@@ -275,6 +275,9 @@ pub static BBPE_TABLE: Lazy<HashMap<&'static str, u8>> = Lazy::new(|| {
     m
 });
 
+static POVEY_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| povey_window(Z_FRAME_LEN));
+static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank_fbank());
+
 // ── Fbank constants (matching standard Kaldi Native Fbank defaults) ──
 pub(crate) const Z_FFT_SIZE: usize = 512;
 pub(crate) const Z_FRAME_LEN: usize = 400;
@@ -287,9 +290,251 @@ pub(crate) const ZIPFORMER_BLANK_ID: usize = 0;
 
 // ── Public API ──
 
+pub struct ZipformerEngine {
+    session: std::sync::Mutex<Session>,
+    chunk_len: usize,
+    chunk_shift: usize,
+    vocab: Vec<String>,
+    is_bbpe: bool,
+    initial_states: Vec<(String, StateValue)>,
+}
+
+impl ZipformerEngine {
+    pub fn new(entry: &config::ModelEntry) -> Result<Self> {
+        let hf_path = config::find_hf_cache(&entry.source)?;
+        let model_path = if hf_path.join("model.onnx").exists() {
+            hf_path.join("model.onnx")
+        } else if hf_path.join("model.int8.onnx").exists() {
+            hf_path.join("model.int8.onnx")
+        } else {
+            anyhow::bail!(
+                "model.onnx / model.int8.onnx not found at {}",
+                hf_path.display()
+            );
+        };
+
+        let session = Session::builder()?.commit_from_file(&model_path)?;
+
+        // Read chunk parameters from model metadata (T, decode_chunk_len)
+        let metadata = session.metadata()?;
+        let chunk_len: usize = metadata
+            .custom("T")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(77);
+        let chunk_shift: usize = metadata
+            .custom("decode_chunk_len")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64);
+        drop(metadata);
+
+        // Setup initial states by inspecting session inputs
+        let mut initial_states: Vec<(String, StateValue)> = Vec::new();
+        for input in session.inputs() {
+            let name = input.name();
+            if name == "x" {
+                continue;
+            }
+            if let Some(shape) = input.dtype().tensor_shape() {
+                let dims: Vec<usize> = shape
+                    .iter()
+                    .map(|&d| if d <= 0 { 1 } else { d as usize })
+                    .collect();
+                let is_int64 = match input.dtype().tensor_type() {
+                    Some(TensorElementType::Int64) => true,
+                    _ => false,
+                };
+                if is_int64 {
+                    let arr = ArrayD::<i64>::zeros(dims);
+                    initial_states.push((name.to_string(), StateValue::I64(arr)));
+                } else {
+                    let arr = ArrayD::<f32>::zeros(dims);
+                    initial_states.push((name.to_string(), StateValue::F32(arr)));
+                }
+            }
+        }
+
+        // Load tokens mapping
+        let tokens_path = hf_path.join("tokens.txt");
+        let tokens_text = std::fs::read_to_string(&tokens_path)
+            .with_context(|| format!("tokens.txt not found at {}", tokens_path.display()))?;
+
+        let mut vocab: Vec<String> = Vec::new();
+        for line in tokens_text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some((token, id_str)) = line.rsplit_once(' ') {
+                if let Ok(id) = id_str.parse::<usize>() {
+                    while vocab.len() <= id {
+                        vocab.push(String::new());
+                    }
+                    vocab[id] = token.to_string();
+                }
+            }
+        }
+
+        // Check if symbol table contains byte BPE characters to determine mode
+        let mut is_bbpe = false;
+        for tok in &vocab {
+            if tok.starts_with('▁') {
+                is_bbpe = true;
+            }
+        }
+
+        Ok(Self {
+            session: std::sync::Mutex::new(session),
+            chunk_len,
+            chunk_shift,
+            vocab,
+            is_bbpe,
+            initial_states,
+        })
+    }
+}
+
+impl crate::engine::OfflineAsrEngine for ZipformerEngine {
+    fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
+        let mut session = self.session.lock().unwrap();
+        let my_feats = compute_fbank_features(samples)?;
+        let n_frames = my_feats.nrows();
+
+        let mut states = self.initial_states.clone();
+
+        // Decoding results
+        let mut token_ids = Vec::new();
+        let mut prev_id = -1;
+
+        // Pad features with last frame values if we run out of frames
+        let mut padded_feats = Array2::<f32>::zeros((n_frames + self.chunk_len, Z_NUM_BINS));
+        for i in 0..n_frames {
+            for j in 0..Z_NUM_BINS {
+                padded_feats[[i, j]] = my_feats[[i, j]];
+            }
+        }
+        for i in n_frames..(n_frames + self.chunk_len) {
+            let last_idx = if n_frames > 0 { n_frames - 1 } else { 0 };
+            for j in 0..Z_NUM_BINS {
+                padded_feats[[i, j]] = my_feats[[last_idx, j]];
+            }
+        }
+
+        // Chunked inference
+        let mut frame_idx = 0;
+        while frame_idx < n_frames {
+            let mut chunk = Array2::<f32>::zeros((self.chunk_len, Z_NUM_BINS));
+            for i in 0..self.chunk_len {
+                for j in 0..Z_NUM_BINS {
+                    chunk[[i, j]] = padded_feats[[frame_idx + i, j]];
+                }
+            }
+            let (chunk_vec, _) = chunk.into_raw_vec_and_offset();
+            let chunk_input = ndarray::Array3::from_shape_vec(
+                (1, self.chunk_len, Z_NUM_BINS),
+                chunk_vec,
+            )?;
+
+            let x_tensor = ort::value::TensorRef::from_array_view(chunk_input.view())?;
+
+            // Prepare input map for this step
+            let mut inputs = ort::inputs! {
+                "x" => x_tensor
+            };
+
+            // Create temporary tensors for the inputs of this run step
+            let mut state_tensors = Vec::new();
+            for (name, val) in &states {
+                let t = match val {
+                    StateValue::F32(arr) => Tensor::from_array(arr.clone())?.into_dyn(),
+                    StateValue::I64(arr) => Tensor::from_array(arr.clone())?.into_dyn(),
+                };
+                state_tensors.push((name.clone(), t));
+            }
+
+            for (name, t) in &state_tensors {
+                inputs.push((name.as_str().into(), t.into()));
+            }
+
+            // Run model forward
+            let outputs = session.run(inputs)?;
+
+            // The first output is log_probs [1, num_out_frames, vocab_dim]
+            let (log_probs_shape, log_probs_data) = outputs[0].try_extract_tensor::<f32>()?;
+            let num_out_frames = log_probs_shape[1] as usize;
+            let vocab_dim = log_probs_shape[2] as usize;
+
+            // Carry states forward
+            for (name, val) in states.iter_mut() {
+                let out_name = format!("new_{}", name);
+                if let Some(new_val) = outputs.get(out_name.as_str()) {
+                    match val {
+                        StateValue::F32(arr) => {
+                            let (shape, data) = new_val.try_extract_tensor::<f32>()?;
+                            let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+                            *arr = ndarray::ArrayD::from_shape_vec(dims, data.to_vec())?;
+                        }
+                        StateValue::I64(arr) => {
+                            let (shape, data) = new_val.try_extract_tensor::<i64>()?;
+                            let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+                            *arr = ndarray::ArrayD::from_shape_vec(dims, data.to_vec())?;
+                        }
+                    }
+                }
+            }
+
+            // Decode CTC frames
+            for t in 0..num_out_frames {
+                let offset = t * vocab_dim;
+                let frame_logits = &log_probs_data[offset..offset + vocab_dim];
+                let best_id = frame_logits
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                if best_id != ZIPFORMER_BLANK_ID && best_id as isize != prev_id {
+                    token_ids.push(best_id);
+                }
+                prev_id = best_id as isize;
+            }
+
+            frame_idx += self.chunk_shift;
+        }
+
+        // Decode tokens to text
+        let mut decoded = String::new();
+        if self.is_bbpe {
+            let mut raw_token_string = String::new();
+            for &tid in &token_ids {
+                if tid < self.vocab.len() {
+                    raw_token_string.push_str(&self.vocab[tid]);
+                }
+            }
+            decoded = decode_byte_bpe(&raw_token_string);
+        } else {
+            // Standard token decoding
+            for &tid in &token_ids {
+                if tid < self.vocab.len() {
+                    let token = &self.vocab[tid];
+                    if token.starts_with('▁') {
+                        if !decoded.is_empty() {
+                            decoded.push(' ');
+                        }
+                        decoded.push_str(&token[3..]); // Strip BPE space marker ▁ (3 bytes)
+                    } else {
+                        decoded.push_str(token);
+                    }
+                }
+            }
+        }
+
+        Ok(decoded.trim().to_string())
+    }
+}
+
 /// Transcribe audio using Zipformer model
 /// Input: 16kHz mono f32 samples. Output: transcribed text.
-pub fn transcribe(samples: &[f32], _language: &str) -> Result<String> {
+pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
     let cfg = config::load_config()?;
     let zip_cfg = cfg
         .asr
@@ -307,224 +552,9 @@ pub fn transcribe(samples: &[f32], _language: &str) -> Result<String> {
             .context("No zipformer model entries")?
     };
 
-    let hf_path = config::find_hf_cache(&entry.source)?;
-    let model_path = if hf_path.join("model.onnx").exists() {
-        hf_path.join("model.onnx")
-    } else if hf_path.join("model.int8.onnx").exists() {
-        hf_path.join("model.int8.onnx")
-    } else {
-        anyhow::bail!(
-            "model.onnx / model.int8.onnx not found at {}",
-            hf_path.display()
-        );
-    };
-
-    let mut session = Session::builder()?.commit_from_file(&model_path)?;
-
-    // Read chunk parameters from model metadata (T, decode_chunk_len)
-    let metadata = session.metadata()?;
-    let chunk_len: usize = metadata
-        .custom("T")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(77);
-    let chunk_shift: usize = metadata
-        .custom("decode_chunk_len")
-        .and_then(|s| s.parse().ok())
-        .unwrap_or(64);
-    drop(metadata);
-
-    // Compute Fbank features (DC offset removal, pre-emphasis, povey window)
-    let my_feats = compute_fbank_features(samples)?;
-    let n_frames = my_feats.nrows();
-
-    // Setup initial states by inspecting session inputs
-    let mut states: Vec<(String, StateValue)> = Vec::new();
-    for input in session.inputs() {
-        let name = input.name();
-        if name == "x" {
-            continue;
-        }
-        if let Some(shape) = input.dtype().tensor_shape() {
-            let dims: Vec<usize> = shape
-                .iter()
-                .map(|&d| if d <= 0 { 1 } else { d as usize })
-                .collect();
-            let is_int64 = match input.dtype().tensor_type() {
-                Some(TensorElementType::Int64) => true,
-                _ => false,
-            };
-            if is_int64 {
-                let arr = ArrayD::<i64>::zeros(dims);
-                states.push((name.to_string(), StateValue::I64(arr)));
-            } else {
-                let arr = ArrayD::<f32>::zeros(dims);
-                states.push((name.to_string(), StateValue::F32(arr)));
-            }
-        }
-    }
-
-    // Decoding results
-    let mut token_ids = Vec::new();
-    let mut prev_id = -1;
-
-    // Pad features with last frame values if we run out of frames
-    let mut padded_feats = Array2::<f32>::zeros((n_frames + chunk_len, Z_NUM_BINS));
-    for i in 0..n_frames {
-        for j in 0..Z_NUM_BINS {
-            padded_feats[[i, j]] = my_feats[[i, j]];
-        }
-    }
-    for i in n_frames..(n_frames + chunk_len) {
-        let last_idx = if n_frames > 0 { n_frames - 1 } else { 0 };
-        for j in 0..Z_NUM_BINS {
-            padded_feats[[i, j]] = my_feats[[last_idx, j]];
-        }
-    }
-
-    // Load tokens mapping
-    let tokens_path = hf_path.join("tokens.txt");
-    let tokens_text = std::fs::read_to_string(&tokens_path)
-        .with_context(|| format!("tokens.txt not found at {}", tokens_path.display()))?;
-
-    let mut vocab: Vec<String> = Vec::new();
-    for line in tokens_text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some((token, id_str)) = line.rsplit_once(' ') {
-            if let Ok(id) = id_str.parse::<usize>() {
-                while vocab.len() <= id {
-                    vocab.push(String::new());
-                }
-                vocab[id] = token.to_string();
-            }
-        }
-    }
-
-    // Check if symbol table contains byte BPE characters to determine mode
-    let mut is_bbpe = false;
-    for tok in &vocab {
-        if tok.chars().any(|c| c as u32 > 0xc6 && c != '▁') {
-            // Note: split logic uses standard BBPE range check
-            // if any token is composed entirely of BBPE chars
-        }
-        // Simplified check: if <blk>, <sos/eos>, <unk> exist and there are BPE tokens
-        if tok.starts_with('▁') {
-            is_bbpe = true;
-        }
-    }
-
-    // Chunked inference
-    let mut frame_idx = 0;
-    while frame_idx < n_frames {
-        let mut chunk = Array2::<f32>::zeros((chunk_len, Z_NUM_BINS));
-        for i in 0..chunk_len {
-            for j in 0..Z_NUM_BINS {
-                chunk[[i, j]] = padded_feats[[frame_idx + i, j]];
-            }
-        }
-        let (chunk_vec, _) = chunk.into_raw_vec_and_offset();
-        let chunk_input = ndarray::Array3::from_shape_vec(
-            (1, chunk_len, Z_NUM_BINS),
-            chunk_vec,
-        )?;
-
-        let x_tensor = ort::value::TensorRef::from_array_view(chunk_input.view())?;
-
-        // Prepare input map for this step
-        let mut inputs = ort::inputs! {
-            "x" => x_tensor
-        };
-
-        // Create temporary tensors for the inputs of this run step
-        let mut state_tensors = Vec::new();
-        for (name, val) in &states {
-            let t = match val {
-                StateValue::F32(arr) => Tensor::from_array(arr.clone())?.into_dyn(),
-                StateValue::I64(arr) => Tensor::from_array(arr.clone())?.into_dyn(),
-            };
-            state_tensors.push((name.clone(), t));
-        }
-
-        for (name, t) in &state_tensors {
-            inputs.push((name.as_str().into(), t.into()));
-        }
-
-        // Run model forward
-        let outputs = session.run(inputs)?;
-
-        // The first output is log_probs [1, num_out_frames, vocab_dim]
-        let (log_probs_shape, log_probs_data) = outputs[0].try_extract_tensor::<f32>()?;
-        let num_out_frames = log_probs_shape[1] as usize;
-        let vocab_dim = log_probs_shape[2] as usize;
-
-        // Carry states forward
-        for (name, val) in states.iter_mut() {
-            let out_name = format!("new_{}", name);
-            if let Some(new_val) = outputs.get(out_name.as_str()) {
-                match val {
-                    StateValue::F32(arr) => {
-                        let (shape, data) = new_val.try_extract_tensor::<f32>()?;
-                        let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-                        *arr = ndarray::ArrayD::from_shape_vec(dims, data.to_vec())?;
-                    }
-                    StateValue::I64(arr) => {
-                        let (shape, data) = new_val.try_extract_tensor::<i64>()?;
-                        let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-                        *arr = ndarray::ArrayD::from_shape_vec(dims, data.to_vec())?;
-                    }
-                }
-            }
-        }
-
-        // Decode CTC frames
-        for t in 0..num_out_frames {
-            let offset = t * vocab_dim;
-            let frame_logits = &log_probs_data[offset..offset + vocab_dim];
-            let best_id = frame_logits
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(i, _)| i)
-                .unwrap_or(0);
-            if best_id != ZIPFORMER_BLANK_ID && best_id as isize != prev_id {
-                token_ids.push(best_id);
-            }
-            prev_id = best_id as isize;
-        }
-
-        frame_idx += chunk_shift;
-    }
-
-    // Decode tokens to text
-    let mut decoded = String::new();
-    if is_bbpe {
-        let mut raw_token_string = String::new();
-        for &tid in &token_ids {
-            if tid < vocab.len() {
-                raw_token_string.push_str(&vocab[tid]);
-            }
-        }
-        decoded = decode_byte_bpe(&raw_token_string);
-    } else {
-        // Standard token decoding
-        for &tid in &token_ids {
-            if tid < vocab.len() {
-                let token = &vocab[tid];
-                if token.starts_with('▁') {
-                    if !decoded.is_empty() {
-                        decoded.push(' ');
-                    }
-                    decoded.push_str(&token[3..]); // Strip BPE space marker ▁ (3 bytes)
-                } else {
-                    decoded.push_str(token);
-                }
-            }
-        }
-    }
-
-    Ok(decoded.trim().to_string())
+    let engine = ZipformerEngine::new(entry)?;
+    use crate::engine::OfflineAsrEngine;
+    engine.transcribe(samples, language)
 }
 
 // ── Decode Byte BPE mapping ──
@@ -557,9 +587,6 @@ pub(crate) fn decode_byte_bpe(text: &str) -> String {
 pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
     let n_frames = (samples.len() + Z_FRAME_SHIFT / 2) / Z_FRAME_SHIFT;
     let n_frames = n_frames.max(1);
-
-    let window = povey_window(Z_FRAME_LEN);
-    let mel_fb = mel_filterbank_fbank();
 
     let mut planner = rustfft::FftPlanner::new();
     let fft = planner.plan_fft_forward(Z_FFT_SIZE);
@@ -600,24 +627,28 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
         preemph[0] = frame[0] - 0.97 * frame[0];
 
         // 3. Apply window
-        let mut buf: Vec<rustfft::num_complex::Complex<f32>> = (0..Z_FFT_SIZE)
-            .map(|j| {
-                let s = if j < Z_FRAME_LEN {
-                    preemph[j] * window[j]
-                } else {
-                    0.0
-                };
-                rustfft::num_complex::Complex::new(s, 0.0)
-            })
-            .collect();
+        let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); Z_FFT_SIZE];
+        for j in 0..Z_FFT_SIZE {
+            let s = if j < Z_FRAME_LEN {
+                preemph[j] * POVEY_WINDOW[j]
+            } else {
+                0.0
+            };
+            buf[j] = rustfft::num_complex::Complex::new(s, 0.0);
+        }
         fft.process(&mut buf);
+
+        // Pre-compute power spectrum to avoid redundant calculations in the filterbank loop
+        let mut power_spectrum = [0.0f64; Z_FFT_SIZE / 2 + 1];
+        for k in 0..n_freqs {
+            power_spectrum[k] = buf[k].re as f64 * buf[k].re as f64 + buf[k].im as f64 * buf[k].im as f64;
+        }
 
         for mi in 0..Z_NUM_BINS {
             let mut sum = 0.0f64;
+            let fb_row = &MEL_FILTERBANK[mi];
             for k in 0..n_freqs {
-                let power =
-                    buf[k].re as f64 * buf[k].re as f64 + buf[k].im as f64 * buf[k].im as f64;
-                sum += power * mel_fb[mi][k];
+                sum += power_spectrum[k] * fb_row[k];
             }
             fbank_data[fi * Z_NUM_BINS + mi] = (sum as f32 + 1.1920929e-7).ln();
         }

@@ -24,11 +24,8 @@ enum Commands {
         #[arg(long, default_value = "auto")]
         language: String,
     },
-    /// Mic → VAD → ASR → text
+    /// Mic → VAD → ASR → text（交互式选择模型）
     E2e {
-        /// ASR engine: sensevoice, whisper, paraformer-streaming, qwen3-asr-0.6B
-        #[arg(long, default_value = "sensevoice")]
-        model: String,
         /// Language: auto, zh, en, ja, ...
         #[arg(long, default_value = "auto")]
         language: String,
@@ -54,7 +51,7 @@ fn main() -> Result<()> {
             model,
             language,
         } => transcribe_file(&wav_path, &model, &language),
-        Commands::E2e { model, language } => run_e2e(&model, &language),
+        Commands::E2e { language } => run_e2e(&language),
         Commands::Config => show_config(),
         Commands::StreamTest { wav_path, model } => stream_test(&wav_path, &model),
     }
@@ -107,14 +104,54 @@ fn transcribe_file(wav_path: &str, model: &str, language: &str) -> Result<()> {
     Ok(())
 }
 
-fn run_e2e(model: &str, language: &str) -> Result<()> {
+/// 列出所有可用模型，让用户输入数字选择
+fn select_model() -> Result<String> {
+    let engines = octopus_asr::config::list_engines()?;
+    if engines.is_empty() {
+        anyhow::bail!("No ASR engines configured in model.json");
+    }
+
+    println!("可用模型：");
+    for (i, e) in engines.iter().enumerate() {
+        let cat_name = match e.category {
+            octopus_asr::config::EngineCategory::Whisper => "Whisper",
+            octopus_asr::config::EngineCategory::SenseVoice => "SenseVoice",
+            octopus_asr::config::EngineCategory::Paraformer => "Paraformer",
+            octopus_asr::config::EngineCategory::Qwen3Asr => "Qwen3-ASR",
+            octopus_asr::config::EngineCategory::Zipformer => "Zipformer",
+        };
+        let desc = if e.description.is_empty() {
+            String::new()
+        } else {
+            format!(" — {}", e.description)
+        };
+        println!("  {}. {} [{}]{}", i + 1, e.name, cat_name, desc);
+    }
+
+    print!("\n请选择模型 (1-{}): ", engines.len());
+    std::io::Write::flush(&mut std::io::stdout())?;
+
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    let choice: usize = input
+        .trim()
+        .parse()
+        .ok()
+        .and_then(|n: usize| if n >= 1 && n <= engines.len() { Some(n) } else { None })
+        .ok_or_else(|| anyhow::anyhow!("无效选择，请输入 1-{} 之间的数字", engines.len()))?;
+
+    Ok(engines[choice - 1].name.clone())
+}
+
+fn run_e2e(language: &str) -> Result<()> {
+    let model = select_model()?;
     // Use streaming mode for Paraformer and Zipformer models
-    let category = octopus_asr::config::resolve_engine_category(model);
+    let category = octopus_asr::config::resolve_engine_category(&model);
     if category == Some(octopus_asr::config::EngineCategory::Paraformer) {
-        return run_e2e_streaming_paraformer(model);
+        return run_e2e_streaming_paraformer(&model);
     }
     if category == Some(octopus_asr::config::EngineCategory::Zipformer) {
-        return run_e2e_streaming_zipformer(model);
+        return run_e2e_streaming_zipformer(&model);
     }
 
     println!("Recording from config... Press Enter to stop.\n");
@@ -142,7 +179,7 @@ fn run_e2e(model: &str, language: &str) -> Result<()> {
     );
 
     let start = std::time::Instant::now();
-    let text = do_transcribe(model, language, &speech)?;
+    let text = do_transcribe(&model, language, &speech)?;
     let elapsed = start.elapsed();
 
     println!("{}", text);

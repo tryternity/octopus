@@ -1,6 +1,7 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use ndarray::Array2;
+use once_cell::sync::Lazy;
 use ort::session::Session;
 
 use crate::config;
@@ -16,11 +17,106 @@ const FBANK_SAMPLE_RATE: u32 = 16000;
 const LFR_WINDOW_SIZE: usize = 7;
 const LFR_WINDOW_SHIFT: usize = 6;
 
+static HAMMING_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hamming_window(FBANK_FRAME_LEN));
+static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank_fbank());
+
 // ── Public API ──
+
+// ── Public API ──
+
+/// Thread-safe, reusable engine for SenseVoice model
+pub struct SenseVoiceEngine {
+    session: std::sync::Mutex<Session>,
+    vocab_list: Vec<String>,
+}
+
+impl SenseVoiceEngine {
+    /// Create a new SenseVoice engine instance by loading model and vocab list
+    pub fn new(entry: &config::ModelEntry) -> Result<Self> {
+        let hf_path = config::find_hf_cache(&entry.source)?;
+        let model_path = hf_path.join("model.int8.onnx");
+        if !model_path.exists() {
+            anyhow::bail!("model.int8.onnx not found at {}", hf_path.display());
+        }
+
+        let session = Session::builder()?.commit_from_file(&model_path)?;
+
+        let tokens_path = hf_path.join("tokens.txt");
+        let tokens_text = std::fs::read_to_string(&tokens_path)
+            .with_context(|| format!("tokens.txt not found at {}", tokens_path.display()))?;
+        let vocab_list: Vec<String> = tokens_text
+            .lines()
+            .map(|l| l.rsplit_once(' ').map(|(t, _)| t.to_string()).unwrap_or_else(|| "".to_string()))
+            .collect();
+
+        Ok(Self {
+            session: std::sync::Mutex::new(session),
+            vocab_list,
+        })
+    }
+}
+
+impl crate::engine::OfflineAsrEngine for SenseVoiceEngine {
+    fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
+        let features = compute_fbank_features(samples)?;
+        let (n_frames, feat_dim) = (features.nrows(), features.ncols());
+
+        let input_tensor = ndarray::Array3::from_shape_vec((1, n_frames, feat_dim), {
+            let (v, _) = features.into_raw_vec_and_offset();
+            v
+        })?;
+
+        let mut session = self.session.lock().unwrap();
+        let outputs = session.run(ort::inputs! {
+            "x" => ort::value::TensorRef::from_array_view(input_tensor.view())?
+        })?;
+
+        // Decode CTC output
+        let (shape, logits) = outputs[0].try_extract_tensor::<f32>()?;
+        let dim: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+        if dim.len() != 3 {
+            anyhow::bail!("Unexpected output rank: {:?}", dim);
+        }
+        let (n_time, vocab) = (dim[1], dim[2]);
+
+        let blank_id: i64 = 60514;
+        let mut deduped: Vec<i64> = Vec::new();
+        let mut prev: i64 = -1;
+        for t in 0..n_time {
+            let offset = t * vocab;
+            let frame = &logits[offset..offset + vocab];
+            let best = frame
+                .iter()
+                .enumerate()
+                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                .map(|(i, _)| i as i64)
+                .unwrap_or(0);
+            if best != prev && best != blank_id {
+                deduped.push(best);
+            }
+            prev = best;
+        }
+
+        let mut text = String::new();
+        for &tid in &deduped {
+            let idx = tid as usize;
+            if idx > 0 && idx < self.vocab_list.len() {
+                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&self.vocab_list[idx]) {
+                    let s = String::from_utf8_lossy(&decoded);
+                    text.push_str(&s);
+                } else {
+                    text.push_str(&self.vocab_list[idx]);
+                }
+            }
+        }
+        let text = text.replace('▁', " ");
+        Ok(text.trim().to_string())
+    }
+}
 
 /// Transcribe audio using SenseVoice model
 /// Input: 16kHz mono f32 samples. Output: transcribed text.
-pub fn transcribe(samples: &[f32], _language: &str) -> Result<String> {
+pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
     let cfg = config::load_config()?;
     let sv_cfg = cfg
         .asr
@@ -32,75 +128,9 @@ pub fn transcribe(samples: &[f32], _language: &str) -> Result<String> {
         .next()
         .context("No sensevoice model entries")?;
 
-    let hf_path = config::find_hf_cache(&entry.source)?;
-    let model_path = hf_path.join("model.int8.onnx");
-    if !model_path.exists() {
-        anyhow::bail!("model.int8.onnx not found at {}", hf_path.display());
-    }
-
-    let mut session = Session::builder()?.commit_from_file(&model_path)?;
-
-    let features = compute_fbank_features(samples)?;
-    let (n_frames, feat_dim) = (features.nrows(), features.ncols());
-
-    let input_tensor = ndarray::Array3::from_shape_vec((1, n_frames, feat_dim), {
-        let (v, _) = features.into_raw_vec_and_offset();
-        v
-    })?;
-
-    let outputs = session.run(ort::inputs! {
-        "x" => ort::value::TensorRef::from_array_view(input_tensor.view())?
-    })?;
-
-    // Decode CTC output
-    let (shape, logits) = outputs[0].try_extract_tensor::<f32>()?;
-    let dim: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-    if dim.len() != 3 {
-        anyhow::bail!("Unexpected output rank: {:?}", dim);
-    }
-    let (n_time, vocab) = (dim[1], dim[2]);
-
-    let blank_id: i64 = 60514;
-    let mut deduped: Vec<i64> = Vec::new();
-    let mut prev: i64 = -1;
-    for t in 0..n_time {
-        let offset = t * vocab;
-        let frame = &logits[offset..offset + vocab];
-        let best = frame
-            .iter()
-            .enumerate()
-            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(i, _)| i as i64)
-            .unwrap_or(0);
-        if best != prev && best != blank_id {
-            deduped.push(best);
-        }
-        prev = best;
-    }
-
-    // Load tokens & decode
-    let tokens_path = hf_path.join("tokens.txt");
-    let tokens_text = std::fs::read_to_string(&tokens_path)
-        .with_context(|| format!("tokens.txt not found at {}", tokens_path.display()))?;
-    let vocab_list: Vec<&str> = tokens_text
-        .lines()
-        .map(|l| l.rsplit_once(' ').map(|(t, _)| t).unwrap_or(""))
-        .collect();
-
-    let mut text = String::new();
-    for &tid in &deduped {
-        let idx = tid as usize;
-        if idx > 0 && idx < vocab_list.len() {
-            if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(vocab_list[idx]) {
-                let s = String::from_utf8_lossy(&decoded);
-                text.push_str(&s);
-            } else {
-                text.push_str(vocab_list[idx]);
-            }
-        }
-    }
-    text = text.replace('▁', " ");
-    Ok(text.trim().to_string())
+    let engine = SenseVoiceEngine::new(entry)?;
+    use crate::engine::OfflineAsrEngine;
+    engine.transcribe(samples, language)
 }
 
 // ── Fbank feature extraction ──
@@ -119,36 +149,38 @@ fn compute_fbank(samples: &[f32]) -> Result<Array2<f32>> {
         1
     };
 
-    let window = hamming_window(FBANK_FRAME_LEN);
-    let mel_fb = mel_filterbank_fbank();
-
     let mut planner = rustfft::FftPlanner::new();
     let fft = planner.plan_fft_forward(FBANK_FFT_SIZE);
 
     let n_freqs = FBANK_FFT_SIZE / 2 + 1;
     let mut fbank_data = vec![0.0f32; n_frames * FBANK_NUM_BINS];
 
+    let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); FBANK_FFT_SIZE];
+
     for fi in 0..n_frames {
         let start = fi * FBANK_FRAME_SHIFT;
 
-        let mut buf: Vec<rustfft::num_complex::Complex<f32>> = (0..FBANK_FFT_SIZE)
-            .map(|j| {
-                let s = if start + j < samples.len() && j < FBANK_FRAME_LEN {
-                    samples[start + j] * window[j]
-                } else {
-                    0.0
-                };
-                rustfft::num_complex::Complex::new(s, 0.0)
-            })
-            .collect();
+        for j in 0..FBANK_FFT_SIZE {
+            let s = if start + j < samples.len() && j < FBANK_FRAME_LEN {
+                samples[start + j] * HAMMING_WINDOW[j]
+            } else {
+                0.0
+            };
+            buf[j] = rustfft::num_complex::Complex::new(s, 0.0);
+        }
         fft.process(&mut buf);
+
+        // Pre-compute power spectrum to avoid redundant calculations in the filterbank loop
+        let mut power_spectrum = [0.0f64; FBANK_FFT_SIZE / 2 + 1];
+        for k in 0..n_freqs {
+            power_spectrum[k] = buf[k].re as f64 * buf[k].re as f64 + buf[k].im as f64 * buf[k].im as f64;
+        }
 
         for mi in 0..FBANK_NUM_BINS {
             let mut sum = 0.0f64;
+            let fb_row = &MEL_FILTERBANK[mi];
             for k in 0..n_freqs {
-                let power =
-                    buf[k].re as f64 * buf[k].re as f64 + buf[k].im as f64 * buf[k].im as f64;
-                sum += power * mel_fb[mi][k];
+                sum += power_spectrum[k] * fb_row[k];
             }
             fbank_data[fi * FBANK_NUM_BINS + mi] = (sum as f32 + 1e-10).ln();
         }

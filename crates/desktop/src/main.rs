@@ -48,16 +48,31 @@ pub fn run() {
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .setup(move |app| {
+            // Initialize engine manager and preheat the active ASR model if embedded
+            let engine_manager = Arc::new(octopus_asr::engine::AsrEngineManager::new());
+            if config.engine_mode == "embedded" {
+                info!("Preheating active ASR model in desktop: {}", config.asr_engine);
+                let em = engine_manager.clone();
+                let active_model = config.asr_engine.clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = em.switch_model(&active_model) {
+                        log::error!("Failed to preheat active ASR model {}: {}", active_model, e);
+                    } else {
+                        info!("Active ASR model {} preheated successfully", active_model);
+                    }
+                });
+            }
+
             // 1. Create engine
             let engine: Arc<dyn TranscriptionEngine> = match config.engine_mode.as_str() {
-                "embedded" => Arc::new(EmbeddedEngine),
+                "embedded" => Arc::new(EmbeddedEngine::new(engine_manager.clone())),
                 #[cfg(feature = "remote-ws")]
                 "websocket" => Arc::new(engine_ws::WsRemoteEngine::new(&config.remote_url)),
                 #[cfg(feature = "remote-grpc")]
                 "grpc" => Arc::new(engine_grpc::GrpcRemoteEngine::new(&config.grpc_endpoint)),
                 other => {
                     log::warn!("Unknown engine_mode '{}', falling back to embedded", other);
-                    Arc::new(EmbeddedEngine)
+                    Arc::new(EmbeddedEngine::new(engine_manager.clone()))
                 }
             };
 

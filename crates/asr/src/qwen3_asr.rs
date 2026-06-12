@@ -37,6 +37,204 @@ static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank());
 
 // ── Public API ──
 
+/// Thread-safe, reusable engine for Qwen3-ASR model
+pub struct Qwen3AsrEngine {
+    conv_session: std::sync::Mutex<Session>,
+    encoder_session: std::sync::Mutex<Session>,
+    decoder_session: std::sync::Mutex<Session>,
+    tokenizer: tokenizers::Tokenizer,
+    entry: config::ModelEntry,
+}
+
+impl Qwen3AsrEngine {
+    /// Create a new Qwen3-ASR engine instance by loading models and tokenizer
+    pub fn new(entry: &config::ModelEntry) -> Result<Self> {
+        let hf_path = config::find_hf_cache(&entry.source)?;
+        let prefer_int8 = entry.quantization != "fp32";
+
+        // Discover ONNX files
+        let conv_path = discover_onnx(&hf_path, "conv_frontend", prefer_int8)?;
+        let encoder_path = discover_onnx(&hf_path, "encoder", prefer_int8)?;
+        let decoder_path = discover_onnx(&hf_path, "decoder", prefer_int8)?;
+
+        // Load ONNX sessions
+        let conv_session = Session::builder()?.commit_from_file(&conv_path)?;
+        let encoder_session = Session::builder()?.commit_from_file(&encoder_path)?;
+        let decoder_session = Session::builder()?.commit_from_file(&decoder_path)?;
+
+        // Load tokenizer from tokenizer/ subdirectory
+        let tokenizer_dir = hf_path.join("tokenizer");
+        let tokenizer = load_tokenizer(&tokenizer_dir)?;
+
+        Ok(Self {
+            conv_session: std::sync::Mutex::new(conv_session),
+            encoder_session: std::sync::Mutex::new(encoder_session),
+            decoder_session: std::sync::Mutex::new(decoder_session),
+            tokenizer,
+            entry: entry.clone(),
+        })
+    }
+}
+
+impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
+    fn transcribe(&self, samples: &[f32], language: &str) -> Result<String> {
+        // Resolve language
+        let lang = if language == "auto" {
+            if self.entry.language.is_empty() || self.entry.language == "auto" {
+                "zh"
+            } else {
+                &self.entry.language
+            }
+        } else {
+            language
+        };
+
+        // Lock sessions for mutability (Session::run requires mutable borrow)
+        let mut conv_session = self.conv_session.lock().unwrap();
+        let mut encoder_session = self.encoder_session.lock().unwrap();
+        let mut decoder_session = self.decoder_session.lock().unwrap();
+
+        // ── Step 1: Mel features (128 bins) ──
+        let mut mel = compute_mel_features(samples)?;
+        let (n_frames, mel_dim) = (mel.nrows(), mel.ncols());
+
+        // Whisper-style normalization: per-frame mean/std
+        normalize_whisper_features(&mut mel);
+
+        // mel is [n_frames, 128], conv_frontend expects [B, n_frames, 128]
+        let (mel_vec, _) = mel.into_raw_vec_and_offset();
+        let mel_input = ndarray::Array3::from_shape_vec((1, n_frames, mel_dim), mel_vec)?;
+
+        // ── Step 2: Conv frontend ──
+        let conv_outputs = conv_session.run(ort::inputs! {
+            "input_features" => ort::value::TensorRef::from_array_view(mel_input.view())?
+        })?;
+
+        let (conv_shape, conv_data) = conv_outputs[0].try_extract_tensor::<f32>()?;
+        let conv_dims: Vec<usize> = conv_shape.iter().map(|&d| d as usize).collect();
+
+        // conv_output is [1, T', 896]
+        let conv_tensor = ArrayView3::from_shape(
+            (conv_dims[0], conv_dims[1], conv_dims[2]),
+            &*conv_data,
+        )?;
+
+        // Build token mask using FeatToAudioTokensLen (matching sherpa-onnx)
+        let conv_num_frames = conv_dims[1];
+        let expected_audio_tokens = feat_to_audio_tokens_len(n_frames, 100);
+        let valid_frames = expected_audio_tokens.min(conv_num_frames);
+
+        let mut mask_vec = vec![false; conv_num_frames];
+        for i in 0..valid_frames {
+            mask_vec[i] = true;
+        }
+        let tok_mask = ndarray::Array2::from_shape_vec((1, conv_num_frames), mask_vec)?;
+
+        // ── Step 3: Encoder ──
+        let enc_outputs = encoder_session.run(ort::inputs! {
+            "input_features" => ort::value::TensorRef::from_array_view(conv_tensor.view())?,
+            "feature_attention_mask" => ort::value::TensorRef::from_array_view(tok_mask.view())?
+        })?;
+
+        let (enc_shape, enc_data) = enc_outputs[0].try_extract_tensor::<f32>()?;
+        let enc_dims: Vec<usize> = enc_shape.iter().map(|&d| d as usize).collect();
+
+        let audio_features_view = ArrayView3::from_shape(
+            (enc_dims[0], enc_dims[1], enc_dims[2]),
+            &*enc_data,
+        )?;
+
+        // Trim trailing silent padding from audio features
+        let (audio_features, trimmed_len) = trim_audio_features(audio_features_view);
+        // Update audio_token_len to min of valid_frames and trimmed_len (matching sherpa-onnx)
+        let audio_token_len = valid_frames.min(trimmed_len);
+
+        // ── Step 4: Build prompt tokens ──
+        let input_ids = build_prompt_ids(&self.tokenizer, audio_token_len, lang)?;
+
+        let s0 = input_ids.len();
+
+        // Dynamic max total length
+        let max_total_len = 2048.max(s0 + MAX_NEW_TOKENS);
+
+        // ── Step 5: Autoregressive decoder loop ──
+        // Initialize KV caches: [1, max_total_len, num_kv_heads, head_dim]
+        let mut caches: Vec<ndarray::Array4<f32>> = (0..NUM_DECODER_LAYERS)
+            .flat_map(|_| {
+                let k = ndarray::Array4::<f32>::zeros((1, max_total_len, NUM_KV_HEADS, HEAD_DIM));
+                let v = ndarray::Array4::<f32>::zeros((1, max_total_len, NUM_KV_HEADS, HEAD_DIM));
+                vec![k, v]
+            })
+            .collect();
+
+        // Run prompt through decoder (prefill)
+        let prompt_ids_arr = ndarray::Array2::from_shape_vec((1, s0), input_ids)?;
+        let prompt_attn = ndarray::Array2::from_shape_vec((1, s0), vec![1i64; s0])?;
+        let prompt_cache_pos: ndarray::Array1<i64> = (0..s0 as i64).collect();
+
+        let logit_vec = run_decoder_step(
+            &mut *decoder_session,
+            &prompt_ids_arr,
+            &audio_features,
+            &prompt_attn,
+            &prompt_cache_pos,
+            0,
+            &mut caches,
+            max_total_len,
+        )?;
+
+        let mut generated_ids = Vec::new();
+        let first_id = argmax(&logit_vec);
+        generated_ids.push(first_id);
+
+        let mut cur_len = s0;
+        let mut active = first_id != EOS_TOKEN_ID;
+
+        // Autoregressive loop
+        while generated_ids.len() < MAX_NEW_TOKENS {
+            if !active {
+                break;
+            }
+
+            if cur_len >= max_total_len {
+                break;
+            }
+
+            let step_ids = ndarray::Array2::from_shape_vec(
+                (1, 1),
+                vec![generated_ids.last().copied().unwrap_or(EOS_TOKEN_ID)],
+            )?;
+            let step_attn = ndarray::Array2::from_shape_vec((1, 1), vec![1i64])?;
+            let step_pos = ndarray::Array1::from_vec(vec![cur_len as i64]);
+
+            let logit_vec = run_decoder_step(
+                &mut *decoder_session,
+                &step_ids,
+                &audio_features,
+                &step_attn,
+                &step_pos,
+                cur_len,
+                &mut caches,
+                max_total_len,
+            )?;
+
+            cur_len += 1;
+
+            let next_id = argmax(&logit_vec);
+            generated_ids.push(next_id);
+
+            if next_id == EOS_TOKEN_ID {
+                active = false;
+            }
+        }
+
+        // ── Step 6: Decode tokens to text ──
+        let text = decode_tokens(&self.tokenizer, &generated_ids);
+
+        Ok(text)
+    }
+}
+
 /// Transcribe audio using Qwen3-ASR model
 /// Input: 16kHz mono f32 samples. Output: transcribed text.
 pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
@@ -58,189 +256,12 @@ pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
             .context("No qwen3-asr model entries")?
     };
 
-    let hf_path = config::find_hf_cache(&entry.source)?;
-    let prefer_int8 = entry.quantization != "fp32";
-
-    // Resolve language
-    let lang = if language == "auto" {
-        if entry.language.is_empty() || entry.language == "auto" {
-            "zh"
-        } else {
-            &entry.language
-        }
-    } else {
-        language
-    };
-
-    // Discover ONNX files
-    let conv_path = discover_onnx(&hf_path, "conv_frontend", prefer_int8)?;
-    let encoder_path = discover_onnx(&hf_path, "encoder", prefer_int8)?;
-    let decoder_path = discover_onnx(&hf_path, "decoder", prefer_int8)?;
-
-
-    // Load ONNX sessions
-    let mut conv_session = Session::builder()?.commit_from_file(&conv_path)?;
-    let mut encoder_session = Session::builder()?.commit_from_file(&encoder_path)?;
-    let mut decoder_session = Session::builder()?.commit_from_file(&decoder_path)?;
-
-    // Load tokenizer from tokenizer/ subdirectory
-    let tokenizer_dir = hf_path.join("tokenizer");
-    let tokenizer = load_tokenizer(&tokenizer_dir)?;
-
-    // ── Step 1: Mel features (128 bins) ──
-    let mut mel = compute_mel_features(samples)?;
-    let (n_frames, mel_dim) = (mel.nrows(), mel.ncols());
-
-
-    // Whisper-style normalization: per-frame mean/std
-    normalize_whisper_features(&mut mel);
-
-
-    // mel is [n_frames, 128], conv_frontend expects [B, n_frames, 128]
-    let (mel_vec, _) = mel.into_raw_vec_and_offset();
-    let mel_input = ndarray::Array3::from_shape_vec((1, n_frames, mel_dim), mel_vec)?;
-
-    // ── Step 2: Conv frontend ──
-    let conv_outputs = conv_session.run(ort::inputs! {
-        "input_features" => ort::value::TensorRef::from_array_view(mel_input.view())?
-    })?;
-
-    let (conv_shape, conv_data) = conv_outputs[0].try_extract_tensor::<f32>()?;
-    let conv_dims: Vec<usize> = conv_shape.iter().map(|&d| d as usize).collect();
-
-    // conv_output is [1, T', 896]
-    let conv_tensor = ArrayView3::from_shape(
-        (conv_dims[0], conv_dims[1], conv_dims[2]),
-        &*conv_data,
-    )?;
-
-    // Build token mask using FeatToAudioTokensLen (matching sherpa-onnx)
-    let conv_num_frames = conv_dims[1];
-    let expected_audio_tokens = feat_to_audio_tokens_len(n_frames, 100);
-    let valid_frames = expected_audio_tokens.min(conv_num_frames);
-
-    let mut mask_vec = vec![false; conv_num_frames];
-    for i in 0..valid_frames {
-        mask_vec[i] = true;
-    }
-    let tok_mask = ndarray::Array2::from_shape_vec((1, conv_num_frames), mask_vec)?;
-
-    // ── Step 3: Encoder ──
-    let enc_outputs = encoder_session.run(ort::inputs! {
-        "input_features" => ort::value::TensorRef::from_array_view(conv_tensor.view())?,
-        "feature_attention_mask" => ort::value::TensorRef::from_array_view(tok_mask.view())?
-    })?;
-
-    let (enc_shape, enc_data) = enc_outputs[0].try_extract_tensor::<f32>()?;
-    let enc_dims: Vec<usize> = enc_shape.iter().map(|&d| d as usize).collect();
-
-    let audio_features_view = ArrayView3::from_shape(
-        (enc_dims[0], enc_dims[1], enc_dims[2]),
-        &*enc_data,
-    )?;
-
-    // Trim trailing silent padding from audio features
-    let (audio_features, trimmed_len) = trim_audio_features(audio_features_view);
-    // Update audio_token_len to min of valid_frames and trimmed_len (matching sherpa-onnx)
-    let audio_token_len = valid_frames.min(trimmed_len);
-
-    // ── Step 4: Build prompt tokens ──
-    let input_ids = build_prompt_ids(&tokenizer, audio_token_len, lang)?;
-
-    let s0 = input_ids.len();
-
-    // Dynamic max total length
-    let max_total_len = 2048.max(s0 + MAX_NEW_TOKENS);
-
-    // ── Step 5: Autoregressive decoder loop ──
-    // Initialize KV caches: [1, max_total_len, num_kv_heads, head_dim]
-    let mut caches: Vec<ndarray::Array4<f32>> = (0..NUM_DECODER_LAYERS)
-        .flat_map(|_| {
-            let k = ndarray::Array4::<f32>::zeros((1, max_total_len, NUM_KV_HEADS, HEAD_DIM));
-            let v = ndarray::Array4::<f32>::zeros((1, max_total_len, NUM_KV_HEADS, HEAD_DIM));
-            vec![k, v]
-        })
-        .collect();
-
-    // Run prompt through decoder (prefill)
-    let prompt_ids_arr = ndarray::Array2::from_shape_vec((1, s0), input_ids)?;
-    let prompt_attn = ndarray::Array2::from_shape_vec((1, s0), vec![1i64; s0])?;
-    let prompt_cache_pos: ndarray::Array1<i64> = (0..s0 as i64).collect();
-
-    let logit_vec = run_decoder_step(
-        &mut decoder_session,
-        &prompt_ids_arr,
-        &audio_features,
-        &prompt_attn,
-        &prompt_cache_pos,
-        0,
-        &mut caches,
-        max_total_len,
-    )?;
-
-    let mut cur_len = s0;
-
-    // Get first generated token
-    let mut next_id = argmax(&logit_vec);
-
-    // If first token is EOS, retry excluding EOS (matching sherpa-onnx fallback)
-    if next_id == EOS_TOKEN_ID {
-        next_id = argmax_excluding(&logit_vec, EOS_TOKEN_ID as usize);
-        if next_id == EOS_TOKEN_ID {
-            // Still EOS after retry, return empty
-            return Ok(String::new());
-        }
-    }
-
-    let mut generated_ids: Vec<i64> = vec![next_id];
-    let mut active = true;
-
-    // Autoregressive loop
-    for _ in 1..MAX_NEW_TOKENS {
-        if !active {
-            break;
-        }
-
-        if cur_len >= max_total_len {
-            break;
-        }
-
-        let step_ids = ndarray::Array2::from_shape_vec(
-            (1, 1),
-            vec![generated_ids.last().copied().unwrap_or(EOS_TOKEN_ID)],
-        )?;
-        let step_attn = ndarray::Array2::from_shape_vec((1, 1), vec![1i64])?;
-        let step_pos = ndarray::Array1::from_vec(vec![cur_len as i64]);
-
-        let logit_vec = run_decoder_step(
-            &mut decoder_session,
-            &step_ids,
-            &audio_features,
-            &step_attn,
-            &step_pos,
-            cur_len,
-            &mut caches,
-            max_total_len,
-        )?;
-
-        cur_len += 1;
-
-        let next_id = argmax(&logit_vec);
-        generated_ids.push(next_id);
-
-        if next_id == EOS_TOKEN_ID {
-            active = false;
-        }
-    }
-
-
-
-    // ── Step 6: Decode tokens to text ──
-    let text = decode_tokens(&tokenizer, &generated_ids);
-
-
-    Ok(text)
+    let engine = Qwen3AsrEngine::new(entry)?;
+    use crate::engine::OfflineAsrEngine;
+    engine.transcribe(samples, language)
 }
+
+
 
 // ── Tokenizer helpers ──
 

@@ -4,6 +4,7 @@
 
 pub mod audio;
 pub mod config;
+pub mod engine;
 pub mod paraformer;
 pub mod qwen3_asr;
 pub mod sensevoice;

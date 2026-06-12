@@ -45,7 +45,7 @@ pub struct AsrSection {
     pub zipformer: Option<HashMap<String, ModelEntry>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct ModelEntry {
     pub source: String,
     #[serde(default)]
@@ -245,6 +245,59 @@ pub fn resolve_engine_category(engine_name: &str) -> Option<EngineCategory> {
         return Some(EngineCategory::Zipformer);
     }
     None
+}
+
+// ── List all available engines ──
+
+/// 可用引擎条目
+pub struct EngineInfo {
+    pub name: String,
+    pub category: EngineCategory,
+    pub description: String,
+}
+
+/// 从 model.json 中列出所有已配置的 ASR 引擎
+pub fn list_engines() -> Result<Vec<EngineInfo>> {
+    let config = load_config()?;
+    let mut engines = Vec::new();
+
+    let sections: [(Option<&HashMap<String, ModelEntry>>, EngineCategory); 5] = [
+        (config.asr.whisper.as_ref(), EngineCategory::Whisper),
+        (config.asr.sensevoice.as_ref(), EngineCategory::SenseVoice),
+        (config.asr.paraformer.as_ref(), EngineCategory::Paraformer),
+        (config.asr.qwen3_asr.as_ref(), EngineCategory::Qwen3Asr),
+        (config.asr.zipformer.as_ref(), EngineCategory::Zipformer),
+    ];
+
+    for (section, category) in sections {
+        if let Some(map) = section {
+            for (name, entry) in map {
+                engines.push(EngineInfo {
+                    name: name.clone(),
+                    category,
+                    description: entry.description.clone(),
+                });
+            }
+        }
+    }
+
+    // 按 category 排序，同 category 内按 name 排序
+    engines.sort_by(|a, b| {
+        let cat_order = |c: &EngineCategory| -> u8 {
+            match c {
+                EngineCategory::SenseVoice => 0,
+                EngineCategory::Whisper => 1,
+                EngineCategory::Paraformer => 2,
+                EngineCategory::Qwen3Asr => 3,
+                EngineCategory::Zipformer => 4,
+            }
+        };
+        cat_order(&a.category)
+            .cmp(&cat_order(&b.category))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+
+    Ok(engines)
 }
 
 // ── App config (config.yaml) ──

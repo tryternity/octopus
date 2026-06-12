@@ -6,8 +6,10 @@ use axum::{
 };
 use clap::Parser;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
+use octopus_asr::engine::AsrEngineManager;
 
 // ── CLI args ──
 
@@ -26,7 +28,8 @@ struct Cli {
 
 #[derive(Clone)]
 struct AppState {
-    asr_engine: String,
+    engine_manager: Arc<AsrEngineManager>,
+    active_model: String,
 }
 
 // ── API types ──
@@ -75,16 +78,17 @@ async fn models(State(state): State<AppState>) -> Json<ModelsResponse> {
         .map(|p| p.display().to_string())
         .unwrap_or_else(|e| format!("error: {}", e));
     Json(ModelsResponse {
-        asr_engine: state.asr_engine.clone(),
+        asr_engine: state.active_model.clone(),
         vad_model: vad_path,
     })
 }
 
 async fn transcribe(
+    State(state): State<AppState>,
     Query(query): Query<TranscribeQuery>,
     body: bytes::Bytes,
 ) -> impl IntoResponse {
-    let engine = query.engine.as_deref().unwrap_or("sensevoice");
+    let engine = query.engine.as_deref().unwrap_or(&state.active_model);
     let language = query.language.as_deref().unwrap_or("auto");
 
     // Try to parse as WAV, fallback to raw f32
@@ -114,7 +118,8 @@ async fn transcribe(
     let duration_ms = (samples.len() as f64 / 16.0) as u64; // 16kHz → ms
     let start = std::time::Instant::now();
 
-    let text = do_transcribe(engine, language, &samples);
+    let text = state.engine_manager.switch_model(engine)
+        .and_then(|_| state.engine_manager.transcribe(&samples, language));
 
     let elapsed = start.elapsed();
     let rtf = if elapsed.as_millis() > 0 {
@@ -154,42 +159,22 @@ struct WsQuery {
 }
 
 async fn ws_stream(
+    State(state): State<AppState>,
     ws: WebSocketUpgrade,
     Query(query): Query<WsQuery>,
 ) -> impl IntoResponse {
     let engine = query
         .engine
-        .unwrap_or_else(|| "sensevoice".to_string());
+        .unwrap_or_else(|| state.active_model.clone());
     let language = query
         .language
         .unwrap_or_else(|| "auto".to_string());
-    ws.on_upgrade(move |socket| handle_ws(socket, engine, language))
-}
-
-/// Dispatch transcription to the correct engine based on category.
-fn do_transcribe(engine: &str, language: &str, samples: &[f32]) -> anyhow::Result<String> {
-    let category = octopus_asr::config::resolve_engine_category(engine);
-    match category {
-        Some(octopus_asr::config::EngineCategory::Whisper) => {
-            octopus_asr::whisper::transcribe(samples, language)
-        }
-        Some(octopus_asr::config::EngineCategory::Paraformer) => {
-            octopus_asr::paraformer::transcribe(samples, language)
-        }
-        Some(octopus_asr::config::EngineCategory::Qwen3Asr) => {
-            octopus_asr::qwen3_asr::transcribe(samples, language)
-        }
-        Some(octopus_asr::config::EngineCategory::Zipformer) => {
-            octopus_asr::zipformer::transcribe(samples, language)
-        }
-        Some(octopus_asr::config::EngineCategory::SenseVoice) | None => {
-            octopus_asr::sensevoice::transcribe(samples, language)
-        }
-    }
+    ws.on_upgrade(move |socket| handle_ws(socket, state.engine_manager, engine, language))
 }
 
 async fn handle_ws(
     mut socket: axum::extract::ws::WebSocket,
+    engine_manager: Arc<AsrEngineManager>,
     engine: String,
     language: String,
 ) {
@@ -244,7 +229,8 @@ async fn handle_ws(
                     let speech =
                         octopus_asr::audio::filter_speech(&audio_buffer, &mut vad, 480, 0.5);
                     if !speech.is_empty() {
-                        let text = do_transcribe(&engine, &language, &speech)
+                        let text = engine_manager.switch_model(&engine)
+                            .and_then(|_| engine_manager.transcribe(&speech, &language))
                             .unwrap_or_else(|e| format!("[error: {}]", e));
                         let _ = socket
                             .send(Message::Text(
@@ -262,7 +248,8 @@ async fn handle_ws(
             }
             Ok(Message::Text(cmd)) => {
                 if cmd == "flush" && !audio_buffer.is_empty() {
-                    let text = do_transcribe(&engine, &language, &audio_buffer)
+                    let text = engine_manager.switch_model(&engine)
+                        .and_then(|_| engine_manager.transcribe(&audio_buffer, &language))
                         .unwrap_or_else(|e| format!("[error: {}]", e));
                     let _ = socket
                         .send(Message::Text(
@@ -293,9 +280,18 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
 
     let config = octopus_asr::config::load_config()?;
-    let asr_engine = config.asr.active.clone();
+    let active_model = config.asr.active.clone();
 
-    let state = AppState { asr_engine };
+    let engine_manager = Arc::new(AsrEngineManager::new());
+    tracing::info!("Preheating active ASR model: {}", active_model);
+    if let Err(e) = engine_manager.switch_model(&active_model) {
+        tracing::error!("Failed to preheat active ASR model {}: {}", active_model, e);
+    }
+
+    let state = AppState {
+        engine_manager,
+        active_model,
+    };
 
     let app = Router::new()
         .route("/health", get(health))
