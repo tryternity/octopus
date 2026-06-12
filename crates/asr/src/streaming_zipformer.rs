@@ -149,22 +149,25 @@ impl StreamingZipformer {
             return Ok(self.decode_tokens());
         }
 
-        // Pad features to extract the remaining chunks
-        let mut padded = Array2::<f32>::zeros((feats.nrows() + self.chunk_len, Z_NUM_BINS));
+        // Run extra chunks of padding to fully flush the model's receptive field / right context
+        let num_extra_chunks = 3;
+        let pad_len = self.chunk_len + num_extra_chunks * self.chunk_shift;
+        let mut padded = Array2::<f32>::zeros((feats.nrows() + pad_len, Z_NUM_BINS));
         for i in 0..feats.nrows() {
             for j in 0..Z_NUM_BINS {
                 padded[[i, j]] = feats[[i, j]];
             }
         }
         let last = if feats.nrows() > 0 { feats.nrows() - 1 } else { 0 };
-        for i in feats.nrows()..(feats.nrows() + self.chunk_len) {
+        for i in feats.nrows()..(feats.nrows() + pad_len) {
             for j in 0..Z_NUM_BINS {
                 padded[[i, j]] = feats[[last, j]];
             }
         }
 
         let mut frame_idx = 0;
-        while frame_idx < n_frames {
+        let limit = n_frames + num_extra_chunks * self.chunk_shift;
+        while frame_idx < limit {
             let mut chunk = Array2::<f32>::zeros((self.chunk_len, Z_NUM_BINS));
             for i in 0..self.chunk_len {
                 for j in 0..Z_NUM_BINS {
@@ -216,35 +219,23 @@ impl StreamingZipformer {
         };
 
         let h_frames = self.history_samples.len() / Z_FRAME_SHIFT;
-        let n_frames = feats.nrows().saturating_sub(h_frames);
 
-        if n_frames < self.chunk_len {
-            // Not enough new frames for a chunk yet
+        // We only process chunks where we have enough real audio frames.
+        // The condition for chunk `frame_idx` to have all real frames is:
+        // `frame_idx + h_frames + chunk_len < feats.nrows()` (matching C++ sherpa-onnx `IsReady`).
+        // If the first chunk is not ready, we return Ok(None) to wait for more audio.
+        if h_frames + self.chunk_len >= feats.nrows() {
             return Ok(None);
-        }
-
-        // Pad features for safe chunk extraction
-        let mut padded = Array2::<f32>::zeros((feats.nrows() + self.chunk_len, Z_NUM_BINS));
-        for i in 0..feats.nrows() {
-            for j in 0..Z_NUM_BINS {
-                padded[[i, j]] = feats[[i, j]];
-            }
-        }
-        let last = if feats.nrows() > 0 { feats.nrows() - 1 } else { 0 };
-        for i in feats.nrows()..(feats.nrows() + self.chunk_len) {
-            for j in 0..Z_NUM_BINS {
-                padded[[i, j]] = feats[[last, j]];
-            }
         }
 
         // Process chunks
         let mut frame_idx = 0;
         let mut produced_any = false;
-        while frame_idx + self.chunk_len <= feats.nrows() + self.chunk_len && frame_idx < n_frames {
+        while frame_idx + h_frames + self.chunk_len < feats.nrows() {
             let mut chunk = Array2::<f32>::zeros((self.chunk_len, Z_NUM_BINS));
             for i in 0..self.chunk_len {
                 for j in 0..Z_NUM_BINS {
-                    chunk[[i, j]] = padded[[frame_idx + h_frames + i, j]];
+                    chunk[[i, j]] = feats[[frame_idx + h_frames + i, j]];
                 }
             }
 

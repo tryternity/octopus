@@ -35,6 +35,10 @@ enum Stage {
         engine: StreamingSession,
         accumulated_text: String,
         streaming_active: Arc<AtomicBool>,
+        /// VAD 实例，用于检测静音间隔
+        vad: Option<octopus_asr::vad::SileroVad>,
+        /// 累积静音时长（秒），超过阈值后恢复说话时插入标点
+        silence_duration: f64,
     },
     /// 离线模式：录音中
     Recording,
@@ -43,6 +47,13 @@ enum Stage {
     /// 粘贴中
     Pasting,
 }
+
+/// VAD 静音判定阈值
+const VAD_SPEECH_THRESHOLD: f32 = 0.5;
+/// VAD 分块大小（采样点数）
+const VAD_CHUNK_SIZE: usize = 512;
+/// 插入标点的静音时长阈值（秒）
+const PUNCTUATION_SILENCE_THRESHOLD: f64 = 0.5;
 
 /// 录音生命周期协调器
 /// 单线程串行化所有事件，消除竞态条件
@@ -176,6 +187,21 @@ fn handle_toggle(
                             crate::tray::TrayState::Recording,
                         );
 
+                        // 初始化 VAD（用于静音检测 + 标点）
+                        let vad = match octopus_asr::config::find_silero_vad() {
+                            Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
+                                Ok(v) => Some(v),
+                                Err(e) => {
+                                    warn!("VAD init failed: {}, punctuation disabled", e);
+                                    None
+                                }
+                            },
+                            Err(e) => {
+                                warn!("VAD not found: {}, punctuation disabled", e);
+                                None
+                            }
+                        };
+
                         let streaming_active = Arc::new(AtomicBool::new(true));
                         start_tick_thread(tx.clone(), streaming_active.clone());
 
@@ -183,6 +209,8 @@ fn handle_toggle(
                             engine: streaming_engine,
                             accumulated_text: String::new(),
                             streaming_active,
+                            vad,
+                            silence_duration: 0.0,
                         };
                     }
                     Err(e) => {
@@ -233,6 +261,7 @@ fn handle_toggle(
             engine: streaming_engine,
             accumulated_text,
             streaming_active,
+            ..
         } => {
             // 流式模式：停止流式，获取最终文本，粘贴
             info!("Toggle: stopping streaming, finalizing");
@@ -243,7 +272,7 @@ fn handle_toggle(
             // 获取最终音频和识别结果
             let final_samples = audio.drain_samples();
             if !final_samples.is_empty() {
-                if let Err(e) = streaming_engine.accept_samples(&final_samples) {
+                if let Err(e) = streaming_engine.accept_samples(&final_samples, false) {
                     warn!("Error processing final samples: {}", e);
                 }
             }
@@ -317,6 +346,8 @@ fn handle_streaming_tick(
     if let Stage::Streaming {
         engine,
         accumulated_text,
+        vad,
+        silence_duration,
         ..
     } = stage
     {
@@ -326,13 +357,12 @@ fn handle_streaming_tick(
             return;
         }
 
-        // 送入流式引擎
-        match engine.accept_samples(&samples) {
+        // 用 VAD 检测本段音频中语音/静音的比例
+        let was_silent = detect_silence_gap(vad, &samples, silence_duration);
+
+        // 送入流式引擎（如果之前有足够长的静音间隔，插入逗号）
+        match engine.accept_samples(&samples, was_silent) {
             Ok(Some(new_text)) => {
-                // 更新累积文本
-                // Paraformer 返回增量，需要追加
-                // Zipformer 返回全文，直接替换
-                // 统一处理：StreamingSession 内部已处理差异，返回的都是累积文本
                 *accumulated_text = new_text;
                 debug!("Partial: '{}'", accumulated_text);
 
@@ -345,6 +375,73 @@ fn handle_streaming_tick(
             Err(e) => {
                 warn!("Streaming accept_samples error: {}", e);
             }
+        }
+    }
+}
+
+/// 用 VAD 检测音频中的语音/静音。
+///
+/// 返回 `true` 表示之前累积了 >0.5s 的静音间隔（需要插入逗号）。
+/// 同时更新 `silence_duration`：
+/// - 本段音频大部分是静音 → 累加静音时长
+/// - 本段音频包含语音 → 重置为 0
+fn detect_silence_gap(
+    vad: &mut Option<octopus_asr::vad::SileroVad>,
+    samples: &[f32],
+    silence_duration: &mut f64,
+) -> bool {
+    let prev_silence = *silence_duration;
+
+    match vad {
+        Some(v) => {
+            let mut speech_chunks = 0usize;
+            let mut silent_chunks = 0usize;
+
+            for chunk in samples.chunks(VAD_CHUNK_SIZE) {
+                if chunk.len() < VAD_CHUNK_SIZE {
+                    break; // 不足一个完整块，跳过
+                }
+                match v.compute(chunk) {
+                    Ok(prob) => {
+                        if prob >= VAD_SPEECH_THRESHOLD {
+                            speech_chunks += 1;
+                        } else {
+                            silent_chunks += 1;
+                        }
+                    }
+                    Err(_) => {
+                        // VAD 计算失败，保守认为有语音
+                        speech_chunks += 1;
+                    }
+                }
+            }
+
+            let total_chunks = speech_chunks + silent_chunks;
+            if total_chunks == 0 {
+                return false;
+            }
+
+            let speech_ratio = speech_chunks as f64 / total_chunks as f64;
+            let chunk_duration = VAD_CHUNK_SIZE as f64 / 16000.0; // 每块时长（秒）
+
+            if speech_ratio < 0.3 {
+                // 本段大部分是静音 → 累积静音时长
+                *silence_duration += total_chunks as f64 * chunk_duration;
+                debug!(
+                    "VAD: silence accumulated {:.2}s (speech_ratio={:.2})",
+                    silence_duration, speech_ratio
+                );
+            } else {
+                // 本段包含语音 → 重置静音计时
+                *silence_duration = 0.0;
+            }
+
+            // 之前累积静音 > 阈值，且本段有语音 → 需要插入标点
+            prev_silence >= PUNCTUATION_SILENCE_THRESHOLD
+        }
+        None => {
+            // 无 VAD，不加标点
+            false
         }
     }
 }
