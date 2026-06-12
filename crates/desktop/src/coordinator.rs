@@ -276,6 +276,10 @@ fn handle_toggle(
                 return;
             }
 
+            // 隐藏 overlay，显示结果窗口
+            crate::overlay::hide_overlay(app_handle);
+            crate::result_window::show_result(app_handle, &combined);
+
             // 粘贴
             *stage = Stage::Pasting;
             let config = config.clone();
@@ -369,6 +373,7 @@ fn handle_cancel(
     }
     *stage = Stage::Idle;
     crate::overlay::hide_overlay(app_handle);
+    crate::result_window::hide_result(app_handle);
     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
 }
 
@@ -389,6 +394,10 @@ fn handle_transcription_done(
                 crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
                 return;
             }
+
+            // 隐藏 overlay，显示结果窗口
+            crate::overlay::hide_overlay(app_handle);
+            crate::result_window::show_result(app_handle, &transcription);
 
             *stage = Stage::Pasting;
             let config = config.clone();

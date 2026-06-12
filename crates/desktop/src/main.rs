@@ -11,6 +11,7 @@ mod engine_grpc;
 mod engine_ws;
 mod overlay;
 mod paste;
+mod result_window;
 mod shortcut;
 mod streaming_engine;
 mod tray;
@@ -111,7 +112,10 @@ pub fn run() {
             // 5. Create Overlay
             overlay::create_overlay(app.handle(), &config);
 
-            // 6. Register global shortcut
+            // 6. Create Result Window
+            result_window::create_result_window(app.handle());
+
+            // 7. Register global shortcut
             if let Err(e) = shortcut::register_shortcut(app.handle(), &config.shortcut) {
                 log::error!("Failed to register shortcut: {}. Use tray menu instead.", e);
             }

@@ -72,6 +72,21 @@ for k in 0..n_freqs {
 - **边界零碎样点缓冲**：内部使用 `buffer: Vec<f32>` 暂存重采样周期中不满一帧的样本，并在下一次输入时拼接，彻底解决了边界点击爆音（Clicks）与音频断截的问题。
 - **流尾冲刷**：录音结束时，通过 `flush()` 进行零填充，输出最后一帧，确保 ASR 能够正确还原末尾音频。
 
+### 3.4 Zipformer 特征提取与归一化对齐优化
+
+Zipformer 模型（包括 `zipformer-ctc`、`zipformer-multi` 和 `zipformer-small-ctc`）在流式与离线识别时，因特征提取算法和数据尺度的微小差异导致了极大的识别准确度波动。针对此，我们进行了以下深度对齐与优化：
+1. **统一输入音频振幅归一化**：
+   - 所有的 Zipformer 模型在官方 `sherpa-onnx` 中默认以 `normalize_samples = true` 运行，即输入波形幅值处于 `[-1.0, 1.0]` 区间。
+   - 之前代码错误地将样本乘以 `32768.0`（Kaldi 默认的 16-bit 整数范围），导致特征值溢出。去除此缩放因子后，`zipformer-multi` 和 `zipformer-small-ctc` 的特征提取完全恢复正常，识别准确率达到预期。
+2. **支持 Whisper 特征提取分支 (`zipformer-ctc`)**：
+   - 检测到 `zipformer-ctc` 模型的 `feature` 元数据为 `whisper` 时，将特征提取路由至专用的 **WhisperMelExtractor**。该提取器使用 Hann 窗、FFT 窗口大小 400 且没有预加重与 DC 去除。
+3. **Chunk 级 Whisper 特征归一化**：
+   - Whisper 特征在送入 `zipformer-ctc` 之前，必须以 Chunk 级别（以 frames 长度为单位）执行专属归一化：
+     - $log\_spec = \log_{10}(\max(spec, 10^{-10}))$
+     - $clamp\_min = \max(log\_spec) - 8.0$
+     - $normalized\_spec = \frac{\max(log\_spec, clamp\_min) + 4.0}{4.0}$
+   - 此操作完全对齐了 C++ 中 `OfflineWhisperModel::NormalizeFeatures` 逻辑，彻底修复了 `zipformer-ctc` 特征数值分布不匹配导致的识别输出为空或大量 `[partial]` 的问题。
+
 ---
 
 ## 4. 引擎管理器与应用集成

@@ -20,6 +20,7 @@ pub struct StreamingZipformer {
     session: Session,
     vocab: Vec<String>,
     is_bbpe: bool,
+    is_whisper: bool,
 
     // Chunk parameters (read from model metadata)
     chunk_len: usize,   // T (e.g. 77 or 45)
@@ -67,6 +68,10 @@ impl StreamingZipformer {
             .custom("decode_chunk_len")
             .and_then(|s| s.parse().ok())
             .unwrap_or(64);
+        let is_whisper = metadata
+            .custom("feature")
+            .map(|s| s == "whisper")
+            .unwrap_or(false);
         drop(metadata);
 
         // Initialize states from ONNX input shapes
@@ -101,6 +106,7 @@ impl StreamingZipformer {
             session,
             vocab,
             is_bbpe,
+            is_whisper,
             chunk_len,
             chunk_shift,
             sample_buffer: Vec::new(),
@@ -125,7 +131,11 @@ impl StreamingZipformer {
 
         // Pad remaining samples to produce at least chunk_len fbank frames
         let samples = std::mem::take(&mut self.sample_buffer);
-        let feats = compute_fbank_features(&samples)?;
+        let feats = if self.is_whisper {
+            crate::zipformer::compute_whisper_features_linear(&samples)?
+        } else {
+            compute_fbank_features(&samples)?
+        };
         let n_frames = feats.nrows();
 
         if n_frames == 0 {
@@ -147,6 +157,10 @@ impl StreamingZipformer {
                     padded[[i, j]] = feats[[last, j]];
                 }
             }
+        }
+
+        if self.is_whisper {
+            crate::zipformer::normalize_whisper_features(&mut padded);
         }
 
         self.run_chunk(&padded)?;
@@ -174,7 +188,11 @@ impl StreamingZipformer {
             return Ok(None);
         }
 
-        let feats = compute_fbank_features(&self.sample_buffer)?;
+        let feats = if self.is_whisper {
+            crate::zipformer::compute_whisper_features_linear(&self.sample_buffer)?
+        } else {
+            compute_fbank_features(&self.sample_buffer)?
+        };
         let n_frames = feats.nrows();
 
         if n_frames < self.chunk_len {
@@ -205,6 +223,10 @@ impl StreamingZipformer {
                 for j in 0..Z_NUM_BINS {
                     chunk[[i, j]] = padded[[frame_idx + i, j]];
                 }
+            }
+
+            if self.is_whisper {
+                crate::zipformer::normalize_whisper_features(&mut chunk);
             }
 
             if self.run_chunk(&chunk)? {
@@ -399,11 +421,9 @@ mod tests {
         println!("\n--- Testing Streaming zipformer-ctc ---");
         let mut engine = StreamingZipformer::new("zipformer-ctc").unwrap();
         let chunk_size = 10000;
-        let mut full_text = String::new();
         for chunk in samples.chunks(chunk_size) {
             if let Some(text) = engine.accept_samples(chunk).unwrap() {
                 println!("Partial: {}", text);
-                full_text = text;
             }
         }
         let final_text = engine.finish().unwrap();
@@ -420,11 +440,9 @@ mod tests {
         println!("\n--- Testing Streaming zipformer-multi ---");
         let mut engine = StreamingZipformer::new("zipformer-multi").unwrap();
         let chunk_size = 10000;
-        let mut full_text = String::new();
         for chunk in samples.chunks(chunk_size) {
             if let Some(text) = engine.accept_samples(chunk).unwrap() {
                 println!("Partial: {}", text);
-                full_text = text;
             }
         }
         let final_text = engine.finish().unwrap();

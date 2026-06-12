@@ -297,6 +297,7 @@ pub struct ZipformerEngine {
     vocab: Vec<String>,
     is_bbpe: bool,
     initial_states: Vec<(String, StateValue)>,
+    is_whisper: bool,
 }
 
 pub(crate) fn is_vocab_bbpe(vocab: &[String]) -> bool {
@@ -400,6 +401,10 @@ impl ZipformerEngine {
             .custom("decode_chunk_len")
             .and_then(|s| s.parse().ok())
             .unwrap_or(64);
+        let is_whisper = metadata
+            .custom("feature")
+            .map(|s| s == "whisper")
+            .unwrap_or(false);
         drop(metadata);
 
         // Setup initial states by inspecting session inputs
@@ -460,6 +465,7 @@ impl ZipformerEngine {
             vocab,
             is_bbpe,
             initial_states,
+            is_whisper,
         })
     }
 }
@@ -467,7 +473,11 @@ impl ZipformerEngine {
 impl crate::engine::OfflineAsrEngine for ZipformerEngine {
     fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
         let mut session = self.session.lock().unwrap();
-        let my_feats = compute_fbank_features(samples)?;
+        let my_feats = if self.is_whisper {
+            compute_whisper_features_linear(samples)?
+        } else {
+            compute_fbank_features(samples)?
+        };
         let n_frames = my_feats.nrows();
 
         let mut states = self.initial_states.clone();
@@ -499,6 +509,11 @@ impl crate::engine::OfflineAsrEngine for ZipformerEngine {
                     chunk[[i, j]] = padded_feats[[frame_idx + i, j]];
                 }
             }
+
+            if self.is_whisper {
+                normalize_whisper_features(&mut chunk);
+            }
+
             let (chunk_vec, _) = chunk.into_raw_vec_and_offset();
             let chunk_input = ndarray::Array3::from_shape_vec(
                 (1, self.chunk_len, Z_NUM_BINS),
@@ -674,7 +689,139 @@ pub(crate) fn decode_byte_bpe(text: &str) -> String {
     String::from_utf8_lossy(&ans).into_owned()
 }
 
+
+// ── Whisper Feature Constants and Extractor ──
+
+static WHISPER_HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| whisper_hann_window(400));
+static WHISPER_MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| whisper_mel_filterbank());
+
+fn whisper_hann_window(size: usize) -> Vec<f32> {
+    (0..size)
+        .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (size - 1) as f32).cos()))
+        .collect()
+}
+
+fn whisper_mel_filterbank() -> Vec<Vec<f64>> {
+    let n_freqs = 400 / 2 + 1; // 201
+    let fmax = 16000.0f64 / 2.0; // Nyquist
+    let mel_min = 2595.0f64 * (1.0f64).log10(); // log10(1) = 0
+    let mel_max = 2595.0 * (1.0 + fmax / 700.0).log10();
+    let hz_points: Vec<f64> = (0..=80 + 1)
+        .map(|i| {
+            700.0
+                * (10.0f64.powf(
+                    (mel_min + (mel_max - mel_min) * i as f64 / (80 + 1) as f64) / 2595.0,
+                ) - 1.0)
+        })
+        .collect();
+    let fft_freqs: Vec<f64> = (0..n_freqs)
+        .map(|i| 16000.0f64 * i as f64 / 400.0)
+        .collect();
+    let mut filters = vec![vec![0.0f64; n_freqs]; 80];
+    for i in 0..80 {
+        let (fl, _fc, fr) = (hz_points[i], hz_points[i + 1], hz_points[i + 2]);
+        let fc = hz_points[i + 1];
+        for j in 0..n_freqs {
+            if fft_freqs[j] >= fl && fft_freqs[j] <= fc && fc > fl {
+                filters[i][j] = (fft_freqs[j] - fl) / (fc - fl);
+            } else if fft_freqs[j] > fc && fft_freqs[j] <= fr && fr > fc {
+                filters[i][j] = (fr - fft_freqs[j]) / (fr - fc);
+            }
+        }
+        let enorm = 2.0 / (hz_points[i + 2] - hz_points[i]);
+        for j in 0..n_freqs {
+            filters[i][j] *= enorm;
+        }
+    }
+    filters
+}
+
+pub(crate) fn compute_whisper_features_linear(samples: &[f32]) -> Result<Array2<f32>> {
+    let n_frames = (samples.len() + Z_FRAME_SHIFT / 2) / Z_FRAME_SHIFT;
+    let n_frames = n_frames.max(1);
+
+    let mut planner = rustfft::FftPlanner::new();
+    let fft = planner.plan_fft_forward(400);
+
+    let mut fbank_data = vec![0.0f32; n_frames * Z_NUM_BINS];
+
+    for fi in 0..n_frames {
+        let midpoint = Z_FRAME_SHIFT * fi + Z_FRAME_SHIFT / 2;
+        let wave_start = midpoint as isize - (Z_FRAME_LEN as isize) / 2;
+
+        let mut frame = vec![0.0f32; Z_FRAME_LEN];
+        let wave_dim = samples.len() as isize;
+        for s in 0..Z_FRAME_LEN {
+            let mut s_in_wave = s as isize + wave_start;
+            while s_in_wave < 0 || s_in_wave >= wave_dim {
+                if s_in_wave < 0 {
+                    s_in_wave = -s_in_wave - 1;
+                } else {
+                    s_in_wave = 2 * wave_dim - 1 - s_in_wave;
+                }
+            }
+            frame[s] = samples[s_in_wave as usize];
+        }
+
+        // Apply Hann window
+        let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); 400];
+        for j in 0..400 {
+            buf[j] = rustfft::num_complex::Complex::new(frame[j] * WHISPER_HANN_WINDOW[j], 0.0);
+        }
+        fft.process(&mut buf);
+
+        // Pre-compute power spectrum
+        let mut power_spectrum = [0.0f64; 201];
+        for k in 0..201 {
+            power_spectrum[k] = buf[k].re as f64 * buf[k].re as f64 + buf[k].im as f64 * buf[k].im as f64;
+        }
+
+        for mi in 0..Z_NUM_BINS {
+            let mut sum = 0.0f64;
+            let fb_row = &WHISPER_MEL_FILTERBANK[mi];
+            for k in 0..201 {
+                sum += power_spectrum[k] * fb_row[k];
+            }
+            fbank_data[fi * Z_NUM_BINS + mi] = sum as f32;
+        }
+    }
+
+    Array2::from_shape_vec((n_frames, Z_NUM_BINS), fbank_data).map_err(Into::into)
+}
+
+pub(crate) fn normalize_whisper_features(chunk: &mut Array2<f32>) {
+    let nrows = chunk.nrows();
+    let ncols = chunk.ncols();
+
+    // 1. log_spec = torch.clamp(features, min=1e-10).log10()
+    for i in 0..nrows {
+        for j in 0..ncols {
+            chunk[[i, j]] = chunk[[i, j]].max(1e-10f32).log10();
+        }
+    }
+
+    // 2. Find max_v
+    let mut max_v = f32::NEG_INFINITY;
+    for i in 0..nrows {
+        for j in 0..ncols {
+            if chunk[[i, j]] > max_v {
+                max_v = chunk[[i, j]];
+            }
+        }
+    }
+
+    // 3. clamp to max_v - 8.0, and shift+scale
+    let clamp_min = max_v - 8.0f32;
+    for i in 0..nrows {
+        for j in 0..ncols {
+            let clamped = chunk[[i, j]].max(clamp_min);
+            chunk[[i, j]] = (clamped + 4.0f32) / 4.0f32;
+        }
+    }
+}
+
 // ── Kaldi Fbank features extraction ──
+
 
 pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
     let n_frames = (samples.len() + Z_FRAME_SHIFT / 2) / Z_FRAME_SHIFT;
@@ -701,7 +848,7 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
                     s_in_wave = 2 * wave_dim - 1 - s_in_wave;
                 }
             }
-            frame[s] = samples[s_in_wave as usize] * 32768.0;
+            frame[s] = samples[s_in_wave as usize];
         }
 
         // 1. Remove DC offset
@@ -808,7 +955,11 @@ mod tests {
 
         println!("\n--- Debugging Offline zipformer-ctc ---");
         let mut session = engine.session.lock().unwrap();
-        let my_feats = compute_fbank_features(&samples).unwrap();
+        let my_feats = if engine.is_whisper {
+            compute_whisper_features_linear(&samples).unwrap()
+        } else {
+            compute_fbank_features(&samples).unwrap()
+        };
         let n_frames = my_feats.nrows();
         let mut states = engine.initial_states.clone();
         let mut token_ids = Vec::new();
@@ -836,6 +987,11 @@ mod tests {
                     chunk[[i, j]] = padded_feats[[frame_idx + i, j]];
                 }
             }
+
+            if engine.is_whisper {
+                normalize_whisper_features(&mut chunk);
+            }
+
             let (chunk_vec, _) = chunk.into_raw_vec_and_offset();
             let chunk_input = ndarray::Array3::from_shape_vec(
                 (1, engine.chunk_len, Z_NUM_BINS),
