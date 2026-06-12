@@ -10,7 +10,8 @@
 //!   5. BPE decode using Qwen2 tokenizer (vocab.json + merges.txt)
 
 use anyhow::{Context, Result};
-use ndarray::Array2;
+use ndarray::{Array2, Array3, ArrayView3, ArrayView4};
+use once_cell::sync::Lazy;
 use ort::session::Session;
 
 use crate::config;
@@ -30,6 +31,9 @@ const MAX_NEW_TOKENS: usize = 512;
 
 // ── Special token IDs (from tokenizer_config.json added_tokens_decoder) ──
 const EOS_TOKEN_ID: i64 = 151645; // <|im_end|>
+
+static HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hann_window(MEL_FRAME_LEN));
+static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank());
 
 // ── Public API ──
 
@@ -104,12 +108,10 @@ pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
     let (conv_shape, conv_data) = conv_outputs[0].try_extract_tensor::<f32>()?;
     let conv_dims: Vec<usize> = conv_shape.iter().map(|&d| d as usize).collect();
 
-
-
     // conv_output is [1, T', 896]
-    let conv_tensor = ndarray::Array3::from_shape_vec(
+    let conv_tensor = ArrayView3::from_shape(
         (conv_dims[0], conv_dims[1], conv_dims[2]),
-        conv_data.to_vec(),
+        &*conv_data,
     )?;
 
     // Build token mask using FeatToAudioTokensLen (matching sherpa-onnx)
@@ -132,24 +134,20 @@ pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
     let (enc_shape, enc_data) = enc_outputs[0].try_extract_tensor::<f32>()?;
     let enc_dims: Vec<usize> = enc_shape.iter().map(|&d| d as usize).collect();
 
-
-    let audio_features = ndarray::Array3::from_shape_vec(
+    let audio_features_view = ArrayView3::from_shape(
         (enc_dims[0], enc_dims[1], enc_dims[2]),
-        enc_data.to_vec(),
+        &*enc_data,
     )?;
 
-
     // Trim trailing silent padding from audio features
-    let (audio_features, trimmed_len) = trim_audio_features(audio_features);
+    let (audio_features, trimmed_len) = trim_audio_features(audio_features_view);
     // Update audio_token_len to min of valid_frames and trimmed_len (matching sherpa-onnx)
     let audio_token_len = valid_frames.min(trimmed_len);
-
 
     // ── Step 4: Build prompt tokens ──
     let input_ids = build_prompt_ids(&tokenizer, audio_token_len, lang)?;
 
     let s0 = input_ids.len();
-
 
     // Dynamic max total length
     let max_total_len = 2048.max(s0 + MAX_NEW_TOKENS);
@@ -169,7 +167,7 @@ pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
     let prompt_attn = ndarray::Array2::from_shape_vec((1, s0), vec![1i64; s0])?;
     let prompt_cache_pos: ndarray::Array1<i64> = (0..s0 as i64).collect();
 
-    let logits = run_decoder_step(
+    let logit_vec = run_decoder_step(
         &mut decoder_session,
         &prompt_ids_arr,
         &audio_features,
@@ -182,10 +180,7 @@ pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
 
     let mut cur_len = s0;
 
-
     // Get first generated token
-    let logit_last = logits.slice(ndarray::s![0, -1, ..]);
-    let logit_vec = logit_last.to_vec();
     let mut next_id = argmax(&logit_vec);
 
     // If first token is EOS, retry excluding EOS (matching sherpa-onnx fallback)
@@ -217,7 +212,7 @@ pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
         let step_attn = ndarray::Array2::from_shape_vec((1, 1), vec![1i64])?;
         let step_pos = ndarray::Array1::from_vec(vec![cur_len as i64]);
 
-        let logits = run_decoder_step(
+        let logit_vec = run_decoder_step(
             &mut decoder_session,
             &step_ids,
             &audio_features,
@@ -230,7 +225,6 @@ pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
 
         cur_len += 1;
 
-        let logit_vec = logits.slice(ndarray::s![0, 0, ..]).to_vec();
         let next_id = argmax(&logit_vec);
         generated_ids.push(next_id);
 
@@ -428,7 +422,7 @@ fn build_prompt_ids(
 
 // ── Decoder step ──
 
-/// Run a single decoder step (prefill or generate)
+/// Run a single decoder step (prefill or generate) and return logits for the last token
 fn run_decoder_step(
     decoder: &mut Session,
     input_ids: &ndarray::Array2<i64>,
@@ -438,7 +432,7 @@ fn run_decoder_step(
     cur_len: usize,
     caches: &mut Vec<ndarray::Array4<f32>>,
     max_total_len: usize,
-) -> Result<ndarray::Array3<f32>> {
+) -> Result<Vec<f32>> {
     let s = input_ids.shape()[1]; // sequence length of this step
 
     let mut inputs = ort::inputs! {
@@ -462,14 +456,6 @@ fn run_decoder_step(
 
     let outputs = decoder.run(inputs)?;
 
-    // Extract logits
-    let (logits_shape, logits_data) = outputs[0].try_extract_tensor::<f32>()?;
-    let logits_dims: Vec<usize> = logits_shape.iter().map(|&d| d as usize).collect();
-    let logits = ndarray::Array3::from_shape_vec(
-        (logits_dims[0], logits_dims[1], logits_dims[2]),
-        logits_data.to_vec(),
-    )?;
-
     // Update caches with KV deltas
     for i in 0..NUM_DECODER_LAYERS {
         let key_out_idx = 1 + 2 * i;
@@ -480,9 +466,9 @@ fn run_decoder_step(
             if let Ok((kd_shape, kd_data)) = outputs[key_out_idx].try_extract_tensor::<f32>() {
                 let kd: Vec<usize> = kd_shape.iter().map(|&d| d as usize).collect();
                 if kd.len() == 4 && kd[1] == s {
-                    if let Ok(delta) = ndarray::Array4::from_shape_vec(
+                    if let Ok(delta) = ArrayView4::from_shape(
                         (kd[0], kd[1], kd[2], kd[3]),
-                        kd_data.to_vec(),
+                        &*kd_data,
                     ) {
                         if cur_len + s <= max_total_len {
                             let mut slice = caches[2 * i].slice_mut(ndarray::s![
@@ -501,9 +487,9 @@ fn run_decoder_step(
             if let Ok((vd_shape, vd_data)) = outputs[val_out_idx].try_extract_tensor::<f32>() {
                 let vd: Vec<usize> = vd_shape.iter().map(|&d| d as usize).collect();
                 if vd.len() == 4 && vd[1] == s {
-                    if let Ok(delta) = ndarray::Array4::from_shape_vec(
+                    if let Ok(delta) = ArrayView4::from_shape(
                         (vd[0], vd[1], vd[2], vd[3]),
-                        vd_data.to_vec(),
+                        &*vd_data,
                     ) {
                         if cur_len + s <= max_total_len {
                             let mut slice = caches[2 * i + 1].slice_mut(ndarray::s![
@@ -520,7 +506,12 @@ fn run_decoder_step(
         }
     }
 
-    Ok(logits)
+    // Extract logits and return only the last token's logits
+    let (logits_shape, logits_data) = outputs[0].try_extract_tensor::<f32>()?;
+    let seq_len = logits_shape[1] as usize;
+    let vocab_size = logits_shape[2] as usize;
+    let last_token_logits = &logits_data[(seq_len - 1) * vocab_size .. seq_len * vocab_size];
+    Ok(last_token_logits.to_vec())
 }
 
 /// Argmax over a slice of f32 values
@@ -557,20 +548,31 @@ fn argmax_excluding(values: &[f32], exclude: usize) -> i64 {
 /// Normalize mel features per-frame (Whisper-style): subtract mean, divide by std.
 /// This matches sherpa-onnx's `NormalizeWhisperFeatures`.
 fn normalize_whisper_features(mel: &mut Array2<f32>) {
-    // 1. log10(max(x, 1e-10))
-    mel.mapv_inplace(|v| v.max(1e-10f32).log10());
-
-    // 2. max_v = max(mel) - 8.0
-    let mut max_val = f32::NEG_INFINITY;
-    for &v in mel.iter() {
-        if v > max_val {
-            max_val = v;
+    if let Some(slice) = mel.as_slice_mut() {
+        let mut max_val = f32::NEG_INFINITY;
+        for v in slice.iter_mut() {
+            let log_v = v.max(1e-10f32).log10();
+            if log_v > max_val {
+                max_val = log_v;
+            }
+            *v = log_v;
         }
+        let max_v = max_val - 8.0f32;
+        for v in slice.iter_mut() {
+            *v = (v.max(max_v) + 4.0f32) / 4.0f32;
+        }
+    } else {
+        // Fallback for non-contiguous arrays
+        mel.mapv_inplace(|v| v.max(1e-10f32).log10());
+        let mut max_val = f32::NEG_INFINITY;
+        for &v in mel.iter() {
+            if v > max_val {
+                max_val = v;
+            }
+        }
+        let max_v = max_val - 8.0f32;
+        mel.mapv_inplace(|v| (v.max(max_v) + 4.0f32) / 4.0f32);
     }
-    let max_v = max_val - 8.0f32;
-
-    // 3. clamp to max_v, then scale: (x + 4.0) / 4.0
-    mel.mapv_inplace(|v| (v.max(max_v) + 4.0f32) / 4.0f32);
 }
 
 // ── Audio token length computation ──
@@ -619,22 +621,21 @@ fn compute_mel_features(samples: &[f32]) -> Result<Array2<f32>> {
     let n_frames = (samples.len() + MEL_FRAME_SHIFT / 2) / MEL_FRAME_SHIFT;
     let n_frames = n_frames.max(1);
 
-    let window = hann_window(MEL_FRAME_LEN);
-    let mel_fb = mel_filterbank();
-
     let mut planner = rustfft::FftPlanner::new();
     let fft = planner.plan_fft_forward(MEL_FFT_SIZE);
 
     let n_freqs = MEL_FFT_SIZE / 2 + 1;
     let mut mel_data = vec![0.0f32; n_frames * MEL_NUM_BINS];
 
+    let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); MEL_FFT_SIZE];
+
     for fi in 0..n_frames {
         let midpoint = MEL_FRAME_SHIFT * fi + MEL_FRAME_SHIFT / 2;
         let wave_start = midpoint as isize - (MEL_FRAME_LEN as isize) / 2;
 
-        let mut buf: Vec<rustfft::num_complex::Complex<f32>> = (0..MEL_FFT_SIZE)
-            .map(|j| {
-                let mut s_in_wave = wave_start + j as isize;
+        for j in 0..MEL_FFT_SIZE {
+            let mut s_in_wave = wave_start + j as isize;
+            if s_in_wave < 0 || s_in_wave >= samples.len() as isize {
                 while s_in_wave < 0 || s_in_wave >= samples.len() as isize {
                     if s_in_wave < 0 {
                         s_in_wave = -s_in_wave - 1;
@@ -642,22 +643,27 @@ fn compute_mel_features(samples: &[f32]) -> Result<Array2<f32>> {
                         s_in_wave = 2 * samples.len() as isize - 1 - s_in_wave;
                     }
                 }
-                let s = if j < MEL_FRAME_LEN {
-                    samples[s_in_wave as usize] * window[j]
-                } else {
-                    0.0
-                };
-                rustfft::num_complex::Complex::new(s, 0.0)
-            })
-            .collect();
+            }
+            let s = if j < MEL_FRAME_LEN {
+                samples[s_in_wave as usize] * HANN_WINDOW[j]
+            } else {
+                0.0
+            };
+            buf[j] = rustfft::num_complex::Complex::new(s, 0.0);
+        }
         fft.process(&mut buf);
+
+        // Pre-compute power spectrum to avoid redundant calculations in the filterbank loop
+        let mut power_spectrum = [0.0f64; MEL_FFT_SIZE / 2 + 1];
+        for k in 0..n_freqs {
+            power_spectrum[k] = buf[k].re as f64 * buf[k].re as f64 + buf[k].im as f64 * buf[k].im as f64;
+        }
 
         for mi in 0..MEL_NUM_BINS {
             let mut sum = 0.0f64;
+            let fb_row = &MEL_FILTERBANK[mi];
             for k in 0..n_freqs {
-                let power =
-                    buf[k].re as f64 * buf[k].re as f64 + buf[k].im as f64 * buf[k].im as f64;
-                sum += power * mel_fb[mi][k];
+                sum += power_spectrum[k] * fb_row[k];
             }
             mel_data[fi * MEL_NUM_BINS + mi] = sum as f32;
         }
@@ -734,7 +740,7 @@ fn mel_filterbank() -> Vec<Vec<f64>> {
 
 /// Trim trailing silent padding from encoder hidden states.
 /// Matches sherpa-onnx TrimAudioFeatures.
-fn trim_audio_features(audio_features: ndarray::Array3<f32>) -> (ndarray::Array3<f32>, usize) {
+fn trim_audio_features(audio_features: ArrayView3<'_, f32>) -> (Array3<f32>, usize) {
     let shape = audio_features.shape();
     let a = shape[1];
     let h = shape[2];
@@ -757,10 +763,10 @@ fn trim_audio_features(audio_features: ndarray::Array3<f32>) -> (ndarray::Array3
     }
 
     if a_valid == 0 {
-        return (audio_features, 0);
+        return (audio_features.to_owned(), 0);
     }
     if a_valid == a {
-        return (audio_features, a);
+        return (audio_features.to_owned(), a);
     }
 
     let sliced = audio_features

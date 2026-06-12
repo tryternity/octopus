@@ -4,23 +4,39 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use clap::Parser;
 use serde::{Deserialize, Serialize};
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
+
+// ── CLI args ──
+
+#[derive(Parser)]
+#[command(name = "octopus-server", about = "ASR inference HTTP/WebSocket server", version)]
+struct Cli {
+    /// Listen port
+    #[arg(long, env = "OCTOPUS_PORT", default_value = "3000")]
+    port: u16,
+    /// Listen address
+    #[arg(long, env = "OCTOPUS_HOST", default_value = "0.0.0.0")]
+    host: String,
+}
 
 // ── Shared state ──
 
 #[derive(Clone)]
 struct AppState {
-    asr_engine: String, // "whisper", "sensevoice", or "paraformer-streaming"
+    asr_engine: String,
 }
 
 // ── API types ──
 
 #[derive(Deserialize)]
 struct TranscribeQuery {
-    engine: Option<String>, // "whisper", "sensevoice", or "paraformer-streaming" (default: sensevoice)
-    language: Option<String>, // "auto" (default), "zh", "en", ...
+    /// ASR engine name from model.json (default: sensevoice)
+    engine: Option<String>,
+    /// Language: "auto" (default), "zh", "en", "ja", ...
+    language: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -28,6 +44,11 @@ struct TranscribeResponse {
     text: String,
     duration_ms: u64,
     rtf: f64,
+}
+
+#[derive(Serialize)]
+struct ErrorResponse {
+    error: String,
 }
 
 #[derive(Serialize)]
@@ -59,7 +80,10 @@ async fn models(State(state): State<AppState>) -> Json<ModelsResponse> {
     })
 }
 
-async fn transcribe(Query(query): Query<TranscribeQuery>, body: bytes::Bytes) -> impl IntoResponse {
+async fn transcribe(
+    Query(query): Query<TranscribeQuery>,
+    body: bytes::Bytes,
+) -> impl IntoResponse {
     let engine = query.engine.as_deref().unwrap_or("sensevoice");
     let language = query.language.as_deref().unwrap_or("auto");
 
@@ -80,40 +104,24 @@ async fn transcribe(Query(query): Query<TranscribeQuery>, body: bytes::Bytes) ->
     if samples.is_empty() {
         return (
             axum::http::StatusCode::BAD_REQUEST,
-            Json(TranscribeResponse {
-                text: "No audio data".into(),
-                duration_ms: 0,
-                rtf: 0.0,
+            Json(ErrorResponse {
+                error: "No audio data received. Send WAV file or raw f32 PCM (16kHz LE)".into(),
             }),
-        );
+        )
+            .into_response();
     }
 
     let duration_ms = (samples.len() as f64 / 16.0) as u64; // 16kHz → ms
     let start = std::time::Instant::now();
 
-    let text = {
-        let category = octopus_asr::config::resolve_engine_category(engine);
-        match category {
-            Some(octopus_asr::config::EngineCategory::Whisper) => {
-                octopus_asr::whisper::transcribe(&samples, language)
-            }
-            Some(octopus_asr::config::EngineCategory::Paraformer) => {
-                octopus_asr::paraformer::transcribe(&samples, language)
-            }
-            Some(octopus_asr::config::EngineCategory::Qwen3Asr) => {
-                octopus_asr::qwen3_asr::transcribe(&samples, language)
-            }
-            Some(octopus_asr::config::EngineCategory::Zipformer) => {
-                octopus_asr::zipformer::transcribe(&samples, language)
-            }
-            Some(octopus_asr::config::EngineCategory::SenseVoice) | None => {
-                octopus_asr::sensevoice::transcribe(&samples, language)
-            }
-        }
-    };
+    let text = do_transcribe(engine, language, &samples);
 
     let elapsed = start.elapsed();
-    let rtf = duration_ms as f64 / elapsed.as_millis() as f64;
+    let rtf = if elapsed.as_millis() > 0 {
+        duration_ms as f64 / elapsed.as_millis() as f64
+    } else {
+        0.0
+    };
 
     match text {
         Ok(t) => (
@@ -123,24 +131,79 @@ async fn transcribe(Query(query): Query<TranscribeQuery>, body: bytes::Bytes) ->
                 duration_ms,
                 rtf,
             }),
-        ),
+        )
+            .into_response(),
         Err(e) => (
             axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-            Json(TranscribeResponse {
-                text: format!("Error: {}", e),
-                duration_ms,
-                rtf,
+            Json(ErrorResponse {
+                error: format!("ASR inference failed: {}", e),
             }),
-        ),
+        )
+            .into_response(),
     }
 }
 
-async fn ws_stream(ws: WebSocketUpgrade) -> impl IntoResponse {
-    ws.on_upgrade(handle_ws)
+// ── WebSocket ──
+
+#[derive(Deserialize)]
+struct WsQuery {
+    /// ASR engine name from model.json (default: sensevoice)
+    engine: Option<String>,
+    /// Language: "auto" (default), "zh", "en", "ja", ...
+    language: Option<String>,
 }
 
-async fn handle_ws(mut socket: axum::extract::ws::WebSocket) {
+async fn ws_stream(
+    ws: WebSocketUpgrade,
+    Query(query): Query<WsQuery>,
+) -> impl IntoResponse {
+    let engine = query
+        .engine
+        .unwrap_or_else(|| "sensevoice".to_string());
+    let language = query
+        .language
+        .unwrap_or_else(|| "auto".to_string());
+    ws.on_upgrade(move |socket| handle_ws(socket, engine, language))
+}
+
+/// Dispatch transcription to the correct engine based on category.
+fn do_transcribe(engine: &str, language: &str, samples: &[f32]) -> anyhow::Result<String> {
+    let category = octopus_asr::config::resolve_engine_category(engine);
+    match category {
+        Some(octopus_asr::config::EngineCategory::Whisper) => {
+            octopus_asr::whisper::transcribe(samples, language)
+        }
+        Some(octopus_asr::config::EngineCategory::Paraformer) => {
+            octopus_asr::paraformer::transcribe(samples, language)
+        }
+        Some(octopus_asr::config::EngineCategory::Qwen3Asr) => {
+            octopus_asr::qwen3_asr::transcribe(samples, language)
+        }
+        Some(octopus_asr::config::EngineCategory::Zipformer) => {
+            octopus_asr::zipformer::transcribe(samples, language)
+        }
+        Some(octopus_asr::config::EngineCategory::SenseVoice) | None => {
+            octopus_asr::sensevoice::transcribe(samples, language)
+        }
+    }
+}
+
+async fn handle_ws(
+    mut socket: axum::extract::ws::WebSocket,
+    engine: String,
+    language: String,
+) {
     use futures_util::StreamExt;
+
+    // Validate engine
+    if octopus_asr::config::resolve_engine_category(&engine).is_none() {
+        let _ = socket
+            .send(Message::Text(
+                format!("{{\"error\": \"Unknown engine '{}'\"}}", engine).into(),
+            ))
+            .await;
+        return;
+    }
 
     let mut audio_buffer: Vec<f32> = Vec::new();
     let vad_path = match octopus_asr::config::find_silero_vad() {
@@ -181,7 +244,7 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket) {
                     let speech =
                         octopus_asr::audio::filter_speech(&audio_buffer, &mut vad, 480, 0.5);
                     if !speech.is_empty() {
-                        let text = octopus_asr::sensevoice::transcribe(&speech, "auto")
+                        let text = do_transcribe(&engine, &language, &speech)
                             .unwrap_or_else(|e| format!("[error: {}]", e));
                         let _ = socket
                             .send(Message::Text(
@@ -199,7 +262,7 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket) {
             }
             Ok(Message::Text(cmd)) => {
                 if cmd == "flush" && !audio_buffer.is_empty() {
-                    let text = octopus_asr::sensevoice::transcribe(&audio_buffer, "auto")
+                    let text = do_transcribe(&engine, &language, &audio_buffer)
                         .unwrap_or_else(|e| format!("[error: {}]", e));
                     let _ = socket
                         .send(Message::Text(
@@ -227,6 +290,8 @@ async fn handle_ws(mut socket: axum::extract::ws::WebSocket) {
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt::init();
 
+    let cli = Cli::parse();
+
     let config = octopus_asr::config::load_config()?;
     let asr_engine = config.asr.active.clone();
 
@@ -240,8 +305,8 @@ async fn main() -> anyhow::Result<()> {
         .layer(CorsLayer::permissive())
         .with_state(state);
 
-    let addr = "0.0.0.0:3000";
-    let listener = TcpListener::bind(addr).await?;
+    let addr = format!("{}:{}", cli.host, cli.port);
+    let listener = TcpListener::bind(&addr).await?;
     tracing::info!("octopus-server listening on {}", addr);
     axum::serve(listener, app).await?;
 
