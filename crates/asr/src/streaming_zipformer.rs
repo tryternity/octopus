@@ -28,6 +28,7 @@ pub struct StreamingZipformer {
 
     // Streaming state
     sample_buffer: Vec<f32>,
+    history_samples: Vec<f32>,
     states: Vec<(String, StateValue)>,
     token_ids: Vec<usize>,
     prev_id: isize,
@@ -110,6 +111,7 @@ impl StreamingZipformer {
             chunk_len,
             chunk_shift,
             sample_buffer: Vec::new(),
+            history_samples: Vec::new(),
             states,
             token_ids: Vec::new(),
             prev_id: -1,
@@ -125,51 +127,67 @@ impl StreamingZipformer {
 
     /// Flush any remaining buffered audio. Call when recording stops.
     pub fn finish(&mut self) -> Result<String> {
-        if self.sample_buffer.is_empty() {
+        let samples = std::mem::take(&mut self.sample_buffer);
+        if samples.is_empty() && self.history_samples.is_empty() {
             return Ok(self.decode_tokens());
         }
 
-        // Pad remaining samples to produce at least chunk_len fbank frames
-        let samples = std::mem::take(&mut self.sample_buffer);
+        let mut input_samples = Vec::with_capacity(self.history_samples.len() + samples.len());
+        input_samples.extend_from_slice(&self.history_samples);
+        input_samples.extend_from_slice(&samples);
+
         let feats = if self.is_whisper {
-            crate::zipformer::compute_whisper_features_linear(&samples)?
+            crate::zipformer::compute_whisper_features_linear(&input_samples)?
         } else {
-            compute_fbank_features(&samples)?
+            compute_fbank_features(&input_samples)?
         };
-        let n_frames = feats.nrows();
+        let h_frames = self.history_samples.len() / Z_FRAME_SHIFT;
+        let n_frames = feats.nrows().saturating_sub(h_frames);
 
         if n_frames == 0 {
+            self.history_samples.clear();
             return Ok(self.decode_tokens());
         }
 
-        // Pad to chunk_len
-        let mut padded = Array2::<f32>::zeros((self.chunk_len, Z_NUM_BINS));
-        for i in 0..self.chunk_len.min(n_frames) {
+        // Pad features to extract the remaining chunks
+        let mut padded = Array2::<f32>::zeros((feats.nrows() + self.chunk_len, Z_NUM_BINS));
+        for i in 0..feats.nrows() {
             for j in 0..Z_NUM_BINS {
                 padded[[i, j]] = feats[[i, j]];
             }
         }
-        // Repeat last frame for padding
-        if n_frames < self.chunk_len {
-            let last = if n_frames > 0 { n_frames - 1 } else { 0 };
-            for i in n_frames..self.chunk_len {
-                for j in 0..Z_NUM_BINS {
-                    padded[[i, j]] = feats[[last, j]];
-                }
+        let last = if feats.nrows() > 0 { feats.nrows() - 1 } else { 0 };
+        for i in feats.nrows()..(feats.nrows() + self.chunk_len) {
+            for j in 0..Z_NUM_BINS {
+                padded[[i, j]] = feats[[last, j]];
             }
         }
 
-        if self.is_whisper {
-            crate::zipformer::normalize_whisper_features(&mut padded);
+        let mut frame_idx = 0;
+        while frame_idx < n_frames {
+            let mut chunk = Array2::<f32>::zeros((self.chunk_len, Z_NUM_BINS));
+            for i in 0..self.chunk_len {
+                for j in 0..Z_NUM_BINS {
+                    chunk[[i, j]] = padded[[frame_idx + h_frames + i, j]];
+                }
+            }
+
+            if self.is_whisper {
+                crate::zipformer::normalize_whisper_features(&mut chunk);
+            }
+
+            self.run_chunk(&chunk)?;
+            frame_idx += self.chunk_shift;
         }
 
-        self.run_chunk(&padded)?;
+        self.history_samples.clear();
         Ok(self.decode_tokens())
     }
 
     /// Reset all streaming state for a new utterance.
     pub fn reset(&mut self) {
         self.sample_buffer.clear();
+        self.history_samples.clear();
         self.token_ids.clear();
         self.prev_id = -1;
         // Reset states to zeros
@@ -183,32 +201,37 @@ impl StreamingZipformer {
 
     /// Process as many full chunks as the sample buffer allows.
     fn process_chunks(&mut self) -> Result<Option<String>> {
-        // Compute fbank for all buffered samples
         if self.sample_buffer.is_empty() {
             return Ok(None);
         }
 
+        let mut input_samples = Vec::with_capacity(self.history_samples.len() + self.sample_buffer.len());
+        input_samples.extend_from_slice(&self.history_samples);
+        input_samples.extend_from_slice(&self.sample_buffer);
+
         let feats = if self.is_whisper {
-            crate::zipformer::compute_whisper_features_linear(&self.sample_buffer)?
+            crate::zipformer::compute_whisper_features_linear(&input_samples)?
         } else {
-            compute_fbank_features(&self.sample_buffer)?
+            compute_fbank_features(&input_samples)?
         };
-        let n_frames = feats.nrows();
+
+        let h_frames = self.history_samples.len() / Z_FRAME_SHIFT;
+        let n_frames = feats.nrows().saturating_sub(h_frames);
 
         if n_frames < self.chunk_len {
-            // Not enough frames for a chunk yet
+            // Not enough new frames for a chunk yet
             return Ok(None);
         }
 
         // Pad features for safe chunk extraction
-        let mut padded = Array2::<f32>::zeros((n_frames + self.chunk_len, Z_NUM_BINS));
-        for i in 0..n_frames {
+        let mut padded = Array2::<f32>::zeros((feats.nrows() + self.chunk_len, Z_NUM_BINS));
+        for i in 0..feats.nrows() {
             for j in 0..Z_NUM_BINS {
                 padded[[i, j]] = feats[[i, j]];
             }
         }
-        let last = if n_frames > 0 { n_frames - 1 } else { 0 };
-        for i in n_frames..(n_frames + self.chunk_len) {
+        let last = if feats.nrows() > 0 { feats.nrows() - 1 } else { 0 };
+        for i in feats.nrows()..(feats.nrows() + self.chunk_len) {
             for j in 0..Z_NUM_BINS {
                 padded[[i, j]] = feats[[last, j]];
             }
@@ -217,11 +240,11 @@ impl StreamingZipformer {
         // Process chunks
         let mut frame_idx = 0;
         let mut produced_any = false;
-        while frame_idx + self.chunk_len <= n_frames + self.chunk_len && frame_idx < n_frames {
+        while frame_idx + self.chunk_len <= feats.nrows() + self.chunk_len && frame_idx < n_frames {
             let mut chunk = Array2::<f32>::zeros((self.chunk_len, Z_NUM_BINS));
             for i in 0..self.chunk_len {
                 for j in 0..Z_NUM_BINS {
-                    chunk[[i, j]] = padded[[frame_idx + i, j]];
+                    chunk[[i, j]] = padded[[frame_idx + h_frames + i, j]];
                 }
             }
 
@@ -236,8 +259,17 @@ impl StreamingZipformer {
         }
 
         // Consume the processed samples
-        // Samples needed for processed frames: approximately frame_idx * Z_FRAME_SHIFT
         let consumed_samples = frame_idx * Z_FRAME_SHIFT;
+
+        // Save the last 160 samples of the consumed audio as history
+        let h_len = self.history_samples.len();
+        let consumed_limit = (h_len + consumed_samples).min(input_samples.len());
+        if consumed_limit >= Z_FRAME_SHIFT {
+            self.history_samples = input_samples[consumed_limit - Z_FRAME_SHIFT .. consumed_limit].to_vec();
+        } else if !input_samples.is_empty() {
+            self.history_samples = input_samples[input_samples.len().saturating_sub(Z_FRAME_SHIFT)..].to_vec();
+        }
+
         if consumed_samples < self.sample_buffer.len() {
             self.sample_buffer = self.sample_buffer[consumed_samples..].to_vec();
         } else {

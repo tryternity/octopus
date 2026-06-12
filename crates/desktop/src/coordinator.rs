@@ -111,6 +111,7 @@ impl Coordinator {
                         info!("Paste complete, returning to idle");
                         stage = Stage::Idle;
                         crate::overlay::hide_overlay(&app_handle);
+                        crate::result_window::clear_result(&app_handle);
                         crate::tray::update_tray_label(
                             &app_handle,
                             crate::tray::TrayState::Idle,
@@ -168,7 +169,8 @@ fn handle_toggle(
                 // 流式模式：创建 StreamingSession 并启动 tick 线程
                 match StreamingSession::new(&config.asr_engine) {
                     Ok(streaming_engine) => {
-                        crate::overlay::show_overlay(app_handle, "streaming");
+                        // 流式模式：只显示 result window，不显示 overlay
+                        crate::result_window::show_result(app_handle, "");
                         crate::tray::update_tray_label(
                             app_handle,
                             crate::tray::TrayState::Recording,
@@ -276,8 +278,7 @@ fn handle_toggle(
                 return;
             }
 
-            // 隐藏 overlay，显示结果窗口
-            crate::overlay::hide_overlay(app_handle);
+            // 显示最终结果（result window 已在流式期间显示，这里更新最终文本）
             crate::result_window::show_result(app_handle, &combined);
 
             // 粘贴
@@ -335,8 +336,8 @@ fn handle_streaming_tick(
                 *accumulated_text = new_text;
                 debug!("Partial: '{}'", accumulated_text);
 
-                // 更新 overlay 显示
-                crate::overlay::show_partial_text(app_handle, accumulated_text);
+                // 更新 result window 显示
+                crate::result_window::update_result(app_handle, accumulated_text);
             }
             Ok(None) => {
                 // 没有新结果

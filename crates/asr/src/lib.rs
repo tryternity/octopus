@@ -12,4 +12,6 @@ pub mod streaming_paraformer;
 pub mod streaming_zipformer;
 pub mod vad;
 pub mod whisper;
+pub mod whisper_mel_matrix;
 pub mod zipformer;
+

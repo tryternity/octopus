@@ -16,171 +16,119 @@
     #container {
       width: 100%;
       height: 100%;
-      padding: 10px 14px;
       background: #ffffff;
       border: 0.5px solid rgba(0, 0, 0, 0.12);
       border-radius: 8px;
       box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
       opacity: 0;
       transition: opacity 0.15s ease-in-out;
-      cursor: default;
-      user-select: none;
       position: relative;
+      display: flex;
+      flex-direction: column;
     }
     #container.visible { opacity: 1; }
+
+    /* 顶部拖拽区域 */
+    #drag-handle {
+      flex-shrink: 0;
+      height: 8px;
+      cursor: grab;
+      border-radius: 8px 8px 0 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #drag-handle:active { cursor: grabbing; }
+    #drag-handle::after {
+      content: '';
+      width: 24px;
+      height: 3px;
+      background: rgba(0, 0, 0, 0.12);
+      border-radius: 1.5px;
+      margin-top: 2px;
+    }
+
+    #text-wrapper {
+      flex: 1;
+      padding: 2px 14px 8px 14px;
+      overflow: hidden;
+    }
 
     #result-text {
       font-size: 14px;
       line-height: 1.5;
       color: #1d1d1f;
-      max-height: 66px;
-      overflow: hidden;
+      /* 3 行高度 = 14px * 1.5 * 3 = 63px */
+      max-height: 63px;
+      overflow-y: auto;
       word-break: break-all;
       user-select: text;
       cursor: text;
+      scrollbar-width: thin;
+      scrollbar-color: rgba(0,0,0,0.15) transparent;
     }
-
-    /* 自动关闭进度条 */
-    #auto-close-bar {
-      position: absolute;
-      bottom: 4px;
-      left: 8px;
-      right: 8px;
-      height: 2px;
-      background: #e5e5ea;
-      border-radius: 1px;
-      overflow: hidden;
+    #result-text::-webkit-scrollbar {
+      width: 4px;
     }
-    #auto-close-progress {
-      height: 100%;
-      background: #007aff;
-      width: 100%;
-      transition: width linear;
+    #result-text::-webkit-scrollbar-track {
+      background: transparent;
+    }
+    #result-text::-webkit-scrollbar-thumb {
+      background: rgba(0, 0, 0, 0.15);
+      border-radius: 2px;
     }
   </style>
 </head>
 <body>
-  <div id="container" data-tauri-drag-region>
-    <div id="result-text"></div>
-    <div id="auto-close-bar">
-      <div id="auto-close-progress"></div>
+  <div id="container">
+    <div id="drag-handle"></div>
+    <div id="text-wrapper">
+      <div id="result-text"></div>
     </div>
   </div>
 
   <script>
     const container = document.getElementById('container');
+    const dragHandle = document.getElementById('drag-handle');
     const resultText = document.getElementById('result-text');
-    const progressBar = document.getElementById('auto-close-progress');
 
     const { listen } = window.__TAURI__.event;
     const { getCurrentWindow } = window.__TAURI__.window;
+    const currentWindow = getCurrentWindow();
 
-    const AUTO_CLOSE_MS = 5000;
-    let autoCloseTimer = null;
-    let autoCloseStart = 0;
-    let paused = false;
-
-    function startAutoClose() {
-      clearAutoClose();
-      paused = false;
-      autoCloseStart = Date.now();
-
-      // 设置进度条动画
-      progressBar.style.transition = 'none';
-      progressBar.style.width = '100%';
-      progressBar.offsetWidth; // 强制 reflow
-      progressBar.style.transition = `width ${AUTO_CLOSE_MS}ms linear`;
-      progressBar.style.width = '0%';
-
-      autoCloseTimer = setTimeout(() => {
-        getCurrentWindow().hide();
-      }, AUTO_CLOSE_MS);
-    }
-
-    function pauseAutoClose() {
-      if (autoCloseTimer && !paused) {
-        clearTimeout(autoCloseTimer);
-        autoCloseTimer = null;
-        paused = true;
-
-        // 冻结进度条在当前位置
-        const computed = getComputedStyle(progressBar);
-        progressBar.style.transition = 'none';
-        progressBar.style.width = computed.width;
-      }
-    }
-
-    function resumeAutoClose() {
-      if (paused) {
-        paused = false;
-        autoCloseStart = Date.now();
-
-        // 从当前位置继续倒计时
-        const currentWidth = parseFloat(progressBar.style.width);
-        const parentWidth = progressBar.parentElement.offsetWidth;
-        const ratio = currentWidth / parentWidth;
-        const timeLeft = ratio * AUTO_CLOSE_MS;
-
-        if (timeLeft < 100) {
-          getCurrentWindow().hide();
-          return;
-        }
-
-        progressBar.style.transition = `width ${timeLeft}ms linear`;
-        progressBar.style.width = '0%';
-
-        autoCloseTimer = setTimeout(() => {
-          getCurrentWindow().hide();
-        }, timeLeft);
-      }
-    }
-
-    function clearAutoClose() {
-      if (autoCloseTimer) {
-        clearTimeout(autoCloseTimer);
-        autoCloseTimer = null;
-      }
-      paused = false;
-    }
-
-    // 鼠标悬停暂停自动关闭
-    container.addEventListener('mouseenter', pauseAutoClose);
-    container.addEventListener('mouseleave', resumeAutoClose);
-
-    // 文本区域阻止 drag-region 冒泡，允许文本选中
-    resultText.addEventListener('mousedown', (e) => e.stopPropagation());
+    // 拖拽：顶部 drag handle 区域触发
+    dragHandle.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      currentWindow.startDragging();
+    });
 
     // 监听 Tauri 事件
     listen('show-result', (event) => {
-      const text = event.payload;
-      resultText.textContent = text;
+      resultText.textContent = event.payload;
       container.classList.add('visible');
-      startAutoClose();
+      resultText.scrollTop = resultText.scrollHeight;
+    });
+
+    // 追加文本事件（流式更新时使用）
+    listen('update-result', (event) => {
+      resultText.textContent = event.payload;
+      resultText.scrollTop = resultText.scrollHeight;
+    });
+
+    // 清空事件（粘贴完成后）
+    listen('clear-result', () => {
+      resultText.textContent = '';
+      container.classList.remove('visible');
     });
 
     listen('hide-result', () => {
       container.classList.remove('visible');
-      clearAutoClose();
     });
 
     // Esc 关闭
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
-        clearAutoClose();
-        getCurrentWindow().hide();
-      }
-    });
-
-    // 窗口失焦关闭
-    getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (!focused && container.classList.contains('visible')) {
-        setTimeout(() => {
-          // 延迟检查，避免拖拽等操作误触发
-          if (!document.hasFocus()) {
-            clearAutoClose();
-            getCurrentWindow().hide();
-          }
-        }, 300);
+        currentWindow.hide();
       }
     });
   </script>

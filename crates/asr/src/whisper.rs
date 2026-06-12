@@ -18,7 +18,6 @@ const ENCODER_LEN: usize = 1500;
 const D_MODEL: usize = 768;
 
 static HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hann_window(FFT_SIZE));
-static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank());
 
 // ── Model discovery via config ──
 fn find_whisper_onnx_dir() -> Result<PathBuf> {
@@ -66,41 +65,6 @@ fn hann_window(size: usize) -> Vec<f32> {
         .collect()
 }
 
-fn mel_filterbank() -> Vec<Vec<f64>> {
-    let n_freqs = FFT_SIZE / 2 + 1;
-    let fmax = SAMPLE_RATE as f64 / 2.0;
-    let mel_min = 2595.0f64 * (1.0f64).log10();
-    let mel_max = 2595.0 * (1.0 + fmax / 700.0).log10();
-    let hz_points: Vec<f64> = (0..=N_MELS + 1)
-        .map(|i| {
-            700.0
-                * (10.0f64.powf(
-                    (mel_min + (mel_max - mel_min) * i as f64 / (N_MELS + 1) as f64) / 2595.0,
-                ) - 1.0)
-        })
-        .collect();
-    let fft_freqs: Vec<f64> = (0..n_freqs)
-        .map(|i| SAMPLE_RATE as f64 * i as f64 / FFT_SIZE as f64)
-        .collect();
-    let mut filters = vec![vec![0.0f64; n_freqs]; N_MELS];
-    for i in 0..N_MELS {
-        let (fl, _fc, fr) = (hz_points[i], hz_points[i + 1], hz_points[i + 2]);
-        let fc = hz_points[i + 1];
-        for j in 0..n_freqs {
-            if fft_freqs[j] >= fl && fft_freqs[j] <= fc && fc > fl {
-                filters[i][j] = (fft_freqs[j] - fl) / (fc - fl);
-            } else if fft_freqs[j] > fc && fft_freqs[j] <= fr && fr > fc {
-                filters[i][j] = (fr - fft_freqs[j]) / (fr - fc);
-            }
-        }
-        let enorm = 2.0 / (hz_points[i + 2] - hz_points[i]);
-        for j in 0..n_freqs {
-            filters[i][j] *= enorm;
-        }
-    }
-    filters
-}
-
 fn compute_mel(audio: &[f32]) -> Result<Array3<f32>> {
     let mut padded = vec![0.0f32; N_SAMPLES];
     let copy_len = audio.len().min(N_SAMPLES);
@@ -133,7 +97,7 @@ fn compute_mel(audio: &[f32]) -> Result<Array3<f32>> {
 
         for mi in 0..N_MELS {
             let mut sum = 0.0f64;
-            let fb_row = &MEL_FILTERBANK[mi];
+            let fb_row = &crate::whisper_mel_matrix::WHISPER_MEL_FILTERBANK[mi];
             for k in 0..n_freqs {
                 sum += power_spectrum[k] * fb_row[k];
             }

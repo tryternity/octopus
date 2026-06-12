@@ -56,7 +56,26 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
     }
 }
 
-/// 隐藏结果窗口。
+/// 更新结果窗口文本（流式更新时使用）。
+pub fn update_result(app: &tauri::AppHandle, text: &str) {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let _ = window.emit("update-result", text);
+    }
+}
+
+/// 清空结果窗口内容并隐藏（粘贴完成后调用）。
+pub fn clear_result(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let _ = window.emit("clear-result", ());
+        let window_clone = window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(200));
+            let _ = window_clone.hide();
+        });
+    }
+}
+
+/// 隐藏结果窗口（不清空内容）。
 pub fn hide_result(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let _ = window.emit("hide-result", ());
