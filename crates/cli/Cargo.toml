@@ -1,0 +1,10 @@
+[package]
+name = "octopus-cli"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+octopus-asr = { path = "../asr" }
+cpal = "0.16"
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }

@@ -1,0 +1,23 @@
+{
+  "identifier": "default",
+  "description": "Default capabilities for octopus-desktop",
+  "windows": ["main", "recording_overlay"],
+  "permissions": [
+    "core:default",
+    "core:window:allow-show",
+    "core:window:allow-hide",
+    "core:window:allow-close",
+    "core:window:allow-set-position",
+    "core:window:allow-set-size",
+    "core:window:allow-set-always-on-top",
+    "core:window:allow-set-focus",
+    "core:event:allow-emit",
+    "core:event:allow-listen",
+    "global-shortcut:allow-register",
+    "global-shortcut:allow-unregister",
+    "clipboard-manager:allow-read-text",
+    "clipboard-manager:allow-write-text",
+    "store:default",
+    "os:default"
+  ]
+}

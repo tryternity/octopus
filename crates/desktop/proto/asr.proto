@@ -1,0 +1,22 @@
+syntax = "proto3";
+package asr;
+
+service AsrService {
+  rpc Transcribe(TranscribeRequest) returns (TranscribeResponse);
+  rpc StreamTranscribe(stream AudioChunk) returns (stream TranscribeResponse);
+}
+
+message TranscribeRequest {
+  bytes audio = 1;       // f32 PCM 16kHz little-endian
+  string language = 2;
+  string engine = 3;     // "sensevoice" | "whisper"
+}
+
+message TranscribeResponse {
+  string text = 1;
+  double rtf = 2;
+}
+
+message AudioChunk {
+  bytes data = 1;        // f32 PCM chunk
+}

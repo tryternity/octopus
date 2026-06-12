@@ -1,0 +1,726 @@
+use anyhow::Result;
+use clap::{Parser, Subcommand};
+use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
+
+#[derive(Parser)]
+#[command(name = "octopus-cli", about = "ASR inference toolkit", version)]
+struct Cli {
+    #[command(subcommand)]
+    command: Commands,
+}
+
+#[derive(Subcommand)]
+enum Commands {
+    /// List available input devices
+    Devices,
+    /// Transcribe WAV file
+    Transcribe {
+        /// Path to WAV file
+        wav_path: String,
+        /// ASR engine: sensevoice, whisper, paraformer-streaming, qwen3-asr-0.6B
+        #[arg(long, default_value = "sensevoice")]
+        model: String,
+        /// Language: auto, zh, en, ja, ...
+        #[arg(long, default_value = "auto")]
+        language: String,
+    },
+    /// Mic → VAD → ASR → text
+    E2e {
+        /// ASR engine: sensevoice, whisper, paraformer-streaming, qwen3-asr-0.6B
+        #[arg(long, default_value = "sensevoice")]
+        model: String,
+        /// Language: auto, zh, en, ja, ...
+        #[arg(long, default_value = "auto")]
+        language: String,
+    },
+    /// Show model discovery info
+    Config,
+    /// Stream-test: feed WAV file chunk-by-chunk to streaming ASR engine
+    StreamTest {
+        /// Path to WAV file
+        wav_path: String,
+        /// ASR engine name from model.json (paraformer or zipformer section)
+        #[arg(long, default_value = "paraformer-streaming")]
+        model: String,
+    },
+}
+
+fn main() -> Result<()> {
+    let cli = Cli::parse();
+    match cli.command {
+        Commands::Devices => list_devices(),
+        Commands::Transcribe {
+            wav_path,
+            model,
+            language,
+        } => transcribe_file(&wav_path, &model, &language),
+        Commands::E2e { model, language } => run_e2e(&model, &language),
+        Commands::Config => show_config(),
+        Commands::StreamTest { wav_path, model } => stream_test(&wav_path, &model),
+    }
+}
+
+fn list_devices() -> Result<()> {
+    println!("Available input devices:");
+    let host = cpal::default_host();
+    let devices: Vec<_> = host
+        .input_devices()?
+        .filter_map(|d| {
+            let _name = d.name().ok()?;
+            Some(d)
+        })
+        .collect();
+    let default = host.default_input_device().and_then(|d| d.name().ok());
+    for (i, device) in devices.iter().enumerate() {
+        let name = device.name().unwrap_or_default();
+        let is_default = default.as_ref() == Some(&name);
+        let marker = if is_default { " (default)" } else { "" };
+        println!("  [{}] {}{}", i, name, marker);
+    }
+    Ok(())
+}
+
+fn transcribe_file(wav_path: &str, model: &str, language: &str) -> Result<()> {
+    if !std::path::Path::new(wav_path).exists() {
+        anyhow::bail!("File not found: {}", wav_path);
+    }
+    let samples = octopus_asr::audio::read_wav_16k(wav_path)?;
+    let duration = samples.len() as f64 / 16000.0;
+    println!(
+        "Audio: {} samples ({:.2}s), model: {}, language: {}",
+        samples.len(),
+        duration,
+        model,
+        language
+    );
+
+    let start = std::time::Instant::now();
+    let text = do_transcribe(model, language, &samples)?;
+    let elapsed = start.elapsed();
+
+    println!("{}", text);
+    eprintln!(
+        "{:.2}s (RTF: {:.2}x)",
+        elapsed.as_secs_f64(),
+        duration / elapsed.as_secs_f64()
+    );
+    Ok(())
+}
+
+fn run_e2e(model: &str, language: &str) -> Result<()> {
+    // Use streaming mode for Paraformer and Zipformer models
+    let category = octopus_asr::config::resolve_engine_category(model);
+    if category == Some(octopus_asr::config::EngineCategory::Paraformer) {
+        return run_e2e_streaming_paraformer(model);
+    }
+    if category == Some(octopus_asr::config::EngineCategory::Zipformer) {
+        return run_e2e_streaming_zipformer(model);
+    }
+
+    println!("Recording from config... Press Enter to stop.\n");
+
+    let all_samples = record_from_config()?;
+    let duration = all_samples.len() as f64 / 16000.0;
+    println!("Recorded {} samples ({:.2}s)", all_samples.len(), duration);
+
+    // VAD filter
+    let vad_path = octopus_asr::config::find_silero_vad()?;
+    let mut vad = octopus_asr::vad::SileroVad::new(&vad_path)?;
+    let speech = octopus_asr::audio::filter_speech(&all_samples, &mut vad, 480, 0.5);
+
+    if speech.is_empty() {
+        println!("No speech detected!");
+        return Ok(());
+    }
+    let speech_dur = speech.len() as f64 / 16000.0;
+    println!(
+        "Speech: {} samples ({:.2}s), model: {}, language: {}",
+        speech.len(),
+        speech_dur,
+        model,
+        language
+    );
+
+    let start = std::time::Instant::now();
+    let text = do_transcribe(model, language, &speech)?;
+    let elapsed = start.elapsed();
+
+    println!("{}", text);
+    eprintln!(
+        "{:.2}s (RTF: {:.2}x)",
+        elapsed.as_secs_f64(),
+        duration / elapsed.as_secs_f64()
+    );
+    Ok(())
+}
+
+fn do_transcribe(model: &str, language: &str, samples: &[f32]) -> Result<String> {
+    let category = octopus_asr::config::resolve_engine_category(model);
+    match category {
+        Some(octopus_asr::config::EngineCategory::Whisper) => {
+            octopus_asr::whisper::transcribe(samples, language)
+        }
+        Some(octopus_asr::config::EngineCategory::Paraformer) => {
+            octopus_asr::paraformer::transcribe(samples, language)
+        }
+        Some(octopus_asr::config::EngineCategory::Qwen3Asr) => {
+            octopus_asr::qwen3_asr::transcribe(samples, language)
+        }
+        Some(octopus_asr::config::EngineCategory::Zipformer) => {
+            octopus_asr::zipformer::transcribe(samples, language)
+        }
+        Some(octopus_asr::config::EngineCategory::SenseVoice) | None => {
+            octopus_asr::sensevoice::transcribe(samples, language)
+        }
+    }
+}
+
+fn show_config() -> Result<()> {
+    println!("Config & Model Discovery");
+    println!("{}", "=".repeat(70));
+    println!(
+        "HANDY_HOME: {}",
+        octopus_asr::config::handy_home().display()
+    );
+
+    let config = octopus_asr::config::load_config()?;
+    println!("ASR active: {}", config.asr.active);
+
+    let vad_path = octopus_asr::config::find_silero_vad()?;
+    let vad_size = std::fs::metadata(&vad_path)?.len() as f64 / 1_048_576.0;
+    if let Some(vad_cfg) = &config.vad {
+        println!("  VAD active: {}", vad_cfg.active);
+    }
+    println!("  VAD model: {} ({:.1} MB)", vad_path.display(), vad_size);
+
+    if let Some(whisper) = &config.asr.whisper {
+        for (id, entry) in whisper {
+            let hf = octopus_asr::config::find_hf_cache(&entry.source)?;
+            let onnx = octopus_asr::config::find_onnx_dir(&hf);
+            println!("  Whisper [{}]: {}", id, entry.source);
+            println!("    ONNX dir: {}", onnx.display());
+        }
+    }
+
+    if let Some(sensevoice) = &config.asr.sensevoice {
+        for (id, entry) in sensevoice {
+            let hf = octopus_asr::config::find_hf_cache(&entry.source)?;
+            println!("  SenseVoice [{}]: {}", id, entry.source);
+            println!("    HF cache: {}", hf.display());
+        }
+    }
+
+    if let Some(paraformer) = &config.asr.paraformer {
+        for (id, entry) in paraformer {
+            let hf = octopus_asr::config::find_hf_cache(&entry.source)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|e| format!("error: {}", e));
+            println!("  Paraformer [{}]: {}", id, entry.source);
+            println!("    HF cache: {}", hf);
+        }
+    }
+
+    if let Some(qwen3_asr) = &config.asr.qwen3_asr {
+        for (id, entry) in qwen3_asr {
+            let hf = octopus_asr::config::find_hf_cache(&entry.source)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|e| format!("error: {}", e));
+            println!("  Qwen3-ASR [{}]: {}", id, entry.source);
+            println!("    HF cache: {}", hf);
+        }
+    }
+
+    if let Some(zipformer) = &config.asr.zipformer {
+        for (id, entry) in zipformer {
+            let hf = octopus_asr::config::find_hf_cache(&entry.source)
+                .map(|p| p.display().to_string())
+                .unwrap_or_else(|e| format!("error: {}", e));
+            println!("  Zipformer [{}]: {}", id, entry.source);
+            println!("    HF cache: {}", hf);
+        }
+    }
+
+    println!("\n✓ OK");
+    Ok(())
+}
+
+fn record_from_config() -> Result<Vec<f32>> {
+    let app_cfg = octopus_asr::config::load_app_config()?;
+    let device_name = if app_cfg.microphone.is_empty() {
+        ""
+    } else {
+        &app_cfg.microphone
+    };
+
+    let host = cpal::default_host();
+    let device = if device_name.is_empty() {
+        host.default_input_device()
+            .ok_or_else(|| anyhow::anyhow!("No input device"))?
+    } else {
+        host.input_devices()?
+            .find(|d| d.name().map(|n| n.contains(device_name)).unwrap_or(false))
+            .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", device_name))?
+    };
+
+    let config = device.default_input_config()?;
+    let sample_rate = config.sample_rate().0;
+    let channels = config.channels() as usize;
+
+    println!("Recording from: {}", device.name().unwrap_or_default());
+    println!("Sample rate: {}, Channels: {}", sample_rate, channels);
+
+    let samples = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
+    let samples_clone = samples.clone();
+
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => device.build_input_stream(
+            &config.into(),
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                let mono: Vec<f32> = data
+                    .chunks(channels)
+                    .map(|c| c.iter().sum::<f32>() / channels as f32)
+                    .collect();
+                samples_clone.lock().unwrap().extend_from_slice(&mono);
+            },
+            |err| eprintln!("Audio error: {}", err),
+            None,
+        )?,
+        cpal::SampleFormat::I16 => device.build_input_stream(
+            &config.into(),
+            move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                let mono: Vec<f32> = data
+                    .chunks(channels)
+                    .map(|c| {
+                        c.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>() / channels as f32
+                    })
+                    .collect();
+                samples_clone.lock().unwrap().extend_from_slice(&mono);
+            },
+            |err| eprintln!("Audio error: {}", err),
+            None,
+        )?,
+        fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),
+    };
+
+    stream.play()?;
+    let mut input = String::new();
+    std::io::stdin().read_line(&mut input)?;
+    drop(stream);
+
+    let recorded = std::sync::Arc::try_unwrap(samples)
+        .unwrap()
+        .into_inner()
+        .unwrap();
+    octopus_asr::audio::resample_to_16k(&recorded, sample_rate)
+}
+
+/// Streaming e2e for Paraformer: Mic → chunk → StreamingParaformer → partial text
+/// Prints [partial] results every ~625ms and [final] on Enter.
+fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
+    println!("Streaming Paraformer e2e — model: {}", model);
+    println!("Speak into the microphone. Press Enter to stop.\n");
+
+    let mut engine = octopus_asr::streaming_paraformer::StreamingParaformer::new(model)?;
+
+    // Set up microphone
+    let app_cfg = octopus_asr::config::load_app_config()?;
+    let device_name = if app_cfg.microphone.is_empty() {
+        ""
+    } else {
+        &app_cfg.microphone
+    };
+
+    let host = cpal::default_host();
+    let device = if device_name.is_empty() {
+        host.default_input_device()
+            .ok_or_else(|| anyhow::anyhow!("No input device"))?
+    } else {
+        host.input_devices()?
+            .find(|d| d.name().map(|n| n.contains(device_name)).unwrap_or(false))
+            .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", device_name))?
+    };
+
+    let config = device.default_input_config()?;
+    let native_rate = config.sample_rate().0;
+    let channels = config.channels() as usize;
+
+    println!(
+        "Recording from: {} ({}Hz, {}ch)",
+        device.name().unwrap_or_default(),
+        native_rate,
+        channels
+    );
+
+    // Shared sample buffer
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
+    let buffer_clone = buffer.clone();
+    // Resample state for non-16kHz devices
+    let needs_resample = native_rate != 16000;
+
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => device.build_input_stream(
+            &config.into(),
+            move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                let mono: Vec<f32> = data
+                    .chunks(channels)
+                    .map(|c| c.iter().sum::<f32>() / channels as f32)
+                    .collect();
+                buffer_clone.lock().unwrap().extend_from_slice(&mono);
+            },
+            |err| eprintln!("Audio error: {}", err),
+            None,
+        )?,
+        cpal::SampleFormat::I16 => {
+            let buffer_clone = buffer.clone();
+            device.build_input_stream(
+                &config.into(),
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    let mono: Vec<f32> = data
+                        .chunks(channels)
+                        .map(|c| {
+                            c.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>()
+                                / channels as f32
+                        })
+                        .collect();
+                    buffer_clone.lock().unwrap().extend_from_slice(&mono);
+                },
+                |err| eprintln!("Audio error: {}", err),
+                None,
+            )?
+        }
+        fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),
+    };
+
+    stream.play()?;
+
+    // Polling interval is always ~625ms real-time regardless of sample rate.
+    // The resample step converts native-rate samples to 16kHz before feeding the engine.
+    let chunk_duration_ms: u64 = 625;
+
+    // Wait for Enter on a separate thread
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done_clone = done.clone();
+    let enter_thread = std::thread::spawn(move || {
+        let mut input = String::new();
+        let _ = std::io::stdin().read_line(&mut input);
+        done_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    let mut accumulated = String::new();
+
+    while !done.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(chunk_duration_ms));
+
+        // Drain the buffer
+        let raw_samples: Vec<f32> = {
+            let mut buf = buffer.lock().unwrap();
+            std::mem::take(&mut *buf)
+        };
+
+        if raw_samples.is_empty() {
+            continue;
+        }
+
+        // Resample if needed (48kHz → 16kHz etc.)
+        let samples_16k = if needs_resample {
+            match octopus_asr::audio::resample_to_16k(&raw_samples, native_rate) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("\n[resample error] {}", e);
+                    continue;
+                }
+            }
+        } else {
+            raw_samples
+        };
+
+        // Feed to streaming engine
+        match engine.accept_samples(&samples_16k) {
+            Ok(Some(text)) => {
+                accumulated.push_str(&text);
+                println!("[partial] {}", accumulated);
+                std::io::Write::flush(&mut std::io::stdout()).ok();
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("\n[error] {}", e),
+        }
+    }
+
+    // Wait for Enter thread
+    let _ = enter_thread.join();
+
+    // Flush remaining
+    // Drain one last time
+    let raw_samples: Vec<f32> = {
+        let mut buf = buffer.lock().unwrap();
+        std::mem::take(&mut *buf)
+    };
+    if !raw_samples.is_empty() {
+        let samples_16k = if needs_resample {
+            octopus_asr::audio::resample_to_16k(&raw_samples, native_rate)?
+        } else {
+            raw_samples
+        };
+        engine.accept_samples(&samples_16k).ok();
+    }
+
+    match engine.finish() {
+        Ok(text) if !text.is_empty() => {
+            accumulated = text;
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("\n[finish error] {}", e),
+    }
+
+    // Clean up: drop stream to stop recording
+    drop(stream);
+
+    println!("\n[final]   {}", accumulated);
+    Ok(())
+}
+
+/// Streaming e2e for Zipformer: Mic → chunk → StreamingZipformer → partial text
+fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
+    println!("Streaming Zipformer e2e — model: {}", model);
+    println!("Speak into the microphone. Press Enter to stop.\n");
+
+    let mut engine = octopus_asr::streaming_zipformer::StreamingZipformer::new(model)?;
+
+    // Set up microphone (same pattern as paraformer e2e)
+    let app_cfg = octopus_asr::config::load_app_config()?;
+    let device_name = if app_cfg.microphone.is_empty() {
+        ""
+    } else {
+        &app_cfg.microphone
+    };
+
+    let host = cpal::default_host();
+    let device = if device_name.is_empty() {
+        host.default_input_device()
+            .ok_or_else(|| anyhow::anyhow!("No input device"))?
+    } else {
+        host.input_devices()?
+            .find(|d| d.name().map(|n| n.contains(device_name)).unwrap_or(false))
+            .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", device_name))?
+    };
+
+    let config = device.default_input_config()?;
+    let native_rate = config.sample_rate().0;
+    let channels = config.channels() as usize;
+    let needs_resample = native_rate != 16000;
+
+    println!(
+        "Recording from: {} ({}Hz, {}ch)",
+        device.name().unwrap_or_default(),
+        native_rate,
+        channels
+    );
+
+    let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
+
+    let stream = match config.sample_format() {
+        cpal::SampleFormat::F32 => {
+            let bc = buffer.clone();
+            device.build_input_stream(
+                &config.into(),
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    let mono: Vec<f32> = data
+                        .chunks(channels)
+                        .map(|c| c.iter().sum::<f32>() / channels as f32)
+                        .collect();
+                    bc.lock().unwrap().extend_from_slice(&mono);
+                },
+                |err| eprintln!("Audio error: {}", err),
+                None,
+            )?
+        }
+        cpal::SampleFormat::I16 => {
+            let bc = buffer.clone();
+            device.build_input_stream(
+                &config.into(),
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    let mono: Vec<f32> = data
+                        .chunks(channels)
+                        .map(|c| {
+                            c.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>()
+                                / channels as f32
+                        })
+                        .collect();
+                    bc.lock().unwrap().extend_from_slice(&mono);
+                },
+                |err| eprintln!("Audio error: {}", err),
+                None,
+            )?
+        }
+        fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),
+    };
+
+    stream.play()?;
+
+    let done = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let done_clone = done.clone();
+    let enter_thread = std::thread::spawn(move || {
+        let mut input = String::new();
+        let _ = std::io::stdin().read_line(&mut input);
+        done_clone.store(true, std::sync::atomic::Ordering::Relaxed);
+    });
+
+    while !done.load(std::sync::atomic::Ordering::Relaxed) {
+        std::thread::sleep(std::time::Duration::from_millis(625));
+
+        let raw_samples: Vec<f32> = {
+            let mut buf = buffer.lock().unwrap();
+            std::mem::take(&mut *buf)
+        };
+
+        if raw_samples.is_empty() {
+            continue;
+        }
+
+        let samples_16k = if needs_resample {
+            match octopus_asr::audio::resample_to_16k(&raw_samples, native_rate) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("\n[resample error] {}", e);
+                    continue;
+                }
+            }
+        } else {
+            raw_samples
+        };
+
+        match engine.accept_samples(&samples_16k) {
+            Ok(Some(text)) => {
+                println!("[partial] {}", text);
+            }
+            Ok(None) => {}
+            Err(e) => eprintln!("\n[error] {}", e),
+        }
+    }
+
+    let _ = enter_thread.join();
+
+    // Flush remaining
+    let raw_samples: Vec<f32> = {
+        let mut buf = buffer.lock().unwrap();
+        std::mem::take(&mut *buf)
+    };
+    if !raw_samples.is_empty() {
+        let samples_16k = if needs_resample {
+            octopus_asr::audio::resample_to_16k(&raw_samples, native_rate)?
+        } else {
+            raw_samples
+        };
+        engine.accept_samples(&samples_16k).ok();
+    }
+
+    match engine.finish() {
+        Ok(text) if !text.is_empty() => {
+            println!("[final]   {}", text);
+        }
+        Ok(_) => {}
+        Err(e) => eprintln!("\n[finish error] {}", e),
+    }
+
+    drop(stream);
+    Ok(())
+}
+
+/// Stream-test: feed a WAV file chunk-by-chunk through streaming ASR engine.
+/// Prints [partial] after each chunk and [final] at the end.
+fn stream_test(wav_path: &str, model: &str) -> Result<()> {
+    if !std::path::Path::new(wav_path).exists() {
+        anyhow::bail!("File not found: {}", wav_path);
+    }
+
+    let samples = octopus_asr::audio::read_wav_16k(wav_path)?;
+    let duration = samples.len() as f64 / 16000.0;
+    println!(
+        "Stream-test: {} samples ({:.2}s), model: {}",
+        samples.len(),
+        duration,
+        model
+    );
+
+    let category = octopus_asr::config::resolve_engine_category(model);
+    match category {
+        Some(octopus_asr::config::EngineCategory::Zipformer) => {
+            stream_test_zipformer(samples, duration, model)
+        }
+        _ => stream_test_paraformer(samples, duration, model),
+    }
+}
+
+fn stream_test_paraformer(
+    samples: Vec<f32>,
+    duration: f64,
+    model: &str,
+) -> Result<()> {
+    let mut engine = octopus_asr::streaming_paraformer::StreamingParaformer::new(model)?;
+
+    let chunk_size = 10_000;
+    let mut chunk_idx = 0;
+    let mut accumulated = String::new();
+    let start = std::time::Instant::now();
+
+    for chunk in samples.chunks(chunk_size) {
+        match engine.accept_samples(chunk)? {
+            Some(text) => {
+                accumulated.push_str(&text);
+                let t = chunk_idx as f64 * 0.625;
+                println!("[chunk {} @{:.1}s] {}", chunk_idx, t, accumulated);
+            }
+            None => {}
+        }
+        chunk_idx += 1;
+    }
+
+    let final_text = engine.finish()?;
+    let elapsed = start.elapsed();
+
+    println!("[final]   {}", final_text);
+    eprintln!(
+        "{:.2}s (RTF: {:.2}x)",
+        elapsed.as_secs_f64(),
+        duration / elapsed.as_secs_f64()
+    );
+    Ok(())
+}
+
+fn stream_test_zipformer(
+    samples: Vec<f32>,
+    duration: f64,
+    model: &str,
+) -> Result<()> {
+    let mut engine = octopus_asr::streaming_zipformer::StreamingZipformer::new(model)?;
+
+    // Chunk size: enough samples for one chunk of fbank frames.
+    // Approx: chunk_shift * Z_FRAME_SHIFT = chunk_shift * 160 samples.
+    // For shift=64: ~10240 samples; for shift=32: ~5120 samples.
+    // Use 625ms chunks (~10000 samples) as a reasonable default.
+    let chunk_size = 10_000;
+    let mut chunk_idx = 0;
+    let start = std::time::Instant::now();
+
+    for chunk in samples.chunks(chunk_size) {
+        match engine.accept_samples(chunk)? {
+            Some(text) => {
+                let t = chunk_idx as f64 * 0.625;
+                println!("[chunk {} @{:.1}s] {}", chunk_idx, t, text);
+            }
+            None => {}
+        }
+        chunk_idx += 1;
+    }
+
+    let final_text = engine.finish()?;
+    let elapsed = start.elapsed();
+
+    println!("[final]   {}", final_text);
+    eprintln!(
+        "{:.2}s (RTF: {:.2}x)",
+        elapsed.as_secs_f64(),
+        duration / elapsed.as_secs_f64()
+    );
+    Ok(())
+}

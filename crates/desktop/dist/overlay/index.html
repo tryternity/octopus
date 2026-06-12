@@ -1,0 +1,79 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>octopus overlay</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      width: 172px;
+      height: 36px;
+      overflow: hidden;
+      background: transparent;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    #container {
+      width: 100%;
+      height: 100%;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+      background: rgba(0, 0, 0, 0.75);
+      border-radius: 18px;
+      color: white;
+      font-size: 13px;
+      opacity: 0;
+      transition: opacity 0.2s ease-in-out;
+    }
+    #container.visible { opacity: 1; }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #ff4444;
+      animation: pulse 1s ease-in-out infinite;
+    }
+    .dot.transcribing { background: #44aaff; }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.5; transform: scale(0.8); }
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="indicator" class="dot"></div>
+    <span id="label">录音中</span>
+  </div>
+  <script>
+    const container = document.getElementById('container');
+    const indicator = document.getElementById('indicator');
+    const label = document.getElementById('label');
+
+    // Listen for Tauri events
+    const { listen } = window.__TAURI__.event;
+
+    listen('show-overlay', (event) => {
+      const state = event.payload;
+      if (state === 'recording') {
+        label.textContent = '录音中';
+        indicator.className = 'dot';
+        indicator.style.background = '#ff4444';
+      } else if (state === 'transcribing') {
+        label.textContent = '识别中';
+        indicator.className = 'dot transcribing';
+        indicator.style.background = '#44aaff';
+      }
+      container.classList.add('visible');
+    });
+
+    listen('hide-overlay', () => {
+      container.classList.remove('visible');
+    });
+  </script>
+</body>
+</html>
