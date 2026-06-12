@@ -68,9 +68,29 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 ### octopus-desktop（桌面应用）
 
-基于 Tauri 2 的桌面应用，支持系统托盘、全局快捷键、悬浮窗。
+基于 Tauri 2 的桌面应用，支持系统托盘、全局快捷键、悬浮窗、流式识别。
 
-支持三种引擎模式：
+**识别模式：**
+
+| 模式 | 引擎 | 说明 |
+|------|------|------|
+| 流式 | Paraformer, Zipformer | 边说边识别，600ms tick 驱动 |
+| 离线 | SenseVoice, Whisper, Qwen3-ASR | 全量录音→一次识别（V2 将改为 VAD 伪流式） |
+
+**窗口管理：**
+
+| 窗口 | 用途 |
+|------|------|
+| `recording_overlay` | 录音/识别状态提示（离线模式） |
+| `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶） |
+
+**核心状态机（Coordinator）：**
+- 单线程 mpsc channel 串行化所有事件
+- 流式模式：Streaming → Pasting
+- 离线模式：Recording → Processing → Pasting
+- VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号
+
+支持三种引擎接入模式：
 - **embedded**（默认）：内嵌 octopus-asr，本地推理
 - **remote-ws**：通过 WebSocket 连接远程 octopus-server
 - **remote-grpc**：通过 gRPC 连接远程推理服务
