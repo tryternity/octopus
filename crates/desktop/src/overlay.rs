@@ -7,8 +7,8 @@ use tauri::{AppHandle, Emitter, Manager};
 #[cfg(target_os = "linux")]
 use gtk_layer_shell::{Edge, KeyboardMode, Layer, LayerShell};
 
-const OVERLAY_WIDTH: f64 = 172.0;
-const OVERLAY_HEIGHT: f64 = 36.0;
+const OVERLAY_WIDTH: f64 = 400.0;
+const OVERLAY_HEIGHT: f64 = 40.0;
 
 /// Create the overlay window (hidden by default).
 pub fn create_overlay(app: &AppHandle, config: &DesktopConfig) {
@@ -87,5 +87,12 @@ pub fn hide_overlay(app: &AppHandle) {
             std::thread::sleep(std::time::Duration::from_millis(300));
             let _ = window_clone.hide();
         });
+    }
+}
+
+/// 显示流式识别的部分文本。
+pub fn show_partial_text(app: &AppHandle, text: &str) {
+    if let Some(window) = app.get_webview_window("recording_overlay") {
+        let _ = window.emit("partial-result", text);
     }
 }

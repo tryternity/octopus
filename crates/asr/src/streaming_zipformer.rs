@@ -11,8 +11,8 @@ use ort::value::{Tensor, TensorElementType};
 
 use crate::config;
 use crate::zipformer::{
-    compute_fbank_features, decode_byte_bpe, StateValue,
-    Z_FRAME_SHIFT, Z_NUM_BINS, ZIPFORMER_BLANK_ID,
+    compute_fbank_features, decode_byte_bpe, discover_streaming_zipformer_onnx, is_vocab_bbpe,
+    StateValue, Z_FRAME_SHIFT, Z_NUM_BINS, ZIPFORMER_BLANK_ID,
 };
 
 /// Streaming Zipformer engine — maintains state across chunks.
@@ -53,16 +53,7 @@ impl StreamingZipformer {
         };
 
         let hf_path = config::find_hf_cache(&entry.source)?;
-        let model_path = if hf_path.join("model.int8.onnx").exists() {
-            hf_path.join("model.int8.onnx")
-        } else if hf_path.join("model.onnx").exists() {
-            hf_path.join("model.onnx")
-        } else {
-            anyhow::bail!(
-                "model.onnx / model.int8.onnx not found at {}",
-                hf_path.display()
-            );
-        };
+        let model_path = discover_streaming_zipformer_onnx(&hf_path)?;
 
         let session = Session::builder()?.commit_from_file(&model_path)?;
 
@@ -104,7 +95,7 @@ impl StreamingZipformer {
 
         // Load vocabulary
         let vocab = load_vocab(&hf_path)?;
-        let is_bbpe = vocab.iter().any(|tok| tok.starts_with('▁'));
+        let is_bbpe = is_vocab_bbpe(&vocab);
 
         Ok(Self {
             session,
@@ -328,19 +319,43 @@ impl StreamingZipformer {
             decode_byte_bpe(&raw)
         } else {
             let mut decoded = String::new();
+            let mut byte_buf: Vec<u8> = Vec::new();
+
             for &tid in &self.token_ids {
-                if tid < self.vocab.len() {
-                    let token = &self.vocab[tid];
-                    if token.starts_with('▁') {
-                        if !decoded.is_empty() {
-                            decoded.push(' ');
-                        }
-                        decoded.push_str(&token[3..]); // Strip ▁ (3 bytes)
-                    } else {
-                        decoded.push_str(token);
+                if tid >= self.vocab.len() {
+                    continue;
+                }
+                let token = &self.vocab[tid];
+
+                // Handle sentencepiece <0xXX> byte fallback tokens
+                if token.starts_with("<0x") && token.ends_with('>') && token.len() == 6 {
+                    if let Ok(byte_val) = u8::from_str_radix(&token[3..5], 16) {
+                        byte_buf.push(byte_val);
+                        continue;
                     }
                 }
+
+                // Flush any pending byte buffer before appending text tokens
+                if !byte_buf.is_empty() {
+                    decoded.push_str(&String::from_utf8_lossy(&byte_buf));
+                    byte_buf.clear();
+                }
+
+                if token.starts_with('▁') {
+                    if !decoded.is_empty() {
+                        decoded.push(' ');
+                    }
+                    decoded.push_str(&token[3..]); // Strip ▁ (3 bytes)
+                } else {
+                    decoded.push_str(token);
+                }
             }
+
+            // Flush remaining byte buffer
+            if !byte_buf.is_empty() {
+                decoded.push_str(&String::from_utf8_lossy(&byte_buf));
+            }
+
             decoded.trim().to_string()
         }
     }
@@ -369,4 +384,51 @@ fn load_vocab(hf_path: &std::path::Path) -> Result<Vec<String>> {
         }
     }
     Ok(vocab)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_streaming_zipformer_ctc() {
+        let wav_path = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join(".cache/huggingface/hub/models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13/snapshots/cfa1a89c049cd0c48fb9e46a49c84b58744daec5/test_wavs/DEV_T0000000000.wav");
+        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
+
+        println!("\n--- Testing Streaming zipformer-ctc ---");
+        let mut engine = StreamingZipformer::new("zipformer-ctc").unwrap();
+        let chunk_size = 10000;
+        let mut full_text = String::new();
+        for chunk in samples.chunks(chunk_size) {
+            if let Some(text) = engine.accept_samples(chunk).unwrap() {
+                println!("Partial: {}", text);
+                full_text = text;
+            }
+        }
+        let final_text = engine.finish().unwrap();
+        println!("Final: {}", final_text);
+        assert!(!final_text.is_empty(), "Transcribed text should not be empty");
+    }
+
+    #[test]
+    fn test_streaming_zipformer_multi() {
+        let wav_path = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join(".cache/huggingface/hub/models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13/snapshots/cfa1a89c049cd0c48fb9e46a49c84b58744daec5/test_wavs/DEV_T0000000000.wav");
+        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
+
+        println!("\n--- Testing Streaming zipformer-multi ---");
+        let mut engine = StreamingZipformer::new("zipformer-multi").unwrap();
+        let chunk_size = 10000;
+        let mut full_text = String::new();
+        for chunk in samples.chunks(chunk_size) {
+            if let Some(text) = engine.accept_samples(chunk).unwrap() {
+                println!("Partial: {}", text);
+                full_text = text;
+            }
+        }
+        let final_text = engine.finish().unwrap();
+        println!("Final: {}", final_text);
+        assert!(!final_text.is_empty(), "Transcribed text should not be empty");
+    }
 }

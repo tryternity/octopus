@@ -83,6 +83,20 @@ impl Default for DesktopConfig {
     }
 }
 
+impl DesktopConfig {
+    /// 检查当前配置的 ASR 引擎是否支持流式识别。
+    /// 仅 Paraformer 和 Zipformer 支持流式。
+    pub fn is_streaming_engine(&self) -> bool {
+        match octopus_asr::config::resolve_engine_category(&self.asr_engine) {
+            Some(
+                octopus_asr::config::EngineCategory::Paraformer
+                | octopus_asr::config::EngineCategory::Zipformer,
+            ) => true,
+            _ => false,
+        }
+    }
+}
+
 /// 从 ~/.octopus/config.yaml 加载桌面配置
 pub fn load_desktop_config() -> Result<DesktopConfig> {
     let handy_home = octopus_asr::config::handy_home();

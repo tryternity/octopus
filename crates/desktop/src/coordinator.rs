@@ -4,7 +4,9 @@ use crate::audio::SharedAudioState;
 use crate::config::DesktopConfig;
 use crate::engine::TranscriptionEngine;
 use crate::paste;
-use log::{debug, error, info};
+use crate::streaming_engine::StreamingSession;
+use log::{debug, error, info, warn};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Instant;
@@ -15,8 +17,12 @@ enum Command {
     Toggle,
     /// 取消当前操作
     Cancel,
-    /// 转录完成
-    TranscriptionDone { text: Result<String, String> },
+    /// 流式识别 tick（定时触发，驱动音频采集和识别）
+    StreamingTick,
+    /// 转录完成（离线模式或远程模式使用）
+    TranscriptionDone {
+        text: Result<String, String>,
+    },
     /// 粘贴完成
     PasteDone,
 }
@@ -24,8 +30,17 @@ enum Command {
 /// 协调器阶段
 enum Stage {
     Idle,
+    /// 流式识别：边录边识别
+    Streaming {
+        engine: StreamingSession,
+        accumulated_text: String,
+        streaming_active: Arc<AtomicBool>,
+    },
+    /// 离线模式：录音中
     Recording,
+    /// 离线模式：离线识别中
     Processing,
+    /// 粘贴中
     Pasting,
 }
 
@@ -38,6 +53,9 @@ pub struct Coordinator {
     tx: std::sync::Mutex<Sender<Command>>,
 }
 
+/// 流式识别 tick 间隔（毫秒）
+const STREAMING_TICK_INTERVAL_MS: u64 = 600;
+
 impl Coordinator {
     pub fn new(
         engine: Arc<dyn TranscriptionEngine>,
@@ -48,184 +66,55 @@ impl Coordinator {
         let (tx, rx): (Sender<Command>, Receiver<Command>) = mpsc::channel();
         let tx_self = tx.clone();
 
+        let use_streaming = config.engine_mode == "embedded" && config.is_streaming_engine();
+
         std::thread::spawn(move || {
             let mut stage = Stage::Idle;
 
-            while let Ok(cmd) = rx.recv() {
-                match cmd {
-                    Command::Toggle => match stage {
-                        Stage::Idle => {
-                            info!("Toggle: starting recording");
-                            if let Err(e) = audio.start() {
-                                error!("Failed to start recording: {}", e);
-                                continue;
-                            }
-                            stage = Stage::Recording;
-                            crate::overlay::show_overlay(&app_handle, "recording");
-                            crate::tray::update_tray_label(
-                                &app_handle,
-                                crate::tray::TrayState::Recording,
-                            );
-                        }
-                        Stage::Recording => {
-                            info!("Toggle: stopping recording, starting transcription");
-                            stage = Stage::Processing;
-                            crate::overlay::show_overlay(&app_handle, "transcribing");
-                            crate::tray::update_tray_label(
-                                &app_handle,
-                                crate::tray::TrayState::Processing,
-                            );
-
-                            let samples = audio.stop().unwrap_or_default();
-
-                            if samples.is_empty() {
-                                info!("No audio samples, returning to idle");
-                                stage = Stage::Idle;
-                                crate::overlay::hide_overlay(&app_handle);
-                                crate::tray::update_tray_label(
-                                    &app_handle,
-                                    crate::tray::TrayState::Idle,
-                                );
-                                continue;
-                            }
-
-                            // VAD filter
-                            let speech_samples = {
-                                match octopus_asr::config::find_silero_vad() {
-                                    Ok(vad_path) => {
-                                        match octopus_asr::vad::SileroVad::new(&vad_path) {
-                                            Ok(mut vad) => {
-                                                let speech = octopus_asr::audio::filter_speech(
-                                                    &samples, &mut vad, 480, 0.5,
-                                                );
-                                                if speech.is_empty() {
-                                                    info!("No speech detected");
-                                                    Vec::new()
-                                                } else {
-                                                    speech
-                                                }
-                                            }
-                                            Err(e) => {
-                                                error!("VAD init failed: {}, using raw samples", e);
-                                                samples
-                                            }
-                                        }
-                                    }
-                                    Err(e) => {
-                                        error!("VAD not found: {}, using raw samples", e);
-                                        samples
-                                    }
-                                }
-                            };
-
-                            if speech_samples.is_empty() {
-                                stage = Stage::Idle;
-                                crate::overlay::hide_overlay(&app_handle);
-                                crate::tray::update_tray_label(
-                                    &app_handle,
-                                    crate::tray::TrayState::Idle,
-                                );
-                                continue;
-                            }
-
-                            // Transcribe in a dedicated thread with its own tokio runtime
-                            // (coordinator thread has no tokio runtime, so tokio::spawn would panic)
-                            let engine = engine.clone();
-                            let language = config.language.clone();
-                            let asr_engine = config.asr_engine.clone();
-                            let tx = tx.clone();
-                            let samples_len = speech_samples.len();
-                            let duration = samples_len as f64 / 16000.0;
-
-                            std::thread::spawn(move || {
-                                let rt = tokio::runtime::Builder::new_current_thread()
-                                    .enable_all()
-                                    .build()
-                                    .expect("Failed to create tokio runtime for transcription");
-
-                                let start = Instant::now();
-                                let result = rt.block_on(engine.transcribe(
-                                    &speech_samples,
-                                    &language,
-                                    &asr_engine,
-                                ));
-                                let elapsed = start.elapsed();
-                                info!(
-                                    "Transcription took {:.2}s (audio: {:.2}s, RTF: {:.2})",
-                                    elapsed.as_secs_f64(),
-                                    duration,
-                                    elapsed.as_secs_f64() / duration
-                                );
-                                let msg = match result {
-                                    Ok(text) => Command::TranscriptionDone { text: Ok(text) },
-                                    Err(e) => Command::TranscriptionDone {
-                                        text: Err(e.to_string()),
-                                    },
-                                };
-                                let _ = tx.send(msg);
-                            });
-                        }
-                        Stage::Processing | Stage::Pasting => {
-                            debug!("Toggle ignored: busy in {:?}", stage_name(&stage));
-                        }
-                    },
-                    Command::Cancel => {
-                        if matches!(stage, Stage::Recording) {
-                            info!("Cancel: stopping recording");
-                            let _ = audio.stop();
-                        }
-                        stage = Stage::Idle;
-                        crate::overlay::hide_overlay(&app_handle);
-                        crate::tray::update_tray_label(&app_handle, crate::tray::TrayState::Idle);
+            loop {
+                let cmd = match rx.recv() {
+                    Ok(c) => c,
+                    Err(_) => {
+                        debug!("Coordinator channel closed, exiting");
+                        break;
                     }
-                    Command::TranscriptionDone { text } => match text {
-                        Ok(transcription) => {
-                            info!("Transcription: '{}'", transcription);
-                            if transcription.is_empty() {
-                                stage = Stage::Idle;
-                                crate::overlay::hide_overlay(&app_handle);
-                                crate::tray::update_tray_label(
-                                    &app_handle,
-                                    crate::tray::TrayState::Idle,
-                                );
-                                continue;
-                            }
+                };
 
-                            stage = Stage::Pasting;
-                            let config = config.clone();
-                            let tx_inner = tx.clone();
-                            let tx_fallback = tx.clone();
-                            let handle_for_closure = app_handle.clone();
-
-                            app_handle
-                                .run_on_main_thread(move || {
-                                    if let Err(e) =
-                                        paste::paste(&transcription, &handle_for_closure, &config)
-                                    {
-                                        error!("Paste failed: {}", e);
-                                    }
-                                    let _ = tx_inner.send(Command::PasteDone);
-                                })
-                                .unwrap_or_else(|e| {
-                                    error!("run_on_main_thread failed: {:?}", e);
-                                    let _ = tx_fallback.send(Command::PasteDone);
-                                });
-                        }
-                        Err(e) => {
-                            error!("Transcription failed: {}", e);
-                            stage = Stage::Idle;
-                            crate::overlay::hide_overlay(&app_handle);
-                            crate::tray::update_tray_label(
-                                &app_handle,
-                                crate::tray::TrayState::Idle,
-                            );
-                        }
-                    },
+                match cmd {
+                    Command::Toggle => {
+                        handle_toggle(
+                            &mut stage,
+                            &audio,
+                            &engine,
+                            &config,
+                            &app_handle,
+                            &tx,
+                            use_streaming,
+                        );
+                    }
+                    Command::StreamingTick => {
+                        handle_streaming_tick(&mut stage, &audio, &app_handle);
+                    }
+                    Command::Cancel => {
+                        handle_cancel(&mut stage, &audio, &app_handle);
+                    }
+                    Command::TranscriptionDone { text } => {
+                        handle_transcription_done(
+                            &mut stage,
+                            text,
+                            &config,
+                            &app_handle,
+                            &tx,
+                        );
+                    }
                     Command::PasteDone => {
                         info!("Paste complete, returning to idle");
                         stage = Stage::Idle;
                         crate::overlay::hide_overlay(&app_handle);
-                        crate::tray::update_tray_label(&app_handle, crate::tray::TrayState::Idle);
+                        crate::tray::update_tray_label(
+                            &app_handle,
+                            crate::tray::TrayState::Idle,
+                        );
                     }
                 }
             }
@@ -256,10 +145,362 @@ impl Coordinator {
     }
 }
 
+/// 处理 Toggle 命令
+fn handle_toggle(
+    stage: &mut Stage,
+    audio: &Arc<SharedAudioState>,
+    engine: &Arc<dyn TranscriptionEngine>,
+    config: &DesktopConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+    use_streaming: bool,
+) {
+    match stage {
+        Stage::Idle => {
+            info!("Toggle: starting {}", if use_streaming { "streaming" } else { "recording" });
+
+            if let Err(e) = audio.start() {
+                error!("Failed to start recording: {}", e);
+                return;
+            }
+
+            if use_streaming {
+                // 流式模式：创建 StreamingSession 并启动 tick 线程
+                match StreamingSession::new(&config.asr_engine) {
+                    Ok(streaming_engine) => {
+                        crate::overlay::show_overlay(app_handle, "streaming");
+                        crate::tray::update_tray_label(
+                            app_handle,
+                            crate::tray::TrayState::Recording,
+                        );
+
+                        let streaming_active = Arc::new(AtomicBool::new(true));
+                        start_tick_thread(tx.clone(), streaming_active.clone());
+
+                        *stage = Stage::Streaming {
+                            engine: streaming_engine,
+                            accumulated_text: String::new(),
+                            streaming_active,
+                        };
+                    }
+                    Err(e) => {
+                        error!("Failed to create streaming session: {}", e);
+                        let _ = audio.stop();
+                        crate::overlay::hide_overlay(app_handle);
+                    }
+                }
+            } else {
+                // 离线模式：原有 Recording → Processing 流程
+                crate::overlay::show_overlay(app_handle, "recording");
+                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
+                *stage = Stage::Recording;
+            }
+        }
+
+        Stage::Recording => {
+            // 离线模式：停止录音，开始离线识别
+            info!("Toggle: stopping recording, starting offline transcription");
+            *stage = Stage::Processing;
+            crate::overlay::show_overlay(app_handle, "transcribing");
+            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Processing);
+
+            let samples = audio.stop().unwrap_or_default();
+            if samples.is_empty() {
+                info!("No audio samples, returning to idle");
+                *stage = Stage::Idle;
+                crate::overlay::hide_overlay(app_handle);
+                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                return;
+            }
+
+            // VAD filter
+            let speech_samples = filter_speech_samples(samples);
+
+            if speech_samples.is_empty() {
+                *stage = Stage::Idle;
+                crate::overlay::hide_overlay(app_handle);
+                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                return;
+            }
+
+            // 离线识别线程
+            spawn_offline_transcription(engine, config, tx, speech_samples);
+        }
+
+        Stage::Streaming {
+            engine: streaming_engine,
+            accumulated_text,
+            streaming_active,
+        } => {
+            // 流式模式：停止流式，获取最终文本，粘贴
+            info!("Toggle: stopping streaming, finalizing");
+
+            // 停止 tick
+            streaming_active.store(false, Ordering::Relaxed);
+
+            // 获取最终音频和识别结果
+            let final_samples = audio.drain_samples();
+            if !final_samples.is_empty() {
+                if let Err(e) = streaming_engine.accept_samples(&final_samples) {
+                    warn!("Error processing final samples: {}", e);
+                }
+            }
+
+            let final_text = match streaming_engine.finish() {
+                Ok(text) => text,
+                Err(e) => {
+                    error!("Streaming finish failed: {}", e);
+                    accumulated_text.clone()
+                }
+            };
+
+            // 重置引擎
+            streaming_engine.reset();
+
+            // 停止录音
+            let _ = audio.stop();
+
+            // 合并最终文本
+            let combined = if final_text.is_empty() {
+                accumulated_text.clone()
+            } else {
+                final_text
+            };
+
+            info!("Final streaming text: '{}'", combined);
+
+            if combined.is_empty() {
+                *stage = Stage::Idle;
+                crate::overlay::hide_overlay(app_handle);
+                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                return;
+            }
+
+            // 粘贴
+            *stage = Stage::Pasting;
+            let config = config.clone();
+            let tx_inner = tx.clone();
+            let tx_fallback = tx.clone();
+            let handle_for_closure = app_handle.clone();
+            let text_to_paste = combined;
+
+            app_handle
+                .run_on_main_thread(move || {
+                    if let Err(e) = paste::paste(&text_to_paste, &handle_for_closure, &config) {
+                        error!("Paste failed: {}", e);
+                    }
+                    let _ = tx_inner.send(Command::PasteDone);
+                })
+                .unwrap_or_else(|e| {
+                    error!("run_on_main_thread failed: {:?}", e);
+                    let _ = tx_fallback.send(Command::PasteDone);
+                });
+        }
+
+        Stage::Processing | Stage::Pasting => {
+            debug!("Toggle ignored: busy in {:?}", stage_name(stage));
+        }
+    }
+}
+
+/// 处理 StreamingTick 命令
+fn handle_streaming_tick(
+    stage: &mut Stage,
+    audio: &Arc<SharedAudioState>,
+    app_handle: &tauri::AppHandle,
+) {
+    if let Stage::Streaming {
+        engine,
+        accumulated_text,
+        ..
+    } = stage
+    {
+        // 排空音频缓冲区
+        let samples = audio.drain_samples();
+        if samples.is_empty() {
+            return;
+        }
+
+        // 送入流式引擎
+        match engine.accept_samples(&samples) {
+            Ok(Some(new_text)) => {
+                // 更新累积文本
+                // Paraformer 返回增量，需要追加
+                // Zipformer 返回全文，直接替换
+                // 统一处理：StreamingSession 内部已处理差异，返回的都是累积文本
+                *accumulated_text = new_text;
+                debug!("Partial: '{}'", accumulated_text);
+
+                // 更新 overlay 显示
+                crate::overlay::show_partial_text(app_handle, accumulated_text);
+            }
+            Ok(None) => {
+                // 没有新结果
+            }
+            Err(e) => {
+                warn!("Streaming accept_samples error: {}", e);
+            }
+        }
+    }
+}
+
+/// 处理 Cancel 命令
+fn handle_cancel(
+    stage: &mut Stage,
+    audio: &Arc<SharedAudioState>,
+    app_handle: &tauri::AppHandle,
+) {
+    match stage {
+        Stage::Recording => {
+            info!("Cancel: stopping recording");
+            let _ = audio.stop();
+        }
+        Stage::Streaming {
+            engine,
+            streaming_active,
+            ..
+        } => {
+            info!("Cancel: stopping streaming");
+            streaming_active.store(false, Ordering::Relaxed);
+            engine.reset();
+            let _ = audio.stop();
+        }
+        _ => {}
+    }
+    *stage = Stage::Idle;
+    crate::overlay::hide_overlay(app_handle);
+    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+}
+
+/// 处理 TranscriptionDone 命令（离线模式）
+fn handle_transcription_done(
+    stage: &mut Stage,
+    text: Result<String, String>,
+    config: &DesktopConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+) {
+    match text {
+        Ok(transcription) => {
+            info!("Transcription: '{}'", transcription);
+            if transcription.is_empty() {
+                *stage = Stage::Idle;
+                crate::overlay::hide_overlay(app_handle);
+                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                return;
+            }
+
+            *stage = Stage::Pasting;
+            let config = config.clone();
+            let tx_inner = tx.clone();
+            let tx_fallback = tx.clone();
+            let handle_for_closure = app_handle.clone();
+
+            app_handle
+                .run_on_main_thread(move || {
+                    if let Err(e) = paste::paste(&transcription, &handle_for_closure, &config) {
+                        error!("Paste failed: {}", e);
+                    }
+                    let _ = tx_inner.send(Command::PasteDone);
+                })
+                .unwrap_or_else(|e| {
+                    error!("run_on_main_thread failed: {:?}", e);
+                    let _ = tx_fallback.send(Command::PasteDone);
+                });
+        }
+        Err(e) => {
+            error!("Transcription failed: {}", e);
+            *stage = Stage::Idle;
+            crate::overlay::hide_overlay(app_handle);
+            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+        }
+    }
+}
+
+/// 启动 tick 线程，定时发送 StreamingTick 命令
+fn start_tick_thread(tx: Sender<Command>, streaming_active: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        while streaming_active.load(Ordering::Relaxed) {
+            std::thread::sleep(std::time::Duration::from_millis(STREAMING_TICK_INTERVAL_MS));
+            if streaming_active.load(Ordering::Relaxed) {
+                if tx.send(Command::StreamingTick).is_err() {
+                    break;
+                }
+            }
+        }
+        debug!("Streaming tick thread exited");
+    });
+}
+
+/// VAD 过滤语音片段
+fn filter_speech_samples(samples: Vec<f32>) -> Vec<f32> {
+    match octopus_asr::config::find_silero_vad() {
+        Ok(vad_path) => match octopus_asr::vad::SileroVad::new(&vad_path) {
+            Ok(mut vad) => {
+                let speech = octopus_asr::audio::filter_speech(&samples, &mut vad, 480, 0.5);
+                if speech.is_empty() {
+                    info!("No speech detected");
+                    Vec::new()
+                } else {
+                    speech
+                }
+            }
+            Err(e) => {
+                error!("VAD init failed: {}, using raw samples", e);
+                samples
+            }
+        },
+        Err(e) => {
+            error!("VAD not found: {}, using raw samples", e);
+            samples
+        }
+    }
+}
+
+/// 离线识别线程
+fn spawn_offline_transcription(
+    engine: &Arc<dyn TranscriptionEngine>,
+    config: &DesktopConfig,
+    tx: &Sender<Command>,
+    speech_samples: Vec<f32>,
+) {
+    let engine = engine.clone();
+    let language = config.language.clone();
+    let asr_engine = config.asr_engine.clone();
+    let tx = tx.clone();
+    let samples_len = speech_samples.len();
+    let duration = samples_len as f64 / 16000.0;
+
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_current_thread()
+            .enable_all()
+            .build()
+            .expect("Failed to create tokio runtime for transcription");
+
+        let start = Instant::now();
+        let result = rt.block_on(engine.transcribe(&speech_samples, &language, &asr_engine));
+        let elapsed = start.elapsed();
+        info!(
+            "Transcription took {:.2}s (audio: {:.2}s, RTF: {:.2})",
+            elapsed.as_secs_f64(),
+            duration,
+            elapsed.as_secs_f64() / duration
+        );
+        let msg = match result {
+            Ok(text) => Command::TranscriptionDone { text: Ok(text) },
+            Err(e) => Command::TranscriptionDone {
+                text: Err(e.to_string()),
+            },
+        };
+        let _ = tx.send(msg);
+    });
+}
+
 fn stage_name(stage: &Stage) -> &'static str {
     match stage {
         Stage::Idle => "Idle",
         Stage::Recording => "Recording",
+        Stage::Streaming { .. } => "Streaming",
         Stage::Processing => "Processing",
         Stage::Pasting => "Pasting",
     }

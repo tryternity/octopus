@@ -69,6 +69,54 @@ pub fn resample_to_16k(samples: &[f32], from_rate: u32) -> Result<Vec<f32>> {
     Ok(resampled)
 }
 
+/// Stateful resampler for streaming audio.
+/// Caches the Rubato FftFixedIn planner and buffers leftover samples between chunks
+/// to ensure glitch-free audio boundaries and high performance.
+pub struct AudioResampler {
+    resampler: rubato::FftFixedIn<f32>,
+    input_frames: usize,
+    buffer: Vec<f32>,
+}
+
+impl AudioResampler {
+    pub fn new(from_rate: u32) -> Result<Self> {
+        let resampler = rubato::FftFixedIn::<f32>::new(from_rate as usize, 16000, 1024, 2, 1)?;
+        let input_frames = resampler.input_frames_next();
+        Ok(Self {
+            resampler,
+            input_frames,
+            buffer: Vec::new(),
+        })
+    }
+
+    /// Resample a chunk of audio. Leftover samples are buffered and prepended to the next call.
+    pub fn resample(&mut self, samples: &[f32]) -> Result<Vec<f32>> {
+        self.buffer.extend_from_slice(samples);
+        let mut resampled = Vec::new();
+        let mut pos = 0;
+        while pos + self.input_frames <= self.buffer.len() {
+            let chunk = &self.buffer[pos..pos + self.input_frames];
+            let output = self.resampler.process(&[chunk], None)?;
+            resampled.extend_from_slice(&output[0]);
+            pos += self.input_frames;
+        }
+        self.buffer.drain(..pos);
+        Ok(resampled)
+    }
+
+    /// Flush any remaining buffered samples by padding with zeros.
+    pub fn flush(&mut self) -> Result<Vec<f32>> {
+        if self.buffer.is_empty() {
+            return Ok(Vec::new());
+        }
+        let needed = self.input_frames - self.buffer.len();
+        self.buffer.extend(std::iter::repeat(0.0).take(needed));
+        let output = self.resampler.process(&[&self.buffer], None)?;
+        self.buffer.clear();
+        Ok(output[0].clone())
+    }
+}
+
 /// Apply VAD filtering: returns only speech frames above threshold
 pub fn filter_speech(
     samples: &[f32],

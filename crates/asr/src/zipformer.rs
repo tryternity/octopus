@@ -299,19 +299,94 @@ pub struct ZipformerEngine {
     initial_states: Vec<(String, StateValue)>,
 }
 
+pub(crate) fn is_vocab_bbpe(vocab: &[String]) -> bool {
+    let mut has_bbpe_marker = false;
+    for tok in vocab {
+        if tok.starts_with('<') && tok.ends_with('>') {
+            continue;
+        }
+        if tok.starts_with('▁') {
+            has_bbpe_marker = true;
+        }
+        for c in tok.chars() {
+            if c == '▁' {
+                continue;
+            }
+            if !c.is_ascii() {
+                let c_str = c.to_string();
+                if !BBPE_TABLE.contains_key(c_str.as_str()) {
+                    return false;
+                }
+            }
+        }
+    }
+    has_bbpe_marker
+}
+
+pub(crate) fn discover_streaming_zipformer_onnx(dir: &std::path::Path) -> Result<std::path::PathBuf> {
+    // 1. Standard names
+    for name in ["model.int8.onnx", "model.onnx"] {
+        let p = dir.join(name);
+        if p.exists() {
+            return Ok(p);
+        }
+    }
+
+    // 2. Scan directory for ONNX files
+    let entries: Vec<_> = std::fs::read_dir(dir)
+        .with_context(|| format!("Cannot read dir {}", dir.display()))?
+        .filter_map(|e| e.ok())
+        .filter(|e| {
+            e.path()
+                .extension()
+                .map(|ext| ext == "onnx")
+                .unwrap_or(false)
+        })
+        .collect();
+
+    if entries.is_empty() {
+        anyhow::bail!(
+            "No .onnx files found at {}. Expected model.onnx or encoder-*.onnx",
+            dir.display()
+        );
+    }
+
+    // Prefer encoder file (transducer models: encoder, decoder, joiner)
+    // Prefer int8 version first
+    if let Some(e) = entries.iter().find(|e| {
+        let binding = e.file_name();
+        let name = binding.to_string_lossy();
+        name.starts_with("encoder") && name.contains("int8")
+    }) {
+        return Ok(e.path());
+    }
+    // Any encoder file
+    if let Some(e) = entries.iter().find(|e| {
+        let binding = e.file_name();
+        binding.to_string_lossy().starts_with("encoder")
+    }) {
+        return Ok(e.path());
+    }
+
+    // 3. Fall back: prefer int8, then any
+    if let Some(e) = entries
+        .iter()
+        .find(|e| e.file_name().to_string_lossy().contains("int8"))
+    {
+        return Ok(e.path());
+    }
+
+    entries
+        .into_iter()
+        .next()
+        .map(|e| e.path())
+        .context("No .onnx files found")
+}
+
 impl ZipformerEngine {
     pub fn new(entry: &config::ModelEntry) -> Result<Self> {
         let hf_path = config::find_hf_cache(&entry.source)?;
-        let model_path = if hf_path.join("model.onnx").exists() {
-            hf_path.join("model.onnx")
-        } else if hf_path.join("model.int8.onnx").exists() {
-            hf_path.join("model.int8.onnx")
-        } else {
-            anyhow::bail!(
-                "model.onnx / model.int8.onnx not found at {}",
-                hf_path.display()
-            );
-        };
+        let model_path = discover_streaming_zipformer_onnx(&hf_path)?;
 
         let session = Session::builder()?.commit_from_file(&model_path)?;
 
@@ -375,12 +450,8 @@ impl ZipformerEngine {
         }
 
         // Check if symbol table contains byte BPE characters to determine mode
-        let mut is_bbpe = false;
-        for tok in &vocab {
-            if tok.starts_with('▁') {
-                is_bbpe = true;
-            }
-        }
+        let is_bbpe = is_vocab_bbpe(&vocab);
+
 
         Ok(Self {
             session: std::sync::Mutex::new(session),
@@ -512,19 +583,40 @@ impl crate::engine::OfflineAsrEngine for ZipformerEngine {
             }
             decoded = decode_byte_bpe(&raw_token_string);
         } else {
-            // Standard token decoding
+            // Standard token decoding with sentencepiece <0xXX> byte fallback
+            let mut byte_buf: Vec<u8> = Vec::new();
             for &tid in &token_ids {
-                if tid < self.vocab.len() {
-                    let token = &self.vocab[tid];
-                    if token.starts_with('▁') {
-                        if !decoded.is_empty() {
-                            decoded.push(' ');
-                        }
-                        decoded.push_str(&token[3..]); // Strip BPE space marker ▁ (3 bytes)
-                    } else {
-                        decoded.push_str(token);
+                if tid >= self.vocab.len() {
+                    continue;
+                }
+                let token = &self.vocab[tid];
+
+                // Handle sentencepiece <0xXX> byte fallback tokens
+                if token.starts_with("<0x") && token.ends_with('>') && token.len() == 6 {
+                    if let Ok(byte_val) = u8::from_str_radix(&token[3..5], 16) {
+                        byte_buf.push(byte_val);
+                        continue;
                     }
                 }
+
+                // Flush pending byte buffer
+                if !byte_buf.is_empty() {
+                    decoded.push_str(&String::from_utf8_lossy(&byte_buf));
+                    byte_buf.clear();
+                }
+
+                if token.starts_with('▁') {
+                    if !decoded.is_empty() {
+                        decoded.push(' ');
+                    }
+                    decoded.push_str(&token[3..]); // Strip BPE space marker ▁ (3 bytes)
+                } else {
+                    decoded.push_str(token);
+                }
+            }
+            // Flush remaining byte buffer
+            if !byte_buf.is_empty() {
+                decoded.push_str(&String::from_utf8_lossy(&byte_buf));
             }
         }
 
@@ -609,7 +701,7 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
                     s_in_wave = 2 * wave_dim - 1 - s_in_wave;
                 }
             }
-            frame[s] = samples[s_in_wave as usize];
+            frame[s] = samples[s_in_wave as usize] * 32768.0;
         }
 
         // 1. Remove DC offset
@@ -699,3 +791,119 @@ pub(crate) fn hz_to_mel(hz: f64) -> f64 {
 pub(crate) fn mel_to_hz(mel: f64) -> f64 {
     700.0 * ((mel / 1127.0).exp() - 1.0)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_zipformer_ctc_offline_debug() {
+        let wav_path = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join(".cache/huggingface/hub/models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13/snapshots/cfa1a89c049cd0c48fb9e46a49c84b58744daec5/test_wavs/DEV_T0000000000.wav");
+        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
+        
+        let cfg = config::load_config().unwrap();
+        let entry = cfg.asr.zipformer.as_ref().unwrap().get("zipformer-ctc").unwrap();
+        let engine = ZipformerEngine::new(entry).unwrap();
+
+        println!("\n--- Debugging Offline zipformer-ctc ---");
+        let mut session = engine.session.lock().unwrap();
+        let my_feats = compute_fbank_features(&samples).unwrap();
+        let n_frames = my_feats.nrows();
+        let mut states = engine.initial_states.clone();
+        let mut token_ids = Vec::new();
+        let mut prev_id = -1;
+
+        let mut padded_feats = ndarray::Array2::<f32>::zeros((n_frames + engine.chunk_len, Z_NUM_BINS));
+        for i in 0..n_frames {
+            for j in 0..Z_NUM_BINS {
+                padded_feats[[i, j]] = my_feats[[i, j]];
+            }
+        }
+        for i in n_frames..(n_frames + engine.chunk_len) {
+            let last_idx = if n_frames > 0 { n_frames - 1 } else { 0 };
+            for j in 0..Z_NUM_BINS {
+                padded_feats[[i, j]] = my_feats[[last_idx, j]];
+            }
+        }
+
+        let mut frame_idx = 0;
+        let mut chunk_idx = 0;
+        while frame_idx < n_frames {
+            let mut chunk = ndarray::Array2::<f32>::zeros((engine.chunk_len, Z_NUM_BINS));
+            for i in 0..engine.chunk_len {
+                for j in 0..Z_NUM_BINS {
+                    chunk[[i, j]] = padded_feats[[frame_idx + i, j]];
+                }
+            }
+            let (chunk_vec, _) = chunk.into_raw_vec_and_offset();
+            let chunk_input = ndarray::Array3::from_shape_vec(
+                (1, engine.chunk_len, Z_NUM_BINS),
+                chunk_vec,
+            ).unwrap();
+
+            let x_tensor = ort::value::TensorRef::from_array_view(chunk_input.view()).unwrap();
+            let mut inputs = ort::inputs! {
+                "x" => x_tensor
+            };
+
+            let mut state_tensors = Vec::new();
+            for (name, val) in &states {
+                let t = match val {
+                    StateValue::F32(arr) => Tensor::from_array(arr.clone()).unwrap().into_dyn(),
+                    StateValue::I64(arr) => Tensor::from_array(arr.clone()).unwrap().into_dyn(),
+                };
+                state_tensors.push((name.clone(), t));
+            }
+            for (name, t) in &state_tensors {
+                inputs.push((name.as_str().into(), t.into()));
+            }
+
+            let outputs = session.run(inputs).unwrap();
+            let (log_probs_shape, log_probs_data) = outputs[0].try_extract_tensor::<f32>().unwrap();
+            let num_out_frames = log_probs_shape[1] as usize;
+            let vocab_dim = log_probs_shape[2] as usize;
+
+            for (name, val) in states.iter_mut() {
+                let out_name = format!("new_{}", name);
+                if let Some(new_val) = outputs.get(out_name.as_str()) {
+                    match val {
+                        StateValue::F32(arr) => {
+                            let (shape, data) = new_val.try_extract_tensor::<f32>().unwrap();
+                            let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+                            *arr = ndarray::ArrayD::from_shape_vec(dims, data.to_vec()).unwrap();
+                        }
+                        StateValue::I64(arr) => {
+                            let (shape, data) = new_val.try_extract_tensor::<i64>().unwrap();
+                            let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+                            *arr = ndarray::ArrayD::from_shape_vec(dims, data.to_vec()).unwrap();
+                        }
+                    }
+                }
+            }
+
+            let mut chunk_best_ids = Vec::new();
+            for t in 0..num_out_frames {
+                let offset = t * vocab_dim;
+                let frame_logits = &log_probs_data[offset..offset + vocab_dim];
+                let best_id = frame_logits
+                    .iter()
+                    .enumerate()
+                    .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                    .map(|(i, _)| i)
+                    .unwrap_or(0);
+                chunk_best_ids.push(best_id);
+                if best_id != ZIPFORMER_BLANK_ID && best_id as isize != prev_id {
+                    token_ids.push(best_id);
+                }
+                prev_id = best_id as isize;
+            }
+
+            println!("  Chunk {}: best_ids = {:?}", chunk_idx, chunk_best_ids);
+            
+            frame_idx += engine.chunk_shift;
+            chunk_idx += 1;
+        }
+    }
+}
+

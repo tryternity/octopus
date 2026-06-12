@@ -392,7 +392,11 @@ fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
     let buffer = std::sync::Arc::new(std::sync::Mutex::new(Vec::<f32>::new()));
     let buffer_clone = buffer.clone();
     // Resample state for non-16kHz devices
-    let needs_resample = native_rate != 16000;
+    let mut resampler = if native_rate != 16000 {
+        Some(octopus_asr::audio::AudioResampler::new(native_rate)?)
+    } else {
+        None
+    };
 
     let stream = match config.sample_format() {
         cpal::SampleFormat::F32 => device.build_input_stream(
@@ -459,8 +463,8 @@ fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
         }
 
         // Resample if needed (48kHz → 16kHz etc.)
-        let samples_16k = if needs_resample {
-            match octopus_asr::audio::resample_to_16k(&raw_samples, native_rate) {
+        let samples_16k = if let Some(ref mut r) = resampler {
+            match r.resample(&raw_samples) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("\n[resample error] {}", e);
@@ -492,12 +496,14 @@ fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
         let mut buf = buffer.lock().unwrap();
         std::mem::take(&mut *buf)
     };
-    if !raw_samples.is_empty() {
-        let samples_16k = if needs_resample {
-            octopus_asr::audio::resample_to_16k(&raw_samples, native_rate)?
-        } else {
-            raw_samples
-        };
+    let samples_16k = if let Some(ref mut r) = resampler {
+        let mut s = r.resample(&raw_samples)?;
+        s.extend(r.flush()?);
+        s
+    } else {
+        raw_samples
+    };
+    if !samples_16k.is_empty() {
         engine.accept_samples(&samples_16k).ok();
     }
 
@@ -544,7 +550,11 @@ fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
     let config = device.default_input_config()?;
     let native_rate = config.sample_rate().0;
     let channels = config.channels() as usize;
-    let needs_resample = native_rate != 16000;
+    let mut resampler = if native_rate != 16000 {
+        Some(octopus_asr::audio::AudioResampler::new(native_rate)?)
+    } else {
+        None
+    };
 
     println!(
         "Recording from: {} ({}Hz, {}ch)",
@@ -614,8 +624,8 @@ fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
             continue;
         }
 
-        let samples_16k = if needs_resample {
-            match octopus_asr::audio::resample_to_16k(&raw_samples, native_rate) {
+        let samples_16k = if let Some(ref mut r) = resampler {
+            match r.resample(&raw_samples) {
                 Ok(s) => s,
                 Err(e) => {
                     eprintln!("\n[resample error] {}", e);
@@ -642,12 +652,14 @@ fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
         let mut buf = buffer.lock().unwrap();
         std::mem::take(&mut *buf)
     };
-    if !raw_samples.is_empty() {
-        let samples_16k = if needs_resample {
-            octopus_asr::audio::resample_to_16k(&raw_samples, native_rate)?
-        } else {
-            raw_samples
-        };
+    let samples_16k = if let Some(ref mut r) = resampler {
+        let mut s = r.resample(&raw_samples)?;
+        s.extend(r.flush()?);
+        s
+    } else {
+        raw_samples
+    };
+    if !samples_16k.is_empty() {
         engine.accept_samples(&samples_16k).ok();
     }
 

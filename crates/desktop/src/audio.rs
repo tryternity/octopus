@@ -49,6 +49,26 @@ impl SharedAudioState {
     pub fn device_name(&self) -> &str {
         &self.device_name
     }
+
+    /// 获取当前采样率
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate.load(Ordering::Relaxed)
+    }
+
+    /// 排空已累积的音频样本，重采样到 16kHz。
+    /// 录音不中断，只清空缓冲区。用于流式识别时定期取走音频。
+    pub fn drain_samples(&self) -> Vec<f32> {
+        let raw = std::mem::take(&mut *self.samples.lock().unwrap());
+        if raw.is_empty() {
+            return Vec::new();
+        }
+        let rate = self.sample_rate.load(Ordering::Relaxed);
+        if rate == 16000 {
+            raw
+        } else {
+            octopus_asr::audio::resample_to_16k(&raw, rate).unwrap_or_default()
+        }
+    }
 }
 
 // Safety: SharedAudioState only contains Arc<Mutex<Vec<f32>>>, Arc<AtomicBool>,
