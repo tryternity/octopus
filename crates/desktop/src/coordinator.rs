@@ -953,10 +953,6 @@ fn detect_silence_gap(
             if speech_ratio < 0.3 {
                 // 本段大部分是静音 → 累积静音时长
                 *silence_duration += total_chunks as f64 * chunk_duration;
-                debug!(
-                    "VAD: silence accumulated {:.2}s (speech_ratio={:.2})",
-                    silence_duration, speech_ratio
-                );
             } else {
                 // 本段包含语音 → 重置静音计时
                 *silence_duration = 0.0;

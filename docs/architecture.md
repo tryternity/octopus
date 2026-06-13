@@ -42,6 +42,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 **数据流（流式）：**
 ```
 麦克风 → PCM chunk → resample_to_16k → 引擎.accept_samples → [partial]
+                                    └─ 静音≥0.5s → 引擎.flush（补零吐尾音，无逗号）→ [partial]
                                                               → engine.finish → [final]
 ```
 
@@ -89,6 +90,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - 流式模式：Streaming → Pasting
 - 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → Pasting
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号
+- 流式尾音冲刷（Active Flush）：流式模式累积静音 ≥0.5s 时向引擎补零，强制对齐右上下文 / 触发 CIF，把憋住的尾音即时吐出；走独立路径不插逗号，每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。详见 [spec](superpowers/specs/2026-06-13-streaming-tail-flush-design.md)
 
 **文本持久化：**
 - 识别文本实时写入 `~/.octopus/record.txt`（识别/编辑同步）
