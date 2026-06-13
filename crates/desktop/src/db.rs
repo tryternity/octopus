@@ -273,6 +273,7 @@ fn insert_model(
 }
 
 /// 当前激活的模型（某 domain 下 is_active=1 的行）。
+/// 只读投影，不含 id/is_active/description；切换引擎（UPDATE is_active）需另查 id。
 pub struct ActiveModel {
     pub category: String,
     pub name: String,
@@ -602,5 +603,61 @@ mod tests {
         let m = active_engine_at(&conn, "asr").unwrap().unwrap();
         assert_eq!(m.name, "paraformer-streaming");
         assert_eq!(m.source, "src");
+    }
+
+    /// insert_transcription 的 None→NULL 路径：
+    /// polished_text=None / polish_model=None / engine_mode=None 时写 NULL，
+    /// 且 char_count 用 display = polished.unwrap_or(raw) = raw_text 的字符数。
+    #[test]
+    fn insert_transcription_with_none_fields() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        insert_transcription_at(
+            &conn,
+            "原生文本abc",
+            None,
+            "off",
+            None,
+            "paraformer-streaming",
+            None,
+        )
+        .unwrap();
+        let (raw, polished, status, model, mode, count): (
+            String,
+            Option<String>,
+            String,
+            Option<String>,
+            Option<String>,
+            i64,
+        ) = conn
+            .query_row(
+                "SELECT raw_text, polished_text, polish_status, polish_model, engine_mode, char_count FROM transcriptions",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)),
+            )
+            .unwrap();
+        assert_eq!(raw, "原生文本abc");
+        assert_eq!(polished, None);
+        assert_eq!(status, "off");
+        assert_eq!(model, None);
+        assert_eq!(mode, None);
+        // char_count 用 display = polished.unwrap_or(raw) = "原生文本abc" 的字符数
+        assert_eq!(count, "原生文本abc".chars().count() as i64);
+    }
+
+    /// active_engine 无 active 行（is_active=0）时返回 None。
+    #[test]
+    fn active_engine_returns_none_when_no_active() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        // 插入一行 is_active=0（非激活）
+        conn.execute(
+            "INSERT INTO models (domain, category, name, source, language, description, quantization, is_active)
+             VALUES ('asr','paraformer','paraformer-streaming','src','zh','','int8',0)",
+            [],
+        )
+        .unwrap();
+        let m = active_engine_at(&conn, "asr").unwrap();
+        assert!(m.is_none());
     }
 }
