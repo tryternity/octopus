@@ -4,6 +4,7 @@
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection, OptionalExtension};
+use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
@@ -363,6 +364,111 @@ pub fn active_engine(domain: &str) -> Result<Option<ActiveModel>> {
     with_db(|conn| active_engine_at(conn, domain))
 }
 
+// ── DB → AppConfig（运行时注入 asr 用）──
+
+/// 从 DB models 表读出，构造 asr 的 AppConfig（运行时注入用）。
+/// DB 无模型数据时返回 None；asr 将回退读 model.json。
+///
+/// `with_db` 闭包签名为 `FnOnce(&Connection) -> Result<R>`，
+/// 而 `load_app_config_at` 返回 `Option<AppConfig>`。
+/// 用 `Ok(...)` 包装为 `Result<Option<_>>`，再 `.ok().flatten()`：
+///   - DB 未初始化（with_db 返 Err）→ .ok() → None
+///   - 有 Err 但实际不会发生（load_app_config_at 自身用 .ok()? 兜底，不返 Err）
+pub fn load_app_config() -> Option<octopus_asr::config::AppConfig> {
+    with_db(|conn| Ok(load_app_config_at(conn))).ok().flatten()
+}
+
+/// 从指定连接读 models 表，构造 AppConfig。DB 无数据返回 None。
+///
+/// 关键映射：DB 的 `category` 列存 JSON key（migrate 时直接用 JSON key，
+/// 如 `"qwen3-asr"` 带 dash），AsrSection 字段是 `qwen3_asr`（下划线）。
+/// 此处按 dash 形式 category 分派到对应字段，serde rename 仅在反序列化时生效。
+fn load_app_config_at(conn: &Connection) -> Option<octopus_asr::config::AppConfig> {
+    use octopus_asr::config::{AsrSection, ModelEntry, SimpleModelEntry, VadSection};
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT domain, category, name, source, language, description, quantization, is_active
+             FROM models",
+        )
+        .ok()?;
+    let rows: Vec<(String, String, String, String, String, String, String, i64)> = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+                row.get(5)?,
+                row.get(6)?,
+                row.get(7)?,
+            ))
+        })
+        .ok()?
+        .filter_map(|r| r.ok())
+        .collect();
+    if rows.is_empty() {
+        return None;
+    }
+
+    let mut asr = AsrSection {
+        active: String::new(),
+        whisper: None,
+        sensevoice: None,
+        paraformer: None,
+        qwen3_asr: None,
+        zipformer: None,
+    };
+    let mut vad_active = String::new();
+    let mut vad_silero: HashMap<String, SimpleModelEntry> = HashMap::new();
+
+    for (domain, category, name, source, language, description, quantization, is_active) in rows {
+        if domain == "asr" {
+            let entry = ModelEntry {
+                source,
+                language,
+                description,
+                quantization,
+            };
+            // category 存的是 JSON key（可能带 dash，如 "qwen3-asr"）
+            let map: &mut Option<HashMap<String, ModelEntry>> = match category.as_str() {
+                "whisper" => &mut asr.whisper,
+                "sensevoice" => &mut asr.sensevoice,
+                "paraformer" => &mut asr.paraformer,
+                "qwen3-asr" => &mut asr.qwen3_asr,
+                "zipformer" => &mut asr.zipformer,
+                _ => continue,
+            };
+            map.get_or_insert_with(HashMap::new).insert(name.clone(), entry);
+            if is_active == 1 {
+                asr.active = name;
+            }
+        } else if domain == "vad" && category == "silero" {
+            vad_silero.insert(
+                name.clone(),
+                SimpleModelEntry {
+                    source,
+                    description,
+                },
+            );
+            if is_active == 1 {
+                vad_active = name;
+            }
+        }
+    }
+
+    let vad = if vad_silero.is_empty() && vad_active.is_empty() {
+        None
+    } else {
+        Some(VadSection {
+            active: vad_active,
+            silero: Some(vad_silero),
+        })
+    };
+    Some(octopus_asr::config::AppConfig { vad, asr })
+}
+
 /// 当前时间字符串 'YYYY-MM-DD HH:MM:SS'（从 result_window 移植，避免依赖 chrono）。
 fn now_string() -> String {
     let duration = std::time::SystemTime::now()
@@ -659,5 +765,63 @@ mod tests {
         .unwrap();
         let m = active_engine_at(&conn, "asr").unwrap();
         assert!(m.is_none());
+    }
+
+    /// load_app_config_at：从 DB models 表构造 AppConfig 的往返测试。
+    /// 覆盖：asr 多 category（含 dash 的 qwen3-asr → qwen3_asr 字段）、active 标记、vad silero。
+    #[test]
+    fn load_app_config_round_trips_models() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        // asr/whisper（非 active）
+        conn.execute(
+            "INSERT INTO models (domain, category, name, source, language, description, quantization, is_active)
+             VALUES ('asr','whisper','whisper-small','src1','en','desc1','int8',0)",
+            [],
+        )
+        .unwrap();
+        // asr/qwen3-asr（active）—— 注意 category 带 dash
+        conn.execute(
+            "INSERT INTO models (domain, category, name, source, language, description, quantization, is_active)
+             VALUES ('asr','qwen3-asr','qwen3-asr-0.6B','src2','zh','desc2','int8',1)",
+            [],
+        )
+        .unwrap();
+        // vad/silero（active）
+        conn.execute(
+            "INSERT INTO models (domain, category, name, source, language, description, quantization, is_active)
+             VALUES ('vad','silero','silero-vad','src3','','vad','',1)",
+            [],
+        )
+        .unwrap();
+
+        let cfg = load_app_config_at(&conn).expect("config from db");
+        // asr active
+        assert_eq!(cfg.asr.active, "qwen3-asr-0.6B");
+        // whisper 普通字段
+        assert!(cfg.asr.whisper.as_ref().unwrap().contains_key("whisper-small"));
+        let whisper_entry = cfg.asr.whisper.as_ref().unwrap().get("whisper-small").unwrap();
+        assert_eq!(whisper_entry.source, "src1");
+        assert_eq!(whisper_entry.language, "en");
+        assert_eq!(whisper_entry.quantization, "int8");
+        // dash category → 下划线字段（serde rename 的逆映射）
+        assert!(cfg.asr.qwen3_asr.as_ref().unwrap().contains_key("qwen3-asr-0.6B"));
+        let entry = cfg.asr.qwen3_asr.as_ref().unwrap().get("qwen3-asr-0.6B").unwrap();
+        assert_eq!(entry.source, "src2");
+        assert_eq!(entry.language, "zh");
+        assert_eq!(entry.description, "desc2");
+        // vad
+        assert_eq!(cfg.vad.as_ref().unwrap().active, "silero-vad");
+        let silero = cfg.vad.as_ref().unwrap().silero.as_ref().unwrap();
+        assert!(silero.contains_key("silero-vad"));
+        assert_eq!(silero.get("silero-vad").unwrap().source, "src3");
+    }
+
+    /// load_app_config_at：空 DB（无 models 行）返回 None。
+    #[test]
+    fn load_app_config_returns_none_on_empty_db() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        assert!(load_app_config_at(&conn).is_none());
     }
 }

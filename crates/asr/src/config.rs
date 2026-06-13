@@ -3,6 +3,7 @@ use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::OnceLock;
 
 // ── Global base dir ──
 
@@ -20,19 +21,19 @@ pub fn handy_home() -> &'static Path {
 // ── Model config schema (model.json) ──
 
 /// model.json 顶层结构
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
     pub vad: Option<VadSection>,
     pub asr: AsrSection,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct VadSection {
     pub active: String,
     pub silero: Option<HashMap<String, SimpleModelEntry>>,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct AsrSection {
     pub active: String,
     pub whisper: Option<HashMap<String, ModelEntry>>,
@@ -58,7 +59,7 @@ pub struct ModelEntry {
     pub quantization: String,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Deserialize, Clone)]
 pub struct SimpleModelEntry {
     pub source: String,
     #[serde(default)]
@@ -67,8 +68,23 @@ pub struct SimpleModelEntry {
 
 // ── Config loading ──
 
-/// 读取 ~/.octopus/model.json
+/// 运行时注入的模型配置（上层 desktop 启动时从 DB 读出注入）。
+/// OnceLock 只能 set 一次；get 返回 Some 后 load_config 优先用它，
+/// 未注入（cli/server 或 desktop DB 空时）回退读 model.json。
+static RUNTIME_CONFIG: OnceLock<AppConfig> = OnceLock::new();
+
+/// 注入运行时配置（desktop 启动时从 DB 读出调用）。
+/// 注入后 load_config 优先返回此配置（clone）；未注入时回退读 model.json。
+/// OnceLock 只注入一次，重复 set 静默忽略（返回 Err 被 `_` 丢弃）。
+pub fn set_runtime_config(cfg: AppConfig) {
+    let _ = RUNTIME_CONFIG.set(cfg);
+}
+
+/// 读取模型配置：优先返回注入的运行时配置，否则回退读 ~/.octopus/model.json。
 pub fn load_config() -> Result<AppConfig> {
+    if let Some(cfg) = RUNTIME_CONFIG.get() {
+        return Ok(cfg.clone());
+    }
     let config_path = handy_home().join("model.json");
     if !config_path.exists() {
         anyhow::bail!(

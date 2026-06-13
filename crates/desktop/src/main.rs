@@ -38,6 +38,16 @@ pub fn run() {
         log::error!("DB init failed: {}, storage disabled", e);
     }
 
+    // 从 DB 注入运行时模型配置；asr 运行时不再读 model.json
+    // DB 无模型（如 init 失败或空库）→ asr 回退读 model.json（原行为）
+    match db::load_app_config() {
+        Some(cfg) => {
+            octopus_asr::config::set_runtime_config(cfg);
+            info!("Injected runtime model config from DB");
+        }
+        None => log::warn!("No models in DB; asr will fall back to model.json"),
+    }
+
     // 校验引擎模式
     if config.engine_mode == "embedded" && !config.is_streaming_engine() {
         log::info!(
