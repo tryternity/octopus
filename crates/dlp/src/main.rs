@@ -123,12 +123,14 @@ async fn prepare_dependencies() -> Result<()> {
 struct Args {
     url: String,
     output: Option<PathBuf>,
+    unclear: bool,
 }
 
 fn parse_args() -> Result<Args> {
     let args: Vec<String> = std::env::args().collect();
     let mut url = None;
     let mut output = None;
+    let mut unclear = false;
 
     let mut i = 1;
     while i < args.len() {
@@ -140,6 +142,9 @@ fn parse_args() -> Result<Args> {
             } else {
                 anyhow::bail!("Error: missing file path after {}", arg);
             }
+        } else if arg == "--unclear" {
+            unclear = true;
+            i += 1;
         } else if arg.starts_with("-") {
             anyhow::bail!("Error: unknown option {}", arg);
         } else {
@@ -151,8 +156,8 @@ fn parse_args() -> Result<Args> {
         }
     }
 
-    let url = url.ok_or_else(|| anyhow!("Usage: octopus-dlp <URL> [-o/--output <FILE>]"))?;
-    Ok(Args { url, output })
+    let url = url.ok_or_else(|| anyhow!("Usage: octopus-dlp <URL> [-o/--output <FILE>] [--unclear]"))?;
+    Ok(Args { url, output, unclear })
 }
 
 #[tokio::main]
@@ -178,7 +183,9 @@ async fn main() -> Result<()> {
     let work_dir = handy_home().join("tmp");
     fs::create_dir_all(&work_dir).await?;
 
-    let output_template = work_dir.join("download_%(id)s.%(ext)s");
+    // 计算 URL 的 MD5 以获得唯一的缓存文件名
+    let url_md5 = format!("{:x}", md5::compute(url));
+    let output_template = work_dir.join(format!("{}.%(ext)s", url_md5));
     let output_template_str = output_template.to_string_lossy().to_string();
 
     // 1. 获取元数据 JSON
@@ -215,20 +222,26 @@ async fn main() -> Result<()> {
     let meta_json = serde_json::to_string(&output_meta)?;
     eprintln!("{}", meta_json); // 输出到 stderr，防止干扰 stdout 中的 pcm 采样数据
 
-    // 2. 执行音频下载
-    eprintln!("Downloading audio track...");
-    let download_status = Command::new(&yt_dlp)
-        .arg("-f")
-        .arg("ba/b")
-        .arg("-o")
-        .arg(&output_template_str)
-        .arg(url)
-        .status()
-        .await?;
+    // 2. 执行音频下载（如果开启了 --unclear 且文件已存在，则跳过下载）
+    let cache_exists = downloaded_filepath.exists();
+    if cache_exists && args.unclear {
+        eprintln!("Cached video file found at: {:?}", downloaded_filepath);
+        eprintln!("Skipping download (--unclear is enabled).");
+    } else {
+        eprintln!("Downloading audio track...");
+        let download_status = Command::new(&yt_dlp)
+            .arg("-f")
+            .arg("ba/b")
+            .arg("-o")
+            .arg(&output_template_str)
+            .arg(url)
+            .status()
+            .await?;
 
-    if !download_status.success() {
-        eprintln!("Failed to download media using yt-dlp.");
-        std::process::exit(1);
+        if !download_status.success() {
+            eprintln!("Failed to download media using yt-dlp.");
+            std::process::exit(1);
+        }
     }
 
     if !downloaded_filepath.exists() {
@@ -236,38 +249,40 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
-    // 3. 转码分离音频并以 f32le 格式直接输出至 stdout 管道或指定输出文件
-    let stdout_stdio = if let Some(ref path) = args.output {
-        eprintln!("Separating audio and saving raw f32le PCM to file: {:?}", path);
-        let file = std::fs::File::create(path)
-            .context(format!("Failed to create output file: {:?}", path))?;
-        Stdio::from(file)
+    // 3. 转码分离音频并输出
+    let mut ffmpeg_cmd = Command::new(&ffmpeg);
+    ffmpeg_cmd.arg("-y").arg("-i").arg(&downloaded_filepath);
+
+    if let Some(ref path) = args.output {
+        eprintln!("Separating audio and saving WAV to file: {:?}", path);
+        ffmpeg_cmd
+            .arg("-f").arg("wav") // 强制输出标准 WAV 格式（包含 44 字节文件头，可直接播放）
+            .arg("-ar").arg("16000")
+            .arg("-ac").arg("1")
+            .arg(path)
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
     } else {
         eprintln!("Separating audio and streaming raw f32le PCM to stdout...");
-        Stdio::inherit()
-    };
+        ffmpeg_cmd
+            .arg("-f").arg("f32le")
+            .arg("-ar").arg("16000")
+            .arg("-ac").arg("1")
+            .arg("-c:a").arg("pcm_f32le")
+            .arg("-")
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::null());
+    }
 
-    let mut ffmpeg_child = Command::new(&ffmpeg)
-        .arg("-y")
-        .arg("-i")
-        .arg(&downloaded_filepath)
-        .arg("-f")
-        .arg("f32le")
-        .arg("-ar")
-        .arg("16000")
-        .arg("-ac")
-        .arg("1")
-        .arg("-c:a")
-        .arg("pcm_f32le")
-        .arg("-") // 输出到 stdout
-        .stdout(stdout_stdio) // 重定向至文件或主程序的 stdout
-        .stderr(Stdio::null()) // 丢弃 ffmpeg 繁杂的日志
-        .spawn()?;
-
+    let mut ffmpeg_child = ffmpeg_cmd.spawn()?;
     let ffmpeg_status = ffmpeg_child.wait().await?;
 
-    // 清理下载好的临时文件
-    let _ = fs::remove_file(&downloaded_filepath).await;
+    // 清理下载好的临时文件（如果指定了 --unclear，则不删除）
+    if args.unclear {
+        eprintln!("Keeping downloaded video file: {:?}", downloaded_filepath);
+    } else {
+        let _ = fs::remove_file(&downloaded_filepath).await;
+    }
 
     if !ffmpeg_status.success() {
         eprintln!("ffmpeg execution failed during transcoding.");

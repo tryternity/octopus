@@ -50,6 +50,12 @@ enum Commands {
         /// Language: auto, zh, en, ja, ...
         #[arg(long, default_value = "auto")]
         language: String,
+        /// Output path to save the separated WAV file
+        #[arg(short, long)]
+        output: Option<String>,
+        /// Do not delete downloaded video file, skip download if cached file exists
+        #[arg(long)]
+        unclear: bool,
     },
 }
 
@@ -69,9 +75,11 @@ fn main() -> Result<()> {
             url,
             model,
             language,
+            output,
+            unclear,
         } => {
             let rt = tokio::runtime::Runtime::new()?;
-            rt.block_on(transcribe_url(&url, &model, &language))
+            rt.block_on(transcribe_url(&url, &model, &language, output.as_deref(), unclear))
         }
     }
 }
@@ -123,7 +131,7 @@ fn transcribe_file(wav_path: &str, model: &str, language: &str) -> Result<()> {
     Ok(())
 }
 
-async fn transcribe_url(url: &str, model: &str, language: &str) -> Result<()> {
+async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&str>, unclear: bool) -> Result<()> {
     use tokio::process::Command;
     use std::process::Stdio;
     use tokio::io::{BufReader, AsyncBufReadExt, AsyncReadExt};
@@ -137,84 +145,96 @@ async fn transcribe_url(url: &str, model: &str, language: &str) -> Result<()> {
 
     println!("Spawning octopus-dlp process to extract audio from: {} ...", url);
 
-    let mut child = Command::new("cargo")
-        .arg("run")
+    let mut cmd = Command::new("cargo");
+    cmd.arg("run")
         .arg("--quiet")
         .arg("--package")
         .arg("octopus-dlp")
         .arg("--")
-        .arg(url)
-        .stdout(Stdio::piped())
+        .arg(url);
+
+    if unclear {
+        cmd.arg("--unclear");
+    }
+    if let Some(out_path) = output {
+        cmd.arg("-o").arg(out_path);
+    }
+
+    let stdout_cfg = if output.is_none() {
+        Stdio::piped()
+    } else {
+        Stdio::null()
+    };
+
+    let mut child = cmd
+        .stdout(stdout_cfg)
         .stderr(Stdio::piped())
         .spawn()?;
 
-    let mut stdout = child.stdout.take().unwrap();
+    let stdout = child.stdout.take();
     let stderr = child.stderr.take().unwrap();
 
-    let (meta_tx, meta_rx) = tokio::sync::oneshot::channel::<VideoMeta>();
-    let mut meta_tx_opt = Some(meta_tx);
+    let duration_sec = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let duration_sec_clone = duration_sec.clone();
 
     let stderr_task = tokio::spawn(async move {
         let mut reader = BufReader::new(stderr).lines();
-        let mut is_first = true;
-        let mut meta_sent = false;
-
         while let Ok(Some(line)) = reader.next_line().await {
-            if is_first {
-                is_first = false;
-                if let Ok(meta) = serde_json::from_str::<VideoMeta>(&line) {
-                    if let Some(tx) = meta_tx_opt.take() {
-                        let _ = tx.send(meta);
-                        meta_sent = true;
-                    }
-                    continue;
-                }
+            if let Ok(meta) = serde_json::from_str::<VideoMeta>(&line) {
+                println!("--- Video Info ---");
+                println!("Title: {}", meta.title);
+                println!("Author: {}", meta.author);
+                println!("Duration: {:.2}s", meta.duration);
+                println!("------------------");
+                duration_sec_clone.store(meta.duration.round() as u32, std::sync::atomic::Ordering::Relaxed);
+                continue;
             }
             eprintln!("[dlp] {}", line);
         }
-
-        if !meta_sent {
-            eprintln!("[dlp] Warning: Failed to parse metadata from the first line of stderr");
-        }
     });
 
-    let mut video_duration = 0.0;
-    if let Ok(meta) = meta_rx.await {
-        println!("--- Video Info ---");
-        println!("Title: {}", meta.title);
-        println!("Author: {}", meta.author);
-        println!("Duration: {:.2}s", meta.duration);
-        println!("------------------");
-        video_duration = meta.duration;
-    }
-
-    println!("Streaming audio data from pipeline and decoding raw float PCM...");
+    let mut samples = Vec::new();
     let start_extract = std::time::Instant::now();
 
-    let mut samples = Vec::new();
-    let mut chunk = [0u8; 4096];
-    while let Ok(n) = stdout.read(&mut chunk).await {
-        if n == 0 {
-            break;
+    if let Some(mut stdout) = stdout {
+        println!("Streaming audio data from pipeline and decoding raw float PCM...");
+        let mut chunk = [0u8; 4096];
+        while let Ok(n) = stdout.read(&mut chunk).await {
+            if n == 0 {
+                break;
+            }
+            for raw_sample in chunk[..n].chunks_exact(4) {
+                let sample = f32::from_le_bytes(raw_sample.try_into().unwrap());
+                samples.push(sample);
+            }
         }
-        for raw_sample in chunk[..n].chunks_exact(4) {
-            let sample = f32::from_le_bytes(raw_sample.try_into().unwrap());
-            samples.push(sample);
-        }
+        let extract_elapsed = start_extract.elapsed();
+        println!(
+            "Audio extraction finished. Read {} samples in {:.2}s.",
+            samples.len(),
+            extract_elapsed.as_secs_f64()
+        );
     }
-
-    let extract_elapsed = start_extract.elapsed();
-    println!(
-        "Audio extraction finished. Read {} samples in {:.2}s.",
-        samples.len(),
-        extract_elapsed.as_secs_f64()
-    );
 
     let status = child.wait().await?;
     let _ = stderr_task.await;
 
     if !status.success() {
         anyhow::bail!("octopus-dlp process exited with error status");
+    }
+
+    if let Some(out_path) = output {
+        let out_path_owned = out_path.to_string();
+        samples = tokio::task::spawn_blocking(move || {
+            octopus_asr::audio::read_wav_16k(&out_path_owned)
+        }).await??;
+        let extract_elapsed = start_extract.elapsed();
+        println!(
+            "Audio extraction finished (saved to {}). Read {} samples in {:.2}s.",
+            out_path,
+            samples.len(),
+            extract_elapsed.as_secs_f64()
+        );
     }
 
     if samples.is_empty() {
@@ -229,10 +249,11 @@ async fn transcribe_url(url: &str, model: &str, language: &str) -> Result<()> {
     println!("\n--- Transcription Result ---");
     println!("{}", text);
     println!("----------------------------");
+    let duration_val = duration_sec.load(std::sync::atomic::Ordering::Relaxed) as f64;
     println!(
         "Transcribe time: {:.2}s (RTF: {:.2}x)",
         transcribe_elapsed.as_secs_f64(),
-        video_duration / transcribe_elapsed.as_secs_f64()
+        duration_val / transcribe_elapsed.as_secs_f64()
     );
 
     Ok(())
