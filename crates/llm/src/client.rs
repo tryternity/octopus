@@ -5,12 +5,23 @@ use crate::config::CompatibleLlmConfig;
 use crate::prompt;
 use serde::{Deserialize, Serialize};
 
+/// 思考模式开关（DeepSeek 独有参数）。
+/// 润色场景不需要思维链：关闭思考可直接拿到 content，避免 reasoning 耗光 token 导致 content 为空。
+/// 仅当 `CompatibleLlmConfig::needs_disable_thinking()` 为真时发送。
+#[derive(Serialize)]
+struct Thinking {
+    #[serde(rename = "type")]
+    kind: String,
+}
+
 #[derive(Serialize)]
 struct ChatRequest {
     model: String,
     messages: Vec<Message>,
     temperature: f32,
     max_tokens: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    thinking: Option<Thinking>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -61,6 +72,13 @@ pub fn polish(text: &str, config: &CompatibleLlmConfig) -> Result<String> {
         ],
         temperature: 0.3,
         max_tokens,
+        thinking: if config.needs_disable_thinking() {
+            Some(Thinking {
+                kind: "disabled".to_string(),
+            })
+        } else {
+            None
+        },
     };
 
     let client = reqwest::blocking::Client::new();
@@ -89,7 +107,9 @@ pub fn polish(text: &str, config: &CompatibleLlmConfig) -> Result<String> {
         .unwrap_or_default();
 
     if polished.is_empty() {
-        anyhow::bail!("LLM 返回空结果");
+        anyhow::bail!(
+            "LLM 返回空 content（模型可能仍处于思考模式，或 max_tokens 不足）；润色建议确认 thinking 已关闭或改用非思考模型"
+        );
     }
 
     Ok(polished)

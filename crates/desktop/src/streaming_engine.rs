@@ -79,6 +79,32 @@ impl StreamingSession {
         }
     }
 
+    /// 主动冲刷剩余音频（不重置状态，用于静音期间强制吐字）。
+    /// 返回更新后的累积文本（如果有新结果）。
+    pub fn flush(&self) -> Result<Option<String>> {
+        match self {
+            Self::Paraformer { engine, accumulated } => {
+                let mut eng = engine.lock().unwrap();
+                match eng.flush()? {
+                    Some(delta) => {
+                        let mut acc = accumulated.lock().unwrap();
+                        acc.push_str(&delta);
+                        Ok(Some(acc.clone()))
+                    }
+                    None => Ok(None),
+                }
+            }
+            Self::Zipformer(m) => {
+                let mut engine = m.lock().unwrap();
+                match engine.flush()? {
+                    Some(full_text) => Ok(Some(full_text)),
+                    None => Ok(None),
+                }
+            }
+        }
+    }
+
+
     /// 冲刷剩余音频，返回最终累积文本。
     /// 在末尾追加句号（如果文本不为空且不以标点结尾）。
     pub fn finish(&self) -> Result<String> {

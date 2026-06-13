@@ -163,6 +163,30 @@ impl StreamingParaformer {
         Ok(result.unwrap_or_default())
     }
 
+    /// Active flush: pad the current sample buffer with zeros to CHUNK_SAMPLES
+    /// to force processing of the lookahead / right context of the tail speech frames.
+    pub fn flush(&mut self) -> Result<Option<String>> {
+        let needed = CHUNK_SAMPLES.saturating_sub(self.sample_buffer.len());
+        if needed > 0 {
+            self.sample_buffer.resize(CHUNK_SAMPLES, 0.0);
+        }
+
+        let mut accumulated_text = String::new();
+        while self.sample_buffer.len() >= CHUNK_SAMPLES {
+            let chunk_samples: Vec<f32> = self.sample_buffer.drain(..CHUNK_SAMPLES).collect();
+            if let Some(text) = self.process_chunk(&chunk_samples)? {
+                accumulated_text.push_str(&text);
+            }
+        }
+
+        if accumulated_text.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(accumulated_text))
+        }
+    }
+
+
     /// Reset all streaming state for a new utterance.
     pub fn reset(&mut self) {
         self.sample_buffer.clear();

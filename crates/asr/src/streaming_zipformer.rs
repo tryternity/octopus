@@ -187,6 +187,22 @@ impl StreamingZipformer {
         Ok(self.decode_tokens())
     }
 
+    /// Active flush: pad the current sample buffer with enough zeros
+    /// to force processing of the lookahead / right context of any remaining audio.
+    pub fn flush(&mut self) -> Result<Option<String>> {
+        let h_frames = self.history_samples.len() / Z_FRAME_SHIFT;
+        let required_total_samples = (h_frames + self.chunk_len + 1) * Z_FRAME_SHIFT;
+        let current_total_samples = self.history_samples.len() + self.sample_buffer.len();
+
+        if current_total_samples < required_total_samples {
+            let needed = required_total_samples - current_total_samples;
+            self.sample_buffer.resize(self.sample_buffer.len() + needed, 0.0);
+        }
+
+        self.process_chunks()
+    }
+
+
     /// Reset all streaming state for a new utterance.
     pub fn reset(&mut self) {
         self.sample_buffer.clear();

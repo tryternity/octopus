@@ -45,9 +45,12 @@ enum Stage {
         vad: Option<octopus_asr::vad::SileroVad>,
         /// 累积静音时长（秒），超过阈值后恢复说话时插入标点
         silence_duration: f64,
+        /// 是否已对当前静音进行了主动冲刷（避免重复冲刷）
+        flushed: bool,
         /// 是否有润色请求进行中
         polish_pending: bool,
-        /// 发起润色时的文本字符数
+        /// 已润色文本的字符基准：发起润色时设为当前长度，润色完成合并后更新为结果长度。
+        /// 其后追加的为未润色增量；仅当出现新增内容（当前长度 > 基准）时才会再次发起润色。
         polish_base_len: usize,
         /// 上次发起润色的时间
         last_polish_time: Instant,
@@ -77,7 +80,8 @@ enum Stage {
         tick_active: Arc<AtomicBool>,
         /// 是否有润色请求进行中
         polish_pending: bool,
-        /// 发起润色时的文本字符数
+        /// 已润色文本的字符基准：发起润色时设为当前长度，润色完成合并后更新为结果长度。
+        /// 其后追加的为未润色增量；仅当出现新增内容（当前长度 > 基准）时才会再次发起润色。
         polish_base_len: usize,
         /// 上次发起润色的时间
         last_polish_time: Instant,
@@ -273,6 +277,7 @@ fn handle_toggle(
                             streaming_active,
                             vad,
                             silence_duration: 0.0,
+                            flushed: false,
                             polish_pending: false,
                             polish_base_len: 0,
                             last_polish_time: Instant::now(),
@@ -805,8 +810,14 @@ fn check_and_trigger_polish(
         return;
     }
 
+    // 距上次润色后若无新增识别内容，跳过，避免无谓调用（及空结果告警）
+    let current_len = accumulated_text.chars().count();
+    if current_len <= *polish_base_len {
+        return;
+    }
+
     // 条件满足，发起润色
-    *polish_base_len = accumulated_text.chars().count();
+    *polish_base_len = current_len;
     *polish_pending = true;
     spawn_polish_thread(accumulated_text.to_string(), config, tx);
 }
@@ -824,6 +835,7 @@ fn handle_streaming_tick(
         accumulated_text,
         vad,
         silence_duration,
+        flushed,
         polish_pending,
         polish_base_len,
         last_polish_time,
@@ -838,6 +850,11 @@ fn handle_streaming_tick(
 
         // 用 VAD 检测本段音频中语音/静音的比例
         let was_silent = detect_silence_gap(vad, &samples, silence_duration);
+
+        // 如果静音计时重置为 0，说明恢复了说话，重置 flushed 状态
+        if *silence_duration == 0.0 {
+            *flushed = false;
+        }
 
         // 送入流式引擎（如果之前有足够长的静音间隔，插入逗号）
         match engine.accept_samples(&samples, was_silent) {
@@ -855,6 +872,25 @@ fn handle_streaming_tick(
             Err(e) => {
                 warn!("Streaming accept_samples error: {}", e);
             }
+        }
+
+        // 如果累积静音超过阈值，且尚未进行主动冲刷，则执行 flush 强制吐尾音
+        if *silence_duration >= PUNCTUATION_SILENCE_THRESHOLD && !*flushed {
+            match engine.flush() {
+                Ok(Some(new_text)) => {
+                    *accumulated_text = new_text;
+                    debug!("Flushed: '{}'", accumulated_text);
+
+                    // 更新 result window 显示并持久化
+                    crate::result_window::update_result(app_handle, accumulated_text);
+                    crate::result_window::save_record(accumulated_text);
+                }
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("Streaming flush error: {}", e);
+                }
+            }
+            *flushed = true;
         }
 
         // 检查润色
@@ -1141,6 +1177,8 @@ fn handle_polish_done(
                     );
 
                     *accumulated_text = merged;
+                    // 更新基准为合并后长度：仅当其后出现新增内容时才再次润色
+                    *polish_base_len = accumulated_text.chars().count();
                     *last_polish_time = Instant::now();
 
                     // 更新 result window 并持久化
