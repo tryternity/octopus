@@ -448,6 +448,7 @@ fn start_pasting(
     }
 
     crate::result_window::show_result(app_handle, text);
+    crate::result_window::save_record(text);
 
     *stage = Stage::Pasting;
     let config = config.clone();
@@ -570,9 +571,10 @@ fn handle_vad_segmented_tick(
             }
         }
 
-        // 5. 更新 result window
+        // 5. 更新 result window 并持久化
         if !accumulated_text.is_empty() {
             crate::result_window::update_result(app_handle, accumulated_text);
+            crate::result_window::save_record(accumulated_text);
         }
     }
 }
@@ -719,8 +721,9 @@ fn handle_streaming_tick(
                 *accumulated_text = new_text;
                 debug!("Partial: '{}'", accumulated_text);
 
-                // 更新 result window 显示
+                // 更新 result window 显示并持久化
                 crate::result_window::update_result(app_handle, accumulated_text);
+                crate::result_window::save_record(accumulated_text);
             }
             Ok(None) => {
                 // 没有新结果
@@ -867,9 +870,10 @@ fn handle_transcription_done(
             // 消费连续序号的结果
             consume_completed_results(completed_seq, completed_results, accumulated_text);
 
-            // 更新 result window
+            // 更新 result window 并持久化
             if !accumulated_text.is_empty() {
                 crate::result_window::update_result(app_handle, accumulated_text);
+                crate::result_window::save_record(accumulated_text);
             }
         }
 
@@ -895,6 +899,11 @@ fn handle_transcription_done(
 
             // 消费连续序号的结果
             consume_completed_results(completed_seq, completed_results, accumulated_text);
+
+            // 持久化当前累积文本
+            if !accumulated_text.is_empty() {
+                crate::result_window::save_record(accumulated_text);
+            }
 
             if *active_count == 0 {
                 // 所有识别完成，拼接最终文本并粘贴

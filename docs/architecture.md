@@ -75,20 +75,25 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | 模式 | 引擎 | 说明 |
 |------|------|------|
 | 流式 | Paraformer, Zipformer | 边说边识别，600ms tick 驱动 |
-| 离线 | SenseVoice, Whisper, Qwen3-ASR | VAD 分段伪流式，300ms tick 驱动，5s/静音分段 |
+| 离线 | SenseVoice, Whisper, Qwen3-ASR | VAD 分段伪流式，300ms tick 驱动，阈值可配置 |
 
 **窗口管理：**
 
 | 窗口 | 用途 |
 |------|------|
 | `recording_overlay` | 录音/识别状态提示（离线模式） |
-| `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶） |
+| `result_window` | 识别结果展示（可拖拽、可编辑、多行滚动、透明无边框、置顶） |
 
 **核心状态机（Coordinator）：**
 - 单线程 mpsc channel 串行化所有事件
 - 流式模式：Streaming → Pasting
 - 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → Pasting
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号
+
+**文本持久化：**
+- 识别文本实时写入 `~/.octopus/record.txt`（识别/编辑同步）
+- 用户可在结果窗口直接编辑文本，300ms 防抖同步到 record.txt
+- 清空时归档到 `~/.octopus/history.txt`（最多 20 条，带时间戳）
 
 支持三种引擎接入模式：
 - **embedded**（默认）：内嵌 octopus-asr，本地推理
