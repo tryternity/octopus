@@ -37,6 +37,16 @@ pub struct DesktopConfig {
     #[serde(default)]
     pub microphone: String,
 
+    /// VAD 伪流式：音频缓冲区累积时长阈值（秒）
+    /// 缓冲区达到此时长时自动发送识别，默认 5.0 秒
+    #[serde(default = "default_segment_duration")]
+    pub segment_duration: f64,
+
+    /// VAD 伪流式：静音触发识别的时长阈值（毫秒）
+    /// 检测到语音后静音超过此时长即发送识别，默认 500 毫秒
+    #[serde(default = "default_segment_silence")]
+    pub segment_silence: f64,
+
     /// overlay 位置: top | bottom | none
     #[serde(default = "default_overlay_position")]
     pub overlay_position: String,
@@ -66,6 +76,12 @@ fn default_paste_method() -> String {
 fn default_overlay_position() -> String {
     "top".into()
 }
+fn default_segment_duration() -> f64 {
+    5.0
+}
+fn default_segment_silence() -> f64 {
+    500.0
+}
 
 impl Default for DesktopConfig {
     fn default() -> Self {
@@ -78,6 +94,8 @@ impl Default for DesktopConfig {
             shortcut: default_shortcut(),
             paste_method: default_paste_method(),
             microphone: String::new(),
+            segment_duration: default_segment_duration(),
+            segment_silence: default_segment_silence(),
             overlay_position: default_overlay_position(),
         }
     }

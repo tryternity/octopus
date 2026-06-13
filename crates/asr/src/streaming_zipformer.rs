@@ -363,44 +363,52 @@ impl StreamingZipformer {
             }
             decode_byte_bpe(&raw)
         } else {
-            let mut decoded = String::new();
-            let mut byte_buf: Vec<u8> = Vec::new();
+            // Check for BPE with byte fallback (standard SentencePiece behavior)
+            let mut is_bpe_with_byte_fallback = false;
+            let mut id_for_0x00 = 0;
+
+            let pos_00 = self.vocab.iter().position(|t| t == "<0x00>");
+            let pos_ff = self.vocab.iter().position(|t| t == "<0xFF>");
+            if let (Some(p00), Some(pff)) = (pos_00, pos_ff) {
+                if pff > p00 && pff - p00 == 255 {
+                    is_bpe_with_byte_fallback = true;
+                    id_for_0x00 = p00;
+                }
+            }
+
+            let mut bytes: Vec<u8> = Vec::new();
 
             for &tid in &self.token_ids {
                 if tid >= self.vocab.len() {
                     continue;
                 }
-                let token = &self.vocab[tid];
+                let mut token = self.vocab[tid].clone();
 
-                // Handle sentencepiece <0xXX> byte fallback tokens
-                if token.starts_with("<0x") && token.ends_with('>') && token.len() == 6 {
-                    if let Ok(byte_val) = u8::from_str_radix(&token[3..5], 16) {
-                        byte_buf.push(byte_val);
-                        continue;
+                // Decode BPE with byte fallback (translates to raw byte)
+                if is_bpe_with_byte_fallback
+                    && token.len() == 6
+                    && token.starts_with("<0x")
+                    && token.ends_with('>')
+                {
+                    if tid >= id_for_0x00 && tid <= id_for_0x00 + 255 {
+                        if let Ok(hex_val) = u8::from_str_radix(&token[3..5], 16) {
+                            if hex_val == (tid - id_for_0x00) as u8 {
+                                bytes.push(hex_val);
+                                continue;
+                            }
+                        }
                     }
                 }
 
-                // Flush any pending byte buffer before appending text tokens
-                if !byte_buf.is_empty() {
-                    decoded.push_str(&String::from_utf8_lossy(&byte_buf));
-                    byte_buf.clear();
+                // For BPE-based models, we replace ▁ (U+2581, utf8 \xe2\x96\x81) with a space " "
+                if token.len() >= 3 && token.starts_with('▁') {
+                    token = format!(" {}", &token[3..]);
                 }
 
-                if token.starts_with('▁') {
-                    if !decoded.is_empty() {
-                        decoded.push(' ');
-                    }
-                    decoded.push_str(&token[3..]); // Strip ▁ (3 bytes)
-                } else {
-                    decoded.push_str(token);
-                }
+                bytes.extend_from_slice(token.as_bytes());
             }
 
-            // Flush remaining byte buffer
-            if !byte_buf.is_empty() {
-                decoded.push_str(&String::from_utf8_lossy(&byte_buf));
-            }
-
+            let decoded = String::from_utf8_lossy(&bytes);
             decoded.trim().to_string()
         }
     }

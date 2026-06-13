@@ -31,14 +31,11 @@ pub fn run() {
         config.asr_engine, config.engine_mode, config.shortcut
     );
 
-    // 校验引擎：embedded 模式下建议使用流式引擎
+    // 校验引擎模式
     if config.engine_mode == "embedded" && !config.is_streaming_engine() {
-        log::warn!(
-            "当前引擎 '{}' 不支持流式识别，将使用离线模式（录音完毕后识别）。",
+        log::info!(
+            "引擎 '{}' 使用 VAD 分段伪流式模式",
             config.asr_engine
-        );
-        log::warn!(
-            "建议在 config.yaml 中配置 Paraformer 或 Zipformer 类引擎以获得实时流式体验。"
         );
     }
 

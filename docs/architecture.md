@@ -75,7 +75,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | 模式 | 引擎 | 说明 |
 |------|------|------|
 | 流式 | Paraformer, Zipformer | 边说边识别，600ms tick 驱动 |
-| 离线 | SenseVoice, Whisper, Qwen3-ASR | 全量录音→一次识别（V2 将改为 VAD 伪流式） |
+| 离线 | SenseVoice, Whisper, Qwen3-ASR | VAD 分段伪流式，300ms tick 驱动，5s/静音分段 |
 
 **窗口管理：**
 
@@ -87,7 +87,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 **核心状态机（Coordinator）：**
 - 单线程 mpsc channel 串行化所有事件
 - 流式模式：Streaming → Pasting
-- 离线模式：Recording → Processing → Pasting
+- 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → Pasting
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号
 
 支持三种引擎接入模式：
