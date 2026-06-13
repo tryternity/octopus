@@ -2,6 +2,7 @@
 
 mod audio;
 mod config;
+mod db;
 mod coordinator;
 mod engine;
 mod engine_embedded;
