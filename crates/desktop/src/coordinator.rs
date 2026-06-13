@@ -31,6 +31,8 @@ enum Command {
     PasteDone,
     /// 润色完成
     PolishDone { result: Result<String, String> },
+    /// 用户在结果窗口编辑了文本
+    ResultEdited { text: String },
 }
 
 /// 协调器阶段
@@ -93,6 +95,8 @@ enum Stage {
     /// 等待所有识别完成
     WaitingCompletion {
         accumulated_text: String,
+        /// 原生识别全文（未经 polish，入库用）；从 VadSegmented 继承
+        raw_text: String,
         active_count: u32,
         completed_seq: u64,
         completed_results: HashMap<u64, String>,
@@ -197,6 +201,9 @@ impl Coordinator {
                     }
                     Command::PolishDone { result } => {
                         handle_polish_done(&mut stage, result, &config, &app_handle, &tx);
+                    }
+                    Command::ResultEdited { text } => {
+                        handle_result_edited(&mut stage, text);
                     }
                 }
             }
@@ -343,6 +350,7 @@ fn handle_toggle(
             audio_buffer,
             overlap_tail,
             accumulated_text,
+            raw_text,
             has_speech,
             active_count,
             next_seq,
@@ -386,6 +394,7 @@ fn handle_toggle(
 
             let active = *active_count;
             let text = accumulated_text.clone();
+            let raw = raw_text.clone();
 
             // 忽略中间润色的 pending 结果（最终润色会重新处理）
             *polish_pending = false;
@@ -395,19 +404,30 @@ fn handle_toggle(
             if active > 0 {
                 *stage = Stage::WaitingCompletion {
                     accumulated_text: text,
+                    raw_text: raw,
                     active_count: active,
                     completed_seq: cseq,
                     completed_results: cresults,
                 };
             } else {
                 // 无进行中识别，直接粘贴
-                start_pasting(stage, &text, config, app_handle, tx);
+                start_pasting(
+                    stage,
+                    &text,
+                    &raw,
+                    &config.asr_engine,
+                    "vad_segmented",
+                    config,
+                    app_handle,
+                    tx,
+                );
             }
         }
 
         Stage::Streaming {
             engine: streaming_engine,
             accumulated_text,
+            raw_text,
             streaming_active,
             polish_pending,
             polish_base_len: _,
@@ -464,8 +484,18 @@ fn handle_toggle(
             // 显示最终结果
             crate::result_window::show_result(app_handle, &combined);
 
-            // 粘贴
-            start_pasting(stage, &combined, config, app_handle, tx);
+            // 粘贴（raw_text 先 clone 以避开与 stage 的借用冲突）
+            let raw = raw_text.clone();
+            start_pasting(
+                stage,
+                &combined,
+                &raw,
+                &config.asr_engine,
+                "streaming",
+                config,
+                app_handle,
+                tx,
+            );
         }
 
         Stage::WaitingCompletion { .. } => {
@@ -482,6 +512,9 @@ fn handle_toggle(
 fn start_pasting(
     stage: &mut Stage,
     text: &str,
+    raw_text: &str,
+    engine: &str,
+    engine_mode: &str,
     config: &DesktopConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
@@ -513,6 +546,33 @@ fn start_pasting(
         text.to_string()
     };
 
+    // 入库：原生全文 + 修正版（仅润色成功时）+ 状态
+    let (polished_for_db, polish_status) = if config.llm_config().is_some() {
+        // 启用了 polish：final_text 与原 text 不同视为成功润色
+        if final_text != text {
+            (Some(final_text.as_str()), "done")
+        } else {
+            (None, "failed") // 润色未生效（空或失败 → 回退原文本）
+        }
+    } else {
+        (None, "off")
+    };
+    let polish_model = if polish_status == "done" {
+        Some(config.llm_model.as_str())
+    } else {
+        None
+    };
+    if let Err(e) = crate::db::insert_transcription(
+        raw_text,
+        polished_for_db,
+        polish_status,
+        polish_model,
+        engine,
+        Some(engine_mode),
+    ) {
+        log::warn!("DB insert transcription failed: {}", e);
+    }
+
     crate::result_window::show_result(app_handle, &final_text);
     crate::result_window::save_record(&final_text);
 
@@ -534,6 +594,16 @@ fn start_pasting(
             error!("run_on_main_thread failed: {:?}", e);
             let _ = tx_fallback.send(Command::PasteDone);
         });
+}
+
+/// 处理结果窗口的编辑事件：更新内存展示文本（不影响 raw_text）。
+fn handle_result_edited(stage: &mut Stage, text: String) {
+    match stage {
+        Stage::Streaming { accumulated_text, .. } | Stage::VadSegmented { accumulated_text, .. } => {
+            *accumulated_text = text;
+        }
+        _ => {}
+    }
 }
 
 /// 消费已完成序号的结果，返回新拼接的文本
@@ -1073,6 +1143,7 @@ fn handle_transcription_done(
 
         Stage::WaitingCompletion {
             accumulated_text,
+            raw_text,
             active_count,
             completed_seq,
             completed_results,
@@ -1091,15 +1162,12 @@ fn handle_transcription_done(
                 }
             }
 
-            // 消费连续序号的结果
-            // WaitingCompletion 阶段不维护 raw_text（入库发生在 stop 时的 start_pasting），
-            // 此处 throwaway 不参与入库，仅满足函数签名。
-            let mut raw_throwaway = String::new();
+            // 消费连续序号的结果（accumulated_text 与 raw_text 同步追加）
             consume_completed_results(
                 completed_seq,
                 completed_results,
                 accumulated_text,
-                &mut raw_throwaway,
+                raw_text,
             );
 
             // 持久化当前累积文本
@@ -1110,6 +1178,7 @@ fn handle_transcription_done(
             if *active_count == 0 {
                 // 所有识别完成，拼接最终文本并粘贴
                 let text = std::mem::take(accumulated_text);
+                let raw = std::mem::take(raw_text);
                 if !text.is_empty() {
                     // 追加句号
                     let final_text = if text.ends_with(|c: char| ",.，。！？!?\n".contains(c)) {
@@ -1117,7 +1186,16 @@ fn handle_transcription_done(
                     } else {
                         format!("{}。", text)
                     };
-                    start_pasting(stage, &final_text, config, app_handle, tx);
+                    start_pasting(
+                        stage,
+                        &final_text,
+                        &raw,
+                        &config.asr_engine,
+                        "vad_segmented",
+                        config,
+                        app_handle,
+                        tx,
+                    );
                 } else {
                     *stage = Stage::Idle;
                     crate::overlay::hide_overlay(app_handle);
