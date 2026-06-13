@@ -2,6 +2,7 @@
 
 use crate::config::DesktopConfig;
 use log::info;
+use std::sync::Mutex;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -14,13 +15,17 @@ pub enum TrayState {
     Processing,
 }
 
+/// 存储需要动态更新的 MenuItem handle
+struct TrayItems<R: Runtime> {
+    toggle: MenuItem<R>,
+}
+
+/// 模块级存储，避免 MenuItem::with_id 重复 ID 导致的 panic
+static TRAY_ITEMS: once_cell::sync::Lazy<Mutex<Option<TrayItems<tauri::Wry>>>> =
+    once_cell::sync::Lazy::new(|| Mutex::new(None));
+
 /// Create the system tray icon and its context menu.
-///
-/// The tray icon id is set to "main" via [`TrayIconBuilder::with_id`] so that
-/// [`update_tray_label`] can look it up later with `app.tray_by_id("main")`.
-/// The Coordinator must be managed as Tauri state (Task 10) for the toggle
-/// handler to work.
-pub fn create_tray<R: Runtime>(app: &tauri::AppHandle<R>, config: &DesktopConfig) {
+pub fn create_tray(app: &tauri::AppHandle, config: &DesktopConfig) {
     let toggle = MenuItem::with_id(app, "toggle", "开始录音", true, None::<&str>)
         .expect("failed to create toggle menu item");
     let engine_info = MenuItem::with_id(
@@ -36,6 +41,14 @@ pub fn create_tray<R: Runtime>(app: &tauri::AppHandle<R>, config: &DesktopConfig
 
     let menu =
         Menu::with_items(app, &[&toggle, &engine_info, &quit]).expect("failed to create tray menu");
+
+    // 存储 toggle handle 供后续更新使用
+    {
+        let mut items = TRAY_ITEMS.lock().unwrap();
+        *items = Some(TrayItems {
+            toggle: toggle.clone(),
+        });
+    }
 
     let _tray = TrayIconBuilder::with_id("main")
         .icon(
@@ -65,27 +78,17 @@ pub fn create_tray<R: Runtime>(app: &tauri::AppHandle<R>, config: &DesktopConfig
 
 /// Update the toggle menu item label based on the current state.
 ///
-/// Looks up the tray by id "main" and rebuilds the menu with the updated
-/// toggle label. The engine_info and quit items are recreated as well since
-/// `TrayIcon` does not expose a `.menu()` getter in Tauri 2.x.
-pub fn update_tray_label<R: Runtime>(app: &tauri::AppHandle<R>, state: TrayState) {
-    if let Some(tray) = app.tray_by_id("main") {
-        let label = match state {
-            TrayState::Idle => "开始录音",
-            TrayState::Recording => "■ 停止录音",
-            TrayState::Processing => "⏳ 处理中...",
-        };
+/// 使用 `set_text` 更新已有 MenuItem 的文本，避免 `MenuItem::with_id`
+/// 重复创建同 ID 项导致的 panic。
+pub fn update_tray_label(app: &tauri::AppHandle, state: TrayState) {
+    let label = match state {
+        TrayState::Idle => "开始录音",
+        TrayState::Recording => "■ 停止录音",
+        TrayState::Processing => "⏳ 处理中...",
+    };
 
-        let toggle = MenuItem::with_id(app, "toggle", label, true, None::<&str>)
-            .expect("failed to create toggle menu item");
-        let engine_info = MenuItem::with_id(app, "engine_info", "引擎", false, None::<&str>)
-            .expect("failed to create engine_info menu item");
-        let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)
-            .expect("failed to create quit menu item");
-
-        let menu = Menu::with_items(app, &[&toggle, &engine_info, &quit])
-            .expect("failed to create tray menu");
-
-        let _ = tray.set_menu(Some(menu));
+    let items = TRAY_ITEMS.lock().unwrap();
+    if let Some(tray_items) = items.as_ref() {
+        let _ = tray_items.toggle.set_text(label);
     }
 }

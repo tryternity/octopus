@@ -226,7 +226,7 @@ fn handle_toggle(
                 match StreamingSession::new(&config.asr_engine) {
                     Ok(streaming_engine) => {
                         // 流式模式：只显示 result window，不显示 overlay
-                        crate::result_window::show_result(app_handle, "");
+                        crate::result_window::show_result(app_handle, "正在聆听…");
                         crate::tray::update_tray_label(
                             app_handle,
                             crate::tray::TrayState::Recording,
@@ -269,7 +269,7 @@ fn handle_toggle(
                 match octopus_asr::config::find_silero_vad() {
                     Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
                         Ok(vad) => {
-                            crate::result_window::show_result(app_handle, "");
+                            crate::result_window::show_result(app_handle, "正在聆听…");
                             crate::tray::update_tray_label(
                                 app_handle,
                                 crate::tray::TrayState::Recording,
