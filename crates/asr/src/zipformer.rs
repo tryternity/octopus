@@ -671,8 +671,7 @@ pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
     };
 
     let engine = ZipformerEngine::new(entry)?;
-    use crate::engine::OfflineAsrEngine;
-    engine.transcribe(samples, language)
+    crate::engine::transcribe_with_vad(&engine, samples, language)
 }
 
 // ── Decode Byte BPE mapping ──

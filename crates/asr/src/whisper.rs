@@ -418,6 +418,5 @@ pub fn transcribe(audio: &[f32], language: &str) -> Result<String> {
         .context("No whisper model entries")?;
 
     let engine = WhisperEngine::new(entry)?;
-    use crate::engine::OfflineAsrEngine;
-    engine.transcribe(audio, language)
+    crate::engine::transcribe_with_vad(&engine, audio, language)
 }

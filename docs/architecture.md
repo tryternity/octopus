@@ -11,6 +11,11 @@ octopus/
 │   ├── cli/         # 命令行工具 (octopus-cli)
 │   ├── server/      # HTTP/WebSocket 服务 (octopus-server)
 │   └── desktop/     # Tauri 桌面应用 (octopus-desktop)
+│       └── src/
+│           ├── coordinator.rs  # 状态机（识别/润色/粘贴/入库）
+│           ├── result_window.rs # 结果窗口
+│           ├── db.rs            # 嵌入式 SQLite 存储层
+│           ├── config.rs / paste.rs / audio.rs / ...
 ├── docs/            # 文档
 └── usage.md         # 快速使用指南
 ```
@@ -89,13 +94,18 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - 单线程 mpsc channel 串行化所有事件
 - 流式模式：Streaming → Pasting
 - 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → Pasting
+- `Stage::Pasting` 为结构变体，持 `raw_text`（原生识别全文）+ `polished_text`（润色/编辑后）+ `polish_status` + `engine` + `engine_mode`
+- 入库时机：粘贴完成发 `Command::PasteDone` 时，从 `Stage::Pasting` 取数据 `INSERT INTO transcriptions`（用户在结果窗口的编辑已反映到 `polished_text`）
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号
 - 流式尾音冲刷（Active Flush）：流式模式累积静音 ≥0.5s 时向引擎补零，强制对齐右上下文 / 触发 CIF，把憋住的尾音即时吐出；走独立路径不插逗号，每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。详见 [spec](superpowers/specs/2026-06-13-streaming-tail-flush-design.md)
 
-**文本持久化：**
-- 识别文本实时写入 `~/.octopus/record.txt`（识别/编辑同步）
-- 用户可在结果窗口直接编辑文本，300ms 防抖同步到 record.txt
-- 清空时归档到 `~/.octopus/history.txt`（最多 20 条，带时间戳）
+**文本持久化（嵌入式 SQLite）：**
+- 存储：`~/.octopus/octopus.db`（`crates/desktop/src/db.rs`，全局 `OnceLock<Mutex<Connection>>`）
+- `transcriptions` 表：识别历史，每条存原生识别全文（`raw_text`）+ 润色/编辑版（`polished_text`）+ 润色状态（`polish_status`：`off`/`done`/`failed`）+ 元数据（engine / engine_mode / created_at / char_count）
+- `models` 表：模型配置（model.json 拍平迁入）
+- 首次启动（DB 新建）从 `history.txt` + `model.json` 一次性迁移（`PRAGMA user_version` 门控，幂等）
+- `record.txt` / `history.txt` 在 desktop 已废弃（代码不再读写）
+- `polish_status` 基于润色调用结果：未启用→`off`；启用且返回非空→`done`；启用但返回空或失败→`failed`
 
 支持三种引擎接入模式：
 - **embedded**（默认）：内嵌 octopus-asr，本地推理
@@ -108,7 +118,8 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 ```
 ~/.octopus/
-├── model.json          # 模型配置（定义各引擎的 HF source）
+├── octopus.db          # 嵌入式 SQLite（识别历史 + 模型配置，desktop 运行时主存储）
+├── model.json          # 模型配置（启动时迁移入 DB；cli/server 仍读此文件）
 ├── config.yaml         # 应用配置（麦克风选择等）
 └── models/
     └── silero_vad_v4.onnx  # VAD 模型
@@ -119,6 +130,11 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 ├── models--csukuangfj--sherpa-onnx-streaming-paraformer-zh/
 └── ...
 ```
+
+**运行时模型查找（desktop vs cli/server）：**
+- desktop：启动时 `db::init()` 建表/迁移 → `db::load_app_config()` 从 `models` 表构造 `AppConfig` → `octopus_asr::config::set_runtime_config(cfg)` 注入。asr 的 `load_config()` 优先返回注入版（`OnceLock`），`resolve_engine_category` / `find_silero_vad` / `list_engines` 等查找函数现从 DB 读。
+- cli/server：不注入，仍读 `~/.octopus/model.json`（保持兼容）。
+- **手编 `models` 表需重启 desktop 生效**（`OnceLock` 为启动期一次性注入，运行中不可热更新）。
 
 ## 支持的 ASR 引擎
 
@@ -137,3 +153,4 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **Web 框架**: Axum + Tokio
 - **桌面框架**: Tauri 2
 - **模型加载**: HuggingFace Hub 本地缓存
+- **嵌入式存储**: rusqlite（`bundled` feature，自带 SQLite C 库）— desktop 用，存识别历史 + 模型配置

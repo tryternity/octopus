@@ -137,3 +137,89 @@ pub fn filter_speech(
     }
     speech
 }
+
+/// Segment audio into multiple speech segments using Silero VAD.
+/// Returns a list of segments, where each segment is a Vec<f32> representing speech.
+pub fn segment_audio_vad(
+    samples: &[f32],
+    vad: &mut crate::vad::SileroVad,
+    frame_size: usize,      // usually 480 (30ms at 16kHz)
+    threshold: f32,         // e.g. 0.4
+    min_silence_ms: usize,  // e.g. 500ms
+    max_segment_ms: usize,  // e.g. 25000ms (25s)
+) -> Vec<Vec<f32>> {
+    let mut segments = Vec::new();
+    let mut in_speech = false;
+    let mut current_segment_start = 0;
+    let mut silence_frames_count = 0;
+
+    // We compute frame duration in milliseconds: (frame_size * 1000) / 16000
+    // For 480 samples, this is 30ms.
+    let frame_duration_ms = (frame_size * 1000) / 16000;
+    let min_silence_frames = min_silence_ms / frame_duration_ms;
+
+    let total_frames = samples.len() / frame_size;
+
+    for i in 0..total_frames {
+        let start_idx = i * frame_size;
+        let end_idx = start_idx + frame_size;
+        let chunk = &samples[start_idx..end_idx];
+
+        let prob = vad.compute(chunk).unwrap_or(0.0);
+        let is_speech_frame = prob >= threshold;
+
+        if !in_speech {
+            if is_speech_frame {
+                in_speech = true;
+                current_segment_start = start_idx;
+                silence_frames_count = 0;
+            }
+        } else {
+            if is_speech_frame {
+                silence_frames_count = 0;
+            } else {
+                silence_frames_count += 1;
+            }
+
+            let current_duration_ms = ((end_idx - current_segment_start) * 1000) / 16000;
+
+            // Check for silence split
+            if silence_frames_count >= min_silence_frames {
+                let speech_end = (i + 1 - silence_frames_count) * frame_size;
+                if speech_end > current_segment_start {
+                    segments.push(samples[current_segment_start..speech_end].to_vec());
+                }
+                in_speech = false;
+            }
+            // Check for max duration split
+            else if current_duration_ms >= max_segment_ms {
+                let speech_end = if silence_frames_count > 0 {
+                    (i + 1 - silence_frames_count) * frame_size
+                } else {
+                    end_idx
+                };
+                if speech_end > current_segment_start {
+                    segments.push(samples[current_segment_start..speech_end].to_vec());
+                }
+                current_segment_start = speech_end;
+                silence_frames_count = 0;
+            }
+        }
+    }
+
+    // Add the final segment if still in speech
+    if in_speech && samples.len() > current_segment_start {
+        let mut speech_end = samples.len();
+        if silence_frames_count > 0 && samples.len() >= silence_frames_count * frame_size {
+            speech_end = samples.len() - silence_frames_count * frame_size;
+        }
+        if speech_end > current_segment_start {
+            segments.push(samples[current_segment_start..speech_end].to_vec());
+        }
+    }
+
+    // Reset VAD states after processing
+    vad.reset();
+
+    segments
+}

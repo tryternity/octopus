@@ -129,8 +129,7 @@ pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
         .context("No sensevoice model entries")?;
 
     let engine = SenseVoiceEngine::new(entry)?;
-    use crate::engine::OfflineAsrEngine;
-    engine.transcribe(samples, language)
+    crate::engine::transcribe_with_vad(&engine, samples, language)
 }
 
 // ── Fbank feature extraction ──
