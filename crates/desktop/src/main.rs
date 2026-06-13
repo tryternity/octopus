@@ -85,6 +85,8 @@ pub fn run() {
                 .level(log::LevelFilter::Debug)
                 .level_for("enigo", log::LevelFilter::Warn)
                 .level_for("tao", log::LevelFilter::Warn)
+                .level_for("reqwest", log::LevelFilter::Info)
+                .level_for("hyper", log::LevelFilter::Info)
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())

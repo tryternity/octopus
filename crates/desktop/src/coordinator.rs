@@ -860,7 +860,6 @@ fn handle_streaming_tick(
         match engine.accept_samples(&samples, was_silent) {
             Ok(Some(new_text)) => {
                 *accumulated_text = new_text;
-                debug!("Partial: '{}'", accumulated_text);
 
                 // 更新 result window 显示并持久化
                 crate::result_window::update_result(app_handle, accumulated_text);
