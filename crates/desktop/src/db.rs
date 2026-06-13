@@ -86,11 +86,77 @@ fn create_tables(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-// 占位 stub：真实迁移逻辑在后续 Task 3（history.txt）/ Task 4（model.json）填充。
-// 此处返回 Ok(()) 以保证 init_schema 结构完整、Task 2 可独立编译通过。
-fn migrate_history(_conn: &Connection) -> Result<()> {
+struct HistoryEntry {
+    timestamp: String,
+    body: String,
+}
+
+/// 解析 history.txt 内容（`--- timestamp ---\nbody` 分隔）。
+fn parse_history_entries(content: &str) -> Vec<HistoryEntry> {
+    let mut entries = Vec::new();
+    let mut ts: Option<String> = None;
+    let mut body = String::new();
+    for line in content.lines() {
+        if line.starts_with("--- ") && line.ends_with(" ---") {
+            if let Some(t) = ts.take() {
+                if !body.trim().is_empty() {
+                    entries.push(HistoryEntry {
+                        timestamp: t,
+                        body: body.trim().to_string(),
+                    });
+                }
+            }
+            ts = Some(
+                line.trim_start_matches("--- ")
+                    .trim_end_matches(" ---")
+                    .to_string(),
+            );
+            body.clear();
+        } else if ts.is_some() {
+            body.push_str(line);
+            body.push('\n');
+        }
+    }
+    if let Some(t) = ts {
+        if !body.trim().is_empty() {
+            entries.push(HistoryEntry {
+                timestamp: t,
+                body: body.trim().to_string(),
+            });
+        }
+    }
+    entries
+}
+
+/// 迁移 history.txt（默认路径）。文件不存在/为空则跳过。
+fn migrate_history(conn: &Connection) -> Result<()> {
+    let path = octopus_asr::config::handy_home().join("history.txt");
+    migrate_history_at(conn, &path)
+}
+
+/// 迁移指定路径的 history.txt（可单测注入路径）。
+fn migrate_history_at(conn: &Connection, path: &std::path::Path) -> Result<()> {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) if !c.trim().is_empty() => c,
+        _ => return Ok(()),
+    };
+    let entries = parse_history_entries(&content);
+    let count = entries.len();
+    for e in entries {
+        conn.execute(
+            "INSERT INTO transcriptions
+                (created_at, engine, engine_mode, raw_text, polished_text, polish_status, char_count)
+             VALUES (?1, '', NULL, ?2, ?2, 'done', ?3)",
+            params![e.timestamp, e.body, e.body.chars().count() as i64],
+        )?;
+    }
+    if count > 0 {
+        log::info!("Migrated {} entries from history.txt", count);
+    }
     Ok(())
 }
+
+// 占位 stub：真实迁移逻辑在 Task 4（model.json）填充。
 fn migrate_model_json(_conn: &Connection) -> Result<()> {
     Ok(())
 }
@@ -206,5 +272,34 @@ mod tests {
         // 跨年边界：2023-12-31 → 下一天 2024-01-01
         assert_eq!(days_to_ymd(19722), (2023, 12, 31));
         assert_eq!(days_to_ymd(19723), (2024, 1, 1));
+    }
+
+    #[test]
+    fn parse_history_entries_extracts_timestamp_and_body() {
+        let content = "--- 2026-06-13 10:00:00 ---\n第一句\n--- 2026-06-13 11:00:00 ---\n第二句\n";
+        let entries = parse_history_entries(content);
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0].timestamp, "2026-06-13 10:00:00");
+        assert_eq!(entries[0].body, "第一句");
+        assert_eq!(entries[1].body, "第二句");
+    }
+
+    #[test]
+    fn migrate_history_at_imports_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("history.txt");
+        std::fs::write(&path, "--- 2026-06-13 10:00:00 ---\n你好世界\n").unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        migrate_history_at(&conn, &path).unwrap();
+        let (raw, status): (String, String) = conn
+            .query_row(
+                "SELECT raw_text, polish_status FROM transcriptions",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(raw, "你好世界");
+        assert_eq!(status, "done"); // 历史数据视为已润色
     }
 }
