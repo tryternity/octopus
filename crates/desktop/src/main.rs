@@ -39,6 +39,37 @@ pub fn run() {
         );
     }
 
+    // 润色配置校验
+    if config.polish_enabled {
+        if config.llm_secret_key.is_empty() {
+            log::warn!("polish_enabled=true 但 llm_secret_key 为空，润色功能将不生效");
+        } else {
+            log::info!(
+                "润色已启用: provider={}, model={}, interval={}s",
+                config.llm_provider,
+                config.llm_model,
+                config.polish_interval
+            );
+        }
+    }
+
+    // 加载自定义润色 system prompt（~/.octopus/VOICE_POLISH.md）
+    // 文件存在且非空时覆盖内置默认 prompt
+    let prompt_path = octopus_asr::config::handy_home().join("VOICE_POLISH.md");
+    if prompt_path.exists() {
+        if let Ok(content) = std::fs::read_to_string(&prompt_path) {
+            let trimmed = content.trim();
+            if !trimmed.is_empty() {
+                octopus_llm::set_system_prompt_override(trimmed.to_string());
+                log::info!("已加载自定义润色 prompt: {}", prompt_path.display());
+            } else {
+                log::warn!("VOICE_POLISH.md 内容为空，使用内置默认 prompt");
+            }
+        } else {
+            log::warn!("读取 VOICE_POLISH.md 失败，使用内置默认 prompt");
+        }
+    }
+
     tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             info!("Single instance: re-activated");

@@ -29,6 +29,8 @@ enum Command {
     },
     /// 粘贴完成
     PasteDone,
+    /// 润色完成
+    PolishDone { result: Result<String, String> },
 }
 
 /// 协调器阶段
@@ -43,6 +45,12 @@ enum Stage {
         vad: Option<octopus_asr::vad::SileroVad>,
         /// 累积静音时长（秒），超过阈值后恢复说话时插入标点
         silence_duration: f64,
+        /// 是否有润色请求进行中
+        polish_pending: bool,
+        /// 发起润色时的文本字符数
+        polish_base_len: usize,
+        /// 上次发起润色的时间
+        last_polish_time: Instant,
     },
     /// VAD 伪流式：tick 驱动分段识别（非流式引擎使用）
     VadSegmented {
@@ -67,6 +75,12 @@ enum Stage {
         completed_results: HashMap<u64, String>,
         /// tick 线程控制标志
         tick_active: Arc<AtomicBool>,
+        /// 是否有润色请求进行中
+        polish_pending: bool,
+        /// 发起润色时的文本字符数
+        polish_base_len: usize,
+        /// 上次发起润色的时间
+        last_polish_time: Instant,
     },
     /// 等待所有识别完成
     WaitingCompletion {
@@ -138,7 +152,7 @@ impl Coordinator {
                         );
                     }
                     Command::StreamingTick => {
-                        handle_streaming_tick(&mut stage, &audio, &app_handle);
+                        handle_streaming_tick(&mut stage, &audio, &config, &app_handle, &tx);
                     }
                     Command::VadSegmentedTick => {
                         handle_vad_segmented_tick(
@@ -172,6 +186,9 @@ impl Coordinator {
                             &app_handle,
                             crate::tray::TrayState::Idle,
                         );
+                    }
+                    Command::PolishDone { result } => {
+                        handle_polish_done(&mut stage, result, &config, &app_handle, &tx);
                     }
                 }
             }
@@ -256,6 +273,9 @@ fn handle_toggle(
                             streaming_active,
                             vad,
                             silence_duration: 0.0,
+                            polish_pending: false,
+                            polish_base_len: 0,
+                            last_polish_time: Instant::now(),
                         };
                     }
                     Err(e) => {
@@ -290,6 +310,9 @@ fn handle_toggle(
                                 completed_seq: 0,
                                 completed_results: HashMap::new(),
                                 tick_active,
+                                polish_pending: false,
+                                polish_base_len: 0,
+                                last_polish_time: Instant::now(),
                             };
                         }
                         Err(e) => {
@@ -315,6 +338,9 @@ fn handle_toggle(
             completed_seq,
             completed_results,
             tick_active,
+            polish_pending,
+            polish_base_len: _,
+            last_polish_time: _,
             ..
         } => {
             // VAD 伪流式：停止 tick，发送剩余缓冲区，决定等待完成或直接粘贴
@@ -349,6 +375,9 @@ fn handle_toggle(
 
             let active = *active_count;
             let text = accumulated_text.clone();
+
+            // 忽略中间润色的 pending 结果（最终润色会重新处理）
+            *polish_pending = false;
             let cseq = *completed_seq;
             let cresults = std::mem::take(completed_results);
 
@@ -369,10 +398,16 @@ fn handle_toggle(
             engine: streaming_engine,
             accumulated_text,
             streaming_active,
+            polish_pending,
+            polish_base_len: _,
+            last_polish_time: _,
             ..
         } => {
             // 流式模式：停止流式，获取最终文本，粘贴
             info!("Toggle: stopping streaming, finalizing");
+
+            // 忽略中间润色的 pending 结果
+            *polish_pending = false;
 
             // 停止 tick
             streaming_active.store(false, Ordering::Relaxed);
@@ -432,7 +467,7 @@ fn handle_toggle(
     }
 }
 
-/// 开始粘贴阶段
+/// 开始粘贴阶段（支持最终润色）
 fn start_pasting(
     stage: &mut Stage,
     text: &str,
@@ -447,15 +482,35 @@ fn start_pasting(
         return;
     }
 
-    crate::result_window::show_result(app_handle, text);
-    crate::result_window::save_record(text);
+    // 最终润色
+    let final_text = if let Some(llm_config) = config.llm_config() {
+        match octopus_llm::polish(text, &llm_config) {
+            Ok(polished) if !polished.is_empty() => {
+                info!("Final polish: {} → {} chars", text.chars().count(), polished.chars().count());
+                polished
+            }
+            Ok(_) => {
+                warn!("Final polish returned empty, using original");
+                text.to_string()
+            }
+            Err(e) => {
+                warn!("Final polish failed: {}, using original", e);
+                text.to_string()
+            }
+        }
+    } else {
+        text.to_string()
+    };
+
+    crate::result_window::show_result(app_handle, &final_text);
+    crate::result_window::save_record(&final_text);
 
     *stage = Stage::Pasting;
     let config = config.clone();
     let tx_inner = tx.clone();
     let tx_fallback = tx.clone();
     let handle_for_closure = app_handle.clone();
-    let text_to_paste = text.to_string();
+    let text_to_paste = final_text;
 
     app_handle
         .run_on_main_thread(move || {
@@ -510,6 +565,9 @@ fn handle_vad_segmented_tick(
         next_seq,
         completed_seq,
         completed_results,
+        polish_pending,
+        polish_base_len,
+        last_polish_time,
         ..
     } = stage
     {
@@ -576,6 +634,16 @@ fn handle_vad_segmented_tick(
             crate::result_window::update_result(app_handle, accumulated_text);
             crate::result_window::save_record(accumulated_text);
         }
+
+        // 6. 检查润色
+        check_and_trigger_polish(
+            accumulated_text,
+            polish_pending,
+            polish_base_len,
+            last_polish_time,
+            config,
+            tx,
+        );
     }
 }
 
@@ -692,17 +760,73 @@ fn filter_speech_from_buffer(samples: &[f32]) -> Vec<f32> {
     }
 }
 
+/// 启动润色线程
+fn spawn_polish_thread(
+    text: String,
+    config: &DesktopConfig,
+    tx: &Sender<Command>,
+) {
+    let llm_config = match config.llm_config() {
+        Some(c) => c,
+        None => return,
+    };
+    let tx = tx.clone();
+    std::thread::spawn(move || {
+        let result = match octopus_llm::polish(&text, &llm_config) {
+            Ok(polished) => Ok(polished),
+            Err(e) => {
+                log::warn!("Polish thread error: {}", e);
+                Err(e.to_string())
+            }
+        };
+        let _ = tx.send(Command::PolishDone { result });
+    });
+}
+
+/// 检查润色条件并触发（在 tick 中调用）
+fn check_and_trigger_polish(
+    accumulated_text: &str,
+    polish_pending: &mut bool,
+    polish_base_len: &mut usize,
+    last_polish_time: &mut Instant,
+    config: &DesktopConfig,
+    tx: &Sender<Command>,
+) {
+    if !config.polish_enabled
+        || config.polish_interval <= 0.0
+        || *polish_pending
+        || accumulated_text.is_empty()
+    {
+        return;
+    }
+
+    let elapsed = last_polish_time.elapsed().as_secs_f64();
+    if elapsed < config.polish_interval {
+        return;
+    }
+
+    // 条件满足，发起润色
+    *polish_base_len = accumulated_text.chars().count();
+    *polish_pending = true;
+    spawn_polish_thread(accumulated_text.to_string(), config, tx);
+}
+
 /// 处理 StreamingTick 命令
 fn handle_streaming_tick(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
+    config: &DesktopConfig,
     app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
 ) {
     if let Stage::Streaming {
         engine,
         accumulated_text,
         vad,
         silence_duration,
+        polish_pending,
+        polish_base_len,
+        last_polish_time,
         ..
     } = stage
     {
@@ -732,6 +856,16 @@ fn handle_streaming_tick(
                 warn!("Streaming accept_samples error: {}", e);
             }
         }
+
+        // 检查润色
+        check_and_trigger_polish(
+            accumulated_text,
+            polish_pending,
+            polish_base_len,
+            last_polish_time,
+            config,
+            tx,
+        );
     }
 }
 
@@ -812,6 +946,9 @@ fn handle_cancel(
         Stage::Streaming {
             engine,
             streaming_active,
+            polish_pending: _,
+            polish_base_len: _,
+            last_polish_time: _,
             ..
         } => {
             info!("Cancel: stopping streaming");
@@ -819,7 +956,13 @@ fn handle_cancel(
             engine.reset();
             let _ = audio.stop();
         }
-        Stage::VadSegmented { tick_active, .. } => {
+        Stage::VadSegmented {
+            tick_active,
+            polish_pending: _,
+            polish_base_len: _,
+            last_polish_time: _,
+            ..
+        } => {
             info!("Cancel: stopping VadSegmented");
             tick_active.store(false, Ordering::Relaxed);
             let _ = audio.stop();
@@ -851,6 +994,9 @@ fn handle_transcription_done(
             active_count,
             completed_seq,
             completed_results,
+            polish_pending: _,
+            polish_base_len: _,
+            last_polish_time: _,
             ..
         } => {
             *active_count = active_count.saturating_sub(1);
@@ -945,6 +1091,74 @@ fn start_tick_thread(tx: Sender<Command>, streaming_active: Arc<AtomicBool>) {
         }
         debug!("Streaming tick thread exited");
     });
+}
+
+/// 处理 PolishDone 命令
+fn handle_polish_done(
+    stage: &mut Stage,
+    result: Result<String, String>,
+    _config: &DesktopConfig,
+    app_handle: &tauri::AppHandle,
+    _tx: &Sender<Command>,
+) {
+    match stage {
+        Stage::Streaming {
+            accumulated_text,
+            polish_pending,
+            polish_base_len,
+            last_polish_time,
+            ..
+        }
+        | Stage::VadSegmented {
+            accumulated_text,
+            polish_pending,
+            polish_base_len,
+            last_polish_time,
+            ..
+        } => {
+            *polish_pending = false;
+
+            match result {
+                Ok(polished) => {
+                    if polished.is_empty() {
+                        warn!("Polish returned empty, keeping original text");
+                        return;
+                    }
+
+                    // 取增量：润色期间新追加的文本
+                    let increment: String = accumulated_text
+                        .chars()
+                        .skip(*polish_base_len)
+                        .collect();
+
+                    // 合并：润色结果 + 增量
+                    let merged = format!("{}{}", polished, increment);
+                    info!(
+                        "Polish done: base_len={} → merged len={} (increment {} chars)",
+                        polish_base_len,
+                        merged.chars().count(),
+                        increment.chars().count()
+                    );
+
+                    *accumulated_text = merged;
+                    *last_polish_time = Instant::now();
+
+                    // 更新 result window 并持久化
+                    if !accumulated_text.is_empty() {
+                        crate::result_window::update_result(app_handle, accumulated_text);
+                        crate::result_window::save_record(accumulated_text);
+                    }
+                }
+                Err(e) => {
+                    warn!("Polish failed: {}, keeping original text", e);
+                }
+            }
+        }
+
+        _ => {
+            debug!("PolishDone ignored in stage {:?}", stage_name(stage));
+        }
+    }
 }
 
 fn stage_name(stage: &Stage) -> &'static str {

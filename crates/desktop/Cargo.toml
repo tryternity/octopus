@@ -51,6 +51,9 @@ futures-util = { version = "0.3", optional = true }
 tonic = { version = "0.12", optional = true }
 prost = { version = "0.13", optional = true }
 
+# LLM polish
+octopus-llm = { path = "../llm" }
+
 [features]
 default = ["embedded"]
 embedded = ["octopus-asr"]

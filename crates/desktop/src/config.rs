@@ -55,6 +55,30 @@ pub struct DesktopConfig {
     /// overlay 位置: top | bottom | none
     #[serde(default = "default_overlay_position")]
     pub overlay_position: String,
+
+    /// 润色总开关
+    #[serde(default)]
+    pub polish_enabled: bool,
+
+    /// 中间润色间隔（秒），0 = 仅最终润色
+    #[serde(default = "default_polish_interval")]
+    pub polish_interval: f64,
+
+    /// 提供商标识（openai/deepseek/自定义）
+    #[serde(default)]
+    pub llm_provider: String,
+
+    /// 模型名
+    #[serde(default = "default_polish_model")]
+    pub llm_model: String,
+
+    /// API base URL
+    #[serde(default = "default_polish_base_url")]
+    pub llm_base_url: String,
+
+    /// API Key
+    #[serde(default)]
+    pub llm_secret_key: String,
 }
 
 fn default_engine_mode() -> String {
@@ -81,6 +105,15 @@ fn default_paste_method() -> String {
 fn default_overlay_position() -> String {
     "top".into()
 }
+fn default_polish_interval() -> f64 {
+    5.0
+}
+fn default_polish_model() -> String {
+    "gpt-4o-mini".into()
+}
+fn default_polish_base_url() -> String {
+    "https://api.openai.com/v1".into()
+}
 fn default_segment_duration() -> f64 {
     5.0
 }
@@ -106,6 +139,12 @@ impl Default for DesktopConfig {
             segment_silence: default_segment_silence(),
             segment_overlap: default_segment_overlap(),
             overlay_position: default_overlay_position(),
+            polish_enabled: false,
+            polish_interval: default_polish_interval(),
+            llm_provider: String::new(),
+            llm_model: default_polish_model(),
+            llm_base_url: default_polish_base_url(),
+            llm_secret_key: String::new(),
         }
     }
 }
@@ -121,6 +160,20 @@ impl DesktopConfig {
             ) => true,
             _ => false,
         }
+    }
+
+    /// 构建 LLM 配置，用于传给 octopus_llm::polish()
+    /// 如果 polish_enabled 为 false 或 secret_key 为空，返回 None
+    pub fn llm_config(&self) -> Option<octopus_llm::CompatibleLlmConfig> {
+        if !self.polish_enabled || self.llm_secret_key.is_empty() {
+            return None;
+        }
+        Some(octopus_llm::CompatibleLlmConfig {
+            provider: self.llm_provider.clone(),
+            model: self.llm_model.clone(),
+            base_url: self.llm_base_url.clone(),
+            secret_key: self.llm_secret_key.clone(),
+        })
     }
 }
 
