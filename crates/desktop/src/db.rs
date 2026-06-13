@@ -128,6 +128,23 @@ fn parse_history_entries(content: &str) -> Vec<HistoryEntry> {
     entries
 }
 
+/// 校验 timestamp 是否为标准格式 'YYYY-MM-DD HH:MM:SS'。
+fn is_standard_timestamp(ts: &str) -> bool {
+    let b = ts.as_bytes();
+    ts.len() == 19
+        && b[4] == b'-'
+        && b[7] == b'-'
+        && b[10] == b' '
+        && b[13] == b':'
+        && b[16] == b':'
+        && b[..4].iter().all(u8::is_ascii_digit)
+        && b[5..7].iter().all(u8::is_ascii_digit)
+        && b[8..10].iter().all(u8::is_ascii_digit)
+        && b[11..13].iter().all(u8::is_ascii_digit)
+        && b[14..16].iter().all(u8::is_ascii_digit)
+        && b[17..19].iter().all(u8::is_ascii_digit)
+}
+
 /// 迁移 history.txt（默认路径）。文件不存在/为空则跳过。
 fn migrate_history(conn: &Connection) -> Result<()> {
     let path = octopus_asr::config::handy_home().join("history.txt");
@@ -135,24 +152,38 @@ fn migrate_history(conn: &Connection) -> Result<()> {
 }
 
 /// 迁移指定路径的 history.txt（可单测注入路径）。
+///
+/// 用 `unchecked_transaction()`（&self 事务）包裹整个循环：
+/// 单连接由全局 `Mutex` 串行保护，此处独占持有，事务安全。
+/// 中途任一 `tx.execute` 抛错 → `?` 早返回 → `tx` drop 自动回滚（RAII），
+/// 保证原子性：要么全部插入，要么一条不留；避免半截迁移导致重复插入。
 fn migrate_history_at(conn: &Connection, path: &std::path::Path) -> Result<()> {
     let content = match std::fs::read_to_string(path) {
         Ok(c) if !c.trim().is_empty() => c,
         _ => return Ok(()),
     };
     let entries = parse_history_entries(&content);
+    if entries.is_empty() {
+        return Ok(());
+    }
     let count = entries.len();
-    for e in entries {
-        conn.execute(
+    let tx = conn.unchecked_transaction()?;
+    for e in &entries {
+        if !is_standard_timestamp(&e.timestamp) {
+            log::warn!(
+                "history.txt entry has non-standard timestamp: {}",
+                e.timestamp
+            );
+        }
+        tx.execute(
             "INSERT INTO transcriptions
                 (created_at, engine, engine_mode, raw_text, polished_text, polish_status, char_count)
              VALUES (?1, '', NULL, ?2, ?2, 'done', ?3)",
             params![e.timestamp, e.body, e.body.chars().count() as i64],
         )?;
     }
-    if count > 0 {
-        log::info!("Migrated {} entries from history.txt", count);
-    }
+    tx.commit()?;
+    log::info!("Migrated {} entries from history.txt", count);
     Ok(())
 }
 
@@ -301,5 +332,21 @@ mod tests {
             .unwrap();
         assert_eq!(raw, "你好世界");
         assert_eq!(status, "done"); // 历史数据视为已润色
+    }
+
+    #[test]
+    fn parse_history_entries_skips_empty_body() {
+        let content = "--- 2026-06-13 10:00:00 ---\n\n--- 2026-06-13 11:00:00 ---\n有内容\n";
+        let entries = parse_history_entries(content);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].body, "有内容");
+    }
+
+    #[test]
+    fn parse_history_entries_handles_multiline_body() {
+        let content = "--- 2026-06-13 10:00:00 ---\n第一行\n第二行\n";
+        let entries = parse_history_entries(content);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].body, "第一行\n第二行");
     }
 }
