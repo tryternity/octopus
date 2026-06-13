@@ -51,7 +51,7 @@ enum Commands {
         #[arg(long, default_value = "auto")]
         language: String,
         /// Output path to save the separated WAV file
-        #[arg(short, long)]
+        #[arg(short, long, num_args = 0..=1, default_missing_value = "")]
         output: Option<String>,
         /// Do not delete downloaded video file, skip download if cached file exists
         #[arg(long)]
@@ -143,6 +143,17 @@ async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&
         author: String,
     }
 
+    let resolved_output = if let Some(out_path) = output {
+        if out_path.is_empty() {
+            let url_md5 = format!("{:x}", md5::compute(url));
+            Some(octopus_asr::config::handy_home().join("tmp").join(format!("{}.wav", url_md5)))
+        } else {
+            Some(std::path::PathBuf::from(out_path))
+        }
+    } else {
+        None
+    };
+
     println!("Spawning octopus-dlp process to extract audio from: {} ...", url);
 
     let mut cmd = Command::new("cargo");
@@ -156,11 +167,11 @@ async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&
     if unclear {
         cmd.arg("--unclear");
     }
-    if let Some(out_path) = output {
+    if let Some(ref out_path) = resolved_output {
         cmd.arg("-o").arg(out_path);
     }
 
-    let stdout_cfg = if output.is_none() {
+    let stdout_cfg = if resolved_output.is_none() {
         Stdio::piped()
     } else {
         Stdio::null()
@@ -223,15 +234,16 @@ async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&
         anyhow::bail!("octopus-dlp process exited with error status");
     }
 
-    if let Some(out_path) = output {
-        let out_path_owned = out_path.to_string();
+    if let Some(ref out_path) = resolved_output {
+        let out_path_str = out_path.to_string_lossy().to_string();
+        let out_path_owned = out_path_str.clone();
         samples = tokio::task::spawn_blocking(move || {
             octopus_asr::audio::read_wav_16k(&out_path_owned)
         }).await??;
         let extract_elapsed = start_extract.elapsed();
         println!(
             "Audio extraction finished (saved to {}). Read {} samples in {:.2}s.",
-            out_path,
+            out_path_str,
             samples.len(),
             extract_elapsed.as_secs_f64()
         );

@@ -136,11 +136,12 @@ fn parse_args() -> Result<Args> {
     while i < args.len() {
         let arg = &args[i];
         if arg == "-o" || arg == "--output" {
-            if i + 1 < args.len() {
+            if i + 1 < args.len() && !args[i + 1].starts_with("-") {
                 output = Some(PathBuf::from(&args[i + 1]));
                 i += 2;
             } else {
-                anyhow::bail!("Error: missing file path after {}", arg);
+                output = Some(PathBuf::new());
+                i += 1;
             }
         } else if arg == "--unclear" {
             unclear = true;
@@ -187,6 +188,13 @@ async fn main() -> Result<()> {
     let url_md5 = format!("{:x}", md5::compute(url));
     let output_template = work_dir.join(format!("{}.%(ext)s", url_md5));
     let output_template_str = output_template.to_string_lossy().to_string();
+
+    let mut final_output = args.output;
+    if let Some(ref path) = final_output {
+        if path.as_os_str().is_empty() {
+            final_output = Some(work_dir.join(format!("{}.wav", url_md5)));
+        }
+    }
 
     // 1. 获取元数据 JSON
     eprintln!("Retrieving video metadata...");
@@ -253,7 +261,7 @@ async fn main() -> Result<()> {
     let mut ffmpeg_cmd = Command::new(&ffmpeg);
     ffmpeg_cmd.arg("-y").arg("-i").arg(&downloaded_filepath);
 
-    if let Some(ref path) = args.output {
+    if let Some(ref path) = final_output {
         eprintln!("Separating audio and saving WAV to file: {:?}", path);
         ffmpeg_cmd
             .arg("-f").arg("wav") // 强制输出标准 WAV 格式（包含 44 字节文件头，可直接播放）
