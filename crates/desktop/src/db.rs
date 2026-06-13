@@ -187,8 +187,88 @@ fn migrate_history_at(conn: &Connection, path: &std::path::Path) -> Result<()> {
     Ok(())
 }
 
-// 占位 stub：真实迁移逻辑在 Task 4（model.json）填充。
-fn migrate_model_json(_conn: &Connection) -> Result<()> {
+/// 迁移 model.json（默认路径）。文件不存在则跳过。
+fn migrate_model_json(conn: &Connection) -> Result<()> {
+    let path = octopus_asr::config::handy_home().join("model.json");
+    migrate_model_json_at(conn, &path)
+}
+
+/// 迁移指定路径的 model.json（可单测注入路径）。
+/// 用事务包裹 insert 循环，保证原子性（与 migrate_history_at 一致）。
+fn migrate_model_json_at(conn: &Connection, path: &std::path::Path) -> Result<()> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(_) => return Ok(()),
+    };
+    let v: serde_json::Value = serde_json::from_str(&text).context("parse model.json")?;
+
+    let tx = conn.unchecked_transaction()?;
+
+    // ASR 域：active + 各 category 的 {name → entry}
+    if let Some(asr) = v.get("asr") {
+        let active = asr.get("active").and_then(|a| a.as_str()).unwrap_or("");
+        if let Some(map) = asr.as_object() {
+            for (category, entries) in map {
+                if category == "active" {
+                    continue;
+                }
+                if let Some(em) = entries.as_object() {
+                    for (name, entry) in em {
+                        insert_model(&tx, "asr", category, name, entry, name == active)?;
+                    }
+                }
+            }
+        }
+    }
+
+    // VAD 域：active + silero {name → entry}
+    if let Some(vad) = v.get("vad") {
+        let active = vad.get("active").and_then(|a| a.as_str()).unwrap_or("");
+        if let Some(silero) = vad.get("silero").and_then(|s| s.as_object()) {
+            for (name, entry) in silero {
+                insert_model(&tx, "vad", "silero", name, entry, name == active)?;
+            }
+        }
+    }
+
+    tx.commit()?;
+    log::info!("Migrated model.json → models table");
+    Ok(())
+}
+
+fn insert_model(
+    conn: &Connection,
+    domain: &str,
+    category: &str,
+    name: &str,
+    entry: &serde_json::Value,
+    is_active: bool,
+) -> Result<()> {
+    let source = entry.get("source").and_then(|s| s.as_str()).unwrap_or("");
+    let language = entry.get("language").and_then(|s| s.as_str()).unwrap_or("");
+    let description = entry
+        .get("description")
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
+    let quantization = entry
+        .get("quantization")
+        .and_then(|s| s.as_str())
+        .unwrap_or("");
+    conn.execute(
+        "INSERT OR IGNORE INTO models
+            (domain, category, name, source, language, description, quantization, is_active)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            domain,
+            category,
+            name,
+            source,
+            language,
+            description,
+            quantization,
+            is_active as i64
+        ],
+    )?;
     Ok(())
 }
 
@@ -348,5 +428,47 @@ mod tests {
         let entries = parse_history_entries(content);
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].body, "第一行\n第二行");
+    }
+
+    #[test]
+    fn migrate_model_json_at_imports_asr_and_vad() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("model.json");
+        std::fs::write(
+            &path,
+            r#"{
+              "vad": { "active": "", "silero": { "silero-vad": { "source": "onnx-community/silero-vad" } } },
+              "asr": {
+                "active": "paraformer-streaming",
+                "paraformer": {
+                  "paraformer-streaming": { "source": "csukuangfj/x", "language": "zh", "quantization": "int8" }
+                }
+              }
+            }"#,
+        )
+        .unwrap();
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        migrate_model_json_at(&conn, &path).unwrap();
+
+        // asr active 行
+        let (name, is_active): (String, i64) = conn
+            .query_row(
+                "SELECT name, is_active FROM models WHERE domain='asr' AND is_active=1",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(name, "paraformer-streaming");
+
+        // vad silero（无 active）
+        let n: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM models WHERE domain='vad' AND category='silero'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(n, 1);
     }
 }
