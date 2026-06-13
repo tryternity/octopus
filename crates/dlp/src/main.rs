@@ -1,0 +1,279 @@
+use std::path::{Path, PathBuf};
+use std::process::Stdio;
+use tokio::process::Command;
+use anyhow::{anyhow, Context, Result};
+use serde::{Deserialize, Serialize};
+use tokio::fs;
+
+#[derive(Deserialize, Debug)]
+struct YtdlpMetadata {
+    title: Option<String>,
+    duration: Option<f64>,
+    uploader: Option<String>,
+    _filename: Option<String>,
+}
+
+#[derive(Serialize, Debug)]
+struct VideoMetadataOutput {
+    title: String,
+    duration: f64,
+    author: String,
+}
+
+fn handy_home() -> PathBuf {
+    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
+    PathBuf::from(home).join(".octopus")
+}
+
+async fn has_binary_on_path(name: &str) -> bool {
+    let cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
+    Command::new(cmd)
+        .arg(name)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .await
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+async fn get_binary_path(name: &str) -> Result<PathBuf> {
+    // 1. 检查 ~/.octopus/bin/
+    let home_bin = handy_home().join("bin").join(name);
+    #[cfg(target_os = "windows")]
+    let home_bin = home_bin.with_extension("exe");
+
+    if home_bin.exists() {
+        return Ok(home_bin);
+    }
+
+    // 2. 检查系统 PATH
+    if has_binary_on_path(name).await {
+        return Ok(PathBuf::from(name));
+    }
+
+    anyhow::bail!(
+        "Binary '{}' not found. Please add it to PATH or place it in ~/.octopus/bin/.",
+        name
+    )
+}
+
+async fn download_file(url: &str, dest: &Path) -> Result<()> {
+    use futures_util::StreamExt;
+    use tokio::io::AsyncWriteExt;
+
+    let response = reqwest::get(url).await?;
+    if !response.status().is_success() {
+        anyhow::bail!("HTTP download failed with status: {}", response.status());
+    }
+
+    let mut file = fs::File::create(dest).await?;
+    let mut stream = response.bytes_stream();
+    while let Some(item) = stream.next().await {
+        let chunk = item.context("Error while downloading chunk")?;
+        file.write_all(&chunk).await?;
+    }
+    file.flush().await?;
+    Ok(())
+}
+
+async fn prepare_dependencies() -> Result<()> {
+    let bin_dir = handy_home().join("bin");
+    fs::create_dir_all(&bin_dir).await?;
+
+    // 1. 检查并自动下载 yt-dlp
+    if get_binary_path("yt-dlp").await.is_err() {
+        eprintln!("yt-dlp not found. Downloading latest yt-dlp binary...");
+        let url = if cfg!(target_os = "windows") {
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+        } else {
+            "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp"
+        };
+
+        let dest_name = if cfg!(target_os = "windows") { "yt-dlp.exe" } else { "yt-dlp" };
+        let dest_path = bin_dir.join(dest_name);
+
+        download_file(url, &dest_path).await.context("Failed to download yt-dlp")?;
+
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mut perms = fs::metadata(&dest_path).await?.permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&dest_path, perms).await?;
+        }
+        eprintln!("yt-dlp downloaded successfully and made executable.");
+    }
+
+    // 2. 检查 ffmpeg
+    if get_binary_path("ffmpeg").await.is_err() {
+        let install_msg = if cfg!(target_os = "macos") {
+            "ffmpeg not found! Please install ffmpeg using Homebrew: `brew install ffmpeg`"
+        } else if cfg!(target_os = "windows") {
+            "ffmpeg not found! Please download ffmpeg from https://ffmpeg.org/download.html and add it to your system PATH."
+        } else {
+            "ffmpeg not found! Please install ffmpeg via your system package manager (e.g. `sudo apt install ffmpeg`)."
+        };
+        anyhow::bail!("{}", install_msg);
+    }
+
+    Ok(())
+}
+
+struct Args {
+    url: String,
+    output: Option<PathBuf>,
+}
+
+fn parse_args() -> Result<Args> {
+    let args: Vec<String> = std::env::args().collect();
+    let mut url = None;
+    let mut output = None;
+
+    let mut i = 1;
+    while i < args.len() {
+        let arg = &args[i];
+        if arg == "-o" || arg == "--output" {
+            if i + 1 < args.len() {
+                output = Some(PathBuf::from(&args[i + 1]));
+                i += 2;
+            } else {
+                anyhow::bail!("Error: missing file path after {}", arg);
+            }
+        } else if arg.starts_with("-") {
+            anyhow::bail!("Error: unknown option {}", arg);
+        } else {
+            if url.is_some() {
+                anyhow::bail!("Error: multiple URLs specified");
+            }
+            url = Some(arg.clone());
+            i += 1;
+        }
+    }
+
+    let url = url.ok_or_else(|| anyhow!("Usage: octopus-dlp <URL> [-o/--output <FILE>]"))?;
+    Ok(Args { url, output })
+}
+
+#[tokio::main]
+async fn main() -> Result<()> {
+    let args = match parse_args() {
+        Ok(a) => a,
+        Err(e) => {
+            eprintln!("{}", e);
+            std::process::exit(1);
+        }
+    };
+    let url = &args.url;
+
+    // 准备依赖项
+    if let Err(e) = prepare_dependencies().await {
+        eprintln!("Dependency error: {}", e);
+        std::process::exit(1);
+    }
+
+    let yt_dlp = get_binary_path("yt-dlp").await?;
+    let ffmpeg = get_binary_path("ffmpeg").await?;
+
+    let work_dir = handy_home().join("tmp");
+    fs::create_dir_all(&work_dir).await?;
+
+    let output_template = work_dir.join("download_%(id)s.%(ext)s");
+    let output_template_str = output_template.to_string_lossy().to_string();
+
+    // 1. 获取元数据 JSON
+    eprintln!("Retrieving video metadata...");
+    let info_output = Command::new(&yt_dlp)
+        .arg("--dump-json")
+        .arg("-f")
+        .arg("ba/b")
+        .arg("-o")
+        .arg(&output_template_str)
+        .arg(url)
+        .output()
+        .await?;
+
+    if !info_output.status.success() {
+        let err = String::from_utf8_lossy(&info_output.stderr);
+        eprintln!("Failed to get video info from yt-dlp: {}", err);
+        std::process::exit(1);
+    }
+
+    let metadata: YtdlpMetadata = serde_json::from_slice(&info_output.stdout)
+        .context("Failed to parse yt-dlp metadata JSON")?;
+
+    let downloaded_file = metadata._filename
+        .ok_or_else(|| anyhow!("yt-dlp metadata does not contain output filename"))?;
+    let downloaded_filepath = PathBuf::from(downloaded_file);
+
+    // 输出包含标题、时长等元数据的 JSON 作为 stderr 的首行，以便主进程读取
+    let output_meta = VideoMetadataOutput {
+        title: metadata.title.unwrap_or_else(|| "Unknown Title".to_string()),
+        duration: metadata.duration.unwrap_or(0.0),
+        author: metadata.uploader.unwrap_or_else(|| "Unknown Author".to_string()),
+    };
+    let meta_json = serde_json::to_string(&output_meta)?;
+    eprintln!("{}", meta_json); // 输出到 stderr，防止干扰 stdout 中的 pcm 采样数据
+
+    // 2. 执行音频下载
+    eprintln!("Downloading audio track...");
+    let download_status = Command::new(&yt_dlp)
+        .arg("-f")
+        .arg("ba/b")
+        .arg("-o")
+        .arg(&output_template_str)
+        .arg(url)
+        .status()
+        .await?;
+
+    if !download_status.success() {
+        eprintln!("Failed to download media using yt-dlp.");
+        std::process::exit(1);
+    }
+
+    if !downloaded_filepath.exists() {
+        eprintln!("Downloaded file does not exist at: {:?}", downloaded_filepath);
+        std::process::exit(1);
+    }
+
+    // 3. 转码分离音频并以 f32le 格式直接输出至 stdout 管道或指定输出文件
+    let stdout_stdio = if let Some(ref path) = args.output {
+        eprintln!("Separating audio and saving raw f32le PCM to file: {:?}", path);
+        let file = std::fs::File::create(path)
+            .context(format!("Failed to create output file: {:?}", path))?;
+        Stdio::from(file)
+    } else {
+        eprintln!("Separating audio and streaming raw f32le PCM to stdout...");
+        Stdio::inherit()
+    };
+
+    let mut ffmpeg_child = Command::new(&ffmpeg)
+        .arg("-y")
+        .arg("-i")
+        .arg(&downloaded_filepath)
+        .arg("-f")
+        .arg("f32le")
+        .arg("-ar")
+        .arg("16000")
+        .arg("-ac")
+        .arg("1")
+        .arg("-c:a")
+        .arg("pcm_f32le")
+        .arg("-") // 输出到 stdout
+        .stdout(stdout_stdio) // 重定向至文件或主程序的 stdout
+        .stderr(Stdio::null()) // 丢弃 ffmpeg 繁杂的日志
+        .spawn()?;
+
+    let ffmpeg_status = ffmpeg_child.wait().await?;
+
+    // 清理下载好的临时文件
+    let _ = fs::remove_file(&downloaded_filepath).await;
+
+    if !ffmpeg_status.success() {
+        eprintln!("ffmpeg execution failed during transcoding.");
+        std::process::exit(1);
+    }
+
+    eprintln!("Audio extraction completed successfully.");
+    Ok(())
+}
