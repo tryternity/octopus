@@ -232,6 +232,11 @@ impl Coordinator {
             }
         }
     }
+
+    /// 结果窗口编辑回写
+    pub fn report_result_edit(&self, text: String) {
+        let _ = self.tx.lock().unwrap().send(Command::ResultEdited { text });
+    }
 }
 
 /// 处理 Toggle 命令
@@ -574,7 +579,6 @@ fn start_pasting(
     }
 
     crate::result_window::show_result(app_handle, &final_text);
-    crate::result_window::save_record(&final_text);
 
     *stage = Stage::Pasting;
     let config = config.clone();
@@ -609,7 +613,6 @@ fn handle_result_edited(stage: &mut Stage, text: String) {
 /// 消费已完成序号的结果，返回新拼接的文本
 ///
 /// `raw_text` 与 `accumulated_text` 同步追加（均为未 polish 的 ASR 文本）。
-/// 调用方若不需要 raw_text（如 WaitingCompletion），可传入一个不会被读取的 throwaway。
 fn consume_completed_results(
     completed_seq: &mut u64,
     completed_results: &mut HashMap<u64, String>,
@@ -717,10 +720,9 @@ fn handle_vad_segmented_tick(
             }
         }
 
-        // 5. 更新 result window 并持久化
+        // 5. 更新 result window
         if !accumulated_text.is_empty() {
             crate::result_window::update_result(app_handle, accumulated_text);
-            crate::result_window::save_record(accumulated_text);
         }
 
         // 6. 检查润色
@@ -946,9 +948,8 @@ fn handle_streaming_tick(
                 *accumulated_text = new_text.clone();
                 *raw_text = new_text;
 
-                // 更新 result window 显示并持久化
+                // 更新 result window 显示
                 crate::result_window::update_result(app_handle, accumulated_text);
-                crate::result_window::save_record(accumulated_text);
             }
             Ok(None) => {
                 // 没有新结果
@@ -966,9 +967,8 @@ fn handle_streaming_tick(
                     *raw_text = new_text;
                     debug!("Flushed: '{}'", accumulated_text);
 
-                    // 更新 result window 显示并持久化
+                    // 更新 result window 显示
                     crate::result_window::update_result(app_handle, accumulated_text);
-                    crate::result_window::save_record(accumulated_text);
                 }
                 Ok(None) => {}
                 Err(e) => {
@@ -1134,10 +1134,9 @@ fn handle_transcription_done(
             // 消费连续序号的结果（accumulated_text 与 raw_text 同步追加）
             consume_completed_results(completed_seq, completed_results, accumulated_text, raw_text);
 
-            // 更新 result window 并持久化
+            // 更新 result window
             if !accumulated_text.is_empty() {
                 crate::result_window::update_result(app_handle, accumulated_text);
-                crate::result_window::save_record(accumulated_text);
             }
         }
 
@@ -1169,11 +1168,6 @@ fn handle_transcription_done(
                 accumulated_text,
                 raw_text,
             );
-
-            // 持久化当前累积文本
-            if !accumulated_text.is_empty() {
-                crate::result_window::save_record(accumulated_text);
-            }
 
             if *active_count == 0 {
                 // 所有识别完成，拼接最终文本并粘贴
@@ -1281,10 +1275,9 @@ fn handle_polish_done(
                     *polish_base_len = accumulated_text.chars().count();
                     *last_polish_time = Instant::now();
 
-                    // 更新 result window 并持久化
+                    // 更新 result window
                     if !accumulated_text.is_empty() {
                         crate::result_window::update_result(app_handle, accumulated_text);
-                        crate::result_window::save_record(accumulated_text);
                     }
                 }
                 Err(e) => {
