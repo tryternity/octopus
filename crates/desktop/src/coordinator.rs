@@ -88,8 +88,6 @@ const PUNCTUATION_SILENCE_THRESHOLD: f64 = 0.5;
 
 /// VAD 伪流式 tick 间隔（毫秒）
 const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 300;
-/// 窗口 overlap 采样点数（0.2s @ 16kHz），确保相邻分段识别的文本连续性
-const OVERLAP_SAMPLES: usize = 3200;
 
 /// 录音生命周期协调器
 /// 单线程串行化所有事件，消除竞态条件
@@ -540,8 +538,9 @@ fn handle_vad_segmented_tick(
             && (audio_buffer.len() >= segment_samples || silence_ms >= config.segment_silence);
 
         if should_send {
-            // 保存末尾 0.2s 作为下一段 overlap
-            let overlap_start = audio_buffer.len().saturating_sub(OVERLAP_SAMPLES);
+            // 保存末尾作为下一段 overlap（segment_overlap 毫秒 → 采样点数）
+            let overlap_samples = (config.segment_overlap * 16.0) as usize;
+            let overlap_start = audio_buffer.len().saturating_sub(overlap_samples);
             *overlap_tail = audio_buffer[overlap_start..].to_vec();
 
             // 构建发送缓冲区：前一窗口 overlap + 当前缓冲区
