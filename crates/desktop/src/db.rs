@@ -174,4 +174,37 @@ mod tests {
             .unwrap();
         assert_eq!(v, 1);
     }
+
+    /// days_to_ymd 边界单测。
+    /// 每个输入 days 值与期望 (y,m,d) 均经 python3 独立验证：
+    ///   python3 -c "from datetime import date; print((date(Y,M,D) - date(1970,1,1)).days)"
+    #[test]
+    fn days_to_ymd_boundary_cases() {
+        // epoch：起点 0 天
+        assert_eq!(days_to_ymd(0), (1970, 1, 1));
+
+        // 平年月末跨月：1 月 31 日（days=30，从 0 计起）
+        assert_eq!(days_to_ymd(30), (1970, 1, 31));
+        // 下一天 2 月 1 日：跨月
+        assert_eq!(days_to_ymd(31), (1970, 2, 1));
+
+        // 闰年 Feb29 存在：2024 是闰年
+        assert_eq!(days_to_ymd(19782), (2024, 2, 29));
+
+        // 平年无 Feb29：2025 非闰，2 月最后一天是 28
+        assert_eq!(days_to_ymd(20147), (2025, 2, 28));
+        // 下一天直接 3 月 1 日（不存在 2 月 29）
+        assert_eq!(days_to_ymd(20148), (2025, 3, 1));
+
+        // 世纪平年：2100 能被 100 整除但不被 400 → 非闰
+        assert_eq!(days_to_ymd(47540), (2100, 2, 28));
+        assert_eq!(days_to_ymd(47541), (2100, 3, 1));
+
+        // 能被 400 整除的闰年：2000 → 闰，2 月 29 存在
+        assert_eq!(days_to_ymd(11016), (2000, 2, 29));
+
+        // 跨年边界：2023-12-31 → 下一天 2024-01-01
+        assert_eq!(days_to_ymd(19722), (2023, 12, 31));
+        assert_eq!(days_to_ymd(19723), (2024, 1, 1));
+    }
 }
