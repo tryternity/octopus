@@ -272,6 +272,96 @@ fn insert_model(
     Ok(())
 }
 
+/// 当前激活的模型（某 domain 下 is_active=1 的行）。
+pub struct ActiveModel {
+    pub category: String,
+    pub name: String,
+    pub source: String,
+    pub language: String,
+    pub quantization: String,
+}
+
+/// 插入一条识别记录（指定连接，可单测）。
+fn insert_transcription_at(
+    conn: &Connection,
+    raw_text: &str,
+    polished_text: Option<&str>,
+    polish_status: &str,
+    polish_model: Option<&str>,
+    engine: &str,
+    engine_mode: Option<&str>,
+) -> Result<()> {
+    let created_at = now_string();
+    let display = polished_text.unwrap_or(raw_text);
+    let char_count = display.chars().count() as i64;
+    conn.execute(
+        "INSERT INTO transcriptions
+            (created_at, engine, engine_mode, raw_text, polished_text, polish_status, polish_model, char_count)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+        params![
+            created_at,
+            engine,
+            engine_mode,
+            raw_text,
+            polished_text,
+            polish_status,
+            polish_model,
+            char_count
+        ],
+    )?;
+    Ok(())
+}
+
+/// 对外：用全局连接插入一条识别记录。
+/// - raw_text：原生识别全文（必有）
+/// - polished_text：仅 polish_status='done' 时传 Some，否则 None
+/// - polish_status：'off' | 'done' | 'failed'
+pub fn insert_transcription(
+    raw_text: &str,
+    polished_text: Option<&str>,
+    polish_status: &str,
+    polish_model: Option<&str>,
+    engine: &str,
+    engine_mode: Option<&str>,
+) -> Result<()> {
+    with_db(|conn| {
+        insert_transcription_at(
+            conn,
+            raw_text,
+            polished_text,
+            polish_status,
+            polish_model,
+            engine,
+            engine_mode,
+        )
+    })
+}
+
+fn active_engine_at(conn: &Connection, domain: &str) -> Result<Option<ActiveModel>> {
+    let row = conn
+        .query_row(
+            "SELECT category, name, source, language, quantization
+             FROM models WHERE domain=?1 AND is_active=1",
+            params![domain],
+            |r| {
+                Ok(ActiveModel {
+                    category: r.get(0)?,
+                    name: r.get(1)?,
+                    source: r.get(2)?,
+                    language: r.get(3)?,
+                    quantization: r.get(4)?,
+                })
+            },
+        )
+        .optional()?;
+    Ok(row)
+}
+
+/// 对外：查询某 domain 的当前激活模型。
+pub fn active_engine(domain: &str) -> Result<Option<ActiveModel>> {
+    with_db(|conn| active_engine_at(conn, domain))
+}
+
 /// 当前时间字符串 'YYYY-MM-DD HH:MM:SS'（从 result_window 移植，避免依赖 chrono）。
 fn now_string() -> String {
     let duration = std::time::SystemTime::now()
@@ -470,5 +560,47 @@ mod tests {
             )
             .unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn insert_transcription_then_query() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        insert_transcription_at(
+            &conn,
+            "raw text",
+            Some("polished text"),
+            "done",
+            Some("deepseek-v4-flash"),
+            "paraformer-streaming",
+            Some("streaming"),
+        )
+        .unwrap();
+        let (raw, polished, status, model): (String, Option<String>, String, Option<String>) = conn
+            .query_row(
+                "SELECT raw_text, polished_text, polish_status, polish_model FROM transcriptions",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(raw, "raw text");
+        assert_eq!(polished.as_deref(), Some("polished text"));
+        assert_eq!(status, "done");
+        assert_eq!(model.as_deref(), Some("deepseek-v4-flash"));
+    }
+
+    #[test]
+    fn active_engine_returns_active_row() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        conn.execute(
+            "INSERT INTO models (domain, category, name, source, language, description, quantization, is_active)
+             VALUES ('asr','paraformer','paraformer-streaming','src','zh','','int8',1)",
+            [],
+        )
+        .unwrap();
+        let m = active_engine_at(&conn, "asr").unwrap().unwrap();
+        assert_eq!(m.name, "paraformer-streaming");
+        assert_eq!(m.source, "src");
     }
 }
