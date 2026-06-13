@@ -102,7 +102,18 @@ enum Stage {
         completed_results: HashMap<u64, String>,
     },
     /// 粘贴中
-    Pasting,
+    Pasting {
+        /// 原生全文（入库用，不受编辑影响）
+        raw_text: String,
+        /// 展示/入库的修正版（初始=润色结果，用户编辑会更新）
+        polished_text: String,
+        /// "off" | "done" | "failed"
+        polish_status: String,
+        /// 引擎名（入库用）
+        engine: String,
+        /// "streaming" | "vad_segmented"
+        engine_mode: String,
+    },
 }
 
 /// VAD 静音判定阈值
@@ -190,6 +201,37 @@ impl Coordinator {
                         );
                     }
                     Command::PasteDone => {
+                        // 入库（从 Pasting 取数据；用户编辑已反映到 polished_text）
+                        if let Stage::Pasting {
+                            raw_text,
+                            polished_text,
+                            polish_status,
+                            engine,
+                            engine_mode,
+                        } = &stage
+                        {
+                            let polish_model = if polish_status == "done" {
+                                Some(config.llm_model.as_str())
+                            } else {
+                                None
+                            };
+                            // polished_text 仅 done 时入库（spec §5.2：polished 仅 done 有值）
+                            let polished_for_db = if polish_status == "done" {
+                                Some(polished_text.as_str())
+                            } else {
+                                None
+                            };
+                            if let Err(e) = crate::db::insert_transcription(
+                                raw_text,
+                                polished_for_db,
+                                polish_status,
+                                polish_model,
+                                engine,
+                                Some(engine_mode),
+                            ) {
+                                log::warn!("DB insert transcription failed: {}", e);
+                            }
+                        }
                         info!("Paste complete, returning to idle");
                         stage = Stage::Idle;
                         crate::overlay::hide_overlay(&app_handle);
@@ -511,7 +553,7 @@ fn handle_toggle(
             debug!("Toggle ignored: waiting for transcription completion");
         }
 
-        Stage::Pasting => {
+        Stage::Pasting { .. } => {
             debug!("Toggle ignored: busy pasting");
         }
     }
@@ -535,56 +577,38 @@ fn start_pasting(
         return;
     }
 
-    // 最终润色
-    let final_text = if let Some(llm_config) = config.llm_config() {
-        match octopus_llm::polish(text, &llm_config) {
+    // 最终润色 + 状态（基于调用结果，非文本比较）
+    let (final_text, polish_status) = match config.llm_config() {
+        None => (text.to_string(), "off"),
+        Some(llm_config) => match octopus_llm::polish(text, &llm_config) {
             Ok(polished) if !polished.is_empty() => {
-                info!("Final polish: {} → {} chars", text.chars().count(), polished.chars().count());
-                polished
+                info!(
+                    "Final polish: {} → {} chars",
+                    text.chars().count(),
+                    polished.chars().count()
+                );
+                (polished, "done")
             }
             Ok(_) => {
                 warn!("Final polish returned empty, using original");
-                text.to_string()
+                (text.to_string(), "failed")
             }
             Err(e) => {
                 warn!("Final polish failed: {}, using original", e);
-                text.to_string()
+                (text.to_string(), "failed")
             }
-        }
-    } else {
-        text.to_string()
+        },
     };
-
-    // 入库：原生全文 + 修正版（仅润色成功时）+ 状态
-    let (polished_for_db, polish_status) = if config.llm_config().is_some() {
-        // 启用了 polish：final_text 与原 text 不同视为成功润色
-        if final_text != text {
-            (Some(final_text.as_str()), "done")
-        } else {
-            (None, "failed") // 润色未生效（空或失败 → 回退原文本）
-        }
-    } else {
-        (None, "off")
-    };
-    let polish_model = if polish_status == "done" {
-        Some(config.llm_model.as_str())
-    } else {
-        None
-    };
-    if let Err(e) = crate::db::insert_transcription(
-        raw_text,
-        polished_for_db,
-        polish_status,
-        polish_model,
-        engine,
-        Some(engine_mode),
-    ) {
-        log::warn!("DB insert transcription failed: {}", e);
-    }
 
     crate::result_window::show_result(app_handle, &final_text);
 
-    *stage = Stage::Pasting;
+    *stage = Stage::Pasting {
+        raw_text: raw_text.to_string(),
+        polished_text: final_text.clone(),
+        polish_status: polish_status.to_string(),
+        engine: engine.to_string(),
+        engine_mode: engine_mode.to_string(),
+    };
     let config = config.clone();
     let tx_inner = tx.clone();
     let tx_fallback = tx.clone();
@@ -607,8 +631,12 @@ fn start_pasting(
 /// 处理结果窗口的编辑事件：更新内存展示文本（不影响 raw_text）。
 fn handle_result_edited(stage: &mut Stage, text: String) {
     match stage {
-        Stage::Streaming { accumulated_text, .. } | Stage::VadSegmented { accumulated_text, .. } => {
+        Stage::Streaming { accumulated_text, .. }
+        | Stage::VadSegmented { accumulated_text, .. } => {
             *accumulated_text = text;
+        }
+        Stage::Pasting { polished_text, .. } => {
+            *polished_text = text;
         }
         _ => {}
     }
@@ -1302,6 +1330,6 @@ fn stage_name(stage: &Stage) -> &'static str {
         Stage::Streaming { .. } => "Streaming",
         Stage::VadSegmented { .. } => "VadSegmented",
         Stage::WaitingCompletion { .. } => "WaitingCompletion",
-        Stage::Pasting => "Pasting",
+        Stage::Pasting { .. } => "Pasting",
     }
 }
