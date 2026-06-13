@@ -69,14 +69,16 @@
 
 ### 3.1. 命令格式
 ```bash
-octopus-dlp <URL> [-o/--output <FILE>]
+octopus-dlp <URL> [-o/--output [<FILE>]] [--unclear]
 ```
 
 ### 3.2. 参数说明
 *   `<URL>`：要转码解析的网络视频/音频链接。
-*   `-o, --output <FILE>`：（可选）指定输出文件路径。
-    *   若指定该参数，音频数据直接写入此文件，`stdout` 不输出任何音频内容。这非常利于开发调试或本地音频持久化。
-    *   若不指定，默认流式写入 `stdout` 管道。
+*   `-o, --output [<FILE>]`：（可选）指定输出文件路径。
+    *   若指定该参数且给定了具体文件名，音频数据直接写入该 WAV 文件，`stdout` 不输出任何音频内容。这非常利于开发调试或本地音频持久化。
+    *   若指定该参数但**没有指定具体的文件名/路径（留空）**，系统将自动解析为 `~/.octopus/tmp/<md5(url)>.wav`，实现自动保存。
+    *   若不指定该参数，默认流式写入 `stdout` 管道。
+*   `--unclear`：（可选）不删除下载的流媒体视频文件。第二次运行相近的 URL 时，若检测到本地缓存已存在该文件，则自动跳过下载（Skipping download）以避免重复下载。缓存文件名规则为 `~/.octopus/tmp/<md5(url)>.<后缀>`。
 
 ### 3.3. 输出设计
 *   **标准输出 (Stdout)**：当且仅当未指定 `-o` 时，为纯净的二进制原始 `f32le` PCM 采样流。没有日志或其他非音频数据，确保主进程可以盲读。
@@ -101,11 +103,14 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-tokio = { version = "1", features = ["process", "rt", "fs", "io-util"] }
+tokio = { version = "1", features = ["full"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-yt-dlp = { version = "2.7", features = ["tokio"] } # 引入 boul2gom 的开源封装
+reqwest = { version = "0.12", features = ["json", "stream"] }
+futures-util = "0.3"
+tempfile = "3"
+md5 = "0.7"
 ```
 
 ### 4.3. 依赖自动下载与检测逻辑
@@ -113,14 +118,17 @@ yt-dlp = { version = "2.7", features = ["tokio"] } # 引入 boul2gom 的开源�
 *   **ffmpeg 检测**：检查系统 PATH 与 `~/.octopus/bin/ffmpeg`。若无，在 `stderr` 打印友好的平台安装指导并退出。
 
 ### 4.4. 临时下载与流式输出实现
-1.  子进程通过 `yt-dlp` 获取元数据并输出 JSON 到 `stderr`。
-2.  `yt-dlp` 异步下载音频轨道（`-f ba/b`）至 `~/.octopus/tmp/` 目录下的唯一临时文件。
-3.  启动 `ffmpeg` 异步转码：
-    ```bash
-    ffmpeg -y -i <temp_file> -f f32le -ar 16000 -ac 1 -
-    ```
-4.  `octopus-dlp` 将 `ffmpeg` 的 stdout 重定向输出至自身的 stdout。
-5.  转码完毕后，异步清理 `~/.octopus/tmp/` 下的原始流媒体文件。
+1.  计算 URL 的 MD5 值（`url_md5`）。
+2.  子进程通过 `yt-dlp` 获取元数据并输出 JSON 到 `stderr`。
+3.  若指定了 `--unclear` 且文件 `~/.octopus/tmp/<url_md5>.<ext>` 已存在，跳过下载阶段。
+4.  否则，调用 `yt-dlp` 异步下载音视频轨道（`-f ba/b`）并保存为 `~/.octopus/tmp/<url_md5>.<ext>`。
+5.  启动 `ffmpeg` 异步转码：
+    *   若指定了 `-o/--output`，则强制使用 `-f wav` 输出一个包含标准 RIFF 头部的可直接播放音频文件到指定路径。
+    *   若未指定 `-o`，则强制使用 `-f f32le` 输出原始 `pcm_f32le` 数据流至 stdout：
+        ```bash
+        ffmpeg -y -i <temp_file> -f f32le -ar 16000 -ac 1 -c:a pcm_f32le -
+        ```
+6.  转码完毕后，除非指定了 `--unclear`，否则自动异步清理下载的原始流媒体视频/音频文件。
 
 ---
 
@@ -180,4 +188,23 @@ async fn extract_and_transcribe_url(url: &str) -> Result<()> {
     println!("转译文本: {}", text);
     Ok(())
 }
+
+---
+
+## 6. ASR 语音转译与长音频 VAD 分段机制 (ASR & VAD Segmentation)
+
+当 `octopus-cli` 接收到大文件或者流式管道流出的较长音频时，需要防止 Transformer 模型在推理时因序列过长产生显存/内存溢出（OOM）或者因注意力机制发散产生虚假复读。
+
+### 6.1. VAD 自动分段策略
+在 `octopus-asr` 核心推理模块中，实现了统一的离线语音转译封装函数 `transcribe_with_vad`：
+1.  **分段阈值**：当输入的 16kHz f32 单声道音频序列长度超过 `30秒`（即 480,000 个采样点）时，自动启用 `Silero VAD v4` 进行分段。
+2.  **停顿检测与切割**：
+    *   利用 VAD 逐帧（30ms/480点）检测音频。
+    *   当遇到持续 `500ms` 以上的静音/换气点时，在此处将音频截断。
+    *   为防止单词跨段切割并限制单次计算复杂度，当单个片段累积长度超过 `25秒` 时强制从最近的静音区截断。
+3.  **串行转译与文本清洗**：
+    *   将分段后的若干语音切片送入底层的 ASR 引擎（如 `SenseVoice`、`Whisper`、`Paraformer` 等）中进行推理。
+    *   如果推理出的分段文本包含 `<|nospeech|>` 特殊事件标记，自动将其过滤。
+4.  **智能拼接排版**：
+    *   在合并相邻语音片段 of 文本时，根据边界字符的语系自适应：若边界两端均为 CJK（中日韩）字符，则无缝拼接不注入空格；若包含英文/西文字符，则自动插入空格，保证排版格式完全贴合人类自然语言习惯。
 ```
