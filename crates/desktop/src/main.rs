@@ -32,6 +32,12 @@ pub fn run() {
         config.asr_engine, config.engine_mode, config.shortcut
     );
 
+    // 初始化嵌入式 DB（建表 + 首次迁移 history.txt / model.json）
+    // 失败仅告警，不阻断启动（存储禁用但应用可用）
+    if let Err(e) = db::init() {
+        log::error!("DB init failed: {}, storage disabled", e);
+    }
+
     // 校验引擎模式
     if config.engine_mode == "embedded" && !config.is_streaming_engine() {
         log::info!(
