@@ -40,6 +40,8 @@ enum Stage {
     Streaming {
         engine: StreamingSession,
         accumulated_text: String,
+        /// 原生识别全文（未经 polish，入库用）
+        raw_text: String,
         streaming_active: Arc<AtomicBool>,
         /// VAD 实例，用于检测静音间隔
         vad: Option<octopus_asr::vad::SileroVad>,
@@ -64,6 +66,8 @@ enum Stage {
         overlap_tail: Vec<f32>,
         /// 累积识别文本
         accumulated_text: String,
+        /// 原生识别全文（未经 polish，入库用）
+        raw_text: String,
         /// 当前静音持续时长（秒）
         silence_duration: f64,
         /// 缓冲区是否包含语音
@@ -274,6 +278,7 @@ fn handle_toggle(
                         *stage = Stage::Streaming {
                             engine: streaming_engine,
                             accumulated_text: String::new(),
+                            raw_text: String::new(),
                             streaming_active,
                             vad,
                             silence_duration: 0.0,
@@ -308,6 +313,7 @@ fn handle_toggle(
                                 audio_buffer: Vec::new(),
                                 overlap_tail: Vec::new(),
                                 accumulated_text: String::new(),
+                                raw_text: String::new(),
                                 silence_duration: 0.0,
                                 has_speech: false,
                                 active_count: 0,
@@ -531,10 +537,14 @@ fn start_pasting(
 }
 
 /// 消费已完成序号的结果，返回新拼接的文本
+///
+/// `raw_text` 与 `accumulated_text` 同步追加（均为未 polish 的 ASR 文本）。
+/// 调用方若不需要 raw_text（如 WaitingCompletion），可传入一个不会被读取的 throwaway。
 fn consume_completed_results(
     completed_seq: &mut u64,
     completed_results: &mut HashMap<u64, String>,
     accumulated_text: &mut String,
+    raw_text: &mut String,
 ) {
     while let Some(text) = completed_results.remove(completed_seq) {
         if !text.is_empty() {
@@ -543,8 +553,10 @@ fn consume_completed_results(
                 && !text.starts_with(|c: char| ",.，。！？!?\n".contains(c))
             {
                 accumulated_text.push('，');
+                raw_text.push('，');
             }
             accumulated_text.push_str(&text);
+            raw_text.push_str(&text);
         }
         *completed_seq += 1;
     }
@@ -564,6 +576,7 @@ fn handle_vad_segmented_tick(
         audio_buffer,
         overlap_tail,
         accumulated_text,
+        raw_text,
         silence_duration,
         has_speech,
         active_count,
@@ -833,6 +846,7 @@ fn handle_streaming_tick(
     if let Stage::Streaming {
         engine,
         accumulated_text,
+        raw_text,
         vad,
         silence_duration,
         flushed,
@@ -859,7 +873,8 @@ fn handle_streaming_tick(
         // 送入流式引擎（如果之前有足够长的静音间隔，插入逗号）
         match engine.accept_samples(&samples, was_silent) {
             Ok(Some(new_text)) => {
-                *accumulated_text = new_text;
+                *accumulated_text = new_text.clone();
+                *raw_text = new_text;
 
                 // 更新 result window 显示并持久化
                 crate::result_window::update_result(app_handle, accumulated_text);
@@ -877,7 +892,8 @@ fn handle_streaming_tick(
         if *silence_duration >= PUNCTUATION_SILENCE_THRESHOLD && !*flushed {
             match engine.flush() {
                 Ok(Some(new_text)) => {
-                    *accumulated_text = new_text;
+                    *accumulated_text = new_text.clone();
+                    *raw_text = new_text;
                     debug!("Flushed: '{}'", accumulated_text);
 
                     // 更新 result window 显示并持久化
@@ -1022,6 +1038,7 @@ fn handle_transcription_done(
     match stage {
         Stage::VadSegmented {
             accumulated_text,
+            raw_text,
             active_count,
             completed_seq,
             completed_results,
@@ -1044,8 +1061,8 @@ fn handle_transcription_done(
                 }
             }
 
-            // 消费连续序号的结果
-            consume_completed_results(completed_seq, completed_results, accumulated_text);
+            // 消费连续序号的结果（accumulated_text 与 raw_text 同步追加）
+            consume_completed_results(completed_seq, completed_results, accumulated_text, raw_text);
 
             // 更新 result window 并持久化
             if !accumulated_text.is_empty() {
@@ -1075,7 +1092,15 @@ fn handle_transcription_done(
             }
 
             // 消费连续序号的结果
-            consume_completed_results(completed_seq, completed_results, accumulated_text);
+            // WaitingCompletion 阶段不维护 raw_text（入库发生在 stop 时的 start_pasting），
+            // 此处 throwaway 不参与入库，仅满足函数签名。
+            let mut raw_throwaway = String::new();
+            consume_completed_results(
+                completed_seq,
+                completed_results,
+                accumulated_text,
+                &mut raw_throwaway,
+            );
 
             // 持久化当前累积文本
             if !accumulated_text.is_empty() {
@@ -1135,6 +1160,7 @@ fn handle_polish_done(
     match stage {
         Stage::Streaming {
             accumulated_text,
+            raw_text,
             polish_pending,
             polish_base_len,
             last_polish_time,
@@ -1142,6 +1168,7 @@ fn handle_polish_done(
         }
         | Stage::VadSegmented {
             accumulated_text,
+            raw_text,
             polish_pending,
             polish_base_len,
             last_polish_time,
