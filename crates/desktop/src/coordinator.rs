@@ -235,7 +235,11 @@ impl Coordinator {
 
     /// 结果窗口编辑回写
     pub fn report_result_edit(&self, text: String) {
-        let _ = self.tx.lock().unwrap().send(Command::ResultEdited { text });
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::ResultEdited { text }).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
     }
 }
 
