@@ -15,6 +15,7 @@ mod result_window;
 mod shortcut;
 mod streaming_engine;
 mod tray;
+mod transcript;
 
 use coordinator::Coordinator;
 use engine::TranscriptionEngine;

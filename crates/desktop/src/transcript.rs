@@ -1,0 +1,264 @@
+// crates/desktop/src/transcript.rs
+//! 识别过程文本状态机：统一管理原生(raw)/润色(polished)/增量(increase)三文本。
+//!
+//! 内部用 `full`（当前完整 ASR）+ `raw_len`（上次停顿快照的 char 长度）派生 raw/increase：
+//! - raw      = full[..raw_len]   （停顿快照，润色基准）
+//! - increase = full[raw_len..]   （停顿后新增）
+//! 停顿触发润色时 raw_len 推进到 full 长度，increase 自动清空。
+//! mode=0/1 不做中间润色，display/db 直接用 full。
+
+use crate::config::PolishMode;
+use std::time::Instant;
+
+pub struct Transcript {
+    /// 识别开始时刻毫秒时间戳（DB 主键 + 时长计算基准）
+    pub id: i64,
+    mode: PolishMode,
+    /// 当前完整 ASR（流式 set_full / 伪流式 append_segment）
+    full: String,
+    /// 上次停顿快照的 char 长度（raw 的边界）
+    raw_len: usize,
+    /// 对 raw 的润色结果（仅 mode=2 中间润色 / 各 mode 最终润色后填值）
+    polished: String,
+    last_polish_time: Instant,
+    polish_pending: bool,
+    /// 是否已 INSERT 过 DB（首次有文本时 INSERT 后置 true，之后走 UPDATE）
+    db_inserted: bool,
+}
+
+impl Transcript {
+    pub fn new(id: i64, mode: PolishMode) -> Self {
+        Self {
+            id,
+            mode,
+            full: String::new(),
+            raw_len: 0,
+            polished: String::new(),
+            last_polish_time: Instant::now(),
+            polish_pending: false,
+            db_inserted: false,
+        }
+    }
+
+    pub fn db_inserted(&self) -> bool {
+        self.db_inserted
+    }
+
+    pub fn mark_db_inserted(&mut self) {
+        self.db_inserted = true;
+    }
+
+    /// 流式：设置当前完整 ASR（引擎 accept_samples/flush 返回全量）。
+    pub fn set_full(&mut self, text: &str) {
+        self.full = text.to_string();
+    }
+
+    /// 伪流式：追加一段识别文本（delta）。
+    pub fn append_segment(&mut self, delta: &str) {
+        self.full.push_str(delta);
+    }
+
+    /// 当前完整 ASR（= raw + increase）。
+    pub fn full(&self) -> &str {
+        &self.full
+    }
+
+    /// 停顿快照部分（润色基准）。
+    pub fn raw(&self) -> String {
+        self.full.chars().take(self.raw_len).collect()
+    }
+
+    /// 停顿后增量（仅 mode=2 有意义；mode=0/1 恒空，符合 spec §2.2 不变量）。
+    pub fn increase(&self) -> String {
+        if self.mode == PolishMode::Intermediate {
+            self.full.chars().skip(self.raw_len).collect()
+        } else {
+            String::new()
+        }
+    }
+
+    /// 停顿触发：返回完整 ASR 作为润色输入，并推进 raw_len（increase 清空）。
+    pub fn snapshot_for_polish(&mut self) -> String {
+        self.raw_len = self.full.chars().count();
+        self.full.clone()
+    }
+
+    /// 润色完成：更新 polished（raw_len 已在 snapshot_for_polish 推进）。
+    pub fn on_polish_done(&mut self, polished: String) {
+        self.polished = polished;
+        self.polish_pending = false;
+        self.last_polish_time = Instant::now();
+    }
+
+    /// 润色失败：保持 polished 不变，清 pending。
+    pub fn on_polish_failed(&mut self) {
+        self.polish_pending = false;
+    }
+
+    pub fn polish_pending(&self) -> bool {
+        self.polish_pending
+    }
+
+    pub fn mark_polish_pending(&mut self) {
+        self.polish_pending = true;
+    }
+
+    pub fn clear_polish_pending(&mut self) {
+        self.polish_pending = false;
+    }
+
+    pub fn last_polish_time(&self) -> Instant {
+        self.last_polish_time
+    }
+
+    pub fn mode(&self) -> PolishMode {
+        self.mode
+    }
+
+    /// 展示文本：mode=2 → polished + increase；其他 → full。
+    pub fn display_text(&self) -> String {
+        match self.mode {
+            PolishMode::Intermediate => {
+                let mut s = self.polished.clone();
+                s.push_str(&self.increase());
+                s
+            }
+            _ => self.full.clone(),
+        }
+    }
+
+    /// 落库文本：完整 ASR（raw + increase）。
+    pub fn db_text(&self) -> String {
+        self.full.clone()
+    }
+
+    /// polished（最终润色后有值；否则空）。
+    pub fn polished(&self) -> &str {
+        &self.polished
+    }
+
+    /// 是否无任何识别文本。
+    pub fn is_empty(&self) -> bool {
+        self.full.is_empty()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mode_disabled_display_is_full() {
+        let mut t = Transcript::new(1, PolishMode::Disabled);
+        t.set_full("你好世界");
+        assert_eq!(t.display_text(), "你好世界");
+        assert_eq!(t.db_text(), "你好世界");
+        assert_eq!(t.increase(), ""); // mode=0 恒空（spec §2.2）
+        assert_eq!(t.db_inserted(), false);
+    }
+
+    #[test]
+    fn mode_finalonly_display_is_full() {
+        let mut t = Transcript::new(2, PolishMode::FinalOnly);
+        t.append_segment("第一段");
+        t.append_segment("第二段");
+        assert_eq!(t.display_text(), "第一段第二段");
+        assert_eq!(t.db_text(), "第一段第二段");
+    }
+
+    #[test]
+    fn mode_intermediate_snapshot_and_merge() {
+        let mut t = Transcript::new(3, PolishMode::Intermediate);
+        // 说了一段
+        t.set_full("你好世界");
+        assert_eq!(t.display_text(), "你好世界"); // polished 空，increase=full
+
+        // 停顿快照 → 送润色
+        let snap = t.snapshot_for_polish();
+        assert_eq!(snap, "你好世界");
+        assert_eq!(t.raw(), "你好世界");
+        assert_eq!(t.increase(), ""); // 快照后 increase 空
+
+        // 润色完成
+        t.on_polish_done("你好，世界。".into());
+        assert_eq!(t.display_text(), "你好，世界。"); // polished + 空 increase
+    }
+
+    #[test]
+    fn mode_intermediate_increase_after_snapshot() {
+        // 验证：快照后新内容进 increase，display = polished + increase
+        let mut t = Transcript::new(4, PolishMode::Intermediate);
+        t.set_full("原始文本");
+        t.snapshot_for_polish();
+        t.on_polish_done("润色文本".into());
+
+        // 流式：raw 前缀稳定，full 追加新内容
+        t.set_full("原始文本新增部分");
+        assert_eq!(t.raw(), "原始文本");
+        assert_eq!(t.increase(), "新增部分");
+        assert_eq!(t.display_text(), "润色文本新增部分");
+    }
+
+    #[test]
+    fn append_segment_accumulates() {
+        let mut t = Transcript::new(5, PolishMode::Intermediate);
+        t.append_segment("A");
+        t.append_segment("B");
+        assert_eq!(t.full(), "AB");
+    }
+
+    #[test]
+    fn polish_failed_keeps_polished() {
+        let mut t = Transcript::new(6, PolishMode::Intermediate);
+        t.set_full("原文");
+        t.snapshot_for_polish();
+        t.on_polish_done("润色".into());
+        t.mark_polish_pending();
+        t.on_polish_failed(); // 失败
+        assert_eq!(t.polished(), "润色"); // 保持上次值
+        assert!(!t.polish_pending());
+    }
+
+    #[test]
+    fn empty_full_initial_state() {
+        let t = Transcript::new(10, PolishMode::Intermediate);
+        assert_eq!(t.display_text(), ""); // 空 full → display 空
+        assert_eq!(t.full(), "");
+        assert_eq!(t.raw(), ""); // raw_len=0 → raw 空
+        assert_eq!(t.increase(), ""); // increase 空
+        assert!(!t.polish_pending());
+        assert!(!t.db_inserted());
+
+        // 空快照：返回空串，raw_len 保持 0
+        let mut t2 = Transcript::new(11, PolishMode::Intermediate);
+        let snap = t2.snapshot_for_polish();
+        assert_eq!(snap, "");
+        assert_eq!(t2.raw(), "");
+        assert_eq!(t2.increase(), "");
+    }
+
+    #[test]
+    fn consecutive_snapshots_overwrite_polished() {
+        let mut t = Transcript::new(12, PolishMode::Intermediate);
+
+        // 第一次停顿快照 + 润色
+        t.set_full("第一段");
+        let s1 = t.snapshot_for_polish();
+        assert_eq!(s1, "第一段");
+        t.on_polish_done("润色一".into());
+        assert_eq!(t.display_text(), "润色一"); // polished + 空 increase
+
+        // 继续说 → increase 出现
+        t.set_full("第一段第二段");
+        assert_eq!(t.increase(), "第二段");
+        assert_eq!(t.display_text(), "润色一第二段");
+
+        // 第二次停顿快照 + 润色（覆盖第一次 polished）
+        let s2 = t.snapshot_for_polish();
+        assert_eq!(s2, "第一段第二段");
+        assert_eq!(t.raw(), "第一段第二段"); // raw_len 推进
+        assert_eq!(t.increase(), ""); // 再次清空
+        t.on_polish_done("润色一二".into());
+        assert_eq!(t.display_text(), "润色一二"); // 第二次润色覆盖第一次
+    }
+}
