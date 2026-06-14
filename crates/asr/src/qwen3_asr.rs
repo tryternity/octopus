@@ -78,10 +78,11 @@ impl Qwen3AsrEngine {
 
 impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
     fn transcribe(&self, samples: &[f32], language: &str) -> Result<String> {
-        // Resolve language
+        // Resolve language：auto 且条目未配具体语言时保持 auto（不限制语言，支持多语言/中英混合）；
+        // 原 auto→zh 硬编码会导致中英混合时英文丢失（Qwen3-ASR 最佳实践即不指定 language，自动检测）。
         let lang = if language == "auto" {
             if self.entry.language.is_empty() || self.entry.language == "auto" {
-                "zh"
+                "auto"
             } else {
                 &self.entry.language
             }
@@ -429,13 +430,15 @@ fn build_prompt_ids(
     ids.push(IM_START);
     ids.extend_from_slice(&asst_ids);
 
-    // Language prefix: language <lang><asr_text>
-    if !language.is_empty() {
+    // Language prefix：指定具体语言时注入 `language <lang>`；
+    // `auto`/空时不注入（模型自动检测语言，支持多语言与中英混合）。
+    // <asr_text> 是生成起始标记，始终注入（原实现空字符串时会连带跳过它，是 bug）。
+    if !language.is_empty() && language != "auto" {
         let lang_text = format!("language {}", language);
         let lang_ids = encode_text(&lang_text)?;
         ids.extend(lang_ids);
-        ids.push(ASR_TEXT);
     }
+    ids.push(ASR_TEXT);
 
     Ok(ids)
 }
