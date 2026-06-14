@@ -5,6 +5,8 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
+use octopus_infra::consts::SILERO_VAD_PATH;
+
 // ── Global base dir ──
 
 /// $HOME/.octopus — 全局根目录，所有配置和模型都基于此
@@ -125,7 +127,7 @@ pub fn resolve_model_dir(source: &str) -> Result<PathBuf> {
 /// 定位 Silero VAD 模型：固定 ~/.octopus/models/silero_vad_v4.onnx（随应用打包）。
 /// 不再读配置/HF 缓存——VAD 模型固定路径，唯一方案。
 pub fn find_silero_vad() -> Result<PathBuf> {
-    let vad = handy_home().join("models/silero_vad_v4.onnx");
+    let vad = handy_home().join(SILERO_VAD_PATH);
     if vad.exists() {
         return Ok(vad);
     }

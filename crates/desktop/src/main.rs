@@ -62,7 +62,7 @@ pub fn run() {
 
     // 加载自定义润色 system prompt（~/.octopus/VOICE_POLISH.md）
     // 文件存在且非空时覆盖内置默认 prompt
-    let prompt_path = octopus_asr::config::handy_home().join("VOICE_POLISH.md");
+    let prompt_path = octopus_asr::config::handy_home().join(octopus_infra::consts::VOICE_POLISH_FILE);
     if prompt_path.exists() {
         if let Ok(content) = std::fs::read_to_string(&prompt_path) {
             let trimmed = content.trim();

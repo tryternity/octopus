@@ -9,6 +9,7 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::config::{handy_home, AppConfig, AsrSection, ModelEntry};
+use octopus_infra::consts::DEFAULT_ASR_MODEL_DIR;
 
 static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
 
@@ -114,7 +115,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
     DefaultModel {
         category: "zipformer",
         name: "zipformer-small-ctc",
-        source: "models/zipformer",
+        source: DEFAULT_ASR_MODEL_DIR,
         language: "zh",
         description: "zipformer-small-ctc, 27M (随应用打包)",
         quantization: "int8",
@@ -390,7 +391,7 @@ mod tests {
         let zf = cfg.asr.zipformer.as_ref().expect("zipformer section");
         assert_eq!(zf.len(), 3);
         let small = zf.get("zipformer-small-ctc").unwrap();
-        assert_eq!(small.source, "models/zipformer"); // 本地路径
+        assert_eq!(small.source, DEFAULT_ASR_MODEL_DIR); // 本地路径
         assert_eq!(cfg.asr.whisper.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 1);

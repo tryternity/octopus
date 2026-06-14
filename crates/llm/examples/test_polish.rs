@@ -6,6 +6,7 @@
 //!
 //! 用法：cargo run --release --package octopus-llm --example test_polish
 
+use octopus_infra::consts::VOICE_POLISH_FILE;
 use octopus_llm::{polish, set_system_prompt_override, CompatibleLlmConfig};
 use serde::Deserialize;
 use std::path::PathBuf;
@@ -25,7 +26,7 @@ fn octopus_home() -> PathBuf {
 
 fn main() -> anyhow::Result<()> {
     // 1. 加载 prompt override
-    let prompt_path = octopus_home().join("VOICE_POLISH.md");
+    let prompt_path = octopus_home().join(VOICE_POLISH_FILE);
     if prompt_path.exists() {
         let content = std::fs::read_to_string(&prompt_path)?;
         let trimmed = content.trim();

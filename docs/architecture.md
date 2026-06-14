@@ -7,20 +7,22 @@ octopus 是一个基于 ONNX Runtime 的语音识别（ASR）工具集，支持�
 ```
 octopus/
 ├── crates/
-│   ├── asr/         # 核心推理库 (octopus-asr)
+│   ├── infra/       # 基础设施 (octopus-infra) — 跨 crate 常量，无项目内依赖
+│   ├── asr/         # 核心推理库 (octopus-asr) — 含 db.rs（SQLite：模型配置+识别历史）
+│   ├── llm/         # LLM 润色 (octopus-llm)
 │   ├── cli/         # 命令行工具 (octopus-cli)
 │   ├── server/      # HTTP/WebSocket 服务 (octopus-server)
-│   └── desktop/     # Tauri 桌面应用 (octopus-desktop)
-│       └── src/
-│           ├── coordinator.rs  # 状态机（识别/润色/粘贴/入库）
-│           ├── result_window.rs # 结果窗口
-│           ├── db.rs            # 嵌入式 SQLite 存储层
-│           ├── config.rs / paste.rs / audio.rs / ...
+│   ├── desktop/     # Tauri 桌面应用 (octopus-desktop)
+│   └── dlp/         # 模型下载工具 (octopus-dlp)
 ├── docs/            # 文档
 └── usage.md         # 快速使用指南
 ```
 
 ## 模块说明
+
+### octopus-infra（基础设施）
+
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施。当前仅 `consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录 / 润色 prompt 文件名）。未来承载 home 路径、时间工具等。任何项目 crate 都可依赖它。
 
 ### octopus-asr（核心推理库）
 
