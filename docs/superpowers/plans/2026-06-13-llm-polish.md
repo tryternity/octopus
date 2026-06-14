@@ -18,7 +18,7 @@
 
 - [x] 流式识别（Paraformer/Zipformer）— StreamingSession + tick 驱动
 - [x] VAD 伪流式分段识别（SenseVoice/Whisper/Qwen3-ASR）— VadSegmented + seq 拼接
-- [x] 结果展示窗口 — 可拖拽、可编辑、多行滚动
+- [x] 结果展示窗口 — 可拖拽、多行滚动（~~可编辑~~ 已于 2026-06-14 移除：编辑态与中间润色流耦合冲突）
 - [x] 文本持久化 — record.txt 实时同步 + history.txt 归档
 - [x] 配置化分段参数 — segment_duration/silence/overlap
 

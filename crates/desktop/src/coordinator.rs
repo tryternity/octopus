@@ -32,8 +32,6 @@ enum Command {
     PasteDone,
     /// 润色完成
     PolishDone { result: Result<String, String> },
-    /// 用户在结果窗口编辑了文本
-    ResultEdited { text: String },
 }
 
 /// 协调器阶段
@@ -248,9 +246,6 @@ impl Coordinator {
                     Command::PolishDone { result } => {
                         handle_polish_done(&mut stage, result, &config, &app_handle, &tx);
                     }
-                    Command::ResultEdited { text } => {
-                        handle_result_edited(&mut stage, text);
-                    }
                 }
             }
             debug!("Coordinator thread exited");
@@ -274,15 +269,6 @@ impl Coordinator {
     pub fn cancel(&self) {
         if let Ok(tx) = self.tx.lock() {
             if tx.send(Command::Cancel).is_err() {
-                error!("Coordinator channel closed");
-            }
-        }
-    }
-
-    /// 结果窗口编辑回写
-    pub fn report_result_edit(&self, text: String) {
-        if let Ok(tx) = self.tx.lock() {
-            if tx.send(Command::ResultEdited { text }).is_err() {
                 error!("Coordinator channel closed");
             }
         }
@@ -631,20 +617,6 @@ fn start_pasting(
             error!("run_on_main_thread failed: {:?}", e);
             let _ = tx_fallback.send(Command::PasteDone);
         });
-}
-
-/// 处理结果窗口的编辑事件：更新内存展示文本（不影响 raw_text）。
-fn handle_result_edited(stage: &mut Stage, text: String) {
-    match stage {
-        Stage::Streaming { accumulated_text, .. }
-        | Stage::VadSegmented { accumulated_text, .. } => {
-            *accumulated_text = text;
-        }
-        Stage::Pasting { polished_text, .. } => {
-            *polished_text = text;
-        }
-        _ => {}
-    }
 }
 
 /// 消费已完成序号的结果，返回新拼接的文本

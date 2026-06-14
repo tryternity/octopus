@@ -1,8 +1,7 @@
 // src/result_window.rs
 
-use crate::coordinator::Coordinator;
 use log::debug;
-use tauri::{Emitter, Listener, Manager};
+use tauri::{Emitter, Manager};
 
 const RESULT_WIDTH: f64 = 520.0;
 const RESULT_HEIGHT: f64 = 100.0;
@@ -44,17 +43,6 @@ pub fn create_result_window(app: &tauri::AppHandle) {
                     ));
                 }
             }
-
-            // 监听来自 JS 的编辑同步事件：转发给 Coordinator 更新内存文本
-            let app_handle = app.clone();
-            let _ = window.listen("result-edited", move |event| {
-                let text = event.payload().to_string();
-                if !text.is_empty() {
-                    if let Some(coordinator) = app_handle.try_state::<Coordinator>() {
-                        coordinator.report_result_edit(text);
-                    }
-                }
-            });
 
             debug!("Result window created");
         }

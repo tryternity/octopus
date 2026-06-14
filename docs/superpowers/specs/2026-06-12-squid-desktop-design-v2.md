@@ -2,6 +2,8 @@
 
 > 基于 Tauri 2.x 构建的独立桌面语音识别应用，支持流式识别（边说边识别）和 VAD 伪流式分段识别。
 
+> ⚠️ **已移除（2026-06-14）— 结果窗口可编辑功能**：编辑态与中间润色流耦合冲突——用户编辑写入 `accumulated_text` 后，`check_and_trigger_polish` 的增量检测（`current_len > polish_base_len`）触发 `PolishDone`，`merged = polished + increment` 覆盖编辑结果，造成文本跳变循环；且前端 `startsWith` 编辑保护因润色重写前缀而失效。结果窗口现为**只读**展示。本文以下涉及 `contenteditable` / `result-edited` 事件 / §6.3 / §6.5（save_record）的内容均视为历史记录，对应代码已删除（`Command::ResultEdited` / `handle_result_edited` / `report_result_edit`）。入库 `polished_text` 即纯润色结果。
+
 ## 0. 背景
 
 octopus-desktop V1 已完成基础功能：全局快捷键、录音 overlay、离线识别、自动粘贴。

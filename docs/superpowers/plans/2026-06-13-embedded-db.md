@@ -978,6 +978,8 @@ git commit -m "feat(coordinator): insert transcription on paste; handle ResultEd
 
 ## Task 9: result_window 改造（删文件写入，result-edited 改发 Command）
 
+> ⚠️ **部分已移除（2026-06-14）**：本 Task 中「`result-edited` 改发 `Command::ResultEdited`」及 Step 3 的编辑回写分支已整体移除——结果窗口可编辑功能废弃（编辑态与中间润色流耦合冲突，详见 `2026-06-12-squid-desktop-design-v2` 顶部注释）。现状：结果窗口只读，不再监听 `result-edited`，`Command::ResultEdited` / `handle_result_edited` 已删。Task 主体（删 record.txt / history.txt 文件写入、由 DB 取代）仍有效。
+
 **Files:**
 - Modify: `crates/desktop/src/result_window.rs`
 - Modify: `crates/desktop/src/main.rs`（若 create_result_window 需透传 app 句柄/state）

@@ -87,7 +87,7 @@
   <div id="container">
     <div id="drag-handle"></div>
     <div id="text-wrapper">
-      <div id="result-text" contenteditable="true"></div>
+      <div id="result-text"></div>
     </div>
   </div>
 
@@ -106,23 +106,6 @@
       currentWindow.startDragging();
     });
 
-    // 追踪用户是否正在编辑
-    let userEditing = false;
-    resultText.addEventListener('focus', () => { userEditing = true; });
-    resultText.addEventListener('blur', () => { userEditing = false; });
-
-    // 用户编辑时同步内容到 Rust → record.txt
-    let editTimer = null;
-    resultText.addEventListener('input', () => {
-      if (editTimer) clearTimeout(editTimer);
-      editTimer = setTimeout(() => {
-        const text = resultText.textContent || '';
-        if (text.trim()) {
-          currentWindow.emit('result-edited', text);
-        }
-      }, 300);
-    });
-
     // 监听 Tauri 事件
     listen('show-result', (event) => {
       resultText.textContent = event.payload;
@@ -131,23 +114,8 @@
     });
 
     // 追加文本事件（流式更新时使用）
-    // 如果用户正在编辑，将新内容追加到末尾而非覆盖
     listen('update-result', (event) => {
-      if (userEditing && document.activeElement === resultText) {
-        // 用户正在编辑，只追加新增部分到末尾
-        const current = resultText.textContent;
-        const updated = event.payload;
-        if (updated.startsWith(current)) {
-          const suffix = updated.slice(current.length);
-          if (suffix) {
-            resultText.textContent = current + suffix;
-          }
-        } else {
-          resultText.textContent = updated;
-        }
-      } else {
-        resultText.textContent = event.payload;
-      }
+      resultText.textContent = event.payload;
       resultText.scrollTop = resultText.scrollHeight;
     });
 

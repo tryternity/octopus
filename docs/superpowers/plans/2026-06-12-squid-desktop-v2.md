@@ -258,6 +258,8 @@ segment_overlap: f64,    // 默认 200 毫秒
 
 ## Task 9: 结果窗口可编辑 + 文本持久化
 
+> ⚠️ **已移除（2026-06-14）**：Step 1（结果窗口可编辑）已整体移除——编辑态与中间润色流耦合冲突（用户编辑 → `accumulated_text` → `check_and_trigger_polish` 增量触发 → `PolishDone` 覆盖编辑 → 文本跳变循环；前端 `startsWith` 编辑保护失效）。结果窗口现只读。Step 2-4（record.txt / history.txt 持久化）此前的 DB 迁移已用 SQLite 取代（见 `2026-06-13-embedded-db`）。`contenteditable` / `result-edited` / `Command::ResultEdited` / `handle_result_edited` 均已删除。原文保留以记录演进。
+
 **Files:**
 - Modify: `crates/desktop/dist/result/index.html`
 - Modify: `crates/desktop/src/result_window.rs`
@@ -375,7 +377,7 @@ Expected: `0 error`（`hide_result` 在 `result_window.rs:93` 已定义）。
 | §8.2 核心逻辑（配置化阈值） | Task 4, 8 | ✅ |
 | §8.3 状态机 | Task 2, 3 | ✅ |
 | §8.4 顺序保证 | Task 5 | ✅ |
-| §6.3 可编辑结果窗口 | Task 9 | ✅ |
+| §6.3 可编辑结果窗口 | Task 9 | ✅ → 编辑部分**已移除**（2026-06-14，与中间润色流耦合冲突） |
 | §6.5 文本持久化（record.txt + history.txt） | Task 9 | ✅ |
 | §10 配置（segment_* 参数） | Task 8 | ✅ |
 | §4.5 停止空文本边界（UI 清理契约） | Task 12 | ✅ |

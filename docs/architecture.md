@@ -90,7 +90,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | 窗口 | 用途 |
 |------|------|
 | `recording_overlay` | 录音/识别状态提示（离线模式） |
-| `result_window` | 识别结果展示（可拖拽、可编辑、多行滚动、透明无边框、置顶） |
+| `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶） |
 
 **核心状态机（Coordinator）：**
 - 单线程 mpsc channel 串行化所有事件
@@ -100,14 +100,14 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
   - 静音切分：检测到语音后静音 ≥ `segment_silence`（默认 500ms）→ 切分，**无 overlap**（静音是自然语句边界，下一段从干净开始）
   - 强制切断：连续语音缓冲达 `segment_duration`（默认 20s）仍未静音 → 强制切断，**保留末尾 `segment_overlap`（200ms）作下一段 overlap**（语句被硬切，需重叠保连贯）
   - 每段经 `filter_speech_from_buffer` 过滤静音后送离线识别，按 `seq` 有序拼接
-- `Stage::Pasting` 为结构变体，持 `raw_text`（原生识别全文）+ `polished_text`（润色/编辑后）+ `polish_status` + `engine` + `engine_mode`
-- 入库时机：粘贴完成发 `Command::PasteDone` 时，从 `Stage::Pasting` 取数据 `INSERT INTO transcriptions`（用户在结果窗口的编辑已反映到 `polished_text`）
+- `Stage::Pasting` 为结构变体，持 `raw_text`（原生识别全文）+ `polished_text`（润色后）+ `polish_status` + `engine` + `engine_mode`
+- 入库时机：粘贴完成发 `Command::PasteDone` 时，从 `Stage::Pasting` 取数据 `INSERT INTO transcriptions`（`raw_text` 原生识别 + `polished_text` 润色结果同步入库）
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号
 - 流式尾音冲刷（Active Flush）：流式模式累积静音 ≥0.5s 时向引擎补零，强制对齐右上下文 / 触发 CIF，把憋住的尾音即时吐出；走独立路径不插逗号，每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。详见 [spec](superpowers/specs/2026-06-13-streaming-tail-flush-design.md)
 
 **文本持久化（嵌入式 SQLite）：**
 - 存储：`~/.octopus/octopus.db`（`crates/asr/src/db.rs`，全局 `OnceLock<Mutex<Connection>>`；cli/server/desktop 共用）
-- `transcriptions` 表：识别历史，每条存原生识别全文（`raw_text`）+ 润色/编辑版（`polished_text`）+ 润色状态（`polish_status`：`off`/`done`/`failed`）+ 元数据（engine / engine_mode / created_at / char_count）
+- `transcriptions` 表：识别历史，每条存原生识别全文（`raw_text`）+ 润色版（`polished_text`）+ 润色状态（`polish_status`：`off`/`done`/`failed`）+ 元数据（engine / engine_mode / created_at / char_count）
 - `models` 表：模型目录（**唯一来源**，首次建库时 `seed_default_models` 写入默认引擎集；v2 schema 无 `is_active` 列——引擎激活改由 `config.yaml.asr_engine` 决定，见「模型管理」）
 - `model.json` / `history.txt` / `record.txt` 已从代码彻底删除——DB 是唯一配置/存储源
 - `polish_status` 基于润色调用结果：未启用→`off`；启用且返回非空→`done`；启用但返回空或失败→`failed`

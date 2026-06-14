@@ -167,6 +167,8 @@ INSERT 时机在 **`PasteDone`（粘贴完成后）**，而非最初设想的「
 
 ### 5.3 result_window.rs 改造
 
+> ⚠️ **已移除（2026-06-14）— 用户编辑回写 polished_text**：本节及 §5.1 / §5.2 中「用户在结果窗口编辑 → 回写 `polished_text`」的链路已整体移除——编辑态与中间润色流耦合冲突（详见 `2026-06-12-squid-desktop-design-v2` 顶部注释）。现状：结果窗口只读，入库 `polished_text` = `start_pasting` 时的纯润色结果，无用户编辑叠加；INSERT 仍在 `PasteDone` 时机。`Command::ResultEdited` / `handle_result_edited` / `report_result_edit` 均已删除。原文保留以记录设计演进。
+
 > **实现状态**：已实现（Task 9，提交 `e69f918`；编辑回写分支由修复 B 完善，`327e1de`）。
 
 | 原 API | 改造 |
