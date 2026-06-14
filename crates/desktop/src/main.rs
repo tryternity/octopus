@@ -46,17 +46,39 @@ pub fn run() {
         );
     }
 
-    // 润色配置校验
-    if config.polish_enabled {
-        if config.llm_secret_key.is_empty() {
-            log::warn!("polish_enabled=true 但 llm_secret_key 为空，润色功能将不生效");
-        } else {
-            log::info!(
-                "润色已启用: provider={}, model={}, interval={}s",
-                config.llm_provider,
-                config.llm_model,
-                config.polish_interval
-            );
+    // 润色配置校验（三档模式）
+    use crate::config::PolishMode;
+    match config.polish_mode {
+        PolishMode::Disabled => {}
+        PolishMode::FinalOnly => {
+            if config.llm_secret_key.is_empty() {
+                log::warn!("polish_mode=1 但 llm_secret_key 为空，润色不生效");
+            } else {
+                log::info!(
+                    "润色模式: 仅最终润色 (provider={}, model={})",
+                    config.llm_provider,
+                    config.llm_model
+                );
+            }
+        }
+        PolishMode::Intermediate => {
+            if config.polish_interval <= 0.0 {
+                log::warn!(
+                    "polish_mode=2 但 polish_interval={}<=0，将使用下限 {}s",
+                    config.polish_interval,
+                    coordinator::MIN_POLISH_INTERVAL_SEC
+                );
+            }
+            if config.llm_secret_key.is_empty() {
+                log::warn!("polish_mode=2 但 llm_secret_key 为空，润色不生效");
+            } else {
+                log::info!(
+                    "润色模式: 中间+最终 (interval={}s, provider={}, model={})",
+                    config.polish_interval,
+                    config.llm_provider,
+                    config.llm_model
+                );
+            }
         }
     }
 

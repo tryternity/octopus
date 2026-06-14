@@ -6,7 +6,7 @@
 
 // 复用 infra 的统一 AppConfig：desktop 内部用 crate::config::AppConfig 即可，
 // 调用点无需写全 octopus_infra::config::AppConfig。
-pub use octopus_infra::config::AppConfig;
+pub use octopus_infra::config::{AppConfig, PolishMode};
 
 /// 检查配置的 ASR 引擎是否支持流式识别。仅 Paraformer 和 Zipformer 支持流式。
 pub fn is_streaming_engine(cfg: &AppConfig) -> bool {
@@ -20,9 +20,9 @@ pub fn is_streaming_engine(cfg: &AppConfig) -> bool {
 }
 
 /// 构建 LLM 配置，用于传给 octopus_llm::polish()。
-/// 如果 polish_enabled 为 false 或 secret_key 为空，返回 None。
+/// polish_mode 为 Disabled 或 secret_key 为空时返回 None（模式 1/2 都启用最终润色）。
 pub fn llm_config(cfg: &AppConfig) -> Option<octopus_llm::CompatibleLlmConfig> {
-    if !cfg.polish_enabled || cfg.llm_secret_key.is_empty() {
+    if cfg.polish_mode == PolishMode::Disabled || cfg.llm_secret_key.is_empty() {
         return None;
     }
     Some(octopus_llm::CompatibleLlmConfig {

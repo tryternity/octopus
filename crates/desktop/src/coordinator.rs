@@ -2,6 +2,7 @@
 
 use crate::audio::SharedAudioState;
 use crate::config::AppConfig;
+use crate::config::PolishMode;
 use crate::engine::TranscriptionEngine;
 use crate::paste;
 use crate::streaming_engine::StreamingSession;
@@ -125,6 +126,9 @@ const PUNCTUATION_SILENCE_THRESHOLD: f64 = 0.5;
 
 /// VAD 伪流式 tick 间隔（毫秒）
 const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 300;
+
+/// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
+pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
 
 /// 录音生命周期协调器
 /// 单线程串行化所有事件，消除竞态条件
@@ -919,8 +923,7 @@ fn check_and_trigger_polish(
     config: &AppConfig,
     tx: &Sender<Command>,
 ) {
-    if !config.polish_enabled
-        || config.polish_interval <= 0.0
+    if config.polish_mode != PolishMode::Intermediate
         || *polish_pending
         || accumulated_text.is_empty()
     {
@@ -928,7 +931,8 @@ fn check_and_trigger_polish(
     }
 
     let elapsed = last_polish_time.elapsed().as_secs_f64();
-    if elapsed < config.polish_interval {
+    // interval<=0 时用下限，避免每 tick 触发刷爆 LLM
+    if elapsed < config.polish_interval.max(MIN_POLISH_INTERVAL_SEC) {
         return;
     }
 
