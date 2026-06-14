@@ -6,6 +6,7 @@ use crate::config::PolishMode;
 use crate::engine::TranscriptionEngine;
 use crate::paste;
 use crate::streaming_engine::StreamingSession;
+use crate::transcript::Transcript;
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -34,15 +35,12 @@ enum Command {
     PolishDone { result: Result<String, String> },
 }
 
-/// 协调器阶段
 enum Stage {
     Idle,
     /// 流式识别：边录边识别
     Streaming {
         engine: StreamingSession,
-        accumulated_text: String,
-        /// 原生识别全文（未经 polish，入库用）
-        raw_text: String,
+        transcript: Transcript,
         streaming_active: Arc<AtomicBool>,
         /// VAD 实例，用于检测静音间隔
         vad: Option<octopus_asr::vad::SileroVad>,
@@ -50,13 +48,6 @@ enum Stage {
         silence_duration: f64,
         /// 是否已对当前静音进行了主动冲刷（避免重复冲刷）
         flushed: bool,
-        /// 是否有润色请求进行中
-        polish_pending: bool,
-        /// 已润色文本的字符基准：发起润色时设为当前长度，润色完成合并后更新为结果长度。
-        /// 其后追加的为未润色增量；仅当出现新增内容（当前长度 > 基准）时才会再次发起润色。
-        polish_base_len: usize,
-        /// 上次发起润色的时间
-        last_polish_time: Instant,
     },
     /// VAD 伪流式：tick 驱动分段识别（非流式引擎使用）
     VadSegmented {
@@ -65,10 +56,7 @@ enum Stage {
         audio_buffer: Vec<f32>,
         /// 前一窗口末尾 0.2s 的 overlap 音频
         overlap_tail: Vec<f32>,
-        /// 累积识别文本
-        accumulated_text: String,
-        /// 原生识别全文（未经 polish，入库用）
-        raw_text: String,
+        transcript: Transcript,
         /// 当前静音持续时长（秒）
         silence_duration: f64,
         /// 缓冲区是否包含语音
@@ -83,25 +71,18 @@ enum Stage {
         completed_results: HashMap<u64, String>,
         /// tick 线程控制标志
         tick_active: Arc<AtomicBool>,
-        /// 是否有润色请求进行中
-        polish_pending: bool,
-        /// 已润色文本的字符基准：发起润色时设为当前长度，润色完成合并后更新为结果长度。
-        /// 其后追加的为未润色增量；仅当出现新增内容（当前长度 > 基准）时才会再次发起润色。
-        polish_base_len: usize,
-        /// 上次发起润色的时间
-        last_polish_time: Instant,
     },
     /// 等待所有识别完成
     WaitingCompletion {
-        accumulated_text: String,
-        /// 原生识别全文（未经 polish，入库用）；从 VadSegmented 继承
-        raw_text: String,
+        transcript: Transcript,
         active_count: u32,
         completed_seq: u64,
         completed_results: HashMap<u64, String>,
     },
     /// 粘贴中
     Pasting {
+        /// 识别记录主键（Task 6 过程入库用）
+        id: i64,
         /// 原生全文（入库用，不受编辑影响）
         raw_text: String,
         /// 展示/入库的修正版（初始=润色结果，用户编辑会更新）
@@ -127,6 +108,14 @@ const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 300;
 
 /// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
 pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
+
+/// 当前 Unix 毫秒时间戳（作 Transcript id / DB 主键）。
+fn now_millis() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as i64)
+        .unwrap_or(0)
+}
 
 /// 录音生命周期协调器
 /// 单线程串行化所有事件，消除竞态条件
@@ -205,6 +194,7 @@ impl Coordinator {
                     Command::PasteDone => {
                         // 入库（从 Pasting 取数据；用户编辑已反映到 polished_text）
                         if let Stage::Pasting {
+                            id: _,
                             raw_text,
                             polished_text,
                             polish_status,
@@ -325,15 +315,11 @@ fn handle_toggle(
 
                         *stage = Stage::Streaming {
                             engine: streaming_engine,
-                            accumulated_text: String::new(),
-                            raw_text: String::new(),
+                            transcript: Transcript::new(now_millis(), config.polish_mode),
                             streaming_active,
                             vad,
                             silence_duration: 0.0,
                             flushed: false,
-                            polish_pending: false,
-                            polish_base_len: 0,
-                            last_polish_time: Instant::now(),
                         };
                     }
                     Err(e) => {
@@ -360,8 +346,7 @@ fn handle_toggle(
                                 vad,
                                 audio_buffer: Vec::new(),
                                 overlap_tail: Vec::new(),
-                                accumulated_text: String::new(),
-                                raw_text: String::new(),
+                                transcript: Transcript::new(now_millis(), config.polish_mode),
                                 silence_duration: 0.0,
                                 has_speech: false,
                                 active_count: 0,
@@ -369,9 +354,6 @@ fn handle_toggle(
                                 completed_seq: 0,
                                 completed_results: HashMap::new(),
                                 tick_active,
-                                polish_pending: false,
-                                polish_base_len: 0,
-                                last_polish_time: Instant::now(),
                             };
                         }
                         Err(e) => {
@@ -390,17 +372,13 @@ fn handle_toggle(
         Stage::VadSegmented {
             audio_buffer,
             overlap_tail,
-            accumulated_text,
-            raw_text,
+            transcript,
             has_speech,
             active_count,
             next_seq,
             completed_seq,
             completed_results,
             tick_active,
-            polish_pending,
-            polish_base_len: _,
-            last_polish_time: _,
             ..
         } => {
             // VAD 伪流式：停止 tick，发送剩余缓冲区，决定等待完成或直接粘贴
@@ -434,52 +412,62 @@ fn handle_toggle(
             }
 
             let active = *active_count;
-            let text = accumulated_text.clone();
-            let raw = raw_text.clone();
-
             // 忽略中间润色的 pending 结果（最终润色会重新处理）
-            *polish_pending = false;
+            transcript.clear_polish_pending();
             let cseq = *completed_seq;
             let cresults = std::mem::take(completed_results);
 
             if active > 0 {
+                // 把 transcript 移入 WaitingCompletion（用临时占位避免部分移动）
+                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
                 *stage = Stage::WaitingCompletion {
-                    accumulated_text: text,
-                    raw_text: raw,
+                    transcript: tr,
                     active_count: active,
                     completed_seq: cseq,
                     completed_results: cresults,
                 };
             } else {
-                // 无进行中识别，直接粘贴
-                start_pasting(
-                    stage,
-                    &text,
-                    &raw,
-                    &config.asr_engine,
-                    "vad_segmented",
-                    config,
-                    app_handle,
-                    tx,
-                );
+                let final_text = if transcript.full().is_empty() {
+                    String::new()
+                } else if transcript
+                    .full()
+                    .ends_with(|c: char| ",.，。！？!?\n".contains(c))
+                {
+                    transcript.db_text()
+                } else {
+                    format!("{}。", transcript.db_text())
+                };
+                if final_text.is_empty() {
+                    *stage = Stage::Idle;
+                    crate::overlay::hide_overlay(app_handle);
+                    crate::result_window::hide_result(app_handle);
+                    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                } else {
+                    let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+                    start_pasting(
+                        stage,
+                        &final_text,
+                        tr,
+                        &config.asr_engine,
+                        "vad_segmented",
+                        config,
+                        app_handle,
+                        tx,
+                    );
+                }
             }
         }
 
         Stage::Streaming {
             engine: streaming_engine,
-            accumulated_text,
-            raw_text,
+            transcript,
             streaming_active,
-            polish_pending,
-            polish_base_len: _,
-            last_polish_time: _,
             ..
         } => {
             // 流式模式：停止流式，获取最终文本，粘贴
             info!("Toggle: stopping streaming, finalizing");
 
-            // 忽略中间润色的 pending 结果
-            *polish_pending = false;
+            transcript.clear_polish_pending();
 
             // 停止 tick
             streaming_active.store(false, Ordering::Relaxed);
@@ -496,7 +484,7 @@ fn handle_toggle(
                 Ok(text) => text,
                 Err(e) => {
                     error!("Streaming finish failed: {}", e);
-                    accumulated_text.clone()
+                    transcript.db_text()
                 }
             };
 
@@ -506,12 +494,10 @@ fn handle_toggle(
             // 停止录音
             let _ = audio.stop();
 
-            // 合并最终文本
-            let combined = if final_text.is_empty() {
-                accumulated_text.clone()
-            } else {
-                final_text
-            };
+            if !final_text.is_empty() {
+                transcript.set_full(&final_text);
+            }
+            let combined = transcript.db_text();
 
             info!("Final streaming text: '{}'", combined);
 
@@ -522,15 +508,14 @@ fn handle_toggle(
                 return;
             }
 
-            // 显示最终结果
-            crate::result_window::show_result(app_handle, &combined);
+            // 显示最终结果（润色前的 display_text，含中间润色结果）
+            crate::result_window::show_result(app_handle, &transcript.display_text());
 
-            // 粘贴（raw_text 先 clone 以避开与 stage 的借用冲突）
-            let raw = raw_text.clone();
+            let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
             start_pasting(
                 stage,
                 &combined,
-                &raw,
+                tr,
                 &config.asr_engine,
                 "streaming",
                 config,
@@ -549,11 +534,11 @@ fn handle_toggle(
     }
 }
 
-/// 开始粘贴阶段（支持最终润色）
+/// 开始粘贴阶段（支持最终润色）。`transcript` 移交进 Pasting 持 id（Task 6 用）。
 fn start_pasting(
     stage: &mut Stage,
     text: &str,
-    raw_text: &str,
+    transcript: Transcript,
     engine: &str,
     engine_mode: &str,
     config: &AppConfig,
@@ -593,9 +578,15 @@ fn start_pasting(
 
     crate::result_window::show_result(app_handle, &final_text);
 
+    let id = transcript.id;
     *stage = Stage::Pasting {
-        raw_text: raw_text.to_string(),
-        polished_text: final_text.clone(),
+        id,
+        raw_text: transcript.db_text(),
+        polished_text: if polish_status == "done" {
+            final_text.clone()
+        } else {
+            String::new()
+        },
         polish_status: polish_status.to_string(),
         engine: engine.to_string(),
         engine_mode: engine_mode.to_string(),
@@ -619,26 +610,21 @@ fn start_pasting(
         });
 }
 
-/// 消费已完成序号的结果，返回新拼接的文本
-///
-/// `raw_text` 与 `accumulated_text` 同步追加（均为未 polish 的 ASR 文本）。
+/// 消费已完成序号的结果，把新段追加到 Transcript。
 fn consume_completed_results(
     completed_seq: &mut u64,
     completed_results: &mut HashMap<u64, String>,
-    accumulated_text: &mut String,
-    raw_text: &mut String,
+    transcript: &mut Transcript,
 ) {
     while let Some(text) = completed_results.remove(completed_seq) {
         if !text.is_empty() {
-            // 段间加逗号分隔（如果已有文本且新文本不以标点开头）
-            if !accumulated_text.is_empty()
+            // 段间加逗号（已有文本且新段不以标点开头）
+            if !transcript.full().is_empty()
                 && !text.starts_with(|c: char| ",.，。！？!?\n".contains(c))
             {
-                accumulated_text.push('，');
-                raw_text.push('，');
+                transcript.append_segment("，");
             }
-            accumulated_text.push_str(&text);
-            raw_text.push_str(&text);
+            transcript.append_segment(&text);
         }
         *completed_seq += 1;
     }
@@ -657,14 +643,11 @@ fn handle_vad_segmented_tick(
         vad,
         audio_buffer,
         overlap_tail,
-        accumulated_text,
+        transcript,
         silence_duration,
         has_speech,
         active_count,
         next_seq,
-        polish_pending,
-        polish_base_len,
-        last_polish_time,
         ..
     } = stage
     {
@@ -735,19 +718,12 @@ fn handle_vad_segmented_tick(
         }
 
         // 5. 更新 result window
-        if !accumulated_text.is_empty() {
-            crate::result_window::update_result(app_handle, accumulated_text);
+        if !transcript.full().is_empty() {
+            crate::result_window::update_result(app_handle, &transcript.display_text());
         }
 
-        // 6. 检查润色
-        check_and_trigger_polish(
-            accumulated_text,
-            polish_pending,
-            polish_base_len,
-            last_polish_time,
-            config,
-            tx,
-        );
+        // 6. 检查润色（Task 5 接入；此处保留占位签名）
+        check_and_trigger_polish(transcript, *silence_duration, config, tx);
     }
 }
 
@@ -887,38 +863,17 @@ fn spawn_polish_thread(
     });
 }
 
-/// 检查润色条件并触发（在 tick 中调用）
+/// 检查润色条件并触发（停顿驱动润色，Task 5 实现）。
+///
+/// 当前为占位实现：Task 4 仅做文本流接入，润色触发逻辑下沉到 Task 5。
 fn check_and_trigger_polish(
-    accumulated_text: &str,
-    polish_pending: &mut bool,
-    polish_base_len: &mut usize,
-    last_polish_time: &mut Instant,
-    config: &AppConfig,
-    tx: &Sender<Command>,
+    transcript: &mut Transcript,
+    _silence_duration: f64,
+    _config: &AppConfig,
+    _tx: &Sender<Command>,
 ) {
-    if config.polish_mode != PolishMode::Intermediate
-        || *polish_pending
-        || accumulated_text.is_empty()
-    {
-        return;
-    }
-
-    let elapsed = last_polish_time.elapsed().as_secs_f64();
-    // interval<=0 时用下限，避免每 tick 触发刷爆 LLM
-    if elapsed < config.polish_interval.max(MIN_POLISH_INTERVAL_SEC) {
-        return;
-    }
-
-    // 距上次润色后若无新增识别内容，跳过，避免无谓调用（及空结果告警）
-    let current_len = accumulated_text.chars().count();
-    if current_len <= *polish_base_len {
-        return;
-    }
-
-    // 条件满足，发起润色
-    *polish_base_len = current_len;
-    *polish_pending = true;
-    spawn_polish_thread(accumulated_text.to_string(), config, tx);
+    // 占位：Task 5 实现停顿驱动润色（snapshot_for_polish + spawn_polish_thread）
+    let _ = transcript;
 }
 
 /// 处理 StreamingTick 命令
@@ -931,76 +886,48 @@ fn handle_streaming_tick(
 ) {
     if let Stage::Streaming {
         engine,
-        accumulated_text,
-        raw_text,
+        transcript,
         vad,
         silence_duration,
         flushed,
-        polish_pending,
-        polish_base_len,
-        last_polish_time,
         ..
     } = stage
     {
-        // 排空音频缓冲区
         let samples = audio.drain_samples();
         if samples.is_empty() {
             return;
         }
 
-        // 用 VAD 检测本段音频中语音/静音的比例
         let was_silent = detect_silence_gap(vad, &samples, silence_duration);
-
-        // 如果静音计时重置为 0，说明恢复了说话，重置 flushed 状态
         if *silence_duration == 0.0 {
             *flushed = false;
         }
 
-        // 送入流式引擎（如果之前有足够长的静音间隔，插入逗号）
         match engine.accept_samples(&samples, was_silent) {
             Ok(Some(new_text)) => {
-                *accumulated_text = new_text.clone();
-                *raw_text = new_text;
-
-                // 更新 result window 显示
-                crate::result_window::update_result(app_handle, accumulated_text);
+                transcript.set_full(&new_text);
+                crate::result_window::update_result(app_handle, &transcript.display_text());
             }
-            Ok(None) => {
-                // 没有新结果
-            }
-            Err(e) => {
-                warn!("Streaming accept_samples error: {}", e);
-            }
+            Ok(None) => {}
+            Err(e) => warn!("Streaming accept_samples error: {}", e),
         }
 
-        // 如果累积静音超过阈值，且尚未进行主动冲刷，则执行 flush 强制吐尾音
+        // 静音主动冲刷（>0.5s）
         if *silence_duration >= PUNCTUATION_SILENCE_THRESHOLD && !*flushed {
             match engine.flush() {
                 Ok(Some(new_text)) => {
-                    *accumulated_text = new_text.clone();
-                    *raw_text = new_text;
-                    debug!("Flushed: '{}'", accumulated_text);
-
-                    // 更新 result window 显示
-                    crate::result_window::update_result(app_handle, accumulated_text);
+                    transcript.set_full(&new_text);
+                    debug!("Flushed: '{}'", transcript.full());
+                    crate::result_window::update_result(app_handle, &transcript.display_text());
                 }
                 Ok(None) => {}
-                Err(e) => {
-                    warn!("Streaming flush error: {}", e);
-                }
+                Err(e) => warn!("Streaming flush error: {}", e),
             }
             *flushed = true;
         }
 
-        // 检查润色
-        check_and_trigger_polish(
-            accumulated_text,
-            polish_pending,
-            polish_base_len,
-            last_polish_time,
-            config,
-            tx,
-        );
+        // 停顿润色（Task 5 接入；此处先保留 check_and_trigger_polish 占位签名）
+        check_and_trigger_polish(transcript, *silence_duration, config, tx);
     }
 }
 
@@ -1077,9 +1004,6 @@ fn handle_cancel(
         Stage::Streaming {
             engine,
             streaming_active,
-            polish_pending: _,
-            polish_base_len: _,
-            last_polish_time: _,
             ..
         } => {
             info!("Cancel: stopping streaming");
@@ -1088,11 +1012,7 @@ fn handle_cancel(
             let _ = audio.stop();
         }
         Stage::VadSegmented {
-            tick_active,
-            polish_pending: _,
-            polish_base_len: _,
-            last_polish_time: _,
-            ..
+            tick_active, ..
         } => {
             info!("Cancel: stopping VadSegmented");
             tick_active.store(false, Ordering::Relaxed);
@@ -1121,42 +1041,34 @@ fn handle_transcription_done(
 ) {
     match stage {
         Stage::VadSegmented {
-            accumulated_text,
-            raw_text,
+            transcript,
             active_count,
             completed_seq,
             completed_results,
-            polish_pending: _,
-            polish_base_len: _,
-            last_polish_time: _,
             ..
         } => {
             *active_count = active_count.saturating_sub(1);
 
             match text {
-                Ok(transcription) => {
-                    info!("VadSegmented transcription seq={}: '{}'", seq, transcription);
-                    if !transcription.is_empty() {
-                        completed_results.insert(seq, transcription);
+                Ok(t) => {
+                    if !t.is_empty() {
+                        info!("VadSegmented transcription seq={}: '{}'", seq, t);
+                        completed_results.insert(seq, t);
                     }
                 }
-                Err(e) => {
-                    error!("VadSegmented transcription seq={} failed: {}", seq, e);
-                }
+                Err(e) => error!("VadSegmented transcription seq={} failed: {}", seq, e),
             }
 
-            // 消费连续序号的结果（accumulated_text 与 raw_text 同步追加）
-            consume_completed_results(completed_seq, completed_results, accumulated_text, raw_text);
+            // 消费连续序号的结果（追加到 Transcript）
+            consume_completed_results(completed_seq, completed_results, transcript);
 
-            // 更新 result window
-            if !accumulated_text.is_empty() {
-                crate::result_window::update_result(app_handle, accumulated_text);
+            if !transcript.full().is_empty() {
+                crate::result_window::update_result(app_handle, &transcript.display_text());
             }
         }
 
         Stage::WaitingCompletion {
-            accumulated_text,
-            raw_text,
+            transcript,
             active_count,
             completed_seq,
             completed_results,
@@ -1164,51 +1076,45 @@ fn handle_transcription_done(
             *active_count = active_count.saturating_sub(1);
 
             match text {
-                Ok(transcription) => {
-                    info!("WaitingCompletion transcription seq={}: '{}'", seq, transcription);
-                    if !transcription.is_empty() {
-                        completed_results.insert(seq, transcription);
+                Ok(t) => {
+                    if !t.is_empty() {
+                        info!("WaitingCompletion transcription seq={}: '{}'", seq, t);
+                        completed_results.insert(seq, t);
                     }
                 }
-                Err(e) => {
-                    error!("WaitingCompletion transcription seq={} failed: {}", seq, e);
-                }
+                Err(e) => error!("WaitingCompletion transcription seq={} failed: {}", seq, e),
             }
 
-            // 消费连续序号的结果（accumulated_text 与 raw_text 同步追加）
-            consume_completed_results(
-                completed_seq,
-                completed_results,
-                accumulated_text,
-                raw_text,
-            );
+            consume_completed_results(completed_seq, completed_results, transcript);
 
             if *active_count == 0 {
-                // 所有识别完成，拼接最终文本并粘贴
-                let text = std::mem::take(accumulated_text);
-                let raw = std::mem::take(raw_text);
-                if !text.is_empty() {
-                    // 追加句号
-                    let final_text = if text.ends_with(|c: char| ",.，。！？!?\n".contains(c)) {
-                        text
-                    } else {
-                        format!("{}。", text)
-                    };
+                let final_text = if transcript.full().is_empty() {
+                    String::new()
+                } else if transcript
+                    .full()
+                    .ends_with(|c: char| ",.，。！？!?\n".contains(c))
+                {
+                    transcript.db_text()
+                } else {
+                    format!("{}。", transcript.db_text())
+                };
+                if final_text.is_empty() {
+                    *stage = Stage::Idle;
+                    crate::overlay::hide_overlay(app_handle);
+                    crate::result_window::hide_result(app_handle);
+                    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                } else {
+                    let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
                     start_pasting(
                         stage,
                         &final_text,
-                        &raw,
+                        tr,
                         &config.asr_engine,
                         "vad_segmented",
                         config,
                         app_handle,
                         tx,
                     );
-                } else {
-                    *stage = Stage::Idle;
-                    crate::overlay::hide_overlay(app_handle);
-                    crate::result_window::hide_result(app_handle);
-                    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
                 }
             }
         }
@@ -1235,7 +1141,7 @@ fn start_tick_thread(tx: Sender<Command>, streaming_active: Arc<AtomicBool>) {
     });
 }
 
-/// 处理 PolishDone 命令
+/// 处理 PolishDone 命令：把润色结果写回 Transcript。
 fn handle_polish_done(
     stage: &mut Stage,
     result: Result<String, String>,
@@ -1243,63 +1149,28 @@ fn handle_polish_done(
     app_handle: &tauri::AppHandle,
     _tx: &Sender<Command>,
 ) {
-    match stage {
-        Stage::Streaming {
-            accumulated_text,
-            polish_pending,
-            polish_base_len,
-            last_polish_time,
-            ..
-        }
-        | Stage::VadSegmented {
-            accumulated_text,
-            polish_pending,
-            polish_base_len,
-            last_polish_time,
-            ..
-        } => {
-            *polish_pending = false;
-
-            match result {
-                Ok(polished) => {
-                    if polished.is_empty() {
-                        warn!("Polish returned empty, keeping original text");
-                        return;
-                    }
-
-                    // 取增量：润色期间新追加的文本
-                    let increment: String = accumulated_text
-                        .chars()
-                        .skip(*polish_base_len)
-                        .collect();
-
-                    // 合并：润色结果 + 增量
-                    let merged = format!("{}{}", polished, increment);
-                    info!(
-                        "Polish done: base_len={} → merged len={} (increment {} chars)",
-                        polish_base_len,
-                        merged.chars().count(),
-                        increment.chars().count()
-                    );
-
-                    *accumulated_text = merged;
-                    // 更新基准为合并后长度：仅当其后出现新增内容时才再次润色
-                    *polish_base_len = accumulated_text.chars().count();
-                    *last_polish_time = Instant::now();
-
-                    // 更新 result window
-                    if !accumulated_text.is_empty() {
-                        crate::result_window::update_result(app_handle, accumulated_text);
-                    }
-                }
-                Err(e) => {
-                    warn!("Polish failed: {}, keeping original text", e);
-                }
-            }
-        }
-
+    let transcript = match stage {
+        Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
         _ => {
             debug!("PolishDone ignored in stage {:?}", stage_name(stage));
+            return;
+        }
+    };
+    match result {
+        Ok(polished) => {
+            if polished.is_empty() {
+                warn!("Polish returned empty, keeping previous");
+                transcript.on_polish_failed();
+                return;
+            }
+            transcript.on_polish_done(polished);
+            if !transcript.full().is_empty() {
+                crate::result_window::update_result(app_handle, &transcript.display_text());
+            }
+        }
+        Err(e) => {
+            warn!("Polish failed: {}, keeping previous", e);
+            transcript.on_polish_failed();
         }
     }
 }
