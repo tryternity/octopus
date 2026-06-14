@@ -36,17 +36,24 @@ pub fn paste<R: Runtime>(
     config: &AppConfig,
 ) -> Result<()> {
     let method = PasteMethod::from(config.paste_method.as_str());
-    info!("Pasting via {:?}, text len: {}", method, text.len());
+    let wtc = config.write_to_clipboard;
+    info!(
+        "Pasting via {:?}, write_to_clipboard={}, text len: {}",
+        method,
+        wtc,
+        text.len()
+    );
 
     match method {
         PasteMethod::None => {
+            // None 模式：唯一目的就是写剪贴板，忽略 write_to_clipboard 配置
             write_to_clipboard(text, app_handle)?;
         }
         PasteMethod::Clipboard => {
-            paste_via_clipboard(text, app_handle)?;
+            paste_via_clipboard(text, app_handle, wtc)?;
         }
         PasteMethod::Direct => {
-            paste_direct(text)?;
+            paste_direct(text, app_handle, wtc)?;
         }
     }
 
@@ -61,21 +68,26 @@ fn write_to_clipboard<R: Runtime>(text: &str, app_handle: &tauri::AppHandle<R>) 
     Ok(())
 }
 
-fn paste_via_clipboard<R: Runtime>(text: &str, app_handle: &tauri::AppHandle<R>) -> Result<()> {
+fn paste_via_clipboard<R: Runtime>(
+    text: &str,
+    app_handle: &tauri::AppHandle<R>,
+    write_to_clipboard: bool,
+) -> Result<()> {
     let clipboard = app_handle.clipboard();
 
-    // 1. Save current clipboard content
-    let saved = clipboard.read_text().unwrap_or_default();
+    // 仅在不保留识别结果时，才需要保存原剪贴板以便恢复
+    let saved = if !write_to_clipboard {
+        clipboard.read_text().unwrap_or_default()
+    } else {
+        String::new()
+    };
 
-    // 2. Write transcribed text to clipboard
     clipboard
         .write_text(text)
         .map_err(|e| anyhow::anyhow!("Clipboard write failed: {}", e))?;
 
-    // 3. Wait for clipboard to take effect
     std::thread::sleep(Duration::from_millis(50));
 
-    // 4. Send Cmd+V (macOS) / Ctrl+V (Linux/Windows)
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| anyhow::anyhow!("Enigo init failed: {}", e))?;
 
@@ -94,22 +106,31 @@ fn paste_via_clipboard<R: Runtime>(text: &str, app_handle: &tauri::AppHandle<R>)
         .key(mod_key, Direction::Release)
         .map_err(|e| anyhow::anyhow!("Mod release: {}", e))?;
 
-    // 5. Wait for paste to complete
     std::thread::sleep(Duration::from_millis(50));
 
-    // 6. Restore original clipboard content
-    let _ = clipboard.write_text(&saved);
+    // 仅在不保留识别结果时恢复原剪贴板
+    if !write_to_clipboard {
+        let _ = clipboard.write_text(&saved);
+    }
 
     Ok(())
 }
 
-fn paste_direct(text: &str) -> Result<()> {
+fn paste_direct<R: Runtime>(
+    text: &str,
+    app_handle: &tauri::AppHandle<R>,
+    write_to_clipboard: bool,
+) -> Result<()> {
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| anyhow::anyhow!("Enigo init failed: {}", e))?;
 
     #[cfg(target_os = "linux")]
     {
         if try_linux_direct_typing(text) {
+            if write_to_clipboard {
+                let clipboard = app_handle.clipboard();
+                let _ = clipboard.write_text(text);
+            }
             return Ok(());
         }
         info!("Falling back to enigo for direct input");
@@ -118,6 +139,14 @@ fn paste_direct(text: &str) -> Result<()> {
     enigo
         .text(text)
         .map_err(|e| anyhow::anyhow!("Direct type failed: {}", e))?;
+
+    // 粘贴完成后按需写剪贴板
+    if write_to_clipboard {
+        let clipboard = app_handle.clipboard();
+        clipboard
+            .write_text(text)
+            .map_err(|e| anyhow::anyhow!("Clipboard write failed: {}", e))?;
+    }
     Ok(())
 }
 

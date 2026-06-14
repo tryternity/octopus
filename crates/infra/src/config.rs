@@ -72,6 +72,11 @@ pub struct AppConfig {
     #[serde(default = "default_paste_method")]
     pub paste_method: String,
 
+    /// 粘贴后是否把识别结果写入剪贴板（默认 true，方便他处再粘贴）。
+    /// false 时保留用户原剪贴板内容（等同旧行为）。
+    #[serde(default = "default_write_to_clipboard")]
+    pub write_to_clipboard: bool,
+
     /// 麦克风名称（空 = 系统默认）
     #[serde(default)]
     pub microphone: String,
@@ -138,6 +143,9 @@ fn default_shortcut() -> String {
 fn default_paste_method() -> String {
     "clipboard".into()
 }
+fn default_write_to_clipboard() -> bool {
+    true
+}
 fn default_overlay_position() -> String {
     "top".into()
 }
@@ -171,6 +179,7 @@ impl Default for AppConfig {
             language: default_language(),
             shortcut: default_shortcut(),
             paste_method: default_paste_method(),
+            write_to_clipboard: default_write_to_clipboard(),
             microphone: String::new(),
             segment_duration: default_segment_duration(),
             segment_silence: default_segment_silence(),
@@ -222,5 +231,12 @@ mod tests {
     #[test]
     fn polish_mode_default_is_disabled() {
         assert_eq!(PolishMode::default(), PolishMode::Disabled);
+    }
+
+    #[test]
+    fn write_to_clipboard_defaults_to_true() {
+        // 空 yaml → 所有字段走 serde 默认；write_to_clipboard 应默认 true
+        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
+        assert!(cfg.write_to_clipboard, "write_to_clipboard 应默认 true");
     }
 }
