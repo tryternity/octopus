@@ -8,6 +8,36 @@ use serde::Deserialize;
 
 use crate::octopus_config_home;
 
+/// LLM 润色模式（config.yaml 的 polish_mode 字段，整数 0/1/2）
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PolishMode {
+    /// 0 — 完全不润色（默认）
+    #[default]
+    Disabled,
+    /// 1 — 仅最终润色（识别结束后润色一次）
+    FinalOnly,
+    /// 2 — 中间润色 + 最终润色
+    Intermediate,
+}
+
+impl<'de> Deserialize<'de> for PolishMode {
+    fn deserialize<D>(deserializer: D) -> std::result::Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let n = u8::deserialize(deserializer)?;
+        Ok(match n {
+            0 => PolishMode::Disabled,
+            1 => PolishMode::FinalOnly,
+            2 => PolishMode::Intermediate,
+            other => {
+                log::warn!("polish_mode={} 非法（应为 0/1/2），回退 0(Disabled)", other);
+                PolishMode::Disabled
+            }
+        })
+    }
+}
+
 /// 应用完整配置，读取自 ~/.octopus/config.yaml，字段缺失时使用默认值。
 ///
 /// 各端按需读取字段：cli 只用 microphone；desktop 用全部；asr 用 asr_engine 解析引擎。
@@ -68,6 +98,10 @@ pub struct AppConfig {
     /// 润色总开关
     #[serde(default)]
     pub polish_enabled: bool,
+
+    /// 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色
+    #[serde(default)]
+    pub polish_mode: PolishMode,
 
     /// 中间润色间隔（秒），0 = 仅最终润色
     #[serde(default = "default_polish_interval")]
@@ -147,6 +181,7 @@ impl Default for AppConfig {
             segment_overlap: default_segment_overlap(),
             overlay_position: default_overlay_position(),
             polish_enabled: false,
+            polish_mode: PolishMode::default(),
             polish_interval: default_polish_interval(),
             llm_provider: String::new(),
             llm_model: default_polish_model(),
@@ -170,4 +205,27 @@ pub fn load_config() -> Result<AppConfig> {
     let text = std::fs::read_to_string(&config_path)?;
     let config: AppConfig = serde_yaml::from_str(&text)?;
     Ok(config)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn polish_mode_deserialize_values() {
+        assert_eq!(serde_yaml::from_str::<PolishMode>("0").unwrap(), PolishMode::Disabled);
+        assert_eq!(serde_yaml::from_str::<PolishMode>("1").unwrap(), PolishMode::FinalOnly);
+        assert_eq!(serde_yaml::from_str::<PolishMode>("2").unwrap(), PolishMode::Intermediate);
+    }
+
+    #[test]
+    fn polish_mode_invalid_falls_back_to_disabled() {
+        assert_eq!(serde_yaml::from_str::<PolishMode>("3").unwrap(), PolishMode::Disabled);
+        assert_eq!(serde_yaml::from_str::<PolishMode>("99").unwrap(), PolishMode::Disabled);
+    }
+
+    #[test]
+    fn polish_mode_default_is_disabled() {
+        assert_eq!(PolishMode::default(), PolishMode::Disabled);
+    }
 }
