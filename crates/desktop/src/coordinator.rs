@@ -576,6 +576,7 @@ fn start_pasting(
 ) {
     if text.is_empty() {
         *stage = Stage::Idle;
+        crate::result_window::hide_result(app_handle);
         crate::overlay::hide_overlay(app_handle);
         crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
         return;
