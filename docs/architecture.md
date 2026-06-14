@@ -104,11 +104,10 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - 流式尾音冲刷（Active Flush）：流式模式累积静音 ≥0.5s 时向引擎补零，强制对齐右上下文 / 触发 CIF，把憋住的尾音即时吐出；走独立路径不插逗号，每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。详见 [spec](superpowers/specs/2026-06-13-streaming-tail-flush-design.md)
 
 **文本持久化（嵌入式 SQLite）：**
-- 存储：`~/.octopus/octopus.db`（`crates/desktop/src/db.rs`，全局 `OnceLock<Mutex<Connection>>`）
+- 存储：`~/.octopus/octopus.db`（`crates/asr/src/db.rs`，全局 `OnceLock<Mutex<Connection>>`；cli/server/desktop 共用）
 - `transcriptions` 表：识别历史，每条存原生识别全文（`raw_text`）+ 润色/编辑版（`polished_text`）+ 润色状态（`polish_status`：`off`/`done`/`failed`）+ 元数据（engine / engine_mode / created_at / char_count）
-- `models` 表：模型配置（model.json 拍平迁入）
-- 首次启动（DB 新建）从 `history.txt` + `model.json` 一次性迁移（`PRAGMA user_version` 门控，幂等）
-- `record.txt` / `history.txt` 在 desktop 已废弃（代码不再读写）
+- `models` 表：模型配置（**唯一来源**，首次建库时 `seed_default_models` 写入默认引擎集）
+- `model.json` / `history.txt` / `record.txt` 已从代码彻底删除——DB 是唯一配置/存储源
 - `polish_status` 基于润色调用结果：未启用→`off`；启用且返回非空→`done`；启用但返回空或失败→`failed`
 
 支持三种引擎接入模式：
@@ -118,27 +117,28 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 ## 模型管理
 
-所有模型通过 HuggingFace Hub 缓存管理：
+模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需从 HuggingFace 下载到缓存。
 
 ```
 ~/.octopus/
-├── octopus.db          # 嵌入式 SQLite（识别历史 + 模型配置，desktop 运行时主存储）
-├── model.json          # 模型配置（启动时迁移入 DB；cli/server 仍读此文件）
-├── config.yaml         # 应用配置（麦克风选择等）
-└── models/
-    └── silero_vad_v4.onnx  # VAD 模型
+├── octopus.db          # 嵌入式 SQLite（models 表 + transcriptions 表，唯一存储）
+├── config.yaml         # 应用配置（麦克风/引擎选择/分段参数等）
+└── models/             # 随应用打包的小模型（固定路径）
+    ├── silero_vad_v4.onnx   # VAD（1.8M，find_silero_vad 固定加载）
+    └── zipformer/           # 默认 ASR（27M，model.int8.onnx + tokens.txt）
 
-~/.cache/huggingface/hub/   # HF 缓存
-├── models--onnx-community--whisper-small/
-├── models--csukuangfj--sherpa-onnx-sense-voice-*/
-├── models--csukuangfj--sherpa-onnx-streaming-paraformer-zh/
-└── ...
+~/.cache/huggingface/hub/   # 大模型 HF 缓存（whisper/sensevoice/qwen3/paraformer 等，按需下载）
 ```
 
-**运行时模型查找（desktop vs cli/server）：**
-- desktop：启动时 `db::init()` 建表/迁移 → `db::load_app_config()` 从 `models` 表构造 `AppConfig` → `octopus_asr::config::set_runtime_config(cfg)` 注入。asr 的 `load_config()` 优先返回注入版（`OnceLock`），`resolve_engine_category` / `find_silero_vad` / `list_engines` 等查找函数现从 DB 读。
-- cli/server：不注入，仍读 `~/.octopus/model.json`（保持兼容）。
-- **手编 `models` 表需重启 desktop 生效**（`OnceLock` 为启动期一次性注入，运行中不可热更新）。
+**模型目录解析（`config::resolve_model_dir`）** —— source 字段双模式：
+- 本地相对路径（如 `models/zipformer`）→ `~/.octopus/<source>`（随应用打包的小模型）
+- HF repo 名（如 `onnx-community/whisper-small`）→ `~/.cache/huggingface/hub/`（大模型缓存）
+
+**运行时配置加载（三端统一）：**
+- `octopus_asr::config::load_config()` 是唯一入口：首次调用 `db::ensure_db()`（自动建表 + seed 默认引擎），读 `models` 表构造 `AppConfig`，缓存到 `OnceLock`。
+- cli / server / desktop 三端无差别，均走此路径，**不再读 model.json**。
+- VAD 模型固定路径（`find_silero_vad` 直接返回 `~/.octopus/models/silero_vad_v4.onnx`），不进 DB、不读配置。
+- **手编 `models` 表需重启进程生效**（`OnceLock` 缓存，运行中不可热更新）。
 
 ## 支持的 ASR 引擎
 

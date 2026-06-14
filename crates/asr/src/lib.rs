@@ -1,9 +1,10 @@
 //! octopus-asr: ASR inference library (Whisper, SenseVoice, Paraformer, Qwen3-ASR, Silero VAD)
 //!
-//! All models are discovered via `~/.octopus/model.json` and `~/.octopus/config.yaml`.
+//! 模型配置存于 `~/.octopus/octopus.db`（models 表，唯一来源）；应用配置读 `~/.octopus/config.yaml`。
 
 pub mod audio;
 pub mod config;
+pub mod db;
 pub mod engine;
 pub mod paraformer;
 pub mod qwen3_asr;

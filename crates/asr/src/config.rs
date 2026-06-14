@@ -18,19 +18,12 @@ pub fn handy_home() -> &'static Path {
     HANDY_HOME.as_path()
 }
 
-// ── Model config schema (model.json) ──
+// ── Model config schema（DB models 表）──
 
-/// model.json 顶层结构
+/// 模型配置顶层结构（对应 DB models 表 domain='asr'；由 db::load_models 构造）
 #[derive(Debug, Deserialize, Clone)]
 pub struct AppConfig {
-    pub vad: Option<VadSection>,
     pub asr: AsrSection,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct VadSection {
-    pub active: String,
-    pub silero: Option<HashMap<String, SimpleModelEntry>>,
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -59,44 +52,23 @@ pub struct ModelEntry {
     pub quantization: String,
 }
 
-#[derive(Debug, Deserialize, Clone)]
-pub struct SimpleModelEntry {
-    pub source: String,
-    #[serde(default)]
-    pub description: String,
-}
-
 // ── Config loading ──
 
-/// 运行时注入的模型配置（上层 desktop 启动时从 DB 读出注入）。
-/// OnceLock 只能 set 一次；get 返回 Some 后 load_config 优先用它，
-/// 未注入（cli/server 或 desktop DB 空时）回退读 model.json。
+/// 运行时缓存：首次从 DB 读出后缓存，避免每次识别重复开连接查询。
+/// 手编 DB models 表后需重启进程生效（与历史行为一致）。
 static RUNTIME_CONFIG: OnceLock<AppConfig> = OnceLock::new();
 
-/// 注入运行时配置（desktop 启动时从 DB 读出调用）。
-/// 注入后 load_config 优先返回此配置（clone）；未注入时回退读 model.json。
-/// OnceLock 只注入一次，重复 set 静默忽略（返回 Err 被 `_` 丢弃）。
-pub fn set_runtime_config(cfg: AppConfig) {
-    let _ = RUNTIME_CONFIG.set(cfg);
-}
-
-/// 读取模型配置：优先返回注入的运行时配置，否则回退读 ~/.octopus/model.json。
+/// 读取模型配置（唯一来源：~/.octopus/octopus.db 的 models 表）。
+/// 首次调用 ensure_db（自动建表 + seed 默认引擎），读出后缓存到 OnceLock。
+/// cli/server/desktop 三端统一走此路径，不再读 model.json。
 pub fn load_config() -> Result<AppConfig> {
     if let Some(cfg) = RUNTIME_CONFIG.get() {
         return Ok(cfg.clone());
     }
-    let config_path = handy_home().join("model.json");
-    if !config_path.exists() {
-        anyhow::bail!(
-            "Model config not found at {}. Please create it.",
-            config_path.display()
-        );
-    }
-    let text = std::fs::read_to_string(&config_path)
-        .with_context(|| format!("Failed to read {}", config_path.display()))?;
-    let config: AppConfig = serde_json::from_str(&text)
-        .with_context(|| format!("Failed to parse {}", config_path.display()))?;
-    Ok(config)
+    crate::db::ensure_db()?;
+    let cfg = crate::db::load_models()?;
+    let _ = RUNTIME_CONFIG.set(cfg.clone());
+    Ok(cfg)
 }
 
 // ── HF cache helpers ──
@@ -129,51 +101,37 @@ pub fn find_onnx_dir(hf_path: &Path) -> PathBuf {
     }
 }
 
+/// 解析模型目录：优先本地固定路径（随应用打包），回退 HF 缓存。
+/// - source 为本地相对路径（如 "models/zipformer"）→ handy_home/source
+/// - source 为绝对路径 → 直接用
+/// - 否则当 HF repo 名（如 "onnx-community/whisper-small"）→ find_hf_cache
+pub fn resolve_model_dir(source: &str) -> Result<PathBuf> {
+    // 1. handy_home 下相对路径（随应用打包的小模型）
+    let local = handy_home().join(source);
+    if local.is_dir() {
+        return Ok(local);
+    }
+    // 2. 绝对路径
+    let abs = PathBuf::from(source);
+    if abs.is_dir() {
+        return Ok(abs);
+    }
+    // 3. HF repo 名 → 缓存发现
+    find_hf_cache(source)
+}
+
 // ── VAD model discovery ──
 
-/// 定位 Silero VAD 模型
-/// 1. 从 model.json vad.active 对应的 source 查找 HF 缓存（active 非空时）
-/// 2. Fallback 到 ~/.octopus/models/ 下 of the VAD 模型
+/// 定位 Silero VAD 模型：固定 ~/.octopus/models/silero_vad_v4.onnx（随应用打包）。
+/// 不再读配置/HF 缓存——VAD 模型固定路径，唯一方案。
 pub fn find_silero_vad() -> Result<PathBuf> {
-    // 1. 从 config 读取 active VAD 模型（active 为空则跳过）
-    if let Ok(config) = load_config() {
-        if let Some(vad_cfg) = &config.vad {
-            if !vad_cfg.active.is_empty() {
-                if let Some(silero_map) = &vad_cfg.silero {
-                    if let Some(entry) = silero_map.get(&vad_cfg.active) {
-                        if let Ok(hf_path) = find_hf_cache(&entry.source) {
-                            let onnx_dir = find_onnx_dir(&hf_path);
-                            for name in ["silero_vad_v4.onnx", "model.onnx", "model_int8.onnx"] {
-                                let p = onnx_dir.join(name);
-                                if p.exists() {
-                                    return Ok(p);
-                                }
-                            }
-                            if let Ok(entries) = std::fs::read_dir(&onnx_dir) {
-                                for e in entries.flatten() {
-                                    let n = e.file_name().to_string_lossy().to_string();
-                                    if n.ends_with(".onnx") {
-                                        return Ok(e.path());
-                                    }
-                                }
-                            }
-                            eprintln!("Warning: VAD model from config not found at {}, falling back to default", hf_path.display());
-                        }
-                    }
-                }
-            }
-        }
+    let vad = handy_home().join("models/silero_vad_v4.onnx");
+    if vad.exists() {
+        return Ok(vad);
     }
-
-    // 2. Fallback: ~/.octopus/models/silero_vad_v4.onnx
-    let default_vad = handy_home().join("models/silero_vad_v4.onnx");
-    if default_vad.exists() {
-        return Ok(default_vad);
-    }
-
     anyhow::bail!(
-        "Silero VAD model not found. Checked:\n  Config HF cache\n  {}",
-        default_vad.display()
+        "Silero VAD model not found at {}. 请随应用打包该文件。",
+        vad.display()
     )
 }
 
@@ -204,7 +162,7 @@ fn find_latest_snapshot(model_dir: &Path) -> Result<PathBuf> {
 
 // ── Engine routing ──
 
-/// ASR engine category, determined by which section of model.json contains the engine name.
+/// ASR engine category, determined by which section in DB models table contains the engine name.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineCategory {
     Whisper,
@@ -215,7 +173,7 @@ pub enum EngineCategory {
 }
 
 /// Resolve an engine name (e.g. "paraformer-bilingual") to its category
-/// by looking up which section in model.json contains it.
+/// by looking up which section in DB contains it.
 /// Returns `None` if the engine name is not found in any section.
 pub fn resolve_engine_category(engine_name: &str) -> Option<EngineCategory> {
     let config = load_config().ok()?;
@@ -272,7 +230,7 @@ pub struct EngineInfo {
     pub description: String,
 }
 
-/// 从 model.json 中列出所有已配置的 ASR 引擎
+/// 从 DB models 表列出所有已配置的 ASR 引擎
 pub fn list_engines() -> Result<Vec<EngineInfo>> {
     let config = load_config()?;
     let mut engines = Vec::new();

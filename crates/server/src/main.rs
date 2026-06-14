@@ -36,7 +36,7 @@ struct AppState {
 
 #[derive(Deserialize)]
 struct TranscribeQuery {
-    /// ASR engine name from model.json (default: sensevoice)
+    /// ASR engine name (from DB models table; default: sensevoice)
     engine: Option<String>,
     /// Language: "auto" (default), "zh", "en", "ja", ...
     language: Option<String>,
@@ -152,7 +152,7 @@ async fn transcribe(
 
 #[derive(Deserialize)]
 struct WsQuery {
-    /// ASR engine name from model.json (default: sensevoice)
+    /// ASR engine name (from DB models table; default: sensevoice)
     engine: Option<String>,
     /// Language: "auto" (default), "zh", "en", "ja", ...
     language: Option<String>,

@@ -68,7 +68,7 @@ impl StreamingParaformer {
                 .context("No paraformer model entries")?
         };
 
-        let hf_path = config::find_hf_cache(&entry.source)?;
+        let hf_path = config::resolve_model_dir(&entry.source)?;
 
         let prefer_int8 = entry.quantization != "fp32";
 

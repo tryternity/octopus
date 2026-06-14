@@ -31,7 +31,7 @@ fn find_whisper_onnx_dir() -> Result<PathBuf> {
         .iter()
         .next()
         .context("No whisper model entries")?;
-    let hf_path = config::find_hf_cache(&entry.source)?;
+    let hf_path = config::resolve_model_dir(&entry.source)?;
     Ok(config::find_onnx_dir(&hf_path))
 }
 
@@ -46,7 +46,7 @@ fn find_tokenizer() -> Result<PathBuf> {
         .iter()
         .next()
         .context("No whisper model entries")?;
-    let hf_path = config::find_hf_cache(&entry.source)?;
+    let hf_path = config::resolve_model_dir(&entry.source)?;
     let tk = hf_path.join("tokenizer.json");
     if tk.exists() {
         return Ok(tk);
@@ -221,7 +221,7 @@ pub struct WhisperEngine {
 impl WhisperEngine {
     /// Create a new Whisper engine instance by loading models and tokenizer
     pub fn new(entry: &config::ModelEntry) -> Result<Self> {
-        let hf_path = config::find_hf_cache(&entry.source)?;
+        let hf_path = config::resolve_model_dir(&entry.source)?;
         let onnx_dir = config::find_onnx_dir(&hf_path);
 
         // Encoder

@@ -54,9 +54,6 @@ prost = { version = "0.13", optional = true }
 # LLM polish
 octopus-llm = { path = "../llm" }
 
-# Storage
-rusqlite = { version = "0.31", features = ["bundled"] }
-
 [features]
 default = ["embedded"]
 embedded = ["octopus-asr"]

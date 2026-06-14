@@ -2,7 +2,6 @@
 
 mod audio;
 mod config;
-mod db;
 mod coordinator;
 mod engine;
 mod engine_embedded;
@@ -32,20 +31,11 @@ pub fn run() {
         config.asr_engine, config.engine_mode, config.shortcut
     );
 
-    // 初始化嵌入式 DB（建表 + 首次迁移 history.txt / model.json）
-    // 失败仅告警，不阻断启动（存储禁用但应用可用）
-    if let Err(e) = db::init() {
+    // 初始化嵌入式 DB（建表 + seed 默认引擎）。asr 的 load_config 首次调用时也会
+    // lazy init，这里显式预热（日志早出 + 错误前置）。模型配置唯一来源即此 DB。
+    // 失败仅告警，不阻断启动（识别历史写入会失败，但应用可用）
+    if let Err(e) = octopus_asr::db::ensure_db() {
         log::error!("DB init failed: {}, storage disabled", e);
-    }
-
-    // 从 DB 注入运行时模型配置；asr 运行时不再读 model.json
-    // DB 无模型（如 init 失败或空库）→ asr 回退读 model.json（原行为）
-    match db::load_app_config() {
-        Some(cfg) => {
-            octopus_asr::config::set_runtime_config(cfg);
-            info!("Injected runtime model config from DB");
-        }
-        None => log::warn!("No models in DB; asr will fall back to model.json"),
     }
 
     // 校验引擎模式

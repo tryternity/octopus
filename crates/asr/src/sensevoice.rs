@@ -33,7 +33,7 @@ pub struct SenseVoiceEngine {
 impl SenseVoiceEngine {
     /// Create a new SenseVoice engine instance by loading model and vocab list
     pub fn new(entry: &config::ModelEntry) -> Result<Self> {
-        let hf_path = config::find_hf_cache(&entry.source)?;
+        let hf_path = config::resolve_model_dir(&entry.source)?;
         let model_path = hf_path.join("model.int8.onnx");
         if !model_path.exists() {
             anyhow::bail!("model.int8.onnx not found at {}", hf_path.display());

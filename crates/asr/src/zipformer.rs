@@ -386,7 +386,7 @@ pub(crate) fn discover_streaming_zipformer_onnx(dir: &std::path::Path) -> Result
 
 impl ZipformerEngine {
     pub fn new(entry: &config::ModelEntry) -> Result<Self> {
-        let hf_path = config::find_hf_cache(&entry.source)?;
+        let hf_path = config::resolve_model_dir(&entry.source)?;
         let model_path = discover_streaming_zipformer_onnx(&hf_path)?;
 
         let session = Session::builder()?.commit_from_file(&model_path)?;

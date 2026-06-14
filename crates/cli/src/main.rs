@@ -36,7 +36,7 @@ enum Commands {
     StreamTest {
         /// Path to WAV file
         wav_path: String,
-        /// ASR engine name from model.json (paraformer or zipformer section)
+        /// ASR engine name (from DB models table; paraformer/zipformer section)
         #[arg(long, default_value = "paraformer-streaming")]
         model: String,
     },
@@ -275,7 +275,7 @@ async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&
 fn select_model() -> Result<String> {
     let engines = octopus_asr::config::list_engines()?;
     if engines.is_empty() {
-        anyhow::bail!("No ASR engines configured in model.json");
+        anyhow::bail!("No ASR engines configured in DB");
     }
 
     println!("可用模型：");
@@ -392,14 +392,11 @@ fn show_config() -> Result<()> {
 
     let vad_path = octopus_asr::config::find_silero_vad()?;
     let vad_size = std::fs::metadata(&vad_path)?.len() as f64 / 1_048_576.0;
-    if let Some(vad_cfg) = &config.vad {
-        println!("  VAD active: {}", vad_cfg.active);
-    }
-    println!("  VAD model: {} ({:.1} MB)", vad_path.display(), vad_size);
+    println!("  VAD model (固定路径): {} ({:.1} MB)", vad_path.display(), vad_size);
 
     if let Some(whisper) = &config.asr.whisper {
         for (id, entry) in whisper {
-            let hf = octopus_asr::config::find_hf_cache(&entry.source)?;
+            let hf = octopus_asr::config::resolve_model_dir(&entry.source)?;
             let onnx = octopus_asr::config::find_onnx_dir(&hf);
             println!("  Whisper [{}]: {}", id, entry.source);
             println!("    ONNX dir: {}", onnx.display());
@@ -408,7 +405,7 @@ fn show_config() -> Result<()> {
 
     if let Some(sensevoice) = &config.asr.sensevoice {
         for (id, entry) in sensevoice {
-            let hf = octopus_asr::config::find_hf_cache(&entry.source)?;
+            let hf = octopus_asr::config::resolve_model_dir(&entry.source)?;
             println!("  SenseVoice [{}]: {}", id, entry.source);
             println!("    HF cache: {}", hf.display());
         }
@@ -416,7 +413,7 @@ fn show_config() -> Result<()> {
 
     if let Some(paraformer) = &config.asr.paraformer {
         for (id, entry) in paraformer {
-            let hf = octopus_asr::config::find_hf_cache(&entry.source)
+            let hf = octopus_asr::config::resolve_model_dir(&entry.source)
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|e| format!("error: {}", e));
             println!("  Paraformer [{}]: {}", id, entry.source);
@@ -426,7 +423,7 @@ fn show_config() -> Result<()> {
 
     if let Some(qwen3_asr) = &config.asr.qwen3_asr {
         for (id, entry) in qwen3_asr {
-            let hf = octopus_asr::config::find_hf_cache(&entry.source)
+            let hf = octopus_asr::config::resolve_model_dir(&entry.source)
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|e| format!("error: {}", e));
             println!("  Qwen3-ASR [{}]: {}", id, entry.source);
@@ -436,7 +433,7 @@ fn show_config() -> Result<()> {
 
     if let Some(zipformer) = &config.asr.zipformer {
         for (id, entry) in zipformer {
-            let hf = octopus_asr::config::find_hf_cache(&entry.source)
+            let hf = octopus_asr::config::resolve_model_dir(&entry.source)
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|e| format!("error: {}", e));
             println!("  Zipformer [{}]: {}", id, entry.source);

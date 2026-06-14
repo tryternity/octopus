@@ -221,7 +221,7 @@ impl Coordinator {
                             } else {
                                 None
                             };
-                            if let Err(e) = crate::db::insert_transcription(
+                            if let Err(e) = octopus_asr::db::insert_transcription(
                                 raw_text,
                                 polished_for_db,
                                 polish_status,

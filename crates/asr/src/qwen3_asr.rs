@@ -49,7 +49,7 @@ pub struct Qwen3AsrEngine {
 impl Qwen3AsrEngine {
     /// Create a new Qwen3-ASR engine instance by loading models and tokenizer
     pub fn new(entry: &config::ModelEntry) -> Result<Self> {
-        let hf_path = config::find_hf_cache(&entry.source)?;
+        let hf_path = config::resolve_model_dir(&entry.source)?;
         let prefer_int8 = entry.quantization != "fp32";
 
         // Discover ONNX files
