@@ -109,6 +109,9 @@ const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 300;
 /// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
 pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
 
+/// 停顿触发中间润色的静音阈值（秒）。流式 silence ≥ 此值 → 全量润色。
+const PAUSE_POLISH_THRESHOLD_SEC: f64 = 0.6;
+
 /// 当前 Unix 毫秒时间戳（作 Transcript id / DB 主键）。
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
@@ -714,6 +717,8 @@ fn handle_vad_segmented_tick(
                 spawn_offline_transcription_with_seq(
                     engine, config, tx, speech_samples, seq,
                 );
+                // 段切分 + 有语音 → 触发停顿润色（传阈值，段边界即停顿点）
+                check_and_trigger_polish(transcript, PAUSE_POLISH_THRESHOLD_SEC, config, tx);
             }
         }
 
@@ -721,9 +726,6 @@ fn handle_vad_segmented_tick(
         if !transcript.full().is_empty() {
             crate::result_window::update_result(app_handle, &transcript.display_text());
         }
-
-        // 6. 检查润色（Task 5 接入；此处保留占位签名）
-        check_and_trigger_polish(transcript, *silence_duration, config, tx);
     }
 }
 
@@ -863,17 +865,41 @@ fn spawn_polish_thread(
     });
 }
 
-/// 检查润色条件并触发（停顿驱动润色，Task 5 实现）。
+/// 停顿驱动润色：流式 silence≥阈值 / 伪流式段边界 → 对完整 ASR 全量润色（mode=2 only）。
 ///
-/// 当前为占位实现：Task 4 仅做文本流接入，润色触发逻辑下沉到 Task 5。
+/// - 流式由调用方传当前真实 silence_duration；
+/// - 伪流式在段切分后调用，传 PAUSE_POLISH_THRESHOLD_SEC（段边界即停顿点，自动达标）。
 fn check_and_trigger_polish(
     transcript: &mut Transcript,
-    _silence_duration: f64,
-    _config: &AppConfig,
-    _tx: &Sender<Command>,
+    silence_duration: f64,
+    config: &AppConfig,
+    tx: &Sender<Command>,
 ) {
-    // 占位：Task 5 实现停顿驱动润色（snapshot_for_polish + spawn_polish_thread）
-    let _ = transcript;
+    // 仅 mode=2（中间润色）；有 pending 或无文本 → 跳过
+    if config.polish_mode != PolishMode::Intermediate
+        || transcript.polish_pending()
+        || transcript.full().is_empty()
+    {
+        return;
+    }
+    // 无新增内容（increase 空）→ 跳过
+    if transcript.increase().is_empty() {
+        return;
+    }
+    // 停顿未达标 → 跳过（流式传真实 silence；伪流式传阈值自动达标）
+    if silence_duration < PAUSE_POLISH_THRESHOLD_SEC {
+        return;
+    }
+    // 节流：距上次润色不足 interval（至少 MIN_POLISH_INTERVAL_SEC）→ 跳过
+    if transcript.last_polish_time().elapsed().as_secs_f64()
+        < config.polish_interval.max(MIN_POLISH_INTERVAL_SEC)
+    {
+        return;
+    }
+    // 快照（推进 raw_len，increase 清空）+ 标记 pending + 送 LLM 全量润色
+    let snapshot = transcript.snapshot_for_polish();
+    transcript.mark_polish_pending();
+    spawn_polish_thread(snapshot, config, tx);
 }
 
 /// 处理 StreamingTick 命令
