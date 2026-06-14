@@ -201,6 +201,7 @@ match config.polish_mode {
 | 文件 | 改动 |
 |---|---|
 | `crates/infra/src/config.rs` | 删 `polish_enabled: bool`；新增 `PolishMode` 枚举 + `Deserialize` impl + `polish_mode` 字段；`Default` 改 `polish_mode: PolishMode::default()`；`polish_interval` 注释更新 |
+| `crates/infra/Cargo.toml` | 加 `log = "0.4"`（`PolishMode::deserialize` 非法值 warn 日志需要） |
 | `crates/desktop/src/config.rs` | `llm_config()`：`!polish_enabled` → `polish_mode == Disabled` |
 | `crates/desktop/src/coordinator.rs` | `check_and_trigger_polish`：`!polish_enabled \|\| interval<=0` → `polish_mode != Intermediate`；interval 用 `.max(MIN_POLISH_INTERVAL_SEC)`；新增常量 |
 | `crates/desktop/src/main.rs` | 启动校验改 `match polish_mode`；模式 2 + interval<=0 warn |

@@ -111,6 +111,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - `models` 表：模型目录（**唯一来源**，首次建库时 `seed_default_models` 写入默认引擎集；v2 schema 无 `is_active` 列——引擎激活改由 `config.yaml.asr_engine` 决定，见「模型管理」）
 - `model.json` / `history.txt` / `record.txt` 已从代码彻底删除——DB 是唯一配置/存储源
 - `polish_status` 基于润色调用结果：未启用→`off`；启用且返回非空→`done`；启用但返回空或失败→`failed`
+- 润色三档（`polish_mode`：0 关闭 / 1 仅最终 / 2 中间+最终）：中间润色由流式/伪流式 tick 共用 `check_and_trigger_polish` 触发，节流 `polish_interval`（下限 `MIN_POLISH_INTERVAL_SEC=1.0s`）+ 新增字符检测；最终润色在 `Stage::Pasting` 入口（`start_pasting`）。详见 [设计](superpowers/specs/2026-06-14-polish-mode-redesign-design.md)。
 
 支持三种引擎接入模式：
 - **embedded**（默认）：内嵌 octopus-asr，本地推理

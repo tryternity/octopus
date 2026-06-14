@@ -66,6 +66,8 @@ octopus-cli config
 
 应用行为配置，文件不存在时使用默认值。
 
+> **⚠️ 迁移提示**：旧字段 `polish_enabled` 已废弃。请改用 `polish_mode`：`false` → `0`（关闭）；`true` + interval>0 → `2`（中间+最终润色）；`true` + interval=0 → `1`（仅最终润色）。旧字段被忽略，未配置 `polish_mode` 时润色默认关闭。
+
 | 字段 | 类型 | 默认值 | 适用端 | 说明 |
 |---|---|---|---|---|
 | `microphone` | string | `""` | cli + desktop | 麦克风设备名（空 = 系统默认） |
@@ -80,8 +82,8 @@ octopus-cli config
 | `segment_duration` | f64 | `5.0` | desktop | VAD 伪流式：缓冲累积时长阈值（秒） |
 | `segment_silence` | f64 | `500.0` | desktop | VAD 伪流式：静音触发识别阈值（毫秒） |
 | `segment_overlap` | f64 | `200.0` | desktop | VAD 伪流式：相邻分段 overlap（毫秒） |
-| `polish_enabled` | bool | `false` | desktop | LLM 润色总开关 |
-| `polish_interval` | f64 | `5.0` | desktop | 中间润色间隔（秒），0 = 仅最终润色 |
+| `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色 |
+| `polish_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s` |
 | `llm_provider` | string | `""` | desktop | openai / deepseek / 自定义 |
 | `llm_model` | string | `"gpt-4o-mini"` | desktop | 模型名 |
 | `llm_base_url` | string | `https://api.openai.com/v1` | desktop | API base URL |
@@ -130,8 +132,8 @@ segment_silence: 500.0           # 毫秒
 segment_overlap: 200.0           # 毫秒
 
 # LLM 润色（可选）
-polish_enabled: false
-polish_interval: 5.0             # 秒，0 = 仅最终润色
+polish_mode: 0                   # 0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色
+polish_interval: 5.0             # 秒，仅 polish_mode=2 生效（中间润色最小间隔）
 llm_provider: "deepseek"
 llm_model: "deepseek-chat"
 llm_base_url: "https://api.deepseek.com/v1"
