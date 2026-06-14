@@ -339,6 +339,34 @@ cargo run --package octopus-desktop --features embedded
 
 ---
 
+## Task 12: 补丁 — 停止空文本时隐藏 result window
+
+**Files:**
+- Modify: `crates/desktop/src/coordinator.rs`
+
+**背景**：Toggle 停止录音时若 `accumulated_text` 为空（麦克风静音、VAD 全程未检出语音等），`start_pasting` 走空文本分支直接回 `Idle`。原实现只 `hide_overlay` + tray Idle，漏 `hide_result`，导致"正在聆听…"结果窗口残留。对应 spec §4.5。
+
+- [x] **Step 1: 空文本分支补 hide_result**
+
+`start_pasting`（coordinator.rs:577）空文本分支：
+
+```rust
+if text.is_empty() {
+    *stage = Stage::Idle;
+    crate::result_window::hide_result(app_handle);   // 新增
+    crate::overlay::hide_overlay(app_handle);
+    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+    return;
+}
+```
+
+- [x] **Step 2: 编译验证**
+
+Run: `cargo check -p octopus-desktop --features embedded`
+Expected: `0 error`（`hide_result` 在 `result_window.rs:93` 已定义）。
+
+---
+
 ## Spec Coverage Check
 
 | Spec Section | Task | Status |
@@ -350,3 +378,4 @@ cargo run --package octopus-desktop --features embedded
 | §6.3 可编辑结果窗口 | Task 9 | ✅ |
 | §6.5 文本持久化（record.txt + history.txt） | Task 9 | ✅ |
 | §10 配置（segment_* 参数） | Task 8 | ✅ |
+| §4.5 停止空文本边界（UI 清理契约） | Task 12 | ✅ |

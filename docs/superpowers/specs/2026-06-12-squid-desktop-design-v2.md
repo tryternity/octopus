@@ -189,6 +189,22 @@ enum Stage {
 }
 ```
 
+### 4.5 Toggle 停止的空文本边界（UI 清理契约）
+
+流式（§4.1）与离线（§4.2）停止时，最终文本统一经 `start_pasting(text, raw_text, ...)` 处理。若 `text` 为空（无任何识别结果），走**空文本分支**：跳过润色/粘贴，直接 `Stage → Idle`。
+
+**触发场景**：麦克风静音/未录入、VAD 全程未检出语音（`has_speech` 恒 false → 不分段）、识别返回空。
+
+**UI 清理契约**：空文本分支必须**对称清理全部三类 UI 反馈通道**，缺一则窗口/图标残留：
+
+| 通道 | 调用 |
+|------|------|
+| result window | `result_window::hide_result()` |
+| overlay | `overlay::hide_overlay()` |
+| tray | `tray::update_tray_label(TrayState::Idle)` |
+
+> **历史缺陷**：空文本分支曾只清 overlay + tray，漏 `hide_result`，导致麦克风静音后停止录音时"正在聆听…"框残留（2026-06-14 修复，见 plan Task 12）。
+
 ## 5. StreamingSession（流式引擎统一包装）
 
 ### 5.1 设计
@@ -364,6 +380,7 @@ Pasting → Idle（PasteDone）
 - **显示 result window**（从开始到粘贴完成）
 - result window 显示"正在聆听…"占位文本，识别结果实时更新
 - 粘贴完成后清空并归档到 history.txt
+- Toggle 停止时若 `accumulated_text` 为空（麦克风静音 / VAD 未检出语音），不进 Pasting，直接 `hide_result` 清窗 + 回 Idle（见 §4.5）
 
 ## 10. 配置
 
