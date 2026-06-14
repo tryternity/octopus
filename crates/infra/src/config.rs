@@ -95,10 +95,6 @@ pub struct AppConfig {
     #[serde(default = "default_overlay_position")]
     pub overlay_position: String,
 
-    /// 润色总开关
-    #[serde(default)]
-    pub polish_enabled: bool,
-
     /// 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色
     #[serde(default)]
     pub polish_mode: PolishMode,
@@ -180,7 +176,6 @@ impl Default for AppConfig {
             segment_silence: default_segment_silence(),
             segment_overlap: default_segment_overlap(),
             overlay_position: default_overlay_position(),
-            polish_enabled: false,
             polish_mode: PolishMode::default(),
             polish_interval: default_polish_interval(),
             llm_provider: String::new(),
