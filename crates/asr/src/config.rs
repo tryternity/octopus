@@ -4,20 +4,21 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
-use octopus_infra::consts::SILERO_VAD_PATH;
+use octopus_infra::consts::{DEFAULT_ASR_MODEL_DIR, SILERO_VAD_PATH};
 use octopus_infra::octopus_config_home;
 
 // ── Model config schema（DB models 表）──
 
-/// 模型配置顶层结构（对应 DB models 表 domain='asr'；由 db::load_models 构造）
+/// DB models 表配置（domain='asr'；由 db::load_models 构造）。
+/// 注意：与 `infra::config::AppConfig`（config.yaml schema）是两个不同的结构——
+/// 这里是「DB 里有哪些引擎」的目录，infra 那个是「应用行为参数」。
 #[derive(Debug, Deserialize, Clone)]
-pub struct AppConfig {
+pub struct AsrConfig {
     pub asr: AsrSection,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct AsrSection {
-    pub active: String,
     pub whisper: Option<HashMap<String, ModelEntry>>,
     pub sensevoice: Option<HashMap<String, ModelEntry>>,
     #[serde(default)]
@@ -45,12 +46,12 @@ pub struct ModelEntry {
 
 /// 运行时缓存：首次从 DB 读出后缓存，避免每次识别重复开连接查询。
 /// 手编 DB models 表后需重启进程生效（与历史行为一致）。
-static RUNTIME_CONFIG: OnceLock<AppConfig> = OnceLock::new();
+static RUNTIME_CONFIG: OnceLock<AsrConfig> = OnceLock::new();
 
 /// 读取模型配置（唯一来源：~/.octopus/octopus.db 的 models 表）。
 /// 首次调用 ensure_db（自动建表 + seed 默认引擎），读出后缓存到 OnceLock。
 /// cli/server/desktop 三端统一走此路径，不再读 model.json。
-pub fn load_config() -> Result<AppConfig> {
+pub fn load_config() -> Result<AsrConfig> {
     if let Some(cfg) = RUNTIME_CONFIG.get() {
         return Ok(cfg.clone());
     }
@@ -263,24 +264,167 @@ pub fn list_engines() -> Result<Vec<EngineInfo>> {
     Ok(engines)
 }
 
-// ── App config (config.yaml) ──
+// ── 全局默认引擎解析（config.yaml.asr_engine → 具体引擎 + 兜底）──
 
-/// config.yaml — application settings
-#[derive(Debug, Deserialize, Default)]
-pub struct AppYamlConfig {
-    #[serde(default)]
-    pub microphone: String,
+/// 解析后的引擎：name + category + entry 三件套。
+#[derive(Debug, Clone)]
+pub struct ResolvedEngine {
+    pub name: String,
+    pub category: EngineCategory,
+    pub entry: ModelEntry,
 }
 
-/// 读取 ~/.octopus/config.yaml，文件不存在则返回默认值
-pub fn load_app_config() -> Result<AppYamlConfig> {
-    let config_path = octopus_config_home().join("config.yaml");
-    if !config_path.exists() {
-        return Ok(AppYamlConfig::default());
+/// 解析 config.yaml.asr_engine 为具体引擎（全局默认引擎入口）。
+///
+/// 解析规则：
+/// - `asr_engine` 非空且在 DB `models` 表按 name 命中 → 用命中项
+/// - `asr_engine` 为空 / 匹配不到任何模型 → 回退兜底引擎（zipformer-small-ctc）
+///
+/// 兜底级联：先从 DB `asr.zipformer` section 查 key `"zipformer-small-ctc"`
+/// （用户手编 source 仍生效）；查不到再硬构造（靠 DEFAULT_ASR_MODEL_DIR 本地打包路径）。
+///
+/// 仅服务「全局默认」（server 启动 preheat、请求未带 engine 时）。
+/// 显式 name 路径（cli `--model`、AsrEngineManager.switch_model、server 请求带 engine）
+/// 直接走 `resolve_engine_category + pick_entry`，不经此函数、不走兜底。
+pub fn resolve_active_engine(asr_engine: &str) -> Result<ResolvedEngine> {
+    let cfg = load_config()?;
+
+    // 1. 显式配置命中
+    if !asr_engine.is_empty() {
+        if let Some(category) = resolve_engine_category(asr_engine) {
+            if let Some(entry) = pick_entry(&cfg, category, asr_engine) {
+                return Ok(ResolvedEngine {
+                    name: asr_engine.to_string(),
+                    category,
+                    entry: entry.clone(),
+                });
+            }
+        }
+        log::warn!(
+            "config.yaml asr_engine='{}' 在 DB models 表中未匹配到，回退兜底引擎",
+            asr_engine
+        );
     }
-    let text = std::fs::read_to_string(&config_path)
-        .with_context(|| format!("Failed to read {}", config_path.display()))?;
-    let config: AppYamlConfig = serde_yaml::from_str(&text)
-        .with_context(|| format!("Failed to parse {}", config_path.display()))?;
-    Ok(config)
+
+    // 2. 兜底：zipformer-small-ctc
+    Ok(fallback_engine(&cfg))
+}
+
+/// 兜底引擎：优先 DB zipformer section 的 zipformer-small-ctc，否则硬构造（本地打包路径）。
+fn fallback_engine(cfg: &AsrConfig) -> ResolvedEngine {
+    if let Some(zf) = cfg.asr.zipformer.as_ref() {
+        if let Some(entry) = zf.get("zipformer-small-ctc") {
+            return ResolvedEngine {
+                name: "zipformer-small-ctc".to_string(),
+                category: EngineCategory::Zipformer,
+                entry: entry.clone(),
+            };
+        }
+    }
+    // DB 无 zipformer section（极端情况）仍可用——靠本地打包路径硬构造
+    ResolvedEngine {
+        name: "zipformer-small-ctc".to_string(),
+        category: EngineCategory::Zipformer,
+        entry: ModelEntry {
+            source: DEFAULT_ASR_MODEL_DIR.to_string(),
+            language: "zh".to_string(),
+            description: String::new(),
+            quantization: "int8".to_string(),
+        },
+    }
+}
+
+/// 按 category + name 从配置中取 entry（统一各引擎模块/AsrEngineManager 的查找逻辑）。
+pub fn pick_entry<'a>(
+    cfg: &'a AsrConfig,
+    category: EngineCategory,
+    name: &str,
+) -> Option<&'a ModelEntry> {
+    let map = match category {
+        EngineCategory::Whisper => cfg.asr.whisper.as_ref(),
+        EngineCategory::SenseVoice => cfg.asr.sensevoice.as_ref(),
+        EngineCategory::Paraformer => cfg.asr.paraformer.as_ref(),
+        EngineCategory::Qwen3Asr => cfg.asr.qwen3_asr.as_ref(),
+        EngineCategory::Zipformer => cfg.asr.zipformer.as_ref(),
+    }?;
+    map.get(name)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    fn make_entry(source: &str) -> ModelEntry {
+        ModelEntry {
+            source: source.to_string(),
+            language: "zh".to_string(),
+            description: String::new(),
+            quantization: "int8".to_string(),
+        }
+    }
+
+    /// 构造含 zipformer-small-ctc（本地路径）+ zipformer-multi（HF）的配置。
+    fn cfg_with_zipformer() -> AsrConfig {
+        let mut zip = HashMap::new();
+        zip.insert("zipformer-small-ctc".to_string(), make_entry("models/zipformer"));
+        zip.insert("zipformer-multi".to_string(), make_entry("hf/zipformer-multi"));
+        AsrConfig {
+            asr: AsrSection {
+                whisper: None,
+                sensevoice: None,
+                paraformer: None,
+                qwen3_asr: None,
+                zipformer: Some(zip),
+            },
+        }
+    }
+
+    #[test]
+    fn pick_entry_finds_present() {
+        let cfg = cfg_with_zipformer();
+        let e = pick_entry(&cfg, EngineCategory::Zipformer, "zipformer-multi").unwrap();
+        assert_eq!(e.source, "hf/zipformer-multi");
+    }
+
+    #[test]
+    fn pick_entry_missing_name_returns_none() {
+        let cfg = cfg_with_zipformer();
+        assert!(pick_entry(&cfg, EngineCategory::Zipformer, "nope").is_none());
+    }
+
+    #[test]
+    fn pick_entry_absent_section_returns_none() {
+        let cfg = cfg_with_zipformer();
+        // whisper section 为 None
+        assert!(pick_entry(&cfg, EngineCategory::Whisper, "whisper-small").is_none());
+    }
+
+    #[test]
+    fn fallback_uses_db_zipformer_small_entry() {
+        // DB 有 zipformer-small-ctc 条目 → 用 DB 的 source（用户手编仍生效）
+        let cfg = cfg_with_zipformer();
+        let r = fallback_engine(&cfg);
+        assert_eq!(r.name, "zipformer-small-ctc");
+        assert_eq!(r.category, EngineCategory::Zipformer);
+        assert_eq!(r.entry.source, "models/zipformer");
+    }
+
+    #[test]
+    fn fallback_hardcodes_when_section_absent() {
+        // DB 无 zipformer section → 硬构造兜底（DEFAULT_ASR_MODEL_DIR 本地打包路径）
+        let cfg = AsrConfig {
+            asr: AsrSection {
+                whisper: None,
+                sensevoice: None,
+                paraformer: None,
+                qwen3_asr: None,
+                zipformer: None,
+            },
+        };
+        let r = fallback_engine(&cfg);
+        assert_eq!(r.name, "zipformer-small-ctc");
+        assert_eq!(r.entry.source, DEFAULT_ASR_MODEL_DIR);
+        assert_eq!(r.entry.language, "zh");
+    }
 }

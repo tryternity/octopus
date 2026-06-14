@@ -1,7 +1,7 @@
 // src/coordinator.rs
 
 use crate::audio::SharedAudioState;
-use crate::config::DesktopConfig;
+use crate::config::AppConfig;
 use crate::engine::TranscriptionEngine;
 use crate::paste;
 use crate::streaming_engine::StreamingSession;
@@ -142,13 +142,13 @@ impl Coordinator {
     pub fn new(
         engine: Arc<dyn TranscriptionEngine>,
         audio: Arc<SharedAudioState>,
-        config: DesktopConfig,
+        config: AppConfig,
         app_handle: tauri::AppHandle,
     ) -> Self {
         let (tx, rx): (Sender<Command>, Receiver<Command>) = mpsc::channel();
         let tx_self = tx.clone();
 
-        let use_streaming = config.engine_mode == "embedded" && config.is_streaming_engine();
+        let use_streaming = config.engine_mode == "embedded" && crate::config::is_streaming_engine(&config);
 
         std::thread::spawn(move || {
             let mut stage = Stage::Idle;
@@ -290,7 +290,7 @@ fn handle_toggle(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
     engine: &Arc<dyn TranscriptionEngine>,
-    config: &DesktopConfig,
+    config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
     use_streaming: bool,
@@ -566,7 +566,7 @@ fn start_pasting(
     raw_text: &str,
     engine: &str,
     engine_mode: &str,
-    config: &DesktopConfig,
+    config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
@@ -578,7 +578,7 @@ fn start_pasting(
     }
 
     // 最终润色 + 状态（基于调用结果，非文本比较）
-    let (final_text, polish_status) = match config.llm_config() {
+    let (final_text, polish_status) = match crate::config::llm_config(&config) {
         None => (text.to_string(), "off"),
         Some(llm_config) => match octopus_llm::polish(text, &llm_config) {
             Ok(polished) if !polished.is_empty() => {
@@ -672,7 +672,7 @@ fn handle_vad_segmented_tick(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
     engine: &Arc<dyn TranscriptionEngine>,
-    config: &DesktopConfig,
+    config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
@@ -823,7 +823,7 @@ fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicB
 /// 带 seq 序号的离线识别线程
 fn spawn_offline_transcription_with_seq(
     engine: &Arc<dyn TranscriptionEngine>,
-    config: &DesktopConfig,
+    config: &AppConfig,
     tx: &Sender<Command>,
     speech_samples: Vec<f32>,
     seq: u64,
@@ -890,10 +890,10 @@ fn filter_speech_from_buffer(samples: &[f32]) -> Vec<f32> {
 /// 启动润色线程
 fn spawn_polish_thread(
     text: String,
-    config: &DesktopConfig,
+    config: &AppConfig,
     tx: &Sender<Command>,
 ) {
-    let llm_config = match config.llm_config() {
+    let llm_config = match crate::config::llm_config(&config) {
         Some(c) => c,
         None => return,
     };
@@ -916,7 +916,7 @@ fn check_and_trigger_polish(
     polish_pending: &mut bool,
     polish_base_len: &mut usize,
     last_polish_time: &mut Instant,
-    config: &DesktopConfig,
+    config: &AppConfig,
     tx: &Sender<Command>,
 ) {
     if !config.polish_enabled
@@ -948,7 +948,7 @@ fn check_and_trigger_polish(
 fn handle_streaming_tick(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
-    config: &DesktopConfig,
+    config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
@@ -1138,7 +1138,7 @@ fn handle_transcription_done(
     stage: &mut Stage,
     text: Result<String, String>,
     seq: u64,
-    config: &DesktopConfig,
+    config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
@@ -1262,7 +1262,7 @@ fn start_tick_thread(tx: Sender<Command>, streaming_active: Arc<AtomicBool>) {
 fn handle_polish_done(
     stage: &mut Stage,
     result: Result<String, String>,
-    _config: &DesktopConfig,
+    _config: &AppConfig,
     app_handle: &tauri::AppHandle,
     _tx: &Sender<Command>,
 ) {

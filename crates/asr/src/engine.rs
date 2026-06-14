@@ -53,34 +53,16 @@ impl AsrEngineManager {
             // Not cached, load configuration and instantiate
             let cfg = config::load_config()?;
             let category = config::resolve_engine_category(model_name)
-                .context(format!("Unknown engine model: {}", model_name))?;
+                .with_context(|| format!("Unknown engine model: {}", model_name))?;
+            let entry = config::pick_entry(&cfg, category, model_name)
+                .with_context(|| format!("Model entry '{}' not found in DB", model_name))?;
 
             let new_eng: Arc<dyn OfflineAsrEngine> = match category {
-                config::EngineCategory::Whisper => {
-                    let whisper_cfg = cfg.asr.whisper.as_ref().context("No whisper models in config")?;
-                    let entry = whisper_cfg.get(model_name).context(format!("Model entry {} not found in whisper config", model_name))?;
-                    Arc::new(WhisperEngine::new(entry)?)
-                }
-                config::EngineCategory::SenseVoice => {
-                    let sv_cfg = cfg.asr.sensevoice.as_ref().context("No sensevoice models in config")?;
-                    let entry = sv_cfg.get(model_name).context(format!("Model entry {} not found in sensevoice config", model_name))?;
-                    Arc::new(SenseVoiceEngine::new(entry)?)
-                }
-                config::EngineCategory::Paraformer => {
-                    let para_cfg = cfg.asr.paraformer.as_ref().context("No paraformer models in config")?;
-                    let entry = para_cfg.get(model_name).context(format!("Model entry {} not found in paraformer config", model_name))?;
-                    Arc::new(ParaformerEngine::new(entry)?)
-                }
-                config::EngineCategory::Qwen3Asr => {
-                    let qwen_cfg = cfg.asr.qwen3_asr.as_ref().context("No qwen3_asr models in config")?;
-                    let entry = qwen_cfg.get(model_name).context(format!("Model entry {} not found in qwen3_asr config", model_name))?;
-                    Arc::new(Qwen3AsrEngine::new(entry)?)
-                }
-                config::EngineCategory::Zipformer => {
-                    let zip_cfg = cfg.asr.zipformer.as_ref().context("No zipformer models in config")?;
-                    let entry = zip_cfg.get(model_name).context(format!("Model entry {} not found in zipformer config", model_name))?;
-                    Arc::new(ZipformerEngine::new(entry)?)
-                }
+                config::EngineCategory::Whisper => Arc::new(WhisperEngine::new(entry)?),
+                config::EngineCategory::SenseVoice => Arc::new(SenseVoiceEngine::new(entry)?),
+                config::EngineCategory::Paraformer => Arc::new(ParaformerEngine::new(entry)?),
+                config::EngineCategory::Qwen3Asr => Arc::new(Qwen3AsrEngine::new(entry)?),
+                config::EngineCategory::Zipformer => Arc::new(ZipformerEngine::new(entry)?),
             };
 
             // Write to cache

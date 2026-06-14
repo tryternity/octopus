@@ -1,6 +1,6 @@
 // src/tray.rs
 
-use crate::config::DesktopConfig;
+use crate::config::AppConfig;
 use log::info;
 use std::sync::Mutex;
 use tauri::image::Image;
@@ -25,7 +25,7 @@ static TRAY_ITEMS: once_cell::sync::Lazy<Mutex<Option<TrayItems<tauri::Wry>>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(None));
 
 /// Create the system tray icon and its context menu.
-pub fn create_tray(app: &tauri::AppHandle, config: &DesktopConfig) {
+pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
     let toggle = MenuItem::with_id(app, "toggle", "开始录音", true, None::<&str>)
         .expect("failed to create toggle menu item");
     let engine_info = MenuItem::with_id(

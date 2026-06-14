@@ -652,7 +652,7 @@ impl crate::engine::OfflineAsrEngine for ZipformerEngine {
 
 /// Transcribe audio using Zipformer model
 /// Input: 16kHz mono f32 samples. Output: transcribed text.
-pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
+pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String> {
     let cfg = config::load_config()?;
     let zip_cfg = cfg
         .asr
@@ -660,15 +660,9 @@ pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
         .as_ref()
         .context("No zipformer models in config")?;
 
-    let entry = if let Some(e) = zip_cfg.get(&cfg.asr.active) {
-        e
-    } else {
-        zip_cfg
-            .iter()
-            .next()
-            .map(|(_, v)| v)
-            .context("No zipformer model entries")?
-    };
+    let entry = zip_cfg
+        .get(name)
+        .with_context(|| format!("zipformer model '{}' not in DB", name))?;
 
     let engine = ZipformerEngine::new(entry)?;
     crate::engine::transcribe_with_vad(&engine, samples, language)

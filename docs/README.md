@@ -4,7 +4,7 @@
 
 - [架构概览](./architecture.md) — 项目结构与模块说明
 - [API 参考](./api.md) — Server HTTP/WebSocket 接口文档
-- [配置指南](./configuration.md) — model.json 与 config.yaml 配置说明
+- [配置指南](./configuration.md) — octopus.db 与 config.yaml 配置说明
 
 ### Desktop 设计文档
 

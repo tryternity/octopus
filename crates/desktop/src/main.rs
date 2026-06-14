@@ -25,7 +25,7 @@ use tauri::Manager;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let config = config::load_desktop_config().expect("Failed to load config");
+    let config = octopus_infra::config::load_config().expect("Failed to load config");
     info!(
         "Config: engine={}, mode={}, shortcut={}",
         config.asr_engine, config.engine_mode, config.shortcut
@@ -39,7 +39,7 @@ pub fn run() {
     }
 
     // 校验引擎模式
-    if config.engine_mode == "embedded" && !config.is_streaming_engine() {
+    if config.engine_mode == "embedded" && !config::is_streaming_engine(&config) {
         log::info!(
             "引擎 '{}' 使用 VAD 分段伪流式模式",
             config.asr_engine

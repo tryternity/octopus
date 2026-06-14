@@ -1,6 +1,6 @@
 // src/paste.rs
 
-use crate::config::DesktopConfig;
+use crate::config::AppConfig;
 use anyhow::Result;
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use log::info;
@@ -33,7 +33,7 @@ impl From<&str> for PasteMethod {
 pub fn paste<R: Runtime>(
     text: &str,
     app_handle: &tauri::AppHandle<R>,
-    config: &DesktopConfig,
+    config: &AppConfig,
 ) -> Result<()> {
     let method = PasteMethod::from(config.paste_method.as_str());
     info!("Pasting via {:?}, text len: {}", method, text.len());

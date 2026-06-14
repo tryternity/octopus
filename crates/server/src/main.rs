@@ -279,8 +279,10 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
-    let config = octopus_asr::config::load_config()?;
-    let active_model = config.asr.active.clone();
+    // 全局默认引擎：以 config.yaml.asr_engine 为准（DB name 精确匹配），
+    // 空/匹配不到 → 回退兜底 zipformer-small-ctc（见 asr::config::resolve_active_engine）。
+    let app_cfg = octopus_infra::config::load_config()?;
+    let active_model = octopus_asr::config::resolve_active_engine(&app_cfg.asr_engine)?.name;
 
     let engine_manager = Arc::new(AsrEngineManager::new());
     tracing::info!("Preheating active ASR model: {}", active_model);

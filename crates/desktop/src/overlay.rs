@@ -1,6 +1,6 @@
 // src/overlay.rs
 
-use crate::config::DesktopConfig;
+use crate::config::AppConfig;
 use log::debug;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -11,7 +11,7 @@ const OVERLAY_WIDTH: f64 = 400.0;
 const OVERLAY_HEIGHT: f64 = 40.0;
 
 /// Create the overlay window (hidden by default).
-pub fn create_overlay(app: &AppHandle, config: &DesktopConfig) {
+pub fn create_overlay(app: &AppHandle, config: &AppConfig) {
     if config.overlay_position == "none" {
         debug!("Overlay disabled in config");
         return;
@@ -49,7 +49,7 @@ pub fn create_overlay(app: &AppHandle, config: &DesktopConfig) {
 
 /// Platform-specific overlay initialization.
 #[cfg(target_os = "linux")]
-fn init_platform_overlay(window: &tauri::webview::WebviewWindow, config: &DesktopConfig) {
+fn init_platform_overlay(window: &tauri::webview::WebviewWindow, config: &AppConfig) {
     if gtk_layer_shell::is_supported() {
         if let Ok(gtk_window) = window.gtk_window() {
             gtk_window.init_layer_shell();
@@ -68,7 +68,7 @@ fn init_platform_overlay(window: &tauri::webview::WebviewWindow, config: &Deskto
 
 /// Platform-specific overlay initialization (no-op on non-Linux).
 #[cfg(not(target_os = "linux"))]
-fn init_platform_overlay(_window: &tauri::webview::WebviewWindow, _config: &DesktopConfig) {}
+fn init_platform_overlay(_window: &tauri::webview::WebviewWindow, _config: &AppConfig) {}
 
 /// Show the overlay with state: "recording" or "transcribing".
 pub fn show_overlay(app: &AppHandle, state: &str) {

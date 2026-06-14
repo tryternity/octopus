@@ -256,22 +256,16 @@ impl crate::engine::OfflineAsrEngine for ParaformerEngine {
 
 /// Transcribe audio using Paraformer model (offline mode)
 /// Input: 16kHz mono f32 samples. Output: transcribed text.
-pub fn transcribe(samples: &[f32], language: &str) -> Result<String> {
+pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String> {
     let cfg = config::load_config()?;
     let para_cfg = cfg
         .asr
         .paraformer
         .as_ref()
         .context("No paraformer models in config")?;
-    let entry = if let Some(e) = para_cfg.get(&cfg.asr.active) {
-        e
-    } else {
-        para_cfg
-            .iter()
-            .next()
-            .map(|(_, v)| v)
-            .context("No paraformer model entries")?
-    };
+    let entry = para_cfg
+        .get(name)
+        .with_context(|| format!("paraformer model '{}' not in DB", name))?;
 
     let engine = ParaformerEngine::new(entry)?;
     crate::engine::transcribe_with_vad(&engine, samples, language)

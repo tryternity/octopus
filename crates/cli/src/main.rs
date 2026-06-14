@@ -17,8 +17,8 @@ enum Commands {
     Transcribe {
         /// Path to WAV file
         wav_path: String,
-        /// ASR engine: sensevoice, whisper, paraformer-streaming, qwen3-asr-0.6B
-        #[arg(long, default_value = "sensevoice")]
+        /// ASR engine name（DB models 表中的 name，用 `octopus-cli config` 查看可选值）
+        #[arg(long, default_value = "sherpa-onnx-sense-voice-funasr-nano-int8")]
         model: String,
         /// Language: auto, zh, en, ja, ...
         #[arg(long, default_value = "auto")]
@@ -44,8 +44,8 @@ enum Commands {
     TranscribeUrl {
         /// URL of the video/audio
         url: String,
-        /// ASR engine: sensevoice, whisper, paraformer, qwen3-asr-0.6B, zipformer
-        #[arg(long, default_value = "sensevoice")]
+        /// ASR engine name（DB models 表中的 name，用 `octopus-cli config` 查看可选值）
+        #[arg(long, default_value = "sherpa-onnx-sense-voice-funasr-nano-int8")]
         model: String,
         /// Language: auto, zh, en, ja, ...
         #[arg(long, default_value = "auto")]
@@ -362,19 +362,19 @@ fn do_transcribe(model: &str, language: &str, samples: &[f32]) -> Result<String>
     let category = octopus_asr::config::resolve_engine_category(model);
     match category {
         Some(octopus_asr::config::EngineCategory::Whisper) => {
-            octopus_asr::whisper::transcribe(samples, language)
+            octopus_asr::whisper::transcribe(model, samples, language)
         }
         Some(octopus_asr::config::EngineCategory::Paraformer) => {
-            octopus_asr::paraformer::transcribe(samples, language)
+            octopus_asr::paraformer::transcribe(model, samples, language)
         }
         Some(octopus_asr::config::EngineCategory::Qwen3Asr) => {
-            octopus_asr::qwen3_asr::transcribe(samples, language)
+            octopus_asr::qwen3_asr::transcribe(model, samples, language)
         }
         Some(octopus_asr::config::EngineCategory::Zipformer) => {
-            octopus_asr::zipformer::transcribe(samples, language)
+            octopus_asr::zipformer::transcribe(model, samples, language)
         }
         Some(octopus_asr::config::EngineCategory::SenseVoice) | None => {
-            octopus_asr::sensevoice::transcribe(samples, language)
+            octopus_asr::sensevoice::transcribe(model, samples, language)
         }
     }
 }
@@ -388,7 +388,17 @@ fn show_config() -> Result<()> {
     );
 
     let config = octopus_asr::config::load_config()?;
-    println!("ASR active: {}", config.asr.active);
+    let app_cfg = octopus_infra::config::load_config()?;
+    match octopus_asr::config::resolve_active_engine(&app_cfg.asr_engine) {
+        Ok(r) => println!(
+            "ASR active: {} (category: {:?}, from config.yaml asr_engine='{}')",
+            r.name, r.category, app_cfg.asr_engine
+        ),
+        Err(e) => println!(
+            "ASR active: <resolve error: {}> (asr_engine='{}')",
+            e, app_cfg.asr_engine
+        ),
+    }
 
     let vad_path = octopus_asr::config::find_silero_vad()?;
     let vad_size = std::fs::metadata(&vad_path)?.len() as f64 / 1_048_576.0;
@@ -446,7 +456,7 @@ fn show_config() -> Result<()> {
 }
 
 fn record_from_config() -> Result<Vec<f32>> {
-    let app_cfg = octopus_asr::config::load_app_config()?;
+    let app_cfg = octopus_infra::config::load_config()?;
     let device_name = if app_cfg.microphone.is_empty() {
         ""
     } else {
@@ -524,7 +534,7 @@ fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
     let mut engine = octopus_asr::streaming_paraformer::StreamingParaformer::new(model)?;
 
     // Set up microphone
-    let app_cfg = octopus_asr::config::load_app_config()?;
+    let app_cfg = octopus_infra::config::load_config()?;
     let device_name = if app_cfg.microphone.is_empty() {
         ""
     } else {
@@ -694,7 +704,7 @@ fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
     let mut engine = octopus_asr::streaming_zipformer::StreamingZipformer::new(model)?;
 
     // Set up microphone (same pattern as paraformer e2e)
-    let app_cfg = octopus_asr::config::load_app_config()?;
+    let app_cfg = octopus_infra::config::load_config()?;
     let device_name = if app_cfg.microphone.is_empty() {
         ""
     } else {

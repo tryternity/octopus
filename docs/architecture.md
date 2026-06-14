@@ -22,7 +22,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录 / 润色 prompt 文件名）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一不再各自定义）。未来加时间工具等。任何项目 crate 都可依赖它。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录 / 润色 prompt 文件名）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一不再各自定义）+ `config`（`AppConfig`——config.yaml 的**统一 schema** 与 `load_config()` 读取，asr/desktop/cli 共享，多余字段对各端无害）。未来加时间工具等。任何项目 crate 都可依赖它。
 
 ### octopus-asr（核心推理库）
 
@@ -30,7 +30,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 
 | 模块 | 说明 |
 |------|------|
-| `config` | 配置加载、模型发现、引擎路由 |
+| `config` | DB 模型配置加载（`AsrConfig`）、模型发现、引擎路由、全局默认引擎兜底解析（`resolve_active_engine`） |
 | `audio` | WAV 读取、重采样（→16kHz）、VAD 语音过滤 |
 | `vad` | Silero VAD 语音活动检测 |
 | `whisper` | Whisper 离线识别 |
@@ -108,7 +108,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 **文本持久化（嵌入式 SQLite）：**
 - 存储：`~/.octopus/octopus.db`（`crates/asr/src/db.rs`，全局 `OnceLock<Mutex<Connection>>`；cli/server/desktop 共用）
 - `transcriptions` 表：识别历史，每条存原生识别全文（`raw_text`）+ 润色/编辑版（`polished_text`）+ 润色状态（`polish_status`：`off`/`done`/`failed`）+ 元数据（engine / engine_mode / created_at / char_count）
-- `models` 表：模型配置（**唯一来源**，首次建库时 `seed_default_models` 写入默认引擎集）
+- `models` 表：模型目录（**唯一来源**，首次建库时 `seed_default_models` 写入默认引擎集；v2 schema 无 `is_active` 列——引擎激活改由 `config.yaml.asr_engine` 决定，见「模型管理」）
 - `model.json` / `history.txt` / `record.txt` 已从代码彻底删除——DB 是唯一配置/存储源
 - `polish_status` 基于润色调用结果：未启用→`off`；启用且返回非空→`done`；启用但返回空或失败→`failed`
 
@@ -136,11 +136,16 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - 本地相对路径（如 `models/zipformer`）→ `~/.octopus/<source>`（随应用打包的小模型）
 - HF repo 名（如 `onnx-community/whisper-small`）→ `~/.cache/huggingface/hub/`（大模型缓存）
 
-**运行时配置加载（三端统一）：**
-- `octopus_asr::config::load_config()` 是唯一入口：首次调用 `db::ensure_db()`（自动建表 + seed 默认引擎），读 `models` 表构造 `AppConfig`，缓存到 `OnceLock`。
-- cli / server / desktop 三端无差别，均走此路径，**不再读 model.json**。
+**两份配置，各司其职：**
+- **应用行为配置** `config.yaml` → `infra::config::AppConfig`（`octopus_infra::config::load_config()`，18 字段：麦克风/引擎选择/分段/润色/LLM 等）。schema 统一定义在 infra，asr/desktop/cli 共享。
+- **DB 模型目录** `~/.octopus/octopus.db` `models` 表 → `asr::config::AsrConfig`（`octopus_asr::config::load_config()`，首次 `db::ensure_db()` 自动建表 + seed，读后缓存到 `OnceLock`）。
+
+**引擎选择（单一真相 = `config.yaml.asr_engine`）：**
+- `models` 表不再有 `is_active` 列（v1→v2 migration 自动 `DROP COLUMN`，见 db.rs `init_schema`）。
+- 全局默认引擎由 `resolve_active_engine(asr_engine)` 解析：DB name 精确匹配命中则用；空/不匹配回退兜底 `zipformer-small-ctc`（`DEFAULT_ASR_MODEL_DIR` 本地打包路径，开箱可用）。
+- 显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，按 name 精确匹配、**不走兜底**（匹配不到直接报错）。
 - VAD 模型固定路径（`find_silero_vad` 直接返回 `~/.octopus/models/silero_vad_v4.onnx`），不进 DB、不读配置。
-- **手编 `models` 表需重启进程生效**（`OnceLock` 缓存，运行中不可热更新）。
+- **手编 `models` 表 / `config.yaml` 需重启进程生效**（`OnceLock` 缓存，运行中不可热更新）。
 
 ## 支持的 ASR 引擎
 

@@ -8,7 +8,7 @@ use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::config::{AppConfig, AsrSection, ModelEntry};
+use crate::config::{AsrConfig, AsrSection, ModelEntry};
 use octopus_infra::{consts::DEFAULT_ASR_MODEL_DIR, octopus_config_home};
 
 static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
@@ -50,16 +50,31 @@ where
     f(&conn)
 }
 
-/// 建表 + 首次 seed（仅在 user_version==0 时）。
+/// 建表 + migration（按 user_version 分派）。
+/// - v0：全新 DB → 建表（新 schema 无 is_active）+ seed 默认引擎 → 升至 v2
+/// - v1：旧 DB（含 models.is_active 列）→ DROP COLUMN is_active → 升至 v2
+/// - v2+：已就绪，no-op
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
-    if v == 0 {
-        create_tables(conn)?;
-        seed_default_models(conn)?;
-        conn.execute("PRAGMA user_version = 1", [])?;
-        log::info!("DB schema initialized (v1), default models seeded");
+    match v {
+        0 => {
+            create_tables(conn)?;
+            seed_default_models(conn)?;
+            conn.execute("PRAGMA user_version = 2", [])?;
+            log::info!("DB schema initialized (v2), default models seeded");
+        }
+        1 => {
+            // v1 → v2：删除 models.is_active 列（引擎选择改由 config.yaml.asr_engine 决定）。
+            // bundled SQLite 3.45+ 支持 DROP COLUMN（3.35+ 起）。
+            let tx = conn.unchecked_transaction()?;
+            tx.execute("ALTER TABLE models DROP COLUMN is_active", [])?;
+            tx.commit()?;
+            conn.execute("PRAGMA user_version = 2", [])?;
+            log::info!("DB schema migrated v1 → v2 (dropped models.is_active)");
+        }
+        _ => {}
     }
     Ok(())
 }
@@ -90,7 +105,6 @@ fn create_tables(conn: &Connection) -> Result<()> {
             language     TEXT    NOT NULL DEFAULT '',
             description  TEXT    NOT NULL DEFAULT '',
             quantization TEXT    NOT NULL DEFAULT '',
-            is_active    INTEGER NOT NULL DEFAULT 0,
             UNIQUE(domain, category, name)
         );",
     )?;
@@ -106,11 +120,11 @@ struct DefaultModel {
     language: &'static str,
     description: &'static str,
     quantization: &'static str,
-    is_active: bool,
 }
 
 /// 默认引擎集（替代 model.json）。
-/// zipformer-small-ctc 走本地打包路径（开箱即用，active）；其余走 HF 缓存（按需下载）。
+/// zipformer-small-ctc 走本地打包路径（开箱即用，是兜底引擎）；其余走 HF 缓存（按需下载）。
+/// 注意：不再有 is_active 列——引擎激活由 config.yaml.asr_engine 决定（见 asr::config::resolve_active_engine）。
 const DEFAULT_MODELS: &[DefaultModel] = &[
     DefaultModel {
         category: "zipformer",
@@ -119,7 +133,6 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "zh",
         description: "zipformer-small-ctc, 27M (随应用打包)",
         quantization: "int8",
-        is_active: true,
     },
     DefaultModel {
         category: "zipformer",
@@ -128,7 +141,6 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "zh",
         description: "zipformer-multi, 80M",
         quantization: "int8",
-        is_active: false,
     },
     DefaultModel {
         category: "zipformer",
@@ -137,7 +149,6 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "zh",
         description: "zipformer-ctc, 163M",
         quantization: "int8",
-        is_active: false,
     },
     DefaultModel {
         category: "paraformer",
@@ -146,7 +157,6 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "zh",
         description: "paraformer-streaming, 230M",
         quantization: "int8",
-        is_active: false,
     },
     DefaultModel {
         category: "sensevoice",
@@ -155,7 +165,6 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "auto",
         description: "SenseVoice FunASR Nano INT8, 265M",
         quantization: "int8",
-        is_active: false,
     },
     DefaultModel {
         category: "qwen3-asr",
@@ -164,7 +173,6 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "auto",
         description: "qwen3-asr-0.6B, 1G",
         quantization: "int8",
-        is_active: false,
     },
     DefaultModel {
         category: "whisper",
@@ -173,7 +181,6 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "auto",
         description: "Whisper Small - 快速轻量, 250M",
         quantization: "int8",
-        is_active: false,
     },
 ];
 
@@ -182,16 +189,15 @@ fn seed_default_models(conn: &Connection) -> Result<()> {
     for m in DEFAULT_MODELS {
         tx.execute(
             "INSERT OR IGNORE INTO models
-                (domain, category, name, source, language, description, quantization, is_active)
-             VALUES ('asr', ?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (domain, category, name, source, language, description, quantization)
+             VALUES ('asr', ?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 m.category,
                 m.name,
                 m.source,
                 m.language,
                 m.description,
-                m.quantization,
-                m.is_active as i64
+                m.quantization
             ],
         )?;
     }
@@ -200,19 +206,19 @@ fn seed_default_models(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
-// ── DB → AppConfig（load_config 用）──
+// ── DB → AsrConfig（load_config 用）──
 
-/// 从 DB models 表构造 AppConfig（domain='asr'）。
-pub fn load_models() -> Result<AppConfig> {
+/// 从 DB models 表构造 AsrConfig（domain='asr'）。
+pub fn load_models() -> Result<AsrConfig> {
     with_db(|conn| load_models_at(conn))
 }
 
-fn load_models_at(conn: &Connection) -> Result<AppConfig> {
+fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
     let mut stmt = conn.prepare(
-        "SELECT category, name, source, language, description, quantization, is_active
+        "SELECT category, name, source, language, description, quantization
          FROM models WHERE domain='asr'",
     )?;
-    let rows: Vec<(String, String, String, String, String, String, i64)> = stmt
+    let rows: Vec<(String, String, String, String, String, String)> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -221,21 +227,19 @@ fn load_models_at(conn: &Connection) -> Result<AppConfig> {
                 row.get(3)?,
                 row.get(4)?,
                 row.get(5)?,
-                row.get(6)?,
             ))
         })?
         .filter_map(|r| r.ok())
         .collect();
 
     let mut asr = AsrSection {
-        active: String::new(),
         whisper: None,
         sensevoice: None,
         paraformer: None,
         qwen3_asr: None,
         zipformer: None,
     };
-    for (category, name, source, language, description, quantization, is_active) in rows {
+    for (category, name, source, language, description, quantization) in rows {
         let entry = ModelEntry {
             source,
             language,
@@ -251,12 +255,9 @@ fn load_models_at(conn: &Connection) -> Result<AppConfig> {
             "zipformer" => &mut asr.zipformer,
             _ => continue,
         };
-        map.get_or_insert_with(HashMap::new).insert(name.clone(), entry);
-        if is_active == 1 {
-            asr.active = name;
-        }
+        map.get_or_insert_with(HashMap::new).insert(name, entry);
     }
-    Ok(AppConfig { asr })
+    Ok(AsrConfig { asr })
 }
 
 // ── 识别历史写入（desktop coordinator 用）──
@@ -387,7 +388,6 @@ mod tests {
         create_tables(&conn).unwrap();
         seed_default_models(&conn).unwrap();
         let cfg = load_models_at(&conn).unwrap();
-        assert_eq!(cfg.asr.active, "zipformer-small-ctc");
         let zf = cfg.asr.zipformer.as_ref().expect("zipformer section");
         assert_eq!(zf.len(), 3);
         let small = zf.get("zipformer-small-ctc").unwrap();
@@ -433,7 +433,6 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         create_tables(&conn).unwrap();
         let cfg = load_models_at(&conn).unwrap();
-        assert_eq!(cfg.asr.active, "");
         assert!(cfg.asr.whisper.is_none());
     }
 
