@@ -80,7 +80,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &DesktopConfig) {
 ///
 /// 使用 `set_text` 更新已有 MenuItem 的文本，避免 `MenuItem::with_id`
 /// 重复创建同 ID 项导致的 panic。
-pub fn update_tray_label(app: &tauri::AppHandle, state: TrayState) {
+pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
     let label = match state {
         TrayState::Idle => "开始录音",
         TrayState::Recording => "■ 停止录音",

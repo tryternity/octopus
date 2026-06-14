@@ -681,13 +681,10 @@ fn handle_vad_segmented_tick(
         audio_buffer,
         overlap_tail,
         accumulated_text,
-        raw_text,
         silence_duration,
         has_speech,
         active_count,
         next_seq,
-        completed_seq,
-        completed_results,
         polish_pending,
         polish_base_len,
         last_polish_time,
@@ -1264,7 +1261,6 @@ fn handle_polish_done(
     match stage {
         Stage::Streaming {
             accumulated_text,
-            raw_text,
             polish_pending,
             polish_base_len,
             last_polish_time,
@@ -1272,7 +1268,6 @@ fn handle_polish_done(
         }
         | Stage::VadSegmented {
             accumulated_text,
-            raw_text,
             polish_pending,
             polish_base_len,
             last_polish_time,
