@@ -1,24 +1,11 @@
 use anyhow::{Context, Result};
-use once_cell::sync::Lazy;
 use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use octopus_infra::consts::SILERO_VAD_PATH;
-
-// ── Global base dir ──
-
-/// $HOME/.octopus — 全局根目录，所有配置和模型都基于此
-static HANDY_HOME: Lazy<PathBuf> = Lazy::new(|| {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".octopus")
-});
-
-/// 获取 ~/.octopus 路径
-pub fn handy_home() -> &'static Path {
-    HANDY_HOME.as_path()
-}
+use octopus_infra::octopus_config_home;
 
 // ── Model config schema（DB models 表）──
 
@@ -104,12 +91,12 @@ pub fn find_onnx_dir(hf_path: &Path) -> PathBuf {
 }
 
 /// 解析模型目录：优先本地固定路径（随应用打包），回退 HF 缓存。
-/// - source 为本地相对路径（如 "models/zipformer"）→ handy_home/source
+/// - source 为本地相对路径（如 "models/zipformer"）→ octopus_config_home/source
 /// - source 为绝对路径 → 直接用
 /// - 否则当 HF repo 名（如 "onnx-community/whisper-small"）→ find_hf_cache
 pub fn resolve_model_dir(source: &str) -> Result<PathBuf> {
-    // 1. handy_home 下相对路径（随应用打包的小模型）
-    let local = handy_home().join(source);
+    // 1. octopus_config_home 下相对路径（随应用打包的小模型）
+    let local = octopus_config_home().join(source);
     if local.is_dir() {
         return Ok(local);
     }
@@ -127,7 +114,7 @@ pub fn resolve_model_dir(source: &str) -> Result<PathBuf> {
 /// 定位 Silero VAD 模型：固定 ~/.octopus/models/silero_vad_v4.onnx（随应用打包）。
 /// 不再读配置/HF 缓存——VAD 模型固定路径，唯一方案。
 pub fn find_silero_vad() -> Result<PathBuf> {
-    let vad = handy_home().join(SILERO_VAD_PATH);
+    let vad = octopus_config_home().join(SILERO_VAD_PATH);
     if vad.exists() {
         return Ok(vad);
     }
@@ -287,7 +274,7 @@ pub struct AppYamlConfig {
 
 /// 读取 ~/.octopus/config.yaml，文件不存在则返回默认值
 pub fn load_app_config() -> Result<AppYamlConfig> {
-    let config_path = handy_home().join("config.yaml");
+    let config_path = octopus_config_home().join("config.yaml");
     if !config_path.exists() {
         return Ok(AppYamlConfig::default());
     }

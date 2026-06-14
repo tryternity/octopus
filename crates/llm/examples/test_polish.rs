@@ -6,10 +6,9 @@
 //!
 //! 用法：cargo run --release --package octopus-llm --example test_polish
 
-use octopus_infra::consts::VOICE_POLISH_FILE;
+use octopus_infra::{consts::VOICE_POLISH_FILE, octopus_config_home};
 use octopus_llm::{polish, set_system_prompt_override, CompatibleLlmConfig};
 use serde::Deserialize;
-use std::path::PathBuf;
 
 #[derive(Deserialize)]
 struct LlmCfg {
@@ -19,14 +18,9 @@ struct LlmCfg {
     llm_secret_key: String,
 }
 
-fn octopus_home() -> PathBuf {
-    let home = std::env::var("HOME").expect("HOME 未设置");
-    PathBuf::from(home).join(".octopus")
-}
-
 fn main() -> anyhow::Result<()> {
     // 1. 加载 prompt override
-    let prompt_path = octopus_home().join(VOICE_POLISH_FILE);
+    let prompt_path = octopus_config_home().join(VOICE_POLISH_FILE);
     if prompt_path.exists() {
         let content = std::fs::read_to_string(&prompt_path)?;
         let trimmed = content.trim();
@@ -39,7 +33,7 @@ fn main() -> anyhow::Result<()> {
     }
 
     // 2. 加载 config.yaml
-    let cfg_path = octopus_home().join("config.yaml");
+    let cfg_path = octopus_config_home().join("config.yaml");
     let text = std::fs::read_to_string(&cfg_path)
         .with_context(|| format!("读取配置失败: {}", cfg_path.display()))?;
     let cfg: LlmCfg = serde_yaml::from_str(&text)?;

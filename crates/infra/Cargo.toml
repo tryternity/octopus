@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 # 基础设施 crate：无项目内 crate 依赖，可被任意项目 crate 依赖。
-# 当前仅 consts（跨 crate 共享的固定常量）；未来承载 home 路径、时间等基础操作。
+# 含 consts（固定常量）+ paths（octopus_config_home 等路径工具）；未来加时间等。
 
 [dependencies]
+once_cell = "1"

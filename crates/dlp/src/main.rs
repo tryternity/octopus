@@ -20,11 +20,6 @@ struct VideoMetadataOutput {
     author: String,
 }
 
-fn handy_home() -> PathBuf {
-    let home = std::env::var("HOME").unwrap_or_else(|_| ".".into());
-    PathBuf::from(home).join(".octopus")
-}
-
 async fn has_binary_on_path(name: &str) -> bool {
     let cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
     Command::new(cmd)
@@ -39,7 +34,7 @@ async fn has_binary_on_path(name: &str) -> bool {
 
 async fn get_binary_path(name: &str) -> Result<PathBuf> {
     // 1. 检查 ~/.octopus/bin/
-    let home_bin = handy_home().join("bin").join(name);
+    let home_bin = octopus_infra::octopus_config_home().join("bin").join(name);
     #[cfg(target_os = "windows")]
     let home_bin = home_bin.with_extension("exe");
 
@@ -78,7 +73,7 @@ async fn download_file(url: &str, dest: &Path) -> Result<()> {
 }
 
 async fn prepare_dependencies() -> Result<()> {
-    let bin_dir = handy_home().join("bin");
+    let bin_dir = octopus_infra::octopus_config_home().join("bin");
     fs::create_dir_all(&bin_dir).await?;
 
     // 1. 检查并自动下载 yt-dlp
@@ -181,7 +176,7 @@ async fn main() -> Result<()> {
     let yt_dlp = get_binary_path("yt-dlp").await?;
     let ffmpeg = get_binary_path("ffmpeg").await?;
 
-    let work_dir = handy_home().join("tmp");
+    let work_dir = octopus_infra::octopus_config_home().join("tmp");
     fs::create_dir_all(&work_dir).await?;
 
     // 计算 URL 的 MD5 以获得唯一的缓存文件名

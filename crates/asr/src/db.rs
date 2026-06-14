@@ -8,14 +8,14 @@ use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::config::{handy_home, AppConfig, AsrSection, ModelEntry};
-use octopus_infra::consts::DEFAULT_ASR_MODEL_DIR;
+use crate::config::{AppConfig, AsrSection, ModelEntry};
+use octopus_infra::{consts::DEFAULT_ASR_MODEL_DIR, octopus_config_home};
 
 static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
 
 /// DB 文件路径：~/.octopus/octopus.db
 fn db_path() -> std::path::PathBuf {
-    handy_home().join("octopus.db")
+    octopus_config_home().join("octopus.db")
 }
 
 /// 幂等初始化：打开/创建 DB，建表 + 首次 seed 默认引擎。

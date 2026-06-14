@@ -179,8 +179,8 @@ impl DesktopConfig {
 
 /// 从 ~/.octopus/config.yaml 加载桌面配置
 pub fn load_desktop_config() -> Result<DesktopConfig> {
-    let handy_home = octopus_asr::config::handy_home();
-    let config_path = handy_home.join("config.yaml");
+    let config_home = octopus_infra::octopus_config_home();
+    let config_path = config_home.join("config.yaml");
 
     if !config_path.exists() {
         return Ok(DesktopConfig::default());

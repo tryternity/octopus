@@ -4,3 +4,7 @@
 //! 任何项目 crate 都可依赖本 crate；本 crate 不依赖任何项目 crate。
 
 pub mod consts;
+pub mod paths;
+
+// 高频路径函数提至 root，调用点用 octopus_infra::octopus_config_home（无需 paths:: 前缀）
+pub use paths::octopus_config_home;

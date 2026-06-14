@@ -146,7 +146,7 @@ async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&
     let resolved_output = if let Some(out_path) = output {
         if out_path.is_empty() {
             let url_md5 = format!("{:x}", md5::compute(url));
-            Some(octopus_asr::config::handy_home().join("tmp").join(format!("{}.wav", url_md5)))
+            Some(octopus_infra::octopus_config_home().join("tmp").join(format!("{}.wav", url_md5)))
         } else {
             Some(std::path::PathBuf::from(out_path))
         }
@@ -383,8 +383,8 @@ fn show_config() -> Result<()> {
     println!("Config & Model Discovery");
     println!("{}", "=".repeat(70));
     println!(
-        "HANDY_HOME: {}",
-        octopus_asr::config::handy_home().display()
+        "OCTOPUS_HOME: {}",
+        octopus_infra::octopus_config_home().display()
     );
 
     let config = octopus_asr::config::load_config()?;
