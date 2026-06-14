@@ -287,65 +287,9 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
 
 // ── 识别历史写入（desktop coordinator 用）──
 
-/// 插入一条识别记录（指定连接，可单测）。
-fn insert_transcription_at(
-    conn: &Connection,
-    raw_text: &str,
-    polished_text: Option<&str>,
-    polish_status: &str,
-    polish_model: Option<&str>,
-    engine: &str,
-    engine_mode: Option<&str>,
-) -> Result<()> {
-    let created_at = now_string();
-    let display = polished_text.unwrap_or(raw_text);
-    let char_count = display.chars().count() as i64;
-    conn.execute(
-        "INSERT INTO transcriptions
-            (created_at, engine, engine_mode, raw_text, polished_text, polish_status, polish_model, char_count)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-        params![
-            created_at,
-            engine,
-            engine_mode,
-            raw_text,
-            polished_text,
-            polish_status,
-            polish_model,
-            char_count
-        ],
-    )?;
-    Ok(())
-}
-
-/// 对外：用全局连接插入一条识别记录。
-/// - raw_text：原生识别全文（必有）
-/// - polished_text：仅 polish_status='done' 时传 Some，否则 None
-/// - polish_status：'off' | 'done' | 'failed'
-pub fn insert_transcription(
-    raw_text: &str,
-    polished_text: Option<&str>,
-    polish_status: &str,
-    polish_model: Option<&str>,
-    engine: &str,
-    engine_mode: Option<&str>,
-) -> Result<()> {
-    with_db(|conn| {
-        insert_transcription_at(
-            conn,
-            raw_text,
-            polished_text,
-            polish_status,
-            polish_model,
-            engine,
-            engine_mode,
-        )
-    })
-}
-
 // ── 过程入库接口（id = 应用写入毫秒戳，按识别生命周期递增更新）──
 //
-// 拆分模式（与旧 insert_transcription / insert_transcription_at 一致）：
+// 拆分模式：
 //   - 私有 `_at(conn, ...)` 接 &Connection，可单测，含业务计算（char_count 等）
 //   - pub 接口仅 `with_db` 转发到 `_at`，调用方无感
 // 这样单测能直接调 `_at` 覆盖业务计算，而非用裸 SQL 复刻。
@@ -428,12 +372,11 @@ fn finalize_at(
 
 /// 首次有 ASR 文本时插入（应用写入毫秒戳 id，走全局连接）。
 ///
-/// 注意区分命名：
-/// - 本函数 `insert_transcription_at_id`（pub，id 由应用写入毫秒戳，走全局连接）
-/// - 私有 `insert_transcription_at(conn, ...)`（旧一次性入库版，id 自增、接 Connection）
-/// - 私有 `insert_at_id(conn, ...)`（本接口的 Connection 内部实现，供单测）
+/// 命名约定：
+/// - `insert_transcription_at_id`（pub，本函数，id 由应用写入毫秒戳，走全局连接）
+/// - `insert_at_id(conn, ...)`（私有，本接口的 Connection 内部实现，供单测）
 ///
-/// 本函数用于过程增量入库（Task 6 coordinator 接线）。
+/// 用于过程增量入库（coordinator 在识别过程中首次有文本时 INSERT）。
 pub fn insert_transcription_at_id(
     id: i64,
     raw_text: &str,
@@ -568,26 +511,6 @@ mod tests {
         seed_default_models(&conn).unwrap(); // INSERT OR IGNORE
         let cfg = load_models_at(&conn).unwrap();
         assert_eq!(cfg.asr.zipformer.as_ref().unwrap().len(), 3); // 未翻倍
-    }
-
-    #[test]
-    fn insert_transcription_writes_row() {
-        let conn = Connection::open_in_memory().unwrap();
-        create_tables(&conn).unwrap();
-        insert_transcription_at(
-            &conn,
-            "原文",
-            Some("润色"),
-            "done",
-            Some("deepseek"),
-            "sensevoice",
-            Some("offline"),
-        )
-        .unwrap();
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM transcriptions", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 1);
     }
 
     #[test]

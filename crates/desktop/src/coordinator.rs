@@ -195,14 +195,14 @@ impl Coordinator {
                         );
                     }
                     Command::PasteDone => {
-                        // 入库（从 Pasting 取数据；用户编辑已反映到 polished_text）
+                        // 入库 finalize（从 Pasting 取数据；用户编辑已反映到 polished_text）
                         if let Stage::Pasting {
-                            id: _,
+                            id,
                             raw_text,
                             polished_text,
                             polish_status,
-                            engine,
-                            engine_mode,
+                            engine: _,
+                            engine_mode: _,
                         } = &stage
                         {
                             let polish_model = if polish_status == "done" {
@@ -216,15 +216,16 @@ impl Coordinator {
                             } else {
                                 None
                             };
-                            if let Err(e) = octopus_asr::db::insert_transcription(
+                            let duration_ms = now_millis() - id;
+                            if let Err(e) = octopus_asr::db::finalize_transcription(
+                                *id,
                                 raw_text,
                                 polished_for_db,
                                 polish_status,
                                 polish_model,
-                                engine,
-                                Some(engine_mode),
+                                Some(duration_ms),
                             ) {
-                                log::warn!("DB insert transcription failed: {}", e);
+                                warn!("DB finalize failed: {}", e);
                             }
                         }
                         info!("Paste complete, returning to idle");
@@ -932,6 +933,11 @@ fn handle_streaming_tick(
         match engine.accept_samples(&samples, was_silent) {
             Ok(Some(new_text)) => {
                 transcript.set_full(&new_text);
+                if let Err(e) =
+                    update_transcription_raw(transcript, &config.asr_engine, "streaming")
+                {
+                    warn!("DB (streaming) failed: {}", e);
+                }
                 crate::result_window::update_result(app_handle, &transcript.display_text());
             }
             Ok(None) => {}
@@ -943,6 +949,11 @@ fn handle_streaming_tick(
             match engine.flush() {
                 Ok(Some(new_text)) => {
                     transcript.set_full(&new_text);
+                    if let Err(e) =
+                        update_transcription_raw(transcript, &config.asr_engine, "streaming")
+                    {
+                        warn!("DB (streaming) failed: {}", e);
+                    }
                     debug!("Flushed: '{}'", transcript.full());
                     crate::result_window::update_result(app_handle, &transcript.display_text());
                 }
@@ -1087,6 +1098,11 @@ fn handle_transcription_done(
 
             // 消费连续序号的结果（追加到 Transcript）
             consume_completed_results(completed_seq, completed_results, transcript);
+            if let Err(e) =
+                update_transcription_raw(transcript, &config.asr_engine, "vad_segmented")
+            {
+                warn!("DB (vad_segmented) failed: {}", e);
+            }
 
             if !transcript.full().is_empty() {
                 crate::result_window::update_result(app_handle, &transcript.display_text());
@@ -1171,7 +1187,7 @@ fn start_tick_thread(tx: Sender<Command>, streaming_active: Arc<AtomicBool>) {
 fn handle_polish_done(
     stage: &mut Stage,
     result: Result<String, String>,
-    _config: &AppConfig,
+    config: &AppConfig,
     app_handle: &tauri::AppHandle,
     _tx: &Sender<Command>,
 ) {
@@ -1190,6 +1206,15 @@ fn handle_polish_done(
                 return;
             }
             transcript.on_polish_done(polished);
+            // 中间润色入库 polished（polish_model 传 config.llm_model，与 PasteDone 一致，便于统计）
+            if let Err(e) = octopus_asr::db::update_polished(
+                transcript.id,
+                transcript.polished(),
+                "done",
+                Some(&config.llm_model),
+            ) {
+                warn!("DB update_polished failed: {}", e);
+            }
             if !transcript.full().is_empty() {
                 crate::result_window::update_result(app_handle, &transcript.display_text());
             }
@@ -1209,4 +1234,30 @@ fn stage_name(stage: &Stage) -> &'static str {
         Stage::WaitingCompletion { .. } => "WaitingCompletion",
         Stage::Pasting { .. } => "Pasting",
     }
+}
+
+/// 首次有文本 INSERT，否则 UPDATE raw_text。DB 失败返回 Err 供调用方 warn（不阻塞识别）。
+/// 用 Transcript.db_inserted() 区分首次与后续（避免「UPDATE 0 行无法判断」歧义）。
+fn update_transcription_raw(
+    transcript: &mut Transcript,
+    engine: &str,
+    engine_mode: &str,
+) -> Result<(), String> {
+    if transcript.full().is_empty() {
+        return Ok(());
+    }
+    if !transcript.db_inserted() {
+        octopus_asr::db::insert_transcription_at_id(
+            transcript.id,
+            &transcript.db_text(),
+            engine,
+            Some(engine_mode),
+        )
+        .map_err(|e| e.to_string())?;
+        transcript.mark_db_inserted();
+    } else {
+        octopus_asr::db::update_raw_text(transcript.id, &transcript.db_text())
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
