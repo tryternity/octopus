@@ -94,6 +94,10 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - 单线程 mpsc channel 串行化所有事件
 - 流式模式：Streaming → Pasting
 - 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → Pasting
+- **VAD 分段切分策略**（`handle_vad_segmented_tick`）：静音边界切分（主）+ 连续超时强制切断（兜底）
+  - 静音切分：检测到语音后静音 ≥ `segment_silence`（默认 500ms）→ 切分，**无 overlap**（静音是自然语句边界，下一段从干净开始）
+  - 强制切断：连续语音缓冲达 `segment_duration`（默认 20s）仍未静音 → 强制切断，**保留末尾 `segment_overlap`（200ms）作下一段 overlap**（语句被硬切，需重叠保连贯）
+  - 每段经 `filter_speech_from_buffer` 过滤静音后送离线识别，按 `seq` 有序拼接
 - `Stage::Pasting` 为结构变体，持 `raw_text`（原生识别全文）+ `polished_text`（润色/编辑后）+ `polish_status` + `engine` + `engine_mode`
 - 入库时机：粘贴完成发 `Command::PasteDone` 时，从 `Stage::Pasting` 取数据 `INSERT INTO transcriptions`（用户在结果窗口的编辑已反映到 `polished_text`）
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号

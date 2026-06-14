@@ -710,21 +710,28 @@ fn handle_vad_segmented_tick(
             *silence_duration += chunk_duration;
         }
 
-        // 4. 判断是否发送识别（segment_duration 秒 / segment_silence 毫秒）
-        let segment_samples = (config.segment_duration * 16000.0) as usize;
+        // 4. 判断是否发送识别：静音边界切分（主）/ 连续超时强制切断（兜底）
+        let buffer_duration_s = audio_buffer.len() as f64 / 16000.0;
         let silence_ms = *silence_duration * 1000.0;
-        let should_send = *has_speech
-            && (audio_buffer.len() >= segment_samples || silence_ms >= config.segment_silence);
+        let silence_cut = *has_speech && silence_ms >= config.segment_silence;
+        let force_cut = *has_speech && buffer_duration_s >= config.segment_duration;
+        let should_send = silence_cut || force_cut;
 
         if should_send {
-            // 保存末尾作为下一段 overlap（segment_overlap 毫秒 → 采样点数）
-            let overlap_samples = (config.segment_overlap * 16.0) as usize;
-            let overlap_start = audio_buffer.len().saturating_sub(overlap_samples);
-            *overlap_tail = audio_buffer[overlap_start..].to_vec();
-
-            // 构建发送缓冲区：前一窗口 overlap + 当前缓冲区
+            // 构建发送缓冲区：前一窗口 overlap（静音切分后为空）+ 当前缓冲区。
+            // 先 clone 再更新 overlap_tail，确保用的是「上一窗口」末尾而非当前段末尾。
             let mut send_buffer = overlap_tail.clone();
             send_buffer.extend_from_slice(audio_buffer);
+
+            // 仅强制切断保留下一段 overlap（语句被硬切，需重叠保证连贯）；
+            // 静音切分是自然语句边界，下一段从干净开始，无需 overlap。
+            if force_cut {
+                let overlap_samples = (config.segment_overlap * 16.0) as usize;
+                let overlap_start = audio_buffer.len().saturating_sub(overlap_samples);
+                *overlap_tail = audio_buffer[overlap_start..].to_vec();
+            } else {
+                overlap_tail.clear();
+            }
 
             // 重置缓冲区状态
             audio_buffer.clear();
@@ -738,7 +745,8 @@ fn handle_vad_segmented_tick(
                 *next_seq += 1;
                 *active_count += 1;
                 debug!(
-                    "VadSegmented: sending segment seq={}, samples={}, active_count={}",
+                    "VadSegmented: {} cut, seq={}, samples={}, active_count={}",
+                    if force_cut { "force" } else { "silence" },
                     seq,
                     speech_samples.len(),
                     active_count
