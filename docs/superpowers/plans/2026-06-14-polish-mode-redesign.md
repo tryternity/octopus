@@ -1,6 +1,6 @@
 # LLM 润色模式三档化（polish_mode）实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans。Steps 用 checkbox（`- [ ]`）跟踪。
+> **For agentic workers:** REQUIRED SUB-SKILL: superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans。**本计划已全部实现，存档备查。**
 
 **Goal:** 将 `polish_enabled: bool` + `polish_interval` 的隐式三态收敛为显式枚举 `PolishMode`（0/1/2），desktop 三处判断点改用枚举，底层润色引擎与流式/伪流式共用路径不变。
 
@@ -34,7 +34,7 @@
 
 **说明：** 本 task **保留** `polish_enabled` 字段不动（仅新增 `polish_mode`），确保此步编译通过——desktop 仍在用 `polish_enabled`，Task 2 才改 desktop 引用，Task 3 才删 `polish_enabled`。
 
-- [ ] **Step 1: 写失败测试。** 在 `crates/infra/src/config.rs` 末尾（`load_config` 函数之后）追加 test mod：
+- [x] **Step 1: 写失败测试。** 在 `crates/infra/src/config.rs` 末尾（`load_config` 函数之后）追加 test mod：
 
 ```rust
 #[cfg(test)]
@@ -61,12 +61,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败。**
+- [x] **Step 2: 跑测试确认失败。**
 
 Run: `cargo test -p octopus-infra`
 Expected: 编译失败 `cannot find type \`PolishMode\` in this scope`（红）。
 
-- [ ] **Step 3: 加 log 依赖。** `crates/infra/Cargo.toml` 的 `[dependencies]` 末尾加一行：
+- [x] **Step 3: 加 log 依赖。** `crates/infra/Cargo.toml` 的 `[dependencies]` 末尾加一行：
 
 ```toml
 [dependencies]
@@ -77,7 +77,7 @@ anyhow = "1"
 log = "0.4"
 ```
 
-- [ ] **Step 4: 实现 PolishMode 枚举 + Deserialize impl。** 在 `crates/infra/src/config.rs` 的 `use crate::octopus_config_home;`（约 :9）之后、`pub struct AppConfig`（约 :14）之前插入：
+- [x] **Step 4: 实现 PolishMode 枚举 + Deserialize impl。** 在 `crates/infra/src/config.rs` 的 `use crate::octopus_config_home;`（约 :9）之后、`pub struct AppConfig`（约 :14）之前插入：
 
 ```rust
 /// LLM 润色模式（config.yaml 的 polish_mode 字段，整数 0/1/2）
@@ -111,7 +111,7 @@ impl<'de> Deserialize<'de> for PolishMode {
 }
 ```
 
-- [ ] **Step 5: AppConfig 加 polish_mode 字段。** 在 `polish_enabled` 字段块（约 :68-70）之后追加一个新字段：
+- [x] **Step 5: AppConfig 加 polish_mode 字段。** 在 `polish_enabled` 字段块（约 :68-70）之后追加一个新字段：
 
 ```rust
     /// 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色
@@ -119,18 +119,18 @@ impl<'de> Deserialize<'de> for PolishMode {
     pub polish_mode: PolishMode,
 ```
 
-- [ ] **Step 6: Default impl 加 polish_mode。** 在 `impl Default for AppConfig` 的 `polish_enabled: false,`（约 :149）之后加一行：
+- [x] **Step 6: Default impl 加 polish_mode。** 在 `impl Default for AppConfig` 的 `polish_enabled: false,`（约 :149）之后加一行：
 
 ```rust
             polish_mode: PolishMode::default(),
 ```
 
-- [ ] **Step 7: 跑测试确认通过。**
+- [x] **Step 7: 跑测试确认通过。**
 
 Run: `cargo test -p octopus-infra`
 Expected: `3 passed`（绿）。
 
-- [ ] **Step 8: commit。**
+- [x] **Step 8: commit。**
 
 ```bash
 git add crates/infra/Cargo.toml crates/infra/src/config.rs
@@ -148,7 +148,7 @@ git commit -m "feat(infra): 新增 PolishMode 枚举 + polish_mode 字段"
 
 **说明：** 三处都是把 `polish_enabled`（bool）替换为 `polish_mode`（枚举）的语义判断。改完后 desktop 不再引用 `polish_enabled`，但 infra 里该字段仍在（Task 3 删）。每步后 `cargo check -p octopus-desktop` 必须通过。这些是配置判断分支，靠**类型系统（`polish_mode` 强类型枚举 + match 穷尽）+ cargo check** 保证正确性，不另写单测（mock LLM/协调器成本高于收益）。
 
-- [ ] **Step 1: desktop/config.rs re-export PolishMode + 改 llm_config。**
+- [x] **Step 1: desktop/config.rs re-export PolishMode + 改 llm_config。**
 
 把 `crates/desktop/src/config.rs:9` 的 re-export：
 ```rust
@@ -178,7 +178,7 @@ pub fn llm_config(cfg: &AppConfig) -> Option<octopus_llm::CompatibleLlmConfig> {
     }
 ```
 
-- [ ] **Step 2: coordinator.rs 加 import + 常量 + 改 check_and_trigger_polish。**
+- [x] **Step 2: coordinator.rs 加 import + 常量 + 改 check_and_trigger_polish。**
 
 在 `crates/desktop/src/coordinator.rs` 顶部 import 区（`use crate::config::AppConfig;` 约 :4 附近）加：
 ```rust
@@ -224,7 +224,7 @@ pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
 
 > 下方 `current_len <= *polish_base_len`（新增字符数检测，约 :936-939）**不动**。
 
-- [ ] **Step 3: main.rs 启动校验改 match。**
+- [x] **Step 3: main.rs 启动校验改 match。**
 
 把 `crates/desktop/src/main.rs:49-61` 的润色校验：
 ```rust
@@ -281,12 +281,12 @@ pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
     }
 ```
 
-- [ ] **Step 4: 编译校验。**
+- [x] **Step 4: 编译校验。**
 
 Run: `cargo check -p octopus-desktop`
 Expected: `0 error`。若报 `cannot find value polish_enabled`，说明有遗漏的引用——grep 定位后按同样模式改。
 
-- [ ] **Step 5: commit。**
+- [x] **Step 5: commit。**
 
 ```bash
 git add crates/desktop/src/config.rs crates/desktop/src/coordinator.rs crates/desktop/src/main.rs
@@ -302,29 +302,29 @@ git commit -m "refactor(desktop): 三处润色判断改用 polish_mode 枚举"
 
 **说明：** Task 2 已把所有 desktop 引用改完，此刻删 `polish_enabled` 安全。删后全 workspace 必须无残留引用。
 
-- [ ] **Step 1: 删 polish_enabled 字段。** 删 `crates/infra/src/config.rs` 约 :68-70 的字段块：
+- [x] **Step 1: 删 polish_enabled 字段。** 删 `crates/infra/src/config.rs` 约 :68-70 的字段块：
 ```rust
     /// 润色总开关
     #[serde(default)]
     pub polish_enabled: bool,
 ```
 
-- [ ] **Step 2: 删 Default 里的赋值。** 删 `impl Default for AppConfig` 里约 :149 的行：
+- [x] **Step 2: 删 Default 里的赋值。** 删 `impl Default for AppConfig` 里约 :149 的行：
 ```rust
             polish_enabled: false,
 ```
 
-- [ ] **Step 3: workspace 编译校验。**
+- [x] **Step 3: workspace 编译校验。**
 
 Run: `cargo check --workspace --all-targets`
 Expected: `0 error`。若有残留 `polish_enabled` 引用报错，按报错定位修复（grep `polish_enabled` 确认清零）。
 
-- [ ] **Step 4: grep 确认清零。**
+- [x] **Step 4: grep 确认清零。**
 
 Run: `grep -rn "polish_enabled" crates/ --include="*.rs"`
 Expected: 无输出（已彻底移除）。
 
-- [ ] **Step 5: commit。**
+- [x] **Step 5: commit。**
 
 ```bash
 git add crates/infra/src/config.rs
@@ -339,7 +339,7 @@ git commit -m "refactor(infra): 删除已废弃的 polish_enabled 字段"
 - Modify: `docs/configuration.md`
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: configuration.md 字段表。** 把约 :83-84 两行：
+- [x] **Step 1: configuration.md 字段表。** 把约 :83-84 两行：
 ```
 | `polish_enabled` | bool | `false` | desktop | LLM 润色总开关 |
 | `polish_interval` | f64 | `5.0` | desktop | 中间润色间隔（秒），0 = 仅最终润色 |
@@ -350,7 +350,7 @@ git commit -m "refactor(infra): 删除已废弃的 polish_enabled 字段"
 | `polish_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s` |
 ```
 
-- [ ] **Step 2: configuration.md 完整示例。** 把约 :133-134 的示例段：
+- [x] **Step 2: configuration.md 完整示例。** 把约 :133-134 的示例段：
 ```yaml
 # LLM 润色（可选）
 polish_enabled: false
@@ -363,17 +363,17 @@ polish_mode: 0                   # 0=关闭 / 1=仅最终润色 / 2=中间润色
 polish_interval: 5.0             # 秒，仅 polish_mode=2 生效（中间润色最小间隔）
 ```
 
-- [ ] **Step 3: configuration.md 顶部加迁移提示。** 在「## config.yaml」章节首段（约 :67「应用行为配置，文件不存在时使用默认值。」）之后插入：
+- [x] **Step 3: configuration.md 顶部加迁移提示。** 在「## config.yaml」章节首段（约 :67「应用行为配置，文件不存在时使用默认值。」）之后插入：
 
 > **⚠️ 迁移提示**：旧字段 `polish_enabled: true` 已废弃。请改用 `polish_mode`（`true` + interval>0 → `polish_mode: 2`；`true` + interval=0 → `polish_mode: 1`）。旧字段被忽略，未配置 `polish_mode` 时润色默认关闭。
 
-- [ ] **Step 4: architecture.md 润色段落。** 在「核心状态机（Coordinator）」段的 `- `polish_status` 基于润色调用结果...`（约 :113）之后追加一行：
+- [x] **Step 4: architecture.md 润色段落。** 在「核心状态机（Coordinator）」段的 `- `polish_status` 基于润色调用结果...`（约 :113）之后追加一行：
 
 ```
 - 润色三档（`polish_mode`：0 关闭 / 1 仅最终 / 2 中间+最终）：中间润色由流式/伪流式 tick 共用 `check_and_trigger_polish` 触发，节流 `polish_interval`（下限 `MIN_POLISH_INTERVAL_SEC=1.0s`）+ 新增字符检测；最终润色在 `Stage::Pasting` 入口（`start_pasting`）。详见 [设计](superpowers/specs/2026-06-14-polish-mode-redesign-design.md)。
 ```
 
-- [ ] **Step 5: commit。**
+- [x] **Step 5: commit。**
 
 ```bash
 git add docs/configuration.md docs/architecture.md
