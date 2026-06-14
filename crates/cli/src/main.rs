@@ -154,15 +154,58 @@ async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&
         None
     };
 
-    println!("Spawning octopus-dlp process to extract audio from: {} ...", url);
+    // 尝试寻找 octopus-dlp 二进制文件，如果存在则直接运行，消除 cargo run 开销：
+    // 1. 查找当前运行的 CLI 相同目录下的二进制
+    // 2. 查找 octopus_config_home()/bin/ 目录下的二进制
+    let exe_dir = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.parent().map(|p| p.to_path_buf()));
 
-    let mut cmd = Command::new("cargo");
-    cmd.arg("run")
-        .arg("--quiet")
-        .arg("--package")
-        .arg("octopus-dlp")
-        .arg("--")
-        .arg(url);
+    let mut octopus_dlp_bin = None;
+    if let Some(mut dir) = exe_dir {
+        #[cfg(target_os = "windows")]
+        dir.push("octopus-dlp.exe");
+        #[cfg(not(target_os = "windows"))]
+        dir.push("octopus-dlp");
+
+        if dir.exists() {
+            octopus_dlp_bin = Some(dir);
+        }
+    }
+
+    if octopus_dlp_bin.is_none() {
+        let mut home_bin = octopus_infra::octopus_config_home().to_path_buf();
+        home_bin.push("bin");
+        #[cfg(target_os = "windows")]
+        home_bin.push("octopus-dlp.exe");
+        #[cfg(not(target_os = "windows"))]
+        home_bin.push("octopus-dlp");
+
+        if home_bin.exists() {
+            octopus_dlp_bin = Some(home_bin);
+        }
+    }
+
+    if let Some(ref bin_path) = octopus_dlp_bin {
+        println!("Spawning octopus-dlp process ({}) directly to extract audio from: {} ...", bin_path.display(), url);
+    } else {
+        println!("Spawning octopus-dlp process via cargo run to extract audio from: {} ...", url);
+    }
+
+    let mut cmd = if let Some(ref bin_path) = octopus_dlp_bin {
+        let mut c = Command::new(bin_path);
+        c.arg(url);
+        c
+    } else {
+        let mut c = Command::new("cargo");
+        c.arg("run")
+            .arg("--quiet")
+            .arg("--package")
+            .arg("octopus-dlp")
+            .arg("--")
+            .arg(url);
+        c
+    };
 
     if unclear {
         cmd.arg("--unclear");

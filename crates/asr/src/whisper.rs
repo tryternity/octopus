@@ -216,6 +216,7 @@ pub struct WhisperEngine {
     dec_init: std::sync::Mutex<Session>,
     dec_past: std::sync::Mutex<Session>,
     tokenizer: Tokenizer,
+    past_key_names: Vec<(&'static str, &'static str, &'static str, &'static str)>,
 }
 
 impl WhisperEngine {
@@ -258,11 +259,21 @@ impl WhisperEngine {
         };
         let tokenizer = Tokenizer::from_file(tk_path).map_err(|e| anyhow::anyhow!("Tokenizer: {}", e))?;
 
+        let mut past_key_names = Vec::with_capacity(N_DECODER_LAYERS);
+        for layer in 0..N_DECODER_LAYERS {
+            let dk_name: &'static str = Box::leak(format!("past_key_values.{}.decoder.key", layer).into_boxed_str());
+            let dv_name: &'static str = Box::leak(format!("past_key_values.{}.decoder.value", layer).into_boxed_str());
+            let ek_name: &'static str = Box::leak(format!("past_key_values.{}.encoder.key", layer).into_boxed_str());
+            let ev_name: &'static str = Box::leak(format!("past_key_values.{}.encoder.value", layer).into_boxed_str());
+            past_key_names.push((dk_name, dv_name, ek_name, ev_name));
+        }
+
         Ok(Self {
             encoder: std::sync::Mutex::new(encoder),
             dec_init: std::sync::Mutex::new(dec_init),
             dec_past: std::sync::Mutex::new(dec_past),
             tokenizer,
+            past_key_names,
         })
     }
 }
@@ -347,20 +358,21 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
             };
 
             for layer in 0..N_DECODER_LAYERS {
+                let (dk, dv, ek, ev) = self.past_key_names[layer];
                 inputs.push((
-                    format!("past_key_values.{}.decoder.key", layer).into(),
+                    dk.into(),
                     ort::value::TensorRef::from_array_view(kv.decoder_keys[layer].view())?.into(),
                 ));
                 inputs.push((
-                    format!("past_key_values.{}.decoder.value", layer).into(),
+                    dv.into(),
                     ort::value::TensorRef::from_array_view(kv.decoder_values[layer].view())?.into(),
                 ));
                 inputs.push((
-                    format!("past_key_values.{}.encoder.key", layer).into(),
+                    ek.into(),
                     ort::value::TensorRef::from_array_view(kv.encoder_keys[layer].view())?.into(),
                 ));
                 inputs.push((
-                    format!("past_key_values.{}.encoder.value", layer).into(),
+                    ev.into(),
                     ort::value::TensorRef::from_array_view(kv.encoder_values[layer].view())?.into(),
                 ));
             }

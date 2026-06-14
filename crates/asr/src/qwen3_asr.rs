@@ -44,6 +44,7 @@ pub struct Qwen3AsrEngine {
     decoder_session: std::sync::Mutex<Session>,
     tokenizer: tokenizers::Tokenizer,
     entry: config::ModelEntry,
+    cache_names: Vec<(&'static str, &'static str)>,
 }
 
 impl Qwen3AsrEngine {
@@ -66,12 +67,20 @@ impl Qwen3AsrEngine {
         let tokenizer_dir = hf_path.join("tokenizer");
         let tokenizer = load_tokenizer(&tokenizer_dir)?;
 
+        let mut cache_names = Vec::with_capacity(NUM_DECODER_LAYERS);
+        for i in 0..NUM_DECODER_LAYERS {
+            let key_name: &'static str = Box::leak(format!("cache_key_{}", i).into_boxed_str());
+            let value_name: &'static str = Box::leak(format!("cache_value_{}", i).into_boxed_str());
+            cache_names.push((key_name, value_name));
+        }
+
         Ok(Self {
             conv_session: std::sync::Mutex::new(conv_session),
             encoder_session: std::sync::Mutex::new(encoder_session),
             decoder_session: std::sync::Mutex::new(decoder_session),
             tokenizer,
             entry: entry.clone(),
+            cache_names,
         })
     }
 }
@@ -182,6 +191,7 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
             0,
             &mut caches,
             max_total_len,
+            &self.cache_names,
         )?;
 
         let mut generated_ids = Vec::new();
@@ -217,6 +227,7 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
                 cur_len,
                 &mut caches,
                 max_total_len,
+                &self.cache_names,
             )?;
 
             cur_len += 1;
@@ -449,6 +460,7 @@ fn run_decoder_step(
     cur_len: usize,
     caches: &mut Vec<ndarray::Array4<f32>>,
     max_total_len: usize,
+    cache_names: &[(&'static str, &'static str)],
 ) -> Result<Vec<f32>> {
     let s = input_ids.shape()[1]; // sequence length of this step
 
@@ -461,12 +473,13 @@ fn run_decoder_step(
 
     // Add KV cache inputs for all 28 layers
     for i in 0..NUM_DECODER_LAYERS {
+        let (key_name, value_name) = cache_names[i];
         inputs.push((
-            format!("cache_key_{}", i).into(),
+            key_name.into(),
             ort::value::TensorRef::from_array_view(caches[2 * i].view())?.into(),
         ));
         inputs.push((
-            format!("cache_value_{}", i).into(),
+            value_name.into(),
             ort::value::TensorRef::from_array_view(caches[2 * i + 1].view())?.into(),
         ));
     }
