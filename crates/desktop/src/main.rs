@@ -175,14 +175,8 @@ pub fn run() {
                 Ok(mut recorder) => {
                     if let Err(e) = recorder.open() {
                         log::error!("Failed to open audio device '{}': {}. Audio input will be silent.", config.microphone, e);
-                        let state = recorder.shared();
-                        std::mem::forget(recorder);
-                        state
-                    } else {
-                        let state = recorder.shared();
-                        std::mem::forget(recorder);
-                        state
                     }
+                    recorder.shared()
                 }
                 Err(e) => {
                     log::error!("Failed to initialize AudioRecorder: {}. Audio input will be silent.", e);

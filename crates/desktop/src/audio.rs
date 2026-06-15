@@ -13,6 +13,7 @@ pub struct SharedAudioState {
     sample_rate: std::sync::atomic::AtomicU32,
     device_name: String,
     resampler: Mutex<Option<octopus_asr::audio::AudioResampler>>,
+    stream: Mutex<Option<cpal::Stream>>,
 }
 
 impl SharedAudioState {
@@ -23,20 +24,37 @@ impl SharedAudioState {
             sample_rate: std::sync::atomic::AtomicU32::new(16000),
             device_name: device_name.to_string(),
             resampler: Mutex::new(None),
+            stream: Mutex::new(None),
         }
     }
 
-    /// Begin capturing: clear buffer, set recording flag
+    /// Begin capturing: clear buffer, set recording flag, play CPAL stream
     pub fn start(&self) -> Result<()> {
         self.samples.lock().unwrap().clear();
         self.is_recording.store(true, Ordering::Relaxed);
+        
+        let stream_guard = self.stream.lock().unwrap();
+        if let Some(ref s) = *stream_guard {
+            s.play()?;
+            debug!("CPAL stream playing started");
+        } else {
+            debug!("CPAL stream is None, recording started in silent mode");
+        }
+        
         debug!("Recording started");
         Ok(())
     }
 
-    /// Stop capturing, drain samples, resample to 16kHz
+    /// Stop capturing, pause CPAL stream, drain samples, resample to 16kHz
     pub fn stop(&self) -> Result<Vec<f32>> {
         self.is_recording.store(false, Ordering::Relaxed);
+        
+        let stream_guard = self.stream.lock().unwrap();
+        if let Some(ref s) = *stream_guard {
+            let _ = s.pause();
+            debug!("CPAL stream paused");
+        }
+
         let raw = std::mem::take(&mut *self.samples.lock().unwrap());
         debug!("Recording stopped, {} raw samples", raw.len());
 
@@ -102,18 +120,15 @@ unsafe impl Send for SharedAudioState {}
 unsafe impl Sync for SharedAudioState {}
 
 /// 麦克风录音管理器
-/// Owns the cpal::Stream (which is NOT Send). Must live on the main thread
-/// or the thread that created it. Only the SharedAudioState handle is shared.
+/// Owns the cpal::Stream inside SharedAudioState.
 pub struct AudioRecorder {
     state: Arc<SharedAudioState>,
-    stream: Option<cpal::Stream>,
 }
 
 impl AudioRecorder {
     pub fn new(device_name: &str) -> Result<Self> {
         Ok(Self {
             state: Arc::new(SharedAudioState::new(device_name)),
-            stream: None,
         })
     }
 
@@ -188,8 +203,8 @@ impl AudioRecorder {
             fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),
         };
 
-        stream.play()?;
-        self.stream = Some(stream);
+        let _ = stream.pause();
+        *self.state.stream.lock().unwrap() = Some(stream);
         Ok(())
     }
 }
