@@ -28,24 +28,118 @@
     }
     #container.visible { opacity: 1; }
 
-    /* 顶部拖拽区域 */
-    #drag-handle {
+    /* 顶部条：拖拽 + 工具栏 */
+    #top-bar {
       flex-shrink: 0;
+      display: flex;
+      align-items: center;
       height: 8px;
+      transition: height 0.12s ease;
+    }
+    #container.toolbar-visible #top-bar { height: 32px; }
+
+    #drag-handle {
+      flex: 1;
+      height: 100%;
       cursor: grab;
-      border-radius: 8px 8px 0 0;
       display: flex;
       align-items: center;
       justify-content: center;
     }
     #drag-handle:active { cursor: grabbing; }
-    #drag-handle::after {
+    #container:not(.toolbar-visible) #drag-handle::after {
       content: '';
       width: 24px;
       height: 3px;
       background: rgba(0, 0, 0, 0.12);
       border-radius: 1.5px;
-      margin-top: 2px;
+    }
+
+    /* 工具栏（默认隐藏，toolbar-visible 时显示） */
+    #toolbar {
+      display: none;
+      align-items: center;
+      gap: 2px;
+      padding: 0 6px;
+    }
+    #container.toolbar-visible #toolbar { display: flex; }
+
+    .tool {
+      width: 26px;
+      height: 26px;
+      padding: 0;
+      border: none;
+      background: transparent;
+      border-radius: 5px;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      color: #1d1d1f;
+    }
+    .tool:hover { color: #007aff; background: rgba(0, 0, 0, 0.06); }
+    .tool.active { color: #007aff; }
+    .tool[disabled] { color: rgba(0, 0, 0, 0.22); cursor: default; }
+    .tool[disabled]:hover { background: transparent; }
+
+    /* mask 图标：单 SVG 随 currentColor 变色 */
+    .tool .icon {
+      width: 18px;
+      height: 18px;
+      background: currentColor;
+      -webkit-mask-size: contain;
+      mask-size: contain;
+      -webkit-mask-repeat: no-repeat;
+      mask-repeat: no-repeat;
+      -webkit-mask-position: center;
+      mask-position: center;
+    }
+    #tool-settings .icon { -webkit-mask-image: url(icons/settings.svg); mask-image: url(icons/settings.svg); }
+    #tool-polish    .icon { -webkit-mask-image: url(icons/polish-mode.svg); mask-image: url(icons/polish-mode.svg); }
+    #tool-asr       .icon { -webkit-mask-image: url(icons/asr-engine.svg); mask-image: url(icons/asr-engine.svg); }
+    #tool-llm       .icon { -webkit-mask-image: url(icons/llm-model.svg); mask-image: url(icons/llm-model.svg); }
+
+    /* 浮层 */
+    #popup {
+      position: absolute;
+      top: 30px;
+      left: 10px;
+      min-width: 180px;
+      max-height: 200px;
+      overflow-y: auto;
+      background: #ffffff;
+      border: 0.5px solid rgba(0, 0, 0, 0.12);
+      border-radius: 8px;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12);
+      z-index: 10;
+      font-size: 13px;
+    }
+    #popup .option {
+      padding: 6px 12px;
+      cursor: pointer;
+      color: #1d1d1f;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    #popup .option:hover { background: rgba(0, 122, 255, 0.08); }
+    #popup .option.current { color: #007aff; font-weight: 500; }
+    #popup .option .cat { font-size: 11px; color: rgba(0,0,0,0.4); margin-left: auto; }
+    #popup .option.current .cat { color: rgba(0,122,255,0.6); }
+
+    /* toast */
+    #toast {
+      position: absolute;
+      bottom: 6px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.78);
+      color: #fff;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 6px;
+      z-index: 20;
+      pointer-events: none;
     }
 
     #text-wrapper {
@@ -85,10 +179,28 @@
 </head>
 <body>
   <div id="container">
-    <div id="drag-handle"></div>
+    <div id="top-bar">
+      <div id="drag-handle"></div>
+      <div id="toolbar">
+        <button class="tool" id="tool-settings" disabled title="敬请期待" aria-label="设置">
+          <span class="icon"></span>
+        </button>
+        <button class="tool" id="tool-polish" title="润色模式" aria-label="润色模式">
+          <span class="icon"></span>
+        </button>
+        <button class="tool" id="tool-asr" title="ASR 识别模型" aria-label="ASR 识别模型">
+          <span class="icon"></span>
+        </button>
+        <button class="tool" id="tool-llm" disabled title="敬请期待" aria-label="LLM 模型">
+          <span class="icon"></span>
+        </button>
+      </div>
+    </div>
     <div id="text-wrapper">
       <div id="result-text"></div>
     </div>
+    <div id="popup" hidden></div>
+    <div id="toast" hidden></div>
   </div>
 
   <script>
@@ -99,6 +211,24 @@
     const { listen } = window.__TAURI__.event;
     const { getCurrentWindow } = window.__TAURI__.window;
     const currentWindow = getCurrentWindow();
+    const { LogicalSize } = window.__TAURI__.window;
+    const WIN_W = 520;
+    const HIDDEN_H = 100;
+    const TOOLBAR_H = 132;
+    let popupOpen = false;
+
+    function showToolbar() {
+      container.classList.add('toolbar-visible');
+      currentWindow.setSize(new LogicalSize(WIN_W, TOOLBAR_H));
+    }
+    function hideToolbar() {
+      if (popupOpen) return;            // 浮层打开时钉住
+      container.classList.remove('toolbar-visible');
+      currentWindow.setSize(new LogicalSize(WIN_W, HIDDEN_H));
+    }
+
+    container.addEventListener('mouseenter', showToolbar);
+    container.addEventListener('mouseleave', hideToolbar);
 
     // 拖拽：顶部 drag handle 区域触发
     dragHandle.addEventListener('mousedown', (e) => {
