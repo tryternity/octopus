@@ -163,7 +163,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 ## 技术栈
 
-- **推理引擎**: ONNX Runtime（通过 ort crate）
+- **推理引擎**: ONNX Runtime（通过 ort crate）；可选硬件加速——CUDA/DirectML/CoreML execution provider（由 `config.yaml.asr_hardware_accelerated` 控制，默认 `false`，注册失败自动回退 CPU），VAD 不受影响（固定 CPU）。config 经 `APP_CONFIG` OnceLock 缓存避免每次 session 构建重复读 yaml。详见 [spec](superpowers/specs/2026-06-15-asr-hardware-acceleration-design.md)
 - **音频处理**: cpal（录音）、rubato（重采样）、hound（WAV 读取）
 - **Web 框架**: Axum + Tokio
 - **桌面框架**: Tauri 2

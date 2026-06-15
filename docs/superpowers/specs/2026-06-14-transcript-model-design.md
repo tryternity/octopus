@@ -128,7 +128,7 @@ impl Transcript {
 | `increase` | 恒空 | 恒空 | 实时累积（停顿后清空并入 raw） |
 | `polished` | 恒空 | 恒空（过程） | 每停顿全量重润色 |
 | 中间展示 | `raw` | `raw` | `polished + increase` |
-| 中间润色触发 | 不触发 | 不触发 | 停顿 600ms 触发 |
+| 中间润色触发 | 不触发 | 不触发 | 停顿 ≥ `pause_polish_threshold_ms`（默认 600ms）触发 |
 | 最终润色 | 不润色 | 停止时润色 | 停止时润色 |
 | 入库 `raw_text` | `raw` | `raw` | `raw + increase` |
 | 入库 `polished_text` | NULL | 最终润色结果 | 最终润色结果 |
@@ -223,7 +223,7 @@ PRAGMA user_version = 3;
 |------|--------|---------|----------|
 | **首次有 ASR** | 首 partial 非空(流式) / 首段 `consume`(伪流式) | `INSERT` | `id`, raw=首段, polished=NULL, status='off', char_count |
 | **分段** | 伪流式 `consume` / 流式停顿分段 | `UPDATE raw` | raw_text=`raw+increase`, char_count（WHERE id=?） |
-| **中间润色** | 停顿 600ms + `on_polish_done`（mode=2） | `UPDATE polished` | polished_text, status='done', polish_model |
+| **中间润色** | 停顿 ≥ `pause_polish_threshold_ms`（默认 600ms）+ `on_polish_done`（mode=2） | `UPDATE polished` | polished_text, status='done', polish_model |
 | **结束 finalize** | Toggle 停止 | `UPDATE finalize` | raw_text=`raw`(完整), polished, status, char_count, duration_ms=`now_ms-id` |
 
 > `id` 在识别开始时生成（`SystemTime::now().duration_since(UNIX_EPOCH).as_millis() as i64`），存入 `Transcript.id`。INSERT 延迟到**首次有 ASR 文本**（按快捷键但未说话时不落库）。

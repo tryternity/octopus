@@ -19,7 +19,7 @@
 - **固定路径 + HF 双模式 source**：`resolve_model_dir(source)` 优先本地（`octopus_config_home()/source` 或绝对路径），回退 HF 缓存。zipformer-small-ctc 走本地打包路径，其他引擎走 HF repo 名。
 - **路径常量与 home 解析集中**：VAD 路径（`SILERO_VAD_PATH`）、默认 ASR 目录（`DEFAULT_ASR_MODEL_DIR`）与 `octopus_config_home()`（原 `handy_home()`，三端各处自建）统一收敛到 [`infra` crate](2026-06-14-infra-crate-design.md)，单一来源。
 - **VAD 固定**：`find_silero_vad()` 固定返回 `~/.octopus/models/silero_vad_v4.onnx`，删 `VadSection` / `AppConfig.vad`。
-- **seed 默认引擎集**：首次建库 `seed_default_models` 写入 7 引擎（见下表），删 model.json 零功能损失。
+- **seed 默认引擎集**：首次建库 `seed_default_models` 写入 8 引擎（见下表），删 model.json 零功能损失。
 
 ## 数据流
 
@@ -39,6 +39,7 @@ load_config() ─首次→ db::ensure_db()(建表+seed) → db::load_models() �
 | paraformer | paraformer-streaming | csukuangfj/sherpa-onnx-streaming-paraformer-zh | |
 | sensevoice | sherpa-onnx-sense-voice-funasr-nano-int8 | csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17 | |
 | qwen3-asr | qwen3-asr-0.6B | csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25 | |
+| qwen3-asr | qwen3-asr-1.7B | ilmina/qwen3-asr-1.7b-sherpa-onnx | |
 | whisper | whisper-small | onnx-community/whisper-small | |
 
 VAD 不进表（固定路径，`find_silero_vad` 直接返回）。

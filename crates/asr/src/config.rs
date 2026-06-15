@@ -350,16 +350,25 @@ pub fn pick_entry<'a>(
     map.get(name)
 }
 
+/// 运行时缓存 config.yaml（AppConfig）：首次读取后缓存，避免每次引擎构建 session 时
+/// 重复读文件 + 解析 yaml（paraformer 一次识别建 encoder+decoder 两个 session，
+/// streaming 引擎更频繁）。手编 config.yaml 后需重启进程生效（与 RUNTIME_CONFIG 一致）。
+static APP_CONFIG: OnceLock<octopus_infra::config::AppConfig> = OnceLock::new();
+
+fn load_app_config_cached() -> &'static octopus_infra::config::AppConfig {
+    APP_CONFIG.get_or_init(|| match octopus_infra::config::load_config() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            log::warn!("Failed to load config.yaml, using defaults (ASR stays on CPU): {:?}", e);
+            octopus_infra::config::AppConfig::default()
+        }
+    })
+}
+
 /// Apply hardware acceleration configuration (if enabled in config.yaml) to a SessionBuilder.
 /// If the acceleration registration fails, it logs a warning and falls back to CPU.
 pub fn apply_session_acceleration(builder: ort::session::builder::SessionBuilder) -> Result<ort::session::builder::SessionBuilder> {
-    let app_cfg = match octopus_infra::config::load_config() {
-        Ok(cfg) => cfg,
-        Err(e) => {
-            log::warn!("Failed to load config.yaml, falling back to CPU: {:?}", e);
-            return Ok(builder);
-        }
-    };
+    let app_cfg = load_app_config_cached();
 
     if !app_cfg.asr_hardware_accelerated {
         return Ok(builder);

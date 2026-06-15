@@ -4,7 +4,7 @@
 
 **Goal:** 引入 `Transcript` 结构统一 raw/polished/increase 三文本，润色改为停顿驱动（修复流式中间润色 P0），DB 改为过程增量入库（id=毫秒戳），剪贴板默认保留识别结果。
 
-**Architecture:** `Transcript` 抽成独立可测 struct（内部用 `full`+`raw_len` 派生 raw/increase），coordinator 各 Stage 持有调用；流式/伪流式统一在停顿（静音≥600ms / 段边界）时全量润色，不重置引擎；DB 表 `id` 改应用写入的毫秒时间戳，新增 UPDATE 接口支持过程增量入库；`write_to_clipboard` 全局配置控制粘贴后剪贴板归属。
+**Architecture:** `Transcript` 抽成独立可测 struct（内部用 `full`+`raw_len` 派生 raw/increase），coordinator 各 Stage 持有调用；流式/伪流式统一在停顿（静音≥`pause_polish_threshold_ms`（默认 600ms）/ 段边界）时全量润色，不重置引擎；DB 表 `id` 改应用写入的毫秒时间戳，新增 UPDATE 接口支持过程增量入库；`write_to_clipboard` 全局配置控制粘贴后剪贴板归属。
 
 **Tech Stack:** Rust, rusqlite (bundled SQLite 3.45+), tauri, enigo, arboard/tauri-clipboard
 
@@ -1183,7 +1183,7 @@ git commit -m "refactor(desktop): Stage holds Transcript, text flow via Transcri
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs`
 
-**改动**：`check_and_trigger_polish` 从「定时+增量」改为「停顿驱动」—— 流式静音≥600ms / 伪流式段边界完成时，把 `transcript.snapshot_for_polish()`（完整 ASR）送 LLM 全量润色。不重置引擎。
+**改动**：`check_and_trigger_polish` 从「定时+增量」改为「停顿驱动」—— 流式静音≥`pause_polish_threshold_ms`（默认 600ms）/ 伪流式段边界完成时，把 `transcript.snapshot_for_polish()`（完整 ASR）送 LLM 全量润色。不重置引擎。
 
 - [x] **Step 1: 停顿润色常量 + check_and_trigger_polish**
 
@@ -1427,9 +1427,9 @@ Expected: 0 error, 0 warning（或仅既有 warning）
 Run: `cargo test --workspace`
 Expected: 所有测试 PASS
 
-> ⚠️ **Step 3-7 为手动 e2e**，涉及用户数据（`~/.octopus/octopus.db`）与麦克风录音，由用户自行验证。代码实现与自动化测试已全部完成（`cargo check --workspace --all-targets` 0 error，`cargo test --workspace` 全 PASS，详见 Task 1-6 各 commit）。
+> **Step 3-7 手动 e2e 已由用户验证通过（2026-06-15）**。代码实现与自动化测试亦全部完成（`cargo check --workspace --all-targets` 0 error，`cargo test --workspace` 全 PASS，详见 Task 1-6 各 commit）。
 
-- [ ] **Step 3: 备份 + migration 验证**
+- [x] **Step 3: 备份 + migration 验证**
 
 ```bash
 cp -r ~/.octopus /tmp/octopus-backup-$(date +%s)
@@ -1440,7 +1440,7 @@ sqlite3 ~/.octopus/octopus.db "PRAGMA user_version;"  # 期望 3
 sqlite3 ~/.octopus/octopus.db "SELECT sql FROM sqlite_master WHERE name='transcriptions';"  # id INTEGER PRIMARY KEY（无 AUTOINCREMENT）
 ```
 
-- [ ] **Step 4: 手动 e2e — 流式 + mode=2**
+- [x] **Step 4: 手动 e2e — 流式 + mode=2**
 
 `~/.octopus/config.yaml` 配 `asr_engine: paraformer-streaming`、`polish_mode: 2`、`llm_*` 填 DeepSeek。
 1. 按快捷键 → 结果窗口「正在聆听…」
@@ -1449,15 +1449,15 @@ sqlite3 ~/.octopus/octopus.db "SELECT sql FROM sqlite_master WHERE name='transcr
 4. 再按快捷键 → 粘贴 polished；他处 Cmd+V 得 polished（write_to_clipboard=true）
 5. `sqlite3 ~/.octopus/octopus.db "SELECT raw_text, polished_text, polish_status, duration_ms FROM transcriptions ORDER BY id DESC LIMIT 1;"` → raw 完整、polished 有值、status=done、duration_ms>0
 
-- [ ] **Step 5: 手动 e2e — 伪流式 + mode=2**
+- [x] **Step 5: 手动 e2e — 伪流式 + mode=2**
 
 配 `asr_engine: sherpa-onnx-sense-voice-funasr-nano-int8`。重复 Step 4 流程，验证分段识别 + 段边界润色。
 
-- [ ] **Step 6: 手动 e2e — 错误降级**
+- [x] **Step 6: 手动 e2e — 错误降级**
 
 `llm_secret_key` 改错 → 录音 → 验证展示降级为 raw、不崩溃、DB `polish_status='failed'`。
 
-- [ ] **Step 7: 手动 e2e — write_to_clipboard=false**
+- [x] **Step 7: 手动 e2e — write_to_clipboard=false**
 
 `write_to_clipboard: false` → 粘贴后剪贴板保留原内容（粘贴前复制一段文字，粘贴后 Cmd+V 他处仍是原文字）。
 

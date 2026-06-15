@@ -90,8 +90,9 @@ octopus-cli config
 | `llm_model` | string | `"gpt-4o-mini"` | desktop | 模型名 |
 | `llm_base_url` | string | `https://api.openai.com/v1` | desktop | API base URL |
 | `llm_secret_key` | string | `""` | desktop | API Key（空则润色不生效） |
+| `asr_hardware_accelerated` | bool | `false` | desktop + cli | ASR 推理是否启用硬件加速（CUDA/DirectML/CoreML EP），失败自动回退 CPU；不影响 VAD（VAD 固定 CPU） |
 
-> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为，`llm_*` 描述 LLM 连接（可被未来其他 LLM 用途复用）。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
+> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为，`llm_*` 描述 LLM 连接（可被未来其他 LLM 用途复用），`asr_*`（`asr_engine`、`asr_hardware_accelerated`）控制 ASR 引擎选择与推理后端。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
 
 ### 引擎选择与兜底（resolve_active_engine）
 
@@ -141,6 +142,7 @@ llm_provider: "deepseek"
 llm_model: "deepseek-chat"
 llm_base_url: "https://api.deepseek.com/v1"
 llm_secret_key: ""               # 填入你的 API Key
+asr_hardware_accelerated: false  # true 启用 GPU/CoreML/DirectML 加速（失败回退 CPU）；VAD 不受影响
 ```
 
 ## 模型下载
