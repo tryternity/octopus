@@ -163,32 +163,8 @@ impl AudioRecorder {
             fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),
         };
 
+        stream.play()?;
         self.stream = Some(stream);
-        Ok(())
-    }
-
-    /// 开始录音
-    pub fn start(&self) -> Result<()> {
-        self.state.start()?;
-        if let Some(stream) = &self.stream {
-            stream.play()?;
-        }
-        Ok(())
-    }
-
-    /// 停止录音，返回 16kHz mono f32 样本
-    pub fn stop(&self) -> Result<Vec<f32>> {
-        if let Some(stream) = &self.stream {
-            stream.pause()?;
-        }
-        self.state.stop()
-    }
-
-    /// 关闭设备
-    pub fn close(&mut self) -> Result<()> {
-        self.state.is_recording.store(false, Ordering::Relaxed);
-        self.stream = None;
-        self.state.samples.lock().unwrap().clear();
         Ok(())
     }
 }
