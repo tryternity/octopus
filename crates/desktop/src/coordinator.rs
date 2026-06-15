@@ -203,7 +203,7 @@ impl Coordinator {
                         } = &stage
                         {
                             let polish_model = if polish_status == "done" {
-                                Some(config.llm_model.as_str())
+                                Some(config.polish_llm.as_str())
                             } else {
                                 None
                             };
@@ -1203,12 +1203,12 @@ fn handle_polish_done(
                 return;
             }
             transcript.on_polish_done(polished);
-            // 中间润色入库 polished（polish_model 传 config.llm_model，与 PasteDone 一致，便于统计）
+            // 中间润色入库 polished（polish_model 传 config.polish_llm，与 PasteDone 一致，便于统计）
             if let Err(e) = octopus_asr::db::update_polished(
                 transcript.id,
                 transcript.polished(),
                 "done",
-                Some(&config.llm_model),
+                Some(&config.polish_llm),
             ) {
                 warn!("DB update_polished failed: {}", e);
             }

@@ -20,15 +20,25 @@ pub fn is_streaming_engine(cfg: &AppConfig) -> bool {
 }
 
 /// 构建 LLM 配置，用于传给 octopus_llm::polish()。
-/// polish_mode 为 Disabled 或 secret_key 为空时返回 None（模式 1/2 都启用最终润色）。
+/// polish_mode 为 Disabled 时返回 None，或者如果 DB 中没有找到对应的 LLM 配置，也返回 None。
 pub fn llm_config(cfg: &AppConfig) -> Option<octopus_llm::CompatibleLlmConfig> {
-    if cfg.polish_mode == PolishMode::Disabled || cfg.llm_secret_key.is_empty() {
+    if cfg.polish_mode == PolishMode::Disabled {
         return None;
     }
-    Some(octopus_llm::CompatibleLlmConfig {
-        provider: cfg.llm_provider.clone(),
-        model: cfg.llm_model.clone(),
-        base_url: cfg.llm_base_url.clone(),
-        secret_key: cfg.llm_secret_key.clone(),
-    })
+    match octopus_asr::db::load_llm_model(&cfg.polish_llm) {
+        Ok(Some(llm_cfg)) => {
+            if llm_cfg.secret_key.is_empty() {
+                log::info!("polish_llm 为 '{}'，其 API Key (secret_key) 为空，适用于本地不需要 key 的模型（如 Ollama 等）", cfg.polish_llm);
+            }
+            Some(llm_cfg)
+        }
+        Ok(None) => {
+            log::warn!("未在数据库中找到名称为 '{}' 的 LLM 润色模型配置", cfg.polish_llm);
+            None
+        }
+        Err(e) => {
+            log::error!("从数据库读取 LLM 润色模型 '{}' 失败: {:?}", cfg.polish_llm, e);
+            None
+        }
+    }
 }

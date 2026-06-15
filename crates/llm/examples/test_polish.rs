@@ -7,15 +7,17 @@
 //! 用法：cargo run --release --package octopus-llm --example test_polish
 
 use octopus_infra::{consts::VOICE_POLISH_FILE, octopus_config_home};
-use octopus_llm::{polish, set_system_prompt_override, CompatibleLlmConfig};
+use octopus_llm::{polish, set_system_prompt_override};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
 struct LlmCfg {
-    llm_provider: String,
-    llm_model: String,
-    llm_base_url: String,
-    llm_secret_key: String,
+    #[serde(default = "default_polish_llm")]
+    polish_llm: String,
+}
+
+fn default_polish_llm() -> String {
+    "GLM-4.7-FlashX".to_string()
 }
 
 fn main() -> anyhow::Result<()> {
@@ -32,32 +34,41 @@ fn main() -> anyhow::Result<()> {
         println!("! 未找到 VOICE_POLISH.md，使用内置默认 prompt");
     }
 
-    // 2. 加载 config.yaml
+    // 2. 加载 config.yaml 获取 polish_llm
     let cfg_path = octopus_config_home().join("config.yaml");
-    let text = std::fs::read_to_string(&cfg_path)
-        .with_context(|| format!("读取配置失败: {}", cfg_path.display()))?;
-    let cfg: LlmCfg = serde_yaml::from_str(&text)?;
-
-    let key_preview = if cfg.llm_secret_key.len() > 6 {
-        format!("{}…({} 字符)", &cfg.llm_secret_key[..6], cfg.llm_secret_key.len())
+    let text = if cfg_path.exists() {
+        std::fs::read_to_string(&cfg_path)?
     } else {
-        format!("({} 字符)", cfg.llm_secret_key.len())
+        String::new()
+    };
+    let cfg: LlmCfg = serde_yaml::from_str(&text).unwrap_or(LlmCfg {
+        polish_llm: default_polish_llm(),
+    });
+
+    println!("正在初始化数据库以加载模型配置...");
+    octopus_asr::db::ensure_db()?;
+
+    println!("正在从数据库加载 LLM 配置: {}...", cfg.polish_llm);
+    let config = match octopus_asr::db::load_llm_model(&cfg.polish_llm)? {
+        Some(c) => c,
+        None => {
+            anyhow::bail!("数据库中未找到 LLM 模型 '{}' 的配置", cfg.polish_llm);
+        }
+    };
+
+    let key_preview = if config.secret_key.len() > 6 {
+        format!("{}…({} 字符)", &config.secret_key[..6], config.secret_key.len())
+    } else {
+        format!("({} 字符)", config.secret_key.len())
     };
     println!(
         "配置: provider={}, model={}, base_url={}, key={}",
-        cfg.llm_provider, cfg.llm_model, cfg.llm_base_url, key_preview
+        config.provider, config.model, config.base_url, key_preview
     );
 
-    if cfg.llm_secret_key.is_empty() {
-        anyhow::bail!("llm_secret_key 为空，无法测试");
+    if config.secret_key.is_empty() {
+        println!("! 数据库中的 API Key (secret_key) 为空，将尝试无 Key 模式发送请求...");
     }
-
-    let config = CompatibleLlmConfig {
-        provider: cfg.llm_provider,
-        model: cfg.llm_model,
-        base_url: cfg.llm_base_url,
-        secret_key: cfg.llm_secret_key,
-    };
 
     // 3. 原始请求诊断：打印完整返回结构，定位 reasoning_content / 字段问题
     println!("\n=== ① 原始请求诊断（reply with one word: hello）===");
@@ -114,5 +125,4 @@ fn main() -> anyhow::Result<()> {
     Ok(())
 }
 
-// 兼容 with_context（anyhow 已引入，补 Context trait）
-use anyhow::Context as _;
+

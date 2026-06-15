@@ -139,6 +139,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
 // ── 默认引擎 seed（替代 model.json）──
 
 struct DefaultModel {
+    domain: &'static str,
     category: &'static str,
     name: &'static str,
     source: &'static str,
@@ -152,6 +153,7 @@ struct DefaultModel {
 /// 注意：不再有 is_active 列——引擎激活由 config.yaml.asr_engine 决定（见 asr::config::resolve_active_engine）。
 const DEFAULT_MODELS: &[DefaultModel] = &[
     DefaultModel {
+        domain: "asr",
         category: "zipformer",
         name: "zipformer-small-ctc",
         source: DEFAULT_ASR_MODEL_DIR,
@@ -160,6 +162,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         secret_key: "",
     },
     DefaultModel {
+        domain: "asr",
         category: "zipformer",
         name: "zipformer-multi",
         source: "k2-fsa/sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13",
@@ -168,6 +171,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         secret_key: "",
     },
     DefaultModel {
+        domain: "asr",
         category: "zipformer",
         name: "zipformer-ctc",
         source: "csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30",
@@ -176,6 +180,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         secret_key: "",
     },
     DefaultModel {
+        domain: "asr",
         category: "paraformer",
         name: "paraformer-streaming",
         source: "csukuangfj/sherpa-onnx-streaming-paraformer-zh",
@@ -184,6 +189,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         secret_key: "",
     },
     DefaultModel {
+        domain: "asr",
         category: "sensevoice",
         name: "sherpa-onnx-sense-voice-funasr-nano-int8",
         source: "csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17",
@@ -192,6 +198,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         secret_key: "",
     },
     DefaultModel {
+        domain: "asr",
         category: "qwen3-asr",
         name: "qwen3-asr-0.6B",
         source: "csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
@@ -200,6 +207,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         secret_key: "",
     },
     DefaultModel {
+        domain: "asr",
         category: "qwen3-asr",
         name: "qwen3-asr-1.7B",
         source: "ilmina/qwen3-asr-1.7b-sherpa-onnx",
@@ -208,11 +216,31 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         secret_key: "",
     },
     DefaultModel {
+        domain: "asr",
         category: "whisper",
         name: "whisper-small",
         source: "onnx-community/whisper-small",
         language: "auto",
         description: "Whisper Small - 快速轻量, 250M",
+        secret_key: "",
+    },
+    // LLM 润色模型
+    DefaultModel {
+        domain: "llm",
+        category: "deepseek",
+        name: "deepseek-v4-flash",
+        source: "https://api.deepseek.com/",
+        language: "",
+        description: "DeepSeek V4 Flash 润色模型",
+        secret_key: "",
+    },
+    DefaultModel {
+        domain: "llm",
+        category: "bigmodel",
+        name: "GLM-4.7-FlashX",
+        source: "https://open.bigmodel.cn/api/paas/v4",
+        language: "",
+        description: "GLM-4.7 FlashX 润色模型",
         secret_key: "",
     },
 ];
@@ -223,8 +251,9 @@ fn seed_default_models(conn: &Connection) -> Result<()> {
         tx.execute(
             "INSERT OR IGNORE INTO models
                 (domain, category, name, source, language, description, secret_key)
-             VALUES ('asr', ?1, ?2, ?3, ?4, ?5, ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![
+                m.domain,
                 m.category,
                 m.name,
                 m.source,
@@ -291,6 +320,36 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
         map.get_or_insert_with(HashMap::new).insert(name, entry);
     }
     Ok(AsrConfig { asr })
+}
+
+/// 从 DB 加载指定名称的 LLM 配置（domain='llm'）。
+pub fn load_llm_model(name: &str) -> Result<Option<octopus_llm::CompatibleLlmConfig>> {
+    with_db(|conn| load_llm_model_at(conn, name))
+}
+
+fn load_llm_model_at(conn: &Connection, name: &str) -> Result<Option<octopus_llm::CompatibleLlmConfig>> {
+    let mut stmt = conn.prepare(
+        "SELECT category, source, secret_key
+         FROM models WHERE domain='llm' AND name=?1",
+    )?;
+    let mut rows = stmt.query_map(params![name], |row| {
+        Ok((
+            row.get::<_, String>(0)?,
+            row.get::<_, String>(1)?,
+            row.get::<_, String>(2)?,
+        ))
+    })?;
+    if let Some(r) = rows.next() {
+        let (category, source, secret_key) = r?;
+        Ok(Some(octopus_llm::CompatibleLlmConfig {
+            provider: category,
+            model: name.to_string(),
+            base_url: source,
+            secret_key,
+        }))
+    } else {
+        Ok(None)
+    }
 }
 
 // ── 识别历史写入（desktop coordinator 用）──
@@ -463,6 +522,24 @@ mod tests {
         create_tables(&conn).unwrap();
         let cfg = load_models_at(&conn).unwrap();
         assert!(cfg.asr.whisper.is_none());
+    }
+
+    #[test]
+    fn test_load_llm_model() {
+        let conn = Connection::open_in_memory().unwrap();
+        create_tables(&conn).unwrap();
+        seed_default_models(&conn).unwrap();
+
+        let glm = load_llm_model_at(&conn, "GLM-4.7-FlashX").unwrap().unwrap();
+        assert_eq!(glm.provider, "bigmodel");
+        assert_eq!(glm.base_url, "https://open.bigmodel.cn/api/paas/v4");
+        assert_eq!(glm.secret_key, "");
+
+        let ds = load_llm_model_at(&conn, "deepseek-v4-flash").unwrap().unwrap();
+        assert_eq!(ds.provider, "deepseek");
+        assert_eq!(ds.base_url, "https://api.deepseek.com/");
+
+        assert!(load_llm_model_at(&conn, "nonexistent-model").unwrap().is_none());
     }
 
     #[test]

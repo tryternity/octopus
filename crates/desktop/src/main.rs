@@ -49,35 +49,43 @@ pub fn run() {
 
     // 润色配置校验（三档模式）
     use crate::config::PolishMode;
-    match config.polish_mode {
-        PolishMode::Disabled => {}
-        PolishMode::FinalOnly => {
-            if config.llm_secret_key.is_empty() {
-                log::warn!("polish_mode=1 但 llm_secret_key 为空，润色不生效");
-            } else {
-                log::info!(
-                    "润色模式: 仅最终润色 (provider={}, model={})",
-                    config.llm_provider,
-                    config.llm_model
-                );
-            }
+    if config.polish_mode != PolishMode::Disabled {
+        if config.polish_mode == PolishMode::Intermediate && config.polish_interval <= 0.0 {
+            log::warn!(
+                "polish_mode=2 但 polish_interval={}<=0，将使用下限 {}s",
+                config.polish_interval,
+                coordinator::MIN_POLISH_INTERVAL_SEC
+            );
         }
-        PolishMode::Intermediate => {
-            if config.polish_interval <= 0.0 {
-                log::warn!(
-                    "polish_mode=2 但 polish_interval={}<=0，将使用下限 {}s",
-                    config.polish_interval,
-                    coordinator::MIN_POLISH_INTERVAL_SEC
-                );
+        match crate::config::llm_config(&config) {
+            Some(llm_cfg) => {
+                let mode_str = match config.polish_mode {
+                    PolishMode::FinalOnly => "仅最终润色",
+                    PolishMode::Intermediate => "中间+最终",
+                    _ => unreachable!(),
+                };
+                if config.polish_mode == PolishMode::Intermediate {
+                    log::info!(
+                        "润色模式: {} (interval={}s, provider={}, model={})",
+                        mode_str,
+                        config.polish_interval,
+                        llm_cfg.provider,
+                        llm_cfg.model
+                    );
+                } else {
+                    log::info!(
+                        "润色模式: {} (provider={}, model={})",
+                        mode_str,
+                        llm_cfg.provider,
+                        llm_cfg.model
+                    );
+                }
             }
-            if config.llm_secret_key.is_empty() {
-                log::warn!("polish_mode=2 但 llm_secret_key 为空，润色不生效");
-            } else {
-                log::info!(
-                    "润色模式: 中间+最终 (interval={}s, provider={}, model={})",
-                    config.polish_interval,
-                    config.llm_provider,
-                    config.llm_model
+            None => {
+                log::warn!(
+                    "polish_mode={:?} 但未找到有效的 LLM 配置（请检查 polish_llm: \"{}\" 或数据库中的 API Key 字段）",
+                    config.polish_mode,
+                    config.polish_llm
                 );
             }
         }

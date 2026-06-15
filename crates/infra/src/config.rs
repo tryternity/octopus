@@ -112,21 +112,9 @@ pub struct AppConfig {
     #[serde(default = "default_pause_polish_threshold_ms")]
     pub pause_polish_threshold_ms: f64,
 
-    /// 提供商标识（openai/deepseek/自定义）
-    #[serde(default)]
-    pub llm_provider: String,
-
-    /// 模型名
-    #[serde(default = "default_polish_model")]
-    pub llm_model: String,
-
-    /// API base URL
-    #[serde(default = "default_polish_base_url")]
-    pub llm_base_url: String,
-
-    /// API Key
-    #[serde(default)]
-    pub llm_secret_key: String,
+    /// 当前润色使用的 LLM 模型名，默认 "GLM-4.7-FlashX"
+    #[serde(default = "default_polish_llm")]
+    pub polish_llm: String,
 
     /// 是否使用 ASR 硬件加速
     #[serde(default = "default_asr_hardware_accelerated")]
@@ -167,11 +155,8 @@ fn default_polish_interval() -> f64 {
 fn default_pause_polish_threshold_ms() -> f64 {
     600.0
 }
-fn default_polish_model() -> String {
-    "gpt-4o-mini".into()
-}
-fn default_polish_base_url() -> String {
-    "https://api.openai.com/v1".into()
+fn default_polish_llm() -> String {
+    "GLM-4.7-FlashX".into()
 }
 fn default_asr_hardware_accelerated() -> bool {
     false
@@ -195,7 +180,7 @@ impl Default for AppConfig {
             engine_mode: default_engine_mode(),
             remote_url: default_remote_url(),
             grpc_endpoint: default_grpc_endpoint(),
-            // 未配置 asr_engine → 空，由 asr::resolve_active_engine 回退到兜底引擎
+            // 未配置 asr_engine → 空，由 asr::resolve_active_engine 回退 to 兜底引擎
             asr_engine: String::new(),
             language: default_language(),
             shortcut: default_shortcut(),
@@ -209,10 +194,7 @@ impl Default for AppConfig {
             polish_mode: PolishMode::default(),
             polish_interval: default_polish_interval(),
             pause_polish_threshold_ms: default_pause_polish_threshold_ms(),
-            llm_provider: String::new(),
-            llm_model: default_polish_model(),
-            llm_base_url: default_polish_base_url(),
-            llm_secret_key: String::new(),
+            polish_llm: default_polish_llm(),
             asr_hardware_accelerated: default_asr_hardware_accelerated(),
             asr_correct: default_asr_correct(),
         }

@@ -36,6 +36,15 @@ octopus 配置分两部分：
 | qwen3-asr | qwen3-asr-1.7B | ilmina/qwen3-asr-1.7b-sherpa-onnx |
 | whisper | whisper-small | onnx-community/whisper-small |
 
+同时，首次建库时也会写入默认的 LLM 润色模型条目：
+
+| domain | category (provider) | name (model) | source (base_url) | 说明 |
+|---|---|---|---|---|
+| llm | deepseek | deepseek-v4-flash | `https://api.deepseek.com/` | DeepSeek V4 Flash 润色模型 |
+| llm | bigmodel | GLM-4.7-FlashX | `https://open.bigmodel.cn/api/paas/v4` | 智谱 GLM-4.7 FlashX 润色模型 |
+
+> **LLM API Key 配置方式**：LLM 模型的所有参数（包括 Base URL 和 API Key）全部存储在 DB `models` 表中。其中 `source` 存储 API Base URL，`secret_key` 存储 API Key。你可以通过 SQLite 客户端手动将 API Key 填入 `models` 表对应条目的 `secret_key` 字段。
+
 > **不再有 `is_active` 列**：引擎激活改由 `config.yaml.asr_engine` 决定（见下方「引擎选择与兜底」）。`zipformer-small-ctc` 是兜底引擎——`asr_engine` 为空或匹配不到任何模型时，自动回退到它（靠本地打包路径，开箱可用）。
 
 **VAD 不进表**：固定路径 `~/.octopus/models/silero_vad_v4.onnx`，随应用打包。
@@ -87,14 +96,11 @@ octopus-cli config
 | `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色 |
 | `polish_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s` |
 | `pause_polish_threshold_ms` | f64 | `600` | desktop | 停顿触发中间润色的静音阈值（毫秒），仅 `polish_mode=2` 生效；**须 > 500**（Active Flush 500ms），否则润色先于尾音冲刷、快照缺尾音 |
-| `llm_provider` | string | `""` | desktop | openai / deepseek / 自定义 |
-| `llm_model` | string | `"gpt-4o-mini"` | desktop | 模型名 |
-| `llm_base_url` | string | `https://api.openai.com/v1` | desktop | API base URL |
-| `llm_secret_key` | string | `""` | desktop | API Key（空则润色不生效） |
+| `polish_llm` | string | `"GLM-4.7-FlashX"` | desktop | 当前润色使用的 LLM 模型名（按 DB `models` 表 `name` 精确匹配） |
 | `asr_hardware_accelerated` | bool | `false` | desktop + cli | ASR 推理是否启用硬件加速（CUDA/DirectML/CoreML EP），失败自动回退 CPU；不影响 VAD（VAD 固定 CPU） |
 | `asr_correct` | bool | `false` | cli + server + desktop | 是否对 ASR 输出做拼音映射 + bigram 转移概率的轻量纠错/热词校正；**自动跳过 Qwen3-ASR**（其自带标点且语义纠错强），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。详见 [architecture.md §ASR 纠错](../architecture.md) |
 
-> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为，`llm_*` 描述 LLM 连接（可被未来其他 LLM 用途复用），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
+> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（包括 `polish_mode`、`polish_interval` 和新字段 `polish_llm`），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
 
 ### 引擎选择与兜底（resolve_active_engine）
 
@@ -141,10 +147,7 @@ segment_overlap: 200.0           # 毫秒
 polish_mode: 0                   # 0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色
 polish_interval: 5.0             # 秒，仅 polish_mode=2 生效（中间润色最小间隔）
 pause_polish_threshold_ms: 600   # 毫秒，仅 polish_mode=2 生效（停顿触发润色的静音阈值，须 > 500）
-llm_provider: "deepseek"
-llm_model: "deepseek-chat"
-llm_base_url: "https://api.deepseek.com/v1"
-llm_secret_key: ""               # 填入你的 API Key
+polish_llm: "GLM-4.7-FlashX"      # 润色模型名称，其 provider/base_url/API Key 保存于 SQLite 的 models 表中
 asr_hardware_accelerated: false  # true 启用 GPU/CoreML/DirectML 加速（失败回退 CPU）；VAD 不受影响
 asr_correct: false               # true 对 ASR 输出做拼音+bigram 轻量纠错（自动跳过 Qwen3-ASR）
 ```
