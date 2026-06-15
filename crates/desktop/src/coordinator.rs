@@ -33,6 +33,8 @@ enum Command {
     PasteDone,
     /// 润色完成
     PolishDone { result: Result<String, String> },
+    /// 最终润色完成
+    FinalPolishDone { result: Result<String, String> },
 }
 
 enum Stage {
@@ -78,6 +80,13 @@ enum Stage {
         active_count: u32,
         completed_seq: u64,
         completed_results: HashMap<u64, String>,
+    },
+    /// 最终润色中
+    Polishing {
+        id: i64,
+        raw_text: String,
+        engine: String,
+        engine_mode: String,
     },
     /// 粘贴中
     Pasting {
@@ -263,6 +272,9 @@ impl Coordinator {
                     }
                     Command::PolishDone { result } => {
                         handle_polish_done(&mut stage, result, &config, &app_handle, &tx);
+                    }
+                    Command::FinalPolishDone { result } => {
+                        handle_final_polish_done(&mut stage, result, &config, &app_handle, &tx);
                     }
                 }
             }
@@ -472,7 +484,7 @@ fn handle_toggle(
                     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
                 } else {
                     let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-                    start_pasting(
+                    start_final_polish_or_paste(
                         stage,
                         &final_text,
                         tr,
@@ -540,7 +552,7 @@ fn handle_toggle(
             crate::result_window::show_result(app_handle, &transcript.display_text());
 
             let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-            start_pasting(
+            start_final_polish_or_paste(
                 stage,
                 &combined,
                 tr,
@@ -556,6 +568,10 @@ fn handle_toggle(
             debug!("Toggle ignored: waiting for transcription completion");
         }
 
+        Stage::Polishing { .. } => {
+            debug!("Toggle ignored: busy polishing");
+        }
+
         Stage::Pasting { .. } => {
             debug!("Toggle ignored: busy pasting");
         }
@@ -563,7 +579,8 @@ fn handle_toggle(
 }
 
 /// 开始粘贴阶段（支持最终润色）。`transcript` 移交进 Pasting 持 id（Task 6 用）。
-fn start_pasting(
+/// 开始最终润色或粘贴阶段（异步最终润色，防止阻塞协调器线程）。
+fn start_final_polish_or_paste(
     stage: &mut Stage,
     text: &str,
     transcript: Transcript,
@@ -581,37 +598,78 @@ fn start_pasting(
         return;
     }
 
-    // 最终润色 + 状态（基于调用结果，非文本比较）
-    let (final_text, polish_status) = match crate::config::llm_config(&config) {
-        None => (text.to_string(), "off"),
-        Some(llm_config) => match octopus_llm::polish(text, &llm_config) {
-            Ok(polished) if !polished.is_empty() => {
-                info!(
-                    "Final polish: {} → {} chars",
-                    text.chars().count(),
-                    polished.chars().count()
-                );
-                (polished, "done")
-            }
-            Ok(_) => {
-                warn!("Final polish returned empty, using original");
-                (text.to_string(), "failed")
-            }
-            Err(e) => {
-                warn!("Final polish failed: {}, using original", e);
-                (text.to_string(), "failed")
-            }
-        },
-    };
+    match crate::config::llm_config(config) {
+        None => {
+            // 无需润色，直接粘贴
+            do_paste(
+                stage,
+                text,
+                transcript.id,
+                &transcript.db_text(),
+                "off",
+                engine,
+                engine_mode,
+                config,
+                app_handle,
+                tx,
+            );
+        }
+        Some(llm_config) => {
+            // 进入异步润色状态
+            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Processing);
+            crate::result_window::show_result(app_handle, "⏳ 最终润色中...");
 
-    crate::result_window::show_result(app_handle, &final_text);
+            let id = transcript.id;
+            let raw_text = transcript.db_text();
+            let engine = engine.to_string();
+            let engine_mode = engine_mode.to_string();
 
-    let id = transcript.id;
+            *stage = Stage::Polishing {
+                id,
+                raw_text: raw_text.clone(),
+                engine: engine.clone(),
+                engine_mode: engine_mode.clone(),
+            };
+
+            let tx = tx.clone();
+            let text_to_polish = text.to_string();
+            std::thread::spawn(move || {
+                let result = match octopus_llm::polish(&text_to_polish, &llm_config) {
+                    Ok(polished) => {
+                        if polished.is_empty() {
+                            Err("Final polish returned empty".to_string())
+                        } else {
+                            Ok(polished)
+                        }
+                    }
+                    Err(e) => Err(e.to_string()),
+                };
+                let _ = tx.send(Command::FinalPolishDone { result });
+            });
+        }
+    }
+}
+
+/// 执行真正的粘贴落库操作（在主线程进行）
+fn do_paste(
+    stage: &mut Stage,
+    text_to_paste: &str,
+    id: i64,
+    raw_text: &str,
+    polish_status: &str,
+    engine: &str,
+    engine_mode: &str,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+) {
+    crate::result_window::show_result(app_handle, text_to_paste);
+
     *stage = Stage::Pasting {
         id,
-        raw_text: transcript.db_text(),
+        raw_text: raw_text.to_string(),
         polished_text: if polish_status == "done" {
-            final_text.clone()
+            text_to_paste.to_string()
         } else {
             String::new()
         },
@@ -619,11 +677,12 @@ fn start_pasting(
         engine: engine.to_string(),
         engine_mode: engine_mode.to_string(),
     };
+
     let config = config.clone();
     let tx_inner = tx.clone();
     let tx_fallback = tx.clone();
     let handle_for_closure = app_handle.clone();
-    let text_to_paste = final_text;
+    let text_to_paste = text_to_paste.to_string();
 
     app_handle
         .run_on_main_thread(move || {
@@ -636,6 +695,62 @@ fn start_pasting(
             error!("run_on_main_thread failed: {:?}", e);
             let _ = tx_fallback.send(Command::PasteDone);
         });
+}
+
+/// 处理最终润色完成事件
+fn handle_final_polish_done(
+    stage: &mut Stage,
+    result: Result<String, String>,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+) {
+    let (id, raw_text, engine, engine_mode) = match stage {
+        Stage::Polishing { id, raw_text, engine, engine_mode } => {
+            (*id, raw_text.clone(), engine.clone(), engine_mode.clone())
+        }
+        _ => {
+            debug!("FinalPolishDone ignored in stage {:?}", stage_name(stage));
+            return;
+        }
+    };
+
+    match result {
+        Ok(polished) => {
+            info!(
+                "Final polish: {} → {} chars",
+                raw_text.chars().count(),
+                polished.chars().count()
+            );
+            do_paste(
+                stage,
+                &polished,
+                id,
+                &raw_text,
+                "done",
+                &engine,
+                &engine_mode,
+                config,
+                app_handle,
+                tx,
+            );
+        }
+        Err(e) => {
+            warn!("Final polish failed: {}, using original", e);
+            do_paste(
+                stage,
+                &raw_text,
+                id,
+                &raw_text,
+                "failed",
+                &engine,
+                &engine_mode,
+                config,
+                app_handle,
+                tx,
+            );
+        }
+    }
 }
 
 /// 消费已完成序号的结果，把新段追加到 Transcript。
@@ -1083,6 +1198,10 @@ fn handle_cancel(
             info!("Cancel: cancelling while waiting for transcription");
             // 识别结果将被忽略，回到 Idle
         }
+        Stage::Polishing { .. } => {
+            info!("Cancel: cancelling while final polishing");
+            // 润色结果将被忽略，回到 Idle
+        }
         _ => {}
     }
     *stage = Stage::Idle;
@@ -1171,7 +1290,7 @@ fn handle_transcription_done(
                     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
                 } else {
                     let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-                    start_pasting(
+                    start_final_polish_or_paste(
                         stage,
                         &final_text,
                         tr,
@@ -1256,6 +1375,7 @@ fn stage_name(stage: &Stage) -> &'static str {
         Stage::Streaming { .. } => "Streaming",
         Stage::VadSegmented { .. } => "VadSegmented",
         Stage::WaitingCompletion { .. } => "WaitingCompletion",
+        Stage::Polishing { .. } => "Polishing",
         Stage::Pasting { .. } => "Pasting",
     }
 }
