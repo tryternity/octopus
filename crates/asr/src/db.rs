@@ -200,6 +200,14 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         quantization: "int8",
     },
     DefaultModel {
+        category: "qwen3-asr",
+        name: "qwen3-asr-1.7B",
+        source: "ilmina/qwen3-asr-1.7b-sherpa-onnx",
+        language: "auto",
+        description: "qwen3-asr-1.7B, 约2.7G",
+        quantization: "int8",
+    },
+    DefaultModel {
         category: "whisper",
         name: "whisper-small",
         source: "onnx-community/whisper-small",
@@ -500,7 +508,7 @@ mod tests {
         assert_eq!(cfg.asr.whisper.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 1);
-        assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 1);
+        assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 2);
     }
 
     #[test]
