@@ -79,6 +79,7 @@ octopus-cli config
 | `grpc_endpoint` | string | `http://127.0.0.1:50051` | desktop | grpc 模式端点 |
 | `shortcut` | string | `CmdOrCtrl+Shift+Space` | desktop | 全局快捷键 |
 | `paste_method` | string | `"clipboard"` | desktop | clipboard / direct / none |
+| `write_to_clipboard` | bool | `true` | desktop | 粘贴完成后是否把识别结果写入剪贴板（方便他处再粘贴）；`false` 时三模式等同重构前现状（不碰/恢复原剪贴板）。详见 [transcript-model spec §6](superpowers/specs/2026-06-14-transcript-model-design.md) |
 | `overlay_position` | string | `"top"` | desktop | top / bottom / none |
 | `segment_duration` | f64 | `5.0` | desktop | VAD 伪流式：缓冲累积时长阈值（秒） |
 | `segment_silence` | f64 | `500.0` | desktop | VAD 伪流式：静音触发识别阈值（毫秒） |
@@ -91,8 +92,9 @@ octopus-cli config
 | `llm_base_url` | string | `https://api.openai.com/v1` | desktop | API base URL |
 | `llm_secret_key` | string | `""` | desktop | API Key（空则润色不生效） |
 | `asr_hardware_accelerated` | bool | `false` | desktop + cli | ASR 推理是否启用硬件加速（CUDA/DirectML/CoreML EP），失败自动回退 CPU；不影响 VAD（VAD 固定 CPU） |
+| `asr_correct` | bool | `false` | cli + server + desktop | 是否对 ASR 输出做拼音映射 + bigram 转移概率的轻量纠错/热词校正；**自动跳过 Qwen3-ASR**（其自带标点且语义纠错强），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。详见 [architecture.md §ASR 纠错](../architecture.md) |
 
-> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为，`llm_*` 描述 LLM 连接（可被未来其他 LLM 用途复用），`asr_*`（`asr_engine`、`asr_hardware_accelerated`）控制 ASR 引擎选择与推理后端。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
+> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为，`llm_*` 描述 LLM 连接（可被未来其他 LLM 用途复用），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
 
 ### 引擎选择与兜底（resolve_active_engine）
 
@@ -127,6 +129,7 @@ engine_mode: "embedded"          # embedded | websocket | grpc
 # 桌面交互
 shortcut: "CmdOrCtrl+Shift+Space"
 paste_method: "clipboard"        # clipboard | direct | none
+write_to_clipboard: true         # 粘贴后是否把识别结果留在剪贴板（false = 等同重构前现状）
 overlay_position: "top"          # top | bottom | none
 
 # VAD 伪流式分段（离线引擎）
@@ -143,6 +146,7 @@ llm_model: "deepseek-chat"
 llm_base_url: "https://api.deepseek.com/v1"
 llm_secret_key: ""               # 填入你的 API Key
 asr_hardware_accelerated: false  # true 启用 GPU/CoreML/DirectML 加速（失败回退 CPU）；VAD 不受影响
+asr_correct: false               # true 对 ASR 输出做拼音+bigram 轻量纠错（自动跳过 Qwen3-ASR）
 ```
 
 ## 模型下载
