@@ -2,6 +2,10 @@
 // 嵌入式 SQLite：模型配置（唯一来源）+ 识别历史。
 // 全局单连接（OnceLock<Mutex<Connection>>），首次 ensure_db 时初始化。
 // cli/server/desktop 三端统一通过 config::load_config() 间接使用本模块。
+//
+// Schema 与 seed 数据统一维护于 crates/infra/src/db.sql，
+// 通过 include_str! 在编译期嵌入，首次建库时执行一次。
+// 开发阶段无迁移逻辑：schema 变更时删除 ~/.octopus/octopus.db 重新初始化即可。
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
@@ -9,18 +13,19 @@ use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
 use crate::config::{AsrConfig, AsrSection, ModelEntry};
-use octopus_infra::{consts::DEFAULT_ASR_MODEL_DIR, octopus_config_home};
+use octopus_infra::octopus_config_home;
 
 static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
+
+/// 编译期嵌入的建表 + seed SQL（来自 crates/infra/src/db.sql）
+const INIT_SQL: &str = include_str!("../../infra/src/db.sql");
 
 /// DB 文件路径：~/.octopus/octopus.db
 fn db_path() -> std::path::PathBuf {
     octopus_config_home().join("octopus.db")
 }
 
-/// 幂等初始化：打开/创建 DB，建表 + 首次 seed 默认引擎。
-/// user_version==0 时建表+seed；已初始化的 DB 重启不重跑。
-/// init_schema 幂等，多线程首次竞争也安全（INSERT OR IGNORE / CREATE IF NOT EXISTS）。
+/// 幂等初始化：打开/创建 DB，user_version=0 时执行 INIT_SQL 建表+seed。
 pub fn ensure_db() -> Result<()> {
     if DB.get().is_some() {
         return Ok(());
@@ -50,265 +55,16 @@ where
     f(&conn)
 }
 
-/// 建表 + migration（按 user_version 分派）。
-/// - v0：全新 DB → 建表（新 schema）+ seed → 升至 v3
-/// - v1/v2：旧 DB → DROP 重建 transcriptions（id 改应用写入毫秒戳）+ 幂等补删 models.is_active → 升至 v3
-/// - v3+：已就绪，no-op
+/// 初始化 schema：user_version=0 时执行 INIT_SQL（建表 + seed），其余直接跳过。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
-    match v {
-        0 => {
-            create_tables(conn)?;
-            seed_default_models(conn)?;
-            conn.execute("PRAGMA user_version = 3", [])?;
-            log::info!("DB schema initialized (v3), default models seeded");
-        }
-        1 | 2 => {
-            // v1/v2 → v3：transcriptions.id 改应用写入的毫秒戳（去 AUTOINCREMENT）。
-            // SQLite 不支持 ALTER 列约束，且旧数据无所谓 → DROP + 重建。
-            let tx = conn.unchecked_transaction()?;
-            tx.execute("DROP TABLE IF EXISTS transcriptions", [])?;
-            tx.execute_batch(
-                "CREATE TABLE transcriptions (
-                    id            INTEGER PRIMARY KEY,
-                    created_at    TEXT    NOT NULL,
-                    engine        TEXT    NOT NULL,
-                    engine_mode   TEXT,
-                    raw_text      TEXT    NOT NULL,
-                    polished_text TEXT,
-                    polish_status TEXT    NOT NULL DEFAULT 'off',
-                    polish_model  TEXT,
-                    duration_ms   INTEGER,
-                    char_count    INTEGER
-                );
-                CREATE INDEX IF NOT EXISTS idx_trans_created ON transcriptions(created_at DESC);
-                CREATE INDEX IF NOT EXISTS idx_trans_engine  ON transcriptions(engine);",
-            )?;
-            // v1 的 models 可能还有 is_active 列 → 幂等补 DROP（v2 已无则跳过）
-            let has_is_active: i64 = tx.query_row(
-                "SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='is_active'",
-                [],
-                |r| r.get(0),
-            )?;
-            if has_is_active > 0 {
-                tx.execute("ALTER TABLE models DROP COLUMN is_active", [])?;
-            }
-            tx.commit()?;
-            conn.execute("PRAGMA user_version = 3", [])?;
-            log::info!("DB schema migrated v{} → v3 (transcriptions rebuilt, id=millis)", v);
-        }
-        _ => {}
+    if v == 0 {
+        conn.execute_batch(INIT_SQL).context("执行 db.sql 初始化失败")?;
+        conn.execute("PRAGMA user_version = 1", [])?;
+        log::info!("DB initialized (v1): schema + seed from db.sql");
     }
-    // 幂等补列：is_thinking（所有版本均适用，新列不存在时自动 ALTER）
-    ensure_models_is_thinking(conn)?;
-    Ok(())
-}
-
-fn create_tables(conn: &Connection) -> Result<()> {
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS transcriptions (
-            id            INTEGER PRIMARY KEY,
-            created_at    TEXT    NOT NULL,
-            engine        TEXT    NOT NULL,
-            engine_mode   TEXT,
-            raw_text      TEXT    NOT NULL,
-            polished_text TEXT,
-            polish_status TEXT    NOT NULL DEFAULT 'off',
-            polish_model  TEXT,
-            duration_ms   INTEGER,
-            char_count    INTEGER
-        );
-        CREATE INDEX IF NOT EXISTS idx_trans_created ON transcriptions(created_at DESC);
-        CREATE INDEX IF NOT EXISTS idx_trans_engine  ON transcriptions(engine);
-
-        CREATE TABLE IF NOT EXISTS models (
-            id           INTEGER PRIMARY KEY AUTOINCREMENT,
-            domain       TEXT    NOT NULL,
-            category     TEXT    NOT NULL,
-            name         TEXT    NOT NULL,
-            source       TEXT    NOT NULL,
-            language     TEXT    NOT NULL DEFAULT '',
-            description  TEXT    NOT NULL DEFAULT '',
-            secret_key   TEXT    NOT NULL DEFAULT '',
-            is_thinking  INTEGER NOT NULL DEFAULT 0,
-            UNIQUE(domain, category, name)
-        );",
-    )?;
-    Ok(())
-}
-
-/// 为存量 DB 幂等补充 models.is_thinking 列（ALTER TABLE ADD COLUMN IF NOT EXISTS 不受 SQLite 支持，
-/// 改用 pragma_table_info 检测后按需补列）。
-fn ensure_models_is_thinking(conn: &Connection) -> Result<()> {
-    let has_col: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='is_thinking'",
-        [],
-        |r| r.get(0),
-    )?;
-    if has_col == 0 {
-        conn.execute(
-            "ALTER TABLE models ADD COLUMN is_thinking INTEGER NOT NULL DEFAULT 0",
-            [],
-        )?;
-        log::info!("DB models: added is_thinking column");
-    }
-    Ok(())
-}
-
-// ── 默认引擎 seed（替代 model.json）──
-
-struct DefaultModel {
-    domain: &'static str,
-    category: &'static str,
-    name: &'static str,
-    source: &'static str,
-    language: &'static str,
-    description: &'static str,
-    secret_key: &'static str,
-    /// LLM 专用：是否为思考（reasoning）模型，非 LLM 域填 false 即可
-    is_thinking: bool,
-}
-
-/// 默认引擎集（替代 model.json）。
-/// zipformer-small-ctc 走本地打包路径（开箱即用，是兜底引擎）；其余走 HF 缓存（按需下载）。
-/// 注意：不再有 is_active 列——引擎激活由 config.yaml.asr_engine 决定（见 asr::config::resolve_active_engine）。
-const DEFAULT_MODELS: &[DefaultModel] = &[
-    DefaultModel {
-        domain: "asr",
-        category: "zipformer",
-        name: "zipformer-small-ctc",
-        source: DEFAULT_ASR_MODEL_DIR,
-        language: "zh",
-        description: "zipformer-small-ctc, 27M (随应用打包)",
-        secret_key: "",
-        is_thinking: false,
-    },
-    DefaultModel {
-        domain: "asr",
-        category: "zipformer",
-        name: "zipformer-multi",
-        source: "k2-fsa/sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13",
-        language: "zh",
-        description: "zipformer-multi, 80M",
-        secret_key: "",
-        is_thinking: false,
-    },
-    DefaultModel {
-        domain: "asr",
-        category: "zipformer",
-        name: "zipformer-ctc",
-        source: "csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30",
-        language: "zh",
-        description: "zipformer-ctc, 163M",
-        secret_key: "",
-        is_thinking: false,
-    },
-    DefaultModel {
-        domain: "asr",
-        category: "paraformer",
-        name: "paraformer-streaming",
-        source: "csukuangfj/sherpa-onnx-streaming-paraformer-zh",
-        language: "zh",
-        description: "paraformer-streaming, 230M",
-        secret_key: "",
-        is_thinking: false,
-    },
-    DefaultModel {
-        domain: "asr",
-        category: "sensevoice",
-        name: "sherpa-onnx-sense-voice-funasr-nano-int8",
-        source: "csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17",
-        language: "auto",
-        description: "SenseVoice FunASR Nano INT8, 265M",
-        secret_key: "",
-        is_thinking: false,
-    },
-    DefaultModel {
-        domain: "asr",
-        category: "qwen3-asr",
-        name: "qwen3-asr-0.6B",
-        source: "csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
-        language: "auto",
-        description: "qwen3-asr-0.6B, 1G",
-        secret_key: "",
-        is_thinking: false,
-    },
-    DefaultModel {
-        domain: "asr",
-        category: "qwen3-asr",
-        name: "qwen3-asr-1.7B",
-        source: "ilmina/qwen3-asr-1.7b-sherpa-onnx",
-        language: "auto",
-        description: "qwen3-asr-1.7B, 约2.7G",
-        secret_key: "",
-        is_thinking: false,
-    },
-    DefaultModel {
-        domain: "asr",
-        category: "whisper",
-        name: "whisper-small",
-        source: "onnx-community/whisper-small",
-        language: "auto",
-        description: "Whisper Small - 快速轻量, 250M",
-        secret_key: "",
-        is_thinking: false,
-    },
-    // LLM 润色模型
-    DefaultModel {
-        domain: "llm",
-        category: "deepseek",
-        name: "deepseek-v4-flash",
-        source: "https://api.deepseek.com/",
-        language: "",
-        description: "DeepSeek V4 Flash 润色模型（思考模型，需关闭 thinking）",
-        secret_key: "",
-        is_thinking: true,
-    },
-    DefaultModel {
-        domain: "llm",
-        category: "bigmodel",
-        name: "glm-4-flashx",
-        source: "https://open.bigmodel.cn/api/paas/v4",
-        language: "",
-        description: "GLM-4 FlashX 润色模型（非思考）",
-        secret_key: "",
-        is_thinking: false,
-    },
-    DefaultModel {
-        domain: "llm",
-        category: "bigmodel",
-        name: "glm-4.5-flash",
-        source: "https://open.bigmodel.cn/api/paas/v4",
-        language: "",
-        description: "GLM-4.5 Flash 润色模型（思考模型，需关闭 thinking）",
-        secret_key: "",
-        is_thinking: true,
-    },
-];
-
-fn seed_default_models(conn: &Connection) -> Result<()> {
-    let tx = conn.unchecked_transaction()?;
-    for m in DEFAULT_MODELS {
-        tx.execute(
-            "INSERT OR IGNORE INTO models
-                (domain, category, name, source, language, description, secret_key, is_thinking)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
-            params![
-                m.domain,
-                m.category,
-                m.name,
-                m.source,
-                m.language,
-                m.description,
-                m.secret_key,
-                m.is_thinking as i32
-            ],
-        )?;
-    }
-    tx.commit()?;
-    log::info!("Seeded {} default models", DEFAULT_MODELS.len());
     Ok(())
 }
 
@@ -352,7 +108,6 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
             description,
             secret_key,
         };
-        // category 存 JSON key（带 dash，如 "qwen3-asr"），按 dash 形式分派
         let map: &mut Option<HashMap<String, ModelEntry>> = match category.as_str() {
             "whisper" => &mut asr.whisper,
             "sensevoice" => &mut asr.sensevoice,
@@ -399,10 +154,6 @@ fn load_llm_model_at(conn: &Connection, name: &str) -> Result<Option<octopus_llm
 }
 
 // ── 识别历史写入（desktop coordinator 用）──
-
-// ── 识别历史写入（desktop coordinator 用）──
-
-// ── 过程入库接口（id = 应用写入毫秒戳，按识别生命周期递增更新）──
 
 /// 首次有 ASR 文本时插入（应用写入毫秒戳 id）。
 pub fn insert_transcription_at_id(
@@ -529,23 +280,33 @@ fn is_leap(year: u64) -> bool {
 mod tests {
     use super::*;
 
-    #[test]
-    fn create_tables_is_idempotent() {
+    /// 在内存 DB 上执行 INIT_SQL，返回初始化好的连接。
+    fn open_init() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
-        create_tables(&conn).unwrap();
-        create_tables(&conn).unwrap(); // 不 panic
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn
+    }
+
+    #[test]
+    fn init_sql_is_idempotent() {
+        let conn = open_init();
+        // INSERT OR IGNORE + CREATE TABLE IF NOT EXISTS → 重复执行不报错、不翻倍
+        conn.execute_batch(INIT_SQL).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
+            .unwrap();
+        // 应有 8 条 ASR 模型
+        assert_eq!(count, 8);
     }
 
     #[test]
     fn seed_then_load_round_trips() {
-        let conn = Connection::open_in_memory().unwrap();
-        create_tables(&conn).unwrap();
-        seed_default_models(&conn).unwrap();
+        let conn = open_init();
         let cfg = load_models_at(&conn).unwrap();
         let zf = cfg.asr.zipformer.as_ref().expect("zipformer section");
         assert_eq!(zf.len(), 3);
         let small = zf.get("zipformer-small-ctc").unwrap();
-        assert_eq!(small.source, DEFAULT_ASR_MODEL_DIR); // 本地路径
+        assert_eq!(small.source, "models/zipformer");
         assert_eq!(cfg.asr.whisper.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 1);
@@ -553,28 +314,8 @@ mod tests {
     }
 
     #[test]
-    fn seed_is_idempotent() {
-        let conn = Connection::open_in_memory().unwrap();
-        create_tables(&conn).unwrap();
-        seed_default_models(&conn).unwrap();
-        seed_default_models(&conn).unwrap(); // INSERT OR IGNORE
-        let cfg = load_models_at(&conn).unwrap();
-        assert_eq!(cfg.asr.zipformer.as_ref().unwrap().len(), 3); // 未翻倍
-    }
-
-    #[test]
-    fn load_models_empty_db_returns_empty_sections() {
-        let conn = Connection::open_in_memory().unwrap();
-        create_tables(&conn).unwrap();
-        let cfg = load_models_at(&conn).unwrap();
-        assert!(cfg.asr.whisper.is_none());
-    }
-
-    #[test]
     fn test_load_llm_model() {
-        let conn = Connection::open_in_memory().unwrap();
-        create_tables(&conn).unwrap();
-        seed_default_models(&conn).unwrap();
+        let conn = open_init();
 
         let glm = load_llm_model_at(&conn, "glm-4-flashx").unwrap().unwrap();
         assert_eq!(glm.provider, "bigmodel");
@@ -600,101 +341,37 @@ mod tests {
     }
 
     #[test]
-    fn v2_to_v3_migration_rebuilds_transcriptions() {
-        let conn = Connection::open_in_memory().unwrap();
-        // 模拟 v1/v2 旧 schema（id AUTOINCREMENT + models 有 is_active）
-        conn.execute_batch(
-            "CREATE TABLE transcriptions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
-                engine TEXT NOT NULL, engine_mode TEXT, raw_text TEXT NOT NULL,
-                polished_text TEXT, polish_status TEXT NOT NULL DEFAULT 'off',
-                polish_model TEXT, duration_ms INTEGER, char_count INTEGER
-            );
-            CREATE TABLE models (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, domain TEXT NOT NULL,
-                category TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL,
-                language TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-                secret_key TEXT NOT NULL DEFAULT '', is_active INTEGER NOT NULL DEFAULT 0,
-                UNIQUE(domain, category, name)
-            );
-            INSERT INTO transcriptions (created_at, engine, raw_text) VALUES ('2020-01-01 00:00:00','x','旧数据');
-            INSERT INTO models (domain, category, name, source, secret_key) VALUES ('asr', 'zipformer', 'zipformer-small-ctc', 'models/zipformer', '');
-            PRAGMA user_version = 1;",
-        ).unwrap();
-
-        // 跑 migration
-        init_schema(&conn).unwrap();
-
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 3);
-        // 旧数据被 DROP
-        let count: i64 = conn.query_row("SELECT COUNT(*) FROM transcriptions", [], |r| r.get(0)).unwrap();
-        assert_eq!(count, 0);
-        // models.is_active 已删
-        let has_is_active: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='is_active'", [], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(has_is_active, 0);
-        let has_secret_key: i64 = conn.query_row(
-            "SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='secret_key'", [], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(has_secret_key, 1);
-        let secret_key: String = conn.query_row(
-            "SELECT secret_key FROM models WHERE name='zipformer-small-ctc'", [], |r| r.get(0),
-        ).unwrap();
-        assert_eq!(secret_key, "");
-
-        // 能插入显式大 id（毫秒戳）
-        conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text) VALUES (1718000000000,'2026-06-14 00:00:00','sensevoice','新数据')",
-            [],).unwrap();
-        let id: i64 = conn.query_row("SELECT id FROM transcriptions WHERE raw_text='新数据'", [], |r| r.get(0)).unwrap();
-        assert_eq!(id, 1718000000000);
-    }
-
-    #[test]
-    fn v2_already_no_is_active_migrates_cleanly() {
-        // v2 现状：models 已无 is_active。验证 migration 幂等、不报错。
-        let conn = Connection::open_in_memory().unwrap();
-        conn.execute_batch(
-            "CREATE TABLE transcriptions (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
-                engine TEXT NOT NULL, engine_mode TEXT, raw_text TEXT NOT NULL,
-                polished_text TEXT, polish_status TEXT NOT NULL DEFAULT 'off',
-                polish_model TEXT, duration_ms INTEGER, char_count INTEGER
-            );
-            CREATE TABLE models (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, domain TEXT NOT NULL,
-                category TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL,
-                language TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-                secret_key TEXT NOT NULL DEFAULT '', UNIQUE(domain, category, name)
-            );
-            PRAGMA user_version = 2;",
-        ).unwrap();
-        init_schema(&conn).unwrap();
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 3);
-    }
-
-    #[test]
     fn update_and_finalize_round_trip() {
-        let conn = Connection::open_in_memory().unwrap();
-        create_tables(&conn).unwrap();
-        // 用 SQL 直接模拟 4 个新接口的语句（接口本身用全局 with_db，单测以 SQL 验证语句正确）
+        let conn = open_init();
         conn.execute(
             "INSERT INTO transcriptions (id, created_at, engine, raw_text, polished_text, polish_status, char_count)
              VALUES (100, '2026-06-14 00:00:00', 'sensevoice', '首段', NULL, 'off', 2)",
-            [],).unwrap();
-        // update_raw_text
-        conn.execute("UPDATE transcriptions SET raw_text='首段二段', char_count=4 WHERE id=100", []).unwrap();
-        // update_polished
-        conn.execute("UPDATE transcriptions SET polished_text='润色', polish_status='done', polish_model='deepseek' WHERE id=100", []).unwrap();
-        // finalize
-        conn.execute("UPDATE transcriptions SET raw_text='首段二段', polished_text='润色', polish_status='done', char_count=2, duration_ms=5000 WHERE id=100", []).unwrap();
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE transcriptions SET raw_text='首段二段', char_count=4 WHERE id=100",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE transcriptions SET polished_text='润色', polish_status='done', polish_model='deepseek' WHERE id=100",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE transcriptions SET raw_text='首段二段', polished_text='润色', polish_status='done', char_count=2, duration_ms=5000 WHERE id=100",
+            [],
+        )
+        .unwrap();
 
         let (raw, polished, status, dur): (String, Option<String>, String, Option<i64>) = conn
-            .query_row("SELECT raw_text, polished_text, polish_status, duration_ms FROM transcriptions WHERE id=100", [],
-            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
+            .query_row(
+                "SELECT raw_text, polished_text, polish_status, duration_ms FROM transcriptions WHERE id=100",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+            )
+            .unwrap();
         assert_eq!(raw, "首段二段");
         assert_eq!(polished, Some("润色".into()));
         assert_eq!(status, "done");
