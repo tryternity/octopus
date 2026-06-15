@@ -102,7 +102,7 @@ impl crate::engine::OfflineAsrEngine for SenseVoiceEngine {
             let idx = tid as usize;
             if idx > 0 && idx < self.vocab_list.len() {
                 if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&self.vocab_list[idx]) {
-                    let s = String::from_utf8_lossy(&decoded);
+                    let s = String::from_utf8_lossy(&decoded).replace('\u{FFFD}', "");
                     text.push_str(&s);
                 } else {
                     text.push_str(&self.vocab_list[idx]);

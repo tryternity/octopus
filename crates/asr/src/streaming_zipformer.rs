@@ -11,8 +11,9 @@ use ort::value::{Tensor, TensorElementType};
 
 use crate::config;
 use crate::zipformer::{
-    compute_fbank_features, decode_byte_bpe, discover_streaming_zipformer_onnx, is_vocab_bbpe,
-    StateValue, Z_FRAME_SHIFT, Z_NUM_BINS, ZIPFORMER_BLANK_ID,
+    clean_decode_utf8, compute_fbank_features, decode_byte_bpe,
+    discover_streaming_zipformer_onnx, is_vocab_bbpe, StateValue, Z_FRAME_SHIFT,
+    Z_NUM_BINS, ZIPFORMER_BLANK_ID,
 };
 
 /// Streaming Zipformer engine — maintains state across chunks.
@@ -129,7 +130,7 @@ impl StreamingZipformer {
     pub fn finish(&mut self) -> Result<String> {
         let samples = std::mem::take(&mut self.sample_buffer);
         if samples.is_empty() && self.history_samples.is_empty() {
-            return Ok(self.decode_tokens());
+            return Ok(self.decode_tokens(false));
         }
 
         let mut input_samples = Vec::with_capacity(self.history_samples.len() + samples.len());
@@ -146,7 +147,7 @@ impl StreamingZipformer {
 
         if n_frames == 0 {
             self.history_samples.clear();
-            return Ok(self.decode_tokens());
+            return Ok(self.decode_tokens(false));
         }
 
         // Run extra chunks of padding to fully flush the model's receptive field / right context
@@ -184,7 +185,7 @@ impl StreamingZipformer {
         }
 
         self.history_samples.clear();
-        Ok(self.decode_tokens())
+        Ok(self.decode_tokens(false))
     }
 
     /// Active flush: pad the current sample buffer with enough zeros
@@ -284,7 +285,7 @@ impl StreamingZipformer {
         }
 
         if produced_any {
-            Ok(Some(self.decode_tokens()))
+            Ok(Some(self.decode_tokens(true)))
         } else {
             Ok(None)
         }
@@ -365,7 +366,7 @@ impl StreamingZipformer {
     }
 
     /// Decode accumulated token_ids into text.
-    fn decode_tokens(&self) -> String {
+    fn decode_tokens(&self, is_streaming: bool) -> String {
         if self.token_ids.is_empty() {
             return String::new();
         }
@@ -377,7 +378,7 @@ impl StreamingZipformer {
                     raw.push_str(&self.vocab[tid]);
                 }
             }
-            decode_byte_bpe(&raw)
+            decode_byte_bpe(&raw, is_streaming)
         } else {
             // Check for BPE with byte fallback (standard SentencePiece behavior)
             let mut is_bpe_with_byte_fallback = false;
@@ -424,7 +425,7 @@ impl StreamingZipformer {
                 bytes.extend_from_slice(token.as_bytes());
             }
 
-            let decoded = String::from_utf8_lossy(&bytes);
+            let decoded = clean_decode_utf8(&bytes, is_streaming);
             decoded.trim().to_string()
         }
     }

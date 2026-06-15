@@ -596,7 +596,7 @@ impl crate::engine::OfflineAsrEngine for ZipformerEngine {
                     raw_token_string.push_str(&self.vocab[tid]);
                 }
             }
-            decode_byte_bpe(&raw_token_string)
+            decode_byte_bpe(&raw_token_string, false)
         } else {
             // Check for BPE with byte fallback (standard SentencePiece behavior)
             let mut is_bpe_with_byte_fallback = false;
@@ -643,7 +643,7 @@ impl crate::engine::OfflineAsrEngine for ZipformerEngine {
                 bytes.extend_from_slice(token.as_bytes());
             }
 
-            String::from_utf8_lossy(&bytes).into_owned()
+            clean_decode_utf8(&bytes, false)
         };
 
         Ok(decoded.trim().to_string())
@@ -670,7 +670,44 @@ pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String>
 
 // ── Decode Byte BPE mapping ──
 
-pub(crate) fn decode_byte_bpe(text: &str) -> String {
+pub(crate) fn clean_decode_utf8(bytes: &[u8], is_streaming: bool) -> String {
+    let mut decode_slice = bytes;
+
+    if is_streaming && !bytes.is_empty() {
+        let mut last_start_idx = None;
+        for i in (0..bytes.len()).rev() {
+            if (bytes[i] & 0xC0) != 0x80 {
+                last_start_idx = Some(i);
+                break;
+            }
+        }
+
+        if let Some(start_idx) = last_start_idx {
+            let start_byte = bytes[start_idx];
+            let required_len = if (start_byte & 0x80) == 0 {
+                1
+            } else if (start_byte & 0xE0) == 0xC0 {
+                2
+            } else if (start_byte & 0xF0) == 0xE0 {
+                3
+            } else if (start_byte & 0xF8) == 0xF0 {
+                4
+            } else {
+                1
+            };
+
+            let actual_len = bytes.len() - start_idx;
+            if actual_len < required_len {
+                decode_slice = &bytes[..start_idx];
+            }
+        }
+    }
+
+    let decoded = String::from_utf8_lossy(decode_slice);
+    decoded.replace('\u{FFFD}', "")
+}
+
+pub(crate) fn decode_byte_bpe(text: &str, is_streaming: bool) -> String {
     let mut ans = Vec::new();
     for char_val in text.chars() {
         let char_str = char_val.to_string();
@@ -690,7 +727,7 @@ pub(crate) fn decode_byte_bpe(text: &str) -> String {
             }
         }
     }
-    String::from_utf8_lossy(&ans).into_owned()
+    clean_decode_utf8(&ans, is_streaming)
 }
 
 
@@ -910,6 +947,49 @@ pub(crate) fn mel_to_hz(mel: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_clean_decode_utf8() {
+        // Test normal ascii
+        assert_eq!(clean_decode_utf8(b"hello", true), "hello");
+        assert_eq!(clean_decode_utf8(b"hello", false), "hello");
+
+        // Test normal Chinese character "张" (3 bytes: E5 BC A0)
+        let zhang = "张";
+        let zhang_bytes = zhang.as_bytes();
+        assert_eq!(zhang_bytes, &[0xE5, 0xBC, 0xA0]);
+        assert_eq!(clean_decode_utf8(zhang_bytes, true), "张");
+        assert_eq!(clean_decode_utf8(zhang_bytes, false), "张");
+
+        // Test incomplete trailing Chinese character in streaming mode
+        // 1 byte incomplete (E5)
+        assert_eq!(clean_decode_utf8(&[0xE5], true), "");
+        // 2 bytes incomplete (E5 BC)
+        assert_eq!(clean_decode_utf8(&[0xE5, 0xBC], true), "");
+
+        // Test incomplete trailing Chinese character in non-streaming mode (should drop the replacement character)
+        assert_eq!(clean_decode_utf8(&[0xE5], false), "");
+        assert_eq!(clean_decode_utf8(&[0xE5, 0xBC], false), "");
+
+        // Test mixed text with incomplete character at the end in streaming mode
+        // "hello张" with last character incomplete
+        let mut mixed = b"hello".to_vec();
+        mixed.push(0xE5);
+        assert_eq!(clean_decode_utf8(&mixed, true), "hello");
+        mixed.push(0xBC);
+        assert_eq!(clean_decode_utf8(&mixed, true), "hello");
+        mixed.push(0xA0);
+        assert_eq!(clean_decode_utf8(&mixed, true), "hello张");
+
+        // Test mixed text with corrupted character in the middle
+        // E.g., "hello" + invalid sequence + "world"
+        let mut corrupted = b"hello".to_vec();
+        corrupted.extend_from_slice(&[0xE5, 0xBC]); // invalid/incomplete middle character
+        corrupted.extend_from_slice(b"world");
+        // Replacement characters generated in the middle should be removed
+        assert_eq!(clean_decode_utf8(&corrupted, true), "helloworld");
+        assert_eq!(clean_decode_utf8(&corrupted, false), "helloworld");
+    }
 
     #[test]
     fn test_zipformer_ctc_offline_debug() {
