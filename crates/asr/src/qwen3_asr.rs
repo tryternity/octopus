@@ -561,22 +561,6 @@ fn argmax(values: &[f32]) -> i64 {
     best_idx as i64
 }
 
-/// Argmax excluding a specific index (for EOS avoidance)
-fn argmax_excluding(values: &[f32], exclude: usize) -> i64 {
-    let mut best_idx = 0usize;
-    let mut best_val = f32::NEG_INFINITY;
-    for (i, &v) in values.iter().enumerate() {
-        if i == exclude {
-            continue;
-        }
-        if v > best_val {
-            best_val = v;
-            best_idx = i;
-        }
-    }
-    best_idx as i64
-}
-
 // ── Whisper-style mel normalization ──
 
 /// Normalize mel features per-frame (Whisper-style): subtract mean, divide by std.

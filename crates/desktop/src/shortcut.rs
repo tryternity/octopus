@@ -43,6 +43,7 @@ pub fn register_shortcut<R: Runtime>(
 }
 
 /// Unregister a previously registered global shortcut.
+#[allow(dead_code)] // 预留：未来支持运行时热重载快捷键时使用（当前 config.yaml shortcut 启动读一次）
 pub fn unregister_shortcut<R: Runtime>(
     app: &tauri::AppHandle<R>,
     shortcut_str: &str,

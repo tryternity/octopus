@@ -5,14 +5,15 @@ use std::sync::Mutex;
 ///
 /// 对外统一返回**累积全文**语义：
 /// - Zipformer 天然返回累积全文
-/// - Paraformer 返回增量文本，内部追加到 accumulated 字段
-/// 调用方无需关心底层引擎差异。
 pub enum StreamingSession {
     Paraformer {
         engine: Mutex<octopus_asr::streaming_paraformer::StreamingParaformer>,
         accumulated: Mutex<String>,
     },
-    Zipformer(Mutex<octopus_asr::streaming_zipformer::StreamingZipformer>),
+    Zipformer {
+        engine: Mutex<octopus_asr::streaming_zipformer::StreamingZipformer>,
+        accumulated: Mutex<String>,
+    },
 }
 
 impl StreamingSession {
@@ -32,7 +33,10 @@ impl StreamingSession {
             }
             octopus_asr::config::EngineCategory::Zipformer => {
                 let engine = octopus_asr::streaming_zipformer::StreamingZipformer::new(engine_name)?;
-                Ok(Self::Zipformer(Mutex::new(engine)))
+                Ok(Self::Zipformer {
+                    engine: Mutex::new(engine),
+                    accumulated: Mutex::new(String::new()),
+                })
             }
             other => {
                 anyhow::bail!(
@@ -69,11 +73,44 @@ impl StreamingSession {
                     None => Ok(None),
                 }
             }
-            Self::Zipformer(m) => {
-                let mut engine = m.lock().unwrap();
-                match engine.accept_samples(samples)? {
-                    Some(full_text) => Ok(Some(full_text)),
-                    None => Ok(None),
+            Self::Zipformer { engine, accumulated } => {
+                let mut eng = engine.lock().unwrap();
+
+                // 如果上一段被判定为静默，且我们已经有积累的内容，说明我们需要“斩断并重置状态”
+                if was_silent {
+                    let segment_text = eng.finish()?;
+                    let trimmed = segment_text.trim();
+                    if !trimmed.is_empty() {
+                        let mut acc = accumulated.lock().unwrap();
+                        if !acc.is_empty() {
+                            acc.push('，');
+                        }
+                        acc.push_str(trimmed);
+                    }
+                    eng.reset();
+                }
+
+                // 接受当前段的输入并生成当前短句的最新识别结果
+                match eng.accept_samples(samples)? {
+                    Some(current_segment) => {
+                        let trimmed_segment = current_segment.trim();
+                        let acc = accumulated.lock().unwrap();
+                        if acc.is_empty() {
+                            Ok(Some(trimmed_segment.to_string()))
+                        } else if trimmed_segment.is_empty() {
+                            Ok(Some(acc.clone()))
+                        } else {
+                            Ok(Some(format!("{}，{}", *acc, trimmed_segment)))
+                        }
+                    }
+                    None => {
+                        let acc = accumulated.lock().unwrap();
+                        if acc.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some(acc.clone()))
+                        }
+                    }
                 }
             }
         }
@@ -94,16 +131,32 @@ impl StreamingSession {
                     None => Ok(None),
                 }
             }
-            Self::Zipformer(m) => {
-                let mut engine = m.lock().unwrap();
-                match engine.flush()? {
-                    Some(full_text) => Ok(Some(full_text)),
-                    None => Ok(None),
+            Self::Zipformer { engine, accumulated } => {
+                let mut eng = engine.lock().unwrap();
+                match eng.flush()? {
+                    Some(current_segment) => {
+                        let trimmed_segment = current_segment.trim();
+                        let acc = accumulated.lock().unwrap();
+                        if acc.is_empty() {
+                            Ok(Some(trimmed_segment.to_string()))
+                        } else if trimmed_segment.is_empty() {
+                            Ok(Some(acc.clone()))
+                        } else {
+                            Ok(Some(format!("{}，{}", *acc, trimmed_segment)))
+                        }
+                    }
+                    None => {
+                        let acc = accumulated.lock().unwrap();
+                        if acc.is_empty() {
+                            Ok(None)
+                        } else {
+                            Ok(Some(acc.clone()))
+                        }
+                    }
                 }
             }
         }
     }
-
 
     /// 冲刷剩余音频，返回最终累积文本。
     /// 在末尾追加句号（如果文本不为空且不以标点结尾）。
@@ -119,10 +172,20 @@ impl StreamingSession {
                 append_final_punctuation(&mut acc);
                 Ok(acc.clone())
             }
-            Self::Zipformer(m) => {
-                let mut eng = m.lock().unwrap();
-                let text = eng.finish()?;
-                Ok(text)
+            Self::Zipformer { engine, accumulated } => {
+                let mut eng = engine.lock().unwrap();
+                let final_segment = eng.finish()?;
+                let trimmed_final = final_segment.trim();
+
+                let mut acc = accumulated.lock().unwrap();
+                if !trimmed_final.is_empty() {
+                    if !acc.is_empty() {
+                        acc.push('，');
+                    }
+                    acc.push_str(trimmed_final);
+                }
+                append_final_punctuation(&mut acc);
+                Ok(acc.clone())
             }
         }
     }
@@ -134,8 +197,9 @@ impl StreamingSession {
                 engine.lock().unwrap().reset();
                 accumulated.lock().unwrap().clear();
             }
-            Self::Zipformer(m) => {
-                m.lock().unwrap().reset();
+            Self::Zipformer { engine, accumulated } => {
+                engine.lock().unwrap().reset();
+                accumulated.lock().unwrap().clear();
             }
         }
     }

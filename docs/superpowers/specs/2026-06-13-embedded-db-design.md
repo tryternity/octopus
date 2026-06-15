@@ -152,7 +152,7 @@ raw_text: String,   // 纯 ASR 原生增量，polish 不触碰
 
 `Stage::Pasting` 为结构变体，持入库所需数据：`raw_text` / `polished_text` / `polish_status` / `engine` / `engine_mode`。
 
-流程：`Toggle 停止 → 最终润色 → start_pasting（构造 Stage::Pasting，**暂不入库**）→ 粘贴 → 粘贴完成发 Command::PasteDone → 【INSERT transcriptions】`。
+流程：`Toggle 停止 → start_final_polish_or_paste（启用润色则异步 Stage::Polishing → Command::FinalPolishDone，否则直达）→ do_paste（构造 Stage::Pasting，**暂不入库**）→ 粘贴 → 粘贴完成发 Command::PasteDone → 【INSERT transcriptions】`。
 
 INSERT 时机在 **`PasteDone`（粘贴完成后）**，而非最初设想的「润色完成后、粘贴前」。延迟入库的好处：用户若在结果窗口编辑了文本，编辑后的 `polished_text` 会被写入入库。
 
@@ -224,7 +224,12 @@ INSERT 时机在 **`PasteDone`（粘贴完成后）**，而非最初设想的「
 | `handle_polish_done` | 仅合并 `accumulated_text`，不碰 `raw_text` | ✅ |
 | `start_pasting` | 调用 `llm_config()` 得润色结果与 `polish_status`；构造 `Stage::Pasting`（**暂不入库**）；启动粘贴 | ✅（修复 B） |
 | `Command::PasteDone` 分支 | 从 `Stage::Pasting` 取数据调 `insert_transcription(...)`（用户编辑已反映到 `polished_text`） | ✅（修复 B） |
-| 新增 `Command::ResultEdited { text }` | 前端编辑回写 → `handle_result_edited` → `Stage::Pasting` 分支更新 `polished_text`（不动 `raw_text`） | ✅ |
+| 新增 `Command::ResultEdited { text }` | 前端编辑回写 → `handle_result_edited` → `Stage::Pasting` 分支更新 `polished_text`（不动 `raw_text`） | ~~✅~~ 已废弃（见下） |
+
+> **实现后修订（2026-06-15，最终润色异步化 + 字段清理）**：上表为初版设计快照，与当前代码三处差异，以 `architecture.md`「核心状态机」为准：
+> 1. **最终润色异步化**：`start_pasting` 重构为 `start_final_polish_or_paste`——启用润色时不再同步阻塞调 `llm_config()`，而是进入新状态 `Stage::Polishing`（持 `id` + `raw_text`，spawn 独立线程跑 LLM 网络请求），回调 `Command::FinalPolishDone` 后 `do_paste` 落地。`Cancel`（Esc）可即时回滚 Idle、丢弃在途结果；`Toggle` 在 Polishing 期间被互斥忽略。**INSERT 时机不变**（仍 `PasteDone`）。
+> 2. **`Stage::Pasting` 字段精简**：删 `engine` / `engine_mode`——入库 engine 在 raw 阶段 `update_transcription_raw(&config.asr_engine, ..)` 已写，`finalize_transcription` 不含 engine，故 Pasting 不必持有。现持 `id` / `raw_text` / `polished_text` / `polish_status`。
+> 3. **`Command::ResultEdited` 已废弃**：结果窗口改只读（编辑回写链路与中间润色流冲突，见 §5.3），`handle_result_edited` / `report_result_edit` 一并删除。
 
 ## 8. 验证
 

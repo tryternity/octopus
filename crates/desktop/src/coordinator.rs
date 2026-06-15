@@ -19,6 +19,7 @@ enum Command {
     /// 切换录音状态（开始/停止）
     Toggle,
     /// 取消当前操作
+    #[allow(dead_code)] // 预留：取消功能未接快捷键，Command::Cancel 暂无构造点
     Cancel,
     /// 流式识别 tick（定时触发，驱动音频采集和识别）
     StreamingTick,
@@ -85,8 +86,6 @@ enum Stage {
     Polishing {
         id: i64,
         raw_text: String,
-        engine: String,
-        engine_mode: String,
     },
     /// 粘贴中
     Pasting {
@@ -98,10 +97,6 @@ enum Stage {
         polished_text: String,
         /// "off" | "done" | "failed"
         polish_status: String,
-        /// 引擎名（入库用）
-        engine: String,
-        /// "streaming" | "vad_segmented"
-        engine_mode: String,
     },
 }
 
@@ -234,8 +229,6 @@ impl Coordinator {
                             raw_text,
                             polished_text,
                             polish_status,
-                            engine: _,
-                            engine_mode: _,
                         } = &stage
                         {
                             let polish_model = if polish_status == "done" {
@@ -296,6 +289,7 @@ impl Coordinator {
     }
 
     /// 发送 cancel 命令
+    #[allow(dead_code)] // 预留：取消录音功能（Esc 键）尚未接线到此处
     pub fn cancel(&self) {
         if let Ok(tx) = self.tx.lock() {
             if tx.send(Command::Cancel).is_err() {
@@ -488,8 +482,6 @@ fn handle_toggle(
                         stage,
                         &final_text,
                         tr,
-                        &config.asr_engine,
-                        "vad_segmented",
                         config,
                         app_handle,
                         tx,
@@ -556,8 +548,6 @@ fn handle_toggle(
                 stage,
                 &combined,
                 tr,
-                &config.asr_engine,
-                "streaming",
                 config,
                 app_handle,
                 tx,
@@ -584,8 +574,6 @@ fn start_final_polish_or_paste(
     stage: &mut Stage,
     text: &str,
     transcript: Transcript,
-    engine: &str,
-    engine_mode: &str,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
@@ -607,8 +595,6 @@ fn start_final_polish_or_paste(
                 transcript.id,
                 &transcript.db_text(),
                 "off",
-                engine,
-                engine_mode,
                 config,
                 app_handle,
                 tx,
@@ -621,14 +607,10 @@ fn start_final_polish_or_paste(
 
             let id = transcript.id;
             let raw_text = transcript.db_text();
-            let engine = engine.to_string();
-            let engine_mode = engine_mode.to_string();
 
             *stage = Stage::Polishing {
                 id,
                 raw_text: raw_text.clone(),
-                engine: engine.clone(),
-                engine_mode: engine_mode.clone(),
             };
 
             let tx = tx.clone();
@@ -657,8 +639,6 @@ fn do_paste(
     id: i64,
     raw_text: &str,
     polish_status: &str,
-    engine: &str,
-    engine_mode: &str,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
@@ -674,8 +654,6 @@ fn do_paste(
             String::new()
         },
         polish_status: polish_status.to_string(),
-        engine: engine.to_string(),
-        engine_mode: engine_mode.to_string(),
     };
 
     let config = config.clone();
@@ -705,9 +683,9 @@ fn handle_final_polish_done(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
-    let (id, raw_text, engine, engine_mode) = match stage {
-        Stage::Polishing { id, raw_text, engine, engine_mode } => {
-            (*id, raw_text.clone(), engine.clone(), engine_mode.clone())
+    let (id, raw_text) = match stage {
+        Stage::Polishing { id, raw_text } => {
+            (*id, raw_text.clone())
         }
         _ => {
             debug!("FinalPolishDone ignored in stage {:?}", stage_name(stage));
@@ -728,8 +706,6 @@ fn handle_final_polish_done(
                 id,
                 &raw_text,
                 "done",
-                &engine,
-                &engine_mode,
                 config,
                 app_handle,
                 tx,
@@ -743,8 +719,6 @@ fn handle_final_polish_done(
                 id,
                 &raw_text,
                 "failed",
-                &engine,
-                &engine_mode,
                 config,
                 app_handle,
                 tx,
@@ -1294,8 +1268,6 @@ fn handle_transcription_done(
                         stage,
                         &final_text,
                         tr,
-                        &config.asr_engine,
-                        "vad_segmented",
                         config,
                         app_handle,
                         tx,

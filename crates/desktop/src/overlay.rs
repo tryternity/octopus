@@ -71,6 +71,7 @@ fn init_platform_overlay(window: &tauri::webview::WebviewWindow, config: &AppCon
 fn init_platform_overlay(_window: &tauri::webview::WebviewWindow, _config: &AppConfig) {}
 
 /// Show the overlay with state: "recording" or "transcribing".
+#[allow(dead_code)] // overlay 显示路径已被 result_window 取代；保留入口待 overlay 子系统复用决策
 pub fn show_overlay(app: &AppHandle, state: &str) {
     if let Some(window) = app.get_webview_window("recording_overlay") {
         let _ = window.show();
@@ -91,6 +92,7 @@ pub fn hide_overlay(app: &AppHandle) {
 }
 
 /// 显示流式识别的部分文本。
+#[allow(dead_code)] // 流式部分文本改走 result_window::update_result；保留入口待复用
 pub fn show_partial_text(app: &AppHandle, text: &str) {
     if let Some(window) = app.get_webview_window("recording_overlay") {
         let _ = window.emit("partial-result", text);

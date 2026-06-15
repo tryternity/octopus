@@ -8,5 +8,6 @@ pub trait TranscriptionEngine: Send + Sync {
     async fn transcribe(&self, samples: &[f32], language: &str, engine: &str) -> Result<String>;
 
     /// 健康检查
+    #[allow(dead_code)] // 预留：健康检查 API，当前无调用点
     async fn health_check(&self) -> bool;
 }

@@ -96,13 +96,15 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 **核心状态机（Coordinator）：**
 - 单线程 mpsc channel 串行化所有事件
-- 流式模式：Streaming → Pasting
-- 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → Pasting
+- 流式模式：Streaming → (Polishing) → Pasting
+- 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → (Polishing) → Pasting
+- **最终润色异步化**：停止后若启用润色（mode=1/2），`start_final_polish_or_paste` 进入 `Stage::Polishing`（spawn 独立线程跑 LLM 网络请求，托盘显「处理中」、结果窗显「最终润色中」），LLM 完成回调 `Command::FinalPolishDone` 后 `do_paste` 落地；未启用润色则直接 `do_paste`。**润色期间协调器线程不阻塞**，`Cancel`（Esc）可即时回滚 Idle、丢弃在途结果，`Toggle` 被互斥忽略（防并发缓存污染）。Polishing 仅持 `id` + `raw_text`（不需 Transcript 其余字段）
+- **音频采集常驻**：`AudioRecorder::open()` 建流后立即 `stream.play()`，CPAL 输入流常驻后台预热，靠回调内 `is_recording` 原子决定是否入缓冲；`SharedAudioState::start/stop` 仅切 flag + drain，不 play/pause stream（`SharedAudioState` 不持有非 Send 的 `cpal::Stream`）。副作用：应用运行期间 macOS 麦克风隐私指示灯常亮（可靠性优先于灭灯）
 - **VAD 分段切分策略**（`handle_vad_segmented_tick`）：静音边界切分（主）+ 连续超时强制切断（兜底）
   - 静音切分：检测到语音后静音 ≥ `segment_silence`（默认 500ms）→ 切分，**无 overlap**（静音是自然语句边界，下一段从干净开始）
   - 强制切断：连续语音缓冲达 `segment_duration`（默认 20s）仍未静音 → 强制切断，**保留末尾 `segment_overlap`（200ms）作下一段 overlap**（语句被硬切，需重叠保连贯）
   - 每段经 `filter_speech_from_buffer` 过滤静音后送离线识别，按 `seq` 有序拼接
-- **Transcript 文本状态机**：识别文本状态由 `Transcript` 结构（`crates/desktop/src/transcript.rs`）统一管理——内部用 `full`（当前完整 ASR）+ `raw_len`（上次停顿快照的 char 长度）派生 `raw`（停顿快照，润色基准）/ `increase`（停顿后增量），避免维护三份字符串。`Stage::Streaming` / `VadSegmented` / `WaitingCompletion` 各持 `transcript: Transcript` 字段，文本流经 Transcript 方法（`set_full` / `append_segment` / `display_text` / `db_text`）。`Stage::Pasting` 仍为结构变体，持 `id` + `raw_text` + `polished_text` + `polish_status` + `engine` + `engine_mode`（由停止时从 Transcript 取出构造）。详见 [spec](superpowers/specs/2026-06-14-transcript-model-design.md)
+- **Transcript 文本状态机**：识别文本状态由 `Transcript` 结构（`crates/desktop/src/transcript.rs`）统一管理——内部用 `full`（当前完整 ASR）+ `raw_len`（上次停顿快照的 char 长度）派生 `raw`（停顿快照，润色基准）/ `increase`（停顿后增量），避免维护三份字符串。`Stage::Streaming` / `VadSegmented` / `WaitingCompletion` 各持 `transcript: Transcript` 字段，文本流经 Transcript 方法（`set_full` / `append_segment` / `display_text` / `db_text`）。停止后 `Stage::Polishing`（最终润色中，持 `id` + `raw_text`）→ `Stage::Pasting`（持 `id` + `raw_text` + `polished_text` + `polish_status`）。入库的 `engine` / `engine_mode` 在过程入库的 raw 阶段已写（`update_transcription_raw(&config.asr_engine, ..)`），`Pasting` 不再持有。详见 [spec](superpowers/specs/2026-06-14-transcript-model-design.md)
 - **停顿驱动润色**：流式 / 伪流式统一——静音 ≥ `pause_polish_threshold_ms`（默认 600ms，可配置）/ 伪流式段边界完成时，把当前完整 ASR 快照（`snapshot_for_polish()` = `raw + increase`）送 LLM 全量润色（mode=2 only），**不重置流式引擎**（只读快照送 LLM，引擎状态原样保留）。修复了流式中间润色 P0（partial 全量覆盖 polished）。默认 600ms > Active Flush 500ms（用户配置需保持 > 500ms，否则润色先于尾音冲刷、快照缺尾音），润色在 tick 流程最末执行，快照可靠
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号
 - 流式尾音冲刷（Active Flush）：流式模式累积静音 ≥0.5s 时向引擎补零，强制对齐右上下文 / 触发 CIF，把憋住的尾音即时吐出；走独立路径不插逗号，每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。详见 [spec](superpowers/specs/2026-06-13-streaming-tail-flush-design.md)
@@ -115,8 +117,8 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - `models` 表：模型目录（**唯一来源**，schema 见 `crates/infra/src/db.sql`，首次建库 `user_version=0` 时整体执行一次 seed 默认引擎集；含 `is_local` / `is_enabled` / `is_streaming` 列——`load_models_at` 仅读 `domain='asr' AND is_enabled=1`，`domain='llm'` 经 `load_llm_model` 读；引擎激活由 `config.yaml.asr_engine` 决定，无 `is_active` 列，见「模型管理」）
 - `model.json` / `history.txt` / `record.txt` 已从代码彻底删除——DB 是唯一配置/存储源
 - `polish_status` 基于润色调用结果：未启用→`off`；启用且返回非空→`done`；启用但返回空或失败→`failed`
-- 润色三档（`polish_mode`：0 关闭 / 1 仅最终 / 2 中间+最终）：中间润色由 `check_and_trigger_polish` 在停顿点触发（流式静音 ≥ `pause_polish_threshold_ms`（默认 600ms）/ 伪流式段边界），把 `Transcript.snapshot_for_polish()`（完整 ASR）送 LLM 全量润色，节流 `polish_interval`（下限 `MIN_POLISH_INTERVAL_SEC=1.0s`）；最终润色在 `Stage::Pasting` 入口（`start_pasting`）。详见 [设计](superpowers/specs/2026-06-14-transcript-model-design.md)。
-- 停止空文本边界：Toggle 停止录音时若 `transcript.full()` 为空（麦克风静音 / VAD 未检出语音），`start_pasting` 空文本分支直接回 `Idle`，必须对称清理 `result_window::hide_result` + `overlay::hide_overlay` + `tray → Idle` 三类 UI 反馈（缺一则"正在聆听…"框残留）。详见 [设计 §4.5](superpowers/specs/2026-06-12-squid-desktop-design-v2.md)。
+- 润色三档（`polish_mode`：0 关闭 / 1 仅最终 / 2 中间+最终）：中间润色由 `check_and_trigger_polish` 在停顿点触发（流式静音 ≥ `pause_polish_threshold_ms`（默认 600ms）/ 伪流式段边界），把 `Transcript.snapshot_for_polish()`（完整 ASR）送 LLM 全量润色，节流 `polish_interval`（下限 `MIN_POLISH_INTERVAL_SEC=1.0s`）；最终润色在 `start_final_polish_or_paste`（停止后）：启用润色→`Stage::Polishing` 异步线程跑 LLM，回调 `Command::FinalPolishDone` 后 `do_paste`；未启用→直接 `do_paste`。详见 [设计](superpowers/specs/2026-06-14-transcript-model-design.md)。
+- 停止空文本边界：Toggle 停止录音时若 `transcript.full()` 为空（麦克风静音 / VAD 未检出语音），`start_final_polish_or_paste` 空文本分支直接回 `Idle`，必须对称清理 `result_window::hide_result` + `overlay::hide_overlay` + `tray → Idle` 三类 UI 反馈（缺一则"正在聆听…"框残留）。详见 [设计 §4.5](superpowers/specs/2026-06-12-squid-desktop-design-v2.md)。
 
 支持三种引擎接入模式：
 - **embedded**（默认）：内嵌 octopus-asr，本地推理
@@ -159,7 +161,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 | 引擎 | 类型 | 特点 |
 |------|------|------|
-| Whisper | 离线 | 多语言，auto 检测 |
+| Whisper | 离线 | 多语言；传 `auto` 且 DB `models.language` 配了具体语种时优先用后者（`entry_language` 覆盖），否则自动检测 |
 | SenseVoice | 离线 | 快速，自动语言检测 |
 | Paraformer | 离线/流式 | 中文优化 |
 | Qwen3-ASR | 离线 | 大模型能力 |

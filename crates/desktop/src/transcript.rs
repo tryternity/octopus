@@ -63,11 +63,6 @@ impl Transcript {
         &self.full
     }
 
-    /// 停顿快照部分（润色基准）。
-    pub fn raw(&self) -> String {
-        self.full.chars().take(self.raw_len).collect()
-    }
-
     /// 停顿后增量（仅 mode=2 有意义；mode=0/1 恒空，符合 spec §2.2 不变量）。
     pub fn increase(&self) -> String {
         if self.mode == PolishMode::Intermediate {
@@ -111,10 +106,6 @@ impl Transcript {
         self.last_polish_time
     }
 
-    pub fn mode(&self) -> PolishMode {
-        self.mode
-    }
-
     /// 运行时更新润色模式（工具栏 live 切换用）。Coordinator 单线程访问，无需同步。
     pub fn set_mode(&mut self, mode: PolishMode) {
         self.mode = mode;
@@ -140,11 +131,6 @@ impl Transcript {
     /// polished（最终润色后有值；否则空）。
     pub fn polished(&self) -> &str {
         &self.polished
-    }
-
-    /// 是否无任何识别文本。
-    pub fn is_empty(&self) -> bool {
-        self.full.is_empty()
     }
 }
 
@@ -181,8 +167,7 @@ mod tests {
         // 停顿快照 → 送润色
         let snap = t.snapshot_for_polish();
         assert_eq!(snap, "你好世界");
-        assert_eq!(t.raw(), "你好世界");
-        assert_eq!(t.increase(), ""); // 快照后 increase 空
+        assert_eq!(t.increase(), ""); // 快照后 increase 空（raw_len 推进到 full）
 
         // 润色完成
         t.on_polish_done("你好，世界。".into());
@@ -199,8 +184,7 @@ mod tests {
 
         // 流式：raw 前缀稳定，full 追加新内容
         t.set_full("原始文本新增部分");
-        assert_eq!(t.raw(), "原始文本");
-        assert_eq!(t.increase(), "新增部分");
+        assert_eq!(t.increase(), "新增部分"); // raw 前缀稳定，新增进 increase
         assert_eq!(t.display_text(), "润色文本新增部分");
     }
 
@@ -229,7 +213,6 @@ mod tests {
         let t = Transcript::new(10, PolishMode::Intermediate);
         assert_eq!(t.display_text(), ""); // 空 full → display 空
         assert_eq!(t.full(), "");
-        assert_eq!(t.raw(), ""); // raw_len=0 → raw 空
         assert_eq!(t.increase(), ""); // increase 空
         assert!(!t.polish_pending());
         assert!(!t.db_inserted());
@@ -238,7 +221,6 @@ mod tests {
         let mut t2 = Transcript::new(11, PolishMode::Intermediate);
         let snap = t2.snapshot_for_polish();
         assert_eq!(snap, "");
-        assert_eq!(t2.raw(), "");
         assert_eq!(t2.increase(), "");
     }
 
@@ -261,8 +243,7 @@ mod tests {
         // 第二次停顿快照 + 润色（覆盖第一次 polished）
         let s2 = t.snapshot_for_polish();
         assert_eq!(s2, "第一段第二段");
-        assert_eq!(t.raw(), "第一段第二段"); // raw_len 推进
-        assert_eq!(t.increase(), ""); // 再次清空
+        assert_eq!(t.increase(), ""); // raw_len 推进到 full → increase 清空
         t.on_polish_done("润色一二".into());
         assert_eq!(t.display_text(), "润色一二"); // 第二次润色覆盖第一次
     }

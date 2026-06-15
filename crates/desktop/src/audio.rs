@@ -46,11 +46,13 @@ impl SharedAudioState {
         }
     }
 
+    #[allow(dead_code)] // 预留：外部访问设备名（当前仅内部用字段）
     pub fn device_name(&self) -> &str {
         &self.device_name
     }
 
     /// 获取当前采样率
+    #[allow(dead_code)] // 预留：外部访问采样率（当前仅内部 load）
     pub fn sample_rate(&self) -> u32 {
         self.sample_rate.load(Ordering::Relaxed)
     }

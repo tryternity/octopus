@@ -2,7 +2,6 @@ use anyhow::{Context, Result};
 use ndarray::{Array2, Array3, ArrayD, IxDyn};
 use once_cell::sync::Lazy;
 use ort::session::Session;
-use std::path::PathBuf;
 use tokenizers::Tokenizer;
 
 use crate::config;
@@ -18,45 +17,6 @@ const ENCODER_LEN: usize = 1500;
 const D_MODEL: usize = 768;
 
 static HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hann_window(FFT_SIZE));
-
-// ── Model discovery via config ──
-fn find_whisper_onnx_dir() -> Result<PathBuf> {
-    let cfg = config::load_config()?;
-    let whisper_cfg = cfg
-        .asr
-        .whisper
-        .as_ref()
-        .context("No whisper models in config")?;
-    let (_, entry) = whisper_cfg
-        .iter()
-        .next()
-        .context("No whisper model entries")?;
-    let hf_path = config::resolve_model_dir(&entry.source)?;
-    Ok(config::find_onnx_dir(&hf_path))
-}
-
-fn find_tokenizer() -> Result<PathBuf> {
-    let cfg = config::load_config()?;
-    let whisper_cfg = cfg
-        .asr
-        .whisper
-        .as_ref()
-        .context("No whisper models in config")?;
-    let (_, entry) = whisper_cfg
-        .iter()
-        .next()
-        .context("No whisper model entries")?;
-    let hf_path = config::resolve_model_dir(&entry.source)?;
-    let tk = hf_path.join("tokenizer.json");
-    if tk.exists() {
-        return Ok(tk);
-    }
-    let tk2 = hf_path.parent().unwrap_or(&hf_path).join("tokenizer.json");
-    if tk2.exists() {
-        return Ok(tk2);
-    }
-    anyhow::bail!("tokenizer.json not found in {}", hf_path.display())
-}
 
 // ── Mel spectrogram ──
 fn hann_window(size: usize) -> Vec<f32> {
