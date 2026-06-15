@@ -94,11 +94,14 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | `recording_overlay` | 录音/识别状态提示（离线模式） |
 | `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 100→132px），移出收起；4 个工具——设置 / 润色模式切换 / ASR 引擎切换 / LLM 模型切换（前二者+ASR 已接通，设置与 LLM 模型为占位） |
 
+**窗口加载就绪（ready）机制：** 结果窗 webview 首次加载有延迟，若后端在页面就绪前 `emit('show-result')`，事件丢失导致「文本不显示 / 不弹窗」。`result_window.rs` 以 `WINDOW_READY`（AtomicBool）+ `PENDING_TEXT`（Mutex<Option<String>>）兜底——未 ready 时暂存文本，前端 `index.html` 加载完成后发起 `result_window_ready` Tauri command → 后端置 ready 并冲刷积压文本。`show_result` / `update_result` 把「判 ready + 写 pending」收进同一把 `PENDING_TEXT` 锁，与 `result_window_ready` 的 store(true)+take 互斥，消除启动首帧 TOCTOU 文本滞留。
+
 **核心状态机（Coordinator）：**
 - 单线程 mpsc channel 串行化所有事件
 - 流式模式：Streaming → (Polishing) → Pasting
 - 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → (Polishing) → Pasting
 - **最终润色异步化**：停止后若启用润色（mode=1/2），`start_final_polish_or_paste` 进入 `Stage::Polishing`（spawn 独立线程跑 LLM 网络请求，托盘显「处理中」、结果窗显「最终润色中」），LLM 完成回调 `Command::FinalPolishDone` 后 `do_paste` 落地；未启用润色则直接 `do_paste`。**润色期间协调器线程不阻塞**，`Cancel`（Esc）可即时回滚 Idle、丢弃在途结果，`Toggle` 被互斥忽略（防并发缓存污染）。Polishing 仅持 `id` + `raw_text`（不需 Transcript 其余字段）
+- **粘贴异步化（`do_paste`）**：`do_paste` 先同步 `show_result` + 置 `Stage::Pasting`（状态机线程），再把真正的落库粘贴（`paste::paste`——含 enigo 键盘模拟 + 焦点切换 `sleep`）投递到 `tauri::async_runtime::spawn` + `tokio::task::spawn_blocking`，完成后回 `Command::PasteDone`——粘贴期间不占用 Tauri UI 主线程、不阻塞协调器线程
 - **取消录音（Cancel）**：结果窗按 Esc → 前端 `invoke('cancel_recording')` → `coordinator::cancel_recording` Tauri command → `Coordinator::cancel` 发 `Command::Cancel`。`handle_cancel` 跨阶段生效——Streaming 停采集 + reset 引擎，VadSegmented 停 tick + 停采集，WaitingCompletion / Polishing 丢弃在途结果，统一回 `Idle` + 隐藏 overlay / result 窗 + 托盘置 Idle（Idle 下为 no-op）。Esc 同时 `currentWindow.hide()` 提供即时反馈（区别于 RuntimeConfig 子系统的 4 个命令，`cancel_recording` 定义在 `coordinator` 模块）
 - **音频采集常驻**：`AudioRecorder::open()` 建流后立即 `stream.play()`，CPAL 输入流常驻后台预热，靠回调内 `is_recording` 原子决定是否入缓冲；`SharedAudioState::start/stop` 仅切 flag + drain，不 play/pause stream（`SharedAudioState` 不持有非 Send 的 `cpal::Stream`）。副作用：应用运行期间 macOS 麦克风隐私指示灯常亮（可靠性优先于灭灯）
 - **VAD 分段切分策略**（`handle_vad_segmented_tick`）：静音边界切分（主）+ 连续超时强制切断（兜底）
@@ -125,6 +128,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **embedded**（默认）：内嵌 octopus-asr，本地推理
 - **remote-ws**：通过 WebSocket 连接远程 octopus-server
 - **remote-grpc**：通过 gRPC 连接远程推理服务
+- **远程超时保护**：`WsRemoteEngine` / `GrpcRemoteEngine` 的 `transcribe` 以 `tokio::time::timeout(8s)` 包裹（连接 + 收发全程），`health_check` 同样 `timeout(3s)`——规避网络断开 / 后端无响应致 ASR 队列无限期卡死。超时返回 `Err`，经序列空洞修复的空串占位分支保证 `completed_seq` 连续推进、不拖死后续分段
 
 ## 模型管理
 

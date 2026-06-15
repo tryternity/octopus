@@ -72,24 +72,42 @@ pub fn result_window_ready(app_handle: tauri::AppHandle) {
 
 /// 显示结果窗口并展示识别文本。
 pub fn show_result(app: &tauri::AppHandle, text: &str) {
-    if WINDOW_READY.load(Ordering::Relaxed) {
+    // 「判 ready + 写 pending」收进同一把 PENDING_TEXT 锁，与 result_window_ready 的
+    // store(true)+take 互斥——消除「load(false) 后、写 pending 前 ready 已 take 走 None」
+    // 导致该文本滞留（应用启动首帧文本丢失 / 不弹窗）的 TOCTOU 竞态。
+    let need_emit = {
+        let mut guard = PENDING_TEXT.lock().unwrap();
+        if WINDOW_READY.load(Ordering::Relaxed) {
+            true
+        } else {
+            *guard = Some(text.to_string());
+            false
+        }
+    };
+    if need_emit {
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
             let _ = window.emit("show-result", text);
             let _ = window.show();
         }
-    } else {
-        *PENDING_TEXT.lock().unwrap() = Some(text.to_string());
     }
 }
 
 /// 更新结果窗口文本（流式更新时使用）。
 pub fn update_result(app: &tauri::AppHandle, text: &str) {
-    if WINDOW_READY.load(Ordering::Relaxed) {
+    // 同 show_result：判 ready + 写 pending 进同一锁，消除与 result_window_ready 的竞态。
+    let need_emit = {
+        let mut guard = PENDING_TEXT.lock().unwrap();
+        if WINDOW_READY.load(Ordering::Relaxed) {
+            true
+        } else {
+            *guard = Some(text.to_string());
+            false
+        }
+    };
+    if need_emit {
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
             let _ = window.emit("update-result", text);
         }
-    } else {
-        *PENDING_TEXT.lock().unwrap() = Some(text.to_string());
     }
 }
 

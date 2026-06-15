@@ -12,6 +12,7 @@ pub struct SharedAudioState {
     is_recording: Arc<AtomicBool>,
     sample_rate: std::sync::atomic::AtomicU32,
     device_name: String,
+    resampler: Mutex<Option<octopus_asr::audio::AudioResampler>>,
 }
 
 impl SharedAudioState {
@@ -21,6 +22,7 @@ impl SharedAudioState {
             is_recording: Arc::new(AtomicBool::new(false)),
             sample_rate: std::sync::atomic::AtomicU32::new(16000),
             device_name: device_name.to_string(),
+            resampler: Mutex::new(None),
         }
     }
 
@@ -39,11 +41,24 @@ impl SharedAudioState {
         debug!("Recording stopped, {} raw samples", raw.len());
 
         let rate = self.sample_rate.load(Ordering::Relaxed);
-        if rate == 16000 {
-            Ok(raw)
+        let resampled = if rate == 16000 {
+            raw
         } else {
-            octopus_asr::audio::resample_to_16k(&raw, rate)
-        }
+            let mut resampler_guard = self.resampler.lock().unwrap();
+            if resampler_guard.is_none() {
+                *resampler_guard = octopus_asr::audio::AudioResampler::new(rate).ok();
+            }
+            if let Some(r) = resampler_guard.as_mut() {
+                let mut out = r.resample(&raw).unwrap_or_default();
+                out.extend(r.flush().unwrap_or_default());
+                out
+            } else {
+                raw
+            }
+        };
+        // 停止录音后清空重采样器状态，释放资源，为下一次录音做准备
+        *self.resampler.lock().unwrap() = None;
+        Ok(resampled)
     }
 
     #[allow(dead_code)] // 预留：外部访问设备名（当前仅内部用字段）
@@ -68,7 +83,15 @@ impl SharedAudioState {
         if rate == 16000 {
             raw
         } else {
-            octopus_asr::audio::resample_to_16k(&raw, rate).unwrap_or_default()
+            let mut resampler_guard = self.resampler.lock().unwrap();
+            if resampler_guard.is_none() {
+                *resampler_guard = octopus_asr::audio::AudioResampler::new(rate).ok();
+            }
+            if let Some(r) = resampler_guard.as_mut() {
+                r.resample(&raw).unwrap_or_default()
+            } else {
+                raw
+            }
         }
     }
 }

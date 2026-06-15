@@ -117,6 +117,18 @@ impl AudioResampler {
     }
 }
 
+// 编译期断言：AudioResampler 必须 Send + Sync。
+// desktop 的 SharedAudioState 经 `unsafe impl Send/Sync` 声明可跨线程（Arc 共享给
+// cpal 回调线程 + coordinator 线程），其字段 `Mutex<Option<AudioResampler>>` 要求
+// AudioResampler: Send。该断言在编译期固化此前提——若 rubato 升级或重构引入非 Send
+// 字段（如 Rc），此处编译失败，避免 unsafe impl 静默退化为未定义行为。
+const _: () = {
+    fn _assert_send_sync<T: Send + Sync>() {}
+    fn _assert() {
+        _assert_send_sync::<AudioResampler>();
+    }
+};
+
 /// Apply VAD filtering: returns only speech frames above threshold
 pub fn filter_speech(
     samples: &[f32],

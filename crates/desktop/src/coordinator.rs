@@ -28,6 +28,7 @@ enum Command {
     TranscriptionDone {
         text: Result<String, String>,
         seq: u64,
+        session_id: i64,
     },
     /// 粘贴完成
     PasteDone,
@@ -214,11 +215,12 @@ impl Coordinator {
                     Command::Cancel => {
                         handle_cancel(&mut stage, &audio, &app_handle);
                     }
-                    Command::TranscriptionDone { text, seq } => {
+                    Command::TranscriptionDone { text, seq, session_id } => {
                         handle_transcription_done(
                             &mut stage,
                             text,
                             seq,
+                            session_id,
                             &config,
                             &app_handle,
                             &tx,
@@ -445,7 +447,7 @@ fn handle_toggle(
                     *next_seq += 1;
                     *active_count += 1;
                     spawn_offline_transcription_with_seq(
-                        engine, config, tx, speech_samples, seq,
+                        engine, config, tx, speech_samples, seq, transcript.id,
                     );
                 }
             }
@@ -834,7 +836,7 @@ fn handle_vad_segmented_tick(
                     active_count
                 );
                 spawn_offline_transcription_with_seq(
-                    engine, config, tx, speech_samples, seq,
+                    engine, config, tx, speech_samples, seq, transcript.id,
                 );
                 // 段切分 + 有语音 → 触发停顿润色（传阈值，段边界即停顿点）
                 check_and_trigger_polish(transcript, config.pause_polish_threshold_ms / 1000.0, config, tx);
@@ -901,6 +903,7 @@ fn spawn_offline_transcription_with_seq(
     tx: &Sender<Command>,
     speech_samples: Vec<f32>,
     seq: u64,
+    session_id: i64,
 ) {
     let engine = engine.clone();
     let language = config.language.clone();
@@ -930,6 +933,7 @@ fn spawn_offline_transcription_with_seq(
                 Err(e) => Err(e.to_string()),
             },
             seq,
+            session_id,
         };
         let _ = tx.send(msg);
     });
@@ -1193,6 +1197,7 @@ fn handle_transcription_done(
     stage: &mut Stage,
     text: Result<String, String>,
     seq: u64,
+    session_id: i64,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
@@ -1205,6 +1210,10 @@ fn handle_transcription_done(
             completed_results,
             ..
         } => {
+            if transcript.id != session_id {
+                debug!("TranscriptionDone seq={} for old session {} ignored (current: {})", seq, session_id, transcript.id);
+                return;
+            }
             *active_count = active_count.saturating_sub(1);
 
             match text {
@@ -1242,6 +1251,10 @@ fn handle_transcription_done(
             completed_seq,
             completed_results,
         } => {
+            if transcript.id != session_id {
+                debug!("TranscriptionDone seq={} for old session {} ignored (current: {})", seq, session_id, transcript.id);
+                return;
+            }
             *active_count = active_count.saturating_sub(1);
 
             match text {

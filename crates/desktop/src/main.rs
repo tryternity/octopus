@@ -170,17 +170,25 @@ pub fn run() {
                 }
             };
 
-            // 2. Create AudioRecorder and open the device
-            let mut recorder = audio::AudioRecorder::new(&config.microphone)
-                .expect("Failed to create AudioRecorder");
-            recorder.open().expect("Failed to open audio device");
-            let audio_state = recorder.shared();
-
-            // Recorder must stay alive for the stream to remain active.
-            // Leak it intentionally — it lives for the entire app lifetime.
-            // The stream callback holds Arc<SharedAudioState> independently,
-            // so the recorder itself only needs to not be dropped.
-            std::mem::forget(recorder);
+            // 2. Create AudioRecorder and open the device (graceful fallback if mic is missing)
+            let audio_state = match audio::AudioRecorder::new(&config.microphone) {
+                Ok(mut recorder) => {
+                    if let Err(e) = recorder.open() {
+                        log::error!("Failed to open audio device '{}': {}. Audio input will be silent.", config.microphone, e);
+                        let state = recorder.shared();
+                        std::mem::forget(recorder);
+                        state
+                    } else {
+                        let state = recorder.shared();
+                        std::mem::forget(recorder);
+                        state
+                    }
+                }
+                Err(e) => {
+                    log::error!("Failed to initialize AudioRecorder: {}. Audio input will be silent.", e);
+                    std::sync::Arc::new(audio::SharedAudioState::new(&config.microphone))
+                }
+            };
 
             // 工具栏运行时配置（asr_engine + polish_mode 的可变镜像），命令与 Coordinator 共享
             let runtime_config: runtime_config::SharedRuntimeConfig =

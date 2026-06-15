@@ -18,6 +18,7 @@ pub enum TrayState {
 /// 存储需要动态更新的 MenuItem handle
 struct TrayItems<R: Runtime> {
     toggle: MenuItem<R>,
+    engine_info: MenuItem<R>,
 }
 
 /// 模块级存储，避免 MenuItem::with_id 重复 ID 导致的 panic
@@ -42,11 +43,12 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
     let menu =
         Menu::with_items(app, &[&toggle, &engine_info, &quit]).expect("failed to create tray menu");
 
-    // 存储 toggle handle 供后续更新使用
+    // 存储 toggle 和 engine_info handle 供后续更新使用
     {
         let mut items = TRAY_ITEMS.lock().unwrap();
         *items = Some(TrayItems {
             toggle: toggle.clone(),
+            engine_info: engine_info.clone(),
         });
     }
 
@@ -92,3 +94,13 @@ pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
         let _ = tray_items.toggle.set_text(label);
     }
 }
+
+/// Update the engine info menu item label dynamically.
+pub fn update_tray_engine_label(_app: &tauri::AppHandle, engine_name: &str, engine_mode: &str) {
+    let label = format!("引擎: {} ({})", engine_name, engine_mode);
+    let items = TRAY_ITEMS.lock().unwrap();
+    if let Some(tray_items) = items.as_ref() {
+        let _ = tray_items.engine_info.set_text(label);
+    }
+}
+

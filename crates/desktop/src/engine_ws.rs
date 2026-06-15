@@ -75,6 +75,10 @@ impl TranscriptionEngine for WsRemoteEngine {
     }
 
     async fn health_check(&self) -> bool {
-        tokio_tungstenite::connect_async(&self.url).await.is_ok()
+        // 与 transcribe 一致加超时：避免后端无响应时健康探测无限期挂起。
+        tokio::time::timeout(std::time::Duration::from_secs(3), tokio_tungstenite::connect_async(&self.url))
+            .await
+            .map(|r| r.is_ok())
+            .unwrap_or(false)
     }
 }

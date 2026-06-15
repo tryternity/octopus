@@ -127,7 +127,11 @@ pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<Engine
 }
 
 #[tauri::command]
-pub fn switch_asr_engine(name: String, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
+pub fn switch_asr_engine(
+    name: String,
+    rc: State<'_, SharedRuntimeConfig>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
     // 校验：name 必须是 DB 已配置的引擎（不走兜底）
     let exists = octopus_asr::config::list_engines()
         .map_err(|e| e.to_string())?
@@ -140,6 +144,12 @@ pub fn switch_asr_engine(name: String, rc: State<'_, SharedRuntimeConfig>) -> Re
         let mut g = rc.write().unwrap();
         g.asr_engine = name.clone();
     }
+    let engine_mode = match octopus_infra::config::load_config() {
+        Ok(cfg) => cfg.engine_mode,
+        Err(_) => "embedded".to_string(),
+    };
+    crate::tray::update_tray_engine_label(&app_handle, &name, &engine_mode);
+
     if let Err(e) = persist_asr_engine(&name) {
         log::warn!(
             "写回 config.yaml 失败（asr_engine={}）：{} —— 本次仍生效，重启后回退",

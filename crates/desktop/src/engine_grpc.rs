@@ -54,8 +54,12 @@ impl TranscriptionEngine for GrpcRemoteEngine {
     }
 
     async fn health_check(&self) -> bool {
+        // 与 transcribe 一致加超时：避免后端无响应时健康探测无限期挂起。
         match tonic::transport::Channel::from_shared(self.endpoint.clone()) {
-            Ok(endpoint) => endpoint.connect().await.is_ok(),
+            Ok(endpoint) => tokio::time::timeout(std::time::Duration::from_secs(3), endpoint.connect())
+                .await
+                .map(|r| r.is_ok())
+                .unwrap_or(false),
             Err(_) => false,
         }
     }
