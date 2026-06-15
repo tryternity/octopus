@@ -230,6 +230,103 @@
     container.addEventListener('mouseenter', showToolbar);
     container.addEventListener('mouseleave', hideToolbar);
 
+    const { invoke } = window.__TAURI__.core;
+
+    function showToast(msg) {
+      const t = document.getElementById('toast');
+      t.textContent = msg;
+      t.hidden = false;
+      clearTimeout(showToast._timer);
+      showToast._timer = setTimeout(() => { t.hidden = true; }, 2000);
+    }
+
+    // ── 浮层 ──
+    const popup = document.getElementById('popup');
+    function closePopup() {
+      popup.hidden = true;
+      popup.innerHTML = '';
+      popupOpen = false;
+    }
+    function openPopup(html) {
+      popup.innerHTML = html;
+      popup.hidden = false;
+      popupOpen = true;
+    }
+    // 点浮层外关闭
+    document.addEventListener('mousedown', (e) => {
+      if (!popupOpen) return;
+      if (!popup.contains(e.target) && !e.target.closest('.tool')) closePopup();
+    });
+    // Esc 关浮层
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && popupOpen) closePopup();
+    });
+
+    // ── 润色 mode ──
+    const POLISH_OPTIONS = [
+      { mode: 0, label: '关闭' },
+      { mode: 1, label: '仅最终润色' },
+      { mode: 2, label: '中间 + 最终润色' },
+    ];
+    let currentPolishMode = 0;
+
+    document.getElementById('tool-polish').addEventListener('click', async () => {
+      const html = POLISH_OPTIONS.map(o =>
+        `<div class="option${o.mode === currentPolishMode ? ' current' : ''}" data-mode="${o.mode}">
+           <span>${o.mode === currentPolishMode ? '●' : '○'}</span>${o.label}
+         </div>`).join('');
+      openPopup(html);
+      popup.querySelectorAll('.option').forEach(el => {
+        el.addEventListener('click', async () => {
+          const mode = Number(el.dataset.mode);
+          try {
+            await invoke('set_polish_mode', { mode });
+            currentPolishMode = mode;
+            closePopup();
+            refreshActive();
+          } catch (e) {
+            showToast('切换失败：' + e);
+          }
+        });
+      });
+    });
+
+    // ── ASR 引擎 ──
+    document.getElementById('tool-asr').addEventListener('click', async () => {
+      let engines;
+      try { engines = await invoke('list_asr_engines'); }
+      catch (e) { showToast('读取引擎失败：' + e); return; }
+      const html = engines.map(e =>
+        `<div class="option${e.current ? ' current' : ''}" data-name="${e.name}">
+           <span>${e.current ? '●' : '○'}</span>${e.name}<span class="cat">${e.category}</span>
+         </div>`).join('');
+      openPopup(html);
+      popup.querySelectorAll('.option').forEach(el => {
+        el.addEventListener('click', async () => {
+          const name = el.dataset.name;
+          try {
+            await invoke('switch_asr_engine', { name });
+            closePopup();
+            refreshActive();
+            showToast('已切换：' + name + '（下次录音生效）');
+          } catch (err) {
+            showToast('' + err);
+          }
+        });
+      });
+    });
+
+    // ── 当前态高亮 ──
+    async function refreshActive() {
+      try {
+        const st = await invoke('toolbar_state');
+        currentPolishMode = st.polish_mode;
+        document.getElementById('tool-polish').classList.toggle('active', st.polish_mode !== 0);
+        document.getElementById('tool-asr').classList.toggle('active', true);
+      } catch (_) { /* 忽略 */ }
+    }
+    refreshActive();
+
     // 拖拽：顶部 drag handle 区域触发
     dragHandle.addEventListener('mousedown', (e) => {
       e.preventDefault();
