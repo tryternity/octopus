@@ -99,11 +99,11 @@
     #tool-asr       .icon { -webkit-mask-image: url(icons/asr-engine.svg); mask-image: url(icons/asr-engine.svg); }
     #tool-llm       .icon { -webkit-mask-image: url(icons/llm-model.svg); mask-image: url(icons/llm-model.svg); }
 
-    /* 浮层 */
+    /* 浮层（左缘对齐工具栏：toolbar padding 0 6px） */
     #popup {
       position: absolute;
       top: 30px;
-      left: 10px;
+      left: 6px;
       min-width: 180px;
       max-height: 200px;
       overflow-y: auto;
@@ -180,7 +180,6 @@
 <body>
   <div id="container">
     <div id="top-bar">
-      <div id="drag-handle"></div>
       <div id="toolbar">
         <button class="tool" id="tool-settings" disabled title="敬请期待" aria-label="设置">
           <span class="icon"></span>
@@ -195,6 +194,7 @@
           <span class="icon"></span>
         </button>
       </div>
+      <div id="drag-handle"></div>
     </div>
     <div id="text-wrapper">
       <div id="result-text"></div>
