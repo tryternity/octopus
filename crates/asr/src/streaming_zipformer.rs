@@ -57,7 +57,7 @@ impl StreamingZipformer {
         let hf_path = config::resolve_model_dir(&entry.source)?;
         let model_path = discover_streaming_zipformer_onnx(&hf_path)?;
 
-        let session = Session::builder()?.commit_from_file(&model_path)?;
+        let session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&model_path)?;
 
         // Read chunk parameters from model metadata
         let metadata = session.metadata()?;

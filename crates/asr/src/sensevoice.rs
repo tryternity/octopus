@@ -39,7 +39,7 @@ impl SenseVoiceEngine {
             anyhow::bail!("model.int8.onnx not found at {}", hf_path.display());
         }
 
-        let session = Session::builder()?.commit_from_file(&model_path)?;
+        let session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&model_path)?;
 
         let tokens_path = hf_path.join("tokens.txt");
         let tokens_text = std::fs::read_to_string(&tokens_path)

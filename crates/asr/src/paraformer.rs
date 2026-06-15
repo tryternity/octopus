@@ -87,8 +87,8 @@ impl ParaformerEngine {
             }
         };
 
-        let encoder_session = Session::builder()?.commit_from_file(&encoder_path)?;
-        let decoder_session = Session::builder()?.commit_from_file(&decoder_path)?;
+        let encoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&encoder_path)?;
+        let decoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&decoder_path)?;
 
         // Read CMVN normalization from encoder metadata
         let (neg_mean, inv_stddev, encoder_output_size) = extract_cmvn_from_metadata(&encoder_session)?;

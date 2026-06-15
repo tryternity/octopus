@@ -59,9 +59,9 @@ impl Qwen3AsrEngine {
         let decoder_path = discover_onnx(&hf_path, "decoder", prefer_int8)?;
 
         // Load ONNX sessions
-        let conv_session = Session::builder()?.commit_from_file(&conv_path)?;
-        let encoder_session = Session::builder()?.commit_from_file(&encoder_path)?;
-        let decoder_session = Session::builder()?.commit_from_file(&decoder_path)?;
+        let conv_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&conv_path)?;
+        let encoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&encoder_path)?;
+        let decoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&decoder_path)?;
 
         // Load tokenizer from tokenizer/ subdirectory
         let tokenizer_dir = hf_path.join("tokenizer");

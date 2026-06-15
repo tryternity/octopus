@@ -350,6 +350,40 @@ pub fn pick_entry<'a>(
     map.get(name)
 }
 
+/// Apply hardware acceleration configuration (if enabled in config.yaml) to a SessionBuilder.
+/// If the acceleration registration fails, it logs a warning and falls back to CPU.
+pub fn apply_session_acceleration(builder: ort::session::builder::SessionBuilder) -> Result<ort::session::builder::SessionBuilder> {
+    let app_cfg = match octopus_infra::config::load_config() {
+        Ok(cfg) => cfg,
+        Err(e) => {
+            log::warn!("Failed to load config.yaml, falling back to CPU: {:?}", e);
+            return Ok(builder);
+        }
+    };
+
+    if !app_cfg.asr_hardware_accelerated {
+        return Ok(builder);
+    }
+
+    let providers = vec![
+        ort::ep::CUDAExecutionProvider::default().build(),
+        ort::ep::DirectMLExecutionProvider::default().build(),
+        ort::ep::CoreMLExecutionProvider::default().build(),
+    ];
+
+    log::info!("Attempting to build session with hardware acceleration execution providers");
+    match builder.with_execution_providers(providers) {
+        Ok(b) => {
+            log::info!("Successfully registered EPs!");
+            Ok(b)
+        }
+        Err(e) => {
+            log::warn!("Failed to register hardware acceleration EPs: {:?}. Falling back to CPU.", e);
+            ort::session::Session::builder().context("Failed to reconstruct fallback session builder")
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

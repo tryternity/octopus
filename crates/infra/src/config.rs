@@ -127,6 +127,10 @@ pub struct AppConfig {
     /// API Key
     #[serde(default)]
     pub llm_secret_key: String,
+
+    /// 是否使用 ASR 硬件加速
+    #[serde(default = "default_asr_hardware_accelerated")]
+    pub asr_hardware_accelerated: bool,
 }
 
 fn default_engine_mode() -> String {
@@ -165,6 +169,9 @@ fn default_polish_model() -> String {
 fn default_polish_base_url() -> String {
     "https://api.openai.com/v1".into()
 }
+fn default_asr_hardware_accelerated() -> bool {
+    false
+}
 fn default_segment_duration() -> f64 {
     5.0
 }
@@ -199,6 +206,7 @@ impl Default for AppConfig {
             llm_model: default_polish_model(),
             llm_base_url: default_polish_base_url(),
             llm_secret_key: String::new(),
+            asr_hardware_accelerated: default_asr_hardware_accelerated(),
         }
     }
 }
@@ -253,5 +261,11 @@ mod tests {
         // 空 yaml → pause_polish_threshold_ms 应默认 600（毫秒）
         let cfg: AppConfig = serde_yaml::from_str("").unwrap();
         assert_eq!(cfg.pause_polish_threshold_ms, 600.0);
+    }
+
+    #[test]
+    fn asr_hardware_accelerated_defaults_to_false() {
+        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
+        assert!(!cfg.asr_hardware_accelerated);
     }
 }

@@ -75,8 +75,8 @@ impl StreamingParaformer {
         let encoder_path = discover_onnx(&hf_path, "encoder", prefer_int8)?;
         let decoder_path = discover_onnx(&hf_path, "decoder", prefer_int8)?;
 
-        let encoder_session = Session::builder()?.commit_from_file(&encoder_path)?;
-        let decoder_session = Session::builder()?.commit_from_file(&decoder_path)?;
+        let encoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&encoder_path)?;
+        let decoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&decoder_path)?;
 
         // Extract metadata — read everything before moving sessions into the struct
         let (neg_mean, inv_stddev, encoder_output_size) =

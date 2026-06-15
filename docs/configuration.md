@@ -23,7 +23,7 @@ octopus 配置分两部分：
 
 ## 模型配置（octopus.db）
 
-模型配置唯一来源是 `models` 表。首次建库时 `seed_default_models` 写入默认 7 引擎：
+模型配置唯一来源是 `models` 表。首次建库时 `seed_default_models` 写入默认 8 引擎：
 
 | category | name | source |
 |---|---|---|
@@ -33,6 +33,7 @@ octopus 配置分两部分：
 | paraformer | paraformer-streaming | csukuangfj/sherpa-onnx-streaming-paraformer-zh |
 | sensevoice | sherpa-onnx-sense-voice-funasr-nano-int8 | csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17 |
 | qwen3-asr | qwen3-asr-0.6B | csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25 |
+| qwen3-asr | qwen3-asr-1.7B | ilmina/qwen3-asr-1.7b-sherpa-onnx |
 | whisper | whisper-small | onnx-community/whisper-small |
 
 > **不再有 `is_active` 列**：引擎激活改由 `config.yaml.asr_engine` 决定（见下方「引擎选择与兜底」）。`zipformer-small-ctc` 是兜底引擎——`asr_engine` 为空或匹配不到任何模型时，自动回退到它（靠本地打包路径，开箱可用）。
@@ -84,12 +85,13 @@ octopus-cli config
 | `segment_overlap` | f64 | `200.0` | desktop | VAD 伪流式：相邻分段 overlap（毫秒） |
 | `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色 |
 | `polish_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s` |
+| `pause_polish_threshold_ms` | f64 | `600` | desktop | 停顿触发中间润色的静音阈值（毫秒），仅 `polish_mode=2` 生效；**须 > 500**（Active Flush 500ms），否则润色先于尾音冲刷、快照缺尾音 |
 | `llm_provider` | string | `""` | desktop | openai / deepseek / 自定义 |
 | `llm_model` | string | `"gpt-4o-mini"` | desktop | 模型名 |
 | `llm_base_url` | string | `https://api.openai.com/v1` | desktop | API base URL |
 | `llm_secret_key` | string | `""` | desktop | API Key（空则润色不生效） |
 
-> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为，`llm_*` 描述 LLM 连接（可被未来其他 LLM 用途复用）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
+> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为，`llm_*` 描述 LLM 连接（可被未来其他 LLM 用途复用）。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
 
 ### 引擎选择与兜底（resolve_active_engine）
 
@@ -134,6 +136,7 @@ segment_overlap: 200.0           # 毫秒
 # LLM 润色（可选）
 polish_mode: 0                   # 0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色
 polish_interval: 5.0             # 秒，仅 polish_mode=2 生效（中间润色最小间隔）
+pause_polish_threshold_ms: 600   # 毫秒，仅 polish_mode=2 生效（停顿触发润色的静音阈值，须 > 500）
 llm_provider: "deepseek"
 llm_model: "deepseek-chat"
 llm_base_url: "https://api.deepseek.com/v1"

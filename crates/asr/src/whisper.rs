@@ -231,7 +231,7 @@ impl WhisperEngine {
         } else {
             "encoder_model.onnx"
         });
-        let encoder = Session::builder()?.commit_from_file(&encoder_path)?;
+        let encoder = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&encoder_path)?;
 
         // Decoders
         let dec_init_path = onnx_dir.join("decoder_model.onnx");
@@ -242,8 +242,8 @@ impl WhisperEngine {
                 "decoder_with_past_model.onnx"
             },
         );
-        let dec_init = Session::builder()?.commit_from_file(&dec_init_path)?;
-        let dec_past = Session::builder()?.commit_from_file(&dec_past_path)?;
+        let dec_init = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&dec_init_path)?;
+        let dec_past = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&dec_past_path)?;
 
         // Tokenizer
         let tk_path = hf_path.join("tokenizer.json");
