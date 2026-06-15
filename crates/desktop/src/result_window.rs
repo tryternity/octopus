@@ -1,11 +1,16 @@
 // src/result_window.rs
 
 use log::debug;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
 const RESULT_WIDTH: f64 = 520.0;
 const RESULT_HEIGHT: f64 = 100.0;
 const WINDOW_LABEL: &str = "result_window";
+
+static WINDOW_READY: AtomicBool = AtomicBool::new(false);
+static PENDING_TEXT: Mutex<Option<String>> = Mutex::new(None);
 
 // ── 窗口管理 ──
 
@@ -55,41 +60,65 @@ pub fn create_result_window(app: &tauri::AppHandle) {
     }
 }
 
+/// 前端页面就绪命令：初始化 ready 状态，并冲刷可能积压的初始文本
+#[tauri::command]
+pub fn result_window_ready(app_handle: tauri::AppHandle) {
+    WINDOW_READY.store(true, Ordering::Relaxed);
+    let pending = PENDING_TEXT.lock().unwrap().take();
+    if let Some(text) = pending {
+        show_result(&app_handle, &text);
+    }
+}
+
 /// 显示结果窗口并展示识别文本。
 pub fn show_result(app: &tauri::AppHandle, text: &str) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = window.emit("show-result", text);
-        let _ = window.show();
+    if WINDOW_READY.load(Ordering::Relaxed) {
+        if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+            let _ = window.emit("show-result", text);
+            let _ = window.show();
+        }
+    } else {
+        *PENDING_TEXT.lock().unwrap() = Some(text.to_string());
     }
 }
 
 /// 更新结果窗口文本（流式更新时使用）。
 pub fn update_result(app: &tauri::AppHandle, text: &str) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = window.emit("update-result", text);
+    if WINDOW_READY.load(Ordering::Relaxed) {
+        if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+            let _ = window.emit("update-result", text);
+        }
+    } else {
+        *PENDING_TEXT.lock().unwrap() = Some(text.to_string());
     }
 }
 
 /// 清空结果窗口内容并隐藏（粘贴完成后调用）。
 pub fn clear_result(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = window.emit("clear-result", ());
-        let window_clone = window.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            let _ = window_clone.hide();
-        });
+    *PENDING_TEXT.lock().unwrap() = None;
+    if WINDOW_READY.load(Ordering::Relaxed) {
+        if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+            let _ = window.emit("clear-result", ());
+            let window_clone = window.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let _ = window_clone.hide();
+            });
+        }
     }
 }
 
 /// 隐藏结果窗口（不清空内容，不归档）。
 pub fn hide_result(app: &tauri::AppHandle) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        let _ = window.emit("hide-result", ());
-        let window_clone = window.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(200));
-            let _ = window_clone.hide();
-        });
+    if WINDOW_READY.load(Ordering::Relaxed) {
+        if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+            let _ = window.emit("hide-result", ());
+            let window_clone = window.clone();
+            tauri::async_runtime::spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                let _ = window_clone.hide();
+            });
+        }
     }
 }
+

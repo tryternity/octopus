@@ -84,8 +84,8 @@ pub fn hide_overlay(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("recording_overlay") {
         let _ = window.emit("hide-overlay", ());
         let window_clone = window.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(300));
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_millis(300)).await;
             let _ = window_clone.hide();
         });
     }

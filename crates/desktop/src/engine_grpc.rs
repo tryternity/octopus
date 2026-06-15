@@ -19,27 +19,38 @@ impl GrpcRemoteEngine {
 #[async_trait]
 impl TranscriptionEngine for GrpcRemoteEngine {
     async fn transcribe(&self, samples: &[f32], language: &str, engine: &str) -> Result<String> {
-        let mut client = asr::asr_service_client::AsrServiceClient::connect(self.endpoint.clone())
+        let endpoint = self.endpoint.clone();
+        let samples = samples.to_vec();
+        let language = language.to_string();
+        let engine = engine.to_string();
+
+        let fut = async move {
+            let mut client = asr::asr_service_client::AsrServiceClient::connect(endpoint.clone())
+                .await
+                .with_context(|| format!("gRPC connect to {} failed", endpoint))?;
+
+            // f32 samples → little-endian bytes
+            let audio_bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
+
+            let request = tonic::Request::new(asr::TranscribeRequest {
+                audio: audio_bytes,
+                language,
+                engine,
+            });
+
+            let response = client
+                .transcribe(request)
+                .await
+                .with_context(|| "gRPC transcribe failed")?;
+
+            let result = response.into_inner();
+            debug!("gRPC result: '{}' (rtf: {:.2})", result.text, result.rtf);
+            Ok(result.text)
+        };
+
+        tokio::time::timeout(std::time::Duration::from_secs(8), fut)
             .await
-            .with_context(|| format!("gRPC connect to {} failed", self.endpoint))?;
-
-        // f32 samples → little-endian bytes
-        let audio_bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
-
-        let request = tonic::Request::new(asr::TranscribeRequest {
-            audio: audio_bytes,
-            language: language.to_string(),
-            engine: engine.to_string(),
-        });
-
-        let response = client
-            .transcribe(request)
-            .await
-            .with_context(|| "gRPC transcribe failed")?;
-
-        let result = response.into_inner();
-        debug!("gRPC result: '{}' (rtf: {:.2})", result.text, result.rtf);
-        Ok(result.text)
+            .map_err(|_| anyhow::anyhow!("gRPC transcription timeout"))?
     }
 
     async fn health_check(&self) -> bool {

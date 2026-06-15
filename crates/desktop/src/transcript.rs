@@ -72,6 +72,11 @@ impl Transcript {
         }
     }
 
+    /// 检查是否有新增内容（避免分配 String 的开销）
+    pub fn has_increase(&self) -> bool {
+        self.mode == PolishMode::Intermediate && self.full.chars().count() > self.raw_len
+    }
+
     /// 停顿触发：返回完整 ASR 作为润色输入，并推进 raw_len（increase 清空）。
     pub fn snapshot_for_polish(&mut self) -> String {
         self.raw_len = self.full.chars().count();

@@ -135,6 +135,7 @@ pub fn run() {
             runtime_config::switch_asr_engine,
             runtime_config::set_polish_mode,
             coordinator::cancel_recording,
+            result_window::result_window_ready,
         ])
         .setup(move |app| {
             // Initialize engine manager and preheat the active ASR model if embedded

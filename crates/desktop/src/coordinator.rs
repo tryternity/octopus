@@ -429,11 +429,8 @@ fn handle_toggle(
             // 停止 tick 线程
             tick_active.store(false, Ordering::Relaxed);
 
-            // 停止录音
-            let _ = audio.stop();
-
-            // 排空剩余音频并发送识别
-            let remaining = audio.drain_samples();
+            // 停止录音并排空剩余音频
+            let remaining = audio.stop().unwrap_or_default();
             if !remaining.is_empty() {
                 audio_buffer.extend_from_slice(&remaining);
             }
@@ -666,21 +663,21 @@ fn do_paste(
 
     let config = config.clone();
     let tx_inner = tx.clone();
-    let tx_fallback = tx.clone();
     let handle_for_closure = app_handle.clone();
     let text_to_paste = text_to_paste.to_string();
 
-    app_handle
-        .run_on_main_thread(move || {
-            if let Err(e) = paste::paste(&text_to_paste, &handle_for_closure, &config) {
-                error!("Paste failed: {}", e);
-            }
-            let _ = tx_inner.send(Command::PasteDone);
-        })
-        .unwrap_or_else(|e| {
-            error!("run_on_main_thread failed: {:?}", e);
-            let _ = tx_fallback.send(Command::PasteDone);
-        });
+    tauri::async_runtime::spawn(async move {
+        let res = tokio::task::spawn_blocking(move || {
+            paste::paste(&text_to_paste, &handle_for_closure, &config)
+        }).await;
+
+        match res {
+            Ok(Ok(())) => {}
+            Ok(Err(e)) => error!("Paste failed: {}", e),
+            Err(e) => error!("Paste task panicked: {:?}", e),
+        }
+        let _ = tx_inner.send(Command::PasteDone);
+    });
 }
 
 /// 处理最终润色完成事件
@@ -1004,7 +1001,7 @@ fn check_and_trigger_polish(
         return;
     }
     // 无新增内容（increase 空）→ 跳过
-    if transcript.increase().is_empty() {
+    if !transcript.has_increase() {
         return;
     }
     // 停顿未达标 → 跳过（流式传真实 silence；伪流式传阈值自动达标）
