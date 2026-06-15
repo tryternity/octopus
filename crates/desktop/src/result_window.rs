@@ -11,6 +11,7 @@ const WINDOW_LABEL: &str = "result_window";
 
 static WINDOW_READY: AtomicBool = AtomicBool::new(false);
 static PENDING_TEXT: Mutex<Option<String>> = Mutex::new(None);
+static SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 // ── 窗口管理 ──
 
@@ -72,6 +73,7 @@ pub fn result_window_ready(app_handle: tauri::AppHandle) {
 
 /// 显示结果窗口并展示识别文本。
 pub fn show_result(app: &tauri::AppHandle, text: &str) {
+    let _ = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
     // 「判 ready + 写 pending」收进同一把 PENDING_TEXT 锁，与 result_window_ready 的
     // store(true)+take 互斥——消除「load(false) 后、写 pending 前 ready 已 take 走 None」
     // 导致该文本滞留（应用启动首帧文本丢失 / 不弹窗）的 TOCTOU 竞态。
@@ -118,9 +120,12 @@ pub fn clear_result(app: &tauri::AppHandle) {
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
             let _ = window.emit("clear-result", ());
             let window_clone = window.clone();
+            let current_session = SESSION_COUNTER.load(Ordering::Relaxed);
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                let _ = window_clone.hide();
+                if SESSION_COUNTER.load(Ordering::Relaxed) == current_session {
+                    let _ = window_clone.hide();
+                }
             });
         }
     }
@@ -132,11 +137,15 @@ pub fn hide_result(app: &tauri::AppHandle) {
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
             let _ = window.emit("hide-result", ());
             let window_clone = window.clone();
+            let current_session = SESSION_COUNTER.load(Ordering::Relaxed);
             tauri::async_runtime::spawn(async move {
                 tokio::time::sleep(std::time::Duration::from_millis(200)).await;
-                let _ = window_clone.hide();
+                if SESSION_COUNTER.load(Ordering::Relaxed) == current_session {
+                    let _ = window_clone.hide();
+                }
             });
         }
     }
 }
+
 

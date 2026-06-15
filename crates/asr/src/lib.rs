@@ -11,6 +11,7 @@ pub mod qwen3_asr;
 pub mod sensevoice;
 pub mod streaming_paraformer;
 pub mod streaming_zipformer;
+pub mod streaming_engine;
 pub mod vad;
 pub mod whisper;
 pub mod whisper_mel_matrix;

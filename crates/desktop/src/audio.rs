@@ -28,31 +28,96 @@ impl SharedAudioState {
         }
     }
 
-    /// Begin capturing: clear buffer, set recording flag, play CPAL stream
-    pub fn start(&self) -> Result<()> {
+    /// Build the input stream for the given device name
+    fn build_stream(&self, device_name: &str) -> Result<cpal::Stream> {
+        let host = cpal::default_host();
+        let device = if device_name.is_empty() {
+            host.default_input_device()
+                .ok_or_else(|| anyhow::anyhow!("No default input device"))?
+        } else {
+            host.input_devices()?
+                .find(|d| {
+                    d.name()
+                        .map(|n| n.contains(device_name))
+                        .unwrap_or(false)
+                })
+                .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", device_name))?
+        };
+
+        let config = device.default_input_config()?;
+        let rate = config.sample_rate().0;
+        let channels = config.channels() as usize;
+        self.sample_rate.store(rate, Ordering::Relaxed);
+
+        info!(
+            "Opened device: {}, rate: {}, channels: {}",
+            device.name().unwrap_or_default(),
+            rate,
+            channels
+        );
+
+        let samples = self.samples.clone();
+        let is_recording = self.is_recording.clone();
+
+        let stream = match config.sample_format() {
+            cpal::SampleFormat::F32 => device.build_input_stream(
+                &config.into(),
+                move |data: &[f32], _: &cpal::InputCallbackInfo| {
+                    if is_recording.load(Ordering::Relaxed) {
+                        let mono: Vec<f32> = data
+                            .chunks(channels)
+                            .map(|c| c.iter().sum::<f32>() / channels as f32)
+                            .collect();
+                        samples.lock().unwrap().extend_from_slice(&mono);
+                    }
+                },
+                |err| debug!("Audio error: {}", err),
+                None,
+            )?,
+            cpal::SampleFormat::I16 => device.build_input_stream(
+                &config.into(),
+                move |data: &[i16], _: &cpal::InputCallbackInfo| {
+                    if is_recording.load(Ordering::Relaxed) {
+                        let mono: Vec<f32> = data
+                            .chunks(channels)
+                            .map(|c| {
+                                c.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>()
+                                    / channels as f32
+                            })
+                            .collect();
+                        samples.lock().unwrap().extend_from_slice(&mono);
+                    }
+                },
+                |err| debug!("Audio error: {}", err),
+                None,
+            )?,
+            fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),
+        };
+
+        Ok(stream)
+    }
+
+    /// Begin capturing: clear buffer, set recording flag, build and play CPAL stream
+    pub fn start(&self, device_name: &str) -> Result<()> {
         self.samples.lock().unwrap().clear();
         self.is_recording.store(true, Ordering::Relaxed);
         
-        let stream_guard = self.stream.lock().unwrap();
-        if let Some(ref s) = *stream_guard {
-            s.play()?;
-            debug!("CPAL stream playing started");
-        } else {
-            debug!("CPAL stream is None, recording started in silent mode");
-        }
+        let stream = self.build_stream(device_name)?;
+        stream.play()?;
         
+        *self.stream.lock().unwrap() = Some(stream);
         debug!("Recording started");
         Ok(())
     }
 
-    /// Stop capturing, pause CPAL stream, drain samples, resample to 16kHz
+    /// Stop capturing, pause and drop CPAL stream, drain samples, resample to 16kHz
     pub fn stop(&self) -> Result<Vec<f32>> {
         self.is_recording.store(false, Ordering::Relaxed);
         
-        let stream_guard = self.stream.lock().unwrap();
-        if let Some(ref s) = *stream_guard {
+        let mut stream_guard = self.stream.lock().unwrap();
+        if let Some(s) = stream_guard.take() {
             let _ = s.pause();
-            debug!("CPAL stream paused");
+            debug!("CPAL stream paused and dropped");
         }
 
         let raw = std::mem::take(&mut *self.samples.lock().unwrap());
@@ -137,74 +202,21 @@ impl AudioRecorder {
         self.state.clone()
     }
 
-    /// 打开麦克风设备，准备录音
+    /// 打开麦克风设备，验证麦克风是否存在
     pub fn open(&mut self) -> Result<()> {
         let host = cpal::default_host();
-        let device = if self.state.device_name.is_empty() {
+        let _device = if self.state.device_name.is_empty() {
             host.default_input_device()
-                .ok_or_else(|| anyhow::anyhow!("No default input device"))?
         } else {
-            host.input_devices()?
-                .find(|d| {
-                    d.name()
-                        .map(|n| n.contains(&self.state.device_name))
-                        .unwrap_or(false)
-                })
-                .ok_or_else(|| anyhow::anyhow!("Device '{}' not found", self.state.device_name))?
+            host.input_devices()?.find(|d| {
+                d.name()
+                    .map(|n| n.contains(&self.state.device_name))
+                    .unwrap_or(false)
+            })
         };
-
-        let config = device.default_input_config()?;
-        let rate = config.sample_rate().0;
-        let channels = config.channels() as usize;
-        self.state.sample_rate.store(rate, Ordering::Relaxed);
-
-        info!(
-            "Opened device: {}, rate: {}, channels: {}",
-            device.name().unwrap_or_default(),
-            rate,
-            channels
-        );
-
-        let samples = self.state.samples.clone();
-        let is_recording = self.state.is_recording.clone();
-
-        let stream = match config.sample_format() {
-            cpal::SampleFormat::F32 => device.build_input_stream(
-                &config.into(),
-                move |data: &[f32], _: &cpal::InputCallbackInfo| {
-                    if is_recording.load(Ordering::Relaxed) {
-                        let mono: Vec<f32> = data
-                            .chunks(channels)
-                            .map(|c| c.iter().sum::<f32>() / channels as f32)
-                            .collect();
-                        samples.lock().unwrap().extend_from_slice(&mono);
-                    }
-                },
-                |err| debug!("Audio error: {}", err),
-                None,
-            )?,
-            cpal::SampleFormat::I16 => device.build_input_stream(
-                &config.into(),
-                move |data: &[i16], _: &cpal::InputCallbackInfo| {
-                    if is_recording.load(Ordering::Relaxed) {
-                        let mono: Vec<f32> = data
-                            .chunks(channels)
-                            .map(|c| {
-                                c.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>()
-                                    / channels as f32
-                            })
-                            .collect();
-                        samples.lock().unwrap().extend_from_slice(&mono);
-                    }
-                },
-                |err| debug!("Audio error: {}", err),
-                None,
-            )?,
-            fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),
-        };
-
-        let _ = stream.pause();
-        *self.state.stream.lock().unwrap() = Some(stream);
+        if _device.is_none() {
+            anyhow::bail!("Microphone device '{}' not found", self.state.device_name);
+        }
         Ok(())
     }
 }

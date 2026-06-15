@@ -172,11 +172,57 @@ async fn ws_stream(
     ws.on_upgrade(move |socket| handle_ws(socket, state.engine_manager, engine, language))
 }
 
+fn detect_silence_gap_local(
+    vad: &mut octopus_asr::vad::SileroVad,
+    samples: &[f32],
+    silence_duration: &mut f64,
+) -> bool {
+    let prev_silence = *silence_duration;
+    let mut speech_chunks = 0usize;
+    let mut silent_chunks = 0usize;
+
+    const VAD_CHUNK_SIZE: usize = 512;
+    const VAD_SPEECH_THRESHOLD: f32 = 0.5;
+
+    for chunk in samples.chunks(VAD_CHUNK_SIZE) {
+        if chunk.len() < VAD_CHUNK_SIZE {
+            break;
+        }
+        match vad.compute(chunk) {
+            Ok(prob) => {
+                if prob >= VAD_SPEECH_THRESHOLD {
+                    speech_chunks += 1;
+                } else {
+                    silent_chunks += 1;
+                }
+            }
+            Err(_) => {
+                speech_chunks += 1;
+            }
+        }
+    }
+
+    let total_chunks = speech_chunks + silent_chunks;
+    if total_chunks == 0 {
+        return false;
+    }
+
+    let chunk_duration = VAD_CHUNK_SIZE as f64 / 16000.0;
+
+    if speech_chunks >= 2 {
+        *silence_duration = 0.0;
+    } else {
+        *silence_duration += total_chunks as f64 * chunk_duration;
+    }
+
+    prev_silence >= 0.5
+}
+
 async fn handle_ws(
     mut socket: axum::extract::ws::WebSocket,
-    engine_manager: Arc<AsrEngineManager>,
+    _engine_manager: Arc<AsrEngineManager>,
     engine: String,
-    language: String,
+    _language: String,
 ) {
     use futures_util::StreamExt;
 
@@ -190,7 +236,18 @@ async fn handle_ws(
         return;
     }
 
-    let mut audio_buffer: Vec<f32> = Vec::new();
+    let streaming_session = match octopus_asr::streaming_engine::StreamingSession::new(&engine) {
+        Ok(sess) => sess,
+        Err(e) => {
+            let _ = socket
+                .send(Message::Text(
+                    format!("{{\"error\": \"Failed to create streaming session: {}\"}}", e).into(),
+                ))
+                .await;
+            return;
+        }
+    };
+
     let vad_path = match octopus_asr::config::find_silero_vad() {
         Ok(p) => p,
         Err(e) => {
@@ -214,6 +271,9 @@ async fn handle_ws(
         }
     };
 
+    let mut silence_duration = 0.0f64;
+    let mut flushed = false;
+
     while let Some(msg) = socket.next().await {
         match msg {
             Ok(Message::Binary(data)) => {
@@ -222,46 +282,81 @@ async fn handle_ws(
                     .chunks_exact(4)
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
                     .collect();
-                audio_buffer.extend_from_slice(&chunk);
+                if chunk.is_empty() {
+                    continue;
+                }
 
-                // When we have enough audio (~1s = 16000 samples), run VAD + ASR
-                if audio_buffer.len() >= 16000 {
-                    let speech =
-                        octopus_asr::audio::filter_speech(&audio_buffer, &mut vad, 480, 0.5);
-                    if !speech.is_empty() {
-                        let text = engine_manager.switch_model(&engine)
-                            .and_then(|_| engine_manager.transcribe(&speech, &language))
-                            .unwrap_or_else(|e| format!("[error: {}]", e));
+                let was_silent = detect_silence_gap_local(&mut vad, &chunk, &mut silence_duration);
+                if silence_duration == 0.0 {
+                    flushed = false;
+                }
+
+                match streaming_session.accept_samples(&chunk, was_silent) {
+                    Ok(Some(new_text)) => {
                         let _ = socket
                             .send(Message::Text(
                                 format!(
-                                    "{{\"text\": \"{}\", \"final\": true}}",
-                                    text.replace('"', "\\\"")
+                                    "{{\"text\": \"{}\", \"final\": false}}",
+                                    new_text.replace('"', "\\\"")
                                 )
                                 .into(),
                             ))
                             .await;
                     }
-                    audio_buffer.clear();
-                    vad.reset();
+                    Ok(None) => {}
+                    Err(e) => {
+                        let _ = socket
+                            .send(Message::Text(
+                                format!("{{\"error\": \"Streaming ASR error: {}\"}}", e).into(),
+                            ))
+                            .await;
+                    }
+                }
+
+                // Silent flush (> 0.5s)
+                if silence_duration >= 0.5 && !flushed {
+                    match streaming_session.flush() {
+                        Ok(Some(new_text)) => {
+                            let _ = socket
+                                .send(Message::Text(
+                                    format!(
+                                        "{{\"text\": \"{}\", \"final\": false}}",
+                                        new_text.replace('"', "\\\"")
+                                    )
+                                    .into(),
+                                ))
+                                .await;
+                            flushed = true;
+                        }
+                        _ => {}
+                    }
                 }
             }
             Ok(Message::Text(cmd)) => {
-                if cmd == "flush" && !audio_buffer.is_empty() {
-                    let text = engine_manager.switch_model(&engine)
-                        .and_then(|_| engine_manager.transcribe(&audio_buffer, &language))
-                        .unwrap_or_else(|e| format!("[error: {}]", e));
-                    let _ = socket
-                        .send(Message::Text(
-                            format!(
-                                "{{\"text\": \"{}\", \"final\": true}}",
-                                text.replace('"', "\\\"")
-                            )
-                            .into(),
-                        ))
-                        .await;
-                    audio_buffer.clear();
-                    vad.reset();
+                if cmd == "flush" {
+                    match streaming_session.finish() {
+                        Ok(final_text) => {
+                            let _ = socket
+                                .send(Message::Text(
+                                    format!(
+                                        "{{\"text\": \"{}\", \"final\": true}}",
+                                        final_text.replace('"', "\\\"")
+                                    )
+                                    .into(),
+                                ))
+                                .await;
+                        }
+                        Err(e) => {
+                            let _ = socket
+                                .send(Message::Text(
+                                    format!("{{\"error\": \"Streaming ASR finish error: {}\"}}", e).into(),
+                                ))
+                                .await;
+                        }
+                    }
+                    streaming_session.reset();
+                    silence_duration = 0.0;
+                    flushed = false;
                 }
             }
             Ok(Message::Close(_)) => break,

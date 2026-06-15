@@ -7,11 +7,11 @@ use std::sync::Mutex;
 /// - Zipformer 天然返回累积全文
 pub enum StreamingSession {
     Paraformer {
-        engine: Mutex<octopus_asr::streaming_paraformer::StreamingParaformer>,
+        engine: Mutex<crate::streaming_paraformer::StreamingParaformer>,
         accumulated: Mutex<String>,
     },
     Zipformer {
-        engine: Mutex<octopus_asr::streaming_zipformer::StreamingZipformer>,
+        engine: Mutex<crate::streaming_zipformer::StreamingZipformer>,
         accumulated: Mutex<String>,
     },
 }
@@ -20,19 +20,19 @@ impl StreamingSession {
     /// 根据引擎名创建流式 session。
     /// 仅支持 Paraformer 和 Zipformer 类别。
     pub fn new(engine_name: &str) -> Result<Self> {
-        let category = octopus_asr::config::resolve_engine_category(engine_name)
+        let category = crate::config::resolve_engine_category(engine_name)
             .context(format!("Unknown streaming engine: {}", engine_name))?;
 
         match category {
-            octopus_asr::config::EngineCategory::Paraformer => {
-                let engine = octopus_asr::streaming_paraformer::StreamingParaformer::new(engine_name)?;
+            crate::config::EngineCategory::Paraformer => {
+                let engine = crate::streaming_paraformer::StreamingParaformer::new(engine_name)?;
                 Ok(Self::Paraformer {
                     engine: Mutex::new(engine),
                     accumulated: Mutex::new(String::new()),
                 })
             }
-            octopus_asr::config::EngineCategory::Zipformer => {
-                let engine = octopus_asr::streaming_zipformer::StreamingZipformer::new(engine_name)?;
+            crate::config::EngineCategory::Zipformer => {
+                let engine = crate::streaming_zipformer::StreamingZipformer::new(engine_name)?;
                 Ok(Self::Zipformer {
                     engine: Mutex::new(engine),
                     accumulated: Mutex::new(String::new()),

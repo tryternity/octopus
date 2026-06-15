@@ -71,7 +71,20 @@ impl AsrEngineManager {
             };
 
             // Write to cache
+            let current_active = {
+                self.active_engine_name.read().unwrap().clone()
+            };
             let mut cache = self.cached_engines.write().unwrap();
+            if cache.len() >= 2 {
+                let key_to_remove = cache.keys()
+                    .find(|k| *k != &current_active)
+                    .cloned()
+                    .or_else(|| cache.keys().next().cloned());
+                if let Some(k) = key_to_remove {
+                    log::info!("Evicting engine '{}' from cache to free up memory", k);
+                    cache.remove(&k);
+                }
+            }
             cache.insert(model_name.to_string(), new_eng.clone());
             new_eng
         };

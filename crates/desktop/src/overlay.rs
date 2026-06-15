@@ -70,9 +70,12 @@ fn init_platform_overlay(window: &tauri::webview::WebviewWindow, config: &AppCon
 #[cfg(not(target_os = "linux"))]
 fn init_platform_overlay(_window: &tauri::webview::WebviewWindow, _config: &AppConfig) {}
 
+static SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Show the overlay with state: "recording" or "transcribing".
 #[allow(dead_code)] // overlay 显示路径已被 result_window 取代；保留入口待 overlay 子系统复用决策
 pub fn show_overlay(app: &AppHandle, state: &str) {
+    let _ = SESSION_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     if let Some(window) = app.get_webview_window("recording_overlay") {
         let _ = window.show();
         let _ = window.emit("show-overlay", state);
@@ -84,9 +87,12 @@ pub fn hide_overlay(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("recording_overlay") {
         let _ = window.emit("hide-overlay", ());
         let window_clone = window.clone();
+        let current_session = SESSION_COUNTER.load(std::sync::atomic::Ordering::Relaxed);
         tauri::async_runtime::spawn(async move {
             tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-            let _ = window_clone.hide();
+            if SESSION_COUNTER.load(std::sync::atomic::Ordering::Relaxed) == current_session {
+                let _ = window_clone.hide();
+            }
         });
     }
 }
