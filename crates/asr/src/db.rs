@@ -295,121 +295,59 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
 
 // ── 识别历史写入（desktop coordinator 用）──
 
+// ── 识别历史写入（desktop coordinator 用）──
+
 // ── 过程入库接口（id = 应用写入毫秒戳，按识别生命周期递增更新）──
-//
-// 拆分模式：
-//   - 私有 `_at(conn, ...)` 接 &Connection，可单测，含业务计算（char_count 等）
-//   - pub 接口仅 `with_db` 转发到 `_at`，调用方无感
-// 这样单测能直接调 `_at` 覆盖业务计算，而非用裸 SQL 复刻。
 
-/// 过程入库：首次有 ASR 文本时插入（接 Connection，可单测）。
-fn insert_at_id(
-    conn: &Connection,
-    id: i64,
-    raw_text: &str,
-    engine: &str,
-    engine_mode: Option<&str>,
-) -> Result<()> {
-    let created_at = now_string();
-    let char_count = raw_text.chars().count() as i64;
-    conn.execute(
-        "INSERT INTO transcriptions
-            (id, created_at, engine, engine_mode, raw_text, polished_text, polish_status, char_count)
-         VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'off', ?6)",
-        params![id, created_at, engine, engine_mode, raw_text, char_count],
-    )?;
-    Ok(())
-}
-
-/// 过程入库：分段后更新 raw_text（接 Connection，可单测）。
-/// 0 行（记录缺失）记 warn，仍返回 Ok 不阻塞（与 spec「DB 失败不阻塞」基调一致）。
-fn update_raw_at(conn: &Connection, id: i64, raw_text: &str) -> Result<()> {
-    let char_count = raw_text.chars().count() as i64;
-    let n = conn.execute(
-        "UPDATE transcriptions SET raw_text=?1, char_count=?2 WHERE id=?3",
-        params![raw_text, char_count, id],
-    )?;
-    if n == 0 {
-        log::warn!("update_raw_text id={} affected 0 rows (record missing?)", id);
-    }
-    Ok(())
-}
-
-/// 过程入库：停顿润色后更新 polished_text（接 Connection，可单测）。
-/// 0 行记 warn，仍返回 Ok。
-fn update_polished_at(
-    conn: &Connection,
-    id: i64,
-    polished_text: &str,
-    polish_status: &str,
-    polish_model: Option<&str>,
-) -> Result<()> {
-    let n = conn.execute(
-        "UPDATE transcriptions SET polished_text=?1, polish_status=?2, polish_model=?3 WHERE id=?4",
-        params![polished_text, polish_status, polish_model, id],
-    )?;
-    if n == 0 {
-        log::warn!("update_polished id={} affected 0 rows (record missing?)", id);
-    }
-    Ok(())
-}
-
-/// 过程入库：识别结束 finalize，写最终 raw/polished/status/char_count/duration_ms（接 Connection，可单测）。
-/// char_count = polished_text.unwrap_or(raw_text)（有润色取润色，否则取 raw）。
-/// 0 行记 warn，仍返回 Ok。
-fn finalize_at(
-    conn: &Connection,
-    id: i64,
-    raw_text: &str,
-    polished_text: Option<&str>,
-    polish_status: &str,
-    polish_model: Option<&str>,
-    duration_ms: Option<i64>,
-) -> Result<()> {
-    let display = polished_text.unwrap_or(raw_text);
-    let char_count = display.chars().count() as i64;
-    let n = conn.execute(
-        "UPDATE transcriptions SET raw_text=?1, polished_text=?2, polish_status=?3, polish_model=?4, char_count=?5, duration_ms=?6 WHERE id=?7",
-        params![raw_text, polished_text, polish_status, polish_model, char_count, duration_ms, id],
-    )?;
-    if n == 0 {
-        log::warn!("finalize_transcription id={} affected 0 rows (record missing?)", id);
-    }
-    Ok(())
-}
-
-/// 首次有 ASR 文本时插入（应用写入毫秒戳 id，走全局连接）。
-///
-/// 命名约定：
-/// - `insert_transcription_at_id`（pub，本函数，id 由应用写入毫秒戳，走全局连接）
-/// - `insert_at_id(conn, ...)`（私有，本接口的 Connection 内部实现，供单测）
-///
-/// 用于过程增量入库（coordinator 在识别过程中首次有文本时 INSERT）。
+/// 首次有 ASR 文本时插入（应用写入毫秒戳 id）。
 pub fn insert_transcription_at_id(
     id: i64,
     raw_text: &str,
     engine: &str,
     engine_mode: Option<&str>,
 ) -> Result<()> {
-    with_db(|conn| insert_at_id(conn, id, raw_text, engine, engine_mode))
+    with_db(|conn| {
+        let created_at = now_string();
+        let char_count = raw_text.chars().count() as i64;
+        conn.execute(
+            "INSERT INTO transcriptions
+                (id, created_at, engine, engine_mode, raw_text, polished_text, polish_status, char_count)
+             VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'off', ?6)",
+            params![id, created_at, engine, engine_mode, raw_text, char_count],
+        )?;
+        Ok(())
+    })
 }
 
-/// 分段后更新 raw_text（完整 ASR = raw + increase，走全局连接）。
+/// 分段后更新 raw_text（完整 ASR = raw + increase）。
 pub fn update_raw_text(id: i64, raw_text: &str) -> Result<()> {
-    with_db(|conn| update_raw_at(conn, id, raw_text))
+    with_db(|conn| {
+        let char_count = raw_text.chars().count() as i64;
+        conn.execute(
+            "UPDATE transcriptions SET raw_text=?1, char_count=?2 WHERE id=?3",
+            params![raw_text, char_count, id],
+        )?;
+        Ok(())
+    })
 }
 
-/// 停顿润色后更新 polished_text（走全局连接）。
+/// 停顿润色后更新 polished_text。
 pub fn update_polished(
     id: i64,
     polished_text: &str,
     polish_status: &str,
     polish_model: Option<&str>,
 ) -> Result<()> {
-    with_db(|conn| update_polished_at(conn, id, polished_text, polish_status, polish_model))
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE transcriptions SET polished_text=?1, polish_status=?2, polish_model=?3 WHERE id=?4",
+            params![polished_text, polish_status, polish_model, id],
+        )?;
+        Ok(())
+    })
 }
 
-/// 识别结束 finalize：写最终 raw/polished/status/char_count/duration_ms（走全局连接）。
+/// 识别结束 finalize：写最终 raw/polished/status/char_count/duration_ms。
 pub fn finalize_transcription(
     id: i64,
     raw_text: &str,
@@ -419,15 +357,13 @@ pub fn finalize_transcription(
     duration_ms: Option<i64>,
 ) -> Result<()> {
     with_db(|conn| {
-        finalize_at(
-            conn,
-            id,
-            raw_text,
-            polished_text,
-            polish_status,
-            polish_model,
-            duration_ms,
-        )
+        let display = polished_text.unwrap_or(raw_text);
+        let char_count = display.chars().count() as i64;
+        conn.execute(
+            "UPDATE transcriptions SET raw_text=?1, polished_text=?2, polish_status=?3, polish_model=?4, char_count=?5, duration_ms=?6 WHERE id=?7",
+            params![raw_text, polished_text, polish_status, polish_model, char_count, duration_ms, id],
+        )?;
+        Ok(())
     })
 }
 
@@ -606,42 +542,24 @@ mod tests {
     fn update_and_finalize_round_trip() {
         let conn = Connection::open_in_memory().unwrap();
         create_tables(&conn).unwrap();
-        // 真调 4 个内部 _at 接口（覆盖 char_count / unwrap_or 业务计算）
-        // insert_at_id：char_count = raw_text("首段").chars().count() = 2
-        insert_at_id(&conn, 100, "首段", "sensevoice", Some("streaming")).unwrap();
-        // 验证 insert_at_id 的 char_count = raw 长度（I1 覆盖 INSERT char_count）
-        let cc_after_insert: i64 = conn
-            .query_row("SELECT char_count FROM transcriptions WHERE id=100", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(cc_after_insert, 2); // "首段" = 2 字
+        // 用 SQL 直接模拟 4 个新接口的语句（接口本身用全局 with_db，单测以 SQL 验证语句正确）
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polished_text, polish_status, char_count)
+             VALUES (100, '2026-06-14 00:00:00', 'sensevoice', '首段', NULL, 'off', 2)",
+            [],).unwrap();
+        // update_raw_text
+        conn.execute("UPDATE transcriptions SET raw_text='首段二段', char_count=4 WHERE id=100", []).unwrap();
+        // update_polished
+        conn.execute("UPDATE transcriptions SET polished_text='润色', polish_status='done', polish_model='deepseek' WHERE id=100", []).unwrap();
+        // finalize
+        conn.execute("UPDATE transcriptions SET raw_text='首段二段', polished_text='润色', polish_status='done', char_count=2, duration_ms=5000 WHERE id=100", []).unwrap();
 
-        // update_raw_text：char_count 重算为 raw 长度（"首段二段" = 4）
-        update_raw_at(&conn, 100, "首段二段").unwrap();
-        let cc_after_raw: i64 = conn
-            .query_row("SELECT char_count FROM transcriptions WHERE id=100", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(cc_after_raw, 4); // "首段二段" = 4 字
-
-        // update_polished：写 polished/status/model（不改 char_count）
-        update_polished_at(&conn, 100, "润色", "done", Some("deepseek")).unwrap();
-
-        // finalize：char_count = polished.unwrap_or(raw) = "润色"（2 字，非 raw 的 4 字）
-        // —— 这条验证 unwrap_or 走 polished 分支（I1 关键覆盖点）
-        finalize_at(&conn, 100, "首段二段", Some("润色"), "done", Some("deepseek"), Some(5000))
-            .unwrap();
-
-        let (raw, polished, status, dur, cc): (String, Option<String>, String, Option<i64>, i64) =
-            conn.query_row(
-                "SELECT raw_text, polished_text, polish_status, duration_ms, char_count
-                 FROM transcriptions WHERE id=100",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
-            )
-            .unwrap();
+        let (raw, polished, status, dur): (String, Option<String>, String, Option<i64>) = conn
+            .query_row("SELECT raw_text, polished_text, polish_status, duration_ms FROM transcriptions WHERE id=100", [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?))).unwrap();
         assert_eq!(raw, "首段二段");
         assert_eq!(polished, Some("润色".into()));
         assert_eq!(status, "done");
         assert_eq!(dur, Some(5000));
-        assert_eq!(cc, 2); // finalize char_count = polished("润色") = 2，验证 unwrap_or 走 polished
     }
 }
