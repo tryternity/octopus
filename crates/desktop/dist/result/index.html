@@ -124,7 +124,8 @@
     }
     #popup .option:hover { background: rgba(0, 122, 255, 0.08); }
     #popup .option.current { color: #007aff; font-weight: 500; }
-    #popup .option .cat { font-size: 11px; color: rgba(0,0,0,0.4); margin-left: auto; }
+    #popup .option .nm { flex: 1; min-width: 0; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+    #popup .option .cat { font-size: 11px; color: rgba(0,0,0,0.4); flex-shrink: 0; }
     #popup .option.current .cat { color: rgba(0,122,255,0.6); }
 
     /* toast */
@@ -273,7 +274,7 @@
     document.getElementById('tool-polish').addEventListener('click', async () => {
       const html = POLISH_OPTIONS.map(o =>
         `<div class="option${o.mode === currentPolishMode ? ' current' : ''}" data-mode="${o.mode}">
-           <span>${o.mode === currentPolishMode ? '●' : '○'}</span>${o.label}
+           <span>${o.mode === currentPolishMode ? '●' : '○'}</span><span class="nm">${o.label}</span>
          </div>`).join('');
       openPopup(html);
       popup.querySelectorAll('.option').forEach(el => {
@@ -298,7 +299,7 @@
       catch (e) { showToast('读取引擎失败：' + e); return; }
       const html = engines.map(e =>
         `<div class="option${e.current ? ' current' : ''}" data-name="${e.name}">
-           <span>${e.current ? '●' : '○'}</span>${e.is_local ? '本地-' : '远程-'}${e.name}<span class="cat">${e.category}</span>
+           <span>${e.current ? '●' : '○'}</span><span class="nm">${e.is_local ? '本地-' : '远程-'}${e.name}</span><span class="cat">${e.category}</span>
          </div>`).join('');
       openPopup(html);
       popup.querySelectorAll('.option').forEach(el => {
