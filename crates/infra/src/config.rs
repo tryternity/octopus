@@ -131,6 +131,10 @@ pub struct AppConfig {
     /// 是否使用 ASR 硬件加速
     #[serde(default = "default_asr_hardware_accelerated")]
     pub asr_hardware_accelerated: bool,
+
+    /// 是否对 ASR 输出进行纠错与热词校正
+    #[serde(default = "default_asr_correct")]
+    pub asr_correct: bool,
 }
 
 fn default_engine_mode() -> String {
@@ -172,6 +176,9 @@ fn default_polish_base_url() -> String {
 fn default_asr_hardware_accelerated() -> bool {
     false
 }
+fn default_asr_correct() -> bool {
+    false
+}
 fn default_segment_duration() -> f64 {
     5.0
 }
@@ -207,6 +214,7 @@ impl Default for AppConfig {
             llm_base_url: default_polish_base_url(),
             llm_secret_key: String::new(),
             asr_hardware_accelerated: default_asr_hardware_accelerated(),
+            asr_correct: default_asr_correct(),
         }
     }
 }
@@ -267,5 +275,11 @@ mod tests {
     fn asr_hardware_accelerated_defaults_to_false() {
         let cfg: AppConfig = serde_yaml::from_str("").unwrap();
         assert!(!cfg.asr_hardware_accelerated);
+    }
+
+    #[test]
+    fn asr_correct_defaults_to_false() {
+        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
+        assert!(!cfg.asr_correct);
     }
 }

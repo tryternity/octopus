@@ -13,6 +13,11 @@ use crate::zipformer::ZipformerEngine;
 pub trait OfflineAsrEngine: Send + Sync {
     /// Transcribe the 16kHz mono f32 samples using this engine.
     fn transcribe(&self, samples: &[f32], language: &str) -> Result<String>;
+
+    /// Check if this is the Qwen3 engine (to skip correction).
+    fn is_qwen3(&self) -> bool {
+        false
+    }
 }
 
 /// Orchestrator to load, cache, and swap ASR engines dynamically.
@@ -100,76 +105,88 @@ pub fn transcribe_with_vad(
     samples: &[f32],
     language: &str,
 ) -> Result<String> {
-    // 30 seconds threshold (480,000 samples @ 16kHz)
-    if samples.len() <= 480_000 {
-        return engine.transcribe(samples, language);
-    }
+    let raw_text = if samples.len() <= 480_000 {
+        engine.transcribe(samples, language)?
+    } else {
+        // Try to load Silero VAD. If VAD cannot be loaded (e.g., model file missing),
+        // fallback to transcribing the entire audio in one shot.
+        let vad_path = match crate::config::find_silero_vad() {
+            Ok(p) => Some(p),
+            Err(e) => {
+                eprintln!("Warning: Silero VAD not found, falling back to full audio transcription: {}", e);
+                None
+            }
+        };
 
-    // Try to load Silero VAD. If VAD cannot be loaded (e.g., model file missing),
-    // fallback to transcribing the entire audio in one shot.
-    let vad_path = match crate::config::find_silero_vad() {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("Warning: Silero VAD not found, falling back to full audio transcription: {}", e);
-            return engine.transcribe(samples, language);
-        }
-    };
+        let vad = vad_path.and_then(|p| match crate::vad::SileroVad::new(&p) {
+            Ok(v) => Some(v),
+            Err(e) => {
+                eprintln!("Warning: Failed to initialize Silero VAD, falling back to full audio transcription: {}", e);
+                None
+            }
+        });
 
-    let mut vad = match crate::vad::SileroVad::new(&vad_path) {
-        Ok(v) => v,
-        Err(e) => {
-            eprintln!("Warning: Failed to initialize Silero VAD, falling back to full audio transcription: {}", e);
-            return engine.transcribe(samples, language);
-        }
-    };
+        if let Some(mut v) = vad {
+            let total_secs = samples.len() as f64 / 16000.0;
+            eprintln!("[ASR] Long audio detected ({:.2}s). Segmenting audio using VAD...", total_secs);
 
-    let total_secs = samples.len() as f64 / 16000.0;
-    eprintln!("[ASR] Long audio detected ({:.2}s). Segmenting audio using VAD...", total_secs);
+            let segments = crate::audio::segment_audio_vad(
+                samples,
+                &mut v,
+                480,    // frame_size
+                0.4,    // threshold
+                500,    // min_silence_ms
+                25000,  // max_segment_ms
+            );
 
-    let segments = crate::audio::segment_audio_vad(
-        samples,
-        &mut vad,
-        480,    // frame_size
-        0.4,    // threshold
-        500,    // min_silence_ms
-        25000,  // max_segment_ms
-    );
+            eprintln!("[ASR] Audio segmented into {} speech chunks.", segments.len());
 
-    eprintln!("[ASR] Audio segmented into {} speech chunks.", segments.len());
-
-    let mut final_text = String::new();
-    for (idx, seg) in segments.iter().enumerate() {
-        if !seg.is_empty() {
-            let seg_secs = seg.len() as f64 / 16000.0;
-            eprintln!("[ASR] Transcribing segment {}/{} ({:.2}s)...", idx + 1, segments.len(), seg_secs);
-            let text = engine.transcribe(seg, language)?;
-            let text_cleaned = text.replace("<|nospeech|>", "");
-            let text_trimmed = text_cleaned.trim();
-            if !text_trimmed.is_empty() {
-                if !final_text.is_empty() {
-                    let last_char = final_text.chars().last();
-                    let next_char = text_trimmed.chars().next();
-                    let needs_space = match (last_char, next_char) {
-                        (Some(lc), Some(nc)) => {
-                            let is_cjk = |c: char| {
-                                let u = c as u32;
-                                (0x4E00..=0x9FFF).contains(&u) || // CJK Unified Ideographs
-                                (0x3040..=0x309F).contains(&u) || // Hiragana
-                                (0x30A0..=0x30FF).contains(&u) || // Katakana
-                                (0xAC00..=0xD7AF).contains(&u)    // Hangul
+            let mut final_text = String::new();
+            for (idx, seg) in segments.iter().enumerate() {
+                if !seg.is_empty() {
+                    let seg_secs = seg.len() as f64 / 16000.0;
+                    eprintln!("[ASR] Transcribing segment {}/{} ({:.2}s)...", idx + 1, segments.len(), seg_secs);
+                    let text = engine.transcribe(seg, language)?;
+                    let text_cleaned = text.replace("<|nospeech|>", "");
+                    let text_trimmed = text_cleaned.trim();
+                    if !text_trimmed.is_empty() {
+                        if !final_text.is_empty() {
+                            let last_char = final_text.chars().last();
+                            let next_char = text_trimmed.chars().next();
+                            let needs_space = match (last_char, next_char) {
+                                (Some(lc), Some(nc)) => {
+                                    let is_cjk = |c: char| {
+                                        let u = c as u32;
+                                        (0x4E00..=0x9FFF).contains(&u) || // CJK Unified Ideographs
+                                        (0x3040..=0x309F).contains(&u) || // Hiragana
+                                        (0x30A0..=0x30FF).contains(&u) || // Katakana
+                                        (0xAC00..=0xD7AF).contains(&u)    // Hangul
+                                    };
+                                    !is_cjk(lc) || !is_cjk(nc)
+                                }
+                                _ => true,
                             };
-                            !is_cjk(lc) || !is_cjk(nc)
+                            if needs_space {
+                                final_text.push(' ');
+                            }
                         }
-                        _ => true,
-                    };
-                    if needs_space {
-                        final_text.push(' ');
+                        final_text.push_str(text_trimmed);
                     }
                 }
-                final_text.push_str(text_trimmed);
             }
+            final_text
+        } else {
+            engine.transcribe(samples, language)?
         }
-    }
+    };
 
-    Ok(final_text)
+    // Apply correction if config.asr_correct is true and it's not a Qwen3 engine
+    let app_cfg = crate::config::load_app_config_cached();
+    if app_cfg.asr_correct && !engine.is_qwen3() {
+        let corrected = crate::corrector::get_corrector().correct(&raw_text);
+        Ok(corrected)
+    } else {
+        Ok(raw_text)
+    }
 }
+

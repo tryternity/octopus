@@ -86,6 +86,10 @@ impl Qwen3AsrEngine {
 }
 
 impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
+    fn is_qwen3(&self) -> bool {
+        true
+    }
+
     fn transcribe(&self, samples: &[f32], language: &str) -> Result<String> {
         // Resolve language：auto 且条目未配具体语言时保持 auto（不限制语言，支持多语言/中英混合）；
         // 原 auto→zh 硬编码会导致中英混合时英文丢失（Qwen3-ASR 最佳实践即不指定 language，自动检测）。

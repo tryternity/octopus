@@ -15,4 +15,6 @@ pub mod vad;
 pub mod whisper;
 pub mod whisper_mel_matrix;
 pub mod zipformer;
+pub mod corrector;
+
 

@@ -25,6 +25,11 @@
 pub trait OfflineAsrEngine: Send + Sync {
     /// 识别 16kHz mono f32 音频数据
     fn transcribe(&self, samples: &[f32], language: &str) -> Result<String>;
+
+    /// 是否是 Qwen3 引擎（用以跳过文本纠错）
+    fn is_qwen3(&self) -> bool {
+        false
+    }
 }
 ```
 
@@ -81,11 +86,13 @@ Zipformer 模型（包括 `zipformer-ctc`、`zipformer-multi` 和 `zipformer-sma
 2. **支持 Whisper 特征提取分支 (`zipformer-ctc`)**：
    - 检测到 `zipformer-ctc` 模型的 `feature` 元数据为 `whisper` 时，将特征提取路由至专用的 **WhisperMelExtractor**。该提取器使用 Hann 窗、FFT 窗口大小 400 且没有预加重与 DC 去除。
 3. **Chunk 级 Whisper 特征归一化**：
-   - Whisper 特征在送入 `zipformer-ctc` 之前，必须以 Chunk 级别（以 frames 长度为单位）执行专属归一化：
+   - Whisper 特征在送入 `zipformer-ctc` 之前，必须以 Chunk 级别（以 frames 长度为单位）执行专属归一化。与标准 Whisper 和 Qwen3-ASR 使用的 $\frac{\max(log\_spec, clamp\_min) + 4.0}{4.0}$ 缩放不同，`zipformer-ctc` 为对齐 `sherpa-onnx` 的 C++ 逻辑而采用如下偏移归一化：
      - $log\_spec = \log_{10}(\max(spec, 10^{-10}))$
      - $clamp\_min = \max(log\_spec) - 8.0$
-     - $normalized\_spec = \frac{\max(log\_spec, clamp\_min) + 4.0}{4.0}$
-   - 此操作完全对齐了 C++ 中 `OfflineWhisperModel::NormalizeFeatures` 逻辑，彻底修复了 `zipformer-ctc` 特征数值分布不匹配导致的识别输出为空或大量 `[partial]` 的问题。
+     - $normalized\_spec = \max(log\_spec, clamp\_min) - clamp\_min$
+   - 此操作完全对齐了 `sherpa-onnx` 底层对 Zipformer 模型 Whisper 特征的处理，彻底修复了因特征数值分布不匹配导致的识别输出为空或大量 `[partial]` 的问题（而 `whisper.rs` 与 `qwen3_asr.rs` 中则继续沿用标准 Whisper 的 $\frac{+4.0}{4.0}$ 缩放归一化）。
+
+
 
 ---
 
@@ -127,3 +134,23 @@ pub struct AsrEngineManager {
 | **流式重采样开销** | 每 625ms 重建一次重采样器，CPU 抖动大 | **重用 Resampler FFT 规划，循环内计算开销极低** |
 | **流式音质拼接** | 不保存滤波器状态，音频分段产生爆音和截断 | **完美平滑过滤，流式 ASR 识别精度无损** |
 | **并发与内存稳定性** | 每次加载申请几百 MB 推理内存，极易造成堆碎片和 OOM | 内存极其稳定，推理后无频繁 Heap 分配与 GC |
+
+---
+
+## 6. 性能与精度扩展：硬件加速与后处理纠错 (ORT EP & Corrector)
+
+为了进一步提升 ASR 推理速度和输出文本的准确率，我们又集成了硬件加速选项与轻量级纠错管道：
+
+### 6.1 ASR 硬件加速与自动降级 (CPU Fallback)
+- **多平台 GPU 加速**：利用 `ort` crate 动态加载平台特定的 GPU 后端（macOS 使用 `CoreML`，Windows/Linux 使用 `CUDA` 或 `DirectML`）。
+- **手自动一体控制**：可通过 `config.yaml` 里的 `asr_hardware_accelerated` 字段显式开启/关闭。
+- **平滑降级机制**：若 GPU 加速器在运行时由于驱动冲突、库缺失或模型含有不支持的动态算子（如 `Qwen3-ASR`）导致初始化失败，Session 构建器会自动捕获异常并回退到干净的 CPU 推理会话，保障 ASR 进程不崩溃。
+- **VAD 纯 CPU 推理**：VAD 模块体积极小，开启 GPU 带来的开销远超计算时间，因此 VAD 固定运行于 CPU。
+
+### 6.2 极致轻量中文拼音纠错 (LightCorrector)
+- **静态嵌入与低延迟**：将 unigram 与 bigram 数据（各精简至高频 40,000 条，gzip 后合计仅 450KB）静态编译入二进制，内存占用约 30MB，纠错耗时在微秒级。
+- **滑窗字符对齐替换**：在 2 字和 3 字窗口内进行同音/近音词召回，只在字数完全相同的候选词之间进行替换，不改变原句字符长度，保证 ASR 文本的对齐与 VAD 时间戳稳定性。
+- **长度归一化打分与自适应惩罚**：
+  - 使用 **“句子总 log 概率 / 分词后 Token 数量”** 作为打分准则，完全消除了由于 typo 被分词碎化引起的长度归一化偏置；
+  - 区分 Jieba 字典的已登录词（修改惩罚 `-1.5`，保护正确表述不被误改）与未登录词（修改惩罚 `-0.2`，积极替换 typo），在保证召回率的同时，做到了接近零的误改率。
+- **智能旁路**：对于 Qwen3-ASR 等自带强大纠错的超大模型，自动跳过纠错管道以节省计算开销。

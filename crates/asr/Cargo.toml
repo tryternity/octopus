@@ -27,3 +27,9 @@ rusqlite = { version = "0.31", features = ["bundled"] }
 
 # 基础设施（跨 crate 共享常量等）
 octopus-infra = { path = "../infra" }
+
+jieba-rs = "0.6"
+pinyin = "0.10"
+flate2 = "1.0"
+
+

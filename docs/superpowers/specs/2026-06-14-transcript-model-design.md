@@ -2,7 +2,7 @@
 
 > 重构识别过程中的文本状态模型，引入 `Transcript` 结构统一管理原生文本、润色文本、增量文本三者关系；润色改为停顿驱动的全量润色（流式 / 伪流式统一）；DB 改为过程增量入库（id = 毫秒时间戳）；剪贴板默认保留识别结果。
 
-> **实现状态（2026-06-14）**：已实现，commits `9bb3b34`..`33b17b8`（`feat/transcript-model` 分支）。`cargo check --workspace --all-targets` 0 error，`cargo test --workspace` 全 PASS（asr 16 + desktop transcript 8 + infra 4）。手动 e2e（§7.3）待用户验证。
+> **实现状态（2026-06-15）**：已实现，commits `9bb3b34`..`33b17b8`（`feat/transcript-model` 分支，已合并 main）。`cargo check --workspace --all-targets` 0 error，`cargo test --workspace` 全 PASS（asr 16 + desktop transcript 8 + infra 4）。手动 e2e（§7.3）已由用户验证通过（2026-06-15）。
 
 ## 0. 背景
 
@@ -53,7 +53,7 @@
 | `write_to_clipboard` 配置 | 全局配置（默认 true）：粘贴后是否把识别结果写入剪贴板 |
 | 错误降级 | DB / 润色失败不阻塞识别流程（best-effort） |
 
-> 以上全部已实现（见顶部 commits，2026-06-14）。仅 §7.3 手动 e2e 待用户验证。
+> 以上全部已实现（见顶部 commits，2026-06-15）。§7.3 手动 e2e 已由用户验证通过。
 
 ### 1.2 不做（本次）
 

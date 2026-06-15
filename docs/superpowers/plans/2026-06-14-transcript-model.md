@@ -1491,4 +1491,4 @@ git commit -m "docs: sync transcript model implementation"
 | §6 write_to_clipboard 配置 + 三模式矩阵 | Task 3 | ✅ |
 | §7.1 Transcript 独立 struct | Task 1 | ✅ |
 | §7.2 单元测试（Transcript + DB） | Task 1 Step 1, Task 2 Step 4 | ✅ |
-| §7.3 手动 e2e | Task 7 Step 4-7 | ⏳ |
+| §7.3 手动 e2e | Task 7 Step 4-7 | ✅ |

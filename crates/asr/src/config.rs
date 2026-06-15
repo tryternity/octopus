@@ -355,7 +355,7 @@ pub fn pick_entry<'a>(
 /// streaming 引擎更频繁）。手编 config.yaml 后需重启进程生效（与 RUNTIME_CONFIG 一致）。
 static APP_CONFIG: OnceLock<octopus_infra::config::AppConfig> = OnceLock::new();
 
-fn load_app_config_cached() -> &'static octopus_infra::config::AppConfig {
+pub fn load_app_config_cached() -> &'static octopus_infra::config::AppConfig {
     APP_CONFIG.get_or_init(|| match octopus_infra::config::load_config() {
         Ok(cfg) => cfg,
         Err(e) => {

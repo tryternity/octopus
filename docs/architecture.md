@@ -40,6 +40,8 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `zipformer` | Zipformer 离线识别 |
 | `streaming_paraformer` | Paraformer 流式识别 |
 | `streaming_zipformer` | Zipformer 流式识别 |
+| `corrector` | 基于拼音映射和 Bigram 转移概率的轻量级中文拼音纠错与热词校正 |
+
 
 **数据流（离线）：**
 ```
@@ -160,6 +162,36 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | Paraformer | 离线/流式 | 中文优化 |
 | Qwen3-ASR | 离线 | 大模型能力 |
 | Zipformer | 离线/流式 | 轻量级 CTC |
+
+## 拼音纠错与热词校正 (ASR Corrector)
+
+为了在不引入重型深度学习模型（如 MacBERT 等动辄几百 MB 的模型）的前提下，实现极致轻量的纠错与专有名词（热词）校正，项目实现了一套基于 **“拼音映射 + 长度归一化 Bigram 转移概率”** 的轻量级后处理纠错引擎。
+
+### 核心特性
+- **纯静态与轻量化**：纠错所需的 unigram 词表与 bigram 共现表（各精简至高频的前 40,000 条，压缩后约 450KB）直接通过 `include_bytes!` 静态嵌入二进制中，无需额外网络下载，运行时解压，额外内存占用约 30MB。
+- **配置开关控制**：由 `config.yaml` 中的 `asr_correct` 字段控制（默认 `false`）。
+- **智能排除**：由于 Qwen3-ASR (0.6B/1.7B) 模型本身输出带有标点且语义纠错能力强，纠错引擎会自动跳过对 Qwen3-ASR 结果的处理，仅应用于 Whisper、SenseVoice、Paraformer 和 Zipformer。
+
+### 纠错算法逻辑
+1. **滑窗候选召回 (Sliding Window)**：使用 2 字和 3 字的字符滑窗扫描识别出的文本，通过拼音库计算滑窗文本的拼音，并在此拼音的 $O(1)$ 模糊拼音倒排索引（支持南方口音混淆，如 `zh/ch/sh` <-> `z/c/s`、`in/en` <-> `ing/eng`、`n` <-> `l` 等）中召回**相同字符长度**的同音/近音候选词。
+2. **长度归一化打分 (Length Normalization)**：利用未登录词（typo）容易被 `jieba` 拆碎分词的特性，评估替换后的句子，并使用 **“句子总 log 概率 / 分词后 Token 数量”** 对句子的语言模型得分进行归一化，彻底消除倾向于更短分词结果的长度偏置。
+3. **基于 Jieba 字典的自适应惩罚**：
+   - 如果原滑窗词是 Jieba 字典中的已登录词（即 `jieba.cut().len() == 1`，说明它是合法的词，如 `"坐上"`），系统施加极高的修改惩罚（`-1.5`）以保护正确表述不被误改；
+   - 如果原滑窗词是未登录词（typo，如 `"以经"` 被 Jieba 拆分为 `"以"` 和 `"经"`），则修改惩罚降低（`-0.2`）以积极纠错。
+
+## ASR 硬件加速与自动降级机制 (ASR Hardware Acceleration & Fallback)
+
+为了最大化利用用户本机的 GPU 资源加速语音识别，同时避免因显卡驱动或算子不支持导致应用程序崩溃，系统在 `octopus-asr` 核心引擎中实现了一套手自动一体的硬件加速及平滑降级机制。
+
+### 核心特性
+- **手动控制开关**：在 `config.yaml` 中提供 `asr_hardware_accelerated` 字段（`bool` 类型，默认 `false`）。用户如果不需要加速，或者大模型加速不稳定时，可随时降级回退到纯 CPU 推理。
+- **多平台加速后端支持**：通过 `ort` (ONNX Runtime) crate 的硬件加速接口，自动支持多平台主流 EP (Execution Provider) 注册：
+  - **macOS**: 自动尝试使用 `CoreML` 执行提供商进行加速。
+  - **Windows/Linux**: 自动尝试使用 `CUDA` 和 `DirectML` 进行 GPU 加速。
+- **平滑降级机制 (CPU Fallback)**：
+  在初始化推理 Session 时，若检测到 `asr_hardware_accelerated: true`，SessionBuilder 会动态尝试注册对应的 GPU EP。如果系统驱动不兼容、加速库文件缺失，或模型自身包含硬件加速器不支持的特殊算子（例如 `Qwen3-ASR` 由于含有复杂动态 Shape 算子，在部分平台的 CoreML 加速启动时会被拦截限制），构建器会捕获该错误、打印 Warning 日志，并**自动且无缝地重构出一个纯 CPU 的 Session**，保证语音识别服务不发生闪退或中断。
+- **VAD 免加速策略**：
+  由于 VAD (Silero VAD) 模型的体积极其微小 (1.8MB)，且对实时性要求极高。将其调度至 GPU 进行加速所产生的显存交互与上下文切换开销（Latency Overhead）远超加速本身带来的收益。因此，**VAD 推理固定运行在 CPU 端**，完全不受 `asr_hardware_accelerated` 字段的影响。
 
 ## 技术栈
 
