@@ -33,6 +33,11 @@ pub fn create_result_window(app: &tauri::AppHandle) {
 
     match builder.build() {
         Ok(window) => {
+            // debug 构建（cargo run / cargo build 不带 --release）自动打开 devtools，
+            // 便于排查前端渲染/事件。release 构建自动剔除，无副作用。
+            #[cfg(debug_assertions)]
+            window.open_devtools();
+
             // 首次创建时定位到屏幕顶部居中
             if let Ok(monitor) = window.primary_monitor() {
                 if let Some(m) = monitor {
