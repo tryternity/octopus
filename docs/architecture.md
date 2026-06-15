@@ -92,7 +92,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | 窗口 | 用途 |
 |------|------|
 | `recording_overlay` | 录音/识别状态提示（离线模式） |
-| `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶） |
+| `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 100→132px），移出收起；4 个工具——设置 / 润色模式切换 / ASR 引擎切换 / LLM 模型切换（前二者+ASR 已接通，设置与 LLM 模型为占位） |
 
 **核心状态机（Coordinator）：**
 - 单线程 mpsc channel 串行化所有事件
@@ -106,6 +106,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **停顿驱动润色**：流式 / 伪流式统一——静音 ≥ `pause_polish_threshold_ms`（默认 600ms，可配置）/ 伪流式段边界完成时，把当前完整 ASR 快照（`snapshot_for_polish()` = `raw + increase`）送 LLM 全量润色（mode=2 only），**不重置流式引擎**（只读快照送 LLM，引擎状态原样保留）。修复了流式中间润色 P0（partial 全量覆盖 polished）。默认 600ms > Active Flush 500ms（用户配置需保持 > 500ms，否则润色先于尾音冲刷、快照缺尾音），润色在 tick 流程最末执行，快照可靠
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号
 - 流式尾音冲刷（Active Flush）：流式模式累积静音 ≥0.5s 时向引擎补零，强制对齐右上下文 / 触发 CIF，把憋住的尾音即时吐出；走独立路径不插逗号，每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。详见 [spec](superpowers/specs/2026-06-13-streaming-tail-flush-design.md)
+- **运行时配置子系统（RuntimeConfig）**：工具栏可运行时切换 `asr_engine` / `polish_mode`，无需重启。`runtime_config.rs` 提供 `SharedRuntimeConfig`（`Arc<RwLock<RuntimeConfig>>`，挂 `tauri::State`）作为这两个字段的**可变运行时镜像**，与启动只读的 `AppConfig` 快照互补。4 个 Tauri 命令（`toolbar_state` / `list_asr_engines` / `switch_asr_engine` / `set_polish_mode`）读写镜像 + best-effort 持久化回 `~/.octopus/config.yaml`（写盘失败仅 `warn`，本次仍生效、重启回退）。Coordinator 闭包持镜像句柄，**在 Toggle 进入 `Idle` 时重读 `asr_engine` 重建引擎**（下次录音生效）；**每个 tick 重读 `polish_mode` 并 `Transcript::set_mode`**（立即生效，下一次润色按新模式）。详见 [spec](superpowers/specs/2026-06-15-result-window-toolbar-design.md)
 
 **文本持久化（嵌入式 SQLite）：**
 - 存储：`~/.octopus/octopus.db`（`crates/asr/src/db.rs`，全局 `OnceLock<Mutex<Connection>>`；cli/server/desktop 共用）

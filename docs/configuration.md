@@ -86,7 +86,7 @@ octopus-cli config
 | 字段 | 类型 | 默认值 | 适用端 | 说明 |
 |---|---|---|---|---|
 | `microphone` | string | `""` | cli + desktop | 麦克风设备名（空 = 系统默认） |
-| `asr_engine` | string | `""` | desktop + server | 引擎 name，按 DB `models` 表 `name` 精确匹配；空或匹配不到回退兜底 `zipformer-small-ctc`（用 `octopus-cli config` 查看可选值）。显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，不走兜底 |
+| `asr_engine` | string | `""` | desktop + server | 引擎 name，按 DB `models` 表 `name` 精确匹配；空或匹配不到回退兜底 `zipformer-small-ctc`（用 `octopus-cli config` 查看可选值）。显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，不走兜底。**desktop 悬停工具栏可在运行时切换**（`switch_asr_engine` 命令）：写 RuntimeConfig 镜像 + 持久化回 config.yaml，**下次录音生效**（Coordinator 在 Toggle 进入 Idle 时重读镜像并重建引擎） |
 | `language` | string | `"auto"` | desktop | auto / zh / en / ja / ko |
 | `engine_mode` | string | `"embedded"` | desktop | embedded / websocket / grpc |
 | `remote_url` | string | `ws://127.0.0.1:3000/ws/stream` | desktop | websocket 模式远程地址 |
@@ -98,7 +98,7 @@ octopus-cli config
 | `segment_duration` | f64 | `5.0` | desktop | VAD 伪流式：缓冲累积时长阈值（秒） |
 | `segment_silence` | f64 | `500.0` | desktop | VAD 伪流式：静音触发识别阈值（毫秒） |
 | `segment_overlap` | f64 | `200.0` | desktop | VAD 伪流式：相邻分段 overlap（毫秒） |
-| `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色 |
+| `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色。**desktop 悬停工具栏可在运行时切换**（`set_polish_mode` 命令）：写 RuntimeConfig 镜像 + 持久化回 config.yaml，**立即生效**（Coordinator 每个 tick 重读镜像并 `Transcript::set_mode`，下一次润色按新模式） |
 | `polish_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s` |
 | `pause_polish_threshold_ms` | f64 | `600` | desktop | 停顿触发中间润色的静音阈值（毫秒），仅 `polish_mode=2` 生效；**须 > 500**（Active Flush 500ms），否则润色先于尾音冲刷、快照缺尾音 |
 | `polish_llm` | string | `"glm-4-flashx"` | desktop | 当前润色使用的 LLM 模型名（按 DB `models` 表 `name` 精确匹配） |
