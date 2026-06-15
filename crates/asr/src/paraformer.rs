@@ -47,7 +47,7 @@ impl ParaformerEngine {
     /// Create a new Paraformer engine instance by loading models and vocab
     pub fn new(entry: &config::ModelEntry) -> Result<Self> {
         let hf_path = config::resolve_model_dir(&entry.source)?;
-        let prefer_int8 = entry.quantization != "fp32";
+        let prefer_int8 = true;
 
         // Discover encoder ONNX
         let encoder_path = if prefer_int8 {

@@ -152,7 +152,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             source       TEXT    NOT NULL,
             language     TEXT    NOT NULL DEFAULT '',
             description  TEXT    NOT NULL DEFAULT '',
-            quantization TEXT    NOT NULL DEFAULT '',
+            secret_key   TEXT    NOT NULL DEFAULT '',
             is_active    INTEGER NOT NULL DEFAULT 0,
             UNIQUE(domain, category, name)
         );",
@@ -423,7 +423,7 @@ git commit -m "feat(db): migrate history.txt → transcriptions"
               "asr": {
                 "active": "paraformer-streaming",
                 "paraformer": {
-                  "paraformer-streaming": { "source": "csukuangfj/x", "language": "zh", "quantization": "int8" }
+                  "paraformer-streaming": { "source": "csukuangfj/x", "language": "zh", "secret_key": "" }
                 }
               }
             }"#,
@@ -521,10 +521,10 @@ fn insert_model(
     let source = entry.get("source").and_then(|s| s.as_str()).unwrap_or("");
     let language = entry.get("language").and_then(|s| s.as_str()).unwrap_or("");
     let description = entry.get("description").and_then(|s| s.as_str()).unwrap_or("");
-    let quantization = entry.get("quantization").and_then(|s| s.as_str()).unwrap_or("");
+    let secret_key = entry.get("secret_key").and_then(|s| s.as_str()).unwrap_or("");
     conn.execute(
         "INSERT OR IGNORE INTO models
-            (domain, category, name, source, language, description, quantization, is_active)
+            (domain, category, name, source, language, description, secret_key, is_active)
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
         params![
             domain,
@@ -533,7 +533,7 @@ fn insert_model(
             source,
             language,
             description,
-            quantization,
+            secret_key,
             is_active as i64
         ],
     )?;
@@ -597,8 +597,8 @@ git commit -m "feat(db): migrate model.json → models table"
         let conn = Connection::open_in_memory().unwrap();
         create_tables(&conn).unwrap();
         conn.execute(
-            "INSERT INTO models (domain, category, name, source, language, description, quantization, is_active)
-             VALUES ('asr','paraformer','paraformer-streaming','src','zh','',  'int8', 1)",
+            "INSERT INTO models (domain, category, name, source, language, description, secret_key, is_active)
+             VALUES ('asr','paraformer','paraformer-streaming','src','zh','',  '', 1)",
             [],
         )
         .unwrap();
@@ -624,7 +624,7 @@ pub struct ActiveModel {
     pub name: String,
     pub source: String,
     pub language: String,
-    pub quantization: String,
+    pub secret_key: String,
 }
 
 /// 插入一条识别记录（指定连接，可单测）。
@@ -686,7 +686,7 @@ pub fn insert_transcription(
 fn active_engine_at(conn: &Connection, domain: &str) -> Result<Option<ActiveModel>> {
     let row = conn
         .query_row(
-            "SELECT category, name, source, language, quantization
+            "SELECT category, name, source, language, secret_key
              FROM models WHERE domain=?1 AND is_active=1",
             params![domain],
             |r| {
@@ -695,7 +695,7 @@ fn active_engine_at(conn: &Connection, domain: &str) -> Result<Option<ActiveMode
                     name: r.get(1)?,
                     source: r.get(2)?,
                     language: r.get(3)?,
-                    quantization: r.get(4)?,
+                    secret_key: r.get(4)?,
                 })
             },
         )

@@ -446,12 +446,12 @@ fn v2_to_v3_migration_rebuilds_transcriptions() {
             polished_text TEXT, polish_status TEXT NOT NULL DEFAULT 'off',
             polish_model TEXT, duration_ms INTEGER, char_count INTEGER
         );
-        CREATE TABLE models (
-            id INTEGER PRIMARY KEY AUTOINCREMENT, domain TEXT NOT NULL,
-            category TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL,
-            language TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-            quantization TEXT NOT NULL DEFAULT '', UNIQUE(domain, category, name)
-        );
+            CREATE TABLE models (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, domain TEXT NOT NULL,
+                category TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL,
+                language TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
+                secret_key TEXT NOT NULL DEFAULT '', UNIQUE(domain, category, name)
+            );
         PRAGMA user_version = 2;",
     ).unwrap();
     conn.execute(

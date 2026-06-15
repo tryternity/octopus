@@ -95,7 +95,7 @@ CREATE TABLE models (
     source       TEXT    NOT NULL,   -- HF source
     language     TEXT    NOT NULL DEFAULT '',
     description  TEXT    NOT NULL DEFAULT '',
-    quantization TEXT    NOT NULL DEFAULT '',  -- 'int8'|'fp32'（仅 ASR 有，silero 留空）
+    secret_key   TEXT    NOT NULL DEFAULT '',  -- 存储 API 形式下的 key，本地模型留空
     is_active    INTEGER NOT NULL DEFAULT 0,    -- 每个 domain 恰好一行 =1
     UNIQUE(domain, category, name)
 );
@@ -187,7 +187,7 @@ INSERT 时机在 **`PasteDone`（粘贴完成后）**，而非最初设想的「
 启动时（DB 初始化阶段，`user_version == 0`）：
 
 1. **建表** + `PRAGMA user_version = 1`。
-2. **model.json → models**：若 `~/.octopus/model.json` 存在，`serde_json` 解析为 `AppConfig`，遍历 `vad` / `asr` 两域，每条 entry INSERT 一行（`domain`/`category`/`name`/`source`/`language`/`description`/`quantization`，active 项置 `is_active=1`）。`INSERT OR IGNORE` + `UNIQUE(domain, category, name)` 保证幂等。
+2. **model.json → models**：若 `~/.octopus/model.json` 存在，`serde_json` 解析为 `AppConfig`，遍历 `vad` / `asr` 两域，每条 entry INSERT 一行（`domain`/`category`/`name`/`source`/`language`/`description`/`secret_key`，active 项置 `is_active=1`）。`INSERT OR IGNORE` + `UNIQUE(domain, category, name)` 保证幂等。
 3. **history.txt → transcriptions**：若存在，用 `parse_history_entries` 解析每条，INSERT（`raw_text = polished_text = 原内容`，`polish_status='done'`，`created_at = 条目时间戳`，`engine`/`engine_mode` 留空）。事务原子。
 4. 迁移完成后 model.json / record.txt / history.txt **desktop 不再读写**（自然废弃，不删文件）。
 

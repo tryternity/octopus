@@ -36,10 +36,9 @@ pub struct ModelEntry {
     pub language: String,
     #[serde(default)]
     pub description: String,
-    /// Quantization preference: "int8" (default) or "fp32".
-    /// Controls which ONNX file variant is loaded when multiple versions exist.
+    /// Secret key (API key) for remote API-based ASR engines, if applicable.
     #[serde(default)]
-    pub quantization: String,
+    pub secret_key: String,
 }
 
 // ── Config loading ──
@@ -329,7 +328,7 @@ fn fallback_engine(cfg: &AsrConfig) -> ResolvedEngine {
             source: DEFAULT_ASR_MODEL_DIR.to_string(),
             language: "zh".to_string(),
             description: String::new(),
-            quantization: "int8".to_string(),
+            secret_key: String::new(),
         },
     }
 }
@@ -403,7 +402,7 @@ mod tests {
             source: source.to_string(),
             language: "zh".to_string(),
             description: String::new(),
-            quantization: "int8".to_string(),
+            secret_key: String::new(),
         }
     }
 

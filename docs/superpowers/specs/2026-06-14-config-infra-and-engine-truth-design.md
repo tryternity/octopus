@@ -76,7 +76,7 @@ resolve_active_engine(asr_engine):
   1. asr_engine 非空 + resolve_engine_category 命中 + pick_entry 命中 → 用命中项
   2. 否则 → fallback_engine(cfg):
      a. DB zipformer section 有 "zipformer-small-ctc" → 用 DB 条目（用户手编 source 生效）
-     b. 否则硬构造 ModelEntry { source: DEFAULT_ASR_MODEL_DIR, language: "zh", quantization: "int8" }
+     b. 否则硬构造 ModelEntry { source: DEFAULT_ASR_MODEL_DIR, language: "zh", secret_key: "" }
 ```
 
 仅服务「全局默认」。显式 name 路径（cli `--model`、AsrEngineManager）直接 `resolve_engine_category + pick_entry`，不经此函数。

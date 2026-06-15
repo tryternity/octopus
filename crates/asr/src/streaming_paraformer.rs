@@ -70,7 +70,7 @@ impl StreamingParaformer {
 
         let hf_path = config::resolve_model_dir(&entry.source)?;
 
-        let prefer_int8 = entry.quantization != "fp32";
+        let prefer_int8 = true;
 
         let encoder_path = discover_onnx(&hf_path, "encoder", prefer_int8)?;
         let decoder_path = discover_onnx(&hf_path, "decoder", prefer_int8)?;

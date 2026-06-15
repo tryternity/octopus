@@ -129,7 +129,7 @@ fn create_tables(conn: &Connection) -> Result<()> {
             source       TEXT    NOT NULL,
             language     TEXT    NOT NULL DEFAULT '',
             description  TEXT    NOT NULL DEFAULT '',
-            quantization TEXT    NOT NULL DEFAULT '',
+            secret_key   TEXT    NOT NULL DEFAULT '',
             UNIQUE(domain, category, name)
         );",
     )?;
@@ -144,7 +144,7 @@ struct DefaultModel {
     source: &'static str,
     language: &'static str,
     description: &'static str,
-    quantization: &'static str,
+    secret_key: &'static str,
 }
 
 /// 默认引擎集（替代 model.json）。
@@ -157,7 +157,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         source: DEFAULT_ASR_MODEL_DIR,
         language: "zh",
         description: "zipformer-small-ctc, 27M (随应用打包)",
-        quantization: "int8",
+        secret_key: "",
     },
     DefaultModel {
         category: "zipformer",
@@ -165,7 +165,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         source: "k2-fsa/sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13",
         language: "zh",
         description: "zipformer-multi, 80M",
-        quantization: "int8",
+        secret_key: "",
     },
     DefaultModel {
         category: "zipformer",
@@ -173,7 +173,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         source: "csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30",
         language: "zh",
         description: "zipformer-ctc, 163M",
-        quantization: "int8",
+        secret_key: "",
     },
     DefaultModel {
         category: "paraformer",
@@ -181,7 +181,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         source: "csukuangfj/sherpa-onnx-streaming-paraformer-zh",
         language: "zh",
         description: "paraformer-streaming, 230M",
-        quantization: "int8",
+        secret_key: "",
     },
     DefaultModel {
         category: "sensevoice",
@@ -189,7 +189,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         source: "csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17",
         language: "auto",
         description: "SenseVoice FunASR Nano INT8, 265M",
-        quantization: "int8",
+        secret_key: "",
     },
     DefaultModel {
         category: "qwen3-asr",
@@ -197,7 +197,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         source: "csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25",
         language: "auto",
         description: "qwen3-asr-0.6B, 1G",
-        quantization: "int8",
+        secret_key: "",
     },
     DefaultModel {
         category: "qwen3-asr",
@@ -205,7 +205,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         source: "ilmina/qwen3-asr-1.7b-sherpa-onnx",
         language: "auto",
         description: "qwen3-asr-1.7B, 约2.7G",
-        quantization: "int8",
+        secret_key: "",
     },
     DefaultModel {
         category: "whisper",
@@ -213,7 +213,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         source: "onnx-community/whisper-small",
         language: "auto",
         description: "Whisper Small - 快速轻量, 250M",
-        quantization: "int8",
+        secret_key: "",
     },
 ];
 
@@ -222,7 +222,7 @@ fn seed_default_models(conn: &Connection) -> Result<()> {
     for m in DEFAULT_MODELS {
         tx.execute(
             "INSERT OR IGNORE INTO models
-                (domain, category, name, source, language, description, quantization)
+                (domain, category, name, source, language, description, secret_key)
              VALUES ('asr', ?1, ?2, ?3, ?4, ?5, ?6)",
             params![
                 m.category,
@@ -230,7 +230,7 @@ fn seed_default_models(conn: &Connection) -> Result<()> {
                 m.source,
                 m.language,
                 m.description,
-                m.quantization
+                m.secret_key
             ],
         )?;
     }
@@ -248,7 +248,7 @@ pub fn load_models() -> Result<AsrConfig> {
 
 fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
     let mut stmt = conn.prepare(
-        "SELECT category, name, source, language, description, quantization
+        "SELECT category, name, source, language, description, secret_key
          FROM models WHERE domain='asr'",
     )?;
     let rows: Vec<(String, String, String, String, String, String)> = stmt
@@ -272,12 +272,12 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
         qwen3_asr: None,
         zipformer: None,
     };
-    for (category, name, source, language, description, quantization) in rows {
+    for (category, name, source, language, description, secret_key) in rows {
         let entry = ModelEntry {
             source,
             language,
             description,
-            quantization,
+            secret_key,
         };
         // category 存 JSON key（带 dash，如 "qwen3-asr"），按 dash 形式分派
         let map: &mut Option<HashMap<String, ModelEntry>> = match category.as_str() {
@@ -474,7 +474,7 @@ mod tests {
     #[test]
     fn v2_to_v3_migration_rebuilds_transcriptions() {
         let conn = Connection::open_in_memory().unwrap();
-        // 模拟 v1 旧 schema（id AUTOINCREMENT + models 有 is_active）
+        // 模拟 v1/v2 旧 schema（id AUTOINCREMENT + models 有 is_active）
         conn.execute_batch(
             "CREATE TABLE transcriptions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT, created_at TEXT NOT NULL,
@@ -486,10 +486,11 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT, domain TEXT NOT NULL,
                 category TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL,
                 language TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-                quantization TEXT NOT NULL DEFAULT '', is_active INTEGER NOT NULL DEFAULT 0,
+                secret_key TEXT NOT NULL DEFAULT '', is_active INTEGER NOT NULL DEFAULT 0,
                 UNIQUE(domain, category, name)
             );
             INSERT INTO transcriptions (created_at, engine, raw_text) VALUES ('2020-01-01 00:00:00','x','旧数据');
+            INSERT INTO models (domain, category, name, source, secret_key) VALUES ('asr', 'zipformer', 'zipformer-small-ctc', 'models/zipformer', '');
             PRAGMA user_version = 1;",
         ).unwrap();
 
@@ -506,6 +507,15 @@ mod tests {
             "SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='is_active'", [], |r| r.get(0),
         ).unwrap();
         assert_eq!(has_is_active, 0);
+        let has_secret_key: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='secret_key'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(has_secret_key, 1);
+        let secret_key: String = conn.query_row(
+            "SELECT secret_key FROM models WHERE name='zipformer-small-ctc'", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(secret_key, "");
+
         // 能插入显式大 id（毫秒戳）
         conn.execute(
             "INSERT INTO transcriptions (id, created_at, engine, raw_text) VALUES (1718000000000,'2026-06-14 00:00:00','sensevoice','新数据')",
@@ -529,7 +539,7 @@ mod tests {
                 id INTEGER PRIMARY KEY AUTOINCREMENT, domain TEXT NOT NULL,
                 category TEXT NOT NULL, name TEXT NOT NULL, source TEXT NOT NULL,
                 language TEXT NOT NULL DEFAULT '', description TEXT NOT NULL DEFAULT '',
-                quantization TEXT NOT NULL DEFAULT '', UNIQUE(domain, category, name)
+                secret_key TEXT NOT NULL DEFAULT '', UNIQUE(domain, category, name)
             );
             PRAGMA user_version = 2;",
         ).unwrap();
