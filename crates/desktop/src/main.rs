@@ -129,6 +129,12 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
+        .invoke_handler(tauri::generate_handler![
+            runtime_config::toolbar_state,
+            runtime_config::list_asr_engines,
+            runtime_config::switch_asr_engine,
+            runtime_config::set_polish_mode,
+        ])
         .setup(move |app| {
             // Initialize engine manager and preheat the active ASR model if embedded
             let engine_manager = Arc::new(octopus_asr::engine::AsrEngineManager::new());
@@ -170,9 +176,21 @@ pub fn run() {
             // so the recorder itself only needs to not be dropped.
             std::mem::forget(recorder);
 
+            // 工具栏运行时配置（asr_engine + polish_mode 的可变镜像），命令与 Coordinator 共享
+            let runtime_config: runtime_config::SharedRuntimeConfig =
+                std::sync::Arc::new(std::sync::RwLock::new(
+                    runtime_config::RuntimeConfig::from_config(&config),
+                ));
+            app.manage(runtime_config.clone());
+
             // 3. Create Coordinator
-            let coordinator =
-                Coordinator::new(engine, audio_state, config.clone(), app.handle().clone());
+            let coordinator = Coordinator::new(
+                engine,
+                audio_state,
+                config.clone(),
+                app.handle().clone(),
+                runtime_config.clone(),
+            );
             app.manage(coordinator);
 
             // 4. Create Tray

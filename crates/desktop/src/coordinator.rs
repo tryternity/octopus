@@ -135,11 +135,14 @@ impl Coordinator {
         audio: Arc<SharedAudioState>,
         config: AppConfig,
         app_handle: tauri::AppHandle,
+        runtime_config: crate::runtime_config::SharedRuntimeConfig,
     ) -> Self {
         let (tx, rx): (Sender<Command>, Receiver<Command>) = mpsc::channel();
         let tx_self = tx.clone();
 
         let use_streaming = config.engine_mode == "embedded" && crate::config::is_streaming_engine(&config);
+        let mut config = config;
+        let mut use_streaming = use_streaming;
 
         std::thread::spawn(move || {
             let mut stage = Stage::Idle;
@@ -155,6 +158,16 @@ impl Coordinator {
 
                 match cmd {
                     Command::Toggle => {
+                        // 仅在 Idle（开新会话）时同步运行时覆盖；STOP 时不动 asr_engine
+                        // （否则会把"刚切换但本会话未用"的引擎名写进 DB 记录）
+                        if matches!(stage, Stage::Idle) {
+                            let rc = runtime_config.read().unwrap();
+                            config.asr_engine = rc.asr_engine.clone();
+                            config.polish_mode = rc.polish_mode;
+                            drop(rc);
+                            use_streaming = config.engine_mode == "embedded"
+                                && crate::config::is_streaming_engine(&config);
+                        }
                         handle_toggle(
                             &mut stage,
                             &audio,
@@ -166,9 +179,23 @@ impl Coordinator {
                         );
                     }
                     Command::StreamingTick => {
+                        {
+                            let rc = runtime_config.read().unwrap();
+                            config.polish_mode = rc.polish_mode;
+                        }
+                        if let Stage::Streaming { transcript, .. } = &mut stage {
+                            transcript.set_mode(config.polish_mode);
+                        }
                         handle_streaming_tick(&mut stage, &audio, &config, &app_handle, &tx);
                     }
                     Command::VadSegmentedTick => {
+                        {
+                            let rc = runtime_config.read().unwrap();
+                            config.polish_mode = rc.polish_mode;
+                        }
+                        if let Stage::VadSegmented { transcript, .. } = &mut stage {
+                            transcript.set_mode(config.polish_mode);
+                        }
                         handle_vad_segmented_tick(
                             &mut stage,
                             &audio,
