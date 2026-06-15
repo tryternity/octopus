@@ -4,7 +4,7 @@
 //! 多余字段对不使用它们的 crate 无害——各 crate 只读自己关心的字段。
 
 use anyhow::Result;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::octopus_config_home;
 
@@ -38,10 +38,23 @@ impl<'de> Deserialize<'de> for PolishMode {
     }
 }
 
+impl Serialize for PolishMode {
+    fn serialize<S>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        serializer.serialize_u8(match self {
+            PolishMode::Disabled => 0,
+            PolishMode::FinalOnly => 1,
+            PolishMode::Intermediate => 2,
+        })
+    }
+}
+
 /// 应用完整配置，读取自 ~/.octopus/config.yaml，字段缺失时使用默认值。
 ///
 /// 各端按需读取字段：cli 只用 microphone；desktop 用全部；asr 用 asr_engine 解析引擎。
-#[derive(Debug, Deserialize, Clone)]
+#[derive(Debug, Deserialize, Serialize, Clone)]
 pub struct AppConfig {
     /// ASR 引擎模式: embedded | websocket | grpc
     #[serde(default = "default_engine_mode")]
@@ -263,5 +276,28 @@ mod tests {
     fn asr_correct_defaults_to_false() {
         let cfg: AppConfig = serde_yaml::from_str("").unwrap();
         assert!(!cfg.asr_correct);
+    }
+
+    #[test]
+    fn app_config_serialize_round_trip_preserves_overrides() {
+        // 构造一个带覆盖值的 AppConfig（从 yaml 解析）
+        let yaml = "asr_engine: whisper-small\npolish_mode: 2\nmicrophone: \"My Mic\"\n";
+        let cfg: AppConfig = serde_yaml::from_str(yaml).unwrap();
+        assert_eq!(cfg.asr_engine, "whisper-small");
+        assert_eq!(cfg.polish_mode, PolishMode::Intermediate);
+
+        // 序列化回 yaml，再解析，字段应保留
+        let reserialized = serde_yaml::to_string(&cfg).unwrap();
+        let cfg2: AppConfig = serde_yaml::from_str(&reserialized).unwrap();
+        assert_eq!(cfg2.asr_engine, "whisper-small");
+        assert_eq!(cfg2.polish_mode, PolishMode::Intermediate);
+        assert_eq!(cfg2.microphone, "My Mic");
+
+        // polish_mode 序列化为整数（u8），非枚举名
+        assert!(
+            reserialized.contains("polish_mode: 2"),
+            "polish_mode 应序列化为整数 2，实际: {}",
+            reserialized
+        );
     }
 }
