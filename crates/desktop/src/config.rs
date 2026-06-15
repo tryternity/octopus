@@ -8,14 +8,12 @@
 // 调用点无需写全 octopus_infra::config::AppConfig。
 pub use octopus_infra::config::{AppConfig, PolishMode};
 
-/// 检查配置的 ASR 引擎是否支持流式识别。仅 Paraformer 和 Zipformer 支持流式。
+/// 检查配置的 ASR 引擎是否支持流式识别。
 pub fn is_streaming_engine(cfg: &AppConfig) -> bool {
-    match octopus_asr::config::resolve_engine_category(&cfg.asr_engine) {
-        Some(
-            octopus_asr::config::EngineCategory::Paraformer
-                | octopus_asr::config::EngineCategory::Zipformer,
-        ) => true,
-        _ => false,
+    if let Ok(resolved) = octopus_asr::config::resolve_active_engine(&cfg.asr_engine) {
+        resolved.entry.is_streaming
+    } else {
+        false
     }
 }
 

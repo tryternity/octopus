@@ -301,6 +301,7 @@ fn fallback_engine(cfg: &AsrConfig) -> ResolvedEngine {
             secret_key: String::new(),
             is_local: true,
             is_enabled: true,
+            is_streaming: true,
         },
     }
 }
@@ -377,6 +378,7 @@ mod tests {
             secret_key: String::new(),
             is_local: true,
             is_enabled: true,
+            is_streaming: false,
         }
     }
 

@@ -22,6 +22,8 @@ pub struct ModelEntry {
     #[serde(default)]
     pub is_enabled: bool,
     #[serde(default)]
+    pub is_streaming: bool,
+    #[serde(default)]
     pub description: String,
 }
 
@@ -130,10 +132,10 @@ pub fn load_models() -> Result<AsrConfig> {
 
 fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
     let mut stmt = conn.prepare(
-        "SELECT category, name, source, language, description, secret_key, is_local, is_enabled
+        "SELECT category, name, source, language, description, secret_key, is_local, is_enabled, is_streaming
          FROM models WHERE domain='asr' AND is_enabled = 1",
     )?;
-    let rows: Vec<(String, String, String, String, String, String, i32, i32)> = stmt
+    let rows: Vec<(String, String, String, String, String, String, i32, i32, i32)> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -144,6 +146,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
                 row.get(5)?,
                 row.get(6)?,
                 row.get(7)?,
+                row.get(8)?,
             ))
         })?
         .filter_map(|r| r.ok())
@@ -156,7 +159,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
         qwen3_asr: None,
         zipformer: None,
     };
-    for (category, name, source, language, description, secret_key, is_local, is_enabled) in rows {
+    for (category, name, source, language, description, secret_key, is_local, is_enabled, is_streaming) in rows {
         let entry = ModelEntry {
             source,
             language,
@@ -164,6 +167,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
             secret_key,
             is_local: is_local != 0,
             is_enabled: is_enabled != 0,
+            is_streaming: is_streaming != 0,
         };
         let map: &mut Option<HashMap<String, ModelEntry>> = match category.as_str() {
             "whisper" => &mut asr.whisper,
@@ -370,7 +374,10 @@ mod tests {
         assert_eq!(small.source, "models/zipformer");
         assert!(small.is_local, "ASR 模型应为本地模型");
         assert!(small.is_enabled, "ASR 模型应为启用状态");
+        assert!(small.is_streaming, "Zipformer 模型应支持流式");
         assert_eq!(cfg.asr.whisper.as_ref().unwrap().len(), 1);
+        let whisper = cfg.asr.whisper.as_ref().unwrap().get("whisper-small").unwrap();
+        assert!(!whisper.is_streaming, "Whisper 模型不应支持流式");
         assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 2);
