@@ -108,6 +108,10 @@ pub struct AppConfig {
     #[serde(default = "default_polish_interval")]
     pub polish_interval: f64,
 
+    /// 停顿驱动中间润色的静音阈值（毫秒）：静音达此值即触发全量润色（mode=2 only）
+    #[serde(default = "default_pause_polish_threshold_ms")]
+    pub pause_polish_threshold_ms: f64,
+
     /// 提供商标识（openai/deepseek/自定义）
     #[serde(default)]
     pub llm_provider: String,
@@ -152,6 +156,9 @@ fn default_overlay_position() -> String {
 fn default_polish_interval() -> f64 {
     5.0
 }
+fn default_pause_polish_threshold_ms() -> f64 {
+    600.0
+}
 fn default_polish_model() -> String {
     "gpt-4o-mini".into()
 }
@@ -187,6 +194,7 @@ impl Default for AppConfig {
             overlay_position: default_overlay_position(),
             polish_mode: PolishMode::default(),
             polish_interval: default_polish_interval(),
+            pause_polish_threshold_ms: default_pause_polish_threshold_ms(),
             llm_provider: String::new(),
             llm_model: default_polish_model(),
             llm_base_url: default_polish_base_url(),
@@ -238,5 +246,12 @@ mod tests {
         // 空 yaml → 所有字段走 serde 默认；write_to_clipboard 应默认 true
         let cfg: AppConfig = serde_yaml::from_str("").unwrap();
         assert!(cfg.write_to_clipboard, "write_to_clipboard 应默认 true");
+    }
+
+    #[test]
+    fn pause_polish_threshold_ms_defaults_to_600() {
+        // 空 yaml → pause_polish_threshold_ms 应默认 600（毫秒）
+        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
+        assert_eq!(cfg.pause_polish_threshold_ms, 600.0);
     }
 }

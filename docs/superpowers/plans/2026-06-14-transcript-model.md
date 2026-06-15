@@ -1193,6 +1193,8 @@ git commit -m "refactor(desktop): Stage holds Transcript, text flow via Transcri
 const PAUSE_POLISH_THRESHOLD_SEC: f64 = 0.6;
 ```
 
+> **后续提取（2026-06-15）**：该常量已从硬编码提取为 `config.yaml` 字段 `pause_polish_threshold_ms`（单位毫秒，默认 600）。常量删除，`check_and_trigger_polish` 内改为 `silence_duration < config.pause_polish_threshold_ms / 1000.0`，两处调用点（流式传真实 silence、伪流式传 `config.pause_polish_threshold_ms / 1000.0`）同步。下方 Step 2 代码片段仍引用旧常量名，仅作历史记录。见 `docs/architecture.md` 核心状态机。
+
 替换 `check_and_trigger_polish`（Task 4 Step 8 的占位实现）为：
 ```rust
 /// 停顿驱动润色：流式 silence≥阈值 / 伪流式段边界 → 全量润色（mode=2 only）。
@@ -1479,7 +1481,7 @@ git commit -m "docs: sync transcript model implementation"
 |---|---|---|
 | §2 Transcript 模型（结构/字段/不变量/方法） | Task 1 | ✅ |
 | §2.4 各 polish_mode 行为 | Task 1 (测试) | ✅ |
-| §3 停顿驱动润色（600ms，流式/伪流式统一） | Task 5 | ✅ |
+| §3 停顿驱动润色（`pause_polish_threshold_ms` 默认 600ms，流式/伪流式统一） | Task 5 | ✅ |
 | §3.2 与 Active Flush/标点协调 | Task 4 Step 4（顺序保留）+ Task 5 | ✅ |
 | §4.1 schema（id=毫秒戳） | Task 2 Step 1 | ✅ |
 | §4.2 migration v2→v3 DROP 重建 | Task 2 Step 2 | ✅ |

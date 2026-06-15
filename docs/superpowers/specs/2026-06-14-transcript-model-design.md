@@ -46,7 +46,7 @@
 | 功能 | 说明 |
 |------|------|
 | `Transcript` 结构 | 抽出独立 struct，统一管理 `raw` / `polished` / `increase` 三文本 + 润色状态，纯逻辑可单测 |
-| 停顿驱动全量润色 | 流式 / 伪流式统一：静音 ≥ 600ms 时把当前完整 ASR 快照送去 LLM 全量润色，不重置流式引擎 |
+| 停顿驱动全量润色 | 流式 / 伪流式统一：静音 ≥ `pause_polish_threshold_ms`（默认 600ms，可配置）时把当前完整 ASR 快照送去 LLM 全量润色，不重置流式引擎 |
 | 修复流式中间润色 P0 | 停顿 = partial 稳定点（无回改），此时切片安全；raw 作快照基准，increase 为停顿后增量 |
 | DB id = 毫秒时间戳 | `id INTEGER PRIMARY KEY`（应用写入，去 AUTOINCREMENT），兼任主键 / 业务 key / 开始时间戳 |
 | 过程增量入库 | 首次有 ASR → INSERT；分段 → UPDATE raw；停顿润色 → UPDATE polished；停止 → finalize UPDATE |
@@ -152,7 +152,7 @@ impl Transcript {
 
 ### 3.1 统一机制
 
-**流式与伪流式统一为：静音 ≥ 600ms 时，把当前完整 ASR 快照（`raw + increase`）送去 LLM 全量润色。**
+**流式与伪流式统一为：静音 ≥ `pause_polish_threshold_ms`（默认 600ms，`config.yaml` 可配置）时，把当前完整 ASR 快照（`raw + increase`）送去 LLM 全量润色。**
 
 - 润色输入 = `snapshot_for_polish()` = `raw + increase`（完整 ASR）
 - 润色返回 → `on_polish_done(polished)`：`polished` 更新，`raw` 推进为快照，`increase` 清空
@@ -166,11 +166,11 @@ impl Transcript {
 |------|--------|--------|-----------|
 | `PUNCTUATION_SILENCE_THRESHOLD` | 标点插入 | 文本层（加逗号句号） | 现有 |
 | `0.5s`（Active Flush） | 引擎补零冲刷 | 引擎层（吐出 buffered partial） | 现有 |
-| **`600ms`（停顿润色）** | **全量润色触发** | **润色层** | **新增** |
+| **`pause_polish_threshold_ms`（默认 600ms，停顿润色）** | **全量润色触发** | **润色层** | **新增（可配置）** |
 
-**顺序保证**：600ms > 500ms，润色触发时 Active Flush 已先冲刷 → `accumulated_text` 是最新完整文本 → 快照可靠。润色在 tick 流程最末执行：
+**顺序保证**：默认 600ms > 500ms，润色触发时 Active Flush 已先冲刷 → `accumulated_text` 是最新完整文本 → 快照可靠。**用户配置 `pause_polish_threshold_ms` 需保持 > 500ms**（否则润色可能先于尾音冲刷，快照缺尾音）。润色在 tick 流程最末执行：
 ```
-drain samples → VAD 更新 silence → Active Flush（500ms）→ 标点 → 润色快照（600ms, mode=2）
+drain samples → VAD 更新 silence → Active Flush（500ms）→ 标点 → 润色快照（pause_polish_threshold_ms, mode=2）
 ```
 
 ### 3.3 伪流式的停顿

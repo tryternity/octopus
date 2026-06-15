@@ -109,9 +109,6 @@ const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 300;
 /// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
 pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
 
-/// 停顿触发中间润色的静音阈值（秒）。流式 silence ≥ 此值 → 全量润色。
-const PAUSE_POLISH_THRESHOLD_SEC: f64 = 0.6;
-
 /// 当前 Unix 毫秒时间戳（作 Transcript id / DB 主键）。
 fn now_millis() -> i64 {
     std::time::SystemTime::now()
@@ -719,7 +716,7 @@ fn handle_vad_segmented_tick(
                     engine, config, tx, speech_samples, seq,
                 );
                 // 段切分 + 有语音 → 触发停顿润色（传阈值，段边界即停顿点）
-                check_and_trigger_polish(transcript, PAUSE_POLISH_THRESHOLD_SEC, config, tx);
+                check_and_trigger_polish(transcript, config.pause_polish_threshold_ms / 1000.0, config, tx);
             }
         }
 
@@ -888,7 +885,7 @@ fn check_and_trigger_polish(
         return;
     }
     // 停顿未达标 → 跳过（流式传真实 silence；伪流式传阈值自动达标）
-    if silence_duration < PAUSE_POLISH_THRESHOLD_SEC {
+    if silence_duration < config.pause_polish_threshold_ms / 1000.0 {
         return;
     }
     // 节流：距上次润色不足 interval（至少 MIN_POLISH_INTERVAL_SEC）→ 跳过

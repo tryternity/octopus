@@ -101,7 +101,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
   - 强制切断：连续语音缓冲达 `segment_duration`（默认 20s）仍未静音 → 强制切断，**保留末尾 `segment_overlap`（200ms）作下一段 overlap**（语句被硬切，需重叠保连贯）
   - 每段经 `filter_speech_from_buffer` 过滤静音后送离线识别，按 `seq` 有序拼接
 - **Transcript 文本状态机**：识别文本状态由 `Transcript` 结构（`crates/desktop/src/transcript.rs`）统一管理——内部用 `full`（当前完整 ASR）+ `raw_len`（上次停顿快照的 char 长度）派生 `raw`（停顿快照，润色基准）/ `increase`（停顿后增量），避免维护三份字符串。`Stage::Streaming` / `VadSegmented` / `WaitingCompletion` 各持 `transcript: Transcript` 字段，文本流经 Transcript 方法（`set_full` / `append_segment` / `display_text` / `db_text`）。`Stage::Pasting` 仍为结构变体，持 `id` + `raw_text` + `polished_text` + `polish_status` + `engine` + `engine_mode`（由停止时从 Transcript 取出构造）。详见 [spec](superpowers/specs/2026-06-14-transcript-model-design.md)
-- **停顿驱动润色**：流式 / 伪流式统一——静音 ≥ 600ms（`PAUSE_POLISH_THRESHOLD_SEC`）/ 伪流式段边界完成时，把当前完整 ASR 快照（`snapshot_for_polish()` = `raw + increase`）送 LLM 全量润色（mode=2 only），**不重置流式引擎**（只读快照送 LLM，引擎状态原样保留）。修复了流式中间润色 P0（partial 全量覆盖 polished）。600ms > Active Flush 500ms，润色在 tick 流程最末执行，快照可靠
+- **停顿驱动润色**：流式 / 伪流式统一——静音 ≥ `pause_polish_threshold_ms`（默认 600ms，可配置）/ 伪流式段边界完成时，把当前完整 ASR 快照（`snapshot_for_polish()` = `raw + increase`）送 LLM 全量润色（mode=2 only），**不重置流式引擎**（只读快照送 LLM，引擎状态原样保留）。修复了流式中间润色 P0（partial 全量覆盖 polished）。默认 600ms > Active Flush 500ms（用户配置需保持 > 500ms，否则润色先于尾音冲刷、快照缺尾音），润色在 tick 流程最末执行，快照可靠
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号
 - 流式尾音冲刷（Active Flush）：流式模式累积静音 ≥0.5s 时向引擎补零，强制对齐右上下文 / 触发 CIF，把憋住的尾音即时吐出；走独立路径不插逗号，每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。详见 [spec](superpowers/specs/2026-06-13-streaming-tail-flush-design.md)
 
@@ -112,7 +112,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - `models` 表：模型目录（**唯一来源**，首次建库时 `seed_default_models` 写入默认引擎集；v2 schema 无 `is_active` 列——引擎激活改由 `config.yaml.asr_engine` 决定，见「模型管理」）
 - `model.json` / `history.txt` / `record.txt` 已从代码彻底删除——DB 是唯一配置/存储源
 - `polish_status` 基于润色调用结果：未启用→`off`；启用且返回非空→`done`；启用但返回空或失败→`failed`
-- 润色三档（`polish_mode`：0 关闭 / 1 仅最终 / 2 中间+最终）：中间润色由 `check_and_trigger_polish` 在停顿点触发（流式静音 ≥600ms / 伪流式段边界），把 `Transcript.snapshot_for_polish()`（完整 ASR）送 LLM 全量润色，节流 `polish_interval`（下限 `MIN_POLISH_INTERVAL_SEC=1.0s`）；最终润色在 `Stage::Pasting` 入口（`start_pasting`）。详见 [设计](superpowers/specs/2026-06-14-transcript-model-design.md)。
+- 润色三档（`polish_mode`：0 关闭 / 1 仅最终 / 2 中间+最终）：中间润色由 `check_and_trigger_polish` 在停顿点触发（流式静音 ≥ `pause_polish_threshold_ms`（默认 600ms）/ 伪流式段边界），把 `Transcript.snapshot_for_polish()`（完整 ASR）送 LLM 全量润色，节流 `polish_interval`（下限 `MIN_POLISH_INTERVAL_SEC=1.0s`）；最终润色在 `Stage::Pasting` 入口（`start_pasting`）。详见 [设计](superpowers/specs/2026-06-14-transcript-model-design.md)。
 - 停止空文本边界：Toggle 停止录音时若 `transcript.full()` 为空（麦克风静音 / VAD 未检出语音），`start_pasting` 空文本分支直接回 `Idle`，必须对称清理 `result_window::hide_result` + `overlay::hide_overlay` + `tray → Idle` 三类 UI 反馈（缺一则"正在聆听…"框残留）。详见 [设计 §4.5](superpowers/specs/2026-06-12-squid-desktop-design-v2.md)。
 
 支持三种引擎接入模式：
