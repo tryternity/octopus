@@ -25,26 +25,30 @@ octopus 配置分两部分：
 
 模型配置唯一来源是 `models` 表。首次建库时自动执行 [`db.sql`](../crates/infra/src/db.sql)（`include_str!` 编译期嵌入），写入默认 8 个 ASR 引擎：
 
-| category | name | source |
-|---|---|---|
-| zipformer | zipformer-small-ctc | `models/zipformer`（本地打包，**兜底引擎**） |
-| zipformer | zipformer-multi | k2-fsa/sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13 |
-| zipformer | zipformer-ctc | csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30 |
-| paraformer | paraformer-streaming | csukuangfj/sherpa-onnx-streaming-paraformer-zh |
-| sensevoice | sherpa-onnx-sense-voice-funasr-nano-int8 | csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17 |
-| qwen3-asr | qwen3-asr-0.6B | csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25 |
-| qwen3-asr | qwen3-asr-1.7B | ilmina/qwen3-asr-1.7b-sherpa-onnx |
-| whisper | whisper-small | onnx-community/whisper-small |
+| category | name | source | is_local | is_enabled |
+|---|---|---|---|---|
+| zipformer | zipformer-small-ctc | `models/zipformer`（本地打包，**兜底引擎**） | 1 | 1 |
+| zipformer | zipformer-multi | k2-fsa/sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13 | 1 | 1 |
+| zipformer | zipformer-ctc | csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30 | 1 | 1 |
+| paraformer | paraformer-streaming | csukuangfj/sherpa-onnx-streaming-paraformer-zh | 1 | 1 |
+| sensevoice | sherpa-onnx-sense-voice-funasr-nano-int8 | csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17 | 1 | 1 |
+| qwen3-asr | qwen3-asr-0.6B | csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25 | 1 | 1 |
+| qwen3-asr | qwen3-asr-1.7B | ilmina/qwen3-asr-1.7b-sherpa-onnx | 1 | 1 |
+| whisper | whisper-small | onnx-community/whisper-small | 1 | 1 |
 
 同时，首次建库时也会写入默认的 LLM 润色模型条目：
 
-| domain | category (provider) | name (model) | source (base_url) | is_thinking | 说明 |
-|---|---|---|---|---|---|
-| llm | deepseek | deepseek-v4-flash | `https://api.deepseek.com/` | 1 | DeepSeek V4 Flash（思考模型） |
-| llm | bigmodel | glm-4-flashx | `https://open.bigmodel.cn/api/paas/v4` | 0 | 智谱 GLM-4 FlashX（非思考） |
-| llm | bigmodel | glm-4.5-flash | `https://open.bigmodel.cn/api/paas/v4` | 1 | 智谱 GLM-4.5 Flash（思考模型） |
+| domain | category (provider) | name (model) | source (base_url) | is_thinking | is_local | is_enabled | 说明 |
+|---|---|---|---|---|---|---|---|
+| llm | deepseek | deepseek-v4-flash | `https://api.deepseek.com/` | 1 | 0 | 1 | DeepSeek V4 Flash（思考模型） |
+| llm | bigmodel | glm-4-flashx | `https://open.bigmodel.cn/api/paas/v4` | 0 | 0 | 1 | 智谱 GLM-4 FlashX（非思考） |
+| llm | bigmodel | glm-4.5-flash | `https://open.bigmodel.cn/api/paas/v4` | 1 | 0 | 1 | 智谱 GLM-4.5 Flash（思考模型） |
 
 > **`is_thinking` 字段**：标记该模型是否为思考（reasoning）模型。思考模型在润色等明确任务中若不关闭思考，`content` 可能为空（token 被 `reasoning_content` 耗尽）。置为 `1` 时程序自动发送关闭思考的参数——DeepSeek 用 `thinking: {type: "disabled"}`，BigModel 用 `enable_thinking: false`。
+
+> **`is_local` 字段**：标记该模型是否为本地运行模型。`1` 表示本地模型（例如随应用打包或下载到本地的 ASR 模型），`0` 表示云端 API 模型。`domain + name + is_local` 构成唯一键。
+
+> **`is_enabled` 字段**：标记该模型是否启用。`1` 表示启用，`0` 表示禁用。只有启用的模型才会被系统加载或供识别/润色使用。
 
 > **LLM API Key 配置方式**：LLM 模型的所有参数（包括 Base URL 和 API Key）全部存储在 DB `models` 表中。其中 `source` 存储 API Base URL，`secret_key` 存储 API Key。你可以通过 SQLite 客户端手动将 API Key 填入 `models` 表对应条目的 `secret_key` 字段。
 

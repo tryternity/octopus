@@ -77,10 +77,10 @@ pub fn load_models() -> Result<AsrConfig> {
 
 fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
     let mut stmt = conn.prepare(
-        "SELECT category, name, source, language, description, secret_key
-         FROM models WHERE domain='asr'",
+        "SELECT category, name, source, language, description, secret_key, is_local
+         FROM models WHERE domain='asr' AND is_enabled = 1",
     )?;
-    let rows: Vec<(String, String, String, String, String, String)> = stmt
+    let rows: Vec<(String, String, String, String, String, String, i32)> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -89,6 +89,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
                 row.get(3)?,
                 row.get(4)?,
                 row.get(5)?,
+                row.get(6)?,
             ))
         })?
         .filter_map(|r| r.ok())
@@ -101,12 +102,13 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
         qwen3_asr: None,
         zipformer: None,
     };
-    for (category, name, source, language, description, secret_key) in rows {
+    for (category, name, source, language, description, secret_key, is_local) in rows {
         let entry = ModelEntry {
             source,
             language,
             description,
             secret_key,
+            is_local: is_local != 0,
         };
         let map: &mut Option<HashMap<String, ModelEntry>> = match category.as_str() {
             "whisper" => &mut asr.whisper,
@@ -128,8 +130,8 @@ pub fn load_llm_model(name: &str) -> Result<Option<octopus_llm::CompatibleLlmCon
 
 fn load_llm_model_at(conn: &Connection, name: &str) -> Result<Option<octopus_llm::CompatibleLlmConfig>> {
     let mut stmt = conn.prepare(
-        "SELECT category, source, secret_key, is_thinking
-         FROM models WHERE domain='llm' AND name=?1",
+        "SELECT category, source, secret_key, is_thinking, is_local
+         FROM models WHERE domain='llm' AND name=?1 AND is_enabled = 1",
     )?;
     let mut rows = stmt.query_map(params![name], |row| {
         Ok((
@@ -137,16 +139,18 @@ fn load_llm_model_at(conn: &Connection, name: &str) -> Result<Option<octopus_llm
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
             row.get::<_, i32>(3)?,
+            row.get::<_, i32>(4)?,
         ))
     })?;
     if let Some(r) = rows.next() {
-        let (category, source, secret_key, is_thinking) = r?;
+        let (category, source, secret_key, is_thinking, is_local) = r?;
         Ok(Some(octopus_llm::CompatibleLlmConfig {
             provider: category,
             model: name.to_string(),
             base_url: source,
             secret_key,
             is_thinking: is_thinking != 0,
+            is_local: is_local != 0,
         }))
     } else {
         Ok(None)
@@ -307,6 +311,7 @@ mod tests {
         assert_eq!(zf.len(), 3);
         let small = zf.get("zipformer-small-ctc").unwrap();
         assert_eq!(small.source, "models/zipformer");
+        assert!(small.is_local, "ASR 模型应为本地模型");
         assert_eq!(cfg.asr.whisper.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 1);
@@ -322,16 +327,33 @@ mod tests {
         assert_eq!(glm.base_url, "https://open.bigmodel.cn/api/paas/v4");
         assert_eq!(glm.secret_key, "");
         assert!(!glm.is_thinking, "glm-4-flashx 不是思考模型");
+        assert!(!glm.is_local, "glm-4-flashx 不是本地模型");
 
         let ds = load_llm_model_at(&conn, "deepseek-v4-flash").unwrap().unwrap();
         assert_eq!(ds.provider, "deepseek");
         assert_eq!(ds.base_url, "https://api.deepseek.com/");
         assert!(ds.is_thinking, "deepseek-v4-flash 是思考模型");
+        assert!(!ds.is_local, "deepseek-v4-flash 不是本地模型");
 
         let glm_think = load_llm_model_at(&conn, "glm-4.5-flash").unwrap().unwrap();
         assert!(glm_think.is_thinking, "glm-4.5-flash 是思考模型");
+        assert!(!glm_think.is_local, "glm-4.5-flash 不是本地模型");
 
         assert!(load_llm_model_at(&conn, "nonexistent-model").unwrap().is_none());
+    }
+
+    #[test]
+    fn test_is_enabled_filtering() {
+        let conn = open_init();
+        
+        // 禁用 glm-4-flashx
+        conn.execute("UPDATE models SET is_enabled = 0 WHERE name = 'glm-4-flashx'", []).unwrap();
+        assert!(load_llm_model_at(&conn, "glm-4-flashx").unwrap().is_none());
+
+        // 禁用 paraformer-streaming
+        conn.execute("UPDATE models SET is_enabled = 0 WHERE name = 'paraformer-streaming'", []).unwrap();
+        let cfg = load_models_at(&conn).unwrap();
+        assert!(cfg.asr.paraformer.is_none() || !cfg.asr.paraformer.unwrap().contains_key("paraformer-streaming"));
     }
 
     #[test]

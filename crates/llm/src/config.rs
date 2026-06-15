@@ -19,6 +19,8 @@ pub struct CompatibleLlmConfig {
     /// 导致润色等明确任务的 content 为空。需显式关闭思考模式。
     /// 该字段来自 DB models.is_thinking，由用户按模型实际情况配置。
     pub is_thinking: bool,
+    /// 是否为本地模型。来自 DB models.is_local。
+    pub is_local: bool,
 }
 
 impl CompatibleLlmConfig {

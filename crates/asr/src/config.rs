@@ -39,6 +39,8 @@ pub struct ModelEntry {
     /// Secret key (API key) for remote API-based ASR engines, if applicable.
     #[serde(default)]
     pub secret_key: String,
+    #[serde(default)]
+    pub is_local: bool,
 }
 
 // ── Config loading ──
@@ -329,6 +331,7 @@ fn fallback_engine(cfg: &AsrConfig) -> ResolvedEngine {
             language: "zh".to_string(),
             description: String::new(),
             secret_key: String::new(),
+            is_local: true,
         },
     }
 }
@@ -403,6 +406,7 @@ mod tests {
             language: "zh".to_string(),
             description: String::new(),
             secret_key: String::new(),
+            is_local: true,
         }
     }
 
