@@ -19,7 +19,6 @@ enum Command {
     /// 切换录音状态（开始/停止）
     Toggle,
     /// 取消当前操作
-    #[allow(dead_code)] // 预留：取消功能未接快捷键，Command::Cancel 暂无构造点
     Cancel,
     /// 流式识别 tick（定时触发，驱动音频采集和识别）
     StreamingTick,
@@ -292,7 +291,6 @@ impl Coordinator {
     }
 
     /// 发送 cancel 命令
-    #[allow(dead_code)] // 预留：取消录音功能（Esc 键）尚未接线到此处
     pub fn cancel(&self) {
         if let Ok(tx) = self.tx.lock() {
             if tx.send(Command::Cancel).is_err() {
@@ -300,6 +298,13 @@ impl Coordinator {
             }
         }
     }
+}
+
+/// 前端命令：取消当前录音/处理（Esc 键）。
+/// 停止麦克风采集、重置状态机为 Idle、隐藏 overlay 与结果窗口、托盘置 Idle。
+#[tauri::command]
+pub fn cancel_recording(coordinator: tauri::State<'_, Coordinator>) {
+    coordinator.cancel();
 }
 
 /// 处理 Toggle 命令
@@ -907,14 +912,13 @@ fn spawn_offline_transcription_with_seq(
     let samples_len = speech_samples.len();
     let duration = samples_len as f64 / 16000.0;
 
-    std::thread::spawn(move || {
-        let rt = tokio::runtime::Builder::new_current_thread()
-            .enable_all()
-            .build()
-            .expect("Failed to create tokio runtime for transcription");
-
+    // 复用 Tauri 全局异步运行时，避免 VadSegmented 每 ~300ms 分段都
+    // 新建并销毁一个 current-thread Tokio Runtime 的开销。
+    // engine.transcribe 的 Future 是 Send（#[async_trait]），且内部 CPU 密集
+    // 推理已用 spawn_blocking 包裹，不阻塞 runtime worker。
+    tauri::async_runtime::spawn(async move {
         let start = Instant::now();
-        let result = rt.block_on(engine.transcribe(&speech_samples, &language, &asr_engine));
+        let result = engine.transcribe(&speech_samples, &language, &asr_engine).await;
         let elapsed = start.elapsed();
         info!(
             "Transcription seq={} took {:.2}s (audio: {:.2}s, RTF: {:.2})",
@@ -1207,13 +1211,19 @@ fn handle_transcription_done(
             *active_count = active_count.saturating_sub(1);
 
             match text {
-                Ok(t) => {
-                    if !t.is_empty() {
-                        info!("VadSegmented transcription seq={}: '{}'", seq, t);
-                        completed_results.insert(seq, t);
-                    }
+                Ok(t) if !t.is_empty() => {
+                    info!("VadSegmented transcription seq={}: '{}'", seq, t);
+                    completed_results.insert(seq, t);
                 }
-                Err(e) => error!("VadSegmented transcription seq={} failed: {}", seq, e),
+                // 空结果：仍占位该 seq，避免 consume_completed_results 卡在缺失序号
+                Ok(_) => {
+                    completed_results.insert(seq, String::new());
+                }
+                // 识别失败：占位空串，保证 completed_seq 连续推进、后续有效段不积压丢失
+                Err(e) => {
+                    error!("VadSegmented transcription seq={} failed: {}", seq, e);
+                    completed_results.insert(seq, String::new());
+                }
             }
 
             // 消费连续序号的结果（追加到 Transcript）
@@ -1238,13 +1248,19 @@ fn handle_transcription_done(
             *active_count = active_count.saturating_sub(1);
 
             match text {
-                Ok(t) => {
-                    if !t.is_empty() {
-                        info!("WaitingCompletion transcription seq={}: '{}'", seq, t);
-                        completed_results.insert(seq, t);
-                    }
+                Ok(t) if !t.is_empty() => {
+                    info!("WaitingCompletion transcription seq={}: '{}'", seq, t);
+                    completed_results.insert(seq, t);
                 }
-                Err(e) => error!("WaitingCompletion transcription seq={} failed: {}", seq, e),
+                // 空结果：仍占位该 seq，避免 consume_completed_results 卡在缺失序号
+                Ok(_) => {
+                    completed_results.insert(seq, String::new());
+                }
+                // 识别失败：占位空串，保证 completed_seq 连续推进、后续有效段不积压丢失
+                Err(e) => {
+                    error!("WaitingCompletion transcription seq={} failed: {}", seq, e);
+                    completed_results.insert(seq, String::new());
+                }
             }
 
             consume_completed_results(completed_seq, completed_results, transcript);

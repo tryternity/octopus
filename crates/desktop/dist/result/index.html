@@ -367,6 +367,7 @@
     // Esc 关闭
     document.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
+        invoke('cancel_recording');
         currentWindow.hide();
       }
     });
