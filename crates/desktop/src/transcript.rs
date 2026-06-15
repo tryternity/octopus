@@ -115,6 +115,11 @@ impl Transcript {
         self.mode
     }
 
+    /// 运行时更新润色模式（工具栏 live 切换用）。Coordinator 单线程访问，无需同步。
+    pub fn set_mode(&mut self, mode: PolishMode) {
+        self.mode = mode;
+    }
+
     /// 展示文本：mode=2 → polished + increase；其他 → full。
     pub fn display_text(&self) -> String {
         match self.mode {
@@ -260,5 +265,25 @@ mod tests {
         assert_eq!(t.increase(), ""); // 再次清空
         t.on_polish_done("润色一二".into());
         assert_eq!(t.display_text(), "润色一二"); // 第二次润色覆盖第一次
+    }
+
+    #[test]
+    fn set_mode_changes_intermediate_behavior_live() {
+        // 起始 mode=2（中间润色）：说一段 + 快照 + 润色
+        let mut t = Transcript::new(20, PolishMode::Intermediate);
+        t.set_full("原文");
+        t.snapshot_for_polish();
+        t.on_polish_done("润色".into());
+        assert_eq!(t.display_text(), "润色");
+
+        // 继续说 → increase 出现（mode=2 行为）
+        t.set_full("原文新增");
+        assert_eq!(t.increase(), "新增");
+        assert_eq!(t.display_text(), "润色新增");
+
+        // live 切到 mode=0（关闭）：increase 立即恒空，display 退回 full
+        t.set_mode(PolishMode::Disabled);
+        assert_eq!(t.increase(), "");
+        assert_eq!(t.display_text(), "原文新增"); // full，不再用 polished
     }
 }
