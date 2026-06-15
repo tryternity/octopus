@@ -2,6 +2,8 @@
 
 > 统一 config.yaml 的 schema 定义到 `infra`；引擎激活以 `config.yaml.asr_engine` 为唯一真相，删除 DB `models.is_active` 列。
 
+> **状态：✅ 已实现（2026-06-14）**。config.yaml schema 下沉 `infra::config::AppConfig`、`resolve_active_engine` 兜底解析、`pick_entry`/`fallback_engine`、`is_active` 列移除均已落地。**两处与本文原设计不同**：(1) 未走 v1→v2 migration，改用「删库重初始化」策略（见 §3.5）；(2) `models` 表后续新增 `is_local` / `is_enabled` / `is_streaming` 列（见 [db-single-source 设计](2026-06-14-db-single-source-design.md)），流式判定已改为 `entry.is_streaming` 数据驱动（`is_streaming_engine` 不再按 category 硬编码）。
+
 ## 0. 背景
 
 octopus 存在两组耦合债务：
@@ -81,14 +83,11 @@ resolve_active_engine(asr_engine):
 
 仅服务「全局默认」。显式 name 路径（cli `--model`、AsrEngineManager）直接 `resolve_engine_category + pick_entry`，不经此函数。
 
-### 3.5 DB migration v1→v2
+### 3.5 DB schema 变更（实际采用：删库重初始化）
 
-`init_schema` 按 `user_version` 分派：
-- `0` → 建表（新 schema 无 is_active）+ seed → v2
-- `1` → `ALTER TABLE models DROP COLUMN is_active`（transaction 包裹）→ v2
-- `2+` → no-op
+> **实现与本文原设计不同**：未实现 v1→v2 `DROP COLUMN` migration。开发期 schema 变更统一走「删库重初始化」——`crates/infra/src/db.sql` 注释明确「调整 schema 时直接删除 `~/.octopus/octopus.db` 重新初始化」，`init_schema` 仅 `user_version=0→1` 一次性执行 `db.sql` 建表 + seed，**无版本分派、无 migration**。
 
-bundled SQLite 3.45+ 支持 `DROP COLUMN`（3.35+ 起）。现有用户 DB 启动即自动迁移、不丢数据。
+原设计（`DROP COLUMN` migration 保留老用户数据）因尚处开发期、DB 可随时重建，未采用。`is_active` 列随 db.sql 重写直接消失。
 
 ### 3.6 desktop is_streaming_engine / llm_config 改自由函数
 
@@ -109,6 +108,6 @@ bundled SQLite 3.45+ 支持 `DROP COLUMN`（3.35+ 起）。现有用户 DB 启�
 - `cargo check --workspace --all-targets`：0 error
 - `cargo test -p octopus-asr`：14 passed（含 5 个新增 config 单测：pick_entry / fallback_engine）
 - e2e：`octopus-cli config` 显示 `ASR active: qwen3-asr-0.6B (category: Qwen3Asr)` 精确命中
-- DB migration：`PRAGMA user_version` = 2，`models` 表无 is_active 列
+- DB：`PRAGMA user_version` = 1，`models` 表无 `is_active` 列（含 `is_local` / `is_enabled` / `is_streaming`）
 
 详见实施计划 [2026-06-14-config-infra-and-engine-truth.md](../plans/2026-06-14-config-infra-and-engine-truth.md)。

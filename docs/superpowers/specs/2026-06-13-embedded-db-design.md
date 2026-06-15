@@ -2,6 +2,14 @@
 
 > 引入 rusqlite（SQLite），将识别历史（含原生 + AI 修正双份）与模型配置（model.json）迁入结构化存储，替代当前的纯文本 record.txt / history.txt / model.json。
 
+> ⚠️ **本文为初版设计（2026-06-13），`models` 表 schema 已演进**——下文出现的 `is_active` 列 / 「每 domain 恰好一行 is_active=1」机制已**废弃**。当前实现：
+> - DB 代码位于 `crates/infra/src/db.rs` + `crates/infra/src/db.sql`（经 desktop → asr → infra 三次下沉）。
+> - `models` 表用 `is_local` / `is_enabled` / `is_streaming` 三列（**无 `is_active`**）；引擎激活改由 `config.yaml.asr_engine` 按 name 精确匹配。
+> - schema 变更走「删库重初始化」（`user_version=0→1` 一次性建表 + seed），无 migration。
+> - 新增 `domain='llm'` 行（LLM 润色模型，`load_llm_model` 读）。
+>
+> 当前真相以 [db-single-source 设计](2026-06-14-db-single-source-design.md) + [config-infra 设计](2026-06-14-config-infra-and-engine-truth-design.md) + [`architecture.md`](../../../architecture.md)「模型管理」段为准；本文保留作历史决策记录。
+
 ## 0. 背景
 
 当前持久化全为纯文本文件：

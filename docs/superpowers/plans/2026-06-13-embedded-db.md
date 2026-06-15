@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ⚠️ **本文为初版实施计划（2026-06-13），`models` 表 schema 已演进**——下文 SQL / `DefaultModel` / `is_active` 代码块为**历史执行记录，非当前代码**。当前 `models` 表用 `is_local` / `is_enabled` / `is_streaming` 三列（无 `is_active`），DB 位于 `crates/infra/src/db.{rs,sql}`，schema 变更走删库重初始化。请勿照抄本文 SQL——以 [`crates/infra/src/db.sql`](../../../crates/infra/src/db.sql) 与 [db-single-source 设计](../specs/2026-06-14-db-single-source-design.md) 为准。
+
 **Goal:** 引入 rusqlite（bundled），将识别历史（原生 + AI 修正双份）与模型配置迁入 SQLite，废弃 record.txt / model.json；内存新增 `raw_text` 保证原生文本不被 polish 覆盖。
 
 **Architecture:** 新增 `crates/desktop/src/db.rs` 封装全局 `Connection`（`OnceLock<Mutex<Connection>>`），提供 `init`（建表 + 一次性迁移）/ `insert_transcription` / `active_engine`。coordinator 的 `Stage::Streaming` / `Stage::VadSegmented` 新增 `raw_text` 字段，在识别新增时镜像全量、polish 时不触碰；最终润色后调 `db::insert_transcription`。`result_window.rs` 删除所有文件写入，`result-edited` 改发 `Command::ResultEdited`。

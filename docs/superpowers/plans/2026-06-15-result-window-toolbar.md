@@ -1,6 +1,6 @@
 # 结果窗口工具栏 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 在 `result_window` 展示区上方加一行 hover 显隐的工具栏，提供运行时切换 LLM 润色 mode（立即生效）和 ASR 引擎（下次会话生效），两者持久化写回 `~/.octopus/config.yaml`；另两个工具（设置页、LLM 模型切换）本轮占位。
 
@@ -9,6 +9,8 @@
 **Tech Stack:** Rust + Tauri 2（`#[tauri::command]`/`tauri::State`/`invoke_handler`）、serde_yaml（config.yaml 写回）、vanilla JS（单 HTML，`window.__TAURI__.core.invoke` + `__TAURI__.window.setSize`）、CSS mask（图标变色）。
 
 **Spec:** `docs/superpowers/specs/2026-06-15-result-window-toolbar-design.md`
+
+> **状态：✅ 已实现（已合并 main，2026-06-15）**——全部 Task 完成。实现中 UI 多轮打磨，最终代码与本文 Task 的代码块有若干差异（触发改 mousemove、弹层 360px、EngineOption 加 `is_local`、引擎名加「本地-/远程-」前缀、图标 `?v=2` 缓存清除、debug devtools、run-octopus.sh），详见 spec §14「实现后修订」。本文 checkbox 已全部勾选，代码块保留作历史执行记录。
 
 **Pre-flight（执行前）：**
 - 当前在 `main` 分支。按项目约定（CLAUDE.md）先建特性分支再提交：`git checkout -b feat/result-window-toolbar`。提交/推送仅在用户要求时进行；本计划的 commit 步骤在该分支上执行。
@@ -24,7 +26,7 @@ config.yaml 写回需要序列化。当前 `AppConfig` 只 `Deserialize`，`Poli
 **Files:**
 - Modify: `crates/infra/src/config.rs`
 
-- [ ] **Step 1: 写失败测试——Serialize/Deserialize 往返保留 asr_engine + polish_mode**
+- [x] **Step 1: 写失败测试——Serialize/Deserialize 往返保留 asr_engine + polish_mode**
 
 在 `crates/infra/src/config.rs` 的 `#[cfg(test)] mod tests` 末尾追加：
 
@@ -53,12 +55,12 @@ config.yaml 写回需要序列化。当前 `AppConfig` 只 `Deserialize`，`Poli
     }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-infra app_config_serialize_round_trip_preserves_overrides`
 Expected: 编译失败（`AppConfig`/`PolishMode` 未实现 `Serialize`，`serde_yaml::to_string` 报错）。
 
-- [ ] **Step 3: 给 AppConfig 加 Serialize**
+- [x] **Step 3: 给 AppConfig 加 Serialize**
 
 `crates/infra/src/config.rs` 第 44 行 derive 改为：
 
@@ -73,7 +75,7 @@ pub struct AppConfig {
 use serde::{Deserialize, Serialize};
 ```
 
-- [ ] **Step 4: 给 PolishMode 加 Serialize impl**
+- [x] **Step 4: 给 PolishMode 加 Serialize impl**
 
 在 `PolishMode` 的 `Deserialize` impl 之后（`config.rs` 约第 39 行 `}` 之后）追加：
 
@@ -92,17 +94,17 @@ impl Serialize for PolishMode {
 }
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [x] **Step 5: 运行测试确认通过**
 
 Run: `cargo test -p octopus-infra`
 Expected: PASS（含新往返测试 + 原有 polish_mode/write_to_clipboard 等测试）。
 
-- [ ] **Step 6: 全量 check**
+- [x] **Step 6: 全量 check**
 
 Run: `cargo check --workspace --all-targets`
 Expected: 通过（infra 加 Serialize 不影响其他 crate）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/infra/src/config.rs
@@ -118,7 +120,7 @@ polish mode 立即生效要求运行中能更新 Transcript 的 mode。
 **Files:**
 - Modify: `crates/desktop/src/transcript.rs`
 
-- [ ] **Step 1: 写失败测试——set_mode 切换后 display 行为随变**
+- [x] **Step 1: 写失败测试——set_mode 切换后 display 行为随变**
 
 在 `transcript.rs` 的 `#[cfg(test)] mod tests` 末尾追加：
 
@@ -144,12 +146,12 @@ polish mode 立即生效要求运行中能更新 Transcript 的 mode。
     }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-desktop set_mode_changes_intermediate_behavior_live`
 Expected: 编译失败（无 `set_mode` 方法）。
 
-- [ ] **Step 3: 加 set_mode 方法**
+- [x] **Step 3: 加 set_mode 方法**
 
 在 `transcript.rs` 的 `impl Transcript` 中，`pub fn mode(&self)`（约第 114 行）之后追加：
 
@@ -160,12 +162,12 @@ Expected: 编译失败（无 `set_mode` 方法）。
     }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cargo test -p octopus-desktop transcript`
 Expected: PASS（含新测试 + 原有 8 个 transcript 测试）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/transcript.rs
@@ -180,7 +182,7 @@ git commit -m "feat(desktop): add Transcript::set_mode for live polish-mode swit
 - Create: `crates/desktop/src/runtime_config.rs`
 - Modify: `crates/desktop/src/main.rs`（仅加 `mod runtime_config;`，命令注册在 Task 4）
 
-- [ ] **Step 1: 写 runtime_config.rs 主体**
+- [x] **Step 1: 写 runtime_config.rs 主体**
 
 创建 `crates/desktop/src/runtime_config.rs`：
 
@@ -380,7 +382,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 注册模块**
+- [x] **Step 2: 注册模块**
 
 `crates/desktop/src/main.rs` 第 14 行 `mod result_window;` 之后加一行：
 
@@ -388,17 +390,17 @@ mod tests {
 mod runtime_config;
 ```
 
-- [ ] **Step 3: 编译确认（命令尚未注册，但模块应编译）**
+- [x] **Step 3: 编译确认（命令尚未注册，但模块应编译）**
 
 Run: `cargo check -p octopus-desktop`
 Expected: 通过（`#[tauri::command]` 宏展开正常，单测代码编译）。
 
-- [ ] **Step 4: 运行单测**
+- [x] **Step 4: 运行单测**
 
 Run: `cargo test -p octopus-desktop runtime_config`
 Expected: PASS（`from_config_mirrors_fields` + `polish_mode_u8_round_trip`）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/runtime_config.rs crates/desktop/src/main.rs
@@ -412,7 +414,7 @@ git commit -m "feat(desktop): add RuntimeConfig module + toolbar Tauri commands"
 **Files:**
 - Modify: `crates/desktop/src/main.rs`
 
-- [ ] **Step 1: 在 setup 里建 RuntimeConfig 并挂 State**
+- [x] **Step 1: 在 setup 里建 RuntimeConfig 并挂 State**
 
 `crates/desktop/src/main.rs` 的 `.setup(move |app| {` 块内，紧接「3. Create Coordinator」之前（约第 172 行 `// 3. Create Coordinator` 之前）插入：
 
@@ -425,7 +427,7 @@ git commit -m "feat(desktop): add RuntimeConfig module + toolbar Tauri commands"
             app.manage(runtime_config.clone());
 ```
 
-- [ ] **Step 2: 把 runtime_config 传给 Coordinator**
+- [x] **Step 2: 把 runtime_config 传给 Coordinator**
 
 把「3. Create Coordinator」（约第 173-175 行）改为：
 
@@ -441,7 +443,7 @@ git commit -m "feat(desktop): add RuntimeConfig module + toolbar Tauri commands"
             app.manage(coordinator);
 ```
 
-- [ ] **Step 3: 注册 invoke_handler**
+- [x] **Step 3: 注册 invoke_handler**
 
 在 `.tauri::Builder::default()` 链中，`.setup(...)` 之前插入 `.invoke_handler(...)`。定位 `crates/desktop/src/main.rs` 的 `        .setup(move |app| {`（约第 131 行），在其上一行加：
 
@@ -454,14 +456,14 @@ git commit -m "feat(desktop): add RuntimeConfig module + toolbar Tauri commands"
         ])
 ```
 
-- [ ] **Step 4: 编译确认**
+- [x] **Step 4: 编译确认**
 
 Run: `cargo check -p octopus-desktop`
 Expected: 失败——`Coordinator::new` 签名还没加 `runtime_config` 参数（下一个 Task 改）。此处先不改 Coordinator 会让编译失败是预期的；若想先绿，可在 Task 5 完成后再统一编译。
 
 > 说明：Task 4 与 Task 5 是原子改动（改 main.rs 调用点 + 改 Coordinator 签名），中间态不编译。两个 Task 都完成后一起 `cargo check`。
 
-- [ ] **Step 5: 暂不单独 commit**（与 Task 5 合并提交）
+- [x] **Step 5: 暂不单独 commit**（与 Task 5 合并提交）
 
 ---
 
@@ -470,7 +472,7 @@ Expected: 失败——`Coordinator::new` 签名还没加 `runtime_config` 参数
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs`
 
-- [ ] **Step 1: Coordinator::new 加 runtime_config 参数 + 闭包内 config/use_streaming 可变**
+- [x] **Step 1: Coordinator::new 加 runtime_config 参数 + 闭包内 config/use_streaming 可变**
 
 `coordinator.rs` 第 133-138 行 `pub fn new(...)` 签名加一个参数：
 
@@ -496,7 +498,7 @@ Expected: 失败——`Coordinator::new` 签名还没加 `runtime_config` 参数
 
 （注意：原第 144 行 `std::thread::spawn(move || {` 保持不变；`runtime_config` 由 `move ||` 自动 move 捕获进闭包。）
 
-- [ ] **Step 2: Toggle 命令分发处——仅 Idle 时同步 asr_engine + polish_mode + 重算 use_streaming**
+- [x] **Step 2: Toggle 命令分发处——仅 Idle 时同步 asr_engine + polish_mode + 重算 use_streaming**
 
 `coordinator.rs` 第 157-167 行的 `Command::Toggle => { ... }` 改为：
 
@@ -524,7 +526,7 @@ Expected: 失败——`Coordinator::new` 签名还没加 `runtime_config` 参数
                     }
 ```
 
-- [ ] **Step 3: StreamingTick 分发处——同步 polish_mode + transcript.set_mode**
+- [x] **Step 3: StreamingTick 分发处——同步 polish_mode + transcript.set_mode**
 
 `coordinator.rs` 第 168-170 行 `Command::StreamingTick => { ... }` 改为：
 
@@ -541,7 +543,7 @@ Expected: 失败——`Coordinator::new` 签名还没加 `runtime_config` 参数
                     }
 ```
 
-- [ ] **Step 4: VadSegmentedTick 分发处——同步 polish_mode + transcript.set_mode**
+- [x] **Step 4: VadSegmentedTick 分发处——同步 polish_mode + transcript.set_mode**
 
 `coordinator.rs` 第 171-180 行 `Command::VadSegmentedTick => { ... }` 改为：
 
@@ -565,17 +567,17 @@ Expected: 失败——`Coordinator::new` 签名还没加 `runtime_config` 参数
                     }
 ```
 
-- [ ] **Step 5: 编译确认（Task 4 + Task 5 合并）**
+- [x] **Step 5: 编译确认（Task 4 + Task 5 合并）**
 
 Run: `cargo check --workspace --all-targets`
 Expected: 通过。
 
-- [ ] **Step 6: 运行已有测试确认无回归**
+- [x] **Step 6: 运行已有测试确认无回归**
 
 Run: `cargo test -p octopus-desktop`
 Expected: PASS（transcript / runtime_config 等全绿；Coordinator 无单测但编译通过即签名正确）。
 
-- [ ] **Step 7: Commit（Task 4 + Task 5 合并）**
+- [x] **Step 7: Commit（Task 4 + Task 5 合并）**
 
 ```bash
 git add crates/desktop/src/main.rs crates/desktop/src/coordinator.rs
@@ -589,7 +591,7 @@ git commit -m "feat(desktop): wire toolbar commands + Coordinator live-sync (eng
 **Files:**
 - Modify: `crates/desktop/dist/result/index.html`
 
-- [ ] **Step 1: 改 DOM 结构（加 top-bar + toolbar + popup）**
+- [x] **Step 1: 改 DOM 结构（加 top-bar + toolbar + popup）**
 
 把 `index.html` 第 86-92 行 `<body>` 内的：
 
@@ -631,7 +633,7 @@ git commit -m "feat(desktop): wire toolbar commands + Coordinator live-sync (eng
   </div>
 ```
 
-- [ ] **Step 2: 改 CSS——top-bar / toolbar / mask 图标 / popup / toast**
+- [x] **Step 2: 改 CSS——top-bar / toolbar / mask 图标 / popup / toast**
 
 把 `index.html` 第 31-83 行（从 `/* 顶部拖拽区域 */` 到 `#result-text::-webkit-scrollbar-thumb { ... }` 之前的 `#drag-handle` 相关样式）替换/扩充。在 `#container.visible { opacity: 1; }`（第 29 行）之后插入：
 
@@ -753,7 +755,7 @@ git commit -m "feat(desktop): wire toolbar commands + Coordinator live-sync (eng
 
 并删掉旧 `#drag-handle` 单独那段（第 32-49 行原块已被上面 `#drag-handle` 替代；若重复定义，保留新块删旧块）。
 
-- [ ] **Step 3: 加 hover 动态高度 JS（mouseenter/mouseleave）**
+- [x] **Step 3: 加 hover 动态高度 JS（mouseenter/mouseleave）**
 
 把 `index.html` 第 94-107 行 `<script>` 开头部分（`const container = ...` 到 `dragHandle.addEventListener('mousedown', ...)` 之间）插入窗口尺寸常量与显隐逻辑。在 `const currentWindow = getCurrentWindow();`（第 101 行）之后插入：
 
@@ -778,12 +780,12 @@ git commit -m "feat(desktop): wire toolbar commands + Coordinator live-sync (eng
     container.addEventListener('mouseleave', hideToolbar);
 ```
 
-- [ ] **Step 4: 冒烟——启动应用，hover 结果窗应长高显示空工具栏**
+- [x] **Step 4: 冒烟——启动应用，hover 结果窗应长高显示空工具栏**
 
 Run: `cargo tauri dev`（或现有启动方式），触发一次识别让 result_window 显示，鼠标移上去。
 Expected: 窗口从 100→132px，顶部出现 4 个图标按钮（图标需用户已放 SVG；暂无 SVG 则按钮空白但布局正常）；移开缩回 100px。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/dist/result/index.html
@@ -797,7 +799,7 @@ git commit -m "feat(desktop): toolbar DOM + mask icons + hover dynamic height"
 **Files:**
 - Modify: `crates/desktop/dist/result/index.html`
 
-- [ ] **Step 1: 加 invoke 封装 + toast + 浮层渲染逻辑**
+- [x] **Step 1: 加 invoke 封装 + toast + 浮层渲染逻辑**
 
 在 `index.html` `<script>` 内（Task 6 插入的 hover 逻辑之后、`listen('show-result', ...)` 之前）插入：
 
@@ -900,11 +902,11 @@ git commit -m "feat(desktop): toolbar DOM + mask icons + hover dynamic height"
     refreshActive();
 ```
 
-- [ ] **Step 2: 占位工具确认无动作**
+- [x] **Step 2: 占位工具确认无动作**
 
 `#tool-settings` 与 `#tool-llm` 已是 `disabled`（HTML 属性），浏览器不会触发 click；CSS 已置灰 + tooltip「敬请期待」。无需额外 JS。
 
-- [ ] **Step 3: 冒烟——切换润色 mode / ASR 引擎**
+- [x] **Step 3: 冒烟——切换润色 mode / ASR 引擎**
 
 Run: `cargo tauri dev`，hover 出工具栏：
 - 点 [✨] → 浮层 3 选 → 选「中间+最终」→ 浮层关闭、图标变蓝、`~/.octopus/config.yaml` 的 `polish_mode: 2`。
@@ -914,12 +916,12 @@ Run: `cargo tauri dev`，hover 出工具栏：
 
 Expected: 上述行为全部符合。
 
-- [ ] **Step 4: 验证 config.yaml 写回内容**
+- [x] **Step 4: 验证 config.yaml 写回内容**
 
 Run: `cat ~/.octopus/config.yaml`（**注意：若文件含 API Key，只确认 asr_engine/polish_mode 两行，勿打印全文**）
 Expected: `asr_engine` 与 `polish_mode` 为刚切换的值，其他字段保留。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/dist/result/index.html
@@ -934,7 +936,7 @@ git commit -m "feat(desktop): toolbar popup + invoke wiring + toast + placeholde
 - Modify: `docs/configuration.md`
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: configuration.md 补注运行时可改**
+- [x] **Step 1: configuration.md 补注运行时可改**
 
 在 `docs/configuration.md` 的 `asr_engine` 行（字段表，约第 75 行）的「说明」末尾追加一句：
 
@@ -948,7 +950,7 @@ git commit -m "feat(desktop): toolbar popup + invoke wiring + toast + placeholde
 （桌面端可经结果窗工具栏运行时切换并写回此字段，立即生效）
 ```
 
-- [ ] **Step 2: architecture.md 补工具栏 + RuntimeConfig 子系统**
+- [x] **Step 2: architecture.md 补工具栏 + RuntimeConfig 子系统**
 
 在 `docs/architecture.md` 的「窗口管理」表（约第 92-95 行 `result_window` 行）的「用途」列补：
 
@@ -962,7 +964,7 @@ git commit -m "feat(desktop): toolbar popup + invoke wiring + toast + placeholde
 - **工具栏运行时切换**：`result_window` 顶部 hover 工具栏经 `#[tauri::command]`（`runtime_config.rs`）改 `Arc<RwLock<RuntimeConfig>>`（asr_engine + polish_mode 两字段）并写回 `~/.octopus/config.yaml`。ASR 引擎在开新会话（Idle）时同步进 Coordinator 的 config（下次录音生效，不破坏当前会话）；polish_mode 每 tick（300/600ms）同步 + `Transcript::set_mode`（立即生效）。占位工具（设置页 / LLM 模型）本轮不实现。
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/configuration.md docs/architecture.md
@@ -975,36 +977,36 @@ git commit -m "docs: note result-window toolbar runtime switching"
 
 **Files:** 无（验证）
 
-- [ ] **Step 1: 基线绿**
+- [x] **Step 1: 基线绿**
 
 Run: `cargo check --workspace --all-targets && cargo test --workspace`
 Expected: 全绿。
 
-- [ ] **Step 2: 显隐 + 尺寸**
+- [x] **Step 2: 显隐 + 尺寸**
 
 启动应用 → 触发识别显示结果窗 → hover：窗口 100→132px、4 图标显示；移开：132→100px。✅
 
-- [ ] **Step 3: ASR 引擎切换（下次会话生效）**
+- [x] **Step 3: ASR 引擎切换（下次会话生效）**
 
 录音中点 [🎙] 切到非当前引擎 → toast「下次录音生效」→ 当前会话识别照常（引擎不变）→ 停止后重新录音 → 用新引擎识别 → `config.yaml.asr_engine` 已更新。✅
 
-- [ ] **Step 4: 跨类别切换重算 streaming 模式**
+- [x] **Step 4: 跨类别切换重算 streaming 模式**
 
 从流式引擎（paraformer/zipformer）切到离线引擎（whisper/sensevoice/qwen3）→ 下次录音自动走 VAD 分段伪流式（`use_streaming` 重算）。✅
 
-- [ ] **Step 5: polish mode 立即生效**
+- [x] **Step 5: polish mode 立即生效**
 
 mode=2 录音中，说一段停顿 → 看到中间润色；点 [✨] 切到 0 → 后续不再润色、display 退回 raw；再切回 2 → 恢复中间润色。`config.yaml.polish_mode` 跟随。✅
 
-- [ ] **Step 6: 钉住 + Esc + 点外关闭**
+- [x] **Step 6: 钉住 + Esc + 点外关闭**
 
 浮层打开时移开鼠标 → 工具栏不收；Esc / 点浮层外 → 浮层关闭。✅
 
-- [ ] **Step 7: 错误态**
+- [x] **Step 7: 错误态**
 
 （临时）手改 DB 删某引擎 或 在 invoke 里传不存在的 name → toast「引擎 X 不存在，未切换」，RuntimeConfig 不变。✅
 
-- [ ] **Step 8: 占位工具**
+- [x] **Step 8: 占位工具**
 
 [⚙] / [🤖] 置灰、悬停「敬请期待」、点击无反应。✅
 

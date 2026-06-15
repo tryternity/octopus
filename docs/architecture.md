@@ -109,10 +109,10 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **运行时配置子系统（RuntimeConfig）**：工具栏可运行时切换 `asr_engine` / `polish_mode`，无需重启。`runtime_config.rs` 提供 `SharedRuntimeConfig`（`Arc<RwLock<RuntimeConfig>>`，挂 `tauri::State`）作为这两个字段的**可变运行时镜像**，与启动只读的 `AppConfig` 快照互补。4 个 Tauri 命令（`toolbar_state` / `list_asr_engines` / `switch_asr_engine` / `set_polish_mode`）读写镜像 + best-effort 持久化回 `~/.octopus/config.yaml`（写盘失败仅 `warn`，本次仍生效、重启回退）。Coordinator 闭包持镜像句柄，**在 Toggle 进入 `Idle` 时重读 `asr_engine` 重建引擎**（下次录音生效）；**每个 tick 重读 `polish_mode` 并 `Transcript::set_mode`**（立即生效，下一次润色按新模式）。详见 [spec](superpowers/specs/2026-06-15-result-window-toolbar-design.md)
 
 **文本持久化（嵌入式 SQLite）：**
-- 存储：`~/.octopus/octopus.db`（`crates/asr/src/db.rs`，全局 `OnceLock<Mutex<Connection>>`；cli/server/desktop 共用）
+- 存储：`~/.octopus/octopus.db`（`crates/infra/src/db.rs`，全局 `OnceLock<Mutex<Connection>>`；asr crate 经 `pub use octopus_infra::db` 以 `crate::db` 暴露；cli/server/desktop 共用）
 - `transcriptions` 表：识别历史，每条存原生识别全文（`raw_text`）+ 润色版（`polished_text`）+ 润色状态（`polish_status`：`off`/`done`/`failed`）+ 元数据（engine / engine_mode / created_at / char_count / duration_ms）
 - **过程增量入库（schema v3）**：`transcriptions.id` = 识别开始毫秒时间戳（`INTEGER PRIMARY KEY`，应用写入，去 `AUTOINCREMENT`），兼任主键 / 业务 key / 开始时间戳；`duration_ms = finalize_now_ms - id`。入库时机分散到识别过程各事件：首次有 ASR 文本 → `INSERT`（`insert_transcription_at_id`）；分段 / 流式 partial → `UPDATE raw_text`（`update_raw_text`）；停顿润色完成 → `UPDATE polished_text`（`update_polished`）；停止 → `finalize`（含 `duration_ms`，`finalize_transcription`）。DB 失败仅 `warn` log 不阻塞识别（best-effort）。v2→v3 migration DROP 重建（旧数据无所谓）。详见 [spec](superpowers/specs/2026-06-14-transcript-model-design.md)
-- `models` 表：模型目录（**唯一来源**，首次建库时 `seed_default_models` 写入默认引擎集；v2 schema 无 `is_active` 列——引擎激活改由 `config.yaml.asr_engine` 决定，见「模型管理」）
+- `models` 表：模型目录（**唯一来源**，schema 见 `crates/infra/src/db.sql`，首次建库 `user_version=0` 时整体执行一次 seed 默认引擎集；含 `is_local` / `is_enabled` / `is_streaming` 列——`load_models_at` 仅读 `domain='asr' AND is_enabled=1`，`domain='llm'` 经 `load_llm_model` 读；引擎激活由 `config.yaml.asr_engine` 决定，无 `is_active` 列，见「模型管理」）
 - `model.json` / `history.txt` / `record.txt` 已从代码彻底删除——DB 是唯一配置/存储源
 - `polish_status` 基于润色调用结果：未启用→`off`；启用且返回非空→`done`；启用但返回空或失败→`failed`
 - 润色三档（`polish_mode`：0 关闭 / 1 仅最终 / 2 中间+最终）：中间润色由 `check_and_trigger_polish` 在停顿点触发（流式静音 ≥ `pause_polish_threshold_ms`（默认 600ms）/ 伪流式段边界），把 `Transcript.snapshot_for_polish()`（完整 ASR）送 LLM 全量润色，节流 `polish_interval`（下限 `MIN_POLISH_INTERVAL_SEC=1.0s`）；最终润色在 `Stage::Pasting` 入口（`start_pasting`）。详见 [设计](superpowers/specs/2026-06-14-transcript-model-design.md)。
@@ -148,8 +148,9 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **`write_to_clipboard`**（默认 `true`）：粘贴后是否把识别结果留在剪贴板，方便他处再粘贴；与 `paste_method`（`clipboard` / `direct` / `none`）构成三模式矩阵——`clipboard` 模式 true 时不恢复原剪贴板内容、false 时恢复；`direct` 模式 true 时 enigo 输入后末尾写剪贴板、false 时不碰剪贴板；`none` 模式忽略此配置（其唯一目的就是写剪贴板）。`false` 时三种粘贴行为等同重构前现状（不破坏现有用户习惯）。详见 [spec §6](superpowers/specs/2026-06-14-transcript-model-design.md)。
 
 **引擎选择（单一真相 = `config.yaml.asr_engine`）：**
-- `models` 表不再有 `is_active` 列（v1→v2 migration 自动 `DROP COLUMN`，见 db.rs `init_schema`）。
+- `models` 表无 `is_active` 列（开发期 schema 变更采用删库重初始化——见 `crates/infra/src/db.sql` 注释；`init_schema` 仅 `user_version=0→1` 一次性建表 + seed，不做 migration）。
 - 全局默认引擎由 `resolve_active_engine(asr_engine)` 解析：DB name 精确匹配命中则用；空/不匹配回退兜底 `zipformer-small-ctc`（`DEFAULT_ASR_MODEL_DIR` 本地打包路径，开箱可用）。
+- **流式判定数据驱动**：是否走流式识别由 `models.is_streaming` 列决定——`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming`（seed：zipformer×3 + paraformer = 流式；whisper / sensevoice / qwen3-asr×2 = 非流式），不再按 category 硬编码匹配。Coordinator 的 `use_streaming` 据此在 Toggle 进入 `Idle`（切引擎 / 切模式）时重算——流式引擎走流式 partial，非流式引擎自动回退 VAD 分段伪流式。
 - 显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，按 name 精确匹配、**不走兜底**（匹配不到直接报错）。
 - VAD 模型固定路径（`find_silero_vad` 直接返回 `~/.octopus/models/silero_vad_v4.onnx`），不进 DB、不读配置。
 - **手编 `models` 表 / `config.yaml` 需重启进程生效**（`OnceLock` 缓存，运行中不可热更新）。

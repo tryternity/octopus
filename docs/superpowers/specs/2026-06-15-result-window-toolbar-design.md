@@ -1,7 +1,7 @@
 # 结果窗口工具栏设计（result window toolbar）
 
 - 日期：2026-06-15
-- 状态：🔴 待实现（设计已确认，方案 A）
+- 状态：✅ 已实现（已合并 main，2026-06-15）。实现过程中的细节修订见 §14。
 - 相关代码：`crates/desktop/src/result_window.rs`、`crates/desktop/dist/result/index.html`、`crates/desktop/src/coordinator.rs`、`crates/desktop/src/transcript.rs`
 
 ---
@@ -239,3 +239,18 @@ click → 无动作（disabled，仅 tooltip）
 ## 13. 后续（实现完成后）
 
 实现 + 验证通过后，转 `writing-plans` 生成的实施计划，按计划落地。文档同步（configuration.md / architecture.md）随代码变更一并完成（CLAUDE.md 强制）。
+
+---
+
+## 14. 实现后修订（实际落地与原设计的差异，2026-06-15）
+
+功能已合并入 main。实现过程中 UI 反复打磨，以下点与上文原设计不同：
+
+1. **触发事件 `mouseenter` → `mousemove`**：macOS WKWebView 对「窗口可见但非前台」的悬浮窗常漏派发 `mouseenter`。改用 `mousemove` 触发 `showToolbar()`，并加 `toolbarVisible` 状态守卫避免高频 `setSize` 抖动。**已知限制（已接受）**：窗口完全无焦点时鼠标进入展示区仍可能不弹工具栏——属 macOS 系统级对非聚焦悬浮窗鼠标事件的限制，非代码 bug。
+2. **`mouseleave` 行为变更（非「钉住」）**：原 §3.6 / §6.1 设计「浮层打开时 mouseleave 钉住工具栏」**未实现**。实际 `hideToolbar()` 先 `closePopup()` 收浮层、再 `setSize(520,100)` 缩回——即鼠标离开展示区时浮层与工具栏**一起收起**。
+3. **`EngineOption` DTO 增 `is_local: bool`**（原 §5.2 表只有 name/category/current）。前端据此渲染引擎名前缀：`is_local=true` 显示「本地-<name>」，否则「远程-<name>」。
+4. **弹层宽度 `width: 360px`**（原设计/plan 未定宽，经 180→240→360 演进）。`.option` 用 `.nm`（`flex:1; min-width:0; white-space:nowrap; text-overflow:ellipsis`）+ `.cat`（`flex-shrink:0`）做单行布局，防长引擎名换行折叠。
+5. **图标缓存清除 `?v=2`**：4 个 mask `url(icons/*.svg?v=2)` 末尾加版本号，强制 WKWebView 重新拉取更新后的 SVG（原 §5.4 / §7.1 未涉及 WebView 子资源缓存；macOS WKWebView 会缓存 mask 引用的 SVG）。
+6. **debug 自动 devtools**：`result_window` 创建后 `#[cfg(debug_assertions)] window.open_devtools()`，debug 构建自动开 devtools 便于排查前端，release 自动剔除无副作用。
+7. **启动脚本 `run-octopus.sh`**（仓库根）：`pkill` 杀进程 + 等 1s + 清 `~/Library/{WebKit,Caches,HTTPStorages}/com.octopus.desktop` + `cargo run --release --features embedded`，一步保证前端/二进制最新，规避缓存与 profile 不匹配。
+8. **ASR 引擎列表数量动态**：`list_asr_engines` 经 `load_models_at`（`WHERE domain='asr' AND is_enabled=1`）过滤，**非固定 8 个**；用户改 DB `models.is_enabled` 即可控制工具栏可见引擎。
