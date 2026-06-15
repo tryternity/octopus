@@ -104,7 +104,7 @@
       position: absolute;
       top: 30px;
       left: 6px;
-      min-width: 240px;
+      width: 240px;
       max-height: 200px;
       overflow-y: auto;
       background: #ffffff;
@@ -217,18 +217,25 @@
     const HIDDEN_H = 100;
     const TOOLBAR_H = 132;
     let popupOpen = false;
+    let toolbarVisible = false;
 
     function showToolbar() {
+      if (toolbarVisible) return;
+      toolbarVisible = true;
       container.classList.add('toolbar-visible');
       currentWindow.setSize(new LogicalSize(WIN_W, TOOLBAR_H));
     }
     function hideToolbar() {
+      if (!toolbarVisible) return;
+      toolbarVisible = false;
       closePopup();                     // 离开展示区：先收浮层
       container.classList.remove('toolbar-visible');
       currentWindow.setSize(new LogicalSize(WIN_W, HIDDEN_H));
     }
 
-    container.addEventListener('mouseenter', showToolbar);
+    // mousemove 比 mouseenter 在「窗口可见但非前台」时更可靠触发（macOS WKWebView
+    // 对非聚焦窗口的 enter 事件常漏派发）。用状态守卫避免高频 setSize 抖动。
+    container.addEventListener('mousemove', showToolbar);
     container.addEventListener('mouseleave', hideToolbar);
 
     const { invoke } = window.__TAURI__.core;
