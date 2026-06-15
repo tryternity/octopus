@@ -38,10 +38,13 @@ octopus 配置分两部分：
 
 同时，首次建库时也会写入默认的 LLM 润色模型条目：
 
-| domain | category (provider) | name (model) | source (base_url) | 说明 |
-|---|---|---|---|---|
-| llm | deepseek | deepseek-v4-flash | `https://api.deepseek.com/` | DeepSeek V4 Flash 润色模型 |
-| llm | bigmodel | GLM-4.7-FlashX | `https://open.bigmodel.cn/api/paas/v4` | 智谱 GLM-4.7 FlashX 润色模型 |
+| domain | category (provider) | name (model) | source (base_url) | is_thinking | 说明 |
+|---|---|---|---|---|---|
+| llm | deepseek | deepseek-v4-flash | `https://api.deepseek.com/` | 1 | DeepSeek V4 Flash（思考模型） |
+| llm | bigmodel | glm-4-flashx | `https://open.bigmodel.cn/api/paas/v4` | 0 | 智谱 GLM-4 FlashX（非思考） |
+| llm | bigmodel | glm-4.5-flash | `https://open.bigmodel.cn/api/paas/v4` | 1 | 智谱 GLM-4.5 Flash（思考模型） |
+
+> **`is_thinking` 字段**：标记该模型是否为思考（reasoning）模型。思考模型在润色等明确任务中若不关闭思考，`content` 可能为空（token 被 `reasoning_content` 耗尽）。置为 `1` 时程序自动发送关闭思考的参数——DeepSeek 用 `thinking: {type: "disabled"}`，BigModel 用 `enable_thinking: false`。
 
 > **LLM API Key 配置方式**：LLM 模型的所有参数（包括 Base URL 和 API Key）全部存储在 DB `models` 表中。其中 `source` 存储 API Base URL，`secret_key` 存储 API Key。你可以通过 SQLite 客户端手动将 API Key 填入 `models` 表对应条目的 `secret_key` 字段。
 
@@ -96,7 +99,7 @@ octopus-cli config
 | `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色 |
 | `polish_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s` |
 | `pause_polish_threshold_ms` | f64 | `600` | desktop | 停顿触发中间润色的静音阈值（毫秒），仅 `polish_mode=2` 生效；**须 > 500**（Active Flush 500ms），否则润色先于尾音冲刷、快照缺尾音 |
-| `polish_llm` | string | `"GLM-4.7-FlashX"` | desktop | 当前润色使用的 LLM 模型名（按 DB `models` 表 `name` 精确匹配） |
+| `polish_llm` | string | `"glm-4-flashx"` | desktop | 当前润色使用的 LLM 模型名（按 DB `models` 表 `name` 精确匹配） |
 | `asr_hardware_accelerated` | bool | `false` | desktop + cli | ASR 推理是否启用硬件加速（CUDA/DirectML/CoreML EP），失败自动回退 CPU；不影响 VAD（VAD 固定 CPU） |
 | `asr_correct` | bool | `false` | cli + server + desktop | 是否对 ASR 输出做拼音映射 + bigram 转移概率的轻量纠错/热词校正；**自动跳过 Qwen3-ASR**（其自带标点且语义纠错强），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。详见 [architecture.md §ASR 纠错](../architecture.md) |
 
@@ -147,7 +150,7 @@ segment_overlap: 200.0           # 毫秒
 polish_mode: 0                   # 0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色
 polish_interval: 5.0             # 秒，仅 polish_mode=2 生效（中间润色最小间隔）
 pause_polish_threshold_ms: 600   # 毫秒，仅 polish_mode=2 生效（停顿触发润色的静音阈值，须 > 500）
-polish_llm: "GLM-4.7-FlashX"      # 润色模型名称，其 provider/base_url/API Key 保存于 SQLite 的 models 表中
+polish_llm: "glm-4-flashx"         # 润色模型名称，其 provider/base_url/API Key 保存于 SQLite 的 models 表中
 asr_hardware_accelerated: false  # true 启用 GPU/CoreML/DirectML 加速（失败回退 CPU）；VAD 不受影响
 asr_correct: false               # true 对 ASR 输出做拼音+bigram 轻量纠错（自动跳过 Qwen3-ASR）
 ```

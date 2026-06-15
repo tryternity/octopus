@@ -13,19 +13,22 @@ pub struct CompatibleLlmConfig {
     pub base_url: String,
     /// API Key
     pub secret_key: String,
+    /// 是否为思考（reasoning）模型。
+    ///
+    /// 思考模型默认将大量 token 花在 reasoning_content / thinking 上，
+    /// 导致润色等明确任务的 content 为空。需显式关闭思考模式。
+    /// 该字段来自 DB models.is_thinking，由用户按模型实际情况配置。
+    pub is_thinking: bool,
 }
 
 impl CompatibleLlmConfig {
-    /// 是否需要显式关闭思考模式（DeepSeek 等默认开启思考的模型）。
+    /// 润色时是否需要显式关闭思考模式。
     ///
-    /// 这些模型若不关闭思考，润色这类明确任务的 `content` 可能为空
-    /// （输出耗在 `reasoning_content` 上，实测 deepseek-v4-flash 润色时 content 直接为空）。
-    /// 关闭后 `content` 直接返回润色结果。
-    ///
-    /// `thinking` 是 DeepSeek 独有参数，其他 OpenAI 兼容服务不支持；
-    /// 故仅对需要的 provider 发送，避免向不兼容的 API 传入未知字段。
-    /// 未来新增支持思考的 provider，在此扩展判断即可。
+    /// 思考模型（`is_thinking=true`）在润色等明确任务中若不关闭思考，
+    /// content 可能为空（token 全花在 reasoning 上）。
+    /// 关闭方式依 provider 而定：DeepSeek 用 `thinking: {type: "disabled"}`，
+    /// 其他 provider 的开关字段在 client.rs 中按 provider 分派。
     pub fn needs_disable_thinking(&self) -> bool {
-        self.provider.eq_ignore_ascii_case("deepseek")
+        self.is_thinking
     }
 }

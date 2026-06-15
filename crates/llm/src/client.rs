@@ -5,9 +5,7 @@ use crate::config::CompatibleLlmConfig;
 use crate::prompt;
 use serde::{Deserialize, Serialize};
 
-/// 思考模式开关（DeepSeek 独有参数）。
-/// 润色场景不需要思维链：关闭思考可直接拿到 content，避免 reasoning 耗光 token 导致 content 为空。
-/// 仅当 `CompatibleLlmConfig::needs_disable_thinking()` 为真时发送。
+/// DeepSeek 专有：关闭思考模式的参数体。
 #[derive(Serialize)]
 struct Thinking {
     #[serde(rename = "type")]
@@ -20,8 +18,12 @@ struct ChatRequest {
     messages: Vec<Message>,
     temperature: f32,
     max_tokens: u64,
+    /// DeepSeek 关闭思考：`{"type": "disabled"}`
     #[serde(skip_serializing_if = "Option::is_none")]
     thinking: Option<Thinking>,
+    /// BigModel 等关闭思考：`false`
+    #[serde(skip_serializing_if = "Option::is_none")]
+    enable_thinking: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -58,6 +60,19 @@ pub fn polish(text: &str, config: &CompatibleLlmConfig) -> Result<String> {
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
     let max_tokens = ((text.chars().count() as f64) * 1.2).ceil() as u64;
 
+    // 按 provider 分派思考模式关闭方式：
+    // - DeepSeek：`thinking: {type: "disabled"}`（专有字段）
+    // - BigModel 等：`enable_thinking: false`（OpenAI 扩展字段）
+    let (thinking, enable_thinking) = if config.needs_disable_thinking() {
+        if config.provider.eq_ignore_ascii_case("deepseek") {
+            (Some(Thinking { kind: "disabled".to_string() }), None)
+        } else {
+            (None, Some(false))
+        }
+    } else {
+        (None, None)
+    };
+
     let request = ChatRequest {
         model: config.model.clone(),
         messages: vec![
@@ -72,13 +87,8 @@ pub fn polish(text: &str, config: &CompatibleLlmConfig) -> Result<String> {
         ],
         temperature: 0.3,
         max_tokens,
-        thinking: if config.needs_disable_thinking() {
-            Some(Thinking {
-                kind: "disabled".to_string(),
-            })
-        } else {
-            None
-        },
+        thinking,
+        enable_thinking,
     };
 
     let client = reqwest::blocking::Client::new();

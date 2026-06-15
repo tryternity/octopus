@@ -112,7 +112,7 @@ pub struct AppConfig {
     #[serde(default = "default_pause_polish_threshold_ms")]
     pub pause_polish_threshold_ms: f64,
 
-    /// 当前润色使用的 LLM 模型名，默认 "GLM-4.7-FlashX"
+    /// 当前润色使用的 LLM 模型名，默认 "glm-4-flashx"
     #[serde(default = "default_polish_llm")]
     pub polish_llm: String,
 
@@ -156,7 +156,7 @@ fn default_pause_polish_threshold_ms() -> f64 {
     600.0
 }
 fn default_polish_llm() -> String {
-    "GLM-4.7-FlashX".into()
+    "glm-4-flashx".into()
 }
 fn default_asr_hardware_accelerated() -> bool {
     false

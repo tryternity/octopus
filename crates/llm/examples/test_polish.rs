@@ -17,7 +17,7 @@ struct LlmCfg {
 }
 
 fn default_polish_llm() -> String {
-    "GLM-4.7-FlashX".to_string()
+    "glm-4-flashx".to_string()
 }
 
 fn main() -> anyhow::Result<()> {

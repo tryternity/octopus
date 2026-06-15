@@ -101,6 +101,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         }
         _ => {}
     }
+    // 幂等补列：is_thinking（所有版本均适用，新列不存在时自动 ALTER）
+    ensure_models_is_thinking(conn)?;
     Ok(())
 }
 
@@ -130,9 +132,28 @@ fn create_tables(conn: &Connection) -> Result<()> {
             language     TEXT    NOT NULL DEFAULT '',
             description  TEXT    NOT NULL DEFAULT '',
             secret_key   TEXT    NOT NULL DEFAULT '',
+            is_thinking  INTEGER NOT NULL DEFAULT 0,
             UNIQUE(domain, category, name)
         );",
     )?;
+    Ok(())
+}
+
+/// 为存量 DB 幂等补充 models.is_thinking 列（ALTER TABLE ADD COLUMN IF NOT EXISTS 不受 SQLite 支持，
+/// 改用 pragma_table_info 检测后按需补列）。
+fn ensure_models_is_thinking(conn: &Connection) -> Result<()> {
+    let has_col: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM pragma_table_info('models') WHERE name='is_thinking'",
+        [],
+        |r| r.get(0),
+    )?;
+    if has_col == 0 {
+        conn.execute(
+            "ALTER TABLE models ADD COLUMN is_thinking INTEGER NOT NULL DEFAULT 0",
+            [],
+        )?;
+        log::info!("DB models: added is_thinking column");
+    }
     Ok(())
 }
 
@@ -146,6 +167,8 @@ struct DefaultModel {
     language: &'static str,
     description: &'static str,
     secret_key: &'static str,
+    /// LLM 专用：是否为思考（reasoning）模型，非 LLM 域填 false 即可
+    is_thinking: bool,
 }
 
 /// 默认引擎集（替代 model.json）。
@@ -160,6 +183,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "zh",
         description: "zipformer-small-ctc, 27M (随应用打包)",
         secret_key: "",
+        is_thinking: false,
     },
     DefaultModel {
         domain: "asr",
@@ -169,6 +193,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "zh",
         description: "zipformer-multi, 80M",
         secret_key: "",
+        is_thinking: false,
     },
     DefaultModel {
         domain: "asr",
@@ -178,6 +203,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "zh",
         description: "zipformer-ctc, 163M",
         secret_key: "",
+        is_thinking: false,
     },
     DefaultModel {
         domain: "asr",
@@ -187,6 +213,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "zh",
         description: "paraformer-streaming, 230M",
         secret_key: "",
+        is_thinking: false,
     },
     DefaultModel {
         domain: "asr",
@@ -196,6 +223,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "auto",
         description: "SenseVoice FunASR Nano INT8, 265M",
         secret_key: "",
+        is_thinking: false,
     },
     DefaultModel {
         domain: "asr",
@@ -205,6 +233,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "auto",
         description: "qwen3-asr-0.6B, 1G",
         secret_key: "",
+        is_thinking: false,
     },
     DefaultModel {
         domain: "asr",
@@ -214,6 +243,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "auto",
         description: "qwen3-asr-1.7B, 约2.7G",
         secret_key: "",
+        is_thinking: false,
     },
     DefaultModel {
         domain: "asr",
@@ -223,6 +253,7 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         language: "auto",
         description: "Whisper Small - 快速轻量, 250M",
         secret_key: "",
+        is_thinking: false,
     },
     // LLM 润色模型
     DefaultModel {
@@ -231,17 +262,29 @@ const DEFAULT_MODELS: &[DefaultModel] = &[
         name: "deepseek-v4-flash",
         source: "https://api.deepseek.com/",
         language: "",
-        description: "DeepSeek V4 Flash 润色模型",
+        description: "DeepSeek V4 Flash 润色模型（思考模型，需关闭 thinking）",
         secret_key: "",
+        is_thinking: true,
     },
     DefaultModel {
         domain: "llm",
         category: "bigmodel",
-        name: "GLM-4.7-FlashX",
+        name: "glm-4-flashx",
         source: "https://open.bigmodel.cn/api/paas/v4",
         language: "",
-        description: "GLM-4.7 FlashX 润色模型",
+        description: "GLM-4 FlashX 润色模型（非思考）",
         secret_key: "",
+        is_thinking: false,
+    },
+    DefaultModel {
+        domain: "llm",
+        category: "bigmodel",
+        name: "glm-4.5-flash",
+        source: "https://open.bigmodel.cn/api/paas/v4",
+        language: "",
+        description: "GLM-4.5 Flash 润色模型（思考模型，需关闭 thinking）",
+        secret_key: "",
+        is_thinking: true,
     },
 ];
 
@@ -250,8 +293,8 @@ fn seed_default_models(conn: &Connection) -> Result<()> {
     for m in DEFAULT_MODELS {
         tx.execute(
             "INSERT OR IGNORE INTO models
-                (domain, category, name, source, language, description, secret_key)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (domain, category, name, source, language, description, secret_key, is_thinking)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
             params![
                 m.domain,
                 m.category,
@@ -259,7 +302,8 @@ fn seed_default_models(conn: &Connection) -> Result<()> {
                 m.source,
                 m.language,
                 m.description,
-                m.secret_key
+                m.secret_key,
+                m.is_thinking as i32
             ],
         )?;
     }
@@ -329,7 +373,7 @@ pub fn load_llm_model(name: &str) -> Result<Option<octopus_llm::CompatibleLlmCon
 
 fn load_llm_model_at(conn: &Connection, name: &str) -> Result<Option<octopus_llm::CompatibleLlmConfig>> {
     let mut stmt = conn.prepare(
-        "SELECT category, source, secret_key
+        "SELECT category, source, secret_key, is_thinking
          FROM models WHERE domain='llm' AND name=?1",
     )?;
     let mut rows = stmt.query_map(params![name], |row| {
@@ -337,15 +381,17 @@ fn load_llm_model_at(conn: &Connection, name: &str) -> Result<Option<octopus_llm
             row.get::<_, String>(0)?,
             row.get::<_, String>(1)?,
             row.get::<_, String>(2)?,
+            row.get::<_, i32>(3)?,
         ))
     })?;
     if let Some(r) = rows.next() {
-        let (category, source, secret_key) = r?;
+        let (category, source, secret_key, is_thinking) = r?;
         Ok(Some(octopus_llm::CompatibleLlmConfig {
             provider: category,
             model: name.to_string(),
             base_url: source,
             secret_key,
+            is_thinking: is_thinking != 0,
         }))
     } else {
         Ok(None)
@@ -530,14 +576,19 @@ mod tests {
         create_tables(&conn).unwrap();
         seed_default_models(&conn).unwrap();
 
-        let glm = load_llm_model_at(&conn, "GLM-4.7-FlashX").unwrap().unwrap();
+        let glm = load_llm_model_at(&conn, "glm-4-flashx").unwrap().unwrap();
         assert_eq!(glm.provider, "bigmodel");
         assert_eq!(glm.base_url, "https://open.bigmodel.cn/api/paas/v4");
         assert_eq!(glm.secret_key, "");
+        assert!(!glm.is_thinking, "glm-4-flashx 不是思考模型");
 
         let ds = load_llm_model_at(&conn, "deepseek-v4-flash").unwrap().unwrap();
         assert_eq!(ds.provider, "deepseek");
         assert_eq!(ds.base_url, "https://api.deepseek.com/");
+        assert!(ds.is_thinking, "deepseek-v4-flash 是思考模型");
+
+        let glm_think = load_llm_model_at(&conn, "glm-4.5-flash").unwrap().unwrap();
+        assert!(glm_think.is_thinking, "glm-4.5-flash 是思考模型");
 
         assert!(load_llm_model_at(&conn, "nonexistent-model").unwrap().is_none());
     }
