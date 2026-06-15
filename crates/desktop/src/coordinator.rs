@@ -166,7 +166,10 @@ impl Coordinator {
                         // （否则会把"刚切换但本会话未用"的引擎名写进 DB 记录）
                         if matches!(stage, Stage::Idle) {
                             let rc = runtime_config.read().unwrap();
-                            config.asr_engine = rc.asr_engine.clone();
+                            config.asr_engine = match octopus_asr::config::resolve_active_engine(&rc.asr_engine) {
+                                Ok(resolved) => resolved.name,
+                                Err(_) => "zipformer-small-ctc".to_string(),
+                            };
                             config.polish_mode = rc.polish_mode;
                             drop(rc);
                             use_streaming = config.engine_mode == "embedded"

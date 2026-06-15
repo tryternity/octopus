@@ -101,7 +101,7 @@ pub fn flush(&mut self) -> Result<Option<String>> {
 
 ### 3.2 累积层：flush 不插逗号（`crates/desktop/src/streaming_engine.rs`）
 
-`StreamingSession` 统一对外返回**累积全文**：
+`StreamingSession` 统一对外返回**累积全文**。**Paraformer** 的 flush 把尾音增量追加到 `accumulated`，刻意不插逗号：
 
 ```rust
 pub fn flush(&self) -> Result<Option<String>> {
@@ -117,12 +117,14 @@ pub fn flush(&self) -> Result<Option<String>> {
                 None => Ok(None),
             }
         }
-        Self::Zipformer(m) => { /* 返回全量 full_text */ }
+        Self::Zipformer { engine, accumulated } => { /* 见 §3.4：分段由 accept_samples 的 finish+reset 完成 */ }
     }
 }
 ```
 
-**关键差异**：`accept_samples` 在「上轮静音 + 本轮有新文本」时会插入逗号（line 62-64）；`flush` **刻意省略**此逻辑——尾音是当前句的结尾，不应被当作新句起点的逗号分隔。这是修复「，下」误逗号的直接手段。
+**关键差异（Paraformer）**：`accept_samples` 在「上轮静音 + 本轮有新文本」时会插入逗号（line 62-64）；`flush` **刻意省略**此逻辑——尾音是当前句的结尾，不应被当作新句起点的逗号分隔。这是修复「，下」误逗号的直接手段。
+
+> **Zipformer 不同**（见 §3.4）：不靠 flush 吐尾音，而靠 VAD 静音时 `finish`+`reset` 显式分段。其 flush 分支虽存在（match 完整性），但静音 tick 下引擎已被 `accept_samples` 的 reset 清空，flush 多返回空——对 Zipformer 基本是 no-op。
 
 ### 3.3 Coordinator：`flushed` 标志状态机（`crates/desktop/src/coordinator.rs`）
 
@@ -156,9 +158,61 @@ if *silence_duration >= PUNCTUATION_SILENCE_THRESHOLD && !*flushed {
 check_and_trigger_polish(...);
 ```
 
+### 3.4 Zipformer VAD 驱动分段（`accept_samples` 的 finish+reset，区别于 Paraformer flush）
+
+> **新增（2026-06-15，方案 A）**：`StreamingSession::Zipformer` 由直接持有 `Mutex` 重构为 `{ engine, accumulated }`（与 Paraformer 对称），并实现基于 VAD 的 `finish`+`reset` 分段。本节描述该机制，与上文 Paraformer 的 flush 策略对照。
+
+Zipformer 流式采用与 Paraformer **不同的分段策略**：不依赖 flush 补零吐尾音，而是在 VAD 判定静音时主动 `finish`+`reset` 把当前段归档、清空引擎状态，下一句从干净状态重新识别。
+
+**动机**：Paraformer 的 flush（§3.1）保留引擎状态补零吐尾音，修复「尾音憋字」。但 Zipformer 状态化推理在长录音下 receptive field / cache 持续累积，分段边界易模糊、句间粘连。方案 A 选择**显式斩断**——静音即句界，`finish` 归档当前段 + `reset` 清状态，下段独立识别。
+
+**机制**（`accept_samples` 的 Zipformer 分支）：
+
+```rust
+Self::Zipformer { engine, accumulated } => {
+    let mut eng = engine.lock().unwrap();
+
+    // ① 静音 → 斩断：finish 归档当前段到 accumulated，reset 清引擎状态
+    if was_silent {
+        let segment_text = eng.finish()?;
+        let trimmed = segment_text.trim();
+        if !trimmed.is_empty() {
+            let mut acc = accumulated.lock().unwrap();
+            if !acc.is_empty() { acc.push('，'); }   // 段间逗号
+            acc.push_str(trimmed);
+        }
+        eng.reset();
+    }
+
+    // ② 当前段识别：返回 accumulated + 当前段拼接（段间逗号）
+    match eng.accept_samples(samples)? {
+        Some(current_segment) => { /* format!("{}，{}", accumulated, current_segment) */ }
+        None => { /* 返回 accumulated（若有）或 None */ }
+    }
+}
+```
+
+要点：
+- **连续静音不重复归档**：第 2+ 轮静音 tick 引擎已 reset，`finish()` 返回空 → `trimmed.is_empty()` 跳过 push，不重复插逗号。
+- **段间逗号**：归档 `push('，')` + 显示 `format!("{}，{}")`，保证「段1，段2，…，当前段」。Zipformer CTC 输出无标点，无双逗号风险。
+- **生命周期**：`finish()`（录音结束）归档末段 + `append_final_punctuation` 补句号；`reset()` 清引擎 + accumulated。
+
+**flush 对 Zipformer 的角色（基本 no-op）**：coordinator 在 silence≥0.5s 时无差别调 `engine.flush()`（§3.3 ④）。对 Zipformer，同 tick `accept_samples(was_silent=true)` 已 `finish`+`reset`，reset 后 `eng.flush()` 补零无真实音频 → 多返回空。故 Zipformer 尾音由 `finish`（分段时）处理，**不靠 flush**；flush 分支仅为 match 完整性存在。
+
+**Paraformer vs Zipformer 策略对比**：
+
+| 维度 | Paraformer | Zipformer |
+|------|-----------|-----------|
+| 分段手段 | flush 补零吐尾音（状态连续） | was_silent 时 finish+reset（显式斩断） |
+| accumulated 语义 | 连续全文，flush delta 直接追加（不插逗号） | 分段归档，段间逗号分隔 |
+| 尾音修复 | flush（§3.1） | finish（分段归档时吐出） |
+| 静音期 coordinator flush | 有效（吐尾音） | 基本 no-op（引擎已 reset） |
+
 ## 4. 时序推演（验证修复）
 
-用户说「等一下」→ 停 2s → 再说「你好」：
+> 以下为 **Paraformer** 的 flush 时序（验证「，下」误逗号修复）。Zipformer 走 `finish`+`reset` 分段（§3.4），无独立 flush 路径、不依赖 `flushed` 标志。
+
+用户说「等一下」→ 停 2s → 再说「你好」（Paraformer）：
 
 | tick | 事件 | silence_duration | 动作 | accumulated_text |
 |------|------|------------------|------|------------------|
@@ -194,3 +248,4 @@ check_and_trigger_polish(...);
 3. 按快捷键 → 说「等一下」→ 停顿 2s → 观察「下」是否**即时**出现且**无逗号**
 4. 继续说「你好」→ 确认「你好」前有逗号 → 「等一下，你好」
 5. 测试连续多段静音（说一句→停→再说→停），确认每段 `flushed` 正确重置、尾音每段都即时吐出
+6. 切换为 Zipformer 流式引擎重复 3-5：确认静音时 `finish`+`reset` 分段归档、段间逗号、连续静音不重复归档（机制见 §3.4，与 Paraformer flush 不同）

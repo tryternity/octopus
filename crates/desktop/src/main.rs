@@ -139,9 +139,13 @@ pub fn run() {
             // Initialize engine manager and preheat the active ASR model if embedded
             let engine_manager = Arc::new(octopus_asr::engine::AsrEngineManager::new());
             if config.engine_mode == "embedded" {
-                info!("Preheating active ASR model in desktop: {}", config.asr_engine);
+                let resolved_model = match octopus_asr::config::resolve_active_engine(&config.asr_engine) {
+                    Ok(resolved) => resolved.name,
+                    Err(_) => "zipformer-small-ctc".to_string(),
+                };
+                info!("Preheating active ASR model in desktop: {}", resolved_model);
                 let em = engine_manager.clone();
-                let active_model = config.asr_engine.clone();
+                let active_model = resolved_model;
                 std::thread::spawn(move || {
                     if let Err(e) = em.switch_model(&active_model) {
                         log::error!("Failed to preheat active ASR model {}: {}", active_model, e);
