@@ -298,7 +298,7 @@
       catch (e) { showToast('读取引擎失败：' + e); return; }
       const html = engines.map(e =>
         `<div class="option${e.current ? ' current' : ''}" data-name="${e.name}">
-           <span>${e.current ? '●' : '○'}</span>${e.name}<span class="cat">${e.category}</span>
+           <span>${e.current ? '●' : '○'}</span>${e.is_local ? '本地-' : '远程-'}${e.name}<span class="cat">${e.category}</span>
          </div>`).join('');
       openPopup(html);
       popup.querySelectorAll('.option').forEach(el => {

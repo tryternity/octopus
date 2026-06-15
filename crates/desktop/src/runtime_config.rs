@@ -91,6 +91,7 @@ pub struct EngineOption {
     pub name: String,
     pub category: String,
     pub current: bool,
+    pub is_local: bool,
 }
 
 // ── Tauri 命令 ──
@@ -120,6 +121,7 @@ pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<Engine
             current: e.name == current_effective,
             name: e.name,
             category: category_str(e.category).to_string(),
+            is_local: e.is_local,
         })
         .collect())
 }

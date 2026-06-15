@@ -219,6 +219,7 @@ pub struct EngineInfo {
     pub name: String,
     pub category: EngineCategory,
     pub description: String,
+    pub is_local: bool,
 }
 
 /// 从 DB models 表列出所有已配置的 ASR 引擎
@@ -241,6 +242,7 @@ pub fn list_engines() -> Result<Vec<EngineInfo>> {
                     name: name.clone(),
                     category,
                     description: entry.description.clone(),
+                    is_local: entry.is_local,
                 });
             }
         }
