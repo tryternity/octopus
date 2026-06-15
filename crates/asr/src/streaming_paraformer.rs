@@ -136,11 +136,13 @@ impl StreamingParaformer {
 
         // Process as many full chunks as available
         let mut accumulated_text = String::new();
+        let chunk_shift_samples = (CHUNK_SIZE - 1) * FBANK_FRAME_SHIFT; // 9600
         while self.sample_buffer.len() >= CHUNK_SAMPLES {
-            let chunk_samples: Vec<f32> = self.sample_buffer.drain(..CHUNK_SAMPLES).collect();
+            let chunk_samples = self.sample_buffer[..CHUNK_SAMPLES].to_vec();
             if let Some(text) = self.process_chunk(&chunk_samples)? {
                 accumulated_text.push_str(&text);
             }
+            self.sample_buffer.drain(..chunk_shift_samples);
         }
 
         if accumulated_text.is_empty() {
@@ -168,15 +170,18 @@ impl StreamingParaformer {
     pub fn flush(&mut self) -> Result<Option<String>> {
         let needed = CHUNK_SAMPLES.saturating_sub(self.sample_buffer.len());
         if needed > 0 {
-            self.sample_buffer.resize(CHUNK_SAMPLES, 0.0);
+            let new_len = self.sample_buffer.len() + needed;
+            self.sample_buffer.resize(new_len, 0.0);
         }
 
         let mut accumulated_text = String::new();
+        let chunk_shift_samples = (CHUNK_SIZE - 1) * FBANK_FRAME_SHIFT; // 9600
         while self.sample_buffer.len() >= CHUNK_SAMPLES {
-            let chunk_samples: Vec<f32> = self.sample_buffer.drain(..CHUNK_SAMPLES).collect();
+            let chunk_samples = self.sample_buffer[..CHUNK_SAMPLES].to_vec();
             if let Some(text) = self.process_chunk(&chunk_samples)? {
                 accumulated_text.push_str(&text);
             }
+            self.sample_buffer.drain(..chunk_shift_samples);
         }
 
         if accumulated_text.is_empty() {
