@@ -543,6 +543,7 @@ fn handle_toggle(
             if combined.is_empty() {
                 *stage = Stage::Idle;
                 crate::overlay::hide_overlay(app_handle);
+                crate::result_window::hide_result(app_handle);
                 crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
                 return;
             }

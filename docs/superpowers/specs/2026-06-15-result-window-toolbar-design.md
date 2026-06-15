@@ -254,3 +254,4 @@ click → 无动作（disabled，仅 tooltip）
 6. **debug 自动 devtools**：`result_window` 创建后 `#[cfg(debug_assertions)] window.open_devtools()`，debug 构建自动开 devtools 便于排查前端，release 自动剔除无副作用。
 7. **启动脚本 `run-octopus.sh`**（仓库根）：`pkill` 杀进程 + 等 1s + 清 `~/Library/{WebKit,Caches,HTTPStorages}/com.octopus.desktop` + `cargo run --release --features embedded`，一步保证前端/二进制最新，规避缓存与 profile 不匹配。
 8. **ASR 引擎列表数量动态**：`list_asr_engines` 经 `load_models_at`（`WHERE domain='asr' AND is_enabled=1`）过滤，**非固定 8 个**；用户改 DB `models.is_enabled` 即可控制工具栏可见引擎。
+9. **托盘引擎项实时刷新**（原 §6.2 未涉及）：`switch_asr_engine` 写 RuntimeConfig + yaml 后，额外调 `tray::update_tray_engine_label(name, engine_mode)` 实时更新系统托盘菜单的「引擎: <name> (<mode>)」项（`TRAY_ITEMS` 缓存 `engine_info` handle，`set_text` 更新避免重复 ID panic）。引擎切换的反馈现覆盖两处 UI：结果窗工具栏（选中态）+ 系统托盘菜单（标签）。
