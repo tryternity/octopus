@@ -23,7 +23,7 @@ octopus 配置分两部分：
 
 ## 模型配置（octopus.db）
 
-模型配置唯一来源是 `models` 表。首次建库时 `seed_default_models` 写入默认 8 引擎：
+模型配置唯一来源是 `models` 表。首次建库时自动执行 [`db.sql`](../crates/infra/src/db.sql)（`include_str!` 编译期嵌入），写入默认 8 个 ASR 引擎：
 
 | category | name | source |
 |---|---|---|
@@ -70,6 +70,8 @@ octopus-cli config
 ### 手编 DB
 
 `models` 表可手动编辑（增删模型条目），但**需重启进程生效**——`asr::load_config()` 首次读出后缓存到 `OnceLock`，运行中不热更新。引擎激活改由 `config.yaml.asr_engine` 决定（`models` 表不再有 `is_active` 列）。
+
+> **开发阶段 schema 变更**：直接修改 [`crates/infra/src/db.sql`](../crates/infra/src/db.sql)，然后删除 `~/.octopus/octopus.db` 并重启即可重新初始化。无迁移逻辑，开发期以此替代。
 
 ### model.json / history.txt 已废弃
 
