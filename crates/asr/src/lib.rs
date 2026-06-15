@@ -4,7 +4,7 @@
 
 pub mod audio;
 pub mod config;
-pub mod db;
+pub use octopus_infra::db;
 pub mod engine;
 pub mod paraformer;
 pub mod qwen3_asr;

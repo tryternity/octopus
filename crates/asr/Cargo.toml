@@ -23,8 +23,6 @@ rustfft = "6"
 base64 = "0.22"
 kaldi-native-fbank = "0.1.0"
 log = "0.4"
-rusqlite = { version = "0.31", features = ["bundled"] }
-
 # 基础设施（跨 crate 共享常量等）
 octopus-infra = { path = "../infra" }
 octopus-llm = { path = "../llm" }

@@ -1,28 +1,82 @@
-// crates/asr/src/db.rs
+// crates/infra/src/db.rs
 // 嵌入式 SQLite：模型配置（唯一来源）+ 识别历史。
 // 全局单连接（OnceLock<Mutex<Connection>>），首次 ensure_db 时初始化。
-// cli/server/desktop 三端统一通过 config::load_config() 间接使用本模块。
-//
-// Schema 与 seed 数据统一维护于 crates/infra/src/db.sql，
-// 通过 include_str! 在编译期嵌入，首次建库时执行一次。
-// 开发阶段无迁移逻辑：schema 变更时删除 ~/.octopus/octopus.db 重新初始化即可。
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
 use std::sync::{Mutex, OnceLock};
 
-use crate::config::{AsrConfig, AsrSection, ModelEntry};
-use octopus_infra::octopus_config_home;
+// ── Model config schema（DB models 表）──
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+pub struct ModelEntry {
+    pub source: String,
+    #[serde(default)]
+    pub language: String,
+    /// Secret key (API key) for remote API-based ASR engines, if applicable.
+    #[serde(default)]
+    pub secret_key: String,
+    #[serde(default)]
+    pub is_local: bool,
+    #[serde(default)]
+    pub is_enabled: bool,
+    #[serde(default)]
+    pub description: String,
+}
+
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+pub struct AsrSection {
+    pub whisper: Option<HashMap<String, ModelEntry>>,
+    pub sensevoice: Option<HashMap<String, ModelEntry>>,
+    #[serde(default)]
+    pub paraformer: Option<HashMap<String, ModelEntry>>,
+    #[serde(default, rename = "qwen3-asr")]
+    pub qwen3_asr: Option<HashMap<String, ModelEntry>>,
+    #[serde(default)]
+    pub zipformer: Option<HashMap<String, ModelEntry>>,
+}
+
+/// DB models 表配置（domain='asr'；由 db::load_models 构造）。
+#[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
+pub struct AsrConfig {
+    pub asr: AsrSection,
+}
+
+/// 兼容 OpenAI 接口的 LLM 配置
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct CompatibleLlmConfig {
+    /// 提供商标识（如 "openai", "deepseek"），仅用于日志
+    pub provider: String,
+    /// 模型名（如 "gpt-4o-mini", "deepseek-chat"）
+    pub model: String,
+    /// API base URL（如 "https://api.openai.com/v1"）
+    pub base_url: String,
+    /// API Key
+    pub secret_key: String,
+    /// 是否为思考（reasoning）模型。
+    pub is_thinking: bool,
+    /// 是否为本地模型。
+    pub is_local: bool,
+    /// 是否启用。
+    pub is_enabled: bool,
+}
+
+impl CompatibleLlmConfig {
+    /// 润色时是否需要显式关闭思考模式。
+    pub fn needs_disable_thinking(&self) -> bool {
+        self.is_thinking
+    }
+}
 
 static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
 
 /// 编译期嵌入的建表 + seed SQL（来自 crates/infra/src/db.sql）
-const INIT_SQL: &str = include_str!("../../infra/src/db.sql");
+const INIT_SQL: &str = include_str!("db.sql");
 
 /// DB 文件路径：~/.octopus/octopus.db
 fn db_path() -> std::path::PathBuf {
-    octopus_config_home().join("octopus.db")
+    crate::paths::octopus_config_home().join("octopus.db")
 }
 
 /// 幂等初始化：打开/创建 DB，user_version=0 时执行 INIT_SQL 建表+seed。
@@ -37,7 +91,6 @@ pub fn ensure_db() -> Result<()> {
     let conn = Connection::open(&path)
         .with_context(|| format!("Failed to open DB at {}", path.display()))?;
     init_schema(&conn)?;
-    // set 失败说明另一线程已先行初始化，忽略（其 conn 会 drop）
     let _ = DB.set(Mutex::new(conn));
     Ok(())
 }
@@ -77,10 +130,10 @@ pub fn load_models() -> Result<AsrConfig> {
 
 fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
     let mut stmt = conn.prepare(
-        "SELECT category, name, source, language, description, secret_key, is_local
+        "SELECT category, name, source, language, description, secret_key, is_local, is_enabled
          FROM models WHERE domain='asr' AND is_enabled = 1",
     )?;
-    let rows: Vec<(String, String, String, String, String, String, i32)> = stmt
+    let rows: Vec<(String, String, String, String, String, String, i32, i32)> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -90,6 +143,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
                 row.get(4)?,
                 row.get(5)?,
                 row.get(6)?,
+                row.get(7)?,
             ))
         })?
         .filter_map(|r| r.ok())
@@ -102,13 +156,14 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
         qwen3_asr: None,
         zipformer: None,
     };
-    for (category, name, source, language, description, secret_key, is_local) in rows {
+    for (category, name, source, language, description, secret_key, is_local, is_enabled) in rows {
         let entry = ModelEntry {
             source,
             language,
             description,
             secret_key,
             is_local: is_local != 0,
+            is_enabled: is_enabled != 0,
         };
         let map: &mut Option<HashMap<String, ModelEntry>> = match category.as_str() {
             "whisper" => &mut asr.whisper,
@@ -124,13 +179,13 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
 }
 
 /// 从 DB 加载指定名称的 LLM 配置（domain='llm'）。
-pub fn load_llm_model(name: &str) -> Result<Option<octopus_llm::CompatibleLlmConfig>> {
+pub fn load_llm_model(name: &str) -> Result<Option<CompatibleLlmConfig>> {
     with_db(|conn| load_llm_model_at(conn, name))
 }
 
-fn load_llm_model_at(conn: &Connection, name: &str) -> Result<Option<octopus_llm::CompatibleLlmConfig>> {
+fn load_llm_model_at(conn: &Connection, name: &str) -> Result<Option<CompatibleLlmConfig>> {
     let mut stmt = conn.prepare(
-        "SELECT category, source, secret_key, is_thinking, is_local
+        "SELECT category, source, secret_key, is_thinking, is_local, is_enabled
          FROM models WHERE domain='llm' AND name=?1 AND is_enabled = 1",
     )?;
     let mut rows = stmt.query_map(params![name], |row| {
@@ -140,17 +195,19 @@ fn load_llm_model_at(conn: &Connection, name: &str) -> Result<Option<octopus_llm
             row.get::<_, String>(2)?,
             row.get::<_, i32>(3)?,
             row.get::<_, i32>(4)?,
+            row.get::<_, i32>(5)?,
         ))
     })?;
     if let Some(r) = rows.next() {
-        let (category, source, secret_key, is_thinking, is_local) = r?;
-        Ok(Some(octopus_llm::CompatibleLlmConfig {
+        let (category, source, secret_key, is_thinking, is_local, is_enabled) = r?;
+        Ok(Some(CompatibleLlmConfig {
             provider: category,
             model: name.to_string(),
             base_url: source,
             secret_key,
             is_thinking: is_thinking != 0,
             is_local: is_local != 0,
+            is_enabled: is_enabled != 0,
         }))
     } else {
         Ok(None)
@@ -294,24 +351,25 @@ mod tests {
     #[test]
     fn init_sql_is_idempotent() {
         let conn = open_init();
-        // INSERT OR IGNORE + CREATE TABLE IF NOT EXISTS → 重复执行不报错、不翻倍
         conn.execute_batch(INIT_SQL).unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
             .unwrap();
-        // 应有 8 条 ASR 模型
         assert_eq!(count, 8);
     }
 
     #[test]
     fn seed_then_load_round_trips() {
         let conn = open_init();
+        // 强制启用所有模型做断言测试
+        conn.execute("UPDATE models SET is_enabled = 1", []).unwrap();
         let cfg = load_models_at(&conn).unwrap();
         let zf = cfg.asr.zipformer.as_ref().expect("zipformer section");
         assert_eq!(zf.len(), 3);
         let small = zf.get("zipformer-small-ctc").unwrap();
         assert_eq!(small.source, "models/zipformer");
         assert!(small.is_local, "ASR 模型应为本地模型");
+        assert!(small.is_enabled, "ASR 模型应为启用状态");
         assert_eq!(cfg.asr.whisper.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 1);
@@ -321,6 +379,8 @@ mod tests {
     #[test]
     fn test_load_llm_model() {
         let conn = open_init();
+        // 强制启用所有模型做断言测试
+        conn.execute("UPDATE models SET is_enabled = 1", []).unwrap();
 
         let glm = load_llm_model_at(&conn, "glm-4-flashx").unwrap().unwrap();
         assert_eq!(glm.provider, "bigmodel");
@@ -328,16 +388,19 @@ mod tests {
         assert_eq!(glm.secret_key, "");
         assert!(!glm.is_thinking, "glm-4-flashx 不是思考模型");
         assert!(!glm.is_local, "glm-4-flashx 不是本地模型");
+        assert!(glm.is_enabled, "glm-4-flashx 应为启用状态");
 
         let ds = load_llm_model_at(&conn, "deepseek-v4-flash").unwrap().unwrap();
         assert_eq!(ds.provider, "deepseek");
         assert_eq!(ds.base_url, "https://api.deepseek.com/");
         assert!(ds.is_thinking, "deepseek-v4-flash 是思考模型");
         assert!(!ds.is_local, "deepseek-v4-flash 不是本地模型");
+        assert!(ds.is_enabled, "deepseek-v4-flash 应为启用状态");
 
         let glm_think = load_llm_model_at(&conn, "glm-4.5-flash").unwrap().unwrap();
         assert!(glm_think.is_thinking, "glm-4.5-flash 是思考模型");
         assert!(!glm_think.is_local, "glm-4.5-flash 不是本地模型");
+        assert!(glm_think.is_enabled, "glm-4.5-flash 应为启用状态");
 
         assert!(load_llm_model_at(&conn, "nonexistent-model").unwrap().is_none());
     }
@@ -346,11 +409,9 @@ mod tests {
     fn test_is_enabled_filtering() {
         let conn = open_init();
         
-        // 禁用 glm-4-flashx
         conn.execute("UPDATE models SET is_enabled = 0 WHERE name = 'glm-4-flashx'", []).unwrap();
         assert!(load_llm_model_at(&conn, "glm-4-flashx").unwrap().is_none());
 
-        // 禁用 paraformer-streaming
         conn.execute("UPDATE models SET is_enabled = 0 WHERE name = 'paraformer-streaming'", []).unwrap();
         let cfg = load_models_at(&conn).unwrap();
         assert!(cfg.asr.paraformer.is_none() || !cfg.asr.paraformer.unwrap().contains_key("paraformer-streaming"));

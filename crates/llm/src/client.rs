@@ -1,7 +1,7 @@
 // crates/llm/src/client.rs
 
 use anyhow::{Context, Result};
-use crate::config::CompatibleLlmConfig;
+use crate::CompatibleLlmConfig;
 use crate::prompt;
 use serde::{Deserialize, Serialize};
 

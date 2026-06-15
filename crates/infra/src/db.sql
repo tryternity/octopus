@@ -30,8 +30,8 @@ CREATE TABLE IF NOT EXISTS models (
     secret_key  TEXT    NOT NULL DEFAULT '', -- LLM API Key（本地模型留空）
     is_thinking INTEGER NOT NULL DEFAULT 0,  -- LLM 专用：是否为思考（reasoning）模型
     is_local    INTEGER NOT NULL DEFAULT 0,  -- 是否为本地模型 (0=否, 1=是)
-    is_enabled  INTEGER NOT NULL DEFAULT 1,  -- 是否启用 (0=禁用, 1=启用),
-    description TEXT    NOT NULL DEFAULT ''
+    is_enabled  INTEGER NOT NULL DEFAULT 1,  -- 是否启用 (0=禁用, 1=启用)
+    description TEXT    NOT NULL DEFAULT '', -- 描述
     UNIQUE(domain, name, is_local)           -- domain + name + is_local 作为唯一键
 );
 

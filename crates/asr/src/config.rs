@@ -1,5 +1,4 @@
 use anyhow::{Context, Result};
-use serde::Deserialize;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
@@ -8,40 +7,7 @@ use octopus_infra::consts::{DEFAULT_ASR_MODEL_DIR, SILERO_VAD_PATH};
 use octopus_infra::octopus_config_home;
 
 // ── Model config schema（DB models 表）──
-
-/// DB models 表配置（domain='asr'；由 db::load_models 构造）。
-/// 注意：与 `infra::config::AppConfig`（config.yaml schema）是两个不同的结构——
-/// 这里是「DB 里有哪些引擎」的目录，infra 那个是「应用行为参数」。
-#[derive(Debug, Deserialize, Clone)]
-pub struct AsrConfig {
-    pub asr: AsrSection,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct AsrSection {
-    pub whisper: Option<HashMap<String, ModelEntry>>,
-    pub sensevoice: Option<HashMap<String, ModelEntry>>,
-    #[serde(default)]
-    pub paraformer: Option<HashMap<String, ModelEntry>>,
-    #[serde(default, rename = "qwen3-asr")]
-    pub qwen3_asr: Option<HashMap<String, ModelEntry>>,
-    #[serde(default)]
-    pub zipformer: Option<HashMap<String, ModelEntry>>,
-}
-
-#[derive(Debug, Deserialize, Clone)]
-pub struct ModelEntry {
-    pub source: String,
-    #[serde(default)]
-    pub language: String,
-    #[serde(default)]
-    pub description: String,
-    /// Secret key (API key) for remote API-based ASR engines, if applicable.
-    #[serde(default)]
-    pub secret_key: String,
-    #[serde(default)]
-    pub is_local: bool,
-}
+pub use octopus_infra::db::{AsrConfig, AsrSection, ModelEntry};
 
 // ── Config loading ──
 
@@ -334,6 +300,7 @@ fn fallback_engine(cfg: &AsrConfig) -> ResolvedEngine {
             description: String::new(),
             secret_key: String::new(),
             is_local: true,
+            is_enabled: true,
         },
     }
 }
@@ -409,6 +376,7 @@ mod tests {
             description: String::new(),
             secret_key: String::new(),
             is_local: true,
+            is_enabled: true,
         }
     }
 

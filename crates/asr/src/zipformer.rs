@@ -918,7 +918,10 @@ mod tests {
         let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
         
         let cfg = config::load_config().unwrap();
-        let entry = cfg.asr.zipformer.as_ref().unwrap().get("zipformer-ctc").unwrap();
+        let zip_cfg = cfg.asr.zipformer.as_ref().unwrap();
+        let entry = zip_cfg.get("zipformer-ctc")
+            .or_else(|| zip_cfg.get("zipformer-small-ctc"))
+            .unwrap();
         let engine = ZipformerEngine::new(entry).unwrap();
 
         println!("\n--- Debugging Offline zipformer-ctc ---");

@@ -6,6 +6,7 @@
 pub mod config;
 pub mod consts;
 pub mod paths;
+pub mod db;
 
 // 高频路径函数提至 root，调用点用 octopus_infra::octopus_config_home（无需 paths:: 前缀）
 pub use paths::octopus_config_home;
