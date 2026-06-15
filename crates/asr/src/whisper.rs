@@ -217,6 +217,7 @@ pub struct WhisperEngine {
     dec_past: std::sync::Mutex<Session>,
     tokenizer: Tokenizer,
     past_key_names: Vec<(&'static str, &'static str, &'static str, &'static str)>,
+    entry_language: String,
 }
 
 impl WhisperEngine {
@@ -274,6 +275,7 @@ impl WhisperEngine {
             dec_past: std::sync::Mutex::new(dec_past),
             tokenizer,
             past_key_names,
+            entry_language: entry.language.clone(),
         })
     }
 }
@@ -311,11 +313,14 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
 
         // Build prompt tokens: <|SOT|> [<|LANG|>] <|transcribe|> <|notimestamps|>
         let mut tokens: Vec<i64> = vec![sot as i64];
-        let lang_code = if language.is_empty() {
-            "auto".into()
+        let mut lang_code = if language.is_empty() {
+            "auto".to_string()
         } else {
             language.to_string()
         };
+        if lang_code == "auto" && !self.entry_language.is_empty() && self.entry_language != "auto" {
+            lang_code = self.entry_language.clone();
+        }
         eprintln!("[whisper] language: {}", lang_code);
         if lang_code != "auto" {
             let lang_tag = format!("<|{}|>", lang_code);
