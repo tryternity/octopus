@@ -12,6 +12,7 @@ mod engine_ws;
 mod overlay;
 mod paste;
 mod result_window;
+mod runtime_config;
 mod shortcut;
 mod streaming_engine;
 mod tray;
