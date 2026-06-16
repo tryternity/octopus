@@ -194,7 +194,7 @@ pub fn resolve_engine_in_config<'a, 'b>(
     let parsed = parse_model_spec(spec);
     let name = parsed.name();
     match parsed {
-        ModelSpec::Local(_) => {
+        ModelSpec::Local(_) | ModelSpec::NameOnly(_) => {
             for (section, cat) in all_sections(cfg) {
                 if let Some(map) = section {
                     if let Some(entry) = map.get(name) {
@@ -209,16 +209,6 @@ pub fn resolve_engine_in_config<'a, 'b>(
         ModelSpec::Category(cat_str, _) => {
             let cat = engine_category_from_str(cat_str)?;
             pick_entry(cfg, cat, name).map(|e| (cat, name, e))
-        }
-        ModelSpec::NameOnly(_) => {
-            for (section, cat) in all_sections(cfg) {
-                if let Some(map) = section {
-                    if let Some(entry) = map.get(name) {
-                        return Some((cat, name, entry));
-                    }
-                }
-            }
-            None
         }
     }
 }
@@ -563,11 +553,43 @@ mod tests {
     }
 
     #[test]
-    fn resolve_bare_name_backward_compat() {
+    fn resolve_bare_name_equivalent_to_local() {
+        // 裸名等价于 local: — make_entry 设 is_local=true，所以能命中
         let cfg = cfg_with_zipformer();
         let (cat, name, _) = resolve_engine_in_config(&cfg, "zipformer-small-ctc").unwrap();
         assert_eq!(cat, EngineCategory::Zipformer);
         assert_eq!(name, "zipformer-small-ctc");
+    }
+
+    #[test]
+    fn resolve_bare_name_skips_non_local() {
+        // 裸名等价 local:，is_local=false 的条目不应被命中
+        let mut zip = HashMap::new();
+        zip.insert(
+            "zipformer-remote".to_string(),
+            ModelEntry {
+                source: "hf/zipformer-remote".to_string(),
+                language: "zh".to_string(),
+                description: String::new(),
+                secret_key: String::new(),
+                is_local: false,
+                is_enabled: true,
+                is_streaming: true,
+            },
+        );
+        let cfg = AsrConfig {
+            asr: AsrSection {
+                whisper: None,
+                sensevoice: None,
+                paraformer: None,
+                qwen3_asr: None,
+                zipformer: Some(zip),
+            },
+        };
+        assert!(
+            resolve_engine_in_config(&cfg, "zipformer-remote").is_none(),
+            "裸名等价 local:，is_local=false 的模型不应被命中"
+        );
     }
 
     #[test]

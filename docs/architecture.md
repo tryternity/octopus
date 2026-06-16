@@ -166,7 +166,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **模型选择 spec（`asr_engine` / `polish_llm` 统一格式）**：配置字符串支持 `"PREFIX:NAME"` 前缀格式从 DB `models` 表唯一定位模型（见 [spec](superpowers/specs/2026-06-16-model-spec-prefix-design.md)）：
   - `"local:NAME"` → `is_local=true AND name`（特殊前缀，跨 category）
   - `"CATEGORY:NAME"` → `category AND name`（如 `"bigmodel:glm-4-flashx"`）
-  - `"NAME"`（无冒号）→ 仅按 name（向后兼容）
+  - `"NAME"`（无冒号）→ 等价 `"local:NAME"`，筛 `is_local=true`
   - 统一解析在 `infra::db::parse_model_spec`，ASR 经 `asr::config::resolve_engine_in_config` 查找，LLM 经 `infra::db::load_llm_model` 查找。区分前缀是因为 DB 唯一键是 `UNIQUE(domain, name, is_local, category)`，不同 category 可有同名模型（如 `deepseek` 与 `aliyun` 下都有 `deepseek-v4-flash`）。
 - 全局默认引擎由 `resolve_active_engine(asr_engine)` 解析：spec 匹配命中则用；空/不匹配回退兜底 `zipformer-small-ctc`（`DEFAULT_ASR_MODEL_DIR` 本地打包路径，开箱可用）。返回 `ResolvedEngine.name` 始终是**裸名**（去掉前缀），下游缓存和加载按裸名工作。
 - **流式判定数据驱动**：是否走流式识别由 `models.is_streaming` 列决定——`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming`（seed：zipformer×3 + paraformer = 流式；whisper / sensevoice / qwen3-asr×2 = 非流式），不再按 category 硬编码匹配。Coordinator 的 `use_streaming` 据此在 Toggle 进入 `Idle`（切引擎 / 切模式）时重算——流式引擎走流式 partial，非流式引擎自动回退 VAD 分段伪流式。

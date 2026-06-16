@@ -122,8 +122,9 @@ octopus-cli config
 |------|------|------|
 | `"local:NAME"` | `is_local = true AND name = NAME` | `"local:zipformer-small-ctc"` |
 | `"CATEGORY:NAME"` | `category = CATEGORY AND name = NAME` | `"bigmodel:glm-4-flashx"`、`"aliyun:deepseek-v4-flash"` |
-| `"NAME"`（无冒号） | 仅按 `name` 匹配（向后兼容） | `"zipformer-small-ctc"` |
+| `"NAME"`（无冒号） | 等价 `"local:NAME"`——筛 `is_local = true` | `"zipformer-small-ctc"` |
 
+- **裸名默认走 local**：不指定前缀时视为本地模型（`is_local = true`）。远程模型必须用 category 前缀显式指定。
 - **`local` 是特殊前缀**（不对应 DB `category` 值），表示筛 `is_local = true` 的本地模型。ASR 本地引擎（whisper/sensevoice/paraformer/qwen3-asr/zipformer）通常用此前缀。
 - 其他前缀是 DB `models.category` 列的精确匹配（如 `bigmodel`、`deepseek`、`aliyun`）。
 - 区分 category 是因为不同 category 可能有同名模型（如 `deepseek` 和 `aliyun` 下都有 `deepseek-v4-flash`）。

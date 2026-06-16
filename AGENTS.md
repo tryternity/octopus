@@ -101,7 +101,7 @@ desktop → feature-gated: embedded (=asr) | remote-ws | remote-grpc
 | 模型配置 | `~/.octopus/octopus.db` (SQLite `models` 表) | `infra::db::ModelEntry` | 引擎目录/LLM 配置/API Key |
 
 - **引擎激活唯一真相**：`config.yaml.asr_engine`（DB `models` 表无 `is_active` 列）
-- **模型选择 spec**：`asr_engine` / `polish_llm` 统一 `"PREFIX:NAME"` 格式——`local:NAME`（is_local=true）、`CATEGORY:NAME`（按 category 精确匹配）、`NAME`（裸名，向后兼容）。解析在 `infra::db::parse_model_spec`，ASR 路由在 `asr::config::resolve_engine_in_config`，LLM 在 `infra::db::load_llm_model`。
+- **模型选择 spec**：`asr_engine` / `polish_llm` 统一 `"PREFIX:NAME"` 格式——`local:NAME`（is_local=true）、`CATEGORY:NAME`（按 category 精确匹配）、`NAME`（裸名，等价 `local:`）。解析在 `infra::db::parse_model_spec`，ASR 路由在 `asr::config::resolve_engine_in_config`，LLM 在 `infra::db::load_llm_model`。
 - **缓存策略**：两者都通过 `OnceLock` 缓存，手编配置后需**重启进程**生效
 - **运行时切换**：desktop 的 `RuntimeConfig`（`Arc<RwLock<>>`）支持 `asr_engine` / `polish_mode` 运行时切换
 

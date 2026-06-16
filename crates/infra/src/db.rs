@@ -131,17 +131,18 @@ fn init_schema(conn: &Connection) -> Result<()> {
 /// |---------|------|
 /// | `"local:NAME"` | `is_local = true AND name = NAME` |
 /// | `"CATEGORY:NAME"` | `category = CATEGORY AND name = NAME` |
-/// | `"NAME"`（无冒号） | 仅按 `name` 匹配（向后兼容） |
+/// | `"NAME"`（无冒号） | 等价于 `"local:NAME"`——筛 `is_local = true AND name` |
 ///
 /// `local` 是特殊前缀（不对应 DB category 值），表示筛 `is_local=true` 的本地模型。
 /// 其他前缀（如 `bigmodel`、`aliyun`、`zipformer`）是 DB `models.category` 列的精确匹配。
+/// 裸名（无冒号）默认走 `local` 语义——不指定前缀时视为本地模型。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSpec<'a> {
     /// `"local:name"` — 筛选 `is_local = true AND name`
     Local(&'a str),
     /// `"category:name"` — 精确匹配 `category AND name`
     Category(&'a str, &'a str),
-    /// `"name"`（不含冒号）— 仅按 name 查询（向后兼容）
+    /// `"name"`（不含冒号）— 等价于 `Local`，筛 `is_local = true AND name`
     NameOnly(&'a str),
 }
 
@@ -251,7 +252,7 @@ fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleL
     let name = parsed.name();
 
     let row = match parsed {
-        ModelSpec::Local(_) => {
+        ModelSpec::Local(_) | ModelSpec::NameOnly(_) => {
             let mut stmt = conn.prepare(
                 "SELECT category, source, secret_key, is_thinking, is_local, is_enabled
                  FROM models
@@ -267,14 +268,6 @@ fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleL
                  WHERE domain='llm' AND category=?1 AND name=?2 AND is_enabled = 1",
             )?;
             let mut rows = stmt.query_map(params![cat, name], parse_llm_row)?;
-            rows.next().transpose()?
-        }
-        ModelSpec::NameOnly(_) => {
-            let mut stmt = conn.prepare(
-                "SELECT category, source, secret_key, is_thinking, is_local, is_enabled
-                 FROM models WHERE domain='llm' AND name=?1 AND is_enabled = 1",
-            )?;
-            let mut rows = stmt.query_map(params![name], parse_llm_row)?;
             rows.next().transpose()?
         }
     };
@@ -465,7 +458,9 @@ mod tests {
         // 强制启用所有模型做断言测试
         conn.execute("UPDATE models SET is_enabled = 1", []).unwrap();
 
-        let glm = load_llm_model_at(&conn, "glm-4-flashx").unwrap().unwrap();
+        let glm = load_llm_model_at(&conn, "bigmodel:glm-4-flashx")
+            .unwrap()
+            .unwrap();
         assert_eq!(glm.provider, "bigmodel");
         assert_eq!(glm.base_url, "https://open.bigmodel.cn/api/paas/v4");
         assert_eq!(glm.secret_key, "");
@@ -505,11 +500,20 @@ mod tests {
             "bigmodel 下不存在 deepseek-v4-flash"
         );
 
-        let glm_think = load_llm_model_at(&conn, "glm-4.5-flash").unwrap().unwrap();
+        let glm_think = load_llm_model_at(&conn, "bigmodel:glm-4.5-flash")
+            .unwrap()
+            .unwrap();
         assert!(glm_think.is_thinking, "glm-4.5-flash 是思考模型");
         assert!(!glm_think.is_local, "glm-4.5-flash 不是本地模型");
         assert!(glm_think.is_enabled, "glm-4.5-flash 应为启用状态");
 
+        // 裸名现在等价于 local: — seed 中所有 LLM 均为远程，裸名查不到
+        assert!(
+            load_llm_model_at(&conn, "glm-4-flashx")
+                .unwrap()
+                .is_none(),
+            "裸名现在等价 local:，seed LLM 全为远程应返回 None"
+        );
         assert!(load_llm_model_at(&conn, "nonexistent-model").unwrap().is_none());
 
         // local: 前缀 — seed 中所有 LLM 均为 is_local=0，所以 local: 查不到

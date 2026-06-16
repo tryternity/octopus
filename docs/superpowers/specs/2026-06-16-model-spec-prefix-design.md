@@ -13,7 +13,7 @@
 1. **统一 `asr_engine` 和 `polish_llm` 的配置格式**为 `PREFIX:NAME`，从 DB `models` 表唯一定位模型。
 2. **`local` 作为特殊前缀**——映射 `is_local=true`，不对应 DB `category` 列值。
 3. **其他前缀按 DB `category` 精确匹配**（如 `bigmodel`、`deepseek`、`aliyun`）。
-4. **向后兼容**——不含冒号的裸名仍按 name 查询（旧行为）。
+4. **裸名默认走 local 语义**——不含冒号的裸名等价于 `local:NAME`，筛 `is_local=true`。这样设计是因为绝大多数场景使用本地模型，裸名即足；远程模型必须用 category 前缀显式指定。
 5. **ASR 与 LLM 统一语义**——同一套 `parse_model_spec` 规则服务两个 domain。
 
 ## 设计决策
@@ -24,16 +24,23 @@
 pub enum ModelSpec<'a> {
     Local(&'a str),          // "local:NAME" → is_local=true AND name
     Category(&'a str, &'a str), // "CATEGORY:NAME" → category AND name
-    NameOnly(&'a str),       // "NAME" → name only（向后兼容）
+    NameOnly(&'a str),       // "NAME" → 等价 Local，筛 is_local=true AND name
 }
 ```
 
 `parse_model_spec(spec: &str) -> ModelSpec` 按第一个冒号分割：
 - `local:` 前缀 → `Local`
 - 其他前缀 → `Category`
-- 无冒号 → `NameOnly`
+- 无冒号 → `NameOnly`（行为等价 `Local`）
 
 `ModelSpec::name()` 返回去掉前缀后的裸名（生命周期绑定到原 `&str`）。
+
+### 裸名等价 local
+
+裸名（无冒号）的语义是**筛本地模型**（`is_local=true`），而非遍历所有 section。这意味着：
+- `"zipformer-small-ctc"` 等价于 `"local:zipformer-small-ctc"`。
+- 远程模型必须用 category 前缀显式指定（如 `"aliyun:deepseek-v4-flash"`）。
+- 这一设计减少了配置心智负担：绝大多数场景使用本地模型，裸名即足；仅在远程 / 多 category 同名时才需前缀。
 
 ### 为什么 `local` 是特殊前缀
 
@@ -43,21 +50,19 @@ ASR 引擎的 category（`whisper` / `sensevoice` / `paraformer` / `qwen3-asr` /
 
 ### LLM 查询（`load_llm_model_at`）
 
-按 `ModelSpec` 三分支构建不同 SQL：
+按 `ModelSpec` 两分支构建不同 SQL（`Local` 和 `NameOnly` 共用同一查询）：
 
 | spec | SQL WHERE 子句 |
 |------|---------------|
-| `Local(name)` | `domain='llm' AND is_local=1 AND name=?` |
+| `Local(name)` / `NameOnly(name)` | `domain='llm' AND is_local=1 AND name=?` |
 | `Category(cat, name)` | `domain='llm' AND category=? AND name=?` |
-| `NameOnly(name)` | `domain='llm' AND name=?`（旧行为） |
 
 ### ASR 引擎解析（`asr::config`）
 
 - `engine_category_from_str(s)` — DB `category` 字符串 → `EngineCategory` 枚举映射（5 个 ASR 类型；远程 category 如 `aliyun` 返回 `None`）。
 - `resolve_engine_in_config(cfg, spec)` — 统一解析入口：
-  - `Local` → 遍历 5 个 section，找 `is_local=true AND name` 的条目
+  - `Local` / `NameOnly` → 遍历 5 个 section，找 `is_local=true AND name` 的条目
   - `Category` → `engine_category_from_str` 映射后 `pick_entry`
-  - `NameOnly` → 遍历 5 个 section 按 name 查找（旧行为）
 - `resolve_engine_category(spec)` / `resolve_active_engine(spec)` 内部调用 `resolve_engine_in_config`。
 
 ### 裸名传播
@@ -97,17 +102,17 @@ pub fn resolve_active_engine(asr_engine: &str) -> Result<ResolvedEngine>;
 # ASR 引擎
 asr_engine: "local:zipformer-small-ctc"     # 本地模型（is_local=true）
 # asr_engine: "zipformer:zipformer-small-ctc" # 按 category 精确匹配
-# asr_engine: "zipformer-small-ctc"           # 裸名（向后兼容）
+# asr_engine: "zipformer-small-ctc"           # 裸名（等价 local:）
 
 # LLM 润色
 polish_llm: "bigmodel:glm-4-flashx"          # category:name
 # polish_llm: "local:qwen3:8b"                # 本地 LLM（Ollama 等）
-# polish_llm: "glm-4-flashx"                  # 裸名（向后兼容）
+# polish_llm: "glm-4-flashx"                  # 裸名（等价 local:，仅当 is_local=1 时命中）
 ```
 
 ## 关键约束
 
-- **向后兼容**：裸名格式（无冒号）仍按旧行为工作，老 `config.yaml` 无需修改。
+- **裸名等价 local**：裸名格式（无冒号）筛 `is_local=true`，远程模型必须用 category 前缀显式指定。
 - **`local` 前缀跨 category**：`local:NAME` 遍历所有 section，若多个 category 下有同名且 `is_local=true` 的模型，返回第一个匹配（按 whisper→sensevoice→paraformer→qwen3-asr→zipformer 顺序）。建议避免此情况。
 - **Category 前缀仅限 ASR 已知类型**：`aliyun:zipformer-small-ctc` 中 `aliyun` 不是已知 ASR 引擎 category → `resolve_engine_in_config` 返回 `None`。远程 ASR 路由（如阿里云远程 ASR）尚未实现，当前所有 ASR 均为本地。
 - **`OnceLock` 缓存不变**：手编 DB `models` 表后仍需重启进程生效。
