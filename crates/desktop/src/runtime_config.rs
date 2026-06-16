@@ -9,10 +9,11 @@ use tauri::State;
 
 use crate::config::PolishMode;
 
-/// 运行时可变的两个配置字段。
+/// 运行时可变的配置字段。
 pub struct RuntimeConfig {
     pub asr_engine: String,
     pub polish_mode: PolishMode,
+    pub polish_llm: String,
 }
 
 impl RuntimeConfig {
@@ -20,6 +21,7 @@ impl RuntimeConfig {
         Self {
             asr_engine: cfg.asr_engine.clone(),
             polish_mode: cfg.polish_mode,
+            polish_llm: cfg.polish_llm.clone(),
         }
     }
 }
@@ -55,6 +57,67 @@ fn category_str(c: octopus_asr::config::EngineCategory) -> &'static str {
     }
 }
 
+/// 统一显示文本：is_local → "本地:{name}"，否则 "{category}:{name}"。
+fn engine_label(is_local: bool, category: &str, name: &str) -> String {
+    if is_local {
+        format!("本地:{}", name)
+    } else {
+        format!("{}:{}", category, name)
+    }
+}
+
+/// ASR 兜底引擎名（固定首项，不依赖 DB 存在）。
+const FALLBACK_ASR_ENGINE: &str = "zipformer-small-ctc";
+
+/// 构造 ASR 选项列表（纯逻辑）：兜底固定第一，DB 同名去重，current 按 current_effective 标记。
+/// current_effective 为空时视作兜底。
+fn build_asr_options(
+    current_effective: &str,
+    engines: Vec<octopus_asr::config::EngineInfo>,
+) -> Vec<EngineOption> {
+    let effective = if current_effective.is_empty() {
+        FALLBACK_ASR_ENGINE
+    } else {
+        current_effective
+    };
+    let mut options = Vec::with_capacity(engines.len() + 1);
+    // 兜底固定第一
+    options.push(EngineOption {
+        name: FALLBACK_ASR_ENGINE.to_string(),
+        category: "zipformer".to_string(),
+        is_local: true,
+        current: effective == FALLBACK_ASR_ENGINE,
+        label: engine_label(true, "zipformer", FALLBACK_ASR_ENGINE),
+    });
+    // DB 模型（跳过同名兜底，避免重复）
+    for e in engines {
+        if e.name == FALLBACK_ASR_ENGINE {
+            continue;
+        }
+        let cat = category_str(e.category);
+        options.push(EngineOption {
+            current: e.name == effective,
+            name: e.name.clone(),
+            category: cat.to_string(),
+            is_local: e.is_local,
+            label: engine_label(e.is_local, cat, &e.name),
+        });
+    }
+    options
+}
+
+/// 校验引擎名可切换：兜底名恒允许（不依赖 DB），其余须在 engines 列表中。
+fn validate_switch(name: &str, engines: &[octopus_asr::config::EngineInfo]) -> Result<(), String> {
+    if name == FALLBACK_ASR_ENGINE {
+        return Ok(());
+    }
+    if engines.iter().any(|e| e.name == name) {
+        Ok(())
+    } else {
+        Err(format!("引擎 '{}' 不存在，未切换", name))
+    }
+}
+
 // ── config.yaml 写回 ──
 
 /// 读当前 config.yaml → 覆盖 asr_engine → 序列化写回 ~/.octopus/config.yaml。
@@ -69,6 +132,13 @@ pub fn persist_asr_engine(value: &str) -> Result<(), String> {
 pub fn persist_polish_mode(value: u8) -> Result<(), String> {
     let mut cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
     cfg.polish_mode = u8_to_polish_mode(value).ok_or_else(|| format!("polish_mode={} 非法", value))?;
+    write_config_yaml(&cfg)
+}
+
+/// 读当前 config.yaml → 覆盖 polish_llm → 序列化写回 ~/.octopus/config.yaml。
+pub fn persist_polish_llm(value: &str) -> Result<(), String> {
+    let mut cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
+    cfg.polish_llm = value.to_string();
     write_config_yaml(&cfg)
 }
 
@@ -92,6 +162,33 @@ pub struct EngineOption {
     pub category: String,
     pub current: bool,
     pub is_local: bool,
+    pub label: String,
+}
+
+/// LLM 润色模型菜单项（与 EngineOption 同构，current 标记当前选中的 polish_llm）。
+#[derive(Serialize)]
+pub struct LlmOption {
+    pub name: String,
+    pub category: String,
+    pub is_local: bool,
+    pub current: bool,
+    pub label: String,
+}
+
+/// 构造 LLM 选项列表（纯逻辑）：current 按 polish_llm 标记，label 复用 engine_label。
+fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) -> Vec<LlmOption> {
+    llms.into_iter()
+        .map(|m| {
+            let label = engine_label(m.is_local, &m.category, &m.name);
+            LlmOption {
+                current: m.name == current,
+                label,
+                name: m.name,
+                category: m.category,
+                is_local: m.is_local,
+            }
+        })
+        .collect()
 }
 
 // ── Tauri 命令 ──
@@ -108,22 +205,8 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
 #[tauri::command]
 pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<EngineOption>, String> {
     let current_raw = rc.read().unwrap().asr_engine.clone();
-    // 兜底：空 asr_engine → 当前生效 zipformer-small-ctc
-    let current_effective = if current_raw.is_empty() {
-        "zipformer-small-ctc".to_string()
-    } else {
-        current_raw
-    };
     let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
-    Ok(engines
-        .into_iter()
-        .map(|e| EngineOption {
-            current: e.name == current_effective,
-            name: e.name,
-            category: category_str(e.category).to_string(),
-            is_local: e.is_local,
-        })
-        .collect())
+    Ok(build_asr_options(&current_raw, engines))
 }
 
 #[tauri::command]
@@ -132,14 +215,8 @@ pub fn switch_asr_engine(
     rc: State<'_, SharedRuntimeConfig>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    // 校验：name 必须是 DB 已配置的引擎（不走兜底）
-    let exists = octopus_asr::config::list_engines()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .any(|e| e.name == name);
-    if !exists {
-        return Err(format!("引擎 '{}' 不存在，未切换", name));
-    }
+    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    validate_switch(&name, &engines)?;
     {
         let mut g = rc.write().unwrap();
         g.asr_engine = name.clone();
@@ -177,6 +254,38 @@ pub fn set_polish_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<(
     Ok(())
 }
 
+/// 列出所有启用的 LLM 润色模型，并标记当前 polish_llm。
+#[tauri::command]
+pub fn list_llm_models(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOption>, String> {
+    let current = rc.read().unwrap().polish_llm.clone();
+    let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
+    Ok(build_llm_options(&current, llms))
+}
+
+/// 切换润色模型：先校验 DB 存在，再写 RuntimeConfig（即时）+ config.yaml（持久）。
+#[tauri::command]
+pub fn switch_polish_llm(name: String, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
+    let exists = octopus_infra::db::list_llm_models()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|m| m.name == name);
+    if !exists {
+        return Err(format!("润色模型 '{}' 不存在，未切换", name));
+    }
+    {
+        let mut g = rc.write().unwrap();
+        g.polish_llm = name.clone();
+    }
+    if let Err(e) = persist_polish_llm(&name) {
+        log::warn!(
+            "写回 config.yaml 失败（polish_llm={}）：{} —— 本次仍生效，重启后回退",
+            name,
+            e
+        );
+    }
+    Ok(())
+}
+
 // ── 单测（纯逻辑，不触文件 IO / Tauri State）──
 
 #[cfg(test)]
@@ -201,5 +310,71 @@ mod tests {
         }
         assert!(u8_to_polish_mode(3).is_none());
         assert!(u8_to_polish_mode(99).is_none());
+    }
+
+    #[test]
+    fn build_asr_options_injects_fallback_first_and_dedups() {
+        use octopus_asr::config::{EngineCategory, EngineInfo};
+        // 场景 1：DB 无兜底 → 注入到首位
+        let engines = vec![
+            EngineInfo { name: "whisper-small".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+        ];
+        let opts = build_asr_options("whisper-small", engines);
+        assert_eq!(opts[0].name, "zipformer-small-ctc");
+        assert_eq!(opts[0].label, "本地:zipformer-small-ctc");
+        assert!(opts[0].is_local);
+        assert!(!opts[0].current, "current=whisper-small，兜底非当前");
+        assert_eq!(opts[1].name, "whisper-small");
+        assert!(opts[1].current);
+        assert_eq!(opts[1].label, "whisper:whisper-small");
+
+        // 场景 2：current 为空 → 兜底为当前
+        let opts2 = build_asr_options("", vec![]);
+        assert_eq!(opts2.len(), 1);
+        assert_eq!(opts2[0].name, "zipformer-small-ctc");
+        assert!(opts2[0].current, "空 asr_engine → 兜底当前");
+
+        // 场景 3：DB 已含兜底 → 去重（只一个 zipformer-small-ctc，且在首位）
+        let engines3 = vec![
+            EngineInfo { name: "zipformer-small-ctc".into(), category: EngineCategory::Zipformer, is_local: true, description: String::new() },
+            EngineInfo { name: "whisper-small".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+        ];
+        let opts3 = build_asr_options("zipformer-small-ctc", engines3);
+        assert_eq!(
+            opts3.iter().filter(|o| o.name == "zipformer-small-ctc").count(),
+            1,
+            "DB 已含兜底时去重"
+        );
+        assert_eq!(opts3[0].name, "zipformer-small-ctc");
+        assert!(opts3[0].current);
+    }
+
+    #[test]
+    fn build_llm_options_marks_current_and_labels() {
+        use octopus_infra::db::LlmModelInfo;
+        let llms = vec![
+            LlmModelInfo { name: "glm-4-flashx".into(), category: "bigmodel".into(), is_local: false },
+            LlmModelInfo { name: "ollama-local".into(), category: "ollama".into(), is_local: true },
+        ];
+        let opts = build_llm_options("glm-4-flashx", llms);
+        assert_eq!(opts.len(), 2);
+        assert!(opts[0].current);
+        assert_eq!(opts[0].label, "bigmodel:glm-4-flashx");
+        assert!(!opts[1].current);
+        assert_eq!(opts[1].label, "本地:ollama-local");
+    }
+
+    #[test]
+    fn validate_switch_allows_fallback_even_when_absent() {
+        use octopus_asr::config::{EngineCategory, EngineInfo};
+        let engines = vec![
+            EngineInfo { name: "whisper-small".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+        ];
+        // 兜底名即使不在 engines 也允许
+        assert!(validate_switch("zipformer-small-ctc", &engines).is_ok());
+        // 在列表中的允许
+        assert!(validate_switch("whisper-small", &engines).is_ok());
+        // 不在列表且非兜底 → 拒绝
+        assert!(validate_switch("nonexistent", &engines).is_err());
     }
 }

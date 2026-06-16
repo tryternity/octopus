@@ -133,6 +133,8 @@ pub fn run() {
             runtime_config::list_asr_engines,
             runtime_config::switch_asr_engine,
             runtime_config::set_polish_mode,
+            runtime_config::list_llm_models,
+            runtime_config::switch_polish_llm,
             coordinator::cancel_recording,
             result_window::result_window_ready,
         ])
