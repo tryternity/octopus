@@ -9,10 +9,11 @@ use tauri::State;
 
 use crate::config::PolishMode;
 
-/// 运行时可变的两个配置字段。
+/// 运行时可变的配置字段。
 pub struct RuntimeConfig {
     pub asr_engine: String,
     pub polish_mode: PolishMode,
+    pub polish_llm: String,
 }
 
 impl RuntimeConfig {
@@ -20,6 +21,7 @@ impl RuntimeConfig {
         Self {
             asr_engine: cfg.asr_engine.clone(),
             polish_mode: cfg.polish_mode,
+            polish_llm: cfg.polish_llm.clone(),
         }
     }
 }
@@ -133,6 +135,13 @@ pub fn persist_polish_mode(value: u8) -> Result<(), String> {
     write_config_yaml(&cfg)
 }
 
+/// 读当前 config.yaml → 覆盖 polish_llm → 序列化写回 ~/.octopus/config.yaml。
+pub fn persist_polish_llm(value: &str) -> Result<(), String> {
+    let mut cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
+    cfg.polish_llm = value.to_string();
+    write_config_yaml(&cfg)
+}
+
 fn write_config_yaml(cfg: &octopus_infra::config::AppConfig) -> Result<(), String> {
     let path = octopus_infra::octopus_config_home().join("config.yaml");
     let text = serde_yaml::to_string(cfg).map_err(|e| e.to_string())?;
@@ -154,6 +163,32 @@ pub struct EngineOption {
     pub current: bool,
     pub is_local: bool,
     pub label: String,
+}
+
+/// LLM 润色模型菜单项（与 EngineOption 同构，current 标记当前选中的 polish_llm）。
+#[derive(Serialize)]
+pub struct LlmOption {
+    pub name: String,
+    pub category: String,
+    pub is_local: bool,
+    pub current: bool,
+    pub label: String,
+}
+
+/// 构造 LLM 选项列表（纯逻辑）：current 按 polish_llm 标记，label 复用 engine_label。
+fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) -> Vec<LlmOption> {
+    llms.into_iter()
+        .map(|m| {
+            let label = engine_label(m.is_local, &m.category, &m.name);
+            LlmOption {
+                current: m.name == current,
+                label,
+                name: m.name,
+                category: m.category,
+                is_local: m.is_local,
+            }
+        })
+        .collect()
 }
 
 // ── Tauri 命令 ──
@@ -213,6 +248,38 @@ pub fn set_polish_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<(
         log::warn!(
             "写回 config.yaml 失败（polish_mode={}）：{} —— 本次仍生效，重启后回退",
             mode,
+            e
+        );
+    }
+    Ok(())
+}
+
+/// 列出所有启用的 LLM 润色模型，并标记当前 polish_llm。
+#[tauri::command]
+pub fn list_llm_models(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOption>, String> {
+    let current = rc.read().unwrap().polish_llm.clone();
+    let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
+    Ok(build_llm_options(&current, llms))
+}
+
+/// 切换润色模型：先校验 DB 存在，再写 RuntimeConfig（即时）+ config.yaml（持久）。
+#[tauri::command]
+pub fn switch_polish_llm(name: String, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
+    let exists = octopus_infra::db::list_llm_models()
+        .map_err(|e| e.to_string())?
+        .iter()
+        .any(|m| m.name == name);
+    if !exists {
+        return Err(format!("润色模型 '{}' 不存在，未切换", name));
+    }
+    {
+        let mut g = rc.write().unwrap();
+        g.polish_llm = name.clone();
+    }
+    if let Err(e) = persist_polish_llm(&name) {
+        log::warn!(
+            "写回 config.yaml 失败（polish_llm={}）：{} —— 本次仍生效，重启后回退",
+            name,
             e
         );
     }
@@ -280,6 +347,21 @@ mod tests {
         );
         assert_eq!(opts3[0].name, "zipformer-small-ctc");
         assert!(opts3[0].current);
+    }
+
+    #[test]
+    fn build_llm_options_marks_current_and_labels() {
+        use octopus_infra::db::LlmModelInfo;
+        let llms = vec![
+            LlmModelInfo { name: "glm-4-flashx".into(), category: "bigmodel".into(), is_local: false },
+            LlmModelInfo { name: "ollama-local".into(), category: "ollama".into(), is_local: true },
+        ];
+        let opts = build_llm_options("glm-4-flashx", llms);
+        assert_eq!(opts.len(), 2);
+        assert!(opts[0].current);
+        assert_eq!(opts[0].label, "bigmodel:glm-4-flashx");
+        assert!(!opts[1].current);
+        assert_eq!(opts[1].label, "本地:ollama-local");
     }
 
     #[test]
