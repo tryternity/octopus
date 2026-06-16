@@ -218,6 +218,40 @@ fn load_llm_model_at(conn: &Connection, name: &str) -> Result<Option<CompatibleL
     }
 }
 
+/// LLM 模型列表项（菜单用，仅含显示与排序所需字段）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct LlmModelInfo {
+    pub name: String,
+    pub category: String,
+    pub is_local: bool,
+}
+
+/// 列出所有启用的 LLM 润色模型（domain='llm' AND is_enabled=1），按 is_local 降序、category 升序排序。
+fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
+    let mut stmt = conn.prepare(
+        "SELECT category, name, is_local FROM models
+         WHERE domain='llm' AND is_enabled = 1
+         ORDER BY is_local DESC, category",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(LlmModelInfo {
+            category: row.get::<_, String>(0)?,
+            name: row.get::<_, String>(1)?,
+            is_local: row.get::<_, i32>(2)? != 0,
+        })
+    })?;
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
+/// 从 DB 列出启用的 LLM 模型（经 with_db，供 Tauri 命令调用）。
+pub fn list_llm_models() -> Result<Vec<LlmModelInfo>> {
+    with_db(|conn| list_llm_models_at(conn))
+}
+
 // ── 识别历史写入（desktop coordinator 用）──
 
 /// 首次有 ASR 文本时插入（应用写入毫秒戳 id）。
@@ -422,6 +456,42 @@ mod tests {
         conn.execute("UPDATE models SET is_enabled = 0 WHERE name = 'paraformer-streaming'", []).unwrap();
         let cfg = load_models_at(&conn).unwrap();
         assert!(cfg.asr.paraformer.is_none() || !cfg.asr.paraformer.unwrap().contains_key("paraformer-streaming"));
+    }
+
+    #[test]
+    fn list_llm_models_filters_disabled_and_sorts() {
+        let conn = open_init();
+        // seed 默认 4 条 LLM 全 is_enabled=0；全部启用
+        conn.execute("UPDATE models SET is_enabled = 1 WHERE domain='llm'", []).unwrap();
+        // 再禁用 aliyun 那条，验证过滤
+        conn.execute(
+            "UPDATE models SET is_enabled = 0 WHERE domain='llm' AND category='aliyun'",
+            [],
+        ).unwrap();
+        let list = list_llm_models_at(&conn).unwrap();
+        // 剩余 3 条（全 is_local=0）→ is_local desc 无影响 → category 字母序
+        // categories: bigmodel(glm-4-flashx), bigmodel(glm-4.5-flash), deepseek(deepseek-v4-flash)
+        assert_eq!(list.len(), 3, "aliyun 被禁用应过滤");
+        assert_eq!(
+            list.iter().map(|m| m.category.as_str()).collect::<Vec<_>>(),
+            vec!["bigmodel", "bigmodel", "deepseek"],
+            "按 category 字母序"
+        );
+        assert!(list.iter().all(|m| !m.is_local), "seed LLM 全远程");
+        // 同 category 内 name 字母序：glm-4-flashx < glm-4.5-flash
+        let bigmodel_names: Vec<&str> = list.iter()
+            .filter(|m| m.category == "bigmodel")
+            .map(|m| m.name.as_str())
+            .collect();
+        assert_eq!(bigmodel_names, vec!["glm-4-flashx", "glm-4.5-flash"]);
+    }
+
+    #[test]
+    fn list_llm_models_at_empty_when_all_disabled() {
+        let conn = open_init();
+        // seed 全 is_enabled=0（默认）
+        let list = list_llm_models_at(&conn).unwrap();
+        assert!(list.is_empty(), "全禁用时返回空");
     }
 
     #[test]
