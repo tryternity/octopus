@@ -448,4 +448,77 @@ mod tests {
         // GRU enc_h 应在推理后变化
         assert_ne!(p.enc_h, enc_before, "GRU enc_h 应在推理后更新");
     }
+
+    #[test]
+    #[ignore] // 需 dfn3.onnx 在 HF cache
+    fn sample_conservation_input_equals_output_length() {
+        let path = crate::config::find_df3().unwrap();
+        let mut p = super::DenoiseProcessor::new(&path).unwrap();
+        let n = 48000; // 1s @48k
+        let input: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 48000.0).sin() * 0.3)
+            .collect();
+        let mut out = p.process_samples(&input);
+        out.extend(p.flush());
+        // 样本守恒：输出长度 == 输入长度（OLA 不丢不增，尾部 flush 吐残留）
+        assert_eq!(
+            out.len(),
+            input.len(),
+            "样本守恒失败：in={} out={}",
+            input.len(),
+            out.len()
+        );
+    }
+
+    #[test]
+    #[ignore] // 需 dfn3.onnx 在 HF cache
+    fn streaming_incremental_equals_batch() {
+        let path = crate::config::find_df3().unwrap();
+        let n = 48000;
+        let input: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48000.0).sin() * 0.3)
+            .collect();
+
+        // 批处理（一次性）
+        let mut p1 = super::DenoiseProcessor::new(&path).unwrap();
+        let mut batch = p1.process_samples(&input);
+        batch.extend(p1.flush());
+
+        // 增量（分多次，每次不固定长度，含非整除 HOP 的块）
+        let mut p2 = super::DenoiseProcessor::new(&path).unwrap();
+        let mut incr = Vec::new();
+        let chunks = [300usize, 700, 480, 1024, 480, 613, 480, 200, 13783];
+        let mut off = 0;
+        for &c in &chunks {
+            if off + c > input.len() {
+                break;
+            }
+            incr.extend(p2.process_samples(&input[off..off + c]));
+            off += c;
+        }
+        if off < input.len() {
+            incr.extend(p2.process_samples(&input[off..]));
+        }
+        incr.extend(p2.flush());
+
+        // 增量 vs 批处理：长度相等 + 逐样本最大差 < 1e-4（无状态漂移、无边界丢帧）
+        assert_eq!(
+            incr.len(),
+            batch.len(),
+            "长度不一致：incr={} batch={}",
+            incr.len(),
+            batch.len()
+        );
+        let max_diff = incr
+            .iter()
+            .zip(batch.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        eprintln!("streaming max_diff = {:.3e}", max_diff);
+        assert!(
+            max_diff < 1e-4,
+            "增量 vs 批处理不一致，max_diff={}",
+            max_diff
+        );
+    }
 }
