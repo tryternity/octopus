@@ -136,6 +136,10 @@ pub struct AppConfig {
     /// 是否对 ASR 输出进行纠错与热词校正
     #[serde(default = "default_asr_correct")]
     pub asr_correct: bool,
+
+    /// 是否启用 DeepFilterNet3 环境降噪（录音送 ASR 前降噪）
+    #[serde(default = "default_denoise_enabled")]
+    pub denoise_enabled: bool,
 }
 
 fn default_engine_mode() -> String {
@@ -177,6 +181,9 @@ fn default_asr_hardware_accelerated() -> bool {
 fn default_asr_correct() -> bool {
     false
 }
+fn default_denoise_enabled() -> bool {
+    true
+}
 fn default_segment_duration() -> f64 {
     5.0
 }
@@ -210,6 +217,7 @@ impl Default for AppConfig {
             polish_llm: default_polish_llm(),
             asr_hardware_accelerated: default_asr_hardware_accelerated(),
             asr_correct: default_asr_correct(),
+            denoise_enabled: default_denoise_enabled(),
         }
     }
 }
@@ -299,5 +307,17 @@ mod tests {
             "polish_mode 应序列化为整数 2，实际: {}",
             reserialized
         );
+    }
+
+    #[test]
+    fn denoise_enabled_defaults_to_true() {
+        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
+        assert!(cfg.denoise_enabled, "denoise_enabled 应默认 true");
+    }
+
+    #[test]
+    fn denoise_enabled_override_from_yaml() {
+        let cfg: AppConfig = serde_yaml::from_str("denoise_enabled: false\n").unwrap();
+        assert!(!cfg.denoise_enabled);
     }
 }
