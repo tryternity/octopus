@@ -212,6 +212,28 @@ pub struct EngineInfo {
     pub is_local: bool,
 }
 
+/// EngineCategory → 小写 category 字符串（与 DB models.category 一致，用于排序与显示）。
+fn category_label(c: &EngineCategory) -> &'static str {
+    use EngineCategory::*;
+    match c {
+        Whisper => "whisper",
+        SenseVoice => "sensevoice",
+        Paraformer => "paraformer",
+        Qwen3Asr => "qwen3-asr",
+        Zipformer => "zipformer",
+    }
+}
+
+/// 排序：is_local 降序（true 在前）→ category 字母序 → name 字母序。
+fn order_engine_infos(engines: &mut [EngineInfo]) {
+    engines.sort_by(|a, b| {
+        b.is_local
+            .cmp(&a.is_local)
+            .then_with(|| category_label(&a.category).cmp(category_label(&b.category)))
+            .then_with(|| a.name.cmp(&b.name))
+    });
+}
+
 /// 从 DB models 表列出所有已配置的 ASR 引擎
 pub fn list_engines() -> Result<Vec<EngineInfo>> {
     let config = load_config()?;
@@ -238,22 +260,7 @@ pub fn list_engines() -> Result<Vec<EngineInfo>> {
         }
     }
 
-    // 按 category 排序，同 category 内按 name 排序
-    engines.sort_by(|a, b| {
-        let cat_order = |c: &EngineCategory| -> u8 {
-            match c {
-                EngineCategory::SenseVoice => 0,
-                EngineCategory::Whisper => 1,
-                EngineCategory::Paraformer => 2,
-                EngineCategory::Qwen3Asr => 3,
-                EngineCategory::Zipformer => 4,
-            }
-        };
-        cat_order(&a.category)
-            .cmp(&cat_order(&b.category))
-            .then_with(|| a.name.cmp(&b.name))
-    });
-
+    order_engine_infos(&mut engines);
     Ok(engines)
 }
 
@@ -420,6 +427,21 @@ mod tests {
                 zipformer: Some(zip),
             },
         }
+    }
+
+    #[test]
+    fn order_engine_infos_sorts_is_local_desc_then_category_then_name() {
+        use EngineCategory::*;
+        let mut engines = vec![
+            EngineInfo { name: "whisper-small".into(), category: Whisper, is_local: false, description: String::new() },
+            EngineInfo { name: "zipformer-multi".into(), category: Zipformer, is_local: true, description: String::new() },
+            EngineInfo { name: "paraformer-x".into(), category: Paraformer, is_local: false, description: String::new() },
+            EngineInfo { name: "zipformer-small-ctc".into(), category: Zipformer, is_local: true, description: String::new() },
+        ];
+        order_engine_infos(&mut engines);
+        let names: Vec<&str> = engines.iter().map(|e| e.name.as_str()).collect();
+        // is_local=true 先（zipformer-multi < zipformer-small-ctc 按 name），再 false（paraformer < whisper 按 category 字母序）
+        assert_eq!(names, vec!["zipformer-multi", "zipformer-small-ctc", "paraformer-x", "whisper-small"]);
     }
 
     #[test]
