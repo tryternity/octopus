@@ -37,11 +37,17 @@ impl AsrEngineManager {
     }
 
     /// Load or switch the active ASR engine to the requested model.
+    ///
+    /// `model_name` 支持 spec 格式（`local:name` / `category:name` / `name`），
+    /// 内部解析为裸名后作为缓存键。
     pub fn switch_model(&self, model_name: &str) -> Result<()> {
+        let parsed = config::parse_model_spec(model_name);
+        let bare_name = parsed.name();
+
         // Quick check under read lock
         {
             let active_name = self.active_engine_name.read().unwrap();
-            if *active_name == model_name {
+            if *active_name == bare_name {
                 return Ok(());
             }
         }
@@ -49,7 +55,7 @@ impl AsrEngineManager {
         // Check if already in cache
         let cached = {
             let cache = self.cached_engines.read().unwrap();
-            cache.get(model_name).cloned()
+            cache.get(bare_name).cloned()
         };
 
         let engine = if let Some(eng) = cached {
@@ -57,10 +63,8 @@ impl AsrEngineManager {
         } else {
             // Not cached, load configuration and instantiate
             let cfg = config::load_config()?;
-            let category = config::resolve_engine_category(model_name)
+            let (category, _bare, entry) = config::resolve_engine_in_config(&cfg, model_name)
                 .with_context(|| format!("Unknown engine model: {}", model_name))?;
-            let entry = config::pick_entry(&cfg, category, model_name)
-                .with_context(|| format!("Model entry '{}' not found in DB", model_name))?;
 
             let new_eng: Arc<dyn OfflineAsrEngine> = match category {
                 config::EngineCategory::Whisper => Arc::new(WhisperEngine::new(entry)?),
@@ -85,7 +89,7 @@ impl AsrEngineManager {
                     cache.remove(&k);
                 }
             }
-            cache.insert(model_name.to_string(), new_eng.clone());
+            cache.insert(bare_name.to_string(), new_eng.clone());
             new_eng
         };
 
@@ -93,7 +97,7 @@ impl AsrEngineManager {
         let mut active = self.active_engine.write().unwrap();
         *active = Some(engine);
         let mut active_name = self.active_engine_name.write().unwrap();
-        *active_name = model_name.to_string();
+        *active_name = bare_name.to_string();
 
         Ok(())
     }

@@ -17,22 +17,26 @@ pub enum StreamingSession {
 }
 
 impl StreamingSession {
-    /// 根据引擎名创建流式 session。
+    /// 根据引擎 spec 创建流式 session。
+    ///
+    /// `engine_spec` 支持 `local:name` / `category:name` / `name` 格式（见 [`parse_model_spec`]）。
     /// 仅支持 Paraformer 和 Zipformer 类别。
-    pub fn new(engine_name: &str) -> Result<Self> {
-        let category = crate::config::resolve_engine_category(engine_name)
-            .context(format!("Unknown streaming engine: {}", engine_name))?;
+    pub fn new(engine_spec: &str) -> Result<Self> {
+        let category = crate::config::resolve_engine_category(engine_spec)
+            .context(format!("Unknown streaming engine: {}", engine_spec))?;
+        let parsed = crate::config::parse_model_spec(engine_spec);
+        let bare_name = parsed.name();
 
         match category {
             crate::config::EngineCategory::Paraformer => {
-                let engine = crate::streaming_paraformer::StreamingParaformer::new(engine_name)?;
+                let engine = crate::streaming_paraformer::StreamingParaformer::new(bare_name)?;
                 Ok(Self::Paraformer {
                     engine: Mutex::new(engine),
                     accumulated: Mutex::new(String::new()),
                 })
             }
             crate::config::EngineCategory::Zipformer => {
-                let engine = crate::streaming_zipformer::StreamingZipformer::new(engine_name)?;
+                let engine = crate::streaming_zipformer::StreamingZipformer::new(bare_name)?;
                 Ok(Self::Zipformer {
                     engine: Mutex::new(engine),
                     accumulated: Mutex::new(String::new()),
@@ -41,7 +45,7 @@ impl StreamingSession {
             other => {
                 anyhow::bail!(
                     "Engine '{}' ({:?}) does not support streaming. Only Paraformer and Zipformer are supported.",
-                    engine_name, other
+                    engine_spec, other
                 )
             }
         }

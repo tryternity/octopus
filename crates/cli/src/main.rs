@@ -355,13 +355,14 @@ fn select_model() -> Result<String> {
 
 fn run_e2e(language: &str) -> Result<()> {
     let model = select_model()?;
+    let bare = octopus_asr::config::parse_model_spec(&model).name().to_string();
     // Use streaming mode for Paraformer and Zipformer models
     let category = octopus_asr::config::resolve_engine_category(&model);
     if category == Some(octopus_asr::config::EngineCategory::Paraformer) {
-        return run_e2e_streaming_paraformer(&model);
+        return run_e2e_streaming_paraformer(&bare);
     }
     if category == Some(octopus_asr::config::EngineCategory::Zipformer) {
-        return run_e2e_streaming_zipformer(&model);
+        return run_e2e_streaming_zipformer(&bare);
     }
 
     println!("Recording from config... Press Enter to stop.\n");
@@ -402,22 +403,23 @@ fn run_e2e(language: &str) -> Result<()> {
 }
 
 fn do_transcribe(model: &str, language: &str, samples: &[f32]) -> Result<String> {
+    let bare = octopus_asr::config::parse_model_spec(model).name();
     let category = octopus_asr::config::resolve_engine_category(model);
     match category {
         Some(octopus_asr::config::EngineCategory::Whisper) => {
-            octopus_asr::whisper::transcribe(model, samples, language)
+            octopus_asr::whisper::transcribe(bare, samples, language)
         }
         Some(octopus_asr::config::EngineCategory::Paraformer) => {
-            octopus_asr::paraformer::transcribe(model, samples, language)
+            octopus_asr::paraformer::transcribe(bare, samples, language)
         }
         Some(octopus_asr::config::EngineCategory::Qwen3Asr) => {
-            octopus_asr::qwen3_asr::transcribe(model, samples, language)
+            octopus_asr::qwen3_asr::transcribe(bare, samples, language)
         }
         Some(octopus_asr::config::EngineCategory::Zipformer) => {
-            octopus_asr::zipformer::transcribe(model, samples, language)
+            octopus_asr::zipformer::transcribe(bare, samples, language)
         }
         Some(octopus_asr::config::EngineCategory::SenseVoice) | None => {
-            octopus_asr::sensevoice::transcribe(model, samples, language)
+            octopus_asr::sensevoice::transcribe(bare, samples, language)
         }
     }
 }
@@ -908,12 +910,13 @@ fn stream_test(wav_path: &str, model: &str) -> Result<()> {
         model
     );
 
+    let bare = octopus_asr::config::parse_model_spec(model).name();
     let category = octopus_asr::config::resolve_engine_category(model);
     match category {
         Some(octopus_asr::config::EngineCategory::Zipformer) => {
-            stream_test_zipformer(samples, duration, model)
+            stream_test_zipformer(samples, duration, bare)
         }
-        _ => stream_test_paraformer(samples, duration, model),
+        _ => stream_test_paraformer(samples, duration, bare),
     }
 }
 

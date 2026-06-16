@@ -17,7 +17,7 @@ struct LlmCfg {
 }
 
 fn default_polish_llm() -> String {
-    "glm-4-flashx".to_string()
+    "bigmodel:glm-4-flashx".to_string()
 }
 
 fn main() -> anyhow::Result<()> {

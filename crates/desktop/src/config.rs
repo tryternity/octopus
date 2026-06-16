@@ -31,7 +31,7 @@ pub fn llm_config(cfg: &AppConfig) -> Option<octopus_llm::CompatibleLlmConfig> {
             Some(llm_cfg)
         }
         Ok(None) => {
-            log::warn!("未在数据库中找到名称为 '{}' 的 LLM 润色模型配置", cfg.polish_llm);
+            log::warn!("未在数据库中找到 '{}' 对应的 LLM 润色模型配置", cfg.polish_llm);
             None
         }
         Err(e) => {

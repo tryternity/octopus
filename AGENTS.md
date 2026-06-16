@@ -101,6 +101,7 @@ desktop → feature-gated: embedded (=asr) | remote-ws | remote-grpc
 | 模型配置 | `~/.octopus/octopus.db` (SQLite `models` 表) | `infra::db::ModelEntry` | 引擎目录/LLM 配置/API Key |
 
 - **引擎激活唯一真相**：`config.yaml.asr_engine`（DB `models` 表无 `is_active` 列）
+- **模型选择 spec**：`asr_engine` / `polish_llm` 统一 `"PREFIX:NAME"` 格式——`local:NAME`（is_local=true）、`CATEGORY:NAME`（按 category 精确匹配）、`NAME`（裸名，向后兼容）。解析在 `infra::db::parse_model_spec`，ASR 路由在 `asr::config::resolve_engine_in_config`，LLM 在 `infra::db::load_llm_model`。
 - **缓存策略**：两者都通过 `OnceLock` 缓存，手编配置后需**重启进程**生效
 - **运行时切换**：desktop 的 `RuntimeConfig`（`Arc<RwLock<>>`）支持 `asr_engine` / `polish_mode` 运行时切换
 
@@ -162,10 +163,12 @@ desktop crate 有三个互斥的引擎接入 feature：
 
 ### 引擎路由
 
-引擎名 → 类别 → 具体实现的路由在 `crates/asr/src/config.rs`：
-- `resolve_engine_category(name)` — 查 DB 配置确定引擎属于 Whisper/SenseVoice/Paraformer/Qwen3Asr/Zipformer
-- `pick_entry(cfg, category, name)` — 取具体模型配置
-- `AsrEngineManager` — 按需加载 + 缓存（最多 2 个引擎实例），秒级切换
+引擎 spec → 类别 → 具体实现的路由在 `crates/asr/src/config.rs`：
+- `parse_model_spec(spec)` — 解析 `"PREFIX:NAME"` 字符串为 `ModelSpec` 枚举（`Local` / `Category` / `NameOnly`），定义在 `infra::db`
+- `resolve_engine_in_config(cfg, spec)` — 统一解析入口，按 spec 在 `AsrConfig` 中查找 (category, 裸名, entry)
+- `resolve_engine_category(spec)` — 委托 `resolve_engine_in_config`，返回类别（Whisper/SenseVoice/Paraformer/Qwen3Asr/Zipformer）
+- `pick_entry(cfg, category, name)` — 按 category + 裸名取具体模型配置
+- `AsrEngineManager.switch_model(spec)` — 解析 spec 后用**裸名**做缓存键（最多 2 个引擎实例），秒级切换
 
 ### 流式 vs 离线判定
 

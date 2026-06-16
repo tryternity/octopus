@@ -7,7 +7,7 @@ use octopus_infra::consts::{DEFAULT_ASR_MODEL_DIR, SILERO_VAD_PATH};
 use octopus_infra::octopus_config_home;
 
 // ── Model config schema（DB models 表）──
-pub use octopus_infra::db::{AsrConfig, AsrSection, ModelEntry};
+pub use octopus_infra::db::{parse_model_spec, AsrConfig, AsrSection, ModelEntry, ModelSpec};
 
 // ── Config loading ──
 
@@ -153,53 +153,82 @@ pub enum EngineCategory {
     Zipformer,
 }
 
-/// Resolve an engine name (e.g. "paraformer-bilingual") to its category
-/// by looking up which section in DB contains it.
-/// Returns `None` if the engine name is not found in any section.
-pub fn resolve_engine_category(engine_name: &str) -> Option<EngineCategory> {
-    let config = load_config().ok()?;
+/// DB `models.category` 字符串 → EngineCategory 映射。
+/// 仅映射 ASR 本地引擎类型（whisper/sensevoice/paraformer/qwen3-asr/zipformer），
+/// 其他 category（如远程供应商 `aliyun`）返回 None。
+fn engine_category_from_str(s: &str) -> Option<EngineCategory> {
+    match s {
+        "whisper" => Some(EngineCategory::Whisper),
+        "sensevoice" => Some(EngineCategory::SenseVoice),
+        "paraformer" => Some(EngineCategory::Paraformer),
+        "qwen3-asr" => Some(EngineCategory::Qwen3Asr),
+        "zipformer" => Some(EngineCategory::Zipformer),
+        _ => None,
+    }
+}
 
-    if config
-        .asr
-        .whisper
-        .as_ref()
-        .map_or(false, |m| m.contains_key(engine_name))
-    {
-        return Some(EngineCategory::Whisper);
+/// 按固定顺序遍历 AsrConfig 的 5 个 section（用于 NameOnly / Local 查找）。
+/// 顺序与 `resolve_engine_category` 原始逻辑一致。
+fn all_sections<'a>(
+    cfg: &'a AsrConfig,
+) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 5] {
+    [
+        (cfg.asr.whisper.as_ref(), EngineCategory::Whisper),
+        (cfg.asr.sensevoice.as_ref(), EngineCategory::SenseVoice),
+        (cfg.asr.paraformer.as_ref(), EngineCategory::Paraformer),
+        (cfg.asr.qwen3_asr.as_ref(), EngineCategory::Qwen3Asr),
+        (cfg.asr.zipformer.as_ref(), EngineCategory::Zipformer),
+    ]
+}
+
+/// 解析 spec 并在已加载配置中查找，返回 (category, 裸名, entry 引用)。
+///
+/// spec 格式见 [`parse_model_spec`]：
+/// - `local:NAME` — 遍历所有 section，匹配 `is_local=true AND name`
+/// - `CATEGORY:NAME` — CATEGORY 必须是已知引擎类型（whisper/sensevoice/...），精确查对应 section
+/// - `NAME`（无冒号）— 遍历所有 section 按 name 查找（向后兼容）
+pub fn resolve_engine_in_config<'a, 'b>(
+    cfg: &'a AsrConfig,
+    spec: &'b str,
+) -> Option<(EngineCategory, &'b str, &'a ModelEntry)> {
+    let parsed = parse_model_spec(spec);
+    let name = parsed.name();
+    match parsed {
+        ModelSpec::Local(_) => {
+            for (section, cat) in all_sections(cfg) {
+                if let Some(map) = section {
+                    if let Some(entry) = map.get(name) {
+                        if entry.is_local {
+                            return Some((cat, name, entry));
+                        }
+                    }
+                }
+            }
+            None
+        }
+        ModelSpec::Category(cat_str, _) => {
+            let cat = engine_category_from_str(cat_str)?;
+            pick_entry(cfg, cat, name).map(|e| (cat, name, e))
+        }
+        ModelSpec::NameOnly(_) => {
+            for (section, cat) in all_sections(cfg) {
+                if let Some(map) = section {
+                    if let Some(entry) = map.get(name) {
+                        return Some((cat, name, entry));
+                    }
+                }
+            }
+            None
+        }
     }
-    if config
-        .asr
-        .sensevoice
-        .as_ref()
-        .map_or(false, |m| m.contains_key(engine_name))
-    {
-        return Some(EngineCategory::SenseVoice);
-    }
-    if config
-        .asr
-        .paraformer
-        .as_ref()
-        .map_or(false, |m| m.contains_key(engine_name))
-    {
-        return Some(EngineCategory::Paraformer);
-    }
-    if config
-        .asr
-        .qwen3_asr
-        .as_ref()
-        .map_or(false, |m| m.contains_key(engine_name))
-    {
-        return Some(EngineCategory::Qwen3Asr);
-    }
-    if config
-        .asr
-        .zipformer
-        .as_ref()
-        .map_or(false, |m| m.contains_key(engine_name))
-    {
-        return Some(EngineCategory::Zipformer);
-    }
-    None
+}
+
+/// Resolve a model spec (e.g. "local:zipformer-small-ctc", "zipformer:zipformer-small-ctc",
+/// or bare "zipformer-small-ctc") to its [`EngineCategory`] by looking up DB models.
+/// Returns `None` if the spec doesn't match any enabled ASR model.
+pub fn resolve_engine_category(spec: &str) -> Option<EngineCategory> {
+    let config = load_config().ok()?;
+    resolve_engine_in_config(&config, spec).map(|(cat, _, _)| cat)
 }
 
 // ── List all available engines ──
@@ -269,29 +298,32 @@ pub struct ResolvedEngine {
 
 /// 解析 config.yaml.asr_engine 为具体引擎（全局默认引擎入口）。
 ///
-/// 解析规则：
-/// - `asr_engine` 非空且在 DB `models` 表按 name 命中 → 用命中项
-/// - `asr_engine` 为空 / 匹配不到任何模型 → 回退兜底引擎（zipformer-small-ctc）
+/// `asr_engine` 支持 spec 格式（见 [`parse_model_spec`]）：
+/// - `"local:zipformer-small-ctc"` — is_local=true AND name
+/// - `"zipformer:zipformer-small-ctc"` — category AND name
+/// - `"zipformer-small-ctc"` — 向后兼容，仅按 name
 ///
-/// 兜底级联：先从 DB `asr.zipformer` section 查 key `"zipformer-small-ctc"`
-/// （用户手编 source 仍生效）；查不到再硬构造（靠 DEFAULT_ASR_MODEL_DIR 本地打包路径）。
+/// 解析规则：
+/// - 非空且命中 → 返回裸名（去掉前缀）+ category + entry
+/// - 空 / 匹配不到 → 回退兜底引擎（zipformer-small-ctc）
+///
+/// 返回的 `ResolvedEngine.name` 始终是**裸名**（不含 `local:` / `category:` 前缀），
+/// 下游引擎缓存和模型加载按裸名工作。
 ///
 /// 仅服务「全局默认」（server 启动 preheat、请求未带 engine 时）。
-/// 显式 name 路径（cli `--model`、AsrEngineManager.switch_model、server 请求带 engine）
-/// 直接走 `resolve_engine_category + pick_entry`，不经此函数、不走兜底。
+/// 显式 spec 路径（cli `--model`、AsrEngineManager.switch_model、server 请求带 engine）
+/// 直接走 `resolve_engine_in_config + pick_entry`，不经此函数、不走兜底。
 pub fn resolve_active_engine(asr_engine: &str) -> Result<ResolvedEngine> {
     let cfg = load_config()?;
 
     // 1. 显式配置命中
     if !asr_engine.is_empty() {
-        if let Some(category) = resolve_engine_category(asr_engine) {
-            if let Some(entry) = pick_entry(&cfg, category, asr_engine) {
-                return Ok(ResolvedEngine {
-                    name: asr_engine.to_string(),
-                    category,
-                    entry: entry.clone(),
-                });
-            }
+        if let Some((category, bare_name, entry)) = resolve_engine_in_config(&cfg, asr_engine) {
+            return Ok(ResolvedEngine {
+                name: bare_name.to_string(),
+                category,
+                entry: entry.clone(),
+            });
         }
         log::warn!(
             "config.yaml asr_engine='{}' 在 DB models 表中未匹配到，回退兜底引擎",
@@ -484,5 +516,74 @@ mod tests {
                 );
             }
         }
+    }
+
+    // ── ModelSpec 解析测试 ──
+
+    #[test]
+    fn parse_spec_local_prefix() {
+        assert_eq!(parse_model_spec("local:zipformer-small-ctc"), ModelSpec::Local("zipformer-small-ctc"));
+    }
+
+    #[test]
+    fn parse_spec_category_prefix() {
+        assert_eq!(
+            parse_model_spec("zipformer:zipformer-small-ctc"),
+            ModelSpec::Category("zipformer", "zipformer-small-ctc")
+        );
+    }
+
+    #[test]
+    fn parse_spec_bare_name() {
+        assert_eq!(parse_model_spec("zipformer-small-ctc"), ModelSpec::NameOnly("zipformer-small-ctc"));
+    }
+
+    #[test]
+    fn resolve_local_prefix_finds_local_model() {
+        let cfg = cfg_with_zipformer(); // make_entry sets is_local=true
+        let (cat, name, entry) = resolve_engine_in_config(&cfg, "local:zipformer-small-ctc").unwrap();
+        assert_eq!(cat, EngineCategory::Zipformer);
+        assert_eq!(name, "zipformer-small-ctc");
+        assert!(entry.is_local);
+    }
+
+    #[test]
+    fn resolve_category_prefix_matches_section() {
+        let cfg = cfg_with_zipformer();
+        let (cat, name, _) = resolve_engine_in_config(&cfg, "zipformer:zipformer-multi").unwrap();
+        assert_eq!(cat, EngineCategory::Zipformer);
+        assert_eq!(name, "zipformer-multi");
+    }
+
+    #[test]
+    fn resolve_category_prefix_wrong_category_returns_none() {
+        let cfg = cfg_with_zipformer();
+        // whisper:zipformer-multi → whisper section 不含此 name
+        assert!(resolve_engine_in_config(&cfg, "whisper:zipformer-multi").is_none());
+    }
+
+    #[test]
+    fn resolve_bare_name_backward_compat() {
+        let cfg = cfg_with_zipformer();
+        let (cat, name, _) = resolve_engine_in_config(&cfg, "zipformer-small-ctc").unwrap();
+        assert_eq!(cat, EngineCategory::Zipformer);
+        assert_eq!(name, "zipformer-small-ctc");
+    }
+
+    #[test]
+    fn resolve_unknown_category_prefix_returns_none() {
+        let cfg = cfg_with_zipformer();
+        // aliyun 不是已知引擎 category → None
+        assert!(resolve_engine_in_config(&cfg, "aliyun:zipformer-small-ctc").is_none());
+    }
+
+    #[test]
+    fn engine_category_from_str_maps_five_types() {
+        assert_eq!(engine_category_from_str("whisper"), Some(EngineCategory::Whisper));
+        assert_eq!(engine_category_from_str("sensevoice"), Some(EngineCategory::SenseVoice));
+        assert_eq!(engine_category_from_str("paraformer"), Some(EngineCategory::Paraformer));
+        assert_eq!(engine_category_from_str("qwen3-asr"), Some(EngineCategory::Qwen3Asr));
+        assert_eq!(engine_category_from_str("zipformer"), Some(EngineCategory::Zipformer));
+        assert_eq!(engine_category_from_str("aliyun"), None);
     }
 }
