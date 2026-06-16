@@ -88,14 +88,17 @@ impl SharedAudioState {
     /// 降级（spec §9）：denoise_enabled=false / 模型缺失 / 实例未就绪 → 走直通（原生→16k），
     /// 仅 warn 日志，绝不 panic、绝不阻断录音。单帧推理失败已由 DenoiseProcessor 内部 bypass。
     ///
-    /// 锁顺序：down_sampler（stream_resample 内 lock→用→drop）→ denoise（lock→用→drop
-    /// 后才进下一阶段）→ resampler。`enhanced_48k` 的 `let mut g` 作用域在 if 块内，
-    /// drop 在 match 前完成，无锁交织。
+    /// 锁顺序：denoise（if 块内 lock）→ 持有期间内嵌 down_sampler（stream_resample 内
+    /// lock→用→drop，与 denoise 短暂同时持有）→ denoise 释放（if 块结束）→ resampler
+    /// （match 内 stream_resample）。三锁**无任何反向获取路径**：start/stop/drain_samples
+    /// 全在 coordinator 单线程串行调用，cpal 回调只触 samples 锁。故 denoise 与 down_sampler
+    /// 虽短暂同时持有，顺序固定，不死锁。
     fn process_pipeline(&self, raw: &[f32], rate: u32, flush: bool) -> Vec<f32> {
         let cfg = octopus_asr::config::load_app_config_cached();
         let denoise_on = cfg.denoise_enabled;
 
-        // denoise 锁：仅本块持有，用完即 drop（不跨 stream_resample 持有，避免与采样器锁交织）
+        // denoise 锁：本块持有；期间调用 stream_resample(down_sampler) 会短暂同时持有
+        // down_sampler 锁——顺序固定（denoise→down_sampler），无反向获取，不死锁。
         let enhanced_48k: Option<Vec<f32>> = if denoise_on {
             let mut g = self.denoise.lock().unwrap();
             if let Some(denoise) = g.as_mut() {

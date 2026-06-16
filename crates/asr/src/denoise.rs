@@ -247,38 +247,68 @@ impl DenoiseProcessor {
             }
         };
 
-        // 提取增强频谱（扁平 [re0,im0,re1,im1,...]，长 481*2）
-        let (_es, enh_data) = outputs["enhanced_spec"]
-            .try_extract_tensor::<f32>()
-            .expect("extract enhanced_spec");
+        // 提取所有输出张量（不可变，不修改 self）；任一失败或形状不符 → bypass 原始样本
+        // （GRU 保持，warn，不 panic）。与 session.run 失败同处理，保证持锁路径无 panic 面。
+        let (enh_data, enc_data, erb_data, df_data) = {
+            let enh = outputs["enhanced_spec"].try_extract_tensor::<f32>();
+            let enc = outputs["new_enc_h"].try_extract_tensor::<f32>();
+            let erb = outputs["new_erb_h"].try_extract_tensor::<f32>();
+            let df = outputs["new_df_h"].try_extract_tensor::<f32>();
+            match (enh, enc, erb, df) {
+                (Ok(a), Ok(b), Ok(c), Ok(d)) => (a.1, b.1, c.1, d.1),
+                (e1, e2, e3, e4) => {
+                    let first_err = e1.err().or_else(|| e2.err()).or_else(|| e3.err()).or_else(|| e4.err());
+                    log::warn!(
+                        "DenoiseProcessor 输出张量提取失败，bypass 原始样本: {:?}",
+                        first_err
+                    );
+                    self.out_buf.extend_from_slice(new_samples);
+                    return;
+                }
+            }
+        };
+        // 长度校验（防 IO 契约漂移导致 panic）：enh_spec 仅取前 NBINS 故需 >= 481*2；
+        // GRU 状态 copy_from_slice 要求精确长度（enc=256, erb=512, df=512），多/少都会 panic。
+        if enh_data.len() < NBINS * 2
+            || enc_data.len() != 256
+            || erb_data.len() != 512
+            || df_data.len() != 512
+        {
+            log::warn!(
+                "DenoiseProcessor 输出形状异常（enh={},enc={},erb={},df={}），bypass 原始样本",
+                enh_data.len(),
+                enc_data.len(),
+                erb_data.len(),
+                df_data.len()
+            );
+            self.out_buf.extend_from_slice(new_samples);
+            return;
+        }
+
+        // —— 以下全部成功，安全修改 self ——
+        // 增强频谱 → 复数（扁平 [re0,im0,re1,im1,...]，长 481*2）
         let enh_spec: Vec<Complex<f32>> = (0..NBINS)
             .map(|i| Complex::new(enh_data[2 * i], enh_data[2 * i + 1]))
             .collect();
 
         // 回写 GRU 状态（照抄 vad.rs 的 as_slice_mut + copy_from_slice 模式）
-        let (_s, enc_data) = outputs["new_enc_h"]
-            .try_extract_tensor::<f32>()
-            .expect("extract new_enc_h");
         if let Some(s) = self.enc_h.as_slice_mut() {
             s.copy_from_slice(&enc_data);
         } else {
-            self.enc_h = Array3::from_shape_vec((1, 1, 256), enc_data.to_vec()).expect("enc_h reshape");
+            self.enc_h =
+                Array3::from_shape_vec((1, 1, 256), enc_data.to_vec()).expect("enc_h reshape");
         }
-        let (_s, erb_data) = outputs["new_erb_h"]
-            .try_extract_tensor::<f32>()
-            .expect("extract new_erb_h");
         if let Some(s) = self.erb_h.as_slice_mut() {
             s.copy_from_slice(&erb_data);
         } else {
-            self.erb_h = Array3::from_shape_vec((2, 1, 256), erb_data.to_vec()).expect("erb_h reshape");
+            self.erb_h =
+                Array3::from_shape_vec((2, 1, 256), erb_data.to_vec()).expect("erb_h reshape");
         }
-        let (_s, df_data) = outputs["new_df_h"]
-            .try_extract_tensor::<f32>()
-            .expect("extract new_df_h");
         if let Some(s) = self.df_h.as_slice_mut() {
             s.copy_from_slice(&df_data);
         } else {
-            self.df_h = Array3::from_shape_vec((2, 1, 256), df_data.to_vec()).expect("df_h reshape");
+            self.df_h =
+                Array3::from_shape_vec((2, 1, 256), df_data.to_vec()).expect("df_h reshape");
         }
 
         // iSTFT → 增强时域 N_FFT 样本
