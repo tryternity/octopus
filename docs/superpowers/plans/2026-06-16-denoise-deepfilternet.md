@@ -4,7 +4,7 @@
 
 **Goal:** 在麦克风录音链路中插入 DeepFilterNet3（ONNX）流式环境降噪层，在送入 VAD/ASR 前降低背景噪声，跨平台（mac/win/linux）生效。
 
-**Architecture:** 新建 `crates/asr/src/denoise.rs` 封装 `DenoiseProcessor`（sqrt-Hann STFT + ERB 特征 + dfn3.onnx 有状态推理 + iSTFT overlap-add）。集成在采集层 `SharedAudioState` 内（coordinator 无感），48kHz 域处理、前后各一次重采样桥接到 ASR 的 16kHz。复用现有 `rustfft` 依赖与 `ort` 推理，零新依赖。配置仅 `denoise_enabled`（infra::AppConfig），模型走 HF cache，失败降级直通不阻断录音。
+**Architecture:** 新建 `crates/asr/src/denoise.rs` 封装 `DenoiseProcessor`（Vorbis 窗 STFT + ERB 特征（dB + EMA 归一化）+ dfn3.onnx 有状态推理 + conv_lookahead=2 帧对齐 + iSTFT overlap-add）。集成在采集层 `SharedAudioState` 内（coordinator 无感），48kHz 域处理、前后各一次重采样桥接到 ASR 的 16kHz。复用现有 `rustfft` 依赖与 `ort` 推理，零新依赖。配置仅 `denoise_enabled`（infra::AppConfig），模型走 HF cache，失败降级直通不阻断录音。
 
 **Tech Stack:** Rust、`ort 2.0.0-rc.12`（ONNX Runtime）、`rustfft 6`、`ndarray 0.17`、`rubato 0.16`（已有依赖）、Tauri/cpal。
 
@@ -18,8 +18,13 @@
   - 入 `spec[1,1,1,481,2]` `feat_erb[1,1,1,32]` `feat_spec[1,1,1,96,2]` `enc_h[1,1,256]` `erb_h[2,1,256]` `df_h[2,1,256]`
   - 出 `enhanced_spec[1,1,1,481,2]` `new_enc_h` `new_erb_h` `new_df_h`
 - **DSP 常量**：n_fft=960、hop=480（48kHz，10ms）、481 bins、32 ERB 带、96 DF bins。
-- **窗**：sqrt-Hann，`w[n]=sqrt(0.5-0.5·cos(2πn/960))`，分析窗=合成窗。50% overlap 下 COLA 增益=1（无需归一化）。
-- **ERB 尺度**：Glasberg-Moore，`f_erb=9.265·ln(1+f/24.863)`。
+- **窗**：Vorbis，`w[n]=sin(π/2·sin²(π(n+0.5)/960))`，分析窗=合成窗。50% overlap 下 COLA 增益=1。
+- **ERB 尺度**：Glasberg-Moore，`f_erb=9.265·ln(1+f/228.833)`（分母 228.833 = 24.7×9.265，对齐 libDF）。
+- **特征归一化**（对齐 libDF，缺失则模型收错误量级）：
+  - `feat_erb`：band 互相关功率 `(Σ|spec|²/width)²` → `10·log10(1e-10+x)` → EMA 均值归一化（alpha=0.99）→ `/40`
+  - `feat_spec`：前 96 bin 复数 → EMA 跟踪 `|z|`（alpha=0.99），除以 `√state`
+  - 初始状态：feat_erb = linspace(-60, -90, 32)，feat_spec = linspace(0.001, 0.0001, 96)
+- **conv_lookahead=2**：模型导出时移除了内部 lookahead，调用方需环形缓冲：spec[t] 配 feat[t+2]。首次推理需累积 3 帧（20ms 算法延迟），flush 填 2 零特征帧排空队列。
 - **rustfft 6 API**：`FftPlanner::new()` → `plan_fft(N, FftDirection::Forward/Inverse)` → `fft.process(&mut [Complex<f32>])`。**inverse 不含 1/N 归一化**，需手动 `×1/N`。
 - **ort**：参照 `crates/asr/src/vad.rs` 的 Session 加载 + `ort::inputs!` + `TensorRef::from_array_view` + `session.run`。
 - **测试模型依赖**：纯 DSP 测试（窗、STFT 重建、ERB、OLA）**不需模型**，常规跑；推理/集成测试需 `dfn3.onnx`，标 `#[ignore]`。
@@ -172,7 +177,7 @@ git commit -m "feat(asr): add find_df3() for DeepFilterNet3 model discovery"
 
 ---
 
-## Task 3: denoise.rs 骨架 + sqrt-Hann 窗 + STFT/iSTFT 重建（纯 DSP，无需模型）
+## Task 3: denoise.rs 骨架 + Vorbis 窗 + STFT/iSTFT 重建（纯 DSP，无需模型）
 
 **Files:**
 - Create: `crates/asr/src/denoise.rs`
@@ -1122,3 +1127,55 @@ Plan 完成并保存至 `docs/superpowers/plans/2026-06-16-denoise-deepfilternet
 **2. Inline Execution** — 本会话内用 executing-plans 批量执行，设检查点 review。
 
 哪种？
+
+---
+
+## Task 9: Bug 修复 — 对齐 libDF 参考实现（2026-06-16）
+
+> 初版实现（Task 1-8）完成后，实测发现降噪后 ASR 效果显著下降。经对比 `penta2himajin/mellonella`（模型导出方）参考实现和 `Rikorose/DeepFilterNet/libDF`，发现 4 个 bug。
+
+**根因**：denoise.rs 的特征提取逻辑与模型训练时的特征分布完全不匹配，模型输出的增强频谱是垃圾，反而破坏了语音信号。
+
+### Bug 列表
+
+| # | Bug | 初版值 | 正确值（libDF） | 影响 |
+|---|-----|--------|----------------|------|
+| 1 | **ERB 公式分母** | `24.863` | `228.833` (= 24.7×9.265) | 带边界错 9.2 倍，32 个 ERB 带覆盖频率全错 |
+| 2 | **feat_erb 缺归一化** | 原始 `\|spec\|²` 求和 | band 互相关功率 → dB → EMA 均值归一化 → /40 | 模型收到错误量级 |
+| 3 | **feat_spec 缺归一化** | 原始 re/im | EMA 跟踪 `\|z\|`，除以 √state | 模型收到错误量级 |
+| 4 | **conv_lookahead 缺失** | spec[t] 立即配 feat[t] | VecDeque 环形缓冲，spec[t] 配 feat[t+2] | 帧错位 20ms |
+
+**额外修正**：
+- 窗函数：sqrt-Hann → **Vorbis**（`sin(π/2·sin²(π(n+0.5)/N))`）
+- band 功率公式：`Σ|spec|²` → **`(Σ|spec|²/width)²`**（libDF compute_band_corr 自相关形式）
+
+### 参考来源
+
+- `penta2himajin/mellonella` → `rust/mellonella-core/src/dfn3.rs`（Rust DFN3 ONNX 调用方）
+- `Rikorose/DeepFilterNet` → `libDF/src/lib.rs`（`freq2erb` / `band_mean_norm_erb` / `band_unit_norm` / Vorbis 窗 / `MEAN_NORM_INIT` / `UNIT_NORM_INIT`）
+
+### 关键参数（对齐后）
+
+| 参数 | 值 |
+|------|-----|
+| 窗 | Vorbis：`sin(π/2·sin²(π(n+0.5)/N))` |
+| ERB 分母 | 228.833 = 24.7 × 9.265 |
+| conv_lookahead | 2 |
+| norm_alpha | 0.99 (= exp(-hop/sr/τ) ≈ exp(-0.01)) |
+| feat_erb 归一化 | dB → EMA(state) → (x - state) / 40 |
+| feat_spec 归一化 | EMA 跟踪 \|z\|，X / √state |
+| mean_norm_state 初始 | linspace(-60.0, -90.0, 32) |
+| unit_norm_state 初始 | linspace(0.001, 0.0001, 96) |
+
+### 改动
+
+- [x] 重写 `crates/asr/src/denoise.rs`：Vorbis 窗 + ERB 公式修正 + 归一化状态 + conv_lookahead 环形缓冲
+- [x] 更新 `docs/architecture.md` denoise 描述
+- [x] 更新 `docs/superpowers/specs/2026-06-16-denoise-deepfilternet-design.md` §3.2 / §5 / §13
+- [x] 更新本 plan 头部关键技术契约 + 追加 Task 9
+
+### 验证
+
+- [x] `cargo test -p octopus-asr -- denoise`：8 单元测试全过（Vorbis COLA、STFT/iSTFT 重建 SNR>40dB、ERB 公式对齐 libDF、归一化数值正确、band 覆盖 481 bins）
+- [x] `cargo check --workspace` 全编译通过
+- [x] `cargo test` 全量 63 tests passed, 0 failed

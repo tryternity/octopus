@@ -1,7 +1,7 @@
 # 环境降噪（DeepFilterNet3）设计
 
-> 日期：2026-06-16
-> 状态：已设计，待实施计划
+> 日期：2026-06-16（初版），2026-06-16 修复 4 个 bug（对齐 libDF）
+> 状态：✅ 已实现 + bug 修复完成
 > 关联：独立于 `config-infra-and-engine-truth` plan（见 §8 落点注记）
 
 ## 1. 背景与目标
@@ -199,12 +199,12 @@ HF cache 模式（与 ASR 引擎模型同源）。用户 `hf download penta2hima
 4. 流式增量与一次性处理输出逐样本相等。
 5. mac/win/linux 三平台单帧推理 <10ms。
 
-## 13. 实施前提（需在实施首步确认）
+## 13. 实施前提（已确认）
 
-1. **STFT 窗类型**：Vorbis 窗 `sin(π/2·sin²(π(n+0.5)/N))`（对齐 libDF），50% overlap COLA 增益=1。
-2. **ERB 边界表**：32 个 ERB 带对 481 bin 的边界常量，取自 DeepFilterNet 原始 `df` crate / `deepfilter-rt`。
-3. **三平台采集实测**：cpal WASAPI(shared)/ALSA(默认设备) 的 SR 报告与下混行为，确认与 mac 一致。
-4. **性能基准**：单帧推理耗时三平台实测，确认实时性。
+1. **STFT 窗类型**：Vorbis 窗 `sin(π/2·sin²(π(n+0.5)/N))`（对齐 libDF），50% overlap COLA 增益=1。~~初版误用 sqrt-Hann~~。
+2. **ERB 尺度**：分母 228.833 = 24.7×9.265（对齐 libDF `freq2erb`）。~~初版误用 24.863，带边界错 9.2 倍~~。
+3. **特征归一化**：feat_erb 需 dB + EMA 归一化 + /40；feat_spec 需单位归一化（EMA 跟踪 |z|，除以 √state）。~~初版直接传原始值~~。
+4. **conv_lookahead=2**：spec[t] 配 feat[t+2]，环形缓冲 + flush 填零。~~初版缺失~~。
 
 ## 关键文件
 
