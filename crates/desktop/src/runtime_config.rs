@@ -104,6 +104,18 @@ fn build_asr_options(
     options
 }
 
+/// 校验引擎名可切换：兜底名恒允许（不依赖 DB），其余须在 engines 列表中。
+fn validate_switch(name: &str, engines: &[octopus_asr::config::EngineInfo]) -> Result<(), String> {
+    if name == FALLBACK_ASR_ENGINE {
+        return Ok(());
+    }
+    if engines.iter().any(|e| e.name == name) {
+        Ok(())
+    } else {
+        Err(format!("引擎 '{}' 不存在，未切换", name))
+    }
+}
+
 // ── config.yaml 写回 ──
 
 /// 读当前 config.yaml → 覆盖 asr_engine → 序列化写回 ~/.octopus/config.yaml。
@@ -168,14 +180,8 @@ pub fn switch_asr_engine(
     rc: State<'_, SharedRuntimeConfig>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    // 校验：name 必须是 DB 已配置的引擎（不走兜底）
-    let exists = octopus_asr::config::list_engines()
-        .map_err(|e| e.to_string())?
-        .iter()
-        .any(|e| e.name == name);
-    if !exists {
-        return Err(format!("引擎 '{}' 不存在，未切换", name));
-    }
+    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    validate_switch(&name, &engines)?;
     {
         let mut g = rc.write().unwrap();
         g.asr_engine = name.clone();
@@ -274,5 +280,19 @@ mod tests {
         );
         assert_eq!(opts3[0].name, "zipformer-small-ctc");
         assert!(opts3[0].current);
+    }
+
+    #[test]
+    fn validate_switch_allows_fallback_even_when_absent() {
+        use octopus_asr::config::{EngineCategory, EngineInfo};
+        let engines = vec![
+            EngineInfo { name: "whisper-small".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+        ];
+        // 兜底名即使不在 engines 也允许
+        assert!(validate_switch("zipformer-small-ctc", &engines).is_ok());
+        // 在列表中的允许
+        assert!(validate_switch("whisper-small", &engines).is_ok());
+        // 不在列表且非兜底 → 拒绝
+        assert!(validate_switch("nonexistent", &engines).is_err());
     }
 }
