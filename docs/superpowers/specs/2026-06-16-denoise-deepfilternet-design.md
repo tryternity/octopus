@@ -43,8 +43,9 @@ octopus 麦克风录音链路当前**无任何噪声消除处理**（已核查�
 ```
 入:
   spec      [1,1,1,481,2]   当前帧 STFT 复数频谱（实部+虚部），n_fft=960 → 481 bins
-  feat_erb  [1,1,1,32]      32 个 ERB 频带能量特征
-  feat_spec [1,1,1,96,2]    前 96 个 bin 的复数频谱特征
+  feat_erb  [1,1,1,32]      32 个 ERB 频带能量（dB + EMA 均值归一化 /40）
+  feat_spec [1,1,1,96,2]    前 96 bin 复数（单位归一化：除以 √EMA(|z|)）
+  注：feat_erb/feat_spec 经 conv_lookahead=2 帧对齐（spec[t] 配 feat[t+2]）
   enc_h     [1,1,256]       encoder GRU 状态（初始 0）
   erb_h     [2,1,256]       erb decoder GRU 状态（2 层，初始 0）
   df_h      [2,1,256]       df decoder GRU 状态（2 层，初始 0）
@@ -71,7 +72,7 @@ drain_samples() / stop()   ← coordinator 线程调用
    │
    ├─ raw(原生SR) →[重采样 48k]→ DenoiseProcessor(48k) →[重采样 16k]→ out   （denoise_enabled）
    │                            │
-   │        每 480 样本(10ms)：STFT(hann, n_fft=960) → feat_erb / feat_spec
+   │        每 480 样本(10ms)：STFT(Vorbis 窗, n_fft=960) → feat_erb(dB+EMA归一化) / feat_spec(单位归一化)
    │                            │  dfn3.onnx(spec + 3 组 GRU 状态) → enhanced_spec
    │                            │  iSTFT + overlap-add → 480 增强样本
    │                            └─ GRU 状态跨帧保持（录音会话内）
@@ -104,8 +105,11 @@ pub struct DenoiseProcessor {
     out_buf:  Vec<f32>,   // 已增强样本待 drain
     ola_prev: Vec<f32>,   // 上一帧 iSTFT（overlap-add 用）
     // DSP 常量（构造时算一次）
-    window:    Vec<f32>,            // 分析/合成窗（hann/sqrt-hann，对齐 DF）
-    erb_bounds: Vec<(usize,usize)>, // 481 bin → 32 ERB 带边界
+    window:     Vec<f32>,        // Vorbis 分析/合成窗（COLA 50% overlap）
+    erb_widths:  Vec<usize>,       // 32 ERB 带宽度（对齐 libDF erb_fb）
+    erb_norm_state: Vec<f32>,  // [32] feat_erb EMA 状态
+    df_norm_state:  Vec<f32>,  // [96] feat_spec EMA 状态
+    spec_queue:  VecDeque,      // conv_lookahead 环形缓冲
     fft: rustfft::FftPlanner<f32>,  // n_fft=960
 }
 
@@ -122,9 +126,10 @@ impl DenoiseProcessor {
 ```
 in_buf 凑满 480 → 取 [上帧尾 480 .. 上帧尾+960] = 960 样本
   → × window → rustfft(960) → spec[481] 复数
-  → feat_erb[32]    = 按 erb_bounds 对 |spec|² 分带求和
-  → feat_spec[96,2] = spec 前 96 bin 的 (re, im)
-  → ort run(spec, feat_erb, feat_spec, enc_h, erb_h, df_h)
+  → feat_erb[32]    = band 互相关功率 → 10·log10 → EMA 均值归一化 /40
+  → feat_spec[96,2] = spec 前 96 bin → 单位归一化（EMA 跟踪 |z|，除以 √state）
+  → conv_lookahead 队列：spec[t] 配 feat[t+2]
+  → ort run(spec[t], feat_erb[t+2], feat_spec[t+2], enc_h, erb_h, df_h)
        → enhanced_spec[481,2], new_enc_h, new_erb_h, new_df_h
   → rustfft 逆变换(enhanced_spec) → × window → OLA(减上帧重叠) → 480 增强样本入 out_buf
   → in_buf 弹出 480（保留余数供下次）
@@ -196,7 +201,7 @@ HF cache 模式（与 ASR 引擎模型同源）。用户 `hf download penta2hima
 
 ## 13. 实施前提（需在实施首步确认）
 
-1. **STFT 窗类型与 OLA 增益**：对齐 `deepfilter-rt` 参考实现（hann / sqrt-hann / COLA 增益系数），确保重建无损。
+1. **STFT 窗类型**：Vorbis 窗 `sin(π/2·sin²(π(n+0.5)/N))`（对齐 libDF），50% overlap COLA 增益=1。
 2. **ERB 边界表**：32 个 ERB 带对 481 bin 的边界常量，取自 DeepFilterNet 原始 `df` crate / `deepfilter-rt`。
 3. **三平台采集实测**：cpal WASAPI(shared)/ALSA(默认设备) 的 SR 报告与下混行为，确认与 mac 一致。
 4. **性能基准**：单帧推理耗时三平台实测，确认实时性。
