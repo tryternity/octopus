@@ -54,7 +54,16 @@ enum Stage {
     },
     /// VAD 伪流式：tick 驱动分段识别（非流式引擎使用）
     VadSegmented {
+        /// 检测用 VAD：逐 tick 喂入顺序音频，**有状态累积**（LSTM 跨 tick 续接），
+        /// 用于 compute_speech_chunks 的语音/静音门控。语义为「流式检测」，
+        /// 录音期间从不 reset（续接上下文使边界判定更稳）。
         vad: octopus_asr::vad::SileroVad,
+        /// 过滤用 VAD：仅 filter_speech_from_buffer 用，**每段独立**。
+        /// 与检测 VAD 分离：检测流喂入的音频与 send_buffer（overlap_tail + audio_buffer）
+        /// 存在重叠，若共用一个有状态 VAD 会双重喂入 + 跨段污染 LSTM h/c → 段首 gating 失真。
+        /// 故每次过滤前 reset() 归零，恢复「每段独立」语义（等价于旧代码每 buffer 新建 VAD），
+        /// 同时避免每次切分重建 ONNX Session 的开销（实例在录音开始时一次性创建）。
+        filter_vad: octopus_asr::vad::SileroVad,
         /// 音频累积缓冲区（16kHz mono f32）
         audio_buffer: Vec<f32>,
         /// 前一窗口末尾 0.2s 的 overlap 音频
@@ -378,6 +387,17 @@ fn handle_toggle(
                 match octopus_asr::config::find_silero_vad() {
                     Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
                         Ok(vad) => {
+                            // 第二个独立 VAD 实例用于过滤（每段 reset，避免与检测流共用造成
+                            // LSTM 状态污染）。ONNX Session 在此一次性创建，过滤时只 reset 不重建。
+                            // 同一路径 vad 已加载成功，filter_vad 失败属异常，直接放弃。
+                            let filter_vad = match octopus_asr::vad::SileroVad::new(&path) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    error!("filter_vad init failed: {}, abort VadSegmented", e);
+                                    let _ = audio.stop();
+                                    return;
+                                }
+                            };
                             crate::result_window::show_result(app_handle, "正在聆听…");
                             crate::tray::update_tray_label(
                                 app_handle,
@@ -389,6 +409,7 @@ fn handle_toggle(
 
                             *stage = Stage::VadSegmented {
                                 vad,
+                                filter_vad,
                                 audio_buffer: Vec::new(),
                                 overlap_tail: Vec::new(),
                                 transcript: Transcript::new(now_millis(), config.polish_mode),
@@ -415,7 +436,7 @@ fn handle_toggle(
         }
 
         Stage::VadSegmented {
-            ref mut vad,
+            ref mut filter_vad,
             audio_buffer,
             overlap_tail,
             transcript,
@@ -443,7 +464,7 @@ fn handle_toggle(
             if *has_speech && !audio_buffer.is_empty() {
                 let mut send_buffer = overlap_tail.clone();
                 send_buffer.extend_from_slice(audio_buffer);
-                let speech_samples = filter_speech_from_buffer(vad, &send_buffer);
+                let speech_samples = filter_speech_from_buffer(filter_vad, &send_buffer);
                 if !speech_samples.is_empty() {
                     let seq = *next_seq;
                     *next_seq += 1;
@@ -788,6 +809,7 @@ fn handle_vad_segmented_tick(
 ) {
     if let Stage::VadSegmented {
         vad,
+        filter_vad,
         audio_buffer,
         overlap_tail,
         transcript,
@@ -845,8 +867,8 @@ fn handle_vad_segmented_tick(
             *has_speech = false;
             *silence_duration = 0.0;
 
-            // VAD 过滤语音片段
-            let speech_samples = filter_speech_from_buffer(vad, &send_buffer);
+            // VAD 过滤语音片段（用独立 filter_vad，每段 reset，不污染检测流）
+            let speech_samples = filter_speech_from_buffer(filter_vad, &send_buffer);
             if !speech_samples.is_empty() {
                 let seq = *next_seq;
                 *next_seq += 1;
@@ -954,9 +976,19 @@ fn spawn_offline_transcription_with_seq(
     });
 }
 
-/// 对缓冲区音频做 VAD 过滤（复用传入的 VAD 实例，避免重复创建 ONNX Session）
-fn filter_speech_from_buffer(vad: &mut octopus_asr::vad::SileroVad, samples: &[f32]) -> Vec<f32> {
-    let speech = octopus_asr::audio::filter_speech(samples, vad, 480, 0.5);
+/// 对缓冲区音频做 VAD 过滤。
+///
+/// 使用 stage 的独立 `filter_vad`（与检测流分离），**过滤前先 reset() 归零 LSTM 状态**，
+/// 使每段过滤处于「冷启动」语义——等价于旧代码每个 buffer 新建一个 VAD（h=0）。
+/// 检测流（stage.vad）会按顺序逐 tick 喂入音频并累积状态，send_buffer 与之重叠，
+/// 若共用会双重喂入 + 跨段污染 → 段首 gating 失真。ONNX Session 在录音开始时一次性
+/// 创建，这里只 reset 不重建，兼顾正确性与性能。
+fn filter_speech_from_buffer(
+    filter_vad: &mut octopus_asr::vad::SileroVad,
+    samples: &[f32],
+) -> Vec<f32> {
+    filter_vad.reset();
+    let speech = octopus_asr::audio::filter_speech(samples, filter_vad, 480, 0.5);
     if speech.is_empty() {
         debug!("VadSegmented: no speech detected in buffer");
         Vec::new()
@@ -1411,54 +1443,113 @@ enum DbCommand {
 
 static DB_SENDER: std::sync::OnceLock<std::sync::mpsc::Sender<DbCommand>> = std::sync::OnceLock::new();
 
+/// 关机标志：置位后后台线程排空队列再退出（避免入队未处理的命令丢失）。
+static DB_SHUTDOWN: AtomicBool = AtomicBool::new(false);
+
+/// 后台写线程句柄（shutdown_db 用于 join，等待排空完成）。
+/// 用 `Mutex<Option<>>` 包裹：`JoinHandle::join` 需要所有权，shutdown 时 take 出来 join。
+static DB_HANDLE: std::sync::OnceLock<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> =
+    std::sync::OnceLock::new();
+
+/// 处理单条 DB 命令（主循环与关机排空共用）。
+fn process_db_command(cmd: DbCommand) {
+    match cmd {
+        DbCommand::Insert { id, text, engine, engine_mode } => {
+            if let Err(e) = octopus_asr::db::insert_transcription_at_id(
+                id,
+                &text,
+                &engine,
+                engine_mode.as_deref(),
+            ) {
+                warn!("Background DB insert failed: {}", e);
+            }
+        }
+        DbCommand::UpdateRaw { id, text } => {
+            if let Err(e) = octopus_asr::db::update_raw_text(id, &text) {
+                warn!("Background DB update_raw_text failed: {}", e);
+            }
+        }
+        DbCommand::UpdatePolished { id, text, status, model } => {
+            if let Err(e) = octopus_asr::db::update_polished(
+                id,
+                &text,
+                &status,
+                model.as_deref(),
+            ) {
+                warn!("Background DB update_polished failed: {}", e);
+            }
+        }
+        DbCommand::Finalize { id, raw_text, polished_text, polish_status, polish_model, duration_ms } => {
+            if let Err(e) = octopus_asr::db::finalize_transcription(
+                id,
+                &raw_text,
+                polished_text.as_deref(),
+                &polish_status,
+                polish_model.as_deref(),
+                duration_ms,
+            ) {
+                warn!("Background DB finalize failed: {}", e);
+            }
+        }
+    }
+}
+
+/// 排空队列中剩余命令（关机 / 断连后调用）。FIFO 顺序由 channel 保证。
+fn drain_db_queue(rx: &std::sync::mpsc::Receiver<DbCommand>) {
+    let mut drained = 0u32;
+    while let Ok(cmd) = rx.try_recv() {
+        process_db_command(cmd);
+        drained += 1;
+    }
+    if drained > 0 {
+        info!("DB drain: flushed {} queued command(s)", drained);
+    }
+}
+
+/// 应用退出前调用：通知后台 DB 线程排空剩余命令并等待退出。
+///
+/// 背景：DB 写入为非阻塞 actor 模式（调用方 send 后即返回，真实落库在后台线程）。
+/// 若不 drain，常见丢失路径为「录音结束 → Finalize 入队 → 用户立即退出 → 后台线程
+/// 被进程 kill，队列里 Finalize 未落库」→ 该条记录停留在未 finalize 态。挂到 Tauri
+/// `RunEvent::ExitRequested` 后即可保证关机前落库。仅当 actor 已初始化时才需要等待。
+pub fn shutdown_db() {
+    if DB_SENDER.get().is_some() {
+        DB_SHUTDOWN.store(true, Ordering::SeqCst);
+        if let Some(cell) = DB_HANDLE.get() {
+            if let Some(handle) = cell.lock().unwrap().take() {
+                let _ = handle.join();
+            }
+        }
+        info!("Background DB writer drained and joined");
+    }
+}
+
 fn get_db_sender() -> &'static std::sync::mpsc::Sender<DbCommand> {
     DB_SENDER.get_or_init(|| {
         let (tx, rx) = std::sync::mpsc::channel::<DbCommand>();
-        std::thread::spawn(move || {
+        let handle = std::thread::spawn(move || {
             info!("Background DB writer thread started");
-            while let Ok(cmd) = rx.recv() {
-                match cmd {
-                    DbCommand::Insert { id, text, engine, engine_mode } => {
-                        if let Err(e) = octopus_asr::db::insert_transcription_at_id(
-                            id,
-                            &text,
-                            &engine,
-                            engine_mode.as_deref(),
-                        ) {
-                            warn!("Background DB insert failed: {}", e);
-                        }
-                    }
-                    DbCommand::UpdateRaw { id, text } => {
-                        if let Err(e) = octopus_asr::db::update_raw_text(id, &text) {
-                            warn!("Background DB update_raw_text failed: {}", e);
-                        }
-                    }
-                    DbCommand::UpdatePolished { id, text, status, model } => {
-                        if let Err(e) = octopus_asr::db::update_polished(
-                            id,
-                            &text,
-                            &status,
-                            model.as_deref(),
-                        ) {
-                            warn!("Background DB update_polished failed: {}", e);
-                        }
-                    }
-                    DbCommand::Finalize { id, raw_text, polished_text, polish_status, polish_model, duration_ms } => {
-                        if let Err(e) = octopus_asr::db::finalize_transcription(
-                            id,
-                            &raw_text,
-                            polished_text.as_deref(),
-                            &polish_status,
-                            polish_model.as_deref(),
-                            duration_ms,
-                        ) {
-                            warn!("Background DB finalize failed: {}", e);
-                        }
+            loop {
+                // 关机：先排空队列再退出（保留 FIFO 顺序的剩余命令）
+                if DB_SHUTDOWN.load(Ordering::SeqCst) {
+                    drain_db_queue(&rx);
+                    break;
+                }
+                // recv_timeout：周期性唤醒以轮询关机标志（最长 200ms 延迟，退出场景可接受）
+                match rx.recv_timeout(std::time::Duration::from_millis(200)) {
+                    Ok(cmd) => process_db_command(cmd),
+                    Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                    Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => {
+                        // 所有 Sender drop（理论上不会发生，DB_SENDER 为 &'static）；
+                        // 防御性排空后退出
+                        drain_db_queue(&rx);
+                        break;
                     }
                 }
             }
             info!("Background DB writer thread exiting");
         });
+        let _ = DB_HANDLE.set(std::sync::Mutex::new(Some(handle)));
         tx
     })
 }

@@ -4,9 +4,15 @@ use log::{debug, info};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Send-safe shared state between AudioRecorder and coordinator thread.
-/// The cpal::Stream is NOT Send on macOS, so it stays on the creating thread;
-/// only this shared handle crosses thread boundaries.
+/// 音频共享状态：采样缓冲 + 录制标志 + cpal 流（生命周期绑定到本结构）。
+///
+/// cpal::Stream 在 macOS 为 `!Send + !Sync`。本结构的 `Arc` 仅被 Coordinator 的
+/// 单线程 mpsc 循环线程独占持有（main.rs → `Coordinator::new` → `std::thread::spawn`
+/// 闭包 move；`audio` 不进 Coordinator 结构体字段），`start`/`stop`/`drain_samples`
+/// 全在该线程调用：`start` 建流 + play，`stop` pause + 析构（take 出 Option 在本线程
+/// drop），结构体本身也在该循环线程退出时析构——故 Stream 的建/播/停/析构全程同线程、
+/// 无跨线程访问。cpal 回调线程只持有独立 clone 的 `Arc<Mutex<Vec>>` / `Arc<AtomicBool>`
+/// （标准 Send+Sync），不经本结构。详见 architecture.md「音频采集按需启停」。
 pub struct SharedAudioState {
     samples: Arc<Mutex<Vec<f32>>>,
     is_recording: Arc<AtomicBool>,
@@ -179,8 +185,12 @@ impl SharedAudioState {
     }
 }
 
-// Safety: SharedAudioState only contains Arc<Mutex<Vec<f32>>>, Arc<AtomicBool>,
-// AtomicU32, and String — all Send + Sync.
+// Safety: 见结构体文档注释。SharedAudioState 含 `Mutex<Option<cpal::Stream>>`（Stream
+// 本身 !Send）与 `Mutex<Option<AudioResampler>>`，故非自动 Send/Sync。但本结构的 Arc
+// 仅被 Coordinator 单线程循环线程独占持有（audio 被 move 进 std::thread::spawn 闭包），
+// Stream 的建（start）/ 停（stop take+drop）/ 结构体析构（循环线程退出）全程同线程、
+// 无跨线程访问；回调线程只持有独立 clone 的 Arc<Mutex<Vec>>/Arc<AtomicBool>。在此不变量
+// 下 Send/Sync 成立。若将来跨多线程共享本 Arc，须改用单一宿主线程 + channel 收敛 Stream。
 unsafe impl Send for SharedAudioState {}
 unsafe impl Sync for SharedAudioState {}
 
