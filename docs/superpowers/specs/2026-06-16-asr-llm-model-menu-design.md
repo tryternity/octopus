@@ -67,7 +67,7 @@ pub fn list_llm_models() -> Result<Vec<LlmModelInfo>>;  // 经 with_db
 **(c) 前端 `result/index.html`**：工具栏加 `#tool-llm` 按钮（润色模型 + 图标），复用 `#popup`：
 - 点击 → `invoke('list_llm_models')` → 渲染每个 `label`（current 高亮）。
 - 点击选项 → `invoke('switch_polish_llm', { name })` → 重绘 popup。
-- 列表为空 → 菜单空（可接受，不加提示文案）。
+- 列表为空 → `showToast('无可用润色模型（请在 DB 启用 is_enabled=1）')` 提示，不渲染空菜单。
 - `#tool-llm` 恒显示（`active` 处理同 `#tool-asr`）。
 - ASR popup 同步改用 `e.label` 直显（替换现有 name+category 两列拼装）。
 
@@ -113,7 +113,6 @@ pub fn list_llm_models() -> Result<Vec<LlmModelInfo>>;  // 经 with_db
 ## 非目标（YAGNI）
 
 - 不改 `toolbar_state`（`list_*` 命令的 `current` 字段已够前端标当前；按钮恒显示）。
-- 不加 LLM 空菜单提示文案（空可接受）。
 - 不显示 `is_thinking` 标记。
 - 不改润色模式（0/1/2）菜单。
 - 不动 `.worktrees/fix-polish-llm-category-prefix`（用户并行分支，独立处理 polish_llm category 前缀）。
