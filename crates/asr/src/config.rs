@@ -92,30 +92,6 @@ pub fn find_silero_vad() -> Result<PathBuf> {
     )
 }
 
-// ── DeepFilterNet3 model discovery ──
-
-/// DF3 模型 HF repo（唯一固定，不走 DB / 不切换）。
-const DF3_HF_REPO: &str = "penta2himajin/deepfilternet3-onnx";
-/// DF3 onnx 文件名（带 GRU 状态的流式版）。
-const DF3_ONNX_FILE: &str = "dfn3.onnx";
-
-/// 定位 DeepFilterNet3 模型：~/.cache/huggingface/hub/models--penta2himajin--deepfilternet3-onnx/snapshots/*/dfn3.onnx
-/// 单一固定模型，不走 DB；缺失时提示下载命令。
-///
-/// 注：`find_hf_cache` 内部已调用 `find_latest_snapshot`，返回值即为最新 snapshot 目录，
-/// 故这里直接 join `dfn3.onnx`，不再二次解析。
-pub fn find_df3() -> Result<PathBuf> {
-    let snapshot = find_hf_cache(DF3_HF_REPO)?;
-    let onnx = snapshot.join(DF3_ONNX_FILE);
-    if onnx.exists() {
-        return Ok(onnx);
-    }
-    anyhow::bail!(
-        "DeepFilterNet3 模型缺失，请先下载：hf download {}",
-        DF3_HF_REPO
-    )
-}
-
 // ── Internal helpers ──
 
 fn find_latest_snapshot(model_dir: &Path) -> Result<PathBuf> {
@@ -512,22 +488,6 @@ mod tests {
         assert_eq!(r.name, "zipformer-small-ctc");
         assert_eq!(r.entry.source, DEFAULT_ASR_MODEL_DIR);
         assert_eq!(r.entry.language, "zh");
-    }
-
-    #[test]
-    fn find_df3_missing_returns_download_hint() {
-        // 模型未下载时，find_df3 应返回含 hf download 提示的 Err
-        match crate::config::find_df3() {
-            Ok(_) => { /* 模型存在，跳过缺失路径断言 */ }
-            Err(e) => {
-                let msg = format!("{:#}", e);
-                assert!(
-                    msg.contains("hf download penta2himajin/deepfilternet3-onnx"),
-                    "缺失时应提示 hf download 命令，实际: {}",
-                    msg
-                );
-            }
-        }
     }
 
     // ── ModelSpec 解析测试 ──

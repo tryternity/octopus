@@ -140,7 +140,7 @@ pub struct AppConfig {
     #[serde(default = "default_asr_correct")]
     pub asr_correct: bool,
 
-    /// 是否启用 DeepFilterNet3 环境降噪（录音送 ASR 前降噪）
+    /// 是否启用 RNNoise 环境降噪（录音送 ASR 前降噪）
     #[serde(default = "default_denoise_enabled")]
     pub denoise_enabled: bool,
 }

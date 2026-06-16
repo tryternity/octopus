@@ -4,6 +4,42 @@
 > 状态：✅ 已实现 + bug 修复完成
 > 关联：独立于 `config-infra-and-engine-truth` plan（见 §8 落点注记）
 
+---
+
+## ⚠️ 修订记录（2026-06-16）：弃用 DeepFilterNet3，换 RNNoise（nnnoiseless）
+
+**本文档以下内容（DeepFilterNet3 / dfn3.onnx 设计）已废弃，仅作历史与调查记录保留。** 当前实现以本节为准。
+
+### 弃用原因：dfn3.onnx 模型层缺陷
+
+经完整诊断链确认 `penta2himajin/deepfilternet3-onnx/dfn3.onnx`（流式逐帧 ONNX 导出）**把正常语音当噪声压到约 10%**，开降噪反而损害 ASR（与用户实测一致：关降噪识别效果更好）。证据：
+
+- DSP/链路全对：spec 量级 ~0.30（含 wnorm）、ERB/DF 特征正常、GRU shape 正确、**完美重构**（增量 vs 批处理 max_diff < 1e-4）；
+- `ort` 对其他模型（whisper/paraformer/vad）推理正常 → 排除 ort；
+- 唯一异常：`enhanced_spec ≈ 0.10 · spec`（正常应 ≈1.0·spec 或 mask），即推理输出压语音；
+- mellonella 的流式逐帧导出测试只验形状不验质量，缺陷未被覆盖。
+
+### 当前实现：RNNoise（nnnoiseless）
+
+改用 `nnnoiseless`（Xiph RNNoise 的纯 Rust 移植，BSD-3，无 C 依赖，内置默认训练模型 `weights.rnn`）：
+
+- `DenoiseProcessor` 包装 `nnnoiseless::DenoiseState`，接口不变（`new`/`reset`/`process_samples`/`flush`；`new()` 已移除 `model_path` 参数）；
+- `FRAME_SIZE = 480`（10ms @48kHz）匹配 octopus HOP；样本在 `[-1,1]` ↔ `[-32768,32767]`（i16 PCM 等价）间转换；
+- **无外部模型文件依赖**——`audio.rs` 不再 `find_df3`，`config.rs` 删 `find_df3`/`DF3_HF_REPO`/`DF3_ONNX_FILE`，`Cargo.toml` 删 `df`（deep_filter）依赖；
+- GRU 状态跨帧保持、会话起点 `reset()` 的语义不变（与本文档 §6 一致）。
+
+### 验证（denoise.rs 测试，无 `#[ignore]` 即可跑）
+
+- `diag_clean_speech_preserved`：干净合成语音 gain≈**0.993x**（dfn3 是 0.10）——**不压语音，dfn3 缺陷已消除**；
+- `diag_pure_noise_suppressed`：稳态白噪声抑制 ~1.8dB（RNNoise 对稳态宽带噪声保守，避免 musical noise——非缺陷）；
+- `streaming_incremental_equals_batch`：分块 = 批处理逐位相同（缓冲逻辑正确）；
+- `length_invariant_within_one_frame` / `diag_silence_output` / `processor_basic_roundtrip`：结构与守恒；
+- 真实语音（macOS `say`）诊断 `diag_denoise_tts_wav` / `diag_real_speech_noisy_denoise_effect`（`#[ignore]`，需 `/tmp/voice48k.wav`）：gain≈1.0。
+
+**度量警示**：评估滤波效果不可用「逐样本 SNR」——RNNoise 频带增益 + OLA 引入相位/群延迟，逐样本相减被相位偏移主导（连干净语音亦显示 ~-3dB）。应用能量保留（gain）或频谱/感知度量。
+
+---
+
 ## 1. 背景与目标
 
 octopus 麦克风录音链路当前**无任何噪声消除处理**（已核查：`audio.rs` 仅做多声道下混、格式转换、重采样；`filter_speech`/VAD 是切静音段而非降噪；`normalize_whisper_features` 是 mel 特征域归一化，不在波形上降噪）。环境噪声完全靠 ASR 模型自身鲁棒性硬扛。

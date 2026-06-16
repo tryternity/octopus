@@ -22,7 +22,7 @@ pub struct SharedAudioState {
     resampler: Mutex<Option<octopus_asr::audio::AudioResampler>>,
     /// 流式下采样器：原生→48k（仅 denoise 路径用，喂给 DenoiseProcessor）。
     down_sampler: Mutex<Option<octopus_asr::audio::AudioResampler>>,
-    /// DeepFilterNet3 降噪器：start 时 lazy 建/重置；缺失/失败则 None（直通降级）。
+    /// RNNoise 降噪器（nnnoiseless）：start 时 lazy 建/重置；失败则 None（直通降级）。
     denoise: Mutex<Option<octopus_asr::denoise::DenoiseProcessor>>,
     stream: Mutex<Option<cpal::Stream>>,
 }
@@ -79,7 +79,7 @@ impl SharedAudioState {
         }
     }
 
-    /// 音频前处理流水：可选 DeepFilterNet3 降噪 + 重采样到 16kHz。
+    /// 音频前处理流水：可选 RNNoise 降噪 + 重采样到 16kHz。
     ///
     /// - flush=true（stop 会话结束）：denoise 与两个采样器都 flush 尾部残留。
     /// - flush=false（drain 流式）：三者都不 flush，GRU 状态与采样缓冲跨调用连续保持
@@ -199,28 +199,26 @@ impl SharedAudioState {
     }
 
     /// Begin capturing: clear buffer, set recording flag, build and play CPAL stream.
-    /// 同时初始化 DF3 降噪（会话起点）：enabled 则建/重置实例，否则置 None。
+    /// 同时初始化 RNNoise 降噪（会话起点）：enabled 则建/重置实例，否则置 None。
     pub fn start(&self, device_name: &str) -> Result<()> {
         self.samples.lock().unwrap().clear();
         self.is_recording.store(true, Ordering::Relaxed);
 
-        // 降噪初始化：enabled 则建/重置实例；失败降级为 None（直通），仅 warn + 下载提示，
-        // 绝不阻断录音、绝不 panic（spec §9 降级）。
+        // 降噪初始化：enabled 则建/重置实例；失败降级为 None（直通），仅 warn，
+        // 绝不阻断录音、绝不 panic（spec §9 降级）。RNNoise 内置模型，无外部文件依赖。
         let cfg = octopus_asr::config::load_app_config_cached();
         {
             let mut g = self.denoise.lock().unwrap();
             if cfg.denoise_enabled {
-                match octopus_asr::config::find_df3()
-                    .and_then(|p| octopus_asr::denoise::DenoiseProcessor::new(&p))
-                {
+                match octopus_asr::denoise::DenoiseProcessor::new() {
                     Ok(mut p) => {
                         p.reset();
                         *g = Some(p);
-                        info!("DF3 环境降噪已启用（48k STFT 链路）");
+                        info!("RNNoise 环境降噪已启用（nnnoiseless，48k）");
                     }
                     Err(e) => {
                         log::warn!(
-                            "DF3 降噪初始化失败，已降级直通（不阻断录音）：{:?}",
+                            "RNNoise 降噪初始化失败，已降级直通（不阻断录音）：{:?}",
                             e
                         );
                         *g = None;

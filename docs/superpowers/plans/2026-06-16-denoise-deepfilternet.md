@@ -8,6 +8,12 @@
 
 **Tech Stack:** Rust、`ort 2.0.0-rc.12`（ONNX Runtime）、`rustfft 6`、`ndarray 0.17`、`rubato 0.16`（已有依赖）、Tauri/cpal。
 
+---
+
+> ⚠️ **修订（2026-06-16）**：本计划的 DeepFilterNet3（dfn3.onnx）实现已废弃。`dfn3.onnx` 流式逐帧导出存在模型层缺陷（把正常语音压到 ~10%，开降噪反而损害 ASR）。已改用 `nnnoiseless`（纯 Rust RNNoise，内置默认模型）重写 `crates/asr/src/denoise.rs`，`new`/`reset`/`process_samples`/`flush` 接口不变、`FRAME_SIZE=480`、无外部模型文件依赖。`audio.rs` 去 `find_df3`、`config.rs` 删 `find_df3`、`Cargo.toml` 删 `df` 依赖。详见 spec 顶部「修订记录」。本计划以下任务步骤仅作历史记录。
+
+---
+
 **Spec:** `docs/superpowers/specs/2026-06-16-denoise-deepfilternet-design.md`
 
 ---

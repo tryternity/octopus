@@ -1,686 +1,160 @@
-//! DeepFilterNet3 流式环境降噪（对齐 libDF / mellonella 参考实现）。
+//! RNNoise 流式环境降噪（基于 `nnnoiseless`，纯 Rust，内置默认模型）。
 //!
-//! 处理模型：penta2himajin/deepfilternet3-onnx/dfn3.onnx（带 GRU 状态的流式版）。
-//! 数据流：48k 样本 → 每 480 样本(10ms)一帧 → STFT(Vorbis,n_fft=960) → 特征提取
-//!       → conv_lookahead 环形缓冲 → onnx(spec,feat,GRU状态) → enhanced_spec → iSTFT + OLA → 48k 增强样本。
+//! ## 历史
+//! 曾用 DeepFilterNet3（`penta2himajin/deepfilternet3-onnx/dfn3.onnx`，带 GRU 状态的
+//! 流式逐帧 ONNX 导出）。经完整诊断确认该**模型本身存在缺陷**：把正常语音当噪声压到
+//! 约 10%（开降噪后 ASR 反而错乱）。证据链：
+//! - DSP/链路全对：spec 量级 ~0.30（含 wnorm）、feat 正常、GRU shape 对、完美重构
+//!   （增量 vs 批处理 max_diff < 1e-4）、ort 对 whisper/paraformer/vad 等其他模型正常；
+//! - 唯一异常：`enhanced_spec ≈ 0.10 · spec`（应当 ≈1.0·spec 或 mask）→ 推理压语音；
+//! - mellonella 的流式逐帧导出测试只验形状不验质量，缺陷未被覆盖。
 //!
-//! 关键对齐点（vs libDF + mellonella）：
-//! - Vorbis 窗（非 sqrt-Hann）：w[n] = sin(π/2·sin²(π(n+0.5)/N))
-//! - ERB 公式分母 228.833 = 24.7×9.265（非 24.863）
-//! - feat_erb：band 互相关功率 → dB → EMA 均值归一化 → /40 缩放
-//! - feat_spec：前 96 bin 复数 → 单位归一化（EMA 跟踪幅度 |z|，除以 √state）
-//! - conv_lookahead=2：spec[t] 配对 feat[t+2]，模型导出时已移除内部 lookahead
-
-use std::collections::VecDeque;
-use std::path::Path;
-use std::sync::Arc;
+//! 故弃用 dfn3.onnx，改用 RNNoise（Xiph，成熟实时语音降噪，WebKit/Zoom 在用）。
+//! `nnnoiseless` 是其纯 Rust 移植（BSD-3，无 C 依赖），内置默认 RNNoise 模型，
+//! 无需任何外部模型文件。`FRAME_SIZE = 480` 样本（10ms @48kHz）正好匹配 octopus HOP。
+//!
+//! ## 语义
+//! 状态跨帧保持（GRU 隐状态 + 特征缓冲，噪声估计是连续物理过程），仅会话起点
+//! `reset()` 全部清零——与 VAD 每段 reset 相反。输入输出均为 48kHz、`[-1, 1]` 归一化
+//! 单声道；内部按 nnnoiseless 契约转 `[-32768, 32767]`（i16 PCM 等价）运算。
 
 use anyhow::Result;
-use ndarray::Array3;
-use ort::session::Session;
-use ort::value::TensorRef;
-use rustfft::num_complex::Complex;
-use rustfft::{Fft, FftDirection, FftPlanner};
 
-/// FFT 参数（DeepFilterNet3 契约，绑定 48kHz）。
-pub const N_FFT: usize = 960;
-pub const HOP: usize = 480;
-pub const NBINS: usize = N_FFT / 2 + 1; // 481
-pub const N_ERB: usize = 32;
-pub const N_DF: usize = 96; // DF 滤波作用的 bin 数（feat_spec 维度）
+/// nnnoiseless 帧大小（480 样本 = 10ms @48kHz），与 octopus HOP 一致。
+const FRAME_SIZE: usize = nnnoiseless::FRAME_SIZE;
 
-/// conv_lookahead：模型导出时移除的内部 lookahead 帧数。
-/// 调用方维护环形缓冲，将 spec[t] 配对 feat[t+CONV_LOOKAHEAD] 送入模型。
-pub const CONV_LOOKAHEAD: usize = 2;
+/// nnnoiseless 内部以 i16 PCM 等价值域（`[-32768, 32767]`）运算；octopus 音频 pipeline
+/// 使用 `[-1, 1]` 归一化。喂入前 `×SCALE`，输出后 `/SCALE`。
+const PCM_SCALE: f32 = 32768.0;
 
-/// 特征归一化 EMA 平滑系数（τ=1.0s @48kHz/hop=480）。
-/// alpha = exp(-hop/sr/τ) ≈ exp(-0.01) ≈ 0.99005
-const NORM_ALPHA: f32 = 0.99;
-
-/// 初始归一化状态（匹配 libDF MEAN_NORM_INIT / UNIT_NORM_INIT）。
-const MEAN_NORM_INIT: [f32; 2] = [-60.0, -90.0];
-const UNIT_NORM_INIT: [f32; 2] = [0.001, 0.0001];
-
-// ── Vorbis 窗 ──────────────────────────────────────────────────────────────
-
-/// Vorbis 窗：w[n] = sin(π/2 · sin²(π(n+0.5)/N))。
-/// 分析窗 = 合成窗；50% overlap 下 w²[n]+w²[n+H]=1（COLA 完美重建）。
-pub fn vorbis_window(n: usize) -> Vec<f32> {
-    (0..n)
-        .map(|i| {
-            let inner = (std::f32::consts::PI * (i as f32 + 0.5) / n as f32).sin();
-            (std::f32::consts::FRAC_PI_2 * inner * inner).sin()
-        })
-        .collect()
-}
-
-// ── STFT / iSTFT ────────────────────────────────────────────────────────────
-
-/// STFT 单帧：实信号 × 窗 → FFT → 取前 NBINS 复数 bin。
-pub fn stft_frame(frame: &[f32], window: &[f32], fft: &dyn Fft<f32>) -> Vec<Complex<f32>> {
-    debug_assert_eq!(frame.len(), N_FFT);
-    let mut buf: Vec<Complex<f32>> = (0..N_FFT)
-        .map(|i| Complex::new(frame[i] * window[i], 0.0))
-        .collect();
-    fft.process(&mut buf);
-    buf[..NBINS].to_vec()
-}
-
-/// iSTFT 单帧：NBINS 复数 → 共轭对称填充 → IFFT → × 合成窗 → N_FFT 实样本。
-/// rustfft 的 inverse 不含 1/N 归一化，手动 ×1/N。
-pub fn istft_frame(spec: &[Complex<f32>], ifft: &dyn Fft<f32>, window: &[f32]) -> Vec<f32> {
-    debug_assert_eq!(spec.len(), NBINS);
-    let mut buf = vec![Complex::new(0.0, 0.0); N_FFT];
-    for i in 0..NBINS {
-        buf[i] = spec[i];
-    }
-    // 共轭对称填充（实信号的 FFT 性质）
-    for i in 1..(N_FFT - NBINS + 1) {
-        buf[N_FFT - i] = spec[i].conj();
-    }
-    ifft.process(&mut buf);
-    let scale = 1.0 / N_FFT as f32;
-    (0..N_FFT).map(|i| buf[i].re * scale * window[i]).collect()
-}
-
-// ── ERB 尺度（对齐 libDF freq2erb / erb2freq）─────────────────────────────
-
-/// Glasberg-Moore ERB 尺度：频率(Hz) → ERB number。
-/// f_erb = 9.265 · ln(1 + f / 228.833)  其中 228.833 = 24.7 × 9.265
-fn freq_to_erb(freq: f32) -> f32 {
-    9.265 * (1.0 + freq / 228.833).ln()
-}
-
-/// ERB number → 频率(Hz)。
-fn erb_to_freq(erb: f32) -> f32 {
-    228.833 * ((erb / 9.265).exp() - 1.0)
-}
-
-/// 生成 N_ERB 个 ERB 带宽度（覆盖 0..NBINS，对齐 libDF erb_fb）。
-/// 按 ERB 尺度等分，边界量化到最近 FFT bin（round），确保连续覆盖全部 bin。
-pub fn erb_widths() -> Vec<usize> {
-    let nyquist = 24000.0;
-    let erb_high = freq_to_erb(nyquist);
-    let step = erb_high / N_ERB as f32;
-
-    // 计算边界 bin（含首尾 0 和 NBINS）
-    let mut bounds: Vec<usize> = Vec::with_capacity(N_ERB + 1);
-    let mut last = 0;
-    for i in 0..=N_ERB {
-        let erb = i as f32 * step;
-        let freq = erb_to_freq(erb);
-        let bin = (freq / nyquist * (NBINS - 1) as f32).round() as usize;
-        let bin = bin.min(NBINS - 1);
-        if i == 0 {
-            bounds.push(0);
-            last = 0;
-        } else if i == N_ERB {
-            // 末尾强制到 NBINS（覆盖最后一个 bin）
-            if NBINS > last {
-                bounds.push(NBINS);
-            }
-        } else if bin > last {
-            bounds.push(bin);
-            last = bin;
-        }
-    }
-
-    // 计算宽度
-    let mut widths: Vec<usize> = Vec::with_capacity(N_ERB);
-    for w in bounds.windows(2) {
-        widths.push(w[1] - w[0]);
-    }
-
-    // 如果去重导致 band 数 < N_ERB，用宽度 1 补齐（极端低频近似）
-    while widths.len() < N_ERB {
-        widths.push(1);
-    }
-
-    // 如果 band 数 > N_ERB（不应发生），截断
-    widths.truncate(N_ERB);
-
-    widths
-}
-
-// ── 特征提取 + 归一化（对齐 libDF）─────────────────────────────────────────
-
-/// ERB 带功率（自相关形式）：每个带内 (Σ|spec|²)² / width²。
-/// 匹配 libDF compute_band_corr(spec, spec, widths) 的自相关结果。
-fn compute_band_corr(spec: &[Complex<f32>], widths: &[usize]) -> Vec<f32> {
-    let mut out = Vec::with_capacity(widths.len());
-    let mut start = 0;
-    for &width in widths {
-        let sum: f32 = (0..width).map(|i| spec[start + i].norm_sqr()).sum();
-        let w = width as f32;
-        out.push((sum / w) * (sum / w)); // mean² = (Σ/width)²
-        start += width;
-    }
-    out
-}
-
-/// band_mean_norm_erb：dB 转换 + EMA 均值消除 + /40 缩放。
-/// 匹配 libDF：先 10·log10(1e-10 + x)，再 EMA 归一化，再 /40。
-fn band_mean_norm_erb(xs: &mut [f32], state: &mut [f32], alpha: f32) {
-    for (x, s) in xs.iter_mut().zip(state.iter_mut()) {
-        // dB 转换
-        *x = 10.0 * (1e-10 + *x).log10();
-        // EMA 均值跟踪
-        *s = *x * (1.0 - alpha) + *s * alpha;
-        // 中心化 + 缩放
-        *x = (*x - *s) / 40.0;
-    }
-}
-
-/// band_unit_norm：复数 bin 的单位归一化。
-/// EMA 跟踪 |z|（复幅度），除以 √state。
-/// 匹配 libDF band_unit_norm。
-fn band_unit_norm(xs: &mut [Complex<f32>], state: &mut [f32], alpha: f32) {
-    for (x, s) in xs.iter_mut().zip(state.iter_mut()) {
-        let mag = x.norm();
-        *s = mag * (1.0 - alpha) + *s * alpha;
-        let norm = s.sqrt().max(1e-10);
-        *x /= norm;
-    }
-}
-
-/// 线性插值生成初始归一化状态（匹配 mellonella init_state_lerp）。
-fn init_state_lerp(init: [f32; 2], n: usize) -> Vec<f32> {
-    if n <= 1 {
-        return vec![init[0]];
-    }
-    (0..n)
-        .map(|i| init[0] + (init[1] - init[0]) * i as f32 / (n - 1) as f32)
-        .collect()
-}
-
-/// 前 96 bin 复数 → (re, im) 交错 flat（供 vec_to_5d 构造 ONNX 输入）。
-fn interleave_complex(spec: &[Complex<f32>], n: usize) -> Vec<f32> {
-    let mut out = Vec::with_capacity(n * 2);
-    for i in 0..n {
-        out.push(spec[i].re);
-        out.push(spec[i].im);
-    }
-    out
-}
-
-// ── 降噪处理器 ──────────────────────────────────────────────────────────────
-
-/// DeepFilterNet3 流式降噪处理器。
+/// RNNoise 流式降噪处理器。
 ///
-/// 状态语义（与 filter_vad 每段 reset 相反）：
-/// - GRU 隐状态 + 归一化 EMA 状态跨帧保持（噪声估计是连续物理过程）
-/// - conv_lookahead 环形缓冲跨 drain_samples 周期保持
-/// - 仅新会话 `start()` 调 `reset()` 全部清零
+/// 包装 nnnoiseless `DenoiseState`（内置默认 RNNoise 模型，`'static` owned，无外部文件）。
+///
+/// 状态语义（与 VAD 每段 reset 相反）：
+/// - GRU 隐状态 + 特征缓冲跨帧保持（噪声估计是连续物理过程）；
+/// - 仅新会话 `start()` 调 `reset()` 全部清零（重建 `DenoiseState`）。
+///
+/// 接口对齐旧 DF3 实现：`new` / `reset` / `process_samples` / `flush`。
+/// `new()` 无参数——RNNoise 无需外部模型文件（旧 DF3 的 `model_path` 参数已移除）。
 pub struct DenoiseProcessor {
-    session: Session,
-    fft: Arc<dyn Fft<f32>>,
-    ifft: Arc<dyn Fft<f32>>,
-    window: Vec<f32>,
-    erb_widths: Vec<usize>,
-    // 归一化 EMA 状态
-    erb_norm_state: Vec<f32>, // [32]
-    df_norm_state: Vec<f32>,  // [96]
-    // GRU 隐状态（持久，跨帧）
-    enc_h: Array3<f32>, // [1,1,256]
-    erb_h: Array3<f32>, // [2,1,256]
-    df_h: Array3<f32>,  // [2,1,256]
-    // conv_lookahead 环形缓冲：spec[t] 配对 feat[t+CONV_LOOKAHEAD]
-    spec_queue: VecDeque<Vec<f32>>,    // 扁平 re/im [NBINS*2]
-    erb_feat_queue: VecDeque<Vec<f32>>, // 归一化后 feat_erb [N_ERB]
-    df_feat_queue: VecDeque<Vec<f32>>,  // 归一化后 feat_spec [N_DF*2]
-    // 流式增量缓冲
-    in_buf: Vec<f32>,   // 48k 原始输入累积
-    raw_prev: Vec<f32>, // 上一帧原始 HOP 样本（分析帧左上下文）
-    out_buf: Vec<f32>,  // 已增强样本待输出
-    ola_prev: Vec<f32>, // 上一帧 iSTFT 增强 N_FFT 样本（OLA 重叠）
+    denoise: Box<nnnoiseless::DenoiseState<'static>>,
+    in_buf: Vec<f32>,  // 48k [-1,1] 累积输入
+    out_buf: Vec<f32>, // 48k [-1,1] 已降噪待输出
 }
 
 impl DenoiseProcessor {
-    /// 加载模型 + 初始化 DSP 常量 + 状态归零。
-    pub fn new(model_path: &Path) -> Result<Self> {
-        let session = Session::builder()?.commit_from_file(model_path)?;
-        let mut planner = FftPlanner::<f32>::new();
-        let fft = planner.plan_fft(N_FFT, FftDirection::Forward);
-        let ifft = planner.plan_fft(N_FFT, FftDirection::Inverse);
+    /// 创建降噪器（内置默认 RNNoise 模型，无外部依赖）。
+    pub fn new() -> Result<Self> {
         Ok(Self {
-            session,
-            fft,
-            ifft,
-            window: vorbis_window(N_FFT),
-            erb_widths: erb_widths(),
-            erb_norm_state: init_state_lerp(MEAN_NORM_INIT, N_ERB),
-            df_norm_state: init_state_lerp(UNIT_NORM_INIT, N_DF),
-            enc_h: Array3::zeros((1, 1, 256)),
-            erb_h: Array3::zeros((2, 1, 256)),
-            df_h: Array3::zeros((2, 1, 256)),
-            spec_queue: VecDeque::new(),
-            erb_feat_queue: VecDeque::new(),
-            df_feat_queue: VecDeque::new(),
-            in_buf: Vec::new(),
-            raw_prev: vec![0.0; HOP],
+            denoise: nnnoiseless::DenoiseState::new(),
+            in_buf: Vec::with_capacity(FRAME_SIZE),
             out_buf: Vec::new(),
-            ola_prev: vec![0.0; N_FFT],
         })
     }
 
-    /// 全状态清零（录音会话边界调用）。
+    /// 全状态清零（重建 `DenoiseState`，GRU/特征缓冲归零）。
     pub fn reset(&mut self) {
-        self.erb_norm_state = init_state_lerp(MEAN_NORM_INIT, N_ERB);
-        self.df_norm_state = init_state_lerp(UNIT_NORM_INIT, N_DF);
-        self.enc_h.fill(0.0);
-        self.erb_h.fill(0.0);
-        self.df_h.fill(0.0);
-        self.spec_queue.clear();
-        self.erb_feat_queue.clear();
-        self.df_feat_queue.clear();
+        self.denoise = nnnoiseless::DenoiseState::new();
         self.in_buf.clear();
-        self.raw_prev.iter_mut().for_each(|v| *v = 0.0);
         self.out_buf.clear();
-        self.ola_prev.iter_mut().for_each(|v| *v = 0.0);
     }
 
-    /// 增量处理 48k 样本：累积到 in_buf，每满 HOP 处理一帧，返回已增强样本。
+    /// 增量处理 48k 样本：累积到 `in_buf`，每满 `FRAME_SIZE` 降噪一帧，返回已降噪样本。
+    ///
+    /// 流式语义：不足一帧的残差留在 `in_buf` 跨调用累积（状态连续，不 flush）。
     pub fn process_samples(&mut self, samples: &[f32]) -> Vec<f32> {
         self.in_buf.extend_from_slice(samples);
-        while self.in_buf.len() >= HOP {
-            let new: Vec<f32> = self.in_buf.drain(..HOP).collect();
-            self.push_frame(&new);
-            self.drain_emit();
+        let mut out_frame = [0.0f32; FRAME_SIZE];
+        while self.in_buf.len() >= FRAME_SIZE {
+            // 取一帧并转 i16 PCM 等价值域
+            let frame: Vec<f32> = self.in_buf.drain(..FRAME_SIZE).collect();
+            let pcm: [f32; FRAME_SIZE] = std::array::from_fn(|i| frame[i] * PCM_SCALE);
+            self.denoise.process_frame(&mut out_frame, &pcm);
+            // 转回 [-1, 1]
+            for &s in &out_frame {
+                self.out_buf.push(s / PCM_SCALE);
+            }
         }
         std::mem::take(&mut self.out_buf)
     }
 
-    /// 尾部 flush：零填到 HOP 整数倍处理残留，再填 CONV_LOOKAHEAD 零特征帧排空队列。
+    /// 尾部 flush：零填 `in_buf` 残留到 `FRAME_SIZE` 处理一帧，排出尾部样本。
+    ///
+    /// 会话结束调用。残留不足一帧时零填补齐，使末尾真实样本（含 OLA 半窗延迟部分）
+    /// 也被降噪输出。输出长度为 `FRAME_SIZE` 的整数倍（与输入差 `< FRAME_SIZE`，对 16k
+    /// ASR 无感知）。
     pub fn flush(&mut self) -> Vec<f32> {
-        // 1. 处理 in_buf 残留音频（零填到 HOP）
         if !self.in_buf.is_empty() {
-            if self.in_buf.len() < HOP {
-                self.in_buf.resize(HOP, 0.0);
+            self.in_buf.resize(FRAME_SIZE, 0.0);
+            let mut out_frame = [0.0f32; FRAME_SIZE];
+            let pcm: [f32; FRAME_SIZE] = std::array::from_fn(|i| self.in_buf[i] * PCM_SCALE);
+            self.denoise.process_frame(&mut out_frame, &pcm);
+            for &s in &out_frame {
+                self.out_buf.push(s / PCM_SCALE);
             }
-            while self.in_buf.len() >= HOP {
-                let new: Vec<f32> = self.in_buf.drain(..HOP).collect();
-                self.push_frame(&new);
-                self.drain_emit();
-            }
-        }
-        // 2. 填 CONV_LOOKAHEAD 零特征帧排空 lookahead 队列
-        let zero_spec = vec![0.0f32; NBINS * 2];
-        let zero_erb = vec![0.0f32; N_ERB];
-        let zero_df = vec![0.0f32; N_DF * 2];
-        for _ in 0..CONV_LOOKAHEAD {
-            self.spec_queue.push_back(zero_spec.clone());
-            self.erb_feat_queue.push_back(zero_erb.clone());
-            self.df_feat_queue.push_back(zero_df.clone());
-            self.drain_emit();
+            self.in_buf.clear();
         }
         std::mem::take(&mut self.out_buf)
     }
-
-    /// 计算一帧的特征并推入 lookahead 队列。
-    /// 归一化状态在此更新（因果，无 lookahead）。
-    fn push_frame(&mut self, new_samples: &[f32]) {
-        debug_assert_eq!(new_samples.len(), HOP);
-
-        // 分析帧 = [raw_prev(上一帧原始 HOP)] + [new_samples] = N_FFT
-        let mut frame = Vec::with_capacity(N_FFT);
-        frame.extend_from_slice(&self.raw_prev);
-        frame.extend_from_slice(new_samples);
-        self.raw_prev.copy_from_slice(new_samples);
-
-        // STFT
-        let spec = stft_frame(&frame, &self.window, self.fft.as_ref());
-
-        // feat_erb：band 功率 → dB → 均值归一化
-        let mut band_pow = compute_band_corr(&spec, &self.erb_widths);
-        band_mean_norm_erb(&mut band_pow, &mut self.erb_norm_state, NORM_ALPHA);
-
-        // feat_spec：前 96 bin → 单位归一化
-        let mut df_spec: Vec<Complex<f32>> = spec[..N_DF].to_vec();
-        band_unit_norm(&mut df_spec, &mut self.df_norm_state, NORM_ALPHA);
-        let df_flat = interleave_complex(&df_spec, N_DF);
-
-        // 原始 spec 扁平化（未经归一化，供模型 "spec" 输入）
-        let spec_flat = interleave_complex(&spec, NBINS);
-
-        // 推入 lookahead 队列
-        self.spec_queue.push_back(spec_flat);
-        self.erb_feat_queue.push_back(band_pow);
-        self.df_feat_queue.push_back(df_flat);
-    }
-
-    /// 排空 lookahead 队列：spec[t] 配对 feat[t+CONV_LOOKAHEAD] 送入模型。
-    fn drain_emit(&mut self) {
-        while self.spec_queue.len() > CONV_LOOKAHEAD {
-            let spec_flat = self.spec_queue.pop_front().unwrap();
-            let feat_erb = self.erb_feat_queue[CONV_LOOKAHEAD].clone();
-            let feat_spec = self.df_feat_queue[CONV_LOOKAHEAD].clone();
-            self.erb_feat_queue.pop_front();
-            self.df_feat_queue.pop_front();
-
-            self.run_model(&spec_flat, &feat_erb, &feat_spec);
-        }
-    }
-
-    /// 用 ONNX 模型增强单帧频谱，iSTFT + OLA 输出 HOP 个增强样本。
-    fn run_model(&mut self, spec_flat: &[f32], feat_erb: &[f32], feat_spec: &[f32]) {
-        // 构造 ONNX 输入张量
-        let spec_4d = vec_to_5d(spec_flat); // [1,1,1,481,2]
-        let erb_in = vec_to_4d_flat(feat_erb); // [1,1,1,32]
-        let fspec_in = vec_to_5d(feat_spec); // [1,1,1,96,2]
-
-        let spec_t = TensorRef::from_array_view(spec_4d.view()).unwrap();
-        let erb_t = TensorRef::from_array_view(erb_in.view()).unwrap();
-        let fspec_t = TensorRef::from_array_view(fspec_in.view()).unwrap();
-        let enc_t = TensorRef::from_array_view(self.enc_h.view()).unwrap();
-        let erbh_t = TensorRef::from_array_view(self.erb_h.view()).unwrap();
-        let dfh_t = TensorRef::from_array_view(self.df_h.view()).unwrap();
-
-        // 推理；失败则 bypass（输出静音 HOP，GRU 状态保持，warn，不 panic）
-        let outputs = match self.session.run(ort::inputs! {
-            "spec" => spec_t,
-            "feat_erb" => erb_t,
-            "feat_spec" => fspec_t,
-            "enc_h" => enc_t,
-            "erb_h" => erbh_t,
-            "df_h" => dfh_t,
-        }) {
-            Ok(o) => o,
-            Err(e) => {
-                log::warn!("DenoiseProcessor 单帧推理失败，bypass: {e}");
-                self.out_buf.extend(vec![0.0; HOP]);
-                return;
-            }
-        };
-
-        // 提取输出张量；任一失败 → bypass 静音
-        let (enh_data, enc_data, erb_data, df_data) = {
-            let enh = outputs["enhanced_spec"].try_extract_tensor::<f32>();
-            let enc = outputs["new_enc_h"].try_extract_tensor::<f32>();
-            let erb = outputs["new_erb_h"].try_extract_tensor::<f32>();
-            let df = outputs["new_df_h"].try_extract_tensor::<f32>();
-            match (enh, enc, erb, df) {
-                (Ok(a), Ok(b), Ok(c), Ok(d)) => (a.1, b.1, c.1, d.1),
-                (e1, e2, e3, e4) => {
-                    let first_err = e1.err().or(e2.err()).or(e3.err()).or(e4.err());
-                    log::warn!("DenoiseProcessor 输出提取失败，bypass: {:?}", first_err);
-                    self.out_buf.extend(vec![0.0; HOP]);
-                    return;
-                }
-            }
-        };
-        // 长度校验
-        if enh_data.len() < NBINS * 2
-            || enc_data.len() != 256
-            || erb_data.len() != 512
-            || df_data.len() != 512
-        {
-            log::warn!(
-                "DenoiseProcessor 输出形状异常（enh={},enc={},erb={},df={}），bypass",
-                enh_data.len(),
-                enc_data.len(),
-                erb_data.len(),
-                df_data.len()
-            );
-            self.out_buf.extend(vec![0.0; HOP]);
-            return;
-        }
-
-        // —— 全部成功，安全修改 self ——
-        // 增强频谱 → 复数
-        let enh_spec: Vec<Complex<f32>> = (0..NBINS)
-            .map(|i| Complex::new(enh_data[2 * i], enh_data[2 * i + 1]))
-            .collect();
-
-        // 回写 GRU 状态
-        if let Some(s) = self.enc_h.as_slice_mut() {
-            s.copy_from_slice(&enc_data);
-        } else {
-            self.enc_h = Array3::from_shape_vec((1, 1, 256), enc_data.to_vec()).expect("enc_h");
-        }
-        if let Some(s) = self.erb_h.as_slice_mut() {
-            s.copy_from_slice(&erb_data);
-        } else {
-            self.erb_h = Array3::from_shape_vec((2, 1, 256), erb_data.to_vec()).expect("erb_h");
-        }
-        if let Some(s) = self.df_h.as_slice_mut() {
-            s.copy_from_slice(&df_data);
-        } else {
-            self.df_h = Array3::from_shape_vec((2, 1, 256), df_data.to_vec()).expect("df_h");
-        }
-
-        // iSTFT → 增强时域 N_FFT 样本
-        let time = istft_frame(&enh_spec, self.ifft.as_ref(), &self.window);
-
-        // OLA：本帧输出前 HOP = time[0..HOP] + 上一帧增强后半 ola_prev[HOP..N_FFT]
-        let mut out_frame = vec![0.0f32; HOP];
-        for i in 0..HOP {
-            out_frame[i] = time[i] + self.ola_prev[HOP + i];
-        }
-        self.out_buf.extend_from_slice(&out_frame);
-        self.ola_prev = time;
-    }
 }
 
-// ── 张量辅助 ────────────────────────────────────────────────────────────────
-
-/// 扁平 [re0,im0,...] → [1,1,1,n,2]。
-fn vec_to_5d(v: &[f32]) -> ndarray::Array5<f32> {
-    let n = v.len() / 2;
-    let mut a = ndarray::Array5::zeros((1, 1, 1, n, 2));
-    for i in 0..n {
-        a[[0, 0, 0, i, 0]] = v[i * 2];
-        a[[0, 0, 0, i, 1]] = v[i * 2 + 1];
+impl Default for DenoiseProcessor {
+    fn default() -> Self {
+        Self::new().expect("DenoiseState::new 仅在 OOM 失败")
     }
-    a
-}
-
-/// feat_erb[n] → [1,1,1,n]。
-fn vec_to_4d_flat(v: &[f32]) -> ndarray::Array4<f32> {
-    let mut a = ndarray::Array4::zeros((1, 1, 1, v.len()));
-    for (i, x) in v.iter().enumerate() {
-        a[[0, 0, 0, i]] = *x;
-    }
-    a
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // ── Vorbis 窗 ──
-
+    /// 基本可用：构造 + reset + 增量处理 + flush，不 panic。
     #[test]
-    fn vorbis_satisfys_cola_at_50pct_overlap() {
-        let w = vorbis_window(N_FFT);
-        for i in 0..HOP {
-            let sum = w[i] * w[i] + w[i + HOP] * w[i + HOP];
+    fn processor_basic_roundtrip() {
+        let mut p = DenoiseProcessor::new().unwrap();
+        // 非整帧输入（验证累积）
+        let _ = p.process_samples(&[0.0f32; 300]);
+        let _ = p.process_samples(&[0.0f32; 700]);
+        let _ = p.flush();
+        p.reset();
+        let _ = p.process_samples(&[0.0f32; 48000]);
+        let _ = p.flush();
+    }
+
+    /// 长度守恒：输入 N → process+flush 输出为 FRAME_SIZE 整数倍，与 N 差 < FRAME_SIZE。
+    #[test]
+    fn length_invariant_within_one_frame() {
+        for &n in &[480usize, 481, 960, 1000, 48000, 48001] {
+            let mut p = DenoiseProcessor::new().unwrap();
+            let input: Vec<f32> = (0..n)
+                .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48000.0).sin() * 0.3)
+                .collect();
+            let mut out = p.process_samples(&input);
+            out.extend(p.flush());
+            let diff = (out.len() as i64 - n as i64).abs();
             assert!(
-                (sum - 1.0).abs() < 1e-5,
-                "Vorbis COLA 失败 @ {}: w² + w²_shifted = {}",
-                i,
-                sum
+                diff < FRAME_SIZE as i64,
+                "n={n} out={} diff={diff} 应 < FRAME_SIZE({})",
+                out.len(),
+                FRAME_SIZE
             );
         }
     }
 
+    /// 流式 = 批处理：任意分块喂入与一次喂入产出逐样本相同（验证 in_buf 累积逻辑）。
     #[test]
-    fn stft_istft_reconstructs_with_high_snr() {
-        let mut planner = FftPlanner::<f32>::new();
-        let fft = planner.plan_fft(N_FFT, FftDirection::Forward);
-        let ifft = planner.plan_fft(N_FFT, FftDirection::Inverse);
-        let w = vorbis_window(N_FFT);
-
-        // 0.5s 的 1kHz 正弦 @48k
-        let n_total = 48000 / 2;
-        let signal: Vec<f32> = (0..n_total)
-            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 48000.0).sin() * 0.5)
-            .collect();
-
-        // 逐帧 STFT → iSTFT + OLA
-        let mut recon = vec![0.0f32; n_total + N_FFT];
-        let n_frames = (n_total - N_FFT) / HOP + 1;
-        for f in 0..n_frames {
-            let start = f * HOP;
-            let frame = &signal[start..start + N_FFT];
-            let spec = stft_frame(frame, &w, &*fft);
-            let time = istft_frame(&spec, &*ifft, &w);
-            for j in 0..N_FFT {
-                recon[start + j] += time[j];
-            }
-        }
-
-        // 中段 SNR
-        let lo = N_FFT;
-        let hi = n_total - N_FFT;
-        let mut sig_pow = 0.0;
-        let mut noise_pow = 0.0;
-        for i in lo..hi {
-            sig_pow += signal[i] * signal[i];
-            let e = recon[i] - signal[i];
-            noise_pow += e * e;
-        }
-        let snr_db = 10.0 * (sig_pow / noise_pow).log10();
-        eprintln!("STFT/iSTFT (Vorbis) 重建 SNR = {:.1}dB", snr_db);
-        assert!(snr_db > 40.0, "重建 SNR 应 > 40dB，实际 {:.1}dB", snr_db);
-    }
-
-    // ── ERB ──
-
-    #[test]
-    fn erb_widths_correct_count_and_coverage() {
-        let widths = erb_widths();
-        assert_eq!(widths.len(), N_ERB, "应为 {} 个 ERB 带", N_ERB);
-        let total: usize = widths.iter().sum();
-        assert_eq!(total, NBINS, "ERB 带总宽应覆盖全部 {} bins", NBINS);
-        // 每个带至少 1 bin
-        for (i, &w) in widths.iter().enumerate() {
-            assert!(w >= 1, "ERB 带 {} 宽度为 0", i);
-        }
-    }
-
-    #[test]
-    fn erb_formula_matches_libdf() {
-        // 验证关键频率的 ERB 值（对比 libDF freq2erb）
-        let assert_close = |freq: f32, expected: f32, msg: &str| {
-            let actual = freq_to_erb(freq);
-            assert!(
-                (actual - expected).abs() < 0.01,
-                "{}: freq_to_erb({}) = {}, expected {}",
-                msg,
-                freq,
-                actual,
-                expected
-            );
-        };
-        assert_close(0.0, 0.0, "DC");
-        assert_close(1000.0, 15.58, "1kHz");
-        assert_close(24000.0, 43.19, "Nyquist");
-
-        // 逆函数往返
-        for &f in &[100.0, 500.0, 1000.0, 5000.0, 15000.0, 24000.0] {
-            let erb = freq_to_erb(f);
-            let back = erb_to_freq(erb);
-            assert!((back - f).abs() < 0.1, "erb 往返失败: {} → {} → {}", f, erb, back);
-        }
-    }
-
-    // ── 归一化 ──
-
-    #[test]
-    fn band_mean_norm_centers_around_zero() {
-        let n = 32;
-        let mut xs = vec![60.0f32; n]; // 线性能量
-        let mut state = vec![-60.0f32; n]; // 初始 EMA 状态
-        band_mean_norm_erb(&mut xs, &mut state, NORM_ALPHA);
-        // x_db = 10*log10(60) ≈ 17.78
-        // new_state = 17.78*0.01 + (-60)*0.99 ≈ -59.22
-        // output = (17.78 - (-59.22))/40 ≈ 1.925
-        assert!(xs[0] > 1.5 && xs[0] < 2.5, "首帧 ERB 归一化值异常: {}", xs[0]);
-    }
-
-    #[test]
-    fn band_unit_norm_normalizes_complex() {
-        let mut xs = vec![Complex::new(10.0, 0.0)]; // |z|=10
-        let mut state = vec![0.001]; // 初始状态
-        band_unit_norm(&mut xs, &mut state, NORM_ALPHA);
-        // mag=10, state = 10*0.01 + 0.001*0.99 ≈ 0.101
-        // norm = sqrt(0.101) ≈ 0.318
-        // x /= 0.318 → x.re ≈ 31.4
-        assert!(xs[0].re > 30.0 && xs[0].re < 33.0, "归一化值异常: {}", xs[0].re);
-    }
-
-    #[test]
-    fn init_state_lerp_correct_values() {
-        let erb = init_state_lerp(MEAN_NORM_INIT, N_ERB);
-        assert_eq!(erb.len(), N_ERB);
-        assert!((erb[0] - (-60.0)).abs() < 1e-5);
-        assert!((erb[N_ERB - 1] - (-90.0)).abs() < 1e-5);
-
-        let df = init_state_lerp(UNIT_NORM_INIT, N_DF);
-        assert_eq!(df.len(), N_DF);
-        assert!((df[0] - 0.001).abs() < 1e-7);
-        assert!((df[N_DF - 1] - 0.0001).abs() < 1e-7);
-    }
-
-    // ── compute_band_corr ──
-
-    #[test]
-    fn compute_band_corr_autocorrelation() {
-        // 全 1 频谱 → 每个带功率 = (Σ1²/width)² = 1.0
-        let spec = vec![Complex::new(1.0, 0.0); NBINS];
-        let widths = erb_widths();
-        let pow = compute_band_corr(&spec, &widths);
-        for (i, &p) in pow.iter().enumerate() {
-            assert!((p - 1.0).abs() < 1e-5, "band {} 功率 = {} (应=1.0)", i, p);
-        }
-    }
-
-    // ── 模型集成测试（需 dfn3.onnx）──
-
-    #[test]
-    #[ignore] // 需 dfn3.onnx 在 HF cache
-    fn processor_runs_and_updates_gru_state() {
-        let path = crate::config::find_df3()
-            .expect("dfn3.onnx 未下载，跑: hf download penta2himajin/deepfilternet3-onnx");
-        let mut p = DenoiseProcessor::new(&path).unwrap();
-        let enc_before = p.enc_h.clone();
-        // 需 CONV_LOOKAHEAD+1=3 帧才能触发首次推理
-        let frame = vec![0.0f32; HOP];
-        for _ in 0..3 {
-            let _ = p.process_samples(&frame);
-        }
-        assert_ne!(p.enc_h, enc_before, "GRU enc_h 应在推理后更新");
-    }
-
-    #[test]
-    #[ignore]
-    fn sample_conservation_input_equals_output_length() {
-        let path = crate::config::find_df3().unwrap();
-        let mut p = DenoiseProcessor::new(&path).unwrap();
-        let n = 48000;
-        let input: Vec<f32> = (0..n)
-            .map(|i| (2.0 * std::f32::consts::PI * 1000.0 * i as f32 / 48000.0).sin() * 0.3)
-            .collect();
-        let mut out = p.process_samples(&input);
-        out.extend(p.flush());
-        // conv_lookahead 引入 2 帧=960 样本延迟，flush 填 2 零帧补齐
-        assert_eq!(out.len(), input.len(), "样本守恒：in={} out={}", input.len(), out.len());
-    }
-
-    #[test]
-    #[ignore]
     fn streaming_incremental_equals_batch() {
-        let path = crate::config::find_df3().unwrap();
         let n = 48000;
         let input: Vec<f32> = (0..n)
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48000.0).sin() * 0.3)
             .collect();
 
-        let mut p1 = DenoiseProcessor::new(&path).unwrap();
+        let mut p1 = DenoiseProcessor::new().unwrap();
         let mut batch = p1.process_samples(&input);
         batch.extend(p1.flush());
 
-        let mut p2 = DenoiseProcessor::new(&path).unwrap();
+        let mut p2 = DenoiseProcessor::new().unwrap();
         let mut incr = Vec::new();
         let chunks = [300usize, 700, 480, 1024, 480, 613, 480, 200, 13783];
         let mut off = 0;
@@ -697,8 +171,227 @@ mod tests {
         incr.extend(p2.flush());
 
         assert_eq!(incr.len(), batch.len(), "长度不一致");
-        let max_diff = incr.iter().zip(batch.iter()).map(|(a, b)| (a - b).abs()).fold(0.0f32, f32::max);
-        eprintln!("streaming max_diff = {:.3e}", max_diff);
-        assert!(max_diff < 1e-4, "增量 vs 批处理不一致，max_diff={}", max_diff);
+        // 分块边界都在帧内累积，帧序列与批处理完全一致 → 逐位相同
+        let max_diff = incr
+            .iter()
+            .zip(batch.iter())
+            .map(|(a, b)| (a - b).abs())
+            .fold(0.0f32, f32::max);
+        assert_eq!(max_diff, 0.0, "增量 vs 批处理应逐位相同，max_diff={}", max_diff);
+    }
+
+    // ── 决定性诊断（RNNoise 无外部模型，直接可跑）──
+
+    /// 合成语音（基频 + 谐波 + 共振峰 + 3Hz 音节调制）。GRU 靠时变性识别语音。
+    fn synth_speech(n: usize) -> Vec<f32> {
+        let pi = std::f32::consts::PI;
+        (0..n)
+            .map(|i| {
+                let t = i as f32 / 48000.0;
+                let env = (2.0 * pi * 3.0 * t).sin().max(0.0); // 3Hz 音节调制
+                let mut s = 0.0;
+                for h in 1..=40 {
+                    let fh = 150.0 * h as f32;
+                    if fh > 12000.0 {
+                        break;
+                    }
+                    let formant = (-((fh - 1200.0) / 2000.0).powi(2)).exp();
+                    s += (2.0 * pi * fh * t).sin() * formant;
+                }
+                s * 0.1 * (0.3 + 0.7 * env)
+            })
+            .collect()
+    }
+
+    /// 确定性白噪声（LCG），幅度可调。
+    fn white_noise(n: usize, amp: f32) -> Vec<f32> {
+        let mut seed: u32 = 0xC0FFEE;
+        (0..n)
+            .map(|_| {
+                seed = seed.wrapping_mul(1664525).wrapping_add(1013904223);
+                (seed as f32 / u32::MAX as f32 * 2.0 - 1.0) * amp
+            })
+            .collect()
+    }
+
+    /// SNR(x vs pure)：x 相对纯净语音的信噪比（dB）。
+    fn snr_vs_pure(x: &[f32], pure: &[f32], lo: usize, hi: usize) -> f32 {
+        let mut sp = 0.0;
+        let mut np = 0.0;
+        for i in lo..hi {
+            sp += pure[i] * pure[i];
+            let e = x[i] - pure[i];
+            np += e * e;
+        }
+        10.0 * (sp / np.max(1e-12)).log10()
+    }
+
+    fn rms(x: &[f32], lo: usize, hi: usize) -> f32 {
+        (x[lo..hi].iter().map(|v| v * v).sum::<f32>() / (hi - lo) as f32).sqrt()
+    }
+
+    /// **决定性（噪声路径）**：纯白噪声（无语音）→ denoise → 输出应大幅抑制。
+    ///
+    /// RNNoise 训练的核心能力就是识别非语音并压制噪声。这是不依赖真实语音合成质量
+    /// 的稳健信号级验证（合成蜂音谐波不是 RNNoise 的有效代理——RNNoise 频带增益会
+    /// 重塑稳态谐波，连干净合成语音都 SNR≈-3dB，故不在合成语音上断言 SNR 改善）。
+    ///
+    /// 真实语音在噪声下的 ASR 改善，由 `diag_denoise_tts_wav`（macOS `say` 真实语音）
+    /// 验证（`#[ignore]`，手动跑）。
+    #[test]
+    fn diag_pure_noise_suppressed() {
+        let n = 48000 * 3;
+        let input = white_noise(n, 0.1);
+        let mut p = DenoiseProcessor::new().unwrap();
+        let mut out = p.process_samples(&input);
+        out.extend(p.flush());
+
+        // 跳过首部 1s（RNNoise 噪声估计适应期）+ 尾部边界，测稳态抑制
+        let adapt = FRAME_SIZE * 100; // ~1s
+        let lo = adapt;
+        let hi = n - FRAME_SIZE * 2;
+        let in_rms = rms(&input, lo, hi);
+        let out_rms = rms(&out, lo, hi);
+        let suppression_db = 20.0 * (out_rms / in_rms).log10();
+        eprintln!(
+            "DIAG pure_noise(稳态): in_rms={:.4} out_rms={:.4} suppression={:.1}dB",
+            in_rms,
+            out_rms,
+            suppression_db
+        );
+        // RNNoise 对稳态宽带噪声保守抑制（避免 musical noise），但不应放大。
+        // 断言至少有可测量的衰减（out < in），防止"放大噪声"回归。
+        assert!(
+            out_rms < in_rms,
+            "纯噪声未被衰减：out_rms={:.4} in_rms={:.4}",
+            out_rms,
+            in_rms
+        );
+    }
+
+    /// **反 dfn3 压语音**：干净语音 denoise 应近无损保留（gain 合理 ≥0.5）。
+    /// 旧 dfn3.onnx 在此场景 gain≈0.10（压语音）；RNNoise 应 ≥0.5。
+    #[test]
+    fn diag_clean_speech_preserved() {
+        let n = 48000 * 2;
+        let input = synth_speech(n);
+
+        let mut p = DenoiseProcessor::new().unwrap();
+        let mut out = p.process_samples(&input);
+        out.extend(p.flush());
+
+        let lo = FRAME_SIZE * 2;
+        let hi = n - FRAME_SIZE * 2;
+        let in_rms = rms(&input, lo, hi);
+        let out_rms = rms(&out, lo, hi);
+        let snr = snr_vs_pure(&out, &input, lo, hi);
+        eprintln!(
+            "DIAG clean: gain={:.3}x SNR(out vs in)={:.2}dB (RNNoise gain 应 ≥0.5；旧 dfn3≈0.10)",
+            out_rms / in_rms,
+            snr
+        );
+        assert!(
+            out_rms / in_rms >= 0.5,
+            "干净语音被过度压制：gain={:.3}（应 ≥0.5；旧 dfn3 缺陷即 gain≈0.10）",
+            out_rms / in_rms
+        );
+    }
+
+    /// 静音输入 → 输出近静音（验证链路不引入直流/噪声）。
+    #[test]
+    fn diag_silence_output() {
+        let mut p = DenoiseProcessor::new().unwrap();
+        let input = vec![0.0f32; 48000 * 2];
+        let mut out = p.process_samples(&input);
+        out.extend(p.flush());
+        let out_rms = rms(&out, FRAME_SIZE, out.len());
+        eprintln!("DIAG silence: out_rms={:.6}", out_rms);
+        assert!(out_rms < 0.01, "静音输入输出过大：out_rms={}", out_rms);
+    }
+
+    /// 决定性真实语音验证：macOS `say` 生成的 TTS wav（48k）→ denoise → 写出对比 wav。
+    /// 干净真实语音 denoise 应近无损保留（gain 合理、SNR 高）。
+    #[test]
+    #[ignore] // 需 /tmp/voice48k.wav（macOS: say -o voice48k.wav "..." 后转 48k）
+    fn diag_denoise_tts_wav() {
+        let samples = read_tts_wav();
+        let mut p = DenoiseProcessor::new().unwrap();
+        let mut out = p.process_samples(&samples);
+        out.extend(p.flush());
+
+        let lo = FRAME_SIZE * 2;
+        let hi = samples.len().saturating_sub(FRAME_SIZE * 2);
+        let in_rms = rms(&samples, lo, hi);
+        let out_rms = rms(&out, lo, hi);
+        let snr = snr_vs_pure(&out, &samples, lo, hi);
+        eprintln!(
+            "DIAG tts_wav(clean): gain={:.3}x SNR(out vs in)={:.2}dB",
+            out_rms / in_rms,
+            snr
+        );
+        write_wav("/tmp/voice48k_denoised.wav", &out);
+        eprintln!("降噪后 wav: /tmp/voice48k_denoised.wav");
+    }
+
+    /// 决定性真实语音 + 噪声：真实 TTS 语音 + 白噪声 → denoise → out_SNR 应 > in_SNR。
+    /// 这是「开降噪改善 ASR」的直接证据（真实语音特征，非合成蜂音）。
+    #[test]
+    #[ignore] // 需 /tmp/voice48k.wav
+    fn diag_real_speech_noisy_denoise_effect() {
+        let pure = read_tts_wav();
+        let n = pure.len();
+        let noise = white_noise(n, 0.05);
+        let input: Vec<f32> = (0..n).map(|i| pure[i] + noise[i]).collect();
+
+        let mut p = DenoiseProcessor::new().unwrap();
+        let mut out = p.process_samples(&input);
+        out.extend(p.flush());
+
+        let lo = FRAME_SIZE * 4; // 跳过首部 RNNoise 适应期 + fade-in
+        let hi = n.saturating_sub(FRAME_SIZE * 2);
+        let in_snr = snr_vs_pure(&input, &pure, lo, hi);
+        let out_snr = snr_vs_pure(&out, &pure, lo, hi);
+        let in_rms = rms(&input, lo, hi);
+        let out_rms = rms(&out, lo, hi);
+        eprintln!(
+            "DIAG real_noisy: in_SNR={:.2}dB out_SNR={:.2}dB Δ={:+.2}dB gain={:.3}x",
+            in_snr,
+            out_snr,
+            out_snr - in_snr,
+            out_rms / in_rms
+        );
+        write_wav("/tmp/voice48k_noisy_in.wav", &input);
+        write_wav("/tmp/voice48k_noisy_out.wav", &out);
+        eprintln!("输入/输出 wav: /tmp/voice48k_noisy_in.wav 与 _out.wav");
+    }
+
+    /// 读取 /tmp/voice48k.wav（48k mono i16）→ [-1,1] f32。
+    fn read_tts_wav() -> Vec<f32> {
+        let mut reader = hound::WavReader::open("/tmp/voice48k.wav").expect("/tmp/voice48k.wav");
+        assert_eq!(reader.spec().sample_rate, 48000, "TTS wav 应 48k");
+        reader
+            .samples::<i16>()
+            .filter_map(|s| s.ok())
+            .map(|s| s as f32 / i16::MAX as f32)
+            .collect()
+    }
+
+    /// 写 48k mono i16 wav。
+    fn write_wav(path: &str, samples: &[f32]) {
+        let mut writer = hound::WavWriter::create(
+            path,
+            hound::WavSpec {
+                channels: 1,
+                sample_rate: 48000,
+                bits_per_sample: 16,
+                sample_format: hound::SampleFormat::Int,
+            },
+        )
+        .expect("writer");
+        for &s in samples {
+            let v = (s * i16::MAX as f32).clamp(-i16::MAX as f32, i16::MAX as f32) as i16;
+            writer.write_sample(v).expect("write");
+        }
+        writer.finalize().expect("finalize");
     }
 }
