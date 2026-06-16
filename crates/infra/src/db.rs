@@ -123,6 +123,49 @@ fn init_schema(conn: &Connection) -> Result<()> {
     Ok(())
 }
 
+// ── Model spec 解析（统一 asr_engine / polish_llm 配置格式）──
+
+/// 模型选择规格，统一 `asr_engine` 和 `polish_llm` 的前缀格式。
+///
+/// | 配置写法 | 含义 |
+/// |---------|------|
+/// | `"local:NAME"` | `is_local = true AND name = NAME` |
+/// | `"CATEGORY:NAME"` | `category = CATEGORY AND name = NAME` |
+/// | `"NAME"`（无冒号） | 等价于 `"local:NAME"`——筛 `is_local = true AND name` |
+///
+/// `local` 是特殊前缀（不对应 DB category 值），表示筛 `is_local=true` 的本地模型。
+/// 其他前缀（如 `bigmodel`、`aliyun`、`zipformer`）是 DB `models.category` 列的精确匹配。
+/// 裸名（无冒号）默认走 `local` 语义——不指定前缀时视为本地模型。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSpec<'a> {
+    /// `"local:name"` — 筛选 `is_local = true AND name`
+    Local(&'a str),
+    /// `"category:name"` — 精确匹配 `category AND name`
+    Category(&'a str, &'a str),
+    /// `"name"`（不含冒号）— 等价于 `Local`，筛 `is_local = true AND name`
+    NameOnly(&'a str),
+}
+
+/// 解析模型选择规格字符串。
+///
+/// 按第一个冒号分割：`"local"` 前缀走 `Local`，其他前缀走 `Category`，无冒号走 `NameOnly`。
+pub fn parse_model_spec(spec: &str) -> ModelSpec<'_> {
+    match spec.split_once(':') {
+        Some(("local", name)) => ModelSpec::Local(name),
+        Some((cat, name)) => ModelSpec::Category(cat, name),
+        None => ModelSpec::NameOnly(spec),
+    }
+}
+
+impl<'a> ModelSpec<'a> {
+    /// 返回去掉前缀后的纯模型名。
+    pub fn name(&self) -> &'a str {
+        match self {
+            ModelSpec::Local(n) | ModelSpec::Category(_, n) | ModelSpec::NameOnly(n) => n,
+        }
+    }
+}
+
 // ── DB → AsrConfig（load_config 用）──
 
 /// 从 DB models 表构造 AsrConfig（domain='asr'）。
@@ -182,28 +225,54 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
     Ok(AsrConfig { asr })
 }
 
-/// 从 DB 加载指定名称的 LLM 配置（domain='llm'）。
-pub fn load_llm_model(name: &str) -> Result<Option<CompatibleLlmConfig>> {
-    with_db(|conn| load_llm_model_at(conn, name))
+/// 从 DB 加载 LLM 配置（domain='llm'）。
+///
+/// `spec` 支持三种写法（见 [`parse_model_spec`]）：
+/// - `"local:name"`：`is_local = true AND name`（本地 LLM，如 Ollama）
+/// - `"category:name"`：`category AND name` 联合精确查询
+/// - `"name"`：仅按 name 查询（向后兼容）
+pub fn load_llm_model(spec: &str) -> Result<Option<CompatibleLlmConfig>> {
+    with_db(|conn| load_llm_model_at(conn, spec))
 }
 
-fn load_llm_model_at(conn: &Connection, name: &str) -> Result<Option<CompatibleLlmConfig>> {
-    let mut stmt = conn.prepare(
-        "SELECT category, source, secret_key, is_thinking, is_local, is_enabled
-         FROM models WHERE domain='llm' AND name=?1 AND is_enabled = 1",
-    )?;
-    let mut rows = stmt.query_map(params![name], |row| {
-        Ok((
-            row.get::<_, String>(0)?,
-            row.get::<_, String>(1)?,
-            row.get::<_, String>(2)?,
-            row.get::<_, i32>(3)?,
-            row.get::<_, i32>(4)?,
-            row.get::<_, i32>(5)?,
-        ))
-    })?;
-    if let Some(r) = rows.next() {
-        let (category, source, secret_key, is_thinking, is_local, is_enabled) = r?;
+/// 解析 models 表的一行（category, source, secret_key, is_thinking, is_local, is_enabled）。
+fn parse_llm_row(row: &rusqlite::Row) -> rusqlite::Result<(String, String, String, i32, i32, i32)> {
+    Ok((
+        row.get::<_, String>(0)?,
+        row.get::<_, String>(1)?,
+        row.get::<_, String>(2)?,
+        row.get::<_, i32>(3)?,
+        row.get::<_, i32>(4)?,
+        row.get::<_, i32>(5)?,
+    ))
+}
+
+fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleLlmConfig>> {
+    let parsed = parse_model_spec(spec);
+    let name = parsed.name();
+
+    let row = match parsed {
+        ModelSpec::Local(_) | ModelSpec::NameOnly(_) => {
+            let mut stmt = conn.prepare(
+                "SELECT category, source, secret_key, is_thinking, is_local, is_enabled
+                 FROM models
+                 WHERE domain='llm' AND is_local=1 AND name=?1 AND is_enabled = 1",
+            )?;
+            let mut rows = stmt.query_map(params![name], parse_llm_row)?;
+            rows.next().transpose()?
+        }
+        ModelSpec::Category(cat, _) => {
+            let mut stmt = conn.prepare(
+                "SELECT category, source, secret_key, is_thinking, is_local, is_enabled
+                 FROM models
+                 WHERE domain='llm' AND category=?1 AND name=?2 AND is_enabled = 1",
+            )?;
+            let mut rows = stmt.query_map(params![cat, name], parse_llm_row)?;
+            rows.next().transpose()?
+        }
+    };
+
+    if let Some((category, source, secret_key, is_thinking, is_local, is_enabled)) = row {
         Ok(Some(CompatibleLlmConfig {
             provider: category,
             model: name.to_string(),
@@ -389,7 +458,9 @@ mod tests {
         // 强制启用所有模型做断言测试
         conn.execute("UPDATE models SET is_enabled = 1", []).unwrap();
 
-        let glm = load_llm_model_at(&conn, "glm-4-flashx").unwrap().unwrap();
+        let glm = load_llm_model_at(&conn, "bigmodel:glm-4-flashx")
+            .unwrap()
+            .unwrap();
         assert_eq!(glm.provider, "bigmodel");
         assert_eq!(glm.base_url, "https://open.bigmodel.cn/api/paas/v4");
         assert_eq!(glm.secret_key, "");
@@ -397,19 +468,88 @@ mod tests {
         assert!(!glm.is_local, "glm-4-flashx 不是本地模型");
         assert!(glm.is_enabled, "glm-4-flashx 应为启用状态");
 
-        let ds = load_llm_model_at(&conn, "deepseek-v4-flash").unwrap().unwrap();
+        // deepseek-v4-flash 在 deepseek 和 aliyun 两个 category 下同名，
+        // 必须用 "category:name" 才能唯一定位（这正是该格式的意义）。
+        let ds = load_llm_model_at(&conn, "deepseek:deepseek-v4-flash")
+            .unwrap()
+            .unwrap();
         assert_eq!(ds.provider, "deepseek");
+        assert_eq!(ds.model, "deepseek-v4-flash");
         assert_eq!(ds.base_url, "https://api.deepseek.com/");
         assert!(ds.is_thinking, "deepseek-v4-flash 是思考模型");
         assert!(!ds.is_local, "deepseek-v4-flash 不是本地模型");
         assert!(ds.is_enabled, "deepseek-v4-flash 应为启用状态");
 
-        let glm_think = load_llm_model_at(&conn, "glm-4.5-flash").unwrap().unwrap();
+        let aliyun = load_llm_model_at(&conn, "aliyun:deepseek-v4-flash")
+            .unwrap()
+            .unwrap();
+        assert_eq!(aliyun.provider, "aliyun");
+        assert_eq!(aliyun.model, "deepseek-v4-flash");
+        assert_eq!(
+            aliyun.base_url,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        );
+        assert!(aliyun.is_thinking, "aliyun 下的 deepseek-v4-flash 也是思考模型");
+        assert!(aliyun.is_enabled);
+
+        // category 不匹配时应返回 None
+        assert!(
+            load_llm_model_at(&conn, "bigmodel:deepseek-v4-flash")
+                .unwrap()
+                .is_none(),
+            "bigmodel 下不存在 deepseek-v4-flash"
+        );
+
+        let glm_think = load_llm_model_at(&conn, "bigmodel:glm-4.5-flash")
+            .unwrap()
+            .unwrap();
         assert!(glm_think.is_thinking, "glm-4.5-flash 是思考模型");
         assert!(!glm_think.is_local, "glm-4.5-flash 不是本地模型");
         assert!(glm_think.is_enabled, "glm-4.5-flash 应为启用状态");
 
+        // 裸名现在等价于 local: — seed 中所有 LLM 均为远程，裸名查不到
+        assert!(
+            load_llm_model_at(&conn, "glm-4-flashx")
+                .unwrap()
+                .is_none(),
+            "裸名现在等价 local:，seed LLM 全为远程应返回 None"
+        );
         assert!(load_llm_model_at(&conn, "nonexistent-model").unwrap().is_none());
+
+        // local: 前缀 — seed 中所有 LLM 均为 is_local=0，所以 local: 查不到
+        assert!(
+            load_llm_model_at(&conn, "local:glm-4-flashx").unwrap().is_none(),
+            "seed LLM 全为远程，local: 前缀应返回 None"
+        );
+
+        // 插入一个 is_local=1 的 LLM 行，验证 local: 前缀能命中
+        conn.execute(
+            "INSERT INTO models (domain, category, name, source, description, is_local, is_enabled)
+             VALUES ('llm', 'ollama', 'qwen3:8b', 'http://localhost:11434/v1', 'local ollama', 1, 1)",
+            [],
+        )
+        .unwrap();
+        let local_llm = load_llm_model_at(&conn, "local:qwen3:8b").unwrap().unwrap();
+        assert_eq!(local_llm.provider, "ollama");
+        assert_eq!(local_llm.model, "qwen3:8b");
+        assert!(local_llm.is_local, "local: 前缀应命中 is_local=1 的模型");
+    }
+
+    #[test]
+    fn parse_model_spec_variants() {
+        assert_eq!(parse_model_spec("local:foo"), ModelSpec::Local("foo"));
+        assert_eq!(
+            parse_model_spec("bigmodel:glm-4-flashx"),
+            ModelSpec::Category("bigmodel", "glm-4-flashx")
+        );
+        assert_eq!(parse_model_spec("bare-name"), ModelSpec::NameOnly("bare-name"));
+    }
+
+    #[test]
+    fn model_spec_name_strips_prefix() {
+        assert_eq!(ModelSpec::Local("foo").name(), "foo");
+        assert_eq!(ModelSpec::Category("cat", "bar").name(), "bar");
+        assert_eq!(ModelSpec::NameOnly("baz").name(), "baz");
     }
 
     #[test]
