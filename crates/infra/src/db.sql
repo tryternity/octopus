@@ -26,14 +26,14 @@ CREATE TABLE IF NOT EXISTS models (
     category      TEXT    NOT NULL,           -- ASR: 'zipformer'/'whisper'/... ; LLM: 'deepseek'/'bigmodel'/...
     name          TEXT    NOT NULL,           -- 唯一模型标识，精确匹配
     source        TEXT    NOT NULL,           -- ASR: 本地相对路径或 HF repo ; LLM: API base URL
-    language      TEXT    NOT NULL DEFAULT '',
     secret_key    TEXT    NOT NULL DEFAULT '', -- LLM API Key（本地模型留空）
-    is_thinking   INTEGER NOT NULL DEFAULT 0,  -- LLM 专用：是否为思考（reasoning）模型
+    language      TEXT    NOT NULL DEFAULT '',
     is_local      INTEGER NOT NULL DEFAULT 0,  -- 是否为本地模型 (0=否, 1=是)
-    is_enabled    INTEGER NOT NULL DEFAULT 1,  -- 是否启用 (0=禁用, 1=启用)
+    is_thinking   INTEGER NOT NULL DEFAULT 0,  -- LLM 专用：是否为思考（reasoning）模型
     is_streaming  INTEGER NOT NULL DEFAULT 0,  -- 是否支持流式 (0=否, 1=是)
+    is_enabled    INTEGER NOT NULL DEFAULT 1,  -- 是否启用 (0=禁用, 1=启用)
     description   TEXT    NOT NULL DEFAULT '', -- 描述
-    UNIQUE(domain, name, is_local)           -- domain + name + is_local 作为唯一键
+    UNIQUE(domain, name, is_local, category)           -- domain + name + is_local + category 作为唯一键
 );
 
 -- ── 默认数据（INSERT OR IGNORE，幂等）────────────────────────────────────────
@@ -77,6 +77,10 @@ INSERT OR IGNORE INTO models (domain, category, name, source, description, is_th
 VALUES
     ('llm', 'deepseek', 'deepseek-v4-flash',
         'https://api.deepseek.com/',
+        'DeepSeek V4 Flash（思考模型，需关闭 thinking）', 1, 0, 0),
+
+    ('llm', 'aliyun', 'deepseek-v4-flash',
+        'https://dashscope.aliyuncs.com/compatible-mode/v1',
         'DeepSeek V4 Flash（思考模型，需关闭 thinking）', 1, 0, 0),
 
     ('llm', 'bigmodel', 'glm-4-flashx',
