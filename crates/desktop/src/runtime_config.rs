@@ -55,6 +55,55 @@ fn category_str(c: octopus_asr::config::EngineCategory) -> &'static str {
     }
 }
 
+/// 统一显示文本：is_local → "本地:{name}"，否则 "{category}:{name}"。
+fn engine_label(is_local: bool, category: &str, name: &str) -> String {
+    if is_local {
+        format!("本地:{}", name)
+    } else {
+        format!("{}:{}", category, name)
+    }
+}
+
+/// ASR 兜底引擎名（固定首项，不依赖 DB 存在）。
+const FALLBACK_ASR_ENGINE: &str = "zipformer-small-ctc";
+
+/// 构造 ASR 选项列表（纯逻辑）：兜底固定第一，DB 同名去重，current 按 current_effective 标记。
+/// current_effective 为空时视作兜底。
+fn build_asr_options(
+    current_effective: &str,
+    engines: Vec<octopus_asr::config::EngineInfo>,
+) -> Vec<EngineOption> {
+    let effective = if current_effective.is_empty() {
+        FALLBACK_ASR_ENGINE
+    } else {
+        current_effective
+    };
+    let mut options = Vec::with_capacity(engines.len() + 1);
+    // 兜底固定第一
+    options.push(EngineOption {
+        name: FALLBACK_ASR_ENGINE.to_string(),
+        category: "zipformer".to_string(),
+        is_local: true,
+        current: effective == FALLBACK_ASR_ENGINE,
+        label: engine_label(true, "zipformer", FALLBACK_ASR_ENGINE),
+    });
+    // DB 模型（跳过同名兜底，避免重复）
+    for e in engines {
+        if e.name == FALLBACK_ASR_ENGINE {
+            continue;
+        }
+        let cat = category_str(e.category);
+        options.push(EngineOption {
+            current: e.name == effective,
+            name: e.name.clone(),
+            category: cat.to_string(),
+            is_local: e.is_local,
+            label: engine_label(e.is_local, cat, &e.name),
+        });
+    }
+    options
+}
+
 // ── config.yaml 写回 ──
 
 /// 读当前 config.yaml → 覆盖 asr_engine → 序列化写回 ~/.octopus/config.yaml。
@@ -92,6 +141,7 @@ pub struct EngineOption {
     pub category: String,
     pub current: bool,
     pub is_local: bool,
+    pub label: String,
 }
 
 // ── Tauri 命令 ──
@@ -108,22 +158,8 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
 #[tauri::command]
 pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<EngineOption>, String> {
     let current_raw = rc.read().unwrap().asr_engine.clone();
-    // 兜底：空 asr_engine → 当前生效 zipformer-small-ctc
-    let current_effective = if current_raw.is_empty() {
-        "zipformer-small-ctc".to_string()
-    } else {
-        current_raw
-    };
     let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
-    Ok(engines
-        .into_iter()
-        .map(|e| EngineOption {
-            current: e.name == current_effective,
-            name: e.name,
-            category: category_str(e.category).to_string(),
-            is_local: e.is_local,
-        })
-        .collect())
+    Ok(build_asr_options(&current_raw, engines))
 }
 
 #[tauri::command]
@@ -201,5 +237,42 @@ mod tests {
         }
         assert!(u8_to_polish_mode(3).is_none());
         assert!(u8_to_polish_mode(99).is_none());
+    }
+
+    #[test]
+    fn build_asr_options_injects_fallback_first_and_dedups() {
+        use octopus_asr::config::{EngineCategory, EngineInfo};
+        // 场景 1：DB 无兜底 → 注入到首位
+        let engines = vec![
+            EngineInfo { name: "whisper-small".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+        ];
+        let opts = build_asr_options("whisper-small", engines);
+        assert_eq!(opts[0].name, "zipformer-small-ctc");
+        assert_eq!(opts[0].label, "本地:zipformer-small-ctc");
+        assert!(opts[0].is_local);
+        assert!(!opts[0].current, "current=whisper-small，兜底非当前");
+        assert_eq!(opts[1].name, "whisper-small");
+        assert!(opts[1].current);
+        assert_eq!(opts[1].label, "whisper:whisper-small");
+
+        // 场景 2：current 为空 → 兜底为当前
+        let opts2 = build_asr_options("", vec![]);
+        assert_eq!(opts2.len(), 1);
+        assert_eq!(opts2[0].name, "zipformer-small-ctc");
+        assert!(opts2[0].current, "空 asr_engine → 兜底当前");
+
+        // 场景 3：DB 已含兜底 → 去重（只一个 zipformer-small-ctc，且在首位）
+        let engines3 = vec![
+            EngineInfo { name: "zipformer-small-ctc".into(), category: EngineCategory::Zipformer, is_local: true, description: String::new() },
+            EngineInfo { name: "whisper-small".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+        ];
+        let opts3 = build_asr_options("zipformer-small-ctc", engines3);
+        assert_eq!(
+            opts3.iter().filter(|o| o.name == "zipformer-small-ctc").count(),
+            1,
+            "DB 已含兜底时去重"
+        );
+        assert_eq!(opts3[0].name, "zipformer-small-ctc");
+        assert!(opts3[0].current);
     }
 }
