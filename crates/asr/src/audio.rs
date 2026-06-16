@@ -50,12 +50,12 @@ pub fn read_wav_16k_from_bytes(data: &[u8]) -> Result<Vec<f32>> {
     }
 }
 
-/// Resample audio to 16kHz
-pub fn resample_to_16k(samples: &[f32], from_rate: u32) -> Result<Vec<f32>> {
-    if from_rate == 16000 {
+/// 一次性重采样到任意 to_rate（无状态；尾部不足一帧的样本会被丢弃，仅适合整段处理，不适合流式）。
+pub fn resample_to(samples: &[f32], from_rate: u32, to_rate: u32) -> Result<Vec<f32>> {
+    if from_rate == to_rate {
         return Ok(samples.to_vec());
     }
-    let resampler = rubato::FftFixedIn::<f32>::new(from_rate as usize, 16000, 1024, 2, 1)?;
+    let resampler = rubato::FftFixedIn::<f32>::new(from_rate as usize, to_rate as usize, 1024, 2, 1)?;
     let input_frames = resampler.input_frames_next();
     let mut resampler = resampler;
     let mut resampled = Vec::new();
@@ -69,6 +69,11 @@ pub fn resample_to_16k(samples: &[f32], from_rate: u32) -> Result<Vec<f32>> {
     Ok(resampled)
 }
 
+/// Resample audio to 16kHz（委托 resample_to，保持原签名/行为）。
+pub fn resample_to_16k(samples: &[f32], from_rate: u32) -> Result<Vec<f32>> {
+    resample_to(samples, from_rate, 16000)
+}
+
 /// Stateful resampler for streaming audio.
 /// Caches the Rubato FftFixedIn planner and buffers leftover samples between chunks
 /// to ensure glitch-free audio boundaries and high performance.
@@ -76,16 +81,24 @@ pub struct AudioResampler {
     resampler: rubato::FftFixedIn<f32>,
     input_frames: usize,
     buffer: Vec<f32>,
+    to_rate: usize,
 }
 
 impl AudioResampler {
+    /// 流式重采样到 16kHz（向后兼容）。
     pub fn new(from_rate: u32) -> Result<Self> {
-        let resampler = rubato::FftFixedIn::<f32>::new(from_rate as usize, 16000, 1024, 2, 1)?;
+        Self::new_to(from_rate, 16000)
+    }
+
+    /// 流式重采样到任意 to_rate（denoise 路径 48k 桥接用）。
+    pub fn new_to(from_rate: u32, to_rate: u32) -> Result<Self> {
+        let resampler = rubato::FftFixedIn::<f32>::new(from_rate as usize, to_rate as usize, 1024, 2, 1)?;
         let input_frames = resampler.input_frames_next();
         Ok(Self {
             resampler,
             input_frames,
             buffer: Vec::new(),
+            to_rate: to_rate as usize,
         })
     }
 
@@ -114,6 +127,11 @@ impl AudioResampler {
         let output = self.resampler.process(&[&self.buffer], None)?;
         self.buffer.clear();
         Ok(output[0].clone())
+    }
+
+    /// 目标采样率（构造时设定，便于上层断言链路配置）。
+    pub fn to_rate(&self) -> usize {
+        self.to_rate
     }
 }
 
@@ -234,4 +252,55 @@ pub fn segment_audio_vad(
     vad.reset();
 
     segments
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn resample_to_identity_when_same_rate() {
+        let s = vec![0.1_f32; 2000];
+        let out = resample_to(&s, 16000, 16000).unwrap();
+        assert_eq!(out.len(), 2000);
+    }
+
+    #[test]
+    fn resample_to_48k_changes_length_proportionally() {
+        // 1 秒 16k 正弦 → 48k：rubato FftFixedIn 以固定 input 帧处理，比例约 3 倍。
+        // 16000 输入 = 15 整帧（1024）+ 640 残留；resample_to 丢弃残留 → 约 46080 输出。
+        let s: Vec<f32> = (0..16000)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin() * 0.3)
+            .collect();
+        let out = resample_to(&s, 16000, 48000).unwrap();
+        assert!(
+            out.len() >= 45000 && out.len() <= 48000,
+            "48k 重采样长度异常: {}",
+            out.len()
+        );
+    }
+
+    #[test]
+    fn audio_resampler_new_to_48k_streaming_keeps_buffer() {
+        // 流式：分两块喂入，缓冲跨调用保留。最终长度应 ≥ 一次性（尾部零填吐残留）。
+        let full: Vec<f32> = (0..16000)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 16000.0).sin() * 0.3)
+            .collect();
+        let mut rs = AudioResampler::new_to(16000, 48000).unwrap();
+        assert_eq!(rs.to_rate(), 48000);
+        let mut acc = rs.resample(&full[..8000]).unwrap();
+        acc.extend(rs.resample(&full[8000..]).unwrap());
+        acc.extend(rs.flush().unwrap());
+        let one = resample_to(&full, 16000, 48000).unwrap();
+        // 流式 flush 后吐出残留（640 samples 零填成一帧 → ~3072 输出），故 acc > one；
+        // 容差放宽到一帧输出大小（4096）以吸收实现细节差异。
+        let diff = acc.len() as i64 - one.len() as i64;
+        assert!(
+            diff >= 0 && diff < 4096,
+            "流式 {} 应 ≥ 一次性 {} 且差值 < 4096，实际 diff={}",
+            acc.len(),
+            one.len(),
+            diff
+        );
+    }
 }
