@@ -121,7 +121,7 @@ polish_llm: "bigmodel:glm-4-flashx"          # category:name
 
 | 模块 | 变更 |
 |------|------|
-| `infra/src/db.rs` | 新增 `ModelSpec` + `parse_model_spec`；`load_llm_model_at` 按 spec 三分支查询 |
+| `infra/src/db.rs` | 新增 `ModelSpec` + `parse_model_spec`；`load_llm_model_at` 按 spec 两分支查询（`Local`/`NameOnly` 合并） |
 | `asr/src/config.rs` | 新增 `engine_category_from_str` / `all_sections` / `resolve_engine_in_config`；`resolve_engine_category` / `resolve_active_engine` 改走 spec 解析 |
 | `asr/src/engine.rs` | `switch_model` 解析 spec → 裸名缓存 |
 | `asr/src/streaming_engine.rs` | `StreamingSession::new` 解析 spec → 裸名传构造器 |
