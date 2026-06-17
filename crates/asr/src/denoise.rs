@@ -542,4 +542,94 @@ mod tests {
         }
         writer.finalize().expect("finalize");
     }
+
+    // ── DF3 后端测试（需加载 7.9MB 模型，慢，手动 `cargo test -- --ignored`）──
+
+    /// DF3 加载 + 长度守恒（同 RNNoise 断言）。
+    #[test]
+    #[ignore]
+    fn df3_length_invariant() {
+        for &n in &[480usize, 481, 960, 4800] {
+            let mut p = DenoiseProcessor::new(DenoiseMode::Df3).unwrap();
+            let input: Vec<f32> = (0..n)
+                .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48000.0).sin() * 0.3)
+                .collect();
+            let mut out = p.process_samples(&input);
+            out.extend(p.flush());
+            let diff = (out.len() as i64 - n as i64).abs();
+            assert!(diff < FRAME_SIZE as i64, "n={n} out={} diff={diff}", out.len());
+        }
+    }
+
+    /// DF3 不压语音：干净**真实** TTS 语音 gain 应 ≥0.5（spike 实测 0.96，本测试实测 0.999）。
+    ///
+    /// **为何用真实语音而非 `synth_speech` 合成谐波**：DeepFilterNet3 在真实语音数据上
+    /// 训练，会识别 `synth_speech` 的稳态谐波（恒幅、无真实语音动态）为非语音并压制
+    /// （合成语音 DF3 gain 实测 0.005，而 RNNoise 因特征不同 gain≥0.5）。这是合成代理
+    /// 的固有失真，**不是 DF3 真压语音**——真实 TTS 语音 gain=0.999 才是该断言的正确
+    /// 代理。这与 plan「spike 实测真实语音 0.96」的意图一致。
+    #[test]
+    #[ignore] // 需 /tmp/voice48k.wav（macOS: say -o voice48k.wav "..." 后转 48k）
+    fn df3_clean_speech_preserved() {
+        let samples = read_tts_wav();
+        let n = samples.len();
+        let mut p = DenoiseProcessor::new(DenoiseMode::Df3).unwrap();
+        let mut out = p.process_samples(&samples);
+        out.extend(p.flush());
+        let lo = FRAME_SIZE * 2;
+        let hi = n.saturating_sub(FRAME_SIZE * 2);
+        let in_rms = rms(&samples, lo, hi);
+        let out_rms = rms(&out, lo, hi);
+        let gain = out_rms / in_rms.max(1e-12);
+        eprintln!(
+            "DIAG df3_clean(real): in_rms={:.4} out_rms={:.4} gain={:.3}（应 ≥0.5；dfn3 缺陷≈0.10）",
+            in_rms, out_rms, gain
+        );
+        assert!(gain >= 0.5, "DF3 压语音：gain={:.3}", gain);
+    }
+
+    /// **诊断（非断言）**：合成谐波经 DF3 的增益——记录合成代理的固有失真。
+    /// 实测 gain≈0.005（DF3 识别稳态谐波为非语音并压制），远低于真实语音的 0.999。
+    /// 此为合成语音代理局限，非回归证据；保留以监控 DF3 对合成信号的行为变化。
+    #[test]
+    #[ignore]
+    fn df3_synth_speech_gain_diag() {
+        let n = 48000 * 2;
+        let input = synth_speech(n);
+        let mut p = DenoiseProcessor::new(DenoiseMode::Df3).unwrap();
+        let mut out = p.process_samples(&input);
+        out.extend(p.flush());
+        let lo = FRAME_SIZE * 2;
+        let hi = n - FRAME_SIZE * 2;
+        let in_rms = rms(&input, lo, hi);
+        let out_rms = rms(&out, lo, hi);
+        let gain = out_rms / in_rms.max(1e-12);
+        eprintln!(
+            "DIAG df3_synth: gain={:.3}（合成谐波，DF3 识别为非语音；真实语音 gain=0.999）",
+            gain
+        );
+        write_wav("/tmp/voice48k_df3_synth_out.wav", &out);
+    }
+
+    /// DF3 抑制噪声：纯白噪声 out_rms < in_rms。
+    #[test]
+    #[ignore]
+    fn df3_noise_suppressed() {
+        let n = 48000 * 3;
+        let input = white_noise(n, 0.1);
+        let mut p = DenoiseProcessor::new(DenoiseMode::Df3).unwrap();
+        let mut out = p.process_samples(&input);
+        out.extend(p.flush());
+        let lo = FRAME_SIZE * 100;
+        let hi = n - FRAME_SIZE * 2;
+        let in_rms = rms(&input, lo, hi);
+        let out_rms = rms(&out, lo, hi);
+        eprintln!("DIAG df3_noise: in_rms={:.4} out_rms={:.4}", in_rms, out_rms);
+        assert!(
+            out_rms < in_rms,
+            "DF3 未抑制噪声：out={:.4} in={:.4}",
+            out_rms,
+            in_rms
+        );
+    }
 }
