@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for octopus-desktop",
-  "windows": ["main", "recording_overlay", "result_window"],
+  "windows": ["main", "recording_overlay", "result_window", "settings_window"],
   "permissions": [
     "core:default",
     "core:window:allow-show",
