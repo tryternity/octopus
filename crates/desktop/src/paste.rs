@@ -96,11 +96,21 @@ fn paste_via_clipboard<R: Runtime>(
     #[cfg(not(target_os = "macos"))]
     let mod_key = Key::Control;
 
+    // macOS：用固定虚拟键码（kVK_ANSI_V=9）而非 Key::Unicode('v')。
+    // enigo 0.6.1 的 Key::Unicode 在 macOS 上走 get_layoutdependent_keycode，
+    // 该函数循环调用 Carbon TIS API（TISCopyCurrentKeyboardInputSource /
+    // UCKeyTranslate），这些 HIToolbox API 非线程安全，在 spawn_blocking 的
+    // 非主线程中调用会触发 macOS 线程断言 → SIGTRAP（Trace/BPT trap: 5）。
+    #[cfg(target_os = "macos")]
+    let v_key = Key::Other(9);
+    #[cfg(not(target_os = "macos"))]
+    let v_key = Key::Unicode('v');
+
     enigo
         .key(mod_key, Direction::Press)
         .map_err(|e| anyhow::anyhow!("Mod press: {}", e))?;
     enigo
-        .key(Key::Unicode('v'), Direction::Click)
+        .key(v_key, Direction::Click)
         .map_err(|e| anyhow::anyhow!("V click: {}", e))?;
     enigo
         .key(mod_key, Direction::Release)

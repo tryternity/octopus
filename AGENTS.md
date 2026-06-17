@@ -222,6 +222,10 @@ VadSegmented 模式中，异步转写可能失败或返回空。**失败/空结�
 
 后台 DB 写线程通过 `OnceLock<Sender>` 持久化 sender，进程退出时队列可能丢数据。`coordinator::shutdown_db()` 在 `ExitRequested` 时排空剩余命令。**新增 DB 写操作路径时记得走 actor 模式（`get_db_sender().send()`）**。
 
+### enigo macOS SIGTRAP（非主线程键盘模拟）
+
+`paste.rs::paste_via_clipboard` 模拟 Cmd+V 时，**macOS 必须用 `Key::Other(9)`（`kVK_ANSI_V`）而非 `Key::Unicode('v')`**。enigo 0.6.1 的 `Key::Unicode` 在 macOS 走 `get_layoutdependent_keycode`（循环 128 keycode × Carbon `TISCopyCurrentKeyboardInputSource`/`UCKeyTranslate`），这些 HIToolbox API 非线程安全，而粘贴在 `spawn_blocking` 的非主线程执行 → SIGTRAP（`Trace/BPT trap: 5`，非 Rust panic、无 backtrace、无 `.ips` 崩溃报告）。`Key::Other(u32)` 直接当 keycode 用、绕过 layout 查找。Linux/Windows 不受影响（`Key::Unicode` 线程安全）。详见 [spec](docs/superpowers/specs/2026-06-17-paste-enigo-macos-sigtrap-design.md)。
+
 ## 文档体系
 
 ```
