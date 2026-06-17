@@ -1,5 +1,7 @@
 # DeepFilterNet3 环境降噪 Implementation Plan
 
+> ⚠️ **已废弃（2026-06-17）**：本 plan 的方案（`ort` + `dfn3.onnx` 自实现 STFT/ERB + `denoise_enabled: bool`）因导出模型压语音（gain≈0.10）已弃用。环境降噪最终方案 = libDF v0.5.6 + tract 原生整合（`FrameDenoise` trait / `RnnoiseBackend` / `Df3Backend`，`denoise_mode: u8` 0/1/2）。详见 [`2026-06-17-denoise-deepfilternet3-integration-design.md`](../specs/2026-06-17-denoise-deepfilternet3-integration-design.md)。本文仅作历史执行记录保留，请勿据此实施。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在麦克风录音链路中插入 DeepFilterNet3（ONNX）流式环境降噪层，在送入 VAD/ASR 前降低背景噪声，跨平台（mac/win/linux）生效。

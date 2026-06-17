@@ -267,7 +267,7 @@ click → 无动作（disabled，仅 tooltip）
 - **图标**：Font Awesome headphone（`denoise.svg`，CSS mask 方式同 §7.1）
 - **浮层 3 选**：无 / 轻度 / 深度 → 对应 `denoise_mode` 0 / 1 / 2
 - **Tauri 命令**：`set_denoise_mode(mode: u8)` —— 校验 0/1/2 → 写 `RuntimeConfig.denoise_mode` → 持久化 `config.yaml.denoise_mode`
-- **生效语义**：`denoise_mode=0` 关闭 RNNoise 前置降噪（等同 `denoise_enabled=false`）；`1`（默认）/`2` 控制降噪强度（当前实现仅开关，强度档位为预留扩展）
+- **生效语义**：`denoise_mode=0` 关闭环境降噪（直通）；`1`（默认）=RNNoise / `2`=DeepFilterNet3，由 mode 选可插拔后端（详见 [DF3 整合 spec](2026-06-17-denoise-deepfilternet3-integration-design.md)）。旧 `denoise_enabled: bool` 字段已删除
 - **config.yaml**：新增 `denoise_mode: u8`（默认 `1`），`AppConfig` 同步加字段
 - **选中态**：`refreshActive()` 读 `toolbar_state.denoise_mode`，mode≠0 时按钮 `.active`
 

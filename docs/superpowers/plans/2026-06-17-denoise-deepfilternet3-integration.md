@@ -93,6 +93,8 @@ git commit -m "build(asr): 加 libDF v0.5.6 依赖 + ndarray_0.15 隔离 + time 
 
 ## Task 2: config 加 denoise_mode + effective_denoise_mode()
 
+> ⚠️ **实施修正（2026-06-17 合并后）**：本 Task 原设计 `denoise_mode: Option<u8>` + `effective_denoise_mode()`（向后兼容旧 `denoise_enabled`）。DF3 分支合并时与 main 工具栏的 `u8` 版本语义冲突（`git merge-tree` 未报文本冲突、却留下重复字段），经决策**统一为 main 的 `denoise_mode: u8`**——`Option<u8>` 字段与 `effective_denoise_mode()` **未保留**，旧 `denoise_enabled` 字段彻底删除。下方 Step 1–5 记录的是原设计步骤（历史执行轨迹）；最终落盘代码见 `crates/infra/src/config.rs`（`denoise_mode: u8` + `default_denoise_mode()=1`）。完整决策动机详见 spec §8「实施修正（2026-06-17 合并后）」。
+
 **Files:**
 - Modify: `crates/infra/src/config.rs:143-145`（字段）、`config.rs`（impl 块加方法）、`config.rs:230`（Default）、`config.rs:324-332`（测试）
 
