@@ -110,12 +110,13 @@ octopus-cli config
 | `polish_llm` | string | `"bigmodel:glm-4-flashx"` | desktop | 当前润色使用的 LLM 模型，格式 `"PREFIX:NAME"`（见下方模型选择 spec） |
 | `asr_hardware_accelerated` | bool | `false` | desktop + cli | ASR 推理是否启用硬件加速（CUDA/DirectML/CoreML EP），失败自动回退 CPU；不影响 VAD（VAD 固定 CPU） |
 | `asr_correct` | bool | `false` | cli + server + desktop | 是否对 ASR 输出做拼音映射 + bigram 转移概率的轻量纠错/热词校正；**自动跳过 Qwen3-ASR**（其自带标点且语义纠错强），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。详见 [architecture.md §ASR 纠错](../architecture.md) |
-| `denoise_enabled` | bool | `true` | desktop | 麦克风音频送入 VAD/ASR 前是否经 RNNoise 环境降噪（`nnnoiseless`，纯 Rust 内置默认模型，48kHz→频带增益+OLA，GRU 状态跨帧保持）；初始化失败自动降级直通（warn），不阻断录音。详见 [architecture.md](../architecture.md) |
+| `denoise_enabled` | bool | `true` | desktop | 麦克风音频送入 VAD/ASR 前是否经 RNNoise 环境降噪（`nnnoiseless`，纯 Rust 内置默认模型，48kHz→频带增益+OLA，GRU 状态跨帧保持）；初始化失败自动降级直通（warn），不阻断录音。**已被 `denoise_mode` 取代，仅作向后兼容回退**（见下）。详见 [architecture.md](../architecture.md) |
+| `denoise_mode` | int | 看 `denoise_enabled` | desktop | 环境降噪模式：`0`=关闭（直通）、`1`=RNNoise（`nnnoiseless`，默认行为）、`2`=DeepFilterNet3（libDF v0.5.6 + tract 0.19，48kHz 全频带，质量最佳，编译期内嵌 ~7.9MB 模型）。降噪为可插拔后端（`FrameDenoise` trait），由 mode 选后端。未配置时回退旧 `denoise_enabled`（`true`→`1`，`false`→`0`）以向后兼容。详见 [architecture.md](../architecture.md) |
 | `output_simplified` | bool | `true` | desktop | ASR 输出字形归一化：`true`→简体（繁→简），`false`→繁体（简→繁）。基于开放词典网 CC-BY 3.0 单字对照表（编译期嵌入），在 ASR 输出后做单字级字形转换（不转地域用词）。解决 Qwen3-ASR `auto` 模式输出繁体的问题。详见 [architecture.md](../architecture.md) |
 | `hide_toolbar` | bool | `true` | desktop | 结果展示区工具栏显隐模式：`true`→鼠标移入显示、移出隐藏（默认）；`false`→工具栏始终显示（窗口高度保持展开态 132px） |
 | `denoise_mode` | u8 | `1` | desktop | 降噪模式：`0`=无降噪，`1`=轻度降噪（默认），`2`=深度降噪。由工具栏运行时切换（`set_denoise_mode` 命令）+ 持久化回 config.yaml |
 
-> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（包括 `polish_mode`、`polish_interval` 和新字段 `polish_llm`），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`denoise_enabled`（前缀 `denoise_`）控制麦克风环境降噪（采集层前置，VAD/ASR 前）。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
+> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（包括 `polish_mode`、`polish_interval` 和新字段 `polish_llm`），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`denoise_mode` + 旧 `denoise_enabled`（前缀 `denoise_`）控制麦克风环境降噪（采集层前置，VAD/ASR 前；`denoise_mode` 优先，未配置回退 `denoise_enabled`）。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
 
 ### 模型选择 spec（`asr_engine` / `polish_llm` 统一格式）
 
@@ -181,7 +182,8 @@ pause_polish_threshold_ms: 600   # 毫秒，仅 polish_mode=2 生效（停顿触
 polish_llm: "bigmodel:glm-4-flashx"  # 润色模型，格式 "PREFIX:NAME"（见模型选择 spec）；provider/base_url/API Key 保存于 SQLite 的 models 表中
 asr_hardware_accelerated: false  # true 启用 GPU/CoreML/DirectML 加速（失败回退 CPU）；VAD 不受影响
 asr_correct: false               # true 对 ASR 输出做拼音+bigram 轻量纠错（自动跳过 Qwen3-ASR）
-denoise_enabled: true            # false 关闭麦克风环境降噪（RNNoise）；初始化失败自动降级直通
+denoise_mode: 1                  # 0=关闭直通 / 1=RNNoise（默认）/ 2=DeepFilterNet3（48kHz 全频带，~7.9MB 模型）；未配置时回退看 denoise_enabled
+denoise_enabled: true            # 旧字段（已被 denoise_mode 取代，仅 denoise_mode 未配置时作回退：true→1, false→0）；初始化失败自动降级直通
 output_simplified: true          # ASR 输出字形：true=简体（繁→简），false=繁体（简→繁）
 hide_toolbar: true               # 结果窗工具栏：true=hover 显隐（默认），false=始终显示
 denoise_mode: 1                  # 降噪模式：0=无降噪，1=轻度（默认），2=深度

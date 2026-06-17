@@ -85,7 +85,7 @@ impl SharedAudioState {
     /// - flush=false（drain 流式）：三者都不 flush，GRU 状态与采样缓冲跨调用连续保持
     ///   （降噪物理连续性，呼应 spec §6「噪声估计跨段保持」，与 VAD 每段 reset 相反）。
     ///
-    /// 降级（spec §9）：denoise_enabled=false / 模型缺失 / 实例未就绪 → 走直通（原生→16k），
+    /// 降级（spec §9）：denoise_mode=0 / 模型缺失 / 实例未就绪 → 走直通（原生→16k），
     /// 仅 warn 日志，绝不 panic、绝不阻断录音。单帧推理失败已由 DenoiseProcessor 内部 bypass。
     ///
     /// 锁顺序：denoise（if 块内 lock）→ 持有期间内嵌 down_sampler（stream_resample 内
@@ -95,7 +95,7 @@ impl SharedAudioState {
     /// 虽短暂同时持有，顺序固定，不死锁。
     fn process_pipeline(&self, raw: &[f32], rate: u32, flush: bool) -> Vec<f32> {
         let cfg = octopus_asr::config::load_app_config_cached();
-        let denoise_on = cfg.denoise_enabled;
+        let denoise_on = cfg.effective_denoise_mode() != 0;
 
         // denoise 锁：本块持有；期间调用 stream_resample(down_sampler) 会短暂同时持有
         // down_sampler 锁——顺序固定（denoise→down_sampler），无反向获取，不死锁。
@@ -207,18 +207,18 @@ impl SharedAudioState {
         // 降噪初始化：enabled 则建/重置实例；失败降级为 None（直通），仅 warn，
         // 绝不阻断录音、绝不 panic（spec §9 降级）。RNNoise 内置模型，无外部文件依赖。
         let cfg = octopus_asr::config::load_app_config_cached();
+        let mode = octopus_asr::denoise::DenoiseMode::from_u8(cfg.effective_denoise_mode());
         {
             let mut g = self.denoise.lock().unwrap();
-            if cfg.denoise_enabled {
-                match octopus_asr::denoise::DenoiseProcessor::new() {
-                    Ok(mut p) => {
-                        p.reset();
+            if mode != octopus_asr::denoise::DenoiseMode::Off {
+                match octopus_asr::denoise::DenoiseProcessor::new(mode) {
+                    Ok(p) => {
                         *g = Some(p);
-                        info!("RNNoise 环境降噪已启用（nnnoiseless，48k）");
+                        info!("环境降噪已启用（mode={:?}，48k）", mode);
                     }
                     Err(e) => {
                         log::warn!(
-                            "RNNoise 降噪初始化失败，已降级直通（不阻断录音）：{:?}",
+                            "环境降噪初始化失败，已降级直通（不阻断录音）：{:?}",
                             e
                         );
                         *g = None;
