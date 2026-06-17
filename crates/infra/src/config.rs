@@ -144,6 +144,11 @@ pub struct AppConfig {
     #[serde(default = "default_denoise_enabled")]
     pub denoise_enabled: bool,
 
+    /// 环境降噪模式：0=关闭，1=RNNoise（默认），2=DeepFilterNet3。
+    /// None=未配置 → 回退看 denoise_enabled（向后兼容旧配置）。
+    #[serde(default)]
+    pub denoise_mode: Option<u8>,
+
     /// ASR 输出字形：true→简体（繁→简），false→繁体（简→繁）。默认简体。
     #[serde(default = "default_output_simplified")]
     pub output_simplified: bool,
@@ -204,6 +209,21 @@ fn default_segment_overlap() -> f64 {
     200.0
 }
 
+impl AppConfig {
+    /// 解析最终降噪模式（denoise_mode 显式优先，否则 denoise_enabled 映射）。
+    /// 0=关闭，1=RNNoise，2=DeepFilterNet3。
+    pub fn effective_denoise_mode(&self) -> u8 {
+        if let Some(m) = self.denoise_mode {
+            return m;
+        }
+        if self.denoise_enabled {
+            1
+        } else {
+            0
+        }
+    }
+}
+
 impl Default for AppConfig {
     fn default() -> Self {
         Self {
@@ -228,6 +248,7 @@ impl Default for AppConfig {
             asr_hardware_accelerated: default_asr_hardware_accelerated(),
             asr_correct: default_asr_correct(),
             denoise_enabled: default_denoise_enabled(),
+            denoise_mode: None,
             output_simplified: default_output_simplified(),
         }
     }
@@ -330,5 +351,26 @@ mod tests {
     fn denoise_enabled_override_from_yaml() {
         let cfg: AppConfig = serde_yaml::from_str("denoise_enabled: false\n").unwrap();
         assert!(!cfg.denoise_enabled);
+    }
+
+    #[test]
+    fn denoise_mode_explicit_wins() {
+        let cfg: AppConfig =
+            serde_yaml::from_str("denoise_mode: 2\ndenoise_enabled: false\n").unwrap();
+        assert_eq!(cfg.effective_denoise_mode(), 2);
+    }
+
+    #[test]
+    fn denoise_mode_absent_falls_back_to_enabled() {
+        let cfg: AppConfig = serde_yaml::from_str("denoise_enabled: true\n").unwrap();
+        assert_eq!(cfg.effective_denoise_mode(), 1);
+        let cfg: AppConfig = serde_yaml::from_str("denoise_enabled: false\n").unwrap();
+        assert_eq!(cfg.effective_denoise_mode(), 0);
+    }
+
+    #[test]
+    fn denoise_mode_absent_defaults_to_rnnoise() {
+        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
+        assert_eq!(cfg.effective_denoise_mode(), 1);
     }
 }
