@@ -95,7 +95,7 @@ impl SharedAudioState {
     /// 虽短暂同时持有，顺序固定，不死锁。
     fn process_pipeline(&self, raw: &[f32], rate: u32, flush: bool) -> Vec<f32> {
         let cfg = octopus_asr::config::load_app_config_cached();
-        let denoise_on = cfg.effective_denoise_mode() != 0;
+        let denoise_on = cfg.denoise_mode != 0;
 
         // denoise 锁：本块持有；期间调用 stream_resample(down_sampler) 会短暂同时持有
         // down_sampler 锁——顺序固定（denoise→down_sampler），无反向获取，不死锁。
@@ -207,7 +207,7 @@ impl SharedAudioState {
         // 降噪初始化：enabled 则建/重置实例；失败降级为 None（直通），仅 warn，
         // 绝不阻断录音、绝不 panic（spec §9 降级）。RNNoise 内置模型，无外部文件依赖。
         let cfg = octopus_asr::config::load_app_config_cached();
-        let mode = octopus_asr::denoise::DenoiseMode::from_u8(cfg.effective_denoise_mode());
+        let mode = octopus_asr::denoise::DenoiseMode::from_u8(cfg.denoise_mode);
         {
             let mut g = self.denoise.lock().unwrap();
             if mode != octopus_asr::denoise::DenoiseMode::Off {
