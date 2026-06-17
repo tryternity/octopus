@@ -32,7 +32,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 |------|------|
 | `config` | DB 模型配置加载（`AsrConfig`）、模型发现、引擎路由（`resolve_engine_in_config` 按 `PREFIX:NAME` spec 解析）、全局默认引擎兜底（`resolve_active_engine`） |
 | `audio` | WAV 读取、重采样（`resample_to` 一次性 / `AudioResampler` 流式，支持任意 from→to 速率，含 denoise 48k 桥接）、VAD 语音过滤 |
-| `denoise` | RNNoise 流式环境降噪（`nnnoiseless`，纯 Rust 移植 Xiph RNNoise，内置默认模型，48kHz/FRAME_SIZE=480→频带特征+VAD/噪声/降噪 GRU→频带增益+OLA，GRU 状态跨帧保持），采集层前置 |
+| `denoise` | 可插拔流式环境降噪后端（`FrameDenoise` trait，由 `denoise_mode` 选择）：`1`=RNNoise（`nnnoiseless`，纯 Rust 移植 Xiph RNNoise，内置默认模型，48kHz/FRAME_SIZE=480→频带特征+VAD/噪声/降噪 GRU→频带增益+OLA，GRU 状态跨帧保持）/ `2`=DeepFilterNet3（`Df3Backend` 包装 libDF v0.5.6 的 `DfTract` + tract 0.19，48kHz 全频带）。`DenoiseProcessor` 为 mode 分发器，采集层前置 |
 | `vad` | Silero VAD 语音活动检测 |
 | `whisper` | Whisper 离线识别 |
 | `sensevoice` | SenseVoice 离线识别 |
@@ -108,7 +108,21 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **音频采集按需启停（替代常驻，修复菜单栏麦克风指示灯常亮）**：`cpal::Stream` 所有权收归 `SharedAudioState`（`Mutex<Option<cpal::Stream>>`），不再 `std::mem::forget` 泄漏保活——**每次录音 `start()` 现场建流（`build_stream`）+ play，`stop()` pause + drop（take 出 Option 在本线程析构）**：空闲期无流、菜单栏麦克风指示灯灭、不触发麦克风权限；录音期间流持续播放、回调内 `is_recording` 作冗余守卫。**Send-safety（已根治）**：`cpal::Stream` 为 `!Send + !Sync`，但 SharedAudioState 的 Arc 被 `move` 进 Coordinator 的 `std::thread::spawn` 循环闭包、仅该线程独占持有（`audio` 不在 Coordinator 结构体字段），故 Stream 的建（start）/ 播（play）/ 停（stop）/ 析构（stop take-drop 或循环线程退出）全程同线程、无跨线程访问；cpal 回调线程只持有独立 clone 的 `Arc<Mutex<Vec>>`/`Arc<AtomicBool>`。`unsafe impl Send/Sync` 在此前提下 sound（注释记录该不变量）。建流失败由 `start()` 返回 `Err`、上层降级
 - **音频初始化防闪退**：`AudioRecorder::open()` 仅校验麦克风存在（失败 `log::error` + 仍持有静音占位 `SharedAudioState`，应用进托盘不 `expect` panic）；真正的 `build_stream` 推迟到首次 `start()`，建流失败（无设备 / 权限拒绝 / 占用）由 `start()` 返回 `Err`、上层降级（采样恒空 → 识别静默 → 空文本回 `Idle`），改配置后重启恢复
 - **流式重采样器缓存**：非 16kHz 麦克风源的流式重采样经 `crates/asr/src/audio.rs` 的 `AudioResampler`（有状态 `rubato::FftFixedIn` + 跨帧 leftover 缓冲）——`desktop::SharedAudioState` 持 `Mutex<Option<AudioResampler>>`，源速率不变时**复用同一规划器**（避免每 ~300ms tick 的 FFT planner 重规划开销，并保留滤波器跨帧状态保边界 glitch-free），仅 `stop` 时 `flush` 补零吐尾 + 置 `None`；`drain_samples` 不 flush。`AudioResampler` 经编译期断言 `Send+Sync`（固化 `SharedAudioState` 的 `unsafe impl` 前提，防 rubato 升级引入非 Send 字段静默退化为 UB）
-- **环境降噪（RNNoise，采集层前置）**：麦克风音频送入 VAD/ASR 前，经 `crates/asr/src/denoise.rs` 的 `DenoiseProcessor`（`nnnoiseless`，纯 Rust 移植 Xiph RNNoise，内置默认模型，48kHz FRAME_SIZE=480(10ms)→频带特征 + VAD/噪声/降噪 GRU → 频带增益 → iSTFT+OLA）降低背景噪声。样本按 nnnoiseless 契约在 `[-1,1]`↔`[-32768,32767]`（i16 PCM 等价）间转换。GRU 隐状态 + 特征缓冲 **跨 `drain_samples` 周期、跨 VAD 分段连续保持**（噪声估计是连续物理过程，与 `filter_vad` 每段 reset 故意相反）；新会话 `start()` 调 `reset()`。链路 `process_pipeline`：原生SR→(`down_sampler`)→48k→DenoiseProcessor→(`resampler`)→16k（`flush` 语义同重采样器：`drain_samples` 不 flush 保连续、`stop` flush 取尾）。由 `config.yaml.denoise_enabled`（默认 true）开关。**两级降级**：`denoise_enabled=false`→零开销直通；`DenoiseProcessor::new` 失败（罕见，仅 OOM）→持 `None` + `warn`→走原 16k 重采样直通；**不 panic**。无外部模型文件依赖（内置默认 RNNoise 模型），不进 DB、不参与引擎选择。**为何弃用 DeepFilterNet3**：`dfn3.onnx` 流式逐帧导出存在模型层缺陷（把正常语音当噪声压到 ~10%，开降噪反而损害 ASR）；RNNoise 内置成熟模型，干净语音近乎无损保留（gain≈1.0）、稳态噪声保守抑制（避免 musical noise）。详见 [spec](superpowers/specs/2026-06-16-denoise-deepfilternet-design.md)（含弃用 DF3 换 RNNoise 修订记录）
+- **环境降噪（可插拔后端，采集层前置）**：麦克风音频送入 VAD/ASR 前，经 `crates/asr/src/denoise.rs` 的 `DenoiseProcessor`（mode 分发器，对外接口与旧 RNNoise-only 一致）降低背景噪声。降噪为**可插拔后端**（`FrameDenoise` trait，`process_frame(&[f32;480], &mut [f32;480])` 用 `[-1,1]` 单声道契约），由 `config.yaml.denoise_mode` 选择：
+  - `0` = 关闭（直通，零开销）。
+  - `1` = RNNoise（`RnnoiseBackend`，`nnnoiseless` 纯 Rust 移植 Xiph RNNoise，内置默认模型，48kHz FRAME_SIZE=480(10ms)→频带特征 + VAD/噪声/降噪 GRU → 频带增益 → iSTFT+OLA）。**默认**。
+  - `2` = DeepFilterNet3（`Df3Backend`，libDF v0.5.6 的 `DfTract` + tract 0.19，48kHz 全频带，编译期内嵌 ~7.9MB `DeepFilterNet3_onnx.tar.gz` 模型）。质量最佳（干净语音 gain≈0.96、带噪 gain≈0.60、RTF≈0.015–0.036）。DF3 **懒加载**：`new(mode=Df3)` 仅占位，首次 `process_samples` 才加载模型（避免构造热路径阻塞）。
+  - 未配置 `denoise_mode` 时回退旧 `denoise_enabled`（`true`→`1`，`false`→`0`），向后兼容。
+
+  **帧边界隔离 ndarray 版本**：libDF（deep_filter）依赖 ndarray 0.15，asr 现有 ndarray 0.17（ort/whisper 等）。Cargo 允许同 workspace 共存（不同 major）。`FrameDenoise` trait 只用原生 `&[f32]`/`&mut [f32]`，绝不暴露 ndarray 类型；`Df3Backend` 内部用与 libDF 同实例的 `ndarray_015`（package rename）构造 `ArrayView2 [1,480]` 喂 `DfTract::process`，asr 的 0.17 类型完全不触及。
+
+  **DF3 依赖（git，非 crates.io）**：`df = { git = "https://github.com/Rikorose/DeepFilterNet.git", tag = "v0.5.6", package = "deep_filter", features = ["tract", "default-model", "transforms"] }`（libDF 不在 crates.io，只能 git）。tag v0.5.6 对应 commit `978576aa`，tract `^0.19.4`（解析到 0.19.16，**不可用 0.21.x**——0.21.4 在 native 有 codegen bug 致权重 NaN，连官方 `deep-filter` bin 也崩）。
+
+  **Send/Sync**：`DfTract` 含 `Arc<dyn RealToComplex<f32>>`（无 `+ Send`）→ `!Send`，故 `Df3Backend` 经 `unsafe impl Send/Sync`（照 VST3 plugin/src/lib.rs:9-11）。安全性：`DenoiseProcessor` 在 `Mutex` 内、coordinator 单线程串行 lock+process（audio.rs:94 注释），实际无跨线程并发，unsafe 仅满足类型约束不引入数据竞争。`RnnoiseBackend`（`Box<DenoiseState<'static>>`）天然 Send，无需 unsafe。
+
+  **状态保持与降级**：GRU 隐状态 + 特征缓冲 **跨 `drain_samples` 周期、跨 VAD 分段连续保持**（噪声估计是连续物理过程，与 `filter_vad` 每段 reset 故意相反）；新会话 `start()` 调 `reset()`（DF3 reset = 重载 7.9MB 模型，仅会话边界可接受）。链路 `process_pipeline`：原生SR→(`down_sampler`)→48k→DenoiseProcessor→(`resampler`)→16k（`flush` 语义同重采样器：`drain_samples` 不 flush 保连续、`stop` flush 取尾）。**三级降级**：`mode=0`→直通；后端加载/单帧推理失败→warn + backend 置 `None`→直通；**不 panic**、不阻断录音。无外部模型文件依赖（RNNoise 内置模型 / DF3 编译期内嵌），不进 DB、不参与引擎选择。
+
+  **历史**：第一版曾用第三方 `dfn3.onnx` + ort（模型缺陷压语音至 ~10%，已弃用换 RNNoise，见 [`2026-06-16-denoise-deepfilternet-design.md`](superpowers/specs/2026-06-16-denoise-deepfilternet-design.md)）；本版改用官方原生 libDF + tract（spike 验证 gain=0.958 不压语音），DF3 与 RNNoise 并存。详见 [spec](superpowers/specs/2026-06-17-denoise-deepfilternet3-integration-design.md)
 - **VAD 分段切分策略**（`handle_vad_segmented_tick`）：静音边界切分（主）+ 连续超时强制切断（兜底）
   - 静音切分：检测到语音后静音 ≥ `segment_silence`（默认 500ms）→ 切分，**无 overlap**（静音是自然语句边界，下一段从干净开始）
   - 强制切断：连续语音缓冲达 `segment_duration`（默认 20s）仍未静音 → 强制切断，**保留末尾 `segment_overlap`（200ms）作下一段 overlap**（语句被硬切，需重叠保连贯）
