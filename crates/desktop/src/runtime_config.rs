@@ -169,6 +169,9 @@ pub struct ToolbarState {
     pub hide_toolbar: bool,
     /// 降噪模式：0=无，1=轻度，2=深度
     pub denoise_mode: u8,
+    /// 当前 polish_llm 是否有效（裸名非空且在 DB 启用 LLM 列表中）。
+    /// false → 无模型状态，前端 `#tool-llm` 图标置灰。DB 查询失败保守为 false。
+    pub polish_llm_valid: bool,
 }
 
 #[derive(Serialize)]
@@ -190,22 +193,34 @@ pub struct LlmOption {
     pub label: String,
 }
 
-/// 构造 LLM 选项列表（纯逻辑）：current 按 polish_llm 的裸名标记，label 复用 engine_label。
-/// current 可能为 spec 格式（"PREFIX:NAME"）或裸名，统一用 parse_model_spec 提取裸名后比较。
+/// 构造 LLM 选项列表（纯逻辑）：首项固定「不选择模型」（name 空 = polish_llm 置空），
+/// 其后为 DB 启用的 LLM。current 按 polish_llm 裸名标记；current 无效（空 / 不在 DB）
+/// 时首项「不选择模型」标 current（DB 找不到回退无模型）。current 可能为 spec 格式
+/// （"PREFIX:NAME"）或裸名，统一用 parse_model_spec 提取裸名后比较。
 fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) -> Vec<LlmOption> {
     let current_bare = octopus_infra::db::parse_model_spec(current).name();
-    llms.into_iter()
-        .map(|m| {
-            let label = engine_label(m.is_local, &m.category, &m.name);
-            LlmOption {
-                current: m.name == current_bare,
-                label,
-                name: m.name,
-                category: m.category,
-                is_local: m.is_local,
-            }
-        })
-        .collect()
+    // current 有效 = 裸名非空且在 DB 列表中；否则回退无模型（首项 current）。
+    let current_valid = !current_bare.is_empty() && llms.iter().any(|m| m.name == current_bare);
+    let mut options = Vec::with_capacity(llms.len() + 1);
+    // 首项：「不选择模型」（name 空）。current 无效时为选中态。
+    options.push(LlmOption {
+        name: String::new(),
+        category: String::new(),
+        is_local: false,
+        current: !current_valid,
+        label: "不选择模型".to_string(),
+    });
+    for m in llms {
+        let label = engine_label(m.is_local, &m.category, &m.name);
+        options.push(LlmOption {
+            current: m.name == current_bare,
+            label,
+            name: m.name,
+            category: m.category,
+            is_local: m.is_local,
+        });
+    }
+    options
 }
 
 // ── Tauri 命令 ──
@@ -215,11 +230,21 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
     let g = rc.read().unwrap();
     // hide_toolbar 是启动只读配置（不参与运行时切换），从 AppConfig 缓存读
     let hide_toolbar = octopus_asr::config::load_app_config_cached().hide_toolbar;
+    // polish_llm 有效 = 裸名非空且在 DB 启用 LLM 列表中（DB 查询失败保守为 false）。
+    let polish_llm = g.polish_llm.clone();
+    let polish_llm_valid = {
+        let bare = octopus_infra::db::parse_model_spec(&polish_llm).name();
+        !bare.is_empty()
+            && octopus_infra::db::list_llm_models()
+                .map(|llms| llms.iter().any(|m| m.name == bare))
+                .unwrap_or(false)
+    };
     ToolbarState {
         asr_engine: g.asr_engine.clone(),
         polish_mode: polish_mode_to_u8(g.polish_mode),
         hide_toolbar,
         denoise_mode: g.denoise_mode,
+        polish_llm_valid,
     }
 }
 
@@ -317,18 +342,24 @@ pub fn list_llm_models(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOpti
 }
 
 /// 切换润色模型：先校验 DB 存在，再构造 spec（"PREFIX:NAME"）写 RuntimeConfig（即时）+ config.yaml（持久）。
+/// 空 name = 选择「不选择模型」：polish_llm 置空，不查 DB（无模型 = 不润色）。
 #[tauri::command]
 pub fn switch_polish_llm(name: String, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
-    let model = octopus_infra::db::list_llm_models()
-        .map_err(|e| e.to_string())?
-        .into_iter()
-        .find(|m| m.name == name)
-        .ok_or_else(|| format!("润色模型 '{}' 不存在，未切换", name))?;
-    // 构造 spec：is_local → "local:NAME"，否则 "CATEGORY:NAME"
-    let spec = if model.is_local {
-        format!("local:{}", name)
+    let spec = if name.is_empty() {
+        // 「不选择模型」：polish_llm 置空
+        String::new()
     } else {
-        format!("{}:{}", model.category, name)
+        let model = octopus_infra::db::list_llm_models()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|m| m.name == name)
+            .ok_or_else(|| format!("润色模型 '{}' 不存在，未切换", name))?;
+        // 构造 spec：is_local → "local:NAME"，否则 "CATEGORY:NAME"
+        if model.is_local {
+            format!("local:{}", name)
+        } else {
+            format!("{}:{}", model.category, name)
+        }
     };
     {
         let mut g = rc.write().unwrap();
@@ -438,11 +469,17 @@ mod tests {
             LlmModelInfo { name: "ollama-local".into(), category: "ollama".into(), is_local: true },
         ];
         let opts = build_llm_options("glm-4-flashx", llms);
-        assert_eq!(opts.len(), 2);
-        assert!(opts[0].current);
-        assert_eq!(opts[0].label, "bigmodel:glm-4-flashx");
-        assert!(!opts[1].current);
-        assert_eq!(opts[1].label, "本地:ollama-local");
+        assert_eq!(opts.len(), 3);
+        // opts[0] = 首项「不选择模型」，current 有效时非 current
+        assert_eq!(opts[0].label, "不选择模型");
+        assert_eq!(opts[0].name, "");
+        assert!(!opts[0].current, "current=glm 有效 → 无模型项非 current");
+        // opts[1] = glm current
+        assert!(opts[1].current);
+        assert_eq!(opts[1].label, "bigmodel:glm-4-flashx");
+        // opts[2] = ollama
+        assert!(!opts[2].current);
+        assert_eq!(opts[2].label, "本地:ollama-local");
     }
 
     #[test]
@@ -456,11 +493,35 @@ mod tests {
         ];
         // spec 格式
         let opts = build_llm_options("bigmodel:glm-4-flashx", llms.clone());
-        assert!(opts[0].current, "spec 格式应正确标记 current");
+        assert!(!opts[0].current, "无模型项非 current");
+        assert!(opts[1].current, "spec 格式应正确标记 current（glm）");
 
         // local spec 格式
         let opts2 = build_llm_options("local:ollama-local", llms);
-        assert!(opts2[1].current, "local: 前缀 spec 应正确标记 current");
+        assert!(opts2[2].current, "local: 前缀 spec 应正确标记 current（ollama）");
+    }
+
+    #[test]
+    fn build_llm_options_none_current_when_polish_llm_empty_or_not_in_db() {
+        // 需求：polish_llm 空 / 裸名不在 DB / spec 格式不命中 → 首项「无模型」标 current（DB 回退）。
+        use octopus_infra::db::LlmModelInfo;
+        let llms = vec![
+            LlmModelInfo { name: "glm-4-flashx".into(), category: "bigmodel".into(), is_local: false },
+        ];
+        // current 空 → 无模型 current
+        let opts = build_llm_options("", llms.clone());
+        assert!(opts[0].current, "空 polish_llm → 无模型 current");
+        assert_eq!(opts[0].name, "");
+        assert!(!opts[1].current);
+
+        // current 裸名不在 DB → 无模型 current
+        let opts2 = build_llm_options("ghost-model", llms.clone());
+        assert!(opts2[0].current, "polish_llm 不在 DB → 无模型 current");
+        assert!(!opts2[1].current);
+
+        // current spec 格式但不命中 DB → 无模型 current
+        let opts3 = build_llm_options("bigmodel:ghost-model", llms);
+        assert!(opts3[0].current, "spec 格式但不命中 DB → 无模型 current");
     }
 
     #[test]

@@ -379,12 +379,11 @@
       });
     });
 
-    // ── LLM 润色模型 ──
+    // ── LLM 润色模型 ──（首项「不选择模型」由后端注入；name 空 = 关闭润色模型）
     document.getElementById('tool-llm').addEventListener('click', async () => {
       let models;
       try { models = await invoke('list_llm_models'); }
       catch (e) { showToast('读取润色模型失败：' + e); return; }
-      if (!models.length) { showToast('无可用润色模型（请在 DB 启用 is_enabled=1）'); return; }
       const html = models.map(m =>
         `<div class="option${m.current ? ' current' : ''}" data-name="${m.name}">
            <span>${m.current ? '●' : '○'}</span><span class="nm">${m.label}</span>
@@ -396,7 +395,8 @@
           try {
             await invoke('switch_polish_llm', { name });
             closePopup();
-            showToast('已切换润色模型：' + name);
+            showToast(name ? '已切换润色模型：' + name : '已关闭润色模型');
+            refreshActive();
           } catch (err) {
             showToast('' + err);
           }
@@ -412,7 +412,7 @@
         currentDenoiseMode = st.denoise_mode;
         document.getElementById('tool-polish').classList.toggle('active', st.polish_mode !== 0);
         document.getElementById('tool-asr').classList.toggle('active', true);
-        document.getElementById('tool-llm').classList.toggle('active', true);
+        document.getElementById('tool-llm').classList.toggle('active', st.polish_llm_valid);
         document.getElementById('tool-denoise').classList.toggle('active', st.denoise_mode !== 0);
         document.getElementById('tool-polish-now').classList.toggle('active', true);
         // hide_toolbar=false → 工具栏始终显示：移除 hover 监听 + 立即展开

@@ -23,7 +23,7 @@
 | 1 | 打开应用设置页 | 齿轮（settings） | 🔴 占位 | 渲染置灰 + tooltip「敬请期待」，点击无动作 |
 | 2 | 切换 LLM 润色 mode | 闪光（sparkles） | ✅ 实现 | 点击→浮层 3 选（关闭/仅最终/中间+最终），**立即生效** + 持久化 |
 | 3 | 切换 ASR 识别模型 | 麦克风（microphone） | ✅ 实现 | 点击→浮层 8 选（DB `models` 表），**下次会话生效** + 持久化 |
-| 4 | 切换润色 LLM 模型 | 芯片/对话（cpu-chip） | 🔴 占位 | 渲染置灰 + tooltip「敬请期待」，点击无动作 |
+| 4 | 切换润色 LLM 模型 | 芯片/对话（cpu-chip，实装 `llm-model.svg`） | ✅ 实现 | 点击→浮层（DB `models` 表 `is_enabled` LLM，当前项 ●），选→`switch_polish_llm` 即时 + 持久化。详见 §16 |
 
 显隐：鼠标移入展示区 → 工具栏显示（窗口动态长高）；移开 → 工具栏隐藏（窗口缩回，等同现状）。
 
@@ -35,7 +35,7 @@
 2. **持久化**：切换 ASR 引擎 / polish mode 后，**写回 `~/.octopus/config.yaml`**，当前会话生效 + 重启保留。需新增运行时写盘能力（当前架构只读不写）。
 3. **选项呈现**：**统一浮层面板**。点任一图标 → 图标下方弹出 in-webview 浮层（绝对定位，单选列表，当前项高亮 ●）。polish = 3 行；ASR = 8 行可滚动。点外部 / 再点图标关闭。
 4. **可用时机**：**随时可切**（录音/识别进行中也可）。ASR 引擎切换**下次会话生效**（不重建当前引擎、不丢缓冲中的音频/partial）；polish mode **立即生效**（影响当前及后续润色）。
-5. **占位工具（1、4）**：渲染但置灰 + tooltip，点击无动作。
+5. **占位工具（1）**：渲染但置灰 + tooltip，点击无动作。（工具 4 润色 LLM 已实现，见 §16）
 6. **触发区**：hover 整个 `#container` 显示工具栏；浮层 `#popup` 打开时**钉住**工具栏（不因 mouseleave 隐藏），浮层关闭后才允许收起。
 
 ---
@@ -49,7 +49,7 @@ result_window (520 × 动态高, 透明置顶)
 │   ├─ [⚙ 设置]        占位置灰
 │   ├─ [✨ 润色mode]    点击→#popup (3 选)
 │   ├─ [🎙 ASR引擎]     点击→#popup (8 选, DB models)
-│   └─ [🤖 LLM模型]     占位置灰
+│   └─ [🤖 LLM模型]     点击→#popup（DB LLM 列表，当前项 ●），见 §16
 ├─ #popup              浮层，点图标弹出，绝对定位叠文本上
 └─ #result-text        现有文本区（不变）
 
@@ -104,7 +104,7 @@ pub struct RuntimeConfig {
 - **显隐**：`#container` 的 `mouseenter` → `currentWindow.setSize(new LogicalSize(520,132))` + `#toolbar` 显示；`mouseleave` → 若 `#popup` 未开则 `setSize(520,100)` + 隐藏。
 - **图标变色**：用 **CSS `mask: url(icons/xxx.svg)` + `background: currentColor`**（见 §7.1）。默认 `color:#1d1d1f`，`:hover`/`.active` `color:#007aff`。
 - **浮层**：点工具图标 → `invoke('list_asr_engines')` 或读 `toolbar_state` → 渲染单选列表 → 点选项 → `invoke('switch_asr_engine'|'set_polish_mode')` → 关浮层 + 刷新。点 `document` 空白处关浮层。
-- **占位工具**：`disabled` + `title="敬请期待"`，CSS 置灰。
+- **占位工具**：工具 1（设置）`disabled` + `title="敬请期待"`，CSS 置灰；工具 4（润色 LLM）已实现，见 §16。
 
 ---
 
@@ -143,10 +143,11 @@ click 选项 → invoke set_polish_mode(mode)
           读 RuntimeConfig 最新 mode → 若当前 Stage 持 Transcript 则 set_mode 同步
 ```
 
-### 6.4 占位工具（1、4）
+### 6.4 占位工具（1）
 ```
 click → 无动作（disabled，仅 tooltip）
 ```
+> 工具 4（润色 LLM）已实现，数据流见 §16。
 
 ---
 
@@ -205,7 +206,7 @@ click → 无动作（disabled，仅 tooltip）
 - hover 长高（100→132）/ 移开缩回（132→100）。
 - 切 ASR 引擎：当前会话引擎不变，重启后新引擎生效，`config.yaml.asr_engine` 已更新。
 - 切 polish mode：边录边看润色行为立即变化（关↔仅最终↔中间+最终），`config.yaml.polish_mode` 已更新。
-- 占位工具（1、4）：置灰 + tooltip，点击无动作。
+- 占位工具（1）：置灰 + tooltip，点击无动作。
 - 浮层打开时移开鼠标：工具栏钉住不收。
 - DB 不存在的引擎名：toast 报错，不切换。
 
@@ -214,7 +215,6 @@ click → 无动作（disabled，仅 tooltip）
 ## 11. 非目标（YAGNI）
 
 - 应用设置页（工具 1）：本轮仅占位，不实现设置 UI。
-- 润色 LLM 模型切换（工具 4）：本轮仅占位，不实现 LLM 模型运行时切换。
 - config.yaml 注释保留式编辑：本轮 `serde_yaml` 整体序列化，丢注释可接受。
 - 工具栏图标的多分辨率 PNG：本轮 SVG（mask）单文件方案，不准备 PNG。
 - 工具栏位置/顺序可配置：固定 4 工具固定顺序。
@@ -306,5 +306,41 @@ click → 无动作（disabled，仅 tooltip）
 3. **已有文本不以标点结尾**（新增，防 `。，` `？，`）
 
 标点集合：`,.，。！？!?\n`。引号 `" '` `「」` 不在此集合中，段间仍可正常补逗号。
+
+---
+
+## 16. 润色模型（LLM）工具实现（2026-06-17）
+
+工具 4（`tool-llm`）从 v1 占位转为可用：前端点击 + 后端 `list_llm_models` / `switch_polish_llm`，与 ASR 引擎工具（§6.2）同构。浮层列出 DB 启用的 LLM，当前项 ●，选→即时切 RuntimeConfig + 持久化 config.yaml。
+
+### 16.1 RuntimeConfig 扩展（补充 §15.4）
+
+`RuntimeConfig` 新增 `polish_llm: String`（运行时镜像 `config.yaml.polish_llm`，`from_config` 初始化镜像）。润色链路（`coordinator.rs` 的 `check_and_trigger_polish` / `start_pasting` / 立即润色）读 `config.polish_llm`——经共享镜像在运行时切换后即时反映（与 `polish_mode` 同机制：Coordinator 每个 tick 读最新 RuntimeConfig）。
+
+### 16.2 后端命令（`runtime_config.rs`）
+
+| 命令 | 行为 |
+|---|---|
+| `list_llm_models` | 读 `RuntimeConfig.polish_llm` → `parse_model_spec` 取裸名 → `db::list_llm_models()`（`is_enabled` LLM）→ `build_llm_options` 标 `current` + `label`（`本地:NAME` / `CATEGORY:NAME`） |
+| `switch_polish_llm(name)` | 校验 `name` 在 DB LLM 列表（`find`）→ 构造 spec（`is_local`→`local:NAME`，否则 `CATEGORY:NAME`）→ 写 `RuntimeConfig.polish_llm`（即时）→ `persist_polish_llm` 写 config.yaml（持久） |
+
+DTO `LlmOption { name, category, is_local, current, label }`（与 `EngineOption` 同构，**无 fallback 固定项**——与 ASR 不同）。后端解析 `polish_llm` 走 `config::llm_config()`（`polish_mode=Disabled` 或 DB 不命中返回 `None`，降级直通不润色，仅 warn）。
+
+### 16.3 前端（`index.html`）
+
+- **点击 `#tool-llm`**：`invoke('list_llm_models')` → 空则 toast「无可用润色模型」→ 否则渲染浮层（当前项 ●）→ 点选项 `invoke('switch_polish_llm', {name})` → 关浮层 + toast「已切换润色模型：X」。
+- **`refreshActive`**：当前 `#tool-llm` **恒 `.active`**（`classList.toggle('active', true)`）——不反映 `polish_llm` 是否有效解析。
+
+### 16.4 「不选择模型」+ DB 回退 + 图标灰（2026-06-17 已实现）
+
+原缺口：① 浮层无「不选择模型」项；② `polish_llm` 在 DB 找不到时仅后端 warn、前端无感知；③ 无有效模型时图标仍 active（误导）。
+
+实现：
+- **`build_llm_options`**：首项固定「不选择模型」（`name: ""`）。`current` 有效（裸名非空且在 DB 列表）→ 首项非 current；`current` 空 / 裸名不在 DB / spec 不命中 → 首项 current（**DB 找不到回退无模型**）。
+- **`switch_polish_llm`**：空 `name` → `polish_llm` 置空（不查 DB）；非空走原 DB 校验 + spec 构造。
+- **`ToolbarState`** 新增 `polish_llm_valid: bool`：`toolbar_state` 命令查 DB 计算（裸名非空且在启用 LLM 列表；DB 失败保守 false）。
+- **前端**：浮层渲染首项；点「不选择模型」→ toast「已关闭润色模型」+ `refreshActive()`；`#tool-llm` `active = st.polish_llm_valid`（无模型时深灰、**仍可点击**，非 `disabled`——区别于工具 1）。
+
+单测：`build_llm_options_none_current_when_polish_llm_empty_or_not_in_db`（空/裸名不在 DB/spec 不命中 → 首项 current）+ 更新 `build_llm_options_marks_current_and_labels` / `build_llm_options_current_in_spec_format`（首项偏移）。
 
 
