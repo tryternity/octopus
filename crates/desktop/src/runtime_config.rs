@@ -214,6 +214,21 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
         .collect()
 }
 
+/// 公开包装（供 settings_commands 调用）。
+pub fn build_asr_options_public(
+    current_effective: &str,
+    engines: Vec<octopus_asr::config::EngineInfo>,
+) -> Vec<EngineOption> {
+    build_asr_options(current_effective, engines)
+}
+
+pub fn build_llm_options_public(
+    current: &str,
+    llms: Vec<octopus_infra::db::LlmModelInfo>,
+) -> Vec<LlmOption> {
+    build_llm_options(current, llms)
+}
+
 // ── Tauri 命令 ──
 
 #[tauri::command]

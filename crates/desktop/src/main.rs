@@ -13,6 +13,8 @@ mod overlay;
 mod paste;
 mod result_window;
 mod runtime_config;
+mod settings_commands;
+mod settings_window;
 mod shortcut;
 mod tray;
 mod transcript;
