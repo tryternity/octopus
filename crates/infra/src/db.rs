@@ -391,6 +391,50 @@ pub fn finalize_transcription(
     })
 }
 
+/// 历史识别记录（设置窗口识别记录页用）。
+#[derive(Debug, serde::Serialize)]
+pub struct TranscriptionRecord {
+    pub id: i64,
+    pub created_at: String,
+    pub engine: String,
+    pub raw_text: String,
+    pub polished_text: Option<String>,
+    pub polish_status: String,
+    pub duration_ms: Option<i64>,
+}
+
+/// 分页查询历史识别记录（按 id 降序 = 最新在前）。
+pub fn list_transcriptions(limit: u32, offset: u32) -> Result<Vec<TranscriptionRecord>> {
+    with_db(|conn| list_transcriptions_at(conn, limit, offset))
+}
+
+fn list_transcriptions_at(
+    conn: &Connection,
+    limit: u32,
+    offset: u32,
+) -> Result<Vec<TranscriptionRecord>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, created_at, engine, raw_text, polished_text, polish_status, duration_ms
+         FROM transcriptions ORDER BY id DESC LIMIT ?1 OFFSET ?2"
+    )?;
+    let rows = stmt.query_map(params![limit, offset], |row| {
+        Ok(TranscriptionRecord {
+            id: row.get(0)?,
+            created_at: row.get(1)?,
+            engine: row.get(2)?,
+            raw_text: row.get(3)?,
+            polished_text: row.get(4)?,
+            polish_status: row.get(5)?,
+            duration_ms: row.get(6)?,
+        })
+    })?;
+    let mut records = Vec::new();
+    for row in rows {
+        records.push(row?);
+    }
+    Ok(records)
+}
+
 // ── 时间戳工具（避免依赖 chrono）──
 
 /// 当前时间字符串 'YYYY-MM-DD HH:MM:SS'。
@@ -676,5 +720,36 @@ mod tests {
         assert_eq!(polished, Some("润色".into()));
         assert_eq!(status, "done");
         assert_eq!(dur, Some(5000));
+    }
+
+    #[test]
+    fn list_transcriptions_returns_records_descending() {
+        let conn = open_init();
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+             VALUES (100, '2026-06-17 10:00:00', 'whisper', '你好', 'off')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polished_text, polish_status)
+             VALUES (200, '2026-06-17 11:00:00', 'qwen3', '你好世界', '你好，世界。', 'done')",
+            [],
+        )
+        .unwrap();
+        let rows = list_transcriptions_at(&conn, 10, 0).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, 200, "最新在前（id 降序）");
+        assert_eq!(rows[1].id, 100);
+        assert_eq!(rows[0].raw_text, "你好世界");
+        assert_eq!(rows[0].polished_text.as_deref(), Some("你好，世界。"));
+        let page1 = list_transcriptions_at(&conn, 1, 0).unwrap();
+        assert_eq!(page1.len(), 1);
+        assert_eq!(page1[0].id, 200);
+        let page2 = list_transcriptions_at(&conn, 1, 1).unwrap();
+        assert_eq!(page2.len(), 1);
+        assert_eq!(page2[0].id, 100);
+        let page3 = list_transcriptions_at(&conn, 10, 2).unwrap();
+        assert!(page3.is_empty());
     }
 }
