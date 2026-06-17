@@ -1,97 +1,245 @@
-//! RNNoise 流式环境降噪（基于 `nnnoiseless`，纯 Rust，内置默认模型）。
+//! 环境降噪：可插拔后端（RNNoise / DeepFilterNet3），由 denoise_mode 选择。
+//!
+//! ## 后端
+//! - `RnnoiseBackend`（mode=1）：nnnoiseless（Xiph RNNoise 纯 Rust 移植），内置默认模型。
+//! - `Df3Backend`（mode=2）：libDF v0.5.6 + tract 0.19，DeepFilterNet3，48kHz 全频带。
+//! - mode=0：无后端（直通）。
+//!
+//! ## 契约
+//! `FrameDenoise::process_frame` 用 `[-1, 1]` 归一化单声道（与 octopus pipeline 一致）。
+//! 各后端内部按模型需求转换（RNNoise 转 i16 PCM 等价；DF3 直接喂 [-1,1]）。
+//! 帧大小 FRAME_SIZE=480（10ms @48kHz），与 octopus HOP 一致，且与 DeepFilterNet3
+//! 内嵌模型的 `hop_size=480` 完全匹配（libDF `process` 的 debug_assert 要求
+//! `noisy.len_of(Axis(1)) == self.hop_size`）。
 //!
 //! ## 历史
-//! 曾用 DeepFilterNet3（`penta2himajin/deepfilternet3-onnx/dfn3.onnx`，带 GRU 状态的
-//! 流式逐帧 ONNX 导出）。经完整诊断确认该**模型本身存在缺陷**：把正常语音当噪声压到
-//! 约 10%（开降噪后 ASR 反而错乱）。证据链：
-//! - DSP/链路全对：spec 量级 ~0.30（含 wnorm）、feat 正常、GRU shape 对、完美重构
-//!   （增量 vs 批处理 max_diff < 1e-4）、ort 对 whisper/paraformer/vad 等其他模型正常；
-//! - 唯一异常：`enhanced_spec ≈ 0.10 · spec`（应当 ≈1.0·spec 或 mask）→ 推理压语音；
-//! - mellonella 的流式逐帧导出测试只验形状不验质量，缺陷未被覆盖。
-//!
-//! 故弃用 dfn3.onnx，改用 RNNoise（Xiph，成熟实时语音降噪，WebKit/Zoom 在用）。
-//! `nnnoiseless` 是其纯 Rust 移植（BSD-3，无 C 依赖），内置默认 RNNoise 模型，
-//! 无需任何外部模型文件。`FRAME_SIZE = 480` 样本（10ms @48kHz）正好匹配 octopus HOP。
-//!
-//! ## 语义
-//! 状态跨帧保持（GRU 隐状态 + 特征缓冲，噪声估计是连续物理过程），仅会话起点
-//! `reset()` 全部清零——与 VAD 每段 reset 相反。输入输出均为 48kHz、`[-1, 1]` 归一化
-//! 单声道；内部按 nnnoiseless 契约转 `[-32768, 32767]`（i16 PCM 等价）运算。
+//! 曾用第三方 dfn3.onnx（压语音 gain≈0.10），已弃用。见
+//! `docs/superpowers/specs/2026-06-17-denoise-deepfilternet3-integration-design.md`。
 
 use anyhow::Result;
 
-/// nnnoiseless 帧大小（480 样本 = 10ms @48kHz），与 octopus HOP 一致。
-const FRAME_SIZE: usize = nnnoiseless::FRAME_SIZE;
+/// 帧大小（480 样本 = 10ms @48kHz）。等于 nnnoiseless::FRAME_SIZE 与 libDF hop_size。
+const FRAME_SIZE: usize = 480;
 
-/// nnnoiseless 内部以 i16 PCM 等价值域（`[-32768, 32767]`）运算；octopus 音频 pipeline
-/// 使用 `[-1, 1]` 归一化。喂入前 `×SCALE`，输出后 `/SCALE`。
+/// 降噪模式。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum DenoiseMode {
+    Off = 0,
+    Rnnoise = 1,
+    Df3 = 2,
+}
+
+impl DenoiseMode {
+    pub fn from_u8(v: u8) -> Self {
+        match v {
+            0 => Self::Off,
+            1 => Self::Rnnoise,
+            _ => Self::Df3,
+        }
+    }
+}
+
+/// 单帧（FRAME_SIZE，48k，[-1,1]）降噪后端抽象。
+///
+/// 仅用原生 slice，不暴露 ndarray——隔离 libDF(ndarray 0.15) 与 asr(ndarray 0.17)。
+/// `Send + Sync`：`DenoiseProcessor` 经 `Mutex` 在 SharedAudioState 跨线程（audio.rs:305 断言）。
+trait FrameDenoise: Send + Sync {
+    fn process_frame(&mut self, pcm: &[f32; FRAME_SIZE], out: &mut [f32; FRAME_SIZE]);
+    /// 清状态（会话边界）。各后端自行决定轻量清零 vs 重建。
+    fn reset(&mut self);
+}
+
+// ── RNNoise 后端 ──
+
+/// nnnoiseless 内部以 i16 PCM 等价值域运算；边界 [-1,1] ↔ PCM 转换在此。
 const PCM_SCALE: f32 = 32768.0;
 
-/// RNNoise 流式降噪处理器。
-///
-/// 包装 nnnoiseless `DenoiseState`（内置默认 RNNoise 模型，`'static` owned，无外部文件）。
-///
-/// 状态语义（与 VAD 每段 reset 相反）：
-/// - GRU 隐状态 + 特征缓冲跨帧保持（噪声估计是连续物理过程）；
-/// - 仅新会话 `start()` 调 `reset()` 全部清零（重建 `DenoiseState`）。
-///
-/// 接口对齐旧 DF3 实现：`new` / `reset` / `process_samples` / `flush`。
-/// `new()` 无参数——RNNoise 无需外部模型文件（旧 DF3 的 `model_path` 参数已移除）。
-pub struct DenoiseProcessor {
+struct RnnoiseBackend {
     denoise: Box<nnnoiseless::DenoiseState<'static>>,
+}
+
+impl RnnoiseBackend {
+    fn new() -> Self {
+        Self {
+            denoise: nnnoiseless::DenoiseState::new(),
+        }
+    }
+}
+
+impl FrameDenoise for RnnoiseBackend {
+    fn process_frame(&mut self, pcm: &[f32; FRAME_SIZE], out: &mut [f32; FRAME_SIZE]) {
+        let pcm_scaled: [f32; FRAME_SIZE] = std::array::from_fn(|i| pcm[i] * PCM_SCALE);
+        self.denoise.process_frame(out, &pcm_scaled);
+        // nnnoiseless 输出沿用输入值域（i16 PCM 等价），转回 [-1,1]
+        for s in out.iter_mut() {
+            *s /= PCM_SCALE;
+        }
+    }
+    fn reset(&mut self) {
+        self.denoise = nnnoiseless::DenoiseState::new();
+    }
+}
+
+// ── DeepFilterNet3 后端（libDF v0.5.6 + tract 0.19）──
+
+use df::tract::DfTract;
+
+/// DeepFilterNet3 降噪后端。包装 libDF `DfTract`（48kHz 全频带，内嵌 DeepFilterNet3 模型）。
+///
+/// `DfTract: !Send`（含 `Arc<dyn RealToComplex>` 无 Send bound）。此处 unsafe impl 仅满足
+/// `DenoiseProcessor: Send`（audio.rs:312 断言）的类型约束——实际由 coordinator 单线程串行
+/// 访问（audio.rs:94），无跨线程并发。同 VST3 plugin/src/lib.rs:9-11。
+pub struct Df3Backend(DfTract);
+
+impl Df3Backend {
+    /// 加载内嵌 DeepFilterNet3 模型。失败返回 Err（供懒加载降级，绝不 panic）。
+    pub fn new() -> Result<Self> {
+        let model = std::panic::catch_unwind(std::panic::AssertUnwindSafe(DfTract::default))
+            .map_err(|e| anyhow::anyhow!("DF3 模型加载失败（panic）: {:?}", e))?;
+        Ok(Self(model))
+    }
+}
+
+// 安全性：coordinator 单线程串行访问（audio.rs:94），Mutex 保护，无跨线程并发。
+unsafe impl Send for Df3Backend {}
+unsafe impl Sync for Df3Backend {}
+
+impl FrameDenoise for Df3Backend {
+    fn process_frame(&mut self, pcm: &[f32; FRAME_SIZE], out: &mut [f32; FRAME_SIZE]) {
+        // DfTract::process 签名：`(noisy: ArrayView2<f32>, enh: ArrayViewMut2<f32>)`，
+        // 要求 `noisy.len_of(Axis(1)) == self.hop_size`（默认模型 hop_size=480 == FRAME_SIZE）。
+        // 用 ndarray_015（与 libDF 同一 crate 实例）构造；契约 [-1,1]（DfTract 期望归一化）。
+        use ndarray_015::{ArrayView2, ArrayViewMut2};
+        let noisy = match ArrayView2::from_shape((1, FRAME_SIZE), pcm.as_slice()) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("DF3 frame shape 错误，直通：{:?}", e);
+                out.copy_from_slice(pcm);
+                return;
+            }
+        };
+        let enh = match ArrayViewMut2::from_shape((1, FRAME_SIZE), out.as_mut_slice()) {
+            Ok(v) => v,
+            Err(e) => {
+                log::warn!("DF3 enh shape 错误，直通：{:?}", e);
+                return;
+            }
+        };
+        // process 第二参数按值接 `ArrayViewMut2`（非 view_mut 的再 view）——核对
+        // verify_gain.rs:45 `model.process(ns_f, enh_f)`，其中 enh_f 来自
+        // `enh.view_mut().axis_chunks_iter_mut(...)` 的元素（已是 ArrayViewMut2）。
+        if let Err(e) = self.0.process(noisy, enh) {
+            log::warn!("DF3 process 失败，本帧直通：{:?}", e);
+        }
+    }
+    fn reset(&mut self) {
+        // DfTract 无轻量状态重置；重建 = 重载模型（仅会话边界调用）。
+        match Self::new() {
+            Ok(b) => *self = b,
+            Err(e) => log::warn!("DF3 reset 重载失败：{:?}", e),
+        }
+    }
+}
+
+// ── DenoiseProcessor（mode 分发器）──
+
+/// 流式降噪处理器。对外接口与旧 RNNoise-only 实现一致（new/reset/process_samples/flush）。
+pub struct DenoiseProcessor {
+    mode: DenoiseMode,
+    backend: Option<Box<dyn FrameDenoise>>, // None = 直通(mode=0 或加载失败降级)
     in_buf: Vec<f32>,  // 48k [-1,1] 累积输入
     out_buf: Vec<f32>, // 48k [-1,1] 已降噪待输出
+    df_pending: bool,  // DF3 懒加载：mode=Df3 但尚未首次 process
 }
 
 impl DenoiseProcessor {
-    /// 创建降噪器（内置默认 RNNoise 模型，无外部依赖）。
-    pub fn new() -> Result<Self> {
-        Ok(Self {
-            denoise: nnnoiseless::DenoiseState::new(),
+    /// 按 mode 创建降噪器。mode=Df3 时延迟到首次 process_samples 加载（避免 new 热路径开销）。
+    pub fn new(mode: DenoiseMode) -> Result<Self> {
+        let mut p = Self {
+            mode,
+            backend: None,
             in_buf: Vec::with_capacity(FRAME_SIZE),
             out_buf: Vec::new(),
-        })
+            df_pending: false,
+        };
+        match mode {
+            DenoiseMode::Off => {}
+            DenoiseMode::Rnnoise => {
+                p.backend = Some(Box::new(RnnoiseBackend::new()));
+            }
+            DenoiseMode::Df3 => {
+                p.df_pending = true; // 懒加载
+            }
+        }
+        Ok(p)
     }
 
-    /// 全状态清零（重建 `DenoiseState`，GRU/特征缓冲归零）。
+    /// 全状态清零（重建后端）。DF3 reset 重载模型——仅会话边界调用。
     pub fn reset(&mut self) {
-        self.denoise = nnnoiseless::DenoiseState::new();
         self.in_buf.clear();
         self.out_buf.clear();
+        match self.mode {
+            DenoiseMode::Off => self.backend = None,
+            DenoiseMode::Rnnoise => self.backend = Some(Box::new(RnnoiseBackend::new())),
+            DenoiseMode::Df3 => {
+                self.backend = match Df3Backend::new() {
+                    Ok(b) => Some(Box::new(b)),
+                    Err(e) => {
+                        log::warn!("DF3 reset 重建失败，降级直通：{:?}", e);
+                        None
+                    }
+                };
+                self.df_pending = false;
+            }
+        }
     }
 
-    /// 增量处理 48k 样本：累积到 `in_buf`，每满 `FRAME_SIZE` 降噪一帧，返回已降噪样本。
-    ///
-    /// 流式语义：不足一帧的残差留在 `in_buf` 跨调用累积（状态连续，不 flush）。
+    /// 增量处理 48k [-1,1] 样本：累积到 FRAME_SIZE，逐帧降噪，返回已降噪样本。
     pub fn process_samples(&mut self, samples: &[f32]) -> Vec<f32> {
+        if self.df_pending {
+            self.backend = match Df3Backend::new() {
+                Ok(b) => Some(Box::new(b)),
+                Err(e) => {
+                    log::warn!("DF3 模型加载失败，降级直通（不阻断录音）：{:?}", e);
+                    None
+                }
+            };
+            self.df_pending = false;
+        }
         self.in_buf.extend_from_slice(samples);
         let mut out_frame = [0.0f32; FRAME_SIZE];
         while self.in_buf.len() >= FRAME_SIZE {
-            // 取一帧并转 i16 PCM 等价值域
             let frame: Vec<f32> = self.in_buf.drain(..FRAME_SIZE).collect();
-            let pcm: [f32; FRAME_SIZE] = std::array::from_fn(|i| frame[i] * PCM_SCALE);
-            self.denoise.process_frame(&mut out_frame, &pcm);
-            // 转回 [-1, 1]
-            for &s in &out_frame {
-                self.out_buf.push(s / PCM_SCALE);
+            let pcm: [f32; FRAME_SIZE] = std::array::from_fn(|i| frame[i]);
+            if let Some(b) = self.backend.as_mut() {
+                b.process_frame(&pcm, &mut out_frame);
+                for &s in &out_frame {
+                    self.out_buf.push(s);
+                }
+            } else {
+                for &s in &pcm {
+                    self.out_buf.push(s); // 直通
+                }
             }
         }
         std::mem::take(&mut self.out_buf)
     }
 
-    /// 尾部 flush：零填 `in_buf` 残留到 `FRAME_SIZE` 处理一帧，排出尾部样本。
-    ///
-    /// 会话结束调用。残留不足一帧时零填补齐，使末尾真实样本（含 OLA 半窗延迟部分）
-    /// 也被降噪输出。输出长度为 `FRAME_SIZE` 的整数倍（与输入差 `< FRAME_SIZE`，对 16k
-    /// ASR 无感知）。
+    /// 尾部 flush：零填残差到 FRAME_SIZE，处理一帧排出尾部。
     pub fn flush(&mut self) -> Vec<f32> {
         if !self.in_buf.is_empty() {
             self.in_buf.resize(FRAME_SIZE, 0.0);
+            let pcm: [f32; FRAME_SIZE] = std::array::from_fn(|i| self.in_buf[i]);
             let mut out_frame = [0.0f32; FRAME_SIZE];
-            let pcm: [f32; FRAME_SIZE] = std::array::from_fn(|i| self.in_buf[i] * PCM_SCALE);
-            self.denoise.process_frame(&mut out_frame, &pcm);
-            for &s in &out_frame {
-                self.out_buf.push(s / PCM_SCALE);
+            if let Some(b) = self.backend.as_mut() {
+                b.process_frame(&pcm, &mut out_frame);
+                for &s in &out_frame {
+                    self.out_buf.push(s);
+                }
+            } else {
+                for &s in &pcm {
+                    self.out_buf.push(s);
+                }
             }
             self.in_buf.clear();
         }
@@ -101,7 +249,7 @@ impl DenoiseProcessor {
 
 impl Default for DenoiseProcessor {
     fn default() -> Self {
-        Self::new().expect("DenoiseState::new 仅在 OOM 失败")
+        Self::new(DenoiseMode::Rnnoise).expect("RNNoise new 仅在 OOM 失败")
     }
 }
 
@@ -112,7 +260,7 @@ mod tests {
     /// 基本可用：构造 + reset + 增量处理 + flush，不 panic。
     #[test]
     fn processor_basic_roundtrip() {
-        let mut p = DenoiseProcessor::new().unwrap();
+        let mut p = DenoiseProcessor::new(DenoiseMode::Rnnoise).unwrap();
         // 非整帧输入（验证累积）
         let _ = p.process_samples(&[0.0f32; 300]);
         let _ = p.process_samples(&[0.0f32; 700]);
@@ -126,7 +274,7 @@ mod tests {
     #[test]
     fn length_invariant_within_one_frame() {
         for &n in &[480usize, 481, 960, 1000, 48000, 48001] {
-            let mut p = DenoiseProcessor::new().unwrap();
+            let mut p = DenoiseProcessor::new(DenoiseMode::Rnnoise).unwrap();
             let input: Vec<f32> = (0..n)
                 .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48000.0).sin() * 0.3)
                 .collect();
@@ -150,11 +298,11 @@ mod tests {
             .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / 48000.0).sin() * 0.3)
             .collect();
 
-        let mut p1 = DenoiseProcessor::new().unwrap();
+        let mut p1 = DenoiseProcessor::new(DenoiseMode::Rnnoise).unwrap();
         let mut batch = p1.process_samples(&input);
         batch.extend(p1.flush());
 
-        let mut p2 = DenoiseProcessor::new().unwrap();
+        let mut p2 = DenoiseProcessor::new(DenoiseMode::Rnnoise).unwrap();
         let mut incr = Vec::new();
         let chunks = [300usize, 700, 480, 1024, 480, 613, 480, 200, 13783];
         let mut off = 0;
@@ -242,7 +390,7 @@ mod tests {
     fn diag_pure_noise_suppressed() {
         let n = 48000 * 3;
         let input = white_noise(n, 0.1);
-        let mut p = DenoiseProcessor::new().unwrap();
+        let mut p = DenoiseProcessor::new(DenoiseMode::Rnnoise).unwrap();
         let mut out = p.process_samples(&input);
         out.extend(p.flush());
 
@@ -276,7 +424,7 @@ mod tests {
         let n = 48000 * 2;
         let input = synth_speech(n);
 
-        let mut p = DenoiseProcessor::new().unwrap();
+        let mut p = DenoiseProcessor::new(DenoiseMode::Rnnoise).unwrap();
         let mut out = p.process_samples(&input);
         out.extend(p.flush());
 
@@ -300,7 +448,7 @@ mod tests {
     /// 静音输入 → 输出近静音（验证链路不引入直流/噪声）。
     #[test]
     fn diag_silence_output() {
-        let mut p = DenoiseProcessor::new().unwrap();
+        let mut p = DenoiseProcessor::new(DenoiseMode::Rnnoise).unwrap();
         let input = vec![0.0f32; 48000 * 2];
         let mut out = p.process_samples(&input);
         out.extend(p.flush());
@@ -315,7 +463,7 @@ mod tests {
     #[ignore] // 需 /tmp/voice48k.wav（macOS: say -o voice48k.wav "..." 后转 48k）
     fn diag_denoise_tts_wav() {
         let samples = read_tts_wav();
-        let mut p = DenoiseProcessor::new().unwrap();
+        let mut p = DenoiseProcessor::new(DenoiseMode::Rnnoise).unwrap();
         let mut out = p.process_samples(&samples);
         out.extend(p.flush());
 
@@ -343,7 +491,7 @@ mod tests {
         let noise = white_noise(n, 0.05);
         let input: Vec<f32> = (0..n).map(|i| pure[i] + noise[i]).collect();
 
-        let mut p = DenoiseProcessor::new().unwrap();
+        let mut p = DenoiseProcessor::new(DenoiseMode::Rnnoise).unwrap();
         let mut out = p.process_samples(&input);
         out.extend(p.flush());
 
