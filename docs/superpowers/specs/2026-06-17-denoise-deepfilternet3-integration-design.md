@@ -76,10 +76,10 @@ DF3 的流式 GRU 需要跨帧保持隐状态。tract 的 `PulsedModel` + `Simpl
 
 ```toml
 # crates/asr/Cargo.toml
-# 实施修正（2026-06-17）：原设计写 fork `tryternity/DeepFilterNet`，实测该 fork 无任何 tag
-# （`git ls-remote --tags` 空），改用上游官方 `Rikorose/DeepFilterNet` tag v0.5.6（commit
-# `978576aa`，与 fork 本地同一 commit，代码等价）。
-df = { git = "https://github.com/Rikorose/DeepFilterNet.git", tag = "v0.5.6",
+# 引用 octopus fork `tryternity/DeepFilterNet` tag v0.5.6（= commit `978576aa`，与上游官方
+# `Rikorose/DeepFilterNet` v0.5.6 等价）。自控仓库避免上游删库/移 tag；精确 commit 由 Cargo.lock 锁定。
+# 演进：初版用上游官方 Rikorose（fork 当时无 tag）；2026-06-17 在 fork 打同名 tag v0.5.6 后改回 fork。
+df = { git = "https://github.com/tryternity/DeepFilterNet.git", tag = "v0.5.6",
        package = "deep_filter", default-features = false,
        features = ["tract", "default-model", "transforms"] }
 ```

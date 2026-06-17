@@ -26,7 +26,9 @@ nnnoiseless = { version = "0.5", default-features = false }
 # DeepFilterNet3 原生降噪（libDF v0.5.6 + tract 0.19，spec 2026-06-17）。
 # ndarray 0.15（libDF 版本）与上方 0.17（ort/asr）共存：rename 隔离，Df3Backend 边界转换。
 ndarray_015 = { package = "ndarray", version = "0.15", default-features = false }
-df = { git = "https://github.com/Rikorose/DeepFilterNet.git", tag = "v0.5.6", package = "deep_filter", default-features = false, features = ["tract", "default-model", "transforms"] }
+# 引用 octopus fork tryternity/DeepFilterNet tag v0.5.6（= commit 978576aa，与上游
+# Rikorose/DeepFilterNet v0.5.6 等价）。自控仓库避免上游删库/移 tag；精确 commit 由 Cargo.lock 锁定。
+df = { git = "https://github.com/tryternity/DeepFilterNet.git", tag = "v0.5.6", package = "deep_filter", default-features = false, features = ["tract", "default-model", "transforms"] }
 base64 = "0.22"
 kaldi-native-fbank = "0.1.0"
 log = "0.4"
