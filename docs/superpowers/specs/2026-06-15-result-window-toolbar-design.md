@@ -255,3 +255,44 @@ click → 无动作（disabled，仅 tooltip）
 7. **启动脚本 `run-octopus.sh`**（仓库根）：`pkill` 杀进程 + 等 1s + 清 `~/Library/{WebKit,Caches,HTTPStorages}/com.octopus.desktop` + `cargo run --release --features embedded`，一步保证前端/二进制最新，规避缓存与 profile 不匹配。
 8. **ASR 引擎列表数量动态**：`list_asr_engines` 经 `load_models_at`（`WHERE domain='asr' AND is_enabled=1`）过滤，**非固定 8 个**；用户改 DB `models.is_enabled` 即可控制工具栏可见引擎。
 9. **托盘引擎项实时刷新**（原 §6.2 未涉及）：`switch_asr_engine` 写 RuntimeConfig + yaml 后，额外调 `tray::update_tray_engine_label(name, engine_mode)` 实时更新系统托盘菜单的「引擎: <name> (<mode>)」项（`TRAY_ITEMS` 缓存 `engine_info` handle，`set_text` 更新避免重复 ID panic）。引擎切换的反馈现覆盖两处 UI：结果窗工具栏（选中态）+ 系统托盘菜单（标签）。
+
+---
+
+## 15. 第二批扩展：降噪模式 + 立即润色 + hide_toolbar（2026-06-17）
+
+在原设计 4 工具基础上扩展为 6 工具。工具栏顺序：系统设置 → 语音模型(ASR) → 降噪模式 → 润色模型(LLM) → 润色模式 → 立即润色。
+
+### 15.1 降噪模式工具（`tool-denoise`）
+
+- **图标**：Font Awesome headphone（`denoise.svg`，CSS mask 方式同 §7.1）
+- **浮层 3 选**：无 / 轻度 / 深度 → 对应 `denoise_mode` 0 / 1 / 2
+- **Tauri 命令**：`set_denoise_mode(mode: u8)` —— 校验 0/1/2 → 写 `RuntimeConfig.denoise_mode` → 持久化 `config.yaml.denoise_mode`
+- **生效语义**：`denoise_mode=0` 关闭 RNNoise 前置降噪（等同 `denoise_enabled=false`）；`1`（默认）/`2` 控制降噪强度（当前实现仅开关，强度档位为预留扩展）
+- **config.yaml**：新增 `denoise_mode: u8`（默认 `1`），`AppConfig` 同步加字段
+- **选中态**：`refreshActive()` 读 `toolbar_state.denoise_mode`，mode≠0 时按钮 `.active`
+
+### 15.2 立即润色工具（`tool-polish-now`）
+
+- **图标**：Font Awesome bolt（`polish-now.svg`）
+- **行为**：点击 → `invoke('polish_now')` → 按钮置 `disabled` + toast「润色中…」→ 后端异步润色 → `listen('polish-done')` 恢复按钮
+- **后端**：`Coordinator::polish_now()` 发 `Command::PolishNow` → `handle_polish_now`：
+  - 仅在 `Streaming` / `VadSegmented` 阶段生效（需持 `Transcript`）
+  - **忽略 `polish_mode`**（区别于 `check_and_trigger_polish` 的 mode=2 限制）——用 `llm_config_ignore_mode()` 取 LLM 配置，绕过 `polish_mode==Disabled` 的 None 短路
+  - 复用现有 `snapshot_for_polish()` → `mark_polish_pending()` → `spawn_polish_thread(text, config, tx, true)` 路径
+  - `spawn_polish_thread` 增加 `ignore_mode: bool` 参数：`true` 调 `llm_config_ignore_mode`，`false`（原自动润色路径）调 `llm_config`
+- **PolishDone 回显**：`handle_polish_done` 接受 `Streaming` / `VadSegmented` / **`WaitingCompletion`**（防止用户点按钮后停止录音，stage 切换导致润色结果丢弃），把 `polished` 写回 Transcript 后调 `update_result` 刷新展示区；结尾 `emit("polish-done")` 通知前端恢复按钮（无论成功/失败/stage 不匹配）
+- **Transcript.display_text() 变更**：原仅 `mode==Intermediate` 展示 polished；现改为 **polished 非空即展示**（`polished + increase`），使 PolishNow 在 mode=0/1 下也能让润色结果覆盖 raw 文本
+- **空配置兜底**：`llm_config_ignore_mode()` 返回 None → `show_result("未配置润色模型")`，不进入润色流程
+
+### 15.3 hide_toolbar 配置项
+
+- **config.yaml**：新增 `hide_toolbar: bool`（默认 `true`）
+- **生效语义**：`true`=hover 显隐工具栏（原行为，窗口 100↔132px 动态高度）；`false`=工具栏始终显示（窗口恒 132px）
+- **前端**：`toolbar_state` 命令返回 `hide_toolbar`，前端据此决定是否注册 `mousemove`/`mouseleave` 高度切换逻辑
+
+### 15.4 RuntimeConfig 扩展
+
+`RuntimeConfig` 新增字段：
+- `denoise_mode: u8` —— 运行时镜像 `config.yaml.denoise_mode`，供 `set_denoise_mode` 命令读写
+- `ToolbarState` DTO 新增 `hide_toolbar: bool` + `denoise_mode: u8`，前端经 `toolbar_state` 命令一次性获取
+
