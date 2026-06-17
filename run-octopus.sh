@@ -18,4 +18,6 @@ rm -rf ~/Library/HTTPStorages/com.octopus.desktop
 cd "$(dirname "$0")/crates/desktop"
 
 # 4. 一步到位编译 + 运行（release，省掉重复编译）
-cargo run --release --features embedded
+# cargo run --release --features embedded
+# 注意：去掉 --release，debug 模式能打出 panic 栈
+RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --features embedded
