@@ -793,9 +793,12 @@ fn consume_completed_results(
                 let suffix: String = text.chars().skip(overlap_len).collect();
                 transcript.append_segment(&suffix);
             } else {
-                // 段间加逗号（已有文本且新段不以标点开头）
-                if !transcript.full().is_empty()
+                // 段间加逗号：已有文本、新段不以标点开头、已有文本不以标点结尾
+                // 避免拼接出 「。，」「？，」 等连续标点
+                let existing = transcript.full();
+                if !existing.is_empty()
                     && !text.starts_with(|c: char| ",.，。！？!?\n".contains(c))
+                    && !existing.ends_with(|c: char| ",.，。！？!?\n".contains(c))
                 {
                     transcript.append_segment("，");
                 }
