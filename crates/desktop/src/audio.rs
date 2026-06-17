@@ -212,8 +212,7 @@ impl SharedAudioState {
             let mut g = self.denoise.lock().unwrap();
             if mode != octopus_asr::denoise::DenoiseMode::Off {
                 match octopus_asr::denoise::DenoiseProcessor::new(mode) {
-                    Ok(mut p) => {
-                        p.reset();
+                    Ok(p) => {
                         *g = Some(p);
                         info!("环境降噪已启用（mode={:?}，48k）", mode);
                     }

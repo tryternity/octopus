@@ -145,6 +145,9 @@ impl FrameDenoise for Df3Backend {
 
 /// 流式降噪处理器。对外接口与旧 RNNoise-only 实现一致（new/reset/process_samples/flush）。
 pub struct DenoiseProcessor {
+    // 构造时确定的模式标识。运行时分发走 backend 多态（trait），不再读取此字段；
+    // 保留供调试/未来诊断（如运行时自省当前配置模式）。
+    #[allow(dead_code)]
     mode: DenoiseMode,
     backend: Option<Box<dyn FrameDenoise>>, // None = 直通(mode=0 或加载失败降级)
     in_buf: Vec<f32>,  // 48k [-1,1] 累积输入
@@ -174,23 +177,14 @@ impl DenoiseProcessor {
         Ok(p)
     }
 
-    /// 全状态清零（重建后端）。DF3 reset 重载模型——仅会话边界调用。
+    /// 全状态清零。走 trait reset（各后端自实现：RNNoise 重建 state，DF3 重载模型）。
+    /// mode=Df3 且 backend=None（懒加载未触发或加载失败降级）时为 no-op——不强制加载，
+    /// 保留懒加载语义（下次 process_samples 才加载）。
     pub fn reset(&mut self) {
         self.in_buf.clear();
         self.out_buf.clear();
-        match self.mode {
-            DenoiseMode::Off => self.backend = None,
-            DenoiseMode::Rnnoise => self.backend = Some(Box::new(RnnoiseBackend::new())),
-            DenoiseMode::Df3 => {
-                self.backend = match Df3Backend::new() {
-                    Ok(b) => Some(Box::new(b)),
-                    Err(e) => {
-                        log::warn!("DF3 reset 重建失败，降级直通：{:?}", e);
-                        None
-                    }
-                };
-                self.df_pending = false;
-            }
+        if let Some(b) = self.backend.as_mut() {
+            b.reset();
         }
     }
 
@@ -209,8 +203,8 @@ impl DenoiseProcessor {
         self.in_buf.extend_from_slice(samples);
         let mut out_frame = [0.0f32; FRAME_SIZE];
         while self.in_buf.len() >= FRAME_SIZE {
-            let frame: Vec<f32> = self.in_buf.drain(..FRAME_SIZE).collect();
-            let pcm: [f32; FRAME_SIZE] = std::array::from_fn(|i| frame[i]);
+            let pcm: [f32; FRAME_SIZE] = std::array::from_fn(|i| self.in_buf[i]);
+            self.in_buf.drain(..FRAME_SIZE);
             if let Some(b) = self.backend.as_mut() {
                 b.process_frame(&pcm, &mut out_frame);
                 for &s in &out_frame {
