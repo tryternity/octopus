@@ -152,6 +152,10 @@ pub struct AppConfig {
     /// false→工具栏始终显示（窗口高度保持展开态）。
     #[serde(default = "default_hide_toolbar")]
     pub hide_toolbar: bool,
+
+    /// 降噪模式：0=无降噪，1=轻度降噪，2=深度降噪。默认 1。
+    #[serde(default = "default_denoise_mode")]
+    pub denoise_mode: u8,
 }
 
 fn default_engine_mode() -> String {
@@ -202,6 +206,9 @@ fn default_output_simplified() -> bool {
 fn default_hide_toolbar() -> bool {
     true
 }
+fn default_denoise_mode() -> u8 {
+    1
+}
 fn default_segment_duration() -> f64 {
     5.0
 }
@@ -238,6 +245,7 @@ impl Default for AppConfig {
             denoise_enabled: default_denoise_enabled(),
             output_simplified: default_output_simplified(),
             hide_toolbar: default_hide_toolbar(),
+            denoise_mode: default_denoise_mode(),
         }
     }
 }

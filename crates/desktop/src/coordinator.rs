@@ -36,6 +36,8 @@ enum Command {
     PolishDone { result: Result<String, String> },
     /// 最终润色完成
     FinalPolishDone { result: Result<String, String> },
+    /// 立即润色（前端工具栏触发，忽略 polish_mode）
+    PolishNow,
 }
 
 enum Stage {
@@ -283,6 +285,9 @@ impl Coordinator {
                     Command::FinalPolishDone { result } => {
                         handle_final_polish_done(&mut stage, result, &config, &app_handle, &tx);
                     }
+                    Command::PolishNow => {
+                        handle_polish_now(&mut stage, &config, &app_handle, &tx);
+                    }
                 }
             }
             debug!("Coordinator thread exited");
@@ -310,6 +315,15 @@ impl Coordinator {
             }
         }
     }
+
+    /// 发送立即润色命令（工具栏按钮触发，忽略 polish_mode）
+    pub fn polish_now(&self) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::PolishNow).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
 }
 
 /// 前端命令：取消当前录音/处理（Esc 键）。
@@ -317,6 +331,12 @@ impl Coordinator {
 #[tauri::command]
 pub fn cancel_recording(coordinator: tauri::State<'_, Coordinator>) {
     coordinator.cancel();
+}
+
+/// 前端命令：立即润色（工具栏按钮触发，忽略 polish_mode）。
+#[tauri::command]
+pub fn polish_now(coordinator: tauri::State<'_, Coordinator>) {
+    coordinator.polish_now();
 }
 
 /// 处理 Toggle 命令
@@ -1403,6 +1423,43 @@ fn handle_polish_done(
             transcript.on_polish_failed();
         }
     }
+}
+
+/// 处理立即润色命令：不管 polish_mode，取当前完整 ASR 文本送 LLM 润色。
+/// 仅在 Streaming / VadSegmented 阶段生效（需有 transcript）；其他阶段忽略。
+/// 与 `check_and_trigger_polish` 区别：不检查 mode/threshold/interval/has_increase，
+/// 直接快照全量文本送 LLM。
+fn handle_polish_now(
+    stage: &mut Stage,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+) {
+    let transcript = match stage {
+        Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
+        _ => {
+            debug!("PolishNow ignored in stage {:?}", stage_name(stage));
+            return;
+        }
+    };
+    if transcript.full().is_empty() {
+        debug!("PolishNow skipped: transcript empty");
+        return;
+    }
+    if transcript.polish_pending() {
+        debug!("PolishNow skipped: polish already pending");
+        return;
+    }
+    // 检查 LLM 配置是否存在
+    if crate::config::llm_config(config).is_none() {
+        warn!("PolishNow: no LLM config available");
+        let _ = crate::result_window::show_result(app_handle, "未配置润色模型");
+        return;
+    }
+    let snapshot = transcript.snapshot_for_polish();
+    transcript.mark_polish_pending();
+    info!("PolishNow triggered, polishing {} chars", snapshot.chars().count());
+    spawn_polish_thread(snapshot, config, tx);
 }
 
 fn stage_name(stage: &Stage) -> &'static str {

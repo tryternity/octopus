@@ -95,9 +95,11 @@
       mask-position: center;
     }
     #tool-settings .icon { -webkit-mask-image: url(icons/settings.svg?v=2); mask-image: url(icons/settings.svg?v=2); }
-    #tool-polish    .icon { -webkit-mask-image: url(icons/polish-mode.svg?v=2); mask-image: url(icons/polish-mode.svg?v=2); }
     #tool-asr       .icon { -webkit-mask-image: url(icons/asr-engine.svg?v=2); mask-image: url(icons/asr-engine.svg?v=2); }
+    #tool-denoise   .icon { -webkit-mask-image: url(icons/denoise.svg?v=2); mask-image: url(icons/denoise.svg?v=2); }
     #tool-llm       .icon { -webkit-mask-image: url(icons/llm-model.svg?v=2); mask-image: url(icons/llm-model.svg?v=2); }
+    #tool-polish    .icon { -webkit-mask-image: url(icons/polish-mode.svg?v=2); mask-image: url(icons/polish-mode.svg?v=2); }
+    #tool-polish-now .icon { -webkit-mask-image: url(icons/polish-now.svg?v=2); mask-image: url(icons/polish-now.svg?v=2); }
 
     /* 浮层（左缘对齐工具栏：toolbar padding 0 6px） */
     #popup {
@@ -188,10 +190,16 @@
         <button class="tool" id="tool-asr" title="语音模型" aria-label="语音模型">
           <span class="icon"></span>
         </button>
+        <button class="tool" id="tool-denoise" title="降噪模式" aria-label="降噪模式">
+          <span class="icon"></span>
+        </button>
         <button class="tool" id="tool-llm" title="润色模型" aria-label="润色模型">
           <span class="icon"></span>
         </button>
         <button class="tool" id="tool-polish" title="润色模式" aria-label="润色模式">
+          <span class="icon"></span>
+        </button>
+        <button class="tool" id="tool-polish-now" title="立即润色" aria-label="立即润色">
           <span class="icon"></span>
         </button>
       </div>
@@ -300,6 +308,45 @@
       });
     });
 
+    // ── 降噪模式 ──
+    const DENOISE_OPTIONS = [
+      { mode: 0, label: '无降噪' },
+      { mode: 1, label: '轻度降噪' },
+      { mode: 2, label: '深度降噪' },
+    ];
+    let currentDenoiseMode = 1;
+
+    document.getElementById('tool-denoise').addEventListener('click', async () => {
+      const html = DENOISE_OPTIONS.map(o =>
+        `<div class="option${o.mode === currentDenoiseMode ? ' current' : ''}" data-mode="${o.mode}">
+           <span>${o.mode === currentDenoiseMode ? '●' : '○'}</span><span class="nm">${o.label}</span>
+         </div>`).join('');
+      openPopup(html);
+      popup.querySelectorAll('.option').forEach(el => {
+        el.addEventListener('click', async () => {
+          const mode = Number(el.dataset.mode);
+          try {
+            await invoke('set_denoise_mode', { mode });
+            currentDenoiseMode = mode;
+            closePopup();
+            refreshActive();
+          } catch (e) {
+            showToast('切换失败：' + e);
+          }
+        });
+      });
+    });
+
+    // ── 立即润色 ──
+    document.getElementById('tool-polish-now').addEventListener('click', async () => {
+      try {
+        await invoke('polish_now');
+        showToast('润色中…');
+      } catch (e) {
+        showToast('润色失败：' + e);
+      }
+    });
+
     // ── ASR 引擎 ──
     document.getElementById('tool-asr').addEventListener('click', async () => {
       let engines;
@@ -355,9 +402,12 @@
       try {
         const st = await invoke('toolbar_state');
         currentPolishMode = st.polish_mode;
+        currentDenoiseMode = st.denoise_mode;
         document.getElementById('tool-polish').classList.toggle('active', st.polish_mode !== 0);
         document.getElementById('tool-asr').classList.toggle('active', true);
         document.getElementById('tool-llm').classList.toggle('active', true);
+        document.getElementById('tool-denoise').classList.toggle('active', st.denoise_mode !== 0);
+        document.getElementById('tool-polish-now').classList.toggle('active', true);
         // hide_toolbar=false → 工具栏始终显示：移除 hover 监听 + 立即展开
         if (st.hide_toolbar === false) {
           container.removeEventListener('mousemove', showToolbar);
