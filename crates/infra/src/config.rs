@@ -147,6 +147,11 @@ pub struct AppConfig {
     /// ASR 输出字形：true→简体（繁→简），false→繁体（简→繁）。默认简体。
     #[serde(default = "default_output_simplified")]
     pub output_simplified: bool,
+
+    /// 结果展示区工具栏是否自动隐藏。true→鼠标移入显示、移出隐藏（默认）；
+    /// false→工具栏始终显示（窗口高度保持展开态）。
+    #[serde(default = "default_hide_toolbar")]
+    pub hide_toolbar: bool,
 }
 
 fn default_engine_mode() -> String {
@@ -194,6 +199,9 @@ fn default_denoise_enabled() -> bool {
 fn default_output_simplified() -> bool {
     true
 }
+fn default_hide_toolbar() -> bool {
+    true
+}
 fn default_segment_duration() -> f64 {
     5.0
 }
@@ -229,6 +237,7 @@ impl Default for AppConfig {
             asr_correct: default_asr_correct(),
             denoise_enabled: default_denoise_enabled(),
             output_simplified: default_output_simplified(),
+            hide_toolbar: default_hide_toolbar(),
         }
     }
 }

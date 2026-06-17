@@ -156,6 +156,8 @@ fn write_config_yaml(cfg: &octopus_infra::config::AppConfig) -> Result<(), Strin
 pub struct ToolbarState {
     pub asr_engine: String,
     pub polish_mode: u8,
+    /// 工具栏是否自动隐藏（true=hover 显隐，false=始终显示）。
+    pub hide_toolbar: bool,
 }
 
 #[derive(Serialize)]
@@ -200,9 +202,12 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
 #[tauri::command]
 pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
     let g = rc.read().unwrap();
+    // hide_toolbar 是启动只读配置（不参与运行时切换），从 AppConfig 缓存读
+    let hide_toolbar = octopus_asr::config::load_app_config_cached().hide_toolbar;
     ToolbarState {
         asr_engine: g.asr_engine.clone(),
         polish_mode: polish_mode_to_u8(g.polish_mode),
+        hide_toolbar,
     }
 }
 
