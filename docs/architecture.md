@@ -122,6 +122,8 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
   **状态保持与降级**：GRU 隐状态 + 特征缓冲 **跨 `drain_samples` 周期、跨 VAD 分段连续保持**（噪声估计是连续物理过程，与 `filter_vad` 每段 reset 故意相反）；新会话 `start()` 调 `reset()`（DF3 reset = 重载 7.9MB 模型，仅会话边界可接受）。链路 `process_pipeline`：原生SR→(`down_sampler`)→48k→DenoiseProcessor→(`resampler`)→16k（`flush` 语义同重采样器：`drain_samples` 不 flush 保连续、`stop` flush 取尾）。**三级降级**：`mode=0`→直通；后端加载/单帧推理失败→warn + backend 置 `None`→直通；**不 panic**、不阻断录音。无外部模型文件依赖（RNNoise 内置模型 / DF3 编译期内嵌），不进 DB、不参与引擎选择。
 
+  **DF3 加载日志**：tract 加载 DF3 模型时刷大量 DEBUG（`tract_core::optim` 的 `applying patch`、`tract_hir::infer` 的 shape 推断），`crates/desktop/src/main.rs` 的 `tauri_plugin_log::Builder` 对 `tract_core`/`tract_hir`/`tract_onnx`/`tract_linalg` 四子模块 `level_for(Warn)` 压制；**保留** `df::tract` 自身 `Info`（`Loading model ...` / `Init encoder` / `Running with model type ...`）作加载进度信号。RNNoise 无 tract 依赖，不受影响。
+
   **历史**：第一版曾用第三方 `dfn3.onnx` + ort（模型缺陷压语音至 ~10%，已弃用换 RNNoise，见 [`2026-06-16-denoise-deepfilternet-design.md`](superpowers/specs/2026-06-16-denoise-deepfilternet-design.md)）；本版改用官方原生 libDF + tract（spike 验证 gain=0.958 不压语音），DF3 与 RNNoise 并存。详见 [spec](superpowers/specs/2026-06-17-denoise-deepfilternet3-integration-design.md)
 - **VAD 分段切分策略**（`handle_vad_segmented_tick`）：静音边界切分（主）+ 连续超时强制切断（兜底）
   - 静音切分：检测到语音后静音 ≥ `segment_silence`（默认 500ms）→ 切分，**无 overlap**（静音是自然语句边界，下一段从干净开始）

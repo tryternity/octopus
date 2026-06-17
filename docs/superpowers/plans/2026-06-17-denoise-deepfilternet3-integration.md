@@ -36,7 +36,7 @@
 
 **背景**：tract 0.19 间接拉 `time`，默认解析到 0.3.28，在 rustc 1.96 下 E0282 编译失败。必须先升 time 再 check。ndarray 0.15 与现有 0.17 共存靠 package rename。
 
-- [ ] **Step 1: 改 `crates/asr/Cargo.toml`，加 df 与 ndarray_015**
+- [x] **Step 1: 改 `crates/asr/Cargo.toml`，加 df 与 ndarray_015**
 
 在 `nnnoiseless = { version = "0.5", default-features = false }`（约 :25）下方插入：
 
@@ -49,7 +49,7 @@ ndarray_015 = { package = "ndarray", version = "0.15", default-features = false 
 df = { git = "https://github.com/Rikorose/DeepFilterNet.git", tag = "v0.5.6", package = "deep_filter", default-features = false, features = ["tract", "default-model", "transforms"] }
 ```
 
-- [ ] **Step 2: time 版本检查（通常无需手动 patch）**
+- [x] **Step 2: time 版本检查（通常无需手动 patch）**
 
 tract 0.19 间接拉 `time`，rustc 1.96 下若解析到 `0.3.28` 会 E0282 失败。但 octopus workspace 已有
 `tauri → plist` 链要求 `time ^0.3.47`（Cargo.lock 解析到 `0.3.49`），**已远高于规避 E0282 的 0.3.35
@@ -68,7 +68,7 @@ cargo update -p time --precise 0.3.36
 Expected: `Updating time v0.3.x -> v0.3.36`（或 "Already up to date" 若已 ≥0.3.36）。若无输出报错
 `Package does not feature`，先 `cargo fetch` 再重试。
 
-- [ ] **Step 3: 验证 asr 编译（首次拉 df + 编译 tract，约 1–3 分钟）**
+- [x] **Step 3: 验证 asr 编译（首次拉 df + 编译 tract，约 1–3 分钟）**
 
 Run:
 ```bash
@@ -80,7 +80,7 @@ Expected: `Finished` 无错误。
 - 若报 ndarray 版本冲突 → 确认 `ndarray_015` 用了 `package = "ndarray"` rename。
 - 若报 df git 拉取失败 → 确认网络/上游 tag `v0.5.6` 存在（`git ls-remote --tags https://github.com/Rikorose/DeepFilterNet.git v0.5.6`）。注意：**用上游 Rikorose 不是 fork tryternity**（后者无 tag）。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 > 注：仓库不跟踪 `Cargo.lock`（既有策略），故只 add `Cargo.toml`。
 
@@ -98,7 +98,7 @@ git commit -m "build(asr): 加 libDF v0.5.6 依赖 + ndarray_0.15 隔离 + time 
 
 **背景**：`denoise_enabled: bool`（默认 true）在 `infra/src/config.rs:144`。新增 `denoise_mode: Option<u8>`（None=未配置）。`effective_denoise_mode()`：mode 显式优先，否则 `denoise_enabled` 映射（true→1, false→0），实现旧配置向后兼容。
 
-- [ ] **Step 1: 写失败测试（先于实现）**
+- [x] **Step 1: 写失败测试（先于实现）**
 
 在 `crates/infra/src/config.rs` 测试模块（`denoise_enabled_override_from_yaml` 测试附近，约 :330）后追加：
 
@@ -125,7 +125,7 @@ git commit -m "build(asr): 加 libDF v0.5.6 依赖 + ndarray_0.15 隔离 + time 
     }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run:
 ```bash
@@ -133,7 +133,7 @@ cargo test -p octopus-infra denoise_mode 2>&1 | tail -15
 ```
 Expected: 编译失败 `no field or method effective_denoise_mode` / `no field denoise_mode`。
 
-- [ ] **Step 3: 加字段 + 默认函数**
+- [x] **Step 3: 加字段 + 默认函数**
 
 改 `crates/infra/src/config.rs:143-145`，在 `denoise_enabled` 字段**之后**插入 `denoise_mode`：
 
@@ -148,7 +148,7 @@ Expected: 编译失败 `no field or method effective_denoise_mode` / `no field d
     pub denoise_mode: Option<u8>,
 ```
 
-- [ ] **Step 4: 加 effective_denoise_mode() 方法 + Default 初始化**
+- [x] **Step 4: 加 effective_denoise_mode() 方法 + Default 初始化**
 
 先定位 AppConfig 的 impl 块与 Default：
 ```bash
@@ -178,7 +178,7 @@ grep -n "impl AppConfig\|impl Default for AppConfig\|denoise_enabled: default_de
             denoise_mode: None,
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run:
 ```bash
@@ -186,7 +186,7 @@ cargo test -p octopus-infra denoise 2>&1 | tail -15
 ```
 Expected: `denoise_mode_explicit_wins ... ok`、`denoise_mode_absent_falls_back_to_enabled ... ok`、`denoise_mode_absent_defaults_to_rnnoise ... ok`、现有 `denoise_enabled_*` 仍 ok。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add crates/infra/src/config.rs
@@ -204,7 +204,7 @@ git commit -m "feat(config): denoise_mode 0/1/2 + effective_denoise_mode 向后�
 
 **注意**：本 task 一次写完 trait + 两后端 + processor，否则 `DenoiseProcessor` 引用 `Df3Backend` 无法编译。
 
-- [ ] **Step 1: 重写 `crates/asr/src/denoise.rs` 的非测试部分**
+- [x] **Step 1: 重写 `crates/asr/src/denoise.rs` 的非测试部分**
 
 替换文件顶部模块文档到 `impl Default for DenoiseProcessor` 之前（含模块文档 + 常量 + 枚举 + trait + 两后端 + DenoiseProcessor 结构 + impl + Default）。新内容：
 
@@ -459,11 +459,11 @@ impl Default for DenoiseProcessor {
 }
 ```
 
-- [ ] **Step 2: 改现有测试的 `new()` 调用为 `new(DenoiseMode::Rnnoise)`**
+- [x] **Step 2: 改现有测试的 `new()` 调用为 `new(DenoiseMode::Rnnoise)`**
 
 在 `crates/asr/src/denoise.rs` 测试模块，把所有 `DenoiseProcessor::new().unwrap()` 改为 `DenoiseProcessor::new(DenoiseMode::Rnnoise).unwrap()`。涉及：`processor_basic_roundtrip`、`length_invariant_within_one_frame`、`streaming_incremental_equals_batch`、`diag_pure_noise_suppressed`、`diag_clean_speech_preserved`、`diag_silence_output`、`diag_denoise_tts_wav`、`diag_real_speech_noisy_denoise_effect`。
 
-- [ ] **Step 3: 跑测试确认 RNNoise 回归全绿**
+- [x] **Step 3: 跑测试确认 RNNoise 回归全绿**
 
 Run:
 ```bash
@@ -472,7 +472,7 @@ cargo test -p octopus-asr --lib denoise 2>&1 | tail -25
 Expected: 所有非 `#[ignore]` 测试 ok。
 诊断：若 `streaming_incremental_equals_batch` 失败（max_diff≠0）→ 检查 `RnnoiseBackend::process_frame` 的 PCM_SCALE 双向转换（`*PCM_SCALE` 喂、`/PCM_SCALE` 收）。
 
-- [ ] **Step 4: 验证 Send 断言（含 Df3Backend 的 unsafe impl）**
+- [x] **Step 4: 验证 Send 断言（含 Df3Backend 的 unsafe impl）**
 
 Run:
 ```bash
@@ -480,7 +480,7 @@ cargo check -p octopus-desktop 2>&1 | tail -10
 ```
 Expected: `Finished`（`audio.rs:312` 的 `_assert_send_sync::<DenoiseProcessor>()` 通过——RnnoiseBackend 天然 Send，Df3Backend 经 unsafe impl 满足）。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/asr/src/denoise.rs
@@ -503,7 +503,7 @@ git commit -m "refactor(asr): FrameDenoise trait + RnnoiseBackend + Df3Backend +
 > `hound::WavReader` 读取；文件不存在则 `#[ignore]` 跳过）。合成谐波对 DF3 是固有代理失真，非「压语音」
 > 回归。RNNoise 用频带能量特征，合成谐波测试对它有效（gain≥0.5），故 RNNoise 测试可继续用 `synth_speech`。
 
-- [ ] **Step 1: 写 DF3 测试**
+- [x] **Step 1: 写 DF3 测试**
 
 在 `crates/asr/src/denoise.rs` 测试模块末尾追加（均 `#[ignore]`，复用现有 `white_noise`/`rms` helper；
 **真实语音输入用 `read_wav_48k` helper 读 `/tmp/voice48k.wav`**——见上方背景说明，不能用 `synth_speech`）：
@@ -601,7 +601,7 @@ say -o /tmp/voice.aiff "这是一段用于降噪测试的真实中文语音，�
     }
 ```
 
-- [ ] **Step 2: 跑 DF3 测试（手动，加载模型慢）**
+- [x] **Step 2: 跑 DF3 测试（手动，加载模型慢）**
 
 Run:
 ```bash
@@ -616,7 +616,7 @@ Expected: `df3_length_invariant ... ok`、`df3_clean_speech_preserved ... ok`（
 - 若 `DfTract::default` panic 未 catch → 确认 `AssertUnwindSafe(DfTract::default)` 包裹正确。
 - 若 ndarray 类型不匹配 → 确认 `ndarray_015` 与 libDF 同版本（`grep -A1 'name = "ndarray"' Cargo.lock` 应只有 0.15.x 与 0.17.x 各一）。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add crates/asr/src/denoise.rs
@@ -632,7 +632,7 @@ git commit -m "test(asr): Df3Backend 行为测试（长度守恒 / 不压语音 
 
 **背景**：audio.rs 经 `octopus_asr::config::load_app_config_cached()`（返回 `&AppConfig`）读 `effective_denoise_mode()`。mode=0 直通（不走 down_sampler/denoise），mode=1/2 走 denoise 路径（DenoiseProcessor 内部按 mode 选后端）。
 
-- [ ] **Step 1: 改 process_pipeline 读 mode（audio.rs:96-98）**
+- [x] **Step 1: 改 process_pipeline 读 mode（audio.rs:96-98）**
 
 把：
 ```rust
@@ -645,7 +645,7 @@ git commit -m "test(asr): Df3Backend 行为测试（长度守恒 / 不压语音 
         let denoise_on = cfg.effective_denoise_mode() != 0;
 ```
 
-- [ ] **Step 2: 改 start() 构造传 mode（audio.rs:208-220）**
+- [x] **Step 2: 改 start() 构造传 mode（audio.rs:208-220）**
 
 把：
 ```rust
@@ -665,7 +665,7 @@ git commit -m "test(asr): Df3Backend 行为测试（长度守恒 / 不压语音 
                 match octopus_asr::denoise::DenoiseProcessor::new(mode) {
 ```
 
-- [ ] **Step 3: 改日志文案（区分 mode）**
+- [x] **Step 3: 改日志文案（区分 mode）**
 
 把该 match 块内的：
 ```rust
@@ -677,7 +677,7 @@ git commit -m "test(asr): Df3Backend 行为测试（长度守恒 / 不压语音 
 ```
 以及降级 warn 文案 `RNNoise 降噪初始化失败` 改为 `环境降噪初始化失败`。
 
-- [ ] **Step 4: 更新注释（audio.rs:88）**
+- [x] **Step 4: 更新注释（audio.rs:88）**
 
 把：
 ```rust
@@ -688,7 +688,7 @@ git commit -m "test(asr): Df3Backend 行为测试（长度守恒 / 不压语音 
     /// 降级（spec §9）：denoise_mode=0 / 模型缺失 / 实例未就绪 → 走直通（原生→16k），
 ```
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run:
 ```bash
@@ -696,7 +696,7 @@ cargo check --workspace --all-targets 2>&1 | tail -10
 ```
 Expected: `Finished` 无错误。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add crates/desktop/src/audio.rs
@@ -712,7 +712,7 @@ git commit -m "feat(desktop): audio 接入 denoise_mode（effective_denoise_mode
 
 **背景**：CLAUDE.md 强制——需求/接口变更同步文档。
 
-- [ ] **Step 1: docs/configuration.md 加 denoise_mode 说明**
+- [x] **Step 1: docs/configuration.md 加 denoise_mode 说明**
 
 grep 定位：
 ```bash
@@ -727,7 +727,7 @@ grep -n "denoise" docs/configuration.md
   - 未配置时回退旧 `denoise_enabled`（true→1，false→0）以向后兼容。
 ```
 
-- [ ] **Step 2: docs/architecture.md 更新降噪段**
+- [x] **Step 2: docs/architecture.md 更新降噪段**
 
 grep 定位：
 ```bash
@@ -735,7 +735,7 @@ grep -n "降噪\|denoise\|RNNoise" docs/architecture.md
 ```
 更新为说明：降噪为可插拔后端（`FrameDenoise` trait），`denoise_mode` 0/1/2 选择；DF3 用 libDF v0.5.6 + tract 0.19（git 依赖），ndarray 0.15 与 asr 0.17 靠 slice 边界隔离；Df3Backend 经 unsafe impl Send（单线程串行访问）。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add docs/configuration.md docs/architecture.md
