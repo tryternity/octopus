@@ -64,6 +64,7 @@ impl Transcript {
     }
 
     /// 停顿后增量（仅 mode=2 有意义；mode=0/1 恒空，符合 spec §2.2 不变量）。
+    #[cfg(test)]
     pub fn increase(&self) -> String {
         if self.mode == PolishMode::Intermediate {
             self.full.chars().skip(self.raw_len).collect()
