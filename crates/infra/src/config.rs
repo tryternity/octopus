@@ -140,11 +140,6 @@ pub struct AppConfig {
     #[serde(default = "default_asr_correct")]
     pub asr_correct: bool,
 
-    /// 是否启用 RNNoise 环境降噪（录音送 ASR 前降噪）
-    /// ⚠ 已被 denoise_mode 取代，仅保留字段不破坏旧 config.yaml 解析；不再参与降噪决策。
-    #[serde(default = "default_denoise_enabled")]
-    pub denoise_enabled: bool,
-
     /// ASR 输出字形：true→简体（繁→简），false→繁体（简→繁）。默认简体。
     #[serde(default = "default_output_simplified")]
     pub output_simplified: bool,
@@ -198,9 +193,6 @@ fn default_asr_hardware_accelerated() -> bool {
 fn default_asr_correct() -> bool {
     false
 }
-fn default_denoise_enabled() -> bool {
-    true
-}
 fn default_output_simplified() -> bool {
     true
 }
@@ -243,7 +235,6 @@ impl Default for AppConfig {
             polish_llm: default_polish_llm(),
             asr_hardware_accelerated: default_asr_hardware_accelerated(),
             asr_correct: default_asr_correct(),
-            denoise_enabled: default_denoise_enabled(),
             output_simplified: default_output_simplified(),
             hide_toolbar: default_hide_toolbar(),
             denoise_mode: default_denoise_mode(),
@@ -339,18 +330,6 @@ mod tests {
     }
 
     #[test]
-    fn denoise_enabled_defaults_to_true() {
-        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
-        assert!(cfg.denoise_enabled, "denoise_enabled 应默认 true");
-    }
-
-    #[test]
-    fn denoise_enabled_override_from_yaml() {
-        let cfg: AppConfig = serde_yaml::from_str("denoise_enabled: false\n").unwrap();
-        assert!(!cfg.denoise_enabled);
-    }
-
-    #[test]
     fn denoise_mode_defaults_to_rnnoise_when_absent() {
         // denoise_mode 缺省 → default_denoise_mode() = 1（轻度/RNNoise）。
         let cfg: AppConfig = serde_yaml::from_str("").unwrap();
@@ -359,7 +338,7 @@ mod tests {
 
     #[test]
     fn denoise_mode_explicit_from_yaml() {
-        // 显式 0/1/2 直接落到字段（不再经 effective_denoise_mode 映射）。
+        // 显式 0/1/2 直接落到字段。
         let cfg: AppConfig = serde_yaml::from_str("denoise_mode: 2\n").unwrap();
         assert_eq!(cfg.denoise_mode, 2);
         let cfg: AppConfig = serde_yaml::from_str("denoise_mode: 0\n").unwrap();
@@ -367,11 +346,11 @@ mod tests {
     }
 
     #[test]
-    fn denoise_mode_independent_of_legacy_denoise_enabled() {
-        // 旧 denoise_enabled 已与降噪决策解耦：两者独立解析，互不影响。
+    fn denoise_mode_legacy_denoise_enabled_ignored() {
+        // 旧 denoise_enabled 已删除：serde 默认忽略未知字段，
+        // 旧 config.yaml 里残留的 denoise_enabled 不影响 denoise_mode 解析。
         let cfg: AppConfig =
             serde_yaml::from_str("denoise_mode: 2\ndenoise_enabled: false\n").unwrap();
         assert_eq!(cfg.denoise_mode, 2);
-        assert!(!cfg.denoise_enabled);
     }
 }

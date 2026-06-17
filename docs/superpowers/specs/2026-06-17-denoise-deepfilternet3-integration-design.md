@@ -231,6 +231,16 @@ unsafe impl Sync for Df3Backend {}
 audio.rs:98 `let denoise_on = cfg.denoise_enabled;` → 改读 `cfg.denoise_mode`，按 mode 构造 backend。
 audio.rs:211-213 `DenoiseProcessor::new()` → `DenoiseProcessor::new(mode)`。
 
+> **实施修正（2026-06-17 合并后）**：上述「向后兼容旧 `denoise_enabled`」逻辑**最终未保留**。
+> 合并时发现 main 已独立引入 `denoise_mode: u8`（接工具栏 `set_denoise_mode` 命令 + 持久化），
+> 与本设计的 `Option<u8>` + `effective_denoise_mode()` 向后兼容方案冲突。经决策**以 main 的
+> `denoise_mode: u8`（固定默认 `1`）为唯一真相**，删除：
+> - feature 的 `Option<u8>` 字段与 `effective_denoise_mode()` 方法；
+> - 旧 `denoise_enabled: bool` 字段本身（彻底移除，不再保留作回退）。
+>
+> 现状：audio.rs 直接读 `cfg.denoise_mode`；`default_denoise_mode() = 1`；旧 config.yaml 里残留的
+> `denoise_enabled` 被 serde 静默忽略（`AppConfig` 无 `deny_unknown_fields`），不影响解析。
+
 ## 9. 懒加载与降级
 
 **懒加载**（mode=2）：
@@ -296,7 +306,7 @@ DF3 的「干净语音 gain」断言**不能用合成稳态谐波**（如现有 
 - [x] mode=1：所有现有 `denoise.rs` 测试全绿（RNNoise 行为不变）。
 - [x] mode=2：DF3 测试通过（gain/噪声抑制/长度守恒）。
 - [x] mode=0：直通，输出 = 输入。
-- [x] 配置：旧 `denoise_enabled: true` 正确映射 mode=1；`denoise_mode: 2` 加载 DF3。
+- [x] 配置：`denoise_mode: 2` 加载 DF3；`denoise_mode: 1`（缺省）RNNoise；`denoise_mode: 0` 直通（旧 `denoise_enabled` 已删除，详见 §8 实施修正）。
 - [x] 手动 e2e：备份 `~/.octopus/` 后，`denoise_mode: 2` 录音 → ASR 不退化（DF3 不压语音）。
 - [x] Send 断言编译通过。
 
@@ -305,7 +315,7 @@ DF3 的「干净语音 gain」断言**不能用合成稳态谐波**（如现有 
 - `crates/asr/Cargo.toml`：加 `df` git 依赖（v0.5.6）+ 可选 time 约束。
 - `crates/asr/src/denoise.rs`：`FrameDenoise` trait + `RnnoiseBackend` + `Df3Backend` + `DenoiseProcessor` 重构。
 - `crates/desktop/src/audio.rs`：`denoise_enabled` → `denoise_mode`（:98 读、:211 构造）。
-- `crates/asr/src/config.rs` 与 desktop/infra config：`denoise_mode` 字段 + 向后兼容。
+- `crates/infra/src/config.rs`：`denoise_mode: u8` 字段 + `default_denoise_mode()`（旧 `denoise_enabled` 已删除，详见 §8 实施修正）。
 - workspace `Cargo.toml` / `Cargo.lock`：time patch。
 
 ## 13. 历史与关联
