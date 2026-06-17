@@ -156,7 +156,9 @@ pub fn run() {
             runtime_config::set_polish_mode,
             runtime_config::list_llm_models,
             runtime_config::switch_polish_llm,
+            runtime_config::set_denoise_mode,
             coordinator::cancel_recording,
+            coordinator::polish_now,
             result_window::result_window_ready,
         ])
         .setup(move |app| {

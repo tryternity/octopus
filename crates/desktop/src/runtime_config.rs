@@ -14,6 +14,7 @@ pub struct RuntimeConfig {
     pub asr_engine: String,
     pub polish_mode: PolishMode,
     pub polish_llm: String,
+    pub denoise_mode: u8,
 }
 
 impl RuntimeConfig {
@@ -22,6 +23,7 @@ impl RuntimeConfig {
             asr_engine: cfg.asr_engine.clone(),
             polish_mode: cfg.polish_mode,
             polish_llm: cfg.polish_llm.clone(),
+            denoise_mode: cfg.denoise_mode,
         }
     }
 }
@@ -144,6 +146,13 @@ pub fn persist_polish_llm(value: &str) -> Result<(), String> {
     write_config_yaml(&cfg)
 }
 
+/// 读当前 config.yaml → 覆盖 denoise_mode → 序列化写回。
+pub fn persist_denoise_mode(value: u8) -> Result<(), String> {
+    let mut cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
+    cfg.denoise_mode = value;
+    write_config_yaml(&cfg)
+}
+
 fn write_config_yaml(cfg: &octopus_infra::config::AppConfig) -> Result<(), String> {
     let path = octopus_infra::octopus_config_home().join("config.yaml");
     let text = serde_yaml::to_string(cfg).map_err(|e| e.to_string())?;
@@ -158,6 +167,8 @@ pub struct ToolbarState {
     pub polish_mode: u8,
     /// 工具栏是否自动隐藏（true=hover 显隐，false=始终显示）。
     pub hide_toolbar: bool,
+    /// 降噪模式：0=无，1=轻度，2=深度
+    pub denoise_mode: u8,
 }
 
 #[derive(Serialize)]
@@ -208,6 +219,7 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
         asr_engine: g.asr_engine.clone(),
         polish_mode: polish_mode_to_u8(g.polish_mode),
         hide_toolbar,
+        denoise_mode: g.denoise_mode,
     }
 }
 
@@ -269,6 +281,26 @@ pub fn set_polish_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<(
     if let Err(e) = persist_polish_mode(mode) {
         log::warn!(
             "写回 config.yaml 失败（polish_mode={}）：{} —— 本次仍生效，重启后回退",
+            mode,
+            e
+        );
+    }
+    Ok(())
+}
+
+/// 切换降噪模式（0=无，1=轻度，2=深度）。写 RuntimeConfig（即时）+ config.yaml（持久）。
+#[tauri::command]
+pub fn set_denoise_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
+    if mode > 2 {
+        return Err(format!("denoise_mode={} 非法（应为 0/1/2）", mode));
+    }
+    {
+        let mut g = rc.write().unwrap();
+        g.denoise_mode = mode;
+    }
+    if let Err(e) = persist_denoise_mode(mode) {
+        log::warn!(
+            "写回 config.yaml 失败（denoise_mode={}）：{} —— 本次仍生效，重启后回退",
             mode,
             e
         );
