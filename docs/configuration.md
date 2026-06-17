@@ -111,6 +111,7 @@ octopus-cli config
 | `asr_hardware_accelerated` | bool | `false` | desktop + cli | ASR 推理是否启用硬件加速（CUDA/DirectML/CoreML EP），失败自动回退 CPU；不影响 VAD（VAD 固定 CPU） |
 | `asr_correct` | bool | `false` | cli + server + desktop | 是否对 ASR 输出做拼音映射 + bigram 转移概率的轻量纠错/热词校正；**自动跳过 Qwen3-ASR**（其自带标点且语义纠错强），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。详见 [architecture.md §ASR 纠错](../architecture.md) |
 | `denoise_enabled` | bool | `true` | desktop | 麦克风音频送入 VAD/ASR 前是否经 RNNoise 环境降噪（`nnnoiseless`，纯 Rust 内置默认模型，48kHz→频带增益+OLA，GRU 状态跨帧保持）；初始化失败自动降级直通（warn），不阻断录音。详见 [architecture.md](../architecture.md) |
+| `output_simplified` | bool | `true` | desktop | ASR 输出字形归一化：`true`→简体（繁→简），`false`→繁体（简→繁）。基于开放词典网 CC-BY 3.0 单字对照表（编译期嵌入），在 ASR 输出后做单字级字形转换（不转地域用词）。解决 Qwen3-ASR `auto` 模式输出繁体的问题。详见 [architecture.md](../architecture.md) |
 
 > **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（包括 `polish_mode`、`polish_interval` 和新字段 `polish_llm`），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`denoise_enabled`（前缀 `denoise_`）控制麦克风环境降噪（采集层前置，VAD/ASR 前）。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
 
@@ -179,6 +180,7 @@ polish_llm: "bigmodel:glm-4-flashx"  # 润色模型，格式 "PREFIX:NAME"（见
 asr_hardware_accelerated: false  # true 启用 GPU/CoreML/DirectML 加速（失败回退 CPU）；VAD 不受影响
 asr_correct: false               # true 对 ASR 输出做拼音+bigram 轻量纠错（自动跳过 Qwen3-ASR）
 denoise_enabled: true            # false 关闭麦克风环境降噪（RNNoise）；初始化失败自动降级直通
+output_simplified: true          # ASR 输出字形：true=简体（繁→简），false=繁体（简→繁）
 ```
 
 ## 模型下载

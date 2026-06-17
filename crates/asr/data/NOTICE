@@ -1,0 +1,12 @@
+数据来自「開放詞典網」(kaifangcidian.com)，自 2009 年起应用于开放汉语词典。
+
+授权：Creative Commons Attribution 3.0 (CC-BY 3.0)
+  https://creativecommons.org/licenses/by/3.0/
+
+按 CC-BY 要求保留此署名。
+
+格式：制表符分隔的单字对照表
+  - t2s.txt：繁<TAB>简（3106 条，一对一）
+  - s2t.txt：简<TAB>繁（4955 条，简→繁一对多已消歧取首选，如「发→發」）
+
+特性：单字级"愚能"字形转换（仅转字形，不转地域用词）。

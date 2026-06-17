@@ -199,11 +199,12 @@ pub fn transcribe_with_vad(
 
     // Apply correction if config.asr_correct is true and it's not a Qwen3 engine
     let app_cfg = crate::config::load_app_config_cached();
-    if app_cfg.asr_correct && !engine.is_qwen3() {
-        let corrected = crate::corrector::get_corrector().correct(&raw_text);
-        Ok(corrected)
+    let text = if app_cfg.asr_correct && !engine.is_qwen3() {
+        crate::corrector::get_corrector().correct(&raw_text)
     } else {
-        Ok(raw_text)
-    }
+        raw_text
+    };
+    // 简繁归一化（config.output_simplified）：ASR 输出最后一步，统一字形
+    Ok(crate::hans::normalize_variant(&text))
 }
 

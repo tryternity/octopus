@@ -42,6 +42,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `streaming_paraformer` | Paraformer 流式识别 |
 | `streaming_zipformer` | Zipformer 流式识别 |
 | `corrector` | 基于拼音映射和 Bigram 转移概率的轻量级中文拼音纠错与热词校正 |
+| `hans` | 简繁体字形转换（单字级，开放词典网 CC-BY 3.0 对照表编译期嵌入）；按 `output_simplified` 归一化 ASR 输出 |
 
 
 **数据流（离线）：**
@@ -157,7 +158,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - HF repo 名（如 `onnx-community/whisper-small`）→ `~/.cache/huggingface/hub/`（大模型缓存）
 
 **两份配置，各司其职：**
-- **应用行为配置** `config.yaml` → `infra::config::AppConfig`（`octopus_infra::config::load_config()`，22 字段：麦克风/引擎选择/分段/润色/LLM/粘贴/硬件加速/ASR 纠错等）。schema 统一定义在 infra，asr/desktop/cli 共享。
+- **应用行为配置** `config.yaml` → `infra::config::AppConfig`（`octopus_infra::config::load_config()`，23 字段：麦克风/引擎选择/分段/润色/LLM/粘贴/硬件加速/ASR 纠错/降噪/简繁输出等）。schema 统一定义在 infra，asr/desktop/cli 共享。
 - **DB 模型目录** `~/.octopus/octopus.db` `models` 表 → `asr::config::AsrConfig`（`octopus_asr::config::load_config()`，首次 `db::ensure_db()` 自动建表 + seed，读后缓存到 `OnceLock`）。
 - **`write_to_clipboard`**（默认 `true`）：粘贴后是否把识别结果留在剪贴板，方便他处再粘贴；与 `paste_method`（`clipboard` / `direct` / `none`）构成三模式矩阵——`clipboard` 模式 true 时不恢复原剪贴板内容、false 时恢复；`direct` 模式 true 时 enigo 输入后末尾写剪贴板、false 时不碰剪贴板；`none` 模式忽略此配置（其唯一目的就是写剪贴板）。`false` 时三种粘贴行为等同重构前现状（不破坏现有用户习惯）。详见 [spec §6](superpowers/specs/2026-06-14-transcript-model-design.md)。
 
@@ -199,6 +200,14 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 3. **基于 Jieba 字典的自适应惩罚**：
    - 如果原滑窗词是 Jieba 字典中的已登录词（即 `jieba.cut().len() == 1`，说明它是合法的词，如 `"坐上"`），系统施加极高的修改惩罚（`-1.5`）以保护正确表述不被误改；
    - 如果原滑窗词是未登录词（typo，如 `"以经"` 被 Jieba 拆分为 `"以"` 和 `"经"`），则修改惩罚降低（`-0.2`）以积极纠错。
+
+## ASR 输出简繁归一化 (Hans Variant Normalization)
+
+ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sherpa-onnx [#3509](https://github.com/k2-fsa/sherpa-onnx/issues/3509) 显示 `language` 参数不可靠。故在 ASR 输出边界做**单字级字形归一化**（保持 auto 多语言优势，不依赖 language 参数）：
+
+- **实现**：`crates/asr/src/hans.rs`，基于「开放词典网」(kaifangcidian.com) CC-BY 3.0 单字对照表（`data/t2s.txt` 繁→简、`data/s2t.txt` 简→繁，`include_str!` 编译期嵌入，零运行时文件依赖）。仅转字形、不转地域用词（"愚能"转换）；简→繁一对多取数据首选（已消歧，如「发→發」）。
+- **开关**：`config.yaml.output_simplified`（默认 `true`=简体）；`true`→繁转简，`false`→简转繁。
+- **注入点**：`engine.rs::transcribe_with_vad` 返回前（offline 统一出口）+ `streaming_engine.rs::finish` 返回前（streaming 统一出口），在 corrector 之后、paste/入库之前。增量中间显示段不转换（短暂过程，最终输出归一化）。
 
 ## ASR 硬件加速与自动降级机制 (ASR Hardware Acceleration & Fallback)
 

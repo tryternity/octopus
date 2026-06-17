@@ -174,7 +174,7 @@ impl StreamingSession {
                     acc.push_str(&delta);
                 }
                 append_final_punctuation(&mut acc);
-                Ok(acc.clone())
+                Ok(crate::hans::normalize_variant(&*acc))
             }
             Self::Zipformer { engine, accumulated } => {
                 let mut eng = engine.lock().unwrap();
@@ -189,7 +189,7 @@ impl StreamingSession {
                     acc.push_str(trimmed_final);
                 }
                 append_final_punctuation(&mut acc);
-                Ok(acc.clone())
+                Ok(crate::hans::normalize_variant(&*acc))
             }
         }
     }

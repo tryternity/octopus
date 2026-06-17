@@ -143,6 +143,10 @@ pub struct AppConfig {
     /// 是否启用 RNNoise 环境降噪（录音送 ASR 前降噪）
     #[serde(default = "default_denoise_enabled")]
     pub denoise_enabled: bool,
+
+    /// ASR 输出字形：true→简体（繁→简），false→繁体（简→繁）。默认简体。
+    #[serde(default = "default_output_simplified")]
+    pub output_simplified: bool,
 }
 
 fn default_engine_mode() -> String {
@@ -187,6 +191,9 @@ fn default_asr_correct() -> bool {
 fn default_denoise_enabled() -> bool {
     true
 }
+fn default_output_simplified() -> bool {
+    true
+}
 fn default_segment_duration() -> f64 {
     5.0
 }
@@ -221,6 +228,7 @@ impl Default for AppConfig {
             asr_hardware_accelerated: default_asr_hardware_accelerated(),
             asr_correct: default_asr_correct(),
             denoise_enabled: default_denoise_enabled(),
+            output_simplified: default_output_simplified(),
         }
     }
 }
