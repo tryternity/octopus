@@ -252,17 +252,17 @@ audio.rs:211-213 `DenoiseProcessor::new()` → `DenoiseProcessor::new(mode)`。
 **降级**（沿用 audio.rs:88-89 现有语义）：DF3 加载失败 / 单帧推理失败 → warn 日志 + backend 置 None
 → 直通，绝不 panic、绝不阻断录音。start() 在非实时路径（audio.rs:211），首帧加载延迟可接受。
 
-### 模型加载日志（DF3 特有，2026-06-17 收尾）
+### 模型加载日志（DF3 特有）
 
 tract 加载 DF3 模型时会刷出极大量 DEBUG 日志（`tract_core::optim` 的 `applying patch`
-数百行、`tract_hir::infer` 的 `Refined` / `Can't infer shape` 等），严重污染 octopus 启动
-日志。`crates/desktop/src/main.rs` 的 `tauri_plugin_log::Builder` 对 4 个 tract 子模块
-`level_for(Warn)`：`tract_core` / `tract_hir` / `tract_onnx` / `tract_linalg`。
+数百行、`tract_hir::infer` 的 `Refined` / `Can't infer shape` 等），且 `df::tract` 自身也打
+`Info`/`Debug`（`Init encoder` / `Start init ERB decoder` / `ERB decoder input:` 等），严重
+污染 octopus 启动日志。`crates/desktop/src/main.rs` 的 `tauri_plugin_log::Builder`（全局
+`level(Debug)`）对这些 target 一律 `level_for(Warn)`：`tract_core` / `tract_hir` /
+`tract_onnx` / `tract_linalg` / `df::tract`。
 
-**有意保留** `df::tract` 自身的 `Info`（`Loading model DeepFilterNet3_onnx.tar.gz` /
-`Init encoder` / `Init ERB decoder` / `Init DF decoder` / `Running with model type
-deepfilternet3 lookahead 2`）——这些是模型加载进度信号，确认加载到哪一步。RNNoise 无 tract
-依赖，不受此策略影响。
+> **2026-06-17 修订**：初版曾有意保留 `df::tract` 的 `Info` 作加载进度信号，实测其 `Info`/`Debug`
+> 仍刷屏（`ERB decoder input:` 等），改为一并压到 `Warn`。RNNoise 无 tract 依赖，不受此策略影响。
 
 ## 10. 测试策略
 

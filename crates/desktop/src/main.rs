@@ -146,12 +146,14 @@ pub fn run() {
                 .level_for("tao", log::LevelFilter::Warn)
                 .level_for("reqwest", log::LevelFilter::Info)
                 .level_for("hyper", log::LevelFilter::Info)
-                // tract（libDF/DF3 模型加载时的 codegen/declutter/shape 推断 DEBUG 极多）压到 Warn；
-                // 保留 df::tract 的 Info（Loading model / Init encoder / Running with model type 等加载进度）。
+                // tract + df::tract（libDF/DF3 模型加载时的 codegen/declutter/shape 推断 DEBUG 极多，
+                // df::tract 的 Init encoder / Start init ERB decoder / ERB decoder input 等 Info/Debug
+                // 同样刷屏）一律压到 Warn。全局 level(Debug)，未列出的 target 默认走 Debug。
                 .level_for("tract_core", log::LevelFilter::Warn)
                 .level_for("tract_hir", log::LevelFilter::Warn)
                 .level_for("tract_onnx", log::LevelFilter::Warn)
                 .level_for("tract_linalg", log::LevelFilter::Warn)
+                .level_for("df::tract", log::LevelFilter::Warn)
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
