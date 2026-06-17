@@ -32,7 +32,7 @@
 
 **Files:**
 - Modify: `crates/asr/Cargo.toml`
-- Modify: `Cargo.lock`（cargo update 生成）
+- 注：`Cargo.lock` 由 cargo update 生成但**仓库不跟踪**（既有策略），不进 commit。
 
 **背景**：tract 0.19 间接拉 `time`，默认解析到 0.3.28，在 rustc 1.96 下 E0282 编译失败。必须先升 time 再 check。ndarray 0.15 与现有 0.17 共存靠 package rename。
 
@@ -44,16 +44,29 @@
 # DeepFilterNet3 原生降噪（libDF v0.5.6 + tract 0.19，spec 2026-06-17）。
 # ndarray 0.15（libDF 版本）与上方 0.17（ort/asr）共存：rename 隔离，Df3Backend 边界转换。
 ndarray_015 = { package = "ndarray", version = "0.15", default-features = false }
-df = { git = "https://github.com/tryternity/DeepFilterNet.git", tag = "v0.5.6", package = "deep_filter", default-features = false, features = ["tract", "default-model", "transforms"] }
+# df URL：原设计写 fork tryternity，实测该 fork 无 tag（git ls-remote --tags 空），
+# 改用上游官方 Rikorose/DeepFilterNet tag v0.5.6（commit 978576aa，与 fork 同 commit 等价）。
+df = { git = "https://github.com/Rikorose/DeepFilterNet.git", tag = "v0.5.6", package = "deep_filter", default-features = false, features = ["tract", "default-model", "transforms"] }
 ```
 
-- [ ] **Step 2: 升级 time（解析 df 依赖图后 patch time 到 0.3.36）**
+- [ ] **Step 2: time 版本检查（通常无需手动 patch）**
 
-Run（仓库根）:
+tract 0.19 间接拉 `time`，rustc 1.96 下若解析到 `0.3.28` 会 E0282 失败。但 octopus workspace 已有
+`tauri → plist` 链要求 `time ^0.3.47`（Cargo.lock 解析到 `0.3.49`），**已远高于规避 E0282 的 0.3.35
+阈值**，故引入 df 后通常无需任何手动 time patch。
+
+先检查（仓库根）:
+```bash
+grep -A1 '^name = "time"' Cargo.lock
+```
+Expected: `version = "0.3.47"` 或更高（≥0.3.35 即可）。
+
+**仅当**解析到 `<0.3.35` 时（如未来 tauri/plist 链变动）才需手动钉版本:
 ```bash
 cargo update -p time --precise 0.3.36
 ```
-Expected: `Updating time v0.3.x -> v0.3.36`（或 "Already up to date" 若已 ≥0.3.36）。若无输出报错 `Package does not feature`，先 `cargo fetch` 再重试。
+Expected: `Updating time v0.3.x -> v0.3.36`（或 "Already up to date" 若已 ≥0.3.36）。若无输出报错
+`Package does not feature`，先 `cargo fetch` 再重试。
 
 - [ ] **Step 3: 验证 asr 编译（首次拉 df + 编译 tract，约 1–3 分钟）**
 
@@ -65,12 +78,14 @@ Expected: `Finished` 无错误。
 诊断：
 - 若报 `time ... E0282 type annotations needed` → time 未升级，回 Step 2。
 - 若报 ndarray 版本冲突 → 确认 `ndarray_015` 用了 `package = "ndarray"` rename。
-- 若报 df git 拉取失败 → 确认网络/fork tag `v0.5.6` 存在（`git ls-remote --tags https://github.com/tryternity/DeepFilterNet.git v0.5.6`）。
+- 若报 df git 拉取失败 → 确认网络/上游 tag `v0.5.6` 存在（`git ls-remote --tags https://github.com/Rikorose/DeepFilterNet.git v0.5.6`）。注意：**用上游 Rikorose 不是 fork tryternity**（后者无 tag）。
 
 - [ ] **Step 4: 提交**
 
+> 注：仓库不跟踪 `Cargo.lock`（既有策略），故只 add `Cargo.toml`。
+
 ```bash
-git add crates/asr/Cargo.toml Cargo.lock
+git add crates/asr/Cargo.toml
 git commit -m "build(asr): 加 libDF v0.5.6 依赖 + ndarray_0.15 隔离 + time patch"
 ```
 
@@ -481,9 +496,37 @@ git commit -m "refactor(asr): FrameDenoise trait + RnnoiseBackend + Df3Backend +
 
 **背景**：Df3Backend 已在 Task 3 实现。本 task 验证其行为：长度守恒、不压语音（gain≥0.5，反 dfn3 回归）、噪声抑制。DF3 测试需加载 7.9MB 模型，加 `#[ignore]` 手动跑。
 
+> **⚠ DF3 测试输入必须用真实语音**（Task 4 实施发现）：DF3 训练于真实语音时频动态，把恒幅稳态谐波
+> （如 `synth_speech` 简单正弦叠加）正确识别为非语音（类啸叫/feedback）并压制——实测合成谐波
+> gain≈0.005（比 dfn3 缺陷 0.10 还低！），真实语音 gain≈0.999（spike 真实音频 0.958）。故「不压语音」
+> gain 断言**不能用 `synth_speech`**，必须用真实 wav（如 `/tmp/voice48k.wav` TTS 或真实录音，
+> `hound::WavReader` 读取；文件不存在则 `#[ignore]` 跳过）。合成谐波对 DF3 是固有代理失真，非「压语音」
+> 回归。RNNoise 用频带能量特征，合成谐波测试对它有效（gain≥0.5），故 RNNoise 测试可继续用 `synth_speech`。
+
 - [ ] **Step 1: 写 DF3 测试**
 
-在 `crates/asr/src/denoise.rs` 测试模块末尾追加（均 `#[ignore]`，复用现有 `synth_speech`/`white_noise`/`rms` helper）：
+在 `crates/asr/src/denoise.rs` 测试模块末尾追加（均 `#[ignore]`，复用现有 `white_noise`/`rms` helper；
+**真实语音输入用 `read_wav_48k` helper 读 `/tmp/voice48k.wav`**——见上方背景说明，不能用 `synth_speech`）：
+
+先加真实语音读取 helper（若测试模块尚无）：
+```rust
+    /// 读取 /tmp/voice48k.wav（48k mono i16）→ [-1,1] f32。
+    fn read_wav_48k() -> Vec<f32> {
+        let mut reader = hound::WavReader::open("/tmp/voice48k.wav").expect("/tmp/voice48k.wav");
+        reader
+            .samples::<i16>()
+            .map(|s| s.unwrap() as f32 / 32768.0)
+            .collect()
+    }
+```
+
+生成 `/tmp/voice48k.wav`（macOS，48k mono i16）：
+```bash
+say -o /tmp/voice.aiff "这是一段用于降噪测试的真实中文语音，包含正常语速与停顿。" \
+  && ffmpeg -y -i /tmp/voice.aiff -ar 48000 -ac 1 -sample_fmt s16 /tmp/voice48k.wav
+```
+
+然后追加测试：
 
 ```rust
     // ── DF3 后端测试（需加载 7.9MB 模型，慢，手动 cargo test -- --ignored）──
@@ -504,12 +547,14 @@ git commit -m "refactor(asr): FrameDenoise trait + RnnoiseBackend + Df3Backend +
         }
     }
 
-    /// DF3 不压语音：干净合成语音 gain 应 ≥0.5（spike 实测真实语音 0.96）。
+    /// DF3 不压语音：**必须用真实语音 `/tmp/voice48k.wav`**（非 synth_speech）。
+    /// 真实语音 gain 应 ≥0.5（spike 实测 0.96，实施实测 0.999）。
+    /// 原因：DF3 把 synth_speech 的稳态谐波当非语音（类啸叫）压制（gain≈0.005），是代理失真非缺陷。
     #[test]
-    #[ignore]
+    #[ignore] // 需 /tmp/voice48k.wav
     fn df3_clean_speech_preserved() {
-        let n = 48000 * 2;
-        let input = synth_speech(n);
+        let input = read_wav_48k();
+        let n = input.len();
         let mut p = DenoiseProcessor::new(DenoiseMode::Df3).unwrap();
         let mut out = p.process_samples(&input);
         out.extend(p.flush());
@@ -518,7 +563,7 @@ git commit -m "refactor(asr): FrameDenoise trait + RnnoiseBackend + Df3Backend +
         let in_rms = rms(&input, lo, hi);
         let out_rms = rms(&out, lo, hi);
         let gain = out_rms / in_rms.max(1e-12);
-        eprintln!("DIAG df3_clean: gain={:.3}（应 ≥0.5；dfn3 缺陷≈0.10）", gain);
+        eprintln!("DIAG df3_clean: gain={:.3}（真实语音，应 ≥0.5；dfn3 缺陷≈0.10）", gain);
         assert!(gain >= 0.5, "DF3 压语音：gain={:.3}", gain);
     }
 
@@ -538,6 +583,22 @@ git commit -m "refactor(asr): FrameDenoise trait + RnnoiseBackend + Df3Backend +
         eprintln!("DIAG df3_noise: in_rms={:.4} out_rms={:.4}", in_rms, out_rms);
         assert!(out_rms < in_rms, "DF3 未抑制噪声：out={:.4} in={:.4}", out_rms, in_rms);
     }
+
+    /// 诊断：合成谐波被 DF3 压制的对照（**仅打印 gain，不断言**）。
+    /// 用以记录「合成稳态谐波 → DF3 gain≈0.005」这一代理失真现象，警示勿用合成语音测 DF3。
+    #[test]
+    #[ignore]
+    fn df3_synth_speech_gain_diag() {
+        let n = 48000 * 2;
+        let input = synth_speech(n);
+        let mut p = DenoiseProcessor::new(DenoiseMode::Df3).unwrap();
+        let mut out = p.process_samples(&input);
+        out.extend(p.flush());
+        let lo = FRAME_SIZE * 2;
+        let hi = n - FRAME_SIZE * 2;
+        let gain = rms(&out, lo, hi) / rms(&input, lo, hi).max(1e-12);
+        eprintln!("DIAG df3_synth: gain={:.3}（合成稳态谐波；DF3 应压低 ~0.005，非缺陷）", gain);
+    }
 ```
 
 - [ ] **Step 2: 跑 DF3 测试（手动，加载模型慢）**
@@ -546,9 +607,12 @@ Run:
 ```bash
 cargo test -p octopus-asr --lib denoise -- --ignored 2>&1 | tail -25
 ```
-Expected: `df3_length_invariant ... ok`、`df3_clean_speech_preserved ... ok`（gain≥0.5）、`df3_noise_suppressed ... ok`。
+Expected: `df3_length_invariant ... ok`、`df3_clean_speech_preserved ... ok`（真实语音 gain≥0.5，
+实测≈0.999）、`df3_noise_suppressed ... ok`、`df3_synth_speech_gain_diag` 仅打印（gain≈0.005）。
 诊断：
-- 若 `df3_clean_speech_preserved` gain<0.5 → 合成谐波非 DF3 最佳代理；放宽至 gain≥0.3 并 eprintln 实测值（spike 真实语音 0.96；合成可能偏低，但不应压到 dfn3 的 0.10）。
+- 若 `df3_clean_speech_preserved` 报 `/tmp/voice48k.wav` 不存在 → 先用 `say + ffmpeg` 生成（见 Step 1）。
+- 若 `df3_clean_speech_preserved` gain<0.5 且输入是真实语音 → 真异常，检查 Df3Backend 实现或模型版本。
+  （若误用 `synth_speech` 得 gain≈0.005，是代理失真非缺陷——改用真实 wav。）
 - 若 `DfTract::default` panic 未 catch → 确认 `AssertUnwindSafe(DfTract::default)` 包裹正确。
 - 若 ndarray 类型不匹配 → 确认 `ndarray_015` 与 libDF 同版本（`grep -A1 'name = "ndarray"' Cargo.lock` 应只有 0.15.x 与 0.17.x 各一）。
 

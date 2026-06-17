@@ -7,9 +7,11 @@
 
 ## 0. spike 验证结论（2026-06-17）
 
-在新 worktree 对 fork（`tryternity/DeepFilterNet`）`v0.5.6` tag + tract `^0.19.4` 跑通完整
+在新 worktree 对官方源（`Rikorose/DeepFilterNet`）`v0.5.6` tag + tract `^0.19.4` 跑通完整
 逐帧 spike（`libDF/examples/verify_gain.rs`，资产 `assets/clean_freesound_33711.wav` 与
-`noisy_snr0.wav`）：
+`noisy_snr0.wav`）。> 注：spike 起初在 fork `tryternity/DeepFilterNet` 上进行，后续发现该 fork
+> 无任何 tag，正式实施改用上游官方源（tag v0.5.6 = commit `978576aa`，与 fork 本地同一
+> commit 等价），见 §3.2 修正说明。
 
 | 指标 | 结果 | 判据 | 结论 |
 |---|---|---|---|
@@ -74,7 +76,10 @@ DF3 的流式 GRU 需要跨帧保持隐状态。tract 的 `PulsedModel` + `Simpl
 
 ```toml
 # crates/asr/Cargo.toml
-df = { git = "https://github.com/tryternity/DeepFilterNet.git", tag = "v0.5.6",
+# 实施修正（2026-06-17）：原设计写 fork `tryternity/DeepFilterNet`，实测该 fork 无任何 tag
+# （`git ls-remote --tags` 空），改用上游官方 `Rikorose/DeepFilterNet` tag v0.5.6（commit
+# `978576aa`，与 fork 本地同一 commit，代码等价）。
+df = { git = "https://github.com/Rikorose/DeepFilterNet.git", tag = "v0.5.6",
        package = "deep_filter", default-features = false,
        features = ["tract", "default-model", "transforms"] }
 ```
@@ -86,13 +91,19 @@ df = { git = "https://github.com/tryternity/DeepFilterNet.git", tag = "v0.5.6",
 ### 3.3 time patch
 
 tract 0.19 间接依赖 `time`，默认解析到 `0.3.28`，在 rustc 1.96 下 E0282 编译失败。须确保 octopus
-`Cargo.lock` 锁 `time ≥ 0.3.35`：
+`Cargo.lock` 锁 `time ≥ 0.3.35`（规避 E0282 的最低版本）。
+
+**实施阶段实际情况（2026-06-17）**：workspace 已有 `tauri → plist` 依赖链要求 `time ^0.3.47`，
+Cargo.lock 解析到 `0.3.49`，**远高于 0.3.35 阈值**，故 DF3 引入后全程 `cargo check` 无任何 time
+E0282 错误，**无需手动 `cargo update -p time`**。
+
+**兜底（仅新克隆环境）**：若未来某环境 tauri/plist 链变动导致 time 解析到 `<0.3.35`，才需手动钉版本：
 
 ```bash
 cargo update -p time --precise 0.3.36
 ```
 
-实施阶段实测：若仅靠 lock 钉版本在 CI/新 clone 不可靠，则在 workspace 根 `Cargo.toml` 加
+若仅靠 lock 钉版本在 CI/新 clone 不可靠，则在 workspace 根 `Cargo.toml` 加
 `time = "0.3.36"` 直接依赖约束固化（不实际使用，仅抬高最小版本）。
 
 ## 4. 架构
@@ -244,6 +255,25 @@ audio.rs:211-213 `DenoiseProcessor::new()` → `DenoiseProcessor::new(mode)`。
 - 噪声抑制：纯白噪声 → out_rms < in_rms（同 `diag_pure_noise_suppressed` 思路）。
 - 用 spike 已验证资产（`assets/clean_freesound_33711.wav` gain≈0.96、`noisy_snr0.wav` gain≈0.60）
   作断言基准。DF3 加载耗资源，DF3 测试加 `#[ignore]` 或独立 feature gate，避免拖慢常规 `cargo test`。
+
+**⚠ DF3 测试输入必须用真实语音**（Task 4 实施发现，2026-06-17）：
+
+DF3 的「干净语音 gain」断言**不能用合成稳态谐波**（如现有 `synth_speech` 的简单正弦叠加），**必须用真实
+语音 wav**（如 `/tmp/voice48k.wav` TTS 输出或真实录音）。原因：DF3 训练于真实语音的时频动态，会把恒幅
+稳态谐波（持续不变的单一频率/简单谐波叠加）**正确识别为非语音信号**（类啸叫/feedback）并压制——这不是
+缺陷，而是 DF3 的设计目标（啸叫抑制）。实测对比：
+
+| 输入 | gain | 判定 |
+|---|---|---|
+| 合成稳态谐波（`synth_speech`） | **≈0.005** | DF3 当稳态噪声压掉（比 dfn3 缺陷 0.10 还低！） |
+| 真实语音 `/tmp/voice48k.wav` | **≈0.999** | 正常保留（spike 真实音频 0.958） |
+
+合成谐波对 DF3 是**固有代理失真**（proxy distortion），**不是「DF3 压语音」回归**。用合成谐波测 DF3 会得到
+假阳性失败。RNNoise 用频带能量特征（不依赖时频动态建模），合成谐波测试对它有效（gain≥0.5），故 RNNoise
+测试可继续用 `synth_speech`。
+
+**实践**：DF3 gain 断言的输入源用真实 wav 文件路径（如 `/tmp/voice48k.wav`，测试中 `hound::WavReader`
+读取）；若文件不存在则 `#[ignore]` 跳过（避免 CI 缺资产失败）。
 
 **Send 守护**：audio.rs:312 编译期 `_assert_send_sync::<DenoiseProcessor>()` 继续生效——
 验证 `Df3Backend` 的 unsafe impl 没破坏 `DenoiseProcessor: Send + Sync`。
