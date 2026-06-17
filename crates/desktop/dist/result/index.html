@@ -182,16 +182,16 @@
   <div id="container">
     <div id="top-bar">
       <div id="toolbar">
-        <button class="tool" id="tool-settings" disabled title="敬请期待" aria-label="设置">
+        <button class="tool" id="tool-settings" disabled title="系统设置" aria-label="系统设置">
           <span class="icon"></span>
         </button>
-        <button class="tool" id="tool-polish" title="润色模式" aria-label="润色模式">
-          <span class="icon"></span>
-        </button>
-        <button class="tool" id="tool-asr" title="ASR 识别模型" aria-label="ASR 识别模型">
+        <button class="tool" id="tool-asr" title="语音模型" aria-label="语音模型">
           <span class="icon"></span>
         </button>
         <button class="tool" id="tool-llm" title="润色模型" aria-label="润色模型">
+          <span class="icon"></span>
+        </button>
+        <button class="tool" id="tool-polish" title="润色模式" aria-label="润色模式">
           <span class="icon"></span>
         </button>
       </div>
@@ -235,6 +235,7 @@
 
     // mousemove 比 mouseenter 在「窗口可见但非前台」时更可靠触发（macOS WKWebView
     // 对非聚焦窗口的 enter 事件常漏派发）。用状态守卫避免高频 setSize 抖动。
+    // hide_toolbar=false 时不绑定 hover → 工具栏始终显示（refreshActive 中处理）。
     container.addEventListener('mousemove', showToolbar);
     container.addEventListener('mouseleave', hideToolbar);
 
@@ -357,6 +358,12 @@
         document.getElementById('tool-polish').classList.toggle('active', st.polish_mode !== 0);
         document.getElementById('tool-asr').classList.toggle('active', true);
         document.getElementById('tool-llm').classList.toggle('active', true);
+        // hide_toolbar=false → 工具栏始终显示：移除 hover 监听 + 立即展开
+        if (st.hide_toolbar === false) {
+          container.removeEventListener('mousemove', showToolbar);
+          container.removeEventListener('mouseleave', hideToolbar);
+          showToolbar();
+        }
       } catch (_) { /* 忽略 */ }
     }
     refreshActive();
