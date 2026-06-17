@@ -15,6 +15,9 @@ pub struct RuntimeConfig {
     pub polish_mode: PolishMode,
     pub polish_llm: String,
     pub denoise_mode: u8,
+    pub asr_correct: bool,
+    pub output_simplified: bool,
+    pub hide_toolbar: bool,
 }
 
 impl RuntimeConfig {
@@ -24,6 +27,9 @@ impl RuntimeConfig {
             polish_mode: cfg.polish_mode,
             polish_llm: cfg.polish_llm.clone(),
             denoise_mode: cfg.denoise_mode,
+            asr_correct: cfg.asr_correct,
+            output_simplified: cfg.output_simplified,
+            hide_toolbar: cfg.hide_toolbar,
         }
     }
 }
@@ -223,6 +229,21 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
     options
 }
 
+/// 公开包装（供 settings_commands 调用）。
+pub fn build_asr_options_public(
+    current_effective: &str,
+    engines: Vec<octopus_asr::config::EngineInfo>,
+) -> Vec<EngineOption> {
+    build_asr_options(current_effective, engines)
+}
+
+pub fn build_llm_options_public(
+    current: &str,
+    llms: Vec<octopus_infra::db::LlmModelInfo>,
+) -> Vec<LlmOption> {
+    build_llm_options(current, llms)
+}
+
 // ── Tauri 命令 ──
 
 #[tauri::command]
@@ -386,9 +407,15 @@ mod tests {
         let mut cfg = octopus_infra::config::AppConfig::default();
         cfg.asr_engine = "qwen3-asr-0.6B".into();
         cfg.polish_mode = PolishMode::Intermediate;
+        cfg.asr_correct = true;
+        cfg.output_simplified = false;
+        cfg.hide_toolbar = false;
         let rc = RuntimeConfig::from_config(&cfg);
         assert_eq!(rc.asr_engine, "qwen3-asr-0.6B");
         assert_eq!(rc.polish_mode, PolishMode::Intermediate);
+        assert!(rc.asr_correct);
+        assert!(!rc.output_simplified);
+        assert!(!rc.hide_toolbar);
     }
 
     #[test]

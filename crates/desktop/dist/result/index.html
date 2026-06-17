@@ -184,7 +184,7 @@
   <div id="container">
     <div id="top-bar">
       <div id="toolbar">
-        <button class="tool" id="tool-settings" disabled title="系统设置" aria-label="系统设置">
+        <button class="tool" id="tool-settings" title="系统设置" aria-label="系统设置">
           <span class="icon"></span>
         </button>
         <button class="tool" id="tool-asr" title="语音模型" aria-label="语音模型">
@@ -286,6 +286,11 @@
       { mode: 2, label: '中间 + 最终润色' },
     ];
     let currentPolishMode = 0;
+
+    document.getElementById('tool-settings').addEventListener('click', async () => {
+      try { await invoke('open_settings'); }
+      catch (e) { showToast('打开设置失败：' + e); }
+    });
 
     document.getElementById('tool-polish').addEventListener('click', async () => {
       const html = POLISH_OPTIONS.map(o =>

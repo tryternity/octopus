@@ -13,6 +13,8 @@ mod overlay;
 mod paste;
 mod result_window;
 mod runtime_config;
+mod settings_commands;
+mod settings_window;
 mod shortcut;
 mod tray;
 mod transcript;
@@ -168,6 +170,10 @@ pub fn run() {
             coordinator::cancel_recording,
             coordinator::polish_now,
             result_window::result_window_ready,
+            settings_window::open_settings,
+            settings_commands::get_config,
+            settings_commands::set_config,
+            settings_commands::get_history,
         ])
         .setup(move |app| {
             // Initialize engine manager and preheat the active ASR model if embedded

@@ -37,11 +37,13 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
         None::<&str>,
     )
     .expect("failed to create engine_info menu item");
+    let settings = MenuItem::with_id(app, "settings", "设置...", true, None::<&str>)
+        .expect("failed to create settings menu item");
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)
         .expect("failed to create quit menu item");
 
-    let menu =
-        Menu::with_items(app, &[&toggle, &engine_info, &quit]).expect("failed to create tray menu");
+    let menu = Menu::with_items(app, &[&toggle, &engine_info, &settings, &quit])
+        .expect("failed to create tray menu");
 
     // 存储 toggle 和 engine_info handle 供后续更新使用
     {
@@ -67,6 +69,10 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
                 if let Some(coordinator) = app.try_state::<crate::coordinator::Coordinator>() {
                     coordinator.toggle();
                 }
+            }
+            "settings" => {
+                info!("Tray: open settings");
+                crate::settings_window::open_settings(app.clone());
             }
             "quit" => {
                 info!("Tray: quit");

@@ -87,6 +87,10 @@ octopus-cli config
 
 应用行为配置，文件不存在时使用默认值。
 
+**两种编辑方式**：
+1. **GUI 设置窗口**（推荐）：桌面应用工具栏点击「设置」按钮或托盘菜单「设置...」打开独立设置窗口——系统设置页提供表单化编辑（toggle/select/number input），修改即时写回 `config.yaml` + RuntimeConfig 镜像。17 个可配置字段均有类型校验和生效时间提示（立即 / 下次录音 / 重启）。
+2. **手动编辑**：直接编辑 `~/.octopus/config.yaml`，需重启进程生效（`OnceLock` 缓存）。
+
 > **⚠️ 迁移提示**：旧字段 `polish_enabled` 已废弃。请改用 `polish_mode`：`false` → `0`（关闭）；`true` + interval>0 → `2`（中间+最终润色）；`true` + interval=0 → `1`（仅最终润色）。旧字段被忽略，未配置 `polish_mode` 时润色默认关闭。
 
 | 字段 | 类型 | 默认值 | 适用端 | 说明 |
