@@ -296,3 +296,15 @@ click → 无动作（disabled，仅 tooltip）
 - `denoise_mode: u8` —— 运行时镜像 `config.yaml.denoise_mode`，供 `set_denoise_mode` 命令读写
 - `ToolbarState` DTO 新增 `hide_toolbar: bool` + `denoise_mode: u8`，前端经 `toolbar_state` 命令一次性获取
 
+### 15.5 VAD 段间拼接标点去重（2026-06-17 修订）
+
+**问题**：VAD 伪流式模式下，每段识别结果由 ASR 引擎返回时自带句尾标点（`。` `？` 等），而 `consume_completed_results` 在段间无条件补逗号 → 拼出 `。，` `？，` 等连续标点。
+
+**修复**：`consume_completed_results` 段间加逗号条件从两个增至三个（`coordinator.rs:797`）：
+1. 已有文本非空（原条件）
+2. 新段不以标点开头（原条件，防 `，。` 倒序）
+3. **已有文本不以标点结尾**（新增，防 `。，` `？，`）
+
+标点集合：`,.，。！？!?\n`。引号 `" '` `「」` 不在此集合中，段间仍可正常补逗号。
+
+
