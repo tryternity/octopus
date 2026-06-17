@@ -39,20 +39,34 @@ impl StreamingZipformer {
     /// Create a new streaming engine for the given model name (e.g. "zipformer-small-ctc").
     pub fn new(engine_name: &str) -> Result<Self> {
         let cfg = config::load_config()?;
-        let zip_cfg = cfg
-            .asr
-            .zipformer
-            .as_ref()
-            .context("No zipformer models in config")?;
 
-        let entry = if let Some(e) = zip_cfg.get(engine_name) {
-            e
+        // DB zipformer section 查找；section 缺失时用本地打包兜底（DEFAULT_ASR_MODEL_DIR），
+        // 与 config::fallback_engine 一致——兜底引擎 zipformer-small-ctc 随应用打包，
+        // DB 缺条目（旧 schema / 人为删除）时仍可用
+        let entry_owned;
+        let entry = if let Some(zip_cfg) = cfg.asr.zipformer.as_ref() {
+            if let Some(e) = zip_cfg.get(engine_name) {
+                e
+            } else {
+                entry_owned = zip_cfg
+                    .iter()
+                    .next()
+                    .map(|(_, v)| v.clone())
+                    .context("No zipformer model entries")?;
+                &entry_owned
+            }
         } else {
-            zip_cfg
-                .iter()
-                .next()
-                .map(|(_, v)| v)
-                .context("No zipformer model entries")?
+            // DB 无 zipformer section：硬构造兜底（本地打包路径）
+            entry_owned = octopus_infra::db::ModelEntry {
+                source: octopus_infra::consts::DEFAULT_ASR_MODEL_DIR.to_string(),
+                language: "zh".to_string(),
+                description: String::new(),
+                secret_key: String::new(),
+                is_local: true,
+                is_enabled: true,
+                is_streaming: true,
+            };
+            &entry_owned
         };
 
         let hf_path = config::resolve_model_dir(&entry.source)?;

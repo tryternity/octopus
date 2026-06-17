@@ -289,6 +289,13 @@ pub struct ResolvedEngine {
 pub fn resolve_active_engine(asr_engine: &str) -> Result<ResolvedEngine> {
     let cfg = load_config()?;
 
+    // 0. 兜底引擎短路：asr_engine 裸名为 zipformer-small-ctc（无论 spec 格式还是裸名）
+    //    时直接返回兜底——该引擎随应用本地打包，不依赖 DB 是否有条目，避免无谓 warning。
+    let bare = parse_model_spec(asr_engine).name();
+    if bare == FALLBACK_ASR_ENGINE_NAME {
+        return Ok(fallback_engine(&cfg));
+    }
+
     // 1. 显式配置命中
     if !asr_engine.is_empty() {
         if let Some((category, bare_name, entry)) = resolve_engine_in_config(&cfg, asr_engine) {
@@ -307,6 +314,9 @@ pub fn resolve_active_engine(asr_engine: &str) -> Result<ResolvedEngine> {
     // 2. 兜底：zipformer-small-ctc
     Ok(fallback_engine(&cfg))
 }
+
+/// 兜底引擎固定裸名。
+const FALLBACK_ASR_ENGINE_NAME: &str = "zipformer-small-ctc";
 
 /// 兜底引擎：优先 DB zipformer section 的 zipformer-small-ctc，否则硬构造（本地打包路径）。
 fn fallback_engine(cfg: &AsrConfig) -> ResolvedEngine {

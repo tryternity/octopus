@@ -21,11 +21,15 @@ impl StreamingSession {
     ///
     /// `engine_spec` 支持 `local:name` / `category:name` / `name` 格式（见 [`parse_model_spec`]）。
     /// 仅支持 Paraformer 和 Zipformer 类别。
+    ///
+    /// 使用 `resolve_active_engine`（带兜底）而非 `resolve_engine_category`（无兜底），
+    /// 与 `is_streaming_engine` 的判定对称——否则 DB 未命中时 `is_streaming_engine` 兜底成功
+    /// （返回 true → 进 streaming 路径），但此处无兜底失败 → streaming session 创建失败。
     pub fn new(engine_spec: &str) -> Result<Self> {
-        let category = crate::config::resolve_engine_category(engine_spec)
-            .context(format!("Unknown streaming engine: {}", engine_spec))?;
-        let parsed = crate::config::parse_model_spec(engine_spec);
-        let bare_name = parsed.name();
+        let resolved = crate::config::resolve_active_engine(engine_spec)
+            .context(format!("Failed to resolve streaming engine: {}", engine_spec))?;
+        let category = resolved.category;
+        let bare_name = resolved.name.as_str();
 
         match category {
             crate::config::EngineCategory::Paraformer => {

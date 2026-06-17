@@ -380,6 +380,8 @@ fn handle_toggle(
                         error!("Failed to create streaming session: {}", e);
                         let _ = audio.stop();
                         crate::overlay::hide_overlay(app_handle);
+                        crate::result_window::hide_result(app_handle);
+                        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
                     }
                 }
             } else {
