@@ -116,15 +116,17 @@ impl Transcript {
         self.mode = mode;
     }
 
-    /// 展示文本：mode=2 → polished + increase；其他 → full。
+    /// 展示文本：polished 非空 → polished + display_increase（不看 mode，覆盖 raw）；
+    /// 否则 mode=2 → polished + increase；其他 → full。
+    /// display_increase 与 increase 区别：前者不看 mode（polished 已存在时新文本需追加展示）。
     pub fn display_text(&self) -> String {
-        match self.mode {
-            PolishMode::Intermediate => {
-                let mut s = self.polished.clone();
-                s.push_str(&self.increase());
-                s
-            }
-            _ => self.full.clone(),
+        if self.mode == PolishMode::Intermediate || !self.polished.is_empty() {
+            let inc: String = self.full.chars().skip(self.raw_len).collect();
+            let mut s = self.polished.clone();
+            s.push_str(&inc);
+            s
+        } else {
+            self.full.clone()
         }
     }
 
@@ -267,9 +269,10 @@ mod tests {
         assert_eq!(t.increase(), "新增");
         assert_eq!(t.display_text(), "润色新增");
 
-        // live 切到 mode=0（关闭）：increase 立即恒空，display 退回 full
+        // live 切到 mode=0（关闭）：increase（公开 API）立即恒空；
+        // display 仍展示 polished + 新增（polished 非空时 display 不看 mode）
         t.set_mode(PolishMode::Disabled);
         assert_eq!(t.increase(), "");
-        assert_eq!(t.display_text(), "原文新增"); // full，不再用 polished
+        assert_eq!(t.display_text(), "润色新增"); // polished + display_increase
     }
 }

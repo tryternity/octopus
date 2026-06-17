@@ -1020,12 +1020,19 @@ fn filter_speech_from_buffer(
 }
 
 /// 启动润色线程
+/// `ignore_mode`=true 时跳过 polish_mode 检查（供「立即润色」用）。
 fn spawn_polish_thread(
     text: String,
     config: &AppConfig,
     tx: &Sender<Command>,
+    ignore_mode: bool,
 ) {
-    let llm_config = match crate::config::llm_config(&config) {
+    let llm_config = if ignore_mode {
+        crate::config::llm_config_ignore_mode(&config)
+    } else {
+        crate::config::llm_config(&config)
+    };
+    let llm_config = match llm_config {
         Some(c) => c,
         None => return,
     };
@@ -1076,7 +1083,7 @@ fn check_and_trigger_polish(
     // 快照（推进 raw_len，increase 清空）+ 标记 pending + 送 LLM 全量润色
     let snapshot = transcript.snapshot_for_polish();
     transcript.mark_polish_pending();
-    spawn_polish_thread(snapshot, config, tx);
+    spawn_polish_thread(snapshot, config, tx, false);
 }
 
 /// 处理 StreamingTick 命令
@@ -1390,9 +1397,13 @@ fn handle_polish_done(
     _tx: &Sender<Command>,
 ) {
     let transcript = match stage {
-        Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. } => transcript,
         _ => {
-            debug!("PolishDone ignored in stage {:?}", stage_name(stage));
+            warn!("PolishDone ignored: stage={} 不是录音/等待阶段，润色结果丢弃", stage_name(stage));
+            use tauri::Emitter;
+            let _ = app_handle.emit("polish-done", ());
             return;
         }
     };
@@ -1401,21 +1412,21 @@ fn handle_polish_done(
             if polished.is_empty() {
                 warn!("Polish returned empty, keeping previous");
                 transcript.on_polish_failed();
-                return;
-            }
-            transcript.on_polish_done(polished);
-            // 中间润色入库 polished（polish_model 传 config.polish_llm，与 PasteDone 一致，便于统计）
-            let cmd = DbCommand::UpdatePolished {
-                id: transcript.id,
-                text: transcript.polished().to_string(),
-                status: "done".to_string(),
-                model: Some(config.polish_llm.clone()),
-            };
-            if let Err(e) = get_db_sender().send(cmd) {
-                warn!("Queue DB update_polished failed: {}", e);
-            }
-            if !transcript.full().is_empty() {
-                crate::result_window::update_result(app_handle, &transcript.display_text());
+            } else {
+                transcript.on_polish_done(polished);
+                // 中间润色入库 polished（polish_model 传 config.polish_llm，与 PasteDone 一致，便于统计）
+                let cmd = DbCommand::UpdatePolished {
+                    id: transcript.id,
+                    text: transcript.polished().to_string(),
+                    status: "done".to_string(),
+                    model: Some(config.polish_llm.clone()),
+                };
+                if let Err(e) = get_db_sender().send(cmd) {
+                    warn!("Queue DB update_polished failed: {}", e);
+                }
+                if !transcript.full().is_empty() {
+                    crate::result_window::update_result(app_handle, &transcript.display_text());
+                }
             }
         }
         Err(e) => {
@@ -1423,6 +1434,9 @@ fn handle_polish_done(
             transcript.on_polish_failed();
         }
     }
+    // 通知前端：润色完成（成功/失败均通知，前端恢复「立即润色」按钮）
+    use tauri::Emitter;
+    let _ = app_handle.emit("polish-done", ());
 }
 
 /// 处理立即润色命令：不管 polish_mode，取当前完整 ASR 文本送 LLM 润色。
@@ -1450,8 +1464,8 @@ fn handle_polish_now(
         debug!("PolishNow skipped: polish already pending");
         return;
     }
-    // 检查 LLM 配置是否存在
-    if crate::config::llm_config(config).is_none() {
+    // 检查 LLM 配置是否存在（忽略 polish_mode，立即润色不看 mode）
+    if crate::config::llm_config_ignore_mode(config).is_none() {
         warn!("PolishNow: no LLM config available");
         let _ = crate::result_window::show_result(app_handle, "未配置润色模型");
         return;
@@ -1459,7 +1473,7 @@ fn handle_polish_now(
     let snapshot = transcript.snapshot_for_polish();
     transcript.mark_polish_pending();
     info!("PolishNow triggered, polishing {} chars", snapshot.chars().count());
-    spawn_polish_thread(snapshot, config, tx);
+    spawn_polish_thread(snapshot, config, tx, true);
 }
 
 fn stage_name(stage: &Stage) -> &'static str {

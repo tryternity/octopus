@@ -23,6 +23,11 @@ pub fn llm_config(cfg: &AppConfig) -> Option<octopus_llm::CompatibleLlmConfig> {
     if cfg.polish_mode == PolishMode::Disabled {
         return None;
     }
+    llm_config_ignore_mode(cfg)
+}
+
+/// 不检查 polish_mode 的 LLM 配置（供「立即润色」用——忽略 mode 直接润色）。
+pub fn llm_config_ignore_mode(cfg: &AppConfig) -> Option<octopus_llm::CompatibleLlmConfig> {
     match octopus_asr::db::load_llm_model(&cfg.polish_llm) {
         Ok(Some(llm_cfg)) => {
             if llm_cfg.secret_key.is_empty() {

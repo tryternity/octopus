@@ -338,13 +338,20 @@
     });
 
     // ── 立即润色 ──
-    document.getElementById('tool-polish-now').addEventListener('click', async () => {
+    const btnPolishNow = document.getElementById('tool-polish-now');
+    btnPolishNow.addEventListener('click', async () => {
+      btnPolishNow.disabled = true;
       try {
         await invoke('polish_now');
         showToast('润色中…');
       } catch (e) {
+        btnPolishNow.disabled = false;
         showToast('润色失败：' + e);
       }
+    });
+    // 润色完成（成功/失败）→ 恢复按钮
+    listen('polish-done', () => {
+      btnPolishNow.disabled = false;
     });
 
     // ── ASR 引擎 ──
