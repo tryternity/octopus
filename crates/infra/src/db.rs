@@ -37,6 +37,9 @@ pub struct AsrSection {
     pub qwen3_asr: Option<HashMap<String, ModelEntry>>,
     #[serde(default)]
     pub zipformer: Option<HashMap<String, ModelEntry>>,
+    /// 阿里云云端 ASR（DashScope Fun-ASR 实时）。provider='aliyun' 路由入此。
+    #[serde(default)]
+    pub aliyun: Option<HashMap<String, ModelEntry>>,
 }
 
 /// DB models 表配置（domain='asr'；由 db::load_models 构造）。
@@ -125,43 +128,48 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
 // ── Model spec 解析（统一 asr_engine / polish_llm 配置格式）──
 
-/// 模型选择规格，统一 `asr_engine` 和 `polish_llm` 的前缀格式。
+/// 模型选择规格，统一 `asr_engine` 和 `polish_llm` 的 3-part 格式
+/// `{provider}:{category}:{model_name}`。
 ///
 /// | 配置写法 | 含义 |
 /// |---------|------|
-/// | `"local:NAME"` | `is_local = true AND name = NAME` |
-/// | `"CATEGORY:NAME"` | `category = CATEGORY AND name = NAME` |
-/// | `"NAME"`（无冒号） | 等价于 `"local:NAME"`——筛 `is_local = true AND name` |
+/// | `"PROVIDER:CATEGORY:NAME"` | 三段精确匹配 `provider AND category AND model_name` |
+/// | `"NAME"`（无冒号） | 跨 provider/category 搜 name，优先 local（全局默认 fallback 用） |
+/// | `"X:Y"`（1 个冒号，旧 2-part） | warn + 按整串作裸名兜底（NameOnly，向后兼容） |
 ///
-/// `local` 是特殊前缀（不对应 DB category 值），表示筛 `is_local=true` 的本地模型。
-/// 其他前缀（如 `bigmodel`、`aliyun`、`zipformer`）是 DB `models.category` 列的精确匹配。
-/// 裸名（无冒号）默认走 `local` 语义——不指定前缀时视为本地模型。
+/// 1 个冒号（旧 2-part 格式）按裸名兜底（NameOnly）并 warn。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ModelSpec<'a> {
-    /// `"local:name"` — 筛选 `is_local = true AND name`
-    Local(&'a str),
-    /// `"category:name"` — 精确匹配 `category AND name`
-    Category(&'a str, &'a str),
-    /// `"name"`（不含冒号）— 等价于 `Local`，筛 `is_local = true AND name`
+    /// `{provider}:{category}:{model_name}` 三段精确匹配
+    Full { provider: &'a str, category: &'a str, model_name: &'a str },
+    /// 裸 `{model_name}`：仅全局默认 fallback 用（跨 provider/category 搜 name，优先 local）
     NameOnly(&'a str),
 }
 
-/// 解析模型选择规格字符串。
-///
-/// 按第一个冒号分割：`"local"` 前缀走 `Local`，其他前缀走 `Category`，无冒号走 `NameOnly`。
+/// 解析 3-part 规格字符串。
+/// - 2 个冒号（3 段）→ Full
+/// - 0 冒号 → NameOnly
+/// - 1 冒号（旧 2-part 格式）→ warn + 按 NameOnly 兜底
 pub fn parse_model_spec(spec: &str) -> ModelSpec<'_> {
-    match spec.split_once(':') {
-        Some(("local", name)) => ModelSpec::Local(name),
-        Some((cat, name)) => ModelSpec::Category(cat, name),
-        None => ModelSpec::NameOnly(spec),
+    let parts: Vec<&str> = spec.split(':').collect();
+    match parts.len() {
+        3 => ModelSpec::Full { provider: parts[0], category: parts[1], model_name: parts[2] },
+        1 => ModelSpec::NameOnly(parts[0]),
+        _ => {
+            log::warn!(
+                "模型 spec '{}' 非合法 3-part '{{provider}}:{{category}}:{{model_name}}'，按裸名兜底",
+                spec
+            );
+            ModelSpec::NameOnly(spec)
+        }
     }
 }
 
 impl<'a> ModelSpec<'a> {
-    /// 返回去掉前缀后的纯模型名。
-    pub fn name(&self) -> &'a str {
+    /// 返回 model_name（去掉 provider:/category: 前缀）。
+    pub fn model_name(&self) -> &'a str {
         match self {
-            ModelSpec::Local(n) | ModelSpec::Category(_, n) | ModelSpec::NameOnly(n) => n,
+            ModelSpec::Full { model_name, .. } | ModelSpec::NameOnly(model_name) => model_name,
         }
     }
 }
@@ -175,10 +183,10 @@ pub fn load_models() -> Result<AsrConfig> {
 
 fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
     let mut stmt = conn.prepare(
-        "SELECT category, name, source, language, description, secret_key, is_local, is_enabled, is_streaming
+        "SELECT provider, category, model_name, source, language, description, secret_key, is_local, is_enabled, is_streaming
          FROM models WHERE domain='asr' AND is_enabled = 1",
     )?;
-    let rows: Vec<(String, String, String, String, String, String, i32, i32, i32)> = stmt
+    let rows: Vec<(String, String, String, String, String, String, String, i32, i32, i32)> = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -190,6 +198,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
                 row.get(6)?,
                 row.get(7)?,
                 row.get(8)?,
+                row.get(9)?,
             ))
         })?
         .filter_map(|r| r.ok())
@@ -201,8 +210,9 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
         paraformer: None,
         qwen3_asr: None,
         zipformer: None,
+        aliyun: None,
     };
-    for (category, name, source, language, description, secret_key, is_local, is_enabled, is_streaming) in rows {
+    for (provider, category, model_name, source, language, description, secret_key, is_local, is_enabled, is_streaming) in rows {
         let entry = ModelEntry {
             source,
             language,
@@ -212,15 +222,17 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
             is_enabled: is_enabled != 0,
             is_streaming: is_streaming != 0,
         };
-        let map: &mut Option<HashMap<String, ModelEntry>> = match category.as_str() {
-            "whisper" => &mut asr.whisper,
-            "sensevoice" => &mut asr.sensevoice,
-            "paraformer" => &mut asr.paraformer,
-            "qwen3-asr" => &mut asr.qwen3_asr,
-            "zipformer" => &mut asr.zipformer,
+        // provider='aliyun' → asr.aliyun；其余按本地 category 映射本地族
+        let map: &mut Option<HashMap<String, ModelEntry>> = match (provider.as_str(), category.as_str()) {
+            ("aliyun", _) => &mut asr.aliyun,
+            (_, "whisper") => &mut asr.whisper,
+            (_, "sensevoice") => &mut asr.sensevoice,
+            (_, "paraformer") => &mut asr.paraformer,
+            (_, "qwen3-asr") => &mut asr.qwen3_asr,
+            (_, "zipformer") => &mut asr.zipformer,
             _ => continue,
         };
-        map.get_or_insert_with(HashMap::new).insert(name, entry);
+        map.get_or_insert_with(HashMap::new).insert(model_name, entry);
     }
     Ok(AsrConfig { asr })
 }
@@ -235,62 +247,69 @@ pub fn load_llm_model(spec: &str) -> Result<Option<CompatibleLlmConfig>> {
     with_db(|conn| load_llm_model_at(conn, spec))
 }
 
-/// 解析 models 表的一行（category, source, secret_key, is_thinking, is_local, is_enabled）。
-fn parse_llm_row(row: &rusqlite::Row) -> rusqlite::Result<(String, String, String, i32, i32, i32)> {
-    Ok((
-        row.get::<_, String>(0)?,
-        row.get::<_, String>(1)?,
-        row.get::<_, String>(2)?,
-        row.get::<_, i32>(3)?,
-        row.get::<_, i32>(4)?,
-        row.get::<_, i32>(5)?,
-    ))
-}
-
 fn load_llm_model_at(conn: &Connection, spec: &str) -> Result<Option<CompatibleLlmConfig>> {
     let parsed = parse_model_spec(spec);
-    let name = parsed.name();
 
     let row = match parsed {
-        ModelSpec::Local(_) | ModelSpec::NameOnly(_) => {
+        ModelSpec::Full { provider, category, model_name } => {
             let mut stmt = conn.prepare(
-                "SELECT category, source, secret_key, is_thinking, is_local, is_enabled
+                "SELECT source, secret_key, is_thinking, is_local, is_enabled
                  FROM models
-                 WHERE domain='llm' AND is_local=1 AND name=?1 AND is_enabled = 1",
+                 WHERE domain='llm' AND provider=?1 AND category=?2 AND model_name=?3 AND is_enabled = 1",
             )?;
-            let mut rows = stmt.query_map(params![name], parse_llm_row)?;
+            let mut rows = stmt.query_map(params![provider, category, model_name], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i32>(2)?,
+                    row.get::<_, i32>(3)?,
+                    row.get::<_, i32>(4)?,
+                ))
+            })?;
             rows.next().transpose()?
         }
-        ModelSpec::Category(cat, _) => {
+        ModelSpec::NameOnly(model_name) => {
+            // 裸名兜底：跨 provider/category 搜 name，优先 local（ORDER BY is_local DESC）
             let mut stmt = conn.prepare(
-                "SELECT category, source, secret_key, is_thinking, is_local, is_enabled
+                "SELECT source, secret_key, is_thinking, is_local, is_enabled
                  FROM models
-                 WHERE domain='llm' AND category=?1 AND name=?2 AND is_enabled = 1",
+                 WHERE domain='llm' AND model_name=?1 AND is_enabled = 1
+                 ORDER BY is_local DESC",
             )?;
-            let mut rows = stmt.query_map(params![cat, name], parse_llm_row)?;
+            let mut rows = stmt.query_map(params![model_name], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, i32>(2)?,
+                    row.get::<_, i32>(3)?,
+                    row.get::<_, i32>(4)?,
+                ))
+            })?;
             rows.next().transpose()?
         }
     };
 
-    if let Some((category, source, secret_key, is_thinking, is_local, is_enabled)) = row {
-        Ok(Some(CompatibleLlmConfig {
-            provider: category,
-            model: name.to_string(),
-            base_url: source,
-            secret_key,
-            is_thinking: is_thinking != 0,
-            is_local: is_local != 0,
-            is_enabled: is_enabled != 0,
-        }))
-    } else {
-        Ok(None)
-    }
+    let model_name = parsed.model_name();
+    Ok(row.map(|(source, secret_key, is_thinking, is_local, is_enabled)| CompatibleLlmConfig {
+        // Full 时取解析出的 provider；NameOnly 时为空串（仅日志用）
+        provider: match parsed {
+            ModelSpec::Full { provider, .. } => provider.to_string(),
+            ModelSpec::NameOnly(_) => String::new(),
+        },
+        model: model_name.to_string(),
+        base_url: source,
+        secret_key,
+        is_thinking: is_thinking != 0,
+        is_local: is_local != 0,
+        is_enabled: is_enabled != 0,
+    }))
 }
 
 /// LLM 模型列表项（菜单用，仅含显示与排序所需字段）。
 #[derive(Debug, Clone, serde::Serialize)]
 pub struct LlmModelInfo {
-    pub name: String,
+    pub model_name: String,
+    pub provider: String,
     pub category: String,
     pub is_local: bool,
 }
@@ -298,15 +317,16 @@ pub struct LlmModelInfo {
 /// 列出所有启用的 LLM 润色模型（domain='llm' AND is_enabled=1），按 is_local 降序、category 升序排序。
 fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT category, name, is_local FROM models
+        "SELECT provider, category, model_name, is_local FROM models
          WHERE domain='llm' AND is_enabled = 1
          ORDER BY is_local DESC, category",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(LlmModelInfo {
-            category: row.get::<_, String>(0)?,
-            name: row.get::<_, String>(1)?,
-            is_local: row.get::<_, i32>(2)? != 0,
+            provider: row.get::<_, String>(0)?,
+            category: row.get::<_, String>(1)?,
+            model_name: row.get::<_, String>(2)?,
+            is_local: row.get::<_, i32>(3)? != 0,
         })
     })?;
     let mut list = Vec::new();
@@ -506,7 +526,8 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(count, 8);
+        // 8 local + 1 aliyun Fun-ASR
+        assert_eq!(count, 9);
     }
 
     #[test]
@@ -528,6 +549,13 @@ mod tests {
         assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 2);
+        // aliyun Fun-ASR
+        let aliyun = cfg.asr.aliyun.as_ref().expect("aliyun section");
+        assert_eq!(aliyun.len(), 1);
+        let funasr = aliyun.get("fun-asr-2025-11-07").unwrap();
+        assert_eq!(funasr.source, "wss://dashscope.aliyuncs.com/api-ws/v1/inference");
+        assert!(!funasr.is_local, "aliyun Fun-ASR 非本地");
+        assert!(!funasr.is_streaming, "aliyun Fun-ASR 走 chunk 路径（is_streaming=0）");
     }
 
     #[test]
@@ -536,19 +564,21 @@ mod tests {
         // 强制启用所有模型做断言测试
         conn.execute("UPDATE models SET is_enabled = 1", []).unwrap();
 
-        let glm = load_llm_model_at(&conn, "bigmodel:glm-4-flashx")
+        // 3-part：bigmodel:glm:glm-4-flashx
+        let glm = load_llm_model_at(&conn, "bigmodel:glm:glm-4-flashx")
             .unwrap()
             .unwrap();
         assert_eq!(glm.provider, "bigmodel");
+        assert_eq!(glm.model, "glm-4-flashx");
         assert_eq!(glm.base_url, "https://open.bigmodel.cn/api/paas/v4");
         assert_eq!(glm.secret_key, "");
         assert!(!glm.is_thinking, "glm-4-flashx 不是思考模型");
         assert!(!glm.is_local, "glm-4-flashx 不是本地模型");
         assert!(glm.is_enabled, "glm-4-flashx 应为启用状态");
 
-        // deepseek-v4-flash 在 deepseek 和 aliyun 两个 category 下同名，
-        // 必须用 "category:name" 才能唯一定位（这正是该格式的意义）。
-        let ds = load_llm_model_at(&conn, "deepseek:deepseek-v4-flash")
+        // deepseek-v4-flash 在 deepseek 和 aliyun 两个 provider 下同名同系列，
+        // 必须用 3-part "provider:category:model_name" 才能唯一定位。
+        let ds = load_llm_model_at(&conn, "deepseek:deepseek:deepseek-v4-flash")
             .unwrap()
             .unwrap();
         assert_eq!(ds.provider, "deepseek");
@@ -558,7 +588,7 @@ mod tests {
         assert!(!ds.is_local, "deepseek-v4-flash 不是本地模型");
         assert!(ds.is_enabled, "deepseek-v4-flash 应为启用状态");
 
-        let aliyun = load_llm_model_at(&conn, "aliyun:deepseek-v4-flash")
+        let aliyun = load_llm_model_at(&conn, "aliyun:deepseek:deepseek-v4-flash")
             .unwrap()
             .unwrap();
         assert_eq!(aliyun.provider, "aliyun");
@@ -570,74 +600,99 @@ mod tests {
         assert!(aliyun.is_thinking, "aliyun 下的 deepseek-v4-flash 也是思考模型");
         assert!(aliyun.is_enabled);
 
-        // category 不匹配时应返回 None
+        // Feature 1：aliyun:qwen 原生（同名 model_name 跨 provider）
+        let qwen = load_llm_model_at(&conn, "aliyun:qwen:qwen-plus")
+            .unwrap()
+            .unwrap();
+        assert_eq!(qwen.provider, "aliyun");
+        assert_eq!(qwen.model, "qwen-plus");
+        assert_eq!(
+            qwen.base_url,
+            "https://dashscope.aliyuncs.com/compatible-mode/v1"
+        );
+        assert!(!qwen.is_thinking, "qwen-plus 非思考模型");
+
+        // provider 不匹配时应返回 None（同 model_name 但不同 provider）
         assert!(
-            load_llm_model_at(&conn, "bigmodel:deepseek-v4-flash")
+            load_llm_model_at(&conn, "deepseek:qwen:qwen-plus")
                 .unwrap()
                 .is_none(),
-            "bigmodel 下不存在 deepseek-v4-flash"
+            "deepseek 下不存在 qwen:qwen-plus"
+        );
+        // category 不匹配也应返回 None
+        assert!(
+            load_llm_model_at(&conn, "bigmodel:deepseek:deepseek-v4-flash")
+                .unwrap()
+                .is_none(),
+            "bigmodel 下不存在 deepseek 系列"
         );
 
-        let glm_think = load_llm_model_at(&conn, "bigmodel:glm-4.5-flash")
+        let glm_think = load_llm_model_at(&conn, "bigmodel:glm:glm-4.5-flash")
             .unwrap()
             .unwrap();
         assert!(glm_think.is_thinking, "glm-4.5-flash 是思考模型");
         assert!(!glm_think.is_local, "glm-4.5-flash 不是本地模型");
         assert!(glm_think.is_enabled, "glm-4.5-flash 应为启用状态");
 
-        // 裸名现在等价于 local: — seed 中所有 LLM 均为远程，裸名查不到
-        assert!(
-            load_llm_model_at(&conn, "glm-4-flashx")
-                .unwrap()
-                .is_none(),
-            "裸名现在等价 local:，seed LLM 全为远程应返回 None"
-        );
+        // 裸名（NameOnly）：跨 provider/category 搜 model_name，优先 local。
+        // seed 中所有 LLM 均 is_local=0，但仍可查到（ORDER BY is_local DESC 兜底）。
+        let bare = load_llm_model_at(&conn, "glm-4-flashx").unwrap().unwrap();
+        assert_eq!(bare.model, "glm-4-flashx");
+        assert!(!bare.is_local);
+        assert!(bare.provider.is_empty(), "NameOnly 时 provider 字段为空串（仅日志用）");
+
         assert!(load_llm_model_at(&conn, "nonexistent-model").unwrap().is_none());
 
-        // local: 前缀 — seed 中所有 LLM 均为 is_local=0，所以 local: 查不到
-        assert!(
-            load_llm_model_at(&conn, "local:glm-4-flashx").unwrap().is_none(),
-            "seed LLM 全为远程，local: 前缀应返回 None"
-        );
-
-        // 插入一个 is_local=1 的 LLM 行，验证 local: 前缀能命中
+        // 插入一个 is_local=1 的 LLM 行，验证 3-part 能精确命中本地模型
+        //（注：model_name 必须不含冒号，3-part spec 不支持冒号嵌入 name）
         conn.execute(
-            "INSERT INTO models (domain, category, name, source, description, is_local, is_enabled)
-             VALUES ('llm', 'ollama', 'qwen3:8b', 'http://localhost:11434/v1', 'local ollama', 1, 1)",
+            "INSERT INTO models (domain, provider, category, model_name, source, description, is_local, is_enabled)
+             VALUES ('llm', 'ollama', 'qwen', 'qwen3-8b', 'http://localhost:11434/v1', 'local ollama', 1, 1)",
             [],
         )
         .unwrap();
-        let local_llm = load_llm_model_at(&conn, "local:qwen3:8b").unwrap().unwrap();
+        let local_llm = load_llm_model_at(&conn, "ollama:qwen:qwen3-8b").unwrap().unwrap();
         assert_eq!(local_llm.provider, "ollama");
-        assert_eq!(local_llm.model, "qwen3:8b");
-        assert!(local_llm.is_local, "local: 前缀应命中 is_local=1 的模型");
+        assert_eq!(local_llm.model, "qwen3-8b");
+        assert!(local_llm.is_local, "ollama 本地模型应命中");
+        // 裸名也应能命中（NameOnly 跨 provider/category 搜，优先 local）
+        let bare_local = load_llm_model_at(&conn, "qwen3-8b").unwrap().unwrap();
+        assert_eq!(bare_local.model, "qwen3-8b");
+        assert!(bare_local.is_local);
     }
 
     #[test]
     fn parse_model_spec_variants() {
-        assert_eq!(parse_model_spec("local:foo"), ModelSpec::Local("foo"));
+        // 3-part → Full
         assert_eq!(
-            parse_model_spec("bigmodel:glm-4-flashx"),
-            ModelSpec::Category("bigmodel", "glm-4-flashx")
+            parse_model_spec("bigmodel:glm:glm-4-flashx"),
+            ModelSpec::Full { provider: "bigmodel", category: "glm", model_name: "glm-4-flashx" }
         );
+        // 裸名 → NameOnly
         assert_eq!(parse_model_spec("bare-name"), ModelSpec::NameOnly("bare-name"));
+        // 2-part（旧格式）→ warn + NameOnly 兜底（用整串作为裸名）
+        assert_eq!(parse_model_spec("bigmodel:glm-4-flashx"), ModelSpec::NameOnly("bigmodel:glm-4-flashx"));
     }
 
     #[test]
     fn model_spec_name_strips_prefix() {
-        assert_eq!(ModelSpec::Local("foo").name(), "foo");
-        assert_eq!(ModelSpec::Category("cat", "bar").name(), "bar");
-        assert_eq!(ModelSpec::NameOnly("baz").name(), "baz");
+        assert_eq!(
+            ModelSpec::Full { provider: "p", category: "c", model_name: "foo" }.model_name(),
+            "foo"
+        );
+        assert_eq!(ModelSpec::NameOnly("baz").model_name(), "baz");
     }
 
     #[test]
     fn test_is_enabled_filtering() {
         let conn = open_init();
-        
-        conn.execute("UPDATE models SET is_enabled = 0 WHERE name = 'glm-4-flashx'", []).unwrap();
+
+        conn.execute("UPDATE models SET is_enabled = 0 WHERE model_name = 'glm-4-flashx'", []).unwrap();
+        assert!(load_llm_model_at(&conn, "bigmodel:glm:glm-4-flashx").unwrap().is_none());
+        // 裸名也应查不到（唯一匹配的那条被禁用了）
         assert!(load_llm_model_at(&conn, "glm-4-flashx").unwrap().is_none());
 
-        conn.execute("UPDATE models SET is_enabled = 0 WHERE name = 'paraformer-streaming'", []).unwrap();
+        conn.execute("UPDATE models SET is_enabled = 0 WHERE model_name = 'paraformer-streaming'", []).unwrap();
         let cfg = load_models_at(&conn).unwrap();
         assert!(cfg.asr.paraformer.is_none() || !cfg.asr.paraformer.unwrap().contains_key("paraformer-streaming"));
     }
@@ -645,29 +700,33 @@ mod tests {
     #[test]
     fn list_llm_models_filters_disabled_and_sorts() {
         let conn = open_init();
-        // seed 默认 4 条 LLM 全 is_enabled=0；全部启用
+        // seed 默认 6 条 LLM 全 is_enabled=0；全部启用
         conn.execute("UPDATE models SET is_enabled = 1 WHERE domain='llm'", []).unwrap();
-        // 再禁用 aliyun 那条，验证过滤
+        // 再禁用 aliyun provider 下全部 3 条（deepseek-v4-flash + qwen-plus + qwen-turbo）
         conn.execute(
-            "UPDATE models SET is_enabled = 0 WHERE domain='llm' AND category='aliyun'",
+            "UPDATE models SET is_enabled = 0 WHERE domain='llm' AND provider='aliyun'",
             [],
         ).unwrap();
         let list = list_llm_models_at(&conn).unwrap();
         // 剩余 3 条（全 is_local=0）→ is_local desc 无影响 → category 字母序
-        // categories: bigmodel(glm-4-flashx), bigmodel(glm-4.5-flash), deepseek(deepseek-v4-flash)
-        assert_eq!(list.len(), 3, "aliyun 被禁用应过滤");
+        // categories: deepseek(deepseek-v4-flash), glm(glm-4-flashx), glm(glm-4.5-flash)
+        assert_eq!(list.len(), 3, "aliyun 3 条被禁用应过滤");
         assert_eq!(
             list.iter().map(|m| m.category.as_str()).collect::<Vec<_>>(),
-            vec!["bigmodel", "bigmodel", "deepseek"],
+            vec!["deepseek", "glm", "glm"],
             "按 category 字母序"
         );
         assert!(list.iter().all(|m| !m.is_local), "seed LLM 全远程");
-        // 同 category 内 name 字母序：glm-4-flashx < glm-4.5-flash
-        let bigmodel_names: Vec<&str> = list.iter()
-            .filter(|m| m.category == "bigmodel")
-            .map(|m| m.name.as_str())
+        // 同 category 内未显式二级排序（仅 is_local + category），但当前两条 glm 顺序
+        // 不依赖 name——验证集合而非顺序
+        let glm_names: Vec<&str> = list.iter()
+            .filter(|m| m.category == "glm")
+            .map(|m| m.model_name.as_str())
             .collect();
-        assert_eq!(bigmodel_names, vec!["glm-4-flashx", "glm-4.5-flash"]);
+        let mut sorted = glm_names.clone();
+        sorted.sort();
+        assert_eq!(glm_names, sorted, "glm 两条均存在");
+        assert!(sorted.contains(&"glm-4-flashx") && sorted.contains(&"glm-4.5-flash"));
     }
 
     #[test]

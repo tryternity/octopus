@@ -38,11 +38,11 @@ impl AsrEngineManager {
 
     /// Load or switch the active ASR engine to the requested model.
     ///
-    /// `model_name` 支持 spec 格式（`local:name` / `category:name` / `name`），
-    /// 内部解析为裸名后作为缓存键。
+    /// `model_name` 支持 spec 格式（`provider:category:model_name` / `model_name`），
+    /// 内部解析为裸 model_name 后作为缓存键。
     pub fn switch_model(&self, model_name: &str) -> Result<()> {
         let parsed = config::parse_model_spec(model_name);
-        let bare_name = parsed.name();
+        let bare_name = parsed.model_name();
 
         // Quick check under read lock
         {
@@ -72,6 +72,11 @@ impl AsrEngineManager {
                 config::EngineCategory::Paraformer => Arc::new(ParaformerEngine::new(entry)?),
                 config::EngineCategory::Qwen3Asr => Arc::new(Qwen3AsrEngine::new(entry)?),
                 config::EngineCategory::Zipformer => Arc::new(ZipformerEngine::new(entry)?),
+                // Aliyun 云端引擎由 Task 2 实现（DashscopeEngine）；Task 1 阶段本地实例化无实现。
+                config::EngineCategory::Aliyun => anyhow::bail!(
+                    "阿里云云端 ASR 引擎尚未接入（spec='{}'，见 Task 2 DashscopeEngine）",
+                    model_name
+                ),
             };
 
             // Write to cache

@@ -329,6 +329,7 @@ fn select_model() -> Result<String> {
             octopus_asr::config::EngineCategory::Paraformer => "Paraformer",
             octopus_asr::config::EngineCategory::Qwen3Asr => "Qwen3-ASR",
             octopus_asr::config::EngineCategory::Zipformer => "Zipformer",
+            octopus_asr::config::EngineCategory::Aliyun => "Aliyun(云)",
         };
         let desc = if e.description.is_empty() {
             String::new()
@@ -350,12 +351,16 @@ fn select_model() -> Result<String> {
         .and_then(|n: usize| if n >= 1 && n <= engines.len() { Some(n) } else { None })
         .ok_or_else(|| anyhow::anyhow!("无效选择，请输入 1-{} 之间的数字", engines.len()))?;
 
-    Ok(engines[choice - 1].name.clone())
+    // 构造 3-part spec "{provider}:{category_str}:{model_name}" 返回给下游。
+    // category_str 复用 octopus_asr::config::category_label（统一映射，Aliyun → "aliyun"）。
+    let picked = &engines[choice - 1];
+    let cat_str = octopus_asr::config::category_label(picked.category);
+    Ok(format!("{}:{}:{}", picked.provider, cat_str, picked.name))
 }
 
 fn run_e2e(language: &str) -> Result<()> {
     let model = select_model()?;
-    let bare = octopus_asr::config::parse_model_spec(&model).name().to_string();
+    let bare = octopus_asr::config::parse_model_spec(&model).model_name().to_string();
     // Use streaming mode for Paraformer and Zipformer models
     let category = octopus_asr::config::resolve_engine_category(&model);
     if category == Some(octopus_asr::config::EngineCategory::Paraformer) {
@@ -403,7 +408,7 @@ fn run_e2e(language: &str) -> Result<()> {
 }
 
 fn do_transcribe(model: &str, language: &str, samples: &[f32]) -> Result<String> {
-    let bare = octopus_asr::config::parse_model_spec(model).name();
+    let bare = octopus_asr::config::parse_model_spec(model).model_name();
     let category = octopus_asr::config::resolve_engine_category(model);
     match category {
         Some(octopus_asr::config::EngineCategory::Whisper) => {
@@ -418,7 +423,13 @@ fn do_transcribe(model: &str, language: &str, samples: &[f32]) -> Result<String>
         Some(octopus_asr::config::EngineCategory::Zipformer) => {
             octopus_asr::zipformer::transcribe(bare, samples, language)
         }
-        Some(octopus_asr::config::EngineCategory::SenseVoice) | None => {
+        Some(octopus_asr::config::EngineCategory::SenseVoice) => {
+            octopus_asr::sensevoice::transcribe(bare, samples, language)
+        }
+        Some(octopus_asr::config::EngineCategory::Aliyun) => {
+            anyhow::bail!("阿里云云端 ASR 引擎尚未接入（spec='{}'，见 Task 2 DashscopeEngine）", model)
+        }
+        None => {
             octopus_asr::sensevoice::transcribe(bare, samples, language)
         }
     }
@@ -910,7 +921,7 @@ fn stream_test(wav_path: &str, model: &str) -> Result<()> {
         model
     );
 
-    let bare = octopus_asr::config::parse_model_spec(model).name();
+    let bare = octopus_asr::config::parse_model_spec(model).model_name();
     let category = octopus_asr::config::resolve_engine_category(model);
     match category {
         Some(octopus_asr::config::EngineCategory::Zipformer) => {

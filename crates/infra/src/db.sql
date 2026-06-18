@@ -22,71 +22,44 @@ CREATE INDEX IF NOT EXISTS idx_trans_engine  ON transcriptions(engine);
 
 CREATE TABLE IF NOT EXISTS models (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    domain        TEXT    NOT NULL,           -- 'asr' | 'llm'
-    category      TEXT    NOT NULL,           -- ASR: 'zipformer'/'whisper'/... ; LLM: 'deepseek'/'bigmodel'/...
-    name          TEXT    NOT NULL,           -- 唯一模型标识，精确匹配
-    source        TEXT    NOT NULL,           -- ASR: 本地相对路径或 HF repo ; LLM: API base URL
-    secret_key    TEXT    NOT NULL DEFAULT '', -- LLM API Key（本地模型留空）
+    domain        TEXT    NOT NULL,                       -- 'asr' | 'llm'
+    provider      TEXT    NOT NULL DEFAULT 'local',       -- vendor/运行位置：local/aliyun/deepseek/bigmodel
+    category      TEXT    NOT NULL,                       -- ASR 引擎族(zipformer/whisper/Fun-ASR) ; LLM 模型系列(qwen/glm/deepseek)
+    model_name    TEXT    NOT NULL,                       -- 具体模型标识，精确匹配
+    source        TEXT    NOT NULL,                       -- ASR: 本地路径/HF repo/云 wss 端点 ; LLM: API base URL
+    secret_key    TEXT    NOT NULL DEFAULT '',            -- 远程 API Key（本地模型留空）
     language      TEXT    NOT NULL DEFAULT '',
-    is_local      INTEGER NOT NULL DEFAULT 0,  -- 是否为本地模型 (0=否, 1=是)
-    is_thinking   INTEGER NOT NULL DEFAULT 0,  -- LLM 专用：是否为思考（reasoning）模型
-    is_streaming  INTEGER NOT NULL DEFAULT 0,  -- 是否支持流式 (0=否, 1=是)
-    is_enabled    INTEGER NOT NULL DEFAULT 1,  -- 是否启用 (0=禁用, 1=启用)
-    description   TEXT    NOT NULL DEFAULT '', -- 描述
-    UNIQUE(domain, name, is_local, category)           -- domain + name + is_local + category 作为唯一键
+    is_local      INTEGER NOT NULL DEFAULT 0,             -- 是否为本地模型 (0=否, 1=是)
+    is_thinking   INTEGER NOT NULL DEFAULT 0,             -- LLM 专用：是否为思考（reasoning）模型
+    is_streaming  INTEGER NOT NULL DEFAULT 0,             -- 是否支持流式 (0=否, 1=是)
+    is_enabled    INTEGER NOT NULL DEFAULT 1,             -- 是否启用 (0=禁用, 1=启用)
+    description   TEXT    NOT NULL DEFAULT '',            -- 描述
+    UNIQUE(domain, provider, category, model_name)        -- domain + provider + category + model_name 作为唯一键
 );
 
 -- ── 默认数据（INSERT OR IGNORE，幂等）────────────────────────────────────────
 
 -- ASR 引擎：激活由 config.yaml.asr_engine 控制，此处仅维护可选列表
-INSERT OR IGNORE INTO models (domain, category, name, source, language, description, is_local, is_enabled, is_streaming)
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
 VALUES
-    ('asr', 'zipformer', 'zipformer-small-ctc',
-        'models/zipformer', 'zh', 'zipformer-small-ctc, 27M（随应用打包，兜底引擎）', 1, 1, 1),
+    ('asr','local','zipformer','zipformer-small-ctc','models/zipformer','zh','zipformer-small-ctc, 27M（随应用打包，兜底引擎）',1,1,1),
+    ('asr','local','zipformer','zipformer-multi','k2-fsa/sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13','zh','zipformer-multi, 80M',1,0,1),
+    ('asr','local','zipformer','zipformer-ctc','csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30','zh','zipformer-ctc, 163M',1,0,1),
+    ('asr','local','paraformer','paraformer-streaming','csukuangfj/sherpa-onnx-streaming-paraformer-zh','zh','paraformer-streaming, 230M',1,0,1),
+    ('asr','local','sensevoice','sherpa-onnx-sense-voice-funasr-nano-int8','csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17','auto','SenseVoice FunASR Nano INT8, 265M',1,0,0),
+    ('asr','local','qwen3-asr','qwen3-asr-0.6B','csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25','auto','qwen3-asr-0.6B, 1G',1,0,0),
+    ('asr','local','qwen3-asr','qwen3-asr-1.7B','ilmina/qwen3-asr-1.7b-sherpa-onnx','auto','qwen3-asr-1.7B, 约2.7G',1,0,0),
+    ('asr','local','whisper','whisper-small','onnx-community/whisper-small','auto','Whisper Small - 快速轻量, 250M',1,0,0),
+    -- 阿里云 FunASR 实时（Feature 2 seed；is_streaming=0 走 chunk 路径；secret_key 用户填）
+    ('asr','aliyun','Fun-ASR','fun-asr-2025-11-07','wss://dashscope.aliyuncs.com/api-ws/v1/inference','auto','阿里云百炼 FunASR 实时（DashScope key 填 secret_key）',0,0,0);
 
-    ('asr', 'zipformer', 'zipformer-multi',
-        'k2-fsa/sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13',
-        'zh', 'zipformer-multi, 80M', 1, 0, 1),
-
-    ('asr', 'zipformer', 'zipformer-ctc',
-        'csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30',
-        'zh', 'zipformer-ctc, 163M', 1, 0, 1),
-
-    ('asr', 'paraformer', 'paraformer-streaming',
-        'csukuangfj/sherpa-onnx-streaming-paraformer-zh',
-        'zh', 'paraformer-streaming, 230M', 1, 0, 1),
-
-    ('asr', 'sensevoice', 'sherpa-onnx-sense-voice-funasr-nano-int8',
-        'csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17',
-        'auto', 'SenseVoice FunASR Nano INT8, 265M', 1, 0, 0),
-
-    ('asr', 'qwen3-asr', 'qwen3-asr-0.6B',
-        'csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25',
-        'auto', 'qwen3-asr-0.6B, 1G', 1, 0, 0),
-
-    ('asr', 'qwen3-asr', 'qwen3-asr-1.7B',
-        'ilmina/qwen3-asr-1.7b-sherpa-onnx',
-        'auto', 'qwen3-asr-1.7B, 约2.7G', 1, 0, 0),
-
-    ('asr', 'whisper', 'whisper-small',
-        'onnx-community/whisper-small',
-        'auto', 'Whisper Small - 快速轻量, 250M', 1, 0, 0);
-
--- LLM 润色模型
-INSERT OR IGNORE INTO models (domain, category, name, source, description, is_thinking, is_local, is_enabled)
+-- LLM 润色模型（原 category=vendor 迁移到 provider；category=模型系列）
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, description, is_thinking, is_local, is_enabled)
 VALUES
-    ('llm', 'deepseek', 'deepseek-v4-flash',
-        'https://api.deepseek.com/',
-        'DeepSeek V4 Flash（思考模型，需关闭 thinking）', 1, 0, 0),
-
-    ('llm', 'aliyun', 'deepseek-v4-flash',
-        'https://dashscope.aliyuncs.com/compatible-mode/v1',
-        'DeepSeek V4 Flash（思考模型，需关闭 thinking）', 1, 0, 0),
-
-    ('llm', 'bigmodel', 'glm-4-flashx',
-        'https://open.bigmodel.cn/api/paas/v4',
-        'GLM-4 FlashX（非思考）', 0, 0, 0),
-
-    ('llm', 'bigmodel', 'glm-4.5-flash',
-        'https://open.bigmodel.cn/api/paas/v4',
-        'GLM-4.5 Flash（思考模型，需关闭 thinking）', 1, 0, 0);
+    ('llm','deepseek','deepseek','deepseek-v4-flash','https://api.deepseek.com/','DeepSeek V4 Flash（思考模型，需关闭 thinking）',1,0,0),
+    ('llm','aliyun','deepseek','deepseek-v4-flash','https://dashscope.aliyuncs.com/compatible-mode/v1','DeepSeek V4 Flash 经 DashScope（思考模型）',1,0,0),
+    ('llm','bigmodel','glm','glm-4-flashx','https://open.bigmodel.cn/api/paas/v4','GLM-4 FlashX（非思考）',0,0,0),
+    ('llm','bigmodel','glm','glm-4.5-flash','https://open.bigmodel.cn/api/paas/v4','GLM-4.5 Flash（思考模型，需关闭 thinking）',1,0,0),
+    -- Feature 1：阿里云 Qwen 原生（DashScope OpenAI 兼容端点）
+    ('llm','aliyun','qwen','qwen-plus','https://dashscope.aliyuncs.com/compatible-mode/v1','Qwen Plus（非思考）',0,0,0),
+    ('llm','aliyun','qwen','qwen-turbo','https://dashscope.aliyuncs.com/compatible-mode/v1','Qwen Turbo（非思考，快）',0,0,0);
