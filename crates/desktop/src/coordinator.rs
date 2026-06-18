@@ -104,6 +104,8 @@ enum Stage {
     Polishing {
         id: i64,
         raw_text: String,
+        /// 最终润色失败时的兜底粘贴文本（= 停止时的 display，含编辑；成功时不用）
+        fallback_text: String,
     },
     /// 粘贴中
     Pasting {
@@ -609,7 +611,11 @@ fn handle_toggle(
                     completed_results: cresults,
                 };
             } else {
-                let final_text = if transcript.full().is_empty() {
+                // 停止路径：edited 非空优先用 edited_display（保留用户编辑，不补句末标点）；
+                // 否则走原 raw 逻辑（db_text + 按需补「。」），与非编辑态等价。
+                let final_text = if let Some(edited) = transcript.edited_display() {
+                    edited
+                } else if transcript.full().is_empty() {
                     String::new()
                 } else if transcript
                     .full()
@@ -664,7 +670,10 @@ fn handle_toggle(
                 Ok(text) => text,
                 Err(e) => {
                     error!("Streaming finish failed: {}", e);
-                    transcript.db_text()
+                    // 引擎兜底：edited 非空优先（保留编辑），否则 raw
+                    transcript
+                        .edited_display()
+                        .unwrap_or_else(|| transcript.db_text())
                 }
             };
 
@@ -677,7 +686,10 @@ fn handle_toggle(
             if !final_text.is_empty() {
                 transcript.set_full(&final_text);
             }
-            let combined = transcript.db_text();
+            // 停止路径：edited 非空优先（保留编辑），否则 raw
+            let combined = transcript
+                .edited_display()
+                .unwrap_or_else(|| transcript.db_text());
 
             info!("Final streaming text: '{}'", combined);
 
@@ -761,6 +773,8 @@ fn start_final_polish_or_paste(
             *stage = Stage::Polishing {
                 id,
                 raw_text: raw_text.clone(),
+                // Part A 后 text = edited_display（含编辑）或 raw-with-」，失败时 paste 它
+                fallback_text: text.to_string(),
             };
 
             let tx = tx.clone();
@@ -832,10 +846,12 @@ fn handle_final_polish_done(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
-    let (id, raw_text) = match stage {
-        Stage::Polishing { id, raw_text } => {
-            (*id, raw_text.clone())
-        }
+    let (id, raw_text, fallback_text) = match stage {
+        Stage::Polishing {
+            id,
+            raw_text,
+            fallback_text,
+        } => (*id, raw_text.clone(), fallback_text.clone()),
         _ => {
             debug!("FinalPolishDone ignored in stage {:?}", stage_name(stage));
             return;
@@ -861,10 +877,10 @@ fn handle_final_polish_done(
             );
         }
         Err(e) => {
-            warn!("Final polish failed: {}, using original", e);
+            warn!("Final polish failed: {}, using fallback (display)", e);
             do_paste(
                 stage,
-                &raw_text,
+                &fallback_text,
                 id,
                 &raw_text,
                 "failed",
@@ -1438,7 +1454,11 @@ fn handle_transcription_done(
             consume_completed_results(completed_seq, completed_results, transcript);
 
             if *active_count == 0 {
-                let final_text = if transcript.full().is_empty() {
+                // 停止路径：edited 非空优先用 edited_display（保留用户编辑，不补句末标点）；
+                // 否则走原 raw 逻辑（db_text + 按需补「。」），与非编辑态等价。
+                let final_text = if let Some(edited) = transcript.edited_display() {
+                    edited
+                } else if transcript.full().is_empty() {
                     String::new()
                 } else if transcript
                     .full()
