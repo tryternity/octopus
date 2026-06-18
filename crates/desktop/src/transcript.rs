@@ -20,6 +20,8 @@ pub struct Transcript {
     raw_len: usize,
     /// 对 raw 的润色结果（仅 mode=2 中间润色 / 各 mode 最终润色后填值）
     polished: String,
+    /// 用户编辑后的 committed 文本（空 = 未编辑；非空时覆盖 polished/raw，优先级最高）。
+    edited: String,
     last_polish_time: Instant,
     polish_pending: bool,
     /// 是否已 INSERT 过 DB（首次有文本时 INSERT 后置 true，之后走 UPDATE）
@@ -34,6 +36,7 @@ impl Transcript {
             full: String::new(),
             raw_len: 0,
             polished: String::new(),
+            edited: String::new(),
             last_polish_time: Instant::now(),
             polish_pending: false,
             db_inserted: false,
@@ -96,6 +99,42 @@ impl Transcript {
         self.polish_pending = false;
     }
 
+    /// 用户提交编辑：edited = 文本，raw_len 推进到 full 末尾（increase 清空），full（raw）不变。
+    /// 空串 → 清空 edited（回退到 polished/raw）。
+    pub fn commit_edit(&mut self, text: &str) {
+        if text.is_empty() {
+            self.edited.clear();
+        } else {
+            self.edited = text.to_string();
+            self.raw_len = self.full.chars().count();
+        }
+    }
+
+    /// 是否已编辑（edited 非空）。
+    pub fn has_edit(&self) -> bool {
+        !self.edited.is_empty()
+    }
+
+    /// edited 文本（未编辑返回 None）。
+    pub fn edited_text(&self) -> Option<&str> {
+        if self.edited.is_empty() {
+            None
+        } else {
+            Some(&self.edited)
+        }
+    }
+
+    /// 停止时喂给「无润色粘贴/兜底」的文本。
+    /// edited 非空 → display（用户编辑结果 + 新增，不补标点）。
+    /// 否则 None → 调用方走原 raw 逻辑（db_text + 按需补「。」）。
+    pub fn edited_display(&self) -> Option<String> {
+        if self.edited.is_empty() {
+            None
+        } else {
+            Some(self.display_text())
+        }
+    }
+
     pub fn polish_pending(&self) -> bool {
         self.polish_pending
     }
@@ -117,18 +156,21 @@ impl Transcript {
         self.mode = mode;
     }
 
-    /// 展示文本：polished 非空 → polished + display_increase（不看 mode，覆盖 raw）；
-    /// 否则 mode=2 → polished + increase；其他 → full。
-    /// display_increase 与 increase 区别：前者不看 mode（polished 已存在时新文本需追加展示）。
+    /// 展示文本：committed 前缀 + increase。
+    /// committed 优先级：edited ≻ polished ≻ full[..raw_len]。
+    /// edited 为空时与旧行为等价（full[..raw_len] + full[raw_len..] = full）。
     pub fn display_text(&self) -> String {
-        if self.mode == PolishMode::Intermediate || !self.polished.is_empty() {
-            let inc: String = self.full.chars().skip(self.raw_len).collect();
-            let mut s = self.polished.clone();
-            s.push_str(&inc);
-            s
+        let committed = if !self.edited.is_empty() {
+            self.edited.clone()
+        } else if !self.polished.is_empty() {
+            self.polished.clone()
         } else {
-            self.full.clone()
-        }
+            self.full.chars().take(self.raw_len).collect()
+        };
+        let inc: String = self.full.chars().skip(self.raw_len).collect();
+        let mut s = committed;
+        s.push_str(&inc);
+        s
     }
 
     /// 落库文本：完整 ASR（raw + increase）。
@@ -275,5 +317,63 @@ mod tests {
         t.set_mode(PolishMode::Disabled);
         assert_eq!(t.increase(), "");
         assert_eq!(t.display_text(), "润色新增"); // polished + display_increase
+    }
+
+    #[test]
+    fn commit_edit_sets_edited_and_advances_boundary() {
+        let mut t = Transcript::new(30, PolishMode::Intermediate);
+        t.set_full("你好世界");
+        t.snapshot_for_polish(); // T1 阶段仍用旧 snapshot；T5 替换
+        t.on_polish_done("你好，世界。".into());
+        assert_eq!(t.display_text(), "你好，世界。");
+
+        t.commit_edit("你好世界（手改）");
+        assert_eq!(t.edited_text(), Some("你好世界（手改）"));
+        assert!(t.has_edit());
+        // raw_len 推进到 full 末尾 → increase 清空
+        assert_eq!(t.display_text(), "你好世界（手改）");
+    }
+
+    #[test]
+    fn commit_edit_preserves_raw_and_appends_new() {
+        let mut t = Transcript::new(31, PolishMode::Intermediate);
+        t.set_full("原文");
+        t.commit_edit("原文（手改）");
+        assert_eq!(t.full(), "原文"); // raw（full）原样保留
+        t.set_full("原文新增");
+        assert_eq!(t.display_text(), "原文（手改）新增"); // edited + 新增
+    }
+
+    #[test]
+    fn edited_takes_priority_over_polished_and_raw() {
+        let mut t = Transcript::new(32, PolishMode::Intermediate);
+        t.set_full("raw文本");
+        t.snapshot_for_polish();
+        t.on_polish_done("polished文本".into());
+        t.commit_edit("edited文本".into());
+        assert_eq!(t.display_text(), "edited文本"); // edited ≻ polished ≻ raw
+    }
+
+    #[test]
+    fn empty_commit_clears_edit_falls_back() {
+        let mut t = Transcript::new(33, PolishMode::Intermediate);
+        t.set_full("原文");
+        t.commit_edit("手改".into());
+        assert!(t.has_edit());
+        t.commit_edit("");
+        assert!(!t.has_edit());
+        assert_eq!(t.edited_text(), None);
+        assert_eq!(t.display_text(), "原文"); // 回退 raw
+    }
+
+    #[test]
+    fn edited_display_returns_display_when_edited_else_none() {
+        let mut t = Transcript::new(34, PolishMode::Intermediate);
+        t.set_full("原文");
+        assert_eq!(t.edited_display(), None); // 未编辑
+        t.commit_edit("手改".into());
+        assert_eq!(t.edited_display().as_deref(), Some("手改"));
+        t.set_full("原文新增");
+        assert_eq!(t.edited_display().as_deref(), Some("手改新增")); // = display
     }
 }
