@@ -2,7 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 改造结果窗口 ASR 下拉菜单（固定兜底首项 + `is_local desc, category` 排序 + 「本地:name / category:name」显示），并新增 LLM 润色模型下拉菜单（同规则，切换 `polish_llm`）。
+**Goal:** 改造结果窗口 ASR 下拉菜单（固定兜底首项 + `is_local desc, category` 排序 + 「本地:name / provider:name」显示），并新增 LLM 润色模型下拉菜单（同规则，切换 `polish_llm`）。
+
+> 状态：✅ 全部完成（2026-06-16，已合并 main）。label 远程前缀 2026-06-17 从 `category` 改为 `provider`（见 spec §3）。
 
 **Architecture:** 后端负责排序/过滤/label 拼接（`list_engines` 改排序、新增 `list_llm_models` 查询、`list_asr_engines`/`list_llm_models` 命令注入兜底与拼 label、`switch_*` 命令校验+持久化）；前端 `result/index.html` 复用现有 `#popup` 模式直显 `label`，启用已存在的 `#tool-llm` 按钮。纯逻辑提取为可测函数（`order_engine_infos`/`build_asr_options`/`validate_switch`/`build_llm_options`），避免 Tauri `State`/DB/文件 IO 进单测。
 
@@ -29,7 +31,7 @@
 **Files:**
 - Modify: `crates/infra/src/db.rs`（在 `load_llm_model_at` 附近新增；在 `tests` mod 新增测试）
 
-- [ ] **Step 1: 写失败测试**（在 `crates/infra/src/db.rs` 的 `mod tests` 内，仿 `seed_then_load_round_trips`）
+- [x] **Step 1: 写失败测试**（在 `crates/infra/src/db.rs` 的 `mod tests` 内，仿 `seed_then_load_round_trips`）
 
 ```rust
 #[test]
@@ -69,12 +71,12 @@ fn list_llm_models_at_empty_when_all_disabled() {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-infra list_llm_models 2>&1`
 Expected: 编译失败（`list_llm_models_at` 未定义）。
 
-- [ ] **Step 3: 实现**（在 `crates/infra/src/db.rs`，`load_llm_model_at` 函数之后）
+- [x] **Step 3: 实现**（在 `crates/infra/src/db.rs`，`load_llm_model_at` 函数之后）
 
 ```rust
 /// LLM 模型列表项（菜单用，仅含显示与排序所需字段）。
@@ -112,12 +114,12 @@ pub fn list_llm_models() -> Result<Vec<LlmModelInfo>> {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cargo test -p octopus-infra list_llm_models 2>&1`
 Expected: 2 passed。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/infra/src/db.rs
@@ -131,7 +133,7 @@ git commit -m "feat(infra): list_llm_models query (domain=llm, is_enabled=1, ord
 **Files:**
 - Modify: `crates/asr/src/config.rs:216`（`list_engines` 排序块）+ 新增 `order_engine_infos`/`category_label`
 
-- [ ] **Step 1: 写失败测试**（在 `crates/asr/src/config.rs` 的 `mod tests` 内，仿 `cfg_with_zipformer` 同区域）
+- [x] **Step 1: 写失败测试**（在 `crates/asr/src/config.rs` 的 `mod tests` 内，仿 `cfg_with_zipformer` 同区域）
 
 ```rust
 #[test]
@@ -150,12 +152,12 @@ fn order_engine_infos_sorts_is_local_desc_then_category_then_name() {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-asr order_engine_infos 2>&1`
 Expected: 编译失败（`order_engine_infos` 未定义）。
 
-- [ ] **Step 3: 实现**（在 `crates/asr/src/config.rs`）
+- [x] **Step 3: 实现**（在 `crates/asr/src/config.rs`）
 
 先加 category→str helper（紧邻 `EngineCategory` 定义或 `EngineInfo` 之后）：
 
@@ -191,12 +193,12 @@ fn order_engine_infos(engines: &mut [EngineInfo]) {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cargo test -p octopus-asr order_engine_infos 2>&1`
 Expected: 1 passed。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/asr/src/config.rs
@@ -210,7 +212,7 @@ git commit -m "feat(asr): list_engines sorts by is_local desc, category, name"
 **Files:**
 - Modify: `crates/desktop/src/runtime_config.rs`（`EngineOption`、`list_asr_engines`、新增 `engine_label`/`build_asr_options`）
 
-- [ ] **Step 1: 写失败测试**（在 `crates/desktop/src/runtime_config.rs` 的 `mod tests` 内）
+- [x] **Step 1: 写失败测试**（在 `crates/desktop/src/runtime_config.rs` 的 `mod tests` 内）
 
 ```rust
 #[test]
@@ -251,12 +253,12 @@ fn build_asr_options_injects_fallback_first_and_dedups() {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-desktop build_asr_options 2>&1`
 Expected: 编译失败（`build_asr_options` 未定义 / `EngineOption` 无 `label` 字段）。
 
-- [ ] **Step 3: 实现**（在 `crates/desktop/src/runtime_config.rs`）
+- [x] **Step 3: 实现**（在 `crates/desktop/src/runtime_config.rs`）
 
 (a) `EngineOption` 加 `label` 字段（替换现有 struct 定义，:90）：
 
@@ -332,12 +334,12 @@ pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<Engine
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cargo test -p octopus-desktop build_asr_options 2>&1`
 Expected: 1 passed。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/runtime_config.rs
@@ -351,7 +353,7 @@ git commit -m "feat(desktop): EngineOption.label + fallback-first ASR menu optio
 **Files:**
 - Modify: `crates/desktop/src/runtime_config.rs:130`（`switch_asr_engine` 校验块）+ 新增 `validate_switch`
 
-- [ ] **Step 1: 写失败测试**（在 `crates/desktop/src/runtime_config.rs` 的 `mod tests` 内）
+- [x] **Step 1: 写失败测试**（在 `crates/desktop/src/runtime_config.rs` 的 `mod tests` 内）
 
 ```rust
 #[test]
@@ -369,12 +371,12 @@ fn validate_switch_allows_fallback_even_when_absent() {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-desktop validate_switch 2>&1`
 Expected: 编译失败（`validate_switch` 未定义）。
 
-- [ ] **Step 3: 实现**（在 `crates/desktop/src/runtime_config.rs`）
+- [x] **Step 3: 实现**（在 `crates/desktop/src/runtime_config.rs`）
 
 新增纯校验函数（放在 `build_asr_options` 之后）：
 
@@ -424,12 +426,12 @@ pub fn switch_asr_engine(
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cargo test -p octopus-desktop validate_switch 2>&1`
 Expected: 1 passed。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/runtime_config.rs
@@ -443,7 +445,7 @@ git commit -m "feat(desktop): switch_asr_engine allows fallback even when absent
 **Files:**
 - Modify: `crates/desktop/src/runtime_config.rs`（`RuntimeConfig`、新增 `LlmOption`/`build_llm_options`/`list_llm_models`/`switch_polish_llm`/`persist_polish_llm`）
 
-- [ ] **Step 1: 写失败测试**（在 `crates/desktop/src/runtime_config.rs` 的 `mod tests` 内）
+- [x] **Step 1: 写失败测试**（在 `crates/desktop/src/runtime_config.rs` 的 `mod tests` 内）
 
 ```rust
 #[test]
@@ -462,12 +464,12 @@ fn build_llm_options_marks_current_and_labels() {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-desktop build_llm_options 2>&1`
 Expected: 编译失败（`build_llm_options`/`LlmOption` 未定义）。
 
-- [ ] **Step 3: 实现**（在 `crates/desktop/src/runtime_config.rs`）
+- [x] **Step 3: 实现**（在 `crates/desktop/src/runtime_config.rs`）
 
 (a) `RuntimeConfig` 加 `polish_llm` 字段（替换 :13-16 struct + :18-25 impl）：
 
@@ -556,12 +558,12 @@ pub fn switch_polish_llm(name: String, rc: State<'_, SharedRuntimeConfig>) -> Re
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cargo test -p octopus-desktop build_llm_options 2>&1`
 Expected: 1 passed。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/runtime_config.rs
@@ -575,7 +577,7 @@ git commit -m "feat(desktop): LLM polish model menu backend (list/switch/persist
 **Files:**
 - Modify: `crates/desktop/src/main.rs:131`（`generate_handler!` 列表）
 
-- [ ] **Step 1: 注册命令**
+- [x] **Step 1: 注册命令**
 
 把 `crates/desktop/src/main.rs:131-135` 的 `generate_handler!` 列表，在 `set_polish_mode,` 之后加两行：
 
@@ -590,12 +592,12 @@ git commit -m "feat(desktop): LLM polish model menu backend (list/switch/persist
             // …其余既有命令保持不变
 ```
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
 Run: `cargo check -p octopus-desktop 2>&1`
 Expected: 编译通过，无错误（确认 `RuntimeConfig` 新增 `polish_llm` 字段后所有构造点仍编译——`from_config` 是唯一构造点，已在 Task 5 更新）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/src/main.rs
@@ -611,7 +613,7 @@ git commit -m "feat(desktop): register list_llm_models & switch_polish_llm comma
 
 前端为静态 HTML/JS（无构建），改动用精确字符串替换，验证靠 `cargo check`（后端）+ 手动运行应用点菜单。
 
-- [ ] **Step 1: 启用 `#tool-llm` 按钮**（去 `disabled`、改 title，替换 :194）
+- [x] **Step 1: 启用 `#tool-llm` 按钮**（去 `disabled`、改 title，替换 :194）
 
 旧：
 ```html
@@ -622,7 +624,7 @@ git commit -m "feat(desktop): register list_llm_models & switch_polish_llm comma
         <button class="tool" id="tool-llm" title="润色模型" aria-label="润色模型">
 ```
 
-- [ ] **Step 2: ASR popup 改用 `label`**（替换 :307-310 的 `engines.map(...)` 渲染块）
+- [x] **Step 2: ASR popup 改用 `label`**（替换 :307-310 的 `engines.map(...)` 渲染块）
 
 旧：
 ```js
@@ -639,7 +641,7 @@ git commit -m "feat(desktop): register list_llm_models & switch_polish_llm comma
          </div>`).join('');
 ```
 
-- [ ] **Step 3: 新增 LLM popup 逻辑**（在 ASR 块之后、`// ── 当前态高亮 ──` 之前插入，即 :325 之后）
+- [x] **Step 3: 新增 LLM popup 逻辑**（在 ASR 块之后、`// ── 当前态高亮 ──` 之前插入，即 :325 之后）
 
 ```js
     // ── LLM 润色模型 ──
@@ -668,7 +670,7 @@ git commit -m "feat(desktop): register list_llm_models & switch_polish_llm comma
     });
 ```
 
-- [ ] **Step 4: `refreshActive` 让 `#tool-llm` 恒显 active**（在 :333 `tool-asr` 那行之后加一行）
+- [x] **Step 4: `refreshActive` 让 `#tool-llm` 恒显 active**（在 :333 `tool-asr` 那行之后加一行）
 
 在：
 ```js
@@ -679,19 +681,19 @@ git commit -m "feat(desktop): register list_llm_models & switch_polish_llm comma
         document.getElementById('tool-llm').classList.toggle('active', true);
 ```
 
-- [ ] **Step 5: 编译验证（确保后端命令齐全）**
+- [x] **Step 5: 编译验证（确保后端命令齐全）**
 
 Run: `cargo check --workspace 2>&1`
 Expected: 通过（前端 HTML 不参与 cargo 编译，但确认后端 `list_llm_models`/`switch_polish_llm` 已注册且类型匹配 invoke 参数）。
 
-- [ ] **Step 6: 手动验证（后置，需运行应用）**
+- [x] **Step 6: 手动验证（后置，需运行应用）**
 
 启动应用（`cargo run -p octopus-desktop` 或既有 run 脚本），结果窗口工具栏：
 1. 点 ASR 按钮 → 首条「本地:zipformer-small-ctc」，选中能切换不报错；其余项格式「本地:{name}」或「{category}:{name}」。
 2. 点润色模型按钮（原「敬请期待」现可用）→ 列出 is_enabled=1 的 LLM；若 DB 全禁用则 toast「无可用润色模型」。
 3. 选 LLM → toast「已切换润色模型:{name}」；重启后仍生效（检查 `~/.octopus/config.yaml` 的 `polish_llm`）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/dist/result/index.html

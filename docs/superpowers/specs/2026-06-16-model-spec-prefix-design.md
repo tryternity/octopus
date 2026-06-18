@@ -1,6 +1,10 @@
 # 模型选择 spec 设计（`PREFIX:NAME` 统一格式）
 
-> 状态：✅ 已实现（2026-06-16）。详见 [`architecture.md`](../../../architecture.md)「模型管理」段。
+> 状态：⚠️ 已被 3-part 演进**部分取代**（2026-06-17，阿里云云端 API 接入）。
+>
+> **本文是 2-part `PREFIX:NAME`（Local/Category/NameOnly）的原始设计记录**，作为历史决策动机保留。引入 `provider` 维度后（区分 deepseek 直连 vs aliyun 代管同名模型），spec 已演进为 3-part `{provider}:{category}:{model_name}`，`ModelSpec` 枚举改为 `Full{provider,category,model_name}` / `NameOnly`。**当前权威设计见 [`2026-06-17-aliyun-cloud-apis-design.md`](2026-06-17-aliyun-cloud-apis-design.md) §3.3「选择规格 parse_model_spec → 3-part」**，[`architecture.md`](../../../architecture.md)「模型管理」段，以及 `infra/src/db.rs` 现实现。
+>
+> 本文中「裸名等价 local」「`local` 特殊前缀」的设计动机（减少本地模型配置心智负担）仍成立，3-part 沿用同一思路（`provider=local` 时仍可跨 category 命中）。
 
 ## 背景
 
@@ -20,6 +24,9 @@
 
 ### ModelSpec 枚举（`infra/src/db.rs`）
 
+> ⚠️ 下方为**原始 2-part 设计**。演进后为 `Full{provider,category,model_name}` / `NameOnly`，详见 [aliyun spec §3.3](2026-06-17-aliyun-cloud-apis-design.md)。
+
+原始（已被取代）：
 ```rust
 pub enum ModelSpec<'a> {
     Local(&'a str),          // "local:NAME" → is_local=true AND name
@@ -28,12 +35,15 @@ pub enum ModelSpec<'a> {
 }
 ```
 
-`parse_model_spec(spec: &str) -> ModelSpec` 按第一个冒号分割：
-- `local:` 前缀 → `Local`
-- 其他前缀 → `Category`
-- 无冒号 → `NameOnly`（行为等价 `Local`）
+演进后（现实现）：
+```rust
+pub enum ModelSpec<'a> {
+    Full { provider: &'a str, category: &'a str, model_name: &'a str }, // "p:c:m"
+    NameOnly(&'a str),   // 裸名：仅全局默认 fallback 用（跨 provider/category 搜，优先 local）
+}
+```
 
-`ModelSpec::name()` 返回去掉前缀后的裸名（生命周期绑定到原 `&str`）。
+`parse_model_spec` 现按冒号数：2 冒号 → `Full`，0 冒号 → `NameOnly`，1 冒号（旧 2-part）→ warn + 按 `NameOnly` 兜底。`ModelSpec::model_name()` 返回裸名。
 
 ### 裸名等价 local
 
@@ -98,23 +108,24 @@ pub fn resolve_active_engine(asr_engine: &str) -> Result<ResolvedEngine>;
 
 ## 配置示例
 
+> ⚠️ 本节示例为原始 2-part 形式，**已演进为 3-part**。当前正确写法见 [`configuration.md`](../../configuration.md)「模型选择 spec」节与 [aliyun spec §3.3](2026-06-17-aliyun-cloud-apis-design.md)。
+
+演进后（现实现）：
 ```yaml
 # ASR 引擎
-asr_engine: "local:zipformer-small-ctc"     # 本地模型（is_local=true）
-# asr_engine: "zipformer:zipformer-small-ctc" # 按 category 精确匹配
-# asr_engine: "zipformer-small-ctc"           # 裸名（等价 local:）
+asr_engine: "local:zipformer:zipformer-small-ctc"   # 本地模型（provider=local）
+# asr_engine: "aliyun:asr:fun-asr-..."              # 阿里云云端 ASR（provider=aliyun）
 
 # LLM 润色
-polish_llm: "bigmodel:glm-4-flashx"          # category:name
-# polish_llm: "local:qwen3:8b"                # 本地 LLM（Ollama 等）
-# polish_llm: "glm-4-flashx"                  # 裸名（等价 local:，仅当 is_local=1 时命中）
+polish_llm: "bigmodel:glm:glm-4-flashx"             # provider:category:model_name
+# polish_llm: "aliyun:qwen:qwen-plus"               # 阿里云代管
 ```
 
 ## 关键约束
 
 - **裸名等价 local**：裸名格式（无冒号）筛 `is_local=true`，远程模型必须用 category 前缀显式指定。
 - **`local` 前缀跨 category**：`local:NAME` 遍历所有 section，若多个 category 下有同名且 `is_local=true` 的模型，返回第一个匹配（按 whisper→sensevoice→paraformer→qwen3-asr→zipformer 顺序）。建议避免此情况。
-- **Category 前缀仅限 ASR 已知类型**：`aliyun:zipformer-small-ctc` 中 `aliyun` 不是已知 ASR 引擎 category → `resolve_engine_in_config` 返回 `None`。远程 ASR 路由（如阿里云远程 ASR）尚未实现，当前所有 ASR 均为本地。
+- **Category 前缀仅限 ASR 已知类型**：~~`aliyun:zipformer-small-ctc` 中 `aliyun` 不是已知 ASR 引擎 category → `resolve_engine_in_config` 返回 `None`。远程 ASR 路由（如阿里云远程 ASR）尚未实现，当前所有 ASR 均为本地。~~ **（已被取代）** 阿里云云端 ASR 已在 2026-06-17 接入——`provider=aliyun` 经 `resolve_category` 的 provider 分支路由到 `EngineCategory::Aliyun` + `DashscopeEngine`（`is_streaming=0` 块路径），不走 `engine_category_from_str`。详见 [aliyun spec §5.2](2026-06-17-aliyun-cloud-apis-design.md)。
 - **`OnceLock` 缓存不变**：手编 DB `models` 表后仍需重启进程生效。
 
 ## 影响范围

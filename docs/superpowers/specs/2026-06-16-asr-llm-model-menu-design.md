@@ -1,7 +1,7 @@
 # ASR/LLM 模型选择菜单设计
 
 > 日期：2026-06-16
-> 状态：设计待审
+> 状态：✅ 已实现（2026-06-16）。后续 2026-06-17 阿里云 taxonomy 重构后，label 远程前缀从 `category` 改为 `provider`（见 §3 更新），`LlmModelInfo` 增 `provider`/`model_name` 字段。
 
 ## 背景与目标
 
@@ -27,9 +27,9 @@ octopus desktop 结果窗口（`crates/desktop/dist/result/index.html`）工具�
 
 **(a) `list_engines` 排序**（asr/config.rs:216）：把现有 category 硬编码 match 改为 **`is_local` 降序优先，再 `category` 字母序**（基于 `category_str`，与 SQL `ORDER BY category` 语义一致；同 category 内 `name` 字母序作 tiebreak）。
 
-**(b) `EngineOption` 加 `label`**（runtime_config.rs:90）：新增 `label: String`，后端拼：
+**(b) `EngineOption` 加 `label`**（runtime_config.rs:90）：新增 `label: String`，后端拼（`engine_label`）：
 - `is_local == true` → `"本地:{name}"`
-- 否则 → `"{category}:{name}"`
+- 否则 → **`"{provider}:{name}"`**（2026-06-17 更新：远程前缀从 `category` 改为 `provider`，以区分 deepseek 直连 vs aliyun 代管同名模型；本地 `provider` 恒为 `"local"` 无信息量故仍走「本地:」前缀）
 
 **(c) `list_asr_engines` 注入兜底**（runtime_config.rs:109）：结果最前插入：
 ```
@@ -47,15 +47,15 @@ EngineOption {
 
 **(a) `db.rs` 新增列表查询**：
 ```rust
-pub struct LlmModelInfo { pub name: String, pub category: String, pub is_local: bool }
+pub struct LlmModelInfo { pub provider: String, pub category: String, pub model_name: String, pub is_local: bool }
 
-// SQL: SELECT category, name, is_local FROM models
+// SQL: SELECT provider, category, model_name, is_local FROM models
 //      WHERE domain='llm' AND is_enabled = 1
 //      ORDER BY is_local DESC, category
 fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>>;
 pub fn list_llm_models() -> Result<Vec<LlmModelInfo>>;  // 经 with_db
 ```
-（仿 `load_llm_model_at` 的 SQL 模式，去 `name=?`、加 `ORDER BY`。）
+（2026-06-17 更新：`name` 字段重命名为 `model_name`，新增 `provider`——配合 3-part spec `{provider}:{category}:{model_name}`。仿 `load_llm_model_at` 的 SQL 模式，去 `model_name=?`、加 `ORDER BY`。）
 
 **(b) `runtime_config.rs`**：
 - `RuntimeConfig` 加 `polish_llm: String`（`from_config` 取 `cfg.polish_llm`，默认 `"glm-4-flashx"`）。
@@ -73,10 +73,10 @@ pub fn list_llm_models() -> Result<Vec<LlmModelInfo>>;  // 经 with_db
 
 ### §3 显示规则（统一）
 
-两菜单 label 后端拼，规则一致：
+两菜单 label 后端拼（`engine_label`，`runtime_config.rs`）：
 - `is_local` → `"本地:{name}"`
-- 否则 → `"{category}:{name}"`
-- `category` 取 DB 原值（ASR: whisper/sensevoice/paraformer/qwen3-asr/zipformer；LLM: deepseek/aliyun/bigmodel）。
+- 否则 → **`"{provider}:{name}"`**（2026-06-17 更新：远程用 `provider` 而非 `category` 前缀——`deepseek` 直连与 `aliyun` 代管的同名模型 category 相同，只有 provider 不同，用 provider 才能在 UI 分辨供应商）
+- 本地引擎 `provider` 恒为 `"local"` 无信息量，故本地仍走 `"本地:{name}"`。
 
 ### §4 兜底与持久化
 
