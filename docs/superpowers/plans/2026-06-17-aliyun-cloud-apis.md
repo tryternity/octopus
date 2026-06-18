@@ -1,6 +1,6 @@
 # 阿里云云端 API 接入（LLM + ASR）实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现。步骤用 checkbox（`- [ ]`）跟踪。
+> **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实现。步骤用 checkbox（`- [x]`）跟踪。
 
 **Goal:** 接入阿里云 LLM（DashScope OpenAI 兼容，零代码）+ 阿里云 FunASR Realtime WS ASR（新 engine），并统一模型配置 taxonomy（加 `provider` 列、`name`→`model_name`、3-part spec）。
 
@@ -8,7 +8,7 @@
 
 **Tech Stack:** Rust + Tauri（desktop）/ axum（server）；SQLite（rusqlite 0.31 bundled，含 db.sql `include_str!`）；tokio-tungstenite（WS）；DashScope `api-ws` 协议。
 
-**前置：** 当前在 worktree `.claude/worktrees/aliyun-apis`（分支 `worktree-aliyun-apis`）。所有命令在此目录运行。
+> 状态：✅ 全部完成（2026-06-17，合并 main commit `ca53db8`）。原 `worktree-aliyun-apis` 分支已合并并清理。WS e2e 集成测试标 `#[ignore]`，待手动验证（见末尾「验证」节）。
 
 ---
 
@@ -32,7 +32,7 @@
 
 **Files:** `crates/infra/src/db.sql`、`crates/infra/src/db.rs`、`crates/asr/src/config.rs`、`crates/desktop/src/runtime_config.rs`、`crates/cli/src/main.rs`、`crates/server/src/main.rs`
 
-- [ ] **Step 1.1：改 `db.sql` DDL + seed（schema 部分）**
+- [x] **Step 1.1：改 `db.sql` DDL + seed（schema 部分）**
 
 `models` 表 DDL（`crates/infra/src/db.sql`）：把 `name` 列改 `model_name`，加 `provider` 列，改唯一键。
 
@@ -86,7 +86,7 @@ VALUES
     ('llm','aliyun','qwen','qwen-turbo','https://dashscope.aliyuncs.com/compatible-mode/v1','Qwen Turbo（非思考，快）',0,0,0);
 ```
 
-- [ ] **Step 1.2：改 `parse_model_spec` + `ModelSpec`（infra/db.rs）**
+- [x] **Step 1.2：改 `parse_model_spec` + `ModelSpec`（infra/db.rs）**
 
 替换 `ModelSpec` enum 与 `parse_model_spec`、`impl ModelSpec`（删除旧 `Local`/`Category`/`NameOnly` 与 `.name()`，改为 `Full`/`NameOnly` 与 `.model_name()`）：
 
@@ -130,7 +130,7 @@ impl<'a> ModelSpec<'a> {
 }
 ```
 
-- [ ] **Step 1.3：改 load 查询（infra/db.rs）**
+- [x] **Step 1.3：改 load 查询（infra/db.rs）**
 
 `load_models_at`：SELECT 列 `name`→`model_name`，新增 `provider`；路由按 `(provider, category)`——`provider='aliyun'` 入 `asr.aliyun`，其余按本地 category。改 AsrConfig 的 AsrSection 需先加字段（见 Step 1.5，但本步 db.rs 只读；AsrSection 字段在 infra/db.rs 定义）。先改 SELECT + tuple + 路由：
 
@@ -224,7 +224,7 @@ pub struct LlmModelInfo { pub model_name: String, pub category: String, pub is_l
 ```
 > 排序与显示若需 provider 前缀，可后续加；当前菜单项 label 已含 category。保持最小改动：`LlmModelInfo` 只换字段名。
 
-- [ ] **Step 1.4：改 `AsrSection`（infra/db.rs）加 `aliyun` 字段**
+- [x] **Step 1.4：改 `AsrSection`（infra/db.rs）加 `aliyun` 字段**
 
 ```rust
 pub struct AsrSection {
@@ -237,7 +237,7 @@ pub struct AsrSection {
 }
 ```
 
-- [ ] **Step 1.5：改 infra/db.rs 测试**
+- [x] **Step 1.5：改 infra/db.rs 测试**
 
 更新 `tests` 模块：`init_sql_is_idempotent` 的 ASR 计数（原 8 → 现 9，含 Fun-ASR）；`seed_then_load_round_trips` 用 `model_name` 字段访问；`test_load_llm_model` 全改 3-part spec（`deepseek:deepseek:deepseek-v4-flash`、`aliyun:deepseek:deepseek-v4-flash`、`bigmodel:glm:glm-4-flashx` 等）+ 新增 `aliyun:qwen:qwen-plus` 命中断言；`parse_model_spec_variants`/`model_spec_*` 改 Full/NameOnly；`list_llm_models_*` 适配新 category（bigmodel→glm, deepseek→deepseek）与 `.model_name`。
 
@@ -254,7 +254,7 @@ let ds_aliyun = load_llm_model_at(&conn, "aliyun:deepseek:deepseek-v4-flash").un
 assert_eq!(ds_aliyun.base_url, "https://dashscope.aliyuncs.com/compatible-mode/v1");
 ```
 
-- [ ] **Step 1.6：改 `asr/config.rs` — EngineCategory + resolver + pick/list/loads**
+- [x] **Step 1.6：改 `asr/config.rs` — EngineCategory + resolver + pick/list/loads**
 
 加 `EngineCategory::Aliyun` 变体；新增 provider 感知 category 解析；`AsrSection` 由 infra 重导出（已含 aliyun）。改：
 
@@ -298,21 +298,21 @@ pub fn resolve_engine_in_config<'a, 'b>(cfg: &'a AsrConfig, spec: &'b str)
 
 `category_label` 加 `Aliyun => "aliyun"`。`fallback_engine` 的硬构造 `ModelEntry` 不变（zipformer 兜底）。
 
-- [ ] **Step 1.7：改 asr/config.rs 测试**
+- [x] **Step 1.7：改 asr/config.rs 测试**
 
 `make_entry` 不变。`cfg_with_zipformer` 加 `aliyun: None`。新增：`resolve_engine_in_config("aliyun:Fun-ASR:fun-asr-2025-11-07")`（需构造 aliyun section）→ `(EngineCategory::Aliyun, "fun-asr-2025-11-07", entry)`；`pick_entry(&cfg, Aliyun, ...)`；`engine_category_from_str("aliyun")` 仍 None（aliyun 走 provider 分支，断言保持）；`resolve_unknown_category_prefix_returns_none` 改用合法 3-part（如 `whisper:zipformer-small-ctc` 在 whisper section 缺 → None）。
 
-- [ ] **Step 1.8：改 desktop/runtime_config.rs（.name → .model_name）**
+- [x] **Step 1.8：改 desktop/runtime_config.rs（.name → .model_name）**
 
 `build_llm_options` / `build_llm_options_public` / `build_asr_options_public` 中所有 `m.name` → `m.model_name`；`LlmOption` 结构体的 `name` 字段（前端契约）可保留键名 `name`（前端用），但其**值**取自 `m.model_name`。`parse_model_spec(current).name()` → `.model_name()`。
 
 > grep 全 workspace 确认无遗漏：`rg "\.name\b" crates/desktop/src/runtime_config.rs`、`rg "parse_model_spec" crates/`。
 
-- [ ] **Step 1.9：改 cli/server（grep 命中点）**
+- [x] **Step 1.9：改 cli/server（grep 命中点）**
 
 `rg "\.name\b|parse_model_spec|asr\.active" crates/cli/src crates/server/src`。预期：cli `show_config`/`do_transcribe` 若硬编码 2-part spec 则改 3-part；server `resolve_active_engine` 调用不变（已接 spec 字符串）。按命中点最小适配。
 
-- [ ] **Step 1.10：编译 + 测试**
+- [x] **Step 1.10：编译 + 测试**
 
 ```bash
 cargo check --workspace --all-targets
@@ -321,7 +321,7 @@ cargo test -p octopus-asr
 ```
 预期：全绿。若 `is_streaming_engine` / `resolve_active_engine` 报错，确认 fallback 路径用 NameOnly 兜底正确。
 
-- [ ] **Step 1.11：删本地 DB 验证 + 提交**
+- [x] **Step 1.11：删本地 DB 验证 + 提交**
 
 ```bash
 rm -f ~/.octopus/octopus.db   # 删库重建（用户确认历史无所谓）
@@ -347,7 +347,7 @@ git commit -m "refactor(db): 统一模型 taxonomy（provider 列 + name→model
 
 **Files:** `crates/desktop/Cargo.toml`、`crates/desktop/src/engine_dashscope.rs`（新）、`crates/desktop/src/main.rs`
 
-- [ ] **Step 2.1：Cargo.toml 加 `dashscope` feature**
+- [x] **Step 2.1：Cargo.toml 加 `dashscope` feature**
 
 `crates/desktop/Cargo.toml`：
 ```toml
@@ -361,7 +361,7 @@ dashscope = ["tokio-tungstenite", "uuid", "futures-util"]
 ```
 > TLS feature 与 `engine_ws.rs`（remote-ws）保持一致——先 `rg "tokio-tungstenite" crates/desktop/Cargo.toml` 看 remote-ws 用的 TLS 后端（native-tls / rustls），dashscope 沿用同一后端避免双 TLS 链接。
 
-- [ ] **Step 2.2：写 `engine_dashscope.rs`（含单测）**
+- [x] **Step 2.2：写 `engine_dashscope.rs`（含单测）**
 
 先写单测（PCM 转换 + run-task JSON 构造），再实现：
 
@@ -515,7 +515,7 @@ mod tests {
 
 > ⚠️ DashScope 三个模型（Fun-ASR / paraformer-realtime-v2 / qwen-asr-realtime）事件结构略有差异——实现后用真实 key 跑 `cargo test -p octopus-desktop -- --ignored` 的集成测试验证；若某模型字段不同，按其官方文档在 `run_session` 内按 `model` 名分派。当前实现以 Fun-ASR 为主（用户首选用例）。
 
-- [ ] **Step 2.3：main.rs 路由 + mod 声明**
+- [x] **Step 2.3：main.rs 路由 + mod 声明**
 
 `crates/desktop/src/main.rs` 顶部加：
 ```rust
@@ -549,7 +549,7 @@ let engine: Arc<dyn TranscriptionEngine> = {
 
 > 注意 `resolve_active_engine` 在 main.rs setup 中已被调用预热（embedded 分支）。这里复用其结果即可，避免重复解析——可把预热处的 `resolved_model` / category 一并用于 cloud 判定。
 
-- [ ] **Step 2.4：编译 + 测试**
+- [x] **Step 2.4：编译 + 测试**
 
 ```bash
 cargo check -p octopus-desktop --features dashscope
@@ -557,7 +557,7 @@ cargo test -p octopus-desktop --features dashscope
 cargo check --workspace   # 确认默认（不开 dashscope）仍绿
 ```
 
-- [ ] **Step 2.5：提交**
+- [x] **Step 2.5：提交**
 
 ```bash
 git add -A
@@ -574,7 +574,7 @@ git commit -m "feat(desktop): 接入阿里云 FunASR Realtime WS engine
 
 **Files:** `docs/configuration.md`、`docs/architecture.md`
 
-- [ ] **Step 3.1：configuration.md**
+- [x] **Step 3.1：configuration.md**
 
 - `asr_engine` / `polish_llm` 字段说明改 3-part `{provider}:{category}:{model_name}`，给 DashScope 示例：
   - `asr_engine: "aliyun:Fun-ASR:fun-asr-2025-11-07"`
@@ -583,12 +583,12 @@ git commit -m "feat(desktop): 接入阿里云 FunASR Realtime WS engine
 - 加「阿里云接入」小节：DashScope key 填法（`sqlite3 ~/.octopus/octopus.db "UPDATE models SET secret_key='sk-...' WHERE ..."`）+ `dashscope` feature 开启（`cargo build --features dashscope`）+ 删库重建提示。
 - 删旧 2-part / `local:` 前缀 / `is_active` 残留描述。
 
-- [ ] **Step 3.2：architecture.md**
+- [x] **Step 3.2：architecture.md**
 
 - 「模型管理」段：models 表 schema（provider / model_name）、provider×category taxonomy、引擎选择 `resolve_active_engine` → `EngineCategory::Aliyun` 路由 DashscopeEngine。
 - 云引擎说明（DashscopeEngine 分块路径、is_streaming=0）。
 
-- [ ] **Step 3.3：提交**
+- [x] **Step 3.3：提交**
 
 ```bash
 git add docs/configuration.md docs/architecture.md
