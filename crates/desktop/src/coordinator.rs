@@ -225,6 +225,11 @@ impl Coordinator {
                                 Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
                             };
                             config.polish_mode = rc.polish_mode;
+                            // 同步 polish_llm：否则 handle_polish_now / check_and_trigger_polish
+                            // / FinalPolish 等用 config.polish_llm 查 DB 的路径全部失效
+                            // （用户在设置窗口改 polish_llm 只写 RuntimeConfig + config.yaml，
+                            // coordinator 的 config 快照不会自动更新——启动时的初值会一直留着）
+                            config.polish_llm = rc.polish_llm.clone();
                             drop(rc);
                             use_streaming = config.engine_mode == "embedded"
                                 && crate::config::is_streaming_engine(&config);
