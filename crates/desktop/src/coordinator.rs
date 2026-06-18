@@ -41,6 +41,11 @@ enum Command {
     FinalPolishDone { result: Result<String, String> },
     /// 立即润色（前端工具栏触发，忽略 polish_mode）
     PolishNow,
+    /// 运行时配置更新——外部（设置窗口 / 工具栏）修改 RuntimeConfig 后，
+    /// 通过此命令通知 coordinator 立即把变更同步到 config 快照（无需等 Toggle）。
+    /// 用于 polish_llm / polish_mode / asr_correct / output_simplified / hide_toolbar 等
+    /// 运行时可变字段。`asr_engine` 不在此列（引擎实例已创建，需 Toggle 重建）。
+    UpdateRuntime,
 }
 
 enum Stage {
@@ -224,12 +229,7 @@ impl Coordinator {
                                 Ok(_) => rc.asr_engine.clone(),
                                 Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
                             };
-                            config.polish_mode = rc.polish_mode;
-                            // 同步 polish_llm：否则 handle_polish_now / check_and_trigger_polish
-                            // / FinalPolish 等用 config.polish_llm 查 DB 的路径全部失效
-                            // （用户在设置窗口改 polish_llm 只写 RuntimeConfig + config.yaml，
-                            // coordinator 的 config 快照不会自动更新——启动时的初值会一直留着）
-                            config.polish_llm = rc.polish_llm.clone();
+                            sync_runtime_fields(&mut config, &rc);
                             drop(rc);
                             use_streaming = config.engine_mode == "embedded"
                                 && crate::config::is_streaming_engine(&config);
@@ -359,6 +359,15 @@ impl Coordinator {
                     Command::PolishNow => {
                         handle_polish_now(&mut stage, &config, &app_handle, &tx);
                     }
+                    Command::UpdateRuntime => {
+                        // 设置窗口 / 工具栏改了 RuntimeConfig 字段——立即同步到 config 快照，
+                        // 无需等下次 Toggle。用于 polish_llm 等运行时可变字段。
+                        // asr_engine 不在此路径（需要重建引擎实例，必须走 Toggle）。
+                        let rc = runtime_config.read().unwrap();
+                        sync_runtime_fields(&mut config, &rc);
+                        debug!("UpdateRuntime: polish_llm='{}', polish_mode={:?}",
+                               config.polish_llm, config.polish_mode);
+                    }
                 }
             }
             debug!("Coordinator thread exited");
@@ -395,6 +404,29 @@ impl Coordinator {
             }
         }
     }
+
+    /// 通知 coordinator 重读 RuntimeConfig 同步可变字段到 config 快照。
+    /// 设置窗口 / 工具栏改完 RuntimeConfig 后调用，让 polish_llm 等字段立即生效。
+    pub fn update_runtime(&self) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::UpdateRuntime).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
+}
+
+/// 把 RuntimeConfig 的运行时可变字段同步到 AppConfig 快照。
+///
+/// 与 Toggle 时的同步逻辑共用，确保两条路径同步内容一致。
+/// 不含 `asr_engine`（需重建引擎实例，只能 Toggle 时切），也不含 `denoise_mode`
+/// （音频处理路径有独立 cfg 读取，会话中切换影响降噪器状态）。
+fn sync_runtime_fields(config: &mut AppConfig, rc: &crate::runtime_config::RuntimeConfig) {
+    config.polish_mode = rc.polish_mode;
+    config.polish_llm = rc.polish_llm.clone();
+    config.asr_correct = rc.asr_correct;
+    config.output_simplified = rc.output_simplified;
+    config.hide_toolbar = rc.hide_toolbar;
 }
 
 /// 前端命令：取消当前录音/处理（Esc 键）。

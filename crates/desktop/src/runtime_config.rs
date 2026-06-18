@@ -357,8 +357,15 @@ pub fn list_llm_models(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOpti
 
 /// 切换润色模型：先校验 DB 存在，再构造 spec（"PREFIX:NAME"）写 RuntimeConfig（即时）+ config.yaml（持久）。
 /// 空 name = 选择「不选择模型」：polish_llm 置空，不查 DB（无模型 = 不润色）。
+///
+/// 同步通过 `coordinator.update_runtime()` 立即生效——用户可在录音中切换，
+/// 下次点「立即润色」或停顿润色就用新模型。
 #[tauri::command]
-pub fn switch_polish_llm(name: String, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
+pub fn switch_polish_llm(
+    name: String,
+    rc: State<'_, SharedRuntimeConfig>,
+    coordinator: State<'_, crate::coordinator::Coordinator>,
+) -> Result<(), String> {
     let spec = if name.is_empty() {
         // 「不选择模型」：polish_llm 置空
         String::new()
@@ -382,6 +389,8 @@ pub fn switch_polish_llm(name: String, rc: State<'_, SharedRuntimeConfig>) -> Re
             e
         );
     }
+    // 立即同步到 coordinator 的 config 快照（无需 Toggle）
+    coordinator.update_runtime();
     Ok(())
 }
 

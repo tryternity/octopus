@@ -415,7 +415,11 @@ click → 无动作（disabled，仅 tooltip）
 
 ### 16.1 RuntimeConfig 扩展（补充 §15.4）
 
-`RuntimeConfig` 新增 `polish_llm: String`（运行时镜像 `config.yaml.polish_llm`，`from_config` 初始化镜像）。润色链路（`coordinator.rs` 的 `check_and_trigger_polish` / `start_pasting` / 立即润色）读 `config.polish_llm`——**但 `config` 是启动时 move 进 coordinator 线程的快照，不会自动跟随 RuntimeConfig 更新**。同步机制：`Command::Toggle` 进入 `Idle` 时从 RuntimeConfig 重读 `asr_engine` / `polish_mode` / **`polish_llm`**（`config.polish_llm = rc.polish_llm.clone()`）——故用户在设置窗口改 `polish_llm` 后**需要重新 Toggle 录音（停止 → 开始）才生效**。`polish_mode` 例外，每个 tick 重读 `set_mode`（立即生效）。2026-06-18 修复：曾遗漏 Toggle 时同步 `polish_llm`，导致「立即润色」报 `no LLM config available` 按钮卡死。
+`RuntimeConfig` 新增 `polish_llm: String`（运行时镜像 `config.yaml.polish_llm`，`from_config` 初始化镜像）。润色链路（`coordinator.rs` 的 `check_and_trigger_polish` / `start_pasting` / 立即润色）读 `config.polish_llm`——**但 `config` 是启动时 move 进 coordinator 线程的快照，不会自动跟随 RuntimeConfig 更新**。
+
+**同步机制（2026-06-18 改进为立即生效）**：新增 `Command::UpdateRuntime`，外部修改 RuntimeConfig 后通过 `coordinator.update_runtime()` 主动通知 coordinator 重读 RuntimeConfig 把 `polish_llm` / `polish_mode` / `asr_correct` / `output_simplified` / `hide_toolbar` 同步到 `config` 快照（详见 `sync_runtime_fields` 辅助函数，与 Toggle 时复用同一逻辑）。`set_config`（设置窗口）和 `switch_polish_llm`（工具栏浮层）在写完 RuntimeConfig 后调 `coordinator.update_runtime()`——**用户在录音中改 polish_llm 也能立即生效**（下次润色用新模型），无需 Toggle。`asr_engine` 不在此路径（需重建引擎实例，仍只能 Toggle 时切）。`polish_mode` 仍保留每 tick 读 + `set_mode` 立即生效（双保险）。
+
+历史修复：2026-06-18 曾遗漏 Toggle 时同步 `polish_llm`，导致「立即润色」报 `no LLM config available` 按钮卡死；本次 UpdateRuntime 路径彻底解决外部修改即时同步问题。
 
 ### 16.2 后端命令（`runtime_config.rs`）
 

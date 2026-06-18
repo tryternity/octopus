@@ -163,8 +163,8 @@ match key {
 
 | 时机 | 字段 | 机制 |
 |---|---|---|
-| **立即** | polish_mode, denoise_mode, asr_correct, output_simplified, hide_toolbar, **shortcut**（热重载：注销旧 + 注册新） | 写 RuntimeConfig / 热重载，即时生效 |
-| **下次录音** | asr_engine, polish_llm, microphone, language, asr_hardware_accelerated, segment_duration, segment_silence, segment_overlap, polish_interval, pause_polish_threshold_ms | 写 AppConfig 缓存，Coordinator Toggle 进入 Idle 时重读 |
+| **立即** | polish_mode, denoise_mode, asr_correct, output_simplified, hide_toolbar, **shortcut**（热重载：注销旧 + 注册新）, **polish_llm**（2026-06-18 改进：通过 `Command::UpdateRuntime` 同步到 coordinator config 快照，录音中改也立即生效） | 写 RuntimeConfig / 热重载 / `update_runtime`，即时生效 |
+| **下次录音** | asr_engine, microphone, language, asr_hardware_accelerated, segment_duration, segment_silence, segment_overlap, polish_interval, pause_polish_threshold_ms | 写 AppConfig 缓存，Coordinator Toggle 进入 Idle 时重读（asr_engine 需重建引擎实例） |
 | **重启** | engine_mode | 需重启进程（引擎初始化等） |
 
 ---
@@ -227,7 +227,7 @@ match key {
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
 | 润色模式 | 下拉（关闭/仅最终/中间+最终） | `polish_mode` | 立即 |
-| 润色模型 | 下拉（llm_models 列表） | `polish_llm` | 下次录音 |
+| 润色模型 | 下拉（llm_models 列表） | `polish_llm` | 立即（2026-06-18 改进，原「下次录音」） |
 | 润色间隔 | 下拉（仅最后=0/每3~8秒） | `polish_interval` | 下次录音 |
 | 说话换气间隔 | 下拉（500/600/700/800/900/1000ms，>= 500） | `pause_polish_threshold_ms` | 下次录音 |
 

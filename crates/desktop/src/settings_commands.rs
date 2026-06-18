@@ -59,6 +59,7 @@ pub fn set_config(
     key: String,
     value: Value,
     rc: State<'_, SharedRuntimeConfig>,
+    coordinator: State<'_, crate::coordinator::Coordinator>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let old_shortcut = {
@@ -69,6 +70,15 @@ pub fn set_config(
     apply_config_value(&mut cfg, &key, &value)?;
     sync_runtime_config(&rc, &key, &cfg);
     write_config_yaml(&cfg)?;
+
+    // 运行时可变字段立即同步到 coordinator 的 config 快照，
+    // 无需等下次 Toggle（用户在录音中改 polish_llm 等也能立即生效）
+    if matches!(
+        key.as_str(),
+        "polish_llm" | "polish_mode" | "asr_correct" | "output_simplified" | "hide_toolbar"
+    ) {
+        coordinator.update_runtime();
+    }
 
     // 快捷键热重载：注销旧的 → 注册新的
     if key == "shortcut" && cfg.shortcut != old_shortcut {
