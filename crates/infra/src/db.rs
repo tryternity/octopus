@@ -391,6 +391,22 @@ pub fn update_polished(
     })
 }
 
+/// 用户提交编辑 / 中间润色折回后更新 edited_text。
+pub fn update_edited_text(id: i64, edited_text: &str) -> Result<()> {
+    with_db(|conn| {
+        update_edited_text_at(conn, id, edited_text)?;
+        Ok(())
+    })
+}
+
+/// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。返回实际更新的行数。
+fn update_edited_text_at(conn: &Connection, id: i64, edited_text: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE transcriptions SET edited_text=?1 WHERE id=?2",
+        params![edited_text, id],
+    )?)
+}
+
 /// 识别结束 finalize：写最终 raw/polished/status/char_count/duration_ms。
 pub fn finalize_transcription(
     id: i64,
@@ -419,6 +435,8 @@ pub struct TranscriptionRecord {
     pub engine: String,
     pub raw_text: String,
     pub polished_text: Option<String>,
+    /// 用户编辑后的最终文本（None=未编辑，回退用 polished_text/raw_text）。
+    pub edited_text: Option<String>,
     pub polish_status: String,
     pub duration_ms: Option<i64>,
 }
@@ -456,7 +474,7 @@ fn list_transcriptions_at(
     offset: u32,
 ) -> Result<Vec<TranscriptionRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, created_at, engine, raw_text, polished_text, polish_status, duration_ms
+        "SELECT id, created_at, engine, raw_text, polished_text, edited_text, polish_status, duration_ms
          FROM transcriptions ORDER BY id DESC LIMIT ?1 OFFSET ?2"
     )?;
     let rows = stmt.query_map(params![limit, offset], |row| {
@@ -466,8 +484,9 @@ fn list_transcriptions_at(
             engine: row.get(2)?,
             raw_text: row.get(3)?,
             polished_text: row.get(4)?,
-            polish_status: row.get(5)?,
-            duration_ms: row.get(6)?,
+            edited_text: row.get(5)?,
+            polish_status: row.get(6)?,
+            duration_ms: row.get(7)?,
         })
     })?;
     let mut records = Vec::new();
@@ -898,5 +917,41 @@ mod tests {
         let n = delete_transcriptions_at(&conn, &[100, 200]).unwrap();
         assert_eq!(n, 2);
         assert!(list_transcriptions_at(&conn, 10, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn update_edited_text_persists_and_lists() {
+        let conn = open_init();
+        // id=100：将被编辑的记录
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polished_text, polish_status)
+             VALUES (100, '2026-06-18 10:00:00', 'whisper', 'raw原文', '润色稿', 'done')",
+            [],
+        )
+        .unwrap();
+        // id=200：未编辑的对照记录（验证 NULL → None 映射）
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+             VALUES (200, '2026-06-18 11:00:00', 'qwen3', '另一条', 'off')",
+            [],
+        )
+        .unwrap();
+
+        // 走真实 update_edited_text_at（而非裸 SQL），断言返回行数 1
+        let n = update_edited_text_at(&conn, 100, "手改文本").unwrap();
+        assert_eq!(n, 1);
+
+        // 经 list_transcriptions_at 回读，同时验证 list 列序映射正确
+        let rows = list_transcriptions_at(&conn, 10, 0).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, 200, "最新在前（id 降序）");
+        assert_eq!(rows[1].id, 100);
+        assert_eq!(rows[1].edited_text.as_deref(), Some("手改文本"));
+        // 未编辑记录：edited_text 为 NULL → Option None
+        assert_eq!(rows[0].edited_text, None);
+
+        // 不存在的 id：返回 0 行更新
+        let missing = update_edited_text_at(&conn, 9999, "无效").unwrap();
+        assert_eq!(missing, 0);
     }
 }
