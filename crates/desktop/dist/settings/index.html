@@ -442,7 +442,11 @@ function renderSettings(resp) {
     '<div class="card">' +
       '<div class="row">' +
         '<div class="label-group"><span class="label-text">激活/关闭快捷键 <span class="label-effect">(立即)</span></span></div>' +
-        '<button class="shortcut-input" id="shortcut-input" onclick="startShortcutCapture(this)">' + escapeHtml(cfg.shortcut) + '</button>' +
+        '<button class="shortcut-input" id="shortcut-input" onclick="startShortcutCapture(this, \'asr_shortcut\')">' + escapeHtml(cfg.asr_shortcut) + '</button>' +
+      '</div>' +
+      '<div class="row">' +
+        '<div class="label-group"><span class="label-text">编辑快捷键 <span class="label-effect">(立即)</span></span><span class="label-hint">结果窗聚焦时进入编辑模式</span></div>' +
+        '<button class="shortcut-input" id="edit-shortcut-input" onclick="startShortcutCapture(this, \'edit_shortcut\')">' + escapeHtml(cfg.edit_shortcut) + '</button>' +
       '</div>' +
       '<div class="row">' +
         '<div class="label-group"><span class="label-text">工具栏自动隐藏 <span class="label-effect">(立即)</span></span><span class="label-hint">开启=自动隐藏，关闭=始终显示</span></div>' +
@@ -565,7 +569,7 @@ async function toggleVal(key, el) {
 window.toggleVal = toggleVal;
 
 // ── 快捷键捕获 ──
-function startShortcutCapture(btn) {
+function startShortcutCapture(btn, configKey) {
   if (btn.classList.contains('capturing')) return;
   const originalValue = btn.textContent;
   btn.classList.add('capturing');
@@ -599,17 +603,19 @@ function startShortcutCapture(btn) {
     btn.classList.remove('capturing');
     btn.textContent = shortcut;
     document.removeEventListener('keydown', onKeyDown, true);
-    // 先检查冲突，无冲突才保存
-    checkAndSaveShortcut(btn, shortcut, originalValue);
+    checkAndSaveShortcut(btn, shortcut, originalValue, configKey);
   }
 
   document.addEventListener('keydown', onKeyDown, true);
 }
 
-async function checkAndSaveShortcut(btn, shortcut, originalValue) {
+async function checkAndSaveShortcut(btn, shortcut, originalValue, configKey) {
   try {
-    await invoke('check_shortcut', { shortcut });
-    await setVal('shortcut', shortcut);
+    // 全局快捷键需冲突检测；编辑快捷键仅结果窗内 keydown 判定，跳过
+    if (configKey === 'asr_shortcut') {
+      await invoke('check_shortcut', { shortcut });
+    }
+    await setVal(configKey, shortcut);
   } catch (e) {
     showToast(String(e));
     btn.textContent = originalValue;

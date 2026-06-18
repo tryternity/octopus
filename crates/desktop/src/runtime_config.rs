@@ -9,33 +9,11 @@ use tauri::State;
 
 use crate::config::PolishMode;
 
-/// 运行时可变的配置字段。
-pub struct RuntimeConfig {
-    pub asr_engine: String,
-    pub polish_mode: PolishMode,
-    pub polish_llm: String,
-    pub denoise_mode: u8,
-    pub asr_correct: bool,
-    pub output_simplified: bool,
-    pub hide_toolbar: bool,
-}
-
-impl RuntimeConfig {
-    pub fn from_config(cfg: &octopus_infra::config::AppConfig) -> Self {
-        Self {
-            asr_engine: cfg.asr_engine.clone(),
-            polish_mode: cfg.polish_mode,
-            polish_llm: cfg.polish_llm.clone(),
-            denoise_mode: cfg.denoise_mode,
-            asr_correct: cfg.asr_correct,
-            output_simplified: cfg.output_simplified,
-            hide_toolbar: cfg.hide_toolbar,
-        }
-    }
-}
-
-/// 挂 tauri::State 的共享句柄。
-pub type SharedRuntimeConfig = Arc<RwLock<RuntimeConfig>>;
+/// 运行时可变的完整应用配置——唯一真相源。
+/// 启动时从 config.yaml 加载，set_config / switch_* 命令直接修改此结构；
+/// toolbar_state / coordinator 都从这里读（coordinator clone 快照）。
+/// 取代旧 RuntimeConfig 部分镜像，消除字段同步遗漏 bug。
+pub type SharedRuntimeConfig = Arc<RwLock<octopus_infra::config::AppConfig>>;
 
 fn polish_mode_to_u8(m: PolishMode) -> u8 {
     match m {
@@ -248,11 +226,8 @@ pub fn build_llm_options_public(
 #[tauri::command]
 pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
     let g = rc.read().unwrap();
-    // hide_toolbar 从 RuntimeConfig 读（set_config 写镜像后立即生效）；
-    // 不能从 load_app_config_cached 读——那是 OnceLock 启动快照，写 config.yaml 不会刷新。
-    // edit_shortcut 是启动只读配置（不参与运行时切换），从 AppConfig 缓存读。
-    let app_cfg = octopus_asr::config::load_app_config_cached();
-    let edit_shortcut = app_cfg.edit_shortcut.clone();
+    // hide_toolbar / edit_shortcut 等所有字段均从共享 AppConfig 读——set_config 写镜像后立即生效。
+    let edit_shortcut = g.edit_shortcut.clone();
     // polish_llm 有效 = 裸名非空且在 DB 启用 LLM 列表中（DB 查询失败保守为 false）。
     let polish_llm = g.polish_llm.clone();
     let polish_llm_valid = {
@@ -406,22 +381,6 @@ pub fn switch_polish_llm(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn from_config_mirrors_fields() {
-        let mut cfg = octopus_infra::config::AppConfig::default();
-        cfg.asr_engine = "qwen3-asr-0.6B".into();
-        cfg.polish_mode = PolishMode::Intermediate;
-        cfg.asr_correct = true;
-        cfg.output_simplified = false;
-        cfg.hide_toolbar = false;
-        let rc = RuntimeConfig::from_config(&cfg);
-        assert_eq!(rc.asr_engine, "qwen3-asr-0.6B");
-        assert_eq!(rc.polish_mode, PolishMode::Intermediate);
-        assert!(rc.asr_correct);
-        assert!(!rc.output_simplified);
-        assert!(!rc.hide_toolbar);
-    }
 
     #[test]
     fn polish_mode_u8_round_trip() {

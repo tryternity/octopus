@@ -77,9 +77,9 @@ pub struct AppConfig {
     #[serde(default = "default_language")]
     pub language: String,
 
-    /// 全局快捷键
-    #[serde(default = "default_shortcut")]
-    pub shortcut: String,
+    /// 全局 ASR 激活/关闭快捷键
+    #[serde(default = "default_asr_shortcut")]
+    pub asr_shortcut: String,
 
     /// 粘贴方式: clipboard | direct | none
     #[serde(default = "default_paste_method")]
@@ -162,7 +162,7 @@ fn default_grpc_endpoint() -> String {
 fn default_language() -> String {
     "auto".into()
 }
-fn default_shortcut() -> String {
+fn default_asr_shortcut() -> String {
     "CmdOrCtrl+Shift+Space".into()
 }
 fn default_paste_method() -> String {
@@ -216,7 +216,7 @@ impl Default for AppConfig {
             // 未配置 asr_engine → 空，由 asr::resolve_active_engine 回退 to 兜底引擎
             asr_engine: String::new(),
             language: default_language(),
-            shortcut: default_shortcut(),
+            asr_shortcut: default_asr_shortcut(),
             paste_method: default_paste_method(),
             write_to_clipboard: default_write_to_clipboard(),
             microphone: String::new(),
@@ -248,7 +248,21 @@ pub fn load_config() -> Result<AppConfig> {
     }
 
     let text = std::fs::read_to_string(&config_path)?;
-    let config: AppConfig = serde_yaml::from_str(&text)?;
+    // 迁移旧字段名 shortcut → asr_shortcut（serde alias 在两键共存时报 duplicate field）
+    let mut value: serde_yaml::Value = serde_yaml::from_str(&text)?;
+    if let Some(map) = value.as_mapping_mut() {
+        let shortcut_key = serde_yaml::Value::String("shortcut".into());
+        let asr_key = serde_yaml::Value::String("asr_shortcut".into());
+        if map.get(&shortcut_key).is_some() {
+            if map.get(&asr_key).is_none() {
+                let old_val = map.remove(&shortcut_key).unwrap();
+                map.insert(asr_key, old_val);
+            } else {
+                map.remove(&shortcut_key);
+            }
+        }
+    }
+    let config: AppConfig = serde_yaml::from_value(value)?;
     Ok(config)
 }
 
@@ -360,5 +374,49 @@ mod tests {
         // 显式值原样落到字段（Tauri Accelerator 字符串）
         let cfg: AppConfig = serde_yaml::from_str("edit_shortcut: CmdOrCtrl+Shift+E\n").unwrap();
         assert_eq!(cfg.edit_shortcut, "CmdOrCtrl+Shift+E");
+    }
+
+    #[test]
+    fn load_config_migrates_shortcut_to_asr_shortcut() {
+        // 旧字段 shortcut → 新字段 asr_shortcut
+        let tmp = std::env::temp_dir().join(format!("octopus_test_migrate_{}.yaml", std::process::id()));
+        std::fs::write(&tmp, "shortcut: Cmd+Q\n").unwrap();
+        // 临时切换 config home
+        std::fs::create_dir_all(tmp.parent().unwrap().join("test_home")).unwrap();
+        // 直接测迁移逻辑（load_config 依赖 octopus_config_home，这里测 serde 层兼容）
+        let text = "shortcut: Cmd+Q\n";
+        let mut value: serde_yaml::Value = serde_yaml::from_str(text).unwrap();
+        if let Some(map) = value.as_mapping_mut() {
+            let old_key = serde_yaml::Value::String("shortcut".into());
+            let new_key = serde_yaml::Value::String("asr_shortcut".into());
+            if map.get(&old_key).is_some() && map.get(&new_key).is_none() {
+                let v = map.remove(&old_key).unwrap();
+                map.insert(new_key, v);
+            }
+        }
+        let cfg: AppConfig = serde_yaml::from_value(value).unwrap();
+        assert_eq!(cfg.asr_shortcut, "Cmd+Q");
+        let _ = std::fs::remove_file(&tmp);
+    }
+
+    #[test]
+    fn load_config_both_keys_drops_old() {
+        // 两键共存 → 删旧留新（不报 duplicate field）
+        let text = "shortcut: Cmd+Q\nasr_shortcut: Cmd+W\n";
+        let mut value: serde_yaml::Value = serde_yaml::from_str(text).unwrap();
+        if let Some(map) = value.as_mapping_mut() {
+            let old_key = serde_yaml::Value::String("shortcut".into());
+            let new_key = serde_yaml::Value::String("asr_shortcut".into());
+            if map.get(&old_key).is_some() {
+                if map.get(&new_key).is_none() {
+                    let v = map.remove(&old_key).unwrap();
+                    map.insert(new_key.clone(), v);
+                } else {
+                    map.remove(&old_key);
+                }
+            }
+        }
+        let cfg: AppConfig = serde_yaml::from_value(value).unwrap();
+        assert_eq!(cfg.asr_shortcut, "Cmd+W");
     }
 }

@@ -497,17 +497,18 @@ impl Coordinator {
     }
 }
 
-/// 把 RuntimeConfig 的运行时可变字段同步到 AppConfig 快照。
+/// 把共享 AppConfig 的运行时可变字段同步到 coordinator 的 config 快照。
 ///
 /// 与 Toggle 时的同步逻辑共用，确保两条路径同步内容一致。
 /// 不含 `asr_engine`（需重建引擎实例，只能 Toggle 时切），也不含 `denoise_mode`
 /// （音频处理路径有独立 cfg 读取，会话中切换影响降噪器状态）。
-fn sync_runtime_fields(config: &mut AppConfig, rc: &crate::runtime_config::RuntimeConfig) {
-    config.polish_mode = rc.polish_mode;
-    config.polish_llm = rc.polish_llm.clone();
-    config.asr_correct = rc.asr_correct;
-    config.output_simplified = rc.output_simplified;
-    config.hide_toolbar = rc.hide_toolbar;
+fn sync_runtime_fields(config: &mut AppConfig, shared: &AppConfig) {
+    config.polish_mode = shared.polish_mode;
+    config.polish_llm = shared.polish_llm.clone();
+    config.asr_correct = shared.asr_correct;
+    config.output_simplified = shared.output_simplified;
+    config.hide_toolbar = shared.hide_toolbar;
+    config.edit_shortcut = shared.edit_shortcut.clone();
 }
 
 /// 前端命令：取消当前录音/处理（Esc 键）。

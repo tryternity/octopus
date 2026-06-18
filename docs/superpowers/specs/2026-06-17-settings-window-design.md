@@ -105,7 +105,7 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
   "config": {
     "asr_engine": "local:qwen3-asr:qwen3-asr-0.6B",
     "language": "auto",
-    "shortcut": "CmdOrCtrl+Shift+Space",
+    "asr_shortcut": "CmdOrCtrl+Shift+Space",
     "segment_silence": 400.0,
     "polish_mode": 0,
     "polish_interval": 5.0,
@@ -146,7 +146,7 @@ match key {
     "segment_silence" / "polish_interval" => as_f64() > 0.0
     "pause_polish_threshold_ms" => as_f64() >= 600.0
     // string（自由）
-    "shortcut" / "microphone" => as_str()
+    "asr_shortcut" / "edit_shortcut" / "microphone" => as_str()
     // string（裸 model_name → 构造 3-part spec）
     "asr_engine" => build_asr_engine_spec(as_str())
     "polish_llm" => build_polish_llm_spec(as_str())
@@ -161,7 +161,7 @@ match key {
 
 | 时机 | 字段 | 机制 |
 |---|---|---|
-| **立即** | polish_mode, denoise_mode, asr_correct, output_simplified, hide_toolbar, **shortcut**（热重载：注销旧 + 注册新）, **polish_llm**（2026-06-18 改进：通过 `Command::UpdateRuntime` 同步到 coordinator config 快照，录音中改也立即生效） | 写 RuntimeConfig / 热重载 / `update_runtime`，即时生效 |
+| **立即** | polish_mode, denoise_mode, asr_correct, output_simplified, hide_toolbar, **asr_shortcut**（热重载：注销旧 + 注册新）, **edit_shortcut**（发 `config-changed` 事件，结果窗 `refreshActive` 重读 `toolbar_state.edit_shortcut`）, **polish_llm**（2026-06-18 改进：通过 `Command::UpdateRuntime` 同步到 coordinator config 快照，录音中改也立即生效） | 写 RuntimeConfig / 热重载 / `update_runtime`，即时生效 |
 | **下次录音** | asr_engine, microphone, language, asr_hardware_accelerated, segment_silence, polish_interval, pause_polish_threshold_ms | 写 AppConfig 缓存，Coordinator Toggle 进入 Idle 时重读（asr_engine 需重建引擎实例） |
 | **重启** | engine_mode | 需重启进程（引擎初始化等） |
 
@@ -209,7 +209,8 @@ match key {
 **卡片「交互」（首位，无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
-| 激活/关闭快捷键 | 快捷键捕获按钮（点击后捕获键盘组合，含冲突检测 `check_shortcut`） | `shortcut` | 立即 |
+| 激活/关闭快捷键 | 快捷键捕获按钮（点击后捕获键盘组合，含冲突检测 `check_shortcut`） | `asr_shortcut` | 立即 |
+| 编辑快捷键 | 快捷键捕获按钮（无冲突检测，仅结果窗内 keydown 判定） | `edit_shortcut` | 立即 |
 | 工具栏自动隐藏 | toggle switch | `hide_toolbar` | 立即 |
 | 麦克风设备 | 下拉（microphones 列表） | `microphone` | 下次录音 |
 
@@ -278,7 +279,7 @@ settings/index.html 加载完成
   → invoke('set_config', {key, value})
   → Rust: 类型校验 → 写 AppConfig 字段 → 写 RuntimeConfig（如适用）
            → write_config_yaml() 写 config.yaml
-           → 如为 shortcut 字段：注销旧快捷键 + 注册新快捷键（热重载）
+           → 如为 asr_shortcut 字段：注销旧快捷键 + 注册新快捷键（热重载）
   → 成功: 控件保持新值
   → 失败: toast 错误 + 控件回退
 ```
@@ -291,7 +292,7 @@ settings/index.html 加载完成
      → Rust: 尝试 on_shortcut 注册 → 立即 unregister → 仅检测
      → 成功: 继续保存
      → 失败: toast「快捷键注册失败，可能被其他应用占用」+ 恢复原值
-  → invoke('set_config', {key:'shortcut', value})
+  → invoke('set_config', {key:'asr_shortcut', value})
      → Rust: 注销旧快捷键 + register_shortcut(新的)
 ```
 

@@ -193,7 +193,7 @@ octopus-cli config
 | `engine_mode` | string | `"embedded"` | desktop | embedded / websocket / grpc |
 | `remote_url` | string | `ws://127.0.0.1:3000/ws/stream` | desktop | websocket 模式远程地址 |
 | `grpc_endpoint` | string | `http://127.0.0.1:50051` | desktop | grpc 模式端点 |
-| `shortcut` | string | `CmdOrCtrl+Shift+Space` | desktop | 全局快捷键 |
+| `asr_shortcut` | string | `CmdOrCtrl+Shift+Space` | desktop | 全局 ASR 激活/关闭快捷键（Tauri Accelerator 格式）。GUI 设置页可配（快捷键捕获按钮 + `check_shortcut` 冲突检测 + 热重载）。旧字段名 `shortcut` 经 serde alias 向后兼容 |
 | `paste_method` | string | `"clipboard"` | desktop | clipboard / direct / none |
 | `write_to_clipboard` | bool | `true` | desktop | 粘贴完成后是否把识别结果写入剪贴板（方便他处再粘贴）；`false` 时三模式等同重构前现状（不碰/恢复原剪贴板）。详见 [transcript-model spec §6](superpowers/specs/2026-06-14-archived-design.md) |
 | `overlay_position` | string | `"top"` | desktop | top / bottom / none |
@@ -207,7 +207,7 @@ octopus-cli config
 | `denoise_mode` | u8 | `1` | desktop | 环境降噪模式：`0`=关闭（直通）、`1`=RNNoise（`nnnoiseless`，默认，纯 Rust 内置默认模型，48kHz→频带增益+OLA，GRU 状态跨帧保持）、`2`=DeepFilterNet3（libDF v0.5.6 + tract 0.19，48kHz 全频带，编译期内嵌 ~7.9MB 模型，质量最佳）。降噪为可插拔后端（`FrameDenoise` trait），由 mode 选后端；亦可由工具栏运行时切换（`set_denoise_mode` 命令）并持久化回 config.yaml。初始化/推理失败自动降级直通（warn），不阻断录音。详见 [architecture.md](../architecture.md) |
 | `output_simplified` | bool | `true` | desktop | ASR 输出字形归一化：`true`→简体（繁→简），`false`→繁体（简→繁）。基于开放词典网 CC-BY 3.0 单字对照表（编译期嵌入），在 ASR 输出后做单字级字形转换（不转地域用词）。解决 Qwen3-ASR `auto` 模式输出繁体的问题。详见 [architecture.md](../architecture.md) |
 | `hide_toolbar` | bool | `true` | desktop | 结果展示区工具栏显隐模式：`true`→鼠标移入显示、移出隐藏（默认）；`false`→工具栏始终显示（窗口高度保持展开态 132px） |
-| `edit_shortcut` | string | `"Cmd+E"` | desktop | 结果展示区「进入编辑」快捷键（Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。保存（退出编辑）固定 `Cmd+Enter` 不走此字段。曾用双击进入，因 WKWebView 在 `user-select:text` 区域 `dblclick` 难触发而弃用 |
+| `edit_shortcut` | string | `"Cmd+E"` | desktop | 结果展示区「进入编辑」快捷键（Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。保存（退出编辑）固定 `Cmd+Enter` 不走此字段。GUI 设置页可配（快捷键捕获按钮，不需冲突检测——仅窗口内 keydown 判定）。曾用双击进入，因 WKWebView 在 `user-select:text` 区域 `dblclick` 难触发而弃用 |
 
 > **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（包括 `polish_mode`、`polish_interval` 和新字段 `polish_llm`），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`denoise_mode`（前缀 `denoise_`）控制麦克风环境降噪（采集层前置，VAD/ASR 前）。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
 
@@ -257,7 +257,7 @@ language: "auto"
 engine_mode: "embedded"          # embedded | websocket | grpc
 
 # 桌面交互
-shortcut: "CmdOrCtrl+Shift+Space"
+asr_shortcut: "CmdOrCtrl+Shift+Space"  # 全局 ASR 激活/关闭快捷键（旧字段名 shortcut 仍兼容）
 paste_method: "clipboard"        # clipboard | direct | none
 write_to_clipboard: true         # 粘贴后是否把识别结果留在剪贴板（false = 等同重构前现状）
 overlay_position: "top"          # top | bottom | none
