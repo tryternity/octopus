@@ -448,6 +448,10 @@ function renderSettings(resp) {
         '<div class="label-group"><span class="label-text">工具栏自动隐藏 <span class="label-effect">(立即)</span></span><span class="label-hint">开启=自动隐藏，关闭=始终显示</span></div>' +
         '<div class="toggle ' + (cfg.hide_toolbar?'on':'') + '" onclick="toggleVal(\'hide_toolbar\', this)"></div>' +
       '</div>' +
+      '<div class="row">' +
+        '<div class="label-group"><span class="label-text">麦克风设备 <span class="label-effect">(下次录音)</span></span></div>' +
+        '<select onchange="setVal(\'microphone\', this.value)">' + micOptions + '</select>' +
+      '</div>' +
     '</div>' +
     '<!-- 识别 -->' +
     '<div class="card">' +
@@ -475,6 +479,12 @@ function renderSettings(resp) {
         '<div class="label-group"><span class="label-text">简繁输出 <span class="label-effect">(立即)</span></span><span class="label-hint">开启=简体，关闭=繁体</span></div>' +
         '<div class="toggle ' + (cfg.output_simplified?'on':'') + '" onclick="toggleVal(\'output_simplified\', this)"></div>' +
       '</div>' +
+      '<div class="row">' +
+        '<div class="label-group"><span class="label-text">句间停顿 <span class="label-effect">(毫秒，下次录音)</span></span><span class="label-hint">说话停顿多久算一句话结束</span></div>' +
+        '<select onchange="setVal(\'segment_silence\', parseFloat(this.value))">' +
+          ['300','400','500','600'].map(v => '<option value="' + v + '" ' + (cfg.segment_silence==Number(v)?'selected':'') + '>' + v + 'ms</option>').join('') +
+        '</select>' +
+      '</div>' +
     '</div>' +
     '<!-- 润色 -->' +
     '<div class="card">' +
@@ -497,9 +507,9 @@ function renderSettings(resp) {
         '</select>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">说话换气间隔 <span class="label-effect">(下次录音)</span></span></div>' +
+        '<div class="label-group"><span class="label-text">润色停顿阈值 <span class="label-effect">(下次录音)</span></span><span class="label-hint">停顿超过此值时触发一次中间润色</span></div>' +
         '<select onchange="setVal(\'pause_polish_threshold_ms\', parseFloat(this.value))">' +
-          ['500','600','700','800','900','1000'].map(v => '<option value="' + v + '" ' + (cfg.pause_polish_threshold_ms==Number(v)?'selected':'') + '>' + v + 'ms</option>').join('') +
+          ['600','700','800','900','1000'].map(v => '<option value="' + v + '" ' + (cfg.pause_polish_threshold_ms==Number(v)?'selected':'') + '>' + v + 'ms</option>').join('') +
         '</select>' +
       '</div>' +
     '</div>' +
@@ -512,29 +522,6 @@ function renderSettings(resp) {
           '<option value="1" ' + (dm===1?'selected':'') + '>轻度</option>' +
           '<option value="2" ' + (dm===2?'selected':'') + '>深度</option>' +
         '</select>' +
-      '</div>' +
-    '</div>' +
-    '<!-- VAD 分段 -->' +
-    '<div class="card">' +
-      '<h3>VAD 分段</h3>' +
-      '<div class="row">' +
-        '<div class="label-group"><span class="label-text">分段时长 <span class="label-effect">(下次录音)</span></span><span class="label-hint">秒</span></div>' +
-        '<input type="number" min="1" step="0.5" value="' + cfg.segment_duration + '" onchange="setVal(\'segment_duration\', parseFloat(this.value))">' +
-      '</div>' +
-      '<div class="row">' +
-        '<div class="label-group"><span class="label-text">静音阈值 <span class="label-effect">(下次录音)</span></span><span class="label-hint">毫秒</span></div>' +
-        '<input type="number" min="100" step="50" value="' + cfg.segment_silence + '" onchange="setVal(\'segment_silence\', parseFloat(this.value))">' +
-      '</div>' +
-      '<div class="row">' +
-        '<div class="label-group"><span class="label-text">分段重叠 <span class="label-effect">(下次录音)</span></span><span class="label-hint">毫秒</span></div>' +
-        '<input type="number" min="0" step="50" value="' + cfg.segment_overlap + '" onchange="setVal(\'segment_overlap\', parseFloat(this.value))">' +
-      '</div>' +
-    '</div>' +
-    '<!-- 音频 -->' +
-    '<div class="card">' +
-      '<div class="row">' +
-        '<div class="label-group"><span class="label-text">麦克风设备 <span class="label-effect">(下次录音)</span></span></div>' +
-        '<select onchange="setVal(\'microphone\', this.value)">' + micOptions + '</select>' +
       '</div>' +
     '</div>' +
     '<!-- 引擎模式 -->' +

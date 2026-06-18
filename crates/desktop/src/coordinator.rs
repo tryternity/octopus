@@ -7,6 +7,7 @@ use crate::engine::TranscriptionEngine;
 use crate::paste;
 use crate::transcript::Transcript;
 use octopus_asr::streaming_engine::StreamingSession;
+use octopus_infra::consts::{SEGMENT_DURATION_S, SEGMENT_OVERLAP_MS};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -1177,7 +1178,7 @@ fn handle_vad_segmented_tick(
         let buffer_duration_s = audio_buffer.len() as f64 / 16000.0;
         let silence_ms = *silence_duration * 1000.0;
         let silence_cut = *has_speech && silence_ms >= config.segment_silence;
-        let force_cut = *has_speech && buffer_duration_s >= config.segment_duration;
+        let force_cut = *has_speech && buffer_duration_s >= SEGMENT_DURATION_S;
         let should_send = silence_cut || force_cut;
 
         if should_send {
@@ -1189,7 +1190,7 @@ fn handle_vad_segmented_tick(
             // 仅强制切断保留下一段 overlap（语句被硬切，需重叠保证连贯）；
             // 静音切分是自然语句边界，下一段从干净开始，无需 overlap。
             if force_cut {
-                let overlap_samples = (config.segment_overlap * 16.0) as usize;
+                let overlap_samples = (SEGMENT_OVERLAP_MS * 16.0) as usize;
                 let overlap_start = audio_buffer.len().saturating_sub(overlap_samples);
                 *overlap_tail = audio_buffer[overlap_start..].to_vec();
             } else {

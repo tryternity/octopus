@@ -388,13 +388,13 @@ click → 无动作（disabled，仅 tooltip）
 
 - **config.yaml**：新增 `hide_toolbar: bool`（默认 `true`）
 - **生效语义**：`true`=hover 显隐工具栏（原行为，窗口 100↔132px 动态高度）；`false`=工具栏始终显示（窗口恒 132px）
-- **前端**：`toolbar_state` 命令返回 `hide_toolbar`，前端据此决定是否注册 `mousemove`/`mouseleave` 高度切换逻辑
+- **前端**：`toolbar_state` 命令返回 `hide_toolbar`，`refreshActive()` 双向切换：`false`→移除 hover 监听 + 常驻展开；`true`→（重新）注册 hover 监听 + 立即收起。**运行时切换立即生效**（2026-06-18 改进）：`set_config` 改 `hide_toolbar` 后 emit `config-changed` 事件，result window 监听该事件重调 `refreshActive()` 即时切换工具栏显隐模式——无需等 `show-result` 或重启。
 
 ### 15.4 RuntimeConfig 扩展
 
 `RuntimeConfig` 新增字段：
 - `denoise_mode: u8` —— 运行时镜像 `config.yaml.denoise_mode`，供 `set_denoise_mode` 命令读写
-- `ToolbarState` DTO 新增 `hide_toolbar: bool` + `denoise_mode: u8`，前端经 `toolbar_state` 命令一次性获取
+- `ToolbarState` DTO 新增 `hide_toolbar: bool` + `denoise_mode: u8`，前端经 `toolbar_state` 命令一次性获取。**`hide_toolbar` 必须从 RuntimeConfig 读**（`g.hide_toolbar`），不能从 `load_app_config_cached()` 读——后者是 `OnceLock` 启动快照，`set_config` 写 config.yaml 后不会刷新缓存，会导致运行时切换 hide_toolbar 不生效（2026-06-18 修复）。
 
 ### 15.5 VAD 段间拼接标点去重（2026-06-17 修订）
 
@@ -443,7 +443,7 @@ DTO `LlmOption { name, category, is_local, current, label }`（与 `EngineOption
 - **`build_llm_options`**：首项固定「不选择模型」（`name: ""`）。`current` 有效（裸名非空且在 DB 列表）→ 首项非 current；`current` 空 / 裸名不在 DB / spec 不命中 → 首项 current（**DB 找不到回退无模型**）。
 - **`switch_polish_llm`**：空 `name` → `polish_llm` 置空（不查 DB）；非空走原 DB 校验 + spec 构造。
 - **`ToolbarState`** 新增 `polish_llm_valid: bool`：`toolbar_state` 命令查 DB 计算（裸名非空且在启用 LLM 列表；DB 失败保守 false）。
-- **前端**：浮层渲染首项；点「不选择模型」→ toast「已关闭润色模型」+ `refreshActive()`；`#tool-llm` `active = st.polish_llm_valid`（无模型时深灰、**仍可点击**，非 `disabled`——区别于工具 1）。**`refreshActive()` 调用时机**：① webview 初始化；② `show-result` 事件（每次显示结果窗时重读 toolbar_state，确保用户在设置窗口改了 polish_llm/polish_mode/denoise_mode 后下次显示即刷新——2026-06-18 修复：曾仅初始化调一次，导致设置改了 polish_llm 后工具栏高亮状态不刷新）；③ 浮层切换 / polish-done 等。
+- **前端**：浮层渲染首项；点「不选择模型」→ toast「已关闭润色模型」+ `refreshActive()`；`#tool-llm` `active = st.polish_llm_valid`（无模型时深灰、**仍可点击**，非 `disabled`——区别于工具 1）。**`refreshActive()` 调用时机**：① webview 初始化；② `show-result` 事件（每次显示结果窗时重读 toolbar_state，确保用户在设置窗口改了 polish_llm/polish_mode/denoise_mode 后下次显示即刷新——2026-06-18 修复：曾仅初始化调一次，导致设置改了 polish_llm 后工具栏高亮状态不刷新）；③ `config-changed` 事件（设置窗口改 hide_toolbar 后后端 emit，前端立即切换工具栏显隐模式——双向：`false`→移除 hover + 常驻展开，`true`→恢复 hover + 立即收起）；④ 浮层切换 / polish-done 等。
 
 单测：`build_llm_options_none_current_when_polish_llm_empty_or_not_in_db`（空/裸名不在 DB/spec 不命中 → 首项 current）+ 更新 `build_llm_options_marks_current_and_labels` / `build_llm_options_current_in_spec_format`（首项偏移）。
 

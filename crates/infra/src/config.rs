@@ -94,20 +94,10 @@ pub struct AppConfig {
     #[serde(default)]
     pub microphone: String,
 
-    /// VAD 伪流式：音频缓冲区累积时长阈值（秒）
-    /// 缓冲区达到此时长时自动发送识别，默认 5.0 秒
-    #[serde(default = "default_segment_duration")]
-    pub segment_duration: f64,
-
     /// VAD 伪流式：静音触发识别的时长阈值（毫秒）
     /// 检测到语音后静音超过此时长即发送识别，默认 500 毫秒
     #[serde(default = "default_segment_silence")]
     pub segment_silence: f64,
-
-    /// VAD 伪流式：相邻分段 overlap 时长（毫秒）
-    /// 每段识别音频前会拼接前一段末尾此毫秒数的音频，确保识别文本连续性，默认 200 毫秒
-    #[serde(default = "default_segment_overlap")]
-    pub segment_overlap: f64,
 
     /// overlay 位置: top | bottom | none
     #[serde(default = "default_overlay_position")]
@@ -213,14 +203,8 @@ fn default_denoise_mode() -> u8 {
 fn default_edit_shortcut() -> String {
     "Cmd+E".into()
 }
-fn default_segment_duration() -> f64 {
-    5.0
-}
 fn default_segment_silence() -> f64 {
-    500.0
-}
-fn default_segment_overlap() -> f64 {
-    200.0
+    400.0
 }
 
 impl Default for AppConfig {
@@ -236,9 +220,7 @@ impl Default for AppConfig {
             paste_method: default_paste_method(),
             write_to_clipboard: default_write_to_clipboard(),
             microphone: String::new(),
-            segment_duration: default_segment_duration(),
             segment_silence: default_segment_silence(),
-            segment_overlap: default_segment_overlap(),
             overlay_position: default_overlay_position(),
             polish_mode: PolishMode::default(),
             polish_interval: default_polish_interval(),
