@@ -320,7 +320,7 @@ DF3 的「干净语音 gain」断言**不能用合成稳态谐波**（如现有 
 
 ## 13. 历史与关联
 
-- 前作：[`2026-06-16-denoise-deepfilternet-design.md`](./2026-06-16-denoise-deepfilternet-design.md)
+- 前作：[`2026-06-16-denoise-deepfilternet-design.md`](./2026-06-16-archived-design.md)
   （dfn3.onnx 弃用记录、RNNoise 现状）。
 - spike 证据：`DeepFilterNet/libDF/examples/verify_gain.rs`（fork worktree）。
 - 参考：`DeepFilterNet3-VST3/plugin/src/lib.rs`（Send 解法、v0.5.6 依赖范本）。
