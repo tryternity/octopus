@@ -182,14 +182,24 @@ pub fn run() {
             let engine_manager = Arc::new(octopus_asr::engine::AsrEngineManager::new());
 
             // 一次性解析 config.asr_engine → ResolvedEngine，结果同时用于：
-            //   ① embedded 模式预热模型（仅本地引擎需要）
+            //   ① embedded 模式预热模型（仅本地引擎需要；云引擎跳过）
             //   ② 云引擎路由判定（category == Aliyun 时走 DashscopeEngine，dashscope feature 下生效）
             let resolved_engine = octopus_asr::config::resolve_active_engine(&config.asr_engine);
-            #[cfg(feature = "dashscope")]
-            let resolved_category = resolved_engine.as_ref().ok().map(|r| r.category);
 
-            // Preheat the active ASR model if embedded 本地引擎
-            if config.engine_mode == "embedded" {
+            // 云引擎判定（dashscope feature 下生效）：asr_engine 解析为 Aliyun → DashscopeEngine。
+            // 仅依赖 resolved_engine（已在上一行算好），上移到 preheat 之前，让 preheat 守卫也能复用，
+            // 避免 embedded + asr_engine=aliyun:... 时 preheat 线程对云模型 switch_model → bail 打 ERROR 噪声。
+            #[cfg(feature = "dashscope")]
+            let is_cloud_aliyun = resolved_engine.as_ref()
+                .map(|r| r.category == octopus_asr::config::EngineCategory::Aliyun)
+                .unwrap_or(false);
+
+            // Preheat 仅本地 embedded 引擎（云引擎 DashscopeEngine 无需预热；跳过避免 switch_model 对 aliyun bail）
+            let do_preheat = config.engine_mode == "embedded";
+            #[cfg(feature = "dashscope")]
+            let do_preheat = do_preheat && !is_cloud_aliyun;
+
+            if do_preheat {
                 let resolved_model = match &resolved_engine {
                     Ok(r) => r.name.clone(),
                     Err(_) => "zipformer-small-ctc".to_string(),
@@ -209,9 +219,6 @@ pub fn run() {
             // 1. Create engine —— 云引擎优先（dashscope feature 启用时）
             //    asr_engine 解析为 EngineCategory::Aliyun → DashscopeEngine
             //    否则回落原 engine_mode match（embedded/websocket/grpc）
-            #[cfg(feature = "dashscope")]
-            let is_cloud_aliyun = resolved_category == Some(octopus_asr::config::EngineCategory::Aliyun);
-
             let engine: Arc<dyn TranscriptionEngine> = {
                 #[cfg(feature = "dashscope")]
                 {
