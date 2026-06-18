@@ -1832,25 +1832,32 @@ fn handle_polish_now(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
+    use tauri::Emitter;
+    // 所有早退路径都 emit polish-done 恢复前端按钮——
+    // 否则用户点了「立即润色」后按钮 disabled=true 永久卡死，直到下次录音才恢复
     let transcript = match stage {
         Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
         _ => {
             debug!("PolishNow ignored in stage {:?}", stage_name(stage));
+            let _ = app_handle.emit("polish-done", ());
             return;
         }
     };
     if transcript.full().is_empty() {
         debug!("PolishNow skipped: transcript empty");
+        let _ = app_handle.emit("polish-done", ());
         return;
     }
     if transcript.polish_pending() {
         debug!("PolishNow skipped: polish already pending");
+        let _ = app_handle.emit("polish-done", ());
         return;
     }
     // 检查 LLM 配置是否存在（忽略 polish_mode，立即润色不看 mode）
     if crate::config::llm_config_ignore_mode(config).is_none() {
         warn!("PolishNow: no LLM config available");
         let _ = crate::result_window::show_result(app_handle, "未配置润色模型");
+        let _ = app_handle.emit("polish-done", ());
         return;
     }
     let snapshot = transcript.snapshot_for_polish();

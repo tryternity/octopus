@@ -441,6 +441,9 @@
       resultText.textContent = event.payload;
       container.classList.add('visible');
       resultText.scrollTop = resultText.scrollHeight;
+      // 刷新工具栏状态：用户可能在设置窗口刚改过 polish_llm / polish_mode / denoise_mode，
+      // 这里重读 toolbar_state 保证按钮 active 态与最新配置一致
+      refreshActive();
     });
 
     // 追加文本事件（流式更新时使用）
