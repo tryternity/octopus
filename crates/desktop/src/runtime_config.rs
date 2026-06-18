@@ -54,17 +54,19 @@ fn u8_to_polish_mode(n: u8) -> Option<PolishMode> {
     }
 }
 
-/// 统一显示文本：is_local → "本地:{name}"，否则 "{provider}:{name}"。
+/// 统一显示文本（3-part）：
+/// - is_local=true  → "本地:{category}:{name}"
+/// - is_local=false → "{provider}:{category}:{name}"
 ///
-/// 远程引擎用 provider 前缀（而非 category），以区分 deepseek 直连（provider=deepseek）
-/// 与 aliyun 代管同名模型（provider=aliyun，category 也是 deepseek 系列）——两者 category
-/// 相同但 provider 不同，前缀用 provider 才能让用户在 UI 上分辨供应商。本地引擎 provider
-/// 恒为 "local" 无信息量，故仍走 category 前缀。
-fn engine_label(is_local: bool, _category: &str, provider: &str, name: &str) -> String {
+/// 远程引擎保留 provider 前缀以区分 deepseek 直连（provider=deepseek）与 aliyun
+/// 代管同名模型（provider=aliyun，category 同为 deepseek 系列）——provider 不同但
+/// category 相同，前缀用 provider 才能让用户分辨供应商。本地引擎 provider 恒为
+/// "local" 无信息量，故用 "本地" 前缀。
+fn engine_label(is_local: bool, category: &str, provider: &str, name: &str) -> String {
     if is_local {
-        format!("本地:{}", name)
+        format!("本地:{}:{}", category, name)
     } else {
-        format!("{}:{}", provider, name)
+        format!("{}:{}:{}", provider, category, name)
     }
 }
 
@@ -424,13 +426,13 @@ mod tests {
         ];
         let opts = build_asr_options("whisper-small", engines);
         assert_eq!(opts[0].name, "zipformer-small-ctc");
-        assert_eq!(opts[0].label, "本地:zipformer-small-ctc");
+        assert_eq!(opts[0].label, "本地:zipformer:zipformer-small-ctc");
         assert!(opts[0].is_local);
         assert!(!opts[0].current, "current=whisper-small，兜底非当前");
         assert_eq!(opts[1].name, "whisper-small");
         assert!(opts[1].current);
-        // 远程引擎 label = "{provider}:{name}"（用 provider 区分供应商，非 category）
-        assert_eq!(opts[1].label, "bigmodel:whisper-small");
+        // 远程引擎 label = "{provider}:{category}:{name}"（保留 provider 区分供应商）
+        assert_eq!(opts[1].label, "bigmodel:whisper:whisper-small");
 
         // 场景 2：current 为空 → 兜底为当前
         let opts2 = build_asr_options("", vec![]);
@@ -492,12 +494,12 @@ mod tests {
         assert_eq!(opts[0].label, "不选择模型");
         assert_eq!(opts[0].name, "");
         assert!(!opts[0].current, "current=glm 有效 → 无模型项非 current");
-        // opts[1] = glm current；远程 label = "{provider}:{name}"（bigmodel 前缀，非 category=glm）
+        // opts[1] = glm current；远程 label = "{provider}:{category}:{name}"
         assert!(opts[1].current);
-        assert_eq!(opts[1].label, "bigmodel:glm-4-flashx");
-        // opts[2] = ollama
+        assert_eq!(opts[1].label, "bigmodel:glm:glm-4-flashx");
+        // opts[2] = ollama；本地 label = "本地:{category}:{name}"
         assert!(!opts[2].current);
-        assert_eq!(opts[2].label, "本地:ollama-local");
+        assert_eq!(opts[2].label, "本地:qwen:ollama-local");
     }
 
     #[test]
