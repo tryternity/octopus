@@ -24,6 +24,9 @@ pub struct Transcript {
     edited: String,
     last_polish_time: Instant,
     polish_pending: bool,
+    /// take_polish_input 时 full 的 char 长度（on_polish_done 时推进 raw_len 到此值）。
+    /// 避免润色 pending 期间 display_text 因 raw_len 已推进而丢失 increase（flicker bug）。
+    polish_snapshot_len: usize,
     /// 是否已 INSERT 过 DB（首次有文本时 INSERT 后置 true，之后走 UPDATE）
     db_inserted: bool,
 }
@@ -39,6 +42,7 @@ impl Transcript {
             edited: String::new(),
             last_polish_time: Instant::now(),
             polish_pending: false,
+            polish_snapshot_len: 0,
             db_inserted: false,
         }
     }
@@ -81,9 +85,12 @@ impl Transcript {
         self.mode == PolishMode::Intermediate && self.full.chars().count() > self.raw_len
     }
 
-    /// 取润色输入并推进 raw_len 边界（increase 清空）。
+    /// 取润色输入并记录快照边界（不立即推进 raw_len）。
     /// - has_edit：(Some(edited), increase) —— 已确认=edited（LLM 须原样保留），待润色=increase（新增）
     /// - 否则：(None, full) —— 全量原始 ASR（保持现状）
+    ///
+    /// raw_len 推进延迟到 on_polish_done，避免润色 pending 期间 display_text
+    /// 因 raw_len 已推进而丢失 increase（展示区文字变少的 flicker bug）。
     pub fn take_polish_input(&mut self) -> (Option<String>, String) {
         let preserved = if self.has_edit() {
             Some(self.edited.clone())
@@ -95,7 +102,7 @@ impl Transcript {
         } else {
             self.full.clone()
         };
-        self.raw_len = self.full.chars().count();
+        self.polish_snapshot_len = self.full.chars().count();
         (preserved, to_polish)
     }
 
@@ -111,6 +118,9 @@ impl Transcript {
         } else {
             self.polished = result;
         }
+        // 推进 raw_len 到 take_polish_input 时的快照边界——
+        // 延迟推进保证 pending 期间 display_text 不变（increase 不丢）
+        self.raw_len = self.polish_snapshot_len;
         self.polish_pending = false;
         self.last_polish_time = Instant::now();
     }
@@ -240,11 +250,13 @@ mod tests {
         let (preserved, snap) = t.take_polish_input();
         assert_eq!(preserved, None);
         assert_eq!(snap, "你好世界");
-        assert_eq!(t.increase(), ""); // 快照后 increase 空（raw_len 推进到 full）
+        // raw_len 未推进——pending 期间 increase 不丢（flicker 修复）
+        assert_eq!(t.increase(), "你好世界");
 
-        // 润色完成
+        // 润色完成 → raw_len 推进，increase 清空
         t.on_polish_done("你好，世界。".into());
         assert_eq!(t.display_text(), "你好，世界。"); // polished + 空 increase
+        assert_eq!(t.increase(), "");
     }
 
     #[test]
@@ -316,7 +328,8 @@ mod tests {
         // 第二次停顿快照 + 润色（覆盖第一次 polished）
         let (_p2, s2) = t.take_polish_input();
         assert_eq!(s2, "第一段第二段");
-        assert_eq!(t.increase(), ""); // raw_len 推进到 full → increase 清空
+        // raw_len 未推进——pending 期间 increase 不丢
+        assert_eq!(t.increase(), "第二段");
         t.on_polish_done("润色一二".into());
         assert_eq!(t.display_text(), "润色一二"); // 第二次润色覆盖第一次
     }

@@ -57,8 +57,8 @@ pub fn run() {
 
     let config = octopus_infra::config::load_config().expect("Failed to load config");
     info!(
-        "Config: engine={}, mode={}, shortcut={}",
-        config.asr_engine, config.engine_mode, config.shortcut
+        "Config: engine={}, mode={}, asr_shortcut={}",
+        config.asr_engine, config.engine_mode, config.asr_shortcut
     );
 
     // 初始化嵌入式 DB（建表 + seed 默认引擎）。asr 的 load_config 首次调用时也会
@@ -250,11 +250,9 @@ pub fn run() {
                 }
             };
 
-            // 工具栏运行时配置（asr_engine + polish_mode 的可变镜像），命令与 Coordinator 共享
+            // 运行时共享配置——唯一真相源（Arc<RwLock<AppConfig>>）
             let runtime_config: runtime_config::SharedRuntimeConfig =
-                std::sync::Arc::new(std::sync::RwLock::new(
-                    runtime_config::RuntimeConfig::from_config(&config),
-                ));
+                std::sync::Arc::new(std::sync::RwLock::new(config.clone()));
             app.manage(runtime_config.clone());
 
             // 3. Create Coordinator
@@ -277,7 +275,7 @@ pub fn run() {
             result_window::create_result_window(app.handle());
 
             // 7. Register global shortcut
-            if let Err(e) = shortcut::register_shortcut(app.handle(), &config.shortcut) {
+            if let Err(e) = shortcut::register_shortcut(app.handle(), &config.asr_shortcut) {
                 log::error!("Failed to register shortcut: {}. Use tray menu instead.", e);
             }
 

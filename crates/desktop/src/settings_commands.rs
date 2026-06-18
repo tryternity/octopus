@@ -62,13 +62,15 @@ pub fn set_config(
     coordinator: State<'_, crate::coordinator::Coordinator>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let old_shortcut = {
-        let cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-        cfg.shortcut.clone()
+    let (old_shortcut, mut cfg) = {
+        let g = rc.read().unwrap();
+        (g.asr_shortcut.clone(), g.clone())
     };
-    let mut cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
     apply_config_value(&mut cfg, &key, &value)?;
-    sync_runtime_config(&rc, &key, &cfg);
+    {
+        let mut g = rc.write().unwrap();
+        *g = cfg.clone();
+    }
     write_config_yaml(&cfg)?;
 
     // 运行时可变字段立即同步到 coordinator 的 config 快照，
@@ -80,20 +82,19 @@ pub fn set_config(
         coordinator.update_runtime();
     }
 
-    // hide_toolbar 改变时通知 result window 刷新工具栏显隐模式
-    // （result window 的 refreshActive 负责切换 hover 监听 / 常驻显示）
-    if key == "hide_toolbar" {
+    // hide_toolbar / edit_shortcut 改变时通知 result window 刷新
+    if key == "hide_toolbar" || key == "edit_shortcut" {
         use tauri::Emitter;
         let _ = app_handle.emit("config-changed", ());
     }
 
     // 快捷键热重载：注销旧的 → 注册新的
-    if key == "shortcut" && cfg.shortcut != old_shortcut {
+    if key == "asr_shortcut" && cfg.asr_shortcut != old_shortcut {
         use tauri_plugin_global_shortcut::GlobalShortcutExt;
         if let Ok(old) = old_shortcut.parse::<tauri_plugin_global_shortcut::Shortcut>() {
             let _ = app_handle.global_shortcut().unregister(old);
         }
-        crate::shortcut::register_shortcut(&app_handle, &cfg.shortcut)
+        crate::shortcut::register_shortcut(&app_handle, &cfg.asr_shortcut)
             .map_err(|e| format!("快捷键已保存但注册失败: {}", e))?;
     }
 
@@ -166,8 +167,11 @@ fn apply_config_value(
             }
             cfg.pause_polish_threshold_ms = v;
         }
-        "shortcut" => {
-            cfg.shortcut = value.as_str().ok_or("shortcut 需要字符串")?.to_string();
+        "asr_shortcut" => {
+            cfg.asr_shortcut = value.as_str().ok_or("asr_shortcut 需要字符串")?.to_string();
+        }
+        "edit_shortcut" => {
+            cfg.edit_shortcut = value.as_str().ok_or("edit_shortcut 需要字符串")?.to_string();
         }
         "microphone" => {
             cfg.microphone = value.as_str().ok_or("microphone 需要字符串")?.to_string();
@@ -218,25 +222,6 @@ fn build_polish_llm_spec(bare_name: &str) -> Result<String, String> {
             .find(|m| m.model_name == bare_name)
             .ok_or_else(|| format!("润色模型 '{}' 不存在", bare_name))?;
         Ok(format!("{}:{}:{}", model.provider, model.category, model.model_name))
-    }
-}
-
-/// 字段属于 RuntimeConfig 镜像范围的，同步更新。
-fn sync_runtime_config(
-    rc: &SharedRuntimeConfig,
-    key: &str,
-    cfg: &octopus_infra::config::AppConfig,
-) {
-    let mut g = rc.write().unwrap();
-    match key {
-        "asr_engine" => g.asr_engine = cfg.asr_engine.clone(),
-        "polish_mode" => g.polish_mode = cfg.polish_mode,
-        "polish_llm" => g.polish_llm = cfg.polish_llm.clone(),
-        "denoise_mode" => g.denoise_mode = cfg.denoise_mode,
-        "asr_correct" => g.asr_correct = cfg.asr_correct,
-        "output_simplified" => g.output_simplified = cfg.output_simplified,
-        "hide_toolbar" => g.hide_toolbar = cfg.hide_toolbar,
-        _ => {}
     }
 }
 
@@ -348,8 +333,8 @@ mod tests {
     #[test]
     fn apply_config_string_fields() {
         let mut cfg = octopus_infra::config::AppConfig::default();
-        apply_config_value(&mut cfg, "shortcut", &json!("Ctrl+Alt+Z")).unwrap();
-        assert_eq!(cfg.shortcut, "Ctrl+Alt+Z");
+        apply_config_value(&mut cfg, "asr_shortcut", &json!("Ctrl+Alt+Z")).unwrap();
+        assert_eq!(cfg.asr_shortcut, "Ctrl+Alt+Z");
         apply_config_value(&mut cfg, "microphone", &json!("External Mic")).unwrap();
         assert_eq!(cfg.microphone, "External Mic");
     }

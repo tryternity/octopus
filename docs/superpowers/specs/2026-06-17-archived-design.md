@@ -794,7 +794,7 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
   "config": {
     "asr_engine": "local:qwen3-asr:qwen3-asr-0.6B",
     "language": "auto",
-    "shortcut": "CmdOrCtrl+Shift+Space",
+    "asr_shortcut": "CmdOrCtrl+Shift+Space",
     "segment_silence": 400.0,
     "polish_mode": 0,
     "polish_interval": 5.0,
@@ -835,7 +835,7 @@ match key {
     "segment_silence" / "polish_interval" => as_f64() > 0.0
     "pause_polish_threshold_ms" => as_f64() >= 600.0
     // string（自由）
-    "shortcut" / "microphone" => as_str()
+    "asr_shortcut" / "edit_shortcut" / "microphone" => as_str()
     // string（裸 model_name → 构造 3-part spec）
     "asr_engine" => build_asr_engine_spec(as_str())
     "polish_llm" => build_polish_llm_spec(as_str())
@@ -898,7 +898,8 @@ match key {
 **卡片「交互」（首位，无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
-| 激活/关闭快捷键 | 快捷键捕获按钮（点击后捕获键盘组合，含冲突检测 `check_shortcut`） | `shortcut` | 立即 |
+| 激活/关闭快捷键 | 快捷键捕获按钮（点击后捕获键盘组合，含冲突检测 `check_shortcut`） | `asr_shortcut` | 立即 |
+| 编辑快捷键 | 快捷键捕获按钮（无冲突检测，仅结果窗内 keydown 判定） | `edit_shortcut` | 立即 |
 | 工具栏自动隐藏 | toggle switch | `hide_toolbar` | 立即 |
 | 麦克风设备 | 下拉（microphones 列表） | `microphone` | 下次录音 |
 
@@ -980,7 +981,7 @@ settings/index.html 加载完成
      → Rust: 尝试 on_shortcut 注册 → 立即 unregister → 仅检测
      → 成功: 继续保存
      → 失败: toast「快捷键注册失败，可能被其他应用占用」+ 恢复原值
-  → invoke('set_config', {key:'shortcut', value})
+  → invoke('set_config', {key:'asr_shortcut', value})
      → Rust: 注销旧快捷键 + register_shortcut(新的)
 ```
 
