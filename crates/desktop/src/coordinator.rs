@@ -118,8 +118,13 @@ const VAD_CHUNK_SIZE: usize = 512;
 /// 插入标点的静音时长阈值（秒）
 const PUNCTUATION_SILENCE_THRESHOLD: f64 = 0.5;
 
+/// VAD 预滚静音帧数：录音启动后喂给检测 VAD 的静音帧数，让 LSTM 状态预热，
+/// 避免首几帧检测概率偏低导致首音丢失。512 samples/chunk @ 16kHz = 32ms，
+/// 10 帧 ≈ 320ms 静音预热。
+const VAD_PREROLL_FRAMES: usize = 10;
+
 /// VAD 伪流式 tick 间隔（毫秒）
-const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 300;
+const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 100;
 
 /// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
 pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
@@ -142,7 +147,7 @@ pub struct Coordinator {
 }
 
 /// 流式识别 tick 间隔（毫秒）
-const STREAMING_TICK_INTERVAL_MS: u64 = 600;
+const STREAMING_TICK_INTERVAL_MS: u64 = 200;
 
 impl Coordinator {
     pub fn new(
@@ -376,7 +381,10 @@ fn handle_toggle(
                         // 初始化 VAD（用于静音检测 + 标点）
                         let vad = match octopus_asr::config::find_silero_vad() {
                             Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
-                                Ok(v) => Some(v),
+                                Ok(mut v) => {
+                                    vad_preroll(&mut v);
+                                    Some(v)
+                                }
                                 Err(e) => {
                                     warn!("VAD init failed: {}, punctuation disabled", e);
                                     None
@@ -412,7 +420,9 @@ fn handle_toggle(
                 // 非流式模式：使用 VAD 伪流式分段识别
                 match octopus_asr::config::find_silero_vad() {
                     Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
-                        Ok(vad) => {
+                        Ok(mut vad) => {
+                            // 预滚检测 VAD（LSTM 预热），filter_vad 每段 reset 无需预热
+                            vad_preroll(&mut vad);
                             // 第二个独立 VAD 实例用于过滤（每段 reset，避免与检测流共用造成
                             // LSTM 状态污染）。ONNX Session 在此一次性创建，过滤时只 reset 不重建。
                             // 同一路径 vad 已加载成功，filter_vad 失败属异常，直接放弃。
@@ -947,16 +957,25 @@ fn compute_speech_chunks(vad: &mut octopus_asr::vad::SileroVad, samples: &[f32])
     speech_chunks
 }
 
+/// 预滚 VAD：喂入若干帧静音（零样本），让 LSTM 隐藏状态从冷启动预热，
+/// 避免录音首几帧检测概率偏低导致首音被误判为静音而丢失。
+fn vad_preroll(vad: &mut octopus_asr::vad::SileroVad) {
+    let silence = vec![0.0_f32; VAD_CHUNK_SIZE];
+    for _ in 0..VAD_PREROLL_FRAMES {
+        let _ = vad.compute(&silence);
+    }
+}
+
 /// 启动 VAD 伪流式 tick 线程
 fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         while tick_active.load(Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_millis(VAD_SEGMENTED_TICK_INTERVAL_MS));
             if tick_active.load(Ordering::Relaxed) {
                 if tx.send(Command::VadSegmentedTick).is_err() {
                     break;
                 }
             }
+            std::thread::sleep(std::time::Duration::from_millis(VAD_SEGMENTED_TICK_INTERVAL_MS));
         }
         debug!("VadSegmented tick thread exited");
     });
@@ -1384,12 +1403,12 @@ fn handle_transcription_done(
 fn start_tick_thread(tx: Sender<Command>, streaming_active: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         while streaming_active.load(Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_millis(STREAMING_TICK_INTERVAL_MS));
             if streaming_active.load(Ordering::Relaxed) {
                 if tx.send(Command::StreamingTick).is_err() {
                     break;
                 }
             }
+            std::thread::sleep(std::time::Duration::from_millis(STREAMING_TICK_INTERVAL_MS));
         }
         debug!("Streaming tick thread exited");
     });
