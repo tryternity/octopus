@@ -95,10 +95,10 @@ aliyun ASR 行 **`is_streaming=0`** → `is_streaming_engine()` 返回 false →
 ### 5.2 `EngineCategory` 扩展
 
 - 新增变体 `EngineCategory::Aliyun`。
-- 解析规则：`provider='aliyun'` → `EngineCategory::Aliyun`；`provider='local'` → 按 `category` 字符串映射 5 个本地族。
+- 解析规则：`provider='aliyun'` → `EngineCategory::Aliyun`；`provider='local'` → 按 `category` 字符串映射 5 个本地族。**实现方式**：新增 `resolve_category(provider, category)`——`provider='aliyun'`（不区分大小写）直接返回 `Some(Aliyun)`，否则回落 `engine_category_from_str(category)`。`engine_category_from_str("aliyun")` **仍返回 `None`**——aliyun 不进 5 个本地族字符串映射，只经 provider 分支识别。
 - `AsrSection` 新增 `pub aliyun: Option<HashMap<String /*model_name*/, ModelEntry>>`。
 - `load_models_at`：按 `(provider, category)` 路由——`provider='local'` 入对应本地 category 字段；`provider='aliyun'` 入 `aliyun` 字段。
-- `engine_category_from_str`（或新增 provider 感知解析）/ `pick_entry` / `all_sections` / `list_engines` 加 aliyun 臂。
+- `pick_entry` / `all_sections` / `list_engines` 加 aliyun 臂（`EngineCategory::Aliyun` → `cfg.asr.aliyun`）。
 - DB `category='Fun-ASR'`（协议族）由 DashscopeEngine 按 `model_name` 分派协议，不进 `EngineCategory` 枚举。
 
 ### 5.3 `DashscopeEngine`（新 `desktop/src/engine_dashscope.rs`）
@@ -150,7 +150,7 @@ health_check(): 返回 true（预留）。
   - LLM 4 行：拆分——provider=原 category（aliyun/deepseek/bigmodel），category=模型系列（deepseek→`deepseek`、glm→`glm`）。
   - 新增 qwen（LLM）+ Fun-ASR（ASR）行。
 - **`infra/src/db.rs`**：`parse_model_spec` 3-part + `ModelSpec` enum；`load_models_at`/`load_llm_model_at`/`list_llm_models_at` 查询改 3 字段 + `model_name`；`LlmModelInfo.model_name`；相关测试更新。
-- **`asr/src/config.rs`**：`EngineCategory::Aliyun` + provider 感知解析；`AsrSection.aliyun`；`pick_entry`/`all_sections`/`list_engines`/`resolve_engine_in_config`/`resolve_active_engine` 加 aliyun；测试更新（`engine_category_from_str("aliyun")` 不再 None）。
+- **`asr/src/config.rs`**：`EngineCategory::Aliyun` + `resolve_category(provider, category)` provider 感知解析；`AsrSection.aliyun`；`pick_entry`/`all_sections`/`list_engines`/`resolve_engine_in_config`/`resolve_active_engine` 加 aliyun；测试更新（`engine_category_from_str("aliyun")` **仍返回 `None`**，断言保持；`resolve_category("aliyun", _)` → `Some(Aliyun)`）。
 - **`desktop/src/engine_dashscope.rs`**（新）+ `main.rs` 路由 + `Cargo.toml` feature。
 - **`desktop/src/runtime_config.rs`**：`build_llm_options`/`build_asr_options*` 的 `.name` → `.model_name` 访问。
 - **`llm/src/client.rs`**：无改。

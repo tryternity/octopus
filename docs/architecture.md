@@ -30,7 +30,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 
 | 模块 | 说明 |
 |------|------|
-| `config` | DB 模型配置加载（`AsrConfig`）、模型发现、引擎路由（`resolve_engine_in_config` 按 `PREFIX:NAME` spec 解析）、全局默认引擎兜底（`resolve_active_engine`） |
+| `config` | DB 模型配置加载（`AsrConfig`）、模型发现、引擎路由（`resolve_engine_in_config` 按 `{provider}:{category}:{model_name}` 3-part spec 解析）、全局默认引擎兜底（`resolve_active_engine`）、云引擎分类（`EngineCategory::Aliyun`，由 `resolve_category` 按 provider 分支识别） |
 | `audio` | WAV 读取、重采样（`resample_to` 一次性 / `AudioResampler` 流式，支持任意 from→to 速率，含 denoise 48k 桥接）、VAD 语音过滤 |
 | `denoise` | 可插拔流式环境降噪后端（`FrameDenoise` trait，由 `denoise_mode` 选择）：`1`=RNNoise（`nnnoiseless`，纯 Rust 移植 Xiph RNNoise，内置默认模型，48kHz/FRAME_SIZE=480→频带特征+VAD/噪声/降噪 GRU→频带增益+OLA，GRU 状态跨帧保持）/ `2`=DeepFilterNet3（`Df3Backend` 包装 libDF v0.5.6 的 `DfTract` + tract 0.19，48kHz 全频带）。`DenoiseProcessor` 为 mode 分发器，采集层前置 |
 | `vad` | Silero VAD 语音活动检测 |
@@ -137,7 +137,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号。**段间拼接标点去重**：`consume_completed_results` 在段间补逗号前同时检查「新段不以标点开头」和「已有文本不以标点结尾」，避免 ASR 引擎返回的自带句尾标点与补的逗号连续出现（`。，` `？，`）
 - 流式尾音冲刷（Active Flush）：流式模式累积静音 ≥0.5s 时向引擎补零，强制对齐右上下文 / 触发 CIF，把憋住的尾音即时吐出；走独立路径不插逗号，每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。详见 [spec](superpowers/specs/2026-06-13-streaming-tail-flush-design.md)
 - **设置窗口子系统（settings_commands + settings_window）**：独立 Tauri 窗口 `settings_window`（`settings_window.rs`），原生标题栏、800×600 可调。4 个 Tauri 命令：`open_settings`（单例窗口管理——`get_webview_window` → `set_focus`，否则 `WebviewWindowBuilder` 新建）、`get_config`（返回 `ConfigResponse`：AppConfig JSON + ASR 引擎列表 + LLM 模型列表 + 麦克风设备列表）、`set_config(key, value)`（通用字段写入器，`apply_config_value` 做 17 字段类型/范围校验 → `sync_runtime_config` 同步 RuntimeConfig 镜像 → `write_config_yaml` 持久化）、`get_history(limit, offset)`（分页查询 `transcriptions` 表，返回 `Vec<TranscriptionRecord>`）。前端 `dist/settings/index.html` 纯 vanilla HTML，无构建步骤。`polish_mode` 序列化为 `u8`（0/1/2），前端 select 直接用数字 value。
-- **运行时配置子系统（RuntimeConfig）**：工具栏可运行时切换 `asr_engine` / `polish_mode` / `polish_llm` / `denoise_mode`，无需重启。`runtime_config.rs` 提供 `SharedRuntimeConfig`（`Arc<RwLock<RuntimeConfig>>`，挂 `tauri::State`）作为这四个字段的**可变运行时镜像**，与启动只读的 `AppConfig` 快照互补。8 个 Tauri 命令（`toolbar_state` / `list_asr_engines` / `switch_asr_engine` / `set_polish_mode` / `list_llm_models` / `switch_polish_llm` / `set_denoise_mode` / `polish_now`）读写镜像 + best-effort 持久化回 `~/.octopus/config.yaml`（写盘失败仅 `warn`，本次仍生效、重启回退；`polish_now` 不写盘，只触发润色流程）。**`switch_asr_engine` / `switch_polish_llm` 前端传裸 `name`，后端查 DB 取 `category` / `is_local` 构造 spec（`"local:NAME"` 或 `"CATEGORY:NAME"`）写入 RuntimeConfig + config.yaml**——保证持久化值与 `parse_model_spec` 解析一致。`list_*` 的 current 判定经 `parse_model_spec(current).name()` 提取裸名比较，兼容 spec 和裸名两种历史格式。`switch_asr_engine` 同时经 `tray::update_tray_engine_label` 实时刷新系统托盘菜单的「引擎: <name> (<mode>)」项（`TRAY_ITEMS` 缓存 `engine_info` MenuItem handle，`set_text` 更新而非重建，规避 `MenuItem::with_id` 重复 ID panic）。Coordinator 闭包持镜像句柄，**在 Toggle 进入 `Idle` 时重读 `asr_engine` 并经 `resolve_active_engine` 解析——失效（如引擎被 `is_enabled=0` 禁用）则兜底替换为 `resolved.name`（如 `zipformer-small-ctc`）写回 `config.asr_engine`**，保证 `is_streaming_engine` 判定 / `use_streaming` 重算 / `StreamingSession::new` / 离线 `transcribe` 全用同一有效引擎名（修「禁用引擎致 `StreamingSession::new` 失败、不弹结果窗」bug）；`main.rs` 启动 preheat 同样解析（preheat 与实际工作模型一致）。**每个 tick 重读 `polish_mode` 并 `Transcript::set_mode`**（立即生效，下一次润色按新模式）。详见 [spec](superpowers/specs/2026-06-15-result-window-toolbar-design.md)
+- **运行时配置子系统（RuntimeConfig）**：工具栏可运行时切换 `asr_engine` / `polish_mode` / `polish_llm` / `denoise_mode`，无需重启。`runtime_config.rs` 提供 `SharedRuntimeConfig`（`Arc<RwLock<RuntimeConfig>>`，挂 `tauri::State`）作为这四个字段的**可变运行时镜像**，与启动只读的 `AppConfig` 快照互补。8 个 Tauri 命令（`toolbar_state` / `list_asr_engines` / `switch_asr_engine` / `set_polish_mode` / `list_llm_models` / `switch_polish_llm` / `set_denoise_mode` / `polish_now`）读写镜像 + best-effort 持久化回 `~/.octopus/config.yaml`（写盘失败仅 `warn`，本次仍生效、重启回退；`polish_now` 不写盘，只触发润色流程）。**`switch_asr_engine` / `switch_polish_llm` 前端传裸 `model_name`，后端查 DB 取 `provider` / `category` 构造 3-part spec（`"{provider}:{category}:{model_name}"`）写入 RuntimeConfig + config.yaml**——保证持久化值与 `parse_model_spec` 解析一致。`list_*` 的 current 判定经 `parse_model_spec(current).model_name()` 提取裸名比较，兼容 3-part 和裸名两种历史格式。`switch_asr_engine` 同时经 `tray::update_tray_engine_label` 实时刷新系统托盘菜单的「引擎: <model_name> (<mode>)」项（`TRAY_ITEMS` 缓存 `engine_info` MenuItem handle，`set_text` 更新而非重建，规避 `MenuItem::with_id` 重复 ID panic）。Coordinator 闭包持镜像句柄，**在 Toggle 进入 `Idle` 时重读 `asr_engine` 并经 `resolve_active_engine` 解析——失效（如引擎被 `is_enabled=0` 禁用）则兜底替换为 `resolved.model_name`（如 `zipformer-small-ctc`）写回 `config.asr_engine`**，保证 `is_streaming_engine` 判定 / `use_streaming` 重算 / `StreamingSession::new` / 离线 `transcribe` 全用同一有效引擎名（修「禁用引擎致 `StreamingSession::new` 失败、不弹结果窗」bug）；`main.rs` 启动 preheat 同样解析（preheat 与实际工作模型一致）。**每个 tick 重读 `polish_mode` 并 `Transcript::set_mode`**（立即生效，下一次润色按新模式）。详见 [spec](superpowers/specs/2026-06-15-result-window-toolbar-design.md)
 
 **文本持久化（嵌入式 SQLite）：**
 - 存储：`~/.octopus/octopus.db`（`crates/infra/src/db.rs`，全局 `OnceLock<Mutex<Connection>>`；asr crate 经 `pub use octopus_infra::db` 以 `crate::db` 暴露；cli/server/desktop 共用）
@@ -145,7 +145,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **过程增量入库（schema v3）**：`transcriptions.id` = 识别开始毫秒时间戳（`INTEGER PRIMARY KEY`，应用写入，去 `AUTOINCREMENT`），兼任主键 / 业务 key / 开始时间戳；`duration_ms = finalize_now_ms - id`。入库时机分散到识别过程各事件：首次有 ASR 文本 → `INSERT`（`insert_transcription_at_id`）；分段 / 流式 partial → `UPDATE raw_text`（`update_raw_text`）；停顿润色完成 → `UPDATE polished_text`（`update_polished`）；停止 → `finalize`（含 `duration_ms`，`finalize_transcription`）。DB 失败仅 `warn` log 不阻塞识别（best-effort）。v2→v3 migration DROP 重建（旧数据无所谓）。详见 [spec](superpowers/specs/2026-06-14-transcript-model-design.md)
 - **非阻塞 DB 写入（actor 模式）**：上述 `INSERT`/`UPDATE`/`finalize` 不在协调器线程同步执行——`update_transcription_raw` / `PasteDone` 等调用方仅 `get_db_sender().send(DbCommand)` 入队后立即返回，真实落库由**后台 DB 写线程**（`static DB_SENDER: OnceLock<Sender<DbCommand>>` 懒加载 spawn）单线程消费。mpsc 的 FIFO 保证同 id 的 `Insert` 必在 `UpdateRaw` 之前被消费（故 `mark_db_inserted()` 在 send 后即置位仍安全——真实顺序由 channel 保，不由标志位保）。识别主循环不再被 SQLite I/O 阻塞。
 - **关机优雅 drain**：后台写线程 `&'static Sender` 永不 drop，进程 kill 时队列里未处理命令会丢失（典型路径：录音结束 → `Finalize` 入队 → 用户立即退出 → 该条记录停留未 finalize 态）。`coordinator::shutdown_db()` 置 `DB_SHUTDOWN`（AtomicBool）→ 后台线程排空 `try_iter()` 剩余命令后退出，主线程 `JoinHandle::join` 等待落库完成；`main.rs` 挂到 `tauri::RunEvent::ExitRequested`（macOS Cmd+Q / 关闭最后一个窗口触发），保证退出前队列清空。
-- `models` 表：模型目录（**唯一来源**，schema 见 `crates/infra/src/db.sql`，首次建库 `user_version=0` 时整体执行一次 seed 默认引擎集；含 `is_local` / `is_enabled` / `is_streaming` 列——`load_models_at` 仅读 `domain='asr' AND is_enabled=1`，`domain='llm'` 经 `load_llm_model(spec)` 按 `PREFIX:NAME` spec 读；引擎激活由 `config.yaml.asr_engine` 决定，无 `is_active` 列，见「模型管理」）
+- `models` 表：模型目录（**唯一来源**，schema 见 `crates/infra/src/db.sql`，首次建库 `user_version=0` 时整体执行一次 seed 默认引擎集；列 `domain` / `provider` / `category` / `model_name` / `source` / `secret_key` / `language` / `is_local` / `is_thinking` / `is_streaming` / `is_enabled` / `description`，唯一键 `UNIQUE(domain, provider, category, model_name)`；`load_models_at` 仅读 `domain='asr' AND is_enabled=1`，`domain='llm'` 经 `load_llm_model(spec)` 按 `{provider}:{category}:{model_name}` 3-part spec 读；引擎激活由 `config.yaml.asr_engine` 决定，无 `is_active` 列，见「模型管理」）
 - `model.json` / `history.txt` / `record.txt` 已从代码彻底删除——DB 是唯一配置/存储源
 - `polish_status` 基于润色调用结果：未启用→`off`；启用且返回非空→`done`；启用但返回空或失败→`failed`
 - 润色三档（`polish_mode`：0 关闭 / 1 仅最终 / 2 中间+最终）：中间润色由 `check_and_trigger_polish` 在停顿点触发（流式静音 ≥ `pause_polish_threshold_ms`（默认 600ms）/ 伪流式段边界），把 `Transcript.snapshot_for_polish()`（完整 ASR）送 LLM 全量润色，节流 `polish_interval`（下限 `MIN_POLISH_INTERVAL_SEC=1.0s`）；最终润色在 `start_final_polish_or_paste`（停止后）：启用润色→`Stage::Polishing` 异步线程跑 LLM，回调 `Command::FinalPolishDone` 后 `do_paste`；未启用→直接 `do_paste`。详见 [设计](superpowers/specs/2026-06-14-transcript-model-design.md)。
@@ -155,7 +155,8 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **embedded**（默认）：内嵌 octopus-asr，本地推理
 - **remote-ws**：通过 WebSocket 连接远程 octopus-server
 - **remote-grpc**：通过 gRPC 连接远程推理服务
-- **远程超时保护**：`WsRemoteEngine` / `GrpcRemoteEngine` 的 `transcribe` 以 `tokio::time::timeout(8s)` 包裹（连接 + 收发全程），`health_check` 同样 `timeout(3s)`——规避网络断开 / 后端无响应致 ASR 队列无限期卡死。超时返回 `Err`，经序列空洞修复的空串占位分支保证 `completed_seq` 连续推进、不拖死后续分段
+- **云引擎（aliyun）**：`config.yaml.asr_engine` 解析为 `provider='aliyun'`（`EngineCategory::Aliyun`）时，路由 `DashscopeEngine`（desktop crate，`dashscope` feature 后），不走 `engine_mode` 分支。详见下方「云端 ASR 引擎」
+- **远程超时保护**：`WsRemoteEngine` / `GrpcRemoteEngine` / `DashscopeEngine` 的 `transcribe` 均以 `tokio::time::timeout(8s)` 包裹（连接 + 收发全程），`health_check` 同样 `timeout(3s)`——规避网络断开 / 后端无响应致 ASR 队列无限期卡死。超时返回 `Err`，经序列空洞修复的空串占位分支保证 `completed_seq` 连续推进、不拖死后续分段
 
 ## 模型管理
 
@@ -183,16 +184,37 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 **引擎选择（单一真相 = `config.yaml.asr_engine`）：**
 - `models` 表无 `is_active` 列（开发期 schema 变更采用删库重初始化——见 `crates/infra/src/db.sql` 注释；`init_schema` 仅 `user_version=0→1` 一次性建表 + seed，不做 migration）。
-- **模型选择 spec（`asr_engine` / `polish_llm` 统一格式）**：配置字符串支持 `"PREFIX:NAME"` 前缀格式从 DB `models` 表唯一定位模型（见 [spec](superpowers/specs/2026-06-16-model-spec-prefix-design.md)）：
-  - `"local:NAME"` → `is_local=true AND name`（特殊前缀，跨 category）
-  - `"CATEGORY:NAME"` → `category AND name`（如 `"bigmodel:glm-4-flashx"`）
-  - `"NAME"`（无冒号）→ 等价 `"local:NAME"`，筛 `is_local=true`
-  - 统一解析在 `infra::db::parse_model_spec`，ASR 经 `asr::config::resolve_engine_in_config` 查找，LLM 经 `infra::db::load_llm_model` 查找。区分前缀是因为 DB 唯一键是 `UNIQUE(domain, name, is_local, category)`，不同 category 可有同名模型（如 `deepseek` 与 `aliyun` 下都有 `deepseek-v4-flash`）。
-- 全局默认引擎由 `resolve_active_engine(asr_engine)` 解析：**兜底引擎短路**（裸名为 `zipformer-small-ctc` 时跳过 DB 查找，直接返回硬构造兜底 entry，不触发 warning）→ 其余 spec 匹配命中则用；空/不匹配回退兜底 `zipformer-small-ctc`（`DEFAULT_ASR_MODEL_DIR` 本地打包路径，开箱可用）。返回 `ResolvedEngine.name` 始终是**裸名**（去掉前缀），下游缓存和加载按裸名工作。
-- **流式判定数据驱动**：是否走流式识别由 `models.is_streaming` 列决定——`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming`（seed：zipformer×3 + paraformer = 流式；whisper / sensevoice / qwen3-asr×2 = 非流式），不再按 category 硬编码匹配。Coordinator 的 `use_streaming` 据此在 Toggle 进入 `Idle`（切引擎 / 切模式）时重算——流式引擎走流式 partial，非流式引擎自动回退 VAD 分段伪流式。`StreamingSession::new` 同样走 `resolve_active_engine`（带兜底），与 `is_streaming_engine` 对称——避免 DB 未命中时 `is_streaming_engine` 兜底成功（→ 进 streaming 路径）但 `StreamingSession::new` 创建失败（→ session 错误）。
+- **provider × category taxonomy**（`provider`=vendor/运行位置，与 `category`=引擎族/模型系列 正交）：
+
+  | `provider` | ASR（`category`） | LLM（`category`） |
+  |---|---|---|
+  | `local` | `zipformer`/`whisper`/`sensevoice`/`paraformer`/`qwen3-asr` | —（暂无本地 LLM） |
+  | `aliyun` | `Fun-ASR`（DashScope FunASR Realtime WS） | `qwen` / `deepseek`（经 DashScope 代管） |
+  | `deepseek` | — | `deepseek`（直连） |
+  | `bigmodel` | — | `glm`（智谱） |
+
+- **模型选择 spec（`asr_engine` / `polish_llm` 统一 3-part 格式）**：配置字符串支持 `"{provider}:{category}:{model_name}"` 三段格式从 DB `models` 表唯一定位模型（见 [spec](superpowers/specs/2026-06-17-aliyun-cloud-apis-design.md)）：
+  - `"local:zipformer:zipformer-small-ctc"` → 4 字段精确匹配本地 zipformer
+  - `"aliyun:Fun-ASR:fun-asr-2025-11-07"` → 云端 DashScope FunASR
+  - `"aliyun:qwen:qwen-plus"` / `"deepseek:deepseek:deepseek-v4-flash"` / `"bigmodel:glm:glm-4-flashx"` → LLM
+  - 裸名 `"{model_name}"`（无冒号）→ 仅全局 fallback 路径用（跨 provider/category 搜，优先 local）
+  - 旧 2-part（1 冒号）→ warn + 裸名兜底（迁移期）
+  - 统一解析在 `infra::db::parse_model_spec`（返回 `ModelSpec::Full` / `NameOnly`），ASR 经 `asr::config::resolve_engine_in_config` 查找，LLM 经 `infra::db::load_llm_model` 查找。区分三段是因为 DB 唯一键是 `UNIQUE(domain, provider, category, model_name)`，不同 provider 或 category 下可有同名模型（如 `deepseek-v4-flash` 在 deepseek 直连与 aliyun 代管下各一行）。
+- 全局默认引擎由 `resolve_active_engine(asr_engine)` 解析：**兜底引擎短路**（裸名为 `zipformer-small-ctc` 时跳过 DB 查找，直接返回硬构造兜底 entry，不触发 warning）→ 其余 spec 匹配命中则用；空/不匹配回退兜底 `zipformer-small-ctc`（`DEFAULT_ASR_MODEL_DIR` 本地打包路径，开箱可用）。返回 `ResolvedEngine.model_name` 始终是**裸名**（去掉前缀），下游缓存和加载按裸名工作。
+- **云引擎路由（`provider='aliyun'` → `DashscopeEngine`）**：`resolve_active_engine` 解析时若 `provider='aliyun'` → 由 `resolve_category(provider, category)` 按 provider 分支返回 `EngineCategory::Aliyun`（**注意**：`engine_category_from_str("aliyun")` 仍返回 `None`——aliyun 不进 5 个本地族字符串映射，靠 provider 分支识别）。`desktop/src/main.rs` 启动时 `resolve_active_engine(&config.asr_engine)` → 若 `resolved.category == Some(EngineCategory::Aliyun)` → `Arc::new(DashscopeEngine::new())`（需开 `dashscope` feature）；否则按 `engine_mode`（embedded/websocket/grpc）走本地 `build_local_engine`。云 ↔ 本地切换改 `config.yaml.asr_engine` 后**重启**生效（engine 实例启动时固定）。
+- **流式判定数据驱动**：是否走流式识别由 `models.is_streaming` 列决定——`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming`（seed：zipformer×3 + paraformer = 流式；whisper / sensevoice / qwen3-asr×2 / aliyun Fun-ASR = 非流式），不再按 category 硬编码匹配。Coordinator 的 `use_streaming` 据此在 Toggle 进入 `Idle`（切引擎 / 切模式）时重算——流式引擎走本地流式 partial，非流式引擎自动回退 VAD 分段伪流式。`StreamingSession::new` 同样走 `resolve_active_engine`（带兜底），与 `is_streaming_engine` 对称——避免 DB 未命中时 `is_streaming_engine` 兜底成功（→ 进 streaming 路径）但 `StreamingSession::new` 创建失败（→ session 错误）。
 - 显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，支持 spec 格式、**不走兜底**（匹配不到直接报错）。
 - VAD 模型固定路径（`find_silero_vad` 直接返回 `~/.octopus/models/silero_vad_v4.onnx`），不进 DB、不读配置。
 - **手编 `models` 表 / `config.yaml` 需重启进程生效**（`OnceLock` 缓存，运行中不可热更新）。
+
+### 云端 ASR 引擎（DashscopeEngine）
+
+`crates/desktop/src/engine_dashscope.rs`（`dashscope` cargo feature 后，默认不开）impl `TranscriptionEngine`，接入阿里云百炼 DashScope FunASR Realtime WebSocket。与本地引擎不同：**不在 ASR crate 内**，而在 desktop crate——因为它是分块式 `TranscriptionEngine`（每段 VAD 开一条 WS 跑 duplex 协议），与本地离线引擎共享 coordinator 的 chunk 路径接口（`is_streaming=0` → 不进本地 `StreamingSession`）。
+
+- **协议流程**：每段 `transcribe(samples, language, "aliyun:Fun-ASR:fun-asr-2025-11-07")` 内部：① parse_model_spec → 取 model_name → 查 `cfg.asr.aliyun[model_name]` 拿 endpoint + secret_key（空则 bail 明确报错含 sqlite3 命令）；② WS 握手 + `Authorization: bearer <key>`；③ 发 `run-task`（text frame，streaming=duplex，format=pcm，sample_rate=16000，language_hints）；④ 流式发二进制 PCM 帧（f32[-1,1]→s16le，200ms 分块）；⑤ 发 `finish-task`；⑥ 收 `result-generated` 累积 `payload.output.sentence.text`（取最终句）；⑦ `task-finished` 收尾。段级超时 8s（与 `engine_ws.rs` 一致）。
+- **鉴权**：WS 握手请求经 `IntoClientRequest` + 追加 `Authorization: bearer <secret_key>` header（DashScope api-ws 端点强制要求）。
+- **无运行时状态**：每次 `transcribe` 从 DB 重新解析 → 取最新 endpoint/key（运行时切引擎可即时生效）。
+- **健康检查**：`health_check()` 保守返回 `true`，避免每次启动探活消耗 API 额度；真实健康度在首次 transcribe 时由错误路径暴露。
 
 ## 支持的 ASR 引擎
 
