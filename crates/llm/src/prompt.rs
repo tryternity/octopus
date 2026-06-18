@@ -4,6 +4,12 @@ use std::sync::OnceLock;
 
 static PROMPT_OVERRIDE: OnceLock<String> = OnceLock::new();
 
+/// 已确认部分的边界标记。
+/// ★ 此标记须与 DEFAULT_SYSTEM_PROMPT 第 7 条规则中的【已确认部分】保持字面一致——
+/// DEFAULT_SYSTEM_PROMPT 是 r#"..."# 原始字符串字面量、无法内部插值，故靠此注释 +
+/// user_prompt 中复用 const 来双端锁定一致，避免未来改词导致 system/user 失配。
+const CONFIRMED_MARKER: &str = "已确认部分";
+
 /// 内置默认 system prompt（当未提供 VOICE_POLISH.md 覆盖时使用）
 const DEFAULT_SYSTEM_PROMPT: &str = r#"
 # Role
@@ -36,13 +42,17 @@ pub fn system_prompt() -> &'static str {
 /// 构建 user prompt。
 /// - preserved=None：全量润色（to_polish = 完整文本）。
 /// - preserved=Some：编辑后增量润色，告知 LLM 已确认部分原样保留、仅润色 to_polish。
+///
+/// 分块文案中的「【{CONFIRMED_MARKER}...】」标记须与 DEFAULT_SYSTEM_PROMPT
+/// 第 7 条规则保持字面一致——通过 const 拼装避免双端失配。
 pub fn user_prompt(preserved: Option<&str>, to_polish: &str) -> String {
+    let m = CONFIRMED_MARKER;
     match preserved {
         None => format!("请润色以下语音识别文本：\n{}", to_polish),
         Some(confirmed) => format!(
-            "以下文本中，【已确认部分】已经用户人工校对，必须原样保留、严禁修改；仅对【新增部分】进行润色。\n\n\
-             【已确认部分（原样保留）】\n{}\n\n【新增部分（请润色）】\n{}\n\n\
-             请输出：已确认部分 + 润色后的新增部分，拼接为完整文本，仅输出纯文本。",
+            "以下文本中，【{m}】已经用户人工校对，必须原样保留、严禁修改；仅对【新增部分】进行润色。\n\n\
+             【{m}（原样保留）】\n{}\n\n【新增部分（请润色）】\n{}\n\n\
+             请输出：{m} + 润色后的新增部分，拼接为完整文本，仅输出纯文本。",
             confirmed, to_polish
         ),
     }

@@ -51,13 +51,19 @@ struct MessageContent {
 /// - preserved=Some：增量润色，保留 preserved 原样、仅润色 to_polish（编辑后用）。
 /// - preserved=None：全量润色 to_polish。
 /// 返回润色后的完整文本。
+///
+/// max_tokens 基于 preserved + to_polish 的总字符数（×1.2 冗余系数），
+/// 因为增量模式下 LLM 输出 = preserved（原样）+ 润色后的 to_polish，
+/// 仅按 to_polish 算会导致长编辑时输出被截断。
 pub fn polish(preserved: Option<&str>, to_polish: &str, config: &CompatibleLlmConfig) -> Result<String> {
     if to_polish.trim().is_empty() {
         return Ok(to_polish.to_string());
     }
 
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let max_tokens = ((to_polish.chars().count() as f64) * 1.2).ceil() as u64;
+    let total_chars = to_polish.chars().count()
+        + preserved.map(|p| p.chars().count()).unwrap_or(0);
+    let max_tokens = ((total_chars as f64) * 1.2).ceil() as u64;
 
     // 按 provider 分派思考模式关闭方式：
     // - DeepSeek：`thinking: {type: "disabled"}`（专有字段）
