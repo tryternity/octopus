@@ -6,6 +6,7 @@ mod coordinator;
 mod engine;
 #[cfg(feature = "dashscope")]
 mod engine_dashscope;
+mod engine_dispatch;
 mod engine_embedded;
 #[cfg(feature = "remote-grpc")]
 mod engine_grpc;
@@ -183,14 +184,11 @@ pub fn run() {
             // Initialize engine manager
             let engine_manager = Arc::new(octopus_asr::engine::AsrEngineManager::new());
 
-            // 一次性解析 config.asr_engine → ResolvedEngine，结果同时用于：
-            //   ① embedded 模式预热模型（仅本地引擎需要；云引擎跳过）
-            //   ② 云引擎路由判定（category == Aliyun 时走 DashscopeEngine，dashscope feature 下生效）
+            // 一次性解析 config.asr_engine → ResolvedEngine，用于 preheat 判定。
             let resolved_engine = octopus_asr::config::resolve_active_engine(&config.asr_engine);
 
-            // 云引擎判定（dashscope feature 下生效）：asr_engine 解析为 Aliyun → DashscopeEngine。
-            // 仅依赖 resolved_engine（已在上一行算好），上移到 preheat 之前，让 preheat 守卫也能复用，
-            // 避免 embedded + asr_engine=aliyun:... 时 preheat 线程对云模型 switch_model → bail 打 ERROR 噪声。
+            // 云引擎判定（仅用于 preheat 守卫）：启动时 asr_engine 解析为 Aliyun → 跳过本地预热。
+            // 运行时引擎路由由 DispatchEngine 按 spec 动态分发，不依赖此判定。
             #[cfg(feature = "dashscope")]
             let is_cloud_aliyun = resolved_engine.as_ref()
                 .map(|r| r.category == octopus_asr::config::EngineCategory::Aliyun)
@@ -218,18 +216,13 @@ pub fn run() {
                 });
             }
 
-            // 1. Create engine —— 云引擎优先（dashscope feature 启用时）
-            //    asr_engine 解析为 EngineCategory::Aliyun → DashscopeEngine
-            //    否则回落原 engine_mode match（embedded/websocket/grpc）
+            // Create engine —— dashscope feature 下用 DispatchEngine（持有本地 + 云端两个实例，
+            // 每次 transcribe 按 spec 动态路由），解决运行时切换云/本地引擎不匹配的问题。
+            // 非 dashscope feature 仅本地引擎（embedded/websocket/grpc）。
             let engine: Arc<dyn TranscriptionEngine> = {
                 #[cfg(feature = "dashscope")]
                 {
-                    if is_cloud_aliyun {
-                        info!("ASR 引擎：阿里云 DashScope（cloud，FunASR Realtime WS）");
-                        Arc::new(engine_dashscope::DashscopeEngine::new())
-                    } else {
-                        build_local_engine(&config, &engine_manager)
-                    }
+                    Arc::new(engine_dispatch::DispatchEngine::new(engine_manager.clone()))
                 }
                 #[cfg(not(feature = "dashscope"))]
                 {
