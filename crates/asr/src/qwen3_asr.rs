@@ -28,6 +28,10 @@ const NUM_DECODER_LAYERS: usize = 28;
 const NUM_KV_HEADS: usize = 8;
 const HEAD_DIM: usize = 128;
 const MAX_NEW_TOKENS: usize = 512;
+/// 连续相同 token 数阈值：达到即判定 repetition loop，提前终止解码。
+/// autoregressive ASR 在噪声/边界音频上易陷入重复（如连续吐几百个「你」）；
+/// 正常文本极少连续 N 个相同 token，此阈值安全且能避免跑满 MAX_NEW_TOKENS 拖慢 RTF。
+const REPETITION_LIMIT: usize = 8;
 
 // ── Special token IDs (from tokenizer_config.json added_tokens_decoder) ──
 const EOS_TOKEN_ID: i64 = 151645; // <|im_end|>
@@ -238,6 +242,21 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
 
             let next_id = argmax(&logit_vec);
             generated_ids.push(next_id);
+
+            // 重复 token 早停：连续相同 token 达阈值 → repetition loop，提前终止
+            // （噪声/边界音频触发，如连续吐几百个「你」；正常文本不会连续 8 个相同 token）
+            if generated_ids.len() >= REPETITION_LIMIT
+                && generated_ids[generated_ids.len() - REPETITION_LIMIT..]
+                    .iter()
+                    .all(|&id| id == next_id)
+            {
+                log::warn!(
+                    "qwen3-asr: repetition loop detected (token {} ×{}), stopping early",
+                    next_id,
+                    REPETITION_LIMIT
+                );
+                break;
+            }
 
             if next_id == EOS_TOKEN_ID {
                 active = false;
