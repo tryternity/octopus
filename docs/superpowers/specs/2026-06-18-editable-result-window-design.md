@@ -238,6 +238,7 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
 - `check_and_trigger_polish` / `handle_polish_now`：`let (preserved, to_polish) = transcript.take_polish_input();`。
 - 最终润色入口 `start_final_polish_or_paste`：polish 分支用 `transcript.take_polish_input()`（持有 owned transcript），无润色分支仍用调用方传入的 `text`（= `edited_display()`）。
 - `handle_polish_done`：折回时 DB 走 `UpdateEdited`（保持 `edited_text` 与 display 一致），否则 `UpdatePolished`。
+- 最终润色失败兜底：`Stage::Polishing` 加 `fallback_text`（= 停止时 display），`handle_final_polish_done` 的 Err 分支 `do_paste(&fallback_text)` 而非 raw ASR，保留编辑（DB raw 仍 raw_text）。
 
 ### 12.4 DB 一致性说明
 

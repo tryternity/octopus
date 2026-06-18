@@ -960,9 +960,11 @@ git commit -m "feat(desktop): 编辑×润色接线（take_polish_input 边界 + 
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs`
 
-3 处停止路径的「无润色粘贴 / finish 兜底」文本从 `db_text()` 改为 edited 优先（T1 `edited_display`）：edited 非空用 display（不补句末标点）；否则走原 raw 逻辑（含补「。」）。DB raw 仍用 `db_text()`。最终润色输入已由 T5 的 `take_polish_input` 处理，本任务只动无润色/兜底站点。
+两部分：**Part A** 三处「无润色粘贴 / finish 兜底」文本从 `db_text()` 改为 edited 优先（T1 `edited_display`）：edited 非空用 display（不补句末标点）；否则走原 raw 逻辑（含补「。」）。DB raw 仍用 `db_text()`。**Part B** 最终润色失败兜底保留编辑——`Stage::Polishing` 加 `fallback_text`（= 停止时 final_text），LLM 失败时 `do_paste(&fallback_text)` 而非 raw ASR。最终润色输入已由 T5 的 `take_polish_input` 处理。
 
-- [ ] **Step 1: VadSegmented 停止路径（约 516-525 行）**
+### Part A：三处无润色/兜底站点改 edited_display
+
+- [ ] **Step 1: VadSegmented 停止路径（handle_toggle VadSegmented 分支）**
 
 替换 `let final_text = if ... else ...` 块为 edited 优先：
 
@@ -981,13 +983,13 @@ git commit -m "feat(desktop): 编辑×润色接线（take_polish_input 边界 + 
                 };
 ```
 
-- [ ] **Step 2: handle_transcription_done 停止路径（约 1349-1351 行）**
+- [ ] **Step 2: handle_transcription_done 停止路径**
 
 同样替换（结构与 Step 1 相同的 `final_text` 块）。
 
-- [ ] **Step 3: Streaming 停止路径（约 584 + 571 行）**
+- [ ] **Step 3: Streaming 停止路径（combined + finish 失败兜底）**
 
-584 行 `let combined = transcript.db_text();` 改：
+`let combined = transcript.db_text();` 改：
 
 ```rust
             let combined = transcript
@@ -995,7 +997,7 @@ git commit -m "feat(desktop): 编辑×润色接线（take_polish_input 边界 + 
                 .unwrap_or_else(|| transcript.db_text());
 ```
 
-571 行（`finish()` 失败兜底）`transcript.db_text()` 改：
+`finish()` 失败兜底 `transcript.db_text()` 改：
 
 ```rust
                     Err(e) => {
@@ -1006,17 +1008,72 @@ git commit -m "feat(desktop): 编辑×润色接线（take_polish_input 边界 + 
                     }
 ```
 
-- [ ] **Step 4: 编译 + 测试**
+### Part B：最终润色失败兜底保留编辑
+
+> Part A 后调用方传入 `start_final_polish_or_paste` 的 `text` = edited_display（含编辑）或 raw(+「。」）。复用它作最终润色失败的兜底粘贴文本，避免失败时丢编辑。
+
+- [ ] **Step 4: Stage::Polishing 加 fallback_text 字段**
+
+`enum Stage` 的 `Polishing { id, raw_text }` 加字段：
+
+```rust
+    Polishing {
+        id: i64,
+        raw_text: String,
+        /// 最终润色失败时的兜底粘贴文本（= 停止时 display，含编辑；成功时不用）
+        fallback_text: String,
+    },
+```
+
+- [ ] **Step 5: 构造 Polishing 时设 fallback_text**
+
+`start_final_polish_or_paste` 的 `*stage = Stage::Polishing { id, raw_text: raw_text.clone() }` 改：
+
+```rust
+            *stage = Stage::Polishing {
+                id,
+                raw_text: raw_text.clone(),
+                fallback_text: text.to_string(),
+            };
+```
+
+- [ ] **Step 6: handle_final_polish_done 解构 + Err 分支用 fallback_text**
+
+解构 `Stage::Polishing { id, raw_text }` → 加 `fallback_text`：
+
+```rust
+    let (id, raw_text, fallback_text) = match stage {
+        Stage::Polishing { id, raw_text, fallback_text } => {
+            (*id, raw_text.clone(), fallback_text.clone())
+        }
+        _ => { ... }
+    };
+```
+
+Err 分支（原 `do_paste(stage, &raw_text, id, &raw_text, "failed", ...)`）改为第一参用 fallback_text、第四参（DB raw）仍 raw_text：
+
+```rust
+        Err(e) => {
+            warn!("Final polish failed: {}, using fallback (display)", e);
+            do_paste(stage, &fallback_text, id, &raw_text, "failed", config, app_handle, tx);
+        }
+```
+
+> Ok 分支 `do_paste(&polished, id, &raw_text, "done", ...)` 不变。其他 `Stage::Polishing { .. }` 解构点（用 `{ .. }` 忽略）无需改。
+
+- [ ] **Step 7: 编译 + 测试**
 
 Run: `cargo check -p octopus-desktop --all-targets && cargo test -p octopus-desktop`
-Expected: 通过。
+Expected: 通过；`edited_display` dead_code 警告消失（已被多处消费）。
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/src/coordinator.rs
-git commit -m "feat(desktop): 停止无润色/兜底粘贴改用 edited_display（edited 优先，保留编辑）"
+git commit -m "feat(desktop): 停止路径用 edited_display（无润色/兜底/最终润色失败均保留编辑）"
 ```
+
+> **T8 e2e 重点**：流式中途编辑→停止→最终润色失败 的路径（Streaming `set_full` 后 edited_display 切片 `full[raw_len..]` 在越界时 Rust 返回空、不 panic，但需 e2e 确认拼接符合预期）。
 
 ---
 
