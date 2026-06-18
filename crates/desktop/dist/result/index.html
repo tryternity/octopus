@@ -290,6 +290,32 @@
       showToast._timer = setTimeout(() => { t.hidden = true; }, 2000);
     }
 
+    // 解析 Tauri Accelerator 风格快捷键字符串（如 "Cmd+E"、"CmdOrCtrl+Shift+P"）为可匹配结构。
+    // 用于窗口内 keydown 判定（edit_shortcut 配置项）。
+    function parseShortcut(s) {
+      const parts = s.toLowerCase().split('+').map(p => p.trim());
+      const key = parts.pop();                 // 末段为 key
+      const cmdOrCtrl = parts.includes('cmdorctrl');
+      return {
+        key,
+        cmdOrCtrl,
+        meta: parts.includes('cmd') || parts.includes('super') || parts.includes('meta'),
+        ctrl: parts.includes('control') || parts.includes('ctrl'),
+        alt: parts.includes('alt') || parts.includes('option'),
+        shift: parts.includes('shift'),
+      };
+    }
+    function matchShortcut(e, sc) {
+      if (!sc || e.key.toLowerCase() !== sc.key) return false;
+      if (sc.cmdOrCtrl) {
+        if (!(e.metaKey || e.ctrlKey)) return false;
+      } else {
+        if (e.metaKey !== sc.meta) return false;
+        if (e.ctrlKey !== sc.ctrl) return false;
+      }
+      return e.altKey === sc.alt && e.shiftKey === sc.shift;
+    }
+
     // ── 浮层 ──
     const popup = document.getElementById('popup');
     function closePopup() {
@@ -394,6 +420,8 @@
 
     // ── 编辑态 ──
     let editing = false;
+    // 进入编辑快捷键：默认 Cmd+E，refreshActive 从 toolbar_state.edit_shortcut 覆盖。
+    let editShortcut = parseShortcut('Cmd+E');
     const btnEdit = document.getElementById('tool-edit');
     const btnEditDone = document.getElementById('edit-done');
 
@@ -410,7 +438,7 @@
       sel.removeAllRanges();
       const range = document.createRange();
       range.selectNodeContents(resultText);
-      range.collapse(false); // 光标到末尾，避免双击选词被首次输入替换
+      range.collapse(false); // 光标置末尾，编辑从文末续接（避免选中内容被首次输入替换）
       sel.addRange(range);
       invoke('enter_edit_mode');
       updateEditBuffer();
@@ -433,13 +461,21 @@
       invoke('update_edit_buffer', { text: resultText.innerText });
     }
 
-    resultText.addEventListener('dblclick', enterEdit);
+    // 进入编辑：edit_shortcut（默认 Cmd+E，仅结果窗聚焦时）或点 ✏️ 按钮。
+    // 放弃双击——WKWebView 在 user-select:text 区域 dblclick 难触发。
     btnEdit.addEventListener('click', (e) => { e.preventDefault(); enterEdit(); });
 
     document.addEventListener('keydown', (e) => {
-      if (editing && (e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+      if (editing) {
+        // 编辑态：Cmd+Enter 保存（固定，不走配置）
+        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
+          e.preventDefault();
+          commitEdit();
+        }
+      } else if (matchShortcut(e, editShortcut)) {
+        // 非编辑态：edit_shortcut 进入编辑（默认 Cmd+E）
         e.preventDefault();
-        commitEdit();
+        enterEdit();
       }
     });
 
@@ -519,6 +555,7 @@
         const st = await invoke('toolbar_state');
         currentPolishMode = st.polish_mode;
         currentDenoiseMode = st.denoise_mode;
+        if (st.edit_shortcut) editShortcut = parseShortcut(st.edit_shortcut);
         document.getElementById('tool-polish').classList.toggle('active', st.polish_mode !== 0);
         document.getElementById('tool-asr').classList.toggle('active', true);
         document.getElementById('tool-llm').classList.toggle('active', st.polish_llm_valid);

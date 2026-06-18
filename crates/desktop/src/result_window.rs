@@ -35,7 +35,11 @@ pub fn create_result_window(app: &tauri::AppHandle) {
     .transparent(true)
     .focused(false)
     .visible(false)
-    .shadow(false);
+    .shadow(false)
+    // macOS：非激活悬浮窗（focused(false)）默认吞掉首次点击——仅用于激活窗口、
+    // 不派发给 webview，导致工具栏按钮（✏️ 进入编辑等）首次点击无响应。accept_first_mouse
+    // 让首次点击也正常派发，按钮点击可靠（双击进入已弃用，改用 edit_shortcut，见 spec §3.1）。
+    .accept_first_mouse(true);
 
     match builder.build() {
         Ok(window) => {

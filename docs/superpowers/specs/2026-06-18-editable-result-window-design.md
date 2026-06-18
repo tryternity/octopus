@@ -2,7 +2,7 @@
 
 > Date: 2026-06-18
 > Branch: `worktree-editable-result`（worktree 路径 `.claude/worktrees/editable-result`）
-> Status: ✅ 已实现（2026-06-18，plan 2026-06-18-editable-result-window.md v2）。会话中编辑（双击/按钮进入，快捷键/按钮退出，硬暂停）+ 三文本分层 + 编辑×润色折回 + DB edited_text 均已落地。
+> Status: ✅ 已实现（2026-06-18，plan 2026-06-18-editable-result-window.md v2）。会话中编辑（快捷键 edit_shortcut/按钮进入，快捷键/按钮退出，硬暂停）+ 三文本分层 + 编辑×润色折回 + DB edited_text 均已落地。
 
 ## 1. 背景与目标
 
@@ -32,12 +32,12 @@
 
 ## 3. 交互设计
 
-### 3.1 进入编辑（择一触发，防误触）
+### 3.1 进入编辑（择一触发）
 
-1. **文本区双击**：`#result-text` `dblclick` → 设 `contenteditable=true` + 聚焦 + `invoke('enter_edit_mode')`。
-2. **工具栏 ✏️ 编辑按钮**：新增工具栏按钮，点击同上。
+1. **快捷键** `edit_shortcut`（config.yaml 可配，默认 `Cmd+E`；窗口内、仅结果窗聚焦时生效）：→ 设 `contenteditable=true` + 聚焦 + `invoke('enter_edit_mode')`。
+2. **工具栏 ✏️ 编辑按钮**：点击同上。
 
-> 单击 / 单次聚焦**不**进入编辑（仅选中文本），降低误触。仅当处于活跃会话（Streaming / VadSegmented）且已有文本时按钮可点。
+> 不用双击——WKWebView 在 `user-select:text` 区域 `dblclick` 难触发（浏览器走选词手势，dblclick 判定常不成立），实测"难触发"后弃用。仅当处于活跃会话（Streaming / VadSegmented）且已有文本时按钮可点。
 
 ### 3.2 编辑态指示
 
@@ -111,7 +111,7 @@ committed = edited 非空 ? edited
 
 ```
 活跃会话（Streaming/VadSegmented）：
-  update-result(display) 持续刷新 ── 用户双击/点编辑按钮 ──▶ enter_edit_mode
+  update-result(display) 持续刷新 ── 用户按 edit_shortcut(Cmd+E) / 点编辑按钮 ──▶ enter_edit_mode
                                                           │
                                               ① contenteditable=true + 聚焦 + setFocus
                                               ② coordinator: 硬暂停（streaming_active=false / 停 tick）
@@ -179,7 +179,7 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
   - 新增 `#[tauri::command] enter_edit_mode` / `commit_edit(text)`。
   - 编辑态冻结 `update-result`（前端配合）。
 - **`desktop/dist/result/index.html`**：
-  - `#result-text` 动态 `contenteditable` 切换；`dblclick` + 新增 ✏️ 编辑按钮 + 完成编辑按钮。
+  - `#result-text` 动态 `contenteditable` 切换；`edit_shortcut`（默认 Cmd+E）+ ✏️ 编辑按钮 + 完成编辑按钮。
   - `CmdOrCtrl+Enter` / 完成按钮 → `commit_edit`。
   - 编辑态：加边框、禁 `mouseleave` 收起、`setFocus`、忽略 `update-result`。
 - **`desktop/src/main.rs`**：`invoke_handler` 注册 `enter_edit_mode` / `commit_edit`。
@@ -199,13 +199,13 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
 - **llm prompt**：`user_prompt(None, text)` 无 preserved（现状）；`user_prompt(Some(p), new)` 含分块标记 + 保留指令。
 - **coordinator**：编辑态停止音频喂入（streaming_active / tick 行为）；编辑态 toggle 先 commit 再停；`handle_polish_done` 折回时走 `UpdateEdited`。
 - **手动 e2e**：
-  - 录音中双击编辑改错别字 → 完成 → 继续说 → 新文本追加在编辑结果后 → 停止 → 粘贴含修正。
+  - 录音中按 Cmd+E 编辑改错别字 → 完成 → 继续说 → 新文本追加在编辑结果后 → 停止 → 粘贴含修正。
   - 编辑态点工具栏切换 ASR → 先提交编辑再切换。
   - 三种 PolishMode 下编辑均生效。
 
 ## 11. 文档同步（CLAUDE.md 强制）
 
-- **`docs/configuration.md`**：编辑能力说明（双击/按钮进入，Cmd+Enter/按钮退出，硬暂停语义）。
+- **`docs/configuration.md`**：编辑能力说明（edit_shortcut/按钮进入，Cmd+Enter/按钮退出，硬暂停语义）+ `edit_shortcut` 字段。
 - **`docs/architecture.md`**：`Transcript` 三文本分层模型（edited ≻ polished ≻ raw）+ 编辑态 + DB `edited_text` 列。
 - 本 spec + 对应 plan（`docs/superpowers/plans/2026-06-18-editable-result-window.md`）。
 

@@ -174,6 +174,9 @@ pub struct ToolbarState {
     /// 当前 polish_llm 是否有效（裸名非空且在 DB 启用 LLM 列表中）。
     /// false → 无模型状态，前端 `#tool-llm` 图标置灰。DB 查询失败保守为 false。
     pub polish_llm_valid: bool,
+    /// 结果展示区「进入编辑」快捷键（Tauri Accelerator 字符串，默认 "Cmd+E"）。
+    /// 仅结果窗聚焦时生效；保存（退出编辑）固定 Cmd+Enter。
+    pub edit_shortcut: String,
 }
 
 #[derive(Serialize)]
@@ -245,8 +248,10 @@ pub fn build_llm_options_public(
 #[tauri::command]
 pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
     let g = rc.read().unwrap();
-    // hide_toolbar 是启动只读配置（不参与运行时切换），从 AppConfig 缓存读
-    let hide_toolbar = octopus_asr::config::load_app_config_cached().hide_toolbar;
+    // hide_toolbar / edit_shortcut 是启动只读配置（不参与运行时切换），从 AppConfig 缓存读
+    let app_cfg = octopus_asr::config::load_app_config_cached();
+    let hide_toolbar = app_cfg.hide_toolbar;
+    let edit_shortcut = app_cfg.edit_shortcut.clone();
     // polish_llm 有效 = 裸名非空且在 DB 启用 LLM 列表中（DB 查询失败保守为 false）。
     let polish_llm = g.polish_llm.clone();
     let polish_llm_valid = {
@@ -262,6 +267,7 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
         hide_toolbar,
         denoise_mode: g.denoise_mode,
         polish_llm_valid,
+        edit_shortcut,
     }
 }
 

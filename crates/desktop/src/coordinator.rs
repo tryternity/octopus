@@ -42,11 +42,11 @@ enum Command {
     FinalPolishDone { result: Result<String, String> },
     /// 立即润色（前端工具栏触发，忽略 polish_mode）
     PolishNow,
-    /// 进入编辑态（前端双击/编辑按钮触发；ASR 硬暂停）
+    /// 进入编辑态（前端 edit_shortcut/编辑按钮触发；ASR 硬暂停）
     EnterEditMode,
     /// 更新编辑缓冲（前端 input 防抖推送；供 Toggle-期间-编辑 恢复）
     UpdateEditBuffer { text: String },
-    /// 提交编辑（快捷键/完成按钮/失焦触发）
+    /// 提交编辑（快捷键 Cmd+Enter / 完成按钮触发）
     CommitEdit { text: String },
     /// 运行时配置更新——外部（设置窗口 / 工具栏）修改 RuntimeConfig 后，
     /// 通过此命令通知 coordinator 立即把变更同步到 config 快照（无需等 Toggle）。
@@ -522,7 +522,7 @@ pub fn polish_now(coordinator: tauri::State<'_, Coordinator>) {
     coordinator.polish_now();
 }
 
-/// 前端命令：进入编辑态（双击/编辑按钮触发）。
+/// 前端命令：进入编辑态（edit_shortcut/编辑按钮触发）。
 #[tauri::command]
 pub fn enter_edit_mode(coordinator: tauri::State<'_, Coordinator>) {
     coordinator.enter_edit_mode();

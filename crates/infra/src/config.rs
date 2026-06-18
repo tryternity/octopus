@@ -152,6 +152,12 @@ pub struct AppConfig {
     /// 降噪模式：0=无降噪，1=轻度降噪，2=深度降噪。默认 1。
     #[serde(default = "default_denoise_mode")]
     pub denoise_mode: u8,
+
+    /// 结果展示区「进入编辑」快捷键（窗口内，仅结果窗聚焦时生效）。
+    /// Tauri Accelerator 格式（如 "Cmd+E"），默认 "Cmd+E"。
+    /// 保存（退出编辑）固定为 Cmd+Enter，不走此字段。
+    #[serde(default = "default_edit_shortcut")]
+    pub edit_shortcut: String,
 }
 
 fn default_engine_mode() -> String {
@@ -204,6 +210,9 @@ fn default_hide_toolbar() -> bool {
 fn default_denoise_mode() -> u8 {
     1
 }
+fn default_edit_shortcut() -> String {
+    "Cmd+E".into()
+}
 fn default_segment_duration() -> f64 {
     5.0
 }
@@ -240,6 +249,7 @@ impl Default for AppConfig {
             output_simplified: default_output_simplified(),
             hide_toolbar: default_hide_toolbar(),
             denoise_mode: default_denoise_mode(),
+            edit_shortcut: default_edit_shortcut(),
         }
     }
 }
@@ -354,5 +364,19 @@ mod tests {
         let cfg: AppConfig =
             serde_yaml::from_str("denoise_mode: 2\ndenoise_enabled: false\n").unwrap();
         assert_eq!(cfg.denoise_mode, 2);
+    }
+
+    #[test]
+    fn edit_shortcut_defaults_to_cmd_e() {
+        // 缺省 → default_edit_shortcut() = "Cmd+E"
+        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
+        assert_eq!(cfg.edit_shortcut, "Cmd+E");
+    }
+
+    #[test]
+    fn edit_shortcut_explicit_from_yaml() {
+        // 显式值原样落到字段（Tauri Accelerator 字符串）
+        let cfg: AppConfig = serde_yaml::from_str("edit_shortcut: CmdOrCtrl+Shift+E\n").unwrap();
+        assert_eq!(cfg.edit_shortcut, "CmdOrCtrl+Shift+E");
     }
 }
