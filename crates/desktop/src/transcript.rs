@@ -100,11 +100,14 @@ impl Transcript {
     }
 
     /// 润色完成：
-    /// - has_edit：结果折回 edited（= edited + 润色后新增），避免 edited 遮蔽 polished 丢字（spec §12）。
+    /// - has_edit：折回。edited 为主展示层；同步写 polished，保证空提交回退（display 优先级链 edited ≻ polished ≻ raw）
+    ///   时不丢最新润色结果（spec §12）。
     /// - 否则：写 polished（raw_len 已在 take_polish_input 推进）。
     pub fn on_polish_done(&mut self, result: String) {
         if self.has_edit() {
-            self.edited = result;
+            // 折回：edited 为主展示层；同步写 polished，保证空提交回退时不丢最新润色结果（spec §12）
+            self.edited = result.clone();
+            self.polished = result;
         } else {
             self.polished = result;
         }
@@ -436,5 +439,40 @@ mod tests {
         t.on_polish_done("润色".into());
         assert_eq!(t.polished(), "润色");
         assert_eq!(t.display_text(), "润色");
+    }
+
+    #[test]
+    fn empty_commit_after_fold_falls_back_to_polished_not_empty() {
+        // I1 回归：编辑→折回→空提交，display 应回退到折回结果（不丢字）
+        let mut t = Transcript::new(44, PolishMode::Intermediate);
+        t.set_full("原文");
+        t.commit_edit("原文（手改）");
+        t.set_full("原文新增");
+        let _ = t.take_polish_input();
+        t.on_polish_done("原文（手改）新增（润色）".into()); // 折回
+        assert_eq!(t.display_text(), "原文（手改）新增（润色）");
+        t.commit_edit(""); // 空提交清空 edited
+        assert!(!t.has_edit());
+        assert_eq!(t.display_text(), "原文（手改）新增（润色）"); // 回退 polished（折回值），不丢字
+    }
+
+    #[test]
+    fn multiple_folds_accumulate_without_loss() {
+        // M3：编辑→折回→再编辑→再折回，raw_len 单调推进、edited 累积无丢字
+        let mut t = Transcript::new(45, PolishMode::Intermediate);
+        t.set_full("原文");
+        t.commit_edit("原文（手改）");
+        t.set_full("原文新增");
+        let _ = t.take_polish_input();
+        t.on_polish_done("原文（手改）新增（润色一）".into());
+        assert_eq!(t.display_text(), "原文（手改）新增（润色一）");
+
+        // 继续说 → 再折回
+        t.set_full("原文新增更多");
+        let (preserved, to_polish) = t.take_polish_input();
+        assert_eq!(preserved.as_deref(), Some("原文（手改）新增（润色一）"));
+        assert_eq!(to_polish, "更多");
+        t.on_polish_done("原文（手改）新增（润色一）更多（润色二）".into());
+        assert_eq!(t.display_text(), "原文（手改）新增（润色一）更多（润色二）");
     }
 }
