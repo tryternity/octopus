@@ -21,7 +21,7 @@
 
 | # | 页面 | 内容 | 本轮状态 |
 |---|---|---|---|
-| 1 | 识别记录 | 当前识别实时文本（录音中）+ 历史记录浏览（transcriptions 表） | ✅ 实现 |
+| 1 | 识别记录 | 当前识别实时文本（录音中）+ 历史记录浏览（transcriptions 表）：工具栏（全选 + 删除）、checkbox 批量选择、润色优先显示、单条拷贝 | ✅ 实现 |
 | 2 | 系统设置 | config.yaml 19 个可配置字段的 GUI 编辑（分组卡片 + 实时保存） | ✅ 实现 |
 | 3 | 模型管理 | 外部模型 API 配置 + 本地模型下载 | 🔴 占位（本轮不实现） |
 
@@ -31,11 +31,11 @@
 
 1. **前端技术**：纯 vanilla HTML（单 `index.html`，内联 CSS/JS），与 result_window 一致，无构建步骤、无 npm 依赖。
 2. **入口**：工具栏设置按钮（第一个图标，现有占位）+ 系统托盘菜单新增"设置..."项，两者均调 `open_settings` 命令。
-3. **窗口属性**：独立 Tauri 窗口，原生标题栏（`decorations: true`），默认 `800×600`，最小 `640×480`，可调整大小，非置顶，单例（已打开则 `set_focus`）。
+3. **窗口属性**：独立 Tauri 窗口，原生标题栏（`decorations: true`），默认 `800×600`，最小 `640×480`，可调整大小，非置顶，单例（已打开则 `set_focus`）。macOS 下采用 **动态激活策略**：启动/无设置窗时 `Accessory`（仅托盘，无 Dock 图标）；打开设置窗时切 `Regular`（Dock 图标出现）；关闭设置窗时切回 `Accessory`。
 4. **保存语义**：实时保存——每个控件改动即时写 `config.yaml` + RuntimeConfig（如适用），无确认按钮。
 5. **生效时机标注**：每个控件旁标注"立即"/"下次录音"/"重启"生效标签。
-6. **跨平台**：macOS / Windows / Linux 三端一致，无平台条件编译。
-7. **后端命令**：通用读写命令（方案 A）——`get_config` + `set_config(key, value)` + `get_history` + `open_settings`，最少样板代码。
+6. **跨平台**：macOS / Windows / Linux 三端 UI 一致。macOS 额外有动态激活策略（Dock 图标显隐），`#[cfg(target_os = "macos")]` 条件编译。
+7. **后端命令**：通用读写命令（方案 A）——`get_config` + `set_config(key, value)` + `get_history` + `delete_history(ids)` + `open_settings`，最少样板代码。
 8. **隐藏字段**：`denoise_enabled`（废弃，忽略不改代码）、`paste_method`/`write_to_clipboard`/`overlay_position`/`remote_url`/`grpc_endpoint`（暂未定，后续再加）。
 
 ---
@@ -56,30 +56,36 @@ crates/desktop/
 │   └── settings/index.html  # 新建：3 页面 vanilla HTML（单文件内联 CSS/JS + 图标）
 ```
 
-### 4.2 窗口创建（`settings_window.rs`）
+### 4.2 窗口创建与 macOS 激活策略（`settings_window.rs`）
 
 ```rust
-// 参考 result_window.rs 的 ready 机制（WINDOW_READY + PENDING_TEXT），
-// 但设置窗无需 pending 暂存——打开时前端主动 invoke('get_config') 拉数据。
-pub fn open_settings(app: &tauri::AppHandle) {
-    // 单例：已存在 → set_focus；不存在 → 创建
-    if let Some(window) = app.get_webview_window("settings_window") {
+// 单例：已存在 → set_focus；不存在 → 创建
+pub fn open_settings(app_handle: tauri::AppHandle) {
+    if let Some(window) = app_handle.get_webview_window("settings_window") {
         let _ = window.set_focus();
         return;
     }
-    let _ = tauri::WebviewWindowBuilder::new(
-        app,
-        "settings_window",
-        tauri::WebviewUrl::App("settings/index.html".into()),
-    )
-    .title("Octopus 设置")
-    .inner_size(800.0, 600.0)
-    .min_inner_size(640.0, 480.0)
-    .decorations(true)       // 原生标题栏
-    .visible(true)
-    .build();
+    // macOS: 打开设置窗口 → Dock 显示图标
+    #[cfg(target_os = "macos")]
+    app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+
+    let _ = WebviewWindowBuilder::new(&app_handle, "settings_window", ...)
+        .title("Octopus 设置")
+        .inner_size(800.0, 600.0)
+        .min_inner_size(640.0, 480.0)
+        .decorations(true)
+        .visible(true)
+        .build();
+}
+
+// macOS: 设置窗口关闭后回调 — 切回仅托盘模式
+#[cfg(target_os = "macos")]
+pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
+    app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
 }
 ```
+
+`main.rs` 的 `app.run()` 回调监听 `RunEvent::WindowEvent { event: Destroyed, label: "settings_window" }`，触发 `on_settings_closed`。启动时 `main.rs` 直接 `app.set_activation_policy(Accessory)`。
 
 ### 4.3 Tauri 命令
 
@@ -88,7 +94,9 @@ pub fn open_settings(app: &tauri::AppHandle) {
 | `open_settings` | `() -> ()` | 创建/聚焦设置窗口（单例） |
 | `get_config` | `() -> Value` | 返回全量 AppConfig（19 个展示字段 JSON）+ ASR/LLM 模型列表（DB `models` 表）+ 系统麦克风设备列表（cpal 跨平台枚举） |
 | `set_config` | `(key: String, value: Value) -> Result<(), String>` | 通用写：match key → 校验类型/范围 → 写 AppConfig + RuntimeConfig（如适用）+ 持久化 config.yaml。非法值返回 `Err` |
-| `get_history` | `(limit: u32, offset: u32) -> Vec<HistoryItem>` | 分页读 transcriptions 表 |
+| `get_history` | `(limit: u32, offset: u32) -> Vec<TranscriptionRecord>` | 分页读 transcriptions 表（倒序） |
+| `delete_history` | `(ids: Vec<i64>) -> Result<usize, String>` | 批量删除 transcriptions（IN 子句），返回删除行数 |
+| `check_shortcut` | `(shortcut: String) -> Result<(), String>` | 检测快捷键是否被占用：尝试 `on_shortcut` 注册 → 立即 `unregister`，仅做检测不持久化 |
 
 **`get_config` 返回结构：**
 ```json
@@ -137,7 +145,7 @@ match key {
     "asr_hardware_accelerated" / "asr_correct" / "output_simplified" / "hide_toolbar" => as_bool()
     // f64 正数
     "segment_duration" / "segment_silence" / "segment_overlap" / "polish_interval" => as_f64() > 0.0
-    "pause_polish_threshold_ms" => as_f64() > 500.0
+    "pause_polish_threshold_ms" => as_f64() >= 500.0
     // string（自由）
     "shortcut" / "microphone" / "asr_engine" / "polish_llm" => as_str()
     // 非法 key
@@ -151,9 +159,9 @@ match key {
 
 | 时机 | 字段 | 机制 |
 |---|---|---|
-| **立即** | polish_mode, denoise_mode, asr_correct, output_simplified, hide_toolbar | 写 RuntimeConfig，Coordinator 下次读取时生效 |
+| **立即** | polish_mode, denoise_mode, asr_correct, output_simplified, hide_toolbar, **shortcut**（热重载：注销旧 + 注册新） | 写 RuntimeConfig / 热重载，即时生效 |
 | **下次录音** | asr_engine, polish_llm, microphone, language, asr_hardware_accelerated, segment_duration, segment_silence, segment_overlap, polish_interval, pause_polish_threshold_ms | 写 AppConfig 缓存，Coordinator Toggle 进入 Idle 时重读 |
-| **重启** | shortcut, engine_mode | 需重启进程（全局快捷键注册等） |
+| **重启** | engine_mode | 需重启进程（引擎初始化等） |
 
 ---
 
@@ -181,35 +189,45 @@ match key {
 ### 5.2 页面 1 — 识别记录
 
 - **顶部区域**：当前正在识别的实时文本（若在录音中）。listen `update-result` 事件，显示当前 display_text。
-- **历史列表**：按日期分组（如"6月17日"、"6月16日"），每条记录：
-  - 时间戳（`14:30:25`）
-  - 原文（`raw_text`）— 默认显示
-  - 润色版（`polished_text`）— 点击展开/折叠
+- **工具栏**：全选 checkbox + 已选计数（"已选 N 项"）+ 删除按钮（红色边框，无选中时禁用）。全选 checkbox 支持 indeterminate 状态（部分选中时）。
+- **历史列表**（倒序，最新在前）：每条记录：
+  - 左侧 checkbox（选中后可批量删除）
+  - 时间戳（`2026-06-17 14:30:25`）
+  - **润色 text 优先显示**（`polished_text`，黑色主文本）；无润色则显示 `raw_text`
+  - **原始 text 折叠隐藏**（`raw_text`，灰色次要文本）；点击"展开/折叠原始"切换
   - 元数据行：引擎名 + 润色状态 + 时长（`qwen3-asr · 已润色 · 3.2s`）
+  - 右侧「拷贝」按钮：拷贝最终 text（润色优先，无润色拷贝原始）
+- **删除流程**：选中记录 → 点击删除 → `confirm()` 确认 → `invoke('delete_history', { ids })` → 刷新列表（重置 offset）。
 - **滚动加载**：初始加载 20 条（`get_history(20, 0)`），滚到底部加载下一页（`offset += 20`），空结果停止。
 
 ### 5.3 页面 2 — 系统设置
 
-按功能分组为卡片，每张卡片有标题 + 若干控件行：
+卡片顺序：交互 → 识别 → 润色 → 降噪 → VAD 分段 → 音频 → 引擎模式。**除「VAD 分段」外，其余卡片标题已去掉**（仅保留行内容）。每行控件后无独立 badge，生效时间作为灰色小字跟在 label 后面，加括号如「(立即)」「(下次录音)」「(重启)」。
 
-**卡片「识别」：**
+**卡片「交互」（首位，无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
-| 语言 | 下拉（auto/zh/en/ja/ko） | `language` | 下次录音 |
+| 激活/关闭快捷键 | 快捷键捕获按钮（点击后捕获键盘组合，含冲突检测 `check_shortcut`） | `shortcut` | 立即 |
+| 工具栏自动隐藏 | toggle switch | `hide_toolbar` | 立即 |
+
+**卡片「识别」（无标题）：**
+| 控件 | 类型 | 字段 | 生效 |
+|---|---|---|---|
+| 语言识别 | 下拉（auto/zh/en） | `language` | 下次录音 |
 | ASR 引擎 | 下拉（asr_engines 列表） | `asr_engine` | 下次录音 |
 | 硬件加速 | toggle switch | `asr_hardware_accelerated` | 下次录音 |
 | ASR 纠错 | toggle switch | `asr_correct` | 立即 |
 | 简繁输出 | toggle switch（true=简体） | `output_simplified` | 立即 |
 
-**卡片「润色」：**
+**卡片「润色」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
 | 润色模式 | 下拉（关闭/仅最终/中间+最终） | `polish_mode` | 立即 |
 | 润色模型 | 下拉（llm_models 列表） | `polish_llm` | 下次录音 |
-| 润色间隔 | number input（秒） | `polish_interval` | 下次录音 |
-| 停顿润色阈值 | number input（毫秒，须>500） | `pause_polish_threshold_ms` | 下次录音 |
+| 润色间隔 | 下拉（仅最后=0/每3~8秒） | `polish_interval` | 下次录音 |
+| 说话换气间隔 | 下拉（500/600/700/800/900/1000ms，>= 500） | `pause_polish_threshold_ms` | 下次录音 |
 
-**卡片「降噪」：**
+**卡片「降噪」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
 | 降噪模式 | 下拉（无/轻度/深度） | `denoise_mode` | 立即 |
@@ -221,18 +239,12 @@ match key {
 | 静音阈值 | number input（毫秒） | `segment_silence` | 下次录音 |
 | 分段重叠 | number input（毫秒） | `segment_overlap` | 下次录音 |
 
-**卡片「音频」：**
+**卡片「音频」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
 | 麦克风设备 | 下拉（microphones 列表） | `microphone` | 下次录音 |
 
-**卡片「交互」：**
-| 控件 | 类型 | 字段 | 生效 |
-|---|---|---|---|
-| 全局快捷键 | text input | `shortcut` | 重启 |
-| 工具栏自动隐藏 | toggle switch | `hide_toolbar` | 立即 |
-
-**卡片「引擎模式」：**
+**卡片「引擎模式」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
 | 引擎接入模式 | 下拉（embedded/websocket/grpc） | `engine_mode` | 重启 |
@@ -241,7 +253,8 @@ match key {
 - 改动即调 `invoke('set_config', { key, value })`。
 - 成功：控件保持新值，无额外提示（静默保存）。
 - 失败：toast 提示错误信息，控件回退到旧值。
-- 生效标签：每个控件右侧灰色小字标注"立即"/"下次录音"/"重启"。
+- 生效时间标签：跟在 label 文字后面的灰色小字括号，如「语言识别 (下次录音)」。
+- **快捷键捕获**：点击按钮 → 显示「按下快捷键…（Esc 取消）」→ 捕获组合键（`Cmd` / `Ctrl` / `Alt` / `Shift` + 主键）→ 先调 `check_shortcut` 检测冲突 → 成功保存 + 热重载（注销旧快捷键 + 注册新快捷键），失败 toast 提示。
 
 ### 5.4 页面 3 — 模型管理
 
@@ -272,9 +285,22 @@ settings/index.html 加载完成
 用户改动控件
   → invoke('set_config', {key, value})
   → Rust: 类型校验 → 写 AppConfig 字段 → 写 RuntimeConfig（如适用）
-           → persist_config_override(key, value) 写 config.yaml
+           → write_config_yaml() 写 config.yaml
+           → 如为 shortcut 字段：注销旧快捷键 + 注册新快捷键（热重载）
   → 成功: 控件保持新值
   → 失败: toast 错误 + 控件回退
+```
+
+**快捷键专用流程：**
+```
+用户点击快捷键按钮 → 进入捕获模式
+  → 按下组合键（修饰键 + 主键）
+  → invoke('check_shortcut', {shortcut})
+     → Rust: 尝试 on_shortcut 注册 → 立即 unregister → 仅检测
+     → 成功: 继续保存
+     → 失败: toast「快捷键注册失败，可能被其他应用占用」+ 恢复原值
+  → invoke('set_config', {key:'shortcut', value})
+     → Rust: 注销旧快捷键 + register_shortcut(新的)
 ```
 
 ### 6.4 历史记录翻页
@@ -303,10 +329,10 @@ settings/index.html 加载完成
 ## 8. 跨平台
 
 - 窗口创建：`WebviewWindowBuilder` 标准 API，三端一致（`decorations:true` 各平台自动渲染原生标题栏）。
+- **macOS 动态激活策略**：启动时 `Accessory`（无 Dock 图标）；`open_settings` 切 `Regular`（Dock 图标出现）；窗口 Destroyed 事件触发 `on_settings_closed` 切回 `Accessory`。`#[cfg(target_os = "macos")]` 条件编译，Windows/Linux 无此逻辑。
 - 麦克风列表：后端复用现有 infra 代码（cpal 跨平台枚举设备）。
 - 字体栈：`-apple-system, "Segoe UI", "Noto Sans", sans-serif`。
-- 无平台条件编译（设置窗是纯 UI + Tauri 命令，不涉及平台 API）。
-- 图标：复用 CSS mask 方式（同 result_window toolbar），Font Awesome SVG。
+- 图标：拷贝按钮内联 SVG（`copy.svg`），侧边栏导航用 CSS mask。
 
 ---
 
@@ -317,6 +343,7 @@ settings/index.html 加载完成
 - `set_config` 写盘：改单字段后其他字段保留（复用 `persist_config_override` 现有测试模式）。
 - `set_config` 范围校验：`pause_polish_threshold_ms > 500`、`segment_duration > 0`。
 - `get_history` 分页：limit/offset 正确切片，offset 越界返回空。
+- `delete_transcriptions_at` 批量删除：指定 id 删除 + 空 id 列表不报错（内部函数可直连 Connection 测试）。
 
 ### 手动 e2e
 - 工具栏设置按钮 / 托盘菜单均能打开设置窗。
@@ -326,6 +353,9 @@ settings/index.html 加载完成
 - 系统设置：改 asr_engine 后下次录音生效。
 - 系统设置：非法值（如 pause_polish_threshold_ms=100）弹出 toast 错误。
 - 识别记录：历史列表正确加载、滚动翻页。
+- 识别记录：润色 text 在前、原始 text 在后（折叠）。
+- 识别记录：checkbox 选择 + 全选 + 删除流程。
+- 识别记录：拷贝按钮拷贝最终 text。
 - 识别记录：录音中实时显示当前文本。
 - 模型管理：显示占位页面。
 - 跨平台验证（macOS / Windows / Linux）。
@@ -339,7 +369,8 @@ settings/index.html 加载完成
 - **config.yaml 注释保留**：`serde_yaml` 整体序列化丢注释（与 result_window toolbar 的 `persist_config_override` 一致）。
 - **设置搜索**：不做设置项搜索功能。
 - **多语言**：仅中文 UI。
-- **识别记录搜索/过滤**：本轮不做，仅时间倒序浏览 + 分页。
+- **识别记录搜索/过滤**：不做，仅时间倒序浏览 + 分页。
+- **识别记录批量导出**：仅支持删除，不支持批量导出。
 
 ---
 

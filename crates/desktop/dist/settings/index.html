@@ -66,8 +66,8 @@ body {
 .card .row:last-child { border-bottom: none; }
 .card .row .label-group { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
 .card .row .label-text { font-size: 14px; }
+.card .row .label-text .label-effect { font-size: 11px; color: var(--text-secondary); }
 .card .row .label-hint { font-size: 12px; color: var(--text-secondary); }
-.card .row .badge { font-size: 11px; color: var(--text-secondary); background: var(--sidebar-bg); padding: 2px 6px; border-radius: 4px; white-space: nowrap; flex-shrink: 0; }
 /* ── Toggle switch ── */
 .toggle { position: relative; width: 44px; height: 24px; background: var(--toggle-off); border-radius: 12px; cursor: pointer; transition: background 0.2s; flex-shrink: 0; }
 .toggle::after { content: ''; position: absolute; top: 2px; left: 2px; width: 20px; height: 20px; background: white; border-radius: 50%; transition: transform 0.2s; box-shadow: 0 1px 3px rgba(0,0,0,0.2); }
@@ -79,14 +79,52 @@ select, input[type="text"], input[type="number"] {
   font-size: 14px; color: var(--text-primary); background: white; min-width: 180px; max-width: 220px;
 }
 select:focus, input:focus { outline: none; border-color: var(--primary); }
+/* ── 快捷键捕获按钮 ── */
+.shortcut-input {
+  padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
+  font-size: 14px; color: var(--text-primary); background: white; cursor: pointer;
+  min-width: 180px; text-align: center; transition: border-color 0.15s;
+}
+.shortcut-input:hover { border-color: var(--primary); }
+.shortcut-input.capturing { border-color: var(--primary); color: var(--text-secondary); }
+/* ── 历史工具栏 ── */
+#history-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 8px 0 16px;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 8px;
+}
+#history-toolbar .toolbar-left { display: flex; align-items: center; gap: 8px; }
+#history-toolbar .toolbar-left label { font-size: 14px; cursor: pointer; display: flex; align-items: center; gap: 6px; }
+#history-toolbar .toolbar-right { margin-left: auto; display: flex; gap: 8px; }
+#history-toolbar .btn-delete {
+  padding: 6px 14px; border: 1px solid #ff3b30; border-radius: 6px;
+  background: white; color: #ff3b30; font-size: 14px; cursor: pointer; transition: all 0.15s;
+}
+#history-toolbar .btn-delete:hover { background: #fff0f0; }
+#history-toolbar .btn-delete:disabled { border-color: var(--border); color: var(--text-secondary); cursor: not-allowed; background: var(--sidebar-bg); }
+#history-toolbar .selected-count { font-size: 12px; color: var(--text-secondary); }
 /* ── 历史记录 ── */
-.history-item { padding: 12px 0; border-bottom: 1px solid var(--border); }
+.history-item { padding: 12px 0; border-bottom: 1px solid var(--border); display: flex; gap: 10px; align-items: flex-start; }
+.history-item .item-check { margin-top: 2px; flex-shrink: 0; width: 18px; height: 18px; cursor: pointer; }
+.history-item .item-body { flex: 1; min-width: 0; }
+.history-item .item-actions { flex-shrink: 0; display: flex; gap: 6px; }
 .history-item .timestamp { font-size: 12px; color: var(--text-secondary); margin-bottom: 4px; }
-.history-item .raw-text { font-size: 14px; line-height: 1.5; word-break: break-word; }
-.history-item .polished-text { font-size: 14px; color: var(--text-secondary); margin-top: 4px; display: none; word-break: break-word; }
-.history-item.expanded .polished-text { display: block; }
+.history-item .polished-text { font-size: 14px; line-height: 1.5; word-break: break-word; color: var(--text-primary); }
+.history-item .raw-text { font-size: 14px; line-height: 1.5; word-break: break-word; color: var(--text-secondary); margin-top: 4px; display: none; }
+.history-item.expanded .raw-text { display: block; }
 .history-item .meta { font-size: 11px; color: var(--text-secondary); margin-top: 4px; display: flex; gap: 12px; }
 .history-item .expand-btn { color: var(--primary); cursor: pointer; font-size: 12px; user-select: none; }
+.history-item .btn-copy {
+  width: 28px; height: 28px; border: none; background: none; cursor: pointer;
+  display: flex; align-items: center; justify-content: center;
+  color: var(--text-secondary); transition: color 0.15s;
+  flex-shrink: 0;
+}
+.history-item .btn-copy svg { width: 16px; height: 16px; fill: currentColor; }
+.history-item .btn-copy:hover { color: var(--primary); }
 /* ── toast ── */
 #toast { position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
   background: rgba(0,0,0,0.8); color: white; padding: 8px 16px; border-radius: 8px;
@@ -98,10 +136,9 @@ select:focus, input:focus { outline: none; border-color: var(--primary); }
 <body>
 <!-- 侧边栏 -->
 <div id="sidebar">
-  <div class="logo">Octopus</div>
   <nav>
     <div class="nav-item active" data-page="history" onclick="switchPage('history')">
-      <div class="icon" style="-webkit-mask-image: url(../result/icons/settings.svg?v=2); mask-image: url(../result/icons/settings.svg?v=2);"></div>
+      <div class="icon" style="-webkit-mask-image: url(../result/icons/message.svg); mask-image: url(../result/icons/message.svg);"></div>
       <span>识别记录</span>
     </div>
     <div class="nav-item" data-page="settings" onclick="switchPage('settings')">
@@ -109,7 +146,7 @@ select:focus, input:focus { outline: none; border-color: var(--primary); }
       <span>系统设置</span>
     </div>
     <div class="nav-item" data-page="models" onclick="switchPage('models')">
-      <div class="icon" style="-webkit-mask-image: url(../result/icons/settings.svg?v=2); mask-image: url(../result/icons/settings.svg?v=2);"></div>
+      <div class="icon" style="-webkit-mask-image: url(../result/icons/model.svg); mask-image: url(../result/icons/model.svg);"></div>
       <span>模型管理</span>
     </div>
   </nav>
@@ -119,8 +156,17 @@ select:focus, input:focus { outline: none; border-color: var(--primary); }
 <div id="content">
   <!-- 页面 1: 识别记录 -->
   <div class="page active" id="page-history">
-    <div id="history-current" style="margin-bottom: 24px;">
+    <div id="history-current" style="margin-bottom: 16px;">
       <!-- 当前识别文本（录音中实时更新） -->
+    </div>
+    <div id="history-toolbar" style="display: none;">
+      <div class="toolbar-left">
+        <label><input type="checkbox" id="history-select-all" onchange="toggleSelectAll(this.checked)"><span>全选</span></label>
+        <span class="selected-count" id="history-selected-count"></span>
+      </div>
+      <div class="toolbar-right">
+        <button class="btn-delete" id="history-delete-btn" onclick="deleteSelected()" disabled>删除</button>
+      </div>
     </div>
     <div id="history-list">
       <!-- 历史记录列表 -->
@@ -219,26 +265,44 @@ async function loadHistory() {
     if (records.length < 20) { historyDone = true; }
     const list = document.getElementById('history-list');
     const empty = document.getElementById('history-empty');
-    if (historyOffset === 0) list.innerHTML = '';
+    const toolbar = document.getElementById('history-toolbar');
+    if (historyOffset === 0) {
+      list.innerHTML = '';
+      selectedIds = new Set();
+    }
     if (historyOffset === 0 && records.length === 0) {
       empty.style.display = 'block';
+      toolbar.style.display = 'none';
     } else {
       empty.style.display = 'none';
+      toolbar.style.display = 'flex';
     }
     records.forEach(r => {
       const div = document.createElement('div');
       div.className = 'history-item';
-      const time = r.created_at.split(' ')[1] || r.created_at;
+      div.dataset.id = r.id;
       const statusText = { done: '已润色', failed: '润色失败', off: '未润色' }[r.polish_status] || r.polish_status || '';
       const duration = r.duration_ms ? (r.duration_ms / 1000).toFixed(1) + 's' : '';
+      const hasPolished = !!r.polished_text;
+      // 显示顺序：润色 text 在前（主），原始 text 在后（默认折叠）
+      const primaryText = hasPolished ? r.polished_text : r.raw_text;
+      const secondaryText = hasPolished ? r.raw_text : null;
+      const labelText = hasPolished ? '原始' : null;
       div.innerHTML =
-        '<div class="timestamp">' + escapeHtml(r.created_at) + '</div>' +
-        '<div class="raw-text">' + escapeHtml(r.raw_text) + '</div>' +
-        (r.polished_text ? '<div class="polished-text">' + escapeHtml(r.polished_text) + '</div><div class="expand-btn" onclick="this.parentElement.classList.toggle(\'expanded\')">展开/折叠润色</div>' : '') +
-        '<div class="meta"><span>' + escapeHtml(r.engine) + '</span><span>' + escapeHtml(statusText) + '</span><span>' + duration + '</span></div>';
+        '<input type="checkbox" class="item-check" onchange="onItemCheck(this, ' + r.id + ')">' +
+        '<div class="item-body">' +
+          '<div class="timestamp">' + escapeHtml(r.created_at) + '</div>' +
+          '<div class="polished-text">' + escapeHtml(primaryText) + '</div>' +
+          (secondaryText ? '<div class="raw-text">' + escapeHtml(secondaryText) + '</div><div class="expand-btn" onclick="this.parentElement.parentElement.classList.toggle(\'expanded\')">展开/折叠' + escapeHtml(labelText) + '</div>' : '') +
+          '<div class="meta"><span>' + escapeHtml(r.engine) + '</span><span>' + escapeHtml(statusText) + '</span><span>' + duration + '</span></div>' +
+        '</div>' +
+        '<div class="item-actions">' +
+          '<button class="btn-copy" title="拷贝" onclick="copyRecord(' + r.id + ')"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path d="M288 64C252.7 64 224 92.7 224 128L224 384C224 419.3 252.7 448 288 448L480 448C515.3 448 544 419.3 544 384L544 183.4C544 166 536.9 149.3 524.3 137.2L466.6 81.8C454.7 70.4 438.8 64 422.3 64L288 64zM160 192C124.7 192 96 220.7 96 256L96 512C96 547.3 124.7 576 160 576L352 576C387.3 576 416 547.3 416 512L416 496L352 496L352 512L160 512L160 256L176 256L176 192L160 192z"/></svg></button>' +
+        '</div>';
       list.appendChild(div);
     });
     historyOffset += records.length;
+    updateSelectedCount();
   } catch (e) {
     showToast('加载历史失败：' + e);
   }
@@ -246,6 +310,110 @@ async function loadHistory() {
   document.getElementById('history-loading').style.display = 'none';
 }
 window.loadHistory = loadHistory;
+
+// ── 选中管理 ──
+let selectedIds = new Set();
+
+function onItemCheck(checkbox, id) {
+  if (checkbox.checked) {
+    selectedIds.add(id);
+  } else {
+    selectedIds.delete(id);
+  }
+  updateSelectedCount();
+}
+window.onItemCheck = onItemCheck;
+
+function updateSelectedCount() {
+  const count = selectedIds.size;
+  const countEl = document.getElementById('history-selected-count');
+  const deleteBtn = document.getElementById('history-delete-btn');
+  const selectAll = document.getElementById('history-select-all');
+  countEl.textContent = count > 0 ? '已选 ' + count + ' 项' : '';
+  deleteBtn.disabled = count === 0;
+  resetDeleteConfirm(deleteBtn);
+  // 全选 checkbox 状态：当前可见条目全选中则 checked，部分选中则不勾（下一次 click 全选）
+  const visibleChecks = document.querySelectorAll('.item-check');
+  if (visibleChecks.length === 0) {
+    selectAll.checked = false;
+    selectAll.indeterminate = false;
+  } else {
+    let checkedCount = 0;
+    visibleChecks.forEach(c => { if (c.checked) checkedCount++; });
+    selectAll.checked = (checkedCount === visibleChecks.length);
+    selectAll.indeterminate = (checkedCount > 0 && checkedCount < visibleChecks.length);
+  }
+}
+
+function toggleSelectAll(checked) {
+  document.querySelectorAll('.item-check').forEach(c => {
+    c.checked = checked;
+    const id = Number(c.parentElement.dataset.id);
+    if (checked) { selectedIds.add(id); } else { selectedIds.delete(id); }
+  });
+  updateSelectedCount();
+}
+window.toggleSelectAll = toggleSelectAll;
+
+function resetDeleteConfirm(btn) {
+  if (!btn || !btn.dataset.confirming) return;
+  delete btn.dataset.confirming;
+  btn.textContent = '删除';
+  btn.style.background = '';
+  btn.style.color = '';
+}
+
+async function deleteSelected() {
+  const ids = Array.from(selectedIds);
+  if (ids.length === 0) return;
+  const btn = document.getElementById('history-delete-btn');
+  // 两次点击确认：首次点击变红+显文字「确认删除?」，3秒内再点才真删
+  if (!btn.dataset.confirming) {
+    btn.dataset.confirming = '1';
+    btn.textContent = '确认删除?';
+    btn.style.background = '#ff3b30';
+    btn.style.color = 'white';
+    setTimeout(() => { resetDeleteConfirm(btn); }, 3000);
+    return;
+  }
+  // 第二次点击 — 执行删除
+  resetDeleteConfirm(btn);
+  try {
+    const n = await invoke('delete_history', { ids });
+    showToast('已删除 ' + n + ' 条');
+    selectedIds.clear();
+    historyOffset = 0;
+    historyDone = false;
+    await loadHistory();
+  } catch (e) {
+    showToast('删除失败：' + e);
+  }
+}
+window.deleteSelected = deleteSelected;
+
+// ── 拷贝 ──
+async function copyRecord(id) {
+  const item = document.querySelector('.history-item[data-id="' + id + '"]');
+  if (!item) return;
+  // 最终 text = 润色 text 优先，无则原始 text
+  const polishedEl = item.querySelector('.polished-text');
+  const text = polishedEl ? polishedEl.textContent : '';
+  if (!text) { showToast('无文本可拷贝'); return; }
+  try {
+    await navigator.clipboard.writeText(text);
+    showToast('已拷贝');
+  } catch (e) {
+    // fallback
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    try { document.execCommand('copy'); showToast('已拷贝'); }
+    catch (_) { showToast('拷贝失败'); }
+    document.body.removeChild(ta);
+  }
+}
+window.copyRecord = copyRecord;
 
 // 滚动加载
 document.getElementById('content').addEventListener('scroll', (e) => {
@@ -270,135 +438,114 @@ function renderSettings(resp) {
   const dm = cfg.denoise_mode;
 
   container.innerHTML =
+    '<!-- 交互 -->' +
+    '<div class="card">' +
+      '<div class="row">' +
+        '<div class="label-group"><span class="label-text">激活/关闭快捷键 <span class="label-effect">(立即)</span></span></div>' +
+        '<button class="shortcut-input" id="shortcut-input" onclick="startShortcutCapture(this)">' + escapeHtml(cfg.shortcut) + '</button>' +
+      '</div>' +
+      '<div class="row">' +
+        '<div class="label-group"><span class="label-text">工具栏自动隐藏 <span class="label-effect">(立即)</span></span><span class="label-hint">开启=自动隐藏，关闭=始终显示</span></div>' +
+        '<div class="toggle ' + (cfg.hide_toolbar?'on':'') + '" onclick="toggleVal(\'hide_toolbar\', this)"></div>' +
+      '</div>' +
+    '</div>' +
     '<!-- 识别 -->' +
     '<div class="card">' +
-      '<h3>识别</h3>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">语言</span></div>' +
+        '<div class="label-group"><span class="label-text">语言识别 <span class="label-effect">(下次录音)</span></span></div>' +
         '<select onchange="setVal(\'language\', this.value)">' +
           '<option value="auto" ' + (cfg.language==='auto'?'selected':'') + '>自动</option>' +
           '<option value="zh" ' + (cfg.language==='zh'?'selected':'') + '>中文</option>' +
           '<option value="en" ' + (cfg.language==='en'?'selected':'') + '>英语</option>' +
-          '<option value="ja" ' + (cfg.language==='ja'?'selected':'') + '>日语</option>' +
-          '<option value="ko" ' + (cfg.language==='ko'?'selected':'') + '>韩语</option>' +
         '</select>' +
-        '<span class="badge">下次录音</span>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">ASR 引擎</span></div>' +
+        '<div class="label-group"><span class="label-text">ASR 引擎 <span class="label-effect">(下次录音)</span></span></div>' +
         '<select onchange="setVal(\'asr_engine\', this.value)">' + asrOptions + '</select>' +
-        '<span class="badge">下次录音</span>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">硬件加速</span><span class="label-hint">GPU/CoreML/DirectML 加速</span></div>' +
+        '<div class="label-group"><span class="label-text">硬件加速 <span class="label-effect">(下次录音)</span></span><span class="label-hint">GPU/CoreML/DirectML 加速</span></div>' +
         '<div class="toggle ' + (cfg.asr_hardware_accelerated?'on':'') + '" onclick="toggleVal(\'asr_hardware_accelerated\', this)"></div>' +
-        '<span class="badge">下次录音</span>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">ASR 纠错</span><span class="label-hint">拼音映射 + bigram 校正</span></div>' +
+        '<div class="label-group"><span class="label-text">ASR 纠错 <span class="label-effect">(立即)</span></span><span class="label-hint">拼音映射 + bigram 校正</span></div>' +
         '<div class="toggle ' + (cfg.asr_correct?'on':'') + '" onclick="toggleVal(\'asr_correct\', this)"></div>' +
-        '<span class="badge">立即</span>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">简繁输出</span><span class="label-hint">开启=简体，关闭=繁体</span></div>' +
+        '<div class="label-group"><span class="label-text">简繁输出 <span class="label-effect">(立即)</span></span><span class="label-hint">开启=简体，关闭=繁体</span></div>' +
         '<div class="toggle ' + (cfg.output_simplified?'on':'') + '" onclick="toggleVal(\'output_simplified\', this)"></div>' +
-        '<span class="badge">立即</span>' +
       '</div>' +
     '</div>' +
     '<!-- 润色 -->' +
     '<div class="card">' +
-      '<h3>润色</h3>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">润色模式</span></div>' +
+        '<div class="label-group"><span class="label-text">润色模式 <span class="label-effect">(立即)</span></span></div>' +
         '<select onchange="setVal(\'polish_mode\', parseInt(this.value))">' +
           '<option value="0" ' + (pm===0?'selected':'') + '>关闭</option>' +
           '<option value="1" ' + (pm===1?'selected':'') + '>仅最终润色</option>' +
           '<option value="2" ' + (pm===2?'selected':'') + '>中间+最终润色</option>' +
         '</select>' +
-        '<span class="badge">立即</span>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">润色模型</span></div>' +
+        '<div class="label-group"><span class="label-text">润色模型 <span class="label-effect">(下次录音)</span></span></div>' +
         '<select onchange="setVal(\'polish_llm\', this.value)">' + llmOptions + '</select>' +
-        '<span class="badge">下次录音</span>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">润色间隔</span><span class="label-hint">秒（0=仅最终润色）</span></div>' +
-        '<input type="number" min="0" step="0.5" value="' + cfg.polish_interval + '" onchange="setVal(\'polish_interval\', parseFloat(this.value))">' +
-        '<span class="badge">下次录音</span>' +
+        '<div class="label-group"><span class="label-text">润色间隔 <span class="label-effect">(下次录音)</span></span></div>' +
+        '<select onchange="setVal(\'polish_interval\', parseFloat(this.value))">' +
+          [{v:0,l:'仅最后'},{v:3,l:'每3秒'},{v:4,l:'每4秒'},{v:5,l:'每5秒'},{v:6,l:'每6秒'},{v:7,l:'每7秒'},{v:8,l:'每8秒'}].map(o => '<option value="' + o.v + '" ' + (cfg.polish_interval==o.v?'selected':'') + '>' + o.l + '</option>').join('') +
+        '</select>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">停顿润色阈值</span><span class="label-hint">毫秒（须 &gt; 500）</span></div>' +
-        '<input type="number" min="501" step="50" value="' + cfg.pause_polish_threshold_ms + '" onchange="setVal(\'pause_polish_threshold_ms\', parseFloat(this.value))">' +
-        '<span class="badge">下次录音</span>' +
+        '<div class="label-group"><span class="label-text">说话换气间隔 <span class="label-effect">(下次录音)</span></span></div>' +
+        '<select onchange="setVal(\'pause_polish_threshold_ms\', parseFloat(this.value))">' +
+          ['500','600','700','800','900','1000'].map(v => '<option value="' + v + '" ' + (cfg.pause_polish_threshold_ms==Number(v)?'selected':'') + '>' + v + 'ms</option>').join('') +
+        '</select>' +
       '</div>' +
     '</div>' +
     '<!-- 降噪 -->' +
     '<div class="card">' +
-      '<h3>降噪</h3>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">降噪模式</span></div>' +
+        '<div class="label-group"><span class="label-text">降噪模式 <span class="label-effect">(立即)</span></span></div>' +
         '<select onchange="setVal(\'denoise_mode\', parseInt(this.value))">' +
           '<option value="0" ' + (dm===0?'selected':'') + '>无</option>' +
           '<option value="1" ' + (dm===1?'selected':'') + '>轻度</option>' +
           '<option value="2" ' + (dm===2?'selected':'') + '>深度</option>' +
         '</select>' +
-        '<span class="badge">立即</span>' +
       '</div>' +
     '</div>' +
     '<!-- VAD 分段 -->' +
     '<div class="card">' +
       '<h3>VAD 分段</h3>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">分段时长</span><span class="label-hint">秒</span></div>' +
+        '<div class="label-group"><span class="label-text">分段时长 <span class="label-effect">(下次录音)</span></span><span class="label-hint">秒</span></div>' +
         '<input type="number" min="1" step="0.5" value="' + cfg.segment_duration + '" onchange="setVal(\'segment_duration\', parseFloat(this.value))">' +
-        '<span class="badge">下次录音</span>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">静音阈值</span><span class="label-hint">毫秒</span></div>' +
+        '<div class="label-group"><span class="label-text">静音阈值 <span class="label-effect">(下次录音)</span></span><span class="label-hint">毫秒</span></div>' +
         '<input type="number" min="100" step="50" value="' + cfg.segment_silence + '" onchange="setVal(\'segment_silence\', parseFloat(this.value))">' +
-        '<span class="badge">下次录音</span>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">分段重叠</span><span class="label-hint">毫秒</span></div>' +
+        '<div class="label-group"><span class="label-text">分段重叠 <span class="label-effect">(下次录音)</span></span><span class="label-hint">毫秒</span></div>' +
         '<input type="number" min="0" step="50" value="' + cfg.segment_overlap + '" onchange="setVal(\'segment_overlap\', parseFloat(this.value))">' +
-        '<span class="badge">下次录音</span>' +
       '</div>' +
     '</div>' +
     '<!-- 音频 -->' +
     '<div class="card">' +
-      '<h3>音频</h3>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">麦克风设备</span></div>' +
+        '<div class="label-group"><span class="label-text">麦克风设备 <span class="label-effect">(下次录音)</span></span></div>' +
         '<select onchange="setVal(\'microphone\', this.value)">' + micOptions + '</select>' +
-        '<span class="badge">下次录音</span>' +
-      '</div>' +
-    '</div>' +
-    '<!-- 交互 -->' +
-    '<div class="card">' +
-      '<h3>交互</h3>' +
-      '<div class="row">' +
-        '<div class="label-group"><span class="label-text">全局快捷键</span></div>' +
-        '<input type="text" value="' + escapeHtml(cfg.shortcut) + '" onchange="setVal(\'shortcut\', this.value)">' +
-        '<span class="badge">重启</span>' +
-      '</div>' +
-      '<div class="row">' +
-        '<div class="label-group"><span class="label-text">工具栏自动隐藏</span><span class="label-hint">开启=自动隐藏，关闭=始终显示</span></div>' +
-        '<div class="toggle ' + (cfg.hide_toolbar?'on':'') + '" onclick="toggleVal(\'hide_toolbar\', this)"></div>' +
-        '<span class="badge">立即</span>' +
       '</div>' +
     '</div>' +
     '<!-- 引擎模式 -->' +
     '<div class="card">' +
-      '<h3>引擎模式</h3>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">引擎接入模式</span><span class="label-hint">embedded=本地推理</span></div>' +
+        '<div class="label-group"><span class="label-text">引擎接入模式 <span class="label-effect">(重启)</span></span><span class="label-hint">embedded=本地推理</span></div>' +
         '<select onchange="setVal(\'engine_mode\', this.value)">' +
           '<option value="embedded" ' + (cfg.engine_mode==='embedded'?'selected':'') + '>embedded</option>' +
           '<option value="websocket" ' + (cfg.engine_mode==='websocket'?'selected':'') + '>websocket</option>' +
           '<option value="grpc" ' + (cfg.engine_mode==='grpc'?'selected':'') + '>grpc</option>' +
         '</select>' +
-        '<span class="badge">重启</span>' +
       '</div>' +
     '</div>';
 }
@@ -429,6 +576,59 @@ async function toggleVal(key, el) {
   }
 }
 window.toggleVal = toggleVal;
+
+// ── 快捷键捕获 ──
+function startShortcutCapture(btn) {
+  if (btn.classList.contains('capturing')) return;
+  const originalValue = btn.textContent;
+  btn.classList.add('capturing');
+  btn.textContent = '按下快捷键…（Esc 取消）';
+
+  function onKeyDown(e) {
+    e.preventDefault();
+    e.stopPropagation();
+    if (e.key === 'Escape') {
+      btn.classList.remove('capturing');
+      btn.textContent = originalValue;
+      document.removeEventListener('keydown', onKeyDown, true);
+      return;
+    }
+    // 忽略单独的修饰键
+    const MODIFIERS = ['Control', 'Shift', 'Alt', 'Meta'];
+    if (MODIFIERS.includes(e.key)) return;
+
+    const parts = [];
+    if (e.metaKey) parts.push('Cmd');
+    if (e.ctrlKey) parts.push('Ctrl');
+    if (e.altKey) parts.push('Alt');
+    if (e.shiftKey) parts.push('Shift');
+    // 主键
+    let mainKey = e.key;
+    if (mainKey === ' ') mainKey = 'Space';
+    else if (mainKey.length === 1) mainKey = mainKey.toUpperCase();
+    parts.push(mainKey);
+
+    const shortcut = parts.join('+');
+    btn.classList.remove('capturing');
+    btn.textContent = shortcut;
+    document.removeEventListener('keydown', onKeyDown, true);
+    // 先检查冲突，无冲突才保存
+    checkAndSaveShortcut(btn, shortcut, originalValue);
+  }
+
+  document.addEventListener('keydown', onKeyDown, true);
+}
+
+async function checkAndSaveShortcut(btn, shortcut, originalValue) {
+  try {
+    await invoke('check_shortcut', { shortcut });
+    await setVal('shortcut', shortcut);
+  } catch (e) {
+    showToast(String(e));
+    btn.textContent = originalValue;
+  }
+}
+window.startShortcutCapture = startShortcutCapture;
 
 // ── 启动 ──
 init();

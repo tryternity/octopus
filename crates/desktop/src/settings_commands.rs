@@ -59,11 +59,27 @@ pub fn set_config(
     key: String,
     value: Value,
     rc: State<'_, SharedRuntimeConfig>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    let old_shortcut = {
+        let cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
+        cfg.shortcut.clone()
+    };
     let mut cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
     apply_config_value(&mut cfg, &key, &value)?;
     sync_runtime_config(&rc, &key, &cfg);
     write_config_yaml(&cfg)?;
+
+    // 快捷键热重载：注销旧的 → 注册新的
+    if key == "shortcut" && cfg.shortcut != old_shortcut {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        if let Ok(old) = old_shortcut.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let _ = app_handle.global_shortcut().unregister(old);
+        }
+        crate::shortcut::register_shortcut(&app_handle, &cfg.shortcut)
+            .map_err(|e| format!("快捷键已保存但注册失败: {}", e))?;
+    }
+
     Ok(())
 }
 
@@ -138,8 +154,8 @@ fn apply_config_value(
         }
         "pause_polish_threshold_ms" => {
             let v = value.as_f64().ok_or("pause_polish_threshold_ms 需要数值")?;
-            if v <= 500.0 {
-                return Err("pause_polish_threshold_ms 必须 > 500（Active Flush 阈值）".into());
+            if v < 500.0 {
+                return Err("pause_polish_threshold_ms 必须 >= 500（Active Flush 阈值）".into());
             }
             cfg.pause_polish_threshold_ms = v;
         }
@@ -192,6 +208,31 @@ pub fn get_history(limit: u32, offset: u32) -> Result<Vec<octopus_infra::db::Tra
     octopus_infra::db::list_transcriptions(limit, offset).map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+pub fn delete_history(ids: Vec<i64>) -> Result<usize, String> {
+    octopus_infra::db::delete_transcriptions(&ids).map_err(|e| e.to_string())
+}
+
+/// 检查快捷键是否可注册（是否被其他应用占用）。
+/// 尝试注册 → 立即注销 → 返回结果。不改变当前已注册的快捷键。
+#[tauri::command]
+pub fn check_shortcut(
+    shortcut: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut};
+    let sc: Shortcut = shortcut
+        .parse()
+        .map_err(|e| format!("快捷键格式无效 '{}': {}", shortcut, e))?;
+    app_handle
+        .global_shortcut()
+        .on_shortcut(sc, |_app, _scut, _event| {})
+        .map_err(|e| format!("快捷键 '{}' 注册失败，可能被其他应用占用: {}", shortcut, e))?;
+    // 注册成功 → 立即注销，仅做检测
+    let _ = app_handle.global_shortcut().unregister(sc);
+    Ok(())
+}
+
 // ── 单测（纯逻辑校验，不触文件 IO / Tauri State）──
 
 #[cfg(test)]
@@ -229,11 +270,11 @@ mod tests {
     }
 
     #[test]
-    fn apply_config_pause_polish_threshold_must_gt_500() {
+    fn apply_config_pause_polish_threshold_must_ge_500() {
         let mut cfg = octopus_infra::config::AppConfig::default();
-        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(400.0)).is_err());
-        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(500.0)).is_err());
-        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(501.0)).is_ok());
+        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(499.0)).is_err());
+        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(500.0)).is_ok());
+        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(600.0)).is_ok());
     }
 
     #[test]

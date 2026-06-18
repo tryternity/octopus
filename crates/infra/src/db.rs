@@ -408,6 +408,28 @@ pub fn list_transcriptions(limit: u32, offset: u32) -> Result<Vec<TranscriptionR
     with_db(|conn| list_transcriptions_at(conn, limit, offset))
 }
 
+/// 批量删除识别记录（按 id）。返回实际删除的行数。
+pub fn delete_transcriptions(ids: &[i64]) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    with_db(|conn| delete_transcriptions_at(conn, ids))
+}
+
+fn delete_transcriptions_at(conn: &Connection, ids: &[i64]) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let params: Vec<&dyn rusqlite::ToSql> = ids
+        .iter()
+        .map(|id| id as &dyn rusqlite::ToSql)
+        .collect();
+    let sql = format!("DELETE FROM transcriptions WHERE id IN ({})", placeholders);
+    let n = conn.execute(&sql, params.as_slice())?;
+    Ok(n)
+}
+
 fn list_transcriptions_at(
     conn: &Connection,
     limit: u32,
@@ -751,5 +773,71 @@ mod tests {
         assert_eq!(page2[0].id, 100);
         let page3 = list_transcriptions_at(&conn, 10, 2).unwrap();
         assert!(page3.is_empty());
+    }
+
+    #[test]
+    fn delete_transcriptions_removes_specified_ids() {
+        let conn = open_init();
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+             VALUES (100, '2026-06-17 10:00:00', 'whisper', '你好', 'off')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+             VALUES (200, '2026-06-17 11:00:00', 'qwen3', '你好世界', 'off')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+             VALUES (300, '2026-06-17 12:00:00', 'sensevoice', '测试', 'off')",
+            [],
+        )
+        .unwrap();
+        let n = conn
+            .execute("DELETE FROM transcriptions WHERE id IN (?,?)", params![200, 300])
+            .unwrap();
+        assert_eq!(n, 2);
+        let remaining = list_transcriptions_at(&conn, 10, 0).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, 100);
+    }
+
+    #[test]
+    fn delete_transcriptions_at_empty_is_noop() {
+        let conn = open_init();
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+             VALUES (100, '2026-06-17 10:00:00', 'whisper', '你好', 'off')",
+            [],
+        )
+        .unwrap();
+        // 空列表不执行 SQL，不报错
+        let n = delete_transcriptions_at(&conn, &[]).unwrap();
+        assert_eq!(n, 0);
+        let remaining = list_transcriptions_at(&conn, 10, 0).unwrap();
+        assert_eq!(remaining.len(), 1);
+    }
+
+    #[test]
+    fn delete_transcriptions_at_via_internal_fn() {
+        let conn = open_init();
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+             VALUES (100, '2026-06-17 10:00:00', 'whisper', '你好', 'off')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+             VALUES (200, '2026-06-17 11:00:00', 'qwen3', '世界', 'off')",
+            [],
+        )
+        .unwrap();
+        let n = delete_transcriptions_at(&conn, &[100, 200]).unwrap();
+        assert_eq!(n, 2);
+        assert!(list_transcriptions_at(&conn, 10, 0).unwrap().is_empty());
     }
 }

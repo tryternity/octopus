@@ -1264,21 +1264,168 @@ git commit -m "docs: 设置窗口架构 + 配置 GUI 编辑说明"
 
 ---
 
+### Task 9: 识别记录页面增强（工具栏 + 批量删除 + 文本顺序反转 + 拷贝）
+
+**Files:**
+- Modify: `crates/infra/src/db.rs`（新增 `delete_transcriptions` / `delete_transcriptions_at`）
+- Modify: `crates/desktop/src/settings_commands.rs`（新增 `delete_history` 命令）
+- Modify: `crates/desktop/src/main.rs`（注册 `delete_history`）
+- Modify: `crates/desktop/dist/settings/index.html`（历史页 UI 大改）
+
+- [x] **Step 1: 后端 — `db.rs` 新增批量删除函数**
+
+在 `list_transcriptions` 之后新增 `delete_transcriptions(ids: &[i64])`（公开，走 `with_db`）和 `delete_transcriptions_at(conn, ids)`（内部，可直连 Connection 测试）。SQL：`DELETE FROM transcriptions WHERE id IN (?,?,...)`，空列表直接返回 `Ok(0)` 不执行 SQL。
+
+测试（3 个）：
+- `delete_transcriptions_removes_specified_ids`：插入 3 条删 2 条，验证剩余 1 条
+- `delete_transcriptions_at_empty_is_noop`：空列表不报错、不删数据
+- `delete_transcriptions_at_via_internal_fn`：正常批量删除
+
+- [x] **Step 2: 后端 — `settings_commands.rs` 新增 `delete_history` 命令**
+
+```rust
+#[tauri::command]
+pub fn delete_history(ids: Vec<i64>) -> Result<usize, String> {
+    octopus_infra::db::delete_transcriptions(&ids).map_err(|e| e.to_string())
+}
+```
+
+`main.rs` invoke_handler 追加 `settings_commands::delete_history`。
+
+- [x] **Step 3: 前端 — 历史页 UI 重构（`dist/settings/index.html`）**
+
+**CSS 新增：**
+- `#history-toolbar`：flex 布局，全选 checkbox + 已选计数（左侧）+ 删除按钮（右侧，红色边框，disabled 时灰）
+- `.history-item` 改为 flex 布局：checkbox + item-body + item-actions
+- `.item-check`：18×18 checkbox
+- `.item-body`：flex:1（时间 + 润色 text + 原始 text 折叠 + meta）
+- `.item-actions`：拷贝按钮
+- `.polished-text`：主文本（黑色，默认显示）
+- `.raw-text`：次要文本（灰色，默认 `display:none`，`.expanded` 时显示）— **逻辑反转**
+
+**HTML 结构变更：**
+- `#page-history` 内 `#history-current` 之后新增 `#history-toolbar`（全选 checkbox + 删除按钮），初始 `display:none`（有数据时显示）
+
+**JS 变更：**
+- `loadHistory()`：记录渲染改为「checkbox + 润色优先 + 拷贝按钮」结构。`data-id` 挂在 `.history-item` 上。首屏时显隐 toolbar。
+- 新增 `selectedIds: Set<number>` 状态
+- 新增 `onItemCheck(checkbox, id)`：增删 selectedIds + updateSelectedCount
+- 新增 `updateSelectedCount()`：更新计数文字、删除按钮 disabled、全选 checkbox 状态（含 indeterminate）
+- 新增 `toggleSelectAll(checked)`：批量勾选/取消可见记录
+- 新增 `deleteSelected()`：`confirm()` → `invoke('delete_history', {ids})` → 刷新列表（重置 offset）
+- 新增 `copyRecord(id)`：取 `.polished-text` 文本 → `navigator.clipboard.writeText`（fallback `execCommand`）
+
+- [x] **Step 4: 测试验证**
+
+```bash
+cargo test -p octopus-infra  # 25 tests pass
+cargo check -p octopus-desktop --features embedded  # 编译通过
+node -e "..."  # JS 语法检查通过
+```
+
+- [ ] **Step 5: Commit**
+
+```bash
+git add -A
+git commit -m "feat(desktop): 识别记录页增强—工具栏批量删除 + 文本顺序反转 + 拷贝"
+```
+
+---
+
+## 自检清单
+
+### Task 10: macOS Dock 图标动态显隐 + UI 微调
+
+**Files:**
+- Modify: `crates/desktop/src/settings_window.rs`（`open_settings` 加 `Regular`、新增 `on_settings_closed`）
+- Modify: `crates/desktop/src/main.rs`（启动设 `Accessory`、run 回调监听窗口 Destroyed）
+- Modify: `crates/desktop/dist/settings/index.html`（去 logo、拷贝图标、删除确认态 reset）
+
+- [x] **Step 1: macOS 动态激活策略**
+
+启动 `main.rs` 在 `app.run()` 前设 `ActivationPolicy::Accessory`（无 Dock 图标）。`open_settings` 创建窗口前切 `Regular`（Dock 图标出现）。新增 `on_settings_closed(&AppHandle)` 切回 `Accessory`。`main.rs` 的 `app.run()` 回调监听 `RunEvent::WindowEvent { event: Destroyed, label: "settings_window" }` 触发该回调。全 `#[cfg(target_os = "macos")]` 条件编译。
+
+- [x] **Step 2: 侧边栏去 logo**
+
+去掉 `dist/settings/index.html` 侧边栏的 `<div class="logo">Octopus</div>`（窗口 title 已有「Octopus 设置」）。
+
+- [x] **Step 3: 拷贝按钮改图标**
+
+将文字「拷贝」按钮替换为内联 `copy.svg` SVG 图标（16×16，灰色，hover 蓝色）。CSS `.btn-copy` 改为无边框透明背景 icon button。
+
+- [x] **Step 4: 删除确认态自动 reset**
+
+Tauri webview 不支持 `window.confirm()`（返回 `undefined` → falsy → 删除被跳过，数据库不删）。改为两次点击确认（首次变红「确认删除?」3 秒超时）。提取 `resetDeleteConfirm(btn)` 函数，在 `updateSelectedCount()` 中统一调用——勾选/取消任何条目、全选/全不选、超时均自动取消确认态恢复按钮。
+
+- [x] **Step 5: 验证 + Commit**
+
+```bash
+cargo test -p octopus-infra -p octopus-desktop --features embedded  # 全绿
+cargo build --release -p octopus-desktop --features embedded        # 编译通过
+```
+
+---
+
+### Task 11: UI 精细化调整 + 快捷键热重载
+
+**Files:**
+- Modify: `crates/desktop/dist/settings/index.html`（侧边栏图标 / section 标题 / label 内联 badge / 语言选项 / 润色间隔+阈值改下拉 / 快捷键捕获）
+- Modify: `crates/desktop/src/settings_commands.rs`（`check_shortcut` 命令、`set_config` 快捷键热重载、`pause_polish_threshold_ms >= 500`）
+- Modify: `crates/desktop/src/main.rs`（注册 `check_shortcut`）
+
+- [x] **Step 1: 侧边栏图标替换**
+- 识别记录 → `message.svg`
+- 模型管理 → `model.svg`
+- 系统设置 → 保持 `settings.svg`
+
+- [x] **Step 2: 去掉侧边栏 logo**
+- 删掉 `<div class="logo">Octopus</div>`（窗口 title 已有「Octopus 设置」）
+
+- [x] **Step 3: 语言选项精简**
+- 语言下拉去掉日语/韩语，只保留 自动/中文/英语
+- 「语言」label 改为「语言识别」
+
+- [x] **Step 4: 卡片标题精简 + 交互卡置顶**
+- 交互卡片移到第一位（在识别之前）
+- 去掉交互/识别/润色/降噪/音频/引擎模式的 `<h3>` 标题，只保留 VAD 分段标题
+
+- [x] **Step 5: 生效时间标签内联到 label**
+- 去掉独立的右侧 `<span class="badge">`，改为 label 文字后面的灰色小字 `(.label-effect)` 带括号，如「语言识别 (下次录音)」
+
+- [x] **Step 6: 快捷键捕获 + 冲突检测 + 热重载**
+- 「全局快捷键」改名「激活/关闭快捷键」，text input 改为快捷键捕获按钮
+- 捕获逻辑：点击 → 显示「按下快捷键…」→ keydown 捕获组合键（修饰键+主键）→ Esc 取消
+- `check_shortcut` 后端命令：尝试 `on_shortcut` 注册 → 立即 `unregister` → 检测冲突
+- 前端流程：捕获 → `check_shortcut` → 成功才 `setVal`，失败 toast + 恢复
+- `set_config` 快捷键热重载：注销旧快捷键 + `register_shortcut` 新的，标签从「重启」改为「立即」
+
+- [x] **Step 7: 润色间隔 / 说话换气间隔改下拉**
+- 润色间隔：number input → 下拉（仅最后=0 / 每3~8秒），去掉 hint
+- 停顿润色阈值 → 改名「说话换气间隔」，number input → 下拉（500~1000ms 六档），去掉 hint
+- 后端约束从 `> 500` 改为 `>= 500`
+
+---
+
 ## 自检清单
 
 ### Spec 覆盖
 - ✅ 窗口架构（Task 4）
-- ✅ get_config / set_config / get_history 命令（Task 3）
+- ✅ get_config / set_config / get_history / delete_history / check_shortcut 命令（Task 3 + 9 + 11）
 - ✅ RuntimeConfig 扩展（Task 2）
 - ✅ 工具栏 + 托盘入口（Task 5）
 - ✅ 前端三页面（Task 6）
-- ✅ 识别记录页（Task 6 历史部分）
-- ✅ 系统设置页 19 字段（Task 6 设置渲染）
+- ✅ 识别记录页—增强（Task 9：工具栏 + 批量删除 + 文本反转 + 拷贝图标）
+- ✅ 系统设置页（Task 6 + Task 11 精细化：标题精简 / label 内联 badge / 快捷键捕获 / 下拉化）
 - ✅ 模型管理占位（Task 6 HTML）
-- ✅ 跨平台（vanilla HTML + cpal + Tauri 标准 API）
-- ✅ 错误处理（Task 3 校验 + Task 6 toast）
-- ✅ 文档同步（Task 8）
+- ✅ macOS Dock 动态显隐（Task 10）
+- ✅ 快捷键冲突检测 + 热重载（Task 11）
+- ✅ 侧边栏图标（Task 11：message.svg / model.svg / settings.svg）
+- ✅ 跨平台（vanilla HTML + cpal + Tauri 标准 API + macOS 条件编译）
+- ✅ 错误处理（Task 3 校验 + Task 6/9/10/11 toast）
+- ✅ 文档同步（Task 8 + Task 10 + Task 11）
 
 ### 已知风险
-- **PolishMode 序列化**：`PolishMode` 是 derive(Serialize) 的 enum，serde 序列化形式需运行时确认。Task 7 预留了修正步骤。
-- **sidebar 图标**：临时复用 `settings.svg`，实际可用 Font Awesome 的 `clock-rotate-left`（历史）、`gear`（设置）、`box`（模型管理）。Task 6 可直接替换。
+- **PolishMode 序列化**：已确认序列化为 `u8`（0/1/2），前端 select 用数字 value（Task 7 已修）。
+- **Tauri confirm() 不可用**：所有需要确认的操作均用两次点击替代（Task 10 已处理删除场景）。
+- **macOS Dock 图标**：release 裸二进制无 .app bundle，通过 `objc2` 手动 `setApplicationIconImage`（Task 10）。
+- **check_shortcut 注册+注销时序**：检测时短暂注册可能与其他应用极小概率竞争，实测可接受。
