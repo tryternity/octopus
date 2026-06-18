@@ -1,7 +1,6 @@
-//! 工具栏运行时可变配置：asr_engine + polish_mode 的共享镜像 + config.yaml 写回 + Tauri 命令。
-//!
-//! 与 OnceLock 缓存的 AppConfig 关系：AppConfig 是启动只读快照；RuntimeConfig 是这两个字段的
-//! 可变运行时镜像。命令写 RuntimeConfig（即时生效）+ 写 config.yaml（重启生效）。
+//! 工具栏运行时可变配置：SharedRuntimeConfig = Arc<RwLock<AppConfig>>（完整配置唯一真相源）
+//! + config.yaml 写回 + Tauri 命令。命令直接读写共享 AppConfig（即时生效）+ `persist_*`
+//! 写 config.yaml（重启生效）。取代旧 RuntimeConfig 部分镜像——详见下方 type 定义注释。
 
 use serde::Serialize;
 use std::sync::{Arc, RwLock};
