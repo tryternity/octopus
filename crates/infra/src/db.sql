@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS transcriptions (
     engine_mode   TEXT,
     raw_text      TEXT    NOT NULL,
     polished_text TEXT,
+    edited_text   TEXT,                     -- 用户编辑后的最终文本（未编辑为 NULL）
     polish_status TEXT    NOT NULL DEFAULT 'off',
     polish_model  TEXT,
     duration_ms   INTEGER,

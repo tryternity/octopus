@@ -391,6 +391,17 @@ pub fn update_polished(
     })
 }
 
+/// 用户提交编辑 / 中间润色折回后更新 edited_text。
+pub fn update_edited_text(id: i64, edited_text: &str) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE transcriptions SET edited_text=?1 WHERE id=?2",
+            params![edited_text, id],
+        )?;
+        Ok(())
+    })
+}
+
 /// 识别结束 finalize：写最终 raw/polished/status/char_count/duration_ms。
 pub fn finalize_transcription(
     id: i64,
@@ -419,6 +430,8 @@ pub struct TranscriptionRecord {
     pub engine: String,
     pub raw_text: String,
     pub polished_text: Option<String>,
+    /// 用户编辑后的最终文本（None=未编辑，回退用 polished_text/raw_text）。
+    pub edited_text: Option<String>,
     pub polish_status: String,
     pub duration_ms: Option<i64>,
 }
@@ -456,7 +469,7 @@ fn list_transcriptions_at(
     offset: u32,
 ) -> Result<Vec<TranscriptionRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, created_at, engine, raw_text, polished_text, polish_status, duration_ms
+        "SELECT id, created_at, engine, raw_text, polished_text, edited_text, polish_status, duration_ms
          FROM transcriptions ORDER BY id DESC LIMIT ?1 OFFSET ?2"
     )?;
     let rows = stmt.query_map(params![limit, offset], |row| {
@@ -466,8 +479,9 @@ fn list_transcriptions_at(
             engine: row.get(2)?,
             raw_text: row.get(3)?,
             polished_text: row.get(4)?,
-            polish_status: row.get(5)?,
-            duration_ms: row.get(6)?,
+            edited_text: row.get(5)?,
+            polish_status: row.get(6)?,
+            duration_ms: row.get(7)?,
         })
     })?;
     let mut records = Vec::new();
@@ -898,5 +912,33 @@ mod tests {
         let n = delete_transcriptions_at(&conn, &[100, 200]).unwrap();
         assert_eq!(n, 2);
         assert!(list_transcriptions_at(&conn, 10, 0).unwrap().is_empty());
+    }
+
+    #[test]
+    fn update_edited_text_persists_and_lists() {
+        let conn = open_init();
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+             VALUES (1, '2026-06-18', 'test', 'raw原文', 'off')",
+            [],
+        )
+        .unwrap();
+
+        let n = conn
+            .execute(
+                "UPDATE transcriptions SET edited_text=?1 WHERE id=?2",
+                rusqlite::params!["手改文本", 1],
+            )
+            .unwrap();
+        assert_eq!(n, 1);
+
+        let edited: Option<String> = conn
+            .query_row(
+                "SELECT edited_text FROM transcriptions WHERE id=1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(edited.as_deref(), Some("手改文本"));
     }
 }
