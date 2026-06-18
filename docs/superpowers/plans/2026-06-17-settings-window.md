@@ -10,6 +10,8 @@
 
 **设计 spec:** `docs/superpowers/specs/2026-06-17-settings-window-design.md`
 
+> ⚠️ **实现演进**（2026-06-18，settings-ui 精简，commit `eb1d249`）：`segment_duration` / `segment_overlap` 两个设置项已从配置 UI 移除——它们属实现细节（用户不可感知），改为 `crates/infra/src/consts.rs` 常量 `SEGMENT_DURATION_S`（20s，连续语音强制截断阈值）/ `SEGMENT_OVERLAP_MS`（200ms，仅强制切断时保留 overlap）。**仅 `segment_silence` 保留为配置项**（默认 400ms）。因此下文 Task 3 的 `set_config` 中 `segment_duration` / `segment_overlap` 分支、相关测试、Task 6 前端 input 中这两字段的代码为**历史实现记录**，当前代码已移除；`segment_silence` 部分仍有效。权威现状见 `architecture.md` / `configuration.md`。
+
 ---
 
 ## 文件结构
