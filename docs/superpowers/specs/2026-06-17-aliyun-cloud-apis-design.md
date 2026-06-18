@@ -1,8 +1,7 @@
 # 阿里云云端 API 接入（LLM + ASR）设计
 
 > Date: 2026-06-17
-> Branch: `worktree-aliyun-apis`（worktree 路径 `.claude/worktrees/aliyun-apis`）
-> Status: 设计已确认，待 spec 复核 → 写 plan
+> 状态：✅ 已实现（2026-06-17 合并 main，commit `ca53db8`）。LLM DashScope + ASR FunASR Realtime WS（`engine_dashscope.rs`）+ 3-part `{provider}:{category}:{model_name}` taxonomy 均已落地。WS 端到端集成测试标 `#[ignore]`（需真实 key，待手动 e2e）。
 
 ## 1. 背景与目标
 

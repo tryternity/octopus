@@ -4,6 +4,8 @@
 > （`penta2himajin/dfn3.onnx`）模型层缺陷（压语音至 ~10%）而弃用 DF3、改用 RNNoise。本版
 > 用**官方原生 libDF + tract** 重新整合 DF3，经 spike 验证可行，作为 `denoise_mode=2` 与
 > RNNoise（mode=1）并存。
+>
+> 状态：✅ 已实现（2026-06-17，plan `2026-06-17-denoise-deepfilternet3.md` ✓27/☐0 全完成）。`denoise_mode=2` 经官方 libDF + tract 落地，与 RNNoise（mode=1）并存。
 
 ## 0. spike 验证结论（2026-06-17）
 
@@ -320,7 +322,7 @@ DF3 的「干净语音 gain」断言**不能用合成稳态谐波**（如现有 
 
 ## 13. 历史与关联
 
-- 前作：[`2026-06-16-denoise-deepfilternet-design.md`](./2026-06-16-denoise-deepfilternet-design.md)
+- 前作：[`2026-06-16-denoise-deepfilternet-design.md`](./2026-06-16-archived-design.md)
   （dfn3.onnx 弃用记录、RNNoise 现状）。
 - spike 证据：`DeepFilterNet/libDF/examples/verify_gain.rs`（fork worktree）。
 - 参考：`DeepFilterNet3-VST3/plugin/src/lib.rs`（Send 解法、v0.5.6 依赖范本）。

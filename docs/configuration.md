@@ -173,7 +173,7 @@ octopus-cli config
 
 ### model.json / history.txt 已废弃
 
-`model.json`（旧模型配置）和 `history.txt`（旧识别历史）已在 DB 单一源重构中彻底删除，DB 是唯一来源。详见 [db-single-source 设计](superpowers/specs/2026-06-14-db-single-source-design.md)。
+`model.json`（旧模型配置）和 `history.txt`（旧识别历史）已在 DB 单一源重构中彻底删除，DB 是唯一来源。详见 [db-single-source 设计](superpowers/specs/2026-06-14-archived-design.md)。
 
 ## config.yaml
 
@@ -195,7 +195,7 @@ octopus-cli config
 | `grpc_endpoint` | string | `http://127.0.0.1:50051` | desktop | grpc 模式端点 |
 | `shortcut` | string | `CmdOrCtrl+Shift+Space` | desktop | 全局快捷键 |
 | `paste_method` | string | `"clipboard"` | desktop | clipboard / direct / none |
-| `write_to_clipboard` | bool | `true` | desktop | 粘贴完成后是否把识别结果写入剪贴板（方便他处再粘贴）；`false` 时三模式等同重构前现状（不碰/恢复原剪贴板）。详见 [transcript-model spec §6](superpowers/specs/2026-06-14-transcript-model-design.md) |
+| `write_to_clipboard` | bool | `true` | desktop | 粘贴完成后是否把识别结果写入剪贴板（方便他处再粘贴）；`false` 时三模式等同重构前现状（不碰/恢复原剪贴板）。详见 [transcript-model spec §6](superpowers/specs/2026-06-14-archived-design.md) |
 | `overlay_position` | string | `"top"` | desktop | top / bottom / none |
 | `segment_duration` | f64 | `5.0` | desktop | VAD 伪流式：缓冲累积时长阈值（秒） |
 | `segment_silence` | f64 | `500.0` | desktop | VAD 伪流式：静音触发识别阈值（毫秒） |
@@ -203,7 +203,7 @@ octopus-cli config
 | `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色。**desktop 悬停工具栏可在运行时切换**（`set_polish_mode` 命令）：写 RuntimeConfig 镜像 + 持久化回 config.yaml，**立即生效**（Coordinator 每个 tick 重读镜像并 `Transcript::set_mode`，下一次润色按新模式） |
 | `polish_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s` |
 | `pause_polish_threshold_ms` | f64 | `600` | desktop | 停顿触发中间润色的静音阈值（毫秒），仅 `polish_mode=2` 生效；**须 >= 500**（Active Flush 500ms），否则润色先于尾音冲刷、快照缺尾音。GUI 设置页改为下拉（500~1000ms 六档），label 名为「说话换气间隔」 |
-| `polish_llm` | string | `"bigmodel:glm:glm-4-flashx"` | desktop | 当前润色使用的 LLM 模型，格式 `"{provider}:{category}:{model_name}"`（见下方「模型选择 spec」）。示例：`"bigmodel:glm:glm-4-flashx"`、`"aliyun:qwen:qwen-plus"`、`"deepseek:deepseek:deepseek-v4-flash"`。**留空 `""` = 不选择模型（不润色）**；该模型在 DB 找不到时，工具栏回退「不选择模型」并图标置灰（见 [toolbar spec §16.4](superpowers/specs/2026-06-15-result-window-toolbar-design.md)） |
+| `polish_llm` | string | `"bigmodel:glm:glm-4-flashx"` | desktop | 当前润色使用的 LLM 模型，格式 `"{provider}:{category}:{model_name}"`（见下方「模型选择 spec」）。示例：`"bigmodel:glm:glm-4-flashx"`、`"aliyun:qwen:qwen-plus"`、`"deepseek:deepseek:deepseek-v4-flash"`。**留空 `""` = 不选择模型（不润色）**；该模型在 DB 找不到时，工具栏回退「不选择模型」并图标置灰（见 [toolbar spec §16.4](superpowers/specs/2026-06-16-archived-design.md)） |
 | `asr_hardware_accelerated` | bool | `false` | desktop + cli | ASR 推理是否启用硬件加速（CUDA/DirectML/CoreML EP），失败自动回退 CPU；不影响 VAD（VAD 固定 CPU） |
 | `asr_correct` | bool | `false` | cli + server + desktop | 是否对 ASR 输出做拼音映射 + bigram 转移概率的轻量纠错/热词校正；**自动跳过 Qwen3-ASR**（其自带标点且语义纠错强），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。详见 [architecture.md §ASR 纠错](../architecture.md) |
 | `denoise_mode` | u8 | `1` | desktop | 环境降噪模式：`0`=关闭（直通）、`1`=RNNoise（`nnnoiseless`，默认，纯 Rust 内置默认模型，48kHz→频带增益+OLA，GRU 状态跨帧保持）、`2`=DeepFilterNet3（libDF v0.5.6 + tract 0.19，48kHz 全频带，编译期内嵌 ~7.9MB 模型，质量最佳）。降噪为可插拔后端（`FrameDenoise` trait），由 mode 选后端；亦可由工具栏运行时切换（`set_denoise_mode` 命令）并持久化回 config.yaml。初始化/推理失败自动降级直通（warn），不阻断录音。详见 [architecture.md](../architecture.md) |
