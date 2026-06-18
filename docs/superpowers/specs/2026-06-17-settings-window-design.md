@@ -102,7 +102,7 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
 ```json
 {
   "config": {
-    "asr_engine": "local:qwen3-asr-0.6B",
+    "asr_engine": "local:qwen3-asr:qwen3-asr-0.6B",
     "language": "auto",
     "shortcut": "CmdOrCtrl+Shift+Space",
     "segment_duration": 5.0,
@@ -111,7 +111,7 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
     "polish_mode": 0,
     "polish_interval": 5.0,
     "pause_polish_threshold_ms": 600,
-    "polish_llm": "bigmodel:glm-4-flashx",
+    "polish_llm": "bigmodel:glm:glm-4-flashx",
     "asr_hardware_accelerated": false,
     "asr_correct": false,
     "output_simplified": true,
@@ -147,7 +147,10 @@ match key {
     "segment_duration" / "segment_silence" / "segment_overlap" / "polish_interval" => as_f64() > 0.0
     "pause_polish_threshold_ms" => as_f64() >= 500.0
     // string（自由）
-    "shortcut" / "microphone" / "asr_engine" / "polish_llm" => as_str()
+    "shortcut" / "microphone" => as_str()
+    // string（裸 model_name → 构造 3-part spec）
+    "asr_engine" => build_asr_engine_spec(as_str())
+    "polish_llm" => build_polish_llm_spec(as_str())
     // 非法 key
     _ => Err("未知配置字段: {key}")
 }
