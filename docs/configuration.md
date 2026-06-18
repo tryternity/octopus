@@ -110,7 +110,7 @@ octopus-cli config
 | `segment_overlap` | f64 | `200.0` | desktop | VAD 伪流式：相邻分段 overlap（毫秒） |
 | `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色。**desktop 悬停工具栏可在运行时切换**（`set_polish_mode` 命令）：写 RuntimeConfig 镜像 + 持久化回 config.yaml，**立即生效**（Coordinator 每个 tick 重读镜像并 `Transcript::set_mode`，下一次润色按新模式） |
 | `polish_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s` |
-| `pause_polish_threshold_ms` | f64 | `600` | desktop | 停顿触发中间润色的静音阈值（毫秒），仅 `polish_mode=2` 生效；**须 > 500**（Active Flush 500ms），否则润色先于尾音冲刷、快照缺尾音 |
+| `pause_polish_threshold_ms` | f64 | `600` | desktop | 停顿触发中间润色的静音阈值（毫秒），仅 `polish_mode=2` 生效；**须 >= 500**（Active Flush 500ms），否则润色先于尾音冲刷、快照缺尾音。GUI 设置页改为下拉（500~1000ms 六档），label 名为「说话换气间隔」 |
 | `polish_llm` | string | `"bigmodel:glm-4-flashx"` | desktop | 当前润色使用的 LLM 模型，格式 `"PREFIX:NAME"`（见下方模型选择 spec）。**留空 `""` = 不选择模型（不润色）**；该模型在 DB 找不到时，工具栏回退「不选择模型」并图标置灰（见 [toolbar spec §16.4](superpowers/specs/2026-06-15-result-window-toolbar-design.md)） |
 | `asr_hardware_accelerated` | bool | `false` | desktop + cli | ASR 推理是否启用硬件加速（CUDA/DirectML/CoreML EP），失败自动回退 CPU；不影响 VAD（VAD 固定 CPU） |
 | `asr_correct` | bool | `false` | cli + server + desktop | 是否对 ASR 输出做拼音映射 + bigram 转移概率的轻量纠错/热词校正；**自动跳过 Qwen3-ASR**（其自带标点且语义纠错强），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。详见 [architecture.md §ASR 纠错](../architecture.md) |
@@ -180,7 +180,7 @@ segment_overlap: 200.0           # 毫秒
 # LLM 润色（可选）
 polish_mode: 0                   # 0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色
 polish_interval: 5.0             # 秒，仅 polish_mode=2 生效（中间润色最小间隔）
-pause_polish_threshold_ms: 600   # 毫秒，仅 polish_mode=2 生效（停顿触发润色的静音阈值，须 > 500）
+pause_polish_threshold_ms: 600   # 毫秒，仅 polish_mode=2 生效（停顿触发润色的静音阈值，须 >= 500）
 polish_llm: "bigmodel:glm-4-flashx"  # 润色模型，格式 "PREFIX:NAME"（见模型选择 spec）；provider/base_url/API Key 保存于 SQLite 的 models 表中
 asr_hardware_accelerated: false  # true 启用 GPU/CoreML/DirectML 加速（失败回退 CPU）；VAD 不受影响
 asr_correct: false               # true 对 ASR 输出做拼音+bigram 轻量纠错（自动跳过 Qwen3-ASR）
