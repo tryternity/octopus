@@ -524,11 +524,17 @@
         document.getElementById('tool-llm').classList.toggle('active', st.polish_llm_valid);
         document.getElementById('tool-denoise').classList.toggle('active', st.denoise_mode !== 0);
         document.getElementById('tool-polish-now').classList.toggle('active', true);
-        // hide_toolbar=false → 工具栏始终显示：移除 hover 监听 + 立即展开
+        // hide_toolbar 双向切换：
+        // false = 始终显示 → 移除 hover 监听 + 立即展开
+        // true  = 自动隐藏 → 恢复 hover 监听 + 立即收起（除非鼠标在上方）
         if (st.hide_toolbar === false) {
           container.removeEventListener('mousemove', showToolbar);
           container.removeEventListener('mouseleave', hideToolbar);
           showToolbar();
+        } else {
+          container.addEventListener('mousemove', showToolbar);
+          container.addEventListener('mouseleave', hideToolbar);
+          hideToolbar();
         }
       } catch (_) { /* 忽略 */ }
     }
@@ -565,6 +571,11 @@
 
     listen('hide-result', () => {
       container.classList.remove('visible');
+    });
+
+    // 配置变更（设置窗口改了 hide_toolbar 等）→ 刷新工具栏显隐
+    listen('config-changed', () => {
+      refreshActive();
     });
 
     // Esc 关闭

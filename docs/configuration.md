@@ -199,7 +199,6 @@ octopus-cli config
 | `overlay_position` | string | `"top"` | desktop | top / bottom / none |
 | `segment_duration` | f64 | `5.0` | desktop | VAD 伪流式：缓冲累积时长阈值（秒） |
 | `segment_silence` | f64 | `500.0` | desktop | VAD 伪流式：静音触发识别阈值（毫秒） |
-| `segment_overlap` | f64 | `200.0` | desktop | VAD 伪流式：相邻分段 overlap（毫秒） |
 | `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色。**desktop 悬停工具栏可在运行时切换**（`set_polish_mode` 命令）：写 RuntimeConfig 镜像 + 持久化回 config.yaml，**立即生效**（Coordinator 每个 tick 重读镜像并 `Transcript::set_mode`，下一次润色按新模式） |
 | `polish_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s` |
 | `pause_polish_threshold_ms` | f64 | `600` | desktop | 停顿触发中间润色的静音阈值（毫秒），仅 `polish_mode=2` 生效；**须 >= 500**（Active Flush 500ms），否则润色先于尾音冲刷、快照缺尾音。GUI 设置页改为下拉（500~1000ms 六档），label 名为「说话换气间隔」 |
@@ -266,7 +265,6 @@ overlay_position: "top"          # top | bottom | none
 # VAD 伪流式分段（离线引擎）
 segment_duration: 5.0            # 秒
 segment_silence: 500.0           # 毫秒
-segment_overlap: 200.0           # 毫秒
 
 # LLM 润色（可选）
 polish_mode: 0                   # 0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色

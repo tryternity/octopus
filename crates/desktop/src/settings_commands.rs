@@ -80,6 +80,13 @@ pub fn set_config(
         coordinator.update_runtime();
     }
 
+    // hide_toolbar 改变时通知 result window 刷新工具栏显隐模式
+    // （result window 的 refreshActive 负责切换 hover 监听 / 常驻显示）
+    if key == "hide_toolbar" {
+        use tauri::Emitter;
+        let _ = app_handle.emit("config-changed", ());
+    }
+
     // 快捷键热重载：注销旧的 → 注册新的
     if key == "shortcut" && cfg.shortcut != old_shortcut {
         use tauri_plugin_global_shortcut::GlobalShortcutExt;
@@ -151,11 +158,6 @@ fn apply_config_value(
             let v = value.as_f64().ok_or("segment_silence 需要数值")?;
             if v <= 0.0 { return Err("segment_silence 必须大于 0".into()); }
             cfg.segment_silence = v;
-        }
-        "segment_overlap" => {
-            let v = value.as_f64().ok_or("segment_overlap 需要数值")?;
-            if v < 0.0 { return Err("segment_overlap 不能为负".into()); }
-            cfg.segment_overlap = v;
         }
         "polish_interval" => {
             let v = value.as_f64().ok_or("polish_interval 需要数值")?;

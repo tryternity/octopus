@@ -104,11 +104,6 @@ pub struct AppConfig {
     #[serde(default = "default_segment_silence")]
     pub segment_silence: f64,
 
-    /// VAD 伪流式：相邻分段 overlap 时长（毫秒）
-    /// 每段识别音频前会拼接前一段末尾此毫秒数的音频，确保识别文本连续性，默认 200 毫秒
-    #[serde(default = "default_segment_overlap")]
-    pub segment_overlap: f64,
-
     /// overlay 位置: top | bottom | none
     #[serde(default = "default_overlay_position")]
     pub overlay_position: String,
@@ -210,9 +205,6 @@ fn default_segment_duration() -> f64 {
 fn default_segment_silence() -> f64 {
     500.0
 }
-fn default_segment_overlap() -> f64 {
-    200.0
-}
 
 impl Default for AppConfig {
     fn default() -> Self {
@@ -229,7 +221,6 @@ impl Default for AppConfig {
             microphone: String::new(),
             segment_duration: default_segment_duration(),
             segment_silence: default_segment_silence(),
-            segment_overlap: default_segment_overlap(),
             overlay_position: default_overlay_position(),
             polish_mode: PolishMode::default(),
             polish_interval: default_polish_interval(),

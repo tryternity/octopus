@@ -108,7 +108,6 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
     "shortcut": "CmdOrCtrl+Shift+Space",
     "segment_duration": 5.0,
     "segment_silence": 500.0,
-    "segment_overlap": 200.0,
     "polish_mode": 0,
     "polish_interval": 5.0,
     "pause_polish_threshold_ms": 600,
@@ -145,7 +144,7 @@ match key {
     // bool
     "asr_hardware_accelerated" / "asr_correct" / "output_simplified" / "hide_toolbar" => as_bool()
     // f64 正数
-    "segment_duration" / "segment_silence" / "segment_overlap" / "polish_interval" => as_f64() > 0.0
+    "segment_duration" / "segment_silence" / "polish_interval" => as_f64() > 0.0
     "pause_polish_threshold_ms" => as_f64() >= 500.0
     // string（自由）
     "shortcut" / "microphone" => as_str()
@@ -164,7 +163,7 @@ match key {
 | 时机 | 字段 | 机制 |
 |---|---|---|
 | **立即** | polish_mode, denoise_mode, asr_correct, output_simplified, hide_toolbar, **shortcut**（热重载：注销旧 + 注册新）, **polish_llm**（2026-06-18 改进：通过 `Command::UpdateRuntime` 同步到 coordinator config 快照，录音中改也立即生效） | 写 RuntimeConfig / 热重载 / `update_runtime`，即时生效 |
-| **下次录音** | asr_engine, microphone, language, asr_hardware_accelerated, segment_duration, segment_silence, segment_overlap, polish_interval, pause_polish_threshold_ms | 写 AppConfig 缓存，Coordinator Toggle 进入 Idle 时重读（asr_engine 需重建引擎实例） |
+| **下次录音** | asr_engine, microphone, language, asr_hardware_accelerated, segment_duration, segment_silence, polish_interval, pause_polish_threshold_ms | 写 AppConfig 缓存，Coordinator Toggle 进入 Idle 时重读（asr_engine 需重建引擎实例） |
 | **重启** | engine_mode | 需重启进程（引擎初始化等） |
 
 ---
@@ -241,7 +240,6 @@ match key {
 |---|---|---|---|
 | 分段时长 | number input（秒） | `segment_duration` | 下次录音 |
 | 静音阈值 | number input（毫秒） | `segment_silence` | 下次录音 |
-| 分段重叠 | number input（毫秒） | `segment_overlap` | 下次录音 |
 
 **卡片「音频」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |

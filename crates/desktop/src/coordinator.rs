@@ -161,6 +161,13 @@ const PUNCTUATION_SILENCE_THRESHOLD: f64 = 0.5;
 /// 10 帧 ≈ 320ms 静音预热。
 const VAD_PREROLL_FRAMES: usize = 10;
 
+/// VAD 强制切断时保留下一段的 overlap 时长（毫秒）。
+///
+/// 仅在连续语音 ≥ `segment_duration` 强制切断时生效（语句被硬切，需重叠保连贯）；
+/// 静音切分是自然语句边界，不带 overlap。200ms ≈ 一个音节，给 ASR 引擎足够声学
+/// 线索补全段首残字。此值原为 config 字段，因属实现细节（用户不可感知）改为常量。
+const SEGMENT_OVERLAP_MS: f64 = 200.0;
+
 /// VAD 伪流式 tick 间隔（毫秒）
 const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 100;
 
@@ -1189,7 +1196,7 @@ fn handle_vad_segmented_tick(
             // 仅强制切断保留下一段 overlap（语句被硬切，需重叠保证连贯）；
             // 静音切分是自然语句边界，下一段从干净开始，无需 overlap。
             if force_cut {
-                let overlap_samples = (config.segment_overlap * 16.0) as usize;
+                let overlap_samples = (SEGMENT_OVERLAP_MS * 16.0) as usize;
                 let overlap_start = audio_buffer.len().saturating_sub(overlap_samples);
                 *overlap_tail = audio_buffer[overlap_start..].to_vec();
             } else {
