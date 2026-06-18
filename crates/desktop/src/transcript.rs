@@ -81,15 +81,33 @@ impl Transcript {
         self.mode == PolishMode::Intermediate && self.full.chars().count() > self.raw_len
     }
 
-    /// 停顿触发：返回完整 ASR 作为润色输入，并推进 raw_len（increase 清空）。
-    pub fn snapshot_for_polish(&mut self) -> String {
+    /// 取润色输入并推进 raw_len 边界（increase 清空）。
+    /// - has_edit：(Some(edited), increase) —— 已确认=edited（LLM 须原样保留），待润色=increase（新增）
+    /// - 否则：(None, full) —— 全量原始 ASR（保持现状）
+    pub fn take_polish_input(&mut self) -> (Option<String>, String) {
+        let preserved = if self.has_edit() {
+            Some(self.edited.clone())
+        } else {
+            None
+        };
+        let to_polish = if self.has_edit() {
+            self.full.chars().skip(self.raw_len).collect()
+        } else {
+            self.full.clone()
+        };
         self.raw_len = self.full.chars().count();
-        self.full.clone()
+        (preserved, to_polish)
     }
 
-    /// 润色完成：更新 polished（raw_len 已在 snapshot_for_polish 推进）。
-    pub fn on_polish_done(&mut self, polished: String) {
-        self.polished = polished;
+    /// 润色完成：
+    /// - has_edit：结果折回 edited（= edited + 润色后新增），避免 edited 遮蔽 polished 丢字（spec §12）。
+    /// - 否则：写 polished（raw_len 已在 take_polish_input 推进）。
+    pub fn on_polish_done(&mut self, result: String) {
+        if self.has_edit() {
+            self.edited = result;
+        } else {
+            self.polished = result;
+        }
         self.polish_pending = false;
         self.last_polish_time = Instant::now();
     }
@@ -215,7 +233,8 @@ mod tests {
         assert_eq!(t.display_text(), "你好世界"); // polished 空，increase=full
 
         // 停顿快照 → 送润色
-        let snap = t.snapshot_for_polish();
+        let (preserved, snap) = t.take_polish_input();
+        assert_eq!(preserved, None);
         assert_eq!(snap, "你好世界");
         assert_eq!(t.increase(), ""); // 快照后 increase 空（raw_len 推进到 full）
 
@@ -229,7 +248,7 @@ mod tests {
         // 验证：快照后新内容进 increase，display = polished + increase
         let mut t = Transcript::new(4, PolishMode::Intermediate);
         t.set_full("原始文本");
-        t.snapshot_for_polish();
+        let _ = t.take_polish_input();
         t.on_polish_done("润色文本".into());
 
         // 流式：raw 前缀稳定，full 追加新内容
@@ -250,7 +269,7 @@ mod tests {
     fn polish_failed_keeps_polished() {
         let mut t = Transcript::new(6, PolishMode::Intermediate);
         t.set_full("原文");
-        t.snapshot_for_polish();
+        let _ = t.take_polish_input();
         t.on_polish_done("润色".into());
         t.mark_polish_pending();
         t.on_polish_failed(); // 失败
@@ -269,7 +288,7 @@ mod tests {
 
         // 空快照：返回空串，raw_len 保持 0
         let mut t2 = Transcript::new(11, PolishMode::Intermediate);
-        let snap = t2.snapshot_for_polish();
+        let (_preserved, snap) = t2.take_polish_input();
         assert_eq!(snap, "");
         assert_eq!(t2.increase(), "");
     }
@@ -280,7 +299,7 @@ mod tests {
 
         // 第一次停顿快照 + 润色
         t.set_full("第一段");
-        let s1 = t.snapshot_for_polish();
+        let (_p1, s1) = t.take_polish_input();
         assert_eq!(s1, "第一段");
         t.on_polish_done("润色一".into());
         assert_eq!(t.display_text(), "润色一"); // polished + 空 increase
@@ -291,7 +310,7 @@ mod tests {
         assert_eq!(t.display_text(), "润色一第二段");
 
         // 第二次停顿快照 + 润色（覆盖第一次 polished）
-        let s2 = t.snapshot_for_polish();
+        let (_p2, s2) = t.take_polish_input();
         assert_eq!(s2, "第一段第二段");
         assert_eq!(t.increase(), ""); // raw_len 推进到 full → increase 清空
         t.on_polish_done("润色一二".into());
@@ -303,7 +322,7 @@ mod tests {
         // 起始 mode=2（中间润色）：说一段 + 快照 + 润色
         let mut t = Transcript::new(20, PolishMode::Intermediate);
         t.set_full("原文");
-        t.snapshot_for_polish();
+        let _ = t.take_polish_input();
         t.on_polish_done("润色".into());
         assert_eq!(t.display_text(), "润色");
 
@@ -323,7 +342,7 @@ mod tests {
     fn commit_edit_sets_edited_and_advances_boundary() {
         let mut t = Transcript::new(30, PolishMode::Intermediate);
         t.set_full("你好世界");
-        t.snapshot_for_polish(); // T1 阶段仍用旧 snapshot；T5 替换
+        let _ = t.take_polish_input();
         t.on_polish_done("你好，世界。".into());
         assert_eq!(t.display_text(), "你好，世界。");
 
@@ -348,7 +367,7 @@ mod tests {
     fn edited_takes_priority_over_polished_and_raw() {
         let mut t = Transcript::new(32, PolishMode::Intermediate);
         t.set_full("raw文本");
-        t.snapshot_for_polish();
+        let _ = t.take_polish_input();
         t.on_polish_done("polished文本".into());
         t.commit_edit("edited文本".into());
         assert_eq!(t.display_text(), "edited文本"); // edited ≻ polished ≻ raw
@@ -375,5 +394,47 @@ mod tests {
         assert_eq!(t.edited_display().as_deref(), Some("手改"));
         t.set_full("原文新增");
         assert_eq!(t.edited_display().as_deref(), Some("手改新增")); // = display
+    }
+
+    #[test]
+    fn take_polish_input_no_edit_returns_full() {
+        let mut t = Transcript::new(40, PolishMode::Intermediate);
+        t.set_full("第一段第二段");
+        let (preserved, to_polish) = t.take_polish_input();
+        assert_eq!(preserved, None);
+        assert_eq!(to_polish, "第一段第二段");
+    }
+
+    #[test]
+    fn take_polish_input_after_edit_returns_preserved_and_increase() {
+        let mut t = Transcript::new(41, PolishMode::Intermediate);
+        t.set_full("原文");
+        t.commit_edit("原文（手改）"); // edited="原文（手改）", raw_len=2
+        t.set_full("原文新增"); // increase="新增"
+        let (preserved, to_polish) = t.take_polish_input();
+        assert_eq!(preserved.as_deref(), Some("原文（手改）"));
+        assert_eq!(to_polish, "新增");
+    }
+
+    #[test]
+    fn on_polish_done_folds_into_edited_when_has_edit() {
+        let mut t = Transcript::new(42, PolishMode::Intermediate);
+        t.set_full("原文");
+        t.commit_edit("原文（手改）");
+        t.set_full("原文新增");
+        let _ = t.take_polish_input(); // 推进 raw_len
+        t.on_polish_done("原文（手改）新增（润色）".into());
+        assert_eq!(t.edited_text(), Some("原文（手改）新增（润色）"));
+        assert_eq!(t.display_text(), "原文（手改）新增（润色）"); // 折回 edited，无丢字
+    }
+
+    #[test]
+    fn on_polish_done_no_edit_writes_polished() {
+        let mut t = Transcript::new(43, PolishMode::Intermediate);
+        t.set_full("原文");
+        let _ = t.take_polish_input();
+        t.on_polish_done("润色".into());
+        assert_eq!(t.polished(), "润色");
+        assert_eq!(t.display_text(), "润色");
     }
 }

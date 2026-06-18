@@ -722,7 +722,7 @@ fn handle_toggle(
 fn start_final_polish_or_paste(
     stage: &mut Stage,
     text: &str,
-    transcript: Transcript,
+    mut transcript: Transcript,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
@@ -756,6 +756,7 @@ fn start_final_polish_or_paste(
 
             let id = transcript.id;
             let raw_text = transcript.db_text();
+            let (preserved, to_polish) = transcript.take_polish_input();
 
             *stage = Stage::Polishing {
                 id,
@@ -763,9 +764,8 @@ fn start_final_polish_or_paste(
             };
 
             let tx = tx.clone();
-            let text_to_polish = text.to_string();
             std::thread::spawn(move || {
-                let result = match octopus_llm::polish(None, &text_to_polish, &llm_config) {
+                let result = match octopus_llm::polish(preserved.as_deref(), &to_polish, &llm_config) {
                     Ok(polished) => {
                         if polished.is_empty() {
                             Err("Final polish returned empty".to_string())
@@ -1120,8 +1120,10 @@ fn filter_speech_from_buffer(
 
 /// 启动润色线程
 /// `ignore_mode`=true 时跳过 polish_mode 检查（供「立即润色」用）。
+/// `preserved` 非空时告知 LLM 须原样保留的 edited 文本，仅润色 `to_polish`（新增）部分（spec §12）。
 fn spawn_polish_thread(
-    text: String,
+    preserved: Option<String>,
+    to_polish: String,
     config: &AppConfig,
     tx: &Sender<Command>,
     ignore_mode: bool,
@@ -1137,7 +1139,7 @@ fn spawn_polish_thread(
     };
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let result = match octopus_llm::polish(None, &text, &llm_config) {
+        let result = match octopus_llm::polish(preserved.as_deref(), &to_polish, &llm_config) {
             Ok(polished) => Ok(polished),
             Err(e) => {
                 log::warn!("Polish thread error: {}", e);
@@ -1179,10 +1181,10 @@ fn check_and_trigger_polish(
     {
         return;
     }
-    // 快照（推进 raw_len，increase 清空）+ 标记 pending + 送 LLM 全量润色
-    let snapshot = transcript.snapshot_for_polish();
+    // 取润色输入（编辑态分块：preserved=edited、to_polish=increase；否则全量）+ 标记 pending + 送 LLM
+    let (preserved, to_polish) = transcript.take_polish_input();
     transcript.mark_polish_pending();
-    spawn_polish_thread(snapshot, config, tx, false);
+    spawn_polish_thread(preserved, to_polish, config, tx, false);
 }
 
 /// 处理 StreamingTick 命令
@@ -1512,16 +1514,25 @@ fn handle_polish_done(
                 warn!("Polish returned empty, keeping previous");
                 transcript.on_polish_failed();
             } else {
-                transcript.on_polish_done(polished);
-                // 中间润色入库 polished（polish_model 传 config.polish_llm，与 PasteDone 一致，便于统计）
-                let cmd = DbCommand::UpdatePolished {
-                    id: transcript.id,
-                    text: transcript.polished().to_string(),
-                    status: "done".to_string(),
-                    model: Some(config.polish_llm.clone()),
+                // 先折回 transcript（on_polish_done 内部决定写 edited 或 polished）
+                transcript.on_polish_done(polished.clone());
+                // 折回→UpdateEdited（保持 edited_text 与 display 一致）；否则 UpdatePolished（现状）
+                let cmd = if transcript.has_edit() {
+                    DbCommand::UpdateEdited {
+                        id: transcript.id,
+                        edited_text: polished,
+                    }
+                } else {
+                    // 中间润色入库 polished（polish_model 传 config.polish_llm，与 PasteDone 一致，便于统计）
+                    DbCommand::UpdatePolished {
+                        id: transcript.id,
+                        text: transcript.polished().to_string(),
+                        status: "done".to_string(),
+                        model: Some(config.polish_llm.clone()),
+                    }
                 };
                 if let Err(e) = get_db_sender().send(cmd) {
-                    warn!("Queue DB update_polished failed: {}", e);
+                    warn!("Queue DB update_polish_result failed: {}", e);
                 }
                 if !transcript.full().is_empty() {
                     crate::result_window::update_result(app_handle, &transcript.display_text());
@@ -1569,10 +1580,10 @@ fn handle_polish_now(
         let _ = crate::result_window::show_result(app_handle, "未配置润色模型");
         return;
     }
-    let snapshot = transcript.snapshot_for_polish();
+    let (preserved, to_polish) = transcript.take_polish_input();
     transcript.mark_polish_pending();
-    info!("PolishNow triggered, polishing {} chars", snapshot.chars().count());
-    spawn_polish_thread(snapshot, config, tx, true);
+    info!("PolishNow triggered, polishing {} chars", to_polish.chars().count());
+    spawn_polish_thread(preserved, to_polish, config, tx, true);
 }
 
 /// 进入编辑态：仅活跃会话（Streaming/VadSegmented）有效；初始化 edit_buffer = 当前 display。
