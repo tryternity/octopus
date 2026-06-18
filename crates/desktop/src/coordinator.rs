@@ -13,6 +13,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Instant;
+use tauri::Emitter;
 
 /// 协调器命令
 enum Command {
@@ -38,6 +39,12 @@ enum Command {
     FinalPolishDone { result: Result<String, String> },
     /// 立即润色（前端工具栏触发，忽略 polish_mode）
     PolishNow,
+    /// 进入编辑态（前端双击/编辑按钮触发；ASR 硬暂停）
+    EnterEditMode,
+    /// 更新编辑缓冲（前端 input 防抖推送；供 Toggle-期间-编辑 恢复）
+    UpdateEditBuffer { text: String },
+    /// 提交编辑（快捷键/完成按钮/失焦触发）
+    CommitEdit { text: String },
 }
 
 enum Stage {
@@ -161,6 +168,10 @@ impl Coordinator {
 
         std::thread::spawn(move || {
             let mut stage = Stage::Idle;
+            // 编辑态：置位时 tick 跳过喂引擎、只排空丢弃音频（硬暂停）。
+            let mut editing = false;
+            // 编辑缓冲：前端 input 防抖推送的最新文本；Toggle-期间-编辑 时用作提交文本。
+            let mut edit_buffer: Option<String> = None;
 
             loop {
                 let cmd = match rx.recv() {
@@ -173,6 +184,14 @@ impl Coordinator {
 
                 match cmd {
                     Command::Toggle => {
+                        // 编辑态下停止：先用 edit_buffer 提交编辑，再走停止流程（spec §7）
+                        if editing {
+                            if let Some(text) = edit_buffer.take() {
+                                commit_edit_apply(&mut stage, &text, &app_handle);
+                            }
+                            editing = false;
+                            let _ = app_handle.emit("edit-force-exit", ());
+                        }
                         // 仅在 Idle（开新会话）时同步运行时覆盖；STOP 时不动 asr_engine
                         // （否则会把"刚切换但本会话未用"的引擎名写进 DB 记录）
                         if matches!(stage, Stage::Idle) {
@@ -204,7 +223,11 @@ impl Coordinator {
                         if let Stage::Streaming { transcript, .. } = &mut stage {
                             transcript.set_mode(config.polish_mode);
                         }
-                        handle_streaming_tick(&mut stage, &audio, &config, &app_handle, &tx);
+                        if editing {
+                            let _ = audio.drain_samples(); // 编辑期丢弃音频，不喂引擎
+                        } else {
+                            handle_streaming_tick(&mut stage, &audio, &config, &app_handle, &tx);
+                        }
                     }
                     Command::VadSegmentedTick => {
                         {
@@ -214,28 +237,36 @@ impl Coordinator {
                         if let Stage::VadSegmented { transcript, .. } = &mut stage {
                             transcript.set_mode(config.polish_mode);
                         }
-                        handle_vad_segmented_tick(
-                            &mut stage,
-                            &audio,
-                            &engine,
-                            &config,
-                            &app_handle,
-                            &tx,
-                        );
+                        if editing {
+                            let _ = audio.drain_samples();
+                        } else {
+                            handle_vad_segmented_tick(
+                                &mut stage,
+                                &audio,
+                                &engine,
+                                &config,
+                                &app_handle,
+                                &tx,
+                            );
+                        }
                     }
                     Command::Cancel => {
                         handle_cancel(&mut stage, &audio, &app_handle);
                     }
                     Command::TranscriptionDone { text, seq, session_id } => {
-                        handle_transcription_done(
-                            &mut stage,
-                            text,
-                            seq,
-                            session_id,
-                            &config,
-                            &app_handle,
-                            &tx,
-                        );
+                        if editing {
+                            debug!("TranscriptionDone ignored during edit");
+                        } else {
+                            handle_transcription_done(
+                                &mut stage,
+                                text,
+                                seq,
+                                session_id,
+                                &config,
+                                &app_handle,
+                                &tx,
+                            );
+                        }
                     }
                     Command::PasteDone => {
                         // 入库 finalize（从 Pasting 取数据；用户编辑已反映到 polished_text）
@@ -288,6 +319,20 @@ impl Coordinator {
                     Command::PolishNow => {
                         handle_polish_now(&mut stage, &config, &app_handle, &tx);
                     }
+                    Command::EnterEditMode => {
+                        handle_enter_edit_mode(&mut stage, &mut editing, &mut edit_buffer);
+                    }
+                    Command::UpdateEditBuffer { text } => {
+                        if editing {
+                            edit_buffer = Some(text);
+                        }
+                    }
+                    Command::CommitEdit { text } => {
+                        if editing {
+                            commit_edit_apply(&mut stage, &text, &app_handle);
+                            editing = false;
+                        }
+                    }
                 }
             }
             debug!("Coordinator thread exited");
@@ -324,6 +369,33 @@ impl Coordinator {
             }
         }
     }
+
+    /// 进入编辑态
+    pub fn enter_edit_mode(&self) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::EnterEditMode).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
+
+    /// 更新编辑缓冲（前端 input 防抖推送）
+    pub fn update_edit_buffer(&self, text: String) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::UpdateEditBuffer { text }).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
+
+    /// 提交编辑
+    pub fn commit_edit(&self, text: String) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::CommitEdit { text }).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
 }
 
 /// 前端命令：取消当前录音/处理（Esc 键）。
@@ -337,6 +409,24 @@ pub fn cancel_recording(coordinator: tauri::State<'_, Coordinator>) {
 #[tauri::command]
 pub fn polish_now(coordinator: tauri::State<'_, Coordinator>) {
     coordinator.polish_now();
+}
+
+/// 前端命令：进入编辑态（双击/编辑按钮触发）。
+#[tauri::command]
+pub fn enter_edit_mode(coordinator: tauri::State<'_, Coordinator>) {
+    coordinator.enter_edit_mode();
+}
+
+/// 前端命令：更新编辑缓冲（input 防抖推送）。
+#[tauri::command]
+pub fn update_edit_buffer(coordinator: tauri::State<'_, Coordinator>, text: String) {
+    coordinator.update_edit_buffer(text);
+}
+
+/// 前端命令：提交编辑（快捷键/完成按钮/失焦触发）。
+#[tauri::command]
+pub fn commit_edit(coordinator: tauri::State<'_, Coordinator>, text: String) {
+    coordinator.commit_edit(text);
 }
 
 /// 处理 Toggle 命令
@@ -1479,6 +1569,43 @@ fn handle_polish_now(
     spawn_polish_thread(snapshot, config, tx, true);
 }
 
+/// 进入编辑态：仅活跃会话（Streaming/VadSegmented）有效；初始化 edit_buffer = 当前 display。
+fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &mut Option<String>) {
+    let transcript = match stage {
+        Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
+        _ => {
+            debug!("enter_edit_mode ignored in non-active stage");
+            return;
+        }
+    };
+    *editing = true;
+    *edit_buffer = Some(transcript.display_text());
+    info!("Entered edit mode (transcript id={})", transcript.id);
+}
+
+/// 提交编辑：写回 transcript（commit_edit）+ UPDATE edited_text（行已存在）+ 刷新展示。
+fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandle) {
+    let transcript = match stage {
+        Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
+        _ => {
+            debug!("commit_edit ignored in non-active stage");
+            return;
+        }
+    };
+    transcript.commit_edit(text);
+    if transcript.db_inserted() {
+        let id = transcript.id;
+        if let Err(e) = get_db_sender().send(DbCommand::UpdateEdited {
+            id,
+            edited_text: text.to_string(),
+        }) {
+            warn!("Queue DB UpdateEdited failed: {}", e);
+        }
+    }
+    crate::result_window::update_result(app_handle, &transcript.display_text());
+    info!("Edit committed ({} chars)", text.chars().count());
+}
+
 fn stage_name(stage: &Stage) -> &'static str {
     match stage {
         Stage::Idle => "Idle",
@@ -1514,6 +1641,10 @@ enum DbCommand {
         polish_status: String,
         polish_model: Option<String>,
         duration_ms: Option<i64>,
+    },
+    UpdateEdited {
+        id: i64,
+        edited_text: String,
     },
 }
 
@@ -1565,6 +1696,11 @@ fn process_db_command(cmd: DbCommand) {
                 duration_ms,
             ) {
                 warn!("Background DB finalize failed: {}", e);
+            }
+        }
+        DbCommand::UpdateEdited { id, edited_text } => {
+            if let Err(e) = octopus_asr::db::update_edited_text(id, &edited_text) {
+                warn!("Background DB update_edited_text failed: {}", e);
             }
         }
     }
