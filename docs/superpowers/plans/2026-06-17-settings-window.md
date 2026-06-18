@@ -433,10 +433,14 @@ fn apply_config_value(
             cfg.microphone = value.as_str().ok_or("microphone 需要字符串")?.to_string();
         }
         "asr_engine" => {
-            cfg.asr_engine = value.as_str().ok_or("asr_engine 需要字符串")?.to_string();
+            let bare_name = value.as_str().ok_or("asr_engine 需要字符串")?;
+            // 前端传裸 model_name，需构造 3-part spec
+            cfg.asr_engine = build_asr_engine_spec(bare_name)?;
         }
         "polish_llm" => {
-            cfg.polish_llm = value.as_str().ok_or("polish_llm 需要字符串")?.to_string();
+            let bare_name = value.as_str().ok_or("polish_llm 需要字符串")?;
+            // 前端传裸 model_name，空串=不选择模型，其余构造 3-part spec
+            cfg.polish_llm = build_polish_llm_spec(bare_name)?;
         }
         _ => return Err(format!("未知配置字段: {}", key)),
     }
@@ -512,11 +516,11 @@ mod tests {
     }
 
     #[test]
-    fn apply_config_pause_polish_threshold_must_gt_500() {
+    fn apply_config_pause_polish_threshold_must_ge_500() {
         let mut cfg = octopus_infra::config::AppConfig::default();
-        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(400.0)).is_err());
-        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(500.0)).is_err());
-        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(501.0)).is_err() == false);
+        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(499.0)).is_err());
+        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(500.0)).is_ok());
+        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(600.0)).is_ok());
     }
 
     #[test]

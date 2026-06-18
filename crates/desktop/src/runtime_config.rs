@@ -69,7 +69,7 @@ fn engine_label(is_local: bool, _category: &str, provider: &str, name: &str) -> 
 }
 
 /// ASR 兜底引擎名（固定首项，不依赖 DB 存在）。
-const FALLBACK_ASR_ENGINE: &str = "zipformer-small-ctc";
+pub(crate) const FALLBACK_ASR_ENGINE: &str = "zipformer-small-ctc";
 
 /// 构造 ASR 选项列表（纯逻辑）：兜底固定第一，DB 同名去重，current 按 current_effective 标记。
 /// current_effective 为空时视作兜底。current 可能为 3-part spec（"provider:category:name"）或裸名，

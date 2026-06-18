@@ -166,14 +166,52 @@ fn apply_config_value(
             cfg.microphone = value.as_str().ok_or("microphone 需要字符串")?.to_string();
         }
         "asr_engine" => {
-            cfg.asr_engine = value.as_str().ok_or("asr_engine 需要字符串")?.to_string();
+            let bare_name = value.as_str().ok_or("asr_engine 需要字符串")?;
+            // 前端传裸 model_name，需构造 3-part spec
+            cfg.asr_engine = build_asr_engine_spec(bare_name)?;
         }
         "polish_llm" => {
-            cfg.polish_llm = value.as_str().ok_or("polish_llm 需要字符串")?.to_string();
+            let bare_name = value.as_str().ok_or("polish_llm 需要字符串")?;
+            // 前端传裸 model_name，空串=不选择模型，其余构造 3-part spec
+            cfg.polish_llm = build_polish_llm_spec(bare_name)?;
         }
         _ => return Err(format!("未知配置字段: {}", key)),
     }
     Ok(())
+}
+
+/// 将前端传来的裸 model_name 构造为 3-part ASR spec "{provider}:{category}:{model_name}"。
+/// 兜底引擎固定 "local:zipformer:NAME"；其余查 DB 取 provider/category。
+fn build_asr_engine_spec(bare_name: &str) -> Result<String, String> {
+    use crate::runtime_config::FALLBACK_ASR_ENGINE;
+    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    if bare_name == FALLBACK_ASR_ENGINE {
+        Ok(format!("local:zipformer:{}", bare_name))
+    } else {
+        let engine = engines.iter().find(|e| e.name == bare_name)
+            .ok_or_else(|| format!("ASR 引擎 '{}' 不存在", bare_name))?;
+        Ok(format!(
+            "{}:{}:{}",
+            engine.provider,
+            octopus_asr::config::category_label(engine.category),
+            bare_name
+        ))
+    }
+}
+
+/// 将前端传来的裸 model_name 构造为 3-part LLM spec "{provider}:{category}:{model_name}"。
+/// 空串 = 「不选择模型」，直接返回空。
+fn build_polish_llm_spec(bare_name: &str) -> Result<String, String> {
+    if bare_name.is_empty() {
+        Ok(String::new())
+    } else {
+        let model = octopus_infra::db::list_llm_models()
+            .map_err(|e| e.to_string())?
+            .into_iter()
+            .find(|m| m.model_name == bare_name)
+            .ok_or_else(|| format!("润色模型 '{}' 不存在", bare_name))?;
+        Ok(format!("{}:{}:{}", model.provider, model.category, model.model_name))
+    }
 }
 
 /// 字段属于 RuntimeConfig 镜像范围的，同步更新。

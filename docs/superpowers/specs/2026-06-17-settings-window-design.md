@@ -148,7 +148,10 @@ match key {
     "segment_duration" / "segment_silence" / "segment_overlap" / "polish_interval" => as_f64() > 0.0
     "pause_polish_threshold_ms" => as_f64() >= 500.0
     // string（自由）
-    "shortcut" / "microphone" / "asr_engine" / "polish_llm" => as_str()
+    "shortcut" / "microphone" => as_str()
+    // string（裸 model_name → 构造 3-part spec）
+    "asr_engine" => build_asr_engine_spec(as_str())
+    "polish_llm" => build_polish_llm_spec(as_str())
     // 非法 key
     _ => Err("未知配置字段: {key}")
 }
