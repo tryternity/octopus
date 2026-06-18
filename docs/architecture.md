@@ -198,7 +198,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **结果窗可编辑（Transcript 三文本分层）**：
   - `Transcript` 三文本分层：`edited ≻ polished ≻ raw`。`display_text()` = committed + increase；`full`（原始 ASR）独立保留为 DB `raw_text`。
   - 编辑态：coordinator 主循环 `editing` 标志置位时，Streaming/VadSegmented tick 跳过喂引擎、只排空丢弃音频（硬暂停）。`commit_edit` 写回 transcript 并 `UPDATE edited_text`。
-  - 编辑×润色（spec §12）：`take_polish_input()` 返回 `(preserved=edited, to_polish=increase)`，LLM 仅润色新增；`on_polish_done` 在 `has_edit()` 时折回 `edited`（避免遮蔽丢字）。
+  - 编辑×润色（spec §12）：`take_polish_input()` 返回 `(preserved=edited, to_polish=increase)`，LLM 仅润色新增；`on_polish_done` 在 `has_edit()` 时折回 `edited`（避免遮蔽丢字）。**raw_len 推进延迟到 `on_polish_done`**（flicker 修复）：`take_polish_input` 只记录 `polish_snapshot_len` 不推进 `raw_len`，保证润色 pending 期间 `display_text()` 不丢 increase（展示区文字不变），润色完成后 raw_len 才推进 + polished 覆盖 → display 只变一次。
   - `transcriptions` 表加 `edited_text` 列（commit + 中间润色折回时写）。
   - 停止路径：润色输入 = `take_polish_input`；无润色/兜底粘贴 = `edited_display()`；最终润色失败兜底 = `Stage::Polishing.fallback_text`；DB raw 仍 = `db_text()`。
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号。**段间拼接标点去重**：`consume_completed_results` 在段间补逗号前同时检查「新段不以标点开头」和「已有文本不以标点结尾」，避免 ASR 引擎返回的自带句尾标点与补的逗号连续出现（`。，` `？，`）

@@ -84,6 +84,8 @@ committed = edited 非空 ? edited
 
 **increase** = `full[raw_len..]`（停顿后的新增 ASR，不变）。
 
+> **raw_len 推进时机**（flicker 修复）：`take_polish_input` 记录快照边界 `polish_snapshot_len` 但**不立即推进 `raw_len`**——避免润色 pending 期间 `display_text()` 因 `raw_len` 已推进而丢失 increase（展示区文字变少的 flicker）。`raw_len` 推进延迟到 `on_polish_done`（润色完成时 `raw_len = polish_snapshot_len`）。
+
 | 派生量 | 定义 |
 |---|---|
 | `display_text()` | committed 前缀 + increase |
@@ -162,7 +164,7 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
   - `display_text()` 改优先级链 `edited ≻ polished ≻ raw[..raw_len]` + increase。
   - `edited_text() -> Option<&str>` / `has_edit() -> bool`。
   - `take_polish_input(&mut self) -> (Option<String>, String)` 替代 `snapshot_for_polish`（§12）。
-  - `on_polish_done`：`has_edit` 时折回 `edited = result`，否则 `polished = result`（§12）。
+  - `on_polish_done`：`has_edit` 时折回 `edited = result`，否则 `polished = result`（§12）；推进 `raw_len = polish_snapshot_len`（take_polish_input 时记录的快照边界）。
   - `edited_display() -> Option<String>`：edited 非空返回 display（停止粘贴/兜底用）。
   - 现有 `snapshot_for_polish` 测试迁移到 `take_polish_input`；新增 commit_edit / 折回 / display 优先级测试。
 - **`llm/src/prompt.rs` + `llm/src/client.rs`**（§12）：
