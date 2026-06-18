@@ -267,7 +267,7 @@ async fn collect_results(ws: &mut WsStream) -> Result<String> {
 /// f32[-1, 1] 样本 → s16le PCM 字节流（16kHz mono）。
 ///
 /// 钳幅到 [-1, 1] 后乘 32767 四舍五入为 i16，按小端字节序展开。
-fn samples_to_pcm_s16le(samples: &[f32]) -> Vec<u8> {
+pub(crate) fn samples_to_pcm_s16le(samples: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len() * 2);
     for &s in samples {
         let v = (s.clamp(-1.0, 1.0) * 32767.0).round() as i16;

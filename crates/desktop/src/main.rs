@@ -3,6 +3,8 @@
 mod audio;
 mod config;
 mod coordinator;
+#[cfg(feature = "dashscope")]
+mod dashscope_stream;
 mod engine;
 #[cfg(feature = "dashscope")]
 mod engine_dashscope;

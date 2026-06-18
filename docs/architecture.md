@@ -105,6 +105,65 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - 单线程 mpsc channel 串行化所有事件
 - 流式模式：Streaming → (Polishing) → Pasting
 - 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → (Polishing) → Pasting
+- 云端流式模式（dashscope feature，VAD-gated per-utterance streaming）：CloudStreaming → (Polishing) → Pasting
+- **音频处理流水线（drain_samples → VAD → ASR，三种 stage 共用同一前处理）**：从 cpal 回调到引擎输入只走一条路径，所有降噪 / 重采样都在 `SharedAudioState::drain_samples` 内部完成，coordinator 层从不直接调 DenoiseProcessor。详见 `crates/desktop/src/audio.rs::process_pipeline`。
+
+  ```
+  cpal Stream 回调（设备原生 SR）
+    │  → SharedAudioState.samples（Mutex<Vec<f32>>）
+    ▼
+  drain_samples()                    ← coordinator 每 tick 调用
+    │  1. take(samples)
+    │  2. process_pipeline(raw, SR, flush=false)
+    │     │
+    │     ├─ 直通路径（denoise_mode=0 / 后端加载失败 / 单帧推理失败 降级）：
+    │     │     原生 SR ───────────resampler──────────▶ 16k
+    │     │
+    │     └─ 降噪路径（denoise_mode=1 RNNoise / 2 DeepFilterNet3，详见「环境降噪」）：
+    │           原生 SR ──down_sampler──▶ 48k
+    │             ──DenoiseProcessor.process_samples──▶ 48k 已降噪
+    │             ──resampler────────────────────────▶ 16k 已降噪
+    │
+    │  GRU 隐状态跨 tick / 跨段连续保持（flush=false 保滤波器+GRU 续接，
+    │  噪声估计是连续物理过程）；仅会话级 start() 调 reset()（DF3 = 重载模型）
+    ▼
+  samples: Vec<f32>（16k 单声道，已降噪 或 直通）—— 三种 stage 看到的是同一份
+    │
+    ├─ Streaming（StreamingSession 本地流式，[`crates/asr/src/streaming`]）：
+    │     StreamingSession.accept_samples(&samples, was_silent) → partial
+    │     （累积静音 ≥0.5s 时引擎独立补零 Active Flush，不走 drain_samples）
+    │
+    ├─ VadSegmented（本地离线引擎，[`coordinator.rs::handle_vad_segmented_tick`]）：
+    │     audio_buffer.extend(&samples)
+    │     compute_speech_chunks(vad, &samples)         // 检测 VAD（跨 tick 有状态累积）
+    │     → 静音 ≥ segment_silence / 持续 ≥ segment_duration：
+    │         filter_speech_from_buffer(filter_vad, send_buffer)  // 过滤 VAD（每段 reset）
+    │         → spawn_blocking(engine.transcribe(&speech_samples))
+    │         → Command::TranscriptionDone{seq} → 按 seq 有序拼接
+    │
+    └─ CloudStreaming（DashScope WSS 长连接，[`coordinator.rs::handle_cloud_streaming_tick`]）：
+          pre_roll_buffer 滚动追加 samples（保留后 200ms = CLOUD_PREROLL_BUFFER_SAMPLES）
+          compute_speech_chunks(vad, &samples) → onset 检测（≥2 speech chunks）
+          ├─ 无活跃 WSS + onset：
+          │     resolve_dashscope_config(spec) → (endpoint, key, model)
+          │     DashScopeStreamSession::open(pre_roll = pre_roll_buffer 末 100ms = 1600 样本)
+          │     push_pcm(&samples)
+          ├─ 有活跃 WSS + 持续语音：
+          │     push_pcm(&samples)（→ s16le → WS binary）
+          │     drain_stream_events() → try_recv_text → 更新 transcript + emit("show-result")
+          └─ 有活跃 WSS + 静音 ≥ pause_polish_threshold_ms（700ms）：
+                session.close(rt)（发 finish-task + 阻塞收最终文本）
+                → transcript.append_segment(final_text)（逗号拼接跨句）
+                → check_and_trigger_polish（停顿润色）
+                → session = None（等下一段 onset）
+  ```
+
+  **关键不变量**：
+  - **降噪在 drain_samples 内部完成**——三种 stage 拿到的 `samples` 都是 16k 已降噪（或降级直通）样本；VAD 与 ASR 用同一份降噪后信号，避免参数 / 状态不一致致 VAD 误判而 ASR 准的解耦 bug。云端引擎（CloudStreaming）的 pre-roll 同样从 drain_samples 取，DashScope 收到的是干净音频。
+  - **降噪 GRU 与 VAD LSTM 状态语义相反**：降噪 GRU **跨 tick / 跨段连续保持**（`flush=false`，噪声估计是连续物理过程，仅会话 `start()` 才 reset）；检测 VAD **跨 tick 有状态累积**（看完整流，稳语音/静音边界）；过滤 VAD **每段 reset**（独立冷启动，等价每段新 VAD 但复用 ONNX Session）。详见「VAD 分段切分策略」。
+  - **降级不 panic**：`denoise_mode=0` / 后端模型缺失 / 单帧推理失败 → `process_pipeline` 走直通分支（原生→16k），仅 warn 日志，识别继续不阻断录音。
+  - **CloudStreaming 的 VAD 用法与 VadSegmented 一致**：同一个 `compute_speech_chunks` + `SileroVad` 检测 onset，但**不切分过滤**（不调 `filter_speech_from_buffer`）——DashScope 自己有 server-side `max_sentence_silence` 切句，客户端 VAD 只负责「何时开 / 何时关 WSS」的生命周期门控。
+- **CloudStreaming（DashScope WSS 长连接，[`dashscope_stream.rs`](../crates/desktop/src/dashscope_stream.rs)）**：当 `is_cloud_engine(cfg)`（`asr_engine` 解析 category=Aliyun）时启用。与本地 Streaming / VadSegmented 不同——**不调用 `TranscriptionEngine::transcribe`**，而是直接管理一条 DashScope WebSocket 长连接（`DashScopeStreamSession`），由 VAD 决定连接生命周期：① 语音 onset（VAD 检测 ≥2 speech chunks）→ `DashScopeStreamSession::open`（建连 + run-task 含 `max_sentence_silence:600` + 推 100ms pre-roll 给 ASR 声学上下文）；② 持续语音 → `push_pcm` 推帧 + `try_recv_text` 轮询 partial 实时更新 transcript + UI；③ 静音 ≥ `pause_polish_threshold_ms`（700ms）→ `close`（发 finish-task + 阻塞收最终文本）→ append 到 transcript（逗号分隔跨句）→ `check_and_trigger_polish` 停顿润色 → `session=None`（等下一段 onset 再开新 WSS）。**tick 间隔 100ms**（`CLOUD_STREAMING_TICK_INTERVAL_MS`），**pre-roll 滚动缓冲 200ms**（`CLOUD_PREROLL_BUFFER_SAMPLES=3200`，每次 onset 提取后 100ms `CLOUD_PREROLL_SAMPLES=1600` 推给 WSS）。后台 WS task 在 tauri tokio runtime 上 spawn，双向循环（PCM channel→WS binary / WS text→result channel）用 `tokio::select!`。Toggle 停止时若 WSS 仍活跃 → `close` 收尾文本 → 走 Pasting。详见 [spec](superpowers/specs/2026-06-18-dashscope-streaming-design.md)。
 - **最终润色异步化**：停止后若启用润色（mode=1/2），`start_final_polish_or_paste` 进入 `Stage::Polishing`（spawn 独立线程跑 LLM 网络请求，托盘显「处理中」、结果窗显「最终润色中」），LLM 完成回调 `Command::FinalPolishDone` 后 `do_paste` 落地；未启用润色则直接 `do_paste`。**润色期间协调器线程不阻塞**，`Cancel`（Esc）可即时回滚 Idle、丢弃在途结果，`Toggle` 被互斥忽略（防并发缓存污染）。Polishing 仅持 `id` + `raw_text`（不需 Transcript 其余字段）
 - **粘贴异步化（`do_paste`）**：`do_paste` 先同步 `show_result` + 置 `Stage::Pasting`（状态机线程），再把真正的落库粘贴（`paste::paste`——含 enigo 键盘模拟 + 焦点切换 `sleep`）投递到 `tauri::async_runtime::spawn` + `tokio::task::spawn_blocking`，完成后回 `Command::PasteDone`——粘贴期间不占用 Tauri UI 主线程、不阻塞协调器线程。**macOS 键盘模拟线程安全**：`paste_via_clipboard` 的 V 键用固定虚拟键码 `Key::Other(9)`（`kVK_ANSI_V`）而非 `Key::Unicode('v')`——enigo 0.6.1 的 `Key::Unicode` 在 macOS 走 `get_layoutdependent_keycode`（循环调用非线程安全的 Carbon `TIS*`/`UCKeyTranslate` API），在 `spawn_blocking` 非主线程执行会触发 SIGTRAP（`Trace/BPT trap: 5`）；`Key::Other` 直接当 keycode 用绕过 layout 查找。详见 [spec](superpowers/specs/2026-06-17-paste-enigo-macos-sigtrap-design.md)
 - **取消录音（Cancel）**：结果窗按 Esc → 前端 `invoke('cancel_recording')` → `coordinator::cancel_recording` Tauri command → `Coordinator::cancel` 发 `Command::Cancel`。`handle_cancel` 跨阶段生效——Streaming 停采集 + reset 引擎，VadSegmented 停 tick + 停采集，WaitingCompletion / Polishing 丢弃在途结果，统一回 `Idle` + 隐藏 overlay / result 窗 + 托盘置 Idle（Idle 下为 no-op）。Esc 同时 `currentWindow.hide()` 提供即时反馈（区别于 RuntimeConfig 子系统的 4 个命令，`cancel_recording` 定义在 `coordinator` 模块）

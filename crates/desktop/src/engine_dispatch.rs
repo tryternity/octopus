@@ -1,7 +1,12 @@
+#[cfg(feature = "dashscope")]
 use crate::engine::TranscriptionEngine;
+#[cfg(feature = "dashscope")]
 use crate::engine_embedded::EmbeddedEngine;
+#[cfg(feature = "dashscope")]
 use anyhow::Result;
+#[cfg(feature = "dashscope")]
 use async_trait::async_trait;
+#[cfg(feature = "dashscope")]
 use std::sync::Arc;
 
 /// 动态路由引擎：持有本地 + 云端两个引擎实例，每次 transcribe 按 spec
