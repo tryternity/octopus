@@ -251,6 +251,12 @@ impl Coordinator {
                         }
                     }
                     Command::Cancel => {
+                        // 编辑态下 Esc 取消：清 editing/edit_buffer（防残留导致下一会话 tick 永久 drain_samples 静音）
+                        if editing {
+                            editing = false;
+                            edit_buffer = None;
+                            let _ = app_handle.emit("edit-force-exit", ());
+                        }
                         handle_cancel(&mut stage, &audio, &app_handle);
                     }
                     Command::TranscriptionDone { text, seq, session_id } => {
