@@ -2,7 +2,7 @@
 
 > Date: 2026-06-18
 > Branch: `worktree-editable-result`（worktree 路径 `.claude/worktrees/editable-result`）
-> Status: 设计已确认并补充「编辑×润色交互」（§12 折回 + 边界提示词），实现中（plan v2：8 任务）
+> Status: ✅ 已实现（2026-06-18，plan 2026-06-18-editable-result-window.md v2）。会话中编辑（双击/按钮进入，快捷键/按钮/失焦退出，硬暂停）+ 三文本分层 + 编辑×润色折回 + DB edited_text 均已落地。
 
 ## 1. 背景与目标
 

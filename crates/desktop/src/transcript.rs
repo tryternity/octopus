@@ -137,6 +137,7 @@ impl Transcript {
     }
 
     /// edited 文本（未编辑返回 None）。
+    #[allow(dead_code)] // 合理访问器（对应 DB edited_text 列）；生产路径用 has_edit/display，测试用此
     pub fn edited_text(&self) -> Option<&str> {
         if self.edited.is_empty() {
             None

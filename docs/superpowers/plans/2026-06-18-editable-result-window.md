@@ -35,7 +35,7 @@
 
 纯逻辑、单文件、完全可单测。只加「编辑相关」字段/方法（`edited`、`commit_edit`、`has_edit`、`edited_text`、`display_text` 优先级链、`edited_display`），**不动** `snapshot_for_polish` / `on_polish_done`（留给 T5），coordinator 照旧编译。`edited` 为空时 `display_text()` 与现有行为等价，现有测试不破。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `transcript.rs` 的 `#[cfg(test)] mod tests` 末尾追加：
 
@@ -99,12 +99,12 @@ fn edited_display_returns_display_when_edited_else_none() {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-desktop transcript::tests`
 Expected: 编译失败（`commit_edit`/`edited_text`/`has_edit`/`edited_display` 未定义）。
 
-- [ ] **Step 3: 加 `edited` 字段**
+- [x] **Step 3: 加 `edited` 字段**
 
 `Transcript` struct（`polished: String,` 下一行）加：
 
@@ -119,7 +119,7 @@ Expected: 编译失败（`commit_edit`/`edited_text`/`has_edit`/`edited_display`
             edited: String::new(),
 ```
 
-- [ ] **Step 4: 实现 `commit_edit` + 访问器**
+- [x] **Step 4: 实现 `commit_edit` + 访问器**
 
 `impl Transcript` 中（`on_polish_done` 附近）加：
 
@@ -150,7 +150,7 @@ pub fn edited_text(&self) -> Option<&str> {
 }
 ```
 
-- [ ] **Step 5: 改 `display_text()` 优先级链**
+- [x] **Step 5: 改 `display_text()` 优先级链**
 
 替换现有 `display_text()`（123-132 行）：
 
@@ -173,7 +173,7 @@ pub fn display_text(&self) -> String {
 }
 ```
 
-- [ ] **Step 6: 加 `edited_display`**
+- [x] **Step 6: 加 `edited_display`**
 
 `edited_text()` 旁加（停止路径无润色/兜底粘贴用，T6）：
 
@@ -190,17 +190,17 @@ pub fn edited_display(&self) -> Option<String> {
 }
 ```
 
-- [ ] **Step 7: 运行测试确认通过**
+- [x] **Step 7: 运行测试确认通过**
 
 Run: `cargo test -p octopus-desktop transcript::tests`
 Expected: 全 PASS（新增 5 个 + 现有测试；edited 空时 display 行为保持）。
 
-- [ ] **Step 8: 编译验证 desktop crate**
+- [x] **Step 8: 编译验证 desktop crate**
 
 Run: `cargo check -p octopus-desktop --all-targets`
 Expected: 通过（coordinator 未受影响——snapshot_for_polish/on_polish_done 未动）。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/desktop/src/transcript.rs
@@ -219,7 +219,7 @@ git commit -m "feat(desktop): Transcript 编辑模型（edited 字段 + commit_e
 
 `polish` 签名加 `preserved: Option<&str>`；`user_prompt` 分块构造（已确认原样保留 + 新增润色）；system prompt 加增量保留规则。coordinator 旧调用点先传 `None`（保持现状），T5 再接真值。
 
-- [ ] **Step 1: 写失败测试 —— user_prompt 分块**
+- [x] **Step 1: 写失败测试 —— user_prompt 分块**
 
 `crates/llm/src/prompt.rs` 末尾加测试模块（当前无 tests）：
 
@@ -248,12 +248,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-llm prompt::tests`
 Expected: 编译失败（`user_prompt` 当前只接 `&str`）。
 
-- [ ] **Step 3: system prompt 加增量保留规则**
+- [x] **Step 3: system prompt 加增量保留规则**
 
 `DEFAULT_SYSTEM_PROMPT` 的 `# Rules` 列表（规则 6 后）加：
 
@@ -261,7 +261,7 @@ Expected: 编译失败（`user_prompt` 当前只接 `&str`）。
 7. [增量保留]：若用户提供【已确认部分】，该部分必须逐字原样保留、严禁修改，仅润色【新增部分】，最终输出两者拼接。
 ```
 
-- [ ] **Step 4: `user_prompt` 加 preserved**
+- [x] **Step 4: `user_prompt` 加 preserved**
 
 替换 `user_prompt`：
 
@@ -282,7 +282,7 @@ pub fn user_prompt(preserved: Option<&str>, to_polish: &str) -> String {
 }
 ```
 
-- [ ] **Step 5: `polish` 签名加 preserved**
+- [x] **Step 5: `polish` 签名加 preserved**
 
 `crates/llm/src/client.rs` 的 `polish`（55 行）签名 + 空检查 + user_prompt 调用改：
 
@@ -310,7 +310,7 @@ pub fn polish(preserved: Option<&str>, to_polish: &str, config: &CompatibleLlmCo
 
 > 其余（thinking/enable_thinking 分派、请求发送、响应解析）不变。
 
-- [ ] **Step 6: coordinator 旧调用点改 `polish(None, ..)`**
+- [x] **Step 6: coordinator 旧调用点改 `polish(None, ..)`**
 
 `coordinator.rs:672`（最终润色）：
 
@@ -326,16 +326,16 @@ pub fn polish(preserved: Option<&str>, to_polish: &str, config: &CompatibleLlmCo
 
 > 仅签名适配，行为不变（preserved=None）。T5 改为真值。
 
-- [ ] **Step 7: test_polish.rs example 适配**
+- [x] **Step 7: test_polish.rs example 适配**
 
 `crates/llm/examples/test_polish.rs` 的 `octopus_llm::polish(...)` 调用加首参 `None`（具体行由实现者 grep 定位，仅改调用签名）。
 
-- [ ] **Step 8: 运行测试 + 编译**
+- [x] **Step 8: 运行测试 + 编译**
 
 Run: `cargo test -p octopus-llm` && `cargo check --workspace --all-targets`
 Expected: llm 测试 PASS；workspace 编译通过。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/llm/src/prompt.rs crates/llm/src/client.rs crates/desktop/src/coordinator.rs crates/llm/examples/test_polish.rs
@@ -352,7 +352,7 @@ git commit -m "feat(llm): polish 加 preserved 边界提示词（增量润色保
 
 开发阶段删库重建（`~/.octopus/octopus.db`），与 db.sql 头注释约定一致，不写 ALTER 迁移。`finalize_transcription` **不改**——`edited_text` 由 commit_edit / 折回时单独 UPDATE。
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 `crates/infra/src/db.rs` 的 `#[cfg(test)] mod tests` 末尾加（复用内存 DB 辅助 `open_init`，约 538 行 `Connection::open_in_memory() + INIT_SQL`）：
 
@@ -381,12 +381,12 @@ fn update_edited_text_persists_and_lists() {
 
 > 若 `open_init` 名称/签名不同，先 grep `fn open_init` 或 `open_in_memory` 确认实际辅助名再复用。
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-infra update_edited_text_persists_and_lists`
 Expected: 失败（`edited_text` 列不存在）。
 
-- [ ] **Step 3: DDL 加列**
+- [x] **Step 3: DDL 加列**
 
 `crates/infra/src/db.sql` 的 `transcriptions` 表（`polished_text TEXT,` 下一行）加：
 
@@ -394,7 +394,7 @@ Expected: 失败（`edited_text` 列不存在）。
     edited_text   TEXT,                     -- 用户编辑后的最终文本（未编辑为 NULL）
 ```
 
-- [ ] **Step 4: 加 `update_edited_text`**
+- [x] **Step 4: 加 `update_edited_text`**
 
 `crates/infra/src/db.rs`，`update_polished` 函数后加（参照其 `with_db` 模式；`params` 已在 use 域）：
 
@@ -411,7 +411,7 @@ pub fn update_edited_text(id: i64, edited_text: &str) -> Result<()> {
 }
 ```
 
-- [ ] **Step 5: `TranscriptionRecord` 加字段**
+- [x] **Step 5: `TranscriptionRecord` 加字段**
 
 `TranscriptionRecord` struct（`polished_text` 字段下一行）加：
 
@@ -419,21 +419,21 @@ pub fn update_edited_text(id: i64, edited_text: &str) -> Result<()> {
     pub edited_text: Option<String>,
 ```
 
-- [ ] **Step 6: `list_transcriptions_at` SELECT + 映射加列**
+- [x] **Step 6: `list_transcriptions_at` SELECT + 映射加列**
 
 SELECT（`polished_text` 后加 `edited_text`）；`query_map` 映射按新列序（edited_text 在 polished_text 后，其余顺延）。实现者读现有 SELECT/映射块（约 453-471 行），在 `polished_text` 后插入 `edited_text` 列与 `edited_text: row.get(n)?`，后续列号 +1。
 
-- [ ] **Step 7: 运行测试确认通过**
+- [x] **Step 7: 运行测试确认通过**
 
 Run: `cargo test -p octopus-infra`
 Expected: PASS（含新测试 + 现有 db 测试）。
 
-- [ ] **Step 8: 编译验证**
+- [x] **Step 8: 编译验证**
 
 Run: `cargo check -p octopus-infra --all-targets`
 Expected: 通过。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -450,7 +450,7 @@ git commit -m "feat(infra): transcriptions 加 edited_text 列 + update_edited_t
 
 编辑态：`editing: bool` + `edit_buffer: Option<String>` 为循环局部变量；tick 在 editing 时排空丢弃音频；commit 时写 transcript（T1 `commit_edit`）+ `UPDATE edited_text`（T3）。Toggle-期间-编辑 用 `edit_buffer`（前端 input 防抖推送）恢复。**本任务不碰润色路径**（T5）。
 
-- [ ] **Step 1: `Command` enum 加 3 变体**
+- [x] **Step 1: `Command` enum 加 3 变体**
 
 `coordinator.rs:18` 的 `enum Command`（`PolishNow` 后）加：
 
@@ -463,7 +463,7 @@ git commit -m "feat(infra): transcriptions 加 edited_text 列 + update_edited_t
     CommitEdit { text: String },
 ```
 
-- [ ] **Step 2: `DbCommand` enum 加 `UpdateEdited`**
+- [x] **Step 2: `DbCommand` enum 加 `UpdateEdited`**
 
 `enum DbCommand`（`Finalize` 后）加：
 
@@ -474,7 +474,7 @@ git commit -m "feat(infra): transcriptions 加 edited_text 列 + update_edited_t
     },
 ```
 
-- [ ] **Step 3: `process_db_command` 加 arm**
+- [x] **Step 3: `process_db_command` 加 arm**
 
 `process_db_command` 的 `match cmd`（`Finalize` arm 后）加：
 
@@ -486,7 +486,7 @@ git commit -m "feat(infra): transcriptions 加 edited_text 列 + update_edited_t
         }
 ```
 
-- [ ] **Step 4: 主循环加 `editing` + `edit_buffer` 局部变量**
+- [x] **Step 4: 主循环加 `editing` + `edit_buffer` 局部变量**
 
 `let mut stage = Stage::Idle;` 旁加：
 
@@ -498,7 +498,7 @@ git commit -m "feat(infra): transcriptions 加 edited_text 列 + update_edited_t
             let mut edit_buffer: Option<String> = None;
 ```
 
-- [ ] **Step 5: tick 分发加 editing 闸门**
+- [x] **Step 5: tick 分发加 editing 闸门**
 
 `Command::StreamingTick` arm 改为（`set_mode` 后、`handle_streaming_tick` 前加闸门）：
 
@@ -533,7 +533,7 @@ git commit -m "feat(infra): transcriptions 加 edited_text 列 + update_edited_t
 
 > 保留原 arm 其余结构；仅把 `handle_xxx_tick(...)` 调用包进 else。
 
-- [ ] **Step 6: 加 3 个编辑 Command 分发 arm + TranscriptionDone 守卫**
+- [x] **Step 6: 加 3 个编辑 Command 分发 arm + TranscriptionDone 守卫**
 
 `Command::PolishNow` arm 后加：
 
@@ -568,7 +568,7 @@ git commit -m "feat(infra): transcriptions 加 edited_text 列 + update_edited_t
                     }
 ```
 
-- [ ] **Step 7: `Command::Toggle` 加编辑态先提交**
+- [x] **Step 7: `Command::Toggle` 加编辑态先提交**
 
 `Command::Toggle =>` 在 `handle_toggle(...)` 调用前插入（保持原 `handle_toggle` 所有参数不变）：
 
@@ -588,7 +588,7 @@ git commit -m "feat(infra): transcriptions 加 edited_text 列 + update_edited_t
 
 > **前置导入**：coordinator.rs 顶部 use 区（`use std::time::Instant;` 下一行）加 `use tauri::Emitter;`（`app_handle.emit` 需 Emitter trait）。
 
-- [ ] **Step 8: 实现 `handle_enter_edit_mode` + `commit_edit_apply`**
+- [x] **Step 8: 实现 `handle_enter_edit_mode` + `commit_edit_apply`**
 
 `handle_polish_now` / `start_final_polish_or_paste` 附近加：
 
@@ -633,7 +633,7 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
 
 > or-pattern `Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. }` 合法：两变体都有 `transcript: Transcript` 字段，绑定同类型。
 
-- [ ] **Step 9: 加 Coordinator 公开方法 + Tauri 命令**
+- [x] **Step 9: 加 Coordinator 公开方法 + Tauri 命令**
 
 `impl Coordinator` 内（`polish_now` 方法后）加 3 方法；其 Tauri 命令（`pub fn polish_now(...)` 后）加 3 命令：
 
@@ -686,7 +686,7 @@ pub fn commit_edit(coordinator: tauri::State<'_, Coordinator>, text: String) {
 }
 ```
 
-- [ ] **Step 10: main.rs 注册 3 命令**
+- [x] **Step 10: main.rs 注册 3 命令**
 
 `invoke_handler` 的 `generate_handler!`（`coordinator::polish_now,` 后）加：
 
@@ -696,12 +696,12 @@ pub fn commit_edit(coordinator: tauri::State<'_, Coordinator>, text: String) {
             coordinator::commit_edit,
 ```
 
-- [ ] **Step 11: 编译 + 测试**
+- [x] **Step 11: 编译 + 测试**
 
 Run: `cargo check -p octopus-desktop --all-targets && cargo test -p octopus-desktop`
 Expected: 编译通过；现有测试 PASS（transcript + coordinator 测试）。
 
-- [ ] **Step 12: Commit**
+- [x] **Step 12: Commit**
 
 ```bash
 git add crates/desktop/src/coordinator.rs crates/desktop/src/main.rs
@@ -718,7 +718,7 @@ git commit -m "feat(desktop): 编辑态命令 + tick 硬暂停闸门 + commit→
 
 T1/T2/T3/T4 已就绪。本任务把「润色输入 = (edited, 新增)」与「结果折回 edited」贯通（spec §12）。`on_polish_done` 在 `has_edit()` 时折回，避免 edited 遮蔽 polished 丢字。
 
-- [ ] **Step 1: 写失败测试 —— take_polish_input + 折回**
+- [x] **Step 1: 写失败测试 —— take_polish_input + 折回**
 
 `transcript.rs` tests 末尾加：
 
@@ -767,12 +767,12 @@ fn on_polish_done_no_edit_writes_polished() {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-desktop transcript::tests`
 Expected: 编译失败（`take_polish_input` 未定义）。
 
-- [ ] **Step 3: Transcript 加 `take_polish_input`，删 `snapshot_for_polish`**
+- [x] **Step 3: Transcript 加 `take_polish_input`，删 `snapshot_for_polish`**
 
 替换 `snapshot_for_polish`（82-85 行）为：
 
@@ -798,7 +798,7 @@ pub fn take_polish_input(&mut self) -> (Option<String>, String) {
 
 > 同步更新其上方 doc 注释里「raw_len 已在 snapshot_for_polish 推进」之类措辞为 take_polish_input。
 
-- [ ] **Step 4: `on_polish_done` 折回**
+- [x] **Step 4: `on_polish_done` 折回**
 
 替换 `on_polish_done`（88-92 行）为：
 
@@ -817,7 +817,7 @@ pub fn on_polish_done(&mut self, result: String) {
 }
 ```
 
-- [ ] **Step 5: 迁移 transcript 测试中的 snapshot_for_polish 调用**
+- [x] **Step 5: 迁移 transcript 测试中的 snapshot_for_polish 调用**
 
 grep `snapshot_for_polish` in transcript.rs tests，逐处改 take_polish_input：
 - `let snap = t.snapshot_for_polish();`（断言 snap）→ `let (preserved, snap) = t.take_polish_input();`（断言 `preserved, None` + `snap`）
@@ -825,7 +825,7 @@ grep `snapshot_for_polish` in transcript.rs tests，逐处改 take_polish_input�
 
 确保无 `snapshot_for_polish` 残留（含 doc）。
 
-- [ ] **Step 6: `spawn_polish_thread` 签名加 preserved**
+- [x] **Step 6: `spawn_polish_thread` 签名加 preserved**
 
 `spawn_polish_thread`（1027 行）签名 + body 改：
 
@@ -860,7 +860,7 @@ fn spawn_polish_thread(
 }
 ```
 
-- [ ] **Step 7: 中间润色 + PolishNow 接 take_polish_input**
+- [x] **Step 7: 中间润色 + PolishNow 接 take_polish_input**
 
 `check_and_trigger_polish`（1086-1089 行）：
 
@@ -880,7 +880,7 @@ fn spawn_polish_thread(
     spawn_polish_thread(preserved, to_polish, config, tx, true);
 ```
 
-- [ ] **Step 8: 最终润色入口接 take_polish_input**
+- [x] **Step 8: 最终润色入口接 take_polish_input**
 
 `start_final_polish_or_paste` 的 polish 分支（670-683 行）。当前 `let text_to_polish = text.to_string();` → 改为从 owned transcript 取边界（transcript 此时还在，未移入 Polishing）：
 
@@ -912,7 +912,7 @@ fn spawn_polish_thread(
 
 > `take_polish_input` 推进 raw_len，但 `db_text()` 返回 full（不受 raw_len 影响），顺序 OK。无润色分支（`None => do_paste(text, ..)`）仍用调用方传入的 `text`（T6 改为 edited_display）。
 
-- [ ] **Step 9: `handle_polish_done` 折回 DB 分支**
+- [x] **Step 9: `handle_polish_done` 折回 DB 分支**
 
 `handle_polish_done`（1413-1425+ 行）的 `Ok(polished) => { ... }` 块：`on_polish_done` 后按 `has_edit()` 决定 DB 命令。读现有 `DbCommand::UpdatePolished { ... }` 块，改为：
 
@@ -941,12 +941,12 @@ fn spawn_polish_thread(
 
 > 实现者读现有 UpdatePolished 块的字段，搬进 else 分支；`polished` 变量在 if 分支 move 进 UpdateEdited，故先 `on_polish_done(polished.clone())`。
 
-- [ ] **Step 10: 编译 + 测试**
+- [x] **Step 10: 编译 + 测试**
 
 Run: `cargo check -p octopus-desktop --all-targets && cargo test -p octopus-desktop`
 Expected: 编译通过；transcript 新测试 + 现有测试 PASS。
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add crates/desktop/src/transcript.rs crates/desktop/src/coordinator.rs
@@ -964,7 +964,7 @@ git commit -m "feat(desktop): 编辑×润色接线（take_polish_input 边界 + 
 
 ### Part A：三处无润色/兜底站点改 edited_display
 
-- [ ] **Step 1: VadSegmented 停止路径（handle_toggle VadSegmented 分支）**
+- [x] **Step 1: VadSegmented 停止路径（handle_toggle VadSegmented 分支）**
 
 替换 `let final_text = if ... else ...` 块为 edited 优先：
 
@@ -983,11 +983,11 @@ git commit -m "feat(desktop): 编辑×润色接线（take_polish_input 边界 + 
                 };
 ```
 
-- [ ] **Step 2: handle_transcription_done 停止路径**
+- [x] **Step 2: handle_transcription_done 停止路径**
 
 同样替换（结构与 Step 1 相同的 `final_text` 块）。
 
-- [ ] **Step 3: Streaming 停止路径（combined + finish 失败兜底）**
+- [x] **Step 3: Streaming 停止路径（combined + finish 失败兜底）**
 
 `let combined = transcript.db_text();` 改：
 
@@ -1012,7 +1012,7 @@ git commit -m "feat(desktop): 编辑×润色接线（take_polish_input 边界 + 
 
 > Part A 后调用方传入 `start_final_polish_or_paste` 的 `text` = edited_display（含编辑）或 raw(+「。」）。复用它作最终润色失败的兜底粘贴文本，避免失败时丢编辑。
 
-- [ ] **Step 4: Stage::Polishing 加 fallback_text 字段**
+- [x] **Step 4: Stage::Polishing 加 fallback_text 字段**
 
 `enum Stage` 的 `Polishing { id, raw_text }` 加字段：
 
@@ -1025,7 +1025,7 @@ git commit -m "feat(desktop): 编辑×润色接线（take_polish_input 边界 + 
     },
 ```
 
-- [ ] **Step 5: 构造 Polishing 时设 fallback_text**
+- [x] **Step 5: 构造 Polishing 时设 fallback_text**
 
 `start_final_polish_or_paste` 的 `*stage = Stage::Polishing { id, raw_text: raw_text.clone() }` 改：
 
@@ -1037,7 +1037,7 @@ git commit -m "feat(desktop): 编辑×润色接线（take_polish_input 边界 + 
             };
 ```
 
-- [ ] **Step 6: handle_final_polish_done 解构 + Err 分支用 fallback_text**
+- [x] **Step 6: handle_final_polish_done 解构 + Err 分支用 fallback_text**
 
 解构 `Stage::Polishing { id, raw_text }` → 加 `fallback_text`：
 
@@ -1061,12 +1061,12 @@ Err 分支（原 `do_paste(stage, &raw_text, id, &raw_text, "failed", ...)`）�
 
 > Ok 分支 `do_paste(&polished, id, &raw_text, "done", ...)` 不变。其他 `Stage::Polishing { .. }` 解构点（用 `{ .. }` 忽略）无需改。
 
-- [ ] **Step 7: 编译 + 测试**
+- [x] **Step 7: 编译 + 测试**
 
 Run: `cargo check -p octopus-desktop --all-targets && cargo test -p octopus-desktop`
 Expected: 通过；`edited_display` dead_code 警告消失（已被多处消费）。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/src/coordinator.rs
@@ -1085,7 +1085,7 @@ git commit -m "feat(desktop): 停止路径用 edited_display（无润色/兜底/
 
 `#result-text` 默认不可编辑；双击或点编辑按钮 → `contenteditable=true` + 聚焦 + `enter_edit_mode`；`Cmd/Ctrl+Enter` / 完成按钮 / blur → `commit_edit`；input 防抖推 `update_edit_buffer`；编辑态加边框、禁 mouseleave 收起、冻结 update-result。
 
-- [ ] **Step 1: 新建 edit.svg**
+- [x] **Step 1: 新建 edit.svg**
 
 `crates/desktop/dist/result/icons/edit.svg`：
 
@@ -1093,7 +1093,7 @@ git commit -m "feat(desktop): 停止路径用 edited_display（无润色/兜底/
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
 ```
 
-- [ ] **Step 2: 加编辑按钮 + 完成按钮 HTML**
+- [x] **Step 2: 加编辑按钮 + 完成按钮 HTML**
 
 工具栏（`#tool-polish-now` 按钮 `</button>` 后）加编辑按钮：
 
@@ -1112,7 +1112,7 @@ git commit -m "feat(desktop): 停止路径用 edited_display（无润色/兜底/
     </div>
 ```
 
-- [ ] **Step 3: 加 CSS**
+- [x] **Step 3: 加 CSS**
 
 `<style>`（`#tool-polish-now .icon` 行后）加编辑按钮图标：
 
@@ -1148,7 +1148,7 @@ git commit -m "feat(desktop): 停止路径用 edited_display（无润色/兜底/
     #container.editing #result-text:focus { background: rgba(0, 122, 255, 0.06); }
 ```
 
-- [ ] **Step 4: 加编辑态 JS**
+- [x] **Step 4: 加编辑态 JS**
 
 `<script>`（润色逻辑后）加：
 
@@ -1219,7 +1219,7 @@ git commit -m "feat(desktop): 停止路径用 edited_display（无润色/兜底/
     });
 ```
 
-- [ ] **Step 5: 编辑态冻结 update-result + 禁 mouseleave 收起**
+- [x] **Step 5: 编辑态冻结 update-result + 禁 mouseleave 收起**
 
 `listen('update-result', ...)` 加 editing 守卫：
 
@@ -1239,7 +1239,7 @@ git commit -m "feat(desktop): 停止路径用 edited_display（无润色/兜底/
       /* …原逻辑… */
 ```
 
-- [ ] **Step 6: 手动构建验证**
+- [x] **Step 6: 手动构建验证** (待用户手动验证：T8 环境无 GUI；前端 dist 已构建并通过 snapshot/编译检查，行为验证需在本地 GUI 跑)
 
 Run: `cargo run -p octopus-desktop`
 手动验证（debug 构建自动开 devtools）：
@@ -1251,7 +1251,7 @@ Run: `cargo run -p octopus-desktop`
 
 Expected: 行为符合预期，devtools 无 JS 报错。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/dist/result/index.html crates/desktop/dist/result/icons/edit.svg
@@ -1268,7 +1268,7 @@ git commit -m "feat(desktop): 结果窗可编辑（双击/按钮进入，快捷�
 - Modify: `docs/superpowers/specs/2026-06-18-editable-result-window-design.md`（状态行）
 - Modify: `docs/superpowers/plans/2026-06-18-editable-result-window.md`（checkbox 勾选）
 
-- [ ] **Step 1: configuration.md 加编辑能力说明**
+- [x] **Step 1: configuration.md 加编辑能力说明**
 
 结果窗/工具栏相关段加：
 
@@ -1284,7 +1284,7 @@ git commit -m "feat(desktop): 结果窗可编辑（双击/按钮进入，快捷�
 - 未编辑时行为与旧版完全一致。
 ```
 
-- [ ] **Step 2: architecture.md 同步**
+- [x] **Step 2: architecture.md 同步**
 
 Transcript 相关段加：
 
@@ -1299,7 +1299,7 @@ Transcript 相关段加：
 - 停止路径：润色输入 = `take_polish_input`；无润色/兜底粘贴 = `edited_display()`；DB raw 仍 = `db_text()`。
 ```
 
-- [ ] **Step 3: spec 状态行置已实现**
+- [x] **Step 3: spec 状态行置已实现**
 
 `docs/superpowers/specs/2026-06-18-editable-result-window-design.md` 顶部 `> Status:` 行改为：
 
@@ -1307,11 +1307,11 @@ Transcript 相关段加：
 > Status: ✅ 已实现（2026-06-18，plan 2026-06-18-editable-result-window.md v2）。会话中编辑（双击/按钮进入，快捷键/按钮/失焦退出，硬暂停）+ 三文本分层 + 编辑×润色折回 + DB edited_text 均已落地。
 ```
 
-- [ ] **Step 4: plan checkbox 勾选**
+- [x] **Step 4: plan checkbox 勾选**
 
 本文件所有 `- [ ]` → `- [x]`（实现者确认每步已做）。
 
-- [ ] **Step 5: 删库重建 + 全流程 e2e**
+- [x] **Step 5: 删库重建 + 全流程 e2e** (待用户手动验证：T8 环境无 GUI，e2e 检查清单已附在 T8 任务报告中)
 
 ```bash
 cp ~/.octopus/octopus.db ~/.octopus/octopus.db.bak.$(date +%s)
@@ -1325,7 +1325,7 @@ cargo run -p octopus-desktop
 3. 编辑态按停止热键 → edit_buffer 提交编辑后停止 → 粘贴含编辑。
 4. `sqlite3 ~/.octopus/octopus.db "SELECT raw_text, polished_text, edited_text FROM transcriptions ORDER BY id DESC LIMIT 3;"` 验证三列互不干扰。
 
-- [ ] **Step 6: workspace 全量编译 + 测试**
+- [x] **Step 6: workspace 全量编译 + 测试**
 
 ```bash
 cargo check --workspace --all-targets
@@ -1333,7 +1333,7 @@ cargo test --workspace
 ```
 Expected: 全绿。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add docs/configuration.md docs/architecture.md docs/superpowers/specs/2026-06-18-editable-result-window-design.md docs/superpowers/plans/2026-06-18-editable-result-window.md
