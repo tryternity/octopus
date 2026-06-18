@@ -106,8 +106,7 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
     "asr_engine": "local:qwen3-asr:qwen3-asr-0.6B",
     "language": "auto",
     "shortcut": "CmdOrCtrl+Shift+Space",
-    "segment_duration": 5.0,
-    "segment_silence": 500.0,
+    "segment_silence": 400.0,
     "polish_mode": 0,
     "polish_interval": 5.0,
     "pause_polish_threshold_ms": 600,
@@ -144,8 +143,8 @@ match key {
     // bool
     "asr_hardware_accelerated" / "asr_correct" / "output_simplified" / "hide_toolbar" => as_bool()
     // f64 正数
-    "segment_duration" / "segment_silence" / "polish_interval" => as_f64() > 0.0
-    "pause_polish_threshold_ms" => as_f64() >= 500.0
+    "segment_silence" / "polish_interval" => as_f64() > 0.0
+    "pause_polish_threshold_ms" => as_f64() >= 600.0
     // string（自由）
     "shortcut" / "microphone" => as_str()
     // string（裸 model_name → 构造 3-part spec）
@@ -163,7 +162,7 @@ match key {
 | 时机 | 字段 | 机制 |
 |---|---|---|
 | **立即** | polish_mode, denoise_mode, asr_correct, output_simplified, hide_toolbar, **shortcut**（热重载：注销旧 + 注册新）, **polish_llm**（2026-06-18 改进：通过 `Command::UpdateRuntime` 同步到 coordinator config 快照，录音中改也立即生效） | 写 RuntimeConfig / 热重载 / `update_runtime`，即时生效 |
-| **下次录音** | asr_engine, microphone, language, asr_hardware_accelerated, segment_duration, segment_silence, polish_interval, pause_polish_threshold_ms | 写 AppConfig 缓存，Coordinator Toggle 进入 Idle 时重读（asr_engine 需重建引擎实例） |
+| **下次录音** | asr_engine, microphone, language, asr_hardware_accelerated, segment_silence, polish_interval, pause_polish_threshold_ms | 写 AppConfig 缓存，Coordinator Toggle 进入 Idle 时重读（asr_engine 需重建引擎实例） |
 | **重启** | engine_mode | 需重启进程（引擎初始化等） |
 
 ---
@@ -205,13 +204,14 @@ match key {
 
 ### 5.3 页面 2 — 系统设置
 
-卡片顺序：交互 → 识别 → 润色 → 降噪 → VAD 分段 → 音频 → 引擎模式。**除「VAD 分段」外，其余卡片标题已去掉**（仅保留行内容）。每行控件后无独立 badge，生效时间作为灰色小字跟在 label 后面，加括号如「(立即)」「(下次录音)」「(重启)」。
+卡片顺序：交互 → 识别 → 润色 → 降噪 → 引擎模式。**全部无标题**（仅保留行内容）。每行控件后无独立 badge，生效时间作为灰色小字跟在 label 后面，加括号如「(立即)」「(下次录音)」「(重启)」。
 
 **卡片「交互」（首位，无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
 | 激活/关闭快捷键 | 快捷键捕获按钮（点击后捕获键盘组合，含冲突检测 `check_shortcut`） | `shortcut` | 立即 |
 | 工具栏自动隐藏 | toggle switch | `hide_toolbar` | 立即 |
+| 麦克风设备 | 下拉（microphones 列表） | `microphone` | 下次录音 |
 
 **卡片「识别」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
@@ -221,6 +221,7 @@ match key {
 | 硬件加速 | toggle switch | `asr_hardware_accelerated` | 下次录音 |
 | ASR 纠错 | toggle switch | `asr_correct` | 立即 |
 | 简繁输出 | toggle switch（true=简体） | `output_simplified` | 立即 |
+| 句间停顿 | select（300/400/500/600ms） | `segment_silence` | 下次录音 |
 
 **卡片「润色」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
@@ -228,23 +229,12 @@ match key {
 | 润色模式 | 下拉（关闭/仅最终/中间+最终） | `polish_mode` | 立即 |
 | 润色模型 | 下拉（llm_models 列表） | `polish_llm` | 立即（2026-06-18 改进，原「下次录音」） |
 | 润色间隔 | 下拉（仅最后=0/每3~8秒） | `polish_interval` | 下次录音 |
-| 说话换气间隔 | 下拉（500/600/700/800/900/1000ms，>= 500） | `pause_polish_threshold_ms` | 下次录音 |
+| 润色停顿阈值 | 下拉（600/700/800/900/1000ms，>= 600） | `pause_polish_threshold_ms` | 下次录音 |
 
 **卡片「降噪」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
 | 降噪模式 | 下拉（无/轻度/深度） | `denoise_mode` | 立即 |
-
-**卡片「VAD 分段」：**
-| 控件 | 类型 | 字段 | 生效 |
-|---|---|---|---|
-| 分段时长 | number input（秒） | `segment_duration` | 下次录音 |
-| 静音阈值 | number input（毫秒） | `segment_silence` | 下次录音 |
-
-**卡片「音频」（无标题）：**
-| 控件 | 类型 | 字段 | 生效 |
-|---|---|---|---|
-| 麦克风设备 | 下拉（microphones 列表） | `microphone` | 下次录音 |
 
 **卡片「引擎模式」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
@@ -319,9 +309,9 @@ settings/index.html 加载完成
 | 场景 | 处理 |
 |---|---|
 | `set_config` 类型错误（如 bool 字段传字符串） | `Err("字段 X 需要 bool 类型")`，前端 toast |
-| `set_config` 值越界（如 segment_duration ≤ 0） | `Err("segment_duration 必须大于 0")`，前端 toast |
+| `set_config` 值越界（如 segment_silence ≤ 0） | `Err("segment_silence 必须大于 0")`，前端 toast |
 | `set_config` 未知 key | `Err("未知配置字段: {key}")`，前端 toast |
-| `pause_polish_threshold_ms` < 500 | `Err("pause_polish_threshold_ms 必须 >= 500（Active Flush 阈值）")`，前端 toast |
+| `pause_polish_threshold_ms` < 600 | `Err("pause_polish_threshold_ms 必须 >= 600（需大于句间停顿最大值）")`，前端 toast |
 | config.yaml 写失败 | `warn` log + `Err("保存失败，本次仍生效，重启后回退")` |
 | `get_history` DB 错误 | 返回空数组 + `warn` log |
 | 设置窗口已打开再次 `open_settings` | `set_focus` 聚焦已有窗口，不重复创建 |
@@ -343,7 +333,7 @@ settings/index.html 加载完成
 ### Rust 单测
 - `set_config` 类型校验：合法值通过 / 非法值返回 Err（覆盖 bool / f64 / u8 / 枚举 / string 各类型）。
 - `set_config` 写盘：改单字段后其他字段保留（复用 `persist_config_override` 现有测试模式）。
-- `set_config` 范围校验：`pause_polish_threshold_ms >= 500`（允许 500）、`segment_duration > 0`。
+- `set_config` 范围校验：`pause_polish_threshold_ms >= 600`、`segment_silence > 0`。
 - `get_history` 分页：limit/offset 正确切片，offset 越界返回空。
 - `delete_transcriptions` 批量删除：指定 id 删除 + 空 id 列表不报错（内部函数可直连 Connection 测试）。
 

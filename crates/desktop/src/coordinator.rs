@@ -7,6 +7,7 @@ use crate::engine::TranscriptionEngine;
 use crate::paste;
 use crate::transcript::Transcript;
 use octopus_asr::streaming_engine::StreamingSession;
+use octopus_infra::consts::{SEGMENT_DURATION_S, SEGMENT_OVERLAP_MS};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -160,13 +161,6 @@ const PUNCTUATION_SILENCE_THRESHOLD: f64 = 0.5;
 /// 避免首几帧检测概率偏低导致首音丢失。512 samples/chunk @ 16kHz = 32ms，
 /// 10 帧 ≈ 320ms 静音预热。
 const VAD_PREROLL_FRAMES: usize = 10;
-
-/// VAD 强制切断时保留下一段的 overlap 时长（毫秒）。
-///
-/// 仅在连续语音 ≥ `segment_duration` 强制切断时生效（语句被硬切，需重叠保连贯）；
-/// 静音切分是自然语句边界，不带 overlap。200ms ≈ 一个音节，给 ASR 引擎足够声学
-/// 线索补全段首残字。此值原为 config 字段，因属实现细节（用户不可感知）改为常量。
-const SEGMENT_OVERLAP_MS: f64 = 200.0;
 
 /// VAD 伪流式 tick 间隔（毫秒）
 const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 100;
@@ -1184,7 +1178,7 @@ fn handle_vad_segmented_tick(
         let buffer_duration_s = audio_buffer.len() as f64 / 16000.0;
         let silence_ms = *silence_duration * 1000.0;
         let silence_cut = *has_speech && silence_ms >= config.segment_silence;
-        let force_cut = *has_speech && buffer_duration_s >= config.segment_duration;
+        let force_cut = *has_speech && buffer_duration_s >= SEGMENT_DURATION_S;
         let should_send = silence_cut || force_cut;
 
         if should_send {

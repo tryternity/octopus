@@ -149,11 +149,6 @@ fn apply_config_value(
         "hide_toolbar" => {
             cfg.hide_toolbar = value.as_bool().ok_or("hide_toolbar 需要 bool")?;
         }
-        "segment_duration" => {
-            let v = value.as_f64().ok_or("segment_duration 需要数值")?;
-            if v <= 0.0 { return Err("segment_duration 必须大于 0".into()); }
-            cfg.segment_duration = v;
-        }
         "segment_silence" => {
             let v = value.as_f64().ok_or("segment_silence 需要数值")?;
             if v <= 0.0 { return Err("segment_silence 必须大于 0".into()); }
@@ -166,8 +161,8 @@ fn apply_config_value(
         }
         "pause_polish_threshold_ms" => {
             let v = value.as_f64().ok_or("pause_polish_threshold_ms 需要数值")?;
-            if v < 500.0 {
-                return Err("pause_polish_threshold_ms 必须 >= 500（Active Flush 阈值）".into());
+            if v < 600.0 {
+                return Err("pause_polish_threshold_ms 必须 >= 600（需大于句间停顿最大值）".into());
             }
             cfg.pause_polish_threshold_ms = v;
         }
@@ -308,22 +303,22 @@ mod tests {
     #[test]
     fn apply_config_valid_f64() {
         let mut cfg = octopus_infra::config::AppConfig::default();
-        apply_config_value(&mut cfg, "segment_duration", &json!(10.0)).unwrap();
-        assert_eq!(cfg.segment_duration, 10.0);
+        apply_config_value(&mut cfg, "segment_silence", &json!(450.0)).unwrap();
+        assert_eq!(cfg.segment_silence, 450.0);
     }
 
     #[test]
     fn apply_config_invalid_f64_zero() {
         let mut cfg = octopus_infra::config::AppConfig::default();
-        assert!(apply_config_value(&mut cfg, "segment_duration", &json!(0.0)).is_err());
-        assert!(apply_config_value(&mut cfg, "segment_duration", &json!(-1.0)).is_err());
+        assert!(apply_config_value(&mut cfg, "segment_silence", &json!(0.0)).is_err());
+        assert!(apply_config_value(&mut cfg, "segment_silence", &json!(-1.0)).is_err());
     }
 
     #[test]
-    fn apply_config_pause_polish_threshold_must_ge_500() {
+    fn apply_config_pause_polish_threshold_must_ge_600() {
         let mut cfg = octopus_infra::config::AppConfig::default();
-        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(499.0)).is_err());
-        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(500.0)).is_ok());
+        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(599.0)).is_err());
+        assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(500.0)).is_err());
         assert!(apply_config_value(&mut cfg, "pause_polish_threshold_ms", &json!(600.0)).is_ok());
     }
 
