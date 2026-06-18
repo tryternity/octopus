@@ -149,8 +149,7 @@ async fn run_session(
         .await
         .with_context(|| format!("dashscope WS 连接失败: {}", endpoint))?;
 
-    // run-task（含完整 payload + header）—— 由 build_run_task 单一构造，
-    // finish-task 直接复用（见下），消除 payload.clone()。
+    // run-task（含完整 payload + header）—— 由 build_run_task 单一构造。
     let task_id = uuid::Uuid::new_v4().to_string();
     let run_task = build_run_task(model, language, &task_id);
     ws.send(Message::Text(run_task.to_string()))
@@ -160,10 +159,17 @@ async fn run_session(
     // PCM 帧（200ms 分块）。
     send_pcm_frames(&mut ws, samples).await?;
 
-    // finish-task：复用 run_task，仅改 header.action（DashScope duplex 要求
-    // finish-task 与 run-task 的 payload 字段一致；task_id/streaming 同一 task 也对）。
-    let mut finish_task = run_task.clone();
-    finish_task["header"]["action"] = json!("finish-task");
+    // finish-task：按官方协议只需 header + payload.input（不需 model/parameters）。
+    let finish_task = json!({
+        "header": {
+        "action": "finish-task",
+            "task_id": task_id,
+            "streaming": "duplex",
+        },
+        "payload": {
+            "input": {}
+        }
+    });
     ws.send(Message::Text(finish_task.to_string()))
         .await
         .context("dashscope WS 发送 finish-task 失败")?;
@@ -172,13 +178,13 @@ async fn run_session(
     collect_results(&mut ws).await
 }
 
-/// 构造 DashScope `run-task` 请求 JSON（含 header + payload + input）。
+/// 构造 DashScope `run-task` 请求 JSON（含 header + payload）。
 ///
-/// 单一构造点：run-task / finish-task 都由此派生（finish-task 仅改 header.action），
-/// 避免两处复制 payload 导致字段漂移。payload 字段符合 DashScope FunASR Realtime 协议：
+/// payload 字段符合 DashScope FunASR Realtime 协议：
 /// - `model`：模型名（如 `fun-asr-2025-11-07`）
 /// - `task_group`="audio" / `task`="asr" / `function`="recognition"
 /// - `parameters.format`="pcm" / `sample_rate`=16000 / `language_hints`
+/// - `input`：固定 `{}`（占位，DashScope duplex 协议要求此字段存在于 payload 内）
 fn build_run_task(model: &str, language: &str, task_id: &str) -> Value {
     // language="auto"/空 → ["zh","en"] 双语 hints；否则单语。
     let lang_hints = if language.is_empty() || language == "auto" {
@@ -201,9 +207,9 @@ fn build_run_task(model: &str, language: &str, task_id: &str) -> Value {
                 "format": "pcm",
                 "sample_rate": 16000,
                 "language_hints": lang_hints,
-            }
-        },
-        "input": {},
+            },
+            "input": {},
+        }
     })
 }
 
@@ -261,7 +267,7 @@ async fn collect_results(ws: &mut WsStream) -> Result<String> {
 /// f32[-1, 1] 样本 → s16le PCM 字节流（16kHz mono）。
 ///
 /// 钳幅到 [-1, 1] 后乘 32767 四舍五入为 i16，按小端字节序展开。
-fn samples_to_pcm_s16le(samples: &[f32]) -> Vec<u8> {
+pub(crate) fn samples_to_pcm_s16le(samples: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(samples.len() * 2);
     for &s in samples {
         let v = (s.clamp(-1.0, 1.0) * 32767.0).round() as i16;
@@ -333,23 +339,33 @@ mod tests {
             run_task["payload"]["parameters"]["language_hints"],
             json!(["zh", "en"])
         );
+        // input 必须在 payload 内部（不在顶层）——官方协议强制要求 payload.input
+        assert_eq!(run_task["payload"]["input"], json!({}));
+        assert!(run_task.get("input").is_none(), "input 不应在顶层");
     }
 
     #[test]
-    fn finish_task_derives_from_run_task() {
-        // finish-task 由 run_task.clone() + 改 header.action 派生：
-        // 验证 payload/task_id/streaming 与 run-task 一致（DashScope duplex 要求），
-        // 仅 action 变为 finish-task。复刻 run_session 的派生逻辑做断言。
-        let run_task = build_run_task("fun-asr-2025-11-07", "zh", "task-xyz");
-        let mut finish_task = run_task.clone();
-        finish_task["header"]["action"] = json!("finish-task");
-
+    fn finish_task_only_carries_payload_input() {
+        // finish-task 按官方协议只需 header + payload.input（不带 model/parameters）。
+        // 复刻 run_session 的构造逻辑做断言。
+        let task_id = "task-xyz".to_string();
+        let finish_task = json!({
+            "header": {
+                "action": "finish-task",
+                "task_id": task_id,
+                "streaming": "duplex",
+            },
+            "payload": {
+                "input": {}
+            }
+        });
         assert_eq!(finish_task["header"]["action"], "finish-task");
-        // payload 与 run-task 完全一致（model/format/sample_rate/language_hints 都在）
-        assert_eq!(finish_task["payload"], run_task["payload"]);
-        // task_id / streaming 同一 task，原样带过来
         assert_eq!(finish_task["header"]["task_id"], "task-xyz");
         assert_eq!(finish_task["header"]["streaming"], "duplex");
+        // finish-task 的 payload 只有 input，没有 model/parameters/task_group 等
+        assert_eq!(finish_task["payload"]["input"], json!({}));
+        assert!(finish_task["payload"].get("model").is_none());
+        assert!(finish_task["payload"].get("parameters").is_none());
     }
 
     #[test]

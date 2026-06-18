@@ -25,6 +25,9 @@ enum Command {
     StreamingTick,
     /// VAD 伪流式 tick（300ms 间隔，驱动分段识别）
     VadSegmentedTick,
+    /// 云端流式 tick（VAD-gated per-utterance streaming）
+    #[cfg(feature = "dashscope")]
+    CloudStreamingTick,
     /// 转录完成（离线模式或远程模式使用，seq 用于顺序拼接）
     TranscriptionDone {
         text: Result<String, String>,
@@ -45,6 +48,11 @@ enum Command {
     UpdateEditBuffer { text: String },
     /// 提交编辑（快捷键/完成按钮/失焦触发）
     CommitEdit { text: String },
+    /// 运行时配置更新——外部（设置窗口 / 工具栏）修改 RuntimeConfig 后，
+    /// 通过此命令通知 coordinator 立即把变更同步到 config 快照（无需等 Toggle）。
+    /// 用于 polish_llm / polish_mode / asr_correct / output_simplified / hide_toolbar 等
+    /// 运行时可变字段。`asr_engine` 不在此列（引擎实例已创建，需 Toggle 重建）。
+    UpdateRuntime,
 }
 
 enum Stage {
@@ -93,6 +101,27 @@ enum Stage {
         /// tick 线程控制标志
         tick_active: Arc<AtomicBool>,
     },
+    /// 云端流式：VAD-gated per-utterance streaming（DashScope 长连接）。
+    ///
+    /// 语音 onset → 开 WSS + pre-roll → 持续推 PCM → 静音 ≥ 700ms → 断开。
+    /// 每条 WSS 对应一个 utterance（一句话），断开后下一段语音开新 WSS。
+    #[cfg(feature = "dashscope")]
+    CloudStreaming {
+        /// 检测用 VAD（逐 tick 喂入，有状态累积，跨 utterance 续接）
+        vad: octopus_asr::vad::SileroVad,
+        /// 当前活跃的 DashScope 流式会话（语音进行中时存在）
+        session: Option<crate::dashscope_stream::DashScopeStreamSession>,
+        /// pre-roll 滚动缓冲区：保留最近 ~200ms 音频，语音 onset 时取 100ms 补齐
+        pre_roll_buffer: Vec<f32>,
+        /// 累积识别文本（跨 utterance 拼接）
+        transcript: Transcript,
+        /// 当前静音持续时长（秒）
+        silence_duration: f64,
+        /// 当前是否有活跃的 WSS（语音进行中）
+        is_speaking: bool,
+        /// tick 线程控制标志
+        tick_active: Arc<AtomicBool>,
+    },
     /// 等待所有识别完成
     WaitingCompletion {
         transcript: Transcript,
@@ -127,8 +156,26 @@ const VAD_CHUNK_SIZE: usize = 512;
 /// 插入标点的静音时长阈值（秒）
 const PUNCTUATION_SILENCE_THRESHOLD: f64 = 0.5;
 
+/// VAD 预滚静音帧数：录音启动后喂给检测 VAD 的静音帧数，让 LSTM 状态预热，
+/// 避免首几帧检测概率偏低导致首音丢失。512 samples/chunk @ 16kHz = 32ms，
+/// 10 帧 ≈ 320ms 静音预热。
+const VAD_PREROLL_FRAMES: usize = 10;
+
 /// VAD 伪流式 tick 间隔（毫秒）
-const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 300;
+const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 100;
+
+/// 云端流式 tick 间隔（毫秒）
+#[cfg(feature = "dashscope")]
+const CLOUD_STREAMING_TICK_INTERVAL_MS: u64 = 100;
+
+/// 云端流式 pre-roll 缓冲区大小（采样点）：200ms @ 16kHz = 3200 samples。
+/// 语音 onset 时取最后 ~100ms（1600 samples）作为 pre-roll。
+#[cfg(feature = "dashscope")]
+const CLOUD_PREROLL_BUFFER_SAMPLES: usize = 3200;
+
+/// 云端流式 pre-roll 补齐长度（采样点）：100ms @ 16kHz = 1600 samples。
+#[cfg(feature = "dashscope")]
+const CLOUD_PREROLL_SAMPLES: usize = 1600;
 
 /// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
 pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
@@ -151,7 +198,7 @@ pub struct Coordinator {
 }
 
 /// 流式识别 tick 间隔（毫秒）
-const STREAMING_TICK_INTERVAL_MS: u64 = 600;
+const STREAMING_TICK_INTERVAL_MS: u64 = 200;
 
 impl Coordinator {
     pub fn new(
@@ -167,6 +214,8 @@ impl Coordinator {
         let use_streaming = config.engine_mode == "embedded" && crate::config::is_streaming_engine(&config);
         let mut config = config;
         let mut use_streaming = use_streaming;
+        #[cfg(feature = "dashscope")]
+        let mut use_cloud_streaming = false;
 
         std::thread::spawn(move || {
             let mut stage = Stage::Idle;
@@ -195,17 +244,24 @@ impl Coordinator {
                             let _ = app_handle.emit("edit-force-exit", ());
                         }
                         // 仅在 Idle（开新会话）时同步运行时覆盖；STOP 时不动 asr_engine
-                        // （否则会把"刚切换但本会话未用"的引擎名写进 DB 记录）
                         if matches!(stage, Stage::Idle) {
                             let rc = runtime_config.read().unwrap();
                             config.asr_engine = match octopus_asr::config::resolve_active_engine(&rc.asr_engine) {
-                                Ok(resolved) => resolved.name,
-                                Err(_) => "zipformer-small-ctc".to_string(),
+                                Ok(_) => rc.asr_engine.clone(),
+                                Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
                             };
-                            config.polish_mode = rc.polish_mode;
+                            sync_runtime_fields(&mut config, &rc);
                             drop(rc);
                             use_streaming = config.engine_mode == "embedded"
                                 && crate::config::is_streaming_engine(&config);
+                            #[cfg(feature = "dashscope")]
+                            {
+                                use_cloud_streaming = is_cloud_engine(&config);
+                                // 云端流式优先于本地流式
+                                if use_cloud_streaming {
+                                    use_streaming = false;
+                                }
+                            }
                         }
                         handle_toggle(
                             &mut stage,
@@ -215,6 +271,8 @@ impl Coordinator {
                             &app_handle,
                             &tx,
                             use_streaming,
+                            #[cfg(feature = "dashscope")]
+                            use_cloud_streaming,
                         );
                     }
                     Command::StreamingTick => {
@@ -230,6 +288,19 @@ impl Coordinator {
                         } else {
                             handle_streaming_tick(&mut stage, &audio, &config, &app_handle, &tx);
                         }
+                    }
+                    #[cfg(feature = "dashscope")]
+                    Command::CloudStreamingTick => {
+                        {
+                            let rc = runtime_config.read().unwrap();
+                            config.polish_mode = rc.polish_mode;
+                        }
+                        if let Stage::CloudStreaming { transcript, .. } = &mut stage {
+                            transcript.set_mode(config.polish_mode);
+                        }
+                        handle_cloud_streaming_tick(
+                            &mut stage, &audio, &config, &app_handle, &tx,
+                        );
                     }
                     Command::VadSegmentedTick => {
                         {
@@ -341,6 +412,15 @@ impl Coordinator {
                             editing = false;
                         }
                     }
+                    Command::UpdateRuntime => {
+                        // 设置窗口 / 工具栏改了 RuntimeConfig 字段——立即同步到 config 快照，
+                        // 无需等下次 Toggle。用于 polish_llm 等运行时可变字段。
+                        // asr_engine 不在此路径（需要重建引擎实例，必须走 Toggle）。
+                        let rc = runtime_config.read().unwrap();
+                        sync_runtime_fields(&mut config, &rc);
+                        debug!("UpdateRuntime: polish_llm='{}', polish_mode={:?}",
+                               config.polish_llm, config.polish_mode);
+                    }
                 }
             }
             debug!("Coordinator thread exited");
@@ -404,6 +484,29 @@ impl Coordinator {
             }
         }
     }
+
+    /// 通知 coordinator 重读 RuntimeConfig 同步可变字段到 config 快照。
+    /// 设置窗口 / 工具栏改完 RuntimeConfig 后调用，让 polish_llm 等字段立即生效。
+    pub fn update_runtime(&self) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::UpdateRuntime).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
+}
+
+/// 把 RuntimeConfig 的运行时可变字段同步到 AppConfig 快照。
+///
+/// 与 Toggle 时的同步逻辑共用，确保两条路径同步内容一致。
+/// 不含 `asr_engine`（需重建引擎实例，只能 Toggle 时切），也不含 `denoise_mode`
+/// （音频处理路径有独立 cfg 读取，会话中切换影响降噪器状态）。
+fn sync_runtime_fields(config: &mut AppConfig, rc: &crate::runtime_config::RuntimeConfig) {
+    config.polish_mode = rc.polish_mode;
+    config.polish_llm = rc.polish_llm.clone();
+    config.asr_correct = rc.asr_correct;
+    config.output_simplified = rc.output_simplified;
+    config.hide_toolbar = rc.hide_toolbar;
 }
 
 /// 前端命令：取消当前录音/处理（Esc 键）。
@@ -446,13 +549,56 @@ fn handle_toggle(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
     use_streaming: bool,
+    #[cfg(feature = "dashscope")] use_cloud_streaming: bool,
 ) {
     match stage {
         Stage::Idle => {
-            info!("Toggle: starting {}", if use_streaming { "streaming" } else { "VAD segmented" });
+            info!("Toggle: starting {}", {
+                #[cfg(feature = "dashscope")]
+                { if use_cloud_streaming { "cloud streaming" } else if use_streaming { "streaming" } else { "VAD segmented" } }
+                #[cfg(not(feature = "dashscope"))]
+                { if use_streaming { "streaming" } else { "VAD segmented" } }
+            });
 
             if let Err(e) = audio.start(&config.microphone) {
                 error!("Failed to start recording: {}", e);
+                return;
+            }
+
+            #[cfg(feature = "dashscope")]
+            if use_cloud_streaming {
+                match octopus_asr::config::find_silero_vad() {
+                    Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
+                        Ok(mut vad) => {
+                            vad_preroll(&mut vad);
+                            crate::result_window::show_result(app_handle, "正在聆听…");
+                            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
+
+                            let tick_active = Arc::new(AtomicBool::new(true));
+                            start_cloud_streaming_tick_thread(tx.clone(), tick_active.clone());
+
+                            *stage = Stage::CloudStreaming {
+                                vad,
+                                session: None,
+                                pre_roll_buffer: Vec::new(),
+                                transcript: Transcript::new(now_millis(), config.polish_mode),
+                                silence_duration: 0.0,
+                                is_speaking: false,
+                                tick_active,
+                            };
+                        }
+                        Err(e) => {
+                            error!("VAD init failed for CloudStreaming: {}, falling back to VadSegmented", e);
+                            let _ = audio.stop();
+                            return;
+                        }
+                    },
+                    Err(e) => {
+                        error!("VAD not found for CloudStreaming: {}, falling back to VadSegmented", e);
+                        let _ = audio.stop();
+                        return;
+                    }
+                }
                 return;
             }
 
@@ -470,7 +616,10 @@ fn handle_toggle(
                         // 初始化 VAD（用于静音检测 + 标点）
                         let vad = match octopus_asr::config::find_silero_vad() {
                             Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
-                                Ok(v) => Some(v),
+                                Ok(mut v) => {
+                                    vad_preroll(&mut v);
+                                    Some(v)
+                                }
                                 Err(e) => {
                                     warn!("VAD init failed: {}, punctuation disabled", e);
                                     None
@@ -506,7 +655,9 @@ fn handle_toggle(
                 // 非流式模式：使用 VAD 伪流式分段识别
                 match octopus_asr::config::find_silero_vad() {
                     Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
-                        Ok(vad) => {
+                        Ok(mut vad) => {
+                            // 预滚检测 VAD（LSTM 预热），filter_vad 每段 reset 无需预热
+                            vad_preroll(&mut vad);
                             // 第二个独立 VAD 实例用于过滤（每段 reset，避免与检测流共用造成
                             // LSTM 状态污染）。ONNX Session 在此一次性创建，过滤时只 reset 不重建。
                             // 同一路径 vad 已加载成功，filter_vad 失败属异常，直接放弃。
@@ -713,6 +864,52 @@ fn handle_toggle(
                 app_handle,
                 tx,
             );
+        }
+
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming {
+            vad: _,
+            session,
+            pre_roll_buffer: _,
+            transcript,
+            silence_duration: _,
+            is_speaking: _,
+            tick_active,
+        } => {
+            info!("Toggle: stopping CloudStreaming, finalizing");
+            transcript.clear_polish_pending();
+            tick_active.store(false, Ordering::Relaxed);
+
+            // 排空剩余音频 + close WSS（如有活跃连接）
+            let final_samples = audio.drain_samples();
+            let _ = audio.stop();
+
+            if let Some(sess) = session.take() {
+                if !final_samples.is_empty() {
+                    let _ = sess.push_pcm(&final_samples);
+                }
+                let rt = tauri::async_runtime::handle();
+                match sess.close(&rt) {
+                    Ok(text) if !text.is_empty() => {
+                        transcript.set_full(&text);
+                    }
+                    Ok(_) => {}
+                    Err(e) => warn!("CloudStreaming close WSS failed: {}", e),
+                }
+            }
+
+            let combined = transcript.db_text();
+            if combined.is_empty() {
+                *stage = Stage::Idle;
+                crate::overlay::hide_overlay(app_handle);
+                crate::result_window::hide_result(app_handle);
+                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                return;
+            }
+
+            crate::result_window::show_result(app_handle, &transcript.display_text());
+            let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+            start_final_polish_or_paste(stage, &combined, tr, config, app_handle, tx);
         }
 
         Stage::WaitingCompletion { .. } => {
@@ -1055,19 +1252,225 @@ fn compute_speech_chunks(vad: &mut octopus_asr::vad::SileroVad, samples: &[f32])
     speech_chunks
 }
 
+/// 预滚 VAD：喂入若干帧静音（零样本），让 LSTM 隐藏状态从冷启动预热，
+/// 避免录音首几帧检测概率偏低导致首音被误判为静音而丢失。
+fn vad_preroll(vad: &mut octopus_asr::vad::SileroVad) {
+    let silence = vec![0.0_f32; VAD_CHUNK_SIZE];
+    for _ in 0..VAD_PREROLL_FRAMES {
+        let _ = vad.compute(&silence);
+    }
+}
+
 /// 启动 VAD 伪流式 tick 线程
 fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         while tick_active.load(Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_millis(VAD_SEGMENTED_TICK_INTERVAL_MS));
             if tick_active.load(Ordering::Relaxed) {
                 if tx.send(Command::VadSegmentedTick).is_err() {
                     break;
                 }
             }
+            std::thread::sleep(std::time::Duration::from_millis(VAD_SEGMENTED_TICK_INTERVAL_MS));
         }
         debug!("VadSegmented tick thread exited");
     });
+}
+
+// ── CloudStreaming（dashscope feature）──
+
+/// 判定 config.asr_engine 是否为云端引擎（Aliyun）。
+#[cfg(feature = "dashscope")]
+fn is_cloud_engine(config: &AppConfig) -> bool {
+    octopus_asr::config::resolve_engine_category(&config.asr_engine)
+        .map(|c| c == octopus_asr::config::EngineCategory::Aliyun)
+        .unwrap_or(false)
+}
+
+/// 启动云端流式 tick 线程（首 tick 立即触发）
+#[cfg(feature = "dashscope")]
+fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
+    std::thread::spawn(move || {
+        while tick_active.load(Ordering::Relaxed) {
+            if tick_active.load(Ordering::Relaxed) {
+                if tx.send(Command::CloudStreamingTick).is_err() {
+                    break;
+                }
+            }
+            std::thread::sleep(std::time::Duration::from_millis(CLOUD_STREAMING_TICK_INTERVAL_MS));
+        }
+        debug!("CloudStreaming tick thread exited");
+    });
+}
+
+/// 解析 DashScope 云端引擎配置（endpoint + key + model_name），供 CloudStreaming tick 调用。
+#[cfg(feature = "dashscope")]
+fn resolve_dashscope_config(engine_spec: &str) -> Result<(String, String, String), String> {
+    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
+        .model_name()
+        .to_string();
+    let entry = cfg
+        .asr
+        .aliyun
+        .as_ref()
+        .and_then(|m| m.get(model_name.as_str()))
+        .ok_or_else(|| format!("aliyun ASR 模型 '{}' 未在 DB 配置", model_name))?;
+    if entry.secret_key.is_empty() {
+        return Err(format!("aliyun ASR 模型 '{}' 的 secret_key 为空", model_name));
+    }
+    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
+}
+
+/// 处理 CloudStreamingTick 命令：VAD-gated per-utterance streaming。
+#[cfg(feature = "dashscope")]
+fn handle_cloud_streaming_tick(
+    stage: &mut Stage,
+    audio: &Arc<SharedAudioState>,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+) {
+    let cs = match stage {
+        Stage::CloudStreaming { .. } => stage,
+        _ => return,
+    };
+
+    // 提取可变引用（单次 match borrow）
+    let Stage::CloudStreaming {
+        vad,
+        session,
+        pre_roll_buffer,
+        transcript,
+        silence_duration,
+        is_speaking,
+        ..
+    } = cs
+    else { return; };
+
+    // 1. drain 音频
+    let samples = audio.drain_samples();
+    if samples.is_empty() {
+        // 即使无新音频，也 try_recv partial 更新 UI
+        if let Some(sess) = session.as_mut() {
+            drain_stream_events(sess, transcript, app_handle);
+        }
+        return;
+    }
+
+    // 2. 追加到 pre-roll 滚动缓冲区（超容量弹头）
+    pre_roll_buffer.extend_from_slice(&samples);
+    if pre_roll_buffer.len() > CLOUD_PREROLL_BUFFER_SAMPLES {
+        let excess = pre_roll_buffer.len() - CLOUD_PREROLL_BUFFER_SAMPLES;
+        pre_roll_buffer.drain(0..excess);
+    }
+
+    // 3. VAD 检测
+    let speech_chunks = compute_speech_chunks(vad, &samples);
+    let has_speech_now = speech_chunks >= 2;
+
+    if has_speech_now {
+        *silence_duration = 0.0;
+    } else {
+        let chunk_duration = samples.len() as f64 / 16000.0;
+        *silence_duration += chunk_duration;
+    }
+
+    // 4. 无活跃 WSS + onset → 开 WSS + pre-roll + push
+    if has_speech_now && !*is_speaking {
+        *is_speaking = true;
+        match resolve_dashscope_config(&config.asr_engine) {
+            Ok((endpoint, key, model)) => {
+                // 取 pre-roll：最后 CLOUD_PREROLL_SAMPLES 个样本（~100ms）
+                let pre_roll: Vec<f32> = if pre_roll_buffer.len() >= CLOUD_PREROLL_SAMPLES {
+                    pre_roll_buffer[pre_roll_buffer.len() - CLOUD_PREROLL_SAMPLES..].to_vec()
+                } else {
+                    pre_roll_buffer.clone()
+                };
+                let rt = tauri::async_runtime::handle();
+                match crate::dashscope_stream::DashScopeStreamSession::open(
+                    &rt, endpoint, key, model, config.language.clone(), pre_roll,
+                ) {
+                    Ok(sess) => {
+                        let _ = sess.push_pcm(&samples);
+                        *session = Some(sess);
+                        debug!("CloudStreaming: WSS opened on speech onset");
+                    }
+                    Err(e) => {
+                        error!("CloudStreaming: open WSS failed: {}", e);
+                        *is_speaking = false;
+                    }
+                }
+            }
+            Err(e) => {
+                error!("CloudStreaming: config resolve failed: {}", e);
+                *is_speaking = false;
+            }
+        }
+    }
+
+    // 5. 有活跃 WSS → push PCM + try_recv partial
+    if let Some(sess) = session.as_mut() {
+        if !samples.is_empty() {
+            if let Err(e) = sess.push_pcm(&samples) {
+                warn!("CloudStreaming: push_pcm failed: {}", e);
+            }
+        }
+        drain_stream_events(sess, transcript, app_handle);
+    }
+
+    // 6. 有活跃 WSS + 静音 ≥ pause_polish_threshold_ms → close + 拼接 + 触发润色
+    if *is_speaking && *silence_duration * 1000.0 >= config.pause_polish_threshold_ms {
+        *is_speaking = false;
+        if let Some(sess) = session.take() {
+            let rt = tauri::async_runtime::handle();
+            match sess.close(&rt) {
+                Ok(text) if !text.is_empty() => {
+                    // 拼接到现有文本（跨 utterance 拼接，用逗号分隔）
+                    if !transcript.full().is_empty() && !transcript.full().ends_with('，') {
+                        transcript.append_segment("，");
+                    }
+                    transcript.append_segment(&text);
+                    update_transcription_raw(transcript, &config.asr_engine, "streaming")
+                        .unwrap_or_else(|e| warn!("CloudStreaming DB update failed: {}", e));
+                    crate::result_window::update_result(app_handle, &transcript.display_text());
+                }
+                Ok(_) => {}
+                Err(e) => warn!("CloudStreaming: close WSS failed: {}", e),
+            }
+        }
+        // 触发停顿润色
+        check_and_trigger_polish(transcript, *silence_duration, config, tx);
+    }
+
+    // 7. 更新 UI
+    if !transcript.full().is_empty() {
+        crate::result_window::update_result(app_handle, &transcript.display_text());
+    }
+}
+
+/// 收集 stream session 的 pending 事件，更新 transcript + UI。
+#[cfg(feature = "dashscope")]
+fn drain_stream_events(
+    sess: &mut crate::dashscope_stream::DashScopeStreamSession,
+    transcript: &mut Transcript,
+    app_handle: &tauri::AppHandle,
+) {
+    while let Some(event) = sess.try_recv_text() {
+        match event {
+            crate::dashscope_stream::StreamEvent::Text(text) => {
+                if !text.is_empty() {
+                    transcript.set_full(&text);
+                    crate::result_window::update_result(app_handle, &transcript.display_text());
+                }
+            }
+            crate::dashscope_stream::StreamEvent::Finished => {
+                debug!("CloudStreaming: stream Finished event");
+            }
+            crate::dashscope_stream::StreamEvent::Failed(msg) => {
+                warn!("CloudStreaming: stream failed: {}", msg);
+            }
+        }
+    }
 }
 
 /// 带 seq 序号的离线识别线程
@@ -1354,6 +1757,15 @@ fn handle_cancel(
             tick_active.store(false, Ordering::Relaxed);
             let _ = audio.stop();
         }
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming {
+            tick_active, session, ..
+        } => {
+            info!("Cancel: stopping CloudStreaming");
+            tick_active.store(false, Ordering::Relaxed);
+            let _ = session.take(); // drop session → channels close → WS task 结束
+            let _ = audio.stop();
+        }
         Stage::WaitingCompletion { .. } => {
             info!("Cancel: cancelling while waiting for transcription");
             // 识别结果将被忽略，回到 Idle
@@ -1498,12 +1910,12 @@ fn handle_transcription_done(
 fn start_tick_thread(tx: Sender<Command>, streaming_active: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         while streaming_active.load(Ordering::Relaxed) {
-            std::thread::sleep(std::time::Duration::from_millis(STREAMING_TICK_INTERVAL_MS));
             if streaming_active.load(Ordering::Relaxed) {
                 if tx.send(Command::StreamingTick).is_err() {
                     break;
                 }
             }
+            std::thread::sleep(std::time::Duration::from_millis(STREAMING_TICK_INTERVAL_MS));
         }
         debug!("Streaming tick thread exited");
     });
@@ -1579,25 +1991,32 @@ fn handle_polish_now(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
+    use tauri::Emitter;
+    // 所有早退路径都 emit polish-done 恢复前端按钮——
+    // 否则用户点了「立即润色」后按钮 disabled=true 永久卡死，直到下次录音才恢复
     let transcript = match stage {
         Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
         _ => {
             debug!("PolishNow ignored in stage {:?}", stage_name(stage));
+            let _ = app_handle.emit("polish-done", ());
             return;
         }
     };
     if transcript.full().is_empty() {
         debug!("PolishNow skipped: transcript empty");
+        let _ = app_handle.emit("polish-done", ());
         return;
     }
     if transcript.polish_pending() {
         debug!("PolishNow skipped: polish already pending");
+        let _ = app_handle.emit("polish-done", ());
         return;
     }
     // 检查 LLM 配置是否存在（忽略 polish_mode，立即润色不看 mode）
     if crate::config::llm_config_ignore_mode(config).is_none() {
         warn!("PolishNow: no LLM config available");
         let _ = crate::result_window::show_result(app_handle, "未配置润色模型");
+        let _ = app_handle.emit("polish-done", ());
         return;
     }
     let (preserved, to_polish) = transcript.take_polish_input();
@@ -1651,6 +2070,8 @@ fn stage_name(stage: &Stage) -> &'static str {
         Stage::WaitingCompletion { .. } => "WaitingCompletion",
         Stage::Polishing { .. } => "Polishing",
         Stage::Pasting { .. } => "Pasting",
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming { .. } => "CloudStreaming",
     }
 }
 

@@ -105,6 +105,65 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - 单线程 mpsc channel 串行化所有事件
 - 流式模式：Streaming → (Polishing) → Pasting
 - 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → (Polishing) → Pasting
+- 云端流式模式（dashscope feature，VAD-gated per-utterance streaming）：CloudStreaming → (Polishing) → Pasting
+- **音频处理流水线（drain_samples → VAD → ASR，三种 stage 共用同一前处理）**：从 cpal 回调到引擎输入只走一条路径，所有降噪 / 重采样都在 `SharedAudioState::drain_samples` 内部完成，coordinator 层从不直接调 DenoiseProcessor。详见 `crates/desktop/src/audio.rs::process_pipeline`。
+
+  ```
+  cpal Stream 回调（设备原生 SR）
+    │  → SharedAudioState.samples（Mutex<Vec<f32>>）
+    ▼
+  drain_samples()                    ← coordinator 每 tick 调用
+    │  1. take(samples)
+    │  2. process_pipeline(raw, SR, flush=false)
+    │     │
+    │     ├─ 直通路径（denoise_mode=0 / 后端加载失败 / 单帧推理失败 降级）：
+    │     │     原生 SR ───────────resampler──────────▶ 16k
+    │     │
+    │     └─ 降噪路径（denoise_mode=1 RNNoise / 2 DeepFilterNet3，详见「环境降噪」）：
+    │           原生 SR ──down_sampler──▶ 48k
+    │             ──DenoiseProcessor.process_samples──▶ 48k 已降噪
+    │             ──resampler────────────────────────▶ 16k 已降噪
+    │
+    │  GRU 隐状态跨 tick / 跨段连续保持（flush=false 保滤波器+GRU 续接，
+    │  噪声估计是连续物理过程）；仅会话级 start() 调 reset()（DF3 = 重载模型）
+    ▼
+  samples: Vec<f32>（16k 单声道，已降噪 或 直通）—— 三种 stage 看到的是同一份
+    │
+    ├─ Streaming（StreamingSession 本地流式，[`crates/asr/src/streaming`]）：
+    │     StreamingSession.accept_samples(&samples, was_silent) → partial
+    │     （累积静音 ≥0.5s 时引擎独立补零 Active Flush，不走 drain_samples）
+    │
+    ├─ VadSegmented（本地离线引擎，[`coordinator.rs::handle_vad_segmented_tick`]）：
+    │     audio_buffer.extend(&samples)
+    │     compute_speech_chunks(vad, &samples)         // 检测 VAD（跨 tick 有状态累积）
+    │     → 静音 ≥ segment_silence / 持续 ≥ segment_duration：
+    │         filter_speech_from_buffer(filter_vad, send_buffer)  // 过滤 VAD（每段 reset）
+    │         → spawn_blocking(engine.transcribe(&speech_samples))
+    │         → Command::TranscriptionDone{seq} → 按 seq 有序拼接
+    │
+    └─ CloudStreaming（DashScope WSS 长连接，[`coordinator.rs::handle_cloud_streaming_tick`]）：
+          pre_roll_buffer 滚动追加 samples（保留后 200ms = CLOUD_PREROLL_BUFFER_SAMPLES）
+          compute_speech_chunks(vad, &samples) → onset 检测（≥2 speech chunks）
+          ├─ 无活跃 WSS + onset：
+          │     resolve_dashscope_config(spec) → (endpoint, key, model)
+          │     DashScopeStreamSession::open(pre_roll = pre_roll_buffer 末 100ms = 1600 样本)
+          │     push_pcm(&samples)
+          ├─ 有活跃 WSS + 持续语音：
+          │     push_pcm(&samples)（→ s16le → WS binary）
+          │     drain_stream_events() → try_recv_text → 更新 transcript + emit("show-result")
+          └─ 有活跃 WSS + 静音 ≥ pause_polish_threshold_ms（700ms）：
+                session.close(rt)（发 finish-task + 阻塞收最终文本）
+                → transcript.append_segment(final_text)（逗号拼接跨句）
+                → check_and_trigger_polish（停顿润色）
+                → session = None（等下一段 onset）
+  ```
+
+  **关键不变量**：
+  - **降噪在 drain_samples 内部完成**——三种 stage 拿到的 `samples` 都是 16k 已降噪（或降级直通）样本；VAD 与 ASR 用同一份降噪后信号，避免参数 / 状态不一致致 VAD 误判而 ASR 准的解耦 bug。云端引擎（CloudStreaming）的 pre-roll 同样从 drain_samples 取，DashScope 收到的是干净音频。
+  - **降噪 GRU 与 VAD LSTM 状态语义相反**：降噪 GRU **跨 tick / 跨段连续保持**（`flush=false`，噪声估计是连续物理过程，仅会话 `start()` 才 reset）；检测 VAD **跨 tick 有状态累积**（看完整流，稳语音/静音边界）；过滤 VAD **每段 reset**（独立冷启动，等价每段新 VAD 但复用 ONNX Session）。详见「VAD 分段切分策略」。
+  - **降级不 panic**：`denoise_mode=0` / 后端模型缺失 / 单帧推理失败 → `process_pipeline` 走直通分支（原生→16k），仅 warn 日志，识别继续不阻断录音。
+  - **CloudStreaming 的 VAD 用法与 VadSegmented 一致**：同一个 `compute_speech_chunks` + `SileroVad` 检测 onset，但**不切分过滤**（不调 `filter_speech_from_buffer`）——DashScope 自己有 server-side `max_sentence_silence` 切句，客户端 VAD 只负责「何时开 / 何时关 WSS」的生命周期门控。
+- **CloudStreaming（DashScope WSS 长连接，[`dashscope_stream.rs`](../crates/desktop/src/dashscope_stream.rs)）**：当 `is_cloud_engine(cfg)`（`asr_engine` 解析 category=Aliyun）时启用。与本地 Streaming / VadSegmented 不同——**不调用 `TranscriptionEngine::transcribe`**，而是直接管理一条 DashScope WebSocket 长连接（`DashScopeStreamSession`），由 VAD 决定连接生命周期：① 语音 onset（VAD 检测 ≥2 speech chunks）→ `DashScopeStreamSession::open`（建连 + run-task 含 `max_sentence_silence:600` + 推 100ms pre-roll 给 ASR 声学上下文）；② 持续语音 → `push_pcm` 推帧 + `try_recv_text` 轮询 partial 实时更新 transcript + UI；③ 静音 ≥ `pause_polish_threshold_ms`（700ms）→ `close`（发 finish-task + 阻塞收最终文本）→ append 到 transcript（逗号分隔跨句）→ `check_and_trigger_polish` 停顿润色 → `session=None`（等下一段 onset 再开新 WSS）。**tick 间隔 100ms**（`CLOUD_STREAMING_TICK_INTERVAL_MS`），**pre-roll 滚动缓冲 200ms**（`CLOUD_PREROLL_BUFFER_SAMPLES=3200`，每次 onset 提取后 100ms `CLOUD_PREROLL_SAMPLES=1600` 推给 WSS）。后台 WS task 在 tauri tokio runtime 上 spawn，双向循环（PCM channel→WS binary / WS text→result channel）用 `tokio::select!`。Toggle 停止时若 WSS 仍活跃 → `close` 收尾文本 → 走 Pasting。详见 [spec](superpowers/specs/2026-06-18-dashscope-streaming-design.md)。
 - **最终润色异步化**：停止后若启用润色（mode=1/2），`start_final_polish_or_paste` 进入 `Stage::Polishing`（spawn 独立线程跑 LLM 网络请求，托盘显「处理中」、结果窗显「最终润色中」），LLM 完成回调 `Command::FinalPolishDone` 后 `do_paste` 落地；未启用润色则直接 `do_paste`。**润色期间协调器线程不阻塞**，`Cancel`（Esc）可即时回滚 Idle、丢弃在途结果，`Toggle` 被互斥忽略（防并发缓存污染）。Polishing 仅持 `id` + `raw_text`（不需 Transcript 其余字段）
 - **粘贴异步化（`do_paste`）**：`do_paste` 先同步 `show_result` + 置 `Stage::Pasting`（状态机线程），再把真正的落库粘贴（`paste::paste`——含 enigo 键盘模拟 + 焦点切换 `sleep`）投递到 `tauri::async_runtime::spawn` + `tokio::task::spawn_blocking`，完成后回 `Command::PasteDone`——粘贴期间不占用 Tauri UI 主线程、不阻塞协调器线程。**macOS 键盘模拟线程安全**：`paste_via_clipboard` 的 V 键用固定虚拟键码 `Key::Other(9)`（`kVK_ANSI_V`）而非 `Key::Unicode('v')`——enigo 0.6.1 的 `Key::Unicode` 在 macOS 走 `get_layoutdependent_keycode`（循环调用非线程安全的 Carbon `TIS*`/`UCKeyTranslate` API），在 `spawn_blocking` 非主线程执行会触发 SIGTRAP（`Trace/BPT trap: 5`）；`Key::Other` 直接当 keycode 用绕过 layout 查找。详见 [spec](superpowers/specs/2026-06-17-paste-enigo-macos-sigtrap-design.md)
 - **取消录音（Cancel）**：结果窗按 Esc → 前端 `invoke('cancel_recording')` → `coordinator::cancel_recording` Tauri command → `Coordinator::cancel` 发 `Command::Cancel`。`handle_cancel` 跨阶段生效——Streaming 停采集 + reset 引擎，VadSegmented 停 tick + 停采集，WaitingCompletion / Polishing 丢弃在途结果，统一回 `Idle` + 隐藏 overlay / result 窗 + 托盘置 Idle（Idle 下为 no-op）。Esc 同时 `currentWindow.hide()` 提供即时反馈（区别于 RuntimeConfig 子系统的 4 个命令，`cancel_recording` 定义在 `coordinator` 模块）
@@ -135,7 +194,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
   - 每段经 `filter_speech_from_buffer` 过滤静音后，由 `spawn_offline_transcription_with_seq` 派发到 **Tauri 全局异步运行时**（`tauri::async_runtime::spawn`）执行 `engine.transcribe`（底层 CPU 密集推理已 `spawn_blocking` 包裹、不阻塞 runtime worker，不再为每段新建 / 销毁 current-thread Runtime），完成回 `Command::TranscriptionDone{seq}`；协调器按 `seq` 有序拼接（`completed_results: HashMap<seq,String>` + `completed_seq` 游标连续消费）。**识别失败 / 空结果仍占位该 `seq`（写空串）以保证游标连续推进**——否则缺失序号会让消费卡死、该次录音此后所有有效段积压丢失；`Command::TranscriptionDone` 另带 `session_id`（= 录音开始毫秒时间戳 = `transcript.id`），消费它的 `VadSegmented` / `WaitingCompletion` 分支先比对 `transcript.id != session_id` → 丢弃旧会话在途结果（快速双击 Toggle / 录音中重启的竞态：新会话分配新 id，旧会话残留的异步转写回调不再污染当前结果）
 - **Transcript 文本状态机**：识别文本状态由 `Transcript` 结构（`crates/desktop/src/transcript.rs`）统一管理——内部用 `full`（当前完整 ASR）+ `raw_len`（上次停顿快照的 char 长度）派生 `raw`（停顿快照，润色基准）/ `increase`（停顿后增量），避免维护三份字符串。`Stage::Streaming` / `VadSegmented` / `WaitingCompletion` 各持 `transcript: Transcript` 字段，文本流经 Transcript 方法（`set_full` / `append_segment` / `display_text` / `db_text`）。停止后 `Stage::Polishing`（最终润色中，持 `id` + `raw_text`）→ `Stage::Pasting`（持 `id` + `raw_text` + `polished_text` + `polish_status`）。入库的 `engine` / `engine_mode` 在过程入库的 raw 阶段已写（`update_transcription_raw(&config.asr_engine, ..)`），`Pasting` 不再持有。详见 [spec](superpowers/specs/2026-06-14-archived-design.md)
 - **停顿驱动润色**：流式 / 伪流式统一——静音 ≥ `pause_polish_threshold_ms`（默认 600ms，可配置）/ 伪流式段边界完成时，经 `take_polish_input()` 取润色输入（无编辑 = 全量 ASR `raw + increase`；已编辑 = `(edited, 新增)` 边界，见「结果窗可编辑」）送 LLM 润色（mode=2 only），**不重置流式引擎**（只读送 LLM，引擎状态原样保留）。修复了流式中间润色 P0（partial 全量覆盖 polished）。默认 600ms > Active Flush 500ms（用户配置需保持 > 500ms，否则润色先于尾音冲刷、快照缺尾音），润色在 tick 流程最末执行，快照可靠
-- **立即润色（PolishNow）**：工具栏「立即润色」按钮（`tool-polish-now`）点击 → `invoke('polish_now')` → `Command::PolishNow` → `handle_polish_now`：**忽略 `polish_mode`**（不受 mode=0/1/2 限制，区别于停顿润色的 mode=2 限制），经 `llm_config_ignore_mode()` 取 LLM 配置，复用 `take_polish_input` → `spawn_polish_thread(ignore_mode=true)` → `Command::PolishDone` 路径。`spawn_polish_thread` 新增 `ignore_mode` 参数控制是否绕过 mode 检查。`handle_polish_done` 接受 `Streaming`/`VadSegmented`/`WaitingCompletion` 三阶段（防用户点按钮后停录音致 stage 切换、润色结果被丢弃），写回后 `emit("polish-done")` 通知前端恢复按钮（成功/失败/stage 不匹配均通知）。`Transcript::display_text()` 同步变更：**polished 非空即展示**（`polished + increase`），不再仅限 `mode==Intermediate`，使 PolishNow 在任意 mode 下都能让润色文本覆盖 raw 回显到展示区
+- **立即润色（PolishNow）**：工具栏「立即润色」按钮（`tool-polish-now`）点击 → `invoke('polish_now')` → `Command::PolishNow` → `handle_polish_now`：**忽略 `polish_mode`**（不受 mode=0/1/2 限制，区别于停顿润色的 mode=2 限制），经 `llm_config_ignore_mode()` 取 LLM 配置，复用 `take_polish_input` → `spawn_polish_thread(ignore_mode=true)` → `Command::PolishDone` 路径。`spawn_polish_thread` 新增 `ignore_mode` 参数控制是否绕过 mode 检查。`handle_polish_done` 接受 `Streaming`/`VadSegmented`/`WaitingCompletion` 三阶段（防用户点按钮后停录音致 stage 切换、润色结果被丢弃），写回后 `emit("polish-done")` 通知前端恢复按钮（成功/失败/stage 不匹配均通知）。**`handle_polish_now` 所有早退路径（stage 不匹配 / transcript 空 / 已 pending / LLM 配置缺失）都 emit `polish-done`**——否则前端 `btnPolishNow.disabled=true` 永久卡死。`Transcript::display_text()` 同步变更：**polished 非空即展示**（`polished + increase`），不再仅限 `mode==Intermediate`，使 PolishNow 在任意 mode 下都能让润色文本覆盖 raw 回显到展示区
 - **结果窗可编辑（Transcript 三文本分层）**：
   - `Transcript` 三文本分层：`edited ≻ polished ≻ raw`。`display_text()` = committed + increase；`full`（原始 ASR）独立保留为 DB `raw_text`。
   - 编辑态：coordinator 主循环 `editing` 标志置位时，Streaming/VadSegmented tick 跳过喂引擎、只排空丢弃音频（硬暂停）。`commit_edit` 写回 transcript 并 `UPDATE edited_text`。
@@ -145,7 +204,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号。**段间拼接标点去重**：`consume_completed_results` 在段间补逗号前同时检查「新段不以标点开头」和「已有文本不以标点结尾」，避免 ASR 引擎返回的自带句尾标点与补的逗号连续出现（`。，` `？，`）
 - 流式尾音冲刷（Active Flush）：流式模式累积静音 ≥0.5s 时向引擎补零，强制对齐右上下文 / 触发 CIF，把憋住的尾音即时吐出；走独立路径不插逗号，每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。详见 [spec](superpowers/specs/2026-06-14-archived-design.md)
 - **设置窗口子系统（settings_commands + settings_window）**：独立 Tauri 窗口 `settings_window`（`settings_window.rs`），原生标题栏、800×600 可调。6 个 Tauri 命令：`open_settings`（单例窗口管理——`get_webview_window` → `set_focus`，否则 `WebviewWindowBuilder` 新建；macOS 打开时切 `Regular` 激活策略显示 Dock 图标 + `setApplicationIconImage`）、`get_config`（返回 `ConfigResponse`：AppConfig JSON + ASR 引擎列表 + LLM 模型列表 + 麦克风设备列表）、`set_config(key, value)`（通用字段写入器，`apply_config_value` 做 17 字段类型/范围校验 → `sync_runtime_config` 同步 RuntimeConfig 镜像 → `write_config_yaml` 持久化；`shortcut` 字段热重载——注销旧快捷键 + `register_shortcut` 新的）、`get_history(limit, offset)`（分页查询 `transcriptions` 表，返回 `Vec<TranscriptionRecord>`）、`delete_history(ids)`（批量删除，`IN` 子句，返回删除行数）、`check_shortcut(shortcut)`（快捷键冲突检测——`on_shortcut` 注册 → 立即 `unregister`，仅检测不持久化）。前端 `dist/settings/index.html` 纯 vanilla HTML，无构建步骤。`polish_mode` 序列化为 `u8`（0/1/2），前端 select 用数字 value。**识别记录页**：倒序排列，润色 text 优先显示（黑色主文本）、原始 text 折叠（灰色次要），工具栏含全选 checkbox + 批量删除（两次点击确认，Tauri webview 不支持原生 `confirm()`，任何勾选变化/超时自动取消确认态），每条记录右侧拷贝按钮（内联 `copy.svg` 图标）。**系统设置页**：7 张卡片（交互置顶），除 VAD 分段外去掉标题；生效时间标签内联到 label 文字后面（灰色小字括号如「(立即)」）；快捷键改为键盘捕获按钮（捕获 → `check_shortcut` 冲突检测 → `set_config` 热重载）；润色间隔/说话换气间隔改为下拉选择（`pause_polish_threshold_ms` 约束 `>= 500`）；语言仅 auto/zh/en。
-- **运行时配置子系统（RuntimeConfig）**：工具栏可运行时切换 `asr_engine` / `polish_mode` / `polish_llm` / `denoise_mode`，无需重启。`runtime_config.rs` 提供 `SharedRuntimeConfig`（`Arc<RwLock<RuntimeConfig>>`，挂 `tauri::State`）作为这四个字段的**可变运行时镜像**，与启动只读的 `AppConfig` 快照互补。8 个 Tauri 命令（`toolbar_state` / `list_asr_engines` / `switch_asr_engine` / `set_polish_mode` / `list_llm_models` / `switch_polish_llm` / `set_denoise_mode` / `polish_now`）读写镜像 + best-effort 持久化回 `~/.octopus/config.yaml`（写盘失败仅 `warn`，本次仍生效、重启回退；`polish_now` 不写盘，只触发润色流程）。**`switch_asr_engine` / `switch_polish_llm` 前端传裸 `model_name`，后端查 DB 取 `provider` / `category` 构造 3-part spec（`"{provider}:{category}:{model_name}"`）写入 RuntimeConfig + config.yaml**——保证持久化值与 `parse_model_spec` 解析一致。`list_*` 的 current 判定经 `parse_model_spec(current).model_name()` 提取裸名比较，兼容 3-part 和裸名两种历史格式。`switch_asr_engine` 同时经 `tray::update_tray_engine_label` 实时刷新系统托盘菜单的「引擎: <model_name> (<mode>)」项（`TRAY_ITEMS` 缓存 `engine_info` MenuItem handle，`set_text` 更新而非重建，规避 `MenuItem::with_id` 重复 ID panic）。Coordinator 闭包持镜像句柄，**在 Toggle 进入 `Idle` 时重读 `asr_engine` 并经 `resolve_active_engine` 解析——失效（如引擎被 `is_enabled=0` 禁用）则兜底替换为 `resolved.model_name`（如 `zipformer-small-ctc`）写回 `config.asr_engine`**，保证 `is_streaming_engine` 判定 / `use_streaming` 重算 / `StreamingSession::new` / 离线 `transcribe` 全用同一有效引擎名（修「禁用引擎致 `StreamingSession::new` 失败、不弹结果窗」bug）；`main.rs` 启动 preheat 同样解析（preheat 与实际工作模型一致）。**每个 tick 重读 `polish_mode` 并 `Transcript::set_mode`**（立即生效，下一次润色按新模式）。详见 [spec](superpowers/specs/2026-06-16-archived-design.md)
+- **运行时配置子系统（RuntimeConfig）**：工具栏可运行时切换 `asr_engine` / `polish_mode` / `polish_llm` / `denoise_mode`，无需重启。`runtime_config.rs` 提供 `SharedRuntimeConfig`（`Arc<RwLock<RuntimeConfig>>`，挂 `tauri::State`）作为这四个字段的**可变运行时镜像**，与启动只读的 `AppConfig` 快照互补。8 个 Tauri 命令（`toolbar_state` / `list_asr_engines` / `switch_asr_engine` / `set_polish_mode` / `list_llm_models` / `switch_polish_llm` / `set_denoise_mode` / `polish_now`）读写镜像 + best-effort 持久化回 `~/.octopus/config.yaml`（写盘失败仅 `warn`，本次仍生效、重启回退；`polish_now` 不写盘，只触发润色流程）。**`switch_asr_engine` / `switch_polish_llm` 前端传裸 `model_name`，后端查 DB 取 `provider` / `category` 构造 3-part spec（`"{provider}:{category}:{model_name}"`）写入 RuntimeConfig + config.yaml**——保证持久化值与 `parse_model_spec` 解析一致。`list_*` 的 current 判定经 `parse_model_spec(current).model_name()` 提取裸名比较，兼容 3-part 和裸名两种历史格式。`switch_asr_engine` 同时经 `tray::update_tray_engine_label` 实时刷新系统托盘菜单的「引擎: <model_name> (<mode>)」项（`TRAY_ITEMS` 缓存 `engine_info` MenuItem handle，`set_text` 更新而非重建，规避 `MenuItem::with_id` 重复 ID panic）。Coordinator 闭包持镜像句柄，**在 Toggle 进入 `Idle` 时重读 `asr_engine` / `polish_mode` / `polish_llm` 并经 `resolve_active_engine` 校验有效性——保留完整 3-part spec（`rc.asr_engine.clone()`）写回 `config.asr_engine`，失效则兜底 `local:zipformer:zipformer-small-ctc`**，保证 `is_streaming_engine` 判定 / `use_streaming` 重算 / `StreamingSession::new` / 离线 `transcribe` / transcriptions.engine 记录全用完整有效 spec；`main.rs` 启动 preheat 同样解析（preheat 与实际工作模型一致）。**外部修改 RuntimeConfig 后立即同步到 coordinator（2026-06-18 改进）**：`set_config`（设置窗口）和 `switch_polish_llm`（工具栏浮层）写完 RuntimeConfig 后调 `coordinator.update_runtime()` → `Command::UpdateRuntime` → `sync_runtime_fields` 把 `polish_llm` / `polish_mode` / `asr_correct` / `output_simplified` / `hide_toolbar` 同步到 config 快照，**无需 Toggle 即可生效**（用户在录音中改 polish_llm 下次润色就用新模型）。`asr_engine` 不走此路径（需重建引擎实例）。`polish_mode` 仍保留每 tick 读 `set_mode`（双保险立即生效）。详见 [spec](superpowers/specs/2026-06-16-archived-design.md)
 
 **文本持久化（嵌入式 SQLite）：**
 - 存储：`~/.octopus/octopus.db`（`crates/infra/src/db.rs`，全局 `OnceLock<Mutex<Connection>>`；asr crate 经 `pub use octopus_infra::db` 以 `crate::db` 暴露；cli/server/desktop 共用）
@@ -219,7 +278,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 `crates/desktop/src/engine_dashscope.rs`（`dashscope` cargo feature 后，默认不开）impl `TranscriptionEngine`，接入阿里云百炼 DashScope FunASR Realtime WebSocket。与本地引擎不同：**不在 ASR crate 内**，而在 desktop crate——因为它是分块式 `TranscriptionEngine`（每段 VAD 开一条 WS 跑 duplex 协议），与本地离线引擎共享 coordinator 的 chunk 路径接口（`is_streaming=0` → 不进本地 `StreamingSession`）。
 
-- **协议流程**：每段 `transcribe(samples, language, "aliyun:Fun-ASR:fun-asr-2025-11-07")` 内部：① parse_model_spec → 取 model_name → 查 `cfg.asr.aliyun[model_name]` 拿 endpoint + secret_key（空则 bail 明确报错含 sqlite3 命令）；② WS 握手 + `Authorization: bearer <key>`；③ 发 `run-task`（text frame，streaming=duplex，format=pcm，sample_rate=16000，language_hints）；④ 流式发二进制 PCM 帧（f32[-1,1]→s16le，200ms 分块）；⑤ 发 `finish-task`；⑥ 收 `result-generated` 累积 `payload.output.sentence.text`（取最终句）；⑦ `task-finished` 收尾。段级超时 8s（与 `engine_ws.rs` 一致）。
+- **协议流程**：每段 `transcribe(samples, language, "aliyun:Fun-ASR:fun-asr-2025-11-07")` 内部：① parse_model_spec → 取 model_name → 查 `cfg.asr.aliyun[model_name]` 拿 endpoint + secret_key（空则 bail 明确报错含 sqlite3 命令）；② WS 握手 + `Authorization: bearer <key>`；③ 发 `run-task`（text frame，streaming=duplex，format=pcm，sample_rate=16000，language_hints，**`input:{}` 必须在 `payload` 内部**）；④ 流式发二进制 PCM 帧（f32[-1,1]→s16le，200ms 分块）；⑤ 发 `finish-task`（只需 header + `payload.input`，不带 model/parameters）；⑥ 收 `result-generated` 累积 `payload.output.sentence.text`（取最终句）；⑦ `task-finished` 收尾。段级超时 8s（与 `engine_ws.rs` 一致）。
 - **鉴权**：WS 握手请求经 `IntoClientRequest` + 追加 `Authorization: bearer <secret_key>` header（DashScope api-ws 端点强制要求）。
 - **无运行时状态**：每次 `transcribe` 从 DB 重新解析 → 取最新 endpoint/key（运行时切引擎可即时生效）。
 - **健康检查**：`health_check()` 保守返回 `true`，避免每次启动探活消耗 API 额度；真实健康度在首次 transcribe 时由错误路径暴露。

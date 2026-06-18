@@ -226,11 +226,11 @@ fn provider_of(c: &EngineCategory) -> &'static str {
     }
 }
 
-/// EngineCategory → 小写 category 字符串（与 DB models.category 一致，用于排序与显示）。
+/// EngineCategory → category 字符串（与 DB models.category 一致，用于排序、显示、构造 spec）。
 ///
-/// 三端（asr / desktop / cli）共享此唯一映射，避免各处内联 match 出现 Aliyun 输出
-/// 不一致（历史上 desktop/runtime_config 与 cli/main.rs 各有一份副本且 Aliyun 分别
-/// 映射到 "aliyun" / "Fun-ASR"）。统一后 Aliyun 恒为 "aliyun"。
+/// 三端（asr / desktop / cli）共享此唯一映射。Aliyun 对应 DB 的 `Fun-ASR` 模型族
+/// （db.sql seed 的 category 列），spec 构造和显示必须与此一致，否则
+/// `{provider}:{category}:{model_name}` 格式的 category 段不匹配 DB 实际值。
 pub fn category_label(c: EngineCategory) -> &'static str {
     use EngineCategory::*;
     match c {
@@ -239,7 +239,7 @@ pub fn category_label(c: EngineCategory) -> &'static str {
         Paraformer => "paraformer",
         Qwen3Asr => "qwen3-asr",
         Zipformer => "zipformer",
-        Aliyun => "aliyun",
+        Aliyun => "Fun-ASR",
     }
 }
 

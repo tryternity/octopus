@@ -380,7 +380,7 @@ click → 无动作（disabled，仅 tooltip）
   - **忽略 `polish_mode`**（区别于 `check_and_trigger_polish` 的 mode=2 限制）——用 `llm_config_ignore_mode()` 取 LLM 配置，绕过 `polish_mode==Disabled` 的 None 短路
   - 复用现有 `snapshot_for_polish()` → `mark_polish_pending()` → `spawn_polish_thread(text, config, tx, true)` 路径
   - `spawn_polish_thread` 增加 `ignore_mode: bool` 参数：`true` 调 `llm_config_ignore_mode`，`false`（原自动润色路径）调 `llm_config`
-- **PolishDone 回显**：`handle_polish_done` 接受 `Streaming` / `VadSegmented` / **`WaitingCompletion`**（防止用户点按钮后停止录音，stage 切换导致润色结果丢弃），把 `polished` 写回 Transcript 后调 `update_result` 刷新展示区；结尾 `emit("polish-done")` 通知前端恢复按钮（无论成功/失败/stage 不匹配）
+- **PolishDone 回显**：`handle_polish_done` 接受 `Streaming` / `VadSegmented` / **`WaitingCompletion`**（防止用户点按钮后停止录音，stage 切换导致润色结果丢弃），把 `polished` 写回 Transcript 后调 `update_result` 刷新展示区；结尾 `emit("polish-done")` 通知前端恢复按钮（无论成功/失败/stage 不匹配）。**`handle_polish_now` 的所有早退路径同样必须 emit `polish-done`**（stage 不匹配 / transcript 空 / `polish_pending` 已置 / LLM 配置缺失）——否则前端 `disabled=true` 永久卡死（2026-06-18 修复：polish_llm 未配置时点击按钮走早退但曾漏 emit，按钮灰色无法恢复）
 - **Transcript.display_text() 变更**：原仅 `mode==Intermediate` 展示 polished；现改为 **polished 非空即展示**（`polished + increase`），使 PolishNow 在 mode=0/1 下也能让润色结果覆盖 raw 文本
 - **空配置兜底**：`llm_config_ignore_mode()` 返回 None → `show_result("未配置润色模型")`，不进入润色流程
 
@@ -415,7 +415,11 @@ click → 无动作（disabled，仅 tooltip）
 
 ### 16.1 RuntimeConfig 扩展（补充 §15.4）
 
-`RuntimeConfig` 新增 `polish_llm: String`（运行时镜像 `config.yaml.polish_llm`，`from_config` 初始化镜像）。润色链路（`coordinator.rs` 的 `check_and_trigger_polish` / `start_pasting` / 立即润色）读 `config.polish_llm`——经共享镜像在运行时切换后即时反映（与 `polish_mode` 同机制：Coordinator 每个 tick 读最新 RuntimeConfig）。
+`RuntimeConfig` 新增 `polish_llm: String`（运行时镜像 `config.yaml.polish_llm`，`from_config` 初始化镜像）。润色链路（`coordinator.rs` 的 `check_and_trigger_polish` / `start_pasting` / 立即润色）读 `config.polish_llm`——**但 `config` 是启动时 move 进 coordinator 线程的快照，不会自动跟随 RuntimeConfig 更新**。
+
+**同步机制（2026-06-18 改进为立即生效）**：新增 `Command::UpdateRuntime`，外部修改 RuntimeConfig 后通过 `coordinator.update_runtime()` 主动通知 coordinator 重读 RuntimeConfig 把 `polish_llm` / `polish_mode` / `asr_correct` / `output_simplified` / `hide_toolbar` 同步到 `config` 快照（详见 `sync_runtime_fields` 辅助函数，与 Toggle 时复用同一逻辑）。`set_config`（设置窗口）和 `switch_polish_llm`（工具栏浮层）在写完 RuntimeConfig 后调 `coordinator.update_runtime()`——**用户在录音中改 polish_llm 也能立即生效**（下次润色用新模型），无需 Toggle。`asr_engine` 不在此路径（需重建引擎实例，仍只能 Toggle 时切）。`polish_mode` 仍保留每 tick 读 + `set_mode` 立即生效（双保险）。
+
+历史修复：2026-06-18 曾遗漏 Toggle 时同步 `polish_llm`，导致「立即润色」报 `no LLM config available` 按钮卡死；本次 UpdateRuntime 路径彻底解决外部修改即时同步问题。
 
 ### 16.2 后端命令（`runtime_config.rs`）
 
@@ -439,7 +443,7 @@ DTO `LlmOption { name, category, is_local, current, label }`（与 `EngineOption
 - **`build_llm_options`**：首项固定「不选择模型」（`name: ""`）。`current` 有效（裸名非空且在 DB 列表）→ 首项非 current；`current` 空 / 裸名不在 DB / spec 不命中 → 首项 current（**DB 找不到回退无模型**）。
 - **`switch_polish_llm`**：空 `name` → `polish_llm` 置空（不查 DB）；非空走原 DB 校验 + spec 构造。
 - **`ToolbarState`** 新增 `polish_llm_valid: bool`：`toolbar_state` 命令查 DB 计算（裸名非空且在启用 LLM 列表；DB 失败保守 false）。
-- **前端**：浮层渲染首项；点「不选择模型」→ toast「已关闭润色模型」+ `refreshActive()`；`#tool-llm` `active = st.polish_llm_valid`（无模型时深灰、**仍可点击**，非 `disabled`——区别于工具 1）。
+- **前端**：浮层渲染首项；点「不选择模型」→ toast「已关闭润色模型」+ `refreshActive()`；`#tool-llm` `active = st.polish_llm_valid`（无模型时深灰、**仍可点击**，非 `disabled`——区别于工具 1）。**`refreshActive()` 调用时机**：① webview 初始化；② `show-result` 事件（每次显示结果窗时重读 toolbar_state，确保用户在设置窗口改了 polish_llm/polish_mode/denoise_mode 后下次显示即刷新——2026-06-18 修复：曾仅初始化调一次，导致设置改了 polish_llm 后工具栏高亮状态不刷新）；③ 浮层切换 / polish-done 等。
 
 单测：`build_llm_options_none_current_when_polish_llm_empty_or_not_in_db`（空/裸名不在 DB/spec 不命中 → 首项 current）+ 更新 `build_llm_options_marks_current_and_labels` / `build_llm_options_current_in_spec_format`（首项偏移）。
 
