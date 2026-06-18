@@ -177,9 +177,13 @@ impl Coordinator {
                         // （否则会把"刚切换但本会话未用"的引擎名写进 DB 记录）
                         if matches!(stage, Stage::Idle) {
                             let rc = runtime_config.read().unwrap();
+                            // 校验 asr_engine spec 有效（命中 DB 或兜底），无效则回退兜底。
+                            // 保留完整 spec（"provider:category:model_name"）用于：
+                            //   ① 写入 transcriptions 表 engine 字段（完整可追溯）
+                            //   ② 传给 engine.transcribe（DashscopeEngine 按 spec 解析 endpoint+key）
                             config.asr_engine = match octopus_asr::config::resolve_active_engine(&rc.asr_engine) {
-                                Ok(resolved) => resolved.name,
-                                Err(_) => "zipformer-small-ctc".to_string(),
+                                Ok(_) => rc.asr_engine.clone(),
+                                Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
                             };
                             config.polish_mode = rc.polish_mode;
                             drop(rc);
