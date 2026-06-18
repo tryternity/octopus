@@ -2,7 +2,9 @@
 
 ## 项目概述
 
-octopus 是一个基于 ONNX Runtime 的语音识别（ASR）工具集，使用 Rust 编写。支持 5 种 ASR 引擎（Whisper / SenseVoice / Paraformer / Qwen3-ASR / Zipformer），提供 CLI、HTTP Server、Tauri 桌面应用三种使用方式，并集成了 LLM 文本润色能力。
+octopus 是一个基于 ONNX Runtime 的语音识别（ASR）工具集，使用 Rust 编写。提供 CLI、HTTP Server、Tauri 桌面应用三种使用方式，并集成了 LLM 文本润色能力。
+
+**架构、功能、技术细节以 [`docs/`](docs/) 下文档为唯一真相源**——本文件只描述项目结构和开发流程，避免重复维护导致文档滞后。
 
 ## 关键命令
 
@@ -91,140 +93,39 @@ desktop → feature-gated: embedded (=asr) | remote-ws | remote-grpc
 
 **infra 是唯一无项目内依赖的 crate**，任何跨 crate 共享的内容应放在 infra。
 
-## 架构要点
+## 开发流程（文档驱动）
 
-### 两套配置系统，各司其职
+**一切以文档为基础继续开发，保持文档与代码同步。** 架构、功能、技术细节以 [`docs/`](docs/) 下文档为唯一真相源——遇到「代码怎么实现」「架构怎么组织」「流程怎么走」的问题，**先查文档，不猜代码**；文档没覆盖或描述过时，先修文档再改代码。
 
-| 配置 | 存储位置 | Schema 定义 | 用途 |
-|------|---------|------------|------|
-| 应用行为配置 | `~/.octopus/config.yaml` | `infra::config::AppConfig` | 麦克风/引擎选择/分段参数/润色/粘贴等 |
-| 模型配置 | `~/.octopus/octopus.db` (SQLite `models` 表) | `infra::db::ModelEntry` | 引擎目录/LLM 配置/API Key |
+### 大需求（新功能 / 架构调整 / 接口变化）
 
-- **引擎激活唯一真相**：`config.yaml.asr_engine`（DB `models` 表无 `is_active` 列）
-- **模型选择 spec**：`asr_engine` / `polish_llm` 统一 `"PREFIX:NAME"` 格式——`local:NAME`（is_local=true）、`CATEGORY:NAME`（按 category 精确匹配）、`NAME`（裸名，等价 `local:`）。解析在 `infra::db::parse_model_spec`，ASR 路由在 `asr::config::resolve_engine_in_config`，LLM 在 `infra::db::load_llm_model`。
-- **缓存策略**：两者都通过 `OnceLock` 缓存，手编配置后需**重启进程**生效
-- **运行时切换**：desktop 的 `RuntimeConfig`（`Arc<RwLock<>>`）支持 `asr_engine` / `polish_mode` 运行时切换
+必须完整经过 superpowers 工作流，**不得跳步**：
 
-### DB Schema 开发方式
+1. **brainstorming** — 用 `superpowers:brainstorming` skill 充分探讨需求、用户意图、设计取舍，确认方向后再动手
+2. **写 spec** — 在 `docs/superpowers/specs/YYYY-MM-DD-<feature>-design.md` 记录设计（功能、架构、接口、不变量、降级路径）
+3. **写执行计划** — 在 `docs/superpowers/plans/YYYY-MM-DD-<feature>.md` 分解任务（每任务含文件、变更点、验证命令）
+4. **实现代码** — 按计划逐任务实现，每任务后跑验证命令
+5. **review plan（强制）** — 实现完成后必须回看 plan，把实际偏差、新增决策、删除/合并的子任务回写到 plan。**plan 是「实施记录」而非「一次性待办」**，最终必须反映实际实现
 
-- Schema 定义在 `crates/infra/src/db.sql`，编译期 `include_str!` 嵌入
-- `init_schema` 仅在 `user_version=0` 时执行一次建表 + seed
-- **无迁移逻辑**：开发阶段改 schema 时直接删除 `~/.octopus/octopus.db` 重启即可
+### 小需求（bug fix / 参数调整 / 文案修改）
 
-### 数据流
+实现前 **review 相关 spec 和 plan**：
+- 找到对应 spec / plan，检查设计描述是否仍然成立
+- 及时修改文档中过时的地方（参数变了、阈值变了、流程变了）
+- 没有对应 spec 的小改动，至少更新 `docs/architecture.md` 相关章节
 
-**离线识别**：`音频文件 → read_wav_16k → [VAD 过滤] → engine.transcribe → 文本`
+### 文档同步（强制）
 
-**流式识别**：`麦克风 → PCM chunk → resample_to_16k → StreamingSession.accept_samples → [partial] → 静音补零 flush → [final]`
+代码变更完成后（或同时）必须同步文档：
+- 架构概览：[`docs/architecture.md`](docs/architecture.md) — 最权威的结构文档，任何架构 / 流程 / 模块变化都要更新
+- 规格文档：`docs/superpowers/specs/` — 功能设计、架构、接口
+- 实施计划：`docs/superpowers/plans/` — 实施步骤、任务分解
 
-**VAD 伪流式**（非流式引擎）：`麦克风 → 300ms tick → VAD 检测 → 静音切分/超时切断 → 离线引擎 → 按序拼接`
+### 混淆即讨论
 
-### Desktop Coordinator 状态机
-
-核心控制流在 `crates/desktop/src/coordinator.rs`，通过 `std::mpsc` channel 串行化所有事件：
-
-```
-Idle → Streaming → (Polishing) → Pasting → Idle
-Idle → VadSegmented → WaitingCompletion → (Polishing) → Pasting → Idle
-```
-
-- 粘贴异步化（`do_paste` 投递到 `tauri::async_runtime::spawn`）
-- 润色异步化（`Polishing` 阶段 spawn 独立线程跑 LLM）
-- DB 写入异步化（actor 模式，后台写线程通过 channel 消费）
-
-## 代码模式与约定
-
-### Rust Edition 与风格
-
-- **Edition 2021**，所有 crate 统一
-- 中文注释和文档为主
-- 错误处理统一使用 `anyhow::Result`
-- 日志统一使用 `log` crate（desktop 通过 `tauri-plugin-log`）
-- 异步运行时：server/dlp 用 `tokio`，desktop 混用 `std::thread`（Coordinator）+ `tauri::async_runtime`（异步任务）
-
-### ONNX Session 线程安全
-
-`ort::Session::run` 需要 `&mut self`，因此所有引擎内部用 `Mutex<Session>` 包裹：
-```rust
-pub trait OfflineAsrEngine: Send + Sync {
-    fn transcribe(&self, samples: &[f32], language: &str) -> Result<String>;
-}
-```
-内部 `self.session.lock().unwrap().run(...)` 实现内部可变性。
-
-### Feature Gates
-
-desktop crate 有三个互斥的引擎接入 feature：
-- `embedded`（默认）— 内嵌 octopus-asr
-- `remote-ws` — WebSocket 远程
-- `remote-grpc` — gRPC 远程
-
-对应代码用 `#[cfg(feature = "...")]` 条件编译。`engine_ws.rs` / `engine_grpc.rs` 仅在对应 feature 下编译。
-
-### 引擎路由
-
-引擎 spec → 类别 → 具体实现的路由在 `crates/asr/src/config.rs`：
-- `parse_model_spec(spec)` — 解析 `"PREFIX:NAME"` 字符串为 `ModelSpec` 枚举（`Local` / `Category` / `NameOnly`），定义在 `infra::db`
-- `resolve_engine_in_config(cfg, spec)` — 统一解析入口，按 spec 在 `AsrConfig` 中查找 (category, 裸名, entry)
-- `resolve_engine_category(spec)` — 委托 `resolve_engine_in_config`，返回类别（Whisper/SenseVoice/Paraformer/Qwen3Asr/Zipformer）
-- `pick_entry(cfg, category, name)` — 按 category + 裸名取具体模型配置
-- `AsrEngineManager.switch_model(spec)` — 解析 spec 后用**裸名**做缓存键（最多 2 个引擎实例），秒级切换
-
-### 流式 vs 离线判定
-
-由 DB `models.is_streaming` 列数据驱动（不按 category 硬编码）：
-- `is_streaming=1`（zipformer×3 / paraformer）→ 流式 partial
-- `is_streaming=0`（sensevoice / qwen3-asr / whisper）→ VAD 分段伪流式
-
-### AudioResampler
-
-`crates/asr/src/audio.rs` 的 `AudioResampler`（有状态 `rubato::FftFixedIn`）：
-- 跨帧 leftover 缓冲保边界 glitch-free
-- 源速率不变时复用同一规划器（避免每 tick 重建 FFT planner）
-- 流结束时 `flush()` 补零吐尾
-
-## 重要 Gotchas
-
-### config/ 符号链接
-
-`config/` 是指向 `~/.octopus/` 的软链接。**读写必须用绝对路径 `~/.octopus/`**，不要通过 `config/` 相对路径——否则安全分类器可能误判为"向仓库提交密钥"。
-
-### VAD 双实例（检测 vs 过滤）
-
-VadSegmented 阶段持两个独立 SileroVad 实例：
-- `vad`：检测用，逐 tick 喂入、有状态累积（跨 tick 不 reset）
-- `filter_vad`：过滤用，每段过滤前 `reset()` 归零
-
-原因：SileroVad 是有状态 LSTM，检测流已见过音频，若共用实例会导致双重喂入 + LSTM 状态污染。
-
-### cpal::Stream 的 Send Safety
-
-`cpal::Stream` 是 `!Send + !Sync`。desktop 中通过 `SharedAudioState`（`Mutex<Option<cpal::Stream>>`）管理，`unsafe impl Send/Sync` 在 Coordinator 的 `std::thread::spawn` 单线程独占前提下 sound。**不要将 Stream 跨线程移动**。
-
-### 序列空洞修复
-
-VadSegmented 模式中，异步转写可能失败或返回空。**失败/空结果必须占位该 seq（写空串）**，否则 `completed_seq` 游标卡死，后续所有有效段积压丢失。
-
-### 停顿润色阈值
-
-`pause_polish_threshold_ms`（默认 600ms）**必须 > 500ms**（Active Flush 阈值），否则润色快照会缺少尾音。
-
-### Zipformer 归一化
-
-- `zipformer-small-ctc` / `zipformer-multi`：输入归一化到 `[-1.0, 1.0]`（不乘 32768）
-- `zipformer-ctc`（whisper 特征）：使用专属 WhisperMelExtractor + chunk 级偏移归一化（非标准 Whisper 的 `(+4)/4` 缩放）
-
-### 纠错器自动旁路
-
-`asr_correct` 启用时，Qwen3-ASR 结果会自动跳过纠错（其自带强纠错能力），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。
-
-### 关机 DB drain
-
-后台 DB 写线程通过 `OnceLock<Sender>` 持久化 sender，进程退出时队列可能丢数据。`coordinator::shutdown_db()` 在 `ExitRequested` 时排空剩余命令。**新增 DB 写操作路径时记得走 actor 模式（`get_db_sender().send()`）**。
-
-### enigo macOS SIGTRAP（非主线程键盘模拟）
-
-`paste.rs::paste_via_clipboard` 模拟 Cmd+V 时，**macOS 必须用 `Key::Other(9)`（`kVK_ANSI_V`）而非 `Key::Unicode('v')`**。enigo 0.6.1 的 `Key::Unicode` 在 macOS 走 `get_layoutdependent_keycode`（循环 128 keycode × Carbon `TISCopyCurrentKeyboardInputSource`/`UCKeyTranslate`），这些 HIToolbox API 非线程安全，而粘贴在 `spawn_blocking` 的非主线程执行 → SIGTRAP（`Trace/BPT trap: 5`，非 Rust panic、无 backtrace、无 `.ips` 崩溃报告）。`Key::Other(u32)` 直接当 keycode 用、绕过 layout 查找。Linux/Windows 不受影响（`Key::Unicode` 线程安全）。详见 [spec](docs/superpowers/specs/2026-06-17-paste-enigo-macos-sigtrap-design.md)。
+如果代码实现与文档描述出现冲突，或文档描述含糊不清导致多种解读：
+- **及时提出讨论**，不要自行假设继续推进
+- 讨论澄清后回写到对应文档，避免下次重复混淆
 
 ## 文档体系
 
@@ -235,11 +136,9 @@ docs/
 ├── configuration.md          # 配置指南
 ├── asr_archiveture_opt.md    # ASR 引擎架构重构总结
 └── superpowers/
-    ├── specs/                 # 功能设计规格（按日期）
-    └── plans/                 # 实施计划（按日期）
+    ├── specs/                 # 功能设计规格（按日期，大需求必备）
+    └── plans/                 # 实施计划（按日期，大需求必备）
 ```
-
-**需求变更后必须同步更新** `docs/superpowers/specs/`、`docs/superpowers/plans/`、`docs/architecture.md`。
 
 ## 运行时文件布局
 
@@ -255,18 +154,8 @@ docs/
 ~/.cache/huggingface/hub/   # 大模型 HF 缓存
 ```
 
-## Tauri Desktop 注意事项
-
-- 前端 `frontendDist: "dist"` 相对于 `crates/desktop/` 目录解析
-- WebView 缓存在 `~/Library/WebKit/com.octopus.desktop/`，开发时 `run-octopus.sh` 会自动清理
-- macOS 用 `tauri-nspanel`（git 依赖），Linux 用 `gtk-layer-shell` + `gtk`（平台条件编译）
-- 结果窗 ready 机制：`result_window_ready` Tauri command + `WINDOW_READY` AtomicBool + `PENDING_TEXT` Mutex 解决首帧事件丢失
-
-## Proto（gRPC）
-
-`crates/desktop/proto/asr.proto` — 仅在 `remote-grpc` feature 编译。`build.rs` 中 `tonic-build` 条件编译。
-
 ## config 目录
+
 `config/` 是指向 `~/.octopus/` 的软链接，这是实际运行配置目录（不在 git 仓库内，无密钥泄露风险）。
 
 对 `config/` 下文件的读写操作，必须使用绝对路径 `~/.octopus/`（即 `/Users/wudarui/.octopus/`）进行，不要通过 `config/` 相对路径访问：
