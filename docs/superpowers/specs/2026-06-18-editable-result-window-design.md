@@ -2,7 +2,7 @@
 
 > Date: 2026-06-18
 > Branch: `worktree-editable-result`（worktree 路径 `.claude/worktrees/editable-result`）
-> Status: 设计已确认，待 spec 复核 → 写 plan
+> Status: 设计已确认并补充「编辑×润色交互」（§12 折回 + 边界提示词），实现中（plan v2：8 任务）
 
 ## 1. 背景与目标
 
@@ -86,7 +86,7 @@ committed = edited 非空 ? edited
 | 派生量 | 定义 |
 |---|---|
 | `display_text()` | committed 前缀 + increase |
-| polish 输入（停顿快照） | committed 前缀 + increase（= display） |
+| polish 输入（停顿快照） | `take_polish_input()`：has_edit → `(Some(edited), increase)`；否则 `(None, full)`（保持现状）。详见 §12 |
 | `db_text()`（raw_text 落库） | `full`（原始 ASR，编辑/润色均不改） |
 | `edited_text()`（新） | `edited`（空则 None） |
 
@@ -100,9 +100,11 @@ committed = edited 非空 ? edited
 2. `raw_len = full.chars().count()`（increase 清空）
 3. `full`（raw ASR）**原样保留**
 
-此后新 ASR 追加到 `full`，`increase = full[raw_len..]` = 新内容 → `display = edited + 新增`（满足"展示 = edited + 新识别"）。下次停顿润色的 snapshot 输入 = `display = edited + increase`（满足"润色输入 = edited + 新识别"）。
+此后新 ASR 追加到 `full`，`increase = full[raw_len..]` = 新内容 → `display = edited + 新增`（满足"展示 = edited + 新识别"）。下次停顿润色经 `take_polish_input()` 取 `(Some(edited), increase)`，LLM 仅润色 increase、保留 edited，结果折回 `edited`（满足"润色输入 = edited + 新识别"，详见 §12）。
 
 **多次编辑**：每次 commit 覆盖 `edited`、把 `raw_len` 推进到当时 `full` 末尾。空文本提交允许（`edited = ""` → committed 回退到 polished/raw）。
+
+**编辑后的润色（§12 核心）**：`on_polish_done` 在 `has_edit()` 时把润色结果**折回 `edited`**（`edited = result`），而非写 `polished`——否则 `edited ≻ polished` 会永久遮蔽 polished、丢失被润色吞掉的新增文本。折回后 `display = edited（= edited + 润色后新增）+ increase`，无丢字。
 
 ## 6. 数据流
 
@@ -157,13 +159,21 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
   - `Transcript` 加 `edited: String` 字段 + `new` 初始化。
   - `commit_edit(&mut self, text: &str)`：执行 §5 三步。
   - `display_text()` 改优先级链 `edited ≻ polished ≻ raw[..raw_len]` + increase。
-  - 新增 `edited_text() -> Option<&str>`。
-  - 现有测试更新（display 优先级）；新增 commit_edit 测试。
+  - `edited_text() -> Option<&str>` / `has_edit() -> bool`。
+  - `take_polish_input(&mut self) -> (Option<String>, String)` 替代 `snapshot_for_polish`（§12）。
+  - `on_polish_done`：`has_edit` 时折回 `edited = result`，否则 `polished = result`（§12）。
+  - `edited_display() -> Option<String>`：edited 非空返回 display（停止粘贴/兜底用）。
+  - 现有 `snapshot_for_polish` 测试迁移到 `take_polish_input`；新增 commit_edit / 折回 / display 优先级测试。
+- **`llm/src/prompt.rs` + `llm/src/client.rs`**（§12）：
+  - `user_prompt(preserved: Option<&str>, to_polish: &str)`：有 preserved 时分块提示（已确认原样保留 + 新增润色）。
+  - `polish(preserved: Option<&str>, to_polish: &str, config)`：签名加 preserved。
+  - system prompt 加一条「已确认部分不得修改」。
 - **`desktop/src/coordinator.rs`**：
-  - 新增 `Command::EnterEditMode` / `Command::CommitEdit { text }`；新命令方法。
-  - 编辑态表示：coordinator 级 `editing: bool` 标志（或 `Stage::Editing` 暂存原 stage——plan 阶段定）。要求：编辑期间 Streaming 的 tick 不喂引擎（`streaming_active=false`）、VadSegmented 停 tick + 退出 flush `audio_buffer`。
-  - `handle_toggle` 等停止路径：编辑态先 commit 再停止（§7）。
+  - 新增 `Command::EnterEditMode` / `UpdateEditBuffer` / `CommitEdit { text }`；`DbCommand::UpdateEdited`；3 个 Tauri 命令 + `invoke_handler` 注册。
+  - 编辑态表示：主循环局部 `editing: bool` + `edit_buffer: Option<String>`。编辑期间 Streaming/VadSegmented 的 tick 跳过喂引擎、只 `audio.drain_samples()` 丢弃（硬暂停）。
+  - `handle_toggle` 停止路径：编辑态先用 `edit_buffer` commit 再停止（§7）。
   - `update_result` 发送处：编辑态跳过（冻结）。
+  - **润色接线（§12）**：`check_and_trigger_polish` / `handle_polish_now` / 最终润色入口改用 `transcript.take_polish_input()` 取 `(preserved, to_polish)` 喂 `polish(preserved, to_polish, ..)`；`spawn_polish_thread` 签名加 `preserved`。`handle_polish_done`：`has_edit` 时折回（`on_polish_done` 已折）+ 走 `DbCommand::UpdateEdited`，否则 `UpdatePolished`。停止路径 3 处无润色/兜底粘贴用 `edited_display()`。
 - **`desktop/src/result_window.rs`**：
   - 新增 `#[tauri::command] enter_edit_mode` / `commit_edit(text)`。
   - 编辑态冻结 `update-result`（前端配合）。
@@ -181,9 +191,12 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
   - `commit_edit` 后：`edited` = 文本、`raw_len` = `full.len()`、`full` 不变、`increase` 清空。
   - `display_text()` 优先级：edited ≻ polished ≻ raw。
   - 编辑后续追加 ASR：`display = edited + 新 increase`。
-  - 编辑后润色 snapshot 输入 = `display`。
+  - `take_polish_input`：has_edit → `(Some(edited), increase)`；无编辑 → `(None, full)`。
+  - `on_polish_done` 折回：has_edit 时 `edited = result`、display 不丢字；无编辑时 `polished = result`（现状）。
   - 空提交回退；多次编辑覆盖。
-- **coordinator**：编辑态停止音频喂入（streaming_active / tick 行为）；编辑态 toggle 先 commit 再停。
+  - 现有 `snapshot_for_polish` 测试迁移到 `take_polish_input`。
+- **llm prompt**：`user_prompt(None, text)` 无 preserved（现状）；`user_prompt(Some(p), new)` 含分块标记 + 保留指令。
+- **coordinator**：编辑态停止音频喂入（streaming_active / tick 行为）；编辑态 toggle 先 commit 再停；`handle_polish_done` 折回时走 `UpdateEdited`。
 - **手动 e2e**：
   - 录音中双击编辑改错别字 → 完成 → 继续说 → 新文本追加在编辑结果后 → 停止 → 粘贴含修正。
   - 编辑态点工具栏切换 ASR → 先提交编辑再切换。
@@ -194,3 +207,39 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
 - **`docs/configuration.md`**：编辑能力说明（双击/按钮进入，Cmd+Enter/按钮/失焦退出，硬暂停语义）。
 - **`docs/architecture.md`**：`Transcript` 三文本分层模型（edited ≻ polished ≻ raw）+ 编辑态 + DB `edited_text` 列。
 - 本 spec + 对应 plan（`docs/superpowers/plans/2026-06-18-editable-result-window.md`）。
+
+## 12. 编辑×润色交互（折回 + 边界提示词）
+
+> 补充于设计复核。解决「编辑后触发润色时新增文本/润色结果被 `edited ≻ polished` 永久遮蔽而丢失」的缺陷。
+
+### 12.1 问题
+
+编辑提交后 `edited` 非空，继续说话触发中间润色（mode=2）：`snapshot` 把 `raw_len` 推到 `full` 末尾（increase 清空）→ `on_polish_done` 写 `polished` → 但 `display = edited ≻ polished`，polished 被永久遮蔽 → **新增文本从 display 丢失**。最终润色（停止时）虽在 `Stage::Polishing` 丢 transcript，但输入已 = display（edited+increase）、粘贴 = LLM 结果，故编辑被尊重、**最终润色无需折回**；折回仅针对中间润色。
+
+### 12.2 目标行为（用户确认）
+
+- 润色输入 = `(edited, 新增 increase)`，**期望 LLM 只润色新增、保留 edited 原样**（需提示词告知边界）。
+- 润色结果 = `edited + 追加润色部分`，**折回 `edited`**：`on_polish_done` 在 `has_edit()` 时 `edited = result`，否则 `polished = result`（保持现状）。
+- 折回后 `display = edited + increase`，无丢字；LLM 若未严格遵守（动了 edited），也接受。
+
+### 12.3 实现
+
+**Transcript**：
+- `take_polish_input(&mut self) -> (Option<String>, String)`：`has_edit` → `(Some(edited.clone()), increase)`；否则 `(None, full)`。副作用推进 `raw_len`（清 increase）。替代 `snapshot_for_polish`。
+- `on_polish_done`：`has_edit` → `edited = result`（折回）；否则 `polished = result`。
+
+**llm crate**：
+- `user_prompt(preserved: Option<&str>, to_polish: &str)`：有 `preserved` 时构造分块提示（「已确认部分原样保留」+「新增部分请润色」+ 输出拼接完整文本）。
+- `polish(preserved, to_polish, config)`：签名加 `preserved`，传入 `user_prompt`。
+- system prompt 加规则：「若提示含【已确认部分】，该部分必须原样保留，仅润色其余部分」。
+
+**coordinator**：
+- `spawn_polish_thread(preserved: Option<String>, to_polish: String, ..)` → `polish(preserved.as_deref(), &to_polish, ..)`。
+- `check_and_trigger_polish` / `handle_polish_now`：`let (preserved, to_polish) = transcript.take_polish_input();`。
+- 最终润色入口 `start_final_polish_or_paste`：polish 分支用 `transcript.take_polish_input()`（持有 owned transcript），无润色分支仍用调用方传入的 `text`（= `edited_display()`）。
+- `handle_polish_done`：折回时 DB 走 `UpdateEdited`（保持 `edited_text` 与 display 一致），否则 `UpdatePolished`。
+
+### 12.4 DB 一致性说明
+
+- `edited_text` 写入时机：commit_edit（用户编辑）+ 中间润色折回（= 润色结果）。最终润色不触碰 `edited_text`（保持最后一次用户/折回值）。
+- 历史展示优先级 `edited_text ?? polished_text ?? raw_text`。最终润色+编辑后，`edited_text`（用户/折回值）与粘贴文本（最终润色结果）可能略有差异——已知次要不一致，不在本次修复范围。
