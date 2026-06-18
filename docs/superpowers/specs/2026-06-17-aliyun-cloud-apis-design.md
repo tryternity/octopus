@@ -111,11 +111,11 @@ transcribe(samples, language, "aliyun:Fun-ASR:fun-asr-2025-11-07"):
      （secret_key 空 → anyhow::bail 明确报错）
   3. 按 model_name 分派协议变体（Fun-ASR / paraformer-realtime-v2 / qwen-asr-realtime，事件/参数略异——实现时以官方三文档为准）
   4. 连 WS source，header `Authorization: bearer <secret_key>`
-  5. 发 run-task（text frame）：header.action="run-task"/streaming="duplex"，payload.model=<model_name>, task_group="audio", function="recognition", parameters.format="pcm", sample_rate=16000, language_hints=[language]
+  5. 发 run-task（text frame）：header.action="run-task"/streaming="duplex"，payload.model=<model_name>, task_group="audio", function="recognition", parameters.format="pcm", sample_rate=16000, language_hints=[language], **payload.input={}（在 payload 内部，不在顶层）**
   6. 等 task-started（拿 task_id）
   7. 流式发二进制 PCM 帧：f32[-1,1] → s16le，按固定块（如 3200 样本=200ms）切分发送
   8. 收 result-generated，累积 payload.output.sentence.text（保留最终 definite 结果）
-  9. 发 finish-task，等最终 result-generated / task-finished
+  9. 发 finish-task（只需 header + payload.input={}，不带 model/parameters），等最终 result-generated / task-finished
   10. 返回累积文本
 health_check(): 返回 true（预留）。
 段级超时：8s（与 engine_grpc 一致），tokio::time::timeout 包裹。

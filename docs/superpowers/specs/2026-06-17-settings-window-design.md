@@ -122,11 +122,11 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
     "microphone": ""
   },
   "asr_engines": [
-    {"name": "zipformer-small-ctc", "label": "本地:zipformer-small-ctc", "current": false},
+    {"name": "zipformer-small-ctc", "label": "本地:zipformer:zipformer-small-ctc", "current": false},
     ...
   ],
   "llm_models": [
-    {"name": "glm-4-flashx", "label": "bigmodel:glm-4-flashx", "current": true},
+    {"name": "glm-4-flashx", "label": "bigmodel:glm:glm-4-flashx", "current": true},
     ...
   ],
   "microphones": ["MacBook Pro 麦克风", "外接 USB 麦克风", ...]
