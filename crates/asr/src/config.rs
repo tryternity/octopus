@@ -127,11 +127,14 @@ pub enum EngineCategory {
     Paraformer,
     Qwen3Asr,
     Zipformer,
+    /// 阿里云云端 ASR（DashScope Fun-ASR 实时）。provider='aliyun' 路由入此。
+    Aliyun,
 }
 
 /// DB `models.category` 字符串 → EngineCategory 映射。
 /// 仅映射 ASR 本地引擎类型（whisper/sensevoice/paraformer/qwen3-asr/zipformer），
-/// 其他 category（如远程供应商 `aliyun`）返回 None。
+/// 其他 category（如云端系列 `Fun-ASR`）返回 None——aliyun 等云端族由 provider 路由，
+/// 见 [`resolve_category`]。
 fn engine_category_from_str(s: &str) -> Option<EngineCategory> {
     match s {
         "whisper" => Some(EngineCategory::Whisper),
@@ -143,48 +146,54 @@ fn engine_category_from_str(s: &str) -> Option<EngineCategory> {
     }
 }
 
-/// 按固定顺序遍历 AsrConfig 的 5 个 section（用于 NameOnly / Local 查找）。
-/// 顺序与 `resolve_engine_category` 原始逻辑一致。
+/// provider + category → EngineCategory。
+/// provider='aliyun' → Aliyun（云）；其余按 category 字符串映射本地族。
+fn resolve_category(provider: &str, category: &str) -> Option<EngineCategory> {
+    if provider.eq_ignore_ascii_case("aliyun") {
+        return Some(EngineCategory::Aliyun);
+    }
+    engine_category_from_str(category)
+}
+
+/// 按固定顺序遍历 AsrConfig 的 6 个 section（用于 NameOnly 裸名查找）。
+/// 顺序与本地引擎优先一致（aliyun 云端放最后）。
 fn all_sections<'a>(
     cfg: &'a AsrConfig,
-) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 5] {
+) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 6] {
     [
         (cfg.asr.whisper.as_ref(), EngineCategory::Whisper),
         (cfg.asr.sensevoice.as_ref(), EngineCategory::SenseVoice),
         (cfg.asr.paraformer.as_ref(), EngineCategory::Paraformer),
         (cfg.asr.qwen3_asr.as_ref(), EngineCategory::Qwen3Asr),
         (cfg.asr.zipformer.as_ref(), EngineCategory::Zipformer),
+        (cfg.asr.aliyun.as_ref(), EngineCategory::Aliyun),
     ]
 }
 
 /// 解析 spec 并在已加载配置中查找，返回 (category, 裸名, entry 引用)。
 ///
-/// spec 格式见 [`parse_model_spec`]：
-/// - `local:NAME` — 遍历所有 section，匹配 `is_local=true AND name`
-/// - `CATEGORY:NAME` — CATEGORY 必须是已知引擎类型（whisper/sensevoice/...），精确查对应 section
-/// - `NAME`（无冒号）— 遍历所有 section 按 name 查找（向后兼容）
+/// spec 格式见 [`parse_model_spec`]（3-part）：
+/// - `provider:category:model_name` — provider='aliyun' → Aliyun；否则按 category 映射本地族，
+///   再 pick_entry 精确匹配
+/// - `model_name`（无冒号）— 遍历所有 section 按 name 查找（NameOnly 兜底，用于全局默认）
 pub fn resolve_engine_in_config<'a, 'b>(
     cfg: &'a AsrConfig,
     spec: &'b str,
 ) -> Option<(EngineCategory, &'b str, &'a ModelEntry)> {
-    let parsed = parse_model_spec(spec);
-    let name = parsed.name();
-    match parsed {
-        ModelSpec::Local(_) | ModelSpec::NameOnly(_) => {
+    match parse_model_spec(spec) {
+        ModelSpec::Full { provider, category, model_name } => {
+            let cat = resolve_category(provider, category)?;
+            pick_entry(cfg, cat, model_name).map(|e| (cat, model_name, e))
+        }
+        ModelSpec::NameOnly(model_name) => {
             for (section, cat) in all_sections(cfg) {
                 if let Some(map) = section {
-                    if let Some(entry) = map.get(name) {
-                        if entry.is_local {
-                            return Some((cat, name, entry));
-                        }
+                    if let Some(entry) = map.get(model_name) {
+                        return Some((cat, model_name, entry));
                     }
                 }
             }
             None
-        }
-        ModelSpec::Category(cat_str, _) => {
-            let cat = engine_category_from_str(cat_str)?;
-            pick_entry(cfg, cat, name).map(|e| (cat, name, e))
         }
     }
 }
@@ -202,13 +211,27 @@ pub fn resolve_engine_category(spec: &str) -> Option<EngineCategory> {
 /// 可用引擎条目
 pub struct EngineInfo {
     pub name: String,
+    pub provider: String,
     pub category: EngineCategory,
     pub description: String,
     pub is_local: bool,
 }
 
+/// EngineCategory 对应的 provider 字符串（与 DB models.provider 一致，用于构造 3-part spec）。
+/// 本地族 → "local"；Aliyun → "aliyun"。
+fn provider_of(c: &EngineCategory) -> &'static str {
+    match c {
+        EngineCategory::Aliyun => "aliyun",
+        _ => "local",
+    }
+}
+
 /// EngineCategory → 小写 category 字符串（与 DB models.category 一致，用于排序与显示）。
-fn category_label(c: &EngineCategory) -> &'static str {
+///
+/// 三端（asr / desktop / cli）共享此唯一映射，避免各处内联 match 出现 Aliyun 输出
+/// 不一致（历史上 desktop/runtime_config 与 cli/main.rs 各有一份副本且 Aliyun 分别
+/// 映射到 "aliyun" / "Fun-ASR"）。统一后 Aliyun 恒为 "aliyun"。
+pub fn category_label(c: EngineCategory) -> &'static str {
     use EngineCategory::*;
     match c {
         Whisper => "whisper",
@@ -216,6 +239,7 @@ fn category_label(c: &EngineCategory) -> &'static str {
         Paraformer => "paraformer",
         Qwen3Asr => "qwen3-asr",
         Zipformer => "zipformer",
+        Aliyun => "aliyun",
     }
 }
 
@@ -224,7 +248,7 @@ fn order_engine_infos(engines: &mut [EngineInfo]) {
     engines.sort_by(|a, b| {
         b.is_local
             .cmp(&a.is_local)
-            .then_with(|| category_label(&a.category).cmp(category_label(&b.category)))
+            .then_with(|| category_label(a.category).cmp(category_label(b.category)))
             .then_with(|| a.name.cmp(&b.name))
     });
 }
@@ -234,19 +258,14 @@ pub fn list_engines() -> Result<Vec<EngineInfo>> {
     let config = load_config()?;
     let mut engines = Vec::new();
 
-    let sections: [(Option<&HashMap<String, ModelEntry>>, EngineCategory); 5] = [
-        (config.asr.whisper.as_ref(), EngineCategory::Whisper),
-        (config.asr.sensevoice.as_ref(), EngineCategory::SenseVoice),
-        (config.asr.paraformer.as_ref(), EngineCategory::Paraformer),
-        (config.asr.qwen3_asr.as_ref(), EngineCategory::Qwen3Asr),
-        (config.asr.zipformer.as_ref(), EngineCategory::Zipformer),
-    ];
-
-    for (section, category) in sections {
+    // 复用 all_sections（与 resolve_engine_in_config 的 NameOnly 遍历共享同一 section 顺序，
+    // 避免两份手写副本发散）。
+    for (section, category) in all_sections(&config) {
         if let Some(map) = section {
             for (name, entry) in map {
                 engines.push(EngineInfo {
                     name: name.clone(),
+                    provider: provider_of(&category).to_string(),
                     category,
                     description: entry.description.clone(),
                     is_local: entry.is_local,
@@ -291,7 +310,7 @@ pub fn resolve_active_engine(asr_engine: &str) -> Result<ResolvedEngine> {
 
     // 0. 兜底引擎短路：asr_engine 裸名为 zipformer-small-ctc（无论 spec 格式还是裸名）
     //    时直接返回兜底——该引擎随应用本地打包，不依赖 DB 是否有条目，避免无谓 warning。
-    let bare = parse_model_spec(asr_engine).name();
+    let bare = parse_model_spec(asr_engine).model_name();
     if bare == FALLBACK_ASR_ENGINE_NAME {
         return Ok(fallback_engine(&cfg));
     }
@@ -357,6 +376,7 @@ pub fn pick_entry<'a>(
         EngineCategory::Paraformer => cfg.asr.paraformer.as_ref(),
         EngineCategory::Qwen3Asr => cfg.asr.qwen3_asr.as_ref(),
         EngineCategory::Zipformer => cfg.asr.zipformer.as_ref(),
+        EngineCategory::Aliyun => cfg.asr.aliyun.as_ref(),
     }?;
     map.get(name)
 }
@@ -433,6 +453,34 @@ mod tests {
                 paraformer: None,
                 qwen3_asr: None,
                 zipformer: Some(zip),
+                aliyun: None,
+            },
+        }
+    }
+
+    /// 构造含 aliyun Fun-ASR 条目的配置（用于验证云端路由）。
+    fn cfg_with_aliyun() -> AsrConfig {
+        let mut aliyun = HashMap::new();
+        aliyun.insert(
+            "fun-asr-2025-11-07".to_string(),
+            ModelEntry {
+                source: "wss://dashscope.aliyuncs.com/api-ws/v1/inference".to_string(),
+                language: "auto".to_string(),
+                description: String::new(),
+                secret_key: String::new(),
+                is_local: false,
+                is_enabled: true,
+                is_streaming: false,
+            },
+        );
+        AsrConfig {
+            asr: AsrSection {
+                whisper: None,
+                sensevoice: None,
+                paraformer: None,
+                qwen3_asr: None,
+                zipformer: None,
+                aliyun: Some(aliyun),
             },
         }
     }
@@ -441,10 +489,10 @@ mod tests {
     fn order_engine_infos_sorts_is_local_desc_then_category_then_name() {
         use EngineCategory::*;
         let mut engines = vec![
-            EngineInfo { name: "whisper-small".into(), category: Whisper, is_local: false, description: String::new() },
-            EngineInfo { name: "zipformer-multi".into(), category: Zipformer, is_local: true, description: String::new() },
-            EngineInfo { name: "paraformer-x".into(), category: Paraformer, is_local: false, description: String::new() },
-            EngineInfo { name: "zipformer-small-ctc".into(), category: Zipformer, is_local: true, description: String::new() },
+            EngineInfo { name: "whisper-small".into(), provider: "local".into(), category: Whisper, is_local: false, description: String::new() },
+            EngineInfo { name: "zipformer-multi".into(), provider: "local".into(), category: Zipformer, is_local: true, description: String::new() },
+            EngineInfo { name: "paraformer-x".into(), provider: "local".into(), category: Paraformer, is_local: false, description: String::new() },
+            EngineInfo { name: "zipformer-small-ctc".into(), provider: "local".into(), category: Zipformer, is_local: true, description: String::new() },
         ];
         order_engine_infos(&mut engines);
         let names: Vec<&str> = engines.iter().map(|e| e.name.as_str()).collect();
@@ -492,6 +540,7 @@ mod tests {
                 paraformer: None,
                 qwen3_asr: None,
                 zipformer: None,
+                aliyun: None,
             },
         };
         let r = fallback_engine(&cfg);
@@ -500,18 +549,13 @@ mod tests {
         assert_eq!(r.entry.language, "zh");
     }
 
-    // ── ModelSpec 解析测试 ──
+    // ── ModelSpec 解析测试（3-part）──
 
     #[test]
-    fn parse_spec_local_prefix() {
-        assert_eq!(parse_model_spec("local:zipformer-small-ctc"), ModelSpec::Local("zipformer-small-ctc"));
-    }
-
-    #[test]
-    fn parse_spec_category_prefix() {
+    fn parse_spec_full_3part() {
         assert_eq!(
-            parse_model_spec("zipformer:zipformer-small-ctc"),
-            ModelSpec::Category("zipformer", "zipformer-small-ctc")
+            parse_model_spec("local:zipformer:zipformer-small-ctc"),
+            ModelSpec::Full { provider: "local", category: "zipformer", model_name: "zipformer-small-ctc" }
         );
     }
 
@@ -521,32 +565,42 @@ mod tests {
     }
 
     #[test]
-    fn resolve_local_prefix_finds_local_model() {
+    fn resolve_full_3part_finds_local_model() {
         let cfg = cfg_with_zipformer(); // make_entry sets is_local=true
-        let (cat, name, entry) = resolve_engine_in_config(&cfg, "local:zipformer-small-ctc").unwrap();
+        let (cat, name, entry) = resolve_engine_in_config(&cfg, "local:zipformer:zipformer-small-ctc").unwrap();
         assert_eq!(cat, EngineCategory::Zipformer);
         assert_eq!(name, "zipformer-small-ctc");
         assert!(entry.is_local);
     }
 
     #[test]
-    fn resolve_category_prefix_matches_section() {
-        let cfg = cfg_with_zipformer();
-        let (cat, name, _) = resolve_engine_in_config(&cfg, "zipformer:zipformer-multi").unwrap();
-        assert_eq!(cat, EngineCategory::Zipformer);
-        assert_eq!(name, "zipformer-multi");
+    fn resolve_full_3part_aliyun_routes_to_aliyun_section() {
+        // provider='aliyun' → Aliyun section，无论 category 字符串（Fun-ASR）
+        let cfg = cfg_with_aliyun();
+        let (cat, name, entry) = resolve_engine_in_config(&cfg, "aliyun:Fun-ASR:fun-asr-2025-11-07").unwrap();
+        assert_eq!(cat, EngineCategory::Aliyun);
+        assert_eq!(name, "fun-asr-2025-11-07");
+        assert!(!entry.is_local, "aliyun 模型非本地");
+        assert_eq!(entry.source, "wss://dashscope.aliyuncs.com/api-ws/v1/inference");
     }
 
     #[test]
-    fn resolve_category_prefix_wrong_category_returns_none() {
-        let cfg = cfg_with_zipformer();
-        // whisper:zipformer-multi → whisper section 不含此 name
-        assert!(resolve_engine_in_config(&cfg, "whisper:zipformer-multi").is_none());
+    fn pick_entry_aliyun() {
+        let cfg = cfg_with_aliyun();
+        let e = pick_entry(&cfg, EngineCategory::Aliyun, "fun-asr-2025-11-07").unwrap();
+        assert_eq!(e.source, "wss://dashscope.aliyuncs.com/api-ws/v1/inference");
     }
 
     #[test]
-    fn resolve_bare_name_equivalent_to_local() {
-        // 裸名等价于 local: — make_entry 设 is_local=true，所以能命中
+    fn resolve_full_wrong_category_returns_none() {
+        let cfg = cfg_with_zipformer();
+        // whisper section 不含 zipformer-multi
+        assert!(resolve_engine_in_config(&cfg, "local:whisper:zipformer-multi").is_none());
+    }
+
+    #[test]
+    fn resolve_bare_name_finds_anywhere() {
+        // 裸名跨 section 搜，命中第一条匹配（不限 is_local）
         let cfg = cfg_with_zipformer();
         let (cat, name, _) = resolve_engine_in_config(&cfg, "zipformer-small-ctc").unwrap();
         assert_eq!(cat, EngineCategory::Zipformer);
@@ -554,41 +608,20 @@ mod tests {
     }
 
     #[test]
-    fn resolve_bare_name_skips_non_local() {
-        // 裸名等价 local:，is_local=false 的条目不应被命中
-        let mut zip = HashMap::new();
-        zip.insert(
-            "zipformer-remote".to_string(),
-            ModelEntry {
-                source: "hf/zipformer-remote".to_string(),
-                language: "zh".to_string(),
-                description: String::new(),
-                secret_key: String::new(),
-                is_local: false,
-                is_enabled: true,
-                is_streaming: true,
-            },
-        );
-        let cfg = AsrConfig {
-            asr: AsrSection {
-                whisper: None,
-                sensevoice: None,
-                paraformer: None,
-                qwen3_asr: None,
-                zipformer: Some(zip),
-            },
-        };
-        assert!(
-            resolve_engine_in_config(&cfg, "zipformer-remote").is_none(),
-            "裸名等价 local:，is_local=false 的模型不应被命中"
-        );
+    fn resolve_bare_name_finds_remote_aliyun() {
+        // NameOnly 不再限 is_local——aliyun 云端条目也能命中
+        let cfg = cfg_with_aliyun();
+        let (cat, name, entry) = resolve_engine_in_config(&cfg, "fun-asr-2025-11-07").unwrap();
+        assert_eq!(cat, EngineCategory::Aliyun);
+        assert_eq!(name, "fun-asr-2025-11-07");
+        assert!(!entry.is_local);
     }
 
     #[test]
     fn resolve_unknown_category_prefix_returns_none() {
         let cfg = cfg_with_zipformer();
-        // aliyun 不是已知引擎 category → None
-        assert!(resolve_engine_in_config(&cfg, "aliyun:zipformer-small-ctc").is_none());
+        // 合法 3-part 但 zipformer section 不含此 name → None
+        assert!(resolve_engine_in_config(&cfg, "local:zipformer:nope").is_none());
     }
 
     #[test]
@@ -598,6 +631,19 @@ mod tests {
         assert_eq!(engine_category_from_str("paraformer"), Some(EngineCategory::Paraformer));
         assert_eq!(engine_category_from_str("qwen3-asr"), Some(EngineCategory::Qwen3Asr));
         assert_eq!(engine_category_from_str("zipformer"), Some(EngineCategory::Zipformer));
+        // aliyun 不在 category 映射——它走 provider 路由
         assert_eq!(engine_category_from_str("aliyun"), None);
+    }
+
+    #[test]
+    fn resolve_category_routes_aliyun_via_provider() {
+        // provider='aliyun' 强制 Aliyun，category 字符串任意
+        assert_eq!(resolve_category("aliyun", "Fun-ASR"), Some(EngineCategory::Aliyun));
+        assert_eq!(resolve_category("ALIYUN", "anything"), Some(EngineCategory::Aliyun));
+        // 非 aliyun provider 按 category 映射本地族
+        assert_eq!(resolve_category("local", "zipformer"), Some(EngineCategory::Zipformer));
+        assert_eq!(resolve_category("deepseek", "zipformer"), Some(EngineCategory::Zipformer));
+        // category 字符串非本地族 → None
+        assert_eq!(resolve_category("local", "Fun-ASR"), None);
     }
 }

@@ -47,6 +47,10 @@ async-trait = "0.1"
 tokio-tungstenite = { version = "0.24", optional = true }
 futures-util = { version = "0.3", optional = true }
 
+# 阿里云 DashScope FunASR Realtime WS engine（dashscope feature 用）
+# uuid 用于生成 DashScope task_id；走 wss:// 必须 TLS。
+uuid = { version = "1", features = ["v4"], optional = true }
+
 # gRPC remote engine
 tonic = { version = "0.12", optional = true }
 prost = { version = "0.13", optional = true }
@@ -62,6 +66,8 @@ default = ["embedded"]
 embedded = ["octopus-asr"]
 remote-ws = ["tokio-tungstenite", "futures-util"]
 remote-grpc = ["tonic", "prost", "tonic-build"]
+# 阿里云 DashScope FunASR Realtime WS：tokio-tungstenite 启用 native-tls 以支持 wss://
+dashscope = ["tokio-tungstenite", "tokio-tungstenite?/native-tls", "uuid", "futures-util"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }

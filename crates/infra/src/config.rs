@@ -125,9 +125,9 @@ pub struct AppConfig {
     #[serde(default = "default_pause_polish_threshold_ms")]
     pub pause_polish_threshold_ms: f64,
 
-    /// 当前润色使用的 LLM 模型，格式为 "PREFIX:NAME"（见 `parse_model_spec`）：
+    /// 当前润色使用的 LLM 模型，格式为 "PREFIX:NAME" 或 3-part（见 `parse_model_spec`）：
     /// - "local:NAME" → is_local=true AND name（本地 LLM，如 Ollama）
-    /// - "CATEGORY:NAME" → category AND name（如 "bigmodel:glm-4-flashx"）
+    /// - "PROVIDER:CATEGORY:MODEL_NAME" → 精确匹配（如 "bigmodel:glm:glm-4-flashx"）
     /// - "NAME"（无冒号）→ 仅按 name（向后兼容）
     #[serde(default = "default_polish_llm")]
     pub polish_llm: String,
@@ -185,7 +185,9 @@ fn default_pause_polish_threshold_ms() -> f64 {
     600.0
 }
 fn default_polish_llm() -> String {
-    "bigmodel:glm-4-flashx".into()
+    // 3-part（provider:category:model_name），与 db.sql 的 bigmodel glm seed 对齐，
+    // 避免每次启动 parse_model_spec 把默认值当 2-part 旧格式走 warn + NameOnly 兜底。
+    "bigmodel:glm:glm-4-flashx".into()
 }
 fn default_asr_hardware_accelerated() -> bool {
     false

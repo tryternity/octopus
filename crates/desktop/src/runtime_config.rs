@@ -54,23 +54,17 @@ fn u8_to_polish_mode(n: u8) -> Option<PolishMode> {
     }
 }
 
-fn category_str(c: octopus_asr::config::EngineCategory) -> &'static str {
-    use octopus_asr::config::EngineCategory::*;
-    match c {
-        Whisper => "whisper",
-        SenseVoice => "sensevoice",
-        Paraformer => "paraformer",
-        Qwen3Asr => "qwen3-asr",
-        Zipformer => "zipformer",
-    }
-}
-
-/// 统一显示文本：is_local → "本地:{name}"，否则 "{category}:{name}"。
-fn engine_label(is_local: bool, category: &str, name: &str) -> String {
+/// 统一显示文本：is_local → "本地:{name}"，否则 "{provider}:{name}"。
+///
+/// 远程引擎用 provider 前缀（而非 category），以区分 deepseek 直连（provider=deepseek）
+/// 与 aliyun 代管同名模型（provider=aliyun，category 也是 deepseek 系列）——两者 category
+/// 相同但 provider 不同，前缀用 provider 才能让用户在 UI 上分辨供应商。本地引擎 provider
+/// 恒为 "local" 无信息量，故仍走 category 前缀。
+fn engine_label(is_local: bool, _category: &str, provider: &str, name: &str) -> String {
     if is_local {
         format!("本地:{}", name)
     } else {
-        format!("{}:{}", category, name)
+        format!("{}:{}", provider, name)
     }
 }
 
@@ -78,13 +72,13 @@ fn engine_label(is_local: bool, category: &str, name: &str) -> String {
 const FALLBACK_ASR_ENGINE: &str = "zipformer-small-ctc";
 
 /// 构造 ASR 选项列表（纯逻辑）：兜底固定第一，DB 同名去重，current 按 current_effective 标记。
-/// current_effective 为空时视作兜底。current 可能为 spec 格式（"PREFIX:NAME"）或裸名，
-/// 统一用 parse_model_spec 提取裸名后比较。
+/// current_effective 为空时视作兜底。current 可能为 3-part spec（"provider:category:name"）或裸名，
+/// 统一用 parse_model_spec 提取裸 model_name 后比较。
 fn build_asr_options(
     current_effective: &str,
     engines: Vec<octopus_asr::config::EngineInfo>,
 ) -> Vec<EngineOption> {
-    let effective_bare = octopus_infra::db::parse_model_spec(current_effective).name();
+    let effective_bare = octopus_infra::db::parse_model_spec(current_effective).model_name();
     let effective = if effective_bare.is_empty() {
         FALLBACK_ASR_ENGINE
     } else {
@@ -97,20 +91,20 @@ fn build_asr_options(
         category: "zipformer".to_string(),
         is_local: true,
         current: effective == FALLBACK_ASR_ENGINE,
-        label: engine_label(true, "zipformer", FALLBACK_ASR_ENGINE),
+        label: engine_label(true, "zipformer", "local", FALLBACK_ASR_ENGINE),
     });
     // DB 模型（跳过同名兜底，避免重复）
     for e in engines {
         if e.name == FALLBACK_ASR_ENGINE {
             continue;
         }
-        let cat = category_str(e.category);
+        let cat = octopus_asr::config::category_label(e.category);
         options.push(EngineOption {
             current: e.name == effective,
             name: e.name.clone(),
             category: cat.to_string(),
             is_local: e.is_local,
-            label: engine_label(e.is_local, cat, &e.name),
+            label: engine_label(e.is_local, cat, &e.provider, &e.name),
         });
     }
     options
@@ -200,13 +194,13 @@ pub struct LlmOption {
 }
 
 /// 构造 LLM 选项列表（纯逻辑）：首项固定「不选择模型」（name 空 = polish_llm 置空），
-/// 其后为 DB 启用的 LLM。current 按 polish_llm 裸名标记；current 无效（空 / 不在 DB）
-/// 时首项「不选择模型」标 current（DB 找不到回退无模型）。current 可能为 spec 格式
-/// （"PREFIX:NAME"）或裸名，统一用 parse_model_spec 提取裸名后比较。
+/// 其后为 DB 启用的 LLM。current 按 polish_llm 裸 model_name 标记；current 无效（空 / 不在 DB）
+/// 时首项「不选择模型」标 current（DB 找不到回退无模型）。current 可能为 3-part spec
+/// （"provider:category:model_name"）或裸名，统一用 parse_model_spec 提取 model_name 后比较。
 fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) -> Vec<LlmOption> {
-    let current_bare = octopus_infra::db::parse_model_spec(current).name();
+    let current_bare = octopus_infra::db::parse_model_spec(current).model_name();
     // current 有效 = 裸名非空且在 DB 列表中；否则回退无模型（首项 current）。
-    let current_valid = !current_bare.is_empty() && llms.iter().any(|m| m.name == current_bare);
+    let current_valid = !current_bare.is_empty() && llms.iter().any(|m| m.model_name == current_bare);
     let mut options = Vec::with_capacity(llms.len() + 1);
     // 首项：「不选择模型」（name 空）。current 无效时为选中态。
     options.push(LlmOption {
@@ -217,11 +211,11 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
         label: "不选择模型".to_string(),
     });
     for m in llms {
-        let label = engine_label(m.is_local, &m.category, &m.name);
+        let label = engine_label(m.is_local, &m.category, &m.provider, &m.model_name);
         options.push(LlmOption {
-            current: m.name == current_bare,
+            current: m.model_name == current_bare,
             label,
-            name: m.name,
+            name: m.model_name,
             category: m.category,
             is_local: m.is_local,
         });
@@ -254,10 +248,10 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
     // polish_llm 有效 = 裸名非空且在 DB 启用 LLM 列表中（DB 查询失败保守为 false）。
     let polish_llm = g.polish_llm.clone();
     let polish_llm_valid = {
-        let bare = octopus_infra::db::parse_model_spec(&polish_llm).name();
+        let bare = octopus_infra::db::parse_model_spec(&polish_llm).model_name();
         !bare.is_empty()
             && octopus_infra::db::list_llm_models()
-                .map(|llms| llms.iter().any(|m| m.name == bare))
+                .map(|llms| llms.iter().any(|m| m.model_name == bare))
                 .unwrap_or(false)
     };
     ToolbarState {
@@ -285,17 +279,14 @@ pub fn switch_asr_engine(
 ) -> Result<(), String> {
     let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
     validate_switch(&name, &engines)?;
-    // 构造 spec：兜底引擎固定 is_local=true；其余查 DB 取 category/is_local
+    // 构造 3-part spec "{provider}:{category}:{model_name}"：
+    // 兜底固定 local:zipformer:NAME；其余查 DB 取 provider/category。
     let spec = if name == FALLBACK_ASR_ENGINE {
-        format!("local:{}", name)
+        format!("local:zipformer:{}", name)
     } else {
         let engine = engines.iter().find(|e| e.name == name)
             .ok_or_else(|| format!("引擎 '{}' 不存在，未切换", name))?;
-        if engine.is_local {
-            format!("local:{}", name)
-        } else {
-            format!("{}:{}", category_str(engine.category), name)
-        }
+        format!("{}:{}:{}", engine.provider, octopus_asr::config::category_label(engine.category), name)
     };
     {
         let mut g = rc.write().unwrap();
@@ -373,14 +364,10 @@ pub fn switch_polish_llm(name: String, rc: State<'_, SharedRuntimeConfig>) -> Re
         let model = octopus_infra::db::list_llm_models()
             .map_err(|e| e.to_string())?
             .into_iter()
-            .find(|m| m.name == name)
+            .find(|m| m.model_name == name)
             .ok_or_else(|| format!("润色模型 '{}' 不存在，未切换", name))?;
-        // 构造 spec：is_local → "local:NAME"，否则 "CATEGORY:NAME"
-        if model.is_local {
-            format!("local:{}", name)
-        } else {
-            format!("{}:{}", model.category, name)
-        }
+        // 构造 3-part spec "{provider}:{category}:{model_name}"
+        format!("{}:{}:{}", model.provider, model.category, model.model_name)
     };
     {
         let mut g = rc.write().unwrap();
@@ -433,7 +420,7 @@ mod tests {
         use octopus_asr::config::{EngineCategory, EngineInfo};
         // 场景 1：DB 无兜底 → 注入到首位
         let engines = vec![
-            EngineInfo { name: "whisper-small".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+            EngineInfo { name: "whisper-small".into(), provider: "bigmodel".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
         ];
         let opts = build_asr_options("whisper-small", engines);
         assert_eq!(opts[0].name, "zipformer-small-ctc");
@@ -442,7 +429,8 @@ mod tests {
         assert!(!opts[0].current, "current=whisper-small，兜底非当前");
         assert_eq!(opts[1].name, "whisper-small");
         assert!(opts[1].current);
-        assert_eq!(opts[1].label, "whisper:whisper-small");
+        // 远程引擎 label = "{provider}:{name}"（用 provider 区分供应商，非 category）
+        assert_eq!(opts[1].label, "bigmodel:whisper-small");
 
         // 场景 2：current 为空 → 兜底为当前
         let opts2 = build_asr_options("", vec![]);
@@ -452,8 +440,8 @@ mod tests {
 
         // 场景 3：DB 已含兜底 → 去重（只一个 zipformer-small-ctc，且在首位）
         let engines3 = vec![
-            EngineInfo { name: "zipformer-small-ctc".into(), category: EngineCategory::Zipformer, is_local: true, description: String::new() },
-            EngineInfo { name: "whisper-small".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+            EngineInfo { name: "zipformer-small-ctc".into(), provider: "local".into(), category: EngineCategory::Zipformer, is_local: true, description: String::new() },
+            EngineInfo { name: "whisper-small".into(), provider: "local".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
         ];
         let opts3 = build_asr_options("zipformer-small-ctc", engines3);
         assert_eq!(
@@ -467,33 +455,36 @@ mod tests {
 
     #[test]
     fn build_asr_options_current_in_spec_format() {
-        // asr_engine 存为 spec 格式时（如 "local:zipformer-small-ctc"），build_asr_options
-        // 应正确提取裸名标记 current
+        // asr_engine 存为 3-part spec 时，build_asr_options 应正确提取裸名标记 current
         use octopus_asr::config::{EngineCategory, EngineInfo};
         let mk = |name: &str, cat: EngineCategory, is_local: bool| EngineInfo {
-            name: name.into(), category: cat, is_local, description: String::new(),
+            name: name.into(), provider: "local".into(), category: cat, is_local, description: String::new(),
         };
         // local spec 格式
-        let opts = build_asr_options("local:zipformer-small-ctc", vec![
+        let opts = build_asr_options("local:zipformer:zipformer-small-ctc", vec![
             mk("zipformer-small-ctc", EngineCategory::Zipformer, true),
             mk("whisper-small", EngineCategory::Whisper, false),
         ]);
-        assert!(opts[0].current, "local: spec 应正确标记 current");
+        assert!(opts[0].current, "local: 3-part spec 应正确标记 current");
 
-        // category spec 格式
-        let opts2 = build_asr_options("whisper:whisper-small", vec![
+        // aliyun spec 格式（云端）
+        let opts2 = build_asr_options("aliyun:Fun-ASR:fun-asr-x", vec![
             mk("zipformer-small-ctc", EngineCategory::Zipformer, true),
             mk("whisper-small", EngineCategory::Whisper, false),
+            EngineInfo { name: "fun-asr-x".into(), provider: "aliyun".into(), category: EngineCategory::Aliyun, is_local: false, description: String::new() },
         ]);
-        assert!(opts2[1].current, "category: spec 应正确标记 current");
+        // opts2 = [注入兜底, whisper-small, fun-asr-x]
+        assert_eq!(opts2.len(), 3);
+        assert_eq!(opts2[2].name, "fun-asr-x");
+        assert!(opts2[2].current, "aliyun: 3-part spec 应正确标记 current");
     }
 
     #[test]
     fn build_llm_options_marks_current_and_labels() {
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { name: "glm-4-flashx".into(), category: "bigmodel".into(), is_local: false },
-            LlmModelInfo { name: "ollama-local".into(), category: "ollama".into(), is_local: true },
+            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false },
+            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true },
         ];
         let opts = build_llm_options("glm-4-flashx", llms);
         assert_eq!(opts.len(), 3);
@@ -501,7 +492,7 @@ mod tests {
         assert_eq!(opts[0].label, "不选择模型");
         assert_eq!(opts[0].name, "");
         assert!(!opts[0].current, "current=glm 有效 → 无模型项非 current");
-        // opts[1] = glm current
+        // opts[1] = glm current；远程 label = "{provider}:{name}"（bigmodel 前缀，非 category=glm）
         assert!(opts[1].current);
         assert_eq!(opts[1].label, "bigmodel:glm-4-flashx");
         // opts[2] = ollama
@@ -511,21 +502,20 @@ mod tests {
 
     #[test]
     fn build_llm_options_current_in_spec_format() {
-        // polish_llm 存为 spec 格式时（如 "bigmodel:glm-4-flashx"），build_llm_options
-        // 应正确提取裸名标记 current
+        // polish_llm 存为 3-part spec 时，build_llm_options 应正确提取 model_name 标记 current
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { name: "glm-4-flashx".into(), category: "bigmodel".into(), is_local: false },
-            LlmModelInfo { name: "ollama-local".into(), category: "ollama".into(), is_local: true },
+            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false },
+            LlmModelInfo { model_name: "ollama-local".into(), provider: "ollama".into(), category: "qwen".into(), is_local: true },
         ];
-        // spec 格式
-        let opts = build_llm_options("bigmodel:glm-4-flashx", llms.clone());
+        // 3-part spec 格式
+        let opts = build_llm_options("bigmodel:glm:glm-4-flashx", llms.clone());
         assert!(!opts[0].current, "无模型项非 current");
-        assert!(opts[1].current, "spec 格式应正确标记 current（glm）");
+        assert!(opts[1].current, "3-part spec 应正确标记 current（glm）");
 
-        // local spec 格式
-        let opts2 = build_llm_options("local:ollama-local", llms);
-        assert!(opts2[2].current, "local: 前缀 spec 应正确标记 current（ollama）");
+        // ollama 本地 3-part spec
+        let opts2 = build_llm_options("ollama:qwen:ollama-local", llms);
+        assert!(opts2[2].current, "3-part spec 应正确标记 current（ollama）");
     }
 
     #[test]
@@ -533,7 +523,7 @@ mod tests {
         // 需求：polish_llm 空 / 裸名不在 DB / spec 格式不命中 → 首项「无模型」标 current（DB 回退）。
         use octopus_infra::db::LlmModelInfo;
         let llms = vec![
-            LlmModelInfo { name: "glm-4-flashx".into(), category: "bigmodel".into(), is_local: false },
+            LlmModelInfo { model_name: "glm-4-flashx".into(), provider: "bigmodel".into(), category: "glm".into(), is_local: false },
         ];
         // current 空 → 无模型 current
         let opts = build_llm_options("", llms.clone());
@@ -546,16 +536,16 @@ mod tests {
         assert!(opts2[0].current, "polish_llm 不在 DB → 无模型 current");
         assert!(!opts2[1].current);
 
-        // current spec 格式但不命中 DB → 无模型 current
-        let opts3 = build_llm_options("bigmodel:ghost-model", llms);
-        assert!(opts3[0].current, "spec 格式但不命中 DB → 无模型 current");
+        // current 3-part spec 但 model_name 不命中 DB → 无模型 current
+        let opts3 = build_llm_options("bigmodel:glm:ghost-model", llms);
+        assert!(opts3[0].current, "3-part spec 但不命中 DB → 无模型 current");
     }
 
     #[test]
     fn validate_switch_allows_fallback_even_when_absent() {
         use octopus_asr::config::{EngineCategory, EngineInfo};
         let engines = vec![
-            EngineInfo { name: "whisper-small".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
+            EngineInfo { name: "whisper-small".into(), provider: "local".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
         ];
         // 兜底名即使不在 engines 也允许
         assert!(validate_switch("zipformer-small-ctc", &engines).is_ok());
