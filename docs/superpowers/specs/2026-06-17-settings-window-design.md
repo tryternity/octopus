@@ -1,8 +1,8 @@
 # 设置窗口设计（settings window）
 
 - 日期：2026-06-17
-- 状态：📝 设计已确认，待实施
-- 相关代码：`crates/desktop/src/settings_window.rs`（新建）、`crates/desktop/src/runtime_config.rs`（扩展）、`crates/desktop/dist/settings/index.html`（新建）
+- 状态：✅ 已实现（合并 main，见 plan Task 1–11 全部完成）
+- 相关代码：`crates/desktop/src/settings_window.rs`（窗口 + `open_settings` + macOS Dock 图标）、`crates/desktop/src/settings_commands.rs`（`get_config` / `set_config` / `get_history` / `delete_history` / `check_shortcut`）、`crates/desktop/src/runtime_config.rs`（扩展）、`crates/desktop/dist/settings/index.html`（前端）
 - 参考界面风格：用户提供 1.png / 2.png（左侧固定侧边栏 + 右侧主内容区，浅色主题，卡片式分块，非原生系统风格的自定义 Web 界面）
 
 ---
@@ -47,8 +47,9 @@
 ```
 crates/desktop/
 ├── src/
-│   ├── settings_window.rs   # 新建：窗口创建 + open/close/ready 机制（参考 result_window.rs）
-│   ├── runtime_config.rs    # 扩展：set_config 通用写 + RuntimeConfig 新增字段
+│   ├── settings_window.rs   # 新建：窗口创建 + open_settings + macOS Dock 图标 / on_settings_closed
+│   ├── settings_commands.rs # 新建：get_config / set_config / get_history / delete_history / check_shortcut
+│   ├── runtime_config.rs    # 扩展：RuntimeConfig 新增字段 + 暴露 build_*_options_public 供 settings 复用
 │   ├── tray.rs              # 修改：托盘菜单加"设置..."项
 │   └── main.rs              # 修改：注册 4 个新命令 + 托盘事件
 ├── dist/
@@ -85,7 +86,7 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
 }
 ```
 
-`main.rs` 的 `app.run()` 回调监听 `RunEvent::WindowEvent { event: Destroyed, label: "settings_window" }`，触发 `on_settings_closed`。启动时 `main.rs` 直接 `app.set_activation_policy(Accessory)`。
+`main.rs` 的 `app.run()` 回调监听 `RunEvent::WindowEvent { event: Destroyed, label: "settings_window" }`，触发 `on_settings_closed`。启动时 `main.rs` 直接 `app.set_activation_policy(Accessory)`。macOS 下 `open_settings` 还调 `set_dock_icon()`——release 裸二进制无 .app bundle，Tauri 仅 debug 自动设图标，故需用 `objc2` 手动 `setApplicationIconImage`（`include_bytes!` 内嵌 `icons/icon.png`）。
 
 ### 4.3 Tauri 命令
 
@@ -102,7 +103,7 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
 ```json
 {
   "config": {
-    "asr_engine": "local:qwen3-asr-0.6B",
+    "asr_engine": "local:qwen3-asr:qwen3-asr-0.6B",
     "language": "auto",
     "shortcut": "CmdOrCtrl+Shift+Space",
     "segment_duration": 5.0,
@@ -111,7 +112,7 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
     "polish_mode": 0,
     "polish_interval": 5.0,
     "pause_polish_threshold_ms": 600,
-    "polish_llm": "bigmodel:glm-4-flashx",
+    "polish_llm": "bigmodel:glm:glm-4-flashx",
     "asr_hardware_accelerated": false,
     "asr_correct": false,
     "output_simplified": true,
@@ -121,11 +122,11 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
     "microphone": ""
   },
   "asr_engines": [
-    {"name": "zipformer-small-ctc", "label": "本地-zipformer-small-ctc", "current": false},
+    {"name": "zipformer-small-ctc", "label": "本地:zipformer-small-ctc", "current": false},
     ...
   ],
   "llm_models": [
-    {"name": "glm-4-flashx", "label": "bigmodel-glm-4-flashx", "current": true},
+    {"name": "glm-4-flashx", "label": "bigmodel:glm-4-flashx", "current": true},
     ...
   ],
   "microphones": ["MacBook Pro 麦克风", "外接 USB 麦克风", ...]
@@ -319,7 +320,7 @@ settings/index.html 加载完成
 | `set_config` 类型错误（如 bool 字段传字符串） | `Err("字段 X 需要 bool 类型")`，前端 toast |
 | `set_config` 值越界（如 segment_duration ≤ 0） | `Err("segment_duration 必须大于 0")`，前端 toast |
 | `set_config` 未知 key | `Err("未知配置字段: {key}")`，前端 toast |
-| `pause_polish_threshold_ms` ≤ 500 | `Err("须 > 500（Active Flush 阈值）")`，前端 toast |
+| `pause_polish_threshold_ms` < 500 | `Err("pause_polish_threshold_ms 必须 >= 500（Active Flush 阈值）")`，前端 toast |
 | config.yaml 写失败 | `warn` log + `Err("保存失败，本次仍生效，重启后回退")` |
 | `get_history` DB 错误 | 返回空数组 + `warn` log |
 | 设置窗口已打开再次 `open_settings` | `set_focus` 聚焦已有窗口，不重复创建 |
@@ -341,9 +342,9 @@ settings/index.html 加载完成
 ### Rust 单测
 - `set_config` 类型校验：合法值通过 / 非法值返回 Err（覆盖 bool / f64 / u8 / 枚举 / string 各类型）。
 - `set_config` 写盘：改单字段后其他字段保留（复用 `persist_config_override` 现有测试模式）。
-- `set_config` 范围校验：`pause_polish_threshold_ms > 500`、`segment_duration > 0`。
+- `set_config` 范围校验：`pause_polish_threshold_ms >= 500`（允许 500）、`segment_duration > 0`。
 - `get_history` 分页：limit/offset 正确切片，offset 越界返回空。
-- `delete_transcriptions_at` 批量删除：指定 id 删除 + 空 id 列表不报错（内部函数可直连 Connection 测试）。
+- `delete_transcriptions` 批量删除：指定 id 删除 + 空 id 列表不报错（内部函数可直连 Connection 测试）。
 
 ### 手动 e2e
 - 工具栏设置按钮 / 托盘菜单均能打开设置窗。
@@ -378,10 +379,11 @@ settings/index.html 加载完成
 
 | 文件 | 改动 |
 |---|---|
-| `crates/desktop/src/settings_window.rs` | **新建**：窗口创建 + `open_settings` 命令 |
-| `crates/desktop/src/runtime_config.rs` | **修改**：`set_config` 通用写命令 + `get_config` + `get_history` + RuntimeConfig 新增字段（asr_correct / output_simplified / hide_toolbar） |
+| `crates/desktop/src/settings_window.rs` | **新建**：窗口创建 + `open_settings` 命令 + macOS `set_dock_icon` / `on_settings_closed` |
+| `crates/desktop/src/settings_commands.rs` | **新建**：`get_config` / `set_config`（含 `apply_config_value` 类型校验 + `sync_runtime_config` + `write_config_yaml` + shortcut 热重载）/ `get_history` / `delete_history` / `check_shortcut` 命令（独立文件避免 `runtime_config.rs` 膨胀） |
+| `crates/desktop/src/runtime_config.rs` | **修改**：RuntimeConfig 新增字段（asr_correct / output_simplified / hide_toolbar）+ 暴露 `build_asr_options_public` / `build_llm_options_public` 供 settings 复用 |
 | `crates/desktop/src/tray.rs` | **修改**：托盘菜单新增"设置..."项 |
-| `crates/desktop/src/main.rs` | **修改**：注册 `open_settings` / `get_config` / `set_config` / `get_history` 命令 + 托盘事件处理 |
+| `crates/desktop/src/main.rs` | **修改**：注册 6 个命令（`open_settings` / `get_config` / `set_config` / `get_history` / `delete_history` / `check_shortcut`）+ 设置窗口模块声明 + `Destroyed` 事件回调 |
 | `crates/desktop/dist/settings/index.html` | **新建**：3 页面 vanilla HTML（单文件内联 CSS/JS + 图标） |
 | `crates/desktop/tauri.conf.json` | **修改**：`frontendDist` 需包含 `settings/` 目录（或确认相对路径解析） |
 | `docs/architecture.md` | 补充设置窗口子系统说明 |

@@ -95,9 +95,9 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 |------|------|
 | `recording_overlay` | 录音/识别状态提示（离线模式） |
 | `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 100→132px），移出收起；6 个工具——系统设置 / 语音模型 / 降噪模式 / 润色模型 / 润色模式 / 立即润色。由 `config.yaml.hide_toolbar`（默认 `true`）控制：`true`=hover 显隐，`false`=始终显示 |
-| `settings_window` | 独立设置窗口（原生标题栏、800×600 可调大小、最小 640×480）。三页面侧边栏布局：识别记录（倒序分页 + 批量删除 + 润色优先显示 + 拷贝）/ 系统设置（17 字段表单，卡片分组 + toggle/select/number input + 生效时间徽章）/ 模型管理（占位）。单例管理：已打开则 `set_focus`。入口：工具栏设置按钮 + 托盘菜单「设置...」。5 个命令：`open_settings` / `get_config` / `set_config(key,value)` / `get_history` / `delete_history(ids)` |
+| `settings_window` | 独立设置窗口（原生标题栏、800×600 可调大小、最小 640×480）。三页面侧边栏布局：识别记录（倒序分页 + 批量删除 + 润色优先显示 + 拷贝）/ 系统设置（17 字段表单，卡片分组 + toggle/select/number input + 生效时间标签内联）/ 模型管理（占位）。单例管理：已打开则 `set_focus`。入口：工具栏设置按钮 + 托盘菜单「设置...」。6 个命令：`open_settings` / `get_config` / `set_config(key,value)` / `get_history` / `delete_history(ids)` / `check_shortcut(shortcut)` |
 
-**macOS 动态激活策略（Dock 图标显隐）：** 应用启动即 `Accessory` 模式（无 Dock 图标，纯托盘应用）。用户打开设置窗口时 `open_settings` 切 `Regular`（Dock 图标出现），设置窗口 `Destroyed` 事件触发 `on_settings_closed` 切回 `Accessory`。`#[cfg(target_os = "macos")]` 条件编译，Windows / Linux 无此逻辑。
+**macOS 动态激活策略（Dock 图标显隐）：** 应用启动即 `Accessory` 模式（无 Dock 图标，纯托盘应用）。用户打开设置窗口时 `open_settings` 切 `Regular`，并经 `set_dock_icon()` 用 `objc2` 手动 `setApplicationIconImage`（release 裸二进制无 .app bundle，Tauri 仅 debug 自动设图标，故需手动设 Dock + 应用图标）；设置窗口 `Destroyed` 事件触发 `on_settings_closed` 切回 `Accessory`。`#[cfg(target_os = "macos")]` 条件编译，Windows / Linux 无此逻辑。
 
 **窗口加载就绪（ready）机制：** 结果窗 webview 首次加载有延迟，若后端在页面就绪前 `emit('show-result')`，事件丢失导致「文本不显示 / 不弹窗」。`result_window.rs` 以 `WINDOW_READY`（AtomicBool）+ `PENDING_TEXT`（Mutex<Option<String>>）兜底——未 ready 时暂存文本，前端 `index.html` 加载完成后发起 `result_window_ready` Tauri command → 后端置 ready 并冲刷积压文本。`show_result` / `update_result` 把「判 ready + 写 pending」收进同一把 `PENDING_TEXT` 锁，与 `result_window_ready` 的 store(true)+take 互斥，消除启动首帧 TOCTOU 文本滞留。
 

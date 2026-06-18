@@ -33,7 +33,7 @@
 - Modify: `crates/infra/src/db.rs`
 - Test: `crates/infra/src/db.rs`（内联 `#[cfg(test)]` 模块）
 
-- [ ] **Step 1: 在 `db.rs` 新增 `TranscriptionRecord` DTO 和 `list_transcriptions` 查询函数**
+- [x] **Step 1: 在 `db.rs` 新增 `TranscriptionRecord` DTO 和 `list_transcriptions` 查询函数**
 
 在 `crates/infra/src/db.rs` 的 `finalize_transcription` 函数之后（约 line 392），添加：
 
@@ -77,12 +77,12 @@ pub fn list_transcriptions(limit: u32, offset: u32) -> Result<Vec<TranscriptionR
 }
 ```
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
 Run: `cargo check -p octopus-infra`
 Expected: 编译通过（`serde::Serialize` 需确认 infra crate 已依赖 serde — 检查 `ModelEntry` 等 DTO 已有 `#[derive(Serialize)]` 确认）。
 
-- [ ] **Step 3: 在 db.rs 内联测试模块新增测试**
+- [x] **Step 3: 在 db.rs 内联测试模块新增测试**
 
 在 db.rs 的 `#[cfg(test)]` 模块末尾添加（需确认测试模块位置——在 `days_to_ymd` 测试之后）：
 
@@ -124,7 +124,7 @@ Expected: 编译通过（`serde::Serialize` 需确认 infra crate 已依赖 serd
 
 注意：测试用 `list_transcriptions_at(&conn, ...)`（直接传 Connection 的版本），需要把 `list_transcriptions` 的核心逻辑拆出一个 `_at` 版本（与现有 `load_models` / `load_models_at` 模式一致）。
 
-- [ ] **Step 4: 重构 `list_transcriptions` 拆出 `_at` 版本**
+- [x] **Step 4: 重构 `list_transcriptions` 拆出 `_at` 版本**
 
 ```rust
 /// 分页查询历史识别记录（按 id 降序 = 最新在前）。
@@ -160,12 +160,12 @@ fn list_transcriptions_at(
 }
 ```
 
-- [ ] **Step 5: 运行测试验证通过**
+- [x] **Step 5: 运行测试验证通过**
 
 Run: `cargo test -p octopus-infra`
 Expected: 全部通过（含新增 `list_transcriptions_returns_records_descending`）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/infra/src/db.rs
@@ -179,7 +179,7 @@ git commit -m "feat(infra): list_transcriptions 分页查询历史识别记录"
 **Files:**
 - Modify: `crates/desktop/src/runtime_config.rs:13-28`（`RuntimeConfig` struct + `from_config`）
 
-- [ ] **Step 1: 扩展 `RuntimeConfig` struct**
+- [x] **Step 1: 扩展 `RuntimeConfig` struct**
 
 在 `crates/desktop/src/runtime_config.rs` line 13 的 `RuntimeConfig` struct 新增 3 个字段：
 
@@ -195,7 +195,7 @@ pub struct RuntimeConfig {
 }
 ```
 
-- [ ] **Step 2: 扩展 `from_config`**
+- [x] **Step 2: 扩展 `from_config`**
 
 ```rust
 impl RuntimeConfig {
@@ -213,7 +213,7 @@ impl RuntimeConfig {
 }
 ```
 
-- [ ] **Step 3: 更新 `from_config_mirrors_fields` 测试**
+- [x] **Step 3: 更新 `from_config_mirrors_fields` 测试**
 
 在 `runtime_config.rs` 测试模块中扩展 `from_config_mirrors_fields`：
 
@@ -235,12 +235,12 @@ impl RuntimeConfig {
     }
 ```
 
-- [ ] **Step 4: 编译 + 测试**
+- [x] **Step 4: 编译 + 测试**
 
 Run: `cargo check -p octopus-desktop --features embedded && cargo test -p octopus-desktop --features embedded`
 Expected: 编译通过，16+ 测试通过（`from_config_mirrors_fields` 更新）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/runtime_config.rs
@@ -255,7 +255,7 @@ git commit -m "feat(desktop): RuntimeConfig 新增 asr_correct/output_simplified
 - Create: `crates/desktop/src/settings_commands.rs`
 - Modify: `crates/desktop/src/main.rs`（模块声明，在 Task 6 统一注册命令时改）
 
-- [ ] **Step 1: 创建 `settings_commands.rs`，实现 `set_config` 命令 + 类型校验**
+- [x] **Step 1: 创建 `settings_commands.rs`，实现 `set_config` 命令 + 类型校验**
 
 ```rust
 //! 设置窗口的 Tauri 命令：get_config / set_config / get_history。
@@ -553,7 +553,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 在 `runtime_config.rs` 暴露 `build_asr_options` / `build_llm_options` 的公开包装**
+- [x] **Step 2: 在 `runtime_config.rs` 暴露 `build_asr_options` / `build_llm_options` 的公开包装**
 
 `settings_commands.rs` 需要调用 `build_asr_options` 和 `build_llm_options`，但它们目前是私有的。在 `runtime_config.rs` 添加公开包装函数：
 
@@ -574,7 +574,7 @@ pub fn build_llm_options_public(
 }
 ```
 
-- [ ] **Step 3: 在 `main.rs` 添加模块声明**
+- [x] **Step 3: 在 `main.rs` 添加模块声明**
 
 在 `main.rs` 的模块声明区域（`mod runtime_config;` 附近）添加：
 
@@ -585,17 +585,17 @@ mod settings_window;
 
 （`settings_window` 在 Task 4 创建，先声明不影响编译——如编译报错可先注释 `settings_window` 行。）
 
-- [ ] **Step 4: 检查 `Cargo.toml` 是否已有 `cpal` 依赖**
+- [x] **Step 4: 检查 `Cargo.toml` 是否已有 `cpal` 依赖**
 
 Run: `grep cpal crates/desktop/Cargo.toml`
 Expected: 已有（audio.rs 使用）。如无，添加 `cpal = { workspace = true }`（但应已有）。
 
-- [ ] **Step 5: 编译 + 测试**
+- [x] **Step 5: 编译 + 测试**
 
 Run: `cargo check -p octopus-desktop --features embedded && cargo test -p octopus-desktop --features embedded`
 Expected: 编译通过，新增 8 个测试通过。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/src/settings_commands.rs crates/desktop/src/runtime_config.rs crates/desktop/src/main.rs
@@ -609,7 +609,7 @@ git commit -m "feat(desktop): set_config/get_config/get_history 通用命令 + �
 **Files:**
 - Create: `crates/desktop/src/settings_window.rs`
 
-- [ ] **Step 1: 创建 `settings_window.rs`**
+- [x] **Step 1: 创建 `settings_window.rs`**
 
 ```rust
 //! 设置窗口：独立 Tauri 窗口，原生标题栏，800×600 可调大小。
@@ -647,12 +647,12 @@ pub fn open_settings(app_handle: tauri::AppHandle) {
 }
 ```
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
 Run: `cargo check -p octopus-desktop --features embedded`
 Expected: 编译通过。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/src/settings_window.rs
@@ -668,7 +668,7 @@ git commit -m "feat(desktop): settings_window 模块 — 窗口创建 + open_set
 - Modify: `crates/desktop/src/tray.rs`（托盘菜单加项）
 - Modify: `crates/desktop/dist/result/index.html`（工具栏设置按钮 invoke）
 
-- [ ] **Step 1: 在 `main.rs` 注册新命令**
+- [x] **Step 1: 在 `main.rs` 注册新命令**
 
 在 `main.rs` 的 `invoke_handler` 中（line 152 附近），添加 4 个新命令：
 
@@ -692,7 +692,7 @@ git commit -m "feat(desktop): settings_window 模块 — 窗口创建 + open_set
         ])
 ```
 
-- [ ] **Step 2: 在 `tray.rs` 托盘菜单添加"设置..."项**
+- [x] **Step 2: 在 `tray.rs` 托盘菜单添加"设置..."项**
 
 在 `create_tray` 函数中，`quit` 菜单项之前添加 `settings` 菜单项：
 
@@ -717,7 +717,7 @@ git commit -m "feat(desktop): settings_window 模块 — 窗口创建 + open_set
 
 注意：`open_settings` 的签名是 `#[tauri::command] pub fn open_settings(app_handle: tauri::AppHandle)`，直接调用时传 `app.clone()`。
 
-- [ ] **Step 3: 修改工具栏设置按钮点击事件**
+- [x] **Step 3: 修改工具栏设置按钮点击事件**
 
 在 `crates/desktop/dist/result/index.html` 中找到设置按钮的点击处理（当前是占位，无动作），改为：
 
@@ -730,12 +730,12 @@ git commit -m "feat(desktop): settings_window 模块 — 窗口创建 + open_set
     });
 ```
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cargo check -p octopus-desktop --features embedded`
 Expected: 编译通过。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/main.rs crates/desktop/src/tray.rs crates/desktop/dist/result/index.html
@@ -751,7 +751,7 @@ git commit -m "feat(desktop): 工具栏设置按钮 + 托盘菜单接通 open_se
 
 这是最大的单步。先创建包含完整 CSS + JS 骨架 + 侧边栏导航 + 3 页面容器的 HTML，页面内容（设置表单 / 历史列表）在后续 Task 填充。
 
-- [ ] **Step 1: 创建 `dist/settings/index.html` 骨架**
+- [x] **Step 1: 创建 `dist/settings/index.html` 骨架**
 
 ```html
 <!DOCTYPE html>
@@ -1158,12 +1158,12 @@ init();
 </html>
 ```
 
-- [ ] **Step 2: 编译验证（确保 dist/settings/ 目录被 Tauri 识别）**
+- [x] **Step 2: 编译验证（确保 dist/settings/ 目录被 Tauri 识别）**
 
 Run: `cargo check -p octopus-desktop --features embedded`
 Expected: 编译通过（Tauri 的 `frontendDist: "dist"` 相对路径包含 `settings/` 子目录）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/dist/settings/index.html
@@ -1180,13 +1180,13 @@ git commit -m "feat(desktop): 设置窗口前端 — 侧边栏 + 3 页面 + 设�
 
 `PolishMode` 是一个 enum，serde 默认序列化为 `{"Disabled":{}}` 形式或字符串。需要确认实际序列化形式并修正前端下拉框选中逻辑。
 
-- [ ] **Step 1: 构建 release 并运行**
+- [x] **Step 1: 构建 release 并运行**
 
 ```bash
 cd crates/desktop && cargo run --release --features embedded
 ```
 
-- [ ] **Step 2: 手动测试 — 基本功能**
+- [x] **Step 2: 手动测试 — 基本功能**
 
 打开应用后：
 1. 点击工具栏设置按钮 → 设置窗口打开
@@ -1194,19 +1194,19 @@ cd crates/desktop && cargo run --release --features embedded
 3. 识别记录页显示历史
 4. 系统设置页控件渲染正确
 
-- [ ] **Step 3: 手动测试 — 实时保存**
+- [x] **Step 3: 手动测试 — 实时保存**
 
 1. 切换"ASR 纠错"开关 → 检查 `~/.octopus/config.yaml` 中 `asr_correct` 值已更新
 2. 修改"分段时长" → 检查 config.yaml
 3. 输入非法值（停顿润色阈值=100）→ 检查 toast 错误提示
 4. 切换润色模式下拉 → 确认 polish_mode 值正确（需确认序列化形式）
 
-- [ ] **Step 4: 手动测试 — 历史记录**
+- [x] **Step 4: 手动测试 — 历史记录**
 
 1. 做几次录音 → 打开设置 → 识别记录页正确显示
 2. 滚动到底部 → 确认翻页加载
 
-- [ ] **Step 5: 如有 polish_mode 序列化问题，修正**
+- [x] **Step 5: 如有 polish_mode 序列化问题，修正**
 
 `PolishMode` 在 `infra::config` 中定义为 `#[derive(Serialize)]` 的 enum。serde 默认序列化为 `{"Disabled":{}}` 或 `"Disabled"`（取决于是否加了 `#[serde(rename_all = ...)]`）。检查实际序列化形式：
 
@@ -1217,7 +1217,7 @@ cat ~/.octopus/config.yaml | grep polish_mode
 
 如果序列化为 `polish_mode: Disabled`（字符串），前端下拉框需用字符串值匹配。如果序列化为数字（自定义 Serialize），则按数字处理。根据实际形式修正 `renderSettings` 中的 polish_mode 选中逻辑。
 
-- [ ] **Step 6: Commit 联调修正**
+- [x] **Step 6: Commit 联调修正**
 
 ```bash
 git add -A
@@ -1232,7 +1232,7 @@ git commit -m "fix(desktop): polish_mode 序列化修正 + e2e 联调"
 - Modify: `docs/architecture.md`
 - Modify: `docs/configuration.md`
 
-- [ ] **Step 1: 在 architecture.md 补充设置窗口说明**
+- [x] **Step 1: 在 architecture.md 补充设置窗口说明**
 
 在 architecture.md 的 desktop 窗口管理表格中（`result_window` 行之后），添加 `settings_window` 行：
 
@@ -1242,7 +1242,7 @@ git commit -m "fix(desktop): polish_mode 序列化修正 + e2e 联调"
 
 在 architecture.md 的 desktop 模块说明中补充设置窗口子系统段落（参考 RuntimeConfig 段落的风格）。
 
-- [ ] **Step 2: 在 configuration.md 补注 GUI 编辑入口**
+- [x] **Step 2: 在 configuration.md 补注 GUI 编辑入口**
 
 在 configuration.md 的 config.yaml 表格之后，添加：
 
@@ -1250,12 +1250,12 @@ git commit -m "fix(desktop): polish_mode 序列化修正 + e2e 联调"
 > **GUI 编辑**：`config.yaml` 的上述字段现可经设置窗口 GUI 编辑（工具栏设置按钮或托盘菜单"设置..."打开），实时保存 + 持久化。部分字段标注生效时机（立即 / 下次录音 / 重启）。
 ```
 
-- [ ] **Step 3: 最终编译 + 测试**
+- [x] **Step 3: 最终编译 + 测试**
 
 Run: `cargo check -p octopus-desktop --features embedded && cargo test -p octopus-desktop --features embedded`
 Expected: 编译零警告，全部测试通过。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/architecture.md docs/configuration.md
@@ -1323,7 +1323,7 @@ cargo check -p octopus-desktop --features embedded  # 编译通过
 node -e "..."  # JS 语法检查通过
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
