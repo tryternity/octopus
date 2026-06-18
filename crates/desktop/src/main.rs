@@ -4,6 +4,8 @@ mod audio;
 mod config;
 mod coordinator;
 mod engine;
+#[cfg(feature = "dashscope")]
+mod engine_dashscope;
 mod engine_embedded;
 #[cfg(feature = "remote-grpc")]
 mod engine_grpc;
@@ -176,11 +178,20 @@ pub fn run() {
             settings_commands::get_history,
         ])
         .setup(move |app| {
-            // Initialize engine manager and preheat the active ASR model if embedded
+            // Initialize engine manager
             let engine_manager = Arc::new(octopus_asr::engine::AsrEngineManager::new());
+
+            // 一次性解析 config.asr_engine → ResolvedEngine，结果同时用于：
+            //   ① embedded 模式预热模型（仅本地引擎需要）
+            //   ② 云引擎路由判定（category == Aliyun 时走 DashscopeEngine，dashscope feature 下生效）
+            let resolved_engine = octopus_asr::config::resolve_active_engine(&config.asr_engine);
+            #[cfg(feature = "dashscope")]
+            let resolved_category = resolved_engine.as_ref().ok().map(|r| r.category);
+
+            // Preheat the active ASR model if embedded 本地引擎
             if config.engine_mode == "embedded" {
-                let resolved_model = match octopus_asr::config::resolve_active_engine(&config.asr_engine) {
-                    Ok(resolved) => resolved.name,
+                let resolved_model = match &resolved_engine {
+                    Ok(r) => r.name.clone(),
                     Err(_) => "zipformer-small-ctc".to_string(),
                 };
                 info!("Preheating active ASR model in desktop: {}", resolved_model);
@@ -195,16 +206,25 @@ pub fn run() {
                 });
             }
 
-            // 1. Create engine
-            let engine: Arc<dyn TranscriptionEngine> = match config.engine_mode.as_str() {
-                "embedded" => Arc::new(EmbeddedEngine::new(engine_manager.clone())),
-                #[cfg(feature = "remote-ws")]
-                "websocket" => Arc::new(engine_ws::WsRemoteEngine::new(&config.remote_url)),
-                #[cfg(feature = "remote-grpc")]
-                "grpc" => Arc::new(engine_grpc::GrpcRemoteEngine::new(&config.grpc_endpoint)),
-                other => {
-                    log::warn!("Unknown engine_mode '{}', falling back to embedded", other);
-                    Arc::new(EmbeddedEngine::new(engine_manager.clone()))
+            // 1. Create engine —— 云引擎优先（dashscope feature 启用时）
+            //    asr_engine 解析为 EngineCategory::Aliyun → DashscopeEngine
+            //    否则回落原 engine_mode match（embedded/websocket/grpc）
+            #[cfg(feature = "dashscope")]
+            let is_cloud_aliyun = resolved_category == Some(octopus_asr::config::EngineCategory::Aliyun);
+
+            let engine: Arc<dyn TranscriptionEngine> = {
+                #[cfg(feature = "dashscope")]
+                {
+                    if is_cloud_aliyun {
+                        info!("ASR 引擎：阿里云 DashScope（cloud，FunASR Realtime WS）");
+                        Arc::new(engine_dashscope::DashscopeEngine::new())
+                    } else {
+                        build_local_engine(&config, &engine_manager)
+                    }
+                }
+                #[cfg(not(feature = "dashscope"))]
+                {
+                    build_local_engine(&config, &engine_manager)
                 }
             };
 
@@ -265,6 +285,27 @@ pub fn run() {
                 coordinator::shutdown_db();
             }
         });
+}
+
+/// 按 `config.engine_mode` 构建本地 ASR 引擎（embedded / websocket / grpc）。
+///
+/// 云引擎（DashScope）由 `run` 内 setup 路由判定后绕过此函数。
+/// 抽成独立函数使云路由分支结构清晰，并复用相同的 config + engine_manager 引用。
+fn build_local_engine(
+    config: &octopus_infra::config::AppConfig,
+    engine_manager: &Arc<octopus_asr::engine::AsrEngineManager>,
+) -> Arc<dyn TranscriptionEngine> {
+    match config.engine_mode.as_str() {
+        "embedded" => Arc::new(EmbeddedEngine::new(engine_manager.clone())),
+        #[cfg(feature = "remote-ws")]
+        "websocket" => Arc::new(engine_ws::WsRemoteEngine::new(&config.remote_url)),
+        #[cfg(feature = "remote-grpc")]
+        "grpc" => Arc::new(engine_grpc::GrpcRemoteEngine::new(&config.grpc_endpoint)),
+        other => {
+            log::warn!("Unknown engine_mode '{}', falling back to embedded", other);
+            Arc::new(EmbeddedEngine::new(engine_manager.clone()))
+        }
+    }
 }
 
 fn main() {
