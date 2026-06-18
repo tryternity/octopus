@@ -24,6 +24,7 @@ mod transcript;
 
 use coordinator::Coordinator;
 use engine::TranscriptionEngine;
+#[cfg(not(feature = "dashscope"))]
 use engine_embedded::EmbeddedEngine;
 use log::info;
 use std::sync::Arc;
@@ -308,8 +309,8 @@ pub fn run() {
 
 /// 按 `config.engine_mode` 构建本地 ASR 引擎（embedded / websocket / grpc）。
 ///
-/// 云引擎（DashScope）由 `run` 内 setup 路由判定后绕过此函数。
-/// 抽成独立函数使云路由分支结构清晰，并复用相同的 config + engine_manager 引用。
+/// 仅在未启用 `dashscope` feature 时使用（dashscope 下由 DispatchEngine 统一路由）。
+#[cfg(not(feature = "dashscope"))]
 fn build_local_engine(
     config: &octopus_infra::config::AppConfig,
     engine_manager: &Arc<octopus_asr::engine::AsrEngineManager>,
