@@ -394,7 +394,7 @@ click → 无动作（disabled，仅 tooltip）
 
 `RuntimeConfig` 新增字段：
 - `denoise_mode: u8` —— 运行时镜像 `config.yaml.denoise_mode`，供 `set_denoise_mode` 命令读写
-- `ToolbarState` DTO 新增 `hide_toolbar: bool` + `denoise_mode: u8`，前端经 `toolbar_state` 命令一次性获取
+- `ToolbarState` DTO 新增 `hide_toolbar: bool` + `denoise_mode: u8`，前端经 `toolbar_state` 命令一次性获取。**`hide_toolbar` 必须从 RuntimeConfig 读**（`g.hide_toolbar`），不能从 `load_app_config_cached()` 读——后者是 `OnceLock` 启动快照，`set_config` 写 config.yaml 后不会刷新缓存，会导致运行时切换 hide_toolbar 不生效（2026-06-18 修复）。
 
 ### 15.5 VAD 段间拼接标点去重（2026-06-17 修订）
 

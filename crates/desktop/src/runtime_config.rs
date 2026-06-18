@@ -245,8 +245,8 @@ pub fn build_llm_options_public(
 #[tauri::command]
 pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
     let g = rc.read().unwrap();
-    // hide_toolbar 是启动只读配置（不参与运行时切换），从 AppConfig 缓存读
-    let hide_toolbar = octopus_asr::config::load_app_config_cached().hide_toolbar;
+    // hide_toolbar 从 RuntimeConfig 读（set_config 写镜像后立即生效）；
+    // 不能从 load_app_config_cached 读——那是 OnceLock 启动快照，写 config.yaml 不会刷新
     // polish_llm 有效 = 裸名非空且在 DB 启用 LLM 列表中（DB 查询失败保守为 false）。
     let polish_llm = g.polish_llm.clone();
     let polish_llm_valid = {
@@ -259,7 +259,7 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
     ToolbarState {
         asr_engine: g.asr_engine.clone(),
         polish_mode: polish_mode_to_u8(g.polish_mode),
-        hide_toolbar,
+        hide_toolbar: g.hide_toolbar,
         denoise_mode: g.denoise_mode,
         polish_llm_valid,
     }
