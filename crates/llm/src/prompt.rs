@@ -16,6 +16,7 @@ const DEFAULT_SYSTEM_PROMPT: &str = r#"
 4. [原生语感]：严禁「AI 式浓缩」或擅自发散、扩写。完美保留用户的个人语气、情绪温度与原始文本体量——只改错，不改意。
 5. [智能排版]：自动添加正确的标点符号。日常沟通保持紧凑段落；明确列举多项事物时，使用列表排版。
 6. [绝对静默]：仅输出处理后的纯文本。严禁任何开场白、解释说明、前后缀或 Markdown 代码块标记。
+7. [增量保留]：若用户提供【已确认部分】，该部分必须逐字原样保留、严禁修改，仅润色【新增部分】，最终输出两者拼接。
 "#;
 
 /// 设置全局 system prompt 覆盖（应用启动时调用一次）。
@@ -32,7 +33,40 @@ pub fn system_prompt() -> &'static str {
         .unwrap_or(DEFAULT_SYSTEM_PROMPT)
 }
 
-/// 构建 user prompt
-pub fn user_prompt(text: &str) -> String {
-    format!("请润色以下语音识别文本：\n{}", text)
+/// 构建 user prompt。
+/// - preserved=None：全量润色（to_polish = 完整文本）。
+/// - preserved=Some：编辑后增量润色，告知 LLM 已确认部分原样保留、仅润色 to_polish。
+pub fn user_prompt(preserved: Option<&str>, to_polish: &str) -> String {
+    match preserved {
+        None => format!("请润色以下语音识别文本：\n{}", to_polish),
+        Some(confirmed) => format!(
+            "以下文本中，【已确认部分】已经用户人工校对，必须原样保留、严禁修改；仅对【新增部分】进行润色。\n\n\
+             【已确认部分（原样保留）】\n{}\n\n【新增部分（请润色）】\n{}\n\n\
+             请输出：已确认部分 + 润色后的新增部分，拼接为完整文本，仅输出纯文本。",
+            confirmed, to_polish
+        ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn user_prompt_without_preserved_is_plain() {
+        let p = user_prompt(None, "你好");
+        assert!(p.contains("请润色以下语音识别文本"));
+        assert!(p.contains("你好"));
+        assert!(!p.contains("已确认部分"));
+    }
+
+    #[test]
+    fn user_prompt_with_preserved_marks_boundary() {
+        let p = user_prompt(Some("已确认文本"), "新增文本");
+        assert!(p.contains("已确认部分"));
+        assert!(p.contains("原样保留"));
+        assert!(p.contains("已确认文本"));
+        assert!(p.contains("新增部分"));
+        assert!(p.contains("新增文本"));
+    }
 }

@@ -105,7 +105,7 @@ fn main() -> anyhow::Result<()> {
 
     // 4a. 配置中的 model（deepseek-v4-flash，带 reasoning）
     println!("\n-- 4a. model = {} （配置值，带 reasoning）--", config.model);
-    match polish(input, &config) {
+    match polish(None, input, &config) {
         Ok(out) => println!("输出 ({} 字符): {}", out.chars().count(), out),
         Err(e) => println!("✗ {:#}", e),
     }
@@ -114,7 +114,7 @@ fn main() -> anyhow::Result<()> {
     let mut cfg_chat = config.clone();
     cfg_chat.model = "deepseek-chat".into();
     println!("\n-- 4b. model = deepseek-chat （对照，非思考模型）--");
-    match polish(input, &cfg_chat) {
+    match polish(None, input, &cfg_chat) {
         Ok(out) => {
             println!("输出 ({} 字符): {}", out.chars().count(), out);
             println!("\n✓ deepseek-chat 润色正常");

@@ -669,7 +669,7 @@ fn start_final_polish_or_paste(
             let tx = tx.clone();
             let text_to_polish = text.to_string();
             std::thread::spawn(move || {
-                let result = match octopus_llm::polish(&text_to_polish, &llm_config) {
+                let result = match octopus_llm::polish(None, &text_to_polish, &llm_config) {
                     Ok(polished) => {
                         if polished.is_empty() {
                             Err("Final polish returned empty".to_string())
@@ -1041,7 +1041,7 @@ fn spawn_polish_thread(
     };
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let result = match octopus_llm::polish(&text, &llm_config) {
+        let result = match octopus_llm::polish(None, &text, &llm_config) {
             Ok(polished) => Ok(polished),
             Err(e) => {
                 log::warn!("Polish thread error: {}", e);

@@ -47,18 +47,17 @@ struct MessageContent {
     content: String,
 }
 
-/// 对 ASR 识别文本进行润色
-/// - 修正识别错误
-/// - 去除无意义语气词
-/// - 不改变内容原意，不过度润色
-/// 返回润色后的完整文本
-pub fn polish(text: &str, config: &CompatibleLlmConfig) -> Result<String> {
-    if text.trim().is_empty() {
-        return Ok(text.to_string());
+/// 对 ASR 识别文本进行润色。
+/// - preserved=Some：增量润色，保留 preserved 原样、仅润色 to_polish（编辑后用）。
+/// - preserved=None：全量润色 to_polish。
+/// 返回润色后的完整文本。
+pub fn polish(preserved: Option<&str>, to_polish: &str, config: &CompatibleLlmConfig) -> Result<String> {
+    if to_polish.trim().is_empty() {
+        return Ok(to_polish.to_string());
     }
 
     let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
-    let max_tokens = ((text.chars().count() as f64) * 1.2).ceil() as u64;
+    let max_tokens = ((to_polish.chars().count() as f64) * 1.2).ceil() as u64;
 
     // 按 provider 分派思考模式关闭方式：
     // - DeepSeek：`thinking: {type: "disabled"}`（专有字段）
@@ -82,7 +81,7 @@ pub fn polish(text: &str, config: &CompatibleLlmConfig) -> Result<String> {
             },
             Message {
                 role: "user".to_string(),
-                content: prompt::user_prompt(text),
+                content: prompt::user_prompt(preserved, to_polish),
             },
         ],
         temperature: 0.3,
