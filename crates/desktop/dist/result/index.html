@@ -201,7 +201,7 @@
     #container.editing #result-text {
       border: 1px solid #007aff;
       border-radius: 4px;
-      padding: 1px 13px 7px 13px;
+      padding: 1px 90px 7px 13px;   /* right 90px 给完成按钮让位 */
     }
     #container.editing #result-text:focus { background: rgba(0, 122, 255, 0.06); }
   </style>
@@ -403,12 +403,19 @@
       btnEdit.classList.add('active');
       currentWindow.setFocus();
       resultText.focus();
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      const range = document.createRange();
+      range.selectNodeContents(resultText);
+      range.collapse(false); // 光标到末尾，避免双击选词被首次输入替换
+      sel.addRange(range);
       invoke('enter_edit_mode');
       updateEditBuffer();
     }
 
     function commitEdit() {
       if (!editing) return;
+      clearTimeout(editBufTimer);
       const text = resultText.innerText;
       editing = false;
       resultText.setAttribute('contenteditable', 'false');
@@ -446,6 +453,7 @@
 
     listen('edit-force-exit', () => {
       if (editing) {
+        clearTimeout(editBufTimer);
         editing = false;
         resultText.setAttribute('contenteditable', 'false');
         container.classList.remove('editing');
