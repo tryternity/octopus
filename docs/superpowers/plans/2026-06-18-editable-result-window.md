@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 在录音会话进行中允许用户编辑结果展示区文本（双击/按钮进入，快捷键/按钮/失焦退出），编辑期间 ASR 硬暂停；编辑后的文本作为后续展示与润色基准，新识别文本追加其上，停止粘贴时保留编辑；编辑后触发润色时只润色新增、保留已编辑（折回 edited + 边界提示词）。
+**Goal:** 在录音会话进行中允许用户编辑结果展示区文本（双击/按钮进入，快捷键/按钮退出），编辑期间 ASR 硬暂停；编辑后的文本作为后续展示与润色基准，新识别文本追加其上，停止粘贴时保留编辑；编辑后触发润色时只润色新增、保留已编辑（折回 edited + 边界提示词）。
 
 **Architecture:** `Transcript` 新增 `edited` 字段，作为 `edited ≻ polished ≻ raw` 分层优先级最高层；`display_text()` = `committed + increase`。编辑是 coordinator 主循环里的 `editing` 标志——置位时两个 tick handler 跳过喂引擎、只排空丢弃音频（硬暂停）。提交时 `commit_edit` 写回 transcript 并 `UPDATE edited_text`。编辑×润色交互（spec §12）：`take_polish_input()` 返回 `(preserved=edited, to_polish=increase)`，LLM 仅润色 `to_polish`，`on_polish_done` 在 `has_edit()` 时把结果折回 `edited`（避免 edited 遮蔽 polished 导致丢字）。
 
@@ -459,7 +459,7 @@ git commit -m "feat(infra): transcriptions 加 edited_text 列 + update_edited_t
     EnterEditMode,
     /// 更新编辑缓冲（前端 input 防抖推送；供 Toggle-期间-编辑 恢复）
     UpdateEditBuffer { text: String },
-    /// 提交编辑（快捷键/完成按钮/失焦触发）
+    /// 提交编辑（快捷键/完成按钮触发）
     CommitEdit { text: String },
 ```
 
@@ -679,7 +679,7 @@ pub fn update_edit_buffer(coordinator: tauri::State<'_, Coordinator>, text: Stri
     coordinator.update_edit_buffer(text);
 }
 
-/// 前端命令：提交编辑（快捷键/完成按钮/失焦触发）。
+/// 前端命令：提交编辑（快捷键/完成按钮触发）。
 #[tauri::command]
 pub fn commit_edit(coordinator: tauri::State<'_, Coordinator>, text: String) {
     coordinator.commit_edit(text);
@@ -1083,7 +1083,7 @@ git commit -m "feat(desktop): 停止路径用 edited_display（无润色/兜底/
 - Create: `crates/desktop/dist/result/icons/edit.svg`
 - Modify: `crates/desktop/dist/result/index.html`
 
-`#result-text` 默认不可编辑；双击或点编辑按钮 → `contenteditable=true` + 聚焦 + `enter_edit_mode`；`Cmd/Ctrl+Enter` / 完成按钮 / blur → `commit_edit`；input 防抖推 `update_edit_buffer`；编辑态加边框、禁 mouseleave 收起、冻结 update-result。
+`#result-text` 默认不可编辑；双击或点编辑按钮 → `contenteditable=true` + 聚焦 + `enter_edit_mode`；`Cmd/Ctrl+Enter` / 完成按钮 → `commit_edit`；input 防抖推 `update_edit_buffer`；编辑态加边框、禁 mouseleave 收起、冻结 update-result。
 
 - [x] **Step 1: 新建 edit.svg**
 
@@ -1139,13 +1139,16 @@ git commit -m "feat(desktop): 停止路径用 edited_display（无润色/兜底/
     }
     #edit-done:hover { background: rgba(0,122,255,0.16); }
 
-    /* 编辑态：蓝边框 + 可编辑光标 */
-    #container.editing #result-text {
-      border: 1px solid #007aff;
-      border-radius: 4px;
-      padding: 1px 13px 7px 13px;
+    /* 编辑态：淡蓝边框包住整个展示区（text-wrapper），完成按钮落在框内（e2e 后） */
+    #container.editing #text-wrapper {
+      border: 1px solid rgba(0, 122, 255, 0.5);
+      border-radius: 6px;
+      background: rgba(0, 122, 255, 0.04);
     }
-    #container.editing #result-text:focus { background: rgba(0, 122, 255, 0.06); }
+    #container.editing #result-text {
+      padding: 1px 90px 7px 13px;   /* right 90px 给完成按钮让位 */
+    }
+    #container.editing #result-text:focus { background: transparent; }
 ```
 
 - [x] **Step 4: 加编辑态 JS**
@@ -1200,7 +1203,7 @@ git commit -m "feat(desktop): 停止路径用 edited_display（无润色/兜底/
     btnEditDone.addEventListener('mousedown', (e) => e.preventDefault());
     btnEditDone.addEventListener('click', (e) => { e.preventDefault(); commitEdit(); });
 
-    resultText.addEventListener('blur', () => { if (editing) commitEdit(); });
+    // （e2e 后去除 blur 触发：完成按钮 + Cmd/Ctrl+Enter 已足够，点别处/toolbar 不再自动提交）
 
     let editBufTimer = null;
     resultText.addEventListener('input', () => {
@@ -1247,7 +1250,7 @@ Run: `cargo run -p octopus-desktop`
 2. 双击文本 → 蓝边框 + 「完成编辑」→ 继续说话，窗口不刷新（硬暂停）。
 3. 改字 → 点「完成编辑」→ 边框消失 → 继续说 → 新文本追加在编辑结果后。
 4. 双击 → 改 → Cmd+Enter → 同样生效。
-5. 编辑态点工具栏 ASR 按钮 → 先退出编辑（blur 提交）再弹浮层。
+5. 编辑态点工具栏 ASR 按钮 → 不退出编辑，直接弹浮层（e2e：完成按钮足够显眼，去除 blur 退出）。
 
 Expected: 行为符合预期，devtools 无 JS 报错。
 
@@ -1255,7 +1258,7 @@ Expected: 行为符合预期，devtools 无 JS 报错。
 
 ```bash
 git add crates/desktop/dist/result/index.html crates/desktop/dist/result/icons/edit.svg
-git commit -m "feat(desktop): 结果窗可编辑（双击/按钮进入，快捷键/按钮/失焦退出，硬暂停）"
+git commit -m "feat(desktop): 结果窗可编辑（双击/按钮进入，快捷键/按钮退出，硬暂停）"
 ```
 
 ---
@@ -1278,7 +1281,7 @@ git commit -m "feat(desktop): 结果窗可编辑（双击/按钮进入，快捷�
 录音过程中可随时修正识别/润色文本：
 - **进入编辑**：双击结果区文本，或点工具栏 ✏️ 编辑按钮。单击不触发（防误触）。
 - **编辑期间 ASR 硬暂停**（音频丢弃），改完恢复。
-- **退出编辑**（择一）：`Cmd/Ctrl+Enter`、点「完成编辑」按钮、或失焦（点别处/工具栏）。
+- **退出编辑**（择一）：`Cmd/Ctrl+Enter`、点「完成编辑」按钮。（e2e：完成按钮足够显眼，去除失焦/点 toolbar 退出。）
 - 编辑后的文本作为后续展示与润色基准；新识别文本追加其上；停止粘贴时保留编辑。
 - 编辑后再触发润色时，仅润色新增部分、保留已编辑（润色结果折回）。
 - 未编辑时行为与旧版完全一致。
@@ -1304,7 +1307,7 @@ Transcript 相关段加：
 `docs/superpowers/specs/2026-06-18-editable-result-window-design.md` 顶部 `> Status:` 行改为：
 
 ```
-> Status: ✅ 已实现（2026-06-18，plan 2026-06-18-editable-result-window.md v2）。会话中编辑（双击/按钮进入，快捷键/按钮/失焦退出，硬暂停）+ 三文本分层 + 编辑×润色折回 + DB edited_text 均已落地。
+> Status: ✅ 已实现（2026-06-18，plan 2026-06-18-editable-result-window.md v2）。会话中编辑（双击/按钮进入，快捷键/按钮退出，硬暂停）+ 三文本分层 + 编辑×润色折回 + DB edited_text 均已落地。
 ```
 
 - [x] **Step 4: plan checkbox 勾选**
@@ -1351,7 +1354,7 @@ git commit -m "docs: 同步结果窗可编辑（configuration/architecture/spec 
 | 编辑后停顿润色（mode=2） | take_polish_input=(edited, 新增)；LLM 仅润色新增；结果折回 edited，无丢字 |
 | 停止粘贴（有润色） | 粘贴 = polish(edited, 新增) 的结果；DB raw 仍原始 ASR |
 | 停止粘贴（无润色/兜底） | 粘贴 = edited_display（含 edited） |
-| 编辑态点 toolbar | 先退出编辑（blur 提交）再执行按钮动作 |
+| 编辑态点 toolbar | 不退出编辑，直接执行按钮动作（e2e 去除 blur 退出） |
 | 编辑态按停止热键 | edit_buffer 提交编辑后停止 |
 | DB | raw/polished/edited 三列独立、互不干扰 |
 

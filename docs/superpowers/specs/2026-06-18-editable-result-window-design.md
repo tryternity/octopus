@@ -2,7 +2,7 @@
 
 > Date: 2026-06-18
 > Branch: `worktree-editable-result`（worktree 路径 `.claude/worktrees/editable-result`）
-> Status: ✅ 已实现（2026-06-18，plan 2026-06-18-editable-result-window.md v2）。会话中编辑（双击/按钮进入，快捷键/按钮/失焦退出，硬暂停）+ 三文本分层 + 编辑×润色折回 + DB edited_text 均已落地。
+> Status: ✅ 已实现（2026-06-18，plan 2026-06-18-editable-result-window.md v2）。会话中编辑（双击/按钮进入，快捷键/按钮退出，硬暂停）+ 三文本分层 + 编辑×润色折回 + DB edited_text 均已落地。
 
 ## 1. 背景与目标
 
@@ -41,7 +41,7 @@
 
 ### 3.2 编辑态指示
 
-- `#result-text:focus` 已有蓝色背景；编辑态额外加**边框**（如 `border: 1px solid #007aff`）。
+- 编辑态：`#text-wrapper` 加**淡蓝边框**（`border: 1px solid rgba(0,122,255,0.5)`）+ 淡蓝底，包住整个展示区；`#result-text` 仅保留右侧内边距（避让完成按钮），不再自带边框；「完成编辑」按钮落在框内（GUI e2e 反馈：饱和蓝 `#007aff` 画在单行 `#result-text` 上太窄、颜色偏深，改为淡蓝 + 上移到 `#text-wrapper`）。
 - 工具栏高亮「✏️ 编辑中」（编辑按钮 `.active`）+ 显示「**完成编辑**」按钮。
 - 编辑期间：禁用 `container.mouseleave` 自动收起；窗口保持可见并 `setFocus()`（保证键盘输入进入 webview）。
 
@@ -49,7 +49,8 @@
 
 1. **快捷键** `CmdOrCtrl+Enter`。
 2. 点「**完成编辑**」按钮。
-3. **失焦**（`#result-text.blur`）：点屏幕别处 / 点 toolbar 任意按钮 / 点文本区外。
+
+> e2e 反馈：完成按钮已足够显眼，失焦 / 点 toolbar 自动退出非必要，已去除 `blur` 触发——点别处或点工具栏不再自动提交，改完请显式 Cmd+Enter 或点完成按钮。后端 Toggle/Cancel 停止路径仍用 `edit_buffer` 兜底提交（§7），不会丢编辑。
 
 任一触发 → 前端取 `#result-text.innerText`，`invoke('commit_edit', { text })` → 后端提交（§5）→ 恢复识别。
 
@@ -118,7 +119,7 @@ committed = edited 非空 ? edited
                                                           │
                                             用户编辑 #result-text ◀── 键盘输入
                                                           │
-  Cmd+Enter / 完成按钮 / blur ──▶ commit_edit(innerText)
+  Cmd+Enter / 完成按钮 ──▶ commit_edit(innerText)
                                                           │
                                               ① edited=text; raw_len=full.len(); full 不变
                                               ② coordinator: 恢复喂音频（streaming_active=true / 续 tick）
@@ -136,9 +137,9 @@ committed = edited 非空 ? edited
 | 编辑态收到 toggle（停止录音） | 先 `commit_edit` 提交，再走正常停止流程（用户改完直接按停止键可用） |
 | 编辑态收到 `TranscriptionDone`（伪流式残留段） | 忽略（硬暂停下本不应有；防御性丢弃） |
 | 编辑态收到 `update-result` 事件 | 前端忽略（ASR 已暂停，本不会来；防御性） |
-| 编辑态点工具栏其他按钮（如切换 ASR） | blur → 先提交编辑，再执行该按钮动作 |
+| 编辑态点工具栏其他按钮（如切换 ASR） | 不退出编辑，直接执行按钮动作（e2e：完成按钮已足够显眼，点 toolbar 退出非必要） |
 | 空文本提交 | `edited=""`，committed 回退 polished/raw |
-| 失焦 vs 完成按钮竞态 | 提交统一走同一 `commit` 函数；完成按钮用 `mousedown preventDefault` 避免过早 blur 抢焦导致 click 丢失 |
+| 完成按钮 click 可靠性 | 提交统一走同一 `commitEdit`；完成按钮用 `mousedown preventDefault` 避免抢焦导致 click 丢失（无 blur 触发，故无失焦竞态） |
 | 窗口键盘焦点 | 进入编辑时 `currentWindow.setFocus()`，确保 contenteditable 能收键盘 |
 
 ## 8. DB 变更
@@ -179,7 +180,7 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
   - 编辑态冻结 `update-result`（前端配合）。
 - **`desktop/dist/result/index.html`**：
   - `#result-text` 动态 `contenteditable` 切换；`dblclick` + 新增 ✏️ 编辑按钮 + 完成编辑按钮。
-  - `CmdOrCtrl+Enter` / 完成按钮 / `blur` → `commit_edit`。
+  - `CmdOrCtrl+Enter` / 完成按钮 → `commit_edit`。
   - 编辑态：加边框、禁 `mouseleave` 收起、`setFocus`、忽略 `update-result`。
 - **`desktop/src/main.rs`**：`invoke_handler` 注册 `enter_edit_mode` / `commit_edit`。
 - **`infra/src/db.sql`** + **`infra/src/db.rs`**：`edited_text` 列 + `finalize_transcription` 参数；`TranscriptionRecord` 加字段；历史查询 SELECT 加列。
@@ -204,7 +205,7 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
 
 ## 11. 文档同步（CLAUDE.md 强制）
 
-- **`docs/configuration.md`**：编辑能力说明（双击/按钮进入，Cmd+Enter/按钮/失焦退出，硬暂停语义）。
+- **`docs/configuration.md`**：编辑能力说明（双击/按钮进入，Cmd+Enter/按钮退出，硬暂停语义）。
 - **`docs/architecture.md`**：`Transcript` 三文本分层模型（edited ≻ polished ≻ raw）+ 编辑态 + DB `edited_text` 列。
 - 本 spec + 对应 plan（`docs/superpowers/plans/2026-06-18-editable-result-window.md`）。
 
