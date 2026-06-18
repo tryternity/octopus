@@ -394,12 +394,17 @@ pub fn update_polished(
 /// 用户提交编辑 / 中间润色折回后更新 edited_text。
 pub fn update_edited_text(id: i64, edited_text: &str) -> Result<()> {
     with_db(|conn| {
-        conn.execute(
-            "UPDATE transcriptions SET edited_text=?1 WHERE id=?2",
-            params![edited_text, id],
-        )?;
+        update_edited_text_at(conn, id, edited_text)?;
         Ok(())
     })
+}
+
+/// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。返回实际更新的行数。
+fn update_edited_text_at(conn: &Connection, id: i64, edited_text: &str) -> Result<usize> {
+    Ok(conn.execute(
+        "UPDATE transcriptions SET edited_text=?1 WHERE id=?2",
+        params![edited_text, id],
+    )?)
 }
 
 /// 识别结束 finalize：写最终 raw/polished/status/char_count/duration_ms。
@@ -917,28 +922,36 @@ mod tests {
     #[test]
     fn update_edited_text_persists_and_lists() {
         let conn = open_init();
+        // id=100：将被编辑的记录
+        conn.execute(
+            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polished_text, polish_status)
+             VALUES (100, '2026-06-18 10:00:00', 'whisper', 'raw原文', '润色稿', 'done')",
+            [],
+        )
+        .unwrap();
+        // id=200：未编辑的对照记录（验证 NULL → None 映射）
         conn.execute(
             "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
-             VALUES (1, '2026-06-18', 'test', 'raw原文', 'off')",
+             VALUES (200, '2026-06-18 11:00:00', 'qwen3', '另一条', 'off')",
             [],
         )
         .unwrap();
 
-        let n = conn
-            .execute(
-                "UPDATE transcriptions SET edited_text=?1 WHERE id=?2",
-                rusqlite::params!["手改文本", 1],
-            )
-            .unwrap();
+        // 走真实 update_edited_text_at（而非裸 SQL），断言返回行数 1
+        let n = update_edited_text_at(&conn, 100, "手改文本").unwrap();
         assert_eq!(n, 1);
 
-        let edited: Option<String> = conn
-            .query_row(
-                "SELECT edited_text FROM transcriptions WHERE id=1",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(edited.as_deref(), Some("手改文本"));
+        // 经 list_transcriptions_at 回读，同时验证 list 列序映射正确
+        let rows = list_transcriptions_at(&conn, 10, 0).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, 200, "最新在前（id 降序）");
+        assert_eq!(rows[1].id, 100);
+        assert_eq!(rows[1].edited_text.as_deref(), Some("手改文本"));
+        // 未编辑记录：edited_text 为 NULL → Option None
+        assert_eq!(rows[0].edited_text, None);
+
+        // 不存在的 id：返回 0 行更新
+        let missing = update_edited_text_at(&conn, 9999, "无效").unwrap();
+        assert_eq!(missing, 0);
     }
 }
