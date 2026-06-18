@@ -515,7 +515,7 @@ Expected: 失败——`Coordinator::new` 签名还没加 `runtime_config` 参数
 
 （注意：原第 144 行 `std::thread::spawn(move || {` 保持不变；`runtime_config` 由 `move ||` 自动 move 捕获进闭包。）
 
-- [x] **Step 2: Toggle 命令分发处——仅 Idle 时同步 asr_engine + polish_mode + 重算 use_streaming**
+- [x] **Step 2: Toggle 命令分发处——仅 Idle 时同步 asr_engine + polish_mode + polish_llm + 重算 use_streaming**（2026-06-18 补 polish_llm 同步——原仅同步 asr_engine/polish_mode，遗漏 polish_llm 致立即润色按钮失效）
 
 `coordinator.rs` 第 157-167 行的 `Command::Toggle => { ... }` 改为：
 
