@@ -173,7 +173,7 @@ octopus-cli config
 
 ### model.json / history.txt 已废弃
 
-`model.json`（旧模型配置）和 `history.txt`（旧识别历史）已在 DB 单一源重构中彻底删除，DB 是唯一来源。详见 [db-single-source 设计](superpowers/specs/2026-06-14-db-single-source-design.md)。
+`model.json`（旧模型配置）和 `history.txt`（旧识别历史）已在 DB 单一源重构中彻底删除，DB 是唯一来源。详见 [db-single-source 设计](superpowers/specs/2026-06-14-archived-design.md)。
 
 ## config.yaml
 
@@ -195,7 +195,7 @@ octopus-cli config
 | `grpc_endpoint` | string | `http://127.0.0.1:50051` | desktop | grpc 模式端点 |
 | `shortcut` | string | `CmdOrCtrl+Shift+Space` | desktop | 全局快捷键 |
 | `paste_method` | string | `"clipboard"` | desktop | clipboard / direct / none |
-| `write_to_clipboard` | bool | `true` | desktop | 粘贴完成后是否把识别结果写入剪贴板（方便他处再粘贴）；`false` 时三模式等同重构前现状（不碰/恢复原剪贴板）。详见 [transcript-model spec §6](superpowers/specs/2026-06-14-transcript-model-design.md) |
+| `write_to_clipboard` | bool | `true` | desktop | 粘贴完成后是否把识别结果写入剪贴板（方便他处再粘贴）；`false` 时三模式等同重构前现状（不碰/恢复原剪贴板）。详见 [transcript-model spec §6](superpowers/specs/2026-06-14-archived-design.md) |
 | `overlay_position` | string | `"top"` | desktop | top / bottom / none |
 | `segment_duration` | f64 | `5.0` | desktop | VAD 伪流式：缓冲累积时长阈值（秒） |
 | `segment_silence` | f64 | `500.0` | desktop | VAD 伪流式：静音触发识别阈值（毫秒） |
