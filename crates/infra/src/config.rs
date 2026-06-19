@@ -6,8 +6,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::octopus_config_home;
-
 /// LLM 润色模式（config.yaml 的 polish_mode 字段，整数 0/1/2）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PolishMode {
@@ -108,8 +106,8 @@ pub struct AppConfig {
     pub polish_mode: PolishMode,
 
     /// 中间润色间隔（秒），0 = 仅最终润色
-    #[serde(default = "default_polish_interval")]
-    pub polish_interval: f64,
+    #[serde(default = "default_polish_min_interval")]
+    pub polish_min_interval: f64,
 
     /// 停顿驱动中间润色的静音阈值（毫秒）：静音达此值即触发全量润色（mode=2 only）
     #[serde(default = "default_pause_polish_threshold_ms")]
@@ -173,7 +171,7 @@ fn default_write_to_clipboard() -> bool {
 fn default_overlay_position() -> String {
     "top".into()
 }
-fn default_polish_interval() -> f64 {
+fn default_polish_min_interval() -> f64 {
     5.0
 }
 fn default_pause_polish_threshold_ms() -> f64 {
@@ -222,7 +220,7 @@ impl Default for AppConfig {
             segment_silence: default_segment_silence(),
             overlay_position: default_overlay_position(),
             polish_mode: PolishMode::default(),
-            polish_interval: default_polish_interval(),
+            polish_min_interval: default_polish_min_interval(),
             pause_polish_threshold_ms: default_pause_polish_threshold_ms(),
             polish_llm: default_polish_llm(),
             asr_hardware_accelerated: default_asr_hardware_accelerated(),
@@ -235,34 +233,13 @@ impl Default for AppConfig {
     }
 }
 
-/// 从 ~/.octopus/config.yaml 加载应用配置。
+/// 从 DB app_config 表加载应用配置。
 ///
-/// 文件不存在或字段缺失时使用默认值（不报错）。文件存在但解析失败才返回 Err。
-/// 注意：不缓存——调用方各自决定是否缓存（asr 侧引擎配置另有 OnceLock 缓存）。
+/// 内部委托 `db::load_app_config()`（首次调用时触发 ensure_db + init_schema，
+/// 包含 yaml → DB 一次性迁移）。不缓存——调用方各自决定是否缓存
+/// （asr 侧引擎配置另有 OnceLock 缓存）。
 pub fn load_config() -> Result<AppConfig> {
-    let config_path = octopus_config_home().join("config.yaml");
-
-    if !config_path.exists() {
-        return Ok(AppConfig::default());
-    }
-
-    let text = std::fs::read_to_string(&config_path)?;
-    // 迁移旧字段名 shortcut → asr_shortcut（serde alias 在两键共存时报 duplicate field）
-    let mut value: serde_yaml::Value = serde_yaml::from_str(&text)?;
-    if let Some(map) = value.as_mapping_mut() {
-        let shortcut_key = serde_yaml::Value::String("shortcut".into());
-        let asr_key = serde_yaml::Value::String("asr_shortcut".into());
-        if map.get(&shortcut_key).is_some() {
-            if map.get(&asr_key).is_none() {
-                let old_val = map.remove(&shortcut_key).unwrap();
-                map.insert(asr_key, old_val);
-            } else {
-                map.remove(&shortcut_key);
-            }
-        }
-    }
-    let config: AppConfig = serde_yaml::from_value(value)?;
-    Ok(config)
+    crate::db::load_app_config()
 }
 
 #[cfg(test)]
@@ -288,29 +265,15 @@ mod tests {
     }
 
     #[test]
-    fn write_to_clipboard_defaults_to_true() {
-        // 空 yaml → 所有字段走 serde 默认；write_to_clipboard 应默认 true
-        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
+    fn app_config_default_values() {
+        let cfg = AppConfig::default();
         assert!(cfg.write_to_clipboard, "write_to_clipboard 应默认 true");
-    }
-
-    #[test]
-    fn pause_polish_threshold_ms_defaults_to_600() {
-        // 空 yaml → pause_polish_threshold_ms 应默认 600（毫秒）
-        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
         assert_eq!(cfg.pause_polish_threshold_ms, 600.0);
-    }
-
-    #[test]
-    fn asr_hardware_accelerated_defaults_to_false() {
-        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
         assert!(!cfg.asr_hardware_accelerated);
-    }
-
-    #[test]
-    fn asr_correct_defaults_to_false() {
-        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
         assert!(!cfg.asr_correct);
+        assert_eq!(cfg.denoise_mode, 1);
+        assert_eq!(cfg.edit_shortcut, "Cmd+E");
+        assert_eq!(cfg.segment_silence, 400.0);
     }
 
     #[test]
@@ -337,13 +300,6 @@ mod tests {
     }
 
     #[test]
-    fn denoise_mode_defaults_to_rnnoise_when_absent() {
-        // denoise_mode 缺省 → default_denoise_mode() = 1（轻度/RNNoise）。
-        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
-        assert_eq!(cfg.denoise_mode, 1);
-    }
-
-    #[test]
     fn denoise_mode_explicit_from_yaml() {
         // 显式 0/1/2 直接落到字段。
         let cfg: AppConfig = serde_yaml::from_str("denoise_mode: 2\n").unwrap();
@@ -362,60 +318,9 @@ mod tests {
     }
 
     #[test]
-    fn edit_shortcut_defaults_to_cmd_e() {
-        // 缺省 → default_edit_shortcut() = "Cmd+E"
-        let cfg: AppConfig = serde_yaml::from_str("").unwrap();
-        assert_eq!(cfg.edit_shortcut, "Cmd+E");
-    }
-
-    #[test]
     fn edit_shortcut_explicit_from_yaml() {
         // 显式值原样落到字段（Tauri Accelerator 字符串）
         let cfg: AppConfig = serde_yaml::from_str("edit_shortcut: CmdOrCtrl+Shift+E\n").unwrap();
         assert_eq!(cfg.edit_shortcut, "CmdOrCtrl+Shift+E");
-    }
-
-    #[test]
-    fn load_config_migrates_shortcut_to_asr_shortcut() {
-        // 旧字段 shortcut → 新字段 asr_shortcut
-        let tmp = std::env::temp_dir().join(format!("octopus_test_migrate_{}.yaml", std::process::id()));
-        std::fs::write(&tmp, "shortcut: Cmd+Q\n").unwrap();
-        // 临时切换 config home
-        std::fs::create_dir_all(tmp.parent().unwrap().join("test_home")).unwrap();
-        // 直接测迁移逻辑（load_config 依赖 octopus_config_home，这里测 serde 层兼容）
-        let text = "shortcut: Cmd+Q\n";
-        let mut value: serde_yaml::Value = serde_yaml::from_str(text).unwrap();
-        if let Some(map) = value.as_mapping_mut() {
-            let old_key = serde_yaml::Value::String("shortcut".into());
-            let new_key = serde_yaml::Value::String("asr_shortcut".into());
-            if map.get(&old_key).is_some() && map.get(&new_key).is_none() {
-                let v = map.remove(&old_key).unwrap();
-                map.insert(new_key, v);
-            }
-        }
-        let cfg: AppConfig = serde_yaml::from_value(value).unwrap();
-        assert_eq!(cfg.asr_shortcut, "Cmd+Q");
-        let _ = std::fs::remove_file(&tmp);
-    }
-
-    #[test]
-    fn load_config_both_keys_drops_old() {
-        // 两键共存 → 删旧留新（不报 duplicate field）
-        let text = "shortcut: Cmd+Q\nasr_shortcut: Cmd+W\n";
-        let mut value: serde_yaml::Value = serde_yaml::from_str(text).unwrap();
-        if let Some(map) = value.as_mapping_mut() {
-            let old_key = serde_yaml::Value::String("shortcut".into());
-            let new_key = serde_yaml::Value::String("asr_shortcut".into());
-            if map.get(&old_key).is_some() {
-                if map.get(&new_key).is_none() {
-                    let v = map.remove(&old_key).unwrap();
-                    map.insert(new_key.clone(), v);
-                } else {
-                    map.remove(&old_key);
-                }
-            }
-        }
-        let cfg: AppConfig = serde_yaml::from_value(value).unwrap();
-        assert_eq!(cfg.asr_shortcut, "Cmd+W");
     }
 }

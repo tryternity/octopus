@@ -3,16 +3,16 @@
 octopus 配置分两部分：
 
 - **模型配置**：`~/.octopus/octopus.db` 的 `models` 表（SQLite，唯一来源）
-- **应用配置**：`~/.octopus/config.yaml`（行为参数，可选）
+- **应用配置**：`~/.octopus/octopus.db` 的 `app_config` 表（SQLite，v3+ 替代旧 config.yaml）
 
-首次启动自动建库 + 写入默认引擎，开箱即用。
+首次启动自动建库 + 写入默认引擎 + 应用配置，开箱即用。
 
 ## 目录结构
 
 ```
 ~/.octopus/
-├── octopus.db          # 嵌入式 SQLite：models 表（模型配置）+ transcriptions 表（识别历史）
-├── config.yaml         # 应用配置（可选，缺失用默认值）
+├── octopus.db          # 嵌入式 SQLite：models 表 + transcriptions 表 + app_config 表（唯一存储）
+├── config.yaml.bak     # 旧 config.yaml 迁移后的备份（首次启动自动生成，可安全删除）
 ├── VOICE_POLISH.md     # 润色 system prompt 自定义覆盖（可选）
 └── models/             # 随应用打包的小模型（固定路径）
     ├── silero_vad_v4.onnx   # VAD（固定加载，不进 DB）
@@ -89,7 +89,7 @@ octopus 配置分两部分：
 
 > **远程 API Key 配置方式（`secret_key`）**：LLM / 云端 ASR 的所有参数（包括 Base URL / WS 端点 和 API Key）全部存储在 DB `models` 表。`source` 存端点 URL，`secret_key` 存 API Key。可通过 SQLite 客户端手动填入（具体填法见下方「阿里云云端 API」小节）。
 
-> **不再有 `is_active` 列**：引擎激活改由 `config.yaml.asr_engine` 决定（见下方「引擎选择与兜底」）。`zipformer-small-ctc` 是兜底引擎——`asr_engine` 为空或匹配不到任何模型时，自动回退到它（靠本地打包路径，开箱可用）。
+> **不再有 `is_active` 列**：引擎激活改由 `app_config.asr_engine` 决定（见下方「引擎选择与兜底」）。`zipformer-small-ctc` 是兜底引擎——`asr_engine` 为空或匹配不到任何模型时，自动回退到它（靠本地打包路径，开箱可用）。
 
 ### 阿里云云端 API 接入
 
@@ -127,7 +127,7 @@ seed 已含 `aliyun:Fun-ASR:fun-asr-2025-11-07`（WS 端点 `wss://dashscope.ali
 asr_engine: "aliyun:Fun-ASR:fun-asr-2025-11-07"
 ```
 
-**云引擎路由**：启动时 `resolve_active_engine(&config.asr_engine)` 按 `provider='aliyun'` 解析为 `EngineCategory::Aliyun` → 建 `DashscopeEngine`；否则按 `engine_mode`（embedded/websocket/grpc）走本地引擎。云 ↔ 本地切换改 `config.yaml.asr_engine` 后**重启**生效（engine 实例启动时固定）。
+**云引擎路由**：启动时 `resolve_active_engine(&config.asr_engine)` 按 `provider='aliyun'` 解析为 `EngineCategory::Aliyun` → 建 `DashscopeEngine`；否则按 `engine_mode`（embedded/websocket/grpc）走本地引擎。云 ↔ 本地切换改 `app_config.asr_engine` 后**重启**生效（engine 实例启动时固定）。
 
 > **注意**：`engine_category_from_str("aliyun")` 仍返回 `None`——aliyun 不靠 `category` 字符串识别，而由 `resolve_category(provider, category)` 按 `provider='aliyun'` 分支识别（不进 5 个本地族字符串映射）。
 
@@ -167,7 +167,7 @@ octopus-cli config
 
 ### 手编 DB
 
-`models` 表可手动编辑（增删模型条目），但**需重启进程生效**——`asr::load_config()` 首次读出后缓存到 `OnceLock`，运行中不热更新。引擎激活改由 `config.yaml.asr_engine` 决定（`models` 表不再有 `is_active` 列）。**唯一键** `UNIQUE(domain, provider, category, model_name)` 允许跨 provider 同名模型共存（如 deepseek-v4-flash 在 deepseek 直连与 aliyun 代管下各一行）。
+`models` 表可手动编辑（增删模型条目），但**需重启进程生效**——`asr::load_config()` 首次读出后缓存到 `OnceLock`，运行中不热更新。引擎激活改由 `app_config.asr_engine` 决定（`models` 表不再有 `is_active` 列）。**唯一键** `UNIQUE(domain, provider, category, model_name)` 允许跨 provider 同名模型共存（如 deepseek-v4-flash 在 deepseek 直连与 aliyun 代管下各一行）。
 
 > **开发阶段 schema 变更**：直接修改 [`crates/infra/src/db.sql`](../crates/infra/src/db.sql)，然后删除 `~/.octopus/octopus.db` 并重启即可重新初始化。无迁移逻辑，开发期以此替代。
 
@@ -175,20 +175,20 @@ octopus-cli config
 
 `model.json`（旧模型配置）和 `history.txt`（旧识别历史）已在 DB 单一源重构中彻底删除，DB 是唯一来源。详见 [db-single-source 设计](superpowers/specs/2026-06-14-archived-design.md)。
 
-## config.yaml
+## 应用配置（app_config 表）
 
-应用行为配置，文件不存在时使用默认值。
+应用行为配置，v3+ 统一存储在 `~/.octopus/octopus.db` 的 `app_config` 表（key-value TEXT）。首次启动由 db.sql seed 默认值；旧 `config.yaml` 自动迁移到 DB 后重命名为 `.bak`。
 
 **两种编辑方式**：
-1. **GUI 设置窗口**（推荐）：桌面应用工具栏点击「设置」按钮或托盘菜单「设置...」打开独立设置窗口——系统设置页提供表单化编辑（toggle/select/number input），修改即时写回共享 `AppConfig` + `config.yaml`。18 个可配置字段均有类型校验和生效时间提示（立即 / 下次录音 / 重启）。
-2. **手动编辑**：直接编辑 `~/.octopus/config.yaml`，需重启进程生效（`OnceLock` 缓存）。
+1. **GUI 设置窗口**（推荐）：桌面应用工具栏点击「设置」按钮或托盘菜单「设置...」打开独立设置窗口——系统设置页提供表单化编辑（toggle/select/number input），修改即时写回 DB `app_config` 表 + RuntimeConfig。21 个可配置字段均有类型校验和生效时间提示（立即 / 下次录音 / 重启）。
+2. **手动编辑**：直接用 sqlite3 编辑 `~/.octopus/octopus.db` 的 `app_config` 表，需重启进程生效（`OnceLock` 缓存）。
 
-> **⚠️ 迁移提示**：旧字段 `polish_enabled` 已废弃。请改用 `polish_mode`：`false` → `0`（关闭）；`true` + interval>0 → `2`（中间+最终润色）；`true` + interval=0 → `1`（仅最终润色）。旧字段被忽略，未配置 `polish_mode` 时润色默认关闭。
+> **⚠️ 迁移提示**：旧 `config.yaml` 首次启动 v3 版本时自动导入 DB 并重命名为 `config.yaml.bak`。旧字段 `polish_enabled` / `shortcut` / `polish_interval` 在迁移时自动转换为 `polish_mode` / `asr_shortcut` / `polish_min_interval`。
 
 | 字段 | 类型 | 默认值 | 适用端 | 说明 |
 |---|---|---|---|---|
 | `microphone` | string | `""` | cli + desktop | 麦克风设备名（空 = 系统默认） |
-| `asr_engine` | string | `""` | desktop + server | ASR 引擎选择，格式 `"{provider}:{category}:{model_name}"`（见下方「模型选择 spec」）。示例：`"local:zipformer:zipformer-small-ctc"`、`"aliyun:Fun-ASR:fun-asr-2025-11-07"`。空或匹配不到回退兜底 `local:zipformer:zipformer-small-ctc`。显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，不走兜底。**desktop 悬停工具栏可在运行时切换**（`switch_asr_engine` 命令）：写共享 `AppConfig` + 持久化回 config.yaml，**下次录音生效**（Coordinator 在 Toggle 进入 Idle 时重读并重建引擎）。`provider='aliyun'` 路由云端 `DashscopeEngine`（需开 `dashscope` feature），改 `provider` 后**重启**生效 |
+| `asr_engine` | string | `""` | desktop + server | ASR 引擎选择，格式 `"{provider}:{category}:{model_name}"`（见下方「模型选择 spec」）。示例：`"local:zipformer:zipformer-small-ctc"`、`"aliyun:Fun-ASR:fun-asr-2025-11-07"`。空或匹配不到回退兜底 `local:zipformer:zipformer-small-ctc`。显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，不走兜底。**desktop 悬停工具栏可在运行时切换**（`switch_asr_engine` 命令）：写 RuntimeConfig + 持久化回 DB `app_config` 表，**下次录音生效**（Coordinator 在 Toggle 进入 Idle 时重读镜像并重建引擎）。`provider='aliyun'` 路由云端 `DashscopeEngine`（需开 `dashscope` feature），改 `provider` 后**重启**生效 |
 | `language` | string | `"auto"` | desktop | auto / zh / en / ja / ko |
 | `engine_mode` | string | `"embedded"` | desktop | embedded / websocket / grpc |
 | `remote_url` | string | `ws://127.0.0.1:3000/ws/stream` | desktop | websocket 模式远程地址 |
@@ -198,13 +198,13 @@ octopus-cli config
 | `write_to_clipboard` | bool | `true` | desktop | 粘贴完成后是否把识别结果写入剪贴板（方便他处再粘贴）；`false` 时三模式等同重构前现状（不碰/恢复原剪贴板）。详见 [transcript-model spec §6](superpowers/specs/2026-06-14-archived-design.md) |
 | `overlay_position` | string | `"top"` | desktop | top / bottom / none |
 | `segment_silence` | f64 | `400.0` | desktop | VAD 伪流式：句间停顿阈值（毫秒），起过此值的停顿触发切句识别 |
-| `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色。**desktop 悬停工具栏可在运行时切换**（`set_polish_mode` 命令）：写共享 `AppConfig` + 持久化回 config.yaml，**立即生效**（Coordinator 每个 tick 重读并 `Transcript::set_mode`，下一次润色按新模式） |
-| `polish_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s` |
+| `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色。**desktop 悬停工具栏可在运行时切换**（`set_polish_mode` 命令）：写 RuntimeConfig + 持久化回 DB，**立即生效**（Coordinator 每个 tick 重读镜像并 `Transcript::set_mode`，下一次润色按新模式） |
+| `polish_min_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒，节流用），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s`。旧名 `polish_interval` 迁移时自动重命名 |
 | `pause_polish_threshold_ms` | f64 | `600` | desktop | 停顿触发中间润色的静音阈值（毫秒），仅 `polish_mode=2` 生效；**须 >= 600**（须大于句间停顿最大值 600ms），否则润色先于尾音冲刷、快照缺尾音。GUI 设置页改为下拉（600~1000ms 五档），label 名为「润色停顿阈值」 |
 | `polish_llm` | string | `"bigmodel:glm:glm-4-flashx"` | desktop | 当前润色使用的 LLM 模型，格式 `"{provider}:{category}:{model_name}"`（见下方「模型选择 spec」）。示例：`"bigmodel:glm:glm-4-flashx"`、`"aliyun:qwen:qwen-plus"`、`"deepseek:deepseek:deepseek-v4-flash"`。**留空 `""` = 不选择模型（不润色）**；该模型在 DB 找不到时，工具栏回退「不选择模型」并图标置灰（见 [toolbar spec §16.4](superpowers/specs/2026-06-16-archived-design.md)） |
 | `asr_hardware_accelerated` | bool | `false` | desktop + cli | ASR 推理是否启用硬件加速（CUDA/DirectML/CoreML EP），失败自动回退 CPU；不影响 VAD（VAD 固定 CPU） |
 | `asr_correct` | bool | `false` | cli + server + desktop | 是否对 ASR 输出做拼音映射 + bigram 转移概率的轻量纠错/热词校正；**自动跳过 Qwen3-ASR**（其自带标点且语义纠错强），仅作用于 Whisper/SenseVoice/Paraformer/Zipformer。详见 [architecture.md §ASR 纠错](../architecture.md) |
-| `denoise_mode` | u8 | `1` | desktop | 环境降噪模式：`0`=关闭（直通）、`1`=RNNoise（`nnnoiseless`，默认，纯 Rust 内置默认模型，48kHz→频带增益+OLA，GRU 状态跨帧保持）、`2`=DeepFilterNet3（libDF v0.5.6 + tract 0.19，48kHz 全频带，编译期内嵌 ~7.9MB 模型，质量最佳）。降噪为可插拔后端（`FrameDenoise` trait），由 mode 选后端；亦可由工具栏运行时切换（`set_denoise_mode` 命令）并持久化回 config.yaml。初始化/推理失败自动降级直通（warn），不阻断录音。详见 [architecture.md](../architecture.md) |
+| `denoise_mode` | u8 | `1` | desktop | 环境降噪模式：`0`=关闭（直通）、`1`=RNNoise（`nnnoiseless`，默认，纯 Rust 内置默认模型，48kHz→频带增益+OLA，GRU 状态跨帧保持）、`2`=DeepFilterNet3（libDF v0.5.6 + tract 0.19，48kHz 全频带，编译期内嵌 ~7.9MB 模型，质量最佳）。降噪为可插拔后端（`FrameDenoise` trait），由 mode 选后端；亦可由工具栏运行时切换（`set_denoise_mode` 命令）并持久化回 DB `app_config` 表。初始化/推理失败自动降级直通（warn），不阻断录音。详见 [architecture.md](../architecture.md) |
 | `output_simplified` | bool | `true` | desktop | ASR 输出字形归一化：`true`→简体（繁→简），`false`→繁体（简→繁）。基于开放词典网 CC-BY 3.0 单字对照表（编译期嵌入），在 ASR 输出后做单字级字形转换（不转地域用词）。解决 Qwen3-ASR `auto` 模式输出繁体的问题。详见 [architecture.md](../architecture.md) |
 | `hide_toolbar` | bool | `true` | desktop | 结果展示区工具栏显隐模式：`true`→鼠标移入显示、移出隐藏（默认）；`false`→工具栏始终显示（窗口高度保持展开态 132px） |
 | `edit_shortcut` | string | `"Cmd+E"` | desktop | 结果展示区编辑 toggle 快捷键——**进入与保存（退出）编辑都用此键**（与 ✏️ 按钮同语义，Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。GUI 设置页可配（快捷键捕获按钮，不需冲突检测——仅窗口内 keydown 判定）。曾用双击进入（WKWebView `dblclick` 难触发而弃用）；曾拆分「Cmd+E 进 / Cmd+Enter 存」，因两者均窗口内 keydown（非全局、不 hijack 系统）已统一为单键 toggle |
@@ -227,7 +227,7 @@ octopus-cli config
 
 ### 引擎选择与兜底（resolve_active_engine）
 
-引擎激活的**唯一真相是 `config.yaml.asr_engine`**（DB `models` 表不再有 `is_active` 列）。解析逻辑（`asr::config::resolve_active_engine`）：
+引擎激活的**唯一真相是 `app_config.asr_engine`**（DB `models` 表不再有 `is_active` 列）。解析逻辑（`asr::config::resolve_active_engine`）：
 
 | `asr_engine` 值 | 解析结果 |
 |---|---|
@@ -237,7 +237,7 @@ octopus-cli config
 
 **兜底级联**：优先从 DB `models` 表 `zipformer` section 查 `zipformer-small-ctc`（用户手编 `source` 仍生效）；DB 无该条目时硬构造（靠 `DEFAULT_ASR_MODEL_DIR` 本地打包路径，保证开箱可用）。
 
-**优先级**：显式参数 > `config.yaml.asr_engine` > 兜底。
+**优先级**：显式参数 > `app_config.asr_engine` > 兜底。
 - cli `--model`、server 请求带 `engine` 字段、`AsrEngineManager.switch_model(spec)` 都支持 spec 格式，按 spec 匹配，**不走兜底**（匹配不到直接报错）。
 - `resolve_active_engine` 仅服务「全局默认」（server 启动 preheat、请求未带 engine 时）。
 

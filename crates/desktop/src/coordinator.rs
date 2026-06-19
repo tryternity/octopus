@@ -178,7 +178,7 @@ const CLOUD_PREROLL_BUFFER_SAMPLES: usize = 3200;
 #[cfg(feature = "dashscope")]
 const CLOUD_PREROLL_SAMPLES: usize = 1600;
 
-/// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
+/// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_min_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
 pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
 
 /// 当前 Unix 毫秒时间戳（作 Transcript id / DB 主键）。
@@ -1598,7 +1598,7 @@ fn check_and_trigger_polish(
     }
     // 节流：距上次润色不足 interval（至少 MIN_POLISH_INTERVAL_SEC）→ 跳过
     if transcript.last_polish_time().elapsed().as_secs_f64()
-        < config.polish_interval.max(MIN_POLISH_INTERVAL_SEC)
+        < config.polish_min_interval.max(MIN_POLISH_INTERVAL_SEC)
     {
         return;
     }

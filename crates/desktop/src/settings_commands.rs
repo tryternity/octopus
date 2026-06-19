@@ -71,7 +71,7 @@ pub fn set_config(
         let mut g = rc.write().unwrap();
         *g = cfg.clone();
     }
-    write_config_yaml(&cfg)?;
+    octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
 
     // 运行时可变字段立即同步到 coordinator 的 config 快照，
     // 无需等下次 Toggle（用户在录音中改 polish_llm 等也能立即生效）
@@ -155,10 +155,10 @@ fn apply_config_value(
             if v <= 0.0 { return Err("segment_silence 必须大于 0".into()); }
             cfg.segment_silence = v;
         }
-        "polish_interval" => {
-            let v = value.as_f64().ok_or("polish_interval 需要数值")?;
-            if v < 0.0 { return Err("polish_interval 不能为负".into()); }
-            cfg.polish_interval = v;
+        "polish_min_interval" => {
+            let v = value.as_f64().ok_or("polish_min_interval 需要数值")?;
+            if v < 0.0 { return Err("polish_min_interval 不能为负".into()); }
+            cfg.polish_min_interval = v;
         }
         "pause_polish_threshold_ms" => {
             let v = value.as_f64().ok_or("pause_polish_threshold_ms 需要数值")?;
@@ -223,12 +223,6 @@ fn build_polish_llm_spec(bare_name: &str) -> Result<String, String> {
             .ok_or_else(|| format!("润色模型 '{}' 不存在", bare_name))?;
         Ok(format!("{}:{}:{}", model.provider, model.category, model.model_name))
     }
-}
-
-fn write_config_yaml(cfg: &octopus_infra::config::AppConfig) -> Result<(), String> {
-    let path = octopus_infra::octopus_config_home().join("config.yaml");
-    let text = serde_yaml::to_string(cfg).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text).map_err(|e| e.to_string())
 }
 
 // ── get_history 命令 ──

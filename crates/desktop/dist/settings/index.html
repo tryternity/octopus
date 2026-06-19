@@ -514,8 +514,8 @@ function renderSettings(resp) {
       '</div>' +
       '<div class="row">' +
         '<div class="label-group"><span class="label-text">文本润色间隔 <span class="label-effect">(下次录音)</span></span></div>' +
-        '<select onchange="setVal(\'polish_interval\', parseFloat(this.value))">' +
-          [{v:0,l:'仅最后'},{v:3,l:'每3秒'},{v:4,l:'每4秒'},{v:5,l:'每5秒'},{v:6,l:'每6秒'},{v:7,l:'每7秒'},{v:8,l:'每8秒'}].map(o => '<option value="' + o.v + '" ' + (cfg.polish_interval==o.v?'selected':'') + '>' + o.l + '</option>').join('') +
+        '<select onchange="setVal(\'polish_min_interval\', parseFloat(this.value))">' +
+          [{v:0,l:'仅最后'},{v:3,l:'每3秒'},{v:4,l:'每4秒'},{v:5,l:'每5秒'},{v:6,l:'每6秒'},{v:7,l:'每7秒'},{v:8,l:'每8秒'}].map(o => '<option value="' + o.v + '" ' + (cfg.polish_min_interval==o.v?'selected':'') + '>' + o.l + '</option>').join('') +
         '</select>' +
       '</div>' +
       '<div class="row">' +
