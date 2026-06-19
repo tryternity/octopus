@@ -893,38 +893,34 @@ match key {
 
 ### 5.3 页面 2 — 系统设置
 
-卡片顺序：交互 → 识别 → 润色 → 降噪 → 引擎模式。**全部无标题**（仅保留行内容）。每行控件后无独立 badge，生效时间作为灰色小字跟在 label 后面，加括号如「(立即)」「(下次录音)」「(重启)」。
+卡片顺序：交互 → 识别 → 润色 → 引擎模式。**全部无标题**（仅保留行内容）。每行控件后无独立 badge，生效时间作为灰色小字跟在 label 后面，加括号如「(立即)」「(下次录音)」「(重启)」。
 
 **卡片「交互」（首位，无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
+| 麦克风设备 | 下拉（microphones 列表） | `microphone` | 下次录音 |
+| 降噪模式 | 下拉（无/轻度/深度） | `denoise_mode` | 立即 |
 | 激活/关闭快捷键 | 快捷键捕获按钮（点击后捕获键盘组合，含冲突检测 `check_shortcut`） | `asr_shortcut` | 立即 |
 | 编辑快捷键 | 快捷键捕获按钮（无冲突检测，仅结果窗内 keydown 判定） | `edit_shortcut` | 立即 |
 | 工具栏自动隐藏 | toggle switch | `hide_toolbar` | 立即 |
-| 麦克风设备 | 下拉（microphones 列表） | `microphone` | 下次录音 |
 
 **卡片「识别」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
-| 语言识别 | 下拉（auto/zh/en） | `language` | 下次录音 |
-| ASR 引擎 | 下拉（asr_engines 列表） | `asr_engine` | 下次录音 |
+| 语音识别引擎 | 下拉（asr_engines 列表） | `asr_engine` | 下次录音 |
+| 语音识别语言 | 下拉（auto/zh/en） | `language` | 下次录音 |
 | 硬件加速 | toggle switch | `asr_hardware_accelerated` | 下次录音 |
-| ASR 纠错 | toggle switch | `asr_correct` | 立即 |
+| 语音识别纠错 | toggle switch | `asr_correct` | 立即 |
 | 简繁输出 | toggle switch（true=简体） | `output_simplified` | 立即 |
 | 句间停顿 | select（300/400/500/600ms） | `segment_silence` | 下次录音 |
 
 **卡片「润色」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |
 |---|---|---|---|
-| 润色模式 | 下拉（关闭/仅最终/中间+最终） | `polish_mode` | 立即 |
-| 润色模型 | 下拉（llm_models 列表） | `polish_llm` | 立即（2026-06-18 改进，原「下次录音」） |
-| 润色间隔 | 下拉（仅最后=0/每3~8秒） | `polish_interval` | 下次录音 |
+| 文本润色模型 | 下拉（llm_models 列表） | `polish_llm` | 立即（2026-06-18 改进，原「下次录音」） |
+| 文本润色模式 | 下拉（关闭/仅最终/中间+最终） | `polish_mode` | 立即 |
+| 文本润色间隔 | 下拉（仅最后=0/每3~8秒） | `polish_interval` | 下次录音 |
 | 润色停顿阈值 | 下拉（600/700/800/900/1000ms，>= 600） | `pause_polish_threshold_ms` | 下次录音 |
-
-**卡片「降噪」（无标题）：**
-| 控件 | 类型 | 字段 | 生效 |
-|---|---|---|---|
-| 降噪模式 | 下拉（无/轻度/深度） | `denoise_mode` | 立即 |
 
 **卡片「引擎模式」（无标题）：**
 | 控件 | 类型 | 字段 | 生效 |

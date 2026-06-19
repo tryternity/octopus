@@ -83,7 +83,7 @@ select:focus, input:focus { outline: none; border-color: var(--primary); }
 .shortcut-input {
   padding: 6px 14px; border: 1px solid var(--border); border-radius: 6px;
   font-size: 14px; color: var(--text-primary); background: white; cursor: pointer;
-  min-width: 180px; text-align: center; transition: border-color 0.15s;
+  min-width: 180px; max-width: 220px; text-align: center; transition: border-color 0.15s;
 }
 .shortcut-input:hover { border-color: var(--primary); }
 .shortcut-input.capturing { border-color: var(--primary); color: var(--text-secondary); }
@@ -441,6 +441,18 @@ function renderSettings(resp) {
     '<!-- 交互 -->' +
     '<div class="card">' +
       '<div class="row">' +
+        '<div class="label-group"><span class="label-text">麦克风设备 <span class="label-effect">(下次录音)</span></span></div>' +
+        '<select onchange="setVal(\'microphone\', this.value)">' + micOptions + '</select>' +
+      '</div>' +
+      '<div class="row">' +
+        '<div class="label-group"><span class="label-text">降噪模式 <span class="label-effect">(立即)</span></span></div>' +
+        '<select onchange="setVal(\'denoise_mode\', parseInt(this.value))">' +
+          '<option value="0" ' + (dm===0?'selected':'') + '>无</option>' +
+          '<option value="1" ' + (dm===1?'selected':'') + '>轻度</option>' +
+          '<option value="2" ' + (dm===2?'selected':'') + '>深度</option>' +
+        '</select>' +
+      '</div>' +
+      '<div class="row">' +
         '<div class="label-group"><span class="label-text">激活/关闭快捷键 <span class="label-effect">(立即)</span></span></div>' +
         '<button class="shortcut-input" id="shortcut-input" onclick="startShortcutCapture(this, \'asr_shortcut\')">' + escapeHtml(cfg.asr_shortcut) + '</button>' +
       '</div>' +
@@ -452,15 +464,15 @@ function renderSettings(resp) {
         '<div class="label-group"><span class="label-text">工具栏自动隐藏 <span class="label-effect">(立即)</span></span><span class="label-hint">开启=自动隐藏，关闭=始终显示</span></div>' +
         '<div class="toggle ' + (cfg.hide_toolbar?'on':'') + '" onclick="toggleVal(\'hide_toolbar\', this)"></div>' +
       '</div>' +
-      '<div class="row">' +
-        '<div class="label-group"><span class="label-text">麦克风设备 <span class="label-effect">(下次录音)</span></span></div>' +
-        '<select onchange="setVal(\'microphone\', this.value)">' + micOptions + '</select>' +
-      '</div>' +
     '</div>' +
     '<!-- 识别 -->' +
     '<div class="card">' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">语言识别 <span class="label-effect">(下次录音)</span></span></div>' +
+        '<div class="label-group"><span class="label-text">语音识别引擎 <span class="label-effect">(下次录音)</span></span></div>' +
+        '<select onchange="setVal(\'asr_engine\', this.value)">' + asrOptions + '</select>' +
+      '</div>' +
+      '<div class="row">' +
+        '<div class="label-group"><span class="label-text">语音识别语言 <span class="label-effect">(下次录音)</span></span></div>' +
         '<select onchange="setVal(\'language\', this.value)">' +
           '<option value="auto" ' + (cfg.language==='auto'?'selected':'') + '>自动</option>' +
           '<option value="zh" ' + (cfg.language==='zh'?'selected':'') + '>中文</option>' +
@@ -468,15 +480,11 @@ function renderSettings(resp) {
         '</select>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">ASR 引擎 <span class="label-effect">(下次录音)</span></span></div>' +
-        '<select onchange="setVal(\'asr_engine\', this.value)">' + asrOptions + '</select>' +
-      '</div>' +
-      '<div class="row">' +
-        '<div class="label-group"><span class="label-text">硬件加速 <span class="label-effect">(下次录音)</span></span><span class="label-hint">GPU/CoreML/DirectML 加速</span></div>' +
+        '<div class="label-group"><span class="label-text">硬件加速 <span class="label-effect">(下次录音)</span></span></div>' +
         '<div class="toggle ' + (cfg.asr_hardware_accelerated?'on':'') + '" onclick="toggleVal(\'asr_hardware_accelerated\', this)"></div>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">ASR 纠错 <span class="label-effect">(立即)</span></span><span class="label-hint">拼音映射 + bigram 校正</span></div>' +
+        '<div class="label-group"><span class="label-text">语音识别纠错 <span class="label-effect">(立即)</span></span><span class="label-hint">拼音映射 + bigram 校正</span></div>' +
         '<div class="toggle ' + (cfg.asr_correct?'on':'') + '" onclick="toggleVal(\'asr_correct\', this)"></div>' +
       '</div>' +
       '<div class="row">' +
@@ -493,7 +501,11 @@ function renderSettings(resp) {
     '<!-- 润色 -->' +
     '<div class="card">' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">润色模式 <span class="label-effect">(立即)</span></span></div>' +
+        '<div class="label-group"><span class="label-text">文本润色模型 <span class="label-effect">(立即)</span></span></div>' +
+        '<select onchange="setVal(\'polish_llm\', this.value)">' + llmOptions + '</select>' +
+      '</div>' +
+      '<div class="row">' +
+        '<div class="label-group"><span class="label-text">文本润色模式 <span class="label-effect">(立即)</span></span></div>' +
         '<select onchange="setVal(\'polish_mode\', parseInt(this.value))">' +
           '<option value="0" ' + (pm===0?'selected':'') + '>关闭</option>' +
           '<option value="1" ' + (pm===1?'selected':'') + '>仅最终润色</option>' +
@@ -501,11 +513,7 @@ function renderSettings(resp) {
         '</select>' +
       '</div>' +
       '<div class="row">' +
-        '<div class="label-group"><span class="label-text">润色模型 <span class="label-effect">(立即)</span></span></div>' +
-        '<select onchange="setVal(\'polish_llm\', this.value)">' + llmOptions + '</select>' +
-      '</div>' +
-      '<div class="row">' +
-        '<div class="label-group"><span class="label-text">润色间隔 <span class="label-effect">(下次录音)</span></span></div>' +
+        '<div class="label-group"><span class="label-text">文本润色间隔 <span class="label-effect">(下次录音)</span></span></div>' +
         '<select onchange="setVal(\'polish_interval\', parseFloat(this.value))">' +
           [{v:0,l:'仅最后'},{v:3,l:'每3秒'},{v:4,l:'每4秒'},{v:5,l:'每5秒'},{v:6,l:'每6秒'},{v:7,l:'每7秒'},{v:8,l:'每8秒'}].map(o => '<option value="' + o.v + '" ' + (cfg.polish_interval==o.v?'selected':'') + '>' + o.l + '</option>').join('') +
         '</select>' +
@@ -514,17 +522,6 @@ function renderSettings(resp) {
         '<div class="label-group"><span class="label-text">润色停顿阈值 <span class="label-effect">(下次录音)</span></span><span class="label-hint">停顿超过此值时触发一次中间润色</span></div>' +
         '<select onchange="setVal(\'pause_polish_threshold_ms\', parseFloat(this.value))">' +
           ['600','700','800','900','1000'].map(v => '<option value="' + v + '" ' + (cfg.pause_polish_threshold_ms==Number(v)?'selected':'') + '>' + v + 'ms</option>').join('') +
-        '</select>' +
-      '</div>' +
-    '</div>' +
-    '<!-- 降噪 -->' +
-    '<div class="card">' +
-      '<div class="row">' +
-        '<div class="label-group"><span class="label-text">降噪模式 <span class="label-effect">(立即)</span></span></div>' +
-        '<select onchange="setVal(\'denoise_mode\', parseInt(this.value))">' +
-          '<option value="0" ' + (dm===0?'selected':'') + '>无</option>' +
-          '<option value="1" ' + (dm===1?'selected':'') + '>轻度</option>' +
-          '<option value="2" ' + (dm===2?'selected':'') + '>深度</option>' +
         '</select>' +
       '</div>' +
     '</div>' +
