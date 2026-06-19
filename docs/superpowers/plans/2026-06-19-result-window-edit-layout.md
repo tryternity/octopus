@@ -151,7 +151,7 @@ git commit -m "refactor(desktop): 删 edit-done 按钮 + 移除编辑态 padding
 ```js
       showToolbar();
 ```
-（`showToolbar` 内部 `if (toolbarVisible) return`——点 ✏️ 进入时 toolbar 已 visible，no-op 无跳动；Cmd+E 进入若 hidden 则显示。`hideToolbar` 已有 `editing` 拦截，编辑中不会隐藏，无需改。）
+（`showToolbar` 内部 `if (toolbarVisible) return`——点 ✏️ 进入时 toolbar 已 visible，no-op 无跳动；Cmd+Enter 进入若 hidden 则显示。`hideToolbar` 已有 `editing` 拦截，编辑中不会隐藏，无需改。）
 
 - [x] **Step 2: 确认 force-exit 自动恢复 icon（CSS 驱动，无需额外 JS）**
 
@@ -161,7 +161,7 @@ icon 切换靠 `#container.editing #tool-edit .icon` CSS。`edit-force-exit` 处
 
 Run: `cargo run -p octopus-desktop`
 Expected:
-1. 鼠标移出结果窗使 toolbar 隐藏 → Cmd+E 进入 → toolbar 出现（窗口增高、文字下移 24px）→ 💾 可见可点
+1. 鼠标移出结果窗使 toolbar 隐藏 → Cmd+Enter 进入 → toolbar 出现（窗口增高、文字下移 24px）→ 💾 可见可点
 2. 编辑中 mouseleave → toolbar **不隐藏**（editing 拦截）
 3. 编辑中触发新录音（force-exit）→ 图标自动回 ✏️、退出编辑态
 
@@ -182,7 +182,7 @@ Run: `cargo run -p octopus-desktop`，逐项验证：
 1. 识别出文字 → ✏️ 进入 → **文字水平位置不变（不重排）** ✓
 2. 编辑态图标 💾 → 点 💾 保存 → 退出、图标回 ✏️ ✓
 3. `edit_shortcut` 进入 → 再按 `edit_shortcut` 保存（toggle）✓
-4. Cmd+E 进入（toolbar 此前 hidden）→ toolbar 出现 → 💾 可见可点 ✓
+4. Cmd+Enter 进入（toolbar 此前 hidden）→ toolbar 出现 → 💾 可见可点 ✓
 5. 编辑中 mouseleave → toolbar 不隐藏 ✓
 6. 编辑中触发新录音（force-exit）→ 图标回 ✏️、退出编辑态 ✓
 

@@ -142,7 +142,7 @@ pub struct AppConfig {
     pub denoise_mode: u8,
 
     /// 结果展示区编辑 toggle 快捷键——进入与保存（退出）编辑都用此键，与 ✏️ 按钮同语义
-    /// （窗口内、仅结果窗聚焦时生效）。Tauri Accelerator 格式（如 "Cmd+E"），默认 "Cmd+E"。
+    /// （窗口内、仅结果窗聚焦时生效）。Tauri Accelerator 格式（如 "Cmd+Enter"），默认 "Cmd+Enter"。
     #[serde(default = "default_edit_shortcut")]
     pub edit_shortcut: String,
 }
@@ -198,7 +198,7 @@ fn default_denoise_mode() -> u8 {
     1
 }
 fn default_edit_shortcut() -> String {
-    "Cmd+E".into()
+    "Cmd+Enter".into()
 }
 fn default_segment_silence() -> f64 {
     400.0
@@ -272,7 +272,7 @@ mod tests {
         assert!(!cfg.asr_hardware_accelerated);
         assert!(!cfg.asr_correct);
         assert_eq!(cfg.denoise_mode, 1);
-        assert_eq!(cfg.edit_shortcut, "Cmd+E");
+        assert_eq!(cfg.edit_shortcut, "Cmd+Enter");
         assert_eq!(cfg.segment_silence, 400.0);
     }
 

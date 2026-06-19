@@ -405,8 +405,8 @@
 
     // ── 编辑态 ──
     let editing = false;
-    // 进入编辑快捷键：默认 Cmd+E，refreshActive 从 toolbar_state.edit_shortcut 覆盖。
-    let editShortcut = parseShortcut('Cmd+E');
+    // 进入编辑快捷键：默认 Cmd+Enter，refreshActive 从 toolbar_state.edit_shortcut 覆盖。
+    let editShortcut = parseShortcut('Cmd+Enter');
     const btnEdit = document.getElementById('tool-edit');
 
     function enterEdit() {
@@ -448,7 +448,7 @@
       invoke('update_edit_buffer', { text: resultText.innerText });
     }
 
-    // 进入编辑：edit_shortcut（默认 Cmd+E，仅结果窗聚焦时）或点 ✏️ 按钮。
+    // 进入编辑：edit_shortcut（默认 Cmd+Enter，仅结果窗聚焦时）或点 ✏️ 按钮。
     // 放弃双击——WKWebView 在 user-select:text 区域 dblclick 难触发。
     btnEdit.addEventListener('click', (e) => {
       e.preventDefault();

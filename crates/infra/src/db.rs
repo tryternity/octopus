@@ -1159,7 +1159,7 @@ mod tests {
         assert_eq!(cfg.segment_silence, 400.0);
         assert_eq!(cfg.polish_min_interval, 5.0);
         assert_eq!(cfg.denoise_mode, 1);
-        assert_eq!(cfg.edit_shortcut, "Cmd+E");
+        assert_eq!(cfg.edit_shortcut, "Cmd+Enter");
     }
 
     #[test]

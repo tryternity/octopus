@@ -207,7 +207,7 @@ octopus-cli config
 | `denoise_mode` | u8 | `1` | desktop | 环境降噪模式：`0`=关闭（直通）、`1`=RNNoise（`nnnoiseless`，默认，纯 Rust 内置默认模型，48kHz→频带增益+OLA，GRU 状态跨帧保持）、`2`=DeepFilterNet3（libDF v0.5.6 + tract 0.19，48kHz 全频带，编译期内嵌 ~7.9MB 模型，质量最佳）。降噪为可插拔后端（`FrameDenoise` trait），由 mode 选后端；亦可由工具栏运行时切换（`set_denoise_mode` 命令）并持久化回 DB `app_config` 表。初始化/推理失败自动降级直通（warn），不阻断录音。详见 [architecture.md](../architecture.md) |
 | `output_simplified` | bool | `true` | desktop | ASR 输出字形归一化：`true`→简体（繁→简），`false`→繁体（简→繁）。基于开放词典网 CC-BY 3.0 单字对照表（编译期嵌入），在 ASR 输出后做单字级字形转换（不转地域用词）。解决 Qwen3-ASR `auto` 模式输出繁体的问题。详见 [architecture.md](../architecture.md) |
 | `hide_toolbar` | bool | `true` | desktop | 结果展示区工具栏显隐模式：`true`→鼠标移入显示、移出隐藏（默认）；`false`→工具栏始终显示（窗口高度保持展开态 132px） |
-| `edit_shortcut` | string | `"Cmd+E"` | desktop | 结果展示区编辑 toggle 快捷键——**进入与保存（退出）编辑都用此键**（与 ✏️ 按钮同语义，Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。GUI 设置页可配（快捷键捕获按钮，不需冲突检测——仅窗口内 keydown 判定）。曾用双击进入（WKWebView `dblclick` 难触发而弃用）；曾拆分「Cmd+E 进 / Cmd+Enter 存」，因两者均窗口内 keydown（非全局、不 hijack 系统）已统一为单键 toggle |
+| `edit_shortcut` | string | `"Cmd+Enter"` | desktop | 结果展示区编辑 toggle 快捷键——**进入与保存（退出）编辑都用此键**（与 ✏️ 按钮同语义，Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。GUI 设置页可配（快捷键捕获按钮，不需冲突检测——仅窗口内 keydown 判定）。曾用双击进入（WKWebView `dblclick` 难触发而弃用）；曾拆分「Cmd+E 进 / Cmd+Enter 存」，因两者均窗口内 keydown（非全局、不 hijack 系统）已统一为单键 toggle |
 
 > **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（包括 `polish_mode`、`polish_interval` 和新字段 `polish_llm`），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`denoise_mode`（前缀 `denoise_`）控制麦克风环境降噪（采集层前置，VAD/ASR 前）。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
 
@@ -275,13 +275,13 @@ asr_correct: false               # true 对 ASR 输出做拼音+bigram 轻量纠
 denoise_mode: 1                  # 环境降噪：0=关闭直通 / 1=RNNoise（默认）/ 2=DeepFilterNet3（48kHz 全频带，~7.9MB 模型）；亦可工具栏运行时切换（set_denoise_mode）
 output_simplified: true          # ASR 输出字形：true=简体（繁→简），false=繁体（简→繁）
 hide_toolbar: true               # 结果窗工具栏：true=hover 显隐（默认），false=始终显示
-edit_shortcut: "Cmd+E"           # 编辑 toggle 快捷键（窗口内，进入/保存都用此键）
+edit_shortcut: "Cmd+Enter"       # 编辑 toggle 快捷键（窗口内，进入/保存都用此键）
 ```
 
 ### 结果展示区编辑
 
 录音过程中可随时修正识别/润色文本：
-- **进入编辑**：按 `edit_shortcut`（默认 `Cmd+E`，窗口内），或点工具栏 ✏️ 编辑按钮。
+- **进入编辑**：按 `edit_shortcut`（默认 `Cmd+Enter`，窗口内），或点工具栏 ✏️ 编辑按钮。
 - **编辑期间 ASR 硬暂停**（音频丢弃），改完恢复。
 - **退出编辑**：再按 `edit_shortcut`（与进入同键，toggle 语义），或点工具栏 ✏️→💾 按钮保存。（曾用「完成编辑」按钮 + 固定 `Cmd+Enter`，前者已删、后者已统一为 `edit_shortcut`。）
 - 编辑后的文本作为后续展示与润色基准；新识别文本追加其上；停止粘贴时保留编辑。

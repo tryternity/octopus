@@ -15,7 +15,7 @@ editable-result 功能已实现（`edit_shortcut` 进入编辑 + ✏️ 按钮�
 - 进入/退出编辑时，**文字水平位置不变**（不重排）——主要诉求。
 - 「保存编辑」入口移到 toolbar。
 - ✏️ 按钮复用 toggle（进入 ↔ 保存），编辑态图标切为 💾（`save.svg`）。
-- 垂直跳动（Cmd+E 进入时 toolbar 出现）可接受（次要）。
+- 垂直跳动（Cmd+Enter 进入时 toolbar 出现）可接受（次要）。
 
 ## 3. 现状（关键事实）
 
@@ -28,7 +28,7 @@ editable-result 功能已实现（`edit_shortcut` 进入编辑 + ✏️ 按钮�
 - **文字区宽度恒 520px（`WIN_W`），不受 toolbar 显隐影响**——水平换行只由 `#result-text` 的 padding 决定。
 - `enterEdit()`（L428）：contenteditable=true + `editing` class + 显示 edit-done + focus + 光标置末尾 + `invoke('enter_edit_mode')`。
 - `commitEdit()`（L447）+ `edit_shortcut` toggle 再按一次（keydown L468-480）。
-- 编辑 toggle 快捷键 `edit_shortcut`（默认 Cmd+E）：进入与保存（退出）都用此键。
+- 编辑 toggle 快捷键 `edit_shortcut`（默认 Cmd+Enter）：进入与保存（退出）都用此键。
 
 ## 4. 设计
 
@@ -69,13 +69,13 @@ editable-result 功能已实现（`edit_shortcut` 进入编辑 + ✏️ 按钮�
 
 - `enterEdit()` 末尾调 `showToolbar()`：保证编辑态 toolbar 可见，保存按钮（💾）恒可见。
   - 点 ✏️ 进入：toolbar 已 visible（鼠标在按钮上），`showToolbar()` 内 `if (toolbarVisible) return` no-op → **无跳动**。
-  - Cmd+E 进入：toolbar 可能 hidden → `showToolbar()` → 窗口 100→132、文字顶部 8→32px（下移 24px，**用户已确认可接受**）。
+  - Cmd+Enter 进入：toolbar 可能 hidden → `showToolbar()` → 窗口 100→132、文字顶部 8→32px（下移 24px，**用户已确认可接受**）。
 - `hideToolbar()` 已有 `editing` 拦截（L270），编辑中不隐藏。✓ 无需改。
 - `commitEdit()` 后不主动 `hideToolbar()`：toolbar 保持 visible，下次 `mouseleave` 才隐藏（恢复正常 hover 行为，避免退出编辑立即跳变）。
 
 ### 4.5 不变项
 
-- 进入方式：`edit_shortcut`（Cmd+E）+ ✏️ 点击。
+- 进入方式：`edit_shortcut`（Cmd+Enter）+ ✏️ 点击。
 - 保存（退出）：`edit_shortcut` toggle 再按一次（与进入同键）。
 - 后端命令 `enter_edit_mode` / `commit_edit` / `update_edit_buffer` 不变。
 - 编辑态硬暂停 ASR（coordinator `editing` 标志）不变。
@@ -84,7 +84,7 @@ editable-result 功能已实现（`edit_shortcut` 进入编辑 + ✏️ 按钮�
 
 ```
 非编辑态（✏️ edit.svg）:
-  点 ✏️ 或 Cmd+E → enterEdit():
+  点 ✏️ 或 Cmd+Enter → enterEdit():
     contenteditable=true, .editing class, focus 光标置末尾
     图标 edit.svg → save.svg, .active 高亮
     showToolbar()（若此前 hidden：窗口增高、文字下移 24px）
@@ -111,7 +111,7 @@ editable-result 功能已实现（`edit_shortcut` 进入编辑 + ✏️ 按钮�
 1. 识别出文字 → ✏️ 进入编辑 → **文字水平位置不变（不重排）** ✓
 2. 编辑态图标为 💾 → 点 💾 保存 → 退出，图标回 ✏️ ✓
 3. `edit_shortcut` 进入 → 再按 `edit_shortcut` 保存（toggle）✓
-4. Cmd+E 进入（toolbar 此前 hidden）→ toolbar 出现（窗口增高）→ 💾 可见可点 ✓
+4. Cmd+Enter 进入（toolbar 此前 hidden）→ toolbar 出现（窗口增高）→ 💾 可见可点 ✓
 5. 编辑中 mouseleave 窗口 → toolbar 不隐藏（editing 拦截）✓
 6. 编辑中触发新录音（结果窗 hide）→ `edit-force-exit` → 图标恢复 ✏️、退出编辑态 ✓
 
