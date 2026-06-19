@@ -52,6 +52,8 @@
 
 > e2e 反馈：完成按钮已足够显眼，失焦 / 点 toolbar 自动退出非必要，已去除 `blur` 触发——点别处或点工具栏不再自动提交，改完请显式 Cmd+Enter 或点完成按钮。后端 Toggle/Cancel 停止路径仍用 `edit_buffer` 兜底提交（§7），不会丢编辑。
 
+> **快捷键演进（2026-06-19）**：退出编辑已从「固定 `CmdOrCtrl+Enter`」统一为 `edit_shortcut` **toggle**——进入与保存（退出）用同一个键（默认 Cmd+E，可配）。本节下方 `CmdOrCtrl+Enter` / 完成按钮为原始设计记录（完成按钮亦已于布局调整删除，见 §9 L186 演进注）。当前权威：`docs/configuration.md` 的 `edit_shortcut`。
+
 任一触发 → 前端取 `#result-text.innerText`，`invoke('commit_edit', { text })` → 后端提交（§5）→ 恢复识别。
 
 ### 3.4 ASR 暂停语义（硬暂停）
@@ -182,7 +184,7 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
   - 编辑态冻结 `update-result`（前端配合）。
 - **`desktop/dist/result/index.html`**：
   - `#result-text` 动态 `contenteditable` 切换；`edit_shortcut`（默认 Cmd+E）+ ✏️ 编辑按钮（编辑态 toggle 为保存，图标 ✏️→💾）。
-  - `CmdOrCtrl+Enter` / ✏️ toggle → `commit_edit`。
+  - `edit_shortcut` toggle（再按一次）/ ✏️(💾) → `commit_edit`。
   - > **布局演进（2026-06-19）**：原「完成编辑」按钮（浮文本区右上）已删除，保存入口迁 ✏️ toggle；编辑态文字不再水平重排（移除 `padding-right:90px`）、编辑态 toolbar 强制常驻。详见 [`edit-layout spec`](2026-06-19-result-window-edit-layout-design.md)。本节下方如仍提「完成编辑按钮」为历史记录。
   - 编辑态：加边框、禁 `mouseleave` 收起、`setFocus`、忽略 `update-result`。
 - **`desktop/src/main.rs`**：`invoke_handler` 注册 `enter_edit_mode` / `commit_edit`。
@@ -208,7 +210,7 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
 
 ## 11. 文档同步（CLAUDE.md 强制）
 
-- **`docs/configuration.md`**：编辑能力说明（edit_shortcut/按钮进入，Cmd+Enter/按钮退出，硬暂停语义）+ `edit_shortcut` 字段。
+- **`docs/configuration.md`**：编辑能力说明（`edit_shortcut` toggle 进入/保存同键、硬暂停语义）+ `edit_shortcut` 字段。
 - **`docs/architecture.md`**：`Transcript` 三文本分层模型（edited ≻ polished ≻ raw）+ 编辑态 + DB `edited_text` 列。
 - 本 spec + 对应 plan（`docs/superpowers/plans/2026-06-18-editable-result-window.md`）。
 

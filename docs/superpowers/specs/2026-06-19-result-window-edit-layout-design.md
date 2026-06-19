@@ -5,7 +5,7 @@
 
 ## 1. 背景
 
-editable-result 功能已实现（`edit_shortcut` 默认 Cmd+E 进入 / Cmd+Enter 保存 + ✏️ 按钮进入）。当前编辑态有两个体验问题：
+editable-result 功能已实现（`edit_shortcut` 进入编辑 + ✏️ 按钮进入；快捷键后已统一为 **toggle**——进入/保存同键，见 §4.5）。当前编辑态有两个布局体验问题：
 
 1. **进入编辑时文字水平重排**：编辑态 CSS 给 `#result-text` 加 `padding-right: 90px`（给浮在文本区右上的「完成编辑」按钮让位），文字内容区从 520px 变 430px → 换行位置改变 → 视觉上文字"动了"。
 2. **保存按钮位置**：「完成编辑」按钮浮在文本区右上，用户希望移到 toolbar（顶栏工具区）。
@@ -27,8 +27,8 @@ editable-result 功能已实现（`edit_shortcut` 默认 Cmd+E 进入 / Cmd+Ente
 - 窗口尺寸驱动 toolbar 显隐（L257-275）：`HIDDEN_H=100` / `TOOLBAR_H=132`；`showToolbar()` 加 `toolbar-visible` + `setSize(132)`；`hideToolbar()` 有 `editing` 拦截（编辑中不隐藏）。
 - **文字区宽度恒 520px（`WIN_W`），不受 toolbar 显隐影响**——水平换行只由 `#result-text` 的 padding 决定。
 - `enterEdit()`（L428）：contenteditable=true + `editing` class + 显示 edit-done + focus + 光标置末尾 + `invoke('enter_edit_mode')`。
-- `commitEdit()`（L447）+ Cmd+Enter（L468-480）。
-- 进入快捷键 `edit_shortcut`（默认 Cmd+E）；保存 Cmd+Enter（固定，不走配置）。
+- `commitEdit()`（L447）+ `edit_shortcut` toggle 再按一次（keydown L468-480）。
+- 编辑 toggle 快捷键 `edit_shortcut`（默认 Cmd+E）：进入与保存（退出）都用此键。
 
 ## 4. 设计
 
@@ -76,7 +76,7 @@ editable-result 功能已实现（`edit_shortcut` 默认 Cmd+E 进入 / Cmd+Ente
 ### 4.5 不变项
 
 - 进入方式：`edit_shortcut`（Cmd+E）+ ✏️ 点击。
-- 保存快捷键：Cmd+Enter（固定）。
+- 保存（退出）：`edit_shortcut` toggle 再按一次（与进入同键）。
 - 后端命令 `enter_edit_mode` / `commit_edit` / `update_edit_buffer` 不变。
 - 编辑态硬暂停 ASR（coordinator `editing` 标志）不变。
 
@@ -91,7 +91,7 @@ editable-result 功能已实现（`edit_shortcut` 默认 Cmd+E 进入 / Cmd+Ente
     invoke('enter_edit_mode')
 
 编辑态（💾 save.svg）:
-  点 💾 或 Cmd+Enter → commitEdit():
+  点 💾 或再按 `edit_shortcut` → commitEdit():
     contenteditable=false, 移除 .editing class
     图标 save.svg → edit.svg, 移除 .active
     invoke('commit_edit', {text})
@@ -101,7 +101,7 @@ editable-result 功能已实现（`edit_shortcut` 默认 Cmd+E 进入 / Cmd+Ente
 ## 6. 边界
 
 - **编辑中结果窗隐藏**：新录音触发 `edit-force-exit` 事件清理——需确保清理时同步恢复图标（save.svg → edit.svg）+ 移除 `.active`（当前 `edit-force-exit` 处理 L491-500 已移除 editing class/contenteditable，需补图标恢复）。
-- **Cmd+E 在编辑态**：keydown 编辑态分支只处理 Cmd+Enter（L469），Cmd+E 编辑态无作用，不冲突。保留。
+- **`edit_shortcut` 在编辑态**：keydown 统一 toggle（L468-470），编辑态再按一次触发保存。同键 toggle，不冲突。
 - **save.svg 加载失败**：mask 源缺失 → 图标空白（按钮仍在、可点）。降级可接受。
 
 ## 7. 测试
@@ -110,7 +110,7 @@ editable-result 功能已实现（`edit_shortcut` 默认 Cmd+E 进入 / Cmd+Ente
 
 1. 识别出文字 → ✏️ 进入编辑 → **文字水平位置不变（不重排）** ✓
 2. 编辑态图标为 💾 → 点 💾 保存 → 退出，图标回 ✏️ ✓
-3. Cmd+E 进入 → Cmd+Enter 保存 ✓
+3. `edit_shortcut` 进入 → 再按 `edit_shortcut` 保存（toggle）✓
 4. Cmd+E 进入（toolbar 此前 hidden）→ toolbar 出现（窗口增高）→ 💾 可见可点 ✓
 5. 编辑中 mouseleave 窗口 → toolbar 不隐藏（editing 拦截）✓
 6. 编辑中触发新录音（结果窗 hide）→ `edit-force-exit` → 图标恢复 ✏️、退出编辑态 ✓

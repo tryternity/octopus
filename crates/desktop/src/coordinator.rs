@@ -47,7 +47,7 @@ enum Command {
     EnterEditMode,
     /// 更新编辑缓冲（前端 input 防抖推送；供 Toggle-期间-编辑 恢复）
     UpdateEditBuffer { text: String },
-    /// 提交编辑（快捷键 Cmd+Enter / 完成按钮触发）
+    /// 提交编辑（edit_shortcut toggle 再按一次 / ✏️(💾) 按钮触发）
     CommitEdit { text: String },
     /// 运行时配置更新——外部（设置窗口 / 工具栏）修改 RuntimeConfig 后，
     /// 通过此命令通知 coordinator 立即把变更同步到 config 快照（无需等 Toggle）。

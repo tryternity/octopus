@@ -1252,7 +1252,7 @@ Run: `cargo run -p octopus-desktop`
 1. 录音 → 说一句 → 结果窗出文本。
 2. 按 Cmd+E → 蓝边框 + 「完成编辑」→ 继续说话，窗口不刷新（硬暂停）。
 3. 改字 → 点「完成编辑」→ 边框消失 → 继续说 → 新文本追加在编辑结果后。
-4. 按 Cmd+E → 改 → Cmd+Enter → 同样生效。
+4. 按 `edit_shortcut` → 改 → 再按 `edit_shortcut`（toggle）→ 同样生效。
 5. 编辑态点工具栏 ASR 按钮 → 不退出编辑，直接弹浮层（e2e：完成按钮足够显眼，去除 blur 退出）。
 
 Expected: 行为符合预期，devtools 无 JS 报错。

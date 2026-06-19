@@ -151,8 +151,8 @@ pub struct ToolbarState {
     /// 当前 polish_llm 是否有效（裸名非空且在 DB 启用 LLM 列表中）。
     /// false → 无模型状态，前端 `#tool-llm` 图标置灰。DB 查询失败保守为 false。
     pub polish_llm_valid: bool,
-    /// 结果展示区「进入编辑」快捷键（Tauri Accelerator 字符串，默认 "Cmd+E"）。
-    /// 仅结果窗聚焦时生效；保存（退出编辑）固定 Cmd+Enter。
+    /// 结果展示区编辑 toggle 快捷键（Tauri Accelerator 字符串，默认 "Cmd+E"，进入/保存同键）。
+    /// 仅结果窗聚焦时生效。
     pub edit_shortcut: String,
 }
 

@@ -456,16 +456,10 @@
     });
 
     document.addEventListener('keydown', (e) => {
-      if (editing) {
-        // 编辑态：Cmd+Enter 保存（固定，不走配置）
-        if ((e.metaKey || e.ctrlKey) && e.key === 'Enter') {
-          e.preventDefault();
-          commitEdit();
-        }
-      } else if (matchShortcut(e, editShortcut)) {
-        // 非编辑态：edit_shortcut 进入编辑（默认 Cmd+E）
+      // edit_shortcut toggle：非编辑态进入 / 编辑态保存（统一一个键，窗口内 keydown）
+      if (matchShortcut(e, editShortcut)) {
         e.preventDefault();
-        enterEdit();
+        editing ? commitEdit() : enterEdit();
       }
     });
 

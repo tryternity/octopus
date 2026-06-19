@@ -179,7 +179,7 @@ git commit -m "feat(desktop): 编辑态强制 toolbar 常驻（enterEdit showToo
 Run: `cargo run -p octopus-desktop`，逐项验证：
 1. 识别出文字 → ✏️ 进入 → **文字水平位置不变（不重排）** ✓
 2. 编辑态图标 💾 → 点 💾 保存 → 退出、图标回 ✏️ ✓
-3. Cmd+E 进入 → Cmd+Enter 保存 ✓
+3. `edit_shortcut` 进入 → 再按 `edit_shortcut` 保存（toggle）✓
 4. Cmd+E 进入（toolbar 此前 hidden）→ toolbar 出现 → 💾 可见可点 ✓
 5. 编辑中 mouseleave → toolbar 不隐藏 ✓
 6. 编辑中触发新录音（force-exit）→ 图标回 ✏️、退出编辑态 ✓
