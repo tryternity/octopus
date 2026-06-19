@@ -1,23 +1,55 @@
 use anyhow::{Context, Result};
 use ndarray::{Array1, Array3, ArrayView2};
 use ort::session::Session;
-use std::path::Path;
+use std::collections::HashMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex, OnceLock};
+
+// 约束：Session 必须 Send + Sync，才能用 Arc<Mutex<Session>> 进全局缓存
+// （OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>>>）。
+const _: fn() = || {
+    fn assert_send_sync<T: Send + Sync>() {}
+    assert_send_sync::<Session>();
+};
+
+/// 按 model 路径缓存已加载的 ONNX Session。
+/// SileroVad 实例各自 owned h/c/sr，但共享底层 Session（Session::run 是 &mut self，
+/// 所以用 Arc<Mutex<Session>> 提供内部可变性 + 共享所有权）。
+static VAD_SESSIONS: OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>>> = OnceLock::new();
+
+fn vad_sessions() -> &'static Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>> {
+    VAD_SESSIONS.get_or_init(|| Mutex::new(HashMap::new()))
+}
 
 /// Silero VAD v4 via ort (ONNX Runtime)
 /// Stateful model with LSTM hidden/cell states
 pub struct SileroVad {
-    session: Session,
-    h: Array3<f32>,  // [2, 1, 64]
-    c: Array3<f32>,  // [2, 1, 64]
-    sr: Array1<i64>, // scalar: 16000
+    session: Arc<Mutex<Session>>,   // 共享缓存：相同 path 复用同一 Session（run 需 &mut self，故 Mutex）
+    h: Array3<f32>,                 // [2, 1, 64]
+    c: Array3<f32>,                 // [2, 1, 64]
+    sr: Array1<i64>,                // scalar: 16000
 }
 
 impl SileroVad {
     pub fn new(model_path: &Path) -> Result<Self> {
-        let session = Session::builder()
-            .context("Failed to create ORT session builder")?
-            .commit_from_file(model_path)
-            .with_context(|| format!("Failed to load Silero VAD from {:?}", model_path))?;
+        // 先查缓存：命中则 clone Arc，避免重复 commit_from_file
+        let session = {
+            let cache = vad_sessions().lock().unwrap();
+            cache.get(model_path).cloned()
+        };
+        let session = match session {
+            Some(s) => s,
+            None => {
+                let s = Arc::new(Mutex::new(
+                    Session::builder()
+                        .context("Failed to create ORT session builder")?
+                        .commit_from_file(model_path)
+                        .with_context(|| format!("Failed to load Silero VAD from {:?}", model_path))?,
+                ));
+                vad_sessions().lock().unwrap().insert(model_path.to_path_buf(), s.clone());
+                s
+            }
+        };
         Ok(Self {
             session,
             h: Array3::zeros((2, 1, 64)),
@@ -34,7 +66,8 @@ impl SileroVad {
         let sr_tensor = ort::value::TensorRef::from_array_view(self.sr.view())?;
         let input_tensor = ort::value::TensorRef::from_array_view(input)?;
 
-        let outputs = self.session.run(ort::inputs! {
+        let mut session = self.session.lock().unwrap();
+        let outputs = session.run(ort::inputs! {
             "input" => input_tensor,
             "sr" => sr_tensor,
             "h" => h_tensor,
@@ -67,5 +100,54 @@ impl SileroVad {
     pub fn reset(&mut self) {
         self.h = Array3::zeros((2, 1, 64));
         self.c = Array3::zeros((2, 1, 64));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // 测试串行化门控：same_path_shares_session 需要在两次 try_new() 之间缓存不被
+    // 其他测试的 insert 覆盖（生产中单 path 不会被并发覆盖，但 cargo test 默认多线程
+    // 并发跑测试会人为制造 race）。用独立 Mutex 串行这两个缓存相关的测试。
+    static TEST_GATE: Mutex<()> = Mutex::new(());
+
+    // 真实 ONNX 模型文件在测试环境可能不存在；find_silero_vad 或 new 失败时跳过，
+    // 不 FAIL，避免 CI 强依赖模型文件。
+    fn try_new() -> Option<SileroVad> {
+        let path = crate::config::find_silero_vad().ok()?;
+        SileroVad::new(&path).ok()
+    }
+
+    #[test]
+    fn same_path_shares_session() {
+        let _gate = TEST_GATE.lock().unwrap();
+        let (a, b) = match (try_new(), try_new()) {
+            (Some(a), Some(b)) => (a, b),
+            _ => {
+                println!("skip: 测试环境无 silero_vad 模型文件");
+                return;
+            }
+        };
+        assert!(
+            Arc::ptr_eq(&a.session, &b.session),
+            "同 path 应共享同一 Session Arc（缓存未生效？）"
+        );
+    }
+
+    #[test]
+    fn compute_returns_probability_in_range() {
+        let _gate = TEST_GATE.lock().unwrap();
+        let mut v = match try_new() {
+            Some(v) => v,
+            None => {
+                println!("skip: 测试环境无 silero_vad 模型文件");
+                return;
+            }
+        };
+        v.reset();
+        let samples = vec![0.0f32; 480];
+        let prob = v.compute(&samples).expect("compute should succeed");
+        assert!((0.0..=1.0).contains(&prob), "概率应在 [0,1]，实际 {}", prob);
     }
 }
