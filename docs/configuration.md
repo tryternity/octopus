@@ -267,7 +267,7 @@ segment_silence: 400.0           # 句间停顿阈值（毫秒）
 
 # LLM 润色（可选）
 polish_mode: 0                   # 0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色
-polish_interval: 5.0             # 秒，仅 polish_mode=2 生效（中间润色最小间隔）
+polish_min_interval: 5.0         # 秒，仅 polish_mode=2 生效（中间润色最小间隔；旧名 polish_interval 迁移时自动重命名）
 pause_polish_threshold_ms: 600   # 毫秒，仅 polish_mode=2 生效（停顿触发润色的静音阈值，须 >= 600）
 polish_llm: "bigmodel:glm:glm-4-flashx"  # 润色模型，格式 "{provider}:{category}:{model_name}"（见模型选择 spec）；provider/base_url/API Key 保存于 SQLite 的 models 表中
 asr_hardware_accelerated: false  # true 启用 GPU/CoreML/DirectML 加速（失败回退 CPU）；VAD 不受影响
@@ -283,7 +283,7 @@ edit_shortcut: "Cmd+E"           # 编辑 toggle 快捷键（窗口内，进入/
 录音过程中可随时修正识别/润色文本：
 - **进入编辑**：按 `edit_shortcut`（默认 `Cmd+E`，窗口内），或点工具栏 ✏️ 编辑按钮。
 - **编辑期间 ASR 硬暂停**（音频丢弃），改完恢复。
-- **退出编辑**（择一）：`Cmd/Ctrl+Enter`、点「完成编辑」按钮。（e2e 反馈完成按钮已足够显眼，失焦/点 toolbar 自动退出非必要，已去除。）
+- **退出编辑**：再按 `edit_shortcut`（与进入同键，toggle 语义），或点工具栏 ✏️→💾 按钮保存。（曾用「完成编辑」按钮 + 固定 `Cmd+Enter`，前者已删、后者已统一为 `edit_shortcut`。）
 - 编辑后的文本作为后续展示与润色基准；新识别文本追加其上；停止粘贴时保留编辑。
 - 编辑后再触发润色时，仅润色新增部分、保留已编辑（润色结果折回）。
 - 未编辑时行为与旧版完全一致。

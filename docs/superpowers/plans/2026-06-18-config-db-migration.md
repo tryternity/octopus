@@ -8,11 +8,13 @@
 
 **Tech Stack:** rusqlite（现有）、serde（现有，JSON 序列化用）、serde_yaml（仅 yaml 迁移一次性使用）
 
+> **状态（2026-06-18）：已实施并合并到 main**（`8441ca8` settings-ui 合并：app_config 表 + v1→v3 迁移 + category 列 + ON CONFLICT 写策略）。下方 checkbox 标记实际完成进度；v3 category 列增量见 `16a6f22`。
+
 ---
 
 ## 前置条件
 
-- [ ] **Step 0: 提交 polish_min_interval 重命名**
+- [x] **Step 0: 提交 polish_min_interval 重命名**
 
 当前有 5 个文件未提交（`polish_interval` → `polish_min_interval` 重命名）。需先提交此变更，保持 DB 迁移分支干净。
 
@@ -41,7 +43,7 @@ git commit -m "refactor: polish_interval → polish_min_interval 语义对齐（
 **Files:**
 - Modify: `crates/infra/src/db.sql`（末尾追加）
 
-- [ ] **Step 1: 追加 app_config 建表 + seed SQL**
+- [x] **Step 1: 追加 app_config 建表 + seed SQL**
 
 在 `db.sql` 末尾（最后一个 INSERT 之后）追加：
 
@@ -82,7 +84,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('denoise_mode',             '1',                               '降噪模式: 0=无 / 1=轻度 / 2=深度');
 ```
 
-- [ ] **Step 2: 验证 SQL 语法**
+- [x] **Step 2: 验证 SQL 语法**
 
 ```bash
 # 确认无语法错误（编译时会 include_str!，cargo check 验证）
@@ -91,7 +93,7 @@ cargo check -p octopus-infra
 
 Expected: 编译通过（INIT_SQL 是 include_str!，编译期不校验 SQL 内容，但确保无 Rust 错误）
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/infra/src/db.sql
@@ -105,7 +107,7 @@ git commit -m "feat(infra): 新增 app_config 表 schema + 21 字段 seed（DB �
 **Files:**
 - Modify: `crates/infra/src/db.rs`
 
-- [ ] **Step 1: 在 db.rs 添加 load_app_config 函数**
+- [x] **Step 1: 在 db.rs 添加 load_app_config 函数**
 
 在 `// ── DB → AsrConfig（load_config 用）──` 区块之前，新增 app_config 读写区块。需要 `use crate::config::{AppConfig, PolishMode};`（同 crate，无循环依赖）。
 
@@ -170,7 +172,7 @@ fn load_app_config_at(conn: &Connection) -> Result<AppConfig> {
 }
 ```
 
-- [ ] **Step 2: 添加 save_app_config（全量写）和 save_config_key（单键写）**
+- [x] **Step 2: 添加 save_app_config（全量写）和 save_config_key（单键写）**
 
 ```rust
 /// 全量写入应用配置（21 字段 INSERT OR REPLACE）。set_config / yaml 迁移用。
@@ -230,7 +232,7 @@ pub fn save_config_key(key: &str, value: &str) -> Result<()> {
 }
 ```
 
-- [ ] **Step 3: 简化 init_schema 支持 v0→v2 和 v1→v2**
+- [x] **Step 3: 简化 init_schema 支持 v0→v2 和 v1→v2**
 
 **关键洞察**：INIT_SQL 全部是 `CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE`，幂等。v1→v2 直接重跑 INIT_SQL 即可——旧表/旧 seed 行跳过，新 app_config 表 + seed 落地。无需单独的迁移 SQL。
 
@@ -260,7 +262,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
 }
 ```
 
-- [ ] **Step 4: 添加 migrate_yaml_to_db 函数**
+- [x] **Step 4: 添加 migrate_yaml_to_db 函数**
 
 ```rust
 /// 一次性 yaml → DB 迁移：config.yaml 存在时解析 → INSERT OR REPLACE 覆盖 seed → 重命名为 .bak。
@@ -310,7 +312,7 @@ fn migrate_yaml_key(map: &mut serde_yaml::Mapping, old: &str, new: &str) {
 }
 ```
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 ```bash
 cargo check -p octopus-infra
@@ -318,7 +320,7 @@ cargo check -p octopus-infra
 
 Expected: 编译通过（新增函数未被调用，仅有 unused warning，可接受）
 
-- [ ] **Step 6: 写测试——load/save 往返 + 单键写**
+- [x] **Step 6: 写测试——load/save 往返 + 单键写**
 
 在 db.rs 的 `#[cfg(test)] mod tests` 中追加（如果已有 test mod 则追加，否则新建）：
 
@@ -394,7 +396,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 7: 运行测试验证通过**
+- [x] **Step 7: 运行测试验证通过**
 
 ```bash
 cargo test -p octopus-infra -- db::tests
@@ -402,7 +404,7 @@ cargo test -p octopus-infra -- db::tests
 
 Expected: 4 tests passed
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/infra/src/db.rs
@@ -416,7 +418,7 @@ git commit -m "feat(infra): app_config DB 读写 + v1→v2 迁移 + yaml 导入�
 **Files:**
 - Modify: `crates/infra/src/config.rs:243-275`（load_config + migrate_key 函数）
 
-- [ ] **Step 1: 重写 load_config 为薄包装**
+- [x] **Step 1: 重写 load_config 为薄包装**
 
 将 `config.rs:243-275`（`load_config` + `migrate_key` 函数整体）替换为：
 
@@ -433,7 +435,7 @@ pub fn load_config() -> Result<AppConfig> {
 
 **注意：** `migrate_key` 函数从 config.rs 移除（逻辑已移至 db.rs `migrate_yaml_key`）。yaml 迁移不再发生在 load_config 中，而是在 `init_schema` → `migrate_yaml_to_db` 中一次性完成。
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
 ```bash
 cargo check -p octopus-infra
@@ -441,7 +443,7 @@ cargo check -p octopus-infra
 
 Expected: 编译通过。如果有 unused import 警告（`serde_yaml` 不再在生产代码使用），暂忽略——测试仍在用。
 
-- [ ] **Step 3: 更新 config.rs 中的 yaml 相关测试**
+- [x] **Step 3: 更新 config.rs 中的 yaml 相关测试**
 
 config.rs 现有测试大量使用 `serde_yaml::from_str::<AppConfig>("")` 来测试默认值。这些测试验证的是 serde 反序列化默认值，**在 DB 化后仍有意义**（验证 AppConfig struct 的 serde 行为正确，用于 yaml 迁移路径中的 `serde_yaml::from_value`）。
 
@@ -470,7 +472,7 @@ config.rs 现有测试大量使用 `serde_yaml::from_str::<AppConfig>("")` 来�
 
 删除被合并的 6 个独立默认值测试。保留 `polish_mode_deserialize_values`、`polish_mode_invalid_falls_back_to_disabled`、`polish_mode_default_is_disabled`（验证 PolishMode serde）、`app_config_serialize_round_trip_preserves_overrides`（验证序列化往返）、`denoise_mode_explicit_from_yaml` / `denoise_mode_legacy_denoise_enabled_ignored` / `edit_shortcut_explicit_from_yaml`（验证 serde 解析行为）。
 
-- [ ] **Step 4: 运行 infra 测试**
+- [x] **Step 4: 运行 infra 测试**
 
 ```bash
 cargo test -p octopus-infra
@@ -478,7 +480,7 @@ cargo test -p octopus-infra
 
 Expected: 所有测试通过
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/infra/src/config.rs
@@ -492,7 +494,7 @@ git commit -m "refactor(infra): load_config 切换为 DB 读取 + 清理 yaml �
 **Files:**
 - Modify: `crates/desktop/src/runtime_config.rs:105-140`（persist_* + write_config_yaml）
 
-- [ ] **Step 1: 重写 4 个 persist_* 函数 + 移除 write_config_yaml**
+- [x] **Step 1: 重写 4 个 persist_* 函数 + 移除 write_config_yaml**
 
 将 `runtime_config.rs:105-140`（从 `// ── config.yaml 写回 ──` 到 `write_config_yaml` 函数结束）替换为：
 
@@ -517,7 +519,7 @@ pub fn persist_denoise_mode(value: u8) -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
 ```bash
 cargo check -p octopus-desktop --features embedded
@@ -525,7 +527,7 @@ cargo check -p octopus-desktop --features embedded
 
 Expected: 编译通过
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/src/runtime_config.rs
@@ -539,7 +541,7 @@ git commit -m "refactor(desktop): persist_* 改用 DB 单键写入（移除 writ
 **Files:**
 - Modify: `crates/desktop/src/settings_commands.rs:74,228-232`（set_config 中的 write_config_yaml 调用 + 本地 write_config_yaml 函数）
 
-- [ ] **Step 1: set_config 中的 write_config_yaml 替换为 DB 写入**
+- [x] **Step 1: set_config 中的 write_config_yaml 替换为 DB 写入**
 
 将 `settings_commands.rs:74` 处的 `write_config_yaml(&cfg)?;` 替换为：
 
@@ -547,7 +549,7 @@ git commit -m "refactor(desktop): persist_* 改用 DB 单键写入（移除 writ
     octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
 ```
 
-- [ ] **Step 2: 移除 settings_commands.rs 中的 write_config_yaml 函数**
+- [x] **Step 2: 移除 settings_commands.rs 中的 write_config_yaml 函数**
 
 删除 `settings_commands.rs:228-232`：
 
@@ -561,7 +563,7 @@ fn write_config_yaml(cfg: &octopus_infra::config::AppConfig) -> Result<(), Strin
 
 整个函数删除。
 
-- [ ] **Step 3: 编译 + 测试验证**
+- [x] **Step 3: 编译 + 测试验证**
 
 ```bash
 cargo test -p octopus-desktop --features "embedded dashscope"
@@ -569,7 +571,7 @@ cargo test -p octopus-desktop --features "embedded dashscope"
 
 Expected: 编译通过，所有测试通过（settings_commands 的测试测的是 apply_config_value，不涉及持久化）
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/settings_commands.rs
@@ -580,7 +582,7 @@ git commit -m "refactor(desktop): set_config 持久化切换到 DB（移除本�
 
 ## Task 6: 全量集成测试
 
-- [ ] **Step 1: 全量编译**
+- [x] **Step 1: 全量编译**
 
 ```bash
 cargo build --release -p octopus-server -p octopus-cli
@@ -589,7 +591,7 @@ cargo build --release -p octopus-desktop --features embedded
 
 Expected: 全部编译通过
 
-- [ ] **Step 2: 运行所有相关测试**
+- [x] **Step 2: 运行所有相关测试**
 
 ```bash
 cargo test -p octopus-infra
@@ -598,7 +600,7 @@ cargo test -p octopus-desktop --features "embedded dashscope"
 
 Expected: 全部通过
 
-- [ ] **Step 3: 手动验证迁移流程（开发环境）**
+- [x] **Step 3: 手动验证迁移流程（开发环境）**
 
 ```bash
 # 1. 确保 ~/.octopus/config.yaml 存在（当前开发环境的配置）
@@ -621,7 +623,7 @@ sqlite3 ~/.octopus/octopus.db "SELECT config_key, config_value FROM app_config L
 # 7. 验证：修改设置后值持久化（改一个设置 → 重启 → 值保留）
 ```
 
-- [ ] **Step 4: 恢复开发环境（可选）**
+- [x] **Step 4: 恢复开发环境（可选）**
 
 如果手动验证修改了配置，恢复备份：
 ```bash
@@ -638,7 +640,7 @@ mv ~/.octopus/config.yaml.bak ~/.octopus/config.yaml
 - Modify: `docs/configuration.md`
 - Create: `docs/superpowers/specs/2026-06-18-config-db-migration-design.md`
 
-- [ ] **Step 1: 更新 architecture.md**
+- [x] **Step 1: 更新 architecture.md**
 
 更新「两套配置系统」表格（原区分 config.yaml vs octopus.db，现在统一到 DB）：
 
@@ -659,11 +661,11 @@ mv ~/.octopus/config.yaml.bak ~/.octopus/config.yaml
 - **引擎激活唯一真相**：`app_config.asr_engine`（DB models 表无 is_active 列）
 ```
 
-- [ ] **Step 2: 更新 configuration.md**
+- [x] **Step 2: 更新 configuration.md**
 
 更新配置文件描述（config.yaml → DB app_config 表），保留字段说明表格。
 
-- [ ] **Step 3: 创建 spec 文档**
+- [x] **Step 3: 创建 spec 文档**
 
 创建 `docs/superpowers/specs/2026-06-18-config-db-migration-design.md`，记录设计决策：
 
@@ -688,7 +690,7 @@ config.yaml 与 octopus.db 两套存储系统并存，yaml 需独立维护序列
 - **category 分组列**：YAGNI，21 个扁平 key-value 无分组需求
 ```
 
-- [ ] **Step 4: Commit 文档**
+- [x] **Step 4: Commit 文档**
 
 ```bash
 git add docs/architecture.md docs/configuration.md docs/superpowers/specs/2026-06-18-config-db-migration-design.md docs/superpowers/plans/2026-06-18-config-db-migration.md
