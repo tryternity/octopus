@@ -90,10 +90,14 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
             false
         }
     };
-    if need_emit {
-        if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        // 物理窗口无条件 show：冷启动首启 webview 可能尚未 ready（走 pending 分支），此前
+        // 不 show、要等 ready 冲刷 → 用户按键后"要说话才出现"。提前 show 让窗口立即可见
+        // （macOS 可见窗口的 webview 优先首绘，亦加速 ready）；文本仍等 ready 后由
+        // show-result 渲染（#container 默认 opacity:0，提前 show 不产生空窗闪烁）。
+        let _ = window.show();
+        if need_emit {
             let _ = window.emit("show-result", text);
-            let _ = window.show();
         }
     }
 }

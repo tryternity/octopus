@@ -566,10 +566,22 @@
     });
 
     // 监听 Tauri 事件
-    listen('show-result', (event) => {
-      resultText.textContent = event.payload;
-      container.classList.add('visible');
+    // ── 结果文本渲染：单调策略 ──
+    // zipformer token_ids 只追加，正常 new_text 单调增长（前缀扩展）；但 VAD 静音抖动会触发
+    // finish+reset 重建文本、或 finish 修正末字，导致跳变/回退，每帧重绘即闪烁。
+    // 故：增长(startsWith)立即渲染（流畅逐字），跳变/回退延迟合并取最新（连续跳变只渲染一次）
+    let displayedResult = '';
+    let pendingDiverted = null;
+    let divertedTimer = 0;
+    const DIVERTED_DELAY_MS = 300;
+    function renderResultNow(text) {
+      displayedResult = text;
+      resultText.textContent = text;
       resultText.scrollTop = resultText.scrollHeight;
+    }
+    listen('show-result', (event) => {
+      renderResultNow(event.payload);
+      container.classList.add('visible');
       // 刷新工具栏状态：用户可能在设置窗口刚改过 polish_llm / polish_mode / denoise_mode，
       // 这里重读 toolbar_state 保证按钮 active 态与最新配置一致
       refreshActive();
@@ -578,8 +590,26 @@
     // 追加文本事件（流式更新时使用）
     listen('update-result', (event) => {
       if (editing) return;
-      resultText.textContent = event.payload;
-      resultText.scrollTop = resultText.scrollHeight;
+      const text = event.payload;
+      if (text === displayedResult || text === pendingDiverted) return;  // 幂等
+      if (text.startsWith(displayedResult)) {
+        // 增长：立即渲染，清掉待处理的跳变
+        if (divertedTimer) { clearTimeout(divertedTimer); divertedTimer = 0; }
+        pendingDiverted = null;
+        renderResultNow(text);
+      } else {
+        // 跳变/回退/段切换：延迟合并，连续跳变只渲染最新，避免闪烁
+        pendingDiverted = text;
+        if (!divertedTimer) {
+          divertedTimer = setTimeout(() => {
+            divertedTimer = 0;
+            if (pendingDiverted !== null) {
+              renderResultNow(pendingDiverted);
+              pendingDiverted = null;
+            }
+          }, DIVERTED_DELAY_MS);
+        }
+      }
     });
 
     // 清空事件（粘贴完成后）
