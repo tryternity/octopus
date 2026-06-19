@@ -1099,39 +1099,23 @@ fn consume_completed_results(
 ) {
     while let Some(text) = completed_results.remove(completed_seq) {
         if !text.is_empty() {
-            let overlap_len = get_overlap_len(transcript.full(), &text);
-            if overlap_len > 0 {
-                let suffix: String = text.chars().skip(overlap_len).collect();
-                transcript.append_segment(&suffix);
-            } else {
-                // 段间加逗号：已有文本、新段不以标点开头、已有文本不以标点结尾
-                // 避免拼接出 「。，」「？，」 等连续标点
-                let existing = transcript.full();
-                if !existing.is_empty()
-                    && !text.starts_with(|c: char| ",.，。！？!?\n".contains(c))
-                    && !existing.ends_with(|c: char| ",.，。！？!?\n".contains(c))
-                {
-                    transcript.append_segment("，");
-                }
-                transcript.append_segment(&text);
+            // 段间加逗号：已有文本、新段不以标点开头、已有文本不以标点结尾
+            // 避免拼接出 「。，」「？，」 等连续标点
+            //
+            // 不做 overlap 去重：force_cut 的 SEGMENT_OVERLAP_MS 仅 200ms（≈1 字），
+            // 真重叠与边界巧合无法区分，dedup 净误删（曾把「识别的效果」误删成「的效果」）；
+            // silence-cut 段音频本就不重叠，更无需 dedup。
+            let existing = transcript.full();
+            if !existing.is_empty()
+                && !text.starts_with(|c: char| ",.，。！？!?\n".contains(c))
+                && !existing.ends_with(|c: char| ",.，。！？!?\n".contains(c))
+            {
+                transcript.append_segment("，");
             }
+            transcript.append_segment(&text);
         }
         *completed_seq += 1;
     }
-}
-
-fn get_overlap_len(existing: &str, incoming: &str) -> usize {
-    let existing_trimmed = existing.trim_end_matches(|c: char| c.is_whitespace() || ",.，。！？!?、;；:：".contains(c));
-    let existing_chars: Vec<char> = existing_trimmed.chars().collect();
-    let incoming_chars: Vec<char> = incoming.chars().collect();
-    let max_match = 8.min(existing_chars.len()).min(incoming_chars.len());
-    let mut best_len = 0;
-    for len in 1..=max_match {
-        if existing_chars[existing_chars.len() - len..] == incoming_chars[..len] {
-            best_len = len;
-        }
-    }
-    best_len
 }
 
 /// 处理 VadSegmentedTick 命令
