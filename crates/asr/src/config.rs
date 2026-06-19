@@ -405,13 +405,26 @@ pub fn apply_session_acceleration(builder: ort::session::builder::SessionBuilder
         return Ok(builder);
     }
 
-    let providers = vec![
-        ort::ep::CUDAExecutionProvider::default().build(),
-        ort::ep::DirectMLExecutionProvider::default().build(),
-        ort::ep::CoreMLExecutionProvider::default().build(),
-    ];
+    // 按平台注册对应 EP——原实现跨平台全注册（CUDA/DirectML/CoreML 一起），在 macOS 上
+    // 会去 init Linux/Windows 专用的 CUDA/DirectML EP，其失败路径（dlopen libcuda 等）
+    // 可能直接 segfault（SIGSEGV 绕过 Rust 错误处理，下面 match 抓不到）。
+    // macOS=CoreML、Linux=CUDA、Windows=DirectML+CUDA。
+    let mut providers = Vec::new();
+    #[cfg(target_os = "macos")]
+    providers.push(ort::ep::CoreMLExecutionProvider::default().build());
+    #[cfg(target_os = "linux")]
+    providers.push(ort::ep::CUDAExecutionProvider::default().build());
+    #[cfg(target_os = "windows")]
+    {
+        providers.push(ort::ep::DirectMLExecutionProvider::default().build());
+        providers.push(ort::ep::CUDAExecutionProvider::default().build());
+    }
 
-    log::info!("Attempting to build session with hardware acceleration execution providers");
+    log::info!(
+        "Attempting to build session with hardware acceleration EPs on {} ({} provider(s))",
+        std::env::consts::OS,
+        providers.len()
+    );
     match builder.with_execution_providers(providers) {
         Ok(b) => {
             log::info!("Successfully registered EPs!");
