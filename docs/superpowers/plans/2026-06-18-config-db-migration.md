@@ -4,7 +4,7 @@
 
 **Goal:** 将全部 21 个 `config.yaml` 配置字段迁移到 SQLite `app_config` 表，实现配置存储统一化（与模型配置/识别历史共用同一 DB），消除 yaml 序列化/字段迁移的复杂度。
 
-**Architecture:** 在 `infra::db` 新增 `app_config` 表（key-value TEXT 存储），`load_config()` 改为从 DB 读取并按字段类型解析，`persist_*` / `set_config` 改为 DB 写入。首次启动时自动将旧 `config.yaml` 导入 DB 后重命名为 `.bak`。`user_version` 从 1 升至 2。
+**Architecture:** 在 `infra::db` 新增 `app_config` 表（key-value TEXT 存储），`load_config()` 改为从 DB 读取并按字段类型解析，`persist_*` / `set_config` 改为 DB 写入。首次启动时自动将旧 `config.yaml` 导入 DB 后重命名为 `.bak`。`user_version` 最终升至 3（v0/v1→v3 直跳，v2→v3 ALTER TABLE 补 category 列）。写策略用 `ON CONFLICT DO UPDATE SET config_value`（保留 description + category，不用 INSERT OR REPLACE）。
 
 **Tech Stack:** rusqlite（现有）、serde（现有，JSON 序列化用）、serde_yaml（仅 yaml 迁移一次性使用）
 

@@ -12,13 +12,14 @@ config.yaml 与 octopus.db 两套存储系统并存，yaml 需独立维护序列
 
 ```sql
 CREATE TABLE IF NOT EXISTS app_config (
+    category     TEXT NOT NULL DEFAULT 'default',
     config_key   TEXT PRIMARY KEY,
     config_value TEXT NOT NULL,
     description  TEXT
 );
 ```
 
-值统一 TEXT 存储，由 `load_app_config()` 按字段类型解析（bool.parse()、f64.parse()、u8 枚举映射）。
+值统一 TEXT 存储，由 `load_app_config()` 按字段类型解析（bool.parse()、f64.parse()、u8 枚举映射）。`category` 列用于后续分组扩展（当前全部 `'default'`），`description` 由 seed 填充、写入时保留。
 
 ### 关键决策
 
@@ -26,13 +27,15 @@ CREATE TABLE IF NOT EXISTS app_config (
 2. **seed 幂等**：`INSERT OR IGNORE`，已有配置不被覆盖。db.sql 21 行 seed 保证首次启动即有默认值。
 3. **yaml 一次性迁移**：`init_schema` 在 v0/v1→v2 升级时检测旧 config.yaml → serde 解析（含字段名迁移 shortcut→asr_shortcut 等）→ `save_app_config_at` 覆盖 seed → 重命名 config.yaml 为 config.yaml.bak。
 4. **v1→v2 迁移策略**：INIT_SQL 全部是 `CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE`，幂等安全重跑。v1 数据库直接重跑 INIT_SQL 即可补建 app_config 表 + seed，无需单独迁移 SQL。
-5. **单键写 vs 全量写**：`persist_*`（工具栏切换）用 `save_config_key`（单键 INSERT OR REPLACE，避免全量回写）；`set_config`（设置窗口表单）用 `save_app_config`（全量 21 字段 INSERT OR REPLACE）。
+5. **写策略（ON CONFLICT DO UPDATE）**：所有写入用 `INSERT ... ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value`，**仅更新 config_value**，保留 description + category。不用 `INSERT OR REPLACE`（它会 DELETE+INSERT 整行，清空非指定列）。
+6. **单键写 vs 全量写**：`persist_*`（工具栏切换）用 `save_config_key`（单键 ON CONFLICT，避免全量回写）；`set_config`（设置窗口表单）用 `save_app_config`（全量 21 字段 ON CONFLICT）。
+7. **category 列**：预留分组能力，当前全部 `'default'`。v2→v3 迁移用 `ALTER TABLE ADD COLUMN`（DEFAULT 自动填入存量行）。
 6. **AppConfig struct 保持不变**：仍然是 serde Serialize/Deserialize，用于：a) 前端 JSON 序列化（get_config 命令）；b) yaml 迁移路径中的 `serde_yaml::from_value` 解析旧 config.yaml。
 
 ### 排除方案
 
 - **serde alias 迁移字段名**：两键共存时 duplicate field panic，改为 yaml Value 层手动迁移（在 `migrate_yaml_to_db` 中一次性完成）。
-- **category 分组列**：YAGNI，21 个扁平 key-value 无分组需求。
+- **INSERT OR REPLACE**：会 DELETE+INSERT 整行，导致 description / category 被清空。改为 `ON CONFLICT DO UPDATE SET config_value`。
 - **多类型列（TEXT/INTEGER/REAL 分列）**：增加 schema 复杂度，parse 开销可忽略。
 
 ## 涉及文件
@@ -48,16 +51,21 @@ CREATE TABLE IF NOT EXISTS app_config (
 ## 迁移流程
 
 ```
-首次启动 (v0/v1 → v2):
+首次启动 (v0/v1 → v3):
   init_schema()
-    → execute_batch(INIT_SQL)        // 幂等：建表 + seed（含 app_config）
+    → execute_batch(INIT_SQL)        // 幂等：建表 + seed（含 app_config + category 列）
     → migrate_yaml_to_db(conn)       // 检测 config.yaml
         → 存在？ → serde_yaml 解析 + 字段名迁移
-                 → save_app_config_at() 覆盖 seed
+                 → save_app_config_at() ON CONFLICT 覆盖 seed value
                  → rename config.yaml → config.yaml.bak
         → 不存在？ → 直接返回
-    → PRAGMA user_version = 2
+    → PRAGMA user_version = 3
 
-后续启动 (v2+):
-  init_schema() → v >= 2 → 跳过
+v2 升级 (v2 → v3):
+  init_schema()
+    → ALTER TABLE app_config ADD COLUMN category TEXT NOT NULL DEFAULT 'default'
+    → PRAGMA user_version = 3
+
+后续启动 (v3+):
+  init_schema() → v >= 3 → 跳过
 ```

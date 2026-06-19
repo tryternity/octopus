@@ -3,7 +3,7 @@
 octopus 配置分两部分：
 
 - **模型配置**：`~/.octopus/octopus.db` 的 `models` 表（SQLite，唯一来源）
-- **应用配置**：`~/.octopus/octopus.db` 的 `app_config` 表（SQLite，v2+ 替代旧 config.yaml）
+- **应用配置**：`~/.octopus/octopus.db` 的 `app_config` 表（SQLite，v3+ 替代旧 config.yaml）
 
 首次启动自动建库 + 写入默认引擎 + 应用配置，开箱即用。
 
