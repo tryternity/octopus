@@ -68,9 +68,11 @@ VALUES
 -- ── 应用配置（app_config 表）─────────────────────────────────────────────────
 -- config.yaml 的 DB 化：所有应用行为配置（引擎/快捷键/润色/降噪等）以 key-value 存储。
 -- 值统一 TEXT，由 Rust 侧 load_app_config 按字段类型解析。
--- 首次启动由 init_schema 执行 seed；后续 set_config / persist_* 通过 INSERT OR REPLACE 更新。
+-- category 用于后续分组（如 'default' / 'audio' / 'network'），当前全部 'default'。
+-- 首次启动由 init_schema 执行 seed；后续 set_config / persist_* 通过 ON CONFLICT DO UPDATE 仅改 config_value，保留 description + category。
 
 CREATE TABLE IF NOT EXISTS app_config (
+    category     TEXT NOT NULL DEFAULT 'default',
     config_key   TEXT PRIMARY KEY,
     config_value TEXT NOT NULL,
     description  TEXT

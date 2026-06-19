@@ -114,9 +114,10 @@ where
 }
 
 /// 初始化 schema + 迁移：
-/// - v0（全新安装）: 执行 INIT_SQL → yaml 迁移 → v2
-/// - v1（旧版升级）: 重跑 INIT_SQL（幂等，补建 app_config + seed）→ yaml 迁移 → v2
-/// - v2+: 跳过
+/// - v0（全新安装）: 执行 INIT_SQL → yaml 迁移 → v3
+/// - v1（旧版升级）: 重跑 INIT_SQL（幂等，补建 app_config + seed）→ yaml 迁移 → v3
+/// - v2（v2 升级）: ALTER TABLE app_config ADD COLUMN category → v3
+/// - v3+: 跳过
 ///
 /// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等安全重跑。
 fn init_schema(conn: &Connection) -> Result<()> {
@@ -129,13 +130,23 @@ fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(INIT_SQL).context("执行 db.sql 初始化失败")?;
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
-        conn.execute("PRAGMA user_version = 2", [])?;
-        log::info!("DB initialized (v2): schema + app_config + yaml migration");
+        // v0/v1 跳过 v2，直接到 v3（app_config 已含 category 列）
+        conn.execute("PRAGMA user_version = 3", [])?;
+        log::info!("DB initialized (v3): schema + app_config(category) + yaml migration");
+    } else if v == 2 {
+        // v2 → v3：app_config 表补 category 列（DEFAULT 'default'，存量行自动填）
+        log::info!("DB migrating v2 → v3: adding app_config.category column...");
+        conn.execute(
+            "ALTER TABLE app_config ADD COLUMN category TEXT NOT NULL DEFAULT 'default'",
+            [],
+        )?;
+        conn.execute("PRAGMA user_version = 3", [])?;
+        log::info!("DB migrated to v3: app_config.category column added");
     }
     Ok(())
 }
 
-/// 一次性 yaml → DB 迁移：config.yaml 存在时解析 → INSERT OR REPLACE 覆盖 seed → 重命名为 .bak。
+/// 一次性 yaml → DB 迁移：config.yaml 存在时解析 → ON CONFLICT 覆盖 seed value → 重命名为 .bak。
 /// 幂等：config.yaml 不存在时直接返回。
 fn migrate_yaml_to_db(conn: &Connection) -> Result<()> {
     let config_path = crate::octopus_config_home().join("config.yaml");
@@ -234,6 +245,7 @@ impl<'a> ModelSpec<'a> {
 /// 从 DB app_config 表加载完整应用配置。
 /// 先构造 AppConfig::default()（保底），再用 DB 行按字段类型解析覆盖。
 /// 缺失行或解析失败 → 保留 default 值（防御性，正常不应触发——seed 保证 21 行齐全）。
+/// 只读 category='default' 的行（当前全部配置均在 default 类别下）。
 pub fn load_app_config() -> Result<crate::config::AppConfig> {
     ensure_db()?;
     with_db(|conn| load_app_config_at(conn))
@@ -242,7 +254,9 @@ pub fn load_app_config() -> Result<crate::config::AppConfig> {
 fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
     use crate::config::{AppConfig, PolishMode};
     let mut cfg = AppConfig::default();
-    let mut stmt = conn.prepare("SELECT config_key, config_value FROM app_config")?;
+    let mut stmt = conn.prepare(
+        "SELECT config_key, config_value FROM app_config WHERE category = 'default'",
+    )?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
     })?;
@@ -289,7 +303,8 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
     Ok(cfg)
 }
 
-/// 全量写入应用配置（21 字段 INSERT OR REPLACE）。set_config / yaml 迁移用。
+/// 全量写入应用配置（21 字段 ON CONFLICT DO UPDATE）。set_config / yaml 迁移用。
+/// 仅更新 config_value，保留 description + category（不同于 INSERT OR REPLACE 会清空非指定列）。
 pub fn save_app_config(cfg: &crate::config::AppConfig) -> Result<()> {
     ensure_db()?;
     with_db(|conn| save_app_config_at(conn, cfg))
@@ -327,7 +342,8 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
     ];
     for (key, value) in &fields {
         conn.execute(
-            "INSERT OR REPLACE INTO app_config (config_key, config_value) VALUES (?1, ?2)",
+            "INSERT INTO app_config (config_key, config_value) VALUES (?1, ?2)
+             ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value",
             params![key, value],
         )?;
     }
@@ -335,11 +351,13 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
 }
 
 /// 单键写入（persist_* 命令用，避免全量回写）。
+/// 使用 ON CONFLICT DO UPDATE 仅改 config_value，保留 description + category。
 pub fn save_config_key(key: &str, value: &str) -> Result<()> {
     ensure_db()?;
     with_db(|conn| {
         conn.execute(
-            "INSERT OR REPLACE INTO app_config (config_key, config_value) VALUES (?1, ?2)",
+            "INSERT INTO app_config (config_key, config_value) VALUES (?1, ?2)
+             ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value",
             params![key, value],
         )?;
         Ok(())
@@ -1185,5 +1203,65 @@ mod tests {
         conn.execute("DELETE FROM app_config WHERE config_key='denoise_mode'", []).unwrap();
         let cfg = load_app_config_at(&conn).unwrap();
         assert_eq!(cfg.denoise_mode, 1); // AppConfig::default() 的值
+    }
+
+    #[test]
+    fn save_preserves_description_and_category() {
+        let conn = open_init();
+        // 验证 seed 有 description
+        let desc: String = conn
+            .query_row(
+                "SELECT description FROM app_config WHERE config_key='language'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!desc.is_empty(), "seed 的 description 不应为空");
+
+        // 单键写入后 description 应保留（INSERT OR REPLACE 会清空，ON CONFLICT 不会）
+        conn.execute(
+            "INSERT INTO app_config (config_key, config_value) VALUES (?1, ?2)\n             ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value",
+            params!["language", "zh"],
+        ).unwrap();
+        let (val, desc2): (String, String) = conn
+            .query_row(
+                "SELECT config_value, description FROM app_config WHERE config_key='language'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(val, "zh");
+        assert_eq!(desc2, desc, "description 应被保留");
+
+        // save_config_key 路径也保留
+        // （save_config_key 走 with_db，需全局 DB 初始化；这里测底层 SQL 一致性即可）
+
+        // save_app_config_at 全量写也保留
+        let mut cfg = load_app_config_at(&conn).unwrap();
+        cfg.language = "en".into();
+        save_app_config_at(&conn, &cfg).unwrap();
+        let (val3, desc3, cat3): (String, String, String) = conn
+            .query_row(
+                "SELECT config_value, description, category FROM app_config WHERE config_key='language'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(val3, "en");
+        assert_eq!(desc3, desc, "save_app_config_at 应保留 description");
+        assert_eq!(cat3, "default", "category 应为 default");
+    }
+
+    #[test]
+    fn app_config_category_defaults_to_default() {
+        let conn = open_init();
+        let categories: Vec<String> = conn
+            .prepare("SELECT DISTINCT category FROM app_config")
+            .unwrap()
+            .query_map([], |r| r.get(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(categories, vec!["default"], "所有行 category 应为 'default'");
     }
 }
