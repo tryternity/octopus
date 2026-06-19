@@ -277,6 +277,67 @@ pub fn test_llm_connection(spec: String) -> Result<String, String> {
     }
 }
 
+/// 测试 ASR 远程引擎连接是否可用。
+/// 本地模型返回 Err 提示无需测试；远程模型（provider=aliyun）检查 secret_key + WS 连通性。
+#[tauri::command]
+pub fn test_asr_connection(bare_name: String) -> Result<String, String> {
+    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    let engine = engines.iter().find(|e| e.name == bare_name)
+        .ok_or_else(|| format!("ASR 引擎 '{}' 不存在", bare_name))?;
+
+    if engine.is_local {
+        return Err("本地模型无需连接测试".into());
+    }
+
+    // 远程引擎：从 DB 取配置（source = WS endpoint, secret_key = API Key）
+    let asr_cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let model_name = octopus_infra::db::parse_model_spec(&bare_name).model_name().to_string();
+    let entry = asr_cfg.asr.aliyun.as_ref()
+        .and_then(|m| m.get(model_name.as_str()))
+        .ok_or_else(|| format!("远程 ASR 模型 '{}' 未在 DB 配置", bare_name))?;
+
+    if entry.secret_key.is_empty() {
+        return Err(format!("ASR 模型 '{}' 的 secret_key 为空", bare_name));
+    }
+
+    #[cfg(feature = "dashscope")]
+    {
+        let endpoint = entry.source.clone();
+        let key = entry.secret_key.clone();
+        // 在 tokio runtime 中做异步 WS 连接测试（3s 超时）
+        let handle = std::thread::spawn(move || {
+            let rt = tokio::runtime::Runtime::new()
+                .map_err(|e| format!("创建 tokio runtime 失败: {}", e))?;
+            rt.block_on(async {
+                use tokio_tungstenite::tungstenite::client::IntoClientRequest;
+                let mut req = endpoint.into_client_request()
+                    .map_err(|e| format!("WS 端点无效: {}", e))?;
+                req.headers_mut().insert(
+                    "Authorization",
+                    format!("bearer {}", key).parse().unwrap(),
+                );
+                tokio::time::timeout(
+                    std::time::Duration::from_secs(3),
+                    tokio_tungstenite::connect_async(req),
+                )
+                .await
+                .map(|r| r.map_err(|e| format!("WS 连接失败: {}", e)).map(|_| ()))
+                .map_err(|_| "WS 连接超时（3s）".to_string())
+                .and_then(|r| r)
+            })
+        });
+        match handle.join() {
+            Ok(Ok(())) => Ok("连接成功".into()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err("测试线程异常终止".into()),
+        }
+    }
+    #[cfg(not(feature = "dashscope"))]
+    {
+        Err("远程 ASR 连接测试需要 dashscope feature".into())
+    }
+}
+
 // ── 单测（纯逻辑校验，不触文件 IO / Tauri State）──
 
 #[cfg(test)]
