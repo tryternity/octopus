@@ -405,6 +405,17 @@ pub fn apply_session_acceleration(builder: ort::session::builder::SessionBuilder
         return Ok(builder);
     }
 
+    // qwen3-asr 含 CoreML 不支持的动态算子 → onnxruntime 把图分区（CoreML 跑能跑的、CPU 跑
+    // 剩下的），每分区边界 CPU↔CoreML 张量拷贝开销 dominate，比纯 CPU 还慢，且狂刷
+    // "Context leak / CoreAnalytics"。检测到 active 引擎 category=qwen3-asr 时跳过 CoreML，纯 CPU。
+    if matches!(parse_model_spec(&app_cfg.asr_engine), ModelSpec::Full { category: "qwen3-asr", .. }) {
+        log::info!(
+            "Skipping CoreML EP: active engine category=qwen3-asr (dynamic ops incompatible — \
+             graph partitioning would slow it down). Using CPU."
+        );
+        return Ok(builder);
+    }
+
     // 按平台注册对应 EP——原实现跨平台全注册（CUDA/DirectML/CoreML 一起），在 macOS 上
     // 会去 init Linux/Windows 专用的 CUDA/DirectML EP，其失败路径（dlopen libcuda 等）
     // 可能直接 segfault（SIGSEGV 绕过 Rust 错误处理，下面 match 抓不到）。
