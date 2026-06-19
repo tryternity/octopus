@@ -32,21 +32,20 @@ pub struct SileroVad {
 
 impl SileroVad {
     pub fn new(model_path: &Path) -> Result<Self> {
-        // 先查缓存：命中则 clone Arc，避免重复 commit_from_file
+        // 持 cache lock 期间完成 get-or-insert：消除 TOCTOU（并发 miss 时只有一个线程加载，
+        // 其余等锁后命中同一 Arc）。commit_from_file 慢但仅在冷启动一次性发生，串行化可接受。
         let session = {
-            let cache = vad_sessions().lock().unwrap();
-            cache.get(model_path).cloned()
-        };
-        let session = match session {
-            Some(s) => s,
-            None => {
+            let mut cache = vad_sessions().lock().unwrap();
+            if let Some(s) = cache.get(model_path) {
+                s.clone()
+            } else {
                 let s = Arc::new(Mutex::new(
                     Session::builder()
                         .context("Failed to create ORT session builder")?
                         .commit_from_file(model_path)
                         .with_context(|| format!("Failed to load Silero VAD from {:?}", model_path))?,
                 ));
-                vad_sessions().lock().unwrap().insert(model_path.to_path_buf(), s.clone());
+                cache.insert(model_path.to_path_buf(), s.clone());
                 s
             }
         };
@@ -107,11 +106,6 @@ impl SileroVad {
 mod tests {
     use super::*;
 
-    // 测试串行化门控：same_path_shares_session 需要在两次 try_new() 之间缓存不被
-    // 其他测试的 insert 覆盖（生产中单 path 不会被并发覆盖，但 cargo test 默认多线程
-    // 并发跑测试会人为制造 race）。用独立 Mutex 串行这两个缓存相关的测试。
-    static TEST_GATE: Mutex<()> = Mutex::new(());
-
     // 真实 ONNX 模型文件在测试环境可能不存在；find_silero_vad 或 new 失败时跳过，
     // 不 FAIL，避免 CI 强依赖模型文件。
     fn try_new() -> Option<SileroVad> {
@@ -121,7 +115,6 @@ mod tests {
 
     #[test]
     fn same_path_shares_session() {
-        let _gate = TEST_GATE.lock().unwrap();
         let (a, b) = match (try_new(), try_new()) {
             (Some(a), Some(b)) => (a, b),
             _ => {
@@ -137,7 +130,6 @@ mod tests {
 
     #[test]
     fn compute_returns_probability_in_range() {
-        let _gate = TEST_GATE.lock().unwrap();
         let mut v = match try_new() {
             Some(v) => v,
             None => {
