@@ -71,7 +71,7 @@ pub fn set_config(
         let mut g = rc.write().unwrap();
         *g = cfg.clone();
     }
-    write_config_yaml(&cfg)?;
+    octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
 
     // 运行时可变字段立即同步到 coordinator 的 config 快照，
     // 无需等下次 Toggle（用户在录音中改 polish_llm 等也能立即生效）
@@ -223,12 +223,6 @@ fn build_polish_llm_spec(bare_name: &str) -> Result<String, String> {
             .ok_or_else(|| format!("润色模型 '{}' 不存在", bare_name))?;
         Ok(format!("{}:{}:{}", model.provider, model.category, model.model_name))
     }
-}
-
-fn write_config_yaml(cfg: &octopus_infra::config::AppConfig) -> Result<(), String> {
-    let path = octopus_infra::octopus_config_home().join("config.yaml");
-    let text = serde_yaml::to_string(cfg).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text).map_err(|e| e.to_string())
 }
 
 // ── get_history 命令 ──
