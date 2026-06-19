@@ -118,8 +118,10 @@ fn paste_via_clipboard<R: Runtime>(
 
     std::thread::sleep(Duration::from_millis(50));
 
-    // 仅在不保留识别结果时恢复原剪贴板
-    if !write_to_clipboard {
+    // 仅在不保留识别结果时恢复原剪贴板。
+    // read_text 对图片/富文本/文件返回空——saved 为空（读不出或本就空）则不写回，
+    // 避免用空文本覆盖用户的非文本剪贴板内容。
+    if !write_to_clipboard && !saved.is_empty() {
         let _ = clipboard.write_text(&saved);
     }
 

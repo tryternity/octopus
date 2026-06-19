@@ -499,7 +499,7 @@ function renderSettings(resp) {
         '<div class="label-group"><span class="label-text">语音识别引擎 <span class="label-effect">(下次录音)</span></span></div>' +
         '<div class="select-with-test">' +
           '<select id="asr-engine-select" onchange="setVal(\'asr_engine\', this.value); updateAsrTestBtn(this.value)">' + asrOptions + '</select>' +
-          '<button class="test-btn' + (currentAsrLocal ? ' disabled' : '') + '" id="asr-test-btn" onclick="testAsrConnection()" title="' + (currentAsrLocal ? '本地模型无需测试' : '测试连接') + '">' + checkIconSvg + '</button>' +
+          '<button class="test-btn' + (currentAsrLocal ? ' disabled' : '') + '" id="asr-test-btn" onclick="testAsrConnection()" title="' + (currentAsrLocal ? '本地模型无需连接测试' : '测试连接') + '">' + checkIconSvg + '</button>' +
         '</div>' +
       '</div>' +
       '<div class="row">' +
@@ -669,7 +669,7 @@ function updateAsrTestBtn(bareName) {
   btn.classList.remove('ok', 'fail', 'disabled');
   if (isLocal) {
     btn.classList.add('disabled');
-    btn.title = '本地模型无需测试';
+    btn.title = '本地模型无需连接测试';
   } else {
     btn.title = '测试连接';
   }

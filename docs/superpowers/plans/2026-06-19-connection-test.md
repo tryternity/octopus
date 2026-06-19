@@ -55,7 +55,7 @@
   - `std::thread::spawn(move || octopus_llm::test_connection(&llm_cfg))` + `join()`
   - 返回 `Ok("连接成功".into())` / `Err(format!("{}", e))`
 - [x] 同文件新增 `test_asr_connection(bare_name)`：
-  - `list_engines().find(|e| e.name == bare_name)` → `is_local` → Err「本地模型无需测试」
+  - `list_engines().find(|e| e.name == bare_name)` → `is_local` → Err「本地模型无需连接测试」
   - 取 DB endpoint + key，空 key → Err
   - `#[cfg(feature="dashscope")]` 分支：独立线程 + `tokio::runtime::Runtime::new()` + `tokio::time::timeout(3s, connect_async(req))`，req 加 `Authorization: bearer <key>`
   - `#[cfg(not(feature="dashscope"))]` 分支：Err「需要 dashscope feature」

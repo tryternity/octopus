@@ -135,13 +135,21 @@ impl DashScopeStreamSession {
         let mut rx = self.result_rx;
         rt.block_on(async move {
             let mut text = String::new();
-            while let Some(event) = rx.recv().await {
-                match event {
-                    StreamEvent::Text(t) => text = t,
-                    StreamEvent::Finished => break,
-                    StreamEvent::Failed(msg) => bail!("dashscope task-failed: {}", msg),
+            // 保底超时：WS task 若因网络挂起不回 Finished/Failed，recv 会一直 pending 直到
+            // TCP 超时（默认可达分钟级）。close 阻塞 coordinator 线程（Toggle 停止路径），
+            // 必须有上限，否则快捷键/录音切换彻底卡死。8s 与 engine_dashscope 段级超时一致。
+            tokio::time::timeout(std::time::Duration::from_secs(8), async {
+                while let Some(event) = rx.recv().await {
+                    match event {
+                        StreamEvent::Text(t) => text = t,
+                        StreamEvent::Finished => break,
+                        StreamEvent::Failed(msg) => bail!("dashscope task-failed: {}", msg),
+                    }
                 }
-            }
+                Ok::<(), anyhow::Error>(())
+            })
+            .await
+            .map_err(|_| anyhow!("dashscope close 超时（8s）"))??;
             Ok(text)
         })
     }

@@ -278,7 +278,7 @@ pub fn test_llm_connection(spec: String) -> Result<String, String> {
 }
 
 /// 测试 ASR 远程引擎连接是否可用。
-/// 本地模型返回 Err 提示无需测试；远程模型（provider=aliyun）检查 secret_key + WS 连通性。
+/// 本地模型返回 Err 提示无需连接测试；远程模型（provider=aliyun）检查 secret_key + WS 连通性。
 #[tauri::command]
 pub fn test_asr_connection(bare_name: String) -> Result<String, String> {
     let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;

@@ -10,7 +10,7 @@
 ## 2. 目标
 
 - ASR 引擎 select 右侧加一个测试按钮：
-  - **本地模型** → 灰掉（`disabled`，`pointer-events:none`，title「本地模型无需测试」）
+  - **本地模型** → 灰掉（`disabled`，`pointer-events:none`，title「本地模型无需连接测试」）
   - **远程模型**（provider=aliyun）→ 可点，3s WS 握手连通性检测
   - select 切换时按 `is_local` 动态刷新按钮 disabled 状态
 - 润色模型 select 右侧加一个测试按钮：始终可点，发一个 `max_tokens=1` 的极简 chat 请求（10s 超时）
@@ -34,7 +34,7 @@ pub fn test_llm_connection(spec: String) -> Result<String, String>;
 pub fn test_asr_connection(bare_name: String) -> Result<String, String>;
 //   入参：bare_name = ASR 引擎裸名（前端 select 的 value）
 //   返回：Ok("连接成功") / Err("<错误信息>")
-//   实现：list_engines().find(name) → is_local 则 Err("本地模型无需测试")
+//   实现：list_engines().find(name) → is_local 则 Err("本地模型无需连接测试")
 //         否则取 DB endpoint+key → 独立线程建 tokio runtime
 //         → tokio::time::timeout(3s, connect_async(req))
 ```
@@ -80,7 +80,7 @@ pub fn test_connection(config: &CompatibleLlmConfig) -> Result<()>;
   <select id="asr-engine-select" onchange="setVal('asr_engine', this.value); updateAsrTestBtn(this.value)">
     ...options...
   </select>
-  <button class="test-btn disabled" id="asr-test-btn" onclick="testAsrConnection()" title="本地模型无需测试">
+  <button class="test-btn disabled" id="asr-test-btn" onclick="testAsrConnection()" title="本地模型无需连接测试">
     <svg>...check.svg path...</svg>
   </button>
 </div>
@@ -96,7 +96,7 @@ pub fn test_connection(config: &CompatibleLlmConfig) -> Result<()>;
 
 - **LLM 测试**（`testLlmConnection`）：取 polish-llm-select 裸名 → **先 `set_config('polish_llm', value)` 持久化**（确保后端从 DB 读到最新 spec）→ `invoke('test_llm_connection', {spec: bareName})` → 切 ok/fail + `showToast`
 - **ASR 测试**（`testAsrConnection`）：取 asr-engine-select 裸名 → `disabled` class 直接 return → `invoke('test_asr_connection', {bareName})` → 切 ok/fail + `showToast`
-- **按钮状态联动**（`updateAsrTestBtn(bareName)`）：从缓存的 `asrEnginesData`（`renderSettings` 时缓存 `resp.asr_engines`）查 `is_local` → 本地加 `disabled` + title「本地模型无需测试」；远程移除 `disabled` + title「测试连接」。同时清掉历史 ok/fail 残留态。
+- **按钮状态联动**（`updateAsrTestBtn(bareName)`）：从缓存的 `asrEnginesData`（`renderSettings` 时缓存 `resp.asr_engines`）查 `is_local` → 本地加 `disabled` + title「本地模型无需连接测试」；远程移除 `disabled` + title「测试连接」。同时清掉历史 ok/fail 残留态。
 
 ## 5. 关键决策
 
