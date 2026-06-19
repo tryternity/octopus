@@ -101,6 +101,7 @@
     #tool-polish    .icon { -webkit-mask-image: url(icons/polish-mode.svg?v=2); mask-image: url(icons/polish-mode.svg?v=2); }
     #tool-polish-now .icon { -webkit-mask-image: url(icons/polish-now.svg?v=2); mask-image: url(icons/polish-now.svg?v=2); }
     #tool-edit .icon { -webkit-mask-image: url(icons/edit.svg?v=1); mask-image: url(icons/edit.svg?v=1); }
+    #tool-close .icon { -webkit-mask-image: url(icons/close.svg?v=1); mask-image: url(icons/close.svg?v=1); }
     /* 编辑态：✏️ 图标切为 💾（save.svg）；点 tool-edit = 保存（toggle 语义） */
     #container.editing #tool-edit .icon {
       -webkit-mask-image: url(icons/save.svg?v=1);
@@ -199,6 +200,9 @@
   <div id="container">
     <div id="top-bar">
       <div id="toolbar">
+        <button class="tool" id="tool-close" title="关闭（放弃内容，保留记录）" aria-label="关闭">
+          <span class="icon"></span>
+        </button>
         <button class="tool" id="tool-settings" title="系统设置" aria-label="系统设置">
           <span class="icon"></span>
         </button>
@@ -334,6 +338,11 @@
     document.getElementById('tool-settings').addEventListener('click', async () => {
       try { await invoke('open_settings'); }
       catch (e) { showToast('打开设置失败：' + e); }
+    });
+
+    document.getElementById('tool-close').addEventListener('click', async () => {
+      try { await invoke('discard_recording'); }
+      catch (e) { showToast('关闭失败：' + e); }
     });
 
     document.getElementById('tool-polish').addEventListener('click', async () => {

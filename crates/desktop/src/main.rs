@@ -174,6 +174,7 @@ pub fn run() {
             runtime_config::switch_polish_llm,
             runtime_config::set_denoise_mode,
             coordinator::cancel_recording,
+            coordinator::discard_recording,
             coordinator::polish_now,
             coordinator::enter_edit_mode,
             coordinator::update_edit_buffer,
