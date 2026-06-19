@@ -181,8 +181,9 @@ edited_text TEXT,   -- 用户编辑后的最终文本（未编辑为 NULL）
   - 新增 `#[tauri::command] enter_edit_mode` / `commit_edit(text)`。
   - 编辑态冻结 `update-result`（前端配合）。
 - **`desktop/dist/result/index.html`**：
-  - `#result-text` 动态 `contenteditable` 切换；`edit_shortcut`（默认 Cmd+E）+ ✏️ 编辑按钮 + 完成编辑按钮。
-  - `CmdOrCtrl+Enter` / 完成按钮 → `commit_edit`。
+  - `#result-text` 动态 `contenteditable` 切换；`edit_shortcut`（默认 Cmd+E）+ ✏️ 编辑按钮（编辑态 toggle 为保存，图标 ✏️→💾）。
+  - `CmdOrCtrl+Enter` / ✏️ toggle → `commit_edit`。
+  - > **布局演进（2026-06-19）**：原「完成编辑」按钮（浮文本区右上）已删除，保存入口迁 ✏️ toggle；编辑态文字不再水平重排（移除 `padding-right:90px`）、编辑态 toolbar 强制常驻。详见 [`edit-layout spec`](2026-06-19-result-window-edit-layout-design.md)。本节下方如仍提「完成编辑按钮」为历史记录。
   - 编辑态：加边框、禁 `mouseleave` 收起、`setFocus`、忽略 `update-result`。
 - **`desktop/src/main.rs`**：`invoke_handler` 注册 `enter_edit_mode` / `commit_edit`。
 - **`infra/src/db.sql`** + **`infra/src/db.rs`**：`edited_text` 列 + `finalize_transcription` 参数；`TranscriptionRecord` 加字段；历史查询 SELECT 加列。
