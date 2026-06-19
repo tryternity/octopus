@@ -114,12 +114,18 @@ enum Stage {
         session: Option<crate::dashscope_stream::DashScopeStreamSession>,
         /// pre-roll 滚动缓冲区：保留最近 ~200ms 音频，语音 onset 时取 100ms 补齐
         pre_roll_buffer: Vec<f32>,
-        /// 累积识别文本（跨 utterance 拼接）
+        /// 已提交的识别文本（跨 utterance 拼接，只由 close() 结果 append）
         transcript: Transcript,
+        /// 当前 session 的实时 partial（未提交预览，close 后清零）
+        current_partial: String,
         /// 当前静音持续时长（秒）
         silence_duration: f64,
         /// 当前是否有活跃的 WSS（语音进行中）
         is_speaking: bool,
+        /// 连续检测到语音的 tick 数（用于 onset 确认，避免单次噪声脉冲误触发）
+        speech_confirm_count: u32,
+        /// 已发送 finish（非阻塞），等待 Finished 事件
+        is_closing: bool,
         /// tick 线程控制标志
         tick_active: Arc<AtomicBool>,
     },
@@ -584,8 +590,11 @@ fn handle_toggle(
                                 session: None,
                                 pre_roll_buffer: Vec::new(),
                                 transcript: Transcript::new(now_millis(), config.polish_mode),
+                                current_partial: String::new(),
                                 silence_duration: 0.0,
                                 is_speaking: false,
+                                speech_confirm_count: 0,
+                                is_closing: false,
                                 tick_active,
                             };
                         }
@@ -874,8 +883,11 @@ fn handle_toggle(
             session,
             pre_roll_buffer: _,
             transcript,
+            current_partial,
             silence_duration: _,
             is_speaking: _,
+            speech_confirm_count: _,
+            is_closing,
             tick_active,
         } => {
             info!("Toggle: stopping CloudStreaming, finalizing");
@@ -887,17 +899,28 @@ fn handle_toggle(
             let _ = audio.stop();
 
             if let Some(sess) = session.take() {
-                if !final_samples.is_empty() {
+                if !final_samples.is_empty() && !*is_closing {
                     let _ = sess.push_pcm(&final_samples);
                 }
                 let rt = tauri::async_runtime::handle();
                 match sess.close(&rt) {
                     Ok(text) if !text.is_empty() => {
+                        // close 返回的是整个 session 的完整文本，直接 set_full
                         transcript.set_full(&text);
                     }
                     Ok(_) => {}
                     Err(e) => warn!("CloudStreaming close WSS failed: {}", e),
                 }
+            }
+            // 即使无 session，也提交未 commit 的 partial
+            if !current_partial.is_empty() {
+                if !transcript.full().is_empty()
+                    && !transcript.full().ends_with('，')
+                {
+                    transcript.append_segment("，");
+                }
+                transcript.append_segment(current_partial);
+                current_partial.clear();
             }
 
             let combined = transcript.db_text();
@@ -1327,46 +1350,62 @@ fn handle_cloud_streaming_tick(
         session,
         pre_roll_buffer,
         transcript,
+        current_partial,
         silence_duration,
         is_speaking,
+        speech_confirm_count,
+        is_closing,
         ..
     } = cs
     else { return; };
 
+    // 辅助闭包：transcript + current_partial 拼接为显示文本
+    let render_display = |t: &Transcript, partial: &str| -> String {
+        let base = t.display_text();
+        if partial.is_empty() { base } else { format!("{}{}", base, partial) }
+    };
+
     // 1. drain 音频
     let samples = audio.drain_samples();
-    if samples.is_empty() {
-        // 即使无新音频，也 try_recv partial 更新 UI
-        if let Some(sess) = session.as_mut() {
-            drain_stream_events(sess, transcript, app_handle);
-        }
-        return;
-    }
 
     // 2. 追加到 pre-roll 滚动缓冲区（超容量弹头）
-    pre_roll_buffer.extend_from_slice(&samples);
-    if pre_roll_buffer.len() > CLOUD_PREROLL_BUFFER_SAMPLES {
-        let excess = pre_roll_buffer.len() - CLOUD_PREROLL_BUFFER_SAMPLES;
-        pre_roll_buffer.drain(0..excess);
+    if !samples.is_empty() {
+        pre_roll_buffer.extend_from_slice(&samples);
+        if pre_roll_buffer.len() > CLOUD_PREROLL_BUFFER_SAMPLES {
+            let excess = pre_roll_buffer.len() - CLOUD_PREROLL_BUFFER_SAMPLES;
+            pre_roll_buffer.drain(0..excess);
+        }
     }
 
     // 3. VAD 检测
-    let speech_chunks = compute_speech_chunks(vad, &samples);
-    let has_speech_now = speech_chunks >= 2;
-
-    if has_speech_now {
-        *silence_duration = 0.0;
-    } else {
-        let chunk_duration = samples.len() as f64 / 16000.0;
-        *silence_duration += chunk_duration;
+    let mut has_speech_now = false;
+    if !samples.is_empty() {
+        let speech_chunks = compute_speech_chunks(vad, &samples);
+        has_speech_now = speech_chunks >= 2;
+        if has_speech_now {
+            *silence_duration = 0.0;
+            // 连续 tick 确认：消除单次噪声脉冲误触发 onset
+            if !*is_speaking && !*is_closing {
+                *speech_confirm_count += 1;
+            }
+        } else {
+            let chunk_duration = samples.len() as f64 / 16000.0;
+            *silence_duration += chunk_duration;
+            // 静音重置确认计数（除非已在 speaking 状态）
+            if !*is_speaking && !*is_closing {
+                *speech_confirm_count = 0;
+            }
+        }
     }
 
-    // 4. 无活跃 WSS + onset → 开 WSS + pre-roll + push
-    if has_speech_now && !*is_speaking {
+    // 4. 无活跃 WSS + 连续 2 tick 确认 onset → 开 WSS + pre-roll + push
+    //    连续 2 tick（~200ms）检测到语音才开 WSS，避免噪声脉冲浪费 API 调用
+    if has_speech_now && !*is_speaking && !*is_closing && *speech_confirm_count >= 2 {
         *is_speaking = true;
+        *speech_confirm_count = 0;
+        current_partial.clear();
         match resolve_dashscope_config(&config.asr_engine) {
             Ok((endpoint, key, model)) => {
-                // 取 pre-roll：最后 CLOUD_PREROLL_SAMPLES 个样本（~100ms）
                 let pre_roll: Vec<f32> = if pre_roll_buffer.len() >= CLOUD_PREROLL_SAMPLES {
                     pre_roll_buffer[pre_roll_buffer.len() - CLOUD_PREROLL_SAMPLES..].to_vec()
                 } else {
@@ -1394,68 +1433,87 @@ fn handle_cloud_streaming_tick(
         }
     }
 
-    // 5. 有活跃 WSS → push PCM + try_recv partial
+    // 5. 有活跃 WSS → push PCM（closing 时不推） + drain events
+    let mut session_just_finished = false;
     if let Some(sess) = session.as_mut() {
-        if !samples.is_empty() {
+        if !samples.is_empty() && !*is_closing {
             if let Err(e) = sess.push_pcm(&samples) {
                 warn!("CloudStreaming: push_pcm failed: {}", e);
             }
         }
-        drain_stream_events(sess, transcript, app_handle);
-    }
-
-    // 6. 有活跃 WSS + 静音 ≥ pause_polish_threshold_ms → close + 拼接 + 触发润色
-    if *is_speaking && *silence_duration * 1000.0 >= config.pause_polish_threshold_ms {
-        *is_speaking = false;
-        if let Some(sess) = session.take() {
-            let rt = tauri::async_runtime::handle();
-            match sess.close(&rt) {
-                Ok(text) if !text.is_empty() => {
-                    // 拼接到现有文本（跨 utterance 拼接，用逗号分隔）
-                    if !transcript.full().is_empty() && !transcript.full().ends_with('，') {
-                        transcript.append_segment("，");
+        // drain partial / final events
+        while let Some(event) = sess.try_recv_text() {
+            match event {
+                crate::dashscope_stream::StreamEvent::Text(text) => {
+                    if !text.is_empty() {
+                        log::info!("[CloudDrain] partial={:?}", text);
+                        *current_partial = text;
                     }
-                    transcript.append_segment(&text);
-                    update_transcription_raw(transcript, &config.asr_engine, "streaming")
-                        .unwrap_or_else(|e| warn!("CloudStreaming DB update failed: {}", e));
-                    crate::result_window::update_result(app_handle, &transcript.display_text());
                 }
-                Ok(_) => {}
-                Err(e) => warn!("CloudStreaming: close WSS failed: {}", e),
+                crate::dashscope_stream::StreamEvent::Finished => {
+                    log::info!(
+                        "[CloudDrain] Finished, committing partial={:?} to transcript",
+                        current_partial
+                    );
+                    // session 完成：把 current_partial 提交到 transcript
+                    if !current_partial.is_empty() {
+                        if !transcript.full().is_empty()
+                            && !transcript.full().ends_with('，')
+                        {
+                            transcript.append_segment("，");
+                        }
+                        transcript.append_segment(current_partial);
+                        current_partial.clear();
+                        update_transcription_raw(
+                            transcript,
+                            &config.asr_engine,
+                            "streaming",
+                        )
+                        .unwrap_or_else(|e| {
+                            warn!("CloudStreaming DB update failed: {}", e)
+                        });
+                    }
+                    *is_closing = false;
+                    *is_speaking = false;
+                    session_just_finished = true;
+                }
+                crate::dashscope_stream::StreamEvent::Failed(msg) => {
+                    warn!("[CloudDrain] Failed: {}", msg);
+                    current_partial.clear();
+                    *is_closing = false;
+                    *is_speaking = false;
+                }
             }
         }
-        // 触发停顿润色
+        // 如果 is_closing 已完成（Finished/Failed 处理后），drop session
+        if !*is_closing && !*is_speaking {
+            let _ = session.take(); // drop → channels close → WS task 结束
+        }
+    }
+
+    // 5.5 session 刚完成 → 触发停顿润色
+    if session_just_finished {
         check_and_trigger_polish(transcript, *silence_duration, config, tx);
     }
 
-    // 7. 更新 UI
-    if !transcript.full().is_empty() {
-        crate::result_window::update_result(app_handle, &transcript.display_text());
-    }
-}
-
-/// 收集 stream session 的 pending 事件，更新 transcript + UI。
-#[cfg(feature = "dashscope")]
-fn drain_stream_events(
-    sess: &mut crate::dashscope_stream::DashScopeStreamSession,
-    transcript: &mut Transcript,
-    app_handle: &tauri::AppHandle,
-) {
-    while let Some(event) = sess.try_recv_text() {
-        match event {
-            crate::dashscope_stream::StreamEvent::Text(text) => {
-                if !text.is_empty() {
-                    transcript.set_full(&text);
-                    crate::result_window::update_result(app_handle, &transcript.display_text());
-                }
-            }
-            crate::dashscope_stream::StreamEvent::Finished => {
-                debug!("CloudStreaming: stream Finished event");
-            }
-            crate::dashscope_stream::StreamEvent::Failed(msg) => {
-                warn!("CloudStreaming: stream failed: {}", msg);
+    // 6. 有活跃 WSS + 静音 ≥ threshold → 非阻塞 finish
+    if *is_speaking && !*is_closing && *silence_duration * 1000.0 >= config.pause_polish_threshold_ms {
+        *is_speaking = false;
+        *is_closing = true;
+        if let Some(sess) = session.as_ref() {
+            log::info!(
+                "[CloudFinish] silence≥threshold, sending finish (non-blocking)"
+            );
+            if let Err(e) = sess.finish() {
+                warn!("CloudStreaming: finish failed: {}", e);
             }
         }
+    }
+
+    // 7. 更新 UI（transcript + current_partial）
+    let display = render_display(transcript, current_partial);
+    if !display.is_empty() {
+        crate::result_window::update_result(app_handle, &display);
     }
 }
 

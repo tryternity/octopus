@@ -757,8 +757,8 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
             .unwrap();
-        // 8 local + 1 aliyun Fun-ASR
-        assert_eq!(count, 9);
+        // 8 local + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
+        assert_eq!(count, 11);
     }
 
     #[test]
@@ -780,13 +780,20 @@ mod tests {
         assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 2);
-        // aliyun Fun-ASR
+        // aliyun ASR（Fun-ASR / Paraformer / Qwen-ASR）
         let aliyun = cfg.asr.aliyun.as_ref().expect("aliyun section");
-        assert_eq!(aliyun.len(), 1);
-        let funasr = aliyun.get("fun-asr-2025-11-07").unwrap();
+        assert_eq!(aliyun.len(), 3);
+        let funasr = aliyun.get("fun-asr-realtime").unwrap();
         assert_eq!(funasr.source, "wss://dashscope.aliyuncs.com/api-ws/v1/inference");
         assert!(!funasr.is_local, "aliyun Fun-ASR 非本地");
         assert!(!funasr.is_streaming, "aliyun Fun-ASR 走 chunk 路径（is_streaming=0）");
+        // Paraformer Realtime（共用 inference 端点）
+        let paraformer = aliyun.get("paraformer-realtime-v2").unwrap();
+        assert_eq!(paraformer.source, "wss://dashscope.aliyuncs.com/api-ws/v1/inference");
+        // Qwen-ASR Realtime（realtime 端点 + OpenAI Realtime 协议）
+        let qwen = aliyun.get("qwen3-asr-flash-realtime").unwrap();
+        assert_eq!(qwen.source, "wss://dashscope.aliyuncs.com/api-ws/v1/realtime");
+        assert!(qwen.is_streaming, "aliyun Qwen-ASR 走 CloudStreaming 路径（is_streaming=1）");
     }
 
     #[test]
