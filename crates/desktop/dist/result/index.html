@@ -186,30 +186,11 @@
       border-radius: 2px;
     }
 
-    /* 完成编辑按钮：编辑态显示，浮于文本区右上 */
-    #edit-done {
-      position: absolute;
-      top: 4px;
-      right: 8px;
-      z-index: 15;
-      font-size: 12px;
-      padding: 2px 10px;
-      border: 0.5px solid rgba(0,122,255,0.4);
-      border-radius: 6px;
-      background: rgba(0,122,255,0.08);
-      color: #007aff;
-      cursor: pointer;
-    }
-    #edit-done:hover { background: rgba(0,122,255,0.16); }
-
-    /* 编辑态：淡蓝边框包住整个展示区（text-wrapper），「完成编辑」按钮落在框内 */
+    /* 编辑态：淡蓝边框包住整个展示区（text-wrapper） */
     #container.editing #text-wrapper {
       border: 1px solid rgba(0, 122, 255, 0.5);
       border-radius: 6px;
       background: rgba(0, 122, 255, 0.04);
-    }
-    #container.editing #result-text {
-      padding: 1px 90px 7px 13px;   /* right 90px 给完成按钮让位 */
     }
     #container.editing #result-text:focus { background: transparent; }
   </style>
@@ -243,7 +224,6 @@
       <div id="drag-handle"></div>
     </div>
     <div id="text-wrapper">
-      <button id="edit-done" hidden>完成编辑</button>
       <div id="result-text"></div>
     </div>
     <div id="popup" hidden></div>
@@ -428,14 +408,12 @@
     // 进入编辑快捷键：默认 Cmd+E，refreshActive 从 toolbar_state.edit_shortcut 覆盖。
     let editShortcut = parseShortcut('Cmd+E');
     const btnEdit = document.getElementById('tool-edit');
-    const btnEditDone = document.getElementById('edit-done');
 
     function enterEdit() {
       if (editing) return;
       editing = true;
       resultText.setAttribute('contenteditable', 'true');
       container.classList.add('editing');
-      btnEditDone.hidden = false;
       btnEdit.classList.add('active');
       btnEdit.title = '保存编辑';
       btnEdit.setAttribute('aria-label', '保存编辑');
@@ -458,7 +436,6 @@
       editing = false;
       resultText.setAttribute('contenteditable', 'false');
       container.classList.remove('editing');
-      btnEditDone.hidden = true;
       btnEdit.classList.remove('active');
       btnEdit.title = '编辑';
       btnEdit.setAttribute('aria-label', '编辑');
@@ -491,9 +468,6 @@
       }
     });
 
-    btnEditDone.addEventListener('mousedown', (e) => e.preventDefault());
-    btnEditDone.addEventListener('click', (e) => { e.preventDefault(); commitEdit(); });
-
     let editBufTimer = null;
     resultText.addEventListener('input', () => {
       clearTimeout(editBufTimer);
@@ -506,7 +480,6 @@
         editing = false;
         resultText.setAttribute('contenteditable', 'false');
         container.classList.remove('editing');
-        btnEditDone.hidden = true;
         btnEdit.classList.remove('active');
         btnEdit.title = '编辑';
         btnEdit.setAttribute('aria-label', '编辑');
