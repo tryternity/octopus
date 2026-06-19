@@ -10,6 +10,8 @@
 
 参考 spec：[`docs/superpowers/specs/2026-06-18-editable-result-window-design.md`](../specs/2026-06-18-editable-result-window-design.md)（§4 三文本模型、§5 提交语义、§12 编辑×润色交互）。
 
+> **布局演进（2026-06-19）**：下方涉及 `edit-done`（完成编辑按钮）的实现步骤（DOM/CSS/JS）已被 [`2026-06-19-result-window-edit-layout`](2026-06-19-result-window-edit-layout.md) 取代——完成编辑按钮删除，保存入口迁 ✏️ toggle，编辑态文字不重排。下方 edit-done 代码块为历史实现记录，当前代码已无。
+
 ---
 
 ## File Structure
