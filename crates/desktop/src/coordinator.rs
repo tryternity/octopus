@@ -1679,13 +1679,16 @@ fn handle_streaming_tick(
 
         match engine.accept_samples(&samples, was_silent) {
             Ok(Some(new_text)) => {
-                transcript.set_full(&new_text);
-                if let Err(e) =
-                    update_transcription_raw(transcript, &config.asr_engine, "streaming")
-                {
-                    warn!("DB (streaming) failed: {}", e);
+                // 幂等：内容未变不重绘（消除静音期/同文本反复 update 导致的闪烁 + 无谓 DB 写）
+                if new_text != transcript.full() {
+                    transcript.set_full(&new_text);
+                    if let Err(e) =
+                        update_transcription_raw(transcript, &config.asr_engine, "streaming")
+                    {
+                        warn!("DB (streaming) failed: {}", e);
+                    }
+                    crate::result_window::update_result(app_handle, &transcript.display_text());
                 }
-                crate::result_window::update_result(app_handle, &transcript.display_text());
             }
             Ok(None) => {}
             Err(e) => warn!("Streaming accept_samples error: {}", e),
@@ -1695,14 +1698,18 @@ fn handle_streaming_tick(
         if *silence_duration >= PUNCTUATION_SILENCE_THRESHOLD && !*flushed {
             match engine.flush() {
                 Ok(Some(new_text)) => {
-                    transcript.set_full(&new_text);
-                    if let Err(e) =
-                        update_transcription_raw(transcript, &config.asr_engine, "streaming")
-                    {
-                        warn!("DB (streaming) failed: {}", e);
+                    // 幂等：静音期 flush 常返回同一累积全文（zipformer 段已 finish 并入 acc），
+                    // 内容未变则不重绘、不打 Flushed 日志（消除静音期反复 flush 闪烁）
+                    if new_text != transcript.full() {
+                        transcript.set_full(&new_text);
+                        if let Err(e) =
+                            update_transcription_raw(transcript, &config.asr_engine, "streaming")
+                        {
+                            warn!("DB (streaming) failed: {}", e);
+                        }
+                        debug!("Flushed: '{}'", transcript.full());
+                        crate::result_window::update_result(app_handle, &transcript.display_text());
                     }
-                    debug!("Flushed: '{}'", transcript.full());
-                    crate::result_window::update_result(app_handle, &transcript.display_text());
                 }
                 Ok(None) => {}
                 Err(e) => warn!("Streaming flush error: {}", e),

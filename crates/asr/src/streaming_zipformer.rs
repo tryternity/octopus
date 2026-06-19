@@ -236,7 +236,7 @@ impl StreamingZipformer {
     /// Process as many full chunks as the sample buffer allows.
     fn process_chunks(&mut self) -> Result<Option<String>> {
         if self.sample_buffer.is_empty() {
-            return Ok(None);
+            return self.decoded_current();
         }
 
         let mut input_samples = Vec::with_capacity(self.history_samples.len() + self.sample_buffer.len());
@@ -256,12 +256,11 @@ impl StreamingZipformer {
         // `frame_idx + h_frames + chunk_len < feats.nrows()` (matching C++ sherpa-onnx `IsReady`).
         // If the first chunk is not ready, we return Ok(None) to wait for more audio.
         if h_frames + self.chunk_len >= feats.nrows() {
-            return Ok(None);
+            return self.decoded_current();
         }
 
         // Process chunks
         let mut frame_idx = 0;
-        let mut produced_any = false;
         while frame_idx + h_frames + self.chunk_len < feats.nrows() {
             let mut chunk = Array2::<f32>::zeros((self.chunk_len, Z_NUM_BINS));
             for i in 0..self.chunk_len {
@@ -274,9 +273,7 @@ impl StreamingZipformer {
                 crate::zipformer::normalize_whisper_features(&mut chunk);
             }
 
-            if self.run_chunk(&chunk)? {
-                produced_any = true;
-            }
+            self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
         }
 
@@ -298,11 +295,8 @@ impl StreamingZipformer {
             self.sample_buffer.clear();
         }
 
-        if produced_any {
-            Ok(Some(self.decode_tokens(true)))
-        } else {
-            Ok(None)
-        }
+        // 始终返回当前累积段文本（见 decoded_current 说明）。
+        self.decoded_current()
     }
 
     /// Run one chunk through the model. Returns true if new tokens were produced.
@@ -442,6 +436,14 @@ impl StreamingZipformer {
             let decoded = clean_decode_utf8(&bytes, is_streaming);
             decoded.trim().to_string()
         }
+    }
+
+    /// 当前已识别的段文本（token_ids 非空时 Some，空则 None）。
+    /// process_chunks 各早退路径统一用它，避免「样本不够凑 chunk 时返回 None、上层丢失
+    /// current_segment 只回 accumulated」导致的长短态逐帧交替闪烁。
+    fn decoded_current(&self) -> Result<Option<String>> {
+        let t = self.decode_tokens(true);
+        Ok(if t.is_empty() { None } else { Some(t) })
     }
 }
 

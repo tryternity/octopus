@@ -191,7 +191,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
   - 静音切分：检测到语音后静音 ≥ `segment_silence`（默认 400ms）→ 切分，**无 overlap**（静音是自然语句边界，下一段从干净开始）
   - 强制切断：连续语音缓冲达 `SEGMENT_DURATION_S`（20s 常量）仍未静音 → 强制切断，**保留末尾 200ms（常量 `SEGMENT_OVERLAP_MS`）作下一段 overlap**（语句被硬切，需重叠保连贯）。`segment_duration` / `segment_overlap` 原为 config 字段，因属实现细节（用户不可感知）已改为常量
   - **双 VAD 实例（检测流 vs 过滤，修 LSTM 状态污染）**：SileroVad 是有状态 LSTM（`compute()` 更新 `h`/`c`，`reset()` 归零）。`VadSegmented` stage 持**两个独立实例**：① 检测用 `vad`——逐 tick 喂入顺序音频、跨 tick 有状态累积（续接上下文使语音/静音边界判定更稳），喂 `compute_speech_chunks`；② 过滤用 `filter_vad`——仅 `filter_speech_from_buffer` 用，**每次过滤前 `reset()` 归零**，恢复「每段独立冷启动」语义（等价旧代码每 buffer 新建 VAD，但 ONNX Session 在录音开始时一次性创建，过滤只 reset 不重建，兼顾正确性与性能）。分离原因：检测流已按顺序见过 `samples`，而 `send_buffer`（`overlap_tail` + `audio_buffer`）与之重叠，若共用一个有状态 VAD 会双重喂入 + 跨段污染 LSTM → 段首 gating 失真（裁掉语音起音或混入前导噪声）
-  - 每段经 `filter_speech_from_buffer` 过滤静音后，由 `spawn_offline_transcription_with_seq` 派发到 **Tauri 全局异步运行时**（`tauri::async_runtime::spawn`）执行 `engine.transcribe`（底层 CPU 密集推理已 `spawn_blocking` 包裹、不阻塞 runtime worker，不再为每段新建 / 销毁 current-thread Runtime），完成回 `Command::TranscriptionDone{seq}`；协调器按 `seq` 有序拼接（`completed_results: HashMap<seq,String>` + `completed_seq` 游标连续消费）。**识别失败 / 空结果仍占位该 `seq`（写空串）以保证游标连续推进**——否则缺失序号会让消费卡死、该次录音此后所有有效段积压丢失；`Command::TranscriptionDone` 另带 `session_id`（= 录音开始毫秒时间戳 = `transcript.id`），消费它的 `VadSegmented` / `WaitingCompletion` 分支先比对 `transcript.id != session_id` → 丢弃旧会话在途结果（快速双击 Toggle / 录音中重启的竞态：新会话分配新 id，旧会话残留的异步转写回调不再污染当前结果）
+  - 每段经 `filter_speech_from_buffer` 过滤静音后，由 `spawn_offline_transcription_with_seq` 派发到 **Tauri 全局异步运行时**（`tauri::async_runtime::spawn`）执行 `engine.transcribe`（底层 CPU 密集推理已 `spawn_blocking` 包裹、不阻塞 runtime worker，不再为每段新建 / 销毁 current-thread Runtime），完成回 `Command::TranscriptionDone{seq}`；协调器按 `seq` 有序拼接（`completed_results: HashMap<seq,String>` + `completed_seq` 游标连续消费）；段间不做 overlap 去重——force_cut 段虽带 200ms overlap_tail，但仅 ≈1 字、与正常重字不可区分，曾因子串匹配误删真词（如「识别」），已移除去重逻辑改为逗号直接拼接。**识别失败 / 空结果仍占位该 `seq`（写空串）以保证游标连续推进**——否则缺失序号会让消费卡死、该次录音此后所有有效段积压丢失；`Command::TranscriptionDone` 另带 `session_id`（= 录音开始毫秒时间戳 = `transcript.id`），消费它的 `VadSegmented` / `WaitingCompletion` 分支先比对 `transcript.id != session_id` → 丢弃旧会话在途结果（快速双击 Toggle / 录音中重启的竞态：新会话分配新 id，旧会话残留的异步转写回调不再污染当前结果）
 - **Transcript 文本状态机**：识别文本状态由 `Transcript` 结构（`crates/desktop/src/transcript.rs`）统一管理——内部用 `full`（当前完整 ASR）+ `raw_len`（上次停顿快照的 char 长度）派生 `raw`（停顿快照，润色基准）/ `increase`（停顿后增量），避免维护三份字符串。`Stage::Streaming` / `VadSegmented` / `WaitingCompletion` 各持 `transcript: Transcript` 字段，文本流经 Transcript 方法（`set_full` / `append_segment` / `display_text` / `db_text`）。停止后 `Stage::Polishing`（最终润色中，持 `id` + `raw_text`）→ `Stage::Pasting`（持 `id` + `raw_text` + `polished_text` + `polish_status`）。入库的 `engine` / `engine_mode` 在过程入库的 raw 阶段已写（`update_transcription_raw(&config.asr_engine, ..)`），`Pasting` 不再持有。详见 [spec](superpowers/specs/2026-06-14-archived-design.md)
 - **停顿驱动润色**：流式 / 伪流式统一——静音 ≥ `pause_polish_threshold_ms`（默认 600ms，可配置）/ 伪流式段边界完成时，经 `take_polish_input()` 取润色输入（无编辑 = 全量 ASR `raw + increase`；已编辑 = `(edited, 新增)` 边界，见「结果窗可编辑」）送 LLM 润色（mode=2 only），**不重置流式引擎**（只读送 LLM，引擎状态原样保留）。修复了流式中间润色 P0（partial 全量覆盖 polished）。默认 600ms > Active Flush 500ms（GUI 约束 `>= 600`，须大于句间停顿最大值，否则润色先于尾音冲刷、快照缺尾音），润色在 tick 流程最末执行，快照可靠
 - **立即润色（PolishNow）**：工具栏「立即润色」按钮（`tool-polish-now`）点击 → `invoke('polish_now')` → `Command::PolishNow` → `handle_polish_now`：**忽略 `polish_mode`**（不受 mode=0/1/2 限制，区别于停顿润色的 mode=2 限制），经 `llm_config_ignore_mode()` 取 LLM 配置，复用 `take_polish_input` → `spawn_polish_thread(ignore_mode=true)` → `Command::PolishDone` 路径。`spawn_polish_thread` 新增 `ignore_mode` 参数控制是否绕过 mode 检查。`handle_polish_done` 接受 `Streaming`/`VadSegmented`/`WaitingCompletion` 三阶段（防用户点按钮后停录音致 stage 切换、润色结果被丢弃），写回后 `emit("polish-done")` 通知前端恢复按钮（成功/失败/stage 不匹配均通知）。**`handle_polish_now` 所有早退路径（stage 不匹配 / transcript 空 / 已 pending / LLM 配置缺失）都 emit `polish-done`**——否则前端 `btnPolishNow.disabled=true` 永久卡死。`Transcript::display_text()` 同步变更：**polished 非空即展示**（`polished + increase`），不再仅限 `mode==Intermediate`，使 PolishNow 在任意 mode 下都能让润色文本覆盖 raw 回显到展示区
@@ -332,19 +332,16 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 
 为了最大化利用用户本机的 GPU 资源加速语音识别，同时避免因显卡驱动或算子不支持导致应用程序崩溃，系统在 `octopus-asr` 核心引擎中实现了一套手自动一体的硬件加速及平滑降级机制。
 
-### 核心特性
-- **手动控制开关**：在 `app_config` 表中提供 `asr_hardware_accelerated` 字段（`bool` 类型，默认 `false`）。用户如果不需要加速，或者大模型加速不稳定时，可随时降级回退到纯 CPU 推理。
-- **多平台加速后端支持**：通过 `ort` (ONNX Runtime) crate 的硬件加速接口，自动支持多平台主流 EP (Execution Provider) 注册：
-  - **macOS**: 自动尝试使用 `CoreML` 执行提供商进行加速。
-  - **Windows/Linux**: 自动尝试使用 `CUDA` 和 `DirectML` 进行 GPU 加速。
-- **平滑降级机制 (CPU Fallback)**：
-  在初始化推理 Session 时，若检测到 `asr_hardware_accelerated: true`，SessionBuilder 会动态尝试注册对应的 GPU EP。如果系统驱动不兼容、加速库文件缺失，或模型自身包含硬件加速器不支持的特殊算子（例如 `Qwen3-ASR` 由于含有复杂动态 Shape 算子，在部分平台的 CoreML 加速启动时会被拦截限制），构建器会捕获该错误、打印 Warning 日志，并**自动且无缝地重构出一个纯 CPU 的 Session**，保证语音识别服务不发生闪退或中断。
-- **VAD 免加速策略**：
-  由于 VAD (Silero VAD) 模型的体积极其微小 (1.8MB)，且对实时性要求极高。将其调度至 GPU 进行加速所产生的显存交互与上下文切换开销（Latency Overhead）远超加速本身带来的收益。因此，**VAD 推理固定运行在 CPU 端**，完全不受 `asr_hardware_accelerated` 字段的影响。
+- **开关**：`app_config.asr_hardware_accelerated`（`bool`，默认 `false`）。`false` 直接走 CPU。
+- **按平台注册 EP**（关键修正：曾跨平台全注册 CUDA+DirectML+CoreML，macOS 上 init Linux/Windows 专用 EP 的失败路径直接 segfault——SIGSEGV 绕过 Rust 的 `match Err`、进程被 OS 杀无法 catch，故必须按平台预防）：macOS 仅 CoreML、Linux CUDA、Windows DirectML+CUDA。
+- **两层降级**：① EP 注册失败（驱动/库缺失）→ 捕获 `Err` 回退纯 CPU session，进程不崩；② **qwen3-asr 显式跳过 CoreML**——其动态算子 CoreML **不报错而是把图分区**跑（CoreML 跑支持的算子、CPU 跑剩下的，CPU↔CoreML 张量拷贝开销 dominate，比纯 CPU 还慢），故检测 active 引擎 `category=qwen3-asr` 时主动走 CPU。zipformer 等静态图照常吃满 CoreML。
+- **VAD 免加速**：Silero VAD 极小（1.8MB）+ 实时性要求极高，上 GPU 的上下文切换开销远超收益，固定 CPU，不受 `asr_hardware_accelerated` 影响。
+
+> 详见 [`docs/asr_archiveture_opt.md`](asr_archiveture_opt.md) §6.1（两层降级完整描述）。
 
 ## 技术栈
 
-- **推理引擎**: ONNX Runtime（通过 ort crate）；可选硬件加速——CUDA/DirectML/CoreML execution provider（由 `app_config.asr_hardware_accelerated` 控制，默认 `false`，注册失败自动回退 CPU），VAD 不受影响（固定 CPU）。config 经 `APP_CONFIG` OnceLock 缓存避免每次 session 构建重复读 DB。详见 [spec](superpowers/specs/2026-06-16-archived-design.md)
+- **推理引擎**: ONNX Runtime（通过 ort crate）；可选硬件加速——按平台注册 CoreML/CUDA/DirectML execution provider（`app_config.asr_hardware_accelerated` 控制，默认 `false`，两层降级见上节），VAD 固定 CPU。config 经 `APP_CONFIG` OnceLock 缓存避免每次 session 构建重复读 DB。
 - **音频处理**: cpal（录音）、rubato（重采样，含 denoise 48k 桥接）、nnnoiseless（RNNoise 降噪）、rustfft（各引擎 fbank STFT）、hound（WAV 读取）
 - **Web 框架**: Axum + Tokio
 - **桌面框架**: Tauri 2
