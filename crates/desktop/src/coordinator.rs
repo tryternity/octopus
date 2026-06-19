@@ -20,8 +20,11 @@ use tauri::Emitter;
 enum Command {
     /// 切换录音状态（开始/停止）
     Toggle,
-    /// 取消当前操作
+    /// 取消当前操作（丢弃一切，包括 DB 记录不 finalize）
     Cancel,
+    /// 放弃当前识别：停止录音 + finalize DB 记录（保留历史），
+    /// 但不粘贴、不入剪贴板。工具栏「关闭」按钮触发。
+    Discard,
     /// 流式识别 tick（定时触发，驱动音频采集和识别）
     StreamingTick,
     /// VAD 伪流式 tick（300ms 间隔，驱动分段识别）
@@ -339,6 +342,14 @@ impl Coordinator {
                         }
                         handle_cancel(&mut stage, &audio, &app_handle);
                     }
+                    Command::Discard => {
+                        if editing {
+                            editing = false;
+                            edit_buffer = None;
+                            let _ = app_handle.emit("edit-force-exit", ());
+                        }
+                        handle_discard(&mut stage, &audio, &app_handle);
+                    }
                     Command::TranscriptionDone { text, seq, session_id } => {
                         if editing {
                             debug!("TranscriptionDone ignored during edit");
@@ -456,6 +467,15 @@ impl Coordinator {
         }
     }
 
+    /// 发送 discard 命令（放弃当前识别：停止录音 + 保留 DB 记录，不粘贴不入剪贴板）
+    pub fn discard(&self) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::Discard).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
+
     /// 发送立即润色命令（工具栏按钮触发，忽略 polish_mode）
     pub fn polish_now(&self) {
         if let Ok(tx) = self.tx.lock() {
@@ -522,6 +542,13 @@ fn sync_runtime_fields(config: &mut AppConfig, shared: &AppConfig) {
 #[tauri::command]
 pub fn cancel_recording(coordinator: tauri::State<'_, Coordinator>) {
     coordinator.cancel();
+}
+
+/// 前端命令：放弃当前识别（工具栏「关闭」按钮）。
+/// 停止录音 + finalize DB 记录（保留历史），但不粘贴、不入剪贴板。
+#[tauri::command]
+pub fn discard_recording(coordinator: tauri::State<'_, Coordinator>) {
+    coordinator.discard();
 }
 
 /// 前端命令：立即润色（工具栏按钮触发，忽略 polish_mode）。
@@ -1833,7 +1860,96 @@ fn handle_cancel(
     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
 }
 
-/// 处理 TranscriptionDone 命令
+/// 处理 Discard 命令：停止录音 + finalize DB 记录（保留识别历史），
+/// 但**不粘贴、不入剪贴板**。与 Cancel 的区别：Cancel 不 finalize DB。
+/// 工具栏「关闭」按钮触发。
+fn handle_discard(
+    stage: &mut Stage,
+    audio: &Arc<SharedAudioState>,
+    app_handle: &tauri::AppHandle,
+) {
+    // Pasting 阶段粘贴已在进行（enigo Cmd+V 已发或正发），无法撤回 → no-op
+    if matches!(stage, Stage::Pasting { .. }) {
+        debug!("Discard ignored during Pasting (paste in flight)");
+        return;
+    }
+
+    // 从当前 stage 提取 (id, raw_text) 用于 DB finalize
+    let db_info: Option<(i64, String)> = match stage {
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. } => {
+            Some((transcript.id, transcript.db_text()))
+        }
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming { transcript, .. } => {
+            Some((transcript.id, transcript.db_text()))
+        }
+        Stage::Polishing { id, raw_text, .. } => Some((*id, raw_text.clone())),
+        Stage::Idle => None,
+        // Pasting 已在上面 early return
+        Stage::Pasting { .. } => unreachable!(),
+    };
+
+    // 停止录音 + 引擎（与 handle_cancel 一致的停止逻辑）
+    match stage {
+        Stage::Streaming {
+            engine,
+            streaming_active,
+            ..
+        } => {
+            info!("Discard: stopping streaming");
+            streaming_active.store(false, Ordering::Relaxed);
+            engine.reset();
+            let _ = audio.stop();
+        }
+        Stage::VadSegmented { tick_active, .. } => {
+            info!("Discard: stopping VadSegmented");
+            tick_active.store(false, Ordering::Relaxed);
+            let _ = audio.stop();
+        }
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming {
+            tick_active, session, ..
+        } => {
+            info!("Discard: stopping CloudStreaming");
+            tick_active.store(false, Ordering::Relaxed);
+            let _ = session.take();
+            let _ = audio.stop();
+        }
+        Stage::WaitingCompletion { .. } => {
+            info!("Discard: discarding while waiting for transcription");
+        }
+        Stage::Polishing { .. } => {
+            info!("Discard: discarding while final polishing");
+        }
+        Stage::Idle => {}
+        Stage::Pasting { .. } => unreachable!(),
+    }
+
+    // finalize DB 记录（保留识别历史，duration_ms 标记实际用时）
+    if let Some((id, raw_text)) = db_info {
+        if id > 0 {
+            let duration_ms = now_millis() - id;
+            let cmd = DbCommand::Finalize {
+                id,
+                raw_text,
+                polished_text: None,
+                polish_status: "off".to_string(),
+                polish_model: None,
+                duration_ms: Some(duration_ms),
+            };
+            if let Err(e) = get_db_sender().send(cmd) {
+                warn!("Queue DB finalize (discard) failed: {}", e);
+            }
+        }
+    }
+
+    *stage = Stage::Idle;
+    crate::overlay::hide_overlay(app_handle);
+    crate::result_window::hide_result(app_handle);
+    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+}
 fn handle_transcription_done(
     stage: &mut Stage,
     text: Result<String, String>,

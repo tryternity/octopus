@@ -235,73 +235,94 @@ impl LightCorrector {
     }
 
     pub fn correct(&self, text: &str) -> String {
-        self.correct_depth(text, 0)
+        self.correct_greedy(text)
     }
 
-    fn correct_depth(&self, text: &str, depth: usize) -> String {
-        if depth >= 5 {
-            return text.to_string();
-        }
+    /// 上下文窗口半幅（评分用）：窗口中心词前后各取 CTX_HALF 个字，
+    /// 总长 ≤ 2*CTX_HALF + sz。jieba.cut 在 30 字规模开销极低。
+    const CTX_HALF: usize = 15;
+
+    /// 贪心纠错：从左到右单次扫描，每处取最优候选词**原地替换**后继续前进。
+    ///
+    /// **性能**：候选词评分用局部上下文（±15 字窗口）而非全句，
+    /// 避免 N 字句 × K 候选 × O(N²) jieba 分词的 O(N³K) 爆炸；
+    /// 单次扫描替代旧 `correct_depth` 的递归回头（最多 5 轮全句扫描）。
+    fn correct_greedy(&self, text: &str) -> String {
         if text.trim().is_empty() {
             return text.to_string();
         }
-
-        let chars: Vec<char> = text.chars().collect();
+        let mut chars: Vec<char> = text.chars().collect();
         let n = chars.len();
-
-        for i in 0..n {
+        let mut i = 0;
+        while i < n {
             for sz in (2..=3).rev() {
-                if i + sz <= n {
-                    let window_word: String = chars[i..i+sz].iter().collect();
-                    let candidates = self.find_candidates(&window_word);
-                    if candidates.len() <= 1 {
-                        continue;
-                    }
+                if i + sz > n {
+                    continue;
+                }
+                let window_word: String = chars[i..i + sz].iter().collect();
+                let candidates = self.find_candidates(&window_word);
+                if candidates.len() <= 1 {
+                    continue;
+                }
 
-                    // Adaptive change penalty on normalized score
-                    let change_penalty = if self.is_jieba_valid_word(&window_word) {
-                        -1.5
+                let change_penalty = if self.is_jieba_valid_word(&window_word) {
+                    -1.5
+                } else {
+                    -0.2
+                };
+
+                // 局部上下文评分：取窗口前后各 CTX_HALF 字做 jieba 分词，
+                // 大幅减少重复全句分词开销（O(N²) → O(CTX²)）。
+                let ctx_start = i.saturating_sub(Self::CTX_HALF);
+                let ctx_end = (i + sz + Self::CTX_HALF).min(n);
+                let offset = i - ctx_start;
+
+                // baseline：原句上下文（含 window_word）
+                let baseline_ctx: String = chars[ctx_start..ctx_end].iter().collect();
+                let baseline_score = self.score_sentence(&baseline_ctx);
+
+                let mut best_cand = window_word.clone();
+                let mut best_gain = 0.0f64;
+
+                for cand in candidates {
+                    // 在 baseline_ctx 副本中做局部替换再评分
+                    let mut ctx_chars: Vec<char> = baseline_ctx.chars().collect();
+                    let cand_chars: Vec<char> = cand.chars().collect();
+                    for k in 0..sz {
+                        ctx_chars[offset + k] = cand_chars[k];
+                    }
+                    let cand_ctx: String = ctx_chars.iter().collect();
+                    let cand_score = self.score_sentence(&cand_ctx);
+
+                    // 增量 gain：正值表示候选优于原词。非原词扣 change_penalty。
+                    let gain = if cand != window_word {
+                        cand_score - baseline_score + change_penalty
                     } else {
-                        -0.2
+                        cand_score - baseline_score
                     };
-
-                    let mut best_cand = window_word.clone();
-                    let mut best_score = f64::NEG_INFINITY;
-
-                    for cand in candidates {
-                        let mut cand_chars = chars.clone();
-                        let cand_word_chars: Vec<char> = cand.chars().collect();
-                        for k in 0..sz {
-                            cand_chars[i + k] = cand_word_chars[k];
-                        }
-                        let cand_sentence: String = cand_chars.iter().collect();
-
-                        let mut score = self.score_sentence(&cand_sentence);
-                        if cand != window_word {
-                            score += change_penalty;
-                        }
-
-                        if score > best_score {
-                            best_score = score;
-                            best_cand = cand;
-                        }
-                    }
-
-                    if best_cand != window_word {
-                        log::info!("[ASR Correct] Replacing '{}' with '{}' (score: {:.2})", window_word, best_cand, best_score);
-                        let best_cand_chars: Vec<char> = best_cand.chars().collect();
-                        let mut new_chars = chars.clone();
-                        for k in 0..sz {
-                            new_chars[i + k] = best_cand_chars[k];
-                        }
-                        let next_text: String = new_chars.iter().collect();
-                        return self.correct_depth(&next_text, depth + 1);
+                    if gain > best_gain {
+                        best_gain = gain;
+                        best_cand = cand;
                     }
                 }
-            }
-        }
 
-        text.to_string()
+                if best_cand != window_word {
+                    log::info!(
+                        "[ASR Correct] Replacing '{}' with '{}' (gain: {:.2})",
+                        window_word,
+                        best_cand,
+                        best_gain
+                    );
+                    let best_chars: Vec<char> = best_cand.chars().collect();
+                    for k in 0..sz {
+                        chars[i + k] = best_chars[k];
+                    }
+                    break; // 跳出 sz 循环，i 前进续扫
+                }
+            }
+            i += 1;
+        }
+        chars.iter().collect()
     }
 }
 
