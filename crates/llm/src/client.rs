@@ -129,3 +129,52 @@ pub fn polish(preserved: Option<&str>, to_polish: &str, config: &CompatibleLlmCo
 
     Ok(polished)
 }
+
+/// 测试 LLM 连接是否可用（发一个 max_tokens=1 的极简请求）。
+/// 成功返回 Ok(())，失败返回错误信息。用于设置页连接检测。
+pub fn test_connection(config: &CompatibleLlmConfig) -> Result<()> {
+    let url = format!("{}/chat/completions", config.base_url.trim_end_matches('/'));
+
+    let (thinking, enable_thinking) = if config.needs_disable_thinking() {
+        if config.provider.eq_ignore_ascii_case("deepseek") {
+            (Some(Thinking { kind: "disabled".to_string() }), None)
+        } else {
+            (None, Some(false))
+        }
+    } else {
+        (None, None)
+    };
+
+    let request = ChatRequest {
+        model: config.model.clone(),
+        messages: vec![Message {
+            role: "user".to_string(),
+            content: "Hi".to_string(),
+        }],
+        temperature: 0.0,
+        max_tokens: 1,
+        thinking,
+        enable_thinking,
+    };
+
+    let client = reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(10))
+        .build()
+        .context("构建 HTTP 客户端失败")?;
+
+    let response = client
+        .post(&url)
+        .header("Content-Type", "application/json")
+        .header("Authorization", format!("Bearer {}", config.secret_key))
+        .json(&request)
+        .send()
+        .context("LLM API 连接失败（检查网络 / API base URL）")?;
+
+    let status = response.status();
+    if !status.is_success() {
+        let body = response.text().unwrap_or_default();
+        anyhow::bail!("LLM API 返回错误 {}: {}", status, body);
+    }
+
+    Ok(())
+}

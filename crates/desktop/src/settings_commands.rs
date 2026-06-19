@@ -257,6 +257,26 @@ pub fn check_shortcut(
     Ok(())
 }
 
+/// 测试 LLM 连接是否可用（发一个 max_tokens=1 的极简请求）。
+/// spec 为 polish_llm 配置值（3-part spec 或裸名），从 DB 加载配置后测试连通性。
+#[tauri::command]
+pub fn test_llm_connection(spec: String) -> Result<String, String> {
+    if spec.is_empty() {
+        return Err("未选择润色模型".into());
+    }
+    let llm_cfg = octopus_infra::db::load_llm_model(&spec)
+        .map_err(|e| format!("从 DB 加载 LLM 配置失败: {}", e))?
+        .ok_or_else(|| format!("DB 中未找到 LLM 模型 '{}'", spec))?;
+
+    // 在独立线程跑阻塞请求，避免 Tauri 命令超时
+    let handle = std::thread::spawn(move || octopus_llm::test_connection(&llm_cfg));
+    match handle.join() {
+        Ok(Ok(())) => Ok("连接成功".into()),
+        Ok(Err(e)) => Err(format!("{}", e)),
+        Err(_) => Err("测试线程异常终止".into()),
+    }
+}
+
 // ── 单测（纯逻辑校验，不触文件 IO / Tauri State）──
 
 #[cfg(test)]

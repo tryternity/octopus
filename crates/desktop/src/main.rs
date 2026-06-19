@@ -185,6 +185,7 @@ pub fn run() {
             settings_commands::get_history,
             settings_commands::delete_history,
             settings_commands::check_shortcut,
+            settings_commands::test_llm_connection,
         ])
         .setup(move |app| {
             // Initialize engine manager
