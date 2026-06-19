@@ -38,8 +38,12 @@ pub async fn test_llm_connection(spec: String) -> Result<String, String> {
         .map_err(|e| format!("从 DB 加载 LLM 配置失败: {}", e))?
         .ok_or_else(|| format!("DB 中未找到 LLM 模型 '{}'", spec))?;
 
-    // reqwest::blocking 客户端跑在 spawn_blocking 线程池，不占用 async runtime worker
-    tauri::async_runtime::spawn_blocking(move || octopus_llm::test_connection(&llm_cfg))
+    // reqwest::blocking 客户端跑在 spawn_blocking 线程池，不占用 async runtime worker。
+    // test_connection 返回 Result<(), anyhow::Error>：闭包内先 map_err 转 String，
+    // 使 spawn_blocking 返回 JoinHandle<Result<(), String>>，.await 后链式匹配 Result<String, String>。
+    tauri::async_runtime::spawn_blocking(move || {
+        octopus_llm::test_connection(&llm_cfg).map_err(|e| format!("{}", e))
+    })
         .await
         .map_err(|_| "测试线程异常终止".to_string())?
         .map(|_| "连接成功".to_string())
