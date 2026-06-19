@@ -1,15 +1,23 @@
-//! 阿里云百炼 DashScope FunASR Realtime WebSocket ASR engine。
+//! 阿里云百炼 DashScope ASR WebSocket 引擎。
+//!
+//! 支持两套云端协议，通过 endpoint 路径自动分发：
+//! - **Fun-ASR / Paraformer**（`/api-ws/v1/inference`）：任务型协议
+//!   1. `run-task`（text frame，model + parameters.format=pcm）
+//!   2. 服务端回 `task-started`
+//!   3. 客户端发二进制 PCM 帧（s16le, 16kHz, mono），分块 200ms
+//!   4. 发 `finish-task`（text frame）
+//!   5. 服务端逐句回 `result-generated`（累积 `payload.output.sentence.text`）
+//!   6. 最终 `task-finished` 关闭
+//! - **Qwen-ASR Realtime**（`/api-ws/v1/realtime`）：OpenAI Realtime 风格会话协议
+//!   1. URL 追加 `?model=<model_name>` 查询参数
+//!   2. `session.update`（配置 pcm/16k + Manual 模式）
+//!   3. `input_audio_buffer.append`（base64 PCM，文本帧）
+//!   4. `input_audio_buffer.commit` + `session.finish`
+//!   5. 收 `conversation.item.input_audio_transcription.completed`
+//!   6. `session.finished` 关闭
 //!
 //! 集成点：桌面分块 [`TranscriptionEngine`]（coordinator 按 `is_streaming_engine=false`
 //! 时，每段 VAD 调一次 [`DashscopeEngine::transcribe`]）。
-//!
-//! DashScope duplex 全双工协议：
-//! 1. `run-task`（text frame，action=run-task，streaming=duplex，model + parameters.format=pcm）
-//! 2. 服务端回 `task-started`
-//! 3. 客户端发二进制 PCM 帧（s16le, 16kHz, mono），分块 200ms
-//! 4. 发 `finish-task`（text frame）
-//! 5. 服务端逐句回 `result-generated`（累积 `payload.output.sentence.text`）
-//! 6. 最终 `task-finished` 关闭
 //!
 //! 鉴权：WS 请求 header `Authorization: bearer <secret_key>`（DashScope API Key）。
 //! DashScope api-ws 端点强制要求该头，缺则 401/连接被拒。通过 `IntoClientRequest` 把
@@ -112,8 +120,14 @@ impl TranscriptionEngine for DashscopeEngine {
         let language = language.to_string();
 
         // 2. 全流程超时 8s（与 engine_ws.rs 一致）
+        //    根据 endpoint 路径选择协议
+        let is_qwen = crate::dashscope_stream::is_qwen_realtime_endpoint(&endpoint);
         tokio::time::timeout(Duration::from_secs(8), async move {
-            run_session(&endpoint, &key, &model, &samples, &language).await
+            if is_qwen {
+                run_qwen_realtime_transcribe(&endpoint, &key, &model, &samples, &language).await
+            } else {
+                run_session(&endpoint, &key, &model, &samples, &language).await
+            }
         })
         .await
         .map_err(|_| anyhow!("dashscope transcription timeout (8s)"))?
@@ -227,10 +241,12 @@ async fn send_pcm_frames(ws: &mut WsStream, samples: &[f32]) -> Result<()> {
     Ok(())
 }
 
-/// 收消息循环：`result-generated` 累积 `payload.output.sentence.text`（取最新即最终句），
+/// 收消息循环：根据 `sentence_id` + `sentence_end` 跨句累积文本，
 /// `task-finished` 收尾，`task-failed` 健壮取错后 bail。
 async fn collect_results(ws: &mut WsStream) -> Result<String> {
-    let mut text = String::new();
+    let mut committed = String::new();
+    let mut current_sentence = String::new();
+    let mut current_sentence_id: i64 = -1;
     while let Some(msg) = ws.next().await {
         let msg = msg.context("dashscope WS 读消息失败")?;
         if let Message::Text(t) = msg {
@@ -240,10 +256,36 @@ async fn collect_results(ws: &mut WsStream) -> Result<String> {
             };
             match v["header"]["event"].as_str() {
                 Some("result-generated") => {
-                    // FunASR Realtime：payload.output.sentence.text 是累积文本，
-                    // 每次覆盖即取最新（最终）句。
-                    if let Some(t) = v["payload"]["output"]["sentence"]["text"].as_str() {
-                        text = t.to_string();
+                    let sentence = &v["payload"]["output"]["sentence"];
+                    // 跳过心跳包
+                    if sentence["heartbeat"].as_bool().unwrap_or(false) {
+                        continue;
+                    }
+                    let text = sentence["text"].as_str().unwrap_or("");
+                    let sentence_id = sentence["sentence_id"].as_i64().unwrap_or(0);
+                    let sentence_end = sentence["sentence_end"].as_bool().unwrap_or(false);
+
+                    // sentence_id 变化 = 新句，提交前一句
+                    if sentence_id != current_sentence_id && current_sentence_id > 0 {
+                        if !current_sentence.is_empty() {
+                            if !committed.is_empty() && !committed.ends_with('，') {
+                                committed.push('，');
+                            }
+                            committed.push_str(&current_sentence);
+                            current_sentence.clear();
+                        }
+                    }
+                    current_sentence_id = sentence_id;
+                    current_sentence = text.to_string();
+
+                    // sentence_end=true = 最终结果，立即提交
+                    if sentence_end {
+                        if !committed.is_empty() && !committed.ends_with('，') {
+                            committed.push('，');
+                        }
+                        committed.push_str(&current_sentence);
+                        current_sentence.clear();
+                        current_sentence_id = -1;
                     }
                 }
                 Some("task-finished") => break,
@@ -261,7 +303,14 @@ async fn collect_results(ws: &mut WsStream) -> Result<String> {
             }
         }
     }
-    Ok(text)
+    // 提交最后一句
+    if !current_sentence.is_empty() {
+        if !committed.is_empty() && !committed.ends_with('，') {
+            committed.push('，');
+        }
+        committed.push_str(&current_sentence);
+    }
+    Ok(committed)
 }
 
 /// f32[-1, 1] 样本 → s16le PCM 字节流（16kHz mono）。
@@ -274,6 +323,136 @@ pub(crate) fn samples_to_pcm_s16le(samples: &[f32]) -> Vec<u8> {
         out.extend_from_slice(&v.to_le_bytes());
     }
     out
+}
+
+// ── Qwen-ASR Realtime 离线转录（Manual 模式）──
+
+/// Qwen-ASR Realtime 离线转录：建连 → session.update(Manual) → append PCM → commit → finish → 收结果。
+///
+/// 用于 coordinator 的 VadSegmented 模式（每段 VAD 调一次）。
+/// 使用 Manual 模式（turn_detection=null），因为 coordinator 已经做了 VAD 切分，
+/// 这里只需转写这一段完整音频。
+async fn run_qwen_realtime_transcribe(
+    endpoint: &str,
+    key: &str,
+    model: &str,
+    samples: &[f32],
+    language: &str,
+) -> Result<String> {
+    if samples.is_empty() {
+        return Ok(String::new());
+    }
+
+    // 1. 构造 URL（追加 ?model= 查询参数）
+    let url = if endpoint.contains("?model=") || endpoint.contains("&model=") {
+        endpoint.to_string()
+    } else if endpoint.contains('?') {
+        format!("{}&model={}", endpoint, model)
+    } else {
+        format!("{}?model={}", endpoint, model)
+    };
+
+    // 2. 建连 + Authorization: Bearer <key>
+    let mut request = url
+        .as_str()
+        .into_client_request()
+        .with_context(|| format!("qwen-asr WS 请求构造失败: {}", url))?;
+    request.headers_mut().insert(
+        AUTHORIZATION,
+        format!("Bearer {}", key)
+            .parse()
+            .context("qwen-asr Authorization header 构造失败")?,
+    );
+    let (mut ws, _resp) = connect_async(request)
+        .await
+        .with_context(|| format!("qwen-asr WS 连接失败: {}", url))?;
+
+    // 3. 发 session.update（Manual 模式：turn_detection=null）
+    let transcription = if language.is_empty() || language == "auto" {
+        json!({})
+    } else {
+        json!({ "language": language })
+    };
+    let session_update = json!({
+        "event_id": format!("evt_{}", uuid::Uuid::new_v4().simple()),
+        "type": "session.update",
+        "session": {
+            "input_audio_format": "pcm",
+            "sample_rate": 16000,
+            "input_audio_transcription": transcription,
+            "turn_detection": null,
+        }
+    });
+    ws.send(Message::Text(session_update.to_string()))
+        .await
+        .context("qwen-asr WS 发送 session.update 失败")?;
+
+    // 4. 发 PCM（base64 编码，200ms 分块）
+    use base64::{engine::general_purpose::STANDARD, Engine as _};
+    let pcm = samples_to_pcm_s16le(samples);
+    const CHUNK_SAMPLES: usize = 3200; // 200ms @ 16kHz
+    const CHUNK_BYTES: usize = CHUNK_SAMPLES * 2; // s16le = 2 bytes/sample
+    for chunk in pcm.chunks(CHUNK_BYTES) {
+        let b64 = STANDARD.encode(chunk);
+        let append = json!({
+            "event_id": format!("evt_{}", uuid::Uuid::new_v4().simple()),
+            "type": "input_audio_buffer.append",
+            "audio": b64,
+        });
+        ws.send(Message::Text(append.to_string()))
+            .await
+            .context("qwen-asr WS 发送 PCM append 失败")?;
+    }
+
+    // 5. commit + finish（Manual 模式：commit 触发识别，finish 结束会话）
+    let commit = json!({
+        "event_id": format!("evt_{}", uuid::Uuid::new_v4().simple()),
+        "type": "input_audio_buffer.commit",
+    });
+    ws.send(Message::Text(commit.to_string()))
+        .await
+        .context("qwen-asr WS 发送 commit 失败")?;
+
+    let finish = json!({
+        "event_id": format!("evt_{}", uuid::Uuid::new_v4().simple()),
+        "type": "session.finish",
+    });
+    ws.send(Message::Text(finish.to_string()))
+        .await
+        .context("qwen-asr WS 发送 session.finish 失败")?;
+
+    // 6. 收结果：conversation.item.input_audio_transcription.completed + session.finished
+    let mut text = String::new();
+    while let Some(msg) = ws.next().await {
+        let msg = msg.context("qwen-asr WS 读消息失败")?;
+        if let Message::Text(t) = msg {
+            let v: Value = match serde_json::from_str(&t) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            match v["type"].as_str() {
+                Some("conversation.item.input_audio_transcription.completed") => {
+                    if let Some(t) = v["transcript"].as_str() {
+                        if !text.is_empty() && !text.ends_with('，') {
+                            text.push('，');
+                        }
+                        text.push_str(t);
+                    }
+                }
+                Some("session.finished") => break,
+                Some("error") => {
+                    let msg = v["error"]["message"]
+                        .as_str()
+                        .or_else(|| v["error"]["code"].as_str())
+                        .map(|s| s.to_string())
+                        .unwrap_or_else(|| v["error"].to_string());
+                    bail!("qwen-asr error: {}", msg);
+                }
+                _ => {} // 其他事件忽略
+            }
+        }
+    }
+    Ok(text)
 }
 
 #[cfg(test)]

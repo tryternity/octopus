@@ -87,6 +87,24 @@ select:focus, input:focus { outline: none; border-color: var(--primary); }
 }
 .shortcut-input:hover { border-color: var(--primary); }
 .shortcut-input.capturing { border-color: var(--primary); color: var(--text-secondary); }
+/* ── 连接测试按钮 ── */
+.test-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 32px; height: 32px; border: 1px solid var(--border); border-radius: 6px;
+  background: white; cursor: pointer; padding: 0; flex-shrink: 0;
+  transition: border-color 0.15s, background 0.15s;
+}
+.test-btn:hover { border-color: var(--primary); }
+.test-btn:active { background: var(--border); }
+.test-btn svg { width: 16px; height: 16px; fill: var(--text-secondary); }
+.test-btn:hover svg { fill: var(--primary); }
+.test-btn.loading { pointer-events: none; opacity: 0.5; }
+.test-btn.ok { border-color: #22c55e; }
+.test-btn.ok svg { fill: #22c55e; }
+.test-btn.fail { border-color: #ef4444; }
+.test-btn.fail svg { fill: #ef4444; }
+.test-btn.disabled { opacity: 0.3; pointer-events: none; }
+.select-with-test { display: flex; align-items: center; gap: 6px; }
 /* ── 历史工具栏 ── */
 #history-toolbar {
   display: flex;
@@ -424,9 +442,15 @@ document.getElementById('content').addEventListener('scroll', (e) => {
 });
 
 // ── 系统设置渲染 ──
+const checkIconSvg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 640"><path d="M530.8 134.1C545.1 144.5 548.3 164.5 537.9 178.8L281.9 530.8C276.4 538.4 267.9 543.1 258.5 543.9C249.1 544.7 240 541.2 233.4 534.6L105.4 406.6C92.9 394.1 92.9 373.8 105.4 361.3C117.9 348.8 138.2 348.8 150.7 361.3L252.2 462.8L486.2 141.1C496.6 126.8 516.6 123.6 530.9 134z"/></svg>';
+
+// 缓存 ASR 引擎列表（is_local 字段供 test 按钮状态切换用）
+let asrEnginesData = [];
+
 function renderSettings(resp) {
   const cfg = resp.config;
   const container = document.getElementById('page-settings');
+  asrEnginesData = resp.asr_engines;
   const asrOptions = resp.asr_engines.map(e => '<option value="' + escapeHtml(e.name) + '" ' + (e.current ? 'selected' : '') + '>' + escapeHtml(e.label) + '</option>').join('');
   const llmOptions = resp.llm_models.map(m => '<option value="' + escapeHtml(m.name) + '" ' + (m.current ? 'selected' : '') + '>' + escapeHtml(m.label) + '</option>').join('');
   const micOptions = ['<option value="">系统默认</option>'].concat(
@@ -436,6 +460,10 @@ function renderSettings(resp) {
   // polish_mode 序列化为 u8 (0/1/2)
   const pm = cfg.polish_mode;
   const dm = cfg.denoise_mode;
+
+  // 当前选中的 ASR 引擎是否为本地模型（决定 test 按钮灰不灰）
+  const currentAsrEngine = resp.asr_engines.find(e => e.current);
+  const currentAsrLocal = currentAsrEngine ? currentAsrEngine.is_local : true;
 
   container.innerHTML =
     '<!-- 交互 -->' +
@@ -469,7 +497,10 @@ function renderSettings(resp) {
     '<div class="card">' +
       '<div class="row">' +
         '<div class="label-group"><span class="label-text">语音识别引擎 <span class="label-effect">(下次录音)</span></span></div>' +
-        '<select onchange="setVal(\'asr_engine\', this.value)">' + asrOptions + '</select>' +
+        '<div class="select-with-test">' +
+          '<select id="asr-engine-select" onchange="setVal(\'asr_engine\', this.value); updateAsrTestBtn(this.value)">' + asrOptions + '</select>' +
+          '<button class="test-btn' + (currentAsrLocal ? ' disabled' : '') + '" id="asr-test-btn" onclick="testAsrConnection()" title="' + (currentAsrLocal ? '本地模型无需测试' : '测试连接') + '">' + checkIconSvg + '</button>' +
+        '</div>' +
       '</div>' +
       '<div class="row">' +
         '<div class="label-group"><span class="label-text">语音识别语言 <span class="label-effect">(下次录音)</span></span></div>' +
@@ -502,7 +533,10 @@ function renderSettings(resp) {
     '<div class="card">' +
       '<div class="row">' +
         '<div class="label-group"><span class="label-text">文本润色模型 <span class="label-effect">(立即)</span></span></div>' +
-        '<select onchange="setVal(\'polish_llm\', this.value)">' + llmOptions + '</select>' +
+        '<div class="select-with-test">' +
+          '<select id="polish-llm-select" onchange="setVal(\'polish_llm\', this.value)">' + llmOptions + '</select>' +
+          '<button class="test-btn" id="llm-test-btn" onclick="testLlmConnection()" title="测试连接">' + checkIconSvg + '</button>' +
+        '</div>' +
       '</div>' +
       '<div class="row">' +
         '<div class="label-group"><span class="label-text">文本润色模式 <span class="label-effect">(立即)</span></span></div>' +
@@ -564,6 +598,83 @@ async function toggleVal(key, el) {
   }
 }
 window.toggleVal = toggleVal;
+
+// ── LLM 连接测试 ──
+async function testLlmConnection() {
+  const btn = document.getElementById('llm-test-btn');
+  if (!btn) return;
+  const select = document.getElementById('polish-llm-select');
+  const bareName = select ? select.value : '';
+  if (!bareName) {
+    showToast('未选择润色模型');
+    return;
+  }
+
+  btn.classList.remove('ok', 'fail');
+  btn.classList.add('loading');
+  btn.title = '测试中...';
+
+  try {
+    // 先保存当前选择（确保 DB 中 polish_llm 是最新值，后端按 spec 从 DB 加载）
+    await invoke('set_config', { key: 'polish_llm', value: bareName });
+    // 构造 spec（与 set_config 内部 build_polish_llm_spec 一致，但 test 命令接收裸名后自行查 DB）
+    const msg = await invoke('test_llm_connection', { spec: bareName });
+    btn.classList.add('ok');
+    btn.title = msg;
+    showToast(msg);
+  } catch (e) {
+    btn.classList.add('fail');
+    btn.title = String(e);
+    showToast('连接失败：' + e);
+  } finally {
+    btn.classList.remove('loading');
+  }
+}
+window.testLlmConnection = testLlmConnection;
+
+// ── ASR 连接测试（远程模型） ──
+async function testAsrConnection() {
+  const btn = document.getElementById('asr-test-btn');
+  if (!btn || btn.classList.contains('disabled')) return;
+  const select = document.getElementById('asr-engine-select');
+  const bareName = select ? select.value : '';
+  if (!bareName) { showToast('未选择 ASR 引擎'); return; }
+
+  btn.classList.remove('ok', 'fail');
+  btn.classList.add('loading');
+  btn.title = '测试中...';
+
+  try {
+    const msg = await invoke('test_asr_connection', { bareName });
+    btn.classList.add('ok');
+    btn.title = msg;
+    showToast(msg);
+  } catch (e) {
+    btn.classList.add('fail');
+    btn.title = String(e);
+    showToast('连接失败：' + e);
+  } finally {
+    btn.classList.remove('loading');
+  }
+}
+window.testAsrConnection = testAsrConnection;
+
+// ASR 引擎切换时更新 test 按钮状态（本地=灰掉，远程=可点）
+function updateAsrTestBtn(bareName) {
+  const btn = document.getElementById('asr-test-btn');
+  if (!btn) return;
+  // 从 asrEnginesData 查 is_local
+  const engine = asrEnginesData.find(e => e.name === bareName);
+  const isLocal = engine ? engine.is_local : true;
+  btn.classList.remove('ok', 'fail', 'disabled');
+  if (isLocal) {
+    btn.classList.add('disabled');
+    btn.title = '本地模型无需测试';
+  } else {
+    btn.title = '测试连接';
+  }
+}
+window.updateAsrTestBtn = updateAsrTestBtn;
 
 // ── 快捷键捕获 ──
 function startShortcutCapture(btn, configKey) {

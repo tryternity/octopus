@@ -51,8 +51,14 @@ VALUES
     ('asr','local','qwen3-asr','qwen3-asr-0.6B','csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25','auto','qwen3-asr-0.6B, 1G',1,0,0),
     ('asr','local','qwen3-asr','qwen3-asr-1.7B','ilmina/qwen3-asr-1.7b-sherpa-onnx','auto','qwen3-asr-1.7B, 约2.7G',1,0,0),
     ('asr','local','whisper','whisper-small','onnx-community/whisper-small','auto','Whisper Small - 快速轻量, 250M',1,0,0),
-    -- 阿里云 FunASR 实时（Feature 2 seed；is_streaming=0 走 chunk 路径；secret_key 用户填）
-    ('asr','aliyun','Fun-ASR','fun-asr-2025-11-07','wss://dashscope.aliyuncs.com/api-ws/v1/inference','auto','阿里云百炼 FunASR 实时（DashScope key 填 secret_key）',0,0,0);
+    -- 阿里云 DashScope 实时 ASR（cloud WS，secret_key 填 DashScope API Key）
+    -- Fun-ASR / Paraformer 共用 /api-ws/v1/inference 端点（run-task 协议）
+    -- Qwen-ASR 用 /api-ws/v1/realtime 端点（OpenAI Realtime 风格协议）
+    -- is_streaming=0：cloud 引擎在 dashscope feature 下由 is_cloud_engine 路由到 CloudStreaming，
+    --   is_streaming 仅影响无 dashscope feature 时的本地 fallback 路径（VadSegmented→transcribe）
+    ('asr','aliyun','Fun-ASR','fun-asr-realtime','wss://dashscope.aliyuncs.com/api-ws/v1/inference','auto','阿里云百炼 FunASR 实时（run-task 协议，DashScope key 填 secret_key）',0,0,0),
+    ('asr','aliyun','Paraformer-Realtime','paraformer-realtime-v2','wss://dashscope.aliyuncs.com/api-ws/v1/inference','zh','阿里云百炼 Paraformer 实时 v2（run-task 协议，带时间戳）',0,0,0),
+    ('asr','aliyun','Qwen-ASR','qwen3-asr-flash-realtime','wss://dashscope.aliyuncs.com/api-ws/v1/realtime','auto','阿里云百炼 Qwen3-ASR-Flash Realtime（OpenAI Realtime 协议，base64 PCM）',0,0,1);
 
 -- LLM 润色模型（原 category=vendor 迁移到 provider；category=模型系列）
 INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, description, is_thinking, is_local, is_enabled)
