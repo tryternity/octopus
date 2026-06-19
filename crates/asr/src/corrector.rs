@@ -255,6 +255,7 @@ impl LightCorrector {
         let n = chars.len();
         let mut i = 0;
         while i < n {
+            let mut replaced_sz = 0;
             for sz in (2..=3).rev() {
                 if i + sz > n {
                     continue;
@@ -317,10 +318,13 @@ impl LightCorrector {
                     for k in 0..sz {
                         chars[i + k] = best_chars[k];
                     }
+                    replaced_sz = sz;
                     break; // 跳出 sz 循环，i 前进续扫
                 }
             }
-            i += 1;
+            // 替换后步进整个窗口（跳过已纠正的字，防重叠二次纠错）；
+            // 未替换则 +1 滑窗。
+            i += if replaced_sz > 0 { replaced_sz } else { 1 };
         }
         chars.iter().collect()
     }
