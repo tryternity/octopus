@@ -101,6 +101,11 @@
     #tool-polish    .icon { -webkit-mask-image: url(icons/polish-mode.svg?v=2); mask-image: url(icons/polish-mode.svg?v=2); }
     #tool-polish-now .icon { -webkit-mask-image: url(icons/polish-now.svg?v=2); mask-image: url(icons/polish-now.svg?v=2); }
     #tool-edit .icon { -webkit-mask-image: url(icons/edit.svg?v=1); mask-image: url(icons/edit.svg?v=1); }
+    /* 编辑态：✏️ 图标切为 💾（save.svg）；点 tool-edit = 保存（toggle 语义） */
+    #container.editing #tool-edit .icon {
+      -webkit-mask-image: url(icons/save.svg?v=1);
+      mask-image: url(icons/save.svg?v=1);
+    }
 
     /* 浮层（左缘对齐工具栏：toolbar padding 0 6px） */
     #popup {
@@ -432,6 +437,8 @@
       container.classList.add('editing');
       btnEditDone.hidden = false;
       btnEdit.classList.add('active');
+      btnEdit.title = '保存编辑';
+      btnEdit.setAttribute('aria-label', '保存编辑');
       currentWindow.setFocus();
       resultText.focus();
       const sel = window.getSelection();
@@ -453,6 +460,8 @@
       container.classList.remove('editing');
       btnEditDone.hidden = true;
       btnEdit.classList.remove('active');
+      btnEdit.title = '编辑';
+      btnEdit.setAttribute('aria-label', '编辑');
       invoke('commit_edit', { text });
     }
 
@@ -463,7 +472,10 @@
 
     // 进入编辑：edit_shortcut（默认 Cmd+E，仅结果窗聚焦时）或点 ✏️ 按钮。
     // 放弃双击——WKWebView 在 user-select:text 区域 dblclick 难触发。
-    btnEdit.addEventListener('click', (e) => { e.preventDefault(); enterEdit(); });
+    btnEdit.addEventListener('click', (e) => {
+      e.preventDefault();
+      editing ? commitEdit() : enterEdit();
+    });
 
     document.addEventListener('keydown', (e) => {
       if (editing) {
@@ -496,6 +508,8 @@
         container.classList.remove('editing');
         btnEditDone.hidden = true;
         btnEdit.classList.remove('active');
+        btnEdit.title = '编辑';
+        btnEdit.setAttribute('aria-label', '编辑');
       }
     });
 
