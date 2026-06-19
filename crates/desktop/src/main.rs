@@ -79,10 +79,10 @@ pub fn run() {
     // 润色配置校验（三档模式）
     use crate::config::PolishMode;
     if config.polish_mode != PolishMode::Disabled {
-        if config.polish_mode == PolishMode::Intermediate && config.polish_interval <= 0.0 {
+        if config.polish_mode == PolishMode::Intermediate && config.polish_min_interval <= 0.0 {
             log::warn!(
-                "polish_mode=2 但 polish_interval={}<=0，将使用下限 {}s",
-                config.polish_interval,
+                "polish_mode=2 但 polish_min_interval={}<=0，将使用下限 {}s",
+                config.polish_min_interval,
                 coordinator::MIN_POLISH_INTERVAL_SEC
             );
         }
@@ -95,9 +95,9 @@ pub fn run() {
                 };
                 if config.polish_mode == PolishMode::Intermediate {
                     log::info!(
-                        "润色模式: {} (interval={}s, provider={}, model={})",
+                        "润色模式: {} (min_interval={}s, provider={}, model={})",
                         mode_str,
-                        config.polish_interval,
+                        config.polish_min_interval,
                         llm_cfg.provider,
                         llm_cfg.model
                     );

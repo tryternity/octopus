@@ -108,8 +108,8 @@ pub struct AppConfig {
     pub polish_mode: PolishMode,
 
     /// 中间润色间隔（秒），0 = 仅最终润色
-    #[serde(default = "default_polish_interval")]
-    pub polish_interval: f64,
+    #[serde(default = "default_polish_min_interval")]
+    pub polish_min_interval: f64,
 
     /// 停顿驱动中间润色的静音阈值（毫秒）：静音达此值即触发全量润色（mode=2 only）
     #[serde(default = "default_pause_polish_threshold_ms")]
@@ -174,7 +174,7 @@ fn default_write_to_clipboard() -> bool {
 fn default_overlay_position() -> String {
     "top".into()
 }
-fn default_polish_interval() -> f64 {
+fn default_polish_min_interval() -> f64 {
     5.0
 }
 fn default_pause_polish_threshold_ms() -> f64 {
@@ -223,7 +223,7 @@ impl Default for AppConfig {
             segment_silence: default_segment_silence(),
             overlay_position: default_overlay_position(),
             polish_mode: PolishMode::default(),
-            polish_interval: default_polish_interval(),
+            polish_min_interval: default_polish_min_interval(),
             pause_polish_threshold_ms: default_pause_polish_threshold_ms(),
             polish_llm: default_polish_llm(),
             asr_hardware_accelerated: default_asr_hardware_accelerated(),
@@ -248,22 +248,30 @@ pub fn load_config() -> Result<AppConfig> {
     }
 
     let text = std::fs::read_to_string(&config_path)?;
-    // 迁移旧字段名 shortcut → asr_shortcut（serde alias 在两键共存时报 duplicate field）
+    // 迁移旧字段名 → 新字段名（serde alias 在两键共存时报 duplicate field）
     let mut value: serde_yaml::Value = serde_yaml::from_str(&text)?;
     if let Some(map) = value.as_mapping_mut() {
-        let shortcut_key = serde_yaml::Value::String("shortcut".into());
-        let asr_key = serde_yaml::Value::String("asr_shortcut".into());
-        if map.get(&shortcut_key).is_some() {
-            if map.get(&asr_key).is_none() {
-                let old_val = map.remove(&shortcut_key).unwrap();
-                map.insert(asr_key, old_val);
-            } else {
-                map.remove(&shortcut_key);
-            }
-        }
+        // shortcut → asr_shortcut
+        migrate_key(map, "shortcut", "asr_shortcut");
+        // polish_interval → polish_min_interval
+        migrate_key(map, "polish_interval", "polish_min_interval");
     }
     let config: AppConfig = serde_yaml::from_value(value)?;
     Ok(config)
+}
+
+/// yaml 字段名迁移：旧键存在时，新键不存在则迁移、新键已存在则删旧留新。
+fn migrate_key(map: &mut serde_yaml::Mapping, old: &str, new: &str) {
+    let old_key = serde_yaml::Value::String(old.into());
+    let new_key = serde_yaml::Value::String(new.into());
+    if map.get(&old_key).is_some() {
+        if map.get(&new_key).is_none() {
+            let old_val = map.remove(&old_key).unwrap();
+            map.insert(new_key, old_val);
+        } else {
+            map.remove(&old_key);
+        }
+    }
 }
 
 #[cfg(test)]

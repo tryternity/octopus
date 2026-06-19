@@ -155,10 +155,10 @@ fn apply_config_value(
             if v <= 0.0 { return Err("segment_silence 必须大于 0".into()); }
             cfg.segment_silence = v;
         }
-        "polish_interval" => {
-            let v = value.as_f64().ok_or("polish_interval 需要数值")?;
-            if v < 0.0 { return Err("polish_interval 不能为负".into()); }
-            cfg.polish_interval = v;
+        "polish_min_interval" => {
+            let v = value.as_f64().ok_or("polish_min_interval 需要数值")?;
+            if v < 0.0 { return Err("polish_min_interval 不能为负".into()); }
+            cfg.polish_min_interval = v;
         }
         "pause_polish_threshold_ms" => {
             let v = value.as_f64().ok_or("pause_polish_threshold_ms 需要数值")?;
