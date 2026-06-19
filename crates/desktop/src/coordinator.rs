@@ -536,7 +536,7 @@ pub fn update_edit_buffer(coordinator: tauri::State<'_, Coordinator>, text: Stri
     coordinator.update_edit_buffer(text);
 }
 
-/// 前端命令：提交编辑（快捷键/完成按钮/失焦触发）。
+/// 前端命令：提交编辑（edit_shortcut toggle 再按 / ✏️(💾) 按钮触发）。
 #[tauri::command]
 pub fn commit_edit(coordinator: tauri::State<'_, Coordinator>, text: String) {
     coordinator.commit_edit(text);

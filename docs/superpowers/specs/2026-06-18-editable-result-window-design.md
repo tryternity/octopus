@@ -52,7 +52,7 @@
 
 > e2e 反馈：完成按钮已足够显眼，失焦 / 点 toolbar 自动退出非必要，已去除 `blur` 触发——点别处或点工具栏不再自动提交，改完请显式 Cmd+Enter 或点完成按钮。后端 Toggle/Cancel 停止路径仍用 `edit_buffer` 兜底提交（§7），不会丢编辑。
 
-> **快捷键演进（2026-06-19）**：退出编辑已从「固定 `CmdOrCtrl+Enter`」统一为 `edit_shortcut` **toggle**——进入与保存（退出）用同一个键（默认 Cmd+E，可配）。本节下方 `CmdOrCtrl+Enter` / 完成按钮为原始设计记录（完成按钮亦已于布局调整删除，见 §9 L186 演进注）。当前权威：`docs/configuration.md` 的 `edit_shortcut`。
+> **快捷键演进（2026-06-19）**：退出编辑已从「固定 `CmdOrCtrl+Enter`」统一为 `edit_shortcut` **toggle**——进入与保存（退出）用同一个键（默认 Cmd+Enter，可配）。本节下方 `CmdOrCtrl+Enter` / 完成按钮为原始设计记录（完成按钮亦已于布局调整删除，见 §9 L186 演进注）。当前权威：`docs/configuration.md` 的 `edit_shortcut`。
 
 任一触发 → 前端取 `#result-text.innerText`，`invoke('commit_edit', { text })` → 后端提交（§5）→ 恢复识别。
 

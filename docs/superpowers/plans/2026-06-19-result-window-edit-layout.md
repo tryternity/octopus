@@ -10,6 +10,8 @@
 
 **设计 spec:** `docs/superpowers/specs/2026-06-19-result-window-edit-layout-design.md`
 
+> **状态（2026-06-19）：已实施并合并到 main**（`d4401cb`：✏️ toggle + 删 edit-done + 文字不重排 + 编辑态 toolbar 常驻；e2e 通过）。下方 checkbox 标记实际完成进度。快捷键后续统一为 `edit_shortcut` toggle（`370e21e`）。
+
 ---
 
 ## 文件结构
@@ -36,7 +38,7 @@
 **Files:**
 - Modify: `crates/desktop/dist/result/index.html`（CSS `#tool-edit .icon` 规则约 L103 + JS `btnEdit` click 约 L466 + `enterEdit`/`commitEdit` 约 L428-457）
 
-- [ ] **Step 1: CSS 加编辑态 icon 切换**
+- [x] **Step 1: CSS 加编辑态 icon 切换**
 
 在 `#tool-edit .icon` 规则（约 L103）之后新增：
 
@@ -48,7 +50,7 @@
     }
 ```
 
-- [ ] **Step 2: JS `btnEdit` click 改 toggle 语义**
+- [x] **Step 2: JS `btnEdit` click 改 toggle 语义**
 
 old:
 ```js
@@ -62,7 +64,7 @@ new:
     });
 ```
 
-- [ ] **Step 3: `enterEdit`/`commitEdit` 加 title/aria-label 切换**
+- [x] **Step 3: `enterEdit`/`commitEdit` 加 title/aria-label 切换**
 
 `enterEdit()` 中，在 `btnEdit.classList.add('active');` 之后加：
 ```js
@@ -76,13 +78,13 @@ new:
       btnEdit.setAttribute('aria-label', '编辑');
 ```
 
-- [ ] **Step 4: 手动验证**
+- [x] **Step 4: 手动验证**
 
 Run: `cargo run -p octopus-desktop`
 Expected: 识别出文字 → 点 ✏️ 进入编辑 → 图标变 💾、tooltip「保存编辑」→ 点 💾 → 保存退出、图标回 ✏️。
 （此 task 后 `#edit-done` 按钮仍在，两保存入口临时并存——Task 2 删除。）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/dist/result/index.html
@@ -96,7 +98,7 @@ git commit -m "feat(desktop): ✏️ 按钮复用 toggle——编辑态切 save 
 **Files:**
 - Modify: `crates/desktop/dist/result/index.html`（DOM 约 L241 + CSS 约 L184-209 + JS `btnEditDone` 引用 L426/433/454/482-483/497）
 
-- [ ] **Step 1: 删 DOM**
+- [x] **Step 1: 删 DOM**
 
 删 `#text-wrapper` 内这一行：
 ```html
@@ -104,7 +106,7 @@ git commit -m "feat(desktop): ✏️ 按钮复用 toggle——编辑态切 save 
 ```
 （删后 `#text-wrapper` 内只剩 `<div id="result-text"></div>`）
 
-- [ ] **Step 2: 删 CSS**
+- [x] **Step 2: 删 CSS**
 
 删 `#edit-done` 全部规则（约 L184-198，含注释「完成编辑按钮：编辑态显示，浮于文本区右上」+ `#edit-done` + `#edit-done:hover`）。
 
@@ -116,7 +118,7 @@ git commit -m "feat(desktop): ✏️ 按钮复用 toggle——编辑态切 save 
 ```
 **保留**其下的 `#container.editing #result-text:focus { background: transparent; }` 与 `#container.editing #text-wrapper` 淡蓝边框规则。
 
-- [ ] **Step 3: 删 JS `btnEditDone` 全部引用**
+- [x] **Step 3: 删 JS `btnEditDone` 全部引用**
 
 - 删 `const btnEditDone = document.getElementById('edit-done');`（约 L426）
 - `enterEdit()` 删 `btnEditDone.hidden = false;`（约 L433）
@@ -124,12 +126,12 @@ git commit -m "feat(desktop): ✏️ 按钮复用 toggle——编辑态切 save 
 - 删两行 `btnEditDone.addEventListener(...)`（mousedown/click，约 L482-483）
 - `edit-force-exit` 处理删 `btnEditDone.hidden = true;`（约 L497）
 
-- [ ] **Step 4: 手动验证**
+- [x] **Step 4: 手动验证**
 
 Run: `cargo run -p octopus-desktop`
 Expected: ✏️ 进入编辑 → **文字水平位置不变（不重排）**；文本区无「完成编辑」按钮；点 💾 保存正常。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/dist/result/index.html
@@ -143,27 +145,27 @@ git commit -m "refactor(desktop): 删 edit-done 按钮 + 移除编辑态 padding
 **Files:**
 - Modify: `crates/desktop/dist/result/index.html`（`enterEdit()` 约 L428-445）
 
-- [ ] **Step 1: `enterEdit` 末尾调 `showToolbar()`**
+- [x] **Step 1: `enterEdit` 末尾调 `showToolbar()`**
 
 在 `enterEdit()` 内、`invoke('enter_edit_mode');` 之前加：
 ```js
       showToolbar();
 ```
-（`showToolbar` 内部 `if (toolbarVisible) return`——点 ✏️ 进入时 toolbar 已 visible，no-op 无跳动；Cmd+E 进入若 hidden 则显示。`hideToolbar` 已有 `editing` 拦截，编辑中不会隐藏，无需改。）
+（`showToolbar` 内部 `if (toolbarVisible) return`——点 ✏️ 进入时 toolbar 已 visible，no-op 无跳动；Cmd+Enter 进入若 hidden 则显示。`hideToolbar` 已有 `editing` 拦截，编辑中不会隐藏，无需改。）
 
-- [ ] **Step 2: 确认 force-exit 自动恢复 icon（CSS 驱动，无需额外 JS）**
+- [x] **Step 2: 确认 force-exit 自动恢复 icon（CSS 驱动，无需额外 JS）**
 
 icon 切换靠 `#container.editing #tool-edit .icon` CSS。`edit-force-exit` 处理（约 L491-500）已 `container.classList.remove('editing')`（移除 editing class → CSS 不再匹配 → 图标自动回 `edit.svg`）+ `btnEdit.classList.remove('active')`。**无需补图标恢复代码**，确认这两行存在即可。
 
-- [ ] **Step 3: 手动验证**
+- [x] **Step 3: 手动验证**
 
 Run: `cargo run -p octopus-desktop`
 Expected:
-1. 鼠标移出结果窗使 toolbar 隐藏 → Cmd+E 进入 → toolbar 出现（窗口增高、文字下移 24px）→ 💾 可见可点
+1. 鼠标移出结果窗使 toolbar 隐藏 → Cmd+Enter 进入 → toolbar 出现（窗口增高、文字下移 24px）→ 💾 可见可点
 2. 编辑中 mouseleave → toolbar **不隐藏**（editing 拦截）
 3. 编辑中触发新录音（force-exit）→ 图标自动回 ✏️、退出编辑态
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/dist/result/index.html
@@ -174,22 +176,22 @@ git commit -m "feat(desktop): 编辑态强制 toolbar 常驻（enterEdit showToo
 
 ### Task 4: 全量 e2e + 文档同步 + 收尾
 
-- [ ] **Step 1: 全量 e2e（spec §7 六项）**
+- [x] **Step 1: 全量 e2e（spec §7 六项）**
 
 Run: `cargo run -p octopus-desktop`，逐项验证：
 1. 识别出文字 → ✏️ 进入 → **文字水平位置不变（不重排）** ✓
 2. 编辑态图标 💾 → 点 💾 保存 → 退出、图标回 ✏️ ✓
 3. `edit_shortcut` 进入 → 再按 `edit_shortcut` 保存（toggle）✓
-4. Cmd+E 进入（toolbar 此前 hidden）→ toolbar 出现 → 💾 可见可点 ✓
+4. Cmd+Enter 进入（toolbar 此前 hidden）→ toolbar 出现 → 💾 可见可点 ✓
 5. 编辑中 mouseleave → toolbar 不隐藏 ✓
 6. 编辑中触发新录音（force-exit）→ 图标回 ✏️、退出编辑态 ✓
 
-- [ ] **Step 2: 文档同步检查**
+- [x] **Step 2: 文档同步检查**
 
 Run: `grep -rn "edit-done" docs/ crates/`（排除本 spec/plan）
 Expected: 若 `architecture.md` L198-203「结果窗可编辑」段或 editable-result spec 提到 `edit-done`/「完成编辑」按钮，更新为「✏️ toggle（编辑态 💾）」。spec §8 已声明不改 editable-result spec 机制描述，预期改动小或无。
 
-- [ ] **Step 3: Commit（若有文档改动）**
+- [x] **Step 3: Commit（若有文档改动）**
 
 ```bash
 git add docs/
@@ -197,7 +199,7 @@ git commit -m "docs: 同步结果窗编辑布局调整（保存按钮移 toolbar
 ```
 （若无改动跳过）
 
-- [ ] **Step 4: 收尾**
+- [x] **Step 4: 收尾**
 
 按 `superpowers:finishing-a-development-branch`：workspace 测试（手动 e2e 已过）→ merge worktree 分支回 main（ff）→ 删 worktree 分支。
 

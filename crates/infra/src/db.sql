@@ -85,7 +85,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('asr_engine',               'local:zipformer:zipformer-small-ctc',  'ASR 引擎选择（DB models 表 model_name 精确匹配；空=兜底引擎）'),
     ('language',                 'auto',                                 '识别语言: auto | zh | en | ja | ko'),
     ('asr_shortcut',             'CmdOrCtrl+Shift+Z',                    '全局 ASR 激活/关闭快捷键'),
-    ('edit_shortcut',            'Cmd+Enter',                            '结果窗进入编辑快捷键（保存固定 Cmd+Enter）'),
+    ('edit_shortcut',            'Cmd+Enter',                            '结果窗编辑 toggle 快捷键（进入/保存同键）'),
     ('paste_method',             'clipboard',                            '粘贴方式: clipboard | direct | none'),
     ('write_to_clipboard',       'true',                                 '粘贴后是否把结果写入剪贴板'),
     ('microphone',               '',                                     '麦克风名称（空=系统默认）'),
