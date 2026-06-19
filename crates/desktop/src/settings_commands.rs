@@ -260,7 +260,7 @@ pub fn check_shortcut(
 /// 测试 LLM 连接是否可用（发一个 max_tokens=1 的极简请求）。
 /// spec 为 polish_llm 配置值（3-part spec 或裸名），从 DB 加载配置后测试连通性。
 #[tauri::command]
-pub fn test_llm_connection(spec: String) -> Result<String, String> {
+pub async fn test_llm_connection(spec: String) -> Result<String, String> {
     if spec.is_empty() {
         return Err("未选择润色模型".into());
     }
@@ -268,13 +268,13 @@ pub fn test_llm_connection(spec: String) -> Result<String, String> {
         .map_err(|e| format!("从 DB 加载 LLM 配置失败: {}", e))?
         .ok_or_else(|| format!("DB 中未找到 LLM 模型 '{}'", spec))?;
 
-    // 在独立线程跑阻塞请求，避免 Tauri 命令超时
-    let handle = std::thread::spawn(move || octopus_llm::test_connection(&llm_cfg));
-    match handle.join() {
-        Ok(Ok(())) => Ok("连接成功".into()),
-        Ok(Err(e)) => Err(format!("{}", e)),
-        Err(_) => Err("测试线程异常终止".into()),
-    }
+    // reqwest::blocking 客户端跑在 spawn_blocking 线程池，不占用 async runtime worker
+    tauri::async_runtime::spawn_blocking(move || {
+        octopus_llm::test_connection(&llm_cfg).map_err(|e| format!("{}", e))
+    })
+    .await
+    .map_err(|_| "测试线程异常终止".to_string())?
+    .map(|_| "连接成功".to_string())
 }
 
 /// 测试 ASR 远程引擎连接是否可用。
