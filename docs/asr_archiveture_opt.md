@@ -144,7 +144,7 @@ pub struct AsrEngineManager {
 ### 6.1 ASR 硬件加速与自动降级 (CPU Fallback)
 - **多平台 GPU 加速**：利用 `ort` crate 动态加载平台特定的 GPU 后端（macOS 使用 `CoreML`，Windows/Linux 使用 `CUDA` 或 `DirectML`）。
 - **手自动一体控制**：可通过 DB `app_config` 表的 `asr_hardware_accelerated` 字段显式开启/关闭（运行时开关，读 `~/.octopus/octopus.db`）。
-- **平滑降级机制**：若 GPU 加速器在运行时由于驱动冲突、库缺失或模型含有不支持的动态算子（如 `Qwen3-ASR`）导致初始化失败，Session 构建器会自动捕获异常并回退到干净的 CPU 推理会话，保障 ASR 进程不崩溃。
+- **降级机制**（两层）：① EP 注册失败（驱动/库缺失）→ `apply_session_acceleration` 捕获 `Err` 回退纯 CPU session，进程不崩；② **qwen3-asr 显式跳过 CoreML**——其动态算子 CoreML 不支持，但 CoreML 不报错而是把图分区跑（CPU↔CoreML 张量拷贝开销 dominate，比纯 CPU 还慢），故检测到 active 引擎 `category=qwen3-asr` 时直接走 CPU。另：曾因 macOS 跨平台误注册 CUDA/DirectML（init 失败路径）触发 segfault（SIGSEGV 绕过 Rust 的 `match`），已改为按平台注册（macOS 仅 CoreML）修复。
 - **VAD 纯 CPU 推理**：VAD 模块体积极小，开启 GPU 带来的开销远超计算时间，因此 VAD 固定运行于 CPU。
 
 ### 6.2 极致轻量中文拼音纠错 (LightCorrector)
