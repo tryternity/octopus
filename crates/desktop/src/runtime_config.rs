@@ -102,41 +102,23 @@ fn validate_switch(name: &str, engines: &[octopus_asr::config::EngineInfo]) -> R
     }
 }
 
-// ── config.yaml 写回 ──
+// ── 配置持久化（DB app_config 表）──
 
-/// 读当前 config.yaml → 覆盖 asr_engine → 序列化写回 ~/.octopus/config.yaml。
-/// 写盘只影响下次重启读取；运行时生效走 RuntimeConfig。失败返回 Err（调用方 best-effort）。
+/// 单键写入 DB（运行时由 RuntimeConfig 负责，此处仅持久化）。
 pub fn persist_asr_engine(value: &str) -> Result<(), String> {
-    let mut cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-    cfg.asr_engine = value.to_string();
-    write_config_yaml(&cfg)
+    octopus_infra::db::save_config_key("asr_engine", value).map_err(|e| e.to_string())
 }
 
-/// 读当前 config.yaml → 覆盖 polish_mode → 序列化写回。
 pub fn persist_polish_mode(value: u8) -> Result<(), String> {
-    let mut cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-    cfg.polish_mode = u8_to_polish_mode(value).ok_or_else(|| format!("polish_mode={} 非法", value))?;
-    write_config_yaml(&cfg)
+    octopus_infra::db::save_config_key("polish_mode", &value.to_string()).map_err(|e| e.to_string())
 }
 
-/// 读当前 config.yaml → 覆盖 polish_llm → 序列化写回 ~/.octopus/config.yaml。
 pub fn persist_polish_llm(value: &str) -> Result<(), String> {
-    let mut cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-    cfg.polish_llm = value.to_string();
-    write_config_yaml(&cfg)
+    octopus_infra::db::save_config_key("polish_llm", value).map_err(|e| e.to_string())
 }
 
-/// 读当前 config.yaml → 覆盖 denoise_mode → 序列化写回。
 pub fn persist_denoise_mode(value: u8) -> Result<(), String> {
-    let mut cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-    cfg.denoise_mode = value;
-    write_config_yaml(&cfg)
-}
-
-fn write_config_yaml(cfg: &octopus_infra::config::AppConfig) -> Result<(), String> {
-    let path = octopus_infra::octopus_config_home().join("config.yaml");
-    let text = serde_yaml::to_string(cfg).map_err(|e| e.to_string())?;
-    std::fs::write(&path, text).map_err(|e| e.to_string())
+    octopus_infra::db::save_config_key("denoise_mode", &value.to_string()).map_err(|e| e.to_string())
 }
 
 // ── 命令返回 DTO ──

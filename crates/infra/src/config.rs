@@ -6,8 +6,6 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 
-use crate::octopus_config_home;
-
 /// LLM 润色模式（config.yaml 的 polish_mode 字段，整数 0/1/2）
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum PolishMode {
