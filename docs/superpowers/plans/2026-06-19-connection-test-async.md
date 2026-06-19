@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-19-connection-test-async-design.md`
 
+> **状态：已实现**（commits `b2b67b3` + `6bd791a`，merge main；GUI 已验证）。Task 1 实施时发现 `test_connection` 返回 `anyhow::Error`，闭包内补 `.map_err(|e| format!("{}", e))` 转 `String`（plan 代码已同步，commit `af809c8`）。
+
 ---
 
 ## File Structure
@@ -22,7 +24,7 @@
 
 **Files:** Modify `crates/desktop/src/settings_commands.rs:260-278`
 
-- [ ] **Step 1: 改签名 + 实现**
+- [x] **Step 1: 改签名 + 实现**
 
 将 `pub fn test_llm_connection` 整体替换为：
 
@@ -52,12 +54,12 @@ pub async fn test_llm_connection(spec: String) -> Result<String, String> {
 
 说明：`spawn_blocking` 返回 `JoinHandle<Result<()>>`，`.await` 得 `Result<Result<()>, JoinError>`——外层 `map_err` 处理线程 panic/取消，内层 `map` 处理 `test_connection` 成功。
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
 Run: `cargo check -p octopus-desktop --features dashscope`
 Expected: PASS（`main.rs` 的 `generate_handler!` 注册不变，async command 自动支持）
 
-- [ ] **Step 3: commit**
+- [x] **Step 3: commit**
 
 ```bash
 git add crates/desktop/src/settings_commands.rs
@@ -70,7 +72,7 @@ git commit -m "refactor(desktop): test_llm_connection 改 async + spawn_blocking
 
 **Files:** Modify `crates/desktop/src/settings_commands.rs:280-339`
 
-- [ ] **Step 1: 改签名 + 删 Runtime::new，WS 直接 await**
+- [x] **Step 1: 改签名 + 删 Runtime::new，WS 直接 await**
 
 将 `pub fn test_asr_connection` 整体替换为（前置校验逻辑不变，仅签名 + WS 测试段改）：
 
@@ -124,12 +126,12 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
 }
 ```
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
 Run: `cargo check -p octopus-desktop --features dashscope`
 Expected: PASS（`connect_async` 在 tauri runtime 上下文，删 nested runtime 后无冲突）
 
-- [ ] **Step 3: commit**
+- [x] **Step 3: commit**
 
 ```bash
 git add crates/desktop/src/settings_commands.rs
@@ -140,18 +142,18 @@ git commit -m "refactor(desktop): test_asr_connection 改 async，删 Runtime::n
 
 ### Task 3: 回归验证
 
-- [ ] **Step 1: 现有单测通过**
+- [x] **Step 1: 现有单测通过**
 
 Run: `cargo test -p octopus-desktop`
 Expected: PASS（纯逻辑单测——spec 解析、`is_local` 判定、`secret_key` 空检查——不受 async 改造影响）
 
-- [ ] **Step 2: 手动验证契约不变（需 GUI 环境）**
+- [x] **Step 2: 手动验证契约不变（需 GUI 环境）**
 
 - 设置窗口选远程 LLM → 点测试 → 成功/失败文案与重构前一致
 - 设置窗口选 aliyun ASR → 点测试 → 成功/失败文案一致
 - 本地 ASR → 按钮灰 + 提示「本地模型无需连接测试」
 
-- [ ] **Step 3: workspace 整体编译**
+- [x] **Step 3: workspace 整体编译**
 
 Run: `cargo check --workspace --all-targets`
 Expected: PASS，零 warning 回归

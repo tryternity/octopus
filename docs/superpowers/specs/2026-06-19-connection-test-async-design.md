@@ -1,7 +1,7 @@
 # 连接测试命令 async 重构设计
 
 > Date: 2026-06-19
-> 状态：设计中
+> 状态：已实现（commits `b2b67b3` + `6bd791a`，merge main；GUI 已验证）
 > 关联：[2026-06-19-connection-test-design.md](./2026-06-19-connection-test-design.md)（连接测试功能本身，已实现）
 
 ## 1. 背景
@@ -40,8 +40,12 @@ pub async fn test_llm_connection(spec: String) -> Result<String, String> {
         .map_err(|e| format!("从 DB 加载 LLM 配置失败: {}", e))?
         .ok_or_else(|| format!("DB 中未找到 LLM 模型 '{}'", spec))?;
 
-    // reqwest::blocking 客户端跑在 spawn_blocking 线程池，不占用 async runtime worker
-    tauri::async_runtime::spawn_blocking(move || octopus_llm::test_connection(&llm_cfg))
+    // reqwest::blocking 客户端跑在 spawn_blocking 线程池，不占用 async runtime worker。
+    // test_connection 返回 Result<(), anyhow::Error>：闭包内先 map_err 转 String，
+    // 使 spawn_blocking 返回 JoinHandle<Result<(), String>>，.await 后链式匹配 Result<String, String>。
+    tauri::async_runtime::spawn_blocking(move || {
+        octopus_llm::test_connection(&llm_cfg).map_err(|e| format!("{}", e))
+    })
         .await
         .map_err(|_| "测试线程异常终止".to_string())?  // JoinError
         .map(|_| "连接成功".to_string())                  // test_connection: Result<()>
@@ -101,7 +105,9 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
 - **低**。`reqwest::blocking` 跑在 `spawn_blocking` 线程池，不污染 async runtime；`connect_async` 在 tauri runtime 上，删 nested runtime 反而更安全。
 - 单测覆盖纯逻辑（spec 解析、`is_local` 判定、`secret_key` 空检查）；WS 连通不便单测，沿用现有手动验证（设置窗口点测试按钮）。
 
-## 7. 验证
+## 7. 验证（已通过）
 
-- `cargo check -p octopus-desktop --features dashscope`
-- 手动：设置窗口点「测试连接」，LLM + ASR（aliyun 远程）各验一次成功/失败文案与重构前一致。
+- `cargo check --workspace --all-targets`：clean
+- `cargo test -p octopus-desktop`：纯逻辑单测全过（spec 解析 / `is_local` 判定 / `secret_key` 空检查不受 async 改造影响）
+- 手动 GUI：设置窗口点「测试连接」，LLM + ASR（aliyun 远程）成功/失败文案与重构前一致（用户本地确认 OK）
+- 前端 `invoke` 契约未变（async command 自动 wrap Promise），前端零改动

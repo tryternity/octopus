@@ -54,7 +54,7 @@
 - [x] `cargo test -p octopus-asr`：42 passed, 6 ignored
 - [x] `cargo check --workspace --all-targets`：clean
 - [x] coordinator 零改动（`git diff af809c8..07a1503 -- coordinator.rs` 空）
-- [ ] 手动：首次按快捷键录音启动延迟显著降低（待用户本地确认）
+- [x] 手动 e2e：通过，无回归；延迟降幅未量化（无改动前基线对比）
 
 ---
 

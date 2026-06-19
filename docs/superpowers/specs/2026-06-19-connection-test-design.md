@@ -2,6 +2,7 @@
 
 > Date: 2026-06-19
 > 状态：已实现（commits `819777d` + `3f96a31` + `e2cd7a8`）
+> ⚠️ 实现已重构为 `async fn`——见 [2026-06-19-connection-test-async-design.md](./2026-06-19-connection-test-async-design.md)（`spawn_blocking` / 直接 `await connect_async`，删 `thread::spawn` + `Runtime::new`）。下方「独立线程 / tokio runtime」代码块为 v1 原始同步实现，仅作设计记录，**非当前代码**。
 
 ## 1. 背景
 

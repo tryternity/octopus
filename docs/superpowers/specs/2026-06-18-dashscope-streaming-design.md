@@ -45,7 +45,7 @@ audio.drain_samples → VAD 检测 → 语音？
 | `push_pcm(&[f32])` | 非阻塞推 PCM（二进制 / base64） | 自动分发 |
 | `finish()` | **非阻塞**发 finish 信号（finish-task / session.finish） | 自动分发 |
 | `try_recv_text()` | 非阻塞取 partial（`Option<StreamEvent>`） | — |
-| `close()` | **阻塞**发 finish + 等最终结果（仅 Toggle 停止用） | 自动分发 |
+| `close()` | **阻塞**发 finish + 等最终结果（仅 Toggle 停止用，**8s 保底超时**防 WS 挂起冻死 Toggle 停止路径） | 自动分发 |
 
 **非阻塞 finish**（关键修复）：tick handler 用 `finish()` 而非 `close()`——`close()` 的 `block_on` 会冻结 coordinator 线程（曾导致 UI 冻结 20 秒），`finish()` 只发信号，结果通过后续 tick 的 `try_recv_text()` 异步获取。
 

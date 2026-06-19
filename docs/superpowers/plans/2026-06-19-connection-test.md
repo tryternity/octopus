@@ -2,6 +2,8 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+> ⚠️ 实现已重构为 `async fn`——见 [2026-06-19-connection-test-async.md](./2026-06-19-connection-test-async.md)。下方「独立线程跑阻塞请求 / `Runtime::new` / `block_on`」为 v1 同步实现，**非当前代码**。
+
 **Goal:** 在设置页「语音识别引擎」和「文本润色模型」两个 select 旁加连接测试按钮，远程模型可点（WS 握手 / chat max_tokens=1），本地模型灰掉；三态视觉反馈。
 
 **Architecture:**
