@@ -64,3 +64,37 @@ VALUES
     -- Feature 1：阿里云 Qwen 原生（DashScope OpenAI 兼容端点）
     ('llm','aliyun','qwen','qwen-plus','https://dashscope.aliyuncs.com/compatible-mode/v1','Qwen Plus（非思考）',0,0,0),
     ('llm','aliyun','qwen','qwen-turbo','https://dashscope.aliyuncs.com/compatible-mode/v1','Qwen Turbo（非思考，快）',0,0,0);
+
+-- ── 应用配置（app_config 表）─────────────────────────────────────────────────
+-- config.yaml 的 DB 化：所有应用行为配置（引擎/快捷键/润色/降噪等）以 key-value 存储。
+-- 值统一 TEXT，由 Rust 侧 load_app_config 按字段类型解析。
+-- 首次启动由 init_schema 执行 seed；后续 set_config / persist_* 通过 INSERT OR REPLACE 更新。
+
+CREATE TABLE IF NOT EXISTS app_config (
+    config_key   TEXT PRIMARY KEY,
+    config_value TEXT NOT NULL,
+    description  TEXT
+);
+
+INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
+    ('engine_mode',              'embedded',                        'ASR 引擎模式: embedded | websocket | grpc'),
+    ('remote_url',               'ws://127.0.0.1:3000/ws/stream',   'WebSocket 远程地址（engine_mode=websocket 时使用）'),
+    ('grpc_endpoint',            'http://127.0.0.1:50051',          'gRPC 端点（engine_mode=grpc 时使用）'),
+    ('asr_engine',               '',                                'ASR 引擎选择（DB models 表 model_name 精确匹配；空=兜底引擎）'),
+    ('language',                 'auto',                            '识别语言: auto | zh | en | ja | ko'),
+    ('asr_shortcut',             'CmdOrCtrl+Shift+Space',           '全局 ASR 激活/关闭快捷键'),
+    ('edit_shortcut',            'Cmd+E',                           '结果窗进入编辑快捷键（保存固定 Cmd+Enter）'),
+    ('paste_method',             'clipboard',                       '粘贴方式: clipboard | direct | none'),
+    ('write_to_clipboard',       'true',                            '粘贴后是否把结果写入剪贴板'),
+    ('microphone',               '',                                '麦克风名称（空=系统默认）'),
+    ('overlay_position',         'top',                             'overlay 位置: top | bottom | none'),
+    ('segment_silence',          '400',                             'VAD 静音触发识别阈值（毫秒）'),
+    ('polish_mode',              '0',                               '润色模式: 0=关闭 / 1=仅最终 / 2=中间+最终'),
+    ('polish_min_interval',      '5',                               '中间润色最小间隔（秒，节流用）'),
+    ('pause_polish_threshold_ms','600',                             '停顿驱动中间润色的静音阈值（毫秒，必须 > 500）'),
+    ('polish_llm',               'bigmodel:glm:glm-4-flashx',       '润色 LLM 模型 spec（PREFIX:CATEGORY:NAME）'),
+    ('asr_hardware_accelerated', 'false',                           '是否使用 ASR 硬件加速'),
+    ('asr_correct',              'false',                           '是否对 ASR 输出进行纠错'),
+    ('output_simplified',        'true',                            'ASR 输出字形: true=简体 / false=繁体'),
+    ('hide_toolbar',             'true',                            '结果展示区工具栏是否自动隐藏'),
+    ('denoise_mode',             '1',                               '降噪模式: 0=无 / 1=轻度 / 2=深度');
