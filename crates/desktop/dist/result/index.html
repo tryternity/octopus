@@ -425,6 +425,7 @@
       range.selectNodeContents(resultText);
       range.collapse(false); // 光标置末尾，编辑从文末续接（避免选中内容被首次输入替换）
       sel.addRange(range);
+      showToolbar();
       invoke('enter_edit_mode');
       updateEditBuffer();
     }
