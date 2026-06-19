@@ -47,7 +47,11 @@ fn list_microphones() -> Vec<String> {
     use cpal::traits::{DeviceTrait, HostTrait};
     let host = cpal::default_host();
     match host.input_devices() {
-        Ok(devices) => devices.filter_map(|d| d.name().ok()).collect(),
+        Ok(devices) => {
+            let mut mics: Vec<String> = devices.filter_map(|d| d.name().ok()).collect();
+            mics.sort();
+            mics
+        }
         Err(_) => Vec::new(),
     }
 }
