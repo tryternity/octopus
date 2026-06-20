@@ -92,6 +92,14 @@
 - [x] `cargo build -p octopus-asr`：clean（0 warning）
 - [x] 流式 Transducer 测试：输出从乱码变为与离线完全一致的可识别中文 ✓
 
+### Task 9: 代码审核修复 ✅
+
+经外部审核 + sherpa-onnx 源码对照，处理 3 项：
+
+- [x] **测试路径硬编码 snapshot hash → 动态查找**：HF cache 用 commit hash 命名 snapshot 目录，硬编码特定 hash 在 hash 变化或部分拉取时 panic。改为 `hf_snapshot()` 辅助函数 `read_dir` 动态查找，找不到则 graceful skip。此前 3 个 CTC 测试因此失败，现在 45 passed 0 failed。
+- [x] **重叠帧冗余解码——经查无需修改**：审核建议裁剪重叠帧输出，但 sherpa-onnx `online-ctc-greedy-search-decoder.cc` 同样解码全部 `num_out_frames`，依靠 CTC `y != prev_id` 去重。我们的实现一致，属于标准行为。
+- [x] **离线全局归一化注释**：审核建议离线也改 per-chunk，但 sherpa-onnx 离线 Transducer 对 whisper 特征完全不做归一化，我们的 chunk 循环模拟需要归一化才能工作。加注释说明差异，避免误改。
+
 ---
 
 ## 实际实现偏离原 plan
