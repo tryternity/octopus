@@ -260,6 +260,12 @@ impl Coordinator {
                                 Ok(_) => rc.asr_engine.clone(),
                                 Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
                             };
+                            // 审查 二2：microphone / engine_mode 此前从不刷新——audio.start 用
+                            // stale config.microphone（改设置后下次录音仍用旧设备）、use_streaming
+                            // 用 stale engine_mode。开新会话时从 rc 拉最新值（与 asr_engine 同策略，
+                            // 下次录音生效；mic/引擎不能会话中热切）。
+                            config.microphone = rc.microphone.clone();
+                            config.engine_mode = rc.engine_mode.clone();
                             sync_runtime_fields(&mut config, &rc);
                             drop(rc);
                             use_streaming = config.engine_mode == "embedded"
