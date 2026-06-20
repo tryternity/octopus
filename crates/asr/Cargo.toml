@@ -4,12 +4,13 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-ort = { version = "2.0.0-rc.12", features = [
-    "download-binaries",
-    "cuda",
-    "coreml",
-    "directml",
-] }
+# ort EP feature 按平台条件化（spec 2026-06-20）：与 config.rs apply_session_acceleration
+# 的 #[cfg(target_os)] 1:1 对齐。base 放跨平台必需的 download-binaries，各平台只启用对应 EP。
+# 硬约束：feature 矩阵必须与 #[cfg] 一致，否则对应平台编译失败（编译器即验证）。
+# 不用 default-features=false：ort 默认集 = std/ndarray/tracing/download-binaries/tls-native/
+# copy-dylibs/api-24，关掉会缺 TLS（download-binaries 编译即报缺 TLS feature）。关键在于
+# 默认集本就不含 cuda/directml/coreml——保留默认集不影响「各平台只编入本平台 EP」的目标。
+ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
 ndarray = "0.17"
 anyhow = "1"
 once_cell = "1"
@@ -39,5 +40,14 @@ octopus-llm = { path = "../llm" }
 jieba-rs = "0.6"
 pinyin = "0.10"
 flate2 = "1.0"
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["coreml"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["cuda"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["directml"] }
 
 
