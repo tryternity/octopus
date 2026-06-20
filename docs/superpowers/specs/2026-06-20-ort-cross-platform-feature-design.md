@@ -1,7 +1,7 @@
 # ort 跨平台 EP feature 条件化设计
 
 > Date: 2026-06-20
-> 状态：已实现（2026-06-20，commits 66a8a73 + 21fb2fb）。mac 单测+release 通过；GUI e2e 待用户本地；linux/win 交叉 check 受阻于目标工具链（见 §7.2）
+> 状态：已实现（2026-06-20，commits 66a8a73 + 21fb2fb）。mac 单测+release 通过；GUI e2e 已通过；linux/win 交叉 check 受阻于目标工具链（见 §7.2）
 > Worktree：`feature/ort-cross-platform`
 > 关联：体积裁剪报告（2026-06-20，release profile 已落地 ac576de）、[[asr 硬件加速 segfault 修复]]
 
@@ -100,7 +100,7 @@ providers.push(ort::ep::DirectMLExecutionProvider::default().build());
 
 ### 5.5 验证策略
 
-- **mac 本地（已验证 2026-06-20）**：`cargo test -p octopus-asr` 45 passed/0 failed；`cargo build --release -p octopus-desktop` 通过；desktop e2e（CoreML 录音）留用户本地（环境无 GUI）。
+- **mac 本地（已验证 2026-06-20）**：`cargo test -p octopus-asr` 45 passed/0 failed；`cargo build --release -p octopus-desktop` 通过；desktop e2e（CoreML 录音）**已通过**（CoreML 加速正常、无 segfault 回归）。
 - **linux/win 交叉（受阻）**：`cargo check --target x86_64-unknown-linux-gnu` 卡在 `openssl-sys`（mac→linux 缺 openssl dev sysroot）、`--target x86_64-pc-windows-msvc` 卡在 `esaxx-rs` C++（缺 MSVC 工具链）——均为目标平台 C/C++ 工具链缺失，**非 ort、非本改动**。feature 矩阵正确性改由源码 gate 结构（§7.3）+ mac coreml 实证代理核验；运行正确性留用户在对应平台本地自测。
 - CI 是否三平台 check：当前未设。
 

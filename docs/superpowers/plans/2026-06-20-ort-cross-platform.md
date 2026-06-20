@@ -24,7 +24,7 @@ commits：`66a8a73`（Task 1 Cargo.toml）、`21fb2fb`（Task 2 config.rs）。
 2. **「feature↔#[cfg] 不一致则编译失败」不成立**：ort EP 类型无条件编译，仅 `register()` 内 FFI 块按 feature gate（feature off 时返回 `MissingFeature`、不碰 FFI）。故编译器**不**抓不一致。但 feature 关闭仍提供**真·defense-in-depth**——cuda/directml feature off 时，即便有人退化 config.rs 的 cfg gate，`register()` 也不走 FFI dlopen-libcuda（segfault 路径），从而不崩。
 3. **`default-features=false` 实测去掉**（保留默认集开启）：关掉会缺 `tls-native`，`download-binaries` 编译即报缺 TLS feature；而默认集本不含 cuda/directml/coreml，保留不影响目标。
 
-**验证状态：** mac 单测 45 passed/0 failed、release build 通过；GUI e2e 待用户本地（进行中）；linux/win 交叉 check 受阻于目标工具链（openssl-sys / esaxx-rs），非 ort，留用户在对应平台本地 `cargo check` 兜底。
+**验证状态：** mac 单测 45 passed/0 failed、release build 通过、**GUI e2e 已通过（2026-06-20，CoreML 加速正常、无 segfault 回归）**；linux/win 交叉 check 受阻于目标工具链（openssl-sys / esaxx-rs），非 ort，留用户在对应平台本地 `cargo check` 兜底。
 
 ---
 
@@ -133,7 +133,7 @@ refactor(asr): win EP 收敛为仅 DirectML（删 CUDA 注册）
 
 ---
 
-## Task 3: mac 本地完整验证 ✅（GUI e2e 除外）
+## Task 3: mac 本地完整验证 ✅
 
 **Files:** 无改动，仅验证。
 
@@ -147,11 +147,11 @@ Run: `cargo test -p octopus-asr`
 Run: `cargo build --release -p octopus-desktop`
 结果：通过（5m07s，strip+lto+codegen-units 预期慢）。
 
-- [ ] **Step 3: desktop e2e（CoreML 加速正常、无 segfault 回归）—— 用户本地进行中**
+- [x] **Step 3: desktop e2e（CoreML 加速正常、无 segfault 回归）—— 已通过（2026-06-20 用户本地）**
 
-启动 desktop app → 触发录音快捷键 → 确认：转写出文字、日志含 `Successfully registered EPs!`、无 SIGSEGV。确认 `config.yaml` 的 `asr_hardware_accelerated` 开启再测。
+启动 desktop app → 触发录音快捷键 → 确认：转写出文字、日志含 `Successfully registered EPs!`、无 SIGSEGV。**结果：通过**——CoreML 加速正常工作、无 segfault 回归（本改动根治的点）。
 
-- [x] **Step 4: 无代码改动不 commit；Step 1-2 全过，e2e 由用户本地验证**
+- [x] **Step 4: 无代码改动不 commit；Step 1-3 全过**
 
 ---
 
