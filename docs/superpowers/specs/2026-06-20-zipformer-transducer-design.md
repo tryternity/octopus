@@ -70,3 +70,13 @@ pub struct ZipformerTransducerEngine {
                                                      ↓
                                               decode_token_ids → 文本
 ```
+
+## 流式 Whisper 特征全局归一化（关键约束）
+
+`normalize_whisper_features`（log10 → 全局 max_v clamp to `max_v - 8` → shift）是**全局操作**，依赖整段特征的 max_v 做统一缩放。
+
+- **离线引擎**：整段音频一次处理，天然全局归一化，正确。
+- **流式引擎**：`process_chunks` / `finish` 必须在整段可用特征（`history_samples + buffer`）上**一次性**归一化，再按 chunk 切片送入 encoder。**不可 per-chunk 归一化**——每 ~45 帧单独 normalize 时，静音 chunk 的 max_v 极小、语音 chunk 极大，归一化尺度在 chunk 间剧烈跳变，encoder 输入分布不一致 → 输出乱码（"回 月 因 同"式重复 token）。
+
+修复覆盖 CTC（`StreamingZipformer`）与 Transducer（`StreamingZipformerTransducer`）两套流式引擎的 `process_chunks` 和 `finish` 共四处。CTC 的 `zipformer-small-ctc` 走 fbank 特征（`is_whisper=false`）不受影响，但代码路径统一以便未来 whisper-CTC 模型即插即用。
+
