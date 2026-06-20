@@ -182,12 +182,12 @@ Transducer 系列（`zh-int8-2025-06-30` / `zh-xlarge-int8-2025-06-30`）和 `zi
 流式 Paraformer 的 fbank 特征提取必须与 sherpa-onnx `kaldi-native-fbank` 完全一致，否则输出 token 重复（`thedayday`/`tomtomor`）或英文粘连。**5 个步骤缺一不可**：
 
 1. **DC offset removal**（`remove_dc_offset=true`）— 每帧 FFT 前减帧均值
-2. **Pre-emphasis**（`preemph_coeff=0.97`）— `y[i]=x[i]-0.97*x[i-1]`，跨帧状态 `preemph_prev`
+2. **Pre-emphasis**（`preemph_coeff=0.97`）— `y[i]=x[i]-0.97*x[i-1]`。**无跨帧状态**：帧重叠（shift=160 < len=400），上一帧末尾并非本帧 start-1，直接从连续缓冲回溯 `samples[start-1]`（减去本帧 mean 近似去直流），无需 `preemph_prev` 字段
 3. **Povey 窗**（流式 Paraformer）— `(0.5-0.5cos(2πi/(N-1)))^0.85`，**非 hamming**
 4. **Mel 滤波器 high_freq=7600 Hz**（`high_freq=-400`，即 Nyquist-400），**非 8000 Hz**
-5. **增量式 fbank 提取**（流式）— 音频线性追加、fbank 帧按序增量计算，**pre-emphasis 状态跨所有帧自然传递**。不可按 chunk 重复提取（重叠帧 pre-emph 状态断裂）
+5. **增量式 fbank 提取**（流式）— 音频线性追加到 `raw_samples`、fbank 帧按序增量计算到 `fbank_cache`。不可按 chunk 重复提取（重叠帧重复计算 + 边界问题）
 
-离线 Paraformer 用 **hamming 窗** + 局部 pre-emph（`compute_fbank_features` 传局部变量），流式用 **povey 窗** + 结构体 `preemph_prev` 字段。`compute_fbank()` 已参数化窗口 + pre-emph 状态，两者共享同一实现。
+离线 Paraformer 用 **hamming 窗**，流式用 **povey 窗**。`compute_fbank(samples, window, preemph_coeff)` 参数化窗口，两者共享同一实现，**pre-emphasis 均无状态**（直接回溯连续缓冲 `samples[start-1]`）。
 
 另：`decode_tokens` 遵循 sherpa-onnx `Convert()` 空格逻辑——ASCII 词前加空格、`@@` BPE 合并；`smart_append()` 在 chunk 边界检测 ASCII↔非 ASCII 插入空格。流式引擎累积 `all_token_ids` 跨 chunk 整体 `decode_tokens`（非逐 chunk 解码），避免 BPE 续接断裂（`val@@`+`ue` 被切成 `val`/`ue`）。`StreamingSession` Paraformer 用 `punct_prefix` + `committed_chars` 管理逗号分句。
 

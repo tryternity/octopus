@@ -415,8 +415,7 @@ pub(crate) fn decode_tokens(sample_ids: &[i64], vocab: &[String]) -> String {
 /// 离线 Paraformer fbank 特征提取（hamming window）
 pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
     let scaled: Vec<f32> = samples.iter().map(|&s| s * 32768.0).collect();
-    let mut preemph_prev = 0.0f32;
-    let fbank = compute_fbank(&scaled, &HAMMING_WINDOW, 0.97, &mut preemph_prev)?;
+    let fbank = compute_fbank(&scaled, &HAMMING_WINDOW, 0.97)?;
     let lfr = apply_lfr(&fbank, LFR_WINDOW_SIZE, LFR_WINDOW_SHIFT);
     Ok(lfr)
 }
@@ -425,13 +424,13 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
 ///
 /// `window` — povey window（流式）或 hamming window（离线）
 /// `preemph_coeff` — 预加重系数，paraformer 用 0.97
-/// `preemph_prev` — 预加重跨帧状态（上一帧最后一个 DC-removed 样本），
-///                  流式时从结构体传入，离线时用局部变量 0.0
+///
+/// Pre-emphasis 无需跨帧状态：帧重叠（shift=160 < len=400），上一帧末尾并非
+/// 本帧 start-1，故直接从连续 `samples` 回溯 start-1 取准确前序样本。
 pub(crate) fn compute_fbank(
     samples: &[f32],
     window: &[f32],
     preemph_coeff: f32,
-    preemph_prev: &mut f32,
 ) -> Result<Array2<f32>> {
     let n_frames = if samples.len() >= FBANK_FRAME_LEN {
         (samples.len() - FBANK_FRAME_LEN) / FBANK_FRAME_SHIFT + 1
@@ -467,14 +466,19 @@ pub(crate) fn compute_fbank(
         }
 
         // 3. Pre-emphasis（预加重）: y[i] = x[i] - preemph_coeff * x[i-1]
-        //    prev 跨帧传递（preemph_prev），初始化为上一帧最后一个 DC-removed 样本
-        let mut prev = *preemph_prev;
+        //    帧重叠（shift=160 < len=400），上一帧末尾并非本帧 start-1。
+        //    直接从连续缓冲回溯 start-1 取准确前序样本，无需跨帧状态。
+        //    samples[start-1] 未去直流，减去本帧 mean 作近似（knf 行为）。
+        let mut prev = if start > 0 {
+            samples[start - 1] - mean
+        } else {
+            0.0
+        };
         for i in 0..FBANK_FRAME_LEN {
             let cur = frame_buf[i];
             frame_buf[i] = cur - preemph_coeff * prev;
             prev = cur;
         }
-        *preemph_prev = prev;
 
         // 4. 加窗 + FFT
         for j in 0..FBANK_FFT_SIZE {
