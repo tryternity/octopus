@@ -40,13 +40,12 @@ pub(crate) fn compute_fbank(
     samples: &[f32],
     window: &[f32],        // povey（流式）或 hamming（离线）
     preemph_coeff: f32,    // 0.97
-    preemph_prev: &mut f32, // 跨帧状态
 ) -> Result<Array2<f32>>
 ```
 
 帧处理流水线（对齐 knf `feature-window.cc`）：
 ```
-帧样本提取 → DC offset removal（减帧均值）→ pre-emphasis（×0.97 跨帧状态）
+帧样本提取 → DC offset removal（减帧均值）→ pre-emphasis（×0.97，回溯 samples[start-1]）
 → povey/hamming 窗 → FFT → 功率谱 → mel 滤波器组 → log
 ```
 
@@ -64,7 +63,7 @@ pub(crate) fn compute_fbank(
 |--------|--------|
 | `sample_buffer: Vec<f32>`（原始样本） | `raw_samples: Vec<f32>`（× 32768 后样本） |
 | 每 chunk 调 `compute_fbank(chunk_samples)` | `fbank_cache: Vec<f32>`（已计算的所有 fbank 帧） |
-| pre-emphasis 状态每 chunk 重置 | `preemph_prev: f32` 跨所有帧正确传递 |
+| pre-emphasis 状态每 chunk 重置 | 无状态，直接回溯 `raw_samples[start-1]`（帧重叠时 start-1 才是真正前序样本） |
 | chunk 间重叠帧 fbank 不一致 | 增量计算，无重复帧 |
 
 数据流：
@@ -114,7 +113,7 @@ pub(crate) fn smart_append(existing: &mut String, new: &str) {
 | 文件 | 变更 |
 |------|------|
 | `crates/asr/src/paraformer.rs` | `compute_fbank` 参数化 + DC offset + pre-emphasis + povey 窗 + mel high_freq + `decode_tokens` 重写 + `smart_append` |
-| `crates/asr/src/streaming_paraformer.rs` | 增量式 fbank 架构重写（`raw_samples` + `fbank_cache` + `preemph_prev`）|
+| `crates/asr/src/streaming_paraformer.rs` | 增量式 fbank 架构重写（`raw_samples` + `fbank_cache`，pre-emphasis 无状态）|
 | `crates/asr/src/streaming_engine.rs` | `flush(insert_comma)` + `smart_append` 拼接 |
 | `crates/desktop/src/coordinator.rs` | `flush(true)` 调用 |
 | `crates/server/src/main.rs` | `flush(true)` 调用 |

@@ -43,7 +43,6 @@ pub struct StreamingParaformer {
     // Incremental fbank extraction state
     raw_samples: Vec<f32>,       // accumulated samples (× 32768)
     fbank_cache: Vec<f32>,       // computed fbank frames, flattened [num_frames * 80]
-    preemph_prev: f32,           // pre-emphasis state (last DC-removed sample)
     input_finished: bool,        // true after flush — allows last frame to zero-pad
 
     // Streaming state (carried across chunks)
@@ -135,7 +134,6 @@ impl StreamingParaformer {
             cache_keys,
             raw_samples: Vec::new(),
             fbank_cache: Vec::new(),
-            preemph_prev: 0.0,
             input_finished: false,
             feat_cache: vec![0.0; (LEFT_CHUNK_SIZE + RIGHT_CHUNK_SIZE) * feat_dim],
             encoder_out_cache: vec![0.0; encoder_output_size],
@@ -239,7 +237,6 @@ impl StreamingParaformer {
     pub fn reset(&mut self) {
         self.raw_samples.clear();
         self.fbank_cache.clear();
-        self.preemph_prev = 0.0;
         self.input_finished = false;
         self.feat_cache.fill(0.0);
         self.encoder_out_cache.fill(0.0);
@@ -307,14 +304,20 @@ impl StreamingParaformer {
                 *s -= mean;
             }
 
-            // 3. Pre-emphasis (stateful, carries correctly across ALL frames)
-            let mut prev = self.preemph_prev;
+            // 3. Pre-emphasis: y[i] = x[i] - α·x[i-1]
+            //    帧重叠（shift=160 < len=400），上一帧末尾并非本帧 start-1。
+            //    直接从连续缓冲回溯 start-1 取准确前序样本，无需跨帧状态。
+            //    raw_samples[start-1] 未去直流，减去本帧 mean 作近似（knf 行为）。
+            let mut prev = if start > 0 {
+                self.raw_samples[start - 1] - mean
+            } else {
+                0.0
+            };
             for i in 0..FBANK_FRAME_LEN {
                 let cur = frame_buf[i];
                 frame_buf[i] = cur - preemph_coeff * prev;
                 prev = cur;
             }
-            self.preemph_prev = prev;
 
             // 4. Povey window + FFT
             for j in 0..FBANK_FFT_SIZE {
