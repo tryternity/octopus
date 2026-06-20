@@ -34,8 +34,9 @@ enum Command {
     CloudStreamingTick,
     /// 云端 close_async 收尾完成（审查 三1）：非阻塞 close 的结果回传，
     /// handle_cloud_streaming_done 据此 finalize（set_full + append partial + paste）。
+    /// session_id = 发起 close 时的 transcript.id，跨会话护栏用（见 handler）。
     #[cfg(feature = "dashscope")]
-    CloudStreamingDone { text: Result<String, String> },
+    CloudStreamingDone { text: Result<String, String>, session_id: i64 },
     /// 转录完成（离线模式或远程模式使用，seq 用于顺序拼接）
     TranscriptionDone {
         text: Result<String, String>,
@@ -46,8 +47,8 @@ enum Command {
     PasteDone,
     /// 润色完成（session_id = 发起润色时的 transcript.id，跨会话护栏用，见 handle_polish_done）
     PolishDone { result: Result<String, String>, session_id: i64 },
-    /// 最终润色完成
-    FinalPolishDone { result: Result<String, String> },
+    /// 最终润色完成（session_id = 发起润色时的 transcript.id，跨会话护栏用，见 handler）
+    FinalPolishDone { result: Result<String, String>, session_id: i64 },
     /// 立即润色（前端工具栏触发，忽略 polish_mode）
     PolishNow,
     /// 进入编辑态（前端 edit_shortcut/编辑按钮触发；ASR 硬暂停）
@@ -428,12 +429,12 @@ impl Coordinator {
                     Command::PolishDone { result, session_id } => {
                         handle_polish_done(&mut stage, result, session_id, &config, &app_handle, &tx);
                     }
-                    Command::FinalPolishDone { result } => {
-                        handle_final_polish_done(&mut stage, result, &config, &app_handle, &tx);
+                    Command::FinalPolishDone { result, session_id } => {
+                        handle_final_polish_done(&mut stage, result, session_id, &config, &app_handle, &tx);
                     }
                     #[cfg(feature = "dashscope")]
-                    Command::CloudStreamingDone { text } => {
-                        handle_cloud_streaming_done(&mut stage, text, &config, &app_handle, &tx);
+                    Command::CloudStreamingDone { text, session_id } => {
+                        handle_cloud_streaming_done(&mut stage, text, session_id, &config, &app_handle, &tx);
                     }
                     Command::PolishNow => {
                         handle_polish_now(&mut stage, &config, &app_handle, &tx);
@@ -956,10 +957,16 @@ fn handle_toggle(
                 let tx_clone = tx.clone();
                 let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
                 let partial = std::mem::take(current_partial);
+                // 跨会话护栏：close 在飞期间 Cancel/Discard 会把 stage 清回 Idle（绕过 Toggle
+                // 的"忙"保护），用户可立刻重开云端会话 → 新 CloudClosing。旧会话迟到的
+                // CloudStreamingDone 会匹配到新 CloudClosing。带 session_id（= 本会话
+                // transcript.id），handler 校验当前 closing transcript.id 是否匹配，否则丢弃。
+                let session_id = tr.id;
                 rt.spawn(async move {
                     let result = sess.close_async().await;
                     let _ = tx_clone.send(Command::CloudStreamingDone {
                         text: result.map_err(|e| e.to_string()),
+                        session_id,
                     });
                 });
                 *stage = Stage::CloudClosing {
@@ -1044,6 +1051,11 @@ fn start_final_polish_or_paste(
             };
 
             let tx = tx.clone();
+            // 跨会话护栏：最终润色 1~3s 窗口内 Cancel+重开会话 → 新 Polishing。旧会话
+            // 迟到的 FinalPolishDone 会匹配到新 Polishing，用新 id + 旧润色文本 do_paste
+            // → 跨会话污染。带 session_id（= 本会话 transcript.id），handler 校验当前
+            // polishing id 是否匹配，否则丢弃。
+            let session_id = id;
             std::thread::spawn(move || {
                 let result = match octopus_llm::polish(preserved.as_deref(), &to_polish, &llm_config) {
                     Ok(polished) => {
@@ -1055,7 +1067,7 @@ fn start_final_polish_or_paste(
                     }
                     Err(e) => Err(e.to_string()),
                 };
-                let _ = tx.send(Command::FinalPolishDone { result });
+                let _ = tx.send(Command::FinalPolishDone { result, session_id });
             });
         }
     }
@@ -1143,18 +1155,32 @@ fn finalize_cloud(
 /// 处理云端 close（close_async）异步完成结果。
 ///
 /// 审查 三1：stop 路径 spawn 了 close_async，结果经 `Command::CloudStreamingDone`
-/// 回到 coordinator 主线程。仅在 `Stage::CloudClosing` 时处理（期间 Cancel/Discard
-/// 被忽略）；close 返回的整段文本 set_full 覆盖 transcript，随后 finalize 落库。
+/// 回到 coordinator 主线程。仅在 `Stage::CloudClosing` 时处理；close 返回的整段文本
+/// set_full 覆盖 transcript，随后 finalize 落库。
+///
+/// 跨会话护栏：close 在飞期间 Cancel/Discard 会把 stage 清回 Idle（绕过 Toggle 的
+/// "忙"保护），用户可立刻重开云端会话 → 新 CloudClosing。旧会话迟到的
+/// CloudStreamingDone 会匹配到新 CloudClosing，set_full 覆盖新 transcript。session_id
+///（= 发起 close 时的 transcript.id）校验：与当前 closing transcript.id 不符则丢弃，
+/// 不动当前 stage。
 #[cfg(feature = "dashscope")]
 fn handle_cloud_streaming_done(
     stage: &mut Stage,
     text: Result<String, String>,
+    session_id: i64,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
     let (transcript, partial) = match stage {
         Stage::CloudClosing { transcript, current_partial } => {
+            if transcript.id != session_id {
+                warn!(
+                    "CloudStreamingDone session_id mismatch (close={}, closing={}) — 跨会话护栏，丢弃",
+                    session_id, transcript.id
+                );
+                return;
+            }
             // close 返回的是整个 session 的完整文本，非空则 set_full 覆盖
             match &text {
                 Ok(text) if !text.is_empty() => transcript.set_full(text),
@@ -1173,10 +1199,16 @@ fn handle_cloud_streaming_done(
     finalize_cloud(stage, transcript, partial, config, app_handle, tx);
 }
 
-/// 处理最终润色完成事件
+/// 处理最终润色完成事件。
+///
+/// 跨会话护栏（与 PolishDone 同理）：最终润色 1~3s 窗口内 Cancel+重开会话 →
+/// 新 Polishing。旧会话迟到的 FinalPolishDone 会匹配到新 Polishing，用新 id +
+/// 旧润色文本 do_paste → 跨会话污染。session_id（= 发起润色时的 transcript.id）
+/// 校验：与当前 polishing id 不符则丢弃，不动当前 stage。
 fn handle_final_polish_done(
     stage: &mut Stage,
     result: Result<String, String>,
+    session_id: i64,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
@@ -1186,7 +1218,16 @@ fn handle_final_polish_done(
             id,
             raw_text,
             fallback_text,
-        } => (*id, raw_text.clone(), fallback_text.clone()),
+        } => {
+            if *id != session_id {
+                debug!(
+                    "FinalPolishDone session_id mismatch (polish={}, polishing={}) — 跨会话护栏，丢弃",
+                    session_id, id
+                );
+                return;
+            }
+            (*id, raw_text.clone(), fallback_text.clone())
+        }
         _ => {
             debug!("FinalPolishDone ignored in stage {:?}", stage_name(stage));
             return;
