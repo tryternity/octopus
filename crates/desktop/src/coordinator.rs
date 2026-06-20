@@ -2223,8 +2223,11 @@ fn handle_polish_done(
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
         | Stage::WaitingCompletion { transcript, .. } => transcript,
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming { transcript, .. }
+        | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
-            warn!("PolishDone ignored: stage={} 不是录音/等待阶段，润色结果丢弃", stage_name(stage));
+            debug!("PolishDone ignored: stage={} 不是录音/等待阶段，润色结果丢弃", stage_name(stage));
             use tauri::Emitter;
             let _ = app_handle.emit("polish-done", ());
             return;
@@ -2297,7 +2300,12 @@ fn handle_polish_now(
     // 所有早退路径都 emit polish-done 恢复前端按钮——
     // 否则用户点了「立即润色」后按钮 disabled=true 永久卡死，直到下次录音才恢复
     let transcript = match stage {
-        Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. } => transcript,
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming { transcript, .. }
+        | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("PolishNow ignored in stage {:?}", stage_name(stage));
             let _ = app_handle.emit("polish-done", ());
@@ -2330,7 +2338,12 @@ fn handle_polish_now(
 /// 进入编辑态：仅活跃会话（Streaming/VadSegmented）有效；初始化 edit_buffer = 当前 display。
 fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &mut Option<String>) {
     let transcript = match stage {
-        Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. } => transcript,
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming { transcript, .. }
+        | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("enter_edit_mode ignored in non-active stage");
             return;
@@ -2344,7 +2357,12 @@ fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &m
 /// 提交编辑：写回 transcript（commit_edit）+ UPDATE edited_text（行已存在）+ 刷新展示。
 fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandle) {
     let transcript = match stage {
-        Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. } => transcript,
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming { transcript, .. }
+        | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("commit_edit ignored in non-active stage");
             return;
