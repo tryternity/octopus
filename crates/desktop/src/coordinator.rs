@@ -1153,6 +1153,13 @@ fn finalize_cloud(
         return;
     }
 
+    // 确保 DB 记录已 INSERT：CloudStreaming 只在 Finished 事件时 INSERT，
+    // 如果整个录音过程从未触发 Finished（用户没停顿够就 Toggle stop），
+    // 记录从未创建——后续 Finalize（UPDATE）会静默 0 行，数据丢失。
+    if let Err(e) = update_transcription_raw(&mut transcript, &config.asr_engine, "streaming") {
+        warn!("CloudStreaming finalize INSERT failed: {}", e);
+    }
+
     crate::result_window::show_result(app_handle, &transcript.display_text());
     start_final_polish_or_paste(stage, &combined, transcript, config, app_handle, tx);
 }
@@ -2328,6 +2335,12 @@ fn handle_polish_now(
         let _ = crate::result_window::show_result(app_handle, "未配置润色模型");
         let _ = app_handle.emit("polish-done", ());
         return;
+    }
+    // 确保 DB 记录已 INSERT：CloudStreaming 路径只在 Finished 事件时 INSERT，
+    // 如果从未触发 Finished，PolishDone 的 UpdatePolished（UPDATE）会静默 0 行。
+    // 本地路径中 Streaming/VadSegmented 已在 accept_samples 时 INSERT，此处 no-op。
+    if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "streaming") {
+        warn!("PolishNow ensure INSERT failed: {}", e);
     }
     let (preserved, to_polish) = transcript.take_polish_input();
     transcript.mark_polish_pending();
