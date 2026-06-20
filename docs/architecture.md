@@ -320,7 +320,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | Whisper | 离线 | 多语言；传 `auto` 且 DB `models.language` 配了具体语种时优先用后者（`entry_language` 覆盖），否则自动检测 |
 | SenseVoice | 离线 | 快速，自动语言检测 |
 | Paraformer | 离线/流式 | 中文优化 |
-| Qwen3-ASR | 离线 | 大模型能力 |
+| Qwen3-ASR | 离线 | 大模型能力；`auto`/空时不注入 language 让模型自检（支持中英混合），显式语种时注入 `language X`；模型自检的 `language <词> <|asr_text|>` 前缀由 `decode_tokens` 剥离（按 token ID 定位 + `trim_start` 容忍 BPE 引导空格） |
 | Zipformer | 离线/流式 | CTC + Transducer（RNN-T）；路由层检测 `decoder.onnx` 分流 |
 
 ### Zipformer 引擎族（CTC vs Transducer）
