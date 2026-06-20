@@ -1,8 +1,7 @@
 # 流式 Paraformer fbank 特征提取修复
 
 **日期**: 2026-06-21
-**状态**: 已实现（待 e2e 验证）
-**分支**: `feature/setting-ui2`
+**状态**: ✅ 已实现（待 e2e 验证），已合并 main（`72e308d`，原分支 `feature/setting-ui2`）
 
 ## 背景
 

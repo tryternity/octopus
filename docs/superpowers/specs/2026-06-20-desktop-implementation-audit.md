@@ -2,7 +2,7 @@
 
 > Date: 2026-06-20
 > 状态：收到另一 AI 对 `crates/desktop`（Tauri 语音转写桌面端，~6.8k 行）的 7 条审查结论，逐条对照真实代码复核。**结论：7 条全部成立、行号引用全部准确，无幻象**（与 qwen3-asr 审查的 #3 不同）。其中一1 / 二2 / 三1 触发面与严重度需校准，二1 应升级。
-> **P0 三条（一1/一2/二1）+ P1 三条（二2/三2/三1）均实施并验证**（worktree `worktree-desktop-audit`，分支 `worktree-desktop-audit`）：`cargo check -p octopus-desktop --features "embedded dashscope"` 零 warning、`cargo test -p octopus-asr` 52 passed/0 failed、逐 commit bisect-clean。P0 已合并 main（44b8ab8）；P1 三条待合并。P2（一3）延后。详见 §4/§5。
+> **P0 三条（一1/一2/二1）+ P1 三条（二2/三2/三1）均实施并验证**（原 worktree `worktree-desktop-audit`）：`cargo check -p octopus-desktop --features "embedded dashscope"` 零 warning、`cargo test -p octopus-asr` 52 passed/0 failed、逐 commit bisect-clean。**P0+P1 均已合并 main**（P0 `44b8ab8`、P1 `9a19b6b`）。P2（一3）延后，GUI e2e 待本地验证，详见 followups plan `2026-06-20-desktop-audit-followups.md`。详见 §4/§5。
 > 基线：worktree `worktree-desktop-audit` @ c259930（含全部 qwen3 修复）。
 > 关联文件：`crates/desktop/src/{coordinator,dashscope_stream,paste,settings_commands,main,runtime_config,audio}.rs`、`crates/asr/src/config.rs`。
 > 平行文档：`2026-06-20-qwen3-asr-inference-audit.md`（同日 asr 推理审查复核）。
@@ -121,7 +121,7 @@
 
 ## 4. 已实施修复
 
-P0（一1/一2/二1）已合并 main（44b8ab8）；P1（二2/三2/三1）在分支 `worktree-desktop-audit` 待合并。逐条 commit、bisect-clean（§5）。
+P0（一1/一2/二1）+ P1（二2/三2/三1）**均已合并 main**（P0 `44b8ab8`、P1 `9a19b6b`）。逐条 commit、bisect-clean（§5）。
 
 ### P0：一1 / 一2 / 二1（已合并 main）
 
@@ -143,9 +143,9 @@ P0（一1/一2/二1）已合并 main（44b8ab8）；P1（二2/三2/三1）在分
 - desktop 写 DB 后调 `reload_app_config()`：`set_config`（save_app_config 后，覆盖所有字段含 denoise/hwaccel）+ `set_denoise_mode`（toolbar 路径，persist 后）。撤回 `set_denoise_mode` 原「本次仍生效，重启后回退」的虚假承诺文案。
 - 涉及：`asr/src/config.rs`、`desktop/src/settings_commands.rs`、`desktop/src/runtime_config.rs`。
 
-### P1：二2 / 三2 / 三1（待合并 main）
+### P1：二2 / 三2 / 三1（已合并 main `9a19b6b`）
 
-P1 三条已实施、逐 commit bisect-clean、待合并 main（分支 `worktree-desktop-audit`，tip `b0b7468`）。提交粒度：每条 finding 一条 commit（dfec6fe 三2 / e1bb944 二2 / b0b7468 三1）。
+P1 三条已实施、逐 commit bisect-clean、**已合并 main**（`9a19b6b`，原分支 `worktree-desktop-audit`）。提交粒度：每条 finding 一条 commit（dfec6fe 三2 / e1bb944 二2 / b0b7468 三1）。
 
 #### 二2 mic/engine_mode 运行时同步
 - `handle_toggle` 的 Idle（开新会话）块，在既有 `asr_engine` 刷新之后、`sync_runtime_fields` 之前，补 `config.microphone = rc.microphone.clone()` + `config.engine_mode = rc.engine_mode.clone()`。
@@ -186,7 +186,7 @@ P1 三条已实施、逐 commit bisect-clean、待合并 main（分支 `worktree
 
 ## 6. 待决定
 
-P0（一1/一2/二1）已合并 main（44b8ab8）。P1 三条（二2/三2/三1）已实施、逐 commit bisect-clean，在分支 `worktree-desktop-audit`（tip `b0b7468`）待合并。下一步选项：①合并 P1 到 main；②补 P2（一3 剪贴板恢复等待）；③就此打住。
+P0（一1/一2/二1，`44b8ab8`）+ P1（二2/三2/三1，`9a19b6b`）**均已合并 main**。剩余：P2（一3 剪贴板恢复等待）延后 + GUI e2e 待本地验证，详见 followups plan `2026-06-20-desktop-audit-followups.md`。
 
 ## 7. 附：已澄清的过时认知
 

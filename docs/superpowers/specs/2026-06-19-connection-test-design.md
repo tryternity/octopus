@@ -2,7 +2,7 @@
 
 > Date: 2026-06-19
 > 状态：已实现（commits `819777d` + `3f96a31` + `e2cd7a8`）
-> ⚠️ 实现已重构为 `async fn`——见 [2026-06-19-connection-test-async-design.md](./2026-06-19-connection-test-async-design.md)（`spawn_blocking` / 直接 `await connect_async`，删 `thread::spawn` + `Runtime::new`）。下方「独立线程 / tokio runtime」代码块为 v1 原始同步实现，仅作设计记录，**非当前代码**。
+> ⚠️ 命令实现为 `async fn`——见 [2026-06-19-connection-test-async-design.md](./2026-06-19-connection-test-async-design.md)（`spawn_blocking` / 直接 `await connect_async`）。本文档保留功能设计、接口契约、前端 UI 与关键决策；命令实现细节（删 `thread::spawn` + `Runtime::new`）见 async 文档 §4。
 
 ## 1. 背景
 
@@ -25,19 +25,19 @@
 文件：`crates/desktop/src/settings_commands.rs`
 
 ```rust
+// 当前为 async fn（详见 connection-test-async-design §4）；签名/入参/返回/语义如下：
 #[tauri::command]
-pub fn test_llm_connection(spec: String) -> Result<String, String>;
+pub async fn test_llm_connection(spec: String) -> Result<String, String>;
 //   入参：spec = polish_llm 配置值（3-part spec 或裸名）
 //   返回：Ok("连接成功") / Err("<错误信息>")
-//   实现：load_llm_model(spec) → 独立线程跑 octopus_llm::test_connection
+//   语义：load_llm_model(spec) → octopus_llm::test_connection（spawn_blocking 包阻塞请求）
 
 #[tauri::command]
-pub fn test_asr_connection(bare_name: String) -> Result<String, String>;
+pub async fn test_asr_connection(bare_name: String) -> Result<String, String>;
 //   入参：bare_name = ASR 引擎裸名（前端 select 的 value）
 //   返回：Ok("连接成功") / Err("<错误信息>")
-//   实现：list_engines().find(name) → is_local 则 Err("本地模型无需连接测试")
-//         否则取 DB endpoint+key → 独立线程建 tokio runtime
-//         → tokio::time::timeout(3s, connect_async(req))
+//   语义：list_engines().find(name) → is_local 则 Err("本地模型无需连接测试")
+//         否则取 DB endpoint+key → tokio::time::timeout(3s, connect_async(req))
 ```
 
 注册：`crates/desktop/src/main.rs::run` 的 `invoke_handler` 列表追加两个命令。
@@ -59,11 +59,11 @@ pub fn test_connection(config: &CompatibleLlmConfig) -> Result<()>;
 
 ### 3.3 ASR 测试实现
 
-内联在 `test_asr_connection` 内：
+内联在 `test_asr_connection` 内（当前 async 直接 `await connect_async`，删 `Runtime::new`，详见 connection-test-async-design §4.2）：
 
 - `parse_model_spec(&bare_name).model_name()` 取裸名 → 查 `cfg.asr.aliyun[model_name]`
 - `secret_key` 空 → Err 提示
-- `#[cfg(feature = "dashscope")]` 分支：独立线程 → `tokio::runtime::Runtime::new()` → `rt.block_on` 跑 `tokio::time::timeout(3s, connect_async(req))`，req 经 `IntoClientRequest` + 追加 `Authorization: bearer <key>` header
+- `#[cfg(feature = "dashscope")]` 分支：req 经 `IntoClientRequest` + 追加 `Authorization: bearer <key>` header → `tokio::time::timeout(3s, connect_async(req))`
 - `#[cfg(not(feature = "dashscope"))]` → Err「远程 ASR 连接测试需要 dashscope feature」
 
 **关键：仅验证 WS 握手成功，不发任何协议帧（run-task / session.update 都不发）**——避免消耗 DashScope 推理额度。握手成功即代表 endpoint + key 有效。
@@ -102,7 +102,7 @@ pub fn test_connection(config: &CompatibleLlmConfig) -> Result<()>;
 ## 5. 关键决策
 
 1. **不抽独立引擎类、不发协议帧**：ASR 测试仅握手（connect_async），不进 `run-task` / `session.update`。理由：握手成功 ⇔ endpoint+key 有效，足够回答「能不能用」的问题，不消耗推理额度。
-2. **独立线程跑阻塞请求**：LLM 用 `reqwest::blocking`，ASR 用独立 tokio runtime——避免 Tauri 命令超时（默认 800ms warning）和污染主 runtime。
+2. **阻塞请求不占 async runtime**：LLM 用 `reqwest::blocking` 包 `tauri::async_runtime::spawn_blocking`，ASR WS 直接 `await connect_async`——v1 曾用独立线程 + 独立 tokio runtime（避免 Tauri 命令超时 + 隔离 runtime），已重构为 async（详见 connection-test-async-design §1）。
 3. **LLM 测试前先 `set_config` 持久化**：`test_llm_connection` 后端按 spec 从 DB 加载配置，必须确保 DB 中 `polish_llm` 是用户刚选中的值（与 set_config 内部 `build_polish_llm_spec` 一致的裸名）。
 4. **ASR 测试不持久化**：`test_asr_connection` 接收 `bare_name` 直接查 DB endpoint——若用户改了 select 但还没触发 `setVal`，会测旧值；但用户从 select 切换到点按钮中间一般有 setVal 触发，可接受。
 5. **图标源**：`crates/desktop/dist/result/icons/check.svg`（FontAwesome check，640×640 viewBox）——前端内联 SVG path（避免运行时加载），独立 SVG 文件保留作资源备份。

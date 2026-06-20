@@ -2,12 +2,12 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-> ⚠️ 实现已重构为 `async fn`——见 [2026-06-19-connection-test-async.md](./2026-06-19-connection-test-async.md)。下方「独立线程跑阻塞请求 / `Runtime::new` / `block_on`」为 v1 同步实现，**非当前代码**。
+> ⚠️ 命令实现为 `async fn`——见 [2026-06-19-connection-test-async.md](./2026-06-19-connection-test-async.md)（LLM `spawn_blocking` / ASR 直接 `await connect_async`）。本 plan Task 1（`test_connection` 函数）+ Task 3（前端 UI）仍有效；Task 2 命令实现已迁至 async plan，仅保留注册步骤。
 
 **Goal:** 在设置页「语音识别引擎」和「文本润色模型」两个 select 旁加连接测试按钮，远程模型可点（WS 握手 / chat max_tokens=1），本地模型灰掉；三态视觉反馈。
 
 **Architecture:**
-- 后端新增 2 个 Tauri 命令（`crates/desktop/src/settings_commands.rs`）：`test_llm_connection(spec)` + `test_asr_connection(bare_name)`，均在独立线程跑阻塞请求避免 Tauri 命令超时
+- 后端新增 2 个 Tauri 命令（`crates/desktop/src/settings_commands.rs`）：`test_llm_connection(spec)` + `test_asr_connection(bare_name)`，均为 `async fn`（LLM `spawn_blocking` 包 `reqwest::blocking`，ASR 直接 `await connect_async`）——命令实现详见 [2026-06-19-connection-test-async.md](./2026-06-19-connection-test-async.md)
 - LLM 测试逻辑抽到 `crates/llm/src/client.rs::test_connection`（复用 `ChatRequest`，`max_tokens=1`）
 - ASR 测试内联在命令实现里（`#[cfg(feature="dashscope")]` 包围，仅握手不发协议帧）
 - 前端 `crates/desktop/dist/settings/index.html`：每个 select 包 flex 容器 + `.test-btn`，三态 CSS + JS 联动
@@ -50,18 +50,11 @@
 - [x] `crates/llm/src/lib.rs` re-export：`pub use client::{polish, test_connection};`
 - [x] `cargo build -p octopus-llm` 通过
 
-## Task 2: 两个 Tauri 命令 + 注册
+## Task 2: 两个 Tauri 命令注册
 
-- [x] `crates/desktop/src/settings_commands.rs` 新增 `test_llm_connection(spec)`：
-  - `load_llm_model(&spec)?` 取配置
-  - `std::thread::spawn(move || octopus_llm::test_connection(&llm_cfg))` + `join()`
-  - 返回 `Ok("连接成功".into())` / `Err(format!("{}", e))`
-- [x] 同文件新增 `test_asr_connection(bare_name)`：
-  - `list_engines().find(|e| e.name == bare_name)` → `is_local` → Err「本地模型无需连接测试」
-  - 取 DB endpoint + key，空 key → Err
-  - `#[cfg(feature="dashscope")]` 分支：独立线程 + `tokio::runtime::Runtime::new()` + `tokio::time::timeout(3s, connect_async(req))`，req 加 `Authorization: bearer <key>`
-  - `#[cfg(not(feature="dashscope"))]` 分支：Err「需要 dashscope feature」
-- [x] `crates/desktop/src/main.rs` 的 `invoke_handler![...]` 追加两个命令
+> **命令实现已重构为 `async fn`**——见 [2026-06-19-connection-test-async.md](./2026-06-19-connection-test-async.md) Task 1/2（LLM `spawn_blocking`、ASR 直接 `await connect_async`，删 `thread::spawn` + `Runtime::new`）。下方仅保留注册步骤（async/sync 注册方式一致）。
+
+- [x] `crates/desktop/src/main.rs` 的 `invoke_handler![...]` 追加 `test_llm_connection` + `test_asr_connection`（async command 注册方式与 sync 相同，Tauri 自动适配）
 - [x] `cargo build --release -p octopus-desktop --features "embedded dashscope"` 通过
 
 ## Task 3: 前端 UI（DOM + CSS + JS）

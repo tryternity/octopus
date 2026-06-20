@@ -1,7 +1,7 @@
 # 结果窗编辑布局调整设计（编辑态文字不动 + 保存按钮移 toolbar）
 
 > Date: 2026-06-19
-> 状态：设计阶段（brainstorming 产出，待实现）
+> 状态：✅ 已实现（2026-06-19，commit `d4401cb`：✏️ toggle + 删 edit-done + 文字不重排 + 编辑态 toolbar 常驻；e2e 通过。快捷键后续统一为 `edit_shortcut` toggle，`370e21e`）。plan：[2026-06-19-result-window-edit-layout.md](./2026-06-19-result-window-edit-layout.md)
 
 ## 1. 背景
 
