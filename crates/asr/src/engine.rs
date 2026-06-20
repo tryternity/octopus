@@ -7,7 +7,7 @@ use crate::qwen3_asr::Qwen3AsrEngine;
 use crate::whisper::WhisperEngine;
 use crate::sensevoice::SenseVoiceEngine;
 use crate::paraformer::ParaformerEngine;
-use crate::zipformer::ZipformerEngine;
+use crate::zipformer::{ZipformerCtcEngine, ZipformerTransducerEngine};
 
 /// Trait representing a reusable offline ASR model engine
 pub trait OfflineAsrEngine: Send + Sync {
@@ -71,7 +71,16 @@ impl AsrEngineManager {
                 config::EngineCategory::SenseVoice => Arc::new(SenseVoiceEngine::new(entry)?),
                 config::EngineCategory::Paraformer => Arc::new(ParaformerEngine::new(entry)?),
                 config::EngineCategory::Qwen3Asr => Arc::new(Qwen3AsrEngine::new(entry)?),
-                config::EngineCategory::Zipformer => Arc::new(ZipformerEngine::new(entry)?),
+                config::EngineCategory::Zipformer => {
+                    // 检测有无 decoder.onnx：有则为 Transducer（RNN-T），无则为 CTC
+                    let hf_path = config::resolve_model_dir(&entry.source)?;
+                    let has_decoder = hf_path.join("decoder.onnx").exists();
+                    if has_decoder {
+                        Arc::new(ZipformerTransducerEngine::new(entry)?)
+                    } else {
+                        Arc::new(ZipformerCtcEngine::new(entry)?)
+                    }
+                }
                 // Aliyun 云端引擎由 Task 2 实现（DashscopeEngine）；Task 1 阶段本地实例化无实现。
                 config::EngineCategory::Aliyun => anyhow::bail!(
                     "阿里云云端 ASR 引擎尚未接入（spec='{}'，见 Task 2 DashscopeEngine）",

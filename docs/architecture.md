@@ -320,7 +320,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | SenseVoice | 离线 | 快速，自动语言检测 |
 | Paraformer | 离线/流式 | 中文优化 |
 | Qwen3-ASR | 离线 | 大模型能力 |
-| Zipformer | 离线/流式 | 轻量级 CTC |
+| Zipformer | 离线/流式 | CTC + Transducer（RNN-T）；路由层检测 `decoder.onnx` 分流 |
 
 ## 拼音纠错与热词校正 (ASR Corrector)
 
