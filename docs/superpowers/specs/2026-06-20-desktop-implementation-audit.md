@@ -184,7 +184,7 @@ P1 三条已实施、逐 commit bisect-clean、**已合并 main**（`9a19b6b`，
   - 二1 reload / 二2 mic 同步 / 三2 预热：需 DB 初始化 + GUI 交互。
   - 逻辑均简单（id 比较 / channel send / RwLock swap / spawn），由 check + 逻辑审查保证；行为正确性留 GUI e2e（环境无 GUI）。
 
-## 6. 待决定
+## 6. 现状与后续
 
 P0（一1/一2/二1，`44b8ab8`）+ P1（二2/三2/三1，`9a19b6b`）**均已合并 main**。剩余：P2（一3 剪贴板恢复等待）延后 + GUI e2e 待本地验证，详见 followups plan `2026-06-20-desktop-audit-followups.md`。
 
