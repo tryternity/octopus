@@ -1198,6 +1198,7 @@ pub fn flush(&mut self) -> Result<Option<String>> {
 
 - 补零到 `CHUNK_SAMPLES`（10000 样本 ≈ 0.61s）→ 用 `process_chunk`（**非** `process_final_chunk`）处理，保留 `feat_cache` / `alpha_cache` / `decoder_caches` 连续性；
 - 补的零帧提供右上下文对齐 + 推动 CIF 累加器过阈 → 尾音 token 发射；
+- **finish() force-fire**（2026-06-20 补充）：即使补零冲刷后，alpha_cache 残留可能仍 >0 但 <1.0（尤其短句），最后一个字卡在 encoder_out_cache 不触发。`process_chunk_final()` 在 CIF 循环结束后检查残留 alpha，>0.5 则 force-fire 为最后一个 token 送 decoder（<0.5 视为噪声不 fire）。sherpa-onnx 官方也丢弃此残留（已知 trade-off），我们做了改善
 - drain 掉补零，不污染后续真实音频。
 
 #### Zipformer（`crates/asr/src/streaming_zipformer.rs`）
