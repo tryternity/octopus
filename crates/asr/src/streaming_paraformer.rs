@@ -8,7 +8,7 @@ use ort::session::Session;
 use crate::config;
 use crate::paraformer::{
     apply_lfr, decode_tokens, extract_cmvn_from_metadata,
-    FBANK_FFT_SIZE, FBANK_FRAME_LEN, FBANK_FRAME_SHIFT, FBANK_NUM_BINS,
+    FBANK_FFT, FBANK_FFT_SIZE, FBANK_FRAME_LEN, FBANK_FRAME_SHIFT, FBANK_NUM_BINS,
     LFR_WINDOW_SHIFT, LFR_WINDOW_SIZE, MEL_FILTERBANK, POVEY_WINDOW,
 };
 
@@ -242,8 +242,14 @@ impl StreamingParaformer {
         self.encoder_out_cache.fill(0.0);
         self.alpha_cache = 0.0;
         let cache_time = self.decoder_kernel_size - 1;
+        // 形状一致时直接 fill(0.0) 复用内存（run_decoder 慢路径可能改维度，此处兜底重建）。
+        let init_shape = (1, self.encoder_output_size, cache_time);
         for cache in &mut self.decoder_caches {
-            *cache = ndarray::Array3::<f32>::zeros((1, self.encoder_output_size, cache_time));
+            if cache.dim() == init_shape {
+                cache.fill(0.0);
+            } else {
+                *cache = ndarray::Array3::<f32>::zeros(init_shape);
+            }
         }
         self.num_processed_frames = 0;
         self.all_token_ids.clear();
@@ -279,8 +285,7 @@ impl StreamingParaformer {
             return;
         }
 
-        let mut planner = rustfft::FftPlanner::new();
-        let fft = planner.plan_fft_forward(FBANK_FFT_SIZE);
+        let fft = &*FBANK_FFT;
         let n_freqs = FBANK_FFT_SIZE / 2 + 1;
         let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); FBANK_FFT_SIZE];
         let mut frame_buf = [0.0f32; FBANK_FRAME_LEN];
@@ -465,9 +470,10 @@ impl StreamingParaformer {
         let cache_rows = LEFT_CHUNK_SIZE + RIGHT_CHUNK_SIZE; // 8
 
         // Reshape feat_cache into [cache_rows, feat_dim]
-        let cache_arr = ndarray::Array2::from_shape_vec(
+        // 零拷贝：用只读视图包装 &self.feat_cache，避免 4480 个 f32（~17.5KB）的堆克隆。
+        let cache_arr = ndarray::ArrayView2::from_shape(
             (cache_rows, self.feat_dim),
-            self.feat_cache.clone(),
+            &self.feat_cache,
         )?;
 
         // Concatenate: [cache | chunk]
@@ -562,7 +568,9 @@ impl StreamingParaformer {
         alphas: &[f32],
     ) -> Result<Vec<f32>> {
         // 零拷贝：直接拿 &[f32] 切片引用 enc_tensor 底层数据
-        let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len, ..]);
+        // 防御性 enc_len 截断：ONNX 输出异常（padding/截断）时避免 slice panic
+        let enc_dim1 = enc_tensor.shape()[1];
+        let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len.min(enc_dim1), ..]);
         let enc_data = enc_slice.as_slice().unwrap();
 
         let mut acoustic: Vec<f32> = Vec::new();
@@ -615,7 +623,9 @@ impl StreamingParaformer {
         alphas: &[f32],
     ) -> Result<Vec<f32>> {
         // 零拷贝：直接拿 &[f32] 切片引用 enc_tensor 底层数据
-        let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len, ..]);
+        // 防御性 enc_len 截断：ONNX 输出异常（padding/截断）时避免 slice panic
+        let enc_dim1 = enc_tensor.shape()[1];
+        let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len.min(enc_dim1), ..]);
         let enc_data = enc_slice.as_slice().unwrap();
 
         let mut acoustic: Vec<f32> = Vec::new();
@@ -669,18 +679,22 @@ impl StreamingParaformer {
         acoustic: &[f32],
         num_tokens: usize,
     ) -> Result<Vec<i64>> {
-        let acoustic_tensor = ndarray::Array3::from_shape_vec(
+        // 零拷贝：用只读视图包装 acoustic 切片，避免 to_vec() 的堆拷贝。
+        let acoustic_view = ndarray::ArrayView3::from_shape(
             (1, num_tokens, self.encoder_output_size),
-            acoustic.to_vec(),
+            acoustic,
         )?;
-        let acoustic_len = ndarray::Array1::from_vec(vec![num_tokens as i32]);
-        let enc_len_arr = ndarray::Array1::from_vec(vec![enc_len as i32]);
+        // 单元素长度张量用栈数组 + ArrayView1，避免 from_vec(vec![x]) 的堆分配。
+        let acoustic_len_data = [num_tokens as i32];
+        let enc_len_data = [enc_len as i32];
+        let acoustic_len = ndarray::ArrayView1::from(&acoustic_len_data);
+        let enc_len_arr = ndarray::ArrayView1::from(&enc_len_data);
 
         let mut inputs = ort::inputs! {
             "enc" => ort::value::TensorRef::from_array_view(enc_tensor.view())?,
-            "enc_len" => ort::value::TensorRef::from_array_view(enc_len_arr.view())?,
-            "acoustic_embeds" => ort::value::TensorRef::from_array_view(acoustic_tensor.view())?,
-            "acoustic_embeds_len" => ort::value::TensorRef::from_array_view(acoustic_len.view())?
+            "enc_len" => ort::value::TensorRef::from_array_view(enc_len_arr)?,
+            "acoustic_embeds" => ort::value::TensorRef::from_array_view(acoustic_view)?,
+            "acoustic_embeds_len" => ort::value::TensorRef::from_array_view(acoustic_len)?
         };
 
         // Feed current decoder caches as inputs (键名预分配，避免 format!)

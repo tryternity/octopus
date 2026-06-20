@@ -147,8 +147,21 @@ pub(crate) fn smart_append(existing: &mut String, new: &str) {
 | encoder 特征构造 | ~45KB clone（10×560×4B） | `into_shape` 零拷贝 reshape 替代 `iter().cloned().collect()` |
 | run_cif encoder 数据 | ~20-40KB 拷贝 | `as_slice().unwrap()` 直接拿 `&[f32]`，移除 `.to_vec()` |
 | decoder input 键名 | 16× `format!()` | `cache_keys: Vec<String>` 预分配于 `new()` |
+| FFT 规划 | 每 chunk 一次 `FftPlanner::new()` + `plan_fft_forward(512)`（堆分配 + twiddle 计算） | `FBANK_FFT: Lazy<Arc<dyn rustfft::Fft<f32>>>` 全局静态（`paraformer.rs`，与 `POVEY_WINDOW` 同位置），`compute_fbank` 与流式 `compute_new_fbank_frames` 共用 |
+| feat_cache reshape | ~17.5KB clone（8×560×4B） | `apply_feat_overlap` 用 `ArrayView2::from_shape` 包装 `&self.feat_cache` |
+| acoustic_embeds 输入 | `acoustic.to_vec()` 拷贝（num_tokens×560×4B） | `run_decoder` 用 `ArrayView3::from_shape` 包装 `acoustic: &[f32]`，与 `qwen3_asr.rs` 的 `ArrayView3+TensorRef` 模式一致 |
+| 单元素长度张量 | 2× `vec![x]` 堆分配（`enc_len` + `acoustic_len`） | `run_decoder` 用栈数组 `[x]` + `ArrayView1::from(&[x])` 替代 `Array1::from_vec(vec![x])` |
+| `reset()` decoder 缓存 | 16× Array3 重新分配（首次 / 形状匹配后均为 fill） | `decoder_caches` 形状与初始 `(1, encoder_output_size, cache_time)` 一致时 `fill(0.0)` 复用内存；不一致（run_decoder 慢路径改过维度）才重分配恢复初始形状 |
+| 离线 `transcribe` encoder 输出 | `enc_tensor.clone().into_raw_vec_and_offset()` 整段拷贝（enc_len×512×4B） | `paraformer.rs` 离线 CIF 循环改用 `enc_tensor.slice(s![0, ..enc_len_scalar, ..]).as_slice().unwrap()` 直接借用，`enc_tensor` 保留供 decoder `view()` 使用；附带将 `speech_lengths`/`acoustic_len`/`enc_len_for_dec` 单元素张量统一为栈数组 + `ArrayView1` |
 
 ### 8. mask_alphas 越界防护
 
 `mask_alphas` / `mask_alphas_left_only` 改为 `n = alphas.len().min(enc_len)` 再循环，消除 `alphas.len() < enc_len` 时的 panic 风险。
+
+### 9. 边界鲁棒性防御
+
+| 位置 | 风险 | 修复 |
+|------|------|------|
+| `smart_append`（`paraformer.rs`） | 空格字节 `0x20` 满足 `< 0x80`（ascii），若 `existing` 末尾或 `new` 首字符已是空格，会再 push 空格 → 双空格 | 空格判定条件追加 `&& last_byte != 0x20 && first_byte != 0x20`，任一侧已是空格则不再添加 |
+| `run_cif` / `run_cif_final`（`streaming_paraformer.rs`） | `enc_len` 来自 ONNX `enc_len_data[0]`，若异常（padding/截断）导致 `enc_len > enc_tensor.shape()[1]`，`slice(s![0, ..enc_len, ..])` 直接 panic | 改为 `..enc_len.min(enc_tensor.shape()[1])` 防御性截断，与 `mask_alphas` 同模式 |
 

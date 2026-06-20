@@ -1,4 +1,6 @@
 use anyhow::{Context, Result};
+use std::sync::Arc;
+
 use ndarray::Array2;
 use once_cell::sync::Lazy;
 use ort::session::Session;
@@ -20,6 +22,12 @@ pub(crate) const LFR_WINDOW_SHIFT: usize = 6;
 pub(crate) static POVEY_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| povey_window(FBANK_FRAME_LEN));
 static HAMMING_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hamming_window(FBANK_FRAME_LEN));
 pub(crate) static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank_fbank());
+// 预规划的 512 点正向 FFT — 所有 fbank 提取共用，避免每次特征计算重复规划（堆分配 + twiddle 计算）。
+// 对流式热路径（StreamingParaformer）尤为关键：每个 chunk 都会调用。
+pub(crate) static FBANK_FFT: Lazy<Arc<dyn rustfft::Fft<f32>>> = Lazy::new(|| {
+    let mut planner = rustfft::FftPlanner::<f32>::new();
+    planner.plan_fft_forward(FBANK_FFT_SIZE)
+});
 
 // ── Decoder cache ──
 const NUM_CACHE_LAYERS: usize = 16;
@@ -151,11 +159,12 @@ impl crate::engine::OfflineAsrEngine for ParaformerEngine {
             v
         };
         let speech_tensor = ndarray::Array3::from_shape_vec((1, n_frames, feat_dim), speech_vec)?;
-        let speech_lengths = ndarray::Array1::from_vec(vec![n_frames as i32]);
+        let speech_lengths_data = [n_frames as i32];
+        let speech_lengths = ndarray::ArrayView1::from(&speech_lengths_data);
 
         let enc_outputs = encoder_session.run(ort::inputs! {
             "speech" => ort::value::TensorRef::from_array_view(speech_tensor.view())?,
-            "speech_lengths" => ort::value::TensorRef::from_array_view(speech_lengths.view())?
+            "speech_lengths" => ort::value::TensorRef::from_array_view(speech_lengths)?
         })?;
 
         // Encoder outputs: enc [1, T', 512], enc_len [1], alphas [1, T']
@@ -177,10 +186,10 @@ impl crate::engine::OfflineAsrEngine for ParaformerEngine {
         let (_, alpha_data) = enc_outputs[2].try_extract_tensor::<f32>()?;
         let alphas: Vec<f32> = alpha_data.to_vec();
 
-        let enc_data = {
-            let (v, _) = enc_tensor.clone().into_raw_vec_and_offset();
-            v
-        };
+        // 零拷贝：直接借用 enc_tensor 的连续切片供 CIF 循环读取，避免 clone() 整段 encoder 输出。
+        // 形状 [1, enc_len_val, enc_feat] 为标准行主序，slice(s![0, ..enc_len_scalar, ..]) 连续。
+        let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len_scalar, ..]);
+        let enc_data: &[f32] = enc_slice.as_slice().unwrap();
 
         let mut acoustic_embedding: Vec<f32> = Vec::new();
         let mut initial_hidden: Vec<f32> = vec![0.0; enc_feat];
@@ -223,14 +232,16 @@ impl crate::engine::OfflineAsrEngine for ParaformerEngine {
         // ── Decoder ──
         let acoustic_tensor =
             ndarray::Array3::from_shape_vec((1, num_tokens, enc_feat), acoustic_embedding)?;
-        let acoustic_len = ndarray::Array1::from_vec(vec![num_tokens as i32]);
-        let enc_len_for_dec = ndarray::Array1::from_vec(vec![enc_len_scalar as i32]);
+        let acoustic_len_data = [num_tokens as i32];
+        let enc_len_for_dec_data = [enc_len_scalar as i32];
+        let acoustic_len = ndarray::ArrayView1::from(&acoustic_len_data);
+        let enc_len_for_dec = ndarray::ArrayView1::from(&enc_len_for_dec_data);
 
         let mut cache_inputs = ort::inputs! {
             "enc" => ort::value::TensorRef::from_array_view(enc_tensor.view())?,
-            "enc_len" => ort::value::TensorRef::from_array_view(enc_len_for_dec.view())?,
+            "enc_len" => ort::value::TensorRef::from_array_view(enc_len_for_dec)?,
             "acoustic_embeds" => ort::value::TensorRef::from_array_view(acoustic_tensor.view())?,
-            "acoustic_embeds_len" => ort::value::TensorRef::from_array_view(acoustic_len.view())?
+            "acoustic_embeds_len" => ort::value::TensorRef::from_array_view(acoustic_len)?
         };
 
         let caches: Vec<ndarray::Array3<f32>> = (0..NUM_CACHE_LAYERS)
@@ -333,7 +344,8 @@ pub(crate) fn smart_append(existing: &mut String, new: &str) {
     let last_is_ascii = last_byte < 0x80;
     let first_is_ascii = first_byte < 0x80;
     // Add space if either side is ASCII (word boundary), except both Chinese
-    if last_is_ascii || first_is_ascii {
+    // or either side already being a space (defensive against double spacing)
+    if (last_is_ascii || first_is_ascii) && last_byte != 0x20 && first_byte != 0x20 {
         existing.push(' ');
     }
     existing.push_str(new);
@@ -438,8 +450,7 @@ pub(crate) fn compute_fbank(
         1
     };
 
-    let mut planner = rustfft::FftPlanner::new();
-    let fft = planner.plan_fft_forward(FBANK_FFT_SIZE);
+    let fft = &*FBANK_FFT;
 
     let n_freqs = FBANK_FFT_SIZE / 2 + 1;
     let mut fbank_data = vec![0.0f32; n_frames * FBANK_NUM_BINS];
