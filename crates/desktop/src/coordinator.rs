@@ -40,8 +40,8 @@ enum Command {
     },
     /// 粘贴完成
     PasteDone,
-    /// 润色完成
-    PolishDone { result: Result<String, String> },
+    /// 润色完成（session_id = 发起润色时的 transcript.id，跨会话护栏用，见 handle_polish_done）
+    PolishDone { result: Result<String, String>, session_id: i64 },
     /// 最终润色完成
     FinalPolishDone { result: Result<String, String> },
     /// 立即润色（前端工具栏触发，忽略 polish_mode）
@@ -407,8 +407,8 @@ impl Coordinator {
                             crate::tray::TrayState::Idle,
                         );
                     }
-                    Command::PolishDone { result } => {
-                        handle_polish_done(&mut stage, result, &config, &app_handle, &tx);
+                    Command::PolishDone { result, session_id } => {
+                        handle_polish_done(&mut stage, result, session_id, &config, &app_handle, &tx);
                     }
                     Command::FinalPolishDone { result } => {
                         handle_final_polish_done(&mut stage, result, &config, &app_handle, &tx);
@@ -1611,12 +1611,15 @@ fn filter_speech_from_buffer(
 /// 启动润色线程
 /// `ignore_mode`=true 时跳过 polish_mode 检查（供「立即润色」用）。
 /// `preserved` 非空时告知 LLM 须原样保留的 edited 文本，仅润色 `to_polish`（新增）部分（spec §12）。
+/// `session_id` = 发起润色时的 transcript.id，原样塞进 PolishDone 回传，供 handle_polish_done
+/// 做跨会话护栏（审查 一1：润色线程不持 transcript 引用，回来时当前 transcript 可能已是新会话）。
 fn spawn_polish_thread(
     preserved: Option<String>,
     to_polish: String,
     config: &AppConfig,
     tx: &Sender<Command>,
     ignore_mode: bool,
+    session_id: i64,
 ) {
     let llm_config = if ignore_mode {
         crate::config::llm_config_ignore_mode(&config)
@@ -1636,7 +1639,7 @@ fn spawn_polish_thread(
                 Err(e.to_string())
             }
         };
-        let _ = tx.send(Command::PolishDone { result });
+        let _ = tx.send(Command::PolishDone { result, session_id });
     });
 }
 
@@ -1674,7 +1677,7 @@ fn check_and_trigger_polish(
     // 取润色输入（编辑态分块：preserved=edited、to_polish=increase；否则全量）+ 标记 pending + 送 LLM
     let (preserved, to_polish) = transcript.take_polish_input();
     transcript.mark_polish_pending();
-    spawn_polish_thread(preserved, to_polish, config, tx, false);
+    spawn_polish_thread(preserved, to_polish, config, tx, false, transcript.id);
 }
 
 /// 处理 StreamingTick 命令
@@ -2092,6 +2095,7 @@ fn start_tick_thread(tx: Sender<Command>, streaming_active: Arc<AtomicBool>) {
 fn handle_polish_done(
     stage: &mut Stage,
     result: Result<String, String>,
+    session_id: i64,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     _tx: &Sender<Command>,
@@ -2107,6 +2111,18 @@ fn handle_polish_done(
             return;
         }
     };
+    // 跨会话护栏（审查 一1）：润色线程不携带 transcript 引用，PolishDone 回到 coordinator 时
+    // 当前 transcript 可能已是新会话（用户在 1~3s 润色窗口内 Esc+Toggle 重开）。session_id
+    // 不符即丢弃，防止旧会话润色结果污染新会话 transcript + 写错 DB 行（UpdatePolished/UpdateEdited）。
+    if transcript.id != session_id {
+        warn!(
+            "PolishDone discarded: session_id mismatch (polish={}, transcript={}) — 跨会话护栏",
+            session_id, transcript.id
+        );
+        use tauri::Emitter;
+        let _ = app_handle.emit("polish-done", ());
+        return;
+    }
     match result {
         Ok(polished) => {
             if polished.is_empty() {
@@ -2189,7 +2205,7 @@ fn handle_polish_now(
     let (preserved, to_polish) = transcript.take_polish_input();
     transcript.mark_polish_pending();
     info!("PolishNow triggered, polishing {} chars", to_polish.chars().count());
-    spawn_polish_thread(preserved, to_polish, config, tx, true);
+    spawn_polish_thread(preserved, to_polish, config, tx, true, transcript.id);
 }
 
 /// 进入编辑态：仅活跃会话（Streaming/VadSegmented）有效；初始化 edit_buffer = 当前 display。
