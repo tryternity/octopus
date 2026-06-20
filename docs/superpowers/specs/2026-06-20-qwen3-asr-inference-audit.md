@@ -1,7 +1,7 @@
 # qwen3-asr 推理实现审查复核与修复
 
 > Date: 2026-06-20
-> 状态：审查的 6 条结论已逐条复核（对照 sherpa-onnx C++ 权威实现）；#1/#2/#5/#6 已修（926550d）；#3 经核实为幻象不改；#4 KV 正确 sizing 已实现（f160cea）。**2026-06-20 e2e 回归**：#2 前缀剥离清理两处 bug（漏竖线后缀检查恒假 + 不容忍 BPE 引导空格）致 `language Chinese` 泄漏，已修（6d72f0d）。**全部已合并 main**。
+> 状态：审查的 6 条结论已逐条复核（对照 sherpa-onnx C++ 权威实现）；#1/#2/#5/#6 已修（926550d）；#3 经核实为幻象不改；#4 KV 正确 sizing 已实现（f160cea）。**2026-06-20 e2e 回归**：#2 前缀剥离清理两处 bug（漏竖线后缀检查恒假 + 不容忍 BPE 引导空格）致 `language Chinese` 泄漏，已修（6d72f0d）。**#7 纯静音早停守卫**（另一 AI 提出、复核确认真实：Rust `trim_audio_features` 全静音返回 `trimmed_len=0` 与 C++ 分叉 → `audio_token_len==0` 进 decoder 维度失配；已加早停 + 单测）。**全部已合并 main**。
 > 已合并 main：审查修复 926550d（spec 490555c）+ #4 / 泄漏修复 / 文档（f160cea + 6d72f0d + 296c8ac）。原 `fix/qwen3-asr-review`、`perf/qwen3-asr-kv-cache-sizing` 分支均删。
 > 关联文件：`crates/asr/src/qwen3_asr.rs`、参考实现 `sherpa-onnx/csrc/offline-recognizer-qwen3-asr-impl.{h,cc}` + `offline-qwen3-asr-model.cc`
 
@@ -18,7 +18,8 @@
 | 1 | 空输入死锁 | ✅ 真实（高危） | 已修 |
 | 2 | auto 语言检测失效 | ✅ 真实（**审查对、原代码注释错**） | 已修 |
 | 3 | 缺音频特征裁剪 | ❌ 幻象 | 不改 |
-| 4 | KV cache 内存抖动 | ⚠️ 真实代价，但非 Rust 缺陷（C++ 同样） | 专项跟进（§6） |
+| 4 | KV cache 内存抖动 | ⚠️ 真实代价，但非 Rust 缺陷（C++ 同样） | 已修（§6） |
+| 7 | 纯静音无早停（trim 分叉） | ✅ 真实（另一 AI 提出，复核确认） | 已修（§4 #7） |
 | 5 | `Box::leak` 内存泄漏 | ✅ 真实（小） | 已修 |
 | 6 | mel filterbank 稀疏密集相乘 | ✅ 真实（perf） | 已修 |
 
@@ -70,7 +71,7 @@ std::vector key_shape = {batch, max_total_len_, kv_h, hd};  // max_total_len_ �
 
 唯一差异（也是真正的可优化点）：`max_total_len` 来源——C++ 读模型 `past_key` shape dim1（固定、可能 ≠ 2048）；Rust 硬编码 `2048.max(s0 + MAX_NEW_TOKENS)`。正确 sizing 见 §6 跟进。
 
-## 4. 已实施修复（#1/#2/#5/#6）
+## 4. 已实施修复（#1/#2/#5/#6/#7）
 
 ### #1 空输入死锁防御
 `compute_mel_features` 入口对空 samples 早返回 `(0, MEL_NUM_BINS)`；`transcribe` 对 0 帧短路返回空文本。
@@ -95,14 +96,21 @@ std::vector key_shape = {batch, max_total_len_, kv_h, hd};  // max_total_len_ �
 - filterbank 是三角滤波、高度稀疏（201 个频率里大部分权重为 0），跳过 ~90% 的 `× 0.0` 无效乘加。
 - 区间内全非零（三角滤波在 `[left_hz, right_hz]` 内单调升再降，无内部空洞）→ 数值结果不变。
 
+### #7 纯静音早停守卫（trim 分叉）
+`transcribe` 在 `audio_token_len = valid_frames.min(trimmed_len)` 后加 `if audio_token_len == 0 { return Ok(String::new()); }`，对齐 C++ `GenerateText` 的 `if (audio_token_len <= 0) { result.text=""; return; }`。
+- 根因：Rust `trim_audio_features` 全静音（所有帧 `|v| < eps`）返回 `(原张量, 0)`，与 C++ `TrimAudioFeatures` **分叉**——C++ 全静音 `if (A_valid <= 0) return audio_features;` 返回原张量且 trimmed_len 不变（仍 >0）。Rust 的 `0` 让 `audio_token_len=0` → prompt 含 0 个 `<|audio_pad|>`，与送入 decoder 的完整 `audio_features [1, conv_num_frames, H]` 维度失配 → ONNX 报错或不可控幻象。
+- 可由纯静音 / 降噪后近静音段触发（VAD 可能放过）。
+- 锁定 `trim_audio_features` 全静音 → `trimmed_len=0` 行为的单测（防误改成返回 `a` 让静音漏进 decoder）。
+
 ## 5. 验证
 
 - `cargo check -p octopus-asr --all-targets`：零 warning。
-- `cargo test -p octopus-asr`：49 passed / 0 failed（含新增 4 个回归测试）：
+- `cargo test -p octopus-asr`：50 passed / 0 failed（含新增 5 个回归测试）：
   - `compute_mel_features_empty_samples_does_not_hang`（#1 死锁回归）
   - `compute_mel_features_single_sample_no_panic`（反射边界 len==1）
   - `mel_filterbank_range_is_contiguous_nonzero`（#6 正确性：区间内全非零、区间外全零）
   - `is_language_scaffold_recognizes_self_detect_prefix`（#2 e2e 回归：自检前缀识别，含 BPE 引导空格容错）
+  - `trim_audio_features_all_silence_yields_zero_trimmed_len`（#7：全静音 trim→0，早停守卫触发源）
 - **#2 e2e**：本地真模型首跑暴露清理 bug（`language Chinese` 泄漏），已修（§4 #2）；修后再验由用户本地重跑确认不再泄漏（环境无模型）。
 - **`cargo check --workspace` 失败**：main 既有、与本次无关——`crates/desktop` 报 `octopus_llm::test_connection` 未找到（llm 单独 check 通过且 `lib.rs` 已 `pub use`，疑似 desktop↔llm 特征/解析层问题，属 setting-ui 工作范畴）。本改动未触及，不阻塞 asr。
 

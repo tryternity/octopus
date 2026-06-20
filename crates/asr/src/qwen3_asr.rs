@@ -209,6 +209,15 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
         // Update audio_token_len to min of valid_frames and trimmed_len (matching sherpa-onnx)
         let audio_token_len = valid_frames.min(trimmed_len);
 
+        // 纯静音守卫：trim_audio_features 在所有特征帧 |v| < eps 时返回 trimmed_len=0
+        // （与 C++ TrimAudioFeatures 分叉——C++ 全静音返回原张量、trimmed_len 不变仍 >0），
+        // 此时 audio_token_len=0 → prompt 含 0 个 <|audio_pad|>，与送入 decoder 的完整
+        // audio_features [1, conv_num_frames, H] 维度失配，会触发 ONNX 报错或不可控幻象。
+        // 对齐 C++ GenerateText 的 `if (audio_token_len <= 0) { result.text=""; return; }`。
+        if audio_token_len == 0 {
+            return Ok(String::new());
+        }
+
         // ── Step 4: Build prompt tokens ──
         let input_ids = build_prompt_ids(&self.tokenizer, audio_token_len, lang)?;
 
@@ -953,5 +962,17 @@ mod tests {
                     }
                 }
             });
+    }
+
+    #[test]
+    fn trim_audio_features_all_silence_yields_zero_trimmed_len() {
+        // 纯静音守卫的触发源：trim 全静音（所有帧 |v| < eps）时返回 trimmed_len=0 —— 与
+        // C++ TrimAudioFeatures 分叉（C++ 全静音返回原张量、trimmed_len 不变）。Rust 的这个 0
+        // 让 transcribe 中 audio_token_len=0 → 触发早停守卫（避免 0 个 audio_pad 进 decoder
+        // 维度失配）。锁定此行为：若有人把 trim 全静音改成返回 a，会让静音漏进 decoder。
+        let silence = ndarray::Array3::<f32>::zeros((1, 8, 4));
+        let (returned, trimmed_len) = trim_audio_features(silence.view());
+        assert_eq!(trimmed_len, 0, "全静音应 trim 为 0（transcribe 早停守卫的触发条件）");
+        assert_eq!(returned.shape(), &[1, 8, 4], "全静音返回原张量（维度不变）");
     }
 }
