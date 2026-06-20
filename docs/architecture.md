@@ -289,7 +289,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
   - 统一解析在 `infra::db::parse_model_spec`（返回 `ModelSpec::Full` / `NameOnly`），ASR 经 `asr::config::resolve_engine_in_config` 查找，LLM 经 `infra::db::load_llm_model` 查找。区分三段是因为 DB 唯一键是 `UNIQUE(domain, provider, category, model_name)`，不同 provider 或 category 下可有同名模型（如 `deepseek-v4-flash` 在 deepseek 直连与 aliyun 代管下各一行）。
 - 全局默认引擎由 `resolve_active_engine(asr_engine)` 解析：**兜底引擎短路**（裸名为 `zipformer-small-ctc` 时跳过 DB 查找，直接返回硬构造兜底 entry，不触发 warning）→ 其余 spec 匹配命中则用；空/不匹配回退兜底 `zipformer-small-ctc`（`DEFAULT_ASR_MODEL_DIR` 本地打包路径，开箱可用）。返回 `ResolvedEngine.model_name` 始终是**裸名**（去掉前缀），下游缓存和加载按裸名工作。
 - **云引擎路由（`provider='aliyun'` → `DashscopeEngine`）**：`resolve_active_engine` 解析时若 `provider='aliyun'` → 由 `resolve_category(provider, category)` 按 provider 分支返回 `EngineCategory::Aliyun`（**注意**：`engine_category_from_str("aliyun")` 仍返回 `None`——aliyun 不进 5 个本地族字符串映射，靠 provider 分支识别）。`desktop/src/main.rs` 启动时 `resolve_active_engine(&config.asr_engine)` → 若 `resolved.category == Some(EngineCategory::Aliyun)` → `Arc::new(DashscopeEngine::new())`（需开 `dashscope` feature）；否则按 `engine_mode`（embedded/websocket/grpc）走本地 `build_local_engine`。云 ↔ 本地切换改 `app_config.asr_engine` 后**重启**生效（engine 实例启动时固定）。
-- **流式判定数据驱动**：是否走流式识别由 `models.is_streaming` 列决定——`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming`（seed：zipformer×3 + paraformer + Qwen-ASR Realtime = 流式；whisper / sensevoice / qwen3-asr×2 / aliyun Fun-ASR / Paraformer-Realtime = 非流式），不再按 category 硬编码匹配。**注：provider=aliyun 的云端引擎（含 Qwen-ASR Realtime）走独立 `CloudStreaming` 路径——Toggle 进 Idle 时 `is_cloud_engine` 分支先于 `use_streaming` 判断并 `return`，故 `is_streaming` 列对 aliyun 引擎实际不生效（Qwen-ASR Realtime 虽 `is_streaming=1` 也不会进本地 `StreamingSession::new`，否则会对 `EngineCategory::Aliyun` bail）**。Coordinator 的 `use_streaming` 据此在 Toggle 进入 `Idle`（切引擎 / 切模式）时重算——流式引擎走本地流式 partial，非流式引擎自动回退 VAD 分段伪流式。`StreamingSession::new` 同样走 `resolve_active_engine`（带兜底），与 `is_streaming_engine` 对称——避免 DB 未命中时 `is_streaming_engine` 兜底成功（→ 进 streaming 路径）但 `StreamingSession::new` 创建失败（→ session 错误）。
+- **流式判定数据驱动**：是否走流式识别由 `models.is_streaming` 列决定——`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming`（seed：zipformer CTC×3 + Transducer×2 + paraformer + Qwen-ASR Realtime = 流式；whisper / sensevoice / qwen3-asr×2 / aliyun Fun-ASR / Paraformer-Realtime = 非流式），不再按 category 硬编码匹配。**注：provider=aliyun 的云端引擎（含 Qwen-ASR Realtime）走独立 `CloudStreaming` 路径——Toggle 进 Idle 时 `is_cloud_engine` 分支先于 `use_streaming` 判断并 `return`，故 `is_streaming` 列对 aliyun 引擎实际不生效（Qwen-ASR Realtime 虽 `is_streaming=1` 也不会进本地 `StreamingSession::new`，否则会对 `EngineCategory::Aliyun` bail）**。Coordinator 的 `use_streaming` 据此在 Toggle 进入 `Idle`（切引擎 / 切模式）时重算——流式引擎走本地流式 partial，非流式引擎自动回退 VAD 分段伪流式。`StreamingSession::new` 同样走 `resolve_active_engine`（带兜底），与 `is_streaming_engine` 对称——避免 DB 未命中时 `is_streaming_engine` 兜底成功（→ 进 streaming 路径）但 `StreamingSession::new` 创建失败（→ session 错误）。
 - 显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，支持 spec 格式、**不走兜底**（匹配不到直接报错）。
 - VAD 模型固定路径（`find_silero_vad` 直接返回 `~/.octopus/models/silero_vad_v4.onnx`），不进 DB、不读配置。
 - **手编 `models` 表 / `app_config` 表需重启进程生效**（`OnceLock` 缓存，运行中不可热更新；运行时修改走 `RuntimeConfig` + `persist_*`）。DB schema `user_version` 当前为 3（v0/v1→v3 直跳，v2→v3 ALTER TABLE 补 category 列）。
@@ -321,6 +321,27 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | Paraformer | 离线/流式 | 中文优化 |
 | Qwen3-ASR | 离线 | 大模型能力 |
 | Zipformer | 离线/流式 | CTC + Transducer（RNN-T）；路由层检测 `decoder.onnx` 分流 |
+
+### Zipformer 引擎族（CTC vs Transducer）
+
+`EngineCategory::Zipformer` 下有两个引擎 struct，由路由层（`engine.rs` `switch_model`）在实例化时检测模型目录下有无 `decoder.onnx` 自动分流：
+
+| Struct | 模型目录特征 | 解码方式 | 典型模型 |
+|---|---|---|---|
+| `ZipformerCtcEngine` | 仅 `model.int8.onnx`（单 session） | CTC argmax + blank/repeat skip | `zipformer-ctc` / `zipformer-small-ctc` / `zipformer-multi` |
+| `ZipformerTransducerEngine` | `encoder.int8.onnx` + `decoder.onnx` + `joiner.int8.onnx`（三 session） | RNN-T greedy decoding | `sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30`（154M）/ `zh-xlarge-int8-2025-06-30`（726M） |
+
+**CTC**：单 session，encoder 同时输出 log_probs，逐帧 argmax，跳过 blank(0) 和重复 token。
+
+**Transducer（RNN-T）**：三 session 协作，遵循 sherpa-onnx 流式 greedy search 约定——
+- **encoder**：与 CTC 版状态管理完全相同（cached_key/N、cached_val/N、cached_conv/N、embed_states、processed_lens），输出 encoder_out `[T', enc_dim]` 而非 log_probs
+- **decoder**：无状态，输入最近 `context_size`（默认 2）个 token `[N, 2]` → decoder_out `[enc_dim]`
+- **joiner**：融合 encoder frame + decoder_out → logit `[vocab_size]`，argmax 决定发射 / blank
+- **解码循环**：每个 encoder frame 跑 joiner → argmax；非 blank(0) 则发射 token、滑动窗口更新、重跑 decoder；blank 则移到下一 frame。内循环安全上限 20 次/frame（防理论无限循环）
+- **encoder_dim 动态读**：从 encoder 输出 shape 最后一维读（zh=512, xlarge=768），不硬编码
+- **token_buf 初始化**：`[-1, ..., -1, 0]`（长度 = context_size，末位 blank），结束后剥离 context padding
+
+两个引擎共享 `load_vocab`（tokens.txt 解析）、`initial_encoder_states`（encoder 缓存初始化）、`decode_token_ids`（token ID → 文本，支持 BBPE + SentencePiece byte-fallback）三个自由函数。
 
 ## 拼音纠错与热词校正 (ASR Corrector)
 
