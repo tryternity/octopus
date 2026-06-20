@@ -265,7 +265,9 @@ impl StreamingParaformer {
         self.apply_positional_encoding(&mut features);
         let combined = self.apply_feat_overlap(features)?;
         let (enc_tensor, enc_len_scalar, alphas) = self.run_encoder(&combined)?;
-        let alphas = self.mask_alphas(alphas, enc_len_scalar);
+        // final chunk：只 mask 左侧（left context），不 mask 右侧——
+        // 右侧 3 帧后面没有新 chunk 处理，mask 掉会永久丢失 ~180ms 尾部语音
+        let alphas = self.mask_alphas_left_only(alphas, enc_len_scalar);
 
         let enc_len = enc_len_scalar;
         let feat = self.encoder_output_size;
@@ -380,8 +382,9 @@ impl StreamingParaformer {
     /// This is critical for streaming — without it the model produces garbage after the first chunk.
     fn apply_positional_encoding(&self, features: &mut ndarray::Array2<f32>) {
         let half_dim = self.feat_dim / 2;
-        // k_scale = ln(10000) / (half_dim - 1)
-        let k_scale = 10000.0f32.ln() / (half_dim - 1) as f32;
+        // k_scale = -ln(10000) / (half_dim - 1) — 负号与 sherpa-onnx 一致
+        //（标准 Transformer 正弦位置编码：exp(-d * log(10000) / (d_model/2 - 1))）
+        let k_scale = -(10000.0f32).ln() / (half_dim - 1) as f32;
         let t_offset = self.num_processed_frames as f32 / LFR_WINDOW_SHIFT as f32;
 
         let n_frames = features.nrows();
@@ -476,6 +479,14 @@ impl StreamingParaformer {
         // Zero right context (last RIGHT_CHUNK_SIZE frames)
         let right_start = enc_len.saturating_sub(RIGHT_CHUNK_SIZE);
         for i in right_start..enc_len {
+            alphas[i] = 0.0;
+        }
+        alphas
+    }
+
+    /// 只 mask 左侧 overlap（final chunk 用）——右侧帧后面无新 chunk，不可丢弃。
+    fn mask_alphas_left_only(&self, mut alphas: Vec<f32>, enc_len: usize) -> Vec<f32> {
+        for i in 0..LEFT_CHUNK_SIZE.min(enc_len) {
             alphas[i] = 0.0;
         }
         alphas
