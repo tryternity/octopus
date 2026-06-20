@@ -8,6 +8,12 @@ use std::time::Duration;
 use tauri::Runtime;
 use tauri_plugin_clipboard_manager::ClipboardExt;
 
+/// Cmd+V 后等待系统粘贴落地、再恢复原剪贴板的延迟。
+/// 审查一3 竞态修复：原 50ms 在慢系统/高负载下不足——粘贴未落地就恢复，
+/// 旧内容被粘进目标应用。200ms 为保守估值；跨平台无可靠「已落地」信号，
+/// 故纯延迟、固定值（probe / 可配置均判 YAGNI）。
+const PASTE_RESTORE_DELAY: Duration = Duration::from_millis(200);
+
 /// Paste method configuration
 #[derive(Debug)]
 pub enum PasteMethod {
@@ -116,7 +122,7 @@ fn paste_via_clipboard<R: Runtime>(
         .key(mod_key, Direction::Release)
         .map_err(|e| anyhow::anyhow!("Mod release: {}", e))?;
 
-    std::thread::sleep(Duration::from_millis(50));
+    std::thread::sleep(PASTE_RESTORE_DELAY);
 
     // 仅在不保留识别结果时恢复原剪贴板。
     // read_text 对图片/富文本/文件返回空——saved 为空（读不出或本就空）则不写回，
