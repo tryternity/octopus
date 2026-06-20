@@ -64,6 +64,7 @@ pub fn set_config(
     value: Value,
     rc: State<'_, SharedRuntimeConfig>,
     coordinator: State<'_, crate::coordinator::Coordinator>,
+    engine_manager: State<'_, std::sync::Arc<octopus_asr::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let (old_shortcut, mut cfg) = {
@@ -81,6 +82,15 @@ pub fn set_config(
     // 等被 asr 的 load_app_config_cached 缓存（audio 每帧读 denoise、apply_session_acceleration
     // 读 hwaccel），不 reload 则改了也不生效（需重启）。从 DB 重读，set_config 罕见、可忽略成本。
     octopus_asr::config::reload_app_config();
+
+    // 审查 三2：切 asr_engine 时后台预热本地引擎（避免首次 transcribe 懒加载卡顿）。
+    if key == "asr_engine" {
+        crate::runtime_config::preheat_local_engine(
+            engine_manager.inner().clone(),
+            &cfg.asr_engine,
+            &cfg.engine_mode,
+        );
+    }
 
     // 运行时可变字段立即同步到 coordinator 的 config 快照，
     // 无需等下次 Toggle（用户在录音中改 polish_llm 等也能立即生效）

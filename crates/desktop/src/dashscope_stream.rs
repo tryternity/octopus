@@ -127,37 +127,29 @@ impl DashScopeStreamSession {
         self.result_rx.try_recv().ok()
     }
 
-    /// 结束会话 + 阻塞等最终结果（仅用于 Toggle/stop 路径）。
-    ///
-    /// **不要在 tick handler 中调用**——`block_on` 会阻塞 coordinator 线程。
-    /// tick handler 应使用 `finish()`（非阻塞），结果通过 `try_recv_text()` 异步获取。
-    ///
-    /// - Fun-ASR 协议：发 `finish-task`
-    /// - Qwen-ASR 协议：发 `session.finish`
-    ///
-    /// 返回最终累积文本（可能为空）。
-    pub fn close(self, rt: &tauri::async_runtime::RuntimeHandle) -> Result<String> {
+    /// 非阻塞收尾的 async 内核（审查 三1）：发 Finish + 收最终结果（8s 超时上限）。
+    /// coordinator 停止路径改为 spawn 本 future，结果以 `Command::CloudStreamingDone`
+    /// 回传，期间进 `Stage::CloudClosing`——避免原同步 `close` 的 `block_on` 卡
+    /// coordinator 主线程最多 8s（Toggle 停止路径；网络挂起时快捷键堆积无响应）。
+    pub async fn close_async(self) -> Result<String> {
         let _ = self.pcm_tx.send(PcmFrame::Finish);
         let mut rx = self.result_rx;
-        rt.block_on(async move {
-            let mut text = String::new();
-            // 保底超时：WS task 若因网络挂起不回 Finished/Failed，recv 会一直 pending 直到
-            // TCP 超时（默认可达分钟级）。close 阻塞 coordinator 线程（Toggle 停止路径），
-            // 必须有上限，否则快捷键/录音切换彻底卡死。8s 与 engine_dashscope 段级超时一致。
-            tokio::time::timeout(std::time::Duration::from_secs(8), async {
-                while let Some(event) = rx.recv().await {
-                    match event {
-                        StreamEvent::Text(t) => text = t,
-                        StreamEvent::Finished => break,
-                        StreamEvent::Failed(msg) => bail!("dashscope task-failed: {}", msg),
-                    }
+        let mut text = String::new();
+        // 保底超时：WS task 若因网络挂起不回 Finished/Failed，recv 会一直 pending 直到
+        // TCP 超时（默认可达分钟级）。须有上限，否则永久挂起。8s 与 engine_dashscope 段级超时一致。
+        tokio::time::timeout(std::time::Duration::from_secs(8), async {
+            while let Some(event) = rx.recv().await {
+                match event {
+                    StreamEvent::Text(t) => text = t,
+                    StreamEvent::Finished => break,
+                    StreamEvent::Failed(msg) => bail!("dashscope task-failed: {}", msg),
                 }
-                Ok::<(), anyhow::Error>(())
-            })
-            .await
-            .map_err(|_| anyhow!("dashscope close 超时（8s）"))??;
-            Ok(text)
+            }
+            Ok::<(), anyhow::Error>(())
         })
+        .await
+        .map_err(|_| anyhow!("dashscope close 超时（8s）"))??;
+        Ok(text)
     }
 }
 
