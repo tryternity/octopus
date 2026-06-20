@@ -71,6 +71,43 @@ pub struct ZipformerTransducerEngine {
                                               decode_token_ids → 文本
 ```
 
+## 流式 Transducer 引擎（StreamingZipformerTransducer）
+
+Transducer 模型（zh-int8 / xlarge）原生支持流式（`is_streaming=1`），故除离线引擎外还需流式引擎。
+
+### 流式引擎分流
+
+`StreamingSession::new`（`streaming_engine.rs`）检测模型目录下 `decoder.onnx` 存在性：
+- **无 `decoder.onnx`** → `StreamingZipformer`（CTC，单 session log_probs argmax）
+- **有 `decoder.onnx`** → `StreamingZipformerTransducer`（RNN-T，三 session greedy decoding）
+
+两者实现 `ZipformerStreamOps` trait，`StreamingSession` 通过 trait 统一分发 `accept_samples` / `flush` / `finish` / `reset`，消除重复代码。
+
+### 跨 chunk 持久状态
+
+| 状态 | 说明 |
+|---|---|
+| `token_buf: Vec<i64>` | decoder 上下文窗口（长度 = context_size，默认 2），初始化 `[-1, ..., -1, 0]` |
+| `emitted_ids: Vec<usize>` | 累积输出 token ID |
+| `states: Vec<(String, StateValue)>` | encoder 缓存（cached_key/N、cached_val/N 等，与 CTC 相同） |
+
+### 关键设计：new_from_entry
+
+`StreamingSession::new` 经 `resolve_active_engine` 解析 entry 后，直接传 `entry` 给流式引擎的 `new_from_entry()`——而非传 bare_name 让引擎内部再查 DB。避免双重 DB 查找 + 可能选错 entry。
+
+### run_chunk 两阶段借用
+
+ort 2.0.0-rc.12 的 `SessionOutputs` 持有 session 的借用，调 decoder/joiner 前必须结束该借用。`run_chunk` 采用两阶段：
+1. encoder session run → `SessionOutputs` → 提取 encoder_out 到 owned `Vec<f32>`（借用结束）
+2. 用 owned 数据调 decoder/joiner session
+
+### 流式 RNN-T 解码
+
+每个 chunk 的 encoder_out 逐 frame 跑 joiner → argmax：
+- **非 blank(0)**：发射 token、`token_buf` 滑动窗口更新、重跑 decoder 获取新 decoder_out
+- **blank(0)**：移到下一 frame
+- 内循环安全上限 20 次/frame（防理论无限循环）
+
 ## 流式 Whisper 特征全局归一化（关键约束）
 
 `normalize_whisper_features`（log10 → 全局 max_v clamp to `max_v - 8` → shift）是**全局操作**，依赖整段特征的 max_v 做统一缩放。
