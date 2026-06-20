@@ -4,23 +4,24 @@ use std::sync::Mutex;
 /// 统一的流式 ASR 引擎包装。
 ///
 /// 对外统一返回**累积全文**语义：
-/// - Zipformer 天然返回累积全文
+/// - Zipformer CTC / Transducer 都返回当前段文本，由上层 accumulated 拼接
 pub enum StreamingSession {
     Paraformer {
         engine: Mutex<crate::streaming_paraformer::StreamingParaformer>,
         accumulated: Mutex<String>,
     },
-    Zipformer {
+    ZipformerCtc {
         engine: Mutex<crate::streaming_zipformer::StreamingZipformer>,
+        accumulated: Mutex<String>,
+    },
+    ZipformerTransducer {
+        engine: Mutex<crate::streaming_zipformer::StreamingZipformerTransducer>,
         accumulated: Mutex<String>,
     },
 }
 
 impl StreamingSession {
     /// 根据引擎 spec 创建流式 session。
-    ///
-    /// `engine_spec` 支持 `local:name` / `category:name` / `name` 格式（见 [`parse_model_spec`]）。
-    /// 仅支持 Paraformer 和 Zipformer 类别。
     ///
     /// 使用 `resolve_active_engine`（带兜底）而非 `resolve_engine_category`（无兜底），
     /// 与 `is_streaming_engine` 的判定对称——否则 DB 未命中时 `is_streaming_engine` 兜底成功
@@ -40,11 +41,22 @@ impl StreamingSession {
                 })
             }
             crate::config::EngineCategory::Zipformer => {
-                let engine = crate::streaming_zipformer::StreamingZipformer::new(bare_name)?;
-                Ok(Self::Zipformer {
-                    engine: Mutex::new(engine),
-                    accumulated: Mutex::new(String::new()),
-                })
+                // 检测有无 decoder.onnx：有则为 Transducer（RNN-T），无则为 CTC
+                let hf_path = crate::config::resolve_model_dir(&resolved.entry.source)
+                    .context("Failed to resolve model dir for streaming Zipformer")?;
+                if hf_path.join("decoder.onnx").exists() {
+                    let engine = crate::streaming_zipformer::StreamingZipformerTransducer::new(bare_name)?;
+                    Ok(Self::ZipformerTransducer {
+                        engine: Mutex::new(engine),
+                        accumulated: Mutex::new(String::new()),
+                    })
+                } else {
+                    let engine = crate::streaming_zipformer::StreamingZipformer::new(bare_name)?;
+                    Ok(Self::ZipformerCtc {
+                        engine: Mutex::new(engine),
+                        accumulated: Mutex::new(String::new()),
+                    })
+                }
             }
             other => {
                 anyhow::bail!(
@@ -69,22 +81,17 @@ impl StreamingSession {
                 match eng.accept_samples(samples)? {
                     Some(delta) => {
                         let mut acc = accumulated.lock().unwrap();
-
-                        // 上一轮静默、本轮有新文本 → 说话恢复，插入逗号
                         if was_silent && !acc.is_empty() {
                             acc.push('，');
                         }
-
                         acc.push_str(&delta);
                         Ok(Some(acc.clone()))
                     }
                     None => Ok(None),
                 }
             }
-            Self::Zipformer { engine, accumulated } => {
+            Self::ZipformerCtc { engine, accumulated } => {
                 let mut eng = engine.lock().unwrap();
-
-                // 如果上一段被判定为静默，且我们已经有积累的内容，说明我们需要“斩断并重置状态”
                 if was_silent {
                     let segment_text = eng.finish()?;
                     let trimmed = segment_text.trim();
@@ -97,35 +104,28 @@ impl StreamingSession {
                     }
                     eng.reset();
                 }
-
-                // 接受当前段的输入并生成当前短句的最新识别结果
-                match eng.accept_samples(samples)? {
-                    Some(current_segment) => {
-                        let trimmed_segment = current_segment.trim();
-                        let acc = accumulated.lock().unwrap();
-                        if acc.is_empty() {
-                            Ok(Some(trimmed_segment.to_string()))
-                        } else if trimmed_segment.is_empty() {
-                            Ok(Some(acc.clone()))
-                        } else {
-                            Ok(Some(format!("{}，{}", *acc, trimmed_segment)))
+                zipformer_accept(&mut *eng, accumulated, samples)
+            }
+            Self::ZipformerTransducer { engine, accumulated } => {
+                let mut eng = engine.lock().unwrap();
+                if was_silent {
+                    let segment_text = eng.finish()?;
+                    let trimmed = segment_text.trim();
+                    if !trimmed.is_empty() {
+                        let mut acc = accumulated.lock().unwrap();
+                        if !acc.is_empty() {
+                            acc.push('，');
                         }
+                        acc.push_str(trimmed);
                     }
-                    None => {
-                        let acc = accumulated.lock().unwrap();
-                        if acc.is_empty() {
-                            Ok(None)
-                        } else {
-                            Ok(Some(acc.clone()))
-                        }
-                    }
+                    eng.reset();
                 }
+                zipformer_accept(&mut *eng, accumulated, samples)
             }
         }
     }
 
     /// 主动冲刷剩余音频（不重置状态，用于静音期间强制吐字）。
-    /// 返回更新后的累积文本（如果有新结果）。
     pub fn flush(&self) -> Result<Option<String>> {
         match self {
             Self::Paraformer { engine, accumulated } => {
@@ -139,29 +139,13 @@ impl StreamingSession {
                     None => Ok(None),
                 }
             }
-            Self::Zipformer { engine, accumulated } => {
+            Self::ZipformerCtc { engine, accumulated } => {
                 let mut eng = engine.lock().unwrap();
-                match eng.flush()? {
-                    Some(current_segment) => {
-                        let trimmed_segment = current_segment.trim();
-                        let acc = accumulated.lock().unwrap();
-                        if acc.is_empty() {
-                            Ok(Some(trimmed_segment.to_string()))
-                        } else if trimmed_segment.is_empty() {
-                            Ok(Some(acc.clone()))
-                        } else {
-                            Ok(Some(format!("{}，{}", *acc, trimmed_segment)))
-                        }
-                    }
-                    None => {
-                        let acc = accumulated.lock().unwrap();
-                        if acc.is_empty() {
-                            Ok(None)
-                        } else {
-                            Ok(Some(acc.clone()))
-                        }
-                    }
-                }
+                zipformer_flush(&mut *eng, accumulated)
+            }
+            Self::ZipformerTransducer { engine, accumulated } => {
+                let mut eng = engine.lock().unwrap();
+                zipformer_flush(&mut *eng, accumulated)
             }
         }
     }
@@ -180,17 +164,28 @@ impl StreamingSession {
                 append_final_punctuation(&mut acc);
                 Ok(crate::hans::normalize_variant(&*acc))
             }
-            Self::Zipformer { engine, accumulated } => {
-                let mut eng = engine.lock().unwrap();
-                let final_segment = eng.finish()?;
-                let trimmed_final = final_segment.trim();
-
+            Self::ZipformerCtc { engine, accumulated } => {
+                let final_segment = engine.lock().unwrap().finish()?;
+                let trimmed = final_segment.trim();
                 let mut acc = accumulated.lock().unwrap();
-                if !trimmed_final.is_empty() {
+                if !trimmed.is_empty() {
                     if !acc.is_empty() {
                         acc.push('，');
                     }
-                    acc.push_str(trimmed_final);
+                    acc.push_str(trimmed);
+                }
+                append_final_punctuation(&mut acc);
+                Ok(crate::hans::normalize_variant(&*acc))
+            }
+            Self::ZipformerTransducer { engine, accumulated } => {
+                let final_segment = engine.lock().unwrap().finish()?;
+                let trimmed = final_segment.trim();
+                let mut acc = accumulated.lock().unwrap();
+                if !trimmed.is_empty() {
+                    if !acc.is_empty() {
+                        acc.push('，');
+                    }
+                    acc.push_str(trimmed);
                 }
                 append_final_punctuation(&mut acc);
                 Ok(crate::hans::normalize_variant(&*acc))
@@ -205,11 +200,114 @@ impl StreamingSession {
                 engine.lock().unwrap().reset();
                 accumulated.lock().unwrap().clear();
             }
-            Self::Zipformer { engine, accumulated } => {
+            Self::ZipformerCtc { engine, accumulated } => {
+                engine.lock().unwrap().reset();
+                accumulated.lock().unwrap().clear();
+            }
+            Self::ZipformerTransducer { engine, accumulated } => {
                 engine.lock().unwrap().reset();
                 accumulated.lock().unwrap().clear();
             }
         }
+    }
+}
+
+// ── Zipformer 共用流式逻辑（CTC 和 Transducer 方法签名相同）──
+
+/// Zipformer accept_samples 后的标准处理：拿当前段文本，与 accumulated 拼接。
+fn zipformer_accept<E: ZipformerStreamOps>(
+    eng: &mut E,
+    accumulated: &Mutex<String>,
+    samples: &[f32],
+) -> Result<Option<String>> {
+    match eng.accept_samples(samples)? {
+        Some(current_segment) => {
+            let trimmed_segment = current_segment.trim();
+            let acc = accumulated.lock().unwrap();
+            if acc.is_empty() {
+                Ok(Some(trimmed_segment.to_string()))
+            } else if trimmed_segment.is_empty() {
+                Ok(Some(acc.clone()))
+            } else {
+                Ok(Some(format!("{}，{}", *acc, trimmed_segment)))
+            }
+        }
+        None => {
+            let acc = accumulated.lock().unwrap();
+            if acc.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(acc.clone()))
+            }
+        }
+    }
+}
+
+/// Zipformer flush 后的标准处理。
+fn zipformer_flush<E: ZipformerStreamOps>(
+    eng: &mut E,
+    accumulated: &Mutex<String>,
+) -> Result<Option<String>> {
+    match eng.flush()? {
+        Some(current_segment) => {
+            let trimmed_segment = current_segment.trim();
+            let acc = accumulated.lock().unwrap();
+            if acc.is_empty() {
+                Ok(Some(trimmed_segment.to_string()))
+            } else if trimmed_segment.is_empty() {
+                Ok(Some(acc.clone()))
+            } else {
+                Ok(Some(format!("{}，{}", *acc, trimmed_segment)))
+            }
+        }
+        None => {
+            let acc = accumulated.lock().unwrap();
+            if acc.is_empty() {
+                Ok(None)
+            } else {
+                Ok(Some(acc.clone()))
+            }
+        }
+    }
+}
+
+/// Zipformer 流式引擎共用接口（CTC 和 Transducer 方法签名完全相同）。
+trait ZipformerStreamOps {
+    fn accept_samples(&mut self, samples: &[f32]) -> Result<Option<String>>;
+    fn flush(&mut self) -> Result<Option<String>>;
+    #[allow(dead_code)]
+    fn finish(&mut self) -> Result<String>;
+    #[allow(dead_code)]
+    fn reset(&mut self);
+}
+
+impl ZipformerStreamOps for crate::streaming_zipformer::StreamingZipformer {
+    fn accept_samples(&mut self, samples: &[f32]) -> Result<Option<String>> {
+        self.accept_samples(samples)
+    }
+    fn flush(&mut self) -> Result<Option<String>> {
+        self.flush()
+    }
+    fn finish(&mut self) -> Result<String> {
+        self.finish()
+    }
+    fn reset(&mut self) {
+        self.reset()
+    }
+}
+
+impl ZipformerStreamOps for crate::streaming_zipformer::StreamingZipformerTransducer {
+    fn accept_samples(&mut self, samples: &[f32]) -> Result<Option<String>> {
+        self.accept_samples(samples)
+    }
+    fn flush(&mut self) -> Result<Option<String>> {
+        self.flush()
+    }
+    fn finish(&mut self) -> Result<String> {
+        self.finish()
+    }
+    fn reset(&mut self) {
+        self.reset()
     }
 }
 
