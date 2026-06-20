@@ -2,7 +2,7 @@
 
 **日期**: 2026-06-21
 **状态**: ✅ 已实现（commit `e0f1420`，`PASTE_RESTORE_DELAY = 200ms`，详见 §3）
-**来源**: desktop 审查一3（`2026-06-20-desktop-implementation-audit.md` §3.3 + `2026-06-20-desktop-audit-followups.md` §1，原 P2 延后项）
+**来源**: desktop 审查一3（`2026-06-20-desktop-implementation-audit.md` §3.3 + `2026-06-20-desktop-audit-followups.md` §1，原 P2 延后项）。**注**：两来源文件已于 2026-06-21 归档——audit spec 见 `specs/2026-06-20-archived-design.md`、followups plan 见 `plans/2026-06-20-archived-plans.md`。
 **分支**: `worktree-clipboard-restore-race`（隔离实现，main 让给 e2e 测试）
 
 ## 1. 背景
