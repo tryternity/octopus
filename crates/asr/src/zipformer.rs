@@ -1123,6 +1123,13 @@ pub(crate) fn compute_whisper_features_linear(samples: &[f32]) -> Result<Array2<
     Array2::from_shape_vec((n_frames, Z_NUM_BINS), fbank_data).map_err(Into::into)
 }
 
+/// Whisper 特征归一化——公式与 sherpa-onnx `NormalizeWhisperFeatures`（math.cc）完全一致。
+///
+/// **勿改公式**：曾错误用 `clamped - clamp_min`（范围 0-8）代替 `(clamped + 4) / 4`（范围~0-2），
+/// 尺度差 4 倍导致 ONNX 模型输入分布不匹配、输出乱码。
+///
+/// **调用方式**：流式引擎必须 **per-chunk** 调用（每个 chunk 切片后独立 normalize），
+/// 不是对整段特征全局归一化。参考 sherpa-onnx online-recognizer-transducer-impl.h。
 pub(crate) fn normalize_whisper_features(chunk: &mut Array2<f32>) {
     let nrows = chunk.nrows();
     let ncols = chunk.ncols();
