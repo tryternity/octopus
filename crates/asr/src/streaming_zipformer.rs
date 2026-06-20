@@ -868,10 +868,31 @@ impl StreamingZipformerTransducer {
 mod tests {
     use super::*;
 
+    /// 动态查找 HF cache 中的 snapshot 目录（不依赖特定 hash）。
+    /// `repo` 如 `models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30`。
+    fn hf_snapshot(repo: &str) -> Option<std::path::PathBuf> {
+        let base = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join(".cache/huggingface/hub")
+            .join(repo)
+            .join("snapshots");
+        if !base.is_dir() {
+            return None;
+        }
+        // 取 snapshots 下第一个子目录（HF 每次拉取用 commit hash 命名）
+        std::fs::read_dir(&base).ok()?.filter_map(|e| e.ok()).find_map(|e| {
+            let p = e.path();
+            if p.is_dir() { Some(p) } else { None }
+        })
+    }
+
     #[test]
     fn test_streaming_zipformer_ctc() {
-        let wav_path = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join(".cache/huggingface/hub/models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13/snapshots/cfa1a89c049cd0c48fb9e46a49c84b58744daec5/test_wavs/DEV_T0000000000.wav");
+        let snapshot = match hf_snapshot("models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13") {
+            Some(p) => p,
+            None => { eprintln!("Skipping: HF snapshot not found"); return; }
+        };
+        let wav_path = snapshot.join("test_wavs/DEV_T0000000000.wav");
+        if !wav_path.exists() { eprintln!("Skipping: {} not found", wav_path.display()); return; }
         let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
 
         println!("\n--- Testing Streaming zipformer-ctc ---");
@@ -889,8 +910,12 @@ mod tests {
 
     #[test]
     fn test_streaming_zipformer_multi() {
-        let wav_path = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join(".cache/huggingface/hub/models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13/snapshots/cfa1a89c049cd0c48fb9e46a49c84b58744daec5/test_wavs/DEV_T0000000000.wav");
+        let snapshot = match hf_snapshot("models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13") {
+            Some(p) => p,
+            None => { eprintln!("Skipping: HF snapshot not found"); return; }
+        };
+        let wav_path = snapshot.join("test_wavs/DEV_T0000000000.wav");
+        if !wav_path.exists() { eprintln!("Skipping: {} not found", wav_path.display()); return; }
         let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
 
         println!("\n--- Testing Streaming zipformer-multi ---");
@@ -908,8 +933,10 @@ mod tests {
 
     #[test]
     fn test_streaming_zipformer_transducer() {
-        let zh_int8 = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join(".cache/huggingface/hub/models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30/snapshots/ad658fa0201659a09ea3c176129a191c77ecae8f");
+        let zh_int8 = match hf_snapshot("models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30") {
+            Some(p) => p,
+            None => { eprintln!("Skipping: HF snapshot not found"); return; }
+        };
         let wav_path = zh_int8.join("test_wavs/0.wav");
         if !wav_path.exists() {
             eprintln!("Skipping transducer streaming test: {} not found", wav_path.display());
