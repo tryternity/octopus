@@ -42,16 +42,17 @@ impl StreamingSession {
             }
             crate::config::EngineCategory::Zipformer => {
                 // 检测有无 decoder.onnx：有则为 Transducer（RNN-T），无则为 CTC
+                // 直接传已解析的 entry，避免流式引擎内部再次查 DB 取到错误条目
                 let hf_path = crate::config::resolve_model_dir(&resolved.entry.source)
                     .context("Failed to resolve model dir for streaming Zipformer")?;
                 if hf_path.join("decoder.onnx").exists() {
-                    let engine = crate::streaming_zipformer::StreamingZipformerTransducer::new(bare_name)?;
+                    let engine = crate::streaming_zipformer::StreamingZipformerTransducer::new_from_entry(&resolved.entry)?;
                     Ok(Self::ZipformerTransducer {
                         engine: Mutex::new(engine),
                         accumulated: Mutex::new(String::new()),
                     })
                 } else {
-                    let engine = crate::streaming_zipformer::StreamingZipformer::new(bare_name)?;
+                    let engine = crate::streaming_zipformer::StreamingZipformer::new_from_entry(&resolved.entry)?;
                     Ok(Self::ZipformerCtc {
                         engine: Mutex::new(engine),
                         accumulated: Mutex::new(String::new()),
