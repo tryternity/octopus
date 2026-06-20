@@ -39,7 +39,6 @@ pub struct ParaformerEngine {
     decoder_session: std::sync::Mutex<Session>,
     neg_mean: Vec<f32>,
     inv_stddev: Vec<f32>,
-    encoder_output_size: usize,
     vocab: Vec<String>,
 }
 
@@ -91,7 +90,7 @@ impl ParaformerEngine {
         let decoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&decoder_path)?;
 
         // Read CMVN normalization from encoder metadata
-        let (neg_mean, inv_stddev, encoder_output_size) = extract_cmvn_from_metadata(&encoder_session)?;
+        let (neg_mean, inv_stddev, _encoder_output_size) = extract_cmvn_from_metadata(&encoder_session)?;
 
         // Token decoding
         let tokens_path = hf_path.join("tokens.txt");
@@ -119,7 +118,6 @@ impl ParaformerEngine {
             decoder_session: std::sync::Mutex::new(decoder_session),
             neg_mean,
             inv_stddev,
-            encoder_output_size,
             vocab,
         })
     }
@@ -135,11 +133,12 @@ impl crate::engine::OfflineAsrEngine for ParaformerEngine {
         let (n_frames, feat_dim) = (features.nrows(), features.ncols());
 
         // ── Apply CMVN normalization ──
-        let scale = (self.encoder_output_size as f32).sqrt();
+        // inv_stddev 已在 extract_cmvn_from_metadata 中乘过 scale = sqrt(enc_output_size)，
+        // 此处不再重复乘（此前重复乘导致特征放大 ~22.6 倍 → 乱码）
         for i in 0..n_frames {
             for j in 0..feat_dim {
                 if j < self.neg_mean.len() && j < self.inv_stddev.len() {
-                    features[[i, j]] = (features[[i, j]] + self.neg_mean[j]) * self.inv_stddev[j] * scale;
+                    features[[i, j]] = (features[[i, j]] + self.neg_mean[j]) * self.inv_stddev[j];
                 }
             }
         }

@@ -257,7 +257,7 @@ pub enum StreamingSession {
 - **对外**：始终返回累积全文
 - **Paraformer**：内部维护 `accumulated` 字段，将增量追加
 - **Zipformer**：直接返回引擎结果（已是累积全文）
-- **标点**：`was_silent=true` 时在文本前插入逗号；`finish()` 时追加句号
+- **标点**：`was_silent=true` 且 acc 不以标点结尾（`ends_with_punct`）时插入逗号（避免 flush 挤出的同句尾音被断词）；`finish()` 时追加句号
 
 ## 6. 结果展示窗口（Result Window）
 
