@@ -387,7 +387,7 @@ fn load_tokenizer(dir: &std::path::Path) -> Result<tokenizers::Tokenizer> {
 }
 
 /// Decode generated token IDs to text using the tokenizer, skipping special tokens.
-/// Cleans prompt prefix if present.
+/// Cleans the model's self-detected `language <word> <|asr_text|>` scaffold prefix if present.
 fn decode_tokens(tokenizer: &tokenizers::Tokenizer, ids: &[i64]) -> String {
     const ASR_TEXT_TOKEN_ID: i64 = 151704;
 
@@ -398,10 +398,14 @@ fn decode_tokens(tokenizer: &tokenizers::Tokenizer, ids: &[i64]) -> String {
             .iter()
             .position(|&id| id == ASR_TEXT_TOKEN_ID)
         {
+            // asr_text token 已按 ID 确认存在（无需再校验其解码串——特殊 token 渲染为
+            // `<|asr_text|>`（带竖线），原 `ends_with("<asr_text>")` 因漏竖线恒假、
+            // 剥离永不触发，导致 "language Chinese" 泄漏进转写结果）。只需校验其前文本
+            // 是 `language <词>` 自检 scaffold 即可剥离到 asr_text 之后。
             if pos > 0 {
-                let prefix_ids: Vec<u32> = ids[..=pos].iter().map(|&id| id as u32).collect();
-                if let Ok(prefix_text) = tokenizer.decode(&prefix_ids, false) {
-                    if prefix_text.starts_with("language ") && prefix_text.ends_with("<asr_text>") {
+                let before_asr: Vec<u32> = ids[..pos].iter().map(|&id| id as u32).collect();
+                if let Ok(before_text) = tokenizer.decode(&before_asr, false) {
+                    if is_language_scaffold(&before_text) {
                         cleaned_ids = ids[pos + 1..].iter().map(|&id| id as u32).collect();
                     }
                 }
@@ -412,6 +416,16 @@ fn decode_tokens(tokenizer: &tokenizers::Tokenizer, ids: &[i64]) -> String {
     tokenizer
         .decode(&cleaned_ids, true)
         .unwrap_or_else(|e| format!("[decode error: {}]", e))
+}
+
+/// 判定 asr_text token 之前的解码文本是否为模型语言自检 scaffold（`language <检测词>`）。
+///
+/// language 字段为空/auto 时，模型自行预测 `language <词> <|asr_text|>` 再出文本，该前缀
+/// 必须剥离。`trim_start` 容忍首 token 的 BPE 引导空格（`Ġlanguage` → ` language`）——
+/// int8 模型对首 token 选择本就不稳，不做 trim 会使剥离时灵时不灵（e2e 实测部分段泄漏、
+/// 部分段干净，正源于此）。asr_text token 已按 ID 确认存在，故此处只校验 language 前缀。
+fn is_language_scaffold(text: &str) -> bool {
+    text.trim_start().starts_with("language ")
 }
 
 // ── ONNX discovery ──
@@ -900,6 +914,25 @@ mod tests {
         let mel = compute_mel_features(&[0.0f32]).expect("single sample should be Ok");
         assert_eq!(mel.ncols(), MEL_NUM_BINS);
         assert!(mel.nrows() >= 1);
+    }
+
+    #[test]
+    fn is_language_scaffold_recognizes_self_detect_prefix() {
+        // #2 e2e 回归：模型自检 `language <词>` 前缀须被识别并（由 decode_tokens）剥离，
+        // 否则 "language Chinese" 会泄漏进转写结果。
+        assert!(is_language_scaffold("language Chinese"));
+        assert!(is_language_scaffold("language English"));
+        // BPE 引导空格（Ġlanguage → " language"）：int8 模型首 token 选择不稳，
+        // 不做 trim 会使剥离时灵时不灵（e2e 实测部分段泄漏、部分段干净的根因）。
+        assert!(is_language_scaffold(" language Chinese"));
+        assert!(is_language_scaffold("  language Japanese"));
+        // 尾随内容不干扰前缀匹配
+        assert!(is_language_scaffold("language Chinese "));
+        // 非自检文本：不误剥
+        assert!(!is_language_scaffold("进行询问。"));
+        assert!(!is_language_scaffold(""));
+        // 单独 "language"（无尾随空格 + 检测词）不构成 scaffold（对齐 C++ rfind("language ",0)）
+        assert!(!is_language_scaffold("language"));
     }
 
     #[test]

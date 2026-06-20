@@ -1,7 +1,7 @@
 # qwen3-asr 推理实现审查复核与修复
 
 > Date: 2026-06-20
-> 状态：审查的 6 条结论已逐条复核（对照 sherpa-onnx C++ 权威实现）；#1/#2/#5/#6 已修（commit 926550d）；#3 经核实为幻象不改；#4 已实现正确 sizing（分支 `perf/qwen3-asr-kv-cache-sizing`，读 decoder past_key dim1 替代硬编码 2048）。
+> 状态：审查的 6 条结论已逐条复核（对照 sherpa-onnx C++ 权威实现）；#1/#2/#5/#6 已修（commit 926550d）；#3 经核实为幻象不改；#4 已实现正确 sizing（分支 `perf/qwen3-asr-kv-cache-sizing`，读 decoder past_key dim1 替代硬编码 2048）。**2026-06-20 e2e 回归**：#2 的前缀剥离清理有两处 bug（漏竖线后缀检查恒假 + 不容忍 BPE 引导空格），导致 `language Chinese` 泄漏进转写结果，已修（见 §4 #2）。
 > Worktree/分支：`fix/qwen3-asr-review`
 > 关联文件：`crates/asr/src/qwen3_asr.rs`、参考实现 `sherpa-onnx/csrc/offline-recognizer-qwen3-asr-impl.{h,cc}` + `offline-qwen3-asr-model.cc`
 
@@ -81,6 +81,10 @@ std::vector key_shape = {batch, max_total_len_, kv_h, hd};  // max_total_len_ �
 `<asr_text>` 移入 `if !language.is_empty() && language != "auto"` 块内（与 `language <lang>` 一起注入）。
 - 见 §3.1。修复后 auto 路径自洽：prompt 以 `assistant\n` 结尾 → 模型吐 `language <检测> <asr_text> <文本>` → `decode_tokens` 剥离前缀。
 - **行为变更**：auto 模式现在真正走模型语言自检（原为强行带 `<asr_text>` 直出文本）。需本地 e2e 验证中英混合场景。
+- **2026-06-20 e2e 回归（已修）**：本地真模型跑出 `language Chinese进行询问。` 泄漏（部分段泄漏、部分段干净）。根因在 `decode_tokens` 的前缀剥离清理有两处叠加 bug：
+  1. 后缀检查 `ends_with("<asr_text>")` **漏竖线** —— 特殊 token 渲染为 `<|asr_text|>`（带 `|`），该检查恒假，剥离永不触发。
+  2. `starts_with("language ")` **不容忍首 token 的 BPE 引导空格**（`Ġlanguage` 解码为 ` language`）—— int8 模型对首 token 选择本就不稳，正是「时灵时不灵」的来源。
+  - **修法**：asr_text token 已按 ID 确认存在（后缀字符串检查冗余），剥离判定改为只校验其前文本 `is_language_scaffold(text) = text.trim_start().starts_with("language ")`。抽出纯函数便于单测（无 tokenizer 依赖）。对齐 C++ `rfind("language ", 0) == 0` + 按 ID 找 token 的语义，但更鲁棒（不依赖特殊 token 的字符串渲染）。
 
 ### #5 `cache_names` 去 `Box::leak`
 56 个 KV cache 输入名（`cache_key_i` / `cache_value_i`）提升为进程级 `static CACHE_NAMES: Lazy<Vec<(&'static str, &'static str)>>`，`Box::leak` 仅发生一次。
@@ -94,11 +98,12 @@ std::vector key_shape = {batch, max_total_len_, kv_h, hd};  // max_total_len_ �
 ## 5. 验证
 
 - `cargo check -p octopus-asr --all-targets`：零 warning。
-- `cargo test -p octopus-asr`：48 passed / 0 failed（含新增 3 个回归测试）：
+- `cargo test -p octopus-asr`：49 passed / 0 failed（含新增 4 个回归测试）：
   - `compute_mel_features_empty_samples_does_not_hang`（#1 死锁回归）
   - `compute_mel_features_single_sample_no_panic`（反射边界 len==1）
   - `mel_filterbank_range_is_contiguous_nonzero`（#6 正确性：区间内全非零、区间外全零）
-- **#2 行为变更**：环境无模型/GUI，未做 e2e；待用户本地跑中英混合音频确认。
+  - `is_language_scaffold_recognizes_self_detect_prefix`（#2 e2e 回归：自检前缀识别，含 BPE 引导空格容错）
+- **#2 e2e**：本地真模型首跑暴露清理 bug（`language Chinese` 泄漏），已修（§4 #2）；修后再验由用户本地重跑确认不再泄漏（环境无模型）。
 - **`cargo check --workspace` 失败**：main 既有、与本次无关——`crates/desktop` 报 `octopus_llm::test_connection` 未找到（llm 单独 check 通过且 `lib.rs` 已 `pub use`，疑似 desktop↔llm 特征/解析层问题，属 setting-ui 工作范畴）。本改动未触及，不阻塞 asr。
 
 ## 6. #4 跟进（已实现，分支 `perf/qwen3-asr-kv-cache-sizing`）
