@@ -77,6 +77,11 @@ pub fn set_config(
     }
     octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
 
+    // 刷新 ASR 侧 AppConfig 缓存（审查 二1）：denoise_mode / asr_hardware_accelerated
+    // 等被 asr 的 load_app_config_cached 缓存（audio 每帧读 denoise、apply_session_acceleration
+    // 读 hwaccel），不 reload 则改了也不生效（需重启）。从 DB 重读，set_config 罕见、可忽略成本。
+    octopus_asr::config::reload_app_config();
+
     // 运行时可变字段立即同步到 coordinator 的 config 快照，
     // 无需等下次 Toggle（用户在录音中改 polish_llm 等也能立即生效）
     if matches!(
