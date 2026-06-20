@@ -72,6 +72,16 @@ impl StreamingZipformer {
         let hf_path = config::resolve_model_dir(&entry.source)?;
         let model_path = discover_streaming_zipformer_onnx(&hf_path)?;
 
+        // 防御性检测：Transducer 模型（encoder+decoder+joiner 三 session）
+        // 不能走 CTC 流式路径——encoder 输出 encoder_out 而非 log_probs，
+        // CTC argmax 会把 enc_dim(512/768) 当 vocab 做 argmax → 乱码。
+        if hf_path.join("decoder.onnx").exists() {
+            anyhow::bail!(
+                "Transducer 模型（含 decoder.onnx）不支持 CTC 流式路径。\
+                 请将 DB models.is_streaming 设为 0 走 VAD 分段伪流式 → ZipformerTransducerEngine"
+            );
+        }
+
         let session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&model_path)?;
 
         // Read chunk parameters from model metadata
