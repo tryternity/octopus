@@ -2,7 +2,7 @@
 
 > Date: 2026-06-20
 > 状态：收到另一 AI 对 `crates/desktop`（Tauri 语音转写桌面端，~6.8k 行）的 7 条审查结论，逐条对照真实代码复核。**结论：7 条全部成立、行号引用全部准确，无幻象**（与 qwen3-asr 审查的 #3 不同）。其中一1 / 二2 / 三1 触发面与严重度需校准，二1 应升级。
-> **P0 三条（一1/一2/二1）已实施并验证**（worktree `worktree-desktop-audit`）：`cargo check --workspace --all-targets` 零 warning、`cargo test -p octopus-asr` 50 passed/0 failed。P1/P2 待定。详见 §4/§5。
+> **P0 三条（一1/一2/二1）+ P1 三条（二2/三2/三1）均实施并验证**（worktree `worktree-desktop-audit`，分支 `worktree-desktop-audit`）：`cargo check -p octopus-desktop --features "embedded dashscope"` 零 warning、`cargo test -p octopus-asr` 52 passed/0 failed、逐 commit bisect-clean。P0 已合并 main（44b8ab8）；P1 三条待合并。P2（一3）延后。详见 §4/§5。
 > 基线：worktree `worktree-desktop-audit` @ c259930（含全部 qwen3 修复）。
 > 关联文件：`crates/desktop/src/{coordinator,dashscope_stream,paste,settings_commands,main,runtime_config,audio}.rs`、`crates/asr/src/config.rs`。
 > 平行文档：`2026-06-20-qwen3-asr-inference-audit.md`（同日 asr 推理审查复核）。
@@ -19,9 +19,9 @@
 | 一2 | 云端流式连接异常→录音挂起 | ✅ 真实 | 中高 | ✅ 已修（§4）：建连/关闭失败 emit `StreamEvent::Failed` + coordinator 报错复位 |
 | 一3 | 剪贴板恢复竞态 | ✅ 真实 | 低 | P2：延长 paste 后等待或平台化处理 |
 | 二1 | OnceLock 缓存致 denoise/hwaccel 失效 | ✅ 真实（**升级**） | 中高 | ✅ 已修（§4）：`OnceLock`→`RwLock<Option<Arc>>` + `reload_app_config`，desktop 写 DB 后刷新 |
-| 二2 | mic/engine_mode 运行时切换失效 | ✅ 真实（mic）/ **部分过时**（engine_mode） | 中 | P1：mic/engine_mode 进 Toggle 同步；云/本地路由已被 DispatchEngine 解决 |
-| 三1 | close `block_on` 卡主线程 | ✅ 真实（**设计取舍**） | 中 | P1：非阻塞 close，结果走 `Command::CloudStreamingDone` |
-| 三2 | ASR 引擎切换缺预热 | ✅ 真实 | 中 | P1：set_config 切引擎时后台 switch_model 预热 |
+| 二2 | mic/engine_mode 运行时切换失效 | ✅ 真实（mic）/ **部分过时**（engine_mode） | 中 | ✅ 已修（§4）：Idle 开新会话时 mic/engine_mode 进 Toggle 同步；云/本地路由已被 DispatchEngine 解决 |
+| 三1 | close `block_on` 卡主线程 | ✅ 真实（**设计取舍**） | 中 | ✅ 已修（§4）：非阻塞 close_async，结果走 `Command::CloudStreamingDone` + `Stage::CloudClosing` |
+| 三2 | ASR 引擎切换缺预热 | ✅ 真实 | 中 | ✅ 已修（§4）：set_config / switch_asr_engine 切引擎时后台 switch_model 预热 |
 
 **总判**：7/7 成立、行号全准，无幻象。校准 4 处（见 §3）。
 
@@ -119,45 +119,74 @@
 
 **建议**：`set_config` 检测 asr_engine 变更时，后台 spawn `switch_model` 预热（复用 setup 的 L219 模式）。注意仅 embedded 本地引擎需要（云引擎无需）。
 
-## 4. 已实施修复（P0：一1/一2/二1）
+## 4. 已实施修复
 
-用户选定 P0 三条，已实施并验证（§5）。
+P0（一1/一2/二1）已合并 main（44b8ab8）；P1（二2/三2/三1）在分支 `worktree-desktop-audit` 待合并。逐条 commit、bisect-clean（§5）。
 
-### 一1 PolishDone 跨会话护栏
+### P0：一1 / 一2 / 二1（已合并 main）
+
+#### 一1 PolishDone 跨会话护栏
 - `Command::PolishDone` 加 `session_id: i64`（与既有 `TranscriptionDone` 模式一致；未改 `FinalPolishDone`——它已被 stage guard 保护，见 §3.1）。
 - `spawn_polish_thread` 加 `session_id` 参数；两处调用（`check_and_trigger_polish` / `handle_polish_now`）传 `transcript.id`。
 - `handle_polish_done` 入口校验 `transcript.id != session_id` 即丢 + emit `polish-done` 恢复前端按钮。选 session_id 方案（非 polish_pending 护栏）：复用代码库既有模式、不污染 pending 语义。
 - 涉及：`coordinator.rs`（Command 定义、dispatch、`spawn_polish_thread`、`handle_polish_done`、两处调用）。
 
-### 一2 云端失败上报 + coordinator 守卫
+#### 一2 云端失败上报 + coordinator 守卫
 - `dashscope_stream.rs::open`：自留 `result_tx.clone()`，建连/建立期失败（`run_*_session` 返 `Err`：connect_async / 发 run-task / pre-roll 失败）时由此发 `StreamEvent::Failed`（原本仅 log、`result_tx` 已被 `run_*` 移入并 drop）。
 - WS 意外关闭（`ws.next()→None`）发 `Failed("WS 连接意外关闭")`；与 `pcm_rx.recv()→None`（coordinator drop、优雅关闭）区分，后者保持静默 break。
 - coordinator `handle_cloud_streaming_tick` 的 `Failed` 分支：清 partial + 复位 cloud 状态 + `update_result("⚠️ 云端识别失败：<msg>")`。session 由既有 `!is_closing && !is_speaking` 分支自动 take（避免与 `sess` 借用冲突），下次 onset 重开 WS（瞬时抖动自动重试；持续失败如 Key 无效每次 onset 报错）。
 - 涉及：`dashscope_stream.rs`（`open`、两处 WS None）、`coordinator.rs`（Failed 分支）。
 
-### 二1 denoise/硬件加速运行时即时生效
+#### 二1 denoise/硬件加速运行时即时生效
 - 根因复盘：`load_config()` 委托 `db::load_app_config()`——**真相源是 DB**（yaml 仅一次性迁移源）。`load_app_config_cached` 用不可重置的 `OnceLock` 冻住了 DB 读取结果。
 - 修法：`APP_CONFIG` 从 `OnceLock<AppConfig>` 改为 `RwLock<Option<Arc<AppConfig>>>`；`load_app_config_cached() -> Arc<AppConfig>`（调用方均即时字段访问，Arc deref 兼容，**零调用点改动**——已 grep 全 workspace 4 处：audio×2、asr/config、hans、engine）；新增 `pub fn reload_app_config()` 从 DB 重读刷新。
 - desktop 写 DB 后调 `reload_app_config()`：`set_config`（save_app_config 后，覆盖所有字段含 denoise/hwaccel）+ `set_denoise_mode`（toolbar 路径，persist 后）。撤回 `set_denoise_mode` 原「本次仍生效，重启后回退」的虚假承诺文案。
 - 涉及：`asr/src/config.rs`、`desktop/src/settings_commands.rs`、`desktop/src/runtime_config.rs`。
 
-### 待定（未实施）
-- **P1**：二2（mic/engine_mode 进 sync）、三2（切引擎后台预热）、三1（非阻塞 close + `Command::CloudStreamingDone`）。
-- **P2**：一3（延长 paste 后等待）。
+### P1：二2 / 三2 / 三1（待合并 main）
+
+P1 三条已实施、逐 commit bisect-clean、待合并 main（分支 `worktree-desktop-audit`，tip `b0b7468`）。提交粒度：每条 finding 一条 commit（dfec6fe 三2 / e1bb944 二2 / b0b7468 三1）。
+
+#### 二2 mic/engine_mode 运行时同步
+- `handle_toggle` 的 Idle（开新会话）块，在既有 `asr_engine` 刷新之后、`sync_runtime_fields` 之前，补 `config.microphone = rc.microphone.clone()` + `config.engine_mode = rc.engine_mode.clone()`。
+- 与 `asr_engine` 同策略：下次录音生效（mic/引擎不支持会话中热切）。修前 audio.start 用 stale 设备名（改设置后下次录音仍用旧设备，需重启）。
+- 涉及：`coordinator.rs`（handle_toggle Idle 块）。
+
+#### 三2 引擎切换后台预热
+- `main.rs`：`engine_manager` 暴露为 State（切引擎预热需持有它；DispatchEngine 已持 clone，此处再 clone 托管）。
+- `runtime_config.rs`：新增 `preheat_local_engine(engine_manager, spec, engine_mode)`——仅 `engine_mode=="embedded"` 且非 cloud（aliyun）时 spawn `switch_model`；`switch_asr_engine` 切换后调用。
+- `settings_commands.rs`：`set_config` 加 `engine_manager` State 参数；`key=="asr_engine"` 时调 `preheat_local_engine`。
+- 涉及：`main.rs`、`runtime_config.rs`、`settings_commands.rs`。
+
+#### 三1 云端 close 非阻塞化
+- `dashscope_stream.rs`：`close()`（block_on 封装）重构为 `pub async fn close_async(self)`（发 Finish + 8s 超时 recv loop）；旧同步 `close()` 删除（无调用方，消除 block_on footgun）。
+- `coordinator.rs`：
+  - `Stage::CloudClosing { transcript, current_partial }`：close 在飞期间持有收尾态。
+  - `Command::CloudStreamingDone { text: Result<String, String> }`：close_async 结果回传。
+  - stop 路径（handle_toggle CloudStreaming arm）：session 在 → spawn `close_async` + 进 CloudClosing + `return`；无 session → 直接 `finalize_cloud`。
+  - `finalize_cloud(stage, transcript, current_partial, ...)`：append partial + 空→Idle / 否则 `start_final_polish_or_paste`（stop 无 session 路径与 Done 路径共用，避免重复）。
+  - `handle_cloud_streaming_done`：仅 CloudClosing 处理，`set_full` + finalize；非 CloudClosing 忽略（Cancel/Discard 已挪走 stage，pending Done 落空不粘贴）。
+  - `handle_toggle`/`handle_discard`/`stage_name` 补 CloudClosing arm；`handle_cancel` 走既有 `_ =>` 兜底。
+- 语义（CloudClosing 期间）：Toggle 忽略（close 完成自动 finalize+粘贴）；Cancel→Idle 不粘贴不写库；Discard→写库保历史不粘贴。三条均正确。
+- 涉及：`dashscope_stream.rs`、`coordinator.rs`。
+
+### 延后（P2，未实施）
+- 一3（延长 paste 后等待剪贴板恢复）。
 
 ## 5. 验证
 
-- `cargo check --workspace --all-targets`：**零 warning**（含 test targets；pub fn 签名变更无遗漏调用点）。
-- `cargo test -p octopus-asr`：**50 passed / 0 failed**（config.rs 改动未破坏既有）。
-- **未加单测的项**（与 qwen3 `decoder_kv_max_len` 同类，依赖外部环境无法离线测）：
+- `cargo check -p octopus-desktop --features "embedded dashscope"`：**零 warning 零 error**（三1 的 cfg-gated 代码需带 dashscope feature 才编入；默认 `embedded` 同样干净）。
+- `cargo test -p octopus-asr`：**52 passed / 0 failed**（P1 不动 asr 逻辑，无回归）。
+- **逐 commit bisect-clean**：dfec6fe / e1bb944 / b0b7468 各自 checkout 独立编译通过。
+- **未加单测的项**（依赖外部环境无法离线测）：
   - 一1 session_id 护栏：需构造 `Stage` + `Transcript` + mock `tauri::AppHandle`，coordinator 全 Tauri 耦合、无既有 test 模块。
-  - 一2 Failed 上报：需 tokio runtime + 真实 WS 连接失败场景。
-  - 二1 reload：需 DB 初始化（`load_config`→`db::load_app_config`），单测环境无 DB。
-  - 逻辑均简单（id 比较 / channel send / RwLock swap），由 check + 逻辑审查保证；行为正确性留 GUI e2e（环境无 GUI）。
+  - 一2 Failed 上报 / 三1 非阻塞 close：需 tokio runtime + 真实 WS 连接场景。
+  - 二1 reload / 二2 mic 同步 / 三2 预热：需 DB 初始化 + GUI 交互。
+  - 逻辑均简单（id 比较 / channel send / RwLock swap / spawn），由 check + 逻辑审查保证；行为正确性留 GUI e2e（环境无 GUI）。
 
 ## 6. 待决定
 
-P0 三条已实施、待提交。下一步选项：①提交到 worktree 分支；②继续 P1（二2/三2/三1）；③就此打住。修复前不预设 P1/P2 范围。
+P0（一1/一2/二1）已合并 main（44b8ab8）。P1 三条（二2/三2/三1）已实施、逐 commit bisect-clean，在分支 `worktree-desktop-audit`（tip `b0b7468`）待合并。下一步选项：①合并 P1 到 main；②补 P2（一3 剪贴板恢复等待）；③就此打住。
 
 ## 7. 附：已澄清的过时认知
 
