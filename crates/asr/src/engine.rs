@@ -86,6 +86,11 @@ impl AsrEngineManager {
                     "阿里云云端 ASR 引擎尚未接入（spec='{}'，见 Task 2 DashscopeEngine）",
                     model_name
                 ),
+                // Moonshine 路由由 Task 4 接入（MoonshineEngine）；此处临时占位保证编译。
+                config::EngineCategory::Moonshine => anyhow::bail!(
+                    "Moonshine ASR 引擎尚未接入（spec='{}'，见 Task 4 MoonshineEngine）",
+                    model_name
+                ),
             };
 
             // Write to cache
