@@ -18,6 +18,11 @@ rm -rf ~/Library/HTTPStorages/com.octopus.desktop
 cd "$(dirname "$0")/crates/desktop"
 
 # 4. 一步到位编译 + 运行（release，省掉重复编译）
-cargo run --release --features "embedded dashscope"
+# cr cargo build --release -p octopus-desktop   # 平时开发，快编
+# cargo build --release -p octopus-desktop      # 打包，走 Cargo.toml 体积优化（无 cr 前缀）
+CARGO_PROFILE_RELEASE_LTO=false \
+CARGO_PROFILE_RELEASE_STRIP=false \
+CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
+cargo run --release -p octopus-desktop
 # 注意：去掉 --release，debug 模式能打出 panic 栈
 #RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --features "embedded dashscope"
