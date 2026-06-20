@@ -27,6 +27,8 @@
 
 ## 3. 关键证据与校准（逐条）
 
+> **行号 / 代码为审查时快照**（基线 `c259930`）。本节描述的是被审查的**缺陷态**，非当前代码——§3.4 的 `OnceLock`、§3.6 的同步 `close()`/`block_on` 等均已在 §4 修复（分别 → `RwLock` / `close_async` + `Stage::CloudClosing`）。下方行号随 main 演进已漂移，定位以函数/符号为准，现况以 `crates/desktop/src/*` 与 `docs/architecture.md` 为准。
+
 ### 3.1 一1 跨会话润色污染 —— 真实，但收窄到中间润色
 
 **涉及位置**：`coordinator.rs` Command 定义（L44 `PolishDone` / L46 `FinalPolishDone`）、dispatch（L410-415）、`handle_polish_done`（L2092-2149）、`handle_final_polish_done`（L1091-1142）、中间润色 spawn（`spawn_polish_thread` L1614，发送 L1639）。

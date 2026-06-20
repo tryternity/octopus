@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-21-clipboard-restore-race-design.md`
 
-> **状态：✅ 已实现**（commit `e0f1420`：`PASTE_RESTORE_DELAY = 200ms`；GUI e2e 通过 2026-06-20；worktree 已清理合并 main）。下方 step 勾选标记实际完成进度。
+> **状态：✅ 已实现**（commit `e0f1420`：`PASTE_RESTORE_DELAY = 200ms`；GUI e2e 通过 2026-06-20；worktree 已清理合并 main）。下方 step 勾选标记实际完成进度。**下文 `L89`/`L119` 等行号为修复前快照**（常量插入后已漂移），定位以代码上下文锚点为准，现况见 `crates/desktop/src/paste.rs`。
 
 > **测试策略说明（偏离 TDD 的理由）**：本改动无单元测试——`paste_via_clipboard` 依赖系统剪贴板 + enigo GUI 键盘交互 + 目标应用粘贴行为，无法离线隔离测试；为单次时序修复引入 mock 框架属 YAGNI。验证靠 `cargo check`（编译）+ 逻辑审查（确认仅 L119 改动、L89 不动）+ 手动 GUI e2e（Task 3 / followups plan 记录）。
 

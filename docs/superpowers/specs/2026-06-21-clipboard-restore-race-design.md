@@ -15,6 +15,8 @@ paste 流程（`paste_method = "clipboard"`，默认）经剪贴板粘贴识别�
 
 ## 2. 根因
 
+> **行号为修复前快照**（`e0f1420` 前；常量 `PASTE_RESTORE_DELAY` 插入后整体下移）。本节描述修复前的时序根因，定位以函数/符号为准（`paste_via_clipboard`），现况见 `crates/desktop/src/paste.rs`。
+
 `crates/desktop/src/paste.rs::paste_via_clipboard`（L71-129）时序：
 
 ```

@@ -112,7 +112,7 @@ std::vector key_shape = {batch, max_total_len_, kv_h, hd};  // max_total_len_ �
   - `is_language_scaffold_recognizes_self_detect_prefix`（#2 e2e 回归：自检前缀识别，含 BPE 引导空格容错）
   - `trim_audio_features_all_silence_yields_zero_trimmed_len`（#7：全静音 trim→0，早停守卫触发源）
 - **#2 e2e**：本地真模型首跑暴露清理 bug（`language Chinese` 泄漏），已修（§4 #2）；修后再验由用户本地重跑确认不再泄漏（环境无模型）。
-- **`cargo check --workspace` 失败**：main 既有、与本次无关——`crates/desktop` 报 `octopus_llm::test_connection` 未找到（llm 单独 check 通过且 `lib.rs` 已 `pub use`，疑似 desktop↔llm 特征/解析层问题，属 setting-ui 工作范畴）。本改动未触及，不阻塞 asr。
+- **`cargo check --workspace`**：审查时 main 既有报错（desktop↔llm `test_connection` 导出缺失），**已修复**——`crates/llm/src/lib.rs:6` 现 `pub use client::{polish, test_connection}`，desktop `settings_commands.rs:292` 正常引用。与本次 asr 改动无关。
 
 ## 6. #4 跟进（已实现 + e2e 验证）
 
@@ -125,7 +125,7 @@ std::vector key_shape = {batch, max_total_len_, kv_h, hd};  // max_total_len_ �
   - dim1 具体 → 用模型声明值（正确 sizing，对齐 C++）。
   - 动态 → 仅装 prompt+生成（`s0 + MAX_NEW_TOKENS`），短音频下比 2048 floor 显著省内存。loop 的 `cur_len + s <= max_total_len` 写入守卫与 `cur_len < max_total_len` 终止条件保证不越界。
 
-**验证**：`cargo check -p octopus-asr` 零 warning；`cargo test -p octopus-asr` 49 passed/0 failed。`decoder_kv_max_len` 依赖 ONNX session，无法离线单测。
+**验证**：`cargo check -p octopus-asr` 零 warning；`cargo test -p octopus-asr` 50 passed/0 failed（与 §5 一致；#4 未新增单测，故计数不变）。`decoder_kv_max_len` 依赖 ONNX session，无法离线单测。
 
 **已 e2e 验证（2026-06-20）**：本地真模型跑出 `dim1 动态 → 按 s0+MAX_NEW_TOKENS sizing`——该模型 `past_key` dim1 确为动态（-1），0.6B 与切换后的更大模型均走动态回退路径；热启动 RTF 0.19~0.20（5× 实时），sizing 行为与内存正常。两条路径中动态路径已实测；dim1 具体路径（`Some` 分支）因现用模型均为动态未直接覆盖，但逻辑与 C++ `InitDecoderSession` 一致。
 
