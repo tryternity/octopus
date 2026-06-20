@@ -247,14 +247,92 @@ impl StreamingParaformer {
         }
     }
 
+    /// Process the final chunk — same as process_chunk, but force-fires any
+    /// residual CIF accumulator (alpha_cache > 0) as a last token.
+    /// 修复尾部吞字：CIF 累积 < 阈值(1.0)时最后一个字卡在 encoder_out_cache。
+    fn process_chunk_final(&mut self, samples: &[f32]) -> Result<Option<String>> {
+        let mut features = self.extract_features(samples)?;
+        self.apply_positional_encoding(&mut features);
+        let combined = self.apply_feat_overlap(features)?;
+        let (enc_tensor, enc_len_scalar, alphas) = self.run_encoder(&combined)?;
+        let alphas = self.mask_alphas(alphas, enc_len_scalar);
+
+        let enc_len = enc_len_scalar;
+        let feat = self.encoder_output_size;
+
+        // CIF 循环 + force-fire 残留（内联 run_cif 逻辑以复用 enc_tensor/enc_len）
+        let enc_data = enc_tensor
+            .slice(ndarray::s![0, ..enc_len, ..])
+            .as_slice()
+            .unwrap()
+            .to_vec();
+
+        let mut acoustic: Vec<f32> = Vec::new();
+        let mut integrate = self.alpha_cache;
+        let threshold: f32 = 1.0;
+
+        for i in 0..enc_len {
+            let this_alpha = alphas[i];
+            if this_alpha <= 0.0 {
+                continue;
+            }
+            if integrate + this_alpha < threshold {
+                integrate += this_alpha;
+                let enc_row = &enc_data[i * feat..(i + 1) * feat];
+                for j in 0..feat {
+                    self.encoder_out_cache[j] += enc_row[j] * this_alpha;
+                }
+                continue;
+            }
+            // Fire
+            let remaining = threshold - integrate;
+            let enc_row = &enc_data[i * feat..(i + 1) * feat];
+            for j in 0..feat {
+                self.encoder_out_cache[j] += enc_row[j] * remaining;
+            }
+            acoustic.extend_from_slice(&self.encoder_out_cache);
+            integrate += this_alpha - threshold;
+            for j in 0..feat {
+                self.encoder_out_cache[j] = enc_row[j] * integrate;
+            }
+        }
+
+        // Force-fire：尾部残留的 alpha 累积（sherpa-onnx 丢弃此处，导致尾部吞字）。
+        // 只有残留接近完整 token 时才 fire，避免噪声帧产生垃圾 token。
+        if integrate > 0.5 && !self.encoder_out_cache.iter().all(|&v| v == 0.0) {
+            acoustic.extend_from_slice(&self.encoder_out_cache);
+            self.alpha_cache = 0.0;
+            self.encoder_out_cache.fill(0.0);
+        } else {
+            self.alpha_cache = integrate;
+        }
+
+        if acoustic.is_empty() {
+            return Ok(None);
+        }
+        let num_tokens = acoustic.len() / feat;
+
+        let sample_ids = self.run_decoder(&enc_tensor, enc_len_scalar, &acoustic, num_tokens)?;
+        let text = decode_tokens(&sample_ids, &self.vocab);
+        self.num_processed_frames += (CHUNK_SIZE - 1) as i32;
+
+        if text.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(text))
+        }
+    }
+
     /// Process a final (possibly short) chunk. Pads to CHUNK_SIZE fbank frames.
+    /// 在 process_chunk 完成后，如果 CIF 残留 alpha > 0，force-fire 最后一个 token。
     fn process_final_chunk(&mut self, samples: &[f32]) -> Result<Option<String>> {
         // Pad to at least CHUNK_SAMPLES so we get CHUNK_SIZE fbank frames
         let mut padded = samples.to_vec();
         if padded.len() < CHUNK_SAMPLES {
             padded.resize(CHUNK_SAMPLES, 0.0);
         }
-        self.process_chunk(&padded)
+        let mut text = self.process_chunk_final(&padded)?;
+        Ok(text.take())
     }
 
     /// Fbank → LFR → CMVN normalization
