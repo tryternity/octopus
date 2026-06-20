@@ -154,7 +154,9 @@ impl StreamingZipformer {
         input_samples.extend_from_slice(&samples);
 
         let feats = if self.is_whisper {
-            crate::zipformer::compute_whisper_features_linear(&input_samples)?
+            let mut f = crate::zipformer::compute_whisper_features_linear(&input_samples)?;
+            crate::zipformer::normalize_whisper_features(&mut f);
+            f
         } else {
             compute_fbank_features(&input_samples)?
         };
@@ -192,10 +194,7 @@ impl StreamingZipformer {
                 }
             }
 
-            if self.is_whisper {
-                crate::zipformer::normalize_whisper_features(&mut chunk);
-            }
-
+            // 特征已全局归一化
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
         }
@@ -246,7 +245,9 @@ impl StreamingZipformer {
         input_samples.extend_from_slice(&self.sample_buffer);
 
         let feats = if self.is_whisper {
-            crate::zipformer::compute_whisper_features_linear(&input_samples)?
+            let mut f = crate::zipformer::compute_whisper_features_linear(&input_samples)?;
+            crate::zipformer::normalize_whisper_features(&mut f);
+            f
         } else {
             compute_fbank_features(&input_samples)?
         };
@@ -271,10 +272,7 @@ impl StreamingZipformer {
                 }
             }
 
-            if self.is_whisper {
-                crate::zipformer::normalize_whisper_features(&mut chunk);
-            }
-
+            // 特征已全局归一化
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
         }
@@ -608,7 +606,9 @@ impl StreamingZipformerTransducer {
         input_samples.extend_from_slice(&samples);
 
         let feats = if self.is_whisper {
-            crate::zipformer::compute_whisper_features_linear(&input_samples)?
+            let mut f = crate::zipformer::compute_whisper_features_linear(&input_samples)?;
+            crate::zipformer::normalize_whisper_features(&mut f);
+            f
         } else {
             compute_fbank_features(&input_samples)?
         };
@@ -644,9 +644,7 @@ impl StreamingZipformerTransducer {
                     chunk[[i, j]] = padded[[frame_idx + h_frames + i, j]];
                 }
             }
-            if self.is_whisper {
-                crate::zipformer::normalize_whisper_features(&mut chunk);
-            }
+            // 特征已全局归一化
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
         }
@@ -694,7 +692,11 @@ impl StreamingZipformerTransducer {
         input_samples.extend_from_slice(&self.sample_buffer);
 
         let feats = if self.is_whisper {
-            crate::zipformer::compute_whisper_features_linear(&input_samples)?
+            let mut f = crate::zipformer::compute_whisper_features_linear(&input_samples)?;
+            // 全局归一化（对整段可用特征一次性 normalize），而非 per-chunk——
+            // per-chunk 归一化会导致静音/语音 chunk 间 max_v 剧烈跳变，encoder 输入不一致
+            crate::zipformer::normalize_whisper_features(&mut f);
+            f
         } else {
             compute_fbank_features(&input_samples)?
         };
@@ -713,9 +715,7 @@ impl StreamingZipformerTransducer {
                     chunk[[i, j]] = feats[[frame_idx + h_frames + i, j]];
                 }
             }
-            if self.is_whisper {
-                crate::zipformer::normalize_whisper_features(&mut chunk);
-            }
+            // 特征已在上文全局归一化，此处不再 per-chunk normalize
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
         }
