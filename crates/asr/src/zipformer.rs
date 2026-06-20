@@ -290,7 +290,62 @@ pub(crate) const ZIPFORMER_BLANK_ID: usize = 0;
 
 // ── Public API ──
 
-pub struct ZipformerEngine {
+/// 加载 tokens.txt 为 vocab 数组（id → token 字符串）。
+/// 格式：每行 `<token> <id>`，id 从 0 开始。
+pub(crate) fn load_vocab(hf_path: &std::path::Path) -> Result<Vec<String>> {
+    let tokens_path = hf_path.join("tokens.txt");
+    let tokens_text = std::fs::read_to_string(&tokens_path)
+        .with_context(|| format!("tokens.txt not found at {}", tokens_path.display()))?;
+
+    let mut vocab: Vec<String> = Vec::new();
+    for line in tokens_text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        if let Some((token, id_str)) = line.rsplit_once(' ') {
+            if let Ok(id) = id_str.parse::<usize>() {
+                while vocab.len() <= id {
+                    vocab.push(String::new());
+                }
+                vocab[id] = token.to_string();
+            }
+        }
+    }
+    Ok(vocab)
+}
+
+/// 遍历 session inputs，为所有非 "x" 的输入创建零张量初始状态。
+/// 适用于 Zipformer encoder（CTC 和 Transducer 结构相同）。
+pub(crate) fn initial_encoder_states(session: &Session) -> Vec<(String, StateValue)> {
+    let mut initial_states: Vec<(String, StateValue)> = Vec::new();
+    for input in session.inputs() {
+        let name = input.name();
+        if name == "x" {
+            continue;
+        }
+        if let Some(shape) = input.dtype().tensor_shape() {
+            let dims: Vec<usize> = shape
+                .iter()
+                .map(|&d| if d <= 0 { 1 } else { d as usize })
+                .collect();
+            let is_int64 = match input.dtype().tensor_type() {
+                Some(TensorElementType::Int64) => true,
+                _ => false,
+            };
+            if is_int64 {
+                let arr = ArrayD::<i64>::zeros(dims);
+                initial_states.push((name.to_string(), StateValue::I64(arr)));
+            } else {
+                let arr = ArrayD::<f32>::zeros(dims);
+                initial_states.push((name.to_string(), StateValue::F32(arr)));
+            }
+        }
+    }
+    initial_states
+}
+
+pub struct ZipformerCtcEngine {
     session: std::sync::Mutex<Session>,
     chunk_len: usize,
     chunk_shift: usize,
@@ -384,7 +439,7 @@ pub(crate) fn discover_streaming_zipformer_onnx(dir: &std::path::Path) -> Result
         .context("No .onnx files found")
 }
 
-impl ZipformerEngine {
+impl ZipformerCtcEngine {
     pub fn new(entry: &config::ModelEntry) -> Result<Self> {
         let hf_path = config::resolve_model_dir(&entry.source)?;
         let model_path = discover_streaming_zipformer_onnx(&hf_path)?;
@@ -408,51 +463,10 @@ impl ZipformerEngine {
         drop(metadata);
 
         // Setup initial states by inspecting session inputs
-        let mut initial_states: Vec<(String, StateValue)> = Vec::new();
-        for input in session.inputs() {
-            let name = input.name();
-            if name == "x" {
-                continue;
-            }
-            if let Some(shape) = input.dtype().tensor_shape() {
-                let dims: Vec<usize> = shape
-                    .iter()
-                    .map(|&d| if d <= 0 { 1 } else { d as usize })
-                    .collect();
-                let is_int64 = match input.dtype().tensor_type() {
-                    Some(TensorElementType::Int64) => true,
-                    _ => false,
-                };
-                if is_int64 {
-                    let arr = ArrayD::<i64>::zeros(dims);
-                    initial_states.push((name.to_string(), StateValue::I64(arr)));
-                } else {
-                    let arr = ArrayD::<f32>::zeros(dims);
-                    initial_states.push((name.to_string(), StateValue::F32(arr)));
-                }
-            }
-        }
+        let initial_states = initial_encoder_states(&session);
 
         // Load tokens mapping
-        let tokens_path = hf_path.join("tokens.txt");
-        let tokens_text = std::fs::read_to_string(&tokens_path)
-            .with_context(|| format!("tokens.txt not found at {}", tokens_path.display()))?;
-
-        let mut vocab: Vec<String> = Vec::new();
-        for line in tokens_text.lines() {
-            let line = line.trim();
-            if line.is_empty() {
-                continue;
-            }
-            if let Some((token, id_str)) = line.rsplit_once(' ') {
-                if let Ok(id) = id_str.parse::<usize>() {
-                    while vocab.len() <= id {
-                        vocab.push(String::new());
-                    }
-                    vocab[id] = token.to_string();
-                }
-            }
-        }
+        let vocab = load_vocab(&hf_path)?;
 
         // Check if symbol table contains byte BPE characters to determine mode
         let is_bbpe = is_vocab_bbpe(&vocab);
@@ -470,7 +484,7 @@ impl ZipformerEngine {
     }
 }
 
-impl crate::engine::OfflineAsrEngine for ZipformerEngine {
+impl crate::engine::OfflineAsrEngine for ZipformerCtcEngine {
     fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
         let mut session = self.session.lock().unwrap();
         let mut my_feats = if self.is_whisper {
@@ -589,62 +603,7 @@ impl crate::engine::OfflineAsrEngine for ZipformerEngine {
         }
 
         // Decode tokens to text
-        let decoded = if self.is_bbpe {
-            let mut raw_token_string = String::new();
-            for &tid in &token_ids {
-                if tid < self.vocab.len() {
-                    raw_token_string.push_str(&self.vocab[tid]);
-                }
-            }
-            decode_byte_bpe(&raw_token_string, false)
-        } else {
-            // Check for BPE with byte fallback (standard SentencePiece behavior)
-            let mut is_bpe_with_byte_fallback = false;
-            let mut id_for_0x00 = 0;
-
-            let pos_00 = self.vocab.iter().position(|t| t == "<0x00>");
-            let pos_ff = self.vocab.iter().position(|t| t == "<0xFF>");
-            if let (Some(p00), Some(pff)) = (pos_00, pos_ff) {
-                if pff > p00 && pff - p00 == 255 {
-                    is_bpe_with_byte_fallback = true;
-                    id_for_0x00 = p00;
-                }
-            }
-
-            let mut bytes: Vec<u8> = Vec::new();
-
-            for &tid in &token_ids {
-                if tid >= self.vocab.len() {
-                    continue;
-                }
-                let mut token = self.vocab[tid].clone();
-
-                // Decode BPE with byte fallback (translates to raw byte)
-                if is_bpe_with_byte_fallback
-                    && token.len() == 6
-                    && token.starts_with("<0x")
-                    && token.ends_with('>')
-                {
-                    if tid >= id_for_0x00 && tid <= id_for_0x00 + 255 {
-                        if let Ok(hex_val) = u8::from_str_radix(&token[3..5], 16) {
-                            if hex_val == (tid - id_for_0x00) as u8 {
-                                bytes.push(hex_val);
-                                continue;
-                            }
-                        }
-                    }
-                }
-
-                // For BPE-based models, we replace ▁ (U+2581, utf8 \xe2\x96\x81) with a space " "
-                if token.len() >= 3 && token.starts_with('▁') {
-                    token = format!(" {}", &token[3..]);
-                }
-
-                bytes.extend_from_slice(token.as_bytes());
-            }
-
-            clean_decode_utf8(&bytes, false)
-        };
+        let decoded = decode_token_ids(&self.vocab, self.is_bbpe, &token_ids);
 
         Ok(decoded.trim().to_string())
     }
@@ -664,8 +623,378 @@ pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String>
         .get(name)
         .with_context(|| format!("zipformer model '{}' not in DB", name))?;
 
-    let engine = ZipformerEngine::new(entry)?;
+    let engine = ZipformerCtcEngine::new(entry)?;
     crate::engine::transcribe_with_vad(&engine, samples, language)
+}
+
+/// 将 token id 序列解码为文本（CTC / Transducer 共用）。
+/// 支持 BBPE 和 SentencePiece byte-fallback 两种模式。
+pub(crate) fn decode_token_ids(vocab: &[String], is_bbpe: bool, token_ids: &[usize]) -> String {
+    if is_bbpe {
+        let mut raw_token_string = String::new();
+        for &tid in token_ids {
+            if tid < vocab.len() {
+                raw_token_string.push_str(&vocab[tid]);
+            }
+        }
+        decode_byte_bpe(&raw_token_string, false)
+    } else {
+        // Check for BPE with byte fallback (standard SentencePiece behavior)
+        let mut is_bpe_with_byte_fallback = false;
+        let mut id_for_0x00 = 0;
+
+        let pos_00 = vocab.iter().position(|t| t == "<0x00>");
+        let pos_ff = vocab.iter().position(|t| t == "<0xFF>");
+        if let (Some(p00), Some(pff)) = (pos_00, pos_ff) {
+            if pff > p00 && pff - p00 == 255 {
+                is_bpe_with_byte_fallback = true;
+                id_for_0x00 = p00;
+            }
+        }
+
+        let mut bytes: Vec<u8> = Vec::new();
+
+        for &tid in token_ids {
+            if tid >= vocab.len() {
+                continue;
+            }
+            let mut token = vocab[tid].clone();
+
+            // Decode BPE with byte fallback (translates to raw byte)
+            if is_bpe_with_byte_fallback
+                && token.len() == 6
+                && token.starts_with("<0x")
+                && token.ends_with('>')
+            {
+                if tid >= id_for_0x00 && tid <= id_for_0x00 + 255 {
+                    if let Ok(hex_val) = u8::from_str_radix(&token[3..5], 16) {
+                        if hex_val == (tid - id_for_0x00) as u8 {
+                            bytes.push(hex_val);
+                            continue;
+                        }
+                    }
+                }
+            }
+
+            // For BPE-based models, we replace ▁ (U+2581, utf8 \xe2\x96\x81) with a space " "
+            if token.len() >= 3 && token.starts_with('▁') {
+                token = format!(" {}", &token[3..]);
+            }
+
+            bytes.extend_from_slice(token.as_bytes());
+        }
+
+        clean_decode_utf8(&bytes, false)
+    }
+}
+
+// ── Zipformer Transducer (RNN-T) Engine ──
+
+/// RNN-T Transducer 引擎：encoder + decoder + joiner 三 session 架构。
+/// encoder 与 CTC 版完全相同（cached_* 状态管理），但输出 encoder_out
+/// 而非 log_probs；decoder 无状态（输入最近 context_size 个 token），
+/// joiner 融合 encoder frame + decoder_out → logit，greedy argmax 解码。
+pub struct ZipformerTransducerEngine {
+    encoder_session: std::sync::Mutex<Session>,
+    decoder_session: std::sync::Mutex<Session>,
+    joiner_session: std::sync::Mutex<Session>,
+    chunk_len: usize,
+    chunk_shift: usize,
+    context_size: usize,
+    vocab: Vec<String>,
+    is_bbpe: bool,
+    initial_states: Vec<(String, StateValue)>,
+    is_whisper: bool,
+}
+
+impl ZipformerTransducerEngine {
+    pub fn new(entry: &config::ModelEntry) -> Result<Self> {
+        let hf_path = config::resolve_model_dir(&entry.source)?;
+
+        let encoder_path = discover_streaming_zipformer_onnx(&hf_path)?;
+        let decoder_path = hf_path.join("decoder.onnx");
+        let joiner_path = {
+            // 优先 joiner.int8.onnx，其次 joiner.onnx
+            let int8 = hf_path.join("joiner.int8.onnx");
+            if int8.exists() {
+                int8
+            } else {
+                hf_path.join("joiner.onnx")
+            }
+        };
+
+        if !decoder_path.exists() {
+            anyhow::bail!(
+                "decoder.onnx not found at {} — not a Transducer model",
+                decoder_path.display()
+            );
+        }
+        if !joiner_path.exists() {
+            anyhow::bail!(
+                "joiner.onnx not found at {} — not a Transducer model",
+                joiner_path.display()
+            );
+        }
+
+        let encoder_session =
+            crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&encoder_path)?;
+        let decoder_session =
+            crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&decoder_path)?;
+        let joiner_session =
+            crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&joiner_path)?;
+
+        // encoder metadata: T, decode_chunk_len, feature
+        let metadata = encoder_session.metadata()?;
+        let chunk_len: usize = metadata
+            .custom("T")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(77);
+        let chunk_shift: usize = metadata
+            .custom("decode_chunk_len")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64);
+        let is_whisper = metadata
+            .custom("feature")
+            .map(|s| s == "whisper")
+            .unwrap_or(false);
+        drop(metadata);
+
+        // encoder_dim: 从 encoder 输出 shape 最后一维读（如 512 / 768）
+        let mut encoder_dim: usize = 0;
+        for output in encoder_session.outputs() {
+            if output.name() == "encoder_out" {
+                if let Some(shape) = output.dtype().tensor_shape() {
+                    // shape = [N, T', enc_dim]
+                    if let Some(last) = shape.last() {
+                        encoder_dim = if *last <= 0 { 0 } else { *last as usize };
+                    }
+                }
+                break;
+            }
+        }
+        // 兜底：从 joiner 输入读
+        if encoder_dim == 0 {
+            for input in joiner_session.inputs() {
+                if input.name() == "encoder_out" {
+                    if let Some(shape) = input.dtype().tensor_shape() {
+                        if let Some(last) = shape.last() {
+                            encoder_dim = if *last <= 0 { 512 } else { *last as usize };
+                        }
+                    }
+                    break;
+                }
+            }
+        }
+        if encoder_dim == 0 {
+            encoder_dim = 512;
+            log::warn!("无法从模型 shape 读出 encoder_dim，使用默认值 512");
+        }
+
+        // context_size: 从 decoder metadata 读（默认 2）
+        let context_size = decoder_session
+            .metadata()
+            .ok()
+            .and_then(|m| m.custom("context_size"))
+            .and_then(|s| s.parse::<usize>().ok())
+            .unwrap_or(2);
+
+        log::info!(
+            "ZipformerTransducer: encoder_dim={}, context_size={}, chunk_len={}, chunk_shift={}, is_whisper={}",
+            encoder_dim, context_size, chunk_len, chunk_shift, is_whisper
+        );
+
+        // encoder 初始状态（同 CTC）
+        let initial_states = initial_encoder_states(&encoder_session);
+
+        // vocab
+        let vocab = load_vocab(&hf_path)?;
+        let is_bbpe = is_vocab_bbpe(&vocab);
+
+        Ok(Self {
+            encoder_session: std::sync::Mutex::new(encoder_session),
+            decoder_session: std::sync::Mutex::new(decoder_session),
+            joiner_session: std::sync::Mutex::new(joiner_session),
+            chunk_len,
+            chunk_shift,
+            context_size,
+            vocab,
+            is_bbpe,
+            initial_states,
+            is_whisper,
+        })
+    }
+
+    /// 运行 decoder：输入 token 窗口 [context_size] → decoder_out [enc_dim]
+    fn run_decoder(&self, token_window: &[i64]) -> Result<Vec<f32>> {
+        let y = ndarray::Array2::from_shape_vec((1, token_window.len()), token_window.to_vec())?;
+        let y_tensor = ort::value::TensorRef::from_array_view(y.view())?;
+        let mut session = self.decoder_session.lock().unwrap();
+        let outputs = session.run(ort::inputs! { "y" => y_tensor })?;
+        let (_shape, data) = outputs["decoder_out"].try_extract_tensor::<f32>()?;
+        Ok(data.to_vec())
+    }
+
+    /// 运行 joiner：encoder_frame [enc_dim] + decoder_out [enc_dim] → logit [vocab_size]
+    fn run_joiner(&self, enc_frame: &[f32], dec_out: &[f32]) -> Result<Vec<f32>> {
+        let enc = ndarray::Array2::from_shape_vec((1, enc_frame.len()), enc_frame.to_vec())?;
+        let dec = ndarray::Array2::from_shape_vec((1, dec_out.len()), dec_out.to_vec())?;
+        let enc_t = ort::value::TensorRef::from_array_view(enc.view())?;
+        let dec_t = ort::value::TensorRef::from_array_view(dec.view())?;
+        let mut session = self.joiner_session.lock().unwrap();
+        let outputs = session.run(ort::inputs! {
+            "encoder_out" => enc_t,
+            "decoder_out" => dec_t,
+        })?;
+        let (_shape, data) = outputs["logit"].try_extract_tensor::<f32>()?;
+        Ok(data.to_vec())
+    }
+}
+
+impl crate::engine::OfflineAsrEngine for ZipformerTransducerEngine {
+    fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
+        let mut enc_session = self.encoder_session.lock().unwrap();
+
+        // 特征提取
+        let mut my_feats = if self.is_whisper {
+            compute_whisper_features_linear(samples)?
+        } else {
+            compute_fbank_features(samples)?
+        };
+        if self.is_whisper {
+            normalize_whisper_features(&mut my_feats);
+        }
+        let n_frames = my_feats.nrows();
+
+        // encoder state
+        let mut states = self.initial_states.clone();
+
+        // RNN-T token 缓冲：初始 [-1, ..., -1, 0]，长度 = context_size
+        let mut token_buf: Vec<i64> = vec![-1; self.context_size];
+        if let Some(last) = token_buf.last_mut() {
+            *last = 0; // blank
+        }
+
+        // 输出 token ids（不含 context padding）
+        let mut emitted_ids: Vec<usize> = Vec::new();
+
+        // Pad features（同 CTC：尾部补最后一帧）
+        let mut padded_feats = Array2::<f32>::zeros((n_frames + self.chunk_len, Z_NUM_BINS));
+        for i in 0..n_frames {
+            for j in 0..Z_NUM_BINS {
+                padded_feats[[i, j]] = my_feats[[i, j]];
+            }
+        }
+        for i in n_frames..(n_frames + self.chunk_len) {
+            let last_idx = if n_frames > 0 { n_frames - 1 } else { 0 };
+            for j in 0..Z_NUM_BINS {
+                padded_feats[[i, j]] = my_feats[[last_idx, j]];
+            }
+        }
+
+        // Chunked encoder 推理 + RNN-T greedy decoding
+        let mut frame_idx = 0;
+        while frame_idx < n_frames {
+            // 构造 chunk 输入
+            let mut chunk = Array2::<f32>::zeros((self.chunk_len, Z_NUM_BINS));
+            for i in 0..self.chunk_len {
+                for j in 0..Z_NUM_BINS {
+                    chunk[[i, j]] = padded_feats[[frame_idx + i, j]];
+                }
+            }
+            let (chunk_vec, _) = chunk.into_raw_vec_and_offset();
+            let chunk_input =
+                ndarray::Array3::from_shape_vec((1, self.chunk_len, Z_NUM_BINS), chunk_vec)?;
+            let x_tensor = ort::value::TensorRef::from_array_view(chunk_input.view())?;
+
+            // 构建 encoder inputs（x + 所有状态）
+            let mut inputs = ort::inputs! { "x" => x_tensor };
+            let mut state_tensors = Vec::new();
+            for (name, val) in &states {
+                let t = match val {
+                    StateValue::F32(arr) => Tensor::from_array(arr.clone())?.into_dyn(),
+                    StateValue::I64(arr) => Tensor::from_array(arr.clone())?.into_dyn(),
+                };
+                state_tensors.push((name.clone(), t));
+            }
+            for (name, t) in &state_tensors {
+                inputs.push((name.as_str().into(), t.into()));
+            }
+
+            // encoder forward
+            let outputs = enc_session.run(inputs)?;
+
+            // encoder_out: [1, T', enc_dim]
+            let (enc_shape, enc_data) = outputs["encoder_out"].try_extract_tensor::<f32>()?;
+            let num_enc_frames = enc_shape[1] as usize;
+            let enc_dim = enc_shape[2] as usize;
+
+            // 更新 encoder states（同 CTC：new_<name> 输出回写）
+            for (name, val) in states.iter_mut() {
+                let out_name = format!("new_{}", name);
+                if let Some(new_val) = outputs.get(out_name.as_str()) {
+                    match val {
+                        StateValue::F32(arr) => {
+                            let (shape, data) = new_val.try_extract_tensor::<f32>()?;
+                            let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+                            *arr = ndarray::ArrayD::from_shape_vec(dims, data.to_vec())?;
+                        }
+                        StateValue::I64(arr) => {
+                            let (shape, data) = new_val.try_extract_tensor::<i64>()?;
+                            let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+                            *arr = ndarray::ArrayD::from_shape_vec(dims, data.to_vec())?;
+                        }
+                    }
+                }
+            }
+
+            // 用当前 token_buf 跑一次 decoder → decoder_out [1, enc_dim]
+            let mut current_dec = self.run_decoder(&token_buf)?;
+
+            // 对每个 encoder frame 做 RNN-T greedy decoding
+            for t in 0..num_enc_frames {
+                let enc_offset = t * enc_dim;
+                let enc_frame = &enc_data[enc_offset..enc_offset + enc_dim];
+
+                // inner emit loop：同一 encoder frame 上可能连续发射多个 token
+                let mut safety = 0usize;
+                loop {
+                    let logit = self.run_joiner(enc_frame, &current_dec)?;
+                    let best_id = logit
+                        .iter()
+                        .enumerate()
+                        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                        .map(|(i, _)| i)
+                        .unwrap_or(0);
+
+                    if best_id == 0 {
+                        // blank → 移到下一 encoder frame
+                        break;
+                    }
+
+                    // 发射 token，更新 token_buf（滑动窗口）
+                    emitted_ids.push(best_id);
+                    token_buf.push(best_id as i64);
+                    if token_buf.len() > self.context_size {
+                        token_buf.remove(0);
+                    }
+                    // 重跑 decoder（新的 token 上下文）
+                    current_dec = self.run_decoder(&token_buf)?;
+
+                    safety += 1;
+                    if safety >= 20 {
+                        log::warn!("RNN-T inner loop safety break at frame {}", t);
+                        break;
+                    }
+                }
+            }
+
+            frame_idx += self.chunk_shift;
+        }
+
+        // Decode tokens to text
+        let decoded = decode_token_ids(&self.vocab, self.is_bbpe, &emitted_ids);
+        Ok(decoded.trim().to_string())
+    }
 }
 
 // ── Decode Byte BPE mapping ──
@@ -947,6 +1276,7 @@ pub(crate) fn mel_to_hz(mel: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::OfflineAsrEngine;
 
     #[test]
     fn test_clean_decode_utf8() {
@@ -1002,7 +1332,7 @@ mod tests {
         let entry = zip_cfg.get("zipformer-ctc")
             .or_else(|| zip_cfg.get("zipformer-small-ctc"))
             .unwrap();
-        let engine = ZipformerEngine::new(entry).unwrap();
+        let engine = ZipformerCtcEngine::new(entry).unwrap();
 
         println!("\n--- Debugging Offline zipformer-ctc ---");
         println!("is_whisper: {}, chunk_len: {}, chunk_shift: {}", engine.is_whisper, engine.chunk_len, engine.chunk_shift);
@@ -1117,6 +1447,64 @@ mod tests {
             frame_idx += engine.chunk_shift;
             chunk_idx += 1;
         }
+    }
+
+    #[test]
+    fn test_zipformer_transducer_offline() {
+        let zh_int8 = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join(".cache/huggingface/hub/models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30/snapshots/ad658fa0201659a09ea3c176129a191c77ecae8f");
+        let wav_path = zh_int8.join("test_wavs/0.wav");
+        if !wav_path.exists() {
+            eprintln!("Skipping transducer test: {} not found", wav_path.display());
+            return;
+        }
+
+        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
+
+        let entry = config::ModelEntry {
+            source: zh_int8.to_string_lossy().to_string(),
+            language: "zh".to_string(),
+            secret_key: String::new(),
+            is_local: true,
+            is_enabled: true,
+            is_streaming: true,
+            description: "test".to_string(),
+        };
+
+        let engine = ZipformerTransducerEngine::new(&entry).unwrap();
+        let text = engine.transcribe(&samples, "zh").unwrap();
+        println!("\n--- Zipformer Transducer (zh-int8) Result ---");
+        println!("  text = {:?}", text);
+        assert!(!text.is_empty(), "transducer should produce non-empty output");
+    }
+
+    #[test]
+    fn test_zipformer_transducer_xlarge() {
+        let xlarge = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join(".cache/huggingface/hub/models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30/snapshots/18f31ce4644ac3bcf544eea692d7242b798d508f");
+        let wav_path = xlarge.join("test_wavs/0.wav");
+        if !wav_path.exists() {
+            eprintln!("Skipping xlarge test: {} not found", wav_path.display());
+            return;
+        }
+
+        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
+
+        let entry = config::ModelEntry {
+            source: xlarge.to_string_lossy().to_string(),
+            language: "zh".to_string(),
+            secret_key: String::new(),
+            is_local: true,
+            is_enabled: true,
+            is_streaming: true,
+            description: "test".to_string(),
+        };
+
+        let engine = ZipformerTransducerEngine::new(&entry).unwrap();
+        let text = engine.transcribe(&samples, "zh").unwrap();
+        println!("\n--- Zipformer Transducer (xlarge) Result ---");
+        println!("  text = {:?}", text);
+        assert!(!text.is_empty(), "transducer xlarge should produce non-empty output");
     }
 }
 
