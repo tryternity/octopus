@@ -1,6 +1,27 @@
+#!/usr/bin/env python3
+"""
+拼音纠错器数据生成器（手动运行，不属于构建流程）。
+
+下载并处理两个语料，产出嵌入二进制的纠错数据：
+  - jieba dict.txt.big       → top 40k 词 → src/corrector_data/unigram.txt.gz
+  - gotokenizer bigram.txt   → top 40k 对 → src/corrector_data/bigram.txt.gz
+
+产物（.gz）已提交仓库，由 crates/asr/src/corrector.rs 在编译期经
+include_bytes! 嵌入 LightCorrector。平时无需重跑；仅当需要更新语料
+（换更新的 jieba dict / 调 top-N 阈值 / 换镜像源）时手动执行：
+
+    python3 crates/asr/scripts/generate_corrector_data.py
+
+输出路径按脚本自身位置解析，可从任意目录运行。
+"""
 import urllib.request
 import gzip
 import os
+
+# 产物目录相对本脚本位置（../src/corrector_data），与 corrector.rs 的 include_bytes! 路径一致。
+HERE = os.path.dirname(os.path.abspath(__file__))
+DATA_DIR = os.path.join(HERE, "..", "src", "corrector_data")
+
 
 def download_file(url, desc):
     print(f"Downloading {desc} from {url}...")
@@ -10,7 +31,7 @@ def download_file(url, desc):
         return response.read()
 
 def main():
-    os.makedirs("crates/asr/src/corrector_data", exist_ok=True)
+    os.makedirs(DATA_DIR, exist_ok=True)
     
     # 1. Download and process unigrams (jieba dict.txt.big)
     unigram_url = "https://fastly.jsdelivr.net/gh/fxsjy/jieba/extra_dict/dict.txt.big"
@@ -37,7 +58,7 @@ def main():
     top_unigrams = unigrams[:40000]
     
     # Write gzipped unigram file
-    unigram_out_path = "crates/asr/src/corrector_data/unigram.txt.gz"
+    unigram_out_path = os.path.join(DATA_DIR, "unigram.txt.gz")
     with gzip.open(unigram_out_path, 'wt', encoding='utf-8') as f:
         for word, freq in top_unigrams:
             f.write(f"{word} {freq}\n")
@@ -71,7 +92,7 @@ def main():
     top_bigrams = bigrams[:40000]
     
     # Write gzipped bigram file
-    bigram_out_path = "crates/asr/src/corrector_data/bigram.txt.gz"
+    bigram_out_path = os.path.join(DATA_DIR, "bigram.txt.gz")
     with gzip.open(bigram_out_path, 'wt', encoding='utf-8') as f:
         for w1, w2, freq in top_bigrams:
             f.write(f"{w1}:{w2} {freq}\n")

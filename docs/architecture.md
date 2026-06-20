@@ -352,7 +352,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 为了在不引入重型深度学习模型（如 MacBERT 等动辄几百 MB 的模型）的前提下，实现极致轻量的纠错与专有名词（热词）校正，项目实现了一套基于 **“拼音映射 + 长度归一化 Bigram 转移概率”** 的轻量级后处理纠错引擎。
 
 ### 核心特性
-- **纯静态与轻量化**：纠错所需的 unigram 词表与 bigram 共现表（各精简至高频的前 40,000 条，压缩后约 450KB）直接通过 `include_bytes!` 静态嵌入二进制中，无需额外网络下载，运行时解压，额外内存占用约 30MB。
+- **纯静态与轻量化**：纠错所需的 unigram 词表与 bigram 共现表（各精简至高频的前 40,000 条，压缩后约 450KB）直接通过 `include_bytes!` 静态嵌入二进制中，无需额外网络下载，运行时解压，额外内存占用约 30MB。数据源自 jieba `dict.txt.big`（unigram）与 gotokenizer `bigram.txt`（bigram），由 `crates/asr/scripts/generate_corrector_data.py` 离线生成到 `src/corrector_data/*.txt.gz`（已提交；更新语料时手动重跑该脚本）。
 - **配置开关控制**：由 `app_config` 表中的 `asr_correct` 字段控制（默认 `false`）。
 - **智能排除**：由于 Qwen3-ASR (0.6B/1.7B) 模型本身输出带有标点且语义纠错能力强，纠错引擎会自动跳过对 Qwen3-ASR 结果的处理，仅应用于 Whisper、SenseVoice、Paraformer 和 Zipformer。
 
