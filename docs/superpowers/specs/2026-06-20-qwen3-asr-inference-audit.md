@@ -1,8 +1,8 @@
 # qwen3-asr 推理实现审查复核与修复
 
 > Date: 2026-06-20
-> 状态：审查的 6 条结论已逐条复核（对照 sherpa-onnx C++ 权威实现）；#1/#2/#5/#6 已修（commit 926550d）；#3 经核实为幻象不改；#4 已实现正确 sizing（分支 `perf/qwen3-asr-kv-cache-sizing`，读 decoder past_key dim1 替代硬编码 2048）。**2026-06-20 e2e 回归**：#2 的前缀剥离清理有两处 bug（漏竖线后缀检查恒假 + 不容忍 BPE 引导空格），导致 `language Chinese` 泄漏进转写结果，已修（见 §4 #2）。
-> Worktree/分支：`fix/qwen3-asr-review`
+> 状态：审查的 6 条结论已逐条复核（对照 sherpa-onnx C++ 权威实现）；#1/#2/#5/#6 已修（926550d）；#3 经核实为幻象不改；#4 KV 正确 sizing 已实现（f160cea）。**2026-06-20 e2e 回归**：#2 前缀剥离清理两处 bug（漏竖线后缀检查恒假 + 不容忍 BPE 引导空格）致 `language Chinese` 泄漏，已修（6d72f0d）。**全部已合并 main**。
+> 已合并 main：审查修复 926550d（spec 490555c）+ #4 / 泄漏修复 / 文档（f160cea + 6d72f0d + 296c8ac）。原 `fix/qwen3-asr-review`、`perf/qwen3-asr-kv-cache-sizing` 分支均删。
 > 关联文件：`crates/asr/src/qwen3_asr.rs`、参考实现 `sherpa-onnx/csrc/offline-recognizer-qwen3-asr-impl.{h,cc}` + `offline-qwen3-asr-model.cc`
 
 ## 1. 背景
