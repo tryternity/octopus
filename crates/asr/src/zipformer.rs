@@ -1144,12 +1144,12 @@ pub(crate) fn normalize_whisper_features(chunk: &mut Array2<f32>) {
         }
     }
 
-    // 3. clamp to max_v - 8.0, and shift+scale
+    // 3. clamp to max_v - 8.0, then (x + 4.0) / 4.0 — 与 sherpa-onnx NormalizeWhisperFeatures 一致
     let clamp_min = max_v - 8.0f32;
     for i in 0..nrows {
         for j in 0..ncols {
             let clamped = chunk[[i, j]].max(clamp_min);
-            chunk[[i, j]] = clamped - clamp_min;
+            chunk[[i, j]] = (clamped + 4.0f32) / 4.0f32;
         }
     }
 }
