@@ -1,7 +1,7 @@
 # 剪贴板恢复竞态修复（desktop 审查一3）
 
 **日期**: 2026-06-21
-**状态**: 设计已批准，待实现
+**状态**: ✅ 已实现（commit `e0f1420`，`PASTE_RESTORE_DELAY = 200ms`，详见 §3）
 **来源**: desktop 审查一3（`2026-06-20-desktop-implementation-audit.md` §3.3 + `2026-06-20-desktop-audit-followups.md` §1，原 P2 延后项）
 **分支**: `worktree-clipboard-restore-race`（隔离实现，main 让给 e2e 测试）
 

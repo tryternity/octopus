@@ -10,6 +10,8 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-21-clipboard-restore-race-design.md`
 
+> **状态：✅ 已实现**（commit `e0f1420`：`PASTE_RESTORE_DELAY = 200ms`；GUI e2e 通过 2026-06-20；worktree 已清理合并 main）。下方 step 勾选标记实际完成进度。
+
 > **测试策略说明（偏离 TDD 的理由）**：本改动无单元测试——`paste_via_clipboard` 依赖系统剪贴板 + enigo GUI 键盘交互 + 目标应用粘贴行为，无法离线隔离测试；为单次时序修复引入 mock 框架属 YAGNI。验证靠 `cargo check`（编译）+ 逻辑审查（确认仅 L119 改动、L89 不动）+ 手动 GUI e2e（Task 3 / followups plan 记录）。
 
 ---
@@ -30,7 +32,7 @@
 
 > **关键陷阱**：L89（写剪贴板后）与 L119（Cmd+V 后）是两处**完全相同**的 `std::thread::sleep(Duration::from_millis(50));`。只改 L119，L89 不动。Step 1 的常量插入与 Step 2 的 Edit 都给出了精确锚点，务必按上下文定位。
 
-- [ ] **Step 1: 顶部新增常量（`use` 块之后、`PasteMethod` 之前）**
+- [x] **Step 1: 顶部新增常量（`use` 块之后、`PasteMethod` 之前）**
 
 old：
 ```rust
@@ -52,7 +54,7 @@ const PASTE_RESTORE_DELAY: Duration = Duration::from_millis(200);
 /// Paste method configuration
 ```
 
-- [ ] **Step 2: L119 改用常量（带上下文区分 L89）**
+- [x] **Step 2: L119 改用常量（带上下文区分 L89）**
 
 old（含「Mod release」+「仅在不保留识别结果时恢复」上下文，唯一定位 L119）：
 ```rust
@@ -76,17 +78,17 @@ new：
     // 仅在不保留识别结果时恢复原剪贴板。
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cargo check -p octopus-desktop`
 Expected: PASS，零 error 零新 warning（`Duration` 已 `use` 于 L7，常量直接可用）。
 
-- [ ] **Step 4: 逻辑审查（确认仅改 L119）**
+- [x] **Step 4: 逻辑审查（确认仅改 L119）**
 
 Run: `git diff crates/desktop/src/paste.rs`
 Expected: 仅两处变化——① 顶部新增 `PASTE_RESTORE_DELAY` 常量 + 注释；② Cmd+V 后那处 `sleep(Duration::from_millis(50))` → `sleep(PASTE_RESTORE_DELAY)`。**L89（写剪贴板后的 sleep）必须仍是 `Duration::from_millis(50)` 未变。**
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/paste.rs
@@ -100,7 +102,7 @@ git commit -m "fix(desktop): 剪贴板恢复竞态——Cmd+V 后 sleep 50ms→2
 **Files:**
 - Modify: `docs/superpowers/plans/2026-06-20-desktop-audit-followups.md`
 
-- [ ] **Step 1: §1 标题 + 状态行改「已实现」**
+- [x] **Step 1: §1 标题 + 状态行改「已实现」**
 
 标题 old：
 ```markdown
@@ -120,7 +122,7 @@ git commit -m "fix(desktop): 剪贴板恢复竞态——Cmd+V 后 sleep 50ms→2
 **状态**：✅ 已实现（worktree `clipboard-restore-race`，`PASTE_RESTORE_DELAY = 200ms`；spec `2026-06-21-clipboard-restore-race-design.md`）。行为正确性待 GUI e2e（见 §2）。
 ```
 
-- [ ] **Step 2: §2 GUI e2e 清单补「剪贴板恢复竞态」项**
+- [x] **Step 2: §2 GUI e2e 清单补「剪贴板恢复竞态」项**
 
 表格末行 old：
 ```markdown
@@ -133,7 +135,7 @@ git commit -m "fix(desktop): 剪贴板恢复竞态——Cmd+V 后 sleep 50ms→2
 | 一3 | `write_to_clipboard=false` + 慢系统/高负载 → 识别粘贴 | 目标应用粘进识别文本（非之前剪贴板内容） |
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/superpowers/plans/2026-06-20-desktop-audit-followups.md
@@ -144,16 +146,16 @@ git commit -m "docs(plan): desktop-audit followups 同步一3 已实现 + e2e �
 
 ## Task 3: 整体验证 + 收尾
 
-- [ ] **Step 1: workspace 编译**
+- [x] **Step 1: workspace 编译**
 
 Run: `cargo check --workspace --all-targets`
 Expected: PASS，零 warning 回归。
 
-- [ ] **Step 2: 确认 e2e 待本地（环境无 GUI）**
+- [x] **Step 2: 确认 e2e 待本地（环境无 GUI）**
 
 本 worktree / CI 无 GUI、无真实音频、无真实目标应用粘贴场景——剪贴板恢复竞态的行为正确性留 GUI e2e（已记入 followups §2）。**不在本 task 跑 e2e。**
 
-- [ ] **Step 3: 收尾（留 worktree，不合并）**
+- [x] **Step 3: 收尾（留 worktree，不合并）**
 
 按 `superpowers:finishing-a-development-branch`：main 正用于 e2e 测试，本修复**留在 worktree 分支 `worktree-clipboard-restore-race`，暂不合并**。待 GUI e2e 通过后再 merge 回 main。
 

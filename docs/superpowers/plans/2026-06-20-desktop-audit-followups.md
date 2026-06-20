@@ -1,7 +1,7 @@
 # desktop 实现审查 · 后续待办
 
 > 来源：`docs/superpowers/specs/2026-06-20-desktop-implementation-audit.md`（7 条审查的复核 + P0/P1 实施）。
-> 状态（2026-06-20）：P0（一1/一2/二1）+ P1（二2/三2/三1）**均已合并 main**（P0 `44b8ab8`、P1 `9a19b6b`）。本文档记录尚未完成、需后续处理的事项。
+> 状态（2026-06-20）：P0（一1/一2/二1）+ P1（二2/三2/三1）**均已合并 main**（P0 `44b8ab8`、P1 `9a19b6b`）。本文档后续事项**均已处理**：§1 一3 已实现（`e0f1420`）、§4 跨会话护栏已实现（`cfe78f4`）、§2 GUI e2e 已通过（2026-06-20，用户确认）。
 
 ---
 
@@ -16,11 +16,11 @@
 - 或改为「restore 前 probe 粘贴是否落地」的信号（更复杂，YAGNI，优先纯延迟）。
 - 注意 macOS / Windows / Linux 粘贴异步性不同，延迟可能需按平台分档。
 
-**状态**：✅ 已实现（worktree `clipboard-restore-race`，`PASTE_RESTORE_DELAY = 200ms`；spec `2026-06-21-clipboard-restore-race-design.md`）。行为正确性待 GUI e2e（见 §2）。
+**状态**：✅ 已实现（`PASTE_RESTORE_DELAY = 200ms`，`e0f1420`；spec `2026-06-21-clipboard-restore-race-design.md`）。GUI e2e 已通过（2026-06-20，见 §2）。
 
 ---
 
-## 2. GUI e2e 验证（P0 + P1 行为正确性）
+## 2. GUI e2e 验证（✅ 已通过 2026-06-20）
 
 P0/P1 的修复逻辑均由 `cargo check` + 逻辑审查 + 既有单测保证，但**行为正确性留 GUI e2e**——CI 环境无 GUI / 无真实音频设备 / 无真实 DashScope key，以下项需在本地桌面环境手动验证：
 
@@ -37,7 +37,7 @@ P0/P1 的修复逻辑均由 `cargo check` + 逻辑审查 + 既有单测保证，
 | 一1+ | 启用最终润色 → Esc Cancel → 立刻重开+停止触发润色 → 等旧润色返回 | 新会话粘进**新**润色文本（非旧会话）；日志见 `FinalPolishDone session_id mismatch ... 丢弃` |
 | 三1+ | 云端停止(CloudClosing) → Esc/Discard → 立刻重开云端+停止 → 等旧 close 返回 | 新会话粘进**新**云端文本（非旧会话）；日志见 `CloudStreamingDone session_id mismatch ... 丢弃` |
 
-**状态**：待用户本地运行。环境无 GUI，本次未跑。
+**状态**：✅ 已通过（2026-06-20 本地 GUI 验证，用户确认）。
 
 > 一1+ / 三1+ 两条触发苛刻（需卡在润色/close 窗口内 Cancel+重开+再停），难稳定手动复现；主要靠护栏逻辑正确性 + mismatch 日志验证。
 
