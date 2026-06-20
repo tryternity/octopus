@@ -154,9 +154,7 @@ impl StreamingZipformer {
         input_samples.extend_from_slice(&samples);
 
         let feats = if self.is_whisper {
-            let mut f = crate::zipformer::compute_whisper_features_linear(&input_samples)?;
-            crate::zipformer::normalize_whisper_features(&mut f);
-            f
+            crate::zipformer::compute_whisper_features_linear(&input_samples)?
         } else {
             compute_fbank_features(&input_samples)?
         };
@@ -194,7 +192,9 @@ impl StreamingZipformer {
                 }
             }
 
-            // 特征已全局归一化
+            if self.is_whisper {
+                crate::zipformer::normalize_whisper_features(&mut chunk);
+            }
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
         }
@@ -245,9 +245,7 @@ impl StreamingZipformer {
         input_samples.extend_from_slice(&self.sample_buffer);
 
         let feats = if self.is_whisper {
-            let mut f = crate::zipformer::compute_whisper_features_linear(&input_samples)?;
-            crate::zipformer::normalize_whisper_features(&mut f);
-            f
+            crate::zipformer::compute_whisper_features_linear(&input_samples)?
         } else {
             compute_fbank_features(&input_samples)?
         };
@@ -272,7 +270,9 @@ impl StreamingZipformer {
                 }
             }
 
-            // 特征已全局归一化
+            if self.is_whisper {
+                crate::zipformer::normalize_whisper_features(&mut chunk);
+            }
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
         }
@@ -606,9 +606,7 @@ impl StreamingZipformerTransducer {
         input_samples.extend_from_slice(&samples);
 
         let feats = if self.is_whisper {
-            let mut f = crate::zipformer::compute_whisper_features_linear(&input_samples)?;
-            crate::zipformer::normalize_whisper_features(&mut f);
-            f
+            crate::zipformer::compute_whisper_features_linear(&input_samples)?
         } else {
             compute_fbank_features(&input_samples)?
         };
@@ -644,7 +642,9 @@ impl StreamingZipformerTransducer {
                     chunk[[i, j]] = padded[[frame_idx + h_frames + i, j]];
                 }
             }
-            // 特征已全局归一化
+            if self.is_whisper {
+                crate::zipformer::normalize_whisper_features(&mut chunk);
+            }
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
         }
@@ -692,11 +692,7 @@ impl StreamingZipformerTransducer {
         input_samples.extend_from_slice(&self.sample_buffer);
 
         let feats = if self.is_whisper {
-            let mut f = crate::zipformer::compute_whisper_features_linear(&input_samples)?;
-            // 全局归一化（对整段可用特征一次性 normalize），而非 per-chunk——
-            // per-chunk 归一化会导致静音/语音 chunk 间 max_v 剧烈跳变，encoder 输入不一致
-            crate::zipformer::normalize_whisper_features(&mut f);
-            f
+            crate::zipformer::compute_whisper_features_linear(&input_samples)?
         } else {
             compute_fbank_features(&input_samples)?
         };
@@ -715,23 +711,27 @@ impl StreamingZipformerTransducer {
                     chunk[[i, j]] = feats[[frame_idx + h_frames + i, j]];
                 }
             }
-            // 特征已在上文全局归一化，此处不再 per-chunk normalize
+            if self.is_whisper {
+                crate::zipformer::normalize_whisper_features(&mut chunk);
+            }
             self.run_chunk(&chunk)?;
             frame_idx += self.chunk_shift;
         }
 
-        // Consume processed samples
-        let consumed_frames = frame_idx;
-        let consumed_samples = consumed_frames * Z_FRAME_SHIFT;
-        let new_history_start = self.history_samples.len() + consumed_samples;
-        let total_len = self.history_samples.len() + self.sample_buffer.len();
-        if new_history_start < total_len {
-            let mut combined = Vec::with_capacity(total_len - new_history_start);
-            combined.extend_from_slice(&input_samples[new_history_start..]);
-            self.history_samples = combined;
-            self.sample_buffer.clear();
+        // Consume processed samples — 仅保留最后 1 帧（Z_FRAME_SHIFT samples）作为 history，
+        // 与 CTC 引擎一致。此前保留全部未消费样本导致 history 无限膨胀、
+        // 每次重算特征时归一化 max_v 剧烈跳变。
+        let consumed_samples = frame_idx * Z_FRAME_SHIFT;
+        let consumed_limit = (self.history_samples.len() + consumed_samples).min(input_samples.len());
+        if consumed_limit >= Z_FRAME_SHIFT {
+            self.history_samples = input_samples[consumed_limit - Z_FRAME_SHIFT..consumed_limit].to_vec();
+        } else if !input_samples.is_empty() {
+            self.history_samples = input_samples[input_samples.len().saturating_sub(Z_FRAME_SHIFT)..].to_vec();
+        }
+
+        if consumed_samples < self.sample_buffer.len() {
+            self.sample_buffer = self.sample_buffer[consumed_samples..].to_vec();
         } else {
-            self.history_samples.clear();
             self.sample_buffer.clear();
         }
 
