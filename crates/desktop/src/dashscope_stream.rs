@@ -80,6 +80,11 @@ impl DashScopeStreamSession {
 
         let is_qwen = is_qwen_realtime_endpoint(&endpoint);
         rt.spawn(async move {
+            // 自留 result_tx 克隆用于建连/建立期失败上报（审查 一2）：run_*_session 在
+            // connect_async / 发 run-task / pre-roll 失败时返回 Err，但传入的 result_tx 已按值
+            // 移入并在早退时 drop，closure 这边拿不到。克隆一份自留，Err 时由此发 Failed，
+            // 否则 coordinator try_recv 恒 None、僵尸会话静默卡到 Esc。
+            let tx_for_err = result_tx.clone();
             let result = if is_qwen {
                 run_qwen_realtime_session(
                     pcm_rx, result_tx, endpoint, key, model, language, pre_roll_samples,
@@ -91,6 +96,7 @@ impl DashScopeStreamSession {
             };
             if let Err(e) = result {
                 log::error!("dashscope stream session error: {}", e);
+                let _ = tx_for_err.send(StreamEvent::Failed(e.to_string()));
             }
         });
 
@@ -313,7 +319,14 @@ async fn run_ws_session(
                         let _ = result_tx.send(StreamEvent::Failed(format!("WS 读错误: {}", e)));
                         break;
                     }
-                    None => break, // WS 关闭
+                    None => {
+                        // WS 意外关闭（服务端断开，非 finish-task 正常收尾）→ 上报 Failed
+                        // （审查 一2）：否则 coordinator try_recv 恒 None、僵尸会话卡到 Esc。
+                        // 这是 ws.next() 的 None（服务端关），与 pcm_rx.recv() 的 None
+                        // （coordinator drop、优雅关闭）不同——后者保持静默 break 不报错。
+                        let _ = result_tx.send(StreamEvent::Failed("WS 连接意外关闭".to_string()));
+                        break;
+                    }
                 }
             }
         }
@@ -566,7 +579,14 @@ async fn run_qwen_realtime_session(
                         let _ = result_tx.send(StreamEvent::Failed(format!("WS 读错误: {}", e)));
                         break;
                     }
-                    None => break, // WS 关闭
+                    None => {
+                        // WS 意外关闭（服务端断开，非 finish-task 正常收尾）→ 上报 Failed
+                        // （审查 一2）：否则 coordinator try_recv 恒 None、僵尸会话卡到 Esc。
+                        // 这是 ws.next() 的 None（服务端关），与 pcm_rx.recv() 的 None
+                        // （coordinator drop、优雅关闭）不同——后者保持静默 break 不报错。
+                        let _ = result_tx.send(StreamEvent::Failed("WS 连接意外关闭".to_string()));
+                        break;
+                    }
                 }
             }
         }

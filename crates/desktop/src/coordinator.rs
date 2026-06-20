@@ -1509,6 +1509,13 @@ fn handle_cloud_streaming_tick(
                     current_partial.clear();
                     *is_closing = false;
                     *is_speaking = false;
+                    // 向用户报错（审查 一2）：session 由下方 `!is_closing && !is_speaking`
+                    // 分支自动 take，下次语音 onset 重开 WS（瞬时抖动自动重试；
+                    // 持续失败如 Key 无效则每次 onset 报错，用户可见可排查）。
+                    crate::result_window::update_result(
+                        app_handle,
+                        &format!("⚠️ 云端识别失败：{}", msg),
+                    );
                 }
             }
         }
