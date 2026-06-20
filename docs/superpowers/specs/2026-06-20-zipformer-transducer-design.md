@@ -108,12 +108,25 @@ ort 2.0.0-rc.12 的 `SessionOutputs` 持有 session 的借用，调 decoder/join
 - **blank(0)**：移到下一 frame
 - 内循环安全上限 20 次/frame（防理论无限循环）
 
-## 流式 Whisper 特征全局归一化（关键约束）
+## Whisper 特征归一化（3 个根因修复）
 
-`normalize_whisper_features`（log10 → 全局 max_v clamp to `max_v - 8` → shift）是**全局操作**，依赖整段特征的 max_v 做统一缩放。
+对比 sherpa-onnx 官方 C++ 实现，发现并修复 3 个导致流式 Transducer 质量差的根因：
 
-- **离线引擎**：整段音频一次处理，天然全局归一化，正确。
-- **流式引擎**：`process_chunks` / `finish` 必须在整段可用特征（`history_samples + buffer`）上**一次性**归一化，再按 chunk 切片送入 encoder。**不可 per-chunk 归一化**——每 ~45 帧单独 normalize 时，静音 chunk 的 max_v 极小、语音 chunk 极大，归一化尺度在 chunk 间剧烈跳变，encoder 输入分布不一致 → 输出乱码（"回 月 因 同"式重复 token）。
+### 根因 1：归一化公式错误
 
-修复覆盖 CTC（`StreamingZipformer`）与 Transducer（`StreamingZipformerTransducer`）两套流式引擎的 `process_chunks` 和 `finish` 共四处。CTC 的 `zipformer-small-ctc` 走 fbank 特征（`is_whisper=false`）不受影响，但代码路径统一以便未来 whisper-CTC 模型即插即用。
+sherpa-onnx `NormalizeWhisperFeatures`（`math.cc`）：
+```
+mel = (max(log10(clamp(x, 1e-10)), max_v - 8.0) + 4.0) / 4.0
+```
+输出范围 ~0-2。我们的实现错误地用 `clamped - clamp_min`（输出范围 0-8，尺度差 4 倍），ONNX 模型输入分布不匹配。修正为 `(clamped + 4.0) / 4.0`。
+
+### 根因 2：Transducer history 泄漏
+
+`StreamingZipformerTransducer::process_chunks` 保留**全部未消费样本**作为 `history_samples`（可达上万样本），而非仅 1 帧（160 samples）。导致每次重算特征时归一化 max_v 剧烈跳变。修复为与 CTC 引擎一致的 1-frame history。
+
+### 根因 3：流式归一化 scope
+
+sherpa-onnx 做 **per-chunk 归一化**（每个 chunk 独立 normalize，配合增量特征计算）。此前误改为 pseudo-global（每次重算 history+buffer 全局归一化），但由于 history/buffer 内容每次不同，max_v 仍不稳定。回退为 per-chunk 归一化——与 sherpa-onnx 行为一致。
+
+修复覆盖 CTC + Transducer 两套流式引擎的 `process_chunks` 和 `finish` 共四处 + `normalize_whisper_features` 函数本身。
 
