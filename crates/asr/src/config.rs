@@ -505,6 +505,7 @@ mod tests {
                 paraformer: None,
                 qwen3_asr: None,
                 zipformer: Some(zip),
+                moonshine: None,
                 aliyun: None,
             },
         }
@@ -532,6 +533,7 @@ mod tests {
                 paraformer: None,
                 qwen3_asr: None,
                 zipformer: None,
+                moonshine: None,
                 aliyun: Some(aliyun),
             },
         }
@@ -592,6 +594,7 @@ mod tests {
                 paraformer: None,
                 qwen3_asr: None,
                 zipformer: None,
+                moonshine: None,
                 aliyun: None,
             },
         };
