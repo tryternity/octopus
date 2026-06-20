@@ -40,9 +40,7 @@ impl StreamingZipformer {
     pub fn new(engine_name: &str) -> Result<Self> {
         let cfg = config::load_config()?;
 
-        // DB zipformer section 查找；section 缺失时用本地打包兜底（DEFAULT_ASR_MODEL_DIR），
-        // 与 config::fallback_engine 一致——兜底引擎 zipformer-small-ctc 随应用打包，
-        // DB 缺条目（旧 schema / 人为删除）时仍可用
+        // DB zipformer section 查找；section 缺失时用本地打包兜底（DEFAULT_ASR_MODEL_DIR）
         let entry_owned;
         let entry = if let Some(zip_cfg) = cfg.asr.zipformer.as_ref() {
             if let Some(e) = zip_cfg.get(engine_name) {
@@ -56,7 +54,6 @@ impl StreamingZipformer {
                 &entry_owned
             }
         } else {
-            // DB 无 zipformer section：硬构造兜底（本地打包路径）
             entry_owned = octopus_infra::db::ModelEntry {
                 source: octopus_infra::consts::DEFAULT_ASR_MODEL_DIR.to_string(),
                 language: "zh".to_string(),
@@ -69,18 +66,13 @@ impl StreamingZipformer {
             &entry_owned
         };
 
+        Self::new_from_entry(entry)
+    }
+
+    /// 从已解析的 ModelEntry 构造（StreamingSession::new 使用，避免双重 DB 查找）。
+    pub fn new_from_entry(entry: &octopus_infra::db::ModelEntry) -> Result<Self> {
         let hf_path = config::resolve_model_dir(&entry.source)?;
         let model_path = discover_streaming_zipformer_onnx(&hf_path)?;
-
-        // 防御性检测：Transducer 模型（encoder+decoder+joiner 三 session）
-        // 不能走 CTC 流式路径——encoder 输出 encoder_out 而非 log_probs，
-        // CTC argmax 会把 enc_dim(512/768) 当 vocab 做 argmax → 乱码。
-        if hf_path.join("decoder.onnx").exists() {
-            anyhow::bail!(
-                "Transducer 模型（含 decoder.onnx）不支持 CTC 流式路径。\
-                 请将 DB models.is_streaming 设为 0 走 VAD 分段伪流式 → ZipformerTransducerEngine"
-            );
-        }
 
         let session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&model_path)?;
 
@@ -515,23 +507,24 @@ impl StreamingZipformerTransducer {
     /// 根据引擎裸名创建流式 Transducer session。
     pub fn new(engine_name: &str) -> Result<Self> {
         let cfg = config::load_config()?;
-
-        let entry_owned;
         let entry = if let Some(zip_cfg) = cfg.asr.zipformer.as_ref() {
             if let Some(e) = zip_cfg.get(engine_name) {
-                e
+                e.clone()
             } else {
-                entry_owned = zip_cfg
+                zip_cfg
                     .iter()
                     .next()
                     .map(|(_, v)| v.clone())
-                    .context("No zipformer model entries")?;
-                &entry_owned
+                    .context("No zipformer model entries")?
             }
         } else {
             anyhow::bail!("No zipformer section in config for Transducer");
         };
+        Self::new_from_entry(&entry)
+    }
 
+    /// 从已解析的 ModelEntry 构造（StreamingSession::new 使用，避免双重 DB 查找）。
+    pub fn new_from_entry(entry: &octopus_infra::db::ModelEntry) -> Result<Self> {
         let hf_path = config::resolve_model_dir(&entry.source)?;
 
         // 发现 encoder + decoder + joiner
