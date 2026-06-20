@@ -34,8 +34,29 @@ P0/P1 的修复逻辑均由 `cargo check` + 逻辑审查 + 既有单测保证，
 | 三1 | 云端录音中连按 Toggle 停止 → 网络模拟慢 close | 主线程不卡（快捷键不堆积），close 完成后自动粘贴 |
 | 三1 | 云端 CloudClosing 期间点 Cancel / Discard | Cancel：不粘贴不写库；Discard：写库保历史不粘贴 |
 | 一3 | `write_to_clipboard=false` + 慢系统/高负载 → 识别粘贴 | 目标应用粘进识别文本（非之前剪贴板内容） |
+| 一1+ | 启用最终润色 → Esc Cancel → 立刻重开+停止触发润色 → 等旧润色返回 | 新会话粘进**新**润色文本（非旧会话）；日志见 `FinalPolishDone session_id mismatch ... 丢弃` |
+| 三1+ | 云端停止(CloudClosing) → Esc/Discard → 立刻重开云端+停止 → 等旧 close 返回 | 新会话粘进**新**云端文本（非旧会话）；日志见 `CloudStreamingDone session_id mismatch ... 丢弃` |
 
 **状态**：待用户本地运行。环境无 GUI，本次未跑。
+
+> 一1+ / 三1+ 两条触发苛刻（需卡在润色/close 窗口内 Cancel+重开+再停），难稳定手动复现；主要靠护栏逻辑正确性 + mismatch 日志验证。
+
+---
+
+## 4. FinalPolishDone / CloudStreamingDone 跨会话护栏（✅ 已实现）
+
+**背景**：审查一1 当时仅给中间润色 `PolishDone` 加了 `session_id` 护栏，认为最终润色 `FinalPolishDone` 已被 stage guard 保护（`handle_toggle` 对 `Stage::Polishing` 忽略 Toggle）。**复核发现该推理有漏洞**——它只覆盖「Cancel 后保持 Idle」，漏了「Cancel（→Idle）+ 立刻重开新录音 + 再次停止触发润色 → 新 `Stage::Polishing`」：旧会话迟到的 `FinalPolishDone` 会匹配新 Polishing，用新 id + 旧润色文本 `do_paste` → 跨会话文本污染。`CloudStreamingDone`（审查三1 引入）同理：CloudClosing 期间 Cancel/Discard 清回 Idle（绕过 Toggle 忙保护），重开云端会话 → 新 CloudClosing，旧 close 结果 `set_full` 覆盖新 transcript。
+
+**触发条件**（窄但真实）：润色 1~3s / close 在飞窗口内 Cancel + 重开 + 再次停止，且旧结果恰好落在新会话的同名 stage 窗口内。命中即静默跨会话污染（粘进/落库错会话文本）。
+
+**修复**（对称于既有 `PolishDone` 护栏，`coordinator.rs` 单文件，机械低风险）：
+- `Command::FinalPolishDone` / `CloudStreamingDone` 各加 `session_id: i64`（= 发起时的 transcript.id）。
+- spawn 处带 id：最终润色 spawn（`start_final_polish_or_paste`，`id` 已在 L1035 取出）、云端 close spawn（`handle_toggle` CloudStreaming arm，`tr.id`）。
+- handler 入口校验当前 stage id == session_id，mismatch 则 warn/debug + return（不动当前 stage）：`handle_final_polish_done`（`Polishing.id`）、`handle_cloud_streaming_done`（`CloudClosing.transcript.id`）。
+
+**验证**：`cargo check --workspace --all-targets` 零 warning；`cargo test -p octopus-desktop` 36 passed / 0 failed。无单测（coordinator 全 Tauri 耦合，与一1 session_id 护栏同理 YAGNI）；行为正确性留 GUI e2e（见 §2 一1+/三1+）。
+
+**状态**：✅ 已实现（本 worktree `clipboard-restore-race`）。audit spec §3.1/§4 已同步修正原「FinalPolishDone 已被保护」结论。
 
 ---
 

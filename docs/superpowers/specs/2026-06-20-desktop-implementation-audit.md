@@ -15,7 +15,7 @@
 
 | # | AI 结论 | 判定 | 严重度 | 处置建议 |
 |---|---|---|---|---|
-| 一1 | 跨会话润色文本污染（PolishDone/FinalPolishDone 无 session_id） | ✅ 真实（**收窄**） | 中 | ✅ 已修（§4）：`PolishDone` 带 session_id + `handle_polish_done` 校验 |
+| 一1 | 跨会话润色文本污染（PolishDone/FinalPolishDone 无 session_id） | ✅ 真实（**收窄**） | 中 | ✅ 已修（§4）：`PolishDone`/`FinalPolishDone` 均带 session_id + handler 校验（FinalPolishDone 为后续复核追加，见 followups §4） |
 | 一2 | 云端流式连接异常→录音挂起 | ✅ 真实 | 中高 | ✅ 已修（§4）：建连/关闭失败 emit `StreamEvent::Failed` + coordinator 报错复位 |
 | 一3 | 剪贴板恢复竞态 | ✅ 真实 | 低 | P2：延长 paste 后等待或平台化处理 |
 | 二1 | OnceLock 缓存致 denoise/hwaccel 失效 | ✅ 真实（**升级**） | 中高 | ✅ 已修（§4）：`OnceLock`→`RwLock<Option<Arc>>` + `reload_app_config`，desktop 写 DB 后刷新 |
@@ -37,7 +37,7 @@
 - `handle_polish_done`（L2092）：匹配 `Streaming|VadSegmented|WaitingCompletion` 取**当前** transcript，**既不查 session_id 也不查 `polish_pending()`**（L2099-2109）。
 
 **校准（复核核心）**：
-- **FinalPolishDone 实际被保护**，不可利用：`handle_toggle` 对 `Stage::Polishing` 直接 `debug!("Toggle ignored: busy polishing")`（L971-973）→ 润色中无法开新录音；`handle_final_polish_done` 要求 stage==Polishing（L1098-1108），Cancel 后 stage 变 Idle → 旧 FinalPolishDone 落空被忽略。AI 把两条并列、过度泛化。
+- **FinalPolishDone 表面被保护，实有重开漏洞**（后续复核修正）：`handle_toggle` 对 `Stage::Polishing` 直接 `debug!("Toggle ignored: busy polishing")`→ 润色中无法开新录音；`handle_final_polish_done` 要求 stage==Polishing。原推理据此认为「Cancel 后 stage 变 Idle → 旧 FinalPolishDone 落空被忽略」——但这只覆盖「Cancel 后保持 Idle」。若用户 Cancel（→Idle）后**立刻重开新录音并再次停止触发润色 → 新 `Stage::Polishing`**，旧会话迟到的 FinalPolishDone 会匹配到新 Polishing，用新 id + 旧润色文本 `do_paste` → 跨会话污染。触发窗口窄（润色 1~3s 内 Cancel+重开+再停），但与中间 PolishDone 同类、后果相同。**已补 `FinalPolishDone.session_id` 护栏（见 followups §4）**。
 - **真正可利用的是中间 PolishDone**：Streaming 期用户 Esc（Cancel→Idle）+ 快速重开新录音 → 新会话 transcript（非 pending）→ 旧 PolishDone 被 `handle_polish_done` 应用到新 transcript + 写错 DB 行（`UpdatePolished`/`UpdateEdited` 用新 transcript.id）。
 - 触发面窄：需 mode=2 + 停顿触发润色 + 润色窗口（1~3s）内 Cancel + 快速重开。但命中即数据污染。
 
@@ -126,7 +126,7 @@ P0（一1/一2/二1）+ P1（二2/三2/三1）**均已合并 main**（P0 `44b8ab
 ### P0：一1 / 一2 / 二1（已合并 main）
 
 #### 一1 PolishDone 跨会话护栏
-- `Command::PolishDone` 加 `session_id: i64`（与既有 `TranscriptionDone` 模式一致；未改 `FinalPolishDone`——它已被 stage guard 保护，见 §3.1）。
+- `Command::PolishDone` 加 `session_id: i64`（与既有 `TranscriptionDone` 模式一致）。`FinalPolishDone` 当时认为已被 stage guard 保护未改（见 §3.1 原推理），**后续复核发现 Cancel+重开+再润色可绕过该保护，已补 `session_id` 护栏（followups §4）**。
 - `spawn_polish_thread` 加 `session_id` 参数；两处调用（`check_and_trigger_polish` / `handle_polish_now`）传 `transcript.id`。
 - `handle_polish_done` 入口校验 `transcript.id != session_id` 即丢 + emit `polish-done` 恢复前端按钮。选 session_id 方案（非 polish_pending 护栏）：复用代码库既有模式、不污染 pending 语义。
 - 涉及：`coordinator.rs`（Command 定义、dispatch、`spawn_polish_thread`、`handle_polish_done`、两处调用）。
@@ -162,10 +162,10 @@ P1 三条已实施、逐 commit bisect-clean、**已合并 main**（`9a19b6b`，
 - `dashscope_stream.rs`：`close()`（block_on 封装）重构为 `pub async fn close_async(self)`（发 Finish + 8s 超时 recv loop）；旧同步 `close()` 删除（无调用方，消除 block_on footgun）。
 - `coordinator.rs`：
   - `Stage::CloudClosing { transcript, current_partial }`：close 在飞期间持有收尾态。
-  - `Command::CloudStreamingDone { text: Result<String, String> }`：close_async 结果回传。
+  - `Command::CloudStreamingDone { text: Result<String, String>, session_id: i64 }`：close_async 结果回传。`session_id` 为后续复核追加——CloudClosing 期间 Cancel/Discard 会清回 Idle（绕过 Toggle 忙保护），用户可立刻重开云端会话 → 新 CloudClosing，旧 close 结果会匹配新 CloudClosing 覆盖其 transcript；`handle_cloud_streaming_done` 校验 `transcript.id == session_id` 不符则丢（followups §4）。
   - stop 路径（handle_toggle CloudStreaming arm）：session 在 → spawn `close_async` + 进 CloudClosing + `return`；无 session → 直接 `finalize_cloud`。
   - `finalize_cloud(stage, transcript, current_partial, ...)`：append partial + 空→Idle / 否则 `start_final_polish_or_paste`（stop 无 session 路径与 Done 路径共用，避免重复）。
-  - `handle_cloud_streaming_done`：仅 CloudClosing 处理，`set_full` + finalize；非 CloudClosing 忽略（Cancel/Discard 已挪走 stage，pending Done 落空不粘贴）。
+  - `handle_cloud_streaming_done`：仅 CloudClosing 处理，先校验 `transcript.id == session_id`（跨会话护栏）再 `set_full` + finalize；非 CloudClosing 或 session_id 不符则忽略。
   - `handle_toggle`/`handle_discard`/`stage_name` 补 CloudClosing arm；`handle_cancel` 走既有 `_ =>` 兜底。
 - 语义（CloudClosing 期间）：Toggle 忽略（close 完成自动 finalize+粘贴）；Cancel→Idle 不粘贴不写库；Discard→写库保历史不粘贴。三条均正确。
 - 涉及：`dashscope_stream.rs`、`coordinator.rs`。
