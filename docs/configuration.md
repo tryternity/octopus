@@ -59,8 +59,8 @@ octopus 配置分两部分：
 | local | zipformer | zipformer-small-ctc | `models/zipformer`（本地打包，**兜底引擎**） | 1 | 1 | 1 |
 | local | zipformer | zipformer-multi | k2-fsa/sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13 | 1 | 0 | 1 |
 | local | zipformer | zipformer-ctc | csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30 | 1 | 0 | 1 |
-| local | zipformer | zipformer-zh-transducer | csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30 | 1 | 0 | 1 |
-| local | zipformer | zipformer-xlarge-transducer | csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30 | 1 | 0 | 1 |
+| local | zipformer | zipformer-zh-transducer | csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30 | 1 | 0 | 0 |
+| local | zipformer | zipformer-xlarge-transducer | csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30 | 1 | 0 | 0 |
 | local | paraformer | paraformer-streaming | csukuangfj/sherpa-onnx-streaming-paraformer-zh | 1 | 0 | 1 |
 | local | sensevoice | sherpa-onnx-sense-voice-funasr-nano-int8 | csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17 | 1 | 0 | 0 |
 | local | qwen3-asr | qwen3-asr-0.6B | csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25 | 1 | 0 | 0 |
@@ -87,7 +87,7 @@ octopus 配置分两部分：
 
 > **`is_enabled` 字段**：标记是否启用。`1` 表示启用，`0` 表示禁用。只有启用的模型才会被系统加载或供识别/润色使用。阿里云 qwen / Fun-ASR seed 默认 `is_enabled=0`，用户填 API Key 后改为 `1` 启用。
 
-> **`is_streaming` 字段**：标记 ASR 模型是否支持流式识别。`1` 表示流式（zipformer CTC×3 + Transducer×2 / paraformer-streaming，走本地流式 partial），`0` 表示非流式（sensevoice / qwen3-asr / whisper / aliyun Fun-ASR，走 VAD 分段伪流式）。`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming`，数据驱动、不再按 category 硬编码。
+> **`is_streaming` 字段**：标记 ASR 模型是否支持流式识别。`1` 表示流式（zipformer CTC×3 / paraformer-streaming，走本地流式 partial），`0` 表示非流式（sensevoice / qwen3-asr / whisper / zipformer Transducer×2 / aliyun Fun-ASR，走 VAD 分段伪流式）。`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming`，数据驱动、不再按 category 硬编码。**注：Zipformer Transducer 虽是流式架构（RNN-T），但当前流式引擎 `StreamingZipformer` 仅支持 CTC，故 Transducer 标 `is_streaming=0` 走 VAD 分段伪流式 → 离线 `ZipformerTransducerEngine` 解码。**
 
 > **远程 API Key 配置方式（`secret_key`）**：LLM / 云端 ASR 的所有参数（包括 Base URL / WS 端点 和 API Key）全部存储在 DB `models` 表。`source` 存端点 URL，`secret_key` 存 API Key。可通过 SQLite 客户端手动填入（具体填法见下方「阿里云云端 API」小节）。
 
