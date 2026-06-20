@@ -345,7 +345,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 两个引擎共享 `load_vocab`（tokens.txt 解析）、`initial_encoder_states`（encoder 缓存初始化）、`decode_token_ids`（token ID → 文本，支持 BBPE + SentencePiece byte-fallback）三个自由函数。
 
-**Whisper 特征全局归一化**：使用 whisper 特征（`is_whisper=true`，即 Transducer 系列 + `zipformer-ctc`）的模型，其 `normalize_whisper_features`（log10 → 全局 max_v clamp → shift）是**全局操作**——必须对整段音频的特征矩阵一次性归一化，再切片送入 encoder。离线引擎天然如此（整段音频一次处理）。**流式引擎的关键约束**：`process_chunks` 和 `finish` 中，归一化在整段可用特征（history + buffer）上执行一次，**不可 per-chunk 归一化**——per-chunk（每 ~45 帧）归一化时静音 chunk 的 max_v 极小而语音 chunk 极大，尺度剧烈跳变导致 encoder 输入不一致、输出乱码（"回 月 因 同"式重复）。CTC 的 `zipformer-small-ctc` 用 fbank 特征（`is_whisper=false`），不受此影响，但代码路径保持一致以便未来 whisper-CTC 模型即插即用。
+**Whisper 特征归一化（per-chunk，与 sherpa-onnx 一致）**：使用 whisper 特征（`is_whisper=true`，即 Transducer 系列 + `zipformer-ctc`）的模型，其 `normalize_whisper_features` 公式为 `mel = (max(log10(clamp(x, 1e-10)), max_v - 8.0) + 4.0) / 4.0`（与 sherpa-onnx `NormalizeWhisperFeatures` 完全一致）。**关键约束**：① 归一化公式最后一步是 `(x + 4) / 4`（范围~0-2），不是简单的 shift（曾错误用 `x - clamp_min`，范围 0-8，尺度差 4 倍）；② 流式引擎做 **per-chunk 归一化**（每个 chunk 独立 normalize 后送 encoder），与 sherpa-onnx 行为一致——此前误改为 pseudo-global（每次重算 history+buffer 全局归一化）反而导致 max_v 跨 tick 不稳定；③ Transducer 流式引擎的 `history_samples` 仅保留最后 1 帧（160 samples），与 CTC 一致——此前保留全部未消费样本导致 history 无限膨胀。
 
 ## 拼音纠错与热词校正 (ASR Corrector)
 

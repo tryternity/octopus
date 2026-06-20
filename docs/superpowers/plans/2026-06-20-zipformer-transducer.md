@@ -81,16 +81,16 @@
 - [x] `streaming_engine.rs::new()` 检测 `decoder.onnx` 分流
 - [x] 测试：`test_streaming_zipformer_transducer` 流式 partial 逐 chunk 增量输出 ✓
 
-### Task 8: 流式 Whisper 特征全局归一化 fix ✅
+### Task 8: Whisper 特征归一化 3 根因修复 ✅
 
-**Bug**：流式引擎的 `normalize_whisper_features` 此前按 per-chunk（每 ~45 帧）执行，静音/语音 chunk 的 max_v 差异巨大 → encoder 输入尺度不一致 → 输出乱码。
+对比 sherpa-onnx 官方 C++ 实现（`math.cc` + `online-recognizer-transducer-impl.h`），定位并修复 3 个根因：
 
-- [x] `StreamingZipformerTransducer::process_chunks` — 全局归一化（整段特征一次 normalize 再切片）
-- [x] `StreamingZipformerTransducer::finish` — 全局归一化
-- [x] `StreamingZipformer::process_chunks`（CTC）— 同步修复（当前 fbank 不受影响，但保证 whisper-CTC 即插即用）
-- [x] `StreamingZipformer::finish`（CTC）— 同步修复
+- [x] **根因 1：归一化公式错误** — `normalize_whisper_features` 最后一步从 `clamped - clamp_min`（范围 0-8）修正为 `(clamped + 4.0) / 4.0`（范围~0-2，与 sherpa-onnx 一致）
+- [x] **根因 2：Transducer history 泄漏** — `process_chunks` 保留全部未消费样本改为仅保留最后 1 帧（与 CTC 引擎一致）
+- [x] **根因 3：归一化 scope** — 从 pseudo-global（每次重算 history+buffer 全局归一化）回退为 per-chunk（与 sherpa-onnx 一致）
+- [x] 覆盖 CTC + Transducer 两套流式引擎的 `process_chunks` 和 `finish` 共四处
 - [x] `cargo build -p octopus-asr`：clean（0 warning）
-- [x] 流式 Transducer 测试：输出从乱码（"回 月 因 同"式重复）变为可识别中文 ✓
+- [x] 流式 Transducer 测试：输出从乱码变为与离线完全一致的可识别中文 ✓
 
 ---
 
@@ -110,5 +110,5 @@
 
 7. **`ZipformerStreamOps` trait**：原设计在 `StreamingSession` 的 accept/flush/finish/reset 中为 CTC 和 Transducer 各写一套分支，重复严重。提取 trait 统一分发，`StreamingSession` 仅持 `Box<dyn ZipformerStreamOps>`。
 
-8. **流式 Whisper 特征全局归一化（P0 bug fix）**：流式引擎原实现按 per-chunk 调 `normalize_whisper_features`，静音/语音 chunk 的 max_v 差异巨大导致 encoder 输入尺度不一致 → 输出乱码。改为在整段可用特征上一次性全局归一化（与离线引擎一致）。覆盖 CTC + Transducer 两套流式引擎共四处。
+8. **Whisper 特征归一化 3 根因修复（P0 bug fix）**：对比 sherpa-onnx C++ 源码发现 3 个根因——①归一化公式错误（`clamped - clamp_min` → `(clamped + 4) / 4`，尺度差 4 倍）；②Transducer history 泄漏（保留全部未消费样本而非 1 帧，导致 max_v 跨 tick 跳变）；③归一化 scope（pseudo-global 回退为 per-chunk，与 sherpa-onnx 一致）。首次尝试用 pseudo-global 修复方向错误（以为 per-chunk 是 bug，实则 sherpa-onnx 恰恰用 per-chunk），系统性对比参考实现后定位真正根因。
 
