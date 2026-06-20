@@ -1,7 +1,7 @@
 # qwen3-asr 推理实现审查复核与修复
 
 > Date: 2026-06-20
-> 状态：审查的 6 条结论已逐条复核（对照 sherpa-onnx C++ 权威实现）；#1/#2/#5/#6 已修（commit 926550d）；#3 经核实为幻象不改；#4 经核实为参考设计的共享代价，留作专项跟进。
+> 状态：审查的 6 条结论已逐条复核（对照 sherpa-onnx C++ 权威实现）；#1/#2/#5/#6 已修（commit 926550d）；#3 经核实为幻象不改；#4 已实现正确 sizing（分支 `perf/qwen3-asr-kv-cache-sizing`，读 decoder past_key dim1 替代硬编码 2048）。
 > Worktree/分支：`fix/qwen3-asr-review`
 > 关联文件：`crates/asr/src/qwen3_asr.rs`、参考实现 `sherpa-onnx/csrc/offline-recognizer-qwen3-asr-impl.{h,cc}` + `offline-qwen3-asr-model.cc`
 
@@ -101,18 +101,22 @@ std::vector key_shape = {batch, max_total_len_, kv_h, hd};  // max_total_len_ �
 - **#2 行为变更**：环境无模型/GUI，未做 e2e；待用户本地跑中英混合音频确认。
 - **`cargo check --workspace` 失败**：main 既有、与本次无关——`crates/desktop` 报 `octopus_llm::test_connection` 未找到（llm 单独 check 通过且 `lib.rs` 已 `pub use`，疑似 desktop↔llm 特征/解析层问题，属 setting-ui 工作范畴）。本改动未触及，不阻塞 asr。
 
-## 6. #4 跟进（专项，本 spec 之后执行）
+## 6. #4 跟进（已实现，分支 `perf/qwen3-asr-kv-cache-sizing`）
 
-**目标**：KV cache 正确 sizing，消除硬编码 `2048` floor 的潜在失配 + 可能的内存节省。
+**目标**：KV cache 正确 sizing，消除硬编码 `2048` floor 的潜在失配 + 动态维度下省内存。
 
-**方案**（对齐 C++ `InitDecoderSession`）：在 `Qwen3AsrEngine::new` 读 decoder 的 `past_key`（第 5 个输入，index=4）shape dim1：
-- dim1 具体（>0）→ `max_total_len = dim1`（与模型声明一致，固定大小）。
-- dim1 动态（-1）→ 回退 `s0 + MAX_NEW_TOKENS`（仅够装 prompt+生成，比 2048 floor 显著省内存，且 loop guard 已保证不越界：写入上限 `s0 + MAX_NEW_TOKENS - 1 < dim`）。
+**已实施方案**（对齐 C++ `InitDecoderSession`）：
+- 新增 `fn decoder_kv_max_len(decoder: &Session) -> Option<usize>`：按名查找 decoder 的 `cache_key_0` 输入，读其 shape dim1；`>0` 返回 `Some`，动态（-1）返回 `None`。
+- `Qwen3AsrEngine` 新增字段 `kv_max_len: Option<usize>`，`new()` 中从 decoder session 读取并存储（`log::debug` 打印实际值/动态）。
+- `transcribe` 中 `let max_total_len = self.kv_max_len.unwrap_or(s0 + MAX_NEW_TOKENS);` 替代原 `2048.max(s0 + MAX_NEW_TOKENS)`。
+  - dim1 具体 → 用模型声明值（正确 sizing，对齐 C++）。
+  - 动态 → 仅装 prompt+生成（`s0 + MAX_NEW_TOKENS`），短音频下比 2048 floor 显著省内存。loop 的 `cur_len + s <= max_total_len` 写入守卫与 `cur_len < max_total_len` 终止条件保证不越界。
 
-**注意点**：
-- 若模型 dim1 具体（如 2048/4096），Rust 当前硬编码 2048 在 dim1>2048 时会传过小 cache → 潜在 shape mismatch；正确 sizing 同时修这个隐患。
-- buffer 复用（eliminate per-call alloc）须**保留清零**（零填充承重，见 §3.3）；仅当确认模型按 `cache_position`/`attention_mask` mask 未写位置时才可免清零（需实测，暂不做）。
-- 需本地带模型验证：打印 dim1 实际值 + 对比内存/延迟。
+**验证**：`cargo check -p octopus-asr` 零 warning；`cargo test -p octopus-asr` 48 passed/0 failed。`decoder_kv_max_len` 依赖 ONNX session，无法离线单测。
+
+**待本地 e2e 验证**（环境无模型）：打印的 dim1 实际值（确认动态/具体）、对应内存与延迟对比。
+
+**未做（YAGNI/需实测）**：buffer 复用消除 per-call alloc。须**保留清零**（零填充承重，见 §3.3）；仅当确认模型按 `cache_position`/`attention_mask` mask 未写位置时才可免清零——需实测，暂不做。
 
 ## 7. 不做（YAGNI 边界）
 

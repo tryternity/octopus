@@ -78,6 +78,11 @@ pub struct Qwen3AsrEngine {
     decoder_session: std::sync::Mutex<Session>,
     tokenizer: tokenizers::Tokenizer,
     entry: config::ModelEntry,
+    /// KV cache 的最大序列长度（审查 #4 跟进）。
+    /// `Some(n)` = decoder `past_key` 输入 shape dim1 具体（模型声明上限，对齐 sherpa-onnx
+    /// `InitDecoderSession`）；`None` = dim1 动态（-1），回退到 `s0 + MAX_NEW_TOKENS`。
+    /// 替代原先硬编码 `2048.max(s0 + MAX_NEW_TOKENS)`：动态时显著省内存，具体时正确 sizing。
+    kv_max_len: Option<usize>,
 }
 
 impl Qwen3AsrEngine {
@@ -100,12 +105,23 @@ impl Qwen3AsrEngine {
         let tokenizer_dir = hf_path.join("tokenizer");
         let tokenizer = load_tokenizer(&tokenizer_dir)?;
 
+        // KV cache 最大序列长度：读 decoder 的 `cache_key_0` 输入 shape dim1（审查 #4）。
+        let kv_max_len = decoder_kv_max_len(&decoder_session);
+        if let Some(n) = kv_max_len {
+            log::debug!("qwen3-asr: decoder past_key dim1 = {}（KV cache 固定 sizing）", n);
+        } else {
+            log::debug!(
+                "qwen3-asr: decoder past_key dim1 动态 → KV cache 按 s0+MAX_NEW_TOKENS sizing"
+            );
+        }
+
         Ok(Self {
             conv_session: std::sync::Mutex::new(conv_session),
             encoder_session: std::sync::Mutex::new(encoder_session),
             decoder_session: std::sync::Mutex::new(decoder_session),
             tokenizer,
             entry: entry.clone(),
+            kv_max_len,
         })
     }
 }
@@ -198,8 +214,11 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
 
         let s0 = input_ids.len();
 
-        // Dynamic max total length
-        let max_total_len = 2048.max(s0 + MAX_NEW_TOKENS);
+        // KV cache 最大序列长度（审查 #4）：
+        //   - decoder past_key dim1 具体（kv_max_len=Some）→ 用它（模型声明上限，对齐 sherpa-onnx）；
+        //   - 动态（None）→ 仅装 prompt + 生成（s0 + MAX_NEW_TOKENS），比原先硬编码 2048 floor 显著省内存。
+        // loop 的 `cur_len + s <= max_total_len` 写入守卫与 `cur_len < max_total_len` 终止条件保证不越界。
+        let max_total_len = self.kv_max_len.unwrap_or(s0 + MAX_NEW_TOKENS);
 
         // ── Step 5: Autoregressive decoder loop ──
         // Initialize KV caches: [1, max_total_len, num_kv_heads, head_dim]
@@ -501,6 +520,20 @@ fn build_prompt_ids(
 }
 
 // ── Decoder step ──
+
+/// 读 decoder 的 `cache_key_0` 输入（首个 past_key）shape 的 dim1，确定 KV cache 最大序列长度。
+/// 对齐 sherpa-onnx `InitDecoderSession`（C++ 读 `past_key_shape_tpl_[1]`）。
+/// 按名查找而非硬编码 index，更鲁棒；返回 `None` 表示该维度动态（ONNX 里为 -1），由调用方回退。
+fn decoder_kv_max_len(decoder: &Session) -> Option<usize> {
+    decoder
+        .inputs()
+        .iter()
+        .find(|o| o.name() == "cache_key_0")
+        .and_then(|o| o.dtype().tensor_shape())
+        .and_then(|s| s.get(1).copied())
+        .filter(|&d| d > 0)
+        .map(|d| d as usize)
+}
 
 /// Run a single decoder step (prefill or generate) and return logits for the last token
 fn run_decoder_step(
