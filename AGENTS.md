@@ -162,3 +162,17 @@ docs/
 - 读：`~/.octopus/config.yaml`、`~/.octopus/record.txt` 等
 - 写：直接写 `~/.octopus/` 下对应文件
 - 原因：`config/` 经符号链接访问时，自动安全分类器无法判断目标在仓库外，可能误判为"向仓库提交密钥"而拦截；用绝对路径 `~/.octopus/` 可避免误拦。
+
+## 重要 Gotchas
+
+### Zipformer Whisper 特征归一化（已踩 3 次坑，勿再改错）
+
+Transducer 系列（`zh-int8-2025-06-30` / `zh-xlarge-int8-2025-06-30`）和 `zipformer-ctc` 使用 whisper 特征（ONNX metadata `feature=whisper` → `is_whisper=true`）。`normalize_whisper_features` 有 3 个关键约束，全部来自 sherpa-onnx C++ 源码（`sherpa-onnx/csrc/math.cc::NormalizeWhisperFeatures`），**修改前务必先读参考实现**：
+
+1. **公式不可变**：最后一步 `(clamped + 4.0) / 4.0`（范围~0-2）。曾错误写成 `clamped - clamp_min`（范围 0-8，尺度差 4 倍）→ ONNX 模型输入分布不匹配 → 输出乱码。
+
+2. **流式必须 per-chunk 归一化**：每个 chunk 切片后**独立** normalize，不是对整段特征全局归一化。sherpa-onnx 的 `online-recognizer-transducer-impl.h` 就是 per-chunk 调 `NormalizeFeatures`。曾误改为 pseudo-global（每次重算 history+buffer 全局归一化），方向完全错误——`history_samples` 每 tick 内容不同导致 max_v 跨 tick 不稳定。
+
+3. **Transducer `history_samples` 仅保留最后 1 帧**（`Z_FRAME_SHIFT` = 160 samples），与 CTC 引擎一致。曾错误保留全部未消费样本（可达上万），导致每次重算特征时归一化 max_v 剧烈跳变 + $O(N^2)$ 性能崩坏。
+
+**诊断方法**：如果流式 Transducer 输出乱码（"回 月 因 同"式重复 token），对照 sherpa-onnx 命令行输出验证——同一段音频，如果 sherpa-onnx 正常但我们的乱码，必定是上述 3 点之一。
