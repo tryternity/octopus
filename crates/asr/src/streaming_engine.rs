@@ -82,9 +82,15 @@ impl StreamingSession {
                 match eng.accept_samples(samples)? {
                     Some(delta) => {
                         let mut acc = accumulated.lock().unwrap();
-                        // 不在此处插逗号——Paraformer flush 挤出的尾音与之前文本
-                        // 属于同一句话（如"现"+"在"），插逗号会断词（"现，在"）。
-                        // 段间标点由 coordinator 的 finish 拼接处理。
+                        // 静音后恢复说话 → 句间分隔插逗号。
+                        // 但只在 acc 非空且不以标点结尾时插（避免 flush 挤出的
+                        // 同句尾音被断词——如 flush 已产出"现在"，acc 尾部
+                        // 不带逗号，但如果 flush 没产出而 accept_samples
+                        // 补出的是同句延续，was_silent 仍会误插。
+                        // 折中：接受偶发的误插，好过完全没有标点）。
+                        if was_silent && !acc.is_empty() && !ends_with_punct(&acc) {
+                            acc.push('，');
+                        }
                         acc.push_str(&delta);
                         Ok(Some(acc.clone()))
                     }
@@ -317,9 +323,18 @@ fn append_final_punctuation(text: &mut String) {
     if text.is_empty() {
         return;
     }
-    let last = text.chars().last().unwrap();
-    let punctuation = ['，', '。', '！', '？', '；', '：', '、', '.', '!', '?', ';', ','];
-    if !punctuation.contains(&last) {
+    if !ends_with_punct(text) {
         text.push('。');
+    }
+}
+
+/// 检查文本是否以标点结尾
+fn ends_with_punct(text: &str) -> bool {
+    match text.chars().last() {
+        Some(last) => {
+            let punctuation = ['，', '。', '！', '？', '；', '：', '、', '.', '!', '?', ';', ','];
+            punctuation.contains(&last)
+        }
+        None => false,
     }
 }
