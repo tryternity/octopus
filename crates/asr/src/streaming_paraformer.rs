@@ -167,6 +167,7 @@ impl StreamingParaformer {
 
     /// Active flush: pad the current sample buffer with zeros to CHUNK_SAMPLES
     /// to force processing of the lookahead / right context of the tail speech frames.
+    /// 最后一个 chunk 走 process_chunk_final（含 CIF force-fire），挤出尾部吞字。
     pub fn flush(&mut self) -> Result<Option<String>> {
         let needed = CHUNK_SAMPLES.saturating_sub(self.sample_buffer.len());
         if needed > 0 {
@@ -176,10 +177,19 @@ impl StreamingParaformer {
 
         let mut accumulated_text = String::new();
         let chunk_shift_samples = (CHUNK_SIZE - 1) * FBANK_FRAME_SHIFT; // 9600
+        // 循环处理所有 chunk，最后一个走 process_chunk_final（force-fire CIF 残留）
         while self.sample_buffer.len() >= CHUNK_SAMPLES {
+            let remaining_chunks = (self.sample_buffer.len() - CHUNK_SAMPLES) / chunk_shift_samples + 1;
             let chunk_samples = self.sample_buffer[..CHUNK_SAMPLES].to_vec();
-            if let Some(text) = self.process_chunk(&chunk_samples)? {
-                accumulated_text.push_str(&text);
+            if remaining_chunks <= 1 {
+                // 最后一个 chunk — force-fire
+                if let Some(text) = self.process_chunk_final(&chunk_samples)? {
+                    accumulated_text.push_str(&text);
+                }
+            } else {
+                if let Some(text) = self.process_chunk(&chunk_samples)? {
+                    accumulated_text.push_str(&text);
+                }
             }
             self.sample_buffer.drain(..chunk_shift_samples);
         }

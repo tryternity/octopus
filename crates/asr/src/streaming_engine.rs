@@ -82,9 +82,9 @@ impl StreamingSession {
                 match eng.accept_samples(samples)? {
                     Some(delta) => {
                         let mut acc = accumulated.lock().unwrap();
-                        if was_silent && !acc.is_empty() {
-                            acc.push('，');
-                        }
+                        // 不在此处插逗号——Paraformer flush 挤出的尾音与之前文本
+                        // 属于同一句话（如"现"+"在"），插逗号会断词（"现，在"）。
+                        // 段间标点由 coordinator 的 finish 拼接处理。
                         acc.push_str(&delta);
                         Ok(Some(acc.clone()))
                     }
