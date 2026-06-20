@@ -664,54 +664,71 @@ fn handle_toggle(
             }
 
             if use_streaming {
-                // 流式模式：创建 StreamingSession 并启动 tick 线程
-                match StreamingSession::new(&config.asr_engine) {
-                    Ok(streaming_engine) => {
-                        // 流式模式：只显示 result window，不显示 overlay
-                        crate::result_window::show_result(app_handle, "正在聆听…");
-                        crate::tray::update_tray_label(
-                            app_handle,
-                            crate::tray::TrayState::Recording,
-                        );
-
-                        // 初始化 VAD（用于静音检测 + 标点）
-                        let vad = match octopus_asr::config::find_silero_vad() {
-                            Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
-                                Ok(mut v) => {
-                                    vad_preroll(&mut v);
-                                    Some(v)
-                                }
-                                Err(e) => {
-                                    warn!("VAD init failed: {}, punctuation disabled", e);
-                                    None
-                                }
-                            },
-                            Err(e) => {
-                                warn!("VAD not found: {}, punctuation disabled", e);
-                                None
-                            }
-                        };
-
-                        let streaming_active = Arc::new(AtomicBool::new(true));
-                        start_tick_thread(tx.clone(), streaming_active.clone());
-
-                        *stage = Stage::Streaming {
-                            engine: streaming_engine,
-                            transcript: Transcript::new(now_millis(), config.polish_mode),
-                            streaming_active,
-                            vad,
-                            silence_duration: 0.0,
-                            flushed: false,
-                        };
-                    }
+                // 流式模式：创建 StreamingSession 并启动 tick 线程。
+                // 引擎不可用时降级到默认引擎（zipformer-small-ctc），而非直接放弃录音。
+                const FALLBACK_STREAMING_SPEC: &str = "local:zipformer:zipformer-small-ctc";
+                let streaming_engine = match StreamingSession::new(&config.asr_engine) {
+                    Ok(session) => session,
                     Err(e) => {
-                        error!("Failed to create streaming session: {}", e);
-                        let _ = audio.stop();
-                        crate::overlay::hide_overlay(app_handle);
-                        crate::result_window::hide_result(app_handle);
-                        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                        warn!(
+                            "StreamingSession '{}' 创建失败 ({}), 降级到默认引擎 '{}'",
+                            config.asr_engine, e, FALLBACK_STREAMING_SPEC
+                        );
+                        match StreamingSession::new(FALLBACK_STREAMING_SPEC) {
+                            Ok(session) => session,
+                            Err(e2) => {
+                                error!(
+                                    "默认引擎 StreamingSession 也失败: {}", e2
+                                );
+                                let _ = audio.stop();
+                                crate::overlay::hide_overlay(app_handle);
+                                crate::result_window::hide_result(app_handle);
+                                crate::tray::update_tray_label(
+                                    app_handle,
+                                    crate::tray::TrayState::Idle,
+                                );
+                                return;
+                            }
+                        }
                     }
-                }
+                };
+
+                // 流式模式：只显示 result window，不显示 overlay
+                crate::result_window::show_result(app_handle, "正在聆听…");
+                crate::tray::update_tray_label(
+                    app_handle,
+                    crate::tray::TrayState::Recording,
+                );
+
+                // 初始化 VAD（用于静音检测 + 标点）
+                let vad = match octopus_asr::config::find_silero_vad() {
+                    Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
+                        Ok(mut v) => {
+                            vad_preroll(&mut v);
+                            Some(v)
+                        }
+                        Err(e) => {
+                            warn!("VAD init failed: {}, punctuation disabled", e);
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        warn!("VAD not found: {}, punctuation disabled", e);
+                        None
+                    }
+                };
+
+                let streaming_active = Arc::new(AtomicBool::new(true));
+                start_tick_thread(tx.clone(), streaming_active.clone());
+
+                *stage = Stage::Streaming {
+                    engine: streaming_engine,
+                    transcript: Transcript::new(now_millis(), config.polish_mode),
+                    streaming_active,
+                    vad,
+                    silence_duration: 0.0,
+                    flushed: false,
+                };
             } else {
                 // 非流式模式：使用 VAD 伪流式分段识别
                 match octopus_asr::config::find_silero_vad() {
@@ -2247,8 +2264,11 @@ fn handle_polish_done(
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
         | Stage::WaitingCompletion { transcript, .. } => transcript,
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming { transcript, .. }
+        | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
-            warn!("PolishDone ignored: stage={} 不是录音/等待阶段，润色结果丢弃", stage_name(stage));
+            debug!("PolishDone ignored: stage={} 不是录音/等待阶段，润色结果丢弃", stage_name(stage));
             use tauri::Emitter;
             let _ = app_handle.emit("polish-done", ());
             return;
@@ -2321,7 +2341,12 @@ fn handle_polish_now(
     // 所有早退路径都 emit polish-done 恢复前端按钮——
     // 否则用户点了「立即润色」后按钮 disabled=true 永久卡死，直到下次录音才恢复
     let transcript = match stage {
-        Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. } => transcript,
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming { transcript, .. }
+        | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("PolishNow ignored in stage {:?}", stage_name(stage));
             let _ = app_handle.emit("polish-done", ());
@@ -2354,7 +2379,12 @@ fn handle_polish_now(
 /// 进入编辑态：仅活跃会话（Streaming/VadSegmented）有效；初始化 edit_buffer = 当前 display。
 fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &mut Option<String>) {
     let transcript = match stage {
-        Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. } => transcript,
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming { transcript, .. }
+        | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("enter_edit_mode ignored in non-active stage");
             return;
@@ -2368,7 +2398,12 @@ fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &m
 /// 提交编辑：写回 transcript（commit_edit）+ UPDATE edited_text（行已存在）+ 刷新展示。
 fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandle) {
     let transcript = match stage {
-        Stage::Streaming { transcript, .. } | Stage::VadSegmented { transcript, .. } => transcript,
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. } => transcript,
+        #[cfg(feature = "dashscope")]
+        Stage::CloudStreaming { transcript, .. }
+        | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("commit_edit ignored in non-active stage");
             return;
