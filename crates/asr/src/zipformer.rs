@@ -492,6 +492,11 @@ impl crate::engine::OfflineAsrEngine for ZipformerCtcEngine {
         } else {
             compute_fbank_features(samples)?
         };
+        // 离线路径：对整段特征做全局归一化再分 chunk 送 encoder。
+        // 与流式路径（per-chunk 归一化）不同——离线一次性处理整段音频，
+        // 全局 max_v 稳定；且这些模型本质是流式模型，sherpa-onnx 离线
+        // Transducer impl 对 whisper 特征不做归一化（仅 NeMo CTC 做 CMVN），
+        // 我们的 chunk 循环模拟需要归一化才能正常工作。
         if self.is_whisper {
             normalize_whisper_features(&mut my_feats);
         }
@@ -860,6 +865,7 @@ impl crate::engine::OfflineAsrEngine for ZipformerTransducerEngine {
         } else {
             compute_fbank_features(samples)?
         };
+        // 离线路径全局归一化（同 CTC 注释，详见 ZipformerCtcEngine::transcribe）
         if self.is_whisper {
             normalize_whisper_features(&mut my_feats);
         }
@@ -1285,6 +1291,21 @@ mod tests {
     use super::*;
     use crate::engine::OfflineAsrEngine;
 
+    /// 动态查找 HF cache 中的 snapshot 目录（不依赖特定 hash）。
+    fn hf_snapshot(repo: &str) -> Option<std::path::PathBuf> {
+        let base = std::path::PathBuf::from(std::env::var("HOME").unwrap())
+            .join(".cache/huggingface/hub")
+            .join(repo)
+            .join("snapshots");
+        if !base.is_dir() {
+            return None;
+        }
+        std::fs::read_dir(&base).ok()?.filter_map(|e| e.ok()).find_map(|e| {
+            let p = e.path();
+            if p.is_dir() { Some(p) } else { None }
+        })
+    }
+
     #[test]
     fn test_clean_decode_utf8() {
         // Test normal ascii
@@ -1330,8 +1351,12 @@ mod tests {
 
     #[test]
     fn test_zipformer_ctc_offline_debug() {
-        let wav_path = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join(".cache/huggingface/hub/models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13/snapshots/cfa1a89c049cd0c48fb9e46a49c84b58744daec5/test_wavs/DEV_T0000000000.wav");
+        let snapshot = hf_snapshot("models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13");
+        let wav_path = match snapshot {
+            Some(s) => s.join("test_wavs/DEV_T0000000000.wav"),
+            None => { eprintln!("Skipping: HF snapshot not found"); return; }
+        };
+        if !wav_path.exists() { eprintln!("Skipping: {} not found", wav_path.display()); return; }
         let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
         
         let cfg = config::load_config().unwrap();
@@ -1458,8 +1483,10 @@ mod tests {
 
     #[test]
     fn test_zipformer_transducer_offline() {
-        let zh_int8 = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join(".cache/huggingface/hub/models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30/snapshots/ad658fa0201659a09ea3c176129a191c77ecae8f");
+        let zh_int8 = match hf_snapshot("models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30") {
+            Some(p) => p,
+            None => { eprintln!("Skipping: HF snapshot not found"); return; }
+        };
         let wav_path = zh_int8.join("test_wavs/0.wav");
         if !wav_path.exists() {
             eprintln!("Skipping transducer test: {} not found", wav_path.display());
@@ -1487,8 +1514,10 @@ mod tests {
 
     #[test]
     fn test_zipformer_transducer_xlarge() {
-        let xlarge = std::path::PathBuf::from(std::env::var("HOME").unwrap())
-            .join(".cache/huggingface/hub/models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30/snapshots/18f31ce4644ac3bcf544eea692d7242b798d508f");
+        let xlarge = match hf_snapshot("models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30") {
+            Some(p) => p,
+            None => { eprintln!("Skipping: HF snapshot not found"); return; }
+        };
         let wav_path = xlarge.join("test_wavs/0.wav");
         if !wav_path.exists() {
             eprintln!("Skipping xlarge test: {} not found", wav_path.display());
