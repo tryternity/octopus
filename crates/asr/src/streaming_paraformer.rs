@@ -7,23 +7,24 @@ use ort::session::Session;
 
 use crate::config;
 use crate::paraformer::{
-    apply_lfr, compute_fbank, decode_tokens, extract_cmvn_from_metadata,
-    FBANK_FRAME_LEN, FBANK_FRAME_SHIFT, FBANK_NUM_BINS,
-    LFR_WINDOW_SHIFT, LFR_WINDOW_SIZE,
+    apply_lfr, decode_tokens, extract_cmvn_from_metadata,
+    FBANK_FFT_SIZE, FBANK_FRAME_LEN, FBANK_FRAME_SHIFT, FBANK_NUM_BINS,
+    LFR_WINDOW_SHIFT, LFR_WINDOW_SIZE, MEL_FILTERBANK, POVEY_WINDOW,
 };
 
 // ── Streaming chunk parameters (from sherpa-onnx) ──
 const CHUNK_SIZE: usize = 61; // fbank frames per chunk (~0.61s)
+const TOKEN_EOS: i64 = 2;     // skip blank(0)/sos(1)/eos(2) when accumulating
 const LEFT_CHUNK_SIZE: usize = 5; // left context overlap in LFR frames
 const RIGHT_CHUNK_SIZE: usize = 3; // right context overlap in LFR frames
-
-// ── Samples needed for one full chunk ──
-// First fbank frame needs FBANK_FRAME_LEN samples, each subsequent frame adds FBANK_FRAME_SHIFT.
-const CHUNK_SAMPLES: usize = FBANK_FRAME_LEN + (CHUNK_SIZE - 1) * FBANK_FRAME_SHIFT; // 10,000
 
 
 
 /// Streaming Paraformer engine — maintains state across chunks.
+///
+/// fbank 提取采用**增量式**架构（与 sherpa-onnx OnlineFbank 一致）：
+/// 音频样本线性追加，fbank 帧按序计算，pre-emphasis 状态跨帧正确传递。
+/// 不再对重叠 chunk 重复提取 fbank。
 pub struct StreamingParaformer {
     // ONNX sessions
     encoder_session: Session,
@@ -37,14 +38,21 @@ pub struct StreamingParaformer {
     decoder_num_blocks: usize,  // 16
     decoder_kernel_size: usize, // 11 → cache_time = 10
     vocab: Vec<String>,
+    cache_keys: Vec<String>,  // 预分配的 decoder input 键名 "in_cache_0".."in_cache_15"
+
+    // Incremental fbank extraction state
+    raw_samples: Vec<f32>,       // accumulated samples (× 32768)
+    fbank_cache: Vec<f32>,       // computed fbank frames, flattened [num_frames * 80]
+    preemph_prev: f32,           // pre-emphasis state (last DC-removed sample)
+    input_finished: bool,        // true after flush — allows last frame to zero-pad
 
     // Streaming state (carried across chunks)
-    sample_buffer: Vec<f32>,                      // accumulated raw 16kHz samples
     feat_cache: Vec<f32>,                         // [8 * 560] overlap buffer
     encoder_out_cache: Vec<f32>,                  // [512] CIF hidden accumulator
     alpha_cache: f32,                             // CIF integrate accumulator
     decoder_caches: Vec<ndarray::Array3<f32>>,    // 16 × [1, 512, cache_time]
-    num_processed_frames: i32,                    // fbank frame counter (in LFR space)
+    num_processed_frames: i32,                    // fbank frame counter (fbank space)
+    all_token_ids: Vec<i64>,                      // 全局累积 token ID（跨 chunk），用于整体解码
 }
 
 impl StreamingParaformer {
@@ -104,12 +112,17 @@ impl StreamingParaformer {
         // Load vocabulary
         let vocab = load_vocab(&hf_path)?;
 
+        // Pre-allocate decoder cache input keys (avoid per-chunk format!)
+        let cache_keys = (0..decoder_num_blocks)
+            .map(|i| format!("in_cache_{}", i))
+            .collect::<Vec<_>>();
+
         // Initialize decoder caches
         let decoder_caches = (0..decoder_num_blocks)
             .map(|_| ndarray::Array3::<f32>::zeros((1, encoder_output_size, cache_time)))
             .collect();
 
-        Ok(Self {
+        let engine = Self {
             encoder_session,
             decoder_session,
             neg_mean,
@@ -119,92 +132,115 @@ impl StreamingParaformer {
             decoder_num_blocks,
             decoder_kernel_size,
             vocab,
-            sample_buffer: Vec::new(),
+            cache_keys,
+            raw_samples: Vec::new(),
+            fbank_cache: Vec::new(),
+            preemph_prev: 0.0,
+            input_finished: false,
             feat_cache: vec![0.0; (LEFT_CHUNK_SIZE + RIGHT_CHUNK_SIZE) * feat_dim],
             encoder_out_cache: vec![0.0; encoder_output_size],
             alpha_cache: 0.0,
             decoder_caches,
             num_processed_frames: 0,
-        })
+            all_token_ids: Vec::new(),
+        };
+
+        Ok(engine)
     }
 
-    /// Feed audio samples (16kHz mono f32) into the engine.
-    /// Returns `Some(text)` if the chunk produced recognition results, `None` otherwise.
+    /// Feed audio samples (16kHz mono f32, range [-1,1]) into the engine.
+    /// Returns `Some(text)` if the chunk produced recognition results.
     /// Call this repeatedly as audio arrives (~600ms chunks).
     pub fn accept_samples(&mut self, samples: &[f32]) -> Result<Option<String>> {
-        self.sample_buffer.extend_from_slice(samples);
+        // Scale × 32768 and append
+        self.raw_samples.reserve(samples.len());
+        for &s in samples {
+            self.raw_samples.push(s * 32768.0);
+        }
 
-        // Process as many full chunks as available
-        let mut accumulated_text = String::new();
-        let chunk_shift_samples = (CHUNK_SIZE - 1) * FBANK_FRAME_SHIFT; // 9600
-        while self.sample_buffer.len() >= CHUNK_SAMPLES {
-            let chunk_samples = self.sample_buffer[..CHUNK_SAMPLES].to_vec();
-            if let Some(text) = self.process_chunk(&chunk_samples)? {
-                accumulated_text.push_str(&text);
+        // Incrementally compute new fbank frames
+        self.compute_new_fbank_frames();
+
+        // Process available chunks (need CHUNK_SIZE frames per chunk)
+        let prev_token_count = self.all_token_ids.len();
+        while self.num_fbank_ready() >= self.num_processed_frames as usize + CHUNK_SIZE {
+            let frame_start = self.num_processed_frames as usize;
+            self.process_chunk_at(frame_start, false)?;
+            self.num_processed_frames += (CHUNK_SIZE - 1) as i32;
+        }
+
+        // 只要有新 token 就重新解码全部（整体解码，BPE 跨 chunk 正确合并）
+        if self.all_token_ids.len() > prev_token_count {
+            let full_text = decode_tokens(&self.all_token_ids, &self.vocab);
+            if !full_text.is_empty() {
+                return Ok(Some(full_text));
             }
-            self.sample_buffer.drain(..chunk_shift_samples);
         }
-
-        if accumulated_text.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(accumulated_text))
-        }
+        Ok(None)
     }
 
-    /// Flush any remaining buffered audio. Call when recording stops.
-    /// Pads short final chunk with zeros to CHUNK_SIZE fbank frames.
+    /// Flush remaining audio after recording stops.
+    /// Pads with zeros, computes all remaining frames, processes final chunks.
     pub fn finish(&mut self) -> Result<String> {
-        if self.sample_buffer.is_empty() {
-            return Ok(String::new());
-        }
-
-        // Process whatever is left as a final (possibly short) chunk
-        let remaining = std::mem::take(&mut self.sample_buffer);
-        let result = self.process_final_chunk(&remaining)?;
+        let result = self.flush()?;
         Ok(result.unwrap_or_default())
     }
 
-    /// Active flush: pad the current sample buffer with zeros to CHUNK_SAMPLES
-    /// to force processing of the lookahead / right context of the tail speech frames.
-    /// 最后一个 chunk 走 process_chunk_final（含 CIF force-fire），挤出尾部吞字。
+    /// Active flush: pad raw_samples with zeros, compute remaining fbank frames,
+    /// and process all remaining chunks. The last chunk force-fires residual CIF.
     pub fn flush(&mut self) -> Result<Option<String>> {
-        let needed = CHUNK_SAMPLES.saturating_sub(self.sample_buffer.len());
-        if needed > 0 {
-            let new_len = self.sample_buffer.len() + needed;
-            self.sample_buffer.resize(new_len, 0.0);
-        }
-
-        let mut accumulated_text = String::new();
-        let chunk_shift_samples = (CHUNK_SIZE - 1) * FBANK_FRAME_SHIFT; // 9600
-        // 循环处理所有 chunk，最后一个走 process_chunk_final（force-fire CIF 残留）
-        while self.sample_buffer.len() >= CHUNK_SAMPLES {
-            let remaining_chunks = (self.sample_buffer.len() - CHUNK_SAMPLES) / chunk_shift_samples + 1;
-            let chunk_samples = self.sample_buffer[..CHUNK_SAMPLES].to_vec();
-            if remaining_chunks <= 1 {
-                // 最后一个 chunk — force-fire
-                if let Some(text) = self.process_chunk_final(&chunk_samples)? {
-                    accumulated_text.push_str(&text);
-                }
+        // Pad raw_samples with enough zeros to ensure at least CHUNK_SIZE frames
+        // can be computed for the final chunk.
+        let current_frames = self.num_fbank_ready();
+        let processed = self.num_processed_frames as usize;
+        let needed_frames = if current_frames > processed {
+            // How many chunks can we still process?
+            let remaining = current_frames - processed;
+            if remaining >= CHUNK_SIZE {
+                0 // Already have enough for at least one more chunk
             } else {
-                if let Some(text) = self.process_chunk(&chunk_samples)? {
-                    accumulated_text.push_str(&text);
-                }
+                CHUNK_SIZE - remaining
             }
-            self.sample_buffer.drain(..chunk_shift_samples);
+        } else {
+            CHUNK_SIZE
+        };
+
+        if needed_frames > 0 {
+            let needed_samples = needed_frames * FBANK_FRAME_SHIFT;
+            self.raw_samples.resize(self.raw_samples.len() + needed_samples, 0.0);
         }
 
-        if accumulated_text.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(accumulated_text))
+        self.input_finished = true;
+        self.compute_new_fbank_frames();
+
+        let mut had_new_tokens = false;
+        while self.num_fbank_ready() >= self.num_processed_frames as usize + CHUNK_SIZE {
+            let frame_start = self.num_processed_frames as usize;
+            // Check if this is the last chunk
+            let remaining_after = self.num_fbank_ready() as i32 - frame_start as i32 - CHUNK_SIZE as i32;
+            let is_last = remaining_after < (CHUNK_SIZE as i32 - 1);
+            if self.process_chunk_at(frame_start, is_last)? {
+                had_new_tokens = true;
+            }
+            self.num_processed_frames += (CHUNK_SIZE - 1) as i32;
         }
+
+        if had_new_tokens {
+            let full_text = decode_tokens(&self.all_token_ids, &self.vocab);
+            if !full_text.is_empty() {
+                return Ok(Some(full_text));
+            }
+        }
+        Ok(None)
     }
 
 
     /// Reset all streaming state for a new utterance.
     pub fn reset(&mut self) {
-        self.sample_buffer.clear();
+        self.raw_samples.clear();
+        self.fbank_cache.clear();
+        self.preemph_prev = 0.0;
+        self.input_finished = false;
         self.feat_cache.fill(0.0);
         self.encoder_out_cache.fill(0.0);
         self.alpha_cache = 0.0;
@@ -213,12 +249,112 @@ impl StreamingParaformer {
             *cache = ndarray::Array3::<f32>::zeros((1, self.encoder_output_size, cache_time));
         }
         self.num_processed_frames = 0;
+        self.all_token_ids.clear();
     }
 
-    /// Process a full chunk (exactly CHUNK_SAMPLES samples).
-    fn process_chunk(&mut self, samples: &[f32]) -> Result<Option<String>> {
-        // 1. Fbank → LFR → CMVN
-        let mut features = self.extract_features(samples)?;
+    /// Number of fbank frames computed and available in fbank_cache.
+    fn num_fbank_ready(&self) -> usize {
+        self.fbank_cache.len() / FBANK_NUM_BINS
+    }
+
+    /// Incrementally compute new fbank frames from raw_samples.
+    /// Pre-emphasis state carries correctly across all frames (no chunk-boundary issues).
+    fn compute_new_fbank_frames(&mut self) {
+        let n_samples = self.raw_samples.len();
+
+        // How many frames can we compute?
+        let max_frames = if n_samples >= FBANK_FRAME_LEN {
+            if self.input_finished {
+                // Flush: allow last frame to extend past buffer (zero-padded)
+                (n_samples - FBANK_FRAME_LEN + FBANK_FRAME_SHIFT + FBANK_FRAME_SHIFT / 2)
+                    / FBANK_FRAME_SHIFT
+            } else {
+                (n_samples - FBANK_FRAME_LEN) / FBANK_FRAME_SHIFT + 1
+            }
+        } else if self.input_finished && n_samples > 0 {
+            1
+        } else {
+            0
+        };
+
+        let current_frames = self.fbank_cache.len() / FBANK_NUM_BINS;
+        if max_frames <= current_frames {
+            return;
+        }
+
+        let mut planner = rustfft::FftPlanner::new();
+        let fft = planner.plan_fft_forward(FBANK_FFT_SIZE);
+        let n_freqs = FBANK_FFT_SIZE / 2 + 1;
+        let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); FBANK_FFT_SIZE];
+        let mut frame_buf = [0.0f32; FBANK_FRAME_LEN];
+        let preemph_coeff = 0.97f32;
+
+        for fi in current_frames..max_frames {
+            let start = fi * FBANK_FRAME_SHIFT;
+
+            // 1. Extract frame
+            for j in 0..FBANK_FRAME_LEN {
+                frame_buf[j] = if start + j < n_samples {
+                    self.raw_samples[start + j]
+                } else {
+                    0.0
+                };
+            }
+
+            // 2. DC offset removal
+            let mean: f32 = frame_buf.iter().sum::<f32>() / FBANK_FRAME_LEN as f32;
+            for s in frame_buf.iter_mut() {
+                *s -= mean;
+            }
+
+            // 3. Pre-emphasis (stateful, carries correctly across ALL frames)
+            let mut prev = self.preemph_prev;
+            for i in 0..FBANK_FRAME_LEN {
+                let cur = frame_buf[i];
+                frame_buf[i] = cur - preemph_coeff * prev;
+                prev = cur;
+            }
+            self.preemph_prev = prev;
+
+            // 4. Povey window + FFT
+            for j in 0..FBANK_FFT_SIZE {
+                let s = if j < FBANK_FRAME_LEN {
+                    frame_buf[j] * POVEY_WINDOW[j]
+                } else {
+                    0.0
+                };
+                buf[j] = rustfft::num_complex::Complex::new(s, 0.0);
+            }
+            fft.process(&mut buf);
+
+            // 5. Power spectrum + mel filterbank + log
+            let mut power_spectrum = [0.0f64; FBANK_FFT_SIZE / 2 + 1];
+            for k in 0..n_freqs {
+                power_spectrum[k] =
+                    buf[k].re as f64 * buf[k].re as f64 + buf[k].im as f64 * buf[k].im as f64;
+            }
+
+            for mi in 0..FBANK_NUM_BINS {
+                let mut sum = 0.0f64;
+                let fb_row = &MEL_FILTERBANK[mi];
+                for k in 0..n_freqs {
+                    sum += power_spectrum[k] * fb_row[k];
+                }
+                self.fbank_cache.push((sum as f32 + 1e-10).ln());
+            }
+        }
+    }
+
+    /// Process a chunk of CHUNK_SIZE fbank frames starting at frame_start.
+    /// Accumulates decoded token IDs into self.all_token_ids.
+    /// Returns true if new tokens were produced.
+    fn process_chunk_at(
+        &mut self,
+        frame_start: usize,
+        is_final: bool,
+    ) -> Result<bool> {
+        // 1. Extract CHUNK_SIZE frames from fbank_cache, pad with zeros if short
+        let mut features = self.extract_features_from_cache(frame_start)?;
 
         // 2. Positional encoding
         self.apply_positional_encoding(&mut features);
@@ -230,147 +366,65 @@ impl StreamingParaformer {
         let (enc_tensor, enc_len_scalar, alphas) = self.run_encoder(&combined)?;
 
         // 5. Zero overlap alphas
-        let alphas = self.mask_alphas(alphas, enc_len_scalar);
+        let alphas = if is_final {
+            self.mask_alphas_left_only(alphas, enc_len_scalar)
+        } else {
+            self.mask_alphas(alphas, enc_len_scalar)
+        };
 
-        // 6. Stateful CIF
-        let acoustic = self.run_cif(&enc_tensor, enc_len_scalar, &alphas)?;
+        // 6. CIF (force-fire if final)
+        let acoustic = if is_final {
+            self.run_cif_final(&enc_tensor, enc_len_scalar, &alphas)?
+        } else {
+            self.run_cif(&enc_tensor, enc_len_scalar, &alphas)?
+        };
+
         if acoustic.is_empty() {
-            // Advance frame counter
-            self.num_processed_frames += (CHUNK_SIZE - 1) as i32;
-            return Ok(None);
+            return Ok(false);
         }
         let num_tokens = acoustic.len() / self.encoder_output_size;
 
-        // 7. Stateful decoder
+        // 7. Stateful decoder → token IDs
         let sample_ids = self.run_decoder(&enc_tensor, enc_len_scalar, &acoustic, num_tokens)?;
 
-        // 8. Decode tokens
-        let text = decode_tokens(&sample_ids, &self.vocab);
-
-        // 9. Advance frame counter (overlap by 1 fbank frame)
-        self.num_processed_frames += (CHUNK_SIZE - 1) as i32;
-
-        if text.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(text))
-        }
-    }
-
-    /// Process the final chunk — same as process_chunk, but force-fires any
-    /// residual CIF accumulator (alpha_cache > 0) as a last token.
-    /// 修复尾部吞字：CIF 累积 < 阈值(1.0)时最后一个字卡在 encoder_out_cache。
-    fn process_chunk_final(&mut self, samples: &[f32]) -> Result<Option<String>> {
-        let mut features = self.extract_features(samples)?;
-        self.apply_positional_encoding(&mut features);
-        let combined = self.apply_feat_overlap(features)?;
-        let (enc_tensor, enc_len_scalar, alphas) = self.run_encoder(&combined)?;
-        // final chunk：只 mask 左侧（left context），不 mask 右侧——
-        // 右侧 3 帧后面没有新 chunk 处理，mask 掉会永久丢失 ~180ms 尾部语音
-        let alphas = self.mask_alphas_left_only(alphas, enc_len_scalar);
-
-        let enc_len = enc_len_scalar;
-        let feat = self.encoder_output_size;
-
-        // CIF 循环 + force-fire 残留（内联 run_cif 逻辑以复用 enc_tensor/enc_len）
-        let enc_data = enc_tensor
-            .slice(ndarray::s![0, ..enc_len, ..])
-            .as_slice()
-            .unwrap()
-            .to_vec();
-
-        let mut acoustic: Vec<f32> = Vec::new();
-        let mut integrate = self.alpha_cache;
-        let threshold: f32 = 1.0;
-
-        for i in 0..enc_len {
-            let this_alpha = alphas[i];
-            if this_alpha <= 0.0 {
-                continue;
-            }
-            if integrate + this_alpha < threshold {
-                integrate += this_alpha;
-                let enc_row = &enc_data[i * feat..(i + 1) * feat];
-                for j in 0..feat {
-                    self.encoder_out_cache[j] += enc_row[j] * this_alpha;
+        // 8. 累积有效 token（跳过 blank/sos/eos）——整体解码交给调用方
+        for &tid in &sample_ids {
+            if tid > TOKEN_EOS {
+                let idx = tid as usize;
+                if idx < self.vocab.len() && !self.vocab[idx].is_empty() {
+                    self.all_token_ids.push(tid);
                 }
-                continue;
-            }
-            // Fire
-            let remaining = threshold - integrate;
-            let enc_row = &enc_data[i * feat..(i + 1) * feat];
-            for j in 0..feat {
-                self.encoder_out_cache[j] += enc_row[j] * remaining;
-            }
-            acoustic.extend_from_slice(&self.encoder_out_cache);
-            integrate += this_alpha - threshold;
-            for j in 0..feat {
-                self.encoder_out_cache[j] = enc_row[j] * integrate;
             }
         }
 
-        // Force-fire：尾部残留的 alpha 累积（sherpa-onnx 丢弃此处，导致尾部吞字）。
-        // 只有残留接近完整 token 时才 fire，避免噪声帧产生垃圾 token。
-        if integrate > 0.5 && !self.encoder_out_cache.iter().all(|&v| v == 0.0) {
-            acoustic.extend_from_slice(&self.encoder_out_cache);
-            self.alpha_cache = 0.0;
-            self.encoder_out_cache.fill(0.0);
-        } else {
-            self.alpha_cache = integrate;
-        }
-
-        if acoustic.is_empty() {
-            return Ok(None);
-        }
-        let num_tokens = acoustic.len() / feat;
-
-        let sample_ids = self.run_decoder(&enc_tensor, enc_len_scalar, &acoustic, num_tokens)?;
-        let text = decode_tokens(&sample_ids, &self.vocab);
-        self.num_processed_frames += (CHUNK_SIZE - 1) as i32;
-
-        if text.is_empty() {
-            Ok(None)
-        } else {
-            Ok(Some(text))
-        }
+        Ok(true)
     }
 
-    /// Process a final (possibly short) chunk. Pads to CHUNK_SIZE fbank frames.
-    /// 在 process_chunk 完成后，如果 CIF 残留 alpha > 0，force-fire 最后一个 token。
-    fn process_final_chunk(&mut self, samples: &[f32]) -> Result<Option<String>> {
-        // Pad to at least CHUNK_SAMPLES so we get CHUNK_SIZE fbank frames
-        let mut padded = samples.to_vec();
-        if padded.len() < CHUNK_SAMPLES {
-            padded.resize(CHUNK_SAMPLES, 0.0);
+    /// Extract CHUNK_SIZE fbank frames from cache starting at frame_start,
+    /// apply LFR and CMVN. Pads with zeros if not enough frames.
+    fn extract_features_from_cache(&self, frame_start: usize) -> Result<ndarray::Array2<f32>> {
+        let total_ready = self.fbank_cache.len() / FBANK_NUM_BINS;
+        let available = total_ready.saturating_sub(frame_start);
+        let n_frames = available.min(CHUNK_SIZE);
+
+        let mut fbank = ndarray::Array2::zeros((CHUNK_SIZE, FBANK_NUM_BINS));
+        for fi in 0..n_frames {
+            let src = (frame_start + fi) * FBANK_NUM_BINS;
+            for j in 0..FBANK_NUM_BINS {
+                fbank[[fi, j]] = self.fbank_cache[src + j];
+            }
         }
-        let mut text = self.process_chunk_final(&padded)?;
-        Ok(text.take())
-    }
-
-    /// Fbank → LFR → CMVN normalization
-    fn extract_features(&self, samples: &[f32]) -> Result<ndarray::Array2<f32>> {
-        let scaled: Vec<f32> = samples.iter().map(|&s| s * 32768.0).collect();
-        let fbank = compute_fbank(&scaled)?;
-
-        // Pad fbank to CHUNK_SIZE frames if short
-        let n_frames = fbank.nrows();
-        let fbank = if n_frames < CHUNK_SIZE {
-            let mut padded = ndarray::Array2::zeros((CHUNK_SIZE, FBANK_NUM_BINS));
-            padded.slice_mut(ndarray::s![..n_frames, ..]).assign(&fbank);
-            padded
-        } else {
-            fbank
-        };
 
         let lfr = apply_lfr(&fbank, LFR_WINDOW_SIZE, LFR_WINDOW_SHIFT);
 
-        // CMVN normalization (same as offline)
+        // CMVN
         let (n_rows, n_cols) = (lfr.nrows(), lfr.ncols());
         let mut features = lfr;
         for i in 0..n_rows {
             for j in 0..n_cols {
                 if j < self.neg_mean.len() && j < self.inv_stddev.len() {
-                    features[[i, j]] = (features[[i, j]] + self.neg_mean[j]) * self.inv_stddev[j];
+                    features[[i, j]] =
+                        (features[[i, j]] + self.neg_mean[j]) * self.inv_stddev[j];
                 }
             }
         }
@@ -441,9 +495,11 @@ impl StreamingParaformer {
         features: &ndarray::Array2<f32>,
     ) -> Result<(ndarray::Array3<f32>, usize, Vec<f32>)> {
         let (n_rows, n_cols) = (features.nrows(), features.ncols());
-        let flat: Vec<f32> = features.iter().cloned().collect();
-        let speech_tensor =
-            ndarray::Array3::from_shape_vec((1, n_rows, n_cols), flat)?;
+        // 零拷贝：直接 reshape 共享底层数据（features 是 owned &mut 的 borrow，此期间不会被修改）
+        let speech_tensor = features
+            .view()
+            .into_shape_with_order(ndarray::IxDyn(&[1, n_rows, n_cols]))?
+            .into_dimensionality::<ndarray::Ix3>()?;
         let speech_lengths = ndarray::Array1::from_vec(vec![n_rows as i32]);
 
         let outputs = self.encoder_session.run(ort::inputs! {
@@ -472,13 +528,14 @@ impl StreamingParaformer {
 
     /// Zero out alphas in the left/right overlap regions.
     fn mask_alphas(&self, mut alphas: Vec<f32>, enc_len: usize) -> Vec<f32> {
+        let n = alphas.len().min(enc_len);
         // Zero left context (first LEFT_CHUNK_SIZE frames)
-        for i in 0..LEFT_CHUNK_SIZE.min(enc_len) {
+        for i in 0..LEFT_CHUNK_SIZE.min(n) {
             alphas[i] = 0.0;
         }
         // Zero right context (last RIGHT_CHUNK_SIZE frames)
-        let right_start = enc_len.saturating_sub(RIGHT_CHUNK_SIZE);
-        for i in right_start..enc_len {
+        let right_start = n.saturating_sub(RIGHT_CHUNK_SIZE);
+        for i in right_start..n {
             alphas[i] = 0.0;
         }
         alphas
@@ -486,7 +543,8 @@ impl StreamingParaformer {
 
     /// 只 mask 左侧 overlap（final chunk 用）——右侧帧后面无新 chunk，不可丢弃。
     fn mask_alphas_left_only(&self, mut alphas: Vec<f32>, enc_len: usize) -> Vec<f32> {
-        for i in 0..LEFT_CHUNK_SIZE.min(enc_len) {
+        let n = alphas.len().min(enc_len);
+        for i in 0..LEFT_CHUNK_SIZE.min(n) {
             alphas[i] = 0.0;
         }
         alphas
@@ -500,11 +558,9 @@ impl StreamingParaformer {
         enc_len: usize,
         alphas: &[f32],
     ) -> Result<Vec<f32>> {
-        let enc_data = enc_tensor
-            .slice(ndarray::s![0, ..enc_len, ..])
-            .as_slice()
-            .unwrap()
-            .to_vec();
+        // 零拷贝：直接拿 &[f32] 切片引用 enc_tensor 底层数据
+        let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len, ..]);
+        let enc_data = enc_slice.as_slice().unwrap();
 
         let mut acoustic: Vec<f32> = Vec::new();
         let mut integrate = self.alpha_cache;
@@ -547,6 +603,61 @@ impl StreamingParaformer {
         Ok(acoustic)
     }
 
+    /// CIF with force-fire: same as run_cif, but fires any residual accumulator
+    /// (alpha_cache > 0.5) at the end to prevent tail token loss.
+    fn run_cif_final(
+        &mut self,
+        enc_tensor: &ndarray::Array3<f32>,
+        enc_len: usize,
+        alphas: &[f32],
+    ) -> Result<Vec<f32>> {
+        // 零拷贝：直接拿 &[f32] 切片引用 enc_tensor 底层数据
+        let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len, ..]);
+        let enc_data = enc_slice.as_slice().unwrap();
+
+        let mut acoustic: Vec<f32> = Vec::new();
+        let mut integrate = self.alpha_cache;
+        let threshold: f32 = 1.0;
+        let feat = self.encoder_output_size;
+
+        for i in 0..enc_len {
+            let this_alpha = alphas[i];
+            if this_alpha <= 0.0 {
+                continue;
+            }
+            if integrate + this_alpha < threshold {
+                integrate += this_alpha;
+                let enc_row = &enc_data[i * feat..(i + 1) * feat];
+                for j in 0..feat {
+                    self.encoder_out_cache[j] += enc_row[j] * this_alpha;
+                }
+                continue;
+            }
+            // Fire
+            let remaining = threshold - integrate;
+            let enc_row = &enc_data[i * feat..(i + 1) * feat];
+            for j in 0..feat {
+                self.encoder_out_cache[j] += enc_row[j] * remaining;
+            }
+            acoustic.extend_from_slice(&self.encoder_out_cache);
+            integrate += this_alpha - threshold;
+            for j in 0..feat {
+                self.encoder_out_cache[j] = enc_row[j] * integrate;
+            }
+        }
+
+        // Force-fire residual
+        if integrate > 0.5 && !self.encoder_out_cache.iter().all(|&v| v == 0.0) {
+            acoustic.extend_from_slice(&self.encoder_out_cache);
+            self.alpha_cache = 0.0;
+            self.encoder_out_cache.fill(0.0);
+        } else {
+            self.alpha_cache = integrate;
+        }
+
+        Ok(acoustic)
+    }
+
     /// Stateful decoder — updates self.decoder_caches.
     fn run_decoder(
         &mut self,
@@ -569,10 +680,10 @@ impl StreamingParaformer {
             "acoustic_embeds_len" => ort::value::TensorRef::from_array_view(acoustic_len.view())?
         };
 
-        // Feed current decoder caches as inputs
+        // Feed current decoder caches as inputs (键名预分配，避免 format!)
         for i in 0..self.decoder_num_blocks {
             inputs.push((
-                format!("in_cache_{}", i).into(),
+                self.cache_keys[i].as_str().into(),
                 ort::value::TensorRef::from_array_view(self.decoder_caches[i].view())?.into(),
             ));
         }
@@ -584,12 +695,21 @@ impl StreamingParaformer {
         let sample_ids: Vec<i64> = ids_data.to_vec();
 
         // Update decoder caches from outputs (out_cache_0..out_cache_15 start at output index 2)
+        // 直接复用预分配的 Array3 内存，避免 to_vec + 重新分配
         for i in 0..self.decoder_num_blocks {
             let out_idx = 2 + i;
             let (shape, data) = outputs[out_idx].try_extract_tensor::<f32>()?;
-            let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-            self.decoder_caches[i] =
-                ndarray::Array3::from_shape_vec((dims[0], dims[1], dims[2]), data.to_vec())?;
+            let expected = self.decoder_caches[i].len();
+            let actual = data.len();
+            if expected == actual {
+                // 快路径：维度匹配，直接 copy 到预分配内存
+                self.decoder_caches[i].as_slice_mut().unwrap().copy_from_slice(data);
+            } else {
+                // 慢路径：维度变化（首次或模型异常），重新分配
+                let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
+                self.decoder_caches[i] =
+                    ndarray::Array3::from_shape_vec((dims[0], dims[1], dims[2]), data.to_vec())?;
+            }
         }
 
         Ok(sample_ids)
@@ -643,4 +763,135 @@ fn load_vocab(hf_path: &std::path::Path) -> Result<Vec<String>> {
         }
     }
     Ok(vocab)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn hf_snapshot(repo: &str) -> Option<std::path::PathBuf> {
+        let base = format!("~/.cache/huggingface/hub/models--{}", repo.replace('/', "--"));
+        let base = base.replace("~", &std::env::var("HOME").unwrap_or_default());
+        let snapshots = std::path::Path::new(&base).join("snapshots");
+        if !snapshots.exists() {
+            return None;
+        }
+        let mut entries = std::fs::read_dir(&snapshots).ok()?;
+        entries
+            .next()?
+            .ok()
+            .map(|e| e.path().join("test_wavs"))
+            .filter(|p| p.exists())
+    }
+
+    /// 流式 Paraformer 集成测试 — 用真实模型验证识别质量。
+    /// 此测试用于诊断"字重复/乱码"类问题。
+    #[test]
+    fn test_streaming_paraformer_real_model() {
+        let repo = "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en";
+        let test_wavs = match hf_snapshot(repo) {
+            Some(p) => p,
+            None => {
+                eprintln!("[skip] HF cache 未找到 {}", repo);
+                return;
+            }
+        };
+
+        let wav_path = test_wavs.join("0.wav");
+        if !wav_path.exists() {
+            eprintln!("[skip] 测试 wav 不存在: {}", wav_path.display());
+            return;
+        }
+
+        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap())
+            .expect("读取 wav 失败");
+        eprintln!("[test] 样本数: {} ({:.2}s)", samples.len(), samples.len() as f32 / 16000.0);
+
+        let mut engine = StreamingParaformer::new("paraformer-bilingual")
+            .expect("创建引擎失败");
+
+        // 模拟流式：每次喂入 600ms 样本（9600 samples）
+        let chunk_size = 16000 * 600 / 1000; // 9600
+        let mut full_text = String::new();
+
+        for (i, chunk) in samples.chunks(chunk_size).enumerate() {
+            if let Some(text) = engine.accept_samples(chunk).expect("accept_samples 失败") {
+                eprintln!("[chunk {}] full_asr: {:?}", i, text);
+                full_text = text;  // 引擎返回完整 ASR 文本（跨 chunk 累积解码）
+            }
+        }
+
+        // flush 尾部
+        if let Some(text) = engine.flush().expect("flush 失败") {
+            eprintln!("[flush] full_asr: {:?}", text);
+            full_text = text;
+        }
+
+        let final_text = engine.finish().expect("finish 失败");
+        if !final_text.is_empty() {
+            eprintln!("[finish] full_asr: {:?}", final_text);
+            full_text = final_text;
+        }
+
+        eprintln!("[result] 完整文本: {:?}", full_text);
+
+        // 不做严格断言，只验证不 panic 且输出非空
+        assert!(!full_text.is_empty(), "识别结果不应为空");
+    }
+
+    /// 离线对比测试 — 用同一个 wav 跑离线 paraformer，对比流式结果。
+    /// 注意：离线用的是 paraformer-zh（非流式模型），和流式模型不同，
+    /// 但可以验证 fbank/LFR 基础设施是否正确。
+    #[test]
+    fn test_offline_paraformer_real_model() {
+        let repo = "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en";
+        let test_wavs = match hf_snapshot(repo) {
+            Some(p) => p,
+            None => {
+                eprintln!("[skip] HF cache 未找到 {}", repo);
+                return;
+            }
+        };
+
+        let wav_path = test_wavs.join("0.wav");
+        if !wav_path.exists() {
+            eprintln!("[skip] 测试 wav 不存在: {}", wav_path.display());
+            return;
+        }
+
+        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap())
+            .expect("读取 wav 失败");
+        eprintln!("[test-offline] 样本数: {} ({:.2}s)", samples.len(), samples.len() as f32 / 16000.0);
+
+        // 离线 paraformer 使用 encoder/decoder 分离模型
+        // 直接用 extract_cmvn_from_metadata 测试 CMVN 是否正确
+        let cfg = config::load_config().expect("加载配置失败");
+        let para_cfg = cfg
+            .asr
+            .paraformer
+            .as_ref()
+            .expect("No paraformer models in config");
+        let entry = para_cfg
+            .get("paraformer-bilingual")
+            .expect("paraformer-bilingual not in config");
+
+        let hf_path = config::resolve_model_dir(&entry.source).expect("resolve_model_dir 失败");
+        let encoder_path = hf_path.join("encoder.int8.onnx");
+        let encoder_session = crate::config::apply_session_acceleration(Session::builder().unwrap())
+            .unwrap()
+            .commit_from_file(&encoder_path)
+            .expect("加载 encoder 失败");
+
+        let (neg_mean, inv_stddev, enc_out) =
+            extract_cmvn_from_metadata(&encoder_session).expect("extract_cmvn 失败");
+
+        eprintln!("[cmvn] neg_mean: {} vals, inv_stddev: {} vals, enc_out: {}",
+                  neg_mean.len(), inv_stddev.len(), enc_out);
+        eprintln!("[cmvn] neg_mean[0..5]: {:?}", &neg_mean[..5.min(neg_mean.len())]);
+        eprintln!("[cmvn] inv_stddev[0..5]: {:?}", &inv_stddev[..5.min(inv_stddev.len())]);
+
+        // 验证 inv_stddev 是否被 sqrt(512) ≈ 22.6 缩放
+        let scale = (enc_out as f32).sqrt();
+        eprintln!("[cmvn] sqrt(enc_out) = {:.4}", scale);
+    }
 }

@@ -8,7 +8,10 @@ use std::sync::Mutex;
 pub enum StreamingSession {
     Paraformer {
         engine: Mutex<crate::streaming_paraformer::StreamingParaformer>,
-        accumulated: Mutex<String>,
+        /// 已提交的 ASR 文本 + 逗号（静音点冻结的历史段）
+        punct_prefix: Mutex<String>,
+        /// prefix 中已提交的 ASR 文本字符数（不含标点）
+        committed_chars: Mutex<usize>,
     },
     ZipformerCtc {
         engine: Mutex<crate::streaming_zipformer::StreamingZipformer>,
@@ -37,7 +40,8 @@ impl StreamingSession {
                 let engine = crate::streaming_paraformer::StreamingParaformer::new(bare_name)?;
                 Ok(Self::Paraformer {
                     engine: Mutex::new(engine),
-                    accumulated: Mutex::new(String::new()),
+                    punct_prefix: Mutex::new(String::new()),
+                    committed_chars: Mutex::new(0),
                 })
             }
             crate::config::EngineCategory::Zipformer => {
@@ -77,22 +81,34 @@ impl StreamingSession {
         }
 
         match self {
-            Self::Paraformer { engine, accumulated } => {
+            Self::Paraformer { engine, punct_prefix, committed_chars } => {
                 let mut eng = engine.lock().unwrap();
                 match eng.accept_samples(samples)? {
-                    Some(delta) => {
-                        let mut acc = accumulated.lock().unwrap();
-                        // 静音后恢复说话 → 句间分隔插逗号。
-                        // 但只在 acc 非空且不以标点结尾时插（避免 flush 挤出的
-                        // 同句尾音被断词——如 flush 已产出"现在"，acc 尾部
-                        // 不带逗号，但如果 flush 没产出而 accept_samples
-                        // 补出的是同句延续，was_silent 仍会误插。
-                        // 折中：接受偶发的误插，好过完全没有标点）。
-                        if was_silent && !acc.is_empty() && !ends_with_punct(&acc) {
-                            acc.push('，');
+                    Some(full_asr) => {
+                        // full_asr 是本次话语的完整 ASR 文本（跨 chunk 累积解码）
+                        let mut prefix = punct_prefix.lock().unwrap();
+                        let mut clen = committed_chars.lock().unwrap();
+
+                        if was_silent && !prefix.is_empty() && !ends_with_punct(&prefix) {
+                            // 静音恢复 → 提交当前 delta + 逗号
+                            let delta: String = full_asr.chars().skip(*clen).collect();
+                            let delta = delta.trim_start();
+                            if !delta.is_empty() {
+                                crate::paraformer::smart_append(&mut prefix, delta);
+                            }
+                            *clen = full_asr.chars().count();
+                            if !ends_with_punct(&prefix) {
+                                prefix.push('，');
+                            }
                         }
-                        acc.push_str(&delta);
-                        Ok(Some(acc.clone()))
+
+                        // 展示文本 = prefix + 未提交的 delta
+                        let delta: String = full_asr.chars().skip(*clen).collect();
+                        let mut display = prefix.clone();
+                        if !delta.trim_start().is_empty() {
+                            crate::paraformer::smart_append(&mut display, delta.trim_start());
+                        }
+                        Ok(Some(display))
                     }
                     None => Ok(None),
                 }
@@ -133,17 +149,47 @@ impl StreamingSession {
     }
 
     /// 主动冲刷剩余音频（不重置状态，用于静音期间强制吐字）。
-    pub fn flush(&self) -> Result<Option<String>> {
+    /// `insert_comma` 为 true 时，在冲刷出的文本末尾追加逗号（静音停顿产生分句）。
+    pub fn flush(&self, insert_comma: bool) -> Result<Option<String>> {
         match self {
-            Self::Paraformer { engine, accumulated } => {
+            Self::Paraformer { engine, punct_prefix, committed_chars } => {
                 let mut eng = engine.lock().unwrap();
                 match eng.flush()? {
-                    Some(delta) => {
-                        let mut acc = accumulated.lock().unwrap();
-                        acc.push_str(&delta);
-                        Ok(Some(acc.clone()))
+                    Some(full_asr) => {
+                        let mut prefix = punct_prefix.lock().unwrap();
+                        let mut clen = committed_chars.lock().unwrap();
+
+                        let delta: String = full_asr.chars().skip(*clen).collect();
+                        let delta_trimmed = delta.trim_start();
+
+                        if insert_comma {
+                            // 提交当前 delta + 逗号
+                            if !delta_trimmed.is_empty() {
+                                crate::paraformer::smart_append(&mut prefix, delta_trimmed);
+                            }
+                            *clen = full_asr.chars().count();
+                            if !prefix.is_empty() && !ends_with_punct(&prefix) {
+                                prefix.push('，');
+                            }
+                            Ok(Some(prefix.clone()))
+                        } else {
+                            let mut display = prefix.clone();
+                            if !delta_trimmed.is_empty() {
+                                crate::paraformer::smart_append(&mut display, delta_trimmed);
+                            }
+                            Ok(Some(display))
+                        }
                     }
-                    None => Ok(None),
+                    None => {
+                        if insert_comma {
+                            let mut prefix = punct_prefix.lock().unwrap();
+                            if !prefix.is_empty() && !ends_with_punct(&prefix) {
+                                prefix.push('，');
+                                return Ok(Some(prefix.clone()));
+                            }
+                        }
+                        Ok(None)
+                    }
                 }
             }
             Self::ZipformerCtc { engine, accumulated } => {
@@ -161,15 +207,20 @@ impl StreamingSession {
     /// 在末尾追加句号（如果文本不为空且不以标点结尾）。
     pub fn finish(&self) -> Result<String> {
         match self {
-            Self::Paraformer { engine, accumulated } => {
+            Self::Paraformer { engine, punct_prefix, committed_chars } => {
                 let mut eng = engine.lock().unwrap();
-                let delta = eng.finish()?;
-                let mut acc = accumulated.lock().unwrap();
-                if !delta.is_empty() {
-                    acc.push_str(&delta);
+                let full_asr = eng.finish()?;
+                let prefix = punct_prefix.lock().unwrap();
+                let clen = committed_chars.lock().unwrap();
+
+                let delta: String = full_asr.chars().skip(*clen).collect();
+                let delta_trimmed = delta.trim_start();
+                let mut display = prefix.clone();
+                if !delta_trimmed.is_empty() {
+                    crate::paraformer::smart_append(&mut display, delta_trimmed);
                 }
-                append_final_punctuation(&mut acc);
-                Ok(crate::hans::normalize_variant(&*acc))
+                append_final_punctuation(&mut display);
+                Ok(crate::hans::normalize_variant(&display))
             }
             Self::ZipformerCtc { engine, accumulated } => {
                 let final_segment = engine.lock().unwrap().finish()?;
@@ -203,9 +254,10 @@ impl StreamingSession {
     /// 重置引擎状态，准备新的识别轮次（不重新加载模型）。
     pub fn reset(&self) {
         match self {
-            Self::Paraformer { engine, accumulated } => {
+            Self::Paraformer { engine, punct_prefix, committed_chars } => {
                 engine.lock().unwrap().reset();
-                accumulated.lock().unwrap().clear();
+                punct_prefix.lock().unwrap().clear();
+                *committed_chars.lock().unwrap() = 0;
             }
             Self::ZipformerCtc { engine, accumulated } => {
                 engine.lock().unwrap().reset();

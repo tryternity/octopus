@@ -16,8 +16,10 @@ pub(crate) const FBANK_SAMPLE_RATE: u32 = 16000;
 pub(crate) const LFR_WINDOW_SIZE: usize = 7;
 pub(crate) const LFR_WINDOW_SHIFT: usize = 6;
 
+// 窗口函数：流式 Paraformer 使用 povey window (hanning^0.85)，离线使用 hamming
+pub(crate) static POVEY_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| povey_window(FBANK_FRAME_LEN));
 static HAMMING_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hamming_window(FBANK_FRAME_LEN));
-static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank_fbank());
+pub(crate) static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank_fbank());
 
 // ── Decoder cache ──
 const NUM_CACHE_LAYERS: usize = 16;
@@ -313,73 +315,124 @@ pub(crate) fn extract_cmvn_from_metadata(session: &Session) -> Result<(Vec<f32>,
     Ok((neg_mean, inv_stddev, encoder_output_size))
 }
 
-/// Decode token IDs into text, handling @@ BPE continuation markers
+/// Append `new` to `existing` with intelligent spacing at the boundary.
+/// Used when concatenating decoded text from different streaming chunks.
+/// - ASCII ↔ ASCII: add space
+/// - Chinese ↔ ASCII or ASCII ↔ Chinese: add space
+/// - Chinese ↔ Chinese: no space
+pub(crate) fn smart_append(existing: &mut String, new: &str) {
+    if new.is_empty() {
+        return;
+    }
+    if existing.is_empty() {
+        existing.push_str(new);
+        return;
+    }
+    let last_byte = existing.as_bytes().last().copied().unwrap_or(0);
+    let first_byte = new.as_bytes().first().copied().unwrap_or(0);
+    let last_is_ascii = last_byte < 0x80;
+    let first_is_ascii = first_byte < 0x80;
+    // Add space if either side is ASCII (word boundary), except both Chinese
+    if last_is_ascii || first_is_ascii {
+        existing.push(' ');
+    }
+    existing.push_str(new);
+}
+
+/// Decode token IDs into text, with sherpa-onnx compatible spacing logic.
+///
+/// Spacing rules (matching sherpa-onnx Convert):
+/// - `@@` suffix → BPE subword continuation, strip `@@` and merge without space
+/// - ASCII token (not @@) → prepend space unless merging from previous subword
+/// - Non-ASCII token (Chinese etc.) → no space; but prepend space if previous token was ASCII
 pub(crate) fn decode_tokens(sample_ids: &[i64], vocab: &[String]) -> String {
-    let mut text_parts: Vec<String> = Vec::new();
-    let mut i = 0;
-
-    while i < sample_ids.len() {
-        let tid = sample_ids[i];
-
-        // Skip special tokens
-        if tid == TOKEN_BLANK || tid == TOKEN_SOS || tid == TOKEN_EOS {
-            i += 1;
-            continue;
-        }
-
-        let idx = tid as usize;
-        if idx == 0 || idx >= vocab.len() || vocab[idx].is_empty() {
-            i += 1;
-            continue;
-        }
-
-        let token = &vocab[idx];
-        if token.ends_with("@@") {
-            // BPE continuation: accumulate until non-@@ token
-            let mut merged = String::new();
-            merged.push_str(&token[..token.len() - 2]);
-            i += 1;
-            while i < sample_ids.len() {
-                let next_tid = sample_ids[i];
-                if next_tid == TOKEN_BLANK || next_tid == TOKEN_SOS || next_tid == TOKEN_EOS {
-                    i += 1;
-                    continue;
-                }
-                let next_idx = next_tid as usize;
-                if next_idx == 0 || next_idx >= vocab.len() || vocab[next_idx].is_empty() {
-                    i += 1;
-                    continue;
-                }
-                let next_token = &vocab[next_idx];
-                if next_token.ends_with("@@") {
-                    merged.push_str(&next_token[..next_token.len() - 2]);
-                } else {
-                    merged.push_str(next_token);
-                    i += 1;
-                    break;
-                }
-                i += 1;
+    // Collect effective (token_id, token_string) pairs, skipping specials/blanks
+    let tokens: Vec<&str> = sample_ids
+        .iter()
+        .filter_map(|&tid| {
+            if tid == TOKEN_BLANK || tid == TOKEN_SOS || tid == TOKEN_EOS {
+                return None;
             }
-            text_parts.push(merged);
+            let idx = tid as usize;
+            if idx == 0 || idx >= vocab.len() || vocab[idx].is_empty() {
+                return None;
+            }
+            Some(vocab[idx].as_str())
+        })
+        .collect();
+
+    let mut text = String::new();
+    let mut mergeable = false;
+
+    for (i, token) in tokens.iter().enumerate() {
+        let ends_with_at = token.ends_with("@@");
+
+        if !ends_with_at {
+            // Token does NOT end with @@ — it's a complete word/character
+            let first_byte = token.as_bytes().first().copied().unwrap_or(0);
+            if first_byte < 0x80 {
+                // ASCII — prepend space unless merging from subword
+                if mergeable {
+                    mergeable = false;
+                    text.push_str(token);
+                } else {
+                    text.push(' ');
+                    text.push_str(token);
+                }
+            } else {
+                // Non-ASCII (Chinese, Japanese, etc.)
+                mergeable = false;
+                if i > 0 {
+                    // Prepend space if previous token was ASCII
+                    let prev = tokens[i - 1];
+                    let prev_byte = prev.as_bytes().first().copied().unwrap_or(0);
+                    if prev_byte < 0x80 && !prev.ends_with("@@") {
+                        text.push(' ');
+                    }
+                }
+                text.push_str(token);
+            }
         } else {
-            text_parts.push(token.clone());
-            i += 1;
+            // Token ends with @@ — BPE subword continuation
+            let stem = &token[..token.len() - 2]; // strip "@@"
+            if mergeable {
+                // Continue merging
+                text.push_str(stem);
+            } else {
+                // Start new subword chain
+                text.push(' ');
+                text.push_str(stem);
+                mergeable = true;
+            }
         }
     }
 
-    text_parts.join("")
+    text.trim().to_string()
 }
 
 // ── Fbank feature extraction (same as SenseVoice) ──
 
+/// 离线 Paraformer fbank 特征提取（hamming window）
 pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
     let scaled: Vec<f32> = samples.iter().map(|&s| s * 32768.0).collect();
-    let fbank = compute_fbank(&scaled)?;
+    let mut preemph_prev = 0.0f32;
+    let fbank = compute_fbank(&scaled, &HAMMING_WINDOW, 0.97, &mut preemph_prev)?;
     let lfr = apply_lfr(&fbank, LFR_WINDOW_SIZE, LFR_WINDOW_SHIFT);
     Ok(lfr)
 }
 
-pub(crate) fn compute_fbank(samples: &[f32]) -> Result<Array2<f32>> {
+/// Fbank 特征提取（DC offset removal + pre-emphasis + windowing → FFT → mel → log）
+///
+/// `window` — povey window（流式）或 hamming window（离线）
+/// `preemph_coeff` — 预加重系数，paraformer 用 0.97
+/// `preemph_prev` — 预加重跨帧状态（上一帧最后一个 DC-removed 样本），
+///                  流式时从结构体传入，离线时用局部变量 0.0
+pub(crate) fn compute_fbank(
+    samples: &[f32],
+    window: &[f32],
+    preemph_coeff: f32,
+    preemph_prev: &mut f32,
+) -> Result<Array2<f32>> {
     let n_frames = if samples.len() >= FBANK_FRAME_LEN {
         (samples.len() - FBANK_FRAME_LEN) / FBANK_FRAME_SHIFT + 1
     } else {
@@ -391,15 +444,42 @@ pub(crate) fn compute_fbank(samples: &[f32]) -> Result<Array2<f32>> {
 
     let n_freqs = FBANK_FFT_SIZE / 2 + 1;
     let mut fbank_data = vec![0.0f32; n_frames * FBANK_NUM_BINS];
-
     let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); FBANK_FFT_SIZE];
+
+    let mut frame_buf = [0.0f32; FBANK_FRAME_LEN];
 
     for fi in 0..n_frames {
         let start = fi * FBANK_FRAME_SHIFT;
 
+        // 1. 提取帧样本
+        for j in 0..FBANK_FRAME_LEN {
+            frame_buf[j] = if start + j < samples.len() {
+                samples[start + j]
+            } else {
+                0.0
+            };
+        }
+
+        // 2. DC offset removal（去直流）
+        let mean: f32 = frame_buf.iter().sum::<f32>() / FBANK_FRAME_LEN as f32;
+        for s in frame_buf.iter_mut() {
+            *s -= mean;
+        }
+
+        // 3. Pre-emphasis（预加重）: y[i] = x[i] - preemph_coeff * x[i-1]
+        //    prev 跨帧传递（preemph_prev），初始化为上一帧最后一个 DC-removed 样本
+        let mut prev = *preemph_prev;
+        for i in 0..FBANK_FRAME_LEN {
+            let cur = frame_buf[i];
+            frame_buf[i] = cur - preemph_coeff * prev;
+            prev = cur;
+        }
+        *preemph_prev = prev;
+
+        // 4. 加窗 + FFT
         for j in 0..FBANK_FFT_SIZE {
-            let s = if start + j < samples.len() && j < FBANK_FRAME_LEN {
-                samples[start + j] * HAMMING_WINDOW[j]
+            let s = if j < FBANK_FRAME_LEN {
+                frame_buf[j] * window[j]
             } else {
                 0.0
             };
@@ -407,12 +487,13 @@ pub(crate) fn compute_fbank(samples: &[f32]) -> Result<Array2<f32>> {
         }
         fft.process(&mut buf);
 
-        // Pre-compute power spectrum to avoid redundant calculations in the filterbank loop
+        // 5. 功率谱
         let mut power_spectrum = [0.0f64; FBANK_FFT_SIZE / 2 + 1];
         for k in 0..n_freqs {
             power_spectrum[k] = buf[k].re as f64 * buf[k].re as f64 + buf[k].im as f64 * buf[k].im as f64;
         }
 
+        // 6. Mel 滤波器组 + log
         for mi in 0..FBANK_NUM_BINS {
             let mut sum = 0.0f64;
             let fb_row = &MEL_FILTERBANK[mi];
@@ -450,6 +531,17 @@ pub(crate) fn apply_lfr(fbank: &Array2<f32>, window_size: usize, window_shift: u
     out
 }
 
+/// Povey window: (0.5 - 0.5*cos(2*pi*i/(N-1)))^0.85
+/// knf feature-window.cc GetWindow() — 流式 Paraformer 默认使用此窗口
+fn povey_window(size: usize) -> Vec<f32> {
+    (0..size)
+        .map(|i| {
+            let a = 2.0 * std::f32::consts::PI * i as f32 / (size - 1) as f32;
+            (0.5 - 0.5 * a.cos()).powf(0.85)
+        })
+        .collect()
+}
+
 fn hamming_window(size: usize) -> Vec<f32> {
     (0..size)
         .map(|i| 0.54 - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / (size - 1) as f32).cos())
@@ -458,26 +550,36 @@ fn hamming_window(size: usize) -> Vec<f32> {
 
 fn mel_filterbank_fbank() -> Vec<Vec<f64>> {
     let n_freqs = FBANK_FFT_SIZE / 2 + 1;
-    let fmax = FBANK_SAMPLE_RATE as f64 / 2.0;
-    let mel_min = hz_to_mel(20.0);
-    let mel_max = hz_to_mel(fmax);
+    // sherpa-onnx 默认 high_freq = -400（即 Nyquist - 400 = 7600 Hz）
+    let high_freq_param = -400.0f64;
+    let fmax = if high_freq_param > 0.0 {
+        high_freq_param
+    } else {
+        FBANK_SAMPLE_RATE as f64 / 2.0 + high_freq_param // 7600.0
+    };
+    let mel_low = hz_to_mel(20.0);
+    let mel_high = hz_to_mel(fmax);
 
-    let hz_points: Vec<f64> = (0..=FBANK_NUM_BINS + 1)
-        .map(|i| mel_to_hz(mel_min + (mel_max - mel_min) * i as f64 / (FBANK_NUM_BINS + 1) as f64))
-        .collect();
-
-    let fft_freqs: Vec<f64> = (0..n_freqs)
-        .map(|i| FBANK_SAMPLE_RATE as f64 * i as f64 / FBANK_FFT_SIZE as f64)
-        .collect();
+    // knf/kaldi 的 mel 滤波器在 **mel 空间** 均匀分布 (num_bins+2) 个点，
+    // 权重斜率也在 mel 空间计算。此前在 Hz 空间计算权重导致 fbank 输出完全不同。
+    let mel_delta = (mel_high - mel_low) / (FBANK_NUM_BINS as f64 + 1.0);
+    let fft_bin_width = FBANK_SAMPLE_RATE as f64 / FBANK_FFT_SIZE as f64;
 
     let mut filters = vec![vec![0.0f64; n_freqs]; FBANK_NUM_BINS];
-    for i in 0..FBANK_NUM_BINS {
-        let (fl, fc, fr) = (hz_points[i], hz_points[i + 1], hz_points[i + 2]);
+    for bin in 0..FBANK_NUM_BINS {
+        let left_mel = mel_low + bin as f64 * mel_delta;
+        let center_mel = mel_low + (bin as f64 + 1.0) * mel_delta;
+        let right_mel = mel_low + (bin as f64 + 2.0) * mel_delta;
+
         for j in 0..n_freqs {
-            if fft_freqs[j] >= fl && fft_freqs[j] <= fc && fc > fl {
-                filters[i][j] = (fft_freqs[j] - fl) / (fc - fl);
-            } else if fft_freqs[j] > fc && fft_freqs[j] <= fr && fr > fc {
-                filters[i][j] = (fr - fft_freqs[j]) / (fr - fc);
+            let freq = fft_bin_width * j as f64;
+            let mel = hz_to_mel(freq);
+            if mel > left_mel && mel < right_mel {
+                if mel <= center_mel {
+                    filters[bin][j] = (mel - left_mel) / (center_mel - left_mel);
+                } else {
+                    filters[bin][j] = (right_mel - mel) / (right_mel - center_mel);
+                }
             }
         }
     }
@@ -486,8 +588,4 @@ fn mel_filterbank_fbank() -> Vec<Vec<f64>> {
 
 fn hz_to_mel(hz: f64) -> f64 {
     1127.0 * (1.0 + hz / 700.0).ln()
-}
-
-fn mel_to_hz(mel: f64) -> f64 {
-    700.0 * (mel / 1127.0).exp() - 700.0
 }

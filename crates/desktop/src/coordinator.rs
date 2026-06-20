@@ -1721,9 +1721,9 @@ fn handle_streaming_tick(
             Err(e) => warn!("Streaming accept_samples error: {}", e),
         }
 
-        // 静音主动冲刷（>0.5s）
+        // 静音主动冲刷（>0.5s）— 同时追加逗号，提供即时分句反馈
         if *silence_duration >= PUNCTUATION_SILENCE_THRESHOLD && !*flushed {
-            match engine.flush() {
+            match engine.flush(true) {
                 Ok(Some(new_text)) => {
                     // 幂等：静音期 flush 常返回同一累积全文（zipformer 段已 finish 并入 acc），
                     // 内容未变则不重绘、不打 Flushed 日志（消除静音期反复 flush 闪烁）

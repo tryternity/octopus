@@ -315,7 +315,7 @@ async fn handle_ws(
 
                 // Silent flush (> 0.5s)
                 if silence_duration >= 0.5 && !flushed {
-                    match streaming_session.flush() {
+                    match streaming_session.flush(true) {
                         Ok(Some(new_text)) => {
                             let _ = socket
                                 .send(Message::Text(
