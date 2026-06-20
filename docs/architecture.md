@@ -321,7 +321,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | Whisper | 离线 | 多语言；传 `auto` 且 DB `models.language` 配了具体语种时优先用后者（`entry_language` 覆盖），否则自动检测 |
 | SenseVoice | 离线 | 快速，自动语言检测 |
 | Paraformer | 离线/流式 | 中文优化 |
-| Qwen3-ASR | 离线 | 大模型能力 |
+| Qwen3-ASR | 离线 | 大模型能力；`auto`/空时不注入 language 让模型自检（支持中英混合），显式语种时注入 `language X`；模型自检的 `language <词> <|asr_text|>` 前缀由 `decode_tokens` 剥离（按 token ID 定位 + `trim_start` 容忍 BPE 引导空格） |
 | Zipformer | 离线/流式 | CTC + Transducer（RNN-T）；路由层检测 `decoder.onnx` 分流 |
 
 ### Zipformer 引擎族（CTC vs Transducer）
@@ -379,7 +379,8 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 为了最大化利用用户本机的 GPU 资源加速语音识别，同时避免因显卡驱动或算子不支持导致应用程序崩溃，系统在 `octopus-asr` 核心引擎中实现了一套手自动一体的硬件加速及平滑降级机制。
 
 - **开关**：`app_config.asr_hardware_accelerated`（`bool`，默认 `false`）。`false` 直接走 CPU。
-- **按平台注册 EP**（关键修正：曾跨平台全注册 CUDA+DirectML+CoreML，macOS 上 init Linux/Windows 专用 EP 的失败路径直接 segfault——SIGSEGV 绕过 Rust 的 `match Err`、进程被 OS 杀无法 catch，故必须按平台预防）：macOS 仅 CoreML、Linux CUDA、Windows DirectML+CUDA。
+- **按平台注册 EP**（关键修正：曾跨平台全注册 CUDA+DirectML+CoreML，macOS 上 init Linux/Windows 专用 EP 的失败路径直接 segfault——SIGSEGV 绕过 Rust 的 `match Err`、进程被 OS 杀无法 catch，故必须按平台预防）：macOS 仅 CoreML、Linux CUDA、Windows 仅 DirectML（2026-06-20 起删 CUDA——DirectML 通吃 DX12 GPU，实时转写够用，YAGNI）。
+- **feature-level 二道防线**（2026-06-20）：除上述代码层 `#[cfg]` 按平台注册，`crates/asr/Cargo.toml` 的 ort feature 也按平台条件化（target-specific dependency：mac=coreml / linux=cuda / win=directml，base 仅 `download-binaries`）。cuda/directml feature 在 mac 关闭 → 即便代码层 cfg gate 被退化、误在 mac 注册 CUDA EP，ort `register()` 也会因 feature off 直接返回 `MissingFeature`、不走 FFI dlopen-libcuda（segfault 那条路径），从而不崩。详见 [`docs/superpowers/specs/2026-06-20-ort-cross-platform-feature-design.md`](superpowers/specs/2026-06-20-ort-cross-platform-feature-design.md) §7.3。
 - **两层降级**：① EP 注册失败（驱动/库缺失）→ 捕获 `Err` 回退纯 CPU session，进程不崩；② **qwen3-asr 显式跳过 CoreML**——其动态算子 CoreML **不报错而是把图分区**跑（CoreML 跑支持的算子、CPU 跑剩下的，CPU↔CoreML 张量拷贝开销 dominate，比纯 CPU 还慢），故检测 active 引擎 `category=qwen3-asr` 时主动走 CPU。zipformer 等静态图照常吃满 CoreML。
 - **VAD 免加速**：Silero VAD 极小（1.8MB）+ 实时性要求极高，上 GPU 的上下文切换开销远超收益，固定 CPU，不受 `asr_hardware_accelerated` 影响。
 

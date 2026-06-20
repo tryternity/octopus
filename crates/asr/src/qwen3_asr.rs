@@ -39,6 +39,36 @@ const EOS_TOKEN_ID: i64 = 151645; // <|im_end|>
 static HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hann_window(MEL_FRAME_LEN));
 static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank());
 
+/// 每个 mel bin 的非零频率区间 `[start, end)`，与 `MEL_FILTERBANK` 一一对应。
+/// 审查 #6：filterbank 是三角滤波、高度稀疏（每行 201 个频率里绝大部分权重为 0）。
+/// 预计算非零区间后，mel 特征内层循环只扫该区间，跳过 ~90% 的 `× 0.0` 无效乘加。
+/// 区间内全非零（三角滤波在 `[left_hz, right_hz]` 内单调升再降，无内部空洞）。
+static MEL_FILTERBANK_RANGE: Lazy<Vec<(usize, usize)>> = Lazy::new(|| {
+    MEL_FILTERBANK
+        .iter()
+        .map(|row| {
+            let start = row.iter().position(|&v| v != 0.0).unwrap_or(row.len());
+            let end = row
+                .len()
+                - row.iter().rev().position(|&v| v != 0.0).unwrap_or(row.len());
+            (start, end)
+        })
+        .collect()
+});
+
+/// decoder 各层 KV cache 输入名（进程级单例，`Box::leak` 仅发生一次）。
+/// 审查 #5：原实现在 `Qwen3AsrEngine::new` 每次实例化都 leak 56 个 `&'static str`，
+/// 在 AsrEngineManager LRU 淘汰 / CLI 每次调用重建引擎时累积泄漏。改为全局 leak 一次。
+static CACHE_NAMES: Lazy<Vec<(&'static str, &'static str)>> = Lazy::new(|| {
+    (0..NUM_DECODER_LAYERS)
+        .flat_map(|i| {
+            let k: &'static str = Box::leak(format!("cache_key_{}", i).into_boxed_str());
+            let v: &'static str = Box::leak(format!("cache_value_{}", i).into_boxed_str());
+            [(k, v)]
+        })
+        .collect()
+});
+
 // ── Public API ──
 
 /// Thread-safe, reusable engine for Qwen3-ASR model
@@ -48,7 +78,11 @@ pub struct Qwen3AsrEngine {
     decoder_session: std::sync::Mutex<Session>,
     tokenizer: tokenizers::Tokenizer,
     entry: config::ModelEntry,
-    cache_names: Vec<(&'static str, &'static str)>,
+    /// KV cache 的最大序列长度（审查 #4 跟进）。
+    /// `Some(n)` = decoder `past_key` 输入 shape dim1 具体（模型声明上限，对齐 sherpa-onnx
+    /// `InitDecoderSession`）；`None` = dim1 动态（-1），回退到 `s0 + MAX_NEW_TOKENS`。
+    /// 替代原先硬编码 `2048.max(s0 + MAX_NEW_TOKENS)`：动态时显著省内存，具体时正确 sizing。
+    kv_max_len: Option<usize>,
 }
 
 impl Qwen3AsrEngine {
@@ -71,11 +105,14 @@ impl Qwen3AsrEngine {
         let tokenizer_dir = hf_path.join("tokenizer");
         let tokenizer = load_tokenizer(&tokenizer_dir)?;
 
-        let mut cache_names = Vec::with_capacity(NUM_DECODER_LAYERS);
-        for i in 0..NUM_DECODER_LAYERS {
-            let key_name: &'static str = Box::leak(format!("cache_key_{}", i).into_boxed_str());
-            let value_name: &'static str = Box::leak(format!("cache_value_{}", i).into_boxed_str());
-            cache_names.push((key_name, value_name));
+        // KV cache 最大序列长度：读 decoder 的 `cache_key_0` 输入 shape dim1（审查 #4）。
+        let kv_max_len = decoder_kv_max_len(&decoder_session);
+        if let Some(n) = kv_max_len {
+            log::debug!("qwen3-asr: decoder past_key dim1 = {}（KV cache 固定 sizing）", n);
+        } else {
+            log::debug!(
+                "qwen3-asr: decoder past_key dim1 动态 → KV cache 按 s0+MAX_NEW_TOKENS sizing"
+            );
         }
 
         Ok(Self {
@@ -84,7 +121,7 @@ impl Qwen3AsrEngine {
             decoder_session: std::sync::Mutex::new(decoder_session),
             tokenizer,
             entry: entry.clone(),
-            cache_names,
+            kv_max_len,
         })
     }
 }
@@ -115,6 +152,11 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
         // ── Step 1: Mel features (128 bins) ──
         let mut mel = compute_mel_features(samples)?;
         let (n_frames, mel_dim) = (mel.nrows(), mel.ncols());
+
+        // 空音频（0 帧）直接返回空文本，避免空张量送入 conv/encoder 报错（审查 #1 配套）。
+        if n_frames == 0 {
+            return Ok(String::new());
+        }
 
         // Whisper-style normalization: per-frame mean/std
         normalize_whisper_features(&mut mel);
@@ -172,8 +214,11 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
 
         let s0 = input_ids.len();
 
-        // Dynamic max total length
-        let max_total_len = 2048.max(s0 + MAX_NEW_TOKENS);
+        // KV cache 最大序列长度（审查 #4）：
+        //   - decoder past_key dim1 具体（kv_max_len=Some）→ 用它（模型声明上限，对齐 sherpa-onnx）；
+        //   - 动态（None）→ 仅装 prompt + 生成（s0 + MAX_NEW_TOKENS），比原先硬编码 2048 floor 显著省内存。
+        // loop 的 `cur_len + s <= max_total_len` 写入守卫与 `cur_len < max_total_len` 终止条件保证不越界。
+        let max_total_len = self.kv_max_len.unwrap_or(s0 + MAX_NEW_TOKENS);
 
         // ── Step 5: Autoregressive decoder loop ──
         // Initialize KV caches: [1, max_total_len, num_kv_heads, head_dim]
@@ -199,7 +244,7 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
             0,
             &mut caches,
             max_total_len,
-            &self.cache_names,
+            &CACHE_NAMES,
         )?;
 
         let mut generated_ids = Vec::new();
@@ -235,7 +280,7 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
                 cur_len,
                 &mut caches,
                 max_total_len,
-                &self.cache_names,
+                &CACHE_NAMES,
             )?;
 
             cur_len += 1;
@@ -342,7 +387,7 @@ fn load_tokenizer(dir: &std::path::Path) -> Result<tokenizers::Tokenizer> {
 }
 
 /// Decode generated token IDs to text using the tokenizer, skipping special tokens.
-/// Cleans prompt prefix if present.
+/// Cleans the model's self-detected `language <word> <|asr_text|>` scaffold prefix if present.
 fn decode_tokens(tokenizer: &tokenizers::Tokenizer, ids: &[i64]) -> String {
     const ASR_TEXT_TOKEN_ID: i64 = 151704;
 
@@ -353,10 +398,14 @@ fn decode_tokens(tokenizer: &tokenizers::Tokenizer, ids: &[i64]) -> String {
             .iter()
             .position(|&id| id == ASR_TEXT_TOKEN_ID)
         {
+            // asr_text token 已按 ID 确认存在（无需再校验其解码串——特殊 token 渲染为
+            // `<|asr_text|>`（带竖线），原 `ends_with("<asr_text>")` 因漏竖线恒假、
+            // 剥离永不触发，导致 "language Chinese" 泄漏进转写结果）。只需校验其前文本
+            // 是 `language <词>` 自检 scaffold 即可剥离到 asr_text 之后。
             if pos > 0 {
-                let prefix_ids: Vec<u32> = ids[..=pos].iter().map(|&id| id as u32).collect();
-                if let Ok(prefix_text) = tokenizer.decode(&prefix_ids, false) {
-                    if prefix_text.starts_with("language ") && prefix_text.ends_with("<asr_text>") {
+                let before_asr: Vec<u32> = ids[..pos].iter().map(|&id| id as u32).collect();
+                if let Ok(before_text) = tokenizer.decode(&before_asr, false) {
+                    if is_language_scaffold(&before_text) {
                         cleaned_ids = ids[pos + 1..].iter().map(|&id| id as u32).collect();
                     }
                 }
@@ -367,6 +416,16 @@ fn decode_tokens(tokenizer: &tokenizers::Tokenizer, ids: &[i64]) -> String {
     tokenizer
         .decode(&cleaned_ids, true)
         .unwrap_or_else(|e| format!("[decode error: {}]", e))
+}
+
+/// 判定 asr_text token 之前的解码文本是否为模型语言自检 scaffold（`language <检测词>`）。
+///
+/// language 字段为空/auto 时，模型自行预测 `language <词> <|asr_text|>` 再出文本，该前缀
+/// 必须剥离。`trim_start` 容忍首 token 的 BPE 引导空格（`Ġlanguage` → ` language`）——
+/// int8 模型对首 token 选择本就不稳，不做 trim 会使剥离时灵时不灵（e2e 实测部分段泄漏、
+/// 部分段干净，正源于此）。asr_text token 已按 ID 确认存在，故此处只校验 language 前缀。
+fn is_language_scaffold(text: &str) -> bool {
+    text.trim_start().starts_with("language ")
 }
 
 // ── ONNX discovery ──
@@ -458,20 +517,37 @@ fn build_prompt_ids(
     ids.push(IM_START);
     ids.extend_from_slice(&asst_ids);
 
-    // Language prefix：指定具体语言时注入 `language <lang>`；
-    // `auto`/空时不注入（模型自动检测语言，支持多语言与中英混合）。
-    // <asr_text> 是生成起始标记，始终注入（原实现空字符串时会连带跳过它，是 bug）。
+    // Language prefix + <asr_text> 起始标记：仅当指定具体语言时一并注入
+    // `language <lang> <asr_text>`（对齐 sherpa-onnx BuildSourceIds —— language 非空才追加
+    // language_ids + asr_text_token_id）。
+    // `auto`/空时 prompt 以 `assistant\n` 结尾，由模型自行预测 `language <检测> <asr_text>`
+    // 再出文本；decode_tokens 的前缀清理正是为这条路径服务（原实现无条件 push ASR_TEXT 会
+    // 跳过模型的语言自检、且让该清理成为死代码——审查 #2）。
     if !language.is_empty() && language != "auto" {
         let lang_text = format!("language {}", language);
         let lang_ids = encode_text(&lang_text)?;
         ids.extend(lang_ids);
+        ids.push(ASR_TEXT);
     }
-    ids.push(ASR_TEXT);
 
     Ok(ids)
 }
 
 // ── Decoder step ──
+
+/// 读 decoder 的 `cache_key_0` 输入（首个 past_key）shape 的 dim1，确定 KV cache 最大序列长度。
+/// 对齐 sherpa-onnx `InitDecoderSession`（C++ 读 `past_key_shape_tpl_[1]`）。
+/// 按名查找而非硬编码 index，更鲁棒；返回 `None` 表示该维度动态（ONNX 里为 -1），由调用方回退。
+fn decoder_kv_max_len(decoder: &Session) -> Option<usize> {
+    decoder
+        .inputs()
+        .iter()
+        .find(|o| o.name() == "cache_key_0")
+        .and_then(|o| o.dtype().tensor_shape())
+        .and_then(|s| s.get(1).copied())
+        .filter(|&d| d > 0)
+        .map(|d| d as usize)
+}
 
 /// Run a single decoder step (prefill or generate) and return logits for the last token
 fn run_decoder_step(
@@ -655,6 +731,14 @@ fn feat_to_audio_tokens_len(feat_frames: usize, chunk_size: usize) -> usize {
 
 /// Compute 128-bin log-mel spectrogram features from 16kHz f32 samples
 fn compute_mel_features(samples: &[f32]) -> Result<Array2<f32>> {
+    // 空输入防御（审查 #1）：samples 为空时，下方反射映射的条件
+    // `s < 0 || s >= samples.len() as isize` 在 len==0 时退化为 `s < 0 || s >= 0`（恒真），
+    // 反射会陷入 `-120 ↔ 119` 死循环、卡死整个进程。sherpa-onnx Decode 在 f.empty() 时
+    // 直接返回空结果，这里对齐其前段防御。
+    if samples.is_empty() {
+        return Ok(Array2::zeros((0, MEL_NUM_BINS)));
+    }
+
     let n_frames = (samples.len() + MEL_FRAME_SHIFT / 2) / MEL_FRAME_SHIFT;
     let n_frames = n_frames.max(1);
 
@@ -699,7 +783,8 @@ fn compute_mel_features(samples: &[f32]) -> Result<Array2<f32>> {
         for mi in 0..MEL_NUM_BINS {
             let mut sum = 0.0f64;
             let fb_row = &MEL_FILTERBANK[mi];
-            for k in 0..n_freqs {
+            let (start, end) = MEL_FILTERBANK_RANGE[mi];
+            for k in start..end {
                 sum += power_spectrum[k] * fb_row[k];
             }
             mel_data[fi * MEL_NUM_BINS + mi] = sum as f32;
@@ -810,4 +895,63 @@ fn trim_audio_features(audio_features: ArrayView3<'_, f32>) -> (Array3<f32>, usi
         .slice(ndarray::s![.., ..a_valid, ..])
         .to_owned();
     (sliced, a_valid)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn compute_mel_features_empty_samples_does_not_hang() {
+        // 审查 #1 回归：空输入曾因反射映射 `s < 0 || s >= 0` 恒真陷入死循环卡死进程。
+        let mel = compute_mel_features(&[]).expect("empty samples should return Ok, not hang");
+        assert_eq!(mel.shape(), &[0, MEL_NUM_BINS]);
+    }
+
+    #[test]
+    fn compute_mel_features_single_sample_no_panic() {
+        // 极短但非空输入：确保反射边界（len==1）不越界、不死循环。
+        let mel = compute_mel_features(&[0.0f32]).expect("single sample should be Ok");
+        assert_eq!(mel.ncols(), MEL_NUM_BINS);
+        assert!(mel.nrows() >= 1);
+    }
+
+    #[test]
+    fn is_language_scaffold_recognizes_self_detect_prefix() {
+        // #2 e2e 回归：模型自检 `language <词>` 前缀须被识别并（由 decode_tokens）剥离，
+        // 否则 "language Chinese" 会泄漏进转写结果。
+        assert!(is_language_scaffold("language Chinese"));
+        assert!(is_language_scaffold("language English"));
+        // BPE 引导空格（Ġlanguage → " language"）：int8 模型首 token 选择不稳，
+        // 不做 trim 会使剥离时灵时不灵（e2e 实测部分段泄漏、部分段干净的根因）。
+        assert!(is_language_scaffold(" language Chinese"));
+        assert!(is_language_scaffold("  language Japanese"));
+        // 尾随内容不干扰前缀匹配
+        assert!(is_language_scaffold("language Chinese "));
+        // 非自检文本：不误剥
+        assert!(!is_language_scaffold("进行询问。"));
+        assert!(!is_language_scaffold(""));
+        // 单独 "language"（无尾随空格 + 检测词）不构成 scaffold（对齐 C++ rfind("language ",0)）
+        assert!(!is_language_scaffold("language"));
+    }
+
+    #[test]
+    fn mel_filterbank_range_is_contiguous_nonzero() {
+        // 审查 #6 正确性：每个 bin 的 [start, end) 区间内权重必须全非零（三角滤波无内部空洞），
+        // 否则稀疏化会漏算。区间外必为 0。
+        MEL_FILTERBANK_RANGE
+            .iter()
+            .enumerate()
+            .for_each(|(mi, &(start, end))| {
+                let row = &MEL_FILTERBANK[mi];
+                for (k, &w) in row.iter().enumerate() {
+                    let in_range = k >= start && k < end;
+                    if in_range {
+                        assert_ne!(w, 0.0, "bin {mi} range [{start},{end}) 含零权重 @ {k}");
+                    } else if w != 0.0 {
+                        assert!(in_range, "bin {mi} 区间外 @ {k} 非零（区间计算错）");
+                    }
+                }
+            });
+    }
 }
