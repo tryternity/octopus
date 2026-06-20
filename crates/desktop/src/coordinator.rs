@@ -32,6 +32,10 @@ enum Command {
     /// 云端流式 tick（VAD-gated per-utterance streaming）
     #[cfg(feature = "dashscope")]
     CloudStreamingTick,
+    /// 云端 close_async 收尾完成（审查 三1）：非阻塞 close 的结果回传，
+    /// handle_cloud_streaming_done 据此 finalize（set_full + append partial + paste）。
+    #[cfg(feature = "dashscope")]
+    CloudStreamingDone { text: Result<String, String> },
     /// 转录完成（离线模式或远程模式使用，seq 用于顺序拼接）
     TranscriptionDone {
         text: Result<String, String>,
@@ -131,6 +135,14 @@ enum Stage {
         is_closing: bool,
         /// tick 线程控制标志
         tick_active: Arc<AtomicBool>,
+    },
+    /// 云端流式停止后等待最终结果（审查 三1）：close 改非阻塞，结果由
+    /// Command::CloudStreamingDone 回传。期间持有 transcript + current_partial，
+    /// 等待 close_async 收尾；Toggle/Cancel 在此阶段被忽略（busy closing）。
+    #[cfg(feature = "dashscope")]
+    CloudClosing {
+        transcript: Transcript,
+        current_partial: String,
     },
     /// 等待所有识别完成
     WaitingCompletion {
@@ -418,6 +430,10 @@ impl Coordinator {
                     }
                     Command::FinalPolishDone { result } => {
                         handle_final_polish_done(&mut stage, result, &config, &app_handle, &tx);
+                    }
+                    #[cfg(feature = "dashscope")]
+                    Command::CloudStreamingDone { text } => {
+                        handle_cloud_streaming_done(&mut stage, text, &config, &app_handle, &tx);
                     }
                     Command::PolishNow => {
                         handle_polish_now(&mut stage, &config, &app_handle, &tx);
@@ -926,8 +942,6 @@ fn handle_toggle(
             info!("Toggle: stopping CloudStreaming, finalizing");
             transcript.clear_polish_pending();
             tick_active.store(false, Ordering::Relaxed);
-
-            // 排空剩余音频 + close WSS（如有活跃连接）
             let final_samples = audio.drain_samples();
             let _ = audio.stop();
 
@@ -935,39 +949,29 @@ fn handle_toggle(
                 if !final_samples.is_empty() && !*is_closing {
                     let _ = sess.push_pcm(&final_samples);
                 }
+                // 审查 三1：close 改非阻塞——原 sess.close(&rt) block_on 最多卡 coordinator 8s。
+                // spawn close_async，结果以 Command::CloudStreamingDone 回来；期间进
+                // Stage::CloudClosing（Toggle/Cancel 被忽略），不阻塞主线程处理其他命令。
                 let rt = tauri::async_runtime::handle();
-                match sess.close(&rt) {
-                    Ok(text) if !text.is_empty() => {
-                        // close 返回的是整个 session 的完整文本，直接 set_full
-                        transcript.set_full(&text);
-                    }
-                    Ok(_) => {}
-                    Err(e) => warn!("CloudStreaming close WSS failed: {}", e),
-                }
-            }
-            // 即使无 session，也提交未 commit 的 partial
-            if !current_partial.is_empty() {
-                if !transcript.full().is_empty()
-                    && !transcript.full().ends_with('，')
-                {
-                    transcript.append_segment("，");
-                }
-                transcript.append_segment(current_partial);
-                current_partial.clear();
-            }
-
-            let combined = transcript.db_text();
-            if combined.is_empty() {
-                *stage = Stage::Idle;
-                crate::overlay::hide_overlay(app_handle);
-                crate::result_window::hide_result(app_handle);
-                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                let tx_clone = tx.clone();
+                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+                let partial = std::mem::take(current_partial);
+                rt.spawn(async move {
+                    let result = sess.close_async().await;
+                    let _ = tx_clone.send(Command::CloudStreamingDone {
+                        text: result.map_err(|e| e.to_string()),
+                    });
+                });
+                *stage = Stage::CloudClosing {
+                    transcript: tr,
+                    current_partial: partial,
+                };
                 return;
             }
-
-            crate::result_window::show_result(app_handle, &transcript.display_text());
+            // 无活跃 session：无需等 close，直接 finalize（append partial + paste）
             let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-            start_final_polish_or_paste(stage, &combined, tr, config, app_handle, tx);
+            let partial = std::mem::take(current_partial);
+            finalize_cloud(stage, tr, partial, config, app_handle, tx);
         }
 
         Stage::WaitingCompletion { .. } => {
@@ -980,6 +984,13 @@ fn handle_toggle(
 
         Stage::Pasting { .. } => {
             debug!("Toggle ignored: busy pasting");
+        }
+
+        // 审查 三1：close 在飞（close_async 未回），Toggle 忽略——close 完成后
+        // CloudStreamingDone 会自动 finalize + 粘贴，无需 Toggle 介入。期间不阻塞主线程。
+        #[cfg(feature = "dashscope")]
+        Stage::CloudClosing { .. } => {
+            debug!("Toggle ignored: cloud closing in flight");
         }
     }
 }
@@ -1091,6 +1102,75 @@ fn do_paste(
         }
         let _ = tx_inner.send(Command::PasteDone);
     });
+}
+
+/// 云端流式 finalize：把未提交的 partial 拼进 transcript，空则回 Idle，
+/// 否则走与本地引擎一致的「最终润色或粘贴」流程。
+///
+/// 审查 三1：从 stop 路径（无 session）与 CloudStreamingDone 路径（close 完成后）
+/// 共用，避免 finalize 逻辑重复。`transcript` / `current_partial` 为 owned（已从
+/// stage 移出），`stage: &mut Stage` 仅用于写回 Idle/Polishing/Pasting，无别名冲突。
+#[cfg(feature = "dashscope")]
+fn finalize_cloud(
+    stage: &mut Stage,
+    mut transcript: Transcript,
+    current_partial: String,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+) {
+    // 即使无 session 或 close 无返回，也提交未 commit 的 partial
+    if !current_partial.is_empty() {
+        if !transcript.full().is_empty() && !transcript.full().ends_with('，') {
+            transcript.append_segment("，");
+        }
+        transcript.append_segment(&current_partial);
+    }
+
+    let combined = transcript.db_text();
+    if combined.is_empty() {
+        *stage = Stage::Idle;
+        crate::overlay::hide_overlay(app_handle);
+        crate::result_window::hide_result(app_handle);
+        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+        return;
+    }
+
+    crate::result_window::show_result(app_handle, &transcript.display_text());
+    start_final_polish_or_paste(stage, &combined, transcript, config, app_handle, tx);
+}
+
+/// 处理云端 close（close_async）异步完成结果。
+///
+/// 审查 三1：stop 路径 spawn 了 close_async，结果经 `Command::CloudStreamingDone`
+/// 回到 coordinator 主线程。仅在 `Stage::CloudClosing` 时处理（期间 Cancel/Discard
+/// 被忽略）；close 返回的整段文本 set_full 覆盖 transcript，随后 finalize 落库。
+#[cfg(feature = "dashscope")]
+fn handle_cloud_streaming_done(
+    stage: &mut Stage,
+    text: Result<String, String>,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+) {
+    let (transcript, partial) = match stage {
+        Stage::CloudClosing { transcript, current_partial } => {
+            // close 返回的是整个 session 的完整文本，非空则 set_full 覆盖
+            match &text {
+                Ok(text) if !text.is_empty() => transcript.set_full(text),
+                Ok(_) => {}
+                Err(e) => warn!("CloudStreaming close WSS failed: {}", e),
+            }
+            let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+            let p = std::mem::take(current_partial);
+            (tr, p)
+        }
+        _ => {
+            warn!("CloudStreamingDone received but stage != CloudClosing, ignoring");
+            return;
+        }
+    };
+    finalize_cloud(stage, transcript, partial, config, app_handle, tx);
 }
 
 /// 处理最终润色完成事件
@@ -1898,7 +1978,8 @@ fn handle_discard(
             Some((transcript.id, transcript.db_text()))
         }
         #[cfg(feature = "dashscope")]
-        Stage::CloudStreaming { transcript, .. } => {
+        Stage::CloudStreaming { transcript, .. }
+        | Stage::CloudClosing { transcript, .. } => {
             Some((transcript.id, transcript.db_text()))
         }
         Stage::Polishing { id, raw_text, .. } => Some((*id, raw_text.clone())),
@@ -1932,6 +2013,14 @@ fn handle_discard(
             tick_active.store(false, Ordering::Relaxed);
             let _ = session.take();
             let _ = audio.stop();
+        }
+        #[cfg(feature = "dashscope")]
+        Stage::CloudClosing { .. } => {
+            // session 已在 stop 路径移交给 close_async 任务、audio 已停。
+            // 这里不粘贴：stage 即将落 Idle，close 完成后到达的
+            // CloudStreamingDone 会被 handle_cloud_streaming_done 的非 CloudClosing
+            // 分支忽略（honoring Discard）。close_async 自身仍会正常收尾释放 WS。
+            info!("Discard: cloud close in flight, pending CloudStreamingDone will be ignored");
         }
         Stage::WaitingCompletion { .. } => {
             info!("Discard: discarding while waiting for transcription");
@@ -2268,6 +2357,8 @@ fn stage_name(stage: &Stage) -> &'static str {
         Stage::Pasting { .. } => "Pasting",
         #[cfg(feature = "dashscope")]
         Stage::CloudStreaming { .. } => "CloudStreaming",
+        #[cfg(feature = "dashscope")]
+        Stage::CloudClosing { .. } => "CloudClosing",
     }
 }
 
