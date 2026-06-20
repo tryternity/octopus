@@ -663,54 +663,71 @@ fn handle_toggle(
             }
 
             if use_streaming {
-                // 流式模式：创建 StreamingSession 并启动 tick 线程
-                match StreamingSession::new(&config.asr_engine) {
-                    Ok(streaming_engine) => {
-                        // 流式模式：只显示 result window，不显示 overlay
-                        crate::result_window::show_result(app_handle, "正在聆听…");
-                        crate::tray::update_tray_label(
-                            app_handle,
-                            crate::tray::TrayState::Recording,
-                        );
-
-                        // 初始化 VAD（用于静音检测 + 标点）
-                        let vad = match octopus_asr::config::find_silero_vad() {
-                            Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
-                                Ok(mut v) => {
-                                    vad_preroll(&mut v);
-                                    Some(v)
-                                }
-                                Err(e) => {
-                                    warn!("VAD init failed: {}, punctuation disabled", e);
-                                    None
-                                }
-                            },
-                            Err(e) => {
-                                warn!("VAD not found: {}, punctuation disabled", e);
-                                None
-                            }
-                        };
-
-                        let streaming_active = Arc::new(AtomicBool::new(true));
-                        start_tick_thread(tx.clone(), streaming_active.clone());
-
-                        *stage = Stage::Streaming {
-                            engine: streaming_engine,
-                            transcript: Transcript::new(now_millis(), config.polish_mode),
-                            streaming_active,
-                            vad,
-                            silence_duration: 0.0,
-                            flushed: false,
-                        };
-                    }
+                // 流式模式：创建 StreamingSession 并启动 tick 线程。
+                // 引擎不可用时降级到默认引擎（zipformer-small-ctc），而非直接放弃录音。
+                const FALLBACK_STREAMING_SPEC: &str = "local:zipformer:zipformer-small-ctc";
+                let streaming_engine = match StreamingSession::new(&config.asr_engine) {
+                    Ok(session) => session,
                     Err(e) => {
-                        error!("Failed to create streaming session: {}", e);
-                        let _ = audio.stop();
-                        crate::overlay::hide_overlay(app_handle);
-                        crate::result_window::hide_result(app_handle);
-                        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                        warn!(
+                            "StreamingSession '{}' 创建失败 ({}), 降级到默认引擎 '{}'",
+                            config.asr_engine, e, FALLBACK_STREAMING_SPEC
+                        );
+                        match StreamingSession::new(FALLBACK_STREAMING_SPEC) {
+                            Ok(session) => session,
+                            Err(e2) => {
+                                error!(
+                                    "默认引擎 StreamingSession 也失败: {}", e2
+                                );
+                                let _ = audio.stop();
+                                crate::overlay::hide_overlay(app_handle);
+                                crate::result_window::hide_result(app_handle);
+                                crate::tray::update_tray_label(
+                                    app_handle,
+                                    crate::tray::TrayState::Idle,
+                                );
+                                return;
+                            }
+                        }
                     }
-                }
+                };
+
+                // 流式模式：只显示 result window，不显示 overlay
+                crate::result_window::show_result(app_handle, "正在聆听…");
+                crate::tray::update_tray_label(
+                    app_handle,
+                    crate::tray::TrayState::Recording,
+                );
+
+                // 初始化 VAD（用于静音检测 + 标点）
+                let vad = match octopus_asr::config::find_silero_vad() {
+                    Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
+                        Ok(mut v) => {
+                            vad_preroll(&mut v);
+                            Some(v)
+                        }
+                        Err(e) => {
+                            warn!("VAD init failed: {}, punctuation disabled", e);
+                            None
+                        }
+                    },
+                    Err(e) => {
+                        warn!("VAD not found: {}, punctuation disabled", e);
+                        None
+                    }
+                };
+
+                let streaming_active = Arc::new(AtomicBool::new(true));
+                start_tick_thread(tx.clone(), streaming_active.clone());
+
+                *stage = Stage::Streaming {
+                    engine: streaming_engine,
+                    transcript: Transcript::new(now_millis(), config.polish_mode),
+                    streaming_active,
+                    vad,
+                    silence_duration: 0.0,
+                    flushed: false,
+                };
             } else {
                 // 非流式模式：使用 VAD 伪流式分段识别
                 match octopus_asr::config::find_silero_vad() {
