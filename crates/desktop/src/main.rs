@@ -249,6 +249,10 @@ pub fn run() {
                 }
             };
 
+            // 暴露 engine_manager 为 State（审查 三2）：switch_asr_engine / set_config 切引擎时
+            // 后台 switch_model 预热需要它。DispatchEngine 持有的是 clone，此处再 clone 托管。
+            app.manage(engine_manager.clone());
+
             // 2. Create AudioRecorder and open the device (graceful fallback if mic is missing)
             let audio_state = match audio::AudioRecorder::new(&config.microphone) {
                 Ok(mut recorder) => {

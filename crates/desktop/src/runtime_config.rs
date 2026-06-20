@@ -235,11 +235,38 @@ pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<Engine
     Ok(build_asr_options(&current_raw, engines))
 }
 
+/// 后台预热本地 ASR 引擎（审查 三2）。switch_asr_engine / set_config 切引擎后调用——
+/// 否则首次 transcribe 在 spawn_blocking 懒加载模型（反序列化 + ONNX session 创建，1~数秒卡顿）。
+/// 仅 embedded 非 cloud 引擎：engine_mode≠embedded 不走本地模型；cloud（aliyun）switch_model 会 bail。
+pub fn preheat_local_engine(
+    engine_manager: std::sync::Arc<octopus_asr::engine::AsrEngineManager>,
+    spec: &str,
+    engine_mode: &str,
+) {
+    if engine_mode != "embedded" {
+        return;
+    }
+    let resolved = match octopus_asr::config::resolve_active_engine(spec) {
+        Ok(r) => r,
+        Err(_) => return,
+    };
+    #[cfg(feature = "dashscope")]
+    if resolved.category == octopus_asr::config::EngineCategory::Aliyun {
+        return;
+    }
+    let name = resolved.name.clone();
+    std::thread::spawn(move || match engine_manager.switch_model(&name) {
+        Ok(_) => log::info!("Preheated ASR model '{}' (runtime switch)", name),
+        Err(e) => log::warn!("Preheat '{}' failed（首次录音懒加载重试）: {}", name, e),
+    });
+}
+
 /// 切换 ASR 引擎：先校验 DB 存在（或兜底），再构造 spec（"PREFIX:NAME"）写 RuntimeConfig（即时）+ config.yaml（持久）。
 #[tauri::command]
 pub fn switch_asr_engine(
     name: String,
     rc: State<'_, SharedRuntimeConfig>,
+    engine_manager: State<'_, std::sync::Arc<octopus_asr::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
@@ -265,11 +292,13 @@ pub fn switch_asr_engine(
 
     if let Err(e) = persist_asr_engine(&spec) {
         log::warn!(
-            "写回 config.yaml 失败（asr_engine={}）：{} —— 本次仍生效，重启后回退",
+            "写回 DB 失败（asr_engine={}）：{} —— RuntimeConfig 已更新，重启后回退",
             spec,
             e
         );
     }
+    // 审查 三2：后台预热切到的本地引擎（避免首次 transcribe 懒加载卡顿）。
+    preheat_local_engine(engine_manager.inner().clone(), &spec, &engine_mode);
     Ok(())
 }
 
