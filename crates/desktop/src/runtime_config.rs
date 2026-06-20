@@ -302,11 +302,14 @@ pub fn set_denoise_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<
     }
     if let Err(e) = persist_denoise_mode(mode) {
         log::warn!(
-            "写回 config.yaml 失败（denoise_mode={}）：{} —— 本次仍生效，重启后回退",
+            "写回 DB 失败（denoise_mode={}）：{} —— ASR 缓存以 DB 为准，本次可能不生效",
             mode,
             e
         );
     }
+    // 刷新 ASR 侧 AppConfig 缓存（审查 二1）：audio 每帧经 load_app_config_cached 读 denoise_mode，
+    // 不 reload 则改了也不生效（需重启）。reload 以 DB 为真——persist 成功即本次生效。
+    octopus_asr::config::reload_app_config();
     Ok(())
 }
 

@@ -381,19 +381,50 @@ pub fn pick_entry<'a>(
     map.get(name)
 }
 
-/// 运行时缓存 config.yaml（AppConfig）：首次读取后缓存，避免每次引擎构建 session 时
-/// 重复读文件 + 解析 yaml（paraformer 一次识别建 encoder+decoder 两个 session，
-/// streaming 引擎更频繁）。手编 config.yaml 后需重启进程生效（与 RUNTIME_CONFIG 一致）。
-static APP_CONFIG: OnceLock<octopus_infra::config::AppConfig> = OnceLock::new();
+/// 运行时缓存 AppConfig（真相源 = DB app_config 表，经 infra::config::load_config →
+/// db::load_app_config 读取）。首次读取后缓存，避免每次引擎构建 session 时重复读 DB
+/// （paraformer 一次识别建 encoder+decoder 两个 session，streaming 引擎更频繁）。
+///
+/// 可重载（审查 二1）：原用 OnceLock 不可失效，设置窗口改 denoise_mode /
+/// asr_hardware_accelerated 后 ASR 侧仍读启动值——audio 每帧读 denoise、
+/// apply_session_acceleration 读 hwaccel，导致设置「本次生效」承诺落空（需重启）。
+/// 改 RwLock<Option<Arc<AppConfig>>>，desktop 写 DB 后调 [`reload_app_config`] 刷新。
+/// 返回 Arc<AppConfig>：调用方均为即时字段访问，靠 Arc deref 兼容，无需改调用点。
+static APP_CONFIG: std::sync::RwLock<Option<std::sync::Arc<octopus_infra::config::AppConfig>>> =
+    std::sync::RwLock::new(None);
 
-pub fn load_app_config_cached() -> &'static octopus_infra::config::AppConfig {
-    APP_CONFIG.get_or_init(|| match octopus_infra::config::load_config() {
-        Ok(cfg) => cfg,
+pub fn load_app_config_cached() -> std::sync::Arc<octopus_infra::config::AppConfig> {
+    {
+        let g = APP_CONFIG.read().unwrap();
+        if let Some(cfg) = g.as_ref() {
+            return cfg.clone();
+        }
+    }
+    // 首次：从 DB 读并缓存（并发首调可能双方都建一份，last-write 无害）
+    let cfg = std::sync::Arc::new(match octopus_infra::config::load_config() {
+        Ok(c) => c,
         Err(e) => {
-            log::warn!("Failed to load config.yaml, using defaults (ASR stays on CPU): {:?}", e);
+            log::warn!("Failed to load config (DB), using defaults (ASR stays on CPU): {:?}", e);
             octopus_infra::config::AppConfig::default()
         }
-    })
+    });
+    *APP_CONFIG.write().unwrap() = Some(cfg.clone());
+    cfg
+}
+
+/// 重载 ASR 侧 AppConfig 缓存（审查 二1）：从 DB 重读并替换，下次
+/// [`load_app_config_cached`] 返回新值。desktop 在 set_config / set_denoise_mode
+/// 写 DB 后调用，让 denoise_mode / asr_hardware_accelerated 等即时生效（以 DB 为真）。
+pub fn reload_app_config() {
+    match octopus_infra::config::load_config() {
+        Ok(c) => {
+            *APP_CONFIG.write().unwrap() = Some(std::sync::Arc::new(c));
+            log::debug!("ASR AppConfig cache reloaded from DB");
+        }
+        Err(e) => {
+            log::warn!("reload_app_config: 重载失败，保留旧缓存：{:?}", e);
+        }
+    }
 }
 
 /// Apply hardware acceleration configuration (if enabled in config.yaml) to a SessionBuilder.
