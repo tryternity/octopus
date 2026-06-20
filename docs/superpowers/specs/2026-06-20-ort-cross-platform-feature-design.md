@@ -29,7 +29,7 @@ ort = { version = "2.0.0-rc.12", features = ["download-binaries", "cuda", "corem
 
 ## 3. 探索结论（关键）
 
-1. **代码层（`config.rs:401-449` `apply_session_acceleration`）已按 `#[cfg(target_os)]` 分平台注册 EP**：mac=CoreML、linux=CUDA、win=DirectML+CUDA。含 `asr_hardware_accelerated` 开关、qwen3-asr 跳 CoreML（动态算子不兼容）、EP 注册失败 fallback CPU。代码层早就是对的。
+1. **代码层（`config.rs:401-449` `apply_session_acceleration`）已按 `#[cfg(target_os)]` 分平台注册 EP**（设计时现状；本 spec Task 2 后 win 收敛为仅 DirectML）：mac=CoreML、linux=CUDA、win=DirectML+CUDA（改动前）。含 `asr_hardware_accelerated` 开关、qwen3-asr 跳 CoreML（动态算子不兼容）、EP 注册失败 fallback CPU。代码层早就是对的。
 2. **ort 全 workspace 仅 `asr/Cargo.toml` 一处声明**（`dlp/main.rs:38` 的 `#[cfg]` 非 ort EP）→ **不存在 workspace 级 feature unification 问题**。
 3. **target-specific dependency 的 feature 不跨 target 合并**：mac 编译时 linux 块的 `cuda` 不激活。所谓"并集"坑只在"同一 target 内多处声明同一包"时发生，octopus 仅 base 一处 + per-target 一处，合并结果正是期望（`download-binaries` + 该平台 EP）。
 4. 结论：方案比预想简单安全——标准 target-specific dependency 即可，无需 build.rs 或自定义 feature 开关。
