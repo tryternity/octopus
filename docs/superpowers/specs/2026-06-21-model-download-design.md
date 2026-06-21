@@ -217,7 +217,7 @@ pub async fn resolve_tasks(
 
 两参考项目都**没用 `If-Range`/`ETag`** 校验续传有效性，只靠 `content-length`/`url_hash`——同 URL 内容被替换会产出损坏文件。本设计补上：
 
-1. **续传有效性**（`If-Range`）：Range 请求带 `If-Range: <etag>`。服务端返回 `206` = 内容未变、续传有效；返回 `200` = 内容已变、全量重下（truncate `.part`）。
+1. **续传有效性**——**最终实现选择不注入 `If-Range`**（初稿设计为带 If-Range etag，实现时改）。理由：注入 If-Range 让不支持它的服务器 / 镜像回退 `200` 全文重传，得不偿失；续传正确性改由下方整文件 SHA256 校验兜底——断点后服务端内容若变更，写到 `.part` 的旧区段会被最终 hash 校验抓住并触发整文件重下（`max_verification_retries`）。sidecar 的 `etag` 字段保留供未来按需启用，当前不参与续传判定。
 2. **完整性**（SHA256/etag）：全段完成后，LFS 文件算 SHA256 比 `expected_hash=Sha256(lfs.oid)`；非 LFS 小文件比 `Etag`。`spawn_blocking` 流式 hash（8KB buffer，避免阻塞 runtime）。
 3. **失败处理**：校验失败重下整文件 `max_verification_retries` 次，仍失败报 `HashMismatch`（删 `.part` + sidecar）。
 
@@ -282,16 +282,17 @@ pub enum TransientKind {
 ```toml
 [dependencies]
 reqwest = { version = "0.12", default-features = false,
-            features = ["stream", "http2", "rustls-tls"] }   # 对齐 workspace 现有版本
+            features = ["stream", "http2", "rustls-tls", "json"] }
 tokio = { version = "1", features = ["full"] }
 tokio-util = { version = "0.7", features = ["rt"] }          # CancellationToken
 futures = "0.3"
 sha2 = "0.10"
-thiserror = "<对齐 workspace>"
+thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-glob = "0.3"                                                  # 或 fnmatch 等价实现
-tracing = "<对齐 workspace>"
+glob = "0.3"                                                  # 实际手写 fnmatch（见 hf/glob.rs），此依赖未使用，待清理
+log = "0.4"                                                   # workspace 用 log，非 tracing
+anyhow = "1"
 
 [dev-dependencies]
 httpmock = "0.8"                                              # mock HTTP，对齐参考项目（mangofetch 0.8.3）
@@ -306,7 +307,7 @@ tokio = { version = "1", features = ["full", "test-util"] }
 - 单段（小文件）下载成功
 - 多段（大文件）分块并发下载成功
 - 断点续传：模拟中断（保留 `.part` + sidecar），重启后从段进度恢复
-- `If-Range` 校验：mock 返回 206（续传）/ 200（内容变，重下）
+- 续传兜底：整文件 SHA256 校验失败 → 整文件重下（不注入 If-Range，靠 hash 兜底）
 - SHA256 校验：成功 / 失败（mock 错误内容）/ 失败重试
 - 镜像 fallback：主源 500，镜像 200
 - 取消：CancellationToken 触发后停止
