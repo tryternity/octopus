@@ -200,6 +200,12 @@ pub fn run() {
             settings_commands::check_shortcut,
             settings_commands::test_llm_connection,
             settings_commands::test_asr_connection,
+            settings_commands::list_prompts,
+            settings_commands::get_active_prompt,
+            settings_commands::set_active_prompt,
+            settings_commands::create_prompt,
+            settings_commands::update_prompt,
+            settings_commands::delete_prompt,
         ])
         .setup(move |app| {
             // Initialize engine manager
