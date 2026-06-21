@@ -694,6 +694,13 @@ Moonshine 5 task 完成并合并后，在测试 whisper 系列模型时发现两
     - 修复：改为 `ok_or_else(bail!)` 强制查询——若 tokenizer 缺少任一特殊 token 立即报错（"tokenizer 缺少 <|xxx|> token"），让真实问题暴露而非静默腐烂
     - 验证：whisper-small/base/tiny 均正常加载并转录；6.62s 测试音频输出仍与参考文本完全一致；54 个 ASR 测试全部通过
 
+16. **whisper encoder/dec_init 互斥锁生命周期优化**（`whisper.rs`，外部 review 发现）：
+    - 现状：`encoder` 和 `dec_init` 的 MutexGuard 绑定为函数级局部变量，会一直持有锁到 `transcribe` 函数结束——包括漫长的 `dec_past` 自回归循环（~0.26s），期间并发线程无法使用 encoder/dec_init
+    - 数据所有权核实：`encoder.run()` 输出通过 `to_vec()` 深拷贝到 owned `Array3 encoder_hidden`；`dec_init.run()` 输出通过 `extract_kv` 的 `to_vec()` 深拷贝到 owned `ArrayD kv`——两者提取后 session 不再被引用，锁可以安全释放
+    - 修复：encoder 用 `{}` 块限定 guard 生命周期；dec_init 在 kv 提取后显式 `drop(init_out)` + `drop(dec_init)`（需先 drop init_out 因 SessionOutputs 借用 dec_init）
+    - 效果（并发场景）：线程 A 跑 decode 循环时，线程 B 可并行跑 encoder forward（0.43s，占 63%），实现流水线并发
+    - 验证：54 个 ASR 测试全部通过；whisper-small 转录输出不变
+
 ### Type consistency
 - `MoonshineEngine::new(entry: &config::ModelEntry)` — 与 `WhisperEngine::new` / `ParaformerEngine::new` 签名一致
 - `transcribe(&self, samples: &[f32], _language: &str) -> Result<String>` — 与 `OfflineAsrEngine` trait 一致
