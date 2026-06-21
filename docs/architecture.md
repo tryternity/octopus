@@ -248,6 +248,15 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **云引擎（cloud feature）**：`app_config.asr_engine` 解析为 `provider='aliyun'`（`EngineCategory::Aliyun`）时，路由 `AliyunEngine`（desktop crate，`cloud` feature 后）；`provider='bytedance'`（`EngineCategory::ByteDance`）时直接走 `Stage::CloudStreaming`（无独立 engine）。均不走 `engine_mode` 分支。详见下方「云端 ASR 引擎」
 - **远程超时保护**：`WsRemoteEngine` / `GrpcRemoteEngine` / `AliyunEngine` 的 `transcribe` 均以 `tokio::time::timeout(8s)` 包裹（连接 + 收发全程），`health_check` 同样 `timeout(3s)`——规避网络断开 / 后端无响应致 ASR 队列无限期卡死。超时返回 `Err`，经序列空洞修复的空串占位分支保证 `completed_seq` 连续推进、不拖死后续分段
 
+### octopus-download（通用下载器）
+
+通用文件下载 crate（分块并发 + 断点续传 sidecar + SHA256 校验 + 镜像 fallback），解终端用户下载大模型的三痛点：需装 Python + huggingface-cli、国内需切镜像、无参数 hf-cli 拉整个仓库（实际只需 int8 量化文件）。两模块：
+
+- **`core`（通用，零 HF 知识）**：`Downloader` 走 probe（GET Range bytes=0-0 取 total/accept-ranges/etag）→ 规划分段 → 并发 Range+seek-write → 进度聚合（mpsc）→ 校验 → 原子 rename。`DownloadTask { url, mirrors, dest, expected_hash }`。sidecar `<dest>.part.resume.json` 记录各段进度（`url_hash` 基于 dest、镜像无关，故镜像源可复用进度），支持崩溃续传；最终整文件 SHA256 校验兜底（不注入 If-Range，避免不支持它的镜像回退 200 全文重传）。
+- **`hf`（HuggingFace 适配层）**：`fetch_siblings`（GET /api/models/{repo} 解析 rfilename/etag/lfs.oid）、`should_download`（手写 fnmatch，`*` 跨 `/`，对齐 hf-cli，已 Python golden 验证）、`resolve_tasks`（构造每文件 DownloadTask：镜像 URL 在前 + 官方 fallback + LFS→Sha256(lfs.oid) / 非 LFS→Etag）。
+
+下载到 `target_dir/{repo}/{path}`（由调用方决定，预期接入模型管理后落 `~/.octopus/models/<repo>/<path>`）。**当前为独立 crate，尚未接入模型管理替换 hf-cli 流程**——模型管理仍走 `~/.cache/huggingface/hub/`（见下节）。详见 spec `superpowers/specs/2026-06-21-model-download-design.md`。
+
 ## 模型管理
 
 模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需从 HuggingFace 下载到缓存。
