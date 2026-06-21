@@ -235,6 +235,14 @@ fn load_tokens(path: &std::path::Path) -> Result<Vec<String>> {
             let token_id: i64 = parts[0]
                 .parse()
                 .with_context(|| format!("tokens.txt 无效 token id: {}", parts[0]))?;
+            // 防御：负 id 经 `as usize` 会 wrapping 成巨大下标，致 result[] 越界 panic。
+            // 标准 tokens.txt 无负 id，此处仅兜底损坏/自造词表，给出清晰加载错误而非崩溃。
+            anyhow::ensure!(
+                token_id >= 0,
+                "tokens.txt 出现负 token id {}: {}",
+                token_id,
+                path.display()
+            );
             vocab.insert(token_id, parts[1].to_string());
         }
     }
