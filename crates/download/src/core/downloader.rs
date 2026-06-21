@@ -13,8 +13,7 @@ use tokio_util::sync::CancellationToken;
 
 use crate::core::error::{DownloadError, TransientKind, classify_status, ErrorClass};
 use crate::core::progress::{Progress, SpeedEstimator};
-// 注：plan_segments 暂未使用（task 9 并发编排时导入并使用）。此处仅导入 Segment。
-use crate::core::segment::Segment;
+use crate::core::segment::{Segment, plan_segments};
 use crate::core::verify::Hash;
 
 /// 下载器配置。
@@ -222,6 +221,8 @@ impl Downloader {
     }
 
     /// 并发下载多段。每段独立 task，Semaphore 限并发，进度累计到 counter。
+    /// 段完成时回写 state（若提供）并落盘 sidecar（dest 提供），支持崩溃续传。
+    #[allow(clippy::too_many_arguments)] // 内部编排方法，参数随下载语义自然增长
     pub async fn download_chunked(
         &self,
         url: &str,
@@ -229,6 +230,8 @@ impl Downloader {
         segments: Vec<Segment>,
         counter: Arc<AtomicU64>,
         cancel: Option<CancellationToken>,
+        state: Option<Arc<std::sync::Mutex<crate::core::resume::ResumeState>>>,
+        dest: Option<&Path>,
     ) -> Result<Vec<Segment>, DownloadError> {
         use tokio::task::JoinSet;
         let sem = Arc::new(tokio::sync::Semaphore::new(self.config.max_concurrent));
@@ -263,9 +266,182 @@ impl Downloader {
                     kind: TransientKind::Network,
                     message: format!("join: {e}"),
                 })??;
+            // 段完成：回写共享 state 并落盘 sidecar（崩溃续传用）
+            if let (Some(st), Some(d)) = (&state, dest) {
+                let snapshot = {
+                    let mut g = st.lock().unwrap();
+                    if i < g.segments.len() {
+                        g.segments[i].downloaded = seg.downloaded;
+                    }
+                    g.clone()
+                };
+                let _ = crate::core::resume::save(d, &snapshot);
+            }
             results[i] = Some(seg);
         }
         Ok(results.into_iter().map(|x| x.expect("every idx filled")).collect())
+    }
+
+    /// 下载单个 task：probe → 规划 → 并发 → 进度 pump → 校验 → rename。
+    /// 镜像 fallback：主 url 失败依次试 mirrors（含 Fatal——镜像可能缺文件）。
+    pub async fn download(
+        &self,
+        task: &DownloadTask,
+        progress: mpsc::Sender<Progress>,
+        cancel: Option<CancellationToken>,
+    ) -> Result<(), DownloadError> {
+        // 镜像候选：主 url 在前，mirrors 随后
+        let mut sources: Vec<String> = vec![task.url.clone()];
+        sources.extend(task.mirrors.iter().cloned());
+
+        let mut last_err: Option<DownloadError> = None;
+        for src in &sources {
+            if let Some(c) = &cancel {
+                if c.is_cancelled() {
+                    return Err(DownloadError::Cancelled);
+                }
+            }
+            match self.download_from_source(src, task, progress.clone(), cancel.as_ref()).await {
+                Ok(()) => return Ok(()),
+                Err(e) => last_err = Some(e),
+            }
+        }
+        Err(last_err.unwrap_or(DownloadError::Fatal { status: 0, url: task.url.clone() }))
+    }
+
+    /// 单源下载：probe → 加载/规划分段 → 预分配 .part → 并发 → 校验 → 原子转正。
+    async fn download_from_source(
+        &self,
+        url: &str,
+        task: &DownloadTask,
+        progress: mpsc::Sender<Progress>,
+        cancel: Option<&CancellationToken>,
+    ) -> Result<(), DownloadError> {
+        let probe = self.probe(url).await?;
+        let total = probe
+            .total
+            .ok_or_else(|| transient(TransientKind::Network, "no content-length"))?;
+
+        // 规划：加载 sidecar 复用进度，否则重新规划
+        let segs = match crate::core::resume::load(&task.dest, total) {
+            Some(state) if !state.segments.is_empty() => {
+                log::info!("resume: 侧载 sidecar，{} 段", state.segments.len());
+                state.segments
+            }
+            _ => plan_segments(
+                total,
+                probe.accept_ranges,
+                self.config.segment_size,
+                self.config.chunk_threshold,
+                self.config.max_concurrent,
+            ),
+        };
+
+        // 预分配 .part
+        let _ = Downloader::ensure_part_file(&task.dest, total)?;
+        let part = part_path(&task.dest);
+
+        // 进度计数：累加 sidecar 恢复的已下字节
+        let downloaded_start: u64 = segs.iter().map(|s| s.downloaded).sum();
+        let counter = Arc::new(AtomicU64::new(downloaded_start));
+
+        // sidecar 状态：段完成时由 download_chunked 回写
+        let state = Arc::new(std::sync::Mutex::new(crate::core::resume::new_state(
+            &task.dest,
+            total,
+            probe.etag.clone(),
+            segs.clone(),
+        )));
+
+        // 进度 pump：250ms 推 mpsc（独立 task，自带 sender clone，避免 move 主 progress）
+        let pump_tx = progress.clone();
+        let pump_counter = Arc::clone(&counter);
+        let pump_cancel = cancel.cloned();
+        let progress_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(Duration::from_millis(250));
+            let mut est = SpeedEstimator::new();
+            let mut last_inst = tokio::time::Instant::now();
+            loop {
+                interval.tick().await;
+                if let Some(c) = &pump_cancel {
+                    if c.is_cancelled() {
+                        break;
+                    }
+                }
+                let bytes = pump_counter.load(Ordering::Relaxed);
+                let now = tokio::time::Instant::now();
+                let spd = est.update(bytes, now - last_inst, 0.4, Duration::from_millis(300));
+                last_inst = now;
+                let _ = pump_tx
+                    .send(Progress {
+                        downloaded_bytes: bytes,
+                        total_bytes: Some(total),
+                        speed_bps: Some(spd),
+                    })
+                    .await;
+                if bytes >= total {
+                    break;
+                }
+            }
+        });
+
+        // 执行下载（段完成回写 state + 落盘 sidecar）
+        let done = self
+            .download_chunked(
+                url,
+                &part,
+                segs,
+                Arc::clone(&counter),
+                cancel.cloned(),
+                Some(Arc::clone(&state)),
+                Some(task.dest.as_path()),
+            )
+            .await;
+
+        // 停 pump
+        progress_handle.abort();
+
+        done?;
+
+        // 校验
+        if let Some(expected) = &task.expected_hash {
+            let mut ok = false;
+            for _ in 0..=self.config.max_verification_retries {
+                if crate::core::verify::verify(&part, expected).await? {
+                    ok = true;
+                    break;
+                }
+                log::warn!("hash mismatch, retrying verification");
+            }
+            if !ok {
+                // 先取实际 hash（part 尚在），再清理
+                let actual = match expected {
+                    Hash::Sha256(_) => {
+                        crate::core::verify::compute_sha256(&part).await.unwrap_or_default()
+                    }
+                    Hash::Etag(_) => String::new(),
+                };
+                let _ = std::fs::remove_file(&part);
+                crate::core::resume::remove(&task.dest);
+                return Err(DownloadError::HashMismatch {
+                    path: task.dest.clone(),
+                    expected: format!("{expected:?}"),
+                    actual,
+                });
+            }
+        }
+
+        // 原子转正
+        std::fs::rename(&part, &task.dest)?;
+        crate::core::resume::remove(&task.dest);
+        let _ = progress
+            .send(Progress {
+                downloaded_bytes: total,
+                total_bytes: Some(total),
+                speed_bps: None,
+            })
+            .await;
+        Ok(())
     }
 }
 
@@ -396,16 +572,12 @@ async fn download_segment_once_with_client(
     Ok(Segment { begin: seg.begin, end: seg.end, downloaded: new_downloaded })
 }
 
-// 注：SpeedEstimator/plan_segments/concurrency/progress pump/sidecar pump 在 Task 8/9 编排时接线。
-// 此处保留占位引用以避免未使用告警（实际接线后移除）。
-#[allow(dead_code)]
-fn _unused_keep_types(_s: SpeedEstimator, _p: Progress, _segs: Vec<Segment>, _tx: mpsc::Sender<Progress>, _a: Arc<u64>) {}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use httpmock::{MockServer, Method};
     use tempfile::tempdir;
+    use tokio::sync::mpsc;
 
     #[tokio::test]
     async fn probe_returns_total_and_accept_ranges() {
@@ -480,7 +652,6 @@ mod tests {
 
     #[tokio::test]
     async fn download_chunked_writes_full_file_in_order() {
-        use crate::core::segment::plan_segments;
         let server = MockServer::start();
         // 100 字节，分 2 段（每段 50）
         let total: u64 = 100;
@@ -502,9 +673,111 @@ mod tests {
         let segs = plan_segments(total, true, half, 0, 2); // threshold=0 强制多段
         assert_eq!(segs.len(), 2);
         let counter = Arc::new(AtomicU64::new(0));
-        let done = dl.download_chunked(&server.url("/f"), &part, segs, counter, None).await.unwrap();
+        let done = dl
+            .download_chunked(&server.url("/f"), &part, segs, counter, None, None, None)
+            .await
+            .unwrap();
         assert!(done.iter().all(|s| s.is_done()));
         let written = std::fs::read(&part).unwrap();
         assert_eq!(written, body);
+    }
+
+    #[tokio::test]
+    async fn download_end_to_end_single_segment_verify_rename() {
+        let server = MockServer::start();
+        let body = b"hello-download-crate"; // 20 bytes
+        let body_len = body.len() as u64;
+        // SHA256 of body
+        use sha2::{Sha256, Digest};
+        let mut h = Sha256::new();
+        h.update(body);
+        let hex: String = h.finalize().iter().map(|b| format!("{:02x}", b)).collect();
+
+        server.mock(|when, then| {
+            when.method(Method::GET).path("/f").header("Range", "bytes=0-0");
+            then.status(206)
+                .header("Content-Range", format!("bytes 0-0/{body_len}"))
+                .header("Accept-Ranges", "bytes");
+        });
+        server.mock(|when, then| {
+            when.method(Method::GET).path("/f").header("Range", format!("bytes=0-{}", body_len - 1));
+            then.status(206).body(body.to_vec());
+        });
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("f");
+        let task = DownloadTask {
+            url: server.url("/f"),
+            mirrors: vec![],
+            dest: dest.clone(),
+            expected_hash: Some(Hash::Sha256(hex)),
+        };
+        let dl = Downloader::new(DownloadConfig::default()).unwrap();
+        let (tx, mut rx) = mpsc::channel(16);
+        dl.download(&task, tx, None).await.unwrap();
+        // dest 已 rename 落地
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        // 进度收到 total
+        let last = rx.recv().await.unwrap();
+        assert_eq!(last.total_bytes, Some(body_len));
+    }
+
+    #[tokio::test]
+    async fn download_mirror_fallback_on_500() {
+        let bad = MockServer::start();
+        let good = MockServer::start();
+        bad.mock(|when, then| {
+            when.method(Method::GET).path("/f");
+            then.status(500);
+        });
+        good.mock(|when, then| {
+            when.method(Method::GET).path("/f").header("Range", "bytes=0-0");
+            then.status(206).header("Content-Range", "bytes 0-0/5").header("Accept-Ranges", "bytes");
+        });
+        good.mock(|when, then| {
+            when.method(Method::GET).path("/f").header("Range", "bytes=0-4");
+            then.status(206).body(b"hello".to_vec());
+        });
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("f");
+        let task = DownloadTask {
+            url: bad.url("/f"),
+            mirrors: vec![good.url("/f")],
+            dest,
+            expected_hash: None,
+        };
+        let dl = Downloader::new(DownloadConfig::default()).unwrap();
+        let (tx, _rx) = mpsc::channel(16);
+        dl.download(&task, tx, None).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn download_cancelled_returns_cancelled() {
+        let server = MockServer::start();
+        // probe 延迟 300ms；取消在 100ms 发生 → download_chunked 段任务首检即 Cancelled
+        server.mock(|when, then| {
+            when.method(Method::GET).path("/f").header("Range", "bytes=0-0");
+            then.status(206)
+                .header("Content-Range", "bytes 0-0/1000000")
+                .header("Accept-Ranges", "bytes")
+                .delay(Duration::from_millis(300));
+        });
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("f");
+        let task = DownloadTask {
+            url: server.url("/f"),
+            mirrors: vec![],
+            dest,
+            expected_hash: None,
+        };
+        let dl = Downloader::new(DownloadConfig::default()).unwrap();
+        let token = CancellationToken::new();
+        let t2 = token.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(100)).await;
+            t2.cancel();
+        });
+        let (tx, _rx) = mpsc::channel(16);
+        let err = dl.download(&task, tx, Some(token)).await.unwrap_err();
+        assert!(matches!(err, DownloadError::Cancelled));
     }
 }
