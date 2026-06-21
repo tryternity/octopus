@@ -676,6 +676,12 @@ Moonshine 5 task 完成并合并后，在测试 whisper 系列模型时发现两
     - 验证：6.62s 测试音频 max_tokens 49 步即终止，输出与参考文本完全一致，无幻听无截断
     - 局限：6 tokens/秒 是 .en 模型的经验值；若未来加入多语言 / 中文 whisper，密集中文可达 ~8-10 tokens/秒，届时需调高系数
 
+13. **whisper Mel 频谱 center=True reflect 填充**（`whisper.rs`，外部 review 发现）：
+    - bug：OpenAI `log_mel_spectrogram` 调用 `torch.stft(audio, N_FFT, HOP_LENGTH, window, return_complex=True)` 未显式传 `center`，依赖 PyTorch 默认 `center=True, pad_mode="reflect"`——即两端各反射填充 `n_fft/2=200` 采样，使 frame 0 中心对齐 sample 0。原 `compute_mel` 直接从 sample 0 开始加窗（`center=False` 语义），导致整个 Mel 谱时间轴偏移 12.5ms，降低首音节识别准确率
+    - 修复：frame t 改为覆盖 `[t×hop - n_fft/2, t×hop + n_fft/2)`，左/右越界样本按 PyTorch `pad_mode="reflect"` 反射（边界样本不参与反射）：左越界 `idx<0 → padded[-idx]`，右越界 `idx>=N → padded[2N - idx - 2]`
+    - 验证：6.62s 测试音频输出仍与参考文本完全一致；mel stats 微变（min -0.8487→-0.8476, max 1.1513→1.1524, mean -0.6792→-0.6763）证明特征确实改变；54 个 ASR 测试全部通过
+    - 注：sherpa-onnx 使用 Kaldi 风格加窗（`start = t×hop + hop/2 - win/2`），与 librosa/PyTorch center=True 相差 5ms，但两者都比原 `center=False` 实现更接近训练分布；此处采用 OpenAI 官方实现（librosa 风格）
+
 ### Type consistency
 - `MoonshineEngine::new(entry: &config::ModelEntry)` — 与 `WhisperEngine::new` / `ParaformerEngine::new` 签名一致
 - `transcribe(&self, samples: &[f32], _language: &str) -> Result<String>` — 与 `OfflineAsrEngine` trait 一致

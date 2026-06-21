@@ -34,7 +34,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `audio` | WAV 读取、重采样（`resample_to` 一次性 / `AudioResampler` 流式，支持任意 from→to 速率，含 denoise 48k 桥接）、VAD 语音过滤 |
 | `denoise` | 可插拔流式环境降噪后端（`FrameDenoise` trait，由 `denoise_mode` 选择）：`1`=RNNoise（`nnnoiseless`，纯 Rust 移植 Xiph RNNoise，内置默认模型，48kHz/FRAME_SIZE=480→频带特征+VAD/噪声/降噪 GRU→频带增益+OLA，GRU 状态跨帧保持）/ `2`=DeepFilterNet3（`Df3Backend` 包装 libDF v0.5.6 的 `DfTract` + tract 0.19，48kHz 全频带）。`DenoiseProcessor` 为 mode 分发器，采集层前置 |
 | `vad` | Silero VAD 语音活动检测 |
-| `whisper` | Whisper 离线识别（int8 三件套优先：encoder + dec_init + dec_past；decoder 层数 / D_MODEL 从 session 输出动态获取，支持 tiny/base/small 等不同规模模型；auto-language 两步式检测：先喂 `[sot]` 预测语言 token，再拼完整 `[sot, lang, transcribe, no_ts]` prompt；**短音频提早结束**——compute_mel 会把音频 0 填充到 30s，若 VAD 只传入 2s 片段剩余 28s 为静音，原硬编码 `max_tokens=448` 会让模型在静音段幻听（重复最后一句话 / “谢谢观看”），现按实际音频时长 `max_tokens = (seconds × 6 + 10).min(448)` 动态限制解码步数，.en 模型平均 ~6 text tokens/秒） |
+| `whisper` | Whisper 离线识别（int8 三件套优先：encoder + dec_init + dec_past；decoder 层数 / D_MODEL 从 session 输出动态获取，支持 tiny/base/small 等不同规模模型；auto-language 两步式检测：先喂 `[sot]` 预测语言 token，再拼完整 `[sot, lang, transcribe, no_ts]` prompt；**短音频提早结束**——compute_mel 会把音频 0 填充到 30s，若 VAD 只传入 2s 片段剩余 28s 为静音，原硬编码 `max_tokens=448` 会让模型在静音段幻听（重复最后一句话 / “谢谢观看”），现按实际音频时长 `max_tokens = (seconds × 6 + 10).min(448)` 动态限制解码步数，.en 模型平均 ~6 text tokens/秒；**Mel 频谱 center=True reflect 填充**——与 OpenAI `torch.stft` 默认行为一致，frame t 覆盖 `[t×hop - n_fft/2, t×hop + n_fft/2)`，左右越界样本按 PyTorch `pad_mode="reflect"` 反射填充 200 采样，使 frame 0 中心对齐 sample 0，避免整个时间轴偏移 12.5ms 影响首音节识别） |
 | `sensevoice` | SenseVoice 离线识别 |
 | `paraformer` | Paraformer 离线识别（fbank: hamming 窗 + DC offset + pre-emphasis） |
 | `qwen3_asr` | Qwen3-ASR 离线识别 |
