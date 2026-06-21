@@ -329,6 +329,7 @@ fn select_model() -> Result<String> {
             octopus_asr::config::EngineCategory::Paraformer => "Paraformer",
             octopus_asr::config::EngineCategory::Qwen3Asr => "Qwen3-ASR",
             octopus_asr::config::EngineCategory::Zipformer => "Zipformer",
+            octopus_asr::config::EngineCategory::Moonshine => "Moonshine",
             octopus_asr::config::EngineCategory::Aliyun => "Aliyun(云)",
         };
         let desc = if e.description.is_empty() {
@@ -425,6 +426,9 @@ fn do_transcribe(model: &str, language: &str, samples: &[f32]) -> Result<String>
         }
         Some(octopus_asr::config::EngineCategory::SenseVoice) => {
             octopus_asr::sensevoice::transcribe(bare, samples, language)
+        }
+        Some(octopus_asr::config::EngineCategory::Moonshine) => {
+            octopus_asr::moonshine::transcribe(bare, samples, language)
         }
         Some(octopus_asr::config::EngineCategory::Aliyun) => {
             anyhow::bail!("阿里云云端 ASR 引擎尚未接入（spec='{}'，见 Task 2 DashscopeEngine）", model)
