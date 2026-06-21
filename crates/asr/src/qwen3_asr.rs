@@ -127,7 +127,7 @@ impl Qwen3AsrEngine {
 }
 
 impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
-    fn is_qwen3(&self) -> bool {
+    fn skip_corrector(&self) -> bool {
         true
     }
 

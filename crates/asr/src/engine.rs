@@ -15,8 +15,11 @@ pub trait OfflineAsrEngine: Send + Sync {
     /// Transcribe the 16kHz mono f32 samples using this engine.
     fn transcribe(&self, samples: &[f32], language: &str) -> Result<String>;
 
-    /// Check if this is the Qwen3 engine (to skip correction).
-    fn is_qwen3(&self) -> bool {
+    /// 是否跳过通用中文 corrector（`transcribe_with_vad` 末尾的纠错步骤）。
+    ///
+    /// 仅用于「非语言原因」需跳过的引擎（如 qwen3 自带纠错/高质量，不需外挂纠错）。
+    /// en-only 场景由 `transcribe_with_vad` 基于 language 自动跳过（language=en），不在此覆盖。
+    fn skip_corrector(&self) -> bool {
         false
     }
 }
@@ -213,9 +216,12 @@ pub fn transcribe_with_vad(
         }
     };
 
-    // Apply correction if config.asr_correct is true and it's not a Qwen3 engine
+    // Apply correction if config.asr_correct is true, engine 不自带纠错，且非 en 识别。
+    // en 跳过：corrector 是中文拼音/bigram 纠错器，对英文无意义且可能扰动。language 来自
+    // 调用方（desktop=config.language 配置项、server=请求、CLI=--language）。
     let app_cfg = crate::config::load_app_config_cached();
-    let text = if app_cfg.asr_correct && !engine.is_qwen3() {
+    let is_english = language.eq_ignore_ascii_case("en");
+    let text = if app_cfg.asr_correct && !engine.skip_corrector() && !is_english {
         crate::corrector::get_corrector().correct(&raw_text)
     } else {
         raw_text

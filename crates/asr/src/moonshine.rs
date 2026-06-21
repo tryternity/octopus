@@ -195,6 +195,10 @@ impl MoonshineEngine {
 }
 
 impl crate::engine::OfflineAsrEngine for MoonshineEngine {
+    // moonshine 是 en-only：corrector 跳过由 transcribe_with_vad 基于 language=en 自动处理
+    //（desktop=config.language、CLI=--language、server=请求，对 en-only 模型即 en），
+    // 无需在此覆盖 skip_corrector()（后者仅用于 qwen3 等「自带纠错」的非语言原因）。
+
     fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
         if samples.is_empty() {
             return Ok(String::new());
