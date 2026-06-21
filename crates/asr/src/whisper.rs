@@ -342,7 +342,17 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         let mut kv = KvCache::new_from_decoder_output(&init_out, self.n_decoder_layers)?;
 
         // Autoregressive loop
-        let max_tokens = 448;
+        // 根据实际音频时长限制解码步数：compute_mel 会把音频 0 填充到 30s，
+        // 若 VAD 只传入 2s 片段，剩余 28s 是静音，Whisper 在静音段不会预测 EOT
+        // 反而开始幻听（重复最后一句话 / “谢谢观看”等）并跑满 448 步导致 RTF 暴增。
+        // .en 模型平均生成 ~6 text tokens/秒，+10 为 prompt/safety 余量；
+        // 30s 以上恢复 448 上限（实际上限由模型上下文决定）。
+        let audio_seconds = audio.len() as f32 / SAMPLE_RATE as f32;
+        let max_tokens = ((audio_seconds * 6.0) as usize + 10).min(448);
+        eprintln!(
+            "[whisper] audio {:.2}s → max_tokens={} (was 448)",
+            audio_seconds, max_tokens
+        );
         for _step in 1..max_tokens {
             let last_id = Array2::from_shape_vec((1, 1), vec![*tokens.last().unwrap()])?;
 
