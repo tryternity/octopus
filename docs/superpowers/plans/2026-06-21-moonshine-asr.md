@@ -606,8 +606,45 @@ git commit -m "test(asr): Moonshine 真实模型单元测试"
 - [x] 验证（真实模型测试）→ Task 5
 
 ### Placeholder scan
-- Task 3 Step 4 的 ort API 细节（SessionOutputs index 遍历 / try_extract_tensor 返回值）标注了"实际实现时需确认"——这是合理的，ort 2.0-rc API 可能有细节差异，需按编译错误调整
-- Task 4 Step 2 的 CLI 入口"具体位置需查看"——已在代码中给出模板，位置根据现有代码确定
+- Task 3 Step 4 的 ort API 细节（SessionOutputs index 遍历 / try_extract_tensor 返回值）标注了"实际实现时需确认"——已确认并解决，见下方「实施偏差」
+- Task 4 Step 2 的 CLI 入口"具体位置需查看"——已在 cli/main.rs 的 `do_transcribe` match 中添加
+
+### 实施偏差（实际实现 vs 计划伪代码）
+
+以下偏差在实现过程中发现并解决，最终代码以实际实现为准：
+
+1. **ort 2.0-rc API**：
+   - 计划：`SessionBuilder::new().with_optimization_level(Level3).with_intra_threads(1).with_model_from_file(path)`
+   - 实际：`Session::builder()?.commit_from_file(path)` + `apply_session_acceleration(builder)?`
+   - 原因：ort 2.0-rc.12 的实际 API 与伪代码不同，需匹配 codebase 已有模式（whisper.rs/paraformer.rs）
+
+2. **Session 需要 Mutex 包裹**：
+   - 计划：struct 字段直接用 `Session`
+   - 实际：`Mutex<Session>`（`Session::run` 在 ort 2.x 接受 `&mut self`）
+   - 与 paraformer.rs:48-49 模式一致
+
+3. **KV cache 数量动态获取**：
+   - 计划/spec：36 个（18 层 × K,V）
+   - 实际：`num_caches = uncached_out.len() - 1`（base 模型实际 32 个 = 16 层 × K,V）
+   - 原因：spec 的层数推断有误；运行时动态获取更健壮，适配不同模型大小
+
+4. **decode_moonshine_tokens 空格处理**：
+   - 计划：直接拼接 vocab[id]，无需处理
+   - 实际：增加 `▁` (U+2581) → 空格替换 + `trim_start()`
+   - 原因：Moonshine tokens.txt 使用 SentencePiece 编码，`▁` 是词首/空格标记
+
+5. **CLI transcribe 使用 VAD 分段**：
+   - 计划：`engine.transcribe(samples, language)`
+   - 实际：`crate::engine::transcribe_with_vad(&engine, samples, language)`
+   - 原因：与 whisper.rs/paraformer.rs CLI 一致，长音频自动 VAD 分段
+
+6. **max_len 公式**：
+   - 计划：`audio_seconds * 6 + 10`
+   - 实际：`features_len * 384 / 16000 * 6`（无 +10，与 sherpa-onnx 一致）
+
+7. **测试使用 `read_wav_16k`**：
+   - 计划：`crate::audio::read_wav(&path)` 返回 `(_sr, samples)`
+   - 实际：`crate::audio::read_wav_16k(path_str)` 返回 `Vec<f32>`（实际 API）
 
 ### Type consistency
 - `MoonshineEngine::new(entry: &config::ModelEntry)` — 与 `WhisperEngine::new` / `ParaformerEngine::new` 签名一致
