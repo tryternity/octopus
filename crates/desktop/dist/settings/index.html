@@ -59,6 +59,7 @@ body {
 #content { flex: 1; overflow-y: auto; background: var(--content-bg); }
 .page { display: none; padding: 24px; }
 .page.active { display: block; }
+#page-prompts.active { display: flex; flex-direction: column; min-height: calc(100vh - 48px); }
 /* ── 卡片 ── */
 .card { background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius); padding: 16px; margin-bottom: 16px; }
 .card h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; color: var(--text-primary); }
@@ -171,18 +172,20 @@ select:focus, input:focus { outline: none; border-color: var(--primary); }
 .prompt-card .prompt-actions button.danger:hover { border-color: #ff3b30; color: #ff3b30; }
 .prompt-card .prompt-actions button.primary { background: var(--primary); color: white; border-color: var(--primary); }
 .prompt-card .prompt-actions button.primary:hover { opacity: 0.9; }
+#prompt-editor { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .prompt-editor {
   background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
-  padding: 16px; margin-bottom: 16px;
+  padding: 16px; margin-bottom: 16px; display: flex; flex-direction: column; flex: 1; min-height: 0;
 }
-.prompt-editor h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
-.prompt-editor .form-row { margin-bottom: 12px; }
+.prompt-editor h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; flex-shrink: 0; }
+.prompt-editor .form-row { margin-bottom: 12px; flex-shrink: 0; }
 .prompt-editor .form-row label { display: block; font-size: 13px; margin-bottom: 4px; }
-.prompt-editor .form-row input[type="text"] { width: 100%; max-width: none; }
+.prompt-editor .form-row input[type="text"] { width: 100%; max-width: none; box-sizing: border-box; }
+.prompt-editor .form-row.content-row { display: flex; flex-direction: column; flex: 1; min-height: 0; }
 .prompt-editor textarea {
-  width: 100%; min-height: 180px; padding: 8px 10px; border: 1px solid var(--border);
-  border-radius: 6px; font-size: 13px; font-family: inherit; resize: vertical; line-height: 1.5;
-  box-sizing: border-box;
+  width: 100%; min-height: 120px; padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: 6px; font-size: 13px; font-family: inherit; resize: none; line-height: 1.5;
+  box-sizing: border-box; flex: 1;
 }
 .prompt-editor textarea:focus { outline: none; border-color: var(--primary); }
 .prompt-editor .form-actions { display: flex; gap: 8px; justify-content: flex-end; }
@@ -889,7 +892,7 @@ function renderPromptEditor(p) {
         '<label>描述（可选）</label>' +
         '<input type="text" id="prompt-desc-input" value="' + escapeHtml(description) + '" placeholder="简短说明此 prompt 的用途" ' + (isSystem ? 'disabled' : '') + '>' +
       '</div>' +
-      '<div class="form-row">' +
+      '<div class="form-row content-row">' +
         '<label>提示词内容（风格规则）</label>' +
         '<textarea id="prompt-content-input" placeholder="定义润色风格、语气、专业领域等规则。增量保留规则由系统自动拼接，无需手写。" ' + (isSystem ? 'disabled' : '') + '>' + escapeHtml(content) + '</textarea>' +
       '</div>' +
