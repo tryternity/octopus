@@ -1,12 +1,14 @@
 # Moonshine ASR 引擎接入实施计划
 
-> **For agentic workers:** REQUIRED SUB-SILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 接入 Moonshine ONNX ASR 模型（v1 格式，4 个 ONNX session），实现离线英语语音识别。
 
 **Architecture:** 新建 `MoonshineEngine` 实现 `OfflineAsrEngine` trait，管理 4 个 ONNX session（preprocess → encode → uncached_decode → cached_decode 循环）。纯 ONNX 体系，无新依赖。category=`moonshine` 走 DB models 表配置。
 
 **Tech Stack:** `ort`（ONNX Runtime）、`ndarray`、`anyhow`。模型来自 `csukuangfj/sherpa-onnx-moonshine-{base,tiny}-en-int8`（HF 缓存已就绪）。
+
+> **状态：✅ 已实现并合并 main**（5 Task 全完成；实际实现 vs 计划伪代码的偏差见下方 Self-Review「实施偏差」段）。后续优化：KV cache 改 owned `Value` 复用（零深拷贝，spec §3）；corrector 跳过改为 `transcribe_with_vad` 基于 `language=en` 自动判断（en-only 模型靠 language，不靠每引擎手动覆盖 `skip_corrector()`，后者仅留 qwen3 等「自带纠错」非语言原因）。下方 step 勾选标记实际完成进度。
 
 ---
 
@@ -29,7 +31,7 @@
 - Modify: `crates/infra/src/db.rs:31-43`（AsrSection struct）
 - Modify: `crates/infra/src/db.rs:416-424`（load_asr_config match）
 
-- [ ] **Step 1: AsrSection 新增 moonshine 字段**
+- [x] **Step 1: AsrSection 新增 moonshine 字段**
 
 在 `crates/infra/src/db.rs` 的 `AsrSection` struct 中，`zipformer` 和 `aliyun` 之间新增：
 
@@ -44,7 +46,7 @@
     pub aliyun: Option<HashMap<String, ModelEntry>>,
 ```
 
-- [ ] **Step 2: load_asr_config 映射追加**
+- [x] **Step 2: load_asr_config 映射追加**
 
 在 `crates/infra/src/db.rs:416` 的 match 中，`zipformer` 和 default 之间新增：
 
@@ -54,12 +56,12 @@
             _ => continue,
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cargo build -p octopus-infra`
 Expected: 编译成功
 
-- [ ] **Step 4: 运行 infra 测试**
+- [x] **Step 4: 运行 infra 测试**
 
 Run: `cargo test -p octopus-infra`
 Expected: 全部通过
@@ -75,7 +77,7 @@ Expected: 全部通过
 - Modify: `crates/asr/src/config.rs:160-170`（all_sections）
 - Modify: `crates/asr/src/config.rs:373-382`（pick_entry）
 
-- [ ] **Step 1: enum 新增 Moonshine variant**
+- [x] **Step 1: enum 新增 Moonshine variant**
 
 ```rust
 pub enum EngineCategory {
@@ -90,7 +92,7 @@ pub enum EngineCategory {
 }
 ```
 
-- [ ] **Step 2: engine_category_from_str 映射**
+- [x] **Step 2: engine_category_from_str 映射**
 
 ```rust
         "zipformer" => Some(EngineCategory::Zipformer),
@@ -98,7 +100,7 @@ pub enum EngineCategory {
         _ => None,
 ```
 
-- [ ] **Step 3: category_label 映射**
+- [x] **Step 3: category_label 映射**
 
 ```rust
         Zipformer => "zipformer",
@@ -106,7 +108,7 @@ pub enum EngineCategory {
         Aliyun => "Fun-ASR",
 ```
 
-- [ ] **Step 4: all_sections 追加 moonshine**
+- [x] **Step 4: all_sections 追加 moonshine**
 
 ```rust
     [
@@ -122,7 +124,7 @@ pub enum EngineCategory {
 
 注意：数组维度从 `[..; 6]` 改为 `[..; 7]`。
 
-- [ ] **Step 5: pick_entry 追加**
+- [x] **Step 5: pick_entry 追加**
 
 ```rust
         EngineCategory::Zipformer => cfg.asr.zipformer.as_ref(),
@@ -130,12 +132,12 @@ pub enum EngineCategory {
         EngineCategory::Aliyun => cfg.asr.aliyun.as_ref(),
 ```
 
-- [ ] **Step 6: 编译验证**
+- [x] **Step 6: 编译验证**
 
 Run: `cargo build -p octopus-asr`
 Expected: 编译成功（moonshine module 尚未引用，纯 enum 变更）
 
-- [ ] **Step 7: 测试验证**
+- [x] **Step 7: 测试验证**
 
 Run: `cargo test -p octopus-asr -- --nocapture config`
 Expected: config 相关测试全通过
@@ -148,7 +150,7 @@ Expected: config 相关测试全通过
 - Create: `crates/asr/src/moonshine.rs`
 - Modify: `crates/asr/src/lib.rs`
 
-- [ ] **Step 1: lib.rs 声明模块**
+- [x] **Step 1: lib.rs 声明模块**
 
 在 `crates/asr/src/lib.rs` 追加（位置在 `pub mod whisper;` 附近）：
 
@@ -156,7 +158,7 @@ Expected: config 相关测试全通过
 pub mod moonshine;
 ```
 
-- [ ] **Step 2: 创建 moonshine.rs 骨架（tokens 加载 + new + struct）**
+- [x] **Step 2: 创建 moonshine.rs 骨架（tokens 加载 + new + struct）**
 
 创建 `crates/asr/src/moonshine.rs`：
 
@@ -269,12 +271,12 @@ fn load_tokens(path: &std::path::Path) -> Result<Vec<String>> {
 }
 ```
 
-- [ ] **Step 3: 编译骨架验证**
+- [x] **Step 3: 编译骨架验证**
 
 Run: `cargo build -p octopus-asr`
 Expected: 编译成功（struct + new 骨架通过）
 
-- [ ] **Step 4: 实现 transcribe + 3 个 run_* 辅助方法**
+- [x] **Step 4: 实现 transcribe + 3 个 run_* 辅助方法**
 
 在 `MoonshineEngine` 的 `impl` 块中追加：
 
@@ -401,7 +403,7 @@ Expected: 编译成功（struct + new 骨架通过）
 
 注意：以上代码中 `ort::inputs!` 返回的 SessionOutputs 的索引顺序——sherpa-onnx 用 output name 遍历，但 ort crate 的 SessionOutputs 可以按 index 遍历。实际实现时需确认 ort crate 2.0 的 API（`try_extract_tensor` 返回 `(&[i64], ArrayViewD<f32>)`）。
 
-- [ ] **Step 5: 实现 OfflineAsrEngine trait + decode_tokens + 顶层 transcribe**
+- [x] **Step 5: 实现 OfflineAsrEngine trait + decode_tokens + 顶层 transcribe**
 
 ```rust
 impl crate::engine::OfflineAsrEngine for MoonshineEngine {
@@ -440,12 +442,12 @@ pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String>
 }
 ```
 
-- [ ] **Step 6: 编译验证**
+- [x] **Step 6: 编译验证**
 
 Run: `cargo build -p octopus-asr`
 Expected: 编译成功。若有 ort API 不匹配，按编译错误调整（ort 2.0-rc API 可能有细节差异）。
 
-- [ ] **Step 7: 运行现有 ASR 测试确认无回归**
+- [x] **Step 7: 运行现有 ASR 测试确认无回归**
 
 Run: `cargo test -p octopus-asr --release`
 Expected: 52+ tests passed（现有测试不受影响）
@@ -458,7 +460,7 @@ Expected: 52+ tests passed（现有测试不受影响）
 - Modify: `crates/asr/src/engine.rs:69`（match 路由）
 - Modify: `crates/cli/src/main.rs`（transcribe 入口）
 
-- [ ] **Step 1: engine.rs import + match 路由**
+- [x] **Step 1: engine.rs import + match 路由**
 
 在 `crates/asr/src/engine.rs` 的 import 段追加：
 
@@ -472,7 +474,7 @@ use crate::moonshine::MoonshineEngine;
                 config::EngineCategory::Moonshine => Arc::new(MoonshineEngine::new(entry)?),
 ```
 
-- [ ] **Step 2: CLI 入口**
+- [x] **Step 2: CLI 入口**
 
 在 `crates/cli/src/main.rs` 找到 whisper transcribe 的调用位置，追加 Moonshine 分支：
 
@@ -485,12 +487,12 @@ use crate::moonshine::MoonshineEngine;
 
 具体位置需查看现有 CLI 如何按 category 分发（可能有 `match` 或 `if` 链）。
 
-- [ ] **Step 3: 编译全部**
+- [x] **Step 3: 编译全部**
 
 Run: `cargo build --release -p octopus-asr -p octopus-cli`
 Expected: 编译成功
 
-- [ ] **Step 4: CLI 功能测试（真实模型）**
+- [x] **Step 4: CLI 功能测试（真实模型）**
 
 Run: `cargo run --release -p octopus-cli -- transcribe ~/.cache/huggingface/hub/models--csukuangfj--sherpa-onnx-moonshine-base-en-int8/snapshots/*/test_wavs/*.wav --model moonshine-base-en`
 
@@ -502,7 +504,7 @@ Expected: 输出英语识别文本（具体取决于 test_wavs 内容）。
 > VALUES ('asr', 'local', 'moonshine', 'moonshine-base-en', 'csukuangfj/sherpa-onnx-moonshine-base-en-int8', 'en', 1, 0, 1, 'Moonshine Base EN (int8)');
 > ```
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/infra/src/db.rs crates/asr/src/config.rs crates/asr/src/moonshine.rs crates/asr/src/lib.rs crates/asr/src/engine.rs crates/cli/src/main.rs
@@ -516,7 +518,7 @@ git commit -m "feat(asr): 接入 Moonshine ONNX ASR 引擎（v1 格式，4 sessi
 **Files:**
 - Modify: `crates/asr/src/moonshine.rs`（追加 #[cfg(test)] mod tests）
 
-- [ ] **Step 1: 编写真实模型测试**
+- [x] **Step 1: 编写真实模型测试**
 
 在 `moonshine.rs` 末尾追加：
 
@@ -581,12 +583,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试**
+- [x] **Step 2: 运行测试**
 
 Run: `cargo test -p octopus-asr --release moonshine -- --nocapture`
 Expected: test_moonshine_base_real_model 和 test_load_tokens 通过（需 DB 有 moonshine 记录 + HF 缓存有模型文件）
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git add crates/asr/src/moonshine.rs

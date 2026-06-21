@@ -14,7 +14,7 @@ use crate::config;
 ///           → cached_decode 循环（后续 token，复用 KV cache）→ EOS 停止。
 ///
 /// Decode 循环逻辑参考 sherpa-onnx `offline-moonshine-greedy-search-decoder.cc`：
-/// BOS(1) → uncached_decode → logits + 36 cache
+/// BOS(1) → uncached_decode → logits + N 个 KV cache（层数×2，base 模型=32）
 /// 循环: argmax → EOS(2) 则停 → cached_decode(token, cache) → logits + 新 cache
 pub struct MoonshineEngine {
     preprocess_session: Mutex<Session>,
@@ -51,12 +51,9 @@ impl MoonshineEngine {
         };
 
         let vocab = load_tokens(&model_dir.join("tokens.txt"))?;
-        if vocab.len() != 32768 {
-            anyhow::bail!(
-                "Moonshine vocab 大小不匹配: 期望 32768, 实际 {}",
-                vocab.len()
-            );
-        }
+        // Moonshine 设计 vocab=32768（byte-level BPE，tiny/base 一致）。不强制校验——
+        // 未来微调/变体词表可能变化；argmax 的 vocab_size 取自 logits 维度（shape[2]）
+        // 而非此硬编码，且 decode 对越界 id 有 `id < vocab.len()` 保护，能自适应。
 
         Ok(Self {
             preprocess_session: Mutex::new(make_session(&preprocess_path)?),
@@ -67,52 +64,59 @@ impl MoonshineEngine {
         })
     }
 
-    /// 运行 preprocess：audio (1, N) → features (T, 416)。
-    fn run_preprocess(&self, samples: &[f32]) -> Result<ndarray::Array2<f32>> {
+    /// 运行 preprocess：audio (1, N) → features (1, T, 416)。
+    /// 返回 owned `Value`（不拷贝到 CPU）+ features_len(T)，后续 run_encode 以 &Value 传回。
+    fn run_preprocess(&self, samples: &[f32]) -> Result<(ort::value::Value, usize)> {
         let audio = ndarray::ArrayView2::from_shape((1, samples.len()), samples)?;
         let mut session = self.preprocess_session.lock().unwrap();
         let outputs = session.run(ort::inputs! {
             "args_0" => TensorRef::from_array_view(audio)?
         })?;
-        let (shape, data) = outputs[0].try_extract_tensor::<f32>()?;
-        let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-        // 输出 (1, T, 416) → 去掉 batch 维 (T, 416) 便于 encode 复用
-        ndarray::Array2::from_shape_vec((dims[1], dims[2]), data.to_vec())
-            .context("preprocess 输出 reshape 失败")
+        // 消费 SessionOutputs 取 features 为 owned Value，不经 CPU to_vec。
+        let out: Vec<ort::value::Value> =
+            outputs.into_iter().map(|(_, v)| v).collect();
+        let features = out.into_iter().next().context("preprocess 输出为空")?;
+        // features shape (1, T, 416)，取 T 作为 features_len。
+        let features_len = {
+            let (shape, _data) = features.try_extract_tensor::<f32>()?;
+            anyhow::ensure!(shape.len() >= 2, "preprocess 输出维度异常: {:?}", shape);
+            shape[1] as usize
+        };
+        Ok((features, features_len))
     }
 
     /// 运行 encode：features (1, T, 416) + len → encoder_out (1, T, 416)。
+    /// features 与返回值均为 owned `Value`（不拷贝到 CPU）——preprocess → encode → decode 全链路零拷贝。
     fn run_encode(
         &self,
-        features: &ndarray::Array2<f32>,
+        features: &ort::value::Value,
         features_len: usize,
-    ) -> Result<ndarray::Array3<f32>> {
-        let features_3d = features.view().insert_axis(ndarray::Axis(0));
+    ) -> Result<ort::value::Value> {
         let len_arr = [features_len as i32];
         let len_view = ndarray::ArrayView1::from(&len_arr);
         let mut session = self.encode_session.lock().unwrap();
         let outputs = session.run(ort::inputs! {
-            "args_0" => TensorRef::from_array_view(features_3d)?,
+            "args_0" => features,
             "args_1" => TensorRef::from_array_view(len_view)?
         })?;
-        let (shape, data) = outputs[0].try_extract_tensor::<f32>()?;
-        let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-        ndarray::Array3::from_shape_vec((dims[0], dims[1], dims[2]), data.to_vec())
-            .context("encode 输出 reshape 失败")
+        // 消费 SessionOutputs 取 encoder_out 为 owned Value（[0]），不经 CPU to_vec。
+        // 先 collect 成 Vec<Value> 脱离 session 借用——SessionOutputs<'_> 持 session 引用，
+        // 而 owned Value 内部 Arc、'static，collect 后即可跨 session 生命周期返回。
+        let out: Vec<ort::value::Value> =
+            outputs.into_iter().map(|(_, v)| v).collect();
+        out.into_iter().next().context("encode 输出为空")
     }
 
     /// Greedy decode 循环。参考 sherpa-onnx `offline-moonshine-greedy-search-decoder.cc`。
     fn greedy_decode(
         &self,
-        encoder_out: &ndarray::Array3<f32>,
+        encoder_out: &ort::value::Value,
         features_len: i32,
     ) -> Result<Vec<i64>> {
         const BOS: i32 = 1;
         const EOS: i64 = 2;
         // 与 sherpa-onnx 一致：encoder_frames * 384 / 16000 * 6
         let max_len = (features_len as f32 * 384.0 / 16000.0 * 6.0) as usize;
-
-        let enc_view = encoder_out.view();
 
         // ── 首 token（BOS）: uncached_decode ──
         let token = [BOS];
@@ -123,39 +127,49 @@ impl MoonshineEngine {
         let mut uncached_session = self.uncached_decode_session.lock().unwrap();
         let uncached_out = uncached_session.run(ort::inputs! {
             "args_0" => TensorRef::from_array_view(token_view)?,
-            "args_1" => TensorRef::from_array_view(enc_view)?,
+            "args_1" => encoder_out,
             "args_2" => TensorRef::from_array_view(seq_len_view)?
         })?;
 
-        // logits (index 0) + N KV caches (index 1.., 数量由模型架构决定)
+        // logits (index 0) + N KV caches (index 1.., N=层数×2，base 模型=32)
         let num_caches = uncached_out.len() - 1;
-        let (logits_shape, logits_data) = uncached_out[0].try_extract_tensor::<f32>()?;
-        let vocab_size = logits_shape[2] as usize;
-        let mut last_logits: Vec<f32> = logits_data.to_vec();
+        // vocab_size 固定（= logits 末维），argmax 仅限此范围。
+        let vocab_size = {
+            let (shape, _data) = uncached_out[0].try_extract_tensor::<f32>()?;
+            anyhow::ensure!(shape.len() >= 3, "uncached_decode logits 维度异常: {:?}", shape);
+            shape[2] as usize
+        };
 
-        let mut state_shapes: Vec<Vec<usize>> = Vec::with_capacity(num_caches);
-        let mut state_data: Vec<Vec<f32>> = Vec::with_capacity(num_caches);
-        for i in 1..=num_caches {
-            let (shape, data) = uncached_out[i].try_extract_tensor::<f32>()?;
-            state_shapes.push(shape.iter().map(|&d| d as usize).collect());
-            state_data.push(data.to_vec());
-        }
+        // logits + KV cache 复用：消费 uncached 输出为 owned Value 列表（[0]=logits，[1..]=N cache），
+        // 后续步骤直接以 ValueView（O(1) Arc 引用计数）传回 ONNX Runtime，张量全程留在 ORT 内部
+        // ——消除原先每步 `to_vec()` 深拷贝 logits（vocab×4B=128KB/步）与 N 个随 seq_len 增长 cache
+        // （base=32，长音频每步可达 MB 级）的开销。参考 sherpa-onnx greedy-search-decoder 直接复用 OrtValue。
+        let mut state_values: Vec<ort::value::Value> =
+            uncached_out.into_iter().map(|(_, v)| v).collect();
 
         // ── 后续 tokens: cached_decode 循环 ──
         let mut result_tokens: Vec<i64> = Vec::new();
         let mut seq_len_val: i32 = 1;
         let mut cached_session = self.cached_decode_session.lock().unwrap();
 
+        // 预算 cache 输入键名（"args_3".."args_{N+2}"），循环内以 Cow::Borrowed 复用，
+        // 避免每步 format! + 堆分配 N 个 String（base=32，长音频循环数百次）。
+        let cache_keys: Vec<String> = (3..num_caches + 3).map(|i| format!("args_{i}")).collect();
+
         for _ in 0..max_len {
-            // argmax over last_logits[..vocab_size]
-            let next_token = last_logits[..vocab_size]
-                .iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| {
-                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|(i, _)| i as i64)
-                .unwrap_or(EOS);
+            // argmax 直接在当前步 logits（state_values[0]）的零拷贝 &[f32] 上做，不 to_vec()。
+            // 块作用域释放借用，之后才能 view/消费 state_values。
+            let next_token = {
+                let (_, logits) = state_values[0].try_extract_tensor::<f32>()?;
+                logits[..vocab_size]
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| {
+                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i as i64)
+                    .unwrap_or(EOS)
+            };
 
             if next_token == EOS {
                 break;
@@ -170,28 +184,21 @@ impl MoonshineEngine {
 
             let mut inputs = ort::inputs! {
                 "args_0" => TensorRef::from_array_view(token_view)?,
-                "args_1" => TensorRef::from_array_view(enc_view)?,
+                "args_1" => encoder_out,
                 "args_2" => TensorRef::from_array_view(seq_len_view)?
             };
-            for (i, (shape, data)) in state_shapes.iter().zip(state_data.iter()).enumerate() {
-                let view = ndarray::ArrayViewD::from_shape(shape.as_slice(), data.as_slice())?;
+            // KV cache 直接以 ValueView 传回（Arc 引用计数，O(1)），不经 CPU 深拷贝；
+            // 键名复用预算的 cache_keys（Cow::Borrowed，零分配）。
+            for i in 0..num_caches {
                 inputs.push((
-                    format!("args_{}", i + 3).into(),
-                    TensorRef::from_array_view(view)?.into(),
+                    std::borrow::Cow::Borrowed(cache_keys[i].as_str()),
+                    state_values[i + 1].view().into(),
                 ));
             }
 
+            // 消费 cached_out 替换 state_values（新 logits=[0]，新 cache=[1..]）。
             let cached_out = cached_session.run(inputs)?;
-
-            // 更新 logits + states
-            let (_, new_logits) = cached_out[0].try_extract_tensor::<f32>()?;
-            last_logits = new_logits.to_vec();
-
-            for i in 0..num_caches {
-                let (shape, data) = cached_out[i + 1].try_extract_tensor::<f32>()?;
-                state_shapes[i] = shape.iter().map(|&d| d as usize).collect();
-                state_data[i] = data.to_vec();
-            }
+            state_values = cached_out.into_iter().map(|(_, v)| v).collect();
         }
 
         Ok(result_tokens)
@@ -199,12 +206,15 @@ impl MoonshineEngine {
 }
 
 impl crate::engine::OfflineAsrEngine for MoonshineEngine {
+    // moonshine 是 en-only：corrector 跳过由 transcribe_with_vad 基于 language=en 自动处理
+    //（desktop=config.language、CLI=--language、server=请求，对 en-only 模型即 en），
+    // 无需在此覆盖 skip_corrector()（后者仅用于 qwen3 等「自带纠错」的非语言原因）。
+
     fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
         if samples.is_empty() {
             return Ok(String::new());
         }
-        let features = self.run_preprocess(samples)?;
-        let features_len = features.nrows();
+        let (features, features_len) = self.run_preprocess(samples)?;
         if features_len == 0 {
             return Ok(String::new());
         }
@@ -242,9 +252,18 @@ fn decode_moonshine_tokens(token_ids: &[i64], vocab: &[String]) -> String {
     let mut text = String::new();
     for &id in token_ids {
         let id = id as usize;
-        if id < vocab.len() {
-            text.push_str(&vocab[id]);
+        if id >= vocab.len() {
+            continue;
         }
+        let token = &vocab[id];
+        // 跳过特殊控制 token（<unk>/<s>/</s>/<pad> 等）：以 '<' 开头且以 '>' 结尾。
+        // greedy_decode 已过滤 BOS/EOS 不进结果序列；此处兜底 <unk> 及其他特殊标记，
+        // 避免噪声/空白音频时模型误输出特殊 token 被当文本拼接。byte-level BPE 普通
+        // token 不会呈完整 "<...>" 形式（'<' 可单独出现但不被 '>' 包裹），判断安全。
+        if token.starts_with('<') && token.ends_with('>') {
+            continue;
+        }
+        text.push_str(token);
     }
     text.replace('\u{2581}', " ").trim_start().to_string()
 }

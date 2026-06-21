@@ -1,7 +1,7 @@
 # Moonshine ASR 引擎接入设计
 
 **日期**: 2026-06-21
-**状态**: 设计完成，待实现
+**状态**: ✅ 已实现并合并 main。`greedy_decode` 全程零拷贝——KV cache 用 owned `Value` 复用、logits argmax 走 `try_extract_tensor` 的零拷贝 `&[f32]`、encoder_out 保留 owned `Value`（详见 §3 张量零拷贝管理）；moonshine en-only 经 `transcribe_with_vad` 的 `language=en` 自动跳过通用中文 corrector（不靠每引擎手动覆盖 `skip_corrector()`）。
 **分支**: `feature/setting-ui2`
 
 ## 背景
@@ -152,11 +152,28 @@ loop:
     (logits, kv_caches) = cached_decode([next_token], encoder_out, seq_len, kv_caches)
 ```
 
-#### KV cache 管理
+#### 张量零拷贝 + 热路径无分配
 
-`state_data: Vec<Vec<f32>>` + `state_shapes: Vec<Vec<usize>>`（N 个张量，N = `uncached_out.len()-1`，base 模型 = 32），在 `greedy_decode` 内部维护：
-- uncached_decode 输出 index 1..=N（跳过 index 0 logits）→ 初始化 cache
-- cached_decode 输入 args_3..args_{N+2}（token + encoder_out + seq_len + N cache）→ 输出 index 1..=N → 更新 cache
+`preprocess → encode → greedy_decode` 全程不让张量离开 ORT 内部，decode 循环也无堆分配：
+
+**张量零拷贝（owned `Value` 流转）**：
+- **preprocess**：`run_preprocess` 返回 owned `Value`（(1,T,416)）+ features_len，不 `to_vec()` 成 `Array2`。
+- **encode**：`run_encode` 接收 `&Value` features、返回 owned `Value` encoder_out（(1,T,416) 几 MB），不 `to_vec()` 成 `Array3`。
+- **`state_values: Vec<ort::value::Value>`**（owned `DynValue`：`[0]`=logits + `[1..]`=N 个 cache，N = `uncached_out.len()-1`，base = 32）。KV cache 每步以 `ValueView`（O(1) Arc 引用计数）传回。
+- **logits argmax**：`try_extract_tensor` 返回零拷贝 `(&Shape, &[f32])`（借用 Value 内存），argmax 直接在 slice 上迭代（省 vocab×4B = 128KB/步）。
+- **encoder_out 传递**：`greedy_decode` 以 `&Value` 直接传为 uncached/cached 的 `args_1`。
+
+**热路径无分配**：
+- **cache 键名预算**：循环外预算 `cache_keys: Vec<String>`（"args_3".."args_{N+2}"），循环内以 `Cow::Borrowed` 复用——消除每步 N 次 `format!` + 堆分配（base=32，长音频循环数百次）。
+
+数据流：
+- preprocess 输出 owned `Value` features → `&Value` 传 encode args_0
+- encode 输出 owned `Value` encoder_out → `&Value` 传 decode args_1
+- uncached_decode 输出 `into_iter()` 消费为 owned Value 列表 → 初始化 `state_values`
+- cached_decode 输入 args_1=encoder_out(`&Value`) + args_3..args_{N+2}=N cache（ValueView）→ 输出 `into_iter()` 消费 → 替换 `state_values`（新 logits=[0]，新 cache=[1..]）
+
+> **实现演进**：① 初版 `state_data: Vec<Vec<f32>>` + `state_shapes`，每步 `to_vec()` 深拷贝 N 个随 seq_len 增长 cache（长音频每步 MB 级）→ 改 owned `Value` 复用。② logits 也 `to_vec()`（128KB/步，仅做 argmax）→ 改 `try_extract_tensor` 的零拷贝 `&[f32]` 直接迭代。③ encoder_out 也 `to_vec()` 成 `Array3` 仅为转 view 传回 → 改保留 owned `Value`。④ preprocess/encode 输出 `to_vec()` 成 `Array2`/`Array3` 仅为传下一步 session → 改 owned `Value` 流转，全链路零拷贝。⑤ decode 循环每步 `format!` N 个 cache 键名 → 改循环外预算 + `Cow::Borrowed` 复用。
+> 注：ort `2.0.0-rc.12` 中 `DynValue` 不实现 `Clone`（bound 限 `DefiniteTensorValueTypeMarker`），故取 owned Value 走 `SessionOutputs::into_iter()` 而非 `.clone()`；`SessionOutputs<'_>` 持 session 借用，需先 `collect` 成 `Vec<Value>`（'static）才能跨 session 生命周期返回（`run_preprocess`/`run_encode`）；`&Value` 在 `ort::inputs!` 宏里直接传入以避免 `view().into()` 的 `From` 歧义（`From<&Value>` 与 `From<ValueRef>`）。
 
 ### 4. `AsrEngineManager` 路由
 

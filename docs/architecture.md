@@ -363,7 +363,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 ### 核心特性
 - **纯静态与轻量化**：纠错所需的 unigram 词表与 bigram 共现表（各精简至高频的前 40,000 条，压缩后约 450KB）直接通过 `include_bytes!` 静态嵌入二进制中，无需额外网络下载，运行时解压，额外内存占用约 30MB。数据源自 jieba `dict.txt.big`（unigram）与 gotokenizer `bigram.txt`（bigram），由 `crates/asr/scripts/generate_corrector_data.py` 离线生成到 `src/corrector_data/*.txt.gz`（已提交；更新语料时手动重跑该脚本）。
 - **配置开关控制**：由 `app_config` 表中的 `asr_correct` 字段控制（默认 `false`）。
-- **智能排除**：由于 Qwen3-ASR (0.6B/1.7B) 模型本身输出带有标点且语义纠错能力强，纠错引擎会自动跳过对 Qwen3-ASR 结果的处理，仅应用于 Whisper、SenseVoice、Paraformer 和 Zipformer。
+- **智能排除**（两类跳过）：①「非语言原因」——Qwen3-ASR (0.6B/1.7B) 输出带标点且自带语义纠错能力，引擎经 `OfflineAsrEngine::skip_corrector()` 返回 true 跳过；②「language=en」——corrector 是中文拼音纠错器，对英文无意义且可能扰动，`transcribe_with_vad` 在注入点基于 `language=en`（desktop=`config.language`、server=请求、CLI=`--language`）自动跳过，覆盖 moonshine 等 en-only 模型。故 corrector 实际作用于 Whisper、SenseVoice、Paraformer、Zipformer 等中文引擎。
 
 ### 纠错算法逻辑
 1. **滑窗候选召回 (Sliding Window)**：使用 2 字和 3 字的字符滑窗扫描识别出的文本，通过拼音库计算滑窗文本的拼音，并在此拼音的 $O(1)$ 模糊拼音倒排索引（支持南方口音混淆，如 `zh/ch/sh` <-> `z/c/s`、`in/en` <-> `ing/eng`、`n` <-> `l` 等）中召回**相同字符长度**的同音/近音候选词。
