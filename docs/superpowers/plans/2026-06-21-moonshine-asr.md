@@ -646,6 +646,25 @@ git commit -m "test(asr): Moonshine 真实模型单元测试"
    - 计划：`crate::audio::read_wav(&path)` 返回 `(_sr, samples)`
    - 实际：`crate::audio::read_wav_16k(path_str)` 返回 `Vec<f32>`（实际 API）
 
+### 合并后修复（session 后 follow-up）
+
+Moonshine 5 task 完成并合并后，在测试 whisper 系列模型时发现两个 pre-existing bug，一并修复：
+
+8. **whisper dec_init int8 优先**（`whisper.rs`）：
+   - bug：encoder 和 dec_past 都有 int8 优先判断，但 dec_init 硬编码加载 fp32 的 `decoder_model.onnx`（586MB）
+   - 修复：dec_init 也优先 `decoder_model_int8.onnx`（149MB）
+   - 效果：whisper-small 实际加载 88+149+135 = 372MB（vs 原 88+586+135 = 809MB）
+
+9. **whisper N_DECODER_LAYERS / D_MODEL 动态化**（`whisper.rs`）：
+   - bug：`N_DECODER_LAYERS=12` / `D_MODEL=768` / `ENCODER_LEN=1500` 三个常量硬编码，只适配 small（12层）
+   - 症状：tiny（4层）/ base（6层）模型 KV cache 提取循环越界 → `out of bounds indexing`
+   - 修复：层数从 `dec_init.outputs().len()` 推算 `(n-1)/4`；encoder 输出维度从实际 shape 读取
+   - 效果：tiny/base/small 均可加载推理（不再崩溃；识别质量取决于模型容量）
+
+10. **db.sql 新增 moonshine seed**（`infra/db.sql`）：
+    - 新增 `moonshine-base-en` + `moonshine-tiny-en` 两条 seed 记录
+    - 修复 `init_sql_is_idempotent` / `seed_then_load_round_trips` 两个过时的测试断言（行数 + zipformer 条数）
+
 ### Type consistency
 - `MoonshineEngine::new(entry: &config::ModelEntry)` — 与 `WhisperEngine::new` / `ParaformerEngine::new` 签名一致
 - `transcribe(&self, samples: &[f32], _language: &str) -> Result<String>` — 与 `OfflineAsrEngine` trait 一致
