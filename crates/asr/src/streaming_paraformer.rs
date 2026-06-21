@@ -150,6 +150,13 @@ impl StreamingParaformer {
     /// Returns `Some(text)` if the chunk produced recognition results.
     /// Call this repeatedly as audio arrives (~600ms chunks).
     pub fn accept_samples(&mut self, samples: &[f32]) -> Result<Option<String>> {
+        // 清除 flush 留下的 input_finished 收尾标记。flush 在静音冲刷时设 true，让末帧越界
+        // 零 padding 吐尾音（compute_new_fbank_frames 走收尾分支）；但 Paraformer 流式不 reset
+        // （累积上下文跨 chunk），会话内若不清，后续 accept_samples 会持续走收尾分支 →
+        // 每次多算越界零 padding 帧 → 特征错乱 → 识别错乱 / 丢字 / 大量重复字。
+        // accept_samples 代表「继续说话」，必须回到正常帧计算模式。
+        // （reset 仅在录音停止 / 取消的会话边界调用，清不了此处。）
+        self.input_finished = false;
         // Scale × 32768 and append
         self.raw_samples.reserve(samples.len());
         for &s in samples {
@@ -854,6 +861,46 @@ mod tests {
 
         // 不做严格断言，只验证不 panic 且输出非空
         assert!(!full_text.is_empty(), "识别结果不应为空");
+    }
+
+    /// 回归（问题四）：flush 设 input_finished=true（收尾模式），accept_samples（继续说话）
+    /// 必须清除它，否则 Paraformer 流式不 reset（累积上下文）会导致后续 compute_new_fbank_frames
+    /// 持续走零 padding 收尾分支 → 帧边界越界零填充 → 特征错乱 → 识别错乱 / 丢字 / 大量重复字。
+    #[test]
+    fn test_accept_samples_clears_input_finished_after_flush() {
+        let repo = "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en";
+        let test_wavs = match hf_snapshot(repo) {
+            Some(p) => p,
+            None => { eprintln!("[skip] HF cache 未找到 {}", repo); return; }
+        };
+        let wav_path = test_wavs.join("0.wav");
+        if !wav_path.exists() {
+            eprintln!("[skip] 测试 wav 不存在: {}", wav_path.display());
+            return;
+        }
+        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).expect("读取 wav 失败");
+
+        let mut engine = StreamingParaformer::new("paraformer-bilingual").expect("创建引擎失败");
+        let chunk_size = 16000 * 600 / 1000;
+
+        // 喂前半段 + flush（模拟第一次静音停顿冲刷）
+        for chunk in samples[..samples.len() / 2].chunks(chunk_size) {
+            let _ = engine.accept_samples(chunk).unwrap();
+        }
+        let _ = engine.flush().unwrap();
+        assert!(engine.input_finished, "flush 后 input_finished 应为 true（收尾模式）");
+
+        // 用户继续说话：accept_samples 必须清除 input_finished
+        let _ = engine.accept_samples(&samples[samples.len() / 2..]).unwrap();
+        assert!(
+            !engine.input_finished,
+            "accept_samples 必须清除 input_finished，否则后续帧计算持续走零 padding 收尾分支 → 特征错乱"
+        );
+
+        // 验证 flush→accept→finish 整条路径不 panic、产出非空文本
+        let final_text = engine.finish().unwrap();
+        eprintln!("[问题四回归] final_text: {:?}", final_text);
+        assert!(!final_text.is_empty(), "flush→accept→finish 后文本不应为空");
     }
 
     /// 离线对比测试 — 用同一个 wav 跑离线 paraformer，对比流式结果。

@@ -165,3 +165,13 @@ pub(crate) fn smart_append(existing: &mut String, new: &str) {
 | `smart_append`（`paraformer.rs`） | 空格字节 `0x20` 满足 `< 0x80`（ascii），若 `existing` 末尾或 `new` 首字符已是空格，会再 push 空格 → 双空格 | 空格判定条件追加 `&& last_byte != 0x20 && first_byte != 0x20`，任一侧已是空格则不再添加 |
 | `run_cif` / `run_cif_final`（`streaming_paraformer.rs`） | `enc_len` 来自 ONNX `enc_len_data[0]`，若异常（padding/截断）导致 `enc_len > enc_tensor.shape()[1]`，`slice(s![0, ..enc_len, ..])` 直接 panic | 改为 `..enc_len.min(enc_tensor.shape()[1])` 防御性截断，与 `mask_alphas` 同模式 |
 
+### 10. accept_samples 清除 flush 的 input_finished 标记（会话内状态污染修复）
+
+**问题**：`input_finished: bool`（`streaming_paraformer.rs`）在 `flush()` 静音冲刷时置 `true`，让 `compute_new_fbank_frames` 走收尾分支——末帧允许越界、零 padding 多算帧，配合 CIF force-fire（`run_cif_final`）吐出憋住的尾音。该标记仅在 `reset()` 清除，而 `reset()` 只在会话边界（录音停止 / 取消）调用。**Paraformer 流式会话内不 reset**（累积上下文跨 chunk，见 architecture「流式 ASR 状态语义」），导致用户停顿冲刷尾音后继续说话时，`accept_samples` 仍见 `input_finished=true` → 持续走收尾分支 → 每次 `accept_samples` 多算越界零 padding 帧 → 特征错乱 → 识别错乱 / 丢字 / 大量重复字（首次停顿后整段会话腐烂）。
+
+**修复**：`accept_samples` 入口 `self.input_finished = false`——`accept_samples` 的语义即「继续说话」，必须回到正常帧计算模式。`reset()` 仍在会话边界不动（清的是会话级全部状态）。
+
+**严重度**：本专项（「首字识别不出来 / 尾字吐不出来」审查）中最严重的一个——前 3 个问题（`segment_audio_vad` padding、`filter_speech` 两端 trim、Zipformer flush replicate padding）影响首尾字边界或单 tick 尾音延迟，本问题导致**首次停顿后会话级识别腐烂**，用户全程可感知。
+
+**回归测试**：`test_accept_samples_clears_input_finished_after_flush`——断言 `flush()` 后 `input_finished == true`，`accept_samples()` 后 `input_finished == false`。
+
