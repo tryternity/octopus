@@ -30,10 +30,12 @@
 
 ### 2.2 调用点
 - **13+ 处**引擎调 `resolve_model_dir(&entry.source)`：whisper / sensevoice / paraformer / streaming_paraformer / streaming_engine / streaming_zipformer / moonshine / qwen3_asr / zipformer / engine，以及 cli（×5）。
-- **3 处绕过 resolve_model_dir 直接拼 `.cache/huggingface/hub`**（重复路径逻辑，异味）：
+- **3 处 `hf_snapshot` 测试辅助函数**（均在 `#[cfg(test)]` 内，定位测试快照目录，**非生产路径逻辑**）：
   - `streaming_paraformer.rs:797`
   - `zipformer.rs:1297`
   - `streaming_zipformer.rs:912`
+
+  > **勘误**：初版误判为"绕过 resolve_model_dir 的重复路径异味"。实施前核实——3 处全在 `#[cfg(test)]` 的 `hf_snapshot` 辅助函数内（streaming_paraformer:792 / zipformer:1289 / streaming_zipformer:904），仅定位测试快照目录；生产代码这些引擎均已正确调 `resolve_model_dir`（streaming_paraformer:78 / zipformer:444,717 / streaming_zipformer:74,548），无重复路径逻辑。详见 §3.2。
 
 ### 2.3 目录约定
 `infra/consts.rs` 已用 `~/.octopus/models/` 根：
@@ -63,10 +65,9 @@ Downloader::download(&DownloadTask, mpsc::Sender<Progress>, Option<...>) -> Resu
 
 **纯查找语义不变**——resolve 不发起网络请求、不下载，只查本地路径是否存在。新级放在 HF cache 之前，使 download 下的模型优先于旧 hf-cli 缓存。
 
-### 3.2 统一 3 处直接拼路径
-`streaming_paraformer.rs:797` / `zipformer.rs:1297` / `streaming_zipformer.rs:912` 直接 `join(".cache/huggingface/hub")` 的，改为调 `resolve_model_dir`。收拢重复路径逻辑，且自动享受 3.1 的新查找级。
+### 3.2 ~~统一 3 处直接拼路径~~（取消：核实为测试辅助）
 
-> 实施时逐处确认它们解析的 source 与 resolve_model_dir 入参语义一致；若不一致（如用了不同形式的 repo 名），保留原逻辑并加注释说明原因。
+> **勘误**：§2.2 所列 3 处 `join(".cache/huggingface/hub")` 全在 `#[cfg(test)]` 的测试辅助函数 `hf_snapshot` 内，仅定位测试快照目录，**不是生产路径逻辑**。生产代码已正确调 `resolve_model_dir`，收拢测试辅助路径无收益、反增维护面，故本阶段**不动**。
 
 ### 3.3 显式下载，resolve 不透明触发（关键决策）
 模型缺失时 resolve **报错**，错误信息提示：
@@ -102,7 +103,7 @@ Download {
 
 ### 3.5 镜像配置
 优先级：`--mirror` 参数 > config.yaml 配置 > 默认 `huggingface.co`。
-- config.yaml 新增可选字段（infra `Config`），如 `download.mirror: hf-mirror.com`（字段名实施时对齐 Config 结构）。
+- `AppConfig` 新增扁平字段 `download_mirror`（非嵌套；空串 = 用官方源 `huggingface.co`）。如 `download_mirror: https://hf-mirror.com`。
 - 解国内"每次切镜像"痛点：配一次，所有 download 复用；`--mirror` 临时覆盖。
 
 ### 3.6 目录布局
@@ -117,7 +118,7 @@ Download {
 | `resolve_model_dir(source)` 签名 | **不变**（`&str -> Result<PathBuf>`），内部加 1 级查找 |
 | cli `Commands` enum | 新增 `Download` 变体 |
 | download crate lib 接口 | **不改**（复用 `HfRequest`/`resolve_tasks`/`Downloader`） |
-| config.yaml | 新增可选 `download.mirror` |
+| `AppConfig` | 新增扁平字段 `download_mirror`（空 = 官方源 `huggingface.co`） |
 
 ## 5. 数据流
 

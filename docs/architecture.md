@@ -22,7 +22,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录 / 润色 prompt 文件名）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一不再各自定义）+ `config`（`AppConfig`——应用配置的**统一 schema**，21 字段，asr/desktop/cli 共享）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `transcriptions` 表）。未来加时间工具等。任何项目 crate 都可依赖它。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录 / 润色 prompt 文件名）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一不再各自定义）+ `config`（`AppConfig`——应用配置的**统一 schema**，22 字段，asr/desktop/cli 共享）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `transcriptions` 表）。未来加时间工具等。任何项目 crate 都可依赖它。
 
 ### octopus-asr（核心推理库）
 
@@ -60,7 +60,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 
 ### octopus-cli（命令行工具）
 
-通过 clap 提供 5 个子命令：
+通过 clap 提供 6 个子命令：
 
 | 命令 | 说明 |
 |------|------|
@@ -69,6 +69,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `transcribe` | WAV 文件离线识别 |
 | `e2e` | 麦克风实时识别（离线/流式） |
 | `stream-test` | WAV 文件流式识别测试 |
+| `download` | 从 HuggingFace 下载模型到 `~/.octopus/models/<repo>/`（薄封装 `octopus-download`：`--include`/`--exclude` glob 过滤、`--mirror` 镜像；镜像优先级 `--mirror` > config `download_mirror` > 官方源） |
 
 ### octopus-server（HTTP 服务）
 
@@ -235,7 +236,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **非阻塞 DB 写入（actor 模式）**：上述 `INSERT`/`UPDATE`/`finalize` 不在协调器线程同步执行——`update_transcription_raw` / `PasteDone` 等调用方仅 `get_db_sender().send(DbCommand)` 入队后立即返回，真实落库由**后台 DB 写线程**（`static DB_SENDER: OnceLock<Sender<DbCommand>>` 懒加载 spawn）单线程消费。mpsc 的 FIFO 保证同 id 的 `Insert` 必在 `UpdateRaw` 之前被消费（故 `mark_db_inserted()` 在 send 后即置位仍安全——真实顺序由 channel 保，不由标志位保）。识别主循环不再被 SQLite I/O 阻塞。
 - **关机优雅 drain**：后台写线程 `&'static Sender` 永不 drop，进程 kill 时队列里未处理命令会丢失（典型路径：录音结束 → `Finalize` 入队 → 用户立即退出 → 该条记录停留未 finalize 态）。`coordinator::shutdown_db()` 置 `DB_SHUTDOWN`（AtomicBool）→ 后台线程排空 `try_iter()` 剩余命令后退出，主线程 `JoinHandle::join` 等待落库完成；`main.rs` 挂到 `tauri::RunEvent::ExitRequested`（macOS Cmd+Q / 关闭最后一个窗口触发），保证退出前队列清空。
 - `models` 表：模型目录（**唯一来源**，schema 见 `crates/infra/src/db.sql`，首次建库 `user_version=0` 时整体执行一次 seed 默认引擎集；列 `domain` / `provider` / `category` / `model_name` / `source` / `secret_key` / `language` / `is_local` / `is_thinking` / `is_streaming` / `is_enabled` / `description`，唯一键 `UNIQUE(domain, provider, category, model_name)`；`load_models_at` 仅读 `domain='asr' AND is_enabled=1`，`domain='llm'` 经 `load_llm_model(spec)` 按 `{provider}:{category}:{model_name}` 3-part spec 读；引擎激活由 `app_config.asr_engine` 决定，无 `is_active` 列，见「模型管理」）
-- **`app_config` 表（v3+，替代旧 `config.yaml`）**：应用行为配置的统一存储（21 字段 key-value TEXT，含 `category` 分组列默认 `'default'` + `description` 描述列），由 `db.sql` seed 默认值 + `load_app_config()` 按字段类型解析。写入用 `ON CONFLICT DO UPDATE SET config_value`（仅改值，保留 description + category）。旧 `config.yaml` 首次启动时一次性导入 DB 后重命名为 `.bak`（迁移逻辑在 `init_schema` 中）。
+- **`app_config` 表（v3+，替代旧 `config.yaml`）**：应用行为配置的统一存储（22 字段 key-value TEXT，含 `category` 分组列默认 `'default'` + `description` 描述列），由 `db.sql` seed 默认值 + `load_app_config()` 按字段类型解析。写入用 `ON CONFLICT DO UPDATE SET config_value`（仅改值，保留 description + category）。旧 `config.yaml` 首次启动时一次性导入 DB 后重命名为 `.bak`（迁移逻辑在 `init_schema` 中）。
 - `model.json` / `history.txt` / `record.txt` 已从代码彻底删除——DB 是唯一配置/存储源
 - `polish_status` 基于润色调用结果：未启用→`off`；启用且返回非空→`done`；启用但返回空或失败→`failed`
 - 润色三档（`polish_mode`：0 关闭 / 1 仅最终 / 2 中间+最终）：中间润色由 `check_and_trigger_polish` 在停顿点触发（流式静音 ≥ `pause_polish_threshold_ms`（默认 600ms）/ 伪流式段边界），把 `Transcript.take_polish_input()`（完整 ASR；已编辑时分块 `edited + 新增`）送 LLM 润色，节流 `polish_interval`（下限 `MIN_POLISH_INTERVAL_SEC=1.0s`）；最终润色在 `start_final_polish_or_paste`（停止后）：启用润色→`Stage::Polishing` 异步线程跑 LLM，回调 `Command::FinalPolishDone` 后 `do_paste`；未启用→直接 `do_paste`。详见 [设计](superpowers/specs/2026-06-14-archived-design.md)。
@@ -255,26 +256,31 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **`core`（通用，零 HF 知识）**：`Downloader` 走 probe（GET Range bytes=0-0 取 total/accept-ranges/etag）→ 规划分段 → 并发 Range+seek-write → 进度聚合（mpsc）→ 校验 → 原子 rename。`DownloadTask { url, mirrors, dest, expected_hash }`。sidecar `<dest>.part.resume.json` 记录各段进度（`url_hash` 基于 dest、镜像无关，故镜像源可复用进度），支持崩溃续传；最终整文件 SHA256 校验兜底（不注入 If-Range，避免不支持它的镜像回退 200 全文重传）。
 - **`hf`（HuggingFace 适配层）**：`fetch_siblings`（GET /api/models/{repo} 解析 rfilename/etag/lfs.oid）、`should_download`（手写 fnmatch，`*` 跨 `/`，对齐 hf-cli，已 Python golden 验证）、`resolve_tasks`（构造每文件 DownloadTask：镜像 URL 在前 + 官方 fallback + LFS→Sha256(lfs.oid) / 非 LFS→Etag）。
 
-下载到 `target_dir/{repo}/{path}`（由调用方决定，预期接入模型管理后落 `~/.octopus/models/<repo>/<path>`）。**当前为独立 crate，尚未接入模型管理替换 hf-cli 流程**——模型管理仍走 `~/.cache/huggingface/hub/`（见下节）。详见 spec `superpowers/specs/2026-06-21-model-download-design.md`。
+下载到 `target_dir/{repo}/{path}`（由调用方决定）。**已接入模型管理（阶段1）**：cli `download` 子命令薄封装此 crate（构 `HfRequest` → `resolve_tasks` 解析 siblings + glob 过滤 → 逐文件 `Downloader::download`，进度经 mpsc 推送打印），`target_dir = ~/.octopus/models`，落 `~/.octopus/models/<repo>/<path>/`；`resolve_model_dir` 已加该路径为查找级（见下节）。镜像优先级 `--mirror` > config `download_mirror` > 官方源。详见 spec `superpowers/specs/2026-06-21-download-model-integration-design.md`。
 
 ## 模型管理
 
-模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需从 HuggingFace 下载到缓存。
+模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需下载——`octopus-cli download <repo>` 下到 `~/.octopus/models/<repo>/`（阶段1，薄封装 `octopus-download`），兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型。
 
 ```
 ~/.octopus/
 ├── octopus.db          # 嵌入式 SQLite（models 表 + transcriptions 表 + app_config 表，唯一存储）
 ├── config.yaml.bak     # 旧 config.yaml 迁移后的备份（首次启动自动生成，可安全删除）
-└── models/             # 随应用打包的小模型（固定路径）
-    ├── silero_vad_v4.onnx   # VAD（1.8M，find_silero_vad 固定加载）
-    └── zipformer/           # 默认 ASR（27M，model.int8.onnx + tokens.txt）
+└── models/
+    ├── silero_vad_v4.onnx   # VAD（1.8M，find_silero_vad 固定加载，随包）
+    ├── zipformer/           # 默认 ASR（27M，随包）
+    └── <HF repo>/           # ★ cli download 下的大模型（如 Systran/faster-whisper-large-v3/）
 
-~/.cache/huggingface/hub/   # 大模型 HF 缓存（whisper/sensevoice/qwen3/paraformer 等，按需下载）
+~/.cache/huggingface/hub/   # 旧 hf-cli 大模型缓存（兼容：resolve 第 4 级仍查此处）
 ```
 
-**模型目录解析（`config::resolve_model_dir`）** —— source 字段双模式：
-- 本地相对路径（如 `models/zipformer`）→ `~/.octopus/<source>`（随应用打包的小模型）
-- HF repo 名（如 `onnx-community/whisper-small.en`）→ `~/.cache/huggingface/hub/`（大模型缓存）
+**模型目录解析（`config::resolve_model_dir`）** —— source 字段四级查找（纯本地 IO，不联网 / 不下载）：
+1. `~/.octopus/<source>`（随包小模型，如 `models/zipformer`）
+2. 绝对路径（`source` 是绝对路径且存在）
+3. `~/.octopus/models/<source>`（★ cli download 下的大模型，优先于旧 hf-cli 缓存）
+4. `find_hf_cache`（`~/.cache/huggingface/hub/models--<repo>/snapshots/<hash>/`，兼容旧 hf-cli）
+
+模型缺失时报错，提示运行 `octopus-cli download <source>`（不自动下载，保持 resolve 纯查找语义）。
 
 **统一 DB 存储（v3+）：**
 所有配置统一存储在 `~/.octopus/octopus.db`（SQLite），不再使用独立 config.yaml 文件：
@@ -283,11 +289,11 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 |----|------|------------|
 | `models` | 引擎/LLM 模型配置 | db.sql seed |
 | `transcriptions` | 识别历史 | 运行时写入 |
-| `app_config` | 应用行为配置（21 字段） | db.sql seed + yaml 迁移 |
+| `app_config` | 应用行为配置（22 字段） | db.sql seed + yaml 迁移 |
 
-- **应用行为配置** `app_config` 表 → `infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`，21 字段：麦克风/引擎选择/分段/润色/LLM/粘贴/硬件加速/ASR 纠错/降噪/简繁输出/工具栏显隐/降噪模式等）。schema 统一定义在 infra，asr/desktop/cli 共享。值统一 TEXT 存储，由 `load_app_config` 按字段类型解析。
+- **应用行为配置** `app_config` 表 → `infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`，22 字段：麦克风/引擎选择/分段/润色/LLM/粘贴/硬件加速/ASR 纠错/降噪/简繁输出/工具栏显隐/降噪模式等）。schema 统一定义在 infra，asr/desktop/cli 共享。值统一 TEXT 存储，由 `load_app_config` 按字段类型解析。
 - **DB 模型目录** `models` 表 → `asr::config::AsrConfig`（`octopus_asr::config::load_config()`，首次 `db::ensure_db()` 自动建表 + seed，读后缓存到 `OnceLock`）。
-- **配置持久化**：`persist_*`（单键 `save_config_key`，ON CONFLICT 仅改 config_value）、`set_config`（全量 `save_app_config`，21 字段 ON CONFLICT），均写 DB。旧 `write_config_yaml` 已移除。
+- **配置持久化**：`persist_*`（单键 `save_config_key`，ON CONFLICT 仅改 config_value）、`set_config`（全量 `save_app_config`，22 字段 ON CONFLICT），均写 DB。旧 `write_config_yaml` 已移除。
 - **yaml 迁移**：首次启动（v0/v1 → v2）检测旧 `~/.octopus/config.yaml` → 解析导入 DB 覆盖 seed → 重命名为 `config.yaml.bak`。迁移逻辑在 `init_schema` 中一次性执行。
 - **`write_to_clipboard`**（默认 `true`）：粘贴后是否把识别结果留在剪贴板，方便他处再粘贴；与 `paste_method`（`clipboard` / `direct` / `none`）构成三模式矩阵——`clipboard` 模式 true 时不恢复原剪贴板内容、false 时恢复（恢复前若 `read_text` 读出空——图片/富文本/文件读不出——则跳过写回，避免空文本覆盖用户的非文本剪贴板）；`direct` 模式 true 时 enigo 输入后末尾写剪贴板、false 时不碰剪贴板；`none` 模式忽略此配置（其唯一目的就是写剪贴板）。`false` 时三种粘贴行为等同重构前现状（不破坏现有用户习惯）。详见 [spec §6](superpowers/specs/2026-06-14-archived-design.md)。
 

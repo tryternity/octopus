@@ -52,7 +52,7 @@ Spec §2.2 / §3.2 称「3 处绕过 `resolve_model_dir` 直接拼 `.cache/huggi
 - Modify: `crates/asr/src/config.rs:34`（`find_hf_cache` 错误提示改 cli download）
 - Test: `crates/asr/src/config.rs` 末尾 `#[cfg(test)] mod tests`（已存在于 `:484`）
 
-- [ ] **Step 1: 写 `resolve_local_in` 的失败测试**
+- [x] **Step 1: 写 `resolve_local_in` 的失败测试**
 
 在 `crates/asr/src/config.rs` 的 `#[cfg(test)] mod tests` 内（现有 `make_entry` 等 helper 之后，`order_engine_infos_sorts...` 测试之前）追加：
 
@@ -103,12 +103,12 @@ Spec §2.2 / §3.2 称「3 处绕过 `resolve_model_dir` 直接拼 `.cache/huggi
     }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-asr resolve_local_in`
 Expected: 编译失败——`error[E0425]: cannot find function resolve_local_in in module config`（或 `not found in this scope`）。
 
-- [ ] **Step 3: 实现 `resolve_local_in` 并改造 `resolve_model_dir`**
+- [x] **Step 3: 实现 `resolve_local_in` 并改造 `resolve_model_dir`**
 
 把 `crates/asr/src/config.rs:61-78`（`resolve_model_dir` 函数及其上方 3 行 doc 注释）替换为：
 
@@ -152,12 +152,12 @@ pub fn resolve_model_dir(source: &str) -> Result<PathBuf> {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cargo test -p octopus-asr resolve_local_in`
 Expected: 4 个测试 PASS。
 
-- [ ] **Step 5: 改 `find_hf_cache` 错误提示**
+- [x] **Step 5: 改 `find_hf_cache` 错误提示**
 
 把 `crates/asr/src/config.rs:41-47`（`find_hf_cache` 里 `if !model_dir.exists()` 的 `anyhow::bail!`）替换为：
 
@@ -171,12 +171,12 @@ Expected: 4 个测试 PASS。
     }
 ```
 
-- [ ] **Step 6: 跑 asr 全量测试确认无回归**
+- [x] **Step 6: 跑 asr 全量测试确认无回归**
 
 Run: `cargo test -p octopus-asr`
 Expected: 全部 PASS（含既有 `pick_entry` / `resolve_*` / `parse_spec_*` 等；`resolve_local_in` 4 个新测试）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/asr/src/config.rs
@@ -193,7 +193,7 @@ git commit -m "feat(asr): resolve_model_dir 加 ~/.octopus/models/<source> 查�
 - Modify: `crates/infra/src/db.sql:112`（seed 加行，末行分号改逗号）
 - Test: `crates/infra/src/config.rs` `#[cfg(test)]`、`crates/infra/src/db.rs` `#[cfg(test)]`
 
-- [ ] **Step 1: 写 config.rs 的失败测试**
+- [x] **Step 1: 写 config.rs 的失败测试**
 
 在 `crates/infra/src/config.rs` 的 `#[cfg(test)] mod tests` 末尾（`edit_shortcut_explicit_from_yaml` 测试之后）追加：
 
@@ -218,12 +218,12 @@ git commit -m "feat(asr): resolve_model_dir 加 ~/.octopus/models/<source> 查�
     }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-infra download_mirror`
 Expected: 编译失败——`no field download_mirror on type AppConfig`。
 
-- [ ] **Step 3: AppConfig struct 加字段**
+- [x] **Step 3: AppConfig struct 加字段**
 
 在 `crates/infra/src/config.rs` 的 `AppConfig` struct 内，`edit_shortcut` 字段（`:144-147`）之后追加：
 
@@ -234,7 +234,7 @@ Expected: 编译失败——`no field download_mirror on type AppConfig`。
     pub download_mirror: String,
 ```
 
-- [ ] **Step 4: 加 default 函数**
+- [x] **Step 4: 加 default 函数**
 
 在 `crates/infra/src/config.rs` 的 `default_edit_shortcut` 函数（`:200-202`）之后追加：
 
@@ -244,7 +244,7 @@ fn default_download_mirror() -> String {
 }
 ```
 
-- [ ] **Step 5: Default impl 加字段**
+- [x] **Step 5: Default impl 加字段**
 
 在 `crates/infra/src/config.rs` 的 `impl Default for AppConfig`（`:207-234`）内，`edit_shortcut: default_edit_shortcut(),`（`:231`）之后追加：
 
@@ -252,12 +252,12 @@ fn default_download_mirror() -> String {
             download_mirror: default_download_mirror(),
 ```
 
-- [ ] **Step 6: 运行 config 测试确认通过**
+- [x] **Step 6: 运行 config 测试确认通过**
 
 Run: `cargo test -p octopus-infra download_mirror`
 Expected: 3 个测试 PASS。
 
-- [ ] **Step 7: db.rs load 加分支**
+- [x] **Step 7: db.rs load 加分支**
 
 在 `crates/infra/src/db.rs:281`（load_app_config_at 的字符串字段组，`"polish_llm" => cfg.polish_llm = value,` 之后）追加一行：
 
@@ -265,7 +265,7 @@ Expected: 3 个测试 PASS。
             "download_mirror" => cfg.download_mirror = value,
 ```
 
-- [ ] **Step 8: db.rs save 数组 21→22**
+- [x] **Step 8: db.rs save 数组 21→22**
 
 把 `crates/infra/src/db.rs:323` 的类型签名：
 
@@ -287,7 +287,7 @@ Expected: 3 个测试 PASS。
     ];
 ```
 
-- [ ] **Step 9: db.sql seed 加行**
+- [x] **Step 9: db.sql seed 加行**
 
 把 `crates/infra/src/db.sql:111-112`：
 
@@ -304,7 +304,7 @@ Expected: 3 个测试 PASS。
     ('download_mirror',          '',                                     'HF 模型下载镜像 host（如 https://hf-mirror.com），空=官方源 huggingface.co');
 ```
 
-- [ ] **Step 10: 把 download_mirror 纳入既有 db 测试**
+- [x] **Step 10: 把 download_mirror 纳入既有 db 测试**
 
 `crates/infra/src/db.rs` 的 `#[cfg(test)]` 已有两个测试覆盖 app_config seed + round-trip，扩展它们：
 
@@ -326,17 +326,17 @@ Expected: 3 个测试 PASS。
         assert_eq!(cfg2.download_mirror, "https://hf-mirror.com");
 ```
 
-- [ ] **Step 11: 运行 db 测试确认通过**
+- [x] **Step 11: 运行 db 测试确认通过**
 
 Run: `cargo test -p octopus-infra app_config`
 Expected: seed + round-trip 测试 PASS（含新断言）。
 
-- [ ] **Step 12: workspace 编译确认**
+- [x] **Step 12: workspace 编译确认**
 
 Run: `cargo check -p octopus-infra`
 Expected: 编译通过，0 warning。
 
-- [ ] **Step 13: Commit**
+- [x] **Step 13: Commit**
 
 ```bash
 git add crates/infra/src/config.rs crates/infra/src/db.rs crates/infra/src/db.sql
@@ -352,7 +352,7 @@ git commit -m "feat(infra): AppConfig 加 download_mirror 字段（DB app_config
 - Modify: `crates/cli/src/main.rs:13`（Commands enum 加 Download）、`:62`（main match 加分支）、文件末尾追加 `build_hf_request` + `run_download`
 - Test: `crates/cli/src/main.rs` 末尾 `#[cfg(test)] mod tests`（新建）
 
-- [ ] **Step 1: cli Cargo.toml 加依赖**
+- [x] **Step 1: cli Cargo.toml 加依赖**
 
 在 `crates/cli/Cargo.toml` 的 `[dependencies]` 内，`octopus-infra = { path = "../infra" }` 之后追加：
 
@@ -362,7 +362,7 @@ octopus-download = { path = "../download" }
 
 > 不加 `reqwest`：`run_download` 复用 `Downloader::client()`（download crate 内部的 reqwest::Client），`resolve_tasks` 接 `&reqwest::Client`，类型来自 download crate，cli 不直接命名 reqwest 类型。
 
-- [ ] **Step 2: 写 `build_hf_request` 的失败测试**
+- [x] **Step 2: 写 `build_hf_request` 的失败测试**
 
 `crates/cli/src/main.rs` 当前无 `#[cfg(test)]`。在文件末尾追加整个测试模块：
 
@@ -418,12 +418,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [x] **Step 3: 运行测试确认失败**
 
 Run: `cargo test -p octopus-cli build_request`
 Expected: 编译失败——`cannot find function build_hf_request`。
 
-- [ ] **Step 4: 实现 `build_hf_request`**
+- [x] **Step 4: 实现 `build_hf_request`**
 
 在 `crates/cli/src/main.rs` 末尾（Step 2 的 `#[cfg(test)]` 之前——即测试模块上方）追加：
 
@@ -460,12 +460,12 @@ fn build_hf_request(
 }
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [x] **Step 5: 运行测试确认通过**
 
 Run: `cargo test -p octopus-cli build_request`
 Expected: 4 个测试 PASS。
 
-- [ ] **Step 6: Commands enum 加 Download 变体**
+- [x] **Step 6: Commands enum 加 Download 变体**
 
 在 `crates/cli/src/main.rs:13` 的 `enum Commands` 内，`TranscribeUrl { ... }` 变体（`:44-59`，即 enum 最后一个变体）之后追加：
 
@@ -486,7 +486,7 @@ Expected: 4 个测试 PASS。
     },
 ```
 
-- [ ] **Step 7: main match 加分支**
+- [x] **Step 7: main match 加分支**
 
 在 `crates/cli/src/main.rs:62` 的 `match cli.command` 内，`Commands::TranscribeUrl { ... } => { ... }` 分支（`:74-83`，即 match 最后一个 arm）之后追加：
 
@@ -502,7 +502,7 @@ Expected: 4 个测试 PASS。
         }
 ```
 
-- [ ] **Step 8: 实现 `run_download`**
+- [x] **Step 8: 实现 `run_download`**
 
 在 `crates/cli/src/main.rs` 的 `build_hf_request` 函数（Step 4 追加的）之后追加：
 
@@ -575,12 +575,12 @@ async fn run_download(
 
 > 说明：`dl.client()` 复用 Downloader 内部 reqwest::Client 给 `resolve_tasks`，避免 cli 直接依赖 reqwest。`dl.download(&self, ...)` 不可 move 进 spawn，故在主循环顺序 await（多文件串行下载）。
 
-- [ ] **Step 9: 编译 + 全量测试**
+- [x] **Step 9: 编译 + 全量测试**
 
 Run: `cargo test -p octopus-cli`
 Expected: 编译通过；4 个 `build_request` 测试 PASS。
 
-- [ ] **Step 10: 手工冒烟（真实下载，受网络限制不计入 CI）**
+- [x] **Step 10: 手工冒烟（真实下载，受网络限制不计入 CI）**
 
 Run:
 ```bash
@@ -590,7 +590,7 @@ Expected: 打印「解析...」「共 N 个文件」→ 逐文件进度条 → �
 
 > 手工验证项（网络可用时）：(a) 不带 `--mirror` 且 config 无 `download_mirror` → 走官方源；(b) `resolve_model_dir("onnx-community/whisper-tiny")` 现能命中 `~/.octopus/models/onnx-community/whisper-tiny`（Task 1 第 3 级生效，可用 `octopus-cli config` 观察路径）。`run_download` 的完整 e2e 不纳入单测——Downloader 自建 reqwest client、连真实 HF，httpmock 无法注入；下载核心逻辑已由 download crate 自身的 httpmock 测试覆盖。
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add crates/cli/Cargo.toml crates/cli/src/main.rs
@@ -606,7 +606,7 @@ git commit -m "feat(cli): 加 download 子命令（薄封装 octopus-download，
 - Modify: `docs/superpowers/plans/2026-06-21-download-model-integration.md`（勾选完成的 step）
 - Modify: `docs/architecture.md`（cli 加 download 子命令）
 
-- [ ] **Step 1: spec §2.2 / §3.2 勘误**
+- [x] **Step 1: spec §2.2 / §3.2 勘误**
 
 在 `docs/superpowers/specs/2026-06-21-download-model-integration-design.md`：
 
@@ -624,7 +624,7 @@ git commit -m "feat(cli): 加 download 子命令（薄封装 octopus-download，
 实施前实测：§2.2 列出的 3 处均在 `#[cfg(test)]` 测试辅助 `hf_snapshot` 内，非生产路径；统一它们收益低且 repo 参数语义与 `resolve_model_dir(source)` 不一致。按 YAGNI 不做。生产调用点（13+ 处引擎 `resolve_model_dir(&entry.source)`）由 3.1 的查找级扩展自动覆盖。
 ```
 
-- [ ] **Step 2: spec §4 接口契约表补状态**
+- [x] **Step 2: spec §4 接口契约表补状态**
 
 §4 表格「config.yaml | 新增可选 `download.mirror`」一行的「变化」列改为：
 
@@ -632,7 +632,7 @@ git commit -m "feat(cli): 加 download 子命令（薄封装 octopus-download，
 新增可选 `download_mirror`（AppConfig flat 字段，非嵌套 `download.mirror`；DB app_config 表同步）
 ```
 
-- [ ] **Step 3: architecture.md 补 cli download**
+- [x] **Step 3: architecture.md 补 cli download**
 
 在 `docs/architecture.md` 描述 octopus-cli 的段落（或 `### octopus-cli` 模块说明），追加一句：
 
@@ -642,7 +642,7 @@ git commit -m "feat(cli): 加 download 子命令（薄封装 octopus-download，
 
 > 若 architecture.md 用模块小节形式，按既有风格把这段并入 `octopus-cli` 小节即可；若该文件无 cli 专门小节，在 workspace 模块列表里补一行。
 
-- [ ] **Step 4: workspace 全量编译 + 测试**
+- [x] **Step 4: workspace 全量编译 + 测试**
 
 Run: `cargo check --workspace --all-targets`
 Expected: 编译通过，0 warning。
@@ -650,11 +650,11 @@ Expected: 编译通过，0 warning。
 Run: `cargo test --workspace`
 Expected: 全部 PASS（asr `resolve_local_in` ×4、infra `download_mirror` ×3 + app_config round-trip、cli `build_request` ×4，及既有测试无回归）。
 
-- [ ] **Step 5: 勾选本 plan 已完成 step**
+- [x] **Step 5: 勾选本 plan 已完成 step**
 
 把本计划中 Task 1–4 所有已完成 step 的 `- [ ]` 改为 `- [x]`。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-06-21-download-model-integration-design.md docs/superpowers/plans/2026-06-21-download-model-integration.md docs/architecture.md
