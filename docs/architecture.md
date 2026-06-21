@@ -54,7 +54,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 **数据流（流式）：**
 ```
 麦克风 → PCM chunk → resample_to_16k → 引擎.accept_samples → [partial]
-                                    └─ 静音≥0.5s → 引擎.flush(insert_comma=true)（补零吐尾音 + 即时逗号）→ [partial]
+                                    └─ 静音≥0.5s → 引擎.flush(insert_comma=true)（padding 冲刷尾音 + 即时逗号）→ [partial]
                                                               → engine.finish → [final]
 ```
 
@@ -132,7 +132,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
     │
     ├─ Streaming（StreamingSession 本地流式，[`crates/asr/src/streaming`]）：
     │     StreamingSession.accept_samples(&samples, was_silent) → partial
-    │     （累积静音 ≥0.5s 时引擎独立补零 Active Flush，不走 drain_samples）
+    │     （累积静音 ≥0.5s 时 was_silent=true → 引擎 finish+reset 冲刷尾音，不走 drain_samples）
     │
     ├─ VadSegmented（本地离线引擎，[`coordinator.rs::handle_vad_segmented_tick`]）：
     │     audio_buffer.extend(&samples)
@@ -210,7 +210,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
   - `transcriptions` 表加 `edited_text` 列（commit + 中间润色折回时写）。
   - 停止路径：润色输入 = `take_polish_input`；无润色/兜底粘贴 = `edited_display()`；最终润色失败兜底 = `Stage::Polishing.fallback_text`；DB raw 仍 = `db_text()`。
 - VAD 标点：基于 SileroVad 静音检测，>0.5s 静音插入逗号。**段间拼接标点去重**：`consume_completed_results` 在段间补逗号前同时检查「新段不以标点开头」和「已有文本不以标点结尾」，避免 ASR 引擎返回的自带句尾标点与补的逗号连续出现（`。，` `？，`）
-- 流式尾音冲刷（Active Flush）：流式模式累积静音 ≥0.5s 时向引擎补零，强制对齐右上下文 / 触发 CIF，把憋住的尾音即时吐出；**同时追加逗号**（`flush(insert_comma=true)`），提供即时分句反馈——此前逗号只在下一句话到来时插入，停顿期间无标点。每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。详见 [spec](superpowers/specs/2026-06-14-archived-design.md)
+- 流式尾音冲刷（Active Flush）：流式模式累积静音 ≥0.5s 时把憋住的尾音即时吐出——Zipformer 用 edge-replicate lookahead padding（3 chunks，与 `finish` 共享 `run_padding_flush`）对齐右上下文，Paraformer 用 CIF force-fire（`run_cif_final`）；**同时追加逗号**（`flush(insert_comma=true)`），提供即时分句反馈——此前逗号只在下一句话到来时插入，停顿期间无标点。每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。详见 [spec](superpowers/specs/2026-06-14-archived-design.md)
 - **Paraformer 流式尾部 CIF force-fire**：CIF 机制 alpha 累积达阈值 1.0 才 fire 产出 token，`finish()` 时残留 alpha >0 但 <1.0 的声学特征卡在 `encoder_out_cache` 不触发 → 最后一个字被吞。`run_cif_final()` 在 CIF 循环结束后检查残留，alpha >0.5 则 force-fire 为最后一个 token 送 decoder（<0.5 视为噪声不 fire）；sherpa-onnx 官方也丢弃此残留（已知 trade-off），我们做了改善
 - **Paraformer 流式 3 个严重 bug 修复**（sherpa-onnx 源码对照）：①离线 CMVN 重复 `* scale`——`extract_cmvn_from_metadata` 已在 inv_stddev 乘 sqrt(512)，`transcribe` 又乘一次 → 特征放大 22.6 倍，移除重复；②流式位置编码缺负号——`k_scale` 应为 `-ln(10000)/(half_dim-1)`，缺负号导致高维频率爆炸、随音频变长退化；③`process_chunk_final` 仍 mask 右侧 alpha——尾部 3 帧无下个 chunk 处理，mask 掉永久丢失 ~180ms 语音，新增 `mask_alphas_left_only`。另：`flush()` 最后一个 chunk 也走 force-fire（`run_cif_final`）；`accept_samples` 恢复逗号但加 `ends_with_punct` 防重复标点
 - **Paraformer fbank 特征提取修复（5 个根因）**（详见 [spec](superpowers/specs/2026-06-21-paraformer-fbank-feature-extraction-fix.md)）：流式识别质量严重退化（token 重复 `thedayday`/`tomtomor`、英文粘连无空格）的根因全部在 fbank 层。①**缺 DC offset removal**——每帧 FFT 前未减帧均值（sherpa-onnx 默认 `remove_dc_offset=true`）；②**缺 pre-emphasis**——未做 `y[i]=x[i]-0.97*x[i-1]` 预加重（sherpa-onnx 默认 `preemph_coeff=0.97`）；③**窗口函数错误**——流式应用 povey 窗 `(0.5-0.5cos)^0.85` 而非 hamming 窗；④**mel 滤波器 high_freq 错误**——应用 7600 Hz（`high_freq=-400`）而非 8000 Hz；⑤**流式架构缺陷**——重叠 chunk 重复提取 fbank 致帧边界断裂，重写为**增量式 fbank**（`raw_samples` 线性追加 + `fbank_cache` 增量计算，对齐 sherpa-onnx `OnlineFbank`）。另：`decode_tokens` 重写为 sherpa-onnx `Convert()` 兼容的空格逻辑（英文词间加空格、`@@` BPE 合并）；新增 `smart_append()` 在 chunk 边界拼接时检测 ASCII↔非 ASCII 过渡插入空格
