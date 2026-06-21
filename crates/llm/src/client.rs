@@ -83,7 +83,7 @@ pub fn polish(preserved: Option<&str>, to_polish: &str, config: &CompatibleLlmCo
         messages: vec![
             Message {
                 role: "system".to_string(),
-                content: prompt::system_prompt().to_string(),
+                content: prompt::system_prompt(),
             },
             Message {
                 role: "user".to_string(),
