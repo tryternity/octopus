@@ -187,6 +187,12 @@ pub fn segment_audio_vad(
     // For 480 samples, this is 30ms.
     let frame_duration_ms = (frame_size * 1000) / 16000;
     let min_silence_frames = min_silence_ms / frame_duration_ms;
+    // Pre/post speech padding：补全首字音头（VAD 破阈值有 1~2 帧延迟、起首辅音能量弱触发更晚）
+    // 与尾字尾音（衰减残尾能量低被判静音、累积进 silence_frames_count）。对称 120ms
+    // （@480 样本/30ms 帧 = 4 帧），远低于 min_silence_ms(500ms)，只借回段间静音、不触及相邻段
+    // 语音（否则 engine.rs 的 final_text 拼接会重复字）。参考 silero-vad speech_pad_ms（默认 30ms）。
+    const SPEECH_PAD_MS: usize = 120;
+    let pad_samples = (SPEECH_PAD_MS / frame_duration_ms) * frame_size;
 
     let total_frames = samples.len() / frame_size;
 
@@ -201,7 +207,8 @@ pub fn segment_audio_vad(
         if !in_speech {
             if is_speech_frame {
                 in_speech = true;
-                current_segment_start = start_idx;
+                // 前置余量：向前借 pad 补回被 VAD 响应延迟切掉的音头（首字辅音）。
+                current_segment_start = start_idx.saturating_sub(pad_samples);
                 silence_frames_count = 0;
             }
         } else {
@@ -215,7 +222,9 @@ pub fn segment_audio_vad(
 
             // Check for silence split
             if silence_frames_count >= min_silence_frames {
-                let speech_end = (i + 1 - silence_frames_count) * frame_size;
+                // 后置余量：尾音残尾被算进静音帧，speech_end 回溯会切掉它，+pad 借回（不超当前帧）。
+                let speech_end = ((i + 1 - silence_frames_count) * frame_size + pad_samples)
+                    .min((i + 1) * frame_size);
                 if speech_end > current_segment_start {
                     segments.push(samples[current_segment_start..speech_end].to_vec());
                 }
@@ -224,7 +233,8 @@ pub fn segment_audio_vad(
             // Check for max duration split
             else if current_duration_ms >= max_segment_ms {
                 let speech_end = if silence_frames_count > 0 {
-                    (i + 1 - silence_frames_count) * frame_size
+                    ((i + 1 - silence_frames_count) * frame_size + pad_samples)
+                        .min((i + 1) * frame_size)
                 } else {
                     end_idx
                 };
@@ -241,7 +251,9 @@ pub fn segment_audio_vad(
     if in_speech && samples.len() > current_segment_start {
         let mut speech_end = samples.len();
         if silence_frames_count > 0 && samples.len() >= silence_frames_count * frame_size {
-            speech_end = samples.len() - silence_frames_count * frame_size;
+            // 末段尾音同理借回 pad（clamp 到 samples.len()，不越界）。
+            speech_end = (samples.len() - silence_frames_count * frame_size + pad_samples)
+                .min(samples.len());
         }
         if speech_end > current_segment_start {
             segments.push(samples[current_segment_start..speech_end].to_vec());
@@ -302,5 +314,46 @@ mod tests {
             one.len(),
             diff
         );
+    }
+
+    #[test]
+    fn segment_audio_vad_segments_in_bounds() {
+        // 回归保护：pre/post speech padding 不应导致 segment 切片越界 panic。依赖真实 SileroVad
+        // （无模型则 skip）；不断言具体段内容，只断言所有返回 segment 下标合法、不越界。
+        let vad_path = match crate::config::find_silero_vad() {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("[SKIP] 无 silero_vad 模型文件");
+                return;
+            }
+        };
+        let mut vad = match crate::vad::SileroVad::new(&vad_path) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[SKIP] SileroVad 初始化失败: {e}");
+                return;
+            }
+        };
+        // 合成 ~31s 音频（略超 30s，覆盖 transcribe_with_vad 的切分路径）；5~25s 段提高幅度，
+        // 让 VAD 大概率产出非空 segment，以 exercise 切分/末段分支的 padding slice 边界。
+        let n = 16000 * 31;
+        let samples: Vec<f32> = (0..n)
+            .map(|i| {
+                let t = i as f32 / 16000.0;
+                let amp = if (5.0..25.0).contains(&t) { 0.3 } else { 0.02 };
+                (2.0 * std::f32::consts::PI * 220.0 * t).sin() * amp
+            })
+            .collect();
+        let segs = segment_audio_vad(&samples, &mut vad, 480, 0.4, 500, 25000);
+        for s in &segs {
+            assert!(!s.is_empty(), "segment 不应为空");
+            assert!(
+                s.len() <= samples.len(),
+                "segment 长度 {} 超过总长 {}（padding 越界？）",
+                s.len(),
+                samples.len()
+            );
+        }
+        // 不强断言 segs 非空（VAD 对纯正弦可能全判静音）；核心是全程不 panic + 下标合法。
     }
 }
