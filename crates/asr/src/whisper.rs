@@ -300,14 +300,18 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         let mel_tensor = ort::value::TensorRef::from_array_view(mel.view())?;
 
         // Encoder forward
-        let mut encoder = self.encoder.lock().unwrap();
-        let enc_out = encoder.run(ort::inputs![mel_tensor])?;
-        let (enc_shape, enc_data) = enc_out[0].try_extract_tensor::<f32>()?;
-        let enc_dim: Vec<usize> = enc_shape.iter().map(|&d| d as usize).collect();
-        let encoder_hidden = Array3::from_shape_vec(
-            (enc_dim[0], enc_dim[1], enc_dim[2]),
-            enc_data.to_vec(),
-        )?;
+        let encoder_hidden = {
+            let mut encoder = self.encoder.lock().unwrap();
+            let enc_out = encoder.run(ort::inputs![mel_tensor])?;
+            let (enc_shape, enc_data) = enc_out[0].try_extract_tensor::<f32>()?;
+            let enc_dim: Vec<usize> = enc_shape.iter().map(|&d| d as usize).collect();
+            Array3::from_shape_vec(
+                (enc_dim[0], enc_dim[1], enc_dim[2]),
+                enc_data.to_vec(),
+            )?
+        };
+        // encoder 锁已释放：encoder_hidden 是 owned Array3（to_vec 深拷贝），
+        // 允许并发线程在当前线程跑 decode 循环时并行执行它们的 encoder forward
 
         // Tokenizer & special tokens
         // 各 Whisper 变体的特殊 token ID 不同（.en 模型整体偏移 -1：
@@ -386,6 +390,11 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         tokens.push(next_token as i64);
 
         let mut kv = KvCache::new_from_decoder_output(&init_out, self.n_decoder_layers)?;
+        drop(init_out);
+        drop(dec_init);
+        // dec_init 锁已释放：init_out 的 SessionOutputs 借用已随 drop(init_out) 释放，
+        // kv 通过 extract_kv 的 to_vec 深拷贝完全 owned，
+        // 允许并发线程在当前线程跑 dec_past 自回归循环时并行执行它们的 dec_init
 
         // Autoregressive loop
         // 根据实际音频时长限制解码步数：compute_mel 会把音频 0 填充到 30s，
