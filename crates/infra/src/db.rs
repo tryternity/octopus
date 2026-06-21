@@ -561,6 +561,134 @@ pub fn list_llm_models() -> Result<Vec<LlmModelInfo>> {
     with_db(|conn| list_llm_models_at(conn))
 }
 
+// ── 润色提示词 CRUD（prompts 表）──
+
+/// prompts 表记录（设置窗口 prompt 管理页用）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct PromptRecord {
+    pub id: i64,
+    pub title: String,
+    pub content: String,
+    pub description: String,
+    pub is_system: bool,
+}
+
+const PROMPT_SELECT_COLS: &str = "id, title, content, description, is_system";
+
+fn row_to_prompt(row: &rusqlite::Row) -> rusqlite::Result<PromptRecord> {
+    Ok(PromptRecord {
+        id: row.get(0)?,
+        title: row.get(1)?,
+        content: row.get(2)?,
+        description: row.get(3)?,
+        is_system: row.get::<_, i32>(4)? != 0,
+    })
+}
+
+/// 列出所有 prompt（按 is_system 降序、id 升序）。
+fn list_prompts_at(conn: &Connection) -> Result<Vec<PromptRecord>> {
+    let sql = format!(
+        "SELECT {} FROM prompts ORDER BY is_system DESC, id ASC",
+        PROMPT_SELECT_COLS
+    );
+    let mut stmt = conn.prepare(&sql)?;
+    let rows = stmt.query_map([], row_to_prompt)?;
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
+pub fn list_prompts() -> Result<Vec<PromptRecord>> {
+    with_db(list_prompts_at)
+}
+
+/// 按 id 加载单条 prompt。
+fn load_prompt_at(conn: &Connection, id: i64) -> Result<Option<PromptRecord>> {
+    let sql = format!("SELECT {} FROM prompts WHERE id=?1", PROMPT_SELECT_COLS);
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = stmt.query_map(params![id], row_to_prompt)?;
+    Ok(rows.next().transpose()?)
+}
+
+pub fn load_prompt(id: i64) -> Result<Option<PromptRecord>> {
+    with_db(|conn| load_prompt_at(conn, id))
+}
+
+/// 新建用户 prompt。返回新 id。is_system 固定 0（用户 prompt）。
+fn insert_prompt_at(conn: &Connection, title: &str, content: &str, description: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO prompts (title, category, content, description, is_system)
+         VALUES (?1, 'voice_text_polish', ?2, ?3, 0)",
+        params![title, content, description],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn insert_prompt(title: &str, content: &str, description: &str) -> Result<i64> {
+    with_db(|conn| insert_prompt_at(conn, title, content, description))
+}
+
+/// 按 id 更新 prompt（拒绝 is_system=1）。
+fn update_prompt_at(conn: &Connection, id: i64, title: &str, content: &str, description: &str) -> Result<()> {
+    let is_system: i32 = conn
+        .query_row("SELECT is_system FROM prompts WHERE id=?1", params![id], |r| r.get(0))
+        .context("prompt 不存在")?;
+    if is_system != 0 {
+        anyhow::bail!("系统内置 prompt 不可编辑");
+    }
+    conn.execute(
+        "UPDATE prompts SET title=?1, content=?2, description=?3, updated_at=datetime('now')
+         WHERE id=?4",
+        params![title, content, description, id],
+    )?;
+    Ok(())
+}
+
+pub fn update_prompt(id: i64, title: &str, content: &str, description: &str) -> Result<()> {
+    with_db(|conn| update_prompt_at(conn, id, title, content, description))
+}
+
+/// 按 id 删除 prompt（拒绝 is_system=1）。
+fn delete_prompt_at(conn: &Connection, id: i64) -> Result<()> {
+    let is_system: i32 = conn
+        .query_row("SELECT is_system FROM prompts WHERE id=?1", params![id], |r| r.get(0))
+        .context("prompt 不存在")?;
+    if is_system != 0 {
+        anyhow::bail!("系统内置 prompt 不可删除");
+    }
+    conn.execute("DELETE FROM prompts WHERE id=?1", params![id])?;
+    Ok(())
+}
+
+pub fn delete_prompt(id: i64) -> Result<()> {
+    with_db(|conn| delete_prompt_at(conn, id))
+}
+
+/// 读取 active_polish_prompt 配置值（字符串 id）。不存在/解析失败返回 1（fallback）。
+pub fn load_active_prompt_id() -> Result<i64> {
+    with_db(|conn| {
+        let val: Option<String> = conn
+            .query_row(
+                "SELECT config_value FROM app_config WHERE config_key='active_polish_prompt'",
+                [],
+                |r| r.get(0),
+            )
+            .ok();
+        let id = val
+            .as_deref()
+            .and_then(|s| s.parse::<i64>().ok())
+            .unwrap_or(1);
+        Ok(id)
+    })
+}
+
+/// 写入 active_polish_prompt 配置值。
+pub fn save_active_prompt_id(id: i64) -> Result<()> {
+    save_config_key("active_polish_prompt", &id.to_string())
+}
+
 // ── 识别历史写入（desktop coordinator 用）──
 
 /// 首次有 ASR 文本时插入（应用写入毫秒戳 id）。
@@ -1356,5 +1484,55 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM prompts WHERE id=1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1, "重跑 INIT_SQL 不应重复 seed");
+    }
+
+    #[test]
+    fn prompt_crud_round_trip() {
+        let conn = open_init();
+        // list 初值：1 条系统默认
+        let list = list_prompts_at(&conn).unwrap();
+        assert_eq!(list.len(), 1);
+        assert!(list[0].is_system);
+        assert_eq!(list[0].title, "默认润色");
+
+        // insert 用户 prompt
+        let id = insert_prompt_at(&conn, "技术写作", "rule1", "desc1").unwrap();
+        assert!(id > 1, "用户 prompt id 应大于 seed id=1");
+
+        // load
+        let loaded = load_prompt_at(&conn, id).unwrap().unwrap();
+        assert_eq!(loaded.title, "技术写作");
+        assert_eq!(loaded.content, "rule1");
+        assert!(!loaded.is_system);
+
+        // update（用户 prompt 可改）
+        update_prompt_at(&conn, id, "技术写作V2", "rule2", "desc2").unwrap();
+        let updated = load_prompt_at(&conn, id).unwrap().unwrap();
+        assert_eq!(updated.title, "技术写作V2");
+        assert_eq!(updated.content, "rule2");
+
+        // update 系统 prompt 被拒
+        assert!(update_prompt_at(&conn, 1, "x", "y", "z").is_err());
+
+        // delete 系统 prompt 被拒
+        assert!(delete_prompt_at(&conn, 1).is_err());
+
+        // delete 用户 prompt 成功
+        delete_prompt_at(&conn, id).unwrap();
+        assert!(load_prompt_at(&conn, id).unwrap().is_none());
+
+        // delete 不存在的 id
+        assert!(delete_prompt_at(&conn, 999).is_err());
+    }
+
+    #[test]
+    fn prompt_title_allows_duplicate() {
+        let conn = open_init();
+        // 插入两条同名用户 prompt（title 允许重复）
+        insert_prompt_at(&conn, "同名", "a", "").unwrap();
+        insert_prompt_at(&conn, "同名", "b", "").unwrap();
+        let list = list_prompts_at(&conn).unwrap();
+        let dup_count = list.iter().filter(|p| p.title == "同名").count();
+        assert_eq!(dup_count, 2, "title 允许重复");
     }
 }
