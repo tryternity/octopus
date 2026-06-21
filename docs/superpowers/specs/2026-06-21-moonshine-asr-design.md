@@ -20,20 +20,20 @@ Moonshine 是**纯 ONNX 体系**的 encoder-decoder Transformer，与项目现�
 |---------|------|------|------|
 | `preprocess.onnx` | `audio (1, N)` f32 | `features (1, T, 416)` | 学习型 conv 前端（替代手写 Mel），下采样率 384× |
 | `encode.int8.onnx` | `features (1, T, 416)` + `features_len (1,)` i32 | `encoder_out (1, T, 416)` | Transformer encoder |
-| `uncached_decode.int8.onnx` | `token (1, L)` i32 + `encoder_out` + `seq_len (1,)` i32 | `logits (1, 1, 32768)` + **36 个 KV cache 张量** `(1, 8, 52)` | 首个 token 解码（初始化 KV cache） |
-| `cached_decode.int8.onnx` | `token (1, L)` + `encoder_out` + `seq_len` + **36 个 KV cache 张量** | `logits (1, 1, 32768)` + 36 个新 KV cache 张量 | 后续 token 解码（复用 KV cache） |
+| `uncached_decode.int8.onnx` | `token (1, L)` i32 + `encoder_out` + `seq_len (1,)` i32 | `logits (1, 1, 32768)` + **N 个 KV cache 张量**（base=32，由模型层数决定） | 首个 token 解码（初始化 KV cache） |
+| `cached_decode.int8.onnx` | `token (1, L)` + `encoder_out` + `seq_len` + **N 个 KV cache 张量** | `logits (1, 1, 32768)` + N 个新 KV cache 张量 | 后续 token 解码（复用 KV cache） |
 
-- **36 个 cache 张量** = 18 层 × (K, V)，每个 shape `(1, 8, 52)`
+- **N 个 cache 张量** = (层数 × 2)（K, V 各一），数量运行时从 `uncached_decode` 输出数动态获取（`(outputs-1)/1`，减去 logits）。base 模型 = 32 个（16 层 × 2），spec 初版误记为 36
 - **vocab 32768**：byte-level BPE（与 Llama 1/2 兼容），`tokens.txt` 格式（token_text + tab + token_id）
 - **特殊 token**：`<unk>=0`, `<s>=1`(BOS), `</s>=2`(EOS)
 
 ### Decode 循环（sherpa-onnx `offline-moonshine-greedy-search-decoder.cc` 参考）
 
 ```
-BOS(1) → uncached_decode → logits + 36 cache
+BOS(1) → uncached_decode → logits + N cache
          ↓ argmax → token_0
          (EOS? stop)
-token_0 → cached_decode(prev_cache) → logits + 36 new cache
+token_0 → cached_decode(prev_cache) → logits + N new cache
          ↓ argmax → token_1
          (EOS? stop)
 ... 循环至 EOS(2) 或 max_len
@@ -154,9 +154,9 @@ loop:
 
 #### KV cache 管理
 
-`kv_caches: Vec<Array3<f32>>`（36 个张量），在 `greedy_decode` 内部维护：
-- uncached_decode 输出 index 1..37（跳过 index 0 logits）→ 初始化 cache
-- cached_decode 输入 3..39（token + encoder_out + seq_len + 36 cache）→ 输出 index 1..37 → 更新 cache
+`state_data: Vec<Vec<f32>>` + `state_shapes: Vec<Vec<usize>>`（N 个张量，N = `uncached_out.len()-1`，base 模型 = 32），在 `greedy_decode` 内部维护：
+- uncached_decode 输出 index 1..=N（跳过 index 0 logits）→ 初始化 cache
+- cached_decode 输入 args_3..args_{N+2}（token + encoder_out + seq_len + N cache）→ 输出 index 1..=N → 更新 cache
 
 ### 4. `AsrEngineManager` 路由
 

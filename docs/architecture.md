@@ -34,7 +34,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `audio` | WAV 读取、重采样（`resample_to` 一次性 / `AudioResampler` 流式，支持任意 from→to 速率，含 denoise 48k 桥接）、VAD 语音过滤 |
 | `denoise` | 可插拔流式环境降噪后端（`FrameDenoise` trait，由 `denoise_mode` 选择）：`1`=RNNoise（`nnnoiseless`，纯 Rust 移植 Xiph RNNoise，内置默认模型，48kHz/FRAME_SIZE=480→频带特征+VAD/噪声/降噪 GRU→频带增益+OLA，GRU 状态跨帧保持）/ `2`=DeepFilterNet3（`Df3Backend` 包装 libDF v0.5.6 的 `DfTract` + tract 0.19，48kHz 全频带）。`DenoiseProcessor` 为 mode 分发器，采集层前置 |
 | `vad` | Silero VAD 语音活动检测 |
-| `whisper` | Whisper 离线识别 |
+| `whisper` | Whisper 离线识别（int8 三件套优先：encoder + dec_init + dec_past；decoder 层数 / D_MODEL 从 session 输出动态获取，支持 tiny/base/small 等不同规模模型） |
 | `sensevoice` | SenseVoice 离线识别 |
 | `paraformer` | Paraformer 离线识别（fbank: hamming 窗 + DC offset + pre-emphasis） |
 | `qwen3_asr` | Qwen3-ASR 离线识别 |

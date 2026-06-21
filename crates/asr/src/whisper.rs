@@ -12,9 +12,7 @@ const HOP_LENGTH: usize = 160;
 const N_MELS: usize = 80;
 const SAMPLE_RATE: u32 = 16000;
 const N_SAMPLES: usize = 30 * SAMPLE_RATE as usize;
-const N_DECODER_LAYERS: usize = 12;
-const ENCODER_LEN: usize = 1500;
-const D_MODEL: usize = 768;
+
 
 static HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hann_window(FFT_SIZE));
 
@@ -116,12 +114,12 @@ impl KvCache {
         Ok((dk, dv, ek, ev))
     }
 
-    fn new_from_decoder_output(dec_out: &ort::session::SessionOutputs) -> Result<Self> {
-        let mut dk = Vec::with_capacity(N_DECODER_LAYERS);
-        let mut dv = Vec::with_capacity(N_DECODER_LAYERS);
-        let mut ek = Vec::with_capacity(N_DECODER_LAYERS);
-        let mut ev = Vec::with_capacity(N_DECODER_LAYERS);
-        for layer in 0..N_DECODER_LAYERS {
+    fn new_from_decoder_output(dec_out: &ort::session::SessionOutputs, n_layers: usize) -> Result<Self> {
+        let mut dk = Vec::with_capacity(n_layers);
+        let mut dv = Vec::with_capacity(n_layers);
+        let mut ek = Vec::with_capacity(n_layers);
+        let mut ev = Vec::with_capacity(n_layers);
+        for layer in 0..n_layers {
             let (d_k, d_v, e_k, e_v) = Self::extract_kv(dec_out, layer)?;
             dk.push(d_k);
             dv.push(d_v);
@@ -136,8 +134,8 @@ impl KvCache {
         })
     }
 
-    fn update_decoder_kv(&mut self, dec_out: &ort::session::SessionOutputs) -> Result<()> {
-        for layer in 0..N_DECODER_LAYERS {
+    fn update_decoder_kv(&mut self, dec_out: &ort::session::SessionOutputs, n_layers: usize) -> Result<()> {
+        for layer in 0..n_layers {
             let dk_name = format!("present.{}.decoder.key", layer);
             let dv_name = format!("present.{}.decoder.value", layer);
             let (shape, data) = dec_out[dk_name.as_str()].try_extract_tensor::<f32>()?;
@@ -177,6 +175,7 @@ pub struct WhisperEngine {
     dec_past: std::sync::Mutex<Session>,
     tokenizer: Tokenizer,
     past_key_names: Vec<(&'static str, &'static str, &'static str, &'static str)>,
+    n_decoder_layers: usize,
     entry_language: String,
 }
 
@@ -194,8 +193,12 @@ impl WhisperEngine {
         });
         let encoder = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&encoder_path)?;
 
-        // Decoders
-        let dec_init_path = onnx_dir.join("decoder_model.onnx");
+        // Decoders（优先 int8 量化版本，与 encoder 一致）
+        let dec_init_path = onnx_dir.join(if onnx_dir.join("decoder_model_int8.onnx").exists() {
+            "decoder_model_int8.onnx"
+        } else {
+            "decoder_model.onnx"
+        });
         let dec_past_path = onnx_dir.join(
             if onnx_dir.join("decoder_with_past_model_int8.onnx").exists() {
                 "decoder_with_past_model_int8.onnx"
@@ -205,6 +208,10 @@ impl WhisperEngine {
         );
         let dec_init = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&dec_init_path)?;
         let dec_past = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&dec_past_path)?;
+
+        // 从 dec_init session 输出数量推算 decoder 层数：
+        // 输出 = 1(logits) + 4*n_layers(decoder_key/value + encoder_key/value)
+        let n_decoder_layers = (dec_init.outputs().len() - 1) / 4;
 
         // Tokenizer
         let tk_path = hf_path.join("tokenizer.json");
@@ -220,8 +227,8 @@ impl WhisperEngine {
         };
         let tokenizer = Tokenizer::from_file(tk_path).map_err(|e| anyhow::anyhow!("Tokenizer: {}", e))?;
 
-        let mut past_key_names = Vec::with_capacity(N_DECODER_LAYERS);
-        for layer in 0..N_DECODER_LAYERS {
+        let mut past_key_names = Vec::with_capacity(n_decoder_layers);
+        for layer in 0..n_decoder_layers {
             let dk_name: &'static str = Box::leak(format!("past_key_values.{}.decoder.key", layer).into_boxed_str());
             let dv_name: &'static str = Box::leak(format!("past_key_values.{}.decoder.value", layer).into_boxed_str());
             let ek_name: &'static str = Box::leak(format!("past_key_values.{}.encoder.key", layer).into_boxed_str());
@@ -235,6 +242,7 @@ impl WhisperEngine {
             dec_past: std::sync::Mutex::new(dec_past),
             tokenizer,
             past_key_names,
+            n_decoder_layers,
             entry_language: entry.language.clone(),
         })
     }
@@ -260,8 +268,12 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         // Encoder forward
         let mut encoder = self.encoder.lock().unwrap();
         let enc_out = encoder.run(ort::inputs![mel_tensor])?;
-        let (_s, enc_data) = enc_out[0].try_extract_tensor::<f32>()?;
-        let encoder_hidden = Array3::from_shape_vec((1, ENCODER_LEN, D_MODEL), enc_data.to_vec())?;
+        let (enc_shape, enc_data) = enc_out[0].try_extract_tensor::<f32>()?;
+        let enc_dim: Vec<usize> = enc_shape.iter().map(|&d| d as usize).collect();
+        let encoder_hidden = Array3::from_shape_vec(
+            (enc_dim[0], enc_dim[1], enc_dim[2]),
+            enc_data.to_vec(),
+        )?;
 
         // Tokenizer & special tokens
         let sot: u32 = self.tokenizer
@@ -311,7 +323,7 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         }
         tokens.push(next_token as i64);
 
-        let mut kv = KvCache::new_from_decoder_output(&init_out)?;
+        let mut kv = KvCache::new_from_decoder_output(&init_out, self.n_decoder_layers)?;
 
         // Autoregressive loop
         let max_tokens = 448;
@@ -322,7 +334,7 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
                 "input_ids" => ort::value::TensorRef::from_array_view(last_id.view())?
             };
 
-            for layer in 0..N_DECODER_LAYERS {
+            for layer in 0..self.n_decoder_layers {
                 let (dk, dv, ek, ev) = self.past_key_names[layer];
                 inputs.push((
                     dk.into(),
@@ -364,7 +376,7 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
                 )
             };
 
-            kv.update_decoder_kv(&dec_out)?;
+            kv.update_decoder_kv(&dec_out, self.n_decoder_layers)?;
 
             if next_token == eot {
                 break;
