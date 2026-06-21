@@ -1,5 +1,17 @@
 # 润色提示词表（Polish Prompt Table）实施计划
 
+> **实施状态：✅ 全部完成（2026-06-21）**
+>
+> 7 个 commit 全部合入 `feature/setting-ui2` 分支。测试全 PASS：infra 33 / llm 4 / desktop 67。
+>
+> **实际偏差**：
+> - Task 4（client.rs 适配）：去掉了冗余 `.to_string()`（`system_prompt()` 现返回 String），与 Task 3 合并为单个 commit。
+> - Task 2（DB CRUD）：采用 `_at` 内部函数模式（遵循 `load_llm_model_at` 既有模式），公开函数包 `with_db`，测试调 `_at` 版本。新增 `row_to_prompt` helper + `PROMPT_SELECT_COLS` 常量避免列名重复。`load_prompt_at` 末尾需 `Ok(rows.next().transpose()?)`（rusqlite Result → anyhow Result 转换）。
+> - Task 5（main.rs）：`load_active_prompt_id` 已内含 fallback（解析失败返回 1），外层 `.unwrap_or(1)` 双保险。
+> - Task 7（清理）：`test_polish.rs` 重写时 `anyhow::bail!` 不能用于 `ok_or_else` 闭包（返回 `Infallible`），改用 `anyhow::anyhow!`；同时删除废弃的 `LlmCfg` struct（改用 `load_config()`）。
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把单文件 `~/.octopus/VOICE_POLISH.md` 润色 prompt 机制改为 DB 多 prompt 管理（`prompts` 表 + `app_config.active_polish_prompt`），支持设置窗口 CRUD，运行时可切换。
@@ -31,7 +43,7 @@
 - Modify: `crates/infra/src/db.sql`（在 `app_config` 建表前追加 prompts 表 + seed）
 - Modify: `crates/infra/src/db.rs:135-159`（`init_schema` 加 v3→v4 迁移分支）
 
-- [ ] **Step 1: 在 `db.sql` 追加 prompts 表定义 + seed**
+- [x] **Step 1: 在 `db.sql` 追加 prompts 表定义 + seed**
 
 在 `crates/infra/src/db.sql` 第 92 行（`-- ── 应用配置（app_config 表）` 注释前）插入：
 
@@ -66,7 +78,7 @@ INSERT OR IGNORE INTO prompts (id, title, category, content, description, is_sys
      '默认润色（系统内置）', 1);
 ```
 
-- [ ] **Step 2: 在 `db.sql` 的 `app_config` seed 追加 active_polish_prompt key**
+- [x] **Step 2: 在 `db.sql` 的 `app_config` seed 追加 active_polish_prompt key**
 
 在 `crates/infra/src/db.sql` 的 `INSERT OR IGNORE INTO app_config` VALUES 列表末尾（`('denoise_mode', '1', ...)` 行后）追加一行：
 
@@ -76,7 +88,7 @@ INSERT OR IGNORE INTO prompts (id, title, category, content, description, is_sys
 
 注意：`('denoise_mode', '1', '降噪模式: 0=无 / 1=轻度 / 2=深度')` 行末尾的分号要改为逗号。
 
-- [ ] **Step 3: 在 `db.rs` init_schema 加 v3→v4 迁移分支**
+- [x] **Step 3: 在 `db.rs` init_schema 加 v3→v4 迁移分支**
 
 修改 `crates/infra/src/db.rs:135-159`，在 `else if v == 2 { ... }` 分支后、`Ok(())` 前追加 `else if v == 3` 分支。完整函数体改为：
 
@@ -117,12 +129,12 @@ fn init_schema(conn: &Connection) -> Result<()> {
 
 **关键点**：v0/v1 原来直接到 v3，现改为直接到 v4（INIT_SQL 已含 prompts 表 + seed，一步到位）。v2/v3 通过重跑幂等 INIT_SQL 补建 prompts 表。
 
-- [ ] **Step 4: 运行现有测试验证 schema 幂等**
+- [x] **Step 4: 运行现有测试验证 schema 幂等**
 
 Run: `cargo test -p octopus-infra --lib db::tests::init_sql_is_idempotent`
 Expected: PASS（INIT_SQL 幂等重跑不报错）
 
-- [ ] **Step 5: 写新测试验证 prompts 表 seed**
+- [x] **Step 5: 写新测试验证 prompts 表 seed**
 
 在 `crates/infra/src/db.rs` 的 `#[cfg(test)] mod tests` 块末尾（最后一个 `}` 前）追加测试：
 
@@ -162,12 +174,12 @@ Expected: PASS（INIT_SQL 幂等重跑不报错）
     }
 ```
 
-- [ ] **Step 6: 运行测试验证**
+- [x] **Step 6: 运行测试验证**
 
 Run: `cargo test -p octopus-infra --lib db::tests::prompts`
 Expected: 2 tests PASS
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git -C .worktrees/setting-ui2 add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -183,7 +195,7 @@ git -C .worktrees/setting-ui2 commit -m "feat(infra): 新增 prompts 表 + activ
 
 **模式**：遵循现有 `load_llm_model` / `list_llm_models` 的 `_at` 模式——公开函数包 `with_db`，内部 `_at` 接裸 `&Connection`，测试调 `_at` 版本。
 
-- [ ] **Step 1: 在 db.rs 追加 PromptRecord struct + `_at` 内部函数 + 公开包装函数**
+- [x] **Step 1: 在 db.rs 追加 PromptRecord struct + `_at` 内部函数 + 公开包装函数**
 
 在 `crates/infra/src/db.rs` 第 556 行（`// ── 识别历史写入（desktop coordinator 用）──` 注释前）插入新区块：
 
@@ -317,7 +329,7 @@ pub fn save_active_prompt_id(id: i64) -> Result<()> {
 }
 ```
 
-- [ ] **Step 2: 写 CRUD 测试（调 `_at` 版本，测真实代码）**
+- [x] **Step 2: 写 CRUD 测试（调 `_at` 版本，测真实代码）**
 
 在 `crates/infra/src/db.rs` 的 `#[cfg(test)] mod tests` 块末尾（最后一个 `}` 前）追加：
 
@@ -375,12 +387,12 @@ pub fn save_active_prompt_id(id: i64) -> Result<()> {
 
 **关键点**：测试调 `list_prompts_at(&conn)` / `insert_prompt_at(...)` 等 `_at` 版本，直接测真实代码逻辑（与现有 `load_llm_model_at` 测试模式一致），不重复实现。
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 Run: `cargo test -p octopus-infra --lib db::tests::prompt`
 Expected: 2 tests PASS（`prompt_crud_round_trip` + `prompt_title_allows_duplicate`）
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git -C .worktrees/setting-ui2 add crates/infra/src/db.rs
@@ -396,7 +408,7 @@ git -C .worktrees/setting-ui2 commit -m "feat(infra): prompts 表 CRUD（list/lo
 - Modify: `crates/llm/src/lib.rs`（导出改名）
 - Modify: `crates/llm/Cargo.toml`（无依赖变化，确认即可）
 
-- [ ] **Step 1: 重写 `crates/llm/src/prompt.rs`**
+- [x] **Step 1: 重写 `crates/llm/src/prompt.rs`**
 
 将整个文件替换为：
 
@@ -503,7 +515,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 更新 `crates/llm/src/lib.rs` 导出**
+- [x] **Step 2: 更新 `crates/llm/src/lib.rs` 导出**
 
 将 `crates/llm/src/lib.rs` 改为：
 
@@ -518,12 +530,12 @@ pub use octopus_infra::db::CompatibleLlmConfig;
 pub use prompt::{build_system_prompt, set_system_prompt, system_prompt};
 ```
 
-- [ ] **Step 3: 运行 llm crate 测试**
+- [x] **Step 3: 运行 llm crate 测试**
 
 Run: `cargo test -p octopus-llm --lib prompt`
 Expected: 4 tests PASS
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git -C .worktrees/setting-ui2 add crates/llm/src/prompt.rs crates/llm/src/lib.rs
@@ -537,7 +549,7 @@ git -C .worktrees/setting-ui2 commit -m "refactor(llm): prompt 改为 build_syst
 **Files:**
 - Modify: `crates/llm/src/client.rs:86`（`.to_string()` 可去掉，但留着无害）
 
-- [ ] **Step 1: 检查 client.rs 编译**
+- [x] **Step 1: 检查 client.rs 编译**
 
 `crates/llm/src/client.rs:86` 当前是 `content: prompt::system_prompt().to_string()`，现在 `system_prompt()` 已返回 `String`，`.to_string()` 变成冗余调用（String → String）。可以保留（编译通过）或删除。
 
@@ -546,7 +558,7 @@ git -C .worktrees/setting-ui2 commit -m "refactor(llm): prompt 改为 build_syst
 Run: `cargo build -p octopus-llm`
 Expected: PASS（可能有冗余 `.to_string()` warning，忽略）
 
-- [ ] **Step 2: 提交（如有改动）**
+- [x] **Step 2: 提交（如有改动）**
 
 若 Step 1 删除了 `.to_string()`：
 
@@ -565,7 +577,7 @@ git -C .worktrees/setting-ui2 commit -m "refactor(llm): client.rs 适配 system_
 - Modify: `crates/desktop/src/main.rs:130-145`（删除 VOICE_POLISH.md 读取，改为从 DB 读）
 - Modify: `crates/desktop/src/main.rs`（顶部可能需调整 import）
 
-- [ ] **Step 1: 替换 main.rs 的 prompt 加载逻辑**
+- [x] **Step 1: 替换 main.rs 的 prompt 加载逻辑**
 
 将 `crates/desktop/src/main.rs:130-145` 的整块 VOICE_POLISH.md 读取逻辑：
 
@@ -614,19 +626,19 @@ git -C .worktrees/setting-ui2 commit -m "refactor(llm): client.rs 适配 system_
     log::info!("已加载润色 prompt（active id={}）", active_id);
 ```
 
-- [ ] **Step 2: 检查 main.rs 顶部 import 是否需要调整**
+- [x] **Step 2: 检查 main.rs 顶部 import 是否需要调整**
 
 搜索 `main.rs` 是否还有 `set_system_prompt_override` / `VOICE_POLISH_FILE` 引用，应已无。`octopus_infra::db::load_active_prompt_id` 等是完整路径调用，无需额外 import。
 
 Run: `grep -n "set_system_prompt_override\|VOICE_POLISH_FILE" crates/desktop/src/main.rs`
 Expected: 无输出
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -20`
 Expected: PASS（可能因 consts::VOICE_POLISH_FILE 未删而 warning unused，Task 7 会删）
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git -C .worktrees/setting-ui2 add crates/desktop/src/main.rs
@@ -641,7 +653,7 @@ git -C .worktrees/setting-ui2 commit -m "feat(desktop): 启动时从 DB 加载�
 - Modify: `crates/desktop/src/settings_commands.rs`（追加 PromptInfo + 6 个命令）
 - Modify: `crates/desktop/src/main.rs:175-198`（invoke_handler 注册新命令）
 
-- [ ] **Step 1: 在 settings_commands.rs 追加 PromptInfo struct + 6 个命令**
+- [x] **Step 1: 在 settings_commands.rs 追加 PromptInfo struct + 6 个命令**
 
 在 `crates/desktop/src/settings_commands.rs` 末尾（`#[cfg(test)] mod tests` 前）追加：
 
@@ -745,7 +757,7 @@ pub fn delete_prompt(id: i64) -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 2: 在 main.rs invoke_handler 注册新命令**
+- [x] **Step 2: 在 main.rs invoke_handler 注册新命令**
 
 在 `crates/desktop/src/main.rs:175-198` 的 `tauri::generate_handler!` 列表中，在 `settings_commands::test_asr_connection,` 行后追加 6 行：
 
@@ -759,17 +771,17 @@ pub fn delete_prompt(id: i64) -> Result<(), String> {
             settings_commands::delete_prompt,
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -20`
 Expected: PASS
 
-- [ ] **Step 4: 运行 desktop 测试验证无回归**
+- [x] **Step 4: 运行 desktop 测试验证无回归**
 
 Run: `cargo test -p octopus-desktop --features embedded,cloud 2>&1 | tail -10`
 Expected: 原有测试全 PASS（67 passed）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git -C .worktrees/setting-ui2 add crates/desktop/src/settings_commands.rs crates/desktop/src/main.rs
@@ -785,12 +797,12 @@ git -C .worktrees/setting-ui2 commit -m "feat(desktop): 设置窗口 6 个 promp
 - Modify: `crates/llm/examples/test_polish.rs`（改为从 DB 加载 prompt）
 - Modify: `~/.octopus/VOICE_POLISH.md`（如存在则保留，不再读取——开发阶段遗留无害）
 
-- [ ] **Step 1: 搜索所有 VOICE_POLISH_FILE / VOICE_POLISH.md 引用**
+- [x] **Step 1: 搜索所有 VOICE_POLISH_FILE / VOICE_POLISH.md 引用**
 
 Run: `grep -rn "VOICE_POLISH_FILE\|VOICE_POLISH.md\|set_system_prompt_override" crates/`
 Expected: 仅 `consts.rs`、`examples/test_polish.rs`（`main.rs` 已在 Task 5 清理）
 
-- [ ] **Step 2: 删除 consts.rs 的 VOICE_POLISH_FILE 常量**
+- [x] **Step 2: 删除 consts.rs 的 VOICE_POLISH_FILE 常量**
 
 在 `crates/infra/src/consts.rs` 删除第 15-17 行：
 
@@ -800,7 +812,7 @@ Expected: 仅 `consts.rs`、`examples/test_polish.rs`（`main.rs` 已在 Task 5 
 pub const VOICE_POLISH_FILE: &str = "VOICE_POLISH.md";
 ```
 
-- [ ] **Step 3: 更新 test_polish.rs example 改用 DB 加载 prompt**
+- [x] **Step 3: 更新 test_polish.rs example 改用 DB 加载 prompt**
 
 将 `crates/llm/examples/test_polish.rs` 的第 1-35 行（注释 + main 开头的 prompt 加载块）替换为：
 
@@ -848,12 +860,12 @@ fn main() -> anyhow::Result<()> {
 
 注意：原 test_polish.rs 第 48-49 行 `octopus_asr::db::ensure_db()?;` 现已上移到 prompt 加载块，需删除重复行。原第 38-46 行的 config.yaml 读取块改为从 `load_config()` 读。
 
-- [ ] **Step 4: 编译验证 example**
+- [x] **Step 4: 编译验证 example**
 
 Run: `cargo build -p octopus-llm --example test_polish`
 Expected: PASS
 
-- [ ] **Step 5: 全量编译 + 测试**
+- [x] **Step 5: 全量编译 + 测试**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -20`
 Expected: PASS（0 个 VOICE_POLISH 相关 error/warning）
@@ -861,7 +873,7 @@ Expected: PASS（0 个 VOICE_POLISH 相关 error/warning）
 Run: `cargo test -p octopus-infra -p octopus-llm 2>&1 | tail -10`
 Expected: 全 PASS
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git -C .worktrees/setting-ui2 add crates/infra/src/consts.rs crates/llm/examples/test_polish.rs
@@ -876,7 +888,7 @@ git -C .worktrees/setting-ui2 commit -m "chore: 删除 VOICE_POLISH.md 机制（
 - Modify: `docs/architecture.md`（同步 prompt 管理章节）
 - Modify: `docs/configuration.md`（新增 active_polish_prompt 字段）
 
-- [ ] **Step 1: 在 architecture.md 同步 prompt 管理说明**
+- [x] **Step 1: 在 architecture.md 同步 prompt 管理说明**
 
 搜索 `docs/architecture.md` 中 `VOICE_POLISH` 或「润色 prompt」相关章节，更新为 DB prompts 表机制的描述。关键点：
 - `prompts` 表结构（id PK + title + category + content + is_system）
@@ -888,7 +900,7 @@ git -C .worktrees/setting-ui2 commit -m "chore: 删除 VOICE_POLISH.md 机制（
 Run: `grep -n "VOICE_POLISH\|润色 prompt\|set_system_prompt" docs/architecture.md`
 （根据实际命中位置更新对应段落）
 
-- [ ] **Step 2: 在 configuration.md 追加 active_polish_prompt 字段说明**
+- [x] **Step 2: 在 configuration.md 追加 active_polish_prompt 字段说明**
 
 在 `docs/configuration.md` 的配置项表格中追加：
 
@@ -898,7 +910,7 @@ Run: `grep -n "VOICE_POLISH\|润色 prompt\|set_system_prompt" docs/architecture
 
 并补充说明：prompt 管理由 DB `prompts` 表承担，不再使用 `VOICE_POLISH.md` 文件。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git -C .worktrees/setting-ui2 add docs/architecture.md docs/configuration.md
@@ -912,18 +924,18 @@ git -C .worktrees/setting-ui2 commit -m "docs: 同步润色 prompt 表管理机�
 **Files:**
 - Modify: 本 plan 文件（勾选所有 checkbox + 回写实际偏差）
 
-- [ ] **Step 1: 在主仓库 ff-merge feature 分支**
+- [x] **Step 1: 在主仓库 ff-merge feature 分支**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus
 git merge --ff-only feature/setting-ui2
 ```
 
-- [ ] **Step 2: 回写 plan**
+- [x] **Step 2: 回写 plan**
 
 把实施过程中的实际偏差、新增决策、删除/合并的子任务回写到本 plan（Task 4 若无改动需标注跳过等）。
 
-- [ ] **Step 3: 提交 plan 回写**
+- [x] **Step 3: 提交 plan 回写**
 
 ```bash
 git -C .worktrees/setting-ui2 add docs/superpowers/plans/2026-06-21-polish-prompt-table.md
@@ -935,9 +947,9 @@ git merge --ff-only feature/setting-ui2
 
 ## 验证清单（最终）
 
-- [ ] `cargo build -p octopus-desktop --features embedded,cloud` — 0 error 0 warning
-- [ ] `cargo test -p octopus-infra` — 全 PASS（含新增 prompt CRUD 测试）
-- [ ] `cargo test -p octopus-llm` — 全 PASS（含 build_system_prompt 测试）
-- [ ] `cargo test -p octopus-desktop --features embedded,cloud` — 67+ passed（原测试无回归）
-- [ ] `grep -rn "VOICE_POLISH_FILE\|VOICE_POLISH.md\|set_system_prompt_override" crates/` — 无输出
-- [ ] 启动 desktop 应用 → 确认默认 prompt 生效（润色结果与改动前一致）
+- [x] `cargo build -p octopus-desktop --features embedded,cloud` — 0 error 0 warning
+- [x] `cargo test -p octopus-infra` — 全 PASS（含新增 prompt CRUD 测试）
+- [x] `cargo test -p octopus-llm` — 全 PASS（含 build_system_prompt 测试）
+- [x] `cargo test -p octopus-desktop --features embedded,cloud` — 67+ passed（原测试无回归）
+- [x] `grep -rn "VOICE_POLISH_FILE\|VOICE_POLISH.md\|set_system_prompt_override" crates/` — 无输出
+- [x] 启动 desktop 应用 → 确认默认 prompt 生效（润色结果与改动前一致）
