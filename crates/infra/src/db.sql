@@ -124,4 +124,5 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('asr_correct',              'false',                                '是否对 ASR 输出进行纠错'),
     ('output_simplified',        'true',                                 'ASR 输出字形: true=简体 / false=繁体'),
     ('hide_toolbar',             'false',                                '结果展示区工具栏是否自动隐藏'),
-    ('denoise_mode',             '1',                                    '降噪模式: 0=无 / 1=轻度 / 2=深度');
+    ('denoise_mode',             '1',                                    '降噪模式: 0=无 / 1=轻度 / 2=深度'),
+    ('download_mirror',          '',                                     'HF 模型下载镜像 host（如 https://hf-mirror.com），空=官方源 huggingface.co');

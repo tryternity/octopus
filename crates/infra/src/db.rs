@@ -288,6 +288,7 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
             "microphone" => cfg.microphone = value,
             "overlay_position" => cfg.overlay_position = value,
             "polish_llm" => cfg.polish_llm = value,
+            "download_mirror" => cfg.download_mirror = value,
             // bool 字段：parse 失败保留 default
             "write_to_clipboard" => { if let Ok(v) = value.parse() { cfg.write_to_clipboard = v; } }
             "asr_hardware_accelerated" => { if let Ok(v) = value.parse() { cfg.asr_hardware_accelerated = v; } }
@@ -315,7 +316,7 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
     Ok(cfg)
 }
 
-/// 全量写入应用配置（21 字段 ON CONFLICT DO UPDATE）。set_config / yaml 迁移用。
+/// 全量写入应用配置（22 字段 ON CONFLICT DO UPDATE）。set_config / yaml 迁移用。
 /// 仅更新 config_value，保留 description + category（不同于 INSERT OR REPLACE 会清空非指定列）。
 pub fn save_app_config(cfg: &crate::config::AppConfig) -> Result<()> {
     ensure_db()?;
@@ -329,7 +330,7 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         PolishMode::FinalOnly => 1,
         PolishMode::Intermediate => 2,
     };
-    let fields: [(&str, String); 21] = [
+    let fields: [(&str, String); 22] = [
         ("engine_mode", cfg.engine_mode.clone()),
         ("remote_url", cfg.remote_url.clone()),
         ("grpc_endpoint", cfg.grpc_endpoint.clone()),
@@ -351,6 +352,7 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         ("output_simplified", cfg.output_simplified.to_string()),
         ("hide_toolbar", cfg.hide_toolbar.to_string()),
         ("denoise_mode", cfg.denoise_mode.to_string()),
+        ("download_mirror", cfg.download_mirror.clone()),
     ];
     for (key, value) in &fields {
         conn.execute(
@@ -1211,6 +1213,7 @@ mod tests {
         assert_eq!(cfg.polish_min_interval, 5.0);
         assert_eq!(cfg.denoise_mode, 1);
         assert_eq!(cfg.edit_shortcut, "Cmd+Enter");
+        assert_eq!(cfg.download_mirror, "");
     }
 
     #[test]
@@ -1223,6 +1226,7 @@ mod tests {
         cfg.microphone = "My Mic".into();
         cfg.segment_silence = 350.0;
         cfg.denoise_mode = 2;
+        cfg.download_mirror = "https://hf-mirror.com".to_string();
         save_app_config_at(&conn, &cfg).unwrap();
 
         let cfg2 = load_app_config_at(&conn).unwrap();
@@ -1231,6 +1235,7 @@ mod tests {
         assert_eq!(cfg2.microphone, "My Mic");
         assert_eq!(cfg2.segment_silence, 350.0);
         assert_eq!(cfg2.denoise_mode, 2);
+        assert_eq!(cfg2.download_mirror, "https://hf-mirror.com");
         // 未改字段保持 seed 默认
         assert_eq!(cfg2.language, "auto");
     }
