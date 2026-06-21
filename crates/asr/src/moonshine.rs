@@ -51,12 +51,9 @@ impl MoonshineEngine {
         };
 
         let vocab = load_tokens(&model_dir.join("tokens.txt"))?;
-        if vocab.len() != 32768 {
-            anyhow::bail!(
-                "Moonshine vocab 大小不匹配: 期望 32768, 实际 {}",
-                vocab.len()
-            );
-        }
+        // Moonshine 设计 vocab=32768（byte-level BPE，tiny/base 一致）。不强制校验——
+        // 未来微调/变体词表可能变化；argmax 的 vocab_size 取自 logits 维度（shape[2]）
+        // 而非此硬编码，且 decode 对越界 id 有 `id < vocab.len()` 保护，能自适应。
 
         Ok(Self {
             preprocess_session: Mutex::new(make_session(&preprocess_path)?),
@@ -82,6 +79,7 @@ impl MoonshineEngine {
         // features shape (1, T, 416)，取 T 作为 features_len。
         let features_len = {
             let (shape, _data) = features.try_extract_tensor::<f32>()?;
+            anyhow::ensure!(shape.len() >= 2, "preprocess 输出维度异常: {:?}", shape);
             shape[1] as usize
         };
         Ok((features, features_len))
@@ -138,6 +136,7 @@ impl MoonshineEngine {
         // vocab_size 固定（= logits 末维），argmax 仅限此范围。
         let vocab_size = {
             let (shape, _data) = uncached_out[0].try_extract_tensor::<f32>()?;
+            anyhow::ensure!(shape.len() >= 3, "uncached_decode logits 维度异常: {:?}", shape);
             shape[2] as usize
         };
 
@@ -253,9 +252,18 @@ fn decode_moonshine_tokens(token_ids: &[i64], vocab: &[String]) -> String {
     let mut text = String::new();
     for &id in token_ids {
         let id = id as usize;
-        if id < vocab.len() {
-            text.push_str(&vocab[id]);
+        if id >= vocab.len() {
+            continue;
         }
+        let token = &vocab[id];
+        // 跳过特殊控制 token（<unk>/<s>/</s>/<pad> 等）：以 '<' 开头且以 '>' 结尾。
+        // greedy_decode 已过滤 BOS/EOS 不进结果序列；此处兜底 <unk> 及其他特殊标记，
+        // 避免噪声/空白音频时模型误输出特殊 token 被当文本拼接。byte-level BPE 普通
+        // token 不会呈完整 "<...>" 形式（'<' 可单独出现但不被 '>' 包裹），判断安全。
+        if token.starts_with('<') && token.ends_with('>') {
+            continue;
+        }
+        text.push_str(token);
     }
     text.replace('\u{2581}', " ").trim_start().to_string()
 }
