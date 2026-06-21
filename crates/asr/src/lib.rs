@@ -16,6 +16,7 @@ pub mod vad;
 pub mod denoise;
 pub mod whisper;
 pub mod whisper_mel_matrix;
+pub mod moonshine;
 pub mod zipformer;
 pub mod corrector;
 pub mod hans;
