@@ -145,6 +145,11 @@ pub struct AppConfig {
     /// （窗口内、仅结果窗聚焦时生效）。Tauri Accelerator 格式（如 "Cmd+Enter"），默认 "Cmd+Enter"。
     #[serde(default = "default_edit_shortcut")]
     pub edit_shortcut: String,
+
+    /// HF 模型下载镜像 host（如 `https://hf-mirror.com`）。空 = 官方源 huggingface.co。
+    /// cli `download --mirror` 临时覆盖此值；优先级 `--mirror` > 此字段 > 官方源。
+    #[serde(default = "default_download_mirror")]
+    pub download_mirror: String,
 }
 
 fn default_engine_mode() -> String {
@@ -200,6 +205,9 @@ fn default_denoise_mode() -> u8 {
 fn default_edit_shortcut() -> String {
     "Cmd+Enter".into()
 }
+fn default_download_mirror() -> String {
+    String::new()
+}
 fn default_segment_silence() -> f64 {
     400.0
 }
@@ -229,6 +237,7 @@ impl Default for AppConfig {
             hide_toolbar: default_hide_toolbar(),
             denoise_mode: default_denoise_mode(),
             edit_shortcut: default_edit_shortcut(),
+            download_mirror: default_download_mirror(),
         }
     }
 }
@@ -322,5 +331,24 @@ mod tests {
         // 显式值原样落到字段（Tauri Accelerator 字符串）
         let cfg: AppConfig = serde_yaml::from_str("edit_shortcut: CmdOrCtrl+Shift+E\n").unwrap();
         assert_eq!(cfg.edit_shortcut, "CmdOrCtrl+Shift+E");
+    }
+
+    #[test]
+    fn download_mirror_defaults_empty() {
+        assert_eq!(AppConfig::default().download_mirror, "");
+    }
+
+    #[test]
+    fn download_mirror_parsed_from_yaml() {
+        let cfg: AppConfig =
+            serde_yaml::from_str("download_mirror: https://hf-mirror.com\n").unwrap();
+        assert_eq!(cfg.download_mirror, "https://hf-mirror.com");
+    }
+
+    #[test]
+    fn download_mirror_absent_keeps_default() {
+        // 缺该字段的旧 config → default 空（serde default）
+        let cfg: AppConfig = serde_yaml::from_str("language: zh\n").unwrap();
+        assert_eq!(cfg.download_mirror, "");
     }
 }

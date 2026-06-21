@@ -40,7 +40,7 @@ pub fn find_hf_cache(source: &str) -> Result<PathBuf> {
 
     if !model_dir.exists() {
         anyhow::bail!(
-            "HF cache not found for '{}'. Run: hf download {}",
+            "模型 '{}' 未在 ~/.octopus/models/ 或 HF cache 找到。请运行 `octopus-cli download {}` 下载。",
             source,
             source
         );
@@ -58,22 +58,41 @@ pub fn find_onnx_dir(hf_path: &Path) -> PathBuf {
     }
 }
 
-/// 解析模型目录：优先本地固定路径（随应用打包），回退 HF 缓存。
-/// - source 为本地相对路径（如 "models/zipformer"）→ octopus_config_home/source
-/// - source 为绝对路径 → 直接用
-/// - 否则当 HF repo 名（如 "onnx-community/whisper-small"）→ find_hf_cache
-pub fn resolve_model_dir(source: &str) -> Result<PathBuf> {
-    // 1. octopus_config_home 下相对路径（随应用打包的小模型）
-    let local = octopus_config_home().join(source);
+/// 前 3 级模型目录查找（基于给定 octopus_home，可单测；不依赖全局 `$HOME`）。
+///
+/// 1. `octopus_home/<source>`（随包小模型，如 `models/zipformer`）
+/// 2. 绝对路径（`source` 本身是绝对路径）
+/// 3. `octopus_home/models/<source>`（download 下的 HF 模型，source 如 `onnx-community/whisper-small`）
+///
+/// 返回 `None` 表示前 3 级全 miss，调用方应回退第 4 级 HF cache（`find_hf_cache`）。
+fn resolve_local_in(source: &str, octopus_home: &Path) -> Option<PathBuf> {
+    // 1. octopus_home 下相对路径（随应用打包的小模型）
+    let local = octopus_home.join(source);
     if local.is_dir() {
-        return Ok(local);
+        return Some(local);
     }
-    // 2. 绝对路径
+    // 2. 绝对路径（join 绝对路径会覆盖 base，等效直接判断 source 本身）
     let abs = PathBuf::from(source);
     if abs.is_dir() {
-        return Ok(abs);
+        return Some(abs);
     }
-    // 3. HF repo 名 → 缓存发现
+    // 3. download 下的 HF 模型（~/.octopus/models/<source>）★ 阶段1 新增
+    let downloaded = octopus_home.join("models").join(source);
+    if downloaded.is_dir() {
+        return Some(downloaded);
+    }
+    None
+}
+
+/// 解析模型目录：前 3 级本地查找（随包 / 绝对路径 / download 下载），回退 HF 缓存。
+/// - source 为本地相对路径（如 "models/zipformer"）→ octopus_config_home/source
+/// - source 为绝对路径 → 直接用
+/// - source 为 HF repo 名（如 "onnx-community/whisper-small"）→ 优先 ~/.octopus/models/<source>（download 下到这里），
+///   否则 find_hf_cache（兼容已用 hf-cli 下的 ~/.cache/huggingface）
+pub fn resolve_model_dir(source: &str) -> Result<PathBuf> {
+    if let Some(p) = resolve_local_in(source, octopus_config_home()) {
+        return Ok(p);
+    }
     find_hf_cache(source)
 }
 
@@ -578,6 +597,51 @@ mod tests {
                 aliyun: Some(aliyun),
             },
         }
+    }
+
+    // ── resolve_local_in 查找内核测试（阶段1：download 模型发现）──
+
+    #[test]
+    fn resolve_local_in_finds_bundled_relative() {
+        // 第 1 级：octopus_home/<source>（随包小模型，如 models/zipformer）
+        let tmp = std::env::temp_dir().join("octopus_t_resolve_bundled");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("models/zipformer")).unwrap();
+        let p = super::resolve_local_in("models/zipformer", &tmp).unwrap();
+        assert_eq!(p, tmp.join("models/zipformer"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_local_in_finds_downloaded_hf_repo() {
+        // 第 3 级（新增）：octopus_home/models/<source>，source 是含 / 的 HF repo 名
+        let tmp = std::env::temp_dir().join("octopus_t_resolve_downloaded");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(tmp.join("models/onnx-community/whisper-small")).unwrap();
+        let p = super::resolve_local_in("onnx-community/whisper-small", &tmp).unwrap();
+        assert_eq!(p, tmp.join("models/onnx-community/whisper-small"));
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_local_in_finds_absolute_path() {
+        // 第 2 级：source 是绝对路径
+        let tmp = std::env::temp_dir().join("octopus_t_resolve_abs");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        let p = super::resolve_local_in(tmp.to_str().unwrap(), &std::env::temp_dir()).unwrap();
+        assert_eq!(p, tmp);
+        let _ = std::fs::remove_dir_all(&tmp);
+    }
+
+    #[test]
+    fn resolve_local_in_returns_none_when_missing() {
+        // 前 3 级全 miss → None（HF cache 第 4 级由 find_hf_cache 处理，不在本函数）
+        let tmp = std::env::temp_dir().join("octopus_t_resolve_missing");
+        let _ = std::fs::remove_dir_all(&tmp);
+        std::fs::create_dir_all(&tmp).unwrap();
+        assert!(super::resolve_local_in("nonexistent/repo", &tmp).is_none());
+        let _ = std::fs::remove_dir_all(&tmp);
     }
 
     #[test]
