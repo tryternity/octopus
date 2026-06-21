@@ -7,9 +7,6 @@ use ort::value::TensorRef;
 
 use crate::config;
 
-/// Moonshine KV cache tensor 数量（18 层 × K,V）。
-const NUM_KV_CACHES: usize = 36;
-
 /// Moonshine ASR 引擎 — 纯 ONNX 体系，4 session 流水线。
 ///
 /// 模型来自 `csukuangfj/sherpa-onnx-moonshine-{base,tiny}-en-int8`（v1 格式）。
@@ -130,14 +127,15 @@ impl MoonshineEngine {
             "args_2" => TensorRef::from_array_view(seq_len_view)?
         })?;
 
-        // logits (index 0) + 36 KV caches (index 1..=36)
+        // logits (index 0) + N KV caches (index 1.., 数量由模型架构决定)
+        let num_caches = uncached_out.len() - 1;
         let (logits_shape, logits_data) = uncached_out[0].try_extract_tensor::<f32>()?;
         let vocab_size = logits_shape[2] as usize;
         let mut last_logits: Vec<f32> = logits_data.to_vec();
 
-        let mut state_shapes: Vec<Vec<usize>> = Vec::with_capacity(NUM_KV_CACHES);
-        let mut state_data: Vec<Vec<f32>> = Vec::with_capacity(NUM_KV_CACHES);
-        for i in 1..=NUM_KV_CACHES {
+        let mut state_shapes: Vec<Vec<usize>> = Vec::with_capacity(num_caches);
+        let mut state_data: Vec<Vec<f32>> = Vec::with_capacity(num_caches);
+        for i in 1..=num_caches {
             let (shape, data) = uncached_out[i].try_extract_tensor::<f32>()?;
             state_shapes.push(shape.iter().map(|&d| d as usize).collect());
             state_data.push(data.to_vec());
@@ -189,7 +187,7 @@ impl MoonshineEngine {
             let (_, new_logits) = cached_out[0].try_extract_tensor::<f32>()?;
             last_logits = new_logits.to_vec();
 
-            for i in 0..NUM_KV_CACHES {
+            for i in 0..num_caches {
                 let (shape, data) = cached_out[i + 1].try_extract_tensor::<f32>()?;
                 state_shapes[i] = shape.iter().map(|&d| d as usize).collect();
                 state_data[i] = data.to_vec();
@@ -238,8 +236,8 @@ fn load_tokens(path: &std::path::Path) -> Result<Vec<String>> {
     Ok(result)
 }
 
-/// Moonshine byte-level BPE 解码：直接拼接 vocab[token_id]。
-/// （BPE merge 在 ONNX 模型内部完成，输出的 token_id 已是最终文本 token。）
+/// Moonshine byte-level BPE 解码：直接拼接 vocab[token_id]，再将 SentencePiece
+/// 空格标记 ▁ (U+2581) 替换为空格。
 fn decode_moonshine_tokens(token_ids: &[i64], vocab: &[String]) -> String {
     let mut text = String::new();
     for &id in token_ids {
@@ -248,7 +246,7 @@ fn decode_moonshine_tokens(token_ids: &[i64], vocab: &[String]) -> String {
             text.push_str(&vocab[id]);
         }
     }
-    text
+    text.replace('\u{2581}', " ").trim_start().to_string()
 }
 
 /// CLI 顶层 transcribe 入口。
@@ -258,4 +256,80 @@ pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String>
         .with_context(|| format!("Moonshine 模型 '{}' 未在配置中找到", name))?;
     let engine = MoonshineEngine::new(entry)?;
     crate::engine::transcribe_with_vad(&engine, samples, language)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::engine::OfflineAsrEngine;
+
+    /// 验证 tokens.txt 解析：vocab 大小 32768，特殊 token 在正确位置。
+    #[test]
+    fn test_load_tokens() {
+        let cfg = config::load_config().expect("load_config 失败");
+        let entry = match config::pick_entry(&cfg, config::EngineCategory::Moonshine, "moonshine-base-en") {
+            Some(e) => e,
+            None => {
+                eprintln!("[SKIP] moonshine-base-en 不在 DB 中 — 跳过 load_tokens 测试");
+                return;
+            }
+        };
+        let model_dir = config::resolve_model_dir(&entry.source).expect("resolve_model_dir 失败");
+        let vocab = load_tokens(&model_dir.join("tokens.txt")).expect("load_tokens 失败");
+        assert_eq!(vocab.len(), 32768, "vocab 大小应为 32768");
+        assert_eq!(vocab[0], "<unk>", "token 0 应为 <unk>");
+        assert_eq!(vocab[1], "<s>", "token 1 应为 <s> (BOS)");
+        assert_eq!(vocab[2], "</s>", "token 2 应为 </s> (EOS)");
+    }
+
+    /// 真实模型端到端测试：加载 Moonshine base 模型，识别 test_wavs 中的 wav 文件。
+    #[test]
+    fn test_moonshine_base_real_model() {
+        let cfg = config::load_config().expect("load_config 失败");
+        let entry = match config::pick_entry(&cfg, config::EngineCategory::Moonshine, "moonshine-base-en") {
+            Some(e) => e,
+            None => {
+                eprintln!("[SKIP] moonshine-base-en 不在 DB 中 — 跳过真实模型测试");
+                return;
+            }
+        };
+        let engine = match MoonshineEngine::new(entry) {
+            Ok(e) => e,
+            Err(e) => {
+                eprintln!("[SKIP] MoonshineEngine::new 失败（可能 HF 缓存未就绪）: {e}");
+                return;
+            }
+        };
+
+        let model_dir = config::resolve_model_dir(&entry.source).expect("resolve_model_dir 失败");
+        let test_wav_dir = model_dir.join("test_wavs");
+        if !test_wav_dir.exists() {
+            eprintln!("[SKIP] 无 test_wavs 目录");
+            return;
+        }
+
+        let mut any_tested = false;
+        let entries: Vec<_> = std::fs::read_dir(&test_wav_dir)
+            .expect("read_dir 失败")
+            .filter_map(|e| e.ok())
+            .map(|e| e.path())
+            .filter(|p| p.extension().map_or(false, |e| e == "wav"))
+            .collect();
+
+        for path in entries {
+            let path_str = path.to_str().expect("路径转 str 失败");
+            let samples = match crate::audio::read_wav_16k(path_str) {
+                Ok(s) => s,
+                Err(e) => {
+                    eprintln!("[WARN] 读取 {:?} 失败: {e}", path.file_name());
+                    continue;
+                }
+            };
+            let text = engine.transcribe(&samples, "en").expect("transcribe 失败");
+            println!("[Moonshine] {:?} => {:?}", path.file_name().unwrap(), text);
+            assert!(!text.is_empty(), "识别结果不应为空: {:?}", path.file_name());
+            any_tested = true;
+        }
+        assert!(any_tested, "应至少测试一个 wav 文件");
+    }
 }
