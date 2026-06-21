@@ -126,10 +126,11 @@ where
 }
 
 /// 初始化 schema + 迁移：
-/// - v0（全新安装）: 执行 INIT_SQL → yaml 迁移 → v3
-/// - v1（旧版升级）: 重跑 INIT_SQL（幂等，补建 app_config + seed）→ yaml 迁移 → v3
-/// - v2（v2 升级）: ALTER TABLE app_config ADD COLUMN category → v3
-/// - v3+: 跳过
+/// - v0（全新安装）: 执行 INIT_SQL → yaml 迁移 → v4
+/// - v1（旧版升级）: 重跑 INIT_SQL（幂等，补建 app_config + prompts + seed）→ yaml 迁移 → v4
+/// - v2（v2 升级）: ALTER TABLE app_config ADD COLUMN category → 重跑 INIT_SQL → v4
+/// - v3（v3 升级）: 重跑 INIT_SQL（幂等，补建 prompts 表 + seed）→ v4
+/// - v4+: 跳过
 ///
 /// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等安全重跑。
 fn init_schema(conn: &Connection) -> Result<()> {
@@ -142,18 +143,25 @@ fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(INIT_SQL).context("执行 db.sql 初始化失败")?;
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
-        // v0/v1 跳过 v2，直接到 v3（app_config 已含 category 列）
-        conn.execute("PRAGMA user_version = 3", [])?;
-        log::info!("DB initialized (v3): schema + app_config(category) + yaml migration");
+        // v0/v1 跳过 v2/v3，直接到 v4（app_config 已含 category 列 + prompts 表已建）
+        conn.execute("PRAGMA user_version = 4", [])?;
+        log::info!("DB initialized (v4): schema + app_config(category) + prompts table + yaml migration");
     } else if v == 2 {
-        // v2 → v3：app_config 表补 category 列（DEFAULT 'default'，存量行自动填）
-        log::info!("DB migrating v2 → v3: adding app_config.category column...");
+        // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
+        log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
         conn.execute(
             "ALTER TABLE app_config ADD COLUMN category TEXT NOT NULL DEFAULT 'default'",
             [],
         )?;
-        conn.execute("PRAGMA user_version = 3", [])?;
-        log::info!("DB migrated to v3: app_config.category column added");
+        conn.execute_batch(INIT_SQL).context("v2→v4: 重跑 db.sql 幂等补建 prompts 表 + seed")?;
+        conn.execute("PRAGMA user_version = 4", [])?;
+        log::info!("DB migrated to v4: app_config.category + prompts table added");
+    } else if v == 3 {
+        // v3 → v4：prompts 表 + app_config.active_polish_prompt seed（INIT_SQL 幂等补建）
+        log::info!("DB migrating v3 → v4: adding prompts table + active_polish_prompt seed...");
+        conn.execute_batch(INIT_SQL).context("v3→v4: 重跑 db.sql 幂等补建 prompts 表 + seed")?;
+        conn.execute("PRAGMA user_version = 4", [])?;
+        log::info!("DB migrated to v4: prompts table + active_polish_prompt seed added");
     }
     Ok(())
 }
@@ -1314,5 +1322,39 @@ mod tests {
             .filter_map(|r| r.ok())
             .collect();
         assert_eq!(categories, vec!["default"], "所有行 category 应为 'default'");
+    }
+
+    #[test]
+    fn prompts_table_seeded_with_default() {
+        let conn = open_init();
+        // id=1 系统默认 prompt 存在
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM prompts WHERE id=1 AND is_system=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "应有 id=1 的系统默认 prompt");
+        // total 至少 1 条
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM prompts", [], |r| r.get(0))
+            .unwrap();
+        assert!(total >= 1);
+        // active_polish_prompt 配置项存在，默认值 '1'
+        let val: String = conn
+            .query_row(
+                "SELECT config_value FROM app_config WHERE config_key='active_polish_prompt'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(val, "1");
+    }
+
+    #[test]
+    fn prompts_table_init_sql_idempotent() {
+        let conn = open_init();
+        conn.execute_batch(INIT_SQL).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM prompts WHERE id=1", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "重跑 INIT_SQL 不应重复 seed");
     }
 }
