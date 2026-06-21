@@ -194,8 +194,12 @@ impl WhisperEngine {
         });
         let encoder = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&encoder_path)?;
 
-        // Decoders
-        let dec_init_path = onnx_dir.join("decoder_model.onnx");
+        // Decoders（优先 int8 量化版本，与 encoder 一致）
+        let dec_init_path = onnx_dir.join(if onnx_dir.join("decoder_model_int8.onnx").exists() {
+            "decoder_model_int8.onnx"
+        } else {
+            "decoder_model.onnx"
+        });
         let dec_past_path = onnx_dir.join(
             if onnx_dir.join("decoder_with_past_model_int8.onnx").exists() {
                 "decoder_with_past_model_int8.onnx"
