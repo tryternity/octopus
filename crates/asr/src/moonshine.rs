@@ -67,34 +67,38 @@ impl MoonshineEngine {
         })
     }
 
-    /// 运行 preprocess：audio (1, N) → features (T, 416)。
-    fn run_preprocess(&self, samples: &[f32]) -> Result<ndarray::Array2<f32>> {
+    /// 运行 preprocess：audio (1, N) → features (1, T, 416)。
+    /// 返回 owned `Value`（不拷贝到 CPU）+ features_len(T)，后续 run_encode 以 &Value 传回。
+    fn run_preprocess(&self, samples: &[f32]) -> Result<(ort::value::Value, usize)> {
         let audio = ndarray::ArrayView2::from_shape((1, samples.len()), samples)?;
         let mut session = self.preprocess_session.lock().unwrap();
         let outputs = session.run(ort::inputs! {
             "args_0" => TensorRef::from_array_view(audio)?
         })?;
-        let (shape, data) = outputs[0].try_extract_tensor::<f32>()?;
-        let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-        // 输出 (1, T, 416) → 去掉 batch 维 (T, 416) 便于 encode 复用
-        ndarray::Array2::from_shape_vec((dims[1], dims[2]), data.to_vec())
-            .context("preprocess 输出 reshape 失败")
+        // 消费 SessionOutputs 取 features 为 owned Value，不经 CPU to_vec。
+        let out: Vec<ort::value::Value> =
+            outputs.into_iter().map(|(_, v)| v).collect();
+        let features = out.into_iter().next().context("preprocess 输出为空")?;
+        // features shape (1, T, 416)，取 T 作为 features_len。
+        let features_len = {
+            let (shape, _data) = features.try_extract_tensor::<f32>()?;
+            shape[1] as usize
+        };
+        Ok((features, features_len))
     }
 
     /// 运行 encode：features (1, T, 416) + len → encoder_out (1, T, 416)。
-    /// 返回 owned `Value`（不拷贝到 CPU）——后续 `greedy_decode` 以 ValueView 传回
-    /// uncached/cached_decode，省去几 MB encoder 张量的 to_vec 拷贝。
+    /// features 与返回值均为 owned `Value`（不拷贝到 CPU）——preprocess → encode → decode 全链路零拷贝。
     fn run_encode(
         &self,
-        features: &ndarray::Array2<f32>,
+        features: &ort::value::Value,
         features_len: usize,
     ) -> Result<ort::value::Value> {
-        let features_3d = features.view().insert_axis(ndarray::Axis(0));
         let len_arr = [features_len as i32];
         let len_view = ndarray::ArrayView1::from(&len_arr);
         let mut session = self.encode_session.lock().unwrap();
         let outputs = session.run(ort::inputs! {
-            "args_0" => TensorRef::from_array_view(features_3d)?,
+            "args_0" => features,
             "args_1" => TensorRef::from_array_view(len_view)?
         })?;
         // 消费 SessionOutputs 取 encoder_out 为 owned Value（[0]），不经 CPU to_vec。
@@ -149,6 +153,10 @@ impl MoonshineEngine {
         let mut seq_len_val: i32 = 1;
         let mut cached_session = self.cached_decode_session.lock().unwrap();
 
+        // 预算 cache 输入键名（"args_3".."args_{N+2}"），循环内以 Cow::Borrowed 复用，
+        // 避免每步 format! + 堆分配 N 个 String（base=32，长音频循环数百次）。
+        let cache_keys: Vec<String> = (3..num_caches + 3).map(|i| format!("args_{i}")).collect();
+
         for _ in 0..max_len {
             // argmax 直接在当前步 logits（state_values[0]）的零拷贝 &[f32] 上做，不 to_vec()。
             // 块作用域释放借用，之后才能 view/消费 state_values。
@@ -180,10 +188,11 @@ impl MoonshineEngine {
                 "args_1" => encoder_out,
                 "args_2" => TensorRef::from_array_view(seq_len_view)?
             };
-            // KV cache 直接以 ValueView 传回（Arc 引用计数，O(1)），不经 CPU 深拷贝。
+            // KV cache 直接以 ValueView 传回（Arc 引用计数，O(1)），不经 CPU 深拷贝；
+            // 键名复用预算的 cache_keys（Cow::Borrowed，零分配）。
             for i in 0..num_caches {
                 inputs.push((
-                    format!("args_{}", i + 3).into(),
+                    std::borrow::Cow::Borrowed(cache_keys[i].as_str()),
                     state_values[i + 1].view().into(),
                 ));
             }
@@ -206,8 +215,7 @@ impl crate::engine::OfflineAsrEngine for MoonshineEngine {
         if samples.is_empty() {
             return Ok(String::new());
         }
-        let features = self.run_preprocess(samples)?;
-        let features_len = features.nrows();
+        let (features, features_len) = self.run_preprocess(samples)?;
         if features_len == 0 {
             return Ok(String::new());
         }
