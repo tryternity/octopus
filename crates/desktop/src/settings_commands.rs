@@ -18,6 +18,8 @@ pub struct ConfigResponse {
     pub asr_engines: Vec<crate::runtime_config::EngineOption>,
     pub llm_models: Vec<crate::runtime_config::LlmOption>,
     pub microphones: Vec<String>,
+    pub prompts: Vec<PromptInfo>,
+    pub active_prompt_id: i64,
 }
 
 #[tauri::command]
@@ -34,11 +36,26 @@ pub fn get_config(rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigResponse, 
 
     let microphones = list_microphones();
 
+    let prompt_records = octopus_infra::db::list_prompts().map_err(|e| e.to_string())?;
+    let prompts = prompt_records
+        .into_iter()
+        .map(|r| PromptInfo {
+            id: r.id,
+            title: r.title,
+            content: r.content,
+            description: r.description,
+            is_system: r.is_system,
+        })
+        .collect();
+    let active_prompt_id = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
+
     Ok(ConfigResponse {
         config: config_json,
         asr_engines,
         llm_models,
         microphones,
+        prompts,
+        active_prompt_id,
     })
 }
 

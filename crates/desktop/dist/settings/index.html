@@ -453,6 +453,7 @@ function renderSettings(resp) {
   asrEnginesData = resp.asr_engines;
   const asrOptions = resp.asr_engines.map(e => '<option value="' + escapeHtml(e.name) + '" ' + (e.current ? 'selected' : '') + '>' + escapeHtml(e.label) + '</option>').join('');
   const llmOptions = resp.llm_models.map(m => '<option value="' + escapeHtml(m.name) + '" ' + (m.current ? 'selected' : '') + '>' + escapeHtml(m.label) + '</option>').join('');
+  const promptOptions = resp.prompts.map(p => '<option value="' + p.id + '" ' + (p.id === resp.active_prompt_id ? 'selected' : '') + '>' + escapeHtml(p.title) + (p.is_system ? '（内置）' : '') + '</option>').join('');
   const micOptions = ['<option value="">系统默认</option>'].concat(
     resp.microphones.map(m => '<option value="' + escapeHtml(m) + '" ' + (cfg.microphone === m ? 'selected' : '') + '>' + escapeHtml(m) + '</option>')
   ).join('');
@@ -547,6 +548,10 @@ function renderSettings(resp) {
         '</select>' +
       '</div>' +
       '<div class="row">' +
+        '<div class="label-group"><span class="label-text">润色提示词 <span class="label-effect">(立即)</span></span><span class="label-hint">选择不同风格 prompt（设置页可管理）</span></div>' +
+        '<select onchange="setActivePrompt(parseInt(this.value))">' + promptOptions + '</select>' +
+      '</div>' +
+      '<div class="row">' +
         '<div class="label-group"><span class="label-text">文本润色间隔 <span class="label-effect">(下次录音)</span></span></div>' +
         '<select onchange="setVal(\'polish_min_interval\', parseFloat(this.value))">' +
           [{v:0,l:'仅最后'},{v:3,l:'每3秒'},{v:4,l:'每4秒'},{v:5,l:'每5秒'},{v:6,l:'每6秒'},{v:7,l:'每7秒'},{v:8,l:'每8秒'}].map(o => '<option value="' + o.v + '" ' + (cfg.polish_min_interval==o.v?'selected':'') + '>' + o.l + '</option>').join('') +
@@ -587,6 +592,20 @@ async function setVal(key, value) {
   }
 }
 window.setVal = setVal;
+
+async function setActivePrompt(id) {
+  try {
+    await invoke('set_active_prompt', { id });
+    showToast('润色提示词已切换');
+  } catch (e) {
+    showToast(String(e));
+    try {
+      const resp = await invoke('get_config');
+      renderSettings(resp);
+    } catch (_) {}
+  }
+}
+window.setActivePrompt = setActivePrompt;
 
 async function toggleVal(key, el) {
   const newVal = !el.classList.contains('on');
