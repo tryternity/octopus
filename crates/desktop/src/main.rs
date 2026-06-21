@@ -22,6 +22,7 @@ mod engine_embedded;
 mod engine_grpc;
 #[cfg(feature = "remote-ws")]
 mod engine_ws;
+mod model_commands;
 mod paste;
 mod result_window;
 mod runtime_config;
@@ -206,6 +207,9 @@ pub fn run() {
             settings_commands::create_prompt,
             settings_commands::update_prompt,
             settings_commands::delete_prompt,
+            model_commands::list_downloadable_models,
+            model_commands::download_model,
+            model_commands::set_download_mirror,
         ])
         .setup(move |app| {
             // Initialize engine manager

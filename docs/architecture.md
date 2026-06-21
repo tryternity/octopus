@@ -96,7 +96,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | 窗口 | 用途 |
 |------|------|
 | `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 100→132px），移出收起；8 个工具——**关闭**（首位，放弃内容保留 DB 记录）/ 系统设置 / 语音模型 / 降噪模式 / 润色模型 / 润色模式 / 立即润色 / 编辑。由 `app_config.hide_toolbar`（默认 `true`）控制：`true`=hover 显隐，`false`=始终显示。**运行时切换立即生效**：设置窗口改 `hide_toolbar` → emit `config-changed` 事件 → result window 的 `refreshActive()` 双向切换（`false`→移除 hover + 常驻展开；`true`→恢复 hover + 立即收起）。**历史**：曾同时存在 `recording_overlay` 窗口（独立 WebView 渲染进程），UI 统一到 result_window 后 overlay 已废弃，全部显示/隐藏调用均为 no-op（仅查 `get_webview_window("recording_overlay")`）。2026-06-21 审查修复：`overlay.rs` 模块整体删除，`create_overlay` 调用 + 9 处 `hide_overlay` 调用全移除，capabilities/default.json 的 `recording_overlay` 窗口标签亦删除——避免未可见 WebView 渲染进程常驻后台的资源浪费 |
-| `settings_window` | 独立设置窗口（原生标题栏、800×600 可调大小、最小 640×480）。三页面侧边栏布局：识别记录（倒序分页 + 批量删除 + 润色优先显示 + 拷贝）/ 系统设置（18 字段表单，卡片分组 + toggle/select/number input + 生效时间标签内联）/ 模型管理（占位）。单例管理：已打开则 `set_focus`。入口：工具栏设置按钮 + 托盘菜单「设置...」。8 个命令：`open_settings` / `get_config` / `set_config(key,value)` / `get_history` / `delete_history(ids)` / `check_shortcut(shortcut)` / `test_llm_connection(spec)` / `test_asr_connection(bare_name)` |
+| `settings_window` | 独立设置窗口（原生标题栏、800×600 可调大小、最小 640×480）。三页面侧边栏布局：识别记录（倒序分页 + 批量删除 + 润色优先显示 + 拷贝）/ 系统设置（18 字段表单，卡片分组 + toggle/select/number input + 生效时间标签内联）/ 模型管理（`model_commands` + `models.js` 实现，见「模型管理」节）。单例管理：已打开则 `set_focus`。入口：工具栏设置按钮 + 托盘菜单「设置...」。8 个命令：`open_settings` / `get_config` / `set_config(key,value)` / `get_history` / `delete_history(ids)` / `check_shortcut(shortcut)` / `test_llm_connection(spec)` / `test_asr_connection(bare_name)` |
 
 **macOS 动态激活策略（Dock 图标显隐）：** 应用启动即 `Accessory` 模式（无 Dock 图标，纯托盘应用）。用户打开设置窗口时 `open_settings` 切 `Regular`，并经 `set_dock_icon()` 用 `objc2` 手动 `setApplicationIconImage`（release 裸二进制无 .app bundle，Tauri 仅 debug 自动设图标，故需手动设 Dock + 应用图标）；设置窗口 `Destroyed` 事件触发 `on_settings_closed` 切回 `Accessory`。`#[cfg(target_os = "macos")]` 条件编译，Windows / Linux 无此逻辑。
 
@@ -262,7 +262,9 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 ## 模型管理
 
-模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需下载——`octopus-cli download <repo>` 下到 `~/.octopus/models/<repo>/`（阶段1，薄封装 `octopus-download`），兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型。
+模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需下载——`octopus-cli download <repo>`（命令行）或设置窗口「模型管理」页（GUI）下到 `~/.octopus/models/<repo>/`（阶段1 接 `octopus-download`），兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型。
+
+**GUI 模型管理（设置窗口页面 3）**：`crates/desktop/src/model_commands.rs`（独立模块，与 `settings_commands.rs` 分离以降低与 setting-ui2 分支的合并冲突）3 个 Tauri 命令——`list_downloadable_models`（列 local 引擎 → `resolve_engine_in_config` 裸名取 `entry.source`（HF repo）→ `is_hf_repo` 过滤随包/云端/绝对路径 → `resolve_model_dir` 判定已就绪）、`download_model(repo)`（复用 download crate：`HfRequest` + `resolve_tasks` + 逐文件 `Downloader::download`，mpsc 进度转 Tauri 事件 `download-progress`/`download-file` 推前端；镜像读 `AppConfig.download_mirror`）、`set_download_mirror(value)`（专用命令，因 `set_config` 的 `apply_config_value` 无 `download_mirror` 分发，独立命令免改 `settings_commands.rs`）。前端 `dist/settings/models.js`（IIFE 隔离全局 const，独立于 index.html 内联脚本；`index.html` 仅两处局部改动——`#page-models` 容器 + `<script src="models.js">`）。spec `superpowers/specs/2026-06-21-model-management-gui-design.md`。
 
 ```
 ~/.octopus/

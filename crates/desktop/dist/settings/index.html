@@ -254,11 +254,21 @@ select:focus, input:focus { outline: none; border-color: var(--primary); }
     <!-- 由 JS 动态渲染 -->
   </div>
 
-  <!-- 页面 3: 模型管理（占位） -->
+  <!-- 页面 3: 模型管理（由 models.js 动态渲染） -->
   <div class="page" id="page-models">
-    <div class="placeholder-page">
-      <div style="font-size: 48px; margin-bottom: 16px; opacity: 0.2;">📦</div>
-      <p>功能开发中，敬请期待</p>
+    <div class="card">
+      <h3>下载镜像</h3>
+      <div class="row">
+        <div class="label-group">
+          <span class="label-text">HF 镜像</span>
+          <span class="label-hint">国内推荐 https://hf-mirror.com；留空用官方源 huggingface.co</span>
+        </div>
+        <input type="text" id="mirror-input" placeholder="https://hf-mirror.com">
+      </div>
+    </div>
+    <div class="card">
+      <h3>ASR 模型</h3>
+      <div id="models-list"></div>
     </div>
   </div>
 
@@ -970,5 +980,7 @@ async function confirmDeletePrompt(id) {
 // ── 启动 ──
 init();
 </script>
+<!-- 模型管理页（页面 3）逻辑：独立文件，降低与 settings-ui2 分支在 index.html 上的合并冲突 -->
+<script src="models.js"></script>
 </body>
 </html>
