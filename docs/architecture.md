@@ -30,7 +30,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 
 | 模块 | 说明 |
 |------|------|
-| `config` | DB 模型配置加载（`AsrConfig`）、模型发现、引擎路由（`resolve_engine_in_config` 按 `{provider}:{category}:{model_name}` 3-part spec 解析）、全局默认引擎兜底（`resolve_active_engine`）、云引擎分类（`EngineCategory::Aliyun`，由 `resolve_category` 按 provider 分支识别） |
+| `config` | DB 模型配置加载（`AsrConfig`）、模型发现、引擎路由（`resolve_engine_in_config` 按 `{provider}:{category}:{model_name}` 3-part spec 解析）、全局默认引擎兜底（`resolve_active_engine`）、云引擎分类（`EngineCategory::Aliyun` / `EngineCategory::ByteDance`，由 `resolve_category` 按 provider 分支识别） |
 | `audio` | WAV 读取、重采样（`resample_to` 一次性 / `AudioResampler` 流式，支持任意 from→to 速率，含 denoise 48k 桥接）、VAD 语音过滤 |
 | `denoise` | 可插拔流式环境降噪后端（`FrameDenoise` trait，由 `denoise_mode` 选择）：`1`=RNNoise（`nnnoiseless`，纯 Rust 移植 Xiph RNNoise，内置默认模型，48kHz/FRAME_SIZE=480→频带特征+VAD/噪声/降噪 GRU→频带增益+OLA，GRU 状态跨帧保持）/ `2`=DeepFilterNet3（`Df3Backend` 包装 libDF v0.5.6 的 `DfTract` + tract 0.19，48kHz 全频带）。`DenoiseProcessor` 为 mode 分发器，采集层前置 |
 | `vad` | Silero VAD 语音活动检测 |
@@ -106,7 +106,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - 单线程 mpsc channel 串行化所有事件
 - 流式模式：Streaming → (Polishing) → Pasting
 - 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → (Polishing) → Pasting
-- 云端流式模式（dashscope feature，VAD-gated per-utterance streaming）：CloudStreaming → (Polishing) → Pasting
+- 云端流式模式（aliyun feature，VAD-gated per-utterance streaming）：CloudStreaming → (Polishing) → Pasting
 - **音频处理流水线（drain_samples → VAD → ASR，三种 stage 共用同一前处理）**：从 cpal 回调到引擎输入只走一条路径，所有降噪 / 重采样都在 `SharedAudioState::drain_samples` 内部完成，coordinator 层从不直接调 DenoiseProcessor。详见 `crates/desktop/src/audio.rs::process_pipeline`。
 
   ```
@@ -142,34 +142,41 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
     │         → spawn_blocking(engine.transcribe(&speech_samples))
     │         → Command::TranscriptionDone{seq} → 按 seq 有序拼接
     │
-    └─ CloudStreaming（DashScope WSS 长连接，[`coordinator.rs::handle_cloud_streaming_tick`]）：
+    └─ CloudStreaming（云端 WSS 长连接，[`coordinator.rs::handle_cloud_streaming_tick`]）：
           pre_roll_buffer 滚动追加 samples（保留后 200ms = CLOUD_PREROLL_BUFFER_SAMPLES）
           compute_speech_chunks(vad, &samples) → onset 检测（≥2 speech chunks）
           ├─ 无活跃 WSS + onset（连续 2 tick 确认，消除噪声脉冲）：
-          │     resolve_dashscope_config(spec) → (endpoint, key, model)
-          │     DashScopeStreamSession::open(pre_roll = pre_roll_buffer 末 100ms = 1600 样本)
-          │     push_pcm(&samples)
+          │     resolve_engine_category(spec) 分派：
+          │       ├─ Aliyun：resolve_aliyun_config → (endpoint, key, model)
+          │       │         AliyunStreamSession::open → CloudSession::Aliyun
+          │       ├─ ByteDance：resolve_bytedance_config → (resource_id, api_key, model)
+          │       │             ByteDanceStreamSession::open → CloudSession::ByteDance
+          │       └─ Tencent：resolve_tencent_config → (appid:secretid, secret_key, engine_model_type)
+          │                  TencentStreamSession::open → CloudSession::Tencent
+          │     session.push_pcm(&samples)
           ├─ 有活跃 WSS + 持续语音：
           │     push_pcm(&samples)（→ s16le / base64 → WS frame）
           │     drain events → try_recv_text → 更新 current_partial + UI（transcript + partial）
           │       ├─ StreamEvent::Text(partial) → current_partial = partial
           │       └─ StreamEvent::Finished → transcript.append_segment(current_partial) → check_and_trigger_polish
           └─ 有活跃 WSS + 静音 ≥ pause_polish_threshold_ms（700ms）：
-                session.finish()（**非阻塞**，发 finish-task / session.finish）
+                session.finish()（**非阻塞**，发 finish-task / 末帧负包）
                 → is_closing = true（后续 tick drain 最终结果，不阻塞 coordinator）
                 → Finished 事件 → 提交 current_partial 到 transcript → drop session
   ```
 
   **关键不变量**：
-  - **降噪在 drain_samples 内部完成**——三种 stage 拿到的 `samples` 都是 16k 已降噪（或降级直通）样本；VAD 与 ASR 用同一份降噪后信号，避免参数 / 状态不一致致 VAD 误判而 ASR 准的解耦 bug。云端引擎（CloudStreaming）的 pre-roll 同样从 drain_samples 取，DashScope 收到的是干净音频。
+  - **降噪在 drain_samples 内部完成**——三种 stage 拿到的 `samples` 都是 16k 已降噪（或降级直通）样本；VAD 与 ASR 用同一份降噪后信号，避免参数 / 状态不一致致 VAD 误判而 ASR 准的解耦 bug。云端引擎（CloudStreaming）的 pre-roll 同样从 drain_samples 取，云端收到的是干净音频。
   - **降噪 GRU 与 VAD LSTM 状态语义相反**：降噪 GRU **跨 tick / 跨段连续保持**（`flush=false`，噪声估计是连续物理过程，仅会话 `start()` 才 reset）；检测 VAD **跨 tick 有状态累积**（看完整流，稳语音/静音边界）；过滤 VAD **每段 reset**（独立冷启动，等价每段新 VAD 但复用 ONNX Session）。详见「VAD 分段切分策略」。
   - **降级不 panic**：`denoise_mode=0` / 后端模型缺失 / 单帧推理失败 → `process_pipeline` 走直通分支（原生→16k），仅 warn 日志，识别继续不阻断录音。
-  - **CloudStreaming 的 VAD 用法与 VadSegmented 一致**：同一个 `compute_speech_chunks` + `SileroVad` 检测 onset，但**不切分过滤**（不调 `filter_speech_from_buffer`）——DashScope 自己有 server-side `max_sentence_silence` 切句，客户端 VAD 只负责「何时开 / 何时关 WSS」的生命周期门控。**onset 抗噪**：连续 2 个 tick（~200ms）检测到语音才开 WSS（`speech_confirm_count`），消除单次噪声脉冲导致的空 session 误触发。
-- **CloudStreaming（DashScope WSS 长连接，[`dashscope_stream.rs`](../crates/desktop/src/dashscope_stream.rs)）**：当 `is_cloud_engine(cfg)`（`asr_engine` 解析 category=Aliyun）时启用。与本地 Streaming / VadSegmented 不同——**不调用 `TranscriptionEngine::transcribe`**，而是直接管理一条 DashScope WebSocket 长连接（`DashScopeStreamSession`），由 VAD 决定连接生命周期。**三套云端协议自动分发**（[`is_qwen_realtime_endpoint`] 按 endpoint 路径分流）：
-  - **Fun-ASR / Paraformer**（`/api-ws/v1/inference`）：任务型协议（`run-task` → 二进制 PCM → `finish-task` → `result-generated`（按 `sentence_id` + `sentence_end` 跨句累积）→ `task-finished`）
-  - **Qwen-ASR Realtime**（`/api-ws/v1/realtime`）：OpenAI Realtime 风格会话协议（`session.update` → base64 PCM via `input_audio_buffer.append` → `session.finish` → `conversation.item.input_audio_transcription.text`/`completed`）
+  - **CloudStreaming 的 VAD 用法与 VadSegmented 一致**：同一个 `compute_speech_chunks` + `SileroVad` 检测 onset，但**不切分过滤**（不调 `filter_speech_from_buffer`）——云端服务端自己有切句逻辑（DashScope server-side `max_sentence_silence` / 豆包 `show_utterances`），客户端 VAD 只负责「何时开 / 何时关 WSS」的生命周期门控。**onset 抗噪**：连续 2 个 tick（~200ms）检测到语音才开 WSS（`speech_confirm_count`），消除单次噪声脉冲导致的空 session 误触发。
+- **CloudStreaming（云端 WSS 长连接）**：当 `is_cloud_engine(cfg)`（`asr_engine` 解析 category=Aliyun **或** ByteDance）时启用。与本地 Streaming / VadSegmented 不同——**不调用 `TranscriptionEngine::transcribe`**，而是直接管理一条云端 WebSocket 长连接，由 VAD 决定连接生命周期。**两个云端 provider** 经 `CloudSession` enum 统一分派（[`cloud_session.rs`](../crates/desktop/src/cloud_session.rs)）：
+  - **AliyunStreamSession**（[`aliyun_stream.rs`](../crates/desktop/src/aliyun_stream.rs)）：阿里云百炼 DashScope。**三套协议自动分发**（[`is_qwen_realtime_endpoint`] 按 endpoint 路径分流）：
+    - **Fun-ASR / Paraformer**（`/api-ws/v1/inference`）：任务型协议（`run-task` → 二进制 PCM → `finish-task` → `result-generated`（按 `sentence_id` + `sentence_end` 跨句累积）→ `task-finished`）
+    - **Qwen-ASR Realtime**（`/api-ws/v1/realtime`）：OpenAI Realtime 风格会话协议（`session.update` → base64 PCM via `input_audio_buffer.append` → `session.finish` → `conversation.item.input_audio_transcription.text`/`completed`）
+  - **ByteDanceStreamSession**（[`bytedance_stream.rs`](../crates/desktop/src/bytedance_stream.rs)）：字节跳动豆包大模型 ASR 双向流式（`bigmodel_async` 优化版）。二进制帧协议（4B header + payload），gzip 压缩，固定 endpoint `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`，鉴权经 `X-Api-Key` + `X-Api-Resource-Id` 握手 headers。`source`=Resource ID（如 `volc.bigasr.sauc.duration`），`secret_key`=API Key。详见 [spec](superpowers/specs/2026-06-21-bytedance-asr-design.md)。
 
-  **生命周期**：① 语音 onset（连续 2 tick 确认）→ `open`（建连 + 初始化 + 推 100ms pre-roll）；② 持续语音 → `push_pcm` 推帧 + drain partial 到 `current_partial`（**不碰 transcript**，UI 显示 transcript + current_partial）；③ 静音 ≥ `pause_polish_threshold_ms` → `finish()`（**非阻塞**）→ `is_closing=true` → 后续 tick drain 最终结果；④ `StreamEvent::Finished` → 提交 `current_partial` 到 `transcript`（逗号分隔）→ `check_and_trigger_polish` → drop session。**partial 与 transcript 分离**（消除 partial 覆盖历史文本的 bug）、**非阻塞 finish**（消除 `close()` 的 `block_on` 冻结 coordinator 线程的 bug）。**DB INSERT 时机**：CloudStreaming 只在 Finished 事件时 `update_transcription_raw`（INSERT/UPDATE raw_text）——与本地 Streaming 路径每次 accept_samples 都 INSERT 不同。如果整个录音过程中从未触发 Finished（用户没停顿够就 Toggle stop / 点立即润色），记录从未创建 → 后续 `Finalize` / `UpdatePolished`（均为 UPDATE WHERE id=?）静默 0 行，数据丢失。**修复**：`finalize_cloud` 在 append partial 后、`start_final_polish_or_paste` 之前先调 `update_transcription_raw` 确保 INSERT；`handle_polish_now` 在 `take_polish_input` 之前也调 `update_transcription_raw`（本地路径已 INSERT 为 no-op，CloudStreaming 路径补 INSERT）。**tick 间隔 100ms**，**pre-roll 滚动缓冲 200ms**。Toggle 停止时若 WSS 仍活跃 → spawn `close_async`（**非阻塞**，审查三1）+ 进 `Stage::CloudClosing`（持 transcript/current_partial），close 完成回 `Command::CloudStreamingDone { text, session_id }` → `handle_cloud_streaming_done` 校验 `transcript.id == session_id`（跨会话护栏，见下）后 `set_full` + finalize → 走润色/粘贴。详见 [spec](superpowers/specs/2026-06-19-archived-design.md)（§ dashscope-streaming-design，已归档）。
+  **生命周期**：① 语音 onset（连续 2 tick 确认）→ 根据 `EngineCategory` 分派 `CloudSession::Aliyun` / `CloudSession::ByteDance` / `CloudSession::Tencent` 的 `open`（建连 + 初始化 + 推 100ms pre-roll）；② 持续语音 → `push_pcm` 推帧 + drain partial 到 `current_partial`（**不碰 transcript**，UI 显示 transcript + current_partial）；③ 静音 ≥ `pause_polish_threshold_ms` → `finish()`（**非阻塞**）→ `is_closing=true` → 后续 tick drain 最终结果；④ `StreamEvent::Finished` → 提交 `current_partial` 到 `transcript`（逗号分隔）→ `check_and_trigger_polish` → drop session。**三个 provider 共享 `PcmFrame` / `StreamEvent` 类型**（定义在 `aliyun_stream.rs`，`pub(crate)` 可见性），`CloudSession` enum 的 `push_pcm` / `finish` / `try_recv_text` / `close_async` 方法内部 match 分派。**partial 与 transcript 分离**（消除 partial 覆盖历史文本的 bug）、**非阻塞 finish**（消除 `close()` 的 `block_on` 冻结 coordinator 线程的 bug）。**DB INSERT 时机**：CloudStreaming 只在 Finished 事件时 `update_transcription_raw`（INSERT/UPDATE raw_text）——与本地 Streaming 路径每次 accept_samples 都 INSERT 不同。如果整个录音过程中从未触发 Finished（用户没停顿够就 Toggle stop / 点立即润色），记录从未创建 → 后续 `Finalize` / `UpdatePolished`（均为 UPDATE WHERE id=?）静默 0 行，数据丢失。**修复**：`finalize_cloud` 在 append partial 后、`start_final_polish_or_paste` 之前先调 `update_transcription_raw` 确保 INSERT；`handle_polish_now` 在 `take_polish_input` 之前也调 `update_transcription_raw`（本地路径已 INSERT 为 no-op，CloudStreaming 路径补 INSERT）。**tick 间隔 100ms**，**pre-roll 滚动缓冲 200ms**。Toggle 停止时若 WSS 仍活跃 → spawn `close_async`（**非阻塞**，审查三1）+ 进 `Stage::CloudClosing`（持 transcript/current_partial），close 完成回 `Command::CloudStreamingDone { text, session_id }` → `handle_cloud_streaming_done` 校验 `transcript.id == session_id`（跨会话护栏，见下）后 `set_full` + finalize → 走润色/粘贴。详见 [spec](superpowers/specs/2026-06-19-archived-design.md)（§ dashscope-streaming-design，已归档）。
 - **最终润色异步化**：停止后若启用润色（mode=1/2），`start_final_polish_or_paste` 进入 `Stage::Polishing`（spawn 独立线程跑 LLM 网络请求，托盘显「处理中」、结果窗显「最终润色中」），LLM 完成回调 `Command::FinalPolishDone` 后 `do_paste` 落地；未启用润色则直接 `do_paste`。**润色期间协调器线程不阻塞**，`Cancel`（Esc）可即时回滚 Idle、丢弃在途结果，`Toggle` 被互斥忽略（防并发缓存污染）。**跨会话护栏**：`Command::FinalPolishDone` 携带 `session_id`（= 发起润色时的 transcript.id），`handle_final_polish_done` 校验当前 Polishing id 匹配才落地——Cancel+重开+再润色时旧结果匹配新 Polishing 的污染被拦（与 `PolishDone` 同理）。Polishing 仅持 `id` + `raw_text`（不需 Transcript 其余字段）
 - **粘贴异步化（`do_paste`）**：`do_paste` 先同步 `show_result` + 置 `Stage::Pasting`（状态机线程），再把真正的落库粘贴（`paste::paste`——含 enigo 键盘模拟 + 焦点切换 `sleep`）投递到 `tauri::async_runtime::spawn` + `tokio::task::spawn_blocking`，完成后回 `Command::PasteDone`——粘贴期间不占用 Tauri UI 主线程、不阻塞协调器线程。**macOS 键盘模拟线程安全**：`paste_via_clipboard` 的 V 键用固定虚拟键码 `Key::Other(9)`（`kVK_ANSI_V`）而非 `Key::Unicode('v')`——enigo 0.6.1 的 `Key::Unicode` 在 macOS 走 `get_layoutdependent_keycode`（循环调用非线程安全的 Carbon `TIS*`/`UCKeyTranslate` API），在 `spawn_blocking` 非主线程执行会触发 SIGTRAP（`Trace/BPT trap: 5`）；`Key::Other` 直接当 keycode 用绕过 layout 查找。详见 [spec](superpowers/specs/2026-06-17-archived-design.md)
 - **取消录音（Cancel）**：结果窗按 Esc → 前端 `invoke('cancel_recording')` → `coordinator::cancel_recording` Tauri command → `Coordinator::cancel` 发 `Command::Cancel`。`handle_cancel` 跨阶段生效——Streaming 停采集 + reset 引擎，VadSegmented 停 tick + 停采集，WaitingCompletion / Polishing 丢弃在途结果，统一回 `Idle` + 隐藏 overlay / result 窗 + 托盘置 Idle（Idle 下为 no-op）。Esc 同时 `currentWindow.hide()` 提供即时反馈（区别于运行时配置子系统的 4 个命令，`cancel_recording` 定义在 `coordinator` 模块）
@@ -239,8 +246,8 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **embedded**（默认）：内嵌 octopus-asr，本地推理
 - **remote-ws**：通过 WebSocket 连接远程 octopus-server
 - **remote-grpc**：通过 gRPC 连接远程推理服务
-- **云引擎（aliyun）**：`app_config.asr_engine` 解析为 `provider='aliyun'`（`EngineCategory::Aliyun`）时，路由 `DashscopeEngine`（desktop crate，`dashscope` feature 后），不走 `engine_mode` 分支。详见下方「云端 ASR 引擎」
-- **远程超时保护**：`WsRemoteEngine` / `GrpcRemoteEngine` / `DashscopeEngine` 的 `transcribe` 均以 `tokio::time::timeout(8s)` 包裹（连接 + 收发全程），`health_check` 同样 `timeout(3s)`——规避网络断开 / 后端无响应致 ASR 队列无限期卡死。超时返回 `Err`，经序列空洞修复的空串占位分支保证 `completed_seq` 连续推进、不拖死后续分段
+- **云引擎（aliyun feature）**：`app_config.asr_engine` 解析为 `provider='aliyun'`（`EngineCategory::Aliyun`）时，路由 `AliyunEngine`（desktop crate，`aliyun` feature 后）；`provider='bytedance'`（`EngineCategory::ByteDance`）时直接走 `Stage::CloudStreaming`（无独立 engine）。均不走 `engine_mode` 分支。详见下方「云端 ASR 引擎」
+- **远程超时保护**：`WsRemoteEngine` / `GrpcRemoteEngine` / `AliyunEngine` 的 `transcribe` 均以 `tokio::time::timeout(8s)` 包裹（连接 + 收发全程），`health_check` 同样 `timeout(3s)`——规避网络断开 / 后端无响应致 ASR 队列无限期卡死。超时返回 `Err`，经序列空洞修复的空串占位分支保证 `completed_seq` 连续推进、不拖死后续分段
 
 ## 模型管理
 
@@ -284,6 +291,8 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
   |---|---|---|
   | `local` | `zipformer`/`whisper`/`sensevoice`/`paraformer`/`qwen3-asr` | —（暂无本地 LLM） |
   | `aliyun` | `Fun-ASR` / `Paraformer-Realtime`（run-task 协议，`/api-ws/v1/inference`）/ `Qwen-ASR`（OpenAI Realtime 协议，`/api-ws/v1/realtime`） | `qwen` / `deepseek`（经 DashScope 代管） |
+  | `bytedance` | `Doubao-ASR`（豆包大模型 ASR 双向流式，`bigmodel_async`，二进制帧协议） | — |
+  | `tencent` | `Tencent-ASR`（腾讯云实时语音识别，WebSocket HMAC-SHA1 签名鉴权） | — |
   | `deepseek` | — | `deepseek`（直连） |
   | `bigmodel` | — | `glm`（智谱） |
 
@@ -292,20 +301,24 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
   - `"aliyun:Fun-ASR:fun-asr-realtime"` → 云端 DashScope FunASR（run-task 协议）
   - `"aliyun:Qwen-ASR:qwen3-asr-flash-realtime"` → 云端 DashScope Qwen-ASR Realtime（OpenAI Realtime 协议）
   - `"aliyun:Paraformer-Realtime:paraformer-realtime-v2"` → 云端 DashScope Paraformer 实时（run-task 协议）
+  - `"bytedance:Doubao-ASR:doubao-asr-1.0-streaming"` → 云端豆包大模型 ASR 1.0（bigmodel_async 二进制帧协议）
+  - `"tencent:Tencent-ASR:16k_zh"` → 云端腾讯实时语音识别（16k 中文通用，HMAC-SHA1 签名鉴权）
   - `"aliyun:qwen:qwen-plus"` / `"deepseek:deepseek:deepseek-v4-flash"` / `"bigmodel:glm:glm-4-flashx"` → LLM
   - 裸名 `"{model_name}"`（无冒号）→ 仅全局 fallback 路径用（跨 provider/category 搜，优先 local）
   - 旧 2-part（1 冒号）→ warn + 裸名兜底（迁移期）
   - 统一解析在 `infra::db::parse_model_spec`（返回 `ModelSpec::Full` / `NameOnly`），ASR 经 `asr::config::resolve_engine_in_config` 查找，LLM 经 `infra::db::load_llm_model` 查找。区分三段是因为 DB 唯一键是 `UNIQUE(domain, provider, category, model_name)`，不同 provider 或 category 下可有同名模型（如 `deepseek-v4-flash` 在 deepseek 直连与 aliyun 代管下各一行）。
 - 全局默认引擎由 `resolve_active_engine(asr_engine)` 解析：**兜底引擎短路**（裸名为 `zipformer-small-ctc` 时跳过 DB 查找，直接返回硬构造兜底 entry，不触发 warning）→ 其余 spec 匹配命中则用；空/不匹配回退兜底 `zipformer-small-ctc`（`DEFAULT_ASR_MODEL_DIR` 本地打包路径，开箱可用）。返回 `ResolvedEngine.model_name` 始终是**裸名**（去掉前缀），下游缓存和加载按裸名工作。
-- **云引擎路由（`provider='aliyun'` → `DashscopeEngine`）**：`resolve_active_engine` 解析时若 `provider='aliyun'` → 由 `resolve_category(provider, category)` 按 provider 分支返回 `EngineCategory::Aliyun`（**注意**：`engine_category_from_str("aliyun")` 仍返回 `None`——aliyun 不进 5 个本地族字符串映射，靠 provider 分支识别）。`desktop/src/main.rs` 启动时 `resolve_active_engine(&config.asr_engine)` → 若 `resolved.category == Some(EngineCategory::Aliyun)` → `Arc::new(DashscopeEngine::new())`（需开 `dashscope` feature）；否则按 `engine_mode`（embedded/websocket/grpc）走本地 `build_local_engine`。云 ↔ 本地切换改 `app_config.asr_engine` 后**重启**生效（engine 实例启动时固定）。
-- **流式判定数据驱动**：是否走流式识别由 `models.is_streaming` 列决定——`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming && category != Aliyun`（seed：zipformer CTC×3 + Transducer×2 + paraformer + Qwen-ASR Realtime = 流式；whisper / sensevoice / qwen3-asr×2 / aliyun Fun-ASR / Paraformer-Realtime = 非流式），不再按 category 硬编码匹配。**云端引擎（Aliyun）被显式排除**——其 `is_streaming=1` 表示支持云端 WS 流式（dashscope），而非本地 `StreamingSession`；dashscope feature 未启用时也不会错误进本地 streaming 路径。**流式引擎内部分流**：`StreamingSession::new` 检测 `decoder.onnx` 存在性——CTC 走 `StreamingZipformer`（单 session log_probs argmax），Transducer 走 `StreamingZipformerTransducer`（三 session RNN-T greedy decoding，跨 chunk 维持 `token_buf`）。**provider=aliyun 的云端引擎走独立 `CloudStreaming` 路径**（dashscope feature gated）——Toggle 进 Idle 时 `is_cloud_engine` 分支先于 `use_streaming` 判断并 `return`。**StreamingSession::new 失败降级**：引擎不可用时（如模型文件缺失 / category 不支持）自动降级到默认引擎 `local:zipformer:zipformer-small-ctc` 重试（warn 日志），再失败才放弃录音——避免用户选了不可用引擎后录音白白启动即失败。`run-octopus.sh` 默认启用 `--features "embedded dashscope"`，否则云端引擎不可用。Coordinator 的 `use_streaming` 据此在 Toggle 进入 `Idle`（切引擎 / 切模式）时重算——流式引擎走本地流式 partial，非流式引擎自动回退 VAD 分段伪流式。`StreamingSession::new` 同样走 `resolve_active_engine`（带兜底），与 `is_streaming_engine` 对称——避免 DB 未命中时 `is_streaming_engine` 兜底成功（→ 进 streaming 路径）但 `StreamingSession::new` 创建失败（→ session 错误）。
+- **云引擎路由（`provider='aliyun'` → `AliyunEngine`，`provider='bytedance'` → 豆包流式，`provider='tencent'` → 腾讯流式）**：`resolve_active_engine` 解析时若 `provider='aliyun'` → 由 `resolve_category(provider, category)` 按 provider 分支返回 `EngineCategory::Aliyun`；若 `provider='bytedance'` → 返回 `EngineCategory::ByteDance`；若 `provider='tencent'` → 返回 `EngineCategory::Tencent`（**注意**：`engine_category_from_str` 对三者均返回 `None`——云 provider 不进本地族字符串映射，靠 provider 分支识别）。`desktop/src/main.rs` 启动时 `resolve_active_engine(&config.asr_engine)` → 若 `resolved.category == Some(EngineCategory::Aliyun)` → `Arc::new(AliyunEngine::new())`（需开 `aliyun` feature）；否则按 `engine_mode`（embedded/websocket/grpc）走本地 `build_local_engine`。**ByteDance / Tencent 不建独立 TranscriptionEngine**（只支持流式，不走 chunk 接口），直接经 `is_cloud_engine` 路由到 `Stage::CloudStreaming`。云 ↔ 本地切换改 `app_config.asr_engine` 后**重启**生效（engine 实例启动时固定）。
+- **流式判定数据驱动**：是否走流式识别由 `models.is_streaming` 列决定——`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming && category != Aliyun && category != ByteDance && category != Tencent`（seed：zipformer CTC×3 + Transducer×2 + paraformer + Qwen-ASR Realtime = 流式；whisper / sensevoice / qwen3-asr×2 / aliyun Fun-ASR / Paraformer-Realtime / bytedance Doubao-ASR / tencent Tencent-ASR = 非流式），不再按 category 硬编码匹配。**云端引擎（Aliyun / ByteDance / Tencent）被显式排除**——其 `is_streaming=1` 表示支持云端 WS 流式（aliyun feature），而非本地 `StreamingSession`；aliyun feature 未启用时也不会错误进本地 streaming 路径。**流式引擎内部分流**：`StreamingSession::new` 检测 `decoder.onnx` 存在性——CTC 走 `StreamingZipformer`（单 session log_probs argmax），Transducer 走 `StreamingZipformerTransducer`（三 session RNN-T greedy decoding，跨 chunk 维持 `token_buf`）。**云端引擎走独立 `CloudStreaming` 路径**（aliyun feature gated）——Toggle 进 Idle 时 `is_cloud_engine`（检测 Aliyun **或** ByteDance **或** Tencent）分支先于 `use_streaming` 判断并 `return`。**StreamingSession::new 失败降级**：引擎不可用时（如模型文件缺失 / category 不支持）自动降级到默认引擎 `local:zipformer:zipformer-small-ctc` 重试（warn 日志），再失败才放弃录音——避免用户选了不可用引擎后录音白白启动即失败。`run-octopus.sh` 默认启用 `--features "embedded aliyun"`，否则云端引擎不可用。Coordinator 的 `use_streaming` 据此在 Toggle 进入 `Idle`（切引擎 / 切模式）时重算——流式引擎走本地流式 partial，非流式引擎自动回退 VAD 分段伪流式。`StreamingSession::new` 同样走 `resolve_active_engine`（带兜底），与 `is_streaming_engine` 对称——避免 DB 未命中时 `is_streaming_engine` 兜底成功（→ 进 streaming 路径）但 `StreamingSession::new` 创建失败（→ session 错误）。
 - 显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，支持 spec 格式、**不走兜底**（匹配不到直接报错）。
 - VAD 模型固定路径（`find_silero_vad` 直接返回 `~/.octopus/models/silero_vad_v4.onnx`），不进 DB、不读配置。
 - **手编 `models` 表 / `app_config` 表需重启进程生效**（`OnceLock` 缓存，运行中不可热更新；运行时修改走 `RuntimeConfig` + `persist_*`）。DB schema `user_version` 当前为 3（v0/v1→v3 直跳，v2→v3 ALTER TABLE 补 category 列）。
 
-### 云端 ASR 引擎（DashscopeEngine）
+### 云端 ASR 引擎（AliyunEngine + ByteDance 流式）
 
-`crates/desktop/src/engine_dashscope.rs`（`dashscope` cargo feature 后，默认不开）impl `TranscriptionEngine`，接入阿里云百炼 DashScope 实时语音识别 WebSocket。与本地引擎不同：**不在 ASR crate 内**，而在 desktop crate——因为它是分块式 `TranscriptionEngine`（每段 VAD 开一条 WS 跑完整协议），与本地离线引擎共享 coordinator 的 chunk 路径接口（`is_streaming=0` → 不进本地 `StreamingSession`）。
+#### AliyunEngine（阿里云 DashScope，分块式）
+
+`crates/desktop/src/engine_aliyun.rs`（`aliyun` cargo feature 后，默认不开）impl `TranscriptionEngine`，接入阿里云百炼 DashScope 实时语音识别 WebSocket。与本地引擎不同：**不在 ASR crate 内**，而在 desktop crate——因为它是分块式 `TranscriptionEngine`（每段 VAD 开一条 WS 跑完整协议），与本地离线引擎共享 coordinator 的 chunk 路径接口（`is_streaming=0` → 不进本地 `StreamingSession`）。
 
 **三套协议自动分发**（`is_qwen_realtime_endpoint` 按 endpoint 路径分流）：
 
@@ -320,6 +333,44 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **鉴权**：WS 握手请求经 `IntoClientRequest` + 追加 `Authorization: bearer/Bearer <secret_key>` header。
 - **无运行时状态**：每次 `transcribe` 从 DB 重新解析 → 取最新 endpoint/key（运行时切引擎可即时生效）。
 - **健康检查**：`health_check()` 保守返回 `true`，避免每次启动探活消耗 API 额度；真实健康度在首次 transcribe 时由错误路径暴露。
+
+#### ByteDance（字节跳动豆包大模型 ASR，双向流式）
+
+`crates/desktop/src/bytedance_stream.rs`（`aliyun` cargo feature 后）接入火山引擎豆包大模型 ASR 1.0/2.0 的双向流式优化版（`bigmodel_async`）。**不实现 `TranscriptionEngine`**（豆包只支持流式，无 chunk 离线接口），直接经 coordinator 的 `Stage::CloudStreaming` 路径，由 `ByteDanceStreamSession` 管理一条 WSS 长连接。与 Aliyun 共享 `PcmFrame` / `StreamEvent` 类型，经 `CloudSession::ByteDance` 变体由 `cloud_session.rs` 统一分派。
+
+**协议**（二进制帧，与 Aliyun 的 JSON 文本帧完全不同）：
+
+| 维度 | 说明 |
+|---|---|
+| Endpoint | 固定 `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`（不来自 DB） |
+| 鉴权 | WS 握手 headers：`X-Api-Key`（= `secret_key`）、`X-Api-Resource-Id`（= `source`，如 `volc.bigasr.sauc.duration`）、`X-Api-Request-Id`（UUID）、`X-Api-Sequence: -1` |
+| 帧格式 | 4B header（ver/hdr + msg_type/flags + ser/comp + reserved）+ 4B payload_size + payload（全大端序） |
+| 消息类型 | `0x1` FULL_CLIENT_REQUEST（初始 JSON config）、`0x2` AUDIO_ONLY_REQUEST（音频帧）、`0x9` FULL_SERVER_RESPONSE（JSON 结果）、`0xF` ERROR_RESPONSE |
+| Flags | `0x0` NO_SEQUENCE、`0x2` NEG_SEQUENCE（末帧/负包，告诉服务端音频结束） |
+| 压缩 | `0x1` GZIP（音频 PCM + config JSON 均 gzip；响应 payload 也 gzip） |
+| 结果 JSON | `{"result":{"text":"全文","utterances":[{"definite":true,"text":"..."}]}}` |
+| 结束信号 | 客户端发 flags=0x2 末帧 → 服务端回 flags=0x3（NEG_WITH_SEQUENCE） |
+
+**DB 映射**：`source` = Resource ID、`secret_key` = API Key、`model_name` = `doubao-asr-1.0-streaming` / `doubao-asr-2.0-streaming`。详见 [spec](superpowers/specs/2026-06-21-bytedance-asr-design.md)。
+
+#### Tencent（腾讯云实时语音识别，双向流式）
+
+`crates/desktop/src/tencent_stream.rs`（`aliyun` cargo feature 后）接入腾讯云实时语音识别 WebSocket API。**不实现 `TranscriptionEngine`**（只支持流式），直接经 coordinator 的 `Stage::CloudStreaming` 路径，由 `TencentStreamSession` 管理一条 WSS 长连接。与 Aliyun / ByteDance 共享 `PcmFrame` / `StreamEvent` 类型，经 `CloudSession::Tencent` 变体由 `cloud_session.rs` 统一分派。
+
+**协议**（URL 签名鉴权 + Raw PCM binary + JSON text 响应）：
+
+| 维度 | 说明 |
+|---|---|
+| Endpoint | 固定 `wss://asr.cloud.tencent.com/asr/v2/<appid>?{params}`（appid 在路径段，参数在 query） |
+| 鉴权 | **URL 签名（HMAC-SHA1）**：参数按字典序排序→拼签名原文→`Base64(HMAC-SHA1(str, SecretKey))`→URL-encode→追加到 URL |
+| 必填参数 | `secretid`、`timestamp`、`expired`、`nonce`、`engine_model_type`（如 `16k_zh`）、`voice_id`（UUID）、`signature` |
+| 可选参数 | `voice_format=1`（PCM）、`needvad=1`、`filter_punc=1`、`vad_silence_time=1000` |
+| 音频帧 | WebSocket Binary 帧，**原始 PCM s16le 字节**（无压缩/无额外头），200ms = 6400 字节 |
+| 响应 | Text 帧 JSON：`code`（0=正常）、`result.slice_type`（0=开始/1=非稳态/2=稳态终态）、`result.voice_text_str`、`final=1`（全部结束） |
+| 结束信号 | Text 帧 `{"type":"end"}` → 服务端返回 `final=1` → 断开 |
+| 文本累积 | 客户端按 `index` 存 `slice_type=2` 稳态句（`BTreeMap<index, text>`），partial（0/1）覆盖当前句 |
+
+**DB 映射**：`source` = `{appid}:{secretid}` 复合（冒号分隔）、`secret_key` = SecretKey（HMAC 签名密钥）、`model_name` = `engine_model_type`（如 `16k_zh` / `16k_zh_en`）。详见 [spec](superpowers/specs/2026-06-21-tencent-asr-design.md)。
 
 ## 支持的 ASR 引擎
 

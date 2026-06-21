@@ -250,7 +250,7 @@ pub fn preheat_local_engine(
         Ok(r) => r,
         Err(_) => return,
     };
-    #[cfg(feature = "dashscope")]
+    #[cfg(feature = "aliyun")]
     if resolved.category == octopus_asr::config::EngineCategory::Aliyun {
         return;
     }

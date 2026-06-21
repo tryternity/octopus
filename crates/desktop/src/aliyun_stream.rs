@@ -6,11 +6,11 @@
 //! - **Qwen-ASR Realtime**（`/api-ws/v1/realtime`）：OpenAI Realtime 风格会话协议
 //!   （`session.update` → base64 PCM via `input_audio_buffer.append` → `session.finish`）
 //!
-//! 与 `engine_dashscope.rs` 的 chunk 模式（每段 VAD 开一条新 WS）不同，本模块维护
+//! 与 `engine_aliyun.rs` 的 chunk 模式（每段 VAD 开一条新 WS）不同，本模块维护
 //! 一条长连接 WS，由 coordinator 的 VAD 逻辑管理连接生命周期：
-//! - 语音 onset → [`DashScopeStreamSession::open`]：建连 + 初始化 + 推 ~100ms pre-roll
-//! - 持续语音 → [`DashScopeStreamSession::push_pcm`]：推 PCM 帧
-//! - 静音 ≥ `pause_polish_threshold_ms` → [`DashScopeStreamSession::close`]：结束 + 收最终结果
+//! - 语音 onset → [`AliyunStreamSession::open`]：建连 + 初始化 + 推 ~100ms pre-roll
+//! - 持续语音 → [`AliyunStreamSession::push_pcm`]：推 PCM 帧
+//! - 静音 ≥ `pause_polish_threshold_ms` → [`AliyunStreamSession::close`]：结束 + 收最终结果
 //!
 //! ## 异步模型
 //!
@@ -31,7 +31,7 @@ use tokio_tungstenite::{
 };
 
 /// PCM 帧指令：coordinator → 后台 WS task
-enum PcmFrame {
+pub(crate) enum PcmFrame {
     /// 推 PCM 样本（s16le bytes）
     Samples(Vec<u8>),
     /// 发 finish-task + 关闭发送端
@@ -53,12 +53,12 @@ pub enum StreamEvent {
 ///
 /// 持有 PCM sender（供 coordinator 推音频）和 result receiver（取识别文本）。
 /// 后台一条 tokio task 管理 WS 连接的双向收发。
-pub struct DashScopeStreamSession {
+pub struct AliyunStreamSession {
     pcm_tx: mpsc::UnboundedSender<PcmFrame>,
     result_rx: mpsc::UnboundedReceiver<StreamEvent>,
 }
 
-impl DashScopeStreamSession {
+impl AliyunStreamSession {
     /// 建连 + 初始化 + 推 pre-roll PCM + 启动后台 WS task。
     ///
     /// 根据 `endpoint` 路径自动选择协议：
@@ -95,7 +95,7 @@ impl DashScopeStreamSession {
                 ).await
             };
             if let Err(e) = result {
-                log::error!("dashscope stream session error: {}", e);
+                log::error!("aliyun stream session error: {}", e);
                 let _ = tx_for_err.send(StreamEvent::Failed(e.to_string()));
             }
         });
@@ -105,10 +105,10 @@ impl DashScopeStreamSession {
 
     /// 推 PCM 样本（f32[-1,1] → s16le），非阻塞。
     pub fn push_pcm(&self, samples: &[f32]) -> Result<()> {
-        let pcm = crate::engine_dashscope::samples_to_pcm_s16le(samples);
+        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(samples);
         self.pcm_tx
             .send(PcmFrame::Samples(pcm))
-            .map_err(|_| anyhow!("dashscope PCM channel closed"))
+            .map_err(|_| anyhow!("aliyun PCM channel closed"))
     }
 
     /// 非阻塞发送 Finish 信号（finish-task / session.finish），不等待结果。
@@ -119,7 +119,7 @@ impl DashScopeStreamSession {
     pub fn finish(&self) -> Result<()> {
         self.pcm_tx
             .send(PcmFrame::Finish)
-            .map_err(|_| anyhow!("dashscope PCM channel closed"))
+            .map_err(|_| anyhow!("aliyun PCM channel closed"))
     }
 
     /// 非阻塞取 partial 文本（如果有新的）。
@@ -136,19 +136,19 @@ impl DashScopeStreamSession {
         let mut rx = self.result_rx;
         let mut text = String::new();
         // 保底超时：WS task 若因网络挂起不回 Finished/Failed，recv 会一直 pending 直到
-        // TCP 超时（默认可达分钟级）。须有上限，否则永久挂起。8s 与 engine_dashscope 段级超时一致。
+        // TCP 超时（默认可达分钟级）。须有上限，否则永久挂起。8s 与 engine_aliyun 段级超时一致。
         tokio::time::timeout(std::time::Duration::from_secs(8), async {
             while let Some(event) = rx.recv().await {
                 match event {
                     StreamEvent::Text(t) => text = t,
                     StreamEvent::Finished => break,
-                    StreamEvent::Failed(msg) => bail!("dashscope task-failed: {}", msg),
+                    StreamEvent::Failed(msg) => bail!("aliyun task-failed: {}", msg),
                 }
             }
             Ok::<(), anyhow::Error>(())
         })
         .await
-        .map_err(|_| anyhow!("dashscope close 超时（8s）"))??;
+        .map_err(|_| anyhow!("aliyun close 超时（8s）"))??;
         Ok(text)
     }
 }
@@ -167,30 +167,30 @@ async fn run_ws_session(
     let mut request = endpoint
         .as_str()
         .into_client_request()
-        .context("dashscope WS 请求构造失败")?;
+        .context("aliyun WS 请求构造失败")?;
     request.headers_mut().insert(
         AUTHORIZATION,
         format!("bearer {}", key)
             .parse()
-            .context("dashscope Authorization header 构造失败")?,
+            .context("aliyun Authorization header 构造失败")?,
     );
     let (mut ws, _resp) = connect_async(request)
         .await
-        .with_context(|| format!("dashscope WS 连接失败: {}", endpoint))?;
+        .with_context(|| format!("aliyun WS 连接失败: {}", endpoint))?;
 
     // 2. 发 run-task（含 max_sentence_silence=600，比客户端 700ms 短，让服务端先出完整句）
     let task_id = uuid::Uuid::new_v4().to_string();
     let run_task = build_run_task_streaming(&model, &language, &task_id);
     ws.send(Message::Text(run_task.to_string()))
         .await
-        .context("dashscope WS 发送 run-task 失败")?;
+        .context("aliyun WS 发送 run-task 失败")?;
 
     // 3. 推 pre-roll PCM
     if !pre_roll_samples.is_empty() {
-        let pcm = crate::engine_dashscope::samples_to_pcm_s16le(&pre_roll_samples);
+        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(&pre_roll_samples);
         ws.send(Message::binary(pcm))
             .await
-            .context("dashscope WS 发送 pre-roll PCM 失败")?;
+            .context("aliyun WS 发送 pre-roll PCM 失败")?;
     }
 
     // 4. 双向循环
@@ -210,7 +210,7 @@ async fn run_ws_session(
                     Some(PcmFrame::Samples(pcm)) => {
                         ws.send(Message::binary(pcm))
                             .await
-                            .context("dashscope WS 发送 PCM 帧失败")?;
+                            .context("aliyun WS 发送 PCM 帧失败")?;
                     }
                     Some(PcmFrame::Finish) => {
                         let finish_task = json!({
@@ -223,7 +223,7 @@ async fn run_ws_session(
                         });
                         ws.send(Message::Text(finish_task.to_string()))
                             .await
-                            .context("dashscope WS 发送 finish-task 失败")?;
+                            .context("aliyun WS 发送 finish-task 失败")?;
                     }
                     None => break, // coordinator drop → 关闭
                 }
@@ -456,7 +456,7 @@ async fn run_qwen_realtime_session(
 
     // 4. 推 pre-roll PCM（base64 编码）
     if !pre_roll_samples.is_empty() {
-        let pcm = crate::engine_dashscope::samples_to_pcm_s16le(&pre_roll_samples);
+        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(&pre_roll_samples);
         let b64 = pcm_s16le_to_base64(&pcm);
         let append = json!({
             "event_id": qwen_event_id(),

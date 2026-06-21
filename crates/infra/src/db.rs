@@ -43,6 +43,12 @@ pub struct AsrSection {
     /// 阿里云云端 ASR（DashScope Fun-ASR 实时）。provider='aliyun' 路由入此。
     #[serde(default)]
     pub aliyun: Option<HashMap<String, ModelEntry>>,
+    /// 火山引擎豆包大模型 ASR（bigmodel_async 双向流式优化版）。provider='bytedance' 路由入此。
+    #[serde(default)]
+    pub bytedance: Option<HashMap<String, ModelEntry>>,
+    /// 腾讯云实时语音识别（WebSocket HMAC-SHA1 签名鉴权）。provider='tencent' 路由入此。
+    #[serde(default)]
+    pub tencent: Option<HashMap<String, ModelEntry>>,
 }
 
 /// DB models 表配置（domain='asr'；由 db::load_models 构造）。
@@ -405,6 +411,8 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
         zipformer: None,
         moonshine: None,
         aliyun: None,
+        bytedance: None,
+        tencent: None,
     };
     for (provider, category, model_name, source, language, description, secret_key, is_local, is_enabled, is_streaming) in rows {
         let entry = ModelEntry {
@@ -416,9 +424,12 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
             is_enabled: is_enabled != 0,
             is_streaming: is_streaming != 0,
         };
-        // provider='aliyun' → asr.aliyun；其余按本地 category 映射本地族
+        // provider='aliyun' → asr.aliyun；provider='bytedance' → asr.bytedance；
+        // provider='tencent' → asr.tencent；其余按本地 category 映射本地族
         let map: &mut Option<HashMap<String, ModelEntry>> = match (provider.as_str(), category.as_str()) {
             ("aliyun", _) => &mut asr.aliyun,
+            ("bytedance", _) => &mut asr.bytedance,
+            ("tencent", _) => &mut asr.tencent,
             (_, "whisper") => &mut asr.whisper,
             (_, "sensevoice") => &mut asr.sensevoice,
             (_, "paraformer") => &mut asr.paraformer,
@@ -762,8 +773,8 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
             .unwrap();
-        // 12 local + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
-        assert_eq!(count, 15);
+        // 14 local + 2 bytedance + 2 tencent + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
+        assert_eq!(count, 19);
     }
 
     #[test]
@@ -790,6 +801,20 @@ mod tests {
         // aliyun ASR（Fun-ASR / Paraformer / Qwen-ASR）
         let aliyun = cfg.asr.aliyun.as_ref().expect("aliyun section");
         assert_eq!(aliyun.len(), 3);
+        // bytedance ASR（Doubao-ASR 1.0 + 2.0）
+        let bytedance = cfg.asr.bytedance.as_ref().expect("bytedance section");
+        assert_eq!(bytedance.len(), 2);
+        let doubao = bytedance.get("doubao-asr-1.0-streaming").unwrap();
+        assert_eq!(doubao.source, "volc.bigasr.sauc.duration");
+        assert!(!doubao.is_local, "bytedance 模型非本地");
+        assert!(doubao.is_enabled, "测试强制 is_enabled=1，此处应为 true");
+        assert!(doubao.is_streaming, "Doubao-ASR 应支持流式");
+        // tencent ASR（16k_zh + 16k_zh_en）
+        let tencent = cfg.asr.tencent.as_ref().expect("tencent section");
+        assert_eq!(tencent.len(), 2);
+        let tc_zh = tencent.get("16k_zh").unwrap();
+        assert!(!tc_zh.is_local, "tencent 模型非本地");
+        assert!(tc_zh.is_streaming, "tencent ASR 应支持流式");
         let funasr = aliyun.get("fun-asr-realtime").unwrap();
         assert_eq!(funasr.source, "wss://dashscope.aliyuncs.com/api-ws/v1/inference");
         assert!(!funasr.is_local, "aliyun Fun-ASR 非本地");

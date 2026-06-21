@@ -85,12 +85,20 @@ impl AsrEngineManager {
                         Arc::new(ZipformerCtcEngine::new(entry)?)
                     }
                 }
-                // Aliyun 云端引擎由 Task 2 实现（DashscopeEngine）；Task 1 阶段本地实例化无实现。
+                // Aliyun 云端引擎由 Task 2 实现（AliyunEngine）；Task 1 阶段本地实例化无实现。
                 config::EngineCategory::Aliyun => anyhow::bail!(
-                    "阿里云云端 ASR 引擎尚未接入（spec='{}'，见 Task 2 DashscopeEngine）",
+                    "阿里云云端 ASR 引擎尚未接入（spec='{}'，见 Task 2 AliyunEngine）",
                     model_name
                 ),
                 config::EngineCategory::Moonshine => Arc::new(MoonshineEngine::new(entry)?),
+                config::EngineCategory::ByteDance => anyhow::bail!(
+                    "字节跳动云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
+                    model_name
+                ),
+                config::EngineCategory::Tencent => anyhow::bail!(
+                    "腾讯云云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
+                    model_name
+                ),
             };
 
             // Write to cache

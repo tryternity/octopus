@@ -11,7 +11,7 @@ pub use octopus_infra::config::{AppConfig, PolishMode};
 /// 检查配置的 ASR 引擎是否支持**本地**流式识别（StreamingSession）。
 ///
 /// 云端引擎（Aliyun）的 `is_streaming=true` 表示支持云端 WS 流式（dashscope），
-/// **不**走本地 StreamingSession——必须排除，否则 dashscope feature 未启用时
+/// **不**走本地 StreamingSession——必须排除，否则 aliyun feature 未启用时
 /// 会错误地走 StreamingSession 路径并在 `new()` 中 bail。
 pub fn is_streaming_engine(cfg: &AppConfig) -> bool {
     if let Ok(resolved) = octopus_asr::config::resolve_active_engine(&cfg.asr_engine) {

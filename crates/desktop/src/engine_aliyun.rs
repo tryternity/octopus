@@ -17,7 +17,7 @@
 //!   6. `session.finished` 关闭
 //!
 //! 集成点：桌面分块 [`TranscriptionEngine`]（coordinator 按 `is_streaming_engine=false`
-//! 时，每段 VAD 调一次 [`DashscopeEngine::transcribe`]）。
+//! 时，每段 VAD 调一次 [`AliyunEngine::transcribe`]）。
 //!
 //! 鉴权：WS 请求 header `Authorization: bearer <secret_key>`（DashScope API Key）。
 //! DashScope api-ws 端点强制要求该头，缺则 401/连接被拒。通过 `IntoClientRequest` 把
@@ -53,12 +53,12 @@ use crate::engine::TranscriptionEngine;
 fn build_authed_request(endpoint: &str, key: &str) -> Result<Request> {
     let mut request = endpoint
         .into_client_request()
-        .context("dashscope WS 请求构造失败")?;
+        .context("aliyun WS 请求构造失败")?;
     request.headers_mut().insert(
         AUTHORIZATION,
         format!("bearer {}", key)
             .parse()
-            .context("dashscope Authorization header 构造失败")?,
+            .context("aliyun Authorization header 构造失败")?,
     );
     Ok(request)
 }
@@ -68,16 +68,16 @@ fn build_authed_request(endpoint: &str, key: &str) -> Result<Request> {
 /// 无运行时状态：每次 `transcribe` 调用都从 DB 重新解析 `engine` 字符串 →
 /// 取 endpoint + secret_key → 开一条 WS。这样运行时切换 asr_engine（toolbar 命令）
 /// 可即时生效。
-pub struct DashscopeEngine;
+pub struct AliyunEngine;
 
-impl DashscopeEngine {
+impl AliyunEngine {
     pub fn new() -> Self {
         Self
     }
 }
 
 #[async_trait]
-impl TranscriptionEngine for DashscopeEngine {
+impl TranscriptionEngine for AliyunEngine {
     async fn transcribe(&self, samples: &[f32], language: &str, engine: &str) -> Result<String> {
         // 1. 从 DB 解析 engine spec → endpoint + secret_key。
         //    显式查 asr.aliyun section，未命中精确 bail（不静默回退 zipformer，
@@ -121,7 +121,7 @@ impl TranscriptionEngine for DashscopeEngine {
 
         // 2. 全流程超时 8s（与 engine_ws.rs 一致）
         //    根据 endpoint 路径选择协议
-        let is_qwen = crate::dashscope_stream::is_qwen_realtime_endpoint(&endpoint);
+        let is_qwen = crate::aliyun_stream::is_qwen_realtime_endpoint(&endpoint);
         tokio::time::timeout(Duration::from_secs(8), async move {
             if is_qwen {
                 run_qwen_realtime_transcribe(&endpoint, &key, &model, &samples, &language).await
@@ -130,7 +130,7 @@ impl TranscriptionEngine for DashscopeEngine {
             }
         })
         .await
-        .map_err(|_| anyhow!("dashscope transcription timeout (8s)"))?
+        .map_err(|_| anyhow!("aliyun transcription timeout (8s)"))?
     }
 
     async fn health_check(&self) -> bool {
@@ -161,14 +161,14 @@ async fn run_session(
     let request = build_authed_request(endpoint, key)?;
     let (mut ws, _resp) = connect_async(request)
         .await
-        .with_context(|| format!("dashscope WS 连接失败: {}", endpoint))?;
+        .with_context(|| format!("aliyun WS 连接失败: {}", endpoint))?;
 
     // run-task（含完整 payload + header）—— 由 build_run_task 单一构造。
     let task_id = uuid::Uuid::new_v4().to_string();
     let run_task = build_run_task(model, language, &task_id);
     ws.send(Message::Text(run_task.to_string()))
         .await
-        .context("dashscope WS 发送 run-task 失败")?;
+        .context("aliyun WS 发送 run-task 失败")?;
 
     // PCM 帧（200ms 分块）。
     send_pcm_frames(&mut ws, samples).await?;
@@ -186,7 +186,7 @@ async fn run_session(
     });
     ws.send(Message::Text(finish_task.to_string()))
         .await
-        .context("dashscope WS 发送 finish-task 失败")?;
+        .context("aliyun WS 发送 finish-task 失败")?;
 
     // 收 result-generated，累积最终句文本。
     collect_results(&mut ws).await
@@ -236,7 +236,7 @@ async fn send_pcm_frames(ws: &mut WsStream, samples: &[f32]) -> Result<()> {
     for chunk in pcm.chunks(CHUNK_BYTES) {
         ws.send(Message::binary(chunk.to_vec()))
             .await
-            .context("dashscope WS 发送 PCM 帧失败")?;
+            .context("aliyun WS 发送 PCM 帧失败")?;
     }
     Ok(())
 }
@@ -248,7 +248,7 @@ async fn collect_results(ws: &mut WsStream) -> Result<String> {
     let mut current_sentence = String::new();
     let mut current_sentence_id: i64 = -1;
     while let Some(msg) = ws.next().await {
-        let msg = msg.context("dashscope WS 读消息失败")?;
+        let msg = msg.context("aliyun WS 读消息失败")?;
         if let Message::Text(t) = msg {
             let v: Value = match serde_json::from_str(&t) {
                 Ok(v) => v,
@@ -297,7 +297,7 @@ async fn collect_results(ws: &mut WsStream) -> Result<String> {
                         .or_else(|| v["header"]["error_code"].as_str())
                         .map(|s| s.to_string())
                         .unwrap_or_else(|| v["header"].to_string());
-                    bail!("dashscope task-failed: {}", msg);
+                    bail!("aliyun task-failed: {}", msg);
                 }
                 _ => {} // task-started / 其他事件忽略
             }
@@ -567,7 +567,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "需真实 DashScope API Key，且消耗云端调用配额"]
     async fn dashscope_e2e_smoke() {
-        let engine = DashscopeEngine::new();
+        let engine = AliyunEngine::new();
         // 合成 1 秒 1kHz 正弦波（非语音，仅验证协议通路，预期返回空或无关文本）
         let sr = 16000_f32;
         let samples: Vec<f32> = (0..sr as usize)

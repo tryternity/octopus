@@ -130,6 +130,10 @@ pub enum EngineCategory {
     Moonshine,
     /// 阿里云云端 ASR（DashScope Fun-ASR 实时）。provider='aliyun' 路由入此。
     Aliyun,
+    /// 字节跳动云端 ASR（豆包大模型 bigmodel_async 双向流式优化版）。provider='bytedance' 路由入此。
+    ByteDance,
+    /// 腾讯云云端 ASR（实时语音识别 WebSocket HMAC-SHA1 签名鉴权）。provider='tencent' 路由入此。
+    Tencent,
 }
 
 /// DB `models.category` 字符串 → EngineCategory 映射。
@@ -154,14 +158,20 @@ fn resolve_category(provider: &str, category: &str) -> Option<EngineCategory> {
     if provider.eq_ignore_ascii_case("aliyun") {
         return Some(EngineCategory::Aliyun);
     }
+    if provider.eq_ignore_ascii_case("bytedance") {
+        return Some(EngineCategory::ByteDance);
+    }
+    if provider.eq_ignore_ascii_case("tencent") {
+        return Some(EngineCategory::Tencent);
+    }
     engine_category_from_str(category)
 }
 
-/// 按固定顺序遍历 AsrConfig 的 7 个 section（用于 NameOnly 裸名查找）。
-/// 顺序与本地引擎优先一致（aliyun 云端放最后）。
+/// 按固定顺序遍历 AsrConfig 的 9 个 section（用于 NameOnly 裸名查找）。
+/// 顺序与本地引擎优先一致（aliyun / bytedance / tencent 云端放最后）。
 fn all_sections<'a>(
     cfg: &'a AsrConfig,
-) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 7] {
+) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 9] {
     [
         (cfg.asr.whisper.as_ref(), EngineCategory::Whisper),
         (cfg.asr.sensevoice.as_ref(), EngineCategory::SenseVoice),
@@ -170,6 +180,8 @@ fn all_sections<'a>(
         (cfg.asr.zipformer.as_ref(), EngineCategory::Zipformer),
         (cfg.asr.moonshine.as_ref(), EngineCategory::Moonshine),
         (cfg.asr.aliyun.as_ref(), EngineCategory::Aliyun),
+        (cfg.asr.bytedance.as_ref(), EngineCategory::ByteDance),
+        (cfg.asr.tencent.as_ref(), EngineCategory::Tencent),
     ]
 }
 
@@ -221,10 +233,12 @@ pub struct EngineInfo {
 }
 
 /// EngineCategory 对应的 provider 字符串（与 DB models.provider 一致，用于构造 3-part spec）。
-/// 本地族 → "local"；Aliyun → "aliyun"。
+/// 本地族 → "local"；Aliyun → "aliyun"；ByteDance → "bytedance"；Tencent → "tencent"。
 fn provider_of(c: &EngineCategory) -> &'static str {
     match c {
         EngineCategory::Aliyun => "aliyun",
+        EngineCategory::ByteDance => "bytedance",
+        EngineCategory::Tencent => "tencent",
         _ => "local",
     }
 }
@@ -232,8 +246,8 @@ fn provider_of(c: &EngineCategory) -> &'static str {
 /// EngineCategory → category 字符串（与 DB models.category 一致，用于排序、显示、构造 spec）。
 ///
 /// 三端（asr / desktop / cli）共享此唯一映射。Aliyun 对应 DB 的 `Fun-ASR` 模型族
-/// （db.sql seed 的 category 列），spec 构造和显示必须与此一致，否则
-/// `{provider}:{category}:{model_name}` 格式的 category 段不匹配 DB 实际值。
+/// （db.sql seed 的 category 列），ByteDance 对应 `Doubao-ASR`，Tencent 对应 `Tencent-ASR`，
+/// spec 构造和显示必须与此一致，否则 `{provider}:{category}:{model_name}` 格式的 category 段不匹配 DB 实际值。
 pub fn category_label(c: EngineCategory) -> &'static str {
     use EngineCategory::*;
     match c {
@@ -244,6 +258,8 @@ pub fn category_label(c: EngineCategory) -> &'static str {
         Zipformer => "zipformer",
         Moonshine => "moonshine",
         Aliyun => "Fun-ASR",
+        ByteDance => "Doubao-ASR",
+        Tencent => "Tencent-ASR",
     }
 }
 
@@ -382,6 +398,8 @@ pub fn pick_entry<'a>(
         EngineCategory::Zipformer => cfg.asr.zipformer.as_ref(),
         EngineCategory::Moonshine => cfg.asr.moonshine.as_ref(),
         EngineCategory::Aliyun => cfg.asr.aliyun.as_ref(),
+        EngineCategory::ByteDance => cfg.asr.bytedance.as_ref(),
+        EngineCategory::Tencent => cfg.asr.tencent.as_ref(),
     }?;
     map.get(name)
 }
@@ -511,6 +529,8 @@ mod tests {
                 qwen3_asr: None,
                 zipformer: Some(zip),
                 moonshine: None,
+                bytedance: None,
+                tencent: None,
                 aliyun: None,
             },
         }
@@ -539,6 +559,8 @@ mod tests {
                 qwen3_asr: None,
                 zipformer: None,
                 moonshine: None,
+                bytedance: None,
+                tencent: None,
                 aliyun: Some(aliyun),
             },
         }
@@ -600,6 +622,8 @@ mod tests {
                 qwen3_asr: None,
                 zipformer: None,
                 moonshine: None,
+                bytedance: None,
+                tencent: None,
                 aliyun: None,
             },
         };
