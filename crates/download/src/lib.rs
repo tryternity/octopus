@@ -4,3 +4,4 @@
 //! 详见 `docs/superpowers/specs/2026-06-21-model-download-design.md`。
 
 pub mod core;
+pub mod hf;
