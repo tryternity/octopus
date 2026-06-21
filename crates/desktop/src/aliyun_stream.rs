@@ -19,7 +19,7 @@
 //! `tokio::select!` 双向循环：收 PCM → send / 收 WS text → 发 result event。
 //! coordinator 通过同步 channel 非阻塞收 partial（`try_recv`），close 时阻塞等最终结果。
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
@@ -30,127 +30,45 @@ use tokio_tungstenite::{
     tungstenite::Message,
 };
 
-/// PCM 帧指令：coordinator → 后台 WS task
-pub(crate) enum PcmFrame {
-    /// 推 PCM 样本（s16le bytes）
-    Samples(Vec<u8>),
-    /// 发 finish-task + 关闭发送端
-    Finish,
-}
+use crate::cloud_types::{CloudStreamHandle, PcmFrame, StreamEvent};
 
-/// 后台 reader 发给 coordinator 的事件。
-#[derive(Debug, Clone)]
-pub enum StreamEvent {
-    /// partial / final 识别文本（累积句文本，每次覆盖取最新）
-    Text(String),
-    /// 服务端 task-finished（最终结果已到位，连接可关闭）
-    Finished,
-    /// task-failed（错误信息）
-    Failed(String),
-}
-
-/// DashScope 流式会话句柄。
+/// 建连 + 初始化 + 推 pre-roll PCM + 启动后台 WS task。
 ///
-/// 持有 PCM sender（供 coordinator 推音频）和 result receiver（取识别文本）。
-/// 后台一条 tokio task 管理 WS 连接的双向收发。
-pub struct AliyunStreamSession {
-    pcm_tx: mpsc::UnboundedSender<PcmFrame>,
-    result_rx: mpsc::UnboundedReceiver<StreamEvent>,
-}
-
-impl AliyunStreamSession {
-    /// 建连 + 初始化 + 推 pre-roll PCM + 启动后台 WS task。
-    ///
-    /// 根据 `endpoint` 路径自动选择协议：
-    /// - 含 `/v1/realtime` → Qwen-ASR Realtime 会话协议（OpenAI Realtime 风格）
-    /// - 否则 → Fun-ASR/Paraformer 任务型协议（run-task/finish-task）
-    ///
-    /// `rt` 是 tauri 全局 runtime handle，用于 spawn async task。
-    /// `pre_roll_samples` 是 f32[-1,1] 样本（~100ms 前导音频），为 ASR 提供声学上下文。
-    pub fn open(
-        rt: &tauri::async_runtime::RuntimeHandle,
-        endpoint: String,
-        key: String,
-        model: String,
-        language: String,
-        pre_roll_samples: Vec<f32>,
-    ) -> Result<Self> {
-        let (pcm_tx, pcm_rx) = mpsc::unbounded_channel::<PcmFrame>();
-        let (result_tx, result_rx) = mpsc::unbounded_channel::<StreamEvent>();
-
-        let is_qwen = is_qwen_realtime_endpoint(&endpoint);
-        rt.spawn(async move {
-            // 自留 result_tx 克隆用于建连/建立期失败上报（审查 一2）：run_*_session 在
-            // connect_async / 发 run-task / pre-roll 失败时返回 Err，但传入的 result_tx 已按值
-            // 移入并在早退时 drop，closure 这边拿不到。克隆一份自留，Err 时由此发 Failed，
-            // 否则 coordinator try_recv 恒 None、僵尸会话静默卡到 Esc。
-            let tx_for_err = result_tx.clone();
-            let result = if is_qwen {
-                run_qwen_realtime_session(
-                    pcm_rx, result_tx, endpoint, key, model, language, pre_roll_samples,
-                ).await
-            } else {
-                run_ws_session(
-                    pcm_rx, result_tx, endpoint, key, model, language, pre_roll_samples,
-                ).await
-            };
-            if let Err(e) = result {
-                log::error!("aliyun stream session error: {}", e);
-                let _ = tx_for_err.send(StreamEvent::Failed(e.to_string()));
-            }
-        });
-
-        Ok(Self { pcm_tx, result_rx })
-    }
-
-    /// 推 PCM 样本（f32[-1,1] → s16le），非阻塞。
-    pub fn push_pcm(&self, samples: &[f32]) -> Result<()> {
-        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(samples);
-        self.pcm_tx
-            .send(PcmFrame::Samples(pcm))
-            .map_err(|_| anyhow!("aliyun PCM channel closed"))
-    }
-
-    /// 非阻塞发送 Finish 信号（finish-task / session.finish），不等待结果。
-    ///
-    /// 后续 WS task 收到服务端最终结果后通过 `try_recv_text()` 返回
-    /// `StreamEvent::Text`（最终文本）+ `StreamEvent::Finished`。
-    /// coordinator 在后续 tick 中 drain 这些事件。
-    pub fn finish(&self) -> Result<()> {
-        self.pcm_tx
-            .send(PcmFrame::Finish)
-            .map_err(|_| anyhow!("aliyun PCM channel closed"))
-    }
-
-    /// 非阻塞取 partial 文本（如果有新的）。
-    pub fn try_recv_text(&mut self) -> Option<StreamEvent> {
-        self.result_rx.try_recv().ok()
-    }
-
-    /// 非阻塞收尾的 async 内核（审查 三1）：发 Finish + 收最终结果（8s 超时上限）。
-    /// coordinator 停止路径改为 spawn 本 future，结果以 `Command::CloudStreamingDone`
-    /// 回传，期间进 `Stage::CloudClosing`——避免原同步 `close` 的 `block_on` 卡
-    /// coordinator 主线程最多 8s（Toggle 停止路径；网络挂起时快捷键堆积无响应）。
-    pub async fn close_async(self) -> Result<String> {
-        let _ = self.pcm_tx.send(PcmFrame::Finish);
-        let mut rx = self.result_rx;
-        let mut text = String::new();
-        // 保底超时：WS task 若因网络挂起不回 Finished/Failed，recv 会一直 pending 直到
-        // TCP 超时（默认可达分钟级）。须有上限，否则永久挂起。8s 与 engine_aliyun 段级超时一致。
-        tokio::time::timeout(std::time::Duration::from_secs(8), async {
-            while let Some(event) = rx.recv().await {
-                match event {
-                    StreamEvent::Text(t) => text = t,
-                    StreamEvent::Finished => break,
-                    StreamEvent::Failed(msg) => bail!("aliyun task-failed: {}", msg),
-                }
-            }
-            Ok::<(), anyhow::Error>(())
-        })
-        .await
-        .map_err(|_| anyhow!("aliyun close 超时（8s）"))??;
-        Ok(text)
-    }
+/// 根据 `endpoint` 路径自动选择协议：
+/// - 含 `/v1/realtime` → Qwen-ASR Realtime 会话协议（OpenAI Realtime 风格）
+/// - 否则 → Fun-ASR/Paraformer 任务型协议（run-task/finish-task）
+///
+/// `rt` 是 tauri 全局 runtime handle，用于 spawn async task。
+/// `pre_roll_samples` 是 f32[-1,1] 样本（~100ms 前导音频），为 ASR 提供声学上下文。
+pub fn open(
+    rt: &tauri::async_runtime::RuntimeHandle,
+    endpoint: String,
+    key: String,
+    model: String,
+    language: String,
+    pre_roll_samples: Vec<f32>,
+) -> Result<CloudStreamHandle> {
+    let (handle, pcm_rx, result_tx) = CloudStreamHandle::new();
+    let is_qwen = is_qwen_realtime_endpoint(&endpoint);
+    rt.spawn(async move {
+        let tx_for_err = result_tx.clone();
+        let result = if is_qwen {
+            run_qwen_realtime_session(
+                pcm_rx, result_tx, endpoint, key, model, language, pre_roll_samples,
+            )
+            .await
+        } else {
+            run_ws_session(
+                pcm_rx, result_tx, endpoint, key, model, language, pre_roll_samples,
+            )
+            .await
+        };
+        if let Err(e) = result {
+            log::error!("aliyun stream session error: {}", e);
+            let _ = tx_for_err.send(StreamEvent::Failed(e.to_string()));
+        }
+    });
+    Ok(handle)
 }
 
 /// 后台 WS 会话主逻辑：建连 → run-task → pre-roll → 双向循环 → finish-task → 收结果。
@@ -187,7 +105,7 @@ async fn run_ws_session(
 
     // 3. 推 pre-roll PCM
     if !pre_roll_samples.is_empty() {
-        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(&pre_roll_samples);
+        let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
         ws.send(Message::binary(pcm))
             .await
             .context("aliyun WS 发送 pre-roll PCM 失败")?;
@@ -456,7 +374,7 @@ async fn run_qwen_realtime_session(
 
     // 4. 推 pre-roll PCM（base64 编码）
     if !pre_roll_samples.is_empty() {
-        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(&pre_roll_samples);
+        let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
         let b64 = pcm_s16le_to_base64(&pcm);
         let append = json!({
             "event_id": qwen_event_id(),

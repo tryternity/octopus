@@ -32,7 +32,7 @@ use tokio_tungstenite::{
     tungstenite::Message,
 };
 
-use crate::aliyun_stream::{PcmFrame, StreamEvent};
+use crate::cloud_types::{CloudStreamHandle, PcmFrame, StreamEvent};
 
 /// HMAC-SHA1 类型别名。
 type HmacSha1 = Hmac<Sha1>;
@@ -41,94 +41,40 @@ type HmacSha1 = Hmac<Sha1>;
 const ENDPOINT_HOST: &str = "asr.cloud.tencent.com";
 const ENDPOINT_PATH_PREFIX: &str = "/asr/v2/";
 
-/// 腾讯云流式会话句柄。
+/// 建连 + 推 pre-roll PCM + 启动后台 WS task。
 ///
-/// 接口与 [`crate::aliyun_stream::AliyunStreamSession`] 完全一致，
-/// coordinator 通过 [`crate::cloud_session::CloudSession`] enum 分派，上层逻辑零改动。
-pub struct TencentStreamSession {
-    pcm_tx: mpsc::UnboundedSender<PcmFrame>,
-    result_rx: mpsc::UnboundedReceiver<StreamEvent>,
-}
-
-impl TencentStreamSession {
-    /// 建连 + 推 pre-roll PCM + 启动后台 WS task。
-    ///
-    /// 参数：
-    /// - `appid_secretid`：`{appid}:{secretid}` 复合字段（来自 DB `source`）
-    /// - `secret_key`：SecretKey（来自 DB `secret_key`，用于 HMAC-SHA1 签名）
-    /// - `engine_model_type`：引擎模型类型（来自 DB `model_name`，如 `16k_zh`）
-    /// - `language`：语言配置（auto/zh/en，用于选择 engine_model_type 的辅助参考）
-    /// - `pre_roll_samples`：前导音频（f32[-1,1]）
-    pub fn open(
-        rt: &tauri::async_runtime::RuntimeHandle,
-        appid_secretid: String,
-        secret_key: String,
-        engine_model_type: String,
-        _language: String,
-        pre_roll_samples: Vec<f32>,
-    ) -> Result<Self> {
-        let (pcm_tx, pcm_rx) = mpsc::unbounded_channel::<PcmFrame>();
-        let (result_tx, result_rx) = mpsc::unbounded_channel::<StreamEvent>();
-
-        rt.spawn(async move {
-            let tx_for_err = result_tx.clone();
-            let result = run_tencent_session(
-                pcm_rx,
-                result_tx,
-                appid_secretid,
-                secret_key,
-                engine_model_type,
-                pre_roll_samples,
-            )
-            .await;
-            if let Err(e) = result {
-                log::error!("tencent stream session error: {}", e);
-                let _ = tx_for_err.send(StreamEvent::Failed(e.to_string()));
-            }
-        });
-
-        Ok(Self { pcm_tx, result_rx })
-    }
-
-    /// 推 PCM 样本（f32[-1,1] → s16le），非阻塞。
-    pub fn push_pcm(&self, samples: &[f32]) -> Result<()> {
-        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(samples);
-        self.pcm_tx
-            .send(PcmFrame::Samples(pcm))
-            .map_err(|_| anyhow!("tencent PCM channel closed"))
-    }
-
-    /// 非阻塞发送 Finish 信号（发 `{"type":"end"}` text），不等待结果。
-    pub fn finish(&self) -> Result<()> {
-        self.pcm_tx
-            .send(PcmFrame::Finish)
-            .map_err(|_| anyhow!("tencent PCM channel closed"))
-    }
-
-    /// 非阻塞取 partial 文本。
-    pub fn try_recv_text(&mut self) -> Option<StreamEvent> {
-        self.result_rx.try_recv().ok()
-    }
-
-    /// 非阻塞收尾的 async 内核：发 Finish + 收最终结果（8s 超时上限）。
-    pub async fn close_async(self) -> Result<String> {
-        let _ = self.pcm_tx.send(PcmFrame::Finish);
-        let mut rx = self.result_rx;
-        let mut text = String::new();
-        tokio::time::timeout(std::time::Duration::from_secs(8), async {
-            while let Some(event) = rx.recv().await {
-                match event {
-                    StreamEvent::Text(t) => text = t,
-                    StreamEvent::Finished => break,
-                    StreamEvent::Failed(msg) => bail!("tencent task-failed: {}", msg),
-                }
-            }
-            Ok::<(), anyhow::Error>(())
-        })
-        .await
-        .map_err(|_| anyhow!("tencent close 超时（8s）"))??;
-        Ok(text)
-    }
+/// 参数：
+/// - `appid_secretid`：`{appid}:{secretid}` 复合字段（来自 DB `source`）
+/// - `secret_key`：SecretKey（来自 DB `secret_key`，用于 HMAC-SHA1 签名）
+/// - `engine_model_type`：引擎模型类型（来自 DB `model_name`，如 `16k_zh`）
+/// - `language`：语言配置（auto/zh/en，用于选择 engine_model_type 的辅助参考）
+/// - `pre_roll_samples`：前导音频（f32[-1,1]）
+pub fn open(
+    rt: &tauri::async_runtime::RuntimeHandle,
+    appid_secretid: String,
+    secret_key: String,
+    engine_model_type: String,
+    _language: String,
+    pre_roll_samples: Vec<f32>,
+) -> Result<CloudStreamHandle> {
+    let (handle, pcm_rx, result_tx) = CloudStreamHandle::new();
+    rt.spawn(async move {
+        let tx_for_err = result_tx.clone();
+        let result = run_tencent_session(
+            pcm_rx,
+            result_tx,
+            appid_secretid,
+            secret_key,
+            engine_model_type,
+            pre_roll_samples,
+        )
+        .await;
+        if let Err(e) = result {
+            log::error!("tencent stream session error: {}", e);
+            let _ = tx_for_err.send(StreamEvent::Failed(e.to_string()));
+        }
+    });
+    Ok(handle)
 }
 
 /// 后台 WS 会话主逻辑：建连 → pre-roll → 双向循环 → 结束信号 → 收结果。
@@ -160,7 +106,7 @@ async fn run_tencent_session(
 
     // 4. 推 pre-roll PCM
     if !pre_roll_samples.is_empty() {
-        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(&pre_roll_samples);
+        let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
         ws.send(Message::Binary(pcm.into()))
             .await
             .context("tencent WS 发送 pre-roll PCM 失败")?;
@@ -170,7 +116,6 @@ async fn run_tencent_session(
     // 文本累积：按句 index 存 slice_type=2 稳态文本，partial 覆盖当前句
     let mut stable_segments: BTreeMap<i64, String> = BTreeMap::new();
     let mut current_partial = String::new();
-    let mut finished = false;
 
     loop {
         tokio::select! {
@@ -203,7 +148,7 @@ async fn run_tencent_session(
                             let _ = result_tx.send(StreamEvent::Failed(
                                 format!("tencent 错误 {}: {}", code, message)
                             ));
-                            break;
+                            return Ok(());
                         }
                         // 检查 final=1（全部识别结束）
                         if json.get("final").and_then(|f| f.as_i64()) == Some(1) {
@@ -213,8 +158,7 @@ async fn run_tencent_session(
                                 let _ = result_tx.send(StreamEvent::Text(stable));
                             }
                             let _ = result_tx.send(StreamEvent::Finished);
-                            finished = true;
-                            break;
+                            return Ok(());
                         }
                         // 处理识别结果
                         if let Some(result) = json.get("result") {
@@ -253,23 +197,20 @@ async fn run_tencent_session(
                     }
                     Some(Ok(_)) => {} // ping/close 等忽略
                     Some(Err(e)) => {
-                        log::error!("tencent WS 读错误: {}", e);
-                        break;
+                        let _ = result_tx.send(StreamEvent::Failed(
+                            format!("tencent WS 读错误: {}", e)
+                        ));
+                        return Ok(());
                     }
-                    None => break,
+                    None => {
+                        let _ = result_tx.send(StreamEvent::Failed("WS 连接意外关闭".to_string()));
+                        return Ok(());
+                    }
                 }
             }
         }
     }
 
-    if !finished {
-        // 连接异常断开但未收到 final=1，发最终文本（如果有）
-        let stable: String = stable_segments.values().cloned().collect();
-        if !stable.is_empty() {
-            let _ = result_tx.send(StreamEvent::Text(stable));
-        }
-        let _ = result_tx.send(StreamEvent::Finished);
-    }
     Ok(())
 }
 

@@ -15,7 +15,7 @@ mod tencent_stream;
 #[cfg(feature = "aliyun")]
 mod baidu_stream;
 #[cfg(feature = "aliyun")]
-mod cloud_session;
+mod cloud_types;
 mod engine_dispatch;
 mod engine_embedded;
 #[cfg(feature = "remote-grpc")]

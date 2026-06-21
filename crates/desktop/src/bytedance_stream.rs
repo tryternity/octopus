@@ -32,7 +32,7 @@
 //! Serialization：0x0=NONE / 0x1=JSON
 //! Compression：0x0=NONE / 0x1=GZIP
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use flate2::read::GzDecoder;
 use flate2::write::GzEncoder;
 use flate2::Compression;
@@ -48,7 +48,7 @@ use tokio_tungstenite::{
     tungstenite::Message,
 };
 
-use crate::aliyun_stream::{PcmFrame, StreamEvent};
+use crate::cloud_types::{CloudStreamHandle, PcmFrame, StreamEvent};
 
 /// 固定 endpoint（火山引擎大模型 ASR 双向流式优化版）。
 const ENDPOINT: &str = "wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async";
@@ -72,81 +72,27 @@ const SER_JSON: u8 = 0x1;
 const COMP_NONE: u8 = 0x0;
 const COMP_GZIP: u8 = 0x1;
 
-/// 字节跳动流式会话句柄。
-///
-/// 接口与 [`crate::aliyun_stream::AliyunStreamSession`] 完全一致，
-/// coordinator 通过 enum 分派，上层逻辑零改动。
-pub struct ByteDanceStreamSession {
-    pcm_tx: mpsc::UnboundedSender<PcmFrame>,
-    result_rx: mpsc::UnboundedReceiver<StreamEvent>,
-}
-
-impl ByteDanceStreamSession {
-    /// 建连 + 发初始 config + 推 pre-roll PCM + 启动后台 WS task。
-    pub fn open(
-        rt: &tauri::async_runtime::RuntimeHandle,
-        api_key: String,
-        resource_id: String,
-        language: String,
-        pre_roll_samples: Vec<f32>,
-    ) -> Result<Self> {
-        let (pcm_tx, pcm_rx) = mpsc::unbounded_channel::<PcmFrame>();
-        let (result_tx, result_rx) = mpsc::unbounded_channel::<StreamEvent>();
-
-        rt.spawn(async move {
-            let tx_for_err = result_tx.clone();
-            let result = run_bytedance_session(
-                pcm_rx, result_tx, api_key, resource_id, language, pre_roll_samples,
-            )
-            .await;
-            if let Err(e) = result {
-                log::error!("bytedance stream session error: {}", e);
-                let _ = tx_for_err.send(StreamEvent::Failed(e.to_string()));
-            }
-        });
-
-        Ok(Self { pcm_tx, result_rx })
-    }
-
-    /// 推 PCM 样本（f32[-1,1] → s16le），非阻塞。
-    pub fn push_pcm(&self, samples: &[f32]) -> Result<()> {
-        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(samples);
-        self.pcm_tx
-            .send(PcmFrame::Samples(pcm))
-            .map_err(|_| anyhow!("bytedance PCM channel closed"))
-    }
-
-    /// 非阻塞发送 Finish 信号（发末帧 = 负包），不等待结果。
-    pub fn finish(&self) -> Result<()> {
-        self.pcm_tx
-            .send(PcmFrame::Finish)
-            .map_err(|_| anyhow!("bytedance PCM channel closed"))
-    }
-
-    /// 非阻塞取 partial 文本。
-    pub fn try_recv_text(&mut self) -> Option<StreamEvent> {
-        self.result_rx.try_recv().ok()
-    }
-
-    /// 非阻塞收尾的 async 内核：发 Finish + 收最终结果（8s 超时上限）。
-    pub async fn close_async(self) -> Result<String> {
-        let _ = self.pcm_tx.send(PcmFrame::Finish);
-        let mut rx = self.result_rx;
-        let mut text = String::new();
-        tokio::time::timeout(std::time::Duration::from_secs(8), async {
-            while let Some(event) = rx.recv().await {
-                match event {
-                    StreamEvent::Text(t) => text = t,
-                    StreamEvent::Finished => break,
-                    StreamEvent::Failed(msg) => bail!("bytedance task-failed: {}", msg),
-                }
-            }
-            Ok::<(), anyhow::Error>(())
-        })
-        .await
-        .map_err(|_| anyhow!("bytedance close 超时（8s）"))??;
-        Ok(text)
-    }
+/// 建连 + 发初始 config + 推 pre-roll PCM + 启动后台 WS task。
+pub fn open(
+    rt: &tauri::async_runtime::RuntimeHandle,
+    api_key: String,
+    resource_id: String,
+    language: String,
+    pre_roll_samples: Vec<f32>,
+) -> Result<CloudStreamHandle> {
+    let (handle, pcm_rx, result_tx) = CloudStreamHandle::new();
+    rt.spawn(async move {
+        let tx_for_err = result_tx.clone();
+        let result = run_bytedance_session(
+            pcm_rx, result_tx, api_key, resource_id, language, pre_roll_samples,
+        )
+        .await;
+        if let Err(e) = result {
+            log::error!("bytedance stream session error: {}", e);
+            let _ = tx_for_err.send(StreamEvent::Failed(e.to_string()));
+        }
+    });
+    Ok(handle)
 }
 
 /// 后台 WS 会话主逻辑：建连 → 发初始 config → pre-roll → 双向循环 → 末帧 → 收结果。
@@ -227,7 +173,7 @@ async fn run_bytedance_session(
 
     // 3. 推 pre-roll PCM
     if !pre_roll_samples.is_empty() {
-        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(&pre_roll_samples);
+        let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
         let audio_frame = build_client_frame(
             MSG_AUDIO_ONLY_REQUEST,
             FLAG_NO_SEQUENCE,
@@ -241,8 +187,6 @@ async fn run_bytedance_session(
     }
 
     // 4. 双向循环
-    let mut accumulated_text = String::new();
-    let mut finished = false;
     loop {
         tokio::select! {
             // 收 PCM 指令
@@ -291,14 +235,12 @@ async fn run_bytedance_session(
                                 let json_val: Value = serde_json::from_str(&json_str)
                                     .context("bytedance 响应 JSON 解析失败")?;
                                 if let Some(text) = json_val["result"]["text"].as_str() {
-                                    accumulated_text = text.to_string();
-                                    let _ = result_tx.send(StreamEvent::Text(accumulated_text.clone()));
+                                    let _ = result_tx.send(StreamEvent::Text(text.to_string()));
                                 }
                                 if parsed.flags == 0x3 {
                                     // 末帧响应（NEG_WITH_SEQUENCE）——全部结束
                                     let _ = result_tx.send(StreamEvent::Finished);
-                                    finished = true;
-                                    break;
+                                    return Ok(());
                                 }
                             }
                             MSG_ERROR_RESPONSE => {
@@ -307,7 +249,7 @@ async fn run_bytedance_session(
                                 let _ = result_tx.send(StreamEvent::Failed(
                                     format!("bytedance 错误 {}: {}", error_code, error_msg)
                                 ));
-                                break;
+                                return Ok(());
                             }
                             _ => {
                                 log::debug!("bytedance: 未知消息类型 0x{:X}", parsed.msg_type);
@@ -316,22 +258,20 @@ async fn run_bytedance_session(
                     }
                     Some(Ok(_)) => {} // text/close/ping 等忽略
                     Some(Err(e)) => {
-                        log::error!("bytedance WS 读错误: {}", e);
-                        break;
+                        let _ = result_tx.send(StreamEvent::Failed(
+                            format!("bytedance WS 读错误: {}", e)
+                        ));
+                        return Ok(());
                     }
-                    None => break,
+                    None => {
+                        let _ = result_tx.send(StreamEvent::Failed("WS 连接意外关闭".to_string()));
+                        return Ok(());
+                    }
                 }
             }
         }
     }
 
-    if !finished {
-        // 连接异常断开但未收到 Finished，发最终文本（如果有）
-        if !accumulated_text.is_empty() {
-            let _ = result_tx.send(StreamEvent::Text(accumulated_text));
-        }
-        let _ = result_tx.send(StreamEvent::Finished);
-    }
     Ok(())
 }
 

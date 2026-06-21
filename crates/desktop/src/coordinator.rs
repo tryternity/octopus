@@ -119,7 +119,7 @@ enum Stage {
         /// 检测用 VAD（逐 tick 喂入，有状态累积，跨 utterance 续接）
         vad: octopus_asr::vad::SileroVad,
         /// 当前活跃的云端流式会话（语音进行中时存在）
-        session: Option<crate::cloud_session::CloudSession>,
+        session: Option<crate::cloud_types::CloudStreamHandle>,
         /// pre-roll 滚动缓冲区：保留最近 ~200ms 音频，语音 onset 时取 100ms 补齐
         pre_roll_buffer: Vec<f32>,
         /// 已提交的识别文本（跨 utterance 拼接，只由 close() 结果 append）
@@ -1505,123 +1505,119 @@ fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<Atomi
     });
 }
 
-/// 解析 DashScope 云端引擎配置（endpoint + key + model_name），供 CloudStreaming tick 调用。
+/// 通用云端配置解析：从 DB section 取 ModelEntry + 校验 secret_key 非空。
+#[cfg(feature = "aliyun")]
+fn resolve_cloud_entry<'a>(
+    section: Option<&'a std::collections::HashMap<String, octopus_infra::db::ModelEntry>>,
+    provider: &'a str,
+    model_name: &'a str,
+) -> Result<&'a octopus_infra::db::ModelEntry, String> {
+    let entry = section
+        .and_then(|m| m.get(model_name))
+        .ok_or_else(|| format!("{} ASR 模型 '{}' 未在 DB 配置", provider, model_name))?;
+    if entry.secret_key.is_empty() {
+        return Err(format!("{} ASR 模型 '{}' 的 secret_key 为空", provider, model_name));
+    }
+    Ok(entry)
+}
+
+/// 解析 Aliyun（DashScope）配置（endpoint + key + model_name）。
 #[cfg(feature = "aliyun")]
 fn resolve_aliyun_config(engine_spec: &str) -> Result<(String, String, String), String> {
     let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
     let model_name = octopus_infra::db::parse_model_spec(engine_spec)
         .model_name()
         .to_string();
-    let entry = cfg
-        .asr
-        .aliyun
-        .as_ref()
-        .and_then(|m| m.get(model_name.as_str()))
-        .ok_or_else(|| format!("aliyun ASR 模型 '{}' 未在 DB 配置", model_name))?;
-    if entry.secret_key.is_empty() {
-        return Err(format!("aliyun ASR 模型 '{}' 的 secret_key 为空", model_name));
-    }
+    let entry = resolve_cloud_entry(cfg.asr.aliyun.as_ref(), "aliyun", &model_name)?;
     Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
 }
 
-/// 解析 ByteDance（豆包）云端引擎配置（resource_id + api_key + model_name）。
-///
-/// 与 `resolve_aliyun_config` 的差异：
-/// - `source` 字段是 Resource ID（如 `volc.bigasr.sauc.duration`），作为
-///   `X-Api-Resource-Id` 握手 header（而非 endpoint URL）。
-/// - `secret_key` 字段是 API Key，作为 `X-Api-Key` 握手 header。
-/// - Endpoint 固定在 `bytedance_stream::ENDPOINT`，不来自 DB。
+/// 解析 ByteDance（豆包）配置（resource_id + api_key + model_name）。
 #[cfg(feature = "aliyun")]
 fn resolve_bytedance_config(engine_spec: &str) -> Result<(String, String, String), String> {
     let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
     let model_name = octopus_infra::db::parse_model_spec(engine_spec)
         .model_name()
         .to_string();
-    let entry = cfg
-        .asr
-        .bytedance
-        .as_ref()
-        .and_then(|m| m.get(model_name.as_str()))
-        .ok_or_else(|| format!("bytedance ASR 模型 '{}' 未在 DB 配置", model_name))?;
-    if entry.secret_key.is_empty() {
-        return Err(format!(
-            "bytedance ASR 模型 '{}' 的 secret_key（API Key）为空",
-            model_name
-        ));
-    }
-    // 返回 (resource_id, api_key, model_name)
+    let entry = resolve_cloud_entry(cfg.asr.bytedance.as_ref(), "bytedance", &model_name)?;
     Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
 }
 
-/// 解析 Tencent（腾讯云）云端引擎配置（appid:secretid + secret_key + engine_model_type）。
-///
-/// 与 ByteDance 的差异：
-/// - `source` 字段是 `{appid}:{secretid}` 复合格式（冒号分隔）。
-/// - `secret_key` 字段是 SecretKey（用于 HMAC-SHA1 签名）。
-/// - `model_name` 字段是 engine_model_type（如 `16k_zh`），直接作为 URL 参数。
-/// - Endpoint 固定在 `tencent_stream::ENDPOINT_HOST`，不来自 DB。
+/// 解析 Tencent（腾讯云）配置（appid:secretid + secret_key + engine_model_type）。
 #[cfg(feature = "aliyun")]
 fn resolve_tencent_config(engine_spec: &str) -> Result<(String, String, String), String> {
     let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
     let model_name = octopus_infra::db::parse_model_spec(engine_spec)
         .model_name()
         .to_string();
-    let entry = cfg
-        .asr
-        .tencent
-        .as_ref()
-        .and_then(|m| m.get(model_name.as_str()))
-        .ok_or_else(|| format!("tencent ASR 模型 '{}' 未在 DB 配置", model_name))?;
-    if entry.secret_key.is_empty() {
-        return Err(format!(
-            "tencent ASR 模型 '{}' 的 secret_key（SecretKey）为空",
-            model_name
-        ));
-    }
+    let entry = resolve_cloud_entry(cfg.asr.tencent.as_ref(), "tencent", &model_name)?;
     if !entry.source.contains(':') {
         return Err(format!(
             "tencent ASR 模型 '{}' 的 source 字段格式应为 appid:secretid（当前='{}'）",
             model_name, entry.source
         ));
     }
-    // 返回 (appid:secretid, secret_key, engine_model_type)
     Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
 }
 
-/// 解析 Baidu（百度云）云端引擎配置（appid + api_key + dev_pid）。
-///
-/// 与 Tencent 的差异：
-/// - `source` 字段是 AppID（纯数字字符串）。
-/// - `secret_key` 字段是 API Key（appkey）。
-/// - `model_name` 字段是 dev_pid 字符串（如 `15372`）。
-/// - 鉴权在 START 帧中直接传 appid + appkey，不需 HMAC 签名。
-/// - Endpoint 固定在 `baidu_stream::ENDPOINT`，不来自 DB。
+/// 解析 Baidu（百度云）配置（appid + api_key + dev_pid）。
 #[cfg(feature = "aliyun")]
 fn resolve_baidu_config(engine_spec: &str) -> Result<(String, String, String), String> {
     let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
     let model_name = octopus_infra::db::parse_model_spec(engine_spec)
         .model_name()
         .to_string();
-    let entry = cfg
-        .asr
-        .baidu
-        .as_ref()
-        .and_then(|m| m.get(model_name.as_str()))
-        .ok_or_else(|| format!("baidu ASR 模型 '{}' 未在 DB 配置", model_name))?;
-    if entry.secret_key.is_empty() {
-        return Err(format!(
-            "baidu ASR 模型 '{}' 的 secret_key（API Key）为空",
-            model_name
-        ));
-    }
+    let entry = resolve_cloud_entry(cfg.asr.baidu.as_ref(), "baidu", &model_name)?;
     if entry.source.is_empty() {
         return Err(format!(
             "baidu ASR 模型 '{}' 的 source 字段（AppID）为空",
             model_name
         ));
     }
-    // 返回 (appid, api_key, dev_pid)
     Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
+}
+
+/// onset dispatch：根据引擎类型解析配置 + 打开对应云端 WS session。
+#[cfg(feature = "aliyun")]
+fn open_cloud_session(
+    config: &AppConfig,
+    pre_roll: Vec<f32>,
+) -> Result<crate::cloud_types::CloudStreamHandle, String> {
+    use octopus_asr::config::EngineCategory;
+    let rt = tauri::async_runtime::handle();
+    match octopus_asr::config::resolve_engine_category(&config.asr_engine) {
+        Some(EngineCategory::Aliyun) => {
+            let (endpoint, key, model) = resolve_aliyun_config(&config.asr_engine)?;
+            crate::aliyun_stream::open(
+                &rt, endpoint, key, model, config.language.clone(), pre_roll,
+            )
+            .map_err(|e| e.to_string())
+        }
+        Some(EngineCategory::ByteDance) => {
+            let (resource_id, api_key, _) = resolve_bytedance_config(&config.asr_engine)?;
+            crate::bytedance_stream::open(
+                &rt, api_key, resource_id, config.language.clone(), pre_roll,
+            )
+            .map_err(|e| e.to_string())
+        }
+        Some(EngineCategory::Tencent) => {
+            let (appid_secretid, secret_key, engine_model_type) =
+                resolve_tencent_config(&config.asr_engine)?;
+            crate::tencent_stream::open(
+                &rt, appid_secretid, secret_key, engine_model_type,
+                config.language.clone(), pre_roll,
+            )
+            .map_err(|e| e.to_string())
+        }
+        Some(EngineCategory::Baidu) => {
+            let (appid, appkey, dev_pid) = resolve_baidu_config(&config.asr_engine)?;
+            crate::baidu_stream::open(
+                &rt, appid, appkey, dev_pid, config.language.clone(), pre_roll,
+            )
+            .map_err(|e| e.to_string())
+        }
+        _ => Err("当前引擎非云端，无法开启 WSS".to_string()),
+    }
 }
 
 /// 处理 CloudStreamingTick 命令：VAD-gated per-utterance streaming。
@@ -1698,118 +1694,15 @@ fn handle_cloud_streaming_tick(
         *is_speaking = true;
         *speech_confirm_count = 0;
         current_partial.clear();
-        match octopus_asr::config::resolve_engine_category(&config.asr_engine) {
-            Some(octopus_asr::config::EngineCategory::Aliyun) => {
-                match resolve_aliyun_config(&config.asr_engine) {
-                    Ok((endpoint, key, model)) => {
-                        let pre_roll = take_preroll(pre_roll_buffer);
-                        let rt = tauri::async_runtime::handle();
-                        match crate::aliyun_stream::AliyunStreamSession::open(
-                            &rt, endpoint, key, model, config.language.clone(), pre_roll,
-                        ) {
-                            Ok(sess) => {
-                                let sess = crate::cloud_session::CloudSession::Aliyun(sess);
-                                let _ = sess.push_pcm(&samples);
-                                *session = Some(sess);
-                                debug!("CloudStreaming: Aliyun WSS opened on speech onset");
-                            }
-                            Err(e) => {
-                                error!("CloudStreaming: open Aliyun WSS failed: {}", e);
-                                *is_speaking = false;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("CloudStreaming: Aliyun config resolve failed: {}", e);
-                        *is_speaking = false;
-                    }
-                }
+        let pre_roll = take_preroll(pre_roll_buffer);
+        match open_cloud_session(config, pre_roll) {
+            Ok(sess) => {
+                let _ = sess.push_pcm(&samples);
+                *session = Some(sess);
+                debug!("CloudStreaming: WSS opened on speech onset");
             }
-            Some(octopus_asr::config::EngineCategory::ByteDance) => {
-                match resolve_bytedance_config(&config.asr_engine) {
-                    Ok((resource_id, api_key, _model)) => {
-                        let pre_roll = take_preroll(pre_roll_buffer);
-                        let rt = tauri::async_runtime::handle();
-                        match crate::bytedance_stream::ByteDanceStreamSession::open(
-                            &rt, api_key, resource_id, config.language.clone(), pre_roll,
-                        ) {
-                            Ok(sess) => {
-                                let sess = crate::cloud_session::CloudSession::ByteDance(sess);
-                                let _ = sess.push_pcm(&samples);
-                                *session = Some(sess);
-                                debug!("CloudStreaming: ByteDance WSS opened on speech onset");
-                            }
-                            Err(e) => {
-                                error!("CloudStreaming: open ByteDance WSS failed: {}", e);
-                                *is_speaking = false;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("CloudStreaming: ByteDance config resolve failed: {}", e);
-                        *is_speaking = false;
-                    }
-                }
-            }
-            Some(octopus_asr::config::EngineCategory::Tencent) => {
-                match resolve_tencent_config(&config.asr_engine) {
-                    Ok((appid_secretid, secret_key, engine_model_type)) => {
-                        let pre_roll = take_preroll(pre_roll_buffer);
-                        let rt = tauri::async_runtime::handle();
-                        match crate::tencent_stream::TencentStreamSession::open(
-                            &rt,
-                            appid_secretid,
-                            secret_key,
-                            engine_model_type,
-                            config.language.clone(),
-                            pre_roll,
-                        ) {
-                            Ok(sess) => {
-                                let sess = crate::cloud_session::CloudSession::Tencent(sess);
-                                let _ = sess.push_pcm(&samples);
-                                *session = Some(sess);
-                                debug!("CloudStreaming: Tencent WSS opened on speech onset");
-                            }
-                            Err(e) => {
-                                error!("CloudStreaming: open Tencent WSS failed: {}", e);
-                                *is_speaking = false;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("CloudStreaming: Tencent config resolve failed: {}", e);
-                        *is_speaking = false;
-                    }
-                }
-            }
-            Some(octopus_asr::config::EngineCategory::Baidu) => {
-                match resolve_baidu_config(&config.asr_engine) {
-                    Ok((appid, appkey, dev_pid)) => {
-                        let pre_roll = take_preroll(pre_roll_buffer);
-                        let rt = tauri::async_runtime::handle();
-                        match crate::baidu_stream::BaiduStreamSession::open(
-                            &rt, appid, appkey, dev_pid, config.language.clone(), pre_roll,
-                        ) {
-                            Ok(sess) => {
-                                let sess = crate::cloud_session::CloudSession::Baidu(sess);
-                                let _ = sess.push_pcm(&samples);
-                                *session = Some(sess);
-                                debug!("CloudStreaming: Baidu WSS opened on speech onset");
-                            }
-                            Err(e) => {
-                                error!("CloudStreaming: open Baidu WSS failed: {}", e);
-                                *is_speaking = false;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        error!("CloudStreaming: Baidu config resolve failed: {}", e);
-                        *is_speaking = false;
-                    }
-                }
-            }
-            _ => {
-                error!("CloudStreaming: 当前引擎非云端，无法开启 WSS");
+            Err(e) => {
+                error!("CloudStreaming: open WSS failed: {}", e);
                 *is_speaking = false;
             }
         }
@@ -1826,13 +1719,13 @@ fn handle_cloud_streaming_tick(
         // drain partial / final events
         while let Some(event) = sess.try_recv_text() {
             match event {
-                crate::aliyun_stream::StreamEvent::Text(text) => {
+                crate::cloud_types::StreamEvent::Text(text) => {
                     if !text.is_empty() {
                         log::info!("[CloudDrain] partial={:?}", text);
                         *current_partial = text;
                     }
                 }
-                crate::aliyun_stream::StreamEvent::Finished => {
+                crate::cloud_types::StreamEvent::Finished => {
                     log::info!(
                         "[CloudDrain] Finished, committing partial={:?} to transcript",
                         current_partial
@@ -1859,7 +1752,7 @@ fn handle_cloud_streaming_tick(
                     *is_speaking = false;
                     session_just_finished = true;
                 }
-                crate::aliyun_stream::StreamEvent::Failed(msg) => {
+                crate::cloud_types::StreamEvent::Failed(msg) => {
                     warn!("[CloudDrain] Failed: {}", msg);
                     current_partial.clear();
                     *is_closing = false;

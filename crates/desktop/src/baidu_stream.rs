@@ -19,99 +19,45 @@
 //! - `type=FIN_TEXT`：最终结果（稳态），`result` 为完整句文本
 //! - `type=HEARTBEAT`：心跳（忽略）
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{connect_async, tungstenite::Message};
 
-use crate::aliyun_stream::{PcmFrame, StreamEvent};
+use crate::cloud_types::{CloudStreamHandle, PcmFrame, StreamEvent};
 
 /// 固定 endpoint。
 const ENDPOINT: &str = "wss://vop.baidu.com/realtime_asr";
 
-/// 百度云流式会话句柄。
+/// 建连 + 发 START 帧 + 推 pre-roll PCM + 启动后台 WS task。
 ///
-/// 接口与 [`crate::aliyun_stream::AliyunStreamSession`] 完全一致，
-/// coordinator 通过 [`crate::cloud_session::CloudSession`] enum 分派，上层逻辑零改动。
-pub struct BaiduStreamSession {
-    pcm_tx: mpsc::UnboundedSender<PcmFrame>,
-    result_rx: mpsc::UnboundedReceiver<StreamEvent>,
-}
-
-impl BaiduStreamSession {
-    /// 建连 + 发 START 帧 + 推 pre-roll PCM + 启动后台 WS task。
-    ///
-    /// 参数：
-    /// - `appid`：百度 AppID（来自 DB `source`）
-    /// - `appkey`：百度 API Key（来自 DB `secret_key`）
-    /// - `dev_pid`：语种模型 PID 字符串（来自 DB `model_name`，如 `"15372"`）
-    /// - `_language`：语言配置（百度用 dev_pid 选模型，此参数保留兼容）
-    /// - `pre_roll_samples`：前导音频（f32[-1,1]）
-    pub fn open(
-        rt: &tauri::async_runtime::RuntimeHandle,
-        appid: String,
-        appkey: String,
-        dev_pid: String,
-        _language: String,
-        pre_roll_samples: Vec<f32>,
-    ) -> Result<Self> {
-        let (pcm_tx, pcm_rx) = mpsc::unbounded_channel::<PcmFrame>();
-        let (result_tx, result_rx) = mpsc::unbounded_channel::<StreamEvent>();
-
-        rt.spawn(async move {
-            let tx_for_err = result_tx.clone();
-            let result =
-                run_baidu_session(pcm_rx, result_tx, appid, appkey, dev_pid, pre_roll_samples)
-                    .await;
-            if let Err(e) = result {
-                log::error!("baidu stream session error: {}", e);
-                let _ = tx_for_err.send(StreamEvent::Failed(e.to_string()));
-            }
-        });
-
-        Ok(Self { pcm_tx, result_rx })
-    }
-
-    /// 推 PCM 样本（f32[-1,1] → s16le），非阻塞。
-    pub fn push_pcm(&self, samples: &[f32]) -> Result<()> {
-        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(samples);
-        self.pcm_tx
-            .send(PcmFrame::Samples(pcm))
-            .map_err(|_| anyhow!("baidu PCM channel closed"))
-    }
-
-    /// 非阻塞发送 Finish 信号（发 FINISH text），不等待结果。
-    pub fn finish(&self) -> Result<()> {
-        self.pcm_tx
-            .send(PcmFrame::Finish)
-            .map_err(|_| anyhow!("baidu PCM channel closed"))
-    }
-
-    /// 非阻塞取 partial 文本。
-    pub fn try_recv_text(&mut self) -> Option<StreamEvent> {
-        self.result_rx.try_recv().ok()
-    }
-
-    /// 非阻塞收尾的 async 内核：发 Finish + 收最终结果（8s 超时上限）。
-    pub async fn close_async(self) -> Result<String> {
-        let _ = self.pcm_tx.send(PcmFrame::Finish);
-        let mut rx = self.result_rx;
-        let mut text = String::new();
-        tokio::time::timeout(std::time::Duration::from_secs(8), async {
-            while let Some(event) = rx.recv().await {
-                match event {
-                    StreamEvent::Text(t) => text = t,
-                    StreamEvent::Finished => break,
-                    StreamEvent::Failed(msg) => bail!("baidu task-failed: {}", msg),
-                }
-            }
-            Ok::<(), anyhow::Error>(())
-        })
-        .await
-        .map_err(|_| anyhow!("baidu close 超时（8s）"))??;
-        Ok(text)
-    }
+/// 参数：
+/// - `appid`：百度 AppID（来自 DB `source`）
+/// - `appkey`：百度 API Key（来自 DB `secret_key`）
+/// - `dev_pid`：语种模型 PID 字符串（来自 DB `model_name`，如 `"15372"`）
+/// - `_language`：语言配置（百度用 dev_pid 选模型，此参数保留兼容）
+/// - `pre_roll_samples`：前导音频（f32[-1,1]）
+pub fn open(
+    rt: &tauri::async_runtime::RuntimeHandle,
+    appid: String,
+    appkey: String,
+    dev_pid: String,
+    _language: String,
+    pre_roll_samples: Vec<f32>,
+) -> Result<CloudStreamHandle> {
+    let (handle, pcm_rx, result_tx) = CloudStreamHandle::new();
+    rt.spawn(async move {
+        let tx_for_err = result_tx.clone();
+        let result =
+            run_baidu_session(pcm_rx, result_tx, appid, appkey, dev_pid, pre_roll_samples)
+                .await;
+        if let Err(e) = result {
+            log::error!("baidu stream session error: {}", e);
+            let _ = tx_for_err.send(StreamEvent::Failed(e.to_string()));
+        }
+    });
+    Ok(handle)
 }
 
 /// 后台 WS 会话主逻辑：建连 → START → pre-roll → 双向循环 → FINISH → 收结果。
@@ -156,7 +102,7 @@ async fn run_baidu_session(
 
     // 5. 推 pre-roll PCM
     if !pre_roll_samples.is_empty() {
-        let pcm = crate::engine_aliyun::samples_to_pcm_s16le(&pre_roll_samples);
+        let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
         ws.send(Message::Binary(pcm.into()))
             .await
             .context("baidu WS 发送 pre-roll PCM 失败")?;
@@ -166,7 +112,6 @@ async fn run_baidu_session(
     // 文本累积：FIN_TEXT 存入 Vec（按顺序拼接），MID_TEXT 覆盖 current_partial
     let mut fin_texts: Vec<String> = Vec::new();
     let mut current_partial = String::new();
-    let mut finished = false;
 
     loop {
         tokio::select! {
@@ -204,7 +149,7 @@ async fn run_baidu_session(
                             let _ = result_tx.send(StreamEvent::Failed(
                                 format!("baidu 错误 {}: {}", err_no, err_msg)
                             ));
-                            break;
+                            return Ok(());
                         }
                         let msg_type = json["type"].as_str().unwrap_or("");
                         match msg_type {
@@ -242,38 +187,32 @@ async fn run_baidu_session(
                     }
                     Some(Ok(Message::Close(_))) => {
                         log::debug!("baidu: WS 连接关闭");
-                        finished = true;
-                        break;
+                        let display = accumulate_display(&fin_texts, &current_partial);
+                        if !display.is_empty() {
+                            let _ = result_tx.send(StreamEvent::Text(display));
+                        }
+                        let _ = result_tx.send(StreamEvent::Finished);
+                        return Ok(());
                     }
                     Some(Ok(Message::Binary(_))) => {
                         // 百度不发 binary 响应，忽略
                     }
                     Some(Ok(_)) => {} // ping 等忽略
                     Some(Err(e)) => {
-                        log::error!("baidu WS 读错误: {}", e);
-                        break;
+                        let _ = result_tx.send(StreamEvent::Failed(
+                            format!("baidu WS 读错误: {}", e)
+                        ));
+                        return Ok(());
                     }
-                    None => break,
+                    None => {
+                        let _ = result_tx.send(StreamEvent::Failed("WS 连接意外关闭".to_string()));
+                        return Ok(());
+                    }
                 }
             }
         }
     }
 
-    if !finished {
-        // 连接异常断开，发最终文本（如果有）
-        let display = accumulate_display(&fin_texts, &current_partial);
-        if !display.is_empty() {
-            let _ = result_tx.send(StreamEvent::Text(display));
-        }
-        let _ = result_tx.send(StreamEvent::Finished);
-    } else {
-        // 正常关闭：发最终文本 + Finished
-        let display = accumulate_display(&fin_texts, &current_partial);
-        if !display.is_empty() {
-            let _ = result_tx.send(StreamEvent::Text(display));
-        }
-        let _ = result_tx.send(StreamEvent::Finished);
-    }
     Ok(())
 }
 
