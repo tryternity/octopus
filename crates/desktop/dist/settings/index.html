@@ -149,6 +149,51 @@ select:focus, input:focus { outline: none; border-color: var(--primary); }
   font-size: 14px; z-index: 9999; display: none; max-width: 80%; text-align: center; }
 /* ── 占位 ── */
 .placeholder-page { display: flex; align-items: center; justify-content: center; flex-direction: column; height: 100%; color: var(--text-secondary); }
+/* ── 提示词管理 ── */
+.prompt-card {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 14px 16px; margin-bottom: 12px; transition: border-color 0.15s;
+}
+.prompt-card.active { border-color: var(--primary); box-shadow: 0 0 0 2px rgba(0,122,255,0.1); }
+.prompt-card .prompt-header { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.prompt-card .prompt-title { font-size: 14px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+.prompt-card .prompt-badge { font-size: 10px; padding: 1px 6px; border-radius: 4px; background: var(--sidebar-bg); color: var(--text-secondary); }
+.prompt-card .prompt-badge.system { background: rgba(0,122,255,0.1); color: var(--primary); }
+.prompt-card .prompt-badge.active-badge { background: rgba(52,199,89,0.15); color: #248a3d; }
+.prompt-card .prompt-desc { font-size: 12px; color: var(--text-secondary); margin-bottom: 6px; }
+.prompt-card .prompt-content { font-size: 12px; color: var(--text-secondary); white-space: pre-wrap; max-height: 60px; overflow: hidden; line-height: 1.4; }
+.prompt-card .prompt-actions { display: flex; gap: 8px; margin-top: 8px; }
+.prompt-card .prompt-actions button {
+  padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px;
+  background: white; color: var(--text-primary); font-size: 12px; cursor: pointer; transition: all 0.15s;
+}
+.prompt-card .prompt-actions button:hover { border-color: var(--primary); color: var(--primary); }
+.prompt-card .prompt-actions button.danger:hover { border-color: #ff3b30; color: #ff3b30; }
+.prompt-card .prompt-actions button.primary { background: var(--primary); color: white; border-color: var(--primary); }
+.prompt-card .prompt-actions button.primary:hover { opacity: 0.9; }
+.prompt-editor {
+  background: var(--card-bg); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 16px; margin-bottom: 16px;
+}
+.prompt-editor h3 { font-size: 14px; font-weight: 600; margin-bottom: 12px; }
+.prompt-editor .form-row { margin-bottom: 12px; }
+.prompt-editor .form-row label { display: block; font-size: 13px; margin-bottom: 4px; }
+.prompt-editor .form-row input[type="text"] { width: 100%; max-width: none; }
+.prompt-editor textarea {
+  width: 100%; min-height: 180px; padding: 8px 10px; border: 1px solid var(--border);
+  border-radius: 6px; font-size: 13px; font-family: inherit; resize: vertical; line-height: 1.5;
+  box-sizing: border-box;
+}
+.prompt-editor textarea:focus { outline: none; border-color: var(--primary); }
+.prompt-editor .form-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.prompt-editor .form-actions button {
+  padding: 6px 16px; border: 1px solid var(--border); border-radius: 6px;
+  background: white; color: var(--text-primary); font-size: 13px; cursor: pointer; transition: all 0.15s;
+}
+.prompt-editor .form-actions button:hover { border-color: var(--primary); }
+.prompt-editor .form-actions button.primary { background: var(--primary); color: white; border-color: var(--primary); }
+.prompt-toolbar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
+.prompt-toolbar .toolbar-title { font-size: 16px; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -166,6 +211,10 @@ select:focus, input:focus { outline: none; border-color: var(--primary); }
     <div class="nav-item" data-page="models" onclick="switchPage('models')">
       <div class="icon" style="-webkit-mask-image: url(../result/icons/model.svg); mask-image: url(../result/icons/model.svg);"></div>
       <span>模型管理</span>
+    </div>
+    <div class="nav-item" data-page="prompts" onclick="switchPage('prompts')">
+      <div class="icon" style="-webkit-mask-image: url(../result/icons/polish-mode.svg); mask-image: url(../result/icons/polish-mode.svg);"></div>
+      <span>提示词</span>
     </div>
   </nav>
 </div>
@@ -209,6 +258,12 @@ select:focus, input:focus { outline: none; border-color: var(--primary); }
       <p>功能开发中，敬请期待</p>
     </div>
   </div>
+
+  <!-- 页面 4: 提示词管理 -->
+  <div class="page" id="page-prompts">
+    <div id="prompts-list"></div>
+    <div id="prompt-editor" style="display:none;"></div>
+  </div>
 </div>
 
 <div id="toast"></div>
@@ -226,6 +281,7 @@ let unlistenUpdate = null;
 function switchPage(pageName) {
   document.querySelectorAll('.nav-item').forEach(el => el.classList.toggle('active', el.dataset.page === pageName));
   document.querySelectorAll('.page').forEach(el => el.classList.toggle('active', el.id === 'page-' + pageName));
+  if (pageName === 'prompts') loadPrompts();
 }
 window.switchPage = switchPage;
 
@@ -749,6 +805,164 @@ async function checkAndSaveShortcut(btn, shortcut, originalValue, configKey) {
   }
 }
 window.startShortcutCapture = startShortcutCapture;
+
+// ── 提示词管理 ──
+
+let promptsCache = [];
+let activePromptIdCache = 1;
+let editingPromptId = null; // null=列表态 / 数字=编辑某条 / 'new'=新建
+
+async function loadPrompts() {
+  try {
+    const resp = await invoke('get_config');
+    promptsCache = resp.prompts;
+    activePromptIdCache = resp.active_prompt_id;
+    editingPromptId = null;
+    renderPromptsList();
+  } catch (e) {
+    showToast('加载提示词失败：' + e);
+  }
+}
+
+function renderPromptsList() {
+  document.getElementById('prompt-editor').style.display = 'none';
+  const listEl = document.getElementById('prompts-list');
+  listEl.style.display = 'block';
+
+  const cards = promptsCache.map(p => {
+    const isActive = p.id === activePromptIdCache;
+    const badges = [];
+    if (p.is_system) badges.push('<span class="prompt-badge system">系统内置</span>');
+    if (isActive) badges.push('<span class="prompt-badge active-badge">使用中</span>');
+
+    let actions;
+    if (p.is_system) {
+      actions = '<div class="prompt-actions">' +
+        (isActive ? '' : '<button onclick="activatePrompt(' + p.id + ')">设为激活</button>') +
+        '<button onclick="viewPrompt(' + p.id + ')">查看</button>' +
+      '</div>';
+    } else {
+      actions = '<div class="prompt-actions">' +
+        (isActive ? '' : '<button class="primary" onclick="activatePrompt(' + p.id + ')">设为激活</button>') +
+        '<button onclick="editPrompt(' + p.id + ')">编辑</button>' +
+        '<button class="danger" onclick="confirmDeletePrompt(' + p.id + ')">删除</button>' +
+      '</div>';
+    }
+
+    return '<div class="prompt-card' + (isActive ? ' active' : '') + '">' +
+      '<div class="prompt-header">' +
+        '<div class="prompt-title">' + escapeHtml(p.title) + badges.join('') + '</div>' +
+      '</div>' +
+      (p.description ? '<div class="prompt-desc">' + escapeHtml(p.description) + '</div>' : '') +
+      '<div class="prompt-content">' + escapeHtml(p.content) + '</div>' +
+      actions +
+    '</div>';
+  }).join('');
+
+  listEl.innerHTML =
+    '<div class="prompt-toolbar">' +
+      '<span class="toolbar-title">润色提示词</span>' +
+      '<button class="primary" onclick="newPrompt()" style="padding:6px 14px;border:1px solid var(--primary);border-radius:6px;background:var(--primary);color:white;font-size:13px;cursor:pointer;">+ 新建提示词</button>' +
+    '</div>' +
+    cards;
+}
+
+function renderPromptEditor(p) {
+  // p = {id, title, content, description, is_system} 或 null（新建）
+  document.getElementById('prompts-list').style.display = 'none';
+  const editorEl = document.getElementById('prompt-editor');
+  editorEl.style.display = 'block';
+
+  const isSystem = p && p.is_system;
+  const title = p ? p.title : '';
+  const content = p ? p.content : '';
+  const description = p ? p.description : '';
+
+  editorEl.innerHTML =
+    '<div class="prompt-editor">' +
+      '<h3>' + (p ? (isSystem ? '查看提示词' : '编辑提示词') : '新建提示词') + '</h3>' +
+      '<div class="form-row">' +
+        '<label>标题（别名，方便记忆）</label>' +
+        '<input type="text" id="prompt-title-input" value="' + escapeHtml(title) + '" placeholder="如：技术写作、会议纪要" ' + (isSystem ? 'disabled' : '') + '>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<label>描述（可选）</label>' +
+        '<input type="text" id="prompt-desc-input" value="' + escapeHtml(description) + '" placeholder="简短说明此 prompt 的用途" ' + (isSystem ? 'disabled' : '') + '>' +
+      '</div>' +
+      '<div class="form-row">' +
+        '<label>提示词内容（风格规则）</label>' +
+        '<textarea id="prompt-content-input" placeholder="定义润色风格、语气、专业领域等规则。增量保留规则由系统自动拼接，无需手写。" ' + (isSystem ? 'disabled' : '') + '>' + escapeHtml(content) + '</textarea>' +
+      '</div>' +
+      '<div class="form-actions">' +
+        '<button onclick="loadPrompts()">返回列表</button>' +
+        (isSystem ? '' : '<button class="primary" onclick="savePromptFromEditor()">' + (p && p.id ? '保存' : '创建') + '</button>') +
+      '</div>' +
+    '</div>';
+}
+
+async function activatePrompt(id) {
+  try {
+    await invoke('set_active_prompt', { id });
+    activePromptIdCache = id;
+    // 同步刷新设置页 select
+    showToast('已激活');
+    renderPromptsList();
+  } catch (e) {
+    showToast(String(e));
+  }
+}
+
+function newPrompt() {
+  editingPromptId = 'new';
+  renderPromptEditor(null);
+}
+
+function editPrompt(id) {
+  const p = promptsCache.find(x => x.id === id);
+  if (!p) return;
+  editingPromptId = id;
+  renderPromptEditor(p);
+}
+
+function viewPrompt(id) {
+  const p = promptsCache.find(x => x.id === id);
+  if (!p) return;
+  editingPromptId = null;
+  renderPromptEditor(p);
+}
+
+async function savePromptFromEditor() {
+  const title = document.getElementById('prompt-title-input').value.trim();
+  const description = document.getElementById('prompt-desc-input').value.trim();
+  const content = document.getElementById('prompt-content-input').value;
+  if (!title) { showToast('标题不能为空'); return; }
+
+  try {
+    if (editingPromptId === 'new') {
+      await invoke('create_prompt', { title, content, description });
+      showToast('已创建');
+    } else {
+      await invoke('update_prompt', { id: editingPromptId, title, content, description });
+      showToast('已保存');
+    }
+    await loadPrompts();
+  } catch (e) {
+    showToast(String(e));
+  }
+}
+
+async function confirmDeletePrompt(id) {
+  const p = promptsCache.find(x => x.id === id);
+  const title = p ? p.title : '';
+  if (!confirm('确定删除提示词「' + title + '」？' + (id === activePromptIdCache ? '\n\n当前正在使用此提示词，删除后将回退到系统默认。' : ''))) return;
+  try {
+    await invoke('delete_prompt', { id });
+    showToast('已删除');
+    await loadPrompts();
+  } catch (e) {
+    showToast(String(e));
+  }
+}
 
 // ── 启动 ──
 init();
