@@ -26,8 +26,9 @@ pub trait OfflineAsrEngine: Send + Sync {
     /// 识别 16kHz mono f32 音频数据
     fn transcribe(&self, samples: &[f32], language: &str) -> Result<String>;
 
-    /// 是否是 Qwen3 引擎（用以跳过文本纠错）
-    fn is_qwen3(&self) -> bool {
+    /// 是否跳过通用中文 corrector——仅「非语言原因」（如 qwen3 自带纠错）。
+    /// en-only 场景由 transcribe_with_vad 基于 language=en 自动跳过，不在此覆盖。
+    fn skip_corrector(&self) -> bool {
         false
     }
 }
@@ -39,6 +40,7 @@ pub trait OfflineAsrEngine: Send + Sync {
 - `SenseVoiceEngine` (持有 `Mutex<Session>` 与 `vocab_list`)
 - `ParaformerEngine` (持有 `Mutex<Session>` 编解码器与词表)
 - `ZipformerEngine` (持有 `Mutex<Session>` 与词表)
+- `MoonshineEngine` (持有 4 个 `Mutex<Session>` 流水线：preprocess/encode/uncached_decode/cached_decode + `vocab`)
 
 ### 2.2 线程安全与内部可变性 (`Mutex<Session>`)
 

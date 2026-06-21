@@ -1,7 +1,7 @@
 # Moonshine ASR 引擎接入设计
 
 **日期**: 2026-06-21
-**状态**: 设计完成，待实现
+**状态**: ✅ 已实现并合并 main。greedy_decode KV cache 用 owned `Value` 复用（零深拷贝，见 §3 KV cache 管理）；moonshine en-only 经 `transcribe_with_vad` 的 `language=en` 自动跳过通用中文 corrector（不靠每引擎手动覆盖 `skip_corrector()`）。
 **分支**: `feature/setting-ui2`
 
 ## 背景
@@ -154,9 +154,11 @@ loop:
 
 #### KV cache 管理
 
-`state_data: Vec<Vec<f32>>` + `state_shapes: Vec<Vec<usize>>`（N 个张量，N = `uncached_out.len()-1`，base 模型 = 32），在 `greedy_decode` 内部维护：
-- uncached_decode 输出 index 1..=N（跳过 index 0 logits）→ 初始化 cache
-- cached_decode 输入 args_3..args_{N+2}（token + encoder_out + seq_len + N cache）→ 输出 index 1..=N → 更新 cache
+`state_values: Vec<ort::value::Value>`（owned `DynValue`：`[0]`=logits + `[1..]`=N 个 cache，N = `uncached_out.len()-1`，base 模型 = 32），在 `greedy_decode` 内部维护。**KV cache 留在 ORT 内部**——每步以 `Value::view()`（`ValueRef`，O(1) Arc 引用计数）将上一步输出的 cache 直接传回，不经 CPU `to_vec()`：
+- uncached_decode 输出 `into_iter()` 消费为 owned Value 列表 → 初始化 `state_values`
+- cached_decode 输入 args_3..args_{N+2}（token + encoder_out + seq_len + N cache 的 ValueView）→ 输出 `into_iter()` 消费 → 替换 `state_values`
+
+> **实现演进**：初版用 `state_data: Vec<Vec<f32>>` + `state_shapes`，每步 `to_vec()` 深拷贝 N 个随 seq_len 增长张量（长音频每步 MB 级拷贝）→ 改 owned `Value` 复用消除拷贝。注：ort `2.0.0-rc.12` 中 `DynValue` 不实现 `Clone`（bound 限 `DefiniteTensorValueTypeMarker`），故取 owned Value 走 `SessionOutputs::into_iter()` 而非 `.clone()`。
 
 ### 4. `AsrEngineManager` 路由
 
