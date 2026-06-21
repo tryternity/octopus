@@ -283,8 +283,8 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         let no_ts: u32 = self.tokenizer.token_to_id("<|notimestamps|>").unwrap_or(50363);
         let eot: u32 = self.tokenizer.token_to_id("<|endoftext|>").unwrap_or(50257);
 
-        // Build prompt tokens: <|SOT|> [<|LANG|>] <|transcribe|> <|notimestamps|>
-        let mut tokens: Vec<i64> = vec![sot as i64];
+        // Build prompt tokens: <|SOT|> <|LANG|> <|transcribe|> <|notimestamps|>
+        // 语言确定优先级：config.yaml language > DB models.language > auto-detect
         let mut lang_code = if language.is_empty() {
             "auto".to_string()
         } else {
@@ -294,11 +294,28 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
             lang_code = self.entry_language.clone();
         }
         eprintln!("[whisper] language: {}", lang_code);
+
+        let mut dec_init = self.dec_init.lock().unwrap();
+
+        // 构建 prompt tokens
+        let mut tokens: Vec<i64> = vec![sot as i64];
         if lang_code != "auto" {
             let lang_tag = format!("<|{}|>", lang_code);
             if let Some(lang_id) = self.tokenizer.token_to_id(&lang_tag) {
                 tokens.push(lang_id as i64);
             }
+        } else {
+            // auto-detect：先喂 [sot] 让模型预测语言 token（与 OpenAI whisper 一致）
+            let detect_ids = Array2::from_shape_vec((1, 1), vec![sot as i64])?;
+            let detect_out = dec_init.run(ort::inputs! {
+                "input_ids" => ort::value::TensorRef::from_array_view(detect_ids.view())?,
+                "encoder_hidden_states" => ort::value::TensorRef::from_array_view(encoder_hidden.view())?
+            })?;
+            let (det_shape, det_logits) = detect_out["logits"].try_extract_tensor::<f32>()?;
+            let det_vocab = det_shape[2] as usize;
+            let detected_lang = argmax_last_token(det_logits, 1, det_vocab);
+            eprintln!("[whisper] auto-detected language token: {}", detected_lang);
+            tokens.push(detected_lang as i64);
         }
         tokens.extend_from_slice(&[transcribe_tok as i64, no_ts as i64]);
         let prompt_len = tokens.len();
@@ -306,7 +323,6 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
 
         // Step 0: initial decoder (no past KV)
         let input_ids = Array2::from_shape_vec((1, tokens.len()), tokens.clone())?;
-        let mut dec_init = self.dec_init.lock().unwrap();
         let init_out = dec_init.run(ort::inputs! {
             "input_ids" => ort::value::TensorRef::from_array_view(input_ids.view())?,
             "encoder_hidden_states" => ort::value::TensorRef::from_array_view(encoder_hidden.view())?
