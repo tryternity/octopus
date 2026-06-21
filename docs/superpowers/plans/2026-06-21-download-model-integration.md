@@ -541,15 +541,21 @@ async fn run_download(
 
     for (i, task) in tasks.iter().enumerate() {
         println!("[{}/{}] {}", i + 1, tasks.len(), task.dest.display());
-        let (tx, mut rx) =
-            tokio::sync::mpsc::channel::<octopus_download::Progress>(64);
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<octopus_download::Progress>(64);
+        // rx move 进 printer：download 返回后 tx drop → channel 关闭 → rx.recv() 返回 None → printer 自然退出。
+        // 勿在主作用域再 rx.close()——rx 已 move 进闭包，访问即 use-of-moved-value 编译错。
         let printer = tokio::spawn(async move {
             while let Some(p) = rx.recv().await {
                 if let Some(total) = p.total_bytes {
                     let pct = p.downloaded_bytes as f64 / total as f64 * 100.0;
+                    // 速度：download crate 250ms 推送 EMA 估算；下大模型时是关键 UX。
+                    let spd = p
+                        .speed_bps
+                        .map(|s| format!(" {:.2} MB/s", s / 1_048_576.0))
+                        .unwrap_or_default();
                     eprint!(
-                        "\r  {}/{} bytes ({:.1}%)   ",
-                        p.downloaded_bytes, total, pct
+                        "\r  {}/{} bytes ({:.1}%){}   ",
+                        p.downloaded_bytes, total, pct, spd
                     );
                 }
             }
@@ -557,10 +563,9 @@ async fn run_download(
         dl.download(task, tx, None)
             .await
             .map_err(|e| anyhow::anyhow!("下载 {} 失败: {e:?}", task.dest.display()))?;
-        // 关闭 rx 让 printer 退出（tx 已随 download 调用 drop）
-        rx.close();
         let _ = printer.await;
-        eprintln!("\r  ✓ done                            ");
+        // \x1b[2K 清当前行——进度行可能比 "✓ done" 长（大文件字节数多），不清会残留尾巴。
+        eprintln!("\r\x1b[2K  ✓ done");
     }
 
     println!("\n完成。模型位于 ~/.octopus/models/{}/", repo);
