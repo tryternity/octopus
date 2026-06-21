@@ -220,7 +220,7 @@ impl WhisperEngine {
                     anyhow::bail!(
                         "Whisper 引擎仅支持 v1/v2（{} mel bins），但模型 encoder 期望 {} mel bins。\
                          Large v3 / Turbo 使用 128 mel bins，当前不支持。\
-                         请使用 whisper-tiny / base / small（.en 或多语言 v2 版本）。",
+                         请使用 whisper-small.en（已验证可用）。",
                         N_MELS, dims[1]
                     );
                 }

@@ -686,8 +686,8 @@ Moonshine 5 task 完成并合并后，在测试 whisper 系列模型时发现两
 
 14. **whisper Large v3 / Turbo mel 维度防御性检查**（`whisper.rs`，外部 review 发现）：
     - 现状：`N_MELS=80` 硬编码 + `WHISPER_MEL_FILTERBANK` 是 `[[f64; 201]; 80]` 静态常量；Large v3 / Turbo 使用 128 mel bins，当前引擎无法支持
-    - 为何是防御检查而非完整支持：完整支持 128 mel 属于"新功能 / 架构调整"（需 25,728 个 f64 常量 + N_MELS 动态化 + filterbank 重构），按 AGENTS.md 应走完整 superpowers 工作流（brainstorming → spec → plan）；DB seed 仅 whisper-tiny/base/small.en（v2，80 mel），HF 缓存无 Large v3/Turbo，architecture.md 已明确"支持 tiny/base/small"——非 active bug
-    - 防御：`WhisperEngine::new` 加载 encoder 后读取其 mel 输入 shape（`[batch, n_mels, n_audio_ctx]`），若 `dims[1] != 80` 立即 fail 给出明确错误消息（"仅支持 v1/v2，Large v3/Turbo 用 128 mel，请用 whisper-tiny/base/small"），避免后续 `encoder.run()` 踩 ONNX shape mismatch 崩溃
+    - 为何是防御检查而非完整支持：完整支持 128 mel 属于"新功能 / 架构调整"（需 25,728 个 f64 常量 + N_MELS 动态化 + filterbank 重构），按 AGENTS.md 应走完整 superpowers 工作流（brainstorming → spec → plan）；DB seed 仅 whisper-small.en（v2，80 mel），whisper-tiny/base 经实测识别质量不可用（tiny 3/3 全空、base 1/3 可用）故不入 seed，HF 缓存无 Large v3/Turbo——非 active bug
+    - 防御：`WhisperEngine::new` 加载 encoder 后读取其 mel 输入 shape（`[batch, n_mels, n_audio_ctx]`），若 `dims[1] != 80` 立即 fail 给出明确错误消息（"仅支持 v1/v2，Large v3/Turbo 用 128 mel，请用 whisper-small"），避免后续 `encoder.run()` 踩 ONNX shape mismatch 崩溃
     - 验证：whisper-small 加载/转录正常通过（80 mel 不触发检查）；54 个 ASR 测试全部通过
 
 15. **whisper 特殊 token 查询改强制 fail**（`whisper.rs`，外部 review 发现）：
