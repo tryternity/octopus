@@ -35,13 +35,29 @@ fn compute_mel(audio: &[f32]) -> Result<Array3<f32>> {
     let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); FFT_SIZE];
     let n_freqs = FFT_SIZE / 2 + 1;
 
+    // center=True reflect padding：frame t 覆盖 [t*hop - n_fft/2, t*hop + n_fft/2)
+    // 与 OpenAI whisper.audio.log_mel_spectrogram 调用的 torch.stft 默认行为一致
+    // （torch.stft 默认 center=True, pad_mode="reflect"，
+    //  对音频两端各反射填充 n_fft/2=200 采样，使 frame 0 中心对齐 sample 0）
+    let pad = FFT_SIZE / 2; // 200
     for fi in 0..n_frames {
-        let start = fi * HOP_LENGTH;
+        let start = (fi * HOP_LENGTH) as isize - pad as isize;
         for j in 0..FFT_SIZE {
-            let s = if start + j < N_SAMPLES {
-                padded[start + j]
+            let idx = start + j as isize;
+            // 反射填充（与 PyTorch pad_mode="reflect" 一致，边界样本不参与反射）：
+            //   左越界 idx<0         → padded[-idx]              (sample -1→1, -2→2, ..., -200→200)
+            //   右越界 idx>=N_SAMPLES → padded[2N - idx - 2]      (sample N→N-2, N+1→N-3, ...)
+            let s = if idx < 0 {
+                padded[(-idx) as usize]
+            } else if (idx as usize) < N_SAMPLES {
+                padded[idx as usize]
             } else {
-                0.0
+                let over = idx as usize - N_SAMPLES;
+                if N_SAMPLES >= over + 2 {
+                    padded[N_SAMPLES - over - 2]
+                } else {
+                    0.0
+                }
             };
             buf[j] = rustfft::num_complex::Complex::new(s * HANN_WINDOW[j], 0.0);
         }
