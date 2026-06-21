@@ -142,16 +142,26 @@ impl StreamingZipformer {
         self.process_chunks()
     }
 
-    /// Flush any remaining buffered audio. Call when recording stops.
-    pub fn finish(&mut self) -> Result<String> {
+    /// 跑完 sample_buffer 内全部音频 + edge-replicate lookahead padding，把右侧上下文
+    /// （Zipformer right-context / receptive field）内的剩余 token 冲刷出来。
+    ///
+    /// `finish`（录音结束）与 `flush`（停顿冲刷）共用。padding 用最后一帧特征 edge-replicate
+    /// （与 sherpa-onnx streaming final 一致），而非零填充——零会让末尾 chunk 沦为静音特征、
+    /// 切断末尾字；replicate 给末尾帧足够 lookahead 激活 token。padding 量 `chunk_len +
+    /// 3*chunk_shift`（3 个 extra chunk）完全覆盖 Zipformer 多层 right context。
+    ///
+    /// padding 会推进 encoder states，但 `flush` 后 coordinator 下一 tick 必经
+    /// `accept_samples(was_silent=true) → finish + reset`（静音累积跨 0.5s 后 was_silent 恒真），
+    /// padding 状态被 reset 清空、不累积污染后续音频。
+    fn run_padding_flush(&mut self) -> Result<()> {
         let samples = std::mem::take(&mut self.sample_buffer);
-        if samples.is_empty() && self.history_samples.is_empty() {
-            return Ok(self.decode_tokens(false));
-        }
-
         let mut input_samples = Vec::with_capacity(self.history_samples.len() + samples.len());
         input_samples.extend_from_slice(&self.history_samples);
         input_samples.extend_from_slice(&samples);
+
+        if input_samples.is_empty() {
+            return Ok(());
+        }
 
         let feats = if self.is_whisper {
             crate::zipformer::compute_whisper_features_linear(&input_samples)?
@@ -160,13 +170,10 @@ impl StreamingZipformer {
         };
         let h_frames = self.history_samples.len() / Z_FRAME_SHIFT;
         let n_frames = feats.nrows().saturating_sub(h_frames);
-
         if n_frames == 0 {
-            self.history_samples.clear();
-            return Ok(self.decode_tokens(false));
+            return Ok(());
         }
 
-        // Run extra chunks of padding to fully flush the model's receptive field / right context
         let num_extra_chunks = 3;
         let pad_len = self.chunk_len + num_extra_chunks * self.chunk_shift;
         let mut padded = Array2::<f32>::zeros((feats.nrows() + pad_len, Z_NUM_BINS));
@@ -191,7 +198,6 @@ impl StreamingZipformer {
                     chunk[[i, j]] = padded[[frame_idx + h_frames + i, j]];
                 }
             }
-
             if self.is_whisper {
                 crate::zipformer::normalize_whisper_features(&mut chunk);
             }
@@ -199,23 +205,39 @@ impl StreamingZipformer {
             frame_idx += self.chunk_shift;
         }
 
+        // 真实样本已全部消费（+ padding 冲刷）。history 更新为真实样本末尾 Z_FRAME_SHIFT：
+        // padding 是特征空间 edge-replicate、无对应样本，不进 history（否则下 tick 重复处理）。
+        // finish 会紧接着 clear；flush 保留以维持特征窗口连续（虽下 tick 必 reset）。
+        if input_samples.len() >= Z_FRAME_SHIFT {
+            self.history_samples = input_samples[input_samples.len() - Z_FRAME_SHIFT..].to_vec();
+        } else {
+            self.history_samples.clear();
+        }
+        Ok(())
+    }
+
+    /// Flush any remaining buffered audio. Call when recording stops.
+    pub fn finish(&mut self) -> Result<String> {
+        if self.sample_buffer.is_empty() && self.history_samples.is_empty() {
+            return Ok(self.decode_tokens(false));
+        }
+        self.run_padding_flush()?;
         self.history_samples.clear();
         Ok(self.decode_tokens(false))
     }
 
-    /// Active flush: pad the current sample buffer with enough zeros
-    /// to force processing of the lookahead / right context of any remaining audio.
+    /// Active flush：用 edge-replicate lookahead padding 冲刷右侧上下文，强制吐出末尾字。
+    /// 用于静音停顿期（coordinator 在 silence_duration ≥ 0.5s 时调用），不重置状态。
+    ///
+    /// 旧实现仅补零到 `chunk_len + 1` 帧对齐、无 lookahead，末尾帧右侧上下文不足 → 尾字卡在
+    /// 网络中间层、延迟一个 tick 才由 finish 补全。现与 `finish` 共用 `run_padding_flush`
+    /// （3 chunks replicate padding）即时激活末尾 token。详见 `run_padding_flush` 时序说明。
     pub fn flush(&mut self) -> Result<Option<String>> {
-        let h_frames = self.history_samples.len() / Z_FRAME_SHIFT;
-        let required_total_samples = (h_frames + self.chunk_len + 1) * Z_FRAME_SHIFT;
-        let current_total_samples = self.history_samples.len() + self.sample_buffer.len();
-
-        if current_total_samples < required_total_samples {
-            let needed = required_total_samples - current_total_samples;
-            self.sample_buffer.resize(self.sample_buffer.len() + needed, 0.0);
+        if self.sample_buffer.is_empty() && self.history_samples.is_empty() {
+            return self.decoded_current();
         }
-
-        self.process_chunks()
+        self.run_padding_flush()?;
+        self.decoded_current()
     }
 
 
@@ -595,15 +617,19 @@ impl StreamingZipformerTransducer {
         self.process_chunks()
     }
 
-    pub fn finish(&mut self) -> Result<String> {
+    /// 跑完 sample_buffer 内全部音频 + edge-replicate lookahead padding，把右侧上下文
+    /// （Zipformer right-context / receptive field）内的剩余 token 冲刷出来。
+    /// `finish`（录音结束）与 `flush`（停顿冲刷）共用；详见 CTC `run_padding_flush` 的
+    /// padding 策略与「flush 后必 finish+reset」状态安全性说明（两者逻辑完全对称）。
+    fn run_padding_flush(&mut self) -> Result<()> {
         let samples = std::mem::take(&mut self.sample_buffer);
-        if samples.is_empty() && self.history_samples.is_empty() {
-            return Ok(self.decode_current(false));
-        }
-
         let mut input_samples = Vec::with_capacity(self.history_samples.len() + samples.len());
         input_samples.extend_from_slice(&self.history_samples);
         input_samples.extend_from_slice(&samples);
+
+        if input_samples.is_empty() {
+            return Ok(());
+        }
 
         let feats = if self.is_whisper {
             crate::zipformer::compute_whisper_features_linear(&input_samples)?
@@ -612,10 +638,8 @@ impl StreamingZipformerTransducer {
         };
         let h_frames = self.history_samples.len() / Z_FRAME_SHIFT;
         let n_frames = feats.nrows().saturating_sub(h_frames);
-
         if n_frames == 0 {
-            self.history_samples.clear();
-            return Ok(self.decode_current(false));
+            return Ok(());
         }
 
         let num_extra_chunks = 3;
@@ -649,20 +673,33 @@ impl StreamingZipformerTransducer {
             frame_idx += self.chunk_shift;
         }
 
+        if input_samples.len() >= Z_FRAME_SHIFT {
+            self.history_samples = input_samples[input_samples.len() - Z_FRAME_SHIFT..].to_vec();
+        } else {
+            self.history_samples.clear();
+        }
+        Ok(())
+    }
+
+    pub fn finish(&mut self) -> Result<String> {
+        if self.sample_buffer.is_empty() && self.history_samples.is_empty() {
+            return Ok(self.decode_current(false));
+        }
+        self.run_padding_flush()?;
         self.history_samples.clear();
         Ok(self.decode_current(false))
     }
 
+    /// Active flush：用 edge-replicate lookahead padding 冲刷右侧上下文，强制吐出末尾字。
+    /// 用于静音停顿期（coordinator 在 silence_duration ≥ 0.5s 时调用），不重置状态。
+    /// 与 CTC `flush` 对称，共用 `run_padding_flush`（3 chunks replicate padding），
+    /// 即时激活末尾 token；详见 `run_padding_flush` 时序说明。
     pub fn flush(&mut self) -> Result<Option<String>> {
-        let h_frames = self.history_samples.len() / Z_FRAME_SHIFT;
-        let required_total_samples = (h_frames + self.chunk_len + 1) * Z_FRAME_SHIFT;
-        let current_total_samples = self.history_samples.len() + self.sample_buffer.len();
-
-        if current_total_samples < required_total_samples {
-            let needed = required_total_samples - current_total_samples;
-            self.sample_buffer.resize(self.sample_buffer.len() + needed, 0.0);
+        if self.sample_buffer.is_empty() && self.history_samples.is_empty() {
+            return self.decoded_current();
         }
-        self.process_chunks()
+        self.run_padding_flush()?;
+        self.decoded_current()
     }
 
     pub fn reset(&mut self) {
@@ -997,5 +1034,39 @@ mod tests {
         let final_text = engine.finish().unwrap();
         println!("Final: {}", final_text);
         assert!(!final_text.is_empty(), "Transducer streaming should produce text");
+    }
+
+    #[test]
+    fn test_flush_mid_stream_ctc() {
+        // 回归：流式运行中调 flush（停顿冲刷）应即时吐出末尾字、不 panic，且不破坏后续
+        // accept_samples / finish。验证 flush 改用 run_padding_flush（3 chunks replicate
+        // padding）后路径正常——flush 不重置状态，后续 finish 仍能产出完整文本。
+        let snapshot = match hf_snapshot("models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13") {
+            Some(p) => p,
+            None => { eprintln!("Skipping: HF snapshot not found"); return; }
+        };
+        let wav_path = snapshot.join("test_wavs/DEV_T0000000000.wav");
+        if !wav_path.exists() { eprintln!("Skipping: {} not found", wav_path.display()); return; }
+        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
+
+        let mut engine = StreamingZipformer::new("zipformer-ctc").unwrap();
+        let chunk_size = 10000;
+        let mid = samples.len() / 2;
+
+        // 喂前半段
+        for chunk in samples[..mid].chunks(chunk_size) {
+            let _ = engine.accept_samples(chunk).unwrap();
+        }
+        // 中途 flush（模拟停顿冲刷）——不应 panic
+        let flushed = engine.flush().unwrap();
+        println!("Mid-stream flush returned: {:?}", flushed);
+
+        // 喂后半段 + finish（验证 flush 未破坏后续状态）
+        for chunk in samples[mid..].chunks(chunk_size) {
+            let _ = engine.accept_samples(chunk).unwrap();
+        }
+        let final_text = engine.finish().unwrap();
+        println!("Final (after mid-stream flush): {}", final_text);
+        assert!(!final_text.is_empty(), "final text should not be empty after mid-stream flush");
     }
 }
