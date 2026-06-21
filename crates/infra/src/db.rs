@@ -762,8 +762,8 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
             .unwrap();
-        // 8 local + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
-        assert_eq!(count, 11);
+        // 12 local + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
+        assert_eq!(count, 15);
     }
 
     #[test]
@@ -773,7 +773,7 @@ mod tests {
         conn.execute("UPDATE models SET is_enabled = 1", []).unwrap();
         let cfg = load_models_at(&conn).unwrap();
         let zf = cfg.asr.zipformer.as_ref().expect("zipformer section");
-        assert_eq!(zf.len(), 3);
+        assert_eq!(zf.len(), 5);
         let small = zf.get("zipformer-small-ctc").unwrap();
         assert_eq!(small.source, "models/zipformer");
         assert!(small.is_local, "ASR 模型应为本地模型");
@@ -785,6 +785,8 @@ mod tests {
         assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 2);
+        // moonshine ASR（base + tiny）
+        assert_eq!(cfg.asr.moonshine.as_ref().unwrap().len(), 2);
         // aliyun ASR（Fun-ASR / Paraformer / Qwen-ASR）
         let aliyun = cfg.asr.aliyun.as_ref().expect("aliyun section");
         assert_eq!(aliyun.len(), 3);

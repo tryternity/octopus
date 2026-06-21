@@ -53,6 +53,8 @@ VALUES
     ('asr','local','qwen3-asr','qwen3-asr-0.6B','csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25','auto','qwen3-asr-0.6B, 1G',1,0,0),
     ('asr','local','qwen3-asr','qwen3-asr-1.7B','ilmina/qwen3-asr-1.7b-sherpa-onnx','auto','qwen3-asr-1.7B, 约2.7G',1,0,0),
     ('asr','local','whisper','whisper-small','onnx-community/whisper-small','auto','Whisper Small - 快速轻量, 250M',1,0,0),
+    ('asr','local','moonshine','moonshine-base-en','csukuangfj/sherpa-onnx-moonshine-base-en-int8','en','Moonshine Base EN (int8), 58M',1,0,0),
+    ('asr','local','moonshine','moonshine-tiny-en','csukuangfj/sherpa-onnx-moonshine-tiny-en-int8','en','Moonshine Tiny EN (int8), 24M',1,0,0),
     -- 阿里云 DashScope 实时 ASR（cloud WS，secret_key 填 DashScope API Key）
     -- Fun-ASR / Paraformer 共用 /api-ws/v1/inference 端点（run-task 协议）
     -- Qwen-ASR 用 /api-ws/v1/realtime 端点（OpenAI Realtime 风格协议）
