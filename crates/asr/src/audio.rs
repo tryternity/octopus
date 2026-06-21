@@ -1,6 +1,12 @@
 use anyhow::Result;
 use rubato::Resampler;
 
+/// VAD 语音段首尾 padding（pre/post 对称）：补全首字音头（VAD 破阈值有 1~2 帧延迟、起首辅音
+/// 能量弱触发更晚）与尾字尾音（衰减残尾能量低被判静音）。120ms（@480 样本/30ms 帧 = 4 帧），
+/// 远低于段间静音阈值，只借回纯静音、不触及相邻段语音。`segment_audio_vad` 与 `filter_speech` 共用。
+/// 参考 silero-vad speech_pad_ms（默认 30ms）。
+const SPEECH_PAD_MS: usize = 120;
+
 /// 从 WAV 文件读取并转为 16kHz mono f32 样本
 pub fn read_wav_16k(path: &str) -> Result<Vec<f32>> {
     let mut reader = hound::WavReader::open(path)?;
@@ -147,25 +153,48 @@ const _: () = {
     }
 };
 
-/// Apply VAD filtering: returns only speech frames above threshold
+/// VAD 过滤：去除首尾静音，**保留中间全部音频**（含句内停顿/轻声帧）。
+///
+/// 仅 trim 两端——找首个/末个高于 `threshold` 的帧，各外扩 `SPEECH_PAD_MS` 作为起止点，
+/// 其间音频原样返回。**不逐帧删除**低于阈值的帧：那样会删掉字间 ~50ms 停顿与轻声读音，
+/// 破坏句子连续时间结构 → 声学特征错乱 → 漏字/乱码/粘连。用于 CLI E2E（整段录音）与
+/// desktop VadSegmented（检测流已切出的单段），两者都只需去首尾残余静音、保留段内结构。
 pub fn filter_speech(
     samples: &[f32],
     vad: &mut crate::vad::SileroVad,
     frame_size: usize,
     threshold: f32,
 ) -> Vec<f32> {
-    let mut speech = Vec::new();
-    for chunk in samples.chunks(frame_size) {
+    let frame_duration_ms = (frame_size * 1000) / 16000;
+    let pad_samples = (SPEECH_PAD_MS / frame_duration_ms) * frame_size;
+
+    // 扫描首个/末个高于阈值的帧（vad.compute 有状态，需顺序扫描）。
+    let mut first_active: Option<usize> = None;
+    let mut last_active: Option<usize> = None;
+    for (i, chunk) in samples.chunks(frame_size).enumerate() {
         if chunk.len() < frame_size {
             break;
         }
         if let Ok(prob) = vad.compute(chunk) {
             if prob > threshold {
-                speech.extend_from_slice(chunk);
+                if first_active.is_none() {
+                    first_active = Some(i);
+                }
+                last_active = Some(i);
             }
         }
     }
-    speech
+
+    match (first_active, last_active) {
+        // 有语音：trim 到 [首帧-pad, 末帧+pad]，clamp 到 samples 边界。
+        (Some(first), Some(last)) => {
+            let start = (first * frame_size).saturating_sub(pad_samples);
+            let end = ((last + 1) * frame_size + pad_samples).min(samples.len());
+            samples[start..end].to_vec()
+        }
+        // 无活跃帧（全静音 / VAD 全判静音）：返回空，调用方据此跳过。
+        _ => Vec::new(),
+    }
 }
 
 /// Segment audio into multiple speech segments using Silero VAD.
@@ -187,11 +216,7 @@ pub fn segment_audio_vad(
     // For 480 samples, this is 30ms.
     let frame_duration_ms = (frame_size * 1000) / 16000;
     let min_silence_frames = min_silence_ms / frame_duration_ms;
-    // Pre/post speech padding：补全首字音头（VAD 破阈值有 1~2 帧延迟、起首辅音能量弱触发更晚）
-    // 与尾字尾音（衰减残尾能量低被判静音、累积进 silence_frames_count）。对称 120ms
-    // （@480 样本/30ms 帧 = 4 帧），远低于 min_silence_ms(500ms)，只借回段间静音、不触及相邻段
-    // 语音（否则 engine.rs 的 final_text 拼接会重复字）。参考 silero-vad speech_pad_ms（默认 30ms）。
-    const SPEECH_PAD_MS: usize = 120;
+    // Pre/post padding 详见模块级 SPEECH_PAD_MS；pad_samples 按实际帧时长换算。
     let pad_samples = (SPEECH_PAD_MS / frame_duration_ms) * frame_size;
 
     let total_frames = samples.len() / frame_size;
@@ -355,5 +380,43 @@ mod tests {
             );
         }
         // 不强断言 segs 非空（VAD 对纯正弦可能全判静音）；核心是全程不 panic + 下标合法。
+    }
+
+    #[test]
+    fn filter_speech_trims_ends_keeps_middle() {
+        // 回归：filter_speech 两端 trim（去首尾静音、保留中间），不逐帧删除（句内空洞）。
+        // 依赖真实 SileroVad（无模型 skip）；不强断言非空（VAD 对纯正弦可能判静音），
+        // 只验证不 panic + trim 结果长度不超输入。
+        let vad_path = match crate::config::find_silero_vad() {
+            Ok(p) => p,
+            Err(_) => {
+                eprintln!("[SKIP] 无 silero_vad 模型文件");
+                return;
+            }
+        };
+        let mut vad = match crate::vad::SileroVad::new(&vad_path) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("[SKIP] SileroVad 初始化失败: {e}");
+                return;
+            }
+        };
+        // 1s 静音 + 2s 正弦（模拟语音）+ 1s 静音，共 4s。
+        let mk = |amp: f32, secs: f32| -> Vec<f32> {
+            let n = (16000.0 * secs) as usize;
+            (0..n)
+                .map(|i| (2.0 * std::f32::consts::PI * 220.0 * i as f32 / 16000.0).sin() * amp)
+                .collect()
+        };
+        let mut samples = mk(0.0, 1.0);
+        samples.extend(mk(0.3, 2.0));
+        samples.extend(mk(0.0, 1.0));
+        let out = filter_speech(&samples, &mut vad, 480, 0.5);
+        assert!(
+            out.len() <= samples.len(),
+            "filter_speech 结果 {} 超过输入 {}（trim 不应增长）",
+            out.len(),
+            samples.len()
+        );
     }
 }
