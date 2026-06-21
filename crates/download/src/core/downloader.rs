@@ -220,6 +220,53 @@ impl Downloader {
         let new_downloaded = if status == 200 { (write_offset - seg.begin) + written_this_call } else { seg.downloaded + written_this_call };
         Ok(Segment { begin: seg.begin, end: seg.end, downloaded: new_downloaded })
     }
+
+    /// 并发下载多段。每段独立 task，Semaphore 限并发，进度累计到 counter。
+    pub async fn download_chunked(
+        &self,
+        url: &str,
+        part_path: &Path,
+        segments: Vec<Segment>,
+        counter: Arc<AtomicU64>,
+        cancel: Option<CancellationToken>,
+    ) -> Result<Vec<Segment>, DownloadError> {
+        use tokio::task::JoinSet;
+        let sem = Arc::new(tokio::sync::Semaphore::new(self.config.max_concurrent));
+        let url = Arc::new(url.to_string());
+        let part = Arc::new(part_path.to_path_buf());
+        let total = segments.len();
+        let mut join: JoinSet<Result<(usize, Segment), DownloadError>> = JoinSet::new();
+
+        for (i, seg) in segments.into_iter().enumerate() {
+            let url = Arc::clone(&url);
+            let part = Arc::clone(&part);
+            let counter = Arc::clone(&counter);
+            let sem = Arc::clone(&sem);
+            let cancel = cancel.clone();
+            // &self 不能 move 进 spawn：拷出 client clone（reqwest::Client 内部 Arc，廉价）+ cfg clone。
+            let client = self.client.clone();
+            let cfg = self.config.clone();
+            join.spawn(async move {
+                let _permit = sem.acquire().await.map_err(|_| {
+                    DownloadError::Transient { kind: TransientKind::Network, message: "semaphore closed".into() }
+                })?;
+                download_segment_with_client(&client, &cfg, &url, &part, seg, &counter, cancel.as_ref())
+                    .await
+                    .map(|s| (i, s))
+            });
+        }
+
+        let mut results = vec![None; total];
+        while let Some(res) = join.join_next().await {
+            let (i, seg) = res
+                .map_err(|e| DownloadError::Transient {
+                    kind: TransientKind::Network,
+                    message: format!("join: {e}"),
+                })??;
+            results[i] = Some(seg);
+        }
+        Ok(results.into_iter().map(|x| x.expect("every idx filled")).collect())
+    }
 }
 
 /// .part 路径：dest + ".part"
@@ -255,6 +302,98 @@ fn class_to_error(class: ErrorClass, status: u16, url: &str) -> DownloadError {
         ErrorClass::Fatal => DownloadError::Fatal { status, url: url.to_string() },
         ErrorClass::Transient(kind) => DownloadError::Transient { kind, message: format!("HTTP {status}") },
     }
+}
+
+/// 段下载自由函数（spawned task 友好：不持 &Downloader）。
+/// 与 Downloader::download_segment 行为一致（带计数器重试 + 指数 backoff）。
+async fn download_segment_with_client(
+    client: &reqwest::Client,
+    cfg: &DownloadConfig,
+    url: &str,
+    part_path: &Path,
+    seg: Segment,
+    counter: &AtomicU64,
+    cancel: Option<&CancellationToken>,
+) -> Result<Segment, DownloadError> {
+    let mut attempt = 0u32;
+    loop {
+        if let Some(c) = cancel {
+            if c.is_cancelled() {
+                return Err(DownloadError::Cancelled);
+            }
+        }
+        match download_segment_once_with_client(client, cfg, url, part_path, seg, counter, cancel).await {
+            Ok(s) => return Ok(s),
+            Err(DownloadError::Transient { .. }) | Err(DownloadError::Http(_)) | Err(DownloadError::Io(_)) => {
+                attempt += 1;
+                if attempt > cfg.max_retries_per_segment {
+                    return Err(DownloadError::Transient {
+                        kind: TransientKind::Network,
+                        message: format!("segment exhausted after {attempt} attempts"),
+                    });
+                }
+                tokio::time::sleep(backoff(cfg.backoff_base, attempt)).await;
+            }
+            Err(other) => return Err(other),
+        }
+    }
+}
+
+/// 单次段下载尝试（自由函数版）。206→从 next_offset 续写；200→从头覆盖该段。
+async fn download_segment_once_with_client(
+    client: &reqwest::Client,
+    cfg: &DownloadConfig,
+    url: &str,
+    part_path: &Path,
+    seg: Segment,
+    counter: &AtomicU64,
+    cancel: Option<&CancellationToken>,
+) -> Result<Segment, DownloadError> {
+    let start = seg.next_offset();
+    let end = seg.end;
+    if start > end {
+        return Ok(seg); // 已完成
+    }
+    let req = client.get(url).header("Range", format!("bytes={start}-{end}"));
+    // 直接传 &str（不写 .into()）：transient 接 impl Into<String>，
+    // .into() 会因 &str: Into<&str>（自反）与 Into<String> 双解触发 E0283 歧义。
+    let resp = tokio::time::timeout(cfg.read_timeout, req.send())
+        .await
+        .map_err(|_| transient(TransientKind::Timeout, "segment read timeout"))?
+        .map_err(map_reqwest_transient)?;
+
+    let status = resp.status().as_u16();
+    if let Some(class) = classify_status(status) {
+        return Err(class_to_error(class, status, url));
+    }
+
+    use std::io::{Seek, SeekFrom, Write};
+    let mut file = std::fs::OpenOptions::new().write(true).open(part_path)?;
+    let write_offset = if status == 200 { seg.begin } else { start };
+    file.seek(SeekFrom::Start(write_offset))?;
+
+    let mut writer = std::io::BufWriter::with_capacity(cfg.buf_kb * 1024, file);
+    let mut stream = resp.bytes_stream();
+    let mut written: u64 = 0;
+    while let Some(chunk) = stream.next().await {
+        if let Some(c) = cancel {
+            if c.is_cancelled() {
+                return Err(DownloadError::Cancelled);
+            }
+        }
+        let bytes = chunk.map_err(map_reqwest_transient)?;
+        writer.write_all(&bytes)?;
+        written += bytes.len() as u64;
+        counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+    }
+    writer.flush()?;
+    // 200 重写：该段 downloaded 应等于整段已写字节；206 续传则累加
+    let new_downloaded = if status == 200 {
+        (write_offset - seg.begin) + written
+    } else {
+        seg.downloaded + written
+    };
+    Ok(Segment { begin: seg.begin, end: seg.end, downloaded: new_downloaded })
 }
 
 // 注：SpeedEstimator/plan_segments/concurrency/progress pump/sidecar pump 在 Task 8/9 编排时接线。
@@ -337,5 +476,35 @@ mod tests {
         let b3 = backoff(Duration::from_secs(1), 3);
         assert!(b2 > b1);
         assert!(b3 > b2);
+    }
+
+    #[tokio::test]
+    async fn download_chunked_writes_full_file_in_order() {
+        use crate::core::segment::plan_segments;
+        let server = MockServer::start();
+        // 100 字节，分 2 段（每段 50）
+        let total: u64 = 100;
+        let body: Vec<u8> = (0..total as u8).collect();
+        let half = 50u64;
+        server.mock(|when, then| {
+            when.method(Method::GET).path("/f").header("Range", format!("bytes=0-{}", half - 1));
+            then.status(206).body(body[0..half as usize].to_vec());
+        });
+        server.mock(|when, then| {
+            when.method(Method::GET).path("/f").header("Range", format!("bytes={half}-{}", total - 1));
+            then.status(206).body(body[half as usize..total as usize].to_vec());
+        });
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("f");
+        let _ = Downloader::ensure_part_file(&dest, total).unwrap();
+        let part = part_path(&dest);
+        let dl = Downloader::new(DownloadConfig::default()).unwrap();
+        let segs = plan_segments(total, true, half, 0, 2); // threshold=0 强制多段
+        assert_eq!(segs.len(), 2);
+        let counter = Arc::new(AtomicU64::new(0));
+        let done = dl.download_chunked(&server.url("/f"), &part, segs, counter, None).await.unwrap();
+        assert!(done.iter().all(|s| s.is_done()));
+        let written = std::fs::read(&part).unwrap();
+        assert_eq!(written, body);
     }
 }
