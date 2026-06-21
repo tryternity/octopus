@@ -383,6 +383,10 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | Paraformer | 离线/流式 | 中文优化 |
 | Qwen3-ASR | 离线 | 大模型能力；`auto`/空时不注入 language 让模型自检（支持中英混合），显式语种时注入 `language X`；模型自检的 `language <词> <|asr_text|>` 前缀由 `decode_tokens` 剥离（按 token ID 定位 + `trim_start` 容忍 BPE 引导空格） |
 | Zipformer | 离线/流式 | CTC + Transducer（RNN-T）；路由层检测 `decoder.onnx` 分流 |
+| Moonshine | 离线 | 英文优化，轻量（24M/58M）；`optimize_for_inference` 可能引发 layout 计算错误，`MoonshineEngine` 跳过 optimize 直接用原始 session |
+| Aliyun（云端） | 流式（CloudStreaming） | 阿里云 DashScope 三协议：Fun-ASR/Paraformer（run-task）/ Qwen-ASR Realtime（OpenAI 风格）；详见上方「云端 ASR 引擎」 |
+| ByteDance（云端） | 流式（CloudStreaming） | 字节跳动豆包大模型 ASR（bigmodel_async，二进制帧 + gzip）；详见上方「云端 ASR 引擎」 |
+| Tencent（云端） | 流式（CloudStreaming） | 腾讯云实时语音识别（WebSocket，HMAC-SHA1 URL 签名）；详见上方「云端 ASR 引擎」 |
 
 ### Zipformer 引擎族（CTC vs Transducer）
 

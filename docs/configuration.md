@@ -295,7 +295,7 @@ octopus-cli config
 
 | 写法 | 含义 | 示例 |
 |------|------|------|
-| `"{provider}:{category}:{model_name}"`（3 段） | 4 字段精确匹配，跨 provider/category 区分同名模型 | `"local:zipformer:zipformer-small-ctc"`、`"aliyun:Fun-ASR:fun-asr-2025-11-07"`、`"aliyun:qwen:qwen-plus"`、`"deepseek:deepseek:deepseek-v4-flash"`、`"bigmodel:glm:glm-4-flashx"` |
+| `"{provider}:{category}:{model_name}"`（3 段） | 4 字段精确匹配，跨 provider/category 区分同名模型 | `"local:zipformer:zipformer-small-ctc"`、`"aliyun:Fun-ASR:fun-asr-2025-11-07"`、`"bytedance:Doubao-ASR:doubao-asr-1.0-streaming"`、`"tencent:Tencent-ASR:16k_zh"`、`"aliyun:qwen:qwen-plus"`、`"deepseek:deepseek:deepseek-v4-flash"`、`"bigmodel:glm:glm-4-flashx"` |
 | `"{model_name}"`（裸名，无冒号） | **仅全局默认 fallback 路径用**——跨 provider/category 按 `model_name` 搜，优先 `provider='local'` | `"zipformer-small-ctc"` |
 | `"{x}:{y}"`（旧 2-part 1 冒号） | 视为非法格式，记录 warn + 按裸名兜底（迁移期用户更新配置；删库重建后 seed 已是 3-part） | 旧 `"bigmodel:glm-4-flashx"` → warn + 裸名搜索 |
 
