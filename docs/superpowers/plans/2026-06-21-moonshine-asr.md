@@ -665,6 +665,11 @@ Moonshine 5 task 完成并合并后，在测试 whisper 系列模型时发现两
     - 新增 `moonshine-base-en` + `moonshine-tiny-en` 两条 seed 记录
     - 修复 `init_sql_is_idempotent` / `seed_then_load_round_trips` 两个过时的测试断言（行数 + zipformer 条数）
 
+11. **whisper auto-language-detect 两步式实现**（`whisper.rs`）：
+    - bug：`language="auto"` 时跳过语言 token，prompt 变为 `[sot, transcribe, no_ts]`（3个）而非标准 `[sot, lang, transcribe, no_ts]`（4个），positional embedding 错位 → 输出乱码 / EOT
+    - 修复：auto 时先喂 `[sot]` 让模型预测语言 token，再拼完整 4-token prompt 跑 dec_init（与 OpenAI whisper 一致）
+    - 当前 DB 里 whisper 模型均为 `.en` + `language=en`，config `language=auto` 由 DB 兜底不走 auto-detect；此 bug 在添加多语言 whisper 模型时才暴露
+
 ### Type consistency
 - `MoonshineEngine::new(entry: &config::ModelEntry)` — 与 `WhisperEngine::new` / `ParaformerEngine::new` 签名一致
 - `transcribe(&self, samples: &[f32], _language: &str) -> Result<String>` — 与 `OfflineAsrEngine` trait 一致
