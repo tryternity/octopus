@@ -209,6 +209,24 @@ impl WhisperEngine {
         });
         let encoder = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&encoder_path)?;
 
+        // 校验 encoder 的 mel 输入维度：Whisper v1/v2 = 80 mel，Large v3 / Turbo = 128 mel。
+        // 当前引擎仅支持 v1/v2（N_MELS=80 + 静态 80×201 filterbank），遇到 128 mel 提前 fail，
+        // 避免后续 encoder.run() 时用户踩到不直观的 ONNX shape mismatch 错误。
+        // mel 输入 shape = [batch, n_mels, n_audio_ctx]，dims[1] = n_mels（>0 时为静态值）。
+        if let Some(mel_input) = encoder.inputs().first() {
+            if let Some(shape) = mel_input.dtype().tensor_shape() {
+                let dims: Vec<i64> = shape.iter().copied().collect();
+                if dims.len() >= 2 && dims[1] > 0 && dims[1] as usize != N_MELS {
+                    anyhow::bail!(
+                        "Whisper 引擎仅支持 v1/v2（{} mel bins），但模型 encoder 期望 {} mel bins。\
+                         Large v3 / Turbo 使用 128 mel bins，当前不支持。\
+                         请使用 whisper-tiny / base / small（.en 或多语言 v2 版本）。",
+                        N_MELS, dims[1]
+                    );
+                }
+            }
+        }
+
         // Decoders（优先 int8 量化版本，与 encoder 一致）
         let dec_init_path = onnx_dir.join(if onnx_dir.join("decoder_model_int8.onnx").exists() {
             "decoder_model_int8.onnx"
