@@ -259,7 +259,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 **模型目录解析（`config::resolve_model_dir`）** —— source 字段双模式：
 - 本地相对路径（如 `models/zipformer`）→ `~/.octopus/<source>`（随应用打包的小模型）
-- HF repo 名（如 `onnx-community/whisper-small`）→ `~/.cache/huggingface/hub/`（大模型缓存）
+- HF repo 名（如 `onnx-community/whisper-small.en`）→ `~/.cache/huggingface/hub/`（大模型缓存）
 
 **统一 DB 存储（v3+）：**
 所有配置统一存储在 `~/.octopus/octopus.db`（SQLite），不再使用独立 config.yaml 文件：
