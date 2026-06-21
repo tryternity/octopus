@@ -65,7 +65,7 @@ octopus 配置分两部分：
 | local | sensevoice | sherpa-onnx-sense-voice-funasr-nano-int8 | csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17 | 1 | 0 | 0 |
 | local | qwen3-asr | qwen3-asr-0.6B | csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25 | 1 | 0 | 0 |
 | local | qwen3-asr | qwen3-asr-1.7B | ilmina/qwen3-asr-1.7b-sherpa-onnx | 1 | 0 | 0 |
-| local | whisper | whisper-small | onnx-community/whisper-small | 1 | 0 | 0 |
+| local | whisper | whisper-small | onnx-community/whisper-small.en | 1 | 0 | 0 |
 | aliyun | Fun-ASR | fun-asr-2025-11-07 | `wss://dashscope.aliyuncs.com/api-ws/v1/inference` | 0 | 0 | 0 |
 
 ### 默认 LLM seed（含 aliyun qwen / deepseek 经 DashScope）
@@ -165,7 +165,7 @@ octopus-cli config
 | source 形态 | 解析结果 | 示例 |
 |---|---|---|
 | 本地相对路径 | `~/.octopus/<source>` | `models/zipformer` → `~/.octopus/models/zipformer` |
-| HF repo 名 | `~/.cache/huggingface/hub/` | `onnx-community/whisper-small` → HF 缓存 |
+| HF repo 名 | `~/.cache/huggingface/hub/` | `onnx-community/whisper-small.en` → HF 缓存 |
 
 ### 手编 DB
 
@@ -299,7 +299,7 @@ edit_shortcut: "Cmd+Enter"       # 编辑 toggle 快捷键（窗口内，进入/
 pip install huggingface_hub
 
 # 下载（source 字段即 HF repo 名）
-huggingface-cli download onnx-community/whisper-small
+huggingface-cli download onnx-community/whisper-small.en
 huggingface-cli download csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17
 huggingface-cli download csukuangfj/sherpa-onnx-streaming-paraformer-zh
 # Zipformer Transducer（RNN-T，三 session：encoder + decoder + joiner）
