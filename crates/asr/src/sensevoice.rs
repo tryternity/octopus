@@ -5,6 +5,7 @@ use once_cell::sync::Lazy;
 use ort::session::Session;
 
 use crate::config;
+use crate::paraformer::FBANK_FFT;
 
 // ── Fbank constants (matching kaldi_native_fbank defaults) ──
 const FBANK_FFT_SIZE: usize = 512;
@@ -147,8 +148,7 @@ fn compute_fbank(samples: &[f32]) -> Result<Array2<f32>> {
         1
     };
 
-    let mut planner = rustfft::FftPlanner::new();
-    let fft = planner.plan_fft_forward(FBANK_FFT_SIZE);
+    let fft = &*FBANK_FFT;
 
     let n_freqs = FBANK_FFT_SIZE / 2 + 1;
     let mut fbank_data = vec![0.0f32; n_frames * FBANK_NUM_BINS];

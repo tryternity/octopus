@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use ndarray::{Array2, Array3, ArrayD, IxDyn};
 use once_cell::sync::Lazy;
 use ort::session::Session;
+use std::sync::Arc;
 use tokenizers::Tokenizer;
 
 use crate::config;
@@ -15,6 +16,10 @@ const N_SAMPLES: usize = 30 * SAMPLE_RATE as usize;
 
 
 static HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hann_window(FFT_SIZE));
+static WHISPER_FFT: Lazy<Arc<dyn rustfft::Fft<f32>>> = Lazy::new(|| {
+    let mut planner = rustfft::FftPlanner::<f32>::new();
+    planner.plan_fft_forward(FFT_SIZE)
+});
 
 // ── Mel spectrogram ──
 fn hann_window(size: usize) -> Vec<f32> {
@@ -28,8 +33,7 @@ fn compute_mel(audio: &[f32]) -> Result<Array3<f32>> {
     let copy_len = audio.len().min(N_SAMPLES);
     padded[..copy_len].copy_from_slice(&audio[..copy_len]);
     let n_frames = N_SAMPLES / HOP_LENGTH;
-    let mut planner = rustfft::FftPlanner::new();
-    let fft = planner.plan_fft_forward(FFT_SIZE);
+    let fft = &*WHISPER_FFT;
     let mut mel_data = vec![0.0f32; N_MELS * n_frames];
 
     let mut buf = vec![rustfft::num_complex::Complex::new(0.0f32, 0.0f32); FFT_SIZE];
@@ -400,10 +404,11 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         // 根据实际音频时长限制解码步数：compute_mel 会把音频 0 填充到 30s，
         // 若 VAD 只传入 2s 片段，剩余 28s 是静音，Whisper 在静音段不会预测 EOT
         // 反而开始幻听（重复最后一句话 / “谢谢观看”等）并跑满 448 步导致 RTF 暴增。
-        // .en 模型平均生成 ~6 text tokens/秒，+10 为 prompt/safety 余量；
+        // .en 模型平均生成 ~6 text tokens/秒，+30 为 prompt/safety 余量；
         // 30s 以上恢复 448 上限（实际上限由模型上下文决定）。
+        // （审查：原 +10 余量对极短音频不足，中文 BPE 切分细碎时末尾被截断，调至 +30）
         let audio_seconds = audio.len() as f32 / SAMPLE_RATE as f32;
-        let max_tokens = ((audio_seconds * 6.0) as usize + 10).min(448);
+        let max_tokens = ((audio_seconds * 6.0) as usize + 30).min(448);
         eprintln!(
             "[whisper] audio {:.2}s → max_tokens={} (was 448)",
             audio_seconds, max_tokens

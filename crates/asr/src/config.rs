@@ -471,7 +471,10 @@ pub fn apply_session_acceleration(builder: ort::session::builder::SessionBuilder
     // qwen3-asr 含 CoreML 不支持的动态算子 → onnxruntime 把图分区（CoreML 跑能跑的、CPU 跑
     // 剩下的），每分区边界 CPU↔CoreML 张量拷贝开销 dominate，比纯 CPU 还慢，且狂刷
     // "Context leak / CoreAnalytics"。检测到 active 引擎 category=qwen3-asr 时跳过 CoreML，纯 CPU。
-    if matches!(parse_model_spec(&app_cfg.asr_engine), ModelSpec::Full { category: "qwen3-asr", .. }) {
+    // 用 resolve_engine_category 而非 parse_model_spec 的 matches!：裸名（如 "qwen3-asr-base"）
+    // 会返回 ModelSpec::NameOnly 导致 matches! 失效，resolve_engine_category 内部会查 DB
+    // 解析出真实 category，对裸名同样有效。
+    if resolve_engine_category(&app_cfg.asr_engine) == Some(EngineCategory::Qwen3Asr) {
         log::info!(
             "Skipping CoreML EP: active engine category=qwen3-asr (dynamic ops incompatible — \
              graph partitioning would slow it down). Using CPU."

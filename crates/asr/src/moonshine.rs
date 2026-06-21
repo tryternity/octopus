@@ -115,8 +115,10 @@ impl MoonshineEngine {
     ) -> Result<Vec<i64>> {
         const BOS: i32 = 1;
         const EOS: i64 = 2;
-        // 与 sherpa-onnx 一致：encoder_frames * 384 / 16000 * 6
-        let max_len = (features_len as f32 * 384.0 / 16000.0 * 6.0) as usize;
+        // 与 sherpa-onNX 一致：encoder_frames * 384 / 16000 * 6
+        // +20 安全余量：极短音频（如 1s 指令）的 BPE 切分可能超出 6 token/秒，
+        // 无余量会导致末尾字被强行截断。
+        let max_len = (features_len as f32 * 384.0 / 16000.0 * 6.0) as usize + 20;
 
         // ── 首 token（BOS）: uncached_decode ──
         let token = [BOS];

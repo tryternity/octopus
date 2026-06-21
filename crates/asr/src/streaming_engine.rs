@@ -95,10 +95,11 @@ impl StreamingSession {
                             let delta = delta.trim_start();
                             if !delta.is_empty() {
                                 crate::paraformer::smart_append(&mut prefix, delta);
-                            }
-                            *clen = full_asr.chars().count();
-                            if !ends_with_punct(&prefix) {
-                                prefix.push('，');
+                                *clen = full_asr.chars().count();
+                                // 只有确实识别出新文本才插逗号，避免静音波动产生多余标点
+                                if !ends_with_punct(&prefix) {
+                                    prefix.push('，');
+                                }
                             }
                         }
 
