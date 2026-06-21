@@ -4066,6 +4066,7 @@ dependencies = [
  "cpal",
  "md5",
  "octopus-asr",
+ "octopus-download",
  "octopus-infra",
  "serde",
  "serde_json",

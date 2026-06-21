@@ -57,6 +57,20 @@ enum Commands {
         #[arg(long)]
         unclear: bool,
     },
+    /// 下载 HuggingFace 模型到 ~/.octopus/models/<repo>
+    Download {
+        /// HF repo，如 onnx-community/whisper-small（与 DB models 的 entry.source 一致）
+        repo: String,
+        /// 只下匹配的文件（glob，对齐 hf-cli，`*` 跨 `/`）。空 = 下整库
+        #[arg(long)]
+        include: Vec<String>,
+        /// 排除匹配的文件
+        #[arg(long)]
+        exclude: Vec<String>,
+        /// HF 镜像 host（如 https://hf-mirror.com），覆盖 config 的 download_mirror
+        #[arg(long)]
+        mirror: Option<String>,
+    },
 }
 
 fn main() -> Result<()> {
@@ -80,6 +94,15 @@ fn main() -> Result<()> {
         } => {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(transcribe_url(&url, &model, &language, output.as_deref(), unclear))
+        }
+        Commands::Download {
+            repo,
+            include,
+            exclude,
+            mirror,
+        } => {
+            let rt = tokio::runtime::Runtime::new()?;
+            rt.block_on(run_download(&repo, &include, &exclude, mirror.as_deref()))
         }
     }
 }
@@ -1019,4 +1042,150 @@ fn stream_test_zipformer(
         duration / elapsed.as_secs_f64()
     );
     Ok(())
+}
+
+// ── download 子命令 ──
+
+/// 构造 HF 下载请求。mirror 优先级：cli `--mirror` > config `download_mirror` > 空（官方源）。
+/// target_dir 固定 `~/.octopus/models`，与 `resolve_model_dir` 第 3 级（`~/.octopus/models/<repo>`）一致。
+fn build_hf_request(
+    repo: String,
+    include: Vec<String>,
+    exclude: Vec<String>,
+    cli_mirror: Option<String>,
+    config_mirror: &str,
+) -> octopus_download::HfRequest {
+    let mirror = cli_mirror
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .or_else(|| {
+            let c = config_mirror.trim();
+            if c.is_empty() {
+                None
+            } else {
+                Some(c.to_string())
+            }
+        });
+    octopus_download::HfRequest {
+        repo,
+        include,
+        exclude,
+        source_url: mirror,
+        target_dir: octopus_infra::octopus_config_home().join("models").to_path_buf(),
+    }
+}
+
+/// 执行下载：resolve 文件列表 → 逐文件 Downloader::download + 进度打印。
+/// 失败透传 anyhow（resolve 网络 / hash 校验 / 镜像 fallback 均由 download crate 处理）。
+async fn run_download(
+    repo: &str,
+    include: &[String],
+    exclude: &[String],
+    cli_mirror: Option<&str>,
+) -> Result<()> {
+    let app_cfg = octopus_infra::config::load_config()?;
+    let req = build_hf_request(
+        repo.to_string(),
+        include.to_vec(),
+        exclude.to_vec(),
+        cli_mirror.map(|s| s.to_string()),
+        &app_cfg.download_mirror,
+    );
+
+    println!("解析 {} 的文件列表...", repo);
+    let dl = octopus_download::Downloader::new(octopus_download::DownloadConfig::default())
+        .map_err(|e| anyhow::anyhow!("初始化下载器失败: {e:?}"))?;
+    let tasks = octopus_download::resolve_tasks(dl.client(), req)
+        .await
+        .map_err(|e| anyhow::anyhow!("resolve 失败: {e:?}"))?;
+    if tasks.is_empty() {
+        anyhow::bail!("没有匹配的文件——检查 --include/--exclude glob");
+    }
+    println!(
+        "共 {} 个文件 → {}",
+        tasks.len(),
+        octopus_infra::octopus_config_home().join("models").display()
+    );
+
+    for (i, task) in tasks.iter().enumerate() {
+        println!("[{}/{}] {}", i + 1, tasks.len(), task.dest.display());
+        let (tx, mut rx) = tokio::sync::mpsc::channel::<octopus_download::Progress>(64);
+        // rx move 进 printer：download 返回后 tx drop → channel 关闭 → rx.recv() 返回 None → printer 自然退出。
+        // 勿在主作用域再 rx.close()——rx 已 move 进闭包，访问即 use-of-moved-value 编译错。
+        let printer = tokio::spawn(async move {
+            while let Some(p) = rx.recv().await {
+                if let Some(total) = p.total_bytes {
+                    let pct = p.downloaded_bytes as f64 / total as f64 * 100.0;
+                    // 速度：download crate 250ms 推送 EMA 估算；下大模型时是关键 UX。
+                    let spd = p
+                        .speed_bps
+                        .map(|s| format!(" {:.2} MB/s", s / 1_048_576.0))
+                        .unwrap_or_default();
+                    eprint!(
+                        "\r  {}/{} bytes ({:.1}%){}   ",
+                        p.downloaded_bytes, total, pct, spd
+                    );
+                }
+            }
+        });
+        dl.download(task, tx, None)
+            .await
+            .map_err(|e| anyhow::anyhow!("下载 {} 失败: {e:?}", task.dest.display()))?;
+        let _ = printer.await;
+        // \x1b[2K 清当前行——进度行可能比 "✓ done" 长（大文件字节数多），不清会残留尾巴。
+        eprintln!("\r\x1b[2K  ✓ done");
+    }
+
+    println!("\n完成。模型位于 ~/.octopus/models/{}/", repo);
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::build_hf_request;
+
+    #[test]
+    fn build_request_cli_mirror_overrides_config() {
+        // --mirror 优先于 config download_mirror
+        let req = build_hf_request(
+            "onnx-community/whisper-small".into(),
+            vec!["onnx/*_int8.onnx".into()],
+            vec![],
+            Some("https://hf-mirror.com".into()),
+            "https://ignored.example.com",
+        );
+        assert_eq!(req.repo, "onnx-community/whisper-small");
+        assert_eq!(req.source_url.as_deref(), Some("https://hf-mirror.com"));
+        assert_eq!(req.include, vec!["onnx/*_int8.onnx"]);
+        assert!(req.target_dir.ends_with("models"));
+    }
+
+    #[test]
+    fn build_request_config_mirror_when_no_cli() {
+        // 无 --mirror → 用 config
+        let req = build_hf_request(
+            "org/m".into(),
+            vec![],
+            vec![],
+            None,
+            "https://hf-mirror.com",
+        );
+        assert_eq!(req.source_url.as_deref(), Some("https://hf-mirror.com"));
+    }
+
+    #[test]
+    fn build_request_none_when_both_empty() {
+        // cli 空 + config 空 → None（官方源，由 download crate 默认）
+        let req = build_hf_request("org/m".into(), vec![], vec![], Some(String::new()), "");
+        assert!(req.source_url.is_none());
+        assert!(req.target_dir.ends_with("models"));
+    }
+
+    #[test]
+    fn build_request_target_dir_under_octopus_models() {
+        // target_dir 必须是 octopus_config_home/models（与 resolve_model_dir 第 3 级一致）
+        let req = build_hf_request("org/m".into(), vec![], vec![], None, "");
+        let expected = octopus_infra::octopus_config_home().join("models");
+        assert_eq!(req.target_dir, expected);
+    }
 }
