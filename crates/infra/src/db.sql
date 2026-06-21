@@ -66,6 +66,10 @@ VALUES
     -- model_name = engine_model_type（如 16k_zh / 16k_zh_en）
     ('asr','tencent','Tencent-ASR','16k_zh','{appid}:{secretid}','zh','腾讯云实时语音识别（16k 中文通用，source 填 appid:secretid，key 填 SecretKey）',0,0,1),
     ('asr','tencent','Tencent-ASR-Multi','16k_zh_en','{appid}:{secretid}','zh','腾讯云实时语音识别大模型（16k 普方英+31 方言，source 填 appid:secretid，key 填 SecretKey）',0,0,0),
+    -- 百度智能云实时语音识别（WebSocket START 帧鉴权）
+    -- endpoint 固定 wss://vop.baidu.com/realtime_asr?sn=<UUID>
+    -- source = AppID；secret_key = API Key（appkey）；model_name = dev_pid（如 15372）
+    ('asr','baidu','Baidu-ASR','15372','{appid}','zh','百度智能云实时语音识别（中文加强标点 dev_pid=15372，source 填 AppID，key 填 API Key）',0,0,1),
     -- 阿里云 DashScope 实时 ASR（cloud WS，secret_key 填 DashScope API Key）
     -- Fun-ASR / Paraformer 共用 /api-ws/v1/inference 端点（run-task 协议）
     -- Qwen-ASR 用 /api-ws/v1/realtime 端点（OpenAI Realtime 风格协议）

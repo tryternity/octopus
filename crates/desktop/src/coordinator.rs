@@ -1465,7 +1465,7 @@ fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicB
 
 // ── CloudStreaming（aliyun feature）──
 
-/// 判定 config.asr_engine 是否为云端引擎（Aliyun、ByteDance 或 Tencent）。
+/// 判定 config.asr_engine 是否为云端引擎（Aliyun、ByteDance、Tencent 或 Baidu）。
 #[cfg(feature = "aliyun")]
 fn is_cloud_engine(config: &AppConfig) -> bool {
     use octopus_asr::config::EngineCategory;
@@ -1475,6 +1475,7 @@ fn is_cloud_engine(config: &AppConfig) -> bool {
         Some(EngineCategory::Aliyun)
             | Some(EngineCategory::ByteDance)
             | Some(EngineCategory::Tencent)
+            | Some(EngineCategory::Baidu)
     )
 }
 
@@ -1584,6 +1585,42 @@ fn resolve_tencent_config(engine_spec: &str) -> Result<(String, String, String),
         ));
     }
     // 返回 (appid:secretid, secret_key, engine_model_type)
+    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
+}
+
+/// 解析 Baidu（百度云）云端引擎配置（appid + api_key + dev_pid）。
+///
+/// 与 Tencent 的差异：
+/// - `source` 字段是 AppID（纯数字字符串）。
+/// - `secret_key` 字段是 API Key（appkey）。
+/// - `model_name` 字段是 dev_pid 字符串（如 `15372`）。
+/// - 鉴权在 START 帧中直接传 appid + appkey，不需 HMAC 签名。
+/// - Endpoint 固定在 `baidu_stream::ENDPOINT`，不来自 DB。
+#[cfg(feature = "aliyun")]
+fn resolve_baidu_config(engine_spec: &str) -> Result<(String, String, String), String> {
+    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
+        .model_name()
+        .to_string();
+    let entry = cfg
+        .asr
+        .baidu
+        .as_ref()
+        .and_then(|m| m.get(model_name.as_str()))
+        .ok_or_else(|| format!("baidu ASR 模型 '{}' 未在 DB 配置", model_name))?;
+    if entry.secret_key.is_empty() {
+        return Err(format!(
+            "baidu ASR 模型 '{}' 的 secret_key（API Key）为空",
+            model_name
+        ));
+    }
+    if entry.source.is_empty() {
+        return Err(format!(
+            "baidu ASR 模型 '{}' 的 source 字段（AppID）为空",
+            model_name
+        ));
+    }
+    // 返回 (appid, api_key, dev_pid)
     Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
 }
 
@@ -1741,6 +1778,32 @@ fn handle_cloud_streaming_tick(
                     }
                     Err(e) => {
                         error!("CloudStreaming: Tencent config resolve failed: {}", e);
+                        *is_speaking = false;
+                    }
+                }
+            }
+            Some(octopus_asr::config::EngineCategory::Baidu) => {
+                match resolve_baidu_config(&config.asr_engine) {
+                    Ok((appid, appkey, dev_pid)) => {
+                        let pre_roll = take_preroll(pre_roll_buffer);
+                        let rt = tauri::async_runtime::handle();
+                        match crate::baidu_stream::BaiduStreamSession::open(
+                            &rt, appid, appkey, dev_pid, config.language.clone(), pre_roll,
+                        ) {
+                            Ok(sess) => {
+                                let sess = crate::cloud_session::CloudSession::Baidu(sess);
+                                let _ = sess.push_pcm(&samples);
+                                *session = Some(sess);
+                                debug!("CloudStreaming: Baidu WSS opened on speech onset");
+                            }
+                            Err(e) => {
+                                error!("CloudStreaming: open Baidu WSS failed: {}", e);
+                                *is_speaking = false;
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        error!("CloudStreaming: Baidu config resolve failed: {}", e);
                         *is_speaking = false;
                     }
                 }

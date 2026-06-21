@@ -333,6 +333,7 @@ fn select_model() -> Result<String> {
             octopus_asr::config::EngineCategory::Aliyun => "Aliyun(云)",
             octopus_asr::config::EngineCategory::ByteDance => "ByteDance(云)",
             octopus_asr::config::EngineCategory::Tencent => "Tencent(云)",
+            octopus_asr::config::EngineCategory::Baidu => "Baidu(云)",
         };
         let desc = if e.description.is_empty() {
             String::new()
@@ -440,6 +441,9 @@ fn do_transcribe(model: &str, language: &str, samples: &[f32]) -> Result<String>
         }
         Some(octopus_asr::config::EngineCategory::Tencent) => {
             anyhow::bail!("腾讯云云端 ASR 引擎仅支持流式模式（需 WS 连接），CLI transcribe 尚未接入（spec='{}'）", model)
+        }
+        Some(octopus_asr::config::EngineCategory::Baidu) => {
+            anyhow::bail!("百度云云端 ASR 引擎仅支持流式模式（需 WS 连接），CLI transcribe 尚未接入（spec='{}'）", model)
         }
         None => {
             octopus_asr::sensevoice::transcribe(bare, samples, language)

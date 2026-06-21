@@ -99,6 +99,10 @@ impl AsrEngineManager {
                     "腾讯云云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
                     model_name
                 ),
+                config::EngineCategory::Baidu => anyhow::bail!(
+                    "百度云云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
+                    model_name
+                ),
             };
 
             // Write to cache

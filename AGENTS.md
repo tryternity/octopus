@@ -91,7 +91,7 @@ crates/
 infra ← (asr, llm, cli, server, desktop, dlp)  — 所有 crate 都依赖 infra
 asr ← (cli, server, desktop via "embedded" feature)
 llm ← (asr via dev-dep, desktop)
-desktop → feature-gated: embedded (=asr) | remote-ws | remote-grpc | aliyun (云端 ASR WS 流式：Aliyun/ByteDance/Tencent)
+desktop → feature-gated: embedded (=asr) | remote-ws | remote-grpc | aliyun (云端 ASR WS 流式：Aliyun/ByteDance/Tencent/Baidu)
 ```
 
 **infra 是唯一无项目内依赖的 crate**，任何跨 crate 共享的内容应放在 infra。

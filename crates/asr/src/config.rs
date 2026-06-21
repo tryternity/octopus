@@ -134,6 +134,8 @@ pub enum EngineCategory {
     ByteDance,
     /// 腾讯云云端 ASR（实时语音识别 WebSocket HMAC-SHA1 签名鉴权）。provider='tencent' 路由入此。
     Tencent,
+    /// 百度智能云云端 ASR（实时语音识别 WebSocket START 帧鉴权）。provider='baidu' 路由入此。
+    Baidu,
 }
 
 /// DB `models.category` 字符串 → EngineCategory 映射。
@@ -164,14 +166,17 @@ fn resolve_category(provider: &str, category: &str) -> Option<EngineCategory> {
     if provider.eq_ignore_ascii_case("tencent") {
         return Some(EngineCategory::Tencent);
     }
+    if provider.eq_ignore_ascii_case("baidu") {
+        return Some(EngineCategory::Baidu);
+    }
     engine_category_from_str(category)
 }
 
-/// 按固定顺序遍历 AsrConfig 的 9 个 section（用于 NameOnly 裸名查找）。
-/// 顺序与本地引擎优先一致（aliyun / bytedance / tencent 云端放最后）。
+/// 按固定顺序遍历 AsrConfig 的 10 个 section（用于 NameOnly 裸名查找）。
+/// 顺序与本地引擎优先一致（aliyun / bytedance / tencent / baidu 云端放最后）。
 fn all_sections<'a>(
     cfg: &'a AsrConfig,
-) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 9] {
+) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 10] {
     [
         (cfg.asr.whisper.as_ref(), EngineCategory::Whisper),
         (cfg.asr.sensevoice.as_ref(), EngineCategory::SenseVoice),
@@ -182,6 +187,7 @@ fn all_sections<'a>(
         (cfg.asr.aliyun.as_ref(), EngineCategory::Aliyun),
         (cfg.asr.bytedance.as_ref(), EngineCategory::ByteDance),
         (cfg.asr.tencent.as_ref(), EngineCategory::Tencent),
+        (cfg.asr.baidu.as_ref(), EngineCategory::Baidu),
     ]
 }
 
@@ -239,6 +245,7 @@ fn provider_of(c: &EngineCategory) -> &'static str {
         EngineCategory::Aliyun => "aliyun",
         EngineCategory::ByteDance => "bytedance",
         EngineCategory::Tencent => "tencent",
+        EngineCategory::Baidu => "baidu",
         _ => "local",
     }
 }
@@ -260,6 +267,7 @@ pub fn category_label(c: EngineCategory) -> &'static str {
         Aliyun => "Fun-ASR",
         ByteDance => "Doubao-ASR",
         Tencent => "Tencent-ASR",
+        Baidu => "Baidu-ASR",
     }
 }
 
@@ -400,6 +408,7 @@ pub fn pick_entry<'a>(
         EngineCategory::Aliyun => cfg.asr.aliyun.as_ref(),
         EngineCategory::ByteDance => cfg.asr.bytedance.as_ref(),
         EngineCategory::Tencent => cfg.asr.tencent.as_ref(),
+        EngineCategory::Baidu => cfg.asr.baidu.as_ref(),
     }?;
     map.get(name)
 }
@@ -531,6 +540,7 @@ mod tests {
                 moonshine: None,
                 bytedance: None,
                 tencent: None,
+                baidu: None,
                 aliyun: None,
             },
         }
@@ -561,6 +571,7 @@ mod tests {
                 moonshine: None,
                 bytedance: None,
                 tencent: None,
+                baidu: None,
                 aliyun: Some(aliyun),
             },
         }
@@ -624,6 +635,7 @@ mod tests {
                 moonshine: None,
                 bytedance: None,
                 tencent: None,
+                baidu: None,
                 aliyun: None,
             },
         };
