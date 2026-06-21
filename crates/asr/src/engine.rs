@@ -8,6 +8,7 @@ use crate::whisper::WhisperEngine;
 use crate::sensevoice::SenseVoiceEngine;
 use crate::paraformer::ParaformerEngine;
 use crate::zipformer::{ZipformerCtcEngine, ZipformerTransducerEngine};
+use crate::moonshine::MoonshineEngine;
 
 /// Trait representing a reusable offline ASR model engine
 pub trait OfflineAsrEngine: Send + Sync {
@@ -86,6 +87,7 @@ impl AsrEngineManager {
                     "阿里云云端 ASR 引擎尚未接入（spec='{}'，见 Task 2 DashscopeEngine）",
                     model_name
                 ),
+                config::EngineCategory::Moonshine => Arc::new(MoonshineEngine::new(entry)?),
             };
 
             // Write to cache

@@ -37,6 +37,9 @@ pub struct AsrSection {
     pub qwen3_asr: Option<HashMap<String, ModelEntry>>,
     #[serde(default)]
     pub zipformer: Option<HashMap<String, ModelEntry>>,
+    /// Moonshine 端侧 ASR（Useful Sensors）。provider='local' + category='moonshine' 路由入此。
+    #[serde(default)]
+    pub moonshine: Option<HashMap<String, ModelEntry>>,
     /// 阿里云云端 ASR（DashScope Fun-ASR 实时）。provider='aliyun' 路由入此。
     #[serde(default)]
     pub aliyun: Option<HashMap<String, ModelEntry>>,
@@ -400,6 +403,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
         paraformer: None,
         qwen3_asr: None,
         zipformer: None,
+        moonshine: None,
         aliyun: None,
     };
     for (provider, category, model_name, source, language, description, secret_key, is_local, is_enabled, is_streaming) in rows {
@@ -420,6 +424,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
             (_, "paraformer") => &mut asr.paraformer,
             (_, "qwen3-asr") => &mut asr.qwen3_asr,
             (_, "zipformer") => &mut asr.zipformer,
+            (_, "moonshine") => &mut asr.moonshine,
             _ => continue,
         };
         map.get_or_insert_with(HashMap::new).insert(model_name, entry);
@@ -757,8 +762,8 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
             .unwrap();
-        // 8 local + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
-        assert_eq!(count, 11);
+        // 12 local + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
+        assert_eq!(count, 15);
     }
 
     #[test]
@@ -768,7 +773,7 @@ mod tests {
         conn.execute("UPDATE models SET is_enabled = 1", []).unwrap();
         let cfg = load_models_at(&conn).unwrap();
         let zf = cfg.asr.zipformer.as_ref().expect("zipformer section");
-        assert_eq!(zf.len(), 3);
+        assert_eq!(zf.len(), 5);
         let small = zf.get("zipformer-small-ctc").unwrap();
         assert_eq!(small.source, "models/zipformer");
         assert!(small.is_local, "ASR 模型应为本地模型");
@@ -780,6 +785,8 @@ mod tests {
         assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 1);
         assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 2);
+        // moonshine ASR（base + tiny）
+        assert_eq!(cfg.asr.moonshine.as_ref().unwrap().len(), 2);
         // aliyun ASR（Fun-ASR / Paraformer / Qwen-ASR）
         let aliyun = cfg.asr.aliyun.as_ref().expect("aliyun section");
         assert_eq!(aliyun.len(), 3);

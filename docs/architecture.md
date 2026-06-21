@@ -39,6 +39,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `paraformer` | Paraformer 离线识别（fbank: hamming 窗 + DC offset + pre-emphasis） |
 | `qwen3_asr` | Qwen3-ASR 离线识别 |
 | `zipformer` | Zipformer 离线识别 |
+| `moonshine` | Moonshine 离线识别（纯 ONNX 4-session 流水线：preprocess → encode → uncached_decode → cached_decode 循环 + KV cache；英语） |
 | `streaming_paraformer` | Paraformer 流式识别（增量式 fbank: povey 窗 + DC offset + pre-emphasis + 跨帧状态） |
 | `streaming_zipformer` | Zipformer 流式识别 |
 | `corrector` | 基于拼音映射和 Bigram 转移概率的轻量级中文拼音纠错与热词校正 |

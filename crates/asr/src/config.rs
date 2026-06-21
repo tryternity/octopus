@@ -127,6 +127,7 @@ pub enum EngineCategory {
     Paraformer,
     Qwen3Asr,
     Zipformer,
+    Moonshine,
     /// 阿里云云端 ASR（DashScope Fun-ASR 实时）。provider='aliyun' 路由入此。
     Aliyun,
 }
@@ -142,6 +143,7 @@ fn engine_category_from_str(s: &str) -> Option<EngineCategory> {
         "paraformer" => Some(EngineCategory::Paraformer),
         "qwen3-asr" => Some(EngineCategory::Qwen3Asr),
         "zipformer" => Some(EngineCategory::Zipformer),
+        "moonshine" => Some(EngineCategory::Moonshine),
         _ => None,
     }
 }
@@ -155,17 +157,18 @@ fn resolve_category(provider: &str, category: &str) -> Option<EngineCategory> {
     engine_category_from_str(category)
 }
 
-/// 按固定顺序遍历 AsrConfig 的 6 个 section（用于 NameOnly 裸名查找）。
+/// 按固定顺序遍历 AsrConfig 的 7 个 section（用于 NameOnly 裸名查找）。
 /// 顺序与本地引擎优先一致（aliyun 云端放最后）。
 fn all_sections<'a>(
     cfg: &'a AsrConfig,
-) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 6] {
+) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 7] {
     [
         (cfg.asr.whisper.as_ref(), EngineCategory::Whisper),
         (cfg.asr.sensevoice.as_ref(), EngineCategory::SenseVoice),
         (cfg.asr.paraformer.as_ref(), EngineCategory::Paraformer),
         (cfg.asr.qwen3_asr.as_ref(), EngineCategory::Qwen3Asr),
         (cfg.asr.zipformer.as_ref(), EngineCategory::Zipformer),
+        (cfg.asr.moonshine.as_ref(), EngineCategory::Moonshine),
         (cfg.asr.aliyun.as_ref(), EngineCategory::Aliyun),
     ]
 }
@@ -239,6 +242,7 @@ pub fn category_label(c: EngineCategory) -> &'static str {
         Paraformer => "paraformer",
         Qwen3Asr => "qwen3-asr",
         Zipformer => "zipformer",
+        Moonshine => "moonshine",
         Aliyun => "Fun-ASR",
     }
 }
@@ -376,6 +380,7 @@ pub fn pick_entry<'a>(
         EngineCategory::Paraformer => cfg.asr.paraformer.as_ref(),
         EngineCategory::Qwen3Asr => cfg.asr.qwen3_asr.as_ref(),
         EngineCategory::Zipformer => cfg.asr.zipformer.as_ref(),
+        EngineCategory::Moonshine => cfg.asr.moonshine.as_ref(),
         EngineCategory::Aliyun => cfg.asr.aliyun.as_ref(),
     }?;
     map.get(name)
@@ -505,6 +510,7 @@ mod tests {
                 paraformer: None,
                 qwen3_asr: None,
                 zipformer: Some(zip),
+                moonshine: None,
                 aliyun: None,
             },
         }
@@ -532,6 +538,7 @@ mod tests {
                 paraformer: None,
                 qwen3_asr: None,
                 zipformer: None,
+                moonshine: None,
                 aliyun: Some(aliyun),
             },
         }
@@ -592,6 +599,7 @@ mod tests {
                 paraformer: None,
                 qwen3_asr: None,
                 zipformer: None,
+                moonshine: None,
                 aliyun: None,
             },
         };
