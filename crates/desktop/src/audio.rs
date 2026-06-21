@@ -1,6 +1,6 @@
 use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use log::{debug, info};
+use log::{debug, error, info};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
@@ -172,7 +172,7 @@ impl SharedAudioState {
                         samples.lock().unwrap().extend_from_slice(&mono);
                     }
                 },
-                |err| debug!("Audio error: {}", err),
+                |err| error!("Audio error: {}", err),
                 None,
             )?,
             cpal::SampleFormat::I16 => device.build_input_stream(
@@ -189,7 +189,26 @@ impl SharedAudioState {
                         samples.lock().unwrap().extend_from_slice(&mono);
                     }
                 },
-                |err| debug!("Audio error: {}", err),
+                |err| error!("Audio error: {}", err),
+                None,
+            )?,
+            cpal::SampleFormat::U16 => device.build_input_stream(
+                &config.into(),
+                move |data: &[u16], _: &cpal::InputCallbackInfo| {
+                    if is_recording.load(Ordering::Relaxed) {
+                        let mono: Vec<f32> = data
+                            .chunks(channels)
+                            .map(|c| {
+                                c.iter()
+                                    .map(|&s| (s as f32 - 32768.0) / 32768.0)
+                                    .sum::<f32>()
+                                    / channels as f32
+                            })
+                            .collect();
+                        samples.lock().unwrap().extend_from_slice(&mono);
+                    }
+                },
+                |err| error!("Audio error: {}", err),
                 None,
             )?,
             fmt => anyhow::bail!("Unsupported sample format: {:?}", fmt),

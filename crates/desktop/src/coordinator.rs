@@ -419,7 +419,6 @@ impl Coordinator {
                         }
                         info!("Paste complete, returning to idle");
                         stage = Stage::Idle;
-                        crate::overlay::hide_overlay(&app_handle);
                         crate::result_window::clear_result(&app_handle);
                         crate::tray::update_tray_label(
                             &app_handle,
@@ -561,7 +560,7 @@ fn sync_runtime_fields(config: &mut AppConfig, shared: &AppConfig) {
 }
 
 /// 前端命令：取消当前录音/处理（Esc 键）。
-/// 停止麦克风采集、重置状态机为 Idle、隐藏 overlay 与结果窗口、托盘置 Idle。
+/// 停止麦克风采集、重置状态机为 Idle、隐藏结果窗口、托盘置 Idle。
 #[tauri::command]
 pub fn cancel_recording(coordinator: tauri::State<'_, Coordinator>) {
     coordinator.cancel();
@@ -681,7 +680,6 @@ fn handle_toggle(
                                     "默认引擎 StreamingSession 也失败: {}", e2
                                 );
                                 let _ = audio.stop();
-                                crate::overlay::hide_overlay(app_handle);
                                 crate::result_window::hide_result(app_handle);
                                 crate::tray::update_tray_label(
                                     app_handle,
@@ -693,7 +691,7 @@ fn handle_toggle(
                     }
                 };
 
-                // 流式模式：只显示 result window，不显示 overlay
+                // 流式模式：只显示 result window
                 crate::result_window::show_result(app_handle, "正在聆听…");
                 crate::tray::update_tray_label(
                     app_handle,
@@ -856,7 +854,6 @@ fn handle_toggle(
                 };
                 if final_text.is_empty() {
                     *stage = Stage::Idle;
-                    crate::overlay::hide_overlay(app_handle);
                     crate::result_window::hide_result(app_handle);
                     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
                 } else {
@@ -924,7 +921,6 @@ fn handle_toggle(
 
             if combined.is_empty() {
                 *stage = Stage::Idle;
-                crate::overlay::hide_overlay(app_handle);
                 crate::result_window::hide_result(app_handle);
                 crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
                 return;
@@ -1032,7 +1028,6 @@ fn start_final_polish_or_paste(
     if text.is_empty() {
         *stage = Stage::Idle;
         crate::result_window::hide_result(app_handle);
-        crate::overlay::hide_overlay(app_handle);
         crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
         return;
     }
@@ -1159,7 +1154,6 @@ fn finalize_cloud(
     let combined = transcript.db_text();
     if combined.is_empty() {
         *stage = Stage::Idle;
-        crate::overlay::hide_overlay(app_handle);
         crate::result_window::hide_result(app_handle);
         crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
         return;
@@ -1704,6 +1698,11 @@ fn handle_cloud_streaming_tick(
             Err(e) => {
                 error!("CloudStreaming: open WSS failed: {}", e);
                 *is_speaking = false;
+                // 向用户报错（审查 Issue 5）：否则前端卡在"正在聆听…"无反馈
+                crate::result_window::update_result(
+                    app_handle,
+                    &format!("⚠️ 云端连接失败：{}", e),
+                );
             }
         }
     }
@@ -2112,8 +2111,29 @@ fn handle_cancel(
         }
         _ => {}
     }
+    // 清理 DB 脏数据（审查 Issue 6）：Cancel = 丢弃，已 INSERT 的记录需删除
+    let db_id_to_delete: Option<i64> = match stage {
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. } => {
+            if transcript.db_inserted() { Some(transcript.id) } else { None }
+        }
+        #[cfg(feature = "cloud")]
+        Stage::CloudStreaming { transcript, .. }
+        | Stage::CloudClosing { transcript, .. } => {
+            if transcript.db_inserted() { Some(transcript.id) } else { None }
+        }
+        Stage::Polishing { id, .. } | Stage::Pasting { id, .. } => Some(*id),
+        _ => None,
+    };
+    if let Some(id) = db_id_to_delete {
+        if let Err(e) = get_db_sender().send(DbCommand::Delete { id }) {
+            warn!("Cancel: failed to queue DB delete for id={}: {}", id, e);
+        } else {
+            info!("Cancel: deleting abandoned DB record id={}", id);
+        }
+    }
     *stage = Stage::Idle;
-    crate::overlay::hide_overlay(app_handle);
     crate::result_window::hide_result(app_handle);
     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
 }
@@ -2213,7 +2233,6 @@ fn handle_discard(
     }
 
     *stage = Stage::Idle;
-    crate::overlay::hide_overlay(app_handle);
     crate::result_window::hide_result(app_handle);
     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
 }
@@ -2316,7 +2335,6 @@ fn handle_transcription_done(
                 };
                 if final_text.is_empty() {
                     *stage = Stage::Idle;
-                    crate::overlay::hide_overlay(app_handle);
                     crate::result_window::hide_result(app_handle);
                     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
                 } else {
@@ -2577,6 +2595,10 @@ enum DbCommand {
         id: i64,
         edited_text: String,
     },
+    /// 取消录音时删除未完成的 DB 记录（审查 Issue 6）
+    Delete {
+        id: i64,
+    },
 }
 
 static DB_SENDER: std::sync::OnceLock<std::sync::mpsc::Sender<DbCommand>> = std::sync::OnceLock::new();
@@ -2632,6 +2654,11 @@ fn process_db_command(cmd: DbCommand) {
         DbCommand::UpdateEdited { id, edited_text } => {
             if let Err(e) = octopus_asr::db::update_edited_text(id, &edited_text) {
                 warn!("Background DB update_edited_text failed: {}", e);
+            }
+        }
+        DbCommand::Delete { id } => {
+            if let Err(e) = octopus_infra::db::delete_transcriptions(&[id]) {
+                warn!("Background DB delete failed: {}", e);
             }
         }
     }

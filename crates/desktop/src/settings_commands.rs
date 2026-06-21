@@ -72,6 +72,21 @@ pub fn set_config(
         (g.asr_shortcut.clone(), g.clone())
     };
     apply_config_value(&mut cfg, &key, &value)?;
+
+    // 快捷键热重载：注册成功后才持久化（审查 Issue 3）。
+    // 若先 save 再 register，注册失败时无效快捷键已写入 DB → 下次启动依然失败。
+    if key == "asr_shortcut" && cfg.asr_shortcut != old_shortcut {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        if let Ok(old) = old_shortcut.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let _ = app_handle.global_shortcut().unregister(old);
+        }
+        if let Err(e) = crate::shortcut::register_shortcut(&app_handle, &cfg.asr_shortcut) {
+            // 注册失败：尝试恢复旧快捷键，避免用户完全失去快捷键
+            let _ = crate::shortcut::register_shortcut(&app_handle, &old_shortcut);
+            return Err(format!("快捷键注册失败，配置未更改: {}", e));
+        }
+    }
+
     {
         let mut g = rc.write().unwrap();
         *g = cfg.clone();
@@ -105,16 +120,6 @@ pub fn set_config(
     if key == "hide_toolbar" || key == "edit_shortcut" {
         use tauri::Emitter;
         let _ = app_handle.emit("config-changed", ());
-    }
-
-    // 快捷键热重载：注销旧的 → 注册新的
-    if key == "asr_shortcut" && cfg.asr_shortcut != old_shortcut {
-        use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        if let Ok(old) = old_shortcut.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-            let _ = app_handle.global_shortcut().unregister(old);
-        }
-        crate::shortcut::register_shortcut(&app_handle, &cfg.asr_shortcut)
-            .map_err(|e| format!("快捷键已保存但注册失败: {}", e))?;
     }
 
     Ok(())

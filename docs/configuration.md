@@ -310,7 +310,7 @@ octopus-cli config
 | `asr_shortcut` | string | `CmdOrCtrl+Shift+Space` | desktop | 全局 ASR 激活/关闭快捷键（Tauri Accelerator 格式）。GUI 设置页可配（快捷键捕获按钮 + `check_shortcut` 冲突检测 + 热重载）。旧字段名 `shortcut` 经 serde alias 向后兼容 |
 | `paste_method` | string | `"clipboard"` | desktop | clipboard / direct / none |
 | `write_to_clipboard` | bool | `true` | desktop | 粘贴完成后是否把识别结果写入剪贴板（方便他处再粘贴）；`false` 时三模式等同重构前现状（不碰/恢复原剪贴板）。详见 [transcript-model spec §6](superpowers/specs/2026-06-14-archived-design.md) |
-| `overlay_position` | string | `"top"` | desktop | top / bottom / none |
+| `overlay_position` | string | `"top"` | desktop | top / bottom / none。**已废弃**（2026-06-21 审查修复）：`recording_overlay` 窗口及 `overlay.rs` 模块已整体删除，UI 统一到 `result_window`。字段保留于 config 结构（避免 DB schema 迁移），但无任何使用方 |
 | `segment_silence` | f64 | `400.0` | desktop | VAD 伪流式：句间停顿阈值（毫秒），起过此值的停顿触发切句识别 |
 | `polish_mode` | int | `0` | desktop | LLM 润色模式：0=关闭 / 1=仅最终润色 / 2=中间润色+最终润色。**desktop 悬停工具栏可在运行时切换**（`set_polish_mode` 命令）：写 RuntimeConfig + 持久化回 DB，**立即生效**（Coordinator 每个 tick 重读镜像并 `Transcript::set_mode`，下一次润色按新模式） |
 | `polish_min_interval` | f64 | `5.0` | desktop | 中间润色最小间隔（秒，节流用），仅 `polish_mode=2` 生效；`<=0` 回退 `1.0s`。旧名 `polish_interval` 迁移时自动重命名 |

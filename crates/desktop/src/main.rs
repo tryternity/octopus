@@ -22,7 +22,6 @@ mod engine_embedded;
 mod engine_grpc;
 #[cfg(feature = "remote-ws")]
 mod engine_ws;
-mod overlay;
 mod paste;
 mod result_window;
 mod runtime_config;
@@ -293,13 +292,10 @@ pub fn run() {
             // 4. Create Tray
             tray::create_tray(app.handle(), &config);
 
-            // 5. Create Overlay
-            overlay::create_overlay(app.handle(), &config);
-
-            // 6. Create Result Window
+            // 5. Create Result Window
             result_window::create_result_window(app.handle());
 
-            // 7. Register global shortcut
+            // 6. Register global shortcut
             if let Err(e) = shortcut::register_shortcut(app.handle(), &config.asr_shortcut) {
                 log::error!("Failed to register shortcut: {}. Use tray menu instead.", e);
             }
