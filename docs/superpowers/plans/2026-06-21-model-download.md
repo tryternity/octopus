@@ -47,7 +47,7 @@ crates/download/
 - Create: `crates/download/src/lib.rs`
 - Modify: `Cargo.toml`（root，members 加 `"crates/download"`）
 
-- [ ] **Step 1: 创建 Cargo.toml**
+- [x] **Step 1: 创建 Cargo.toml**
 
 `crates/download/Cargo.toml`:
 ```toml
@@ -75,7 +75,7 @@ tokio = { version = "1", features = ["full", "test-util"] }
 tempfile = "3"
 ```
 
-- [ ] **Step 2: 创建最小 lib.rs**
+- [x] **Step 2: 创建最小 lib.rs**
 
 `crates/download/src/lib.rs`:
 ```rust
@@ -92,19 +92,19 @@ pub mod core;
 //! 通用下载核心。
 ```
 
-- [ ] **Step 3: 注册到 workspace**
+- [x] **Step 3: 注册到 workspace**
 
 Modify root `Cargo.toml`，`members` 数组加 `"crates/download"`：
 ```toml
 members = ["crates/infra", "crates/asr", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download"]
 ```
 
-- [ ] **Step 4: 验证编译**
+- [x] **Step 4: 验证编译**
 
 Run: `cargo check -p octopus-download`
 Expected: 编译通过（可能有 unused warning，无妨）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Cargo.toml crates/download/
@@ -119,7 +119,7 @@ git commit -m "feat(download): octopus-download crate 骨架 + workspace 注册"
 - Create: `crates/download/src/core/error.rs`
 - Modify: `crates/download/src/core/mod.rs`（`pub mod error;`）
 
-- [ ] **Step 1: 写分类逻辑测试（先于实现）**
+- [x] **Step 1: 写分类逻辑测试（先于实现）**
 
 `crates/download/src/core/error.rs` 末尾内联测试模块。先写文件骨架（仅 enum + 函数签名占位，让测试编译失败）：
 
@@ -234,14 +234,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests to verify they pass**
+- [x] **Step 2: Run tests to verify they pass**
 
 Run: `cargo test -p octopus-download core::error`
 Expected: 4 tests pass（本 task 代码即实现，测试与实现同文件一次写完）。
 
 > 注：本 task 的 enum/分类逻辑简单，实现即上述全部代码。测试已覆盖 Fatal/Transient/2xx 三类。
 
-- [ ] **Step 3: mod.rs 导出**
+- [x] **Step 3: mod.rs 导出**
 
 Modify `crates/download/src/core/mod.rs`：
 ```rust
@@ -252,7 +252,7 @@ pub mod error;
 Run: `cargo test -p octopus-download`
 Expected: 全绿。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/download/src/core/
@@ -267,7 +267,7 @@ git commit -m "feat(download): DownloadError 类型 + HTTP 状态分类"
 - Create: `crates/download/src/core/progress.rs`
 - Modify: `crates/download/src/core/mod.rs`
 
-- [ ] **Step 1: 写实现 + 测试**
+- [x] **Step 1: 写实现 + 测试**
 
 `crates/download/src/core/progress.rs`:
 ```rust
@@ -374,12 +374,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 Run: `cargo test -p octopus-download core::progress`
 Expected: 4 pass。
 
-- [ ] **Step 3: mod.rs 导出**
+- [x] **Step 3: mod.rs 导出**
 
 ```rust
 //! 通用下载核心。
@@ -387,7 +387,7 @@ pub mod error;
 pub mod progress;
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/download/src/core/progress.rs crates/download/src/core/mod.rs
@@ -402,7 +402,7 @@ git commit -m "feat(download): Progress + SpeedEstimator（EMA 速度）"
 - Create: `crates/download/src/core/segment.rs`
 - Modify: `crates/download/src/core/mod.rs`
 
-- [ ] **Step 1: 写实现 + 测试**
+- [x] **Step 1: 写实现 + 测试**
 
 `crates/download/src/core/segment.rs`:
 ```rust
@@ -509,12 +509,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 Run: `cargo test -p octopus-download core::segment`
 Expected: 5 pass。
 
-- [ ] **Step 3: mod.rs 导出**
+- [x] **Step 3: mod.rs 导出**
 
 ```rust
 pub mod error;
@@ -522,7 +522,7 @@ pub mod progress;
 pub mod segment;
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/download/src/core/segment.rs crates/download/src/core/mod.rs
@@ -537,7 +537,7 @@ git commit -m "feat(download): Segment + plan_segments 分段规划"
 - Create: `crates/download/src/core/resume.rs`
 - Modify: `crates/download/src/core/mod.rs`
 
-- [ ] **Step 1: 写实现 + 测试**
+- [x] **Step 1: 写实现 + 测试**
 
 `crates/download/src/core/resume.rs`:
 ```rust
@@ -690,12 +690,12 @@ mod tests {
 
 > 注：需在 `Cargo.toml` dev-dependencies 加 `tempfile = "3"`（Task 1 已含）。
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 Run: `cargo test -p octopus-download core::resume`
 Expected: 6 pass。
 
-- [ ] **Step 3: mod.rs 导出**
+- [x] **Step 3: mod.rs 导出**
 
 ```rust
 pub mod error;
@@ -704,7 +704,7 @@ pub mod segment;
 pub mod resume;
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/download/src/core/resume.rs crates/download/src/core/mod.rs
@@ -719,7 +719,7 @@ git commit -m "feat(download): sidecar 断点续传（三重校验 + 原子写�
 - Create: `crates/download/src/core/verify.rs`
 - Modify: `crates/download/src/core/mod.rs`
 
-- [ ] **Step 1: 写实现 + 测试**
+- [x] **Step 1: 写实现 + 测试**
 
 `crates/download/src/core/verify.rs`:
 ```rust
@@ -813,12 +813,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 Run: `cargo test -p octopus-download core::verify`
 Expected: 3 pass。
 
-- [ ] **Step 3: mod.rs 导出**
+- [x] **Step 3: mod.rs 导出**
 
 ```rust
 pub mod error;
@@ -828,7 +828,7 @@ pub mod resume;
 pub mod verify;
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/download/src/core/verify.rs crates/download/src/core/mod.rs
@@ -845,7 +845,7 @@ git commit -m "feat(download): SHA256 流式校验 + If-Range 头"
 - Create: `crates/download/src/core/downloader.rs`
 - Modify: `crates/download/src/core/mod.rs`（导出 Downloader/DownloadTask/DownloadConfig）
 
-- [ ] **Step 1: 写骨架 + 类型 + probe + 单段**
+- [x] **Step 1: 写骨架 + 类型 + probe + 单段**
 
 `crates/download/src/core/downloader.rs`:
 ```rust
@@ -1189,12 +1189,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 Run: `cargo test -p octopus-download core::downloader`
 Expected: 5 pass（probe 成功/404、单段下载、ensure_part、backoff）。
 
-- [ ] **Step 3: mod.rs 导出**
+- [x] **Step 3: mod.rs 导出**
 
 ```rust
 pub mod error;
@@ -1207,7 +1207,7 @@ pub mod downloader;
 pub use downloader::{Downloader, DownloadConfig, DownloadTask, ProbeResult};
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/download/src/core/downloader.rs crates/download/src/core/mod.rs
@@ -1223,7 +1223,7 @@ git commit -m "feat(download): Downloader 骨架 + probe + 单段下载（Range/
 **Files:**
 - Modify: `crates/download/src/core/downloader.rs`（加 `download_chunked` 方法）
 
-- [ ] **Step 1: 加 download_chunked 方法 + 测试**
+- [x] **Step 1: 加 download_chunked 方法 + 测试**
 
 在 `impl Downloader` 内（Task 7 的 `download_segment` 之后）追加：
 
@@ -1385,7 +1385,7 @@ async fn download_segment_once_with_client(
 
 > **重构说明**：Task 7 的 `Downloader::download_segment`/`download_segment_once`（基于 `&self`）保留用于单段同步路径；Task 8 引入 `*_with_client` 自由函数供 spawned task。两者逻辑一致。若想消除重复，可在 Task 9 把 `download_segment` 改为调用自由函数——MVP 阶段容忍这点重复以求清晰。
 
-- [ ] **Step 2: 加分块测试**
+- [x] **Step 2: 加分块测试**
 
 在 `#[cfg(test)] mod tests` 追加：
 ```rust
@@ -1419,12 +1419,12 @@ async fn download_segment_once_with_client(
     }
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `cargo test -p octopus-download core::downloader`
 Expected: 6 pass（Task 7 的 5 + 分块 1）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/download/src/core/downloader.rs
@@ -1438,7 +1438,7 @@ git commit -m "feat(download): 并发分块下载（JoinSet + Semaphore + 进度
 **Files:**
 - Modify: `crates/download/src/core/downloader.rs`（加 `download` 方法 + sidecar pump + 进度 pump）
 
-- [ ] **Step 1: 加 download 主方法**
+- [x] **Step 1: 加 download 主方法**
 
 在 `impl Downloader` 内追加：
 ```rust
@@ -1621,7 +1621,7 @@ git commit -m "feat(download): 并发分块下载（JoinSet + Semaphore + 进度
 
 **最终 `download_from_source` 移除 sidecar_handle，改为下载后 `save` 一次（已通过 per-seg 回写维持）**：段完成后回写即 save，无需独立 pump。简化后去掉 `sc_*` 变量与 `sidecar_handle`，`progress_handle` 保留。
 
-- [ ] **Step 2: 加端到端测试（续传 + 校验 + rename）**
+- [x] **Step 2: 加端到端测试（续传 + 校验 + rename）**
 
 在 tests 追加：
 ```rust
@@ -1708,12 +1708,12 @@ git commit -m "feat(download): 并发分块下载（JoinSet + Semaphore + 进度
     }
 ```
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `cargo test -p octopus-download core::downloader`
 Expected: 全绿（含端到端、镜像 fallback、取消）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/download/src/core/downloader.rs
@@ -1728,7 +1728,7 @@ git commit -m "feat(download): download() 主编排（probe/规划/并发/校验
 - Create: `crates/download/src/hf/mod.rs`、`crates/download/src/hf/api.rs`
 - Modify: `crates/download/src/lib.rs`（`pub mod hf;`）
 
-- [ ] **Step 1: 写实现 + 测试**
+- [x] **Step 1: 写实现 + 测试**
 
 `crates/download/src/hf/api.rs`:
 ```rust
@@ -1812,12 +1812,12 @@ pub mod core;
 pub mod hf;
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 Run: `cargo test -p octopus-download hf::api`
 Expected: 1 pass。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/download/src/hf/ crates/download/src/lib.rs
@@ -1834,7 +1834,7 @@ git commit -m "feat(download): HF api 解析 siblings（rfilename/etag/lfs.oid�
 - Create: `crates/download/src/hf/glob.rs`
 - Modify: `crates/download/src/hf/mod.rs`
 
-- [ ] **Step 1: 写实现 + golden 测试**
+- [x] **Step 1: 写实现 + golden 测试**
 
 `crates/download/src/hf/glob.rs`:
 ```rust
@@ -1953,7 +1953,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 生成 hf-cli golden（手动，一次性）**
+- [x] **Step 2: 生成 hf-cli golden（手动，一次性）**
 
 > **生成 golden 期望**（需 Python 环境，仅生成测试数据，非 crate 依赖）：
 > ```bash
@@ -1963,12 +1963,12 @@ mod tests {
 > ```
 > 把输出文件列表与本 task 的 `should_download` 对真实 siblings 的过滤结果比对。若一致，`glob`/手写 fnmatch 正确。把验证结论写入 commit message。
 
-- [ ] **Step 3: Run tests**
+- [x] **Step 3: Run tests**
 
 Run: `cargo test -p octopus-download hf::glob`
 Expected: 5 pass。
 
-- [ ] **Step 4: mod.rs 导出 + Commit**
+- [x] **Step 4: mod.rs 导出 + Commit**
 
 ```rust
 //! HuggingFace 适配层。
@@ -1990,7 +1990,7 @@ git commit -m "feat(download): HF include/exclude glob（手写 fnmatch 对齐 h
 - Create: `crates/download/src/hf/resolve.rs`
 - Modify: `crates/download/src/hf/mod.rs`
 
-- [ ] **Step 1: 写实现 + 测试**
+- [x] **Step 1: 写实现 + 测试**
 
 `crates/download/src/hf/resolve.rs`:
 ```rust
@@ -2092,12 +2092,12 @@ pub mod resolve;
 pub use resolve::{HfRequest, resolve_tasks};
 ```
 
-- [ ] **Step 2: Run tests**
+- [x] **Step 2: Run tests**
 
 Run: `cargo test -p octopus-download hf::resolve`
 Expected: 1 pass。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/download/src/hf/resolve.rs crates/download/src/hf/mod.rs
@@ -2114,7 +2114,7 @@ git commit -m "feat(download): HF resolve_tasks（API+glob+resolve URL+镜像+ha
 - Modify: `docs/architecture.md`（加 download crate 说明）
 - Modify: `docs/superpowers/specs/...`（若 spec 有偏差，同步；本 plan 已对齐）
 
-- [ ] **Step 1: lib.rs 顶层导出**
+- [x] **Step 1: lib.rs 顶层导出**
 
 `crates/download/src/lib.rs`:
 ```rust
@@ -2134,7 +2134,7 @@ pub use crate::core::verify::Hash;
 pub use crate::hf::{HfRequest, resolve_tasks};
 ```
 
-- [ ] **Step 2: 集成测试**
+- [x] **Step 2: 集成测试**
 
 `crates/download/tests/integration.rs`:
 ```rust
@@ -2179,7 +2179,7 @@ async fn hf_resolve_then_download_single_file() {
 }
 ```
 
-- [ ] **Step 3: Run full test suite**
+- [x] **Step 3: Run full test suite**
 
 Run: `cargo test -p octopus-download`
 Expected: 全绿。
@@ -2187,14 +2187,14 @@ Expected: 全绿。
 Run: `cargo clippy -p octopus-download --all-targets -- -D warnings`（若 workspace 有 clippy 约定）
 Expected: 无 warning（或按 workspace 惯例放宽）。
 
-- [ ] **Step 4: architecture.md 同步**
+- [x] **Step 4: architecture.md 同步**
 
 在 `docs/architecture.md` 合适位置（如模型加载/基础设施章节附近）加一段：
 ```markdown
 - **octopus-download crate**：通用文件下载器（分块并发 + 断点续传 sidecar + If-Range/SHA256 校验 + 镜像 fallback）。`core` 通用、`hf` 适配层（API 列文件 + include/exclude glob 对齐 hf-cli + resolve URL）。替代 `huggingface-cli` 下载大模型，解终端用户装 Python、国内镜像、按需选 int8 文件三痛点。下载到 `~/.octopus/models/<repo>/<path>`。详见 spec `2026-06-21-model-download-design.md`。
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/download/src/lib.rs crates/download/tests/integration.rs docs/architecture.md

@@ -69,11 +69,11 @@ huggingface-cli download <repo>
      5. 并发执行 segments（JoinSet + Semaphore，单段时并发=1）:
         each segment:
           - Range: bytes={begin+downloaded}-{end}
-          - If-Range: <etag>（防同 URL 内容被换）
+          - （不注入 If-Range：最终整文件 hash 校验兜底内容变更；注入反而让不支持它的镜像回退 200 全文重传）
           - seek(offset) + write，BufWriter 256KB
           - 段级重试（MAX_RETRIES_PER_SEGMENT，指数 backoff + jitter）
         progress pump: AtomicU64 fetch_add → 后台 task 250ms 推 mpsc::Sender<Progress>
-        sidecar pump: 后台 task 每 2s 快照各段 downloaded，原子写（tmp+rename）
+        sidecar 回写: 段完成时（join_next）快照各段 downloaded，原子写（tmp+rename）
         cancel: CancellationToken 贯穿，取消时 abort 全部段
      6. 全部段 done → SHA256/etag 校验(expected_hash)
           - 失败：重试整文件下载 MAX_VERIFICATION_RETRIES 次，仍失败报 HashMismatch
@@ -189,7 +189,7 @@ pub async fn resolve_tasks(
   "type": "octopus-segmented",
   "url_hash": "<sha256(dest 路径) 前 16 hex，镜像无关>",
   "total_bytes": 12345678,
-  "etag": "<probe 拿到的 etag，用于 If-Range>",
+  "etag": "<probe etag，当前未注入 If-Range、靠 hash 兜底；保留字段供未来启用>",
   "segments": [
     {"begin": 0, "end": 4194303, "downloaded": 4194304},
     {"begin": 4194304, "end": 8388607, "downloaded": 1000000}
@@ -197,9 +197,9 @@ pub async fn resolve_tasks(
 }
 ```
 
-- **加载时三重校验**（任一不符即丢弃 sidecar、重新规划）：`type == "octopus-segmented"` && `total_bytes == probe 总长` && `url_hash == sha256(dest 路径)`。`url_hash` 基于 **dest 路径**而非 url——故换镜像（dest 不变）不触发重下，仅换目录/目标文件才失效（符合预期）。
+- **加载时三重校验**（任一不符即丢弃 sidecar、重新规划）：`type == "octopus-segmented"` && `total_bytes == probe 总长` && `url_hash == sha256(dest 路径)`。`url_hash` 基于 **dest 路径**而非 url——故换镜像（dest 不变）不触发重下，仅换目录/目标文件才失效（符合预期）。另：多段 sidecar 遇不支持 Range 的源（`accept_ranges=false`）会丢弃重规划为单段——否则会向不支持 Range 的服务器发分段请求、注定 200 全文错位。
 - **原子写**：先写 `<dest>.part.resume.json.tmp` 再 `rename` 覆盖，崩溃时不留半截 JSON。
-- **节奏**：后台 task 每 2s 快照各段 `downloaded` 写一次（下载活跃时）。
+- **节奏**：段完成时（`download_chunked` 的 `join_next`）快照各段 `downloaded` 写一次（非独立定时 pump）。
 - **清理**：下载成功 `rename(.part→dest)` 后 `remove_file(sidecar)`；致命错误（4xx）删 `.part` + sidecar；瞬时错误（5xx/超时）保留 `.part` + sidecar 待续传。
 - **单段也记 sidecar**：保持架构统一（单段 = segments.len()==1 的特例），续传逻辑一套。
 
