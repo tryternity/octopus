@@ -152,6 +152,13 @@ enum Stage {
         completed_seq: u64,
         completed_results: HashMap<u64, String>,
     },
+    /// Toggle 停止录音后，仍有进行中的立即润色（PolishNow 未返回）。
+    /// 持有 transcript 等待 `Command::PolishDone` 到达，再按 polish_mode 决定后续路径。
+    /// 修复 bug：原实现直接 `clear_polish_pending` + 走 final 路径，
+    /// 导致立即润色结果被 stage 切换丢弃 + 最终润色因 polish_mode=0 跳过 → 只粘贴原文。
+    StoppingPolish {
+        transcript: Transcript,
+    },
     /// 最终润色中
     Polishing {
         id: i64,
@@ -823,13 +830,11 @@ fn handle_toggle(
             }
 
             let active = *active_count;
-            // 忽略中间润色的 pending 结果（最终润色会重新处理）
-            transcript.clear_polish_pending();
             let cseq = *completed_seq;
             let cresults = std::mem::take(completed_results);
 
             if active > 0 {
-                // 把 transcript 移入 WaitingCompletion（用临时占位避免部分移动）
+                // 还有识别任务在跑：进 WaitingCompletion 等所有 seq 完成
                 let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
                 *stage = Stage::WaitingCompletion {
                     transcript: tr,
@@ -838,35 +843,9 @@ fn handle_toggle(
                     completed_results: cresults,
                 };
             } else {
-                // 停止路径：edited 非空优先用 edited_display（保留用户编辑，不补句末标点）；
-                // 否则走原 raw 逻辑（db_text + 按需补「。」），与非编辑态等价。
-                let final_text = if let Some(edited) = transcript.edited_display() {
-                    edited
-                } else if transcript.full().is_empty() {
-                    String::new()
-                } else if transcript
-                    .full()
-                    .ends_with(|c: char| ",.，。！？!?\n".contains(c))
-                {
-                    transcript.db_text()
-                } else {
-                    format!("{}。", transcript.db_text())
-                };
-                if final_text.is_empty() {
-                    *stage = Stage::Idle;
-                    crate::result_window::hide_result(app_handle);
-                    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
-                } else {
-                    let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-                    start_final_polish_or_paste(
-                        stage,
-                        &final_text,
-                        tr,
-                        config,
-                        app_handle,
-                        tx,
-                    );
-                }
+                // 所有识别已完成：直接收尾（按 polish_pending 决定是否等润色）
+                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+                finalize_after_stop(stage, tr, config, app_handle, tx);
             }
         }
 
@@ -878,8 +857,6 @@ fn handle_toggle(
         } => {
             // 流式模式：停止流式，获取最终文本，粘贴
             info!("Toggle: stopping streaming, finalizing");
-
-            transcript.clear_polish_pending();
 
             // 停止 tick
             streaming_active.store(false, Ordering::Relaxed);
@@ -912,32 +889,11 @@ fn handle_toggle(
             if !final_text.is_empty() {
                 transcript.set_full(&final_text);
             }
-            // 停止路径：edited 非空优先（保留编辑），否则 raw
-            let combined = transcript
-                .edited_display()
-                .unwrap_or_else(|| transcript.db_text());
 
-            info!("Final streaming text: '{}'", combined);
-
-            if combined.is_empty() {
-                *stage = Stage::Idle;
-                crate::result_window::hide_result(app_handle);
-                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
-                return;
-            }
-
-            // 显示最终结果（润色前的 display_text，含中间润色结果）
-            crate::result_window::show_result(app_handle, &transcript.display_text());
+            info!("Final streaming text: '{}'", transcript.db_text());
 
             let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-            start_final_polish_or_paste(
-                stage,
-                &combined,
-                tr,
-                config,
-                app_handle,
-                tx,
-            );
+            finalize_after_stop(stage, tr, config, app_handle, tx);
         }
 
         #[cfg(feature = "cloud")]
@@ -954,7 +910,6 @@ fn handle_toggle(
             tick_active,
         } => {
             info!("Toggle: stopping CloudStreaming, finalizing");
-            transcript.clear_polish_pending();
             tick_active.store(false, Ordering::Relaxed);
             let final_samples = audio.drain_samples();
             let _ = audio.stop();
@@ -1002,6 +957,10 @@ fn handle_toggle(
             debug!("Toggle ignored: busy polishing");
         }
 
+        Stage::StoppingPolish { .. } => {
+            debug!("Toggle ignored: waiting for polish to complete");
+        }
+
         Stage::Pasting { .. } => {
             debug!("Toggle ignored: busy pasting");
         }
@@ -1012,6 +971,67 @@ fn handle_toggle(
         Stage::CloudClosing { .. } => {
             debug!("Toggle ignored: cloud closing in flight");
         }
+    }
+}
+
+/// Toggle 停止录音后的统一收尾：决定走 final 路径还是等待 pending 立即润色。
+///
+/// **修复 bug**：原实现直接 `transcript.clear_polish_pending()` 后走 final 路径，
+/// 导致：(1) 立即润色的 `PolishDone` 回来时 stage 已切换 → 结果被丢弃；
+/// (2) 若 `polish_mode=0`，最终润色被跳过 → 只粘贴原文，DB 也只存原文。
+///
+/// 现在的语义：若仍有 pending 的立即润色，进入 `StoppingPolish` 持有 transcript，
+/// `PolishDone` 到达后在 `handle_polish_done` 中走 final 路径，把立即润色结果纳入最终文本。
+///
+/// **优化**：若 polished 非空且无新增 ASR（has_increase=false），立即润色已覆盖全部文本，
+/// 跳过最终润色（mode=1/2 也跳过），直接 paste，避免平白多一次 LLM 调用。
+fn finalize_after_stop(
+    stage: &mut Stage,
+    transcript: Transcript,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+) {
+    // 1. 立即润色仍在途：等其完成再走 final 路径（避免丢弃润色结果）
+    if transcript.polish_pending() {
+        info!("Toggle stop: polish_pending=true, entering StoppingPolish");
+        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Processing);
+        crate::result_window::show_result(app_handle, "⏳ 等待润色完成...");
+        *stage = Stage::StoppingPolish { transcript };
+        return;
+    }
+    // 2. 无 pending：检查是否可以跳过最终润色
+    //    若 polished 非空且无新增 ASR（has_increase=false），立即润色已覆盖全部文本
+    let skip_final_polish = !transcript.polished().is_empty() && !transcript.has_increase();
+    // 3. 句末标点补全 + display_text 计算（与原 final 路径一致）
+    let combined = if let Some(edited) = transcript.edited_display() {
+        edited
+    } else if transcript.full().is_empty() {
+        String::new()
+    } else if transcript
+        .full()
+        .ends_with(|c: char| ",.，。！？!?\n".contains(c))
+    {
+        transcript.db_text()
+    } else {
+        format!("{}。", transcript.db_text())
+    };
+    if combined.is_empty() {
+        *stage = Stage::Idle;
+        crate::result_window::hide_result(app_handle);
+        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+        return;
+    }
+    crate::result_window::show_result(app_handle, &transcript.display_text());
+    if skip_final_polish {
+        // 立即润色已覆盖全部文本，直接 paste（polish_status="done"）
+        info!("Toggle stop: skip final polish (polished covers all, no increase)");
+        let display = transcript.display_text();
+        let raw = transcript.db_text();
+        do_paste(stage, &display, transcript.id, &raw, "done", config, app_handle, tx);
+    } else {
+        // 走原 final 路径（按 polish_mode 决定是否润色）
+        start_final_polish_or_paste(stage, &combined, transcript, config, app_handle, tx);
     }
 }
 
@@ -1164,6 +1184,16 @@ fn finalize_cloud(
     // 记录从未创建——后续 Finalize（UPDATE）会静默 0 行，数据丢失。
     if let Err(e) = update_transcription_raw(&mut transcript, &config.asr_engine, "streaming") {
         warn!("CloudStreaming finalize INSERT failed: {}", e);
+    }
+
+    // 立即润色仍在途：进 StoppingPolish 等 PolishDone
+    // （CloudStreaming 的 partial 已 append 到 transcript.full，不会再增长）
+    if transcript.polish_pending() {
+        info!("CloudStreaming finalize: polish_pending=true, entering StoppingPolish");
+        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Processing);
+        crate::result_window::show_result(app_handle, "⏳ 等待润色完成...");
+        *stage = Stage::StoppingPolish { transcript };
+        return;
     }
 
     crate::result_window::show_result(app_handle, &transcript.display_text());
@@ -2109,13 +2139,18 @@ fn handle_cancel(
             info!("Cancel: cancelling while final polishing");
             // 润色结果将被忽略，回到 Idle
         }
+        Stage::StoppingPolish { .. } => {
+            info!("Cancel: cancelling while waiting for polish");
+            // 立即润色结果将被忽略，回到 Idle
+        }
         _ => {}
     }
     // 清理 DB 脏数据（审查 Issue 6）：Cancel = 丢弃，已 INSERT 的记录需删除
     let db_id_to_delete: Option<i64> = match stage {
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
-        | Stage::WaitingCompletion { transcript, .. } => {
+        | Stage::WaitingCompletion { transcript, .. }
+        | Stage::StoppingPolish { transcript, .. } => {
             if transcript.db_inserted() { Some(transcript.id) } else { None }
         }
         #[cfg(feature = "cloud")]
@@ -2165,6 +2200,7 @@ fn handle_discard(
             Some((transcript.id, transcript.db_text()))
         }
         Stage::Polishing { id, raw_text, .. } => Some((*id, raw_text.clone())),
+        Stage::StoppingPolish { transcript } => Some((transcript.id, transcript.db_text())),
         Stage::Idle => None,
         // Pasting 已在上面 early return
         Stage::Pasting { .. } => unreachable!(),
@@ -2209,6 +2245,9 @@ fn handle_discard(
         }
         Stage::Polishing { .. } => {
             info!("Discard: discarding while final polishing");
+        }
+        Stage::StoppingPolish { .. } => {
+            info!("Discard: discarding while waiting for polish");
         }
         Stage::Idle => {}
         Stage::Pasting { .. } => unreachable!(),
@@ -2319,35 +2358,9 @@ fn handle_transcription_done(
             consume_completed_results(completed_seq, completed_results, transcript);
 
             if *active_count == 0 {
-                // 停止路径：edited 非空优先用 edited_display（保留用户编辑，不补句末标点）；
-                // 否则走原 raw 逻辑（db_text + 按需补「。」），与非编辑态等价。
-                let final_text = if let Some(edited) = transcript.edited_display() {
-                    edited
-                } else if transcript.full().is_empty() {
-                    String::new()
-                } else if transcript
-                    .full()
-                    .ends_with(|c: char| ",.，。！？!?\n".contains(c))
-                {
-                    transcript.db_text()
-                } else {
-                    format!("{}。", transcript.db_text())
-                };
-                if final_text.is_empty() {
-                    *stage = Stage::Idle;
-                    crate::result_window::hide_result(app_handle);
-                    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
-                } else {
-                    let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-                    start_final_polish_or_paste(
-                        stage,
-                        &final_text,
-                        tr,
-                        config,
-                        app_handle,
-                        tx,
-                    );
-                }
+                // 所有识别完成：直接收尾（按 polish_pending 决定是否等润色）
+                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+                finalize_after_stop(stage, tr, config, app_handle, tx);
             }
         }
 
@@ -2382,6 +2395,57 @@ fn handle_polish_done(
     app_handle: &tauri::AppHandle,
     _tx: &Sender<Command>,
 ) {
+    // StoppingPolish 特殊处理：PolishDone 到达后走 final 路径（需 owned transcript）
+    if let Stage::StoppingPolish { transcript } = stage {
+        // 跨会话护栏
+        if transcript.id != session_id {
+            warn!(
+                "PolishDone discarded: session_id mismatch (polish={}, transcript={}) — 跨会话护栏",
+                session_id, transcript.id
+            );
+            use tauri::Emitter;
+            let _ = app_handle.emit("polish-done", ());
+            return;
+        }
+        // 写入润色结果
+        match result {
+            Ok(polished) => {
+                if polished.is_empty() {
+                    warn!("Polish returned empty, keeping previous");
+                    transcript.on_polish_failed();
+                } else {
+                    transcript.on_polish_done(polished.clone());
+                    let cmd = if transcript.has_edit() {
+                        DbCommand::UpdateEdited {
+                            id: transcript.id,
+                            edited_text: polished,
+                        }
+                    } else {
+                        DbCommand::UpdatePolished {
+                            id: transcript.id,
+                            text: transcript.polished().to_string(),
+                            status: "done".to_string(),
+                            model: Some(config.polish_llm.clone()),
+                        }
+                    };
+                    if let Err(e) = get_db_sender().send(cmd) {
+                        warn!("Queue DB update_polish_result failed: {}", e);
+                    }
+                }
+            }
+            Err(e) => {
+                warn!("Polish failed: {}, keeping previous", e);
+                transcript.on_polish_failed();
+            }
+        }
+        use tauri::Emitter;
+        let _ = app_handle.emit("polish-done", ());
+        // PolishDone 处理完成（pending 已清），走 final 路径
+        let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+        finalize_after_stop(stage, tr, config, app_handle, _tx);
+        return;
+    }
+
     let transcript = match stage {
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
@@ -2557,6 +2621,7 @@ fn stage_name(stage: &Stage) -> &'static str {
         Stage::Streaming { .. } => "Streaming",
         Stage::VadSegmented { .. } => "VadSegmented",
         Stage::WaitingCompletion { .. } => "WaitingCompletion",
+        Stage::StoppingPolish { .. } => "StoppingPolish",
         Stage::Polishing { .. } => "Polishing",
         Stage::Pasting { .. } => "Pasting",
         #[cfg(feature = "cloud")]

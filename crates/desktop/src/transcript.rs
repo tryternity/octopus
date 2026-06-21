@@ -175,6 +175,7 @@ impl Transcript {
         self.polish_pending = true;
     }
 
+    #[allow(dead_code)] // 合理访问器；生产路径已改为等待 pending（StoppingPolish）而非清除
     pub fn clear_polish_pending(&mut self) {
         self.polish_pending = false;
     }
