@@ -127,22 +127,27 @@ pub fn run() {
         }
     }
 
-    // 加载自定义润色 system prompt（~/.octopus/VOICE_POLISH.md）
-    // 文件存在且非空时覆盖内置默认 prompt
-    let prompt_path = octopus_infra::octopus_config_home().join(octopus_infra::consts::VOICE_POLISH_FILE);
-    if prompt_path.exists() {
-        if let Ok(content) = std::fs::read_to_string(&prompt_path) {
-            let trimmed = content.trim();
-            if !trimmed.is_empty() {
-                octopus_llm::set_system_prompt_override(trimmed.to_string());
-                log::info!("已加载自定义润色 prompt: {}", prompt_path.display());
-            } else {
-                log::warn!("VOICE_POLISH.md 内容为空，使用内置默认 prompt");
-            }
-        } else {
-            log::warn!("读取 VOICE_POLISH.md 失败，使用内置默认 prompt");
+    // 从 DB 加载激活的润色 prompt（prompts 表 active_polish_prompt 指向的记录）
+    // 失败时 fallback 到 id=1（系统默认）
+    let active_id = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
+    let prompt_content = match octopus_infra::db::load_prompt(active_id) {
+        Ok(Some(p)) => p.content,
+        Ok(None) => {
+            log::warn!("active_polish_prompt id={} 不存在，fallback 到 id=1", active_id);
+            let _ = octopus_infra::db::save_active_prompt_id(1);
+            octopus_infra::db::load_prompt(1)
+                .ok()
+                .flatten()
+                .map(|p| p.content)
+                .unwrap_or_default()
         }
-    }
+        Err(e) => {
+            log::warn!("DB 加载 prompt 失败（id={}）：{} —— 使用空 content 降级", active_id, e);
+            String::new()
+        }
+    };
+    octopus_llm::set_system_prompt(&prompt_content);
+    log::info!("已加载润色 prompt（active id={}）", active_id);
 
     let mut app = tauri::Builder::default()
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
@@ -195,6 +200,12 @@ pub fn run() {
             settings_commands::check_shortcut,
             settings_commands::test_llm_connection,
             settings_commands::test_asr_connection,
+            settings_commands::list_prompts,
+            settings_commands::get_active_prompt,
+            settings_commands::set_active_prompt,
+            settings_commands::create_prompt,
+            settings_commands::update_prompt,
+            settings_commands::delete_prompt,
         ])
         .setup(move |app| {
             // Initialize engine manager

@@ -12,10 +12,6 @@ pub const SILERO_VAD_PATH: &str = "models/silero_vad_v4.onnx";
 /// zipformer-small-ctc 的 source，27M，随应用打包，开箱即用。
 pub const DEFAULT_ASR_MODEL_DIR: &str = "models/zipformer";
 
-/// 自定义润色 system prompt 文件名（~/.octopus/VOICE_POLISH.md）。
-/// 文件存在且非空时覆盖 llm 内置默认 prompt。
-pub const VOICE_POLISH_FILE: &str = "VOICE_POLISH.md";
-
 /// VAD 伪流式连续语音强制截断阈值（秒）。缓冲区达到此时长仍未静音 → 强制切断送识别。
 /// 兜底逻辑——正常人不会连续说这么久。原为 config 字段，因属实现细节（用户不可感知）改为常量。
 pub const SEGMENT_DURATION_S: f64 = 20.0;

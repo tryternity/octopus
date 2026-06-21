@@ -1,58 +1,39 @@
 //! LLM 润色链路测试。
 //!
-//! 读取 ~/.octopus/config.yaml 与 ~/.octopus/VOICE_POLISH.md，
+//! 从 DB 加载激活的润色 prompt 与 LLM 配置，
 //! 先发一个原始请求观察返回结构（诊断 reasoning_content 等），
 //! 再调用 octopus_llm::polish() 验证封装链路。
 //!
 //! 用法：cargo run --release --package octopus-llm --example test_polish
 
-use octopus_infra::{consts::VOICE_POLISH_FILE, octopus_config_home};
-use octopus_llm::{polish, set_system_prompt_override};
-use serde::Deserialize;
-
-#[derive(Deserialize)]
-struct LlmCfg {
-    #[serde(default = "default_polish_llm")]
-    polish_llm: String,
-}
+use octopus_llm::{polish, set_system_prompt};
 
 fn default_polish_llm() -> String {
     "bigmodel:glm:glm-4-flashx".to_string()
 }
 
 fn main() -> anyhow::Result<()> {
-    // 1. 加载 prompt override
-    let prompt_path = octopus_config_home().join(VOICE_POLISH_FILE);
-    if prompt_path.exists() {
-        let content = std::fs::read_to_string(&prompt_path)?;
-        let trimmed = content.trim();
-        if !trimmed.is_empty() {
-            set_system_prompt_override(trimmed.to_string());
-            println!("✓ 已加载 VOICE_POLISH.md（{} 字节）", trimmed.len());
-        }
-    } else {
-        println!("! 未找到 VOICE_POLISH.md，使用内置默认 prompt");
-    }
-
-    // 2. 加载 config.yaml 获取 polish_llm
-    let cfg_path = octopus_config_home().join("config.yaml");
-    let text = if cfg_path.exists() {
-        std::fs::read_to_string(&cfg_path)?
-    } else {
-        String::new()
-    };
-    let cfg: LlmCfg = serde_yaml::from_str(&text).unwrap_or(LlmCfg {
-        polish_llm: default_polish_llm(),
-    });
-
-    println!("正在初始化数据库以加载模型配置...");
+    // 1. 从 DB 加载激活的润色 prompt
     octopus_asr::db::ensure_db()?;
+    let active_id = octopus_infra::db::load_active_prompt_id()?;
+    let prompt_record = octopus_infra::db::load_prompt(active_id)?
+        .ok_or_else(|| anyhow::anyhow!("DB 中未找到 active prompt id={}", active_id))?;
+    set_system_prompt(&prompt_record.content);
+    println!("✓ 已加载 prompt（id={} title={}）", prompt_record.id, prompt_record.title);
 
-    println!("正在从数据库加载 LLM 配置: {}...", cfg.polish_llm);
-    let config = match octopus_asr::db::load_llm_model(&cfg.polish_llm)? {
+    // 2. 加载 polish_llm 配置（从 app_config 读 polish_llm spec）
+    let cfg = octopus_infra::config::load_config().unwrap_or_default();
+    let polish_llm = if cfg.polish_llm.is_empty() {
+        default_polish_llm()
+    } else {
+        cfg.polish_llm.clone()
+    };
+
+    println!("正在从数据库加载 LLM 配置: {}...", polish_llm);
+    let config = match octopus_asr::db::load_llm_model(&polish_llm)? {
         Some(c) => c,
         None => {
-            anyhow::bail!("数据库中未找到 LLM 模型 '{}' 的配置", cfg.polish_llm);
+            anyhow::bail!("数据库中未找到 LLM 模型 '{}' 的配置", polish_llm);
         }
     };
 

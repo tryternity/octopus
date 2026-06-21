@@ -22,7 +22,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录 / 润色 prompt 文件名）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一不再各自定义）+ `config`（`AppConfig`——应用配置的**统一 schema**，22 字段，asr/desktop/cli 共享）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `transcriptions` 表）。未来加时间工具等。任何项目 crate 都可依赖它。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一不再各自定义）+ `config`（`AppConfig`——应用配置的**统一 schema**，22 字段，asr/desktop/cli 共享）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `transcriptions` 表 / `prompts` 表）。未来加时间工具等。任何项目 crate 都可依赖它。
 
 ### octopus-asr（核心推理库）
 
@@ -237,7 +237,8 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **非阻塞 DB 写入（actor 模式）**：上述 `INSERT`/`UPDATE`/`finalize` 不在协调器线程同步执行——`update_transcription_raw` / `PasteDone` 等调用方仅 `get_db_sender().send(DbCommand)` 入队后立即返回，真实落库由**后台 DB 写线程**（`static DB_SENDER: OnceLock<Sender<DbCommand>>` 懒加载 spawn）单线程消费。mpsc 的 FIFO 保证同 id 的 `Insert` 必在 `UpdateRaw` 之前被消费（故 `mark_db_inserted()` 在 send 后即置位仍安全——真实顺序由 channel 保，不由标志位保）。识别主循环不再被 SQLite I/O 阻塞。
 - **关机优雅 drain**：后台写线程 `&'static Sender` 永不 drop，进程 kill 时队列里未处理命令会丢失（典型路径：录音结束 → `Finalize` 入队 → 用户立即退出 → 该条记录停留未 finalize 态）。`coordinator::shutdown_db()` 置 `DB_SHUTDOWN`（AtomicBool）→ 后台线程排空 `try_iter()` 剩余命令后退出，主线程 `JoinHandle::join` 等待落库完成；`main.rs` 挂到 `tauri::RunEvent::ExitRequested`（macOS Cmd+Q / 关闭最后一个窗口触发），保证退出前队列清空。
 - `models` 表：模型目录（**唯一来源**，schema 见 `crates/infra/src/db.sql`，首次建库 `user_version=0` 时整体执行一次 seed 默认引擎集；列 `domain` / `provider` / `category` / `model_name` / `source` / `secret_key` / `language` / `is_local` / `is_thinking` / `is_streaming` / `is_enabled` / `description`，唯一键 `UNIQUE(domain, provider, category, model_name)`；`load_models_at` 仅读 `domain='asr' AND is_enabled=1`，`domain='llm'` 经 `load_llm_model(spec)` 按 `{provider}:{category}:{model_name}` 3-part spec 读；引擎激活由 `app_config.asr_engine` 决定，无 `is_active` 列，见「模型管理」）
-- **`app_config` 表（v3+，替代旧 `config.yaml`）**：应用行为配置的统一存储（22 字段 key-value TEXT，含 `category` 分组列默认 `'default'` + `description` 描述列），由 `db.sql` seed 默认值 + `load_app_config()` 按字段类型解析。写入用 `ON CONFLICT DO UPDATE SET config_value`（仅改值，保留 description + category）。旧 `config.yaml` 首次启动时一次性导入 DB 后重命名为 `.bak`（迁移逻辑在 `init_schema` 中）。
+- **`app_config` 表（v3+，替代旧 `config.yaml`）**：应用行为配置的统一存储（22 字段 key-value TEXT，含 `category` 分组列默认 `'default'` + `description` 描述列），由 `db.sql` seed 默认值 + `load_app_config()` 按字段类型解析。写入用 `ON CONFLICT DO UPDATE SET config_value`（仅改值，保留 description + category）。旧 `config.yaml` 首次启动时一次性导入 DB 后重命名为 `.bak`（迁移逻辑在 `init_schema` 中）。新增 `active_polish_prompt` key（存 prompts 表 id 字符串，默认 `'1'`）。
+- **`prompts` 表（v4+，润色提示词管理）**：多 prompt 管理（替代旧单文件 `VOICE_POLISH.md`）。列：`id`（PK AUTOINCREMENT，用户不可编辑）/ `title`（用户可读别名，允许重复）/ `category`（固定 `voice_text_polish`）/ `content`（风格规则，不含增量逻辑）/ `description` / `is_system` / 时间戳。seed `id=1` 系统默认（不可编辑/删除）。`app_config.active_polish_prompt` 存激活 id。`llm::prompt::build_system_prompt(content) = content + INCREMENTAL_RULE`（第 7 条增量规则代码常量强制拼接，用户不可见）。启动时 `main.rs` 从 DB 读 active prompt → `set_system_prompt`；设置窗口 6 个 Tauri 命令（`list_prompts` / `get_active_prompt` / `set_active_prompt` / `create_prompt` / `update_prompt` / `delete_prompt`），切换即时生效（`set_system_prompt` 写 `RwLock<String>`，下次润色用新 prompt）。
 - `model.json` / `history.txt` / `record.txt` 已从代码彻底删除——DB 是唯一配置/存储源
 - `polish_status` 基于润色调用结果：未启用→`off`；启用且返回非空→`done`；启用但返回空或失败→`failed`
 - 润色三档（`polish_mode`：0 关闭 / 1 仅最终 / 2 中间+最终）：中间润色由 `check_and_trigger_polish` 在停顿点触发（流式静音 ≥ `pause_polish_threshold_ms`（默认 600ms）/ 伪流式段边界），把 `Transcript.take_polish_input()`（完整 ASR；已编辑时分块 `edited + 新增`）送 LLM 润色，节流 `polish_interval`（下限 `MIN_POLISH_INTERVAL_SEC=1.0s`）；最终润色在 `start_final_polish_or_paste`（停止后）：启用润色→`Stage::Polishing` 异步线程跑 LLM，回调 `Command::FinalPolishDone` 后 `do_paste`；未启用→直接 `do_paste`。详见 [设计](superpowers/specs/2026-06-14-archived-design.md)。
@@ -265,7 +266,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 ```
 ~/.octopus/
-├── octopus.db          # 嵌入式 SQLite（models 表 + transcriptions 表 + app_config 表，唯一存储）
+├── octopus.db          # 嵌入式 SQLite（models + transcriptions + app_config + prompts 表，唯一存储）
 ├── config.yaml.bak     # 旧 config.yaml 迁移后的备份（首次启动自动生成，可安全删除）
 └── models/
     ├── silero_vad_v4.onnx   # VAD（1.8M，find_silero_vad 固定加载，随包）
@@ -292,7 +293,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | `transcriptions` | 识别历史 | 运行时写入 |
 | `app_config` | 应用行为配置（22 字段） | db.sql seed + yaml 迁移 |
 
-- **应用行为配置** `app_config` 表 → `infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`，22 字段：麦克风/引擎选择/分段/润色/LLM/粘贴/硬件加速/ASR 纠错/降噪/简繁输出/工具栏显隐/降噪模式等）。schema 统一定义在 infra，asr/desktop/cli 共享。值统一 TEXT 存储，由 `load_app_config` 按字段类型解析。
+- **应用行为配置** `app_config` 表 → `infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`，22 字段：麦克风/引擎选择/分段/润色/LLM/粘贴/硬件加速/ASR 纠错/降噪/简繁输出/工具栏显隐/降噪模式/下载镜像等；另有 `active_polish_prompt` 由 `db::load_active_prompt_id()` 独立读取，不入 AppConfig struct）。schema 统一定义在 infra，asr/desktop/cli 共享。值统一 TEXT 存储，由 `load_app_config` 按字段类型解析。
 - **DB 模型目录** `models` 表 → `asr::config::AsrConfig`（`octopus_asr::config::load_config()`，首次 `db::ensure_db()` 自动建表 + seed，读后缓存到 `OnceLock`）。
 - **配置持久化**：`persist_*`（单键 `save_config_key`，ON CONFLICT 仅改 config_value）、`set_config`（全量 `save_app_config`，22 字段 ON CONFLICT），均写 DB。旧 `write_config_yaml` 已移除。
 - **yaml 迁移**：首次启动（v0/v1 → v2）检测旧 `~/.octopus/config.yaml` → 解析导入 DB 覆盖 seed → 重命名为 `config.yaml.bak`。迁移逻辑在 `init_schema` 中一次性执行。

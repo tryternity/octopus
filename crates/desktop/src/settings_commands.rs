@@ -349,6 +349,104 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
     }
 }
 
+// ── 润色 prompt 管理（设置窗口 prompt 管理页）──
+
+/// 设置窗口返回的 prompt 信息。
+#[derive(Serialize)]
+pub struct PromptInfo {
+    pub id: i64,
+    pub title: String,
+    pub content: String,
+    pub description: String,
+    pub is_system: bool,
+}
+
+/// 列出所有润色 prompt（按 is_system 降序、id 升序）。
+#[tauri::command]
+pub fn list_prompts() -> Result<Vec<PromptInfo>, String> {
+    let records = octopus_infra::db::list_prompts().map_err(|e| e.to_string())?;
+    Ok(records
+        .into_iter()
+        .map(|r| PromptInfo {
+            id: r.id,
+            title: r.title,
+            content: r.content,
+            description: r.description,
+            is_system: r.is_system,
+        })
+        .collect())
+}
+
+/// 返回当前激活的 prompt id。
+#[tauri::command]
+pub fn get_active_prompt() -> Result<i64, String> {
+    octopus_infra::db::load_active_prompt_id().map_err(|e| e.to_string())
+}
+
+/// 设置激活 prompt（校验 id 存在 + 写 app_config + 调 set_system_prompt 即时生效）。
+#[tauri::command]
+pub fn set_active_prompt(id: i64) -> Result<(), String> {
+    let record = octopus_infra::db::load_prompt(id)
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("prompt id={} 不存在", id))?;
+    octopus_infra::db::save_active_prompt_id(id).map_err(|e| e.to_string())?;
+    octopus_llm::set_system_prompt(&record.content);
+    log::info!("激活润色 prompt: id={} title={}", id, record.title);
+    Ok(())
+}
+
+/// 新建用户 prompt（校验 title 非空）。返回新 id。
+#[tauri::command]
+pub fn create_prompt(
+    title: String,
+    content: String,
+    description: String,
+) -> Result<i64, String> {
+    if title.trim().is_empty() {
+        return Err("title 不能为空".into());
+    }
+    octopus_infra::db::insert_prompt(&title, &content, &description)
+        .map_err(|e| e.to_string())
+}
+
+/// 更新用户 prompt（拒绝 is_system=true）。
+#[tauri::command]
+pub fn update_prompt(
+    id: i64,
+    title: String,
+    content: String,
+    description: String,
+) -> Result<(), String> {
+    if title.trim().is_empty() {
+        return Err("title 不能为空".into());
+    }
+    octopus_infra::db::update_prompt(id, &title, &content, &description).map_err(|e| e.to_string())?;
+    // 若更新的是当前激活 prompt，同步刷新 system_prompt
+    let active = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
+    if active == id {
+        if let Ok(Some(rec)) = octopus_infra::db::load_prompt(id) {
+            octopus_llm::set_system_prompt(&rec.content);
+        }
+    }
+    Ok(())
+}
+
+/// 删除用户 prompt（拒绝 is_system=true；若删的是激活项，回退到 id=1）。
+#[tauri::command]
+pub fn delete_prompt(id: i64) -> Result<(), String> {
+    let active = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
+    octopus_infra::db::delete_prompt(id).map_err(|e| e.to_string())?;
+    // 删除激活项 → fallback 到 id=1
+    if active == id {
+        log::warn!("删除了激活 prompt id={}，回退到 id=1", id);
+        let _ = octopus_infra::db::save_active_prompt_id(1);
+        if let Ok(Some(rec)) = octopus_infra::db::load_prompt(1) {
+            octopus_llm::set_system_prompt(&rec.content);
+        }
+    }
+    Ok(())
+}
+
 // ── 单测（纯逻辑校验，不触文件 IO / Tauri State）──
 
 #[cfg(test)]

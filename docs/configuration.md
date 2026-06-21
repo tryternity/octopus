@@ -11,9 +11,8 @@ octopus 配置分两部分：
 
 ```
 ~/.octopus/
-├── octopus.db          # 嵌入式 SQLite：models 表 + transcriptions 表 + app_config 表（唯一存储）
+├── octopus.db          # 嵌入式 SQLite：models + transcriptions + app_config + prompts 表（唯一存储）
 ├── config.yaml.bak     # 旧 config.yaml 迁移后的备份（首次启动自动生成，可安全删除）
-├── VOICE_POLISH.md     # 润色 system prompt 自定义覆盖（可选）
 └── models/             # 随应用打包的小模型（固定路径）
     ├── silero_vad_v4.onnx   # VAD（固定加载，不进 DB）
     └── zipformer/           # 默认 ASR（model.int8.onnx + tokens.txt）
@@ -322,8 +321,9 @@ octopus-cli config
 | `output_simplified` | bool | `true` | desktop | ASR 输出字形归一化：`true`→简体（繁→简），`false`→繁体（简→繁）。基于开放词典网 CC-BY 3.0 单字对照表（编译期嵌入），在 ASR 输出后做单字级字形转换（不转地域用词）。解决 Qwen3-ASR `auto` 模式输出繁体的问题。详见 [architecture.md](../architecture.md) |
 | `hide_toolbar` | bool | `true` | desktop | 结果展示区工具栏显隐模式：`true`→鼠标移入显示、移出隐藏（默认）；`false`→工具栏始终显示（窗口高度保持展开态 132px） |
 | `edit_shortcut` | string | `"Cmd+Enter"` | desktop | 结果展示区编辑 toggle 快捷键——**进入与保存（退出）编辑都用此键**（与 ✏️ 按钮同语义，Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。GUI 设置页可配（快捷键捕获按钮，不需冲突检测——仅窗口内 keydown 判定）。曾用双击进入（WKWebView `dblclick` 难触发而弃用）；曾拆分「Cmd+E 进 / Cmd+Enter 存」，因两者均窗口内 keydown（非全局、不 hijack 系统）已统一为单键 toggle |
+| `active_polish_prompt` | string | `"1"` | desktop | 激活的润色 prompt id（`prompts` 表 `id` 字段，字符串形式存储）。默认 `"1"` 指向系统内置 prompt。设置窗口 prompt 管理页可切换（`set_active_prompt` 命令即时生效，下次润色用新 prompt）。详见 [prompts 表](#prompts-表-润色提示词管理) |
 
-> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（包括 `polish_mode`、`polish_interval` 和新字段 `polish_llm`），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`denoise_mode`（前缀 `denoise_`）控制麦克风环境降噪（采集层前置，VAD/ASR 前）。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。
+> **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（包括 `polish_mode`、`polish_interval` 和新字段 `polish_llm`），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`denoise_mode`（前缀 `denoise_`）控制麦克风环境降噪（采集层前置，VAD/ASR 前）。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。`active_polish_prompt` 属润色行为（与 `polish_*` 同组，但存独立 key，由 `db::load_active_prompt_id()` 读，不入 `AppConfig` struct）。
 
 ### 模型选择 spec（`asr_engine` / `polish_llm` 统一 3-part 格式）
 
@@ -401,6 +401,48 @@ edit_shortcut: "Cmd+Enter"       # 编辑 toggle 快捷键（窗口内，进入/
 - 编辑后的文本作为后续展示与润色基准；新识别文本追加其上；停止粘贴时保留编辑。
 - 编辑后再触发润色时，仅润色新增部分、保留已编辑（润色结果折回）。
 - 未编辑时行为与旧版完全一致。
+
+## prompts 表（润色提示词管理）
+
+润色提示词由 DB `prompts` 表管理（替代旧单文件 `~/.octopus/VOICE_POLISH.md`，已删除）。用户可维护多条润色 prompt，激活其一。
+
+### schema
+
+| 列 | 含义 |
+|---|---|
+| `id` | INTEGER PK AUTOINCREMENT——系统主键，用户不可编辑，`app_config.active_polish_prompt` 引用此字段 |
+| `title` | TEXT——用户可读别名，**允许重复**（用户自行区分即可） |
+| `category` | TEXT——用途分类，当前固定 `voice_text_polish`（语音文本润色） |
+| `content` | TEXT——system prompt 的「风格规则」部分（不含增量保留规则） |
+| `description` | TEXT——用户可读描述 |
+| `is_system` | INTEGER——`1`=系统内置（不可编辑/删除），`0`=用户自建 |
+| `created_at` / `updated_at` | TEXT——时间戳 |
+
+### seed
+
+```sql
+INSERT OR IGNORE INTO prompts (id, title, category, content, description, is_system) VALUES
+    (1, '默认润色', 'voice_text_polish', '<内置 6 条风格规则>', '默认润色（系统内置）', 1);
+```
+
+固定 `id=1` 为系统默认 prompt（`is_system=1`，不可编辑/删除）。
+
+### Prompt 组装
+
+`content` 只存「风格规则」部分。润色时由 `llm::prompt::build_system_prompt(content)` 强制拼接 `INCREMENTAL_RULE`（第 7 条增量保留规则，代码常量，用户不可见/不可改）：
+
+```
+system_prompt = content + "\n" + INCREMENTAL_RULE
+```
+
+### 运行时切换
+
+设置窗口 prompt 管理页提供 6 个 Tauri 命令：`list_prompts` / `get_active_prompt` / `set_active_prompt` / `create_prompt` / `update_prompt` / `delete_prompt`。切换 active prompt 即时生效（`set_system_prompt` 写 `RwLock<String>`），下次润色用新 prompt；进行中的润色不受影响。
+
+### 降级
+
+- `active_polish_prompt` 指向不存在的 id → fallback 到 `id=1` + warn 日志 + 自动修正 app_config
+- DB 读 prompt 失败 → fallback 到空 content（仅增量规则）+ warn 日志
 
 ## 模型下载
 
