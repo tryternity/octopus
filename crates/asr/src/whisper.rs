@@ -310,12 +310,24 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         )?;
 
         // Tokenizer & special tokens
+        // 各 Whisper 变体的特殊 token ID 不同（.en 模型整体偏移 -1：
+        //   .en: sot=50257, transcribe=50358, no_ts=50362, eot=50256
+        //   multilingual: sot=50258, transcribe=50359, no_ts=50363, eot=50257
+        //   Large v3/Turbo: 可能又有不同）
+        // 此前用 unwrap_or(50XXX) 静默回退到 multilingual 值——若 tokenizer 查询失败，
+        // 会注入错误 ID 导致模型行为失控且极难排查。改为强制查询，失败立即报错。
         let sot: u32 = self.tokenizer
             .token_to_id("<|startoftranscript|>")
-            .unwrap_or(50258);
-        let transcribe_tok: u32 = self.tokenizer.token_to_id("<|transcribe|>").unwrap_or(50359);
-        let no_ts: u32 = self.tokenizer.token_to_id("<|notimestamps|>").unwrap_or(50363);
-        let eot: u32 = self.tokenizer.token_to_id("<|endoftext|>").unwrap_or(50257);
+            .ok_or_else(|| anyhow::anyhow!("tokenizer 缺少 <|startoftranscript|> token"))?;
+        let transcribe_tok: u32 = self.tokenizer
+            .token_to_id("<|transcribe|>")
+            .ok_or_else(|| anyhow::anyhow!("tokenizer 缺少 <|transcribe|> token"))?;
+        let no_ts: u32 = self.tokenizer
+            .token_to_id("<|notimestamps|>")
+            .ok_or_else(|| anyhow::anyhow!("tokenizer 缺少 <|notimestamps|> token"))?;
+        let eot: u32 = self.tokenizer
+            .token_to_id("<|endoftext|>")
+            .ok_or_else(|| anyhow::anyhow!("tokenizer 缺少 <|endoftext|> token"))?;
 
         // Build prompt tokens: <|SOT|> <|LANG|> <|transcribe|> <|notimestamps|>
         // 语言确定优先级：config.yaml language > DB models.language > auto-detect
