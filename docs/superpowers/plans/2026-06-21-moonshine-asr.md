@@ -688,6 +688,12 @@ Moonshine 5 task 完成并合并后，在测试 whisper 系列模型时发现两
     - 防御：`WhisperEngine::new` 加载 encoder 后读取其 mel 输入 shape（`[batch, n_mels, n_audio_ctx]`），若 `dims[1] != 80` 立即 fail 给出明确错误消息（"仅支持 v1/v2，Large v3/Turbo 用 128 mel，请用 whisper-tiny/base/small"），避免后续 `encoder.run()` 踩 ONNX shape mismatch 崩溃
     - 验证：whisper-small 加载/转录正常通过（80 mel 不触发检查）；54 个 ASR 测试全部通过
 
+15. **whisper 特殊 token 查询改强制 fail**（`whisper.rs`，外部 review 发现）：
+    - 现状：`unwrap_or(50XXX)` fallback 值取自 multilingual 模型，但各 Whisper 变体的特殊 token ID 不同（.en 模型整体偏移 -1：`.en` sot=50257/transcribe=50358/no_ts=50362/eot=50256；multilingual sot=50258/transcribe=50359/no_ts=50363/eot=50257）。若 tokenizer 查询失败，静默 fallback 会注入错误 ID（对 .en 是错的）导致模型行为失控且极难排查
+    - 核实：当前 3 个 .en 模型的 tokenizer 都包含这些 special tokens，`token_to_id()` 实际返回 `Some(正确ID)`，unwrap_or 分支从未被触发——**非 active bug，是潜在隐患**。但审计方向成立：fallback 值确实不适用于 .en 词表
+    - 修复：改为 `ok_or_else(bail!)` 强制查询——若 tokenizer 缺少任一特殊 token 立即报错（"tokenizer 缺少 <|xxx|> token"），让真实问题暴露而非静默腐烂
+    - 验证：whisper-small/base/tiny 均正常加载并转录；6.62s 测试音频输出仍与参考文本完全一致；54 个 ASR 测试全部通过
+
 ### Type consistency
 - `MoonshineEngine::new(entry: &config::ModelEntry)` — 与 `WhisperEngine::new` / `ParaformerEngine::new` 签名一致
 - `transcribe(&self, samples: &[f32], _language: &str) -> Result<String>` — 与 `OfflineAsrEngine` trait 一致
