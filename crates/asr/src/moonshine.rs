@@ -14,7 +14,7 @@ use crate::config;
 ///           → cached_decode 循环（后续 token，复用 KV cache）→ EOS 停止。
 ///
 /// Decode 循环逻辑参考 sherpa-onnx `offline-moonshine-greedy-search-decoder.cc`：
-/// BOS(1) → uncached_decode → logits + 36 cache
+/// BOS(1) → uncached_decode → logits + N 个 KV cache（层数×2，base 模型=32）
 /// 循环: argmax → EOS(2) 则停 → cached_decode(token, cache) → logits + 新 cache
 pub struct MoonshineEngine {
     preprocess_session: Mutex<Session>,
@@ -127,19 +127,19 @@ impl MoonshineEngine {
             "args_2" => TensorRef::from_array_view(seq_len_view)?
         })?;
 
-        // logits (index 0) + N KV caches (index 1.., 数量由模型架构决定)
+        // logits (index 0) + N KV caches (index 1.., N=层数×2，base 模型=32)
         let num_caches = uncached_out.len() - 1;
-        let (logits_shape, logits_data) = uncached_out[0].try_extract_tensor::<f32>()?;
-        let vocab_size = logits_shape[2] as usize;
-        let mut last_logits: Vec<f32> = logits_data.to_vec();
+        let (vocab_size, mut last_logits) = {
+            let (shape, data) = uncached_out[0].try_extract_tensor::<f32>()?;
+            (shape[2] as usize, data.to_vec())
+        };
 
-        let mut state_shapes: Vec<Vec<usize>> = Vec::with_capacity(num_caches);
-        let mut state_data: Vec<Vec<f32>> = Vec::with_capacity(num_caches);
-        for i in 1..=num_caches {
-            let (shape, data) = uncached_out[i].try_extract_tensor::<f32>()?;
-            state_shapes.push(shape.iter().map(|&d| d as usize).collect());
-            state_data.push(data.to_vec());
-        }
+        // KV cache 复用：消费 uncached 输出为 owned Value 列表（[0]=logits 已提取，[1..]=N cache），
+        // 后续步骤直接以 ValueView（O(1) Arc 引用计数）传回 ONNX Runtime，让 KV cache 留在 ORT
+        // 内部——消除原先每步 `to_vec()` 深拷贝 N 个随 seq_len 增长张量（base=32，长音频解码每步
+        // 拷贝可达 MB 级）的 CPU/带宽开销。参考 sherpa-onnx greedy-search-decoder 直接复用 OrtValue。
+        let mut state_values: Vec<ort::value::Value> =
+            uncached_out.into_iter().map(|(_, v)| v).collect();
 
         // ── 后续 tokens: cached_decode 循环 ──
         let mut result_tokens: Vec<i64> = Vec::new();
@@ -173,25 +173,21 @@ impl MoonshineEngine {
                 "args_1" => TensorRef::from_array_view(enc_view)?,
                 "args_2" => TensorRef::from_array_view(seq_len_view)?
             };
-            for (i, (shape, data)) in state_shapes.iter().zip(state_data.iter()).enumerate() {
-                let view = ndarray::ArrayViewD::from_shape(shape.as_slice(), data.as_slice())?;
+            // KV cache 直接以 ValueView 传回（Arc 引用计数，O(1)），不经 CPU 深拷贝。
+            for i in 0..num_caches {
                 inputs.push((
                     format!("args_{}", i + 3).into(),
-                    TensorRef::from_array_view(view)?.into(),
+                    state_values[i + 1].view().into(),
                 ));
             }
 
             let cached_out = cached_session.run(inputs)?;
-
-            // 更新 logits + states
-            let (_, new_logits) = cached_out[0].try_extract_tensor::<f32>()?;
-            last_logits = new_logits.to_vec();
-
-            for i in 0..num_caches {
-                let (shape, data) = cached_out[i + 1].try_extract_tensor::<f32>()?;
-                state_shapes[i] = shape.iter().map(|&d| d as usize).collect();
-                state_data[i] = data.to_vec();
-            }
+            // 提取 logits（块作用域内释放对 cached_out 的借用，之后才能消费它）+ 替换 cache。
+            last_logits = {
+                let (_, new_logits) = cached_out[0].try_extract_tensor::<f32>()?;
+                new_logits.to_vec()
+            };
+            state_values = cached_out.into_iter().map(|(_, v)| v).collect();
         }
 
         Ok(result_tokens)
