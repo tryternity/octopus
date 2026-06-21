@@ -670,6 +670,12 @@ Moonshine 5 task 完成并合并后，在测试 whisper 系列模型时发现两
     - 修复：auto 时先喂 `[sot]` 让模型预测语言 token，再拼完整 4-token prompt 跑 dec_init（与 OpenAI whisper 一致）
     - 当前 DB 里 whisper 模型均为 `.en` + `language=en`，config `language=auto` 由 DB 兜底不走 auto-detect；此 bug 在添加多语言 whisper 模型时才暴露
 
+12. **whisper 短音频提早结束机制**（`whisper.rs`，外部 review 发现）：
+    - bug：`compute_mel` 把音频 0 填充到固定 30s，若 VAD 只传入 2s 片段，剩余 28s 全是静音；原解码循环硬编码 `max_tokens=448`，只靠 EOT 终止，但 Whisper 在长静音段往往不预测 EOT 反而开始幻听（重复最后一句话 / “谢谢观看”等），既产生转录噪声又把本应秒级结束的短音频拖到完整 448 步，RTF 暴增
+    - 修复：按实际音频时长动态计算上限 `max_tokens = (audio_seconds × 6 + 10).min(448)`，.en 模型平均生成 ~6 text tokens/秒，+10 为 prompt/safety 余量，30s 以上恢复 448 上限
+    - 验证：6.62s 测试音频 max_tokens 49 步即终止，输出与参考文本完全一致，无幻听无截断
+    - 局限：6 tokens/秒 是 .en 模型的经验值；若未来加入多语言 / 中文 whisper，密集中文可达 ~8-10 tokens/秒，届时需调高系数
+
 ### Type consistency
 - `MoonshineEngine::new(entry: &config::ModelEntry)` — 与 `WhisperEngine::new` / `ParaformerEngine::new` 签名一致
 - `transcribe(&self, samples: &[f32], _language: &str) -> Result<String>` — 与 `OfflineAsrEngine` trait 一致
