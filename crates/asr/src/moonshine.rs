@@ -82,11 +82,13 @@ impl MoonshineEngine {
     }
 
     /// 运行 encode：features (1, T, 416) + len → encoder_out (1, T, 416)。
+    /// 返回 owned `Value`（不拷贝到 CPU）——后续 `greedy_decode` 以 ValueView 传回
+    /// uncached/cached_decode，省去几 MB encoder 张量的 to_vec 拷贝。
     fn run_encode(
         &self,
         features: &ndarray::Array2<f32>,
         features_len: usize,
-    ) -> Result<ndarray::Array3<f32>> {
+    ) -> Result<ort::value::Value> {
         let features_3d = features.view().insert_axis(ndarray::Axis(0));
         let len_arr = [features_len as i32];
         let len_view = ndarray::ArrayView1::from(&len_arr);
@@ -95,24 +97,24 @@ impl MoonshineEngine {
             "args_0" => TensorRef::from_array_view(features_3d)?,
             "args_1" => TensorRef::from_array_view(len_view)?
         })?;
-        let (shape, data) = outputs[0].try_extract_tensor::<f32>()?;
-        let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-        ndarray::Array3::from_shape_vec((dims[0], dims[1], dims[2]), data.to_vec())
-            .context("encode 输出 reshape 失败")
+        // 消费 SessionOutputs 取 encoder_out 为 owned Value（[0]），不经 CPU to_vec。
+        // 先 collect 成 Vec<Value> 脱离 session 借用——SessionOutputs<'_> 持 session 引用，
+        // 而 owned Value 内部 Arc、'static，collect 后即可跨 session 生命周期返回。
+        let out: Vec<ort::value::Value> =
+            outputs.into_iter().map(|(_, v)| v).collect();
+        out.into_iter().next().context("encode 输出为空")
     }
 
     /// Greedy decode 循环。参考 sherpa-onnx `offline-moonshine-greedy-search-decoder.cc`。
     fn greedy_decode(
         &self,
-        encoder_out: &ndarray::Array3<f32>,
+        encoder_out: &ort::value::Value,
         features_len: i32,
     ) -> Result<Vec<i64>> {
         const BOS: i32 = 1;
         const EOS: i64 = 2;
         // 与 sherpa-onnx 一致：encoder_frames * 384 / 16000 * 6
         let max_len = (features_len as f32 * 384.0 / 16000.0 * 6.0) as usize;
-
-        let enc_view = encoder_out.view();
 
         // ── 首 token（BOS）: uncached_decode ──
         let token = [BOS];
@@ -123,21 +125,22 @@ impl MoonshineEngine {
         let mut uncached_session = self.uncached_decode_session.lock().unwrap();
         let uncached_out = uncached_session.run(ort::inputs! {
             "args_0" => TensorRef::from_array_view(token_view)?,
-            "args_1" => TensorRef::from_array_view(enc_view)?,
+            "args_1" => encoder_out,
             "args_2" => TensorRef::from_array_view(seq_len_view)?
         })?;
 
         // logits (index 0) + N KV caches (index 1.., N=层数×2，base 模型=32)
         let num_caches = uncached_out.len() - 1;
-        let (vocab_size, mut last_logits) = {
-            let (shape, data) = uncached_out[0].try_extract_tensor::<f32>()?;
-            (shape[2] as usize, data.to_vec())
+        // vocab_size 固定（= logits 末维），argmax 仅限此范围。
+        let vocab_size = {
+            let (shape, _data) = uncached_out[0].try_extract_tensor::<f32>()?;
+            shape[2] as usize
         };
 
-        // KV cache 复用：消费 uncached 输出为 owned Value 列表（[0]=logits 已提取，[1..]=N cache），
-        // 后续步骤直接以 ValueView（O(1) Arc 引用计数）传回 ONNX Runtime，让 KV cache 留在 ORT
-        // 内部——消除原先每步 `to_vec()` 深拷贝 N 个随 seq_len 增长张量（base=32，长音频解码每步
-        // 拷贝可达 MB 级）的 CPU/带宽开销。参考 sherpa-onnx greedy-search-decoder 直接复用 OrtValue。
+        // logits + KV cache 复用：消费 uncached 输出为 owned Value 列表（[0]=logits，[1..]=N cache），
+        // 后续步骤直接以 ValueView（O(1) Arc 引用计数）传回 ONNX Runtime，张量全程留在 ORT 内部
+        // ——消除原先每步 `to_vec()` 深拷贝 logits（vocab×4B=128KB/步）与 N 个随 seq_len 增长 cache
+        // （base=32，长音频每步可达 MB 级）的开销。参考 sherpa-onnx greedy-search-decoder 直接复用 OrtValue。
         let mut state_values: Vec<ort::value::Value> =
             uncached_out.into_iter().map(|(_, v)| v).collect();
 
@@ -147,15 +150,19 @@ impl MoonshineEngine {
         let mut cached_session = self.cached_decode_session.lock().unwrap();
 
         for _ in 0..max_len {
-            // argmax over last_logits[..vocab_size]
-            let next_token = last_logits[..vocab_size]
-                .iter()
-                .enumerate()
-                .max_by(|(_, a), (_, b)| {
-                    a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
-                })
-                .map(|(i, _)| i as i64)
-                .unwrap_or(EOS);
+            // argmax 直接在当前步 logits（state_values[0]）的零拷贝 &[f32] 上做，不 to_vec()。
+            // 块作用域释放借用，之后才能 view/消费 state_values。
+            let next_token = {
+                let (_, logits) = state_values[0].try_extract_tensor::<f32>()?;
+                logits[..vocab_size]
+                    .iter()
+                    .enumerate()
+                    .max_by(|(_, a), (_, b)| {
+                        a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal)
+                    })
+                    .map(|(i, _)| i as i64)
+                    .unwrap_or(EOS)
+            };
 
             if next_token == EOS {
                 break;
@@ -170,7 +177,7 @@ impl MoonshineEngine {
 
             let mut inputs = ort::inputs! {
                 "args_0" => TensorRef::from_array_view(token_view)?,
-                "args_1" => TensorRef::from_array_view(enc_view)?,
+                "args_1" => encoder_out,
                 "args_2" => TensorRef::from_array_view(seq_len_view)?
             };
             // KV cache 直接以 ValueView 传回（Arc 引用计数，O(1)），不经 CPU 深拷贝。
@@ -181,12 +188,8 @@ impl MoonshineEngine {
                 ));
             }
 
+            // 消费 cached_out 替换 state_values（新 logits=[0]，新 cache=[1..]）。
             let cached_out = cached_session.run(inputs)?;
-            // 提取 logits（块作用域内释放对 cached_out 的借用，之后才能消费它）+ 替换 cache。
-            last_logits = {
-                let (_, new_logits) = cached_out[0].try_extract_tensor::<f32>()?;
-                new_logits.to_vec()
-            };
             state_values = cached_out.into_iter().map(|(_, v)| v).collect();
         }
 
