@@ -174,13 +174,10 @@ impl Downloader {
         let start = seg.next_offset();
         let end = seg.end;
         if start > end { return Ok(*seg); } // 已完成
-        // task 9 编排时会在此插入 If-Range header（req = req.header(...)），届时移除 allow。
-        #[allow(unused_mut)]
-        let mut req = self.client.get(url).header("Range", format!("bytes={start}-{end}"));
-        if let Some(ir) = crate::core::verify::if_range_value(None) {
-            // etag 由调用方在 multi-segment 编排时注入；单段 probe 的 etag 经参数透传见 Task 9
-            let _ = ir;
-        }
+        // 设计决策：不注入 If-Range。续传正确性依赖最终整文件 hash 校验兜底——
+        // 若服务端内容在断点后变更，写到 .part 的旧区段会被 hash 校验抓住并重下。
+        // 注入 If-Range 反而让不支持它的服务器/镜像回退 200 全文重传，得不偿失。
+        let req = self.client.get(url).header("Range", format!("bytes={start}-{end}"));
         let resp = tokio::time::timeout(self.config.read_timeout, req.send())
             .await
             .map_err(|_| transient(TransientKind::Timeout, "segment read timeout"))?
@@ -322,9 +319,17 @@ impl Downloader {
             .total
             .ok_or_else(|| transient(TransientKind::Network, "no content-length"))?;
 
-        // 规划：加载 sidecar 复用进度，否则重新规划
+        // 规划：加载 sidecar 复用进度，否则重新规划。
+        // sidecar 的 url_hash 基于 dest（镜像无关），故镜像源也可复用——这是设计意图：
+        // 镜像即"同文件不同 URL"，内容一致时复用进度省带宽，内容不一致由最终 hash 校验兜底。
+        // 唯一需丢弃 sidecar 的情况：多段 sidecar 遇到不支持 Range 的源（否则会向不支持
+        // Range 的服务器发分段 Range 请求，注定得到 200 全文且 offset 错位）。单段 sidecar
+        // 无此问题——即便服务端忽略 Range 返回全文，200 重写路径会从头覆盖整个单段=整文件。
         let segs = match crate::core::resume::load(&task.dest, total) {
-            Some(state) if !state.segments.is_empty() => {
+            Some(state)
+                if !state.segments.is_empty()
+                    && (probe.accept_ranges || state.segments.len() == 1) =>
+            {
                 log::info!("resume: 侧载 sidecar，{} 段", state.segments.len());
                 state.segments
             }
@@ -779,5 +784,53 @@ mod tests {
         let (tx, _rx) = mpsc::channel(16);
         let err = dl.download(&task, tx, Some(token)).await.unwrap_err();
         assert!(matches!(err, DownloadError::Cancelled));
+    }
+
+    #[tokio::test]
+    async fn download_drops_multi_segment_sidecar_when_source_no_range() {
+        // 多段 sidecar（前次支持 Range 的源崩溃遗留）遇到不支持 Range 的源：
+        // 必须丢弃 sidecar 改单段，否则会向不支持 Range 的服务器发分段 Range 请求。
+        let server = MockServer::start();
+        let total: u64 = 100;
+        let body: Vec<u8> = (0..total as u8).collect();
+
+        // probe：返回 total 但不带 Accept-Ranges → accept_ranges=false
+        server.mock(|when, then| {
+            when.method(Method::GET).path("/f").header("Range", "bytes=0-0");
+            then.status(206).header("Content-Range", format!("bytes 0-0/{total}"));
+        });
+        // 仅 mock 单段全文件请求。若 guard 未生效（沿用多段 sidecar），
+        // 会发 bytes=0-49 / bytes=50-99 两段，二者未 mock → download 失败。
+        server.mock(|when, then| {
+            when.method(Method::GET)
+                .path("/f")
+                .header("Range", format!("bytes=0-{}", total - 1));
+            then.status(206).body(body.clone());
+        });
+
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("f");
+        // 预置多段 sidecar（模拟前次崩溃遗留）
+        let multi = crate::core::resume::new_state(
+            &dest,
+            total,
+            None,
+            vec![
+                Segment { begin: 0, end: 49, downloaded: 0 },
+                Segment { begin: 50, end: 99, downloaded: 0 },
+            ],
+        );
+        crate::core::resume::save(&dest, &multi).unwrap();
+
+        let task = DownloadTask {
+            url: server.url("/f"),
+            mirrors: vec![],
+            dest: dest.clone(),
+            expected_hash: None,
+        };
+        let dl = Downloader::new(DownloadConfig::default()).unwrap();
+        let (tx, _rx) = mpsc::channel(16);
+        dl.download(&task, tx, None).await.unwrap();
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
     }
 }
