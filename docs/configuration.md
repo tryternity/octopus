@@ -30,7 +30,7 @@ octopus 配置分两部分：
 | 列 | 含义 |
 |---|---|
 | `domain` | `asr` / `llm` |
-| `provider` | **vendor / 运行位置**——`local`（本地）/ `aliyun`（阿里云 DashScope）/ `deepseek` / `bigmodel` |
+| `provider` | **vendor / 运行位置**——`local`（本地）/ `aliyun`（阿里云 DashScope）/ `bytedance`（字节跳动火山引擎）/ `tencent`（腾讯云）/ `baidu`（百度智能云）/ `deepseek` / `bigmodel` |
 | `category` | ASR=引擎族（`zipformer`/`whisper`/`sensevoice`/`paraformer`/`qwen3-asr`/`Fun-ASR`）；LLM=模型系列（`qwen`/`glm`/`deepseek`） |
 | `model_name` | 具体模型标识（精确匹配） |
 | `source` | ASR=本地路径 / HF repo / 云 WS 端点；LLM=API Base URL |
@@ -49,10 +49,13 @@ octopus 配置分两部分：
 |---|---|---|
 | `local` | `zipformer` / `whisper` / `sensevoice` / `paraformer` / `qwen3-asr` | —（暂无本地 LLM） |
 | `aliyun` | `Fun-ASR`（FunASR Realtime WS） | `qwen`（DashScope OpenAI 兼容端点） / `deepseek`（经 DashScope 代管） |
+| `bytedance` | `Doubao-ASR`（豆包大模型 ASR 双向流式） | — |
+| `tencent` | `Tencent-ASR`（腾讯云实时语音识别） | — |
+| `baidu` | `Baidu-ASR`（百度智能云实时语音识别） | — |
 | `deepseek` | — | `deepseek`（直连 api.deepseek.com） |
 | `bigmodel` | — | `glm`（智谱开放平台） |
 
-### 默认 ASR seed（8 local + 1 aliyun）
+### 默认 ASR seed（8 local + 1 aliyun + 2 bytedance + 2 tencent + 1 baidu）
 
 | provider | category | model_name | source | is_local | is_enabled | is_streaming |
 |---|---|---|---|---|---|---|
@@ -67,6 +70,15 @@ octopus 配置分两部分：
 | local | qwen3-asr | qwen3-asr-1.7B | ilmina/qwen3-asr-1.7b-sherpa-onnx | 1 | 0 | 0 |
 | local | whisper | whisper-small | onnx-community/whisper-small.en | 1 | 0 | 0 |
 | aliyun | Fun-ASR | fun-asr-2025-11-07 | `wss://dashscope.aliyuncs.com/api-ws/v1/inference` | 0 | 0 | 0 |
+| bytedance | Doubao-ASR | doubao-asr-1.0-streaming | `volc.bigasr.sauc.duration` | 0 | 0 | 1 |
+| bytedance | Doubao-ASR | doubao-asr-2.0-streaming | `volc.seedasr.sauc.duration` | 0 | 0 | 0 |
+| tencent | Tencent-ASR | 16k_zh | `{appid}:{secretid}` | 0 | 0 | 1 |
+| tencent | Tencent-ASR-Multi | 16k_zh_en | `{appid}:{secretid}` | 0 | 0 | 0 |
+| baidu | Baidu-ASR | 15372 | `{appid}` | 0 | 0 | 1 |
+
+> **bytedance `source` 字段**是 Resource ID（如 `volc.bigasr.sauc.duration`），不是 endpoint URL。
+> **tencent `source` 字段**是 `{appid}:{secretid}` 复合格式（冒号分隔），`secret_key` 填 SecretKey（签名密钥）。endpoint 固定为 `wss://asr.cloud.tencent.com/asr/v2/<appid>?{params}`。
+> **baidu `source` 字段**是 AppID（纯数字），`secret_key` 填 API Key（appkey），`model_name` 是 dev_pid（如 `15372`）。endpoint 固定为 `wss://vop.baidu.com/realtime_asr`。
 
 ### 默认 LLM seed（含 aliyun qwen / deepseek 经 DashScope）
 
@@ -79,7 +91,7 @@ octopus 配置分两部分：
 | aliyun | qwen | qwen-plus | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 0 | 0 | Qwen Plus（非思考） |
 | aliyun | qwen | qwen-turbo | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 0 | 0 | Qwen Turbo（非思考，快） |
 
-> **`provider` 字段**：vendor / 运行位置维度，与 `category`（引擎族/模型系列）正交。`local` 表示随应用打包或下载到本地，`aliyun` 表示经阿里云 DashScope 云端调用。决定引擎路由（`provider='aliyun'` → `EngineCategory::Aliyun` → `DashscopeEngine`）。
+> **`provider` 字段**：vendor / 运行位置维度，与 `category`（引擎族/模型系列）正交。`local` 表示随应用打包或下载到本地，`aliyun` 表示经阿里云 DashScope 云端调用，`bytedance` 表示经火山引擎豆包云端调用。决定引擎路由（`provider='aliyun'` → `EngineCategory::Aliyun` → `AliyunEngine`；`provider='bytedance'` → `EngineCategory::ByteDance` → `Stage::CloudStreaming`）。
 
 > **`is_local` 字段**：标记是否本地运行。`provider='local'` ⟺ `is_local=1`（二者并存：`is_local` 供本地过滤，`provider` 用于 vendor 路由）。
 
@@ -129,17 +141,117 @@ seed 已含 `aliyun:Fun-ASR:fun-asr-2025-11-07`（WS 端点 `wss://dashscope.ali
 asr_engine: "aliyun:Fun-ASR:fun-asr-2025-11-07"
 ```
 
-**云引擎路由**：启动时 `resolve_active_engine(&config.asr_engine)` 按 `provider='aliyun'` 解析为 `EngineCategory::Aliyun` → 建 `DashscopeEngine`；否则按 `engine_mode`（embedded/websocket/grpc）走本地引擎。云 ↔ 本地切换改 `app_config.asr_engine` 后**重启**生效（engine 实例启动时固定）。
+**云引擎路由**：启动时 `resolve_active_engine(&config.asr_engine)` 按 `provider='aliyun'` 解析为 `EngineCategory::Aliyun` → 建 `AliyunEngine`；`provider='bytedance'` 解析为 `EngineCategory::ByteDance` → 直接走 `Stage::CloudStreaming`（无独立 engine）；否则按 `engine_mode`（embedded/websocket/grpc）走本地引擎。云 ↔ 本地切换改 `app_config.asr_engine` 后**重启**生效（engine 实例启动时固定）。
 
-> **注意**：`engine_category_from_str("aliyun")` 仍返回 `None`——aliyun 不靠 `category` 字符串识别，而由 `resolve_category(provider, category)` 按 `provider='aliyun'` 分支识别（不进 5 个本地族字符串映射）。
+> **注意**：`engine_category_from_str` 对 `"aliyun"` / `"bytedance"` 均返回 `None`——云 provider 不靠 `category` 字符串识别，而由 `resolve_category(provider, category)` 按 provider 分支识别（不进 5 个本地族字符串映射）。
 
-#### 4. 启用 `dashscope` cargo feature
+#### 4. 启用 `aliyun` cargo feature
 
-ASR 云引擎（`DashscopeEngine`）在 `dashscope` feature 后，默认不开（与 `remote-ws` / `remote-grpc` 一致）：
+云 ASR 引擎（`AliyunEngine` + `ByteDanceStreamSession`）在 `aliyun` feature 后，默认不开（与 `remote-ws` / `remote-grpc` 一致）：
 
 ```bash
-cargo run -p octopus-desktop --features dashscope
+cargo run -p octopus-desktop --features aliyun
 ```
+
+### 字节跳动豆包 ASR 接入
+
+通过 `provider='bytedance'` 接入火山引擎豆包大模型 ASR（双向流式优化版 `bigmodel_async`）。与阿里云不同：**二进制帧协议**（4B header + gzip payload，非 JSON 文本帧）、**固定 endpoint**（不来自 DB `source` 字段）、**Resource ID 鉴权**（`X-Api-Key` + `X-Api-Resource-Id` 握手 headers）。
+
+#### DB 字段映射
+
+| DB 字段 | 豆包含义 | 示例 |
+|---|---|---|
+| `source` | **Resource ID**（作为 `X-Api-Resource-Id` 握手 header） | `volc.bigasr.sauc.duration` |
+| `secret_key` | **API Key**（作为 `X-Api-Key` 握手 header） | 你的火山引擎 API Key |
+| `model_name` | 模型标识（seed 内固定，用于 DB 查找） | `doubao-asr-1.0-streaming` |
+
+> Endpoint 固定为 `wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async`，**不存 DB**。
+
+#### 1. 填 API Key
+
+```bash
+sqlite3 ~/.octopus/octopus.db "UPDATE models SET secret_key='你的火山-api-key', is_enabled=1 WHERE domain='asr' AND model_name='doubao-asr-1.0-streaming';"
+```
+
+#### 2. 配置引擎
+
+```yaml
+asr_engine: "bytedance:Doubao-ASR:doubao-asr-1.0-streaming"
+```
+
+seed 还含 `doubao-asr-2.0-streaming`（`volc.seedasr.sauc.duration`），二选一即可。
+
+#### 3. feature 依赖
+
+与阿里云共用 `aliyun` feature（控制 WS 流式编译），无需额外 feature flag。
+
+### 腾讯云 ASR 接入
+
+通过 `provider='tencent'` 接入腾讯云实时语音识别 WebSocket API。与阿里云/字节跳动不同：**URL 签名鉴权（HMAC-SHA1）**、**原始 PCM binary 帧**、**JSON 文本响应**、**`{"type":"end"}` 结束信号**。
+
+#### DB 字段映射
+
+需要 3 个鉴权信息：AppID、SecretID、SecretKey。
+
+| DB 字段 | 腾讯含义 | 示例 |
+|---|---|---|
+| `source` | **`{appid}:{secretid}` 复合字段**（冒号分隔） | `1259221234:AKIDxxxxxxxx` |
+| `secret_key` | **SecretKey**（HMAC-SHA1 签名密钥） | `yyyyyyyyyy` |
+| `model_name` | engine_model_type（直接作为 URL 参数） | `16k_zh`、`16k_zh_en` |
+
+> Endpoint 固定为 `wss://asr.cloud.tencent.com/asr/v2/<appid>?{params}`，**不存 DB**。
+
+#### 1. 填 AppID + SecretID + SecretKey
+
+```bash
+# source 格式 = appid:secretid
+sqlite3 ~/.octopus/octopus.db "UPDATE models SET source='你的appid:你的secretid', secret_key='你的secretkey', is_enabled=1 WHERE domain='asr' AND model_name='16k_zh';"
+```
+
+#### 2. 配置引擎
+
+```yaml
+asr_engine: "tencent:Tencent-ASR:16k_zh"
+```
+
+seed 还含 `16k_zh_en`（普方英大模型，支持中英+31种方言），二选一即可。
+
+#### 3. feature 依赖
+
+与阿里云/字节跳动共用 `aliyun` feature，无需额外 feature flag。
+
+### 百度智能云 ASR 接入
+
+通过 `provider='baidu'` 接入百度智能云实时语音识别 WebSocket API。与腾讯云不同：**START 帧 JSON 鉴权**（appid+appkey 在 `data` 内，无 HMAC 签名）、**Raw PCM binary 帧**、**JSON text 响应**（`MID_TEXT` 临时 / `FIN_TEXT` 稳态）。
+
+#### DB 字段映射
+
+| DB 字段 | 百度含义 | 示例 |
+|---|---|---|
+| `source` | **AppID**（纯数字） | `1050000017` |
+| `secret_key` | **API Key**（appkey） | `UA4oPSxxxxkGOuFbb6` |
+| `model_name` | **dev_pid**（语种模型 ID） | `15372`（中文加强标点）、`17372`（英文加强标点） |
+
+> Endpoint 固定为 `wss://vop.baidu.com/realtime_asr?sn=<UUID>`，**不存 DB**。
+> 百度实时识别不使用 access_token / SecretKey，鉴权全在 START 帧。
+
+#### 1. 填 AppID + API Key
+
+```bash
+sqlite3 ~/.octopus/octopus.db "UPDATE models SET source='你的AppID', secret_key='你的APIKey', is_enabled=1 WHERE domain='asr' AND model_name='15372';"
+```
+
+#### 2. 配置引擎
+
+```yaml
+asr_engine: "baidu:Baidu-ASR:15372"
+```
+
+`model_name` 是 dev_pid，常用取值：`15372`（中文加强标点）、`15376`（中文多方言）、`17372`（英文加强标点）。
+
+#### 3. feature 依赖
+
+与其他云端 provider 共用 `aliyun` feature，无需额外 feature flag。
 
 #### 5. schema 变更：删库重建（dev 阶段）
 
@@ -190,7 +302,7 @@ octopus-cli config
 | 字段 | 类型 | 默认值 | 适用端 | 说明 |
 |---|---|---|---|---|
 | `microphone` | string | `""` | cli + desktop | 麦克风设备名（空 = 系统默认） |
-| `asr_engine` | string | `""` | desktop + server | ASR 引擎选择，格式 `"{provider}:{category}:{model_name}"`（见下方「模型选择 spec」）。示例：`"local:zipformer:zipformer-small-ctc"`、`"aliyun:Fun-ASR:fun-asr-2025-11-07"`。空或匹配不到回退兜底 `local:zipformer:zipformer-small-ctc`。显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，不走兜底。**desktop 悬停工具栏可在运行时切换**（`switch_asr_engine` 命令）：写 RuntimeConfig + 持久化回 DB `app_config` 表，**下次录音生效**（Coordinator 在 Toggle 进入 Idle 时重读镜像并重建引擎）。`provider='aliyun'` 路由云端 `DashscopeEngine`（需开 `dashscope` feature），改 `provider` 后**重启**生效 |
+| `asr_engine` | string | `""` | desktop + server | ASR 引擎选择，格式 `"{provider}:{category}:{model_name}"`（见下方「模型选择 spec」）。示例：`"local:zipformer:zipformer-small-ctc"`、`"aliyun:Fun-ASR:fun-asr-2025-11-07"`、`"bytedance:Doubao-ASR:doubao-asr-1.0-streaming"`、`"tencent:Tencent-ASR:16k_zh"`、`"baidu:Baidu-ASR:15372"`。空或匹配不到回退兜底 `local:zipformer:zipformer-small-ctc`。显式参数（cli `--model`、server 请求 `engine`、`AsrEngineManager.switch_model`）优先级更高，不走兜底。**desktop 悬停工具栏可在运行时切换**（`switch_asr_engine` 命令）：写 RuntimeConfig + 持久化回 DB `app_config` 表，**下次录音生效**（Coordinator 在 Toggle 进入 Idle 时重读镜像并重建引擎）。`provider='aliyun'` / `provider='bytedance'` / `provider='tencent'` / `provider='baidu'` 路由云端引擎（需开 `aliyun` feature），改 `provider` 后**重启**生效 |
 | `language` | string | `"auto"` | desktop | auto / zh / en / ja / ko |
 | `engine_mode` | string | `"embedded"` | desktop | embedded / websocket / grpc |
 | `remote_url` | string | `ws://127.0.0.1:3000/ws/stream` | desktop | websocket 模式远程地址 |
@@ -219,12 +331,12 @@ octopus-cli config
 
 | 写法 | 含义 | 示例 |
 |------|------|------|
-| `"{provider}:{category}:{model_name}"`（3 段） | 4 字段精确匹配，跨 provider/category 区分同名模型 | `"local:zipformer:zipformer-small-ctc"`、`"aliyun:Fun-ASR:fun-asr-2025-11-07"`、`"aliyun:qwen:qwen-plus"`、`"deepseek:deepseek:deepseek-v4-flash"`、`"bigmodel:glm:glm-4-flashx"` |
+| `"{provider}:{category}:{model_name}"`（3 段） | 4 字段精确匹配，跨 provider/category 区分同名模型 | `"local:zipformer:zipformer-small-ctc"`、`"aliyun:Fun-ASR:fun-asr-2025-11-07"`、`"bytedance:Doubao-ASR:doubao-asr-1.0-streaming"`、`"tencent:Tencent-ASR:16k_zh"`、`"baidu:Baidu-ASR:15372"`、`"aliyun:qwen:qwen-plus"`、`"deepseek:deepseek:deepseek-v4-flash"`、`"bigmodel:glm:glm-4-flashx"` |
 | `"{model_name}"`（裸名，无冒号） | **仅全局默认 fallback 路径用**——跨 provider/category 按 `model_name` 搜，优先 `provider='local'` | `"zipformer-small-ctc"` |
 | `"{x}:{y}"`（旧 2-part 1 冒号） | 视为非法格式，记录 warn + 按裸名兜底（迁移期用户更新配置；删库重建后 seed 已是 3-part） | 旧 `"bigmodel:glm-4-flashx"` → warn + 裸名搜索 |
 
 - **区分 provider 与 category**：因为不同 provider 下可有同名模型（`deepseek-v4-flash` 在 deepseek 直连与 aliyun 代管下各一行），不同 category 也可有同名模型。
-- **`provider='aliyun'` 路由云端**：解析时若 `provider='aliyun'` → `EngineCategory::Aliyun` → 云引擎 `DashscopeEngine`（ASR）；否则按 `category` 映射到本地引擎族。
+- **`provider='aliyun'` / `provider='bytedance'` / `provider='tencent'` / `provider='baidu'` 路由云端**：解析时若 `provider='aliyun'` → `EngineCategory::Aliyun` → 云引擎 `AliyunEngine`（ASR）；`bytedance` → `ByteDance` → `Stage::CloudStreaming`（豆包流式）；`tencent` → `Tencent` → `Stage::CloudStreaming`（腾讯流式）；`baidu` → `Baidu` → `Stage::CloudStreaming`（百度流式）；否则按 `category` 映射到本地引擎族。
 - **DB 查询统一 4 字段精确匹配**：`parse_model_spec` 解析后，`load_models_at` / `load_llm_model` / `resolve_engine_in_config` 均按 `provider + category + model_name` 查询。
 
 ### 引擎选择与兜底（resolve_active_engine）

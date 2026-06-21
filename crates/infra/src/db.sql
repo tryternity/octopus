@@ -55,6 +55,21 @@ VALUES
     ('asr','local','whisper','whisper-small','onnx-community/whisper-small.en','en','Whisper Small EN - 快速轻量, 244M',1,0,0),
     ('asr','local','moonshine','moonshine-base-en','csukuangfj/sherpa-onnx-moonshine-base-en-int8','en','Moonshine Base EN (int8), 58M',1,0,0),
     ('asr','local','moonshine','moonshine-tiny-en','csukuangfj/sherpa-onnx-moonshine-tiny-en-int8','en','Moonshine Tiny EN (int8), 24M',1,0,0),
+    -- 火山引擎豆包大模型 ASR（bigmodel_async 双向流式优化版）
+    -- endpoint 固定 wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async
+    -- source = X-Api-Resource-Id；secret_key = X-Api-Key（火山引擎控制台申请）
+    ('asr','bytedance','Doubao-ASR','doubao-asr-1.0-streaming','volc.bigasr.sauc.duration','zh','火山引擎豆包大模型 ASR 1.0（bigmodel_async，时长计费，key 填 secret_key）',0,0,1),
+    ('asr','bytedance','Doubao-ASR-2.0','doubao-asr-2.0-streaming','volc.seedasr.sauc.duration','zh','火山引擎豆包大模型 ASR 2.0（bigmodel_async，时长计费，key 填 secret_key）',0,0,0),
+    -- 腾讯云实时语音识别（WebSocket HMAC-SHA1 签名鉴权）
+    -- endpoint 固定 wss://asr.cloud.tencent.com/asr/v2/<appid>?{params}
+    -- source = appid:secretid 复合字段；secret_key = SecretKey（签名密钥）
+    -- model_name = engine_model_type（如 16k_zh / 16k_zh_en）
+    ('asr','tencent','Tencent-ASR','16k_zh','{appid}:{secretid}','zh','腾讯云实时语音识别（16k 中文通用，source 填 appid:secretid，key 填 SecretKey）',0,0,1),
+    ('asr','tencent','Tencent-ASR-Multi','16k_zh_en','{appid}:{secretid}','zh','腾讯云实时语音识别大模型（16k 普方英+31 方言，source 填 appid:secretid，key 填 SecretKey）',0,0,0),
+    -- 百度智能云实时语音识别（WebSocket START 帧鉴权）
+    -- endpoint 固定 wss://vop.baidu.com/realtime_asr?sn=<UUID>
+    -- source = AppID；secret_key = API Key（appkey）；model_name = dev_pid（如 15372）
+    ('asr','baidu','Baidu-ASR','15372','{appid}','zh','百度智能云实时语音识别（中文加强标点 dev_pid=15372，source 填 AppID，key 填 API Key）',0,0,1),
     -- 阿里云 DashScope 实时 ASR（cloud WS，secret_key 填 DashScope API Key）
     -- Fun-ASR / Paraformer 共用 /api-ws/v1/inference 端点（run-task 协议）
     -- Qwen-ASR 用 /api-ws/v1/realtime 端点（OpenAI Realtime 风格协议）

@@ -47,11 +47,16 @@ async-trait = "0.1"
 tokio-tungstenite = { version = "0.24", optional = true }
 futures-util = { version = "0.3", optional = true }
 
-# 阿里云 DashScope ASR Realtime WS engine（dashscope feature 用）
-# uuid 用于生成 DashScope task_id / Qwen-ASR event_id；走 wss:// 必须 TLS。
-# base64 用于 Qwen-ASR Realtime 协议（audio 字段为 base64 PCM）。
+# 云端 ASR WS engine（aliyun feature 用）
+# uuid 用于生成 task_id / event_id / request_id / voice_id；走 wss:// 必须 TLS。
+# base64 用于 Qwen-ASR Realtime 协议（audio 字段为 base64 PCM）+ Tencent 签名 Base64。
+# flate2 用于 ByteDance ASR 二进制协议（gzip 压缩 payload）。
+# hmac + sha1 用于 Tencent ASR 签名鉴权（HMAC-SHA1）。
 uuid = { version = "1", features = ["v4"], optional = true }
 base64 = { version = "0.22", optional = true }
+flate2 = { version = "1", optional = true }
+hmac = { version = "0.12", optional = true }
+sha1 = { version = "0.10", optional = true }
 
 # gRPC remote engine
 tonic = { version = "0.12", optional = true }
@@ -70,7 +75,7 @@ remote-ws = ["tokio-tungstenite", "futures-util"]
 remote-grpc = ["tonic", "prost", "tonic-build"]
 # 阿里云 DashScope ASR Realtime WS（Fun-ASR/Paraformer + Qwen-ASR Realtime）：
 # tokio-tungstenite 启用 native-tls 以支持 wss://
-dashscope = ["tokio-tungstenite", "tokio-tungstenite?/native-tls", "uuid", "futures-util", "base64"]
+aliyun = ["tokio-tungstenite", "tokio-tungstenite?/native-tls", "uuid", "futures-util", "base64", "flate2", "hmac", "sha1"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }

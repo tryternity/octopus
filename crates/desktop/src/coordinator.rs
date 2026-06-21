@@ -30,12 +30,12 @@ enum Command {
     /// VAD 伪流式 tick（300ms 间隔，驱动分段识别）
     VadSegmentedTick,
     /// 云端流式 tick（VAD-gated per-utterance streaming）
-    #[cfg(feature = "dashscope")]
+    #[cfg(feature = "aliyun")]
     CloudStreamingTick,
     /// 云端 close_async 收尾完成（审查 三1）：非阻塞 close 的结果回传，
     /// handle_cloud_streaming_done 据此 finalize（set_full + append partial + paste）。
     /// session_id = 发起 close 时的 transcript.id，跨会话护栏用（见 handler）。
-    #[cfg(feature = "dashscope")]
+    #[cfg(feature = "aliyun")]
     CloudStreamingDone { text: Result<String, String>, session_id: i64 },
     /// 转录完成（离线模式或远程模式使用，seq 用于顺序拼接）
     TranscriptionDone {
@@ -114,12 +114,12 @@ enum Stage {
     ///
     /// 语音 onset → 开 WSS + pre-roll → 持续推 PCM → 静音 ≥ 700ms → 断开。
     /// 每条 WSS 对应一个 utterance（一句话），断开后下一段语音开新 WSS。
-    #[cfg(feature = "dashscope")]
+    #[cfg(feature = "aliyun")]
     CloudStreaming {
         /// 检测用 VAD（逐 tick 喂入，有状态累积，跨 utterance 续接）
         vad: octopus_asr::vad::SileroVad,
-        /// 当前活跃的 DashScope 流式会话（语音进行中时存在）
-        session: Option<crate::dashscope_stream::DashScopeStreamSession>,
+        /// 当前活跃的云端流式会话（语音进行中时存在）
+        session: Option<crate::cloud_types::CloudStreamHandle>,
         /// pre-roll 滚动缓冲区：保留最近 ~200ms 音频，语音 onset 时取 100ms 补齐
         pre_roll_buffer: Vec<f32>,
         /// 已提交的识别文本（跨 utterance 拼接，只由 close() 结果 append）
@@ -140,7 +140,7 @@ enum Stage {
     /// 云端流式停止后等待最终结果（审查 三1）：close 改非阻塞，结果由
     /// Command::CloudStreamingDone 回传。期间持有 transcript + current_partial，
     /// 等待 close_async 收尾；Toggle/Cancel 在此阶段被忽略（busy closing）。
-    #[cfg(feature = "dashscope")]
+    #[cfg(feature = "aliyun")]
     CloudClosing {
         transcript: Transcript,
         current_partial: String,
@@ -188,16 +188,16 @@ const VAD_PREROLL_FRAMES: usize = 10;
 const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 100;
 
 /// 云端流式 tick 间隔（毫秒）
-#[cfg(feature = "dashscope")]
+#[cfg(feature = "aliyun")]
 const CLOUD_STREAMING_TICK_INTERVAL_MS: u64 = 100;
 
 /// 云端流式 pre-roll 缓冲区大小（采样点）：200ms @ 16kHz = 3200 samples。
 /// 语音 onset 时取最后 ~100ms（1600 samples）作为 pre-roll。
-#[cfg(feature = "dashscope")]
+#[cfg(feature = "aliyun")]
 const CLOUD_PREROLL_BUFFER_SAMPLES: usize = 3200;
 
 /// 云端流式 pre-roll 补齐长度（采样点）：100ms @ 16kHz = 1600 samples。
-#[cfg(feature = "dashscope")]
+#[cfg(feature = "aliyun")]
 const CLOUD_PREROLL_SAMPLES: usize = 1600;
 
 /// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_min_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
@@ -237,7 +237,7 @@ impl Coordinator {
         let use_streaming = config.engine_mode == "embedded" && crate::config::is_streaming_engine(&config);
         let mut config = config;
         let mut use_streaming = use_streaming;
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         let mut use_cloud_streaming = false;
 
         std::thread::spawn(move || {
@@ -283,7 +283,7 @@ impl Coordinator {
                             drop(rc);
                             use_streaming = config.engine_mode == "embedded"
                                 && crate::config::is_streaming_engine(&config);
-                            #[cfg(feature = "dashscope")]
+                            #[cfg(feature = "aliyun")]
                             {
                                 use_cloud_streaming = is_cloud_engine(&config);
                                 // 云端流式优先于本地流式
@@ -300,7 +300,7 @@ impl Coordinator {
                             &app_handle,
                             &tx,
                             use_streaming,
-                            #[cfg(feature = "dashscope")]
+                            #[cfg(feature = "aliyun")]
                             use_cloud_streaming,
                         );
                     }
@@ -318,7 +318,7 @@ impl Coordinator {
                             handle_streaming_tick(&mut stage, &audio, &config, &app_handle, &tx);
                         }
                     }
-                    #[cfg(feature = "dashscope")]
+                    #[cfg(feature = "aliyun")]
                     Command::CloudStreamingTick => {
                         {
                             let rc = runtime_config.read().unwrap();
@@ -432,7 +432,7 @@ impl Coordinator {
                     Command::FinalPolishDone { result, session_id } => {
                         handle_final_polish_done(&mut stage, result, session_id, &config, &app_handle, &tx);
                     }
-                    #[cfg(feature = "dashscope")]
+                    #[cfg(feature = "aliyun")]
                     Command::CloudStreamingDone { text, session_id } => {
                         handle_cloud_streaming_done(&mut stage, text, session_id, &config, &app_handle, &tx);
                     }
@@ -607,14 +607,14 @@ fn handle_toggle(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
     use_streaming: bool,
-    #[cfg(feature = "dashscope")] use_cloud_streaming: bool,
+    #[cfg(feature = "aliyun")] use_cloud_streaming: bool,
 ) {
     match stage {
         Stage::Idle => {
             info!("Toggle: starting {}", {
-                #[cfg(feature = "dashscope")]
+                #[cfg(feature = "aliyun")]
                 { if use_cloud_streaming { "cloud streaming" } else if use_streaming { "streaming" } else { "VAD segmented" } }
-                #[cfg(not(feature = "dashscope"))]
+                #[cfg(not(feature = "aliyun"))]
                 { if use_streaming { "streaming" } else { "VAD segmented" } }
             });
 
@@ -623,7 +623,7 @@ fn handle_toggle(
                 return;
             }
 
-            #[cfg(feature = "dashscope")]
+            #[cfg(feature = "aliyun")]
             if use_cloud_streaming {
                 match octopus_asr::config::find_silero_vad() {
                     Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
@@ -944,7 +944,7 @@ fn handle_toggle(
             );
         }
 
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudStreaming {
             vad: _,
             session,
@@ -1012,7 +1012,7 @@ fn handle_toggle(
 
         // 审查 三1：close 在飞（close_async 未回），Toggle 忽略——close 完成后
         // CloudStreamingDone 会自动 finalize + 粘贴，无需 Toggle 介入。期间不阻塞主线程。
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudClosing { .. } => {
             debug!("Toggle ignored: cloud closing in flight");
         }
@@ -1139,7 +1139,7 @@ fn do_paste(
 /// 审查 三1：从 stop 路径（无 session）与 CloudStreamingDone 路径（close 完成后）
 /// 共用，避免 finalize 逻辑重复。`transcript` / `current_partial` 为 owned（已从
 /// stage 移出），`stage: &mut Stage` 仅用于写回 Idle/Polishing/Pasting，无别名冲突。
-#[cfg(feature = "dashscope")]
+#[cfg(feature = "aliyun")]
 fn finalize_cloud(
     stage: &mut Stage,
     mut transcript: Transcript,
@@ -1187,7 +1187,7 @@ fn finalize_cloud(
 /// CloudStreamingDone 会匹配到新 CloudClosing，set_full 覆盖新 transcript。session_id
 ///（= 发起 close 时的 transcript.id）校验：与当前 closing transcript.id 不符则丢弃，
 /// 不动当前 stage。
-#[cfg(feature = "dashscope")]
+#[cfg(feature = "aliyun")]
 fn handle_cloud_streaming_done(
     stage: &mut Stage,
     text: Result<String, String>,
@@ -1463,18 +1463,34 @@ fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicB
     });
 }
 
-// ── CloudStreaming（dashscope feature）──
+// ── CloudStreaming（aliyun feature）──
 
-/// 判定 config.asr_engine 是否为云端引擎（Aliyun）。
-#[cfg(feature = "dashscope")]
+/// 判定 config.asr_engine 是否为云端引擎（Aliyun、ByteDance、Tencent 或 Baidu）。
+#[cfg(feature = "aliyun")]
 fn is_cloud_engine(config: &AppConfig) -> bool {
-    octopus_asr::config::resolve_engine_category(&config.asr_engine)
-        .map(|c| c == octopus_asr::config::EngineCategory::Aliyun)
-        .unwrap_or(false)
+    use octopus_asr::config::EngineCategory;
+    let cat = octopus_asr::config::resolve_engine_category(&config.asr_engine);
+    matches!(
+        cat,
+        Some(EngineCategory::Aliyun)
+            | Some(EngineCategory::ByteDance)
+            | Some(EngineCategory::Tencent)
+            | Some(EngineCategory::Baidu)
+    )
+}
+
+/// 从 pre-roll 滚动缓冲区取最后 `CLOUD_PREROLL_SAMPLES` 样本作为前导音频。
+#[cfg(feature = "aliyun")]
+fn take_preroll(pre_roll_buffer: &[f32]) -> Vec<f32> {
+    if pre_roll_buffer.len() >= CLOUD_PREROLL_SAMPLES {
+        pre_roll_buffer[pre_roll_buffer.len() - CLOUD_PREROLL_SAMPLES..].to_vec()
+    } else {
+        pre_roll_buffer.to_vec()
+    }
 }
 
 /// 启动云端流式 tick 线程（首 tick 立即触发）
-#[cfg(feature = "dashscope")]
+#[cfg(feature = "aliyun")]
 fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         while tick_active.load(Ordering::Relaxed) {
@@ -1489,27 +1505,123 @@ fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<Atomi
     });
 }
 
-/// 解析 DashScope 云端引擎配置（endpoint + key + model_name），供 CloudStreaming tick 调用。
-#[cfg(feature = "dashscope")]
-fn resolve_dashscope_config(engine_spec: &str) -> Result<(String, String, String), String> {
+/// 通用云端配置解析：从 DB section 取 ModelEntry + 校验 secret_key 非空。
+#[cfg(feature = "aliyun")]
+fn resolve_cloud_entry<'a>(
+    section: Option<&'a std::collections::HashMap<String, octopus_infra::db::ModelEntry>>,
+    provider: &'a str,
+    model_name: &'a str,
+) -> Result<&'a octopus_infra::db::ModelEntry, String> {
+    let entry = section
+        .and_then(|m| m.get(model_name))
+        .ok_or_else(|| format!("{} ASR 模型 '{}' 未在 DB 配置", provider, model_name))?;
+    if entry.secret_key.is_empty() {
+        return Err(format!("{} ASR 模型 '{}' 的 secret_key 为空", provider, model_name));
+    }
+    Ok(entry)
+}
+
+/// 解析 Aliyun（DashScope）配置（endpoint + key + model_name）。
+#[cfg(feature = "aliyun")]
+fn resolve_aliyun_config(engine_spec: &str) -> Result<(String, String, String), String> {
     let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
     let model_name = octopus_infra::db::parse_model_spec(engine_spec)
         .model_name()
         .to_string();
-    let entry = cfg
-        .asr
-        .aliyun
-        .as_ref()
-        .and_then(|m| m.get(model_name.as_str()))
-        .ok_or_else(|| format!("aliyun ASR 模型 '{}' 未在 DB 配置", model_name))?;
-    if entry.secret_key.is_empty() {
-        return Err(format!("aliyun ASR 模型 '{}' 的 secret_key 为空", model_name));
+    let entry = resolve_cloud_entry(cfg.asr.aliyun.as_ref(), "aliyun", &model_name)?;
+    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
+}
+
+/// 解析 ByteDance（豆包）配置（resource_id + api_key + model_name）。
+#[cfg(feature = "aliyun")]
+fn resolve_bytedance_config(engine_spec: &str) -> Result<(String, String, String), String> {
+    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
+        .model_name()
+        .to_string();
+    let entry = resolve_cloud_entry(cfg.asr.bytedance.as_ref(), "bytedance", &model_name)?;
+    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
+}
+
+/// 解析 Tencent（腾讯云）配置（appid:secretid + secret_key + engine_model_type）。
+#[cfg(feature = "aliyun")]
+fn resolve_tencent_config(engine_spec: &str) -> Result<(String, String, String), String> {
+    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
+        .model_name()
+        .to_string();
+    let entry = resolve_cloud_entry(cfg.asr.tencent.as_ref(), "tencent", &model_name)?;
+    if !entry.source.contains(':') {
+        return Err(format!(
+            "tencent ASR 模型 '{}' 的 source 字段格式应为 appid:secretid（当前='{}'）",
+            model_name, entry.source
+        ));
     }
     Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
 }
 
+/// 解析 Baidu（百度云）配置（appid + api_key + dev_pid）。
+#[cfg(feature = "aliyun")]
+fn resolve_baidu_config(engine_spec: &str) -> Result<(String, String, String), String> {
+    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
+        .model_name()
+        .to_string();
+    let entry = resolve_cloud_entry(cfg.asr.baidu.as_ref(), "baidu", &model_name)?;
+    if entry.source.is_empty() {
+        return Err(format!(
+            "baidu ASR 模型 '{}' 的 source 字段（AppID）为空",
+            model_name
+        ));
+    }
+    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
+}
+
+/// onset dispatch：根据引擎类型解析配置 + 打开对应云端 WS session。
+#[cfg(feature = "aliyun")]
+fn open_cloud_session(
+    config: &AppConfig,
+    pre_roll: Vec<f32>,
+) -> Result<crate::cloud_types::CloudStreamHandle, String> {
+    use octopus_asr::config::EngineCategory;
+    let rt = tauri::async_runtime::handle();
+    match octopus_asr::config::resolve_engine_category(&config.asr_engine) {
+        Some(EngineCategory::Aliyun) => {
+            let (endpoint, key, model) = resolve_aliyun_config(&config.asr_engine)?;
+            crate::aliyun_stream::open(
+                &rt, endpoint, key, model, config.language.clone(), pre_roll,
+            )
+            .map_err(|e| e.to_string())
+        }
+        Some(EngineCategory::ByteDance) => {
+            let (resource_id, api_key, _) = resolve_bytedance_config(&config.asr_engine)?;
+            crate::bytedance_stream::open(
+                &rt, api_key, resource_id, config.language.clone(), pre_roll,
+            )
+            .map_err(|e| e.to_string())
+        }
+        Some(EngineCategory::Tencent) => {
+            let (appid_secretid, secret_key, engine_model_type) =
+                resolve_tencent_config(&config.asr_engine)?;
+            crate::tencent_stream::open(
+                &rt, appid_secretid, secret_key, engine_model_type,
+                config.language.clone(), pre_roll,
+            )
+            .map_err(|e| e.to_string())
+        }
+        Some(EngineCategory::Baidu) => {
+            let (appid, appkey, dev_pid) = resolve_baidu_config(&config.asr_engine)?;
+            crate::baidu_stream::open(
+                &rt, appid, appkey, dev_pid, config.language.clone(), pre_roll,
+            )
+            .map_err(|e| e.to_string())
+        }
+        _ => Err("当前引擎非云端，无法开启 WSS".to_string()),
+    }
+}
+
 /// 处理 CloudStreamingTick 命令：VAD-gated per-utterance streaming。
-#[cfg(feature = "dashscope")]
+#[cfg(feature = "aliyun")]
 fn handle_cloud_streaming_tick(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
@@ -1582,30 +1694,15 @@ fn handle_cloud_streaming_tick(
         *is_speaking = true;
         *speech_confirm_count = 0;
         current_partial.clear();
-        match resolve_dashscope_config(&config.asr_engine) {
-            Ok((endpoint, key, model)) => {
-                let pre_roll: Vec<f32> = if pre_roll_buffer.len() >= CLOUD_PREROLL_SAMPLES {
-                    pre_roll_buffer[pre_roll_buffer.len() - CLOUD_PREROLL_SAMPLES..].to_vec()
-                } else {
-                    pre_roll_buffer.clone()
-                };
-                let rt = tauri::async_runtime::handle();
-                match crate::dashscope_stream::DashScopeStreamSession::open(
-                    &rt, endpoint, key, model, config.language.clone(), pre_roll,
-                ) {
-                    Ok(sess) => {
-                        let _ = sess.push_pcm(&samples);
-                        *session = Some(sess);
-                        debug!("CloudStreaming: WSS opened on speech onset");
-                    }
-                    Err(e) => {
-                        error!("CloudStreaming: open WSS failed: {}", e);
-                        *is_speaking = false;
-                    }
-                }
+        let pre_roll = take_preroll(pre_roll_buffer);
+        match open_cloud_session(config, pre_roll) {
+            Ok(sess) => {
+                let _ = sess.push_pcm(&samples);
+                *session = Some(sess);
+                debug!("CloudStreaming: WSS opened on speech onset");
             }
             Err(e) => {
-                error!("CloudStreaming: config resolve failed: {}", e);
+                error!("CloudStreaming: open WSS failed: {}", e);
                 *is_speaking = false;
             }
         }
@@ -1622,13 +1719,13 @@ fn handle_cloud_streaming_tick(
         // drain partial / final events
         while let Some(event) = sess.try_recv_text() {
             match event {
-                crate::dashscope_stream::StreamEvent::Text(text) => {
+                crate::cloud_types::StreamEvent::Text(text) => {
                     if !text.is_empty() {
                         log::info!("[CloudDrain] partial={:?}", text);
                         *current_partial = text;
                     }
                 }
-                crate::dashscope_stream::StreamEvent::Finished => {
+                crate::cloud_types::StreamEvent::Finished => {
                     log::info!(
                         "[CloudDrain] Finished, committing partial={:?} to transcript",
                         current_partial
@@ -1655,7 +1752,7 @@ fn handle_cloud_streaming_tick(
                     *is_speaking = false;
                     session_just_finished = true;
                 }
-                crate::dashscope_stream::StreamEvent::Failed(msg) => {
+                crate::cloud_types::StreamEvent::Failed(msg) => {
                     warn!("[CloudDrain] Failed: {}", msg);
                     current_partial.clear();
                     *is_closing = false;
@@ -1996,7 +2093,7 @@ fn handle_cancel(
             tick_active.store(false, Ordering::Relaxed);
             let _ = audio.stop();
         }
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudStreaming {
             tick_active, session, ..
         } => {
@@ -2042,7 +2139,7 @@ fn handle_discard(
         | Stage::WaitingCompletion { transcript, .. } => {
             Some((transcript.id, transcript.db_text()))
         }
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudStreaming { transcript, .. }
         | Stage::CloudClosing { transcript, .. } => {
             Some((transcript.id, transcript.db_text()))
@@ -2070,7 +2167,7 @@ fn handle_discard(
             tick_active.store(false, Ordering::Relaxed);
             let _ = audio.stop();
         }
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudStreaming {
             tick_active, session, ..
         } => {
@@ -2079,7 +2176,7 @@ fn handle_discard(
             let _ = session.take();
             let _ = audio.stop();
         }
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudClosing { .. } => {
             // session 已在 stop 路径移交给 close_async 任务、audio 已停。
             // 这里不粘贴：stage 即将落 Idle，close 完成后到达的
@@ -2271,7 +2368,7 @@ fn handle_polish_done(
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
         | Stage::WaitingCompletion { transcript, .. } => transcript,
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudStreaming { transcript, .. }
         | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
@@ -2351,7 +2448,7 @@ fn handle_polish_now(
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
         | Stage::WaitingCompletion { transcript, .. } => transcript,
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudStreaming { transcript, .. }
         | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
@@ -2395,7 +2492,7 @@ fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &m
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
         | Stage::WaitingCompletion { transcript, .. } => transcript,
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudStreaming { transcript, .. }
         | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
@@ -2414,7 +2511,7 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
         | Stage::WaitingCompletion { transcript, .. } => transcript,
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudStreaming { transcript, .. }
         | Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
@@ -2444,9 +2541,9 @@ fn stage_name(stage: &Stage) -> &'static str {
         Stage::WaitingCompletion { .. } => "WaitingCompletion",
         Stage::Polishing { .. } => "Polishing",
         Stage::Pasting { .. } => "Pasting",
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudStreaming { .. } => "CloudStreaming",
-        #[cfg(feature = "dashscope")]
+        #[cfg(feature = "aliyun")]
         Stage::CloudClosing { .. } => "CloudClosing",
     }
 }
