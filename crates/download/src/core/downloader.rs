@@ -116,8 +116,12 @@ impl Downloader {
     }
 
     /// 预分配 .part 文件到 total（sparse）。若已存在且 size!=total 则重新分配。
+    /// 会先 create_dir_all 父目录（dest 常为 {target}/{repo}/{path}，深层路径父目录可能不存在）。
     pub fn ensure_part_file(dest: &Path, total: u64) -> std::io::Result<std::fs::File> {
         let part = part_path(dest);
+        if let Some(parent) = part.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
         if let Ok(meta) = std::fs::metadata(&part) {
             if meta.len() != total {
                 let f = std::fs::OpenOptions::new().write(true).create(true).truncate(false).open(&part)?;
@@ -664,11 +668,11 @@ mod tests {
         let half = 50u64;
         server.mock(|when, then| {
             when.method(Method::GET).path("/f").header("Range", format!("bytes=0-{}", half - 1));
-            then.status(206).body(body[0..half as usize].to_vec());
+            then.status(206).body(&body[0..half as usize]);
         });
         server.mock(|when, then| {
             when.method(Method::GET).path("/f").header("Range", format!("bytes={half}-{}", total - 1));
-            then.status(206).body(body[half as usize..total as usize].to_vec());
+            then.status(206).body(&body[half as usize..total as usize]);
         });
         let dir = tempdir().unwrap();
         let dest = dir.path().join("f");
@@ -706,7 +710,7 @@ mod tests {
         });
         server.mock(|when, then| {
             when.method(Method::GET).path("/f").header("Range", format!("bytes=0-{}", body_len - 1));
-            then.status(206).body(body.to_vec());
+            then.status(206).body(body);
         });
         let dir = tempdir().unwrap();
         let dest = dir.path().join("f");
@@ -740,7 +744,7 @@ mod tests {
         });
         good.mock(|when, then| {
             when.method(Method::GET).path("/f").header("Range", "bytes=0-4");
-            then.status(206).body(b"hello".to_vec());
+            then.status(206).body(b"hello");
         });
         let dir = tempdir().unwrap();
         let dest = dir.path().join("f");

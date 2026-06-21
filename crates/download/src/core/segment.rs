@@ -12,6 +12,9 @@ impl Segment {
     pub fn len(&self) -> u64 {
         self.end.saturating_sub(self.begin) + 1
     }
+    pub fn is_empty(&self) -> bool {
+        self.end < self.begin
+    }
     pub fn is_done(&self) -> bool {
         self.downloaded >= self.len()
     }
@@ -30,7 +33,7 @@ pub fn plan_segments(total: u64, accept_ranges: bool, segment_size: u64, thresho
     if !accept_ranges || total < threshold || segment_size == 0 || max_concurrent == 0 {
         return one();
     }
-    let count_by_size = ((total + segment_size - 1) / segment_size) as usize;
+    let count_by_size = total.div_ceil(segment_size) as usize;
     let n = count_by_size.min(max_concurrent).max(1);
     let base = total / n as u64;
     let mut segs = Vec::with_capacity(n);

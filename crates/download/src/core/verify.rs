@@ -25,7 +25,7 @@ pub async fn compute_sha256(path: &Path) -> std::io::Result<String> {
             hasher.update(&buf[..n]);
         }
         Ok(hasher.finalize().iter().map(|b| format!("{:02x}", b)).collect())
-    }).await.map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e))?
+    }).await.map_err(std::io::Error::other)?
 }
 
 /// 校验文件是否符合期望 hash。Sha256→比 hex；Etag→直接字符串比对（调用方保证语义）。
