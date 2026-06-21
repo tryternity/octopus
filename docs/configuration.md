@@ -145,12 +145,12 @@ asr_engine: "aliyun:Fun-ASR:fun-asr-2025-11-07"
 
 > **注意**：`engine_category_from_str` 对 `"aliyun"` / `"bytedance"` 均返回 `None`——云 provider 不靠 `category` 字符串识别，而由 `resolve_category(provider, category)` 按 provider 分支识别（不进 5 个本地族字符串映射）。
 
-#### 4. 启用 `aliyun` cargo feature
+#### 4. 启用 `cloud` cargo feature
 
-云 ASR 引擎（`AliyunEngine` + `ByteDanceStreamSession`）在 `aliyun` feature 后，默认不开（与 `remote-ws` / `remote-grpc` 一致）：
+云 ASR 引擎（`AliyunEngine` + 各 provider 的 `*_stream::open`）在 `cloud` feature 后，默认不开（与 `remote-ws` / `remote-grpc` 一致）：
 
 ```bash
-cargo run -p octopus-desktop --features aliyun
+cargo run -p octopus-desktop --features cloud
 ```
 
 ### 字节跳动豆包 ASR 接入
@@ -183,7 +183,7 @@ seed 还含 `doubao-asr-2.0-streaming`（`volc.seedasr.sauc.duration`），二�
 
 #### 3. feature 依赖
 
-与阿里云共用 `aliyun` feature（控制 WS 流式编译），无需额外 feature flag。
+与阿里云共用 `cloud` feature（控制 WS 流式编译），无需额外 feature flag。
 
 ### 腾讯云 ASR 接入
 
@@ -218,7 +218,7 @@ seed 还含 `16k_zh_en`（普方英大模型，支持中英+31种方言），二
 
 #### 3. feature 依赖
 
-与阿里云/字节跳动共用 `aliyun` feature，无需额外 feature flag。
+与阿里云/字节跳动共用 `cloud` feature，无需额外 feature flag。
 
 ### 百度智能云 ASR 接入
 
@@ -251,7 +251,7 @@ asr_engine: "baidu:Baidu-ASR:15372"
 
 #### 3. feature 依赖
 
-与其他云端 provider 共用 `aliyun` feature，无需额外 feature flag。
+与其他云端 provider 共用 `cloud` feature，无需额外 feature flag。
 
 #### 5. schema 变更：删库重建（dev 阶段）
 

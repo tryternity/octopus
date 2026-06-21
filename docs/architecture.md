@@ -106,7 +106,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - 单线程 mpsc channel 串行化所有事件
 - 流式模式：Streaming → (Polishing) → Pasting
 - 离线模式（VadSegmented 伪流式）：VadSegmented → WaitingCompletion → (Polishing) → Pasting
-- 云端流式模式（aliyun feature，VAD-gated per-utterance streaming）：CloudStreaming → (Polishing) → Pasting
+- 云端流式模式（cloud feature，VAD-gated per-utterance streaming）：CloudStreaming → (Polishing) → Pasting
 - **音频处理流水线（drain_samples → VAD → ASR，三种 stage 共用同一前处理）**：从 cpal 回调到引擎输入只走一条路径，所有降噪 / 重采样都在 `SharedAudioState::drain_samples` 内部完成，coordinator 层从不直接调 DenoiseProcessor。详见 `crates/desktop/src/audio.rs::process_pipeline`。
 
   ```
@@ -246,7 +246,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - **embedded**（默认）：内嵌 octopus-asr，本地推理
 - **remote-ws**：通过 WebSocket 连接远程 octopus-server
 - **remote-grpc**：通过 gRPC 连接远程推理服务
-- **云引擎（aliyun feature）**：`app_config.asr_engine` 解析为 `provider='aliyun'`（`EngineCategory::Aliyun`）时，路由 `AliyunEngine`（desktop crate，`aliyun` feature 后）；`provider='bytedance'`（`EngineCategory::ByteDance`）时直接走 `Stage::CloudStreaming`（无独立 engine）。均不走 `engine_mode` 分支。详见下方「云端 ASR 引擎」
+- **云引擎（cloud feature）**：`app_config.asr_engine` 解析为 `provider='aliyun'`（`EngineCategory::Aliyun`）时，路由 `AliyunEngine`（desktop crate，`cloud` feature 后）；`provider='bytedance'`（`EngineCategory::ByteDance`）时直接走 `Stage::CloudStreaming`（无独立 engine）。均不走 `engine_mode` 分支。详见下方「云端 ASR 引擎」
 - **远程超时保护**：`WsRemoteEngine` / `GrpcRemoteEngine` / `AliyunEngine` 的 `transcribe` 均以 `tokio::time::timeout(8s)` 包裹（连接 + 收发全程），`health_check` 同样 `timeout(3s)`——规避网络断开 / 后端无响应致 ASR 队列无限期卡死。超时返回 `Err`，经序列空洞修复的空串占位分支保证 `completed_seq` 连续推进、不拖死后续分段
 
 ## 模型管理
@@ -320,7 +320,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 #### AliyunEngine（阿里云 DashScope，分块式）
 
-`crates/desktop/src/engine_aliyun.rs`（`aliyun` cargo feature 后，默认不开）impl `TranscriptionEngine`，接入阿里云百炼 DashScope 实时语音识别 WebSocket。与本地引擎不同：**不在 ASR crate 内**，而在 desktop crate——因为它是分块式 `TranscriptionEngine`（每段 VAD 开一条 WS 跑完整协议），与本地离线引擎共享 coordinator 的 chunk 路径接口（`is_streaming=0` → 不进本地 `StreamingSession`）。
+`crates/desktop/src/engine_aliyun.rs`（`cloud` cargo feature 后，默认不开）impl `TranscriptionEngine`，接入阿里云百炼 DashScope 实时语音识别 WebSocket。与本地引擎不同：**不在 ASR crate 内**，而在 desktop crate——因为它是分块式 `TranscriptionEngine`（每段 VAD 开一条 WS 跑完整协议），与本地离线引擎共享 coordinator 的 chunk 路径接口（`is_streaming=0` → 不进本地 `StreamingSession`）。
 
 **三套协议自动分发**（`is_qwen_realtime_endpoint` 按 endpoint 路径分流）：
 
@@ -338,7 +338,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 #### ByteDance（字节跳动豆包大模型 ASR，双向流式）
 
-`crates/desktop/src/bytedance_stream.rs`（`aliyun` cargo feature 后）接入火山引擎豆包大模型 ASR 1.0/2.0 的双向流式优化版（`bigmodel_async`）。**不实现 `TranscriptionEngine`**（豆包只支持流式，无 chunk 离线接口），直接经 coordinator 的 `Stage::CloudStreaming` 路径，由 `bytedance_stream::open` 返回 `CloudStreamHandle` 管理一条 WSS 长连接。与其他 provider 共享 `PcmFrame` / `StreamEvent` 类型（`cloud_types.rs`）。
+`crates/desktop/src/bytedance_stream.rs`（`cloud` cargo feature 后）接入火山引擎豆包大模型 ASR 1.0/2.0 的双向流式优化版（`bigmodel_async`）。**不实现 `TranscriptionEngine`**（豆包只支持流式，无 chunk 离线接口），直接经 coordinator 的 `Stage::CloudStreaming` 路径，由 `bytedance_stream::open` 返回 `CloudStreamHandle` 管理一条 WSS 长连接。与其他 provider 共享 `PcmFrame` / `StreamEvent` 类型（`cloud_types.rs`）。
 
 **协议**（二进制帧，与 Aliyun 的 JSON 文本帧完全不同）：
 
@@ -357,7 +357,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 #### Tencent（腾讯云实时语音识别，双向流式）
 
-`crates/desktop/src/tencent_stream.rs`（`aliyun` cargo feature 后）接入腾讯云实时语音识别 WebSocket API。**不实现 `TranscriptionEngine`**（只支持流式），直接经 coordinator 的 `Stage::CloudStreaming` 路径，由 `tencent_stream::open` 返回 `CloudStreamHandle` 管理一条 WSS 长连接。与其他 provider 共享 `PcmFrame` / `StreamEvent` 类型（`cloud_types.rs`）。
+`crates/desktop/src/tencent_stream.rs`（`cloud` cargo feature 后）接入腾讯云实时语音识别 WebSocket API。**不实现 `TranscriptionEngine`**（只支持流式），直接经 coordinator 的 `Stage::CloudStreaming` 路径，由 `tencent_stream::open` 返回 `CloudStreamHandle` 管理一条 WSS 长连接。与其他 provider 共享 `PcmFrame` / `StreamEvent` 类型（`cloud_types.rs`）。
 
 **协议**（URL 签名鉴权 + Raw PCM binary + JSON text 响应）：
 
@@ -376,7 +376,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 #### Baidu（百度智能云实时语音识别，双向流式）
 
-`crates/desktop/src/baidu_stream.rs`（`aliyun` cargo feature 后）接入百度智能云实时语音识别 WebSocket API。**不实现 `TranscriptionEngine`**（只支持流式），直接经 coordinator 的 `Stage::CloudStreaming` 路径，由 `baidu_stream::open` 返回 `CloudStreamHandle` 管理一条 WSS 长连接。与其他 provider 共享 `PcmFrame` / `StreamEvent` 类型（`cloud_types.rs`）。协议最简洁——无 HMAC 签名、无 gzip 压缩、无二进制帧头。
+`crates/desktop/src/baidu_stream.rs`（`cloud` cargo feature 后）接入百度智能云实时语音识别 WebSocket API。**不实现 `TranscriptionEngine`**（只支持流式），直接经 coordinator 的 `Stage::CloudStreaming` 路径，由 `baidu_stream::open` 返回 `CloudStreamHandle` 管理一条 WSS 长连接。与其他 provider 共享 `PcmFrame` / `StreamEvent` 类型（`cloud_types.rs`）。协议最简洁——无 HMAC 签名、无 gzip 压缩、无二进制帧头。
 
 **协议**（START 帧鉴权 + Raw PCM binary + JSON text 响应）：
 

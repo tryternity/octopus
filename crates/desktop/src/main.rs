@@ -3,18 +3,18 @@
 mod audio;
 mod config;
 mod coordinator;
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 mod aliyun_stream;
 mod engine;
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 mod engine_aliyun;
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 mod bytedance_stream;
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 mod tencent_stream;
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 mod baidu_stream;
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 mod cloud_types;
 mod engine_dispatch;
 mod engine_embedded;
@@ -34,7 +34,7 @@ mod transcript;
 
 use coordinator::Coordinator;
 use engine::TranscriptionEngine;
-#[cfg(not(feature = "aliyun"))]
+#[cfg(not(feature = "cloud"))]
 use engine_embedded::EmbeddedEngine;
 use log::info;
 use std::sync::Arc;
@@ -206,14 +206,14 @@ pub fn run() {
 
             // 云引擎判定（仅用于 preheat 守卫）：启动时 asr_engine 解析为 Aliyun → 跳过本地预热。
             // 运行时引擎路由由 DispatchEngine 按 spec 动态分发，不依赖此判定。
-            #[cfg(feature = "aliyun")]
+            #[cfg(feature = "cloud")]
             let is_cloud_aliyun = resolved_engine.as_ref()
                 .map(|r| r.category == octopus_asr::config::EngineCategory::Aliyun)
                 .unwrap_or(false);
 
             // Preheat 仅本地 embedded 引擎（云引擎 AliyunEngine 无需预热；跳过避免 switch_model 对 aliyun bail）
             let do_preheat = config.engine_mode == "embedded";
-            #[cfg(feature = "aliyun")]
+            #[cfg(feature = "cloud")]
             let do_preheat = do_preheat && !is_cloud_aliyun;
 
             if do_preheat {
@@ -247,11 +247,11 @@ pub fn run() {
             // 每次 transcribe 按 spec 动态路由），解决运行时切换云/本地引擎不匹配的问题。
             // 非 aliyun feature 仅本地引擎（embedded/websocket/grpc）。
             let engine: Arc<dyn TranscriptionEngine> = {
-                #[cfg(feature = "aliyun")]
+                #[cfg(feature = "cloud")]
                 {
                     Arc::new(engine_dispatch::DispatchEngine::new(engine_manager.clone()))
                 }
-                #[cfg(not(feature = "aliyun"))]
+                #[cfg(not(feature = "cloud"))]
                 {
                     build_local_engine(&config, &engine_manager)
                 }
@@ -338,7 +338,7 @@ pub fn run() {
 /// 按 `config.engine_mode` 构建本地 ASR 引擎（embedded / websocket / grpc）。
 ///
 /// 仅在未启用 `dashscope` feature 时使用（dashscope 下由 DispatchEngine 统一路由）。
-#[cfg(not(feature = "aliyun"))]
+#[cfg(not(feature = "cloud"))]
 fn build_local_engine(
     config: &octopus_infra::config::AppConfig,
     engine_manager: &Arc<octopus_asr::engine::AsrEngineManager>,

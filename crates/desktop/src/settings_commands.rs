@@ -319,7 +319,7 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
         return Err(format!("ASR 模型 '{}' 的 secret_key 为空", bare_name));
     }
 
-    #[cfg(feature = "aliyun")]
+    #[cfg(feature = "cloud")]
     {
         use tokio_tungstenite::tungstenite::client::IntoClientRequest;
         let mut req = entry.source.clone().into_client_request()
@@ -338,7 +338,7 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
             Err(_) => Err("WS 连接超时（3s）".into()),
         }
     }
-    #[cfg(not(feature = "aliyun"))]
+    #[cfg(not(feature = "cloud"))]
     {
         Err("远程 ASR 连接测试需要 aliyun feature".into())
     }

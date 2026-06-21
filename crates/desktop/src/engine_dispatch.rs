@@ -1,12 +1,12 @@
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 use crate::engine::TranscriptionEngine;
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 use crate::engine_embedded::EmbeddedEngine;
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 use anyhow::Result;
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 use async_trait::async_trait;
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 use std::sync::Arc;
 
 /// 动态路由引擎：持有本地 + 云端两个引擎实例，每次 transcribe 按 spec
@@ -16,13 +16,13 @@ use std::sync::Arc;
 /// 解决运行时切换 asr_engine（工具栏/设置窗口）时引擎实例不匹配的问题：
 /// 启动时 AliyunEngine 与 EmbeddedEngine 都创建好，transcribe 的 engine
 /// 参数（spec 字符串）决定实际路由，不再依赖启动时的 is_cloud_aliyun 判定。
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 pub struct DispatchEngine {
     embedded: EmbeddedEngine,
     dashscope: crate::engine_aliyun::AliyunEngine,
 }
 
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 impl DispatchEngine {
     pub fn new(engine_manager: Arc<octopus_asr::engine::AsrEngineManager>) -> Self {
         Self {
@@ -32,7 +32,7 @@ impl DispatchEngine {
     }
 }
 
-#[cfg(feature = "aliyun")]
+#[cfg(feature = "cloud")]
 #[async_trait]
 impl TranscriptionEngine for DispatchEngine {
     async fn transcribe(&self, samples: &[f32], language: &str, engine: &str) -> Result<String> {
