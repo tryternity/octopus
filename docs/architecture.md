@@ -270,7 +270,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 - `verify_model(model_name, repo)`：**v2 新增**完整性复核——按 `secret_key` 清单逐文件 sha256 比对；空清单则自举；损坏/缺失置 `is_enabled=false` 并返回损坏清单。
 - `set_download_mirror(value)`：专用命令（`set_config.apply_config_value` 无 `download_mirror` 分发，独立命令免改 `settings_commands.rs`）。
 
-**is_enabled 语义 = 文件就绪（v2）**：`true`=文件完备可被引擎加载，`false`=未就绪/未下载。写 DB 后调 `asr::config::reload_models_config()` 刷新 AsrConfig 缓存（`RUNTIME_CONFIG` v2 改 `RwLock<Option<Arc<AsrConfig>>>`，对齐 `APP_CONFIG` 模式），让「系统设置」引擎下拉即时更新——未就绪的模型不进下拉。local 模型 `secret_key` 重载为「文件清单 + sha256」JSON（api 模型仍是 key，按 `is_local` 分支，不冲突）。前端 `dist/settings/models.js`（IIFE 隔离；卡片按 is_enabled 显示「✓ 已就绪（+重新校验）/ 下载」；`index.html` 仅两处局部改动——`#page-models` 容器 + `<script src="models.js">`）。spec `superpowers/specs/2026-06-21-model-management-gui-design.md` §9。
+**is_enabled 语义 = 文件就绪（v2）**：`true`=文件完备可被引擎加载，`false`=未就绪/未下载。写 DB 后调 `asr::config::reload_models_config()` 刷新 AsrConfig 缓存（`RUNTIME_CONFIG` v2 改 `RwLock<Option<Arc<AsrConfig>>>`，对齐 `APP_CONFIG` 模式），让「系统设置」引擎下拉即时更新——未就绪的模型不进下拉。local 模型 `secret_key` 重载为「文件清单 + sha256」JSON（api 模型仍是 key，按 `is_local` 分支，不冲突）。前端 `dist/settings/models.js`（IIFE 隔离；卡片按 is_enabled 显示「✓ 已就绪（+重新校验）/ 下载」；`index.html` 仅两处局部改动——`#page-models` 容器 + `<script src="models.js">`）。manifest（文件清单 + sha256，map 格式存 secret_key）下沉 `asr::manifest`，desktop/cli 共用；**cli `octopus-cli sync-models`** 批量扫描就绪本地模型、自举写 secret_key + 同步 is_enabled（首次填充/批量复核）。spec `superpowers/specs/2026-06-21-model-management-gui-design.md` §9。
 
 ```
 ~/.octopus/

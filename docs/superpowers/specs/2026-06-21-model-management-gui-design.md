@@ -143,11 +143,13 @@ download crate 下载时已做服务端 sha256 校验（阶段1），下载成�
 - `reload_models_config()`：从 DB 重读 `AsrConfig` 替换缓存（对齐 `reload_app_config`）。`download_model`/`verify_model` 改 `is_enabled` 后调用，让引擎下拉即时更新。
 
 ### 9.3 `secret_key` 复用与 JSON schema
-local 模型 `secret_key`（DB 默认 `''`，原仅 api 模型用）重载为「文件清单 + sha256」JSON；api 模型（`is_local=0`）`secret_key` 仍是真 API key，**按 `is_local` 分支，不冲突**。schema：
+local 模型 `secret_key`（DB 默认 `''`，原仅 api 模型用）重载为「文件清单 + sha256」JSON；api 模型（`is_local=0`）`secret_key` 仍是真 API key，**按 `is_local` 分支，不冲突**。schema（**path 为 key 的 map**，紧凑可读；`BTreeMap` 保证字母序、diff 友好）：
 ```json
-{"files":[{"path":"model.onnx","sha256":"<hex>","size":12345}, ...]}
+{"model.onnx":{"sha256":"<hex>","size":12345}, "tokens.txt":{"sha256":"<hex>","size":75756}}
 ```
-`path` 相对模型目录根（`resolve_model_dir` 返回的目录）。读取时 JSON 解析失败→视为清单空→自举重建。
+key 为相对模型目录根（`resolve_model_dir` 返回目录）的路径。读取时 JSON 解析失败→视为清单空→自举重建。manifest 逻辑（`bootstrap_manifest`/`verify_against_manifest`/`Manifest`）下沉到 `asr::manifest`，desktop（`download_model`/`verify_model`）与 cli（`sync-models`）共用。
+
+**批量预填**：cli `octopus-cli sync-models` 扫描所有本地 ASR 模型，就绪的（`resolve_model_dir` 命中）自举清单写 `secret_key` + 置 `is_enabled=true`，未就绪置 `false`，末尾 `reload_models_config`——供首次填充或批量复核（GUI 的 `verify_model` 是单模型按需触发）。
 
 ### 9.4 自举（manifest 生成）
 触发时机：① 下载完成；② 探查命中（已有文件，如 hf-cache）；③ `verify_model` 发现清单空。

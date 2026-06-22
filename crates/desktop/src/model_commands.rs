@@ -7,15 +7,14 @@
 //! - `verify_model` 按 secret_key 清单复核，损坏置 false。
 //! - is_enabled 语义 = 文件就绪可用；写 DB 后 `reload_models_config` 让引擎下拉即时更新。
 //!
+//! manifest（文件清单 + sha256）逻辑下沉到 `octopus_asr::manifest`，与 cli `sync-models` 共用。
 //! 复用阶段1 download crate（HfRequest/resolve_tasks/Downloader）和 resolve_model_dir。
 
-use std::fmt::Write as _;
-use std::path::Path;
-
-use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
+
+use octopus_asr::manifest::{bootstrap_manifest, verify_against_manifest, Manifest};
 
 use crate::runtime_config::SharedRuntimeConfig;
 
@@ -43,20 +42,6 @@ pub struct VerifyResult {
     /// 损坏/缺失的文件相对路径。
     pub broken_files: Vec<String>,
     pub message: String,
-}
-
-/// 文件清单条目（存 DB secret_key 的 JSON 元素）。
-#[derive(Serialize, Deserialize)]
-struct ManifestFile {
-    path: String,
-    sha256: String,
-    size: u64,
-}
-
-/// 文件清单（序列化后整体存 DB models.secret_key）。
-#[derive(Serialize, Deserialize)]
-struct Manifest {
-    files: Vec<ManifestFile>,
 }
 
 /// 判定 source 是否为可下载的 HF repo。
@@ -264,72 +249,9 @@ fn current_secret_key(model_name: &str) -> Result<String, String> {
         .ok_or_else(|| format!("未找到模型 '{model_name}'"))
 }
 
-/// 遍历目录常规文件（递归，跳过隐藏，follow symlink 读实际内容），生成清单 JSON。
-///
-/// HF cache snapshot 目录下是 symlink 到 blobs——`std::fs::read` 会 follow 读取实际字节，
-/// 保证清单记录的是文件内容 hash 而非 symlink 元数据。
-fn bootstrap_manifest(dir: &Path) -> anyhow::Result<String> {
-    let mut files = Vec::new();
-    collect_files(dir, dir, &mut files)?;
-    files.sort_by(|a, b| a.path.cmp(&b.path));
-    Ok(serde_json::to_string(&Manifest { files })?)
-}
-
-fn collect_files(root: &Path, dir: &Path, out: &mut Vec<ManifestFile>) -> anyhow::Result<()> {
-    for entry in std::fs::read_dir(dir)? {
-        let entry = entry?;
-        if entry.file_name().to_string_lossy().starts_with('.') {
-            continue; // 跳过隐藏文件/目录（.DS_Store 等）
-        }
-        let path = entry.path();
-        // is_file()/is_dir() 会 follow symlink，适配 HF snapshot 结构。
-        if path.is_file() {
-            let rel = path.strip_prefix(root)?.to_string_lossy().to_string();
-            let data = std::fs::read(&path)?;
-            out.push(ManifestFile {
-                path: rel,
-                sha256: hex_sha256(&data),
-                size: data.len() as u64,
-            });
-        } else if path.is_dir() {
-            collect_files(root, &path, out)?;
-        }
-    }
-    Ok(())
-}
-
-/// 按 manifest 复核 dir 下文件，返回损坏/缺失的相对路径。
-fn verify_against_manifest(dir: &Path, manifest: &Manifest) -> Vec<String> {
-    manifest
-        .files
-        .iter()
-        .filter_map(|f| {
-            let path = dir.join(&f.path);
-            let ok = std::fs::read(&path)
-                .ok()
-                .map(|d| hex_sha256(&d) == f.sha256)
-                .unwrap_or(false);
-            if ok { None } else { Some(f.path.clone()) }
-        })
-        .collect()
-}
-
-fn hex_sha256(data: &[u8]) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(data);
-    let bytes = hasher.finalize();
-    let mut s = String::with_capacity(bytes.len() * 2);
-    for b in bytes {
-        write!(s, "{:02x}", b).unwrap();
-    }
-    s
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
-    use tempfile::tempdir;
 
     #[test]
     fn is_hf_repo_real_repos() {
@@ -356,52 +278,5 @@ mod tests {
     #[test]
     fn is_hf_repo_excludes_empty() {
         assert!(!is_hf_repo(""));
-    }
-
-    /// bootstrap_manifest：造文件 → 清单含正确 sha256 + size，隐藏文件跳过。
-    #[test]
-    fn bootstrap_manifest_hashes_files() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("a.onnx"), b"hello").unwrap();
-        fs::write(dir.path().join("b.txt"), b"world!").unwrap();
-        fs::write(dir.path().join(".DS_Store"), b"junk").unwrap(); // 应跳过
-        let json = bootstrap_manifest(dir.path()).unwrap();
-        let m: Manifest = serde_json::from_str(&json).unwrap();
-        assert_eq!(m.files.len(), 2, "隐藏文件应跳过");
-        let a = m.files.iter().find(|f| f.path == "a.onnx").unwrap();
-        // sha256("hello") 标准已知值
-        assert_eq!(
-            a.sha256,
-            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824"
-        );
-        assert_eq!(a.size, 5);
-    }
-
-    /// verify_against_manifest：未篡改空；篡改/删除返回损坏清单。
-    #[test]
-    fn verify_detects_tamper() {
-        let dir = tempdir().unwrap();
-        fs::write(dir.path().join("a.onnx"), b"hello").unwrap();
-        let manifest = Manifest {
-            files: vec![ManifestFile {
-                path: "a.onnx".into(),
-                sha256: "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824".into(),
-                size: 5,
-            }],
-        };
-        // 未篡改 → 空
-        assert!(verify_against_manifest(dir.path(), &manifest).is_empty());
-        // 篡改 → 损坏
-        fs::write(dir.path().join("a.onnx"), b"HACKED").unwrap();
-        assert_eq!(
-            verify_against_manifest(dir.path(), &manifest),
-            vec!["a.onnx".to_string()]
-        );
-        // 删除 → 损坏
-        fs::remove_file(dir.path().join("a.onnx")).unwrap();
-        assert_eq!(
-            verify_against_manifest(dir.path(), &manifest),
-            vec!["a.onnx".to_string()]
-        );
     }
 }

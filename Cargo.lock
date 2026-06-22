@@ -4054,6 +4054,8 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
+ "sha2",
+ "tempfile",
  "tokenizers",
 ]
 
@@ -4102,7 +4104,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "sha1",
- "sha2",
  "tauri",
  "tauri-build",
  "tauri-nspanel",

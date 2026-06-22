@@ -71,6 +71,8 @@ enum Commands {
         #[arg(long)]
         mirror: Option<String>,
     },
+    /// 同步本地模型状态：扫描所有本地 ASR 模型，就绪的算 sha256 清单写入 secret_key + 置 is_enabled=true；未就绪置 false
+    SyncModels,
 }
 
 fn main() -> Result<()> {
@@ -104,7 +106,46 @@ fn main() -> Result<()> {
             let rt = tokio::runtime::Runtime::new()?;
             rt.block_on(run_download(&repo, &include, &exclude, mirror.as_deref()))
         }
+        Commands::SyncModels => run_sync_models(),
     }
+}
+
+/// 同步本地模型状态：遍历所有本地 ASR 模型，就绪的算 sha256 清单写入 secret_key + 置
+/// is_enabled=true；未就绪置 false。末尾 reload 运行时缓存。供首次填充 secret_key 或批量复核用。
+fn run_sync_models() -> Result<()> {
+    let rows = octopus_infra::db::list_all_local_asr_models()?;
+    let mut ready = 0usize;
+    let mut missing = 0usize;
+    for r in &rows {
+        match octopus_asr::config::resolve_model_dir(&r.source) {
+            Ok(dir) => {
+                let manifest = octopus_asr::manifest::bootstrap_manifest(&dir)?;
+                let count =
+                    serde_json::from_str::<octopus_asr::manifest::Manifest>(&manifest)?.len();
+                octopus_infra::db::set_model_secret_key(&r.model_name, &manifest)?;
+                octopus_infra::db::set_model_enabled(&r.model_name, true)?;
+                ready += 1;
+                println!(
+                    "✓ {} [{}]: 就绪，{} 个文件已记录清单到 secret_key",
+                    r.model_name, r.source, count
+                );
+            }
+            Err(_) => {
+                octopus_infra::db::set_model_enabled(&r.model_name, false)?;
+                missing += 1;
+                println!(
+                    "✗ {} [{}]: 文件未就绪，置 is_enabled=false",
+                    r.model_name, r.source
+                );
+            }
+        }
+    }
+    octopus_asr::config::reload_models_config();
+    println!(
+        "\n完成：{} 个就绪（已写 sha256 清单），{} 个未就绪",
+        ready, missing
+    );
+    Ok(())
 }
 
 fn list_devices() -> Result<()> {

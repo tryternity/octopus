@@ -4,6 +4,7 @@
 
 pub mod audio;
 pub mod config;
+pub mod manifest;
 pub use octopus_infra::db;
 pub mod engine;
 pub mod paraformer;

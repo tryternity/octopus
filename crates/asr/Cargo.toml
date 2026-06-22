@@ -19,6 +19,8 @@ hound = "3"
 rubato = "0.16"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# 模型文件清单 sha256 校验（manifest，desktop/cli 共用）
+sha2 = "0.10"
 serde_yaml = "0.9"
 tokenizers = "0.21"
 rustfft = "6"
@@ -51,4 +53,5 @@ ort = { version = "2.0.0-rc.12", features = ["cuda"] }
 [target.'cfg(target_os = "windows")'.dependencies]
 ort = { version = "2.0.0-rc.12", features = ["directml"] }
 
-
+[dev-dependencies]
+tempfile = "3"
