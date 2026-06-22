@@ -884,7 +884,7 @@ function renderPromptEditor(p) {
   // p = {id, title, content, description, is_system} 或 null（新建）
   document.getElementById('prompts-list').style.display = 'none';
   const editorEl = document.getElementById('prompt-editor');
-  editorEl.style.display = 'block';
+  editorEl.style.display = 'flex';
 
   const isSystem = p && p.is_system;
   const title = p ? p.title : '';
