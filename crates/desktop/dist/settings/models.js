@@ -1,13 +1,17 @@
 // 模型管理页（设置窗口页面 3）。独立文件——与 settings-ui2 分支在 index.html 上的改动隔离。
 // 由 index.html 的 <script src="models.js"> 加载；switchPage('models') 调 initModelsPage()。
 // 包在 IIFE 里：避免与 index.html 内联脚本的顶层 const（invoke/listen）重声明冲突。
+//
+// v2（2026-06-22）：就绪状态用 is_enabled（非 downloaded）；点下载后端先探查，
+// 已就绪则不重下（download-done 的 already_ready）；新增「重新校验」按钮（verify_model）。
 (function () {
   const { invoke } = window.__TAURI__.core;
   const { listen } = window.__TAURI__.event;
 
   let progressUnlisten = null;
   let fileUnlisten = null;
-  let currentRepo = null; // 同一时刻只允许一个下载（v1 串行）
+  let doneUnlisten = null;
+  let currentRepo = null; // 同一时刻只允许一个下载/校验（串行）
 
   const fmtBytes = (n) => {
     if (n == null) return '?';
@@ -48,6 +52,11 @@
         transition: opacity 0.15s; }
       .btn-download:hover { opacity: 0.85; }
       .btn-download:disabled { opacity: 0.4; cursor: not-allowed; }
+      .btn-verify { padding: 4px 12px; border: 1px solid var(--border); border-radius: 6px;
+        background: white; color: var(--text-secondary); font-size: 12px; cursor: pointer;
+        transition: all 0.15s; }
+      .btn-verify:hover { border-color: var(--primary); color: var(--primary); }
+      .btn-verify:disabled { opacity: 0.4; cursor: not-allowed; }
       .model-downloaded { font-size: 13px; color: var(--toggle-on); }
       .progress-wrap { width: 100%; }
       .progress-file { font-size: 11px; color: var(--text-secondary); margin-bottom: 3px;
@@ -56,6 +65,7 @@
       .progress-fill { height: 100%; background: var(--primary); width: 0%; transition: width 0.2s; }
       .progress-text { font-size: 11px; color: var(--text-secondary); margin-top: 3px; }
       .progress-failed { font-size: 11px; color: #ef4444; margin-top: 3px; word-break: break-all; }
+      .verify-busy { font-size: 11px; color: var(--text-secondary); }
     `;
     document.head.appendChild(style);
   }
@@ -78,9 +88,10 @@
             <span class="model-repo">${escapeHtml(m.repo)}</span>
           </div>
           <div class="model-action" data-action="${escapeHtml(m.repo)}">
-            ${m.downloaded
-              ? '<span class="model-downloaded">✓ 已就绪</span>'
-              : `<button class="btn-download" data-repo="${escapeHtml(m.repo)}" onclick="window.__modelsDownload(this.dataset.repo)">下载</button>`}
+            ${m.is_enabled
+              ? '<span class="model-downloaded">✓ 已就绪</span>' +
+                '<button class="btn-verify" data-repo="' + escapeHtml(m.repo) + '" data-name="' + escapeHtml(m.name) + '" onclick="window.__modelsVerify(this.dataset.repo, this.dataset.name)">重新校验</button>'
+              : '<button class="btn-download" data-repo="' + escapeHtml(m.repo) + '" onclick="window.__modelsDownload(this.dataset.repo)">下载</button>'}
           </div>
         </div>
       `).join('');
@@ -109,14 +120,28 @@
       </div>`;
   }
 
-  async function startDownload(repo) {
-    if (currentRepo) { toast('已有下载进行中，请等待完成'); return; }
-    currentRepo = repo;
-    document.querySelectorAll('.btn-download').forEach((b) => (b.disabled = true));
-    renderProgress(repo, '准备中...', 0, null, null);
+  function disableActions(disabled) {
+    document.querySelectorAll('.btn-download, .btn-verify').forEach((b) => (b.disabled = disabled));
+  }
 
+  function clearListeners() {
     if (progressUnlisten) { progressUnlisten(); progressUnlisten = null; }
     if (fileUnlisten) { fileUnlisten(); fileUnlisten = null; }
+    if (doneUnlisten) { doneUnlisten(); doneUnlisten = null; }
+  }
+
+  async function startDownload(repo) {
+    if (currentRepo) { toast('已有任务进行中，请等待完成'); return; }
+    currentRepo = repo;
+    disableActions(true);
+    renderProgress(repo, '准备中...', 0, null, null);
+
+    let alreadyReady = false;
+    clearListeners();
+    doneUnlisten = await listen('download-done', (ev) => {
+      if (ev.payload.repo !== repo) return;
+      alreadyReady = !!ev.payload.already_ready;
+    });
     progressUnlisten = await listen('download-progress', (ev) => {
       const p = ev.payload;
       if (p.repo !== repo) return;
@@ -130,18 +155,36 @@
 
     try {
       await invoke('download_model', { repo });
-      toast('下载完成: ' + repo);
+      toast(alreadyReady ? '文件已就绪: ' + repo : '下载完成: ' + repo);
     } catch (e) {
       toast('下载失败: ' + e);
       renderProgress(repo, null, 0, null, null, String(e));
     } finally {
-      if (progressUnlisten) { progressUnlisten(); progressUnlisten = null; }
-      if (fileUnlisten) { fileUnlisten(); fileUnlisten = null; }
+      clearListeners();
       currentRepo = null;
-      renderModels(); // 刷新 downloaded 状态（失败也刷新，恢复下载按钮）
+      renderModels(); // 刷新 is_enabled（失败也刷新，恢复下载按钮）
     }
   }
   window.__modelsDownload = startDownload;
+
+  // 重新校验：按 secret_key 清单 sha256 复核；损坏则后端置 is_enabled=false。
+  async function startVerify(repo, name) {
+    if (currentRepo) { toast('已有任务进行中，请等待完成'); return; }
+    currentRepo = repo;
+    disableActions(true);
+    const actionEl = document.querySelector(`.model-action[data-action="${CSS.escape(repo)}"]`);
+    if (actionEl) actionEl.insertAdjacentHTML('beforeend', '<span class="verify-busy">校验中...</span>');
+    try {
+      const r = await invoke('verify_model', { modelName: name, repo });
+      toast(r.message);
+    } catch (e) {
+      toast('校验失败: ' + e);
+    } finally {
+      currentRepo = null;
+      renderModels();
+    }
+  }
+  window.__modelsVerify = startVerify;
 
   async function initMirror() {
     const input = document.getElementById('mirror-input');

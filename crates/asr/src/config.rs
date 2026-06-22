@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::OnceLock;
+use std::sync::{Arc, RwLock};
 
 use octopus_infra::consts::{DEFAULT_ASR_MODEL_DIR, SILERO_VAD_PATH};
 use octopus_infra::octopus_config_home;
@@ -12,20 +12,42 @@ pub use octopus_infra::db::{parse_model_spec, AsrConfig, AsrSection, ModelEntry,
 // ── Config loading ──
 
 /// 运行时缓存：首次从 DB 读出后缓存，避免每次识别重复开连接查询。
-/// 手编 DB models 表后需重启进程生效（与历史行为一致）。
-static RUNTIME_CONFIG: OnceLock<AsrConfig> = OnceLock::new();
+/// 可重载（见 [`reload_models_config`]）：模型管理页 set_model_enabled 后调用，让
+/// 引擎下拉即时反映新的就绪状态。
+static RUNTIME_CONFIG: RwLock<Option<Arc<AsrConfig>>> = RwLock::new(None);
 
 /// 读取模型配置（唯一来源：~/.octopus/octopus.db 的 models 表）。
-/// 首次调用 ensure_db（自动建表 + seed 默认引擎），读出后缓存到 OnceLock。
+/// 首次调用 ensure_db（自动建表 + seed 默认引擎），读出后缓存。
 /// cli/server/desktop 三端统一走此路径，不再读 model.json。
 pub fn load_config() -> Result<AsrConfig> {
-    if let Some(cfg) = RUNTIME_CONFIG.get() {
-        return Ok(cfg.clone());
+    // 读锁：已缓存则 clone 返回
+    if let Some(arc) = RUNTIME_CONFIG.read().unwrap().as_ref() {
+        return Ok(arc.as_ref().clone());
     }
     crate::db::ensure_db()?;
     let cfg = crate::db::load_models()?;
-    let _ = RUNTIME_CONFIG.set(cfg.clone());
+    // 写锁：double-check，避免并发首次 miss 重复 load（load_models 幂等，双重保险）
+    let mut slot = RUNTIME_CONFIG.write().unwrap();
+    if slot.is_none() {
+        *slot = Some(Arc::new(cfg.clone()));
+    }
     Ok(cfg)
+}
+
+/// 重载 AsrConfig 缓存（models 表）：从 DB 重读替换。
+///
+/// desktop 在 set_model_enabled / set_model_secret_key 写 DB 后调用，让引擎下拉
+/// （`list_engines` → `load_config`）即时反映新的 is_enabled。对齐 [`reload_app_config`]。
+pub fn reload_models_config() {
+    match crate::db::load_models() {
+        Ok(c) => {
+            *RUNTIME_CONFIG.write().unwrap() = Some(Arc::new(c));
+            log::debug!("AsrConfig cache reloaded from DB");
+        }
+        Err(e) => {
+            log::warn!("reload_models_config: 重载失败，保留旧缓存：{:?}", e);
+        }
+    }
 }
 
 // ── HF cache helpers ──

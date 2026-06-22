@@ -264,7 +264,13 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 
 模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需下载——`octopus-cli download <repo>`（命令行）或设置窗口「模型管理」页（GUI）下到 `~/.octopus/models/<repo>/`（阶段1 接 `octopus-download`），兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型。
 
-**GUI 模型管理（设置窗口页面 3）**：`crates/desktop/src/model_commands.rs`（独立模块，与 `settings_commands.rs` 分离以降低与 setting-ui2 分支的合并冲突）3 个 Tauri 命令——`list_downloadable_models`（列 local 引擎 → `resolve_engine_in_config` 裸名取 `entry.source`（HF repo）→ `is_hf_repo` 过滤随包/云端/绝对路径 → `resolve_model_dir` 判定已就绪）、`download_model(repo)`（复用 download crate：`HfRequest` + `resolve_tasks` + 逐文件 `Downloader::download`，mpsc 进度转 Tauri 事件 `download-progress`/`download-file` 推前端；镜像读 `AppConfig.download_mirror`）、`set_download_mirror(value)`（专用命令，因 `set_config` 的 `apply_config_value` 无 `download_mirror` 分发，独立命令免改 `settings_commands.rs`）。前端 `dist/settings/models.js`（IIFE 隔离全局 const，独立于 index.html 内联脚本；`index.html` 仅两处局部改动——`#page-models` 容器 + `<script src="models.js">`）。spec `superpowers/specs/2026-06-21-model-management-gui-design.md`。
+**GUI 模型管理（设置窗口页面 3）**：`crates/desktop/src/model_commands.rs`（独立模块，与 `settings_commands.rs` 分离以降低与 setting-ui2 分支的合并冲突）4 个 Tauri 命令——
+- `list_downloadable_models`：**v2 直读 DB** `list_all_local_asr_models`（`domain='asr' AND is_local=1`，**不过滤 is_enabled**——区别于 `load_models_at` 的引擎选择用），按 `is_enabled` 显示就绪/下载。
+- `download_model(repo)`：**v2 先探查** `resolve_model_dir`——命中（文件已就绪，如 hf-cache 旧模型）则自举 sha256 清单写 `secret_key` + 置 `is_enabled=true`（**不重下**）；未命中才下载（复用 download crate：`HfRequest` + `resolve_tasks` + 逐文件 `Downloader::download`，mpsc 进度转事件 `download-progress`/`download-file`），完成后自举 + 置 true。完成 emit `download-done{already_ready}`。
+- `verify_model(model_name, repo)`：**v2 新增**完整性复核——按 `secret_key` 清单逐文件 sha256 比对；空清单则自举；损坏/缺失置 `is_enabled=false` 并返回损坏清单。
+- `set_download_mirror(value)`：专用命令（`set_config.apply_config_value` 无 `download_mirror` 分发，独立命令免改 `settings_commands.rs`）。
+
+**is_enabled 语义 = 文件就绪（v2）**：`true`=文件完备可被引擎加载，`false`=未就绪/未下载。写 DB 后调 `asr::config::reload_models_config()` 刷新 AsrConfig 缓存（`RUNTIME_CONFIG` v2 改 `RwLock<Option<Arc<AsrConfig>>>`，对齐 `APP_CONFIG` 模式），让「系统设置」引擎下拉即时更新——未就绪的模型不进下拉。local 模型 `secret_key` 重载为「文件清单 + sha256」JSON（api 模型仍是 key，按 `is_local` 分支，不冲突）。前端 `dist/settings/models.js`（IIFE 隔离；卡片按 is_enabled 显示「✓ 已就绪（+重新校验）/ 下载」；`index.html` 仅两处局部改动——`#page-models` 容器 + `<script src="models.js">`）。spec `superpowers/specs/2026-06-21-model-management-gui-design.md` §9。
 
 ```
 ~/.octopus/
@@ -296,7 +302,7 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
 | `app_config` | 应用行为配置（22 字段） | db.sql seed + yaml 迁移 |
 
 - **应用行为配置** `app_config` 表 → `infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`，22 字段：麦克风/引擎选择/分段/润色/LLM/粘贴/硬件加速/ASR 纠错/降噪/简繁输出/工具栏显隐/降噪模式/下载镜像等；另有 `active_polish_prompt` 由 `db::load_active_prompt_id()` 独立读取，不入 AppConfig struct）。schema 统一定义在 infra，asr/desktop/cli 共享。值统一 TEXT 存储，由 `load_app_config` 按字段类型解析。
-- **DB 模型目录** `models` 表 → `asr::config::AsrConfig`（`octopus_asr::config::load_config()`，首次 `db::ensure_db()` 自动建表 + seed，读后缓存到 `OnceLock`）。
+- **DB 模型目录** `models` 表 → `asr::config::AsrConfig`（`octopus_asr::config::load_config()`，首次 `db::ensure_db()` 自动建表 + seed，读后缓存到 `RwLock<Option<Arc<AsrConfig>>>`——v2 可刷新：模型管理页 `set_model_enabled`/`set_model_secret_key` 后调 `reload_models_config()` 从 DB 重读替换，引擎下拉即时更新；对齐 `APP_CONFIG` 模式）。
 - **配置持久化**：`persist_*`（单键 `save_config_key`，ON CONFLICT 仅改 config_value）、`set_config`（全量 `save_app_config`，22 字段 ON CONFLICT），均写 DB。旧 `write_config_yaml` 已移除。
 - **yaml 迁移**：首次启动（v0/v1 → v2）检测旧 `~/.octopus/config.yaml` → 解析导入 DB 覆盖 seed → 重命名为 `config.yaml.bak`。迁移逻辑在 `init_schema` 中一次性执行。
 - **`write_to_clipboard`**（默认 `true`）：粘贴后是否把识别结果留在剪贴板，方便他处再粘贴；与 `paste_method`（`clipboard` / `direct` / `none`）构成三模式矩阵——`clipboard` 模式 true 时不恢复原剪贴板内容、false 时恢复（恢复前若 `read_text` 读出空——图片/富文本/文件读不出——则跳过写回，避免空文本覆盖用户的非文本剪贴板）；`direct` 模式 true 时 enigo 输入后末尾写剪贴板、false 时不碰剪贴板；`none` 模式忽略此配置（其唯一目的就是写剪贴板）。`false` 时三种粘贴行为等同重构前现状（不破坏现有用户习惯）。详见 [spec §6](superpowers/specs/2026-06-14-archived-design.md)。

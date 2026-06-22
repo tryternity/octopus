@@ -459,6 +459,78 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
     Ok(AsrConfig { asr })
 }
 
+// ── 模型管理页：直读/写 models 表（不过滤 is_enabled）──
+
+/// 模型管理页用的一行本地 ASR 模型（平铺，含 is_enabled）。
+///
+/// 与 `load_models_at`（过滤 is_enabled=1、按 category 分组、供引擎选择）区分：
+/// 本结构**不过滤 is_enabled**，供模型管理页列出「所有可下载模型（含未就绪）」。
+#[derive(Debug, Clone)]
+pub struct LocalAsrModelRow {
+    pub category: String,
+    pub model_name: String,
+    pub source: String,
+    /// local 模型重载为「文件清单 + sha256」JSON（见 model_commands）；api 模型仍是 API key。
+    pub secret_key: String,
+    pub description: String,
+    pub is_enabled: bool,
+    pub is_streaming: bool,
+}
+
+/// 列出全部本地 ASR 模型（domain='asr' AND is_local=1，**不过滤 is_enabled**）。
+pub fn list_all_local_asr_models() -> Result<Vec<LocalAsrModelRow>> {
+    with_db(list_all_local_asr_models_at)
+}
+
+fn list_all_local_asr_models_at(conn: &Connection) -> Result<Vec<LocalAsrModelRow>> {
+    let mut stmt = conn.prepare(
+        "SELECT category, model_name, source, secret_key, description, is_enabled, is_streaming
+         FROM models WHERE domain='asr' AND is_local = 1",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(LocalAsrModelRow {
+            category: row.get(0)?,
+            model_name: row.get(1)?,
+            source: row.get(2)?,
+            secret_key: row.get(3)?,
+            description: row.get(4)?,
+            is_enabled: row.get::<_, i32>(5)? != 0,
+            is_streaming: row.get::<_, i32>(6)? != 0,
+        })
+    })?;
+    let mut out = Vec::new();
+    for r in rows {
+        out.push(r?);
+    }
+    Ok(out)
+}
+
+/// 设置某本地 ASR 模型就绪状态（is_enabled）。写 DB；调方需随后 reload 运行时缓存。
+pub fn set_model_enabled(model_name: &str, enabled: bool) -> Result<()> {
+    with_db(|conn| set_model_enabled_at(conn, model_name, enabled))
+}
+
+fn set_model_enabled_at(conn: &Connection, model_name: &str, enabled: bool) -> Result<()> {
+    conn.execute(
+        "UPDATE models SET is_enabled = ?1 WHERE model_name = ?2 AND domain='asr' AND is_local = 1",
+        params![if enabled { 1 } else { 0 }, model_name],
+    )?;
+    Ok(())
+}
+
+/// 写某本地 ASR 模型的 secret_key（模型管理页存「文件清单 + sha256」JSON）。写 DB。
+pub fn set_model_secret_key(model_name: &str, json: &str) -> Result<()> {
+    with_db(|conn| set_model_secret_key_at(conn, model_name, json))
+}
+
+fn set_model_secret_key_at(conn: &Connection, model_name: &str, json: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE models SET secret_key = ?1 WHERE model_name = ?2 AND domain='asr' AND is_local = 1",
+        params![json, model_name],
+    )?;
+    Ok(())
+}
+
 /// 从 DB 加载 LLM 配置（domain='llm'）。
 ///
 /// `spec` 支持三种写法（见 [`parse_model_spec`]）：
@@ -1115,6 +1187,42 @@ mod tests {
         conn.execute("UPDATE models SET is_enabled = 0 WHERE model_name = 'paraformer-streaming'", []).unwrap();
         let cfg = load_models_at(&conn).unwrap();
         assert!(cfg.asr.paraformer.is_none() || !cfg.asr.paraformer.unwrap().contains_key("paraformer-streaming"));
+    }
+
+    #[test]
+    fn list_all_local_asr_models_includes_disabled() {
+        let conn = open_init();
+        let rows = list_all_local_asr_models_at(&conn).unwrap();
+        // seed 里 paraformer-streaming is_enabled=0，load_models_at 会过滤，本函数应保留
+        let names: Vec<&str> = rows.iter().map(|r| r.model_name.as_str()).collect();
+        assert!(names.contains(&"paraformer-streaming"), "未过滤 is_enabled=0");
+        assert!(rows.iter().any(|r| !r.is_enabled), "应含未就绪模型");
+        // 兜底打包模型 source=models/... 也列出（是否可下载由上层 is_hf_repo 过滤）
+        assert!(rows.iter().any(|r| r.source.starts_with("models/")));
+    }
+
+    #[test]
+    fn set_model_enabled_persists() {
+        let conn = open_init();
+        set_model_enabled_at(&conn, "paraformer-streaming", true).unwrap();
+        let rows = list_all_local_asr_models_at(&conn).unwrap();
+        let p = rows.iter().find(|r| r.model_name == "paraformer-streaming").unwrap();
+        assert!(p.is_enabled);
+        // 关掉再读
+        set_model_enabled_at(&conn, "paraformer-streaming", false).unwrap();
+        let rows = list_all_local_asr_models_at(&conn).unwrap();
+        let p = rows.iter().find(|r| r.model_name == "paraformer-streaming").unwrap();
+        assert!(!p.is_enabled);
+    }
+
+    #[test]
+    fn set_model_secret_key_persists() {
+        let conn = open_init();
+        let json = r#"{"files":[{"path":"a.onnx","sha256":"abc","size":10}]}"#;
+        set_model_secret_key_at(&conn, "paraformer-streaming", json).unwrap();
+        let rows = list_all_local_asr_models_at(&conn).unwrap();
+        let p = rows.iter().find(|r| r.model_name == "paraformer-streaming").unwrap();
+        assert_eq!(p.secret_key, json);
     }
 
     #[test]

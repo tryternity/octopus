@@ -209,6 +209,7 @@ pub fn run() {
             settings_commands::delete_prompt,
             model_commands::list_downloadable_models,
             model_commands::download_model,
+            model_commands::verify_model,
             model_commands::set_download_mirror,
         ])
         .setup(move |app| {

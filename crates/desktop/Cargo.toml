@@ -71,6 +71,9 @@ octopus-infra = { path = "../infra" }
 # 通用下载 crate（模型管理页下 HF 模型，复用阶段1 能力）
 octopus-download = { path = "../download" }
 
+# 模型管理页完整性校验：sha256 自举/复核文件清单（存 secret_key）
+sha2 = "0.10"
+
 [features]
 default = ["embedded"]
 embedded = ["octopus-asr"]
