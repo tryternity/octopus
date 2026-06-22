@@ -40,21 +40,29 @@ CREATE TABLE IF NOT EXISTS models (
 
 -- ── 默认数据（INSERT OR IGNORE，幂等）────────────────────────────────────────
 
--- ASR 引擎：激活由 config.yaml.asr_engine 控制，此处仅维护可选列表
+-- ── 本地 ASR 模型（is_local=1，应用限定的开发适配清单，只读；下载/就绪由模型管理页管理）──
+-- is_enabled 表「文件就绪」：seed 初始全部未就绪（is_enabled=0），用户在模型管理页下载后置 true。
+-- 默认/兜底引擎 zipformer-small-ctc（随应用本地打包）由代码写死（asr/config.rs FALLBACK_ASR_ENGINE_NAME），
+--   不在 seed/DB 中——app_config.asr_engine 空/匹配不到时 fallback_engine 硬构造，不依赖本表。
+-- 清单以 2026-06-22 实时数据库 is_local=1 行为准重生成（旧随包 zipformer-small-ctc 等已移除）。
 INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
 VALUES
-    ('asr','local','zipformer','zipformer-small-ctc','models/zipformer','zh','zipformer-small-ctc, 27M（随应用打包，兜底引擎）',1,1,1),
-    ('asr','local','zipformer','zipformer-multi','k2-fsa/sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13','zh','zipformer-multi, 80M',1,0,1),
-    ('asr','local','zipformer','zipformer-ctc','csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30','zh','zipformer-ctc, 163M',1,0,1),
-    ('asr','local','zipformer','zipformer-zh-transducer','csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30','zh','zipformer Transducer (RNN-T), 154M',1,0,1),
-    ('asr','local','zipformer','zipformer-xlarge-transducer','csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30','zh','zipformer Transducer xlarge (RNN-T), 726M',1,0,1),
+    ('asr','local','moonshine','moonshine-base-en','csukuangfj/sherpa-onnx-moonshine-base-en-int8','en','Moonshine Base EN (274M)',1,0,0),
+    ('asr','local','moonshine','moonshine-tiny-en','csukuangfj/sherpa-onnx-moonshine-tiny-en-int8','en','Moonshine Tiny EN (119M)',1,0,0),
+    ('asr','local','paraformer','paraformer-bilingual','csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en','auto','paraformer中英版, 230M',1,0,1),
+    ('asr','local','paraformer','paraformer-multi-zh','csukuangfj/sherpa-onnx-streaming-paraformer-trilingual-zh-cantonese-en','auto','paraformer方言+英语, 230M',1,0,1),
     ('asr','local','paraformer','paraformer-streaming','csukuangfj/sherpa-onnx-streaming-paraformer-zh','zh','paraformer-streaming, 230M',1,0,1),
-    ('asr','local','sensevoice','sherpa-onnx-sense-voice-funasr-nano-int8','csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17','auto','SenseVoice FunASR Nano INT8, 265M',1,0,0),
-    ('asr','local','qwen3-asr','qwen3-asr-0.6B','csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25','auto','qwen3-asr-0.6B, 1G',1,0,0),
-    ('asr','local','qwen3-asr','qwen3-asr-1.7B','ilmina/qwen3-asr-1.7b-sherpa-onnx','auto','qwen3-asr-1.7B, 约2.7G',1,0,0),
-    ('asr','local','whisper','whisper-small','onnx-community/whisper-small.en','en','Whisper Small EN - 快速轻量, 244M',1,0,0),
-    ('asr','local','moonshine','moonshine-base-en','csukuangfj/sherpa-onnx-moonshine-base-en-int8','en','Moonshine Base EN (int8), 58M',1,0,0),
-    ('asr','local','moonshine','moonshine-tiny-en','csukuangfj/sherpa-onnx-moonshine-tiny-en-int8','en','Moonshine Tiny EN (int8), 24M',1,0,0),
+    ('asr','local','paraformer','paraformer-zh','csukuangfj/sherpa-onnx-streaming-paraformer-zh','zh','paraformer普通话版, 230M',1,0,1),
+    ('asr','local','qwen3-asr','qwen3-asr-0.6B','csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25','auto','qwen3-asr-0.6B, 954M',1,0,0),
+    ('asr','local','qwen3-asr','qwen3-asr-1.7B','ilmina/qwen3-asr-1.7b-sherpa-onnx','auto','qwen3-asr-1.7B, 2.2G',1,0,0),
+    ('asr','local','sensevoice','sense-voice-nano','csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17','auto','SenseVoice FunASR Nano INT8, 265M',1,0,0),
+    ('asr','local','whisper','whisper-small','onnx-community/whisper-small.en','en','whisper-small.en, 372M',1,0,0),
+    ('asr','local','zipformer','zipformer','csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30','zh','zipformer, 160M',1,0,1),
+    ('asr','local','zipformer','zipformer-large','csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30','zh','zipformer-large, 736M',1,0,1);
+
+-- ── 云端 ASR（is_local=0，走「系统设置」填 key + 连接测试，不在模型管理页）──
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, language, description, is_local, is_enabled, is_streaming)
+VALUES
     -- 火山引擎豆包大模型 ASR（bigmodel_async 双向流式优化版）
     -- endpoint 固定 wss://openspeech.bytedance.com/api/v3/sauc/bigmodel_async
     -- source = X-Api-Resource-Id；secret_key = X-Api-Key（火山引擎控制台申请）
@@ -136,7 +144,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('engine_mode',              'embedded',                             'ASR 引擎模式: embedded | websocket | grpc'),
     ('remote_url',               'ws://127.0.0.1:3000/ws/stream',        'WebSocket 远程地址（engine_mode=websocket 时使用）'),
     ('grpc_endpoint',            'http://127.0.0.1:50051',               'gRPC 端点（engine_mode=grpc 时使用）'),
-    ('asr_engine',               'local:zipformer:zipformer-small-ctc',  'ASR 引擎选择（DB models 表 model_name 精确匹配；空=兜底引擎）'),
+    ('asr_engine',               '',                                     'ASR 引擎选择（DB models 表 model_name 精确匹配；空=代码兜底引擎 zipformer-small-ctc，随包打包）'),
     ('language',                 'auto',                                 '识别语言: auto | zh | en | ja | ko'),
     ('asr_shortcut',             'CmdOrCtrl+Shift+Z',                    '全局 ASR 激活/关闭快捷键'),
     ('edit_shortcut',            'Cmd+Enter',                            '结果窗编辑 toggle 快捷键（进入/保存同键）'),

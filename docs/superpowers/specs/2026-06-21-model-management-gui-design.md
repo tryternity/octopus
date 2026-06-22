@@ -24,7 +24,7 @@
 `get_config` / `set_config`（含 `download_mirror` 字段）/ `get_history` / `test_llm_connection` / `test_asr_connection` 等。模型管理命令在独立模块 `model_commands.rs`（v1）：`list_downloadable_models` / `download_model` / `set_download_mirror`。v2 新增 `verify_model`。
 
 ### 2.3 引擎 DB = 天然下载目录（关键利好）
-`infra/src/db.sql` 的 models 表 seed：每个本地 ASR 引擎的 `source` 即 HF repo（如 `csukuangfj/sherpa-onnx-streaming-paraformer-zh`）；兜底 `zipformer-small-ctc` → `models/zipformer`（随包打包，不可下载）。`source` ↔ cli `download <repo>` ↔ `resolve_model_dir`，三者对齐。
+`infra/src/db.sql` 的 models 表 seed：本地 ASR（is_local=1，12 行）每个引擎的 `source` 即 HF repo（如 `csukuangfj/sherpa-onnx-streaming-paraformer-zh`），`source` ↔ cli `download <repo>` ↔ `resolve_model_dir` 三者对齐。**默认/兜底引擎 `zipformer-small-ctc`（随包打包，本地路径 `models/zipformer`）由代码写死（`asr/config.rs` `FALLBACK_ASR_ENGINE_NAME`），不在 seed/DB 中**——`app_config.asr_engine` 空/不匹配时 `fallback_engine` 硬构造，开箱可用、不依赖本表。
 
 ### 2.4 `is_enabled` 过滤发生在 DB 加载层（v2 关键发现）
 `load_models_at`（`infra/src/db.rs:396`）SQL 硬编码 `WHERE domain='asr' AND is_enabled = 1`——**`is_enabled=0` 的模型不进 `AsrConfig`、不进 `list_engines()`**。seed 里 local 可下载模型 `is_enabled` 全 0，所以 v1 用 `list_engines()` 列表时只能看到用户手编置 1 的。v2 因此改为**直读 DB（不过滤 is_enabled）**列全部。`ModelEntry` 已含 `is_enabled` 字段。
@@ -135,7 +135,7 @@ download crate 下载时已做服务端 sha256 校验（阶段1），下载成�
 ## 9. 就绪逻辑重构 v2 详述（2026-06-22）
 
 ### 9.1 `is_enabled` 语义
-`is_enabled` 统一表达「该模型文件是否就绪可用」：`true`=文件完备可被引擎加载，`false`=未就绪。引擎下拉（`list_engines`→`load_config`）只收 `is_enabled=1` 是 load 层既有行为，自然联动——**未就绪的模型不会出现在「系统设置」的引擎下拉**，避免选了下载不全的模型。seed 里 `is_enabled=0` 语义即「未下载」（用户：seed 不同步不管，以当前 DB 为准；用户初始只有兜底打包模型，其余靠本页下载）。
+`is_enabled` 统一表达「该模型文件是否就绪可用」：`true`=文件完备可被引擎加载，`false`=未就绪。引擎下拉（`list_engines`→`load_config`）只收 `is_enabled=1` 是 load 层既有行为，自然联动——**未就绪的模型不会出现在「系统设置」的引擎下拉**，避免选了下载不全的模型。seed 里本地 ASR 初始**全部 `is_enabled=0`**（未就绪，待下载）；**默认引擎 `zipformer-small-ctc` 不占 seed 行**（代码写死、随包打包），首次启动靠代码兜底即开箱可用，其余引擎用户在本页下载后置 true。（2026-06-22：seed 本地 ASR 已按实时 DB is_local=1 的 12 行重生成，旧随包 `zipformer-small-ctc` 等移出 seed；`app_config.asr_engine` seed 改空=代码兜底。）
 
 ### 9.2 `RUNTIME_CONFIG` 可刷新化
 - `static RUNTIME_CONFIG: OnceLock<AsrConfig>` → `static RUNTIME_CONFIG: RwLock<Option<Arc<AsrConfig>>>`（对齐 `APP_CONFIG`）。
