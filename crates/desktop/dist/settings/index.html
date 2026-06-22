@@ -851,14 +851,14 @@ function renderPromptsList() {
     let actions;
     if (p.is_system) {
       actions = '<div class="prompt-actions">' +
-        (isActive ? '' : '<button onclick="activatePrompt(' + p.id + ')">设为激活</button>') +
+        (isActive ? '' : '<button onclick="activatePrompt(' + p.id + ')">激活</button>') +
         '<button onclick="viewPrompt(' + p.id + ')">查看</button>' +
       '</div>';
     } else {
       actions = '<div class="prompt-actions">' +
-        (isActive ? '' : '<button class="primary" onclick="activatePrompt(' + p.id + ')">设为激活</button>') +
+        (isActive ? '' : '<button class="primary" onclick="activatePrompt(' + p.id + ')">激活</button>') +
         '<button onclick="editPrompt(' + p.id + ')">编辑</button>' +
-        '<button class="danger" onclick="confirmDeletePrompt(' + p.id + ')">删除</button>' +
+        '<button class="danger" onclick="confirmDeletePrompt(event, ' + p.id + ')">删除</button>' +
       '</div>';
     }
 
@@ -907,7 +907,7 @@ function renderPromptEditor(p) {
         '<textarea id="prompt-content-input" placeholder="定义润色风格、语气、专业领域等规则。增量保留规则由系统自动拼接，无需手写。" ' + (isSystem ? 'disabled' : '') + '>' + escapeHtml(content) + '</textarea>' +
       '</div>' +
       '<div class="form-actions">' +
-        '<button onclick="loadPrompts()">返回列表</button>' +
+        '<button onclick="loadPrompts()">返回</button>' +
         (isSystem ? '' : '<button class="primary" onclick="savePromptFromEditor()">' + (p && p.id ? '保存' : '创建') + '</button>') +
       '</div>' +
     '</div>';
@@ -964,13 +964,29 @@ async function savePromptFromEditor() {
   }
 }
 
-async function confirmDeletePrompt(id) {
+async function confirmDeletePrompt(evt, id) {
+  const btn = evt.currentTarget;
   const p = promptsCache.find(x => x.id === id);
   const title = p ? p.title : '';
-  if (!confirm('确定删除提示词「' + title + '」？' + (id === activePromptIdCache ? '\n\n当前正在使用此提示词，删除后将回退到系统默认。' : ''))) return;
+  // 两次点击确认：首次点击变红+显文字「确认删除?」，3 秒内再点才真删
+  // （Tauri WebView 禁用 window.confirm，参考历史记录页 deleteSelected 的两段式）
+  if (!btn.dataset.confirming) {
+    btn.dataset.confirming = '1';
+    btn.textContent = '确认删除?';
+    btn.style.background = '#ff3b30';
+    btn.style.color = 'white';
+    setTimeout(() => {
+      delete btn.dataset.confirming;
+      btn.textContent = '删除';
+      btn.style.background = '';
+      btn.style.color = '';
+    }, 3000);
+    return;
+  }
+  // 第二次点击 — 执行删除
   try {
     await invoke('delete_prompt', { id });
-    showToast('已删除');
+    showToast('已删除「' + title + '」' + (id === activePromptIdCache ? '，已回退到系统默认' : ''));
     await loadPrompts();
   } catch (e) {
     showToast(String(e));
