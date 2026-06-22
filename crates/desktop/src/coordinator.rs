@@ -374,7 +374,7 @@ impl Coordinator {
                             edit_buffer = None;
                             let _ = app_handle.emit("edit-force-exit", ());
                         }
-                        handle_discard(&mut stage, &audio, &app_handle);
+                        handle_discard(&mut stage, &audio, &app_handle, &config);
                     }
                     Command::TranscriptionDone { text, seq, session_id } => {
                         if editing {
@@ -2173,6 +2173,16 @@ fn handle_cancel(
     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
 }
 
+/// handle_discard 从当前 stage 提取的 DB finalize 数据。
+/// （用 struct 而非 tuple，避免 clippy::type_complexity 且字段意义明确）
+struct DiscardDbInfo {
+    id: i64,
+    raw_text: String,
+    polished_text: Option<String>,
+    polish_status: String,
+    polish_model: Option<String>,
+}
+
 /// 处理 Discard 命令：停止录音 + finalize DB 记录（保留识别历史），
 /// 但**不粘贴、不入剪贴板**。与 Cancel 的区别：Cancel 不 finalize DB。
 /// 工具栏「关闭」按钮触发。
@@ -2180,6 +2190,7 @@ fn handle_discard(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
     app_handle: &tauri::AppHandle,
+    config: &AppConfig,
 ) {
     // Pasting 阶段粘贴已在进行（enigo Cmd+V 已发或正发），无法撤回 → no-op
     if matches!(stage, Stage::Pasting { .. }) {
@@ -2187,20 +2198,65 @@ fn handle_discard(
         return;
     }
 
-    // 从当前 stage 提取 (id, raw_text) 用于 DB finalize
-    let db_info: Option<(i64, String)> = match stage {
+    // 从 transcript 提取 (polished_text, polish_status, polish_model) for Finalize：
+    //   polished 非空 → 入库为 "done"；空 → "off"。
+    // 修复：原版硬编码 None / "off"，把已完成的立即润色结果擦掉
+    // （用户场景：立即润色→PolishDone 入库→点关闭→Finalize 覆盖 polished=None）。
+    let polished_info = |t: &Transcript| -> (Option<String>, String, Option<String>) {
+        let p = t.polished();
+        if p.is_empty() {
+            (None, "off".to_string(), None)
+        } else {
+            (Some(p.to_string()), "done".to_string(), Some(config.polish_llm.clone()))
+        }
+    };
+
+    // 从当前 stage 提取 DiscardDbInfo
+    let db_info: Option<DiscardDbInfo> = match stage {
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
         | Stage::WaitingCompletion { transcript, .. } => {
-            Some((transcript.id, transcript.db_text()))
+            let (p, s, m) = polished_info(transcript);
+            Some(DiscardDbInfo {
+                id: transcript.id,
+                raw_text: transcript.db_text(),
+                polished_text: p,
+                polish_status: s,
+                polish_model: m,
+            })
         }
         #[cfg(feature = "cloud")]
         Stage::CloudStreaming { transcript, .. }
         | Stage::CloudClosing { transcript, .. } => {
-            Some((transcript.id, transcript.db_text()))
+            let (p, s, m) = polished_info(transcript);
+            Some(DiscardDbInfo {
+                id: transcript.id,
+                raw_text: transcript.db_text(),
+                polished_text: p,
+                polish_status: s,
+                polish_model: m,
+            })
         }
-        Stage::Polishing { id, raw_text, .. } => Some((*id, raw_text.clone())),
-        Stage::StoppingPolish { transcript } => Some((transcript.id, transcript.db_text())),
+        Stage::Polishing { id, raw_text, .. } => {
+            // 最终润色中（非立即润色路径）：polished 尚未产出
+            Some(DiscardDbInfo {
+                id: *id,
+                raw_text: raw_text.clone(),
+                polished_text: None,
+                polish_status: "off".to_string(),
+                polish_model: None,
+            })
+        }
+        Stage::StoppingPolish { transcript } => {
+            let (p, s, m) = polished_info(transcript);
+            Some(DiscardDbInfo {
+                id: transcript.id,
+                raw_text: transcript.db_text(),
+                polished_text: p,
+                polish_status: s,
+                polish_model: m,
+            })
+        }
         Stage::Idle => None,
         // Pasting 已在上面 early return
         Stage::Pasting { .. } => unreachable!(),
@@ -2253,16 +2309,16 @@ fn handle_discard(
         Stage::Pasting { .. } => unreachable!(),
     }
 
-    // finalize DB 记录（保留识别历史，duration_ms 标记实际用时）
-    if let Some((id, raw_text)) = db_info {
-        if id > 0 {
-            let duration_ms = now_millis() - id;
+    // finalize DB 记录（保留识别历史 + 已完成的润色结果，duration_ms 标记实际用时）
+    if let Some(info) = db_info {
+        if info.id > 0 {
+            let duration_ms = now_millis() - info.id;
             let cmd = DbCommand::Finalize {
-                id,
-                raw_text,
-                polished_text: None,
-                polish_status: "off".to_string(),
-                polish_model: None,
+                id: info.id,
+                raw_text: info.raw_text,
+                polished_text: info.polished_text,
+                polish_status: info.polish_status,
+                polish_model: info.polish_model,
                 duration_ms: Some(duration_ms),
             };
             if let Err(e) = get_db_sender().send(cmd) {
