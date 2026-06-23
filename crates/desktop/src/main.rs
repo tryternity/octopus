@@ -24,6 +24,7 @@ mod engine_grpc;
 mod engine_ws;
 mod model_commands;
 mod paste;
+mod pipeline;
 mod result_window;
 mod runtime_config;
 mod settings_commands;
