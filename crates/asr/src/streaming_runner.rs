@@ -64,6 +64,17 @@ const VAD_CHUNK_SIZE: usize = 512;
 const VAD_SPEECH_THRESHOLD: f32 = 0.5;
 /// 标点（逗号）触发的静音时长阈值（秒）。
 const PUNCTUATION_SILENCE_THRESHOLD: f64 = 0.5;
+/// VAD LSTM 预热帧数（搬自 `coordinator.rs:VAD_PREROLL_FRAMES`）。
+const VAD_PREROLL_FRAMES: usize = 10;
+
+/// VAD 预热：喂静音帧让 Silero LSTM 状态稳定（搬自 `coordinator.rs:vad_preroll`）。
+/// 未预热时开头几帧 prob 偏高/偏低，导致标点检测开头不准。
+fn preroll_vad(vad: &mut SileroVad) {
+    let silence = vec![0.0_f32; VAD_CHUNK_SIZE];
+    for _ in 0..VAD_PREROLL_FRAMES {
+        let _ = vad.compute(&silence);
+    }
+}
 
 /// 静音/标点决策纯函数（从 `detect_silence_gap` + `handle_streaming_tick` 抽出）。
 ///
@@ -160,9 +171,12 @@ impl StreamingRunner {
     /// 构造 runner。`engine` 由调用方创建（local `StreamingSession` 或 cloud WS）。
     /// VAD 经 `find_silero_vad` 解析模型路径，缺失则 `None`（不加标点，与现状一致）。
     pub fn new(engine: Box<dyn StreamingEngine>, correct: bool) -> Result<Self> {
-        let vad = crate::config::find_silero_vad()
+        let mut vad = crate::config::find_silero_vad()
             .ok()
             .and_then(|p| SileroVad::new(&p).ok());
+        if let Some(v) = vad.as_mut() {
+            preroll_vad(v);
+        }
         Ok(Self {
             engine,
             vad,
@@ -215,6 +229,20 @@ impl StreamingRunner {
             Ok(text) => TranscriptEvent::Final(text),
             Err(e) => TranscriptEvent::Error(e.to_string()),
         }
+    }
+
+    /// 收尾并先吃入尾部样本（stop 路径用）。
+    ///
+    /// 精确等价 `coordinator.rs` stop 顺序：`engine.accept_samples(tail, false)`
+    /// （**不**走 VAD/flush，`was_silent=false` 不插逗号）→ `engine.finish()`。与 [`push_samples`]
+    /// 的区别：push_samples 会 VAD 检测 + 静音冲刷标点，stop 尾部不应触发标点。
+    pub fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent {
+        if !tail.is_empty() {
+            if let Err(e) = self.engine.accept_samples(tail, false) {
+                log::warn!("StreamingRunner finish_with_tail accept error: {e}");
+            }
+        }
+        self.finish()
     }
 
     /// 重置（会话间复用）：engine + VAD + 静音/标点状态归零。
@@ -366,5 +394,21 @@ mod tests {
         assert_eq!(evs.len(), 1);
         assert!(matches!(evs[0], TranscriptEvent::Error(_)));
         let _ = r.finish(); // 不 panic
+    }
+
+    #[test]
+    fn finish_with_tail_emits_final() {
+        // accept 队列给 1 个（tail 吃入），finish 返回固定串
+        let mut r = runner(FakeStreamingEngine::new(vec!["尾"], vec![], "最终。"));
+        let ev = r.finish_with_tail(&[0.0; 512]);
+        assert_eq!(ev, TranscriptEvent::Final("最终。".to_string()));
+    }
+
+    #[test]
+    fn finish_with_tail_empty_tail_still_finishes() {
+        // 空 tail → 不调 accept（队列不消耗）→ finish 直接返回
+        let mut r = runner(FakeStreamingEngine::new(vec![], vec![], "空尾。"));
+        let ev = r.finish_with_tail(&[]);
+        assert_eq!(ev, TranscriptEvent::Final("空尾。".to_string()));
     }
 }
