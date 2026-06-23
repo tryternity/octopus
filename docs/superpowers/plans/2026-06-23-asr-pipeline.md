@@ -1,5 +1,8 @@
 # ASR Pipeline 重构（阶段1：批处理 helper + cli）实施计划
 
+> ✅ **阶段1 全部 5 task 已实施（2026-06-23）**：asr `pipeline` 模块（`PipelineConfig` + `transcribe_batch` + `transcribe_with_vad` 委托 + `AsrEngineManager::transcribe_batch` 入口）+ cli `do_transcribe` 走 `pipeline::run` + architecture/spec 同步。workspace check / 4 单测 / clippy 零新 warning 均通过。流式 trait / StreamingRunner / desktop / server 留阶段2/3。
+>
+
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 按 task 实施。Steps 用 checkbox（`- [ ]`）跟踪。
 >
 > spec：`docs/superpowers/specs/2026-06-23-asr-pipeline-design.md`。worktree：`worktree-model-mgmt-ui`。
@@ -27,13 +30,13 @@
 
 ---
 
-## Task 1：asr 新增 `pipeline.rs` 模块 + `PipelineConfig`
+## Task 1：asr 新增 `pipeline.rs` 模块 + `PipelineConfig` ✅
 
 **Files:**
 - Create: `crates/asr/src/pipeline.rs`
 - Modify: `crates/asr/src/lib.rs`（在 `pub mod hans;` 后加 `pub mod pipeline;`）
 
-- [ ] **Step 1: 创建 `crates/asr/src/pipeline.rs`**
+- [x] **Step 1: 创建 `crates/asr/src/pipeline.rs`**
 
 ```rust
 //! ASR pipeline 编排：批处理 helper（流式 helper / StreamingRunner 见后续阶段）。
@@ -76,7 +79,7 @@ impl PipelineConfig {
 }
 ```
 
-- [ ] **Step 2: 在 `crates/asr/src/lib.rs` 注册模块**
+- [x] **Step 2: 在 `crates/asr/src/lib.rs` 注册模块**
 
 在 `pub mod hans;`（第 23 行）后加一行：
 
@@ -84,12 +87,12 @@ impl PipelineConfig {
 pub mod pipeline;
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cargo check -p octopus-asr`
 Expected: 通过（`PipelineConfig` 暂无调用点，`load_app_config_cached` 字段名 `asr_correct` / `output_simplified` 已核对存在）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/asr/src/pipeline.rs crates/asr/src/lib.rs
@@ -98,13 +101,13 @@ git commit -m "feat(asr): 新增 pipeline 模块 + PipelineConfig（阶段1）"
 
 ---
 
-## Task 2：`transcribe_batch` + `transcribe_with_vad` 委托（TDD）
+## Task 2：`transcribe_batch` + `transcribe_with_vad` 委托（TDD） ✅
 
 **Files:**
 - Modify: `crates/asr/src/pipeline.rs`（加 `transcribe_batch` + `transcribe_segments` + 测试）
 - Modify: `crates/asr/src/engine.rs:150-243`（`transcribe_with_vad` 改委托）
 
-- [ ] **Step 1: 在 `pipeline.rs` 末尾加测试模块（先写失败测试）**
+- [x] **Step 1: 在 `pipeline.rs` 末尾加测试模块（先写失败测试）**
 
 在 `pipeline.rs` 末尾追加：
 
@@ -170,12 +173,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-asr pipeline::tests 2>&1 | head -30`
 Expected: 编译失败 `cannot find function transcribe_batch`（尚未实现）。
 
-- [ ] **Step 3: 在 `pipeline.rs` 实现 `transcribe_batch` + `transcribe_segments`**
+- [x] **Step 3: 在 `pipeline.rs` 实现 `transcribe_batch` + `transcribe_segments`**
 
 在 `impl PipelineConfig { ... }` 块之后、`#[cfg(test)]` 之前插入（`use anyhow::Result;` 加到文件顶部 `use` 区）：
 
@@ -287,12 +290,12 @@ fn transcribe_segments(
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cargo test -p octopus-asr pipeline::tests`
 Expected: 4 passed。
 
-- [ ] **Step 5: `transcribe_with_vad` 改委托**
+- [x] **Step 5: `transcribe_with_vad` 改委托**
 
 在 `crates/asr/src/engine.rs` 把第 150-243 行的整个 `transcribe_with_vad` 函数体替换为：
 
@@ -312,12 +315,12 @@ pub fn transcribe_with_vad(
 
 > 说明：原函数体（VAD 分段 + 纠错 + hans）已整体搬到 `pipeline::transcribe_batch` / `transcribe_segments`，此处只保留向后兼容的薄包装。`OfflineAsrEngine` trait、`AsrEngineManager`（除 Task 3 加的方法外）不动。
 
-- [ ] **Step 6: 编译验证 asr**
+- [x] **Step 6: 编译验证 asr**
 
 Run: `cargo check -p octopus-asr`
 Expected: 通过（`AsrEngineManager::transcribe` 在 engine.rs:143 调 `transcribe_with_vad`，委托后行为不变）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/asr/src/pipeline.rs crates/asr/src/engine.rs
@@ -326,12 +329,12 @@ git commit -m "feat(asr): transcribe_batch 收编 transcribe_with_vad，纠错/�
 
 ---
 
-## Task 3：`AsrEngineManager::transcribe_batch` 方法
+## Task 3：`AsrEngineManager::transcribe_batch` 方法 ✅
 
 **Files:**
 - Modify: `crates/asr/src/engine.rs`（`impl AsrEngineManager` 块内，`transcribe` 方法后追加）
 
-- [ ] **Step 1: 加 `transcribe_batch` 方法**
+- [x] **Step 1: 加 `transcribe_batch` 方法**
 
 在 `crates/asr/src/engine.rs` 的 `impl AsrEngineManager { ... }` 块内，紧接现有 `pub fn transcribe(&self, samples: &[f32], language: &str) -> Result<String>`（第 137-147 行）之后追加：
 
@@ -353,12 +356,12 @@ git commit -m "feat(asr): transcribe_batch 收编 transcribe_with_vad，纠错/�
     }
 ```
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
 Run: `cargo check -p octopus-asr`
 Expected: 通过。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/asr/src/engine.rs
@@ -367,13 +370,13 @@ git commit -m "feat(asr): AsrEngineManager::transcribe_batch 多端入口"
 
 ---
 
-## Task 4：cli 批处理 pipeline + `do_transcribe` 改造
+## Task 4：cli 批处理 pipeline + `do_transcribe` 改造 ✅
 
 **Files:**
 - Create: `crates/cli/src/pipeline.rs`
 - Modify: `crates/cli/src/main.rs`（顶部 `mod pipeline;` + 替换 `do_transcribe` 函数体）
 
-- [ ] **Step 1: 创建 `crates/cli/src/pipeline.rs`**
+- [x] **Step 1: 创建 `crates/cli/src/pipeline.rs`**
 
 ```rust
 //! CLI 批处理转写 pipeline：`switch_model` → `AsrEngineManager::transcribe_batch`。
@@ -399,7 +402,7 @@ pub fn run(model: &str, language: &str, samples: &[f32]) -> Result<String> {
 }
 ```
 
-- [ ] **Step 2: `main.rs` 注册模块**
+- [x] **Step 2: `main.rs` 注册模块**
 
 在 `crates/cli/src/main.rs` 顶部 `use` 区之后（第 3 行 `use cpal::...` 之后）加：
 
@@ -407,7 +410,7 @@ pub fn run(model: &str, language: &str, samples: &[f32]) -> Result<String> {
 mod pipeline;
 ```
 
-- [ ] **Step 3: 替换 `do_transcribe` 函数体**
+- [x] **Step 3: 替换 `do_transcribe` 函数体**
 
 把 `crates/cli/src/main.rs` 第 478-516 行的整个 `fn do_transcribe(model: &str, language: &str, samples: &[f32]) -> Result<String> { ... }` 替换为：
 
@@ -421,14 +424,14 @@ fn do_transcribe(model: &str, language: &str, samples: &[f32]) -> Result<String>
 
 > 说明：原 `do_transcribe` 按 `EngineCategory` 分发到各引擎裸 `transcribe` 自由函数（whisper::transcribe 等）的逻辑整体删除——引擎实例化 + category 路由由 `AsrEngineManager::switch_model` 接管，编排由 `pipeline::transcribe_batch` 接管。调用点 `transcribe_file`（main.rs:186）与 `transcribe_url`（main.rs:365）签名不变，自动受益。
 
-- [ ] **Step 4: 编译验证 cli**
+- [x] **Step 4: 编译验证 cli**
 
 Run: `cargo check -p octopus-cli`
 Expected: 通过。
 
 > 注意：若 `octopus-asr` 未在 cli 的 `Cargo.toml` 依赖中，需确认已存在（cli 已大量用 `octopus_asr::*`，应已声明）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/cli/src/pipeline.rs crates/cli/src/main.rs
@@ -437,27 +440,27 @@ git commit -m "feat(cli): do_transcribe 走 pipeline::run（补齐 VAD/纠错/�
 
 ---
 
-## Task 5：workspace 验证 + 文档同步
+## Task 5：workspace 验证 + 文档同步 ✅
 
 **Files:**
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: workspace 全量 check**
+- [x] **Step 1: workspace 全量 check**
 
 Run: `cargo check --workspace --all-targets`
 Expected: 通过，零 error。
 
-- [ ] **Step 2: asr pipeline 单测**
+- [x] **Step 2: asr pipeline 单测**
 
 Run: `cargo test -p octopus-asr pipeline`
 Expected: 4 passed。
 
-- [ ] **Step 3: workspace clippy（零新 warning）**
+- [x] **Step 3: workspace clippy（零新 warning）**
 
 Run: `cargo clippy --workspace --all-targets 2>&1 | grep -E "warning|error" | head`
 Expected: 无新增 warning（`PipelineConfig` 字段均被读：`language`/`correct`/`simplify` 在 transcribe_batch 用，`ngram` 在 warn 分支用，无 dead_code）。
 
-- [ ] **Step 4: 更新 `docs/architecture.md`**
+- [x] **Step 4: 更新 `docs/architecture.md`**
 
 在 asr 模块说明里（models 表描述附近）加 `asr::pipeline` 模块条目：
 
@@ -468,7 +471,7 @@ Expected: 无新增 warning（`PipelineConfig` 字段均被读：`language`/`cor
   cli 经 `AsrEngineManager::transcribe_batch` 复用。流式 helper / StreamingRunner 见后续阶段。
 ```
 
-- [ ] **Step 5: 标注 spec 阶段1 完成**
+- [x] **Step 5: 标注 spec 阶段1 完成**
 
 在 `docs/superpowers/specs/2026-06-23-asr-pipeline-design.md` 顶部「> 2026-06-23 初版」行下加：
 
@@ -477,7 +480,7 @@ Expected: 无新增 warning（`PipelineConfig` 字段均被读：`language`/`cor
 > `transcribe_with_vad` 委托、cli 走新 pipeline。流式 trait / StreamingRunner / desktop / server 留阶段2/3。
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/architecture.md docs/superpowers/specs/2026-06-23-asr-pipeline-design.md

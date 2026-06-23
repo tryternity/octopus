@@ -1,6 +1,7 @@
 # ASR Pipeline 架构重构设计
 
 > 2026-06-23 初版（brainstorming 产出）。
+> **阶段1 已实施（2026-06-23）**：`asr::pipeline`（PipelineConfig + transcribe_batch）、`transcribe_with_vad` 委托、cli 走新 pipeline。流式 trait / StreamingRunner / desktop / server 留阶段2/3。
 > 目标：把现在散落在 `desktop/coordinator.rs` 主循环、`desktop/audio.rs` 录制层、`asr/engine.rs::transcribe_with_vad`、`asr/streaming_engine.rs::StreamingSession` 的隐式编排，收敛成**显式的 pipeline 角色** + **asr 提供可复用零件与无端编排 helper**。
 > 工作分支：`worktree-model-mgmt-ui`（后续可开独立 worktree 实施）。
 

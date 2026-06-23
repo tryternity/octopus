@@ -44,6 +44,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `streaming_zipformer` | Zipformer 流式识别 |
 | `corrector` | 基于拼音映射和 Bigram 转移概率的轻量级中文拼音纠错与热词校正 |
 | `hans` | 简繁体字形转换（单字级，开放词典网 CC-BY 3.0 对照表编译期嵌入）；按 `output_simplified` 归一化 ASR 输出 |
+| `pipeline` | 批处理 pipeline 编排（阶段1 新增）：`PipelineConfig`（language/correct/simplify/ngram）+ `transcribe_batch`（VAD 分段 → 逐段转写 → 纠错 → 简繁归一化，收编自 `transcribe_with_vad`，纠错/简繁参数化为 cfg 字段）；`transcribe_with_vad` 退化为从 app_config 构造 cfg 的薄包装（desktop 向后兼容）；cli 经 `AsrEngineManager::transcribe_batch` 复用同一编排。流式 helper / StreamingRunner 见后续阶段 |
 
 
 **数据流（离线）：**
