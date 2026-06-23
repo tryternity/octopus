@@ -4,9 +4,10 @@
 > **阶段1 已实施（2026-06-23）**：`asr::pipeline`（PipelineConfig + transcribe_batch）、`transcribe_with_vad` 委托、cli 走新 pipeline。流式 trait / StreamingRunner / desktop / server 留阶段2/3。
 > **阶段2 进行中（2026-06-23）**：phase 2（desktop 全量拆分）拆为 2a/2b/2c/2d——
 > - **2a（已实施，ff-merge main）**：asr 流式基础设施 `StreamingRunner` + `StreamingEngine` trait + `TranscriptEvent`（plan `stage2a.md`）。
-> - **2b（已实施，commit 5ab50e7/1d9e347，e2e 待本地）**：desktop 本地流式迁移——`Stage::Streaming` 委托 `StreamingRunner`，`handle_streaming_tick` 消费 `TranscriptEvent`，stop 用 `finish_with_tail`；`StreamingPipeline` 抽象延后 2c（plan `stage2b.md`）。
-> - **2c（待）**：cloud `StreamingEngine`（WSS）+ `VadSegmented` 归位，抽 `StreamingPipeline` 统一 local/cloud 分发。
-> - **2d（待）**：coordinator 清理退化（移除迁后残留 + 收敛）。
+> - **2b（已实施，commit 5ab50e7/1d9e347，e2e 基本通过）**：desktop 本地流式迁移——`Stage::Streaming` 委托 `StreamingRunner`，`handle_streaming_tick` 消费 `TranscriptEvent`，stop 用 `finish_with_tail`；`StreamingPipeline` 抽象延后 2c（plan `stage2b.md`）。
+> - **2c-1（已实施，commit 6106401/d2bf7dd，e2e 待本地）**：`StreamingPipeline` 壳立（`desktop/pipeline.rs`）+ local ASR→set_full 迁入 pipeline；emit/DB/polish 留 coordinator（三路径共用 / 保持 set_full→DB→emit 顺序）；transcript 留 Stage。cloud/VadSegmented 不动（plan `stage2c1.md`）。
+> - **2c-2（待）**：cloud 接入设计——cloud（utterance 级异步，多 WSS，close_async）与 `StreamingEngine`（sample 级同步，单 session）语义不匹配，需 brainstorm adapter / 分层接口；`VadSegmented` 归位一并设计。
+> - **2d（待）**：coordinator 清理——emit/DB/polish + transcript 全收敛进 `StreamingPipeline`，coordinator 退化为路由。
 > **设计调整（用户 2026-06-23 决策，覆盖 §3.3/§3.6 字面）**：denoise + resample **留 `desktop/audio.rs` 不迁入 StreamingRunner**（denoise 紧耦合 cpal 采集，`DenoiseProcessor`/`AudioResampler` 类型本就在 asr，`audio.rs` 仅调用方）；`StreamingRunner` 输入即 `drain_samples()` 的已降噪 16k 样本，只收编 VAD 静音+标点+engine accept/flush/finish 纯 ASR 编排。`AudioSource` trait 延后到 2b，流式纠错 hook 预留但默认关（§9.4 待核实）。
 > 目标：把现在散落在 `desktop/coordinator.rs` 主循环、`desktop/audio.rs` 录制层、`asr/engine.rs::transcribe_with_vad`、`asr/streaming_engine.rs::StreamingSession` 的隐式编排，收敛成**显式的 pipeline 角色** + **asr 提供可复用零件与无端编排 helper**。
 > 工作分支：`worktree-model-mgmt-ui`（后续可开独立 worktree 实施）。
