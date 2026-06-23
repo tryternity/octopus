@@ -5,9 +5,10 @@ use crate::config::AppConfig;
 use crate::config::PolishMode;
 use crate::engine::TranscriptionEngine;
 use crate::paste;
+use crate::pipeline::StreamingPipeline;
 use crate::transcript::Transcript;
 use octopus_asr::streaming_engine::StreamingSession;
-use octopus_asr::streaming_runner::{StreamingRunner, TranscriptEvent};
+use octopus_asr::streaming_runner::TranscriptEvent;
 use octopus_infra::consts::{SEGMENT_DURATION_S, SEGMENT_OVERLAP_MS};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
@@ -69,8 +70,8 @@ enum Stage {
     Idle,
     /// 流式识别：边录边识别
     Streaming {
-        /// 流式编排 runner（持 StreamingSession + VAD + 静音/标点状态，阶段2a）。
-        runner: octopus_asr::streaming_runner::StreamingRunner,
+        /// 流式 pipeline（持 StreamingRunner + 承载 set_full 文本更新，spec §3.4）。
+        pipeline: crate::pipeline::StreamingPipeline,
         transcript: Transcript,
         streaming_active: Arc<AtomicBool>,
     },
@@ -699,11 +700,11 @@ fn handle_toggle(
                     crate::tray::TrayState::Recording,
                 );
 
-                // VAD + 预热由 StreamingRunner 内部处理（阶段2a/2b）
-                let runner = match StreamingRunner::new(Box::new(streaming_engine), false) {
-                    Ok(r) => r,
+                // StreamingPipeline 内部构造 StreamingRunner（VAD + 预热，阶段2a/2b）
+                let pipeline = match StreamingPipeline::new(Box::new(streaming_engine), false) {
+                    Ok(p) => p,
                     Err(e) => {
-                        error!("StreamingRunner init failed: {}, abort streaming", e);
+                        error!("StreamingPipeline init failed: {}, abort streaming", e);
                         let _ = audio.stop();
                         crate::result_window::hide_result(app_handle);
                         crate::tray::update_tray_label(
@@ -718,7 +719,7 @@ fn handle_toggle(
                 start_tick_thread(tx.clone(), streaming_active.clone());
 
                 *stage = Stage::Streaming {
-                    runner,
+                    pipeline,
                     transcript: Transcript::new(now_millis(), config.polish_mode),
                     streaming_active,
                 };
@@ -838,7 +839,7 @@ fn handle_toggle(
         }
 
         Stage::Streaming {
-            runner,
+            pipeline,
             transcript,
             streaming_active,
         } => {
@@ -851,7 +852,7 @@ fn handle_toggle(
             // 获取最终音频和识别结果
             let final_samples = audio.drain_samples();
             // 尾部样本 + finish（精确等价原 accept(tail,false)+finish；不走 VAD/标点）
-            let final_text = match runner.finish_with_tail(&final_samples) {
+            let final_text = match pipeline.finish_with_tail(&final_samples) {
                 TranscriptEvent::Final(text) => text,
                 TranscriptEvent::Error(e) => {
                     error!("Streaming finish failed: {}", e);
@@ -863,7 +864,7 @@ fn handle_toggle(
                 _ => transcript.edited_display().unwrap_or_else(|| transcript.db_text()),
             };
 
-            runner.reset();
+            pipeline.reset();
 
             // 停止录音
             let _ = audio.stop();
@@ -1955,7 +1956,7 @@ fn handle_streaming_tick(
     tx: &Sender<Command>,
 ) {
     let Stage::Streaming {
-        runner,
+        pipeline,
         transcript,
         ..
     } = stage
@@ -1968,31 +1969,18 @@ fn handle_streaming_tick(
         return;
     }
 
-    // ASR 编排（VAD 静音 + 标点 + accept/flush）委托 runner（阶段2a）
-    for event in runner.push_samples(&samples) {
-        match event {
-            TranscriptEvent::Partial(text) | TranscriptEvent::Committed(text) => {
-                // 幂等：内容未变不重绘（消除静音期/同文本反复 update 闪烁 + 无谓 DB 写）
-                if text != transcript.full() {
-                    transcript.set_full(&text);
-                    if let Err(e) =
-                        update_transcription_raw(transcript, &config.asr_engine, "streaming")
-                    {
-                        warn!("DB (streaming) failed: {}", e);
-                    }
-                    crate::result_window::update_result(app_handle, &transcript.display_text());
-                }
-            }
-            TranscriptEvent::Final(_) => {
-                // Final 只在 stop 路径产生（finish），tick 不应收到；防御性忽略
-                debug!("Streaming tick got unexpected Final event, ignored");
-            }
-            TranscriptEvent::Error(e) => warn!("Streaming event error: {}", e),
+    // ASR 编排 + 文本更新委托 pipeline（spec §3.4）；changed 表示文本变化
+    let changed = pipeline.tick(&samples, transcript);
+    if changed {
+        // 幂等：内容未变不落库/不重绘（DB + emit 留 coordinator，保持 set_full→DB→emit 顺序）
+        if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "streaming") {
+            warn!("DB (streaming) failed: {}", e);
         }
+        crate::result_window::update_result(app_handle, &transcript.display_text());
     }
 
-    // 停顿润色（留端，spec §3.8）
-    check_and_trigger_polish(transcript, runner.silence_duration(), config, tx);
+    // 停顿润色（留 coordinator：三路径共用 check_and_trigger_polish，spec §3.8）
+    check_and_trigger_polish(transcript, pipeline.silence_duration(), config, tx);
 }
 
 /// 处理 Cancel 命令
@@ -2003,13 +1991,13 @@ fn handle_cancel(
 ) {
     match stage {
         Stage::Streaming {
-            runner,
+            pipeline,
             streaming_active,
             ..
         } => {
             info!("Cancel: stopping streaming");
             streaming_active.store(false, Ordering::Relaxed);
-            runner.reset();
+            pipeline.reset();
             let _ = audio.stop();
         }
         Stage::VadSegmented {
@@ -2162,13 +2150,13 @@ fn handle_discard(
     // 停止录音 + 引擎（与 handle_cancel 一致的停止逻辑）
     match stage {
         Stage::Streaming {
-            runner,
+            pipeline,
             streaming_active,
             ..
         } => {
             info!("Discard: stopping streaming");
             streaming_active.store(false, Ordering::Relaxed);
-            runner.reset();
+            pipeline.reset();
             let _ = audio.stop();
         }
         Stage::VadSegmented { tick_active, .. } => {
