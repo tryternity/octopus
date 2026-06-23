@@ -145,6 +145,22 @@ impl AsrEngineManager {
             anyhow::bail!("No active ASR engine loaded in AsrEngineManager")
         }
     }
+
+    /// 批处理转写（pipeline 入口）：用 active engine + cfg 调 `pipeline::transcribe_batch`。
+    /// 供 cli/server 等多端复用，取代端侧各自读全局 config 的旧路径。
+    pub fn transcribe_batch(
+        &self,
+        samples: &[f32],
+        cfg: &crate::pipeline::PipelineConfig,
+    ) -> Result<String> {
+        let engine = {
+            let active = self.active_engine.read().unwrap();
+            active.clone()
+        };
+        let eng = engine
+            .ok_or_else(|| anyhow::anyhow!("No active ASR engine loaded in AsrEngineManager"))?;
+        crate::pipeline::transcribe_batch(eng.as_ref(), samples, cfg)
+    }
 }
 
 /// 保留入口（desktop 经 `AsrEngineManager::transcribe` 使用）：从全局 app_config 构造 cfg
