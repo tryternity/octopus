@@ -7,6 +7,8 @@
 //! 设计详见 `docs/superpowers/specs/2026-06-23-asr-pipeline-design.md`。
 
 use crate::config::load_app_config_cached;
+use crate::engine::OfflineAsrEngine;
+use anyhow::Result;
 
 /// 批处理 pipeline 配置。
 ///
@@ -33,5 +35,169 @@ impl PipelineConfig {
             simplify: app.output_simplified,
             ngram: false,
         }
+    }
+}
+
+/// 批处理转写：VAD 分段 → 逐段 `engine.transcribe` → 连接 → 纠错 → 简繁归一化。
+///
+/// 收编自原 `engine::transcribe_with_vad`；纠错/简繁改由 `cfg` 控制（不读全局 config），
+/// 使 cli/server 能以明确参数复用同一编排。短音频（≤480k samples = 30s）跳过 VAD 直连引擎。
+/// ngram 解码尚未实现（`cfg.ngram=true` 时仅 warn，不改变行为）——预留接入点。
+pub fn transcribe_batch(
+    engine: &dyn OfflineAsrEngine,
+    samples: &[f32],
+    cfg: &PipelineConfig,
+) -> Result<String> {
+    if cfg.ngram {
+        log::warn!("ngram 解码尚未实现，忽略 cfg.ngram 开关");
+    }
+
+    let raw_text = transcribe_segments(engine, samples, &cfg.language)?;
+
+    let is_english = cfg.language.eq_ignore_ascii_case("en");
+    let text = if cfg.correct && !engine.skip_corrector() && !is_english {
+        crate::corrector::get_corrector().correct(&raw_text)
+    } else {
+        raw_text
+    };
+
+    Ok(if cfg.simplify {
+        crate::hans::to_simplified(&text)
+    } else {
+        crate::hans::to_traditional(&text)
+    })
+}
+
+/// VAD 分段转写：短音频直连；长音频用 Silero VAD 切片后逐段转写，并按 CJK/非 CJK 规则连接。
+/// VAD 不可用时降级为整段转写。搬自原 `engine::transcribe_with_vad` 的分段主体（逻辑不变）。
+fn transcribe_segments(
+    engine: &dyn OfflineAsrEngine,
+    samples: &[f32],
+    language: &str,
+) -> Result<String> {
+    if samples.len() <= 480_000 {
+        return engine.transcribe(samples, language);
+    }
+
+    let vad_path = match crate::config::find_silero_vad() {
+        Ok(p) => Some(p),
+        Err(e) => {
+            eprintln!(
+                "Warning: Silero VAD not found, falling back to full audio transcription: {}", e);
+            None
+        }
+    };
+    let vad = vad_path.and_then(|p| match crate::vad::SileroVad::new(&p) {
+        Ok(v) => Some(v),
+        Err(e) => {
+            eprintln!(
+                "Warning: Failed to initialize Silero VAD, falling back to full audio transcription: {}", e);
+            None
+        }
+    });
+
+    if let Some(mut v) = vad {
+        let total_secs = samples.len() as f64 / 16000.0;
+        eprintln!("[ASR] Long audio detected ({:.2}s). Segmenting audio using VAD...", total_secs);
+        let segments = crate::audio::segment_audio_vad(samples, &mut v, 480, 0.4, 500, 25000);
+        eprintln!("[ASR] Audio segmented into {} speech chunks.", segments.len());
+
+        let mut final_text = String::new();
+        for (idx, seg) in segments.iter().enumerate() {
+            if !seg.is_empty() {
+                let seg_secs = seg.len() as f64 / 16000.0;
+                eprintln!(
+                    "[ASR] Transcribing segment {}/{} ({:.2}s)...", idx + 1, segments.len(), seg_secs);
+                let text = engine.transcribe(seg, language)?;
+                let text_cleaned = text.replace("<|nospeech|>", "");
+                let text_trimmed = text_cleaned.trim();
+                if !text_trimmed.is_empty() {
+                    if !final_text.is_empty() {
+                        let last_char = final_text.chars().last();
+                        let next_char = text_trimmed.chars().next();
+                        let needs_space = match (last_char, next_char) {
+                            (Some(lc), Some(nc)) => {
+                                let is_cjk = |c: char| {
+                                    let u = c as u32;
+                                    (0x4E00..=0x9FFF).contains(&u) // CJK Unified Ideographs
+                                        || (0x3040..=0x309F).contains(&u) // Hiragana
+                                        || (0x30A0..=0x30FF).contains(&u) // Katakana
+                                        || (0xAC00..=0xD7AF).contains(&u)  // Hangul
+                                };
+                                !is_cjk(lc) || !is_cjk(nc)
+                            }
+                            _ => true,
+                        };
+                        if needs_space {
+                            final_text.push(' ');
+                        }
+                    }
+                    final_text.push_str(text_trimmed);
+                }
+            }
+        }
+        Ok(final_text)
+    } else {
+        engine.transcribe(samples, language)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use anyhow::Result;
+
+    struct FakeEngine {
+        text: String,
+        skip: bool,
+    }
+    impl OfflineAsrEngine for FakeEngine {
+        fn transcribe(&self, _samples: &[f32], _language: &str) -> Result<String> {
+            Ok(self.text.clone())
+        }
+        fn skip_corrector(&self) -> bool {
+            self.skip
+        }
+    }
+
+    fn cfg(simplify: bool, correct: bool) -> PipelineConfig {
+        PipelineConfig {
+            language: "zh".into(),
+            correct,
+            simplify,
+            ngram: false,
+        }
+    }
+
+    #[test]
+    fn batch_simplify_on_converts_traditional() {
+        let eng = FakeEngine { text: "語言識別".into(), skip: false };
+        let out = transcribe_batch(&eng, &[], &cfg(true, false)).unwrap();
+        assert_eq!(out, "语言识别");
+    }
+
+    #[test]
+    fn batch_simplify_off_keeps_traditional() {
+        let eng = FakeEngine { text: "语言".into(), skip: false };
+        let out = transcribe_batch(&eng, &[], &cfg(false, false)).unwrap();
+        assert_eq!(out, "語言");
+    }
+
+    #[test]
+    fn batch_ngram_flag_does_not_panic() {
+        let eng = FakeEngine { text: "你好".into(), skip: false };
+        let mut c = cfg(true, false);
+        c.ngram = true;
+        let out = transcribe_batch(&eng, &[], &c).unwrap();
+        assert_eq!(out, "你好");
+    }
+
+    #[test]
+    fn batch_short_audio_calls_engine_directly() {
+        // ≤480k samples 走直连，不经 VAD（FakeEngine 不依赖真实模型即可验证路径）
+        let eng = FakeEngine { text: "短音频".into(), skip: false };
+        let samples = vec![0.0f32; 1000];
+        let out = transcribe_batch(&eng, &samples, &cfg(true, false)).unwrap();
+        assert_eq!(out, "短音频");
     }
 }
