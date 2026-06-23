@@ -13,6 +13,7 @@ pub mod sensevoice;
 pub mod streaming_paraformer;
 pub mod streaming_zipformer;
 pub mod streaming_engine;
+pub mod streaming_runner;
 pub mod vad;
 pub mod denoise;
 pub mod whisper;
