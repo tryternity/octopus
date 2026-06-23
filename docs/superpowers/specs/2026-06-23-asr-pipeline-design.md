@@ -2,7 +2,11 @@
 
 > 2026-06-23 初版（brainstorming 产出）。
 > **阶段1 已实施（2026-06-23）**：`asr::pipeline`（PipelineConfig + transcribe_batch）、`transcribe_with_vad` 委托、cli 走新 pipeline。流式 trait / StreamingRunner / desktop / server 留阶段2/3。
-> **阶段2 进行中（2026-06-23）**：按 §10「分阶段」+ writing-plans Scope Check，phase 2（desktop 全量拆分）再拆为 2a/2b/2c/2d——2a=asr 流式基础设施（`StreamingRunner`+`StreamingEngine` trait，详见 `docs/superpowers/plans/2026-06-23-asr-pipeline-stage2a.md`，待评审），2b=desktop StreamingPipeline+本地流式迁移，2c=cloud StreamingEngine+VadSegmented 归位，2d=coordinator 清理退化。
+> **阶段2 进行中（2026-06-23）**：phase 2（desktop 全量拆分）拆为 2a/2b/2c/2d——
+> - **2a（已实施，ff-merge main）**：asr 流式基础设施 `StreamingRunner` + `StreamingEngine` trait + `TranscriptEvent`（plan `stage2a.md`）。
+> - **2b（已实施，commit 5ab50e7/1d9e347，e2e 待本地）**：desktop 本地流式迁移——`Stage::Streaming` 委托 `StreamingRunner`，`handle_streaming_tick` 消费 `TranscriptEvent`，stop 用 `finish_with_tail`；`StreamingPipeline` 抽象延后 2c（plan `stage2b.md`）。
+> - **2c（待）**：cloud `StreamingEngine`（WSS）+ `VadSegmented` 归位，抽 `StreamingPipeline` 统一 local/cloud 分发。
+> - **2d（待）**：coordinator 清理退化（移除迁后残留 + 收敛）。
 > **设计调整（用户 2026-06-23 决策，覆盖 §3.3/§3.6 字面）**：denoise + resample **留 `desktop/audio.rs` 不迁入 StreamingRunner**（denoise 紧耦合 cpal 采集，`DenoiseProcessor`/`AudioResampler` 类型本就在 asr，`audio.rs` 仅调用方）；`StreamingRunner` 输入即 `drain_samples()` 的已降噪 16k 样本，只收编 VAD 静音+标点+engine accept/flush/finish 纯 ASR 编排。`AudioSource` trait 延后到 2b，流式纠错 hook 预留但默认关（§9.4 待核实）。
 > 目标：把现在散落在 `desktop/coordinator.rs` 主循环、`desktop/audio.rs` 录制层、`asr/engine.rs::transcribe_with_vad`、`asr/streaming_engine.rs::StreamingSession` 的隐式编排，收敛成**显式的 pipeline 角色** + **asr 提供可复用零件与无端编排 helper**。
 > 工作分支：`worktree-model-mgmt-ui`（后续可开独立 worktree 实施）。

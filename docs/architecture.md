@@ -44,7 +44,9 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `streaming_zipformer` | Zipformer 流式识别 |
 | `corrector` | 基于拼音映射和 Bigram 转移概率的轻量级中文拼音纠错与热词校正 |
 | `hans` | 简繁体字形转换（单字级，开放词典网 CC-BY 3.0 对照表编译期嵌入）；按 `output_simplified` 归一化 ASR 输出 |
-| `pipeline` | 批处理 pipeline 编排（阶段1 新增）：`PipelineConfig`（language/correct/simplify/ngram）+ `transcribe_batch`（VAD 分段 → 逐段转写 → 纠错 → 简繁归一化，收编自 `transcribe_with_vad`，纠错/简繁参数化为 cfg 字段）；`transcribe_with_vad` 退化为从 app_config 构造 cfg 的薄包装（desktop 向后兼容）；cli 经 `AsrEngineManager::transcribe_batch` 复用同一编排。流式 helper / StreamingRunner 见后续阶段 |
+| `pipeline` | 批处理 pipeline 编排（阶段1 新增）：`PipelineConfig`（language/correct/simplify/ngram）+ `transcribe_batch`（VAD 分段 → 逐段转写 → 纠错 → 简繁归一化，收编自 `transcribe_with_vad`，纠错/简繁参数化为 cfg 字段）；`transcribe_with_vad` 退化为从 app_config 构造 cfg 的薄包装（desktop 向后兼容）；cli 经 `AsrEngineManager::transcribe_batch` 复用同一编排 |
+| `streaming_engine` | 流式 ASR 引擎抽象：`StreamingSession`（Paraformer / ZipformerCtc / ZipformerTransducer 增量流式，`&self` + 内部 Mutex）；阶段2a impl `StreamingEngine` trait |
+| `streaming_runner` | 流式编排 helper（阶段2a 新增）：`StreamingRunner`（持 `Box<dyn StreamingEngine>` + VAD + 静音/标点状态）收编 VAD 静音检测 + 标点触发 + accept/flush/finish；`TranscriptEvent`（Partial/Committed/Final/Error）+ `StreamingEngine` trait（local `StreamingSession` impl，cloud 2c）。denoise/resample 不入（留 `audio.rs`，输入为已降噪 16k 样本） |
 
 
 **数据流（离线）：**
@@ -132,9 +134,11 @@ Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流�
     ▼
   samples: Vec<f32>（16k 单声道，已降噪 或 直通）—— 三种 stage 看到的是同一份
     │
-    ├─ Streaming（StreamingSession 本地流式，[`crates/asr/src/streaming`]）：
-    │     StreamingSession.accept_samples(&samples, was_silent) → partial
-    │     （累积静音 ≥0.5s 时 was_silent=true → 引擎 finish+reset 冲刷尾音，不走 drain_samples）
+    ├─ Streaming（本地流式，coordinator 经 [`asr::StreamingRunner`] 委托，阶段2b）：
+    │     runner.push_samples(&samples) → Vec<TranscriptEvent>
+    │       runner 内部：VAD 静音检测 → StreamingSession.accept_samples(→Partial)
+    │         → 累积静音 ≥0.5s → flush(true) 插逗号(→Committed)；stop 用 finish_with_tail(→Final)
+    │     coordinator 端：Partial/Committed 幂等 set_full+DB+emit；Final 走 stop 收尾
     │
     ├─ VadSegmented（本地离线引擎，[`coordinator.rs::handle_vad_segmented_tick`]）：
     │     audio_buffer.extend(&samples)
