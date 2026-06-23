@@ -2,6 +2,8 @@ use anyhow::Result;
 use clap::{Parser, Subcommand};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 
+mod pipeline;
+
 #[derive(Parser)]
 #[command(name = "octopus-cli", about = "ASR inference toolkit", version)]
 struct Cli {
@@ -475,44 +477,10 @@ fn run_e2e(language: &str) -> Result<()> {
     Ok(())
 }
 
+/// 批处理转写入口（transcribe / transcribe-url 共用）：委托 `pipeline::run`，
+/// 走 AsrEngineManager + transcribe_batch（VAD 分段 + 纠错 + 简繁归一化）。
 fn do_transcribe(model: &str, language: &str, samples: &[f32]) -> Result<String> {
-    let bare = octopus_asr::config::parse_model_spec(model).model_name();
-    let category = octopus_asr::config::resolve_engine_category(model);
-    match category {
-        Some(octopus_asr::config::EngineCategory::Whisper) => {
-            octopus_asr::whisper::transcribe(bare, samples, language)
-        }
-        Some(octopus_asr::config::EngineCategory::Paraformer) => {
-            octopus_asr::paraformer::transcribe(bare, samples, language)
-        }
-        Some(octopus_asr::config::EngineCategory::Qwen3Asr) => {
-            octopus_asr::qwen3_asr::transcribe(bare, samples, language)
-        }
-        Some(octopus_asr::config::EngineCategory::Zipformer) => {
-            octopus_asr::zipformer::transcribe(bare, samples, language)
-        }
-        Some(octopus_asr::config::EngineCategory::SenseVoice) => {
-            octopus_asr::sensevoice::transcribe(bare, samples, language)
-        }
-        Some(octopus_asr::config::EngineCategory::Moonshine) => {
-            octopus_asr::moonshine::transcribe(bare, samples, language)
-        }
-        Some(octopus_asr::config::EngineCategory::Aliyun) => {
-            anyhow::bail!("阿里云云端 ASR 引擎仅支持流式模式（需 WS 连接），CLI transcribe 尚未接入（spec='{}'）", model)
-        }
-        Some(octopus_asr::config::EngineCategory::ByteDance) => {
-            anyhow::bail!("字节跳动云端 ASR 引擎仅支持流式模式（需 WS 连接），CLI transcribe 尚未接入（spec='{}'）", model)
-        }
-        Some(octopus_asr::config::EngineCategory::Tencent) => {
-            anyhow::bail!("腾讯云云端 ASR 引擎仅支持流式模式（需 WS 连接），CLI transcribe 尚未接入（spec='{}'）", model)
-        }
-        Some(octopus_asr::config::EngineCategory::Baidu) => {
-            anyhow::bail!("百度云云端 ASR 引擎仅支持流式模式（需 WS 连接），CLI transcribe 尚未接入（spec='{}'）", model)
-        }
-        None => {
-            octopus_asr::sensevoice::transcribe(bare, samples, language)
-        }
-    }
+    pipeline::run(model, language, samples)
 }
 
 fn show_config() -> Result<()> {
