@@ -7,6 +7,7 @@ use crate::engine::TranscriptionEngine;
 use crate::paste;
 use crate::transcript::Transcript;
 use octopus_asr::streaming_engine::StreamingSession;
+use octopus_asr::streaming_runner::{StreamingRunner, TranscriptEvent};
 use octopus_infra::consts::{SEGMENT_DURATION_S, SEGMENT_OVERLAP_MS};
 use log::{debug, error, info, warn};
 use std::collections::HashMap;
@@ -68,15 +69,10 @@ enum Stage {
     Idle,
     /// 流式识别：边录边识别
     Streaming {
-        engine: StreamingSession,
+        /// 流式编排 runner（持 StreamingSession + VAD + 静音/标点状态，阶段2a）。
+        runner: octopus_asr::streaming_runner::StreamingRunner,
         transcript: Transcript,
         streaming_active: Arc<AtomicBool>,
-        /// VAD 实例，用于检测静音间隔
-        vad: Option<octopus_asr::vad::SileroVad>,
-        /// 累积静音时长（秒），超过阈值后恢复说话时插入标点
-        silence_duration: f64,
-        /// 是否已对当前静音进行了主动冲刷（避免重复冲刷）
-        flushed: bool,
     },
     /// VAD 伪流式：tick 驱动分段识别（非流式引擎使用）
     VadSegmented {
@@ -183,8 +179,6 @@ enum Stage {
 const VAD_SPEECH_THRESHOLD: f32 = 0.5;
 /// VAD 分块大小（采样点数）
 const VAD_CHUNK_SIZE: usize = 512;
-/// 插入标点的静音时长阈值（秒）
-const PUNCTUATION_SILENCE_THRESHOLD: f64 = 0.5;
 
 /// VAD 预滚静音帧数：录音启动后喂给检测 VAD 的静音帧数，让 LSTM 状态预热，
 /// 避免首几帧检测概率偏低导致首音丢失。512 samples/chunk @ 16kHz = 32ms，
@@ -705,21 +699,18 @@ fn handle_toggle(
                     crate::tray::TrayState::Recording,
                 );
 
-                // 初始化 VAD（用于静音检测 + 标点）
-                let vad = match octopus_asr::config::find_silero_vad() {
-                    Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
-                        Ok(mut v) => {
-                            vad_preroll(&mut v);
-                            Some(v)
-                        }
-                        Err(e) => {
-                            warn!("VAD init failed: {}, punctuation disabled", e);
-                            None
-                        }
-                    },
+                // VAD + 预热由 StreamingRunner 内部处理（阶段2a/2b）
+                let runner = match StreamingRunner::new(Box::new(streaming_engine), false) {
+                    Ok(r) => r,
                     Err(e) => {
-                        warn!("VAD not found: {}, punctuation disabled", e);
-                        None
+                        error!("StreamingRunner init failed: {}, abort streaming", e);
+                        let _ = audio.stop();
+                        crate::result_window::hide_result(app_handle);
+                        crate::tray::update_tray_label(
+                            app_handle,
+                            crate::tray::TrayState::Idle,
+                        );
+                        return;
                     }
                 };
 
@@ -727,12 +718,9 @@ fn handle_toggle(
                 start_tick_thread(tx.clone(), streaming_active.clone());
 
                 *stage = Stage::Streaming {
-                    engine: streaming_engine,
+                    runner,
                     transcript: Transcript::new(now_millis(), config.polish_mode),
                     streaming_active,
-                    vad,
-                    silence_duration: 0.0,
-                    flushed: false,
                 };
             } else {
                 // 非流式模式：使用 VAD 伪流式分段识别
@@ -850,10 +838,9 @@ fn handle_toggle(
         }
 
         Stage::Streaming {
-            engine: streaming_engine,
+            runner,
             transcript,
             streaming_active,
-            ..
         } => {
             // 流式模式：停止流式，获取最终文本，粘贴
             info!("Toggle: stopping streaming, finalizing");
@@ -863,25 +850,20 @@ fn handle_toggle(
 
             // 获取最终音频和识别结果
             let final_samples = audio.drain_samples();
-            if !final_samples.is_empty() {
-                if let Err(e) = streaming_engine.accept_samples(&final_samples, false) {
-                    warn!("Error processing final samples: {}", e);
-                }
-            }
-
-            let final_text = match streaming_engine.finish() {
-                Ok(text) => text,
-                Err(e) => {
+            // 尾部样本 + finish（精确等价原 accept(tail,false)+finish；不走 VAD/标点）
+            let final_text = match runner.finish_with_tail(&final_samples) {
+                TranscriptEvent::Final(text) => text,
+                TranscriptEvent::Error(e) => {
                     error!("Streaming finish failed: {}", e);
                     // 引擎兜底：edited 非空优先（保留编辑），否则 raw
                     transcript
                         .edited_display()
                         .unwrap_or_else(|| transcript.db_text())
                 }
+                _ => transcript.edited_display().unwrap_or_else(|| transcript.db_text()),
             };
 
-            // 重置引擎
-            streaming_engine.reset();
+            runner.reset();
 
             // 停止录音
             let _ = audio.stop();
@@ -1972,30 +1954,27 @@ fn handle_streaming_tick(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
-    if let Stage::Streaming {
-        engine,
+    let Stage::Streaming {
+        runner,
         transcript,
-        vad,
-        silence_duration,
-        flushed,
         ..
     } = stage
-    {
-        let samples = audio.drain_samples();
-        if samples.is_empty() {
-            return;
-        }
+    else {
+        return;
+    };
 
-        let was_silent = detect_silence_gap(vad, &samples, silence_duration);
-        if *silence_duration == 0.0 {
-            *flushed = false;
-        }
+    let samples = audio.drain_samples();
+    if samples.is_empty() {
+        return;
+    }
 
-        match engine.accept_samples(&samples, was_silent) {
-            Ok(Some(new_text)) => {
-                // 幂等：内容未变不重绘（消除静音期/同文本反复 update 导致的闪烁 + 无谓 DB 写）
-                if new_text != transcript.full() {
-                    transcript.set_full(&new_text);
+    // ASR 编排（VAD 静音 + 标点 + accept/flush）委托 runner（阶段2a）
+    for event in runner.push_samples(&samples) {
+        match event {
+            TranscriptEvent::Partial(text) | TranscriptEvent::Committed(text) => {
+                // 幂等：内容未变不重绘（消除静音期/同文本反复 update 闪烁 + 无谓 DB 写）
+                if text != transcript.full() {
+                    transcript.set_full(&text);
                     if let Err(e) =
                         update_transcription_raw(transcript, &config.asr_engine, "streaming")
                     {
@@ -2004,98 +1983,16 @@ fn handle_streaming_tick(
                     crate::result_window::update_result(app_handle, &transcript.display_text());
                 }
             }
-            Ok(None) => {}
-            Err(e) => warn!("Streaming accept_samples error: {}", e),
-        }
-
-        // 静音主动冲刷（>0.5s）— 同时追加逗号，提供即时分句反馈
-        if *silence_duration >= PUNCTUATION_SILENCE_THRESHOLD && !*flushed {
-            match engine.flush(true) {
-                Ok(Some(new_text)) => {
-                    // 幂等：静音期 flush 常返回同一累积全文（zipformer 段已 finish 并入 acc），
-                    // 内容未变则不重绘、不打 Flushed 日志（消除静音期反复 flush 闪烁）
-                    if new_text != transcript.full() {
-                        transcript.set_full(&new_text);
-                        if let Err(e) =
-                            update_transcription_raw(transcript, &config.asr_engine, "streaming")
-                        {
-                            warn!("DB (streaming) failed: {}", e);
-                        }
-                        debug!("Flushed: '{}'", transcript.full());
-                        crate::result_window::update_result(app_handle, &transcript.display_text());
-                    }
-                }
-                Ok(None) => {}
-                Err(e) => warn!("Streaming flush error: {}", e),
+            TranscriptEvent::Final(_) => {
+                // Final 只在 stop 路径产生（finish），tick 不应收到；防御性忽略
+                debug!("Streaming tick got unexpected Final event, ignored");
             }
-            *flushed = true;
-        }
-
-        // 停顿润色（Task 5 接入；此处先保留 check_and_trigger_polish 占位签名）
-        check_and_trigger_polish(transcript, *silence_duration, config, tx);
-    }
-}
-
-/// 用 VAD 检测音频中的语音/静音。
-///
-/// 返回 `true` 表示之前累积了 >0.5s 的静音间隔（需要插入逗号）。
-/// 同时更新 `silence_duration`：
-/// - 本段音频大部分是静音 → 累加静音时长
-/// - 本段音频包含语音 → 重置为 0
-fn detect_silence_gap(
-    vad: &mut Option<octopus_asr::vad::SileroVad>,
-    samples: &[f32],
-    silence_duration: &mut f64,
-) -> bool {
-    let prev_silence = *silence_duration;
-
-    match vad {
-        Some(v) => {
-            let mut speech_chunks = 0usize;
-            let mut silent_chunks = 0usize;
-
-            for chunk in samples.chunks(VAD_CHUNK_SIZE) {
-                if chunk.len() < VAD_CHUNK_SIZE {
-                    break; // 不足一个完整块，跳过
-                }
-                match v.compute(chunk) {
-                    Ok(prob) => {
-                        if prob >= VAD_SPEECH_THRESHOLD {
-                            speech_chunks += 1;
-                        } else {
-                            silent_chunks += 1;
-                        }
-                    }
-                    Err(_) => {
-                        // VAD 计算失败，保守认为有语音
-                        speech_chunks += 1;
-                    }
-                }
-            }
-
-            let total_chunks = speech_chunks + silent_chunks;
-            if total_chunks == 0 {
-                return false;
-            }
-
-            let chunk_duration = VAD_CHUNK_SIZE as f64 / 16000.0; // 每块时长（秒）
-
-            if speech_chunks >= 2 {
-                // 本段包含足够的语音 → 重置静音计时
-                *silence_duration = 0.0;
-            } else {
-                // 本段大部分是静音 → 累积静音时长
-                *silence_duration += total_chunks as f64 * chunk_duration;
-            }
-
-            // 之前累积静音 > 阈值，且本段有语音 → 需要插入标点
-            prev_silence >= PUNCTUATION_SILENCE_THRESHOLD
-        }
-        None => {
-            // 无 VAD，不加标点
-            false
+            TranscriptEvent::Error(e) => warn!("Streaming event error: {}", e),
         }
     }
+
+    // 停顿润色（留端，spec §3.8）
+    check_and_trigger_polish(transcript, runner.silence_duration(), config, tx);
 }
 
 /// 处理 Cancel 命令
@@ -2106,13 +2003,13 @@ fn handle_cancel(
 ) {
     match stage {
         Stage::Streaming {
-            engine,
+            runner,
             streaming_active,
             ..
         } => {
             info!("Cancel: stopping streaming");
             streaming_active.store(false, Ordering::Relaxed);
-            engine.reset();
+            runner.reset();
             let _ = audio.stop();
         }
         Stage::VadSegmented {
@@ -2265,13 +2162,13 @@ fn handle_discard(
     // 停止录音 + 引擎（与 handle_cancel 一致的停止逻辑）
     match stage {
         Stage::Streaming {
-            engine,
+            runner,
             streaming_active,
             ..
         } => {
             info!("Discard: stopping streaming");
             streaming_active.store(false, Ordering::Relaxed);
-            engine.reset();
+            runner.reset();
             let _ = audio.stop();
         }
         Stage::VadSegmented { tick_active, .. } => {
