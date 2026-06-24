@@ -90,7 +90,7 @@ octopus 配置分两部分：
 | aliyun | qwen | qwen-plus | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 0 | 0 | Qwen Plus（非思考） |
 | aliyun | qwen | qwen-turbo | `https://dashscope.aliyuncs.com/compatible-mode/v1` | 0 | 0 | Qwen Turbo（非思考，快） |
 
-> **`provider` 字段**：vendor / 运行位置维度，与 `category`（引擎族/模型系列）正交。`local` 表示随应用打包或下载到本地，`aliyun` 表示经阿里云 DashScope 云端调用，`bytedance` 表示经火山引擎豆包云端调用。决定引擎路由（`provider='aliyun'` → `EngineCategory::Aliyun` → `AliyunEngine`；`provider='bytedance'` → `EngineCategory::ByteDance` → `Stage::CloudStreaming`）。
+> **`provider` 字段**：vendor / 运行位置维度，与 `category`（引擎族/模型系列）正交。`local` 表示随应用打包或下载到本地，`aliyun` 表示经阿里云 DashScope 云端调用，`bytedance` 表示经火山引擎豆包云端调用。决定引擎路由（`provider='aliyun'` → `EngineCategory::Aliyun` → `AliyunEngine`；`provider='bytedance'` → `EngineCategory::ByteDance` → `CloudPipelineEngine`，`Stage::Streaming` cloud 分支）。
 
 > **`is_local` 字段**：标记是否本地运行。`provider='local'` ⟺ `is_local=1`（二者并存：`is_local` 供本地过滤，`provider` 用于 vendor 路由）。
 
@@ -140,7 +140,7 @@ seed 已含 `aliyun:Fun-ASR:fun-asr-2025-11-07`（WS 端点 `wss://dashscope.ali
 asr_engine: "aliyun:Fun-ASR:fun-asr-2025-11-07"
 ```
 
-**云引擎路由**：启动时 `resolve_active_engine(&config.asr_engine)` 按 `provider='aliyun'` 解析为 `EngineCategory::Aliyun` → 建 `AliyunEngine`；`provider='bytedance'` 解析为 `EngineCategory::ByteDance` → 直接走 `Stage::CloudStreaming`（无独立 engine）；否则按 `engine_mode`（embedded/websocket/grpc）走本地引擎。云 ↔ 本地切换改 `app_config.asr_engine` 后**重启**生效（engine 实例启动时固定）。
+**云引擎路由**：启动时 `resolve_active_engine(&config.asr_engine)` 按 `provider='aliyun'` 解析为 `EngineCategory::Aliyun` → 建 `AliyunEngine`；`provider='bytedance'` 解析为 `EngineCategory::ByteDance` → 直接走 `CloudPipelineEngine`（`Stage::Streaming` cloud 分支，无独立 engine）；否则按 `engine_mode`（embedded/websocket/grpc）走本地引擎。云 ↔ 本地切换改 `app_config.asr_engine` 后**重启**生效（engine 实例启动时固定）。
 
 > **注意**：`engine_category_from_str` 对 `"aliyun"` / `"bytedance"` 均返回 `None`——云 provider 不靠 `category` 字符串识别，而由 `resolve_category(provider, category)` 按 provider 分支识别（不进 5 个本地族字符串映射）。
 
@@ -336,7 +336,7 @@ octopus-cli config
 | `"{x}:{y}"`（旧 2-part 1 冒号） | 视为非法格式，记录 warn + 按裸名兜底（迁移期用户更新配置；删库重建后 seed 已是 3-part） | 旧 `"bigmodel:glm-4-flashx"` → warn + 裸名搜索 |
 
 - **区分 provider 与 category**：因为不同 provider 下可有同名模型（`deepseek-v4-flash` 在 deepseek 直连与 aliyun 代管下各一行），不同 category 也可有同名模型。
-- **`provider='aliyun'` / `provider='bytedance'` / `provider='tencent'` / `provider='baidu'` 路由云端**：解析时若 `provider='aliyun'` → `EngineCategory::Aliyun` → 云引擎 `AliyunEngine`（ASR）；`bytedance` → `ByteDance` → `Stage::CloudStreaming`（豆包流式）；`tencent` → `Tencent` → `Stage::CloudStreaming`（腾讯流式）；`baidu` → `Baidu` → `Stage::CloudStreaming`（百度流式）；否则按 `category` 映射到本地引擎族。
+- **`provider='aliyun'` / `provider='bytedance'` / `provider='tencent'` / `provider='baidu'` 路由云端**：解析时若 `provider='aliyun'` → `EngineCategory::Aliyun` → 云引擎 `AliyunEngine`（ASR）；`bytedance` → `ByteDance` → `CloudPipelineEngine`（豆包流式）；`tencent` → `Tencent` → `CloudPipelineEngine`（腾讯流式）；`baidu` → `Baidu` → `CloudPipelineEngine`（百度流式）；否则按 `category` 映射到本地引擎族。
 - **DB 查询统一 4 字段精确匹配**：`parse_model_spec` 解析后，`load_models_at` / `load_llm_model` / `resolve_engine_in_config` 均按 `provider + category + model_name` 查询。
 
 ### 引擎选择与兜底（resolve_active_engine）

@@ -23,10 +23,6 @@ use octopus_asr::vad::SileroVad;
 /// local（包 `StreamingRunner`）与 cloud（持 `CloudStreamHandle`）各 impl。
 /// 同步 `tick` + 同步 `finish_with_tail`；cloud 的 async close 不在此 trait
 /// （留 coordinator，spec §2——`close_async` 必须 async，否则 `block_on` 卡主线程 8s）。
-///
-/// **dead_code allow**：`current_partial`/`is_cloud`/`take_close_handle` 为 cloud 路径
-/// （T2/T3）预留接口，local 路径不调用；T3 接线后自然被引用，allow 届时可移除。
-#[allow(dead_code)]
 pub trait StreamingPipelineEngine: Send {
     /// 喂一帧已降噪 16k 样本，返回本帧 `TranscriptEvent`（0..n）。
     fn tick(&mut self, samples: &[f32]) -> Vec<TranscriptEvent>;
@@ -83,10 +79,6 @@ impl StreamingPipelineEngine for LocalPipelineEngine {
 ///
 /// 不持 transcript（留 `Stage::Streaming`），`tick` 接收 `&mut Transcript`。
 /// 不持 denoise/resample（留 `audio.rs`，输入为已降噪 16k 样本）。
-///
-/// **dead_code allow**：`current_partial`/`take_error`/`take_close_handle`/`is_cloud`
-/// 为 cloud 路径（T2/T3）预留；T3 接线后被 coordinator 引用，allow 届时可移除。
-#[allow(dead_code)]
 pub struct StreamingPipeline {
     engine: Box<dyn StreamingPipelineEngine>,
     /// 上一 tick 承载层捕获的用户可见错误（cloud WSS 开启失败 / `StreamEvent::Failed`）。
@@ -94,8 +86,6 @@ pub struct StreamingPipeline {
     last_error: Option<String>,
 }
 
-/// dead_code allow 同 struct：cloud 预留方法（T2/T3 接线后引用）。
-#[allow(dead_code)]
 impl StreamingPipeline {
     /// 构造 pipeline。`engine` 由调用方创建（`LocalPipelineEngine` 或 `CloudPipelineEngine`）。
     pub fn new(engine: Box<dyn StreamingPipelineEngine>) -> anyhow::Result<Self> {
