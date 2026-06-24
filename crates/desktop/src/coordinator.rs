@@ -176,9 +176,8 @@ enum Stage {
     },
 }
 
-/// VAD 静音判定阈值
-const VAD_SPEECH_THRESHOLD: f32 = 0.5;
-/// VAD 分块大小（采样点数）
+/// VAD 分块大小（采样点数）。`compute_speech_chunks` 迁入 `pipeline.rs` 后自持阈值
+/// 常量；coordinator 仅 `vad_preroll` 用本 `VAD_CHUNK_SIZE`，故保留。
 const VAD_CHUNK_SIZE: usize = 512;
 
 /// VAD 预滚静音帧数：录音启动后喂给检测 VAD 的静音帧数，让 LSTM 状态预热，
@@ -701,7 +700,20 @@ fn handle_toggle(
                 );
 
                 // StreamingPipeline 内部构造 StreamingRunner（VAD + 预热，阶段2a/2b）
-                let pipeline = match StreamingPipeline::new(Box::new(streaming_engine), false) {
+                let local_engine = match crate::pipeline::LocalPipelineEngine::from_session(streaming_engine, false) {
+                    Ok(e) => e,
+                    Err(e) => {
+                        error!("LocalPipelineEngine init failed: {}, abort streaming", e);
+                        let _ = audio.stop();
+                        crate::result_window::hide_result(app_handle);
+                        crate::tray::update_tray_label(
+                            app_handle,
+                            crate::tray::TrayState::Idle,
+                        );
+                        return;
+                    }
+                };
+                let pipeline = match StreamingPipeline::new(Box::new(local_engine)) {
                     Ok(p) => p,
                     Err(e) => {
                         error!("StreamingPipeline init failed: {}, abort streaming", e);
@@ -1358,7 +1370,7 @@ fn handle_vad_segmented_tick(
         audio_buffer.extend_from_slice(&samples);
 
         // 3. VAD 检测本段语音帧数
-        let speech_chunks = compute_speech_chunks(vad, &samples);
+        let speech_chunks = crate::pipeline::compute_speech_chunks(vad, &samples);
         if speech_chunks >= 2 {
             *silence_duration = 0.0;
             *has_speech = true;
@@ -1421,29 +1433,6 @@ fn handle_vad_segmented_tick(
             crate::result_window::update_result(app_handle, &transcript.display_text());
         }
     }
-}
-
-/// 计算音频片段中语音帧的数量
-fn compute_speech_chunks(vad: &mut octopus_asr::vad::SileroVad, samples: &[f32]) -> usize {
-    let mut speech_chunks = 0usize;
-
-    for chunk in samples.chunks(VAD_CHUNK_SIZE) {
-        if chunk.len() < VAD_CHUNK_SIZE {
-            break;
-        }
-        match vad.compute(chunk) {
-            Ok(prob) => {
-                if prob >= VAD_SPEECH_THRESHOLD {
-                    speech_chunks += 1;
-                }
-            }
-            Err(_) => {
-                // VAD 计算失败，保守认为有语音
-                speech_chunks += 1;
-            }
-        }
-    }
-    speech_chunks
 }
 
 /// 预滚 VAD：喂入若干帧静音（零样本），让 LSTM 隐藏状态从冷启动预热，
@@ -1677,7 +1666,7 @@ fn handle_cloud_streaming_tick(
     // 3. VAD 检测
     let mut has_speech_now = false;
     if !samples.is_empty() {
-        let speech_chunks = compute_speech_chunks(vad, &samples);
+        let speech_chunks = crate::pipeline::compute_speech_chunks(vad, &samples);
         has_speech_now = speech_chunks >= 2;
         if has_speech_now {
             *silence_duration = 0.0;

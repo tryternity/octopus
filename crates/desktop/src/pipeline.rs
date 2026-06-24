@@ -1,45 +1,117 @@
-//! desktop 流式 pipeline（spec §3.4）。
+//! desktop 流式 pipeline（spec §3.4 阶段 2c-1/2c-2）。
 //!
-//! [`StreamingPipeline`] 持 [`StreamingRunner`]（asr，2a/2b），承载 local 流式的
-//! 「ASR 编排结果（`TranscriptEvent`）→ 文本状态更新（`Transcript::set_full`）」。
+//! [`StreamingPipeline`] 持 `Box<dyn StreamingPipelineEngine>`（上层抽象），承载
+//! 「engine 事件（`TranscriptEvent`）→ 文本状态更新（`Transcript::set_full`）」。
+//! - [`LocalPipelineEngine`]：薄包 asr `StreamingRunner`（VAD + accept/flush，2a/2b/2c-1）。
+//! - `CloudPipelineEngine`（cfg cloud，见 `cloud_pipeline.rs`）：持 `CloudStreamHandle`
+//!   （onset/push/drain/双层文本/静音非阻塞 finish，2c-2）。cloud 的 async close 不在
+//!   trait（留 coordinator，spec §2）。
 //!
-//! **边界**（2c-1）：emit（`result_window::update_result`）/DB（`coordinator::update_transcription_raw`）
-//! /polish（`coordinator::check_and_trigger_polish`）留 coordinator——emit 与 DB 同步触发以保持
-//! `set_full → DB → emit` 顺序；DB/polish 被 local + VadSegmented + cloud 三路径共用，移出会碰
-//! 其他路径。transcript 也留 `Stage::Streaming`（多处访问），`tick` 接收 `&mut Transcript`。
-//! emit/DB/polish 全收敛留 2d（transcript 进 pipeline 时一起）。
-//!
-//! cloud（utterance 级异步）/VadSegmented（离线分段）不进本 pipeline，留 coordinator（2c-2）。
+//! **边界**：emit（`result_window::update_result`）/DB（`update_transcription_raw`）/polish
+//! （`check_and_trigger_polish`）留 coordinator（emit 与 DB 同步触发以保持 `set_full→DB→emit`
+//! 顺序；DB/polish 被 local + VadSegmented + cloud 三路径共用）。transcript 也留
+//! `Stage::Streaming`，`tick` 接收 `&mut Transcript`。全收敛留 2d。
 
 use crate::transcript::Transcript;
-use log::{debug, warn};
-use octopus_asr::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
+use log::warn;
+use octopus_asr::streaming_runner::{StreamingRunner, TranscriptEvent};
+use octopus_asr::streaming_engine::StreamingSession;
+use octopus_asr::vad::SileroVad;
 
-/// local 流式 pipeline：持 [`StreamingRunner`]，承载 TranscriptEvent → set_full。
+/// desktop 流式 pipeline 引擎（上层抽象，spec §3.4 阶段2c-2）。
+///
+/// local（包 `StreamingRunner`）与 cloud（持 `CloudStreamHandle`）各 impl。
+/// 同步 `tick` + 同步 `finish_with_tail`；cloud 的 async close 不在此 trait
+/// （留 coordinator，spec §2——`close_async` 必须 async，否则 `block_on` 卡主线程 8s）。
+///
+/// **dead_code allow**：`current_partial`/`is_cloud`/`take_close_handle` 为 cloud 路径
+/// （T2/T3）预留接口，local 路径不调用；T3 接线后自然被引用，allow 届时可移除。
+#[allow(dead_code)]
+pub trait StreamingPipelineEngine: Send {
+    /// 喂一帧已降噪 16k 样本，返回本帧 `TranscriptEvent`（0..n）。
+    fn tick(&mut self, samples: &[f32]) -> Vec<TranscriptEvent>;
+    /// 收尾：吃入尾部样本 + finish。
+    ///   local → `StreamingRunner::finish_with_tail`（accept tail + finish，返回 `Final`）。
+    ///   cloud → **只 push tail**（不发 Finish——cloud 的 Finish 由 coordinator 的
+    ///            `close_async` 发，见 spec §4.3，避免重复 Finish），返回最后 `current_partial`
+    ///            作 `Committed` 兜底（不产 `Final`，cloud stop 路径不用其返回值）。
+    fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent;
+    /// 当前累积静音时长（秒，停顿润色触发用）。
+    fn silence_duration(&self) -> f64;
+    /// cloud 预览（`current_partial`），coordinator display 拼接用。local 默认空。
+    /// cloud 双层文本：预览不进 transcript/DB，仅 display（spec §4.1/§4.2 不对称）。
+    fn current_partial(&self) -> &str { "" }
+    /// 重置（会话间复用）。cloud 须同时 drop 内置 session（→ channels 关 → WS task 结束）。
+    fn reset(&mut self);
+    /// cloud engine 的 async close 句柄（stop 时 coordinator 取出 spawn `close_async`）。
+    /// local 返回 `None`（默认）；cloud 取出内置 session 后返回 `Some`。
+    /// **cfg cloud**：`cloud_types` 仅 cloud feature 存在，故方法整体门控（无 cloud 时 trait 无此方法）。
+    #[cfg(feature = "cloud")]
+    fn take_close_handle(&mut self) -> Option<crate::cloud_types::CloudStreamHandle> { None }
+    /// 是否 cloud 引擎（spec §4.2/§4.3 不对称判别：cloud 每 tick emit + commit 时 DB/polish +
+    /// 错误上报 + stop 走 finalize_cloud；local emit/DB/polish 仅 changed + stop 走 finalize_after_stop）。
+    fn is_cloud(&self) -> bool { false }
+}
+
+/// local：薄包 `StreamingRunner`，转发（VAD + accept/flush 编排仍在 asr `StreamingRunner`）。
+pub struct LocalPipelineEngine(StreamingRunner);
+
+impl LocalPipelineEngine {
+    /// 构造 local 引擎，包已创建的 `StreamingSession`（保留 coordinator 的引擎降级逻辑，见 Step 1.4 ④）。
+    /// 内部构造 `StreamingRunner`（含 VAD 预热，2a/2b）。
+    pub fn from_session(session: StreamingSession, correct: bool) -> anyhow::Result<Self> {
+        Ok(Self(StreamingRunner::new(Box::new(session), correct)?))
+    }
+}
+
+impl StreamingPipelineEngine for LocalPipelineEngine {
+    fn tick(&mut self, samples: &[f32]) -> Vec<TranscriptEvent> {
+        self.0.push_samples(samples)
+    }
+    fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent {
+        self.0.finish_with_tail(tail)
+    }
+    fn silence_duration(&self) -> f64 {
+        self.0.silence_duration()
+    }
+    fn reset(&mut self) {
+        self.0.reset();
+    }
+}
+
+/// local 流式 pipeline 壳：持 `Box<dyn StreamingPipelineEngine>`，承载事件 → set_full。
 ///
 /// 不持 transcript（留 `Stage::Streaming`），`tick` 接收 `&mut Transcript`。
 /// 不持 denoise/resample（留 `audio.rs`，输入为已降噪 16k 样本）。
+///
+/// **dead_code allow**：`current_partial`/`take_error`/`take_close_handle`/`is_cloud`
+/// 为 cloud 路径（T2/T3）预留；T3 接线后被 coordinator 引用，allow 届时可移除。
+#[allow(dead_code)]
 pub struct StreamingPipeline {
-    runner: StreamingRunner,
+    engine: Box<dyn StreamingPipelineEngine>,
+    /// 上一 tick 承载层捕获的用户可见错误（cloud WSS 开启失败 / `StreamEvent::Failed`）。
+    /// coordinator 仅对 cloud 取出上报（`take_error`）；local 错误只在承载层 warn，不取出。
+    last_error: Option<String>,
 }
 
+/// dead_code allow 同 struct：cloud 预留方法（T2/T3 接线后引用）。
+#[allow(dead_code)]
 impl StreamingPipeline {
-    /// 构造 pipeline。`engine` 由调用方创建（local `StreamingSession`）。
-    /// 内部构造 `StreamingRunner`（含 VAD 预热，2b）。
-    pub fn new(engine: Box<dyn StreamingEngine>, correct: bool) -> anyhow::Result<Self> {
-        Ok(Self {
-            runner: StreamingRunner::new(engine, correct)?,
-        })
+    /// 构造 pipeline。`engine` 由调用方创建（`LocalPipelineEngine` 或 `CloudPipelineEngine`）。
+    pub fn new(engine: Box<dyn StreamingPipelineEngine>) -> anyhow::Result<Self> {
+        Ok(Self { engine, last_error: None })
     }
 
-    /// 喂一帧已降噪 16k 样本：runner 编排 → TranscriptEvent → set_full。
+    /// 喂一帧已降噪 16k 样本：engine 产事件 → set_full，返回 `changed`。
     ///
-    /// 返回 `true` 表示文本变化（coordinator 据决定是否 DB + emit，保持「内容未变不落库/不重绘」幂等）。
-    /// 只承载 set_full（文本状态更新）；emit/DB/polish 留 coordinator（设计要点 §2/§3）。
-    /// set_full 幂等逻辑收编自 `coordinator::handle_streaming_tick`（2b 版本）。
+    /// `changed=true` 表示文本变化（coordinator 据决定 DB + emit，保持「内容未变不落库/不重绘」幂等）。
+    /// - local 的 `Partial`/`Committed`/`Final` 都 set-full（幂等去重）。
+    /// - cloud 的预览（`current_partial`）**不**经过此——engine 自持 + 暴露 `current_partial()`
+    ///   （spec §4.1）；仅 `Committed`（Finished）经此 set-full。
+    /// - `Error` 承载层 warn + 暂存 `last_error`（coordinator `take_error` 取出，仅 cloud 上报）。
     pub fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> bool {
         let mut changed = false;
-        for event in self.runner.push_samples(samples) {
+        for event in self.engine.tick(samples) {
             match event {
                 TranscriptEvent::Partial(text) | TranscriptEvent::Committed(text) => {
                     if text != transcript.full() {
@@ -47,30 +119,81 @@ impl StreamingPipeline {
                         changed = true;
                     }
                 }
-                TranscriptEvent::Final(_) => {
-                    // Final 只在 stop 路径产生（finish），tick 不应收到；防御性忽略
-                    debug!("StreamingPipeline tick got unexpected Final event, ignored");
+                TranscriptEvent::Final(text) => {
+                    transcript.set_full(&text);
+                    changed = true;
                 }
-                TranscriptEvent::Error(e) => warn!("StreamingPipeline event error: {}", e),
+                TranscriptEvent::Error(e) => {
+                    warn!("StreamingPipeline event error: {}", e);
+                    self.last_error = Some(e);
+                }
             }
         }
         changed
     }
 
-    /// 收尾并先吃入尾部样本（stop 路径用）。委托 [`StreamingRunner::finish_with_tail`]。
+    /// 收尾并先吃入尾部样本（stop 路径用）。委托 engine（local→Final；cloud→push tail + 兜底 Committed）。
     pub fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent {
-        self.runner.finish_with_tail(tail)
+        self.engine.finish_with_tail(tail)
     }
 
-    /// 当前累积静音时长（秒），供 coordinator 判断停顿润色。委托 runner。
+    /// 当前累积静音时长（秒），供 coordinator 判断停顿润色。委托 engine。
     pub fn silence_duration(&self) -> f64 {
-        self.runner.silence_duration()
+        self.engine.silence_duration()
     }
 
-    /// 重置（会话间复用）。委托 runner。
-    pub fn reset(&mut self) {
-        self.runner.reset();
+    /// cloud 预览（`current_partial`），local 恒空。coordinator display 拼接用。
+    pub fn current_partial(&self) -> &str {
+        self.engine.current_partial()
     }
+
+    /// 取出上一 tick 暂存的用户可见错误（cloud 上报用）。取走后清空。
+    pub fn take_error(&mut self) -> Option<String> {
+        self.last_error.take()
+    }
+
+    /// stop 路径分派：cloud → `Some(CloudStreamHandle)`（coordinator spawn close_async）；local → `None`。
+    /// cfg cloud（与 trait 方法同步门控）。
+    #[cfg(feature = "cloud")]
+    pub fn take_close_handle(&mut self) -> Option<crate::cloud_types::CloudStreamHandle> {
+        self.engine.take_close_handle()
+    }
+
+    /// 是否 cloud 引擎（§4.2/§4.3 不对称判别）。
+    pub fn is_cloud(&self) -> bool {
+        self.engine.is_cloud()
+    }
+
+    /// 重置（会话间复用）。委托 engine（cloud 同时 drop session）。
+    pub fn reset(&mut self) {
+        self.engine.reset();
+    }
+}
+
+// ── 共享 VAD helper（coordinator vad-segmented tick 与 cloud tick 共用，spec §3.4）──
+
+/// VAD 静音判定阈值（与 `streaming_runner` 常量一致）。
+pub(crate) const VAD_SPEECH_THRESHOLD: f32 = 0.5;
+/// VAD 分块大小（采样点数，16k 下 32ms）。
+pub(crate) const VAD_CHUNK_SIZE: usize = 512;
+
+/// 计算音频片段中语音帧的数量（迁自 `coordinator.rs`，vad-segmented / cloud 共用）。
+pub(crate) fn compute_speech_chunks(vad: &mut SileroVad, samples: &[f32]) -> usize {
+    let mut speech_chunks = 0usize;
+    for chunk in samples.chunks(VAD_CHUNK_SIZE) {
+        if chunk.len() < VAD_CHUNK_SIZE {
+            break;
+        }
+        match vad.compute(chunk) {
+            Ok(prob) => {
+                if prob >= VAD_SPEECH_THRESHOLD {
+                    speech_chunks += 1;
+                }
+            }
+            Err(_) => speech_chunks += 1, // VAD 计算失败，保守认为有语音
+        }
+    }
+    speech_chunks
 }
 
 #[cfg(test)]
@@ -79,52 +202,46 @@ mod tests {
     use crate::config::PolishMode;
     use std::sync::Mutex;
 
-    /// 可编程 fake（搬自 `streaming_runner::tests`，简化：只 accept + finish）。
-    struct FakeStreamingEngine {
-        accept_out: Mutex<Vec<Option<String>>>,
-        finish_out: Mutex<String>,
+    /// 直接 impl 新 trait 的 fake（不经过 StreamingRunner），测 StreamingPipeline 承载层。
+    struct FakePipelineEngine {
+        tick_out: Mutex<Vec<TranscriptEvent>>,
+        partial: String,
+        finish_out: TranscriptEvent,
+        silence: f64,
     }
-
-    impl FakeStreamingEngine {
-        fn new(accept: Vec<&str>, finish: &str) -> Self {
+    impl FakePipelineEngine {
+        fn new(tick: Vec<TranscriptEvent>, partial: &str, finish: TranscriptEvent) -> Self {
             Self {
-                accept_out: Mutex::new(
-                    accept.into_iter().map(|s| Some(s.to_string())).collect(),
-                ),
-                finish_out: Mutex::new(finish.to_string()),
+                tick_out: Mutex::new(tick),
+                partial: partial.to_string(),
+                finish_out: finish,
+                silence: 0.0,
             }
         }
     }
-
-    impl StreamingEngine for FakeStreamingEngine {
-        fn accept_samples(
-            &self,
-            _samples: &[f32],
-            _was_silent: bool,
-        ) -> anyhow::Result<Option<String>> {
-            let mut q = self.accept_out.lock().unwrap();
-            if q.is_empty() {
-                anyhow::bail!("fake accept error");
-            }
-            Ok(q.remove(0))
+    impl StreamingPipelineEngine for FakePipelineEngine {
+        fn tick(&mut self, _samples: &[f32]) -> Vec<TranscriptEvent> {
+            std::mem::take(&mut *self.tick_out.lock().unwrap())
         }
-        fn flush(&self, _insert_comma: bool) -> anyhow::Result<Option<String>> {
-            Ok(None)
+        fn finish_with_tail(&mut self, _tail: &[f32]) -> TranscriptEvent {
+            self.finish_out.clone()
         }
-        fn finish(&self) -> anyhow::Result<String> {
-            Ok(self.finish_out.lock().unwrap().clone())
-        }
-        fn reset(&self) {}
+        fn silence_duration(&self) -> f64 { self.silence }
+        fn current_partial(&self) -> &str { &self.partial }
+        fn reset(&mut self) {}
     }
 
-    fn pipeline(fake: FakeStreamingEngine) -> StreamingPipeline {
-        StreamingPipeline::new(Box::new(fake), false).unwrap()
+    fn pipeline(fake: FakePipelineEngine) -> StreamingPipeline {
+        StreamingPipeline::new(Box::new(fake)).unwrap()
     }
 
     #[test]
     fn tick_partial_updates_transcript_and_signals_changed() {
-        // accept 首次返回 Some("你好") → Partial → transcript.full 由 "" 变 "你好" → changed=true
-        let mut p = pipeline(FakeStreamingEngine::new(vec!["你好"], "你好。"));
+        let mut p = pipeline(FakePipelineEngine::new(
+            vec![TranscriptEvent::Partial("你好".to_string())],
+            "",
+            TranscriptEvent::Final("你好。".to_string()),
+        ));
         let mut t = Transcript::new(0, PolishMode::Disabled);
         let changed = p.tick(&[0.0; 1600], &mut t);
         assert!(changed);
@@ -132,10 +249,76 @@ mod tests {
     }
 
     #[test]
-    fn finish_with_tail_delegates_to_runner() {
-        // pipeline.finish_with_tail 委托 runner；accept 队列给 1 个（tail 吃入），finish 返回固定串
-        let mut p = pipeline(FakeStreamingEngine::new(vec!["尾"], "最终。"));
+    fn tick_final_overrides_transcript() {
+        // Final 显式承载（2c-2 新增分支，local stop 产 Final）
+        let mut p = pipeline(FakePipelineEngine::new(
+            vec![TranscriptEvent::Final("最终。".to_string())],
+            "",
+            TranscriptEvent::Final("最终。".to_string()),
+        ));
+        let mut t = Transcript::new(0, PolishMode::Disabled);
+        t.set_full("旧的");
+        let changed = p.tick(&[0.0; 1600], &mut t);
+        assert!(changed);
+        assert_eq!(t.full(), "最终。"); // Final 无条件覆盖
+    }
+
+    #[test]
+    fn tick_committed_idempotent_no_change_skip() {
+        // Committed 与当前 full 相同 → 不改、changed=false（幂等）
+        let mut p = pipeline(FakePipelineEngine::new(
+            vec![TranscriptEvent::Committed("一样".to_string())],
+            "",
+            TranscriptEvent::Final("".to_string()),
+        ));
+        let mut t = Transcript::new(0, PolishMode::Disabled);
+        t.set_full("一样");
+        let changed = p.tick(&[0.0; 1600], &mut t);
+        assert!(!changed);
+    }
+
+    #[test]
+    fn tick_stashes_error_for_take_error() {
+        let mut p = pipeline(FakePipelineEngine::new(
+            vec![TranscriptEvent::Error("boom".to_string())],
+            "",
+            TranscriptEvent::Final("".to_string()),
+        ));
+        let mut t = Transcript::new(0, PolishMode::Disabled);
+        let changed = p.tick(&[0.0; 1600], &mut t);
+        assert!(!changed);
+        assert_eq!(p.take_error().as_deref(), Some("boom"));
+        assert!(p.take_error().is_none());
+    }
+
+    #[test]
+    fn current_partial_forwards_to_engine() {
+        let p = pipeline(FakePipelineEngine::new(
+            vec![],
+            "预览",
+            TranscriptEvent::Final("".to_string()),
+        ));
+        assert_eq!(p.current_partial(), "预览");
+        assert!(!p.is_cloud());
+    }
+
+    #[test]
+    fn finish_with_tail_delegates_to_engine() {
+        let mut p = pipeline(FakePipelineEngine::new(
+            vec![],
+            "",
+            TranscriptEvent::Final("最终。".to_string()),
+        ));
         let ev = p.finish_with_tail(&[0.0; 512]);
         assert_eq!(ev, TranscriptEvent::Final("最终。".to_string()));
+    }
+
+    #[cfg(feature = "cloud")]
+    #[test]
+    fn take_close_handle_none_for_local_fake() {
+        // FakePipelineEngine 不覆盖 take_close_handle → 默认 None（与 LocalPipelineEngine 一致）。
+        // 方法本身 cfg cloud，故测试同步门控（无 cloud feature 时不编译）。
+        let mut p = pipeline(FakePipelineEngine::new(vec![], "", TranscriptEvent::Final("".to_string())));
+        assert!(p.take_close_handle().is_none());
     }
 }
