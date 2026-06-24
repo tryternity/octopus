@@ -1,7 +1,7 @@
 # ASR Pipeline 阶段 2c-2：云端流式接入 StreamingPipeline
 
 > 2026-06-24 初版（brainstorming 产出）。
-> **状态**：设计已定（Approach 1：上层 trait + cloud close 留 coordinator），待写实施计划。
+> **状态**：设计已定 + 实施计划就绪（2026-06-24，Approach 1：上层 trait + cloud close 留 coordinator）。plan `docs/superpowers/plans/2026-06-24-asr-pipeline-stage2c2.md`。
 > **关联**：总 spec `docs/superpowers/specs/2026-06-23-asr-pipeline-design.md` §3.4（阶段 2c-2）。
 > **前置**：阶段 2a/2b/2c-1 已合并 main（本地流式链路已收敛进 `desktop::StreamingPipeline`）。
 > **范围**：仅 cloud streaming（DashScope/ByteDance/Tencent/Baidu 长连接 WSS）。**VadSegmented（离线分段）语义模型不同，拆 2c-3 单独设计**。
