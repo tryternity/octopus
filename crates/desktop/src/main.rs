@@ -16,6 +16,8 @@ mod tencent_stream;
 mod baidu_stream;
 #[cfg(feature = "cloud")]
 mod cloud_types;
+#[cfg(feature = "cloud")]
+mod cloud_pipeline;
 mod engine_dispatch;
 mod engine_embedded;
 #[cfg(feature = "remote-grpc")]
