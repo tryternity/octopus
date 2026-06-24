@@ -218,6 +218,9 @@ pub struct CloudPipelineEngine {
     pre_roll_buffer: Vec<f32>,
     session: Option<CloudStreamHandle>,
     /// 已提交累积（镜像 `transcript.full` 的提交层；engine 无 transcript 访问，故自持）。
+    /// **T3 接线硬约束**：`transcript.full` 除本 engine 的 `Committed` 经 `set_full` 覆盖外，
+    /// 不被其他路径（如 `append_segment`）修改，否则镜像失同步会导致下次 commit 的逗号拼接
+    /// 或全量覆盖出错。
     committed_text: String,
     current_partial: String,
     silence_duration: f64,
@@ -458,6 +461,35 @@ mod tests {
         assert!(!is_closing);
         assert!(!is_speaking);
         assert!(session.is_none()); // Finished → !is_closing && !is_speaking → take
+    }
+
+    #[test]
+    fn drain_finished_no_double_comma_when_committed_ends_with_comma() {
+        // committed 已以 '，' 结尾 + partial "第二句" → Finished → 不再加逗号 → "第一句，第二句"
+        // 防回归：若误改成无条件 push('，') 会得 "第一句，，第二句"
+        let (handle, _pcm_rx, result_tx) = CloudStreamHandle::new();
+        let mut session = Some(handle);
+        let (mut committed, mut partial, mut is_closing, mut is_speaking) =
+            ("第一句，".to_string(), String::new(), false, true);
+        let _ = result_tx.send(StreamEvent::Text("第二句".to_string()));
+        let _ = drain_cloud_session(CloudDrainState {
+            session: &mut session,
+            committed_text: &mut committed,
+            current_partial: &mut partial,
+            is_closing: &mut is_closing,
+            is_speaking: &mut is_speaking,
+        });
+        assert_eq!(partial, "第二句");
+        let _ = result_tx.send(StreamEvent::Finished);
+        let evs = drain_cloud_session(CloudDrainState {
+            session: &mut session,
+            committed_text: &mut committed,
+            current_partial: &mut partial,
+            is_closing: &mut is_closing,
+            is_speaking: &mut is_speaking,
+        });
+        assert_eq!(evs, vec![TranscriptEvent::Committed("第一句，第二句".to_string())]);
+        assert_eq!(committed, "第一句，第二句"); // 不双逗号
     }
 
     #[test]
