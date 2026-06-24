@@ -107,33 +107,6 @@ enum Stage {
         /// tick 线程控制标志
         tick_active: Arc<AtomicBool>,
     },
-    /// 云端流式：VAD-gated per-utterance streaming（DashScope 长连接）。
-    ///
-    /// 语音 onset → 开 WSS + pre-roll → 持续推 PCM → 静音 ≥ 700ms → 断开。
-    /// 每条 WSS 对应一个 utterance（一句话），断开后下一段语音开新 WSS。
-    #[cfg(feature = "cloud")]
-    CloudStreaming {
-        /// 检测用 VAD（逐 tick 喂入，有状态累积，跨 utterance 续接）
-        vad: octopus_asr::vad::SileroVad,
-        /// 当前活跃的云端流式会话（语音进行中时存在）
-        session: Option<crate::cloud_types::CloudStreamHandle>,
-        /// pre-roll 滚动缓冲区：保留最近 ~200ms 音频，语音 onset 时取 100ms 补齐
-        pre_roll_buffer: Vec<f32>,
-        /// 已提交的识别文本（跨 utterance 拼接，只由 close() 结果 append）
-        transcript: Transcript,
-        /// 当前 session 的实时 partial（未提交预览，close 后清零）
-        current_partial: String,
-        /// 当前静音持续时长（秒）
-        silence_duration: f64,
-        /// 当前是否有活跃的 WSS（语音进行中）
-        is_speaking: bool,
-        /// 连续检测到语音的 tick 数（用于 onset 确认，避免单次噪声脉冲误触发）
-        speech_confirm_count: u32,
-        /// 已发送 finish（非阻塞），等待 Finished 事件
-        is_closing: bool,
-        /// tick 线程控制标志
-        tick_active: Arc<AtomicBool>,
-    },
     /// 云端流式停止后等待最终结果（审查 三1）：close 改非阻塞，结果由
     /// Command::CloudStreamingDone 回传。期间持有 transcript + current_partial，
     /// 等待 close_async 收尾；Toggle/Cancel 在此阶段被忽略（busy closing）。
@@ -191,15 +164,6 @@ const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 100;
 /// 云端流式 tick 间隔（毫秒）
 #[cfg(feature = "cloud")]
 const CLOUD_STREAMING_TICK_INTERVAL_MS: u64 = 100;
-
-/// 云端流式 pre-roll 缓冲区大小（采样点）：200ms @ 16kHz = 3200 samples。
-/// 语音 onset 时取最后 ~100ms（1600 samples）作为 pre-roll。
-#[cfg(feature = "cloud")]
-const CLOUD_PREROLL_BUFFER_SAMPLES: usize = 3200;
-
-/// 云端流式 pre-roll 补齐长度（采样点）：100ms @ 16kHz = 1600 samples。
-#[cfg(feature = "cloud")]
-const CLOUD_PREROLL_SAMPLES: usize = 1600;
 
 /// 中间润色最小间隔下限（秒）：polish_mode=2 且 polish_min_interval<=0 时回退到此值，避免每 tick 刷爆 LLM。
 pub(crate) const MIN_POLISH_INTERVAL_SEC: f64 = 1.0;
@@ -325,12 +289,14 @@ impl Coordinator {
                             let rc = runtime_config.read().unwrap();
                             config.polish_mode = rc.polish_mode;
                         }
-                        if let Stage::CloudStreaming { transcript, .. } = &mut stage {
+                        if let Stage::Streaming { transcript, .. } = &mut stage {
                             transcript.set_mode(config.polish_mode);
                         }
-                        handle_cloud_streaming_tick(
-                            &mut stage, &audio, &config, &app_handle, &tx,
-                        );
+                        if editing {
+                            let _ = audio.drain_samples();
+                        } else {
+                            handle_streaming_tick(&mut stage, &audio, &config, &app_handle, &tx);
+                        }
                     }
                     Command::VadSegmentedTick => {
                         {
@@ -632,30 +598,41 @@ fn handle_toggle(
                             crate::result_window::show_result(app_handle, "正在聆听…");
                             crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
 
+                            let cloud_engine = crate::cloud_pipeline::CloudPipelineEngine::new(
+                                vad,
+                                config.asr_engine.clone(),
+                                config.language.clone(),
+                                config.pause_polish_threshold_ms,
+                            );
+                            let pipeline = match StreamingPipeline::new(Box::new(cloud_engine)) {
+                                Ok(p) => p,
+                                Err(e) => {
+                                    error!("StreamingPipeline (cloud) init failed: {}, abort", e);
+                                    let _ = audio.stop();
+                                    crate::result_window::hide_result(app_handle);
+                                    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                                    return;
+                                }
+                            };
+
+                            // cloud 用独立 100ms tick 线程（STREAMING=200/CLOUD=100，不可合并）
                             let tick_active = Arc::new(AtomicBool::new(true));
                             start_cloud_streaming_tick_thread(tx.clone(), tick_active.clone());
 
-                            *stage = Stage::CloudStreaming {
-                                vad,
-                                session: None,
-                                pre_roll_buffer: Vec::new(),
+                            *stage = Stage::Streaming {
+                                pipeline,
                                 transcript: Transcript::new(now_millis(), config.polish_mode),
-                                current_partial: String::new(),
-                                silence_duration: 0.0,
-                                is_speaking: false,
-                                speech_confirm_count: 0,
-                                is_closing: false,
-                                tick_active,
+                                streaming_active: tick_active,
                             };
                         }
                         Err(e) => {
-                            error!("VAD init failed for CloudStreaming: {}, falling back to VadSegmented", e);
+                            error!("VAD init failed for cloud streaming: {}, falling back to VadSegmented", e);
                             let _ = audio.stop();
                             return;
                         }
                     },
                     Err(e) => {
-                        error!("VAD not found for CloudStreaming: {}, falling back to VadSegmented", e);
+                        error!("VAD not found for cloud streaming: {}, falling back to VadSegmented", e);
                         let _ = audio.stop();
                         return;
                     }
@@ -855,14 +832,48 @@ fn handle_toggle(
             transcript,
             streaming_active,
         } => {
-            // 流式模式：停止流式，获取最终文本，粘贴
             info!("Toggle: stopping streaming, finalizing");
-
-            // 停止 tick
             streaming_active.store(false, Ordering::Relaxed);
-
-            // 获取最终音频和识别结果
             let final_samples = audio.drain_samples();
+            let _ = audio.stop();
+
+            #[cfg(feature = "cloud")]
+            if pipeline.is_cloud() {
+                // cloud: push tail（不发 Finish——Finish 由 close_async 发，避免重复）
+                let _ = pipeline.finish_with_tail(&final_samples);
+                let partial = pipeline.current_partial().to_string();
+                if let Some(handle) = pipeline.take_close_handle() {
+                    // spawn close_async，结果以 Command::CloudStreamingDone 回来；期间进 CloudClosing
+                    // 审查 三1：close 改非阻塞——原 sess.close(&rt) block_on 最多卡 coordinator 8s。
+                    // Toggle/Cancel 在 CloudClosing 阶段被忽略（busy closing），不阻塞主线程。
+                    let rt = tauri::async_runtime::handle();
+                    let tx_clone = tx.clone();
+                    let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+                    // 跨会话护栏：close 在飞期间 Cancel/Discard 会把 stage 清回 Idle（绕过 Toggle
+                    // 的"忙"保护），用户可立刻重开云端会话 → 新 CloudClosing。旧会话迟到的
+                    // CloudStreamingDone 会匹配到新 CloudClosing。带 session_id（= 本会话
+                    // transcript.id），handler 校验当前 closing transcript.id 是否匹配，否则丢弃。
+                    let session_id = tr.id;
+                    rt.spawn(async move {
+                        let result = handle.close_async().await;
+                        let _ = tx_clone.send(Command::CloudStreamingDone {
+                            text: result.map_err(|e| e.to_string()),
+                            session_id,
+                        });
+                    });
+                    *stage = Stage::CloudClosing {
+                        transcript: tr,
+                        current_partial: partial,
+                    };
+                    return;
+                }
+                // 无活跃 session：无需等 close，直接 finalize_cloud（无标点补全，服务端已分句）
+                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+                finalize_cloud(stage, tr, partial, config, app_handle, tx);
+                return;
+            }
+
+            // local: finish_with_tail → Final → set_full → finalize_after_stop（带标点补全）
             // 尾部样本 + finish（精确等价原 accept(tail,false)+finish；不走 VAD/标点）
             let final_text = match pipeline.finish_with_tail(&final_samples) {
                 TranscriptEvent::Final(text) => text,
@@ -875,73 +886,13 @@ fn handle_toggle(
                 }
                 _ => transcript.edited_display().unwrap_or_else(|| transcript.db_text()),
             };
-
             pipeline.reset();
-
-            // 停止录音
-            let _ = audio.stop();
-
             if !final_text.is_empty() {
                 transcript.set_full(&final_text);
             }
-
             info!("Final streaming text: '{}'", transcript.db_text());
-
             let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
             finalize_after_stop(stage, tr, config, app_handle, tx);
-        }
-
-        #[cfg(feature = "cloud")]
-        Stage::CloudStreaming {
-            vad: _,
-            session,
-            pre_roll_buffer: _,
-            transcript,
-            current_partial,
-            silence_duration: _,
-            is_speaking: _,
-            speech_confirm_count: _,
-            is_closing,
-            tick_active,
-        } => {
-            info!("Toggle: stopping CloudStreaming, finalizing");
-            tick_active.store(false, Ordering::Relaxed);
-            let final_samples = audio.drain_samples();
-            let _ = audio.stop();
-
-            if let Some(sess) = session.take() {
-                if !final_samples.is_empty() && !*is_closing {
-                    let _ = sess.push_pcm(&final_samples);
-                }
-                // 审查 三1：close 改非阻塞——原 sess.close(&rt) block_on 最多卡 coordinator 8s。
-                // spawn close_async，结果以 Command::CloudStreamingDone 回来；期间进
-                // Stage::CloudClosing（Toggle/Cancel 被忽略），不阻塞主线程处理其他命令。
-                let rt = tauri::async_runtime::handle();
-                let tx_clone = tx.clone();
-                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-                let partial = std::mem::take(current_partial);
-                // 跨会话护栏：close 在飞期间 Cancel/Discard 会把 stage 清回 Idle（绕过 Toggle
-                // 的"忙"保护），用户可立刻重开云端会话 → 新 CloudClosing。旧会话迟到的
-                // CloudStreamingDone 会匹配到新 CloudClosing。带 session_id（= 本会话
-                // transcript.id），handler 校验当前 closing transcript.id 是否匹配，否则丢弃。
-                let session_id = tr.id;
-                rt.spawn(async move {
-                    let result = sess.close_async().await;
-                    let _ = tx_clone.send(Command::CloudStreamingDone {
-                        text: result.map_err(|e| e.to_string()),
-                        session_id,
-                    });
-                });
-                *stage = Stage::CloudClosing {
-                    transcript: tr,
-                    current_partial: partial,
-                };
-                return;
-            }
-            // 无活跃 session：无需等 close，直接 finalize（append partial + paste）
-            let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-            let partial = std::mem::take(current_partial);
-            finalize_cloud(stage, tr, partial, config, app_handle, tx);
         }
 
         Stage::WaitingCompletion { .. } => {
@@ -1475,16 +1426,6 @@ fn is_cloud_engine(config: &AppConfig) -> bool {
     )
 }
 
-/// 从 pre-roll 滚动缓冲区取最后 `CLOUD_PREROLL_SAMPLES` 样本作为前导音频。
-#[cfg(feature = "cloud")]
-fn take_preroll(pre_roll_buffer: &[f32]) -> Vec<f32> {
-    if pre_roll_buffer.len() >= CLOUD_PREROLL_SAMPLES {
-        pre_roll_buffer[pre_roll_buffer.len() - CLOUD_PREROLL_SAMPLES..].to_vec()
-    } else {
-        pre_roll_buffer.to_vec()
-    }
-}
-
 /// 启动云端流式 tick 线程（首 tick 立即触发）
 #[cfg(feature = "cloud")]
 fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
@@ -1499,305 +1440,6 @@ fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<Atomi
         }
         debug!("CloudStreaming tick thread exited");
     });
-}
-
-/// 通用云端配置解析：从 DB section 取 ModelEntry + 校验 secret_key 非空。
-#[cfg(feature = "cloud")]
-fn resolve_cloud_entry<'a>(
-    section: Option<&'a std::collections::HashMap<String, octopus_infra::db::ModelEntry>>,
-    provider: &'a str,
-    model_name: &'a str,
-) -> Result<&'a octopus_infra::db::ModelEntry, String> {
-    let entry = section
-        .and_then(|m| m.get(model_name))
-        .ok_or_else(|| format!("{} ASR 模型 '{}' 未在 DB 配置", provider, model_name))?;
-    if entry.secret_key.is_empty() {
-        return Err(format!("{} ASR 模型 '{}' 的 secret_key 为空", provider, model_name));
-    }
-    Ok(entry)
-}
-
-/// 解析 Aliyun（DashScope）配置（endpoint + key + model_name）。
-#[cfg(feature = "cloud")]
-fn resolve_aliyun_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.aliyun.as_ref(), "aliyun", &model_name)?;
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
-}
-
-/// 解析 ByteDance（豆包）配置（resource_id + api_key + model_name）。
-#[cfg(feature = "cloud")]
-fn resolve_bytedance_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.bytedance.as_ref(), "bytedance", &model_name)?;
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
-}
-
-/// 解析 Tencent（腾讯云）配置（appid:secretid + secret_key + engine_model_type）。
-#[cfg(feature = "cloud")]
-fn resolve_tencent_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.tencent.as_ref(), "tencent", &model_name)?;
-    if !entry.source.contains(':') {
-        return Err(format!(
-            "tencent ASR 模型 '{}' 的 source 字段格式应为 appid:secretid（当前='{}'）",
-            model_name, entry.source
-        ));
-    }
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
-}
-
-/// 解析 Baidu（百度云）配置（appid + api_key + dev_pid）。
-#[cfg(feature = "cloud")]
-fn resolve_baidu_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.baidu.as_ref(), "baidu", &model_name)?;
-    if entry.source.is_empty() {
-        return Err(format!(
-            "baidu ASR 模型 '{}' 的 source 字段（AppID）为空",
-            model_name
-        ));
-    }
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
-}
-
-/// onset dispatch：根据引擎类型解析配置 + 打开对应云端 WS session。
-#[cfg(feature = "cloud")]
-fn open_cloud_session(
-    config: &AppConfig,
-    pre_roll: Vec<f32>,
-) -> Result<crate::cloud_types::CloudStreamHandle, String> {
-    use octopus_asr::config::EngineCategory;
-    let rt = tauri::async_runtime::handle();
-    match octopus_asr::config::resolve_engine_category(&config.asr_engine) {
-        Some(EngineCategory::Aliyun) => {
-            let (endpoint, key, model) = resolve_aliyun_config(&config.asr_engine)?;
-            crate::aliyun_stream::open(
-                &rt, endpoint, key, model, config.language.clone(), pre_roll,
-            )
-            .map_err(|e| e.to_string())
-        }
-        Some(EngineCategory::ByteDance) => {
-            let (resource_id, api_key, _) = resolve_bytedance_config(&config.asr_engine)?;
-            crate::bytedance_stream::open(
-                &rt, api_key, resource_id, config.language.clone(), pre_roll,
-            )
-            .map_err(|e| e.to_string())
-        }
-        Some(EngineCategory::Tencent) => {
-            let (appid_secretid, secret_key, engine_model_type) =
-                resolve_tencent_config(&config.asr_engine)?;
-            crate::tencent_stream::open(
-                &rt, appid_secretid, secret_key, engine_model_type,
-                config.language.clone(), pre_roll,
-            )
-            .map_err(|e| e.to_string())
-        }
-        Some(EngineCategory::Baidu) => {
-            let (appid, appkey, dev_pid) = resolve_baidu_config(&config.asr_engine)?;
-            crate::baidu_stream::open(
-                &rt, appid, appkey, dev_pid, config.language.clone(), pre_roll,
-            )
-            .map_err(|e| e.to_string())
-        }
-        _ => Err("当前引擎非云端，无法开启 WSS".to_string()),
-    }
-}
-
-/// 处理 CloudStreamingTick 命令：VAD-gated per-utterance streaming。
-#[cfg(feature = "cloud")]
-fn handle_cloud_streaming_tick(
-    stage: &mut Stage,
-    audio: &Arc<SharedAudioState>,
-    config: &AppConfig,
-    app_handle: &tauri::AppHandle,
-    tx: &Sender<Command>,
-) {
-    let cs = match stage {
-        Stage::CloudStreaming { .. } => stage,
-        _ => return,
-    };
-
-    // 提取可变引用（单次 match borrow）
-    let Stage::CloudStreaming {
-        vad,
-        session,
-        pre_roll_buffer,
-        transcript,
-        current_partial,
-        silence_duration,
-        is_speaking,
-        speech_confirm_count,
-        is_closing,
-        ..
-    } = cs
-    else { return; };
-
-    // 辅助闭包：transcript + current_partial 拼接为显示文本
-    let render_display = |t: &Transcript, partial: &str| -> String {
-        let base = t.display_text();
-        if partial.is_empty() { base } else { format!("{}{}", base, partial) }
-    };
-
-    // 1. drain 音频
-    let samples = audio.drain_samples();
-
-    // 2. 追加到 pre-roll 滚动缓冲区（超容量弹头）
-    if !samples.is_empty() {
-        pre_roll_buffer.extend_from_slice(&samples);
-        if pre_roll_buffer.len() > CLOUD_PREROLL_BUFFER_SAMPLES {
-            let excess = pre_roll_buffer.len() - CLOUD_PREROLL_BUFFER_SAMPLES;
-            pre_roll_buffer.drain(0..excess);
-        }
-    }
-
-    // 3. VAD 检测
-    let mut has_speech_now = false;
-    if !samples.is_empty() {
-        let speech_chunks = crate::pipeline::compute_speech_chunks(vad, &samples);
-        has_speech_now = speech_chunks >= 2;
-        if has_speech_now {
-            *silence_duration = 0.0;
-            // 连续 tick 确认：消除单次噪声脉冲误触发 onset
-            if !*is_speaking && !*is_closing {
-                *speech_confirm_count += 1;
-            }
-        } else {
-            let chunk_duration = samples.len() as f64 / 16000.0;
-            *silence_duration += chunk_duration;
-            // 静音重置确认计数（除非已在 speaking 状态）
-            if !*is_speaking && !*is_closing {
-                *speech_confirm_count = 0;
-            }
-        }
-    }
-
-    // 4. 无活跃 WSS + 连续 2 tick 确认 onset → 开 WSS + pre-roll + push
-    //    连续 2 tick（~200ms）检测到语音才开 WSS，避免噪声脉冲浪费 API 调用
-    if has_speech_now && !*is_speaking && !*is_closing && *speech_confirm_count >= 2 {
-        *is_speaking = true;
-        *speech_confirm_count = 0;
-        current_partial.clear();
-        let pre_roll = take_preroll(pre_roll_buffer);
-        match open_cloud_session(config, pre_roll) {
-            Ok(sess) => {
-                let _ = sess.push_pcm(&samples);
-                *session = Some(sess);
-                debug!("CloudStreaming: WSS opened on speech onset");
-            }
-            Err(e) => {
-                error!("CloudStreaming: open WSS failed: {}", e);
-                *is_speaking = false;
-                // 向用户报错（审查 Issue 5）：否则前端卡在"正在聆听…"无反馈
-                crate::result_window::update_result(
-                    app_handle,
-                    &format!("⚠️ 云端连接失败：{}", e),
-                );
-            }
-        }
-    }
-
-    // 5. 有活跃 WSS → push PCM（closing 时不推） + drain events
-    let mut session_just_finished = false;
-    if let Some(sess) = session.as_mut() {
-        if !samples.is_empty() && !*is_closing {
-            if let Err(e) = sess.push_pcm(&samples) {
-                warn!("CloudStreaming: push_pcm failed: {}", e);
-            }
-        }
-        // drain partial / final events
-        while let Some(event) = sess.try_recv_text() {
-            match event {
-                crate::cloud_types::StreamEvent::Text(text) => {
-                    if !text.is_empty() {
-                        log::info!("[CloudDrain] partial={:?}", text);
-                        *current_partial = text;
-                    }
-                }
-                crate::cloud_types::StreamEvent::Finished => {
-                    log::info!(
-                        "[CloudDrain] Finished, committing partial={:?} to transcript",
-                        current_partial
-                    );
-                    // session 完成：把 current_partial 提交到 transcript
-                    if !current_partial.is_empty() {
-                        if !transcript.full().is_empty()
-                            && !transcript.full().ends_with('，')
-                        {
-                            transcript.append_segment("，");
-                        }
-                        transcript.append_segment(current_partial);
-                        current_partial.clear();
-                        update_transcription_raw(
-                            transcript,
-                            &config.asr_engine,
-                            "streaming",
-                        )
-                        .unwrap_or_else(|e| {
-                            warn!("CloudStreaming DB update failed: {}", e)
-                        });
-                    }
-                    *is_closing = false;
-                    *is_speaking = false;
-                    session_just_finished = true;
-                }
-                crate::cloud_types::StreamEvent::Failed(msg) => {
-                    warn!("[CloudDrain] Failed: {}", msg);
-                    current_partial.clear();
-                    *is_closing = false;
-                    *is_speaking = false;
-                    // 向用户报错（审查 一2）：session 由下方 `!is_closing && !is_speaking`
-                    // 分支自动 take，下次语音 onset 重开 WS（瞬时抖动自动重试；
-                    // 持续失败如 Key 无效则每次 onset 报错，用户可见可排查）。
-                    crate::result_window::update_result(
-                        app_handle,
-                        &format!("⚠️ 云端识别失败：{}", msg),
-                    );
-                }
-            }
-        }
-        // 如果 is_closing 已完成（Finished/Failed 处理后），drop session
-        if !*is_closing && !*is_speaking {
-            let _ = session.take(); // drop → channels close → WS task 结束
-        }
-    }
-
-    // 5.5 session 刚完成 → 触发停顿润色
-    if session_just_finished {
-        check_and_trigger_polish(transcript, *silence_duration, config, tx);
-    }
-
-    // 6. 有活跃 WSS + 静音 ≥ threshold → 非阻塞 finish
-    if *is_speaking && !*is_closing && *silence_duration * 1000.0 >= config.pause_polish_threshold_ms {
-        *is_speaking = false;
-        *is_closing = true;
-        if let Some(sess) = session.as_ref() {
-            log::info!(
-                "[CloudFinish] silence≥threshold, sending finish (non-blocking)"
-            );
-            if let Err(e) = sess.finish() {
-                warn!("CloudStreaming: finish failed: {}", e);
-            }
-        }
-    }
-
-    // 7. 更新 UI（transcript + current_partial）
-    let display = render_display(transcript, current_partial);
-    if !display.is_empty() {
-        crate::result_window::update_result(app_handle, &display);
-    }
 }
 
 /// 带 seq 序号的离线识别线程
@@ -1936,7 +1578,13 @@ fn check_and_trigger_polish(
     spawn_polish_thread(preserved, to_polish, config, tx, false, transcript.id);
 }
 
-/// 处理 StreamingTick 命令
+/// 处理 StreamingTick / CloudStreamingTick 命令（2c-2：local/cloud 统一）。
+///
+/// engine.tick 承载事件 → set_full（`changed`）；emit/DB/polish 留 coordinator。
+/// - local：`changed` → DB + emit（幂等，无变化不落库/不重绘）；每 tick 查停顿润色。
+/// - cloud：`changed`（= Committed/Finished）→ DB + 停顿润色（increase 被 take_polish_input
+///   消耗 + polish_pending 护栏保证与原「仅 session_just_finished 触发」等价）；**每 tick emit**
+///   （display + current_partial 预览，预览不进 DB）；用户可见错误（WSS 开启失败 / Failed）上报。
 fn handle_streaming_tick(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
@@ -1953,23 +1601,49 @@ fn handle_streaming_tick(
         return;
     };
 
+    let is_cloud = pipeline.is_cloud();
     let samples = audio.drain_samples();
-    if samples.is_empty() {
+    // local 在空样本时早退（无音频可处理）；cloud 不早退（仍 drain events / 检查 finish / emit）
+    if !is_cloud && samples.is_empty() {
         return;
     }
 
-    // ASR 编排 + 文本更新委托 pipeline（spec §3.4）；changed 表示文本变化
     let changed = pipeline.tick(&samples, transcript);
-    if changed {
-        // 幂等：内容未变不落库/不重绘（DB + emit 留 coordinator，保持 set_full→DB→emit 顺序）
-        if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "streaming") {
-            warn!("DB (streaming) failed: {}", e);
-        }
-        crate::result_window::update_result(app_handle, &transcript.display_text());
-    }
 
-    // 停顿润色（留 coordinator：三路径共用 check_and_trigger_polish，spec §3.8）
-    check_and_trigger_polish(transcript, pipeline.silence_duration(), config, tx);
+    if is_cloud {
+        // commit（changed）→ DB + 停顿润色（与原 session_just_finished 触发等价）
+        if changed {
+            if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "streaming") {
+                warn!("DB (cloud streaming) failed: {}", e);
+            }
+            check_and_trigger_polish(transcript, pipeline.silence_duration(), config, tx);
+        }
+        // 用户可见错误（WSS 开启失败 / StreamEvent::Failed；local 错误只在承载层 warn）
+        if let Some(e) = pipeline.take_error() {
+            crate::result_window::update_result(app_handle, &e);
+        }
+        // 每 tick emit（display + current_partial 预览）——与原 cloud tick 末尾总 emit 一致
+        let base = transcript.display_text();
+        let partial = pipeline.current_partial();
+        let display = if partial.is_empty() {
+            base
+        } else {
+            format!("{}{}", base, partial)
+        };
+        if !display.is_empty() {
+            crate::result_window::update_result(app_handle, &display);
+        }
+    } else {
+        // local：changed → DB + emit（幂等）
+        if changed {
+            if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "streaming") {
+                warn!("DB (streaming) failed: {}", e);
+            }
+            crate::result_window::update_result(app_handle, &transcript.display_text());
+        }
+        // 停顿润色（每 tick，留 coordinator：三路径共用 check_and_trigger_polish）
+        check_and_trigger_polish(transcript, pipeline.silence_duration(), config, tx);
+    }
 }
 
 /// 处理 Cancel 命令
@@ -1996,15 +1670,6 @@ fn handle_cancel(
             tick_active.store(false, Ordering::Relaxed);
             let _ = audio.stop();
         }
-        #[cfg(feature = "cloud")]
-        Stage::CloudStreaming {
-            tick_active, session, ..
-        } => {
-            info!("Cancel: stopping CloudStreaming");
-            tick_active.store(false, Ordering::Relaxed);
-            let _ = session.take(); // drop session → channels close → WS task 结束
-            let _ = audio.stop();
-        }
         Stage::WaitingCompletion { .. } => {
             info!("Cancel: cancelling while waiting for transcription");
             // 识别结果将被忽略，回到 Idle
@@ -2028,8 +1693,7 @@ fn handle_cancel(
             if transcript.db_inserted() { Some(transcript.id) } else { None }
         }
         #[cfg(feature = "cloud")]
-        Stage::CloudStreaming { transcript, .. }
-        | Stage::CloudClosing { transcript, .. } => {
+        Stage::CloudClosing { transcript, .. } => {
             if transcript.db_inserted() { Some(transcript.id) } else { None }
         }
         Stage::Polishing { id, .. } | Stage::Pasting { id, .. } => Some(*id),
@@ -2100,8 +1764,7 @@ fn handle_discard(
             })
         }
         #[cfg(feature = "cloud")]
-        Stage::CloudStreaming { transcript, .. }
-        | Stage::CloudClosing { transcript, .. } => {
+        Stage::CloudClosing { transcript, .. } => {
             let (p, s, m) = polished_info(transcript);
             Some(DiscardDbInfo {
                 id: transcript.id,
@@ -2151,15 +1814,6 @@ fn handle_discard(
         Stage::VadSegmented { tick_active, .. } => {
             info!("Discard: stopping VadSegmented");
             tick_active.store(false, Ordering::Relaxed);
-            let _ = audio.stop();
-        }
-        #[cfg(feature = "cloud")]
-        Stage::CloudStreaming {
-            tick_active, session, ..
-        } => {
-            info!("Discard: stopping CloudStreaming");
-            tick_active.store(false, Ordering::Relaxed);
-            let _ = session.take();
             let _ = audio.stop();
         }
         #[cfg(feature = "cloud")]
@@ -2381,8 +2035,7 @@ fn handle_polish_done(
         | Stage::VadSegmented { transcript, .. }
         | Stage::WaitingCompletion { transcript, .. } => transcript,
         #[cfg(feature = "cloud")]
-        Stage::CloudStreaming { transcript, .. }
-        | Stage::CloudClosing { transcript, .. } => transcript,
+        Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("PolishDone ignored: stage={} 不是录音/等待阶段，润色结果丢弃", stage_name(stage));
             use tauri::Emitter;
@@ -2461,8 +2114,7 @@ fn handle_polish_now(
         | Stage::VadSegmented { transcript, .. }
         | Stage::WaitingCompletion { transcript, .. } => transcript,
         #[cfg(feature = "cloud")]
-        Stage::CloudStreaming { transcript, .. }
-        | Stage::CloudClosing { transcript, .. } => transcript,
+        Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("PolishNow ignored in stage {:?}", stage_name(stage));
             let _ = app_handle.emit("polish-done", ());
@@ -2505,8 +2157,7 @@ fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &m
         | Stage::VadSegmented { transcript, .. }
         | Stage::WaitingCompletion { transcript, .. } => transcript,
         #[cfg(feature = "cloud")]
-        Stage::CloudStreaming { transcript, .. }
-        | Stage::CloudClosing { transcript, .. } => transcript,
+        Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("enter_edit_mode ignored in non-active stage");
             return;
@@ -2524,8 +2175,7 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
         | Stage::VadSegmented { transcript, .. }
         | Stage::WaitingCompletion { transcript, .. } => transcript,
         #[cfg(feature = "cloud")]
-        Stage::CloudStreaming { transcript, .. }
-        | Stage::CloudClosing { transcript, .. } => transcript,
+        Stage::CloudClosing { transcript, .. } => transcript,
         _ => {
             debug!("commit_edit ignored in non-active stage");
             return;
@@ -2554,8 +2204,6 @@ fn stage_name(stage: &Stage) -> &'static str {
         Stage::StoppingPolish { .. } => "StoppingPolish",
         Stage::Polishing { .. } => "Polishing",
         Stage::Pasting { .. } => "Pasting",
-        #[cfg(feature = "cloud")]
-        Stage::CloudStreaming { .. } => "CloudStreaming",
         #[cfg(feature = "cloud")]
         Stage::CloudClosing { .. } => "CloudClosing",
     }

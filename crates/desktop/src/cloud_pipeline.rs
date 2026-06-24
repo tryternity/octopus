@@ -93,9 +93,9 @@ pub(super) fn should_send_finish(
     is_speaking: bool,
     is_closing: bool,
     silence_ms: f64,
-    pause_polish_threshold_ms: u64,
+    pause_polish_threshold_ms: f64,
 ) -> bool {
-    is_speaking && !is_closing && silence_ms >= pause_polish_threshold_ms as f64
+    is_speaking && !is_closing && silence_ms >= pause_polish_threshold_ms
 }
 
 /// 从 pre-roll 滚动缓冲区取最后 `CLOUD_PREROLL_SAMPLES` 样本作为前导音频（迁自 coordinator）。
@@ -229,17 +229,17 @@ pub struct CloudPipelineEngine {
     is_closing: bool,
     asr_engine: String,
     language: String,
-    pause_polish_threshold_ms: u64,
+    pause_polish_threshold_ms: f64,
 }
 
 impl CloudPipelineEngine {
     /// 构造。`vad` 由 coordinator 经 `find_silero_vad` + `vad_preroll` 预热后传入。
-    /// `asr_engine`/`language`/`pause_polish_threshold_ms` 从 config 快照克隆（onset 时开 session / finish 判定用）。
+    /// `asr_engine`/`language`/`pause_polish_threshold_ms` 从 config 快照克隆（onset 时开 session / finish 刡定用）。
     pub fn new(
         vad: SileroVad,
         asr_engine: String,
         language: String,
-        pause_polish_threshold_ms: u64,
+        pause_polish_threshold_ms: f64,
     ) -> Self {
         Self {
             vad,
@@ -550,10 +550,10 @@ mod tests {
 
     #[test]
     fn should_send_finish_only_when_speaking_not_closing_silence_enough() {
-        assert!(should_send_finish(true, false, 800.0, 700));   // speaking + 静音 800≥700
-        assert!(!should_send_finish(false, false, 800.0, 700)); // 未 speaking
-        assert!(!should_send_finish(true, true, 800.0, 700));   // 已 closing
-        assert!(!should_send_finish(true, false, 600.0, 700));  // 静音不足
+        assert!(should_send_finish(true, false, 800.0, 700.0));   // speaking + 静音 800≥700
+        assert!(!should_send_finish(false, false, 800.0, 700.0)); // 未 speaking
+        assert!(!should_send_finish(true, true, 800.0, 700.0));   // 已 closing
+        assert!(!should_send_finish(true, false, 600.0, 700.0));  // 静音不足
     }
 
     #[test]
