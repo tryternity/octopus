@@ -1,0 +1,25 @@
+[package]
+name = "octopus-asr-cloud"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+octopus-asr = { path = "../asr" }
+octopus-infra = { path = "../infra" }
+
+# Async + WSS（wss:// 需 native-tls）
+tokio = { version = "1", features = ["full"] }
+tokio-tungstenite = { version = "0.24", features = ["native-tls"] }
+futures-util = "0.3"
+
+# 协议层依赖（与 desktop cloud feature 一致）
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+base64 = "0.22"
+flate2 = "1"
+hmac = "0.12"
+sha1 = "0.10"
+
+# 通用
+anyhow = "1"
+log = "0.4"

@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/infra", "crates/asr", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download"]
+members = ["crates/infra", "crates/asr", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download"]
 resolver = "2"
 
 # Release profile：缩减打包体积（2026-06-20，体积裁剪报告）。
