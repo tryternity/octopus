@@ -931,7 +931,7 @@ Expected: check 0 error；clippy 无本次引入的新 warning。
 ```
 改为：
 ```
-> **状态**：已实现（plan `docs/superpowers/plans/2026-06-25-cloud-asr-cli.md`，8 task 全完成；workspace 测试绿；e2e 待用户本地云端 key 手动验）。
+> **状态**：已实现且 e2e 通过（plan `docs/superpowers/plans/2026-06-25-cloud-asr-cli.md`，8 task 全完成；workspace 测试绿；e2e 用户本地云端 key 验通过 2026-06-25）。
 ```
 
 并在 §4.1「协议层」开头加一句实施修正注记：
@@ -959,7 +959,7 @@ Read `docs/architecture.md`，在 crate 列表/workspace 结构处加 `octopus-a
 **云端 ASR 下沉 cli（已实施，worktree-model-mgmt-ui）**：新建 octopus-asr-cloud crate
 （4 provider WSS 协议层 1:1 复刻 desktop + CloudBatchEngine impl OfflineAsrEngine，
 skip_corrector=true）+ cli 本地/云端分流（is_cloud_spec + AsrEngineManager::active_engine）。
-desktop 本次零改动（*_stream.rs 副本暂留，第二步合并）。e2e 待用户本地云端 key。
+desktop 本次零改动（*_stream.rs 副本暂留，第二步合并）。e2e 通过（用户本地云端 key 验，2026-06-25）。
 ```
 
 同步更新 `MEMORY.md` 索引行的尾部「2c-3/2d 待」前后，提及 cloud-asr-cli 已实施。
@@ -973,7 +973,7 @@ git commit -m "docs: 云端 ASR 下沉 cli 实施完成同步（spec 横幅 + ar
 
 （记忆文件在仓库外，不进 git，Step 5 用 Write 工具直接写。）
 
-- [ ] **Step 7: e2e 手动验证清单（交付给用户，不自动化）**
+- [x] **Step 7: e2e 手动验证清单（用户本地云端 key 验通过，2026-06-25）**
 
 实现完成后，向用户给出以下 e2e 清单（用户本地有云端 key 时执行）：
 

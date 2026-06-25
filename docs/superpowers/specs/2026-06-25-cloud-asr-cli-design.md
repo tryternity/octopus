@@ -1,7 +1,7 @@
 # 云端 ASR 下沉：cli 批处理接入（`octopus-asr-cloud` crate）
 
 > 2026-06-25 初版（brainstorming 产出）。
-> **状态**：已实现（plan `docs/superpowers/plans/2026-06-25-cloud-asr-cli.md`，8 task 全完成；asr-cloud 30 单测绿、workspace check 0 error、新代码 clippy 0 warning；e2e 待用户本地云端 key 手动验）。
+> **状态**：已实现且 e2e 通过（plan `docs/superpowers/plans/2026-06-25-cloud-asr-cli.md`，8 task 全完成；asr-cloud 30 单测绿、workspace check 0 error、新代码 clippy 0 warning；e2e 用户本地云端 key 验通过 2026-06-25）。
 > **动机**：cli/server 转译音频文件应能选云端 ASR 引擎（DashScope/ByteDance/Tencent/Baidu），不必只靠本地 onnx。当前云端 ASR 全锁在 desktop crate（依赖 `tauri::async_runtime`），cli 够不到。
 > **关联**：ASR pipeline 总 spec `2026-06-23-asr-pipeline-design.md`；2c-2 cloud 流式已合并 main（`fa2becc`）。
 > **范围（本次）**：建 `octopus-asr-cloud` crate（WSS 协议层 + 批引擎）+ cli 接入。**不含**：desktop 复用（第二步，后续）、流式适配（留 desktop）、VadSegmented（2c-3）。
