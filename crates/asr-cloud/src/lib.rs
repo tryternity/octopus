@@ -9,3 +9,4 @@
 
 pub mod cloud_types;
 pub mod aliyun_stream;
+pub mod bytedance_stream;
