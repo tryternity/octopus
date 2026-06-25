@@ -2,13 +2,13 @@
 
 > 2026-06-23 初版（brainstorming 产出）。
 > **阶段1 已实施（2026-06-23）**：`asr::pipeline`（PipelineConfig + transcribe_batch）、`transcribe_with_vad` 委托、cli 走新 pipeline。流式 trait / StreamingRunner / desktop / server 留阶段2/3。
-> **阶段2 进行中（2026-06-23）**：phase 2（desktop 全量拆分）拆为 2a/2b/2c-1/2c-2/2c-3/2d——
+> **阶段2 已完成（2026-06-25，2a-2d 全 ff-merge main）**：phase 2（desktop 全量拆分）拆为 2a/2b/2c-1/2c-2/2c-3/2d——
 > - **2a（已实施，ff-merge main）**：asr 流式基础设施 `StreamingRunner` + `StreamingEngine` trait + `TranscriptEvent`（plan `stage2a.md`）。
 > - **2b（已实施，commit 5ab50e7/1d9e347，ff-merge main deac36b，e2e 基本通过 2026-06-24）**：desktop 本地流式迁移——`Stage::Streaming` 委托 `StreamingRunner`，`handle_streaming_tick` 消费 `TranscriptEvent`，stop 用 `finish_with_tail`；`StreamingPipeline` 抽象延后 2c（plan `stage2b.md`）。
 > - **2c-1（已实施，commit 6106401/d2bf7dd/9a803a5，e2e 通过 2026-06-24，ff-merge main 9a803a5）**：`StreamingPipeline` 壳立（`desktop/pipeline.rs`）+ local ASR→set_full 迁入 pipeline；emit/DB/polish 留 coordinator（三路径共用 / 保持 set_full→DB→emit 顺序）；transcript 留 Stage。cloud/VadSegmented 不动（plan `stage2c1.md`）。
 > - **2c-2（已合并 main 2026-06-24，commit f8cd395→9928f60，e2e 通过）**：cloud 接入——上层 trait `StreamingPipelineEngine`（`LocalPipelineEngine` 包 StreamingRunner / `CloudPipelineEngine` 持 CloudStreamHandle 各 impl）+ cloud `close_async` 留 coordinator（不可消除，`Stage::CloudClosing` + session_id 护栏保留）；`Stage::CloudStreaming` 合并进 `Stage::Streaming`，cloud tick 迁入 `CloudPipelineEngine`（`cloud_pipeline.rs`）。双 feature 编译/测试通过 + clippy 零新 warning；e2e 通过（本地+云端流式识别正常），已 ff-merge main。spec `2026-06-24-asr-pipeline-stage2c2-design.md`，plan `2026-06-24-asr-pipeline-stage2c2.md`。
-> - **2c-3（待）**：VadSegmented（离线分段，`OfflineAsrEngine` async transcribe + seq 乱序回填）归位——语义模型不同（非流式分段），单独设计。
-> - **2d（待）**：coordinator 清理——emit/DB/polish + transcript 全收敛进 `StreamingPipeline`，coordinator 退化为路由。
+> - **2c-3（已 ff-merge main `a5630c4`，2026-06-25）**：VadSegmented（离线分段，`OfflineAsrEngine` async transcribe + seq 乱序回填）归位——`VadSegmentedPipeline` + `Pipeline` 上层 trait，删 `Command::TranscriptionDone`，WaitingCompletion 由 tick 线程空样本 drain rx 驱动；零行为差异，VadSegmented 全路径 e2e 通过。spec `2026-06-25-vad-segmented-rehome-design.md`。
+> - **2d（已 ff-merge main `4acf340`，2026-06-25）**：coordinator 清理——emit/DB/polish 触发逻辑收敛进 pipeline 事件流（`PipelineEvent` + `Pipeline::tick` 签名 `bool→Vec` + `apply_pipeline_events`/`dispatch_tick` 统一路由），coordinator 退化为事件路由；transcript 留 Stage，stop 路径丢弃 tick 事件保零行为差异，三路径 e2e 通过。spec `2026-06-25-coordinator-cleanup-design.md`。
 > **设计调整（用户 2026-06-23 决策，覆盖 §3.3/§3.6 字面）**：denoise + resample **留 `desktop/audio.rs` 不迁入 StreamingRunner**（denoise 紧耦合 cpal 采集，`DenoiseProcessor`/`AudioResampler` 类型本就在 asr，`audio.rs` 仅调用方）；`StreamingRunner` 输入即 `drain_samples()` 的已降噪 16k 样本，只收编 VAD 静音+标点+engine accept/flush/finish 纯 ASR 编排。`AudioSource` trait 延后到 2b，流式纠错 hook 预留但默认关（§9.4 待核实）。
 > 目标：把现在散落在 `desktop/coordinator.rs` 主循环、`desktop/audio.rs` 录制层、`asr/engine.rs::transcribe_with_vad`、`asr/streaming_engine.rs::StreamingSession` 的隐式编排，收敛成**显式的 pipeline 角色** + **asr 提供可复用零件与无端编排 helper**。
 > 工作分支：`worktree-model-mgmt-ui`（后续可开独立 worktree 实施）。
