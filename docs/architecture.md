@@ -61,6 +61,19 @@ ASR 推理的核心库，所有上层组件都依赖它。
                                                               → engine.finish → [final]
 ```
 
+### octopus-asr-cloud（云端 ASR 协议层 + 批引擎）
+
+云端 ASR（Aliyun/ByteDance/Tencent/Baidu 4 provider）WSS 协议层 + 批引擎，cli/server 批处理转译音频文件可选云端 API（不必只靠本地 onnx）。依赖 `octopus-asr`（**单向**，asr 不依赖 cloud，避免循环——本地/云端分流在 cli 层）。
+
+| 模块 | 说明 |
+|------|------|
+| `cloud_types` | `PcmFrame`/`StreamEvent`/`CloudStreamHandle`（`new`/`push_pcm`/`finish`/`close_async`，迁自 desktop；`CLOUD_CLOSE_TIMEOUT_SECS=8`）|
+| `aliyun_stream`/`bytedance_stream`/`tencent_stream`/`baidu_stream` | 4 provider WSS 协议层（建连/鉴权/帧编解码/WS 循环），1:1 复刻 desktop `*_stream.rs`，仅改造 `open()`：去 `tauri::async_runtime::RuntimeHandle` 参、`rt.spawn`→`tokio::spawn`；协议字节级零差异，单测随源文件搬入 |
+| `config` | `resolve_*_config`（从 `AppConfig.asr.{provider}` 取 `ModelEntry` 校验 `secret_key`）+ `open_cloud_session(spec, lang, pre_roll) -> anyhow::Result<CloudStreamHandle>`（按 `resolve_engine_category` 分发到 4 provider `open`）|
+| `batch` | `CloudBatchEngine impl OfflineAsrEngine`：`from_spec`（3-part 云端 spec 校验 + 建 tokio runtime，不查 DB/不连网）；`transcribe` = 单段→单 WSS session→完整文本（`block_on`：open + 分块 push_pcm + close_async，分段由上层 `transcribe_segments` 自动完成）；`skip_corrector()=true`；`is_cloud_spec`（`parse_model_spec` 3-part provider 前缀判云端，不查 DB）|
+
+> desktop 本次零改动：`*_stream.rs`/`cloud_types.rs`/`cloud_pipeline.rs` 副本暂留，第二步（独立后续）删副本、`CloudPipelineEngine` 改指 cloud crate 协议层 + 云端流式 e2e 回归。
+
 ### octopus-cli（命令行工具）
 
 通过 clap 提供 6 个子命令：
@@ -69,7 +82,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 |------|------|
 | `devices` | 列出可用麦克风 |
 | `config` | 显示模型发现信息 |
-| `transcribe` | WAV 文件离线识别 |
+| `transcribe` | WAV 文件离线识别；`--model` 支持 3-part 云端 spec（`provider:category:model_name`，provider=aliyun/bytedance/tencent/baidu）→ `octopus-asr-cloud` 的 `CloudBatchEngine`（WSS，`skip_corrector=true`），否则本地 onnx；两端都经 `asr::pipeline::transcribe_batch`（VAD 分段 + 纠错 + 简繁）。分流在 cli 层（`pipeline::run` 用 `is_cloud_spec`） |
 | `e2e` | 麦克风实时识别（离线/流式） |
 | `stream-test` | WAV 文件流式识别测试 |
 | `download` | 从 HuggingFace 下载模型到 `~/.octopus/models/<repo>/`（薄封装 `octopus-download`：`--include`/`--exclude` glob 过滤、`--mirror` 镜像；镜像优先级 `--mirror` > config `download_mirror` > 官方源） |

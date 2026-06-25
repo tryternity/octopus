@@ -1,7 +1,7 @@
 # 云端 ASR 下沉：cli 批处理接入（`octopus-asr-cloud` crate）
 
 > 2026-06-25 初版（brainstorming 产出）。
-> **状态**：设计中（待用户审 → writing-plans）。
+> **状态**：已实现（plan `docs/superpowers/plans/2026-06-25-cloud-asr-cli.md`，8 task 全完成；asr-cloud 30 单测绿、workspace check 0 error、新代码 clippy 0 warning；e2e 待用户本地云端 key 手动验）。
 > **动机**：cli/server 转译音频文件应能选云端 ASR 引擎（DashScope/ByteDance/Tencent/Baidu），不必只靠本地 onnx。当前云端 ASR 全锁在 desktop crate（依赖 `tauri::async_runtime`），cli 够不到。
 > **关联**：ASR pipeline 总 spec `2026-06-23-asr-pipeline-design.md`；2c-2 cloud 流式已合并 main（`fa2becc`）。
 > **范围（本次）**：建 `octopus-asr-cloud` crate（WSS 协议层 + 批引擎）+ cli 接入。**不含**：desktop 复用（第二步，后续）、流式适配（留 desktop）、VadSegmented（2c-3）。
@@ -63,6 +63,8 @@ cloud crate 只暴露 async 协议 fn + 同步批引擎，spawn 上下文由调�
 ## 4. `octopus-asr-cloud` crate
 
 ### 4.1 协议层（4 provider WSS，纯 async fn）
+
+> **实施修正**（核对 desktop 源码后，详见 plan 顶部「据实修正」）：`open()` 保持**同步**签名（仅 `CloudStreamHandle::new()` + `tokio::spawn` + 返回 handle，不 await），唯一 async 收尾在 `CloudStreamHandle::close_async`；`CloudBatchEngine` 不自己 VAD 分段（`asr::pipeline::transcribe_segments` 自动分段 + CJK 连接）；`is_cloud_spec`/`from_spec` 用 `parse_model_spec` 的 **3-part provider 前缀**判云端（不查 DB），须 `provider:category:model_name` 三段 spec。
 
 从 desktop `baidu_stream.rs`/`bytedance_stream.rs`/`aliyun_stream.rs`/`tencent_stream.rs` 复刻协议逻辑（建连、鉴权、二进制/JSON 帧编解码、WS 收发循环），改造为 **async fn**（去掉 `open()` 内部的 `tauri::async_runtime::spawn`，改为调用方驱动的 async fn）：
 
