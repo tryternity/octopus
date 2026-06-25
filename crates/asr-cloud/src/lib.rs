@@ -10,3 +10,5 @@
 pub mod cloud_types;
 pub mod aliyun_stream;
 pub mod bytedance_stream;
+pub mod tencent_stream;
+pub mod baidu_stream;
