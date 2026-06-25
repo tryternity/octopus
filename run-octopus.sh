@@ -15,7 +15,9 @@ rm -rf ~/Library/HTTPStorages/com.octopus.desktop
 
 # 3. 构建前端（React → dist/）
 #    cargo run 不走 Tauri CLI，不会触发 beforeBuildCommand，必须手动 build。
-cd "$(dirname "$0")/crates/desktop/frontend"
+cd "$(dirname "$0")/crates/desktop/"
+rm -rf ./dist
+cd ./frontend
 npm run build
 
 # 4. 切到 desktop crate 目录：frontendDist:"dist" 相对 tauri.conf.json 所在目录，

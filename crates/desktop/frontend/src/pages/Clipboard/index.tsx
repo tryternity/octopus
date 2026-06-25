@@ -39,7 +39,7 @@ export default function Clipboard() {
   return (
     <div className="flex flex-col h-screen bg-muted/30 text-foreground select-none overflow-hidden" data-tauri-drag-region>
       {/* Title bar */}
-      <div className="flex items-center gap-1 px-2 py-1.5" data-tauri-drag-region>
+      <div className="flex items-center justify-between px-2 py-1.5" data-tauri-drag-region>
         <button
           className="p-1 rounded-md hover:bg-black/5 text-muted-foreground hover:text-foreground transition-colors"
           onClick={() => getCurrentWindow().hide()}
@@ -47,6 +47,7 @@ export default function Clipboard() {
         >
           <X className="w-3.5 h-3.5" />
         </button>
+        <span className="text-xs text-muted-foreground/70">剪贴板历史</span>
         <button
           className={cn(
             "p-1 rounded-md transition-colors",
@@ -57,7 +58,6 @@ export default function Clipboard() {
         >
           <Pin className="w-3.5 h-3.5" />
         </button>
-        <div className="flex-1" data-tauri-drag-region />
       </div>
 
       {/* Search + Filter compact row */}
