@@ -37,7 +37,7 @@ export default function Clipboard() {
   }, [pinned]);
 
   return (
-    <div className="flex flex-col h-screen bg-muted/30 text-foreground select-none overflow-hidden rounded-xl border border-border/30 shadow-lg" data-tauri-drag-region>
+    <div className="flex flex-col h-screen bg-background text-foreground select-none overflow-hidden rounded-xl border border-border shadow-lg" data-tauri-drag-region>
       {/* Title bar */}
       <div className="flex items-center justify-between px-2 py-1.5" data-tauri-drag-region>
         <button
