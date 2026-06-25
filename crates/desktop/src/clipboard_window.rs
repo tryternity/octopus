@@ -18,6 +18,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     .always_on_top(true)
     .skip_taskbar(true)
     .resizable(true)
+    .transparent(true)
     .visible(false)
     .build()?;
 
