@@ -161,6 +161,19 @@ impl AsrEngineManager {
             .ok_or_else(|| anyhow::anyhow!("No active ASR engine loaded in AsrEngineManager"))?;
         crate::pipeline::transcribe_batch(eng.as_ref(), samples, cfg)
     }
+
+    /// 取出当前 active engine（供 cli 分流后统一调 `pipeline::transcribe_batch`）。
+    ///
+    /// 与本地/云端分流配合：cli 本地分支构造 `AsrEngineManager` + `switch_model` 后取
+    /// `Arc<dyn OfflineAsrEngine>`，与云端分支的 `CloudBatchEngine` 同为 `dyn OfflineAsrEngine`，
+    /// 喂同一 `transcribe_batch`。
+    pub fn active_engine(&self) -> Result<Arc<dyn OfflineAsrEngine>> {
+        self.active_engine
+            .read()
+            .unwrap()
+            .clone()
+            .ok_or_else(|| anyhow::anyhow!("No active ASR engine loaded in AsrEngineManager"))
+    }
 }
 
 /// 保留入口（desktop 经 `AsrEngineManager::transcribe` 使用）：从全局 app_config 构造 cfg

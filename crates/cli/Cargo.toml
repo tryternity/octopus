@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 octopus-asr = { path = "../asr" }
+octopus-asr-cloud = { path = "../asr-cloud" }
 cpal = "0.16"
 anyhow = "1"
 clap = { version = "4", features = ["derive"] }
