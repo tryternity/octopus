@@ -1,10 +1,11 @@
 import { useState, useCallback } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
 import { useClipboardHistory } from "@/hooks/useClipboardHistory";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
-import { Pin, Trash2 } from "lucide-react";
+import { Pin, Trash2, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export default function Clipboard() {
@@ -36,6 +37,13 @@ export default function Clipboard() {
     >
       {/* Title bar */}
       <div className="flex items-center justify-between px-3 py-1.5" data-tauri-drag-region>
+        <button
+          className="p-1 rounded hover:bg-accent text-muted-foreground"
+          onClick={() => getCurrentWindow().hide()}
+          title="关闭"
+        >
+          <X className="w-3.5 h-3.5" />
+        </button>
         <span className="text-xs text-muted-foreground">剪贴板历史</span>
         <button
           className={cn("p-1 rounded hover:bg-accent", pinned && "text-primary")}
