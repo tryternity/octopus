@@ -117,17 +117,14 @@ pub trait Pipeline: Send {
 /// desktop 流式 pipeline 引擎（上层抽象，spec §3.4 阶段2c-2）。
 ///
 /// local（包 `StreamingRunner`）与 cloud（持 `CloudStreamHandle`）各 impl。
-/// 同步 `tick` + 同步 `finish_with_tail`；cloud 的 async close 不在此 trait
+/// 同步 `tick` + 同步 `finish`；cloud 的 async close 不在此 trait
 /// （留 coordinator，spec §2——`close_async` 必须 async，否则 `block_on` 卡主线程 8s）。
 pub trait StreamingPipelineEngine: Send {
     /// 喂一帧已降噪 16k 样本，返回本帧 `TranscriptEvent`（0..n）。
     fn tick(&mut self, samples: &[f32]) -> Vec<TranscriptEvent>;
-    /// 收尾：吃入尾部样本 + finish。
-    ///   local → `StreamingRunner::finish_with_tail`（accept tail + finish，返回 `Final`）。
-    ///   cloud → **只 push tail**（不发 Finish——cloud 的 Finish 由 coordinator 的
-    ///            `close_async` 发，见 spec §4.3，避免重复 Finish），返回最后 `current_partial`
-    ///            作 `Committed` 兜底（不产 `Final`，cloud stop 路径不用其返回值）。
-    fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent;
+    /// 收尾 flush（tail 已由 stop 路径 tick 喂入 accept）：
+    /// local → `StreamingRunner::finish`（Final）；cloud → 返回最后 `current_partial` 作 Committed 兜底。
+    fn finish(&mut self) -> TranscriptEvent;
     /// 当前累积静音时长（秒，停顿润色触发用）。
     fn silence_duration(&self) -> f64;
     /// cloud 预览（`current_partial`），coordinator display 拼接用。local 默认空。
@@ -160,8 +157,8 @@ impl StreamingPipelineEngine for LocalPipelineEngine {
     fn tick(&mut self, samples: &[f32]) -> Vec<TranscriptEvent> {
         self.0.push_samples(samples)
     }
-    fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent {
-        self.0.finish_with_tail(tail)
+    fn finish(&mut self) -> TranscriptEvent {
+        self.0.finish()
     }
     fn silence_duration(&self) -> f64 {
         self.0.silence_duration()
@@ -218,9 +215,13 @@ impl StreamingPipeline {
         changed
     }
 
-    /// 收尾并先吃入尾部样本（stop 路径用）。委托 engine（local→Final；cloud→push tail + 兜底 Committed）。
-    pub fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent {
-        self.engine.finish_with_tail(tail)
+    /// 收尾 flush（tail 已由 stop 路径 tick 喂入 accept）。委托 engine（local→Final；cloud→兜底 Committed）。
+    ///
+    /// coordinator 的 Streaming stage 持具体类型 `StreamingPipeline`，调此 inherent 方法（0 参）。
+    /// 同名 trait 方法 `Pipeline::finish(&mut self, &mut Transcript)`（1 参）待 Task 5 coordinator
+    /// 改 `Box<dyn Pipeline>` 后启用，届时本 inherent 可删。
+    pub fn finish(&mut self) -> TranscriptEvent {
+        self.engine.finish()
     }
 
     /// 当前累积静音时长（秒），供 coordinator 判断停顿润色。委托 engine。
@@ -254,6 +255,31 @@ impl StreamingPipeline {
     pub fn reset(&mut self) {
         self.engine.reset();
     }
+}
+
+impl Pipeline for StreamingPipeline {
+    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> bool {
+        // 复用既有 inherent StreamingPipeline::tick（engine tick → set_full，返回 changed）。
+        self.tick(samples, transcript)
+    }
+    fn finish(&mut self, _transcript: &mut Transcript) -> TranscriptEvent {
+        // tail 已由 stop 路径 tick 喂入 accept；此处仅 flush。
+        self.engine.finish()
+    }
+    fn silence_duration(&self) -> f64 {
+        self.engine.silence_duration()
+    }
+    fn reset(&mut self) {
+        self.engine.reset();
+    }
+    #[cfg(feature = "cloud")]
+    fn take_close_handle(&mut self) -> Option<octopus_asr_cloud::CloudStreamHandle> {
+        self.engine.take_close_handle()
+    }
+    fn is_cloud(&self) -> bool {
+        self.engine.is_cloud()
+    }
+    // took_segment_cut 用默认 false（流式停顿润色走 silence_duration 每 tick 判）。
 }
 
 // ── 共享 VAD helper（coordinator vad-segmented tick 与 cloud tick 共用，spec §3.4）──
@@ -525,7 +551,7 @@ mod tests {
         fn tick(&mut self, _samples: &[f32]) -> Vec<TranscriptEvent> {
             std::mem::take(&mut *self.tick_out.lock().unwrap())
         }
-        fn finish_with_tail(&mut self, _tail: &[f32]) -> TranscriptEvent {
+        fn finish(&mut self) -> TranscriptEvent {
             self.finish_out.clone()
         }
         fn silence_duration(&self) -> f64 { self.silence }
@@ -605,13 +631,15 @@ mod tests {
     }
 
     #[test]
-    fn finish_with_tail_delegates_to_engine() {
+    fn finish_delegates_to_engine() {
         let mut p = pipeline(FakePipelineEngine::new(
             vec![],
             "",
             TranscriptEvent::Final("最终。".to_string()),
         ));
-        let ev = p.finish_with_tail(&[0.0; 512]);
+        // 走 inherent StreamingPipeline::finish（coordinator Task 4 也走此路径；
+        // Pipeline trait 同名方法 Task 5 起 Box<dyn Pipeline> 时方启用）。
+        let ev = p.finish();
         assert_eq!(ev, TranscriptEvent::Final("最终。".to_string()));
     }
 

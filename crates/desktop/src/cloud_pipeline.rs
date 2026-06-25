@@ -267,16 +267,9 @@ impl StreamingPipelineEngine for CloudPipelineEngine {
         events
     }
 
-    fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent {
-        // cloud stop：只 push tail（不发 Finish——Finish 由 coordinator 的 close_async 发，避免重复）。
-        // 返回 current_partial 作 Committed 兜底（cloud stop 路径不用其返回值，见 coordinator stop 分支）。
-        if !tail.is_empty() && !self.is_closing {
-            if let Some(sess) = self.session.as_ref() {
-                if let Err(e) = sess.push_pcm(tail) {
-                    warn!("CloudPipelineEngine finish_with_tail push_pcm failed: {}", e);
-                }
-            }
-        }
+    fn finish(&mut self) -> TranscriptEvent {
+        // tail 已由 stop 路径 tick 喂入 push_pcm；此处仅返回最后 current_partial 作 Committed 兜底。
+        // cloud stop 路径不用其返回值（走 finalize_cloud / CloudClosing）。
         TranscriptEvent::Committed(self.current_partial.clone())
     }
 

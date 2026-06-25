@@ -5,7 +5,10 @@ use crate::config::AppConfig;
 use crate::config::PolishMode;
 use crate::engine::TranscriptionEngine;
 use crate::paste;
-use crate::pipeline::StreamingPipeline;
+// `Pipeline` 在 Task 5（coordinator stage 改 Box<dyn Pipeline>）前 inherent StreamingPipeline 优先，
+// 故此处暂未直接用 trait；保留 import 供 Task 5 直接启用，期间用 allow 抑制 unused。
+#[allow(unused_imports)]
+use crate::pipeline::{Pipeline, StreamingPipeline};
 use crate::transcript::Transcript;
 use octopus_asr::streaming_engine::StreamingSession;
 use octopus_asr::streaming_runner::TranscriptEvent;
@@ -839,8 +842,11 @@ fn handle_toggle(
 
             #[cfg(feature = "cloud")]
             if pipeline.is_cloud() {
-                // cloud: push tail（不发 Finish——Finish 由 close_async 发，避免重复）
-                let _ = pipeline.finish_with_tail(&final_samples);
+                // cloud: tick(tail) 喂入 push_pcm + finish（不发 Finish——Finish 由 close_async 发，避免重复）
+                if !final_samples.is_empty() {
+                    pipeline.tick(&final_samples, transcript);
+                }
+                let _ = pipeline.finish();
                 let partial = pipeline.current_partial().to_string();
                 if let Some(handle) = pipeline.take_close_handle() {
                     // spawn close_async，结果以 Command::CloudStreamingDone 回来；期间进 CloudClosing
@@ -873,9 +879,11 @@ fn handle_toggle(
                 return;
             }
 
-            // local: finish_with_tail → Final → set_full → finalize_after_stop（带标点补全）
-            // 尾部样本 + finish（精确等价原 accept(tail,false)+finish；不走 VAD/标点）
-            let final_text = match pipeline.finish_with_tail(&final_samples) {
+            // local: tick(tail) accept + finish flush（tail 经 push_samples 喂入；finish Final 覆盖）
+            if !final_samples.is_empty() {
+                pipeline.tick(&final_samples, transcript);
+            }
+            let final_text = match pipeline.finish() {
                 TranscriptEvent::Final(text) => text,
                 TranscriptEvent::Error(e) => {
                     error!("Streaming finish failed: {}", e);
