@@ -13,18 +13,18 @@ rm -rf ~/Library/WebKit/com.octopus.desktop
 rm -rf ~/Library/Caches/com.octopus.desktop
 rm -rf ~/Library/HTTPStorages/com.octopus.desktop
 
-# 3. 切到 desktop crate 目录：frontendDist:"dist" 相对 tauri.conf.json 所在目录，
-#    运行时按 CWD 解析，CWD = crates/desktop 最保险。
-cd "$(dirname "$0")/crates/desktop"
+# 3. 构建前端（React → dist/）
+#    cargo run 不走 Tauri CLI，不会触发 beforeBuildCommand，必须手动 build。
+cd "$(dirname "$0")/crates/desktop/frontend"
+npm run build
 
-# 4. 一步到位编译 + 运行（release，省掉重复编译）
-# cr cargo build --release -p octopus-desktop   # 平时开发，快编
-# cargo build --release -p octopus-desktop      # 打包，走 Cargo.toml 体积优化（无 cr 前缀）
+# 4. 切到 desktop crate 目录：frontendDist:"dist" 相对 tauri.conf.json 所在目录，
+#    运行时按 CWD 解析，CWD = crates/desktop 最保险。
+cd "../"
+
+# 5. 编译 + 运行（debug 模式：能看到 panic 栈 + 自动开 devtools 排查前端）
 # 必须启用 cloud feature：云端引擎（Aliyun/ByteDance/Tencent/Baidu）的流式识别依赖此 feature，
 # 不启用时云端引擎无法使用（is_cloud_engine / DispatchEngine 均 cfg gated）。
-CARGO_PROFILE_RELEASE_LTO=false \
-CARGO_PROFILE_RELEASE_STRIP=false \
-CARGO_PROFILE_RELEASE_CODEGEN_UNITS=16 \
-cargo run --release -p octopus-desktop --features "embedded cloud"
+RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run -p octopus-desktop --features "embedded cloud"
 # 注意：去掉 --release，debug 模式能打出 panic 栈
 #RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --features "embedded cloud"
