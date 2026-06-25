@@ -24,19 +24,18 @@ use octopus_infra::consts::{SEGMENT_DURATION_S, SEGMENT_OVERLAP_MS};
 /// VadSegmented 段识别结果（pipeline 内部回传类型，2c-3）。
 ///
 /// spawn 线程跑完 `engine.transcribe` 后，把结果发回 `VadSegmentedPipeline.rx`（**不发
-/// coordinator.tx**），下个 tick `try_recv` drain。`session_id` 仅日志用——跨会话护栏由
-/// 「stage 切换 = 新 pipeline 实例」天然保证（旧 pipeline drop → rx disconnect → spawn 的
-/// `tx.send` 失败忽略），不在此比对（spec §4）。
+/// coordinator.tx**），下个 tick `try_recv` drain。跨会话护栏由「stage 切换 = 新 pipeline
+/// 实例」天然保证（旧 pipeline drop → rx disconnect → spawn 的 `tx.send` 失败忽略），
+/// 无需 session_id（spec §4）。
 pub(crate) struct SegmentResult {
     pub seq: u64,
-    pub session_id: i64,
     pub text: Result<String, String>,
 }
 
 /// 把一条段结果回填进缓存 + 递减 active_count（纯逻辑，2c-3）。
 ///
 /// 空串/失败占位空串（保 `completed_seq` 连续推进，避免后续有效段积压丢失）。
-/// 不判 `session_id`（跨会话护栏由 pipeline 随 stage drop 天然保证，spec §4）。
+/// 不判 session_id（跨会话护栏由 pipeline 随 stage drop 天然保证，spec §4）。
 pub(crate) fn apply_segment_result(
     results: &mut HashMap<u64, String>,
     active_count: &mut u32,
@@ -88,8 +87,11 @@ pub(crate) fn consume_completed_results_vad(
 /// desktop ASR pipeline 统一上层抽象（2c-3，spec §3.1）。
 ///
 /// `StreamingPipeline`（流式，内持 `StreamingPipelineEngine`）与 `VadSegmentedPipeline`
-///（VAD 分段伪流式）各 impl。coordinator 持 `Box<dyn Pipeline>`，tick/finish/silence 统一
-/// 调用，不再按 stage 分流 tick 逻辑。emit/DB/polish/transcript 留 coordinator（2d 收敛）。
+///（VAD 分段伪流式）各 impl。coordinator 调 tick/finish/silence 统一接口。
+/// emit/DB/polish/transcript 留 coordinator（2d 收敛）。
+///
+/// `silence_duration`/`reset`/`take_close_handle`/`is_cloud` 当前仅 StreamingPipeline 通过
+/// inherent 方法调用（trait 暂未走全路径），用 `#[allow(unused)]` 抑制直至 2d 全收敛。
 #[allow(unused)]
 pub trait Pipeline: Send {
     /// 喂一帧已降噪 16k 样本。
@@ -388,7 +390,7 @@ impl VadSegmentedPipeline {
     pub(crate) fn active_count(&self) -> u32 { self.active_count }
 
     /// spawn 一段离线识别（搬迁自 coordinator.rs:1446，改发 SegmentResult 到 self.tx）。
-    fn spawn_offline(&self, speech_samples: Vec<f32>, seq: u64, session_id: i64) {
+    fn spawn_offline(&self, speech_samples: Vec<f32>, seq: u64) {
         let engine = self.engine.clone();
         let language = self.language.clone();
         let asr_engine = self.asr_engine.clone();
@@ -405,7 +407,7 @@ impl VadSegmentedPipeline {
                 elapsed.as_secs_f64() / duration.max(0.001)
             );
             let _ = tx.send(SegmentResult {
-                seq, session_id,
+                seq,
                 text: result.map_err(|e| e.to_string()),
             });
         });
@@ -471,7 +473,7 @@ impl VadSegmentedPipeline {
                         if force_cut { "force" } else { "silence" },
                         seq, speech_samples.len(), self.active_count,
                     );
-                    self.spawn_offline(speech_samples, seq, transcript.id);
+                    self.spawn_offline(speech_samples, seq);
                 }
             }
         }
@@ -662,7 +664,7 @@ mod tests {
         let mut results = HashMap::new();
         let mut active = 1u32;
         apply_segment_result(&mut results, &mut active, SegmentResult {
-            seq: 0, session_id: 1, text: Ok("你好".to_string()),
+            seq: 0, text: Ok("你好".to_string()),
         });
         assert_eq!(results.get(&0).map(String::as_str), Some("你好"));
         assert_eq!(active, 0);
@@ -673,7 +675,7 @@ mod tests {
         let mut results = HashMap::new();
         let mut active = 1u32;
         apply_segment_result(&mut results, &mut active, SegmentResult {
-            seq: 0, session_id: 1, text: Ok(String::new()),
+            seq: 0, text: Ok(String::new()),
         });
         assert_eq!(results.get(&0).map(String::as_str), Some(""));
         assert_eq!(active, 0);
@@ -684,7 +686,7 @@ mod tests {
         let mut results = HashMap::new();
         let mut active = 2u32;
         apply_segment_result(&mut results, &mut active, SegmentResult {
-            seq: 0, session_id: 1, text: Err("boom".to_string()),
+            seq: 0, text: Err("boom".to_string()),
         });
         assert_eq!(results.get(&0).map(String::as_str), Some(""));
         assert_eq!(active, 1);

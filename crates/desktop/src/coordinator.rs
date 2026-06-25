@@ -5,20 +5,14 @@ use crate::config::AppConfig;
 use crate::config::PolishMode;
 use crate::engine::TranscriptionEngine;
 use crate::paste;
-// `Pipeline` 在 Task 5（coordinator stage 改 Box<dyn Pipeline>）前 inherent StreamingPipeline 优先，
-// 故此处暂未直接用 trait；保留 import 供 Task 5 直接启用，期间用 allow 抑制 unused。
-#[allow(unused_imports)]
 use crate::pipeline::{Pipeline, StreamingPipeline};
 use crate::transcript::Transcript;
 use octopus_asr::streaming_engine::StreamingSession;
 use octopus_asr::streaming_runner::TranscriptEvent;
-use octopus_infra::consts::{SEGMENT_DURATION_S, SEGMENT_OVERLAP_MS};
 use log::{debug, error, info, warn};
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Instant;
 use tauri::Emitter;
 
 /// 协调器命令
@@ -42,12 +36,6 @@ enum Command {
     /// session_id = 发起 close 时的 transcript.id，跨会话护栏用（见 handler）。
     #[cfg(feature = "cloud")]
     CloudStreamingDone { text: Result<String, String>, session_id: i64 },
-    /// 转录完成（离线模式或远程模式使用，seq 用于顺序拼接）
-    TranscriptionDone {
-        text: Result<String, String>,
-        seq: u64,
-        session_id: i64,
-    },
     /// 粘贴完成
     PasteDone,
     /// 润色完成（session_id = 发起润色时的 transcript.id，跨会话护栏用，见 handle_polish_done）
@@ -78,36 +66,12 @@ enum Stage {
         transcript: Transcript,
         streaming_active: Arc<AtomicBool>,
     },
-    /// VAD 伪流式：tick 驱动分段识别（非流式引擎使用）
+    /// VAD 伪流式：tick 驱动分段识别（非流式引擎使用，2c-3：编排收进 VadSegmentedPipeline）
     VadSegmented {
-        /// 检测用 VAD：逐 tick 喂入顺序音频，**有状态累积**（LSTM 跨 tick 续接），
-        /// 用于 compute_speech_chunks 的语音/静音门控。语义为「流式检测」，
-        /// 录音期间从不 reset（续接上下文使边界判定更稳）。
-        vad: octopus_asr::vad::SileroVad,
-        /// 过滤用 VAD：仅 filter_speech_from_buffer 用，**每段独立**。
-        /// 与检测 VAD 分离：检测流喂入的音频与 send_buffer（overlap_tail + audio_buffer）
-        /// 存在重叠，若共用一个有状态 VAD 会双重喂入 + 跨段污染 LSTM h/c → 段首 gating 失真。
-        /// 故每次过滤前 reset() 归零，恢复「每段独立」语义（等价于旧代码每 buffer 新建 VAD），
-        /// 同时避免每次切分重建 ONNX Session 的开销（实例在录音开始时一次性创建）。
-        filter_vad: octopus_asr::vad::SileroVad,
-        /// 音频累积缓冲区（16kHz mono f32）
-        audio_buffer: Vec<f32>,
-        /// 前一窗口末尾 0.2s 的 overlap 音频
-        overlap_tail: Vec<f32>,
+        /// VAD 分段 pipeline（封装双 VAD + 切段 + spawn + 乱序回填，2c-3）。
+        pipeline: crate::pipeline::VadSegmentedPipeline,
         transcript: Transcript,
-        /// 当前静音持续时长（秒）
-        silence_duration: f64,
-        /// 缓冲区是否包含语音
-        has_speech: bool,
-        /// 正在进行的识别任务数
-        active_count: u32,
-        /// 下一个发送序号
-        next_seq: u64,
-        /// 已消费到的连续序号（completed_seq 之前的已拼接完毕）
-        completed_seq: u64,
-        /// 缓存乱序完成的识别结果
-        completed_results: HashMap<u64, String>,
-        /// tick 线程控制标志
+        /// tick 线程控制标志（move 进 WaitingCompletion，finalize 时才停，plan 细化）。
         tick_active: Arc<AtomicBool>,
     },
     /// 云端流式停止后等待最终结果（审查 三1）：close 改非阻塞，结果由
@@ -118,12 +82,13 @@ enum Stage {
         transcript: Transcript,
         current_partial: String,
     },
-    /// 等待所有识别完成
+    /// 等待所有识别完成（2c-3：复用 VadSegmented pipeline，靠 tick 线程继续驱动 drain rx）
     WaitingCompletion {
+        /// VadSegmented pipeline（从 VadSegmented move 过来；tick 空样本 drain rx 收尾）。
+        pipeline: crate::pipeline::VadSegmentedPipeline,
         transcript: Transcript,
-        active_count: u32,
-        completed_seq: u64,
-        completed_results: HashMap<u64, String>,
+        /// tick 线程标志（VadSegmented move 过来；finalize 时 store(false) 停线程）。
+        tick_active: Arc<AtomicBool>,
     },
     /// Toggle 停止录音后，仍有进行中的立即润色（PolishNow 未返回）。
     /// 持有 transcript 等待 `Command::PolishDone` 到达，再按 polish_mode 决定后续路径。
@@ -151,15 +116,6 @@ enum Stage {
         polish_status: String,
     },
 }
-
-/// VAD 分块大小（采样点数）。`compute_speech_chunks` 迁入 `pipeline.rs` 后自持阈值
-/// 常量；coordinator 仅 `vad_preroll` 用本 `VAD_CHUNK_SIZE`，故保留。
-const VAD_CHUNK_SIZE: usize = 512;
-
-/// VAD 预滚静音帧数：录音启动后喂给检测 VAD 的静音帧数，让 LSTM 状态预热，
-/// 避免首几帧检测概率偏低导致首音丢失。512 samples/chunk @ 16kHz = 32ms，
-/// 10 帧 ≈ 320ms 静音预热。
-const VAD_PREROLL_FRAMES: usize = 10;
 
 /// VAD 伪流式 tick 间隔（毫秒）
 const VAD_SEGMENTED_TICK_INTERVAL_MS: u64 = 100;
@@ -306,7 +262,9 @@ impl Coordinator {
                             let rc = runtime_config.read().unwrap();
                             config.polish_mode = rc.polish_mode;
                         }
-                        if let Stage::VadSegmented { transcript, .. } = &mut stage {
+                        if let Stage::VadSegmented { transcript, .. }
+                        | Stage::WaitingCompletion { transcript, .. } = &mut stage
+                        {
                             transcript.set_mode(config.polish_mode);
                         }
                         if editing {
@@ -315,7 +273,6 @@ impl Coordinator {
                             handle_vad_segmented_tick(
                                 &mut stage,
                                 &audio,
-                                &engine,
                                 &config,
                                 &app_handle,
                                 &tx,
@@ -338,21 +295,6 @@ impl Coordinator {
                             let _ = app_handle.emit("edit-force-exit", ());
                         }
                         handle_discard(&mut stage, &audio, &app_handle, &config);
-                    }
-                    Command::TranscriptionDone { text, seq, session_id } => {
-                        if editing {
-                            debug!("TranscriptionDone ignored during edit");
-                        } else {
-                            handle_transcription_done(
-                                &mut stage,
-                                text,
-                                seq,
-                                session_id,
-                                &config,
-                                &app_handle,
-                                &tx,
-                            );
-                        }
                     }
                     Command::PasteDone => {
                         // 入库 finalize（从 Pasting 取数据；用户编辑已反映到 polished_text）
@@ -597,7 +539,7 @@ fn handle_toggle(
                 match octopus_asr::config::find_silero_vad() {
                     Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
                         Ok(mut vad) => {
-                            vad_preroll(&mut vad);
+                            crate::pipeline::vad_preroll(&mut vad);
                             crate::result_window::show_result(app_handle, "正在聆听…");
                             crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
 
@@ -716,119 +658,66 @@ fn handle_toggle(
                     streaming_active,
                 };
             } else {
-                // 非流式模式：使用 VAD 伪流式分段识别
-                match octopus_asr::config::find_silero_vad() {
-                    Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
-                        Ok(mut vad) => {
-                            // 预滚检测 VAD（LSTM 预热），filter_vad 每段 reset 无需预热
-                            vad_preroll(&mut vad);
-                            // 第二个独立 VAD 实例用于过滤（每段 reset，避免与检测流共用造成
-                            // LSTM 状态污染）。ONNX Session 在此一次性创建，过滤时只 reset 不重建。
-                            // 同一路径 vad 已加载成功，filter_vad 失败属异常，直接放弃。
-                            let filter_vad = match octopus_asr::vad::SileroVad::new(&path) {
-                                Ok(v) => v,
-                                Err(e) => {
-                                    error!("filter_vad init failed: {}, abort VadSegmented", e);
-                                    let _ = audio.stop();
-                                    return;
-                                }
-                            };
-                            crate::result_window::show_result(app_handle, "正在聆听…");
-                            crate::tray::update_tray_label(
-                                app_handle,
-                                crate::tray::TrayState::Recording,
-                            );
+                // 非流式模式：使用 VAD 伪流式分段识别（2c-3：编排收进 VadSegmentedPipeline）
+                match crate::pipeline::VadSegmentedPipeline::new(
+                    engine.clone(),
+                    config.language.clone(),
+                    config.asr_engine.clone(),
+                    config.segment_silence,
+                ) {
+                    Ok(pipeline) => {
+                        crate::result_window::show_result(app_handle, "正在聆听…");
+                        crate::tray::update_tray_label(
+                            app_handle,
+                            crate::tray::TrayState::Recording,
+                        );
 
-                            let tick_active = Arc::new(AtomicBool::new(true));
-                            start_vad_segmented_tick_thread(tx.clone(), tick_active.clone());
+                        let tick_active = Arc::new(AtomicBool::new(true));
+                        start_vad_segmented_tick_thread(tx.clone(), tick_active.clone());
 
-                            *stage = Stage::VadSegmented {
-                                vad,
-                                filter_vad,
-                                audio_buffer: Vec::new(),
-                                overlap_tail: Vec::new(),
-                                transcript: Transcript::new(now_millis(), config.polish_mode),
-                                silence_duration: 0.0,
-                                has_speech: false,
-                                active_count: 0,
-                                next_seq: 0,
-                                completed_seq: 0,
-                                completed_results: HashMap::new(),
-                                tick_active,
-                            };
-                        }
-                        Err(e) => {
-                            error!("VAD init failed for VadSegmented: {}, falling back to offline", e);
-                            let _ = audio.stop();
-                        }
-                    },
+                        *stage = Stage::VadSegmented {
+                            pipeline,
+                            transcript: Transcript::new(now_millis(), config.polish_mode),
+                            tick_active,
+                        };
+                    }
                     Err(e) => {
-                        error!("VAD not found for VadSegmented: {}, falling back to offline", e);
+                        error!("VAD init failed for VadSegmented: {}, falling back to offline", e);
                         let _ = audio.stop();
                     }
                 }
             }
         }
 
-        Stage::VadSegmented {
-            ref mut filter_vad,
-            audio_buffer,
-            overlap_tail,
-            transcript,
-            has_speech,
-            active_count,
-            next_seq,
-            completed_seq,
-            completed_results,
-            tick_active,
-            ..
-        } => {
-            // VAD 伪流式：停止 tick，发送剩余缓冲区，决定等待完成或直接粘贴
-            info!("Toggle: stopping VadSegmented (active_count={})", active_count);
+        Stage::VadSegmented { .. } => {
+            // mem::replace 取出 owned 部件，避开 &mut stage 借用冲突（2c-3）
+            let (mut pipeline, mut transcript, tick_active) =
+                match std::mem::replace(stage, Stage::Idle) {
+                    Stage::VadSegmented { pipeline, transcript, tick_active } => {
+                        (pipeline, transcript, tick_active)
+                    }
+                    _ => unreachable!(),
+                };
+            info!("Toggle: stopping VadSegmented (active_count={})", pipeline.active_count());
 
-            // 停止 tick 线程
-            tick_active.store(false, Ordering::Relaxed);
-
-            // 停止录音并排空剩余音频
+            // 停止录音并排空剩余音频（tail 喂入 pipeline 触发最后一轮切段）
             let remaining = audio.stop().unwrap_or_default();
             if !remaining.is_empty() {
-                audio_buffer.extend_from_slice(&remaining);
+                pipeline.tick(&remaining, &mut transcript);
             }
+            pipeline.finish(&mut transcript);  // drain 在途段
 
-            // 如果缓冲区有语音，发送最后一次识别
-            if *has_speech && !audio_buffer.is_empty() {
-                let mut send_buffer = overlap_tail.clone();
-                send_buffer.extend_from_slice(audio_buffer);
-                let speech_samples = filter_speech_from_buffer(filter_vad, &send_buffer);
-                if !speech_samples.is_empty() {
-                    let seq = *next_seq;
-                    *next_seq += 1;
-                    *active_count += 1;
-                    spawn_offline_transcription_with_seq(
-                        engine, config, tx, speech_samples, seq, transcript.id,
-                    );
-                }
-            }
-
-            let active = *active_count;
-            let cseq = *completed_seq;
-            let cresults = std::mem::take(completed_results);
-
-            if active > 0 {
-                // 还有识别任务在跑：进 WaitingCompletion 等所有 seq 完成
-                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-                *stage = Stage::WaitingCompletion {
-                    transcript: tr,
-                    active_count: active,
-                    completed_seq: cseq,
-                    completed_results: cresults,
-                };
+            if pipeline.active_count() > 0 {
+                // 还有识别在跑：pipeline + tick_active move 进 WaitingCompletion，
+                // tick 线程不停（收尾靠 tick 继续发 VadSegmentedTick drain rx）
+                *stage = Stage::WaitingCompletion { pipeline, transcript, tick_active };
             } else {
-                // 所有识别已完成：直接收尾（按 polish_pending 决定是否等润色）
-                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-                finalize_after_stop(stage, tr, config, app_handle, tx);
+                // 全部完成：停 tick 线程 + finalize（pipeline drop）
+                tick_active.store(false, Ordering::Relaxed);
+                finalize_after_stop(stage, transcript, config, app_handle, tx);
             }
         }
+
 
         Stage::Streaming {
             pipeline,
@@ -1270,136 +1159,66 @@ fn handle_final_polish_done(
     }
 }
 
-/// 消费已完成序号的结果，把新段追加到 Transcript。
-fn consume_completed_results(
-    completed_seq: &mut u64,
-    completed_results: &mut HashMap<u64, String>,
-    transcript: &mut Transcript,
-) {
-    while let Some(text) = completed_results.remove(completed_seq) {
-        if !text.is_empty() {
-            // 段间加逗号：已有文本、新段不以标点开头、已有文本不以标点结尾
-            // 避免拼接出 「。，」「？，」 等连续标点
-            //
-            // 不做 overlap 去重：force_cut 的 SEGMENT_OVERLAP_MS 仅 200ms（≈1 字），
-            // 真重叠与边界巧合无法区分，dedup 净误删（曾把「识别的效果」误删成「的效果」）；
-            // silence-cut 段音频本就不重叠，更无需 dedup。
-            let existing = transcript.full();
-            if !existing.is_empty()
-                && !text.starts_with(|c: char| ",.，。！？!?\n".contains(c))
-                && !existing.ends_with(|c: char| ",.，。！？!?\n".contains(c))
-            {
-                transcript.append_segment("，");
-            }
-            transcript.append_segment(&text);
-        }
-        *completed_seq += 1;
-    }
-}
-
-/// 处理 VadSegmentedTick 命令
+/// 处理 VadSegmentedTick 命令（2c-3：编排进 pipeline.tick，此函数只做 emit/DB/polish + 收尾判定）。
 fn handle_vad_segmented_tick(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
-    engine: &Arc<dyn TranscriptionEngine>,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
-    if let Stage::VadSegmented {
-        vad,
-        filter_vad,
-        audio_buffer,
-        overlap_tail,
-        transcript,
-        silence_duration,
-        has_speech,
-        active_count,
-        next_seq,
-        ..
-    } = stage
-    {
-        // 1. drain 音频
-        let samples = audio.drain_samples();
-        if samples.is_empty() {
-            return;
+    let samples = audio.drain_samples();
+
+    match stage {
+        Stage::VadSegmented { pipeline, transcript, .. } => {
+            let changed = pipeline.tick(&samples, transcript);
+            let segment_cut = pipeline.took_segment_cut();
+            after_vad_tick(transcript, changed, segment_cut, "vad_segmented", config, app_handle, tx);
         }
-
-        // 2. 追加到缓冲区
-        audio_buffer.extend_from_slice(&samples);
-
-        // 3. VAD 检测本段语音帧数
-        let speech_chunks = crate::pipeline::compute_speech_chunks(vad, &samples);
-        if speech_chunks >= 2 {
-            *silence_duration = 0.0;
-            *has_speech = true;
-        } else {
-            let chunk_duration = samples.len() as f64 / 16000.0;
-            *silence_duration += chunk_duration;
-        }
-
-        // 4. 判断是否发送识别：静音边界切分（主）/ 连续超时强制切断（兜底）
-        let buffer_duration_s = audio_buffer.len() as f64 / 16000.0;
-        let silence_ms = *silence_duration * 1000.0;
-        let silence_cut = *has_speech && silence_ms >= config.segment_silence;
-        let force_cut = *has_speech && buffer_duration_s >= SEGMENT_DURATION_S;
-        let should_send = silence_cut || force_cut;
-
-        if should_send {
-            // 构建发送缓冲区：前一窗口 overlap（静音切分后为空）+ 当前缓冲区。
-            // 先 clone 再更新 overlap_tail，确保用的是「上一窗口」末尾而非当前段末尾。
-            let mut send_buffer = overlap_tail.clone();
-            send_buffer.extend_from_slice(audio_buffer);
-
-            // 仅强制切断保留下一段 overlap（语句被硬切，需重叠保证连贯）；
-            // 静音切分是自然语句边界，下一段从干净开始，无需 overlap。
-            if force_cut {
-                let overlap_samples = (SEGMENT_OVERLAP_MS * 16.0) as usize;
-                let overlap_start = audio_buffer.len().saturating_sub(overlap_samples);
-                *overlap_tail = audio_buffer[overlap_start..].to_vec();
-            } else {
-                overlap_tail.clear();
+        Stage::WaitingCompletion { pipeline, transcript, tick_active } => {
+            // 收尾：空样本驱动 drain rx（pipeline.tick 跳过切段，仅 drain+consume）。
+            // 不复用 after_vad_tick：收尾不再切段（segment_cut 恒 false），不应触发停顿润色。
+            let changed = pipeline.tick(&samples, transcript);
+            if changed {
+                if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "vad_segmented") {
+                    warn!("DB (vad_segmented waiting) failed: {}", e);
+                }
+                if !transcript.full().is_empty() {
+                    crate::result_window::update_result(app_handle, &transcript.display_text());
+                }
             }
-
-            // 重置缓冲区状态
-            audio_buffer.clear();
-            *has_speech = false;
-            *silence_duration = 0.0;
-
-            // VAD 过滤语音片段（用独立 filter_vad，每段 reset，不污染检测流）
-            let speech_samples = filter_speech_from_buffer(filter_vad, &send_buffer);
-            if !speech_samples.is_empty() {
-                let seq = *next_seq;
-                *next_seq += 1;
-                *active_count += 1;
-                debug!(
-                    "VadSegmented: {} cut, seq={}, samples={}, active_count={}",
-                    if force_cut { "force" } else { "silence" },
-                    seq,
-                    speech_samples.len(),
-                    active_count
-                );
-                spawn_offline_transcription_with_seq(
-                    engine, config, tx, speech_samples, seq, transcript.id,
-                );
-                // 段切分 + 有语音 → 触发停顿润色（传阈值，段边界即停顿点）
-                check_and_trigger_polish(transcript, config.pause_polish_threshold_ms / 1000.0, config, tx);
+            // 所有在途段完成 → 收尾（停 tick 线程 + finalize）
+            if pipeline.active_count() == 0 {
+                tick_active.store(false, Ordering::Relaxed);
+                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+                finalize_after_stop(stage, tr, config, app_handle, tx);
             }
         }
+        _ => {}
+    }
+}
 
-        // 5. 更新 result window
+/// VadSegmented tick 后处理：changed → DB + emit；segment_cut → 停顿润色（零差异保留原触发）。
+fn after_vad_tick(
+    transcript: &mut Transcript,
+    changed: bool,
+    segment_cut: bool,
+    db_source: &str,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+) {
+    if changed {
+        if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, db_source) {
+            warn!("DB ({}) failed: {}", db_source, e);
+        }
         if !transcript.full().is_empty() {
             crate::result_window::update_result(app_handle, &transcript.display_text());
         }
     }
-}
-
-/// 预滚 VAD：喂入若干帧静音（零样本），让 LSTM 隐藏状态从冷启动预热，
-/// 避免录音首几帧检测概率偏低导致首音被误判为静音而丢失。
-fn vad_preroll(vad: &mut octopus_asr::vad::SileroVad) {
-    let silence = vec![0.0_f32; VAD_CHUNK_SIZE];
-    for _ in 0..VAD_PREROLL_FRAMES {
-        let _ = vad.compute(&silence);
+    if segment_cut {
+        // 切段有语音 → 停顿润色（传阈值让 check_and_trigger_polish 静音检查自动通过，等价原 coordinator.rs:1378）
+        check_and_trigger_polish(transcript, config.pause_polish_threshold_ms / 1000.0, config, tx);
     }
 }
 
@@ -1448,70 +1267,6 @@ fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<Atomi
         }
         debug!("CloudStreaming tick thread exited");
     });
-}
-
-/// 带 seq 序号的离线识别线程
-fn spawn_offline_transcription_with_seq(
-    engine: &Arc<dyn TranscriptionEngine>,
-    config: &AppConfig,
-    tx: &Sender<Command>,
-    speech_samples: Vec<f32>,
-    seq: u64,
-    session_id: i64,
-) {
-    let engine = engine.clone();
-    let language = config.language.clone();
-    let asr_engine = config.asr_engine.clone();
-    let tx = tx.clone();
-    let samples_len = speech_samples.len();
-    let duration = samples_len as f64 / 16000.0;
-
-    // 复用 Tauri 全局异步运行时，避免 VadSegmented 每 ~300ms 分段都
-    // 新建并销毁一个 current-thread Tokio Runtime 的开销。
-    // engine.transcribe 的 Future 是 Send（#[async_trait]），且内部 CPU 密集
-    // 推理已用 spawn_blocking 包裹，不阻塞 runtime worker。
-    tauri::async_runtime::spawn(async move {
-        let start = Instant::now();
-        let result = engine.transcribe(&speech_samples, &language, &asr_engine).await;
-        let elapsed = start.elapsed();
-        info!(
-            "Transcription seq={} took {:.2}s (audio: {:.2}s, RTF: {:.2})",
-            seq,
-            elapsed.as_secs_f64(),
-            duration,
-            elapsed.as_secs_f64() / duration.max(0.001)
-        );
-        let msg = Command::TranscriptionDone {
-            text: match result {
-                Ok(text) => Ok(text),
-                Err(e) => Err(e.to_string()),
-            },
-            seq,
-            session_id,
-        };
-        let _ = tx.send(msg);
-    });
-}
-
-/// 对缓冲区音频做 VAD 过滤。
-///
-/// 使用 stage 的独立 `filter_vad`（与检测流分离），**过滤前先 reset() 归零 LSTM 状态**，
-/// 使每段过滤处于「冷启动」语义——等价于旧代码每个 buffer 新建一个 VAD（h=0）。
-/// 检测流（stage.vad）会按顺序逐 tick 喂入音频并累积状态，send_buffer 与之重叠，
-/// 若共用会双重喂入 + 跨段污染 → 段首 gating 失真。ONNX Session 在录音开始时一次性
-/// 创建，这里只 reset 不重建，兼顾正确性与性能。
-fn filter_speech_from_buffer(
-    filter_vad: &mut octopus_asr::vad::SileroVad,
-    samples: &[f32],
-) -> Vec<f32> {
-    filter_vad.reset();
-    let speech = octopus_asr::audio::filter_speech(samples, filter_vad, 480, 0.5);
-    if speech.is_empty() {
-        debug!("VadSegmented: no speech detected in buffer");
-        Vec::new()
-    } else {
-        speech
-    }
 }
 
 /// 启动润色线程
@@ -1678,9 +1433,12 @@ fn handle_cancel(
             tick_active.store(false, Ordering::Relaxed);
             let _ = audio.stop();
         }
-        Stage::WaitingCompletion { .. } => {
+        Stage::WaitingCompletion { tick_active, .. } => {
             info!("Cancel: cancelling while waiting for transcription");
+            // 2c-3：WaitingCompletion 现持 tick_active（VadSegmented move 过来），必须停；
             // 识别结果将被忽略，回到 Idle
+            tick_active.store(false, Ordering::Relaxed);
+            let _ = audio.stop();
         }
         Stage::Polishing { .. } => {
             info!("Cancel: cancelling while final polishing");
@@ -1832,8 +1590,11 @@ fn handle_discard(
             // 分支忽略（honoring Discard）。close_async 自身仍会正常收尾释放 WS。
             info!("Discard: cloud close in flight, pending CloudStreamingDone will be ignored");
         }
-        Stage::WaitingCompletion { .. } => {
+        Stage::WaitingCompletion { tick_active, .. } => {
             info!("Discard: discarding while waiting for transcription");
+            // 2c-3：WaitingCompletion 现持 tick_active（VadSegmented move 过来），必须停
+            tick_active.store(false, Ordering::Relaxed);
+            let _ = audio.stop();
         }
         Stage::Polishing { .. } => {
             info!("Discard: discarding while final polishing");
@@ -1866,101 +1627,6 @@ fn handle_discard(
     *stage = Stage::Idle;
     crate::result_window::hide_result(app_handle);
     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
-}
-fn handle_transcription_done(
-    stage: &mut Stage,
-    text: Result<String, String>,
-    seq: u64,
-    session_id: i64,
-    config: &AppConfig,
-    app_handle: &tauri::AppHandle,
-    tx: &Sender<Command>,
-) {
-    match stage {
-        Stage::VadSegmented {
-            transcript,
-            active_count,
-            completed_seq,
-            completed_results,
-            ..
-        } => {
-            if transcript.id != session_id {
-                debug!("TranscriptionDone seq={} for old session {} ignored (current: {})", seq, session_id, transcript.id);
-                return;
-            }
-            *active_count = active_count.saturating_sub(1);
-
-            match text {
-                Ok(t) if !t.is_empty() => {
-                    info!("VadSegmented transcription seq={}: '{}'", seq, t);
-                    completed_results.insert(seq, t);
-                }
-                // 空结果：仍占位该 seq，避免 consume_completed_results 卡在缺失序号
-                Ok(_) => {
-                    completed_results.insert(seq, String::new());
-                }
-                // 识别失败：占位空串，保证 completed_seq 连续推进、后续有效段不积压丢失
-                Err(e) => {
-                    error!("VadSegmented transcription seq={} failed: {}", seq, e);
-                    completed_results.insert(seq, String::new());
-                }
-            }
-
-            // 消费连续序号的结果（追加到 Transcript）
-            consume_completed_results(completed_seq, completed_results, transcript);
-            if let Err(e) =
-                update_transcription_raw(transcript, &config.asr_engine, "vad_segmented")
-            {
-                warn!("DB (vad_segmented) failed: {}", e);
-            }
-
-            if !transcript.full().is_empty() {
-                crate::result_window::update_result(app_handle, &transcript.display_text());
-            }
-        }
-
-        Stage::WaitingCompletion {
-            transcript,
-            active_count,
-            completed_seq,
-            completed_results,
-        } => {
-            if transcript.id != session_id {
-                debug!("TranscriptionDone seq={} for old session {} ignored (current: {})", seq, session_id, transcript.id);
-                return;
-            }
-            *active_count = active_count.saturating_sub(1);
-
-            match text {
-                Ok(t) if !t.is_empty() => {
-                    info!("WaitingCompletion transcription seq={}: '{}'", seq, t);
-                    completed_results.insert(seq, t);
-                }
-                // 空结果：仍占位该 seq，避免 consume_completed_results 卡在缺失序号
-                Ok(_) => {
-                    completed_results.insert(seq, String::new());
-                }
-                // 识别失败：占位空串，保证 completed_seq 连续推进、后续有效段不积压丢失
-                Err(e) => {
-                    error!("WaitingCompletion transcription seq={} failed: {}", seq, e);
-                    completed_results.insert(seq, String::new());
-                }
-            }
-
-            consume_completed_results(completed_seq, completed_results, transcript);
-
-            if *active_count == 0 {
-                // 所有识别完成：直接收尾（按 polish_pending 决定是否等润色）
-                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-                finalize_after_stop(stage, tr, config, app_handle, tx);
-            }
-        }
-
-        _ => {
-            // 其他阶段收到转录结果（可能是取消后延迟到达），忽略
-            debug!("TranscriptionDone seq={} ignored in stage {:?}", seq, stage_name(stage));
-        }
-    }
 }
 
 /// 启动 tick 线程，定时发送 StreamingTick 命令
