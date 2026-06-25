@@ -17,6 +17,9 @@ use log::warn;
 use octopus_asr::streaming_runner::{StreamingRunner, TranscriptEvent};
 use octopus_asr::streaming_engine::StreamingSession;
 use octopus_asr::vad::SileroVad;
+use std::collections::HashMap;
+use std::sync::Arc;
+use octopus_infra::consts::{SEGMENT_DURATION_S, SEGMENT_OVERLAP_MS};
 
 /// VadSegmented 段识别结果（pipeline 内部回传类型，2c-3）。
 ///
@@ -28,6 +31,58 @@ pub(crate) struct SegmentResult {
     pub seq: u64,
     pub session_id: i64,
     pub text: Result<String, String>,
+}
+
+/// 把一条段结果回填进缓存 + 递减 active_count（纯逻辑，2c-3）。
+///
+/// 空串/失败占位空串（保 `completed_seq` 连续推进，避免后续有效段积压丢失）。
+/// 不判 `session_id`（跨会话护栏由 pipeline 随 stage drop 天然保证，spec §4）。
+pub(crate) fn apply_segment_result(
+    results: &mut HashMap<u64, String>,
+    active_count: &mut u32,
+    seg: SegmentResult,
+) {
+    *active_count = active_count.saturating_sub(1);
+    match seg.text {
+        Ok(t) if !t.is_empty() => {
+            log::info!("VadSegmented seq={}: '{}'", seg.seq, t);
+            results.insert(seg.seq, t);
+        }
+        Ok(_) => {
+            results.insert(seg.seq, String::new());
+        }
+        Err(e) => {
+            log::error!("VadSegmented seq={} failed: {}", seg.seq, e);
+            results.insert(seg.seq, String::new());
+        }
+    }
+}
+
+/// 消费连续序号的结果，把新段追加到 Transcript（搬迁自 `coordinator.rs:1266`，零改动）。
+pub(crate) fn consume_completed_results_vad(
+    completed_seq: &mut u64,
+    completed_results: &mut HashMap<u64, String>,
+    transcript: &mut Transcript,
+) {
+    while let Some(text) = completed_results.remove(completed_seq) {
+        if !text.is_empty() {
+            // 段间加逗号：已有文本、新段不以标点开头、已有文本不以标点结尾
+            // 避免拼接出 「。，」「？，」 等连续标点
+            //
+            // 不做 overlap 去重：force_cut 的 SEGMENT_OVERLAP_MS 仅 200ms（≈1 字），
+            // 真重叠与边界巧合无法区分，dedup 净误删（曾把「识别的效果」误删成「的效果」）；
+            // silence-cut 段音频本就不重叠，更无需 dedup。
+            let existing = transcript.full();
+            if !existing.is_empty()
+                && !text.starts_with(|c: char| ",.，。！？!?\n".contains(c))
+                && !existing.ends_with(|c: char| ",.，。！？!?\n".contains(c))
+            {
+                transcript.append_segment("，");
+            }
+            transcript.append_segment(&text);
+        }
+        *completed_seq += 1;
+    }
 }
 
 /// desktop ASR pipeline 统一上层抽象（2c-3，spec §3.1）。
@@ -227,6 +282,181 @@ pub(crate) fn compute_speech_chunks(vad: &mut SileroVad, samples: &[f32]) -> usi
     speech_chunks
 }
 
+/// 预滚帧数（VAD LSTM 预热，搬迁自 coordinator.rs:159）。
+pub(crate) const VAD_PREROLL_FRAMES: usize = 10;
+
+/// 预滚 VAD：喂入若干帧静音，让 LSTM 隐藏状态预热，避免首几帧误判静音丢字
+///（搬迁自 coordinator.rs:1389，零改动）。
+pub(crate) fn vad_preroll(vad: &mut SileroVad) {
+    let silence = vec![0.0_f32; VAD_CHUNK_SIZE];
+    for _ in 0..VAD_PREROLL_FRAMES {
+        let _ = vad.compute(&silence);
+    }
+}
+
+/// 对缓冲区音频做 VAD 过滤（搬迁自 coordinator.rs:1495，零改动）。
+/// 用独立 `filter_vad`（与检测流分离），过滤前 reset() 归零 LSTM 状态（等价旧代码每 buffer 新建 VAD）。
+fn filter_speech_from_buffer(filter_vad: &mut SileroVad, samples: &[f32]) -> Vec<f32> {
+    filter_vad.reset();
+    let speech = octopus_asr::audio::filter_speech(samples, filter_vad, 480, 0.5);
+    if speech.is_empty() {
+        log::debug!("VadSegmented: no speech detected in buffer");
+        Vec::new()
+    } else {
+        speech
+    }
+}
+
+/// VadSegmented 伪流式 pipeline：封装双 VAD + 切段 + spawn + 乱序回填（2c-3）。
+/// 非 VAD 依赖字段集合；engine/language/asr_engine/segment_silence_ms 是 config 子集（不 clone 整 AppConfig）。
+pub(crate) struct VadSegmentedPipeline {
+    engine: Arc<dyn crate::engine::TranscriptionEngine>,
+    language: String,
+    asr_engine: String,
+    /// 切段静音阈值（毫秒，来自 config.segment_silence）。
+    segment_silence_ms: f64,
+    /// 检测 VAD（流式有状态，跨 tick 续接，录音期间从不 reset）。
+    detect_vad: SileroVad,
+    /// 过滤 VAD（每段 reset，与检测分离防 LSTM 污染）。
+    filter_vad: SileroVad,
+    audio_buffer: Vec<f32>,
+    overlap_tail: Vec<f32>,
+    silence_duration: f64,
+    has_speech: bool,
+    active_count: u32,
+    next_seq: u64,
+    completed_seq: u64,
+    completed_results: HashMap<u64, String>,
+    tx: std::sync::mpsc::Sender<SegmentResult>,
+    rx: std::sync::mpsc::Receiver<SegmentResult>,
+    /// 本 tick 是否发生「有语音的切段」（停顿润色触发用，plan 细化 1）。
+    segment_cut_this_tick: bool,
+}
+
+impl VadSegmentedPipeline {
+    /// 构造：加载双 VAD（检测 VAD 预滚）+ 建 channel。
+    /// VAD 加载失败 propagate（coordinator start 路径处理 fallback，见 Task 5）。
+    pub(crate) fn new(
+        engine: Arc<dyn crate::engine::TranscriptionEngine>,
+        language: String,
+        asr_engine: String,
+        segment_silence_ms: f64,
+    ) -> anyhow::Result<Self> {
+        let path = octopus_asr::config::find_silero_vad()?;
+        let mut detect_vad = SileroVad::new(&path)?;
+        vad_preroll(&mut detect_vad);
+        let filter_vad = SileroVad::new(&path)?;
+        let (tx, rx) = std::sync::mpsc::channel();
+        Ok(Self {
+            engine, language, asr_engine, segment_silence_ms,
+            detect_vad, filter_vad,
+            audio_buffer: Vec::new(), overlap_tail: Vec::new(),
+            silence_duration: 0.0, has_speech: false,
+            active_count: 0, next_seq: 0, completed_seq: 0,
+            completed_results: HashMap::new(),
+            tx, rx, segment_cut_this_tick: false,
+        })
+    }
+
+    /// 当前在途识别数（WaitingCompletion 收尾判定 active_count==0 用）。
+    pub(crate) fn active_count(&self) -> u32 { self.active_count }
+
+    /// spawn 一段离线识别（搬迁自 coordinator.rs:1446，改发 SegmentResult 到 self.tx）。
+    fn spawn_offline(&self, speech_samples: Vec<f32>, seq: u64, session_id: i64) {
+        let engine = self.engine.clone();
+        let language = self.language.clone();
+        let asr_engine = self.asr_engine.clone();
+        let tx = self.tx.clone();
+        let samples_len = speech_samples.len();
+        let duration = samples_len as f64 / 16000.0;
+        tauri::async_runtime::spawn(async move {
+            let start = std::time::Instant::now();
+            let result = engine.transcribe(&speech_samples, &language, &asr_engine).await;
+            let elapsed = start.elapsed();
+            log::info!(
+                "Transcription seq={} took {:.2}s (audio: {:.2}s, RTF: {:.2})",
+                seq, elapsed.as_secs_f64(), duration,
+                elapsed.as_secs_f64() / duration.max(0.001)
+            );
+            let _ = tx.send(SegmentResult {
+                seq, session_id,
+                text: result.map_err(|e| e.to_string()),
+            });
+        });
+    }
+
+    /// drain rx（try_recv 至空）+ 回填 + 消费连续 seq 追加 transcript。
+    /// 返回是否文本变化（consume 追加了新段）。
+    fn drain_rx_and_consume(&mut self, transcript: &mut Transcript) -> bool {
+        let before = transcript.full().len();
+        while let Ok(seg) = self.rx.try_recv() {
+            apply_segment_result(&mut self.completed_results, &mut self.active_count, seg);
+        }
+        consume_completed_results_vad(
+            &mut self.completed_seq, &mut self.completed_results, transcript,
+        );
+        transcript.full().len() != before
+    }
+
+    /// tick 编排（搬迁 coordinator.rs:1314-1385，零逻辑改动，仅 spawn 目标改 self.tx）。
+    /// `samples` 空则跳过切段/spawn（步骤 1-5），仍走 drain_rx（WaitingCompletion 收尾靠此）。
+    pub(crate) fn run_tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> bool {
+        self.segment_cut_this_tick = false;
+        let mut changed = false;
+
+        if !samples.is_empty() {
+            self.audio_buffer.extend_from_slice(samples);
+
+            let speech_chunks = compute_speech_chunks(&mut self.detect_vad, samples);
+            if speech_chunks >= 2 {
+                self.silence_duration = 0.0;
+                self.has_speech = true;
+            } else {
+                let chunk_duration = samples.len() as f64 / 16000.0;
+                self.silence_duration += chunk_duration;
+            }
+
+            let buffer_duration_s = self.audio_buffer.len() as f64 / 16000.0;
+            let silence_ms = self.silence_duration * 1000.0;
+            let silence_cut = self.has_speech && silence_ms >= self.segment_silence_ms;
+            let force_cut = self.has_speech && buffer_duration_s >= SEGMENT_DURATION_S;
+            if silence_cut || force_cut {
+                let mut send_buffer = self.overlap_tail.clone();
+                send_buffer.extend_from_slice(&self.audio_buffer);
+                if force_cut {
+                    let overlap_samples = (SEGMENT_OVERLAP_MS * 16.0) as usize;
+                    let overlap_start = self.audio_buffer.len().saturating_sub(overlap_samples);
+                    self.overlap_tail = self.audio_buffer[overlap_start..].to_vec();
+                } else {
+                    self.overlap_tail.clear();
+                }
+                self.audio_buffer.clear();
+                self.has_speech = false;
+                self.silence_duration = 0.0;
+
+                let speech_samples = filter_speech_from_buffer(&mut self.filter_vad, &send_buffer);
+                if !speech_samples.is_empty() {
+                    self.segment_cut_this_tick = true;
+                    let seq = self.next_seq;
+                    self.next_seq += 1;
+                    self.active_count += 1;
+                    log::debug!(
+                        "VadSegmented: {} cut, seq={}, samples={}, active_count={}",
+                        if force_cut { "force" } else { "silence" },
+                        seq, speech_samples.len(), self.active_count,
+                    );
+                    self.spawn_offline(speech_samples, seq, transcript.id);
+                }
+            }
+        }
+
+        if self.drain_rx_and_consume(transcript) {
+            changed = true;
+        }
+        changed
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -351,5 +581,62 @@ mod tests {
         // 方法本身 cfg cloud，故测试同步门控（无 cloud feature 时不编译）。
         let mut p = pipeline(FakePipelineEngine::new(vec![], "", TranscriptEvent::Final("".to_string())));
         assert!(p.take_close_handle().is_none());
+    }
+
+    // ── VadSegmentedPipeline 纯逻辑（2c-3）──
+
+    use super::{apply_segment_result, consume_completed_results_vad, SegmentResult};
+    use std::collections::HashMap;
+
+    #[test]
+    fn apply_segment_result_normal_inserts_text() {
+        let mut results = HashMap::new();
+        let mut active = 1u32;
+        apply_segment_result(&mut results, &mut active, SegmentResult {
+            seq: 0, session_id: 1, text: Ok("你好".to_string()),
+        });
+        assert_eq!(results.get(&0).map(String::as_str), Some("你好"));
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn apply_segment_result_empty_occupies_slot() {
+        let mut results = HashMap::new();
+        let mut active = 1u32;
+        apply_segment_result(&mut results, &mut active, SegmentResult {
+            seq: 0, session_id: 1, text: Ok(String::new()),
+        });
+        assert_eq!(results.get(&0).map(String::as_str), Some(""));
+        assert_eq!(active, 0);
+    }
+
+    #[test]
+    fn apply_segment_result_failed_occupies_slot() {
+        let mut results = HashMap::new();
+        let mut active = 2u32;
+        apply_segment_result(&mut results, &mut active, SegmentResult {
+            seq: 0, session_id: 1, text: Err("boom".to_string()),
+        });
+        assert_eq!(results.get(&0).map(String::as_str), Some(""));
+        assert_eq!(active, 1);
+    }
+
+    #[test]
+    fn consume_appends_only_contiguous_seq() {
+        let mut completed_seq = 0u64;
+        let mut results = HashMap::new();
+        results.insert(0u64, "甲".to_string());
+        results.insert(2u64, "丙".to_string());
+        let mut t = Transcript::new(0, PolishMode::Disabled);
+        consume_completed_results_vad(&mut completed_seq, &mut results, &mut t);
+        assert_eq!(t.full(), "甲");
+        assert_eq!(completed_seq, 1);
+        assert!(results.contains_key(&2));
+
+        results.insert(1u64, "乙".to_string());
+        consume_completed_results_vad(&mut completed_seq, &mut results, &mut t);
+        assert_eq!(t.full(), "甲，乙，丙");
+        assert_eq!(completed_seq, 3);
+        assert!(results.is_empty());
     }
 }
