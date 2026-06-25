@@ -13,5 +13,7 @@ pub mod bytedance_stream;
 pub mod tencent_stream;
 pub mod baidu_stream;
 pub mod config;
+pub mod batch;
 
 pub use config::open_cloud_session;
+pub use batch::{CloudBatchEngine, is_cloud_spec};
