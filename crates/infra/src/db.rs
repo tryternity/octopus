@@ -989,7 +989,7 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
             .unwrap();
-        // 14 local + 2 bytedance + 2 tencent + 1 baidu + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
+        // 12 local + 2 bytedance + 2 tencent + 1 baidu + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
         assert_eq!(count, 20);
     }
 
@@ -999,18 +999,21 @@ mod tests {
         // 强制启用所有模型做断言测试
         conn.execute("UPDATE models SET is_enabled = 1", []).unwrap();
         let cfg = load_models_at(&conn).unwrap();
+        // c796cbc 后本地 zipformer 2 条（zipformer / zipformer-large）；
+        // 兜底 zipformer-small-ctc 移出 seed，由代码（asr/config.rs FALLBACK_ASR_ENGINE_NAME）写死
         let zf = cfg.asr.zipformer.as_ref().expect("zipformer section");
-        assert_eq!(zf.len(), 5);
-        let small = zf.get("zipformer-small-ctc").unwrap();
-        assert_eq!(small.source, "models/zipformer");
-        assert!(small.is_local, "ASR 模型应为本地模型");
-        assert!(small.is_enabled, "ASR 模型应为启用状态");
-        assert!(small.is_streaming, "Zipformer 模型应支持流式");
+        assert_eq!(zf.len(), 2);
+        let zp = zf.get("zipformer").unwrap();
+        assert_eq!(zp.source, "csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30");
+        assert!(zp.is_local, "ASR 模型应为本地模型");
+        assert!(zp.is_enabled, "测试强制 is_enabled=1，此处应为 true");
+        assert!(zp.is_streaming, "Zipformer 模型应支持流式");
         assert_eq!(cfg.asr.whisper.as_ref().unwrap().len(), 1);
         let whisper = cfg.asr.whisper.as_ref().unwrap().get("whisper-small").unwrap();
         assert!(!whisper.is_streaming, "Whisper 模型不应支持流式");
         assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
-        assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 1);
+        // c796cbc 后本地 paraformer 4 条：bilingual / multi-zh / streaming / zh
+        assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 4);
         assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 2);
         // moonshine ASR（base + tiny）
         assert_eq!(cfg.asr.moonshine.as_ref().unwrap().len(), 2);
@@ -1193,12 +1196,14 @@ mod tests {
     fn list_all_local_asr_models_includes_disabled() {
         let conn = open_init();
         let rows = list_all_local_asr_models_at(&conn).unwrap();
-        // seed 里 paraformer-streaming is_enabled=0，load_models_at 会过滤，本函数应保留
+        // seed 里本地 ASR 全 is_enabled=0，load_models_at 会过滤，本函数应保留
         let names: Vec<&str> = rows.iter().map(|r| r.model_name.as_str()).collect();
         assert!(names.contains(&"paraformer-streaming"), "未过滤 is_enabled=0");
         assert!(rows.iter().any(|r| !r.is_enabled), "应含未就绪模型");
-        // 兜底打包模型 source=models/... 也列出（是否可下载由上层 is_hf_repo 过滤）
-        assert!(rows.iter().any(|r| r.source.starts_with("models/")));
+        // c796cbc 后兜底 zipformer-small-ctc 移出 seed，本地模型 source 全是 HF repo id；
+        // 验证列出全部 12 条本地 ASR，无 models/ 开头的随包行
+        assert_eq!(rows.len(), 12, "本地 ASR 清单应含 12 条");
+        assert!(rows.iter().all(|r| r.source.contains('/')), "本地 source 均为 HF repo id 形式");
     }
 
     #[test]

@@ -29,7 +29,7 @@
 - Modify: `crates/desktop/src/coordinator.rs:148-155`（`Stage` enum 定义）
 - Modify: `crates/desktop/src/coordinator.rs:2556-2570`（`stage_name` 函数）
 
-- [ ] **Step 1: 在 `Stage` enum 中新增 `StoppingPolish` 变体**
+- [x] **Step 1: 在 `Stage` enum 中新增 `StoppingPolish` 变体**
 
 在 `crates/desktop/src/coordinator.rs` 的 `Stage` enum 中，`WaitingCompletion` 变体之后、`Polishing` 变体之前插入：
 
@@ -43,7 +43,7 @@
     },
 ```
 
-- [ ] **Step 2: 在 `stage_name` 函数中新增 `StoppingPolish` arm**
+- [x] **Step 2: 在 `stage_name` 函数中新增 `StoppingPolish` arm**
 
 在 `stage_name` 函数的 match 中添加（位置在 `WaitingCompletion` 之后）：
 
@@ -51,7 +51,7 @@
         Stage::StoppingPolish { .. } => "StoppingPolish",
 ```
 
-- [ ] **Step 3: 构建验证**
+- [x] **Step 3: 构建验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -5`
 Expected: PASS（新变体未被使用会有 dead_code 警告，但不应报错；后续 Task 会用到）
@@ -63,7 +63,7 @@ Expected: PASS（新变体未被使用会有 dead_code 警告，但不应报错�
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs`（在 `start_final_polish_or_paste` 函数之前插入新函数）
 
-- [ ] **Step 1: 在 `start_final_polish_or_paste` 之前插入 `finalize_after_stop` 函数**
+- [x] **Step 1: 在 `start_final_polish_or_paste` 之前插入 `finalize_after_stop` 函数**
 
 在 `crates/desktop/src/coordinator.rs` 中找到 `/// 开始最终润色或粘贴阶段（异步最终润色，防止阻塞协调器线程）。` 这行注释（`start_final_polish_or_paste` 的文档注释），在其**之前**插入：
 
@@ -130,7 +130,7 @@ fn finalize_after_stop(
 }
 ```
 
-- [ ] **Step 2: 构建验证**
+- [x] **Step 2: 构建验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -5`
 Expected: PASS（函数未被调用会有 dead_code 警告，下一个 Task 消除）
@@ -142,7 +142,7 @@ Expected: PASS（函数未被调用会有 dead_code 警告，下一个 Task 消�
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs:873-941`（`handle_toggle` 的 `Stage::Streaming` arm）
 
-- [ ] **Step 1: 用 `finalize_after_stop` 替换 Streaming 停止分支的收尾逻辑**
+- [x] **Step 1: 用 `finalize_after_stop` 替换 Streaming 停止分支的收尾逻辑**
 
 找到 `handle_toggle` 中的 `Stage::Streaming { ... } => { ... }` 分支（约 873 行起），将其中的：
 - 删除 `transcript.clear_polish_pending();` 这一行
@@ -199,7 +199,7 @@ Expected: PASS（函数未被调用会有 dead_code 警告，下一个 Task 消�
         }
 ```
 
-- [ ] **Step 2: 构建验证**
+- [x] **Step 2: 构建验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -5`
 Expected: PASS
@@ -211,7 +211,7 @@ Expected: PASS
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs:785-878`（`handle_toggle` 的 `Stage::VadSegmented` arm）
 
-- [ ] **Step 1: 用 `finalize_after_stop` 替换 VadSegmented 停止分支的收尾逻辑**
+- [x] **Step 1: 用 `finalize_after_stop` 替换 VadSegmented 停止分支的收尾逻辑**
 
 找到 `handle_toggle` 中的 `Stage::VadSegmented { ... } => { ... }` 分支（约 785 行起），将其中的：
 - 删除 `transcript.clear_polish_pending();` 这一行（约 827 行，注释 `// 忽略中间润色的 pending 结果（最终润色会重新处理）` 也一并删除）
@@ -291,7 +291,7 @@ Expected: PASS
         }
 ```
 
-- [ ] **Step 2: 构建验证**
+- [x] **Step 2: 构建验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -5`
 Expected: PASS
@@ -305,13 +305,13 @@ Expected: PASS
 
 **背景**：VadSegmented 的 `active_count > 0` 分支会进 `WaitingCompletion`，等所有 `TranscriptionDone` 收齐后需要收尾。原代码可能也有 `clear_polish_pending`，需要改为调 `finalize_after_stop`。
 
-- [ ] **Step 1: 定位 WaitingCompletion 收齐后的收尾代码**
+- [x] **Step 1: 定位 WaitingCompletion 收齐后的收尾代码**
 
 Run: `grep -n 'clear_polish_pending\|WaitingCompletion' crates/desktop/src/coordinator.rs`
 
 查找 `WaitingCompletion` 中 `active_count` 减到 0 时的收尾代码。
 
-- [ ] **Step 2: 移除 `clear_polish_pending` 调用，改用 `finalize_after_stop`**
+- [x] **Step 2: 移除 `clear_polish_pending` 调用，改用 `finalize_after_stop`**
 
 在 `WaitingCompletion` 收齐所有 seq 后的收尾路径中：
 - 删除 `transcript.clear_polish_pending();` 调用（如果存在）
@@ -319,7 +319,7 @@ Run: `grep -n 'clear_polish_pending\|WaitingCompletion' crates/desktop/src/coord
 
 **注意**：如果原代码在此处有句末标点补全逻辑（`format!("{}。", ...)`），`finalize_after_stop` 已内置此逻辑，无需重复。
 
-- [ ] **Step 3: 构建验证**
+- [x] **Step 3: 构建验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -5`
 Expected: PASS
@@ -333,7 +333,7 @@ Expected: PASS
 
 **背景**：CloudStreaming Toggle 停止时，无活跃 session 的分支调 `finalize_cloud`。此函数原代码直接调 `start_final_polish_or_paste`，需要改为先判断 `polish_pending`。但 CloudStreaming 有特殊逻辑（append partial + ensure INSERT），不能直接用 `finalize_after_stop`。
 
-- [ ] **Step 1: 在 `finalize_cloud` 中加入 polish_pending 判断**
+- [x] **Step 1: 在 `finalize_cloud` 中加入 polish_pending 判断**
 
 找到 `finalize_cloud` 函数（约 1143 行），在 `start_final_polish_or_paste` 调用之前插入 polish_pending 判断。修改后的 `finalize_cloud` 应形如：
 
@@ -382,7 +382,7 @@ fn finalize_cloud(
 }
 ```
 
-- [ ] **Step 2: 构建验证**
+- [x] **Step 2: 构建验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -5`
 Expected: PASS
@@ -394,7 +394,7 @@ Expected: PASS
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs:2377-2450`（`handle_polish_done` 函数）
 
-- [ ] **Step 1: 在 `handle_polish_done` 的 stage match 中新增 `StoppingPolish` arm**
+- [x] **Step 1: 在 `handle_polish_done` 的 stage match 中新增 `StoppingPolish` arm**
 
 找到 `handle_polish_done` 函数（约 2377 行），在现有的 stage match 中，`_ => { ... 丢弃 ... }` 之前插入 `StoppingPolish` arm：
 
@@ -453,7 +453,7 @@ Expected: PASS
 
 **关键**：此 arm 末尾的 `return` 确保不落入后续的 `_ =>` 丢弃分支。
 
-- [ ] **Step 2: 构建验证**
+- [x] **Step 2: 构建验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -5`
 Expected: PASS
@@ -465,7 +465,7 @@ Expected: PASS
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs:2072-2140`（`handle_cancel` 函数）
 
-- [ ] **Step 1: 在 `handle_cancel` 的 stage match 中新增 `StoppingPolish` arm**
+- [x] **Step 1: 在 `handle_cancel` 的 stage match 中新增 `StoppingPolish` arm**
 
 找到 `handle_cancel` 函数（约 2072 行）。在现有的 stage match 中（`Polishing` / `WaitingCompletion` 等 arm 附近）添加：
 
@@ -478,7 +478,7 @@ Expected: PASS
 
 **注意**：`handle_cancel` 末尾已有统一的 DB 清理逻辑（检查 `db_inserted` → `DbCommand::Delete`），`StoppingPolish` 的 transcript 会被该逻辑覆盖（`StoppingPolish { transcript, .. }` 匹配后，末尾的 `db_id_to_delete` 提取逻辑需要新增 `StoppingPolish` arm，见 Step 2）。
 
-- [ ] **Step 2: 在 `handle_cancel` 末尾的 `db_id_to_delete` 提取逻辑中新增 `StoppingPolish` arm**
+- [x] **Step 2: 在 `handle_cancel` 末尾的 `db_id_to_delete` 提取逻辑中新增 `StoppingPolish` arm**
 
 找到 `handle_cancel` 中提取 `db_id_to_delete` 的 match 表达式（约 2118-2127 行），添加 `StoppingPolish` arm：
 
@@ -488,7 +488,7 @@ Expected: PASS
         }
 ```
 
-- [ ] **Step 3: 构建验证**
+- [x] **Step 3: 构建验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -5`
 Expected: PASS
@@ -500,11 +500,11 @@ Expected: PASS
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs`（`handle_discard` 函数）
 
-- [ ] **Step 1: 定位 `handle_discard` 函数**
+- [x] **Step 1: 定位 `handle_discard` 函数**
 
 Run: `grep -n 'fn handle_discard' crates/desktop/src/coordinator.rs`
 
-- [ ] **Step 2: 在 `handle_discard` 中新增 `StoppingPolish` arm**
+- [x] **Step 2: 在 `handle_discard` 中新增 `StoppingPolish` arm**
 
 `handle_discard` 与 `handle_cancel` 共享停止逻辑，但额外 finalize DB 记录。找到其 stage match，添加 `StoppingPolish` arm（与 `Polishing` arm 类似，finalize DB 记录）：
 
@@ -531,7 +531,7 @@ Run: `grep -n 'fn handle_discard' crates/desktop/src/coordinator.rs`
 
 **注意**：需检查 `handle_discard` 是否已有 `Polishing` arm 的 finalize 逻辑模板，参照其写法。如果 `handle_discard` 的 finalize 逻辑与上述不同，以现有 `Polishing` arm 的写法为准。
 
-- [ ] **Step 3: 构建验证**
+- [x] **Step 3: 构建验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -5`
 Expected: PASS
@@ -543,7 +543,7 @@ Expected: PASS
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs:997-1015`（`handle_toggle` 的 busy stage 忽略分支）
 
-- [ ] **Step 1: 在 `handle_toggle` 中新增 `StoppingPolish` 忽略 arm**
+- [x] **Step 1: 在 `handle_toggle` 中新增 `StoppingPolish` 忽略 arm**
 
 找到 `handle_toggle` 中忽略 busy stage 的 match 分支（`WaitingCompletion` / `Polishing` / `Pasting` 等返回 `debug!("Toggle ignored: ...")` 的位置），添加：
 
@@ -553,7 +553,7 @@ Expected: PASS
         }
 ```
 
-- [ ] **Step 2: 构建验证**
+- [x] **Step 2: 构建验证**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | tail -5`
 Expected: PASS
@@ -565,7 +565,7 @@ Expected: PASS
 **Files:**
 - 无文件修改，仅验证
 
-- [ ] **Step 1: 全量构建（cloud + 非 cloud）**
+- [x] **Step 1: 全量构建（cloud + 非 cloud）**
 
 Run:
 ```bash
@@ -574,7 +574,7 @@ cargo build -p octopus-desktop --features embedded 2>&1 | tail -10
 ```
 Expected: 两个构建均 PASS，0 warnings
 
-- [ ] **Step 2: 运行测试**
+- [x] **Step 2: 运行测试**
 
 Run:
 ```bash
@@ -582,7 +582,7 @@ cargo test -p octopus-desktop --features embedded,cloud 2>&1 | tail -15
 ```
 Expected: 所有测试 PASS（67+ passed）
 
-- [ ] **Step 3: 检查 warnings**
+- [x] **Step 3: 检查 warnings**
 
 Run: `cargo build -p octopus-desktop --features embedded,cloud 2>&1 | grep -i warning`
 Expected: 无输出（0 warnings）
@@ -594,7 +594,7 @@ Expected: 无输出（0 warnings）
 **Files:**
 - Modify: `docs/architecture.md`（核心状态机章节 + 取消录音章节）
 
-- [ ] **Step 1: 更新核心状态机章节**
+- [x] **Step 1: 更新核心状态机章节**
 
 在 `docs/architecture.md` 的「核心状态机（Coordinator）」章节，更新模式说明：
 
@@ -609,7 +609,7 @@ Expected: 无输出（0 warnings）
 - （新增）Toggle 停止时若有进行中的立即润色：Streaming/VadSegmented/CloudStreaming → StoppingPolish → (Polishing) → Pasting
 ```
 
-- [ ] **Step 2: 更新「取消录音（Cancel）」章节**
+- [x] **Step 2: 更新「取消录音（Cancel）」章节**
 
 找到 `docs/architecture.md` 中 `- **取消录音（Cancel）**` 的段落，在其末尾补充 `StoppingPolish` 的说明：
 
@@ -617,7 +617,7 @@ Expected: 无输出（0 warnings）
 **StoppingPolish 阶段**（Toggle 停止时立即润色仍在途）：Cancel 丢弃在途润色结果 + 删除 DB 脏数据（同其他阶段的 Cancel 语义）。
 ```
 
-- [ ] **Step 3: 在 spec/plan 中勾选完成**
+- [x] **Step 3: 在 spec/plan 中勾选完成**
 
 回到本 plan 文档，把所有 checkbox 标记为 `[x]`。
 
@@ -625,7 +625,7 @@ Expected: 无输出（0 warnings）
 
 ## Task 13: 提交
 
-- [ ] **Step 1: 提交所有改动**
+- [x] **Step 1: 提交所有改动**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/setting-ui2
@@ -653,7 +653,7 @@ EOF
 )"
 ```
 
-- [ ] **Step 2: 同步到 main**
+- [x] **Step 2: 同步到 main**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus

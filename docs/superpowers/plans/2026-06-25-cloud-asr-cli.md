@@ -79,7 +79,7 @@ crates/asr-cloud/                 # 新建 crate
 - Create: `crates/asr-cloud/src/cloud_types.rs`
 - Modify: `Cargo.toml`（workspace members）
 
-- [ ] **Step 1: 注册 workspace member**
+- [x] **Step 1: 注册 workspace member**
 
 编辑 `/Users/wudarui/workspace/agent/octopus/.claude/worktrees/model-mgmt-ui/Cargo.toml`，把 `members` 行改为：
 
@@ -87,7 +87,7 @@ crates/asr-cloud/                 # 新建 crate
 members = ["crates/infra", "crates/asr", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download"]
 ```
 
-- [ ] **Step 2: 写 crate Cargo.toml**
+- [x] **Step 2: 写 crate Cargo.toml**
 
 Create `crates/asr-cloud/Cargo.toml`（依赖版本对齐 `crates/desktop/Cargo.toml`）：
 
@@ -119,7 +119,7 @@ anyhow = "1"
 log = "0.4"
 ```
 
-- [ ] **Step 3: 写 lib.rs 骨架**
+- [x] **Step 3: 写 lib.rs 骨架**
 
 Create `crates/asr-cloud/src/lib.rs`：
 
@@ -136,7 +136,7 @@ Create `crates/asr-cloud/src/lib.rs`：
 pub mod cloud_types;
 ```
 
-- [ ] **Step 4: 写 cloud_types 测试（先写测试，TDD）**
+- [x] **Step 4: 写 cloud_types 测试（先写测试，TDD）**
 
 先 Read `crates/desktop/src/cloud_types.rs` 全文确认内容（本 task 迁移它）。然后 Create `crates/asr-cloud/src/cloud_types.rs`，**整体复制 desktop 版本**，做以下改造：
 - `pub(crate) enum PcmFrame` → `pub enum PcmFrame`（cloud crate 内部跨模块用，但保持 pub(crate) 亦可；本 task 保持 `pub(crate)`，与 desktop 一致）。
@@ -147,17 +147,17 @@ pub mod cloud_types;
 
 最终 `cloud_types.rs` 内容 = desktop `cloud_types.rs` 全文（含 `PcmFrame`/`StreamEvent`/`CloudStreamHandle`/`CLOUD_CLOSE_TIMEOUT_SECS`/`samples_to_pcm_s16le` + tests），无需任何逻辑改动（该文件不依赖 tauri）。
 
-- [ ] **Step 5: 验证测试通过**
+- [x] **Step 5: 验证测试通过**
 
 Run: `cargo test -p octopus-asr-cloud --lib`
 Expected: 3 passed（samples_to_pcm_s16le 三个单测），0 failed。
 
-- [ ] **Step 6: workspace check 确认注册无误**
+- [x] **Step 6: workspace check 确认注册无误**
 
 Run: `cargo check -p octopus-asr-cloud`
 Expected: 编译通过（cloud_types 无 tauri 依赖，应干净通过）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/asr-cloud Cargo.toml
@@ -174,7 +174,7 @@ git commit -m "feat(asr-cloud): 新建 crate 骨架 + 迁移 cloud_types（PcmFr
 
 aliyun 协议最复杂（Fun-ASR/Paraformer 任务型 + Qwen-ASR Realtime 两套），但纯函数可单测面有限（主要是 `is_qwen_realtime_endpoint`）。WSS 主体靠 desktop 已验证逻辑 + `#[ignore]` 真实 key 集成测试。
 
-- [ ] **Step 1: 复制 + 改造 aliyun_stream.rs**
+- [x] **Step 1: 复制 + 改造 aliyun_stream.rs**
 
 Read `crates/desktop/src/aliyun_stream.rs` 全文。Create `crates/asr-cloud/src/aliyun_stream.rs`，整体粘贴，按「复刻通用规则」改造：
 - `open()` 签名改为（去掉 `rt`，`rt.spawn` → `tokio::spawn`）：
@@ -223,7 +223,7 @@ pub fn open(
 - `run_ws_session` / `run_qwen_realtime_session` / `is_qwen_realtime_endpoint` 及所有 helper：**逐字照搬** desktop 版本。
 - 模块文档头：把"tauri::async_runtime（tokio handle）"改为"tokio runtime（CloudBatchEngine 的 block_on 驱动）"。
 
-- [ ] **Step 2: 注册模块**
+- [x] **Step 2: 注册模块**
 
 `crates/asr-cloud/src/lib.rs` 末尾加：
 
@@ -231,21 +231,21 @@ pub fn open(
 pub mod aliyun_stream;
 ```
 
-- [ ] **Step 3: 复制 desktop 已有单测（含 is_qwen_realtime_endpoint）**
+- [x] **Step 3: 复制 desktop 已有单测（含 is_qwen_realtime_endpoint）**
 
 desktop `aliyun_stream.rs` 已带：`is_qwen_realtime_endpoint`（L282，pub(crate)）+ L508 起的 `mod tests`（5 个测试）。复刻时把 `is_qwen_realtime_endpoint` 函数 + 整个 `#[cfg(test)] mod tests {...}` **逐字复制**到 cloud crate 版本（字节级验证已存在，无需新编）。确认 `is_qwen_realtime_endpoint` 判定逻辑含 `/v1/realtime` 子串。
 
-- [ ] **Step 4: 验证测试通过**
+- [x] **Step 4: 验证测试通过**
 
 Run: `cargo test -p octopus-asr-cloud --lib aliyun`
 Expected: `is_qwen_realtime_endpoint_detects_realtime` PASS。
 
-- [ ] **Step 5: 编译验证（含 native-tls / serde_json 依赖生效）**
+- [x] **Step 5: 编译验证（含 native-tls / serde_json 依赖生效）**
 
 Run: `cargo check -p octopus-asr-cloud`
 Expected: 编译通过，0 error。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/asr-cloud/src/aliyun_stream.rs crates/asr-cloud/src/lib.rs
@@ -262,7 +262,7 @@ git commit -m "feat(asr-cloud): 复刻 aliyun(DashScope) WSS 协议层（open �
 
 bytedance 是二进制帧协议（4B header + payload + gzip），帧编解码纯函数可单测，价值最高。
 
-- [ ] **Step 1: 复制 + 改造 bytedance_stream.rs**
+- [x] **Step 1: 复制 + 改造 bytedance_stream.rs**
 
 Read `crates/desktop/src/bytedance_stream.rs` 全文。Create `crates/asr-cloud/src/bytedance_stream.rs`，整体粘贴，按「复刻通用规则」改造。`open()` 新签名：
 
@@ -295,25 +295,25 @@ pub fn open(
 
 - 帧编解码常量（`PROTOCOL_VERSION`/`MSG_*`/`FLAG_*`/`SER_*`）、`build_*`/`parse_*` helper、`run_session`：**逐字照搬**。
 
-- [ ] **Step 2: 注册模块**
+- [x] **Step 2: 注册模块**
 
 `lib.rs` 加 `pub mod bytedance_stream;`
 
-- [ ] **Step 3: 复制 desktop 已有帧编解码单测**
+- [x] **Step 3: 复制 desktop 已有帧编解码单测**
 
 desktop `bytedance_stream.rs` L385 起的 `mod tests` 已带 5 个测试：`test_build_client_frame_audio` / `test_build_client_frame_last`（帧构造，校验 4B header：byte0=0x11、msg_type、flags、ser、comp）+ `test_gzip_roundtrip` + `test_parse_server_frame_response` / `test_parse_server_frame_error`。帧构造函数实际名 `build_client_frame(msg_type, flags, serialization, compression, payload_raw)`（5 参数）。复刻时**逐字复制**该 `mod tests`——它依赖的 `build_client_frame`/`parse_server_frame`/`gzip_compress`/`decompress_or_raw`/协议常量本就在 `run_bytedance_session` 同文件，Step 1 整体复制已含。字节级验证已存在，无需新编。
 
-- [ ] **Step 4: 验证测试通过**
+- [x] **Step 4: 验证测试通过**
 
 Run: `cargo test -p octopus-asr-cloud --lib bytedance`
 Expected: 帧编解码单测 PASS。
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run: `cargo check -p octopus-asr-cloud`
 Expected: 0 error（flate2 Gzip 依赖生效）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/asr-cloud/src/bytedance_stream.rs crates/asr-cloud/src/lib.rs
@@ -331,7 +331,7 @@ git commit -m "feat(asr-cloud): 复刻 bytedance(豆包) 二进制帧 WSS 协议
 
 两个相对简单（tencent 签名构造 + baidu START 帧），合并到一个 task。
 
-- [ ] **Step 1: 复刻 tencent_stream.rs**
+- [x] **Step 1: 复刻 tencent_stream.rs**
 
 Read `crates/desktop/src/tencent_stream.rs` 全文。Create `crates/asr-cloud/src/tencent_stream.rs`，整体粘贴，按「复刻通用规则」改造。`open()` 新签名：
 
@@ -364,7 +364,7 @@ pub fn open(
 
 - 签名构造 helper（拼 `sign_str` → HMAC-SHA1 → base64 → URL-encode）+ `run_tencent_session`：**逐字照搬**。
 
-- [ ] **Step 2: 复刻 baidu_stream.rs**
+- [x] **Step 2: 复刻 baidu_stream.rs**
 
 Read `crates/desktop/src/baidu_stream.rs` 全文。Create `crates/asr-cloud/src/baidu_stream.rs`，整体粘贴，按「复刻通用规则」改造。`open()` 新签名：
 
@@ -395,7 +395,7 @@ pub fn open(
 
 - `run_baidu_session`（含 START 帧 JSON 构造、UUID `sn`、双向循环、FINISH）：**逐字照搬**。
 
-- [ ] **Step 3: 注册模块**
+- [x] **Step 3: 注册模块**
 
 `lib.rs` 加：
 
@@ -404,25 +404,25 @@ pub mod tencent_stream;
 pub mod baidu_stream;
 ```
 
-- [ ] **Step 4: 复制 desktop 已有签名单测（tencent）**
+- [x] **Step 4: 复制 desktop 已有签名单测（tencent）**
 
 desktop `tencent_stream.rs` L298 起的 `mod tests` 已带 7 个测试：`test_percent_encode_special_chars` / `test_percent_encode_alphanumeric`（URL 编码）+ `test_build_signed_url_structure` / `_deterministic` / `_different_keys`（签名 URL 结构/确定性/密钥敏感性）。签名函数实际名 `build_signed_url(appid, secretid, secret_key, engine_model_type, voice_id)`（5 参数，含 voice_id）。复刻时**逐字复制**该 `mod tests`——依赖的 `build_signed_url`/`percent_encode` Step 1 整体复制已含。
 
-- [ ] **Step 5: 复制 desktop 已有单测（baidu）**
+- [x] **Step 5: 复制 desktop 已有单测（baidu）**
 
 desktop `baidu_stream.rs` L230 起的 `mod tests` 已带 6 个测试。复刻时**逐字复制**该 `mod tests`。
 
-- [ ] **Step 6: 验证测试通过**
+- [x] **Step 6: 验证测试通过**
 
 Run: `cargo test -p octopus-asr-cloud --lib`
 Expected: tencent 签名 + baidu endpoint 单测 PASS（连同前序 task 的测试全绿）。
 
-- [ ] **Step 7: 编译验证**
+- [x] **Step 7: 编译验证**
 
 Run: `cargo check -p octopus-asr-cloud`
 Expected: 0 error（hmac/sha1/base64 依赖生效）。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/asr-cloud/src/tencent_stream.rs crates/asr-cloud/src/baidu_stream.rs crates/asr-cloud/src/lib.rs
@@ -439,7 +439,7 @@ git commit -m "feat(asr-cloud): 复刻 tencent(HMAC-SHA1) + baidu(START 帧) WSS
 
 复刻 `crates/desktop/src/cloud_pipeline.rs:110-213` 的 resolve_* + open_cloud_session，去 tauri、改同步（open 同步）。
 
-- [ ] **Step 1: 写 config.rs（迁移 resolve_* + open_cloud_session）**
+- [x] **Step 1: 写 config.rs（迁移 resolve_* + open_cloud_session）**
 
 Create `crates/asr-cloud/src/config.rs`：
 
@@ -564,7 +564,7 @@ pub fn open_cloud_session(
 
 > **核对**：`octopus_asr::config::load_config()` / `resolve_engine_category()` / `EngineCategory` 均 pub（desktop `cloud_pipeline.rs:129/186/188` 跨 crate 已用）；`octopus_infra::db::{ModelEntry, parse_model_spec}` pub（desktop `cloud_pipeline.rs:114/131` 已用）。`AppConfig.asr.{aliyun,bytedance,tencent,baidu}` 字段类型 = `Option<HashMap<String, ModelEntry>>`（见 desktop resolve_* 用法）。若字段名/类型有出入，以 desktop `cloud_pipeline.rs:127-177` 为准对齐。
 
-- [ ] **Step 2: 注册模块 + re-export**
+- [x] **Step 2: 注册模块 + re-export**
 
 `lib.rs` 加：
 
@@ -573,7 +573,7 @@ pub mod config;
 pub use config::open_cloud_session;
 ```
 
-- [ ] **Step 3: 写 open_cloud_session 错误路径单测（先写测试）**
+- [x] **Step 3: 写 open_cloud_session 错误路径单测（先写测试）**
 
 在 `config.rs` 末尾加（非法 spec 在 resolve 前就 bail，不需真实 key）：
 
@@ -601,17 +601,17 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: 验证测试通过**
+- [x] **Step 4: 验证测试通过**
 
 Run: `cargo test -p octopus-asr-cloud --lib config`
 Expected: 2 passed。
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run: `cargo check -p octopus-asr-cloud`
 Expected: 0 error。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/asr-cloud/src/config.rs crates/asr-cloud/src/lib.rs
@@ -628,7 +628,7 @@ git commit -m "feat(asr-cloud): config 分发（resolve_*_config + open_cloud_se
 
 批引擎核心：`from_spec` 解析 + 建 runtime；`transcribe` 单段单 session（block_on open + 分块 push + close_async）；`skip_corrector=true`。
 
-- [ ] **Step 1: 写 from_spec 错误路径测试（先写测试）**
+- [x] **Step 1: 写 from_spec 错误路径测试（先写测试）**
 
 Create `crates/asr-cloud/src/batch.rs`，先写测试模块：
 
@@ -755,7 +755,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 注册模块 + re-export**
+- [x] **Step 2: 注册模块 + re-export**
 
 `lib.rs` 加：
 
@@ -764,12 +764,12 @@ pub mod batch;
 pub use batch::{CloudBatchEngine, is_cloud_spec};
 ```
 
-- [ ] **Step 3: 验证测试通过**
+- [x] **Step 3: 验证测试通过**
 
 Run: `cargo test -p octopus-asr-cloud --lib batch`
 Expected: `from_spec_rejects_local_engine` + `from_spec_rejects_garbage` PASS。
 
-- [ ] **Step 4: 加真实 key 集成测试（#[ignore]）**
+- [x] **Step 4: 加真实 key 集成测试（#[ignore]）**
 
 在 `batch.rs` 测试模块追加（用户提供本地 DashScope key 时手动跑）：
 
@@ -787,12 +787,12 @@ Expected: `from_spec_rejects_local_engine` + `from_spec_rejects_garbage` PASS。
     }
 ```
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run: `cargo check -p octopus-asr-cloud --all-targets`
 Expected: 0 error（含 test target）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/asr-cloud/src/batch.rs crates/asr-cloud/src/lib.rs
@@ -808,7 +808,7 @@ git commit -m "feat(asr-cloud): CloudBatchEngine impl OfflineAsrEngine（单段�
 - Modify: `crates/cli/Cargo.toml`（加 octopus-asr-cloud 依赖）
 - Modify: `crates/cli/src/pipeline.rs`（分流）
 
-- [ ] **Step 1: 给 AsrEngineManager 加 active_engine getter**
+- [x] **Step 1: 给 AsrEngineManager 加 active_engine getter**
 
 编辑 `crates/asr/src/engine.rs`，在 `transcribe_batch` 方法后（`impl AsrEngineManager` 块内，约 L163 后）加：
 
@@ -827,7 +827,7 @@ git commit -m "feat(asr-cloud): CloudBatchEngine impl OfflineAsrEngine（单段�
     }
 ```
 
-- [ ] **Step 2: cli 加 octopus-asr-cloud 依赖**
+- [x] **Step 2: cli 加 octopus-asr-cloud 依赖**
 
 编辑 `crates/cli/Cargo.toml`，在 `[dependencies]` 加（位置参考既有 octopus-asr 行）：
 
@@ -837,7 +837,7 @@ octopus-asr-cloud = { path = "../asr-cloud" }
 
 > 先 Read `crates/cli/Cargo.toml` 确认既有 `octopus-asr` 行的写法，紧随其后加。
 
-- [ ] **Step 3: 写 is_cloud_spec 测试（先写测试）**
+- [x] **Step 3: 写 is_cloud_spec 测试（先写测试）**
 
 编辑 `crates/cli/src/pipeline.rs`，整体替换为（先写测试 + is_cloud_spec）：
 
@@ -877,24 +877,24 @@ pub fn run(model: &str, language: &str, samples: &[f32]) -> Result<String> {
 
 > **核对**：`octopus_asr::pipeline::transcribe_batch` 是 pub（`asr/pipeline.rs:46`）。`resolve_engine_category` / `EngineCategory` pub（见 Task 5 核对）。若 `is_cloud_spec_recognizes_cloud_prefixes` 中某前缀解析不出云端（取决于 `resolve_engine_category` 实现），Read `crates/asr/src/config.rs` 的 `resolve_engine_category` + `EngineCategory` 前缀表，用**实际能解析为云端**的 spec 形态替换测试用例。
 
-- [ ] **Step 4: 确认 is_cloud_spec 测试在 cloud crate 通过**
+- [x] **Step 4: 确认 is_cloud_spec 测试在 cloud crate 通过**
 
 `is_cloud_spec` 单测在 `octopus-asr-cloud`（Task 6 Step 1），cli 层无单测（run 需真实引擎/WSS）。
 
 Run: `cargo test -p octopus-asr-cloud --lib batch`
 Expected: `is_cloud_spec_*` + `from_spec_*` 全 PASS（Task 6 已验证）。
 
-- [ ] **Step 5: workspace 编译验证（关键里程碑：cli 拉通 cloud crate）**
+- [x] **Step 5: workspace 编译验证（关键里程碑：cli 拉通 cloud crate）**
 
 Run: `cargo check --workspace --all-targets`
 Expected: 0 error。asr-cloud 全链路（cli → asr-cloud → asr/infra）编译通过。
 
-- [ ] **Step 6: clippy 零新 warning**
+- [x] **Step 6: clippy 零新 warning**
 
 Run: `cargo clippy -p octopus-asr-cloud -p octopus-cli --all-targets -- -D warnings`
 Expected: 0 warning（新代码）。若 asr-cloud/cli 既有 warning 与本次无关，用 `-W` 而非 `-D` 区分；目标只看新代码无 warning。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/asr/src/engine.rs crates/cli/Cargo.toml crates/cli/src/pipeline.rs
@@ -911,18 +911,18 @@ git commit -m "feat(cli): 本地/云端 ASR 分流（AsrEngineManager::active_en
 - Modify: 记忆 `parallel-workstreams.md` + `MEMORY.md`
 - Create: 本 plan 同目录无需新建（e2e 清单写在本 task）
 
-- [ ] **Step 1: workspace 全量测试**
+- [x] **Step 1: workspace 全量测试**
 
 Run: `cargo test --workspace`
 Expected: 全绿（含 asr-cloud 全部单测；`#[ignore]` 的真实 key 测试跳过）。
 
-- [ ] **Step 2: workspace check + clippy 兜底**
+- [x] **Step 2: workspace check + clippy 兜底**
 
 Run: `cargo check --workspace --all-targets`
 Run: `cargo clippy --workspace --all-targets`
 Expected: check 0 error；clippy 无本次引入的新 warning。
 
-- [ ] **Step 3: 更新 spec 横幅状态**
+- [x] **Step 3: 更新 spec 横幅状态**
 
 编辑 `docs/superpowers/specs/2026-06-25-cloud-asr-cli-design.md`，把顶部状态行：
 
@@ -941,7 +941,7 @@ Expected: check 0 error；clippy 无本次引入的新 warning。
 > CloudBatchEngine 不自己分段（`transcribe_segments` 自动分段）。详见 plan 顶部「两点据实修正」。
 ```
 
-- [ ] **Step 4: 更新 architecture.md**
+- [x] **Step 4: 更新 architecture.md**
 
 Read `docs/architecture.md`，在 crate 列表/workspace 结构处加 `octopus-asr-cloud`（云端 ASR WSS 协议层 + 批引擎，cli 批处理用；desktop 第二步复用）。若无明确 crate 清单段，在最接近的「模块/crate 说明」处补一段：
 
@@ -951,7 +951,7 @@ Read `docs/architecture.md`，在 crate 列表/workspace 结构处加 `octopus-a
   API；desktop 流式适配暂留 desktop（第二步合并）。依赖 `octopus-asr`（单向）。
 ```
 
-- [ ] **Step 5: 更新记忆 parallel-workstreams.md**
+- [x] **Step 5: 更新记忆 parallel-workstreams.md**
 
 在 `parallel-workstreams.md` 的 ASR pipeline 阶段2 条目（item 7）末尾，或作为新进展，补一行：
 
@@ -964,7 +964,7 @@ desktop 本次零改动（*_stream.rs 副本暂留，第二步合并）。e2e �
 
 同步更新 `MEMORY.md` 索引行的尾部「2c-3/2d 待」前后，提及 cloud-asr-cli 已实施。
 
-- [ ] **Step 6: 文档提交**
+- [x] **Step 6: 文档提交**
 
 ```bash
 git add docs/superpowers/specs/2026-06-25-cloud-asr-cli-design.md docs/architecture.md
@@ -1001,7 +1001,7 @@ octopus-cli transcribe --model "aliyun:not-configured" --language zh test.wav
 # 预期：报 "aliyun ASR 模型 'not-configured' 未在 DB 配置" 或 secret_key 为空。
 ```
 
-- [ ] **Step 8: 标记 plan 全部完成**
+- [x] **Step 8: 标记 plan 全部完成**
 
 本 plan 所有 task checkbox 勾选；向用户报告实施完成 + e2e 清单，进入 `finishing-a-development-branch`（保留 worktree / ff-merge 由用户定）。
 

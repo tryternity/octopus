@@ -445,17 +445,17 @@ Expected: 4 tests 全过。
 Run: `cargo build -p octopus-desktop`
 Expected: 0 error（desktop 无单测，靠 build + 手动 e2e）。
 
-- [ ] **Step 4: 手动 e2e 清单（行为不变验证）**（代码完成，待用户本地 e2e）
+- [x] **Step 4: 手动 e2e 清单（行为不变验证）**（已随 stage2b ff-merge main，e2e 通过 2026-06-25）
 
 本地运行 desktop（`cargo tauri dev` 或既有启动方式），逐项验证本地流式（非 cloud、非 VadSegmented）：
 
-- [ ] 开录音（use_streaming 配置）→ result window 显示「正在聆听…」
-- [ ] 说一句中文 → 实时增量文本出现（Partial）
-- [ ] 停顿 >0.5s → 文本插入逗号（Committed，VAD 标点）
-- [ ] 继续说 → 新增文本，逗号标点正常（验证 preroll 后 VAD 标点开头不偏）
-- [ ] 停录音（toggle off）→ 追加句号 + 走润色/粘贴（Final，stop 路径）
-- [ ] DB（`~/.octopus/`）有 streaming 记录、文本正确
-- [ ] 静音期无闪烁（幂等去重生效）
+- [x] 开录音（use_streaming 配置）→ result window 显示「正在聆听…」
+- [x] 说一句中文 → 实时增量文本出现（Partial）
+- [x] 停顿 >0.5s → 文本插入逗号（Committed，VAD 标点）
+- [x] 继续说 → 新增文本，逗号标点正常（验证 preroll 后 VAD 标点开头不偏）
+- [x] 停录音（toggle off）→ 追加句号 + 走润色/粘贴（Final，stop 路径）
+- [x] DB（`~/.octopus/`）有 streaming 记录、文本正确
+- [x] 静音期无闪烁（幂等去重生效）
 
 > 若本地无法 e2e，至少完成 Step 1-3 并在提交信息标注「e2e 待本地验证」。
 

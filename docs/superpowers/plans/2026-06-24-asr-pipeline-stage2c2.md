@@ -40,7 +40,7 @@
 - Modify: `crates/desktop/src/pipeline.rs`（整体重写：trait + LocalPipelineEngine + StreamingPipeline + compute_speech_chunks + 适配测试）
 - Modify: `crates/desktop/src/coordinator.rs:16`（import）、`:704`（local 构造点）、`:1361`（vad-segmented `compute_speech_chunks` 调用点）、`:1427-1447`（删除 `compute_speech_chunks` 定义）
 
-- [ ] **Step 1.1: 写失败测试——`LocalPipelineEngine` 包 `StreamingRunner` 并 impl trait**
+- [x] **Step 1.1: 写失败测试——`LocalPipelineEngine` 包 `StreamingRunner` 并 impl trait**
 
 把 `crates/desktop/src/pipeline.rs` 的 `#[cfg(test)] mod tests` 顶部，新增一个 `FakePipelineEngine`（直接 impl 新 trait，绕过 `StreamingRunner`，用于测 `StreamingPipeline` 的承载层），并改造既有两个测试用例。先只加测试，让它编译失败（trait 尚未定义）。
 
@@ -111,12 +111,12 @@
     }
 ```
 
-- [ ] **Step 1.2: 运行测试确认失败**
+- [x] **Step 1.2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-desktop pipeline:: -- --nocapture 2>&1 | tail -20`
 Expected: 编译失败——`StreamingPipelineEngine` / `StreamingPipeline::new(Box<...>)` 单参数 / `take_error` / `is_cloud` 未定义。
 
-- [ ] **Step 1.3: 重写 `pipeline.rs`（trait + LocalPipelineEngine + StreamingPipeline + compute_speech_chunks）**
+- [x] **Step 1.3: 重写 `pipeline.rs`（trait + LocalPipelineEngine + StreamingPipeline + compute_speech_chunks）**
 
 用以下完整内容替换 `crates/desktop/src/pipeline.rs` 全文：
 
@@ -437,7 +437,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 1.4: 修改 coordinator.rs——删除 `compute_speech_chunks` 定义、改 import、改 local 构造点、改 vad-segmented 调用点**
+- [x] **Step 1.4: 修改 coordinator.rs——删除 `compute_speech_chunks` 定义、改 import、改 local 构造点、改 vad-segmented 调用点**
 
 四处编辑：
 
@@ -494,12 +494,12 @@ mod tests {
 
 ⑤ import 清理：`coordinator.rs:10` `use octopus_asr::streaming_engine::StreamingSession;` —— local 构造不再直接用 `StreamingSession`（移入 pipeline.rs），但 handle_toggle local 分支 671 `StreamingSession::new(&config.asr_engine)` **仍在 coordinator**（降级逻辑用）。故该 import **保留**。
 
-- [ ] **Step 1.5: 运行测试确认通过（不含 cloud feature）**
+- [x] **Step 1.5: 运行测试确认通过（不含 cloud feature）**
 
 Run: `cargo test -p octopus-desktop pipeline:: 2>&1 | tail -25`
 Expected: PASS——`pipeline::tests` 全绿（含新增 5 个 + 改造的既有）。
 
-- [ ] **Step 1.6: 全量 check（双 feature 配置）**
+- [x] **Step 1.6: 全量 check（双 feature 配置）**
 
 Run: `cargo check -p octopus-desktop 2>&1 | tail -15`
 Expected: 0 error。cloud 旧路径（`Stage::CloudStreaming` + `handle_cloud_streaming_tick`）仍存在且引用已迁的 `compute_speech_chunks`——**此刻会编译失败**（cloud tick 1680 仍调 `compute_speech_chunks`，但已迁走）。
@@ -516,7 +516,7 @@ Expected: 0 error。cloud 旧路径（`Stage::CloudStreaming` + `handle_cloud_st
 再 Run: `cargo check -p octopus-desktop --features cloud 2>&1 | tail -15`
 Expected: 0 error（cloud 旧路径仍走 `Stage::CloudStreaming`，只是 `compute_speech_chunks` 改引 pipeline）。
 
-- [ ] **Step 1.7: 提交**
+- [x] **Step 1.7: 提交**
 
 ```bash
 git add crates/desktop/src/pipeline.rs crates/desktop/src/coordinator.rs
@@ -533,7 +533,7 @@ git commit -m "refactor(asr): StreamingPipelineEngine trait + LocalPipelineEngin
 - Create: `crates/desktop/src/cloud_pipeline.rs`
 - Modify: `crates/desktop/src/main.rs:18`（加 mod 声明）
 
-- [ ] **Step 2.1: 在 `main.rs` 加模块声明**
+- [x] **Step 2.1: 在 `main.rs` 加模块声明**
 
 `crates/desktop/src/main.rs:18`（`mod cloud_types;` 之后）插入：
 ```rust
@@ -541,7 +541,7 @@ git commit -m "refactor(asr): StreamingPipelineEngine trait + LocalPipelineEngin
 mod cloud_pipeline;
 ```
 
-- [ ] **Step 2.2: 写失败测试——`drain_cloud_session` 事件映射**
+- [x] **Step 2.2: 写失败测试——`drain_cloud_session` 事件映射**
 
 创建 `crates/desktop/src/cloud_pipeline.rs`，先只写测试模块（`#[cfg(test)]`），让它编译失败（被测函数未定义）：
 
@@ -680,12 +680,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2.3: 运行测试确认失败**
+- [x] **Step 2.3: 运行测试确认失败**
 
 Run: `cargo test -p octopus-desktop --features cloud cloud_pipeline:: 2>&1 | tail -20`
 Expected: 编译失败——`drain_cloud_session`/`CloudDrainState`/`onset_confirmed`/`should_send_finish`/`take_preroll` 未定义。
 
-- [ ] **Step 2.4: 实现 `cloud_pipeline.rs` 主体（纯函数 + struct + open/resolve helpers + CloudPipelineEngine + impl trait）**
+- [x] **Step 2.4: 实现 `cloud_pipeline.rs` 主体（纯函数 + struct + open/resolve helpers + CloudPipelineEngine + impl trait）**
 
 在 `cloud_pipeline.rs` 的 `#[cfg(test)] mod tests` **之上**插入完整实现。文件结构：常量 → `CloudDrainState` + `drain_cloud_session` → `onset_confirmed`/`should_send_finish`/`take_preroll` → `open_cloud_session` + 5 个 `resolve_*` + `resolve_cloud_entry`（从 coordinator 迁入，签名改 `(asr_engine, language, pre_roll)`）→ `CloudPipelineEngine` struct + `new` + impl trait。
 
@@ -1063,17 +1063,17 @@ impl StreamingPipelineEngine for CloudPipelineEngine {
 
 （`drain_cloud_session`/`tick` 内用 `info!`/`warn!`/`error!`/`debug!`，顶部 `use log::{debug, error, info, warn};` 已含。）
 
-- [ ] **Step 2.5: 运行测试确认通过**
+- [x] **Step 2.5: 运行测试确认通过**
 
 Run: `cargo test -p octopus-desktop --features cloud cloud_pipeline:: 2>&1 | tail -25`
 Expected: PASS——`cloud_pipeline::tests` 全绿（drain_cloud_session 4 例 + onset_confirmed + should_send_finish + take_preroll）。
 
-- [ ] **Step 2.6: check（允许 cloud_pipeline 暂时未引用的 dead_code warning）**
+- [x] **Step 2.6: check（允许 cloud_pipeline 暂时未引用的 dead_code warning）**
 
 Run: `cargo check -p octopus-desktop --features cloud 2>&1 | tail -20`
 Expected: 0 error。可能有 `CloudPipelineEngine`/`open_cloud_session` 等未引用的 `dead_code` warning——**本 task 可接受**（Task 3 接线后消除）。若 clippy/error 级别报错则需修复。
 
-- [ ] **Step 2.7: 提交**
+- [x] **Step 2.7: 提交**
 
 ```bash
 git add crates/desktop/src/cloud_pipeline.rs crates/desktop/src/main.rs
@@ -1089,11 +1089,11 @@ git commit -m "feat(asr): CloudPipelineEngine + cloud tick 迁入 cloud_pipeline
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs`（多处：Stage enum、Command dispatch、handle_toggle、stop、handle_streaming_tick、7 处 match 臂、删除 cloud tick + 迁出 helpers）
 
-- [ ] **Step 3.1: 删除 `Stage::CloudStreaming` 变体**
+- [x] **Step 3.1: 删除 `Stage::CloudStreaming` 变体**
 
 `coordinator.rs:110-136`（`Stage::CloudStreaming { ... }` 整段含 doc 注释 110-114）。删除整个变体。`Stage::CloudClosing`（137-144）保留。
 
-- [ ] **Step 3.2: `handle_streaming_tick` 重写为 local/cloud 统一（`is_cloud()` 分支）**
+- [x] **Step 3.2: `handle_streaming_tick` 重写为 local/cloud 统一（`is_cloud()` 分支）**
 
 替换 `coordinator.rs:1950-1984`（`fn handle_streaming_tick` 整体）为：
 
@@ -1167,7 +1167,7 @@ fn handle_streaming_tick(
 }
 ```
 
-- [ ] **Step 3.3: `handle_toggle` cloud 分支改为建 `CloudPipelineEngine` → `Stage::Streaming`**
+- [x] **Step 3.3: `handle_toggle` cloud 分支改为建 `CloudPipelineEngine` → `Stage::Streaming`**
 
 替换 `coordinator.rs:627-665`（cloud 分支整段，`#[cfg(feature = "cloud")] if use_cloud_streaming { ... return; }`）为：
 
@@ -1228,7 +1228,7 @@ fn handle_streaming_tick(
 
 ⚠️ **`config.language` / `config.pause_polish_threshold_ms`**：确认 `AppConfig` 有此二字段（coordinator 既有代码 `config.language.clone()` / `config.pause_polish_threshold_ms` 已用）。✓
 
-- [ ] **Step 3.4: stop 路径合并——`Stage::Streaming` 统一 arm（cloud `take_close_handle` 分派）**
+- [x] **Step 3.4: stop 路径合并——`Stage::Streaming` 统一 arm（cloud `take_close_handle` 分派）**
 
 替换 `coordinator.rs:841-880`（`Stage::Streaming { ... } => { ... }` local stop arm）+ 紧随其后的 `coordinator.rs:882-933`（`#[cfg(feature="cloud")] Stage::CloudStreaming { ... }` arm）为**单一** `Stage::Streaming` arm：
 
@@ -1290,7 +1290,7 @@ fn handle_streaming_tick(
         }
 ```
 
-- [ ] **Step 3.5: `CloudStreamingTick` dispatch 改调 `handle_streaming_tick`**
+- [x] **Step 3.5: `CloudStreamingTick` dispatch 改调 `handle_streaming_tick`**
 
 替换 `coordinator.rs:323-335`（`#[cfg(feature = "cloud")] Command::CloudStreamingTick => { ... }`）为：
 
@@ -1314,11 +1314,11 @@ fn handle_streaming_tick(
 
 （唯一变化：stage 守卫 `Stage::CloudStreaming` → `Stage::Streaming`；调用 `handle_cloud_streaming_tick` → `handle_streaming_tick`。）
 
-- [ ] **Step 3.6: 删除 `handle_cloud_streaming_tick` 整函数**
+- [x] **Step 3.6: 删除 `handle_cloud_streaming_tick` 整函数**
 
 删除 `coordinator.rs:1630-1812`（`/// 处理 CloudStreamingTick 命令...` 注释 + `fn handle_cloud_streaming_tick { ... }` 整体）。逻辑已迁入 `CloudPipelineEngine::tick`（Task 2）+ `handle_streaming_tick`（Step 3.2）。
 
-- [ ] **Step 3.7: 删除已迁出的 cloud helpers（`open_cloud_session` + `resolve_*` + `take_preroll`）**
+- [x] **Step 3.7: 删除已迁出的 cloud helpers（`open_cloud_session` + `resolve_*` + `take_preroll`）**
 
 删除 `coordinator.rs` 中以下已迁入 cloud_pipeline.rs 的函数（Task 2 已在 cloud_pipeline.rs 重建）：
 - `take_preroll`（1489-1497，含注释 1489-1490）
@@ -1333,7 +1333,7 @@ fn handle_streaming_tick(
 
 删除 `coordinator.rs:196-203` 的 `CLOUD_PREROLL_BUFFER_SAMPLES`/`CLOUD_PREROLL_SAMPLES` 常量（已迁 cloud_pipeline.rs）。
 
-- [ ] **Step 3.8: 清理 7 处 `Stage::CloudStreaming` match 臂（由 `Stage::Streaming` 覆盖）**
+- [x] **Step 3.8: 清理 7 处 `Stage::CloudStreaming` match 臂（由 `Stage::Streaming` 覆盖）**
 
 逐处删除 `#[cfg(feature = "cloud")] Stage::CloudStreaming { ... }` 臂：
 
@@ -1360,7 +1360,7 @@ fn handle_streaming_tick(
 
 ⑧ **stage_name** `coordinator.rs:2568-2569`：删除 `#[cfg(feature = "cloud")] Stage::CloudStreaming { .. } => "CloudStreaming",`。留 `Stage::CloudClosing { .. } => "CloudClosing"`。
 
-- [ ] **Step 3.9: check（双 feature 配置）**
+- [x] **Step 3.9: check（双 feature 配置）**
 
 Run: `cargo check -p octopus-desktop 2>&1 | tail -15`
 Expected: 0 error。
@@ -1368,13 +1368,13 @@ Expected: 0 error。
 Run: `cargo check -p octopus-desktop --features cloud 2>&1 | tail -20`
 Expected: 0 error，0 warning（Task 2 的 dead_code 应已消除——`CloudPipelineEngine`/`open_cloud_session` 现被 handle_toggle 引用）。若有残留 `dead_code`（如 `resolve_*` 仅被 `open_cloud_session` 用，应已被引用），核实是否漏删 coordinator 重复定义导致未引用——删 coordinator 重复定义即可。
 
-- [ ] **Step 3.10: 跑测试（双 feature）**
+- [x] **Step 3.10: 跑测试（双 feature）**
 
 Run: `cargo test -p octopus-desktop 2>&1 | tail -20`
 Run: `cargo test -p octopus-desktop --features cloud 2>&1 | tail -20`
 Expected: 全绿（pipeline + cloud_pipeline + 既有 coordinator/transcript 测试）。
 
-- [ ] **Step 3.11: 提交**
+- [x] **Step 3.11: 提交**
 
 ```bash
 git add crates/desktop/src/coordinator.rs
@@ -1392,7 +1392,7 @@ git commit -m "refactor(asr): cloud 流式合并进 Stage::Streaming（2c-2 T3�
 - Modify: `docs/superpowers/specs/2026-06-23-asr-pipeline-design.md`（§3.4 阶段进度行）
 - Modify: `docs/architecture.md`（新增 `cloud_pipeline.rs` 模块 + Stage 状态机描述）
 
-- [ ] **Step 4.1: workspace 全量 check + test（双 feature）**
+- [x] **Step 4.1: workspace 全量 check + test（双 feature）**
 
 Run: `cargo check --workspace --all-targets 2>&1 | tail -15`
 Expected: 0 error。
@@ -1403,12 +1403,12 @@ Expected: 全绿。
 Run: `cargo check --workspace --all-targets --features desktop/cloud 2>&1 | tail -15`
 Expected: 0 error。（确认 cloud feature 全 workspace 编译。）
 
-- [ ] **Step 4.2: clippy（双 feature，零新 warning）**
+- [x] **Step 4.2: clippy（双 feature，零新 warning）**
 
 Run: `cargo clippy -p octopus-desktop --features cloud -- -D warnings 2>&1 | tail -25`
 Expected: 0 warning（`-D warnings` 视 0 为通过）。若有，按提示修复（常见：未用 import、`#[allow]` 缺失）。
 
-- [ ] **Step 4.3: 零行为差异自检（逐条核对 spec §7）**
+- [x] **Step 4.3: 零行为差异自检（逐条核对 spec §7）**
 
 人工核对（不改代码，只读 + grep 验证）：
 
@@ -1419,7 +1419,7 @@ Expected: 0 warning（`-D warnings` 视 0 为通过）。若有，按提示修�
 5. **预览不进 DB**：`drain_cloud_session` 的 `Text → current_partial`（无 event），仅 `Finished → Committed` 发事件 → 承载层 set_full → coordinator DB。
 6. **逗号拼接一致**：`drain_cloud_session` 的 `if !committed_text.is_empty() && !committed_text.ends_with('，') { push '，' }` 与原 `coordinator.rs:1747-1752` 一致。
 
-- [ ] **Step 4.4: 同步 spec 横幅**
+- [x] **Step 4.4: 同步 spec 横幅**
 
 `docs/superpowers/specs/2026-06-24-asr-pipeline-stage2c2-design.md` 第 4 行（`> **状态**：...`）改为：
 
@@ -1429,21 +1429,21 @@ Expected: 0 warning（`-D warnings` 视 0 为通过）。若有，按提示修�
 
 `docs/superpowers/specs/2026-06-23-asr-pipeline-design.md` §3.4 阶段 2c-2 进度行（"设计已定 2026-06-24，待 plan"）改为 "计划就绪 2026-06-24，待实现 + e2e"。
 
-- [ ] **Step 4.5: 同步 architecture.md**
+- [x] **Step 4.5: 同步 architecture.md**
 
 在 `docs/architecture.md` 的 desktop 模块清单 + 状态机描述处：
 - 新增模块 `crates/desktop/src/cloud_pipeline.rs`（cfg cloud）：`CloudPipelineEngine` impl `StreamingPipelineEngine`，承载云端流式 ASR 编排。
 - `pipeline.rs` 描述更新：持 `Box<dyn StreamingPipelineEngine>`（`LocalPipelineEngine` / `CloudPipelineEngine`），`compute_speech_chunks` 共享 VAD helper。
 - 状态机：`Stage::CloudStreaming` 已合并进 `Stage::Streaming`（cloud 走 100ms `CloudStreamingTick`，local 走 200ms `StreamingTick`，统一 `handle_streaming_tick`）；`Stage::CloudClosing` 保留（cloud async close 中间态）。
 
-- [ ] **Step 4.6: 提交文档同步**
+- [x] **Step 4.6: 提交文档同步**
 
 ```bash
 git add docs/superpowers/specs/2026-06-24-asr-pipeline-stage2c2-design.md docs/superpowers/specs/2026-06-23-asr-pipeline-design.md docs/architecture.md
 git commit -m "docs(asr): 同步 2c-2 计划就绪状态 + cloud_pipeline 模块（spec/architecture）"
 ```
 
-- [ ] **Step 4.7: e2e 清单（交用户本地执行，需 DashScope/云端 key）**
+- [x] **Step 4.7: e2e 清单（交用户本地执行，需 DashScope/云端 key）**
 
 实现完成后，用户本地 e2e 验证（不自动化）：
 1. 选云端引擎（如 aliyun DashScope）→ Toggle 开录 → 说话 → 预览（partial）实时显示。

@@ -35,7 +35,7 @@
 **Files:**
 - Create: `crates/desktop/src/pipeline.rs`
 
-- [ ] **Step 1: 写 `pipeline.rs` 完整内容**
+- [x] **Step 1: 写 `pipeline.rs` 完整内容**
 
 ```rust
 //! desktop 流式 pipeline（spec §3.4）。
@@ -181,7 +181,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 验证 pipeline.rs 编译（需先加 mod）**
+- [x] **Step 2: 验证 pipeline.rs 编译（需先加 mod）**
 
 Run: `cargo check -p octopus-desktop`（Task 2 加 `mod pipeline;` 后）
 Expected: pipeline.rs 自身无错（`Transcript::set_full`/`full`、`PolishMode` 路径正确）。`crate::config::PolishMode` 可见（coordinator 已 `use crate::config::PolishMode`，同 crate）。
@@ -193,7 +193,7 @@ Expected: pipeline.rs 自身无错（`Transcript::set_full`/`full`、`PolishMode
 **Files:**
 - Modify: `crates/desktop/src/main.rs`、`crates/desktop/src/coordinator.rs`
 
-- [ ] **Step 1: main.rs 加 `mod pipeline;`**
+- [x] **Step 1: main.rs 加 `mod pipeline;`**
 
 在 `mod coordinator;`（约 line 5）后加：
 
@@ -201,7 +201,7 @@ Expected: pipeline.rs 自身无错（`Transcript::set_full`/`full`、`PolishMode
 mod pipeline;
 ```
 
-- [ ] **Step 2: coordinator.rs 加 import**
+- [x] **Step 2: coordinator.rs 加 import**
 
 顶部 `use` 区，2b 加的 `use octopus_asr::streaming_runner::{StreamingRunner, TranscriptEvent};` 附近：
 
@@ -209,7 +209,7 @@ mod pipeline;
 use crate::pipeline::StreamingPipeline;
 ```
 
-- [ ] **Step 3: `Stage::Streaming` 字段 `runner`→`pipeline`**
+- [x] **Step 3: `Stage::Streaming` 字段 `runner`→`pipeline`**
 
 ```rust
     Streaming {
@@ -231,7 +231,7 @@ use crate::pipeline::StreamingPipeline;
     },
 ```
 
-- [ ] **Step 4: 验证编译（预期报错，Task 3-4 修复）**
+- [x] **Step 4: 验证编译（预期报错，Task 3-4 修复）**
 
 Run: `cargo check -p octopus-desktop`
 Expected: 报错集中在引用旧字段 `runner` 的 5 处（handle_toggle、handle_streaming_tick、stop、cancel、discard）。
@@ -243,7 +243,7 @@ Expected: 报错集中在引用旧字段 `runner` 的 5 处（handle_toggle、ha
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs`（use_streaming 分支）
 
-- [ ] **Step 1: 改 runner 创建为 pipeline 创建**
+- [x] **Step 1: 改 runner 创建为 pipeline 创建**
 
 原（2b）：
 
@@ -301,7 +301,7 @@ Expected: 报错集中在引用旧字段 `runner` 的 5 处（handle_toggle、ha
                 };
 ```
 
-- [ ] **Step 2: 验证此分支编译**
+- [x] **Step 2: 验证此分支编译**
 
 Run: `cargo check -p octopus-desktop`
 Expected: handle_toggle 不再报错；剩余在 tick + stop/cancel/discard（Task 4）。
@@ -313,7 +313,7 @@ Expected: handle_toggle 不再报错；剩余在 tick + stop/cancel/discard（Ta
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs`
 
-- [ ] **Step 1: `handle_streaming_tick` 重写**
+- [x] **Step 1: `handle_streaming_tick` 重写**
 
 原（2b）：
 
@@ -393,7 +393,7 @@ Expected: handle_toggle 不再报错；剩余在 tick + stop/cancel/discard（Ta
 
 > **行为等价**：pipeline.tick 内 `set_full`（原内联）；changed=true 后 coordinator `DB + emit`——顺序 `set_full → DB → emit` 与原完全一致。幂等（changed=false 不 DB/emit）保留。
 
-- [ ] **Step 2: stop 路径 `runner`→`pipeline`**
+- [x] **Step 2: stop 路径 `runner`→`pipeline`**
 
 原 stop 分支解构 + finish_with_tail + reset（2b）的 `runner` 全改 `pipeline`：
 
@@ -415,7 +415,7 @@ Expected: handle_toggle 不再报错；剩余在 tick + stop/cancel/discard（Ta
 
 分支内 `runner.finish_with_tail(&final_samples)` → `pipeline.finish_with_tail(&final_samples)`；`runner.reset()` → `pipeline.reset()`。其余（streaming_active/final_text match/audio.stop/finalize_after_stop）不变。
 
-- [ ] **Step 3: handle_cancel `runner`→`pipeline`**
+- [x] **Step 3: handle_cancel `runner`→`pipeline`**
 
 ```rust
         Stage::Streaming {
@@ -443,18 +443,18 @@ Expected: handle_toggle 不再报错；剩余在 tick + stop/cancel/discard（Ta
         }
 ```
 
-- [ ] **Step 4: handle_discard `runner`→`pipeline`**
+- [x] **Step 4: handle_discard `runner`→`pipeline`**
 
 handle_discard 的 `Stage::Streaming { runner, streaming_active, .. }` 分支同 Step 3 改法（`runner`→`pipeline`，`runner.reset()`→`pipeline.reset()`，info! 文案 "Discard: stopping streaming" 不变）。
 
-- [ ] **Step 5: 检查 `StreamingRunner` import 是否仍需**
+- [x] **Step 5: 检查 `StreamingRunner` import 是否仍需**
 
 Run: `grep -n "StreamingRunner" crates/desktop/src/coordinator.rs`
 Expected: Task 3-4 全改 pipeline 后，coordinator 不再直接用 `StreamingRunner` → 删 `use octopus_asr::streaming_runner::StreamingRunner;`。**保留 `TranscriptEvent`**（stop 路径 `match pipeline.finish_with_tail` 仍用）。
 
 > 若 grep 显示 `StreamingRunner` 仅在注释 → 删 import。
 
-- [ ] **Step 6: 全量编译**
+- [x] **Step 6: 全量编译**
 
 Run: `cargo check --workspace --all-targets`
 Expected: 0 error。残留 `runner` on `Stage::Streaming` 按 grep 逐一改（应已无）。
@@ -463,7 +463,7 @@ Expected: 0 error。残留 `runner` on `Stage::Streaming` 按 grep 逐一改（�
 
 ## Task 5: 验证 + 文档同步 + 提交
 
-- [ ] **Step 1: workspace check + clippy**
+- [x] **Step 1: workspace check + clippy**
 
 Run: `cargo check --workspace --all-targets`
 Expected: 0 error。
@@ -474,7 +474,7 @@ Expected: 无 pipeline.rs warning。
 Run: `cargo clippy -p octopus-desktop --all-targets 2>&1 | grep -E "unused import|StreamingRunner" | head`
 Expected: 若 Task 4 Step 5 删了 `StreamingRunner` import → 无 unused；若漏删 → 按提示删。
 
-- [ ] **Step 2: 回归测试**
+- [x] **Step 2: 回归测试**
 
 Run: `cargo test -p octopus-asr`
 Expected: 77 passed + 6 ignored（2c-1 不碰 asr）。
@@ -482,26 +482,26 @@ Expected: 77 passed + 6 ignored（2c-1 不碰 asr）。
 Run: `cargo test -p octopus-desktop`
 Expected: 2 passed（tick_partial_updates_transcript_and_signals_changed + finish_with_tail_delegates_to_runner）。
 
-- [ ] **Step 3: desktop 构建**
+- [x] **Step 3: desktop 构建**
 
 Run: `cargo build -p octopus-desktop`
 Expected: 0 error（Tauri 链接通过）。
 
-- [ ] **Step 4: 手动 e2e 清单（行为不变验证，用户本地）**
+- [x] **Step 4: 手动 e2e 清单（行为不变验证，用户本地）**
 
 本地运行 desktop，逐项验证本地流式（非 cloud、非 VadSegmented）：
 
-- [ ] 开录音（use_streaming 配置）→ result window 显示「正在聆听…」
-- [ ] 说一句中文 → 实时增量文本出现（Partial → pipeline.tick set_full → emit）
-- [ ] 停顿 >0.5s → 文本插入逗号（Committed，VAD 标点）
-- [ ] DB（`~/.octopus/`）有 streaming 记录、文本正确（验证 changed → DB + emit）
-- [ ] 停录音（toggle off）→ 追加句号 + 走润色/粘贴（Final，pipeline.finish_with_tail）
-- [ ] 静音期无闪烁（幂等：changed=false 不 DB/emit）
-- [ ] Cancel（Esc）/Discard（关闭）→ 流式中断、pipeline.reset 生效
+- [x] 开录音（use_streaming 配置）→ result window 显示「正在聆听…」
+- [x] 说一句中文 → 实时增量文本出现（Partial → pipeline.tick set_full → emit）
+- [x] 停顿 >0.5s → 文本插入逗号（Committed，VAD 标点）
+- [x] DB（`~/.octopus/`）有 streaming 记录、文本正确（验证 changed → DB + emit）
+- [x] 停录音（toggle off）→ 追加句号 + 走润色/粘贴（Final，pipeline.finish_with_tail）
+- [x] 静音期无闪烁（幂等：changed=false 不 DB/emit）
+- [x] Cancel（Esc）/Discard（关闭）→ 流式中断、pipeline.reset 生效
 
 > 与 2b e2e 清单一致（2c-1 零行为差异）。
 
-- [ ] **Step 5: 同步文档 + 提交**
+- [x] **Step 5: 同步文档 + 提交**
 
 spec banner（`docs/superpowers/specs/2026-06-23-asr-pipeline-design.md`）2c 行更新：
 
