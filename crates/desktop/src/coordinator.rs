@@ -13,7 +13,6 @@ use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use std::time::Instant;
 use tauri::{Emitter, Manager};
 
 /// 协调器命令
