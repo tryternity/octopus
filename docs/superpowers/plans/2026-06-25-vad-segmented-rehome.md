@@ -44,7 +44,7 @@ spec 是设计层，以下两点是落地必需的补充，**不要当成偏离 
 
 **目的：** 定义统一上层抽象与 VadSegmented 内部回传类型。此 Task 仅定义、不 impl，trait 暂未使用会有 `dead_code`/`unused` 警告——Task 2/3/4 impl 后消失；本 Task 用 `#[allow(unused)]` 临时压住。
 
-- [ ] **Step 1: 加 `SegmentResult` 与 `Pipeline` trait**
+- [x] **Step 1: 加 `SegmentResult` 与 `Pipeline` trait**
 
 在 `crates/desktop/src/pipeline.rs` 顶部 `use` 块之后（约 L20，`use std::sync::Arc;` 之前——按现有 import 顺序，把 `mpsc` 加进现有 `use`），插入：
 
@@ -93,14 +93,14 @@ pub trait Pipeline: Send {
 
 `SegmentResult` 字段默认私有——Task 2 构造时用字面量，需 `pub` 字段（上面已是 `pub`）。
 
-- [ ] **Step 2: 验证编译**
+- [x] **Step 2: 验证编译**
 
 ```bash
 cargo check -p octopus-desktop 2>&1 | tail -20
 ```
 Expected: 0 error（可能有 `unused`/`dead_code` 警告——已用 `#[allow(unused)]` 压 trait；`SegmentResult` 未构造会有 dead_code 警告，Task 2 消除）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/src/pipeline.rs
@@ -117,7 +117,7 @@ git commit -m "feat(desktop): 加 Pipeline trait + SegmentResult（2c-3 Task 1�
 
 **目的：** 把 VadSegmented 的 11 字段编排 + spawn + 乱序回填封装成 `VadSegmentedPipeline`，tick 对外同步。回填/consume 拆成纯函数单测（不依赖 VAD/模型文件）。
 
-- [ ] **Step 1: 写失败的单测（纯函数：回填 + 乱序消费）**
+- [x] **Step 1: 写失败的单测（纯函数：回填 + 乱序消费）**
 
 在 `crates/desktop/src/pipeline.rs` 末尾现有 `#[cfg(test)] mod tests` 内追加：
 
@@ -183,14 +183,14 @@ git commit -m "feat(desktop): 加 Pipeline trait + SegmentResult（2c-3 Task 1�
     }
 ```
 
-- [ ] **Step 2: 运行测试，确认失败**
+- [x] **Step 2: 运行测试，确认失败**
 
 ```bash
 cargo test -p octopus-desktop pipeline::tests::apply_segment_result_normal_inserts_text 2>&1 | tail -15
 ```
 Expected: 编译失败——`apply_segment_result`/`consume_completed_results_vad`/`SegmentResult` 字段未定义。
 
-- [ ] **Step 3: 实现 `SegmentResult` 字段可见性 + 2 个纯函数**
+- [x] **Step 3: 实现 `SegmentResult` 字段可见性 + 2 个纯函数**
 
 `SegmentResult`（Task 1 已加）字段已是 `pub`。在 `pipeline.rs` 的 `SegmentResult` 定义之后加两个纯函数：
 
@@ -245,14 +245,14 @@ pub(crate) fn consume_completed_results_vad(
 
 `HashMap` 已在 pipeline.rs 顶部 import（若没有，加 `use std::collections::HashMap;`）。
 
-- [ ] **Step 4: 运行测试，确认通过**
+- [x] **Step 4: 运行测试，确认通过**
 
 ```bash
 cargo test -p octopus-desktop pipeline::tests 2>&1 | grep "test result"
 ```
 Expected: `test result: ok. N passed`（含 4 个新测试 + 既有 StreamingPipeline 测试）。
 
-- [ ] **Step 5: 加 `VadSegmentedPipeline` 结构 + 构造 + 搬入 helper**
+- [x] **Step 5: 加 `VadSegmentedPipeline` 结构 + 构造 + 搬入 helper**
 
 在 `pipeline.rs`（`compute_speech_chunks` 之后）加常量、helper、结构：
 
@@ -441,7 +441,7 @@ impl VadSegmentedPipeline {
 
 顶部 import 补：`use std::sync::Arc;`、`use std::collections::HashMap;`、`use octopus_infra::consts::{SEGMENT_DURATION_S, SEGMENT_OVERLAP_MS};`（若已有则跳过；`Arc` 现有 pipeline.rs 未 import，需加）。
 
-- [ ] **Step 6: 验证编译 + 测试**
+- [x] **Step 6: 验证编译 + 测试**
 
 ```bash
 cargo check -p octopus-desktop 2>&1 | tail -20
@@ -449,7 +449,7 @@ cargo test -p octopus-desktop pipeline::tests 2>&1 | grep "test result"
 ```
 Expected: 0 error；测试全绿（`SegmentResult`/`consume_completed_results_vad`/`apply_segment_result` 的 dead_code 警告消失——已被结构与测试引用）。`run_tick`/`new`/`spawn_offline`/`drain_rx_and_consume`/`active_count` 未被外部调用会有 dead_code 警告，Task 3/5 消除；如需临时压住可加 `#[allow(dead_code)]` 到结构，但建议留作 Task 3 自然消除。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/src/pipeline.rs
@@ -465,7 +465,7 @@ git commit -m "feat(desktop): VadSegmentedPipeline 结构 + tick 编排 + 回填
 
 **目的：** 给 `VadSegmentedPipeline` 套上 `Pipeline` trait（tick 转 `run_tick`；finish = drain rx 至空 + consume；silence/reset/take_close_handle/is_cloud/took_segment_cut）。
 
-- [ ] **Step 1: 写 impl**
+- [x] **Step 1: 写 impl**
 
 在 `pipeline.rs` 的 `VadSegmentedPipeline` impl 块之后加：
 
@@ -512,7 +512,7 @@ impl Pipeline for VadSegmentedPipeline {
 }
 ```
 
-- [ ] **Step 2: 验证编译 + clippy**
+- [x] **Step 2: 验证编译 + clippy**
 
 ```bash
 cargo check -p octopus-desktop 2>&1 | tail -20
@@ -520,7 +520,7 @@ cargo clippy -p octopus-desktop --all-targets 2>&1 | grep -E "^(error|warning)" 
 ```
 Expected: 0 error；本 Task 新代码 0 新 warning（coordinator/cloud_pipeline 的预存 warning 非本 Task 引入）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/src/pipeline.rs
@@ -540,11 +540,11 @@ git commit -m "feat(desktop): impl Pipeline for VadSegmentedPipeline（2c-3 Task
 
 > **行为说明（implementer 必读）：** 现状 `StreamingRunner::finish_with_tail(tail)` 内部用 `engine.accept_samples(tail, false)`（**不走 VAD/标点**）+ `finish()`。改 `tick(tail)+finish` 后，tail 经 `StreamingPipeline::tick`→`StreamingRunner::push_samples`（**走 VAD**）。差异：尾部样本会过一次 VAD（可能产标点/Partial 事件）。但 tail 极短（`audio.drain_samples()` 的剩余，约一个 tick ≤100ms），且紧接 `finish()` 的 `Final` 会 `set_full` 覆盖。实际等价，靠既有流式测试 + Task 6 e2e 验证（spec §3.3/§6 已论证）。
 
-- [ ] **Step 1: 改 `StreamingPipelineEngine` trait 签名（pipeline.rs L34）**
+- [x] **Step 1: 改 `StreamingPipelineEngine` trait 签名（pipeline.rs L34）**
 
 `finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent` → `finish(&mut self) -> TranscriptEvent`。更新该方法的文档注释为「收尾 flush（tail 已由 stop 路径 tick 喂入 accept）：local → `StreamingRunner::finish`（Final）；cloud → 返回最后 `current_partial` 作 Committed 兜底」。
 
-- [ ] **Step 2: 改 `LocalPipelineEngine` impl（pipeline.rs L67-69）**
+- [x] **Step 2: 改 `LocalPipelineEngine` impl（pipeline.rs L67-69）**
 
 ```rust
     fn finish(&mut self) -> TranscriptEvent {
@@ -552,7 +552,7 @@ git commit -m "feat(desktop): impl Pipeline for VadSegmentedPipeline（2c-3 Task
     }
 ```
 
-- [ ] **Step 3: 改 `CloudPipelineEngine` impl（cloud_pipeline.rs L270 区域）**
+- [x] **Step 3: 改 `CloudPipelineEngine` impl（cloud_pipeline.rs L270 区域）**
 
 现状 `finish_with_tail` 内部 `push_pcm(tail)` + 返回 `current_partial` 兜底。去 tail 后只返回兜底（tail 由 stop 路径 `tick` 内的 `push_pcm` 喂入）：
 
@@ -566,7 +566,7 @@ git commit -m "feat(desktop): impl Pipeline for VadSegmentedPipeline（2c-3 Task
 
 （删除原 `finish_with_tail` 内的 `push_pcm` 逻辑——已移到 tick 路径。）
 
-- [ ] **Step 4: 改 `StreamingPipeline` 包装方法（pipeline.rs L126-128）+ 加 `impl Pipeline`**
+- [x] **Step 4: 改 `StreamingPipeline` 包装方法（pipeline.rs L126-128）+ 加 `impl Pipeline`**
 
 把 `pub fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent` 改为内部不再暴露带 tail 方法，转由 `impl Pipeline` 的 `finish` 承载。**保留 `StreamingPipeline::tick` 原样**（它已是 `tick(&mut self, samples, transcript) -> bool`，正好对应 `Pipeline::tick`）。
 
@@ -597,7 +597,7 @@ impl Pipeline for StreamingPipeline {
 
 删掉 `StreamingPipeline` 的 `pub fn finish_with_tail`（不再有外部调用——Step 5 改 coordinator 后确认）。
 
-- [ ] **Step 5: 改 coordinator stop 路径（coordinator.rs L840-895）**
+- [x] **Step 5: 改 coordinator stop 路径（coordinator.rs L840-895）**
 
 **cloud 分支（L843）**：`let _ = pipeline.finish_with_tail(&final_samples);` →
 ```rust
@@ -625,7 +625,7 @@ impl Pipeline for StreamingPipeline {
 
 （`pipeline.reset()` 及其后逻辑不变。）
 
-- [ ] **Step 6: 改既有流式测试（pipeline.rs L296 `finish_with_tail_delegates_to_engine`）**
+- [x] **Step 6: 改既有流式测试（pipeline.rs L296 `finish_with_tail_delegates_to_engine`）**
 
 改测 `finish` 无 tail：
 ```rust
@@ -641,7 +641,7 @@ impl Pipeline for StreamingPipeline {
 ```
 同步把 `FakePipelineEngine` 的 `finish_with_tail`（pipeline.rs L216）改 `finish(&mut self) -> TranscriptEvent { self.finish_out.clone() }`。
 
-- [ ] **Step 7: 双 feature 编译 + 既有测试 + clippy**
+- [x] **Step 7: 双 feature 编译 + 既有测试 + clippy**
 
 ```bash
 cargo check -p octopus-desktop 2>&1 | tail -5
@@ -652,7 +652,7 @@ cargo clippy -p octopus-desktop --features cloud --all-targets 2>&1 | grep -E "^
 ```
 Expected: 全 0 error；pipeline/cloud_pipeline 测试绿；新代码 0 新 warning。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/src/pipeline.rs crates/desktop/src/cloud_pipeline.rs crates/desktop/src/coordinator.rs
@@ -670,7 +670,7 @@ git commit -m "feat(desktop): impl Pipeline for StreamingPipeline + finish 去 t
 
 > **本 Task 是最大改动，按以下顺序逐步改，每步编译。**
 
-- [ ] **Step 1: 改 `Stage` 枚举字段**
+- [x] **Step 1: 改 `Stage` 枚举字段**
 
 `Stage::VadSegmented`（coordinator.rs L79-109）11 字段 → 3 字段：
 ```rust
@@ -694,7 +694,7 @@ git commit -m "feat(desktop): impl Pipeline for StreamingPipeline + finish 去 t
     },
 ```
 
-- [ ] **Step 2: 改 start 路径构造（coordinator.rs L716-755）**
+- [x] **Step 2: 改 start 路径构造（coordinator.rs L716-755）**
 
 把双 VAD 创建 + preroll + 11 字段构造，换成 `VadSegmentedPipeline::new`（VAD 加载失败走原 fallback）：
 ```rust
@@ -725,7 +725,7 @@ git commit -m "feat(desktop): impl Pipeline for StreamingPipeline + finish 去 t
 
 （删原 `find_silero_vad`/`SileroVad::new`/`vad_preroll`/`filter_vad` 创建块 L717-756。`engine` 变量在 start 路径已有，确认其类型是 `Arc<dyn TranscriptionEngine>`；若作用域名不同按实际。）
 
-- [ ] **Step 3: 改 `VadSegmentedTick` dispatch（coordinator.rs L301-321）**
+- [x] **Step 3: 改 `VadSegmentedTick` dispatch（coordinator.rs L301-321）**
 
 ```rust
                     Command::VadSegmentedTick => {
@@ -746,7 +746,7 @@ git commit -m "feat(desktop): impl Pipeline for StreamingPipeline + finish 去 t
                     }
 ```
 
-- [ ] **Step 4: 重写 `handle_vad_segmented_tick`（coordinator.rs L1292-1387）**
+- [x] **Step 4: 重写 `handle_vad_segmented_tick`（coordinator.rs L1292-1387）**
 
 把原 ~95 行编排整体替换为：取 stage → `pipeline.tick` → 据 changed/segment_cut 做 DB/emit/polish → WaitingCompletion 收尾判定。
 
@@ -814,7 +814,7 @@ fn after_vad_tick(
 }
 ```
 
-- [ ] **Step 5: 改 stop 路径 `Stage::VadSegmented` 分支（coordinator.rs L770-828）**
+- [x] **Step 5: 改 stop 路径 `Stage::VadSegmented` 分支（coordinator.rs L770-828）**
 
 现状停止 tick 线程 + 末段 spawn + active>0 进 WaitingCompletion。改：**不停 tick 线程**（保留驱动 WaitingCompletion），末段切段用 `pipeline.tick(remaining)` 触发，pipeline move 进 WaitingCompletion：
 
@@ -892,7 +892,7 @@ fn after_vad_tick(
 ```
 > **借用是本步难点。** implementer 以「`mem::replace(stage, Idle)` 取出全部 owned → 处理 → 写回」为主线，确保无 `&mut` 重叠。`finalize_after_stop` 现签名接 `&mut Stage`，写回 VadSegmented 后调即可（finalize 内部会再 `mem::replace`）。`transcript.set_to_placeholder` 不存在——直接用原 `transcript`（finalize 前 `mem::replace` 成空）。implementer 按实际 `Transcript` API 调整，核心：pipeline 与 tick_active 一并 move，tick 线程不停。
 
-- [ ] **Step 6: 删 `Command::TranscriptionDone` + dispatch arm + handler + spawn helper**
+- [x] **Step 6: 删 `Command::TranscriptionDone` + dispatch arm + handler + spawn helper**
 
 1. 删 `Command::TranscriptionDone` variant（coordinator.rs L43-47）。
 2. 删 dispatch arm `Command::TranscriptionDone { .. } => { ... }`（L339-353）。
@@ -907,7 +907,7 @@ grep -n "SEGMENT_DURATION_S\|SEGMENT_OVERLAP_MS\|consume_completed_results\|filt
 ```
 Expected: 仅剩注释/无引用（若有残留引用，逐一改/删）。
 
-- [ ] **Step 7: 修其余 `Stage::WaitingCompletion` / `Stage::VadSegmented` 的 match arm**
+- [x] **Step 7: 修其余 `Stage::WaitingCompletion` / `Stage::VadSegmented` 的 match arm**
 
 grep 全部 `WaitingCompletion` / `VadSegmented` match（`stage_name`、`current_transcript`、`handle_cancel`/`handle_discard` 等 ~10 处，见 Task 调研 grep 结果 L1673/1691/1756/1827/2036...）：把旧字段解构（`transcript, active_count, completed_seq, completed_results`）改为新字段（`pipeline, transcript, tick_active`）。**Cancel/Discard 路径需停 tick 线程**（`tick_active.store(false)`）防泄漏。
 
@@ -916,7 +916,7 @@ grep -n "WaitingCompletion\|Stage::VadSegmented" crates/desktop/src/coordinator.
 ```
 逐一改每个 match arm 的字段绑定。
 
-- [ ] **Step 8: workspace 编译 + clippy**
+- [x] **Step 8: workspace 编译 + clippy**
 
 ```bash
 cargo check --workspace --all-targets 2>&1 | tail -10
@@ -925,7 +925,7 @@ cargo test -p octopus-desktop 2>&1 | grep "test result"
 ```
 Expected: 0 error；新代码 0 新 warning；desktop 测试全绿。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/desktop/src/coordinator.rs
@@ -942,7 +942,7 @@ git commit -m "feat(desktop): coordinator Stage 改持 pipeline + 删 Transcript
 
 **目的：** 端到端验证 VadSegmented 全路径零行为差异，同步文档。
 
-- [ ] **Step 1: 全量编译 + 测试矩阵**
+- [x] **Step 1: 全量编译 + 测试矩阵**
 
 ```bash
 cargo check --workspace --all-targets 2>&1 | tail -5
@@ -963,7 +963,7 @@ Expected: 双 feature 0 error；clippy 无新 warning（与基线比）；worksp
 6. **跨会话护栏**：停止后立刻重开新会话 → 旧会话迟到的段结果不污染新会话（pipeline 随 stage drop，rx disconnect）。
 7. **Cancel/Discard**：录音中 Cancel/Discard → tick 线程停止、无泄漏、无迟到的粘贴。
 
-- [ ] **Step 3: 同步 spec 横幅 + plan 复选框**
+- [x] **Step 3: 同步 spec 横幅 + plan 复选框**
 
 spec `docs/superpowers/specs/2026-06-25-vad-segmented-rehome-design.md` 顶部状态行改：
 ```
@@ -971,7 +971,7 @@ spec `docs/superpowers/specs/2026-06-25-vad-segmented-rehome-design.md` 顶部�
 ```
 本 plan 所有 `- [ ]` → `- [x]`。
 
-- [ ] **Step 4: Commit 文档**
+- [x] **Step 4: Commit 文档**
 
 ```bash
 git add docs/superpowers/specs/2026-06-25-vad-segmented-rehome-design.md docs/superpowers/plans/2026-06-25-vad-segmented-rehome.md

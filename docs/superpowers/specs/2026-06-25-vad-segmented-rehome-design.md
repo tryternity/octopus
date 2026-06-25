@@ -1,7 +1,7 @@
 # 2c-3 VadSegmented 归位（统一 pipeline 角色）
 
 > 2026-06-25 初版（brainstorming 产出）。
-> **状态**：设计待实施。
+> **状态**：✅ 已实施（Task 1-6，commit `cde1100`）。双 feature 编译 0 error、新代码 clippy 0 新 warning、workspace 测试除 2 个 pre-existing infra 失败（`seed_then_load_round_trips` / `list_all_local_asr_models_includes_disabled`，seed `c796cbc` 重写后断言过时，与本次无关——2c-3 未触碰 `crates/infra/`）外全绿。VadSegmented 全路径 e2e 待本地验证，通过后 ff-merge main。
 > **动机**：ASR pipeline 重构阶段2（spec `2026-06-23-asr-pipeline-design.md`）已收编流式（2a/2b/2c-1：`StreamingPipeline` 壳）+ cloud（2c-2：`StreamingPipelineEngine` trait + `CloudPipelineEngine`）。VadSegmented（非流式引擎的 VAD 分段伪流式）是阶段2 最后一块未归位的编排，散在 `coordinator.rs`（`handle_vad_segmented_tick` + `Stage::VadSegmented`/`WaitingCompletion` 两处 `TranscriptionDone` 乱序回填 handler）。本 spec 把它收进统一 `Pipeline` 角色，为 2d（coordinator 清理）铺路。
 > **关联**：总 spec `2026-06-23-asr-pipeline-design.md`（§3.4 / §9 迁移映射）；2c-1 spec `2026-06-23-...`（`StreamingPipeline` 壳）；2c-2 spec `2026-06-24-asr-pipeline-stage2c2-design.md`（`StreamingPipelineEngine` trait）。
 > **范围**：新增 `Pipeline` 上层 trait + `VadSegmentedPipeline`（封装分段编排 + 乱序回填）+ 删 `TranscriptionDone` 命令 + `Stage::VadSegmented`/`WaitingCompletion` 字段改持 pipeline。**不含**：emit/DB/polish/transcript 全收敛（2d）、cli/server。
