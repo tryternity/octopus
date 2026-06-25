@@ -18,20 +18,20 @@ export default function FilterTabs({
   onChange: (v: string) => void;
 }) {
   return (
-    <div className="flex items-center gap-1 px-3 py-1.5 border-b border-border overflow-x-auto">
+    <div className="flex items-center gap-0.5">
       {TABS.map(({ value: tabValue, icon: Icon, label }) => (
         <button
           key={tabValue}
           title={label}
           className={cn(
-            "flex items-center justify-center p-1.5 rounded-md transition-colors",
+            "flex items-center justify-center px-2 py-1 rounded-md transition-all",
             value === tabValue
-              ? "bg-primary text-primary-foreground"
-              : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
+              ? "bg-background text-primary shadow-sm"
+              : "text-muted-foreground/60 hover:text-foreground hover:bg-black/5",
           )}
           onClick={() => onChange(tabValue)}
         >
-          <Icon className="w-4 h-4" />
+          <Icon className="w-3.5 h-3.5" />
           {tabValue === "all" && <span className="ml-1 text-xs">{label}</span>}
         </button>
       ))}

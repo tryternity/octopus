@@ -5,7 +5,7 @@ import { useClipboardHistory } from "@/hooks/useClipboardHistory";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
-import { Pin, Trash2, X } from "lucide-react";
+import { Pin, X } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export default function Clipboard() {
@@ -25,59 +25,69 @@ export default function Clipboard() {
     }
   }, [refresh]);
 
-  const togglePin = useCallback(() => {
-    setPinned((p) => !p);
-    // TODO: set always_on_top via Tauri
-  }, []);
+  const togglePin = useCallback(async () => {
+    const next = !pinned;
+    setPinned(next);
+    try {
+      const win = getCurrentWindow();
+      await win.setAlwaysOnTop(next);
+    } catch (e) {
+      console.error(e);
+    }
+  }, [pinned]);
 
   return (
-    <div
-      className="flex flex-col h-screen bg-background text-foreground select-none"
-      data-tauri-drag-region
-    >
+    <div className="flex flex-col h-screen bg-muted/30 text-foreground select-none overflow-hidden" data-tauri-drag-region>
       {/* Title bar */}
-      <div className="flex items-center justify-between px-3 py-1.5" data-tauri-drag-region>
+      <div className="flex items-center gap-1 px-2 py-1.5" data-tauri-drag-region>
         <button
-          className="p-1 rounded hover:bg-accent text-muted-foreground"
+          className="p-1 rounded-md hover:bg-black/5 text-muted-foreground hover:text-foreground transition-colors"
           onClick={() => getCurrentWindow().hide()}
           title="关闭"
         >
           <X className="w-3.5 h-3.5" />
         </button>
-        <span className="text-xs text-muted-foreground">剪贴板历史</span>
         <button
-          className={cn("p-1 rounded hover:bg-accent", pinned && "text-primary")}
+          className={cn(
+            "p-1 rounded-md transition-colors",
+            pinned ? "text-primary bg-primary/10" : "text-muted-foreground hover:bg-black/5 hover:text-foreground",
+          )}
           onClick={togglePin}
           title="置顶"
         >
           <Pin className="w-3.5 h-3.5" />
         </button>
+        <div className="flex-1" data-tauri-drag-region />
       </div>
 
-      <SearchBar value={search} onChange={setSearch} />
-      <FilterTabs value={filter} onChange={setFilter} />
+      {/* Search + Filter compact row */}
+      <div className="px-2 pb-1.5 flex flex-col gap-1.5">
+        <SearchBar value={search} onChange={setSearch} />
+        <FilterTabs value={filter} onChange={setFilter} />
+      </div>
 
       {/* List */}
-      <div className="flex-1 overflow-y-auto">
+      <div className="flex-1 overflow-y-auto px-1.5 pb-1">
         {items.length === 0 ? (
-          <div className="flex items-center justify-center h-full text-sm text-muted-foreground">
-            暂无记录
+          <div className="flex flex-col items-center justify-center h-full gap-1.5 text-muted-foreground/60">
+            <span className="text-xs">暂无记录</span>
           </div>
         ) : (
-          items.map((item) => (
-            <ClipboardItemRow key={item.id} item={item} onChanged={refresh} />
-          ))
+          <div className="flex flex-col gap-0.5">
+            {items.map((item) => (
+              <ClipboardItemRow key={item.id} item={item} onChanged={refresh} />
+            ))}
+          </div>
         )}
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between px-3 py-1.5 border-t border-border text-xs text-muted-foreground">
-        <span>共 {total} 条</span>
+      <div className="flex items-center justify-between px-3 py-1 border-t border-border/50 text-[11px] text-muted-foreground/70">
+        <span>{total} 条</span>
         <button
-          className="flex items-center gap-1 hover:text-destructive transition-colors"
+          className="hover:text-destructive transition-colors"
           onClick={handleClear}
         >
-          <Trash2 className="w-3 h-3" />
           清空
         </button>
       </div>

@@ -25,6 +25,7 @@ cd "../"
 # 5. 编译 + 运行（debug 模式：能看到 panic 栈 + 自动开 devtools 排查前端）
 # 必须启用 cloud feature：云端引擎（Aliyun/ByteDance/Tencent/Baidu）的流式识别依赖此 feature，
 # 不启用时云端引擎无法使用（is_cloud_engine / DispatchEngine 均 cfg gated）。
-RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run -p octopus-desktop --features "embedded cloud"
+# RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run -p octopus-desktop --features "embedded cloud"
+RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --release -p octopus-desktop --features "embedded cloud"
 # 注意：去掉 --release，debug 模式能打出 panic 栈
 #RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --features "embedded cloud"
