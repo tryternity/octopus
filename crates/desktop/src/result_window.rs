@@ -24,7 +24,7 @@ pub fn create_result_window(app: &tauri::AppHandle) {
     let builder = tauri::WebviewWindowBuilder::new(
         app,
         WINDOW_LABEL,
-        tauri::WebviewUrl::App("result/index.html".into()),
+        tauri::WebviewUrl::default(),
     )
     .title("Result")
     .inner_size(RESULT_WIDTH, RESULT_HEIGHT)
