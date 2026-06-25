@@ -59,6 +59,16 @@ impl CloudStreamHandle {
         (Self { pcm_tx, result_rx }, pcm_rx, result_tx)
     }
 
+    /// 仅供测试：构造 handle + result 发送端（预载事件用）。不暴露 pcm_rx / `pub(crate) PcmFrame`。
+    ///
+    /// 返回 `(handle, result_tx)`：测试向 `result_tx` 投递 `StreamEvent` 后，`handle.try_recv_text`
+    /// 可取到。供 desktop `cloud_pipeline::handle_with_events` 等 drain 测试跨 crate 构造预载 handle。
+    #[doc(hidden)]
+    pub fn new_for_test() -> (Self, mpsc::UnboundedSender<StreamEvent>) {
+        let (handle, _pcm_rx, result_tx) = Self::new();
+        (handle, result_tx)
+    }
+
     /// 推 PCM 样本（f32[-1,1] → s16le），非阻塞。
     pub fn push_pcm(&self, samples: &[f32]) -> Result<()> {
         let pcm = samples_to_pcm_s16le(samples);
@@ -145,5 +155,17 @@ mod tests {
         // 超出 [-1,1] 的值应被钳幅
         let pcm = samples_to_pcm_s16le(&[2.0]);
         assert_eq!(i16::from_le_bytes([pcm[0], pcm[1]]), 32767);
+    }
+
+    #[test]
+    fn new_for_test_returns_handle_and_event_sender() {
+        // new_for_test 构造的 (handle, sender)：sender 预载事件后 handle.try_recv_text 能取到。
+        // 供跨 crate（desktop cloud_pipeline 测试）构造预载事件的 handle。
+        let (mut handle, tx) = CloudStreamHandle::new_for_test();
+        let _ = tx.send(StreamEvent::Text("hello".to_string()));
+        assert!(
+            matches!(handle.try_recv_text(), Some(StreamEvent::Text(t)) if t == "hello"),
+            "new_for_test 预载的事件应能被 try_recv_text 取到"
+        );
     }
 }
