@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for octopus-desktop",
-  "windows": ["main", "result_window", "settings_window"],
+  "windows": ["main", "result_window", "settings_window", "clipboard_window"],
   "permissions": [
     "core:default",
     "core:window:allow-show",
