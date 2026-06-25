@@ -4,7 +4,10 @@
   "version": "0.1.0",
   "identifier": "com.octopus.desktop",
   "build": {
-    "frontendDist": "dist"
+    "frontendDist": "dist",
+    "beforeBuildCommand": "cd frontend && npm run build",
+    "beforeDevCommand": "cd frontend && npm run dev",
+    "devUrl": "http://localhost:1420"
   },
   "app": {
     "withGlobalTauri": true,
