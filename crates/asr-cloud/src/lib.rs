@@ -8,3 +8,4 @@
 //! 设计详见 `docs/superpowers/specs/2026-06-25-cloud-asr-cli-design.md`。
 
 pub mod cloud_types;
+pub mod aliyun_stream;
