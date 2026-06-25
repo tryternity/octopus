@@ -2,6 +2,8 @@
 
 mod audio;
 mod config;
+mod clipboard_commands;
+mod clipboard_window;
 mod coordinator;
 mod engine;
 #[cfg(feature = "cloud")]
@@ -31,7 +33,8 @@ use engine::TranscriptionEngine;
 use engine_embedded::EmbeddedEngine;
 use log::info;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
+use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -203,6 +206,12 @@ pub fn run() {
             model_commands::download_model,
             model_commands::verify_model,
             model_commands::set_download_mirror,
+            clipboard_commands::query_clipboard_history,
+            clipboard_commands::toggle_clipboard_favorite,
+            clipboard_commands::delete_clipboard_item,
+            clipboard_commands::clear_clipboard_history,
+            clipboard_commands::copy_clipboard_item,
+            clipboard_commands::clipboard_stats,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -211,6 +220,31 @@ pub fn run() {
                     .expect("Failed to init clipboard handle"),
             );
             app.manage(clipboard_handle.clone());
+
+            // Start clipboard watcher (background thread, clipboard-rs)
+            {
+                let app_handle_for_watcher = app.handle().clone();
+                let watcher_handle = clipboard_handle.clone();
+                match octopus_clipboard::ClipboardWatcher::start(watcher_handle, move || {
+                    octopus_clipboard::watcher::handle_clipboard_change(
+                        &app_handle_for_watcher
+                            .state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>()
+                            .inner(),
+                    );
+                    let _ = app_handle_for_watcher.emit("clipboard://changed", ());
+                }) {
+                    Ok(watcher) => { app.manage(watcher); }
+                    Err(e) => log::error!("Failed to start clipboard watcher: {}", e),
+                }
+            }
+
+            // Register clipboard window global shortcut (Alt+V)
+            {
+                let app_handle_for_clipboard = app.handle().clone();
+                let _ = app.global_shortcut().on_shortcut("Alt+V", move |_app, _scut, _event| {
+                    let _ = clipboard_window::toggle_clipboard_window(&app_handle_for_clipboard);
+                });
+            }
 
             // Initialize engine manager
             let engine_manager = Arc::new(octopus_asr::engine::AsrEngineManager::new());
