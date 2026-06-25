@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, Emitter};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
 
 const WINDOW_LABEL: &str = "clipboard_window";
 
