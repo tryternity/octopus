@@ -18,6 +18,47 @@ use octopus_asr::streaming_runner::{StreamingRunner, TranscriptEvent};
 use octopus_asr::streaming_engine::StreamingSession;
 use octopus_asr::vad::SileroVad;
 
+/// VadSegmented 段识别结果（pipeline 内部回传类型，2c-3）。
+///
+/// spawn 线程跑完 `engine.transcribe` 后，把结果发回 `VadSegmentedPipeline.rx`（**不发
+/// coordinator.tx**），下个 tick `try_recv` drain。`session_id` 仅日志用——跨会话护栏由
+/// 「stage 切换 = 新 pipeline 实例」天然保证（旧 pipeline drop → rx disconnect → spawn 的
+/// `tx.send` 失败忽略），不在此比对（spec §4）。
+pub(crate) struct SegmentResult {
+    pub seq: u64,
+    pub session_id: i64,
+    pub text: Result<String, String>,
+}
+
+/// desktop ASR pipeline 统一上层抽象（2c-3，spec §3.1）。
+///
+/// `StreamingPipeline`（流式，内持 `StreamingPipelineEngine`）与 `VadSegmentedPipeline`
+///（VAD 分段伪流式）各 impl。coordinator 持 `Box<dyn Pipeline>`，tick/finish/silence 统一
+/// 调用，不再按 stage 分流 tick 逻辑。emit/DB/polish/transcript 留 coordinator（2d 收敛）。
+#[allow(unused)]
+pub trait Pipeline: Send {
+    /// 喂一帧已降噪 16k 样本。
+    /// - 流式：engine tick → set_full。
+    /// - VadSegmented：累积+双 VAD+切段+spawn+drain_rx 回填+consume。
+    /// 返回 `changed`（coordinator 据 DB + emit，保持「内容未变不落库/不重绘」幂等）。
+    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> bool;
+    /// 收尾：流式 flush（tail 已由 stop 路径的 tick 喂入 accept）；vad-seg 仅 drain 剩余 rx。
+    fn finish(&mut self, transcript: &mut Transcript) -> TranscriptEvent;
+    /// 当前累积静音时长（秒，停顿润色触发用）。
+    fn silence_duration(&self) -> f64;
+    /// 重置（会话间复用）。
+    fn reset(&mut self);
+    /// cloud engine 的 async close 句柄（stop 时 coordinator 取出 spawn `close_async`）。
+    /// local/vad-seg 返回 `None`（默认）。cfg cloud（与 `StreamingPipelineEngine` 同步门控）。
+    #[cfg(feature = "cloud")]
+    fn take_close_handle(&mut self) -> Option<octopus_asr_cloud::CloudStreamHandle> { None }
+    /// 是否 cloud 引擎（§4.2/§4.3 不对称判别）。vad-seg 恒 false。
+    fn is_cloud(&self) -> bool { false }
+    /// 本 tick 是否发生「有语音的切段」（仅 VadSegmented 为 true，停顿润色触发用，见 plan 细化 1）。
+    /// 流式默认 false（停顿润色走 silence_duration 每 tick 判）。
+    fn took_segment_cut(&self) -> bool { false }
+}
+
 /// desktop 流式 pipeline 引擎（上层抽象，spec §3.4 阶段2c-2）。
 ///
 /// local（包 `StreamingRunner`）与 cloud（持 `CloudStreamHandle`）各 impl。
