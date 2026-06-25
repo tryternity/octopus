@@ -62,6 +62,11 @@ impl CloudBatchEngine {
 }
 
 impl OfflineAsrEngine for CloudBatchEngine {
+    /// 单段音频（≤30s）→ 单个 WSS session → 完整文本。
+    ///
+    /// **须在非 tokio runtime context 调用**：内部 `self.rt.block_on` 会嵌套 panic
+    ///（"Cannot start a runtime from within a runtime"）。cli 主线程满足此约束；
+    /// 勿在 server/tauri 的 async handler 内直接调用。
     fn transcribe(&self, samples: &[f32], language: &str) -> Result<String> {
         let spec = self.spec.clone();
         let lang = language.to_string();
@@ -72,7 +77,8 @@ impl OfflineAsrEngine for CloudBatchEngine {
             for chunk in samples.chunks(CLOUD_PUSH_CHUNK_SAMPLES) {
                 handle.push_pcm(chunk)?;
             }
-            // close_async：发 Finish + 收最终结果（超时上限 CLOUD_CLOSE_TIMEOUT_SECS=8s）。
+            // close_async：发 Finish + 收最终结果（超时上限 CLOUD_CLOSE_TIMEOUT_SECS=8s）
+            //（消费 handle，本 session 结束）。
             handle.close_async().await
         })
     }
