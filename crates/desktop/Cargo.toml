@@ -50,14 +50,9 @@ futures-util = { version = "0.3", optional = true }
 # 云端 ASR WS engine（cloud feature 用）
 # uuid 用于生成 task_id / event_id / request_id / voice_id；走 wss:// 必须 TLS。
 # base64 用于 Qwen-ASR Realtime 协议（audio 字段为 base64 PCM）+ Tencent 签名 Base64。
-# flate2 用于 ByteDance ASR 二进制协议（gzip 压缩 payload）。
-# hmac + sha1 用于 Tencent ASR 签名鉴权（HMAC-SHA1）。
-#（flate2/hmac/sha1 仅 *_stream.rs 副本用；Task 4 删副本后随之从 deps 移除，此处暂留。）
+#（flate2/hmac/sha1 已随 *_stream.rs 副本删去，下沉 octopus-asr-cloud；engine_aliyun.rs chunk 模式仅需 uuid/base64。）
 uuid = { version = "1", features = ["v4"], optional = true }
 base64 = { version = "0.22", optional = true }
-flate2 = { version = "1", optional = true }
-hmac = { version = "0.12", optional = true }
-sha1 = { version = "0.10", optional = true }
 
 # 云端 ASR 协议层（4 provider WSS + 批引擎，下沉 crate；desktop cloud feature 复用）
 octopus-asr-cloud = { path = "../asr-cloud", optional = true }
@@ -82,8 +77,8 @@ remote-ws = ["tokio-tungstenite", "futures-util"]
 remote-grpc = ["tonic", "prost", "tonic-build"]
 # 云端 ASR WS 流式识别（Aliyun / ByteDance / Tencent / Baidu）：
 # 协议层下沉 octopus-asr-cloud（4 provider WSS 1:1 复刻自原 desktop *_stream.rs）。
-# tokio-tungstenite 启用 native-tls 以支持 wss://；flate2/hmac/sha1 暂留（Task 4 删副本后移除）。
-cloud = ["tokio-tungstenite", "tokio-tungstenite?/native-tls", "uuid", "futures-util", "base64", "flate2", "hmac", "sha1", "octopus-asr-cloud"]
+# tokio-tungstenite 启用 native-tls 以支持 wss://（engine_aliyun chunk 模式 + settings 连接测试亦用）。
+cloud = ["tokio-tungstenite", "tokio-tungstenite?/native-tls", "uuid", "futures-util", "base64", "octopus-asr-cloud"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }

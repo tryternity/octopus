@@ -3,19 +3,9 @@
 mod audio;
 mod config;
 mod coordinator;
-#[cfg(feature = "cloud")]
-mod aliyun_stream;
 mod engine;
 #[cfg(feature = "cloud")]
 mod engine_aliyun;
-#[cfg(feature = "cloud")]
-mod bytedance_stream;
-#[cfg(feature = "cloud")]
-mod tencent_stream;
-#[cfg(feature = "cloud")]
-mod baidu_stream;
-#[cfg(feature = "cloud")]
-mod cloud_types;
 #[cfg(feature = "cloud")]
 mod cloud_pipeline;
 mod engine_dispatch;

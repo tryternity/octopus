@@ -279,7 +279,7 @@ fn build_run_task_streaming(model: &str, language: &str, task_id: &str) -> Value
 ///
 /// Qwen-ASR Realtime 使用 `/api-ws/v1/realtime` 路径，
 /// 而 Fun-ASR/Paraformer 使用 `/api-ws/v1/inference` 路径。
-pub(crate) fn is_qwen_realtime_endpoint(endpoint: &str) -> bool {
+pub fn is_qwen_realtime_endpoint(endpoint: &str) -> bool {
     endpoint.contains("/v1/realtime") || endpoint.contains("/realtime?")
 }
 

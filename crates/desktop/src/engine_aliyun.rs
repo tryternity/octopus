@@ -121,7 +121,7 @@ impl TranscriptionEngine for AliyunEngine {
 
         // 2. 全流程超时 8s（与 engine_ws.rs 一致）
         //    根据 endpoint 路径选择协议
-        let is_qwen = crate::aliyun_stream::is_qwen_realtime_endpoint(&endpoint);
+        let is_qwen = octopus_asr_cloud::aliyun_stream::is_qwen_realtime_endpoint(&endpoint);
         tokio::time::timeout(Duration::from_secs(8), async move {
             if is_qwen {
                 run_qwen_realtime_transcribe(&endpoint, &key, &model, &samples, &language).await
@@ -313,8 +313,8 @@ async fn collect_results(ws: &mut WsStream) -> Result<String> {
     Ok(committed)
 }
 
-/// f32[-1,1] → s16le PCM 转发：实际实现在 [`crate::cloud_types::samples_to_pcm_s16le`]。
-pub(crate) use crate::cloud_types::samples_to_pcm_s16le;
+/// f32[-1,1] → s16le PCM 转发：实际实现在 [`octopus_asr_cloud::samples_to_pcm_s16le`]。
+pub(crate) use octopus_asr_cloud::samples_to_pcm_s16le;
 
 // ── Qwen-ASR Realtime 离线转录（Manual 模式）──
 
