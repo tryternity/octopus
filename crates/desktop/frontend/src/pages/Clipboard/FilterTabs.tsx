@@ -3,7 +3,7 @@ import { LayoutGrid, Mic, Type, Image as ImageIcon, FileText, Star } from "lucid
 
 const TABS = [
   { value: "all", icon: LayoutGrid, label: "全部" },
-  { value: "asr", icon: Mic, label: "ASR" },
+  { value: "asr", icon: Mic, label: "语音" },
   { value: "text", icon: Type, label: "文本" },
   { value: "image", icon: ImageIcon, label: "图片" },
   { value: "file", icon: FileText, label: "文件" },

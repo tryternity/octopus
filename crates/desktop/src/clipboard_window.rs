@@ -13,7 +13,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         WebviewUrl::default(),
     )
     .title("剪贴板历史")
-    .inner_size(420.0, 600.0)
+    .inner_size(300.0, 600.0)
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
