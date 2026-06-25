@@ -1,7 +1,7 @@
 # desktop 复用 cloud 协议层（消除协议层两份副本）
 
 > 2026-06-25 初版（brainstorming 产出）。
-> **状态**：已实现（Task 1-5 编译/测试通过；e2e 待用户本地云端 key 验证）。
+> **状态**：✅ 已合并 main（`6a4593e`，ff-merge）。Task 1-6 编译/测试/云端流式 e2e 全通过（2026-06-25 本地云端 key 验证）。
 > **动机**：cloud-asr-cli（`octopus-asr-cloud` crate）落地后，4 provider WSS 协议层临时存在两份副本——`octopus-asr-cloud`（cli/server 用，去 tauri）与 `octopus-desktop`（流式适配用，依赖 tauri runtime）。本 spec 收口这份技术债：删 desktop 协议副本，desktop 改指 cloud crate，协议层单源。
 > **关联**：`2026-06-25-cloud-asr-cli-design.md` §8/§10（明确"第二步"范围）；ASR pipeline 总 spec `2026-06-23-asr-pipeline-design.md`。
 > **范围**：desktop 删 5 个协议副本 + 改造 `cloud_pipeline.rs`/`coordinator.rs` 改指 cloud crate + cloud crate 加测试构造器 + 云端流式 e2e 回归。**不含**：`engine_aliyun.rs`、VadSegmented 归位（2c-3）、coordinator 清理（2d）。
@@ -159,4 +159,4 @@ octopus-desktop ──(cloud feature)──→ octopus-asr-cloud ──→ octop
 - [x] `cloud_pipeline.rs` 全部测试绿（8 个：5 个 drain 测试改用 `new_for_test` + 3 个纯函数测试零改动）
 - [x] cloud crate 31 测试不变（加 `new_for_test` 不破坏）
 - [x] `cargo check --workspace --all-targets` 0 error
-- [ ] **云端流式 e2e 回归**：desktop `--features cloud`，用户本地云端 key，本地流式 + 云端流式识别均正常（onset/partial/finish/close 全路径）
+- [x] **云端流式 e2e 回归**：desktop `--features cloud`，用户本地云端 key，本地流式 + 云端流式识别均正常（onset/partial/finish/close 全路径，2026-06-25 验证通过）

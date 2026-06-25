@@ -11,7 +11,7 @@
 **Spec:** `docs/superpowers/specs/2026-06-25-desktop-cloud-dedupe-design.md`
 **Worktree:** `worktree-model-mgmt-ui`（已就位，叠加分支）
 
-> **实施状态**：已实现（Task 1-5 编译/测试通过；Task 6 e2e 清单已交付，待用户本地云端 key 验证）。commit `b13161c`→`c5b73cf`。
+> **实施状态**：✅ 已合并 main（`6a4593e`，ff-merge）。Task 1-6 全完成，云端流式 e2e 2026-06-25 本地云端 key 验证通过。
 >
 > **实施修正**（vs 原 plan，3 处盲点 + 1 时序）：
 > - **Task 2 时序**：原"接入+瘦身"合一，删 flate2/hmac/sha1 deps 时 `bytedance_stream`/`tencent_stream` 副本仍 `use` 它们→编译断。拆为 Task 2 仅接入 octopus-asr-cloud，瘦身随 Task 4 删副本（`57685df`）。
@@ -435,6 +435,8 @@ desktop cloud e2e 回归（--features cloud release 二进制）：
 5. 本地流式回归：切本地引擎（embedded）→ 流式识别正常（验证 cloud 改造不影响 local 路径）
 6. cloud off 回归：cargo build（无 cloud）→ embedded 本地识别正常（验证 default 路径不受影响）
 ```
+
+> ✅ **2026-06-25 e2e 验证通过**：用户本地云端 key 跑全 6 项，云端流式 + 本地流式 + cloud off 全路径正常。
 
 - [x] **Step 3: 同步 spec 横幅状态**
 
