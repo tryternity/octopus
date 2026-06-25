@@ -695,10 +695,10 @@ fn handle_toggle(
             info!("Toggle: stopping VadSegmented (active_count={})", pipeline.active_count());
 
             // 停止录音并排空剩余音频（tail 喂入 pipeline 触发最后一轮切段）。
-            // 2d：tick_events 替代 tick；事件丢弃（现状 stop 无 DB/emit，副作用靠 finalize）。
+            // 2d：tick 事件流；事件丢弃（现状 stop 无 DB/emit，副作用靠 finalize）。
             let remaining = audio.stop().unwrap_or_default();
             if !remaining.is_empty() {
-                let _ = pipeline.tick_events(&remaining, &mut transcript);
+                let _ = pipeline.tick(&remaining, &mut transcript);
             }
             pipeline.finish(&mut transcript);  // drain 在途段
 
@@ -727,9 +727,9 @@ fn handle_toggle(
             #[cfg(feature = "cloud")]
             if pipeline.is_cloud() {
                 // cloud: tick(tail) 喂入 push_pcm + finish（不发 Finish——Finish 由 close_async 发，避免重复）。
-                // 2d：tick_events 替代 tick；事件丢弃（现状 stop 无 DB/emit，副作用靠 finalize_cloud）。
+                // 2d：tick 事件流；事件丢弃（现状 stop 无 DB/emit，副作用靠 finalize_cloud）。
                 if !final_samples.is_empty() {
-                    let _ = pipeline.tick_events(&final_samples, transcript);
+                    let _ = pipeline.tick(&final_samples, transcript);
                 }
                 let _ = pipeline.finish();
                 let partial = pipeline.current_partial().to_string();
@@ -765,9 +765,9 @@ fn handle_toggle(
             }
 
             // local: tick(tail) accept + finish flush（tail 经 push_samples 喂入；finish Final 覆盖）。
-            // 2d：tick_events 替代 tick；事件丢弃（现状 stop 无 DB/emit，副作用靠 finalize_after_stop）。
+            // 2d：tick 事件流；事件丢弃（现状 stop 无 DB/emit，副作用靠 finalize_after_stop）。
             if !final_samples.is_empty() {
-                let _ = pipeline.tick_events(&final_samples, transcript);
+                let _ = pipeline.tick(&final_samples, transcript);
             }
             let final_text = match pipeline.finish() {
                 TranscriptEvent::Final(text) => text,
@@ -1939,7 +1939,7 @@ fn apply_pipeline_events(
 }
 
 /// VadSegmentedTick / StreamingTick / CloudStreamingTick 三命令合一的 dispatch（2d，spec §3.5）。
-/// 各 Stage 变体调对应 pipeline 的 `tick_events` → `apply_pipeline_events` 统一路由。
+/// 各 Stage 变体调对应 pipeline 的 `tick` → `apply_pipeline_events` 统一路由。
 /// WaitingCompletion 额外做 active_count==0 收尾判定（沿用 2c-3 既有逻辑）。
 fn dispatch_tick(
     stage: &mut Stage,
@@ -1951,15 +1951,15 @@ fn dispatch_tick(
     let samples = audio.drain_samples();
     match stage {
         Stage::Streaming { pipeline, transcript, .. } => {
-            let events = pipeline.tick_events(&samples, transcript);
+            let events = pipeline.tick(&samples, transcript);
             apply_pipeline_events(events, transcript, config, app_handle, tx);
         }
         Stage::VadSegmented { pipeline, transcript, .. } => {
-            let events = pipeline.tick_events(&samples, transcript);
+            let events = pipeline.tick(&samples, transcript);
             apply_pipeline_events(events, transcript, config, app_handle, tx);
         }
         Stage::WaitingCompletion { pipeline, transcript, tick_active } => {
-            let events = pipeline.tick_events(&samples, transcript);
+            let events = pipeline.tick(&samples, transcript);
             apply_pipeline_events(events, transcript, config, app_handle, tx);
             // 所有在途段完成 → 收尾（停 tick 线程 + finalize）
             if pipeline.active_count() == 0 {

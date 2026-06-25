@@ -106,22 +106,18 @@ pub(crate) fn consume_completed_results_vad(
 /// desktop ASR pipeline 统一上层抽象（2c-3，spec §3.1）。
 ///
 /// `StreamingPipeline`（流式，内持 `StreamingPipelineEngine`）与 `VadSegmentedPipeline`
-///（VAD 分段伪流式）各 impl。coordinator 调 tick/finish/silence 统一接口。
+///（VAD 分段伪流式）各 impl。coordinator 调 tick/finish 统一接口。
 /// emit/DB/polish/transcript 留 coordinator（2d 收敛）。
 ///
-/// `silence_duration`/`reset`/`take_close_handle`/`is_cloud` 当前仅 StreamingPipeline 通过
-/// inherent 方法调用（trait 暂未走全路径），用 `#[allow(unused)]` 抑制直至 2d 全收敛。
-#[allow(unused)]
+/// 当前 coordinator 持具体类型（走 inherent 同名方法），trait 方法在 Task 5 改 `Box<dyn Pipeline>`
+/// 后方经 trait 对象调用，此前用 `#[allow(dead_code)]` 抑制。
+#[allow(dead_code)]
 pub trait Pipeline: Send {
-    /// 喂一帧已降噪 16k 样本。
-    /// - 流式：engine tick → set_full。
-    /// - VadSegmented：累积+双 VAD+切段+spawn+drain_rx 回填+consume。
-    /// 返回 `changed`（coordinator 据 DB + emit，保持「内容未变不落库/不重绘」幂等）。
-    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> bool;
+    /// 喂一帧已降噪 16k 样本，返回本 tick 事件流（PersistRaw/Emit/Polish/Error）。
+    /// coordinator `apply_pipeline_events` 据此执行 DB/emit/polish/错误上报。（2d）
+    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> Vec<PipelineEvent>;
     /// 收尾：流式 flush（tail 已由 stop 路径的 tick 喂入 accept）；vad-seg 仅 drain 剩余 rx。
     fn finish(&mut self, transcript: &mut Transcript) -> TranscriptEvent;
-    /// 当前累积静音时长（秒，停顿润色触发用）。
-    fn silence_duration(&self) -> f64;
     /// 重置（会话间复用）。
     fn reset(&mut self);
     /// cloud engine 的 async close 句柄（stop 时 coordinator 取出 spawn `close_async`）。
@@ -130,9 +126,6 @@ pub trait Pipeline: Send {
     fn take_close_handle(&mut self) -> Option<octopus_asr_cloud::CloudStreamHandle> { None }
     /// 是否 cloud 引擎（§4.2/§4.3 不对称判别）。vad-seg 恒 false。
     fn is_cloud(&self) -> bool { false }
-    /// 本 tick 是否发生「有语音的切段」（仅 VadSegmented 为 true，停顿润色触发用，见 plan 细化 1）。
-    /// 流式默认 false（停顿润色走 silence_duration 每 tick 判）。
-    fn took_segment_cut(&self) -> bool { false }
 }
 
 /// desktop 流式 pipeline 引擎（上层抽象，spec §3.4 阶段2c-2）。
@@ -196,7 +189,7 @@ impl StreamingPipelineEngine for LocalPipelineEngine {
 pub struct StreamingPipeline {
     engine: Box<dyn StreamingPipelineEngine>,
     /// 上一 tick 承载层捕获的用户可见错误（cloud WSS 开启失败 / `StreamEvent::Failed`）。
-    /// coordinator 仅对 cloud 取出上报（`take_error`）；local 错误只在承载层 warn，不取出。
+    /// 由 `tick` 在下个调用取出注入 `PipelineEvent::Error`（2d 收敛）；local 错误只在承载层 warn。
     last_error: Option<String>,
 }
 
@@ -206,14 +199,15 @@ impl StreamingPipeline {
         Ok(Self { engine, last_error: None })
     }
 
-    /// 喂一帧已降噪 16k 样本：engine 产事件 → set_full，返回 `changed`。
-    ///
-    /// `changed=true` 表示文本变化（coordinator 据决定 DB + emit，保持「内容未变不落库/不重绘」幂等）。
-    /// - local 的 `Partial`/`Committed`/`Final` 都 set-full（幂等去重）。
-    /// - cloud 的预览（`current_partial`）**不**经过此——engine 自持 + 暴露 `current_partial()`
-    ///   （spec §4.1）；仅 `Committed`（Finished）经此 set-full。
-    /// - `Error` 承载层 warn + 暂存 `last_error`（coordinator `take_error` 取出，仅 cloud 上报）。
-    pub fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> bool {
+    /// 喂一帧已降噪 16k 样本：engine 产事件 → set_full，返回 tick 事件流（2d 合并）。
+    /// - local：changed→[PersistRaw,Emit]；每 tick→[Polish]；空样本→[]（早退）
+    /// - cloud：changed→[PersistRaw,Polish]；每 tick→[Emit{display+partial}]；error→[Error]
+    pub fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> Vec<PipelineEvent> {
+        let is_cloud = self.engine.is_cloud();
+        // local 空样本早退（等价原 handle_streaming_tick L1370）；cloud 不早退（仍 emit 预览/drain）
+        if !is_cloud && samples.is_empty() {
+            return Vec::new();
+        }
         let mut changed = false;
         for event in self.engine.tick(samples) {
             match event {
@@ -233,24 +227,6 @@ impl StreamingPipeline {
                 }
             }
         }
-        changed
-    }
-
-    /// 产 tick 事件流（2d，spec §3.4）。coordinator `dispatch_tick` 调此 + `apply_pipeline_events`。
-    /// 复用 inherent `tick` 的 set_full/last_error 逻辑（不重复），按 `is_cloud` 决定事件序列：
-    /// - local：`changed`→`[PersistRaw, Emit]`；每 tick 追加 `[Polish{silence_duration}]`；空样本→`[]`（早退）
-    /// - cloud：`changed`→`[PersistRaw, Polish]`；每 tick 追加 `[Emit{display+partial}]`；`error`→追加 `[Error]`
-    pub fn tick_events(
-        &mut self,
-        samples: &[f32],
-        transcript: &mut Transcript,
-    ) -> Vec<PipelineEvent> {
-        let is_cloud = self.engine.is_cloud();
-        // local 空样本早退（等价原 handle_streaming_tick L1370）；cloud 不早退（仍 emit 预览/drain）
-        if !is_cloud && samples.is_empty() {
-            return Vec::new();
-        }
-        let changed = self.tick(samples, transcript); // set_full + 设 last_error（复用，不重复逻辑）
         let mut events = Vec::new();
         if is_cloud {
             if changed {
@@ -289,19 +265,9 @@ impl StreamingPipeline {
         self.engine.finish()
     }
 
-    /// 当前累积静音时长（秒），供 coordinator 判断停顿润色。委托 engine。
-    pub fn silence_duration(&self) -> f64 {
-        self.engine.silence_duration()
-    }
-
     /// cloud 预览（`current_partial`），local 恒空。coordinator display 拼接用。
     pub fn current_partial(&self) -> &str {
         self.engine.current_partial()
-    }
-
-    /// 取出上一 tick 暂存的用户可见错误（cloud 上报用）。取走后清空。
-    pub fn take_error(&mut self) -> Option<String> {
-        self.last_error.take()
     }
 
     /// stop 路径分派：cloud → `Some(CloudStreamHandle)`（coordinator spawn close_async）；local → `None`。
@@ -323,16 +289,13 @@ impl StreamingPipeline {
 }
 
 impl Pipeline for StreamingPipeline {
-    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> bool {
-        // 复用既有 inherent StreamingPipeline::tick（engine tick → set_full，返回 changed）。
+    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> Vec<PipelineEvent> {
+        // 转发 inherent StreamingPipeline::tick（同名，trait impl 内 self.tick 调的是 inherent）。
         self.tick(samples, transcript)
     }
     fn finish(&mut self, _transcript: &mut Transcript) -> TranscriptEvent {
         // tail 已由 stop 路径 tick 喂入 accept；此处仅 flush。
         self.engine.finish()
-    }
-    fn silence_duration(&self) -> f64 {
-        self.engine.silence_duration()
     }
     fn reset(&mut self) {
         self.engine.reset();
@@ -344,7 +307,6 @@ impl Pipeline for StreamingPipeline {
     fn is_cloud(&self) -> bool {
         self.engine.is_cloud()
     }
-    // took_segment_cut 用默认 false（流式停顿润色走 silence_duration 每 tick 判）。
 }
 
 // ── 共享 VAD helper（coordinator vad-segmented tick 与 cloud tick 共用，spec §3.4）──
@@ -547,12 +509,12 @@ impl VadSegmentedPipeline {
         changed
     }
 
-    /// 产 tick 事件流（2d，spec §3.4）。复用 `run_tick`（双 VAD+切段+spawn+drain+set_full，不重复），
+    /// tick 事件流（2d 合并，spec §3.4）。复用 `run_tick`（双 VAD+切段+spawn+drain+set_full，不重复），
     /// 按 `changed`/`segment_cut` 产事件：
     /// `changed`→`[PersistRaw{vad_segmented}, Emit]`；`segment_cut`→追加 `[Polish{INFINITY}]`
     ///（段边界 silence 必过，等价原 after_vad_tick L1221 传 pause_polish_threshold_ms）。
     /// WaitingCompletion 收尾也走此（空样本 run_tick 跳过切段仅 drain，segment_cut 恒 false → 无 Polish）。
-    pub(crate) fn tick_events(
+    pub(crate) fn tick(
         &mut self,
         samples: &[f32],
         transcript: &mut Transcript,
@@ -572,8 +534,9 @@ impl VadSegmentedPipeline {
 }
 
 impl Pipeline for VadSegmentedPipeline {
-    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> bool {
-        self.run_tick(samples, transcript)
+    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> Vec<PipelineEvent> {
+        // 转发 inherent VadSegmentedPipeline::tick（同名，trait impl 内 self.tick 调的是 inherent）。
+        self.tick(samples, transcript)
     }
 
     fn finish(&mut self, transcript: &mut Transcript) -> TranscriptEvent {
@@ -583,10 +546,6 @@ impl Pipeline for VadSegmentedPipeline {
         // VadSegmented 不产 Final 事件（文本经 set_full 累积），返回空 Committed 作占位
         //（coordinator stop 路径不读 vad-seg 的 finish 返回值，见 Task 5）。
         TranscriptEvent::Committed(String::new())
-    }
-
-    fn silence_duration(&self) -> f64 {
-        self.silence_duration
     }
 
     fn reset(&mut self) {
@@ -605,11 +564,8 @@ impl Pipeline for VadSegmentedPipeline {
         self.segment_cut_this_tick = false;
     }
 
-    fn took_segment_cut(&self) -> bool {
-        self.segment_cut_this_tick
-    }
-
     // take_close_handle / is_cloud 用默认（None / false）——VadSegmented 仅非流式本地引擎。
+    // 删原 trait silence_duration / took_segment_cut（信息进 Polish 事件）。
 }
 
 #[cfg(test)]
@@ -671,9 +627,9 @@ mod tests {
             TranscriptEvent::Final("你好。".to_string()),
         ));
         let mut t = Transcript::new(0, PolishMode::Disabled);
-        let changed = p.tick(&[0.0; 1600], &mut t);
-        assert!(changed);
+        let events = p.tick(&[0.0; 1600], &mut t);
         assert_eq!(t.full(), "你好");
+        assert!(events.contains(&PipelineEvent::PersistRaw { engine_mode: "streaming" }));
     }
 
     #[test]
@@ -686,14 +642,14 @@ mod tests {
         ));
         let mut t = Transcript::new(0, PolishMode::Disabled);
         t.set_full("旧的");
-        let changed = p.tick(&[0.0; 1600], &mut t);
-        assert!(changed);
+        let events = p.tick(&[0.0; 1600], &mut t);
         assert_eq!(t.full(), "最终。"); // Final 无条件覆盖
+        assert!(events.contains(&PipelineEvent::PersistRaw { engine_mode: "streaming" }));
     }
 
     #[test]
     fn tick_committed_idempotent_no_change_skip() {
-        // Committed 与当前 full 相同 → 不改、changed=false（幂等）
+        // Committed 与当前 full 相同 → changed=false → 只产 Polish（local 每 tick），无 PersistRaw/Emit
         let mut p = pipeline(FakePipelineEngine::new(
             vec![TranscriptEvent::Committed("一样".to_string())],
             "",
@@ -701,22 +657,9 @@ mod tests {
         ));
         let mut t = Transcript::new(0, PolishMode::Disabled);
         t.set_full("一样");
-        let changed = p.tick(&[0.0; 1600], &mut t);
-        assert!(!changed);
-    }
-
-    #[test]
-    fn tick_stashes_error_for_take_error() {
-        let mut p = pipeline(FakePipelineEngine::new(
-            vec![TranscriptEvent::Error("boom".to_string())],
-            "",
-            TranscriptEvent::Final("".to_string()),
-        ));
-        let mut t = Transcript::new(0, PolishMode::Disabled);
-        let changed = p.tick(&[0.0; 1600], &mut t);
-        assert!(!changed);
-        assert_eq!(p.take_error().as_deref(), Some("boom"));
-        assert!(p.take_error().is_none());
+        let events = p.tick(&[0.0; 1600], &mut t);
+        assert!(!events.contains(&PipelineEvent::PersistRaw { engine_mode: "streaming" }));
+        assert_eq!(events, vec![PipelineEvent::Polish { silence: 0.0 }]);
     }
 
     #[test]
@@ -743,7 +686,7 @@ mod tests {
         assert_eq!(ev, TranscriptEvent::Final("最终。".to_string()));
     }
 
-    // ── tick_events（2d Task 1）──
+    // ── tick 事件流（2d Task 1）──
 
     #[test]
     fn tick_events_local_changed_produces_persist_emit_polish() {
@@ -752,7 +695,7 @@ mod tests {
             "", TranscriptEvent::Final("".into()),
         ));
         let mut t = Transcript::new(0, PolishMode::Disabled);
-        let events = p.tick_events(&[0.0; 1600], &mut t);
+        let events = p.tick(&[0.0; 1600], &mut t);
         assert_eq!(events, vec![
             PipelineEvent::PersistRaw { engine_mode: "streaming" },
             PipelineEvent::Emit { display: "你好".to_string() },
@@ -764,7 +707,7 @@ mod tests {
     fn tick_events_local_empty_samples_returns_empty() {
         let mut p = pipeline(FakePipelineEngine::new(vec![], "", TranscriptEvent::Final("".into())));
         let mut t = Transcript::new(0, PolishMode::Disabled);
-        assert!(p.tick_events(&[], &mut t).is_empty());
+        assert!(p.tick(&[], &mut t).is_empty());
     }
 
     #[test]
@@ -775,7 +718,7 @@ mod tests {
         ));
         let mut t = Transcript::new(0, PolishMode::Disabled);
         t.set_full("一样");
-        let events = p.tick_events(&[0.0; 1600], &mut t);
+        let events = p.tick(&[0.0; 1600], &mut t);
         assert_eq!(events, vec![PipelineEvent::Polish { silence: 0.0 }]);
     }
 
@@ -786,7 +729,7 @@ mod tests {
             "预览中", TranscriptEvent::Final("".into()),
         ));
         let mut t = Transcript::new(0, PolishMode::Disabled);
-        let events = p.tick_events(&[0.0; 1600], &mut t);
+        let events = p.tick(&[0.0; 1600], &mut t);
         // changed → PersistRaw + Polish；每 tick Emit(display+partial) = "已提交预览中"
         assert!(events.contains(&PipelineEvent::PersistRaw { engine_mode: "streaming" }));
         assert!(events.iter().any(|e| matches!(e, PipelineEvent::Emit { display } if display == "已提交预览中")));
@@ -799,7 +742,7 @@ mod tests {
             "", TranscriptEvent::Final("".into()),
         ));
         let mut t = Transcript::new(0, PolishMode::Disabled);
-        let events = p.tick_events(&[0.0; 1600], &mut t);
+        let events = p.tick(&[0.0; 1600], &mut t);
         assert!(events.iter().any(|e| matches!(e, PipelineEvent::Error(msg) if msg == "boom")));
     }
 
