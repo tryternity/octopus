@@ -241,8 +241,10 @@ pub fn run() {
             // Register clipboard window global shortcut (Alt+V)
             {
                 let app_handle_for_clipboard = app.handle().clone();
-                let _ = app.global_shortcut().on_shortcut("Alt+V", move |_app, _scut, _event| {
-                    let _ = clipboard_window::toggle_clipboard_window(&app_handle_for_clipboard);
+                let _ = app.global_shortcut().on_shortcut("Alt+V", move |_app, _scut, event| {
+                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                        let _ = clipboard_window::toggle_clipboard_window(&app_handle_for_clipboard);
+                    }
                 });
             }
 
