@@ -1,7 +1,7 @@
 # desktop 复用 cloud 协议层（消除协议层两份副本）
 
 > 2026-06-25 初版（brainstorming 产出）。
-> **状态**：设计待实施。
+> **状态**：已实现（Task 1-5 编译/测试通过；e2e 待用户本地云端 key 验证）。
 > **动机**：cloud-asr-cli（`octopus-asr-cloud` crate）落地后，4 provider WSS 协议层临时存在两份副本——`octopus-asr-cloud`（cli/server 用，去 tauri）与 `octopus-desktop`（流式适配用，依赖 tauri runtime）。本 spec 收口这份技术债：删 desktop 协议副本，desktop 改指 cloud crate，协议层单源。
 > **关联**：`2026-06-25-cloud-asr-cli-design.md` §8/§10（明确"第二步"范围）；ASR pipeline 总 spec `2026-06-23-asr-pipeline-design.md`。
 > **范围**：desktop 删 5 个协议副本 + 改造 `cloud_pipeline.rs`/`coordinator.rs` 改指 cloud crate + cloud crate 加测试构造器 + 云端流式 e2e 回归。**不含**：`engine_aliyun.rs`、VadSegmented 归位（2c-3）、coordinator 清理（2d）。
@@ -106,7 +106,9 @@ cloud crate 自身测试仍用 `pub(crate) new()`；desktop 测试改用 `new_fo
 | 删文件 | `aliyun_stream.rs`、`bytedance_stream.rs`、`tencent_stream.rs`、`baidu_stream.rs`、`cloud_types.rs` | 5 个，cloud crate 1:1 |
 | 删 `mod` | `main.rs` 的 `mod aliyun_stream;`/`mod bytedance_stream;`/`mod tencent_stream;`/`mod baidu_stream;`/`mod cloud_types;` | 5 行；`mod cloud_pipeline;`/`mod engine_aliyun;` 保留 |
 | 改造 `cloud_pipeline.rs` | 见 5.2 | |
-| 改造 `coordinator.rs` | `CloudStreamHandle`/`StreamEvent` 的 `use` 源改 `octopus_asr_cloud` | close 路径 |
+| `coordinator.rs` | **零改动**（靠类型推断：`take_close_handle`→`close_async`，`CloudStreamHandle` 类型由 cloud_pipeline 返回类型推断，无需 `use`） | close 路径 |
+| 改造 `pipeline.rs` | `StreamingPipelineEngine::take_close_handle` trait 默认 + `StreamingPipeline` 包装方法签名 `crate::cloud_types::CloudStreamHandle` → `octopus_asr_cloud::CloudStreamHandle`（trait 与 impl 类型须一致，否则 E0053） | **实施盲点修正** |
+| 改造 `engine_aliyun.rs` | `is_qwen_realtime_endpoint` + `samples_to_pcm_s16le` re-export 改指 `octopus_asr_cloud`（chunk 模式复用 cloud 协议层工具） | **实施盲点修正** |
 | `Cargo.toml` | `cloud` feature 加 `octopus-asr-cloud`；可能瘦身 `tokio-tungstenite`/`uuid`/`base64`/`flate2`/`hmac`/`sha1` | plan 阶段 grep `use` 核实，仅当 desktop 删副本后不再直接用才删 |
 
 ### 5.2 `cloud_pipeline.rs` 改造明细
@@ -122,7 +124,7 @@ cloud crate 自身测试仍用 `pub(crate) new()`；desktop 测试改用 `new_fo
 
 ### 5.3 cloud crate 侧
 
-仅加 `CloudStreamHandle::new_for_test()`（4.2）。协议层（`*_stream.rs` × 4 + `config.rs` + `batch.rs` + `cloud_types.rs` 协议部分）**零改动**。
+加 `CloudStreamHandle::new_for_test()`（4.2）+ 暴露两个 engine_aliyun 复用的 helper：`is_qwen_realtime_endpoint`（`aliyun_stream.rs` `pub(crate)`→`pub`）、`samples_to_pcm_s16le`（`cloud_types.rs` `pub(crate)`→`pub`）+ `lib.rs` 顶层 re-export `CloudStreamHandle`/`StreamEvent`/`samples_to_pcm_s16le`。协议逻辑（鉴权/帧/会话状态机）**零改动**。
 
 ### 5.4 依赖边界
 
@@ -134,7 +136,7 @@ octopus-desktop ──(cloud feature)──→ octopus-asr-cloud ──→ octop
 
 ## 6. 不在范围
 
-- **`engine_aliyun.rs`**：`AliyunEngine`（chunk 模式离线引擎，`engine_dispatch.rs` 用），与 `*_stream.rs` 长连接协议是两套，零改动。
+- **`engine_aliyun.rs`**：`AliyunEngine`（chunk 模式离线引擎，`engine_dispatch.rs` 用）——实施时发现它**复用了** `aliyun_stream::is_qwen_realtime_endpoint` + `cloud_types::samples_to_pcm_s16le`（brainstorming 盲点，原以为零改动）。实际改指 `octopus_asr_cloud`（chunk 模式也复用 cloud 协议层工具，进一步消除重复）。
 - **VadSegmented 归位（2c-3）**：独立设计。
 - **coordinator 清理（2d）**：emit/DB/polish + transcript 全收敛进 pipeline。
 - **cli/server 接入**：cloud-asr-cli 第一步已完成（批处理用 cloud crate），本次不改 cli/server。
@@ -147,14 +149,14 @@ octopus-desktop ──(cloud feature)──→ octopus-asr-cloud ──→ octop
 | 方案 B 的 `block_on` 在 coordinator 主线程有"隐式须 context"约束 | 注释标明；`block_on` 包同步 fn 是进入 context 的标准手段，open 只 spawn+返回 channel handle 不阻塞；plan 含 e2e 回归验证 |
 | cloud crate 加 `new_for_test()` 是封装小让步 | `#[doc(hidden)]` + 不暴露 `PcmFrame`（返回类型只含 `pub StreamEvent`）；仅测试用，非生产路径 |
 | `Cargo.toml` cloud feature 瘦身可能误删仍被直接使用的 dep | plan 阶段 grep desktop src 确认每个 dep 的直接 `use`，仅删确认无直接引用的 |
-| 删副本后 desktop cloud 编译/行为回归 | 双 feature 编译（cloud on/off）+ cloud_pipeline 6 测试 + cloud crate 30 测试 + 云端流式 e2e 回归（用户本地 key） |
+| 删副本后 desktop cloud 编译/行为回归 | 双 feature 编译（cloud on/off）+ cloud_pipeline 8 测试 + cloud crate 31 测试 + 云端流式 e2e 回归（用户本地 key） |
 | cloud crate 协议层与 desktop 副本字节级一致的前提 | cloud-asr-cli 第一步已验证 1:1 复刻（30 单测 + cli/server/desktop 批处理 e2e 通过）；改指后 e2e 回归再次确认 |
 
 ## 8. 验证清单
 
-- [ ] desktop `cargo build --features cloud` + `cargo build`（cloud off）双 feature 编译 0 error
-- [ ] desktop `cargo clippy --features cloud --all-targets` 新代码 0 warning（cloud 协议层当前已零 warning，见探索结论）
-- [ ] `cloud_pipeline.rs` 全部测试绿（8 个：5 个 drain 测试改用 `new_for_test` + 3 个纯函数测试零改动）
-- [ ] cloud crate 30 测试不变（加 `new_for_test` 不破坏）
-- [ ] `cargo check --workspace --all-targets` 0 error
+- [x] desktop `cargo build --features cloud` + `cargo build`（cloud off）双 feature 编译 0 error
+- [x] desktop `cargo clippy --features cloud --all-targets` 本次新代码（cloud_pipeline/pipeline/engine_aliyun 改造 + cloud crate 可见性/re-export）0 新 warning。注：cloud crate 协议层（`*_stream.rs`）与 desktop（coordinator/transcript 等）有第一步遗留的预存 warning，非本次引入，不在范围
+- [x] `cloud_pipeline.rs` 全部测试绿（8 个：5 个 drain 测试改用 `new_for_test` + 3 个纯函数测试零改动）
+- [x] cloud crate 31 测试不变（加 `new_for_test` 不破坏）
+- [x] `cargo check --workspace --all-targets` 0 error
 - [ ] **云端流式 e2e 回归**：desktop `--features cloud`，用户本地云端 key，本地流式 + 云端流式识别均正常（onset/partial/finish/close 全路径）

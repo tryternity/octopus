@@ -11,6 +11,13 @@
 **Spec:** `docs/superpowers/specs/2026-06-25-desktop-cloud-dedupe-design.md`
 **Worktree:** `worktree-model-mgmt-ui`（已就位，叠加分支）
 
+> **实施状态**：已实现（Task 1-5 编译/测试通过；Task 6 e2e 清单已交付，待用户本地云端 key 验证）。commit `b13161c`→`c5b73cf`。
+>
+> **实施修正**（vs 原 plan，3 处盲点 + 1 时序）：
+> - **Task 2 时序**：原"接入+瘦身"合一，删 flate2/hmac/sha1 deps 时 `bytedance_stream`/`tencent_stream` 副本仍 `use` 它们→编译断。拆为 Task 2 仅接入 octopus-asr-cloud，瘦身随 Task 4 删副本（`57685df`）。
+> - **Task 3 盲点**：`pipeline.rs` 的 `StreamingPipelineEngine::take_close_handle` trait 签名（+ 包装方法）也写死 `crate::cloud_types::CloudStreamHandle`，须同步切 `octopus_asr_cloud`（否则 E0053 trait 类型不匹配）。cloud crate `lib.rs` 补 `CloudStreamHandle`/`StreamEvent` 顶层 re-export（`2e15bfd`）。
+> - **Task 4 盲点**：`engine_aliyun.rs`（chunk 模式）复用 `aliyun_stream::is_qwen_realtime_endpoint` + `cloud_types::samples_to_pcm_s16le`（原以为零改动）。改指 cloud crate；cloud crate 顺势把这两个 helper `pub(crate)`→`pub` + re-export `samples_to_pcm_s16le`（`c5b73cf`）。
+
 ---
 
 ## 文件结构
@@ -35,7 +42,7 @@
 
 **Why:** desktop 删 `cloud_types.rs` 后，其 `cloud_pipeline.rs` 5 个 drain 测试需跨 crate 构造预载 `StreamEvent` 的 `CloudStreamHandle`。cloud crate 的 `new()` 是 `pub(crate)` 且返回类型含 `pub(crate) PcmFrame`，无法直接暴露；新增只返回 `(Self, UnboundedSender<StreamEvent>)` 的 `new_for_test` 绕过此约束。
 
-- [ ] **Step 1: 写失败测试（验证 new_for_test 返回的 sender 能投递到 handle）**
+- [x] **Step 1: 写失败测试（验证 new_for_test 返回的 sender 能投递到 handle）**
 
 在 `crates/asr-cloud/src/cloud_types.rs` 的 `#[cfg(test)] mod tests`（文件末尾 `}` 前）追加：
 
@@ -53,12 +60,12 @@
     }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-asr-cloud new_for_test`
 Expected: 编译失败 `no function named new_for_test`（方法尚未定义）。
 
-- [ ] **Step 3: 实现 new_for_test**
+- [x] **Step 3: 实现 new_for_test**
 
 在 `crates/asr-cloud/src/cloud_types.rs` 的 `impl CloudStreamHandle {` 块内、`pub(crate) fn new(...)` 之后插入：
 
@@ -74,12 +81,12 @@ Expected: 编译失败 `no function named new_for_test`（方法尚未定义）�
     }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cargo test -p octopus-asr-cloud`
 Expected: PASS（含新增 `new_for_test_returns_handle_and_event_sender` + 原 3 个 cloud_types 测试，共 ≥4）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/asr-cloud/src/cloud_types.rs
@@ -99,7 +106,7 @@ git commit -m "feat(asr-cloud): 加 CloudStreamHandle::new_for_test 测试构造
 
 **Why:** desktop 改指 cloud crate 后需声明依赖；`flate2`/`hmac`/`sha1` 仅被待删的 `bytedance_stream.rs`/`tencent_stream.rs` 直接 use（已 grep 确认），删副本后 desktop 不再直接用，从 cloud feature 与 `[dependencies]` 移除（cloud crate 自身依赖它们，作为 transitive dep 仍编译可用）。`tokio-tungstenite`/`uuid`/`base64`/`futures-util` 仍被 `engine_aliyun.rs`（cloud，不删）/`engine_ws.rs`（remote-ws）/`settings_commands.rs` 用，**保留**。
 
-- [ ] **Step 1: 改 [dependencies]——删 flate2/hmac/sha1，加 octopus-asr-cloud**
+- [x] **Step 1: 改 [dependencies]——删 flate2/hmac/sha1，加 octopus-asr-cloud**
 
 把 `crates/desktop/Cargo.toml` 的云端 WS 依赖段（当前 L50-59）：
 
@@ -130,7 +137,7 @@ base64 = { version = "0.22", optional = true }
 octopus-asr-cloud = { path = "../asr-cloud", optional = true }
 ```
 
-- [ ] **Step 2: 改 [features].cloud——删 flate2/hmac/sha1，加 octopus-asr-cloud**
+- [x] **Step 2: 改 [features].cloud——删 flate2/hmac/sha1，加 octopus-asr-cloud**
 
 把当前 cloud feature 行（L81）：
 
@@ -147,12 +154,12 @@ cloud = ["tokio-tungstenite", "tokio-tungstenite?/native-tls", "uuid", "futures-
 cloud = ["tokio-tungstenite", "tokio-tungstenite?/native-tls", "uuid", "futures-util", "base64", "octopus-asr-cloud"]
 ```
 
-- [ ] **Step 3: 验证依赖解析 + cloud feature 编译（desktop 代码尚未改，应仍通过）**
+- [x] **Step 3: 验证依赖解析 + cloud feature 编译（desktop 代码尚未改，应仍通过）**
 
 Run: `cargo build -p octopus-desktop --features cloud`
 Expected: 编译成功（此时 desktop 仍用 `crate::cloud_types` 副本，新依赖 `octopus-asr-cloud` 仅被引入未使用，不影响编译；可能有无害的 unused warning，下一步代码改完即消）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/Cargo.toml
@@ -173,7 +180,7 @@ desktop-cloud-dedupe 第二步 D3。"
 
 **Why:** 这是搬迁核心：类型源切到 cloud crate，配置解析/open 分发改调 cloud crate，`CloudPipelineEngine`/drain 逻辑零改动。改后 `crate::cloud_types` 不再被 `cloud_pipeline.rs` 引用（`cloud_types.rs` 文件本身暂留，下一 Task 删，期间为 dead code 但编译通过）。
 
-- [ ] **Step 1: 改 use 区——切 cloud crate，删 RuntimeHandle**
+- [x] **Step 1: 改 use 区——切 cloud crate，删 RuntimeHandle**
 
 把 `crates/desktop/src/cloud_pipeline.rs` 顶部 use 区（L8-13）：
 
@@ -196,13 +203,13 @@ use octopus_asr::vad::SileroVad;
 use octopus_asr_cloud::{CloudStreamHandle, StreamEvent};
 ```
 
-- [ ] **Step 2: 删 5 个 resolve fn（L110-177 整段）**
+- [x] **Step 2: 删 5 个 resolve fn（L110-177 整段）**
 
 删除从注释 `// ── open/resolve helpers（迁自 coordinator.rs:1504-1617...`（约 L110）到 `resolve_baidu_config` 结束 `}`（L177）的整段——含：`resolve_cloud_entry`、`resolve_aliyun_config`、`resolve_bytedance_config`、`resolve_tencent_config`、`resolve_baidu_config` 共 5 个 fn（这些 cloud crate `config.rs` 已有等价物）。
 
 删除后，该区域紧接着 `take_preroll` fn（L108 结束）之后直接是改造后的 `open_cloud_session`（见 Step 3）。
 
-- [ ] **Step 3: open_cloud_session 改 block_on 瘦 wrapper（方案 B）**
+- [x] **Step 3: open_cloud_session 改 block_on 瘦 wrapper（方案 B）**
 
 把原 `open_cloud_session`（删完 resolve 后，原 L181-213 的整段）替换为：
 
@@ -225,7 +232,7 @@ pub(super) fn open_cloud_session(
 }
 ```
 
-- [ ] **Step 4: tests 改 new_for_test（4 处）**
+- [x] **Step 4: tests 改 new_for_test（4 处）**
 
 `crates/desktop/src/cloud_pipeline.rs` tests mod 里，所有 `CloudStreamHandle::new()` 调用（返回三元组 `(handle, _pcm_rx, result_tx)`）改为 `CloudStreamHandle::new_for_test()`（返回二元组 `(handle, result_tx)`）。共 4 处：
 
@@ -255,19 +262,19 @@ pub(super) fn open_cloud_session(
 
 （共 3 处，逐个替换；`_pcm_rx` 不再存在因 `new_for_test` 不返回它。）
 
-- [ ] **Step 5: cloud feature 编译验证（coordinator 应零改动）**
+- [x] **Step 5: cloud feature 编译验证（coordinator 应零改动）**
 
 Run: `cargo build -p octopus-desktop --features cloud`
 Expected: 编译成功。`coordinator.rs` 靠类型推断（L845 `if let Some(handle) = pipeline.take_close_handle()` + L858 `handle.close_async().await`），`CloudStreamHandle` 类型由 `cloud_pipeline::CloudPipelineEngine::take_close_handle` 返回类型推断而来，无需 `use`，**预期零改动**。
 
 若编译报 `coordinator.rs` 缺 `CloudStreamHandle` 类型：在 `coordinator.rs` 顶部 use 区加 `#[cfg(feature = "cloud")] use octopus_asr_cloud::CloudStreamHandle;`（但据 grep 确认 coordinator 无显式类型标注，不应需要）。
 
-- [ ] **Step 6: cloud_pipeline 8 测试验证**
+- [x] **Step 6: cloud_pipeline 8 测试验证**
 
 Run: `cargo test -p octopus-desktop --features cloud cloud_pipeline`
 Expected: PASS（8 个：`drain_text_updates_partial_no_event` / `drain_finished_emits_committed_with_comma` / `drain_finished_no_double_comma_when_committed_ends_with_comma` / `drain_finished_no_partial_no_event_no_comma` / `drain_failed_emits_error_clears_partial` / `onset_confirmed_requires_two_consecutive` / `should_send_finish_only_when_speaking_not_closing_silence_enough` / `take_preroll_last_n_samples`）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/src/cloud_pipeline.rs
@@ -289,7 +296,7 @@ coordinator 靠类型推断零改动。desktop-cloud-dedupe 第二步 D2+D3。"
 
 **Why:** Task 3 后 `cloud_pipeline.rs` + `coordinator.rs` 已不引用 `crate::cloud_types` / `crate::*_stream`，可安全删 mod 与文件。保留 `mod engine_aliyun`（chunk 模式离线引擎，另一套）+ `mod cloud_pipeline`（改造后留）。
 
-- [ ] **Step 1: 删 main.rs 的 5 个 cloud mod**
+- [x] **Step 1: 删 main.rs 的 5 个 cloud mod**
 
 `crates/desktop/src/main.rs` 的 mod 区当前（L3-20 节选）：
 
@@ -327,7 +334,7 @@ mod engine_aliyun;
 mod cloud_pipeline;
 ```
 
-- [ ] **Step 2: 删 5 个协议副本文件**
+- [x] **Step 2: 删 5 个协议副本文件**
 
 ```bash
 git rm crates/desktop/src/aliyun_stream.rs crates/desktop/src/bytedance_stream.rs crates/desktop/src/tencent_stream.rs crates/desktop/src/baidu_stream.rs crates/desktop/src/cloud_types.rs
@@ -335,7 +342,7 @@ git rm crates/desktop/src/aliyun_stream.rs crates/desktop/src/bytedance_stream.r
 
 Expected: 5 个文件删除，staged。
 
-- [ ] **Step 3: 双 feature 编译验证**
+- [x] **Step 3: 双 feature 编译验证**
 
 Run: `cargo build -p octopus-desktop --features cloud`
 Expected: 编译成功（cloud on：协议层走 octopus-asr-cloud，`engine_aliyun`/`cloud_pipeline` 仍在）。
@@ -343,7 +350,7 @@ Expected: 编译成功（cloud on：协议层走 octopus-asr-cloud，`engine_ali
 Run: `cargo build -p octopus-desktop`
 Expected: 编译成功（cloud off：5 个 mod 与 cloud_pipeline/engine_aliyun 都不编译，default=embedded）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/main.rs
@@ -360,7 +367,7 @@ cloud_pipeline（流式适配，Task 3 改造）。desktop-cloud-dedupe 第二�
 
 **Files:** 无代码改动（仅验证；若有 clippy/编译修复则改对应文件）
 
-- [ ] **Step 1: cloud on 全 target 构建 + clippy**
+- [x] **Step 1: cloud on 全 target 构建 + clippy**
 
 Run: `cargo build -p octopus-desktop --features cloud --all-targets`
 Expected: 0 error。
@@ -368,27 +375,27 @@ Expected: 0 error。
 Run: `cargo clippy -p octopus-desktop --features cloud --all-targets`
 Expected: desktop 新代码（cloud_pipeline.rs）0 warning。预存的 infra/llm/asr warning 与本次无关（cloud 协议层本就零 warning）。
 
-- [ ] **Step 2: cloud off 构建（default embedded）**
+- [x] **Step 2: cloud off 构建（default embedded）**
 
 Run: `cargo build -p octopus-desktop --all-targets`
 Expected: 0 error（cloud 副本已删，cloud off 不受影响）。
 
-- [ ] **Step 3: asr-cloud 30 测试不变**
+- [x] **Step 3: asr-cloud 30 测试不变**
 
 Run: `cargo test -p octopus-asr-cloud`
 Expected: PASS（Task 1 加的 new_for_test 测试 + 原 30 个，无回归）。
 
-- [ ] **Step 4: desktop cloud_pipeline 8 测试**
+- [x] **Step 4: desktop cloud_pipeline 8 测试**
 
 Run: `cargo test -p octopus-desktop --features cloud cloud_pipeline`
 Expected: PASS（8 个）。
 
-- [ ] **Step 5: workspace check**
+- [x] **Step 5: workspace check**
 
 Run: `cargo check --workspace --all-targets`
 Expected: 0 error。
 
-- [ ] **Step 6: 若 Step 1-5 发现问题则修复并 commit；全绿则进 Task 6**
+- [x] **Step 6: 若 Step 1-5 发现问题则修复并 commit；全绿则进 Task 6**
 
 若 clippy 报新 warning 或编译错误，修复后：
 
@@ -410,12 +417,12 @@ git commit -m "fix(desktop): desktop-cloud-dedupe 全量验证修复"
 
 **Why:** GUI/网络集成无自动化 e2e；云端流式需用户本地云端 key 验证。交付手动清单 + 同步文档状态（z_sync_superpowers 精神）。
 
-- [ ] **Step 1: 编译 desktop release（cloud）交付用户跑 e2e**
+- [x] **Step 1: 编译 desktop release（cloud）交付用户跑 e2e**
 
 Run: `cargo build -p octopus-desktop --features cloud --release`
 Expected: release 二进制生成（交付用户本地云端 key 验证）。
 
-- [ ] **Step 2: 交付 e2e 手动验证清单（不自动化）**
+- [x] **Step 2: 交付 e2e 手动验证清单（不自动化）**
 
 向用户提供以下清单（用户本地云端 key 跑），覆盖云端流式全路径 + 本地流式回归：
 
@@ -429,7 +436,7 @@ desktop cloud e2e 回归（--features cloud release 二进制）：
 6. cloud off 回归：cargo build（无 cloud）→ embedded 本地识别正常（验证 default 路径不受影响）
 ```
 
-- [ ] **Step 3: 同步 spec 横幅状态**
+- [x] **Step 3: 同步 spec 横幅状态**
 
 `docs/superpowers/specs/2026-06-25-desktop-cloud-dedupe-design.md` 顶部横幅：
 
@@ -443,7 +450,7 @@ desktop cloud e2e 回归（--features cloud release 二进制）：
 > **状态**：已实现（8 task 全完成，Task 1-5 编译/测试通过；e2e 待用户本地云端 key 验证）。
 ```
 
-- [ ] **Step 4: 同步 plan 横幅 + Task checkbox**
+- [x] **Step 4: 同步 plan 横幅 + Task checkbox**
 
 `docs/superpowers/plans/2026-06-25-desktop-cloud-dedupe.md` 顶部加横幅（Goal 上方）：
 
@@ -453,7 +460,7 @@ desktop cloud e2e 回归（--features cloud release 二进制）：
 
 并把 Task 1-5 所有 `[ ]` 改 `[x]`（Task 6 的 Step 1-3 改 `[x]`，Step 2「交付 e2e 清单」保持 `[ ]` 标注待用户验证）。
 
-- [ ] **Step 5: Commit 文档同步**
+- [x] **Step 5: Commit 文档同步**
 
 ```bash
 git add docs/superpowers/specs/2026-06-25-desktop-cloud-dedupe-design.md docs/superpowers/plans/2026-06-25-desktop-cloud-dedupe.md
