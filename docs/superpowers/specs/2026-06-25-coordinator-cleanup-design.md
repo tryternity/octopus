@@ -1,7 +1,7 @@
 # 2d coordinator 清理（emit/DB/polish 触发逻辑收敛进 pipeline）
 
 > 2026-06-25 初版（brainstorming 产出）。
-> **状态**：📋 设计完成，待写 plan。
+> **状态**：✅ 已实施（Task 1-4，2026-06-25）。双 feature 编译 0 error、clippy 无 2d 引入的 dead_code、workspace 测试除 2 pre-existing infra 失败外全绿；e2e 待本地回归 + ff-merge main。
 > **动机**：ASR pipeline 重构阶段2（总 spec `2026-06-23-asr-pipeline-design.md`）已把三条 ASR 编排路径收进统一 `Pipeline` 角色——流式（2a/2b/2c-1：`StreamingPipeline` 壳）+ cloud（2c-2：`StreamingPipelineEngine` trait + `CloudPipelineEngine`）+ VadSegmented（2c-3：`VadSegmentedPipeline` + 删 `TranscriptionDone`）。但 `Pipeline::tick` 目前只返回 `changed: bool`，**emit/DB/polish 的触发逻辑仍散在 coordinator 三处**（`handle_streaming_tick` / `after_vad_tick` / WaitingCompletion 内联），每处重复 `if changed { DB + emit } + polish` 的变体，cloud 还多出「每 tick emit 预览 + 错误上报」特判。2d 把这些**触发逻辑**收敛进 pipeline 产事件，coordinator 退化为统一事件路由。
 > **关联**：总 spec `2026-06-23-asr-pipeline-design.md`（§3.4/§9/§11）；2c-1 `2026-06-23-...`（StreamingPipeline 壳）；2c-2 `2026-06-24-asr-pipeline-stage2c2-design.md`（StreamingPipelineEngine trait）；2c-3 `2026-06-25-vad-segmented-rehome-design.md`（VadSegmentedPipeline + Pipeline trait）。
 > **范围**：`Pipeline::tick` 返回 `Vec<PipelineEvent>`；pipeline 内部产事件（changed/segment_cut/silence/error/cloud partial 全算好）；coordinator 三个 tick handler 合一为统一事件循环（抽 `apply_pipeline_events`，dispatch_tick + stop 路径共用）；删 `after_vad_tick`；Pipeline trait 精简（去 `silence_duration`/`took_segment_cut`，清 `#[allow(unused)]`）。**不含**：finalize 链、cloud close、Transcript 状态机、audio.rs、transcript 物理位置（留 Stage）。
@@ -152,13 +152,13 @@ fn dispatch_tick(
 ```
 > 借用说明：Rust 借用检查下，`pipeline.tick(&mut self, …)` 与后续 `apply_pipeline_events(.., transcript, ..)` 不能在同一 match arm 内连续 `&mut` 同一 stage 的两个字段。实现时 pipeline.tick 先在第一段 match 取出 `events`（消费 `&mut pipeline`，结束其借用），第二段 match 再取 `&mut transcript` 喂 apply。WaitingCompletion 收尾用 2c-3 既有的 `mem::replace` 提取 owned transcript。plan 给出确切写法。
 
-stop 路径同样复用：
+stop 路径**不复用 apply_pipeline_events，丢弃 tick 事件**（保持现状 stop 无 DB/emit/polish，副作用靠 finalize 的 show_result；零行为差异）：
 ```rust
 // VadSegmented / Streaming stop 分支
-let events = pipeline.tick(&remaining, transcript);
-apply_pipeline_events(events, transcript, config, app_handle, tx);
+let _ = pipeline.tick(&remaining, transcript);  // 仅 set_full（内部），事件 Vec 丢弃
 pipeline.finish(transcript);  // 或 cloud finish，结构不动
 ```
+> 设计修正（plan 实施时定性）：原设计拟让 stop 复用 apply_pipeline_events，但现状 stop 的 tick 只 set_full 无 DB/emit/polish（副作用全靠 `finalize_after_stop` 的 show_result）。若 stop 调 apply 会引入额外 DB/emit 改变行为。故 stop 丢弃事件，保零行为差异。
 
 VadSegmentedTick / StreamingTick / CloudStreamingTick 三命令在 command dispatch 处合一调 `dispatch_tick`。
 
@@ -166,19 +166,19 @@ VadSegmentedTick / StreamingTick / CloudStreamingTick 三命令在 command dispa
 - **Stage 字段不变**：transcript + pipeline 都留。
 - **finalize 链**：`finalize_after_stop` / `StoppingPolish` / `Pasting` / `start_final_polish_or_paste` / `do_paste` 保留 coordinator（持 transcript 值传递，2c-3 既有）。
 - **cloud close**：`close_async` + `Stage::CloudClosing` + session_id 护栏保留 coordinator（2c-2 约束）。
-- **stop 路径结构不动**：仅 `pipeline.tick` 返回值适配（`let events = …; apply_pipeline_events(events, …);`），`pipeline.finish` / active_count 判定 / finalize 调用不变。
+- **stop 路径结构不动**：`pipeline.tick` 调用保留但**丢弃返回事件**（`let _ = pipeline.tick(..)`，不调 apply_pipeline_events，保 stop 现状无 DB/emit）；`pipeline.finish` / active_count 判定 / finalize 调用不变。
 
 ### 3.7 Pipeline trait 精简
-- **去掉** trait 方法 `silence_duration` / `took_segment_cut`（信息进 `Polish` 事件，coordinator 不再直调）→ 清掉 2c-3 留的 `#[allow(unused)]`（pipeline.rs:95）。
+- **去掉** trait 方法 `silence_duration` / `took_segment_cut`（信息进 `Polish` 事件，coordinator 不再直调）。原 `#[allow(unused)]` 改为 `#[allow(dead_code)]`：coordinator 持具体类型走 inherent `tick`（Rust inherent 优先于 trait），trait `tick` 不经 trait 路径调用（无 `dyn Pipeline`），故 `impl Pipeline::*::tick` 为 dead；trait 的 `finish`/`reset`/`is_cloud`/`take_close_handle` 仍经具体类型调用（无 inherent 同名）非 dead。未来若 coordinator 改 `Box<dyn Pipeline>` 统一 dispatch，trait tick 方经 trait 路径调用，届时可去 allow。
 - 保留 `tick` / `finish` / `reset` / `take_close_handle` / `is_cloud`。
-- `StreamingPipeline` inherent `current_partial` / `take_error` 收回内部（产 `Emit` / `Error` 事件用），不再 pub 暴露给 coordinator。
+- `StreamingPipeline` inherent `take_error` 删（error 进 `Error` 事件，coordinator 不再取）；`current_partial` **保留 pub**（cloud stop 取 partial 给 `CloudClosing`——spec 原拟收回 internal，实施时 cloud stop 仍需它，故保留）。
 - `VadSegmentedPipeline::active_count` 保留 `pub(crate)`（WaitingCompletion 收尾判定用）。
 
 ## 4. 接口契约
 | 接口 | 变化 |
 |---|---|
 | `Pipeline` trait | `tick` 返回 `Vec<PipelineEvent>`（原 `bool`）；删 `silence_duration` / `took_segment_cut` |
-| `pipeline.rs` | 新增 `PipelineEvent` enum；`StreamingPipeline` / `VadSegmentedPipeline` tick 内部产事件；inherent `current_partial` / `take_error` 收回内部 |
+| `pipeline.rs` | 新增 `PipelineEvent` enum；`StreamingPipeline` / `VadSegmentedPipeline` tick 内部产事件；inherent `take_error` 删；`current_partial` 保留 pub（cloud stop 用）；trait `#[allow(unused)]`→`#[allow(dead_code)]` |
 | `coordinator.rs` | 新增 `apply_pipeline_events` + `dispatch_tick`；删 `after_vad_tick`；`handle_streaming_tick` / `handle_vad_segmented_tick` 移除（逻辑进 dispatch_tick）；三 Tick 命令 dispatch 合一；stop 路径 tick 适配 |
 | `update_transcription_raw` / `check_and_trigger_polish` | **不改**（仍吃 `&mut Transcript`，由 apply_pipeline_events 调用） |
 | `finalize_after_stop` / cloud close 链 | **不改** |

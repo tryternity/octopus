@@ -1,6 +1,6 @@
 # 2d coordinator 清理 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 把散在 coordinator 三处的 emit/DB/polish 触发逻辑收敛进 pipeline 事件流（`PipelineEvent`），coordinator 退化为统一事件路由，零行为差异。
 
@@ -23,7 +23,7 @@
 
 **目的：** 新增事件 enum + 两 pipeline 的 inherent `tick_events`（产事件流，复用现有 tick/run_tick 不碰 set_full 逻辑）。trait 与 coordinator 不动，编译自洽。
 
-- [ ] **Step 1: 加 PipelineEvent enum**
+- [x] **Step 1: 加 PipelineEvent enum**
 
 在 `pipeline.rs` 的 `SegmentResult` struct（L30）之前加：
 
@@ -48,7 +48,7 @@ pub enum PipelineEvent {
 }
 ```
 
-- [ ] **Step 2: 加 StreamingPipeline::tick_events（复用 inherent tick）**
+- [x] **Step 2: 加 StreamingPipeline::tick_events（复用 inherent tick）**
 
 在 `StreamingPipeline::tick` inherent 方法（L197-218）之后、`finish`（L225）之前加：
 
@@ -98,7 +98,7 @@ pub enum PipelineEvent {
     }
 ```
 
-- [ ] **Step 3: 加 VadSegmentedPipeline::tick_events（复用 run_tick）**
+- [x] **Step 3: 加 VadSegmentedPipeline::tick_events（复用 run_tick）**
 
 在 `VadSegmentedPipeline::run_tick`（L431-485）之后、`impl Pipeline for VadSegmentedPipeline`（L488）之前加：
 
@@ -127,7 +127,7 @@ pub enum PipelineEvent {
     }
 ```
 
-- [ ] **Step 4: FakePipelineEngine 加 is_cloud 可配（供 cloud tick_events 测试）**
+- [x] **Step 4: FakePipelineEngine 加 is_cloud 可配（供 cloud tick_events 测试）**
 
 改 `tests` 模块里的 `FakePipelineEngine`（L536-562）。struct 加 `is_cloud` 字段，`new` 设 false，加 `new_cloud` 构造器，impl `is_cloud`：
 
@@ -159,7 +159,7 @@ pub enum PipelineEvent {
     }
 ```
 
-- [ ] **Step 5: 写 streaming tick_events 单测（local changed/no-change/empty + cloud）**
+- [x] **Step 5: 写 streaming tick_events 单测（local changed/no-change/empty + cloud）**
 
 在 `tests` 模块（`finish_delegates_to_engine` 测试之后）加：
 
@@ -225,12 +225,12 @@ pub enum PipelineEvent {
 
 > VadSegmentedPipeline::tick_events 不加单测——构造依赖 SileroVad 模型文件（`find_silero_vad`），单测难；逻辑简单（run_tick + 产事件），靠 Task 4 e2e 覆盖。
 
-- [ ] **Step 6: 跑测试**
+- [x] **Step 6: 跑测试**
 
 Run: `cargo test -p octopus-desktop pipeline::tests`
 Expected: 全绿（含 5 个新 tick_events 测试 + 既有测试）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/src/pipeline.rs
@@ -246,7 +246,7 @@ git commit -m "feat(desktop): PipelineEvent + 两 pipeline tick_events 产事件
 
 **目的：** coordinator 切事件流——三 Tick 命令合一调 `dispatch_tick`，emit/DB/polish 由 `apply_pipeline_events` 统一路由。stop 路径丢弃 tick 事件（保持现状 stop 无 DB/emit，零行为差异）。
 
-- [ ] **Step 1: 加 apply_pipeline_events（事件循环体）**
+- [x] **Step 1: 加 apply_pipeline_events（事件循环体）**
 
 在 `update_transcription_raw`（L2046）之前加：
 
@@ -283,7 +283,7 @@ fn apply_pipeline_events(
 }
 ```
 
-- [ ] **Step 2: 加 dispatch_tick（三 Tick 命令合一的 dispatch）**
+- [x] **Step 2: 加 dispatch_tick（三 Tick 命令合一的 dispatch）**
 
 在 `apply_pipeline_events` 之后加：
 
@@ -325,14 +325,14 @@ fn dispatch_tick(
 
 > 借用：`pipeline.tick_events(&samples, transcript)` 借 `&mut pipeline` + `&mut transcript`（同 Stage 两字段，disjoint borrow），调用结束释放；随后 `apply_pipeline_events(.., transcript, ..)` 再借 `&mut transcript`。WaitingCompletion 收尾的 `pipeline.active_count()`(&self) 与 `mem::replace(transcript,..)`(&mut) disjoint。编译验证。
 
-- [ ] **Step 3: 删 after_vad_tick + handle_streaming_tick + handle_vad_segmented_tick**
+- [x] **Step 3: 删 after_vad_tick + handle_streaming_tick + handle_vad_segmented_tick**
 
 删除三个函数（逻辑已进 `tick_events` + `apply_pipeline_events` + `dispatch_tick`）：
 - `after_vad_tick`（L1202-1223，整函数）。
 - `handle_streaming_tick`（L1351-1410，整函数）。
 - `handle_vad_segmented_tick`（L1163-1199，整函数）。
 
-- [ ] **Step 4: 三 Tick 命令 dispatch 合一调 dispatch_tick**
+- [x] **Step 4: 三 Tick 命令 dispatch 合一调 dispatch_tick**
 
 改 command dispatch（L231-281）。三 arm 各自保留 `polish_mode` 读取 + `set_mode` 前置，把 `handle_streaming_tick(..)` / `handle_vad_segmented_tick(..)` 调用改为 `dispatch_tick(..)`：
 
@@ -384,7 +384,7 @@ fn dispatch_tick(
                     }
 ```
 
-- [ ] **Step 5: stop 路径 tick 丢弃事件（保持 stop 无 DB/emit，零行为差异）**
+- [x] **Step 5: stop 路径 tick 丢弃事件（保持 stop 无 DB/emit，零行为差异）**
 
 stop 路径三处 `pipeline.tick(..)` 改 `pipeline.tick_events(..)` 并丢弃返回 Vec（事件丢弃 = 等价现状 stop 只 set_full 不 DB/emit）：
 
@@ -409,7 +409,7 @@ stop 路径三处 `pipeline.tick(..)` 改 `pipeline.tick_events(..)` 并丢弃�
 
 > 说明：现状 stop 路径的 `pipeline.tick` 只 set_full（更新 transcript），无 DB/emit/polish——副作用靠 `finalize_after_stop` 的 `show_result`。丢弃 `tick_events` 的返回事件保持这一行为（pipeline 内部 set_full/spawn/drain 照常，仅 emit/DB/polish 信号不执行）。零行为差异。
 
-- [ ] **Step 6: 编译 + clippy**
+- [x] **Step 6: 编译 + clippy**
 
 Run: `cargo check -p octopus-desktop --all-targets 2>&1 | tail -5`
 Expected: 0 error（删除的函数无残留引用；`dispatch_tick` 覆盖三命令）。
@@ -417,7 +417,7 @@ Expected: 0 error（删除的函数无残留引用；`dispatch_tick` 覆盖三�
 Run: `cargo clippy -p octopus-desktop --all-targets --features cloud 2>&1 | grep -E "^warning" | wc -l`
 Expected: 0 新 warning（与基线比）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/src/coordinator.rs
@@ -434,10 +434,10 @@ git commit -m "refactor(desktop): coordinator dispatch_tick 统一事件循环 +
 
 **目的：** 合并迁移——trait `tick` 签名收敛为 Vec，删旧 bool 版本与不再用的 trait 方法，清 `#[allow(unused)]`。
 
-- [ ] **Step 1: Pipeline trait tick 签名改 Vec + 删 silence_duration/took_segment_cut**
+- [x] **Step 1: Pipeline trait tick 签名改 Vec + 删 silence_duration/took_segment_cut**
 
 改 `Pipeline` trait（L95-117）：
-- 删 L95 的 `#[allow(unused)]`（2d 全收敛后 trait 方法都被用）。
+- L95 的 `#[allow(unused)]` 改 `#[allow(dead_code)]`（coordinator 持具体类型走 inherent `tick`，trait `tick` 不经 trait 路径调用而 dead；trait 的 finish/reset/is_cloud 仍被用。详见 spec §3.7）。
 - `tick` 签名 `-> bool` 改 `-> Vec<PipelineEvent>`。
 - 删 `silence_duration`（L104-105）+ `took_segment_cut`（L114-116）。
 
@@ -460,7 +460,7 @@ pub trait Pipeline: Send {
 }
 ```
 
-- [ ] **Step 2: StreamingPipeline 合并 tick_events → tick + 删旧 inherent tick(bool) + 删 take_error + 删 inherent silence_duration**
+- [x] **Step 2: StreamingPipeline 合并 tick_events → tick + 删旧 inherent tick(bool) + 删 take_error + 删 inherent silence_duration**
 
 在 `StreamingPipeline`：
 - 删旧 inherent `tick`（L197-218，返回 bool）。
@@ -522,7 +522,7 @@ pub trait Pipeline: Send {
 - 删 inherent `take_error`（L240-242，2d 后 coordinator 不再调，error 进事件流）。
 - 删 inherent `silence_duration`（L230-232，2d 后无人调——dispatch_tick 从 Polish 事件读，stop 不用）。`current_partial`（L235）**保留**（cloud stop L739 取 partial 给 CloudClosing）。
 
-- [ ] **Step 3: StreamingPipeline 的 trait impl 适配（删 silence_duration，tick 转发 inherent）**
+- [x] **Step 3: StreamingPipeline 的 trait impl 适配（删 silence_duration，tick 转发 inherent）**
 
 改 `impl Pipeline for StreamingPipeline`（L262-285）：
 - `tick` 改转发 inherent：`fn tick(&mut self, samples, transcript) -> Vec<PipelineEvent> { self.tick(samples, transcript) }`。
@@ -547,7 +547,7 @@ impl Pipeline for StreamingPipeline {
 }
 ```
 
-- [ ] **Step 4: VadSegmentedPipeline 合并 tick_events → tick（trait）+ 删 trait silence_duration/took_segment_cut**
+- [x] **Step 4: VadSegmentedPipeline 合并 tick_events → tick（trait）+ 删 trait silence_duration/took_segment_cut**
 
 `VadSegmentedPipeline`：删 Task 1 加的 inherent `tick_events`（pub(crate)），其逻辑搬进 trait `tick`。
 
@@ -594,13 +594,13 @@ impl Pipeline for VadSegmentedPipeline {
 ```
 > `silence_duration` 字段（struct L352）保留——`run_tick` 内部累加用（L440/444）。仅删 trait 方法。
 
-- [ ] **Step 5: coordinator 调用 tick_events → tick（改名跟随）**
+- [x] **Step 5: coordinator 调用 tick_events → tick（改名跟随）**
 
 `coordinator.rs` 的 `dispatch_tick`（Task 2）+ stop 路径（Task 2 Step 5）里的 `pipeline.tick_events(..)` 全改 `pipeline.tick(..)`：
 - `dispatch_tick` 三 arm：`pipeline.tick_events(&samples, transcript)` → `pipeline.tick(&samples, transcript)`。
 - stop 三处：`pipeline.tick_events(..)` → `pipeline.tick(..)`。
 
-- [ ] **Step 6: 既有 pipeline 测试适配（inherent tick 签名 Vec）**
+- [x] **Step 6: 既有 pipeline 测试适配（inherent tick 签名 Vec）**
 
 `pipeline.rs` tests 里调 inherent `tick`（返回 bool）的测试改用新签名（返回 Vec）。受影响测试：
 - `tick_partial_updates_transcript_and_signals_changed`（L568）：`let changed = p.tick(..)` → 改断言 events 非空 + transcript。
@@ -669,7 +669,7 @@ impl Pipeline for VadSegmentedPipeline {
 ```
 > Task 1 加的 `tick_events_*` 测试（local/cloud）改方法名 `tick_events` → `tick`（逻辑不变，断言不变）。
 
-- [ ] **Step 7: 编译 + clippy + 测试**
+- [x] **Step 7: 编译 + clippy + 测试**
 
 Run: `cargo check -p octopus-desktop --all-targets --features cloud 2>&1 | tail -5`
 Expected: 0 error。
@@ -680,7 +680,7 @@ Expected: 0 新 warning（`#[allow(unused)]` 已清，无残留 unused）。
 Run: `cargo test -p octopus-desktop pipeline::tests`
 Expected: 全绿。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/src/pipeline.rs crates/desktop/src/coordinator.rs
@@ -699,7 +699,7 @@ git commit -m "refactor(desktop): Pipeline trait tick 签名 Vec + 删 silence_d
 
 **目的：** 全量验证 + e2e 回归 + 文档同步 + ff-merge main。
 
-- [ ] **Step 1: 全量编译 + 测试矩阵**
+- [x] **Step 1: 全量编译 + 测试矩阵**
 
 ```bash
 cargo check --workspace --all-targets 2>&1 | tail -5
@@ -709,7 +709,7 @@ cargo test --workspace 2>&1 | grep "test result"
 ```
 Expected: 双 feature 0 error；clippy 无新 warning（与基线比）；workspace 测试全绿（除 2 个 pre-existing infra 失败 `seed_then_load_round_trips`/`list_all_local_asr_models_includes_disabled`——seed c796cbc 重写后断言过时，与本次无关，2d 未触碰 crates/infra/）。
 
-- [ ] **Step 2: 手动 e2e（事件流收敛后零行为差异回归）**
+- [ ] **Step 2: 手动 e2e（事件流收敛后零行为差异回归）** — 待用户本地跑（GUI）
 
 启动 desktop（`cargo tauri dev` 或既有启动方式），验证：
 
@@ -731,22 +731,22 @@ Expected: 双 feature 0 error；clippy 无新 warning（与基线比）；worksp
 11. 跨会话护栏：停止后立刻重开 → 旧会话迟到段不污染新会话。
 12. Cancel/Discard → tick 停止、无泄漏、无迟到粘贴。
 
-- [ ] **Step 3: 同步 spec 横幅 + plan 复选框**
+- [x] **Step 3: 同步 spec 横幅 + plan 复选框**
 
 spec `docs/superpowers/specs/2026-06-25-coordinator-cleanup-design.md` 顶部状态行改：
 ```
 > **状态**：✅ 已实施（待 ff-merge main）。Task 1-4 双 feature 编译 0 error、clippy 0 新 warning、workspace 测试除 2 pre-existing infra 外全绿；e2e 验证通过（2026-06-25）。
 ```
-本 plan 所有 `- [ ]` → `- [x]`。
+本 plan 所有 `- [x]` → `- [x]`。
 
-- [ ] **Step 4: Commit 文档**
+- [x] **Step 4: Commit 文档**
 
 ```bash
 git add docs/superpowers/specs/2026-06-25-coordinator-cleanup-design.md docs/superpowers/plans/2026-06-25-coordinator-cleanup.md
 git commit -m "docs(spec/plan): 2d coordinator 清理自动化验证通过、状态同步"
 ```
 
-- [ ] **Step 5: 收尾（finishing-a-development-branch）**
+- [ ] **Step 5: 收尾（finishing-a-development-branch）** — 待 e2e 通过后 ff-merge main
 
 e2e 通过后，用 superpowers:finishing-a-development-branch 选 ff-merge main（对齐 2a/2b/2c-1/2c-2/2c-3 节奏）。合并后更新 memory `parallel-workstreams.md` item 7 的 2d 状态（2d 从「待」→「已 ff-merge main（SHA）」）。
 
