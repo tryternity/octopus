@@ -204,12 +204,12 @@ CREATE INDEX IF NOT EXISTS idx_clip_source    ON clipboard_history(source);
 CREATE INDEX IF NOT EXISTS idx_clip_hash      ON clipboard_history(blob_hash);
 CREATE INDEX IF NOT EXISTS idx_clip_favorite  ON clipboard_history(is_favorite);
 
--- FTS5 全文索引（CJK 友好：unicode61 tokenizer）
+-- FTS5 全文索引（trigram tokenizer 支持 CJK 子串匹配）
 CREATE VIRTUAL TABLE IF NOT EXISTS clipboard_history_fts USING fts5(
     search_text,
     content='clipboard_history',
     content_rowid='id',
-    tokenize='unicode61'
+    tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS clip_fts_ai AFTER INSERT ON clipboard_history BEGIN

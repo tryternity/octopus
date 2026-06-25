@@ -113,7 +113,7 @@ pub fn ensure_db() -> Result<()> {
 }
 
 /// 取 DB 锁执行闭包（未初始化时自动 ensure_db）。
-fn with_db<F, R>(f: F) -> Result<R>
+pub fn with_db<F, R>(f: F) -> Result<R>
 where
     F: FnOnce(&Connection) -> Result<R>,
 {
