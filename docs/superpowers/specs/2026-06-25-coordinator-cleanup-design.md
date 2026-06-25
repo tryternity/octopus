@@ -1,7 +1,7 @@
 # 2d coordinator 清理（emit/DB/polish 触发逻辑收敛进 pipeline）
 
 > 2026-06-25 初版（brainstorming 产出）。
-> **状态**：✅ 已实施（Task 1-4，2026-06-25）。双 feature 编译 0 error、clippy 无 2d 引入的 dead_code、workspace 测试除 2 pre-existing infra 失败外全绿；e2e 待本地回归 + ff-merge main。
+> **状态**：✅ 已实施并 ff-merge main（Task 1-4，2026-06-25）。双 feature 编译 0 error、clippy 无 2d 引入的 dead_code、workspace 测试除 2 pre-existing infra 失败外全绿；e2e 零行为差异回归通过（2026-06-25）。
 > **动机**：ASR pipeline 重构阶段2（总 spec `2026-06-23-asr-pipeline-design.md`）已把三条 ASR 编排路径收进统一 `Pipeline` 角色——流式（2a/2b/2c-1：`StreamingPipeline` 壳）+ cloud（2c-2：`StreamingPipelineEngine` trait + `CloudPipelineEngine`）+ VadSegmented（2c-3：`VadSegmentedPipeline` + 删 `TranscriptionDone`）。但 `Pipeline::tick` 目前只返回 `changed: bool`，**emit/DB/polish 的触发逻辑仍散在 coordinator 三处**（`handle_streaming_tick` / `after_vad_tick` / WaitingCompletion 内联），每处重复 `if changed { DB + emit } + polish` 的变体，cloud 还多出「每 tick emit 预览 + 错误上报」特判。2d 把这些**触发逻辑**收敛进 pipeline 产事件，coordinator 退化为统一事件路由。
 > **关联**：总 spec `2026-06-23-asr-pipeline-design.md`（§3.4/§9/§11）；2c-1 `2026-06-23-...`（StreamingPipeline 壳）；2c-2 `2026-06-24-asr-pipeline-stage2c2-design.md`（StreamingPipelineEngine trait）；2c-3 `2026-06-25-vad-segmented-rehome-design.md`（VadSegmentedPipeline + Pipeline trait）。
 > **范围**：`Pipeline::tick` 返回 `Vec<PipelineEvent>`；pipeline 内部产事件（changed/segment_cut/silence/error/cloud partial 全算好）；coordinator 三个 tick handler 合一为统一事件循环（抽 `apply_pipeline_events`，dispatch_tick + stop 路径共用）；删 `after_vad_tick`；Pipeline trait 精简（去 `silence_duration`/`took_segment_cut`，清 `#[allow(unused)]`）。**不含**：finalize 链、cloud close、Transcript 状态机、audio.rs、transcript 物理位置（留 Stage）。

@@ -709,7 +709,7 @@ cargo test --workspace 2>&1 | grep "test result"
 ```
 Expected: 双 feature 0 error；clippy 无新 warning（与基线比）；workspace 测试全绿（除 2 个 pre-existing infra 失败 `seed_then_load_round_trips`/`list_all_local_asr_models_includes_disabled`——seed c796cbc 重写后断言过时，与本次无关，2d 未触碰 crates/infra/）。
 
-- [ ] **Step 2: 手动 e2e（事件流收敛后零行为差异回归）** — 待用户本地跑（GUI）
+- [x] **Step 2: 手动 e2e（事件流收敛后零行为差异回归）** — 通过（2026-06-25，用户本地验三路径零行为差异）
 
 启动 desktop（`cargo tauri dev` 或既有启动方式），验证：
 
@@ -746,7 +746,7 @@ git add docs/superpowers/specs/2026-06-25-coordinator-cleanup-design.md docs/sup
 git commit -m "docs(spec/plan): 2d coordinator 清理自动化验证通过、状态同步"
 ```
 
-- [ ] **Step 5: 收尾（finishing-a-development-branch）** — 待 e2e 通过后 ff-merge main
+- [x] **Step 5: 收尾（finishing-a-development-branch）** — ff-merge main（2026-06-25）
 
 e2e 通过后，用 superpowers:finishing-a-development-branch 选 ff-merge main（对齐 2a/2b/2c-1/2c-2/2c-3 节奏）。合并后更新 memory `parallel-workstreams.md` item 7 的 2d 状态（2d 从「待」→「已 ff-merge main（SHA）」）。
 
