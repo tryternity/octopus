@@ -1,3 +1,5 @@
+import { Button } from "@/components/ui/button";
+
 function App() {
   const label =
     (window as any).__TAURI__?.window?.getCurrentWindow?.()?.label ?? "unknown";
@@ -5,6 +7,9 @@ function App() {
     <div className="p-4 text-foreground">
       <p className="text-sm text-muted-foreground">Window label:</p>
       <p className="text-lg font-medium">{label}</p>
+      <Button variant="outline" className="mt-4">
+        shadcn works
+      </Button>
     </div>
   );
 }
