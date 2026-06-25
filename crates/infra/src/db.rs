@@ -128,9 +128,10 @@ where
 /// 初始化 schema + 迁移：
 /// - v0（全新安装）: 执行 INIT_SQL → yaml 迁移 → v4
 /// - v1（旧版升级）: 重跑 INIT_SQL（幂等，补建 app_config + prompts + seed）→ yaml 迁移 → v4
-/// - v2（v2 升级）: ALTER TABLE app_config ADD COLUMN category → 重跑 INIT_SQL → v4
-/// - v3（v3 升级）: 重跑 INIT_SQL（幂等，补建 prompts 表 + seed）→ v4
-/// - v4+: 跳过
+/// - v2（v2 升级）: ALTER TABLE app_config ADD COLUMN category → 重跑 INIT_SQL → v5
+/// - v3（v3 升级）: 重跑 INIT_SQL（幂等，补建 prompts 表 + seed）→ v5
+/// - v4（v4 升级）: 重跑 INIT_SQL（幂等，补建 clipboard_history + FTS5）→ v5
+/// - v5+: 跳过
 ///
 /// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等安全重跑。
 fn init_schema(conn: &Connection) -> Result<()> {
@@ -143,9 +144,9 @@ fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(INIT_SQL).context("执行 db.sql 初始化失败")?;
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
-        // v0/v1 跳过 v2/v3，直接到 v4（app_config 已含 category 列 + prompts 表已建）
-        conn.execute("PRAGMA user_version = 4", [])?;
-        log::info!("DB initialized (v4): schema + app_config(category) + prompts table + yaml migration");
+        // v0/v1 跳过 v2/v3/v4，直接到 v5（app_config + prompts + clipboard_history 全部幂等建）
+        conn.execute("PRAGMA user_version = 5", [])?;
+        log::info!("DB initialized (v5): schema + app_config + prompts + clipboard_history + yaml migration");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
@@ -153,15 +154,21 @@ fn init_schema(conn: &Connection) -> Result<()> {
             "ALTER TABLE app_config ADD COLUMN category TEXT NOT NULL DEFAULT 'default'",
             [],
         )?;
-        conn.execute_batch(INIT_SQL).context("v2→v4: 重跑 db.sql 幂等补建 prompts 表 + seed")?;
-        conn.execute("PRAGMA user_version = 4", [])?;
-        log::info!("DB migrated to v4: app_config.category + prompts table added");
+        conn.execute_batch(INIT_SQL).context("v2→v5: 重跑 db.sql 幂等补建 prompts + clipboard_history")?;
+        conn.execute("PRAGMA user_version = 5", [])?;
+        log::info!("DB migrated to v5: app_config.category + prompts + clipboard_history");
     } else if v == 3 {
         // v3 → v4：prompts 表 + app_config.active_polish_prompt seed（INIT_SQL 幂等补建）
         log::info!("DB migrating v3 → v4: adding prompts table + active_polish_prompt seed...");
-        conn.execute_batch(INIT_SQL).context("v3→v4: 重跑 db.sql 幂等补建 prompts 表 + seed")?;
-        conn.execute("PRAGMA user_version = 4", [])?;
-        log::info!("DB migrated to v4: prompts table + active_polish_prompt seed added");
+        conn.execute_batch(INIT_SQL).context("v3→v5: 重跑 db.sql 幂等补建 clipboard_history")?;
+        conn.execute("PRAGMA user_version = 5", [])?;
+        log::info!("DB migrated to v5: prompts + clipboard_history");
+    } else if v == 4 {
+        // v4 → v5：clipboard_history 表 + FTS5 + 触发器 + app_config seed
+        log::info!("DB migrating v4 → v5: adding clipboard_history table...");
+        conn.execute_batch(INIT_SQL).context("v4→v5: 建 clipboard_history 表 + FTS5")?;
+        conn.execute("PRAGMA user_version = 5", [])?;
+        log::info!("DB migrated to v5: clipboard_history + FTS5");
     }
     Ok(())
 }
