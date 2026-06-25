@@ -239,7 +239,7 @@ impl Coordinator {
                         if editing {
                             let _ = audio.drain_samples(); // 编辑期丢弃音频，不喂引擎
                         } else {
-                            handle_streaming_tick(&mut stage, &audio, &config, &app_handle, &tx);
+                            dispatch_tick(&mut stage, &audio, &config, &app_handle, &tx);
                         }
                     }
                     #[cfg(feature = "cloud")]
@@ -254,7 +254,7 @@ impl Coordinator {
                         if editing {
                             let _ = audio.drain_samples();
                         } else {
-                            handle_streaming_tick(&mut stage, &audio, &config, &app_handle, &tx);
+                            dispatch_tick(&mut stage, &audio, &config, &app_handle, &tx);
                         }
                     }
                     Command::VadSegmentedTick => {
@@ -270,13 +270,7 @@ impl Coordinator {
                         if editing {
                             let _ = audio.drain_samples();
                         } else {
-                            handle_vad_segmented_tick(
-                                &mut stage,
-                                &audio,
-                                &config,
-                                &app_handle,
-                                &tx,
-                            );
+                            dispatch_tick(&mut stage, &audio, &config, &app_handle, &tx);
                         }
                     }
                     Command::Cancel => {
@@ -700,10 +694,11 @@ fn handle_toggle(
                 };
             info!("Toggle: stopping VadSegmented (active_count={})", pipeline.active_count());
 
-            // 停止录音并排空剩余音频（tail 喂入 pipeline 触发最后一轮切段）
+            // 停止录音并排空剩余音频（tail 喂入 pipeline 触发最后一轮切段）。
+            // 2d：tick_events 替代 tick；事件丢弃（现状 stop 无 DB/emit，副作用靠 finalize）。
             let remaining = audio.stop().unwrap_or_default();
             if !remaining.is_empty() {
-                pipeline.tick(&remaining, &mut transcript);
+                let _ = pipeline.tick_events(&remaining, &mut transcript);
             }
             pipeline.finish(&mut transcript);  // drain 在途段
 
@@ -731,9 +726,10 @@ fn handle_toggle(
 
             #[cfg(feature = "cloud")]
             if pipeline.is_cloud() {
-                // cloud: tick(tail) 喂入 push_pcm + finish（不发 Finish——Finish 由 close_async 发，避免重复）
+                // cloud: tick(tail) 喂入 push_pcm + finish（不发 Finish——Finish 由 close_async 发，避免重复）。
+                // 2d：tick_events 替代 tick；事件丢弃（现状 stop 无 DB/emit，副作用靠 finalize_cloud）。
                 if !final_samples.is_empty() {
-                    pipeline.tick(&final_samples, transcript);
+                    let _ = pipeline.tick_events(&final_samples, transcript);
                 }
                 let _ = pipeline.finish();
                 let partial = pipeline.current_partial().to_string();
@@ -768,9 +764,10 @@ fn handle_toggle(
                 return;
             }
 
-            // local: tick(tail) accept + finish flush（tail 经 push_samples 喂入；finish Final 覆盖）
+            // local: tick(tail) accept + finish flush（tail 经 push_samples 喂入；finish Final 覆盖）。
+            // 2d：tick_events 替代 tick；事件丢弃（现状 stop 无 DB/emit，副作用靠 finalize_after_stop）。
             if !final_samples.is_empty() {
-                pipeline.tick(&final_samples, transcript);
+                let _ = pipeline.tick_events(&final_samples, transcript);
             }
             let final_text = match pipeline.finish() {
                 TranscriptEvent::Final(text) => text,
@@ -1159,69 +1156,6 @@ fn handle_final_polish_done(
     }
 }
 
-/// 处理 VadSegmentedTick 命令（2c-3：编排进 pipeline.tick，此函数只做 emit/DB/polish + 收尾判定）。
-fn handle_vad_segmented_tick(
-    stage: &mut Stage,
-    audio: &Arc<SharedAudioState>,
-    config: &AppConfig,
-    app_handle: &tauri::AppHandle,
-    tx: &Sender<Command>,
-) {
-    let samples = audio.drain_samples();
-
-    match stage {
-        Stage::VadSegmented { pipeline, transcript, .. } => {
-            let changed = pipeline.tick(&samples, transcript);
-            let segment_cut = pipeline.took_segment_cut();
-            after_vad_tick(transcript, changed, segment_cut, "vad_segmented", config, app_handle, tx);
-        }
-        Stage::WaitingCompletion { pipeline, transcript, tick_active } => {
-            // 收尾：空样本驱动 drain rx（pipeline.tick 跳过切段，仅 drain+consume）。
-            // 不复用 after_vad_tick：收尾不再切段（segment_cut 恒 false），不应触发停顿润色。
-            let changed = pipeline.tick(&samples, transcript);
-            if changed {
-                if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "vad_segmented") {
-                    warn!("DB (vad_segmented waiting) failed: {}", e);
-                }
-                if !transcript.full().is_empty() {
-                    crate::result_window::update_result(app_handle, &transcript.display_text());
-                }
-            }
-            // 所有在途段完成 → 收尾（停 tick 线程 + finalize）
-            if pipeline.active_count() == 0 {
-                tick_active.store(false, Ordering::Relaxed);
-                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
-                finalize_after_stop(stage, tr, config, app_handle, tx);
-            }
-        }
-        _ => {}
-    }
-}
-
-/// VadSegmented tick 后处理：changed → DB + emit；segment_cut → 停顿润色（零差异保留原触发）。
-fn after_vad_tick(
-    transcript: &mut Transcript,
-    changed: bool,
-    segment_cut: bool,
-    db_source: &str,
-    config: &AppConfig,
-    app_handle: &tauri::AppHandle,
-    tx: &Sender<Command>,
-) {
-    if changed {
-        if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, db_source) {
-            warn!("DB ({}) failed: {}", db_source, e);
-        }
-        if !transcript.full().is_empty() {
-            crate::result_window::update_result(app_handle, &transcript.display_text());
-        }
-    }
-    if segment_cut {
-        // 切段有语音 → 停顿润色（传阈值让 check_and_trigger_polish 静音检查自动通过，等价原 coordinator.rs:1378）
-        check_and_trigger_polish(transcript, config.pause_polish_threshold_ms / 1000.0, config, tx);
-    }
-}
-
 /// 启动 VAD 伪流式 tick 线程
 fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
     std::thread::spawn(move || {
@@ -1339,74 +1273,6 @@ fn check_and_trigger_polish(
     let (preserved, to_polish) = transcript.take_polish_input();
     transcript.mark_polish_pending();
     spawn_polish_thread(preserved, to_polish, config, tx, false, transcript.id);
-}
-
-/// 处理 StreamingTick / CloudStreamingTick 命令（2c-2：local/cloud 统一）。
-///
-/// engine.tick 承载事件 → set_full（`changed`）；emit/DB/polish 留 coordinator。
-/// - local：`changed` → DB + emit（幂等，无变化不落库/不重绘）；每 tick 查停顿润色。
-/// - cloud：`changed`（= Committed/Finished）→ DB + 停顿润色（increase 被 take_polish_input
-///   消耗 + polish_pending 护栏保证与原「仅 session_just_finished 触发」等价）；**每 tick emit**
-///   （display + current_partial 预览，预览不进 DB）；用户可见错误（WSS 开启失败 / Failed）上报。
-fn handle_streaming_tick(
-    stage: &mut Stage,
-    audio: &Arc<SharedAudioState>,
-    config: &AppConfig,
-    app_handle: &tauri::AppHandle,
-    tx: &Sender<Command>,
-) {
-    let Stage::Streaming {
-        pipeline,
-        transcript,
-        ..
-    } = stage
-    else {
-        return;
-    };
-
-    let is_cloud = pipeline.is_cloud();
-    let samples = audio.drain_samples();
-    // local 在空样本时早退（无音频可处理）；cloud 不早退（仍 drain events / 检查 finish / emit）
-    if !is_cloud && samples.is_empty() {
-        return;
-    }
-
-    let changed = pipeline.tick(&samples, transcript);
-
-    if is_cloud {
-        // commit（changed）→ DB + 停顿润色（与原 session_just_finished 触发等价）
-        if changed {
-            if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "streaming") {
-                warn!("DB (cloud streaming) failed: {}", e);
-            }
-            check_and_trigger_polish(transcript, pipeline.silence_duration(), config, tx);
-        }
-        // 用户可见错误（WSS 开启失败 / StreamEvent::Failed；local 错误只在承载层 warn）
-        if let Some(e) = pipeline.take_error() {
-            crate::result_window::update_result(app_handle, &e);
-        }
-        // 每 tick emit（display + current_partial 预览）——与原 cloud tick 末尾总 emit 一致
-        let base = transcript.display_text();
-        let partial = pipeline.current_partial();
-        let display = if partial.is_empty() {
-            base
-        } else {
-            format!("{}{}", base, partial)
-        };
-        if !display.is_empty() {
-            crate::result_window::update_result(app_handle, &display);
-        }
-    } else {
-        // local：changed → DB + emit（幂等）
-        if changed {
-            if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "streaming") {
-                warn!("DB (streaming) failed: {}", e);
-            }
-            crate::result_window::update_result(app_handle, &transcript.display_text());
-        }
-        // 停顿润色（每 tick，留 coordinator：三路径共用 check_and_trigger_polish）
-        check_and_trigger_polish(transcript, pipeline.silence_duration(), config, tx);
-    }
 }
 
 /// 处理 Cancel 命令
@@ -2039,6 +1905,71 @@ fn get_db_sender() -> &'static std::sync::mpsc::Sender<DbCommand> {
         let _ = DB_HANDLE.set(std::sync::Mutex::new(Some(handle)));
         tx
     })
+}
+
+/// pipeline 事件 → 端动作（DB/emit/polish/错误上报）。2d 统一路由，消除三路径重复。（spec §3.5）
+fn apply_pipeline_events(
+    events: Vec<crate::pipeline::PipelineEvent>,
+    transcript: &mut Transcript,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+) {
+    use crate::pipeline::PipelineEvent;
+    for ev in events {
+        match ev {
+            PipelineEvent::PersistRaw { engine_mode } => {
+                if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, engine_mode) {
+                    warn!("DB ({}) failed: {}", engine_mode, e);
+                }
+            }
+            PipelineEvent::Emit { display } => {
+                if !display.is_empty() {
+                    crate::result_window::update_result(app_handle, &display);
+                }
+            }
+            PipelineEvent::Polish { silence } => {
+                check_and_trigger_polish(transcript, silence, config, tx);
+            }
+            PipelineEvent::Error(e) => {
+                crate::result_window::update_result(app_handle, &e);
+            }
+        }
+    }
+}
+
+/// VadSegmentedTick / StreamingTick / CloudStreamingTick 三命令合一的 dispatch（2d，spec §3.5）。
+/// 各 Stage 变体调对应 pipeline 的 `tick_events` → `apply_pipeline_events` 统一路由。
+/// WaitingCompletion 额外做 active_count==0 收尾判定（沿用 2c-3 既有逻辑）。
+fn dispatch_tick(
+    stage: &mut Stage,
+    audio: &Arc<SharedAudioState>,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+) {
+    let samples = audio.drain_samples();
+    match stage {
+        Stage::Streaming { pipeline, transcript, .. } => {
+            let events = pipeline.tick_events(&samples, transcript);
+            apply_pipeline_events(events, transcript, config, app_handle, tx);
+        }
+        Stage::VadSegmented { pipeline, transcript, .. } => {
+            let events = pipeline.tick_events(&samples, transcript);
+            apply_pipeline_events(events, transcript, config, app_handle, tx);
+        }
+        Stage::WaitingCompletion { pipeline, transcript, tick_active } => {
+            let events = pipeline.tick_events(&samples, transcript);
+            apply_pipeline_events(events, transcript, config, app_handle, tx);
+            // 所有在途段完成 → 收尾（停 tick 线程 + finalize）
+            if pipeline.active_count() == 0 {
+                tick_active.store(false, Ordering::Relaxed);
+                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+                finalize_after_stop(stage, tr, config, app_handle, tx);
+            }
+        }
+        _ => {}
+    }
 }
 
 /// 首次有文本 INSERT，否则 UPDATE raw_text。DB 失败返回 Err 供调用方 warn（不阻塞识别）。
