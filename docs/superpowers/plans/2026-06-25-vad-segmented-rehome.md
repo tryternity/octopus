@@ -952,7 +952,7 @@ cargo test --workspace 2>&1 | grep "test result"
 ```
 Expected: 双 feature 0 error；clippy 无新 warning（与基线比）；workspace 测试全绿。
 
-- [ ] **Step 2: 手动 e2e（非流式本地引擎 VadSegmented 全路径）**
+- [x] **Step 2: 手动 e2e（非流式本地引擎 VadSegmented 全路径）**
 
 启动 desktop（`cargo tauri dev` 或既有启动方式），配一个**非流式本地引擎**（如 moonshine / zipformer-non-streaming，`is_streaming_engine()==false`），验证：
 1. **onset**：开始录音 → result window 显示「正在聆听…」→ 说话 → 段识别结果乱序回填、按 seq 顺序拼接（逗号分隔）。
@@ -978,7 +978,7 @@ git add docs/superpowers/specs/2026-06-25-vad-segmented-rehome-design.md docs/su
 git commit -m "docs(spec/plan): 2c-3 VadSegmented 归位 e2e 通过、状态同步"
 ```
 
-- [ ] **Step 5: 收尾（finishing-a-development-branch）**
+- [x] **Step 5: 收尾（finishing-a-development-branch）**
 
 e2e 通过后，用 superpowers:finishing-a-development-branch 选 ff-merge main（对齐 2a/2b/2c-1/2c-2 节奏）。合并后更新 memory `parallel-workstreams.md` item 7 的 2c-3 状态。
 
