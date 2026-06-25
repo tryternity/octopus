@@ -22,16 +22,17 @@ export default function FilterTabs({
       {TABS.map(({ value: tabValue, icon: Icon, label }) => (
         <button
           key={tabValue}
+          title={label}
           className={cn(
-            "flex items-center gap-1 px-2.5 py-1 rounded-md text-xs transition-colors whitespace-nowrap",
+            "flex items-center justify-center p-1.5 rounded-md transition-colors",
             value === tabValue
               ? "bg-primary text-primary-foreground"
               : "text-muted-foreground hover:bg-accent hover:text-accent-foreground",
           )}
           onClick={() => onChange(tabValue)}
         >
-          <Icon className="w-3.5 h-3.5" />
-          <span>{label}</span>
+          <Icon className="w-4 h-4" />
+          {tabValue === "all" && <span className="ml-1 text-xs">{label}</span>}
         </button>
       ))}
     </div>
