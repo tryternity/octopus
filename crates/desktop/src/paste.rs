@@ -4,24 +4,17 @@ use crate::config::AppConfig;
 use anyhow::Result;
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
 use log::info;
+use octopus_clipboard::ClipboardHandle;
 use std::time::Duration;
-use tauri::Runtime;
-use tauri_plugin_clipboard_manager::ClipboardExt;
 
 /// Cmd+V 后等待系统粘贴落地、再恢复原剪贴板的延迟。
-/// 审查一3 竞态修复：原 50ms 在慢系统/高负载下不足——粘贴未落地就恢复，
-/// 旧内容被粘进目标应用。200ms 为保守估值；跨平台无可靠「已落地」信号，
-/// 故纯延迟、固定值（probe / 可配置均判 YAGNI）。
 const PASTE_RESTORE_DELAY: Duration = Duration::from_millis(200);
 
 /// Paste method configuration
 #[derive(Debug)]
 pub enum PasteMethod {
-    /// Write to clipboard + Cmd/Ctrl+V
     Clipboard,
-    /// Direct input to active window
     Direct,
-    /// Only write to clipboard, no auto-paste
     None,
 }
 
@@ -36,11 +29,7 @@ impl From<&str> for PasteMethod {
 }
 
 /// Paste transcribed text to the active window
-pub fn paste<R: Runtime>(
-    text: &str,
-    app_handle: &tauri::AppHandle<R>,
-    config: &AppConfig,
-) -> Result<()> {
+pub fn paste(text: &str, handle: &ClipboardHandle, config: &AppConfig) -> Result<()> {
     let method = PasteMethod::from(config.paste_method.as_str());
     let wtc = config.write_to_clipboard;
     info!(
@@ -52,45 +41,36 @@ pub fn paste<R: Runtime>(
 
     match method {
         PasteMethod::None => {
-            // None 模式：唯一目的就是写剪贴板，忽略 write_to_clipboard 配置
-            write_to_clipboard(text, app_handle)?;
+            write_to_clipboard(text, handle)?;
         }
         PasteMethod::Clipboard => {
-            paste_via_clipboard(text, app_handle, wtc)?;
+            paste_via_clipboard(text, handle, wtc)?;
         }
         PasteMethod::Direct => {
-            paste_direct(text, app_handle, wtc)?;
+            paste_direct(text, handle, wtc)?;
         }
     }
 
     Ok(())
 }
 
-fn write_to_clipboard<R: Runtime>(text: &str, app_handle: &tauri::AppHandle<R>) -> Result<()> {
-    let clipboard = app_handle.clipboard();
-    clipboard
-        .write_text(text)
-        .map_err(|e| anyhow::anyhow!("Clipboard write failed: {}", e))?;
+fn write_to_clipboard(text: &str, handle: &ClipboardHandle) -> Result<()> {
+    handle.write_text(text)?;
     Ok(())
 }
 
-fn paste_via_clipboard<R: Runtime>(
+fn paste_via_clipboard(
     text: &str,
-    app_handle: &tauri::AppHandle<R>,
+    handle: &ClipboardHandle,
     write_to_clipboard: bool,
 ) -> Result<()> {
-    let clipboard = app_handle.clipboard();
-
-    // 仅在不保留识别结果时，才需要保存原剪贴板以便恢复
     let saved = if !write_to_clipboard {
-        clipboard.read_text().unwrap_or_default()
+        handle.read_text().unwrap_or_default()
     } else {
         String::new()
     };
 
-    clipboard
-        .write_text(text)
-        .map_err(|e| anyhow::anyhow!("Clipboard write failed: {}", e))?;
+    handle.write_text(text)?;
 
     std::thread::sleep(Duration::from_millis(50));
 
@@ -102,11 +82,6 @@ fn paste_via_clipboard<R: Runtime>(
     #[cfg(not(target_os = "macos"))]
     let mod_key = Key::Control;
 
-    // macOS：用固定虚拟键码（kVK_ANSI_V=9）而非 Key::Unicode('v')。
-    // enigo 0.6.1 的 Key::Unicode 在 macOS 上走 get_layoutdependent_keycode，
-    // 该函数循环调用 Carbon TIS API（TISCopyCurrentKeyboardInputSource /
-    // UCKeyTranslate），这些 HIToolbox API 非线程安全，在 spawn_blocking 的
-    // 非主线程中调用会触发 macOS 线程断言 → SIGTRAP（Trace/BPT trap: 5）。
     #[cfg(target_os = "macos")]
     let v_key = Key::Other(9);
     #[cfg(not(target_os = "macos"))]
@@ -124,19 +99,16 @@ fn paste_via_clipboard<R: Runtime>(
 
     std::thread::sleep(PASTE_RESTORE_DELAY);
 
-    // 仅在不保留识别结果时恢复原剪贴板。
-    // read_text 对图片/富文本/文件返回空——saved 为空（读不出或本就空）则不写回，
-    // 避免用空文本覆盖用户的非文本剪贴板内容。
     if !write_to_clipboard && !saved.is_empty() {
-        let _ = clipboard.write_text(&saved);
+        let _ = handle.write_text(&saved);
     }
 
     Ok(())
 }
 
-fn paste_direct<R: Runtime>(
+fn paste_direct(
     text: &str,
-    app_handle: &tauri::AppHandle<R>,
+    handle: &ClipboardHandle,
     write_to_clipboard: bool,
 ) -> Result<()> {
     let mut enigo = Enigo::new(&Settings::default())
@@ -146,8 +118,7 @@ fn paste_direct<R: Runtime>(
     {
         if try_linux_direct_typing(text) {
             if write_to_clipboard {
-                let clipboard = app_handle.clipboard();
-                let _ = clipboard.write_text(text);
+                let _ = handle.write_text(text);
             }
             return Ok(());
         }
@@ -158,12 +129,8 @@ fn paste_direct<R: Runtime>(
         .text(text)
         .map_err(|e| anyhow::anyhow!("Direct type failed: {}", e))?;
 
-    // 粘贴完成后按需写剪贴板
     if write_to_clipboard {
-        let clipboard = app_handle.clipboard();
-        clipboard
-            .write_text(text)
-            .map_err(|e| anyhow::anyhow!("Clipboard write failed: {}", e))?;
+        handle.write_text(text)?;
     }
     Ok(())
 }
@@ -172,7 +139,6 @@ fn paste_direct<R: Runtime>(
 fn try_linux_direct_typing(text: &str) -> bool {
     use std::process::Command;
 
-    // X11: xdotool
     if Command::new("which")
         .arg("xdotool")
         .output()
@@ -189,7 +155,6 @@ fn try_linux_direct_typing(text: &str) -> bool {
         }
     }
 
-    // Wayland: wtype
     if Command::new("which")
         .arg("wtype")
         .output()

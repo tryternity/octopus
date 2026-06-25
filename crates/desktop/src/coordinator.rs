@@ -16,7 +16,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use std::time::Instant;
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 
 /// 协调器命令
 enum Command {
@@ -1077,12 +1077,15 @@ fn do_paste(
 
     let config = config.clone();
     let tx_inner = tx.clone();
-    let handle_for_closure = app_handle.clone();
+    let clipboard_handle = app_handle
+        .state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>()
+        .inner()
+        .clone();
     let text_to_paste = text_to_paste.to_string();
 
     tauri::async_runtime::spawn(async move {
         let res = tokio::task::spawn_blocking(move || {
-            paste::paste(&text_to_paste, &handle_for_closure, &config)
+            paste::paste(&text_to_paste, &clipboard_handle, &config)
         }).await;
 
         match res {

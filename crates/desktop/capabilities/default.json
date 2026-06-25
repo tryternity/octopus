@@ -16,8 +16,6 @@
     "core:event:allow-listen",
     "global-shortcut:allow-register",
     "global-shortcut:allow-unregister",
-    "clipboard-manager:allow-read-text",
-    "clipboard-manager:allow-write-text",
     "store:default",
     "os:default"
   ]

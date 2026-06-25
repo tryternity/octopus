@@ -150,7 +150,6 @@ pub fn run() {
                 coordinator.toggle();
             }
         }))
-        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_store::Builder::default().build())
         .plugin(tauri_plugin_os::init())
         .plugin(
@@ -206,6 +205,13 @@ pub fn run() {
             model_commands::set_download_mirror,
         ])
         .setup(move |app| {
+            // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
+            let clipboard_handle = Arc::new(
+                octopus_clipboard::ClipboardHandle::new()
+                    .expect("Failed to init clipboard handle"),
+            );
+            app.manage(clipboard_handle.clone());
+
             // Initialize engine manager
             let engine_manager = Arc::new(octopus_asr::engine::AsrEngineManager::new());
 
