@@ -176,6 +176,12 @@ function Result() {
         if (cancelled) { fn(); return; }
         unlistens.push(fn);
       }
+      // All listeners registered — now tell backend we're ready.
+      // Must come AFTER listen() calls complete, otherwise show-result
+      // events emitted by result_window_ready are lost (no listener yet).
+      if (!cancelled) {
+        invoke("result_window_ready");
+      }
     })();
 
     return () => { cancelled = true; unlistens.forEach((fn) => fn()); };
@@ -252,12 +258,6 @@ function Result() {
     document.addEventListener("mousedown", onDown);
     return () => document.removeEventListener("mousedown", onDown);
   }, [popupType]);
-
-  // ── Notify backend window is ready ──
-  useEffect(() => {
-    invoke("result_window_ready");
-    refreshActive();
-  }, [refreshActive]);
 
   // ── Text input handler (edit mode) ──
   const onTextInput = () => {
