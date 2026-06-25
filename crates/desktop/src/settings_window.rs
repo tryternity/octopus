@@ -29,7 +29,7 @@ pub fn open_settings(app_handle: tauri::AppHandle) {
     let _ = WebviewWindowBuilder::new(
         &app_handle,
         WINDOW_LABEL,
-        WebviewUrl::App("settings/index.html".into()),
+        WebviewUrl::default(),
     )
     .title("Octopus 设置")
     .inner_size(SETTINGS_WIDTH, SETTINGS_HEIGHT)

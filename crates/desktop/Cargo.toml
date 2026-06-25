@@ -12,7 +12,6 @@ tonic-build = { version = "0.12", optional = true }
 tauri = { version = "2", features = ["tray-icon", "image-png"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
-tauri-plugin-clipboard-manager = "2"
 tauri-plugin-store = "2"
 tauri-plugin-os = "2"
 tauri-plugin-log = "2"
@@ -69,6 +68,9 @@ octopus-infra = { path = "../infra" }
 
 # 通用下载 crate（模型管理页下 HF 模型，复用阶段1 能力）
 octopus-download = { path = "../download" }
+
+# 剪贴板历史管理（clipboard-rs 监听 + 存储 + 图片处理）
+octopus-clipboard = { path = "../clipboard" }
 
 [features]
 default = ["embedded"]

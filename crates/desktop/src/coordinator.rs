@@ -13,7 +13,8 @@ use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
-use tauri::Emitter;
+use std::time::Instant;
+use tauri::{Emitter, Manager};
 
 /// 协调器命令
 enum Command {
@@ -971,12 +972,32 @@ fn do_paste(
 
     let config = config.clone();
     let tx_inner = tx.clone();
-    let handle_for_closure = app_handle.clone();
+    let clipboard_handle = app_handle
+        .state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>()
+        .inner()
+        .clone();
     let text_to_paste = text_to_paste.to_string();
+    let polish_status_owned = polish_status.to_string();
 
     tauri::async_runtime::spawn(async move {
         let res = tokio::task::spawn_blocking(move || {
-            paste::paste(&text_to_paste, &handle_for_closure, &config)
+            // Write to clipboard history (source=asr). Failure doesn't block paste.
+            if let Err(e) = octopus_infra::db::with_db(|conn| {
+                octopus_clipboard::store::insert_asr_item(
+                    conn,
+                    &text_to_paste,
+                    octopus_clipboard::model::AsrMeta {
+                        transcription_id: id,
+                        polish_status: polish_status_owned,
+                        engine: config.asr_engine.clone(),
+                        model: String::new(),
+                    },
+                )
+            }) {
+                warn!("Clipboard history ASR insert failed: {}", e);
+            }
+
+            paste::paste(&text_to_paste, &clipboard_handle, &config)
         }).await;
 
         match res {

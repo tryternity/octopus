@@ -164,3 +164,71 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('denoise_mode',             '1',                                    '降噪模式: 0=无 / 1=轻度 / 2=深度'),
     ('download_mirror',          '',                                     'HF 模型下载镜像 host（如 https://hf-mirror.com），空=官方源 huggingface.co'),
     ('active_polish_prompt',     '1',                                    '激活的润色 prompt id（prompts 表 id 字段）');
+
+-- ── 剪贴板历史（clipboard_history 表）─────────────────────────────────────────
+-- 管理 text/image/file 三类剪贴板内容 + ASR 识别文本来源标记。
+
+CREATE TABLE IF NOT EXISTS clipboard_history (
+    id                INTEGER PRIMARY KEY,       -- 毫秒戳（同 transcriptions 约定）
+    item_type         TEXT    NOT NULL,          -- 'text' | 'image' | 'file'
+    source            TEXT    NOT NULL,          -- 'clipboard' | 'asr'
+    content           TEXT    NOT NULL,          -- text:文本; image:blob_hash; file:JSON路径数组
+    search_text       TEXT,                      -- FTS5 索引文本（text=内容; image=NULL; file=路径拼接）
+    is_favorite       INTEGER NOT NULL DEFAULT 0,
+    created_at        TEXT    NOT NULL,
+
+    -- image 元数据
+    blob_hash         TEXT,                      -- SHA-256(PNG bytes)，去重 + 文件引用
+    width             INTEGER,
+    height            INTEGER,
+    has_thumbnail     INTEGER NOT NULL DEFAULT 0,
+
+    -- file 元数据
+    file_count        INTEGER,
+
+    -- 富文本标记（text 类型，二期扩展用）
+    is_rich           INTEGER NOT NULL DEFAULT 0,
+
+    -- ASR 元数据（source='asr' 时填充）
+    transcription_id  INTEGER,                   -- 外键 → transcriptions.id
+    polish_status     TEXT,                      -- 'off' | 'applied' | 'edited'
+    engine            TEXT,
+    model             TEXT,
+
+    FOREIGN KEY (transcription_id) REFERENCES transcriptions(id) ON DELETE SET NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_clip_created   ON clipboard_history(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_clip_type      ON clipboard_history(item_type);
+CREATE INDEX IF NOT EXISTS idx_clip_source    ON clipboard_history(source);
+CREATE INDEX IF NOT EXISTS idx_clip_hash      ON clipboard_history(blob_hash);
+CREATE INDEX IF NOT EXISTS idx_clip_favorite  ON clipboard_history(is_favorite);
+
+-- FTS5 全文索引（trigram tokenizer 支持 CJK 子串匹配）
+CREATE VIRTUAL TABLE IF NOT EXISTS clipboard_history_fts USING fts5(
+    search_text,
+    content='clipboard_history',
+    content_rowid='id',
+    tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS clip_fts_ai AFTER INSERT ON clipboard_history BEGIN
+    INSERT INTO clipboard_history_fts(rowid, search_text) VALUES (new.id, new.search_text);
+END;
+CREATE TRIGGER IF NOT EXISTS clip_fts_ad AFTER DELETE ON clipboard_history BEGIN
+    INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, search_text)
+    VALUES('delete', old.id, old.search_text);
+END;
+CREATE TRIGGER IF NOT EXISTS clip_fts_au AFTER UPDATE ON clipboard_history BEGIN
+    INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, search_text)
+    VALUES('delete', old.id, old.search_text);
+    INSERT INTO clipboard_history_fts(rowid, search_text) VALUES (new.id, new.search_text);
+END;
+
+-- 剪贴板配置项 seed
+INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
+    ('clipboard_enabled',      'true',  '是否启用剪贴板历史监听'),
+    ('clipboard_shortcut',     'Alt+V', '剪贴板历史窗口快捷键'),
+    ('clipboard_max_items',    '1000',  '最大保留条数（不含收藏）'),
+    ('clipboard_max_age_days', '30',    '自动清理天数（不含收藏）'),
+    ('clipboard_auto_paste',   'double','列表项点击行为: single(复制) | double(粘贴)');
