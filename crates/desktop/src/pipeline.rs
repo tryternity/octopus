@@ -457,6 +457,47 @@ impl VadSegmentedPipeline {
     }
 }
 
+impl Pipeline for VadSegmentedPipeline {
+    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> bool {
+        self.run_tick(samples, transcript)
+    }
+
+    fn finish(&mut self, transcript: &mut Transcript) -> TranscriptEvent {
+        // drain rx 至空 + 消费在途段（unbounded channel 不丢；active_count 归零由 drain 递减）。
+        // 无 tail（tail 已由 coordinator stop 路径的 tick 喂入，可能触发最后一轮切段）。
+        self.drain_rx_and_consume(transcript);
+        // VadSegmented 不产 Final 事件（文本经 set_full 累积），返回空 Committed 作占位
+        //（coordinator stop 路径不读 vad-seg 的 finish 返回值，见 Task 5）。
+        TranscriptEvent::Committed(String::new())
+    }
+
+    fn silence_duration(&self) -> f64 {
+        self.silence_duration
+    }
+
+    fn reset(&mut self) {
+        // 会话间复用：清缓冲 + VAD 状态。rx 内残余旧段丢弃（新会话 seq 从 0 重来）。
+        self.audio_buffer.clear();
+        self.overlap_tail.clear();
+        self.silence_duration = 0.0;
+        self.has_speech = false;
+        self.active_count = 0;
+        self.next_seq = 0;
+        self.completed_seq = 0;
+        self.completed_results.clear();
+        self.detect_vad.reset();
+        self.filter_vad.reset();
+        while self.rx.try_recv().is_ok() {}
+        self.segment_cut_this_tick = false;
+    }
+
+    fn took_segment_cut(&self) -> bool {
+        self.segment_cut_this_tick
+    }
+
+    // take_close_handle / is_cloud 用默认（None / false）——VadSegmented 仅非流式本地引擎。
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
