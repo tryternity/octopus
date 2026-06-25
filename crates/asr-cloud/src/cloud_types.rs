@@ -46,7 +46,10 @@ impl CloudStreamHandle {
     /// 创建句柄，返回 `(handle, pcm_rx, result_tx)`。
     ///
     /// `pcm_rx` 和 `result_tx` 交给后台 WS task（`run_xxx_session`）。
-    pub fn new() -> (
+    ///
+    /// `pub(crate)`：仅本 crate 的 4 个 provider `open()` 与测试调用；外部经
+    /// `open_cloud_session` 拿到 `CloudStreamHandle`，不自行构造（避免暴露 `pub(crate) PcmFrame`）。
+    pub(crate) fn new() -> (
         Self,
         mpsc::UnboundedReceiver<PcmFrame>,
         mpsc::UnboundedSender<StreamEvent>,
