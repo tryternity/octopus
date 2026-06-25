@@ -43,7 +43,7 @@ pub trait StreamingPipelineEngine: Send {
     /// local 返回 `None`（默认）；cloud 取出内置 session 后返回 `Some`。
     /// **cfg cloud**：`cloud_types` 仅 cloud feature 存在，故方法整体门控（无 cloud 时 trait 无此方法）。
     #[cfg(feature = "cloud")]
-    fn take_close_handle(&mut self) -> Option<crate::cloud_types::CloudStreamHandle> { None }
+    fn take_close_handle(&mut self) -> Option<octopus_asr_cloud::CloudStreamHandle> { None }
     /// 是否 cloud 引擎（spec §4.2/§4.3 不对称判别：cloud 每 tick emit + commit 时 DB/polish +
     /// 错误上报 + stop 走 finalize_cloud；local emit/DB/polish 仅 changed + stop 走 finalize_after_stop）。
     fn is_cloud(&self) -> bool { false }
@@ -145,7 +145,7 @@ impl StreamingPipeline {
     /// stop 路径分派：cloud → `Some(CloudStreamHandle)`（coordinator spawn close_async）；local → `None`。
     /// cfg cloud（与 trait 方法同步门控）。
     #[cfg(feature = "cloud")]
-    pub fn take_close_handle(&mut self) -> Option<crate::cloud_types::CloudStreamHandle> {
+    pub fn take_close_handle(&mut self) -> Option<octopus_asr_cloud::CloudStreamHandle> {
         self.engine.take_close_handle()
     }
 

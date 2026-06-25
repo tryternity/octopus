@@ -17,3 +17,4 @@ pub mod batch;
 
 pub use config::open_cloud_session;
 pub use batch::{CloudBatchEngine, is_cloud_spec};
+pub use cloud_types::{CloudStreamHandle, StreamEvent};

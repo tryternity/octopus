@@ -5,12 +5,11 @@
 //! events / partial-transcript 双层 / 静音非阻塞 finish）迁入 `tick`，产
 //! `Vec<TranscriptEvent>`。emit/DB/polish 留 coordinator（§4.2 不对称）。
 
-use crate::cloud_types::{CloudStreamHandle, StreamEvent};
 use crate::pipeline::{compute_speech_chunks, StreamingPipelineEngine};
 use log::{debug, error, info, warn};
 use octopus_asr::streaming_runner::TranscriptEvent;
 use octopus_asr::vad::SileroVad;
-use tauri::async_runtime::RuntimeHandle;
+use octopus_asr_cloud::{CloudStreamHandle, StreamEvent};
 
 /// pre-roll 滚动缓冲区大小（采样点）：200ms @ 16kHz = 3200。
 const CLOUD_PREROLL_BUFFER_SAMPLES: usize = 3200;
@@ -107,109 +106,21 @@ pub(super) fn take_preroll(pre_roll_buffer: &[f32]) -> Vec<f32> {
     }
 }
 
-// ── open/resolve helpers（迁自 coordinator.rs:1504-1617，签名改 (asr_engine, language, pre_roll)）──
-
-/// 通用云端配置解析：从 DB section 取 ModelEntry + 校验 secret_key 非空。
-fn resolve_cloud_entry<'a>(
-    section: Option<&'a std::collections::HashMap<String, octopus_infra::db::ModelEntry>>,
-    provider: &'a str,
-    model_name: &'a str,
-) -> Result<&'a octopus_infra::db::ModelEntry, String> {
-    let entry = section
-        .and_then(|m| m.get(model_name))
-        .ok_or_else(|| format!("{} ASR 模型 '{}' 未在 DB 配置", provider, model_name))?;
-    if entry.secret_key.is_empty() {
-        return Err(format!("{} ASR 模型 '{}' 的 secret_key 为空", provider, model_name));
-    }
-    Ok(entry)
-}
-
-/// 解析 Aliyun（DashScope）配置（endpoint + key + model_name）。
-fn resolve_aliyun_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.aliyun.as_ref(), "aliyun", &model_name)?;
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
-}
-
-/// 解析 ByteDance（豆包）配置（resource_id + api_key + model_name）。
-fn resolve_bytedance_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.bytedance.as_ref(), "bytedance", &model_name)?;
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
-}
-
-/// 解析 Tencent（腾讯云）配置（appid:secretid + secret_key + engine_model_type）。
-fn resolve_tencent_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.tencent.as_ref(), "tencent", &model_name)?;
-    if !entry.source.contains(':') {
-        return Err(format!(
-            "tencent ASR 模型 '{}' 的 source 字段格式应为 appid:secretid（当前='{}'）",
-            model_name, entry.source
-        ));
-    }
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
-}
-
-/// 解析 Baidu（百度云）配置（appid + api_key + dev_pid）。
-fn resolve_baidu_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
-    let model_name = octopus_infra::db::parse_model_spec(engine_spec)
-        .model_name()
-        .to_string();
-    let entry = resolve_cloud_entry(cfg.asr.baidu.as_ref(), "baidu", &model_name)?;
-    if entry.source.is_empty() {
-        return Err(format!(
-            "baidu ASR 模型 '{}' 的 source 字段（AppID）为空",
-            model_name
-        ));
-    }
-    Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
-}
-
-/// onset dispatch：根据引擎类型解析配置 + 打开对应云端 WS session（迁自 coordinator，
-/// 签名由 `&AppConfig` 改为 `(asr_engine, language, pre_roll)`）。
+/// onset dispatch：根据引擎 spec 打开对应云端 WSS session（返回句柄）。
+///
+/// cloud crate 的 `open_cloud_session` 内部 `tokio::spawn`，**须在 tokio context**；
+/// coordinator 主线程非 tokio，用 `tauri::async_runtime::block_on` 进入（tauri runtime 即 tokio）。
+/// `block_on` 内同步 `open` 只 spawn reader task + 返回 channel handle（不 await 建连），立即返回，
+/// 不阻塞 coordinator 主线程。
 pub(super) fn open_cloud_session(
     asr_engine: &str,
     language: &str,
     pre_roll: Vec<f32>,
 ) -> Result<CloudStreamHandle, String> {
-    use octopus_asr::config::EngineCategory;
-    let rt: RuntimeHandle = tauri::async_runtime::handle();
-    match octopus_asr::config::resolve_engine_category(asr_engine) {
-        Some(EngineCategory::Aliyun) => {
-            let (endpoint, key, model) = resolve_aliyun_config(asr_engine)?;
-            crate::aliyun_stream::open(&rt, endpoint, key, model, language.to_string(), pre_roll)
-                .map_err(|e| e.to_string())
-        }
-        Some(EngineCategory::ByteDance) => {
-            let (resource_id, api_key, _) = resolve_bytedance_config(asr_engine)?;
-            crate::bytedance_stream::open(&rt, api_key, resource_id, language.to_string(), pre_roll)
-                .map_err(|e| e.to_string())
-        }
-        Some(EngineCategory::Tencent) => {
-            let (appid_secretid, secret_key, engine_model_type) = resolve_tencent_config(asr_engine)?;
-            crate::tencent_stream::open(
-                &rt, appid_secretid, secret_key, engine_model_type, language.to_string(), pre_roll,
-            )
-            .map_err(|e| e.to_string())
-        }
-        Some(EngineCategory::Baidu) => {
-            let (appid, appkey, dev_pid) = resolve_baidu_config(asr_engine)?;
-            crate::baidu_stream::open(&rt, appid, appkey, dev_pid, language.to_string(), pre_roll)
-                .map_err(|e| e.to_string())
-        }
-        _ => Err("当前引擎非云端，无法开启 WSS".to_string()),
-    }
+    tauri::async_runtime::block_on(async {
+        octopus_asr_cloud::open_cloud_session(asr_engine, language, pre_roll)
+    })
+    .map_err(|e| e.to_string())
 }
 
 /// cloud 流式 pipeline 引擎（持 `CloudStreamHandle` + onset/状态，spec §3.3）。
@@ -401,11 +312,11 @@ impl StreamingPipelineEngine for CloudPipelineEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cloud_types::{CloudStreamHandle, StreamEvent};
+    use octopus_asr_cloud::{CloudStreamHandle, StreamEvent};
 
     /// 构造一个预载事件序列的 CloudStreamHandle（onset 后 drain 用）。
     fn handle_with_events(events: Vec<StreamEvent>) -> CloudStreamHandle {
-        let (handle, _pcm_rx, result_tx) = CloudStreamHandle::new();
+        let (handle, result_tx) = CloudStreamHandle::new_for_test();
         for ev in events {
             let _ = result_tx.send(ev);
         }
@@ -434,7 +345,7 @@ mod tests {
         // 已提交 "第一句" + current_partial "第二句" → Finished → Committed("第一句，第二句")
         // 分两次 drain（drain 的 while 循环会一次清空所有已排队事件，故用 result_tx 跨调用分段投递）：
         //   先 Text 进 partial（is_speaking=true，不 take session），再 Finished 提交。
-        let (handle, _pcm_rx, result_tx) = CloudStreamHandle::new();
+        let (handle, result_tx) = CloudStreamHandle::new_for_test();
         let mut session = Some(handle);
         let (mut committed, mut partial, mut is_closing, mut is_speaking) =
             ("第一句".to_string(), String::new(), false, true);
@@ -467,7 +378,7 @@ mod tests {
     fn drain_finished_no_double_comma_when_committed_ends_with_comma() {
         // committed 已以 '，' 结尾 + partial "第二句" → Finished → 不再加逗号 → "第一句，第二句"
         // 防回归：若误改成无条件 push('，') 会得 "第一句，，第二句"
-        let (handle, _pcm_rx, result_tx) = CloudStreamHandle::new();
+        let (handle, result_tx) = CloudStreamHandle::new_for_test();
         let mut session = Some(handle);
         let (mut committed, mut partial, mut is_closing, mut is_speaking) =
             ("第一句，".to_string(), String::new(), false, true);
@@ -513,7 +424,7 @@ mod tests {
     #[test]
     fn drain_failed_emits_error_clears_partial() {
         // 分两次 drain：先 Text 进 partial，再 Failed → Error + 清 partial
-        let (handle, _pcm_rx, result_tx) = CloudStreamHandle::new();
+        let (handle, result_tx) = CloudStreamHandle::new_for_test();
         let mut session = Some(handle);
         let (mut committed, mut partial, mut is_closing, mut is_speaking) =
             (String::new(), String::new(), false, true);
