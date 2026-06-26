@@ -44,7 +44,7 @@ function Result() {
   const [toolbarVisible, setToolbarVisible] = useState(false);
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
-  const [isRecording, setIsRecording] = useState(true);
+  const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [toolbarState, setToolbarState] = useState<ToolbarState>({
     polish_mode: 0, denoise_mode: 1, polish_llm_valid: false,
