@@ -14,9 +14,9 @@
 
 use crate::transcript::Transcript;
 use log::warn;
-use octopus_asr::streaming_runner::{StreamingRunner, TranscriptEvent};
-use octopus_asr::streaming_engine::StreamingSession;
-use octopus_asr::vad::SileroVad;
+use octopus_asr_local::streaming_runner::{StreamingRunner, TranscriptEvent};
+use octopus_asr_local::streaming_engine::StreamingSession;
+use octopus_asr_local::vad::SileroVad;
 use std::collections::HashMap;
 use std::sync::Arc;
 use octopus_infra::consts::{SEGMENT_DURATION_S, SEGMENT_OVERLAP_MS};
@@ -351,7 +351,7 @@ pub(crate) fn vad_preroll(vad: &mut SileroVad) {
 /// 用独立 `filter_vad`（与检测流分离），过滤前 reset() 归零 LSTM 状态（等价旧代码每 buffer 新建 VAD）。
 fn filter_speech_from_buffer(filter_vad: &mut SileroVad, samples: &[f32]) -> Vec<f32> {
     filter_vad.reset();
-    let speech = octopus_asr::audio::filter_speech(samples, filter_vad, 480, 0.5);
+    let speech = octopus_asr_local::audio::filter_speech(samples, filter_vad, 480, 0.5);
     if speech.is_empty() {
         log::debug!("VadSegmented: no speech detected in buffer");
         Vec::new()
@@ -395,7 +395,7 @@ impl VadSegmentedPipeline {
         asr_engine: String,
         segment_silence_ms: f64,
     ) -> anyhow::Result<Self> {
-        let path = octopus_asr::config::find_silero_vad()?;
+        let path = octopus_asr_local::config::find_silero_vad()?;
         let mut detect_vad = SileroVad::new(&path)?;
         vad_preroll(&mut detect_vad);
         let filter_vad = SileroVad::new(&path)?;

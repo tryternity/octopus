@@ -4,7 +4,7 @@
 //! 不含 polish / denoise（总 spec §3.8/§3.6：留端，server 不依赖 llm/cpal）。
 
 use anyhow::Result;
-use octopus_asr::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
+use octopus_asr_local::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
 
 /// WS 流式会话：薄包 asr `StreamingRunner`。
 pub struct WsStreamSession {

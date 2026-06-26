@@ -12,4 +12,4 @@ octopus-infra = { path = "../infra" }
 
 [dev-dependencies]
 serde_yaml = "0.9"
-octopus-asr = { path = "../asr" }
+octopus-asr-local = { path = "../asr-local" }

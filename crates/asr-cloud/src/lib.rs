@@ -1,7 +1,7 @@
 //! 云端 ASR（cli/server 批处理用）。
 //!
 //! 4 provider（Aliyun/ByteDance/Tencent/Baidu）WSS 协议层 + 批引擎（impl
-//! `octopus_asr::engine::OfflineAsrEngine`）。协议层从 `octopus-desktop` 复刻
+//! `octopus_asr_local::engine::OfflineAsrEngine`）。协议层从 `octopus-desktop` 复刻
 //!（见各 `*_stream.rs`），改造为不依赖 tauri runtime：`open()` 内部用 `tokio::spawn`，
 //! 调用方（`CloudBatchEngine`）在自有 tokio runtime 上 `block_on` 驱动。
 //!

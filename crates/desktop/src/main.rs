@@ -68,7 +68,7 @@ pub fn run() {
     // 初始化嵌入式 DB（建表 + seed 默认引擎）。asr 的 load_config 首次调用时也会
     // lazy init，这里显式预热（日志早出 + 错误前置）。模型配置唯一来源即此 DB。
     // 失败仅告警，不阻断启动（识别历史写入会失败，但应用可用）
-    if let Err(e) = octopus_asr::db::ensure_db() {
+    if let Err(e) = octopus_asr_local::db::ensure_db() {
         log::error!("DB init failed: {}, storage disabled", e);
     }
 
@@ -249,16 +249,16 @@ pub fn run() {
             }
 
             // Initialize engine manager
-            let engine_manager = Arc::new(octopus_asr::engine::AsrEngineManager::new());
+            let engine_manager = Arc::new(octopus_asr_local::engine::AsrEngineManager::new());
 
             // 一次性解析 config.asr_engine → ResolvedEngine，用于 preheat 判定。
-            let resolved_engine = octopus_asr::config::resolve_active_engine(&config.asr_engine);
+            let resolved_engine = octopus_asr_local::config::resolve_active_engine(&config.asr_engine);
 
             // 云引擎判定（仅用于 preheat 守卫）：启动时 asr_engine 解析为 Aliyun → 跳过本地预热。
             // 运行时引擎路由由 DispatchEngine 按 spec 动态分发，不依赖此判定。
             #[cfg(feature = "cloud")]
             let is_cloud_aliyun = resolved_engine.as_ref()
-                .map(|r| r.category == octopus_asr::config::EngineCategory::Aliyun)
+                .map(|r| r.category == octopus_asr_local::config::EngineCategory::Aliyun)
                 .unwrap_or(false);
 
             // Preheat 仅本地 embedded 引擎（云引擎 AliyunEngine 无需预热；跳过避免 switch_model 对 aliyun bail）
@@ -282,8 +282,8 @@ pub fn run() {
                     }
                     // 预加载 VAD session 到全局缓存：首次 Toggle 命中缓存，消除录音启动延迟。
                     // 失败不影响启动（首次录音时 new() 会懒加载重试）。
-                    if let Ok(vad_path) = octopus_asr::config::find_silero_vad() {
-                        match octopus_asr::vad::SileroVad::new(&vad_path) {
+                    if let Ok(vad_path) = octopus_asr_local::config::find_silero_vad() {
+                        match octopus_asr_local::vad::SileroVad::new(&vad_path) {
                             Ok(_) => info!("VAD session preheated"),
                             Err(e) => log::warn!(
                                 "VAD 预加载失败（不影响启动，首次录音懒加载）: {}", e
@@ -388,7 +388,7 @@ pub fn run() {
 #[cfg(not(feature = "cloud"))]
 fn build_local_engine(
     config: &octopus_infra::config::AppConfig,
-    engine_manager: &Arc<octopus_asr::engine::AsrEngineManager>,
+    engine_manager: &Arc<octopus_asr_local::engine::AsrEngineManager>,
 ) -> Arc<dyn TranscriptionEngine> {
     match config.engine_mode.as_str() {
         "embedded" => Arc::new(EmbeddedEngine::new(engine_manager.clone())),

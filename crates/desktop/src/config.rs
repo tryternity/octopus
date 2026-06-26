@@ -1,7 +1,7 @@
 //! Desktop 应用配置接入。
 //!
 //! config.yaml 的 schema 与读取统一定义在 `octopus_infra::config`（AppConfig），
-//! 本模块只保留依赖 `octopus_asr`/`octopus_llm` 的派生判断（is_streaming_engine / llm_config）——
+//! 本模块只保留依赖 `octopus_asr_local`/`octopus_llm` 的派生判断（is_streaming_engine / llm_config）——
 //! 它们不能放进 infra（infra 不依赖任何项目 crate）。
 
 // 复用 infra 的统一 AppConfig：desktop 内部用 crate::config::AppConfig 即可，
@@ -14,9 +14,9 @@ pub use octopus_infra::config::{AppConfig, PolishMode};
 /// **不**走本地 StreamingSession——必须排除，否则 aliyun feature 未启用时
 /// 会错误地走 StreamingSession 路径并在 `new()` 中 bail。
 pub fn is_streaming_engine(cfg: &AppConfig) -> bool {
-    if let Ok(resolved) = octopus_asr::config::resolve_active_engine(&cfg.asr_engine) {
+    if let Ok(resolved) = octopus_asr_local::config::resolve_active_engine(&cfg.asr_engine) {
         resolved.entry.is_streaming
-            && resolved.category != octopus_asr::config::EngineCategory::Aliyun
+            && resolved.category != octopus_asr_local::config::EngineCategory::Aliyun
     } else {
         false
     }
@@ -33,7 +33,7 @@ pub fn llm_config(cfg: &AppConfig) -> Option<octopus_llm::CompatibleLlmConfig> {
 
 /// 不检查 polish_mode 的 LLM 配置（供「立即润色」用——忽略 mode 直接润色）。
 pub fn llm_config_ignore_mode(cfg: &AppConfig) -> Option<octopus_llm::CompatibleLlmConfig> {
-    match octopus_asr::db::load_llm_model(&cfg.polish_llm) {
+    match octopus_asr_local::db::load_llm_model(&cfg.polish_llm) {
         Ok(Some(llm_cfg)) => {
             if llm_cfg.secret_key.is_empty() {
                 log::info!("polish_llm 为 '{}'，其 API Key (secret_key) 为空，适用于本地不需要 key 的模型（如 Ollama 等）", cfg.polish_llm);

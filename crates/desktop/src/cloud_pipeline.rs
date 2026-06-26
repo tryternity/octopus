@@ -7,8 +7,8 @@
 
 use crate::pipeline::{compute_speech_chunks, StreamingPipelineEngine};
 use log::{debug, error, info, warn};
-use octopus_asr::streaming_runner::TranscriptEvent;
-use octopus_asr::vad::SileroVad;
+use octopus_asr_local::streaming_runner::TranscriptEvent;
+use octopus_asr_local::vad::SileroVad;
 use octopus_asr_cloud::{CloudStreamHandle, StreamEvent};
 
 /// pre-roll 滚动缓冲区大小（采样点）：200ms @ 16kHz = 3200。

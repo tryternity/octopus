@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-octopus-asr = { path = "../asr" }
+octopus-asr-local = { path = "../asr-local" }
 octopus-asr-cloud = { path = "../asr-cloud" }
 cpal = "0.16"
 anyhow = "1"

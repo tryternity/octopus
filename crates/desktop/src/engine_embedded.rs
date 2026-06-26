@@ -2,9 +2,9 @@ use crate::engine::TranscriptionEngine;
 use anyhow::Result;
 use async_trait::async_trait;
 use std::sync::Arc;
-use octopus_asr::engine::AsrEngineManager;
+use octopus_asr_local::engine::AsrEngineManager;
 
-/// 嵌入式引擎：进程内直接调用 octopus-asr
+/// 嵌入式引擎：进程内直接调用 octopus-asr-local
 pub struct EmbeddedEngine {
     engine_manager: Arc<AsrEngineManager>,
 }

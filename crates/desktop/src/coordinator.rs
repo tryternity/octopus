@@ -7,8 +7,8 @@ use crate::engine::TranscriptionEngine;
 use crate::paste;
 use crate::pipeline::{Pipeline, StreamingPipeline};
 use crate::transcript::Transcript;
-use octopus_asr::streaming_engine::StreamingSession;
-use octopus_asr::streaming_runner::TranscriptEvent;
+use octopus_asr_local::streaming_engine::StreamingSession;
+use octopus_asr_local::streaming_runner::TranscriptEvent;
 use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
@@ -193,7 +193,7 @@ impl Coordinator {
                         // 仅在 Idle（开新会话）时同步运行时覆盖；STOP 时不动 asr_engine
                         if matches!(stage, Stage::Idle) {
                             let rc = runtime_config.read().unwrap();
-                            config.asr_engine = match octopus_asr::config::resolve_active_engine(&rc.asr_engine) {
+                            config.asr_engine = match octopus_asr_local::config::resolve_active_engine(&rc.asr_engine) {
                                 Ok(_) => rc.asr_engine.clone(),
                                 Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
                             };
@@ -530,8 +530,8 @@ fn handle_toggle(
 
             #[cfg(feature = "cloud")]
             if use_cloud_streaming {
-                match octopus_asr::config::find_silero_vad() {
-                    Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
+                match octopus_asr_local::config::find_silero_vad() {
+                    Ok(path) => match octopus_asr_local::vad::SileroVad::new(&path) {
                         Ok(mut vad) => {
                             crate::pipeline::vad_preroll(&mut vad);
                             crate::result_window::show_result(app_handle, "正在聆听…");
@@ -1196,8 +1196,8 @@ fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicB
 /// 判定 config.asr_engine 是否为云端引擎（Aliyun、ByteDance、Tencent 或 Baidu）。
 #[cfg(feature = "cloud")]
 fn is_cloud_engine(config: &AppConfig) -> bool {
-    use octopus_asr::config::EngineCategory;
-    let cat = octopus_asr::config::resolve_engine_category(&config.asr_engine);
+    use octopus_asr_local::config::EngineCategory;
+    let cat = octopus_asr_local::config::resolve_engine_category(&config.asr_engine);
     matches!(
         cat,
         Some(EngineCategory::Aliyun)
@@ -1818,7 +1818,7 @@ static DB_HANDLE: std::sync::OnceLock<std::sync::Mutex<Option<std::thread::JoinH
 fn process_db_command(cmd: DbCommand) {
     match cmd {
         DbCommand::Insert { id, text, engine, engine_mode } => {
-            if let Err(e) = octopus_asr::db::insert_transcription_at_id(
+            if let Err(e) = octopus_asr_local::db::insert_transcription_at_id(
                 id,
                 &text,
                 &engine,
@@ -1828,12 +1828,12 @@ fn process_db_command(cmd: DbCommand) {
             }
         }
         DbCommand::UpdateRaw { id, text } => {
-            if let Err(e) = octopus_asr::db::update_raw_text(id, &text) {
+            if let Err(e) = octopus_asr_local::db::update_raw_text(id, &text) {
                 warn!("Background DB update_raw_text failed: {}", e);
             }
         }
         DbCommand::UpdatePolished { id, text, status, model } => {
-            if let Err(e) = octopus_asr::db::update_polished(
+            if let Err(e) = octopus_asr_local::db::update_polished(
                 id,
                 &text,
                 &status,
@@ -1843,7 +1843,7 @@ fn process_db_command(cmd: DbCommand) {
             }
         }
         DbCommand::Finalize { id, raw_text, polished_text, polish_status, polish_model, duration_ms } => {
-            if let Err(e) = octopus_asr::db::finalize_transcription(
+            if let Err(e) = octopus_asr_local::db::finalize_transcription(
                 id,
                 &raw_text,
                 polished_text.as_deref(),
@@ -1855,7 +1855,7 @@ fn process_db_command(cmd: DbCommand) {
             }
         }
         DbCommand::UpdateEdited { id, edited_text } => {
-            if let Err(e) = octopus_asr::db::update_edited_text(id, &edited_text) {
+            if let Err(e) = octopus_asr_local::db::update_edited_text(id, &edited_text) {
                 warn!("Background DB update_edited_text failed: {}", e);
             }
         }

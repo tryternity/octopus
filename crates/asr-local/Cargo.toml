@@ -1,5 +1,5 @@
 [package]
-name = "octopus-asr"
+name = "octopus-asr-local"
 version = "0.1.0"
 edition = "2021"
 

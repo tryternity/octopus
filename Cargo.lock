@@ -4296,7 +4296,26 @@ dependencies = [
 ]
 
 [[package]]
-name = "octopus-asr"
+name = "octopus-asr-cloud"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64 0.22.1",
+ "flate2",
+ "futures-util",
+ "hmac",
+ "log",
+ "octopus-asr-local",
+ "octopus-infra",
+ "serde_json",
+ "sha1",
+ "tokio",
+ "tokio-tungstenite 0.24.0",
+ "uuid",
+]
+
+[[package]]
+name = "octopus-asr-local"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -4326,25 +4345,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "octopus-asr-cloud"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "base64 0.22.1",
- "flate2",
- "futures-util",
- "hmac",
- "log",
- "octopus-asr",
- "octopus-infra",
- "serde_json",
- "sha1",
- "tokio",
- "tokio-tungstenite 0.24.0",
- "uuid",
-]
-
-[[package]]
 name = "octopus-cli"
 version = "0.1.0"
 dependencies = [
@@ -4352,8 +4352,8 @@ dependencies = [
  "clap",
  "cpal",
  "md5",
- "octopus-asr",
  "octopus-asr-cloud",
+ "octopus-asr-local",
  "octopus-download",
  "octopus-infra",
  "serde",
@@ -4392,8 +4392,8 @@ dependencies = [
  "objc2",
  "objc2-app-kit",
  "objc2-foundation",
- "octopus-asr",
  "octopus-asr-cloud",
+ "octopus-asr-local",
  "octopus-clipboard",
  "octopus-download",
  "octopus-infra",
@@ -4471,7 +4471,7 @@ name = "octopus-llm"
 version = "0.1.0"
 dependencies = [
  "anyhow",
- "octopus-asr",
+ "octopus-asr-local",
  "octopus-infra",
  "reqwest 0.12.28",
  "serde",
@@ -4488,7 +4488,7 @@ dependencies = [
  "bytes",
  "clap",
  "futures-util",
- "octopus-asr",
+ "octopus-asr-local",
  "octopus-infra",
  "serde",
  "serde_json",

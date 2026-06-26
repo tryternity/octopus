@@ -19,11 +19,11 @@ pub struct SharedAudioState {
     sample_rate: std::sync::atomic::AtomicU32,
     device_name: String,
     /// 流式重采样器：denoise 路径=48k→16k；直通路径=原生→16k。会话内 lazy 重建。
-    resampler: Mutex<Option<octopus_asr::audio::AudioResampler>>,
+    resampler: Mutex<Option<octopus_asr_local::audio::AudioResampler>>,
     /// 流式下采样器：原生→48k（仅 denoise 路径用，喂给 DenoiseProcessor）。
-    down_sampler: Mutex<Option<octopus_asr::audio::AudioResampler>>,
+    down_sampler: Mutex<Option<octopus_asr_local::audio::AudioResampler>>,
     /// RNNoise 降噪器（nnnoiseless）：start 时 lazy 建/重置；失败则 None（直通降级）。
-    denoise: Mutex<Option<octopus_asr::denoise::DenoiseProcessor>>,
+    denoise: Mutex<Option<octopus_asr_local::denoise::DenoiseProcessor>>,
     stream: Mutex<Option<cpal::Stream>>,
 }
 
@@ -46,7 +46,7 @@ impl SharedAudioState {
     /// 注：本方法持有 field 锁仅限函数体内，用完即 drop，不与其它锁交织。
     fn stream_resample(
         &self,
-        field: &Mutex<Option<octopus_asr::audio::AudioResampler>>,
+        field: &Mutex<Option<octopus_asr_local::audio::AudioResampler>>,
         samples: &[f32],
         from_rate: u32,
         to_rate: u32,
@@ -57,7 +57,7 @@ impl SharedAudioState {
         }
         let mut g = field.lock().unwrap();
         if g.is_none() {
-            *g = octopus_asr::audio::AudioResampler::new_to(from_rate, to_rate).ok();
+            *g = octopus_asr_local::audio::AudioResampler::new_to(from_rate, to_rate).ok();
         }
         match g.as_mut() {
             Some(r) => {
@@ -94,7 +94,7 @@ impl SharedAudioState {
     /// 全在 coordinator 单线程串行调用，cpal 回调只触 samples 锁。故 denoise 与 down_sampler
     /// 虽短暂同时持有，顺序固定，不死锁。
     fn process_pipeline(&self, raw: &[f32], rate: u32, flush: bool) -> Vec<f32> {
-        let cfg = octopus_asr::config::load_app_config_cached();
+        let cfg = octopus_asr_local::config::load_app_config_cached();
         let denoise_on = cfg.denoise_mode != 0;
 
         // denoise 锁：本块持有；期间调用 stream_resample(down_sampler) 会短暂同时持有
@@ -225,12 +225,12 @@ impl SharedAudioState {
 
         // 降噪初始化：enabled 则建/重置实例；失败降级为 None（直通），仅 warn，
         // 绝不阻断录音、绝不 panic（spec §9 降级）。RNNoise 内置模型，无外部文件依赖。
-        let cfg = octopus_asr::config::load_app_config_cached();
-        let mode = octopus_asr::denoise::DenoiseMode::from_u8(cfg.denoise_mode);
+        let cfg = octopus_asr_local::config::load_app_config_cached();
+        let mode = octopus_asr_local::denoise::DenoiseMode::from_u8(cfg.denoise_mode);
         {
             let mut g = self.denoise.lock().unwrap();
-            if mode != octopus_asr::denoise::DenoiseMode::Off {
-                match octopus_asr::denoise::DenoiseProcessor::new(mode) {
+            if mode != octopus_asr_local::denoise::DenoiseMode::Off {
+                match octopus_asr_local::denoise::DenoiseProcessor::new(mode) {
                     Ok(p) => {
                         *g = Some(p);
                         info!("环境降噪已启用（mode={:?}，48k）", mode);
@@ -328,7 +328,7 @@ unsafe impl Sync for SharedAudioState {}
 const _: () = {
     fn _assert_send_sync<T: Send + Sync>() {}
     fn _assert() {
-        _assert_send_sync::<octopus_asr::denoise::DenoiseProcessor>();
+        _assert_send_sync::<octopus_asr_local::denoise::DenoiseProcessor>();
     }
 };
 

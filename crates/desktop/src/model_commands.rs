@@ -7,14 +7,14 @@
 //! - `verify_model` 按 secret_key 清单复核，损坏置 false。
 //! - is_enabled 语义 = 文件就绪可用；写 DB 后 `reload_models_config` 让引擎下拉即时更新。
 //!
-//! manifest（文件清单 + sha256）逻辑下沉到 `octopus_asr::manifest`，与 cli `sync-models` 共用。
+//! manifest（文件清单 + sha256）逻辑下沉到 `octopus_asr_local::manifest`，与 cli `sync-models` 共用。
 //! 复用阶段1 download crate（HfRequest/resolve_tasks/Downloader）和 resolve_model_dir。
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 use tokio::sync::mpsc;
 
-use octopus_asr::manifest::{bootstrap_manifest, verify_against_manifest, Manifest};
+use octopus_asr_local::manifest::{bootstrap_manifest, verify_against_manifest, Manifest};
 
 use crate::runtime_config::SharedRuntimeConfig;
 
@@ -93,7 +93,7 @@ pub async fn download_model(
     app_handle: AppHandle,
 ) -> Result<(), String> {
     // 1. 探查：文件已就绪（如用户 hf-cli 下过、在 cache）→ 自举清单 + 置 true，不重下。
-    if let Ok(dir) = octopus_asr::config::resolve_model_dir(&repo) {
+    if let Ok(dir) = octopus_asr_local::config::resolve_model_dir(&repo) {
         let manifest = bootstrap_manifest(&dir).map_err(|e| format!("生成校验清单失败: {e:?}"))?;
         apply_model_state(&repo, Some(&manifest), true)?;
         let _ = app_handle.emit(
@@ -165,7 +165,7 @@ pub async fn download_model(
     drop(tx); // 关闭 channel → 转发 task 退出
 
     // 3. 下载完成：自举清单 + 置 true + reload。
-    let dir = octopus_asr::config::resolve_model_dir(&repo)
+    let dir = octopus_asr_local::config::resolve_model_dir(&repo)
         .map_err(|e| format!("下载后定位目录失败: {e:?}"))?;
     let manifest = bootstrap_manifest(&dir).map_err(|e| format!("生成校验清单失败: {e:?}"))?;
     apply_model_state(&repo, Some(&manifest), true)?;
@@ -179,7 +179,7 @@ pub async fn download_model(
 /// 完整性复核：按 secret_key 清单 sha256 校验；清单空则自举；损坏置 false。
 #[tauri::command]
 pub fn verify_model(model_name: String, repo: String) -> Result<VerifyResult, String> {
-    let dir = octopus_asr::config::resolve_model_dir(&repo)
+    let dir = octopus_asr_local::config::resolve_model_dir(&repo)
         .map_err(|e| format!("模型目录不存在（未就绪）: {e:?}"))?;
 
     let secret_key = current_secret_key(&model_name)?;
@@ -227,7 +227,7 @@ fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> 
         octopus_infra::db::set_model_secret_key(&model_name, json).map_err(|e| e.to_string())?;
     }
     octopus_infra::db::set_model_enabled(&model_name, enabled).map_err(|e| e.to_string())?;
-    octopus_asr::config::reload_models_config();
+    octopus_asr_local::config::reload_models_config();
     Ok(())
 }
 

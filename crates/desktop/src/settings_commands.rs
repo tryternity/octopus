@@ -28,7 +28,7 @@ pub fn get_config(rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigResponse, 
     let config_json = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
 
     let g = rc.read().unwrap();
-    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     let asr_engines = crate::runtime_config::build_asr_options_public(&g.asr_engine, engines);
 
     let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
@@ -81,7 +81,7 @@ pub fn set_config(
     value: Value,
     rc: State<'_, SharedRuntimeConfig>,
     coordinator: State<'_, crate::coordinator::Coordinator>,
-    engine_manager: State<'_, std::sync::Arc<octopus_asr::engine::AsrEngineManager>>,
+    engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let (old_shortcut, mut cfg) = {
@@ -113,7 +113,7 @@ pub fn set_config(
     // 刷新 ASR 侧 AppConfig 缓存（审查 二1）：denoise_mode / asr_hardware_accelerated
     // 等被 asr 的 load_app_config_cached 缓存（audio 每帧读 denoise、apply_session_acceleration
     // 读 hwaccel），不 reload 则改了也不生效（需重启）。从 DB 重读，set_config 罕见、可忽略成本。
-    octopus_asr::config::reload_app_config();
+    octopus_asr_local::config::reload_app_config();
 
     // 审查 三2：切 asr_engine 时后台预热本地引擎（避免首次 transcribe 懒加载卡顿）。
     if key == "asr_engine" {
@@ -236,7 +236,7 @@ fn apply_config_value(
 /// 兜底引擎固定 "local:zipformer:NAME"；其余查 DB 取 provider/category。
 fn build_asr_engine_spec(bare_name: &str) -> Result<String, String> {
     use crate::runtime_config::FALLBACK_ASR_ENGINE;
-    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     if bare_name == FALLBACK_ASR_ENGINE {
         Ok(format!("local:zipformer:{}", bare_name))
     } else {
@@ -245,7 +245,7 @@ fn build_asr_engine_spec(bare_name: &str) -> Result<String, String> {
         Ok(format!(
             "{}:{}:{}",
             engine.provider,
-            octopus_asr::config::category_label(engine.category),
+            octopus_asr_local::config::category_label(engine.category),
             bare_name
         ))
     }
@@ -322,7 +322,7 @@ pub async fn test_llm_connection(spec: String) -> Result<String, String> {
 /// 本地模型返回 Err 提示无需连接测试；远程模型（provider=aliyun）检查 secret_key + WS 连通性。
 #[tauri::command]
 pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
-    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     let engine = engines.iter().find(|e| e.name == bare_name)
         .ok_or_else(|| format!("ASR 引擎 '{}' 不存在", bare_name))?;
 
@@ -331,7 +331,7 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
     }
 
     // 远程引擎：从 DB 取配置（source = WS endpoint, secret_key = API Key）
-    let asr_cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let asr_cfg = octopus_asr_local::config::load_config().map_err(|e| e.to_string())?;
     let model_name = octopus_infra::db::parse_model_spec(&bare_name).model_name().to_string();
     let entry = asr_cfg.asr.aliyun.as_ref()
         .and_then(|m| m.get(model_name.as_str()))

@@ -7,8 +7,8 @@
 //! 两端都经 `asr::pipeline::transcribe_batch` 编排（VAD 分段 + 纠错 + 简繁）。
 
 use anyhow::Result;
-use octopus_asr::engine::AsrEngineManager;
-use octopus_asr::pipeline::{transcribe_batch, PipelineConfig};
+use octopus_asr_local::engine::AsrEngineManager;
+use octopus_asr_local::pipeline::{transcribe_batch, PipelineConfig};
 use octopus_asr_cloud::{is_cloud_spec, CloudBatchEngine};
 
 /// 批处理转写：分流 → transcribe_batch（VAD 分段 + 纠错 + 简繁）。

@@ -11,8 +11,8 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
-use octopus_asr::engine::AsrEngineManager;
-use octopus_asr::streaming_runner::TranscriptEvent;
+use octopus_asr_local::engine::AsrEngineManager;
+use octopus_asr_local::streaming_runner::TranscriptEvent;
 use pipeline::{event_to_json, WsStreamSession};
 
 // ── CLI args ──
@@ -78,7 +78,7 @@ async fn health() -> Json<HealthResponse> {
 }
 
 async fn models(State(state): State<AppState>) -> Json<ModelsResponse> {
-    let vad_path = octopus_asr::config::find_silero_vad()
+    let vad_path = octopus_asr_local::config::find_silero_vad()
         .map(|p| p.display().to_string())
         .unwrap_or_else(|e| format!("error: {}", e));
     Json(ModelsResponse {
@@ -96,7 +96,7 @@ async fn transcribe(
     let language = query.language.as_deref().unwrap_or("auto");
 
     // Try to parse as WAV, fallback to raw f32
-    let samples = match octopus_asr::audio::read_wav_16k_from_bytes(&body) {
+    let samples = match octopus_asr_local::audio::read_wav_16k_from_bytes(&body) {
         Ok(s) => s,
         Err(_) => {
             // Try raw f32 bytes
@@ -122,7 +122,7 @@ async fn transcribe(
     let duration_ms = (samples.len() as f64 / 16.0) as u64; // 16kHz → ms
     let start = std::time::Instant::now();
 
-    let cfg = octopus_asr::pipeline::PipelineConfig::from_app_config(language);
+    let cfg = octopus_asr_local::pipeline::PipelineConfig::from_app_config(language);
     let text = state.engine_manager.switch_model(engine)
         .and_then(|_| state.engine_manager.transcribe_batch(&samples, &cfg));
 
@@ -186,7 +186,7 @@ async fn handle_ws(
     use futures_util::StreamExt;
 
     // Validate engine
-    if octopus_asr::config::resolve_engine_category(&engine).is_none() {
+    if octopus_asr_local::config::resolve_engine_category(&engine).is_none() {
         let _ = socket
             .send(Message::Text(
                 event_to_json(&TranscriptEvent::Error(format!(
@@ -199,7 +199,7 @@ async fn handle_ws(
         return;
     }
 
-    let session = match octopus_asr::streaming_engine::StreamingSession::new(&engine) {
+    let session = match octopus_asr_local::streaming_engine::StreamingSession::new(&engine) {
         Ok(s) => s,
         Err(e) => {
             let _ = socket
@@ -216,7 +216,7 @@ async fn handle_ws(
     };
 
     // correct 与批处理 PipelineConfig.correct 同源（app_config.asr_correct）。
-    let correct = octopus_asr::config::load_app_config_cached().asr_correct;
+    let correct = octopus_asr_local::config::load_app_config_cached().asr_correct;
     let mut stream = match WsStreamSession::new(Box::new(session), correct) {
         Ok(s) => s,
         Err(e) => {
@@ -273,7 +273,7 @@ async fn main() -> anyhow::Result<()> {
     // 全局默认引擎：以 config.yaml.asr_engine 为准（DB name 精确匹配），
     // 空/匹配不到 → 回退兜底 zipformer-small-ctc（见 asr::config::resolve_active_engine）。
     let app_cfg = octopus_infra::config::load_config()?;
-    let active_model = octopus_asr::config::resolve_active_engine(&app_cfg.asr_engine)?.name;
+    let active_model = octopus_asr_local::config::resolve_active_engine(&app_cfg.asr_engine)?.name;
 
     let engine_manager = Arc::new(AsrEngineManager::new());
     tracing::info!("Preheating active ASR model: {}", active_model);

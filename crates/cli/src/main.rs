@@ -119,11 +119,11 @@ fn run_sync_models() -> Result<()> {
     let mut ready = 0usize;
     let mut missing = 0usize;
     for r in &rows {
-        match octopus_asr::config::resolve_model_dir(&r.source) {
+        match octopus_asr_local::config::resolve_model_dir(&r.source) {
             Ok(dir) => {
-                let manifest = octopus_asr::manifest::bootstrap_manifest(&dir)?;
+                let manifest = octopus_asr_local::manifest::bootstrap_manifest(&dir)?;
                 let count =
-                    serde_json::from_str::<octopus_asr::manifest::Manifest>(&manifest)?.len();
+                    serde_json::from_str::<octopus_asr_local::manifest::Manifest>(&manifest)?.len();
                 octopus_infra::db::set_model_secret_key(&r.model_name, &manifest)?;
                 octopus_infra::db::set_model_enabled(&r.model_name, true)?;
                 ready += 1;
@@ -142,7 +142,7 @@ fn run_sync_models() -> Result<()> {
             }
         }
     }
-    octopus_asr::config::reload_models_config();
+    octopus_asr_local::config::reload_models_config();
     println!(
         "\n完成：{} 个就绪（已写 sha256 清单），{} 个未就绪",
         ready, missing
@@ -174,7 +174,7 @@ fn transcribe_file(wav_path: &str, model: &str, language: &str) -> Result<()> {
     if !std::path::Path::new(wav_path).exists() {
         anyhow::bail!("File not found: {}", wav_path);
     }
-    let samples = octopus_asr::audio::read_wav_16k(wav_path)?;
+    let samples = octopus_asr_local::audio::read_wav_16k(wav_path)?;
     let duration = samples.len() as f64 / 16000.0;
     println!(
         "Audio: {} samples ({:.2}s), model: {}, language: {}",
@@ -347,7 +347,7 @@ async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&
         let out_path_str = out_path.to_string_lossy().to_string();
         let out_path_owned = out_path_str.clone();
         samples = tokio::task::spawn_blocking(move || {
-            octopus_asr::audio::read_wav_16k(&out_path_owned)
+            octopus_asr_local::audio::read_wav_16k(&out_path_owned)
         }).await??;
         let extract_elapsed = start_extract.elapsed();
         println!(
@@ -382,7 +382,7 @@ async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&
 
 /// 列出所有可用模型，让用户输入数字选择
 fn select_model() -> Result<String> {
-    let engines = octopus_asr::config::list_engines()?;
+    let engines = octopus_asr_local::config::list_engines()?;
     if engines.is_empty() {
         anyhow::bail!("No ASR engines configured in DB");
     }
@@ -390,16 +390,16 @@ fn select_model() -> Result<String> {
     println!("可用模型：");
     for (i, e) in engines.iter().enumerate() {
         let cat_name = match e.category {
-            octopus_asr::config::EngineCategory::Whisper => "Whisper",
-            octopus_asr::config::EngineCategory::SenseVoice => "SenseVoice",
-            octopus_asr::config::EngineCategory::Paraformer => "Paraformer",
-            octopus_asr::config::EngineCategory::Qwen3Asr => "Qwen3-ASR",
-            octopus_asr::config::EngineCategory::Zipformer => "Zipformer",
-            octopus_asr::config::EngineCategory::Moonshine => "Moonshine",
-            octopus_asr::config::EngineCategory::Aliyun => "Aliyun(云)",
-            octopus_asr::config::EngineCategory::ByteDance => "ByteDance(云)",
-            octopus_asr::config::EngineCategory::Tencent => "Tencent(云)",
-            octopus_asr::config::EngineCategory::Baidu => "Baidu(云)",
+            octopus_asr_local::config::EngineCategory::Whisper => "Whisper",
+            octopus_asr_local::config::EngineCategory::SenseVoice => "SenseVoice",
+            octopus_asr_local::config::EngineCategory::Paraformer => "Paraformer",
+            octopus_asr_local::config::EngineCategory::Qwen3Asr => "Qwen3-ASR",
+            octopus_asr_local::config::EngineCategory::Zipformer => "Zipformer",
+            octopus_asr_local::config::EngineCategory::Moonshine => "Moonshine",
+            octopus_asr_local::config::EngineCategory::Aliyun => "Aliyun(云)",
+            octopus_asr_local::config::EngineCategory::ByteDance => "ByteDance(云)",
+            octopus_asr_local::config::EngineCategory::Tencent => "Tencent(云)",
+            octopus_asr_local::config::EngineCategory::Baidu => "Baidu(云)",
         };
         let desc = if e.description.is_empty() {
             String::new()
@@ -422,21 +422,21 @@ fn select_model() -> Result<String> {
         .ok_or_else(|| anyhow::anyhow!("无效选择，请输入 1-{} 之间的数字", engines.len()))?;
 
     // 构造 3-part spec "{provider}:{category_str}:{model_name}" 返回给下游。
-    // category_str 复用 octopus_asr::config::category_label（统一映射，Aliyun → "aliyun"）。
+    // category_str 复用 octopus_asr_local::config::category_label（统一映射，Aliyun → "aliyun"）。
     let picked = &engines[choice - 1];
-    let cat_str = octopus_asr::config::category_label(picked.category);
+    let cat_str = octopus_asr_local::config::category_label(picked.category);
     Ok(format!("{}:{}:{}", picked.provider, cat_str, picked.name))
 }
 
 fn run_e2e(language: &str) -> Result<()> {
     let model = select_model()?;
-    let bare = octopus_asr::config::parse_model_spec(&model).model_name().to_string();
+    let bare = octopus_asr_local::config::parse_model_spec(&model).model_name().to_string();
     // Use streaming mode for Paraformer and Zipformer models
-    let category = octopus_asr::config::resolve_engine_category(&model);
-    if category == Some(octopus_asr::config::EngineCategory::Paraformer) {
+    let category = octopus_asr_local::config::resolve_engine_category(&model);
+    if category == Some(octopus_asr_local::config::EngineCategory::Paraformer) {
         return run_e2e_streaming_paraformer(&bare);
     }
-    if category == Some(octopus_asr::config::EngineCategory::Zipformer) {
+    if category == Some(octopus_asr_local::config::EngineCategory::Zipformer) {
         return run_e2e_streaming_zipformer(&bare);
     }
 
@@ -447,9 +447,9 @@ fn run_e2e(language: &str) -> Result<()> {
     println!("Recorded {} samples ({:.2}s)", all_samples.len(), duration);
 
     // VAD filter
-    let vad_path = octopus_asr::config::find_silero_vad()?;
-    let mut vad = octopus_asr::vad::SileroVad::new(&vad_path)?;
-    let speech = octopus_asr::audio::filter_speech(&all_samples, &mut vad, 480, 0.5);
+    let vad_path = octopus_asr_local::config::find_silero_vad()?;
+    let mut vad = octopus_asr_local::vad::SileroVad::new(&vad_path)?;
+    let speech = octopus_asr_local::audio::filter_speech(&all_samples, &mut vad, 480, 0.5);
 
     if speech.is_empty() {
         println!("No speech detected!");
@@ -491,9 +491,9 @@ fn show_config() -> Result<()> {
         octopus_infra::octopus_config_home().display()
     );
 
-    let config = octopus_asr::config::load_config()?;
+    let config = octopus_asr_local::config::load_config()?;
     let app_cfg = octopus_infra::config::load_config()?;
-    match octopus_asr::config::resolve_active_engine(&app_cfg.asr_engine) {
+    match octopus_asr_local::config::resolve_active_engine(&app_cfg.asr_engine) {
         Ok(r) => println!(
             "ASR active: {} (category: {:?}, from config.yaml asr_engine='{}')",
             r.name, r.category, app_cfg.asr_engine
@@ -504,14 +504,14 @@ fn show_config() -> Result<()> {
         ),
     }
 
-    let vad_path = octopus_asr::config::find_silero_vad()?;
+    let vad_path = octopus_asr_local::config::find_silero_vad()?;
     let vad_size = std::fs::metadata(&vad_path)?.len() as f64 / 1_048_576.0;
     println!("  VAD model (固定路径): {} ({:.1} MB)", vad_path.display(), vad_size);
 
     if let Some(whisper) = &config.asr.whisper {
         for (id, entry) in whisper {
-            let hf = octopus_asr::config::resolve_model_dir(&entry.source)?;
-            let onnx = octopus_asr::config::find_onnx_dir(&hf);
+            let hf = octopus_asr_local::config::resolve_model_dir(&entry.source)?;
+            let onnx = octopus_asr_local::config::find_onnx_dir(&hf);
             println!("  Whisper [{}]: {}", id, entry.source);
             println!("    ONNX dir: {}", onnx.display());
         }
@@ -519,7 +519,7 @@ fn show_config() -> Result<()> {
 
     if let Some(sensevoice) = &config.asr.sensevoice {
         for (id, entry) in sensevoice {
-            let hf = octopus_asr::config::resolve_model_dir(&entry.source)?;
+            let hf = octopus_asr_local::config::resolve_model_dir(&entry.source)?;
             println!("  SenseVoice [{}]: {}", id, entry.source);
             println!("    HF cache: {}", hf.display());
         }
@@ -527,7 +527,7 @@ fn show_config() -> Result<()> {
 
     if let Some(paraformer) = &config.asr.paraformer {
         for (id, entry) in paraformer {
-            let hf = octopus_asr::config::resolve_model_dir(&entry.source)
+            let hf = octopus_asr_local::config::resolve_model_dir(&entry.source)
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|e| format!("error: {}", e));
             println!("  Paraformer [{}]: {}", id, entry.source);
@@ -537,7 +537,7 @@ fn show_config() -> Result<()> {
 
     if let Some(qwen3_asr) = &config.asr.qwen3_asr {
         for (id, entry) in qwen3_asr {
-            let hf = octopus_asr::config::resolve_model_dir(&entry.source)
+            let hf = octopus_asr_local::config::resolve_model_dir(&entry.source)
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|e| format!("error: {}", e));
             println!("  Qwen3-ASR [{}]: {}", id, entry.source);
@@ -547,7 +547,7 @@ fn show_config() -> Result<()> {
 
     if let Some(zipformer) = &config.asr.zipformer {
         for (id, entry) in zipformer {
-            let hf = octopus_asr::config::resolve_model_dir(&entry.source)
+            let hf = octopus_asr_local::config::resolve_model_dir(&entry.source)
                 .map(|p| p.display().to_string())
                 .unwrap_or_else(|e| format!("error: {}", e));
             println!("  Zipformer [{}]: {}", id, entry.source);
@@ -626,7 +626,7 @@ fn record_from_config() -> Result<Vec<f32>> {
         .unwrap()
         .into_inner()
         .unwrap();
-    octopus_asr::audio::resample_to_16k(&recorded, sample_rate)
+    octopus_asr_local::audio::resample_to_16k(&recorded, sample_rate)
 }
 
 /// Streaming e2e for Paraformer: Mic → chunk → StreamingParaformer → partial text
@@ -635,7 +635,7 @@ fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
     println!("Streaming Paraformer e2e — model: {}", model);
     println!("Speak into the microphone. Press Enter to stop.\n");
 
-    let mut engine = octopus_asr::streaming_paraformer::StreamingParaformer::new(model)?;
+    let mut engine = octopus_asr_local::streaming_paraformer::StreamingParaformer::new(model)?;
 
     // Set up microphone
     let app_cfg = octopus_infra::config::load_config()?;
@@ -671,7 +671,7 @@ fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
     let buffer_clone = buffer.clone();
     // Resample state for non-16kHz devices
     let mut resampler = if native_rate != 16000 {
-        Some(octopus_asr::audio::AudioResampler::new(native_rate)?)
+        Some(octopus_asr_local::audio::AudioResampler::new(native_rate)?)
     } else {
         None
     };
@@ -805,7 +805,7 @@ fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
     println!("Streaming Zipformer e2e — model: {}", model);
     println!("Speak into the microphone. Press Enter to stop.\n");
 
-    let mut engine = octopus_asr::streaming_zipformer::StreamingZipformer::new(model)?;
+    let mut engine = octopus_asr_local::streaming_zipformer::StreamingZipformer::new(model)?;
 
     // Set up microphone (same pattern as paraformer e2e)
     let app_cfg = octopus_infra::config::load_config()?;
@@ -829,7 +829,7 @@ fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
     let native_rate = config.sample_rate().0;
     let channels = config.channels() as usize;
     let mut resampler = if native_rate != 16000 {
-        Some(octopus_asr::audio::AudioResampler::new(native_rate)?)
+        Some(octopus_asr_local::audio::AudioResampler::new(native_rate)?)
     } else {
         None
     };
@@ -960,7 +960,7 @@ fn stream_test(wav_path: &str, model: &str) -> Result<()> {
         anyhow::bail!("File not found: {}", wav_path);
     }
 
-    let samples = octopus_asr::audio::read_wav_16k(wav_path)?;
+    let samples = octopus_asr_local::audio::read_wav_16k(wav_path)?;
     let duration = samples.len() as f64 / 16000.0;
     println!(
         "Stream-test: {} samples ({:.2}s), model: {}",
@@ -969,10 +969,10 @@ fn stream_test(wav_path: &str, model: &str) -> Result<()> {
         model
     );
 
-    let bare = octopus_asr::config::parse_model_spec(model).model_name();
-    let category = octopus_asr::config::resolve_engine_category(model);
+    let bare = octopus_asr_local::config::parse_model_spec(model).model_name();
+    let category = octopus_asr_local::config::resolve_engine_category(model);
     match category {
-        Some(octopus_asr::config::EngineCategory::Zipformer) => {
+        Some(octopus_asr_local::config::EngineCategory::Zipformer) => {
             stream_test_zipformer(samples, duration, bare)
         }
         _ => stream_test_paraformer(samples, duration, bare),
@@ -984,7 +984,7 @@ fn stream_test_paraformer(
     duration: f64,
     model: &str,
 ) -> Result<()> {
-    let mut engine = octopus_asr::streaming_paraformer::StreamingParaformer::new(model)?;
+    let mut engine = octopus_asr_local::streaming_paraformer::StreamingParaformer::new(model)?;
 
     let chunk_size = 10_000;
     let mut chunk_idx = 0;
@@ -1020,7 +1020,7 @@ fn stream_test_zipformer(
     duration: f64,
     model: &str,
 ) -> Result<()> {
-    let mut engine = octopus_asr::streaming_zipformer::StreamingZipformer::new(model)?;
+    let mut engine = octopus_asr_local::streaming_zipformer::StreamingZipformer::new(model)?;
 
     // Chunk size: enough samples for one chunk of fbank frames.
     // Approx: chunk_shift * Z_FRAME_SHIFT = chunk_shift * 160 samples.

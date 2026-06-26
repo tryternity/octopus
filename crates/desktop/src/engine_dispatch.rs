@@ -24,7 +24,7 @@ pub struct DispatchEngine {
 
 #[cfg(feature = "cloud")]
 impl DispatchEngine {
-    pub fn new(engine_manager: Arc<octopus_asr::engine::AsrEngineManager>) -> Self {
+    pub fn new(engine_manager: Arc<octopus_asr_local::engine::AsrEngineManager>) -> Self {
         Self {
             embedded: EmbeddedEngine::new(engine_manager),
             dashscope: crate::engine_aliyun::AliyunEngine::new(),
@@ -37,8 +37,8 @@ impl DispatchEngine {
 impl TranscriptionEngine for DispatchEngine {
     async fn transcribe(&self, samples: &[f32], language: &str, engine: &str) -> Result<String> {
         // 按 spec 解析 category 动态路由
-        let is_cloud = octopus_asr::config::resolve_engine_category(engine)
-            .map(|c| c == octopus_asr::config::EngineCategory::Aliyun)
+        let is_cloud = octopus_asr_local::config::resolve_engine_category(engine)
+            .map(|c| c == octopus_asr_local::config::EngineCategory::Aliyun)
             .unwrap_or(false);
 
         if is_cloud {

@@ -14,7 +14,7 @@ fn default_polish_llm() -> String {
 
 fn main() -> anyhow::Result<()> {
     // 1. 从 DB 加载激活的润色 prompt
-    octopus_asr::db::ensure_db()?;
+    octopus_asr_local::db::ensure_db()?;
     let active_id = octopus_infra::db::load_active_prompt_id()?;
     let prompt_record = octopus_infra::db::load_prompt(active_id)?
         .ok_or_else(|| anyhow::anyhow!("DB 中未找到 active prompt id={}", active_id))?;
@@ -30,7 +30,7 @@ fn main() -> anyhow::Result<()> {
     };
 
     println!("正在从数据库加载 LLM 配置: {}...", polish_llm);
-    let config = match octopus_asr::db::load_llm_model(&polish_llm)? {
+    let config = match octopus_asr_local::db::load_llm_model(&polish_llm)? {
         Some(c) => c,
         None => {
             anyhow::bail!("数据库中未找到 LLM 模型 '{}' 的配置", polish_llm);

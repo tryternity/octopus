@@ -1,4 +1,4 @@
-//! octopus-asr: ASR inference library (Whisper, SenseVoice, Paraformer, Qwen3-ASR, Silero VAD)
+//! octopus-asr-local: ASR inference library (Whisper, SenseVoice, Paraformer, Qwen3-ASR, Silero VAD)
 //!
 //! 模型配置存于 `~/.octopus/octopus.db`（models 表，唯一来源）；应用配置读 `~/.octopus/config.yaml`。
 

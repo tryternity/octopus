@@ -16,8 +16,8 @@ tauri-plugin-store = "2"
 tauri-plugin-os = "2"
 tauri-plugin-log = "2"
 
-# octopus-asr (embedded engine)
-octopus-asr = { path = "../asr", optional = true }
+# octopus-asr-local (embedded engine)
+octopus-asr-local = { path = "../asr-local", optional = true }
 
 # Audio
 cpal = "0.16"
@@ -74,7 +74,7 @@ octopus-clipboard = { path = "../clipboard" }
 
 [features]
 default = ["embedded"]
-embedded = ["octopus-asr"]
+embedded = ["octopus-asr-local"]
 remote-ws = ["tokio-tungstenite", "futures-util"]
 remote-grpc = ["tonic", "prost", "tonic-build"]
 # 云端 ASR WS 流式识别（Aliyun / ByteDance / Tencent / Baidu）：

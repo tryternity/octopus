@@ -55,7 +55,7 @@ pub(crate) const FALLBACK_ASR_ENGINE: &str = "zipformer-small-ctc";
 /// 统一用 parse_model_spec 提取裸 model_name 后比较。
 fn build_asr_options(
     current_effective: &str,
-    engines: Vec<octopus_asr::config::EngineInfo>,
+    engines: Vec<octopus_asr_local::config::EngineInfo>,
 ) -> Vec<EngineOption> {
     let effective_bare = octopus_infra::db::parse_model_spec(current_effective).model_name();
     let effective = if effective_bare.is_empty() {
@@ -77,7 +77,7 @@ fn build_asr_options(
         if e.name == FALLBACK_ASR_ENGINE {
             continue;
         }
-        let cat = octopus_asr::config::category_label(e.category);
+        let cat = octopus_asr_local::config::category_label(e.category);
         options.push(EngineOption {
             current: e.name == effective,
             name: e.name.clone(),
@@ -90,7 +90,7 @@ fn build_asr_options(
 }
 
 /// 校验引擎名可切换：兜底名恒允许（不依赖 DB），其余须在 engines 列表中。
-fn validate_switch(name: &str, engines: &[octopus_asr::config::EngineInfo]) -> Result<(), String> {
+fn validate_switch(name: &str, engines: &[octopus_asr_local::config::EngineInfo]) -> Result<(), String> {
     if name == FALLBACK_ASR_ENGINE {
         return Ok(());
     }
@@ -190,7 +190,7 @@ fn build_llm_options(current: &str, llms: Vec<octopus_infra::db::LlmModelInfo>) 
 /// 公开包装（供 settings_commands 调用）。
 pub fn build_asr_options_public(
     current_effective: &str,
-    engines: Vec<octopus_asr::config::EngineInfo>,
+    engines: Vec<octopus_asr_local::config::EngineInfo>,
 ) -> Vec<EngineOption> {
     build_asr_options(current_effective, engines)
 }
@@ -231,7 +231,7 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
 #[tauri::command]
 pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<EngineOption>, String> {
     let current_raw = rc.read().unwrap().asr_engine.clone();
-    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     Ok(build_asr_options(&current_raw, engines))
 }
 
@@ -239,19 +239,19 @@ pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<Engine
 /// 否则首次 transcribe 在 spawn_blocking 懒加载模型（反序列化 + ONNX session 创建，1~数秒卡顿）。
 /// 仅 embedded 非 cloud 引擎：engine_mode≠embedded 不走本地模型；cloud（aliyun）switch_model 会 bail。
 pub fn preheat_local_engine(
-    engine_manager: std::sync::Arc<octopus_asr::engine::AsrEngineManager>,
+    engine_manager: std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>,
     spec: &str,
     engine_mode: &str,
 ) {
     if engine_mode != "embedded" {
         return;
     }
-    let resolved = match octopus_asr::config::resolve_active_engine(spec) {
+    let resolved = match octopus_asr_local::config::resolve_active_engine(spec) {
         Ok(r) => r,
         Err(_) => return,
     };
     #[cfg(feature = "cloud")]
-    if resolved.category == octopus_asr::config::EngineCategory::Aliyun {
+    if resolved.category == octopus_asr_local::config::EngineCategory::Aliyun {
         return;
     }
     let name = resolved.name.clone();
@@ -266,10 +266,10 @@ pub fn preheat_local_engine(
 pub fn switch_asr_engine(
     name: String,
     rc: State<'_, SharedRuntimeConfig>,
-    engine_manager: State<'_, std::sync::Arc<octopus_asr::engine::AsrEngineManager>>,
+    engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     validate_switch(&name, &engines)?;
     // 构造 3-part spec "{provider}:{category}:{model_name}"：
     // 兜底固定 local:zipformer:NAME；其余查 DB 取 provider/category。
@@ -278,7 +278,7 @@ pub fn switch_asr_engine(
     } else {
         let engine = engines.iter().find(|e| e.name == name)
             .ok_or_else(|| format!("引擎 '{}' 不存在，未切换", name))?;
-        format!("{}:{}:{}", engine.provider, octopus_asr::config::category_label(engine.category), name)
+        format!("{}:{}:{}", engine.provider, octopus_asr_local::config::category_label(engine.category), name)
     };
     {
         let mut g = rc.write().unwrap();
@@ -338,7 +338,7 @@ pub fn set_denoise_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<
     }
     // 刷新 ASR 侧 AppConfig 缓存（审查 二1）：audio 每帧经 load_app_config_cached 读 denoise_mode，
     // 不 reload 则改了也不生效（需重启）。reload 以 DB 为真——persist 成功即本次生效。
-    octopus_asr::config::reload_app_config();
+    octopus_asr_local::config::reload_app_config();
     Ok(())
 }
 
@@ -407,7 +407,7 @@ mod tests {
 
     #[test]
     fn build_asr_options_injects_fallback_first_and_dedups() {
-        use octopus_asr::config::{EngineCategory, EngineInfo};
+        use octopus_asr_local::config::{EngineCategory, EngineInfo};
         // 场景 1：DB 无兜底 → 注入到首位
         let engines = vec![
             EngineInfo { name: "whisper-small".into(), provider: "bigmodel".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
@@ -446,7 +446,7 @@ mod tests {
     #[test]
     fn build_asr_options_current_in_spec_format() {
         // asr_engine 存为 3-part spec 时，build_asr_options 应正确提取裸名标记 current
-        use octopus_asr::config::{EngineCategory, EngineInfo};
+        use octopus_asr_local::config::{EngineCategory, EngineInfo};
         let mk = |name: &str, cat: EngineCategory, is_local: bool| EngineInfo {
             name: name.into(), provider: "local".into(), category: cat, is_local, description: String::new(),
         };
@@ -533,7 +533,7 @@ mod tests {
 
     #[test]
     fn validate_switch_allows_fallback_even_when_absent() {
-        use octopus_asr::config::{EngineCategory, EngineInfo};
+        use octopus_asr_local::config::{EngineCategory, EngineInfo};
         let engines = vec![
             EngineInfo { name: "whisper-small".into(), provider: "local".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
         ];

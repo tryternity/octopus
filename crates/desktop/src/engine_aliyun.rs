@@ -82,7 +82,7 @@ impl TranscriptionEngine for AliyunEngine {
         // 1. 从 DB 解析 engine spec → endpoint + secret_key。
         //    显式查 asr.aliyun section，未命中精确 bail（不静默回退 zipformer，
         //    避免报错指向错误名字）。
-        let cfg = octopus_asr::config::load_config()?;
+        let cfg = octopus_asr_local::config::load_config()?;
         let model_name = octopus_infra::db::parse_model_spec(engine)
             .model_name()
             .to_string();

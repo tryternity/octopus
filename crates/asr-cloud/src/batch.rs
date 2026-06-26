@@ -1,4 +1,4 @@
-//! 云端 ASR 批引擎（impl `octopus_asr::engine::OfflineAsrEngine`）。
+//! 云端 ASR 批引擎（impl `octopus_asr_local::engine::OfflineAsrEngine`）。
 //!
 //! 语义：`transcribe(samples, language)` = 单段音频（≤30s，由上层 `transcribe_segments`
 //! 保证）→ 单个 WSS session → 完整文本。VAD 分段 + CJK 连接由
@@ -9,7 +9,7 @@
 
 use crate::open_cloud_session;
 use anyhow::{bail, Result};
-use octopus_asr::engine::OfflineAsrEngine;
+use octopus_asr_local::engine::OfflineAsrEngine;
 use octopus_infra::db::{parse_model_spec, ModelSpec};
 
 /// 分块推送粒度（采样点）：200ms @ 16kHz = 3200。平滑灌入避免单帧过大。

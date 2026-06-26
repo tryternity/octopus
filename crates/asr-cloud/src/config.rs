@@ -5,7 +5,7 @@
 
 use anyhow::{bail, Result};
 use crate::cloud_types::CloudStreamHandle;
-use octopus_asr::config::{self, EngineCategory};
+use octopus_asr_local::config::{self, EngineCategory};
 
 /// 通用云端配置解析：从 DB section 取 ModelEntry + 校验 secret_key 非空。
 fn resolve_cloud_entry<'a>(
