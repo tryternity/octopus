@@ -137,7 +137,13 @@ function Result() {
           setVisible(true);
           setIsRecording(true);
           refreshActive();
-          if (!isPlaceholder) {
+          if (isPlaceholder) {
+            // 新录音开始：清空上次残留
+            setText("");
+            displayedRef.current = "";
+            pendingDiverted.current = null;
+            if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
+          } else {
             renderResultNow(text);
           }
         }],
