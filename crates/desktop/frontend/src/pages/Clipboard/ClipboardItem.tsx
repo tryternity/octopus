@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import type { ClipboardItem } from "@/types/clipboard";
 
@@ -64,6 +64,15 @@ export default function ClipboardItemRow({
     e.stopPropagation();
     try {
       await invoke("save_image_item", { id: item.id });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleOpenFile = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await invoke("open_file_item", { id: item.id });
     } catch (e) {
       console.error(e);
     }
@@ -133,6 +142,15 @@ export default function ClipboardItemRow({
             title="保存为文件"
           >
             <Download className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+          </button>
+        )}
+        {item.item_type === "file" && (
+          <button
+            className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+            onClick={handleOpenFile}
+            title="打开文件"
+          >
+            <FolderOpen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
           </button>
         )}
         <button
