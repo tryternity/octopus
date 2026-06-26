@@ -5,6 +5,7 @@
 
 pub mod config;
 pub mod consts;
+pub mod image_util;
 pub mod paths;
 pub mod db;
 
