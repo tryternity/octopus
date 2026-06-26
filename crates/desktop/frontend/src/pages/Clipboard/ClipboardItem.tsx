@@ -2,7 +2,6 @@ import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2 } from "lucide-react";
 import { invoke } from "@/lib/tauri";
-import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ClipboardItem } from "@/types/clipboard";
 
 export default function ClipboardItemRow({
@@ -55,10 +54,7 @@ export default function ClipboardItemRow({
 
   const handleDoubleClick = async () => {
     try {
-      // 先隐藏剪贴板窗口，让焦点回到上一个应用
-      await getCurrentWindow().hide();
-      // 等待系统焦点切换（200ms）
-      await new Promise(r => setTimeout(r, 200));
+      // hide + restore_focus + paste 全在后端处理
       await invoke("paste_clipboard_item", { id: item.id });
     } catch (e) {
       console.error(e);

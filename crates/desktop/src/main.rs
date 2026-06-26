@@ -23,6 +23,7 @@ mod result_window;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
+mod focus_tracker;
 mod shortcut;
 mod tray;
 mod transcript;
@@ -224,6 +225,13 @@ pub fn run() {
                     .expect("Failed to init clipboard handle"),
             );
             app.manage(clipboard_handle.clone());
+
+            // Start focus tracker (macOS no-op, Windows/Linux TODO)
+            let focus_tracker = std::sync::Arc::new(focus_tracker::FocusTracker::new());
+            if let Err(e) = focus_tracker.start() {
+                log::warn!("Focus tracker not available: {}", e);
+            }
+            app.manage(focus_tracker);
 
             // Start clipboard watcher (background thread, clipboard-rs)
             {

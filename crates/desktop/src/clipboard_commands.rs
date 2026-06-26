@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 use octopus_clipboard::{ClipboardHandle, ClipboardItem, QueryFilter};
 
 #[tauri::command]
@@ -78,13 +78,15 @@ pub async fn clipboard_stats() -> Result<i64, String> {
     .map_err(|e| e.to_string())
 }
 
-/// 双击条目：写剪贴板 + 模拟 Cmd+V 粘贴到目标应用
+/// 双击条目：写剪贴板 → hide 窗口 → 恢复焦点 → 模拟粘贴
 #[tauri::command]
 pub async fn paste_clipboard_item(
     id: i64,
+    app_handle: tauri::AppHandle,
     handle: State<'_, Arc<ClipboardHandle>>,
+    focus: State<'_, Arc<crate::focus_tracker::FocusTracker>>,
 ) -> Result<(), String> {
-    // 从 DB 按 id 读条目内容
+    // 1. 从 DB 按 id 读条目内容
     let content = octopus_infra::db::with_db(|conn| {
         let items = octopus_clipboard::store::query_history(conn, &octopus_clipboard::QueryFilter {
             filter: "all".into(),
@@ -96,19 +98,32 @@ pub async fn paste_clipboard_item(
     })
     .map_err(|e| e.to_string())?;
 
-    if let Some(item) = content.into_iter().find(|i| i.id == id) {
-        if item.item_type == octopus_clipboard::ItemType::Text {
-            let text = item.content;
-            let handle = handle.inner().clone();
-            std::thread::spawn(move || {
-                let config = crate::config::AppConfig {
-                    write_to_clipboard: true,
-                    paste_method: "clipboard".into(),
-                    ..Default::default()
-                };
-                let _ = crate::paste::paste(&text, &handle, &config);
-            });
-        }
+    let item = content.into_iter().find(|i| i.id == id);
+    if item.is_none() {
+        return Ok(());
     }
+    let item = item.unwrap();
+
+    // 2. 写剪贴板（设 suppress flag 防 watcher 重复记录）
+    if item.item_type == octopus_clipboard::ItemType::Text {
+        handle.write_text(&item.content).map_err(|e| e.to_string())?;
+    } else {
+        return Ok(()); // 非 text 暂不支持自动粘贴
+    }
+
+    // 3. hide 剪贴板窗口（macOS 自动还焦点）
+    if let Some(win) = app_handle.get_webview_window("clipboard_window") {
+        let _ = win.hide();
+    }
+
+    // 4. 恢复焦点（macOS no-op，Windows/Linux 主动恢复）
+    focus.restore_focus();
+
+    // 5. 延迟等焦点切换
+    std::thread::sleep(std::time::Duration::from_millis(200));
+
+    // 6. 模拟粘贴
+    focus.simulate_paste();
+
     Ok(())
 }
