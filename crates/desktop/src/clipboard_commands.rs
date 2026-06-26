@@ -195,3 +195,48 @@ pub async fn save_image_item(
 
     Ok(abs_path)
 }
+
+/// 文件条目：用系统默认应用打开第一个文件
+#[tauri::command]
+pub async fn open_file_item(id: i64) -> Result<(), String> {
+    let item = octopus_infra::db::with_db(|conn| {
+        let items = octopus_clipboard::store::query_history(conn, &QueryFilter {
+            filter: "all".into(),
+            search: None,
+            page: 1,
+            size: 1000,
+        })?;
+        Ok::<_, anyhow::Error>(items.into_iter().find(|i| i.id == id))
+    })
+    .map_err(|e| e.to_string())?;
+
+    let item = item.ok_or("条目不存在")?;
+    if item.item_type != octopus_clipboard::ItemType::File {
+        return Err("非文件条目".into());
+    }
+
+    // 解析 JSON 路径数组
+    let paths: Vec<String> = serde_json::from_str(&item.content)
+        .map_err(|e| format!("解析路径失败: {}", e))?;
+
+    let first = paths.first().ok_or("无文件路径")?;
+    let path = first.strip_prefix("file://").unwrap_or(first);
+
+    // 用系统默认应用打开
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open").arg(path).spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("explorer").arg(path).spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open").arg(path).spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
