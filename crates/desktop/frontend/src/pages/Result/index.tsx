@@ -365,6 +365,10 @@ function Result() {
           )}
           onMouseDown={onDragStart}
         >
+          {/* 录音中无文本时显示提示（工具栏隐藏期间填充占位区） */}
+          {!text.trim() && isRecording && (
+            <span className="text-[11px] text-black/[0.25] px-1 select-none">正在聆听…</span>
+          )}
           {tools.map(({ id, icon: Icon, label, active, disabled, onClick }) => (
             <button
               key={id}
