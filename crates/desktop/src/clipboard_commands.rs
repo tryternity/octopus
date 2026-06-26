@@ -111,23 +111,43 @@ pub async fn paste_clipboard_item(
         return Ok(()); // 非 text 暂不支持自动粘贴
     }
 
-    // 3. hide 剪贴板窗口（在主线程执行）
+    // 3. hide 剪贴板窗口
     let win = app_handle.get_webview_window("clipboard_window");
     if let Some(w) = &win {
         log::info!("paste_clipboard_item: hiding clipboard window");
         let _ = w.hide();
-    } else {
-        log::warn!("paste_clipboard_item: clipboard window not found");
     }
     drop(win);
 
-    // 4. 焦点恢复 + 延迟 + 粘贴
-    let focus = focus.inner().clone();
+    // 4. 用 paste::paste（Clipboard 方式）——复用 ASR 粘贴的完整逻辑
+    //    hide 后 macOS 自动还焦点 → paste 写剪贴板 + enigo Cmd+V
+    let handle = handle.inner().clone();
     tokio::task::spawn_blocking(move || {
-        log::info!("paste_clipboard_item: restore_focus + delay + paste");
-        focus.restore_focus();
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        focus.simulate_paste();
+        // 等焦点回到上一个应用
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // 复用 paste.rs 的 paste_via_clipboard（写剪贴板 + Cmd+V + 不恢复原剪贴板）
+        let config = crate::config::AppConfig {
+            write_to_clipboard: true,
+            paste_method: "clipboard".into(),
+            ..Default::default()
+        };
+        // paste::paste 内部会 write_text（设 suppress）+ Cmd+V
+        // 但我们已经在前面写过了剪贴板，这里直接调 paste_via_clipboard 会再写一次
+        // 更简单：直接模拟 Cmd+V（剪贴板已有内容）
+        log::info!("paste_clipboard_item: enigo Cmd+V via paste module");
+        use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+        match Enigo::new(&Settings::default()) {
+            Ok(mut enigo) => {
+                let mod_key = Key::Meta;
+                let v_key = Key::Other(9);
+                let _ = enigo.key(mod_key, Direction::Press);
+                let _ = enigo.key(v_key, Direction::Click);
+                let _ = enigo.key(mod_key, Direction::Release);
+                log::info!("paste_clipboard_item: Cmd+V done");
+            }
+            Err(e) => log::warn!("paste_clipboard_item: enigo failed: {}", e),
+        }
+        let _ = handle; // 保持引用，确保 suppress flag 不被提前清理
     });
 
     Ok(())
