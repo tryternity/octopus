@@ -1,4 +1,6 @@
-# 窗口焦点追踪 + 自动粘贴 Implementation Plan
+# 窗口焦点追踪 + 自动粘贴 Implementation Plan（暂缓）
+
+> **状态: ⏸️ 暂缓**——macOS 自动粘贴方案不可靠（Sublime Text/微信等应用不工作），已回滚为"双击复制到剪贴板，用户手动 Cmd+V"。Windows/Linux 焦点追踪不再实施。后续重启条件见 `specs/2026-06-26-focus-tracker-design-todo.md`。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans.
 
