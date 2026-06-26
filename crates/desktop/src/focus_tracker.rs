@@ -47,28 +47,19 @@ fn restore_focus_platform() {
 
 #[cfg(target_os = "macos")]
 fn simulate_paste_platform() {
-    use std::process::Command;
-
-    // 先确认当前前台应用
-    let front_app = Command::new("osascript")
-        .args(["-e", r#"tell application "System Events" to get name of first process whose frontmost is true"#])
-        .output();
-    if let Ok(out) = &front_app {
-        log::info!("simulate_paste: frontmost app = {}", String::from_utf8_lossy(&out.stdout).trim());
-    }
-
-    let script = r#"tell application "System Events" to keystroke "v" using command down"#;
-    log::info!("simulate_paste: running osascript Cmd+V");
-    match Command::new("osascript").args(["-e", script]).output() {
-        Ok(out) => {
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr);
-                log::warn!("osascript paste failed (exit {:?}): {}", out.status, stderr);
-            } else {
-                log::info!("osascript paste succeeded");
-            }
+    use enigo::{Direction, Enigo, Key, Keyboard, Settings};
+    log::info!("simulate_paste: enigo Cmd+V");
+    match Enigo::new(&Settings::default()) {
+        Ok(mut enigo) => {
+            // macOS：用固定虚拟键码 kVK_ANSI_V=9（与 paste.rs 一致，绕开 enigo Carbon TIS 线程问题）
+            let mod_key = Key::Meta;
+            let v_key = Key::Other(9);
+            let _ = enigo.key(mod_key, Direction::Press);
+            let _ = enigo.key(v_key, Direction::Click);
+            let _ = enigo.key(mod_key, Direction::Release);
+            log::info!("simulate_paste: enigo Cmd+V done");
         }
-        Err(e) => log::warn!("osascript command failed: {}", e),
+        Err(e) => log::warn!("simulate_paste: enigo init failed: {}", e),
     }
 }
 
