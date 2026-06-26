@@ -1,7 +1,7 @@
 # ASR Pipeline 架构重构设计
 
 > 2026-06-23 初版（brainstorming 产出）。
-> **阶段1 已实施（2026-06-23）**：`asr::pipeline`（PipelineConfig + transcribe_batch）、`transcribe_with_vad` 委托、cli 走新 pipeline。流式 trait / StreamingRunner / desktop / server 留阶段2/3。
+> **阶段1 已实施（2026-06-23）**：`asr::pipeline`（PipelineConfig + transcribe_batch）、`transcribe_with_vad` 委托、cli 走新 pipeline。流式 trait / StreamingRunner / desktop / server 分别在阶段2/3 落地（均已完成，见下）。
 > **阶段2 已完成（2026-06-25，2a-2d 全 ff-merge main）**：phase 2（desktop 全量拆分）拆为 2a/2b/2c-1/2c-2/2c-3/2d——
 > - **2a（已实施，ff-merge main）**：asr 流式基础设施 `StreamingRunner` + `StreamingEngine` trait + `TranscriptEvent`（plan `stage2a.md`）。
 > - **2b（已实施，commit 5ab50e7/1d9e347，ff-merge main deac36b，e2e 基本通过 2026-06-24）**：desktop 本地流式迁移——`Stage::Streaming` 委托 `StreamingRunner`，`handle_streaming_tick` 消费 `TranscriptEvent`，stop 用 `finish_with_tail`；`StreamingPipeline` 抽象延后 2c（plan `stage2b.md`）。
