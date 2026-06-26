@@ -117,6 +117,7 @@ async fn run_ws_session(
     // - sentence_end=true 表示该句最终结果（之后 sentence_id 会递增）
     // - heartbeat=true 时 sentence_id=0，应跳过
     // - text 是该句的累积文本（中间结果可能被修订，最终结果在 sentence_end=true 时确定）
+    let sep = sentence_separator(&language); // 句间分隔符（英文空格 / 其他中文逗号）
     let mut committed: String = String::new(); // 已完成的句子
     let mut current_sentence: String = String::new(); // 当前句子的累积文本
     let mut current_sentence_id: i64 = -1; // 当前句子 ID（-1 = 尚未收到）
@@ -169,8 +170,8 @@ async fn run_ws_session(
                                 // sentence_id 变化 = 新句开始，提交前一句
                                 if sentence_id != current_sentence_id && current_sentence_id > 0 {
                                     if !current_sentence.is_empty() {
-                                        if !committed.is_empty() && !committed.ends_with('，') {
-                                            committed.push('，');
+                                        if !committed.is_empty() && !committed.ends_with(sep) {
+                                            committed.push_str(sep);
                                         }
                                         committed.push_str(&current_sentence);
                                         current_sentence.clear();
@@ -181,8 +182,8 @@ async fn run_ws_session(
 
                                 // sentence_end=true = 该句最终结果，立即提交
                                 if sentence_end {
-                                    if !committed.is_empty() && !committed.ends_with('，') {
-                                        committed.push('，');
+                                    if !committed.is_empty() && !committed.ends_with(sep) {
+                                        committed.push_str(sep);
                                     }
                                     committed.push_str(&current_sentence);
                                     current_sentence.clear();
@@ -199,8 +200,8 @@ async fn run_ws_session(
                             Some("task-finished") => {
                                 // 提交未提交的最后一句
                                 if !current_sentence.is_empty() {
-                                    if !committed.is_empty() && !committed.ends_with('，') {
-                                        committed.push('，');
+                                    if !committed.is_empty() && !committed.ends_with(sep) {
+                                        committed.push_str(sep);
                                     }
                                     committed.push_str(&current_sentence);
                                     current_sentence.clear();
@@ -242,6 +243,19 @@ async fn run_ws_session(
         }
     }
     Ok(())
+}
+
+/// 多句拼接的句间分隔符。
+///
+/// 英文用空格（ASR 句子常自带句末标点，空格连接最自然且不与之冲突）；
+/// 其他语言（中文/auto）用中文逗号 `，`（口语连续叙述的连贯感）。
+/// 原硬编码 `，` 在 `language=en` 时给英文插入中文标点，按语言选择更规范。
+fn sentence_separator(language: &str) -> &'static str {
+    if language.eq_ignore_ascii_case("en") {
+        " "
+    } else {
+        "，"
+    }
 }
 
 /// 构造 streaming 模式的 run-task（含 max_sentence_silence=600）。
@@ -387,6 +401,7 @@ async fn run_qwen_realtime_session(
     }
 
     // 5. 双向循环
+    let sep = sentence_separator(&language); // 句间分隔符（英文空格 / 其他中文逗号）
     let mut accumulated_text = String::new();
     loop {
         tokio::select! {
@@ -450,9 +465,9 @@ async fn run_qwen_realtime_session(
                                     );
                                     if !t.is_empty() {
                                         if !accumulated_text.is_empty()
-                                            && !accumulated_text.ends_with('，')
+                                            && !accumulated_text.ends_with(sep)
                                         {
-                                            accumulated_text.push('，');
+                                            accumulated_text.push_str(sep);
                                         }
                                         accumulated_text.push_str(t);
                                         let _ = result_tx.send(
@@ -565,5 +580,16 @@ mod tests {
         let id = qwen_event_id();
         assert!(id.starts_with("evt_"), "event_id 应以 evt_ 开头: {}", id);
         assert!(id.len() > 10, "event_id 应有足够长度: {}", id);
+    }
+
+    #[test]
+    fn sentence_separator_by_language() {
+        // 英文 → 空格（避免与服务端句末标点冲突）
+        assert_eq!(sentence_separator("en"), " ");
+        assert_eq!(sentence_separator("EN"), " "); // 大小写不敏感
+        // 中文 / auto / 空 → 中文逗号（口语连续叙述连贯感）
+        assert_eq!(sentence_separator("zh"), "，");
+        assert_eq!(sentence_separator("auto"), "，");
+        assert_eq!(sentence_separator(""), "，");
     }
 }
