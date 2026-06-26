@@ -338,7 +338,7 @@ function Result() {
     <div
       id="result-container"
       className={cn(
-        "w-full h-full bg-background rounded-xl border border-border shadow-2xl shadow-black/8 flex flex-col transition-opacity duration-150 overflow-hidden",
+        "w-full h-full bg-background rounded-lg border border-black/[0.08] shadow-lg shadow-black/[0.06] flex flex-col transition-opacity duration-150 overflow-hidden",
         visible ? "opacity-100" : "opacity-0",
       )}
     >
@@ -347,23 +347,23 @@ function Result() {
         className={cn("flex-shrink-0 flex items-center transition-all duration-120", toolbarVisible ? "h-8" : "h-2")}
       >
         <div
-          className={cn("flex items-center gap-0.5 px-1.5", toolbarVisible ? "flex" : "hidden")}
+          className={cn("flex items-center gap-[2px] px-1.5", toolbarVisible ? "flex" : "hidden")}
         >
           {tools.map(({ id, icon: Icon, label, active, disabled, onClick }) => (
             <button
               key={id}
               className={cn(
                 "tool-btn w-[26px] h-[26px] flex items-center justify-center rounded-[5px] transition-colors",
-                "text-muted-foreground hover:text-foreground hover:bg-accent",
-                active && "text-voice",
-                disabled && "text-muted-foreground/30 cursor-default hover:bg-transparent hover:text-muted-foreground/30",
+                "text-foreground hover:text-[#007aff] hover:bg-black/[0.06]",
+                active && "text-[#007aff]",
+                disabled && "text-black/[0.22] cursor-default hover:bg-transparent hover:text-black/[0.22]",
               )}
               title={label}
               aria-label={label}
               disabled={disabled}
               onClick={onClick}
             >
-              <Icon className="w-[18px] h-[18px]" />
+              <Icon className="w-[18px] h-[18px]" strokeWidth={1.5} />
             </button>
           ))}
         </div>
@@ -373,7 +373,7 @@ function Result() {
           data-tauri-drag-region
         >
           {!toolbarVisible && (
-            <div className="w-8 h-1 rounded-full bg-border" />
+            <div className="w-6 h-[3px] rounded-[1.5px] bg-black/[0.12]" />
           )}
         </div>
       </div>
@@ -414,21 +414,21 @@ function Result() {
 
       {/* Popup */}
       {popupType && (
-        <div className="popup-content absolute top-[30px] left-1.5 w-[360px] max-h-[200px] overflow-y-auto bg-background rounded-lg border border-border shadow-2xl shadow-black/12 z-10 text-[13px]">
+        <div className="popup-content absolute top-[30px] left-1.5 w-[360px] max-h-[200px] overflow-y-auto bg-white rounded-lg border border-black/[0.10] shadow-lg shadow-black/[0.12] z-10 text-[13px]">
           {popupItems.map((item, i) => (
             <div
               key={i}
               className={cn(
                 "px-3 py-1.5 cursor-pointer flex items-center gap-1.5 transition-colors",
-                "hover:bg-accent",
-                item.current && "text-voice font-medium",
+                "hover:bg-[#007aff]/[0.08]",
+                item.current && "text-[#007aff] font-medium",
               )}
               onClick={() => handlePopupSelect(item)}
             >
-              <span className={cn("text-xs", item.current ? "text-voice" : "text-muted-foreground")}>
+              <span className={cn("text-xs", item.current ? "text-[#007aff]" : "text-black/40")}>
                 {item.current ? "●" : "○"}
               </span>
-              <span className="flex-1 min-w-0 truncate">{item.label}</span>
+              <span className="flex-1 min-w-0 truncate text-foreground">{item.label}</span>
             </div>
           ))}
         </div>
@@ -436,7 +436,7 @@ function Result() {
 
       {/* Toast */}
       {toast && (
-        <div className="absolute bottom-1.5 left-1/2 -translate-x-1/2 bg-foreground/90 text-background text-xs px-2.5 py-1 rounded-md z-20 pointer-events-none">
+        <div className="absolute bottom-1.5 left-1/2 -translate-x-1/2 bg-black/78 text-white text-xs px-2.5 py-1 rounded-md z-20 pointer-events-none">
           {toast}
         </div>
       )}
