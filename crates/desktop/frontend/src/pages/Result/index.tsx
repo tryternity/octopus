@@ -350,7 +350,7 @@ function Result() {
         {/* Toolbar — 纯图标，hover 变蓝，整行可拖拽 */}
         <div
           className={cn(
-            "flex items-center gap-[2px] px-1.5 pt-1 transition-opacity duration-150 cursor-grab active:cursor-grabbing",
+            "flex items-center gap-[2px] px-1.5 pt-0.5 transition-opacity duration-150 cursor-grab active:cursor-grabbing",
             toolbarState.hide_toolbar === false
               ? "opacity-100"
               : toolbarVisible ? "opacity-100" : "opacity-0",
@@ -361,7 +361,7 @@ function Result() {
             <button
               key={id}
               className={cn(
-                "tool-btn w-[24px] h-[24px] flex items-center justify-center rounded-[5px] transition-colors cursor-default",
+                "tool-btn w-[20px] h-[20px] flex items-center justify-center rounded-[4px] transition-colors cursor-default",
                 "text-black/[0.55] hover:text-[#007aff] hover:bg-black/[0.05]",
                 active && "text-[#007aff]",
                 disabled && "text-black/[0.18] cursor-default hover:bg-transparent hover:text-black/[0.18]",
@@ -371,7 +371,7 @@ function Result() {
               disabled={disabled}
               onClick={onClick}
             >
-              <Icon className="w-[16px] h-[16px]" strokeWidth={1.5} />
+              <Icon className="w-[14px] h-[14px]" strokeWidth={1.5} />
             </button>
           ))}
         </div>
