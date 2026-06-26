@@ -58,7 +58,7 @@ function Settings() {
 
   const setVal = useCallback(async (key: string, value: string | number | boolean) => {
     try {
-      await invoke("set_config", { key, value: String(value) });
+      await invoke("set_config", { key, value });
       await refreshConfig();
     } catch (e) {
       showToast("设置失败：" + e);
