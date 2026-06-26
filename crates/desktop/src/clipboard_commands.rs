@@ -55,7 +55,7 @@ pub async fn copy_clipboard_item(
             filter: "all".into(),
             search: None,
             page: 1,
-            size: 1,
+            size: 1000,
         })?;
         Ok::<_, anyhow::Error>(items)
     })
