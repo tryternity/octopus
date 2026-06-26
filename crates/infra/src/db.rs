@@ -393,6 +393,20 @@ pub fn save_config_key(key: &str, value: &str) -> Result<()> {
     })
 }
 
+/// 按 key 读取单个 config_value（不存在返回 None）。
+pub fn load_config_key(key: &str) -> Result<Option<String>> {
+    ensure_db()?;
+    with_db(|conn| {
+        let mut stmt = conn.prepare("SELECT config_value FROM app_config WHERE config_key = ?1")?;
+        let row = stmt.query_row(params![key], |r| r.get::<_, String>(0));
+        match row {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
+    })
+}
+
 // ── DB → AsrConfig（load_config 用）──
 
 /// 从 DB models 表构造 AsrConfig（domain='asr'）。

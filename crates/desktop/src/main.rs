@@ -26,6 +26,7 @@ mod settings_window;
 mod shortcut;
 mod tray;
 mod transcript;
+mod window_position;
 
 use coordinator::Coordinator;
 use engine::TranscriptionEngine;
