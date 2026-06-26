@@ -1,145 +1,109 @@
-# 窗口焦点追踪 + 自动粘贴设计
+# 窗口焦点追踪 + 自动粘贴设计（存档）
 
 **日期**: 2026-06-26
-**状态**: 设计中
+**状态**: ⏸️ 暂缓——自动粘贴方案不可靠，已回滚为"复制到剪贴板，用户手动 Cmd+V"
 **分支**: `feature/clipboard-research`（worktree: `.worktrees/clipboard-research`）
 
-## 1. 背景
+## 1. 目标
 
-剪贴板历史窗口双击条目时，需要把内容粘贴到"弹出剪贴板窗口之前的那个前台应用"（如编辑器、聊天框）。当前实现 `hide() + sleep(200ms) + Cmd+V` 不可靠——窗口隐藏后焦点回到哪里由系统决定，不确定。
+双击剪贴板历史条目时，自动把内容粘贴到"弹出剪贴板窗口之前的那个前台应用"（如编辑器、聊天框）。
 
-参考 EcoPaste 的 `eco-paste` 插件实现（~393 行 Rust，42% unsafe），三平台各有独立的焦点监听 + 恢复 + 模拟粘贴机制。
+## 2. 最终实现状态
 
-## 2. 架构
+**部分工作**：豆包/备忘录可自动粘贴；Sublime Text / 微信不可靠。
 
-### 2.1 新增模块：`crates/desktop/src/focus_tracker.rs`
+**当前决策**：回滚为单击复制到剪贴板（不关闭窗口），用户手动 Cmd+V 粘贴。后续视需求重新评估。
 
-独立模块，封装三平台的"记住上一个前台窗口"逻辑。在应用启动时开始监听，记录非自身窗口的前台窗口标识。
+## 3. 踩过的坑（完整记录）
 
-```rust
-pub struct FocusTracker {
-    // 各平台存储上一个前台窗口的标识
-    // macOS: PID (i32)
-    // Windows: HWND (isize)
-    // Linux: X11 Window (u64)
-}
+### 坑 1：窗口 hide 后焦点不自动回到上一个应用
 
-impl FocusTracker {
-    /// 启动全局焦点监听（各平台独立线程）
-    pub fn start(&self) -> Result<()>;
-    /// 获取上一个前台窗口标识（粘贴目标）
-    pub fn previous_window(&self) -> Option<WindowId>;
-    /// 把焦点恢复到上一个前台窗口
-    pub fn restore_focus(&self) -> Result<()>;
-}
-```
+**现象**：剪贴板窗口 `hide()` 后，Cmd+V 发到了 octopus 自身而非目标编辑器。
 
-### 2.2 各平台实现
+**根因**：octopus 是 macOS `Accessory` 激活策略（无 Dock 图标）。与 `Regular` 应用（如 result_window）不同，`Accessory` 应用的窗口 `hide()` 后 **macOS 不自动把焦点还给上一个前台应用**——焦点停在 octopus 进程上。
 
-#### macOS — NSWorkspace 通知
+**对比**：ASR 识别结果粘贴（`paste::paste`）有效，是因为 result_window 是 `Regular` 策略（或至少有不同焦点行为）。
 
-| 步骤 | 实现 |
-|---|---|
-| 监听 | `NSWorkspaceDidActivateApplicationNotification`（独立线程跑 NSRunLoop） |
-| 存储 | `Mutex<Option<i32>>`（PID） |
-| 过滤 | `app.localizedName == "octopus"` 跳过自身 |
-| 恢复焦点 | 不主动恢复——靠 NSPanel resign。剪贴板窗口 `hide()` 时系统自动把 key window 还给上一个应用 |
-| 粘贴 | `osascript` 执行 `tell application "System Events" to keystroke "v" using command down`（需辅助功能权限） |
-| 依赖 | `objc` crate（动态注册 ObjC 类 `AppObserver`） |
+**解决**：需要主动用 osascript 检测前台是否 octopus，是则切到第一个非 octopus 的前台进程。
 
-**macOS 特殊优化**：如果剪贴板窗口用的是 NSPanel（非激活面板），`resign_key_window()` 后 macOS 自动还焦点。此时不需要 ObjC FFI 焦点追踪——只需 `hide()` + 200ms 延迟 + osascript 粘贴。**先验证此路径是否可靠，可靠则 macOS 跳过 PID 追踪**。
+### 坑 2：enigo Cmd+V 在非主线程不生效
 
-#### Windows — SetWinEventHook
+**现象**：enigo 模拟 Cmd+V（`Key::Meta` + `Key::Other(9)`）在 `std::thread::spawn` 线程里执行成功（无错误），但按键事件没有到达目标应用。
 
-| 步骤 | 实现 |
-|---|---|
-| 监听 | `SetWinEventHook(EVENT_SYSTEM_FOREGROUND)`（回调在主线程消息泵） |
-| 存储 | `Mutex<Option<isize>>`（HWND） |
-| 过滤 | `GetWindowTextW(hwnd) == "octopus"` 跳过自身 |
-| 恢复焦点 | `SetForegroundWindow(hwnd)` + `sleep(100ms)` |
-| 粘贴 | enigo `Shift+Insert`（比 `Ctrl+V` 兼容性更好） |
-| 依赖 | `windows` crate（Win32 API） |
+**根因**：不确定。可能是 enigo 的 CGEvent 注入在非主线程时，macOS 窗口服务器把事件投递给了错误的 key window。
 
-#### Linux — X11 focus event
+**验证**：日志显示 `frontmost app = sublime_text`（焦点正确），但 Sublime Text 没收到 Cmd+V。
 
-| 步骤 | 实现 |
-|---|---|
-| 监听 | `XSelectInput(root, FocusChangeMask)`（独立线程跑 `XNextEvent` 阻塞循环） |
-| 存储 | `Mutex<Option<u64>>`（X11 Window） |
-| 过滤 | `XGetInputFocus` 排除自身 + 读 `_NET_WM_NAME` 排除标题为 "octopus" 的窗口 |
-| 恢复焦点 | `XRaiseWindow(win)` + `XSetInputFocus(win, RevertToNone, CurrentTime)` |
-| 粘贴 | enigo `Shift+Insert`（Linux 上 enigo 已有 `try_linux_direct_typing` 兜底 wtype） |
-| 依赖 | `x11rb` crate（X11 协议） |
-| **限制** | **Wayland 不支持**——`XOpenDisplay` 在纯 Wayland 下返回 null → 监听静默失败 → 双击只复制不粘贴 |
+### 坑 3：osascript `keystroke` 需要 `activate` 才生效
 
-### 2.3 粘贴流程（双击条目）
+**现象**：直接 `tell application "System Events" to keystroke "v" using command down` 在某些应用无效（备忘录也不行）。
 
-```
-双击剪贴板条目
-  → 前端调 invoke("paste_clipboard_item", { id })
-  → 后端 paste_clipboard_item：
-      1. 从 DB 按 id 读 content
-      2. 写剪贴板（ClipboardHandle.write_text，设 suppress flag）
-      3. hide() 剪贴板窗口
-      4. focus_tracker.restore_focus()（Windows/Linux 主动恢复）
-      5. sleep(100ms)（等焦点切换）
-      6. 模拟粘贴（macOS: osascript / Windows+Linux: enigo Shift+Insert）
-```
+**根因**：`keystroke` 需要 System Events 进程有权限向目标应用的 key window 注入事件。如果 key window 不在目标应用上（可能还挂在 octopus 的隐藏窗口），keystroke 发到了错误的地方。
 
-### 2.4 降级策略
+**部分解决**：先 `activate` 目标应用再 keystroke。豆包/备忘录有效，但引入新问题。
 
-| 场景 | 行为 |
-|---|---|
-| Linux 纯 Wayland（无 XWayland） | 焦点追踪不可用 → 双击只复制到剪贴板，不自动粘贴 |
-| macOS 辅助功能权限未授权 | osascript 静默失败 → 只复制到剪贴板 |
-| Windows 前台锁定阻止 SetForegroundWindow | 焦点恢复可能失败 → 粘贴可能进入错误窗口（可接受，用户可 Cmd+Z 撤销） |
-| 焦点追踪线程启动失败 | `start()` 返回 Err → 日志记录，双击降级为只复制 |
+### 坑 4：osascript `activate` 按进程名不可靠
 
-## 3. 接口设计
+**现象**：`tell application "sublime_text" to activate` 报错 `-1728`（不能获得 application "sublime_text"）。
 
-### 3.1 Tauri 命令
+**根因**：AppleScript 的 `application` 对象用**应用名**（如 "Sublime Text"）而非**进程名**（如 "sublime_text"）。两者经常不一致。
 
-```rust
-/// 双击条目：写剪贴板 + 恢复焦点 + 模拟粘贴
-#[tauri::command]
-pub async fn paste_clipboard_item(
-    id: i64,
-    app_handle: tauri::AppHandle,
-    handle: State<'_, Arc<ClipboardHandle>>,
-) -> Result<(), String>
-```
+**尝试**：改用 `System Events` 的 `process` 对象 `set frontmost of p to true`（不经过 application name）——部分有效，但微信仍不工作。
 
-内部流程改为：写剪贴板 → hide → restore_focus → delay → simulate paste。
+### 坑 5：微信屏蔽 AppleScript keystroke
 
-### 3.2 FocusTracker 初始化
+**现象**：osascript `keystroke "v"` 对微信返回成功，但微信没有粘贴。
 
-在 `main.rs` setup 中：
-```rust
-let focus_tracker = Arc::new(FocusTracker::new());
-match focus_tracker.start() {
-    Ok(()) => { app.manage(focus_tracker); }
-    Err(e) => { log::warn!("Focus tracker not available: {}", e); }
-}
-```
+**根因**：微信（Electron 应用）可能屏蔽了 AppleScript 的事件注入，或其输入框不在标准 key window 链上。
 
-启动失败不阻断应用——双击降级为只复制。
+### 坑 6：tokio::task::spawn_blocking 阻塞命令池
 
-## 4. 平台依赖
+**现象**：第一次双击粘贴成功，第二次及之后失效。
 
-| 平台 | crate | octopus 是否已有 |
-|---|---|---|
-| macOS | `objc` / `cocoa`（ObjC FFI） | ❌ 新增（但 tauri-nspanel 已间接依赖） |
-| macOS | `std::process::Command`（osascript） | ✅ 已有 |
-| Windows | `windows`（Win32 API） | ❌ 新增 |
-| Windows | `enigo`（键盘模拟） | ✅ 已有 |
-| Linux | `x11rb`（X11 协议） | ❌ 新增（clipboard-rs 已间接依赖） |
+**根因**：`std::thread::sleep` 在 `tokio::task::spawn_blocking` 之前的 async 命令上下文里执行，阻塞了 Tauri 的命令线程池。
 
-## 5. 风险
+**解决**：改为 `std::thread::spawn`（非 tokio 调度）。
 
-| 风险 | 概率 | 影响 | 缓解 |
-|---|---|---|---|
-| macOS ObjC FFI 代码不正确导致 crash | 中 | 应用崩溃 | 参考 EcoPaste 成熟实现 + 充分测试 |
-| Windows 前台锁定导致粘贴到错误窗口 | 中 | 用户体验差 | 可接受（Cmd+Z 可撤销） |
-| Linux Wayland 完全不支持 | 确定 | 双击只复制 | 降级策略已覆盖 |
-| 辅助功能权限引导缺失 | 低 | macOS 粘贴静默失败 | 首次双击时检测权限并提示 |
-| 窗口标题匹配失效（标题被修改） | 低 | 自身窗口被误追踪 | 用 window label 而非标题匹配（Tauri API） |
+### 坑 7：query_history size:1 只返回最新一条
+
+**现象**：`paste_clipboard_item` 按 id 查条目时，查不到目标。
+
+**根因**：`QueryFilter { size: 1 }` 只返回最新的 1 条记录，目标 id 的条目不在其中。
+
+**解决**：改为 `size: 1000` + `find by id`。
+
+## 4. 各方案对比
+
+| 方案 | 豆包 | 备忘录 | Sublime Text | 微信 | 复杂度 |
+|---|---|---|---|---|---|
+| enigo Cmd+V（非主线程） | ❌ | ❌ | ❌ | ❌ | 低 |
+| osascript keystroke（无 activate） | ✅ | ✅ | ❌ | ❌ | 低 |
+| osascript activate(进程名) + keystroke | ✅ | ✅ | ❌(-1728) | ❌ | 中 |
+| osascript set frontmost(process) + keystroke | ✅ | ✅ | ❌ | ❌ | 中 |
+| paste::paste（完整 ASR 路径） | ❌ | ❌ | ❌ | ❌ | 低 |
+
+**结论**：没有一种方案能覆盖所有应用。AppleScript keystroke 对原生 macOS 应用（备忘录/豆包）有效，但对非标准应用（Sublime Text/微信/ Electron 应用）不可靠。
+
+## 5. EcoPaste 的参考方案
+
+EcoPaste 的 macOS 实现：
+- **不追踪 PID**（PID 存了但从不用——死代码）
+- **靠 NSPanel resign_key_window** 让系统自动还焦点
+- **用 osascript keystroke** 模拟 Cmd+V
+
+EcoPaste 的关键差异：它用的是 **NSPanel**（`tauri-nspanel`），而非普通 Tauri 窗口。NSPanel 的 `resign_key_window` 能让 macOS 窗口管理器可靠地还焦点。octopus 的剪贴板窗口是普通窗口（`WebviewWindowBuilder`），没有这个能力。
+
+## 6. 后续重启条件
+
+如果要重新实现自动粘贴，以下任一条件满足时值得尝试：
+
+1. **改用 NSPanel**：剪贴板窗口用 `tauri-nspanel` 创建（非激活面板），`resign_key_window` 后系统自动还焦点——最干净的方案，但需要重写窗口创建代码。
+2. **CGEvent 直接注入**：用 `CGEventCreateKeyboardEvent`（Core Graphics）替代 enigo/osascript——绕过 AppleScript 和 enigo 的中间层，直接在硬件事件层注入 Cmd+V。需要 `core-graphics` crate + unsafe FFI。
+3. **等待 macOS API 改进**：如果未来 macOS 提供更可靠的非前台应用键盘注入 API。
+
+## 7. 当前实现（回滚后）
+
+- **单击**：复制到剪贴板，不关闭窗口（用户手动 Cmd+V 粘贴）
+- **双击**：同单击（不自动粘贴）
+- `focus_tracker.rs` 保留代码但不用于自动粘贴
+- `paste_clipboard_item` 命令保留但不再被前端双击调用

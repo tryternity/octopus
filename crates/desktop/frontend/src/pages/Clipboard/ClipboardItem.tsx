@@ -37,25 +37,24 @@ export default function ClipboardItemRow({
   const handleDeleteClick = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (!deletePending) {
-      // 第一次点击：进入待确认状态，1.5s 后恢复
       setDeletePending(true);
       deleteTimer.current = setTimeout(() => setDeletePending(false), 1500);
     } else {
-      // 第二次点击（1.5s 内）：确认删除
       if (deleteTimer.current) clearTimeout(deleteTimer.current);
       invoke("delete_clipboard_item", { id: item.id }).then(onChanged).catch(console.error);
     }
   };
 
+  // 单击：选中条目（不复制）
   const handleClick = () => {
-    if (deletePending) return; // 待确认状态下不触发选中
+    if (deletePending) return;
     onSelect();
   };
 
+  // 双击：复制到剪贴板（不关闭窗口，用户手动 Cmd+V 粘贴）
   const handleDoubleClick = async () => {
     try {
-      // hide + restore_focus + paste 全在后端处理
-      await invoke("paste_clipboard_item", { id: item.id });
+      await invoke("copy_clipboard_item", { id: item.id });
     } catch (e) {
       console.error(e);
     }
