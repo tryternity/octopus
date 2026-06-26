@@ -1,5 +1,5 @@
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2 } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import type { ClipboardItem } from "@/types/clipboard";
 
@@ -22,10 +22,19 @@ export default function ClipboardItemRow({
     }
   };
 
+  const handleDelete = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await invoke("delete_clipboard_item", { id: item.id });
+      onChanged();
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const handleClick = async () => {
     try {
       await invoke("copy_clipboard_item", { id: item.id });
-      getCurrentWindow().hide();
     } catch (e) {
       console.error(e);
     }
@@ -43,7 +52,6 @@ export default function ClipboardItemRow({
       className="group relative flex items-start gap-2 px-2.5 py-2 cursor-pointer hover:bg-accent transition-colors"
       onClick={handleClick}
     >
-      {/* ASR 条目左侧色条 — 一眼区分语音 vs 复制 */}
       {isVoice && (
         <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-voice/60" />
       )}
@@ -70,30 +78,35 @@ export default function ClipboardItemRow({
           </span>
         )}
       </div>
-      <button
-        className={cn(
-          "flex-shrink-0 p-0.5 transition-opacity",
-          item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-70 hover:!opacity-100",
-        )}
-        onClick={handleFavorite}
-      >
-        <Star
-          className={cn("w-4 h-4", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
-        />
-      </button>
 
-      {/* Hairline 分隔线 — 替代斑马纹 */}
+      {/* 右侧操作：收藏 + 删除（hover 显示） */}
+      <div className="flex-shrink-0 flex items-center gap-0.5">
+        <button
+          className={cn(
+            "p-0.5 transition-opacity hover:scale-110",
+            item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+          )}
+          onClick={handleFavorite}
+        >
+          <Star
+            className={cn("w-3.5 h-3.5", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
+          />
+        </button>
+        <button
+          className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+          onClick={handleDelete}
+          title="删除"
+        >
+          <Trash2 className="w-3.5 h-3.5 text-muted-foreground hover:text-red-500" />
+        </button>
+      </div>
+
       {!isLast && <div className="absolute bottom-0 left-2.5 right-2.5 h-px bg-border/50" />}
     </div>
   );
 }
 
-function getCurrentWindow() {
-  return (window as any).__TAURI__?.window?.getCurrentWindow?.() ?? { hide: () => {} };
-}
-
-/// content 是 JSON 路径数组（如 ["file:///Users/foo/bar.txt"]），
-/// 取每个路径的最后 2 段显示（如 …/foo/bar.txt）。
+/// content 是 JSON 路径数组，取每个路径最后 2 段显示。
 function formatFilePaths(content: string, count?: number): string {
   try {
     const paths: string[] = JSON.parse(content);
