@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, Copy } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import type { ClipboardItem } from "@/types/clipboard";
 
@@ -78,6 +78,15 @@ export default function ClipboardItemRow({
     }
   };
 
+  const handleCopy = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await invoke("copy_clipboard_item", { id: item.id });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
   const Icon = item.source === "asr" ? Mic
     : item.item_type === "image" ? ImageIcon
     : item.item_type === "file" ? FileText
@@ -122,8 +131,15 @@ export default function ClipboardItemRow({
         )}
       </div>
 
-      {/* 右侧操作：收藏 + 删除 */}
+      {/* 右侧操作：复制 + 收藏 + 保存/打开 + 删除 */}
       <div className="flex-shrink-0 flex items-center gap-0.5">
+        <button
+          className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+          onClick={handleCopy}
+          title="复制"
+        >
+          <Copy className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+        </button>
         <button
           className={cn(
             "p-0.5 transition-opacity hover:scale-110",
