@@ -47,6 +47,7 @@ function Result() {
   const [toolbarVisible, setToolbarVisible] = useState(false);
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
+  const [isRecording, setIsRecording] = useState(true);
   const [toolbarState, setToolbarState] = useState<ToolbarState>({
     polish_mode: 0, denoise_mode: 1, polish_llm_valid: false,
     hide_toolbar: true, edit_shortcut: "Cmd+Enter",
@@ -133,6 +134,7 @@ function Result() {
         ["show-result", (p) => {
           renderResultNow(p as string);
           setVisible(true);
+          setIsRecording(true);
           refreshActive();
         }],
         ["update-result", (p) => {
@@ -160,8 +162,9 @@ function Result() {
           setText("");
           displayedRef.current = "";
           setVisible(false);
+          setIsRecording(false);
         }],
-        ["hide-result", () => setVisible(false)],
+        ["hide-result", () => { setVisible(false); setIsRecording(false); }],
         ["config-changed", () => refreshActive()],
         ["polish-done", () => setPolishLoading(false)],
         ["edit-force-exit", () => {
@@ -176,9 +179,6 @@ function Result() {
         if (cancelled) { fn(); return; }
         unlistens.push(fn);
       }
-      // All listeners registered — now tell backend we're ready.
-      // Must come AFTER listen() calls complete, otherwise show-result
-      // events emitted by result_window_ready are lost (no listener yet).
       if (!cancelled) {
         invoke("result_window_ready");
       }
@@ -191,6 +191,7 @@ function Result() {
   const enterEdit = useCallback(() => {
     if (editingRef.current) return;
     setEditing(true);
+    setIsRecording(false);
     showToolbar();
     invoke("enter_edit_mode");
     setTimeout(() => {
@@ -227,7 +228,6 @@ function Result() {
   // ── Keyboard shortcuts ──
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // Esc: cancel + hide (unless popup open or editing)
       if (e.key === "Escape") {
         if (popupType) { setPopupType(null); return; }
         if (editingRef.current) { commitEdit(); return; }
@@ -235,7 +235,6 @@ function Result() {
         win.hide();
         return;
       }
-      // Edit shortcut (Cmd+Enter by default)
       const sc = parseShortcut(toolbarState.edit_shortcut);
       if (matchShortcut(e, sc)) {
         e.preventDefault();
@@ -259,7 +258,7 @@ function Result() {
     return () => document.removeEventListener("mousedown", onDown);
   }, [popupType]);
 
-  // ── Text input handler (edit mode) ──
+  // ── Text input handler ──
   const onTextInput = () => {
     if (editBufTimer.current) clearTimeout(editBufTimer.current);
     editBufTimer.current = setTimeout(updateEditBuffer, 150);
@@ -339,7 +338,7 @@ function Result() {
     <div
       id="result-container"
       className={cn(
-        "w-full h-full bg-white rounded-lg border border-black/10 shadow-lg flex flex-col transition-opacity duration-150",
+        "w-full h-full bg-background rounded-xl border border-border shadow-2xl shadow-black/8 flex flex-col transition-opacity duration-150 overflow-hidden",
         visible ? "opacity-100" : "opacity-0",
       )}
     >
@@ -355,9 +354,9 @@ function Result() {
               key={id}
               className={cn(
                 "tool-btn w-[26px] h-[26px] flex items-center justify-center rounded-[5px] transition-colors",
-                "text-foreground hover:text-primary hover:bg-black/[0.06]",
-                active && "text-primary",
-                disabled && "text-black/20 cursor-default hover:bg-transparent hover:text-black/20",
+                "text-muted-foreground hover:text-foreground hover:bg-accent",
+                active && "text-voice",
+                disabled && "text-muted-foreground/30 cursor-default hover:bg-transparent hover:text-muted-foreground/30",
               )}
               title={label}
               aria-label={label}
@@ -374,7 +373,7 @@ function Result() {
           data-tauri-drag-region
         >
           {!toolbarVisible && (
-            <div className="w-6 h-[3px] bg-black/10 rounded-[1.5px]" />
+            <div className="w-8 h-1 rounded-full bg-border" />
           )}
         </div>
       </div>
@@ -382,15 +381,15 @@ function Result() {
       {/* Text display */}
       <div
         className={cn(
-          "flex-1 px-3.5 pb-2 overflow-hidden relative",
-          editing && "border border-primary/50 rounded-md bg-primary/[0.04]",
+          "flex-1 px-3.5 pb-2 overflow-hidden relative transition-colors",
+          editing && "bg-voice/[0.06]",
         )}
       >
         <div
           ref={textRef}
           className={cn(
-            "text-sm leading-[1.5] text-foreground max-h-[63px] overflow-y-auto",
-            "word-break-all outline-none thin-scrollbar",
+            "text-sm leading-[1.6] text-foreground max-h-[63px] overflow-y-auto",
+            "break-words outline-none thin-scrollbar",
             !editing && "cursor-text",
           )}
           contentEditable={editing}
@@ -399,22 +398,36 @@ function Result() {
         >
           {text}
         </div>
+
+        {/* Voice signature: 录音中底部脉冲线 */}
+        {isRecording && !editing && (
+          <div className="absolute bottom-0 left-3.5 right-3.5 h-px bg-voice/40">
+            <div className="h-full w-8 bg-voice/80 animate-pulse" />
+          </div>
+        )}
+
+        {/* 编辑态底线 */}
+        {editing && (
+          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-voice/30" />
+        )}
       </div>
 
       {/* Popup */}
       {popupType && (
-        <div className="popup-content absolute top-[30px] left-1.5 w-[360px] max-h-[200px] overflow-y-auto bg-white rounded-lg border border-black/10 shadow-lg z-10 text-[13px]">
+        <div className="popup-content absolute top-[30px] left-1.5 w-[360px] max-h-[200px] overflow-y-auto bg-background rounded-lg border border-border shadow-2xl shadow-black/12 z-10 text-[13px]">
           {popupItems.map((item, i) => (
             <div
               key={i}
               className={cn(
                 "px-3 py-1.5 cursor-pointer flex items-center gap-1.5 transition-colors",
-                "hover:bg-primary/[0.08]",
-                item.current && "text-primary font-medium",
+                "hover:bg-accent",
+                item.current && "text-voice font-medium",
               )}
               onClick={() => handlePopupSelect(item)}
             >
-              <span>{item.current ? "●" : "○"}</span>
+              <span className={cn("text-xs", item.current ? "text-voice" : "text-muted-foreground")}>
+                {item.current ? "●" : "○"}
+              </span>
               <span className="flex-1 min-w-0 truncate">{item.label}</span>
             </div>
           ))}
@@ -423,7 +436,7 @@ function Result() {
 
       {/* Toast */}
       {toast && (
-        <div className="absolute bottom-1.5 left-1/2 -translate-x-1/2 bg-black/78 text-white text-xs px-2.5 py-1 rounded-md z-20 pointer-events-none">
+        <div className="absolute bottom-1.5 left-1/2 -translate-x-1/2 bg-foreground/90 text-background text-xs px-2.5 py-1 rounded-md z-20 pointer-events-none">
           {toast}
         </div>
       )}
