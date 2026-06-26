@@ -40,7 +40,7 @@ export default function ClipboardItemRow({
     <div
       className={cn(
         "flex items-start gap-2 px-2.5 py-1.5 cursor-pointer group transition-colors",
-        index % 2 === 0 ? "bg-muted/40" : "bg-background",
+        index % 2 === 0 ? "bg-amber-50" : "bg-background",
         "hover:bg-accent",
       )}
       onClick={handleClick}
