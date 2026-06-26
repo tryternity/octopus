@@ -166,7 +166,7 @@ async fn run_bytedance_session(
         SER_JSON,
         COMP_GZIP,
         config.to_string().as_bytes(),
-    );
+    )?;
     ws.send(Message::binary(init_frame))
         .await
         .context("bytedance WS 发送初始 config 失败")?;
@@ -180,7 +180,7 @@ async fn run_bytedance_session(
             SER_NONE,
             COMP_GZIP,
             &pcm,
-        );
+        )?;
         ws.send(Message::binary(audio_frame))
             .await
             .context("bytedance WS 发送 pre-roll PCM 失败")?;
@@ -199,7 +199,7 @@ async fn run_bytedance_session(
                             SER_NONE,
                             COMP_GZIP,
                             &pcm,
-                        );
+                        )?;
                         ws.send(Message::binary(audio_frame))
                             .await
                             .context("bytedance WS 发送音频帧失败")?;
@@ -212,7 +212,7 @@ async fn run_bytedance_session(
                             SER_NONE,
                             COMP_GZIP,
                             &[],
-                        );
+                        )?;
                         ws.send(Message::binary(last_frame))
                             .await
                             .context("bytedance WS 发送末帧失败")?;
@@ -284,10 +284,10 @@ fn build_client_frame(
     serialization: u8,
     compression: u8,
     payload_raw: &[u8],
-) -> Vec<u8> {
+) -> Result<Vec<u8>> {
     // 压缩 payload（如需要）
     let payload: Vec<u8> = if compression == COMP_GZIP {
-        gzip_compress(payload_raw)
+        gzip_compress(payload_raw)?
     } else {
         payload_raw.to_vec()
     };
@@ -306,7 +306,7 @@ fn build_client_frame(
     frame.push(byte3);
     frame.extend_from_slice(&payload_size.to_be_bytes());
     frame.extend_from_slice(&payload);
-    frame
+    Ok(frame)
 }
 
 /// 解析后的服务端帧。
@@ -364,10 +364,18 @@ fn parse_server_frame(data: &[u8]) -> Result<ParsedServerFrame> {
 }
 
 /// gzip 压缩。
-fn gzip_compress(data: &[u8]) -> Vec<u8> {
+///
+/// 压缩失败直接返回 `Err` 向上传播，**不**回退到未压缩原始数据——
+/// 帧头已固定标记 `COMP_GZIP`，回退 raw 会让服务端按 gzip 解析失败（协议错误帧）。
+///
+/// `GzEncoder` 底层为 `Vec<u8>`（`Write` infallible），DEFLATE 对任意输入亦不报错，
+/// 故实际近乎不可能失败；保留 `Result` 仅为杜绝静默吞错，让真正异常走 `?` 链路。
+fn gzip_compress(data: &[u8]) -> Result<Vec<u8>> {
     let mut encoder = GzEncoder::new(Vec::new(), Compression::default());
-    encoder.write_all(data).ok();
-    encoder.finish().unwrap_or_else(|_| data.to_vec())
+    encoder
+        .write_all(data)
+        .context("bytedance gzip write 失败")?;
+    encoder.finish().context("bytedance gzip finish 失败")
 }
 
 /// gzip 解压或直接返回。
@@ -395,7 +403,7 @@ mod tests {
             SER_NONE,
             COMP_GZIP,
             payload,
-        );
+        ).unwrap();
         // header 4B + payload_size 4B + gzip(payload)
         assert_eq!(frame[0], 0x11); // ver=1, hdr=1
         assert_eq!((frame[1] >> 4) & 0xF, MSG_AUDIO_ONLY_REQUEST);
@@ -412,7 +420,7 @@ mod tests {
             SER_NONE,
             COMP_GZIP,
             &[],
-        );
+        ).unwrap();
         // 末帧 flags = 0x2 (NEG_SEQUENCE)
         assert_eq!(frame[1] & 0xF, FLAG_NEG_SEQUENCE);
     }
@@ -420,7 +428,7 @@ mod tests {
     #[test]
     fn test_gzip_roundtrip() {
         let original = r#"{"result":{"text":"测试文本"}}"#;
-        let compressed = gzip_compress(original.as_bytes());
+        let compressed = gzip_compress(original.as_bytes()).unwrap();
         let decompressed = decompress_or_raw(&compressed, true).unwrap();
         assert_eq!(decompressed, original);
     }
