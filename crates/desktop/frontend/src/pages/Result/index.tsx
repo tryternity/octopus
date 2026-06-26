@@ -374,11 +374,9 @@ function Result() {
             onMouseDown={onDragStart}
           />
         </div>
-        {/* Voice signature: 脉冲线 / 编辑态底线 */}
+        {/* Voice signature: 红绿流动线 / 编辑态底线 */}
         {isRecording && !editing && (
-          <div className="relative h-px bg-voice/30 mx-3.5">
-            <div className="h-full w-8 bg-voice/80 animate-pulse" />
-          </div>
+          <div className="voice-line mx-3.5" />
         )}
         {editing && (
           <div className="h-0.5 bg-voice/30 mx-0" />
