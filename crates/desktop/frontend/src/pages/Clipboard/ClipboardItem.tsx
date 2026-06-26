@@ -5,9 +5,11 @@ import type { ClipboardItem } from "@/types/clipboard";
 
 export default function ClipboardItemRow({
   item,
+  index,
   onChanged,
 }: {
   item: ClipboardItem;
+  index: number;
   onChanged: () => void;
 }) {
   const handleFavorite = async (e: React.MouseEvent) => {
@@ -36,7 +38,11 @@ export default function ClipboardItemRow({
 
   return (
     <div
-      className="flex items-start gap-2 px-2.5 py-1.5 hover:bg-background rounded-md cursor-pointer group transition-colors"
+      className={cn(
+        "flex items-start gap-2 px-2.5 py-1.5 cursor-pointer group transition-colors",
+        index % 2 === 0 ? "bg-muted/40" : "bg-background",
+        "hover:bg-accent",
+      )}
       onClick={handleClick}
     >
       <Icon className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-muted-foreground/50 group-hover:text-primary/70 transition-colors" />
