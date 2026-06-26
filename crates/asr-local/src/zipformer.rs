@@ -50,6 +50,7 @@ pub static BBPE_TABLE: Lazy<HashMap<&'static str, u8>> = Lazy::new(|| {
     m.insert("ğ", 31);
     m.insert(" ", 32);
     m.insert("!", 33);
+    m.insert("\"", 34);
     m.insert("#", 35);
     m.insert("$", 36);
     m.insert("%", 37);
@@ -1290,6 +1291,28 @@ pub(crate) fn mel_to_hz(mel: f64) -> f64 {
 mod tests {
     use super::*;
     use crate::engine::OfflineAsrEngine;
+
+    /// BBPE_TABLE 应对 byte 0-255 全部显式映射。decode_byte_bpe 的 len()==1 兜底
+    /// 只覆盖 ASCII 32-126；byte 0-31（控制字符，无法作 str 键，用 chr(N+0x100)）
+    /// 与 127-255 必须靠表。补全前 byte 34 (`"`) 唯一缺失（靠兜底"恰好正确"），
+    /// 此测试锁死表完整性，防未来再漏任何 byte。
+    #[test]
+    fn bbpe_table_covers_all_bytes() {
+        let covered: std::collections::HashSet<u8> = BBPE_TABLE.values().copied().collect();
+        let missing: Vec<u8> = (0u8..=255).filter(|b| !covered.contains(b)).collect();
+        assert!(
+            missing.is_empty(),
+            "BBPE_TABLE 缺少 byte 映射: {:?}（每个 byte 都应有显式键，不依赖 decode 兜底）",
+            missing
+        );
+    }
+
+    /// `"` (byte 34) 即使删掉表项，decode 兜底（ASCII 32-126）也应正确映射——
+    /// 双保险：表显式映射 + 兜底 safety net。
+    #[test]
+    fn decode_byte_bpe_handles_quote() {
+        assert_eq!(decode_byte_bpe("\"", false), "\"");
+    }
 
     /// 动态查找 HF cache 中的 snapshot 目录（不依赖特定 hash）。
     fn hf_snapshot(repo: &str) -> Option<std::path::PathBuf> {
