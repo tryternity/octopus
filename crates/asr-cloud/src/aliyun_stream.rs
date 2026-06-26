@@ -64,6 +64,9 @@ pub fn open(
             )
             .await
         };
+        // session 契约：Ok = 已通过 result_tx 通知最终结果（Finished/运行期 Failed，
+        // 见 run_*_session 内 WS 错误分支 return Ok 处）；仅 Err（签名/建连等启动期失败，
+        // 未及经 channel 通知）在此补发一次 Failed——避免与 session 内部已发的 Failed 重复。
         if let Err(e) = result {
             log::error!("aliyun stream session error: {}", e);
             let _ = tx_for_err.send(StreamEvent::Failed(e.to_string()));
