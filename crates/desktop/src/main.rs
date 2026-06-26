@@ -23,9 +23,11 @@ mod result_window;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
+mod focus_tracker;
 mod shortcut;
 mod tray;
 mod transcript;
+mod window_position;
 
 use coordinator::Coordinator;
 use engine::TranscriptionEngine;
@@ -170,6 +172,7 @@ pub fn run() {
                 .level_for("tract_onnx", log::LevelFilter::Warn)
                 .level_for("tract_linalg", log::LevelFilter::Warn)
                 .level_for("df::tract", log::LevelFilter::Warn)
+                .level_for("octopus_desktop::window_position", log::LevelFilter::Info)
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
@@ -213,6 +216,7 @@ pub fn run() {
             clipboard_commands::clear_clipboard_history,
             clipboard_commands::copy_clipboard_item,
             clipboard_commands::clipboard_stats,
+            clipboard_commands::paste_clipboard_item,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -221,6 +225,13 @@ pub fn run() {
                     .expect("Failed to init clipboard handle"),
             );
             app.manage(clipboard_handle.clone());
+
+            // Start focus tracker (macOS no-op, Windows/Linux TODO)
+            let focus_tracker = std::sync::Arc::new(focus_tracker::FocusTracker::new());
+            if let Err(e) = focus_tracker.start() {
+                log::warn!("Focus tracker not available: {}", e);
+            }
+            app.manage(focus_tracker);
 
             // Start clipboard watcher (background thread, clipboard-rs)
             {

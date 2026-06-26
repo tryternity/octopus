@@ -144,31 +144,40 @@ fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(INIT_SQL).context("执行 db.sql 初始化失败")?;
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
-        // v0/v1 跳过 v2/v3/v4，直接到 v5（app_config + prompts + clipboard_history 全部幂等建）
-        conn.execute("PRAGMA user_version = 5", [])?;
-        log::info!("DB initialized (v5): schema + app_config + prompts + clipboard_history + yaml migration");
+        // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
+        conn.execute("PRAGMA user_version = 6", [])?;
+        log::info!("DB initialized (v6): schema + app_config(setting) + prompts + clipboard_history + yaml migration");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
         conn.execute(
-            "ALTER TABLE app_config ADD COLUMN category TEXT NOT NULL DEFAULT 'default'",
+            "ALTER TABLE app_config ADD COLUMN category TEXT NOT NULL DEFAULT 'setting'",
             [],
         )?;
-        conn.execute_batch(INIT_SQL).context("v2→v5: 重跑 db.sql 幂等补建 prompts + clipboard_history")?;
-        conn.execute("PRAGMA user_version = 5", [])?;
-        log::info!("DB migrated to v5: app_config.category + prompts + clipboard_history");
+        conn.execute_batch(INIT_SQL).context("v2→v6: 重跑 db.sql 幂等补建 prompts + clipboard_history")?;
+        conn.execute("PRAGMA user_version = 6", [])?;
+        log::info!("DB migrated to v6: app_config.category + prompts + clipboard_history");
     } else if v == 3 {
         // v3 → v4：prompts 表 + app_config.active_polish_prompt seed（INIT_SQL 幂等补建）
         log::info!("DB migrating v3 → v4: adding prompts table + active_polish_prompt seed...");
-        conn.execute_batch(INIT_SQL).context("v3→v5: 重跑 db.sql 幂等补建 clipboard_history")?;
-        conn.execute("PRAGMA user_version = 5", [])?;
-        log::info!("DB migrated to v5: prompts + clipboard_history");
+        conn.execute_batch(INIT_SQL).context("v3→v6: 重跑 db.sql 幂等补建 clipboard_history")?;
+        conn.execute("PRAGMA user_version = 6", [])?;
+        log::info!("DB migrated to v6: prompts + clipboard_history");
     } else if v == 4 {
         // v4 → v5：clipboard_history 表 + FTS5 + 触发器 + app_config seed
         log::info!("DB migrating v4 → v5: adding clipboard_history table...");
         conn.execute_batch(INIT_SQL).context("v4→v5: 建 clipboard_history 表 + FTS5")?;
         conn.execute("PRAGMA user_version = 5", [])?;
         log::info!("DB migrated to v5: clipboard_history + FTS5");
+    } else if v == 5 {
+        // v5 → v6：app_config category 'default' → 'setting'（语义化分组）
+        log::info!("DB migrating v5 → v6: app_config category 'default' → 'setting'...");
+        conn.execute(
+            "UPDATE app_config SET category = 'setting' WHERE category = 'default'",
+            [],
+        )?;
+        conn.execute("PRAGMA user_version = 6", [])?;
+        log::info!("DB migrated to v6: app_config category renamed");
     }
     Ok(())
 }
@@ -272,7 +281,7 @@ impl<'a> ModelSpec<'a> {
 /// 从 DB app_config 表加载完整应用配置。
 /// 先构造 AppConfig::default()（保底），再用 DB 行按字段类型解析覆盖。
 /// 缺失行或解析失败 → 保留 default 值（防御性，正常不应触发——seed 保证 21 行齐全）。
-/// 只读 category='default' 的行（当前全部配置均在 default 类别下）。
+/// 只读 category='setting' 的行（用户配置项）。
 pub fn load_app_config() -> Result<crate::config::AppConfig> {
     ensure_db()?;
     with_db(|conn| load_app_config_at(conn))
@@ -282,7 +291,7 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
     use crate::config::{AppConfig, PolishMode};
     let mut cfg = AppConfig::default();
     let mut stmt = conn.prepare(
-        "SELECT config_key, config_value FROM app_config WHERE category = 'default'",
+        "SELECT config_key, config_value FROM app_config WHERE category = 'setting'",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
@@ -390,6 +399,20 @@ pub fn save_config_key(key: &str, value: &str) -> Result<()> {
             params![key, value],
         )?;
         Ok(())
+    })
+}
+
+/// 按 key 读取单个 config_value（不存在返回 None）。
+pub fn load_config_key(key: &str) -> Result<Option<String>> {
+    ensure_db()?;
+    with_db(|conn| {
+        let mut stmt = conn.prepare("SELECT config_value FROM app_config WHERE config_key = ?1")?;
+        let row = stmt.query_row(params![key], |r| r.get::<_, String>(0));
+        match row {
+            Ok(v) => Ok(Some(v)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e.into()),
+        }
     })
 }
 
@@ -1574,7 +1597,7 @@ mod tests {
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-        assert_eq!(categories, vec!["default"], "所有行 category 应为 'default'");
+        assert_eq!(categories, vec!["setting"], "所有行 category 应为 'setting'");
     }
 
     #[test]

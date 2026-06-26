@@ -1,5 +1,7 @@
 # 剪贴板历史管理功能 Implementation Plan
 
+> **状态: ✅ Phase 0-3 已实现**（commit `a30306e` 及之前全部完成）。Phase 0（React 骨架）/ Phase 1（三页面迁移）/ Phase 2（octopus-clipboard crate + paste.rs 迁移）/ Phase 3（剪贴板 UI + Tauri 集成）全部落地。额外实现：SVG 图标恢复、窗口位置记忆、编辑取消按钮、单击选中/双击粘贴交互、app_config category 语义化。
+>
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 为 octopus desktop 新增剪贴板历史管理功能（监听、存储、搜索、UI），同时迁移现有 paste 插件到 clipboard-rs，迁移前端到 React + shadcn/ui。

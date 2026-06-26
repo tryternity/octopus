@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use tauri::State;
+use tauri::{Manager, State};
 use octopus_clipboard::{ClipboardHandle, ClipboardItem, QueryFilter};
 
 #[tauri::command]
@@ -76,4 +76,55 @@ pub async fn clipboard_stats() -> Result<i64, String> {
         octopus_clipboard::store::count_all(conn)
     })
     .map_err(|e| e.to_string())
+}
+
+/// 双击条目：写剪贴板 → hide 窗口 → 恢复焦点 → 模拟粘贴
+#[tauri::command]
+pub async fn paste_clipboard_item(
+    id: i64,
+    app_handle: tauri::AppHandle,
+    handle: State<'_, Arc<ClipboardHandle>>,
+    focus: State<'_, Arc<crate::focus_tracker::FocusTracker>>,
+) -> Result<(), String> {
+    // 1. 从 DB 按 id 读条目内容
+    let content = octopus_infra::db::with_db(|conn| {
+        let items = octopus_clipboard::store::query_history(conn, &octopus_clipboard::QueryFilter {
+            filter: "all".into(),
+            search: None,
+            page: 1,
+            size: 1000,
+        })?;
+        Ok::<_, anyhow::Error>(items)
+    })
+    .map_err(|e| e.to_string())?;
+
+    let item = content.into_iter().find(|i| i.id == id);
+    if item.is_none() {
+        return Ok(());
+    }
+    let item = item.unwrap();
+
+    // 2. hide 剪贴板窗口
+    let win = app_handle.get_webview_window("clipboard_window");
+    if let Some(w) = &win {
+        let _ = w.hide();
+    }
+    drop(win);
+
+    // 3. 恢复焦点 + 粘贴（同一线程）
+    let text = item.content;
+    let handle = handle.inner().clone();
+    let focus = focus.inner().clone();
+    std::thread::spawn(move || {
+        // 1. 写剪贴板
+        let _ = handle.write_text(&text);
+        // 2. hide 后 macOS 自动还焦点（已确认 sublime_text 获得焦点）
+        // 3. 等焦点稳定
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        // 4. osascript 发 Cmd+V 给当前前台应用（不经过 enigo）
+        focus.restore_focus();
+        focus.simulate_paste();
+    });
+
+    Ok(())
 }

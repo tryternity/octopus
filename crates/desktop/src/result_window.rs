@@ -43,21 +43,26 @@ pub fn create_result_window(app: &tauri::AppHandle) {
 
     match builder.build() {
         Ok(window) => {
-            // debug 构建（cargo run / cargo build 不带 --release）自动打开 devtools，
-            // 便于排查前端渲染/事件。release 构建自动剔除，无副作用。
             #[cfg(debug_assertions)]
             window.open_devtools();
 
-            // 首次创建时定位到屏幕顶部居中
-            if let Ok(monitor) = window.primary_monitor() {
-                if let Some(m) = monitor {
+            // 恢复上次位置（不可见时 fallback 到顶部居中）
+            crate::window_position::restore_window_position(&window, WINDOW_LABEL, |w| {
+                if let Ok(Some(m)) = w.primary_monitor() {
                     let x = (m.size().width as f64 / m.scale_factor() - RESULT_WIDTH) / 2.0;
-                    let y = 80.0;
-                    let _ = window.set_position(tauri::Position::Logical(
-                        tauri::LogicalPosition::new(x, y),
+                    let _ = w.set_position(tauri::Position::Logical(
+                        tauri::LogicalPosition::new(x, 80.0),
                     ));
                 }
-            }
+            });
+
+            // 移动结束后保存位置
+            let win_clone = window.clone();
+            window.on_window_event(move |event| {
+                if let tauri::WindowEvent::Moved(_) = event {
+                    crate::window_position::save_current_position(&win_clone, WINDOW_LABEL);
+                }
+            });
 
             debug!("Result window created");
         }

@@ -1,17 +1,29 @@
+import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2 } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import type { ClipboardItem } from "@/types/clipboard";
 
 export default function ClipboardItemRow({
   item,
   isLast,
+  isSelected,
+  onSelect,
   onChanged,
 }: {
   item: ClipboardItem;
   isLast: boolean;
+  isSelected: boolean;
+  onSelect: () => void;
   onChanged: () => void;
 }) {
+  const [deletePending, setDeletePending] = useState(false);
+  const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => { if (deleteTimer.current) clearTimeout(deleteTimer.current); };
+  }, []);
+
   const handleFavorite = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
@@ -22,10 +34,27 @@ export default function ClipboardItemRow({
     }
   };
 
-  const handleClick = async () => {
+  const handleDeleteClick = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!deletePending) {
+      setDeletePending(true);
+      deleteTimer.current = setTimeout(() => setDeletePending(false), 1500);
+    } else {
+      if (deleteTimer.current) clearTimeout(deleteTimer.current);
+      invoke("delete_clipboard_item", { id: item.id }).then(onChanged).catch(console.error);
+    }
+  };
+
+  // 单击：选中条目（不复制）
+  const handleClick = () => {
+    if (deletePending) return;
+    onSelect();
+  };
+
+  // 双击：复制到剪贴板（不关闭窗口，用户手动 Cmd+V 粘贴）
+  const handleDoubleClick = async () => {
     try {
       await invoke("copy_clipboard_item", { id: item.id });
-      getCurrentWindow().hide();
     } catch (e) {
       console.error(e);
     }
@@ -40,10 +69,14 @@ export default function ClipboardItemRow({
 
   return (
     <div
-      className="group relative flex items-start gap-2 px-2.5 py-2 cursor-pointer hover:bg-accent transition-colors"
+      className={cn(
+        "group relative flex items-start gap-2 px-2.5 py-2 cursor-pointer transition-colors",
+        isSelected && !deletePending ? "bg-accent" : "hover:bg-accent",
+        deletePending && "bg-red-50",
+      )}
       onClick={handleClick}
+      onDoubleClick={handleDoubleClick}
     >
-      {/* ASR 条目左侧色条 — 一眼区分语音 vs 复制 */}
       {isVoice && (
         <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-voice/60" />
       )}
@@ -70,30 +103,43 @@ export default function ClipboardItemRow({
           </span>
         )}
       </div>
-      <button
-        className={cn(
-          "flex-shrink-0 p-0.5 transition-opacity",
-          item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-70 hover:!opacity-100",
-        )}
-        onClick={handleFavorite}
-      >
-        <Star
-          className={cn("w-4 h-4", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
-        />
-      </button>
 
-      {/* Hairline 分隔线 — 替代斑马纹 */}
+      {/* 右侧操作：收藏 + 删除 */}
+      <div className="flex-shrink-0 flex items-center gap-0.5">
+        <button
+          className={cn(
+            "p-0.5 transition-opacity hover:scale-110",
+            item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+          )}
+          onClick={handleFavorite}
+        >
+          <Star
+            className={cn("w-3.5 h-3.5", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
+          />
+        </button>
+        <button
+          className={cn(
+            "p-0.5 transition-all",
+            deletePending
+              ? "opacity-100 bg-red-100 rounded"
+              : "opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity",
+          )}
+          onClick={handleDeleteClick}
+          title={deletePending ? "再次点击确认删除" : "删除"}
+        >
+          <Trash2 className={cn(
+            "w-3.5 h-3.5 transition-colors",
+            deletePending ? "text-red-600" : "text-muted-foreground hover:text-red-500",
+          )} />
+        </button>
+      </div>
+
       {!isLast && <div className="absolute bottom-0 left-2.5 right-2.5 h-px bg-border/50" />}
     </div>
   );
 }
 
-function getCurrentWindow() {
-  return (window as any).__TAURI__?.window?.getCurrentWindow?.() ?? { hide: () => {} };
-}
-
-/// content 是 JSON 路径数组（如 ["file:///Users/foo/bar.txt"]），
-/// 取每个路径的最后 2 段显示（如 …/foo/bar.txt）。
+/// content 是 JSON 路径数组，取每个路径最后 2 段显示。
 function formatFilePaths(content: string, count?: number): string {
   try {
     const paths: string[] = JSON.parse(content);

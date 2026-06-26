@@ -1,7 +1,7 @@
 # 剪贴板历史管理功能设计
 
 **日期**: 2026-06-25
-**状态**: 设计中（brainstorming 完成，待写实施计划）
+**状态**: ✅ Phase 0-3 已实现（clipboard-rs 监听 + 存储 + 图片去重 + React UI + paste.rs 迁移 + 窗口位置记忆）
 **分支**: `feature/clipboard-research`（worktree: `.worktrees/clipboard-research`）
 
 ## 0. 概述
