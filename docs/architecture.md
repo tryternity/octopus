@@ -89,11 +89,11 @@ ASR 推理的核心库，所有上层组件都依赖它。
 
 ### octopus-server（HTTP 服务）
 
-基于 Axum 的 Web 服务，提供 REST 和 WebSocket 接口。
+基于 Axum 的 Web 服务，提供 REST 和 WebSocket 接口。两条 ASR 路径均走 asr helper（阶段3，2026-06-26）：批处理 `/transcribe` → `AsrEngineManager::transcribe_batch` + `PipelineConfig`（VAD 分段 + 纠错 + 简繁）；流式 `/ws/stream` → `pipeline.rs::WsStreamSession`（薄包 `StreamingRunner`，VAD 静音/标点内部收编）→ `event_to_json` 回推 `TranscriptEvent` `{type,text}`。`pipeline.rs`（WS↔runner 桥接 + 序列化，纯逻辑可单测）+ `main.rs`（路由 + WS/HTTP 胶水）。
 
 ```
-Client ──HTTP POST──→ /transcribe ──→ octopus-asr ──→ JSON 响应
-Client ──WebSocket──→ /ws/stream  ──→ VAD + ASR   ──→ 流式 JSON
+Client ──HTTP POST──→ /transcribe ──→ transcribe_batch（asr::pipeline）──→ JSON 响应
+Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingRunner) ──→ {type,text} JSON
 ```
 
 ### octopus-desktop（桌面应用）

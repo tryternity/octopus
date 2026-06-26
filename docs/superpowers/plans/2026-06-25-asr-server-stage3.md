@@ -30,7 +30,7 @@
 - Modify: `crates/server/src/main.rs`（加 `mod pipeline;`）
 - Test: `crates/server/src/pipeline.rs`（`#[cfg(test)] mod tests`）
 
-- [ ] **Step 1: 在 `main.rs` 注册新模块**
+- [x] **Step 1: 在 `main.rs` 注册新模块**
 
 在 `crates/server/src/main.rs` 顶部 `use` 区上方加一行模块声明：
 
@@ -40,7 +40,7 @@ mod pipeline;
 
 放在文件第 1 行（`use axum::{...}` 之前）。
 
-- [ ] **Step 2: 写 `pipeline.rs` 骨架 + 失败测试（todo! 占位）**
+- [x] **Step 2: 写 `pipeline.rs` 骨架 + 失败测试（todo! 占位）**
 
 创建 `crates/server/src/pipeline.rs`，内容如下（实现处用 `todo!()`，测试引用之 → 运行时 panic = RED）：
 
@@ -163,12 +163,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 跑测试验证 RED（todo! panic）**
+- [x] **Step 3: 跑测试验证 RED（todo! panic）**
 
 Run: `cargo test -p octopus-server pipeline::tests 2>&1 | tail -30`
 Expected: 编译通过，3 个测试中 `event_to_json_all_variants` / `event_to_json_escapes_backslash_quote_newline` / `ws_stream_session_feed_partial_then_empty_finish_final` 均 **FAIL**，报 `not yet implemented: Step 4 实现`（`todo!()` panic）。
 
-- [ ] **Step 4: 实现 `WsStreamSession` + `event_to_json`（替换 4 处 `todo!()`）**
+- [x] **Step 4: 实现 `WsStreamSession` + `event_to_json`（替换 4 处 `todo!()`）**
 
 用 Edit 把 `pipeline.rs` 中 4 处 `todo!("Step 4 实现")` 替换为真实实现。
 
@@ -220,17 +220,17 @@ pub fn event_to_json(ev: &TranscriptEvent) -> String {
 }
 ```
 
-- [ ] **Step 5: 跑测试验证 GREEN**
+- [x] **Step 5: 跑测试验证 GREEN**
 
 Run: `cargo test -p octopus-server pipeline::tests 2>&1 | tail -15`
 Expected: `3 passed; 0 failed`。
 
-- [ ] **Step 6: cargo check + clippy（零新 warning）**
+- [x] **Step 6: cargo check + clippy（零新 warning）**
 
 Run: `cargo clippy -p octopus-server --all-targets 2>&1 | tail -20`
 Expected: 编译通过，**无新 warning**（pipeline.rs 内 `WsStreamSession` 此时尚未被 main.rs 使用，可能报 `field runner never read` / dead_code——若出现，Task 2 接线后自动消失；此处记录 warning 数量，Task 2 后归零）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/server/src/pipeline.rs crates/server/src/main.rs
@@ -249,7 +249,7 @@ event_to_json（TranscriptEvent 4 variant → {type,text} JSON，含转义）。
 **Files:**
 - Modify: `crates/server/src/main.rs`（`use` 区 + `handle_ws` L221-367 + 删 `detect_silence_gap_local` L175-219）
 
-- [ ] **Step 1: 加 `use` 导入**
+- [x] **Step 1: 加 `use` 导入**
 
 在 `crates/server/src/main.rs` 的 `use` 区（L1-15 附近）加两行：
 
@@ -260,11 +260,11 @@ use pipeline::{event_to_json, WsStreamSession};
 
 （`use octopus_asr::engine::AsrEngineManager;` 之后即可。）
 
-- [ ] **Step 2: 删除 `detect_silence_gap_local` 整个函数**
+- [x] **Step 2: 删除 `detect_silence_gap_local` 整个函数**
 
 删除 `crates/server/src/main.rs` 中 L175-219 的 `fn detect_silence_gap_local(...) -> bool { ... }` 整个函数（含前面的注释行 `// ── WebSocket ──` 保留，只删函数本身）。
 
-- [ ] **Step 3: 用新 `handle_ws` 替换旧实现**
+- [x] **Step 3: 用新 `handle_ws` 替换旧实现**
 
 把 `crates/server/src/main.rs` 中 `async fn handle_ws(...) { ... }`（L221-367）整个函数替换为：
 
@@ -357,12 +357,12 @@ async fn handle_ws(
 
 行为对照（零差异）：输入协议不变（binary f32 PCM + `"flush"` text + Close）；静音 flush 由 `StreamingRunner` 内部处理（`PUNCTUATION_SILENCE_THRESHOLD = 0.5s`，与旧 `detect_silence_gap_local` 一致）；错误从手拼 `{error}` 改为 `{type:error}`。
 
-- [ ] **Step 4: cargo check + clippy（验证接线，Task 1 的 dead_code warning 应消失）**
+- [x] **Step 4: cargo check + clippy（验证接线，Task 1 的 dead_code warning 应消失）**
 
 Run: `cargo clippy -p octopus-server --all-targets 2>&1 | tail -20`
 Expected: 编译通过，**零 warning**（`WsStreamSession`/`event_to_json` 已被 `handle_ws` 使用，dead_code 消除）。若 `Message`/`Query`/`State` 等已有 import 缺失，按编译器提示补齐。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/server/src/main.rs
@@ -381,7 +381,7 @@ git commit -m "refactor(server): handle_ws 迁 WsStreamSession + 删 detect_sile
 **Files:**
 - Modify: `crates/server/src/main.rs:118-122`（`transcribe` 函数内的引擎调用）
 
-- [ ] **Step 1: 替换引擎调用**
+- [x] **Step 1: 替换引擎调用**
 
 在 `crates/server/src/main.rs` 的 `transcribe` 函数内，把这段（L121-122）：
 
@@ -400,17 +400,17 @@ git commit -m "refactor(server): handle_ws 迁 WsStreamSession + 删 detect_sile
 
 说明：`switch_model(engine)` 保留（`transcribe_batch` 用 active engine，需先切）；`language: &str` 直接传 `PipelineConfig::from_app_config(language: &str)`；`transcribe_batch(&samples, &cfg) -> Result<String>` 与旧 `transcribe` 返回类型一致，`and_then` 链不变。`TranscribeResponse { text, duration_ms, rtf }` 格式不变。
 
-- [ ] **Step 2: cargo check + clippy**
+- [x] **Step 2: cargo check + clippy**
 
 Run: `cargo clippy -p octopus-server --all-targets 2>&1 | tail -20`
 Expected: 编译通过，零 warning。若旧 `transcribe` 方法在 `AsrEngineManager` 上删除后无其他调用方，编译器会提示——本计划不删 `AsrEngineManager::transcribe`（可能仍有其他用途，留待后续清理）。
 
-- [ ] **Step 3: 跑 server 全部单测确认无回归**
+- [x] **Step 3: 跑 server 全部单测确认无回归**
 
 Run: `cargo test -p octopus-server 2>&1 | tail -15`
 Expected: Task 1 的 3 个测试仍 `3 passed; 0 failed`。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/server/src/main.rs
@@ -429,7 +429,7 @@ TranscribeResponse 格式不变。"
 - Verify: 全 workspace
 - Modify: `docs/superpowers/specs/2026-06-25-asr-server-stage3-design.md`（§4.1 签名回写）、`docs/superpowers/specs/2026-06-23-asr-pipeline-design.md`（横幅阶段3）、`docs/architecture.md`（server crate 描述）
 
-- [ ] **Step 1: 全 workspace 编译 + 测试 + clippy**
+- [x] **Step 1: 全 workspace 编译 + 测试 + clippy**
 
 Run:
 ```bash
@@ -438,11 +438,11 @@ cargo clippy --workspace --all-targets 2>&1 | grep -E "warning|error" | head
 ```
 Expected: workspace lib 测试全绿（含 Task 1 的 3 个 server 单测）；clippy 零新 warning（server crate 无 `unused`/`dead_code`）。
 
-- [ ] **Step 2: 回写 spec §4.1 签名微调**
+- [x] **Step 2: 回写 spec §4.1 签名微调**
 
 在 `docs/superpowers/specs/2026-06-25-asr-server-stage3-design.md` §4.1，把 `WsStreamSession::new` 的签名说明由 `new(engine: &str, correct)` 改为 `new(engine: Box<dyn StreamingEngine>, correct)`，并在代码块与文字说明中体现「`handle_ws` 负责调 `StreamingSession::new(&engine)` 后装箱传入；解耦 + 可注入 fake 单测」。同步更新 §4.1 代码块与 §10 迁移映射表对应行。
 
-- [ ] **Step 3: 总 spec 横幅标注阶段3 已实施**
+- [x] **Step 3: 总 spec 横幅标注阶段3 已实施**
 
 在 `docs/superpowers/specs/2026-06-23-asr-pipeline-design.md` 横幅（L4-12 附近）追加一行：
 
@@ -452,11 +452,11 @@ Expected: workspace lib 测试全绿（含 Task 1 的 3 个 server 单测）；c
 
 并修订 §7「本次不迁 server」措辞：注明「本次」= 阶段1/2，阶段3 已补齐。
 
-- [ ] **Step 4: 同步 `architecture.md` server crate 描述**
+- [x] **Step 4: 同步 `architecture.md` server crate 描述**
 
 在 `docs/architecture.md` 的 server crate 段落（或 crates 列表），把 server 描述从「单文件 main.rs，裸调 StreamingSession」更新为「`pipeline.rs`（WsStreamSession 薄包 StreamingRunner + event_to_json）+ `main.rs`（路由）；流式/批处理均走 asr helper」。
 
-- [ ] **Step 5: e2e 手动回归清单（交付前必跑）**
+- [ ] **Step 5: e2e 手动回归清单（待用户本地，需 ASR 模型环境；代码/单测/文档已完成 2026-06-26）**
 
 起服务并验证两条路径（需本地有 ASR 模型 + VAD 模型，参考 desktop e2e 环境）：
 
@@ -476,7 +476,7 @@ curl -s -X POST "http://localhost:3000/transcribe?engine=<engine>&language=zh" \
 
 若行为与旧路径有差异（尤其静音 flush 时机），记录并评估是否需调整（以 `StreamingRunner` 为准——desktop 已验证）。
 
-- [ ] **Step 6: Commit 文档 + 交付报告**
+- [x] **Step 6: Commit 文档 + 交付报告**
 
 ```bash
 git add docs/superpowers/specs/2026-06-25-asr-server-stage3-design.md \

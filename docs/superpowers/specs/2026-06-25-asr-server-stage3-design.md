@@ -45,8 +45,7 @@
 ```rust
 // crates/server/src/pipeline.rs
 use anyhow::Result;
-use octopus_asr::streaming_engine::StreamingSession;
-use octopus_asr::streaming_runner::{StreamingRunner, TranscriptEvent};
+use octopus_asr::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
 
 /// WS 流式会话：薄包 asr `StreamingRunner`（含 VAD 预热 + accept/flush/finish + 纠错）。
 /// 不含 polish / denoise（spec §3.8/§3.6：留端，server 不依赖 llm/cpal）。
@@ -55,13 +54,13 @@ pub struct WsStreamSession {
 }
 
 impl WsStreamSession {
-    /// 由 DB engine 名构造：StreamingSession::new → Box<dyn StreamingEngine> → StreamingRunner::new。
+    /// 由已构造的流式引擎装箱传入（解耦 `StreamingSession`，便于测试注入 fake）。
     /// `correct` 来自 app_config.asr_correct（与批处理 PipelineConfig.correct 同源）。
-    /// 失败（未知 engine / VAD 初始化）返 Err，由 handle_ws 回推 {type:error} 后 return。
-    pub fn new(engine: &str, correct: bool) -> Result<Self> {
-        let session = StreamingSession::new(engine)?;
+    /// 失败（VAD 初始化）返 Err，由 handle_ws 回推 {type:error} 后 return。
+    /// engine 名校验 + `StreamingSession::new(&engine)` 由 `handle_ws` 负责（见 §5）。
+    pub fn new(engine: Box<dyn StreamingEngine>, correct: bool) -> Result<Self> {
         Ok(Self {
-            runner: StreamingRunner::new(Box::new(session), correct)?,
+            runner: StreamingRunner::new(engine, correct)?,
         })
     }
 
@@ -166,6 +165,8 @@ body PCM → read_wav_16k_from_bytes（或 raw f32 兜底）
 
 ## 8. 删除项（零行为差异）
 
+> **唯一预期差异——VAD preroll**（code review I-1）：新路径经 `StreamingRunner::new` 构造时 `preroll_vad`（喂 10 帧静音预热 Silero LSTM，搬自 `coordinator.rs`），旧 `detect_silence_gap_local` 无预热。效果是会话开头几帧 VAD 概率更稳定 → 标点触发时机更准（对齐 desktop 已验证行为），属**预期改善**，非 regression。另：accept/flush 错误路径更严格（旧 `_ => {}` 吞错，新区分 `Ok(None)` 静默 vs `Err → Error` 事件）——同样属改善。
+
 - `detect_silence_gap_local`（~45 行手搓 VAD：512 chunk / 0.5 阈值 / 0.5s 静音）→ `StreamingRunner` 内部已收编等价逻辑
 - 裸 `StreamingSession` + 手写 `accept_samples`/`flush`/`finish` 循环 → `WsStreamSession`
 - 手拼 `{text,final}` / `{error}` JSON → `event_to_json`
@@ -175,7 +176,7 @@ body PCM → read_wav_16k_from_bytes（或 raw f32 兜底）
 
 **单测**（`server/src/pipeline.rs` 纯逻辑，无需起 server）：
 - `event_to_json`：4 variant 各一条断言（含 `text` 转义：`"` / `\` / `\n`）
-- `WsStreamSession`（用真 `StreamingSession` + 小音频样本）：feed 产 `Partial`/`Committed`、finish 产 `Final`、reset 后可复用
+- `WsStreamSession`（注入 `FakeStreamingEngine`，无需 VAD 模型）：feed 产 `Partial`（accept Some）/ 第二帧空（accept None）、finish 产 `Final`
 
 **e2e**（起 server，回归）：
 - WS：发 16k PCM → 验 `{type:...}` 事件序列（含静音后 `committed`、`flush` 后 `final`）
@@ -185,7 +186,7 @@ body PCM → read_wav_16k_from_bytes（或 raw f32 兜底）
 
 | 现有（server/main.rs） | 新位置 | 说明 |
 |---|---|---|
-| `StreamingSession::new(&engine)` 裸调 | `WsStreamSession::new` → `StreamingRunner::new(Box::new(session), correct)` | 包进 runner |
+| `StreamingSession::new(&engine)` 裸调 | `handle_ws` 构 `StreamingSession` → `WsStreamSession::new(Box::new(session), correct)` → `StreamingRunner::new` | engine 构造留 handle_ws，WsStreamSession 只收 `Box<dyn StreamingEngine>`（解耦 + 可注入 fake） |
 | `detect_silence_gap_local` 手搓 VAD | 删除（`StreamingRunner` 内部 VAD） | 阈值一致 0.5s |
 | `streaming_session.accept_samples/flush/finish` 手写循环 | `WsStreamSession::feed`/`finish` | 委托 runner |
 | 手拼 `{text,final}`/`{error}` JSON | `event_to_json` | match TranscriptEvent |
