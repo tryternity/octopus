@@ -8,6 +8,7 @@
 //! 消除原 4 个 provider 各自的 `XxxStreamSession` struct + 4 方法 × 4 = 16 个重复实现。
 
 use anyhow::{anyhow, bail, Result};
+use std::sync::atomic::{AtomicBool, Ordering};
 use tokio::sync::mpsc;
 
 /// PCM 帧指令：coordinator → 后台 WS task
@@ -40,6 +41,11 @@ const CLOUD_CLOSE_TIMEOUT_SECS: u64 = 8;
 pub struct CloudStreamHandle {
     pcm_tx: mpsc::UnboundedSender<PcmFrame>,
     result_rx: mpsc::UnboundedReceiver<StreamEvent>,
+    /// Finish 幂等守卫：首个 `finish()` / `close_async()` 发 `Finish` 后置 true，
+    /// 后续调用跳过——防 tick 的 `sess.finish()` 与 `close_async` 双发 `Finish`，
+    /// 导致服务端收到两次 finish-task/末帧/end/FINISH（4 provider 的 WS task 收到
+    /// `Finish` 都只发服务端信号、不退出循环，第二个 `Finish` 会被原样处理）。
+    finished: AtomicBool,
 }
 
 impl CloudStreamHandle {
@@ -56,7 +62,15 @@ impl CloudStreamHandle {
     ) {
         let (pcm_tx, pcm_rx) = mpsc::unbounded_channel::<PcmFrame>();
         let (result_tx, result_rx) = mpsc::unbounded_channel::<StreamEvent>();
-        (Self { pcm_tx, result_rx }, pcm_rx, result_tx)
+        (
+            Self {
+                pcm_tx,
+                result_rx,
+                finished: AtomicBool::new(false),
+            },
+            pcm_rx,
+            result_tx,
+        )
     }
 
     /// 仅供测试：构造 handle + result 发送端（预载事件用）。不暴露 pcm_rx / `pub(crate) PcmFrame`。
@@ -78,7 +92,13 @@ impl CloudStreamHandle {
     }
 
     /// 非阻塞发送 Finish 信号，不等待结果。
+    ///
+    /// **幂等**：首个调用发 `Finish` 并置 `finished=true`，后续调用（含 `close_async`）直接
+    /// 返回 `Ok(())`——防止调用方「先 `finish()` 再 `close_async()`」时双发 `Finish`。
     pub fn finish(&self) -> Result<()> {
+        if self.finished.swap(true, Ordering::Relaxed) {
+            return Ok(());
+        }
         self.pcm_tx
             .send(PcmFrame::Finish)
             .map_err(|_| anyhow!("cloud PCM channel closed"))
@@ -89,12 +109,18 @@ impl CloudStreamHandle {
         self.result_rx.try_recv().ok()
     }
 
-    /// 非阻塞收尾的 async 内核：发 Finish + 收最终结果（超时上限 `CLOUD_CLOSE_TIMEOUT_SECS`）。
+    /// 非阻塞收尾的 async 内核：发 Finish（若未发过）+ 收最终结果（超时上限 `CLOUD_CLOSE_TIMEOUT_SECS`）。
     ///
     /// coordinator 停止路径 spawn 本 future，结果以 `Command::CloudStreamingDone`
     /// 回传，期间进 `Stage::CloudClosing`——避免同步 `block_on` 卡 coordinator 主线程。
+    ///
+    /// **幂等**：若 `finish()` 已发过 `Finish`（`finished=true`）则不重发，只收结果——
+    /// 防「tick 的 `sess.finish()` + `close_async`」双发 `Finish` 到服务端。
     pub async fn close_async(self) -> Result<String> {
-        let _ = self.pcm_tx.send(PcmFrame::Finish);
+        // 幂等：finish() 已发过则不重发（防双发）；未发过才补发收尾。
+        if !self.finished.swap(true, Ordering::Relaxed) {
+            let _ = self.pcm_tx.send(PcmFrame::Finish);
+        }
         let mut rx = self.result_rx;
         let mut text = String::new();
         tokio::time::timeout(
@@ -167,5 +193,41 @@ mod tests {
             matches!(handle.try_recv_text(), Some(StreamEvent::Text(t)) if t == "hello"),
             "new_for_test 预载的事件应能被 try_recv_text 取到"
         );
+    }
+
+    #[test]
+    fn finish_is_idempotent() {
+        // finish() 幂等：连调两次只发一个 Finish（防 tick sess.finish 与 close_async 双发）。
+        let (handle, mut pcm_rx, _result_tx) = CloudStreamHandle::new();
+        handle.finish().unwrap();
+        handle.finish().unwrap(); // 第二次 swap 已 true → 跳过，不报错
+        let mut finish_count = 0;
+        while let Ok(frame) = pcm_rx.try_recv() {
+            if matches!(frame, PcmFrame::Finish) {
+                finish_count += 1;
+            }
+        }
+        assert_eq!(finish_count, 1, "finish() 幂等，只应发一个 Finish");
+    }
+
+    #[tokio::test]
+    async fn close_async_after_finish_skips_resend() {
+        // finish() 先发 Finish 置 finished=true，close_async 不应重发（防双发到服务端）。
+        let (handle, mut pcm_rx, result_tx) = CloudStreamHandle::new();
+        handle.finish().unwrap(); // 发 Finish #1，置 finished=true
+        // 预发结果让 close_async 不超时（CLOUD_CLOSE_TIMEOUT_SECS=8s）
+        result_tx.send(StreamEvent::Text("hi".into())).ok();
+        result_tx.send(StreamEvent::Finished).ok();
+        drop(result_tx);
+        let text = handle.close_async().await.unwrap();
+        assert_eq!(text, "hi");
+        // close_async 应跳过 Finish：pcm_rx 只剩 finish() 发的那一个
+        let mut finish_count = 0;
+        while let Ok(frame) = pcm_rx.try_recv() {
+            if matches!(frame, PcmFrame::Finish) {
+                finish_count += 1;
+            }
+        }
+        assert_eq!(finish_count, 1, "close_async 在 finish() 之后不应重发 Finish");
     }
 }
