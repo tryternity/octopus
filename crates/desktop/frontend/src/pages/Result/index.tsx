@@ -193,6 +193,7 @@ function Result() {
   // ── Edit mode ──
   const enterEdit = useCallback(() => {
     if (editingRef.current) return;
+    if (!displayedRef.current.trim()) return;
     setEditing(true);
     setIsRecording(false);
     showToolbar();
