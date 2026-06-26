@@ -73,9 +73,9 @@ export default function Clipboard() {
             <span className="text-xs">暂无记录</span>
           </div>
         ) : (
-          <div className="flex flex-col gap-0.5">
-            {items.map((item) => (
-              <ClipboardItemRow key={item.id} item={item} onChanged={refresh} />
+          <div className="flex flex-col">
+            {items.map((item, index) => (
+              <ClipboardItemRow key={item.id} item={item} index={index} onChanged={refresh} />
             ))}
           </div>
         )}
