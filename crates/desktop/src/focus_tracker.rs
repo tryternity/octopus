@@ -73,9 +73,15 @@ fn restore_focus_platform() {
 #[cfg(target_os = "macos")]
 fn simulate_paste_platform() {
     use std::process::Command;
-    // 焦点已确认在目标应用上（restore_focus 已处理），直接 keystroke
-    let script = r#"tell application "System Events" to keystroke "v" using command down"#;
-    log::info!("simulate_paste: osascript keystroke Cmd+V");
+    // 强制前台进程重新获取 key window 焦点，再 keystroke
+    // 用 System Events 的 process 属性而非 application name（避免 -1728）
+    let script = r#"tell application "System Events"
+        set p to first process whose frontmost is true
+        set frontmost of p to true
+        delay 0.15
+        keystroke "v" using command down
+    end tell"#;
+    log::info!("simulate_paste: osascript frontmost + keystroke");
     match Command::new("osascript").args(["-e", script]).output() {
         Ok(out) => {
             if !out.status.success() {
