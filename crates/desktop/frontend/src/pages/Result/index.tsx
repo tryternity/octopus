@@ -2,11 +2,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import {
-  X, Settings, Mic, Waves, Sparkles, Wand2, Zap, Pencil, Save,
-  type LucideIcon,
-} from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SvgIcon, type IconName } from "@/components/SvgIcon";
 
 const DIVERTED_DELAY_MS = 300;
 
@@ -327,19 +324,19 @@ function Result() {
     win.startDragging();
   };
 
-  const tools: { id: string; icon: LucideIcon; label: string; active?: boolean; disabled?: boolean; onClick: () => void }[] = [
-    { id: "close", icon: X, label: "关闭", onClick: () => invoke("discard_recording") },
-    { id: "settings", icon: Settings, label: "系统设置", onClick: () => invoke("open_settings") },
-    { id: "asr", icon: Mic, label: "语音模型", active: true, onClick: openAsrPopup },
-    { id: "denoise", icon: Waves, label: "降噪模式", active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
-    { id: "llm", icon: Sparkles, label: "润色模型", active: toolbarState.polish_llm_valid, onClick: openLlmPopup },
-    { id: "polish", icon: Wand2, label: "润色模式", active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
-    { id: "polish-now", icon: Zap, label: "立即润色", disabled: polishLoading, onClick: async () => {
+  const tools: { id: string; icon: IconName; label: string; active?: boolean; disabled?: boolean; onClick: () => void }[] = [
+    { id: "close", icon: "close", label: "关闭", onClick: () => invoke("discard_recording") },
+    { id: "settings", icon: "settings", label: "系统设置", onClick: () => invoke("open_settings") },
+    { id: "asr", icon: "asr", label: "语音模型", active: true, onClick: openAsrPopup },
+    { id: "denoise", icon: "denoise", label: "降噪模式", active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
+    { id: "llm", icon: "llm", label: "润色模型", active: toolbarState.polish_llm_valid, onClick: openLlmPopup },
+    { id: "polish", icon: "polish", label: "润色模式", active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
+    { id: "polish-now", icon: "polish-now", label: "立即润色", disabled: polishLoading, onClick: async () => {
       setPolishLoading(true);
       try { await invoke("polish_now"); showToast("润色中…"); }
       catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
     } },
-    { id: "edit", icon: editing ? Save : Pencil, label: editing ? "保存编辑" : "编辑", active: editing, disabled: !text.trim() && !editing, onClick: toggleEdit },
+    { id: "edit", icon: editing ? "save" : "edit", label: editing ? "保存编辑" : "编辑", active: editing, disabled: !text.trim() && !editing, onClick: toggleEdit },
   ];
 
   return (
@@ -368,7 +365,7 @@ function Result() {
           )}
           onMouseDown={onDragStart}
         >
-          {tools.map(({ id, icon: Icon, label, active, disabled, onClick }) => (
+          {tools.map(({ id, icon, label, active, disabled, onClick }) => (
             <button
               key={id}
               className={cn(
@@ -382,7 +379,7 @@ function Result() {
               disabled={disabled}
               onClick={onClick}
             >
-              <Icon className="w-[14px] h-[14px]" strokeWidth={1.5} />
+              <SvgIcon name={icon} size={16} />
             </button>
           ))}
         </div>
