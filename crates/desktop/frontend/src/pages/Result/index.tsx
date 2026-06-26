@@ -234,9 +234,14 @@ function Result() {
     if (editBufTimer.current) clearTimeout(editBufTimer.current);
     const original = editSnapshotRef.current;
     setEditing(false);
-    renderResultNow(original);
+    // renderResultNow 更新 React state，但 contentEditable DOM 需手动恢复
+    displayedRef.current = original;
+    setText(original);
+    if (textRef.current) {
+      textRef.current.innerText = original;
+    }
     invoke("commit_edit", { text: original });
-  }, [renderResultNow]);
+  }, []);
 
   const toggleEdit = useCallback(() => {
     editingRef.current ? commitEdit() : enterEdit();
