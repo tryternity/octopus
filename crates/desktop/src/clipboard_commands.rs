@@ -111,22 +111,19 @@ pub async fn paste_clipboard_item(
     }
     drop(win);
 
-    // 3. 恢复焦点到上一个应用 + paste（同一线程）
+    // 3. 恢复焦点 + 粘贴（同一线程）
     let text = item.content;
     let handle = handle.inner().clone();
     let focus = focus.inner().clone();
     std::thread::spawn(move || {
-        // 主动切焦点（macOS Accessory 应用 hide 后不自动还焦点）
-        focus.restore_focus();
-        // 等焦点切换
+        // 1. 写剪贴板
+        let _ = handle.write_text(&text);
+        // 2. hide 后 macOS 自动还焦点（已确认 sublime_text 获得焦点）
+        // 3. 等焦点稳定
         std::thread::sleep(std::time::Duration::from_millis(300));
-        // paste::paste: write_text + sleep(50ms) + Cmd+V + sleep(200ms)
-        let config = crate::config::AppConfig {
-            write_to_clipboard: true,
-            paste_method: "clipboard".into(),
-            ..Default::default()
-        };
-        let _ = crate::paste::paste(&text, &handle, &config);
+        // 4. osascript 发 Cmd+V 给当前前台应用（不经过 enigo）
+        focus.restore_focus();
+        focus.simulate_paste();
     });
 
     Ok(())
