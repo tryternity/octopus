@@ -311,6 +311,7 @@ fn build_client_frame(
 
 /// 解析后的服务端帧。
 #[allow(dead_code)]
+#[derive(Debug)]
 struct ParsedServerFrame {
     msg_type: u8,
     flags: u8,
@@ -347,10 +348,17 @@ fn parse_server_frame(data: &[u8]) -> Result<ParsedServerFrame> {
     let sequence = u32::from_be_bytes([data[4], data[5], data[6], data[7]]);
     let payload_size = u32::from_be_bytes([data[8], data[9], data[10], data[11]]) as usize;
 
+    // data 已是 tungstenite 重组的完整 WS 消息，payload_size 超过实际字节数属应用层
+    // 协议异常——直接 bail，否则截断 payload 进下游（gzip/JSON 报"解析失败"、
+    // ERROR_RESPONSE 经 from_utf8_lossy 静默截断 error_msg），都掩盖了根因。
     let payload = if data.len() >= 12 + payload_size {
         data[12..12 + payload_size].to_vec()
     } else {
-        data[12..].to_vec() // 尽量取
+        bail!(
+            "payload 不完整：header 声明 {} 字节，但帧仅余 {} 字节",
+            payload_size,
+            data.len() - 12
+        );
     };
 
     Ok(ParsedServerFrame {
@@ -474,5 +482,22 @@ mod tests {
         assert_eq!(parsed.msg_type, MSG_ERROR_RESPONSE);
         assert_eq!(parsed.sequence, 45000001); // error code 存在 sequence 位
         assert_eq!(String::from_utf8_lossy(&parsed.payload), error_msg);
+    }
+
+    #[test]
+    fn test_parse_server_frame_truncated_payload() {
+        // payload_size 声明 100 但实际只给 5 字节 → 应 bail（不再"尽量取"截断，
+        // 避免下游 gzip/JSON 报"解析失败"或 ERROR_RESPONSE lossy 静默截断 error_msg 掩盖根因）。
+        let mut frame: Vec<u8> = vec![0x11, 0x91, 0x11, 0x00]; // ver/hdr, FULL_SERVER_RESPONSE+POS_SEQUENCE, JSON+GZIP, reserved
+        frame.extend_from_slice(&1u32.to_be_bytes()); // sequence
+        frame.extend_from_slice(&100u32.to_be_bytes()); // payload_size=100（远超实际）
+        frame.extend_from_slice(b"hello"); // 实际仅 5 字节 payload
+        let err = parse_server_frame(&frame).unwrap_err();
+        let msg = format!("{}", err);
+        assert!(
+            msg.contains("payload 不完整") && msg.contains("100"),
+            "截断帧应 bail 并点明 payload_size 与实际不符，实际报错: {}",
+            msg
+        );
     }
 }
