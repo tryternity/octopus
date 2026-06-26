@@ -9,6 +9,7 @@ release
 test.pcm
 tmp.wav
 /.worktrees/
+/node_modules/
 fanjian
 /fanjian/
 DeepFilterNet
