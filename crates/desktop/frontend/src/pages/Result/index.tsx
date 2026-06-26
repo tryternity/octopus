@@ -337,22 +337,23 @@ function Result() {
         visible ? "opacity-100" : "opacity-0",
       )}
     >
-      {/* Top bar: drag handle + toolbar */}
+      {/* Top bar: toolbar + drag handle + voice line */}
       <div className="flex-shrink-0 flex flex-col">
-        {/* Toolbar — 纯图标，hover 变蓝 */}
+        {/* Toolbar — 纯图标，hover 变蓝，整行可拖拽 */}
         <div
           className={cn(
-            "flex items-center gap-[2px] px-1.5 pt-1 transition-opacity duration-150",
+            "flex items-center gap-[2px] px-1.5 pt-1 transition-opacity duration-150 cursor-grab active:cursor-grabbing",
             toolbarState.hide_toolbar === false
               ? "opacity-100"
               : toolbarVisible ? "opacity-100" : "opacity-0",
           )}
+          onMouseDown={onDragStart}
         >
           {tools.map(({ id, icon: Icon, label, active, disabled, onClick }) => (
             <button
               key={id}
               className={cn(
-                "tool-btn w-[24px] h-[24px] flex items-center justify-center rounded-[5px] transition-colors",
+                "tool-btn w-[24px] h-[24px] flex items-center justify-center rounded-[5px] transition-colors cursor-default",
                 "text-black/[0.55] hover:text-[#007aff] hover:bg-black/[0.05]",
                 active && "text-[#007aff]",
                 disabled && "text-black/[0.18] cursor-default hover:bg-transparent hover:text-black/[0.18]",
@@ -373,12 +374,21 @@ function Result() {
             onMouseDown={onDragStart}
           />
         </div>
+        {/* Voice signature: 脉冲线 / 编辑态底线 */}
+        {isRecording && !editing && (
+          <div className="relative h-px bg-voice/30 mx-3.5">
+            <div className="h-full w-8 bg-voice/80 animate-pulse" />
+          </div>
+        )}
+        {editing && (
+          <div className="h-0.5 bg-voice/30 mx-0" />
+        )}
       </div>
 
       {/* Text display */}
       <div
         className={cn(
-          "flex-1 px-3.5 pt-0.5 pb-2 overflow-hidden relative transition-colors",
+          "flex-1 px-3.5 pt-1 pb-2 overflow-hidden relative transition-colors",
           editing && "bg-voice/[0.06]",
         )}
       >
@@ -395,16 +405,6 @@ function Result() {
         >
           {text}
         </div>
-
-        {/* Voice signature: 录音中底部脉冲线 */}
-        {isRecording && !editing && (
-          <div className="absolute bottom-0 left-3.5 right-3.5 h-px bg-voice/40">
-            <div className="h-full w-8 bg-voice/80 animate-pulse" />
-          </div>
-        )}
-        {editing && (
-          <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-voice/30" />
-        )}
       </div>
 
       {/* Bottom toolbar removed — moved to top */}
