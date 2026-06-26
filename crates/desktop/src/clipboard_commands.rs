@@ -111,12 +111,16 @@ pub async fn paste_clipboard_item(
     }
     drop(win);
 
-    // 3. 复用 paste::paste（已验证可靠）——同一线程内 write_text + sleep + Cmd+V
+    // 3. 恢复焦点到上一个应用 + paste（同一线程）
     let text = item.content;
     let handle = handle.inner().clone();
+    let focus = focus.inner().clone();
     std::thread::spawn(move || {
-        // 等焦点回到上一个应用
+        // 主动切焦点（macOS Accessory 应用 hide 后不自动还焦点）
+        focus.restore_focus();
+        // 等焦点切换
         std::thread::sleep(std::time::Duration::from_millis(300));
+        // paste::paste: write_text + sleep(50ms) + Cmd+V + sleep(200ms)
         let config = crate::config::AppConfig {
             write_to_clipboard: true,
             paste_method: "clipboard".into(),

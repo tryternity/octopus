@@ -42,7 +42,22 @@ fn start_platform_listener() {
 
 #[cfg(target_os = "macos")]
 fn restore_focus_platform() {
-    // macOS no-op：剪贴板窗口 hide 后系统自动激活上一个前台应用
+    // octopus 是 Accessory 应用（无 Dock），窗口 hide 后 macOS 不自动还焦点。
+    // 用 osascript 把焦点切回上一个前台应用。
+    use std::process::Command;
+    let script = r#"tell application "System Events"
+        set frontMost to name of first process whose frontmost is true
+        if frontMost is "octopus" then
+            -- 焦点还在 octopus，切到上一个应用
+            repeat with p in (every process whose background only is false)
+                if name of p is not "octopus" and name of p is not "osascript" then
+                    set frontmost of p to true
+                    return
+                end if
+            end repeat
+        end if
+    end tell"#;
+    let _ = Command::new("osascript").args(["-e", script]).output();
 }
 
 #[cfg(target_os = "macos")]
