@@ -215,6 +215,7 @@ pub fn run() {
             clipboard_commands::clear_clipboard_history,
             clipboard_commands::copy_clipboard_item,
             clipboard_commands::clipboard_stats,
+            clipboard_commands::paste_clipboard_item,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)

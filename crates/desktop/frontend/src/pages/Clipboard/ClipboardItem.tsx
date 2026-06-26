@@ -6,10 +6,14 @@ import type { ClipboardItem } from "@/types/clipboard";
 export default function ClipboardItemRow({
   item,
   isLast,
+  isSelected,
+  onSelect,
   onChanged,
 }: {
   item: ClipboardItem;
   isLast: boolean;
+  isSelected: boolean;
+  onSelect: () => void;
   onChanged: () => void;
 }) {
   const handleFavorite = async (e: React.MouseEvent) => {
@@ -32,9 +36,13 @@ export default function ClipboardItemRow({
     }
   };
 
-  const handleClick = async () => {
+  const handleClick = () => {
+    onSelect();
+  };
+
+  const handleDoubleClick = async () => {
     try {
-      await invoke("copy_clipboard_item", { id: item.id });
+      await invoke("paste_clipboard_item", { id: item.id });
     } catch (e) {
       console.error(e);
     }
@@ -49,8 +57,12 @@ export default function ClipboardItemRow({
 
   return (
     <div
-      className="group relative flex items-start gap-2 px-2.5 py-2 cursor-pointer hover:bg-accent transition-colors"
+      className={cn(
+        "group relative flex items-start gap-2 px-2.5 py-2 cursor-pointer transition-colors",
+        isSelected ? "bg-accent" : "hover:bg-accent",
+      )}
       onClick={handleClick}
+      onDoubleClick={handleDoubleClick}
     >
       {isVoice && (
         <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-voice/60" />

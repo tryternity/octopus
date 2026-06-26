@@ -77,3 +77,37 @@ pub async fn clipboard_stats() -> Result<i64, String> {
     })
     .map_err(|e| e.to_string())
 }
+
+/// 双击条目：写剪贴板 + 模拟 Cmd+V 粘贴到目标应用
+#[tauri::command]
+pub async fn paste_clipboard_item(
+    id: i64,
+    handle: State<'_, Arc<ClipboardHandle>>,
+) -> Result<(), String> {
+    // 从 DB 读条目内容
+    let content = octopus_infra::db::with_db(|conn| {
+        let items = octopus_clipboard::store::query_history(conn, &octopus_clipboard::QueryFilter {
+            filter: "all".into(),
+            search: None,
+            page: 1,
+            size: 1,
+        })?;
+        Ok::<_, anyhow::Error>(items)
+    })
+    .map_err(|e| e.to_string())?;
+
+    if let Some(item) = content.into_iter().find(|i| i.id == id) {
+        if item.item_type == octopus_clipboard::ItemType::Text {
+            let text = item.content;
+            let handle = handle.inner().clone();
+            std::thread::spawn(move || {
+                let config = crate::config::AppConfig {
+                    write_to_clipboard: true,
+                    ..Default::default()
+                };
+                let _ = crate::paste::paste(&text, &handle, &config);
+            });
+        }
+    }
+    Ok(())
+}

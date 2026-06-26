@@ -12,6 +12,7 @@ export default function Clipboard() {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [pinned, setPinned] = useState(false);
+  const [selectedId, setSelectedId] = useState<number | null>(null);
 
   const { items, total, refresh } = useClipboardHistory(filter, search);
 
@@ -74,7 +75,14 @@ export default function Clipboard() {
           </div>
         ) : (
           items.map((item, index) => (
-            <ClipboardItemRow key={item.id} item={item} isLast={index === items.length - 1} onChanged={refresh} />
+            <ClipboardItemRow
+              key={item.id}
+              item={item}
+              isLast={index === items.length - 1}
+              isSelected={selectedId === item.id}
+              onSelect={() => setSelectedId(item.id)}
+              onChanged={refresh}
+            />
           ))
         )}
       </div>
