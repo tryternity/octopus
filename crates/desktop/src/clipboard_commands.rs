@@ -114,15 +114,19 @@ pub async fn paste_clipboard_item(
     // 3. hide 剪贴板窗口（在主线程执行）
     let win = app_handle.get_webview_window("clipboard_window");
     if let Some(w) = &win {
+        log::info!("paste_clipboard_item: hiding clipboard window");
         let _ = w.hide();
+    } else {
+        log::warn!("paste_clipboard_item: clipboard window not found");
     }
-    drop(win); // 释放窗口引用
+    drop(win);
 
-    // 4. 焦点恢复（macOS no-op）+ 延迟 + 粘贴——在 spawn_blocking 不阻塞命令池
+    // 4. 焦点恢复 + 延迟 + 粘贴
     let focus = focus.inner().clone();
     tokio::task::spawn_blocking(move || {
+        log::info!("paste_clipboard_item: restore_focus + delay + paste");
         focus.restore_focus();
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::thread::sleep(std::time::Duration::from_millis(500));
         focus.simulate_paste();
     });
 

@@ -48,9 +48,27 @@ fn restore_focus_platform() {
 #[cfg(target_os = "macos")]
 fn simulate_paste_platform() {
     use std::process::Command;
+
+    // 先确认当前前台应用
+    let front_app = Command::new("osascript")
+        .args(["-e", r#"tell application "System Events" to get name of first process whose frontmost is true"#])
+        .output();
+    if let Ok(out) = &front_app {
+        log::info!("simulate_paste: frontmost app = {}", String::from_utf8_lossy(&out.stdout).trim());
+    }
+
     let script = r#"tell application "System Events" to keystroke "v" using command down"#;
-    if let Err(e) = Command::new("osascript").args(["-e", script]).output() {
-        log::warn!("osascript paste failed: {}", e);
+    log::info!("simulate_paste: running osascript Cmd+V");
+    match Command::new("osascript").args(["-e", script]).output() {
+        Ok(out) => {
+            if !out.status.success() {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                log::warn!("osascript paste failed (exit {:?}): {}", out.status, stderr);
+            } else {
+                log::info!("osascript paste succeeded");
+            }
+        }
+        Err(e) => log::warn!("osascript command failed: {}", e),
     }
 }
 
