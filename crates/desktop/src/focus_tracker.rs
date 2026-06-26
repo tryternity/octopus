@@ -7,15 +7,6 @@
 //! - Windows：SetWinEventHook + SetForegroundWindow + enigo Shift+Insert（Task 2）
 //! - Linux：X11 focus event + XRaiseWindow + enigo Shift+Insert（Task 3）
 
-use std::sync::{Arc, Mutex, OnceLock};
-
-/// 全局存储上一个前台窗口/应用的标识（Windows HWND / Linux X11 Window）。
-static PREVIOUS_WINDOW: OnceLock<Mutex<Option<i64>>> = OnceLock::new();
-
-fn prev_lock() -> &'static Mutex<Option<i64>> {
-    PREVIOUS_WINDOW.get_or_init(|| Mutex::new(None))
-}
-
 pub struct FocusTracker;
 
 impl FocusTracker {
