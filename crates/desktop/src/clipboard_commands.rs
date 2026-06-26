@@ -111,19 +111,21 @@ pub async fn paste_clipboard_item(
         return Ok(()); // 非 text 暂不支持自动粘贴
     }
 
-    // 3. hide 剪贴板窗口（macOS 自动还焦点）
-    if let Some(win) = app_handle.get_webview_window("clipboard_window") {
-        let _ = win.hide();
-    }
-
-    // 4. 恢复焦点（macOS no-op，Windows/Linux 主动恢复）
-    focus.restore_focus();
-
-    // 5. 延迟等焦点切换
-    std::thread::sleep(std::time::Duration::from_millis(200));
-
-    // 6. 模拟粘贴
-    focus.simulate_paste();
+    // 3-6. hide → restore → delay → paste 在独立线程，不阻塞 async 命令
+    let app_handle = app_handle.clone();
+    let focus = focus.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        // hide 剪贴板窗口（macOS 自动还焦点）
+        if let Some(win) = app_handle.get_webview_window("clipboard_window") {
+            let _ = win.hide();
+        }
+        // 恢复焦点（macOS no-op）
+        focus.restore_focus();
+        // 延迟等焦点切换
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        // 模拟粘贴
+        focus.simulate_paste();
+    });
 
     Ok(())
 }
