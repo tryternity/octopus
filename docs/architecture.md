@@ -7,13 +7,16 @@ octopus 是一个基于 ONNX Runtime 的语音识别（ASR）工具集，支持�
 ```
 octopus/
 ├── crates/
-│   ├── infra/       # 基础设施 (octopus-infra) — 常量 + octopus_config_home，无项目内依赖
-│   ├── asr/         # 核心推理库 (octopus-asr-local) — 含 db.rs（SQLite：模型配置+识别历史）
+│   ├── infra/       # 基础设施 (octopus-infra)
+│   ├── asr-local/   # 核心推理库 (octopus-asr-local)
+│   ├── asr-cloud/   # 云端 ASR 协议层 (octopus-asr-cloud)
+│   ├── clipboard/   # 剪贴板历史管理 (octopus-clipboard)
 │   ├── llm/         # LLM 润色 (octopus-llm)
 │   ├── cli/         # 命令行工具 (octopus-cli)
 │   ├── server/      # HTTP/WebSocket 服务 (octopus-server)
 │   ├── desktop/     # Tauri 桌面应用 (octopus-desktop)
-│   └── dlp/         # 模型下载工具 (octopus-dlp)
+│   ├── download/    # 模型下载 (octopus-download)
+│   └── dlp/         # 视频音频下载 (octopus-dlp)
 ├── docs/            # 文档
 └── usage.md         # 快速使用指南
 ```
@@ -22,7 +25,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一不再各自定义）+ `config`（`AppConfig`——应用配置的**统一 schema**，22 字段，asr/desktop/cli 共享）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `transcriptions` 表 / `prompts` 表）。未来加时间工具等。任何项目 crate 都可依赖它。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表）。DB 迁移至 v6。`with_db` 为公开 API 供其他 crate 调用。
 
 ### octopus-asr-local（核心推理库）
 
@@ -96,6 +99,25 @@ Client ──HTTP POST──→ /transcribe ──→ transcribe_batch（asr::pi
 Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingRunner) ──→ {type,text} JSON
 ```
 
+### octopus-clipboard（剪贴板历史管理）
+
+独立的剪贴板历史核心库，仅依赖 `octopus-infra`。基于 `clipboard-rs`（跨平台剪贴板读写 + 监听），替代了原来的 `tauri-plugin-clipboard-manager`。
+
+| 模块 | 说明 |
+|------|------|
+| `model` | 数据结构：`ItemType`（Text/Image/File）/ `Source`（Clipboard/Asr）/ `ClipboardItem`（含 `ImageMeta`/`FileMeta`/`AsrMeta`）/ `QueryFilter`（6 种过滤 + 分页 + 搜索）|
+| `handle` | `ClipboardHandle`：`Mutex<ClipboardContext>` 全局单例（Windows 防锁竞争）+ `AtomicBool` suppress flag（区分 ASR 写入与外部复制，watcher 跳过自身写入） |
+| `watcher` | `ClipboardWatcher`：后台线程跑 `ClipboardWatcherContext::start_watch()`（阻塞），`on_clipboard_change` 回调检查 suppress flag → 判断类型（files > image > text 优先级）→ 去重 → 存 DB → 通知前端 |
+| `store` | DB CRUD：`insert_clipboard_item` / `insert_asr_item`（source=asr，关联 transcription_id）/ `query_history`（LIKE 搜索 + 6 种过滤 + 分页）/ `toggle_favorite` / `delete_item` / `clear_history`（保留收藏）+ 去重（hash / text） |
+| `image` | PNG 编码（`image` crate）+ SHA-256 去重 + 缩略图 240×240（Lanczos3）+ 孤立 blob 回收。图片存 `~/.octopus/clipboard_images/<hash>.png` |
+| `cleanup` | 自动清理：按天数（默认 30）+ 按数量（默认 1000）删除非收藏记录 + 孤立 blob 回收 + FTS5 索引重建 |
+
+**监听机制（clipboard-rs 内置）：** macOS 轮询 `NSPasteboard.changeCount`（500ms）；Windows 事件驱动 `AddClipboardFormatListener`；Linux X11 XFixes 事件驱动；Linux Wayland 两级轮询（MIME 类型 + text 内容，500ms）。
+
+**ASR 集成：** `coordinator.rs::do_paste` 中先调 `store::insert_asr_item`（写 DB source=asr）再调 `paste::paste`（写剪贴板，suppress flag 阻止 watcher 重复记录）。
+
+**DB 表：** `clipboard_history`（全字段：item_type/source/content/search_text/is_favorite/created_at + image 元数据 blob_hash/width/height/has_thumbnail + file_count + is_rich + ASR 元数据 transcription_id/polish_status/engine/model）+ `clipboard_history_fts`（FTS5 虚表，trigram tokenizer）+ 3 触发器自动同步。
+
 ### octopus-desktop（桌面应用）
 
 基于 Tauri 2 的桌面应用，支持系统托盘、全局快捷键、结果窗口、流式识别。
@@ -112,7 +134,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 | 窗口 | 用途 |
 |------|------|
 | `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 100→132px），移出收起；8 个工具——**关闭**（首位，放弃内容保留 DB 记录）/ 系统设置 / 语音模型 / 降噪模式 / 润色模型 / 润色模式 / 立即润色 / 编辑。由 `app_config.hide_toolbar`（默认 `true`）控制：`true`=hover 显隐，`false`=始终显示。**运行时切换立即生效**：设置窗口改 `hide_toolbar` → emit `config-changed` 事件 → result window 的 `refreshActive()` 双向切换（`false`→移除 hover + 常驻展开；`true`→恢复 hover + 立即收起）。**历史**：曾同时存在 `recording_overlay` 窗口（独立 WebView 渲染进程），UI 统一到 result_window 后 overlay 已废弃，全部显示/隐藏调用均为 no-op（仅查 `get_webview_window("recording_overlay")`）。2026-06-21 审查修复：`overlay.rs` 模块整体删除，`create_overlay` 调用 + 9 处 `hide_overlay` 调用全移除，capabilities/default.json 的 `recording_overlay` 窗口标签亦删除——避免未可见 WebView 渲染进程常驻后台的资源浪费 |
-| `settings_window` | 独立设置窗口（原生标题栏、800×600 可调大小、最小 640×480）。三页面侧边栏布局：识别记录（倒序分页 + 批量删除 + 润色优先显示 + 拷贝）/ 系统设置（18 字段表单，卡片分组 + toggle/select/number input + 生效时间标签内联）/ 模型管理（`model_commands` + `models.js` 实现，见「模型管理」节）。单例管理：已打开则 `set_focus`。入口：工具栏设置按钮 + 托盘菜单「设置...」。8 个命令：`open_settings` / `get_config` / `set_config(key,value)` / `get_history` / `delete_history(ids)` / `check_shortcut(shortcut)` / `test_llm_connection(spec)` / `test_asr_connection(bare_name)` |
+| `settings_window` | 独立设置窗口（原生标题栏、圆角、可调大小）。四页面侧边栏布局：识别记录 / 系统设置 / 模型管理 / 提示词。React 组件化，表单用 react-hook-form。窗口位置记忆。 |
+| `clipboard_window` | 剪贴板历史浮窗（300×600，无边框圆角透明置顶，Alt+V 唤起，窗口位置记忆）。顶部标题栏（X + 「剪贴板」 + Pin），搜索框 + 6 类过滤（全部/语音/文本/图片/文件/收藏，纯图标 tooltip），列表（hairline 分隔线，ASR 条目左侧 voice 色条，hover 显示收藏/删除按钮）。单击选中不关闭，双击粘贴到目标应用（模拟 Cmd+V），不关闭窗口。 |
 
 **macOS 动态激活策略（Dock 图标显隐）：** 应用启动即 `Accessory` 模式（无 Dock 图标，纯托盘应用）。用户打开设置窗口时 `open_settings` 切 `Regular`，并经 `set_dock_icon()` 用 `objc2` 手动 `setApplicationIconImage`（release 裸二进制无 .app bundle，Tauri 仅 debug 自动设图标，故需手动设 Dock + 应用图标）；设置窗口 `Destroyed` 事件触发 `on_settings_closed` 切回 `Accessory`。`#[cfg(target_os = "macos")]` 条件编译，Windows / Linux 无此逻辑。
 
