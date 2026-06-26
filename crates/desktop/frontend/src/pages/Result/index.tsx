@@ -91,9 +91,11 @@ function Result() {
       setToolbarState(st);
       if (st.hide_toolbar === false) {
         showToolbar();
+      } else {
+        hideToolbar();
       }
     } catch { /* ignore */ }
-  }, [showToolbar]);
+  }, [showToolbar, hideToolbar]);
 
   const renderResultNow = useCallback((newText: string) => {
     displayedRef.current = newText;
