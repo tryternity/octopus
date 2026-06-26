@@ -171,6 +171,7 @@ pub fn run() {
                 .level_for("tract_onnx", log::LevelFilter::Warn)
                 .level_for("tract_linalg", log::LevelFilter::Warn)
                 .level_for("df::tract", log::LevelFilter::Warn)
+                .level_for("octopus_desktop::window_position", log::LevelFilter::Info)
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
