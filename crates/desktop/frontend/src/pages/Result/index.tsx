@@ -45,6 +45,7 @@ function Result() {
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
   const [isRecording, setIsRecording] = useState(true);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [toolbarState, setToolbarState] = useState<ToolbarState>({
     polish_mode: 0, denoise_mode: 1, polish_llm_valid: false,
     hide_toolbar: true, edit_shortcut: "Cmd+Enter",
@@ -60,6 +61,7 @@ function Result() {
   const pendingDiverted = useRef<string | null>(null);
   const divertedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editBufTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speakingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolbarVisibleRef = useRef(false);
   const editingStateRef = useRef(false);
 
@@ -103,6 +105,10 @@ function Result() {
     if (textRef.current) {
       textRef.current.scrollTop = textRef.current.scrollHeight;
     }
+    // 标记正在说话
+    setIsSpeaking(true);
+    if (speakingTimer.current) clearTimeout(speakingTimer.current);
+    speakingTimer.current = setTimeout(() => setIsSpeaking(false), 1500);
   }, []);
 
   // ── Toolbar hover ──
@@ -376,9 +382,9 @@ function Result() {
             onMouseDown={onDragStart}
           />
         </div>
-        {/* Voice signature: 红绿流动线 / 编辑态底线 */}
+        {/* Voice line: 说话时绿色流动 / 静音时静态灰线 / 编辑态 voice 底线 */}
         {isRecording && !editing && (
-          <div className="voice-line mx-3.5" />
+          <div className={cn("mx-3.5 transition-all duration-300", isSpeaking ? "voice-line-speaking" : "voice-line-idle")} />
         )}
         {editing && (
           <div className="h-0.5 bg-voice/30 mx-0" />
