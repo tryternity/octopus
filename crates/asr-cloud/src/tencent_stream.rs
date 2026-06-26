@@ -237,7 +237,11 @@ fn build_signed_url(
         .unwrap_or(0);
     let timestamp = now.to_string();
     let expired = (now + 86400).to_string(); // 24h 有效
-    let nonce = now.to_string(); // 随机正整数（用时间戳凑数）
+    // 随机正整数（≤10 位，符合腾讯文档 + specs/2026-06-21-tencent-asr-design.md）。
+    // 取 uuid v4 低 32 位：u32::MAX=4294967295 恰好 10 位，满足位数约束且真随机。
+    // 不复用 timestamp：同秒多请求/未来并发场景下 nonce 须唯一；voice_id 虽唯一已能
+    // 避免被误判重放，但按文档用随机数更稳妥。复用 uuid v4 随机性，避免引入 rand 依赖。
+    let nonce = (uuid::Uuid::new_v4().as_u128() as u32).to_string();
 
     // 收集参数（字典序）
     let mut params: Vec<(&str, String)> = vec![
@@ -344,29 +348,49 @@ mod tests {
     }
 
     #[test]
-    fn test_build_signed_url_deterministic() {
-        // 同样的参数 + 同一时间窗口应产生相同签名（但时间戳会变，所以只验证结构）
-        let url1 = build_signed_url(
-            "appid1",
-            "secretid1",
-            "key1",
-            "16k_zh",
-            "voice-id-1",
-        )
-        .unwrap();
-        let url2 = build_signed_url(
-            "appid1",
-            "secretid1",
-            "key1",
-            "16k_zh",
-            "voice-id-1",
-        )
-        .unwrap();
-        // 参数部分应相同（时间戳可能差 1s，但结构一致）
-        assert_eq!(
-            url1.split("&signature=").next(),
-            url2.split("&signature=").next()
-        );
+    fn test_build_signed_url_repeatable_structure() {
+        // nonce 随机化后，两次调用的 query 不再字节相等（nonce/timestamp 每次不同）；
+        // 改为验证每次调用都生成结构合法的 URL：必填字段齐全 + signature 已 URL-encode。
+        for _ in 0..2 {
+            let url = build_signed_url(
+                "appid1",
+                "secretid1",
+                "key1",
+                "16k_zh",
+                "voice-id-1",
+            )
+            .unwrap();
+            assert!(url.starts_with("wss://asr.cloud.tencent.com/asr/v2/appid1?"));
+            for field in &[
+                "engine_model_type=16k_zh",
+                "voice_id=voice-id-1",
+                "secretid=secretid1",
+                "nonce=",
+                "timestamp=",
+                "expired=",
+                "voice_format=1",
+                "needvad=1",
+                "&signature=",
+            ] {
+                assert!(url.contains(field), "缺少字段 {}，url={}", field, url);
+            }
+            // nonce 应为纯数字随机正整数，且 ≤10 位（spec 约束：u32 范围）
+            let nonce_val = url
+                .split("nonce=")
+                .nth(1)
+                .and_then(|s| s.split('&').next())
+                .unwrap();
+            let nonce_num: u64 = nonce_val.parse().expect("nonce 非数字");
+            assert!(
+                nonce_num <= u32::MAX as u64,
+                "nonce 超 10 位约束：{}",
+                nonce_val
+            );
+            // signature 应已 URL-encode（不含裸 / 或 =）
+            let sig = url.split("&signature=").nth(1).unwrap();
+            assert!(!sig.contains('/'));
+            assert!(!sig.contains('='));
+        }
     }
 
     #[test]
