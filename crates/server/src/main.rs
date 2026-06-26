@@ -12,6 +12,8 @@ use std::sync::Arc;
 use tokio::net::TcpListener;
 use tower_http::cors::CorsLayer;
 use octopus_asr::engine::AsrEngineManager;
+use octopus_asr::streaming_runner::TranscriptEvent;
+use pipeline::{event_to_json, WsStreamSession};
 
 // ── CLI args ──
 
@@ -174,52 +176,6 @@ async fn ws_stream(
     ws.on_upgrade(move |socket| handle_ws(socket, state.engine_manager, engine, language))
 }
 
-fn detect_silence_gap_local(
-    vad: &mut octopus_asr::vad::SileroVad,
-    samples: &[f32],
-    silence_duration: &mut f64,
-) -> bool {
-    let prev_silence = *silence_duration;
-    let mut speech_chunks = 0usize;
-    let mut silent_chunks = 0usize;
-
-    const VAD_CHUNK_SIZE: usize = 512;
-    const VAD_SPEECH_THRESHOLD: f32 = 0.5;
-
-    for chunk in samples.chunks(VAD_CHUNK_SIZE) {
-        if chunk.len() < VAD_CHUNK_SIZE {
-            break;
-        }
-        match vad.compute(chunk) {
-            Ok(prob) => {
-                if prob >= VAD_SPEECH_THRESHOLD {
-                    speech_chunks += 1;
-                } else {
-                    silent_chunks += 1;
-                }
-            }
-            Err(_) => {
-                speech_chunks += 1;
-            }
-        }
-    }
-
-    let total_chunks = speech_chunks + silent_chunks;
-    if total_chunks == 0 {
-        return false;
-    }
-
-    let chunk_duration = VAD_CHUNK_SIZE as f64 / 16000.0;
-
-    if speech_chunks >= 2 {
-        *silence_duration = 0.0;
-    } else {
-        *silence_duration += total_chunks as f64 * chunk_duration;
-    }
-
-    prev_silence >= 0.5
-}
-
 async fn handle_ws(
     mut socket: axum::extract::ws::WebSocket,
     _engine_manager: Arc<AsrEngineManager>,
@@ -232,54 +188,54 @@ async fn handle_ws(
     if octopus_asr::config::resolve_engine_category(&engine).is_none() {
         let _ = socket
             .send(Message::Text(
-                format!("{{\"error\": \"Unknown engine '{}'\"}}", engine).into(),
+                event_to_json(&TranscriptEvent::Error(format!(
+                    "Unknown engine '{}'",
+                    engine
+                )))
+                .into(),
             ))
             .await;
         return;
     }
 
-    let streaming_session = match octopus_asr::streaming_engine::StreamingSession::new(&engine) {
-        Ok(sess) => sess,
+    let session = match octopus_asr::streaming_engine::StreamingSession::new(&engine) {
+        Ok(s) => s,
         Err(e) => {
             let _ = socket
                 .send(Message::Text(
-                    format!("{{\"error\": \"Failed to create streaming session: {}\"}}", e).into(),
+                    event_to_json(&TranscriptEvent::Error(format!(
+                        "Failed to create streaming session: {}",
+                        e
+                    )))
+                    .into(),
                 ))
                 .await;
             return;
         }
     };
 
-    let vad_path = match octopus_asr::config::find_silero_vad() {
-        Ok(p) => p,
+    // correct 与批处理 PipelineConfig.correct 同源（app_config.asr_correct）。
+    let correct = octopus_asr::config::load_app_config_cached().asr_correct;
+    let mut stream = match WsStreamSession::new(Box::new(session), correct) {
+        Ok(s) => s,
         Err(e) => {
             let _ = socket
                 .send(Message::Text(
-                    format!("{{\"error\": \"VAD: {}\"}}", e).into(),
+                    event_to_json(&TranscriptEvent::Error(format!(
+                        "VAD init: {}",
+                        e
+                    )))
+                    .into(),
                 ))
                 .await;
             return;
         }
     };
-    let mut vad = match octopus_asr::vad::SileroVad::new(&vad_path) {
-        Ok(v) => v,
-        Err(e) => {
-            let _ = socket
-                .send(Message::Text(
-                    format!("{{\"error\": \"VAD init: {}\"}}", e).into(),
-                ))
-                .await;
-            return;
-        }
-    };
-
-    let mut silence_duration = 0.0f64;
-    let mut flushed = false;
 
     while let Some(msg) = socket.next().await {
         match msg {
             Ok(Message::Binary(data)) => {
-                // Expect f32 PCM little-endian chunks
+                // f32 PCM little-endian chunks
                 let chunk: Vec<f32> = data
                     .chunks_exact(4)
                     .map(|b| f32::from_le_bytes([b[0], b[1], b[2], b[3]]))
@@ -287,78 +243,15 @@ async fn handle_ws(
                 if chunk.is_empty() {
                     continue;
                 }
-
-                let was_silent = detect_silence_gap_local(&mut vad, &chunk, &mut silence_duration);
-                if silence_duration == 0.0 {
-                    flushed = false;
-                }
-
-                match streaming_session.accept_samples(&chunk, was_silent) {
-                    Ok(Some(new_text)) => {
-                        let _ = socket
-                            .send(Message::Text(
-                                format!(
-                                    "{{\"text\": \"{}\", \"final\": false}}",
-                                    new_text.replace('"', "\\\"")
-                                )
-                                .into(),
-                            ))
-                            .await;
-                    }
-                    Ok(None) => {}
-                    Err(e) => {
-                        let _ = socket
-                            .send(Message::Text(
-                                format!("{{\"error\": \"Streaming ASR error: {}\"}}", e).into(),
-                            ))
-                            .await;
-                    }
-                }
-
-                // Silent flush (> 0.5s)
-                if silence_duration >= 0.5 && !flushed {
-                    match streaming_session.flush(true) {
-                        Ok(Some(new_text)) => {
-                            let _ = socket
-                                .send(Message::Text(
-                                    format!(
-                                        "{{\"text\": \"{}\", \"final\": false}}",
-                                        new_text.replace('"', "\\\"")
-                                    )
-                                    .into(),
-                                ))
-                                .await;
-                            flushed = true;
-                        }
-                        _ => {}
-                    }
+                for ev in stream.feed(&chunk) {
+                    let _ = socket.send(Message::Text(event_to_json(&ev).into())).await;
                 }
             }
             Ok(Message::Text(cmd)) => {
                 if cmd == "flush" {
-                    match streaming_session.finish() {
-                        Ok(final_text) => {
-                            let _ = socket
-                                .send(Message::Text(
-                                    format!(
-                                        "{{\"text\": \"{}\", \"final\": true}}",
-                                        final_text.replace('"', "\\\"")
-                                    )
-                                    .into(),
-                                ))
-                                .await;
-                        }
-                        Err(e) => {
-                            let _ = socket
-                                .send(Message::Text(
-                                    format!("{{\"error\": \"Streaming ASR finish error: {}\"}}", e).into(),
-                                ))
-                                .await;
-                        }
-                    }
-                    streaming_session.reset();
-                    silence_duration = 0.0;
-                    flushed = false;
+                    let ev = stream.finish();
+                    let _ = socket.send(Message::Text(event_to_json(&ev).into())).await;
+                    stream.reset();
                 }
             }
             Ok(Message::Close(_)) => break,
