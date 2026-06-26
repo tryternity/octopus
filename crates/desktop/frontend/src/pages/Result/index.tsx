@@ -136,15 +136,12 @@ function Result() {
       const handlers: [string, (payload: unknown) => void][] = [
         ["show-result", (p) => {
           const text = p as string;
-          // 后端发 "正在聆听…" 占位时不算真实识别结果
           const isPlaceholder = text === "正在聆听…" || text === "正在聆听...";
           setVisible(true);
+          setIsRecording(true);
           refreshActive();
-          if (isPlaceholder) {
-            setIsRecording(false);
-          } else {
+          if (!isPlaceholder) {
             renderResultNow(text);
-            setIsRecording(true);
           }
         }],
         ["update-result", (p) => {
