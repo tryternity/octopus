@@ -811,7 +811,7 @@ editable-result 功能已实现（`edit_shortcut` 进入编辑 + ✏️ 按钮�
 
 coordinator 每次 Toggle（开始录音）实时构造 VAD：
 
-- `coordinator.rs:606 / 656`（detection / streaming vad）+ filter_vad（VadSegmented 场景）调 `octopus_asr::vad::SileroVad::new(&path)`——内部 `Session::commit_from_file` 同步加载 ONNX，百 ms 级。**首次按快捷键 → 录音启动有明显延迟**。
+- `coordinator.rs:606 / 656`（detection / streaming vad）+ filter_vad（VadSegmented 场景）调 `octopus_asr_local::vad::SileroVad::new(&path)`——内部 `Session::commit_from_file` 同步加载 ONNX，百 ms 级。**首次按快捷键 → 录音启动有明显延迟**。
 - filter_vad 每个语音段都重新加载一次。
 - `main.rs:210-226` preheat 只 preheat ASR model，不碰 VAD。
 
@@ -901,8 +901,8 @@ impl SileroVad {
 preheat 后台线程闭包内，ASR `switch_model` 之后追加 VAD 预加载（`main.rs:227-234`）：
 
 ```rust
-if let Ok(vad_path) = octopus_asr::config::find_silero_vad() {
-    match octopus_asr::vad::SileroVad::new(&vad_path) {
+if let Ok(vad_path) = octopus_asr_local::config::find_silero_vad() {
+    match octopus_asr_local::vad::SileroVad::new(&vad_path) {
         Ok(_) => info!("VAD session preheated"),
         Err(e) => log::warn!("VAD 预加载失败（不影响启动，首次录音懒加载）: {}", e),
     }
@@ -934,7 +934,7 @@ if let Ok(vad_path) = octopus_asr::config::find_silero_vad() {
 
 ## 7. 验证
 
-- `cargo test -p octopus-asr`：42 passed, 6 ignored（dashscope 等需真实 key）。
+- `cargo test -p octopus-asr-local`：42 passed, 6 ignored（dashscope 等需真实 key）。
 - `cargo check --workspace --all-targets`：clean。
 - coordinator 零改动（`git diff` 空）。
 - 手动：首次按快捷键录音启动延迟显著降低（待用户本地确认）。

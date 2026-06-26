@@ -1,6 +1,6 @@
 # ASR Pipeline 阶段2a：asr 流式基础设施（StreamingRunner）实施计划
 
-> ✅ **已实施（2026-06-23，commit `10f612c`）**：Task 1-4 全完成。`crates/asr/src/streaming_runner.rs` 新增（371 行），`cargo test -p octopus-asr` 81 tests（75 pass + 6 ignored 模型相关，0 fail，含新增 7 个），`cargo check --workspace --all-targets` 干净，clippy 无新 warning。纯新增不碰 desktop，运行时零行为变化。
+> ✅ **已实施（2026-06-23，commit `10f612c`）**：Task 1-4 全完成。`crates/asr/src/streaming_runner.rs` 新增（371 行），`cargo test -p octopus-asr-local` 81 tests（75 pass + 6 ignored 模型相关，0 fail，含新增 7 个），`cargo check --workspace --all-targets` 干净，clippy 无新 warning。纯新增不碰 desktop，运行时零行为变化。
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development 或 superpowers:executing-plans 按任务实施。Steps 用 checkbox（`- [ ]`）跟踪。
 
@@ -8,7 +8,7 @@
 
 **Architecture:** 纯 asr 新增，**不碰 desktop**（denoise/resample 留 `audio.rs`，见「设计调整」）。`StreamingRunner` 吃已降噪的 16k 样本，产出 `TranscriptEvent` 流；润色/DB/Tauri emit 留端（spec §3.8）。`StreamingEngine` trait 让 local `StreamingSession` 与（阶段2c）cloud WS 共实现，签名对齐 `StreamingSession` 现有 `&self` 方法，impl 为直接委托。静音/标点决策逻辑抽成纯函数 `step_silence`，无 VAD 模型亦可单测。
 
-**Tech Stack:** Rust workspace、`octopus_asr`（`vad::SileroVad`、`streaming_engine::StreamingSession`、`config::find_silero_vad`、`corrector`）、`anyhow::Result`、`log`。
+**Tech Stack:** Rust workspace、`octopus_asr_local`（`vad::SileroVad`、`streaming_engine::StreamingSession`、`config::find_silero_vad`、`corrector`）、`anyhow::Result`、`log`。
 
 ---
 
@@ -23,7 +23,7 @@ spec §10 建议分阶段，phase 2（desktop 全量拆分）体量大、无桌�
 | 2c | cloud `StreamingEngine` WS 实现（feature-gated）+ `CloudStreaming` 路径迁移；**VadSegmented 归位决策**（见下） | 2b |
 | 2d | coordinator 清理退化（删死分发代码，成纯驱动） | 2c |
 
-**2a 独立可验**：`cargo test -p octopus_asr` + `cargo check --workspace --all-targets` + clippy。不改变任何运行时行为（无调用方）。
+**2a 独立可验**：`cargo test -p octopus_asr_local` + `cargo check --workspace --all-targets` + clippy。不改变任何运行时行为（无调用方）。
 
 ---
 
@@ -127,7 +127,7 @@ pub mod streaming_runner;
 
 - [x] **Step 3: 验证编译（trait + 委托 impl 类型对齐）**
 
-Run: `cargo check -p octopus-asr`
+Run: `cargo check -p octopus-asr-local`
 Expected: 编译通过。若 `flush`/`finish`/`reset` 报签名不匹配，核对 `crates/asr/src/streaming_engine.rs:154/209/256` 实际签名（已核实为 `flush(&self,bool)->Result<Option<String>>` / `finish(&self)->Result<String>` / `reset(&self)`）。
 
 - [x] **Step 4: 暂不提交（与 Task 2 合并提交）**
@@ -354,7 +354,7 @@ impl StreamingRunner {
 
 - [x] **Step 4: 验证编译**
 
-Run: `cargo check -p octopus-asr`
+Run: `cargo check -p octopus-asr-local`
 Expected: 通过。若 `find_silero_vad` 签名不符，核对 `crates/asr/src/config.rs`（已核实返回 `Option<PathBuf>`，与 `pipeline.rs:90` 用法一致）；`SileroVad::new(&Path)` 返回 `Result`，`.ok()` 转 Option。
 
 - [x] **Step 5: 暂不提交（与 Task 1、3 合并）**
@@ -538,7 +538,7 @@ mod tests {
 
 - [x] **Step 5: 运行测试**
 
-Run: `cargo test -p octopus-asr streaming_runner`
+Run: `cargo test -p octopus-asr-local streaming_runner`
 Expected: 全部通过（`step_silence_*` ×3 + `push_samples_*` ×2 + `finish_emits_final` + `accept_error_*`）。VAD 相关路径在无模型环境由 `detect_silence_gap` 的 `None` 分支短路，不影响这些用例。
 
 ---
@@ -550,12 +550,12 @@ Expected: 全部通过（`step_silence_*` ×3 + `push_samples_*` ×2 + `finish_e
 Run: `cargo check --workspace --all-targets`
 Expected: 0 error。
 
-Run: `cargo clippy -p octopus-asr --all-targets -- -D warnings`
+Run: `cargo clippy -p octopus-asr-local --all-targets -- -D warnings`
 Expected: 无新 warning（asr 既存 warning 维持原样，不引入新增）。
 
 - [x] **Step 2: asr 全量测试回归**
 
-Run: `cargo test -p octopus-asr`
+Run: `cargo test -p octopus-asr-local`
 Expected: 阶段1 的 68 个测试 + 本 plan 新增测试全过。
 
 - [x] **Step 3: 提交（Task 1+2+3 合并）**

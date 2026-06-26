@@ -118,7 +118,7 @@ commits：`66a8a73`（Task 1 Cargo.toml）、`21fb2fb`（Task 2 config.rs）。
 
 配置 + 条件编译改动，无传统单测新增。验证三层：
 
-1. **现有测试不回归**：`cargo test -p octopus-asr` 全过。
+1. **现有测试不回归**：`cargo test -p octopus-asr-local` 全过。
 2. **mac 编译+release**：`cargo check/build --release` 通过。
 3. **mac e2e**：desktop 录音 + CoreML 加速正常、无 segfault 回归（用户本地）。
 
@@ -161,7 +161,7 @@ ort = { version = "2.0.0-rc.12", features = ["directml"] }
 
 - [x] **Step 2: mac 本地验证编译**
 
-Run: `cargo check -p octopus-asr`
+Run: `cargo check -p octopus-asr-local`
 结果：初版带 `default-features=false` 时**报错**——`download-binaries` 要求 TLS feature（关掉默认集丢了 `tls-native`）。去掉 false 后通过（16.3s）。
 
 - [x] **Step 3: 实测 `default-features = false` 结论**
@@ -199,7 +199,7 @@ build(asr): ort EP feature 按平台条件化（mac=coreml/linux=cuda/win=direct
 
 - [x] **Step 2: mac 本地验证（win 块不参与 mac 编译，应仍过）**
 
-Run: `cargo check -p octopus-asr`
+Run: `cargo check -p octopus-asr-local`
 结果：通过（1.37s）。
 
 - [x] **Step 3: commit**（`21fb2fb`）
@@ -216,7 +216,7 @@ refactor(asr): win EP 收敛为仅 DirectML（删 CUDA 注册）
 
 - [x] **Step 1: asr 单测不回归**
 
-Run: `cargo test -p octopus-asr`
+Run: `cargo test -p octopus-asr-local`
 结果：**45 passed / 0 failed / 6 ignored**（无回归）。
 
 - [x] **Step 2: desktop release 编译**
@@ -243,12 +243,12 @@ Run: `rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-msvc`
 
 - [x] **Step 2: linux 交叉 check —— 受阻**
 
-Run: `cargo check -p octopus-asr --target x86_64-unknown-linux-gnu`
+Run: `cargo check -p octopus-asr-local --target x86_64-unknown-linux-gnu`
 结果：**卡在 `openssl-sys` build script**——mac→linux 缺 openssl dev sysroot / pkg-config 交叉配置。非 ort、非本改动（openssl-sys 来自 ort 默认集 `tls-native`）。
 
 - [x] **Step 3: windows 交叉 check —— 受阻**
 
-Run: `cargo check -p octopus-asr --target x86_64-pc-windows-msvc`
+Run: `cargo check -p octopus-asr-local --target x86_64-pc-windows-msvc`
 结果：**卡在 `esaxx-rs` C++ build script**（jieba-rs 的 C++ 依赖）——mac 无 MSVC C++ 工具链，`clang++` 找不到 `<cstdint>`。非 ort、非本改动。
 
 - [x] **Step 4: 降级处理（按 plan 原预案）**
@@ -353,7 +353,7 @@ Run: `cargo build --release -p octopus-desktop`（已在 Task 3 Step 2 产出）
 
 ### Task 6: 验证 ✅
 
-- [x] `cargo build -p octopus-asr`：clean（0 warning）
+- [x] `cargo build -p octopus-asr-local`：clean（0 warning）
 - [x] `cargo build --release -p octopus-desktop --features "embedded dashscope"`：clean
 - [x] `cargo build --release -p octopus-server -p octopus-cli`：clean
 - [x] zh-int8 测试：`"对我做了介绍哈那么我想说的是大家如果对我的研究感兴趣呢"` ✓
@@ -381,7 +381,7 @@ Run: `cargo build --release -p octopus-desktop`（已在 Task 3 Step 2 产出）
 - [x] **根因 2：Transducer history 泄漏** — `process_chunks` 保留全部未消费样本改为仅保留最后 1 帧（与 CTC 引擎一致）
 - [x] **根因 3：归一化 scope** — 从 pseudo-global（每次重算 history+buffer 全局归一化）回退为 per-chunk（与 sherpa-onnx 一致）
 - [x] 覆盖 CTC + Transducer 两套流式引擎的 `process_chunks` 和 `finish` 共四处
-- [x] `cargo build -p octopus-asr`：clean（0 warning）
+- [x] `cargo build -p octopus-asr-local`：clean（0 warning）
 - [x] 流式 Transducer 测试：输出从乱码变为与离线完全一致的可识别中文 ✓
 
 ### Task 9: 代码审核修复 ✅

@@ -12,7 +12,7 @@
 
 ASR pipeline 重构的大愿景：asr 模块含一切 ASR 能力（含云端），desktop 只是壳。当前现实：
 
-- **本地 ASR**（onnx：zipformer/whisper/qwen3 等）在 `octopus-asr`，cli/server/desktop 共用，走同步 `OfflineAsrEngine` trait。
+- **本地 ASR**（onnx：zipformer/whisper/qwen3 等）在 `octopus-asr-local`，cli/server/desktop 共用，走同步 `OfflineAsrEngine` trait。
 - **云端 ASR**（4 provider WSS 流式）全在 `octopus-desktop`：`baidu_stream.rs`/`bytedance_stream.rs`/`aliyun_stream.rs`/`tencent_stream.rs` + `cloud_types.rs` + `cloud_pipeline.rs`。签名 `open(rt: &tauri::async_runtime::RuntimeHandle, ...)`——依赖 tauri runtime，cli/server 够不到。
 - `asr` crate 是**纯同步**（无 tokio），被 cli/server/desktop 共用；`desktop` 才有 `tokio` + `tokio-tungstenite`（`cloud` feature）。
 
@@ -30,11 +30,11 @@ ASR pipeline 重构的大愿景：asr 模块含一切 ASR 能力（含云端）�
 ### 3.1 crate 依赖图
 
 ```
-octopus-asr-cloud ──→ octopus-asr        (impl OfflineAsrEngine trait)
+octopus-asr-cloud ──→ octopus-asr-local        (impl OfflineAsrEngine trait)
                  ──→ octopus-infra       (ModelEntry, parse_model_spec, config 类型)
                  ──→ tokio, tokio-tungstenite(native-tls), uuid, base64, flate2, hmac, sha1
 
-octopus-cli ──→ octopus-asr              (AsrEngineManager, pipeline, config)
+octopus-cli ──→ octopus-asr-local              (AsrEngineManager, pipeline, config)
             ──→ octopus-asr-cloud        (CloudBatchEngine, 云端分流)
             ──→ octopus-infra
 
@@ -124,7 +124,7 @@ pub fn run(model_spec: &str, language: &str, samples: &[f32]) -> Result<String> 
 
 ## 6. config 复用
 
-云端 ASR 配置走 `octopus_asr::config::load_config().asr.{aliyun,bytedance,tencent,baidu}`（`Option<HashMap<String, ModelEntry>>`），与 desktop 完全同源。`ModelEntry`（`crates/infra/src/db.rs:13`）：`source`/`language`/`secret_key`/`is_local`/`is_enabled`/`is_streaming`/`description`。
+云端 ASR 配置走 `octopus_asr_local::config::load_config().asr.{aliyun,bytedance,tencent,baidu}`（`Option<HashMap<String, ModelEntry>>`），与 desktop 完全同源。`ModelEntry`（`crates/infra/src/db.rs:13`）：`source`/`language`/`secret_key`/`is_local`/`is_enabled`/`is_streaming`/`description`。
 
 各 provider 字段语义复刻 desktop 约定（`source`/`secret_key`/`model_name` 在不同 provider 复用为 endpoint/api_key/dev_pid 等，见 desktop `resolve_<provider>_config`）。cloud crate 依赖 infra 拿 `ModelEntry` 类型 + `parse_model_spec`。
 

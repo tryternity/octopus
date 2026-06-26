@@ -134,12 +134,12 @@ pub enum EngineCategory {
 
 - [x] **Step 6: 编译验证**
 
-Run: `cargo build -p octopus-asr`
+Run: `cargo build -p octopus-asr-local`
 Expected: 编译成功（moonshine module 尚未引用，纯 enum 变更）
 
 - [x] **Step 7: 测试验证**
 
-Run: `cargo test -p octopus-asr -- --nocapture config`
+Run: `cargo test -p octopus-asr-local -- --nocapture config`
 Expected: config 相关测试全通过
 
 ---
@@ -273,7 +273,7 @@ fn load_tokens(path: &std::path::Path) -> Result<Vec<String>> {
 
 - [x] **Step 3: 编译骨架验证**
 
-Run: `cargo build -p octopus-asr`
+Run: `cargo build -p octopus-asr-local`
 Expected: 编译成功（struct + new 骨架通过）
 
 - [x] **Step 4: 实现 transcribe + 3 个 run_* 辅助方法**
@@ -444,12 +444,12 @@ pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String>
 
 - [x] **Step 6: 编译验证**
 
-Run: `cargo build -p octopus-asr`
+Run: `cargo build -p octopus-asr-local`
 Expected: 编译成功。若有 ort API 不匹配，按编译错误调整（ort 2.0-rc API 可能有细节差异）。
 
 - [x] **Step 7: 运行现有 ASR 测试确认无回归**
 
-Run: `cargo test -p octopus-asr --release`
+Run: `cargo test -p octopus-asr-local --release`
 Expected: 52+ tests passed（现有测试不受影响）
 
 ---
@@ -481,7 +481,7 @@ use crate::moonshine::MoonshineEngine;
 ```rust
         // 在 match category 或条件分支中
         config::EngineCategory::Moonshine => {
-            octopus_asr::moonshine::transcribe(bare, samples, language)
+            octopus_asr_local::moonshine::transcribe(bare, samples, language)
         }
 ```
 
@@ -489,7 +489,7 @@ use crate::moonshine::MoonshineEngine;
 
 - [x] **Step 3: 编译全部**
 
-Run: `cargo build --release -p octopus-asr -p octopus-cli`
+Run: `cargo build --release -p octopus-asr-local -p octopus-cli`
 Expected: 编译成功
 
 - [x] **Step 4: CLI 功能测试（真实模型）**
@@ -585,7 +585,7 @@ mod tests {
 
 - [x] **Step 2: 运行测试**
 
-Run: `cargo test -p octopus-asr --release moonshine -- --nocapture`
+Run: `cargo test -p octopus-asr-local --release moonshine -- --nocapture`
 Expected: test_moonshine_base_real_model 和 test_load_tokens 通过（需 DB 有 moonshine 记录 + HF 缓存有模型文件）
 
 - [x] **Step 3: 提交**

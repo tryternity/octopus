@@ -46,7 +46,7 @@ pub trait TranscriptionEngine: Send + Sync {
 `transcribe` 吃整段 16k samples 返回 String——**纯批处理，无流式方法**。实现：`EmbeddedEngine`（local，内部调 asr）、`WsRemoteEngine`、`GrpcRemoteEngine`。`build_local_engine`（main.rs:354）按 `engine_mode` 选实现。
 
 ### 2.2 流式绕过 trait，coordinator 裸调 StreamingSession
-`coordinator.rs:9` `use octopus_asr::streaming_engine::StreamingSession;`，`StreamingSession::new(&config.asr_engine)` 直接创建（:676）。流式/云端流式通过 `use_streaming` / `use_cloud_streaming` 标志在主循环分发（:615+），**不经过 TranscriptionEngine trait**。
+`coordinator.rs:9` `use octopus_asr_local::streaming_engine::StreamingSession;`，`StreamingSession::new(&config.asr_engine)` 直接创建（:676）。流式/云端流式通过 `use_streaming` / `use_cloud_streaming` 标志在主循环分发（:615+），**不经过 TranscriptionEngine trait**。
 
 ### 2.3 润色执行已在 llm crate
 desktop 调 `octopus_llm::polish(preserved, to_polish, &llm_config)`（coordinator.rs:1092/1919），`desktop/config.rs::llm_config()` 构造 `CompatibleLlmConfig`。润色**状态机**（`polished`/`raw_len`/`polish_pending`/`polish_snapshot_len`/`PolishMode`）在 `desktop/transcript.rs::Transcript`。

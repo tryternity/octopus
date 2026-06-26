@@ -6,7 +6,7 @@
 
 **Architecture:** 新建 `server/src/pipeline.rs`——`WsStreamSession`（薄包 asr `StreamingRunner`：`new`/`feed`/`finish`/`reset`）+ `event_to_json`（`TranscriptEvent` 4 variant → `{type,text}` JSON）。`main.rs::handle_ws` 用 `WsStreamSession` 替裸 `StreamingSession` + 删 `detect_silence_gap_local`（手搓 VAD 已收编进 runner）+ 回推改 `event_to_json`；`main.rs::transcribe` 改走 `AsrEngineManager::transcribe_batch` + `PipelineConfig`。不接 cloud；polish/denoise 不进 server（spec §3.8/§3.6）。
 
-**Tech Stack:** Rust / axum 0.8 ws / tokio / `octopus-asr`（`StreamingRunner`/`TranscriptEvent`/`StreamingEngine`/`StreamingSession`/`pipeline::transcribe_batch`/`PipelineConfig`）。
+**Tech Stack:** Rust / axum 0.8 ws / tokio / `octopus-asr-local`（`StreamingRunner`/`TranscriptEvent`/`StreamingEngine`/`StreamingSession`/`pipeline::transcribe_batch`/`PipelineConfig`）。
 
 **Spec:** `docs/superpowers/specs/2026-06-25-asr-server-stage3-design.md`
 
@@ -51,7 +51,7 @@ mod pipeline;
 //! 不含 polish / denoise（总 spec §3.8/§3.6：留端，server 不依赖 llm/cpal）。
 
 use anyhow::Result;
-use octopus_asr::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
+use octopus_asr_local::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
 
 /// WS 流式会话：薄包 asr `StreamingRunner`。
 pub struct WsStreamSession {
@@ -254,11 +254,11 @@ event_to_json（TranscriptEvent 4 variant → {type,text} JSON，含转义）。
 在 `crates/server/src/main.rs` 的 `use` 区（L1-15 附近）加两行：
 
 ```rust
-use octopus_asr::streaming_runner::TranscriptEvent;
+use octopus_asr_local::streaming_runner::TranscriptEvent;
 use pipeline::{event_to_json, WsStreamSession};
 ```
 
-（`use octopus_asr::engine::AsrEngineManager;` 之后即可。）
+（`use octopus_asr_local::engine::AsrEngineManager;` 之后即可。）
 
 - [x] **Step 2: 删除 `detect_silence_gap_local` 整个函数**
 
@@ -278,7 +278,7 @@ async fn handle_ws(
     use futures_util::StreamExt;
 
     // Validate engine
-    if octopus_asr::config::resolve_engine_category(&engine).is_none() {
+    if octopus_asr_local::config::resolve_engine_category(&engine).is_none() {
         let _ = socket
             .send(Message::Text(
                 event_to_json(&TranscriptEvent::Error(format!(
@@ -291,7 +291,7 @@ async fn handle_ws(
         return;
     }
 
-    let session = match octopus_asr::streaming_engine::StreamingSession::new(&engine) {
+    let session = match octopus_asr_local::streaming_engine::StreamingSession::new(&engine) {
         Ok(s) => s,
         Err(e) => {
             let _ = socket
@@ -308,7 +308,7 @@ async fn handle_ws(
     };
 
     // correct 与批处理 PipelineConfig.correct 同源（app_config.asr_correct）。
-    let correct = octopus_asr::config::load_app_config_cached().asr_correct;
+    let correct = octopus_asr_local::config::load_app_config_cached().asr_correct;
     let mut stream = match WsStreamSession::new(Box::new(session), correct) {
         Ok(s) => s,
         Err(e) => {
@@ -393,7 +393,7 @@ git commit -m "refactor(server): handle_ws 迁 WsStreamSession + 删 detect_sile
 替换为：
 
 ```rust
-    let cfg = octopus_asr::pipeline::PipelineConfig::from_app_config(language);
+    let cfg = octopus_asr_local::pipeline::PipelineConfig::from_app_config(language);
     let text = state.engine_manager.switch_model(engine)
         .and_then(|_| state.engine_manager.transcribe_batch(&samples, &cfg));
 ```

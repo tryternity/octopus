@@ -18,7 +18,7 @@ cargo build --release
 cargo build --release -p octopus-server -p octopus-cli
 
 # 仅构建 library
-cargo build --release -p octopus-asr
+cargo build --release -p octopus-asr-local
 
 # 构建桌面应用（embedded 模式，默认）
 cargo run --release -p octopus-desktop --features embedded
@@ -65,7 +65,7 @@ cargo run --release --package octopus-llm --example test_polish
 cargo test
 
 # 单个 crate 测试
-cargo test -p octopus-asr
+cargo test -p octopus-asr-local
 cargo test -p octopus-infra
 cargo test -p octopus-desktop
 ```
@@ -77,7 +77,7 @@ cargo test -p octopus-desktop
 ```
 crates/
 ├── infra/     # octopus-infra — 基础设施层，无项目内依赖
-├── asr/       # octopus-asr — 核心推理库（所有上层依赖此 crate）
+├── asr/       # octopus-asr-local — 核心推理库（所有上层依赖此 crate）
 ├── llm/       # octopus-llm — LLM 润色客户端
 ├── cli/       # octopus-cli — 命令行工具
 ├── server/    # octopus-server — HTTP/WebSocket 服务
@@ -196,4 +196,4 @@ Transducer 系列（`zh-int8-2025-06-30` / `zh-xlarge-int8-2025-06-30`）和 `zi
 
 **热路径性能**：decoder_caches 用 `copy_from_slice` 复用预分配内存（省 ~320KB/chunk），encoder 输入 `into_shape` 零拷贝（省 ~45KB），CIF 用 `as_slice()` 引用（省 ~20-40KB），decoder 键名预分配 `cache_keys`（省 16× format!）。
 
-**诊断方法**：`cargo test -p octopus-asr --lib streaming_paraformer::tests::test_streaming_paraformer_real_model -- --nocapture`，对比输出与 sherpa-onnx 参考值 `"昨天是 monday today day is 礼拜二 the day after tomorrow 是星期"`。详见 [spec](docs/superpowers/specs/2026-06-21-paraformer-fbank-feature-extraction-fix.md)。
+**诊断方法**：`cargo test -p octopus-asr-local --lib streaming_paraformer::tests::test_streaming_paraformer_real_model -- --nocapture`，对比输出与 sherpa-onnx 参考值 `"昨天是 monday today day is 礼拜二 the day after tomorrow 是星期"`。详见 [spec](docs/superpowers/specs/2026-06-21-paraformer-fbank-feature-extraction-fix.md)。

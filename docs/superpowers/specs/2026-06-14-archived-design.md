@@ -92,7 +92,7 @@ V2 新增：
 │  │                                                             │  │
 │  │  ┌──────────────┐  ┌────────────┐  ┌────────────┐         │  │
 │  │  │  Embedded    │  │ WebSocket  │  │   gRPC     │         │  │
-│  │  │ (octopus-asr) │  │ Remote     │  │   Remote   │         │  │
+│  │  │ (octopus-asr-local) │  │ Remote     │  │   Remote   │         │  │
 │  │  └──────────────┘  └────────────┘  └────────────┘         │  │
 │  └─────────────────────────────────────────────────────────────┘  │
 │                                                                  │
@@ -117,7 +117,7 @@ crates/desktop/
 │   ├── main.rs                     # Tauri setup：managers、tray、result_window
 │   ├── config.rs                   # DesktopConfig + is_streaming_engine()
 │   ├── engine.rs                   # trait TranscriptionEngine
-│   ├── engine_embedded.rs          # octopus-asr 进程内调用（使用 AsrEngineManager）
+│   ├── engine_embedded.rs          # octopus-asr-local 进程内调用（使用 AsrEngineManager）
 │   ├── engine_ws.rs                # WebSocket 远程
 │   ├── engine_grpc.rs              # gRPC 远程（feature flag）
 │   ├── audio.rs                    # 麦克风录音管理 + SharedAudioState
@@ -437,7 +437,7 @@ segment_overlap: 200           # 强制切断时保留下一段的 overlap 时�
 
 ### 10.1 引擎模式判断
 
-`config.is_streaming_engine()` 通过 `octopus_asr::config::resolve_engine_category()` 判断：
+`config.is_streaming_engine()` 通过 `octopus_asr_local::config::resolve_engine_category()` 判断：
 - `Paraformer` / `Zipformer` → 流式模式
 - 其他 → 离线模式（V2 转为 VadSegmented 伪流式）
 
@@ -452,7 +452,7 @@ segment_overlap: 200           # 强制切断时保留下一段的 overlap 时�
 | `tauri_plugin_single_instance` 2.x | 单实例 |
 | `tauri_plugin_clipboard_manager` 2.x | 剪贴板 |
 | `tauri_plugin_store` 2.x | 配置持久化 |
-| `octopus-asr` | ASR 推理 (embedded feature) |
+| `octopus-asr-local` | ASR 推理 (embedded feature) |
 | `cpal` | 麦克风录音 |
 | `rubato` | 音频重采样 |
 | `enigo` | 键盘模拟/粘贴 |
@@ -685,7 +685,7 @@ INSERT 时机在 **`PasteDone`（粘贴完成后）**，而非最初设想的「
 迁移完成后，**desktop 运行时模型查找从 DB 读，不再读 model.json**：
 
 - `crates/desktop/src/db.rs` 提供 `load_app_config()`：从 `models` 表构造 `AppConfig` 返回。**关键映射**：DB 的 `category` 列存 JSON key（迁移时直接取，如 `"qwen3-asr"` 带 dash），`AsrSection` 字段是 `qwen3_asr`（下划线）；`load_app_config_at` 按 dash 形式 category 分派到对应字段。空库返回 `None`。
-- `crates/desktop/src/main.rs` 在 `db::init()` 后调用 `db::load_app_config()`：返回 `Some(cfg)` → `octopus_asr::config::set_runtime_config(cfg)` 注入；返回 `None` → warn 回退。
+- `crates/desktop/src/main.rs` 在 `db::init()` 后调用 `db::load_app_config()`：返回 `Some(cfg)` → `octopus_asr_local::config::set_runtime_config(cfg)` 注入；返回 `None` → warn 回退。
 - `crates/asr/src/config.rs`：`static RUNTIME_CONFIG: OnceLock<AppConfig>`；`load_config()` 优先返回注入版（`cfg.clone()`），未注入回退读 model.json。`resolve_engine_category` / `find_silero_vad` / `list_engines` 等模型查找函数现从 DB（经注入）读。
 - **cli/server 不注入**，仍读 model.json（保持兼容）。
 
@@ -1421,7 +1421,7 @@ octopus 存在两组耦合债务：
        asr::config    desktop::config    cli::main
                         ▼
 ┌──────────────────────────────────────────────────────┐
-│ octopus-asr                                           │
+│ octopus-asr-local                                           │
 │  config::AsrConfig  ← DB models 表（asr section 目录） │
 │  config::resolve_active_engine(asr_engine)            │
 │     → ResolvedEngine { name, category, entry }        │
@@ -1470,7 +1470,7 @@ resolve_active_engine(asr_engine):
 
 ### 3.6 desktop is_streaming_engine / llm_config 改自由函数
 
-这两个函数依赖 `octopus_asr`/`octopus_llm`，不能放进 infra（infra 无项目内依赖）。改为接 `&AppConfig` 的自由函数留在 `desktop::config`，desktop 内部用 `pub use octopus_infra::config::AppConfig` re-export 保持调用简洁。
+这两个函数依赖 `octopus_asr_local`/`octopus_llm`，不能放进 infra（infra 无项目内依赖）。改为接 `&AppConfig` 的自由函数留在 `desktop::config`，desktop 内部用 `pub use octopus_infra::config::AppConfig` re-export 保持调用简洁。
 
 ## 4. 影响范围
 
@@ -1485,7 +1485,7 @@ resolve_active_engine(asr_engine):
 ## 5. 验证
 
 - `cargo check --workspace --all-targets`：0 error
-- `cargo test -p octopus-asr`：14 passed（含 5 个新增 config 单测：pick_entry / fallback_engine）
+- `cargo test -p octopus-asr-local`：14 passed（含 5 个新增 config 单测：pick_entry / fallback_engine）
 - e2e：`octopus-cli config` 显示 `ASR active: qwen3-asr-0.6B (category: Qwen3Asr)` 精确命中
 - DB：`PRAGMA user_version` = 1，`models` 表无 `is_active` 列（含 `is_local` / `is_enabled` / `is_streaming`）
 
@@ -2241,7 +2241,7 @@ write_to_clipboard: true   # 默认 true
 ## 9. 验证步骤
 
 1. `cargo test -p octopus-desktop`（Transcript 状态机单元测试通过）
-2. `cargo test -p octopus-asr`（DB migration + UPDATE 接口测试通过）
+2. `cargo test -p octopus-asr-local`（DB migration + UPDATE 接口测试通过）
 3. `cargo check --workspace --all-targets`（编译通过）
 4. 备份 `~/.octopus/`，删除 `octopus.db`，启动 → 确认 `PRAGMA user_version=3`、`transcriptions.id` 列无 AUTOINCREMENT
 5. 流式 + mode=2 录音：说话 → 停顿 600ms → 结果窗口展示跳变为 polished+increase → 停止 → 粘贴得到 polished；DB 该条 `raw_text` 完整、`polished_text` 有值、`polish_status='done'`

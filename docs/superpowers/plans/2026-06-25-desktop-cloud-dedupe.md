@@ -188,8 +188,8 @@ desktop-cloud-dedupe 第二步 D3。"
 use crate::cloud_types::{CloudStreamHandle, StreamEvent};
 use crate::pipeline::{compute_speech_chunks, StreamingPipelineEngine};
 use log::{debug, error, info, warn};
-use octopus_asr::streaming_runner::TranscriptEvent;
-use octopus_asr::vad::SileroVad;
+use octopus_asr_local::streaming_runner::TranscriptEvent;
+use octopus_asr_local::vad::SileroVad;
 use tauri::async_runtime::RuntimeHandle;
 ```
 
@@ -198,8 +198,8 @@ use tauri::async_runtime::RuntimeHandle;
 ```rust
 use crate::pipeline::{compute_speech_chunks, StreamingPipelineEngine};
 use log::{debug, error, info, warn};
-use octopus_asr::streaming_runner::TranscriptEvent;
-use octopus_asr::vad::SileroVad;
+use octopus_asr_local::streaming_runner::TranscriptEvent;
+use octopus_asr_local::vad::SileroVad;
 use octopus_asr_cloud::{CloudStreamHandle, StreamEvent};
 ```
 

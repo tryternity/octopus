@@ -13,7 +13,7 @@
 
 **Architecture**：`transcribe_batch(engine, samples, &cfg)` 收编 `transcribe_with_vad` 主体，`correct`/`simplify` 改读 `cfg`（`ngram` 预留位，未实现仅 warn）。`transcribe_with_vad` 退化为「从 app_config 构造 cfg → 委托 transcribe_batch」，desktop 行为零变化。cli 经 `AsrEngineManager.transcribe_batch` 复用同一编排。
 
-**Tech Stack**：Rust、anyhow、log、octopus-asr / octopus-infra / octopus-cli crate。
+**Tech Stack**：Rust、anyhow、log、octopus-asr-local / octopus-infra / octopus-cli crate。
 
 ---
 
@@ -89,7 +89,7 @@ pub mod pipeline;
 
 - [x] **Step 3: 编译验证**
 
-Run: `cargo check -p octopus-asr`
+Run: `cargo check -p octopus-asr-local`
 Expected: 通过（`PipelineConfig` 暂无调用点，`load_app_config_cached` 字段名 `asr_correct` / `output_simplified` 已核对存在）。
 
 - [x] **Step 4: Commit**
@@ -175,7 +175,7 @@ mod tests {
 
 - [x] **Step 2: 跑测试确认失败**
 
-Run: `cargo test -p octopus-asr pipeline::tests 2>&1 | head -30`
+Run: `cargo test -p octopus-asr-local pipeline::tests 2>&1 | head -30`
 Expected: 编译失败 `cannot find function transcribe_batch`（尚未实现）。
 
 - [x] **Step 3: 在 `pipeline.rs` 实现 `transcribe_batch` + `transcribe_segments`**
@@ -292,7 +292,7 @@ fn transcribe_segments(
 
 - [x] **Step 4: 跑测试确认通过**
 
-Run: `cargo test -p octopus-asr pipeline::tests`
+Run: `cargo test -p octopus-asr-local pipeline::tests`
 Expected: 4 passed。
 
 - [x] **Step 5: `transcribe_with_vad` 改委托**
@@ -317,7 +317,7 @@ pub fn transcribe_with_vad(
 
 - [x] **Step 6: 编译验证 asr**
 
-Run: `cargo check -p octopus-asr`
+Run: `cargo check -p octopus-asr-local`
 Expected: 通过（`AsrEngineManager::transcribe` 在 engine.rs:143 调 `transcribe_with_vad`，委托后行为不变）。
 
 - [x] **Step 7: Commit**
@@ -358,7 +358,7 @@ git commit -m "feat(asr): transcribe_batch 收编 transcribe_with_vad，纠错/�
 
 - [x] **Step 2: 编译验证**
 
-Run: `cargo check -p octopus-asr`
+Run: `cargo check -p octopus-asr-local`
 Expected: 通过。
 
 - [x] **Step 3: Commit**
@@ -386,8 +386,8 @@ git commit -m "feat(asr): AsrEngineManager::transcribe_batch 多端入口"
 //! （VAD 分段 + 纠错 + 简繁归一化）。cfg 从全局 app_config 构造，与 desktop 行为一致。
 
 use anyhow::Result;
-use octopus_asr::engine::AsrEngineManager;
-use octopus_asr::pipeline::PipelineConfig;
+use octopus_asr_local::engine::AsrEngineManager;
+use octopus_asr_local::pipeline::PipelineConfig;
 
 /// 批处理转写：加载引擎 → transcribe_batch（VAD + 纠错 + 简繁）。
 ///
@@ -429,7 +429,7 @@ fn do_transcribe(model: &str, language: &str, samples: &[f32]) -> Result<String>
 Run: `cargo check -p octopus-cli`
 Expected: 通过。
 
-> 注意：若 `octopus-asr` 未在 cli 的 `Cargo.toml` 依赖中，需确认已存在（cli 已大量用 `octopus_asr::*`，应已声明）。
+> 注意：若 `octopus-asr-local` 未在 cli 的 `Cargo.toml` 依赖中，需确认已存在（cli 已大量用 `octopus_asr_local::*`，应已声明）。
 
 - [x] **Step 5: Commit**
 
@@ -452,7 +452,7 @@ Expected: 通过，零 error。
 
 - [x] **Step 2: asr pipeline 单测**
 
-Run: `cargo test -p octopus-asr pipeline`
+Run: `cargo test -p octopus-asr-local pipeline`
 Expected: 4 passed。
 
 - [x] **Step 3: workspace clippy（零新 warning）**

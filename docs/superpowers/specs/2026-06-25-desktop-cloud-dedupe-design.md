@@ -129,7 +129,7 @@ cloud crate 自身测试仍用 `pub(crate) new()`；desktop 测试改用 `new_fo
 ### 5.4 依赖边界
 
 ```
-octopus-desktop ──(cloud feature)──→ octopus-asr-cloud ──→ octopus-asr + octopus-infra
+octopus-desktop ──(cloud feature)──→ octopus-asr-cloud ──→ octopus-asr-local + octopus-infra
 ```
 
 单向，无循环。`asr` 不依赖 `cloud`（cloud-asr-cli 第一步已确立）。desktop 仅在 `cloud` feature 开启时依赖 cloud crate。

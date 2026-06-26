@@ -100,7 +100,7 @@ impl LocalPipelineEngine {
 /// cloud：持 CloudStreamHandle + onset/状态（搬迁 handle_cloud_streaming_tick:1632-1812 的字段）。
 #[cfg(feature = "cloud")]
 pub struct CloudPipelineEngine {
-    vad: octopus_asr::vad::SileroVad,
+    vad: octopus_asr_local::vad::SileroVad,
     pre_roll_buffer: Vec<f32>,
     session: Option<CloudStreamHandle>,   // onset 后 Some；Finished/Failed 后 take 清 None
     current_partial: String,              // 当前 session 累积预览（未提交）

@@ -6,7 +6,7 @@
 
 ## 1. 许可证合规性设计 (GPLv3 隔离)
 
-本模块使用的底层下载器 `boul2gom/yt-dlp` Crate 采用 **GNU GPL v3.0** 开源许可证。为了防止 GPLv3 许可证向 `octopus` 项目的其他闭源/专有模块（如 `octopus-asr` 核心推理模块、`octopus-desktop` 桌面端应用等）发生传染，我们采用了**物理进程隔离**的架构设计：
+本模块使用的底层下载器 `boul2gom/yt-dlp` Crate 采用 **GNU GPL v3.0** 开源许可证。为了防止 GPLv3 许可证向 `octopus` 项目的其他闭源/专有模块（如 `octopus-asr-local` 核心推理模块、`octopus-desktop` 桌面端应用等）发生传染，我们采用了**物理进程隔离**的架构设计：
 
 ### 1.1. 边界划分
 1.  **`octopus-dlp` (独立 CLI 进程，开源 GPLv3)**：
@@ -17,7 +17,7 @@
     *   通过操作系统的 `fork-exec` 机制异步拉起 `octopus-dlp` 子进程。
     *   双方通过**标准输出管道 (Stdout Pipe)** 进行单向通信。
     *   根据 FSF 的官方合规性解释，通过管道、命令行参数以及标准输入输出进行数据交换属于**单纯聚合 (Mere Aggregation)**，不构成派生作品，因此 GPL 许可证**不会传染**到主进程。
-3.  **`octopus-asr` (核心推理库，完全闭源/受保护)**：
+3.  **`octopus-asr-local` (核心推理库，完全闭源/受保护)**：
     *   由主进程本地直接调用，与 `octopus-dlp` 无任何直接代码链接或编译依赖。
 
 ### 1.2. 编译期与运行期依赖解耦
@@ -48,7 +48,7 @@
       │                                                      │
       ├─ 4. 从 ChildStdout 实时拉取 raw f32 字节流 <─────────┘
       │
-      └─ 5. 本地运行 ASR 推理 (octopus-asr) ──> 输出文本
+      └─ 5. 本地运行 ASR 推理 (octopus-asr-local) ──> 输出文本
 ```
 
 ### 2.2. 数据流格式说明：Raw `f32le` PCM
@@ -196,7 +196,7 @@ async fn extract_and_transcribe_url(url: &str) -> Result<()> {
 当 `octopus-cli` 接收到大文件或者流式管道流出的较长音频时，需要防止 Transformer 模型在推理时因序列过长产生显存/内存溢出（OOM）或者因注意力机制发散产生虚假复读。
 
 ### 6.1. VAD 自动分段策略
-在 `octopus-asr` 核心推理模块中，实现了统一的离线语音转译封装函数 `transcribe_with_vad`：
+在 `octopus-asr-local` 核心推理模块中，实现了统一的离线语音转译封装函数 `transcribe_with_vad`：
 1.  **分段阈值**：当输入的 16kHz f32 单声道音频序列长度超过 `30秒`（即 480,000 个采样点）时，自动启用 `Silero VAD v4` 进行分段。
 2.  **停顿检测与切割**：
     *   利用 VAD 逐帧（30ms/480点）检测音频。

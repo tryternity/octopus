@@ -21,7 +21,7 @@
 
 > 为 ASR 推理增加硬件加速（CUDA / DirectML / CoreML execution provider）的手动开关与平滑降级：配置开启时在 ONNX Runtime 注册 EP，加载失败/异常自动回退 CPU；关闭时纯 CPU 推理。VAD 不受影响（固定 CPU）。
 
-> **实现状态（2026-06-15）**：已实现并经 macOS CoreML 手动验证。`cargo test -p octopus-asr` 16 passed / 0 failed。
+> **实现状态（2026-06-15）**：已实现并经 macOS CoreML 手动验证。`cargo test -p octopus-asr-local` 16 passed / 0 failed。
 
 ## 1. 背景与目标
 
@@ -79,7 +79,7 @@ asr_hardware_accelerated: false  # true 启用 GPU/CoreML/DirectML（失败回�
 ## 5. 验证
 
 ### 5.1 自动化回归
-`cargo test -p octopus-asr` → 16 passed / 0 failed。
+`cargo test -p octopus-asr-local` → 16 passed / 0 failed。
 
 ### 5.2 macOS CoreML 手动
 | 模型 | 加速 | 结果 |

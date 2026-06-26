@@ -250,8 +250,8 @@ fn u8_to_polish_mode(n: u8) -> Option<PolishMode> {
     }
 }
 
-fn category_str(c: octopus_asr::config::EngineCategory) -> &'static str {
-    use octopus_asr::config::EngineCategory::*;
+fn category_str(c: octopus_asr_local::config::EngineCategory) -> &'static str {
+    use octopus_asr_local::config::EngineCategory::*;
     match c {
         Whisper => "whisper",
         SenseVoice => "sensevoice",
@@ -319,7 +319,7 @@ pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<Engine
     } else {
         current_raw
     };
-    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     Ok(engines
         .into_iter()
         .map(|e| EngineOption {
@@ -333,7 +333,7 @@ pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<Engine
 #[tauri::command]
 pub fn switch_asr_engine(name: String, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
     // 校验：name 必须是 DB 已配置的引擎（不走兜底）
-    let exists = octopus_asr::config::list_engines()
+    let exists = octopus_asr_local::config::list_engines()
         .map_err(|e| e.to_string())?
         .iter()
         .any(|e| e.name == name);
@@ -1224,7 +1224,7 @@ fn order_engine_infos_sorts_is_local_desc_then_category_then_name() {
 
 - [x] **Step 2: 跑测试确认失败**
 
-Run: `cargo test -p octopus-asr order_engine_infos 2>&1`
+Run: `cargo test -p octopus-asr-local order_engine_infos 2>&1`
 Expected: 编译失败（`order_engine_infos` 未定义）。
 
 - [x] **Step 3: 实现**（在 `crates/asr/src/config.rs`）
@@ -1265,7 +1265,7 @@ fn order_engine_infos(engines: &mut [EngineInfo]) {
 
 - [x] **Step 4: 跑测试确认通过**
 
-Run: `cargo test -p octopus-asr order_engine_infos 2>&1`
+Run: `cargo test -p octopus-asr-local order_engine_infos 2>&1`
 Expected: 1 passed。
 
 - [x] **Step 5: Commit**
@@ -1287,7 +1287,7 @@ git commit -m "feat(asr): list_engines sorts by is_local desc, category, name"
 ```rust
 #[test]
 fn build_asr_options_injects_fallback_first_and_dedups() {
-    use octopus_asr::config::{EngineCategory, EngineInfo};
+    use octopus_asr_local::config::{EngineCategory, EngineInfo};
     // 场景 1：DB 无兜底 → 注入到首位
     let engines = vec![
         EngineInfo { name: "whisper-small".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
@@ -1360,7 +1360,7 @@ const FALLBACK_ASR_ENGINE: &str = "zipformer-small-ctc";
 
 /// 构造 ASR 选项列表（纯逻辑）：兜底固定第一，DB 同名去重，current 按 current_effective 标记。
 /// current_effective 为空时视作兜底。
-fn build_asr_options(current_effective: &str, engines: Vec<octopus_asr::config::EngineInfo>) -> Vec<EngineOption> {
+fn build_asr_options(current_effective: &str, engines: Vec<octopus_asr_local::config::EngineInfo>) -> Vec<EngineOption> {
     let effective = if current_effective.is_empty() {
         FALLBACK_ASR_ENGINE
     } else {
@@ -1399,7 +1399,7 @@ fn build_asr_options(current_effective: &str, engines: Vec<octopus_asr::config::
 #[tauri::command]
 pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<EngineOption>, String> {
     let current_raw = rc.read().unwrap().asr_engine.clone();
-    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     Ok(build_asr_options(&current_raw, engines))
 }
 ```
@@ -1428,7 +1428,7 @@ git commit -m "feat(desktop): EngineOption.label + fallback-first ASR menu optio
 ```rust
 #[test]
 fn validate_switch_allows_fallback_even_when_absent() {
-    use octopus_asr::config::{EngineCategory, EngineInfo};
+    use octopus_asr_local::config::{EngineCategory, EngineInfo};
     let engines = vec![
         EngineInfo { name: "whisper-small".into(), category: EngineCategory::Whisper, is_local: false, description: String::new() },
     ];
@@ -1452,7 +1452,7 @@ Expected: 编译失败（`validate_switch` 未定义）。
 
 ```rust
 /// 校验引擎名可切换：兜底名恒允许（不依赖 DB），其余须在 engines 列表中。
-fn validate_switch(name: &str, engines: &[octopus_asr::config::EngineInfo]) -> Result<(), String> {
+fn validate_switch(name: &str, engines: &[octopus_asr_local::config::EngineInfo]) -> Result<(), String> {
     if name == FALLBACK_ASR_ENGINE {
         return Ok(());
     }
@@ -1473,7 +1473,7 @@ pub fn switch_asr_engine(
     rc: State<'_, SharedRuntimeConfig>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     validate_switch(&name, &engines)?;
     {
         let mut g = rc.write().unwrap();
@@ -1945,7 +1945,7 @@ Run: `grep -nE "fn find_hf_cache|fn find_latest_snapshot" crates/asr/src/config.
 
 - [ ] **Step 3: 跑测试确认失败**
 
-Run: `cargo test -p octopus-asr find_df3_missing`
+Run: `cargo test -p octopus-asr-local find_df3_missing`
 Expected: 编译失败 `cannot find function find_df3`
 
 - [ ] **Step 4: 实现 find_df3**
@@ -1978,7 +1978,7 @@ pub fn find_df3() -> Result<PathBuf> {
 
 - [ ] **Step 5: 跑测试确认通过**
 
-Run: `cargo test -p octopus-asr find_df3_missing`
+Run: `cargo test -p octopus-asr-local find_df3_missing`
 Expected: PASS（模型在则 Ok 跳过；不在则 Err 含下载提示）
 
 - [ ] **Step 6: 提交**
@@ -2135,7 +2135,7 @@ mod tests {
 
 - [ ] **Step 3: 跑测试确认通过**
 
-Run: `cargo test -p octopus-asr denoise::tests`
+Run: `cargo test -p octopus-asr-local denoise::tests`
 Expected: PASS（2 个纯 DSP 测试，无需模型）
 
 - [ ] **Step 4: 提交**
@@ -2201,7 +2201,7 @@ git commit -m "feat(asr): denoise.rs skeleton + sqrt-Hann STFT/iSTFT reconstruct
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cargo test -p octopus-asr denoise::tests::erb`
+Run: `cargo test -p octopus-asr-local denoise::tests::erb`
 Expected: 编译失败 `cannot find function erb_bounds`
 
 - [ ] **Step 3: 实现 ERB 边界 + feat 函数**
@@ -2281,7 +2281,7 @@ pub fn feat_spec(spec: &[Complex<f32>]) -> Vec<f32> {
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `cargo test -p octopus-asr denoise::tests`
+Run: `cargo test -p octopus-asr-local denoise::tests`
 Expected: PASS（5 个 DSP 测试）
 
 - [ ] **Step 5: 提交**
@@ -2320,7 +2320,7 @@ git commit -m "feat(asr): ERB bounds + feat_erb/feat_spec feature extraction"
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cargo test -p octopus-asr processor_runs -- --ignored`
+Run: `cargo test -p octopus-asr-local processor_runs -- --ignored`
 Expected: 编译失败 `cannot find type DenoiseProcessor`
 
 - [ ] **Step 3: 实现 DenoiseProcessor::new + 单帧推理**
@@ -2455,7 +2455,7 @@ impl DenoiseProcessor {
 
 - [ ] **Step 4: 编译驱动修正 GRU 状态回写 + OLA**
 
-Run: `cargo build -p octopus-asr`
+Run: `cargo build -p octopus-asr-local`
 
 逐个修正编译错误（典型）：
 - `ort::session::Session` 的 `outputs[...]` 访问与 `try_extract_tensor` 签名（参照 `crates/asr/src/vad.rs:37-45` 的 outputs 取值模式）。
@@ -2530,7 +2530,7 @@ fn arr4d_to_complex(view: &ndarray::ArrayViewD<f32>) -> Vec<Complex<f32>> {
 
 - [ ] **Step 5: 跑测试确认通过**
 
-Run: `cargo test -p octopus-asr processor_runs -- --ignored`
+Run: `cargo test -p octopus-asr-local processor_runs -- --ignored`
 Expected: PASS（需 `hf download penta2himajin/deepfilternet3-onnx` 已执行）
 
 - [ ] **Step 6: 提交**
@@ -2605,7 +2605,7 @@ git commit -m "feat(asr): DenoiseProcessor ONNX session + GRU state + per-frame 
 
 - [ ] **Step 2: 跑测试确认失败**
 
-Run: `cargo test -p octopus-asr sample_conservation -- --ignored`
+Run: `cargo test -p octopus-asr-local sample_conservation -- --ignored`
 Expected: 编译失败（`process_samples`/`flush` 未实现）
 
 - [ ] **Step 3: 实现 process_samples + flush**
@@ -2696,7 +2696,7 @@ Expected: 编译失败（`process_samples`/`flush` 未实现）
 
 - [ ] **Step 4: 跑测试确认通过**
 
-Run: `cargo test -p octopus-asr sample_conservation streaming_incremental -- --ignored`
+Run: `cargo test -p octopus-asr-local sample_conservation streaming_incremental -- --ignored`
 Expected: PASS（两个流式一致性测试）
 
 - [ ] **Step 5: 提交**
@@ -2729,12 +2729,12 @@ pub struct SharedAudioState {
     is_recording: Arc<AtomicBool>,
     sample_rate: std::sync::atomic::AtomicU32,
     device_name: String,
-    resampler: Mutex<Option<octopus_asr::audio::AudioResampler>>,
+    resampler: Mutex<Option<octopus_asr_local::audio::AudioResampler>>,
     stream: Mutex<Option<cpal::Stream>>,
     // 新增：降噪处理器（None = 未启用/加载失败，降级直通）
-    denoise: Mutex<Option<octopus_asr::denoise::DenoiseProcessor>>,
+    denoise: Mutex<Option<octopus_asr_local::denoise::DenoiseProcessor>>,
     // 新增：48k→16k 重采样器（NS 输出后降采样）
-    down_sampler: Mutex<Option<octopus_asr::audio::AudioResampler>>,
+    down_sampler: Mutex<Option<octopus_asr_local::audio::AudioResampler>>,
 }
 ```
 
@@ -2773,14 +2773,14 @@ impl SharedAudioState {
     fn resample_to(&self, samples: Vec<f32>, from: u32, to: u32) -> Vec<f32> {
         if from == to { return samples; }
         // 用 rubato 一次性重采样（非流式路径）
-        octopus_asr::audio::resample_to_16k 仅为 16k；此处用通用 resample
+        octopus_asr_local::audio::resample_to_16k 仅为 16k；此处用通用 resample
         // 实现见 Step 4：复用 AudioResampler 或新增通用函数
         todo_in_step4()
     }
 }
 ```
 
-> ⚠️ **Step 4 编译驱动**：`resample_to` 的通用实现——`octopus_asr::audio` 现有 `resample_to_16k` 写死 16k 目标。新增通用 `resample_to(samples, from, to)`（用 `rubato::FftFixedIn`），放 `crates/asr/src/audio.rs`。
+> ⚠️ **Step 4 编译驱动**：`resample_to` 的通用实现——`octopus_asr_local::audio` 现有 `resample_to_16k` 写死 16k 目标。新增通用 `resample_to(samples, from, to)`（用 `rubato::FftFixedIn`），放 `crates/asr/src/audio.rs`。
 
 - [ ] **Step 4: 新增通用重采样 + lazy init denoise**
 
@@ -2809,7 +2809,7 @@ pub fn resample_to(samples: &[f32], from_rate: u32, to_rate: u32) -> anyhow::Res
         // lazy init denoise（首次启用时加载模型；失败降级 None，warn 不阻断）
         let mut dn = self.denoise.lock().unwrap();
         if dn.is_none() {
-            match octopus_asr::config::find_df3().and_then(|p| octopus_asr::denoise::DenoiseProcessor::new(&p)) {
+            match octopus_asr_local::config::find_df3().and_then(|p| octopus_asr_local::denoise::DenoiseProcessor::new(&p)) {
                 Ok(mut proc) => { proc.reset(); *dn = Some(proc); info!("DenoiseProcessor loaded"); }
                 Err(e) => log::warn!("降噪未启用（降级直通）: {:#}", e),
             }
@@ -2843,7 +2843,7 @@ pub fn resample_to(samples: &[f32], from_rate: u32, to_rate: u32) -> anyhow::Res
 
 - [ ] **Step 5: 编译 + 跑全量测试**
 
-Run: `cargo build -p octopus-desktop && cargo test -p octopus-asr && cargo test -p octopus-infra`
+Run: `cargo build -p octopus-desktop && cargo test -p octopus-asr-local && cargo test -p octopus-infra`
 Expected: 编译通过；DSP 测试 PASS（推理测试 `--ignored` 单独跑）
 
 - [ ] **Step 6: 手动 e2e 验证（需模型）**
@@ -2989,7 +2989,7 @@ Plan 完成并保存至 `docs/superpowers/plans/2026-06-16-denoise-deepfilternet
 
 ### 验证
 
-- [x] `cargo test -p octopus-asr -- denoise`：8 单元测试全过（Vorbis COLA、STFT/iSTFT 重建 SNR>40dB、ERB 公式对齐 libDF、归一化数值正确、band 覆盖 481 bins）
+- [x] `cargo test -p octopus-asr-local -- denoise`：8 单元测试全过（Vorbis COLA、STFT/iSTFT 重建 SNR>40dB、ERB 公式对齐 libDF、归一化数值正确、band 覆盖 481 bins）
 - [x] `cargo check --workspace` 全编译通过
 - [x] `cargo test` 全量 63 tests passed, 0 failed
 

@@ -43,7 +43,7 @@ cargo test -p octopus-infra
 
 ### 验证
 ```bash
-cargo test -p octopus-asr --release
+cargo test -p octopus-asr-local --release
 ```
 
 ---
@@ -92,9 +92,9 @@ cargo build -p octopus-desktop --features embedded,aliyun
 ## Task 5：Build + test + 文档
 
 ```bash
-cargo build -p octopus-infra -p octopus-asr -p octopus-cli
+cargo build -p octopus-infra -p octopus-asr-local -p octopus-cli
 cargo build -p octopus-desktop --features embedded,aliyun
-cargo test -p octopus-infra && cargo test -p octopus-asr && cargo test -p octopus-desktop --features embedded,aliyun
+cargo test -p octopus-infra && cargo test -p octopus-asr-local && cargo test -p octopus-desktop --features embedded,aliyun
 ```
 
 文档：architecture.md（Tencent 章节）、configuration.md（接入指南）
@@ -107,12 +107,12 @@ cargo test -p octopus-infra && cargo test -p octopus-asr && cargo test -p octopu
 
 | 验证项 | 结果 |
 |---|---|
-| `cargo build -p octopus-infra -p octopus-asr` | ✅ PASS |
+| `cargo build -p octopus-infra -p octopus-asr-local` | ✅ PASS |
 | `cargo build -p octopus-cli` | ✅ PASS |
 | `cargo build -p octopus-server` | ✅ PASS |
 | `cargo build -p octopus-desktop --features embedded,aliyun` | ✅ PASS（0 warnings） |
 | `cargo test -p octopus-infra` | ✅ 29 passed |
-| `cargo test -p octopus-asr` | ✅ 54 passed (6 ignored) |
+| `cargo test -p octopus-asr-local` | ✅ 54 passed (6 ignored) |
 | `cargo test -p octopus-desktop` | ✅ 58 passed (1 ignored，含 5 个 Tencent 测试) |
 
 ### 新增依赖

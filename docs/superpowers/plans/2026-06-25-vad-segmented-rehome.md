@@ -6,7 +6,7 @@
 
 **Architecture:** 新增上层 `Pipeline` trait（`tick/finish/silence_duration/reset/take_close_handle/is_cloud/took_segment_cut`）。`VadSegmentedPipeline` 内部持 mpsc channel：切段后 `tauri::async_runtime::spawn` 跑 `engine.transcribe`，结果发回 pipeline 自持 `rx`（**不发 coordinator.tx**），下一个 tick `try_recv` drain + 乱序回填 + 消费连续 seq + set_full——异步命令回传转成同步 tick 输出。`StreamingPipeline` 外层加 `impl Pipeline`（内层 `StreamingPipelineEngine` 两层不动）。coordinator `Stage::VadSegmented`/`WaitingCompletion` 字段改持 pipeline，删 `TranscriptionDone` 命令与两处回填 handler。emit/DB/polish/transcript 仍留 coordinator（2d 收敛）。每 Task 零行为差异 + 双 feature 编译 + clippy 零新 warning。
 
-**Tech Stack:** Rust，tauri 2（`tauri::async_runtime::spawn`），`std::sync::mpsc`，`octopus_asr`（`SileroVad`/`TranscriptEvent`/`streaming_runner`），`octopus_infra::consts`（`SEGMENT_DURATION_S`/`SEGMENT_OVERLAP_MS`）。
+**Tech Stack:** Rust，tauri 2（`tauri::async_runtime::spawn`），`std::sync::mpsc`，`octopus_asr_local`（`SileroVad`/`TranscriptEvent`/`streaming_runner`），`octopus_infra::consts`（`SEGMENT_DURATION_S`/`SEGMENT_OVERLAP_MS`）。
 
 **Spec:** `docs/superpowers/specs/2026-06-25-vad-segmented-rehome-design.md`
 
@@ -33,7 +33,7 @@ spec 是设计层，以下两点是落地必需的补充，**不要当成偏离 
 | `crates/desktop/src/coordinator.rs` | 编排 + Stage 状态机 | `Stage::VadSegmented`/`WaitingCompletion` 字段改持 pipeline；tick handler 改调 `pipeline.tick`；**删** `Command::TranscriptionDone` + dispatch arm + `handle_transcription_done` + `spawn_offline_transcription_with_seq`；stop 路径改 `tick(tail)+finish`；WaitingCompletion 复用 tick 驱动 |
 | `crates/asr/src/streaming_runner.rs` | `StreamingRunner`（2a） | **不动**（`finish`/`finish_with_tail` 保留，desktop 内层仍可调） |
 
-依赖边界不变：`octopus-desktop ──→ octopus-asr + octopus-infra`，无 cloud 依赖（VadSegmented 仅非流式本地引擎，`is_cloud()` 恒 false）。
+依赖边界不变：`octopus-desktop ──→ octopus-asr-local + octopus-infra`，无 cloud 依赖（VadSegmented 仅非流式本地引擎，`is_cloud()` 恒 false）。
 
 ---
 
@@ -273,7 +273,7 @@ pub(crate) fn vad_preroll(vad: &mut SileroVad) {
 /// 用独立 `filter_vad`（与检测流分离），过滤前 reset() 归零 LSTM 状态（等价旧代码每 buffer 新建 VAD）。
 fn filter_speech_from_buffer(filter_vad: &mut SileroVad, samples: &[f32]) -> Vec<f32> {
     filter_vad.reset();
-    let speech = octopus_asr::audio::filter_speech(samples, filter_vad, 480, 0.5);
+    let speech = octopus_asr_local::audio::filter_speech(samples, filter_vad, 480, 0.5);
     if speech.is_empty() {
         log::debug!("VadSegmented: no speech detected in buffer");
         Vec::new()
@@ -317,7 +317,7 @@ impl VadSegmentedPipeline {
         asr_engine: String,
         segment_silence_ms: f64,
     ) -> anyhow::Result<Self> {
-        let path = octopus_asr::config::find_silero_vad()?;
+        let path = octopus_asr_local::config::find_silero_vad()?;
         let mut detect_vad = SileroVad::new(&path)?;
         vad_preroll(&mut detect_vad);
         let filter_vad = SileroVad::new(&path)?;

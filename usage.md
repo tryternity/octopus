@@ -12,7 +12,7 @@ cargo build --release -p octopus-server -p octopus-cli
 cargo build --release
 
 # 仅编译 library
-cargo build --release -p octopus-asr
+cargo build --release -p octopus-asr-local
 
 # 桌面测试
 cargo run --release -p octopus-desktop --features embedded

@@ -840,7 +840,7 @@ fn default_polish_llm() -> String {
 
 fn main() -> anyhow::Result<()> {
     // 1. 从 DB 加载激活的润色 prompt
-    octopus_asr::db::ensure_db()?;
+    octopus_asr_local::db::ensure_db()?;
     let active_id = octopus_infra::db::load_active_prompt_id()?;
     let prompt_record = octopus_infra::db::load_prompt(active_id)?
         .ok_or_else(|| anyhow::bail!("DB 中未找到 active prompt id={}", active_id))?;
@@ -858,7 +858,7 @@ fn main() -> anyhow::Result<()> {
 
 （其余从 `println!("正在初始化数据库以加载模型配置...");` 开始的 LLM 加载部分不变，删除原重复的 `ensure_db` 调用）
 
-注意：原 test_polish.rs 第 48-49 行 `octopus_asr::db::ensure_db()?;` 现已上移到 prompt 加载块，需删除重复行。原第 38-46 行的 config.yaml 读取块改为从 `load_config()` 读。
+注意：原 test_polish.rs 第 48-49 行 `octopus_asr_local::db::ensure_db()?;` 现已上移到 prompt 加载块，需删除重复行。原第 38-46 行的 config.yaml 读取块改为从 `load_config()` 读。
 
 - [x] **Step 4: 编译验证 example**
 

@@ -1338,7 +1338,7 @@ git commit -m "feat(infra): transcriptions 加 edited_text 列 + update_edited_t
 
 ```rust
         DbCommand::UpdateEdited { id, edited_text } => {
-            if let Err(e) = octopus_asr::db::update_edited_text(id, &edited_text) {
+            if let Err(e) = octopus_asr_local::db::update_edited_text(id, &edited_text) {
                 warn!("Background DB update_edited_text failed: {}", e);
             }
         }
@@ -2398,7 +2398,7 @@ git commit -m "refactor(desktop): test_llm_connection 改 async + spawn_blocking
 /// 本地模型返回 Err 提示无需连接测试；远程模型（provider=aliyun）检查 secret_key + WS 连通性。
 #[tauri::command]
 pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
-    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     let engine = engines.iter().find(|e| e.name == bare_name)
         .ok_or_else(|| format!("ASR 引擎 '{}' 不存在", bare_name))?;
 
@@ -2407,7 +2407,7 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
     }
 
     // 远程引擎：从 DB 取配置（source = WS endpoint, secret_key = API Key）
-    let asr_cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let asr_cfg = octopus_asr_local::config::load_config().map_err(|e| e.to_string())?;
     let model_name = octopus_infra::db::parse_model_spec(&bare_name).model_name().to_string();
     let entry = asr_cfg.asr.aliyun.as_ref()
         .and_then(|m| m.get(model_name.as_str()))
@@ -2761,7 +2761,7 @@ git commit -m "docs: 同步结果窗编辑布局调整（保存按钮移 toolbar
 
 ### Task 4: 验证  ✅
 
-- [x] `cargo test -p octopus-asr`：42 passed, 6 ignored
+- [x] `cargo test -p octopus-asr-local`：42 passed, 6 ignored
 - [x] `cargo check --workspace --all-targets`：clean
 - [x] coordinator 零改动（`git diff af809c8..07a1503 -- coordinator.rs` 空）
 - [x] 手动 e2e：通过，无回归；延迟降幅未量化（无改动前基线对比）

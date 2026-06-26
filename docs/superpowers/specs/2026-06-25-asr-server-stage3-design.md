@@ -45,7 +45,7 @@
 ```rust
 // crates/server/src/pipeline.rs
 use anyhow::Result;
-use octopus_asr::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
+use octopus_asr_local::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
 
 /// WS 流式会话：薄包 asr `StreamingRunner`（含 VAD 预热 + accept/flush/finish + 纠错）。
 /// 不含 polish / denoise（spec §3.8/§3.6：留端，server 不依赖 llm/cpal）。
@@ -109,7 +109,7 @@ pub fn event_to_json(ev: &TranscriptEvent) -> String {
 把 `engine_manager.transcribe(&samples, language)` 换成：
 
 ```rust
-let cfg = octopus_asr::pipeline::PipelineConfig::from_app_config(language);
+let cfg = octopus_asr_local::pipeline::PipelineConfig::from_app_config(language);
 let text = state.engine_manager.transcribe_batch(&samples, &cfg)?;
 ```
 

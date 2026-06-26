@@ -105,7 +105,7 @@ Spec §2.2 / §3.2 称「3 处绕过 `resolve_model_dir` 直接拼 `.cache/huggi
 
 - [x] **Step 2: 运行测试确认失败**
 
-Run: `cargo test -p octopus-asr resolve_local_in`
+Run: `cargo test -p octopus-asr-local resolve_local_in`
 Expected: 编译失败——`error[E0425]: cannot find function resolve_local_in in module config`（或 `not found in this scope`）。
 
 - [x] **Step 3: 实现 `resolve_local_in` 并改造 `resolve_model_dir`**
@@ -154,7 +154,7 @@ pub fn resolve_model_dir(source: &str) -> Result<PathBuf> {
 
 - [x] **Step 4: 运行测试确认通过**
 
-Run: `cargo test -p octopus-asr resolve_local_in`
+Run: `cargo test -p octopus-asr-local resolve_local_in`
 Expected: 4 个测试 PASS。
 
 - [x] **Step 5: 改 `find_hf_cache` 错误提示**
@@ -173,7 +173,7 @@ Expected: 4 个测试 PASS。
 
 - [x] **Step 6: 跑 asr 全量测试确认无回归**
 
-Run: `cargo test -p octopus-asr`
+Run: `cargo test -p octopus-asr-local`
 Expected: 全部 PASS（含既有 `pick_entry` / `resolve_*` / `parse_spec_*` 等；`resolve_local_in` 4 个新测试）。
 
 - [x] **Step 7: Commit**

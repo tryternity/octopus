@@ -8,7 +8,7 @@ octopus 是一个基于 ONNX Runtime 的语音识别（ASR）工具集，支持�
 octopus/
 ├── crates/
 │   ├── infra/       # 基础设施 (octopus-infra) — 常量 + octopus_config_home，无项目内依赖
-│   ├── asr/         # 核心推理库 (octopus-asr) — 含 db.rs（SQLite：模型配置+识别历史）
+│   ├── asr/         # 核心推理库 (octopus-asr-local) — 含 db.rs（SQLite：模型配置+识别历史）
 │   ├── llm/         # LLM 润色 (octopus-llm)
 │   ├── cli/         # 命令行工具 (octopus-cli)
 │   ├── server/      # HTTP/WebSocket 服务 (octopus-server)
@@ -24,7 +24,7 @@ octopus/
 
 无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一不再各自定义）+ `config`（`AppConfig`——应用配置的**统一 schema**，22 字段，asr/desktop/cli 共享）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `transcriptions` 表 / `prompts` 表）。未来加时间工具等。任何项目 crate 都可依赖它。
 
-### octopus-asr（核心推理库）
+### octopus-asr-local（核心推理库）
 
 ASR 推理的核心库，所有上层组件都依赖它。
 
@@ -63,7 +63,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 
 ### octopus-asr-cloud（云端 ASR 协议层 + 批引擎）
 
-云端 ASR（Aliyun/ByteDance/Tencent/Baidu 4 provider）WSS 协议层 + 批引擎，cli/server 批处理转译音频文件可选云端 API（不必只靠本地 onnx）。依赖 `octopus-asr`（**单向**，asr 不依赖 cloud，避免循环——本地/云端分流在 cli 层）。
+云端 ASR（Aliyun/ByteDance/Tencent/Baidu 4 provider）WSS 协议层 + 批引擎，cli/server 批处理转译音频文件可选云端 API（不必只靠本地 onnx）。依赖 `octopus-asr-local`（**单向**，asr 不依赖 cloud，避免循环——本地/云端分流在 cli 层）。
 
 | 模块 | 说明 |
 |------|------|
@@ -232,7 +232,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
   - 静音切分：检测到语音后静音 ≥ `segment_silence`（默认 400ms）→ 切分，**无 overlap**（静音是自然语句边界，下一段从干净开始）
   - 强制切断：连续语音缓冲达 `SEGMENT_DURATION_S`（20s 常量）仍未静音 → 强制切断，**保留末尾 200ms（常量 `SEGMENT_OVERLAP_MS`）作下一段 overlap**（语句被硬切，需重叠保连贯）。`segment_duration` / `segment_overlap` 原为 config 字段，因属实现细节（用户不可感知）已改为常量
   - **双 VAD 实例（检测流 vs 过滤，修 LSTM 状态污染）**：SileroVad 是有状态 LSTM（`compute()` 更新 `h`/`c`，`reset()` 归零）。`VadSegmented` stage 持**两个独立实例**：① 检测用 `vad`——逐 tick 喂入顺序音频、跨 tick 有状态累积（续接上下文使语音/静音边界判定更稳），喂 `compute_speech_chunks`；② 过滤用 `filter_vad`——仅 `filter_speech_from_buffer` 用，**每次过滤前 `reset()` 归零**，恢复「每段独立冷启动」语义（等价旧代码每 buffer 新建 VAD，但 ONNX Session 全局缓存（启动 preheat 加载、同 path 复用，`SileroVad::new` 仅 clone Arc + zeros h/c），过滤只 reset 不重建，兼顾正确性与性能）。分离原因：检测流已按顺序见过 `samples`，而 `send_buffer`（`overlap_tail` + `audio_buffer`）与之重叠，若共用一个有状态 VAD 会双重喂入 + 跨段污染 LSTM → 段首 gating 失真（裁掉语音起音或混入前导噪声）
-  - **`filter_speech` 两端 trim（修首尾字丢失）**：检测流切出的单段经 `filter_speech_from_buffer` → `octopus_asr::audio::filter_speech` 过滤，**只 trim 首尾静音、保留中间全部音频**（含句内 ~50ms 停顿 / 轻声帧），**不逐帧删除**低于阈值帧——逐帧删会破坏句子连续时间结构 → 声学特征错乱 → 漏字 / 乱码 / 粘连。扫描首个 / 末个高于阈值的帧，各外扩 `SPEECH_PAD_MS`（120ms，@480 样本/30ms 帧 = 4 帧）作为起止点，补回 VAD 响应延迟切掉的首字音头、与衰减残尾被判静音的尾字尾音（参考 silero-vad `speech_pad_ms` 默认 30ms）；该 padding 远低于段间静音阈值（仅借回纯静音、不触及相邻段语音）。`transcribe_with_vad` 的 `segment_audio_vad`（>30s 长音频走此路径）共用同一 `SPEECH_PAD_MS`，段首预借 / 段尾后补同模式
+  - **`filter_speech` 两端 trim（修首尾字丢失）**：检测流切出的单段经 `filter_speech_from_buffer` → `octopus_asr_local::audio::filter_speech` 过滤，**只 trim 首尾静音、保留中间全部音频**（含句内 ~50ms 停顿 / 轻声帧），**不逐帧删除**低于阈值帧——逐帧删会破坏句子连续时间结构 → 声学特征错乱 → 漏字 / 乱码 / 粘连。扫描首个 / 末个高于阈值的帧，各外扩 `SPEECH_PAD_MS`（120ms，@480 样本/30ms 帧 = 4 帧）作为起止点，补回 VAD 响应延迟切掉的首字音头、与衰减残尾被判静音的尾字尾音（参考 silero-vad `speech_pad_ms` 默认 30ms）；该 padding 远低于段间静音阈值（仅借回纯静音、不触及相邻段语音）。`transcribe_with_vad` 的 `segment_audio_vad`（>30s 长音频走此路径）共用同一 `SPEECH_PAD_MS`，段首预借 / 段尾后补同模式
   - 每段经 `filter_speech_from_buffer` 过滤静音后，由 `VadSegmentedPipeline` 内部 `spawn_offline_transcription_with_seq` 派发到 **Tauri 全局异步运行时**（`tauri::async_runtime::spawn`）执行 `engine.transcribe`（底层 CPU 密集推理已 `spawn_blocking` 包裹、不阻塞 runtime worker），完成经 **mpsc rx** 回填 `completed_results: HashMap<seq,String>` + `completed_seq` 游标连续消费（**2c-3 删 `Command::TranscriptionDone`**，改 pipeline 内部 mpsc，coordinator 不再参与段完成回调）；段间不做 overlap 去重——force_cut 段虽带 200ms overlap_tail，但仅 ≈1 字、与正常重字不可区分，曾因子串匹配误删真词（如「识别」），已移除去重逻辑改为逗号直接拼接。**识别失败 / 空结果仍占位该 `seq`（写空串）以保证游标连续推进**——否则缺失序号会让消费卡死、该次录音此后所有有效段积压丢失；**跨会话保护（2c-3）**：pipeline drop → mpsc rx disconnect，旧会话迟到段不污染新会话（原 `TranscriptionDone` 携带 `session_id` 比对 `transcript.id` 的机制随命令删除，改由 pipeline 生命周期兜底——快速双击 Toggle / 录音中重启时旧 pipeline drop 即切断其 rx，残留异步转写回调无处回填）
 - **Transcript 文本状态机**：识别文本状态由 `Transcript` 结构（`crates/desktop/src/transcript.rs`）统一管理——内部用 `full`（当前完整 ASR）+ `raw_len`（上次停顿快照的 char 长度）派生 `raw`（停顿快照，润色基准）/ `increase`（停顿后增量），避免维护三份字符串。`Stage::Streaming` / `VadSegmented` / `WaitingCompletion` 各持 `transcript: Transcript` 字段，文本流经 Transcript 方法（`set_full` / `append_segment` / `display_text` / `db_text`）。停止后 `Stage::Polishing`（最终润色中，持 `id` + `raw_text`）→ `Stage::Pasting`（持 `id` + `raw_text` + `polished_text` + `polish_status`）。入库的 `engine` / `engine_mode` 在过程入库的 raw 阶段已写（`update_transcription_raw(&config.asr_engine, ..)`），`Pasting` 不再持有。详见 [spec](superpowers/specs/2026-06-14-archived-design.md)
 - **停顿驱动润色**：流式 / 伪流式统一——静音 ≥ `pause_polish_threshold_ms`（默认 600ms，可配置）/ 伪流式段边界完成时，经 `take_polish_input()` 取润色输入（无编辑 = 全量 ASR `raw + increase`；已编辑 = `(edited, 新增)` 边界，见「结果窗可编辑」）送 LLM 润色（mode=2 only），**不重置流式引擎**（只读送 LLM，引擎状态原样保留）。修复了流式中间润色 P0（partial 全量覆盖 polished）。默认 600ms > Active Flush 500ms（GUI 约束 `>= 600`，须大于句间停顿最大值，否则润色先于尾音冲刷、快照缺尾音），润色在 tick 流程最末执行，快照可靠
@@ -273,7 +273,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - 停止空文本边界：Toggle 停止录音时若 `transcript.full()` 为空（麦克风静音 / VAD 未检出语音），`start_final_polish_or_paste` 空文本分支直接回 `Idle`，必须对称清理 `result_window::hide_result` + `tray → Idle` 两类 UI 反馈（缺一则"正在聆听…"框残留）；详见 [设计 §4.5](superpowers/specs/2026-06-14-archived-design.md)。**云端 WSS 连接失败（2026-06-21 审查修复）**：`CloudPipelineEngine::tick` 中 `cloud_pipeline::open_cloud_session` 返回 `Err` 时，除 `error!` 日志 + 复位 `is_speaking=false` 外，**产 `TranscriptEvent::Error("⚠️ 云端连接失败：<msg>")`**（承载层 last_error → 下 tick `PipelineEvent::Error` → `apply_pipeline_events` → `update_result`，2d 删原 `take_error`），让用户即时感知错误而非卡在"正在聆听…"假死状态。session 由 `!is_closing && !is_speaking` 分支自动 take，下次语音 onset 重开 WS（瞬时抖动自动重试；持续失败如 Key 无效每次 onset 报错，用户可见可排查）
 
 支持三种引擎接入模式：
-- **embedded**（默认）：内嵌 octopus-asr，本地推理
+- **embedded**（默认）：内嵌 octopus-asr-local，本地推理
 - **remote-ws**：通过 WebSocket 连接远程 octopus-server
 - **remote-grpc**：通过 gRPC 连接远程推理服务
 - **云引擎（cloud feature）**：`app_config.asr_engine` 解析为 `provider='aliyun'`（`EngineCategory::Aliyun`）时，路由 `AliyunEngine`（desktop crate，`cloud` feature 后）；`provider='bytedance'`（`EngineCategory::ByteDance`）时直接走 `CloudPipelineEngine`（`Stage::Streaming` cloud 分支，无独立 engine）。均不走 `engine_mode` 分支。详见下方「云端 ASR 引擎」
@@ -330,7 +330,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 | `app_config` | 应用行为配置（22 字段） | db.sql seed + yaml 迁移 |
 
 - **应用行为配置** `app_config` 表 → `infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`，22 字段：麦克风/引擎选择/分段/润色/LLM/粘贴/硬件加速/ASR 纠错/降噪/简繁输出/工具栏显隐/降噪模式/下载镜像等；另有 `active_polish_prompt` 由 `db::load_active_prompt_id()` 独立读取，不入 AppConfig struct）。schema 统一定义在 infra，asr/desktop/cli 共享。值统一 TEXT 存储，由 `load_app_config` 按字段类型解析。
-- **DB 模型目录** `models` 表 → `asr::config::AsrConfig`（`octopus_asr::config::load_config()`，首次 `db::ensure_db()` 自动建表 + seed，读后缓存到 `RwLock<Option<Arc<AsrConfig>>>`——v2 可刷新：模型管理页 `set_model_enabled`/`set_model_secret_key` 后调 `reload_models_config()` 从 DB 重读替换，引擎下拉即时更新；对齐 `APP_CONFIG` 模式）。
+- **DB 模型目录** `models` 表 → `asr::config::AsrConfig`（`octopus_asr_local::config::load_config()`，首次 `db::ensure_db()` 自动建表 + seed，读后缓存到 `RwLock<Option<Arc<AsrConfig>>>`——v2 可刷新：模型管理页 `set_model_enabled`/`set_model_secret_key` 后调 `reload_models_config()` 从 DB 重读替换，引擎下拉即时更新；对齐 `APP_CONFIG` 模式）。
 - **配置持久化**：`persist_*`（单键 `save_config_key`，ON CONFLICT 仅改 config_value）、`set_config`（全量 `save_app_config`，22 字段 ON CONFLICT），均写 DB。旧 `write_config_yaml` 已移除。
 - **yaml 迁移**：首次启动（v0/v1 → v2）检测旧 `~/.octopus/config.yaml` → 解析导入 DB 覆盖 seed → 重命名为 `config.yaml.bak`。迁移逻辑在 `init_schema` 中一次性执行。
 - **`write_to_clipboard`**（默认 `true`）：粘贴后是否把识别结果留在剪贴板，方便他处再粘贴；与 `paste_method`（`clipboard` / `direct` / `none`）构成三模式矩阵——`clipboard` 模式 true 时不恢复原剪贴板内容、false 时恢复（恢复前若 `read_text` 读出空——图片/富文本/文件读不出——则跳过写回，避免空文本覆盖用户的非文本剪贴板）；`direct` 模式 true 时 enigo 输入后末尾写剪贴板、false 时不碰剪贴板；`none` 模式忽略此配置（其唯一目的就是写剪贴板）。`false` 时三种粘贴行为等同重构前现状（不破坏现有用户习惯）。详见 [spec §6](superpowers/specs/2026-06-14-archived-design.md)。
@@ -511,7 +511,7 @@ ASR（尤其 Qwen3-ASR 在 `language=auto` 下）输出会混入繁体字；sher
 
 ## ASR 硬件加速与自动降级机制 (ASR Hardware Acceleration & Fallback)
 
-为了最大化利用用户本机的 GPU 资源加速语音识别，同时避免因显卡驱动或算子不支持导致应用程序崩溃，系统在 `octopus-asr` 核心引擎中实现了一套手自动一体的硬件加速及平滑降级机制。
+为了最大化利用用户本机的 GPU 资源加速语音识别，同时避免因显卡驱动或算子不支持导致应用程序崩溃，系统在 `octopus-asr-local` 核心引擎中实现了一套手自动一体的硬件加速及平滑降级机制。
 
 - **开关**：`app_config.asr_hardware_accelerated`（`bool`，默认 `false`）。`false` 直接走 CPU。
 - **按平台注册 EP**（关键修正：曾跨平台全注册 CUDA+DirectML+CoreML，macOS 上 init Linux/Windows 专用 EP 的失败路径直接 segfault——SIGSEGV 绕过 Rust 的 `match Err`、进程被 OS 杀无法 catch，故必须按平台预防）：macOS 仅 CoreML、Linux CUDA、Windows 仅 DirectML（2026-06-20 起删 CUDA——DirectML 通吃 DX12 GPU，实时转写够用，YAGNI）。

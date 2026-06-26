@@ -6,7 +6,7 @@
 
 **Architecture:** 新增上层 trait `StreamingPipelineEngine`（`tick/finish_with_tail/silence_duration/current_partial/reset/take_close_handle/is_cloud`，后三个带默认实现）。`StreamingPipeline` 从「持 `StreamingRunner`」改为「持 `Box<dyn StreamingPipelineEngine>`」。`LocalPipelineEngine` 薄包 `StreamingRunner`（2c-1 既有行为）；`CloudPipelineEngine`（cfg cloud，新文件 `cloud_pipeline.rs`）把 `handle_cloud_streaming_tick` 的 ASR 编排（onset/push/drain/双层文本/静音非阻塞 finish）迁入 `tick`，产 `Vec<TranscriptEvent>` 而非直接写 transcript/emit。coordinator 侧 `Stage::CloudStreaming` 合并进 `Stage::Streaming`，`handle_cloud_streaming_tick` 删除合并进 `handle_streaming_tick`（统一 `pipeline.tick` + DB/emit/polish，`is_cloud()` 分支处理 cloud 的「每 tick emit / commit 时 DB+polish / 错误上报」三处不对称）。cloud close 链（`CloudClosing`/`CloudStreamingDone`/`handle_cloud_streaming_done`/`finalize_cloud`/`session_id` 护栏/`close_async` spawn）完全不动。
 
-**Tech Stack:** Rust workspace（crate `desktop`，binary `main.rs`）；`cloud` feature（`#[cfg(feature = "cloud")]`，Cargo.toml 已定义）；tauri async runtime；`octopus_asr::vad::SileroVad` / `streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent}`。
+**Tech Stack:** Rust workspace（crate `desktop`，binary `main.rs`）；`cloud` feature（`#[cfg(feature = "cloud")]`，Cargo.toml 已定义）；tauri async runtime；`octopus_asr_local::vad::SileroVad` / `streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent}`。
 
 **关联文档：** spec `docs/superpowers/specs/2026-06-24-asr-pipeline-stage2c2-design.md`；总 spec `docs/superpowers/specs/2026-06-23-asr-pipeline-design.md` §3.4。
 
@@ -137,9 +137,9 @@ Expected: 编译失败——`StreamingPipelineEngine` / `StreamingPipeline::new(
 
 use crate::transcript::Transcript;
 use log::warn;
-use octopus_asr::streaming_runner::{StreamingRunner, TranscriptEvent};
-use octopus_asr::streaming_engine::StreamingSession;
-use octopus_asr::vad::SileroVad;
+use octopus_asr_local::streaming_runner::{StreamingRunner, TranscriptEvent};
+use octopus_asr_local::streaming_engine::StreamingSession;
+use octopus_asr_local::vad::SileroVad;
 
 /// desktop 流式 pipeline 引擎（上层抽象，spec §3.4 阶段2c-2）。
 ///
@@ -492,7 +492,7 @@ mod tests {
 ```
 （`Box<LocalPipelineEngine> → Box<dyn StreamingPipelineEngine>` 的 unsize 强转由 `StreamingPipeline::new` 形参期望类型驱动，**无需** 在 coordinator 额外 `use` trait。）
 
-⑤ import 清理：`coordinator.rs:10` `use octopus_asr::streaming_engine::StreamingSession;` —— local 构造不再直接用 `StreamingSession`（移入 pipeline.rs），但 handle_toggle local 分支 671 `StreamingSession::new(&config.asr_engine)` **仍在 coordinator**（降级逻辑用）。故该 import **保留**。
+⑤ import 清理：`coordinator.rs:10` `use octopus_asr_local::streaming_engine::StreamingSession;` —— local 构造不再直接用 `StreamingSession`（移入 pipeline.rs），但 handle_toggle local 分支 671 `StreamingSession::new(&config.asr_engine)` **仍在 coordinator**（降级逻辑用）。故该 import **保留**。
 
 - [x] **Step 1.5: 运行测试确认通过（不含 cloud feature）**
 
@@ -693,8 +693,8 @@ Expected: 编译失败——`drain_cloud_session`/`CloudDrainState`/`onset_confi
 use crate::cloud_types::{CloudStreamHandle, StreamEvent};
 use crate::pipeline::{compute_speech_chunks, StreamingPipelineEngine};
 use log::{debug, error, info, warn};
-use octopus_asr::streaming_runner::TranscriptEvent;
-use octopus_asr::vad::SileroVad;
+use octopus_asr_local::streaming_runner::TranscriptEvent;
+use octopus_asr_local::vad::SileroVad;
 use tauri::async_runtime::RuntimeHandle;
 
 /// pre-roll 滚动缓冲区大小（采样点）：200ms @ 16kHz = 3200。
@@ -811,7 +811,7 @@ fn resolve_cloud_entry<'a>(
 
 #[cfg(feature = "cloud")]
 fn resolve_aliyun_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let cfg = octopus_asr_local::config::load_config().map_err(|e| e.to_string())?;
     let model_name = octopus_infra::db::parse_model_spec(engine_spec).model_name().to_string();
     let entry = resolve_cloud_entry(cfg.asr.aliyun.as_ref(), "aliyun", &model_name)?;
     Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
@@ -819,7 +819,7 @@ fn resolve_aliyun_config(engine_spec: &str) -> Result<(String, String, String), 
 
 #[cfg(feature = "cloud")]
 fn resolve_bytedance_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let cfg = octopus_asr_local::config::load_config().map_err(|e| e.to_string())?;
     let model_name = octopus_infra::db::parse_model_spec(engine_spec).model_name().to_string();
     let entry = resolve_cloud_entry(cfg.asr.bytedance.as_ref(), "bytedance", &model_name)?;
     Ok((entry.source.clone(), entry.secret_key.clone(), model_name))
@@ -827,7 +827,7 @@ fn resolve_bytedance_config(engine_spec: &str) -> Result<(String, String, String
 
 #[cfg(feature = "cloud")]
 fn resolve_tencent_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let cfg = octopus_asr_local::config::load_config().map_err(|e| e.to_string())?;
     let model_name = octopus_infra::db::parse_model_spec(engine_spec).model_name().to_string();
     let entry = resolve_cloud_entry(cfg.asr.tencent.as_ref(), "tencent", &model_name)?;
     if !entry.source.contains(':') {
@@ -841,7 +841,7 @@ fn resolve_tencent_config(engine_spec: &str) -> Result<(String, String, String),
 
 #[cfg(feature = "cloud")]
 fn resolve_baidu_config(engine_spec: &str) -> Result<(String, String, String), String> {
-    let cfg = octopus_asr::config::load_config().map_err(|e| e.to_string())?;
+    let cfg = octopus_asr_local::config::load_config().map_err(|e| e.to_string())?;
     let model_name = octopus_infra::db::parse_model_spec(engine_spec).model_name().to_string();
     let entry = resolve_cloud_entry(cfg.asr.baidu.as_ref(), "baidu", &model_name)?;
     if entry.source.is_empty() {
@@ -857,9 +857,9 @@ pub(super) fn open_cloud_session(
     language: &str,
     pre_roll: Vec<f32>,
 ) -> Result<CloudStreamHandle, String> {
-    use octopus_asr::config::EngineCategory;
+    use octopus_asr_local::config::EngineCategory;
     let rt: RuntimeHandle = tauri::async_runtime::handle();
-    match octopus_asr::config::resolve_engine_category(asr_engine) {
+    match octopus_asr_local::config::resolve_engine_category(asr_engine) {
         Some(EngineCategory::Aliyun) => {
             let (endpoint, key, model) = resolve_aliyun_config(asr_engine)?;
             crate::aliyun_stream::open(&rt, endpoint, key, model, language.to_string(), pre_roll)
@@ -1174,8 +1174,8 @@ fn handle_streaming_tick(
 ```rust
             #[cfg(feature = "cloud")]
             if use_cloud_streaming {
-                match octopus_asr::config::find_silero_vad() {
-                    Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
+                match octopus_asr_local::config::find_silero_vad() {
+                    Ok(path) => match octopus_asr_local::vad::SileroVad::new(&path) {
                         Ok(mut vad) => {
                             vad_preroll(&mut vad);
                             crate::result_window::show_result(app_handle, "正在聆听…");

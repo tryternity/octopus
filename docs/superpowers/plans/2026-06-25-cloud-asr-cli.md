@@ -6,7 +6,7 @@
 
 **Architecture:** 协议层从 desktop `*_stream.rs` 1:1 复刻（仅改 spawn 方式），`CloudBatchEngine impl asr::OfflineAsrEngine`（单段→单 WSS session→完整文本，分段由 `asr::pipeline::transcribe_segments` 自动完成）；cli 层做本地/云端分流，两端都产出 `dyn OfflineAsrEngine` 喂 `transcribe_batch`。依赖单向 `asr ← cloud`。
 
-**Tech Stack:** Rust workspace；tokio + tokio-tungstenite(native-tls)；复用 `octopus-asr`（trait/config）+ `octopus-infra`（ModelEntry/parse_model_spec）。
+**Tech Stack:** Rust workspace；tokio + tokio-tungstenite(native-tls)；复用 `octopus-asr-local`（trait/config）+ `octopus-infra`（ModelEntry/parse_model_spec）。
 
 **关联 spec：** `docs/superpowers/specs/2026-06-25-cloud-asr-cli-design.md`。
 
@@ -98,7 +98,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-octopus-asr = { path = "../asr" }
+octopus-asr-local = { path = "../asr" }
 octopus-infra = { path = "../infra" }
 
 # Async + WSS（wss:// 需 native-tls）
@@ -127,7 +127,7 @@ Create `crates/asr-cloud/src/lib.rs`：
 //! 云端 ASR（cli/server 批处理用）。
 //!
 //! 4 provider（Aliyun/ByteDance/Tencent/Baidu）WSS 协议层 + 批引擎（impl
-//! `octopus_asr::engine::OfflineAsrEngine`）。协议层从 `octopus-desktop` 复刻
+//! `octopus_asr_local::engine::OfflineAsrEngine`）。协议层从 `octopus-desktop` 复刻
 //!（见各 `*_stream.rs`），改造为不依赖 tauri runtime：`open()` 内部用 `tokio::spawn`，
 //! 调用方（`CloudBatchEngine`）在自有 tokio runtime 上 `block_on` 驱动。
 //!
@@ -451,7 +451,7 @@ Create `crates/asr-cloud/src/config.rs`：
 
 use crate::cloud_types::CloudStreamHandle;
 use anyhow::{bail, Result};
-use octopus_asr::config::{self, EngineCategory};
+use octopus_asr_local::config::{self, EngineCategory};
 
 /// 通用云端配置解析：从 DB section 取 ModelEntry + 校验 secret_key 非空。
 fn resolve_cloud_entry<'a>(
@@ -562,7 +562,7 @@ pub fn open_cloud_session(
 }
 ```
 
-> **核对**：`octopus_asr::config::load_config()` / `resolve_engine_category()` / `EngineCategory` 均 pub（desktop `cloud_pipeline.rs:129/186/188` 跨 crate 已用）；`octopus_infra::db::{ModelEntry, parse_model_spec}` pub（desktop `cloud_pipeline.rs:114/131` 已用）。`AppConfig.asr.{aliyun,bytedance,tencent,baidu}` 字段类型 = `Option<HashMap<String, ModelEntry>>`（见 desktop resolve_* 用法）。若字段名/类型有出入，以 desktop `cloud_pipeline.rs:127-177` 为准对齐。
+> **核对**：`octopus_asr_local::config::load_config()` / `resolve_engine_category()` / `EngineCategory` 均 pub（desktop `cloud_pipeline.rs:129/186/188` 跨 crate 已用）；`octopus_infra::db::{ModelEntry, parse_model_spec}` pub（desktop `cloud_pipeline.rs:114/131` 已用）。`AppConfig.asr.{aliyun,bytedance,tencent,baidu}` 字段类型 = `Option<HashMap<String, ModelEntry>>`（见 desktop resolve_* 用法）。若字段名/类型有出入，以 desktop `cloud_pipeline.rs:127-177` 为准对齐。
 
 - [x] **Step 2: 注册模块 + re-export**
 
@@ -633,7 +633,7 @@ git commit -m "feat(asr-cloud): config 分发（resolve_*_config + open_cloud_se
 Create `crates/asr-cloud/src/batch.rs`，先写测试模块：
 
 ```rust
-//! 云端 ASR 批引擎（impl `octopus_asr::engine::OfflineAsrEngine`）。
+//! 云端 ASR 批引擎（impl `octopus_asr_local::engine::OfflineAsrEngine`）。
 //!
 //! 语义：`transcribe(samples, language)` = 单段音频（≤30s，由上层 `transcribe_segments`
 //! 保证）→ 单个 WSS session → 完整文本。VAD 分段 + CJK 连接由
@@ -644,7 +644,7 @@ Create `crates/asr-cloud/src/batch.rs`，先写测试模块：
 
 use crate::open_cloud_session;
 use anyhow::{bail, Result};
-use octopus_asr::engine::OfflineAsrEngine;
+use octopus_asr_local::engine::OfflineAsrEngine;
 use octopus_infra::db::{parse_model_spec, ModelSpec};
 
 /// 分块推送粒度（采样点）：200ms @ 16kHz = 3200。平滑灌入避免单帧过大。
@@ -829,13 +829,13 @@ git commit -m "feat(asr-cloud): CloudBatchEngine impl OfflineAsrEngine（单段�
 
 - [x] **Step 2: cli 加 octopus-asr-cloud 依赖**
 
-编辑 `crates/cli/Cargo.toml`，在 `[dependencies]` 加（位置参考既有 octopus-asr 行）：
+编辑 `crates/cli/Cargo.toml`，在 `[dependencies]` 加（位置参考既有 octopus-asr-local 行）：
 
 ```toml
 octopus-asr-cloud = { path = "../asr-cloud" }
 ```
 
-> 先 Read `crates/cli/Cargo.toml` 确认既有 `octopus-asr` 行的写法，紧随其后加。
+> 先 Read `crates/cli/Cargo.toml` 确认既有 `octopus-asr-local` 行的写法，紧随其后加。
 
 - [x] **Step 3: 写 is_cloud_spec 测试（先写测试）**
 
@@ -850,8 +850,8 @@ octopus-asr-cloud = { path = "../asr-cloud" }
 //! 两端都经 `asr::pipeline::transcribe_batch` 编排（VAD 分段 + 纠错 + 简繁）。
 
 use anyhow::Result;
-use octopus_asr::engine::{AsrEngineManager, OfflineAsrEngine};
-use octopus_asr::pipeline::{transcribe_batch, PipelineConfig};
+use octopus_asr_local::engine::{AsrEngineManager, OfflineAsrEngine};
+use octopus_asr_local::pipeline::{transcribe_batch, PipelineConfig};
 use octopus_asr_cloud::{is_cloud_spec, CloudBatchEngine};
 
 /// 批处理转写：分流 → transcribe_batch（VAD 分段 + 纠错 + 简繁）。
@@ -875,7 +875,7 @@ pub fn run(model: &str, language: &str, samples: &[f32]) -> Result<String> {
 // run 需真实引擎 / WSS，验证靠 cargo check + clippy + Task 8 e2e 清单。
 ```
 
-> **核对**：`octopus_asr::pipeline::transcribe_batch` 是 pub（`asr/pipeline.rs:46`）。`resolve_engine_category` / `EngineCategory` pub（见 Task 5 核对）。若 `is_cloud_spec_recognizes_cloud_prefixes` 中某前缀解析不出云端（取决于 `resolve_engine_category` 实现），Read `crates/asr/src/config.rs` 的 `resolve_engine_category` + `EngineCategory` 前缀表，用**实际能解析为云端**的 spec 形态替换测试用例。
+> **核对**：`octopus_asr_local::pipeline::transcribe_batch` 是 pub（`asr/pipeline.rs:46`）。`resolve_engine_category` / `EngineCategory` pub（见 Task 5 核对）。若 `is_cloud_spec_recognizes_cloud_prefixes` 中某前缀解析不出云端（取决于 `resolve_engine_category` 实现），Read `crates/asr/src/config.rs` 的 `resolve_engine_category` + `EngineCategory` 前缀表，用**实际能解析为云端**的 spec 形态替换测试用例。
 
 - [x] **Step 4: 确认 is_cloud_spec 测试在 cloud crate 通过**
 
@@ -948,7 +948,7 @@ Read `docs/architecture.md`，在 crate 列表/workspace 结构处加 `octopus-a
 ```markdown
 - `crates/asr-cloud`（`octopus-asr-cloud`）：云端 ASR（Aliyun/ByteDance/Tencent/Baidu）WSS
   协议层 + 批引擎 `CloudBatchEngine`（impl `OfflineAsrEngine`）。cli 批处理转译音频文件可选云端
-  API；desktop 流式适配暂留 desktop（第二步合并）。依赖 `octopus-asr`（单向）。
+  API；desktop 流式适配暂留 desktop（第二步合并）。依赖 `octopus-asr-local`（单向）。
 ```
 
 - [x] **Step 5: 更新记忆 parallel-workstreams.md**

@@ -11,7 +11,7 @@
 
 > Date: 2026-06-20
 > 状态：收到另一 AI 对 `crates/desktop`（Tauri 语音转写桌面端，~6.8k 行）的 7 条审查结论，逐条对照真实代码复核。**结论：7 条全部成立、行号引用全部准确，无幻象**（与 qwen3-asr 审查的 #3 不同）。其中一1 / 二2 / 三1 触发面与严重度需校准，二1 应升级。
-> **P0 三条（一1/一2/二1）+ P1 三条（二2/三2/三1）均实施并验证**（原 worktree `worktree-desktop-audit`）：`cargo check -p octopus-desktop --features "embedded dashscope"` 零 warning、`cargo test -p octopus-asr` 52 passed/0 failed、逐 commit bisect-clean。**P0+P1 均已合并 main**（P0 `44b8ab8`、P1 `9a19b6b`）。P2（一3）延后，GUI e2e 待本地验证，详见 followups plan `2026-06-20-desktop-audit-followups.md`。详见 §4/§5。
+> **P0 三条（一1/一2/二1）+ P1 三条（二2/三2/三1）均实施并验证**（原 worktree `worktree-desktop-audit`）：`cargo check -p octopus-desktop --features "embedded dashscope"` 零 warning、`cargo test -p octopus-asr-local` 52 passed/0 failed、逐 commit bisect-clean。**P0+P1 均已合并 main**（P0 `44b8ab8`、P1 `9a19b6b`）。P2（一3）延后，GUI e2e 待本地验证，详见 followups plan `2026-06-20-desktop-audit-followups.md`。详见 §4/§5。
 > 基线：worktree `worktree-desktop-audit` @ c259930（含全部 qwen3 修复）。
 > 关联文件：`crates/desktop/src/{coordinator,dashscope_stream,paste,settings_commands,main,runtime_config,audio}.rs`、`crates/asr/src/config.rs`。
 > 平行文档：`2026-06-20-qwen3-asr-inference-audit.md`（同日 asr 推理审查复核）。
@@ -187,7 +187,7 @@ P1 三条已实施、逐 commit bisect-clean、**已合并 main**（`9a19b6b`，
 ## 5. 验证
 
 - `cargo check -p octopus-desktop --features "embedded dashscope"`：**零 warning 零 error**（三1 的 cfg-gated 代码需带 dashscope feature 才编入；默认 `embedded` 同样干净）。
-- `cargo test -p octopus-asr`：**52 passed / 0 failed**（P1 不动 asr 逻辑，无回归）。
+- `cargo test -p octopus-asr-local`：**52 passed / 0 failed**（P1 不动 asr 逻辑，无回归）。
 - **逐 commit bisect-clean**：dfec6fe / e1bb944 / b0b7468 各自 checkout 独立编译通过。
 - **未加单测的项**（依赖外部环境无法离线测）：
   - 一1 session_id 护栏：需构造 `Stage` + `Transcript` + mock `tauri::AppHandle`，coordinator 全 Tauri 耦合、无既有 test 模块。
@@ -307,7 +307,7 @@ providers.push(ort::ep::DirectMLExecutionProvider::default().build());
 
 ### 5.5 验证策略
 
-- **mac 本地（已验证 2026-06-20）**：`cargo test -p octopus-asr` 45 passed/0 failed；`cargo build --release -p octopus-desktop` 通过；desktop e2e（CoreML 录音）**已通过**（CoreML 加速正常、无 segfault 回归）。
+- **mac 本地（已验证 2026-06-20）**：`cargo test -p octopus-asr-local` 45 passed/0 failed；`cargo build --release -p octopus-desktop` 通过；desktop e2e（CoreML 录音）**已通过**（CoreML 加速正常、无 segfault 回归）。
 - **linux/win 交叉（受阻）**：`cargo check --target x86_64-unknown-linux-gnu` 卡在 `openssl-sys`（mac→linux 缺 openssl dev sysroot）、`--target x86_64-pc-windows-msvc` 卡在 `esaxx-rs` C++（缺 MSVC 工具链）——均为目标平台 C/C++ 工具链缺失，**非 ort、非本改动**。feature 矩阵正确性改由源码 gate 结构（§7.3）+ mac coreml 实证代理核验；运行正确性留用户在对应平台本地自测。
 - CI 是否三平台 check：当前未设。
 
@@ -441,8 +441,8 @@ std::vector key_shape = {batch, max_total_len_, kv_h, hd};  // max_total_len_ �
 
 ## 5. 验证
 
-- `cargo check -p octopus-asr --all-targets`：零 warning。
-- `cargo test -p octopus-asr`：50 passed / 0 failed（含新增 5 个回归测试）：
+- `cargo check -p octopus-asr-local --all-targets`：零 warning。
+- `cargo test -p octopus-asr-local`：50 passed / 0 failed（含新增 5 个回归测试）：
   - `compute_mel_features_empty_samples_does_not_hang`（#1 死锁回归）
   - `compute_mel_features_single_sample_no_panic`（反射边界 len==1）
   - `mel_filterbank_range_is_contiguous_nonzero`（#6 正确性：区间内全非零、区间外全零）
@@ -462,7 +462,7 @@ std::vector key_shape = {batch, max_total_len_, kv_h, hd};  // max_total_len_ �
   - dim1 具体 → 用模型声明值（正确 sizing，对齐 C++）。
   - 动态 → 仅装 prompt+生成（`s0 + MAX_NEW_TOKENS`），短音频下比 2048 floor 显著省内存。loop 的 `cur_len + s <= max_total_len` 写入守卫与 `cur_len < max_total_len` 终止条件保证不越界。
 
-**验证**：`cargo check -p octopus-asr` 零 warning；`cargo test -p octopus-asr` 50 passed/0 failed（与 §5 一致；#4 未新增单测，故计数不变）。`decoder_kv_max_len` 依赖 ONNX session，无法离线单测。
+**验证**：`cargo check -p octopus-asr-local` 零 warning；`cargo test -p octopus-asr-local` 50 passed/0 failed（与 §5 一致；#4 未新增单测，故计数不变）。`decoder_kv_max_len` 依赖 ONNX session，无法离线单测。
 
 **已 e2e 验证（2026-06-20）**：本地真模型跑出 `dim1 动态 → 按 s0+MAX_NEW_TOKENS sizing`——该模型 `past_key` dim1 确为动态（-1），0.6B 与切换后的更大模型均走动态回退路径；热启动 RTF 0.19~0.20（5× 实时），sizing 行为与内存正常。两条路径中动态路径已实测；dim1 具体路径（`Some` 分支）因现用模型均为动态未直接覆盖，但逻辑与 C++ `InitDecoderSession` 一致。
 

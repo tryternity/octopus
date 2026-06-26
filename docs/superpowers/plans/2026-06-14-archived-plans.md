@@ -82,7 +82,7 @@ enum Stage {
     Streaming { /* 已有 */ },
     /// VAD 伪流式：tick 驱动分段识别
     VadSegmented {
-        vad: octopus_asr::vad::SileroVad,
+        vad: octopus_asr_local::vad::SileroVad,
         audio_buffer: Vec<f32>,           // 累积音频缓冲区
         overlap_tail: Vec<f32>,           // 前一窗口末尾 0.2s
         accumulated_text: String,         // 累积识别文本
@@ -496,7 +496,7 @@ static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
 
 /// DB 文件路径：~/.octopus/octopus.db
 fn db_path() -> std::path::PathBuf {
-    octopus_asr::config::handy_home().join("octopus.db")
+    octopus_asr_local::config::handy_home().join("octopus.db")
 }
 
 /// 启动时初始化：打开/创建 DB，建表 + 一次性迁移。
@@ -773,7 +773,7 @@ fn parse_history_entries(content: &str) -> Vec<HistoryEntry> {
 
 /// 迁移 history.txt（默认路径）。文件不存在/为空则跳过。
 fn migrate_history(conn: &Connection) -> Result<()> {
-    let path = octopus_asr::config::handy_home().join("history.txt");
+    let path = octopus_asr_local::config::handy_home().join("history.txt");
     migrate_history_at(conn, &path)
 }
 
@@ -874,12 +874,12 @@ Expected: 编译失败（`migrate_model_json_at` 未定义）。
 
 - [x] **Step 3: 写实现**
 
-在 `db.rs` 追加（用 `serde_json::Value` 解析，feature 无关、不依赖 octopus-asr 的结构体）：
+在 `db.rs` 追加（用 `serde_json::Value` 解析，feature 无关、不依赖 octopus-asr-local 的结构体）：
 
 ```rust
 /// 迁移 model.json（默认路径）。文件不存在则跳过。
 fn migrate_model_json(conn: &Connection) -> Result<()> {
-    let path = octopus_asr::config::handy_home().join("model.json");
+    let path = octopus_asr_local::config::handy_home().join("model.json");
     migrate_model_json_at(conn, &path)
 }
 
@@ -2523,7 +2523,7 @@ git commit -m "feat: implement polish trigger logic and final polish before past
 
     // 加载自定义润色 system prompt（~/.octopus/VOICE_POLISH.md）
     // 文件存在且非空时覆盖内置默认 prompt
-    let prompt_path = octopus_asr::config::handy_home().join("VOICE_POLISH.md");
+    let prompt_path = octopus_asr_local::config::handy_home().join("VOICE_POLISH.md");
     if prompt_path.exists() {
         if let Ok(content) = std::fs::read_to_string(&prompt_path) {
             let trimmed = content.trim();
@@ -2692,7 +2692,7 @@ llm_secret_key: "your-key-here"
 ## 验证
 
 - [x] `cargo check --workspace --all-targets`：0 error
-- [x] `cargo test -p octopus-asr -p octopus-infra`：asr 14 passed / 0 failed（含 5 新增 config 单测 + 2 streaming 集成测试）
+- [x] `cargo test -p octopus-asr-local -p octopus-infra`：asr 14 passed / 0 failed（含 5 新增 config 单测 + 2 streaming 集成测试）
 - [x] e2e `octopus-cli config`：`ASR active: qwen3-asr-0.6B (category: Qwen3Asr, from config.yaml asr_engine='qwen3-asr-0.6B')`
 - [x] DB migration：`PRAGMA user_version`=2，`PRAGMA table_info(models)` 无 is_active
 
@@ -2729,8 +2729,8 @@ llm_secret_key: "your-key-here"
 
 ## 阶段 D：desktop 瘦身 ✅
 - [x] 删 `desktop/src/db.rs` + `main.rs` 的 `mod db;`
-- [x] `main.rs`: `db::init`→`octopus_asr::db::ensure_db`；删 `load_app_config` + `set_runtime_config` 注入两步
-- [x] `coordinator.rs`: `insert_transcription` 改调 `octopus_asr::db`
+- [x] `main.rs`: `db::init`→`octopus_asr_local::db::ensure_db`；删 `load_app_config` + `set_runtime_config` 注入两步
+- [x] `coordinator.rs`: `insert_transcription` 改调 `octopus_asr_local::db`
 - [x] `desktop/Cargo.toml` 移除直接 `rusqlite` 依赖（asr 传递提供）
 
 ## 阶段 E：cli/server 注释 + Config 展示 ✅
@@ -2744,7 +2744,7 @@ llm_secret_key: "your-key-here"
 ## 验证
 
 - [x] `cargo check --workspace` 通过（含 desktop embedded）
-- [x] `cargo test -p octopus-asr` 9 测试通过（6 新 db 单测 + 3 原有 zipformer/streaming）
+- [x] `cargo test -p octopus-asr-local` 9 测试通过（6 新 db 单测 + 3 原有 zipformer/streaming）
 - [x] **手动端到端**（用户执行，2026-06-14 通过）：
   - 备份后删 `~/.octopus/octopus.db` → 启动 desktop → 确认自动建表 + seed（zipformer-small-ctc active）
   - `config.yaml` asr_engine=`zipformer-small-ctc` → 录音识别（走本地 `~/.octopus/models/zipformer`）
@@ -2801,7 +2801,7 @@ llm_secret_key: "your-key-here"
 ## 验证
 
 - [x] `cargo check --workspace --all-targets`：0 error（Finished）
-- [x] `cargo test -p octopus-asr`：9 passed
+- [x] `cargo test -p octopus-asr-local`：9 passed
 - [x] grep 全仓确认 `handy_home` / `HANDY_HOME` / `octopus_home` 零残留
 
 ## 过程问题（记录备查）
@@ -3734,7 +3734,7 @@ fn update_and_finalize_round_trip() {
 
 - [x] **Step 5: 运行测试**
 
-Run: `cargo test -p octopus-asr`
+Run: `cargo test -p octopus-asr-local`
 Expected: 所有测试 PASS（含新增 2 个）
 
 - [x] **Step 6: 提交**
@@ -3918,12 +3918,12 @@ enum Stage {
         engine: StreamingSession,
         transcript: Transcript,
         streaming_active: Arc<AtomicBool>,
-        vad: Option<octopus_asr::vad::SileroVad>,
+        vad: Option<octopus_asr_local::vad::SileroVad>,
         silence_duration: f64,
         flushed: bool,
     },
     VadSegmented {
-        vad: octopus_asr::vad::SileroVad,
+        vad: octopus_asr_local::vad::SileroVad,
         audio_buffer: Vec<f32>,
         overlap_tail: Vec<f32>,
         transcript: Transcript,
@@ -4526,7 +4526,7 @@ fn update_transcription_raw(
         return Ok(());
     }
     if !transcript.db_inserted() {
-        octopus_asr::db::insert_transcription_at_id(
+        octopus_asr_local::db::insert_transcription_at_id(
             transcript.id,
             &transcript.db_text(),
             engine,
@@ -4535,7 +4535,7 @@ fn update_transcription_raw(
         .map_err(|e| e.to_string())?;
         transcript.mark_db_inserted();
     } else {
-        octopus_asr::db::update_raw_text(transcript.id, &transcript.db_text())
+        octopus_asr_local::db::update_raw_text(transcript.id, &transcript.db_text())
             .map_err(|e| e.to_string())?;
     }
     Ok(())
@@ -4569,7 +4569,7 @@ if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "vad_se
 ```rust
 transcript.on_polish_done(polished);
 // 入库 polished
-if let Err(e) = octopus_asr::db::update_polished(
+if let Err(e) = octopus_asr_local::db::update_polished(
     transcript.id,
     transcript.polished(),
     "done",
@@ -4596,7 +4596,7 @@ Command::PasteDone => {
         let polish_model = if polish_status == "done" { Some(config.llm_model.as_str()) } else { None };
         let polished_for_db = if polish_status == "done" { Some(polished_text.as_str()) } else { None };
         let duration_ms = now_millis() - id;
-        if let Err(e) = octopus_asr::db::finalize_transcription(
+        if let Err(e) = octopus_asr_local::db::finalize_transcription(
             *id,
             raw_text,
             polished_for_db,
@@ -4617,7 +4617,7 @@ Command::PasteDone => {
 
 - [x] **Step 5: 删除旧 insert_transcription 调用 + 旧接口**
 
-确认 coordinator 不再调 `octopus_asr::db::insert_transcription`（旧自增版）。`db.rs` 的旧 `insert_transcription` / `insert_transcription_at` 若无其他调用方（grep 确认 cli/server 不用），可删除或保留。保留无害（YAGNI），但删更干净：
+确认 coordinator 不再调 `octopus_asr_local::db::insert_transcription`（旧自增版）。`db.rs` 的旧 `insert_transcription` / `insert_transcription_at` 若无其他调用方（grep 确认 cli/server 不用），可删除或保留。保留无害（YAGNI），但删更干净：
 ```bash
 grep -rn "insert_transcription\b" crates/ --include="*.rs"
 ```

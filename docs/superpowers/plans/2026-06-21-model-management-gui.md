@@ -54,7 +54,7 @@
 - [x] `load_config()`：读 `RUNTIME_CONFIG.read()`；`None` 则 `ensure_db` + `load_models` + 写 `Some(Arc::new(cfg))`；返回 clone。
 - [x] 新增 `pub fn reload_models_config()`：`load_models()` 成功则替换 `RUNTIME_CONFIG.write()` 为 `Some(Arc::new(c))`，失败 log::warn 保留旧值（对齐 `reload_app_config`）。
 - [x] reload **不单测**：asr 测试惯例为纯函数内核（手工构造 AsrConfig，不碰全局/真实 DB）；reload 是 3 行胶水，靠 model_commands 集成 + 手动 GUI 覆盖。
-- [x] `cargo check -p octopus-asr` 全调用点通过。
+- [x] `cargo check -p octopus-asr-local` 全调用点通过。
 
 ## Task 8：model_commands list 改造 + DTO（v2）✅
 
@@ -95,7 +95,7 @@
 
 - [x] `cargo check --workspace --all-targets` 通过、零新 warning。
 - [x] clippy 零新 warning。
-- [x] `cargo test -p octopus-infra list_all/set_model`、`-p octopus-asr manifest`、`-p octopus-desktop model_commands`（reload 不单测，见 Task 7）。
+- [x] `cargo test -p octopus-infra list_all/set_model`、`-p octopus-asr-local manifest`、`-p octopus-desktop model_commands`（reload 不单测，见 Task 7）。
 - [x] architecture.md 更新（is_enabled 就绪语义 / verify_model / secret_key 校验 / RUNTIME_CONFIG 可刷新 / manifest-asr）。
 - [x] spec §9 v2 详述 + memory `parallel-workstreams` 更新。
 

@@ -6,7 +6,7 @@
 
 **Architecture:** 2b 只迁本地流式（`Stage::Streaming`）。cloud（`CloudStreaming`）、`VadSegmented`、`StreamingPipeline` 抽象**留 2c/2d**——2b 让 coordinator 直接持 `StreamingRunner`（单路径无需抽象）。asr 小增量：`StreamingRunner` 补 `preroll_vad`（搬自 coordinator，补齐 2a 遗漏的 VAD 预热）+ `finish_with_tail`（stop 收尾，精确等价原 `accept(tail)+finish`）。coordinator `Stage::Streaming` 四字段（`engine/vad/silence_duration/flushed`）合并为 `runner`，保留 `transcript`+`streaming_active`。
 
-**Tech Stack:** Rust、`octopus_asr::streaming_runner::{StreamingRunner, StreamingEngine, TranscriptEvent}`、`octopus_asr::streaming_engine::StreamingSession`、Tauri、`Transcript`。
+**Tech Stack:** Rust、`octopus_asr_local::streaming_runner::{StreamingRunner, StreamingEngine, TranscriptEvent}`、`octopus_asr_local::streaming_engine::StreamingSession`、Tauri、`Transcript`。
 
 ---
 
@@ -117,10 +117,10 @@ fn preroll_vad(vad: &mut SileroVad) {
 
 - [x] **Step 5: 验证 asr**
 
-Run: `cargo test -p octopus-asr streaming_runner`
+Run: `cargo test -p octopus-asr-local streaming_runner`
 Expected: 原 7 个 + 新增 2 个 = 9 个全过。
 
-Run: `cargo clippy -p octopus-asr --all-targets 2>&1 | grep streaming_runner`
+Run: `cargo clippy -p octopus-asr-local --all-targets 2>&1 | grep streaming_runner`
 Expected: 无输出（无新 warning）。
 
 - [x] **Step 6: 暂不提交（与 Task 2-5 合并提交，或单独提交 asr 增量）**
@@ -143,7 +143,7 @@ Expected: 无输出（无新 warning）。
         engine: StreamingSession,
         transcript: Transcript,
         streaming_active: Arc<AtomicBool>,
-        vad: Option<octopus_asr::vad::SileroVad>,
+        vad: Option<octopus_asr_local::vad::SileroVad>,
         silence_duration: f64,
         flushed: bool,
     },
@@ -154,7 +154,7 @@ Expected: 无输出（无新 warning）。
 ```rust
     Streaming {
         /// 流式编排 runner（持 StreamingSession + VAD + 静音/标点状态，阶段2a）。
-        runner: octopus_asr::streaming_runner::StreamingRunner,
+        runner: octopus_asr_local::streaming_runner::StreamingRunner,
         transcript: Transcript,
         streaming_active: Arc<AtomicBool>,
     },
@@ -165,10 +165,10 @@ Expected: 无输出（无新 warning）。
 coordinator.rs 顶部 `use` 区，在 `StreamingSession` 相关 import 附近加（若无则加）：
 
 ```rust
-use octopus_asr::streaming_runner::{StreamingRunner, TranscriptEvent};
+use octopus_asr_local::streaming_runner::{StreamingRunner, TranscriptEvent};
 ```
 
-> 若 coordinator 用 `use octopus_asr::streaming_engine::StreamingSession;`，保留（handle_toggle 创建仍用）。
+> 若 coordinator 用 `use octopus_asr_local::streaming_engine::StreamingSession;`，保留（handle_toggle 创建仍用）。
 
 - [x] **Step 3: 验证编译（预期大量错误，Task 3-5 修复）**
 
@@ -188,8 +188,8 @@ Expected: 报错集中在 `handle_toggle` 创建点、`handle_streaming_tick`、
 
 ```rust
                 // 初始化 VAD（用于静音检测 + 标点）
-                let vad = match octopus_asr::config::find_silero_vad() {
-                    Ok(path) => match octopus_asr::vad::SileroVad::new(&path) {
+                let vad = match octopus_asr_local::config::find_silero_vad() {
+                    Ok(path) => match octopus_asr_local::vad::SileroVad::new(&path) {
                         Ok(mut v) => {
                             vad_preroll(&mut v);
                             Some(v)
@@ -429,12 +429,12 @@ Expected: 0 error。
 Run: `cargo clippy -p octopus-desktop --all-targets 2>&1 | grep -E "streaming|StreamingRunner|error" | head`
 Expected: 无新增 streaming 相关 warning（desktop 既存 warning 维持）。若有 `unused import`/`dead_code`（如删 detect_silence_gap 后残留常量），按提示清理。
 
-Run: `cargo clippy -p octopus-asr --all-targets 2>&1 | grep streaming_runner`
+Run: `cargo clippy -p octopus-asr-local --all-targets 2>&1 | grep streaming_runner`
 Expected: 无输出。
 
 - [x] **Step 2: asr + cli 回归（不应受影响）**
 
-Run: `cargo test -p octopus-asr`
+Run: `cargo test -p octopus-asr-local`
 Expected: 83 tests（原 81 + Task 1 新增 2）全过（75+2 pass + 6 ignored）。
 
 Run: `cargo test -p octopus-cli`

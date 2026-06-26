@@ -333,7 +333,7 @@ pub fn resolve_engine_in_config<'a, 'b>(cfg: &'a AsrConfig, spec: &'b str)
 ```bash
 cargo check --workspace --all-targets
 cargo test -p octopus-infra
-cargo test -p octopus-asr
+cargo test -p octopus-asr-local
 ```
 预期：全绿。若 `is_streaming_engine` / `resolve_active_engine` 报错，确认 fallback 路径用 NameOnly 兜底正确。
 
@@ -406,7 +406,7 @@ impl TranscriptionEngine for DashscopeEngine {
     async fn transcribe(&self, samples: &[f32], language: &str, engine: &str) -> Result<String> {
         let model_name = octopus_infra::db::parse_model_spec(engine).model_name().to_string();
 
-        let cfg = octopus_asr::config::load_config()?;
+        let cfg = octopus_asr_local::config::load_config()?;
         let entry = cfg.asr.aliyun.as_ref()
             .and_then(|m| m.get(model_name.as_str()))
             .with_context(|| format!("aliyun ASR 模型 '{}' 未在 DB 配置", model_name))?;
@@ -541,7 +541,7 @@ mod engine_dashscope;
 
 engine 构建处（`match config.engine_mode.as_str()` 之前）插入云路由：
 ```rust
-use octopus_asr::config::{resolve_active_engine, EngineCategory};
+use octopus_asr_local::config::{resolve_active_engine, EngineCategory};
 
 // 云引擎优先：asr_engine 解析为 aliyun → DashscopeEngine
 #[cfg(feature = "dashscope")]
@@ -728,7 +728,7 @@ Expected: `Updating time v0.3.x -> v0.3.36`（或 "Already up to date" 若已 �
 
 Run:
 ```bash
-cargo check -p octopus-asr
+cargo check -p octopus-asr-local
 ```
 Expected: `Finished` 无错误。
 诊断：
@@ -1125,7 +1125,7 @@ impl Default for DenoiseProcessor {
 
 Run:
 ```bash
-cargo test -p octopus-asr --lib denoise 2>&1 | tail -25
+cargo test -p octopus-asr-local --lib denoise 2>&1 | tail -25
 ```
 Expected: 所有非 `#[ignore]` 测试 ok。
 诊断：若 `streaming_incremental_equals_batch` 失败（max_diff≠0）→ 检查 `RnnoiseBackend::process_frame` 的 PCM_SCALE 双向转换（`*PCM_SCALE` 喂、`/PCM_SCALE` 收）。
@@ -1263,7 +1263,7 @@ say -o /tmp/voice.aiff "这是一段用于降噪测试的真实中文语音，�
 
 Run:
 ```bash
-cargo test -p octopus-asr --lib denoise -- --ignored 2>&1 | tail -25
+cargo test -p octopus-asr-local --lib denoise -- --ignored 2>&1 | tail -25
 ```
 Expected: `df3_length_invariant ... ok`、`df3_clean_speech_preserved ... ok`（真实语音 gain≥0.5，
 实测≈0.999）、`df3_noise_suppressed ... ok`、`df3_synth_speech_gain_diag` 仅打印（gain≈0.005）。
@@ -1288,18 +1288,18 @@ git commit -m "test(asr): Df3Backend 行为测试（长度守恒 / 不压语音 
 **Files:**
 - Modify: `crates/desktop/src/audio.rs:96-98`（读 mode）、`audio.rs:208-220`（构造）、注释 :88
 
-**背景**：audio.rs 经 `octopus_asr::config::load_app_config_cached()`（返回 `&AppConfig`）读 `effective_denoise_mode()`。mode=0 直通（不走 down_sampler/denoise），mode=1/2 走 denoise 路径（DenoiseProcessor 内部按 mode 选后端）。
+**背景**：audio.rs 经 `octopus_asr_local::config::load_app_config_cached()`（返回 `&AppConfig`）读 `effective_denoise_mode()`。mode=0 直通（不走 down_sampler/denoise），mode=1/2 走 denoise 路径（DenoiseProcessor 内部按 mode 选后端）。
 
 - [x] **Step 1: 改 process_pipeline 读 mode（audio.rs:96-98）**
 
 把：
 ```rust
-        let cfg = octopus_asr::config::load_app_config_cached();
+        let cfg = octopus_asr_local::config::load_app_config_cached();
         let denoise_on = cfg.denoise_enabled;
 ```
 改为：
 ```rust
-        let cfg = octopus_asr::config::load_app_config_cached();
+        let cfg = octopus_asr_local::config::load_app_config_cached();
         let denoise_on = cfg.effective_denoise_mode() != 0;
 ```
 
@@ -1307,20 +1307,20 @@ git commit -m "test(asr): Df3Backend 行为测试（长度守恒 / 不压语音 
 
 把：
 ```rust
-        let cfg = octopus_asr::config::load_app_config_cached();
+        let cfg = octopus_asr_local::config::load_app_config_cached();
         {
             let mut g = self.denoise.lock().unwrap();
             if cfg.denoise_enabled {
-                match octopus_asr::denoise::DenoiseProcessor::new() {
+                match octopus_asr_local::denoise::DenoiseProcessor::new() {
 ```
 改为：
 ```rust
-        let cfg = octopus_asr::config::load_app_config_cached();
-        let mode = octopus_asr::denoise::DenoiseMode::from_u8(cfg.effective_denoise_mode());
+        let cfg = octopus_asr_local::config::load_app_config_cached();
+        let mode = octopus_asr_local::denoise::DenoiseMode::from_u8(cfg.effective_denoise_mode());
         {
             let mut g = self.denoise.lock().unwrap();
-            if mode != octopus_asr::denoise::DenoiseMode::Off {
-                match octopus_asr::denoise::DenoiseProcessor::new(mode) {
+            if mode != octopus_asr_local::denoise::DenoiseMode::Off {
+                match octopus_asr_local::denoise::DenoiseProcessor::new(mode) {
 ```
 
 - [x] **Step 3: 改日志文案（区分 mode）**
@@ -1417,8 +1417,8 @@ cargo run -p octopus-desktop  # 录音 → ASR 结果不应退化（DF3 gain≈0
 ```
 
 ```bash
-cargo test -p octopus-asr --lib denoise -- --ignored  # DF3 单元测试（手动，慢）
-cargo test -p octopus-asr --lib denoise               # RNNoise 回归
+cargo test -p octopus-asr-local --lib denoise -- --ignored  # DF3 单元测试（手动，慢）
+cargo test -p octopus-asr-local --lib denoise               # RNNoise 回归
 cargo test -p octopus-infra denoise                   # config 测试
 ```
 
@@ -1720,7 +1720,7 @@ pub fn get_config(rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigResponse, 
 
     // ASR 引擎列表（复用 runtime_config 的逻辑）
     let g = rc.read().unwrap();
-    let engines = octopus_asr::config::list_engines().map_err(|e| e.to_string())?;
+    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     let asr_engines = crate::runtime_config::build_asr_options_public(&g.asr_engine, engines);
 
     // LLM 模型列表
@@ -1996,7 +1996,7 @@ mod tests {
 /// 公开包装（供 settings_commands 调用）。
 pub fn build_asr_options_public(
     current_effective: &str,
-    engines: Vec<octopus_asr::config::EngineInfo>,
+    engines: Vec<octopus_asr_local::config::EngineInfo>,
 ) -> Vec<EngineOption> {
     build_asr_options(current_effective, engines)
 }

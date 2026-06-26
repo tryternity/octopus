@@ -6,7 +6,7 @@
 
 **Architecture:** 2c-1 是 2c 的低风险前置（用户 2026-06-23 决策「拆 2c：先低风险搬迁」）。cloud（utterance 级异步，与 `StreamingEngine` sample 级同步语义不匹配）+ VadSegmented（离线分段）**暂留 coordinator 不动**，留 2c-2 单独设计 cloud 接入。2c-1 只立 `StreamingPipeline` 壳 + 把 local 路径的 ASR→文本更新迁入；emit/DB/polish 留 coordinator（DB/polish 被 local + VadSegmented + cloud 三路径共用，移出会碰其他路径）。端胶水全收敛（含 emit）留 2d（transcript 进 pipeline 时一起）。
 
-**Tech Stack:** Rust、`octopus_asr::streaming_runner::{StreamingRunner, StreamingEngine, TranscriptEvent}`、`crate::transcript::Transcript`。
+**Tech Stack:** Rust、`octopus_asr_local::streaming_runner::{StreamingRunner, StreamingEngine, TranscriptEvent}`、`crate::transcript::Transcript`。
 
 ---
 
@@ -53,7 +53,7 @@
 
 use crate::transcript::Transcript;
 use log::{debug, warn};
-use octopus_asr::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
+use octopus_asr_local::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
 
 /// local 流式 pipeline：持 [`StreamingRunner`]，承载 TranscriptEvent → set_full。
 ///
@@ -203,7 +203,7 @@ mod pipeline;
 
 - [x] **Step 2: coordinator.rs 加 import**
 
-顶部 `use` 区，2b 加的 `use octopus_asr::streaming_runner::{StreamingRunner, TranscriptEvent};` 附近：
+顶部 `use` 区，2b 加的 `use octopus_asr_local::streaming_runner::{StreamingRunner, TranscriptEvent};` 附近：
 
 ```rust
 use crate::pipeline::StreamingPipeline;
@@ -214,7 +214,7 @@ use crate::pipeline::StreamingPipeline;
 ```rust
     Streaming {
         /// 流式编排 runner（持 StreamingSession + VAD + 静音/标点状态，阶段2a）。
-        runner: octopus_asr::streaming_runner::StreamingRunner,
+        runner: octopus_asr_local::streaming_runner::StreamingRunner,
         transcript: Transcript,
         streaming_active: Arc<AtomicBool>,
     },
@@ -450,7 +450,7 @@ handle_discard 的 `Stage::Streaming { runner, streaming_active, .. }` 分支同
 - [x] **Step 5: 检查 `StreamingRunner` import 是否仍需**
 
 Run: `grep -n "StreamingRunner" crates/desktop/src/coordinator.rs`
-Expected: Task 3-4 全改 pipeline 后，coordinator 不再直接用 `StreamingRunner` → 删 `use octopus_asr::streaming_runner::StreamingRunner;`。**保留 `TranscriptEvent`**（stop 路径 `match pipeline.finish_with_tail` 仍用）。
+Expected: Task 3-4 全改 pipeline 后，coordinator 不再直接用 `StreamingRunner` → 删 `use octopus_asr_local::streaming_runner::StreamingRunner;`。**保留 `TranscriptEvent`**（stop 路径 `match pipeline.finish_with_tail` 仍用）。
 
 > 若 grep 显示 `StreamingRunner` 仅在注释 → 删 import。
 
@@ -476,7 +476,7 @@ Expected: 若 Task 4 Step 5 删了 `StreamingRunner` import → 无 unused；若
 
 - [x] **Step 2: 回归测试**
 
-Run: `cargo test -p octopus-asr`
+Run: `cargo test -p octopus-asr-local`
 Expected: 77 passed + 6 ignored（2c-1 不碰 asr）。
 
 Run: `cargo test -p octopus-desktop`

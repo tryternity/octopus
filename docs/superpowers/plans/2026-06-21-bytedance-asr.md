@@ -64,7 +64,7 @@ config.rs 内联测试更新（struct literal 补 `bytedance: None`）
 
 ### 验证
 ```bash
-cargo test -p octopus-asr --release
+cargo test -p octopus-asr-local --release
 cargo run -p octopus-cli -- config   # 应列出 Doubao-ASR 引擎
 ```
 
@@ -158,9 +158,9 @@ cargo build -p octopus-desktop --features embedded,aliyun
 1. `is_cloud_engine` 扩展：
    ```rust
    fn is_cloud_engine(config: &AppConfig) -> bool {
-       let cat = octopus_asr::config::resolve_engine_category(&config.asr_engine);
-       cat == Some(octopus_asr::config::EngineCategory::Aliyun)
-           || cat == Some(octopus_asr::config::EngineCategory::ByteDance)
+       let cat = octopus_asr_local::config::resolve_engine_category(&config.asr_engine);
+       cat == Some(octopus_asr_local::config::EngineCategory::Aliyun)
+           || cat == Some(octopus_asr_local::config::EngineCategory::ByteDance)
    }
    ```
 
@@ -216,7 +216,7 @@ Some(EngineCategory::ByteDance) => {
 
 ### 6.1 构建
 ```bash
-cargo build --release -p octopus-infra -p octopus-asr
+cargo build --release -p octopus-infra -p octopus-asr-local
 cargo build --release -p octopus-desktop --features embedded,aliyun
 cargo build --release -p octopus-cli
 ```
@@ -224,7 +224,7 @@ cargo build --release -p octopus-cli
 ### 6.2 测试
 ```bash
 cargo test -p octopus-infra
-cargo test -p octopus-asr --release
+cargo test -p octopus-asr-local --release
 cargo test -p octopus-desktop
 ```
 
@@ -275,12 +275,12 @@ cargo test -p octopus-desktop
 
 | 验证项 | 结果 |
 |---|---|
-| `cargo build -p octopus-infra -p octopus-asr` | ✅ PASS |
+| `cargo build -p octopus-infra -p octopus-asr-local` | ✅ PASS |
 | `cargo build -p octopus-cli` | ✅ PASS |
 | `cargo build -p octopus-desktop --features embedded,aliyun` | ✅ PASS（0 warnings） |
 | `cargo build -p octopus-server` | ✅ PASS |
 | `cargo test -p octopus-infra` | ✅ 29 passed |
-| `cargo test -p octopus-asr` | ✅ 54 passed (6 ignored) |
+| `cargo test -p octopus-asr-local` | ✅ 54 passed (6 ignored) |
 | `cargo test -p octopus-desktop` | ✅ 53 passed (1 ignored) |
 
 ### 未完成 / 待验证
