@@ -117,7 +117,7 @@ impl StreamingZipformer {
         }
 
         // Load vocabulary
-        let vocab = load_vocab(&hf_path)?;
+        let vocab = crate::zipformer::load_vocab(&hf_path)?;
         let is_bbpe = is_vocab_bbpe(&vocab);
 
         Ok(Self {
@@ -467,31 +467,6 @@ impl StreamingZipformer {
         let t = self.decode_tokens(true);
         Ok(if t.is_empty() { None } else { Some(t) })
     }
-}
-
-// ── Helpers ──
-
-fn load_vocab(hf_path: &std::path::Path) -> Result<Vec<String>> {
-    let tokens_path = hf_path.join("tokens.txt");
-    let text = std::fs::read_to_string(&tokens_path)
-        .with_context(|| format!("tokens.txt not found at {}", tokens_path.display()))?;
-
-    let mut vocab: Vec<String> = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some((token, id_str)) = line.rsplit_once(' ') {
-            if let Ok(id) = id_str.parse::<usize>() {
-                while vocab.len() <= id {
-                    vocab.push(String::new());
-                }
-                vocab[id] = token.to_string();
-            }
-        }
-    }
-    Ok(vocab)
 }
 
 // ── Streaming Zipformer Transducer (RNN-T) ──

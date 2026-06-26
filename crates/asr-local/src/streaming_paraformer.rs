@@ -109,7 +109,7 @@ impl StreamingParaformer {
         let feat_dim = FBANK_NUM_BINS * LFR_WINDOW_SIZE; // 560
 
         // Load vocabulary
-        let vocab = load_vocab(&hf_path)?;
+        let vocab = crate::zipformer::load_vocab(&hf_path)?;
 
         // Pre-allocate decoder cache input keys (avoid per-chunk format!)
         let cache_keys = (0..decoder_num_blocks)
@@ -764,29 +764,6 @@ fn discover_onnx(hf_path: &std::path::Path, name: &str, prefer_int8: bool) -> Re
             anyhow::bail!("{}.onnx / {}.int8.onnx not found at {}", name, name, hf_path.display())
         }
     }
-}
-
-fn load_vocab(hf_path: &std::path::Path) -> Result<Vec<String>> {
-    let tokens_path = hf_path.join("tokens.txt");
-    let text = std::fs::read_to_string(&tokens_path)
-        .with_context(|| format!("tokens.txt not found at {}", tokens_path.display()))?;
-
-    let mut vocab: Vec<String> = Vec::new();
-    for line in text.lines() {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        if let Some((token, id_str)) = line.rsplit_once(' ') {
-            if let Ok(id) = id_str.parse::<usize>() {
-                while vocab.len() <= id {
-                    vocab.push(String::new());
-                }
-                vocab[id] = token.to_string();
-            }
-        }
-    }
-    Ok(vocab)
 }
 
 #[cfg(test)]
