@@ -24,14 +24,14 @@
 - Modify: ~17 个 `.rs` 源文件（`octopus_asr` → `octopus_asr_local`）
 - Auto: `Cargo.lock`（cargo check 自动更新，不手改）
 
-- [ ] **Step 1: git mv 目录（保 rename history）**
+- [x] **Step 1: git mv 目录（保 rename history）**
 
 ```bash
 git mv crates/asr crates/asr-local
 ```
 Expected: 无输出（成功）。`ls crates/asr-local/Cargo.toml` 存在。
 
-- [ ] **Step 2: 改 asr-local 的 package name**
+- [x] **Step 2: 改 asr-local 的 package name**
 
 ```bash
 perl -pi -e 's/^name = "octopus-asr"$/name = "octopus-asr-local"/' crates/asr-local/Cargo.toml
@@ -39,7 +39,7 @@ head -3 crates/asr-local/Cargo.toml
 ```
 Expected: `[package]` / `name = "octopus-asr-local"` / `version = "0.1.0"`。
 
-- [ ] **Step 3: 改 workspace members**
+- [x] **Step 3: 改 workspace members**
 
 ```bash
 perl -pi -e 's{"crates/asr"}{"crates/asr-local"}g' Cargo.toml
@@ -47,7 +47,7 @@ grep -n 'crates/asr' Cargo.toml
 ```
 Expected: members 行显示 `"crates/asr-local"`（与 `"crates/asr-cloud"` 并列）；无裸 `"crates/asr"`。
 
-- [ ] **Step 4: 改 5 个依赖 Cargo.toml（依赖名 + path + desktop feature）**
+- [x] **Step 4: 改 5 个依赖 Cargo.toml（依赖名 + path + desktop feature）**
 
 依赖名 `octopus-asr`→`octopus-asr-local`（`(?!-)` 排除 `octopus-asr-cloud`）；path `"../asr"`→`"../asr-local"`（带引号精确匹配，排除 `"../asr-cloud"`）。desktop 的 `embedded = ["octopus-asr"]` 同步被改。
 
@@ -60,7 +60,7 @@ grep -rn 'octopus-asr' crates/*/Cargo.toml | grep -vE 'octopus-asr-local|octopus
 ```
 Expected: 末行 `✓ 无残留`。`grep 'octopus-asr' crates/desktop/Cargo.toml` 应见 `octopus-asr-local = { path = "../asr-local", optional = true }` + `embedded = ["octopus-asr-local"]`。
 
-- [ ] **Step 5: 改源码 use/path（octopus_asr → octopus_asr_local）**
+- [x] **Step 5: 改源码 use/path（octopus_asr → octopus_asr_local）**
 
 `(?!_)` 排除 `octopus_asr_cloud`。覆盖所有 `.rs`（含 asr-local 自身 lib.rs doc、asr-cloud 引用本地零件的 `use octopus_asr::`）。
 
@@ -71,28 +71,28 @@ grep -rn 'octopus_asr' crates/ --include='*.rs' | grep -vE 'octopus_asr_local|oc
 ```
 Expected: 末行 `✓ 无残留`。
 
-- [ ] **Step 6: cargo check（验证编译 + 自动更新 Cargo.lock）**
+- [x] **Step 6: cargo check（验证编译 + 自动更新 Cargo.lock）**
 
 ```bash
 cargo check --workspace --all-targets 2>&1 | tail -5
 ```
 Expected: `Finished` 无 error。Cargo.lock 自动含 `octopus-asr-local`（`grep 'name = "octopus-asr-local"' Cargo.lock` 命中）。若报 `unresolved import octopus_asr` → 有遗漏，回 Step 5 grep 找漏文件。
 
-- [ ] **Step 7: cargo test --workspace（零行为变更验证）**
+- [x] **Step 7: cargo test --workspace（零行为变更验证）**
 
 ```bash
 cargo test --workspace 2>&1 | tail -15
 ```
 Expected: 全绿（lib + 各 crate 单测全 passed，0 failed）。测试数应与改名前一致（无新增/丢失）。
 
-- [ ] **Step 8: cargo clippy（0 新 warning）**
+- [x] **Step 8: cargo clippy（0 新 warning）**
 
 ```bash
 cargo clippy --workspace --all-targets 2>&1 | grep -E 'warning|error' | head || echo "✓ 零 warning/error"
 ```
 Expected: 仅 pre-existing warning（如 desktop `dead_code` current_partial/is_cloud），**无新** warning。
 
-- [ ] **Step 9: grep 复核代码侧无残留 + 无 cloud 误伤**
+- [x] **Step 9: grep 复核代码侧无残留 + 无 cloud 误伤**
 
 ```bash
 echo "--- 残留（应空）---"
@@ -105,7 +105,7 @@ grep -c 'octopus-asr-local' Cargo.lock
 ```
 Expected: 三处均 `✓`；members 含 `crates/asr-local`；Cargo.lock 命中 ≥1。
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add -A
@@ -124,7 +124,7 @@ perl 负向 lookahead 排除 -cloud，防误伤。"
 **Files:**
 - Modify: 所有 `.md`（`docs/superpowers/specs/*`、`docs/superpowers/plans/*` 含 `*-archived-*`、`docs/architecture.md`、`docs/asr_archiveture_opt.md`、`AGENTS.md`、`usage.md`、`crates/dlp/docs/architecture.md`）
 
-- [ ] **Step 1: docs 全量替换（连字符 + 下划线，排除 cloud）**
+- [x] **Step 1: docs 全量替换（连字符 + 下划线，排除 cloud）**
 
 对仓库内所有 `.md`（排除构建产物 / 其他 worktree），一条 perl 跑两个表达式：
 
@@ -139,7 +139,7 @@ grep -rl 'octopus-asr-local' . --include='*.md' -z 2>/dev/null | grep -vE 'targe
 ```
 Expected: 命中文件数 > 0（与原 33 文件量级吻合）。
 
-- [ ] **Step 2: grep 复核 docs 无残留 + 无误伤**
+- [x] **Step 2: grep 复核 docs 无残留 + 无误伤**
 
 ```bash
 echo "--- docs 残留裸 octopus-asr/octopus_asr（应空，只剩 -local/-cloud）---"
@@ -154,7 +154,7 @@ find . -name '*.md' -not -path './target/*' -not -path './.git/*' -print0 \
 ```
 Expected: 两处均 `✓`。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add -A
