@@ -207,13 +207,9 @@ impl DenoiseProcessor {
             self.in_buf.drain(..FRAME_SIZE);
             if let Some(b) = self.backend.as_mut() {
                 b.process_frame(&pcm, &mut out_frame);
-                for &s in &out_frame {
-                    self.out_buf.push(s);
-                }
+                self.out_buf.extend_from_slice(&out_frame);
             } else {
-                for &s in &pcm {
-                    self.out_buf.push(s); // 直通
-                }
+                self.out_buf.extend_from_slice(&pcm); // 直通
             }
         }
         std::mem::take(&mut self.out_buf)
@@ -227,13 +223,9 @@ impl DenoiseProcessor {
             let mut out_frame = [0.0f32; FRAME_SIZE];
             if let Some(b) = self.backend.as_mut() {
                 b.process_frame(&pcm, &mut out_frame);
-                for &s in &out_frame {
-                    self.out_buf.push(s);
-                }
+                self.out_buf.extend_from_slice(&out_frame);
             } else {
-                for &s in &pcm {
-                    self.out_buf.push(s);
-                }
+                self.out_buf.extend_from_slice(&pcm);
             }
             self.in_buf.clear();
         }
