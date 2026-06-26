@@ -122,8 +122,9 @@ async fn transcribe(
     let duration_ms = (samples.len() as f64 / 16.0) as u64; // 16kHz → ms
     let start = std::time::Instant::now();
 
+    let cfg = octopus_asr::pipeline::PipelineConfig::from_app_config(language);
     let text = state.engine_manager.switch_model(engine)
-        .and_then(|_| state.engine_manager.transcribe(&samples, language));
+        .and_then(|_| state.engine_manager.transcribe_batch(&samples, &cfg));
 
     let elapsed = start.elapsed();
     let rtf = if elapsed.as_millis() > 0 {
