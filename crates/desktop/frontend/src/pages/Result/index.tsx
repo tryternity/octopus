@@ -334,7 +334,7 @@ function Result() {
       try { await invoke("polish_now"); showToast("润色中…"); }
       catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
     } },
-    { id: "edit", icon: editing ? Save : Pencil, label: editing ? "保存编辑" : "编辑", active: editing, onClick: toggleEdit },
+    { id: "edit", icon: editing ? Save : Pencil, label: editing ? "保存编辑" : "编辑", active: editing, disabled: !text.trim() && !editing, onClick: toggleEdit },
   ];
 
   return (
