@@ -4,6 +4,7 @@ use ort::session::Session;
 use ort::value::{Tensor, TensorElementType};
 use std::collections::HashMap;
 use once_cell::sync::Lazy;
+use std::sync::Arc;
 
 #[derive(Clone)]
 pub(crate) enum StateValue {
@@ -285,6 +286,14 @@ pub(crate) const Z_FRAME_LEN: usize = 400;
 pub(crate) const Z_FRAME_SHIFT: usize = 160;
 pub(crate) const Z_NUM_BINS: usize = 80;
 pub(crate) const Z_SAMPLE_RATE: u32 = 16000;
+
+// 预规划的 512 点正向 FFT — fbank 提取共用，避免每次重复规划（堆分配 + twiddle 计算）。
+// 流式热路径（Zipformer process_chunks 每 accept_samples 调 compute_fbank_features）尤为关键。
+// 对齐 paraformer::FBANK_FFT 模式。
+static Z_FFT: Lazy<Arc<dyn rustfft::Fft<f32>>> = Lazy::new(|| {
+    let mut planner = rustfft::FftPlanner::<f32>::new();
+    planner.plan_fft_forward(Z_FFT_SIZE)
+});
 
 // ── Zipformer CTC blank ──
 pub(crate) const ZIPFORMER_BLANK_ID: usize = 0;
@@ -1071,6 +1080,13 @@ pub(crate) fn decode_byte_bpe(text: &str, is_streaming: bool) -> String {
 
 static WHISPER_HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| whisper_hann_window(400));
 
+// 预规划的 400 点正向 FFT — Whisper 特征提取（compute_whisper_features_linear）共用，
+// 与 Z_FFT 同理：流式热路径避免每次 accept_samples 重复规划。
+static WHISPER_FFT: Lazy<Arc<dyn rustfft::Fft<f32>>> = Lazy::new(|| {
+    let mut planner = rustfft::FftPlanner::<f32>::new();
+    planner.plan_fft_forward(400)
+});
+
 fn whisper_hann_window(size: usize) -> Vec<f32> {
     (0..size)
         .map(|i| 0.5 * (1.0 - (2.0 * std::f32::consts::PI * i as f32 / (size - 1) as f32).cos()))
@@ -1081,8 +1097,7 @@ pub(crate) fn compute_whisper_features_linear(samples: &[f32]) -> Result<Array2<
     let n_frames = (samples.len() + Z_FRAME_SHIFT / 2) / Z_FRAME_SHIFT;
     let n_frames = n_frames.max(1);
 
-    let mut planner = rustfft::FftPlanner::new();
-    let fft = planner.plan_fft_forward(400);
+    let fft = &*WHISPER_FFT;
 
     let mut fbank_data = vec![0.0f32; n_frames * Z_NUM_BINS];
 
@@ -1175,8 +1190,7 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
     let n_frames = (samples.len() + Z_FRAME_SHIFT / 2) / Z_FRAME_SHIFT;
     let n_frames = n_frames.max(1);
 
-    let mut planner = rustfft::FftPlanner::new();
-    let fft = planner.plan_fft_forward(Z_FFT_SIZE);
+    let fft = &*Z_FFT;
 
     let n_freqs = Z_FFT_SIZE / 2 + 1;
     let mut fbank_data = vec![0.0f32; n_frames * Z_NUM_BINS];
