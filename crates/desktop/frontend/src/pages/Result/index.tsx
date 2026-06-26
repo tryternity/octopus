@@ -1,16 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import {
-  X, Settings, Mic, Waves, Sparkles, Wand2, Zap, Pencil, Save,
-  type LucideIcon,
-} from "lucide-react";
 import { cn } from "@/lib/utils";
+import { SvgIcon, type IconName } from "@/components/SvgIcon";
 
-const WIN_W = 520;
-const HIDDEN_H = 100;
-const TOOLBAR_H = 132;
 const DIVERTED_DELAY_MS = 300;
 
 const POLISH_OPTIONS = [
@@ -47,6 +41,8 @@ function Result() {
   const [toolbarVisible, setToolbarVisible] = useState(false);
   const [editing, setEditing] = useState(false);
   const [text, setText] = useState("");
+  const [isRecording, setIsRecording] = useState(false);
+  const [isSpeaking, setIsSpeaking] = useState(false);
   const [toolbarState, setToolbarState] = useState<ToolbarState>({
     polish_mode: 0, denoise_mode: 1, polish_llm_valid: false,
     hide_toolbar: true, edit_shortcut: "Cmd+Enter",
@@ -62,8 +58,10 @@ function Result() {
   const pendingDiverted = useRef<string | null>(null);
   const divertedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editBufTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const speakingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolbarVisibleRef = useRef(false);
   const editingStateRef = useRef(false);
+  const editSnapshotRef = useRef(""); // 编辑前原始文本快照
 
   const win = getCurrentWindow();
 
@@ -79,15 +77,13 @@ function Result() {
   const showToolbar = useCallback(() => {
     if (toolbarVisibleRef.current) return;
     setToolbarVisible(true);
-    win.setSize(new LogicalSize(WIN_W, TOOLBAR_H));
-  }, [win]);
+  }, []);
 
   const hideToolbar = useCallback(() => {
     if (!toolbarVisibleRef.current || editingStateRef.current) return;
     setToolbarVisible(false);
     setPopupType(null);
-    win.setSize(new LogicalSize(WIN_W, HIDDEN_H));
-  }, [win]);
+  }, []);
 
   const refreshActive = useCallback(async () => {
     try {
@@ -95,9 +91,11 @@ function Result() {
       setToolbarState(st);
       if (st.hide_toolbar === false) {
         showToolbar();
+      } else {
+        hideToolbar();
       }
     } catch { /* ignore */ }
-  }, [showToolbar]);
+  }, [showToolbar, hideToolbar]);
 
   const renderResultNow = useCallback((newText: string) => {
     displayedRef.current = newText;
@@ -105,6 +103,10 @@ function Result() {
     if (textRef.current) {
       textRef.current.scrollTop = textRef.current.scrollHeight;
     }
+    // 标记正在说话
+    setIsSpeaking(true);
+    if (speakingTimer.current) clearTimeout(speakingTimer.current);
+    speakingTimer.current = setTimeout(() => setIsSpeaking(false), 1500);
   }, []);
 
   // ── Toolbar hover ──
@@ -131,9 +133,20 @@ function Result() {
     (async () => {
       const handlers: [string, (payload: unknown) => void][] = [
         ["show-result", (p) => {
-          renderResultNow(p as string);
+          const text = p as string;
+          const isPlaceholder = text === "正在聆听…" || text === "正在聆听...";
           setVisible(true);
+          setIsRecording(true);
           refreshActive();
+          if (isPlaceholder) {
+            // 新录音开始：清空上次残留
+            setText("");
+            displayedRef.current = "";
+            pendingDiverted.current = null;
+            if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
+          } else {
+            renderResultNow(text);
+          }
         }],
         ["update-result", (p) => {
           if (editingRef.current) return;
@@ -160,8 +173,9 @@ function Result() {
           setText("");
           displayedRef.current = "";
           setVisible(false);
+          setIsRecording(false);
         }],
-        ["hide-result", () => setVisible(false)],
+        ["hide-result", () => { setVisible(false); setIsRecording(false); }],
         ["config-changed", () => refreshActive()],
         ["polish-done", () => setPolishLoading(false)],
         ["edit-force-exit", () => {
@@ -176,9 +190,6 @@ function Result() {
         if (cancelled) { fn(); return; }
         unlistens.push(fn);
       }
-      // All listeners registered — now tell backend we're ready.
-      // Must come AFTER listen() calls complete, otherwise show-result
-      // events emitted by result_window_ready are lost (no listener yet).
       if (!cancelled) {
         invoke("result_window_ready");
       }
@@ -190,7 +201,10 @@ function Result() {
   // ── Edit mode ──
   const enterEdit = useCallback(() => {
     if (editingRef.current) return;
+    if (!displayedRef.current.trim()) return;
+    editSnapshotRef.current = displayedRef.current; // 保存快照
     setEditing(true);
+    setIsRecording(false);
     showToolbar();
     invoke("enter_edit_mode");
     setTimeout(() => {
@@ -215,6 +229,21 @@ function Result() {
     invoke("commit_edit", { text: editedText });
   }, []);
 
+  const cancelEdit = useCallback(() => {
+    if (!editingRef.current) return;
+    if (editBufTimer.current) clearTimeout(editBufTimer.current);
+    const original = editSnapshotRef.current;
+    setEditing(false);
+    // 恢复 contentEditable DOM 到编辑前文本
+    displayedRef.current = original;
+    setText(original);
+    if (textRef.current) {
+      textRef.current.innerText = original;
+    }
+    // 只退出编辑态，不 commit（不写 edited_text 到 DB）
+    invoke("exit_edit_without_commit");
+  }, []);
+
   const toggleEdit = useCallback(() => {
     editingRef.current ? commitEdit() : enterEdit();
   }, [commitEdit, enterEdit]);
@@ -227,7 +256,6 @@ function Result() {
   // ── Keyboard shortcuts ──
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
-      // Esc: cancel + hide (unless popup open or editing)
       if (e.key === "Escape") {
         if (popupType) { setPopupType(null); return; }
         if (editingRef.current) { commitEdit(); return; }
@@ -235,7 +263,6 @@ function Result() {
         win.hide();
         return;
       }
-      // Edit shortcut (Cmd+Enter by default)
       const sc = parseShortcut(toolbarState.edit_shortcut);
       if (matchShortcut(e, sc)) {
         e.preventDefault();
@@ -259,7 +286,7 @@ function Result() {
     return () => document.removeEventListener("mousedown", onDown);
   }, [popupType]);
 
-  // ── Text input handler (edit mode) ──
+  // ── Text input handler ──
   const onTextInput = () => {
     if (editBufTimer.current) clearTimeout(editBufTimer.current);
     editBufTimer.current = setTimeout(updateEditBuffer, 150);
@@ -320,77 +347,101 @@ function Result() {
     win.startDragging();
   };
 
-  const tools: { id: string; icon: LucideIcon; label: string; active?: boolean; disabled?: boolean; onClick: () => void }[] = [
-    { id: "close", icon: X, label: "关闭", onClick: () => invoke("discard_recording") },
-    { id: "settings", icon: Settings, label: "系统设置", onClick: () => invoke("open_settings") },
-    { id: "asr", icon: Mic, label: "语音模型", active: true, onClick: openAsrPopup },
-    { id: "denoise", icon: Waves, label: "降噪模式", active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
-    { id: "llm", icon: Sparkles, label: "润色模型", active: toolbarState.polish_llm_valid, onClick: openLlmPopup },
-    { id: "polish", icon: Wand2, label: "润色模式", active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
-    { id: "polish-now", icon: Zap, label: "立即润色", disabled: polishLoading, onClick: async () => {
+  const tools: { id: string; icon: IconName; label: string; active?: boolean; disabled?: boolean; onClick: () => void }[] = [
+    { id: "close", icon: "close", label: "关闭", onClick: () => invoke("discard_recording") },
+    { id: "settings", icon: "settings", label: "系统设置", onClick: () => invoke("open_settings") },
+    { id: "asr", icon: "asr", label: "语音模型", active: true, onClick: openAsrPopup },
+    { id: "denoise", icon: "denoise", label: "降噪模式", active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
+    { id: "llm", icon: "llm", label: "润色模型", active: toolbarState.polish_llm_valid, onClick: openLlmPopup },
+    { id: "polish", icon: "polish", label: "润色模式", active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
+    { id: "polish-now", icon: "polish-now", label: "立即润色", disabled: polishLoading, onClick: async () => {
       setPolishLoading(true);
       try { await invoke("polish_now"); showToast("润色中…"); }
       catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
     } },
-    { id: "edit", icon: editing ? Save : Pencil, label: editing ? "保存编辑" : "编辑", active: editing, onClick: toggleEdit },
+    ...(editing
+      ? [
+          { id: "cancel-edit", icon: "cancel-editor" as IconName, label: "取消编辑", onClick: cancelEdit },
+          { id: "save", icon: "save" as IconName, label: "保存编辑", active: true, onClick: commitEdit },
+        ]
+      : [
+          { id: "edit", icon: "edit" as IconName, label: "编辑", disabled: !text.trim(), onClick: toggleEdit },
+        ]
+    ),
   ];
 
   return (
     <div
       id="result-container"
       className={cn(
-        "w-full h-full bg-white rounded-lg border border-black/10 shadow-lg flex flex-col transition-opacity duration-150",
+        "w-full h-full bg-background rounded-lg border border-black/[0.08] shadow-lg shadow-black/[0.06] flex flex-col transition-opacity duration-150 overflow-hidden",
         visible ? "opacity-100" : "opacity-0",
       )}
     >
-      {/* Top bar: drag + toolbar */}
-      <div
-        className={cn("flex-shrink-0 flex items-center transition-all duration-120", toolbarVisible ? "h-8" : "h-2")}
-      >
+      {/* Top bar: toolbar + drag handle + voice line */}
+      <div className="flex-shrink-0 flex flex-col relative">
+        {/* 录音提示——独立于工具栏 opacity，常显居中 */}
+        {!text.trim() && isRecording && (
+          <div className="absolute top-0 left-0 right-0 flex items-center justify-center h-[22px] pointer-events-none z-20">
+            <span className="text-[11px] text-black/[0.28] select-none">正在聆听…</span>
+          </div>
+        )}
+        {/* Toolbar — 纯图标，hover 变蓝，整行可拖拽 */}
         <div
-          className={cn("flex items-center gap-0.5 px-1.5", toolbarVisible ? "flex" : "hidden")}
+          className={cn(
+            "flex items-center gap-[2px] px-1.5 pt-0.5 transition-opacity duration-150 cursor-grab active:cursor-grabbing",
+            toolbarState.hide_toolbar === false
+              ? "opacity-100"
+              : toolbarVisible ? "opacity-100" : "opacity-0",
+          )}
+          onMouseDown={onDragStart}
         >
-          {tools.map(({ id, icon: Icon, label, active, disabled, onClick }) => (
+          {tools.map(({ id, icon, label, active, disabled, onClick }) => (
             <button
               key={id}
               className={cn(
-                "tool-btn w-[26px] h-[26px] flex items-center justify-center rounded-[5px] transition-colors",
-                "text-foreground hover:text-primary hover:bg-black/[0.06]",
-                active && "text-primary",
-                disabled && "text-black/20 cursor-default hover:bg-transparent hover:text-black/20",
+                "tool-btn w-[20px] h-[20px] flex items-center justify-center rounded-[4px] transition-colors cursor-default",
+                "text-black/[0.55] hover:text-[#007aff] hover:bg-black/[0.05]",
+                active && "text-[#007aff]",
+                disabled && "text-black/[0.18] cursor-default hover:bg-transparent hover:text-black/[0.18]",
               )}
               title={label}
               aria-label={label}
               disabled={disabled}
               onClick={onClick}
             >
-              <Icon className="w-[18px] h-[18px]" />
+              <SvgIcon name={icon} size={16} />
             </button>
           ))}
         </div>
-        <div
-          className="flex-1 h-full cursor-grab active:cursor-grabbing flex items-center justify-center"
-          onMouseDown={onDragStart}
-          data-tauri-drag-region
-        >
-          {!toolbarVisible && (
-            <div className="w-6 h-[3px] bg-black/10 rounded-[1.5px]" />
-          )}
+        {/* Drag handle */}
+        <div className="flex items-center justify-center h-2">
+          <div
+            className="w-6 h-[3px] rounded-[1.5px] bg-black/[0.12] cursor-grab active:cursor-grabbing"
+            onMouseDown={onDragStart}
+          />
         </div>
+        {/* Voice line: 说话时绿色流动 / 静音时静态灰线 / 编辑态 voice 底线 */}
+        {isRecording && !editing && (
+          <div className={cn("mx-3.5 transition-all duration-300", isSpeaking ? "voice-line-speaking" : "voice-line-idle")} />
+        )}
+        {editing && (
+          <div className="h-0.5 bg-voice/30 mx-0" />
+        )}
       </div>
 
       {/* Text display */}
       <div
         className={cn(
-          "flex-1 px-3.5 pb-2 overflow-hidden relative",
-          editing && "border border-primary/50 rounded-md bg-primary/[0.04]",
+          "flex-1 px-3.5 pt-1 pb-2 overflow-hidden relative transition-colors",
+          editing && "bg-voice/[0.06]",
         )}
       >
         <div
           ref={textRef}
           className={cn(
-            "text-sm leading-[1.5] text-foreground max-h-[63px] overflow-y-auto",
-            "word-break-all outline-none thin-scrollbar",
+            "text-sm leading-[1.6] text-foreground max-h-[63px] overflow-y-auto",
+            "break-words outline-none thin-scrollbar",
             !editing && "cursor-text",
           )}
           contentEditable={editing}
@@ -401,21 +452,25 @@ function Result() {
         </div>
       </div>
 
+      {/* Bottom toolbar removed — moved to top */}
+
       {/* Popup */}
       {popupType && (
-        <div className="popup-content absolute top-[30px] left-1.5 w-[360px] max-h-[200px] overflow-y-auto bg-white rounded-lg border border-black/10 shadow-lg z-10 text-[13px]">
+        <div className="popup-content absolute top-[30px] left-1.5 w-[360px] max-h-[200px] overflow-y-auto bg-white rounded-lg border border-black/[0.10] shadow-lg shadow-black/[0.12] z-10 text-[13px]">
           {popupItems.map((item, i) => (
             <div
               key={i}
               className={cn(
                 "px-3 py-1.5 cursor-pointer flex items-center gap-1.5 transition-colors",
-                "hover:bg-primary/[0.08]",
-                item.current && "text-primary font-medium",
+                "hover:bg-[#007aff]/[0.08]",
+                item.current && "text-[#007aff] font-medium",
               )}
               onClick={() => handlePopupSelect(item)}
             >
-              <span>{item.current ? "●" : "○"}</span>
-              <span className="flex-1 min-w-0 truncate">{item.label}</span>
+              <span className={cn("text-xs", item.current ? "text-[#007aff]" : "text-black/40")}>
+                {item.current ? "●" : "○"}
+              </span>
+              <span className="flex-1 min-w-0 truncate text-foreground">{item.label}</span>
             </div>
           ))}
         </div>

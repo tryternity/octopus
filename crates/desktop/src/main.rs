@@ -187,6 +187,7 @@ pub fn run() {
             coordinator::enter_edit_mode,
             coordinator::update_edit_buffer,
             coordinator::commit_edit,
+            coordinator::exit_edit_without_commit,
             result_window::result_window_ready,
             settings_window::open_settings,
             settings_commands::get_config,

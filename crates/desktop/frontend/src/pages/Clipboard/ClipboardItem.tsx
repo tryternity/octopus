@@ -5,11 +5,11 @@ import type { ClipboardItem } from "@/types/clipboard";
 
 export default function ClipboardItemRow({
   item,
-  index,
+  isLast,
   onChanged,
 }: {
   item: ClipboardItem;
-  index: number;
+  isLast: boolean;
   onChanged: () => void;
 }) {
   const handleFavorite = async (e: React.MouseEvent) => {
@@ -36,30 +36,36 @@ export default function ClipboardItemRow({
     : item.item_type === "file" ? FileText
     : Type;
 
+  const isVoice = item.source === "asr";
+
   return (
     <div
-      className={cn(
-        "flex items-start gap-2 px-2.5 py-1.5 cursor-pointer group transition-colors",
-        index % 2 === 0 ? "bg-muted/40" : "bg-background",
-        "hover:bg-accent",
-      )}
+      className="group relative flex items-start gap-2 px-2.5 py-2 cursor-pointer hover:bg-accent transition-colors"
       onClick={handleClick}
     >
-      <Icon className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 text-muted-foreground/50 group-hover:text-primary/70 transition-colors" />
+      {/* ASR 条目左侧色条 — 一眼区分语音 vs 复制 */}
+      {isVoice && (
+        <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-voice/60" />
+      )}
+
+      <Icon className={cn(
+        "w-4 h-4 mt-px flex-shrink-0 transition-colors",
+        isVoice ? "text-voice" : "text-muted-foreground group-hover:text-foreground",
+      )} />
       <div className="flex-1 min-w-0">
         {item.item_type === "image" && item.image_meta ? (
           <div className="text-xs text-muted-foreground">
             图片 {item.image_meta.width}×{item.image_meta.height}
           </div>
-        ) : item.item_type === "file" && item.file_meta ? (
+        ) : item.item_type === "file" ? (
           <div className="text-xs text-muted-foreground truncate">
-            {item.file_meta.file_count} 个文件
+            {formatFilePaths(item.content, item.file_meta?.file_count)}
           </div>
         ) : (
           <p className="text-xs leading-relaxed text-foreground/90 break-all line-clamp-2">{item.content}</p>
         )}
-        {item.source === "asr" && item.asr_meta && (
-          <span className="inline-block mt-0.5 text-[10px] text-muted-foreground/50">
+        {isVoice && item.asr_meta && (
+          <span className="inline-block mt-0.5 text-[10px] text-voice/70 font-medium">
             {item.asr_meta.engine}
           </span>
         )}
@@ -67,18 +73,41 @@ export default function ClipboardItemRow({
       <button
         className={cn(
           "flex-shrink-0 p-0.5 transition-opacity",
-          item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+          item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-70 hover:!opacity-100",
         )}
         onClick={handleFavorite}
       >
         <Star
-          className={cn("w-3.5 h-3.5", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
+          className={cn("w-4 h-4", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
         />
       </button>
+
+      {/* Hairline 分隔线 — 替代斑马纹 */}
+      {!isLast && <div className="absolute bottom-0 left-2.5 right-2.5 h-px bg-border/50" />}
     </div>
   );
 }
 
 function getCurrentWindow() {
   return (window as any).__TAURI__?.window?.getCurrentWindow?.() ?? { hide: () => {} };
+}
+
+/// content 是 JSON 路径数组（如 ["file:///Users/foo/bar.txt"]），
+/// 取每个路径的最后 2 段显示（如 …/foo/bar.txt）。
+function formatFilePaths(content: string, count?: number): string {
+  try {
+    const paths: string[] = JSON.parse(content);
+    const display = paths.slice(0, 3).map((raw) => {
+      const path = raw.replace(/^file:\/\//, "");
+      const parts = path.split("/").filter(Boolean);
+      const tail = parts.slice(-2).join("/");
+      return "…/" + tail;
+    });
+    if (paths.length > 3) {
+      return display.join("  ") + `  +${paths.length - 3}`;
+    }
+    return display.join("  ") + (count ? ` (${count})` : "");
+  } catch {
+    return count ? `${count} 个文件` : "文件";
+  }
 }

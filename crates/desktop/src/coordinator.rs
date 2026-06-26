@@ -50,6 +50,8 @@ enum Command {
     UpdateEditBuffer { text: String },
     /// 提交编辑（edit_shortcut toggle 再按一次 / ✏️(💾) 按钮触发）
     CommitEdit { text: String },
+    /// 取消编辑（恢复原始文本，不写 edited_text 到 DB）
+    CancelEdit,
     /// 运行时配置更新——外部（设置窗口 / 工具栏）修改 RuntimeConfig 后，
     /// 通过此命令通知 coordinator 立即把变更同步到 config 快照（无需等 Toggle）。
     /// 用于 polish_llm / polish_mode / asr_correct / output_simplified / hide_toolbar 等
@@ -358,6 +360,16 @@ impl Coordinator {
                             editing = false;
                         }
                     }
+                    Command::CancelEdit => {
+                        if editing {
+                            editing = false;
+                            // 恢复展示原始文本（edited 清空 → display_text 回退到 polished/raw）
+                            let display = stage_transcript(&mut stage).map(|t| t.display_text()).unwrap_or_default();
+                            if !display.is_empty() {
+                                crate::result_window::update_result(&app_handle, &display);
+                            }
+                        }
+                    }
                     Command::UpdateRuntime => {
                         // 设置窗口 / 工具栏改了 RuntimeConfig 字段——立即同步到 config 快照，
                         // 无需等下次 Toggle。用于 polish_llm 等运行时可变字段。
@@ -440,6 +452,15 @@ impl Coordinator {
         }
     }
 
+    /// 取消编辑（不写 DB）
+    pub fn cancel_edit(&self) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::CancelEdit).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
+
     /// 通知 coordinator 重读 RuntimeConfig 同步可变字段到 config 快照。
     /// 设置窗口 / 工具栏改完 RuntimeConfig 后调用，让 polish_llm 等字段立即生效。
     pub fn update_runtime(&self) {
@@ -501,6 +522,12 @@ pub fn update_edit_buffer(coordinator: tauri::State<'_, Coordinator>, text: Stri
 #[tauri::command]
 pub fn commit_edit(coordinator: tauri::State<'_, Coordinator>, text: String) {
     coordinator.commit_edit(text);
+}
+
+/// 前端命令：取消编辑（恢复原始文本，不写 edited_text 到 DB）。
+#[tauri::command]
+pub fn exit_edit_without_commit(coordinator: tauri::State<'_, Coordinator>) {
+    coordinator.cancel_edit();
 }
 
 /// 处理 Toggle 命令
@@ -1753,6 +1780,19 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
     }
     crate::result_window::update_result(app_handle, &transcript.display_text());
     info!("Edit committed ({} chars)", text.chars().count());
+}
+
+/// 从 stage 中取出 transcript 的可变引用（用于 cancel edit 恢复展示）
+fn stage_transcript(stage: &mut Stage) -> Option<&mut Transcript> {
+    match stage {
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. }
+        | Stage::StoppingPolish { transcript, .. } => Some(transcript),
+        #[cfg(feature = "cloud")]
+        Stage::CloudClosing { transcript, .. } => Some(transcript),
+        _ => None,
+    }
 }
 
 fn stage_name(stage: &Stage) -> &'static str {
