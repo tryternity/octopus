@@ -156,6 +156,7 @@ pub fn run() {
             }
         }))
         .plugin(tauri_plugin_store::Builder::default().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_os::init())
         .plugin(
             tauri_plugin_log::Builder::default()
@@ -217,6 +218,7 @@ pub fn run() {
             clipboard_commands::copy_clipboard_item,
             clipboard_commands::clipboard_stats,
             clipboard_commands::paste_clipboard_item,
+            clipboard_commands::save_image_item,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)

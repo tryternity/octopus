@@ -13,3 +13,5 @@ serde_yaml = "0.9"
 anyhow = "1"
 log = "0.4"
 rusqlite = { version = "0.31", features = ["bundled"] }
+image = { version = "0.25", features = ["png", "webp", "jpeg"] }
+webp = "0.3"

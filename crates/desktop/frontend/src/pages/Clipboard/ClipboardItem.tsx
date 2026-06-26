@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2 } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import type { ClipboardItem } from "@/types/clipboard";
 
@@ -55,6 +55,15 @@ export default function ClipboardItemRow({
   const handleDoubleClick = async () => {
     try {
       await invoke("copy_clipboard_item", { id: item.id });
+    } catch (e) {
+      console.error(e);
+    }
+  };
+
+  const handleSaveImage = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    try {
+      await invoke("save_image_item", { id: item.id });
     } catch (e) {
       console.error(e);
     }
@@ -117,6 +126,15 @@ export default function ClipboardItemRow({
             className={cn("w-3.5 h-3.5", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
           />
         </button>
+        {item.item_type === "image" && (
+          <button
+            className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+            onClick={handleSaveImage}
+            title="保存为文件"
+          >
+            <Download className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+          </button>
+        )}
         <button
           className={cn(
             "p-0.5 transition-all",
