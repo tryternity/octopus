@@ -84,13 +84,13 @@ pub async fn paste_clipboard_item(
     id: i64,
     handle: State<'_, Arc<ClipboardHandle>>,
 ) -> Result<(), String> {
-    // 从 DB 读条目内容
+    // 从 DB 按 id 读条目内容
     let content = octopus_infra::db::with_db(|conn| {
         let items = octopus_clipboard::store::query_history(conn, &octopus_clipboard::QueryFilter {
             filter: "all".into(),
             search: None,
             page: 1,
-            size: 1,
+            size: 1000,
         })?;
         Ok::<_, anyhow::Error>(items)
     })
@@ -103,6 +103,7 @@ pub async fn paste_clipboard_item(
             std::thread::spawn(move || {
                 let config = crate::config::AppConfig {
                     write_to_clipboard: true,
+                    paste_method: "clipboard".into(),
                     ..Default::default()
                 };
                 let _ = crate::paste::paste(&text, &handle, &config);
