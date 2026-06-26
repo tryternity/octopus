@@ -104,39 +104,25 @@ pub async fn paste_clipboard_item(
     }
     let item = item.unwrap();
 
-    // 2. 写剪贴板（设 suppress flag 防 watcher 重复记录）
-    if item.item_type == octopus_clipboard::ItemType::Text {
-        handle.write_text(&item.content).map_err(|e| e.to_string())?;
-    } else {
-        return Ok(()); // 非 text 暂不支持自动粘贴
-    }
-
-    // 3. hide 剪贴板窗口
+    // 2. hide 剪贴板窗口
     let win = app_handle.get_webview_window("clipboard_window");
     if let Some(w) = &win {
-        log::info!("paste_clipboard_item: hiding clipboard window");
         let _ = w.hide();
     }
     drop(win);
 
-    // 4. 独立线程：等焦点回到上一个应用 → 模拟 Cmd+V
-    //    用 std::thread::spawn（非 spawn_blocking）确保不被 tokio 调度干扰
+    // 3. 复用 paste::paste（已验证可靠）——同一线程内 write_text + sleep + Cmd+V
+    let text = item.content;
+    let handle = handle.inner().clone();
     std::thread::spawn(move || {
-        log::info!("paste_clipboard_item: sleeping 500ms for focus restore");
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        log::info!("paste_clipboard_item: enigo Cmd+V");
-
-        use enigo::{Direction, Enigo, Key, Keyboard, Settings};
-        match Enigo::new(&Settings::default()) {
-            Ok(mut enigo) => {
-                // macOS 固定虚拟键码 kVK_ANSI_V=9，与 paste.rs 一致
-                let _ = enigo.key(Key::Meta, Direction::Press);
-                let _ = enigo.key(Key::Other(9), Direction::Click);
-                let _ = enigo.key(Key::Meta, Direction::Release);
-                log::info!("paste_clipboard_item: Cmd+V sent");
-            }
-            Err(e) => log::warn!("paste_clipboard_item: enigo failed: {}", e),
-        }
+        // 等焦点回到上一个应用
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let config = crate::config::AppConfig {
+            write_to_clipboard: true,
+            paste_method: "clipboard".into(),
+            ..Default::default()
+        };
+        let _ = crate::paste::paste(&text, &handle, &config);
     });
 
     Ok(())
