@@ -10,6 +10,7 @@ const ICONS = {
   "polish-now": "/icons/polish-now.svg",
   edit: "/icons/edit.svg",
   save: "/icons/save.svg",
+  "cancel-editor": "/icons/cancel-edit.svg",
 } as const;
 
 export type IconName = keyof typeof ICONS;

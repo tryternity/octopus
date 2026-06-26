@@ -61,6 +61,7 @@ function Result() {
   const speakingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolbarVisibleRef = useRef(false);
   const editingStateRef = useRef(false);
+  const editSnapshotRef = useRef(""); // 编辑前原始文本快照
 
   const win = getCurrentWindow();
 
@@ -201,6 +202,7 @@ function Result() {
   const enterEdit = useCallback(() => {
     if (editingRef.current) return;
     if (!displayedRef.current.trim()) return;
+    editSnapshotRef.current = displayedRef.current; // 保存快照
     setEditing(true);
     setIsRecording(false);
     showToolbar();
@@ -226,6 +228,15 @@ function Result() {
     setEditing(false);
     invoke("commit_edit", { text: editedText });
   }, []);
+
+  const cancelEdit = useCallback(() => {
+    if (!editingRef.current) return;
+    if (editBufTimer.current) clearTimeout(editBufTimer.current);
+    const original = editSnapshotRef.current;
+    setEditing(false);
+    renderResultNow(original);
+    invoke("commit_edit", { text: original });
+  }, [renderResultNow]);
 
   const toggleEdit = useCallback(() => {
     editingRef.current ? commitEdit() : enterEdit();
@@ -342,7 +353,15 @@ function Result() {
       try { await invoke("polish_now"); showToast("润色中…"); }
       catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
     } },
-    { id: "edit", icon: editing ? "save" : "edit", label: editing ? "保存编辑" : "编辑", active: editing, disabled: !text.trim() && !editing, onClick: toggleEdit },
+    ...(editing
+      ? [
+          { id: "cancel-edit", icon: "cancel-editor" as IconName, label: "取消编辑", onClick: cancelEdit },
+          { id: "save", icon: "save" as IconName, label: "保存编辑", active: true, onClick: commitEdit },
+        ]
+      : [
+          { id: "edit", icon: "edit" as IconName, label: "编辑", disabled: !text.trim(), onClick: toggleEdit },
+        ]
+    ),
   ];
 
   return (
