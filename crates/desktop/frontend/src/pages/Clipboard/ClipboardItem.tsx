@@ -1,6 +1,8 @@
+import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2 } from "lucide-react";
 import { invoke } from "@/lib/tauri";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import type { ClipboardItem } from "@/types/clipboard";
 
 export default function ClipboardItemRow({
@@ -16,6 +18,13 @@ export default function ClipboardItemRow({
   onSelect: () => void;
   onChanged: () => void;
 }) {
+  const [deletePending, setDeletePending] = useState(false);
+  const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => { if (deleteTimer.current) clearTimeout(deleteTimer.current); };
+  }, []);
+
   const handleFavorite = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
@@ -26,22 +35,30 @@ export default function ClipboardItemRow({
     }
   };
 
-  const handleDelete = async (e: React.MouseEvent) => {
+  const handleDeleteClick = (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await invoke("delete_clipboard_item", { id: item.id });
-      onChanged();
-    } catch (e) {
-      console.error(e);
+    if (!deletePending) {
+      // 第一次点击：进入待确认状态，1.5s 后恢复
+      setDeletePending(true);
+      deleteTimer.current = setTimeout(() => setDeletePending(false), 1500);
+    } else {
+      // 第二次点击（1.5s 内）：确认删除
+      if (deleteTimer.current) clearTimeout(deleteTimer.current);
+      invoke("delete_clipboard_item", { id: item.id }).then(onChanged).catch(console.error);
     }
   };
 
   const handleClick = () => {
+    if (deletePending) return; // 待确认状态下不触发选中
     onSelect();
   };
 
   const handleDoubleClick = async () => {
     try {
+      // 先隐藏剪贴板窗口，让焦点回到上一个应用
+      await getCurrentWindow().hide();
+      // 等待系统焦点切换（200ms）
+      await new Promise(r => setTimeout(r, 200));
       await invoke("paste_clipboard_item", { id: item.id });
     } catch (e) {
       console.error(e);
@@ -59,7 +76,8 @@ export default function ClipboardItemRow({
     <div
       className={cn(
         "group relative flex items-start gap-2 px-2.5 py-2 cursor-pointer transition-colors",
-        isSelected ? "bg-accent" : "hover:bg-accent",
+        isSelected && !deletePending ? "bg-accent" : "hover:bg-accent",
+        deletePending && "bg-red-50",
       )}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
@@ -91,7 +109,7 @@ export default function ClipboardItemRow({
         )}
       </div>
 
-      {/* 右侧操作：收藏 + 删除（hover 显示） */}
+      {/* 右侧操作：收藏 + 删除 */}
       <div className="flex-shrink-0 flex items-center gap-0.5">
         <button
           className={cn(
@@ -105,11 +123,19 @@ export default function ClipboardItemRow({
           />
         </button>
         <button
-          className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
-          onClick={handleDelete}
-          title="删除"
+          className={cn(
+            "p-0.5 transition-all",
+            deletePending
+              ? "opacity-100 bg-red-100 rounded"
+              : "opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity",
+          )}
+          onClick={handleDeleteClick}
+          title={deletePending ? "再次点击确认删除" : "删除"}
         >
-          <Trash2 className="w-3.5 h-3.5 text-muted-foreground hover:text-red-500" />
+          <Trash2 className={cn(
+            "w-3.5 h-3.5 transition-colors",
+            deletePending ? "text-red-600" : "text-muted-foreground hover:text-red-500",
+          )} />
         </button>
       </div>
 
