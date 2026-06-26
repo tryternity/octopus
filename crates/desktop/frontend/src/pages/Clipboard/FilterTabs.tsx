@@ -24,14 +24,14 @@ export default function FilterTabs({
           key={tabValue}
           title={label}
           className={cn(
-            "flex items-center justify-center px-2 py-1 rounded-md transition-all",
+            "flex items-center justify-center px-2 py-1 rounded transition-all",
             value === tabValue
-              ? "bg-background text-primary shadow-sm"
-              : "text-muted-foreground/60 hover:text-foreground hover:bg-black/5",
+              ? "bg-primary text-primary-foreground"
+              : "text-muted-foreground hover:text-foreground hover:bg-accent",
           )}
           onClick={() => onChange(tabValue)}
         >
-          <Icon className="w-3.5 h-3.5" />
+          <Icon className="w-4 h-4" />
           {tabValue === "all" && <span className="ml-1 text-xs">{label}</span>}
         </button>
       ))}

@@ -37,21 +37,21 @@ export default function Clipboard() {
   }, [pinned]);
 
   return (
-    <div className="flex flex-col h-screen bg-background text-foreground select-none overflow-hidden rounded-xl border border-border shadow-lg" data-tauri-drag-region>
-      {/* Title bar */}
+    <div className="flex flex-col h-screen bg-background text-foreground select-none overflow-hidden rounded-xl border border-border shadow-2xl shadow-black/8" data-tauri-drag-region>
+      {/* Title bar — 极简，去掉"历史" */}
       <div className="flex items-center justify-between px-2 py-1.5" data-tauri-drag-region>
         <button
-          className="p-1 rounded-md hover:bg-black/5 text-muted-foreground hover:text-foreground transition-colors"
+          className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
           onClick={() => getCurrentWindow().hide()}
           title="关闭"
         >
           <X className="w-3.5 h-3.5" />
         </button>
-        <span className="text-xs text-muted-foreground/70">剪贴板历史</span>
+        <span className="text-[11px] font-medium tracking-wide text-muted-foreground">剪贴板</span>
         <button
           className={cn(
-            "p-1 rounded-md transition-colors",
-            pinned ? "text-primary bg-primary/10" : "text-muted-foreground hover:bg-black/5 hover:text-foreground",
+            "p-1 rounded transition-colors",
+            pinned ? "text-voice bg-voice/10" : "text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
           onClick={togglePin}
           title="置顶"
@@ -60,32 +60,30 @@ export default function Clipboard() {
         </button>
       </div>
 
-      {/* Search + Filter compact row */}
+      {/* Search + Filter */}
       <div className="px-2 pb-1.5 flex flex-col gap-1.5">
         <SearchBar value={search} onChange={setSearch} />
         <FilterTabs value={filter} onChange={setFilter} />
       </div>
 
       {/* List */}
-      <div className="flex-1 overflow-y-auto px-1.5 pb-1">
+      <div className="clipboard-list flex-1 overflow-y-auto pb-1">
         {items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center h-full gap-1.5 text-muted-foreground/60">
+          <div className="flex flex-col items-center justify-center h-full gap-1 text-muted-foreground/50">
             <span className="text-xs">暂无记录</span>
           </div>
         ) : (
-          <div className="flex flex-col">
-            {items.map((item, index) => (
-              <ClipboardItemRow key={item.id} item={item} index={index} onChanged={refresh} />
-            ))}
-          </div>
+          items.map((item, index) => (
+            <ClipboardItemRow key={item.id} item={item} isLast={index === items.length - 1} onChanged={refresh} />
+          ))
         )}
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between px-3 py-1 border-t border-border/50 text-[11px] text-muted-foreground/70">
+      <div className="flex items-center justify-between px-3 py-1 border-t border-border text-[10px] text-muted-foreground/80">
         <span>{total} 条</span>
         <button
-          className="hover:text-destructive transition-colors"
+          className="hover:text-red-500 transition-colors"
           onClick={handleClear}
         >
           清空
