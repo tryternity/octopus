@@ -24,4 +24,7 @@ pub mod corrector;
 pub mod hans;
 pub mod pipeline;
 
+/// 句间分隔符（按 language 选择），全 workspace ASR 文本拼接复用。
+pub use paraformer::sentence_separator;
+
 

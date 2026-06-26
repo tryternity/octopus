@@ -610,14 +610,14 @@ fn handle_toggle(
                 // 流式模式：创建 StreamingSession 并启动 tick 线程。
                 // 引擎不可用时降级到默认引擎（zipformer-small-ctc），而非直接放弃录音。
                 const FALLBACK_STREAMING_SPEC: &str = "local:zipformer:zipformer-small-ctc";
-                let streaming_engine = match StreamingSession::new(&config.asr_engine) {
+                let streaming_engine = match StreamingSession::new(&config.asr_engine, &config.language) {
                     Ok(session) => session,
                     Err(e) => {
                         warn!(
                             "StreamingSession '{}' 创建失败 ({}), 降级到默认引擎 '{}'",
                             config.asr_engine, e, FALLBACK_STREAMING_SPEC
                         );
-                        match StreamingSession::new(FALLBACK_STREAMING_SPEC) {
+                        match StreamingSession::new(FALLBACK_STREAMING_SPEC, &config.language) {
                             Ok(session) => session,
                             Err(e2) => {
                                 error!(
@@ -1052,8 +1052,9 @@ fn finalize_cloud(
 ) {
     // 即使无 session 或 close 无返回，也提交未 commit 的 partial
     if !current_partial.is_empty() {
-        if !transcript.full().is_empty() && !transcript.full().ends_with('，') {
-            transcript.append_segment("，");
+        let sep = octopus_asr_local::sentence_separator(&config.language);
+        if !transcript.full().is_empty() && !transcript.full().ends_with(sep) {
+            transcript.append_segment(sep);
         }
         transcript.append_segment(&current_partial);
     }

@@ -21,6 +21,7 @@
 
 use anyhow::{Context, Result};
 use futures_util::{SinkExt, StreamExt};
+use octopus_asr_local::sentence_separator;
 use serde_json::{json, Value};
 use tokio::sync::mpsc;
 use tokio_tungstenite::{
@@ -243,19 +244,6 @@ async fn run_ws_session(
         }
     }
     Ok(())
-}
-
-/// 多句拼接的句间分隔符。
-///
-/// 英文用空格（ASR 句子常自带句末标点，空格连接最自然且不与之冲突）；
-/// 其他语言（中文/auto）用中文逗号 `，`（口语连续叙述的连贯感）。
-/// 原硬编码 `，` 在 `language=en` 时给英文插入中文标点，按语言选择更规范。
-fn sentence_separator(language: &str) -> &'static str {
-    if language.eq_ignore_ascii_case("en") {
-        " "
-    } else {
-        "，"
-    }
 }
 
 /// 构造 streaming 模式的 run-task（含 max_sentence_silence=600）。
@@ -580,16 +568,5 @@ mod tests {
         let id = qwen_event_id();
         assert!(id.starts_with("evt_"), "event_id 应以 evt_ 开头: {}", id);
         assert!(id.len() > 10, "event_id 应有足够长度: {}", id);
-    }
-
-    #[test]
-    fn sentence_separator_by_language() {
-        // 英文 → 空格（避免与服务端句末标点冲突）
-        assert_eq!(sentence_separator("en"), " ");
-        assert_eq!(sentence_separator("EN"), " "); // 大小写不敏感
-        // 中文 / auto / 空 → 中文逗号（口语连续叙述连贯感）
-        assert_eq!(sentence_separator("zh"), "，");
-        assert_eq!(sentence_separator("auto"), "，");
-        assert_eq!(sentence_separator(""), "，");
     }
 }

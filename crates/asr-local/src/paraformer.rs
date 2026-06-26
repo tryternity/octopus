@@ -326,6 +326,21 @@ pub(crate) fn extract_cmvn_from_metadata(session: &Session) -> Result<(Vec<f32>,
     Ok((neg_mean, inv_stddev, encoder_output_size))
 }
 
+/// 多句/多段拼接的句间分隔符（按 language 选择）。
+///
+/// 英文用空格（ASR 句子常自带句末标点，空格连接最自然且不与之冲突）；
+/// 其他语言（中文/auto/空）用中文逗号 `，`（口语连续叙述的连贯感）。
+///
+/// 全 workspace 统一复用：asr-cloud（云端流式/batch）、desktop（coordinator/
+/// pipeline/cloud_pipeline/engine_aliyun）、asr-local（streaming_engine 静音分句）。
+pub fn sentence_separator(language: &str) -> &'static str {
+    if language.eq_ignore_ascii_case("en") {
+        " "
+    } else {
+        "，"
+    }
+}
+
 /// Append `new` to `existing` with intelligent spacing at the boundary.
 /// Used when concatenating decoded text from different streaming chunks.
 /// - ASCII ↔ ASCII: add space
@@ -603,4 +618,20 @@ fn mel_filterbank_fbank() -> Vec<Vec<f64>> {
 
 fn hz_to_mel(hz: f64) -> f64 {
     1127.0 * (1.0 + hz / 700.0).ln()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn sentence_separator_by_language() {
+        // 英文 → 空格（避免与服务端句末标点冲突）
+        assert_eq!(sentence_separator("en"), " ");
+        assert_eq!(sentence_separator("EN"), " "); // 大小写不敏感
+        // 中文 / auto / 空 → 中文逗号（口语连续叙述连贯感）
+        assert_eq!(sentence_separator("zh"), "，");
+        assert_eq!(sentence_separator("auto"), "，");
+        assert_eq!(sentence_separator(""), "，");
+    }
 }

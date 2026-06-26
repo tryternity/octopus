@@ -23,18 +23,20 @@ pub(super) struct CloudDrainState<'a> {
     pub current_partial: &'a mut String,
     pub is_closing: &'a mut bool,
     pub is_speaking: &'a mut bool,
+    pub language: &'a str,
 }
 
 /// drain `try_recv_text` 事件并映射为 `TranscriptEvent`（迁自 `handle_cloud_streaming_tick:1721-1770`）。
 ///
 /// - `Text(t)` 非空 → `current_partial=t`（**预览层，不发事件**，不进 transcript/DB）。
-/// - `Finished` → `committed_text` 追加（`，` 逗号拼接，与原 `append_segment("，")` 逻辑一致）+
+/// - `Finished` → `committed_text` 追加（按 language 选分隔符：英文空格 / 其他中文逗号）+
 ///   发 `Committed(committed_text)`（**DB 触发点**，由承载层 set_full）；清 `current_partial`；
 ///   `is_closing=false`、`is_speaking=false`。
 /// - `Failed(msg)` → 发 `Error("⚠️ 云端识别失败：{msg}")`（coordinator 取 `take_error` 上报）；
 ///   清 `current_partial`/状态（下次 onset 重开，瞬时抖动自动重试）。
 /// - drain 后 `!is_closing && !is_speaking` → `session.take()`（drop → channels 关 → WS task 结束）。
 pub(super) fn drain_cloud_session(s: CloudDrainState) -> Vec<TranscriptEvent> {
+    let sep = octopus_asr_local::sentence_separator(s.language);
     let mut events = Vec::new();
     if let Some(sess) = s.session.as_mut() {
         while let Some(event) = sess.try_recv_text() {
@@ -51,8 +53,8 @@ pub(super) fn drain_cloud_session(s: CloudDrainState) -> Vec<TranscriptEvent> {
                         *s.current_partial
                     );
                     if !s.current_partial.is_empty() {
-                        if !s.committed_text.is_empty() && !s.committed_text.ends_with('，') {
-                            s.committed_text.push('，');
+                        if !s.committed_text.is_empty() && !s.committed_text.ends_with(sep) {
+                            s.committed_text.push_str(sep);
                         }
                         s.committed_text.push_str(s.current_partial);
                         s.current_partial.clear();
@@ -244,6 +246,7 @@ impl StreamingPipelineEngine for CloudPipelineEngine {
             current_partial: &mut self.current_partial,
             is_closing: &mut self.is_closing,
             is_speaking: &mut self.is_speaking,
+            language: &self.language,
         });
         //（drain_cloud_session 内部在 !is_closing && !is_speaking 时已 session.take()）
 
@@ -370,7 +373,7 @@ mod tests {
     #[test]
     fn drain_finished_no_double_comma_when_committed_ends_with_comma() {
         // committed 已以 '，' 结尾 + partial "第二句" → Finished → 不再加逗号 → "第一句，第二句"
-        // 防回归：若误改成无条件 push('，') 会得 "第一句，，第二句"
+        // 防回归：若误改成无条件 push_str(sep) 会得 "第一句，，第二句"
         let (handle, result_tx) = CloudStreamHandle::new_for_test();
         let mut session = Some(handle);
         let (mut committed, mut partial, mut is_closing, mut is_speaking) =

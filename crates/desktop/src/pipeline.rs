@@ -81,7 +81,9 @@ pub(crate) fn consume_completed_results_vad(
     completed_seq: &mut u64,
     completed_results: &mut HashMap<u64, String>,
     transcript: &mut Transcript,
+    language: &str,
 ) {
+    let sep = octopus_asr_local::sentence_separator(language);
     while let Some(text) = completed_results.remove(completed_seq) {
         if !text.is_empty() {
             // 段间加逗号：已有文本、新段不以标点开头、已有文本不以标点结尾
@@ -95,7 +97,7 @@ pub(crate) fn consume_completed_results_vad(
                 && !text.starts_with(|c: char| ",.，。！？!?\n".contains(c))
                 && !existing.ends_with(|c: char| ",.，。！？!?\n".contains(c))
             {
-                transcript.append_segment("，");
+                transcript.append_segment(sep);
             }
             transcript.append_segment(&text);
         }
@@ -446,7 +448,7 @@ impl VadSegmentedPipeline {
             apply_segment_result(&mut self.completed_results, &mut self.active_count, seg);
         }
         consume_completed_results_vad(
-            &mut self.completed_seq, &mut self.completed_results, transcript,
+            &mut self.completed_seq, &mut self.completed_results, transcript, &self.language,
         );
         transcript.full().len() != before
     }
@@ -800,13 +802,13 @@ mod tests {
         results.insert(0u64, "甲".to_string());
         results.insert(2u64, "丙".to_string());
         let mut t = Transcript::new(0, PolishMode::Disabled);
-        consume_completed_results_vad(&mut completed_seq, &mut results, &mut t);
+        consume_completed_results_vad(&mut completed_seq, &mut results, &mut t, "zh");
         assert_eq!(t.full(), "甲");
         assert_eq!(completed_seq, 1);
         assert!(results.contains_key(&2));
 
         results.insert(1u64, "乙".to_string());
-        consume_completed_results_vad(&mut completed_seq, &mut results, &mut t);
+        consume_completed_results_vad(&mut completed_seq, &mut results, &mut t, "zh");
         assert_eq!(t.full(), "甲，乙，丙");
         assert_eq!(completed_seq, 3);
         assert!(results.is_empty());

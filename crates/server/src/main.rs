@@ -181,7 +181,7 @@ async fn handle_ws(
     mut socket: axum::extract::ws::WebSocket,
     _engine_manager: Arc<AsrEngineManager>,
     engine: String,
-    _language: String,
+    language: String,
 ) {
     use futures_util::StreamExt;
 
@@ -199,7 +199,7 @@ async fn handle_ws(
         return;
     }
 
-    let session = match octopus_asr_local::streaming_engine::StreamingSession::new(&engine) {
+    let session = match octopus_asr_local::streaming_engine::StreamingSession::new(&engine, &language) {
         Ok(s) => s,
         Err(e) => {
             let _ = socket

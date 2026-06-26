@@ -37,6 +37,7 @@ use tokio_tungstenite::{
     tungstenite::Message,
     WebSocketStream,
 };
+use octopus_asr_local::sentence_separator;
 
 /// DashScope duplex WS 流类型别名。
 ///
@@ -189,7 +190,7 @@ async fn run_session(
         .context("aliyun WS 发送 finish-task 失败")?;
 
     // 收 result-generated，累积最终句文本。
-    collect_results(&mut ws).await
+    collect_results(&mut ws, language).await
 }
 
 /// 构造 DashScope `run-task` 请求 JSON（含 header + payload）。
@@ -243,7 +244,8 @@ async fn send_pcm_frames(ws: &mut WsStream, samples: &[f32]) -> Result<()> {
 
 /// 收消息循环：根据 `sentence_id` + `sentence_end` 跨句累积文本，
 /// `task-finished` 收尾，`task-failed` 健壮取错后 bail。
-async fn collect_results(ws: &mut WsStream) -> Result<String> {
+async fn collect_results(ws: &mut WsStream, language: &str) -> Result<String> {
+    let sep = sentence_separator(language);
     let mut committed = String::new();
     let mut current_sentence = String::new();
     let mut current_sentence_id: i64 = -1;
@@ -268,8 +270,8 @@ async fn collect_results(ws: &mut WsStream) -> Result<String> {
                     // sentence_id 变化 = 新句，提交前一句
                     if sentence_id != current_sentence_id && current_sentence_id > 0 {
                         if !current_sentence.is_empty() {
-                            if !committed.is_empty() && !committed.ends_with('，') {
-                                committed.push('，');
+                            if !committed.is_empty() && !committed.ends_with(sep) {
+                                committed.push_str(sep);
                             }
                             committed.push_str(&current_sentence);
                             current_sentence.clear();
@@ -280,8 +282,8 @@ async fn collect_results(ws: &mut WsStream) -> Result<String> {
 
                     // sentence_end=true = 最终结果，立即提交
                     if sentence_end {
-                        if !committed.is_empty() && !committed.ends_with('，') {
-                            committed.push('，');
+                        if !committed.is_empty() && !committed.ends_with(sep) {
+                            committed.push_str(sep);
                         }
                         committed.push_str(&current_sentence);
                         current_sentence.clear();
@@ -305,8 +307,8 @@ async fn collect_results(ws: &mut WsStream) -> Result<String> {
     }
     // 提交最后一句
     if !current_sentence.is_empty() {
-        if !committed.is_empty() && !committed.ends_with('，') {
-            committed.push('，');
+        if !committed.is_empty() && !committed.ends_with(sep) {
+            committed.push_str(sep);
         }
         committed.push_str(&current_sentence);
     }
@@ -330,6 +332,7 @@ async fn run_qwen_realtime_transcribe(
     samples: &[f32],
     language: &str,
 ) -> Result<String> {
+    let sep = sentence_separator(language);
     if samples.is_empty() {
         return Ok(String::new());
     }
@@ -424,8 +427,8 @@ async fn run_qwen_realtime_transcribe(
             match v["type"].as_str() {
                 Some("conversation.item.input_audio_transcription.completed") => {
                     if let Some(t) = v["transcript"].as_str() {
-                        if !text.is_empty() && !text.ends_with('，') {
-                            text.push('，');
+                        if !text.is_empty() && !text.ends_with(sep) {
+                            text.push_str(sep);
                         }
                         text.push_str(t);
                     }
