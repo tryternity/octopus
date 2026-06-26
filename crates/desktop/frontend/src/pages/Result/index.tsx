@@ -337,18 +337,48 @@ function Result() {
         visible ? "opacity-100" : "opacity-0",
       )}
     >
-      {/* Top: drag handle only */}
-      <div className="flex-shrink-0 flex items-center justify-center h-2">
+      {/* Top bar: drag handle + toolbar */}
+      <div className="flex-shrink-0 flex flex-col">
+        {/* Toolbar — 纯图标，hover 变蓝 */}
         <div
-          className="w-6 h-[3px] rounded-[1.5px] bg-black/[0.12] cursor-grab active:cursor-grabbing"
-          onMouseDown={onDragStart}
-        />
+          className={cn(
+            "flex items-center gap-[2px] px-1.5 pt-1 transition-opacity duration-150",
+            toolbarState.hide_toolbar === false
+              ? "opacity-100"
+              : toolbarVisible ? "opacity-100" : "opacity-0",
+          )}
+        >
+          {tools.map(({ id, icon: Icon, label, active, disabled, onClick }) => (
+            <button
+              key={id}
+              className={cn(
+                "tool-btn w-[24px] h-[24px] flex items-center justify-center rounded-[5px] transition-colors",
+                "text-black/[0.55] hover:text-[#007aff] hover:bg-black/[0.05]",
+                active && "text-[#007aff]",
+                disabled && "text-black/[0.18] cursor-default hover:bg-transparent hover:text-black/[0.18]",
+              )}
+              title={label}
+              aria-label={label}
+              disabled={disabled}
+              onClick={onClick}
+            >
+              <Icon className="w-[16px] h-[16px]" strokeWidth={1.5} />
+            </button>
+          ))}
+        </div>
+        {/* Drag handle */}
+        <div className="flex items-center justify-center h-2">
+          <div
+            className="w-6 h-[3px] rounded-[1.5px] bg-black/[0.12] cursor-grab active:cursor-grabbing"
+            onMouseDown={onDragStart}
+          />
+        </div>
       </div>
 
       {/* Text display */}
       <div
         className={cn(
-          "flex-1 px-3.5 pt-1 overflow-hidden relative transition-colors",
+          "flex-1 px-3.5 pt-0.5 pb-2 overflow-hidden relative transition-colors",
           editing && "bg-voice/[0.06]",
         )}
       >
@@ -377,37 +407,11 @@ function Result() {
         )}
       </div>
 
-      {/* Bottom toolbar — 纯图标，hover 变蓝 */}
-      <div
-        className={cn(
-          "flex-shrink-0 flex items-center gap-[2px] px-1.5 pb-1 transition-opacity duration-150",
-          toolbarState.hide_toolbar === false
-            ? "opacity-100"
-            : toolbarVisible ? "opacity-100" : "opacity-0",
-        )}
-      >
-        {tools.map(({ id, icon: Icon, label, active, disabled, onClick }) => (
-          <button
-            key={id}
-            className={cn(
-              "tool-btn w-[24px] h-[24px] flex items-center justify-center rounded-[5px] transition-colors",
-              "text-black/[0.55] hover:text-[#007aff] hover:bg-black/[0.05]",
-              active && "text-[#007aff]",
-              disabled && "text-black/[0.18] cursor-default hover:bg-transparent hover:text-black/[0.18]",
-            )}
-            title={label}
-            aria-label={label}
-            disabled={disabled}
-            onClick={onClick}
-          >
-            <Icon className="w-[16px] h-[16px]" strokeWidth={1.5} />
-          </button>
-        ))}
-      </div>
+      {/* Bottom toolbar removed — moved to top */}
 
       {/* Popup */}
       {popupType && (
-        <div className="popup-content absolute bottom-[30px] left-1.5 w-[360px] max-h-[200px] overflow-y-auto bg-white rounded-lg border border-black/[0.10] shadow-lg shadow-black/[0.12] z-10 text-[13px]">
+        <div className="popup-content absolute top-[30px] left-1.5 w-[360px] max-h-[200px] overflow-y-auto bg-white rounded-lg border border-black/[0.10] shadow-lg shadow-black/[0.12] z-10 text-[13px]">
           {popupItems.map((item, i) => (
             <div
               key={i}
