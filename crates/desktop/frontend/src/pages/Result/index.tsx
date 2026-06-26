@@ -135,10 +135,17 @@ function Result() {
     (async () => {
       const handlers: [string, (payload: unknown) => void][] = [
         ["show-result", (p) => {
-          renderResultNow(p as string);
+          const text = p as string;
+          // 后端发 "正在聆听…" 占位时不算真实识别结果
+          const isPlaceholder = text === "正在聆听…" || text === "正在聆听...";
           setVisible(true);
-          setIsRecording(true);
           refreshActive();
+          if (isPlaceholder) {
+            setIsRecording(false);
+          } else {
+            renderResultNow(text);
+            setIsRecording(true);
+          }
         }],
         ["update-result", (p) => {
           if (editingRef.current) return;
