@@ -73,7 +73,10 @@ async fn run_baidu_session(
     dev_pid: String,
     pre_roll_samples: Vec<f32>,
 ) -> Result<()> {
-    // 1. 解析 dev_pid 字符串为整数
+    // 1. 解析 appid / dev_pid 字符串为整数（fail-fast：配置错误时明确报错，而非静默发 0）
+    let appid_int: i64 = appid
+        .parse()
+        .with_context(|| format!("baidu appid '{}' 不是有效整数（应为百度控制台 AppID）", appid))?;
     let dev_pid_int: i64 = dev_pid
         .parse()
         .with_context(|| format!("baidu dev_pid '{}' 不是有效整数", dev_pid))?;
@@ -92,7 +95,7 @@ async fn run_baidu_session(
     let start_frame = json!({
         "type": "START",
         "data": {
-            "appid": appid.parse::<i64>().unwrap_or(0),
+            "appid": appid_int,
             "appkey": appkey,
             "dev_pid": dev_pid_int,
             "cuid": cuid,
