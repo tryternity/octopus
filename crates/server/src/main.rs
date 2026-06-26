@@ -1,3 +1,5 @@
+mod pipeline;
+
 use axum::{
     extract::{ws::Message, Query, State, WebSocketUpgrade},
     response::IntoResponse,
