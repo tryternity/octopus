@@ -351,7 +351,13 @@ function Result() {
       )}
     >
       {/* Top bar: toolbar + drag handle + voice line */}
-      <div className="flex-shrink-0 flex flex-col">
+      <div className="flex-shrink-0 flex flex-col relative">
+        {/* 录音提示——独立于工具栏 opacity，常显居中 */}
+        {!text.trim() && isRecording && (
+          <div className="absolute top-0 left-0 right-0 flex items-center justify-center h-[22px] pointer-events-none z-20">
+            <span className="text-[11px] text-black/[0.28] select-none">正在聆听…</span>
+          </div>
+        )}
         {/* Toolbar — 纯图标，hover 变蓝，整行可拖拽 */}
         <div
           className={cn(
@@ -362,10 +368,6 @@ function Result() {
           )}
           onMouseDown={onDragStart}
         >
-          {/* 录音中无文本时显示提示（工具栏隐藏期间填充占位区） */}
-          {!text.trim() && isRecording && (
-            <span className="text-[11px] text-black/[0.25] px-1 select-none">正在聆听…</span>
-          )}
           {tools.map(({ id, icon: Icon, label, active, disabled, onClick }) => (
             <button
               key={id}
