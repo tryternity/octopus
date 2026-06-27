@@ -917,3 +917,32 @@ cd .. && cargo build --features embedded 2>&1 | tail -5
 | §7 迁移策略 | Task 7 |
 | §8 依赖（已有） | 无需 task |
 | §9 DB v7 | Task 1 |
+
+---
+
+## 实施偏差与补充记录
+
+### 偏差 1：image_type 字段
+
+spec 原设计无 `image_type` 列，实施时用户要求新增（预留未来 PNG/JPEG 格式扩展）。DB schema 和 `insert_image_data` 均含 `image_type TEXT NOT NULL DEFAULT 'webp'`。
+
+### 偏差 2：encode_to_webp 参数未使用
+
+`encode_to_webp(png_bytes, _width, _height)` 的 width/height 参数实际未使用（图片尺寸从 PNG 解码内部获取），保留下划线前缀兼容调用方签名（watcher.rs 传入 w/h）。
+
+### 偏差 3：编译 warning 清理
+
+- `store.rs` 删除未使用的 `use std::collections::HashSet`（`get_referenced_blob_hashes` 被删后无引用）
+- `image.rs` `encode_to_webp` 参数加 `_` 前缀
+
+### 偏差 4：desktop Cargo.toml 新增 image 依赖
+
+`image_migration.rs` 模块需要 `image` crate 做格式转换，desktop Cargo.toml 新增 `image = { version = "0.25", features = ["png", "webp", "jpeg"] }`。
+
+### 偏差 5：save_image_item 导出逻辑变更
+
+原计划从文件系统读 PNG → `infra::image_util` 转码。实施改为从 DB 读 WebP BLOB → `image` crate 解码 → 按目标格式编码（JPEG/PNG 解码再编码，WebP 直接写原始 BLOB）。不再依赖 `infra::image_util`。
+
+### 偏差 6：端到端验证通过
+
+用户确认：截图 → 缩略图显示 → OCR 识别 → 删除条目 → image_data 引用计数回收 → 导出 JPEG/WebP/PNG 全部正常。

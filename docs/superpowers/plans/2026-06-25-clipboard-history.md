@@ -2049,3 +2049,40 @@ Phase 3 完成后的持续迭代，按实际实施顺序记录。
 - 清理 DB 中 `transcription_id IS NULL` 的旧 ASR 记录
 - 重新运行后新 ASR 记录正确关联，级联删除生效
 - 反向不级联：`delete_clipboard_item` 只删 `clipboard_history` 行，`transcriptions` 不受影响（`ON DELETE SET NULL`）
+
+### 迭代 9：OCR 模块（详见 `2026-06-27-ocr-module.md`）
+
+- 新增 `octopus-ocr` crate（ocr-rs/MNN + PP-OCRv6）
+- `clipboard_commands.rs` 新增 `ocr_image` 命令 + `get_image_thumb` 命令
+- 前端 ClipboardItem + ClipboardRow 新增 OCR 按钮（ScanText 三态：idle → spin → ✓）
+- OCR 结果写入 `search_text` + 系统剪贴板 + osascript 新建 TextEdit 文档
+
+### 迭代 10：图片存储迁移 文件系统 → DB BLOB（详见 `2026-06-27-image-storage-blob.md`）
+
+- 新增 `image_data` 表（DB v7）
+- `image.rs` 重写：WebP 无损编码 + 20% 缩略图
+- `store.rs` 新增 image_data CRUD + 引用计数删除
+- `watcher.rs` 图片编码改为 WebP → DB BLOB
+- `image_migration.rs` 启动时迁移旧文件到 DB
+- 前端图片条目内联缩略图展示（base64 WebP）
+
+### 迭代 11：设置页配置暴露
+
+- AppConfig 新增 `clipboard_shortcut` / `clipboard_max_items` / `clipboard_max_age_days`
+- **关键 bug 修复**：`save_app_config_at` / `load_app_config_at` 字段列表漏了新字段（22→25），导致内存生效但 DB 不持久化
+- `set_config` 新增 `clipboard_shortcut` 热重载（unregister 旧 + register 新）
+- `apply_config_value` 新增三个字段的校验
+- 快捷键 section 新增「剪贴板浮窗」行
+- 剪贴板 section（新 Card）：保留条数 + 清理天数
+- ShortcutButton 组件 kbd 标签风格（⌘/⌥/⇧ 符号）
+
+### 迭代 12：快捷键捕获修复
+
+- 快捷键捕获过滤纯修饰键（Alt/Shift/Control/Meta），避免 `Alt+AltLeft` 错误
+- 曾尝试 suspend/restore 方案（unregister_all → 太暴力；suspend_shortcut → 时序问题），最终回退到与 `asr_shortcut` 完全一致的简单流程（check_shortcut → setVal → set_config 热重载）
+
+### 迭代 13：设置页 UI 优化
+
+- 「引擎接入」section 移除
+- 润色 section label 加「润色」前缀（润色模型/润色模式/润色提示词/润色间隔/润色停顿阈值）
+- 润色模型 select 用 `llm_models.find(m => m.current)?.name` 匹配当前选中（修 3-part spec 与裸名不匹配）

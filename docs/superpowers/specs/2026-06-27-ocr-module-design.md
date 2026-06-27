@@ -306,3 +306,21 @@ INSERT OR IGNORE INTO app_config (key, value, category) VALUES
 | ocr-rs API 变更（v2.x 仍在快速迭代） | 低 | 接口不兼容 | 锁定版本 `= "2.3.1"` |
 | macOS osascript TextEdit 权限 | 低 | 新建文档失败 | 降级为只写剪贴板 + toast |
 | MNN 与 ort 共存内存冲突 | 极低 | 推理崩溃 | 独立 crate 隔离 + 测试验证 |
+
+## 10. 实施偏差与补充
+
+### 10.1 图片存储迁移影响
+
+OCR spec 原设计从文件系统 `~/.octopus/clipboard_images/<hash>.png` 读取原图。实施过程中图片存储迁移到 DB BLOB（详见 `2026-06-27-image-storage-blob-design.md`），OCR 读取路径相应调整：
+- `ocr_image` 命令从 `image_data` 表读 WebP BLOB（不再读文件）
+- `OcrEngine::recognize` 改用 `image::load_from_memory`（自动检测格式，支持 WebP）
+
+### 10.2 ocr-rs 实际 API
+
+- `OcrEngine::new(det_path, rec_path, charset_path, config)` — 接受 `impl AsRef<Path>`
+- `recognize(&DynamicImage)` → `OcrResult<Vec<OcrResult_>>`，`OcrResult_` 有 `.text` 字段
+- MNN 预编译库从 GitHub 自动下载（build script），release 构建需手动放置预编译包
+
+### 10.3 osascript 输出静默
+
+osascript 创建 TextEdit 文档时会在 stderr 输出「document 未命名」，需 `.stdout(Stdio::null()).stderr(Stdio::null())` 静默。
