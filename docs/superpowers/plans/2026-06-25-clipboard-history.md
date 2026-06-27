@@ -66,7 +66,7 @@
 - Create: `crates/desktop/frontend/src/App.tsx`
 - Create: `crates/desktop/frontend/src/index.css`
 
-- [ ] **Step 1: 创建 Vite + React + TypeScript 项目**
+- [x] **Step 1: 创建 Vite + React + TypeScript 项目**
 
 ```bash
 cd crates/desktop
@@ -75,14 +75,14 @@ cd frontend
 npm install
 ```
 
-- [ ] **Step 2: 安装 Tailwind CSS 4 + Vite 插件**
+- [x] **Step 2: 安装 Tailwind CSS 4 + Vite 插件**
 
 ```bash
 cd crates/desktop/frontend
 npm install tailwindcss @tailwindcss/vite
 ```
 
-- [ ] **Step 3: 配置 vite.config.ts**
+- [x] **Step 3: 配置 vite.config.ts**
 
 ```typescript
 import { defineConfig } from "vite";
@@ -98,7 +98,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 4: 配置 src/index.css（Tailwind 入口）**
+- [x] **Step 4: 配置 src/index.css（Tailwind 入口）**
 
 ```css
 @import "tailwindcss";
@@ -131,7 +131,7 @@ export default defineConfig({
 }
 ```
 
-- [ ] **Step 5: 配置 tsconfig.json 的 path alias**
+- [x] **Step 5: 配置 tsconfig.json 的 path alias**
 
 确保 `tsconfig.json` 有：
 ```json
@@ -143,7 +143,7 @@ export default defineConfig({
 }
 ```
 
-- [ ] **Step 6: 写一个最小 App.tsx 验证骨架**
+- [x] **Step 6: 写一个最小 App.tsx 验证骨架**
 
 ```tsx
 function App() {
@@ -153,7 +153,7 @@ function App() {
 export default App;
 ```
 
-- [ ] **Step 7: 验证构建**
+- [x] **Step 7: 验证构建**
 
 ```bash
 cd crates/desktop/frontend
@@ -161,7 +161,7 @@ npm run build
 ```
 Expected: `../dist/` 下生成 `index.html` + `assets/`。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/frontend/
@@ -177,7 +177,7 @@ git commit -m "feat(desktop): React + Vite + Tailwind 前端骨架"
 - Create: `crates/desktop/frontend/src/lib/utils.ts`
 - Create: `crates/desktop/frontend/src/components/ui/button.tsx`（验证 shadcn 工作流）
 
-- [ ] **Step 1: 安装 shadcn/ui CLI 依赖**
+- [x] **Step 1: 安装 shadcn/ui CLI 依赖**
 
 ```bash
 cd crates/desktop/frontend
@@ -185,7 +185,7 @@ npm install class-variance-authority clsx tailwind-merge
 npm install -D @types/node
 ```
 
-- [ ] **Step 2: 创建 components.json**
+- [x] **Step 2: 创建 components.json**
 
 ```json
 {
@@ -206,7 +206,7 @@ npm install -D @types/node
 }
 ```
 
-- [ ] **Step 3: 创建 lib/utils.ts**
+- [x] **Step 3: 创建 lib/utils.ts**
 
 ```typescript
 import { type ClassValue, clsx } from "clsx";
@@ -217,7 +217,7 @@ export function cn(...inputs: ClassValue[]) {
 }
 ```
 
-- [ ] **Step 4: 用 shadcn CLI 添加 button 组件验证**
+- [x] **Step 4: 用 shadcn CLI 添加 button 组件验证**
 
 ```bash
 cd crates/desktop/frontend
@@ -225,7 +225,7 @@ npx shadcn@latest add button
 ```
 Expected: `src/components/ui/button.tsx` 生成。
 
-- [ ] **Step 5: 在 App.tsx 验证 Button 渲染**
+- [x] **Step 5: 在 App.tsx 验证 Button 渲染**
 
 ```tsx
 import { Button } from "@/components/ui/button";
@@ -240,14 +240,14 @@ function App() {
 export default App;
 ```
 
-- [ ] **Step 6: 验证构建**
+- [x] **Step 6: 验证构建**
 
 ```bash
 npm run build
 ```
 Expected: PASS。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/frontend/
@@ -263,7 +263,7 @@ git commit -m "feat(desktop): shadcn/ui 配置 + 基础组件"
 - Create: `crates/desktop/frontend/src/lib/tauri.ts`
 - Create: `crates/desktop/frontend/src/hooks/useTauriEvent.ts`
 
-- [ ] **Step 1: 更新 tauri.conf.json 构建配置**
+- [x] **Step 1: 更新 tauri.conf.json 构建配置**
 
 old:
 ```json
@@ -290,14 +290,14 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 2: 安装 Tauri 前端 API**
+- [x] **Step 2: 安装 Tauri 前端 API**
 
 ```bash
 cd crates/desktop/frontend
 npm install @tauri-apps/api @tauri-apps/plugin-global-shortcut
 ```
 
-- [ ] **Step 3: 创建 src/lib/tauri.ts 封装**
+- [x] **Step 3: 创建 src/lib/tauri.ts 封装**
 
 ```typescript
 import { invoke as rawInvoke } from "@tauri-apps/api/core";
@@ -312,7 +312,7 @@ export async function listen(event: string, handler: (payload: unknown) => void)
 }
 ```
 
-- [ ] **Step 4: 创建 src/hooks/useTauriEvent.ts**
+- [x] **Step 4: 创建 src/hooks/useTauriEvent.ts**
 
 ```typescript
 import { useEffect } from "react";
@@ -334,14 +334,14 @@ export function useTauriEvent(event: string, handler: (payload: unknown) => void
 }
 ```
 
-- [ ] **Step 5: 验证 `cargo build` 能正确触发前端构建**
+- [x] **Step 5: 验证 `cargo build` 能正确触发前端构建**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | head -20
 ```
 Expected: 构建过程中执行 `npm run build`，`dist/` 下有 React 产物。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/frontend/ crates/desktop/tauri.conf.json
@@ -360,13 +360,13 @@ git commit -m "feat(desktop): Tauri 构建链集成 React + IPC 封装"
 - Create: `crates/desktop/frontend/src/pages/Overlay.tsx`
 - Reference: `crates/desktop/dist/overlay/index.html`（旧实现，迁移后删除）
 
-- [ ] **Step 1: 读旧 overlay/index.html，理解全部逻辑**
+- [x] **Step 1: 读旧 overlay/index.html，理解全部逻辑**
 
 Run: `cat crates/desktop/dist/overlay/index.html`
 
 关键逻辑：监听 `show-overlay` / `partial-result` / `hide-overlay` 事件，显示录音/识别状态指示器。
 
-- [ ] **Step 2: 实现 Overlay.tsx**
+- [x] **Step 2: 实现 Overlay.tsx**
 
 将 124 行 HTML + 内联 JS 翻译为 React 组件：
 - `useTauriEvent('show-overlay', ...)` 替代 `listen('show-overlay', ...)`
@@ -375,7 +375,7 @@ Run: `cat crates/desktop/dist/overlay/index.html`
 - CSS 用 Tailwind 类替代 `<style>` 块（保持视觉一致）
 - 动画用 Tailwind `animate-pulse` + 自定义 keyframe
 
-- [ ] **Step 3: 更新 App.tsx 路由**
+- [x] **Step 3: 更新 App.tsx 路由**
 
 ```tsx
 import Overlay from "@/pages/Overlay";
@@ -389,18 +389,18 @@ function App() {
 }
 ```
 
-- [ ] **Step 4: 验证构建**
+- [x] **Step 4: 验证构建**
 
 ```bash
 cd crates/desktop/frontend && npm run build
 ```
 Expected: PASS。
 
-- [ ] **Step 5: 手动验证（需 GUI）**
+- [x] **Step 5: 手动验证（需 GUI）**
 
 启动应用，触发录音，确认 overlay 状态指示器正常显示/隐藏。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/
@@ -415,7 +415,7 @@ git commit -m "feat(desktop): 迁移 overlay 页面到 React"
 - Create: `crates/desktop/frontend/src/pages/Result.tsx`
 - Reference: `crates/desktop/dist/result/index.html`（651 行，迁移后删除）
 
-- [ ] **Step 1: 读旧 result/index.html，梳理全部功能模块**
+- [x] **Step 1: 读旧 result/index.html，梳理全部功能模块**
 
 关键功能：
 - 结果文本展示（committed + incremental）
@@ -427,7 +427,7 @@ git commit -m "feat(desktop): 迁移 overlay 页面到 React"
 - Tauri 事件监听（show-result / partial-result / polish-done / edit-state 等）
 - invoke 调用（enter_edit_mode / update_edit_buffer / commit_edit / polish_now / open_settings 等）
 
-- [ ] **Step 2: 拆分为子组件**
+- [x] **Step 2: 拆分为子组件**
 
 ```
 Result/
@@ -437,7 +437,7 @@ Result/
 └── PolishToggle.tsx   ← 润色模式切换
 ```
 
-- [ ] **Step 3: 实现 Result/index.tsx**
+- [x] **Step 3: 实现 Result/index.tsx**
 
 翻译核心逻辑：
 - `useState` 替代 DOM 状态变量
@@ -446,21 +446,21 @@ Result/
 - JSX 替代 `innerHTML` 拼接
 - shadcn `Popover` / `Button` / `Tooltip` 替代手工浮层
 
-- [ ] **Step 4: 实现子组件**
+- [x] **Step 4: 实现子组件**
 
 按拆分实现 Toolbar / EditArea / PolishToggle。
 
-- [ ] **Step 5: 更新 App.tsx 路由**
+- [x] **Step 5: 更新 App.tsx 路由**
 
 ```tsx
 case "result": return <Result />;
 ```
 
-- [ ] **Step 6: 验证构建 + 手动测试**
+- [x] **Step 6: 验证构建 + 手动测试**
 
 验证：结果展示、编辑模式、润色切换、工具栏 hover、快捷键。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/
@@ -479,7 +479,7 @@ git commit -m "feat(desktop): 迁移 result 页面到 React"
 - Create: `crates/desktop/frontend/src/pages/Settings/ModelsPanel.tsx`
 - Reference: `crates/desktop/dist/settings/index.html`（1002 行）+ `models.js`（217 行）
 
-- [ ] **Step 1: 读旧 settings/index.html + models.js，梳理全部功能**
+- [x] **Step 1: 读旧 settings/index.html + models.js，梳理全部功能**
 
 关键功能：
 - 侧边栏导航（通用/历史/模型/prompts）
@@ -488,37 +488,37 @@ git commit -m "feat(desktop): 迁移 result 页面到 React"
 - 模型管理（可下载模型列表 + 下载/验证）
 - Prompts 管理（CRUD + 激活）
 
-- [ ] **Step 2: 实现 Settings/index.tsx（侧边栏 + 路由）**
+- [x] **Step 2: 实现 Settings/index.tsx（侧边栏 + 路由）**
 
 用 shadcn `Tabs` 或自定义 nav 实现侧边栏切换。
 
-- [ ] **Step 3: 实现 GeneralSettings.tsx**
+- [x] **Step 3: 实现 GeneralSettings.tsx**
 
 用 `react-hook-form` + `zod` 管理配置表单，替代手工 DOM 读写。每个配置项用 shadcn `Switch` / `Input` / `Select`。
 
-- [ ] **Step 4: 实现 HistoryPanel.tsx**
+- [x] **Step 4: 实现 HistoryPanel.tsx**
 
 翻译历史列表逻辑：分页加载 + 多选 + 删除 + 复制。`innerHTML` 拼接 → JSX map。
 
-- [ ] **Step 5: 实现 ModelsPanel.tsx**
+- [x] **Step 5: 实现 ModelsPanel.tsx**
 
 翻译 `models.js` 逻辑：模型列表 + 下载进度 + 验证。
 
-- [ ] **Step 6: 实现 PromptsPanel.tsx**
+- [x] **Step 6: 实现 PromptsPanel.tsx**
 
 CRUD 界面：prompt 列表 + 编辑器 + 激活。
 
-- [ ] **Step 7: 更新 App.tsx 路由**
+- [x] **Step 7: 更新 App.tsx 路由**
 
 ```tsx
 case "settings": return <Settings />;
 ```
 
-- [ ] **Step 8: 验证构建 + 手动测试**
+- [x] **Step 8: 验证构建 + 手动测试**
 
 验证：配置读写、历史列表、模型管理、prompts CRUD。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/
@@ -535,17 +535,17 @@ git commit -m "feat(desktop): 迁移 settings 页面到 React"
 - Delete: `crates/desktop/dist/settings/`
 - Note: `dist/` 现在由 Vite 构建产物输出（`index.html` + `assets/`）
 
-- [ ] **Step 1: 确认所有窗口路由正常**
+- [x] **Step 1: 确认所有窗口路由正常**
 
 手动测试：overlay 窗口、result 窗口、settings 窗口全部正常加载 React 版。
 
-- [ ] **Step 2: 更新窗口创建代码（如有硬编码 dist 路径）**
+- [x] **Step 2: 更新窗口创建代码（如有硬编码 dist 路径）**
 
 检查 `result_window.rs` / `settings_window.rs` / overlay 窗口创建代码，确保 `url` 参数指向新的 `index.html`（而非 `dist/result/index.html` 等子路径）。
 
 Tauri v2 单 HTML 模式：所有窗口加载 `index.html`，React 根据 `window.label` 渲染。
 
-- [ ] **Step 3: 删除旧 dist 子目录**
+- [x] **Step 3: 删除旧 dist 子目录**
 
 ```bash
 rm -rf crates/desktop/dist/overlay/
@@ -553,14 +553,14 @@ rm -rf crates/desktop/dist/result/
 rm -rf crates/desktop/dist/settings/
 ```
 
-- [ ] **Step 4: 验证完整构建**
+- [x] **Step 4: 验证完整构建**
 
 ```bash
 cargo build -p octopus-desktop
 ```
 Expected: PASS，`dist/` 下只有 Vite 产物。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A crates/desktop/dist/
@@ -578,7 +578,7 @@ git commit -m "refactor(desktop): 清理旧 HTML，统一为 React 单 HTML 入�
 - Create: `crates/clipboard/src/lib.rs`
 - Modify: `Cargo.toml`（workspace root）
 
-- [ ] **Step 1: 创建 Cargo.toml**
+- [x] **Step 1: 创建 Cargo.toml**
 
 ```toml
 [package]
@@ -598,7 +598,7 @@ serde_json = "1"
 log = "0.4"
 ```
 
-- [ ] **Step 2: 创建 src/lib.rs（最小骨架）**
+- [x] **Step 2: 创建 src/lib.rs（最小骨架）**
 
 ```rust
 pub mod model;
@@ -607,7 +607,7 @@ pub mod store;
 pub use model::{ClipboardItem, ItemType, Source};
 ```
 
-- [ ] **Step 3: 注册到 workspace**
+- [x] **Step 3: 注册到 workspace**
 
 old (`Cargo.toml` line 2):
 ```
@@ -619,7 +619,7 @@ new:
 members = ["crates/infra", "crates/asr", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download", "crates/clipboard"]
 ```
 
-- [ ] **Step 4: 验证编译**
+- [x] **Step 4: 验证编译**
 
 ```bash
 cargo check -p octopus-clipboard
@@ -628,7 +628,7 @@ Expected: PASS（model/store 模块还没实现，先建空文件让 lib.rs 编�
 
 创建 `src/model.rs` 和 `src/store.rs` 为空文件（`pub fn _placeholder() {}`），后续 Task 填充。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/clipboard/ Cargo.toml
@@ -642,7 +642,7 @@ git commit -m "feat(clipboard): 创建 octopus-clipboard crate 骨架"
 **Files:**
 - Create: `crates/clipboard/src/model.rs`
 
-- [ ] **Step 1: 定义全部数据结构**
+- [x] **Step 1: 定义全部数据结构**
 
 ```rust
 use serde::{Deserialize, Serialize};
@@ -758,18 +758,18 @@ impl Default for Source {
 }
 ```
 
-- [ ] **Step 2: 写单元测试**
+- [x] **Step 2: 写单元测试**
 
 在 model.rs 底部加 `#[cfg(test)] mod tests`，测试 `ItemType::from_str` / `as_str` 往返、`Source` 同理。
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 ```bash
 cargo test -p octopus-clipboard --lib model
 ```
 Expected: PASS。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/clipboard/src/model.rs
@@ -784,7 +784,7 @@ git commit -m "feat(clipboard): 数据结构定义（ItemType/Source/ClipboardIt
 - Modify: `crates/infra/src/db.sql`
 - Modify: `crates/infra/src/db.rs`
 
-- [ ] **Step 1: 追加 clipboard_history 建表到 db.sql**
+- [x] **Step 1: 追加 clipboard_history 建表到 db.sql**
 
 在 db.sql 末尾追加（全文见 spec §2.3）：
 - `clipboard_history` 表（全字段）
@@ -793,7 +793,7 @@ git commit -m "feat(clipboard): 数据结构定义（ItemType/Source/ClipboardIt
 - 3 个触发器（clip_fts_ai / ad / au）
 - app_config seed（5 个 clipboard_ 配置项）
 
-- [ ] **Step 2: db.rs 加 v4→v5 迁移分支**
+- [x] **Step 2: db.rs 加 v4→v5 迁移分支**
 
 old（db.rs `init_schema` 函数末尾，`v == 3` 分支之后）:
 ```rust
@@ -831,14 +831,14 @@ new: `conn.execute("PRAGMA user_version = 5", [])?;`
 
 同理 `v == 2` 分支末尾。
 
-- [ ] **Step 3: 验证 FTS5 可用**
+- [x] **Step 3: 验证 FTS5 可用**
 
 ```bash
 cargo test -p octopus-infra --lib
 ```
 Expected: PASS。如果 FTS5 不可用，需检查 rusqlite bundled feature。
 
-- [ ] **Step 4: 手动验证迁移（删除旧 DB 触发重建）**
+- [x] **Step 4: 手动验证迁移（删除旧 DB 触发重建）**
 
 ```bash
 rm ~/.octopus/octopus.db
@@ -852,7 +852,7 @@ sqlite3 ~/.octopus/octopus.db ".tables"
 ```
 Expected: 含 `clipboard_history` 和 `clipboard_history_fts`。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -866,7 +866,7 @@ git commit -m "feat(infra): clipboard_history 表 + FTS5 + v5 迁移"
 **Files:**
 - Create: `crates/clipboard/src/store.rs`
 
-- [ ] **Step 1: 写 insert_clipboard_item 的失败测试**
+- [x] **Step 1: 写 insert_clipboard_item 的失败测试**
 
 ```rust
 #[cfg(test)]
@@ -889,7 +889,7 @@ mod tests {
 
 **设计决策**：store.rs 的函数接受 `&Connection` 参数（不从全局单例取），方便测试。调用方（Tauri 命令层）负责从 infra 取全局连接传入。
 
-- [ ] **Step 2: 实现 insert / query / delete / clear**
+- [x] **Step 2: 实现 insert / query / delete / clear**
 
 核心函数签名：
 
@@ -906,7 +906,7 @@ pub fn clear_history(conn: &Connection, keep_favorite: bool) -> anyhow::Result<u
 pub fn find_by_content_hash(conn: &Connection, blob_hash: &str) -> anyhow::Result<Option<i64>>;
 ```
 
-- [ ] **Step 3: 实现 FTS5 搜索**
+- [x] **Step 3: 实现 FTS5 搜索**
 
 `query_history` 中当 `filter.search` 非空时，走 FTS5 join：
 
@@ -926,7 +926,7 @@ ORDER BY created_at DESC
 LIMIT ? OFFSET ?
 ```
 
-- [ ] **Step 4: 实现过滤条件构建**
+- [x] **Step 4: 实现过滤条件构建**
 
 根据 `filter.filter` 值构建 WHERE：
 - `all` → 无额外条件
@@ -936,7 +936,7 @@ LIMIT ? OFFSET ?
 - `file` → `item_type = 'file'`
 - `favorite` → `is_favorite = 1`
 
-- [ ] **Step 5: 写全部 CRUD 测试**
+- [x] **Step 5: 写全部 CRUD 测试**
 
 测试用例：
 - `test_insert_and_query_text` — 插入文本 → 查询验证
@@ -949,14 +949,14 @@ LIMIT ? OFFSET ?
 - `test_clear_history_keep_favorite` — 清空但保留收藏
 - `test_dedup_by_hash` — 相同 blob_hash 不重复插入
 
-- [ ] **Step 6: 运行测试**
+- [x] **Step 6: 运行测试**
 
 ```bash
 cargo test -p octopus-clipboard --lib store
 ```
 Expected: 全部 PASS。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/clipboard/src/store.rs
@@ -970,7 +970,7 @@ git commit -m "feat(clipboard): Store CRUD + FTS5 搜索 + 过滤"
 **Files:**
 - Create: `crates/clipboard/src/image.rs`
 
-- [ ] **Step 1: 实现 PNG 编码 + SHA-256 去重**
+- [x] **Step 1: 实现 PNG 编码 + SHA-256 去重**
 
 ```rust
 use anyhow::Result;
@@ -1007,7 +1007,7 @@ pub fn cleanup_orphaned_blobs(referenced_hashes: &std::collections::HashSet<Stri
 }
 ```
 
-- [ ] **Step 2: 实现缩略图生成**
+- [x] **Step 2: 实现缩略图生成**
 
 用 `image` crate 的 `resize`：
 ```rust
@@ -1019,7 +1019,7 @@ fn generate_thumbnail(orig: &Path, thumb: &Path, max_size: u32) -> Result<()> {
 }
 ```
 
-- [ ] **Step 3: 写测试**
+- [x] **Step 3: 写测试**
 
 测试用例：
 - `test_encode_and_hash` — 已知像素 → 验证 hash
@@ -1027,14 +1027,14 @@ fn generate_thumbnail(orig: &Path, thumb: &Path, max_size: u32) -> Result<()> {
 - `test_dedup_same_image` — 相同像素 → 相同 hash
 - `test_cleanup_orphaned` — 创建 3 个文件，2 个有引用 → 删除 1 个孤立文件
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
 ```bash
 cargo test -p octopus-clipboard --lib image
 ```
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/clipboard/src/image.rs
@@ -1049,7 +1049,7 @@ git commit -m "feat(clipboard): 图片 PNG 编码 + SHA-256 去重 + 缩略图"
 - Create: `crates/clipboard/src/handle.rs`
 - Modify: `crates/clipboard/src/lib.rs`（导出 handle 模块）
 
-- [ ] **Step 1: 实现 ClipboardHandle**
+- [x] **Step 1: 实现 ClipboardHandle**
 
 ```rust
 use anyhow::Result;
@@ -1110,7 +1110,7 @@ impl ClipboardHandle {
 }
 ```
 
-- [ ] **Step 2: 更新 lib.rs 导出**
+- [x] **Step 2: 更新 lib.rs 导出**
 
 ```rust
 pub mod model;
@@ -1122,14 +1122,14 @@ pub use model::{ClipboardItem, ItemType, Source, QueryFilter};
 pub use handle::ClipboardHandle;
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 ```bash
 cargo check -p octopus-clipboard
 ```
 Expected: PASS。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/clipboard/src/handle.rs crates/clipboard/src/lib.rs
@@ -1144,7 +1144,7 @@ git commit -m "feat(clipboard): ClipboardHandle 读写 + suppress flag"
 - Create: `crates/clipboard/src/watcher.rs`
 - Modify: `crates/clipboard/src/lib.rs`
 
-- [ ] **Step 1: 实现 Watcher**
+- [x] **Step 1: 实现 Watcher**
 
 ```rust
 use anyhow::Result;
@@ -1207,7 +1207,7 @@ impl<F: Fn() + Send + Sync + 'static> ClipboardHandler for ChangeHandler<F> {
 }
 ```
 
-- [ ] **Step 2: 在 lib.rs 导出 + 加 start_watcher 便捷函数**
+- [x] **Step 2: 在 lib.rs 导出 + 加 start_watcher 便捷函数**
 
 ```rust
 pub mod watcher;
@@ -1225,20 +1225,20 @@ pub fn handle_clipboard_change(handle: &ClipboardHandle) -> anyhow::Result<()> {
 }
 ```
 
-- [ ] **Step 3: 实现 handle_clipboard_change**
+- [x] **Step 3: 实现 handle_clipboard_change**
 
 按 spec §2.2 优先级逻辑：
 - `handle.has(ContentFormat::Files)` → read_files → JSON stringify → 去重 → insert
 - `handle.has(ContentFormat::Image)` → read_image → encode_and_hash → 去重 → save + insert
 - else → read_text → hash 去重 → insert
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 ```bash
 cargo check -p octopus-clipboard
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/clipboard/src/watcher.rs crates/clipboard/src/lib.rs
@@ -1253,7 +1253,7 @@ git commit -m "feat(clipboard): Watcher 封装 + 变化处理逻辑"
 - Create: `crates/clipboard/src/cleanup.rs`
 - Modify: `crates/clipboard/src/lib.rs`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 ```rust
 #[cfg(test)]
@@ -1280,7 +1280,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 实现 cleanup**
+- [x] **Step 2: 实现 cleanup**
 
 ```rust
 use anyhow::Result;
@@ -1319,14 +1319,14 @@ pub struct CleanupResult {
 }
 ```
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 ```bash
 cargo test -p octopus-clipboard --lib cleanup
 ```
 Expected: PASS。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/clipboard/src/cleanup.rs crates/clipboard/src/lib.rs
@@ -1343,7 +1343,7 @@ git commit -m "feat(clipboard): 自动清理（天数+数量+收藏豁免+blob �
 - Modify: `crates/desktop/src/main.rs`（移除 clipboard-manager 插件）
 - Modify: `crates/desktop/capabilities/default.json`（移除 clipboard-manager 权限）
 
-- [ ] **Step 1: desktop Cargo.toml 加 octopus-clipboard**
+- [x] **Step 1: desktop Cargo.toml 加 octopus-clipboard**
 
 在 `[dependencies]` 中加：
 ```toml
@@ -1355,7 +1355,7 @@ octopus-clipboard = { path = "../clipboard" }
 tauri-plugin-clipboard-manager = "2"
 ```
 
-- [ ] **Step 2: paste.rs 替换 ClipboardExt**
+- [x] **Step 2: paste.rs 替换 ClipboardExt**
 
 old:
 ```rust
@@ -1383,7 +1383,7 @@ paste 函数签名改为接收 `Arc<ClipboardHandle>` 而非 `AppHandle`：
 pub fn paste(text: &str, handle: &ClipboardHandle, config: &AppConfig) -> Result<()> { ... }
 ```
 
-- [ ] **Step 3: main.rs 移除 clipboard-manager 插件 + 初始化 ClipboardHandle**
+- [x] **Step 3: main.rs 移除 clipboard-manager 插件 + 初始化 ClipboardHandle**
 
 old:
 ```rust
@@ -1398,7 +1398,7 @@ let clipboard_handle = Arc::new(octopus_clipboard::ClipboardHandle::new()?);
 app.manage(clipboard_handle.clone());
 ```
 
-- [ ] **Step 4: coordinator.rs 更新 paste 调用**
+- [x] **Step 4: coordinator.rs 更新 paste 调用**
 
 old（do_paste 函数内）:
 ```rust
@@ -1412,7 +1412,7 @@ paste::paste(&text_to_paste, &clipboard_handle, &config)
 
 需要把 `clipboard_handle: Arc<ClipboardHandle>` 传入 do_paste 的调用链。由于 coordinator 已有 `app_handle`，可以用 `app.state::<Arc<ClipboardHandle>>()` 获取。
 
-- [ ] **Step 5: capabilities/default.json 移除权限**
+- [x] **Step 5: capabilities/default.json 移除权限**
 
 old:
 ```json
@@ -1422,18 +1422,18 @@ old:
 
 删除这两行。
 
-- [ ] **Step 6: 编译验证**
+- [x] **Step 6: 编译验证**
 
 ```bash
 cargo check -p octopus-desktop
 ```
 Expected: PASS，零 error。
 
-- [ ] **Step 7: 手动回归测试**
+- [x] **Step 7: 手动回归测试**
 
 录音 → 识别 → 确认 paste 行为不变（写剪贴板 + Cmd+V + 恢复原剪贴板）。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/ crates/clipboard/
@@ -1450,7 +1450,7 @@ git commit -m "refactor(desktop): paste.rs 从 tauri-plugin-clipboard-manager �
 - Create: `crates/desktop/src/clipboard_commands.rs`
 - Modify: `crates/desktop/src/main.rs`（注册命令）
 
-- [ ] **Step 1: 实现 clipboard_commands.rs**
+- [x] **Step 1: 实现 clipboard_commands.rs**
 
 ```rust
 use octopus_clipboard::{ClipboardItem, QueryFilter};
@@ -1488,7 +1488,7 @@ pub async fn copy_clipboard_item(
 }
 ```
 
-- [ ] **Step 2: main.rs 注册命令**
+- [x] **Step 2: main.rs 注册命令**
 
 在 `invoke_handler` 中追加：
 ```rust
@@ -1499,7 +1499,7 @@ clipboard_commands::clear_clipboard_history,
 clipboard_commands::copy_clipboard_item,
 ```
 
-- [ ] **Step 3: main.rs setup 中启动 watcher**
+- [x] **Step 3: main.rs setup 中启动 watcher**
 
 ```rust
 // 启动剪贴板监听
@@ -1513,13 +1513,13 @@ let mut watcher = octopus_clipboard::ClipboardWatcher::start(watcher_handle, mov
 app.manage(watcher);
 ```
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 ```bash
 cargo check -p octopus-desktop
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/clipboard_commands.rs crates/desktop/src/main.rs
@@ -1534,7 +1534,7 @@ git commit -m "feat(desktop): 剪贴板历史 Tauri 命令层 + watcher 启动"
 - Create: `crates/desktop/src/clipboard_window.rs`
 - Modify: `crates/desktop/src/main.rs`
 
-- [ ] **Step 1: 实现 clipboard_window.rs**
+- [x] **Step 1: 实现 clipboard_window.rs**
 
 ```rust
 use tauri::{AppHandle, Manager, WebviewWindowBuilder, WebviewUrl};
@@ -1576,7 +1576,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
 }
 ```
 
-- [ ] **Step 2: main.rs 注册全局快捷键 + 失焦隐藏**
+- [x] **Step 2: main.rs 注册全局快捷键 + 失焦隐藏**
 
 在 setup 中注册 `Alt+V` 快捷键：
 ```rust
@@ -1597,13 +1597,13 @@ window.on_window_event(move |event| {
 });
 ```
 
-- [ ] **Step 3: App.tsx 加 clipboard 路由**
+- [x] **Step 3: App.tsx 加 clipboard 路由**
 
 ```tsx
 case "clipboard": return <Clipboard />;
 ```
 
-- [ ] **Step 4: 创建最小 Clipboard 页面验证窗口能弹出**
+- [x] **Step 4: 创建最小 Clipboard 页面验证窗口能弹出**
 
 ```tsx
 // src/pages/Clipboard/index.tsx（最小版）
@@ -1612,11 +1612,11 @@ function Clipboard() {
 }
 ```
 
-- [ ] **Step 5: 手动验证**
+- [x] **Step 5: 手动验证**
 
 启动应用 → 按 Alt+V → 窗口弹出 → 失焦隐藏。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/src/clipboard_window.rs crates/desktop/src/main.rs crates/desktop/frontend/src/
@@ -1631,18 +1631,18 @@ git commit -m "feat(desktop): 剪贴板历史窗口 + Alt+V 快捷键"
 - Create: `crates/desktop/frontend/src/pages/Clipboard/FilterTabs.tsx`
 - Create: `crates/desktop/frontend/src/pages/Clipboard/index.tsx`
 
-- [ ] **Step 1: 安装 shadcn tabs 组件**
+- [x] **Step 1: 安装 shadcn tabs 组件**
 
 ```bash
 cd crates/desktop/frontend
 npx shadcn@latest add tabs badge
 ```
 
-- [ ] **Step 2: 实现 FilterTabs**
+- [x] **Step 2: 实现 FilterTabs**
 
 6 个 tab（全部/ASR/文本/图片/文件/收藏），单选互斥，Lucide 图标。见 spec §4.4。
 
-- [ ] **Step 3: 实现 Clipboard/index.tsx 主框架**
+- [x] **Step 3: 实现 Clipboard/index.tsx 主框架**
 
 ```tsx
 function Clipboard() {
@@ -1659,13 +1659,13 @@ function Clipboard() {
 }
 ```
 
-- [ ] **Step 4: 验证构建**
+- [x] **Step 4: 验证构建**
 
 ```bash
 npm run build
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Clipboard/
@@ -1680,13 +1680,13 @@ git commit -m "feat(desktop): 剪贴板 FilterTabs 组件 + 主框架"
 - Create: `crates/desktop/frontend/src/pages/Clipboard/HistoryList.tsx`
 - Create: `crates/desktop/frontend/src/hooks/useClipboardHistory.ts`
 
-- [ ] **Step 1: 安装虚拟滚动依赖**
+- [x] **Step 1: 安装虚拟滚动依赖**
 
 ```bash
 npm install @tanstack/react-virtual
 ```
 
-- [ ] **Step 2: 实现 useClipboardHistory hook**
+- [x] **Step 2: 实现 useClipboardHistory hook**
 
 ```typescript
 export function useClipboardHistory(filter: string, search: string) {
@@ -1713,15 +1713,15 @@ export function useClipboardHistory(filter: string, search: string) {
 }
 ```
 
-- [ ] **Step 3: 实现 HistoryList 虚拟滚动**
+- [x] **Step 3: 实现 HistoryList 虚拟滚动**
 
 用 `@tanstack/react-virtual` 的 `useVirtualizer`，见 spec §4.5。
 
-- [ ] **Step 4: 验证构建 + 手动测试**
+- [x] **Step 4: 验证构建 + 手动测试**
 
 复制几段文本 → 窗口弹出 → 列表显示。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/
@@ -1736,7 +1736,7 @@ git commit -m "feat(desktop): 剪贴板 HistoryList 虚拟滚动 + useClipboardH
 - Create: `crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx`
 - Create: `crates/desktop/frontend/src/types/clipboard.ts`
 
-- [ ] **Step 1: 定义 TypeScript 类型**
+- [x] **Step 1: 定义 TypeScript 类型**
 
 ```typescript
 // src/types/clipboard.ts
@@ -1757,7 +1757,7 @@ export interface ClipboardItem {
 }
 ```
 
-- [ ] **Step 2: 实现 ClipboardItem 组件**
+- [x] **Step 2: 实现 ClipboardItem 组件**
 
 按 spec §4.6 渲染：text/image/file/asr 四种，Lucide 图标，收藏按钮，右键菜单（shadcn ContextMenu）。
 
@@ -1766,18 +1766,18 @@ export interface ClipboardItem {
 npx shadcn@latest add context-menu
 ```
 
-- [ ] **Step 3: 实现操作行为**
+- [x] **Step 3: 实现操作行为**
 
 - 单击：`invoke('copy_clipboard_item', { id })` → 关闭窗口
 - 双击：`invoke('copy_clipboard_item', { id })` → 模拟粘贴 → 关闭窗口
 - 收藏：`invoke('toggle_clipboard_favorite', { id })` → 乐观更新
 - 右键删除：`invoke('delete_clipboard_item', { id })`
 
-- [ ] **Step 4: 验证构建 + 手动测试**
+- [x] **Step 4: 验证构建 + 手动测试**
 
 复制文本/截图 → 列表正确渲染 → 点击复制 → 收藏切换。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/
@@ -1793,7 +1793,7 @@ git commit -m "feat(desktop): ClipboardItem 按类型渲染 + 操作行为"
 - Create: `crates/desktop/frontend/src/pages/Clipboard/Footer.tsx`
 - Create: `crates/desktop/frontend/src/hooks/useDebouncedValue.ts`
 
-- [ ] **Step 1: 实现 useDebouncedValue**
+- [x] **Step 1: 实现 useDebouncedValue**
 
 ```typescript
 import { useEffect, useState } from "react";
@@ -1807,11 +1807,11 @@ export function useDebouncedValue<T>(value: T, delay: number): T {
 }
 ```
 
-- [ ] **Step 2: 实现 SearchBar**
+- [x] **Step 2: 实现 SearchBar**
 
 shadcn `Input` + Lucide `Search` 图标。
 
-- [ ] **Step 3: 实现 Footer**
+- [x] **Step 3: 实现 Footer**
 
 显示总条数 + "清空历史" 按钮（shadcn `Button` + 确认弹窗 shadcn `AlertDialog`）。
 
@@ -1820,11 +1820,11 @@ shadcn `Input` + Lucide `Search` 图标。
 npx shadcn@latest add input alert-dialog
 ```
 
-- [ ] **Step 4: 验证构建 + 手动测试**
+- [x] **Step 4: 验证构建 + 手动测试**
 
 搜索中文文本 → FTS5 正确返回 → 清空历史 → 列表空。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/
@@ -1838,7 +1838,7 @@ git commit -m "feat(desktop): 剪贴板搜索 + 底栏 + 清空历史"
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs`
 
-- [ ] **Step 1: do_paste 中追加 insert_asr_item 调用**
+- [x] **Step 1: do_paste 中追加 insert_asr_item 调用**
 
 在 `do_paste` 函数内，`paste::paste()` 调用前插入：
 ```rust
@@ -1859,18 +1859,18 @@ if let Err(e) = octopus_infra::db::with_db(|conn| {
 }
 ```
 
-- [ ] **Step 2: 编译验证**
+- [x] **Step 2: 编译验证**
 
 ```bash
 cargo check -p octopus-desktop
 ```
 
-- [ ] **Step 3: 手动端到端测试**
+- [x] **Step 3: 手动端到端测试**
 
 录音 → 识别 → 粘贴 → 打开剪贴板历史 → 确认 ASR 条目出现（🎤 图标 + source=asr）。
 同时确认不会出现重复的 clipboard 来源条目（suppress flag 生效）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/coordinator.rs
@@ -1885,7 +1885,7 @@ git commit -m "feat(desktop): ASR 识别完成写入剪贴板历史"
 - Create: `crates/desktop/frontend/src/pages/Settings/ClipboardSettings.tsx`
 - Modify: `crates/desktop/frontend/src/pages/Settings/index.tsx`（加导航项）
 
-- [ ] **Step 1: 实现 ClipboardSettings 面板**
+- [x] **Step 1: 实现 ClipboardSettings 面板**
 
 配置项（已在 app_config seed）：
 - 启用/禁用监听（`clipboard_enabled`）→ shadcn Switch
@@ -1894,11 +1894,11 @@ git commit -m "feat(desktop): ASR 识别完成写入剪贴板历史"
 - 清理天数（`clipboard_max_age_days`）→ Select（7/30/90）
 - 点击行为（`clipboard_auto_paste`）→ Select（single/double）
 
-- [ ] **Step 2: 更新 Settings 侧边栏**
+- [x] **Step 2: 更新 Settings 侧边栏**
 
 加"剪贴板"导航项 + 对应面板。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/

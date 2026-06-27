@@ -1849,7 +1849,7 @@ git commit -m "feat(desktop): ASR menu uses label; enable LLM polish model menu"
 **Files:**
 - Modify: `crates/infra/src/config.rs:138`（AppConfig 末字段后）、`:179`（default 函数）、`:212`（Default impl）、`:279`（测试）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `crates/infra/src/config.rs` 的 `mod tests` 末尾（`app_config_serialize_round_trip_preserves_overrides` 之后）加：
 
@@ -1867,12 +1867,12 @@ git commit -m "feat(desktop): ASR menu uses label; enable LLM polish model menu"
     }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-infra denoise_enabled`
 Expected: 编译失败 `no field denoise_enabled on type AppConfig`
 
-- [ ] **Step 3: 加字段 + default 函数 + Default impl**
+- [x] **Step 3: 加字段 + default 函数 + Default impl**
 
 在 `AppConfig` 结构体 `asr_correct` 字段后（`config.rs:138` 之后）加：
 
@@ -1896,12 +1896,12 @@ fn default_denoise_enabled() -> bool {
             denoise_enabled: default_denoise_enabled(),
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cargo test -p octopus-infra`
 Expected: PASS（含新加的 2 个测试）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/infra/src/config.rs
@@ -1915,12 +1915,12 @@ git commit -m "feat(config): add denoise_enabled field (default true)"
 **Files:**
 - Modify: `crates/asr/src/config.rs`（在 `find_silero_vad` 之后，`:93` 附近）
 
-- [ ] **Step 1: 确认现有 helper 签名**
+- [x] **Step 1: 确认现有 helper 签名**
 
 Run: `grep -nE "fn find_hf_cache|fn find_latest_snapshot" crates/asr/src/config.rs`
 确认：`find_hf_cache(source: &str) -> Result<PathBuf>`（返回 repo 的 model_dir，含 snapshots/）、`find_latest_snapshot(model_dir: &Path) -> Result<PathBuf>`（返回最新 snapshot 目录）。
 
-- [ ] **Step 2: 写失败测试**
+- [x] **Step 2: 写失败测试**
 
 在 `crates/asr/src/config.rs` 末尾的 `#[cfg(test)] mod tests`（若不存在则新建）加：
 
@@ -1943,12 +1943,12 @@ Run: `grep -nE "fn find_hf_cache|fn find_latest_snapshot" crates/asr/src/config.
     }
 ```
 
-- [ ] **Step 3: 跑测试确认失败**
+- [x] **Step 3: 跑测试确认失败**
 
 Run: `cargo test -p octopus-asr-local find_df3_missing`
 Expected: 编译失败 `cannot find function find_df3`
 
-- [ ] **Step 4: 实现 find_df3**
+- [x] **Step 4: 实现 find_df3**
 
 在 `find_silero_vad` 之后加：
 
@@ -1976,12 +1976,12 @@ pub fn find_df3() -> Result<PathBuf> {
 }
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `cargo test -p octopus-asr-local find_df3_missing`
 Expected: PASS（模型在则 Ok 跳过；不在则 Err 含下载提示）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add crates/asr/src/config.rs
@@ -1996,7 +1996,7 @@ git commit -m "feat(asr): add find_df3() for DeepFilterNet3 model discovery"
 - Create: `crates/asr/src/denoise.rs`
 - Modify: `crates/asr/src/lib.rs`（加 `pub mod denoise;`）
 
-- [ ] **Step 1: 注册模块**
+- [x] **Step 1: 注册模块**
 
 在 `crates/asr/src/lib.rs` 加（与 `pub mod vad;` 同处）：
 
@@ -2004,7 +2004,7 @@ git commit -m "feat(asr): add find_df3() for DeepFilterNet3 model discovery"
 pub mod denoise;
 ```
 
-- [ ] **Step 2: 写 denoise.rs 常量 + 窗 + STFT/iSTFT + 重建测试**
+- [x] **Step 2: 写 denoise.rs 常量 + 窗 + STFT/iSTFT + 重建测试**
 
 创建 `crates/asr/src/denoise.rs`：
 
@@ -2133,12 +2133,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 跑测试确认通过**
+- [x] **Step 3: 跑测试确认通过**
 
 Run: `cargo test -p octopus-asr-local denoise::tests`
 Expected: PASS（2 个纯 DSP 测试，无需模型）
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add crates/asr/src/denoise.rs crates/asr/src/lib.rs
@@ -2152,7 +2152,7 @@ git commit -m "feat(asr): denoise.rs skeleton + sqrt-Hann STFT/iSTFT reconstruct
 **Files:**
 - Modify: `crates/asr/src/denoise.rs`
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `denoise.rs` 的 `mod tests` 加：
 
@@ -2199,12 +2199,12 @@ git commit -m "feat(asr): denoise.rs skeleton + sqrt-Hann STFT/iSTFT reconstruct
     }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-asr-local denoise::tests::erb`
 Expected: 编译失败 `cannot find function erb_bounds`
 
-- [ ] **Step 3: 实现 ERB 边界 + feat 函数**
+- [x] **Step 3: 实现 ERB 边界 + feat 函数**
 
 在 `denoise.rs`（`istft_frame` 之后）加：
 
@@ -2279,12 +2279,12 @@ pub fn feat_spec(spec: &[Complex<f32>]) -> Vec<f32> {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cargo test -p octopus-asr-local denoise::tests`
 Expected: PASS（5 个 DSP 测试）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/asr/src/denoise.rs
@@ -2298,7 +2298,7 @@ git commit -m "feat(asr): ERB bounds + feat_erb/feat_spec feature extraction"
 **Files:**
 - Modify: `crates/asr/src/denoise.rs`
 
-- [ ] **Step 1: 写失败测试（需模型，#[ignore]）**
+- [x] **Step 1: 写失败测试（需模型，#[ignore]）**
 
 在 `denoise.rs` 的 `mod tests` 加：
 
@@ -2318,12 +2318,12 @@ git commit -m "feat(asr): ERB bounds + feat_erb/feat_spec feature extraction"
     }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-asr-local processor_runs -- --ignored`
 Expected: 编译失败 `cannot find type DenoiseProcessor`
 
-- [ ] **Step 3: 实现 DenoiseProcessor::new + 单帧推理**
+- [x] **Step 3: 实现 DenoiseProcessor::new + 单帧推理**
 
 在 `denoise.rs` 顶部加 import：
 
@@ -2453,7 +2453,7 @@ impl DenoiseProcessor {
 
 > ⚠️ **Step 3 的 GRU 状态回写与 OLA 是初稿，Step 4 会编译驱动修正**。ort `try_extract_tensor` 返回的类型重塑（`into_shape((1,1,256))`）与 OLA 重叠减法的精确边界需在编译时报错处对齐——这是 ONNX 集成最易错的点，按编译器错误逐个修正，不猜测。
 
-- [ ] **Step 4: 编译驱动修正 GRU 状态回写 + OLA**
+- [x] **Step 4: 编译驱动修正 GRU 状态回写 + OLA**
 
 Run: `cargo build -p octopus-asr-local`
 
@@ -2528,12 +2528,12 @@ fn arr4d_to_complex(view: &ndarray::ArrayViewD<f32>) -> Vec<Complex<f32>> {
 }
 ```
 
-- [ ] **Step 5: 跑测试确认通过**
+- [x] **Step 5: 跑测试确认通过**
 
 Run: `cargo test -p octopus-asr-local processor_runs -- --ignored`
 Expected: PASS（需 `hf download penta2himajin/deepfilternet3-onnx` 已执行）
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add crates/asr/src/denoise.rs
@@ -2547,7 +2547,7 @@ git commit -m "feat(asr): DenoiseProcessor ONNX session + GRU state + per-frame 
 **Files:**
 - Modify: `crates/asr/src/denoise.rs`
 
-- [ ] **Step 1: 写失败测试（#[ignore]，需模型）**
+- [x] **Step 1: 写失败测试（#[ignore]，需模型）**
 
 在 `mod tests` 加：
 
@@ -2603,12 +2603,12 @@ git commit -m "feat(asr): DenoiseProcessor ONNX session + GRU state + per-frame 
     }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run: `cargo test -p octopus-asr-local sample_conservation -- --ignored`
 Expected: 编译失败（`process_samples`/`flush` 未实现）
 
-- [ ] **Step 3: 实现 process_samples + flush**
+- [x] **Step 3: 实现 process_samples + flush**
 
 在 `impl DenoiseProcessor` 加（替换 Task 5 的 `process_frame` 调用方式为公开增量接口）：
 
@@ -2694,12 +2694,12 @@ Expected: 编译失败（`process_samples`/`flush` 未实现）
 
 > **若 `streaming_incremental_equals_batch` 失败**：偏差来自分析帧上下文（`ola_prev` 是 iSTFT 输出而非原始时域）。修正：新增字段 `prev_time_tail: Vec<f32>`（存上一帧原始 new 样本尾 480），分析帧用它而非 `ola_prev` 切片。测试驱动此修正。
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run: `cargo test -p octopus-asr-local sample_conservation streaming_incremental -- --ignored`
 Expected: PASS（两个流式一致性测试）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/asr/src/denoise.rs
@@ -2713,13 +2713,13 @@ git commit -m "feat(asr): streaming process_samples/flush + sample conservation 
 **Files:**
 - Modify: `crates/desktop/src/audio.rs`（`SharedAudioState` 加字段、`start`/`stop`/`drain_samples` 接入）
 
-- [ ] **Step 1: 读现有 audio.rs 确认集成点**
+- [x] **Step 1: 读现有 audio.rs 确认集成点**
 
 Run: `grep -nE "fn start|fn stop|fn drain_samples|resampler|struct SharedAudioState" crates/desktop/src/audio.rs`
 
 确认：`stop`（重采样到 16k 后返回）、`drain_samples`（流式重采样到 16k）、`start`（clear buffer + 建流）。
 
-- [ ] **Step 2: SharedAudioState 加 DenoiseProcessor 字段**
+- [x] **Step 2: SharedAudioState 加 DenoiseProcessor 字段**
 
 在 `crates/desktop/src/audio.rs` 的 `SharedAudioState` 结构体加字段：
 
@@ -2740,7 +2740,7 @@ pub struct SharedAudioState {
 
 `new` 初始化（若 `config.denoise_enabled`）：在 `new` 加参数 `denoise_enabled: bool`，或从 config 读。鉴于 `SharedAudioState::new` 当前只接 `device_name`，改为在 `start` 时按需 lazy init（见 Step 3）。
 
-- [ ] **Step 3: 接入 drain_samples / stop**
+- [x] **Step 3: 接入 drain_samples / stop**
 
 改造重采样路径。原 `stop`/`drain_samples` 直接 `raw → 16k`；改为 `raw → 48k → NS → 16k`（denoise 启用时）。
 
@@ -2782,7 +2782,7 @@ impl SharedAudioState {
 
 > ⚠️ **Step 4 编译驱动**：`resample_to` 的通用实现——`octopus_asr_local::audio` 现有 `resample_to_16k` 写死 16k 目标。新增通用 `resample_to(samples, from, to)`（用 `rubato::FftFixedIn`），放 `crates/asr/src/audio.rs`。
 
-- [ ] **Step 4: 新增通用重采样 + lazy init denoise**
+- [x] **Step 4: 新增通用重采样 + lazy init denoise**
 
 在 `crates/asr/src/audio.rs` 加：
 
@@ -2841,12 +2841,12 @@ pub fn resample_to(samples: &[f32], from_rate: u32, to_rate: u32) -> anyhow::Res
 
 > 流式细节：`drain_samples` 用 `process_samples`（不 flush，GRU 状态跨次保持）；`stop` 在取最后一段时 `process_samples` + `flush` 吐残留。重构 `process_pipeline` 接受 `flush: bool` 参数。
 
-- [ ] **Step 5: 编译 + 跑全量测试**
+- [x] **Step 5: 编译 + 跑全量测试**
 
 Run: `cargo build -p octopus-desktop && cargo test -p octopus-asr-local && cargo test -p octopus-infra`
 Expected: 编译通过；DSP 测试 PASS（推理测试 `--ignored` 单独跑）
 
-- [ ] **Step 6: 手动 e2e 验证（需模型）**
+- [x] **Step 6: 手动 e2e 验证（需模型）**
 
 ```bash
 # 确保模型已下载
@@ -2858,7 +2858,7 @@ hf download penta2himajin/deepfilternet3-onnx
 # 删除 dfn3.onnx → 应用正常启动 + warn 下载提示，不崩溃
 ```
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add crates/desktop/src/audio.rs crates/asr/src/audio.rs
@@ -2872,7 +2872,7 @@ git commit -m "feat(desktop): integrate DeepFilterNet3 denoise in SharedAudioSta
 **Files:**
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: 更新 architecture.md**
+- [x] **Step 1: 更新 architecture.md**
 
 在音频采集/持久化相关段加「环境降噪（DeepFilterNet3）」小节：
 
@@ -2890,7 +2890,7 @@ git commit -m "feat(desktop): integrate DeepFilterNet3 denoise in SharedAudioSta
 - **模块**：`crates/asr/src/denoise.rs`（`DenoiseProcessor` + DSP）、`crates/asr/src/config.rs::find_df3`。
 ```
 
-- [ ] **Step 2: 提交**
+- [x] **Step 2: 提交**
 
 ```bash
 git add docs/architecture.md

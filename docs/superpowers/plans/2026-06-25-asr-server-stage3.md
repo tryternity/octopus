@@ -456,7 +456,7 @@ Expected: workspace lib 测试全绿（含 Task 1 的 3 个 server 单测）；c
 
 在 `docs/architecture.md` 的 server crate 段落（或 crates 列表），把 server 描述从「单文件 main.rs，裸调 StreamingSession」更新为「`pipeline.rs`（WsStreamSession 薄包 StreamingRunner + event_to_json）+ `main.rs`（路由）；流式/批处理均走 asr helper」。
 
-- [ ] **Step 5: e2e 手动回归清单（待用户本地，需 ASR 模型环境；代码/单测/文档已完成 2026-06-26）**
+- [x] **Step 5: e2e 手动回归清单（e2e 已通过并 ff-merge main `e254da0`，2026-06-26；下方清单保留作复现参考）**
 
 起服务并验证两条路径（需本地有 ASR 模型 + VAD 模型，参考 desktop e2e 环境）：
 
