@@ -31,7 +31,7 @@ pub fn open_settings(app_handle: tauri::AppHandle) {
         WINDOW_LABEL,
         WebviewUrl::default(),
     )
-    .title("Octopus 设置")
+    .title("Octopus")
     .inner_size(SETTINGS_WIDTH, SETTINGS_HEIGHT)
     .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
     .decorations(true)
