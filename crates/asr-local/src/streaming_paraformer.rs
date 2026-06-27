@@ -396,22 +396,23 @@ impl StreamingParaformer {
 
         // 5. Zero overlap alphas（去 chunk 间 overlap，防 CIF 重复 fire）
         let alpha_sum: f32 = alphas.iter().sum();
-        // 首 chunk（num_processed_frames==0）：feat_cache 初始全 0（padding），左侧 encoder 帧
-        // 基于"padding + 首音频"，alpha 反映首字音头（**非 overlap**）——mask 会误删首字
-        // （e2e 实测 frame0 mask前 alpha_sum=1.607 → mask后 fired=0，首字丢失）。故首 chunk
-        // 不 mask 左侧；它没有上 chunk 可 overlap，不 mask 不会引入重复 fire。
-        // final chunk：右侧无后续 chunk overlap，不 mask 右侧（保留尾音 fire）。
+        // 单侧 mask（只 mask left，right 从不 mask）：overlap 区 = 本 chunk 的 right = 下 chunk 的
+        // left，只在【下 chunk 的 left】这一侧 mask 即可防重复 fire；本 chunk 再 mask right 是冗余，
+        // 还会砍掉集中在 chunk 右侧的能量。e2e 实测首 chunk alpha 几乎全在 right 3 帧（frame0
+        // mask前1.129，right占~1.0），mask_right 把首字能量砍光 → fired=0 首字丢失。
+        // 首 chunk（num_processed_frames==0）连 left 也不 mask：其 left 基于"padding+首音频"非
+        // overlap（feat_cache 初始全0），且无上 chunk 可重叠 → 不 mask 不引入重复 fire。
         let is_first_chunk = self.num_processed_frames == 0;
         let alphas = mask_alphas_selective(
             alphas,
             enc_len_scalar,
             /*mask_left=*/ !is_first_chunk,
-            /*mask_right=*/ !is_final,
+            /*mask_right=*/ false,
         );
         log::debug!(
             "[asr-diag] paraformer mask: is_final={} is_first={} enc_len={} mask前alpha_sum={:.3} \
-            (mask_left={} mask_right={})",
-            is_final, is_first_chunk, enc_len_scalar, alpha_sum, !is_first_chunk, !is_final
+            (mask_left={} mask_right=false)",
+            is_final, is_first_chunk, enc_len_scalar, alpha_sum, !is_first_chunk
         );
 
         // 6. CIF (force-fire if final)
