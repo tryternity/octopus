@@ -43,7 +43,7 @@ paraformer 的 `was_silent` 只插逗号、**不** `finish+reset`（`streaming_p
 
 ## 4. 修复方案与设计决策
 
-### 4.1 zipformer 首字（#3.1）— `fc2d387`
+### 4.1 zipformer 首字（#3.1）— `041e678`
 
 把「本轮是否有语音」传进 engine，让 `finish+reset` 只在**持续静音**（真·段边界）触发，排除「静音→语音过渡」tick：
 
@@ -57,9 +57,9 @@ paraformer 的 `was_silent` 只插逗号、**不** `finish+reset`（`streaming_p
 
 | commit | 改动 | 效果 |
 |---|---|---|
-| `a9795ff` | 首 chunk 也置零 left → 改为**首 chunk 不 mask left** | frame0 fired=0→1，首字 fire；但 right 仍 mask |
-| `2dae4c8` | 首 chunk 也**不 mask right** | 首字能量保住；但关了**所有** chunk 的 right → 中段退化（中段 right 是 overlap 边界帧，不 mask → fired 增多 → 叠字/错字涨） |
-| `7d66887` | `mask_right = !(is_first \|\| is_final)`，**仅中段** mask right | 首字改善保留 + 中段质量回稳 |
+| `8f32f2f` | 首 chunk 也置零 left → 改为**首 chunk 不 mask left** | frame0 fired=0→1，首字 fire；但 right 仍 mask |
+| `e802e98` | 首 chunk 也**不 mask right** | 首字能量保住；但关了**所有** chunk 的 right → 中段退化（中段 right 是 overlap 边界帧，不 mask → fired 增多 → 叠字/错字涨） |
+| `3930dbf` | `mask_right = !(is_first \|\| is_final)`，**仅中段** mask right | 首字改善保留 + 中段质量回稳 |
 
 **最终 mask 策略**（`process_chunk_at`）：
 
@@ -73,7 +73,7 @@ let mask_right = !is_first_chunk && !is_final;
 - **mask_left**：首 chunk 与 fresh 段首 chunk 关（保音头）；中段/final 开（去上 chunk overlap）。
 - **mask_right**：仅中段开（去下 chunk overlap 边界帧，acoustic 不准）；首/final 关（保首字能量 + 尾音 fire）。
 
-### 4.3 paraformer 启动「嗯」（#3.3）— `seen_speech` 门控 `144812c`
+### 4.3 paraformer 启动「嗯」（#3.3）— `seen_speech` 门控 `968b7e5`
 
 `StreamingRunner` 加 `seen_speech: bool` 锁存：
 
@@ -83,7 +83,7 @@ let mask_right = !is_first_chunk && !is_final;
 - `finish_with_tail` 同步门控：纯噪声会话（`seen_speech=false`）不喂 tail → finish 返回空。
 - `reset()` 清零。
 
-### 4.4 paraformer 停顿后丢字（#3.4）— `fresh_segment` `a0464dd`
+### 4.4 paraformer 停顿后丢字（#3.4）— `fresh_segment` `a9b55ab`
 
 `StreamingParaformer` 加 `fresh_segment: bool`：
 
@@ -93,7 +93,7 @@ let mask_right = !is_first_chunk && !is_final;
 - `flush()` 开头先清 `fresh_segment=false`，避免上段 unconsumed 的 fresh 误 mask 当前段尾 chunk。
 - `reset()` 清零。
 
-### 4.5 paraformer 跨边界重复（#3.5 跨边界）— token 层去重 `4ca57bb`
+### 4.5 paraformer 跨边界重复（#3.5 跨边界）— token 层去重 `1105798`
 
 `process_chunk_at` step 8 累积 token 时跨边界去重：
 
@@ -124,10 +124,10 @@ if !seen_first_valid && (tid as i64) == self.last_emitted_token {
 
 | commit | 内容 |
 |---|---|
-| `fc2d387` | zipformer 首字：`has_speech` 区分段边界与开口过渡 |
-| `08b190f` / `0d452cd` | 加 `[asr-diag]` 流式 token 诊断日志（诊断期） |
-| `4ca57bb` | paraformer 跨 chunk 边界 token 去重 |
-| `5df19fc` | paraformer 文本层重复哨兵（验证用，诊断期） |
-| `a9795ff` / `2dae4c8` / `7d66887` | paraformer mask 策略迭代收敛 |
-| `144812c` | paraformer 启动「嗯」：`seen_speech` 开口前门控 |
-| `a0464dd` | paraformer 停顿后丢字：`fresh_segment` |
+| `041e678` | zipformer 首字：`has_speech` 区分段边界与开口过渡 |
+| `c73af9c` / `54a0636` | 加 `[asr-diag]` 流式 token 诊断日志（诊断期） |
+| `1105798` | paraformer 跨 chunk 边界 token 去重 |
+| `73e350d` | paraformer 文本层重复哨兵（验证用，诊断期） |
+| `8f32f2f` / `e802e98` / `3930dbf` | paraformer mask 策略迭代收敛 |
+| `968b7e5` | paraformer 启动「嗯」：`seen_speech` 开口前门控 |
+| `a9b55ab` | paraformer 停顿后丢字：`fresh_segment` |

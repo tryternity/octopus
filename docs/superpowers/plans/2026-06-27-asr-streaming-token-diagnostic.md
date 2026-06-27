@@ -8,9 +8,9 @@
 流式 ASR（`StreamingPipeline`）首字缺失 / 启动 spurious「嗯」/ 停顿后丢字 / 尾字中段重复，按「**丢字 > 叠字**」优先级修复。4 个 Phase，10 个 commit。
 
 ```
-Phase 1  zipformer 首字（确凿，先行）              fc2d387
-Phase 2  诊断日志（[asr-diag]，驱动后续）           08b190f 0d452cd
-Phase 3  日志驱动精准修（paraformer 5 项）          4ca57bb 5df19fc a9795ff 2dae4c8 7d66887 144812c a0464dd
+Phase 1  zipformer 首字（确凿，先行）              041e678
+Phase 2  诊断日志（[asr-diag]，驱动后续）           c73af9c 54a0636
+Phase 3  日志驱动精准修（paraformer 5 项）          1105798 73e350d 8f32f2f e802e98 3930dbf 968b7e5 a9b55ab
 Phase 4  文档 + 诊断日志清理                       本 plan + 日志清理 commit
 ```
 
@@ -18,7 +18,7 @@ Phase 4  文档 + 诊断日志清理                       本 plan + 日志清�
 
 **症结**：`accept_samples` Zipformer 分支 `if was_silent { finish+reset }`，`was_silent` 取更新前 `silence_duration`；开口前静音 > 0.5s + 开口瞬间 `has_speech=false` → 每 tick 反复 reset → 清空 `token_ids` 冲首字。
 
-**步骤**（commit `fc2d387`）：
+**步骤**（commit `041e678`）：
 1. `step_silence` / `detect_silence_gap` 额外返回 `has_speech` → `(was_silent_for_punct, should_flush, has_speech)`。
 2. `StreamingEngine::accept_samples` trait 加 `has_speech` 参数。
 3. `streaming_engine.rs` ZipformerCtc / Transducer 分支条件改 `if was_silent && !has_speech`；Paraformer 分支忽略。
@@ -29,11 +29,11 @@ Phase 4  文档 + 诊断日志清理                       本 plan + 日志清�
 
 ## Phase 2 — 诊断日志（驱动后续修复）
 
-**步骤**（commit `08b190f` + `0d452cd`）：
+**步骤**（commit `c73af9c` + `54a0636`）：
 - `log::debug!`（热路径）/ `log::info!`（reset / force-fire 一次性），统一 `[asr-diag]` 前缀。
 - **paraformer**：`process_chunk_at` mask 决策、CIF `fired`/`alpha_cache`、force-fire、跨边界去重命中、fresh_segment 消费；`run_cif` / `run_cif_final`。
 - **zipformer**：reset 前段文本快照、CTC / Transducer token emit。
-- **文本层哨兵**（`5df19fc`，commit 于 Phase 3）：`diag_text_dup_sentinel`——decode 后扫描相邻 CJK 叠字，验证 token 层去重是否漏网。附 `scan_cjk_dups` / `is_cjk_char` 单测。
+- **文本层哨兵**（`73e350d`，commit 于 Phase 3）：`diag_text_dup_sentinel`——decode 后扫描相邻 CJK 叠字，验证 token 层去重是否漏网。附 `scan_cjk_dups` / `is_cjk_char` 单测。
 
 > **为什么不走文本层去重**：paraformer 重复在 `all_token_ids` / `full_text` 内部，`prefix|delta` 拼接边界永不触发（prefix 空或 commit 后逗号隔开）；且全文折叠分不清「别别」artifact vs「爸爸」合法叠字。安全去重只能在 token 层（有 chunk 边界），文本层改观测哨兵。
 
@@ -41,20 +41,20 @@ Phase 4  文档 + 诊断日志清理                       本 plan + 日志清�
 
 复现「我想说话 / 开始语音识别」后据日志定位，逐项修：
 
-### 3.1 跨边界 token 去重（`4ca57bb`）
+### 3.1 跨边界 token 去重（`1105798`）
 `process_chunk_at` step 8：本 chunk 首个有效 token == 上 chunk 末 token → CIF 双 fire，`continue` 跳过。不影响单 chunk 内合法重复。
 
-### 3.2 mask 策略迭代（`a9795ff` → `2dae4c8` → `7d66887`）
+### 3.2 mask 策略迭代（`8f32f2f` → `e802e98` → `3930dbf`）
 e2e 三轮收敛（见 spec §4.2）：
-- `a9795ff`：首 chunk 不 mask left（frame0 fired 0→1）。
-- `2dae4c8`：首 chunk 不 mask right（过度，中段退化）。
-- `7d66887`：`mask_right = !(is_first || is_final)`，仅中段 mask right。
+- `8f32f2f`：首 chunk 不 mask left（frame0 fired 0→1）。
+- `e802e98`：首 chunk 不 mask right（过度，中段退化）。
+- `3930dbf`：`mask_right = !(is_first || is_final)`，仅中段 mask right。
 - 最终：`mask_left = !(is_first || fresh)`，`mask_right = !is_first && !is_final`。
 
-### 3.3 启动「嗯」门控（`144812c`）
+### 3.3 启动「嗯」门控（`968b7e5`）
 `streaming_runner` 加 `seen_speech` 锁存：VAD 检出首个语音前不喂 engine（丢弃启动噪声）；VAD=None 不门控；`finish_with_tail` / `reset` 同步。
 
-### 3.4 停顿后丢字 `fresh_segment`（`a0464dd`）
+### 3.4 停顿后丢字 `fresh_segment`（`a9b55ab`）
 `flush()` 末尾置 `fresh_segment=true`（零 padding 已把 `feat_cache` 冲成静音 → 新段首 chunk 不 mask left 安全）；锁存到新段首个 fire 的 chunk 才清。`flush()` 开头先清避免误 mask 段尾。
 
 ## Phase 4 — 文档 + 诊断日志清理（本步）
