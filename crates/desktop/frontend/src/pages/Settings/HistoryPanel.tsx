@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Copy, Trash2, ChevronDown } from "lucide-react";
+import { Copy, Trash2, ChevronDown, Search } from "lucide-react";
 
 interface HistoryRecord {
   id: number;
@@ -23,22 +23,27 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
   const [selectedIds, setSelectedIds] = useState<Set<number>>(new Set());
   const [expandedIds, setExpandedIds] = useState<Set<number>>(new Set());
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [search, setSearch] = useState("");
+  const debouncedSearch = useDebouncedValue(search, 300);
 
   const loadHistory = useCallback(async (resetOffset?: boolean) => {
     if (loading) return;
     setLoading(true);
     const o = resetOffset ? 0 : offset;
     try {
-      const recs = await invoke<HistoryRecord[]>("get_history", { limit: 20, offset: o });
+      const recs = await invoke<HistoryRecord[]>("get_history", {
+        limit: 20, offset: o,
+        search: debouncedSearch || null,
+      });
       if (resetOffset) { setRecords(recs); setSelectedIds(new Set()); }
       else { setRecords((prev) => [...prev, ...recs]); }
       setOffset(o + recs.length);
       setDone(recs.length < 20);
     } catch (e) { showToast("加载历史失败：" + e); }
     setLoading(false);
-  }, [loading, offset, showToast]);
+  }, [loading, offset, showToast, debouncedSearch]);
 
-  useEffect(() => { loadHistory(true); }, []);
+  useEffect(() => { loadHistory(true); }, [debouncedSearch]);
 
   const toggleSelect = (id: number) => {
     setSelectedIds((prev) => {
@@ -116,6 +121,18 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
           <Trash2 className="w-3.5 h-3.5" />
           {confirmDelete ? "确认删除" : "删除选中"}
         </button>
+      </div>
+
+      {/* Search */}
+      <div className="flex items-center gap-2 py-3 px-3 bg-muted rounded-md border border-border">
+        <Search className="w-4 h-4 text-muted-foreground" />
+        <input
+          type="text"
+          placeholder="搜索识别文本..."
+          value={search}
+          onChange={(e) => setSearch(e.target.value)}
+          className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/60"
+        />
       </div>
 
       {/* List */}
@@ -213,4 +230,13 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
       </div>
     </div>
   );
+}
+
+function useDebouncedValue<T>(value: T, delay: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+  return debounced;
 }

@@ -893,9 +893,30 @@ pub struct TranscriptionRecord {
     pub duration_ms: Option<i64>,
 }
 
-/// 分页查询历史识别记录（按 id 降序 = 最新在前）。
-pub fn list_transcriptions(limit: u32, offset: u32) -> Result<Vec<TranscriptionRecord>> {
-    with_db(|conn| list_transcriptions_at(conn, limit, offset))
+/// 分页查询历史识别记录（按 id 降序 = 最新在前）。可选搜索关键词。
+pub fn list_transcriptions(limit: u32, offset: u32, search: Option<&str>) -> Result<Vec<TranscriptionRecord>> {
+    with_db(|conn| {
+        if let Some(q) = search {
+            if !q.is_empty() {
+                let pattern = format!("%{}%", q);
+                let mut stmt = conn.prepare(
+                    "SELECT id, created_at, engine, raw_text, polished_text, edited_text, polish_status, duration_ms
+                     FROM transcriptions
+                     WHERE raw_text LIKE ?1 OR polished_text LIKE ?1 OR edited_text LIKE ?1
+                     ORDER BY id DESC LIMIT ?2 OFFSET ?3"
+                )?;
+                let rows = stmt.query_map(params![pattern, limit, offset], |row| {
+                    Ok(TranscriptionRecord {
+                        id: row.get(0)?, created_at: row.get(1)?, engine: row.get(2)?,
+                        raw_text: row.get(3)?, polished_text: row.get(4)?, edited_text: row.get(5)?,
+                        polish_status: row.get(6)?, duration_ms: row.get(7)?,
+                    })
+                })?;
+                return Ok(rows.filter_map(|r| r.ok()).collect());
+            }
+        }
+        list_transcriptions_at(conn, limit, offset)
+    })
 }
 
 /// 批量删除识别记录（按 id）。返回实际删除的行数。

@@ -269,8 +269,8 @@ fn build_polish_llm_spec(bare_name: &str) -> Result<String, String> {
 // ── get_history 命令 ──
 
 #[tauri::command]
-pub fn get_history(limit: u32, offset: u32) -> Result<Vec<octopus_infra::db::TranscriptionRecord>, String> {
-    octopus_infra::db::list_transcriptions(limit, offset).map_err(|e| e.to_string())
+pub fn get_history(limit: u32, offset: u32, search: Option<String>) -> Result<Vec<octopus_infra::db::TranscriptionRecord>, String> {
+    octopus_infra::db::list_transcriptions(limit, offset, search.as_deref()).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

@@ -21,15 +21,15 @@ export interface ConfigResponse {
 type PageName = "history" | "clipboard" | "settings" | "models" | "prompts";
 
 const NAV_ITEMS: { page: PageName; icon: LucideIcon; label: string }[] = [
+  { page: "settings", icon: SettingsIcon, label: "系统设置" },
   { page: "history", icon: History, label: "识别记录" },
   { page: "clipboard", icon: Clipboard, label: "剪贴板" },
-  { page: "settings", icon: SettingsIcon, label: "系统设置" },
   { page: "models", icon: Box, label: "模型管理" },
   { page: "prompts", icon: Wand2, label: "提示词" },
 ];
 
 function Settings() {
-  const [page, setPage] = useState<PageName>("history");
+  const [page, setPage] = useState<PageName>("settings");
   const [configResp, setConfigResp] = useState<ConfigResponse | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
