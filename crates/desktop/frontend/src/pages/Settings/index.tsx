@@ -1,9 +1,10 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
-import { History, Settings as SettingsIcon, Box, Wand2, type LucideIcon } from "lucide-react";
+import { History, Settings as SettingsIcon, Box, Wand2, Clipboard, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import HistoryPanel from "./HistoryPanel";
+import ClipboardPanel from "./ClipboardPanel";
 import GeneralPanel from "./GeneralPanel";
 import ModelsPanel from "./ModelsPanel";
 import PromptsPanel from "./PromptsPanel";
@@ -17,17 +18,18 @@ export interface ConfigResponse {
   microphones: string[];
 }
 
-type PageName = "history" | "settings" | "models" | "prompts";
+type PageName = "history" | "clipboard" | "settings" | "models" | "prompts";
 
 const NAV_ITEMS: { page: PageName; icon: LucideIcon; label: string }[] = [
-  { page: "history", icon: History, label: "识别记录" },
   { page: "settings", icon: SettingsIcon, label: "系统设置" },
+  { page: "history", icon: History, label: "识别记录" },
+  { page: "clipboard", icon: Clipboard, label: "剪贴板" },
   { page: "models", icon: Box, label: "模型管理" },
   { page: "prompts", icon: Wand2, label: "提示词" },
 ];
 
 function Settings() {
-  const [page, setPage] = useState<PageName>("history");
+  const [page, setPage] = useState<PageName>("settings");
   const [configResp, setConfigResp] = useState<ConfigResponse | null>(null);
   const [toast, setToast] = useState<string | null>(null);
 
@@ -91,7 +93,9 @@ function Settings() {
 
       {/* Content */}
       <div className="flex-1 overflow-y-auto bg-background p-6">
-        {!configResp ? (
+        {page === "clipboard" ? (
+          <ClipboardPanel showToast={showToast} />
+        ) : !configResp ? (
           <div className="flex items-center justify-center h-full text-muted-foreground">加载中...</div>
         ) : page === "history" ? (
           <HistoryPanel showToast={showToast} />
