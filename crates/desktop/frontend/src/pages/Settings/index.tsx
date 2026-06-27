@@ -71,11 +71,7 @@ function Settings() {
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
       {/* Sidebar */}
       <div className="w-[160px] flex-shrink-0 bg-muted/40 border-r border-border flex flex-col">
-        <div className="px-4 pt-5 pb-4">
-          <div className="text-base font-bold tracking-tight">Octopus</div>
-          <div className="text-[10px] text-muted-foreground/60 mt-0.5">语音识别 · 剪贴板</div>
-        </div>
-        <nav className="flex-1 py-1">
+        <nav className="flex-1 pt-3">
           {NAV_ITEMS.map(({ page: p, icon: Icon, label }) => (
             <div
               key={p}
