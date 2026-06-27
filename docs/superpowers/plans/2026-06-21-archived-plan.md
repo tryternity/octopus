@@ -1,25 +1,34 @@
 # 已归档实施计划（2026-06-20 ~ 2026-06-21）
 
-> 本文件合并了以下已完成的实施计划。原文档已删除。
+> 以下功能均已实现并合并 main。交叉引用统一指向本归档文件内同名章节；对应 specs 见 `docs/superpowers/specs/2026-06-21-archived-spec.md`。
 
-## 包含的计划
+## 目录
 
-- 2026-06-20-archived-plans（cloud-asr-dedup / baidu-asr / bytedance-asr / clipboard-restore-race / download-model-integration / model-download / model-management-gui / moonshine-asr / polish-prompt-table / tencent-asr / toggle-stop-polish-race）
+| 原文件 | 主题 | 状态 |
+|---|---|---|
+| desktop-audit-followups | desktop 实现审查后续（剪贴板竞态/跨会话护栏/e2e） | ✅ 已实现 |
+| ort-cross-platform | ort 跨平台 EP feature 条件化 | ✅ 已落地 |
+| zipformer-transducer | Zipformer Transducer (RNN-T) 引擎 | ✅ 已完成 |
+| cloud-asr-dedup | 云端 ASR 6 接口审查修复 + 去重 | ✅ 已实现 |
+| baidu-asr | 百度智能云实时语音识别 | ✅ 已完成 |
+| bytedance-asr | 火山引擎豆包大模型流式 ASR | ✅ 已完成 |
+| clipboard-restore-race | 剪贴板恢复竞态修复 | ✅ 已实现 |
+| download-model-integration | octopus-download 接入模型管理 | ✅ 已完成 |
+| model-download | octopus-download crate | ✅ 已完成 |
+| model-management-gui | 模型管理 GUI 接入 | ✅ 已完成 |
+| moonshine-asr | Moonshine ASR 引擎接入 | ✅ 已完成 |
+| polish-prompt-table | 润色提示词表 | ✅ 已完成 |
+| tencent-asr | 腾讯云 ASR 实时语音识别 | ✅ 已完成 |
+| toggle-stop-polish-race | Toggle 停止时润色结果丢失修复 | ✅ 已完成 |
 
 ---
 
-# 归档实施计划（2026-06-20）
+## desktop-audit-followups
 
-> **归档说明**（2026-06-21）：以下 3 个 plan 对应功能均已实现并合并 main，各自文档原样合并归档于此，原独立文件已删除。每个章节以 `📄 <原文件名>` 标注来源。
-> **交叉引用**：正文内 `[xxx.md](./xxx.md)` 链接为合并前原文件名，现指向本归档文件内同名章节；对应 specs 见 `docs/superpowers/specs/2026-06-20-archived-design.md`。
-
----
-
-## 📄 `2026-06-20-desktop-audit-followups.md`
 
 # desktop 实现审查 · 后续待办
 
-> 来源：`docs/superpowers/specs/2026-06-20-desktop-implementation-audit.md`（7 条审查的复核 + P0/P1 实施）。
+> 来源：`docs/superpowers/specs/2026-06-21-archived-spec.md#desktop-implementation-audit`（7 条审查的复核 + P0/P1 实施）。
 > 状态（2026-06-20）：P0（一1/一2/二1）+ P1（二2/三2/三1）**均已合并 main**（P0 `44b8ab8`、P1 `9a19b6b`）。本文档后续事项**均已处理**：§1 一3 已实现（`e0f1420`）、§4 跨会话护栏已实现（`cfe78f4`）、§2 GUI e2e 已通过（2026-06-20，用户确认）。
 
 ---
@@ -35,7 +44,7 @@
 - 或改为「restore 前 probe 粘贴是否落地」的信号（更复杂，YAGNI，优先纯延迟）。
 - 注意 macOS / Windows / Linux 粘贴异步性不同，延迟可能需按平台分档。
 
-**状态**：✅ 已实现（`PASTE_RESTORE_DELAY = 200ms`，`e0f1420`；spec `2026-06-21-clipboard-restore-race-design.md`）。GUI e2e 已通过（2026-06-20，见 §2）。
+**状态**：✅ 已实现（`PASTE_RESTORE_DELAY = 200ms`，`e0f1420`；spec `2026-06-21-archived-spec.md#clipboard-restore-race-design`）。GUI e2e 已通过（2026-06-20，见 §2）。
 
 ---
 
@@ -83,11 +92,9 @@ P0/P1 的修复逻辑均由 `cargo check` + 逻辑审查 + 既有单测保证，
 
 - **dashscope ASR 真实 key e2e**：云端 WS 引擎是 `#[ignore]` 测试，从未用真实 DashScope key 跑过端到端。属独立 workstream，见 memory `parallel-workstreams`，不在本审查范围。
 
-## 📄 `2026-06-20-ort-cross-platform.md`
 
 # ort 跨平台 EP feature 条件化 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 让 ort 的硬件加速 EP feature 按平台条件化（mac=coreml、linux=cuda、win=directml），与代码层 `#[cfg]` 1:1 对齐，为 macOS 上曾发生的 cuda/directml EP segfault 提供feature-level 二道防线（首道是 config.rs 的 cfg gate）。
 
@@ -95,7 +102,7 @@ P0/P1 的修复逻辑均由 `cargo check` + 逻辑审查 + 既有单测保证，
 
 **Tech Stack:** Rust + Cargo target-specific dependencies + ort 2.0.0-rc.12 + `#[cfg(target_os)]` 条件编译
 
-**设计 spec:** `docs/superpowers/specs/2026-06-20-ort-cross-platform-feature-design.md`
+**设计 spec:** `docs/superpowers/specs/2026-06-21-archived-spec.md#ort-cross-platform-feature-design`
 
 **Worktree:** `feature/ort-cross-platform`（`.claude/worktrees/ort-cross-platform`）。EnterWorktree 工具切入失败，session CWD 已手动落在 worktree 内；git 操作直接在本目录跑。
 
@@ -298,12 +305,11 @@ Run: `cargo build --release -p octopus-desktop`（已在 Task 3 Step 2 产出）
 - win CUDA 删除**非编译必需**（类型存在），但运行时清洁，仍正确。
 - win NVIDIA 用户从 CUDA 回退到 DirectML，极端长音频批量转写可能略慢；实时录音转写影响可忽略。
 
-## 📄 `2026-06-20-zipformer-transducer.md`
 
 # Zipformer Transducer (RNN-T) 引擎 Implementation Plan
 
 > 状态：**已实现**（离线 commit `465e901` merge `f238c47`；流式 commit `415e89c` merge `109cccb`；归一化 fix commit `0d7ef5c`）
-> Spec：`docs/superpowers/specs/2026-06-20-zipformer-transducer-design.md`
+> Spec：`docs/superpowers/specs/2026-06-21-archived-spec.md#zipformer-transducer-design`
 
 **Goal:** 将原 `ZipformerEngine`（仅 CTC）重命名为 `ZipformerCtcEngine`，新增 `ZipformerTransducerEngine`（RNN-T 三 session 架构，离线 + 流式），支持两个新中文模型。
 
@@ -359,7 +365,7 @@ Run: `cargo build --release -p octopus-desktop`（已在 Task 3 Step 2 产出）
 - [x] `db.sql` seed 新增 `zipformer-zh-transducer`（154M）和 `zipformer-xlarge-transducer`（726M）
 - [x] `architecture.md`：Zipformer 引擎族表格（CTC vs Transducer 对比）+ 流式判定描述更新
 - [x] `configuration.md`：seed 表 + is_streaming 说明 + 模型下载命令
-- [x] spec 文档：`docs/superpowers/specs/2026-06-20-zipformer-transducer-design.md`
+- [x] spec 文档：`docs/superpowers/specs/2026-06-21-archived-spec.md#zipformer-transducer-design`
 
 ### Task 6: 验证 ✅
 
@@ -560,7 +566,7 @@ fn open_cloud_session(cat: EngineCategory, config: &AppConfig, pre_roll: Vec<f32
 
 # 百度智能云实时语音识别实施计划
 
-> Spec：`docs/superpowers/specs/2026-06-21-baidu-asr-design.md`
+> Spec：`docs/superpowers/specs/2026-06-21-archived-spec.md#baidu-asr-design`
 
 ## Task 1：infra 层
 
@@ -629,7 +635,7 @@ fn open_cloud_session(cat: EngineCategory, config: &AppConfig, pre_roll: Vec<f32
 
 # 火山引擎豆包大模型流式 ASR 实施计划
 
-> Spec：`docs/superpowers/specs/2026-06-21-bytedance-asr-design.md`
+> Spec：`docs/superpowers/specs/2026-06-21-archived-spec.md#bytedance-asr-design`
 > 对标实现：DashScopeStreamSession + EngineCategory::Aliyun
 
 ## Task 1：infra 层 — AsrSection.bytedance 字段 + db.sql seed
@@ -924,7 +930,6 @@ cargo test -p octopus-desktop
 
 # 剪贴板恢复竞态修复 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 修复 desktop 审查一3——paste 经剪贴板粘贴后恢复原剪贴板的竞态（Cmd+V 后 sleep 50ms 不足，慢系统粘贴未落地就恢复→旧内容被粘进目标应用）。
 
@@ -932,9 +937,9 @@ cargo test -p octopus-desktop
 
 **Tech Stack:** Rust + enigo（键盘模拟）+ tauri-plugin-clipboard-manager。
 
-**Spec:** `docs/superpowers/specs/2026-06-21-clipboard-restore-race-design.md`
+**Spec:** `docs/superpowers/specs/2026-06-21-archived-spec.md#clipboard-restore-race-design`
 
-> **状态：✅ 已实现**（commit `e0f1420`：`PASTE_RESTORE_DELAY = 200ms`；GUI e2e 通过 2026-06-20；worktree 已清理合并 main）。下方 step 勾选标记实际完成进度。**下文 `L89`/`L119` 等行号为修复前快照**（常量插入后已漂移），定位以代码上下文锚点为准，现况见 `crates/desktop/src/paste.rs`。**注**：本计划引用的 `2026-06-20-desktop-audit-followups.md` 已于 2026-06-21 归档至 `plans/2026-06-20-archived-plans.md`。
+> **状态：✅ 已实现**（commit `e0f1420`：`PASTE_RESTORE_DELAY = 200ms`；GUI e2e 通过 2026-06-20；worktree 已清理合并 main）。下方 step 勾选标记实际完成进度。**下文 `L89`/`L119` 等行号为修复前快照**（常量插入后已漂移），定位以代码上下文锚点为准，现况见 `crates/desktop/src/paste.rs`。**注**：本计划引用的 `2026-06-21-archived-plan.md#desktop-audit-followups` 已于 2026-06-21 归档至 `plans/2026-06-21-archived-plan.md`。
 
 > **测试策略说明（偏离 TDD 的理由）**：本改动无单元测试——`paste_via_clipboard` 依赖系统剪贴板 + enigo GUI 键盘交互 + 目标应用粘贴行为，无法离线隔离测试；为单次时序修复引入 mock 框架属 YAGNI。验证靠 `cargo check`（编译）+ 逻辑审查（确认仅 L119 改动、L89 不动）+ 手动 GUI e2e（Task 3 / followups plan 记录）。
 
@@ -945,7 +950,7 @@ cargo test -p octopus-desktop
 | 文件 | 责任 | 动作 |
 |---|---|---|
 | `crates/desktop/src/paste.rs` | `paste_via_clipboard` 粘贴+恢复时序 | **改**：加常量 + L119 sleep 改用常量 |
-| `docs/superpowers/plans/2026-06-20-desktop-audit-followups.md` | desktop 审查后续待办 | **改**：§1 标题/状态→已实现、§2 补 e2e 项 |
+| `docs/superpowers/plans/2026-06-21-archived-plan.md#desktop-audit-followups` | desktop 审查后续待办 | **改**：§1 标题/状态→已实现、§2 补 e2e 项 |
 
 ---
 
@@ -1024,7 +1029,7 @@ git commit -m "fix(desktop): 剪贴板恢复竞态——Cmd+V 后 sleep 50ms→2
 ## Task 2: followups plan 文档同步
 
 **Files:**
-- Modify: `docs/superpowers/plans/2026-06-20-desktop-audit-followups.md`
+- Modify: `docs/superpowers/plans/2026-06-21-archived-plan.md#desktop-audit-followups`
 
 - [x] **Step 1: §1 标题 + 状态行改「已实现」**
 
@@ -1043,7 +1048,7 @@ git commit -m "fix(desktop): 剪贴板恢复竞态——Cmd+V 后 sleep 50ms→2
 ```
 状态行 new：
 ```markdown
-**状态**：✅ 已实现（worktree `clipboard-restore-race`，`PASTE_RESTORE_DELAY = 200ms`；spec `2026-06-21-clipboard-restore-race-design.md`）。行为正确性待 GUI e2e（见 §2）。
+**状态**：✅ 已实现（worktree `clipboard-restore-race`，`PASTE_RESTORE_DELAY = 200ms`；spec `2026-06-21-archived-spec.md#clipboard-restore-race-design`）。行为正确性待 GUI e2e（见 §2）。
 ```
 
 - [x] **Step 2: §2 GUI e2e 清单补「剪贴板恢复竞态」项**
@@ -1062,7 +1067,7 @@ git commit -m "fix(desktop): 剪贴板恢复竞态——Cmd+V 后 sleep 50ms→2
 - [x] **Step 3: Commit**
 
 ```bash
-git add docs/superpowers/plans/2026-06-20-desktop-audit-followups.md
+git add docs/superpowers/plans/2026-06-21-archived-plan.md#desktop-audit-followups
 git commit -m "docs(plan): desktop-audit followups 同步一3 已实现 + e2e 项"
 ```
 
@@ -1100,7 +1105,6 @@ Expected: PASS，零 warning 回归。
 
 # octopus-download 接入模型管理（阶段1）实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 `octopus-download` crate 接入模型管理——`octopus-cli download <repo>` 把 HF 模型下到 `~/.octopus/models/<repo>/`，ASR 的 `resolve_model_dir` 新增一级查找发现它。
 
@@ -1108,7 +1112,7 @@ Expected: PASS，零 warning 回归。
 
 **Tech Stack:** Rust，clap（cli 子命令），tokio（async runtime），octopus-download（HF 适配层 + 分块并发下载器），octopus-infra（AppConfig + DB），rusqlite（app_config 表）。
 
-**Spec:** `docs/superpowers/specs/2026-06-21-download-model-integration-design.md`
+**Spec:** `docs/superpowers/specs/2026-06-21-archived-spec.md#download-model-integration-design`
 
 ---
 
@@ -1702,13 +1706,13 @@ git commit -m "feat(cli): 加 download 子命令（薄封装 octopus-download，
 ## Task 4: 文档同步 + 收尾验证
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-06-21-download-model-integration-design.md`（§2.2/§3.2 勘误、§4 接口契约状态）
-- Modify: `docs/superpowers/plans/2026-06-21-download-model-integration.md`（勾选完成的 step）
+- Modify: `docs/superpowers/specs/2026-06-21-archived-spec.md#download-model-integration-design`（§2.2/§3.2 勘误、§4 接口契约状态）
+- Modify: `docs/superpowers/plans/2026-06-21-archived-plan.md#download-model-integration`（勾选完成的 step）
 - Modify: `docs/architecture.md`（cli 加 download 子命令）
 
 - [x] **Step 1: spec §2.2 / §3.2 勘误**
 
-在 `docs/superpowers/specs/2026-06-21-download-model-integration-design.md`：
+在 `docs/superpowers/specs/2026-06-21-archived-spec.md#download-model-integration-design`：
 
 §2.2 第 2 点（「3 处绕过 resolve_model_dir...」整段，含 3 个文件:行号列表）替换为：
 
@@ -1757,7 +1761,7 @@ Expected: 全部 PASS（asr `resolve_local_in` ×4、infra `download_mirror` ×3
 - [x] **Step 6: Commit**
 
 ```bash
-git add docs/superpowers/specs/2026-06-21-download-model-integration-design.md docs/superpowers/plans/2026-06-21-download-model-integration.md docs/architecture.md
+git add docs/superpowers/specs/2026-06-21-archived-spec.md#download-model-integration-design docs/superpowers/plans/2026-06-21-archived-plan.md#download-model-integration docs/architecture.md
 git commit -m "docs: 同步 download 模型管理阶段1（spec §3.2 勘误 + architecture cli download）"
 ```
 
@@ -1783,7 +1787,6 @@ git commit -m "docs: 同步 download 模型管理阶段1（spec §3.2 勘误 + a
 
 # octopus-download crate Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 实现通用文件下载 crate `octopus-download`（分块并发 + 断点续传 sidecar + `If-Range`/SHA256 校验 + 镜像 fallback），含 HF 适配层，替代 `huggingface-cli` 下载模型。
 
@@ -1791,7 +1794,7 @@ git commit -m "docs: 同步 download 模型管理阶段1（spec §3.2 勘误 + a
 
 **Tech Stack:** Rust 2021，reqwest 0.12（`rustls-tls`+`stream`+`default-features=false`）、tokio（full）、tokio-util（rt，`CancellationToken`）、sha2、thiserror、serde、glob、log。测试用 httpmock。
 
-**Spec:** `docs/superpowers/specs/2026-06-21-model-download-design.md`（权威设计）。
+**Spec:** `docs/superpowers/specs/2026-06-21-archived-spec.md#model-download-design`（权威设计）。
 
 **workspace 约定（对齐）**：crate 名 `octopus-<name>`，路径 `crates/<name>`，edition 2021，日志用 `log`（非 tracing），测试源文件内联 `#[cfg(test)] mod tests`，无 `[workspace.dependencies]`（各 crate 自声明版本）。本 crate 在 worktree `model-download`，不合并主干（main 让给 e2e）。
 
@@ -1865,7 +1868,7 @@ tempfile = "3"
 //! octopus-download：通用文件下载 crate（分块并发 + 断点续传 + 校验 + 镜像）。
 //!
 //! 两模块：`core`（通用，零 HF 知识）+ `hf`（HuggingFace 适配层）。
-//! 详见 `docs/superpowers/specs/2026-06-21-model-download-design.md`。
+//! 详见 `docs/superpowers/specs/2026-06-21-archived-spec.md#model-download-design`。
 
 pub mod core;
 ```
@@ -3904,7 +3907,7 @@ git commit -m "feat(download): HF resolve_tasks（API+glob+resolve URL+镜像+ha
 //! octopus-download：通用文件下载 crate（分块并发 + 断点续传 + 校验 + 镜像）。
 //!
 //! `core`：通用下载器（零 HF 知识）。`hf`：HuggingFace 适配层。
-//! 详见 docs/superpowers/specs/2026-06-21-model-download-design.md。
+//! 详见 docs/superpowers/specs/2026-06-21-archived-spec.md#model-download-design。
 
 pub mod core;
 pub mod hf;
@@ -3974,7 +3977,7 @@ Expected: 无 warning（或按 workspace 惯例放宽）。
 
 在 `docs/architecture.md` 合适位置（如模型加载/基础设施章节附近）加一段：
 ```markdown
-- **octopus-download crate**：通用文件下载器（分块并发 + 断点续传 sidecar + If-Range/SHA256 校验 + 镜像 fallback）。`core` 通用、`hf` 适配层（API 列文件 + include/exclude glob 对齐 hf-cli + resolve URL）。替代 `huggingface-cli` 下载大模型，解终端用户装 Python、国内镜像、按需选 int8 文件三痛点。下载到 `~/.octopus/models/<repo>/<path>`。详见 spec `2026-06-21-model-download-design.md`。
+- **octopus-download crate**：通用文件下载器（分块并发 + 断点续传 sidecar + If-Range/SHA256 校验 + 镜像 fallback）。`core` 通用、`hf` 适配层（API 列文件 + include/exclude glob 对齐 hf-cli + resolve URL）。替代 `huggingface-cli` 下载大模型，解终端用户装 Python、国内镜像、按需选 int8 文件三痛点。下载到 `~/.octopus/models/<repo>/<path>`。详见 spec `2026-06-21-archived-spec.md#model-download-design`。
 ```
 
 - [x] **Step 5: Commit**
@@ -4023,7 +4026,7 @@ git commit -m "feat(download): lib 顶层导出 + 端到端集成测试 + archit
 
 ## Execution Handoff
 
-Plan complete and saved to `docs/superpowers/plans/2026-06-21-model-download.md`. Two execution options:
+Plan complete and saved to `docs/superpowers/plans/2026-06-21-archived-plan.md#model-download`. Two execution options:
 
 **1. Subagent-Driven（推荐）** — 每个 task 派新 subagent，task 间复核，快速迭代。
 
@@ -4037,9 +4040,8 @@ Which approach?
 
 # 模型管理 GUI 接入 实施计划
 
-> spec：`docs/superpowers/specs/2026-06-21-model-management-gui-design.md`。worktree `model-mgmt-ui`。
+> spec：`docs/superpowers/specs/2026-06-21-archived-spec.md#model-management-gui-design`。worktree `model-mgmt-ui`。
 >
-> **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:executing-plans 按 task 实施。Steps 用 checkbox（`- [ ]`）跟踪。
 >
 > **v1（Task 1–5）已合并 main `7fd0682`（2026-06-21）**，下方标 `[x]`。
 > **v2（Task 6–12，2026-06-22，已合并 main `08e1bef`+`bb33237`）**：就绪逻辑重构——`is_enabled` 改就绪语义、直读 DB 列全部、点下载先探查、`secret_key` 自举 sha256 清单（manifest 下沉 `asr::manifest`，map 格式）、`verify_model` 复核、`RUNTIME_CONFIG` 可刷新；cli `sync-models` 批量填 secret_key。
@@ -4153,7 +4155,6 @@ Which approach?
 
 # Moonshine ASR 引擎接入实施计划
 
-> **For agentic workers:** REQUIRED SUB-SILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 接入 Moonshine ONNX ASR 模型（v1 格式，4 个 ONNX session），实现离线英语语音识别。
 
@@ -4879,7 +4880,6 @@ Moonshine 5 task 完成并合并后，在测试 whisper 系列模型时发现两
 
 ---
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把单文件 `~/.octopus/VOICE_POLISH.md` 润色 prompt 机制改为 DB 多 prompt 管理（`prompts` 表 + `app_config.active_polish_prompt`），支持设置窗口 CRUD，运行时可切换。
 
@@ -4889,7 +4889,7 @@ Moonshine 5 task 完成并合并后，在测试 whisper 系列模型时发现两
 
 **Worktree:** 所有改动在 `/Users/wudarui/workspace/agent/octopus/.worktrees/setting-ui2/`（分支 `feature/setting-ui2`）。所有路径下文以仓库根相对书写。
 
-**Spec:** `docs/superpowers/specs/2026-06-21-polish-prompt-table-design.md`
+**Spec:** `docs/superpowers/specs/2026-06-21-archived-spec.md#polish-prompt-table-design`
 
 ---
 
@@ -5805,7 +5805,7 @@ git merge --ff-only feature/setting-ui2
 - [x] **Step 3: 提交 plan 回写**
 
 ```bash
-git -C .worktrees/setting-ui2 add docs/superpowers/plans/2026-06-21-polish-prompt-table.md
+git -C .worktrees/setting-ui2 add docs/superpowers/plans/2026-06-21-archived-plan.md#polish-prompt-table
 git -C .worktrees/setting-ui2 commit -m "docs: 回写 polish prompt table plan 实施记录"
 git merge --ff-only feature/setting-ui2
 ```
@@ -5827,7 +5827,7 @@ git merge --ff-only feature/setting-ui2
 
 # 腾讯云 ASR 实时语音识别实施计划
 
-> Spec：`docs/superpowers/specs/2026-06-21-tencent-asr-design.md`
+> Spec：`docs/superpowers/specs/2026-06-21-archived-spec.md#tencent-asr-design`
 
 ## Task 1：infra 层 — AsrSection.tencent 字段 + db.sql seed
 
@@ -5961,7 +5961,6 @@ cargo test -p octopus-infra && cargo test -p octopus-asr-local && cargo test -p 
 
 # Toggle 停止时立即润色结果丢失修复 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 修复用户点击「立即润色」后按 Toggle 结束录音时，润色结果丢失、只粘贴原文的 bug。
 
@@ -5969,7 +5968,7 @@ cargo test -p octopus-infra && cargo test -p octopus-asr-local && cargo test -p 
 
 **Tech Stack:** Rust、Tauri 2、mpsc channel 状态机
 
-**Spec:** [`docs/superpowers/specs/2026-06-21-toggle-stop-polish-race-design.md`](../specs/2026-06-21-toggle-stop-polish-race-design.md)
+**Spec:** [`docs/superpowers/specs/2026-06-21-archived-spec.md#toggle-stop-polish-race-design`](../specs/2026-06-21-archived-spec.md#toggle-stop-polish-race-design)
 
 ---
 
@@ -6604,8 +6603,8 @@ fix(desktop): 修复 Toggle 停止时立即润色结果丢失
 按 polish_mode 走 final 路径（mode=0 直接 paste display_text 含 polished+increase；
 mode=1/2 触发最终润色）。抽取 finalize_after_stop 公共收尾函数统一三个分支。
 
-spec: docs/superpowers/specs/2026-06-21-toggle-stop-polish-race-design.md
-plan: docs/superpowers/plans/2026-06-21-toggle-stop-polish-race.md
+spec: docs/superpowers/specs/2026-06-21-archived-spec.md#toggle-stop-polish-race-design
+plan: docs/superpowers/plans/2026-06-21-archived-plan.md#toggle-stop-polish-race
 
 💘 Generated with Crush
 
