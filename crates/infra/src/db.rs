@@ -1584,7 +1584,7 @@ mod tests {
             .unwrap();
         assert_eq!(val3, "en");
         assert_eq!(desc3, desc, "save_app_config_at 应保留 description");
-        assert_eq!(cat3, "default", "category 应为 default");
+        assert_eq!(cat3, "setting", "category 应为 setting");
     }
 
     #[test]
