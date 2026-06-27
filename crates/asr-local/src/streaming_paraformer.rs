@@ -7,18 +7,16 @@ use ort::session::Session;
 
 use crate::config;
 use crate::paraformer::{
-    apply_lfr, decode_tokens, extract_cmvn_from_metadata,
-    FBANK_FFT, FBANK_FFT_SIZE, FBANK_FRAME_LEN, FBANK_FRAME_SHIFT, FBANK_NUM_BINS,
-    LFR_WINDOW_SHIFT, LFR_WINDOW_SIZE, MEL_FILTERBANK, POVEY_WINDOW,
+    apply_lfr, decode_tokens, extract_cmvn_from_metadata, FBANK_FFT, FBANK_FFT_SIZE,
+    FBANK_FRAME_LEN, FBANK_FRAME_SHIFT, FBANK_NUM_BINS, LFR_WINDOW_SHIFT, LFR_WINDOW_SIZE,
+    MEL_FILTERBANK, POVEY_WINDOW,
 };
 
 // ── Streaming chunk parameters (from sherpa-onnx) ──
 const CHUNK_SIZE: usize = 61; // fbank frames per chunk (~0.61s)
-const TOKEN_EOS: i64 = 2;     // skip blank(0)/sos(1)/eos(2) when accumulating
+const TOKEN_EOS: i64 = 2; // skip blank(0)/sos(1)/eos(2) when accumulating
 const LEFT_CHUNK_SIZE: usize = 5; // left context overlap in LFR frames
 const RIGHT_CHUNK_SIZE: usize = 3; // right context overlap in LFR frames
-
-
 
 /// Streaming Paraformer engine — maintains state across chunks.
 ///
@@ -38,21 +36,21 @@ pub struct StreamingParaformer {
     decoder_num_blocks: usize,  // 16
     decoder_kernel_size: usize, // 11 → cache_time = 10
     vocab: Vec<String>,
-    cache_keys: Vec<String>,  // 预分配的 decoder input 键名 "in_cache_0".."in_cache_15"
+    cache_keys: Vec<String>, // 预分配的 decoder input 键名 "in_cache_0".."in_cache_15"
 
     // Incremental fbank extraction state
-    raw_samples: Vec<f32>,       // accumulated samples (× 32768)
-    fbank_cache: Vec<f32>,       // computed fbank frames, flattened [num_frames * 80]
-    input_finished: bool,        // true after flush — allows last frame to zero-pad
+    raw_samples: Vec<f32>, // accumulated samples (× 32768)
+    fbank_cache: Vec<f32>, // computed fbank frames, flattened [num_frames * 80]
+    input_finished: bool,  // true after flush — allows last frame to zero-pad
 
     // Streaming state (carried across chunks)
-    feat_cache: Vec<f32>,                         // [8 * 560] overlap buffer
-    encoder_out_cache: Vec<f32>,                  // [512] CIF hidden accumulator
-    alpha_cache: f32,                             // CIF integrate accumulator
-    decoder_caches: Vec<ndarray::Array3<f32>>,    // 16 × [1, 512, cache_time]
-    num_processed_frames: i32,                    // fbank frame counter (fbank space)
-    all_token_ids: Vec<i64>,                      // 全局累积 token ID（跨 chunk），用于整体解码
-    last_emitted_token: i64,                      // 上个 chunk 最后一个有效 token（跨边界去重用，-1=无）
+    feat_cache: Vec<f32>,                      // [8 * 560] overlap buffer
+    encoder_out_cache: Vec<f32>,               // [512] CIF hidden accumulator
+    alpha_cache: f32,                          // CIF integrate accumulator
+    decoder_caches: Vec<ndarray::Array3<f32>>, // 16 × [1, 512, cache_time]
+    num_processed_frames: i32,                 // fbank frame counter (fbank space)
+    all_token_ids: Vec<i64>,                   // 全局累积 token ID（跨 chunk），用于整体解码
+    last_emitted_token: i64, // 上个 chunk 最后一个有效 token（跨边界去重用，-1=无）
     /// flush 后新段标记：flush 用零 padding 收尾，结束后 feat_cache 已被冲成静音（非上段语音
     /// 尾巴）。故新段首 chunk 不 mask left 是安全的——静音 alpha≈0 不会重 fire 上段尾，却保住
     /// 新句音头（修停顿后首字丢失：段2丢「开」、段4丢「始」）。锁存到新段首个 fire 的 chunk 才清
@@ -88,8 +86,10 @@ impl StreamingParaformer {
         let encoder_path = discover_onnx(&hf_path, "encoder", prefer_int8)?;
         let decoder_path = discover_onnx(&hf_path, "decoder", prefer_int8)?;
 
-        let encoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&encoder_path)?;
-        let decoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&decoder_path)?;
+        let encoder_session = crate::config::apply_session_acceleration(Session::builder()?)?
+            .commit_from_file(&encoder_path)?;
+        let decoder_session = crate::config::apply_session_acceleration(Session::builder()?)?
+            .commit_from_file(&decoder_path)?;
 
         // Extract metadata — read everything before moving sessions into the struct
         let (neg_mean, inv_stddev, encoder_output_size) =
@@ -179,10 +179,6 @@ impl StreamingParaformer {
         while self.num_fbank_ready() >= self.num_processed_frames as usize + CHUNK_SIZE {
             let frame_start = self.num_processed_frames as usize;
             self.process_chunk_at(frame_start, false)?;
-            log::debug!(
-                "[asr-diag] paraformer accept chunk: frame_start={} fbank_ready={} → processed={}",
-                frame_start, self.num_fbank_ready(), self.num_processed_frames
-            );
             self.num_processed_frames += (CHUNK_SIZE - 1) as i32;
         }
 
@@ -190,7 +186,6 @@ impl StreamingParaformer {
         if self.all_token_ids.len() > prev_token_count {
             let full_text = decode_tokens(&self.all_token_ids, &self.vocab);
             if !full_text.is_empty() {
-                diag_text_dup_sentinel(&full_text);
                 return Ok(Some(full_text));
             }
         }
@@ -228,7 +223,8 @@ impl StreamingParaformer {
 
         if needed_frames > 0 {
             let needed_samples = needed_frames * FBANK_FRAME_SHIFT;
-            self.raw_samples.resize(self.raw_samples.len() + needed_samples, 0.0);
+            self.raw_samples
+                .resize(self.raw_samples.len() + needed_samples, 0.0);
         }
 
         self.input_finished = true;
@@ -238,13 +234,10 @@ impl StreamingParaformer {
         while self.num_fbank_ready() >= self.num_processed_frames as usize + CHUNK_SIZE {
             let frame_start = self.num_processed_frames as usize;
             // Check if this is the last chunk
-            let remaining_after = self.num_fbank_ready() as i32 - frame_start as i32 - CHUNK_SIZE as i32;
+            let remaining_after =
+                self.num_fbank_ready() as i32 - frame_start as i32 - CHUNK_SIZE as i32;
             let is_last = remaining_after < (CHUNK_SIZE as i32 - 1);
             let produced = self.process_chunk_at(frame_start, is_last)?;
-            log::debug!(
-                "[asr-diag] paraformer flush chunk: frame_start={} is_last={} produced={} fbank_ready={}",
-                frame_start, is_last, produced, self.num_fbank_ready()
-            );
             if produced {
                 had_new_tokens = true;
             }
@@ -257,13 +250,11 @@ impl StreamingParaformer {
         if had_new_tokens {
             let full_text = decode_tokens(&self.all_token_ids, &self.vocab);
             if !full_text.is_empty() {
-                diag_text_dup_sentinel(&full_text);
                 return Ok(Some(full_text));
             }
         }
         Ok(None)
     }
-
 
     /// Reset all streaming state for a new utterance.
     pub fn reset(&mut self) {
@@ -390,11 +381,7 @@ impl StreamingParaformer {
     /// Process a chunk of CHUNK_SIZE fbank frames starting at frame_start.
     /// Accumulates decoded token IDs into self.all_token_ids.
     /// Returns true if new tokens were produced.
-    fn process_chunk_at(
-        &mut self,
-        frame_start: usize,
-        is_final: bool,
-    ) -> Result<bool> {
+    fn process_chunk_at(&mut self, frame_start: usize, is_final: bool) -> Result<bool> {
         // 1. Extract CHUNK_SIZE frames from fbank_cache, pad with zeros if short
         let mut features = self.extract_features_from_cache(frame_start)?;
 
@@ -408,7 +395,6 @@ impl StreamingParaformer {
         let (enc_tensor, enc_len_scalar, alphas) = self.run_encoder(&combined)?;
 
         // 5. Zero overlap alphas（去 chunk 间 overlap，防 CIF 重复 fire）
-        let alpha_sum: f32 = alphas.iter().sum();
         // mask_left = !is_first：首 chunk 的 left 基于"padding+首音频"非 overlap（feat_cache 初始
         //   全0），mask 会误删；中段/final mask left 去【上 chunk】overlap。
         // mask_right = !(is_first || is_final)，即**仅中段 chunk** mask right：
@@ -429,11 +415,6 @@ impl StreamingParaformer {
             /*mask_left=*/ mask_left,
             /*mask_right=*/ mask_right,
         );
-        log::debug!(
-            "[asr-diag] paraformer mask: is_final={} is_first={} enc_len={} mask前alpha_sum={:.3} \
-            (mask_left={} mask_right={} fresh={})",
-            is_final, is_first_chunk, enc_len_scalar, alpha_sum, mask_left, mask_right, fresh
-        );
 
         // 6. CIF (force-fire if final)
         let acoustic = if is_final {
@@ -450,10 +431,6 @@ impl StreamingParaformer {
         // 新段首个 fire 的 chunk：音头已过，清 fresh_segment 恢复正常 mask_left。
         // 若本 chunk 静音没 fire（num_tokens=0），保留 fresh 给下个 chunk——确保音头不被错过。
         if num_tokens > 0 && self.fresh_segment {
-            log::debug!(
-                "[asr-diag] paraformer fresh_segment 消费: 新段首 fire（frame_start={} fired={}），恢复正常 mask_left",
-                frame_start, num_tokens
-            );
             self.fresh_segment = false;
         }
 
@@ -471,10 +448,6 @@ impl StreamingParaformer {
                 let idx = tid as usize;
                 if idx < self.vocab.len() && !self.vocab[idx].is_empty() {
                     if !seen_first_valid && (tid as i64) == self.last_emitted_token {
-                        log::debug!(
-                            "[asr-diag] paraformer 跨边界去重: 跳过 token={}（与上 chunk 末 token 重复，CIF 双 fire）",
-                            tid
-                        );
                         seen_first_valid = true;
                         continue;
                     }
@@ -484,12 +457,6 @@ impl StreamingParaformer {
                 }
             }
         }
-
-        log::debug!(
-            "[asr-diag] paraformer decode: frame_start={} is_final={} fired={} → 累积文本='{}'",
-            frame_start, is_final, num_tokens,
-            decode_tokens(&self.all_token_ids, &self.vocab)
-        );
 
         Ok(true)
     }
@@ -517,8 +484,7 @@ impl StreamingParaformer {
         for i in 0..n_rows {
             for j in 0..n_cols {
                 if j < self.neg_mean.len() && j < self.inv_stddev.len() {
-                    features[[i, j]] =
-                        (features[[i, j]] + self.neg_mean[j]) * self.inv_stddev[j];
+                    features[[i, j]] = (features[[i, j]] + self.neg_mean[j]) * self.inv_stddev[j];
                 }
             }
         }
@@ -557,10 +523,8 @@ impl StreamingParaformer {
 
         // Reshape feat_cache into [cache_rows, feat_dim]
         // 零拷贝：用只读视图包装 &self.feat_cache，避免 4480 个 f32（~17.5KB）的堆克隆。
-        let cache_arr = ndarray::ArrayView2::from_shape(
-            (cache_rows, self.feat_dim),
-            &self.feat_cache,
-        )?;
+        let cache_arr =
+            ndarray::ArrayView2::from_shape((cache_rows, self.feat_dim), &self.feat_cache)?;
 
         // Concatenate: [cache | chunk]
         let mut combined = ndarray::Array2::zeros((cache_rows + n_chunk, self.feat_dim));
@@ -672,10 +636,6 @@ impl StreamingParaformer {
 
         // Save state
         self.alpha_cache = integrate;
-        log::debug!(
-            "[asr-diag] paraformer run_cif: enc_len={} fired={} alpha_cache={:.3}",
-            enc_len, acoustic.len() / feat, integrate
-        );
 
         Ok(acoustic)
     }
@@ -727,19 +687,10 @@ impl StreamingParaformer {
 
         // Force-fire residual
         if integrate > 0.5 && !self.encoder_out_cache.iter().all(|&v| v == 0.0) {
-            log::info!(
-                "[asr-diag] paraformer force-fire: alpha={:.3}(>0.5) 追加残留acoustic → \
-                尾字重复嫌疑（多次flush对同一残留重复fire?）",
-                integrate
-            );
             acoustic.extend_from_slice(&self.encoder_out_cache);
             self.alpha_cache = 0.0;
             self.encoder_out_cache.fill(0.0);
         } else {
-            log::debug!(
-                "[asr-diag] paraformer cif-final 无force-fire: alpha={:.3}",
-                integrate
-            );
             self.alpha_cache = integrate;
         }
 
@@ -755,10 +706,8 @@ impl StreamingParaformer {
         num_tokens: usize,
     ) -> Result<Vec<i64>> {
         // 零拷贝：用只读视图包装 acoustic 切片，避免 to_vec() 的堆拷贝。
-        let acoustic_view = ndarray::ArrayView3::from_shape(
-            (1, num_tokens, self.encoder_output_size),
-            acoustic,
-        )?;
+        let acoustic_view =
+            ndarray::ArrayView3::from_shape((1, num_tokens, self.encoder_output_size), acoustic)?;
         // 单元素长度张量用栈数组 + ArrayView1，避免 from_vec(vec![x]) 的堆分配。
         let acoustic_len_data = [num_tokens as i32];
         let enc_len_data = [enc_len as i32];
@@ -795,7 +744,10 @@ impl StreamingParaformer {
             let actual = data.len();
             if expected == actual {
                 // 快路径：维度匹配，直接 copy 到预分配内存
-                self.decoder_caches[i].as_slice_mut().unwrap().copy_from_slice(data);
+                self.decoder_caches[i]
+                    .as_slice_mut()
+                    .unwrap()
+                    .copy_from_slice(data);
             } else {
                 // 慢路径：维度变化（首次或模型异常），重新分配
                 let dims: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
@@ -810,7 +762,11 @@ impl StreamingParaformer {
 
 // ── Helpers ──
 
-fn discover_onnx(hf_path: &std::path::Path, name: &str, prefer_int8: bool) -> Result<std::path::PathBuf> {
+fn discover_onnx(
+    hf_path: &std::path::Path,
+    name: &str,
+    prefer_int8: bool,
+) -> Result<std::path::PathBuf> {
     if prefer_int8 {
         let int8 = hf_path.join(format!("{}.int8.onnx", name));
         let fp32 = hf_path.join(format!("{}.onnx", name));
@@ -819,7 +775,12 @@ fn discover_onnx(hf_path: &std::path::Path, name: &str, prefer_int8: bool) -> Re
         } else if fp32.exists() {
             Ok(fp32)
         } else {
-            anyhow::bail!("{}.onnx / {}.int8.onnx not found at {}", name, name, hf_path.display())
+            anyhow::bail!(
+                "{}.onnx / {}.int8.onnx not found at {}",
+                name,
+                name,
+                hf_path.display()
+            )
         }
     } else {
         let fp32 = hf_path.join(format!("{}.onnx", name));
@@ -829,7 +790,12 @@ fn discover_onnx(hf_path: &std::path::Path, name: &str, prefer_int8: bool) -> Re
         } else if int8.exists() {
             Ok(int8)
         } else {
-            anyhow::bail!("{}.onnx / {}.int8.onnx not found at {}", name, name, hf_path.display())
+            anyhow::bail!(
+                "{}.onnx / {}.int8.onnx not found at {}",
+                name,
+                name,
+                hf_path.display()
+            )
         }
     }
 }
@@ -864,61 +830,15 @@ fn mask_alphas_selective(
     alphas
 }
 
-// ── [asr-diag] 文本层重复哨兵（验证 token 层跨边界去重是否漏网）──
-
-/// CJK 汉字判定（常用 + 扩展A + 兼容区）。
-fn is_cjk_char(c: char) -> bool {
-    matches!(c,
-        '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs（常用汉字）
-        | '\u{3400}'..='\u{4DBF}' // CJK Extension A
-        | '\u{F900}'..='\u{FAFF}' // CJK Compatibility Ideographs
-    )
-}
-
-/// 扫描相邻相同 CJK 单字，返回命中列表（每组连续同字算一处）。纯函数，便于单测。
-///
-/// CIF/CTC 双 fire 的 artifact 重复表现为相邻同字（如"识别别"的"别别"）；合法叠字
-/// （"爸爸/常常"）同样命中——哨兵**不区分**二者，靠人工判断（这正是纯文本层无法安全
-/// 去重的原因：要区分须靠 chunk 边界信息，而那只 token 层有）。
-fn scan_cjk_dups(text: &str) -> Vec<String> {
-    let chars: Vec<char> = text.chars().collect();
-    let mut hits = Vec::new();
-    let mut i = 1;
-    while i < chars.len() {
-        if is_cjk_char(chars[i]) && chars[i] == chars[i - 1] {
-            hits.push(format!("{}{}", chars[i - 1], chars[i]));
-            // 跳过连续同字组（"啊啊啊"只报一处），避免重复计数
-            while i + 1 < chars.len() && chars[i + 1] == chars[i] {
-                i += 1;
-            }
-        }
-        i += 1;
-    }
-    hits
-}
-
-/// `[asr-diag]` 文本层重复哨兵：decode 后扫描相邻叠字并打 debug 日志。
-///
-/// **仅观测，不改文本**——纯文本去重会误杀"爸爸/常常"等合法叠字，安全去重只能在
-/// token 层（`process_chunk_at` step 8 跨边界去重，已落地）。本哨兵用于 e2e 验证
-/// token 层是否漏网：日志仍检出"别别"类 artifact 叠字 = token 层漏网，需排查。
-fn diag_text_dup_sentinel(text: &str) {
-    let hits = scan_cjk_dups(text);
-    if !hits.is_empty() {
-        log::debug!(
-            "[asr-diag] paraformer 文本层重复哨兵: 检出 {} 处叠字 {:?}（token 层应已去重；合法叠字如\"爸爸\"请忽略）",
-            hits.len(),
-            hits
-        );
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn hf_snapshot(repo: &str) -> Option<std::path::PathBuf> {
-        let base = format!("~/.cache/huggingface/hub/models--{}", repo.replace('/', "--"));
+        let base = format!(
+            "~/.cache/huggingface/hub/models--{}",
+            repo.replace('/', "--")
+        );
         let base = base.replace("~", &std::env::var("HOME").unwrap_or_default());
         let snapshots = std::path::Path::new(&base).join("snapshots");
         if !snapshots.exists() {
@@ -930,41 +850,6 @@ mod tests {
             .ok()
             .map(|e| e.path().join("test_wavs"))
             .filter(|p| p.exists())
-    }
-
-    #[test]
-    fn scan_cjk_dups_finds_artifact_and_legal_doubles() {
-        // artifact 叠字（CIF 双 fire，token 层应已去重）
-        assert_eq!(scan_cjk_dups("识别别"), vec!["别别".to_string()]);
-        // 合法叠字同样命中——哨兵不区分，靠人工判断（文本层无法安全去重的根因）
-        assert_eq!(scan_cjk_dups("爸爸"), vec!["爸爸".to_string()]);
-        assert_eq!(scan_cjk_dups("常常"), vec!["常常".to_string()]);
-        // 无叠字 / 空
-        assert!(scan_cjk_dups("识别").is_empty());
-        assert!(scan_cjk_dups("").is_empty());
-        // ASCII 不在 CJK 范围（英文空格分隔由 smart_append 处理，不归哨兵）
-        assert!(scan_cjk_dups("hello world").is_empty());
-        // 连续三同字只报一处（跳过组内剩余）
-        assert_eq!(scan_cjk_dups("啊啊啊"), vec!["啊啊".to_string()]);
-        // 多组叠字分别命中
-        assert_eq!(
-            scan_cjk_dups("别别说常常"),
-            vec!["别别".to_string(), "常常".to_string()]
-        );
-    }
-
-    #[test]
-    fn is_cjk_char_covers_common_ranges() {
-        // 常用汉字
-        assert!(is_cjk_char('汉'));
-        assert!(is_cjk_char('字'));
-        // 扩展 A / 兼容区
-        assert!(is_cjk_char('\u{3400}'));
-        assert!(is_cjk_char('\u{F900}'));
-        // 非汉字：ASCII、空格、CJK 标点（U+FF0C 全角逗号不在 CJK Unified 范围）
-        assert!(!is_cjk_char('a'));
-        assert!(!is_cjk_char(' '));
-        assert!(!is_cjk_char('\u{FF0C}'));
     }
 
     #[test]
@@ -1017,12 +902,15 @@ mod tests {
             return;
         }
 
-        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap())
-            .expect("读取 wav 失败");
-        eprintln!("[test] 样本数: {} ({:.2}s)", samples.len(), samples.len() as f32 / 16000.0);
+        let samples =
+            crate::audio::read_wav_16k(wav_path.to_str().unwrap()).expect("读取 wav 失败");
+        eprintln!(
+            "[test] 样本数: {} ({:.2}s)",
+            samples.len(),
+            samples.len() as f32 / 16000.0
+        );
 
-        let mut engine = StreamingParaformer::new("paraformer-bilingual")
-            .expect("创建引擎失败");
+        let mut engine = StreamingParaformer::new("paraformer-bilingual").expect("创建引擎失败");
 
         // 模拟流式：每次喂入 600ms 样本（9600 samples）
         let chunk_size = 16000 * 600 / 1000; // 9600
@@ -1031,7 +919,7 @@ mod tests {
         for (i, chunk) in samples.chunks(chunk_size).enumerate() {
             if let Some(text) = engine.accept_samples(chunk).expect("accept_samples 失败") {
                 eprintln!("[chunk {}] full_asr: {:?}", i, text);
-                full_text = text;  // 引擎返回完整 ASR 文本（跨 chunk 累积解码）
+                full_text = text; // 引擎返回完整 ASR 文本（跨 chunk 累积解码）
             }
         }
 
@@ -1061,14 +949,18 @@ mod tests {
         let repo = "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en";
         let test_wavs = match hf_snapshot(repo) {
             Some(p) => p,
-            None => { eprintln!("[skip] HF cache 未找到 {}", repo); return; }
+            None => {
+                eprintln!("[skip] HF cache 未找到 {}", repo);
+                return;
+            }
         };
         let wav_path = test_wavs.join("0.wav");
         if !wav_path.exists() {
             eprintln!("[skip] 测试 wav 不存在: {}", wav_path.display());
             return;
         }
-        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).expect("读取 wav 失败");
+        let samples =
+            crate::audio::read_wav_16k(wav_path.to_str().unwrap()).expect("读取 wav 失败");
 
         let mut engine = StreamingParaformer::new("paraformer-bilingual").expect("创建引擎失败");
         let chunk_size = 16000 * 600 / 1000;
@@ -1078,10 +970,15 @@ mod tests {
             let _ = engine.accept_samples(chunk).unwrap();
         }
         let _ = engine.flush().unwrap();
-        assert!(engine.input_finished, "flush 后 input_finished 应为 true（收尾模式）");
+        assert!(
+            engine.input_finished,
+            "flush 后 input_finished 应为 true（收尾模式）"
+        );
 
         // 用户继续说话：accept_samples 必须清除 input_finished
-        let _ = engine.accept_samples(&samples[samples.len() / 2..]).unwrap();
+        let _ = engine
+            .accept_samples(&samples[samples.len() / 2..])
+            .unwrap();
         assert!(
             !engine.input_finished,
             "accept_samples 必须清除 input_finished，否则后续帧计算持续走零 padding 收尾分支 → 特征错乱"
@@ -1113,9 +1010,13 @@ mod tests {
             return;
         }
 
-        let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap())
-            .expect("读取 wav 失败");
-        eprintln!("[test-offline] 样本数: {} ({:.2}s)", samples.len(), samples.len() as f32 / 16000.0);
+        let samples =
+            crate::audio::read_wav_16k(wav_path.to_str().unwrap()).expect("读取 wav 失败");
+        eprintln!(
+            "[test-offline] 样本数: {} ({:.2}s)",
+            samples.len(),
+            samples.len() as f32 / 16000.0
+        );
 
         // 离线 paraformer 使用 encoder/decoder 分离模型
         // 直接用 extract_cmvn_from_metadata 测试 CMVN 是否正确
@@ -1131,18 +1032,29 @@ mod tests {
 
         let hf_path = config::resolve_model_dir(&entry.source).expect("resolve_model_dir 失败");
         let encoder_path = hf_path.join("encoder.int8.onnx");
-        let encoder_session = crate::config::apply_session_acceleration(Session::builder().unwrap())
-            .unwrap()
-            .commit_from_file(&encoder_path)
-            .expect("加载 encoder 失败");
+        let encoder_session =
+            crate::config::apply_session_acceleration(Session::builder().unwrap())
+                .unwrap()
+                .commit_from_file(&encoder_path)
+                .expect("加载 encoder 失败");
 
         let (neg_mean, inv_stddev, enc_out) =
             extract_cmvn_from_metadata(&encoder_session).expect("extract_cmvn 失败");
 
-        eprintln!("[cmvn] neg_mean: {} vals, inv_stddev: {} vals, enc_out: {}",
-                  neg_mean.len(), inv_stddev.len(), enc_out);
-        eprintln!("[cmvn] neg_mean[0..5]: {:?}", &neg_mean[..5.min(neg_mean.len())]);
-        eprintln!("[cmvn] inv_stddev[0..5]: {:?}", &inv_stddev[..5.min(inv_stddev.len())]);
+        eprintln!(
+            "[cmvn] neg_mean: {} vals, inv_stddev: {} vals, enc_out: {}",
+            neg_mean.len(),
+            inv_stddev.len(),
+            enc_out
+        );
+        eprintln!(
+            "[cmvn] neg_mean[0..5]: {:?}",
+            &neg_mean[..5.min(neg_mean.len())]
+        );
+        eprintln!(
+            "[cmvn] inv_stddev[0..5]: {:?}",
+            &inv_stddev[..5.min(inv_stddev.len())]
+        );
 
         // 验证 inv_stddev 是否被 sqrt(512) ≈ 22.6 缩放
         let scale = (enc_out as f32).sqrt();

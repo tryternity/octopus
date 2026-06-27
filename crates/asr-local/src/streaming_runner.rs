@@ -37,7 +37,12 @@ pub trait StreamingEngine: Send + Sync {
     /// - `has_speech`：本轮 VAD 判定有语音（speech_chunks≥2）。zipformer 用它区分「持续静音段边界」
     ///   与「静音→语音过渡」tick——仅 `was_silent && !has_speech` 时 finish+reset，避免开口瞬间
     ///   反复冲刷冲掉首字音头（首字缺失根因）。paraformer 忽略（流式不 reset）。
-    fn accept_samples(&self, samples: &[f32], was_silent: bool, has_speech: bool) -> Result<Option<String>>;
+    fn accept_samples(
+        &self,
+        samples: &[f32],
+        was_silent: bool,
+        has_speech: bool,
+    ) -> Result<Option<String>>;
     /// 静音冲刷：`insert_comma=true` 冻结历史段并插逗号。
     fn flush(&self, insert_comma: bool) -> Result<Option<String>>;
     /// 收尾：追加句号 + 简繁归一，返回最终全文。
@@ -48,7 +53,12 @@ pub trait StreamingEngine: Send + Sync {
 
 /// `StreamingSession` 委托实现——签名完全一致，UFCS 调用固有方法避免与 trait 方法歧义。
 impl StreamingEngine for StreamingSession {
-    fn accept_samples(&self, samples: &[f32], was_silent: bool, has_speech: bool) -> Result<Option<String>> {
+    fn accept_samples(
+        &self,
+        samples: &[f32],
+        was_silent: bool,
+        has_speech: bool,
+    ) -> Result<Option<String>> {
         StreamingSession::accept_samples(self, samples, was_silent, has_speech)
     }
     fn flush(&self, insert_comma: bool) -> Result<Option<String>> {
@@ -150,7 +160,8 @@ fn detect_silence_gap(
     if total_chunks == 0 {
         return (false, false, false);
     }
-    let (punct, flush, _) = step_silence(silence_duration, flushed, speech_chunks >= 2, total_chunks);
+    let (punct, flush, _) =
+        step_silence(silence_duration, flushed, speech_chunks >= 2, total_chunks);
     (punct, flush, speech_chunks >= 2)
 }
 
@@ -217,15 +228,11 @@ impl StreamingRunner {
             self.seen_speech = true;
         }
         let feed = !gate_active || self.seen_speech;
-        if !feed {
-            log::debug!(
-                "[asr-diag] streaming_runner 开口前门控: VAD 未检出语音，丢弃 {} 样本（≈{:.0}ms），不喂 engine",
-                samples_16k.len(),
-                samples_16k.len() as f64 / 16.0
-            );
-        }
         if feed {
-            match self.engine.accept_samples(samples_16k, was_silent, has_speech) {
+            match self
+                .engine
+                .accept_samples(samples_16k, was_silent, has_speech)
+            {
                 Ok(Some(text)) => events.push(self.maybe_correct(TranscriptEvent::Partial(text))),
                 Ok(None) => {}
                 Err(e) => {
@@ -235,7 +242,9 @@ impl StreamingRunner {
             }
             if should_flush {
                 match self.engine.flush(true) {
-                    Ok(Some(text)) => events.push(self.maybe_correct(TranscriptEvent::Committed(text))),
+                    Ok(Some(text)) => {
+                        events.push(self.maybe_correct(TranscriptEvent::Committed(text)))
+                    }
                     Ok(None) => {}
                     Err(e) => {
                         log::warn!("StreamingRunner flush error: {e}");
@@ -323,19 +332,20 @@ mod tests {
     impl FakeStreamingEngine {
         fn new(accept: Vec<&str>, flush: Vec<&str>, finish: &str) -> Self {
             Self {
-                accept_out: Mutex::new(
-                    accept.into_iter().map(|s| Some(s.to_string())).collect(),
-                ),
-                flush_out: Mutex::new(
-                    flush.into_iter().map(|s| Some(s.to_string())).collect(),
-                ),
+                accept_out: Mutex::new(accept.into_iter().map(|s| Some(s.to_string())).collect()),
+                flush_out: Mutex::new(flush.into_iter().map(|s| Some(s.to_string())).collect()),
                 finish_out: Mutex::new(finish.to_string()),
             }
         }
     }
 
     impl StreamingEngine for FakeStreamingEngine {
-        fn accept_samples(&self, _samples: &[f32], _was_silent: bool, _has_speech: bool) -> Result<Option<String>> {
+        fn accept_samples(
+            &self,
+            _samples: &[f32],
+            _was_silent: bool,
+            _has_speech: bool,
+        ) -> Result<Option<String>> {
             let mut q = self.accept_out.lock().unwrap();
             if q.is_empty() {
                 anyhow::bail!("fake accept error");
@@ -390,7 +400,7 @@ mod tests {
         assert!(flush1);
         assert!(fl);
         assert!(!punct1); // prev=0
-        // 第二帧继续静音 → 已上锁，不再 flush
+                          // 第二帧继续静音 → 已上锁，不再 flush
         let (_punct2, flush2, _has) = step_silence(&mut sd, &mut fl, false, 16);
         assert!(!flush2);
         assert!(fl);
@@ -414,7 +424,11 @@ mod tests {
         // engine → 无 Partial/Committed 事件（这是消除启动 spurious「嗯」的核心）。
         // dev 环境 silero 可用 → 门控激活；无 silero 的环境（vad=None）→ 门控不激活，自动跳过。
         let mut r = StreamingRunner::new(
-            Box::new(FakeStreamingEngine::new(vec!["你好"], vec!["不应到达"], "x")),
+            Box::new(FakeStreamingEngine::new(
+                vec!["你好"],
+                vec!["不应到达"],
+                "x",
+            )),
             false,
         )
         .unwrap();

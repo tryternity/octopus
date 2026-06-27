@@ -11,9 +11,8 @@ use ort::value::{Tensor, TensorElementType};
 
 use crate::config;
 use crate::zipformer::{
-    clean_decode_utf8, compute_fbank_features, decode_byte_bpe,
-    discover_streaming_zipformer_onnx, is_vocab_bbpe, StateValue, Z_FRAME_SHIFT,
-    Z_NUM_BINS, ZIPFORMER_BLANK_ID,
+    clean_decode_utf8, compute_fbank_features, decode_byte_bpe, discover_streaming_zipformer_onnx,
+    is_vocab_bbpe, StateValue, ZIPFORMER_BLANK_ID, Z_FRAME_SHIFT, Z_NUM_BINS,
 };
 
 /// Streaming Zipformer engine — maintains state across chunks.
@@ -25,7 +24,7 @@ pub struct StreamingZipformer {
 
     // Chunk parameters (read from model metadata)
     chunk_len: usize,   // T (e.g. 77 or 45)
-    chunk_shift: usize,  // decode_chunk_len (e.g. 64 or 32)
+    chunk_shift: usize, // decode_chunk_len (e.g. 64 or 32)
 
     // Streaming state
     sample_buffer: Vec<f32>,
@@ -74,7 +73,8 @@ impl StreamingZipformer {
         let hf_path = config::resolve_model_dir(&entry.source)?;
         let model_path = discover_streaming_zipformer_onnx(&hf_path)?;
 
-        let session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&model_path)?;
+        let session = crate::config::apply_session_acceleration(Session::builder()?)?
+            .commit_from_file(&model_path)?;
 
         // Read chunk parameters from model metadata
         let metadata = session.metadata()?;
@@ -104,14 +104,18 @@ impl StreamingZipformer {
                     .iter()
                     .map(|&d| if d <= 0 { 1 } else { d as usize })
                     .collect();
-                let is_int64 = matches!(
-                    input.dtype().tensor_type(),
-                    Some(TensorElementType::Int64)
-                );
+                let is_int64 =
+                    matches!(input.dtype().tensor_type(), Some(TensorElementType::Int64));
                 if is_int64 {
-                    states.push((name.to_string(), StateValue::I64(ArrayD::<i64>::zeros(dims))));
+                    states.push((
+                        name.to_string(),
+                        StateValue::I64(ArrayD::<i64>::zeros(dims)),
+                    ));
                 } else {
-                    states.push((name.to_string(), StateValue::F32(ArrayD::<f32>::zeros(dims))));
+                    states.push((
+                        name.to_string(),
+                        StateValue::F32(ArrayD::<f32>::zeros(dims)),
+                    ));
                 }
             }
         }
@@ -182,7 +186,11 @@ impl StreamingZipformer {
                 padded[[i, j]] = feats[[i, j]];
             }
         }
-        let last = if feats.nrows() > 0 { feats.nrows() - 1 } else { 0 };
+        let last = if feats.nrows() > 0 {
+            feats.nrows() - 1
+        } else {
+            0
+        };
         for i in feats.nrows()..(feats.nrows() + pad_len) {
             for j in 0..Z_NUM_BINS {
                 padded[[i, j]] = feats[[last, j]];
@@ -240,15 +248,8 @@ impl StreamingZipformer {
         self.decoded_current()
     }
 
-
     /// Reset all streaming state for a new utterance.
     pub fn reset(&mut self) {
-        let snap = self.decode_tokens(false);
-        log::info!(
-            "[asr-diag] zipformer-ctc reset: 段文本='{}'({} tokens) prev_id={} | \
-            开口瞬间触发=首字被冲(Phase1应消除); 句末触发=正常分段",
-            snap, self.token_ids.len(), self.prev_id
-        );
         self.sample_buffer.clear();
         self.history_samples.clear();
         self.token_ids.clear();
@@ -268,7 +269,8 @@ impl StreamingZipformer {
             return self.decoded_current();
         }
 
-        let mut input_samples = Vec::with_capacity(self.history_samples.len() + self.sample_buffer.len());
+        let mut input_samples =
+            Vec::with_capacity(self.history_samples.len() + self.sample_buffer.len());
         input_samples.extend_from_slice(&self.history_samples);
         input_samples.extend_from_slice(&self.sample_buffer);
 
@@ -312,9 +314,11 @@ impl StreamingZipformer {
         let h_len = self.history_samples.len();
         let consumed_limit = (h_len + consumed_samples).min(input_samples.len());
         if consumed_limit >= Z_FRAME_SHIFT {
-            self.history_samples = input_samples[consumed_limit - Z_FRAME_SHIFT .. consumed_limit].to_vec();
+            self.history_samples =
+                input_samples[consumed_limit - Z_FRAME_SHIFT..consumed_limit].to_vec();
         } else if !input_samples.is_empty() {
-            self.history_samples = input_samples[input_samples.len().saturating_sub(Z_FRAME_SHIFT)..].to_vec();
+            self.history_samples =
+                input_samples[input_samples.len().saturating_sub(Z_FRAME_SHIFT)..].to_vec();
         }
 
         if consumed_samples < self.sample_buffer.len() {
@@ -330,10 +334,8 @@ impl StreamingZipformer {
     /// Run one chunk through the model. Returns true if new tokens were produced.
     fn run_chunk(&mut self, chunk: &Array2<f32>) -> Result<bool> {
         let (chunk_vec, _) = chunk.clone().into_raw_vec_and_offset();
-        let chunk_input = ndarray::Array3::from_shape_vec(
-            (1, self.chunk_len, Z_NUM_BINS),
-            chunk_vec,
-        )?;
+        let chunk_input =
+            ndarray::Array3::from_shape_vec((1, self.chunk_len, Z_NUM_BINS), chunk_vec)?;
 
         let x_tensor = ort::value::TensorRef::from_array_view(chunk_input.view())?;
 
@@ -393,10 +395,6 @@ impl StreamingZipformer {
                 .unwrap_or(0);
             if best_id != ZIPFORMER_BLANK_ID && best_id as isize != self.prev_id {
                 self.token_ids.push(best_id);
-                log::debug!(
-                    "[asr-diag] zipformer-ctc emit: token={} prev_id={} → {} tokens",
-                    best_id, self.prev_id, self.token_ids.len()
-                );
                 produced = true;
             }
             self.prev_id = best_id as isize;
@@ -537,24 +535,46 @@ impl StreamingZipformerTransducer {
         let decoder_path = hf_path.join("decoder.onnx");
         let joiner_path = {
             let int8 = hf_path.join("joiner.int8.onnx");
-            if int8.exists() { int8 } else { hf_path.join("joiner.onnx") }
+            if int8.exists() {
+                int8
+            } else {
+                hf_path.join("joiner.onnx")
+            }
         };
 
         if !decoder_path.exists() {
-            anyhow::bail!("decoder.onnx not found at {} — not a Transducer model", decoder_path.display());
+            anyhow::bail!(
+                "decoder.onnx not found at {} — not a Transducer model",
+                decoder_path.display()
+            );
         }
         if !joiner_path.exists() {
-            anyhow::bail!("joiner.onnx not found at {} — not a Transducer model", joiner_path.display());
+            anyhow::bail!(
+                "joiner.onnx not found at {} — not a Transducer model",
+                joiner_path.display()
+            );
         }
 
-        let encoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&encoder_path)?;
-        let decoder_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&decoder_path)?;
-        let joiner_session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&joiner_path)?;
+        let encoder_session = crate::config::apply_session_acceleration(Session::builder()?)?
+            .commit_from_file(&encoder_path)?;
+        let decoder_session = crate::config::apply_session_acceleration(Session::builder()?)?
+            .commit_from_file(&decoder_path)?;
+        let joiner_session = crate::config::apply_session_acceleration(Session::builder()?)?
+            .commit_from_file(&joiner_path)?;
 
         let metadata = encoder_session.metadata()?;
-        let chunk_len: usize = metadata.custom("T").and_then(|s| s.parse().ok()).unwrap_or(77);
-        let chunk_shift: usize = metadata.custom("decode_chunk_len").and_then(|s| s.parse().ok()).unwrap_or(64);
-        let is_whisper = metadata.custom("feature").map(|s| s == "whisper").unwrap_or(false);
+        let chunk_len: usize = metadata
+            .custom("T")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(77);
+        let chunk_shift: usize = metadata
+            .custom("decode_chunk_len")
+            .and_then(|s| s.parse().ok())
+            .unwrap_or(64);
+        let is_whisper = metadata
+            .custom("feature")
+            .map(|s| s == "whisper")
+            .unwrap_or(false);
         drop(metadata);
 
         let context_size = decoder_session
@@ -635,7 +655,11 @@ impl StreamingZipformerTransducer {
                 padded[[i, j]] = feats[[i, j]];
             }
         }
-        let last = if feats.nrows() > 0 { feats.nrows() - 1 } else { 0 };
+        let last = if feats.nrows() > 0 {
+            feats.nrows() - 1
+        } else {
+            0
+        };
         for i in feats.nrows()..(feats.nrows() + pad_len) {
             for j in 0..Z_NUM_BINS {
                 padded[[i, j]] = feats[[last, j]];
@@ -688,12 +712,6 @@ impl StreamingZipformerTransducer {
     }
 
     pub fn reset(&mut self) {
-        let snap = self.decode_current(false);
-        log::info!(
-            "[asr-diag] zipformer-transducer reset: 段文本='{}'({} tokens) | \
-            开口瞬间触发=首字被冲(Phase1应消除); 句末触发=正常分段",
-            snap, self.emitted_ids.len()
-        );
         self.sample_buffer.clear();
         self.history_samples.clear();
         self.emitted_ids.clear();
@@ -715,7 +733,8 @@ impl StreamingZipformerTransducer {
             return self.decoded_current();
         }
 
-        let mut input_samples = Vec::with_capacity(self.history_samples.len() + self.sample_buffer.len());
+        let mut input_samples =
+            Vec::with_capacity(self.history_samples.len() + self.sample_buffer.len());
         input_samples.extend_from_slice(&self.history_samples);
         input_samples.extend_from_slice(&self.sample_buffer);
 
@@ -750,11 +769,14 @@ impl StreamingZipformerTransducer {
         // 与 CTC 引擎一致。此前保留全部未消费样本导致 history 无限膨胀、
         // 每次重算特征时归一化 max_v 剧烈跳变。
         let consumed_samples = frame_idx * Z_FRAME_SHIFT;
-        let consumed_limit = (self.history_samples.len() + consumed_samples).min(input_samples.len());
+        let consumed_limit =
+            (self.history_samples.len() + consumed_samples).min(input_samples.len());
         if consumed_limit >= Z_FRAME_SHIFT {
-            self.history_samples = input_samples[consumed_limit - Z_FRAME_SHIFT..consumed_limit].to_vec();
+            self.history_samples =
+                input_samples[consumed_limit - Z_FRAME_SHIFT..consumed_limit].to_vec();
         } else if !input_samples.is_empty() {
-            self.history_samples = input_samples[input_samples.len().saturating_sub(Z_FRAME_SHIFT)..].to_vec();
+            self.history_samples =
+                input_samples[input_samples.len().saturating_sub(Z_FRAME_SHIFT)..].to_vec();
         }
 
         if consumed_samples < self.sample_buffer.len() {
@@ -771,7 +793,8 @@ impl StreamingZipformerTransducer {
         // ── Phase 1: encoder forward + 状态更新（借用 encoder_session）──
         let (enc_data, num_enc_frames, enc_dim) = {
             let (chunk_vec, _) = chunk.clone().into_raw_vec_and_offset();
-            let chunk_input = ndarray::Array3::from_shape_vec((1, self.chunk_len, Z_NUM_BINS), chunk_vec)?;
+            let chunk_input =
+                ndarray::Array3::from_shape_vec((1, self.chunk_len, Z_NUM_BINS), chunk_vec)?;
             let x_tensor = ort::value::TensorRef::from_array_view(chunk_input.view())?;
 
             let mut inputs = ort::inputs! { "x" => x_tensor };
@@ -840,10 +863,6 @@ impl StreamingZipformerTransducer {
 
                 // 发射 token
                 self.emitted_ids.push(best_id);
-                log::debug!(
-                    "[asr-diag] zipformer-transducer emit: token={} → {} tokens",
-                    best_id, self.emitted_ids.len()
-                );
                 self.token_buf.push(best_id as i64);
                 if self.token_buf.len() > self.context_size {
                     self.token_buf.remove(0);
@@ -911,20 +930,35 @@ mod tests {
             return None;
         }
         // 取 snapshots 下第一个子目录（HF 每次拉取用 commit hash 命名）
-        std::fs::read_dir(&base).ok()?.filter_map(|e| e.ok()).find_map(|e| {
-            let p = e.path();
-            if p.is_dir() { Some(p) } else { None }
-        })
+        std::fs::read_dir(&base)
+            .ok()?
+            .filter_map(|e| e.ok())
+            .find_map(|e| {
+                let p = e.path();
+                if p.is_dir() {
+                    Some(p)
+                } else {
+                    None
+                }
+            })
     }
 
     #[test]
     fn test_streaming_zipformer_ctc() {
-        let snapshot = match hf_snapshot("models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13") {
+        let snapshot = match hf_snapshot(
+            "models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13",
+        ) {
             Some(p) => p,
-            None => { eprintln!("Skipping: HF snapshot not found"); return; }
+            None => {
+                eprintln!("Skipping: HF snapshot not found");
+                return;
+            }
         };
         let wav_path = snapshot.join("test_wavs/DEV_T0000000000.wav");
-        if !wav_path.exists() { eprintln!("Skipping: {} not found", wav_path.display()); return; }
+        if !wav_path.exists() {
+            eprintln!("Skipping: {} not found", wav_path.display());
+            return;
+        }
         let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
 
         println!("\n--- Testing Streaming zipformer-ctc ---");
@@ -937,17 +971,28 @@ mod tests {
         }
         let final_text = engine.finish().unwrap();
         println!("Final: {}", final_text);
-        assert!(!final_text.is_empty(), "Transcribed text should not be empty");
+        assert!(
+            !final_text.is_empty(),
+            "Transcribed text should not be empty"
+        );
     }
 
     #[test]
     fn test_streaming_zipformer_multi() {
-        let snapshot = match hf_snapshot("models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13") {
+        let snapshot = match hf_snapshot(
+            "models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13",
+        ) {
             Some(p) => p,
-            None => { eprintln!("Skipping: HF snapshot not found"); return; }
+            None => {
+                eprintln!("Skipping: HF snapshot not found");
+                return;
+            }
         };
         let wav_path = snapshot.join("test_wavs/DEV_T0000000000.wav");
-        if !wav_path.exists() { eprintln!("Skipping: {} not found", wav_path.display()); return; }
+        if !wav_path.exists() {
+            eprintln!("Skipping: {} not found", wav_path.display());
+            return;
+        }
         let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
 
         println!("\n--- Testing Streaming zipformer-multi ---");
@@ -960,18 +1005,29 @@ mod tests {
         }
         let final_text = engine.finish().unwrap();
         println!("Final: {}", final_text);
-        assert!(!final_text.is_empty(), "Transcribed text should not be empty");
+        assert!(
+            !final_text.is_empty(),
+            "Transcribed text should not be empty"
+        );
     }
 
     #[test]
     fn test_streaming_zipformer_transducer() {
-        let zh_int8 = match hf_snapshot("models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30") {
+        let zh_int8 = match hf_snapshot(
+            "models--csukuangfj--sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30",
+        ) {
             Some(p) => p,
-            None => { eprintln!("Skipping: HF snapshot not found"); return; }
+            None => {
+                eprintln!("Skipping: HF snapshot not found");
+                return;
+            }
         };
         let wav_path = zh_int8.join("test_wavs/0.wav");
         if !wav_path.exists() {
-            eprintln!("Skipping transducer streaming test: {} not found", wav_path.display());
+            eprintln!(
+                "Skipping transducer streaming test: {} not found",
+                wav_path.display()
+            );
             return;
         }
 
@@ -1028,7 +1084,10 @@ mod tests {
         }
         let final_text = engine.finish().unwrap();
         println!("Final: {}", final_text);
-        assert!(!final_text.is_empty(), "Transducer streaming should produce text");
+        assert!(
+            !final_text.is_empty(),
+            "Transducer streaming should produce text"
+        );
     }
 
     #[test]
@@ -1036,12 +1095,20 @@ mod tests {
         // 回归：流式运行中调 flush（停顿冲刷）应即时吐出末尾字、不 panic，且不破坏后续
         // accept_samples / finish。验证 flush 改用 run_padding_flush（3 chunks replicate
         // padding）后路径正常——flush 不重置状态，后续 finish 仍能产出完整文本。
-        let snapshot = match hf_snapshot("models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13") {
+        let snapshot = match hf_snapshot(
+            "models--k2-fsa--sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13",
+        ) {
             Some(p) => p,
-            None => { eprintln!("Skipping: HF snapshot not found"); return; }
+            None => {
+                eprintln!("Skipping: HF snapshot not found");
+                return;
+            }
         };
         let wav_path = snapshot.join("test_wavs/DEV_T0000000000.wav");
-        if !wav_path.exists() { eprintln!("Skipping: {} not found", wav_path.display()); return; }
+        if !wav_path.exists() {
+            eprintln!("Skipping: {} not found", wav_path.display());
+            return;
+        }
         let samples = crate::audio::read_wav_16k(wav_path.to_str().unwrap()).unwrap();
 
         let mut engine = StreamingZipformer::new("zipformer-ctc").unwrap();
@@ -1062,6 +1129,9 @@ mod tests {
         }
         let final_text = engine.finish().unwrap();
         println!("Final (after mid-stream flush): {}", final_text);
-        assert!(!final_text.is_empty(), "final text should not be empty after mid-stream flush");
+        assert!(
+            !final_text.is_empty(),
+            "final text should not be empty after mid-stream flush"
+        );
     }
 }
