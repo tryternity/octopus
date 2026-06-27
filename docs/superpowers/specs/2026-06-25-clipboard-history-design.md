@@ -1,7 +1,7 @@
 # 剪贴板历史管理功能设计
 
 **日期**: 2026-06-25
-**状态**: ✅ Phase 0-3 已实现 + Phase 3 后迭代（图片保存格式选择、FTS5 自动 rebuild、toolbar 精简、窗口高度调整）
+**状态**: ✅ Phase 0-3 + Phase 3 后持续迭代（OCR / 图片存储迁移 / 设置页配置 / 管理页重设计 / 分页竞态修复 / 级联删除验证 / 快捷键热重载 / UI 优化 / FTS5 维护）
 **分支**: `feature/clipboard-research`（worktree: `.worktrees/clipboard-research`）
 
 ## 0. 概述
@@ -723,3 +723,24 @@ FTS5 可用性：`rusqlie` with `bundled` feature 默认启用 FTS5，需验证�
 
 - 启动时 rebuild + 删除计数器达 10 自动 rebuild
 - `delete_item` / `clear_history` 写回 search_text 时 FTS5 触发器自动更新索引
+
+### 9.6 管理入口 + 管理页重设计
+
+- 浮窗底部「清空」改为「管理」按钮，点击 `open_settings({ initialPage: "clipboard" })` 跳转设置页
+- `open_settings` 支持初始页面参数（`PENDING_PAGE` 暂存 + `get_initial_page` 拉取）
+- ClipboardPanel/HistoryPanel 按同风格重设计（stone 色系、行子组件、hover 操作）
+
+### 9.7 分页与删除竞态
+
+- 曾尝试无限滚动（IntersectionObserver）→ 闭包陷阱（`pendingResetRef` 递归捕获旧 loading）→ 回退手动「加载更多」
+- 管理页手动加载更多不会与删除并发，`loadHistory`/`fetchData` 无需 loading 守卫
+
+### 9.8 级联删除验证与 transcription_id 修复
+
+- 发现旧数据 `transcription_id` 为 NULL 导致级联失效，清理后新记录正确关联
+- 单向级联：删识别记录 → 同步删剪贴板引用；反向不级联
+
+### 9.9 快捷键热重载
+
+- `clipboard_shortcut` 在 `set_config` 中 unregister 旧 + register 新（与 `asr_shortcut` 一致）
+- `save_app_config` / `load_app_config` 补齐三个剪贴板配置字段（原 bug：AppConfig 有字段但 DB 读写漏了）
