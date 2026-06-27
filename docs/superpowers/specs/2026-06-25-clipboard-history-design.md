@@ -503,7 +503,7 @@ function App() {
 
 失焦自动隐藏（除非 pinned）。macOS 后续可用 `tauri-nspanel` 做 NSPanel。
 
-两个入口：全局快捷键浮窗（默认 `Alt+V`）+ 主窗口内访问按钮。
+两个入口：全局快捷键浮窗（默认 `Alt+V`，toggle 按焦点判断：失焦状态按快捷键直接 `show`+`set_focus` 激活，仅「可见且有焦点」才收起——避免 always-on-top 窗口失焦后仍 visible 导致需按两次）+ 主窗口内访问按钮。
 
 **管理入口**：浮窗底部「管理」按钮 → `open_settings({ initialPage: "clipboard" })` → 跳转设置窗口剪贴板管理页。`open_settings` 通过 `PENDING_PAGE`（`Mutex<Option<String>>`）暂存目标页面，前端 mount 后调 `get_initial_page` 拉取；窗口已打开时走 `settings://navigate` 事件即时切换。
 

@@ -1562,8 +1562,13 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
 }
 
 pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
-    if let Some(window) = app.get_webview_window("clipboard") {
-        if window.is_visible()? {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        // toggle 方向按"焦点"而非"可见性"判断：always-on-top 窗口失焦后仍 visible，
+        // 若用 is_visible() 决定方向，失焦时按一次会被先藏掉、第二次才弹出。
+        // 仅当"可见且有焦点"才收起；失焦（或不可见）一律 show + set_focus 激活。
+        let visible = window.is_visible().unwrap_or(false);
+        let focused = window.is_focused().unwrap_or(false);
+        if visible && focused {
             window.hide()?;
         } else {
             window.show()?;
@@ -1571,6 +1576,10 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         }
     } else {
         create_clipboard_window(app)?;
+        if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+            window.show()?;
+            window.set_focus()?;
+        }
     }
     Ok(())
 }
