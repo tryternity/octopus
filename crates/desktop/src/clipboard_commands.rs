@@ -288,3 +288,77 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// 图片条目 OCR：识别文本 → 写 search_text + 写剪贴板 + 新建文档。
+#[tauri::command]
+pub async fn ocr_image(
+    id: i64,
+    handle: State<'_, Arc<ClipboardHandle>>,
+) -> Result<String, String> {
+    let item = octopus_infra::db::with_db(|conn| {
+        let items = octopus_clipboard::store::query_history(conn, &QueryFilter {
+            filter: "all".into(),
+            search: None,
+            page: 1,
+            size: 1000,
+        })?;
+        Ok::<_, anyhow::Error>(items.into_iter().find(|i| i.id == id))
+    })
+    .map_err(|e| e.to_string())?;
+
+    let item = item.ok_or("条目不存在")?;
+    if item.item_type != octopus_clipboard::ItemType::Image {
+        return Err("非图片条目".into());
+    }
+
+    let blob_hash = item.image_meta.as_ref().map(|m| m.blob_hash.clone())
+        .ok_or("图片元数据缺失")?;
+
+    let orig_path = octopus_clipboard::image::clipboard_images_dir()
+        .join(format!("{}.png", blob_hash));
+    let png_bytes = std::fs::read(&orig_path).map_err(|e| e.to_string())?;
+
+    let engine = octopus_ocr::engine::OcrEngine::instance()
+        .map_err(|e| e.to_string())?;
+    let text = engine.recognize(&png_bytes).map_err(|e| e.to_string())?;
+
+    if text.trim().is_empty() {
+        return Err("未识别到文本".into());
+    }
+
+    octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::update_search_text(conn, id, &text)
+    }).map_err(|e| e.to_string())?;
+
+    handle.write_text(&text).map_err(|e| e.to_string())?;
+
+    open_text_editor_with_content(&text);
+
+    Ok(text)
+}
+
+/// 用系统文本编辑器新建无标题文档（不落盘临时文件）。
+fn open_text_editor_with_content(text: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            r#"tell application "TextEdit"
+    activate
+    make new document with properties {{text:"{}"}}
+end tell"#,
+            escaped
+        );
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("notepad").spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open").arg("text://").spawn();
+    }
+}

@@ -6,6 +6,7 @@ import type { ClipboardItem } from "@/types/clipboard";
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Copy, Download, FolderOpen,
+  ScanText, Loader2, Check,
 } from "lucide-react";
 import SaveImagePopover from "../Clipboard/SaveImagePopover";
 
@@ -226,6 +227,8 @@ function ClipboardRow({
 }) {
   const [deletePending, setDeletePending] = useState(false);
   const [showSavePopover, setShowSavePopover] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrDone, setOcrDone] = useState(false);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -277,6 +280,27 @@ function ClipboardRow({
   const handleSaveImage = (e: React.MouseEvent) => {
     e.stopPropagation();
     setShowSavePopover((v) => !v);
+  };
+
+  const handleOcr = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (ocrLoading) return;
+    setOcrLoading(true);
+    try {
+      await invoke("ocr_image", { id: item.id });
+      setOcrLoading(false);
+      setOcrDone(true);
+      setTimeout(() => setOcrDone(false), 1000);
+    } catch (e) {
+      setOcrLoading(false);
+      const msg = String(e);
+      if (msg.includes("未识别到文本")) {
+        setOcrDone(true);
+        setTimeout(() => setOcrDone(false), 1000);
+      } else {
+        showToast("OCR 失败：" + e);
+      }
+    }
   };
 
   const Icon = item.source === "asr" ? Mic
@@ -368,6 +392,27 @@ function ClipboardRow({
               <SaveImagePopover id={item.id} onClose={() => setShowSavePopover(false)} />
             )}
           </div>
+        )}
+        {item.item_type === "image" && (
+          <button
+            className={cn(
+              "p-1 rounded transition-opacity",
+              ocrLoading || ocrDone
+                ? "opacity-100"
+                : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+            )}
+            onClick={handleOcr}
+            disabled={ocrLoading}
+            title="OCR 识别"
+          >
+            {ocrLoading ? (
+              <Loader2 className="w-3.5 h-3.5 text-stone-500 animate-spin" />
+            ) : ocrDone ? (
+              <Check className="w-3.5 h-3.5 text-emerald-600" />
+            ) : (
+              <ScanText className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
+            )}
+          </button>
         )}
         {item.item_type === "file" && (
           <button

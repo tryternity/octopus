@@ -20,6 +20,9 @@ tauri-plugin-dialog = "2"
 # octopus-asr-local (embedded engine)
 octopus-asr-local = { path = "../asr-local", optional = true }
 
+# OCR
+octopus-ocr = { path = "../ocr" }
+
 # Audio
 cpal = "0.16"
 rubato = "0.16"
