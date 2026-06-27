@@ -371,6 +371,8 @@ end tell"#,
         );
         let _ = std::process::Command::new("osascript")
             .args(["-e", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
             .spawn();
     }
     #[cfg(target_os = "windows")]

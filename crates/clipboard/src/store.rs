@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::model::*;

@@ -23,7 +23,7 @@ pub struct EncodedImage {
 }
 
 /// PNG bytes → WebP 100% 无损 + 缩略图 WebP 20%（240×240 Lanczos）。
-pub fn encode_to_webp(png_bytes: &[u8], width: u32, height: u32) -> Result<EncodedImage> {
+pub fn encode_to_webp(png_bytes: &[u8], _width: u32, _height: u32) -> Result<EncodedImage> {
     let img = ::image::load_from_memory_with_format(png_bytes, ::image::ImageFormat::Png)
         .context("Failed to decode PNG for WebP encoding")?;
     let rgba = img.to_rgba8();
