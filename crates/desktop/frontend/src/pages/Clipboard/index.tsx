@@ -30,9 +30,10 @@ export default function Clipboard() {
   return (
     <div className="flex flex-col h-screen bg-background text-foreground select-none overflow-hidden rounded-xl border border-border shadow-2xl shadow-black/8" data-tauri-drag-region>
       {/* Title bar — 极简，去掉"历史" */}
-      <div className="flex items-center justify-between px-2 py-1.5" data-tauri-drag-region>
+      {/* deep：点击标题文本/空白均触发拖动；按钮仍因 clickable 元素被 drag.js 跳过，不受影响 */}
+      <div className="flex items-center justify-between px-2 py-1.5 cursor-grab active:cursor-grabbing" data-tauri-drag-region="deep">
         <button
-          className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
+          className="p-1 rounded cursor-default hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
           onClick={() => getCurrentWindow().hide()}
           title="关闭"
         >
@@ -41,7 +42,7 @@ export default function Clipboard() {
         <span className="text-[11px] font-medium tracking-wide text-muted-foreground">剪贴板</span>
         <button
           className={cn(
-            "p-1 rounded transition-colors",
+            "p-1 rounded cursor-default transition-colors",
             pinned ? "text-voice bg-voice/10" : "text-muted-foreground hover:bg-accent hover:text-foreground",
           )}
           onClick={togglePin}
