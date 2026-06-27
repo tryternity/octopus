@@ -1588,7 +1588,7 @@ mod tests {
     }
 
     #[test]
-    fn app_config_category_defaults_to_default() {
+    fn app_config_category_defaults_to_setting() {
         let conn = open_init();
         let categories: Vec<String> = conn
             .prepare("SELECT DISTINCT category FROM app_config")
