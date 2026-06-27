@@ -171,6 +171,10 @@ impl StreamingParaformer {
         while self.num_fbank_ready() >= self.num_processed_frames as usize + CHUNK_SIZE {
             let frame_start = self.num_processed_frames as usize;
             self.process_chunk_at(frame_start, false)?;
+            log::debug!(
+                "[asr-diag] paraformer accept chunk: frame_start={} fbank_ready={} → processed={}",
+                frame_start, self.num_fbank_ready(), self.num_processed_frames
+            );
             self.num_processed_frames += (CHUNK_SIZE - 1) as i32;
         }
 
@@ -226,8 +230,8 @@ impl StreamingParaformer {
             let is_last = remaining_after < (CHUNK_SIZE as i32 - 1);
             let produced = self.process_chunk_at(frame_start, is_last)?;
             log::debug!(
-                "[asr-diag] paraformer flush chunk: frame_start={} is_last={} produced={}",
-                frame_start, is_last, produced
+                "[asr-diag] paraformer flush chunk: frame_start={} is_last={} produced={} fbank_ready={}",
+                frame_start, is_last, produced, self.num_fbank_ready()
             );
             if produced {
                 had_new_tokens = true;
@@ -422,6 +426,12 @@ impl StreamingParaformer {
                 }
             }
         }
+
+        log::debug!(
+            "[asr-diag] paraformer decode: frame_start={} is_final={} fired={} → 累积文本='{}'",
+            frame_start, is_final, num_tokens,
+            decode_tokens(&self.all_token_ids, &self.vocab)
+        );
 
         Ok(true)
     }
