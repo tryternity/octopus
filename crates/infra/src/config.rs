@@ -150,6 +150,18 @@ pub struct AppConfig {
     /// cli `download --mirror` 临时覆盖此值；优先级 `--mirror` > 此字段 > 官方源。
     #[serde(default = "default_download_mirror")]
     pub download_mirror: String,
+
+    /// 剪贴板历史浮窗全局快捷键（Tauri Accelerator 格式，如 "Alt+V"）。默认 "Alt+V"。
+    #[serde(default = "default_clipboard_shortcut")]
+    pub clipboard_shortcut: String,
+
+    /// 剪贴板最大保留条数（不含收藏，超出自动清理）。默认 1000。
+    #[serde(default = "default_clipboard_max_items")]
+    pub clipboard_max_items: i64,
+
+    /// 剪贴板自动清理天数（超过此天数的非收藏记录自动删除）。默认 30。
+    #[serde(default = "default_clipboard_max_age_days")]
+    pub clipboard_max_age_days: i64,
 }
 
 fn default_engine_mode() -> String {
@@ -208,6 +220,15 @@ fn default_edit_shortcut() -> String {
 fn default_download_mirror() -> String {
     String::new()
 }
+fn default_clipboard_shortcut() -> String {
+    "Alt+V".into()
+}
+fn default_clipboard_max_items() -> i64 {
+    1000
+}
+fn default_clipboard_max_age_days() -> i64 {
+    30
+}
 fn default_segment_silence() -> f64 {
     400.0
 }
@@ -238,6 +259,9 @@ impl Default for AppConfig {
             denoise_mode: default_denoise_mode(),
             edit_shortcut: default_edit_shortcut(),
             download_mirror: default_download_mirror(),
+            clipboard_shortcut: default_clipboard_shortcut(),
+            clipboard_max_items: default_clipboard_max_items(),
+            clipboard_max_age_days: default_clipboard_max_age_days(),
         }
     }
 }
