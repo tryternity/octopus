@@ -78,7 +78,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
             }
             "settings" => {
                 info!("Tray: open settings");
-                crate::settings_window::open_settings(app.clone());
+                crate::settings_window::open_settings(app.clone(), None);
             }
             "quit" => {
                 info!("Tray: quit");

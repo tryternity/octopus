@@ -5,7 +5,7 @@ import { useClipboardHistory } from "@/hooks/useClipboardHistory";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
-import { Pin, X } from "lucide-react";
+import { Pin, X, Settings2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 export default function Clipboard() {
@@ -15,16 +15,6 @@ export default function Clipboard() {
   const [selectedId, setSelectedId] = useState<number | null>(null);
 
   const { items, total, refresh } = useClipboardHistory(filter, search);
-
-  const handleClear = useCallback(async () => {
-    if (!confirm("清空所有非收藏的历史记录？")) return;
-    try {
-      await invoke("clear_clipboard_history", { keepFavorite: true });
-      refresh();
-    } catch (e) {
-      console.error(e);
-    }
-  }, [refresh]);
 
   const togglePin = useCallback(async () => {
     const next = !pinned;
@@ -91,10 +81,12 @@ export default function Clipboard() {
       <div className="flex items-center justify-between px-3 py-1 border-t border-border text-[10px] text-muted-foreground/80">
         <span>{total} 条</span>
         <button
-          className="hover:text-red-500 transition-colors"
-          onClick={handleClear}
+          className="flex items-center gap-0.5 hover:text-foreground transition-colors"
+          onClick={() => invoke("open_settings", { initialPage: "clipboard" })}
+          title="管理剪贴板"
         >
-          清空
+          <Settings2 className="w-2.5 h-2.5" />
+          管理
         </button>
       </div>
     </div>

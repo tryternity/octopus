@@ -49,13 +49,24 @@ function Settings() {
 
   useEffect(() => {
     refreshConfig();
+    // 拉取初始页面（由 open_settings 暂存）
+    invoke<string>("get_initial_page").then((page) => {
+      if (page) setPage(page as PageName);
+    }).catch(() => {});
     let unlisten: UnlistenFn;
+    let unlistenNav: UnlistenFn;
     let cancelled = false;
     listen("config-changed", () => refreshConfig()).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
     });
-    return () => { cancelled = true; unlisten?.(); };
+    listen<string>("settings://navigate", (page) => {
+      if (typeof page === "string") setPage(page as PageName);
+    }).then((fn) => {
+      if (cancelled) fn();
+      else unlistenNav = fn;
+    });
+    return () => { cancelled = true; unlisten?.(); unlistenNav?.(); };
   }, [refreshConfig]);
 
   const setVal = useCallback(async (key: string, value: string | number | boolean) => {
