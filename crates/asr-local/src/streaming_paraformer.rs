@@ -394,17 +394,24 @@ impl StreamingParaformer {
         // 4. Encoder
         let (enc_tensor, enc_len_scalar, alphas) = self.run_encoder(&combined)?;
 
-        // 5. Zero overlap alphas
+        // 5. Zero overlap alphas（去 chunk 间 overlap，防 CIF 重复 fire）
         let alpha_sum: f32 = alphas.iter().sum();
-        let alphas = if is_final {
-            self.mask_alphas_left_only(alphas, enc_len_scalar)
-        } else {
-            self.mask_alphas(alphas, enc_len_scalar)
-        };
+        // 首 chunk（num_processed_frames==0）：feat_cache 初始全 0（padding），左侧 encoder 帧
+        // 基于"padding + 首音频"，alpha 反映首字音头（**非 overlap**）——mask 会误删首字
+        // （e2e 实测 frame0 mask前 alpha_sum=1.607 → mask后 fired=0，首字丢失）。故首 chunk
+        // 不 mask 左侧；它没有上 chunk 可 overlap，不 mask 不会引入重复 fire。
+        // final chunk：右侧无后续 chunk overlap，不 mask 右侧（保留尾音 fire）。
+        let is_first_chunk = self.num_processed_frames == 0;
+        let alphas = mask_alphas_selective(
+            alphas,
+            enc_len_scalar,
+            /*mask_left=*/ !is_first_chunk,
+            /*mask_right=*/ !is_final,
+        );
         log::debug!(
-            "[asr-diag] paraformer mask: is_final={} enc_len={} mask前alpha_sum={:.3} \
-            (首chunk左侧5帧置零→首字fire延迟观测)",
-            is_final, enc_len_scalar, alpha_sum
+            "[asr-diag] paraformer mask: is_final={} is_first={} enc_len={} mask前alpha_sum={:.3} \
+            (mask_left={} mask_right={})",
+            is_final, is_first_chunk, enc_len_scalar, alpha_sum, !is_first_chunk, !is_final
         );
 
         // 6. CIF (force-fire if final)
@@ -581,30 +588,6 @@ impl StreamingParaformer {
         let alphas: Vec<f32> = alpha_data.to_vec();
 
         Ok((enc_tensor, enc_len_scalar, alphas))
-    }
-
-    /// Zero out alphas in the left/right overlap regions.
-    fn mask_alphas(&self, mut alphas: Vec<f32>, enc_len: usize) -> Vec<f32> {
-        let n = alphas.len().min(enc_len);
-        // Zero left context (first LEFT_CHUNK_SIZE frames)
-        for i in 0..LEFT_CHUNK_SIZE.min(n) {
-            alphas[i] = 0.0;
-        }
-        // Zero right context (last RIGHT_CHUNK_SIZE frames)
-        let right_start = n.saturating_sub(RIGHT_CHUNK_SIZE);
-        for i in right_start..n {
-            alphas[i] = 0.0;
-        }
-        alphas
-    }
-
-    /// 只 mask 左侧 overlap（final chunk 用）——右侧帧后面无新 chunk，不可丢弃。
-    fn mask_alphas_left_only(&self, mut alphas: Vec<f32>, enc_len: usize) -> Vec<f32> {
-        let n = alphas.len().min(enc_len);
-        for i in 0..LEFT_CHUNK_SIZE.min(n) {
-            alphas[i] = 0.0;
-        }
-        alphas
     }
 
     /// Stateful CIF (Continuous Integrate-and-Fire).
@@ -820,6 +803,36 @@ fn discover_onnx(hf_path: &std::path::Path, name: &str, prefer_int8: bool) -> Re
     }
 }
 
+// ── CIF alpha overlap mask（去 chunk 间 overlap，防 CIF 重复 fire）──
+
+/// 按 `mask_left` / `mask_right` 选择性置零 alpha 的 overlap 区。纯函数，便于单测。
+///
+/// - `mask_left`：置零前 [`LEFT_CHUNK_SIZE`] 帧（上 chunk 的 overlap）。**首 chunk 不 mask**——
+///   其 `feat_cache` 初始全 0（padding），left 帧 基于"padding + 首音频"，alpha 反映首字音头，
+///   mask 会误删首字（见 `process_chunk_at` step 5 的 e2e 实测）。
+/// - `mask_right`：置零后 [`RIGHT_CHUNK_SIZE`] 帧（下 chunk 的 overlap）。**final chunk 不 mask**——
+///   其后无新 chunk，right 帧是真实尾音，置零会丢尾字。
+fn mask_alphas_selective(
+    mut alphas: Vec<f32>,
+    enc_len: usize,
+    mask_left: bool,
+    mask_right: bool,
+) -> Vec<f32> {
+    let n = alphas.len().min(enc_len);
+    if mask_left {
+        for i in 0..LEFT_CHUNK_SIZE.min(n) {
+            alphas[i] = 0.0;
+        }
+    }
+    if mask_right {
+        let right_start = n.saturating_sub(RIGHT_CHUNK_SIZE);
+        for i in right_start..n {
+            alphas[i] = 0.0;
+        }
+    }
+    alphas
+}
+
 // ── [asr-diag] 文本层重复哨兵（验证 token 层跨边界去重是否漏网）──
 
 /// CJK 汉字判定（常用 + 扩展A + 兼容区）。
@@ -921,6 +934,37 @@ mod tests {
         assert!(!is_cjk_char('a'));
         assert!(!is_cjk_char(' '));
         assert!(!is_cjk_char('\u{FF0C}'));
+    }
+
+    #[test]
+    fn mask_alphas_selective_four_combinations() {
+        // enc_len=18, LEFT_CHUNK_SIZE=5, RIGHT_CHUNK_SIZE=3。用 1.0..=18.0 标记每帧便于观察。
+        let mk = || (1..=18).map(|x| x as f32).collect::<Vec<_>>();
+        // 正常中间 chunk（非首非 final）：mask 两侧 → 前 5 + 后 3 置零
+        let v = mask_alphas_selective(mk(), 18, true, true);
+        assert_eq!(&v[0..5], &[0.0; 5], "left 5 置零");
+        assert_eq!(&v[15..18], &[0.0; 3], "right 3 置零 (idx 15,16,17)");
+        assert_eq!(v[5], 6.0, "中间保留");
+        assert_eq!(v[14], 15.0);
+        // 首 chunk 非 final：只 mask right（首字 left 保留——本次首字丢失修复的核心）
+        let v = mask_alphas_selective(mk(), 18, false, true);
+        assert_eq!(v[0], 1.0, "首字 left[0] 保留");
+        assert_eq!(v[4], 5.0, "left[4] 保留");
+        assert_eq!(&v[15..18], &[0.0; 3], "right 仍 mask");
+        // 非首 final：只 mask left（尾音 right 保留）
+        let v = mask_alphas_selective(mk(), 18, true, false);
+        assert_eq!(&v[0..5], &[0.0; 5], "left 仍 mask");
+        assert_eq!(v[17], 18.0, "尾音 right[17] 保留");
+        // 首 chunk final（开口极短、一 chunk 即 flush）：两侧都不 mask
+        let v = mask_alphas_selective(mk(), 18, false, false);
+        assert_eq!(v[0], 1.0);
+        assert_eq!(v[17], 18.0);
+        // enc_len 截断：alphans 长于 enc_len 时只 mask 前 enc_len 帧
+        let v = mask_alphas_selective(vec![1.0; 20], 18, true, true);
+        assert_eq!(v.len(), 20, "长度不变");
+        assert_eq!(&v[0..5], &[0.0; 5]);
+        assert_eq!(&v[15..18], &[0.0; 3]);
+        assert_eq!(v[18], 1.0, "超出 enc_len 的帧不动");
     }
 
     /// 流式 Paraformer 集成测试 — 用真实模型验证识别质量。
