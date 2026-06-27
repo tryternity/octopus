@@ -53,6 +53,11 @@ pub struct StreamingParaformer {
     num_processed_frames: i32,                    // fbank frame counter (fbank space)
     all_token_ids: Vec<i64>,                      // 全局累积 token ID（跨 chunk），用于整体解码
     last_emitted_token: i64,                      // 上个 chunk 最后一个有效 token（跨边界去重用，-1=无）
+    /// flush 后新段标记：flush 用零 padding 收尾，结束后 feat_cache 已被冲成静音（非上段语音
+    /// 尾巴）。故新段首 chunk 不 mask left 是安全的——静音 alpha≈0 不会重 fire 上段尾，却保住
+    /// 新句音头（修停顿后首字丢失：段2丢「开」、段4丢「始」）。锁存到新段首个 fire 的 chunk 才清
+    ///（若首 chunk 是静音没 fire，保留给下个 chunk，确保音头不被错过）。
+    fresh_segment: bool,
 }
 
 impl StreamingParaformer {
@@ -143,6 +148,7 @@ impl StreamingParaformer {
             num_processed_frames: 0,
             all_token_ids: Vec::new(),
             last_emitted_token: -1,
+            fresh_segment: false,
         };
 
         Ok(engine)
@@ -201,6 +207,9 @@ impl StreamingParaformer {
     /// Active flush: pad raw_samples with zeros, compute remaining fbank frames,
     /// and process all remaining chunks. The last chunk force-fires residual CIF.
     pub fn flush(&mut self) -> Result<Option<String>> {
+        // flush 收尾【当前段】——其 process_chunk_at 走正常 mask（清掉可能残留的 fresh_segment，
+        // 避免上一段 unconsumed 的 fresh 误 mask 当前段尾 chunk）。
+        self.fresh_segment = false;
         // Pad raw_samples with enough zeros to ensure at least CHUNK_SIZE frames
         // can be computed for the final chunk.
         let current_frames = self.num_fbank_ready();
@@ -242,6 +251,9 @@ impl StreamingParaformer {
             self.num_processed_frames += (CHUNK_SIZE - 1) as i32;
         }
 
+        // flush 结束 = 段边界。下次 accept 是新段首 chunk，置 fresh_segment 让其 mask_left=false
+        //（保新句音头；feat_cache 已被零 padding 冲成静音，不 mask left 不会重 fire 上段尾）。
+        self.fresh_segment = true;
         if had_new_tokens {
             let full_text = decode_tokens(&self.all_token_ids, &self.vocab);
             if !full_text.is_empty() {
@@ -274,6 +286,7 @@ impl StreamingParaformer {
         self.num_processed_frames = 0;
         self.all_token_ids.clear();
         self.last_emitted_token = -1;
+        self.fresh_segment = false;
     }
 
     /// Number of fbank frames computed and available in fbank_cache.
@@ -405,17 +418,21 @@ impl StreamingParaformer {
         //   - 中段 chunk mask right：right 是与【下 chunk】的 overlap 边界帧，acoustic 不准
         //     （边界重复计算），不 mask 会让 fired 增多 → 叠字/错字上升（2dae4c8 全关 right 的副作用）。
         let is_first_chunk = self.num_processed_frames == 0;
+        // fresh_segment：flush 后新段首 chunk——feat_cache 已是静音，不 mask left 保新句音头
+        //（修停顿后首字丢失）。锁存到新段首个 fire 的 chunk 才清（见 step 6 后 consume）。
+        let fresh = self.fresh_segment;
+        let mask_left = !(is_first_chunk || fresh);
         let mask_right = !is_first_chunk && !is_final;
         let alphas = mask_alphas_selective(
             alphas,
             enc_len_scalar,
-            /*mask_left=*/ !is_first_chunk,
+            /*mask_left=*/ mask_left,
             /*mask_right=*/ mask_right,
         );
         log::debug!(
             "[asr-diag] paraformer mask: is_final={} is_first={} enc_len={} mask前alpha_sum={:.3} \
-            (mask_left={} mask_right={})",
-            is_final, is_first_chunk, enc_len_scalar, alpha_sum, !is_first_chunk, mask_right
+            (mask_left={} mask_right={} fresh={})",
+            is_final, is_first_chunk, enc_len_scalar, alpha_sum, mask_left, mask_right, fresh
         );
 
         // 6. CIF (force-fire if final)
@@ -429,6 +446,16 @@ impl StreamingParaformer {
             return Ok(false);
         }
         let num_tokens = acoustic.len() / self.encoder_output_size;
+
+        // 新段首个 fire 的 chunk：音头已过，清 fresh_segment 恢复正常 mask_left。
+        // 若本 chunk 静音没 fire（num_tokens=0），保留 fresh 给下个 chunk——确保音头不被错过。
+        if num_tokens > 0 && self.fresh_segment {
+            log::debug!(
+                "[asr-diag] paraformer fresh_segment 消费: 新段首 fire（frame_start={} fired={}），恢复正常 mask_left",
+                frame_start, num_tokens
+            );
+            self.fresh_segment = false;
+        }
 
         // 7. Stateful decoder → token IDs
         let sample_ids = self.run_decoder(&enc_tensor, enc_len_scalar, &acoustic, num_tokens)?;
