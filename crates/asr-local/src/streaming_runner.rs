@@ -166,6 +166,12 @@ pub struct StreamingRunner {
     flushed: bool,
     /// 流式纠错开关（spec §3.3 新增 hook，默认 false——desktop 流式现无纠错，行为不变）。
     correct: bool,
+    /// 开口前静音门控：VAD 检出首个语音前丢弃样本不喂 engine，避免启动噪声/话筒瞬态触发
+    /// spurious token（实测 paraformer 首 chunk 在 ~0.6s 噪声上 alpha_sum≈1.3 误 fire 出"嗯"，
+    /// 被 is_first mask 放行后 commit 成首段）。VAD=None（无 silero 模型）时**不门控**——退回
+    /// 原行为喂全部，兼容测试环境与模型缺失。首个 has_speech tick 整体喂入（含该 tick 内开头
+    /// 静音），故不丢真实首字音头；与 is_first mask 修复配合：首 speech chunk → is_first → 首字 fire。
+    seen_speech: bool,
 }
 
 impl StreamingRunner {
@@ -184,6 +190,7 @@ impl StreamingRunner {
             silence_duration: 0.0,
             flushed: false,
             correct,
+            seen_speech: false,
         })
     }
 
@@ -203,21 +210,37 @@ impl StreamingRunner {
             &mut self.silence_duration,
             &mut self.flushed,
         );
-        match self.engine.accept_samples(samples_16k, was_silent, has_speech) {
-            Ok(Some(text)) => events.push(self.maybe_correct(TranscriptEvent::Partial(text))),
-            Ok(None) => {}
-            Err(e) => {
-                log::warn!("StreamingRunner accept_samples error: {e}");
-                events.push(TranscriptEvent::Error(e.to_string()));
-            }
+        // 开口前门控：VAD 在场时，首个 has_speech 锁存 seen_speech；未锁存前不喂 engine（丢弃
+        // 启动噪声，避免 spurious "嗯"）。VAD 缺失则不门控，退回原行为喂全部（测试/模型缺失兼容）。
+        let gate_active = self.vad.is_some();
+        if has_speech {
+            self.seen_speech = true;
         }
-        if should_flush {
-            match self.engine.flush(true) {
-                Ok(Some(text)) => events.push(self.maybe_correct(TranscriptEvent::Committed(text))),
+        let feed = !gate_active || self.seen_speech;
+        if !feed {
+            log::debug!(
+                "[asr-diag] streaming_runner 开口前门控: VAD 未检出语音，丢弃 {} 样本（≈{:.0}ms），不喂 engine",
+                samples_16k.len(),
+                samples_16k.len() as f64 / 16.0
+            );
+        }
+        if feed {
+            match self.engine.accept_samples(samples_16k, was_silent, has_speech) {
+                Ok(Some(text)) => events.push(self.maybe_correct(TranscriptEvent::Partial(text))),
                 Ok(None) => {}
                 Err(e) => {
-                    log::warn!("StreamingRunner flush error: {e}");
+                    log::warn!("StreamingRunner accept_samples error: {e}");
                     events.push(TranscriptEvent::Error(e.to_string()));
+                }
+            }
+            if should_flush {
+                match self.engine.flush(true) {
+                    Ok(Some(text)) => events.push(self.maybe_correct(TranscriptEvent::Committed(text))),
+                    Ok(None) => {}
+                    Err(e) => {
+                        log::warn!("StreamingRunner flush error: {e}");
+                        events.push(TranscriptEvent::Error(e.to_string()));
+                    }
                 }
             }
         }
@@ -239,9 +262,13 @@ impl StreamingRunner {
     /// 且 was_silent=false 已短路 zipformer 的 finish+reset，故尾字不被冲）→ `engine.finish()`。
     /// 与 [`push_samples`] 的区别：push_samples 会 VAD 检测 + 静音冲刷标点，stop 尾部不应触发标点。
     pub fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent {
-        if !tail.is_empty() {
-            if let Err(e) = self.engine.accept_samples(tail, false, false) {
-                log::warn!("StreamingRunner finish_with_tail accept error: {e}");
+        // 开口前门控：未见语音（纯噪声会话）时不喂 tail——避免噪声尾巴触发 spurious token，
+        // finish 返回空。VAD 缺失则维持原行为（喂 tail）。
+        if self.seen_speech || self.vad.is_none() {
+            if !tail.is_empty() {
+                if let Err(e) = self.engine.accept_samples(tail, false, false) {
+                    log::warn!("StreamingRunner finish_with_tail accept error: {e}");
+                }
             }
         }
         self.finish()
@@ -255,6 +282,7 @@ impl StreamingRunner {
         }
         self.silence_duration = 0.0;
         self.flushed = false;
+        self.seen_speech = false;
     }
 
     /// 当前累积静音时长（秒），供端判断是否触发停顿润色（`check_and_trigger_polish` 留端）。
@@ -328,7 +356,11 @@ mod tests {
     }
 
     fn runner(fake: FakeStreamingEngine) -> StreamingRunner {
-        StreamingRunner::new(Box::new(fake), false).unwrap()
+        let mut r = StreamingRunner::new(Box::new(fake), false).unwrap();
+        // 以下用例验 accept/flush/finish 的 relay 管线，与开口前门控无关——预置 seen_speech=true
+        // 跳过门控（喂入即视为已开口）。门控行为由 push_samples_gates_silence_* 专测覆盖。
+        r.seen_speech = true;
+        r
     }
 
     #[test]
@@ -370,10 +402,34 @@ mod tests {
 
     #[test]
     fn push_samples_relays_accept_as_partial() {
-        // VAD=None（测试环境无 silero 模型）→ 无标点/冲刷；accept 首次返回 Some("你好")
+        // runner() 预置 seen_speech=true 跳过门控；accept 首次返回 Some("你好") → Partial
         let mut r = runner(FakeStreamingEngine::new(vec!["你好"], vec![], "你好。"));
         let evs = r.push_samples(&[0.0; 1600]); // 任意 16k 样本
         assert_eq!(evs, vec![TranscriptEvent::Partial("你好".to_string())]);
+    }
+
+    #[test]
+    fn push_samples_gates_silence_until_speech_when_vad_present() {
+        // 开口前门控：VAD 在场 + 纯静音样本 → has_speech=false → seen_speech 不锁存 → 不喂
+        // engine → 无 Partial/Committed 事件（这是消除启动 spurious「嗯」的核心）。
+        // dev 环境 silero 可用 → 门控激活；无 silero 的环境（vad=None）→ 门控不激活，自动跳过。
+        let mut r = StreamingRunner::new(
+            Box::new(FakeStreamingEngine::new(vec!["你好"], vec!["不应到达"], "x")),
+            false,
+        )
+        .unwrap();
+        if r.vad.is_none() {
+            eprintln!("[skip] 无 silero VAD，门控未激活，跳过");
+            return;
+        }
+        // 喂足够长静音（1600 样本 = 3 VAD chunk，0.096s < flush 阈值，不触发 flush）
+        let evs = r.push_samples(&[0.0_f32; 1600]);
+        assert!(
+            evs.is_empty(),
+            "开口前静音应被门控丢弃（seen_speech 未锁存），实际产生事件: {:?}",
+            evs
+        );
+        assert!(!r.seen_speech, "静音不应锁存 seen_speech");
     }
 
     #[test]
