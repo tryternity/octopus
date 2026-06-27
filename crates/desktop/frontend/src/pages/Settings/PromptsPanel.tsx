@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Plus, Pencil, Check, Trash2, X } from "lucide-react";
+import { Plus, Pencil, Check, Trash2, X, Eye } from "lucide-react";
 
 interface Prompt {
   id: number;
@@ -19,6 +19,16 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
   const [title, setTitle] = useState("");
   const [content, setContent] = useState("");
   const [description, setDescription] = useState("");
+  const [viewing, setViewing] = useState<Prompt | null>(null);
+  const [deletePendingId, setDeletePendingId] = useState<number | null>(null);
+
+  // 删除二次确认
+  useEffect(() => {
+    if (deletePendingId !== null) {
+      const timer = setTimeout(() => setDeletePendingId(null), 3000);
+      return () => clearTimeout(timer);
+    }
+  }, [deletePendingId]);
 
   const load = useCallback(async () => {
     try {
@@ -59,6 +69,35 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
     try { await invoke("delete_prompt", { id }); load(); showToast("已删除"); }
     catch (e) { showToast("删除失败：" + e); }
   };
+
+  const handleDelete = (id: number) => {
+    if (deletePendingId !== id) {
+      setDeletePendingId(id);
+    } else {
+      del(id);
+      setDeletePendingId(null);
+    }
+  };
+
+  // ── 查看视图（只读）──
+  if (viewing) {
+    return (
+      <div className="max-w-[640px] flex flex-col h-full">
+        <div className="flex items-center justify-between mb-3">
+          <h3 className="text-sm font-semibold">{viewing.title}</h3>
+          <button className="p-1 text-muted-foreground hover:text-foreground" onClick={() => setViewing(null)}>
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+        {viewing.description && (
+          <div className="text-xs text-muted-foreground/70 mb-2">{viewing.description}</div>
+        )}
+        <div className="border border-border rounded-lg overflow-hidden flex-1 min-h-0 bg-background">
+          <pre className="px-4 py-3 text-xs font-mono leading-relaxed whitespace-pre-wrap overflow-y-auto thin-scrollbar h-full">{viewing.content}</pre>
+        </div>
+      </div>
+    );
+  }
 
   // ── 编辑器 ──
   if (editing) {
@@ -152,6 +191,14 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
                   <Check className="w-3 h-3" /> 激活
                 </button>
               )}
+              {p.is_system && (
+                <button
+                  className="flex items-center gap-1 px-2.5 py-1 text-xs rounded text-muted-foreground hover:text-foreground transition-colors"
+                  onClick={() => setViewing(p)}
+                >
+                  <Eye className="w-3 h-3" /> 查看
+                </button>
+              )}
               {!p.is_system && (
                 <>
                   <button
@@ -161,10 +208,15 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
                     <Pencil className="w-3 h-3" /> 编辑
                   </button>
                   <button
-                    className="flex items-center gap-1 px-2.5 py-1 text-xs rounded text-muted-foreground hover:text-red-500 transition-colors"
-                    onClick={() => del(p.id)}
+                    className={cn(
+                      "flex items-center gap-1 px-2.5 py-1 text-xs rounded transition-colors",
+                      deletePendingId === p.id
+                        ? "bg-red-600 text-white"
+                        : "text-muted-foreground hover:text-red-500",
+                    )}
+                    onClick={() => handleDelete(p.id)}
                   >
-                    <Trash2 className="w-3 h-3" /> 删除
+                    <Trash2 className="w-3 h-3" /> {deletePendingId === p.id ? "确认删除" : "删除"}
                   </button>
                 </>
               )}
