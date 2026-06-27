@@ -98,6 +98,16 @@ VALUES
     ('llm','aliyun','qwen','qwen-plus','https://dashscope.aliyuncs.com/compatible-mode/v1','Qwen Plus（非思考）',0,0,0),
     ('llm','aliyun','qwen','qwen-turbo','https://dashscope.aliyuncs.com/compatible-mode/v1','Qwen Turbo（非思考，快）',0,0,0);
 
+-- ── OCR 模型（domain='ocr'）─────────────────────────────────────────
+-- source = det 下载地址；secret_key = rec 下载地址（本地模型复用字段）
+INSERT OR IGNORE INTO models (domain, provider, category, model_name, source, secret_key, language, description, is_local, is_enabled, is_streaming)
+VALUES
+    ('ocr','paddleocr','ocr','PP-OCRv6-small',
+     'https://github.com/zibo-chen/rust-paddle-ocr/raw/next/models/PP-OCRv6_small_det.mnn',
+     'https://github.com/zibo-chen/rust-paddle-ocr/raw/next/models/PP-OCRv6_small_rec.mnn',
+     'auto','PP-OCRv6 small (det 4.7M + rec 10M + keys 73K)，中/英/繁体/日',
+     1,1,0);
+
 -- ── 润色提示词（prompts 表）───────────────────────────────────────────────────
 -- 用户可维护多条润色 prompt，激活其一（app_config.active_polish_prompt 存 id）。
 -- id=1 为系统内置默认（is_system=1，不可编辑/删除）。
@@ -231,4 +241,5 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('clipboard_shortcut',     'Alt+V', '剪贴板历史窗口快捷键'),
     ('clipboard_max_items',    '1000',  '最大保留条数（不含收藏）'),
     ('clipboard_max_age_days', '30',    '自动清理天数（不含收藏）'),
-    ('clipboard_auto_paste',   'double','列表项点击行为: single(复制) | double(粘贴)');
+    ('clipboard_auto_paste',   'double','列表项点击行为: single(复制) | double(粘贴)'),
+    ('ocr_model',              'PP-OCRv6-small', 'OCR 模型（当前激活）');
