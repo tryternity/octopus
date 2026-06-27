@@ -1,30 +1,40 @@
 # 已归档设计规格（2026-06-20 ~ 2026-06-21）
 
-> 本文件合并了以下已完成的设计规格。原文档已删除。
+> 以下功能均已实现并合并 main。交叉引用统一指向本归档文件内同名章节；对应 plans 见 `docs/superpowers/plans/2026-06-21-archived-plan.md`。
 
-## 包含的规格
+## 目录
 
-- 2026-06-20-archived-design（baidu-asr / bytedance-asr / clipboard-restore-race / download-model-integration / model-download / model-management-gui / moonshine-asr / paraformer-fbank-feature-extraction-fix / polish-prompt-table / tencent-asr / toggle-stop-polish-race）
+| 原文件 | 主题 |
+|---|---|
+| desktop-implementation-audit | octopus-desktop 实现审查复核 |
+| ort-cross-platform-feature-design | ort 跨平台 EP feature 条件化 |
+| zipformer-transducer-design | Zipformer Transducer 引擎设计 |
+| qwen3-asr-inference-audit | Qwen3-ASR 推理审查 |
+| baidu-asr-design | 百度智能云实时 ASR 设计 |
+| bytedance-asr-design | 火山引擎豆包 ASR 设计 |
+| clipboard-restore-race-design | 剪贴板恢复竞态设计 |
+| download-model-integration-design | octopus-download 接入模型管理设计 |
+| model-download-design | octopus-download crate 设计 |
+| model-management-gui-design | 模型管理 GUI 设计 |
+| moonshine-asr-design | Moonshine ASR 引擎设计 |
+| paraformer-fbank-feature-extraction-fix | Paraformer Fbank 特征提取修复 |
+| polish-prompt-table-design | 润色提示词表设计 |
+| tencent-asr-design | 腾讯云 ASR 设计 |
+| toggle-stop-polish-race-design | Toggle 停止润色丢失修复设计 |
 
 ---
 
-# 归档设计文档（2026-06-20）
+## desktop-implementation-audit
 
-> **归档说明**（2026-06-21）：以下 4 个 spec 对应功能/审查均已实现并合并 main（ort 跨平台 EP feature 的 linux/win 交叉验证受目标工具链阻塞，详见正文），各自文档原样合并归档于此，原独立文件已删除。每个章节以 `📄 <原文件名>` 标注来源。
-> **交叉引用**：正文内 `[xxx.md](./xxx.md)` 链接为合并前原文件名，现指向本归档文件内同名章节；对应 plans 见 `docs/superpowers/plans/2026-06-20-archived-plans.md`。
-
----
-
-## 📄 `2026-06-20-desktop-implementation-audit.md`
 
 # octopus-desktop 实现审查复核
 
 > Date: 2026-06-20
 > 状态：收到另一 AI 对 `crates/desktop`（Tauri 语音转写桌面端，~6.8k 行）的 7 条审查结论，逐条对照真实代码复核。**结论：7 条全部成立、行号引用全部准确，无幻象**（与 qwen3-asr 审查的 #3 不同）。其中一1 / 二2 / 三1 触发面与严重度需校准，二1 应升级。
-> **P0 三条（一1/一2/二1）+ P1 三条（二2/三2/三1）均实施并验证**（原 worktree `worktree-desktop-audit`）：`cargo check -p octopus-desktop --features "embedded dashscope"` 零 warning、`cargo test -p octopus-asr-local` 52 passed/0 failed、逐 commit bisect-clean。**P0+P1 均已合并 main**（P0 `44b8ab8`、P1 `9a19b6b`）。P2（一3）延后，GUI e2e 待本地验证，详见 followups plan `2026-06-20-desktop-audit-followups.md`。详见 §4/§5。
+> **P0 三条（一1/一2/二1）+ P1 三条（二2/三2/三1）均实施并验证**（原 worktree `worktree-desktop-audit`）：`cargo check -p octopus-desktop --features "embedded dashscope"` 零 warning、`cargo test -p octopus-asr-local` 52 passed/0 failed、逐 commit bisect-clean。**P0+P1 均已合并 main**（P0 `44b8ab8`、P1 `9a19b6b`）。P2（一3）延后，GUI e2e 待本地验证，详见 followups plan `2026-06-21-archived-plan.md#desktop-audit-followups`。详见 §4/§5。
 > 基线：worktree `worktree-desktop-audit` @ c259930（含全部 qwen3 修复）。
 > 关联文件：`crates/desktop/src/{coordinator,dashscope_stream,paste,settings_commands,main,runtime_config,audio}.rs`、`crates/asr/src/config.rs`。
-> 平行文档：`2026-06-20-qwen3-asr-inference-audit.md`（同日 asr 推理审查复核）。
+> 平行文档：`2026-06-21-archived-spec.md#qwen3-asr-inference-audit`（同日 asr 推理审查复核）。
 
 ## 1. 背景
 
@@ -207,13 +217,12 @@ P1 三条已实施、逐 commit bisect-clean、**已合并 main**（`9a19b6b`，
 
 ## 6. 现状与后续
 
-P0（一1/一2/二1，`44b8ab8`）+ P1（二2/三2/三1，`9a19b6b`）**均已合并 main**。剩余：P2（一3 剪贴板恢复等待）延后 + GUI e2e 待本地验证，详见 followups plan `2026-06-20-desktop-audit-followups.md`。
+P0（一1/一2/二1，`44b8ab8`）+ P1（二2/三2/三1，`9a19b6b`）**均已合并 main**。剩余：P2（一3 剪贴板恢复等待）延后 + GUI e2e 待本地验证，详见 followups plan `2026-06-21-archived-plan.md#desktop-audit-followups`。
 
 ## 7. 附：已澄清的过时认知
 
 - summary 曾记「`cargo check --workspace` 在 `crates/desktop` 报 `octopus_llm::test_connection` 未找到」——**已不存在**：`crates/llm/src/lib.rs:6` 已 `pub use client::{polish, test_connection}`，定义 `client.rs:135`，desktop 调用点 `settings_commands.rs:277` 合法。该旧状态过时。
 
-## 📄 `2026-06-20-ort-cross-platform-feature-design.md`
 
 # ort 跨平台 EP feature 条件化设计
 
@@ -343,7 +352,6 @@ providers.push(ort::ep::DirectMLExecutionProvider::default().build());
 - 不升级 ort 版本（仍 2.0.0-rc.12）。
 - 不为 linux 额外支持 coreml、不为 mac 支持 cuda（跨平台无意义）。
 
-## 📄 `2026-06-20-qwen3-asr-inference-audit.md`
 
 # qwen3-asr 推理实现审查复核与修复
 
@@ -484,7 +492,6 @@ std::vector key_shape = {batch, max_total_len_, kv_h, hd};  // max_total_len_ �
 - KV cache 免清零复用（需模型 masking 行为实测，未验证前不动）。
 - 长音频（>150s）的 `context > max_seq_len` 溢出裁剪（VAD 分段场景 N/A）。
 
-## 📄 `2026-06-20-zipformer-transducer-design.md`
 
 # Zipformer Transducer（RNN-T）引擎设计
 
@@ -1035,7 +1042,7 @@ session: Option<CloudSession>,  // enum: Aliyun(DashScopeStreamSession) | ByteDa
 
 **日期**: 2026-06-21
 **状态**: ✅ 已实现（commit `e0f1420`，`PASTE_RESTORE_DELAY = 200ms`，详见 §3）
-**来源**: desktop 审查一3（`2026-06-20-desktop-implementation-audit.md` §3.3 + `2026-06-20-desktop-audit-followups.md` §1，原 P2 延后项）。**注**：两来源文件已于 2026-06-21 归档——audit spec 见 `specs/2026-06-20-archived-design.md`、followups plan 见 `plans/2026-06-20-archived-plans.md`。
+**来源**: desktop 审查一3（`2026-06-21-archived-spec.md#desktop-implementation-audit` §3.3 + `2026-06-21-archived-plan.md#desktop-audit-followups` §1，原 P2 延后项）。**注**：两来源文件已于 2026-06-21 归档——audit spec 见 `specs/2026-06-21-archived-spec.md`、followups plan 见 `plans/2026-06-21-archived-plan.md`。
 **分支**: `worktree-clipboard-restore-race`（隔离实现，main 让给 e2e 测试）
 
 ## 1. 背景
@@ -1102,7 +1109,7 @@ std::thread::sleep(PASTE_RESTORE_DELAY);
 
 无单元测试（系统剪贴板 + enigo GUI 交互，无法离线测；与 connection-test 同理 YAGNI）。
 
-手动 e2e（补入 `2026-06-20-desktop-audit-followups.md` §2 GUI e2e 清单）：
+手动 e2e（补入 `2026-06-21-archived-plan.md#desktop-audit-followups` §2 GUI e2e 清单）：
 - `write_to_clipboard = false` + 慢系统/高负载（前台跑重任务）→ 识别粘贴 → 确认目标应用粘进的是识别文本（非之前剪贴板内容）。
 - 回归：`write_to_clipboard = true` 路径行为不变（结果留剪贴板）。
 
@@ -1116,7 +1123,7 @@ std::thread::sleep(PASTE_RESTORE_DELAY);
 | 文件 | 变更 |
 |---|---|
 | `crates/desktop/src/paste.rs` | 新增 `PASTE_RESTORE_DELAY` 常量 + L119 sleep 改用常量 |
-| `docs/superpowers/plans/2026-06-20-desktop-audit-followups.md` | §2 GUI e2e 清单补「剪贴板恢复竞态」验证项；§1 P2 状态改为已实现 |
+| `docs/superpowers/plans/2026-06-21-archived-plan.md#desktop-audit-followups` | §2 GUI e2e 清单补「剪贴板恢复竞态」验证项；§1 P2 状态改为已实现 |
 
 
 ---
@@ -1125,7 +1132,7 @@ std::thread::sleep(PASTE_RESTORE_DELAY);
 # octopus-download 接入模型管理（阶段1）设计
 
 > 2026-06-21。4 阶段体积优化工程的第 1 阶段。整体方案见会话记录；本 spec 只覆盖阶段1。
-> 相关：download crate spec `2026-06-21-model-download-design.md`、TLS/体积分析 `docs/download_architure.md`。
+> 相关：download crate spec `2026-06-21-archived-spec.md#model-download-design`、TLS/体积分析 `docs/download_architure.md`。
 
 ## 1. 背景与定位
 
@@ -1642,7 +1649,7 @@ tokio = { version = "1", features = ["full", "test-util"] }
 # 模型管理 GUI 接入设计（desktop 设置窗口页面 3）
 
 > 2026-06-21 初版（已合并 main `7fd0682`）。2026-06-22 **就绪逻辑重构 v2**（见 §9）：`is_enabled` 改为「就绪」语义、点下载先探查、`secret_key` 存文件清单 + sha256 自举、新增完整性复核。
-> 相关：download crate spec `2026-06-21-model-download-design.md`、阶段1 接入 spec `2026-06-21-download-model-integration-design.md`。
+> 相关：download crate spec `2026-06-21-archived-spec.md#model-download-design`、阶段1 接入 spec `2026-06-21-archived-spec.md#download-model-integration-design`。
 > worktree：`model-mgmt-ui`（分支 `worktree-model-mgmt-ui`）。
 
 ## 1. 背景与定位
