@@ -52,6 +52,7 @@ pub struct StreamingParaformer {
     decoder_caches: Vec<ndarray::Array3<f32>>,    // 16 × [1, 512, cache_time]
     num_processed_frames: i32,                    // fbank frame counter (fbank space)
     all_token_ids: Vec<i64>,                      // 全局累积 token ID（跨 chunk），用于整体解码
+    last_emitted_token: i64,                      // 上个 chunk 最后一个有效 token（跨边界去重用，-1=无）
 }
 
 impl StreamingParaformer {
@@ -141,6 +142,7 @@ impl StreamingParaformer {
             decoder_caches,
             num_processed_frames: 0,
             all_token_ids: Vec::new(),
+            last_emitted_token: -1,
         };
 
         Ok(engine)
@@ -269,6 +271,7 @@ impl StreamingParaformer {
         }
         self.num_processed_frames = 0;
         self.all_token_ids.clear();
+        self.last_emitted_token = -1;
     }
 
     /// Number of fbank frames computed and available in fbank_cache.
@@ -417,12 +420,27 @@ impl StreamingParaformer {
         // 7. Stateful decoder → token IDs
         let sample_ids = self.run_decoder(&enc_tensor, enc_len_scalar, &acoustic, num_tokens)?;
 
-        // 8. 累积有效 token（跳过 blank/sos/eos）——整体解码交给调用方
+        // 8. 累积有效 token（跳过 blank/sos/eos）——整体解码交给调用方。
+        // 跨 chunk 边界去重：CIF 在音节跨 chunk 时，会在相邻两个 chunk 各 fire 一次同一 token
+        //（如"识别"的"别"跨 480/540 两个 chunk 双 fire → "识别别"）。若本 chunk 首个有效 token
+        // == 上 chunk 末 token，判为双 fire 重复，跳过。单 chunk 内合法重复（"爸爸""常常"，
+        // 两个相同字在同一 chunk fire）不跨边界，不受影响。
+        let mut seen_first_valid = false;
         for &tid in &sample_ids {
             if tid > TOKEN_EOS {
                 let idx = tid as usize;
                 if idx < self.vocab.len() && !self.vocab[idx].is_empty() {
+                    if !seen_first_valid && (tid as i64) == self.last_emitted_token {
+                        log::debug!(
+                            "[asr-diag] paraformer 跨边界去重: 跳过 token={}（与上 chunk 末 token 重复，CIF 双 fire）",
+                            tid
+                        );
+                        seen_first_valid = true;
+                        continue;
+                    }
                     self.all_token_ids.push(tid);
+                    self.last_emitted_token = tid as i64;
+                    seen_first_valid = true;
                 }
             }
         }
