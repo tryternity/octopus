@@ -320,6 +320,10 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
             "overlay_position" => cfg.overlay_position = value,
             "polish_llm" => cfg.polish_llm = value,
             "download_mirror" => cfg.download_mirror = value,
+            "clipboard_shortcut" => cfg.clipboard_shortcut = value,
+            // i64 字段
+            "clipboard_max_items" => { if let Ok(v) = value.parse() { cfg.clipboard_max_items = v; } }
+            "clipboard_max_age_days" => { if let Ok(v) = value.parse() { cfg.clipboard_max_age_days = v; } }
             // bool 字段：parse 失败保留 default
             "write_to_clipboard" => { if let Ok(v) = value.parse() { cfg.write_to_clipboard = v; } }
             "asr_hardware_accelerated" => { if let Ok(v) = value.parse() { cfg.asr_hardware_accelerated = v; } }
@@ -361,7 +365,7 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         PolishMode::FinalOnly => 1,
         PolishMode::Intermediate => 2,
     };
-    let fields: [(&str, String); 22] = [
+    let fields: [(&str, String); 25] = [
         ("engine_mode", cfg.engine_mode.clone()),
         ("remote_url", cfg.remote_url.clone()),
         ("grpc_endpoint", cfg.grpc_endpoint.clone()),
@@ -384,6 +388,9 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         ("hide_toolbar", cfg.hide_toolbar.to_string()),
         ("denoise_mode", cfg.denoise_mode.to_string()),
         ("download_mirror", cfg.download_mirror.clone()),
+        ("clipboard_shortcut", cfg.clipboard_shortcut.clone()),
+        ("clipboard_max_items", cfg.clipboard_max_items.to_string()),
+        ("clipboard_max_age_days", cfg.clipboard_max_age_days.to_string()),
     ];
     for (key, value) in &fields {
         conn.execute(

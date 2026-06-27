@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Mic, Volume2, Sparkles, Server, Keyboard, ClipboardList } from "lucide-react";
+import { Mic, Volume2, Sparkles, Keyboard, ClipboardList } from "lucide-react";
 import type { ConfigResponse } from "./index";
 
 interface GeneralPanelProps {
@@ -184,40 +184,32 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
       </Card>
 
       <Card icon={Sparkles} title="润色">
-        <Row label="模型" effect="立即">
-          <select className={selectClass} value={cfg.polish_llm as string} onChange={(e) => setVal("polish_llm", e.target.value)}>
+        <Row label="润色模型" effect="立即">
+          <select className={selectClass}
+            value={llm_models.find((m) => m.current)?.name ?? ""}
+            onChange={(e) => setVal("polish_llm", e.target.value)}>
             {llm_models.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
           </select>
         </Row>
-        <Row label="模式" effect="立即">
+        <Row label="润色模式" effect="立即">
           <select className={selectClass} value={cfg.polish_mode as number} onChange={(e) => setVal("polish_mode", parseInt(e.target.value))}>
             <option value={0}>关闭</option><option value={1}>仅最终润色</option><option value={2}>中间 + 最终</option>
           </select>
         </Row>
-        <Row label="提示词" effect="立即" hint="选择不同风格 prompt">
+        <Row label="润色提示词" effect="立即" hint="选择不同风格 prompt">
           <select className={selectClass} value={active_prompt_id} onChange={(e) => setActivePrompt(parseInt(e.target.value))}>
             {prompts.map((p) => <option key={p.id} value={p.id}>{p.title}{p.is_system ? "（内置）" : ""}</option>)}
           </select>
         </Row>
-        <Row label="间隔" effect="下次录音">
+        <Row label="润色间隔" effect="下次录音">
           <select className={selectClass} value={cfg.polish_min_interval as number} onChange={(e) => setVal("polish_min_interval", parseFloat(e.target.value))}>
             <option value={0}>仅最后</option>
             {[3, 4, 5, 6, 7, 8].map((v) => <option key={v} value={v}>每 {v} 秒</option>)}
           </select>
         </Row>
-        <Row label="停顿阈值" effect="下次录音" hint="超过此值触发中间润色">
+        <Row label="润色停顿阈值" effect="下次录音" hint="超过此值触发中间润色">
           <select className={selectClass} value={cfg.pause_polish_threshold_ms as number} onChange={(e) => setVal("pause_polish_threshold_ms", parseFloat(e.target.value))}>
             {[600, 700, 800, 900, 1000].map((v) => <option key={v} value={v}>{v}ms</option>)}
-          </select>
-        </Row>
-      </Card>
-
-      <Card icon={Server} title="引擎接入">
-        <Row label="模式" effect="重启" hint="embedded = 本地推理">
-          <select className={selectClass} value={cfg.engine_mode as string} onChange={(e) => setVal("engine_mode", e.target.value)}>
-            <option value="embedded">embedded</option>
-            <option value="websocket">websocket</option>
-            <option value="grpc">grpc</option>
           </select>
         </Row>
       </Card>
@@ -225,16 +217,12 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
       <Card icon={ClipboardList} title="剪贴板">
         <Row label="最大保留条数" effect="下次启动" hint="不含收藏，超出自动清理">
           <select className={selectClass} value={cfg.clipboard_max_items as number} onChange={(e) => setVal("clipboard_max_items", parseInt(e.target.value))}>
-            {[200, 500, 1000, 2000, 5000].map((v) => <option key={v} value={v}>{v} 条</option>)}
+            {[100, 200, 300, 500, 1000].map((v) => <option key={v} value={v}>{v} 条</option>)}
           </select>
         </Row>
         <Row label="自动清理天数" effect="下次启动" hint="超过此天数的非收藏记录自动删除">
           <select className={selectClass} value={cfg.clipboard_max_age_days as number} onChange={(e) => setVal("clipboard_max_age_days", parseInt(e.target.value))}>
-            <option value={7}>7 天</option>
-            <option value={15}>15 天</option>
-            <option value={30}>30 天</option>
-            <option value={90}>90 天</option>
-            <option value={36500}>永久</option>
+            {[1, 3, 7, 15, 30].map((v) => <option key={v} value={v}>{v} 天</option>)}
           </select>
         </Row>
       </Card>
