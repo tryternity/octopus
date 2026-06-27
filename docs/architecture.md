@@ -11,6 +11,7 @@ octopus/
 │   ├── asr-local/   # 核心推理库 (octopus-asr-local)
 │   ├── asr-cloud/   # 云端 ASR 协议层 (octopus-asr-cloud)
 │   ├── clipboard/   # 剪贴板历史管理 (octopus-clipboard)
+│   ├── ocr/         # OCR 图片识别 (octopus-ocr)
 │   ├── llm/         # LLM 润色 (octopus-llm)
 │   ├── cli/         # 命令行工具 (octopus-cli)
 │   ├── server/      # HTTP/WebSocket 服务 (octopus-server)
@@ -25,7 +26,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表）。DB 迁移至 v6。`with_db` 为公开 API 供其他 crate 调用。`image_util`（PNG 原样保存 + WebP 有损压缩（`webp` crate）+ JPEG 有损压缩（`image` crate JpegEncoder），均接受 quality 参数）。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表 / `image_data` 表）。DB 迁移至 v7。`with_db` 为公开 API 供其他 crate 调用。`image_util`（PNG 原样保存 + WebP 有损压缩（`webp` crate）+ JPEG 有损压缩（`image` crate JpegEncoder），均接受 quality 参数）。
 
 ### octopus-asr-local（核心推理库）
 
@@ -108,15 +109,30 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 | `model` | 数据结构：`ItemType`（Text/Image/File）/ `Source`（Clipboard/Asr）/ `ClipboardItem`（含 `ImageMeta`/`FileMeta`/`AsrMeta`）/ `QueryFilter`（6 种过滤 + 分页 + 搜索）|
 | `handle` | `ClipboardHandle`：`Mutex<ClipboardContext>` 全局单例（Windows 防锁竞争）+ `AtomicBool` suppress flag（区分 ASR 写入与外部复制，watcher 跳过自身写入） |
 | `watcher` | `ClipboardWatcher`：后台线程跑 `ClipboardWatcherContext::start_watch()`（阻塞），`on_clipboard_change` 回调检查 suppress flag → 判断类型（files > image > text 优先级）→ 去重 → 存 DB → 通知前端 |
-| `store` | DB CRUD：`insert_clipboard_item` / `insert_asr_item`（source=asr，关联 transcription_id）/ `query_history`（LIKE 搜索 + 6 种过滤 + 分页）/ `toggle_favorite` / `delete_item`（+ 删除计数器 `track_deletes`）/ `delete_by_transcription_ids`（级联删除：Settings 删转译记录时同步删剪贴板引用）/ `clear_history`（保留收藏）/ `rebuild_fts_index`（FTS5 索引重建，启动时 + 删除计数达 10 自动调用）+ 去重（hash / text） |
-| `image` | PNG 编码（`image` crate）+ SHA-256 去重 + 缩略图 240×240（Lanczos3）+ 孤立 blob 回收。图片存 `~/.octopus/clipboard_images/<hash>.png` |
+| `store` | DB CRUD：`insert_clipboard_item` / `insert_asr_item`（source=asr，关联 transcription_id）/ `query_history`（LIKE 搜索 + 6 种过滤 + 分页）/ `toggle_favorite` / `delete_item`（+ 删除计数器 `track_deletes` + image_data 引用计数回收）/ `delete_by_transcription_ids`（级联删除：Settings 删转译记录时同步删剪贴板引用）/ `clear_history`（保留收藏）/ `rebuild_fts_index`（FTS5 索引重建，启动时 + 删除计数达 10 自动调用）/ `insert_image_data` / `get_image_blob` / `get_image_thumb` / `cleanup_unreferenced_images` + 去重（hash / text） |
+| `image` | RGBA → PNG → SHA-256 去重 + WebP 无损编码（`webp` crate）+ 缩略图 240×240（Lanczos3）。图片 BLOB 存 DB `image_data` 表（不再写文件系统） |
 | `cleanup` | 自动清理：按天数（默认 30）+ 按数量（默认 1000）删除非收藏记录 + 孤立 blob 回收 + FTS5 索引重建。**注意：`run_cleanup` 已实现但尚未接入定时调用**；FTS5 索引维护已单独接入（启动时 rebuild + 删除计数器达 10 自动 rebuild，见 store.rs） |
 
 **监听机制（clipboard-rs 内置）：** macOS 轮询 `NSPasteboard.changeCount`（500ms）；Windows 事件驱动 `AddClipboardFormatListener`；Linux X11 XFixes 事件驱动；Linux Wayland 两级轮询（MIME 类型 + text 内容，500ms）。
 
 **ASR 集成：** `coordinator.rs::do_paste` 中先调 `store::insert_asr_item`（写 DB source=asr，关联 `transcription_id`）再调 `paste::paste`（写剪贴板，suppress flag 阻止 watcher 重复记录）。**级联删除（单向）：** Settings 删除转译记录时，`delete_history` 同步调 `delete_by_transcription_ids` 清理剪贴板中引用该记录的条目；反向不级联（剪贴板删除语音条目只删 `clipboard_history` 行，外键 `ON DELETE SET NULL` 处理引用置空，`transcriptions` 源数据不受影响）。曾发现旧数据 `transcription_id` 为 NULL 导致级联失效（旧二进制未关联），已清理并加测试断言验证。
 
-**DB 表：** `clipboard_history`（全字段：item_type/source/content/search_text/is_favorite/created_at + image 元数据 blob_hash/width/height/has_thumbnail + file_count + is_rich + ASR 元数据 transcription_id/polish_status/engine/model）+ `clipboard_history_fts`（FTS5 虚表，trigram tokenizer）+ 3 触发器自动同步。**FTS5 索引维护**：FTS5 external content table 的 DELETE 触发器只移除逻辑索引，`_data` 表 b-tree 页不收缩，删除越多空洞越大。维护策略——启动时 rebuild 一次（`main.rs` setup）+ 运行中删除计数器（`AtomicU32`，阈值 10）达 10 自动 rebuild + 清零。
+**DB 表：** `clipboard_history`（全字段：item_type/source/content/search_text/is_favorite/created_at + image 元数据 blob_hash/width/height/has_thumbnail + file_count + is_rich + ASR 元数据 transcription_id/polish_status/engine/model）+ `clipboard_history_fts`（FTS5 虚表，trigram tokenizer）+ 3 触发器自动同步 + `image_data`（图片 BLOB 存储：hash/blob/thumb/image_type/width/height/created_at）。**FTS5 索引维护**：FTS5 external content table 的 DELETE 触发器只移除逻辑索引，`_data` 表 b-tree 页不收缩，删除越多空洞越大。维护策略——启动时 rebuild 一次（`main.rs` setup）+ 运行中删除计数器（`AtomicU32`，阈值 10）达 10 自动 rebuild + 清零。**图片存储**：剪贴板图片以 WebP 无损 BLOB 存 `image_data` 表（替代旧文件系统 `~/.octopus/clipboard_images/`），`clipboard_history.blob_hash` 引用 `image_data.hash`；删除条目时引用计数为 0 才删 image_data 行（应用层实现，非 DB 外键）。启动时 `image_migration` 模块自动迁移旧文件到 DB。
+
+### octopus-ocr（OCR 图片识别）
+
+独立的 OCR crate，仅依赖 `octopus-infra`。基于 `ocr-rs`（MNN 推理后端）封装 PaddleOCR PP-OCRv6 pipeline（det→crop→rec）。
+
+| 模块 | 职责 |
+|---|---|
+| `engine` | `OcrEngine`：全局单例（`OnceLock`），懒加载模型。`recognize(image_bytes)` 支持任意格式（image crate 自动检测）。模型名从 `app_config.ocr_model` 读取 |
+| `model` | 模型路径管理（`~/.octopus/models/ocr/<name>/`）+ `is_model_ready`（det.mnn + rec.mnn + keys.txt 三件套检测） |
+
+**模型**：PP-OCRv6 small（det 4.7M + rec 10M + keys 73K），从 ocr-rs GitHub 仓库下载。DB `models` 表 `domain='ocr'` 记录，source=det URL、secret_key=rec URL。
+
+**触发方式**：手动——剪贴板浮窗/管理页图片条目点 OCR 按钮（ScanText 图标）。不支持自动 OCR。
+
+**结果处理**：识别文本 → `clipboard_history.search_text`（FTS5 可搜索）→ 系统剪贴板 → osascript 新建 TextEdit 无标题文档（不落盘临时文件）。
 
 ### octopus-desktop（桌面应用）
 
@@ -135,7 +151,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 |------|------|
 | `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 116→148px），移出收起；工具精简为 5 个——**关闭**（首位，放弃内容保留 DB 记录）/ 系统设置 / 降噪模式 / 润色模式 / 立即润色 / 编辑（编辑态追加取消/保存）。语音模型和润色模型入口已移至 Settings 页面（模型太多，下拉空间有限）。由 `app_config.hide_toolbar`（默认 `true`）控制：`true`=hover 显隐，`false`=始终显示。**运行时切换立即生效**：设置窗口改 `hide_toolbar` → emit `config-changed` 事件 → result window 的 `refreshActive()` 双向切换。**历史**：曾同时存在 `recording_overlay` 窗口（独立 WebView 渲染进程），UI 统一到 result_window 后 overlay 已废弃。 |
 | `settings_window` | 独立设置窗口（原生标题栏、圆角、可调大小）。五页面侧边栏布局：系统设置 / 识别记录 / 剪贴板 / 模型管理 / 提示词。React 组件化，表单用 react-hook-form。窗口位置记忆。`open_settings` 支持初始页面参数（`PENDING_PAGE` 暂存 + `get_initial_page` 拉取 + `settings://navigate` 事件），剪贴板浮窗「管理」按钮直接跳转剪贴板 tab。 |
-| `clipboard_window` | 剪贴板历史浮窗（300×600，无边框圆角透明置顶，Alt+V 唤起，窗口位置记忆）。顶部标题栏（X + 「剪贴板」 + Pin），搜索框 + 6 类过滤（全部/语音/文本/图片/文件/收藏，纯图标 tooltip），列表（hairline 分隔线，ASR 条目左侧 voice 色条，hover 显示复制/收藏/保存/打开/删除按钮）。单击选中不关闭，双击复制到剪贴板（用户手动 Cmd+V）。图片条目可保存到 `~/Downloads/octopus/`（自定义浮层选格式 JPEG/WebP/PNG + 质量，默认 JPEG 85%，可选保存后打开文件夹）。底部「管理」按钮跳转 Settings 剪贴板 tab（完整批量管理）。Settings 剪贴板/识别记录管理页手动「加载更多」分页，行操作与浮窗一致。 |
+| `image_migration` | 一次性迁移：`~/.octopus/clipboard_images/` → DB `image_data` BLOB。幂等（已存在的 hash 跳过），迁移成功后删除目录。启动时 `main.rs` setup 阶段调用。 |
+| `clipboard_window` | 剪贴板历史浮窗（300×600，无边框圆角透明置顶，Alt+V 唤起，窗口位置记忆）。顶部标题栏（X + 「剪贴板」 + Pin），搜索框 + 6 类过滤（全部/语音/文本/图片/文件/收藏，纯图标 tooltip），列表（hairline 分隔线，ASR 条目左侧 voice 色条，图片条目内联 WebP 缩略图，hover 显示复制/收藏/保存/OCR/打开/删除按钮）。单击选中不关闭，双击复制到剪贴板（用户手动 Cmd+V）。图片条目可保存到 `~/Downloads/octopus/`（自定义浮层选格式 JPEG/WebP/PNG + 质量，默认 JPEG 85%，可选保存后打开文件夹）。OCR 识别文本写入 search_text + 剪贴板 + osascript 新建 TextEdit 文档。底部「管理」按钮跳转 Settings 剪贴板 tab（完整批量管理）。Settings 剪贴板/识别记录管理页手动「加载更多」分页，行操作与浮窗一致。 |
 
 **macOS 动态激活策略（Dock 图标显隐）：** 应用启动即 `Accessory` 模式（无 Dock 图标，纯托盘应用）。用户打开设置窗口时 `open_settings` 切 `Regular`，并经 `set_dock_icon()` 用 `objc2` 手动 `setApplicationIconImage`（release 裸二进制无 .app bundle，Tauri 仅 debug 自动设图标，故需手动设 Dock + 应用图标）；设置窗口 `Destroyed` 事件触发 `on_settings_closed` 切回 `Accessory`。`#[cfg(target_os = "macos")]` 条件编译，Windows / Linux 无此逻辑。
 
