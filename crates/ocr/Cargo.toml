@@ -1,0 +1,11 @@
+[package]
+name = "octopus-ocr"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+octopus-infra = { path = "../infra" }
+ocr-rs = "2.3"
+image = "0.25"
+anyhow = "1"
+log = "0.4"
