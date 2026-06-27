@@ -405,7 +405,7 @@ mod tests {
     fn test_insert_asr() {
         let conn = open_test_db();
         insert_asr_item(&conn, "识别文本", AsrMeta {
-            transcription_id: 1, polish_status: "off".into(),
+            transcription_id: 12345, polish_status: "off".into(),
             engine: "sensevoice".into(), model: "".into(),
         }).unwrap();
         let result = query_history(&conn, &QueryFilter {
@@ -414,6 +414,8 @@ mod tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].source, Source::Asr);
         assert_eq!(result[0].asr_meta.as_ref().unwrap().engine, "sensevoice");
+        // 验证 transcription_id 正确写入并读回
+        assert_eq!(result[0].asr_meta.as_ref().unwrap().transcription_id, 12345);
     }
 
     #[test]

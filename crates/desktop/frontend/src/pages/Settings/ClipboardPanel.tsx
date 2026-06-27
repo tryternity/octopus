@@ -2,7 +2,6 @@ import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
-import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
 import type { ClipboardItem } from "@/types/clipboard";
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
@@ -32,13 +31,8 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
   const [noMore, setNoMore] = useState(false);
 
   const debouncedSearch = useDebouncedValue(search, 300);
-  const pendingResetRef = useRef(false);
 
   const fetchData = useCallback(async (resetPage?: boolean) => {
-    if (loading) {
-      if (resetPage) pendingResetRef.current = true;
-      return;
-    }
     setLoading(true);
     const targetPage = resetPage ? 1 : page;
     try {
@@ -61,11 +55,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
       showToast("加载失败：" + e);
     }
     setLoading(false);
-    if (pendingResetRef.current) {
-      pendingResetRef.current = false;
-      fetchData(true);
-    }
-  }, [filter, debouncedSearch, showToast, page, loading]);
+  }, [filter, debouncedSearch, showToast, page]);
 
   useEffect(() => { fetchData(true); }, [filter, debouncedSearch]);
   useTauriEvent("clipboard://changed", () => fetchData(true));
@@ -106,8 +96,6 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
 
   const allChecked = items.length > 0 && selectedIds.size === items.length;
   const hasSelection = selectedIds.size > 0;
-
-  const sentinelRef = useInfiniteScroll(() => fetchData(), loading, noMore);
 
   return (
     <div className="flex flex-col h-full">
@@ -181,11 +169,17 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
             {loading && items.length > 0 && (
               <div className="text-center py-3 text-stone-400 text-xs">加载中...</div>
             )}
+            {!loading && !noMore && items.length > 0 && (
+              <button
+                className="w-full py-3 text-xs text-stone-500 hover:text-stone-800 transition-colors"
+                onClick={() => fetchData()}
+              >
+                加载更多
+              </button>
+            )}
             {!loading && noMore && items.length > 0 && (
               <div className="text-center py-3 text-stone-300 text-[10px]">— 没有更多了 —</div>
             )}
-            {/* 无限滚动 sentinel */}
-            <div ref={sentinelRef} className="h-1" />
           </div>
         )}
       </div>

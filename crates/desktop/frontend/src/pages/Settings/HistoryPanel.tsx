@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { useInfiniteScroll } from "@/hooks/useInfiniteScroll";
 import { Copy, Trash2, ChevronDown, Search, ChevronRight } from "lucide-react";
 
 interface HistoryRecord {
@@ -25,13 +24,8 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [search, setSearch] = useState("");
   const debouncedSearch = useDebouncedValue(search, 300);
-  const pendingResetRef = useRef(false);
 
   const loadHistory = useCallback(async (resetOffset?: boolean) => {
-    if (loading) {
-      if (resetOffset) pendingResetRef.current = true;
-      return;
-    }
     setLoading(true);
     const o = resetOffset ? 0 : offset;
     try {
@@ -45,12 +39,7 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
       setDone(recs.length < 20);
     } catch (e) { showToast("加载历史失败：" + e); }
     setLoading(false);
-    // 如果加载期间收到 reset 请求，补执行
-    if (pendingResetRef.current) {
-      pendingResetRef.current = false;
-      loadHistory(true);
-    }
-  }, [loading, offset, showToast, debouncedSearch]);
+  }, [offset, showToast, debouncedSearch]);
 
   useEffect(() => { loadHistory(true); }, [debouncedSearch]);
 
@@ -87,8 +76,6 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
     setSelectedIds(new Set());
     loadHistory(true);
   };
-
-  const sentinelRef = useInfiniteScroll(() => loadHistory(), loading, done);
 
   return (
     <div className="flex flex-col h-full">
@@ -145,11 +132,17 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
         {loading && (
           <div className="text-center py-4 text-stone-400 text-xs">加载中...</div>
         )}
+        {!loading && !done && records.length > 0 && (
+          <button
+            className="w-full py-3 text-xs text-stone-500 hover:text-stone-800 transition-colors"
+            onClick={() => loadHistory()}
+          >
+            加载更多
+          </button>
+        )}
         {!loading && done && records.length > 0 && (
           <div className="text-center py-3 text-stone-300 text-[10px]">— 没有更多了 —</div>
         )}
-        {/* 无限滚动 sentinel */}
-        <div ref={sentinelRef} className="h-1" />
       </div>
 
       {/* ── 底部：状态 + 批量操作 ── */}

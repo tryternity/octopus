@@ -1993,3 +1993,59 @@ Phase 3 完成后的持续迭代，按实际实施顺序记录。
 - 降噪/润色弹窗 3 个选项被 `overflow-hidden` 裁剪（窗口高 100px）
 - 弹窗字号 `13px→12px`、行间距 `py-1.5→py-1`、起始位 `30px→28px`、`z-10→z-30`
 - `result_window.rs` 窗口高度 `100→116px`
+
+### 迭代 6：剪贴板管理入口 + 管理页重设计
+
+**剪贴板浮窗**：
+- 底部「清空」按钮改为「管理」按钮（齿轮图标），点击 `open_settings({ initialPage: "clipboard" })`
+- 移除 `handleClear` 函数和 `invoke` import
+
+**open_settings 导航**：
+- `settings_window.rs` 新增 `initial_page: Option<String>` 参数
+- `PENDING_PAGE`（`Mutex<Option<String>>`）暂存目标页面
+- 新增 `get_initial_page` 命令，前端 mount 时拉取并清除
+- 窗口已打开时走 `settings://navigate` 事件即时切换
+- `tray.rs` 调用处补 `None` 参数
+
+**ClipboardPanel 重设计**（frontend-design skill）：
+- 布局对调：搜索/过滤置顶 → 列表 → 底部状态 + 批量操作浮现
+- stone 暖灰色系，过滤标签选中 stone-800 深墨
+- 提取 `ClipboardRow` 子组件：行操作与浮窗一致（复制/收藏/保存图片/打开文件/单条二次确认删除）
+- 复用 `SaveImagePopover` 组件
+
+**HistoryPanel 同风格重设计**：
+- 搜索置顶，列表 header 全选
+- 提取 `HistoryRow` 子组件：复制 + 单条二次确认删除 + 原始文本折叠展开
+- 已润色条目左侧 amber-600 竖线（签名元素）
+
+### 迭代 7：分页与删除竞态（三轮演进）
+
+**第一轮：无限滚动**
+- 新增 `useInfiniteScroll` hook（`IntersectionObserver`，rootMargin 100px 预加载）
+- 两页面去掉「加载更多」按钮，sentinel 自动触发加载
+- 底部「— 没有更多了 —」提示
+
+**第二轮：竞态修复（失败）**
+- 问题：无限滚动正在加载（`loading=true`）时，删除完成调 `loadHistory(true)` 被 `if (loading) return` 挡住，列表不刷新
+- 尝试 `pendingResetRef`（useRef）标记「待重置」，加载完成后补执行
+- **闭包陷阱**：`useCallback` 依赖 `loading`，递归补执行捕获的是旧闭包（`loading` 仍为 `true`），永远跳不出
+
+**第三轮（最终）：回退为手动加载更多**
+- 删除 `useInfiniteScroll` hook + sentinel
+- 删除 `pendingResetRef` 和 loading 守卫
+- 恢复手动「加载更多」按钮——手动点击不会与删除并发
+- `loadHistory`/`fetchData` 无需守卫，删除后直接刷新
+- 保留「— 没有更多了 —」提示
+
+### 迭代 8：级联删除验证与 transcription_id 修复
+
+**问题**：用户删除识别记录后，剪贴板中的 ASR 条目未被联动删除。
+
+**排查**：DB 中 4 条 ASR 记录的 `transcription_id` 全是 NULL。代码正确（`coordinator.rs` 传 `transcript.id` → `insert_asr_item` → SQL INSERT），但旧二进制产生的数据无关联。
+
+**验证**：`test_insert_asr` 测试加断言 `transcription_id == 12345`——INSERT + query 正确写入读回，通过。
+
+**修复**：
+- 清理 DB 中 `transcription_id IS NULL` 的旧 ASR 记录
+- 重新运行后新 ASR 记录正确关联，级联删除生效
+- 反向不级联：`delete_clipboard_item` 只删 `clipboard_history` 行，`transcriptions` 不受影响（`ON DELETE SET NULL`）
