@@ -439,7 +439,7 @@ function App() {
 │  │ 📄  file1.txt, file2.png (2)       [⭐]  │ │
 │  └──────────────────────────────────────────┘ │
 │                                                │
-│  共 156 条                         [清空历史]  │
+│  共 156 条                      [管理]  │
 └──────────────────────────────────────────────┘
 ```
 
@@ -505,6 +505,8 @@ function App() {
 
 两个入口：全局快捷键浮窗（默认 `Alt+V`）+ 主窗口内访问按钮。
 
+**管理入口**：浮窗底部「管理」按钮 → `open_settings({ initialPage: "clipboard" })` → 跳转设置窗口剪贴板管理页。`open_settings` 通过 `PENDING_PAGE`（`Mutex<Option<String>>`）暂存目标页面，前端 mount 后调 `get_initial_page` 拉取；窗口已打开时走 `settings://navigate` 事件即时切换。
+
 ### 4.9 图片保存浮层（SaveImagePopover）
 
 点击图片条目的下载图标弹出格式选择浮层（非系统对话框）：
@@ -534,7 +536,7 @@ function App() {
 
 **视觉设计**（frontend-design skill）：纯白不透明卡片 + 双层强阴影，与剪贴板透明底形成明确层次。分段控件激活项白底微阴影，滑轨 3px 深墨色填充进度。
 
-### 4.9 Tauri 命令层
+### 4.10 Tauri 命令层
 
 ```rust
 #[tauri::command]
@@ -631,6 +633,25 @@ FTS5 可用性：`rusqlie` with `bundled` feature 默认启用 FTS5，需验证�
 | **Phase 3** | 剪贴板历史 UI（FilterTabs/HistoryList/ClipboardItem/SearchBar）+ Tauri 集成 + ASR 写入 | Phase 1 + 2 |
 | **Phase 4** | file 类型渲染 + 富文本原文存储 | Phase 3 |
 | **Phase 5**（可选） | macOS NSPanel + Paste Stack + 内容变换 | Phase 3 |
+
+### 6.1 Settings 管理页设计（ClipboardPanel + HistoryPanel）
+
+剪贴板浮窗适合快速查看/复制，但批量管理（多选删除、搜索过滤）需要更大的空间。Settings 窗口的「剪贴板」和「识别记录」两个 tab 提供完整管理能力。
+
+**统一布局**（两页面共享风格）：
+- **顶部**：搜索框 / 过滤标签（stone-50 底 + stone-200 描边）
+- **列表 header**：全选 checkbox（hover 或有选中时显示「已选 N 项 / 全选」）
+- **列表行**：checkbox + 类型图标 + 内容预览 + 元数据（时间/引擎/badge）+ hover 操作栏
+- **底部**：状态栏（共 N 条 / 显示 N 条），选中后浮现「删除选中」按钮（二次确认 3s）
+- **分页**：手动「加载更多」按钮（每页 20/50 条），底部「— 没有更多了 —」提示
+
+**ClipboardPanel 行操作**（ClipboardRow 子组件，与浮窗一致）：复制、收藏、保存图片（SaveImagePopover）、打开文件、单条二次确认删除（1.5s）
+
+**HistoryPanel 行操作**（HistoryRow 子组件）：复制、单条二次确认删除（1.5s）、原始文本折叠展开（已润色条目左侧 amber-600 竖线）
+
+**竞态说明**：曾尝试无限滚动（IntersectionObserver），但自动加载与删除刷新存在闭包陷阱（`pendingResetRef` 递归补执行捕获旧 `loading=true` 永远跳不出），最终回退为手动「加载更多」——手动点击不会与删除并发，`loadHistory`/`fetchData` 无需 loading 守卫，删除后直接刷新。
+
+**级联删除**（单向）：删除识别记录（`transcriptions`）→ 同步删除引用该 `transcription_id` 的剪贴板条目（`delete_by_transcription_ids`）。反向不级联——删除剪贴板 ASR 条目只删 `clipboard_history` 行，`transcriptions` 源数据不受影响（外键 `ON DELETE SET NULL` 处理引用置空）。曾发现旧数据 `transcription_id` 为 NULL 导致级联失效，已清理旧数据并加测试断言验证写入/读回正确。
 
 ## 7. 依赖变更
 

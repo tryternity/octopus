@@ -114,7 +114,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **监听机制（clipboard-rs 内置）：** macOS 轮询 `NSPasteboard.changeCount`（500ms）；Windows 事件驱动 `AddClipboardFormatListener`；Linux X11 XFixes 事件驱动；Linux Wayland 两级轮询（MIME 类型 + text 内容，500ms）。
 
-**ASR 集成：** `coordinator.rs::do_paste` 中先调 `store::insert_asr_item`（写 DB source=asr）再调 `paste::paste`（写剪贴板，suppress flag 阻止 watcher 重复记录）。**级联删除：** Settings 删除转译记录时，`delete_history` 同步调 `delete_by_transcription_ids` 清理剪贴板中引用该记录的条目；反向不级联（剪贴板删除语音条目只删 `clipboard_history` 行，外键 `ON DELETE SET NULL` 处理引用置空）。
+**ASR 集成：** `coordinator.rs::do_paste` 中先调 `store::insert_asr_item`（写 DB source=asr，关联 `transcription_id`）再调 `paste::paste`（写剪贴板，suppress flag 阻止 watcher 重复记录）。**级联删除（单向）：** Settings 删除转译记录时，`delete_history` 同步调 `delete_by_transcription_ids` 清理剪贴板中引用该记录的条目；反向不级联（剪贴板删除语音条目只删 `clipboard_history` 行，外键 `ON DELETE SET NULL` 处理引用置空，`transcriptions` 源数据不受影响）。曾发现旧数据 `transcription_id` 为 NULL 导致级联失效（旧二进制未关联），已清理并加测试断言验证。
 
 **DB 表：** `clipboard_history`（全字段：item_type/source/content/search_text/is_favorite/created_at + image 元数据 blob_hash/width/height/has_thumbnail + file_count + is_rich + ASR 元数据 transcription_id/polish_status/engine/model）+ `clipboard_history_fts`（FTS5 虚表，trigram tokenizer）+ 3 触发器自动同步。**FTS5 索引维护**：FTS5 external content table 的 DELETE 触发器只移除逻辑索引，`_data` 表 b-tree 页不收缩，删除越多空洞越大。维护策略——启动时 rebuild 一次（`main.rs` setup）+ 运行中删除计数器（`AtomicU32`，阈值 10）达 10 自动 rebuild + 清零。
 
@@ -134,8 +134,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 | 窗口 | 用途 |
 |------|------|
 | `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 116→148px），移出收起；工具精简为 5 个——**关闭**（首位，放弃内容保留 DB 记录）/ 系统设置 / 降噪模式 / 润色模式 / 立即润色 / 编辑（编辑态追加取消/保存）。语音模型和润色模型入口已移至 Settings 页面（模型太多，下拉空间有限）。由 `app_config.hide_toolbar`（默认 `true`）控制：`true`=hover 显隐，`false`=始终显示。**运行时切换立即生效**：设置窗口改 `hide_toolbar` → emit `config-changed` 事件 → result window 的 `refreshActive()` 双向切换。**历史**：曾同时存在 `recording_overlay` 窗口（独立 WebView 渲染进程），UI 统一到 result_window 后 overlay 已废弃。 |
-| `settings_window` | 独立设置窗口（原生标题栏、圆角、可调大小）。四页面侧边栏布局：识别记录 / 系统设置 / 模型管理 / 提示词。React 组件化，表单用 react-hook-form。窗口位置记忆。 |
-| `clipboard_window` | 剪贴板历史浮窗（300×600，无边框圆角透明置顶，Alt+V 唤起，窗口位置记忆）。顶部标题栏（X + 「剪贴板」 + Pin），搜索框 + 6 类过滤（全部/语音/文本/图片/文件/收藏，纯图标 tooltip），列表（hairline 分隔线，ASR 条目左侧 voice 色条，hover 显示收藏/删除/保存/打开按钮）。单击选中不关闭，双击复制到剪贴板（用户手动 Cmd+V，不模拟粘贴）。图片条目可保存到 `~/Downloads/octopus/`（自定义浮层选格式 JPEG/WebP/PNG + 质量，默认 JPEG 85%，可选保存后打开文件夹）。 |
+| `settings_window` | 独立设置窗口（原生标题栏、圆角、可调大小）。五页面侧边栏布局：系统设置 / 识别记录 / 剪贴板 / 模型管理 / 提示词。React 组件化，表单用 react-hook-form。窗口位置记忆。`open_settings` 支持初始页面参数（`PENDING_PAGE` 暂存 + `get_initial_page` 拉取 + `settings://navigate` 事件），剪贴板浮窗「管理」按钮直接跳转剪贴板 tab。 |
+| `clipboard_window` | 剪贴板历史浮窗（300×600，无边框圆角透明置顶，Alt+V 唤起，窗口位置记忆）。顶部标题栏（X + 「剪贴板」 + Pin），搜索框 + 6 类过滤（全部/语音/文本/图片/文件/收藏，纯图标 tooltip），列表（hairline 分隔线，ASR 条目左侧 voice 色条，hover 显示复制/收藏/保存/打开/删除按钮）。单击选中不关闭，双击复制到剪贴板（用户手动 Cmd+V）。图片条目可保存到 `~/Downloads/octopus/`（自定义浮层选格式 JPEG/WebP/PNG + 质量，默认 JPEG 85%，可选保存后打开文件夹）。底部「管理」按钮跳转 Settings 剪贴板 tab（完整批量管理）。Settings 剪贴板/识别记录管理页手动「加载更多」分页，行操作与浮窗一致。 |
 
 **macOS 动态激活策略（Dock 图标显隐）：** 应用启动即 `Accessory` 模式（无 Dock 图标，纯托盘应用）。用户打开设置窗口时 `open_settings` 切 `Regular`，并经 `set_dock_icon()` 用 `objc2` 手动 `setApplicationIconImage`（release 裸二进制无 .app bundle，Tauri 仅 debug 自动设图标，故需手动设 Dock + 应用图标）；设置窗口 `Destroyed` 事件触发 `on_settings_closed` 切回 `Accessory`。`#[cfg(target_os = "macos")]` 条件编译，Windows / Linux 无此逻辑。
 
