@@ -12,6 +12,7 @@
 use anyhow::{Context, Result};
 use ndarray::{Array2, Array3, ArrayView3, ArrayView4};
 use once_cell::sync::Lazy;
+use std::sync::Arc;
 use ort::session::Session;
 
 use crate::config;
@@ -38,6 +39,13 @@ const EOS_TOKEN_ID: i64 = 151645; // <|im_end|>
 
 static HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hann_window(MEL_FRAME_LEN));
 static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank());
+
+/// 400 点 FFT 规划器（全局缓存，对齐 zipformer.rs 的 Z_FFT / WHISPER_FFT）：
+/// compute_mel_features 每帧调 `fft.process`，规划器下沉避免每次转写重建 twiddle factors。
+static MEL_FFT: Lazy<Arc<dyn rustfft::Fft<f32>>> = Lazy::new(|| {
+    let mut planner = rustfft::FftPlanner::<f32>::new();
+    planner.plan_fft_forward(MEL_FFT_SIZE)
+});
 
 /// 每个 mel bin 的非零频率区间 `[start, end)`，与 `MEL_FILTERBANK` 一一对应。
 /// 审查 #6：filterbank 是三角滤波、高度稀疏（每行 201 个频率里绝大部分权重为 0）。
@@ -751,8 +759,7 @@ fn compute_mel_features(samples: &[f32]) -> Result<Array2<f32>> {
     let n_frames = (samples.len() + MEL_FRAME_SHIFT / 2) / MEL_FRAME_SHIFT;
     let n_frames = n_frames.max(1);
 
-    let mut planner = rustfft::FftPlanner::new();
-    let fft = planner.plan_fft_forward(MEL_FFT_SIZE);
+    let fft = &*MEL_FFT;
 
     let n_freqs = MEL_FFT_SIZE / 2 + 1;
     let mut mel_data = vec![0.0f32; n_frames * MEL_NUM_BINS];

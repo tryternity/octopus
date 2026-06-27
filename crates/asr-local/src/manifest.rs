@@ -10,6 +10,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt::Write as _;
+use std::io::{BufReader, Read};
 use std::path::Path;
 
 use anyhow::Result;
@@ -43,14 +44,10 @@ fn collect_files(root: &Path, dir: &Path, out: &mut Manifest) -> Result<()> {
         // is_file()/is_dir() 会 follow symlink，适配 HF snapshot 结构。
         if path.is_file() {
             let rel = path.strip_prefix(root)?.to_string_lossy().to_string();
-            let data = std::fs::read(&path)?; // follow symlink 读实际字节
-            out.insert(
-                rel,
-                ManifestFile {
-                    sha256: hex_sha256(&data),
-                    size: data.len() as u64,
-                },
-            );
+            // 流式哈希 + metadata 取大小（不整文件读入，避免大模型文件的内存尖峰/OOM）。
+            let size = std::fs::metadata(&path)?.len(); // follow symlink，实际字节数
+            let sha256 = hex_sha256_file(&path)?;
+            out.insert(rel, ManifestFile { sha256, size });
         } else if path.is_dir() {
             collect_files(root, &path, out)?;
         }
@@ -64,24 +61,38 @@ pub fn verify_against_manifest(dir: &Path, manifest: &Manifest) -> Vec<String> {
         .iter()
         .filter_map(|(path, f)| {
             let full = dir.join(path);
-            let ok = std::fs::read(&full)
+            let ok = hex_sha256_file(&full)
                 .ok()
-                .map(|d| hex_sha256(&d) == f.sha256)
+                .map(|h| h == f.sha256)
                 .unwrap_or(false);
             if ok { None } else { Some(path.clone()) }
         })
         .collect()
 }
 
-fn hex_sha256(data: &[u8]) -> String {
+/// 流式计算文件 sha256（64KB 缓冲循环 update）。
+///
+/// 不用 `std::fs::read` 整文件读入——ASR 模型文件常达数百 MB ~ GB，整读会在客户端
+/// 产生数倍于文件大小的临时堆分配尖峰，内存敏感机器易 OOM。流式版内存占用恒定
+///（~64KB 缓冲），与文件大小无关。File::open / metadata 均 follow symlink，
+/// 与原 `fs::read` 语义一致（适配 HF cache snapshot 下指向 blobs 的符号链接）。
+fn hex_sha256_file(path: &Path) -> Result<String> {
     let mut hasher = Sha256::new();
-    hasher.update(data);
+    let mut reader = BufReader::with_capacity(64 * 1024, std::fs::File::open(path)?);
+    let mut buf = [0u8; 64 * 1024];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hasher.update(&buf[..n]);
+    }
     let bytes = hasher.finalize();
     let mut s = String::with_capacity(bytes.len() * 2);
     for b in bytes {
-        write!(s, "{:02x}", b).unwrap();
+        write!(s, "{:02x}", b)?;
     }
-    s
+    Ok(s)
 }
 
 #[cfg(test)]
