@@ -22,9 +22,10 @@ static PENDING_PAGE: Mutex<Option<String>> = Mutex::new(None);
 pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>) {
     if let Some(window) = app_handle.get_webview_window(WINDOW_LABEL) {
         let _ = window.set_focus();
-        // 窗口已存在，直接 emit 让前端切页
+        // 窗口已存在：暂存页面 + emit 让前端切页
         if let Some(ref page) = initial_page {
-            let _ = app_handle.emit_to(WINDOW_LABEL, "settings://navigate", page);
+            *PENDING_PAGE.lock().unwrap() = Some(page.clone());
+            let _ = app_handle.emit("settings://navigate", page.clone());
         }
         return;
     }

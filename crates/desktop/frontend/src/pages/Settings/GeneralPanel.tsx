@@ -139,6 +139,9 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             <option value={0}>无</option><option value={1}>轻度</option><option value={2}>深度</option>
           </select>
         </Row>
+        <Row label="识别工具栏自动隐藏" effect="立即" hint="关闭后始终显示">
+          <Toggle on={cfg.hide_toolbar as boolean} onClick={() => toggleVal("hide_toolbar")} />
+        </Row>
       </Card>
 
       <Card icon={Keyboard} title="快捷键">
@@ -150,9 +153,6 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         </Row>
         <Row label="剪贴板浮窗" effect="立即">
           <ShortcutButton shortcut={cfg.clipboard_shortcut as string} capturing={capturingKey === "clipboard_shortcut"} onClick={() => startShortcutCapture("clipboard_shortcut")} />
-        </Row>
-        <Row label="工具栏自动隐藏" effect="立即" hint="关闭后始终显示">
-          <Toggle on={cfg.hide_toolbar as boolean} onClick={() => toggleVal("hide_toolbar")} />
         </Row>
       </Card>
 
