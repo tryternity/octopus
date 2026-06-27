@@ -117,6 +117,14 @@ desktop → feature-gated: embedded (=asr) | remote-ws | remote-grpc | cloud (�
 - 及时修改文档中过时的地方（参数变了、阈值变了、流程变了）
 - 没有对应 spec 的小改动，至少更新 `docs/architecture.md` 相关章节
 
+### 前端页面设计（强制）
+
+涉及任何页面、组件、弹窗、浮层等前端 UI 的修改或新建，**必须使用 `frontend-design` skill 进行设计**：
+
+- 动手写代码前，先 `view` 该 skill 的 SKILL.md，按其指导原则（色彩、字体、布局、签名元素）做设计规划
+- 不是简单套用 shadcn/ui 默认样式，而是做出有意图、有辨识度的设计选择
+- 纯功能性改动（如改个文案、修个逻辑 bug）无需触发此流程，但涉及视觉表现的改动必须遵守
+
 ### 文档同步（强制）
 
 代码变更完成后（或同时）必须同步文档：
