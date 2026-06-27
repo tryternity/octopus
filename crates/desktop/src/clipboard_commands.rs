@@ -129,13 +129,20 @@ pub async fn paste_clipboard_item(
     Ok(())
 }
 
-/// 图片条目：保存原图为文件 + 写文件绝对路径到剪贴板
+/// 图片条目：保存原图为文件 + 写文件绝对路径到剪贴板。
+/// format: "png" | "webp" | "jpeg"（决定对话框 filter 和编码方式）
+/// quality: 1-100，仅 webp/jpeg 生效，png 忽略
 #[tauri::command]
 pub async fn save_image_item(
     id: i64,
+    format: String,
+    quality: Option<u8>,
     app_handle: tauri::AppHandle,
     handle: State<'_, Arc<ClipboardHandle>>,
 ) -> Result<String, String> {
+    let fmt = format.to_lowercase();
+    let q = quality.unwrap_or(90).clamp(1, 100);
+
     // 1. 从 DB 读条目
     let item = octopus_infra::db::with_db(|conn| {
         let items = octopus_clipboard::store::query_history(conn, &QueryFilter {
@@ -162,32 +169,35 @@ pub async fn save_image_item(
         .join(format!("{}.png", blob_hash));
     let png_bytes = std::fs::read(&orig_path).map_err(|e| e.to_string())?;
 
-    // 3. 弹保存对话框（默认 webp）
-    let default_name = format!("{}.webp", &blob_hash[..8.min(blob_hash.len())]);
+    // 3. 弹保存对话框（仅显示用户选择的格式）
+    let ext = match fmt.as_str() {
+        "png" => "png",
+        "jpeg" | "jpg" => "jpg",
+        _ => "webp",
+    };
+    let filter_label = match ext {
+        "png" => "PNG 图片",
+        "jpg" => "JPEG 图片",
+        _ => "WebP 图片",
+    };
+    let default_name = format!("{}.{}", &blob_hash[..8.min(blob_hash.len())], ext);
     use tauri_plugin_dialog::DialogExt;
     let save_path = app_handle.dialog()
         .file()
-        .add_filter("WebP 图片", &["webp"])
-        .add_filter("PNG 图片", &["png"])
+        .add_filter(filter_label, &[ext])
         .set_file_name(&default_name)
         .blocking_save_file();
 
     let save_path = save_path.ok_or("用户取消")?;
     let save_path = save_path.as_path().ok_or("无效路径")?;
 
-    // 4. 按扩展名保存
-    let ext = save_path.extension()
-        .and_then(|e| e.to_str())
-        .unwrap_or("webp")
-        .to_lowercase();
-
-    if ext == "png" {
-        octopus_infra::image_util::save_as_png(&png_bytes, save_path)
-            .map_err(|e| e.to_string())?;
-    } else {
-        octopus_infra::image_util::save_as_webp(&png_bytes, save_path, 90)
-            .map_err(|e| e.to_string())?;
+    // 4. 按格式+质量保存
+    match ext {
+        "png" => octopus_infra::image_util::save_as_png(&png_bytes, save_path),
+        "jpg" => octopus_infra::image_util::save_as_jpeg(&png_bytes, save_path, q),
+        _ => octopus_infra::image_util::save_as_webp(&png_bytes, save_path, q),
     }
+    .map_err(|e| e.to_string())?;
 
     // 5. 写文件绝对路径到剪贴板
     let abs_path = save_path.to_string_lossy().to_string();

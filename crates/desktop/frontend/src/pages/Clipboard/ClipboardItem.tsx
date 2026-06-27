@@ -3,6 +3,7 @@ import { cn } from "@/lib/utils";
 import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, Copy } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import type { ClipboardItem } from "@/types/clipboard";
+import SaveImagePopover from "./SaveImagePopover";
 
 export default function ClipboardItemRow({
   item,
@@ -18,6 +19,7 @@ export default function ClipboardItemRow({
   onChanged: () => void;
 }) {
   const [deletePending, setDeletePending] = useState(false);
+  const [showSavePopover, setShowSavePopover] = useState(false);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
@@ -60,13 +62,9 @@ export default function ClipboardItemRow({
     }
   };
 
-  const handleSaveImage = async (e: React.MouseEvent) => {
+  const handleSaveImage = (e: React.MouseEvent) => {
     e.stopPropagation();
-    try {
-      await invoke("save_image_item", { id: item.id });
-    } catch (e) {
-      console.error(e);
-    }
+    setShowSavePopover((v) => !v);
   };
 
   const handleOpenFile = async (e: React.MouseEvent) => {
@@ -152,13 +150,26 @@ export default function ClipboardItemRow({
           />
         </button>
         {item.item_type === "image" && (
-          <button
-            className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
-            onClick={handleSaveImage}
-            title="保存为文件"
-          >
-            <Download className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-          </button>
+          <div className="relative">
+            <button
+              className={cn(
+                "p-0.5 transition-opacity hover:scale-110",
+                showSavePopover
+                  ? "opacity-100"
+                  : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+              )}
+              onClick={handleSaveImage}
+              title="保存为文件"
+            >
+              <Download className={cn(
+                "w-3.5 h-3.5 text-muted-foreground",
+                showSavePopover && "text-foreground",
+              )} />
+            </button>
+            {showSavePopover && (
+              <SaveImagePopover id={item.id} onClose={() => setShowSavePopover(false)} />
+            )}
+          </div>
         )}
         {item.item_type === "file" && (
           <button
