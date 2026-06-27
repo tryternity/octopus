@@ -22,6 +22,7 @@ octopus-asr-local = { path = "../asr-local", optional = true }
 
 # OCR
 octopus-ocr = { path = "../ocr" }
+image = { version = "0.25", features = ["png", "webp", "jpeg"] }
 
 # Audio
 cpal = "0.16"

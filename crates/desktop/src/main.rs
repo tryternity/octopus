@@ -3,6 +3,7 @@
 mod audio;
 mod config;
 mod clipboard_commands;
+mod image_migration;
 mod clipboard_window;
 mod coordinator;
 mod engine;
@@ -222,6 +223,7 @@ pub fn run() {
             clipboard_commands::save_image_item,
             clipboard_commands::open_file_item,
             clipboard_commands::ocr_image,
+            clipboard_commands::get_image_thumb,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -237,6 +239,9 @@ pub fn run() {
             }) {
                 log::warn!("Startup FTS5 rebuild failed: {}", e);
             }
+
+            // 迁移旧文件系统图片到 DB BLOB
+            image_migration::migrate_images_to_db();
 
             // Start focus tracker (macOS no-op, Windows/Linux TODO)
             let focus_tracker = std::sync::Arc::new(focus_tracker::FocusTracker::new());

@@ -229,11 +229,23 @@ function ClipboardRow({
   const [showSavePopover, setShowSavePopover] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrDone, setOcrDone] = useState(false);
+  const [thumbSrc, setThumbSrc] = useState<string | null>(null);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => { if (deleteTimer.current) clearTimeout(deleteTimer.current); };
   }, []);
+
+  useEffect(() => {
+    if (item.item_type === "image") {
+      invoke<number[]>("get_image_thumb", { id: item.id })
+        .then((bytes) => {
+          const base64 = btoa(bytes.map((b: number) => String.fromCharCode(b)).join(""));
+          setThumbSrc(`data:image/webp;base64,${base64}`);
+        })
+        .catch(() => {});
+    }
+  }, [item.id, item.item_type]);
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -334,8 +346,13 @@ function ClipboardRow({
       )} />
       <div className="flex-1 min-w-0">
         {item.item_type === "image" && item.image_meta ? (
-          <div className="text-xs text-stone-500">
-            图片 {item.image_meta.width}×{item.image_meta.height}
+          <div className="flex items-center gap-1.5">
+            {thumbSrc && (
+              <img src={thumbSrc} className="w-10 h-10 rounded object-cover flex-shrink-0" alt="" />
+            )}
+            <span className="text-xs text-stone-500">
+              {item.image_meta.width}×{item.image_meta.height}
+            </span>
           </div>
         ) : item.item_type === "file" ? (
           <div className="text-xs text-stone-500 truncate">

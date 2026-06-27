@@ -47,11 +47,11 @@ impl OcrEngine {
         Ok(engine)
     }
 
-    /// 识别图片字节（PNG），返回识别文本（多行用 \n 连接）。
-    pub fn recognize(&self, png_bytes: &[u8]) -> Result<String> {
-        let img =
-            ::image::load_from_memory_with_format(png_bytes, ::image::ImageFormat::Png)
-                .context("Failed to decode PNG")?;
+    /// 识别图片字节，返回识别文本（多行用 \n 连接）。
+    /// 支持 WebP / PNG 等常见格式（image crate 自动检测）。
+    pub fn recognize(&self, image_bytes: &[u8]) -> Result<String> {
+        let img = ::image::load_from_memory(image_bytes)
+            .context("Failed to decode image")?;
 
         let results = self
             .inner

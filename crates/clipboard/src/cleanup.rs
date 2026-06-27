@@ -21,9 +21,8 @@ pub fn run_cleanup(conn: &Connection, max_age_days: u32, max_items: u32) -> Resu
     // 2. 按数量删除
     deleted += delete_by_count(conn, max_items)?;
 
-    // 3. 孤立 blob 回收
-    let referenced = crate::store::get_referenced_blob_hashes(conn)?;
-    let reclaimed = crate::image::cleanup_orphaned_blobs(&referenced)?;
+    // 3. 无引用 image_data BLOB 清理
+    let reclaimed = crate::store::cleanup_unreferenced_images(conn)?;
 
     // 4. FTS5 重建
     let _ = conn.execute(

@@ -4674,6 +4674,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "webp",
 ]
 
 [[package]]
@@ -4689,6 +4690,7 @@ dependencies = [
  "futures-util",
  "gtk",
  "gtk-layer-shell",
+ "image",
  "log",
  "objc2",
  "objc2-app-kit",
