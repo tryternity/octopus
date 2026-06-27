@@ -214,6 +214,18 @@ CREATE INDEX IF NOT EXISTS idx_clip_source    ON clipboard_history(source);
 CREATE INDEX IF NOT EXISTS idx_clip_hash      ON clipboard_history(blob_hash);
 CREATE INDEX IF NOT EXISTS idx_clip_favorite  ON clipboard_history(is_favorite);
 
+-- ── 图片 BLOB 存储（image_data 表）─────────────────────────────────────────
+-- 替代文件系统 clipboard_images/，WebP 无损 + 缩略图存 DB，引用计数回收。
+CREATE TABLE IF NOT EXISTS image_data (
+    hash       TEXT PRIMARY KEY,     -- SHA-256(PNG bytes)，去重键
+    blob       BLOB NOT NULL,        -- 图片原图 BLOB（格式见 image_type）
+    thumb      BLOB NOT NULL,        -- 缩略图 BLOB（240×240 Lanczos resize）
+    image_type TEXT NOT NULL DEFAULT 'webp',  -- BLOB 格式：webp（预留 png/jpeg 扩展）
+    width      INTEGER NOT NULL,
+    height     INTEGER NOT NULL,
+    created_at TEXT NOT NULL
+);
+
 -- FTS5 全文索引（trigram tokenizer 支持 CJK 子串匹配）
 CREATE VIRTUAL TABLE IF NOT EXISTS clipboard_history_fts USING fts5(
     search_text,
