@@ -184,6 +184,7 @@ impl StreamingParaformer {
         if self.all_token_ids.len() > prev_token_count {
             let full_text = decode_tokens(&self.all_token_ids, &self.vocab);
             if !full_text.is_empty() {
+                diag_text_dup_sentinel(&full_text);
                 return Ok(Some(full_text));
             }
         }
@@ -244,6 +245,7 @@ impl StreamingParaformer {
         if had_new_tokens {
             let full_text = decode_tokens(&self.all_token_ids, &self.vocab);
             if !full_text.is_empty() {
+                diag_text_dup_sentinel(&full_text);
                 return Ok(Some(full_text));
             }
         }
@@ -818,6 +820,55 @@ fn discover_onnx(hf_path: &std::path::Path, name: &str, prefer_int8: bool) -> Re
     }
 }
 
+// ── [asr-diag] 文本层重复哨兵（验证 token 层跨边界去重是否漏网）──
+
+/// CJK 汉字判定（常用 + 扩展A + 兼容区）。
+fn is_cjk_char(c: char) -> bool {
+    matches!(c,
+        '\u{4E00}'..='\u{9FFF}'   // CJK Unified Ideographs（常用汉字）
+        | '\u{3400}'..='\u{4DBF}' // CJK Extension A
+        | '\u{F900}'..='\u{FAFF}' // CJK Compatibility Ideographs
+    )
+}
+
+/// 扫描相邻相同 CJK 单字，返回命中列表（每组连续同字算一处）。纯函数，便于单测。
+///
+/// CIF/CTC 双 fire 的 artifact 重复表现为相邻同字（如"识别别"的"别别"）；合法叠字
+/// （"爸爸/常常"）同样命中——哨兵**不区分**二者，靠人工判断（这正是纯文本层无法安全
+/// 去重的原因：要区分须靠 chunk 边界信息，而那只 token 层有）。
+fn scan_cjk_dups(text: &str) -> Vec<String> {
+    let chars: Vec<char> = text.chars().collect();
+    let mut hits = Vec::new();
+    let mut i = 1;
+    while i < chars.len() {
+        if is_cjk_char(chars[i]) && chars[i] == chars[i - 1] {
+            hits.push(format!("{}{}", chars[i - 1], chars[i]));
+            // 跳过连续同字组（"啊啊啊"只报一处），避免重复计数
+            while i + 1 < chars.len() && chars[i + 1] == chars[i] {
+                i += 1;
+            }
+        }
+        i += 1;
+    }
+    hits
+}
+
+/// `[asr-diag]` 文本层重复哨兵：decode 后扫描相邻叠字并打 debug 日志。
+///
+/// **仅观测，不改文本**——纯文本去重会误杀"爸爸/常常"等合法叠字，安全去重只能在
+/// token 层（`process_chunk_at` step 8 跨边界去重，已落地）。本哨兵用于 e2e 验证
+/// token 层是否漏网：日志仍检出"别别"类 artifact 叠字 = token 层漏网，需排查。
+fn diag_text_dup_sentinel(text: &str) {
+    let hits = scan_cjk_dups(text);
+    if !hits.is_empty() {
+        log::debug!(
+            "[asr-diag] paraformer 文本层重复哨兵: 检出 {} 处叠字 {:?}（token 层应已去重；合法叠字如\"爸爸\"请忽略）",
+            hits.len(),
+            hits
+        );
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -835,6 +886,41 @@ mod tests {
             .ok()
             .map(|e| e.path().join("test_wavs"))
             .filter(|p| p.exists())
+    }
+
+    #[test]
+    fn scan_cjk_dups_finds_artifact_and_legal_doubles() {
+        // artifact 叠字（CIF 双 fire，token 层应已去重）
+        assert_eq!(scan_cjk_dups("识别别"), vec!["别别".to_string()]);
+        // 合法叠字同样命中——哨兵不区分，靠人工判断（文本层无法安全去重的根因）
+        assert_eq!(scan_cjk_dups("爸爸"), vec!["爸爸".to_string()]);
+        assert_eq!(scan_cjk_dups("常常"), vec!["常常".to_string()]);
+        // 无叠字 / 空
+        assert!(scan_cjk_dups("识别").is_empty());
+        assert!(scan_cjk_dups("").is_empty());
+        // ASCII 不在 CJK 范围（英文空格分隔由 smart_append 处理，不归哨兵）
+        assert!(scan_cjk_dups("hello world").is_empty());
+        // 连续三同字只报一处（跳过组内剩余）
+        assert_eq!(scan_cjk_dups("啊啊啊"), vec!["啊啊".to_string()]);
+        // 多组叠字分别命中
+        assert_eq!(
+            scan_cjk_dups("别别说常常"),
+            vec!["别别".to_string(), "常常".to_string()]
+        );
+    }
+
+    #[test]
+    fn is_cjk_char_covers_common_ranges() {
+        // 常用汉字
+        assert!(is_cjk_char('汉'));
+        assert!(is_cjk_char('字'));
+        // 扩展 A / 兼容区
+        assert!(is_cjk_char('\u{3400}'));
+        assert!(is_cjk_char('\u{F900}'));
+        // 非汉字：ASCII、空格、CJK 标点（U+FF0C 全角逗号不在 CJK Unified 范围）
+        assert!(!is_cjk_char('a'));
+        assert!(!is_cjk_char(' '));
+        assert!(!is_cjk_char('\u{FF0C}'));
     }
 
     /// 流式 Paraformer 集成测试 — 用真实模型验证识别质量。
