@@ -224,7 +224,12 @@ impl StreamingParaformer {
             // Check if this is the last chunk
             let remaining_after = self.num_fbank_ready() as i32 - frame_start as i32 - CHUNK_SIZE as i32;
             let is_last = remaining_after < (CHUNK_SIZE as i32 - 1);
-            if self.process_chunk_at(frame_start, is_last)? {
+            let produced = self.process_chunk_at(frame_start, is_last)?;
+            log::debug!(
+                "[asr-diag] paraformer flush chunk: frame_start={} is_last={} produced={}",
+                frame_start, is_last, produced
+            );
+            if produced {
                 had_new_tokens = true;
             }
             self.num_processed_frames += (CHUNK_SIZE - 1) as i32;
@@ -381,11 +386,17 @@ impl StreamingParaformer {
         let (enc_tensor, enc_len_scalar, alphas) = self.run_encoder(&combined)?;
 
         // 5. Zero overlap alphas
+        let alpha_sum: f32 = alphas.iter().sum();
         let alphas = if is_final {
             self.mask_alphas_left_only(alphas, enc_len_scalar)
         } else {
             self.mask_alphas(alphas, enc_len_scalar)
         };
+        log::debug!(
+            "[asr-diag] paraformer mask: is_final={} enc_len={} mask前alpha_sum={:.3} \
+            (首chunk左侧5帧置零→首字fire延迟观测)",
+            is_final, enc_len_scalar, alpha_sum
+        );
 
         // 6. CIF (force-fire if final)
         let acoustic = if is_final {
@@ -617,6 +628,10 @@ impl StreamingParaformer {
 
         // Save state
         self.alpha_cache = integrate;
+        log::debug!(
+            "[asr-diag] paraformer run_cif: enc_len={} fired={} alpha_cache={:.3}",
+            enc_len, acoustic.len() / feat, integrate
+        );
 
         Ok(acoustic)
     }
@@ -668,10 +683,19 @@ impl StreamingParaformer {
 
         // Force-fire residual
         if integrate > 0.5 && !self.encoder_out_cache.iter().all(|&v| v == 0.0) {
+            log::info!(
+                "[asr-diag] paraformer force-fire: alpha={:.3}(>0.5) 追加残留acoustic → \
+                尾字重复嫌疑（多次flush对同一残留重复fire?）",
+                integrate
+            );
             acoustic.extend_from_slice(&self.encoder_out_cache);
             self.alpha_cache = 0.0;
             self.encoder_out_cache.fill(0.0);
         } else {
+            log::debug!(
+                "[asr-diag] paraformer cif-final 无force-fire: alpha={:.3}",
+                integrate
+            );
             self.alpha_cache = integrate;
         }
 

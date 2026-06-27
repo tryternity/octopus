@@ -243,6 +243,12 @@ impl StreamingZipformer {
 
     /// Reset all streaming state for a new utterance.
     pub fn reset(&mut self) {
+        let snap = self.decode_tokens(false);
+        log::info!(
+            "[asr-diag] zipformer-ctc reset: 段文本='{}'({} tokens) prev_id={} | \
+            开口瞬间触发=首字被冲(Phase1应消除); 句末触发=正常分段",
+            snap, self.token_ids.len(), self.prev_id
+        );
         self.sample_buffer.clear();
         self.history_samples.clear();
         self.token_ids.clear();
@@ -387,6 +393,10 @@ impl StreamingZipformer {
                 .unwrap_or(0);
             if best_id != ZIPFORMER_BLANK_ID && best_id as isize != self.prev_id {
                 self.token_ids.push(best_id);
+                log::debug!(
+                    "[asr-diag] zipformer-ctc emit: token={} prev_id={} → {} tokens",
+                    best_id, self.prev_id, self.token_ids.len()
+                );
                 produced = true;
             }
             self.prev_id = best_id as isize;
@@ -678,6 +688,12 @@ impl StreamingZipformerTransducer {
     }
 
     pub fn reset(&mut self) {
+        let snap = self.decode_current(false);
+        log::info!(
+            "[asr-diag] zipformer-transducer reset: 段文本='{}'({} tokens) | \
+            开口瞬间触发=首字被冲(Phase1应消除); 句末触发=正常分段",
+            snap, self.emitted_ids.len()
+        );
         self.sample_buffer.clear();
         self.history_samples.clear();
         self.emitted_ids.clear();
@@ -824,6 +840,10 @@ impl StreamingZipformerTransducer {
 
                 // 发射 token
                 self.emitted_ids.push(best_id);
+                log::debug!(
+                    "[asr-diag] zipformer-transducer emit: token={} → {} tokens",
+                    best_id, self.emitted_ids.len()
+                );
                 self.token_buf.push(best_id as i64);
                 if self.token_buf.len() > self.context_size {
                     self.token_buf.remove(0);
