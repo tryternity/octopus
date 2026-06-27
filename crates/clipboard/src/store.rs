@@ -248,6 +248,15 @@ pub fn toggle_favorite(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// 更新条目的 search_text（OCR 场景：识别后让图片可搜索）。
+pub fn update_search_text(conn: &Connection, id: i64, search_text: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE clipboard_history SET search_text = ? WHERE id = ?",
+        params![search_text, id],
+    )?;
+    Ok(())
+}
+
 /// 删除单条。
 pub fn delete_item(conn: &Connection, id: i64) -> Result<()> {
     conn.execute("DELETE FROM clipboard_history WHERE id = ?", params![id])?;
