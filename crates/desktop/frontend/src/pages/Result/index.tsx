@@ -307,34 +307,12 @@ function Result() {
     setPopupType("denoise");
   };
 
-  const openAsrPopup = async () => {
-    try {
-      const engines = await invoke<{ name: string; label: string; current: boolean }[]>("list_asr_engines");
-      setPopupItems(engines.map(e => ({ label: e.label, current: e.current, name: e.name })));
-      setPopupType("asr");
-    } catch (e) { showToast("读取引擎失败：" + e); }
-  };
-
-  const openLlmPopup = async () => {
-    try {
-      const models = await invoke<{ name: string; label: string; current: boolean }[]>("list_llm_models");
-      setPopupItems(models.map(m => ({ label: m.label, current: m.current, name: m.name })));
-      setPopupType("llm");
-    } catch (e) { showToast("读取润色模型失败：" + e); }
-  };
-
   const handlePopupSelect = async (item: PopupItem) => {
     try {
       if (popupType === "polish" && item.mode !== undefined) {
         await invoke("set_polish_mode", { mode: item.mode });
       } else if (popupType === "denoise" && item.mode !== undefined) {
         await invoke("set_denoise_mode", { mode: item.mode });
-      } else if (popupType === "asr" && item.name !== undefined) {
-        await invoke("switch_asr_engine", { name: item.name });
-        showToast(`已切换：${item.name}（下次录音生效）`);
-      } else if (popupType === "llm" && item.name !== undefined) {
-        await invoke("switch_polish_llm", { name: item.name });
-        showToast(item.name ? `已切换润色模型：${item.name}` : "已关闭润色模型");
       }
       setPopupType(null);
       refreshActive();
@@ -350,9 +328,7 @@ function Result() {
   const tools: { id: string; icon: IconName; label: string; active?: boolean; disabled?: boolean; onClick: () => void }[] = [
     { id: "close", icon: "close", label: "关闭", onClick: () => invoke("discard_recording") },
     { id: "settings", icon: "settings", label: "系统设置", onClick: () => invoke("open_settings") },
-    { id: "asr", icon: "asr", label: "语音模型", active: true, onClick: openAsrPopup },
     { id: "denoise", icon: "denoise", label: "降噪模式", active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
-    { id: "llm", icon: "llm", label: "润色模型", active: toolbarState.polish_llm_valid, onClick: openLlmPopup },
     { id: "polish", icon: "polish", label: "润色模式", active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
     { id: "polish-now", icon: "polish-now", label: "立即润色", disabled: polishLoading, onClick: async () => {
       setPolishLoading(true);
@@ -456,18 +432,18 @@ function Result() {
 
       {/* Popup */}
       {popupType && (
-        <div className="popup-content absolute top-[30px] left-1.5 w-[360px] max-h-[200px] overflow-y-auto bg-white rounded-lg border border-black/[0.10] shadow-lg shadow-black/[0.12] z-10 text-[13px]">
+        <div className="popup-content absolute top-[28px] left-1.5 w-[360px] bg-white rounded-lg border border-black/[0.10] shadow-lg shadow-black/[0.12] z-30 text-[12px]">
           {popupItems.map((item, i) => (
             <div
               key={i}
               className={cn(
-                "px-3 py-1.5 cursor-pointer flex items-center gap-1.5 transition-colors",
+                "px-3 py-1 cursor-pointer flex items-center gap-1.5 transition-colors",
                 "hover:bg-[#007aff]/[0.08]",
                 item.current && "text-[#007aff] font-medium",
               )}
               onClick={() => handlePopupSelect(item)}
             >
-              <span className={cn("text-xs", item.current ? "text-[#007aff]" : "text-black/40")}>
+              <span className={cn("text-[10px]", item.current ? "text-[#007aff]" : "text-black/40")}>
                 {item.current ? "●" : "○"}
               </span>
               <span className="flex-1 min-w-0 truncate text-foreground">{item.label}</span>

@@ -131,16 +131,19 @@ pub async fn paste_clipboard_item(
 
 /// 图片条目：直接保存到 ~/Downloads/octopus/，不弹系统对话框。
 /// format: "jpeg" | "webp" | "png"，quality: 1-100（jpeg/webp 生效）
+/// open_folder: true 时保存后用系统文件管理器定位到该文件
 /// 返回写入的绝对路径，同时写入剪贴板。
 #[tauri::command]
 pub async fn save_image_item(
     id: i64,
     format: String,
     quality: Option<u8>,
+    open_folder: Option<bool>,
     handle: State<'_, Arc<ClipboardHandle>>,
 ) -> Result<String, String> {
     let fmt = format.to_lowercase();
     let q = quality.unwrap_or(85).clamp(1, 100);
+    let open_after = open_folder.unwrap_or(false);
 
     // 1. 从 DB 读条目
     let item = octopus_infra::db::with_db(|conn| {
@@ -195,7 +198,35 @@ pub async fn save_image_item(
     let abs_path = save_path.to_string_lossy().to_string();
     handle.write_text(&abs_path).map_err(|e| e.to_string())?;
 
+    // 7. 可选：用系统文件管理器定位到该文件
+    if open_after {
+        reveal_in_file_manager(&save_path);
+    }
+
     Ok(abs_path)
+}
+
+/// 用系统文件管理器打开并高亮指定文件。
+fn reveal_in_file_manager(path: &std::path::Path) {
+    #[cfg(target_os = "macos")]
+    {
+        let _ = std::process::Command::new("open")
+            .args(["-R", &path.to_string_lossy()])
+            .spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("explorer")
+            .arg(format!("/select,{}", path.to_string_lossy()))
+            .spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let dir = path.parent().unwrap_or(path);
+        let _ = std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn();
+    }
 }
 
 /// 在 dir 下找不冲突的文件名：base.ext → base-1.ext → base-2.ext …

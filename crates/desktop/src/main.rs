@@ -229,6 +229,13 @@ pub fn run() {
             );
             app.manage(clipboard_handle.clone());
 
+            // 启动时重建 FTS5 索引，清理上次运行遗留的空洞
+            if let Err(e) = octopus_infra::db::with_db(|conn| {
+                octopus_clipboard::store::rebuild_fts_index(conn)
+            }) {
+                log::warn!("Startup FTS5 rebuild failed: {}", e);
+            }
+
             // Start focus tracker (macOS no-op, Windows/Linux TODO)
             let focus_tracker = std::sync::Arc::new(focus_tracker::FocusTracker::new());
             if let Err(e) = focus_tracker.start() {

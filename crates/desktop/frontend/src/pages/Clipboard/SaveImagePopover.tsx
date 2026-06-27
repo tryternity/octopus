@@ -20,6 +20,7 @@ export default function SaveImagePopover({
 }) {
   const [format, setFormat] = useState<ImageFormat>("jpeg");
   const [quality, setQuality] = useState(85);
+  const [openFolder, setOpenFolder] = useState(false);
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
@@ -41,6 +42,7 @@ export default function SaveImagePopover({
         id,
         format,
         quality: lossy ? quality : null,
+        openFolder,
       });
       setSaving(false);
       setDone(true);
@@ -121,6 +123,30 @@ export default function SaveImagePopover({
           PNG 为无损格式，不压缩
         </div>
       )}
+
+      {/* 打开文件夹开关 */}
+      <button
+        type="button"
+        className="w-full flex items-center justify-between text-left"
+        onClick={() => setOpenFolder((v) => !v)}
+      >
+        <span className="text-[11px] text-stone-600 font-medium">
+          保存后打开文件夹
+        </span>
+        <span
+          className={cn(
+            "relative w-7 h-4 rounded-full transition-colors duration-200 flex-shrink-0",
+            openFolder ? "bg-stone-900" : "bg-stone-200",
+          )}
+        >
+          <span
+            className={cn(
+              "absolute top-0.5 w-3 h-3 rounded-full bg-white shadow-sm transition-all duration-200",
+              openFolder ? "left-[14px]" : "left-0.5",
+            )}
+          />
+        </span>
+      </button>
 
       {/* 分隔线 */}
       <div className="h-px bg-stone-100" />

@@ -1,8 +1,35 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::collections::HashSet;
+use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::model::*;
+
+/// 删除计数器：累计达阈值后自动 rebuild FTS5 索引，防止影子表膨胀。
+const FTS_REBUILD_THRESHOLD: u32 = 10;
+static DELETE_COUNT: AtomicU32 = AtomicU32::new(0);
+
+/// 重建 FTS5 索引。应用启动时调用一次。
+pub fn rebuild_fts_index(conn: &Connection) -> Result<()> {
+    conn.execute(
+        "INSERT INTO clipboard_history_fts(clipboard_history_fts) VALUES('rebuild')",
+        [],
+    )?;
+    Ok(())
+}
+
+/// 累加删除计数，达到阈值时自动 rebuild FTS5 索引。
+fn track_deletes(conn: &Connection, deleted: u32) {
+    let prev = DELETE_COUNT.fetch_add(deleted, Ordering::Relaxed);
+    if prev + deleted >= FTS_REBUILD_THRESHOLD {
+        DELETE_COUNT.store(0, Ordering::Relaxed);
+        if let Err(e) = rebuild_fts_index(conn) {
+            log::warn!("FTS5 rebuild failed: {}", e);
+        } else {
+            log::info!("FTS5 index rebuilt after {} deletes", prev + deleted);
+        }
+    }
+}
 
 /// 插入剪贴板条目（来自外部复制）。返回插入的 id。
 pub fn insert_clipboard_item(conn: &Connection, item: &NewClipboardItem) -> Result<i64> {
@@ -224,6 +251,7 @@ pub fn toggle_favorite(conn: &Connection, id: i64) -> Result<()> {
 /// 删除单条。
 pub fn delete_item(conn: &Connection, id: i64) -> Result<()> {
     conn.execute("DELETE FROM clipboard_history WHERE id = ?", params![id])?;
+    track_deletes(conn, 1);
     Ok(())
 }
 
@@ -234,6 +262,9 @@ pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
     } else {
         conn.execute("DELETE FROM clipboard_history", [])?
     };
+    if rows > 0 {
+        track_deletes(conn, rows as u32);
+    }
     Ok(rows)
 }
 

@@ -6,7 +6,7 @@ use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
 const RESULT_WIDTH: f64 = 520.0;
-const RESULT_HEIGHT: f64 = 100.0;
+const RESULT_HEIGHT: f64 = 116.0;
 const WINDOW_LABEL: &str = "result_window";
 
 static WINDOW_READY: AtomicBool = AtomicBool::new(false);
