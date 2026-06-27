@@ -25,7 +25,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表）。DB 迁移至 v6。`with_db` 为公开 API 供其他 crate 调用。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表）。DB 迁移至 v6。`with_db` 为公开 API 供其他 crate 调用。`image_util`（PNG→WebP 90% 有损压缩保存，基于 `webp` crate）。
 
 ### octopus-asr-local（核心推理库）
 
@@ -108,13 +108,13 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 | `model` | 数据结构：`ItemType`（Text/Image/File）/ `Source`（Clipboard/Asr）/ `ClipboardItem`（含 `ImageMeta`/`FileMeta`/`AsrMeta`）/ `QueryFilter`（6 种过滤 + 分页 + 搜索）|
 | `handle` | `ClipboardHandle`：`Mutex<ClipboardContext>` 全局单例（Windows 防锁竞争）+ `AtomicBool` suppress flag（区分 ASR 写入与外部复制，watcher 跳过自身写入） |
 | `watcher` | `ClipboardWatcher`：后台线程跑 `ClipboardWatcherContext::start_watch()`（阻塞），`on_clipboard_change` 回调检查 suppress flag → 判断类型（files > image > text 优先级）→ 去重 → 存 DB → 通知前端 |
-| `store` | DB CRUD：`insert_clipboard_item` / `insert_asr_item`（source=asr，关联 transcription_id）/ `query_history`（LIKE 搜索 + 6 种过滤 + 分页）/ `toggle_favorite` / `delete_item` / `clear_history`（保留收藏）+ 去重（hash / text） |
+| `store` | DB CRUD：`insert_clipboard_item` / `insert_asr_item`（source=asr，关联 transcription_id）/ `query_history`（LIKE 搜索 + 6 种过滤 + 分页）/ `toggle_favorite` / `delete_item` / `delete_by_transcription_ids`（级联删除：Settings 删转译记录时同步删剪贴板引用）/ `clear_history`（保留收藏）+ 去重（hash / text） |
 | `image` | PNG 编码（`image` crate）+ SHA-256 去重 + 缩略图 240×240（Lanczos3）+ 孤立 blob 回收。图片存 `~/.octopus/clipboard_images/<hash>.png` |
 | `cleanup` | 自动清理：按天数（默认 30）+ 按数量（默认 1000）删除非收藏记录 + 孤立 blob 回收 + FTS5 索引重建 |
 
 **监听机制（clipboard-rs 内置）：** macOS 轮询 `NSPasteboard.changeCount`（500ms）；Windows 事件驱动 `AddClipboardFormatListener`；Linux X11 XFixes 事件驱动；Linux Wayland 两级轮询（MIME 类型 + text 内容，500ms）。
 
-**ASR 集成：** `coordinator.rs::do_paste` 中先调 `store::insert_asr_item`（写 DB source=asr）再调 `paste::paste`（写剪贴板，suppress flag 阻止 watcher 重复记录）。
+**ASR 集成：** `coordinator.rs::do_paste` 中先调 `store::insert_asr_item`（写 DB source=asr）再调 `paste::paste`（写剪贴板，suppress flag 阻止 watcher 重复记录）。**级联删除：** Settings 删除转译记录时，`delete_history` 同步调 `delete_by_transcription_ids` 清理剪贴板中引用该记录的条目；反向不级联（剪贴板删除语音条目只删 `clipboard_history` 行，外键 `ON DELETE SET NULL` 处理引用置空）。
 
 **DB 表：** `clipboard_history`（全字段：item_type/source/content/search_text/is_favorite/created_at + image 元数据 blob_hash/width/height/has_thumbnail + file_count + is_rich + ASR 元数据 transcription_id/polish_status/engine/model）+ `clipboard_history_fts`（FTS5 虚表，trigram tokenizer）+ 3 触发器自动同步。
 
