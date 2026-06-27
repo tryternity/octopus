@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Mic, Volume2, Sparkles, Server, Keyboard } from "lucide-react";
+import { Mic, Volume2, Sparkles, Keyboard, ClipboardList } from "lucide-react";
 import type { ConfigResponse } from "./index";
 
 interface GeneralPanelProps {
@@ -52,6 +52,35 @@ function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
   );
 }
 
+function ShortcutButton({ shortcut, capturing, onClick }: { shortcut: string; capturing: boolean; onClick: () => void }) {
+  if (capturing) {
+    return (
+      <button
+        className="px-3 py-1.5 rounded-md text-xs font-medium text-voice bg-voice/5 border border-voice/40 cursor-pointer animate-pulse"
+        onClick={onClick}
+      >
+        按下快捷键…（Esc 取消）
+      </button>
+    );
+  }
+  const keys = shortcut.split("+");
+  return (
+    <button
+      className="flex items-center gap-1 px-2.5 py-1.5 rounded-md border border-border bg-stone-50 hover:border-foreground/30 cursor-pointer transition-colors group"
+      onClick={onClick}
+    >
+      {keys.map((k, i) => (
+        <span key={i} className="flex items-center gap-1">
+          {i > 0 && <span className="text-muted-foreground/40 text-[10px]">+</span>}
+          <kbd className="min-w-[20px] px-1.5 py-0.5 text-[11px] font-medium text-stone-700 bg-white rounded border border-stone-200 shadow-sm group-hover:border-stone-300 transition-colors">
+            {k === "CmdOrCtrl" ? "⌘" : k === "Alt" ? "⌥" : k === "Shift" ? "⇧" : k}
+          </kbd>
+        </span>
+      ))}
+    </button>
+  );
+}
+
 const selectClass = "px-2.5 py-1.5 border border-border rounded-md text-sm bg-background min-w-[160px] max-w-[200px] cursor-pointer hover:border-foreground/30 transition-colors outline-none focus:border-voice/40";
 
 export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig }: GeneralPanelProps) {
@@ -76,6 +105,8 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
       e.preventDefault();
       e.stopPropagation();
       if (e.key === "Escape") { setCapturingKey(null); cleanup(); return; }
+      // 纯修饰键不触发，等待用户按实际键
+      if (e.key === "Alt" || e.key === "Shift" || e.key === "Control" || e.key === "Meta") return;
       const parts: string[] = [];
       if (e.metaKey || e.ctrlKey) parts.push("CmdOrCtrl");
       if (e.altKey) parts.push("Alt");
@@ -112,22 +143,13 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
 
       <Card icon={Keyboard} title="快捷键">
         <Row label="激活 / 关闭" effect="立即">
-          <button
-            className={cn("px-3 py-1.5 border rounded-md text-sm min-w-[160px] max-w-[200px] text-center cursor-pointer transition-colors hover:border-foreground/30 outline-none",
-              capturingKey === "asr_shortcut" ? "border-voice text-voice bg-voice/5" : "border-border bg-background")}
-            onClick={() => startShortcutCapture("asr_shortcut")}
-          >
-            {capturingKey === "asr_shortcut" ? "按下快捷键…" : cfg.asr_shortcut as string}
-          </button>
+          <ShortcutButton shortcut={cfg.asr_shortcut as string} capturing={capturingKey === "asr_shortcut"} onClick={() => startShortcutCapture("asr_shortcut")} />
         </Row>
         <Row label="编辑模式" effect="立即" hint="结果窗聚焦时进入编辑">
-          <button
-            className={cn("px-3 py-1.5 border rounded-md text-sm min-w-[160px] max-w-[200px] text-center cursor-pointer transition-colors hover:border-foreground/30 outline-none",
-              capturingKey === "edit_shortcut" ? "border-voice text-voice bg-voice/5" : "border-border bg-background")}
-            onClick={() => startShortcutCapture("edit_shortcut")}
-          >
-            {capturingKey === "edit_shortcut" ? "按下快捷键…" : cfg.edit_shortcut as string}
-          </button>
+          <ShortcutButton shortcut={cfg.edit_shortcut as string} capturing={capturingKey === "edit_shortcut"} onClick={() => startShortcutCapture("edit_shortcut")} />
+        </Row>
+        <Row label="剪贴板浮窗" effect="立即">
+          <ShortcutButton shortcut={cfg.clipboard_shortcut as string} capturing={capturingKey === "clipboard_shortcut"} onClick={() => startShortcutCapture("clipboard_shortcut")} />
         </Row>
         <Row label="工具栏自动隐藏" effect="立即" hint="关闭后始终显示">
           <Toggle on={cfg.hide_toolbar as boolean} onClick={() => toggleVal("hide_toolbar")} />
@@ -162,40 +184,45 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
       </Card>
 
       <Card icon={Sparkles} title="润色">
-        <Row label="模型" effect="立即">
-          <select className={selectClass} value={cfg.polish_llm as string} onChange={(e) => setVal("polish_llm", e.target.value)}>
+        <Row label="润色模型" effect="立即">
+          <select className={selectClass}
+            value={llm_models.find((m) => m.current)?.name ?? ""}
+            onChange={(e) => setVal("polish_llm", e.target.value)}>
             {llm_models.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
           </select>
         </Row>
-        <Row label="模式" effect="立即">
+        <Row label="润色模式" effect="立即">
           <select className={selectClass} value={cfg.polish_mode as number} onChange={(e) => setVal("polish_mode", parseInt(e.target.value))}>
             <option value={0}>关闭</option><option value={1}>仅最终润色</option><option value={2}>中间 + 最终</option>
           </select>
         </Row>
-        <Row label="提示词" effect="立即" hint="选择不同风格 prompt">
+        <Row label="润色提示词" effect="立即" hint="选择不同风格 prompt">
           <select className={selectClass} value={active_prompt_id} onChange={(e) => setActivePrompt(parseInt(e.target.value))}>
             {prompts.map((p) => <option key={p.id} value={p.id}>{p.title}{p.is_system ? "（内置）" : ""}</option>)}
           </select>
         </Row>
-        <Row label="间隔" effect="下次录音">
+        <Row label="润色间隔" effect="下次录音">
           <select className={selectClass} value={cfg.polish_min_interval as number} onChange={(e) => setVal("polish_min_interval", parseFloat(e.target.value))}>
             <option value={0}>仅最后</option>
             {[3, 4, 5, 6, 7, 8].map((v) => <option key={v} value={v}>每 {v} 秒</option>)}
           </select>
         </Row>
-        <Row label="停顿阈值" effect="下次录音" hint="超过此值触发中间润色">
+        <Row label="润色停顿阈值" effect="下次录音" hint="超过此值触发中间润色">
           <select className={selectClass} value={cfg.pause_polish_threshold_ms as number} onChange={(e) => setVal("pause_polish_threshold_ms", parseFloat(e.target.value))}>
             {[600, 700, 800, 900, 1000].map((v) => <option key={v} value={v}>{v}ms</option>)}
           </select>
         </Row>
       </Card>
 
-      <Card icon={Server} title="引擎接入">
-        <Row label="模式" effect="重启" hint="embedded = 本地推理">
-          <select className={selectClass} value={cfg.engine_mode as string} onChange={(e) => setVal("engine_mode", e.target.value)}>
-            <option value="embedded">embedded</option>
-            <option value="websocket">websocket</option>
-            <option value="grpc">grpc</option>
+      <Card icon={ClipboardList} title="剪贴板">
+        <Row label="最大保留条数" effect="下次启动" hint="不含收藏，超出自动清理">
+          <select className={selectClass} value={cfg.clipboard_max_items as number} onChange={(e) => setVal("clipboard_max_items", parseInt(e.target.value))}>
+            {[100, 200, 300, 500, 1000].map((v) => <option key={v} value={v}>{v} 条</option>)}
+          </select>
+        </Row>
+        <Row label="自动清理天数" effect="下次启动" hint="超过此天数的非收藏记录自动删除">
+          <select className={selectClass} value={cfg.clipboard_max_age_days as number} onChange={(e) => setVal("clipboard_max_age_days", parseInt(e.target.value))}>
+            {[1, 3, 7, 15, 30].map((v) => <option key={v} value={v}>{v} 天</option>)}
           </select>
         </Row>
       </Card>

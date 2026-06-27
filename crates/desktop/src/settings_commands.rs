@@ -84,23 +84,38 @@ pub fn set_config(
     engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (old_shortcut, mut cfg) = {
+    let (old_asr_sc, old_clipboard_sc, mut cfg) = {
         let g = rc.read().unwrap();
-        (g.asr_shortcut.clone(), g.clone())
+        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.clone())
     };
     apply_config_value(&mut cfg, &key, &value)?;
 
     // 快捷键热重载：注册成功后才持久化（审查 Issue 3）。
     // 若先 save 再 register，注册失败时无效快捷键已写入 DB → 下次启动依然失败。
-    if key == "asr_shortcut" && cfg.asr_shortcut != old_shortcut {
+    if key == "asr_shortcut" && cfg.asr_shortcut != old_asr_sc {
         use tauri_plugin_global_shortcut::GlobalShortcutExt;
-        if let Ok(old) = old_shortcut.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+        if let Ok(old) = old_asr_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
             let _ = app_handle.global_shortcut().unregister(old);
         }
         if let Err(e) = crate::shortcut::register_shortcut(&app_handle, &cfg.asr_shortcut) {
             // 注册失败：尝试恢复旧快捷键，避免用户完全失去快捷键
-            let _ = crate::shortcut::register_shortcut(&app_handle, &old_shortcut);
+            let _ = crate::shortcut::register_shortcut(&app_handle, &old_asr_sc);
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
+        }
+    }
+
+    if key == "clipboard_shortcut" && cfg.clipboard_shortcut != old_clipboard_sc {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        if let Ok(old) = old_clipboard_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let _ = app_handle.global_shortcut().unregister(old);
+        }
+        if let Ok(new) = cfg.clipboard_shortcut.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let ah = app_handle.clone();
+            let _ = app_handle.global_shortcut().on_shortcut(new, move |_app, _scut, event| {
+                if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                    let _ = crate::clipboard_window::toggle_clipboard_window(&ah);
+                }
+            });
         }
     }
 
@@ -213,6 +228,21 @@ fn apply_config_value(
         }
         "edit_shortcut" => {
             cfg.edit_shortcut = value.as_str().ok_or("edit_shortcut 需要字符串")?.to_string();
+        }
+        "clipboard_shortcut" => {
+            cfg.clipboard_shortcut = value.as_str().ok_or("clipboard_shortcut 需要字符串")?.to_string();
+        }
+        "clipboard_max_items" => {
+            let v = value.as_i64().or_else(|| value.as_f64().map(|f| f as i64))
+                .ok_or("clipboard_max_items 需要整数")?;
+            if v < 10 { return Err("clipboard_max_items 必须 >= 10".into()); }
+            cfg.clipboard_max_items = v;
+        }
+        "clipboard_max_age_days" => {
+            let v = value.as_i64().or_else(|| value.as_f64().map(|f| f as i64))
+                .ok_or("clipboard_max_age_days 需要整数")?;
+            if v < 1 { return Err("clipboard_max_age_days 必须 >= 1".into()); }
+            cfg.clipboard_max_age_days = v;
         }
         "microphone" => {
             cfg.microphone = value.as_str().ok_or("microphone 需要字符串")?.to_string();

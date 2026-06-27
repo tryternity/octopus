@@ -790,3 +790,34 @@ git commit -m "feat(ocr): 端到端验证通过"
 | §6 错误处理（空文本/模型未就绪） | Task 5 + 6/7 |
 | §7 依赖变更（ocr-rs） | Task 1 |
 | load_config_key（engine 依赖） | Task 8 |
+
+---
+
+## 实施偏差与补充记录
+
+### 偏差 1：图片存储迁移影响（Task 6 变更）
+
+原计划 OCR 从文件系统读取 PNG，实施时图片存储已迁移到 DB BLOB：
+- `ocr_image` 从 `image_data` 表读 WebP BLOB（`store::get_image_blob`），不再读 `clipboard_images/`
+- `save_image_item` 从 DB 读 WebP BLOB → 按目标格式转码（WebP 直接写 / PNG+JPEG 解码再编码）
+- `OcrEngine::recognize` 改用 `image::load_from_memory`（自动检测格式）
+
+### 偏差 2：ocr-rs API（Task 2）
+
+实际 API 签名：
+- `OcrEngine::new(det_path: impl AsRef<Path>, rec_path, charset_path, config: Option<OcrEngineConfig>)` → `OcrResult<Self>`
+- `recognize(&self, image: &DynamicImage)` → `OcrResult<Vec<OcrResult_>>`
+- `OcrResult_` 有 `.text: String` 和 `.confidence: f32`
+- MNN build script 从 GitHub 下载预编译库，release 构建需手动放置
+
+### 偏差 3：osascript 静默（Task 5）
+
+osascript `spawn()` 后 stdout/stderr 会打印「document 未命名」到控制台。修复：`.stdout(Stdio::null()).stderr(Stdio::null())`。
+
+### 偏差 4：Task 8 已存在
+
+`load_config_key` 在 `crates/infra/src/db.rs:406` 已存在，返回 `Result<Option<String>>`。无需新增，Task 8 跳过。
+
+### 偏差 5：DB seed 手动插入
+
+seed 写在 db.sql 中（幂等 `INSERT OR IGNORE`），但已运行的 DB 不会重新执行 db.sql。需手动 `sqlite3` 插入 OCR models + app_config seed。

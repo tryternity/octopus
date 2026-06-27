@@ -267,14 +267,17 @@ pub fn run() {
                 }
             }
 
-            // Register clipboard window global shortcut (Alt+V)
+            // Register clipboard window global shortcut (from config, default Alt+V)
             {
                 let app_handle_for_clipboard = app.handle().clone();
-                let _ = app.global_shortcut().on_shortcut("Alt+V", move |_app, _scut, event| {
-                    if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                        let _ = clipboard_window::toggle_clipboard_window(&app_handle_for_clipboard);
-                    }
-                });
+                let clipboard_sc = config.clipboard_shortcut.clone();
+                if !clipboard_sc.is_empty() {
+                    let _ = app.global_shortcut().on_shortcut(clipboard_sc.as_str(), move |_app, _scut, event| {
+                        if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                            let _ = clipboard_window::toggle_clipboard_window(&app_handle_for_clipboard);
+                        }
+                    });
+                }
             }
 
             // Initialize engine manager

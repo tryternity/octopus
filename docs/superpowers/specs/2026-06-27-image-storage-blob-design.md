@@ -13,8 +13,9 @@
 ```sql
 CREATE TABLE IF NOT EXISTS image_data (
     hash       TEXT PRIMARY KEY,     -- SHA-256(PNG bytes)，去重键
-    blob       BLOB NOT NULL,        -- WebP 100% 无损原图
-    thumb      BLOB NOT NULL,        -- WebP 20% 缩略图（240×240 resize）
+    blob       BLOB NOT NULL,        -- 图片原图 BLOB（格式见 image_type）
+    thumb      BLOB NOT NULL,        -- 缩略图 BLOB（240×240 resize）
+    image_type TEXT NOT NULL DEFAULT 'webp',  -- BLOB 格式：webp（预留 png/jpeg 扩展）
     width      INTEGER NOT NULL,
     height     INTEGER NOT NULL,
     created_at TEXT NOT NULL

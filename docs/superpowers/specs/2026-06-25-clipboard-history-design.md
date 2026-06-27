@@ -683,3 +683,43 @@ FTS5 可用性：`rusqlie` with `bundled` feature 默认启用 FTS5，需验证�
 | React 迁移引入回归 | 中 | 现有功能异常 | Phase 1 后全面回归测试；旧 HTML 在 git 历史可回退 |
 | suppress flag 极窄竞态 | 低 | 偶发丢失一条外部复制 | 可接受（< 300ms 窗口） |
 | Windows 剪贴板锁竞争 | 中 | `set_text` 偶发失败 | 重试 3 次 + 50ms 间隔 |
+
+## 9. Phase 3 后持续迭代（2026-06-27）
+
+### 9.1 OCR 模块（详见独立 spec: `2026-06-27-ocr-module-design.md`）
+
+剪贴板图片条目新增 OCR 识别能力：
+- 独立 crate `octopus-ocr`（ocr-rs/MNN + PP-OCRv6）
+- 手动触发：图片条目点 OCR 按钮 → 识别文本写入 `search_text` + 系统剪贴板 + osascript 新建 TextEdit 文档
+- DB `models` 表新增 `domain='ocr'` 模型条目（source=det URL, secret_key=rec URL）
+- 详见 `docs/superpowers/specs/2026-06-27-ocr-module-design.md`
+
+### 9.2 图片存储迁移（详见独立 spec: `2026-06-27-image-storage-blob-design.md`）
+
+剪贴板图片从文件系统 `~/.octopus/clipboard_images/` 迁移到 DB BLOB：
+- 新增 `image_data` 表（hash/blob/thumb/image_type/width/height/created_at）
+- WebP 无损原图 + WebP 20% 缩略图
+- 删除条目时引用计数为 0 才删 image_data 行
+- 启动时 `image_migration` 模块自动迁移旧文件到 DB，迁移后删除目录
+- 前端图片条目内联缩略图（`get_image_thumb` 命令 → base64 WebP）
+- 详见 `docs/superpowers/specs/2026-06-27-image-storage-blob-design.md`
+
+### 9.3 设置页配置暴露
+
+剪贴板相关配置暴露到系统设置页（GeneralPanel）：
+- **快捷键 section** 新增「剪贴板浮窗」行（ShortcutButton kbd 标签风格，热重载）
+- **剪贴板 section**（新增 Card）：最大保留条数（100/200/300/500/1000）+ 自动清理天数（1/3/7/15/30）
+- AppConfig 新增 `clipboard_shortcut` / `clipboard_max_items` / `clipboard_max_age_days` 字段
+- `save_app_config` / `load_app_config` 同步更新（25 字段）
+
+### 9.4 设置页 UI 优化
+
+- 「引擎接入」section 移除（embedded 模式不需要用户配置）
+- 润色 section label 加「润色」前缀
+- 润色模型 select 用 `current` 匹配（修 3-part spec 与裸名不匹配问题）
+- 快捷键捕获过滤纯修饰键（Alt/Shift/Control/Meta）
+
+### 9.5 FTS5 索引维护
+
+- 启动时 rebuild + 删除计数器达 10 自动 rebuild
+- `delete_item` / `clear_history` 写回 search_text 时 FTS5 触发器自动更新索引
