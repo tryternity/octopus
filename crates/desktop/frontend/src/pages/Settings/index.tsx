@@ -70,22 +70,25 @@ function Settings() {
   return (
     <div className="flex h-screen overflow-hidden bg-background text-foreground">
       {/* Sidebar */}
-      <div className="w-[180px] flex-shrink-0 bg-muted/50 border-r border-border flex flex-col">
-        <div className="px-4 pt-5 pb-3 text-lg font-bold">Octopus</div>
-        <nav className="flex-1 py-2">
+      <div className="w-[160px] flex-shrink-0 bg-muted/40 border-r border-border flex flex-col">
+        <div className="px-4 pt-5 pb-4">
+          <div className="text-base font-bold tracking-tight">Octopus</div>
+          <div className="text-[10px] text-muted-foreground/60 mt-0.5">语音识别 · 剪贴板</div>
+        </div>
+        <nav className="flex-1 py-1">
           {NAV_ITEMS.map(({ page: p, icon: Icon, label }) => (
             <div
               key={p}
               className={cn(
-                "flex items-center gap-2.5 px-4 py-2 cursor-pointer text-sm transition-colors",
+                "flex items-center gap-2 px-3 mx-1.5 py-2 rounded-md cursor-pointer text-sm transition-colors",
                 page === p
-                  ? "text-primary bg-primary/[0.08]"
-                  : "hover:bg-black/[0.05]",
+                  ? "bg-background text-foreground shadow-sm font-medium"
+                  : "text-muted-foreground hover:text-foreground hover:bg-background/50",
               )}
               onClick={() => setPage(p)}
             >
-              <Icon className="w-[18px] h-[18px]" />
-              <span>{label}</span>
+              <Icon className="w-4 h-4 flex-shrink-0" />
+              <span className="truncate">{label}</span>
             </div>
           ))}
         </nav>
