@@ -1,11 +1,11 @@
+//! 图片编码：RGBA → PNG → SHA-256 → WebP 无损 + 缩略图 → DB BLOB。
+//! 替代旧文件系统方案，不再写 ~/.octopus/clipboard_images/。
+
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
-use std::path::PathBuf;
 
-pub fn clipboard_images_dir() -> PathBuf {
-    octopus_infra::paths::octopus_config_home().join("clipboard_images")
-}
-
+/// RGBA 像素 → PNG bytes + SHA-256 hash。
+/// hash 用于去重（同一张图只存一份 BLOB）。
 pub fn encode_and_hash(rgba: &[u8], width: u32, height: u32) -> Result<(Vec<u8>, String)> {
     let img = ::image::RgbaImage::from_raw(width, height, rgba.to_vec())
         .context("Failed to create RgbaImage from raw pixels")?;
@@ -16,52 +16,31 @@ pub fn encode_and_hash(rgba: &[u8], width: u32, height: u32) -> Result<(Vec<u8>,
     Ok((png_bytes, hash))
 }
 
-pub struct ImageSaveResult {
-    pub orig_path: PathBuf,
-    pub thumb_path: PathBuf,
+/// 编码结果：WebP 无损原图 + WebP 缩略图。
+pub struct EncodedImage {
+    pub webp_blob: Vec<u8>,
+    pub thumb_blob: Vec<u8>,
 }
 
-pub fn save_image(png_bytes: &[u8], hash: &str) -> Result<ImageSaveResult> {
-    let dir = clipboard_images_dir();
-    std::fs::create_dir_all(&dir).context("Failed to create clipboard_images dir")?;
-    let orig_path = dir.join(format!("{}.png", hash));
-    let thumb_path = dir.join(format!("{}_thumb.png", hash));
-    std::fs::write(&orig_path, png_bytes).context("Failed to write original image")?;
-    if !thumb_path.exists() {
-        generate_thumbnail(&orig_path, &thumb_path, 240)?;
-    }
-    Ok(ImageSaveResult { orig_path, thumb_path })
-}
+/// PNG bytes → WebP 100% 无损 + 缩略图 WebP 20%（240×240 Lanczos）。
+pub fn encode_to_webp(png_bytes: &[u8], _width: u32, _height: u32) -> Result<EncodedImage> {
+    let img = ::image::load_from_memory_with_format(png_bytes, ::image::ImageFormat::Png)
+        .context("Failed to decode PNG for WebP encoding")?;
+    let rgba = img.to_rgba8();
 
-fn generate_thumbnail(orig: &std::path::Path, thumb: &std::path::Path, max_size: u32) -> Result<()> {
-    let img = ::image::open(orig).context("Failed to open image for thumbnail")?;
-    let thumbnail = img.resize(max_size, max_size, ::image::imageops::FilterType::Lanczos3);
-    thumbnail.save(thumb).context("Failed to save thumbnail")?;
-    Ok(())
-}
+    // 无损 WebP 原图
+    let encoder = webp::Encoder::from_rgba(&rgba, rgba.width(), rgba.height());
+    let webp_blob = encoder.encode_lossless();
+    let webp_blob = webp_blob.to_vec();
 
-pub fn cleanup_orphaned_blobs(referenced_hashes: &std::collections::HashSet<String>) -> Result<usize> {
-    let dir = clipboard_images_dir();
-    if !dir.exists() {
-        return Ok(0);
-    }
-    let mut deleted = 0;
-    for entry in std::fs::read_dir(&dir)? {
-        let entry = entry?;
-        let filename = entry.file_name();
-        let filename_str = filename.to_string_lossy();
-        let hash = if let Some(name) = filename_str.strip_suffix(".png") {
-            name.trim_end_matches("_thumb")
-        } else {
-            continue;
-        };
-        if !referenced_hashes.contains(hash) {
-            if std::fs::remove_file(entry.path()).is_ok() {
-                deleted += 1;
-            }
-        }
-    }
-    Ok(deleted)
+    // 缩略图：resize 240×240 → WebP 20%
+    let thumb_img = img.resize(240, 240, ::image::imageops::FilterType::Lanczos3);
+    let thumb_rgba = thumb_img.to_rgba8();
+    let thumb_encoder = webp::Encoder::from_rgba(&thumb_rgba, thumb_rgba.width(), thumb_rgba.height());
+    let thumb_blob = thumb_encoder.encode(20.0);
+    let thumb_blob = thumb_blob.to_vec();
+
+    Ok(EncodedImage { webp_blob, thumb_blob })
 }
 
 pub fn sha256_hex(data: &[u8]) -> String {
@@ -93,5 +72,16 @@ mod tests {
         let (_, hash1) = encode_and_hash(&rgba, 2, 1).unwrap();
         let (_, hash2) = encode_and_hash(&rgba, 2, 1).unwrap();
         assert_eq!(hash1, hash2);
+    }
+
+    #[test]
+    fn test_encode_to_webp() {
+        let rgba = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255];
+        let (png, _) = encode_and_hash(&rgba, 2, 2).unwrap();
+        let encoded = encode_to_webp(&png, 2, 2).unwrap();
+        assert!(!encoded.webp_blob.is_empty());
+        assert!(!encoded.thumb_blob.is_empty());
+        assert_eq!(&encoded.webp_blob[..4], b"RIFF");
+        assert_eq!(&encoded.thumb_blob[..4], b"RIFF");
     }
 }

@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, Copy } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, Copy, ScanText, Loader2, Check } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import type { ClipboardItem } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
@@ -20,11 +20,25 @@ export default function ClipboardItemRow({
 }) {
   const [deletePending, setDeletePending] = useState(false);
   const [showSavePopover, setShowSavePopover] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrDone, setOcrDone] = useState(false);
+  const [thumbSrc, setThumbSrc] = useState<string | null>(null);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => { if (deleteTimer.current) clearTimeout(deleteTimer.current); };
   }, []);
+
+  useEffect(() => {
+    if (item.item_type === "image") {
+      invoke<number[]>("get_image_thumb", { id: item.id })
+        .then((bytes) => {
+          const base64 = btoa(bytes.map((b: number) => String.fromCharCode(b)).join(""));
+          setThumbSrc(`data:image/webp;base64,${base64}`);
+        })
+        .catch(() => {});
+    }
+  }, [item.id, item.item_type]);
 
   const handleFavorite = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -65,6 +79,27 @@ export default function ClipboardItemRow({
   const handleSaveImage = (e: React.MouseEvent) => {
     e.stopPropagation();
     setShowSavePopover((v) => !v);
+  };
+
+  const handleOcr = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (ocrLoading) return;
+    setOcrLoading(true);
+    try {
+      await invoke("ocr_image", { id: item.id });
+      setOcrLoading(false);
+      setOcrDone(true);
+      setTimeout(() => setOcrDone(false), 1000);
+    } catch (e) {
+      setOcrLoading(false);
+      const msg = String(e);
+      if (msg.includes("未识别到文本")) {
+        setOcrDone(true);
+        setTimeout(() => setOcrDone(false), 1000);
+      } else {
+        console.error(e);
+      }
+    }
   };
 
   const handleOpenFile = async (e: React.MouseEvent) => {
@@ -112,8 +147,13 @@ export default function ClipboardItemRow({
       )} />
       <div className="flex-1 min-w-0">
         {item.item_type === "image" && item.image_meta ? (
-          <div className="text-xs text-muted-foreground">
-            图片 {item.image_meta.width}×{item.image_meta.height}
+          <div className="flex items-center gap-1.5">
+            {thumbSrc && (
+              <img src={thumbSrc} className="w-8 h-8 rounded object-cover flex-shrink-0" alt="" />
+            )}
+            <span className="text-xs text-muted-foreground">
+              {item.image_meta.width}×{item.image_meta.height}
+            </span>
           </div>
         ) : item.item_type === "file" ? (
           <div className="text-xs text-muted-foreground truncate">
@@ -170,6 +210,27 @@ export default function ClipboardItemRow({
               <SaveImagePopover id={item.id} onClose={() => setShowSavePopover(false)} />
             )}
           </div>
+        )}
+        {item.item_type === "image" && (
+          <button
+            className={cn(
+              "p-0.5 transition-opacity",
+              ocrLoading || ocrDone
+                ? "opacity-100"
+                : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+            )}
+            onClick={handleOcr}
+            disabled={ocrLoading}
+            title="OCR 识别"
+          >
+            {ocrLoading ? (
+              <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />
+            ) : ocrDone ? (
+              <Check className="w-3.5 h-3.5 text-emerald-600" />
+            ) : (
+              <ScanText className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+            )}
+          </button>
         )}
         {item.item_type === "file" && (
           <button

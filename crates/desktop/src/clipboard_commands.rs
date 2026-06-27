@@ -166,10 +166,12 @@ pub async fn save_image_item(
     let blob_hash = item.image_meta.as_ref().map(|m| m.blob_hash.clone())
         .ok_or("图片元数据缺失")?;
 
-    // 2. 读原图 PNG 字节
-    let orig_path = octopus_clipboard::image::clipboard_images_dir()
-        .join(format!("{}.png", blob_hash));
-    let png_bytes = std::fs::read(&orig_path).map_err(|e| e.to_string())?;
+    // 2. 从 DB 读 WebP 无损 BLOB
+    let webp_blob = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::get_image_blob(conn, &blob_hash)
+    })
+    .map_err(|e| e.to_string())?
+    .ok_or("图片数据不存在")?;
 
     // 3. 目标目录 ~/Downloads/octopus/
     let downloads_dir = dirs::download_dir()
@@ -186,13 +188,29 @@ pub async fn save_image_item(
     let base_name = &blob_hash[..8.min(blob_hash.len())];
     let save_path = unique_path(&downloads_dir, base_name, ext);
 
-    // 5. 编码写入
+    // 5. 编码写入（从 WebP BLOB 转码到目标格式）
     match ext {
-        "png" => octopus_infra::image_util::save_as_png(&png_bytes, &save_path),
-        "webp" => octopus_infra::image_util::save_as_webp(&png_bytes, &save_path, q),
-        _ => octopus_infra::image_util::save_as_jpeg(&png_bytes, &save_path, q),
+        "png" => {
+            let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
+                .map_err(|e| e.to_string())?;
+            img.save_with_format(&save_path, ::image::ImageFormat::Png)
+                .map_err(|e| e.to_string())?;
+        }
+        "webp" => {
+            std::fs::write(&save_path, &webp_blob).map_err(|e| e.to_string())?;
+        }
+        _ => {
+            let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
+                .map_err(|e| e.to_string())?;
+            let rgb = img.to_rgb8();
+            let mut buf = std::io::BufWriter::new(
+                std::fs::File::create(&save_path).map_err(|e| e.to_string())?
+            );
+            let mut encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, q);
+            encoder.encode(&rgb, rgb.width(), rgb.height(), ::image::ExtendedColorType::Rgb8)
+                .map_err(|e| e.to_string())?;
+        }
     }
-    .map_err(|e| e.to_string())?;
 
     // 6. 写文件路径到剪贴板
     let abs_path = save_path.to_string_lossy().to_string();
@@ -287,4 +305,111 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// 图片条目 OCR：识别文本 → 写 search_text + 写剪贴板 + 新建文档。
+#[tauri::command]
+pub async fn ocr_image(
+    id: i64,
+    handle: State<'_, Arc<ClipboardHandle>>,
+) -> Result<String, String> {
+    let item = octopus_infra::db::with_db(|conn| {
+        let items = octopus_clipboard::store::query_history(conn, &QueryFilter {
+            filter: "all".into(),
+            search: None,
+            page: 1,
+            size: 1000,
+        })?;
+        Ok::<_, anyhow::Error>(items.into_iter().find(|i| i.id == id))
+    })
+    .map_err(|e| e.to_string())?;
+
+    let item = item.ok_or("条目不存在")?;
+    if item.item_type != octopus_clipboard::ItemType::Image {
+        return Err("非图片条目".into());
+    }
+
+    let blob_hash = item.image_meta.as_ref().map(|m| m.blob_hash.clone())
+        .ok_or("图片元数据缺失")?;
+
+    let webp_blob = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::get_image_blob(conn, &blob_hash)
+    })
+    .map_err(|e| e.to_string())?
+    .ok_or("图片数据不存在")?;
+
+    let engine = octopus_ocr::engine::OcrEngine::instance()
+        .map_err(|e| e.to_string())?;
+    let text = engine.recognize(&webp_blob).map_err(|e| e.to_string())?;
+
+    if text.trim().is_empty() {
+        return Err("未识别到文本".into());
+    }
+
+    octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::update_search_text(conn, id, &text)
+    }).map_err(|e| e.to_string())?;
+
+    handle.write_text(&text).map_err(|e| e.to_string())?;
+
+    open_text_editor_with_content(&text);
+
+    Ok(text)
+}
+
+/// 用系统文本编辑器新建无标题文档（不落盘临时文件）。
+fn open_text_editor_with_content(text: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            r#"tell application "TextEdit"
+    activate
+    make new document with properties {{text:"{}"}}
+end tell"#,
+            escaped
+        );
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+    #[cfg(target_os = "windows")]
+    {
+        let _ = std::process::Command::new("notepad").spawn();
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let _ = std::process::Command::new("xdg-open").arg("text://").spawn();
+    }
+}
+
+/// 获取图片缩略图 BLOB（前端 base64 展示）。
+#[tauri::command]
+pub async fn get_image_thumb(id: i64) -> Result<Vec<u8>, String> {
+    let item = octopus_infra::db::with_db(|conn| {
+        let items = octopus_clipboard::store::query_history(conn, &QueryFilter {
+            filter: "all".into(),
+            search: None,
+            page: 1,
+            size: 1000,
+        })?;
+        Ok::<_, anyhow::Error>(items.into_iter().find(|i| i.id == id))
+    })
+    .map_err(|e| e.to_string())?;
+
+    let item = item.ok_or("条目不存在")?;
+    if item.item_type != octopus_clipboard::ItemType::Image {
+        return Err("非图片条目".into());
+    }
+
+    let blob_hash = item.image_meta.as_ref().map(|m| m.blob_hash.clone())
+        .ok_or("图片元数据缺失")?;
+
+    octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::get_image_thumb(conn, &blob_hash)
+    })
+    .map_err(|e| e.to_string())?
+    .ok_or("缩略图不存在".into())
 }

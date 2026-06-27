@@ -1,6 +1,5 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
-use std::collections::HashSet;
 use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::model::*;
@@ -248,14 +247,37 @@ pub fn toggle_favorite(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// 删除单条。
-pub fn delete_item(conn: &Connection, id: i64) -> Result<()> {
-    conn.execute("DELETE FROM clipboard_history WHERE id = ?", params![id])?;
-    track_deletes(conn, 1);
+/// 更新条目的 search_text（OCR 场景：识别后让图片可搜索）。
+pub fn update_search_text(conn: &Connection, id: i64, search_text: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE clipboard_history SET search_text = ? WHERE id = ?",
+        params![search_text, id],
+    )?;
     Ok(())
 }
 
-/// 清空历史（可选保留收藏）。
+/// 删除单条。若被删的是图片且无其他条目引用同一 blob，顺带删除 image_data 行。
+pub fn delete_item(conn: &Connection, id: i64) -> Result<()> {
+    let blob_hash: Option<String> = conn
+        .query_row(
+            "SELECT blob_hash FROM clipboard_history WHERE id = ?",
+            params![id],
+            |r| r.get::<_, Option<String>>(0),
+        )
+        .ok()
+        .flatten();
+
+    conn.execute("DELETE FROM clipboard_history WHERE id = ?", params![id])?;
+    track_deletes(conn, 1);
+
+    if let Some(hash) = blob_hash {
+        delete_image_if_unreferenced(conn, &hash);
+    }
+
+    Ok(())
+}
+
+/// 清空历史（可选保留收藏）。删除后回收无引用的 image_data BLOB。
 pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
     let rows = if keep_favorite {
         conn.execute("DELETE FROM clipboard_history WHERE is_favorite = 0", [])?
@@ -264,6 +286,7 @@ pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
     };
     if rows > 0 {
         track_deletes(conn, rows as u32);
+        cleanup_unreferenced_images(conn)?;
     }
     Ok(rows)
 }
@@ -283,17 +306,67 @@ pub fn delete_by_transcription_ids(conn: &Connection, ids: &[i64]) -> Result<usi
     Ok(rows)
 }
 
-/// 获取所有图片 blob hash（用于孤立文件清理）。
-pub fn get_referenced_blob_hashes(conn: &Connection) -> Result<HashSet<String>> {
-    let mut stmt = conn.prepare(
-        "SELECT DISTINCT blob_hash FROM clipboard_history WHERE blob_hash IS NOT NULL"
+/// ── image_data 表 CRUD ──
+
+/// 插入图片 BLOB（WebP 无损 + 缩略图）。
+pub fn insert_image_data(
+    conn: &Connection,
+    hash: &str,
+    webp_blob: &[u8],
+    thumb_blob: &[u8],
+    width: i64,
+    height: i64,
+) -> Result<()> {
+    conn.execute(
+        "INSERT OR REPLACE INTO image_data (hash, blob, thumb, image_type, width, height, created_at)\n         VALUES (?, ?, ?, 'webp', ?, ?, ?)",
+        params![hash, webp_blob, thumb_blob, width, height, iso_now()],
     )?;
-    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-    let mut set = HashSet::new();
-    for row in rows {
-        if let Ok(h) = row { set.insert(h); }
+    Ok(())
+}
+
+/// 读取图片原图 BLOB。
+pub fn get_image_blob(conn: &Connection, hash: &str) -> Result<Option<Vec<u8>>> {
+    let mut stmt = conn.prepare("SELECT blob FROM image_data WHERE hash = ?")?;
+    let row = stmt.query_row(params![hash], |r| r.get::<_, Vec<u8>>(0));
+    match row {
+        Ok(blob) => Ok(Some(blob)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
     }
-    Ok(set)
+}
+
+/// 读取缩略图 BLOB。
+pub fn get_image_thumb(conn: &Connection, hash: &str) -> Result<Option<Vec<u8>>> {
+    let mut stmt = conn.prepare("SELECT thumb FROM image_data WHERE hash = ?")?;
+    let row = stmt.query_row(params![hash], |r| r.get::<_, Vec<u8>>(0));
+    match row {
+        Ok(blob) => Ok(Some(blob)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
+/// 删除 image_data 中无引用的 BLOB（引用计数为 0）。返回删除行数。
+pub fn cleanup_unreferenced_images(conn: &Connection) -> Result<usize> {
+    let deleted = conn.execute(
+        "DELETE FROM image_data WHERE hash NOT IN (\n            SELECT DISTINCT blob_hash FROM clipboard_history WHERE blob_hash IS NOT NULL\n        )",
+        [],
+    )?;
+    Ok(deleted)
+}
+
+/// 删除指定 hash 的 image_data（如果无其他条目引用）。
+fn delete_image_if_unreferenced(conn: &Connection, hash: &str) {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM clipboard_history WHERE blob_hash = ?",
+            params![hash],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if count == 0 {
+        let _ = conn.execute("DELETE FROM image_data WHERE hash = ?", params![hash]);
+    }
 }
 
 /// 统计总数。

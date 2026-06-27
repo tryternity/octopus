@@ -131,10 +131,15 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
             if let Some(id) = existing {
                 octopus_infra::db::with_db(|conn| store::touch_created_at(conn, id))?;
             } else {
-                // 保存图片文件
-                let save_result = image::save_image(&png_bytes, &hash);
-                let has_thumb = save_result.is_ok();
+                // 编码 WebP 无损 + 缩略图
+                let encoded = image::encode_to_webp(&png_bytes, w, h)?;
 
+                // 存 image_data BLOB
+                octopus_infra::db::with_db(|conn| {
+                    store::insert_image_data(conn, &hash, &encoded.webp_blob, &encoded.thumb_blob, w as i64, h as i64)
+                })?;
+
+                // 存 clipboard_history 条目
                 octopus_infra::db::with_db(|conn| {
                     store::insert_clipboard_item(conn, &store::NewClipboardItem {
                         id: store::chrono_millis(),
@@ -145,15 +150,11 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                         blob_hash: Some(hash),
                         width: Some(w as i64),
                         height: Some(h as i64),
-                        has_thumbnail: if has_thumb { Some(1) } else { Some(0) },
+                        has_thumbnail: Some(1),
                         file_count: None,
                         is_rich: false,
                     })
                 })?;
-
-                if let Err(e) = save_result {
-                    error!("Failed to save image: {}", e);
-                }
             }
         } else {
             // text 类型

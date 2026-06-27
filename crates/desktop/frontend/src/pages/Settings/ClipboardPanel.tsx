@@ -6,6 +6,7 @@ import type { ClipboardItem } from "@/types/clipboard";
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Copy, Download, FolderOpen,
+  ScanText, Loader2, Check,
 } from "lucide-react";
 import SaveImagePopover from "../Clipboard/SaveImagePopover";
 
@@ -226,11 +227,25 @@ function ClipboardRow({
 }) {
   const [deletePending, setDeletePending] = useState(false);
   const [showSavePopover, setShowSavePopover] = useState(false);
+  const [ocrLoading, setOcrLoading] = useState(false);
+  const [ocrDone, setOcrDone] = useState(false);
+  const [thumbSrc, setThumbSrc] = useState<string | null>(null);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => { if (deleteTimer.current) clearTimeout(deleteTimer.current); };
   }, []);
+
+  useEffect(() => {
+    if (item.item_type === "image") {
+      invoke<number[]>("get_image_thumb", { id: item.id })
+        .then((bytes) => {
+          const base64 = btoa(bytes.map((b: number) => String.fromCharCode(b)).join(""));
+          setThumbSrc(`data:image/webp;base64,${base64}`);
+        })
+        .catch(() => {});
+    }
+  }, [item.id, item.item_type]);
 
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
@@ -279,6 +294,27 @@ function ClipboardRow({
     setShowSavePopover((v) => !v);
   };
 
+  const handleOcr = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (ocrLoading) return;
+    setOcrLoading(true);
+    try {
+      await invoke("ocr_image", { id: item.id });
+      setOcrLoading(false);
+      setOcrDone(true);
+      setTimeout(() => setOcrDone(false), 1000);
+    } catch (e) {
+      setOcrLoading(false);
+      const msg = String(e);
+      if (msg.includes("未识别到文本")) {
+        setOcrDone(true);
+        setTimeout(() => setOcrDone(false), 1000);
+      } else {
+        showToast("OCR 失败：" + e);
+      }
+    }
+  };
+
   const Icon = item.source === "asr" ? Mic
     : item.item_type === "image" ? ImageIcon
     : item.item_type === "file" ? FileText
@@ -310,8 +346,13 @@ function ClipboardRow({
       )} />
       <div className="flex-1 min-w-0">
         {item.item_type === "image" && item.image_meta ? (
-          <div className="text-xs text-stone-500">
-            图片 {item.image_meta.width}×{item.image_meta.height}
+          <div className="flex items-center gap-1.5">
+            {thumbSrc && (
+              <img src={thumbSrc} className="w-10 h-10 rounded object-cover flex-shrink-0" alt="" />
+            )}
+            <span className="text-xs text-stone-500">
+              {item.image_meta.width}×{item.image_meta.height}
+            </span>
           </div>
         ) : item.item_type === "file" ? (
           <div className="text-xs text-stone-500 truncate">
@@ -368,6 +409,27 @@ function ClipboardRow({
               <SaveImagePopover id={item.id} onClose={() => setShowSavePopover(false)} />
             )}
           </div>
+        )}
+        {item.item_type === "image" && (
+          <button
+            className={cn(
+              "p-1 rounded transition-opacity",
+              ocrLoading || ocrDone
+                ? "opacity-100"
+                : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+            )}
+            onClick={handleOcr}
+            disabled={ocrLoading}
+            title="OCR 识别"
+          >
+            {ocrLoading ? (
+              <Loader2 className="w-3.5 h-3.5 text-stone-500 animate-spin" />
+            ) : ocrDone ? (
+              <Check className="w-3.5 h-3.5 text-emerald-600" />
+            ) : (
+              <ScanText className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
+            )}
+          </button>
         )}
         {item.item_type === "file" && (
           <button

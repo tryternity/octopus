@@ -6,7 +6,8 @@ edition = "2021"
 [dependencies]
 octopus-infra = { path = "../infra" }
 clipboard-rs = { version = "0.3", features = ["image", "wayland"] }
-image = { version = "0.25", features = ["png", "jpeg"] }
+image = { version = "0.25", features = ["png", "jpeg", "webp"] }
+webp = "0.3"
 sha2 = "0.10"
 rusqlite = { version = "0.31", features = ["bundled"] }
 anyhow = "1"

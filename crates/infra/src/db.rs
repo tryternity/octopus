@@ -145,8 +145,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
         // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 6", [])?;
-        log::info!("DB initialized (v6): schema + app_config(setting) + prompts + clipboard_history + yaml migration");
+        conn.execute("PRAGMA user_version = 7", [])?;
+        log::info!("DB initialized (v7): schema + app_config(setting) + prompts + clipboard_history + image_data + yaml migration");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
@@ -154,21 +154,21 @@ fn init_schema(conn: &Connection) -> Result<()> {
             "ALTER TABLE app_config ADD COLUMN category TEXT NOT NULL DEFAULT 'setting'",
             [],
         )?;
-        conn.execute_batch(INIT_SQL).context("v2→v6: 重跑 db.sql 幂等补建 prompts + clipboard_history")?;
-        conn.execute("PRAGMA user_version = 6", [])?;
-        log::info!("DB migrated to v6: app_config.category + prompts + clipboard_history");
+        conn.execute_batch(INIT_SQL).context("v2→v7: 重跑 db.sql 幂等补建 prompts + clipboard_history + image_data")?;
+        conn.execute("PRAGMA user_version = 7", [])?;
+        log::info!("DB migrated to v7: app_config.category + prompts + clipboard_history + image_data");
     } else if v == 3 {
         // v3 → v4：prompts 表 + app_config.active_polish_prompt seed（INIT_SQL 幂等补建）
         log::info!("DB migrating v3 → v4: adding prompts table + active_polish_prompt seed...");
-        conn.execute_batch(INIT_SQL).context("v3→v6: 重跑 db.sql 幂等补建 clipboard_history")?;
-        conn.execute("PRAGMA user_version = 6", [])?;
-        log::info!("DB migrated to v6: prompts + clipboard_history");
+        conn.execute_batch(INIT_SQL).context("v3→v7: 重跑 db.sql 幂等补建 clipboard_history + image_data")?;
+        conn.execute("PRAGMA user_version = 7", [])?;
+        log::info!("DB migrated to v7: prompts + clipboard_history + image_data");
     } else if v == 4 {
         // v4 → v5：clipboard_history 表 + FTS5 + 触发器 + app_config seed
         log::info!("DB migrating v4 → v5: adding clipboard_history table...");
         conn.execute_batch(INIT_SQL).context("v4→v5: 建 clipboard_history 表 + FTS5")?;
-        conn.execute("PRAGMA user_version = 5", [])?;
-        log::info!("DB migrated to v5: clipboard_history + FTS5");
+        conn.execute("PRAGMA user_version = 7", [])?;
+        log::info!("DB migrated v4→v7 (skip v5/v6): clipboard_history + FTS5 + image_data");
     } else if v == 5 {
         // v5 → v6：app_config category 'default' → 'setting'（语义化分组）
         log::info!("DB migrating v5 → v6: app_config category 'default' → 'setting'...");
@@ -176,8 +176,15 @@ fn init_schema(conn: &Connection) -> Result<()> {
             "UPDATE app_config SET category = 'setting' WHERE category = 'default'",
             [],
         )?;
-        conn.execute("PRAGMA user_version = 6", [])?;
-        log::info!("DB migrated to v6: app_config category renamed");
+        conn.execute_batch(INIT_SQL).context("v5→v7: 补建 image_data 表")?;
+        conn.execute("PRAGMA user_version = 7", [])?;
+        log::info!("DB migrated v5→v7: app_config category renamed + image_data");
+    } else if v == 6 {
+        // v6 → v7：image_data 表
+        log::info!("DB migrating v6 → v7: adding image_data table...");
+        conn.execute_batch(INIT_SQL).context("v6→v7: 建 image_data 表")?;
+        conn.execute("PRAGMA user_version = 7", [])?;
+        log::info!("DB migrated to v7: image_data");
     }
     Ok(())
 }
