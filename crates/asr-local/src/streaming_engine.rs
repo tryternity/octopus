@@ -85,9 +85,11 @@ impl StreamingSession {
     }
 
     /// 送入音频样本（16kHz mono f32），返回累积识别文本（如果有新结果）。
-    /// `was_silent` 表示上一轮音频是否为静默（由调用方根据采样量判断），
-    /// 如果上一轮静音、本轮有新文本，则在文本前插入分隔符。
-    pub fn accept_samples(&self, samples: &[f32], was_silent: bool) -> Result<Option<String>> {
+    /// - `was_silent`：上一轮静音≥阈值（由调用方 VAD 判定）。
+    /// - `has_speech`：本轮 VAD 判定有语音。仅 zipformer 用：`was_silent && !has_speech` 时 finish+reset
+    ///   （持续静音=真段边界）；`was_silent && has_speech`（静音→语音过渡）不 reset，避免开口瞬间
+    ///   反复冲刷冲掉首字音头（首字缺失根因）。paraformer 忽略（流式不 reset，标点仅靠 was_silent）。
+    pub fn accept_samples(&self, samples: &[f32], was_silent: bool, has_speech: bool) -> Result<Option<String>> {
         if samples.is_empty() {
             return Ok(None);
         }
@@ -128,7 +130,7 @@ impl StreamingSession {
             }
             Self::ZipformerCtc { engine, accumulated, separator } => {
                 let mut eng = engine.lock().unwrap();
-                if was_silent {
+                if was_silent && !has_speech {
                     let segment_text = eng.finish()?;
                     let trimmed = segment_text.trim();
                     if !trimmed.is_empty() {
@@ -144,7 +146,7 @@ impl StreamingSession {
             }
             Self::ZipformerTransducer { engine, accumulated, separator } => {
                 let mut eng = engine.lock().unwrap();
-                if was_silent {
+                if was_silent && !has_speech {
                     let segment_text = eng.finish()?;
                     let trimmed = segment_text.trim();
                     if !trimmed.is_empty() {

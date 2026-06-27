@@ -96,7 +96,7 @@ mod tests {
         finish_text: String,
     }
     impl StreamingEngine for FakeEngine {
-        fn accept_samples(&self, _samples: &[f32], _was_silent: bool) -> Result<Option<String>> {
+        fn accept_samples(&self, _samples: &[f32], _was_silent: bool, _has_speech: bool) -> Result<Option<String>> {
             Ok(self.next_accept.lock().unwrap().take())
         }
         fn flush(&self, _insert_comma: bool) -> Result<Option<String>> {

@@ -32,8 +32,12 @@ pub enum TranscriptEvent {
 /// local `StreamingSession` 与（阶段2c）cloud WS 实现本 trait；`StreamingRunner` 持
 /// `Box<dyn StreamingEngine>`，对本地/云端无感（spec §3.4）。
 pub trait StreamingEngine: Send + Sync {
-    /// 送 16k 样本，返回累积全文（有新结果时）。`was_silent` 表示上一轮静音≥阈值（触发插逗号）。
-    fn accept_samples(&self, samples: &[f32], was_silent: bool) -> Result<Option<String>>;
+    /// 送 16k 样本，返回累积全文（有新结果时）。
+    /// - `was_silent`：上一轮静音≥阈值（触发插逗号/分段）。
+    /// - `has_speech`：本轮 VAD 判定有语音（speech_chunks≥2）。zipformer 用它区分「持续静音段边界」
+    ///   与「静音→语音过渡」tick——仅 `was_silent && !has_speech` 时 finish+reset，避免开口瞬间
+    ///   反复冲刷冲掉首字音头（首字缺失根因）。paraformer 忽略（流式不 reset）。
+    fn accept_samples(&self, samples: &[f32], was_silent: bool, has_speech: bool) -> Result<Option<String>>;
     /// 静音冲刷：`insert_comma=true` 冻结历史段并插逗号。
     fn flush(&self, insert_comma: bool) -> Result<Option<String>>;
     /// 收尾：追加句号 + 简繁归一，返回最终全文。
@@ -44,8 +48,8 @@ pub trait StreamingEngine: Send + Sync {
 
 /// `StreamingSession` 委托实现——签名完全一致，UFCS 调用固有方法避免与 trait 方法歧义。
 impl StreamingEngine for StreamingSession {
-    fn accept_samples(&self, samples: &[f32], was_silent: bool) -> Result<Option<String>> {
-        StreamingSession::accept_samples(self, samples, was_silent)
+    fn accept_samples(&self, samples: &[f32], was_silent: bool, has_speech: bool) -> Result<Option<String>> {
+        StreamingSession::accept_samples(self, samples, was_silent, has_speech)
     }
     fn flush(&self, insert_comma: bool) -> Result<Option<String>> {
         StreamingSession::flush(self, insert_comma)
@@ -81,9 +85,10 @@ fn preroll_vad(vad: &mut SileroVad) {
 /// - `has_speech`：本帧语音 chunk 数 ≥ 2（由 VAD 判定，见 `detect_silence_gap`）。
 /// - `total_chunks`：本帧完整 VAD chunk 数（用于累加静音时长）。
 ///
-/// 返回 `(was_silent_for_punct, should_flush)`：
+/// 返回 `(was_silent_for_punct, should_flush, has_speech)`：
 /// - `was_silent_for_punct`：**上一帧结束前**累积静音已 ≥ 阈值（传给 engine 触发插逗号）。
 /// - `should_flush`：本帧累积静音达阈值且未在本轮冲刷过 → engine.flush(true)。
+/// - `has_speech`：本帧 `speech_chunks ≥ 2`（透传给 engine，区分段边界与开口过渡，见 trait 文档）。
 ///
 /// `flushed` 锁语义与 `handle_streaming_tick:1990-1992,2012-2032` 一致：
 /// 语音恢复（静音清零）→ 解锁；达阈值冲刷一次 → 上锁，避免静音期重复 flush。
@@ -92,7 +97,7 @@ fn step_silence(
     flushed: &mut bool,
     has_speech: bool,
     total_chunks: usize,
-) -> (bool, bool) {
+) -> (bool, bool, bool) {
     let prev = *silence_duration;
     if has_speech {
         *silence_duration = 0.0;
@@ -108,7 +113,7 @@ fn step_silence(
     if should_flush {
         *flushed = true;
     }
-    (was_silent_for_punct, should_flush)
+    (was_silent_for_punct, should_flush, has_speech)
 }
 
 /// VAD 静音检测 + 标点触发（收编自 `coordinator.rs:detect_silence_gap`）。
@@ -121,9 +126,9 @@ fn detect_silence_gap(
     samples: &[f32],
     silence_duration: &mut f64,
     flushed: &mut bool,
-) -> (bool, bool) {
+) -> (bool, bool, bool) {
     let Some(v) = vad.as_mut() else {
-        return (false, false);
+        return (false, false, false);
     };
     let (mut speech_chunks, mut silent_chunks) = (0usize, 0usize);
     for chunk in samples.chunks(VAD_CHUNK_SIZE) {
@@ -143,14 +148,10 @@ fn detect_silence_gap(
     }
     let total_chunks = speech_chunks + silent_chunks;
     if total_chunks == 0 {
-        return (false, false);
+        return (false, false, false);
     }
-    step_silence(
-        silence_duration,
-        flushed,
-        speech_chunks >= 2,
-        total_chunks,
-    )
+    let (punct, flush, _) = step_silence(silence_duration, flushed, speech_chunks >= 2, total_chunks);
+    (punct, flush, speech_chunks >= 2)
 }
 
 /// 流式编排 runner（收编 coordinator 本地流式 tick 的纯 ASR 编排）。
@@ -196,13 +197,13 @@ impl StreamingRunner {
         if samples_16k.is_empty() {
             return events;
         }
-        let (was_silent, should_flush) = detect_silence_gap(
+        let (was_silent, should_flush, has_speech) = detect_silence_gap(
             &mut self.vad,
             samples_16k,
             &mut self.silence_duration,
             &mut self.flushed,
         );
-        match self.engine.accept_samples(samples_16k, was_silent) {
+        match self.engine.accept_samples(samples_16k, was_silent, has_speech) {
             Ok(Some(text)) => events.push(self.maybe_correct(TranscriptEvent::Partial(text))),
             Ok(None) => {}
             Err(e) => {
@@ -233,12 +234,13 @@ impl StreamingRunner {
 
     /// 收尾并先吃入尾部样本（stop 路径用）。
     ///
-    /// 精确等价 `coordinator.rs` stop 顺序：`engine.accept_samples(tail, false)`
-    /// （**不**走 VAD/flush，`was_silent=false` 不插逗号）→ `engine.finish()`。与 [`push_samples`]
-    /// 的区别：push_samples 会 VAD 检测 + 静音冲刷标点，stop 尾部不应触发标点。
+    /// 精确等价 `coordinator.rs` stop 顺序：`engine.accept_samples(tail, false, false)`
+    /// （**不**走 VAD/flush，`was_silent=false` 不插逗号；`has_speech=false`——tail 不经 VAD 判定，
+    /// 且 was_silent=false 已短路 zipformer 的 finish+reset，故尾字不被冲）→ `engine.finish()`。
+    /// 与 [`push_samples`] 的区别：push_samples 会 VAD 检测 + 静音冲刷标点，stop 尾部不应触发标点。
     pub fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent {
         if !tail.is_empty() {
-            if let Err(e) = self.engine.accept_samples(tail, false) {
+            if let Err(e) = self.engine.accept_samples(tail, false, false) {
                 log::warn!("StreamingRunner finish_with_tail accept error: {e}");
             }
         }
@@ -305,7 +307,7 @@ mod tests {
     }
 
     impl StreamingEngine for FakeStreamingEngine {
-        fn accept_samples(&self, _samples: &[f32], _was_silent: bool) -> Result<Option<String>> {
+        fn accept_samples(&self, _samples: &[f32], _was_silent: bool, _has_speech: bool) -> Result<Option<String>> {
             let mut q = self.accept_out.lock().unwrap();
             if q.is_empty() {
                 anyhow::bail!("fake accept error");
@@ -332,7 +334,7 @@ mod tests {
     #[test]
     fn step_silence_speech_resets_silence_and_unlocks_flushed() {
         let (mut sd, mut fl) = (0.6, true); // 已过阈值且上锁
-        let (punct, flush) = step_silence(&mut sd, &mut fl, true, 3);
+        let (punct, flush, _has_speech) = step_silence(&mut sd, &mut fl, true, 3);
         // 语音 → silence 清零、flushed 解锁；prev=0.6≥阈值 → punct=true；清零后 < 阈值 → flush=false
         assert_eq!((sd, fl), (0.0, false));
         assert_eq!((punct, flush), (true, false));
@@ -342,7 +344,7 @@ mod tests {
     fn step_silence_accumulate_below_threshold_no_flush() {
         let (mut sd, mut fl) = (0.0, false);
         // 静音 10 chunk × (512/16000=0.032s) = 0.32s < 0.5
-        let (punct, flush) = step_silence(&mut sd, &mut fl, false, 10);
+        let (punct, flush, _has_speech) = step_silence(&mut sd, &mut fl, false, 10);
         assert!((sd - 0.32).abs() < 1e-9);
         assert_eq!((punct, flush), (false, false));
         assert!(!fl);
@@ -352,12 +354,12 @@ mod tests {
     fn step_silence_cross_threshold_flushes_once_then_latches() {
         let (mut sd, mut fl) = (0.0, false);
         // 第一帧静音 16 chunk × 0.032 = 0.512s ≥ 0.5 → flush=true，上锁
-        let (punct1, flush1) = step_silence(&mut sd, &mut fl, false, 16);
+        let (punct1, flush1, _has) = step_silence(&mut sd, &mut fl, false, 16);
         assert!(flush1);
         assert!(fl);
         assert!(!punct1); // prev=0
         // 第二帧继续静音 → 已上锁，不再 flush
-        let (_punct2, flush2) = step_silence(&mut sd, &mut fl, false, 16);
+        let (_punct2, flush2, _has) = step_silence(&mut sd, &mut fl, false, 16);
         assert!(!flush2);
         assert!(fl);
         // 语音恢复 → 解锁
