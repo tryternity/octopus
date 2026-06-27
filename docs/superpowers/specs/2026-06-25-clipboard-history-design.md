@@ -1,7 +1,7 @@
 # 剪贴板历史管理功能设计
 
 **日期**: 2026-06-25
-**状态**: ✅ Phase 0-3 已实现（clipboard-rs 监听 + 存储 + 图片去重 + React UI + paste.rs 迁移 + 窗口位置记忆）
+**状态**: ✅ Phase 0-3 已实现 + Phase 3 后迭代（图片保存格式选择、FTS5 自动 rebuild、toolbar 精简、窗口高度调整）
 **分支**: `feature/clipboard-research`（worktree: `.worktrees/clipboard-research`）
 
 ## 0. 概述
@@ -475,10 +475,13 @@ function App() {
 
 | 动作 | 行为 |
 |---|---|
-| 单击项 | 写入剪贴板 + 关闭窗口 |
-| 双击项 | 写入剪贴板 + 模拟粘贴到原应用 + 关闭窗口 |
+| 单击项 | 选中条目（不复制） |
+| 双击项 | 复制到剪贴板（不关闭窗口，用户手动 Cmd+V） |
 | 右键菜单 | 复制/粘贴/删除/收藏/备注 |
 | 收藏 | toggle `is_favorite`（乐观更新） |
+| 删除 | 两步确认（首次点击红色高亮 1.5s，再次点击执行） |
+| 图片保存 | 点击下载图标 → 格式选择浮层 → 选 JPEG/WebP/PNG + 质量 → 直接落盘到 `~/Downloads/octopus/` |
+| 文件打开 | 点击打开图标 → 系统默认应用打开 |
 | 搜索 | FTS5 全文搜索，debounce 300ms |
 | Tab 键 | 循环切换过滤器 |
 | Esc | 关闭窗口 |
@@ -501,6 +504,35 @@ function App() {
 失焦自动隐藏（除非 pinned）。macOS 后续可用 `tauri-nspanel` 做 NSPanel。
 
 两个入口：全局快捷键浮窗（默认 `Alt+V`）+ 主窗口内访问按钮。
+
+### 4.9 图片保存浮层（SaveImagePopover）
+
+点击图片条目的下载图标弹出格式选择浮层（非系统对话框）：
+
+```
+┌────────────────────────────┐
+│  格式                       │
+│  ┌──────┬──────┬──────┐    │
+│  │ JPEG │ WebP │ PNG  │    │  ← 分段控件，默认 JPEG
+│  └──────┴──────┴──────┘    │
+│                             │
+│  质量               85      │  ← 细线滑轨 10-100，默认 85（仅 JPEG/WebP）
+│  ●━━━━━━━━━━━━○────────    │
+│  小                大       │
+│                             │
+│  保存后打开文件夹      [○]  │  ← toggle 开关，默认关
+│ ─────────────────────────── │
+│  [    保存到下载    ]       │  ← 墨色按钮，成功后变翡翠绿
+└────────────────────────────┘
+```
+
+**保存逻辑**：
+- 直接写入 `~/Downloads/octopus/<hash前8位>.<ext>`，文件名冲突自动加 `-1`、`-2`
+- JPEG/WebP 使用用户选的质量值；PNG 无损（隐藏质量控件）
+- 保存后写文件路径到剪贴板
+- 勾选「打开文件夹」时，用系统文件管理器定位到该文件（macOS `open -R`、Windows `explorer /select,`、Linux `xdg-open`）
+
+**视觉设计**（frontend-design skill）：纯白不透明卡片 + 双层强阴影，与剪贴板透明底形成明确层次。分段控件激活项白底微阴影，滑轨 3px 深墨色填充进度。
 
 ### 4.9 Tauri 命令层
 
@@ -526,13 +558,30 @@ async fn copy_clipboard_item(id: i64) -> Result<(), String>;
 
 ### 5.1 自动清理
 
+> ⚠️ `run_cleanup`（按天数/数量清理 + blob 回收）已实现但**尚未接入定时调用**。当前仅 FTS5 索引维护已接入（见下）。
+
+**FTS5 索引维护**（已实现，防止影子表膨胀）：
+
 ```
-触发时机：a) 启动后 5s；b) 每小时；c) 手动
+触发时机：
+  a) 应用启动时——rebuild 一次，清理上次运行遗留的空洞
+  b) 运行中删除计数器（AtomicU32）累计达 10——rebuild + 清零
+
+原理：FTS5 external content table 的 DELETE 触发器只移除逻辑索引，
+      _data 表 b-tree 页不自动收缩，删除越多空洞越大。
+      rebuild 重建索引结构，回收空洞。
+
+边界：计数器是进程内存态，重启归零（启动时已 rebuild，逻辑自洽）。
+```
+
+**完整清理（run_cleanup，待接入）**：
+
+```
 执行步骤：
   1. DELETE 超过 max_age_days（默认 30）且 is_favorite=0
   2. DELETE 超出 max_items（默认 1000）且 is_favorite=0（按 created_at ASC）
   3. 孤立 blob 回收：对比 DB blob_hash 与磁盘文件，无引用的删除
-  4. FTS5 索引重建（清理后）
+  4. FTS5 索引重建
 
 豁免：is_favorite=1 永不被删
 ```
@@ -589,8 +638,10 @@ FTS5 可用性：`rusqlie` with `bundled` feature 默认启用 FTS5，需验证�
 
 **新增（Rust）**：
 - `clipboard-rs = { version = "0.3", features = ["image", "wayland"] }`
-- `image = { version = "0.25", features = ["png", "jpeg"] }`
+- `image = { version = "0.25", features = ["png", "webp", "jpeg"] }`
+- `webp = "0.3"`（WebP 编码）
 - `sha2 = "0.10"`
+- `dirs = "5"`（定位 Downloads 目录）
 
 **新增（前端 package.json）**：
 - react / react-dom / vite / @vitejs/plugin-react

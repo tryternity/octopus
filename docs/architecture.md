@@ -25,7 +25,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表）。DB 迁移至 v6。`with_db` 为公开 API 供其他 crate 调用。`image_util`（PNG→WebP 90% 有损压缩保存，基于 `webp` crate）。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表）。DB 迁移至 v6。`with_db` 为公开 API 供其他 crate 调用。`image_util`（PNG 原样保存 + WebP 有损压缩（`webp` crate）+ JPEG 有损压缩（`image` crate JpegEncoder），均接受 quality 参数）。
 
 ### octopus-asr-local（核心推理库）
 
@@ -108,15 +108,15 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 | `model` | 数据结构：`ItemType`（Text/Image/File）/ `Source`（Clipboard/Asr）/ `ClipboardItem`（含 `ImageMeta`/`FileMeta`/`AsrMeta`）/ `QueryFilter`（6 种过滤 + 分页 + 搜索）|
 | `handle` | `ClipboardHandle`：`Mutex<ClipboardContext>` 全局单例（Windows 防锁竞争）+ `AtomicBool` suppress flag（区分 ASR 写入与外部复制，watcher 跳过自身写入） |
 | `watcher` | `ClipboardWatcher`：后台线程跑 `ClipboardWatcherContext::start_watch()`（阻塞），`on_clipboard_change` 回调检查 suppress flag → 判断类型（files > image > text 优先级）→ 去重 → 存 DB → 通知前端 |
-| `store` | DB CRUD：`insert_clipboard_item` / `insert_asr_item`（source=asr，关联 transcription_id）/ `query_history`（LIKE 搜索 + 6 种过滤 + 分页）/ `toggle_favorite` / `delete_item` / `delete_by_transcription_ids`（级联删除：Settings 删转译记录时同步删剪贴板引用）/ `clear_history`（保留收藏）+ 去重（hash / text） |
+| `store` | DB CRUD：`insert_clipboard_item` / `insert_asr_item`（source=asr，关联 transcription_id）/ `query_history`（LIKE 搜索 + 6 种过滤 + 分页）/ `toggle_favorite` / `delete_item`（+ 删除计数器 `track_deletes`）/ `delete_by_transcription_ids`（级联删除：Settings 删转译记录时同步删剪贴板引用）/ `clear_history`（保留收藏）/ `rebuild_fts_index`（FTS5 索引重建，启动时 + 删除计数达 10 自动调用）+ 去重（hash / text） |
 | `image` | PNG 编码（`image` crate）+ SHA-256 去重 + 缩略图 240×240（Lanczos3）+ 孤立 blob 回收。图片存 `~/.octopus/clipboard_images/<hash>.png` |
-| `cleanup` | 自动清理：按天数（默认 30）+ 按数量（默认 1000）删除非收藏记录 + 孤立 blob 回收 + FTS5 索引重建 |
+| `cleanup` | 自动清理：按天数（默认 30）+ 按数量（默认 1000）删除非收藏记录 + 孤立 blob 回收 + FTS5 索引重建。**注意：`run_cleanup` 已实现但尚未接入定时调用**；FTS5 索引维护已单独接入（启动时 rebuild + 删除计数器达 10 自动 rebuild，见 store.rs） |
 
 **监听机制（clipboard-rs 内置）：** macOS 轮询 `NSPasteboard.changeCount`（500ms）；Windows 事件驱动 `AddClipboardFormatListener`；Linux X11 XFixes 事件驱动；Linux Wayland 两级轮询（MIME 类型 + text 内容，500ms）。
 
 **ASR 集成：** `coordinator.rs::do_paste` 中先调 `store::insert_asr_item`（写 DB source=asr）再调 `paste::paste`（写剪贴板，suppress flag 阻止 watcher 重复记录）。**级联删除：** Settings 删除转译记录时，`delete_history` 同步调 `delete_by_transcription_ids` 清理剪贴板中引用该记录的条目；反向不级联（剪贴板删除语音条目只删 `clipboard_history` 行，外键 `ON DELETE SET NULL` 处理引用置空）。
 
-**DB 表：** `clipboard_history`（全字段：item_type/source/content/search_text/is_favorite/created_at + image 元数据 blob_hash/width/height/has_thumbnail + file_count + is_rich + ASR 元数据 transcription_id/polish_status/engine/model）+ `clipboard_history_fts`（FTS5 虚表，trigram tokenizer）+ 3 触发器自动同步。
+**DB 表：** `clipboard_history`（全字段：item_type/source/content/search_text/is_favorite/created_at + image 元数据 blob_hash/width/height/has_thumbnail + file_count + is_rich + ASR 元数据 transcription_id/polish_status/engine/model）+ `clipboard_history_fts`（FTS5 虚表，trigram tokenizer）+ 3 触发器自动同步。**FTS5 索引维护**：FTS5 external content table 的 DELETE 触发器只移除逻辑索引，`_data` 表 b-tree 页不收缩，删除越多空洞越大。维护策略——启动时 rebuild 一次（`main.rs` setup）+ 运行中删除计数器（`AtomicU32`，阈值 10）达 10 自动 rebuild + 清零。
 
 ### octopus-desktop（桌面应用）
 
@@ -133,9 +133,9 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 | 窗口 | 用途 |
 |------|------|
-| `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 100→132px），移出收起；8 个工具——**关闭**（首位，放弃内容保留 DB 记录）/ 系统设置 / 语音模型 / 降噪模式 / 润色模型 / 润色模式 / 立即润色 / 编辑。由 `app_config.hide_toolbar`（默认 `true`）控制：`true`=hover 显隐，`false`=始终显示。**运行时切换立即生效**：设置窗口改 `hide_toolbar` → emit `config-changed` 事件 → result window 的 `refreshActive()` 双向切换（`false`→移除 hover + 常驻展开；`true`→恢复 hover + 立即收起）。**历史**：曾同时存在 `recording_overlay` 窗口（独立 WebView 渲染进程），UI 统一到 result_window 后 overlay 已废弃，全部显示/隐藏调用均为 no-op（仅查 `get_webview_window("recording_overlay")`）。2026-06-21 审查修复：`overlay.rs` 模块整体删除，`create_overlay` 调用 + 9 处 `hide_overlay` 调用全移除，capabilities/default.json 的 `recording_overlay` 窗口标签亦删除——避免未可见 WebView 渲染进程常驻后台的资源浪费 |
+| `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 116→148px），移出收起；工具精简为 5 个——**关闭**（首位，放弃内容保留 DB 记录）/ 系统设置 / 降噪模式 / 润色模式 / 立即润色 / 编辑（编辑态追加取消/保存）。语音模型和润色模型入口已移至 Settings 页面（模型太多，下拉空间有限）。由 `app_config.hide_toolbar`（默认 `true`）控制：`true`=hover 显隐，`false`=始终显示。**运行时切换立即生效**：设置窗口改 `hide_toolbar` → emit `config-changed` 事件 → result window 的 `refreshActive()` 双向切换。**历史**：曾同时存在 `recording_overlay` 窗口（独立 WebView 渲染进程），UI 统一到 result_window 后 overlay 已废弃。 |
 | `settings_window` | 独立设置窗口（原生标题栏、圆角、可调大小）。四页面侧边栏布局：识别记录 / 系统设置 / 模型管理 / 提示词。React 组件化，表单用 react-hook-form。窗口位置记忆。 |
-| `clipboard_window` | 剪贴板历史浮窗（300×600，无边框圆角透明置顶，Alt+V 唤起，窗口位置记忆）。顶部标题栏（X + 「剪贴板」 + Pin），搜索框 + 6 类过滤（全部/语音/文本/图片/文件/收藏，纯图标 tooltip），列表（hairline 分隔线，ASR 条目左侧 voice 色条，hover 显示收藏/删除按钮）。单击选中不关闭，双击粘贴到目标应用（模拟 Cmd+V），不关闭窗口。 |
+| `clipboard_window` | 剪贴板历史浮窗（300×600，无边框圆角透明置顶，Alt+V 唤起，窗口位置记忆）。顶部标题栏（X + 「剪贴板」 + Pin），搜索框 + 6 类过滤（全部/语音/文本/图片/文件/收藏，纯图标 tooltip），列表（hairline 分隔线，ASR 条目左侧 voice 色条，hover 显示收藏/删除/保存/打开按钮）。单击选中不关闭，双击复制到剪贴板（用户手动 Cmd+V，不模拟粘贴）。图片条目可保存到 `~/Downloads/octopus/`（自定义浮层选格式 JPEG/WebP/PNG + 质量，默认 JPEG 85%，可选保存后打开文件夹）。 |
 
 **macOS 动态激活策略（Dock 图标显隐）：** 应用启动即 `Accessory` 模式（无 Dock 图标，纯托盘应用）。用户打开设置窗口时 `open_settings` 切 `Regular`，并经 `set_dock_icon()` 用 `objc2` 手动 `setApplicationIconImage`（release 裸二进制无 .app bundle，Tauri 仅 debug 自动设图标，故需手动设 Dock + 应用图标）；设置窗口 `Destroyed` 事件触发 `on_settings_closed` 切回 `Accessory`。`#[cfg(target_os = "macos")]` 条件编译，Windows / Linux 无此逻辑。
 

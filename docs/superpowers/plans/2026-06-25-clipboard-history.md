@@ -1943,3 +1943,53 @@ git commit -m "feat(desktop): 剪贴板设置面板"
 | §6 实施分期 | Phase 0-3 对应 |
 | §7 依赖变更 | Task 2.1 + Task 2.9 + Task 0.1 |
 | §8 风险缓解 | Task 2.3（FTS5 验证）+ Task 2.9（重试） |
+
+---
+
+## Phase 3 后迭代记录（2026-06-27）
+
+Phase 3 完成后的持续迭代，按实际实施顺序记录。
+
+### 迭代 1：设置窗口标题简化
+
+- `settings_window.rs:34` — `.title("Octopus 设置")` → `.title("Octopus")`
+
+### 迭代 2：图片保存格式选择（三轮演进）
+
+**第一轮**：系统对话框 + filter 选格式（WebP/PNG），quality 硬编码 90
+
+**第二轮**：自定义浮层（SaveImagePopover）+ 格式按钮 + 质量滑块（默认 90）+ 系统保存对话框
+
+**第三轮（最终）**：去掉系统对话框，直接落盘到 `~/Downloads/octopus/`
+- 新增 `infra::image_util::save_as_jpeg()`（PNG→RGB→JPEG，quality 参数）
+- `save_image_item` 命令改为接受 `format` + `quality` + `open_folder` 参数
+- 默认 JPEG quality=85
+- 文件名冲突自动加序号（`unique_path`）
+- 勾选「打开文件夹」时 `reveal_in_file_manager`（macOS `open -R` / Windows `explorer /select,` / Linux `xdg-open`）
+- Cargo.toml 新增 `dirs = "5"` 依赖
+- 前端 SaveImagePopover 按 frontend-design skill 设计（纯白卡片+强阴影、分段控件、细线滑轨）
+
+### 迭代 3：FTS5 索引自动维护
+
+**问题**：FTS5 external content table 的 DELETE 触发器只移除逻辑索引，`_data` 表 b-tree 页不收缩，删除越多空洞越大（实测 8 条数据 _data 表 183 行、DB 2.1M）。
+
+**实现**：
+- `store.rs` 新增 `rebuild_fts_index()` + `track_deletes()`（`AtomicU32`，阈值 10）
+- `delete_item` 每次累加 1，`clear_history` 累加删除行数，达 10 rebuild + 清零
+- `main.rs` setup 阶段调用 `rebuild_fts_index`，清理上次运行遗留
+- 手动 `INSERT INTO clipboard_history_fts(...) VALUES('rebuild')` + `VACUUM` 清理已膨胀的 DB（2.1M → 168K）
+
+**注意**：`run_cleanup`（按天数/数量清理 + blob 回收）已实现但**尚未接入定时调用**。
+
+### 迭代 4：Toolbar 精简
+
+- Result 窗口 toolbar 去掉「语音模型」和「润色模型」入口（模型太多，下拉空间有限）
+- 模型切换移至 Settings 页面
+- 清理 `openAsrPopup`、`openLlmPopup` 函数和 `handlePopupSelect` 中的 asr/llm 分支
+- 保留 5 个图标：关闭 / 系统设置 / 降噪模式 / 润色模式 / 立即润色
+
+### 迭代 5：弹窗适配
+
+- 降噪/润色弹窗 3 个选项被 `overflow-hidden` 裁剪（窗口高 100px）
+- 弹窗字号 `13px→12px`、行间距 `py-1.5→py-1`、起始位 `30px→28px`、`z-10→z-30`
+- `result_window.rs` 窗口高度 `100→116px`
