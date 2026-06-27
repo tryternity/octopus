@@ -275,7 +275,12 @@ pub fn get_history(limit: u32, offset: u32) -> Result<Vec<octopus_infra::db::Tra
 
 #[tauri::command]
 pub fn delete_history(ids: Vec<i64>) -> Result<usize, String> {
-    octopus_infra::db::delete_transcriptions(&ids).map_err(|e| e.to_string())
+    // 删除转译记录，同步删除剪贴板中引用这些记录的条目
+    let deleted = octopus_infra::db::delete_transcriptions(&ids).map_err(|e| e.to_string())?;
+    let _ = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::delete_by_transcription_ids(conn, &ids)
+    });
+    Ok(deleted)
 }
 
 /// 检查快捷键是否可注册（是否被其他应用占用）。

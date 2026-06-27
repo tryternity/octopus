@@ -237,6 +237,21 @@ pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
     Ok(rows)
 }
 
+/// 删除引用了指定 transcription_id 的所有剪贴板条目。
+/// 用于 Settings 删除转译记录时同步清理剪贴板引用。
+pub fn delete_by_transcription_ids(conn: &Connection, ids: &[i64]) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+    let rows = conn.execute(
+        &format!("DELETE FROM clipboard_history WHERE transcription_id IN ({})", placeholders),
+        params.as_slice(),
+    )?;
+    Ok(rows)
+}
+
 /// 获取所有图片 blob hash（用于孤立文件清理）。
 pub fn get_referenced_blob_hashes(conn: &Connection) -> Result<HashSet<String>> {
     let mut stmt = conn.prepare(
