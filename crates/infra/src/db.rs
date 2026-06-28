@@ -1729,15 +1729,17 @@ mod tests {
     #[test]
     fn prompt_crud_round_trip() {
         let conn = open_init();
-        // list 初值：1 条系统默认
+        // list 初值：2 条系统内置（id=1 默认润色 + id=2 进阶润色（断续纠正））
         let list = list_prompts_at(&conn).unwrap();
-        assert_eq!(list.len(), 1);
+        assert_eq!(list.len(), 2, "seed 应有 2 条系统内置 prompt");
         assert!(list[0].is_system);
         assert_eq!(list[0].title, "默认润色");
+        assert!(list[1].is_system);
+        assert_eq!(list[1].title, "进阶润色（断续纠正）");
 
-        // insert 用户 prompt
+        // insert 用户 prompt（id 应大于 seed 最大 id）
         let id = insert_prompt_at(&conn, "技术写作", "rule1", "desc1").unwrap();
-        assert!(id > 1, "用户 prompt id 应大于 seed id=1");
+        assert!(id > 2, "用户 prompt id 应大于 seed 最大 id(2)");
 
         // load
         let loaded = load_prompt_at(&conn, id).unwrap().unwrap();
