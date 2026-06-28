@@ -145,24 +145,24 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
       </Card>
 
       <Card icon={Keyboard} title="快捷键">
-        <Row label="激活 / 关闭" effect="立即">
+        <Row label="语音识别" effect="立即">
           <ShortcutButton shortcut={cfg.asr_shortcut as string} capturing={capturingKey === "asr_shortcut"} onClick={() => startShortcutCapture("asr_shortcut")} />
         </Row>
         <Row label="剪贴板浮窗" effect="立即">
           <ShortcutButton shortcut={cfg.clipboard_shortcut as string} capturing={capturingKey === "clipboard_shortcut"} onClick={() => startShortcutCapture("clipboard_shortcut")} />
         </Row>
-        <Row label="全局编辑" effect="立即" hint="任意应用聚焦时唤起结果窗并编辑">
+        <Row label="语音编辑" effect="立即" hint="任意应用聚焦时唤起结果窗并编辑">
           <ShortcutButton shortcut={cfg.edit_global_shortcut as string} capturing={capturingKey === "edit_global_shortcut"} onClick={() => startShortcutCapture("edit_global_shortcut")} />
         </Row>
       </Card>
 
-      <Card icon={Volume2} title="识别">
-        <Row label="引擎" effect="下次录音">
+      <Card icon={Volume2} title="语音识别">
+        <Row label="识别引擎" effect="下次录音">
           <select className={selectClass} value={cfg.asr_engine as string} onChange={(e) => setVal("asr_engine", e.target.value)}>
             {asr_engines.map((e) => <option key={e.name} value={e.name}>{e.label}</option>)}
           </select>
         </Row>
-        <Row label="语言" effect="下次录音">
+        <Row label="识别语言" effect="下次录音">
           <select className={selectClass} value={cfg.language as string} onChange={(e) => setVal("language", e.target.value)}>
             <option value="auto">自动</option><option value="zh">中文</option><option value="en">英语</option>
           </select>
@@ -183,7 +183,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         </Row>
       </Card>
 
-      <Card icon={Sparkles} title="润色">
+      <Card icon={Sparkles} title="语音识别润色">
         <Row label="润色模型" effect="立即">
           <select className={selectClass}
             value={llm_models.find((m) => m.current)?.name ?? ""}
