@@ -4,6 +4,7 @@ use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::ClipboardHandle;
 
 static SCREENSHOT_DATA: Mutex<Option<octopus_capx::capture::ScreenCapture>> = Mutex::new(None);
+static PENDING_IMAGE: Mutex<Option<String>> = Mutex::new(None);
 const WINDOW_LABEL: &str = "screenshot_window";
 
 /// 启动截图：截全屏 → 创建截图窗口 → emit 图片给前端
@@ -23,7 +24,9 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     let width = capture.width;
     let height = capture.height;
 
-    // 3. 暂存全屏数据
+    // 3. 暂存全屏数据 + base64 图片
+    let b64 = general_purpose::STANDARD.encode(&png_bytes);
+    *PENDING_IMAGE.lock().unwrap() = Some(b64.clone());
     *SCREENSHOT_DATA.lock().unwrap() = Some(capture);
 
     // 4. 创建/重建截图窗口
@@ -34,7 +37,7 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     let _ = WebviewWindowBuilder::new(
         &app_handle,
         WINDOW_LABEL,
-        WebviewUrl::App("index.html#/screenshot".into()),
+        WebviewUrl::default(),
     )
     .title("")
     .fullscreen(true)
@@ -42,25 +45,25 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     .always_on_top(true)
     .skip_taskbar(true)
     .resizable(false)
-    .transparent(true)
     .build();
 
-    // 5. 等前端 ready 后 emit 图片数据
-    let b64 = general_purpose::STANDARD.encode(&png_bytes);
-    let ah = app_handle.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(300));
-        let _ = ah.emit("screenshot://ready", serde_json::json!({
-            "image": b64,
-            "width": width,
-            "height": height,
-        }));
-        if let Some(window) = ah.get_webview_window(WINDOW_LABEL) {
-            let _ = window.set_focus();
-        }
-    });
-
     Ok(())
+}
+
+/// 前端 mount 后调用，拉取截图数据
+#[tauri::command]
+pub fn get_screenshot_image() -> Result<serde_json::Value, String> {
+    let b64 = PENDING_IMAGE.lock().unwrap().take()
+        .ok_or("无待处理截图数据")?;
+    let full = SCREENSHOT_DATA.lock().unwrap();
+    let (w, h) = full.as_ref()
+        .map(|c| (c.width, c.height))
+        .unwrap_or((0, 0));
+    Ok(serde_json::json!({
+        "image": b64,
+        "width": w,
+        "height": h,
+    }))
 }
 
 /// 确认截图：从全屏图裁剪选区 → 写剪贴板历史 → 关窗口

@@ -1,6 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
-import { listen } from "@tauri-apps/api/event";
 
 interface Selection {
   x: number;
@@ -30,13 +29,11 @@ export default function Screenshot() {
 
   const dpr = window.devicePixelRatio || 1;
 
-  // 监听 screenshot://ready 事件
+  // 前端 mount 后主动拉取截图数据
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    listen<{ image: string; width: number; height: number }>(
-      "screenshot://ready",
-      (e) => {
-        const { image, width, height } = e.payload;
+    invoke<{ image: string; width: number; height: number }>("get_screenshot_image")
+      .then((data) => {
+        const { image, width, height } = data;
         screenWRef.current = width;
         screenHRef.current = height;
         const img = new Image();
@@ -45,11 +42,10 @@ export default function Screenshot() {
           setReady(true);
         };
         img.src = `data:image/png;base64,${image}`;
-      }
-    ).then((fn) => {
-      unlisten = fn;
-    });
-    return () => unlisten?.();
+      })
+      .catch((e) => {
+        console.error("Failed to get screenshot image:", e);
+      });
   }, []);
 
   // 绘制
