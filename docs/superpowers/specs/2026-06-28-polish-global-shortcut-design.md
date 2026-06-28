@@ -24,8 +24,8 @@
 
 ### 3.1 新配置字段 `polish_global_shortcut`
 
-- `AppConfig.polish_global_shortcut: String`（`crates/infra/src/config.rs`），`#[serde(default = "default_polish_global_shortcut")]`，默认 `"CmdOrCtrl+Shift+L"`。
-- 默认值选择：`L` = poLish 助记；不与 `asr_shortcut`（`CmdOrCtrl+Shift+Z`）/ `edit_global_shortcut`（`CmdOrCtrl+Shift+E`）/ `clipboard_shortcut`（`Alt+V`）/ 窗口内 `edit_shortcut`（`Cmd+Enter`）冲突。
+- `AppConfig.polish_global_shortcut: String`（`crates/infra/src/config.rs`），`#[serde(default = "default_polish_global_shortcut")]`，默认 `"CmdOrCtrl+Alt+S"`。
+- 默认值选择：与同批调整的 `asr_shortcut`（`CmdOrCtrl+Alt+A`）/ `edit_global_shortcut`（`CmdOrCtrl+Alt+E`）/ `clipboard_shortcut`（`CmdOrCtrl+Alt+D`）统一为 `CmdOrCtrl+Alt+<字母>` 系列（S=润色、A=ASR、E=Edit、D=剪贴板），窗口内 `edit_shortcut`（`Cmd+Enter`）不冲突。
 - `db.sql` `app_config` seed 加一行（新安装用户）；老 DB 缺该行时 serde default 兜底。
 - `impl Default for AppConfig` 同步加字段初始化 + 单测断言默认值。
 

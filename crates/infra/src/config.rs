@@ -190,7 +190,7 @@ fn default_language() -> String {
     "auto".into()
 }
 fn default_asr_shortcut() -> String {
-    "CmdOrCtrl+Shift+Space".into()
+    "CmdOrCtrl+Alt+A".into()
 }
 fn default_paste_method() -> String {
     "clipboard".into()
@@ -231,16 +231,16 @@ fn default_edit_shortcut() -> String {
     "Cmd+Enter".into()
 }
 fn default_edit_global_shortcut() -> String {
-    "CmdOrCtrl+Shift+E".into()
+    "CmdOrCtrl+Alt+E".into()
 }
 fn default_polish_global_shortcut() -> String {
-    "CmdOrCtrl+Shift+L".into()
+    "CmdOrCtrl+Alt+S".into()
 }
 fn default_download_mirror() -> String {
     String::new()
 }
 fn default_clipboard_shortcut() -> String {
-    "Alt+V".into()
+    "CmdOrCtrl+Alt+D".into()
 }
 fn default_clipboard_max_items() -> i64 {
     1000
@@ -327,8 +327,8 @@ mod tests {
         assert!(!cfg.asr_correct);
         assert_eq!(cfg.denoise_mode, 1);
         assert_eq!(cfg.edit_shortcut, "Cmd+Enter");
-        assert_eq!(cfg.edit_global_shortcut, "CmdOrCtrl+Shift+E");
-        assert_eq!(cfg.polish_global_shortcut, "CmdOrCtrl+Shift+L");
+        assert_eq!(cfg.edit_global_shortcut, "CmdOrCtrl+Alt+E");
+        assert_eq!(cfg.polish_global_shortcut, "CmdOrCtrl+Alt+S");
         assert_eq!(cfg.segment_silence, 400.0);
     }
 

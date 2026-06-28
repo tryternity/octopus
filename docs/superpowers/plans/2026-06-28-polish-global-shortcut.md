@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** 新增全局快捷键 `polish_global_shortcut`（默认 `CmdOrCtrl+Shift+L`），任意应用聚焦时对当前识别结果立即润色（show 窗口不聚焦），复刻 `edit_global_shortcut` 模式。
+**Goal:** 新增全局快捷键 `polish_global_shortcut`（默认 `CmdOrCtrl+Alt+S`），任意应用聚焦时对当前识别结果立即润色（show 窗口不聚焦），复刻 `edit_global_shortcut` 模式。
 
 **Architecture:** config 字段 + result_window handler（show+emit，不 set_focus）+ 前端 listen 复用 `polishNow`（从 polish-now 按钮抽出）+ settings 热重载 + 设置 UI 行。纯复刻 edit_global，零新机制。
 
@@ -41,7 +41,7 @@
 
 ```rust
     /// 全局立即润色快捷键（跨应用，show 结果窗不聚焦 + 触发 polish_now）。
-    /// 默认 CmdOrCtrl+Shift+L。
+    /// 默认 CmdOrCtrl+Alt+S。
     #[serde(default = "default_polish_global_shortcut")]
     pub polish_global_shortcut: String,
 ```
@@ -52,7 +52,7 @@
 
 ```rust
 fn default_polish_global_shortcut() -> String {
-    "CmdOrCtrl+Shift+L".into()
+    "CmdOrCtrl+Alt+S".into()
 }
 ```
 
@@ -69,7 +69,7 @@ fn default_polish_global_shortcut() -> String {
 在单测 `assert_eq!(cfg.edit_global_shortcut, "CmdOrCtrl+Shift+E");`（L320）之后插入：
 
 ```rust
-        assert_eq!(cfg.polish_global_shortcut, "CmdOrCtrl+Shift+L");
+        assert_eq!(cfg.polish_global_shortcut, "CmdOrCtrl+Alt+S");
 ```
 
 - [x] **Step 1.5: db.sql seed 加行**
@@ -77,7 +77,7 @@ fn default_polish_global_shortcut() -> String {
 在 `edit_global_shortcut` seed 行（L188）之后插入（注意对齐 + category 吃列 DEFAULT='setting'）：
 
 ```sql
-    ('polish_global_shortcut',   'CmdOrCtrl+Shift+L',                    '全局立即润色快捷键（跨应用 show 结果窗不聚焦 + 触发 polish_now）'),
+    ('polish_global_shortcut',   'CmdOrCtrl+Alt+S',                    '全局立即润色快捷键（跨应用 show 结果窗不聚焦 + 触发 polish_now）'),
 ```
 
 - [x] **Step 1.6: db.rs load 加分支**
@@ -101,7 +101,7 @@ fn default_polish_global_shortcut() -> String {
 - [x] **Step 1.8: 验证 config 编译 + 单测**
 
 Run: `cargo test -p octopus-infra config::tests -- --nocapture`（或含默认值断言的测试名）
-Expected: PASS，含 `polish_global_shortcut == "CmdOrCtrl+Shift+L"` 断言通过。
+Expected: PASS，含 `polish_global_shortcut == "CmdOrCtrl+Alt+S"` 断言通过。
 
 - [x] **Step 1.9: Commit**
 
@@ -322,7 +322,7 @@ git commit -m "feat(desktop): 前端 polishNow 抽函数 + global-polish-trigger
 
 L152 `result_window` 行的工具栏/编辑入口描述里，在全局 `edit_global_shortcut` 之后补全局润色入口：
 
-> + 全局 `polish_global_shortcut` 默认 CmdOrCtrl+Shift+L（任意应用聚焦时 show 结果窗**不聚焦** + 触发 `polish_now` 立即润色，复用前端 `polishNow`：空文本静默、polishLoading 幂等）
+> + 全局 `polish_global_shortcut` 默认 CmdOrCtrl+Alt+S（任意应用聚焦时 show 结果窗**不聚焦** + 触发 `polish_now` 立即润色，复用前端 `polishNow`：空文本静默、polishLoading 幂等）
 
 - [x] **Step 5.2: architecture.md 设置卡片清单 + handler 描述**
 
@@ -351,7 +351,7 @@ git commit -m "docs: polish_global_shortcut 同步 architecture + plan checkbox"
 
 ## 验证清单（e2e，待用户桌面环境确认）
 
-1. 按默认 `CmdOrCtrl+Shift+L`：结果窗 show（不抢焦点）+ 当前识别结果立即润色（toast「润色中…」→ 润色文本）。
+1. 按默认 `CmdOrCtrl+Alt+S`：结果窗 show（不抢焦点）+ 当前识别结果立即润色（toast「润色中…」→ 润色文本）。
 2. 无识别结果时按：结果窗 show（透明）但不润色（前端判空）。
 3. 润色进行中再按：幂等忽略（polishLoading 门控）。
 4. 结果窗当前隐藏时按：show 后润色，`update-result` 显示润色文本。
