@@ -248,6 +248,16 @@ function Result() {
     editingRef.current ? commitEdit() : enterEdit();
   }, [commitEdit, enterEdit]);
 
+  // 立即润色：工具栏按钮 + 全局 polish_global_shortcut 共用。
+  // polishLoading 门控（幂等，与按钮 disabled 一致）+ 空文本判空（无结果静默）。
+  const polishNow = useCallback(async () => {
+    if (polishLoading) return;
+    if (!displayedRef.current.trim()) return;
+    setPolishLoading(true);
+    try { await invoke("polish_now"); showToast("润色中…"); }
+    catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
+  }, [polishLoading, showToast]);
+
   // 全局编辑快捷键（edit_global_shortcut）：后端唤起窗口+focus 后 emit 此事件，
   // 复用 toggleEdit——未编辑则进入、已编辑则保存，与窗口内 Cmd+Enter 同语义。
   // 独立 useEffect（而非并入上面的事件数组）：toggleEdit 在此声明，前置使用会触发 TS2448。
@@ -260,6 +270,19 @@ function Result() {
     });
     return () => { cancelled = true; unlisten?.(); };
   }, [toggleEdit]);
+
+  // 全局立即润色快捷键（polish_global_shortcut）：后端 show 结果窗（不聚焦）后 emit 此事件，
+  // 复用 polishNow——空文本静默、进行中幂等，与工具栏「立即润色」按钮同语义。
+  // 独立 useEffect（同 global-edit-toggle）：polishNow 在此声明，前置使用触发 TS2448。
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    listen("global-polish-trigger", () => polishNow()).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, [polishNow]);
 
   const updateEditBuffer = useCallback(() => {
     if (!editingRef.current) return;
@@ -345,11 +368,7 @@ function Result() {
     { id: "settings", icon: "settings", label: "系统设置", onClick: () => invoke("open_settings") },
     { id: "denoise", icon: "denoise", label: "降噪模式", active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
     { id: "polish", icon: "polish", label: "润色模式", active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
-    { id: "polish-now", icon: "polish-now", label: "立即润色", disabled: polishLoading, onClick: async () => {
-      setPolishLoading(true);
-      try { await invoke("polish_now"); showToast("润色中…"); }
-      catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
-    } },
+    { id: "polish-now", icon: "polish-now", label: "立即润色", disabled: polishLoading, onClick: polishNow },
     ...(editing
       ? [
           { id: "cancel-edit", icon: "cancel-editor" as IconName, label: "取消编辑", onClick: cancelEdit },

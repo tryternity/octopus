@@ -154,6 +154,9 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         <Row label="语音编辑" effect="立即" hint="任意应用聚焦时唤起结果窗并编辑">
           <ShortcutButton shortcut={cfg.edit_global_shortcut as string} capturing={capturingKey === "edit_global_shortcut"} onClick={() => startShortcutCapture("edit_global_shortcut")} />
         </Row>
+        <Row label="立即润色" effect="立即" hint="对当前识别结果立即润色">
+          <ShortcutButton shortcut={cfg.polish_global_shortcut as string} capturing={capturingKey === "polish_global_shortcut"} onClick={() => startShortcutCapture("polish_global_shortcut")} />
+        </Row>
       </Card>
 
       <Card icon={Volume2} title="语音识别">
