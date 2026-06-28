@@ -1,13 +1,13 @@
 import { cn } from "@/lib/utils";
-import { LayoutGrid, Mic, Type, Image as ImageIcon, FileText, Star } from "lucide-react";
+import { LayoutGrid } from "lucide-react";
 
 const TABS = [
-  { value: "all", icon: LayoutGrid, label: "全部" },
-  { value: "asr", icon: Mic, label: "语音" },
-  { value: "text", icon: Type, label: "文本" },
-  { value: "image", icon: ImageIcon, label: "图片" },
-  { value: "file", icon: FileText, label: "文件" },
-  { value: "favorite", icon: Star, label: "收藏" },
+  { value: "all", icon: LayoutGrid, label: "全部", svg: undefined as string | undefined },
+  { value: "asr", icon: null, label: "语音", svg: "voice" },
+  { value: "text", icon: null, label: "文本", svg: "text" },
+  { value: "image", icon: null, label: "图片", svg: "images" },
+  { value: "file", icon: null, label: "文件", svg: "files" },
+  { value: "favorite", icon: null, label: "收藏", svg: "favorite" },
 ] as const;
 
 export default function FilterTabs({
@@ -19,7 +19,7 @@ export default function FilterTabs({
 }) {
   return (
     <div className="flex items-center gap-0.5">
-      {TABS.map(({ value: tabValue, icon: Icon, label }) => (
+      {TABS.map(({ value: tabValue, icon: Icon, label, svg }) => (
         <button
           key={tabValue}
           title={label}
@@ -31,7 +31,11 @@ export default function FilterTabs({
           )}
           onClick={() => onChange(tabValue)}
         >
-          <Icon className="w-4 h-4" />
+          {svg ? (
+            <img src={`icons/${svg}.svg`} alt={label} className="w-4 h-4" style={{ filter: value === tabValue ? "brightness(0) invert(1)" : "none" }} />
+          ) : Icon ? (
+            <Icon className="w-4 h-4" />
+          ) : null}
           {tabValue === "all" && <span className="ml-1 text-xs">{label}</span>}
         </button>
       ))}

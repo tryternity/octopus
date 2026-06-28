@@ -12,12 +12,13 @@ import SaveImagePopover from "../Clipboard/SaveImagePopover";
 
 const PAGE_SIZE = 50;
 const TABS = [
-  { value: "all", icon: LayoutGrid, label: "全部" },
-  { value: "asr", icon: Mic, label: "语音" },
-  { value: "text", icon: Type, label: "文本" },
-  { value: "image", icon: ImageIcon, label: "图片" },
-  { value: "file", icon: FileText, label: "文件" },
-  { value: "favorite", icon: Star, label: "收藏" },
+  { value: "all", icon: LayoutGrid, label: "全部", svg: undefined },
+  { value: "asr", icon: null, label: "语音", svg: "voice" },
+  { value: "text", icon: null, label: "文本", svg: "text" },
+  { value: "image", icon: null, label: "图片", svg: "images" },
+  { value: "file", icon: null, label: "文件", svg: "files" },
+  { value: "favorite", icon: Star, label: "收藏", svg: "favorite" },
+  { value: "unfavorite", icon: Star, label: "非收藏", svg: "un-favorite" },
 ] as const;
 
 export default function ClipboardPanel({ showToast }: { showToast: (msg: string) => void }) {
@@ -103,7 +104,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
       {/* ── 筛选区：过滤标签 + 搜索（主操作，置顶）── */}
       <div className="space-y-2.5 pb-3 border-b border-border">
         <div className="flex items-center gap-1">
-          {TABS.map(({ value: v, icon: Icon, label }) => (
+          {TABS.map(({ value: v, icon: Icon, label, svg }) => (
             <button
               key={v}
               title={label}
@@ -115,7 +116,11 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
               )}
               onClick={() => setFilter(v)}
             >
-              <Icon className="w-3.5 h-3.5" />
+              {svg ? (
+                <img src={`icons/${svg}.svg`} alt={label} className="w-3.5 h-3.5" style={{ filter: filter === v ? "brightness(0) invert(1)" : "none" }} />
+              ) : (
+                <Icon className="w-3.5 h-3.5" />
+              )}
               {v === "all" && <span className="text-xs font-medium">{label}</span>}
             </button>
           ))}
