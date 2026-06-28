@@ -282,4 +282,5 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('clipboard_max_items',    '1000',  '最大保留条数（不含收藏）'),
     ('clipboard_max_age_days', '30',    '自动清理天数（不含收藏）'),
     ('clipboard_auto_paste',   'double','列表项点击行为: single(复制) | double(粘贴)'),
-    ('ocr_model',              'PP-OCRv6-small', 'OCR 模型（当前激活）');
+    ('ocr_model',              'PP-OCRv6-small', 'OCR 模型（当前激活）'),
+    ('screenshot_shortcut',     'Alt+S',                                '截图快捷键');
