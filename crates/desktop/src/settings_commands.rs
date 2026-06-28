@@ -88,7 +88,6 @@ pub fn set_config(
         let g = rc.read().unwrap();
         (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.clone())
     };
-    };
     apply_config_value(&mut cfg, &key, &value)?;
 
     // 快捷键热重载：注册成功后才持久化（审查 Issue 3）。
@@ -164,6 +163,7 @@ pub fn set_config(
     }
 
     {
+        let mut g = rc.write().unwrap();
         *g = cfg.clone();
     }
     octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;

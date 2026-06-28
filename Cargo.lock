@@ -5030,6 +5030,7 @@ dependencies = [
  "objc2-foundation",
  "octopus-asr-cloud",
  "octopus-asr-local",
+ "octopus-capx",
  "octopus-clipboard",
  "octopus-download",
  "octopus-infra",

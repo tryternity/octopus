@@ -21,6 +21,7 @@ mod model_commands;
 mod paste;
 mod pipeline;
 mod result_window;
+mod screenshot_commands;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
@@ -224,6 +225,9 @@ pub fn run() {
             clipboard_commands::open_file_item,
             clipboard_commands::ocr_image,
             clipboard_commands::get_image_thumb,
+            screenshot_commands::start_screenshot,
+            screenshot_commands::confirm_screenshot,
+            screenshot_commands::cancel_screenshot,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -275,6 +279,22 @@ pub fn run() {
                     let _ = app.global_shortcut().on_shortcut(clipboard_sc.as_str(), move |_app, _scut, event| {
                         if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
                             let _ = clipboard_window::toggle_clipboard_window(&app_handle_for_clipboard);
+                        }
+                    });
+                }
+            }
+
+            // Register screenshot global shortcut
+            {
+                let app_handle_for_screenshot = app.handle().clone();
+                let screenshot_sc = config.screenshot_shortcut.clone();
+                if !screenshot_sc.is_empty() {
+                    let _ = app.global_shortcut().on_shortcut(screenshot_sc.as_str(), move |_app, _scut, event| {
+                        if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                            let ah = app_handle_for_screenshot.clone();
+                            tauri::async_runtime::spawn(async move {
+                                let _ = screenshot_commands::start_screenshot(ah).await;
+                            });
                         }
                     });
                 }
