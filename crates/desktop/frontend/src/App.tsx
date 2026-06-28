@@ -49,9 +49,10 @@ function App() {
             return <Settings />;
           case "clipboard_window":
             return <Clipboard />;
-          case "screenshot_window":
-            return <Screenshot />;
           default:
+            if (label.startsWith("screenshot_")) {
+              return <Screenshot />;
+            }
             return (
               <div className="p-4 text-foreground">
                 <p className="text-sm text-muted-foreground">Window: {label}</p>

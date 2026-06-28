@@ -3,68 +3,100 @@ use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::ClipboardHandle;
 
-static SCREENSHOT_DATA: Mutex<Option<octopus_capx::capture::ScreenCapture>> = Mutex::new(None);
-static PENDING_IMAGE: Mutex<Option<String>> = Mutex::new(None);
-const WINDOW_LABEL: &str = "screenshot_window";
+/// 所有显示器的截图数据，按 window label 索引。
+static ALL_CAPTURES: Mutex<Vec<(String, octopus_capx::capture::ScreenCapture)>> = Mutex::new(Vec::new());
+/// 待处理的图片 base64，按 window label 索引（前端 mount 后拉取）。
+static PENDING_IMAGES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
-/// 启动截图：截全屏 → 创建截图窗口 → emit 图片给前端
+/// 启动截图：截所有显示器 → 每个显示器一个窗口
 #[tauri::command]
 pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String> {
-    // 1. 截全屏
-    let capture = octopus_capx::capture::capture_full_screen()
+    // 1. 截所有显示器
+    let captures = octopus_capx::capture::capture_all_monitors()
         .map_err(|e| format!("截图失败: {}", e))?;
 
-    // 2. RGBA → PNG base64（前端 Canvas 渲染用）
-    let img = ::image::RgbaImage::from_raw(capture.width, capture.height, capture.rgba_bytes.clone())
-        .ok_or("图像处理失败: RgbaImage::from_raw returned None")?;
-    let mut png_bytes = Vec::new();
-    img.write_to(&mut std::io::Cursor::new(&mut png_bytes), ::image::ImageFormat::Png)
-        .map_err(|e| format!("PNG 编码失败: {:?}", e))?;
-
-    let width = capture.width;
-    let height = capture.height;
-
-    let mon_w = capture.width as f64;
-    let mon_h = capture.height as f64;
-    let mon_x = capture.monitor_x as f64;
-    let mon_y = capture.monitor_y as f64;
-
-    // 3. 暂存全屏数据 + base64 图片
-    let b64 = general_purpose::STANDARD.encode(&png_bytes);
-    *PENDING_IMAGE.lock().unwrap() = Some(b64.clone());
-    *SCREENSHOT_DATA.lock().unwrap() = Some(capture);
-
-    // 4. 创建/重建截图窗口（定位到鼠标所在显示器）
-    if let Some(old) = app_handle.get_webview_window(WINDOW_LABEL) {
-        let _ = old.destroy();
+    // 2. 清理旧数据 + 旧窗口
+    ALL_CAPTURES.lock().unwrap().clear();
+    PENDING_IMAGES.lock().unwrap().clear();
+    let labels: Vec<String> = app_handle
+        .webview_windows()
+        .keys()
+        .filter(|k| k.starts_with("screenshot_"))
+        .cloned()
+        .collect();
+    for label in &labels {
+        if let Some(win) = app_handle.get_webview_window(label) {
+            let _ = win.destroy();
+        }
     }
 
-    let _ = WebviewWindowBuilder::new(
-        &app_handle,
-        WINDOW_LABEL,
-        WebviewUrl::default(),
-    )
-    .title("")
-    .decorations(false)
-    .always_on_top(true)
-    .skip_taskbar(true)
-    .resizable(false)
-    .position(mon_x, mon_y)
-    .inner_size(mon_w, mon_h)
-    .build();
+    // 3. 每个显示器创建一个窗口
+    for (i, capture) in captures.into_iter().enumerate() {
+        let label = if i == 0 {
+            "screenshot_window".to_string()
+        } else {
+            format!("screenshot_window_{}", i)
+        };
+
+        // RGBA → PNG base64
+        let img = ::image::RgbaImage::from_raw(capture.width, capture.height, capture.rgba_bytes.clone())
+            .ok_or("图像处理失败")?;
+        let mut png_bytes = Vec::new();
+        img.write_to(&mut std::io::Cursor::new(&mut png_bytes), ::image::ImageFormat::Png)
+            .map_err(|e| format!("PNG 编码失败: {:?}", e))?;
+        let b64 = general_purpose::STANDARD.encode(&png_bytes);
+
+        // 暂存
+        PENDING_IMAGES.lock().unwrap().push((label.clone(), b64));
+        ALL_CAPTURES.lock().unwrap().push((label.clone(), capture));
+
+        // 获取显示器坐标
+        let mon_data = ALL_CAPTURES.lock().unwrap()
+            .iter()
+            .find(|(l, _)| *l == label)
+            .map(|(_, c)| (c.monitor_x as f64, c.monitor_y as f64, c.width as f64, c.height as f64))
+            .unwrap_or((0.0, 0.0, 1920.0, 1080.0));
+
+        let _ = WebviewWindowBuilder::new(
+            &app_handle,
+            &label,
+            WebviewUrl::default(),
+        )
+        .title("")
+        .decorations(false)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .position(mon_data.0, mon_data.1)
+        .inner_size(mon_data.2, mon_data.3)
+        .build();
+
+        log::info!("Created screenshot window '{}' at ({},{}) {}x{}", label, mon_data.0, mon_data.1, mon_data.2, mon_data.3);
+    }
 
     Ok(())
 }
 
-/// 前端 mount 后调用，拉取截图数据
+/// 前端 mount 后调用，拉取当前窗口的截图数据
 #[tauri::command]
-pub fn get_screenshot_image() -> Result<serde_json::Value, String> {
-    let b64 = PENDING_IMAGE.lock().unwrap().take()
-        .ok_or("无待处理截图数据")?;
-    let full = SCREENSHOT_DATA.lock().unwrap();
-    let (w, h) = full.as_ref()
-        .map(|c| (c.width, c.height))
+pub fn get_screenshot_image(label: String) -> Result<serde_json::Value, String> {
+    // 取出对应的 base64
+    let b64 = {
+        let mut pending = PENDING_IMAGES.lock().unwrap();
+        pending
+            .iter()
+            .position(|(l, _)| *l == label)
+            .map(|i| pending.remove(i).1)
+    }
+    .ok_or("无待处理截图数据")?;
+
+    // 找到对应的截图尺寸
+    let (w, h) = ALL_CAPTURES.lock().unwrap()
+        .iter()
+        .find(|(l, _)| *l == label)
+        .map(|(_, c)| (c.width, c.height))
         .unwrap_or((0, 0));
+
     Ok(serde_json::json!({
         "image": b64,
         "width": w,
@@ -72,9 +104,10 @@ pub fn get_screenshot_image() -> Result<serde_json::Value, String> {
     }))
 }
 
-/// 确认截图：从全屏图裁剪选区 → 写剪贴板历史 → 关窗口
+/// 确认截图：从指定窗口的截图裁剪选区 → 写剪贴板历史 → 关所有窗口
 #[tauri::command]
 pub async fn confirm_screenshot(
+    label: String,
     x: u32,
     y: u32,
     w: u32,
@@ -82,15 +115,24 @@ pub async fn confirm_screenshot(
     app_handle: tauri::AppHandle,
     handle: State<'_, std::sync::Arc<ClipboardHandle>>,
 ) -> Result<(), String> {
-    // 1. 取全屏数据
-    let full = SCREENSHOT_DATA.lock().unwrap().take()
-        .ok_or("无截图数据")?;
+    // 1. 取对应窗口的全屏数据
+    let full = {
+        let mut all = ALL_CAPTURES.lock().unwrap();
+        all.iter()
+            .position(|(l, _)| *l == label)
+            .map(|i| all.remove(i).1)
+    }
+    .ok_or("无截图数据")?;
 
-    // 2. 裁剪选区 → PNG bytes
+    // 清空所有暂存
+    ALL_CAPTURES.lock().unwrap().clear();
+    PENDING_IMAGES.lock().unwrap().clear();
+
+    // 2. 裁剪选区
     let png_bytes = octopus_capx::capture::crop_region(&full, x, y, w, h)
         .map_err(|e| format!("裁剪失败: {}", e))?;
 
-    // 3. SHA-256 去重（直接对裁剪后的 PNG bytes 算 hash）
+    // 3. SHA-256 去重
     let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
 
     // 4. 检查 DB 中是否已有此 hash
@@ -99,7 +141,6 @@ pub async fn confirm_screenshot(
     }).map_err(|e| e.to_string())?;
 
     if let Some(id) = existing {
-        // 已存在：更新 created_at
         octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::touch_created_at(conn, id)
         }).map_err(|e| e.to_string())?;
@@ -144,20 +185,31 @@ pub async fn confirm_screenshot(
     // 9. 通知前端刷新
     let _ = app_handle.emit("clipboard://changed", ());
 
-    // 10. 关闭截图窗口
-    if let Some(window) = app_handle.get_webview_window(WINDOW_LABEL) {
-        let _ = window.destroy();
-    }
+    // 10. 关闭所有截图窗口
+    close_all_screenshot_windows(&app_handle);
 
     Ok(())
 }
 
-/// 取消截图：关窗口
+/// 取消截图：关所有窗口
 #[tauri::command]
 pub async fn cancel_screenshot(app_handle: tauri::AppHandle) -> Result<(), String> {
-    *SCREENSHOT_DATA.lock().unwrap() = None;
-    if let Some(window) = app_handle.get_webview_window(WINDOW_LABEL) {
-        let _ = window.destroy();
-    }
+    ALL_CAPTURES.lock().unwrap().clear();
+    PENDING_IMAGES.lock().unwrap().clear();
+    close_all_screenshot_windows(&app_handle);
     Ok(())
+}
+
+fn close_all_screenshot_windows(app_handle: &tauri::AppHandle) {
+    let labels: Vec<String> = app_handle
+        .webview_windows()
+        .keys()
+        .filter(|k| k.starts_with("screenshot_"))
+        .cloned()
+        .collect();
+    for label in &labels {
+        if let Some(win) = app_handle.get_webview_window(label) {
+            let _ = win.destroy();
+        }
+    }
 }

@@ -1,4 +1,5 @@
 import { useState, useRef, useEffect, useCallback } from "react";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
 
 interface Selection {
@@ -29,9 +30,18 @@ export default function Screenshot() {
 
   const dpr = window.devicePixelRatio || 1;
 
+  // 获取当前窗口 label（前端按 label 区分多显示器）
+  const winLabel = (() => {
+    try {
+      return getCurrentWindow().label;
+    } catch {
+      return "screenshot_window";
+    }
+  })();
+
   // 前端 mount 后主动拉取截图数据
   useEffect(() => {
-    invoke<{ image: string; width: number; height: number }>("get_screenshot_image")
+    invoke<{ image: string; width: number; height: number }>("get_screenshot_image", { label: winLabel })
       .then((data) => {
         const { image, width, height } = data;
         screenWRef.current = width;
@@ -234,6 +244,7 @@ export default function Screenshot() {
     } else if (e.key === "Enter" && sel && sel.w >= MIN_SIZE && sel.h >= MIN_SIZE) {
       // CSS 像素 → 物理像素
       invoke("confirm_screenshot", {
+        label: winLabel,
         x: Math.round(sel.x * dpr),
         y: Math.round(sel.y * dpr),
         w: Math.round(sel.w * dpr),

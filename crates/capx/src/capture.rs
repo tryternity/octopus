@@ -9,65 +9,59 @@ pub struct ScreenCapture {
     pub monitor_y: i32,
 }
 
-/// 截取主显示器全屏（返回 RGBA 像素 + 尺寸）。
-/// 主显示器 = 包含鼠标当前位置的显示器。
-pub fn capture_full_screen() -> Result<ScreenCapture> {
-    // 用鼠标位置定位主显示器（比 Monitor::all().next() 更可靠）
-    let mouse_pos = get_mouse_position().unwrap_or((0, 0));
-    let monitor = Monitor::from_point(mouse_pos.0, mouse_pos.1)
-        .or_else(|_| {
-            log::warn!("Monitor::from_point failed, falling back to first monitor");
-            Monitor::all()
-                .context("Failed to list monitors")?
-                .into_iter()
-                .next()
-                .context("No monitor found")
-        })
-        .context("Failed to get monitor")?;
+/// 截取所有显示器（返回每个显示器的截图 + 坐标）。
+pub fn capture_all_monitors() -> Result<Vec<ScreenCapture>> {
+    let monitors = Monitor::all().context("Failed to list monitors")?;
+    let mut captures = Vec::with_capacity(monitors.len());
 
-    log::info!(
-        "Capturing monitor: {} ({}x{}) at ({},{})",
-        monitor.name().unwrap_or_default(),
-        monitor.width().unwrap_or(0),
-        monitor.height().unwrap_or(0),
-        monitor.x().unwrap_or(0),
-        monitor.y().unwrap_or(0),
-    );
+    for monitor in monitors {
+        let name = monitor.name().unwrap_or_default();
+        let mw = monitor.width().unwrap_or(0);
+        let mh = monitor.height().unwrap_or(0);
+        let mx = monitor.x().unwrap_or(0);
+        let my = monitor.y().unwrap_or(0);
+        log::info!("Capturing monitor: {} ({}x{}) at ({},{})", name, mw, mh, mx, my);
 
-    let img = monitor
-        .capture_image()
-        .context("Failed to capture screen")?;
+        let img = match monitor.capture_image() {
+            Ok(img) => img,
+            Err(e) => {
+                log::warn!("Failed to capture monitor {}: {}", name, e);
+                continue;
+            }
+        };
 
-    let width = img.width();
-    let height = img.height();
-    let rgba_bytes = img.into_raw();
+        let width = img.width();
+        let height = img.height();
+        let rgba_bytes = img.into_raw();
 
-    // 检查是否全黑（权限未授权时返回空/黑屏）
-    let non_zero: usize = rgba_bytes.chunks(4)
-        .take(1000)
-        .filter(|px| px[0] != 0 || px[1] != 0 || px[2] != 0)
-        .count();
-    log::info!(
-        "Screen captured: {}x{} ({}KB RGBA), non-zero pixels in first 1000: {}/1000",
-        width,
-        height,
-        rgba_bytes.len() / 1024,
-        non_zero,
-    );
-    if non_zero == 0 {
-        log::error!("Screenshot is entirely black — likely missing Screen Recording permission. Grant permission to your terminal app (Terminal/iTerm/Warp) and restart.");
+        let non_zero: usize = rgba_bytes.chunks(4)
+            .take(1000)
+            .filter(|px| px[0] != 0 || px[1] != 0 || px[2] != 0)
+            .count();
+        log::info!(
+            "Monitor {} captured: {}x{} ({}KB), non-zero: {}/1000",
+            name, width, height, rgba_bytes.len() / 1024, non_zero,
+        );
+        if non_zero == 0 {
+            log::error!("Monitor {} is entirely black — likely missing Screen Recording permission.", name);
+        }
+
+        captures.push(ScreenCapture {
+            rgba_bytes,
+            width,
+            height,
+            monitor_x: mx,
+            monitor_y: my,
+        });
     }
 
-    Ok(ScreenCapture {
-        rgba_bytes,
-        width,
-        height,
-        monitor_x: monitor.x().unwrap_or(0),
-        monitor_y: monitor.y().unwrap_or(0),
-    })
+    if captures.is_empty() {
+        anyhow::bail!("No monitors captured");
+    }
+    Ok(captures)
 }
 
-/// 获取当前鼠标位置（跨平台，用 CGEvent / X11 / Win32）。
+/// 获取当前鼠标位置（macOS）。
 #[cfg(target_os = "macos")]
 fn get_mouse_position() -> Option<(i32, i32)> {
     use core_graphics::event::CGEvent;
