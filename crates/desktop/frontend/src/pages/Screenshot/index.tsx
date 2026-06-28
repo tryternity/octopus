@@ -50,6 +50,10 @@ export default function Screenshot() {
         img.onload = () => {
           bgImgRef.current = img;
           setReady(true);
+          // Canvas 渲染后通知后端显示窗口（消除闪烁）
+          setTimeout(() => {
+            invoke("show_screenshot_window", { label: winLabel }).catch(() => {});
+          }, 50);
         };
         img.src = `data:image/png;base64,${image}`;
       })
@@ -278,10 +282,9 @@ export default function Screenshot() {
   }
 
   if (!ready) {
+    // 纯黑背景，和最终暗遮罩接近，避免白→暗闪烁
     return (
-      <div style={{ width: "100vw", height: "100vh", background: "#000", display: "flex", alignItems: "center", justifyContent: "center" }}>
-        <span style={{ color: "#666", fontSize: 14 }}>正在截屏…</span>
-      </div>
+      <div style={{ width: "100vw", height: "100vh", background: "rgba(0,0,0,0.5)" }} />
     );
   }
 

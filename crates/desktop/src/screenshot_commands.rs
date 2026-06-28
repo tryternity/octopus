@@ -3,8 +3,16 @@ use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::ClipboardHandle;
 
+/// 截图数据副本（不含 monitor 坐标，仅像素数据用于裁剪）
+#[derive(Clone)]
+struct ScreenCaptureClone {
+    rgba_bytes: Vec<u8>,
+    width: u32,
+    height: u32,
+}
+
 /// 所有显示器的截图数据，按 window label 索引。
-static ALL_CAPTURES: Mutex<Vec<(String, octopus_capx::capture::ScreenCapture)>> = Mutex::new(Vec::new());
+static ALL_CAPTURES: Mutex<Vec<(String, ScreenCaptureClone)>> = Mutex::new(Vec::new());
 /// 待处理的图片 base64，按 window label 索引（前端 mount 后拉取）。
 static PENDING_IMAGES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 
@@ -15,23 +23,45 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     let captures = octopus_capx::capture::capture_all_monitors()
         .map_err(|e| format!("截图失败: {}", e))?;
 
-    // 2. 清理旧数据 + 旧窗口
+    // 3. 获取 Tauri 的显示器列表（逻辑坐标）
+    let tauri_monitors = app_handle.available_monitors()
+        .map_err(|e| format!("获取显示器失败: {}", e))?;
+
+    // 清理旧数据 + 旧窗口
     ALL_CAPTURES.lock().unwrap().clear();
     PENDING_IMAGES.lock().unwrap().clear();
-    let labels: Vec<String> = app_handle
+    let old_labels: Vec<String> = app_handle
         .webview_windows()
         .keys()
         .filter(|k| k.starts_with("screenshot_"))
         .cloned()
         .collect();
-    for label in &labels {
+    for label in &old_labels {
         if let Some(win) = app_handle.get_webview_window(label) {
             let _ = win.destroy();
         }
     }
 
-    // 3. 每个显示器创建一个窗口
-    for (i, capture) in captures.into_iter().enumerate() {
+    // 4. 按 Tauri monitor 匹配 xcap capture（用物理尺寸近似匹配）
+    for (i, tauri_mon) in tauri_monitors.iter().enumerate() {
+        let phys_w = tauri_mon.size().width as f64;
+        let phys_h = tauri_mon.size().height as f64;
+        let scale = tauri_mon.scale_factor() as f64;
+        let pos_x = tauri_mon.position().x as f64 / scale;  // 物理 → 逻辑
+        let pos_y = tauri_mon.position().y as f64 / scale;
+        let log_w = phys_w / scale;
+        let log_h = phys_h / scale;
+
+        // 找到物理尺寸匹配的 xcap capture
+        let capture = captures.iter()
+            .find(|c| c.width as f64 == phys_w && c.height as f64 == phys_h)
+            .or_else(|| captures.get(i));
+
+        let capture = match capture {
+            Some(c) => c,
+            None => continue,
+        };
+
         let label = if i == 0 {
             "screenshot_window".to_string()
         } else {
@@ -48,15 +78,14 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 
         // 暂存
         PENDING_IMAGES.lock().unwrap().push((label.clone(), b64));
-        ALL_CAPTURES.lock().unwrap().push((label.clone(), capture));
+        ALL_CAPTURES.lock().unwrap().push((label.clone(), ScreenCaptureClone {
+            rgba_bytes: capture.rgba_bytes.clone(),
+            width: capture.width,
+            height: capture.height,
+        }));
 
-        // 获取显示器坐标
-        let mon_data = ALL_CAPTURES.lock().unwrap()
-            .iter()
-            .find(|(l, _)| *l == label)
-            .map(|(_, c)| (c.monitor_x as f64, c.monitor_y as f64, c.width as f64, c.height as f64))
-            .unwrap_or((0.0, 0.0, 1920.0, 1080.0));
-
+        // 用 Tauri 的逻辑坐标 + 逻辑尺寸创建窗口
+        // visible=false：等前端渲染完成后再显示，避免白屏闪烁
         let _ = WebviewWindowBuilder::new(
             &app_handle,
             &label,
@@ -67,14 +96,27 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
-        .position(mon_data.0, mon_data.1)
-        .inner_size(mon_data.2, mon_data.3)
+        .visible(false)       // 初始不可见
+        .position(pos_x, pos_y)
+        .inner_size(log_w, log_h)
         .build();
 
-        log::info!("Created screenshot window '{}' at ({},{}) {}x{}", label, mon_data.0, mon_data.1, mon_data.2, mon_data.3);
+        log::info!(
+            "Screenshot window '{}' at ({},{}) {}x{} (monitor phys {}x{}, scale {})",
+            label, pos_x, pos_y, log_w, log_h, phys_w, phys_h, tauri_mon.scale_factor(),
+        );
     }
 
     Ok(())
+}
+
+/// 前端渲染完成后调用，显示指定截图窗口
+#[tauri::command]
+pub fn show_screenshot_window(label: String, app_handle: tauri::AppHandle) {
+    if let Some(window) = app_handle.get_webview_window(&label) {
+        let _ = window.show();
+        let _ = window.set_focus();
+    }
 }
 
 /// 前端 mount 后调用，拉取当前窗口的截图数据
@@ -129,7 +171,14 @@ pub async fn confirm_screenshot(
     PENDING_IMAGES.lock().unwrap().clear();
 
     // 2. 裁剪选区
-    let png_bytes = octopus_capx::capture::crop_region(&full, x, y, w, h)
+    let fake_full = octopus_capx::capture::ScreenCapture {
+        rgba_bytes: full.rgba_bytes.clone(),
+        width: full.width,
+        height: full.height,
+        monitor_x: 0,
+        monitor_y: 0,
+    };
+    let png_bytes = octopus_capx::capture::crop_region(&fake_full, x, y, w, h)
         .map_err(|e| format!("裁剪失败: {}", e))?;
 
     // 3. SHA-256 去重
