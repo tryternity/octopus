@@ -1,5 +1,5 @@
 use anyhow::Result;
-use clipboard_rs::common::ContentFormat;
+use clipboard_rs::common::{ContentFormat, RustImage};
 use clipboard_rs::{Clipboard, ClipboardContext};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
@@ -28,6 +28,17 @@ impl ClipboardHandle {
         let ctx = self.ctx.lock().unwrap();
         ctx.set_text(text.to_string())
             .map_err(|e| anyhow::anyhow!("Clipboard write failed: {}", e))?;
+        Ok(())
+    }
+
+    /// 写入 PNG 图片到剪贴板（设置 suppress flag）。
+    pub fn write_image(&self, png_bytes: &[u8]) -> Result<()> {
+        self.suppress_flag.store(true, Ordering::SeqCst);
+        let ctx = self.ctx.lock().unwrap();
+        let img = clipboard_rs::common::RustImageData::from_bytes(png_bytes)
+            .map_err(|e| anyhow::anyhow!("Failed to create RustImageData: {}", e))?;
+        ctx.set_image(img)
+            .map_err(|e| anyhow::anyhow!("Clipboard write image failed: {}", e))?;
         Ok(())
     }
 

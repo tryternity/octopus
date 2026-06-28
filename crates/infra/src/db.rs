@@ -326,6 +326,7 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
             // i64 字段
             "clipboard_max_items" => { if let Ok(v) = value.parse() { cfg.clipboard_max_items = v; } }
             "clipboard_max_age_days" => { if let Ok(v) = value.parse() { cfg.clipboard_max_age_days = v; } }
+            "screenshot_shortcut" => cfg.screenshot_shortcut = value,
             // bool 字段：parse 失败保留 default
             "write_to_clipboard" => { if let Ok(v) = value.parse() { cfg.write_to_clipboard = v; } }
             "asr_hardware_accelerated" => { if let Ok(v) = value.parse() { cfg.asr_hardware_accelerated = v; } }
@@ -395,6 +396,7 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         ("polish_global_shortcut", cfg.polish_global_shortcut.clone()),
         ("clipboard_max_items", cfg.clipboard_max_items.to_string()),
         ("clipboard_max_age_days", cfg.clipboard_max_age_days.to_string()),
+        ("screenshot_shortcut", cfg.screenshot_shortcut.clone()),
     ];
     for (key, value) in &fields {
         conn.execute(

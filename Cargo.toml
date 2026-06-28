@@ -1,5 +1,6 @@
 [workspace]
-members = ["crates/infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download", "crates/clipboard", "crates/ocr"]
+members = ["crates/infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download", "crates/clipboard", "crates/ocr", "crates/capx"]
+exclude = ["xcap"]
 resolver = "2"
 
 # Release profile：缩减打包体积（2026-06-20，体积裁剪报告）。

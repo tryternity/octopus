@@ -84,9 +84,10 @@ pub fn set_config(
     engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, mut cfg) = {
+    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, mut cfg) = {
         let g = rc.read().unwrap();
-        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.clone())
+        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.clone())
+    };
     };
     apply_config_value(&mut cfg, &key, &value)?;
 
@@ -144,8 +145,25 @@ pub fn set_config(
         }
     }
 
+    if key == "screenshot_shortcut" && cfg.screenshot_shortcut != old_screenshot_sc {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        if let Ok(old) = old_screenshot_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let _ = app_handle.global_shortcut().unregister(old);
+        }
+        if let Ok(new) = cfg.screenshot_shortcut.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let ah = app_handle.clone();
+            let _ = app_handle.global_shortcut().on_shortcut(new, move |_app, _scut, event| {
+                if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
+                    let ah = ah.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let _ = crate::screenshot_commands::start_screenshot(ah).await;
+                    });
+                }
+            });
+        }
+    }
+
     {
-        let mut g = rc.write().unwrap();
         *g = cfg.clone();
     }
     octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
@@ -274,6 +292,9 @@ fn apply_config_value(
                 .ok_or("clipboard_max_age_days 需要整数")?;
             if v < 1 { return Err("clipboard_max_age_days 必须 >= 1".into()); }
             cfg.clipboard_max_age_days = v;
+        }
+        "screenshot_shortcut" => {
+            cfg.screenshot_shortcut = value.as_str().ok_or("screenshot_shortcut 需要字符串")?.to_string();
         }
         "microphone" => {
             cfg.microphone = value.as_str().ok_or("microphone 需要字符串")?.to_string();

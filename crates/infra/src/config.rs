@@ -175,6 +175,10 @@ pub struct AppConfig {
     /// 剪贴板自动清理天数（超过此天数的非收藏记录自动删除）。默认 30。
     #[serde(default = "default_clipboard_max_age_days")]
     pub clipboard_max_age_days: i64,
+
+    /// 截图全局快捷键（Tauri Accelerator 格式）。默认 "Alt+S"。
+    #[serde(default = "default_screenshot_shortcut")]
+    pub screenshot_shortcut: String,
 }
 
 fn default_engine_mode() -> String {
@@ -248,6 +252,9 @@ fn default_clipboard_max_items() -> i64 {
 fn default_clipboard_max_age_days() -> i64 {
     30
 }
+fn default_screenshot_shortcut() -> String {
+    "Alt+S".into()
+}
 fn default_segment_silence() -> f64 {
     400.0
 }
@@ -283,6 +290,7 @@ impl Default for AppConfig {
             clipboard_shortcut: default_clipboard_shortcut(),
             clipboard_max_items: default_clipboard_max_items(),
             clipboard_max_age_days: default_clipboard_max_age_days(),
+            screenshot_shortcut: default_screenshot_shortcut(),
         }
     }
 }
