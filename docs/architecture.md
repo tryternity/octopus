@@ -141,11 +141,13 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 | 模块 | 职责 |
 |---|---|
-| `capture` | `capture_full_screen()`：`Monitor::from_point(鼠标位置)` 定位主显示器 → xcap 截全屏 → RGBA 像素。`crop_region()`：从全屏 RGBA 裁剪矩形 → PNG。黑屏检测日志（权限诊断） |
+| `capture` | `capture_all_monitors()`：截取所有显示器（每个返回 RGBA + 物理像素尺寸 + 显示器坐标）。`crop_region()`：从全屏 RGBA 裁剪矩形 → PNG。黑屏检测日志（权限诊断） |
 
 **触发方式**：全局快捷键（`screenshot_shortcut`，默认 Alt+S）+ 托盘菜单「截图」。
 
-**截图流程**：`start_screenshot` → xcap 截全屏 → 创建全屏无边框窗口 → 前端 `get_screenshot_image` 拉取 base64 PNG → Canvas 渲染（原图 + 暗遮罩 + 选区框 + 8 手柄 + 尺寸标注）→ Enter 确认 → `crop_region` 裁剪 → SHA-256 去重 → WebP BLOB → DB image_data + clipboard_history + 系统剪贴板 → 关窗口。
+**多显示器**：每个显示器创建独立 Tauri 窗口（`screenshot_window` / `screenshot_window_N`），用 Tauri `available_monitors()` 获取逻辑坐标 + 尺寸（物理坐标除以 `scale_factor`），定位到对应屏幕。窗口初始 `visible(false)`，前端 Canvas 渲染完截图后调 `show_screenshot_window` 显示（消除白屏闪烁）。确认/取消时关闭所有 `screenshot_*` 窗口。
+
+**截图流程**：`start_screenshot` → `capture_all_monitors` 截所有显示器 → 每屏创建不可见窗口 → 前端 `get_screenshot_image` 按 label 拉取各自截图 → Canvas 渲染（原图 + 暗遮罩 + 选区框 + 8 手柄 + 尺寸标注）→ `show_screenshot_window` 显示 → Enter 确认 → `crop_region` 裁剪 → SHA-256 去重 → WebP BLOB → DB image_data + clipboard_history + 系统剪贴板 → 关所有窗口。
 
 **macOS 权限**：通过 `cargo run` 运行时，屏幕录制权限需授给终端应用（非二进制）。打包 .app 后绑定 octopus 本身。
 

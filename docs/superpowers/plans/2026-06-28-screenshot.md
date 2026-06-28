@@ -576,3 +576,18 @@ xcap 声明了 `[workspace]`，导致 octopus workspace 冲突。解决：`exclu
 ### 偏差 6：macOS 权限
 
 通过 `cargo run` 运行时，屏幕录制权限绑定终端应用（非二进制）。首次截图黑屏 → 授权终端后重启生效。打包 .app 后绑定 octopus 本身。
+
+### 偏差 7：1.1 期多显示器——每屏独立窗口（非拼接）
+
+原设计为「截取所有屏幕拼接为一张全图」，用户澄清为「指定截哪个屏幕」。改为每屏独立窗口：
+- `capture_all_monitors()` 截所有显示器
+- 每个显示器创建独立 Tauri 窗口（`screenshot_window` / `screenshot_window_N`）
+- 窗口坐标用 Tauri `available_monitors()` 逻辑坐标（物理除以 `scale_factor`）
+- confirm/cancel 关闭所有 `screenshot_*` 窗口
+
+### 偏差 8：窗口闪烁——延迟显示
+
+窗口创建后立即可见导致白屏闪烁。改为 `visible(false)` + 前端 Canvas 渲染完后调 `show_screenshot_window` 命令显示。
+- main.tsx 按 window label 提前设 body 背景为 `rgba(0,0,0,0.5)`
+- Loading 态也用 `rgba(0,0,0,0.5)` 和最终遮罩一致
+- **TODO**：后续可加窗口过渡动画进一步消除抖动（达到 Xnip 级体验）
