@@ -179,6 +179,11 @@ pub struct AppConfig {
     /// 截图全局快捷键（Tauri Accelerator 格式）。默认 "Alt+S"。
     #[serde(default = "default_screenshot_shortcut")]
     pub screenshot_shortcut: String,
+
+    /// OCR 模型（当前激活），对应 ~/.octopus/models/ocr/<name>/ 目录名。
+    /// 默认 "PP-OCRv6-small"。OCR 引擎 OnceLock 单例缓存，改后重启生效。
+    #[serde(default = "default_ocr_model")]
+    pub ocr_model: String,
 }
 
 fn default_engine_mode() -> String {
@@ -255,6 +260,10 @@ fn default_clipboard_max_age_days() -> i64 {
 fn default_screenshot_shortcut() -> String {
     "Alt+S".into()
 }
+
+fn default_ocr_model() -> String {
+    "PP-OCRv6-small".into()
+}
 fn default_segment_silence() -> f64 {
     400.0
 }
@@ -291,6 +300,7 @@ impl Default for AppConfig {
             clipboard_max_items: default_clipboard_max_items(),
             clipboard_max_age_days: default_clipboard_max_age_days(),
             screenshot_shortcut: default_screenshot_shortcut(),
+            ocr_model: default_ocr_model(),
         }
     }
 }
@@ -337,6 +347,7 @@ mod tests {
         assert_eq!(cfg.edit_shortcut, "Cmd+Enter");
         assert_eq!(cfg.edit_global_shortcut, "CmdOrCtrl+Shift+E");
         assert_eq!(cfg.polish_global_shortcut, "CmdOrCtrl+Shift+S");
+        assert_eq!(cfg.ocr_model, "PP-OCRv6-small");
         assert_eq!(cfg.segment_silence, 400.0);
     }
 

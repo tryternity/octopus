@@ -319,6 +319,7 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
             "microphone" => cfg.microphone = value,
             "overlay_position" => cfg.overlay_position = value,
             "polish_llm" => cfg.polish_llm = value,
+            "ocr_model" => cfg.ocr_model = value,
             "download_mirror" => cfg.download_mirror = value,
             "clipboard_shortcut" => cfg.clipboard_shortcut = value,
             "edit_global_shortcut" => cfg.edit_global_shortcut = value,
@@ -354,7 +355,7 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
     Ok(cfg)
 }
 
-/// 全量写入应用配置（27 字段 ON CONFLICT DO UPDATE）。set_config / yaml 迁移用。
+/// 全量写入应用配置（29 字段 ON CONFLICT DO UPDATE）。set_config / yaml 迁移用。
 /// 仅更新 config_value，保留 description + category（不同于 INSERT OR REPLACE 会清空非指定列）。
 pub fn save_app_config(cfg: &crate::config::AppConfig) -> Result<()> {
     ensure_db()?;
@@ -368,7 +369,7 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         PolishMode::FinalOnly => 1,
         PolishMode::Intermediate => 2,
     };
-    let fields: [(&str, String); 28] = [
+    let fields: [(&str, String); 29] = [
         ("engine_mode", cfg.engine_mode.clone()),
         ("remote_url", cfg.remote_url.clone()),
         ("grpc_endpoint", cfg.grpc_endpoint.clone()),
@@ -385,6 +386,7 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         ("polish_min_interval", cfg.polish_min_interval.to_string()),
         ("pause_polish_threshold_ms", cfg.pause_polish_threshold_ms.to_string()),
         ("polish_llm", cfg.polish_llm.clone()),
+        ("ocr_model", cfg.ocr_model.clone()),
         ("asr_hardware_accelerated", cfg.asr_hardware_accelerated.to_string()),
         ("asr_correct", cfg.asr_correct.to_string()),
         ("output_simplified", cfg.output_simplified.to_string()),
@@ -683,6 +685,37 @@ fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
 /// 从 DB 列出启用的 LLM 模型（经 with_db，供 Tauri 命令调用）。
 pub fn list_llm_models() -> Result<Vec<LlmModelInfo>> {
     with_db(|conn| list_llm_models_at(conn))
+}
+
+/// OCR 模型列表项（菜单用，仅含显示字段）。
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OcrModelInfo {
+    pub model_name: String,
+    pub description: String,
+}
+
+/// 列出所有启用的 OCR 模型（domain='ocr' AND is_enabled=1）。
+fn list_ocr_models_at(conn: &Connection) -> Result<Vec<OcrModelInfo>> {
+    let mut stmt = conn.prepare(
+        "SELECT model_name, description FROM models
+         WHERE domain='ocr' AND is_enabled = 1",
+    )?;
+    let rows = stmt.query_map([], |row| {
+        Ok(OcrModelInfo {
+            model_name: row.get::<_, String>(0)?,
+            description: row.get::<_, String>(1)?,
+        })
+    })?;
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
+/// 从 DB 列出启用的 OCR 模型（经 with_db，供 Tauri 命令调用）。
+pub fn list_ocr_models() -> Result<Vec<OcrModelInfo>> {
+    with_db(|conn| list_ocr_models_at(conn))
 }
 
 // ── 润色提示词 CRUD（prompts 表）──
@@ -1338,6 +1371,24 @@ mod tests {
         let conn = open_init();
         // seed 全 is_enabled=0（默认）
         let list = list_llm_models_at(&conn).unwrap();
+        assert!(list.is_empty(), "全禁用时返回空");
+    }
+
+    #[test]
+    fn list_ocr_models_returns_enabled() {
+        let conn = open_init();
+        let list = list_ocr_models_at(&conn).unwrap();
+        // seed 默认 1 条 OCR（PP-OCRv6-small, is_enabled=1）
+        assert_eq!(list.len(), 1, "seed 1 条启用 OCR");
+        assert_eq!(list[0].model_name, "PP-OCRv6-small");
+        assert!(!list[0].description.is_empty(), "description 非空");
+    }
+
+    #[test]
+    fn list_ocr_models_filters_disabled() {
+        let conn = open_init();
+        conn.execute("UPDATE models SET is_enabled = 0 WHERE domain='ocr'", []).unwrap();
+        let list = list_ocr_models_at(&conn).unwrap();
         assert!(list.is_empty(), "全禁用时返回空");
     }
 
