@@ -16,6 +16,7 @@ interface Annotation {
   points?: number[][];
   color?: string;
   lineWidth?: number;
+  fontSize?: number;
 }
 
 const HANDLE_SIZE = 8;
@@ -41,6 +42,7 @@ export default function Screenshot() {
   const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
   const [toolColor, setToolColor] = useState("#ef4444");
   const [toolWidth, setToolWidth] = useState(3);
+  const [toolFontSize, setToolFontSize] = useState(16);
   const annMoveStartRef = useRef<{ idx: number; mx: number; my: number; anns: Annotation[] } | null>(null);
 
   const dpr = window.devicePixelRatio || 1;
@@ -184,7 +186,8 @@ export default function Screenshot() {
       }
       ctx.stroke();
     } else if (ann.type === "text" && ann.text) {
-      ctx.font = "16px -apple-system, sans-serif";
+      const fs = ann.fontSize || 16;
+      ctx.font = `${fs}px -apple-system, sans-serif`;
       ctx.textBaseline = "top";
       ctx.fillText(ann.text, ann.x1, ann.y1);
     }
@@ -238,7 +241,8 @@ export default function Screenshot() {
       }
       ctx.stroke();
     } else if (ann.type === "text" && ann.text) {
-      ctx.font = `${16 * scale}px -apple-system, sans-serif`;
+      const fs = (ann.fontSize || 16) * scale;
+      ctx.font = `${fs}px -apple-system, sans-serif`;
       ctx.textBaseline = "top";
       ctx.fillText(ann.text, ann.x1 * scale, ann.y1 * scale);
     }
@@ -617,7 +621,7 @@ export default function Screenshot() {
           onBlur={() => {
             const draft = textDraftRef.current;
             if (draft && draft.val.trim()) {
-              setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColor }]);
+              setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColor, fontSize: toolFontSize }]);
             }
             textDraftRef.current = null;
             setTextDraft(null);
@@ -630,14 +634,14 @@ export default function Screenshot() {
             position: "fixed",
             left: textDraft.x,
             top: textDraft.y,
-            fontSize: 16,
-            color: "#ef4444",
+            fontSize: toolFontSize,
+            color: toolColor,
             background: "transparent",
-            border: "1px dashed #ef4444",
+            border: `1px dashed ${toolColor}`,
             outline: "none",
             resize: "none",
             padding: "2px 4px",
-            minHeight: 24,
+            minHeight: toolFontSize + 8,
             width: 200,
           }}
         />
@@ -693,15 +697,18 @@ export default function Screenshot() {
         </div>
       )}
 
-      {/* 工具属性浮窗（矩形/直线/箭头/画笔选中时） */}
-      {sel && mode === "selected" && (tool === "rect" || tool === "line" || tool === "arrow" || tool === "pen") && (
+      {/* 工具属性浮窗 */}
+      {sel && mode === "selected" && tool !== "none" && (
         <ToolPropsPopover
           x={toolbarX}
           y={toolbarY + 44}
           color={toolColor}
           width={toolWidth}
+          fontSize={toolFontSize}
+          isText={tool === "text"}
           onColorChange={setToolColor}
           onWidthChange={setToolWidth}
+          onFontSizeChange={setToolFontSize}
         />
       )}
     </>
@@ -732,13 +739,20 @@ function ToolButton({ active, onClick, label, icon }: { active?: boolean; onClic
 const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#000000", "#ffffff"];
 
 function ToolPropsPopover({
-  x, y, color, width, onColorChange, onWidthChange,
+  x, y, color, width, fontSize, isText, onColorChange, onWidthChange, onFontSizeChange,
 }: {
   x: number; y: number;
-  color: string; width: number;
+  color: string; width: number; fontSize: number; isText: boolean;
   onColorChange: (c: string) => void;
   onWidthChange: (w: number) => void;
+  onFontSizeChange: (s: number) => void;
 }) {
+  const sizeValue = isText ? fontSize : width;
+  const setSize = isText ? onFontSizeChange : onWidthChange;
+  const min = isText ? 10 : 1;
+  const max = isText ? 48 : 10;
+  const label = isText ? "字号" : "粗细";
+
   return (
     <div
       style={{
@@ -756,18 +770,18 @@ function ToolPropsPopover({
         width: 200,
       }}
     >
-      {/* 第一行：粗细滑轨 */}
+      {/* 第一行：粗细/字号滑轨 */}
       <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: 10, color: "#888", width: 24 }}>粗细</span>
+        <span style={{ fontSize: 10, color: "#888", width: 24 }}>{label}</span>
         <input
           type="range"
-          min={1}
-          max={10}
-          value={width}
-          onChange={(e) => onWidthChange(Number(e.target.value))}
+          min={min}
+          max={max}
+          value={sizeValue}
+          onChange={(e) => setSize(Number(e.target.value))}
           style={{ flex: 1, height: 3, accentColor: color, cursor: "pointer" }}
         />
-        <span style={{ fontSize: 10, color: "#555", fontVariantNumeric: "tabular-nums", width: 16, textAlign: "right" }}>{width}</span>
+        <span style={{ fontSize: 10, color: "#555", fontVariantNumeric: "tabular-nums", width: 20, textAlign: "right" }}>{sizeValue}</span>
       </div>
 
       {/* 第二行：当前色 + 预设色 */}
