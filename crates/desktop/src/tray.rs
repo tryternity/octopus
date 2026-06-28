@@ -27,7 +27,7 @@ static TRAY_ITEMS: once_cell::sync::Lazy<Mutex<Option<TrayItems<tauri::Wry>>>> =
 
 /// Create the system tray icon and its context menu.
 pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
-    let toggle = MenuItem::with_id(app, "toggle", "开始录音", true, None::<&str>)
+    let toggle = MenuItem::with_id(app, "toggle", "语音识别", true, None::<&str>)
         .expect("failed to create toggle menu item");
     let engine_info = MenuItem::with_id(
         app,
@@ -96,8 +96,8 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
 /// 重复创建同 ID 项导致的 panic。
 pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
     let label = match state {
-        TrayState::Idle => "开始录音",
-        TrayState::Recording => "■ 停止录音",
+        TrayState::Idle => "语音识别",
+        TrayState::Recording => "■ 停止识别",
         TrayState::Processing => "⏳ 处理中...",
     };
 
