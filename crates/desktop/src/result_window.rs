@@ -179,6 +179,38 @@ pub fn register_edit_global_shortcut(
     Ok(())
 }
 
+/// 全局立即润色快捷键被按下：show 结果窗（**不 set_focus**，润色不需窗口聚焦接收键盘）
+/// 并通知前端触发 polish_now。前端 polishNow 内部判空（无结果静默）+ polishLoading
+/// 门控（幂等）。与 trigger_global_edit 的区别仅在此处不 set_focus。
+pub fn trigger_global_polish(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let _ = window.show();
+        let _ = window.emit("global-polish-trigger", ());
+    }
+}
+
+/// 注册全局立即润色快捷键。与 register_edit_global_shortcut 的区别：handler 调
+/// trigger_global_polish。set_config 热重载时复用此函数。
+pub fn register_polish_global_shortcut(
+    app: &tauri::AppHandle,
+    shortcut_str: &str,
+) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+    let shortcut: Shortcut = shortcut_str
+        .parse()
+        .map_err(|e| format!("Failed to parse shortcut '{}': {}", shortcut_str, e))?;
+    let app_handle = app.clone();
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |_ah, _scut, event| {
+            if event.state() == ShortcutState::Pressed {
+                trigger_global_polish(&app_handle);
+            }
+        })
+        .map_err(|e| format!("Failed to register shortcut '{}': {}", shortcut_str, e))?;
+    debug!("Registered global polish shortcut: {}", shortcut_str);
+    Ok(())
+}
+
 /// 隐藏结果窗口（不清空内容，不归档）。
 pub fn hide_result(app: &tauri::AppHandle) {
     if WINDOW_READY.load(Ordering::Relaxed) {

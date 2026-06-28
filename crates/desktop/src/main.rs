@@ -388,6 +388,11 @@ pub fn run() {
                 log::error!("Failed to register global edit shortcut: {}", e);
             }
 
+            // 6.2 Register global polish shortcut（跨应用 show 结果窗 + 立即润色）
+            if let Err(e) = result_window::register_polish_global_shortcut(app.handle(), &config.polish_global_shortcut) {
+                log::error!("Failed to register global polish shortcut: {}", e);
+            }
+
             info!("octopus-desktop initialized");
             Ok(())
         })
