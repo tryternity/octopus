@@ -157,6 +157,15 @@ pub struct LlmOption {
     pub label: String,
 }
 
+/// OCR 模型菜单项（与 LlmOption 同构，current 标记当前选中的 ocr_model）。
+/// 与 LLM 的区别：不做「不选择模型」首项——OCR 必须有一个模型。
+#[derive(Serialize)]
+pub struct OcrOption {
+    pub name: String,
+    pub label: String,
+    pub current: bool,
+}
+
 /// 构造 LLM 选项列表（纯逻辑）：首项固定「不选择模型」（name 空 = polish_llm 置空），
 /// 其后为 DB 启用的 LLM。current 按 polish_llm 裸 model_name 标记；current 无效（空 / 不在 DB）
 /// 时首项「不选择模型」标 current（DB 找不到回退无模型）。current 可能为 3-part spec
@@ -200,6 +209,30 @@ pub fn build_llm_options_public(
     llms: Vec<octopus_infra::db::LlmModelInfo>,
 ) -> Vec<LlmOption> {
     build_llm_options(current, llms)
+}
+
+/// 构造 OCR 选项列表（纯逻辑）：DB 启用的 OCR 模型，current 按裸 model_name 标记。
+/// 不做「不选择」首项（OCR 必须有一个）。label 优先 description，空则 model_name。
+fn build_ocr_options(current: &str, ocrs: Vec<octopus_infra::db::OcrModelInfo>) -> Vec<OcrOption> {
+    ocrs.into_iter()
+        .map(|m| OcrOption {
+            current: m.model_name == current,
+            label: if m.description.is_empty() {
+                m.model_name.clone()
+            } else {
+                m.description
+            },
+            name: m.model_name,
+        })
+        .collect()
+}
+
+/// 公开包装（供 settings_commands 调用）。
+pub fn build_ocr_options_public(
+    current: &str,
+    ocrs: Vec<octopus_infra::db::OcrModelInfo>,
+) -> Vec<OcrOption> {
+    build_ocr_options(current, ocrs)
 }
 
 // ── Tauri 命令 ──

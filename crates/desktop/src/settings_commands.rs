@@ -17,6 +17,7 @@ pub struct ConfigResponse {
     pub config: Value,
     pub asr_engines: Vec<crate::runtime_config::EngineOption>,
     pub llm_models: Vec<crate::runtime_config::LlmOption>,
+    pub ocr_models: Vec<crate::runtime_config::OcrOption>,
     pub microphones: Vec<String>,
     pub prompts: Vec<PromptInfo>,
     pub active_prompt_id: i64,
@@ -33,6 +34,9 @@ pub fn get_config(rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigResponse, 
 
     let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
     let llm_models = crate::runtime_config::build_llm_options_public(&g.polish_llm, llms);
+
+    let ocrs = octopus_infra::db::list_ocr_models().map_err(|e| e.to_string())?;
+    let ocr_models = crate::runtime_config::build_ocr_options_public(&g.ocr_model, ocrs);
 
     let microphones = list_microphones();
 
@@ -53,6 +57,7 @@ pub fn get_config(rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigResponse, 
         config: config_json,
         asr_engines,
         llm_models,
+        ocr_models,
         microphones,
         prompts,
         active_prompt_id,
@@ -277,6 +282,9 @@ fn apply_config_value(
         }
         "polish_global_shortcut" => {
             cfg.polish_global_shortcut = value.as_str().ok_or("polish_global_shortcut 需要字符串")?.to_string();
+        }
+        "ocr_model" => {
+            cfg.ocr_model = value.as_str().ok_or("ocr_model 需要字符串")?.to_string();
         }
         "clipboard_shortcut" => {
             cfg.clipboard_shortcut = value.as_str().ok_or("clipboard_shortcut 需要字符串")?.to_string();
