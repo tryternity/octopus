@@ -151,10 +151,10 @@ pub async fn save_screenshot_dialog(
 /// 前端合成标注+裁剪后，直接发送最终 PNG base64（含标注）
 #[tauri::command]
 pub async fn confirm_screenshot_with_data(
-    label: String,
+    _label: String,
     png_base64: String,
-    width: u32,
-    height: u32,
+    _width: u32,
+    _height: u32,
     app_handle: tauri::AppHandle,
     handle: State<'_, std::sync::Arc<ClipboardHandle>>,
 ) -> Result<(), String> {
