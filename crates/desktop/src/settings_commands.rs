@@ -84,9 +84,9 @@ pub fn set_config(
     engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (old_asr_sc, old_clipboard_sc, old_edit_global, mut cfg) = {
+    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, mut cfg) = {
         let g = rc.read().unwrap();
-        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.clone())
+        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.clone())
     };
     apply_config_value(&mut cfg, &key, &value)?;
 
@@ -113,6 +113,18 @@ pub fn set_config(
         }
         if let Err(e) = crate::result_window::register_edit_global_shortcut(&app_handle, &cfg.edit_global_shortcut) {
             let _ = crate::result_window::register_edit_global_shortcut(&app_handle, &old_edit_global);
+            return Err(format!("快捷键注册失败，配置未更改: {}", e));
+        }
+    }
+
+    // polish_global_shortcut 热重载：注册成功后才持久化（同 asr/edit_global 审查 Issue 3）。
+    if key == "polish_global_shortcut" && cfg.polish_global_shortcut != old_polish_global {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        if let Ok(old) = old_polish_global.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let _ = app_handle.global_shortcut().unregister(old);
+        }
+        if let Err(e) = crate::result_window::register_polish_global_shortcut(&app_handle, &cfg.polish_global_shortcut) {
+            let _ = crate::result_window::register_polish_global_shortcut(&app_handle, &old_polish_global);
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }
@@ -244,6 +256,9 @@ fn apply_config_value(
         }
         "edit_global_shortcut" => {
             cfg.edit_global_shortcut = value.as_str().ok_or("edit_global_shortcut 需要字符串")?.to_string();
+        }
+        "polish_global_shortcut" => {
+            cfg.polish_global_shortcut = value.as_str().ok_or("polish_global_shortcut 需要字符串")?.to_string();
         }
         "clipboard_shortcut" => {
             cfg.clipboard_shortcut = value.as_str().ok_or("clipboard_shortcut 需要字符串")?.to_string();
