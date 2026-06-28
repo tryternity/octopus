@@ -13,7 +13,9 @@ interface Annotation {
   type: "rect" | "line" | "arrow" | "pen" | "text";
   x1: number; y1: number; x2: number; y2: number;
   text?: string;
-  points?: number[][]; // pen 自由曲线点序列
+  points?: number[][];
+  color?: string;
+  lineWidth?: number;
 }
 
 const HANDLE_SIZE = 8;
@@ -37,6 +39,8 @@ export default function Screenshot() {
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; val: string } | null>(null);
   const textDraftRef = useRef<{ x: number; y: number; val: string } | null>(null);
   const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
+  const [toolColor, setToolColor] = useState("#ef4444");
+  const [toolWidth, setToolWidth] = useState(3);
   const annMoveStartRef = useRef<{ idx: number; mx: number; my: number; anns: Annotation[] } | null>(null);
 
   const dpr = window.devicePixelRatio || 1;
@@ -135,9 +139,11 @@ export default function Screenshot() {
   useEffect(() => { draw(); }, [draw]);
 
   function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
-    ctx.strokeStyle = "#ef4444";
-    ctx.fillStyle = "#ef4444";
-    ctx.lineWidth = 3;
+    const color = ann.color || "#ef4444";
+    const lw = ann.lineWidth || 3;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = lw;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
@@ -186,9 +192,11 @@ export default function Screenshot() {
 
   // 合成到原图分辨率时用——坐标、线宽、字号全部 × scale
   function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotation, scale: number) {
-    ctx.strokeStyle = "#ef4444";
-    ctx.fillStyle = "#ef4444";
-    ctx.lineWidth = 3 * scale;
+    const color = ann.color || "#ef4444";
+    const lw = (ann.lineWidth || 3) * scale;
+    ctx.strokeStyle = color;
+    ctx.fillStyle = color;
+    ctx.lineWidth = lw;
     ctx.lineCap = "round";
     ctx.lineJoin = "round";
 
@@ -333,9 +341,9 @@ export default function Screenshot() {
         return;
       }
       if (tool === "pen") {
-        drawingRef.current = { type: "pen", x1: mx, y1: my, x2: mx, y2: my, points: [[mx, my]] };
+        drawingRef.current = { type: "pen", x1: mx, y1: my, x2: mx, y2: my, points: [[mx, my]], color: toolColor, lineWidth: toolWidth };
       } else {
-        drawingRef.current = { type: tool, x1: mx, y1: my, x2: mx, y2: my };
+        drawingRef.current = { type: tool, x1: mx, y1: my, x2: mx, y2: my, color: toolColor, lineWidth: toolWidth };
       }
       return;
     }
@@ -513,12 +521,9 @@ export default function Screenshot() {
 
     const dataUrl = croppedCanvas.toDataURL("image/png");
     const base64 = dataUrl.split(",")[1];
-    // 保存到文件 = 不进剪贴板历史，直接下载
-    invoke("save_screenshot_to_file", {
-      label: winLabel,
+    // 弹系统保存对话框
+    invoke("save_screenshot_dialog", {
       pngBase64: base64,
-      width: pw,
-      height: ph,
     }).catch(() => {});
   }
 
@@ -612,7 +617,7 @@ export default function Screenshot() {
           onBlur={() => {
             const draft = textDraftRef.current;
             if (draft && draft.val.trim()) {
-              setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val }]);
+              setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColor }]);
             }
             textDraftRef.current = null;
             setTextDraft(null);
@@ -687,6 +692,18 @@ export default function Screenshot() {
           </button>
         </div>
       )}
+
+      {/* 工具属性浮窗（矩形/直线/箭头/画笔选中时） */}
+      {sel && mode === "selected" && (tool === "rect" || tool === "line" || tool === "arrow" || tool === "pen") && (
+        <ToolPropsPopover
+          x={toolbarX}
+          y={toolbarY + 44}
+          color={toolColor}
+          width={toolWidth}
+          onColorChange={setToolColor}
+          onWidthChange={setToolWidth}
+        />
+      )}
     </>
   );
 }
@@ -709,5 +726,88 @@ function ToolButton({ active, onClick, label, icon }: { active?: boolean; onClic
     >
       {icon}
     </button>
+  );
+}
+
+const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#000000", "#ffffff"];
+
+function ToolPropsPopover({
+  x, y, color, width, onColorChange, onWidthChange,
+}: {
+  x: number; y: number;
+  color: string; width: number;
+  onColorChange: (c: string) => void;
+  onWidthChange: (w: number) => void;
+}) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        left: x,
+        top: y,
+        padding: "8px 10px",
+        background: "rgba(255,255,255,0.97)",
+        borderRadius: 8,
+        boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+        zIndex: 101,
+        display: "flex",
+        flexDirection: "column",
+        gap: 8,
+        width: 200,
+      }}
+    >
+      {/* 第一行：粗细滑轨 */}
+      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ fontSize: 10, color: "#888", width: 24 }}>粗细</span>
+        <input
+          type="range"
+          min={1}
+          max={10}
+          value={width}
+          onChange={(e) => onWidthChange(Number(e.target.value))}
+          style={{ flex: 1, height: 3, accentColor: color, cursor: "pointer" }}
+        />
+        <span style={{ fontSize: 10, color: "#555", fontVariantNumeric: "tabular-nums", width: 16, textAlign: "right" }}>{width}</span>
+      </div>
+
+      {/* 第二行：当前色 + 预设色 */}
+      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+        <div style={{
+          width: 18, height: 18, borderRadius: 4,
+          background: color,
+          border: "2px solid #fff",
+          boxShadow: "0 0 0 1px rgba(0,0,0,0.2)",
+          flexShrink: 0,
+        }} />
+        {PRESET_COLORS.map((c) => (
+          <button
+            key={c}
+            onClick={() => onColorChange(c)}
+            style={{
+              width: 16, height: 16, borderRadius: 4,
+              background: c,
+              border: c === "#ffffff" ? "1px solid #ddd" : "none",
+              cursor: "pointer",
+              padding: 0,
+              opacity: color === c ? 1 : 0.6,
+              transition: "opacity 0.15s",
+            }}
+          />
+        ))}
+      </div>
+
+      {/* 第三行：自定义调色板 */}
+      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+        <label style={{ position: "relative", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
+          <span style={{ fontSize: 10, color: "#888" }}>自定义</span>
+          <input
+            type="color"
+            value={color}
+            onChange={(e) => onColorChange(e.target.value)}
+            style={{ width: 24, height: 18, border: "1px solid #ddd", borderRadius: 4, cursor: "pointer", padding: 0 }}
+          />
+        </label>
+      </div>
+    </div>
   );
 }
