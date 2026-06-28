@@ -182,6 +182,7 @@ fn build_where(filter: &QueryFilter) -> String {
         "image" => { conditions.push("item_type = 'image'".to_string()); }
         "file" => { conditions.push("item_type = 'file'".to_string()); }
         "favorite" => { conditions.push("is_favorite = 1".to_string()); }
+        "unfavorite" => { conditions.push("is_favorite = 0".to_string()); }
         _ => {}
     }
 
