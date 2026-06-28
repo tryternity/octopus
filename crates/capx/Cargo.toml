@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-xcap = { path = "../../xcap" }
+xcap = "0.9.6"
 image = "0.25"
 anyhow = "1"
 log = "0.4"

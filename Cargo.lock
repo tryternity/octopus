@@ -10292,6 +10292,8 @@ dependencies = [
 [[package]]
 name = "xcap"
 version = "0.9.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b6ad471d5ba232bc276382d26a9d3b837d6853b7df389058b5bb1e94dcdd248c"
 dependencies = [
  "dispatch2",
  "image",
