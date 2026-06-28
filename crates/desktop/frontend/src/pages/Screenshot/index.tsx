@@ -34,6 +34,8 @@ export default function Screenshot() {
   const [tool, setTool] = useState<Tool>("none");
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; val: string } | null>(null);
+  const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
+  const annMoveStartRef = useRef<{ idx: number; mx: number; my: number; anns: Annotation[] } | null>(null);
 
   const dpr = window.devicePixelRatio || 1;
 
@@ -84,16 +86,27 @@ export default function Screenshot() {
       ctx.rect(x, y, w, h);
       ctx.clip();
 
-      for (const ann of annotations) {
-        drawAnnotation(ctx, ann);
+      for (let i = 0; i < annotations.length; i++) {
+        drawAnnotation(ctx, annotations[i]);
+        if (selectedAnn === i) {
+          const b = annBounds(annotations[i]);
+          ctx.strokeStyle = "#3b82f6";
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.strokeRect(b.x, b.y, b.w, b.h);
+          ctx.setLineDash([]);
+        }
       }
       if (drawingRef.current) {
         drawAnnotation(ctx, drawingRef.current);
       }
       if (textDraft) {
+        // 已在 annotations 中的文字标注也会走 drawAnnotation
+        // textDraft 只画正在输入的（未确认）
         ctx.font = "16px -apple-system, sans-serif";
         ctx.fillStyle = "#ef4444";
-        ctx.fillText(textDraft.val, textDraft.x, textDraft.y + 16);
+        ctx.textBaseline = "top";
+        ctx.fillText(textDraft.val, textDraft.x, textDraft.y);
       }
 
       ctx.restore();
@@ -122,7 +135,7 @@ export default function Screenshot() {
     } else {
       ctx.fillRect(0, 0, cssW, cssH);
     }
-  }, [sel, mode, ready, dpr, annotations, textDraft, tool]);
+  }, [sel, mode, ready, dpr, annotations, textDraft, tool, selectedAnn]);
 
   useEffect(() => { draw(); }, [draw]);
 
@@ -157,7 +170,8 @@ export default function Screenshot() {
       ctx.fill();
     } else if (ann.type === "text" && ann.text) {
       ctx.font = "16px -apple-system, sans-serif";
-      ctx.fillText(ann.text, ann.x1, ann.y1 + 16);
+      ctx.textBaseline = "top";
+      ctx.fillText(ann.text, ann.x1, ann.y1);
     }
   }
 
@@ -185,6 +199,28 @@ export default function Screenshot() {
     return mx >= sel.x && mx <= sel.x + sel.w && my >= sel.y && my <= sel.y + sel.h;
   }
 
+  function annBounds(ann: Annotation): { x: number; y: number; w: number; h: number } {
+    if (ann.type === "text") {
+      return { x: ann.x1 - 2, y: ann.y1 - 2, w: 200, h: 22 };
+    }
+    return {
+      x: Math.min(ann.x1, ann.x2) - 4,
+      y: Math.min(ann.y1, ann.y2) - 4,
+      w: Math.abs(ann.x2 - ann.x1) + 8,
+      h: Math.abs(ann.y2 - ann.y1) + 8,
+    };
+  }
+
+  function hitTestAnnotation(mx: number, my: number): number | null {
+    for (let i = annotations.length - 1; i >= 0; i--) {
+      const b = annBounds(annotations[i]);
+      if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
+        return i;
+      }
+    }
+    return null;
+  }
+
   // 鼠标事件
   function onMouseDown(e: React.MouseEvent) {
     const mx = e.clientX;
@@ -200,6 +236,17 @@ export default function Screenshot() {
       }
       drawingRef.current = { type: tool, x1: mx, y1: my, x2: mx, y2: my };
       return;
+    }
+
+    // tool 为 none 时：检测是否点击了已有标注（可拖动）
+    if (tool === "none" && sel && inSelection(mx, my)) {
+      const annIdx = hitTestAnnotation(mx, my);
+      if (annIdx !== null) {
+        setSelectedAnn(annIdx);
+        annMoveStartRef.current = { idx: annIdx, mx, my, anns: [...annotations] };
+        return;
+      }
+      setSelectedAnn(null);
     }
 
     if (mode === "selected" || mode === "idle") {
@@ -233,6 +280,23 @@ export default function Screenshot() {
       return;
     }
 
+    // 标注拖动中
+    if (annMoveStartRef.current) {
+      const { idx, mx: sx, my: sy, anns } = annMoveStartRef.current;
+      const dx = mx - sx;
+      const dy = my - sy;
+      const orig = anns[idx];
+      const moved: Annotation = {
+        ...orig,
+        x1: orig.x1 + dx, y1: orig.y1 + dy,
+        x2: orig.x2 + dx, y2: orig.y2 + dy,
+      };
+      const newAnns = [...anns];
+      newAnns[idx] = moved;
+      setAnnotations(newAnns);
+      return;
+    }
+
     if (mode === "idle" || mode === "selected") {
       const handle = hitTest(mx, my);
       if (handle) {
@@ -263,6 +327,11 @@ export default function Screenshot() {
   }
 
   function onMouseUp() {
+    if (annMoveStartRef.current) {
+      annMoveStartRef.current = null;
+      return;
+    }
+
     if (drawingRef.current) {
       const ann = drawingRef.current;
       drawingRef.current = null;
