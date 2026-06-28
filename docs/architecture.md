@@ -12,6 +12,7 @@ octopus/
 │   ├── asr-cloud/   # 云端 ASR 协议层 (octopus-asr-cloud)
 │   ├── clipboard/   # 剪贴板历史管理 (octopus-clipboard)
 │   ├── ocr/         # OCR 图片识别 (octopus-ocr)
+│   ├── capx/        # 屏幕截图 (octopus-capx)
 │   ├── llm/         # LLM 润色 (octopus-llm)
 │   ├── cli/         # 命令行工具 (octopus-cli)
 │   ├── server/      # HTTP/WebSocket 服务 (octopus-server)
@@ -133,6 +134,22 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 **触发方式**：手动——剪贴板浮窗/管理页图片条目点 OCR 按钮（ScanText 图标）。不支持自动 OCR。
 
 **结果处理**：识别文本 → `clipboard_history.search_text`（FTS5 可搜索）→ 系统剪贴板 → osascript 新建 TextEdit 无标题文档（不落盘临时文件）。
+
+### octopus-capx（屏幕截图）
+
+独立的截图 crate，仅依赖 xcap（本地路径引用）。封装截全屏 + 裁剪选区。
+
+| 模块 | 职责 |
+|---|---|
+| `capture` | `capture_full_screen()`：`Monitor::from_point(鼠标位置)` 定位主显示器 → xcap 截全屏 → RGBA 像素。`crop_region()`：从全屏 RGBA 裁剪矩形 → PNG。黑屏检测日志（权限诊断） |
+
+**触发方式**：全局快捷键（`screenshot_shortcut`，默认 Alt+S）+ 托盘菜单「截图」。
+
+**截图流程**：`start_screenshot` → xcap 截全屏 → 创建全屏无边框窗口 → 前端 `get_screenshot_image` 拉取 base64 PNG → Canvas 渲染（原图 + 暗遮罩 + 选区框 + 8 手柄 + 尺寸标注）→ Enter 确认 → `crop_region` 裁剪 → SHA-256 去重 → WebP BLOB → DB image_data + clipboard_history + 系统剪贴板 → 关窗口。
+
+**macOS 权限**：通过 `cargo run` 运行时，屏幕录制权限需授给终端应用（非二进制）。打包 .app 后绑定 octopus 本身。
+
+详见 [spec](superpowers/specs/2026-06-28-screenshot-design.md)。
 
 ### octopus-desktop（桌面应用）
 

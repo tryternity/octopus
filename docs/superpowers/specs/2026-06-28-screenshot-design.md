@@ -1,7 +1,7 @@
 # 屏幕截图功能设计
 
 **日期**: 2026-06-28
-**状态**: 设计完成，待实施
+**状态**: ✅ 一期已实现（基础截图 + 框选 + 手柄调整 + 确认 → 剪贴板历史）
 **分支**: `feature/clipboard-research`（worktree: `.worktrees/clipboard-research`）
 
 ## 0. 概述

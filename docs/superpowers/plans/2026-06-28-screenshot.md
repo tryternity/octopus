@@ -548,3 +548,31 @@ cd .. && cargo build --features embedded 2>&1 | tail -5
 | §4.3 截图配置 | Task 3 |
 | §5 Tauri 命令 + 窗口 | Task 4 |
 | §6 错误处理 | Task 4 + Task 5 |
+
+---
+
+## 实施偏差与补充记录
+
+### 偏差 1：前端拉取模式（替代 emit 延迟）
+
+原设计用 emit + 300ms 延迟发送截图数据给前端，实际 emit 在前端未 ready 时丢失。改为 `get_screenshot_image` 命令——前端 mount 后主动调用，暂存到 `PENDING_IMAGE` 静态变量（与 settings_window 的 `PENDING_PAGE` 同模式）。
+
+### 偏差 2：Monitor::from_point 定位
+
+`Monitor::all().next()` 可能取到错误的显示器。改为 `Monitor::from_point(鼠标位置)` 定位用户当前所在显示器。macOS 用 `core-graphics::CGEvent` 获取鼠标位置。
+
+### 偏差 3：去掉 transparent: true
+
+透明窗口在加载期间闪烁黑色。改为不透明窗口，前端自行渲染全屏 Canvas（黑色 loading 态 → 截图数据就绪后渲染）。
+
+### 偏差 4：base64 从 optional 改为非 optional
+
+screenshot_commands 需要 base64 编码 PNG，将 base64 从 cloud feature 的 optional 依赖改为非 optional。
+
+### 偏差 5：xcap 软链接 + workspace exclude
+
+xcap 声明了 `[workspace]`，导致 octopus workspace 冲突。解决：`exclude = ["xcap"]` + `.gitignore` 排除软链接。
+
+### 偏差 6：macOS 权限
+
+通过 `cargo run` 运行时，屏幕录制权限绑定终端应用（非二进制）。首次截图黑屏 → 授权终端后重启生效。打包 .app 后绑定 octopus 本身。
