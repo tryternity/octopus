@@ -153,6 +153,12 @@ pub struct AppConfig {
     #[serde(default = "default_edit_global_shortcut")]
     pub edit_global_shortcut: String,
 
+    /// 全局立即润色快捷键——任意应用聚焦时 show 结果窗（不聚焦）+ 触发 polish_now
+    /// （复用工具栏「立即润色」按钮语义：空文本静默、polishLoading 幂等）。
+    /// 默认 "CmdOrCtrl+Shift+L"，不与 asr/edit_global/clipboard/edit_shortcut 冲突。
+    #[serde(default = "default_polish_global_shortcut")]
+    pub polish_global_shortcut: String,
+
     /// HF 模型下载镜像 host（如 `https://hf-mirror.com`）。空 = 官方源 huggingface.co。
     /// cli `download --mirror` 临时覆盖此值；优先级 `--mirror` > 此字段 > 官方源。
     #[serde(default = "default_download_mirror")]
@@ -227,6 +233,9 @@ fn default_edit_shortcut() -> String {
 fn default_edit_global_shortcut() -> String {
     "CmdOrCtrl+Shift+E".into()
 }
+fn default_polish_global_shortcut() -> String {
+    "CmdOrCtrl+Shift+L".into()
+}
 fn default_download_mirror() -> String {
     String::new()
 }
@@ -269,6 +278,7 @@ impl Default for AppConfig {
             denoise_mode: default_denoise_mode(),
             edit_shortcut: default_edit_shortcut(),
             edit_global_shortcut: default_edit_global_shortcut(),
+            polish_global_shortcut: default_polish_global_shortcut(),
             download_mirror: default_download_mirror(),
             clipboard_shortcut: default_clipboard_shortcut(),
             clipboard_max_items: default_clipboard_max_items(),
@@ -318,6 +328,7 @@ mod tests {
         assert_eq!(cfg.denoise_mode, 1);
         assert_eq!(cfg.edit_shortcut, "Cmd+Enter");
         assert_eq!(cfg.edit_global_shortcut, "CmdOrCtrl+Shift+E");
+        assert_eq!(cfg.polish_global_shortcut, "CmdOrCtrl+Shift+L");
         assert_eq!(cfg.segment_silence, 400.0);
     }
 

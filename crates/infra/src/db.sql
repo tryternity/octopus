@@ -186,6 +186,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('asr_shortcut',             'CmdOrCtrl+Shift+Z',                    '全局 ASR 激活/关闭快捷键'),
     ('edit_shortcut',            'Cmd+Enter',                            '结果窗编辑 toggle 快捷键（进入/保存同键）'),
     ('edit_global_shortcut',     'CmdOrCtrl+Shift+E',                    '全局编辑结果窗快捷键（跨应用唤起窗口+进入/保存编辑）'),
+    ('polish_global_shortcut',   'CmdOrCtrl+Shift+L',                    '全局立即润色快捷键（跨应用 show 结果窗不聚焦 + 触发 polish_now）'),
     ('paste_method',             'clipboard',                            '粘贴方式: clipboard | direct | none'),
     ('write_to_clipboard',       'true',                                 '粘贴后是否把结果写入剪贴板'),
     ('microphone',               '',                                     '麦克风名称（空=系统默认）'),
