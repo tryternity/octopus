@@ -6,9 +6,11 @@
 
 **Architecture:** 独立 crate `octopus-capx`（封装 xcap 截图引擎）+ Tauri 全屏透明窗口 + React Canvas 选区 UI。截图结果手动写入剪贴板历史（绕过 watcher）。
 
-**Tech Stack:** Rust + xcap 0.9.6（本地路径引用）+ image 0.25 + Tauri + React Canvas
+**Tech Stack:** Rust + xcap 0.9.6（crates.io 发布版，原 `path = "../../xcap"` 本地 fork 已弃用）+ image 0.25 + Tauri + React Canvas
 
 **Spec:** `docs/superpowers/specs/2026-06-28-screenshot-design.md`
+
+> **实施状态（2026-06-28）**：一期（Task 1-6）+ 二期标注工具栏（矩形/箭头/文字 + 撤销 + 确认/取消）均已实现并合并 main，详见文末「实施偏差与补充记录」偏差 1-11。下方 Task 1-6 的 `[ ]` checkbox 为初版计划、**未回填完成状态**；实际实现以代码（`crates/capx`、`crates/desktop/src/screenshot_commands.rs`、`frontend/src/pages/Screenshot/`）+ 偏差记录为准。
 
 ---
 

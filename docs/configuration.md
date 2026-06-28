@@ -293,7 +293,7 @@ octopus-cli config
 应用行为配置，v3+ 统一存储在 `~/.octopus/octopus.db` 的 `app_config` 表（key-value TEXT）。首次启动由 db.sql seed 默认值；旧 `config.yaml` 自动迁移到 DB 后重命名为 `.bak`。
 
 **两种编辑方式**：
-1. **GUI 设置窗口**（推荐）：桌面应用工具栏点击「设置」按钮或托盘菜单「设置...」打开独立设置窗口——系统设置页提供表单化编辑（toggle/select/number input），修改即时写回 DB `app_config` 表 + RuntimeConfig。21 个可配置字段均有类型校验和生效时间提示（立即 / 下次录音 / 重启）。
+1. **GUI 设置窗口**（推荐）：桌面应用工具栏点击「设置」按钮或托盘菜单「设置...」打开独立设置窗口——系统设置页提供表单化编辑（toggle/select/number input），修改即时写回 DB `app_config` 表 + RuntimeConfig。29 个可配置字段均有类型校验和生效时间提示（立即 / 下次录音 / 重启）。
 2. **手动编辑**：直接用 sqlite3 编辑 `~/.octopus/octopus.db` 的 `app_config` 表，需重启进程生效（`OnceLock` 缓存）。
 
 > **⚠️ 迁移提示**：旧 `config.yaml` 首次启动 v3 版本时自动导入 DB 并重命名为 `config.yaml.bak`。旧字段 `polish_enabled` / `shortcut` / `polish_interval` 在迁移时自动转换为 `polish_mode` / `asr_shortcut` / `polish_min_interval`。
@@ -422,10 +422,11 @@ edit_shortcut: "Cmd+Enter"       # 编辑 toggle 快捷键（窗口内，进入/
 
 ```sql
 INSERT OR IGNORE INTO prompts (id, title, category, content, description, is_system) VALUES
-    (1, '默认润色', 'voice_text_polish', '<内置 6 条风格规则>', '默认润色（系统内置）', 1);
+    (1, '默认润色', 'voice_text_polish', '<内置 6 条风格规则>', '默认润色（系统内置）', 1),
+    (2, '进阶润色（断续纠正）', 'voice_text_polish', '<默认 6 条 + 断续纠正/重复修正/同音漂移 3 条强化规则>', '进阶版：针对断续纠正、重复修正、同音漂移场景强化的润色 prompt（系统内置）', 1);
 ```
 
-固定 `id=1` 为系统默认 prompt（`is_system=1`，不可编辑/删除）。
+固定 `id=1`（默认润色）/ `id=2`（进阶润色（断续纠正））为系统内置 prompt（`is_system=1`，不可编辑/删除）。
 
 ### Prompt 组装
 
