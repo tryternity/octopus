@@ -183,10 +183,10 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('grpc_endpoint',            'http://127.0.0.1:50051',               'gRPC 端点（engine_mode=grpc 时使用）'),
     ('asr_engine',               '',                                     'ASR 引擎选择（DB models 表 model_name 精确匹配；空=代码兜底引擎 zipformer-small-ctc，随包打包）'),
     ('language',                 'auto',                                 '识别语言: auto | zh | en | ja | ko'),
-    ('asr_shortcut',             'CmdOrCtrl+Alt+A',                      '全局 ASR 激活/关闭快捷键'),
+    ('asr_shortcut',             'CmdOrCtrl+Shift+A',                      '全局 ASR 激活/关闭快捷键'),
     ('edit_shortcut',            'Cmd+Enter',                            '结果窗编辑 toggle 快捷键（进入/保存同键）'),
-    ('edit_global_shortcut',     'CmdOrCtrl+Alt+E',                      '全局编辑结果窗快捷键（跨应用唤起窗口+进入/保存编辑）'),
-    ('polish_global_shortcut',   'CmdOrCtrl+Alt+S',                      '全局立即润色快捷键（跨应用 show 结果窗不聚焦 + 触发 polish_now）'),
+    ('edit_global_shortcut',     'CmdOrCtrl+Shift+E',                      '全局编辑结果窗快捷键（跨应用唤起窗口+进入/保存编辑）'),
+    ('polish_global_shortcut',   'CmdOrCtrl+Shift+S',                      '全局立即润色快捷键（跨应用 show 结果窗不聚焦 + 触发 polish_now）'),
     ('paste_method',             'clipboard',                            '粘贴方式: clipboard | direct | none'),
     ('write_to_clipboard',       'true',                                 '粘贴后是否把结果写入剪贴板'),
     ('microphone',               '',                                     '麦克风名称（空=系统默认）'),
@@ -279,7 +279,7 @@ END;
 -- 剪贴板配置项 seed
 INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('clipboard_enabled',      'true',  '是否启用剪贴板历史监听'),
-    ('clipboard_shortcut',     'CmdOrCtrl+Alt+D', '剪贴板历史窗口快捷键'),
+    ('clipboard_shortcut',     'CmdOrCtrl+Shift+D', '剪贴板历史窗口快捷键'),
     ('clipboard_max_items',    '1000',  '最大保留条数（不含收藏）'),
     ('clipboard_max_age_days', '30',    '自动清理天数（不含收藏）'),
     ('clipboard_auto_paste',   'double','列表项点击行为: single(复制) | double(粘贴)'),
