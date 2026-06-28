@@ -5,6 +5,8 @@ pub struct ScreenCapture {
     pub rgba_bytes: Vec<u8>,
     pub width: u32,
     pub height: u32,
+    pub monitor_x: i32,
+    pub monitor_y: i32,
 }
 
 /// 截取主显示器全屏（返回 RGBA 像素 + 尺寸）。
@@ -60,6 +62,8 @@ pub fn capture_full_screen() -> Result<ScreenCapture> {
         rgba_bytes,
         width,
         height,
+        monitor_x: monitor.x().unwrap_or(0),
+        monitor_y: monitor.y().unwrap_or(0),
     })
 }
 

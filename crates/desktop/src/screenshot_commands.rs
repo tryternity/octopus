@@ -24,12 +24,17 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     let width = capture.width;
     let height = capture.height;
 
+    let mon_w = capture.width as f64;
+    let mon_h = capture.height as f64;
+    let mon_x = capture.monitor_x as f64;
+    let mon_y = capture.monitor_y as f64;
+
     // 3. 暂存全屏数据 + base64 图片
     let b64 = general_purpose::STANDARD.encode(&png_bytes);
     *PENDING_IMAGE.lock().unwrap() = Some(b64.clone());
     *SCREENSHOT_DATA.lock().unwrap() = Some(capture);
 
-    // 4. 创建/重建截图窗口
+    // 4. 创建/重建截图窗口（定位到鼠标所在显示器）
     if let Some(old) = app_handle.get_webview_window(WINDOW_LABEL) {
         let _ = old.destroy();
     }
@@ -40,11 +45,12 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         WebviewUrl::default(),
     )
     .title("")
-    .fullscreen(true)
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)
     .resizable(false)
+    .position(mon_x, mon_y)
+    .inner_size(mon_w, mon_h)
     .build();
 
     Ok(())
