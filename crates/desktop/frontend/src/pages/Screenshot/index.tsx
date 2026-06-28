@@ -7,12 +7,13 @@ interface Selection {
 }
 
 type Mode = "idle" | "selecting" | "selected" | "move" | "resize";
-type Tool = "none" | "rect" | "arrow" | "text";
+type Tool = "none" | "rect" | "line" | "arrow" | "pen" | "text";
 
 interface Annotation {
-  type: "rect" | "arrow" | "text";
+  type: "rect" | "line" | "arrow" | "pen" | "text";
   x1: number; y1: number; x2: number; y2: number;
   text?: string;
+  points?: number[][]; // pen 自由曲线点序列
 }
 
 const HANDLE_SIZE = 8;
@@ -137,6 +138,8 @@ export default function Screenshot() {
     ctx.strokeStyle = "#ef4444";
     ctx.fillStyle = "#ef4444";
     ctx.lineWidth = 3;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
 
     if (ann.type === "rect") {
       const x = Math.min(ann.x1, ann.x2);
@@ -144,6 +147,11 @@ export default function Screenshot() {
       const w = Math.abs(ann.x2 - ann.x1);
       const h = Math.abs(ann.y2 - ann.y1);
       ctx.strokeRect(x, y, w, h);
+    } else if (ann.type === "line") {
+      ctx.beginPath();
+      ctx.moveTo(ann.x1, ann.y1);
+      ctx.lineTo(ann.x2, ann.y2);
+      ctx.stroke();
     } else if (ann.type === "arrow") {
       const dx = ann.x2 - ann.x1;
       const dy = ann.y2 - ann.y1;
@@ -153,7 +161,6 @@ export default function Screenshot() {
       ctx.moveTo(ann.x1, ann.y1);
       ctx.lineTo(ann.x2, ann.y2);
       ctx.stroke();
-      // 箭头头部
       const angle = Math.atan2(dy, dx);
       const headLen = 12;
       ctx.beginPath();
@@ -162,6 +169,14 @@ export default function Screenshot() {
       ctx.lineTo(ann.x2 - headLen * Math.cos(angle + Math.PI / 6), ann.y2 - headLen * Math.sin(angle + Math.PI / 6));
       ctx.closePath();
       ctx.fill();
+    } else if (ann.type === "pen" && ann.points) {
+      ctx.beginPath();
+      for (let i = 0; i < ann.points.length; i++) {
+        const [px, py] = ann.points[i];
+        if (i === 0) ctx.moveTo(px, py);
+        else ctx.lineTo(px, py);
+      }
+      ctx.stroke();
     } else if (ann.type === "text" && ann.text) {
       ctx.font = "16px -apple-system, sans-serif";
       ctx.textBaseline = "top";
@@ -174,6 +189,8 @@ export default function Screenshot() {
     ctx.strokeStyle = "#ef4444";
     ctx.fillStyle = "#ef4444";
     ctx.lineWidth = 3 * scale;
+    ctx.lineCap = "round";
+    ctx.lineJoin = "round";
 
     if (ann.type === "rect") {
       const x = Math.min(ann.x1, ann.x2) * scale;
@@ -181,6 +198,11 @@ export default function Screenshot() {
       const w = Math.abs(ann.x2 - ann.x1) * scale;
       const h = Math.abs(ann.y2 - ann.y1) * scale;
       ctx.strokeRect(x, y, w, h);
+    } else if (ann.type === "line") {
+      ctx.beginPath();
+      ctx.moveTo(ann.x1 * scale, ann.y1 * scale);
+      ctx.lineTo(ann.x2 * scale, ann.y2 * scale);
+      ctx.stroke();
     } else if (ann.type === "arrow") {
       const ax1 = ann.x1 * scale, ay1 = ann.y1 * scale;
       const ax2 = ann.x2 * scale, ay2 = ann.y2 * scale;
@@ -199,6 +221,14 @@ export default function Screenshot() {
       ctx.lineTo(ax2 - headLen * Math.cos(angle + Math.PI / 6), ay2 - headLen * Math.sin(angle + Math.PI / 6));
       ctx.closePath();
       ctx.fill();
+    } else if (ann.type === "pen" && ann.points) {
+      ctx.beginPath();
+      for (let i = 0; i < ann.points.length; i++) {
+        const [px, py] = ann.points[i];
+        if (i === 0) ctx.moveTo(px * scale, py * scale);
+        else ctx.lineTo(px * scale, py * scale);
+      }
+      ctx.stroke();
     } else if (ann.type === "text" && ann.text) {
       ctx.font = `${16 * scale}px -apple-system, sans-serif`;
       ctx.textBaseline = "top";
@@ -233,6 +263,15 @@ export default function Screenshot() {
   function annBounds(ann: Annotation): { x: number; y: number; w: number; h: number } {
     if (ann.type === "text") {
       return { x: ann.x1 - 2, y: ann.y1 - 2, w: 200, h: 22 };
+    }
+    if (ann.type === "pen" && ann.points && ann.points.length > 0) {
+      const xs = ann.points.map(p => p[0]);
+      const ys = ann.points.map(p => p[1]);
+      return {
+        x: Math.min(...xs) - 4, y: Math.min(...ys) - 4,
+        w: Math.max(...xs) - Math.min(...xs) + 8,
+        h: Math.max(...ys) - Math.min(...ys) + 8,
+      };
     }
     return {
       x: Math.min(ann.x1, ann.x2) - 4,
@@ -293,7 +332,11 @@ export default function Screenshot() {
         setTimeout(() => textInputRef.current?.focus(), 10);
         return;
       }
-      drawingRef.current = { type: tool, x1: mx, y1: my, x2: mx, y2: my };
+      if (tool === "pen") {
+        drawingRef.current = { type: "pen", x1: mx, y1: my, x2: mx, y2: my, points: [[mx, my]] };
+      } else {
+        drawingRef.current = { type: tool, x1: mx, y1: my, x2: mx, y2: my };
+      }
       return;
     }
 
@@ -328,7 +371,11 @@ export default function Screenshot() {
 
     // 标注绘制中
     if (drawingRef.current && tool !== "none") {
-      drawingRef.current = { ...drawingRef.current, x2: mx, y2: my };
+      if (drawingRef.current.type === "pen" && drawingRef.current.points) {
+        drawingRef.current.points.push([mx, my]);
+      } else {
+        drawingRef.current = { ...drawingRef.current, x2: mx, y2: my };
+      }
       draw();
       return;
     }
@@ -396,13 +443,17 @@ export default function Screenshot() {
       // 过滤太小的
       if (ann.type === "rect") {
         if (Math.abs(ann.x2 - ann.x1) > 5 && Math.abs(ann.y2 - ann.y1) > 5) {
-          setAnnotations([...annotations, ann]);
+          setAnnotations(prev => [...prev, ann]);
         }
-      } else if (ann.type === "arrow") {
+      } else if (ann.type === "line" || ann.type === "arrow") {
         const dx = ann.x2 - ann.x1;
         const dy = ann.y2 - ann.y1;
         if (Math.sqrt(dx * dx + dy * dy) > 10) {
-          setAnnotations([...annotations, ann]);
+          setAnnotations(prev => [...prev, ann]);
+        }
+      } else if (ann.type === "pen" && ann.points) {
+        if (ann.points.length > 2) {
+          setAnnotations(prev => [...prev, ann]);
         }
       }
       return;
@@ -432,6 +483,43 @@ export default function Screenshot() {
   function onContextMenu(e: React.MouseEvent) {
     e.preventDefault();
     invoke("cancel_screenshot").catch(() => {});
+  }
+
+  function doSaveFile() {
+    if (!sel || !bgImgRef.current) return;
+    const bg = bgImgRef.current;
+    const cssW = window.innerWidth;
+    const natW = bg.naturalWidth;
+    const scale = natW / cssW;
+
+    const tmpCanvas = document.createElement("canvas");
+    tmpCanvas.width = bg.naturalWidth;
+    tmpCanvas.height = bg.naturalHeight;
+    const tmpCtx = tmpCanvas.getContext("2d")!;
+    tmpCtx.drawImage(bg, 0, 0);
+    for (const ann of annotations) {
+      drawAnnotationScaled(tmpCtx, ann, scale);
+    }
+
+    const px = Math.round(sel.x * scale);
+    const py = Math.round(sel.y * scale);
+    const pw = Math.round(sel.w * scale);
+    const ph = Math.round(sel.h * scale);
+    const croppedCanvas = document.createElement("canvas");
+    croppedCanvas.width = pw;
+    croppedCanvas.height = ph;
+    const croppedCtx = croppedCanvas.getContext("2d")!;
+    croppedCtx.drawImage(tmpCanvas, px, py, pw, ph, 0, 0, pw, ph);
+
+    const dataUrl = croppedCanvas.toDataURL("image/png");
+    const base64 = dataUrl.split(",")[1];
+    // 保存到文件 = 不进剪贴板历史，直接下载
+    invoke("save_screenshot_to_file", {
+      label: winLabel,
+      pngBase64: base64,
+      width: pw,
+      height: ph,
+    }).catch(() => {});
   }
 
   function doConfirm() {
@@ -570,8 +658,14 @@ export default function Screenshot() {
           <ToolButton active={tool === "rect"} onClick={() => setTool(tool === "rect" ? "none" : "rect")} label="矩形" icon={
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="3" y="4" width="12" height="10" rx="1" stroke="currentColor" strokeWidth="2"/></svg>
           } />
+          <ToolButton active={tool === "line"} onClick={() => setTool(tool === "line" ? "none" : "line")} label="直线" icon={
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="3" y1="15" x2="15" y2="3" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+          } />
           <ToolButton active={tool === "arrow"} onClick={() => setTool(tool === "arrow" ? "none" : "arrow")} label="箭头" icon={
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 15L15 3M15 3L10 3M15 3L15 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+          } />
+          <ToolButton active={tool === "pen"} onClick={() => setTool(tool === "pen" ? "none" : "pen")} label="画笔" icon={
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 14C5 12 7 10 9 8C11 6 13 5 15 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><circle cx="3.5" cy="14.5" r="1.5" fill="currentColor"/></svg>
           } />
           <ToolButton active={tool === "text"} onClick={() => setTool(tool === "text" ? "none" : "text")} label="文字" icon={
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><text x="4" y="14" fontSize="14" fontWeight="bold" fill="currentColor">A</text></svg>
@@ -581,6 +675,10 @@ export default function Screenshot() {
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 8H11C13 8 15 10 15 12C15 14 13 16 11 16H7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M6 4L2 8L6 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
+          <button onClick={doSaveFile} title="保存到文件" style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.15)", background: "#fff", color: "#333", fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
+            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1V9M7 9L4 6M7 9L10 6M2 11V13H12V11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            保存
+          </button>
           <button onClick={doConfirm} style={{ padding: "4px 12px", borderRadius: 6, border: "none", background: "#3b82f6", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
             ✓ 确认
           </button>

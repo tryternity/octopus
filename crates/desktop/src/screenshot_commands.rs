@@ -119,6 +119,41 @@ pub fn show_screenshot_window(label: String, app_handle: tauri::AppHandle) {
     }
 }
 
+/// 保存截图到文件（不进剪贴板历史，直接写入 ~/Downloads/octopus/）
+#[tauri::command]
+pub async fn save_screenshot_to_file(
+    label: String,
+    png_base64: String,
+    width: u32,
+    height: u32,
+    app_handle: tauri::AppHandle,
+) -> Result<String, String> {
+    let png_bytes = general_purpose::STANDARD.decode(&png_base64)
+        .map_err(|e| format!("base64 解码失败: {}", e))?;
+
+    ALL_CAPTURES.lock().unwrap().clear();
+    PENDING_IMAGES.lock().unwrap().clear();
+
+    let downloads_dir = dirs::download_dir()
+        .unwrap_or_else(|| dirs::home_dir().expect("no home dir"))
+        .join("octopus");
+    std::fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
+
+    let timestamp = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    let filename = format!("screenshot-{}.png", timestamp);
+    let filepath = downloads_dir.join(&filename);
+    std::fs::write(&filepath, &png_bytes).map_err(|e| e.to_string())?;
+
+    let abs_path = filepath.to_string_lossy().to_string();
+    log::info!("Screenshot saved to {}", abs_path);
+
+    close_all_screenshot_windows(&app_handle);
+    Ok(abs_path)
+}
+
 /// 前端合成标注+裁剪后，直接发送最终 PNG base64（含标注）
 #[tauri::command]
 pub async fn confirm_screenshot_with_data(
