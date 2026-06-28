@@ -146,7 +146,11 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
 
       <Card icon={Layers} title="模型选择">
         <Row label="语音识别模型" effect="下次录音">
-          <select className={selectClass} value={cfg.asr_engine as string} onChange={(e) => setVal("asr_engine", e.target.value)}>
+          {/* 后端 asr_engine 存 3-part spec（"provider:category:name"），option value 是裸名，
+              直接用 cfg.asr_engine 匹配不上 → 必须从 asr_engines 的 current 项取裸名（同润色模型行） */}
+          <select className={selectClass}
+            value={asr_engines.find((e) => e.current)?.name ?? ""}
+            onChange={(e) => setVal("asr_engine", e.target.value)}>
             {asr_engines.map((e) => <option key={e.name} value={e.name}>{e.label}</option>)}
           </select>
         </Row>
