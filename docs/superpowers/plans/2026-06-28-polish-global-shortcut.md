@@ -35,7 +35,7 @@
 - Modify: `crates/infra/src/db.sql`（seed L188 区）
 - Modify: `crates/infra/src/db.rs`（load L324 区、save L369/393 区）
 
-- [ ] **Step 1.1: config.rs 加字段定义**
+- [x] **Step 1.1: config.rs 加字段定义**
 
 在 `edit_global_shortcut` 字段定义之后（L154 `pub edit_global_shortcut: String,` 之后）插入：
 
@@ -46,7 +46,7 @@
     pub polish_global_shortcut: String,
 ```
 
-- [ ] **Step 1.2: config.rs 加 default 函数**
+- [x] **Step 1.2: config.rs 加 default 函数**
 
 在 `default_edit_global_shortcut`（L227-229）之后插入：
 
@@ -56,7 +56,7 @@ fn default_polish_global_shortcut() -> String {
 }
 ```
 
-- [ ] **Step 1.3: config.rs Default impl 加初始化**
+- [x] **Step 1.3: config.rs Default impl 加初始化**
 
 在 Default impl 的 `edit_global_shortcut: default_edit_global_shortcut(),`（L271）之后插入：
 
@@ -64,7 +64,7 @@ fn default_polish_global_shortcut() -> String {
             polish_global_shortcut: default_polish_global_shortcut(),
 ```
 
-- [ ] **Step 1.4: config.rs 单测加断言**
+- [x] **Step 1.4: config.rs 单测加断言**
 
 在单测 `assert_eq!(cfg.edit_global_shortcut, "CmdOrCtrl+Shift+E");`（L320）之后插入：
 
@@ -72,7 +72,7 @@ fn default_polish_global_shortcut() -> String {
         assert_eq!(cfg.polish_global_shortcut, "CmdOrCtrl+Shift+L");
 ```
 
-- [ ] **Step 1.5: db.sql seed 加行**
+- [x] **Step 1.5: db.sql seed 加行**
 
 在 `edit_global_shortcut` seed 行（L188）之后插入（注意对齐 + category 吃列 DEFAULT='setting'）：
 
@@ -80,7 +80,7 @@ fn default_polish_global_shortcut() -> String {
     ('polish_global_shortcut',   'CmdOrCtrl+Shift+L',                    '全局立即润色快捷键（跨应用 show 结果窗不聚焦 + 触发 polish_now）'),
 ```
 
-- [ ] **Step 1.6: db.rs load 加分支**
+- [x] **Step 1.6: db.rs load 加分支**
 
 在 `load_app_config_at` 的 `"edit_global_shortcut" => cfg.edit_global_shortcut = value,`（L324）之后插入：
 
@@ -88,7 +88,7 @@ fn default_polish_global_shortcut() -> String {
             "polish_global_shortcut" => cfg.polish_global_shortcut = value,
 ```
 
-- [ ] **Step 1.7: db.rs save 加字段**
+- [x] **Step 1.7: db.rs save 加字段**
 
 `save_app_config_at`：
 - 数组长度 `let fields: [(&str, String); 26]` → `27`
@@ -98,12 +98,12 @@ fn default_polish_global_shortcut() -> String {
         ("polish_global_shortcut", cfg.polish_global_shortcut.clone()),
 ```
 
-- [ ] **Step 1.8: 验证 config 编译 + 单测**
+- [x] **Step 1.8: 验证 config 编译 + 单测**
 
 Run: `cargo test -p octopus-infra config::tests -- --nocapture`（或含默认值断言的测试名）
 Expected: PASS，含 `polish_global_shortcut == "CmdOrCtrl+Shift+L"` 断言通过。
 
-- [ ] **Step 1.9: Commit**
+- [x] **Step 1.9: Commit**
 
 ```bash
 git add crates/infra/src/config.rs crates/infra/src/db.sql crates/infra/src/db.rs
@@ -118,7 +118,7 @@ git commit -m "feat(infra): polish_global_shortcut 配置字段 + db load/save�
 - Modify: `crates/desktop/src/result_window.rs`（L180 `register_edit_global_shortcut` 之后）
 - Modify: `crates/desktop/src/main.rs`（L389 注册块之后）
 
-- [ ] **Step 2.1: result_window.rs 加 trigger_global_polish + register**
+- [x] **Step 2.1: result_window.rs 加 trigger_global_polish + register**
 
 在 `register_edit_global_shortcut` 函数（L162-180）之后插入。**关键区别：trigger 只 `show` 不 `set_focus`**（润色不需窗口接收键盘）：
 
@@ -156,7 +156,7 @@ pub fn register_polish_global_shortcut(
 }
 ```
 
-- [ ] **Step 2.2: main.rs setup 加注册**
+- [x] **Step 2.2: main.rs setup 加注册**
 
 在 `register_edit_global_shortcut` 注册块（L386-389）之后插入：
 
@@ -167,12 +167,12 @@ pub fn register_polish_global_shortcut(
             }
 ```
 
-- [ ] **Step 2.3: 验证 desktop 编译**
+- [x] **Step 2.3: 验证 desktop 编译**
 
 Run: `cargo check -p octopus-desktop`
 Expected: 0 error（可能有 pre-existing dead_code warning，无关）。
 
-- [ ] **Step 2.4: Commit**
+- [x] **Step 2.4: Commit**
 
 ```bash
 git add crates/desktop/src/result_window.rs crates/desktop/src/main.rs
@@ -186,7 +186,7 @@ git commit -m "feat(desktop): trigger_global_polish + register（show 不聚焦�
 **Files:**
 - Modify: `crates/desktop/src/settings_commands.rs`（L87-89 old 拆分、L107-118 热重载块、L245-247 apply 分支）
 
-- [ ] **Step 3.1: set_config old 拆分加 old_polish_global**
+- [x] **Step 3.1: set_config old 拆分加 old_polish_global**
 
 L87-89：
 ```rust
@@ -203,7 +203,7 @@ L87-89：
     };
 ```
 
-- [ ] **Step 3.2: set_config 加 polish_global 热重载块**
+- [x] **Step 3.2: set_config 加 polish_global 热重载块**
 
 在 `edit_global_shortcut` 热重载块（L107-118）之后、`clipboard_shortcut` 块（L120）之前插入：
 
@@ -221,7 +221,7 @@ L87-89：
     }
 ```
 
-- [ ] **Step 3.3: apply_config_value 加 polish_global 分支**
+- [x] **Step 3.3: apply_config_value 加 polish_global 分支**
 
 在 `"edit_global_shortcut" =>` 分支（L245-247）之后插入：
 
@@ -231,12 +231,12 @@ L87-89：
         }
 ```
 
-- [ ] **Step 3.4: 验证 desktop 编译 + 单测**
+- [x] **Step 3.4: 验证 desktop 编译 + 单测**
 
 Run: `cargo test -p octopus-desktop settings_commands`
 Expected: PASS（既有 apply_config_value 单测不受影响；新分支字符串校验同 edit_global）。
 
-- [ ] **Step 3.5: Commit**
+- [x] **Step 3.5: Commit**
 
 ```bash
 git add crates/desktop/src/settings_commands.rs
@@ -251,7 +251,7 @@ git commit -m "feat(desktop): polish_global_shortcut 热重载 + apply_config_va
 - Modify: `crates/desktop/frontend/src/pages/Result/index.tsx`（polish-now 按钮 onClick L348-352、新增 polishNow useCallback + listen useEffect）
 - Modify: `crates/desktop/frontend/src/pages/Settings/GeneralPanel.tsx`（快捷键卡片 L154-156 语音编辑行后）
 
-- [ ] **Step 4.1: Result/index.tsx 抽 polishNow + 按钮 onClick 复用**
+- [x] **Step 4.1: Result/index.tsx 抽 polishNow + 按钮 onClick 复用**
 
 把 polish-now 按钮（L348-352）内联的 onClick 逻辑抽成 `polishNow` useCallback（加 polishLoading 门控 + trim 判空）。在 `toggleEdit` 声明区附近（global-edit-toggle useEffect 之前）加：
 
@@ -269,7 +269,7 @@ git commit -m "feat(desktop): polish_global_shortcut 热重载 + apply_config_va
 
 polish-now 按钮 onClick 改为 `onClick: polishNow`（去掉内联 async）。
 
-- [ ] **Step 4.2: Result/index.tsx 加 global-polish-trigger listen**
+- [x] **Step 4.2: Result/index.tsx 加 global-polish-trigger listen**
 
 在 `global-edit-toggle` useEffect（L254-262）之后加独立 useEffect（规避 TDZ，同 global-edit-toggle）：
 
@@ -288,7 +288,7 @@ polish-now 按钮 onClick 改为 `onClick: polishNow`（去掉内联 async）。
   }, [polishNow]);
 ```
 
-- [ ] **Step 4.3: GeneralPanel.tsx 加「立即润色」行**
+- [x] **Step 4.3: GeneralPanel.tsx 加「立即润色」行**
 
 在「语音编辑」行（L154-156）之后插入（快捷键卡片内，`</Card>` 之前）：
 
@@ -298,12 +298,12 @@ polish-now 按钮 onClick 改为 `onClick: polishNow`（去掉内联 async）。
         </Row>
 ```
 
-- [ ] **Step 4.4: 验证前端 build**
+- [x] **Step 4.4: 验证前端 build**
 
 Run: `npm --prefix crates/desktop/frontend run build`
 Expected: tsc + vite 通过，新 bundle 生成（含 polishNow + listen + 立即润色行）。
 
-- [ ] **Step 4.5: Commit**
+- [x] **Step 4.5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Result/index.tsx crates/desktop/frontend/src/pages/Settings/GeneralPanel.tsx crates/desktop/dist
@@ -318,29 +318,29 @@ git commit -m "feat(desktop): 前端 polishNow 抽函数 + global-polish-trigger
 - Modify: `docs/architecture.md`（L152 result_window 描述、L298 设置卡片清单 + handler 描述）
 - Modify: 本 plan（checkbox 全勾）
 
-- [ ] **Step 5.1: architecture.md result_window 描述加全局润色入口**
+- [x] **Step 5.1: architecture.md result_window 描述加全局润色入口**
 
 L152 `result_window` 行的工具栏/编辑入口描述里，在全局 `edit_global_shortcut` 之后补全局润色入口：
 
 > + 全局 `polish_global_shortcut` 默认 CmdOrCtrl+Shift+L（任意应用聚焦时 show 结果窗**不聚焦** + 触发 `polish_now` 立即润色，复用前端 `polishNow`：空文本静默、polishLoading 幂等）
 
-- [ ] **Step 5.2: architecture.md 设置卡片清单 + handler 描述**
+- [x] **Step 5.2: architecture.md 设置卡片清单 + handler 描述**
 
 L298：
 - 快捷键卡片清单「语音识别/语音编辑/剪贴板浮窗」→「语音识别/语音编辑/立即润色/剪贴板浮窗」
 - `set_config` 热重载快捷键列表 `asr_shortcut / clipboard_shortcut / edit_global_shortcut` → 加 `/ polish_global_shortcut`；handler 描述补 `register_polish_global_shortcut`（handler 调 `trigger_global_polish`：show 结果窗不聚焦 + emit `global-polish-trigger` → 前端 `polishNow`）；save 字段 `26 字段` → `27 字段`。
 
-- [ ] **Step 5.3: 全量编译 + 测试**
+- [x] **Step 5.3: 全量编译 + 测试**
 
 Run: `cargo check -p octopus-desktop -p octopus-infra && cargo test -p octopus-infra -p octopus-desktop`
 Expected: 0 error，单测全绿。
 
-- [ ] **Step 5.4: 前端最终 build**
+- [x] **Step 5.4: 前端最终 build**
 
 Run: `npm --prefix crates/desktop/frontend run build`
 Expected: 通过。
 
-- [ ] **Step 5.5: 本 plan checkbox 全勾 + Commit 文档**
+- [x] **Step 5.5: 本 plan checkbox 全勾 + Commit 文档**
 
 ```bash
 git add docs/architecture.md docs/superpowers/plans/2026-06-28-polish-global-shortcut.md
