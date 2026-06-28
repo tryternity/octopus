@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Mic, Volume2, Sparkles, Keyboard, ClipboardList } from "lucide-react";
+import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Layers } from "lucide-react";
 import type { ConfigResponse } from "./index";
 
 interface GeneralPanelProps {
@@ -84,7 +84,7 @@ function ShortcutButton({ shortcut, capturing, onClick }: { shortcut: string; ca
 const selectClass = "px-2.5 py-1.5 border border-border rounded-md text-sm bg-background min-w-[160px] max-w-[200px] cursor-pointer hover:border-foreground/30 transition-colors outline-none focus:border-voice/40";
 
 export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig }: GeneralPanelProps) {
-  const { config: cfg, asr_engines, llm_models, prompts, active_prompt_id, microphones } = configResp;
+  const { config: cfg, asr_engines, llm_models, ocr_models, prompts, active_prompt_id, microphones } = configResp;
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
 
   const toggleVal = useCallback(async (key: string) => {
@@ -144,6 +144,26 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         </Row>
       </Card>
 
+      <Card icon={Layers} title="模型选择">
+        <Row label="语音识别模型" effect="下次录音">
+          <select className={selectClass} value={cfg.asr_engine as string} onChange={(e) => setVal("asr_engine", e.target.value)}>
+            {asr_engines.map((e) => <option key={e.name} value={e.name}>{e.label}</option>)}
+          </select>
+        </Row>
+        <Row label="润色模型" effect="立即">
+          <select className={selectClass}
+            value={llm_models.find((m) => m.current)?.name ?? ""}
+            onChange={(e) => setVal("polish_llm", e.target.value)}>
+            {llm_models.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
+          </select>
+        </Row>
+        <Row label="OCR 模型" effect="下次启动" hint="截图识别用，改后重启生效">
+          <select className={selectClass} value={cfg.ocr_model as string} onChange={(e) => setVal("ocr_model", e.target.value)}>
+            {ocr_models.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
+          </select>
+        </Row>
+      </Card>
+
       <Card icon={Keyboard} title="快捷键">
         <Row label="语音识别" effect="立即">
           <ShortcutButton shortcut={cfg.asr_shortcut as string} capturing={capturingKey === "asr_shortcut"} onClick={() => startShortcutCapture("asr_shortcut")} />
@@ -160,11 +180,6 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
       </Card>
 
       <Card icon={Volume2} title="语音识别">
-        <Row label="识别引擎" effect="下次录音">
-          <select className={selectClass} value={cfg.asr_engine as string} onChange={(e) => setVal("asr_engine", e.target.value)}>
-            {asr_engines.map((e) => <option key={e.name} value={e.name}>{e.label}</option>)}
-          </select>
-        </Row>
         <Row label="识别语言" effect="下次录音">
           <select className={selectClass} value={cfg.language as string} onChange={(e) => setVal("language", e.target.value)}>
             <option value="auto">自动</option><option value="zh">中文</option><option value="en">英语</option>
@@ -187,13 +202,6 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
       </Card>
 
       <Card icon={Sparkles} title="语音识别润色">
-        <Row label="润色模型" effect="立即">
-          <select className={selectClass}
-            value={llm_models.find((m) => m.current)?.name ?? ""}
-            onChange={(e) => setVal("polish_llm", e.target.value)}>
-            {llm_models.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
-          </select>
-        </Row>
         <Row label="润色模式" effect="立即">
           <select className={selectClass} value={cfg.polish_mode as number} onChange={(e) => setVal("polish_mode", parseInt(e.target.value))}>
             <option value={0}>关闭</option><option value={1}>仅最终润色</option><option value={2}>中间 + 最终</option>
