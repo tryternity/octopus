@@ -321,6 +321,7 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
             "polish_llm" => cfg.polish_llm = value,
             "download_mirror" => cfg.download_mirror = value,
             "clipboard_shortcut" => cfg.clipboard_shortcut = value,
+            "edit_global_shortcut" => cfg.edit_global_shortcut = value,
             // i64 字段
             "clipboard_max_items" => { if let Ok(v) = value.parse() { cfg.clipboard_max_items = v; } }
             "clipboard_max_age_days" => { if let Ok(v) = value.parse() { cfg.clipboard_max_age_days = v; } }
@@ -351,7 +352,7 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
     Ok(cfg)
 }
 
-/// 全量写入应用配置（22 字段 ON CONFLICT DO UPDATE）。set_config / yaml 迁移用。
+/// 全量写入应用配置（26 字段 ON CONFLICT DO UPDATE）。set_config / yaml 迁移用。
 /// 仅更新 config_value，保留 description + category（不同于 INSERT OR REPLACE 会清空非指定列）。
 pub fn save_app_config(cfg: &crate::config::AppConfig) -> Result<()> {
     ensure_db()?;
@@ -365,7 +366,7 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         PolishMode::FinalOnly => 1,
         PolishMode::Intermediate => 2,
     };
-    let fields: [(&str, String); 25] = [
+    let fields: [(&str, String); 26] = [
         ("engine_mode", cfg.engine_mode.clone()),
         ("remote_url", cfg.remote_url.clone()),
         ("grpc_endpoint", cfg.grpc_endpoint.clone()),
@@ -389,6 +390,7 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         ("denoise_mode", cfg.denoise_mode.to_string()),
         ("download_mirror", cfg.download_mirror.clone()),
         ("clipboard_shortcut", cfg.clipboard_shortcut.clone()),
+        ("edit_global_shortcut", cfg.edit_global_shortcut.clone()),
         ("clipboard_max_items", cfg.clipboard_max_items.to_string()),
         ("clipboard_max_age_days", cfg.clipboard_max_age_days.to_string()),
     ];

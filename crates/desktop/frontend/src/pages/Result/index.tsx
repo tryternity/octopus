@@ -248,6 +248,19 @@ function Result() {
     editingRef.current ? commitEdit() : enterEdit();
   }, [commitEdit, enterEdit]);
 
+  // 全局编辑快捷键（edit_global_shortcut）：后端唤起窗口+focus 后 emit 此事件，
+  // 复用 toggleEdit——未编辑则进入、已编辑则保存，与窗口内 Cmd+Enter 同语义。
+  // 独立 useEffect（而非并入上面的事件数组）：toggleEdit 在此声明，前置使用会触发 TS2448。
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    listen("global-edit-toggle", () => toggleEdit()).then((fn) => {
+      if (cancelled) fn();
+      else unlisten = fn;
+    });
+    return () => { cancelled = true; unlisten?.(); };
+  }, [toggleEdit]);
+
   const updateEditBuffer = useCallback(() => {
     if (!editingRef.current) return;
     invoke("update_edit_buffer", { text: textRef.current?.innerText ?? "" });
@@ -257,8 +270,10 @@ function Result() {
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
+        // 分层：弹窗 > 编辑态 > 录音。编辑态 ESC 放弃编辑（不保存，还原原文），
+        // 再按一次 ESC（此时已退出编辑态）才放弃录音。
         if (popupType) { setPopupType(null); return; }
-        if (editingRef.current) { commitEdit(); return; }
+        if (editingRef.current) { cancelEdit(); return; }
         invoke("cancel_recording");
         win.hide();
         return;
@@ -271,7 +286,7 @@ function Result() {
     };
     document.addEventListener("keydown", onKeyDown);
     return () => document.removeEventListener("keydown", onKeyDown);
-  }, [popupType, toolbarState.edit_shortcut, toggleEdit, win, commitEdit]);
+  }, [popupType, toolbarState.edit_shortcut, toggleEdit, win, cancelEdit]);
 
   // ── Popup close on outside click ──
   useEffect(() => {

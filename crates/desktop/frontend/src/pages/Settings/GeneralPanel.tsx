@@ -145,11 +145,11 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         <Row label="激活 / 关闭" effect="立即">
           <ShortcutButton shortcut={cfg.asr_shortcut as string} capturing={capturingKey === "asr_shortcut"} onClick={() => startShortcutCapture("asr_shortcut")} />
         </Row>
-        <Row label="编辑模式" effect="立即" hint="结果窗聚焦时进入编辑">
-          <ShortcutButton shortcut={cfg.edit_shortcut as string} capturing={capturingKey === "edit_shortcut"} onClick={() => startShortcutCapture("edit_shortcut")} />
-        </Row>
         <Row label="剪贴板浮窗" effect="立即">
           <ShortcutButton shortcut={cfg.clipboard_shortcut as string} capturing={capturingKey === "clipboard_shortcut"} onClick={() => startShortcutCapture("clipboard_shortcut")} />
+        </Row>
+        <Row label="全局编辑" effect="立即" hint="任意应用聚焦时唤起结果窗并编辑">
+          <ShortcutButton shortcut={cfg.edit_global_shortcut as string} capturing={capturingKey === "edit_global_shortcut"} onClick={() => startShortcutCapture("edit_global_shortcut")} />
         </Row>
         <Row label="工具栏自动隐藏" effect="立即" hint="关闭后始终显示">
           <Toggle on={cfg.hide_toolbar as boolean} onClick={() => toggleVal("hide_toolbar")} />

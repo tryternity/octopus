@@ -144,6 +144,41 @@ pub fn clear_result(app: &tauri::AppHandle) {
     }
 }
 
+/// 全局编辑快捷键被按下：唤起结果窗（show + set_focus）并通知前端 toggle 编辑态。
+///
+/// 复用前端 toggleEdit：未编辑则进入编辑（enterEdit 内部已对空文本 return，
+/// 无识别结果时只唤起窗口不进编辑），已编辑则保存——与窗口内 edit_shortcut
+/// （Cmd+Enter）语义一致。全局键相比窗口内键，只多了「跨应用唤起 + set_focus」。
+pub fn trigger_global_edit(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.emit("global-edit-toggle", ());
+    }
+}
+
+/// 注册全局编辑快捷键。与 shortcut::register_shortcut 的区别：handler 调用
+/// trigger_global_edit（而非 coordinator.toggle）。set_config 热重载时复用此函数。
+pub fn register_edit_global_shortcut(
+    app: &tauri::AppHandle,
+    shortcut_str: &str,
+) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+    let shortcut: Shortcut = shortcut_str
+        .parse()
+        .map_err(|e| format!("Failed to parse shortcut '{}': {}", shortcut_str, e))?;
+    let app_handle = app.clone();
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |_ah, _scut, event| {
+            if event.state() == ShortcutState::Pressed {
+                trigger_global_edit(&app_handle);
+            }
+        })
+        .map_err(|e| format!("Failed to register shortcut '{}': {}", shortcut_str, e))?;
+    debug!("Registered global edit shortcut: {}", shortcut_str);
+    Ok(())
+}
+
 /// 隐藏结果窗口（不清空内容，不归档）。
 pub fn hide_result(app: &tauri::AppHandle) {
     if WINDOW_READY.load(Ordering::Relaxed) {

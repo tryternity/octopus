@@ -383,6 +383,11 @@ pub fn run() {
                 log::error!("Failed to register shortcut: {}. Use tray menu instead.", e);
             }
 
+            // 6.1 Register global edit shortcut（跨应用唤起结果窗 + toggle 编辑）
+            if let Err(e) = result_window::register_edit_global_shortcut(app.handle(), &config.edit_global_shortcut) {
+                log::error!("Failed to register global edit shortcut: {}", e);
+            }
+
             info!("octopus-desktop initialized");
             Ok(())
         })

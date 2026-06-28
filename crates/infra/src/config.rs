@@ -146,6 +146,13 @@ pub struct AppConfig {
     #[serde(default = "default_edit_shortcut")]
     pub edit_shortcut: String,
 
+    /// 全局编辑快捷键——任意应用聚焦时唤起结果窗并进入/保存编辑（toggle，复用窗口内编辑语义）。
+    /// 与 edit_shortcut（窗口内、仅结果窗聚焦时生效）并存：edit_global 负责跨应用唤起+toggle，
+    /// edit_shortcut 负责结果窗已聚焦时的编辑 toggle（用户明确要求保留不动）。
+    /// Tauri Accelerator 格式，默认 "CmdOrCtrl+Shift+E"（与 asr_shortcut 同系列，不与 Alt+V/Cmd+Enter 冲突）。
+    #[serde(default = "default_edit_global_shortcut")]
+    pub edit_global_shortcut: String,
+
     /// HF 模型下载镜像 host（如 `https://hf-mirror.com`）。空 = 官方源 huggingface.co。
     /// cli `download --mirror` 临时覆盖此值；优先级 `--mirror` > 此字段 > 官方源。
     #[serde(default = "default_download_mirror")]
@@ -217,6 +224,9 @@ fn default_denoise_mode() -> u8 {
 fn default_edit_shortcut() -> String {
     "Cmd+Enter".into()
 }
+fn default_edit_global_shortcut() -> String {
+    "CmdOrCtrl+Shift+E".into()
+}
 fn default_download_mirror() -> String {
     String::new()
 }
@@ -258,6 +268,7 @@ impl Default for AppConfig {
             hide_toolbar: default_hide_toolbar(),
             denoise_mode: default_denoise_mode(),
             edit_shortcut: default_edit_shortcut(),
+            edit_global_shortcut: default_edit_global_shortcut(),
             download_mirror: default_download_mirror(),
             clipboard_shortcut: default_clipboard_shortcut(),
             clipboard_max_items: default_clipboard_max_items(),
@@ -306,6 +317,7 @@ mod tests {
         assert!(!cfg.asr_correct);
         assert_eq!(cfg.denoise_mode, 1);
         assert_eq!(cfg.edit_shortcut, "Cmd+Enter");
+        assert_eq!(cfg.edit_global_shortcut, "CmdOrCtrl+Shift+E");
         assert_eq!(cfg.segment_silence, 400.0);
     }
 
