@@ -3,6 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import Result from "@/pages/Result";
 import Settings from "@/pages/Settings";
 import Clipboard from "@/pages/Clipboard";
+import Screenshot from "@/pages/Screenshot";
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -48,6 +49,8 @@ function App() {
             return <Settings />;
           case "clipboard_window":
             return <Clipboard />;
+          case "screenshot_window":
+            return <Screenshot />;
           default:
             return (
               <div className="p-4 text-foreground">
