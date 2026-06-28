@@ -307,6 +307,27 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 | **一期** | 基础截图：xcap 截主屏 + Canvas 框选 + 8 手柄调整 + Enter 确认 → 剪贴板历史 | 无 |
 | **1.1 期** | 多显示器支持：每个显示器独立窗口，鼠标在哪屏截哪屏 | ✅ 已实现 |
 | **二期** | 标注工具栏（矩形/箭头/文字/撤销），选区内 Canvas 绘制 | ✅ 已实现 |
+
+### 二期实现详情
+
+**标注工具**：
+- **矩形**：拖拽绘制红色矩形框（`#ef4444`）
+- **箭头**：拖拽绘制红色箭头（起点→终点 + 三角头部）
+- **文字**：点击弹 textarea 输入，失焦/点击其他位置确认
+- **撤销**：Cmd+Z / 工具栏按钮，删除最后一个标注
+
+**标注交互**：
+- 任何工具状态下优先检测已有标注命中（bounding box hit test）
+- 选中标注蓝色虚线高亮，可拖动移动（delta 偏移所有坐标）
+- 悬停标注显示 move 光标
+- 标注绘制限制在选区内（Canvas `clip()`）
+
+**确认合成**（`confirm_screenshot_with_data`）：
+- 前端在临时 Canvas 上合成：原图 1:1（`naturalWidth × naturalHeight`）+ 标注
+- 标注坐标/线宽/字号按 `scale = naturalWidth / innerWidth` 放大
+- 裁剪选区后 `toDataURL("image/png")` → base64 传给后端
+- 后端跳过裁剪，直接解码 → SHA-256 去重 → WebP BLOB → DB + 剪贴板
+- 保证截图全分辨率 + 标注比例正确
 | **三期** | 滚动截图（自动滚动 + 逐行像素匹配拼接） | 一期 |
 
 ## 9. 风险

@@ -601,3 +601,20 @@ xcap 声明了 `[workspace]`，导致 octopus workspace 冲突。解决：`exclu
 - 撤销：Cmd+Z / 工具栏按钮，删除最后一个标注
 - 确认时临时 Canvas 合成标注到截图（坐标 × dpr 转物理像素）→ 替换底图 → 裁剪
 - 工具栏是 DOM 元素浮在 Canvas 上（选区下方，空间不够时放上方），白色圆角 + 阴影
+
+### 偏差 10：标注重影 + 消失 + 不能移动 + 分辨率/比例问题（多轮修复）
+
+**问题 1 — 文字重影**：文字标注同时在 Canvas（textDraft）和 DOM（textarea）渲染，两层叠加。修复：Canvas 不画 textDraft，只靠 DOM textarea 显示。
+
+**问题 2 — 文字标注消失**：文字工具激活时点击其他地方，Canvas mousedown 创建新空 textDraft 覆盖旧值。修复：mousedown 开头检查 textDraftRef，有未保存文字先写入 annotations。用 ref（非 state）存最新值避免闭包陷阱。
+
+**问题 3 — 标注框不能移动**：标注选中+移动只在 tool=none 时生效。修复：任何工具状态下优先 hitTestAnnotation，命中后进入拖动模式。
+
+**问题 4 — 截图分辨率低**：合成 Canvas 用 cssW*dpr 而非原图 naturalWidth。修复：临时 Canvas 用原图 naturalWidth/Height（全分辨率），`drawImage(bg, 0, 0)` 1:1 无缩放。
+
+**问题 5 — 标注变小**：合成到原图分辨率时标注的 lineWidth(3px) 和 font(16px) 没缩放。修复：新增 `drawAnnotationScaled` 函数，坐标/线宽/字号/箭头头部全部 × scale（`scale = natW / cssW`）。
+
+### 偏差 11：confirm_screenshot_with_data（前端合成替代后端裁剪）
+
+原设计：前端传坐标 → 后端从 SCREENSHOT_DATA 裁剪。但标注在前端 Canvas 上，后端无法感知。
+改为：前端完整合成（原图 + 标注 → 裁剪选区 → base64 PNG）→ 新增 `confirm_screenshot_with_data` 命令接收最终 PNG → 后端跳过裁剪直接入库。
