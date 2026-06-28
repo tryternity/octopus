@@ -66,5 +66,5 @@ ASR 多句/多段文本拼接的句间分隔符，全 workspace 原硬编码中�
 
 ## 不在范围
 
-- coordinator/desktop 侧历史 plan（`stage2c2.md`/`vad-segmented-rehome.md`）里的「逗号拼接」
+- coordinator/desktop 侧历史 plan（已归档到 `2026-06-25-archived-plan.md` 的 `asr-pipeline-stage2c2` / `vad-segmented-rehome`）里的「逗号拼接」
   描述为已合并的历史实施记录，按惯例不回溯修改；本 spec 作为现状设计文档。

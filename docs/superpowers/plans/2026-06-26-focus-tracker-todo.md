@@ -10,7 +10,7 @@
 
 **Tech Stack:** Rust（objc / windows / x11rb crate）+ enigo + osascript
 
-**Spec:** `docs/superpowers/specs/2026-06-26-focus-tracker-design.md`
+**Spec:** `docs/superpowers/specs/2026-06-26-focus-tracker-design-todo.md`
 
 ---
 
