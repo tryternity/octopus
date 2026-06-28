@@ -119,7 +119,73 @@ pub fn show_screenshot_window(label: String, app_handle: tauri::AppHandle) {
     }
 }
 
-/// 前端 mount 后调用，拉取当前窗口的截图数据
+/// 前端合成标注+裁剪后，直接发送最终 PNG base64（含标注）
+#[tauri::command]
+pub async fn confirm_screenshot_with_data(
+    label: String,
+    png_base64: String,
+    width: u32,
+    height: u32,
+    app_handle: tauri::AppHandle,
+    handle: State<'_, std::sync::Arc<ClipboardHandle>>,
+) -> Result<(), String> {
+    // 解码 base64 → PNG bytes
+    let png_bytes = general_purpose::STANDARD.decode(&png_base64)
+        .map_err(|e| format!("base64 解码失败: {}", e))?;
+
+    // 清空所有暂存
+    ALL_CAPTURES.lock().unwrap().clear();
+    PENDING_IMAGES.lock().unwrap().clear();
+
+    // SHA-256 去重
+    let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
+
+    let existing = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::find_by_content_hash(conn, &hash)
+    }).map_err(|e| e.to_string())?;
+
+    if let Some(id) = existing {
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::touch_created_at(conn, id)
+        }).map_err(|e| e.to_string())?;
+    } else {
+        let img = ::image::load_from_memory(&png_bytes)
+            .map_err(|e| format!("解码失败: {:?}", e))?;
+        let crop_w = img.width();
+        let crop_h = img.height();
+        let encoded = octopus_clipboard::image::encode_to_webp(&png_bytes, crop_w, crop_h)
+            .map_err(|e| format!("WebP 编码失败: {}", e))?;
+
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::insert_image_data(
+                conn, &hash, &encoded.webp_blob, &encoded.thumb_blob,
+                crop_w as i64, crop_h as i64,
+            )
+        }).map_err(|e| e.to_string())?;
+
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
+                id: octopus_clipboard::store::chrono_millis(),
+                item_type: octopus_clipboard::ItemType::Image,
+                content: hash.clone(),
+                search_text: String::new(),
+                created_at: octopus_clipboard::store::iso_now(),
+                blob_hash: Some(hash),
+                width: Some(crop_w as i64),
+                height: Some(crop_h as i64),
+                has_thumbnail: Some(1),
+                file_count: None,
+                is_rich: false,
+            })
+        }).map_err(|e| e.to_string())?;
+    }
+
+    handle.write_image(&png_bytes).map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("clipboard://changed", ());
+    close_all_screenshot_windows(&app_handle);
+
+    Ok(())
+}
 #[tauri::command]
 pub fn get_screenshot_image(label: String) -> Result<serde_json::Value, String> {
     // 取出对应的 base64

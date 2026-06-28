@@ -34,6 +34,7 @@ export default function Screenshot() {
   const [tool, setTool] = useState<Tool>("none");
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; val: string } | null>(null);
+  const textDraftRef = useRef<{ x: number; y: number; val: string } | null>(null);
   const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
   const annMoveStartRef = useRef<{ idx: number; mx: number; my: number; anns: Annotation[] } | null>(null);
 
@@ -100,14 +101,7 @@ export default function Screenshot() {
       if (drawingRef.current) {
         drawAnnotation(ctx, drawingRef.current);
       }
-      if (textDraft) {
-        // 已在 annotations 中的文字标注也会走 drawAnnotation
-        // textDraft 只画正在输入的（未确认）
-        ctx.font = "16px -apple-system, sans-serif";
-        ctx.fillStyle = "#ef4444";
-        ctx.textBaseline = "top";
-        ctx.fillText(textDraft.val, textDraft.x, textDraft.y);
-      }
+      // textDraft 不在 Canvas 画（DOM textarea 已显示），避免重影
 
       ctx.restore();
 
@@ -175,6 +169,43 @@ export default function Screenshot() {
     }
   }
 
+  // 合成到原图分辨率时用——坐标、线宽、字号全部 × scale
+  function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotation, scale: number) {
+    ctx.strokeStyle = "#ef4444";
+    ctx.fillStyle = "#ef4444";
+    ctx.lineWidth = 3 * scale;
+
+    if (ann.type === "rect") {
+      const x = Math.min(ann.x1, ann.x2) * scale;
+      const y = Math.min(ann.y1, ann.y2) * scale;
+      const w = Math.abs(ann.x2 - ann.x1) * scale;
+      const h = Math.abs(ann.y2 - ann.y1) * scale;
+      ctx.strokeRect(x, y, w, h);
+    } else if (ann.type === "arrow") {
+      const ax1 = ann.x1 * scale, ay1 = ann.y1 * scale;
+      const ax2 = ann.x2 * scale, ay2 = ann.y2 * scale;
+      const dx = ax2 - ax1, dy = ay2 - ay1;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 5 * scale) return;
+      ctx.beginPath();
+      ctx.moveTo(ax1, ay1);
+      ctx.lineTo(ax2, ay2);
+      ctx.stroke();
+      const angle = Math.atan2(dy, dx);
+      const headLen = 12 * scale;
+      ctx.beginPath();
+      ctx.moveTo(ax2, ay2);
+      ctx.lineTo(ax2 - headLen * Math.cos(angle - Math.PI / 6), ay2 - headLen * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(ax2 - headLen * Math.cos(angle + Math.PI / 6), ay2 - headLen * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fill();
+    } else if (ann.type === "text" && ann.text) {
+      ctx.font = `${16 * scale}px -apple-system, sans-serif`;
+      ctx.textBaseline = "top";
+      ctx.fillText(ann.text, ann.x1 * scale, ann.y1 * scale);
+    }
+  }
+
   function getHandles(s: Selection): [number, number][] {
     return [
       [s.x, s.y], [s.x + s.w / 2, s.y], [s.x + s.w, s.y],
@@ -227,10 +258,38 @@ export default function Screenshot() {
     const my = e.clientY;
     startPtRef.current = { x: mx, y: my };
 
-    // 标注工具激活时，在选区内绘制
+    // 文字标注正在输入时，点击其他地方 = 确认当前文字
+    if (textDraftRef.current) {
+      const draft = textDraftRef.current;
+      if (draft.val.trim()) {
+        setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val }]);
+      }
+      textDraftRef.current = null;
+      setTextDraft(null);
+      // 如果点击的还是选区内 + 文字工具，开新的文字输入
+      if (tool === "text" && sel && inSelection(mx, my)) {
+        setTextDraft({ x: mx, y: my, val: "" });
+        textDraftRef.current = { x: mx, y: my, val: "" };
+        setTimeout(() => textInputRef.current?.focus(), 10);
+      }
+      return;
+    }
+
+    // 任何工具状态下：优先检测是否点中了已有标注（选中+拖动）
+    if (sel && inSelection(mx, my)) {
+      const annIdx = hitTestAnnotation(mx, my);
+      if (annIdx !== null) {
+        setSelectedAnn(annIdx);
+        annMoveStartRef.current = { idx: annIdx, mx, my, anns: [...annotations] };
+        return;
+      }
+    }
+
+    // 标注工具激活时，在选区内绘制新标注
     if (tool !== "none" && sel && inSelection(mx, my)) {
       if (tool === "text") {
         setTextDraft({ x: mx, y: my, val: "" });
+        textDraftRef.current = { x: mx, y: my, val: "" };
         setTimeout(() => textInputRef.current?.focus(), 10);
         return;
       }
@@ -238,14 +297,8 @@ export default function Screenshot() {
       return;
     }
 
-    // tool 为 none 时：检测是否点击了已有标注（可拖动）
+    // tool 为 none 时：选区内空白点击取消选中
     if (tool === "none" && sel && inSelection(mx, my)) {
-      const annIdx = hitTestAnnotation(mx, my);
-      if (annIdx !== null) {
-        setSelectedAnn(annIdx);
-        annMoveStartRef.current = { idx: annIdx, mx, my, anns: [...annotations] };
-        return;
-      }
       setSelectedAnn(null);
     }
 
@@ -298,17 +351,22 @@ export default function Screenshot() {
     }
 
     if (mode === "idle" || mode === "selected") {
-      const handle = hitTest(mx, my);
-      if (handle) {
-        const cursors: Record<string, string> = {
-          nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize",
-          n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
-        };
-        (e.currentTarget as HTMLCanvasElement).style.cursor = tool !== "none" ? "crosshair" : (cursors[handle] || "crosshair");
-      } else if (sel && inSelection(mx, my)) {
-        (e.currentTarget as HTMLCanvasElement).style.cursor = tool !== "none" ? "crosshair" : "move";
+      // 悬停在标注上显示 move 光标
+      if (sel && inSelection(mx, my) && hitTestAnnotation(mx, my) !== null) {
+        (e.currentTarget as HTMLCanvasElement).style.cursor = "move";
       } else {
-        (e.currentTarget as HTMLCanvasElement).style.cursor = "crosshair";
+        const handle = hitTest(mx, my);
+        if (handle) {
+          const cursors: Record<string, string> = {
+            nw: "nwse-resize", se: "nwse-resize", ne: "nesw-resize", sw: "nesw-resize",
+            n: "ns-resize", s: "ns-resize", e: "ew-resize", w: "ew-resize",
+          };
+          (e.currentTarget as HTMLCanvasElement).style.cursor = tool !== "none" ? "crosshair" : (cursors[handle] || "crosshair");
+        } else if (sel && inSelection(mx, my)) {
+          (e.currentTarget as HTMLCanvasElement).style.cursor = tool !== "none" ? "crosshair" : "move";
+        } else {
+          (e.currentTarget as HTMLCanvasElement).style.cursor = "crosshair";
+        }
       }
     }
 
@@ -377,47 +435,44 @@ export default function Screenshot() {
   }
 
   function doConfirm() {
-    if (!sel) return;
-    // 合成标注到 Canvas 并导出为带标注的 PNG → 传给后端裁剪
-    // 后端裁剪不含标注（标注在选区内绘制），
-    // 需要把标注合成进去。用临时 canvas 合成。
-    if (annotations.length > 0 && bgImgRef.current && sel) {
-      const tmpCanvas = document.createElement("canvas");
-      tmpCanvas.width = bgImgRef.current.naturalWidth;
-      tmpCanvas.height = bgImgRef.current.naturalHeight;
-      const tmpCtx = tmpCanvas.getContext("2d")!;
-      tmpCtx.drawImage(bgImgRef.current, 0, 0);
-      // 标注坐标是 CSS 像素，需要乘 dpr 转物理
-      for (const ann of annotations) {
-        drawAnnotation(tmpCtx, {
-          ...ann,
-          x1: ann.x1 * dpr, y1: ann.y1 * dpr,
-          x2: ann.x2 * dpr, y2: ann.y2 * dpr,
-        });
-      }
-      // 标注合成后的全图存回 bgImgRef，后端裁剪时就会包含标注
-      const dataUrl = tmpCanvas.toDataURL("image/png");
-      const newImg = new Image();
-      newImg.onload = () => {
-        bgImgRef.current = newImg;
-        draw();
-        // 实际发送裁剪请求
-        sendConfirm();
-      };
-      newImg.src = dataUrl;
-    } else {
-      sendConfirm();
-    }
-  }
+    if (!sel || !bgImgRef.current) return;
+    const bg = bgImgRef.current;
+    const cssW = window.innerWidth;
+    const natW = bg.naturalWidth;
+    const natH = bg.naturalHeight;
+    const scale = natW / cssW; // 原图/显示比例（标注线宽和字号需放大）
 
-  function sendConfirm() {
-    if (!sel) return;
-    invoke("confirm_screenshot", {
+    // 临时 Canvas = 原图原始分辨率，1:1 无缩放
+    const tmpCanvas = document.createElement("canvas");
+    tmpCanvas.width = natW;
+    tmpCanvas.height = natH;
+    const tmpCtx = tmpCanvas.getContext("2d")!;
+    tmpCtx.drawImage(bg, 0, 0);
+
+    // 标注：坐标 × scale 转原图像素，线宽和字号也 × scale
+    for (const ann of annotations) {
+      drawAnnotationScaled(tmpCtx, ann, scale);
+    }
+
+    // 裁剪选区（CSS 坐标 × scale → 原图像素）
+    const px = Math.round(sel.x * scale);
+    const py = Math.round(sel.y * scale);
+    const pw = Math.round(sel.w * scale);
+    const ph = Math.round(sel.h * scale);
+    const croppedCanvas = document.createElement("canvas");
+    croppedCanvas.width = pw;
+    croppedCanvas.height = ph;
+    const croppedCtx = croppedCanvas.getContext("2d")!;
+    croppedCtx.drawImage(tmpCanvas, px, py, pw, ph, 0, 0, pw, ph);
+
+    // 转 base64 → 发送给后端
+    const dataUrl = croppedCanvas.toDataURL("image/png");
+    const base64 = dataUrl.split(",")[1];
+    invoke("confirm_screenshot_with_data", {
       label: winLabel,
-      x: Math.round(sel.x * dpr),
-      y: Math.round(sel.y * dpr),
-      w: Math.round(sel.w * dpr),
-      h: Math.round(sel.h * dpr),
+      pngBase64: base64,
+      width: pw,
+      height: ph,
     }).catch(() => {});
   }
 
@@ -461,14 +516,23 @@ export default function Screenshot() {
         <textarea
           ref={textInputRef}
           value={textDraft.val}
-          onChange={(e) => { setTextDraft({ ...textDraft, val: e.target.value }); draw(); }}
+          onChange={(e) => {
+            const updated = { ...textDraft, val: e.target.value };
+            textDraftRef.current = updated;
+            setTextDraft(updated);
+          }}
           onBlur={() => {
-            if (textDraft.val.trim()) {
-              setAnnotations([...annotations, { type: "text", x1: textDraft.x, y1: textDraft.y, x2: textDraft.x, y2: textDraft.y, text: textDraft.val }]);
+            const draft = textDraftRef.current;
+            if (draft && draft.val.trim()) {
+              setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val }]);
             }
+            textDraftRef.current = null;
             setTextDraft(null);
           }}
-          onKeyDown={(e) => { if (e.key === "Escape") { setTextDraft(null); } e.stopPropagation(); }}
+          onKeyDown={(e) => {
+            if (e.key === "Escape") { textDraftRef.current = null; setTextDraft(null); }
+            e.stopPropagation();
+          }}
           style={{
             position: "fixed",
             left: textDraft.x,

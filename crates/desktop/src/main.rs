@@ -230,6 +230,7 @@ pub fn run() {
             screenshot_commands::cancel_screenshot,
             screenshot_commands::get_screenshot_image,
             screenshot_commands::show_screenshot_window,
+            screenshot_commands::confirm_screenshot_with_data,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)

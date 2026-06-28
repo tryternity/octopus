@@ -61,22 +61,6 @@ pub fn capture_all_monitors() -> Result<Vec<ScreenCapture>> {
     Ok(captures)
 }
 
-/// 获取当前鼠标位置（macOS）。
-#[cfg(target_os = "macos")]
-fn get_mouse_position() -> Option<(i32, i32)> {
-    use core_graphics::event::CGEvent;
-    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).ok()?;
-    let event = CGEvent::new(source).ok()?;
-    let pt = event.location();
-    Some((pt.x as i32, pt.y as i32))
-}
-
-#[cfg(not(target_os = "macos"))]
-fn get_mouse_position() -> Option<(i32, i32)> {
-    None
-}
-
 /// 从全屏 RGBA 中裁剪矩形区域，返回 PNG bytes。
 /// 坐标为物理像素。
 pub fn crop_region(
