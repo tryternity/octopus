@@ -1005,10 +1005,11 @@ fn do_paste(
     let text_to_paste = text_to_paste.to_string();
     let polish_status_owned = polish_status.to_string();
 
+    let app_handle_emit = app_handle.clone();
     tauri::async_runtime::spawn(async move {
         let res = tokio::task::spawn_blocking(move || {
             // Write to clipboard history (source=asr). Failure doesn't block paste.
-            if let Err(e) = octopus_infra::db::with_db(|conn| {
+            let inserted = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::insert_asr_item(
                     conn,
                     &text_to_paste,
@@ -1019,8 +1020,17 @@ fn do_paste(
                         model: String::new(),
                     },
                 )
-            }) {
+            });
+            if let Err(e) = &inserted {
                 warn!("Clipboard history ASR insert failed: {}", e);
+            }
+
+            // ASR 记录已入库：主动广播 clipboard://changed。paste 路径写剪贴板时
+            // 会设 suppress_flag，watcher 的 on_clipboard_change 命中
+            // check_and_clear_suppress 后直接 return（不调 on_change 闭包），
+            // emit 不会自然触发——前端浮窗/设置面板收不到通知，ASR 记录无法即时渲染。
+            if inserted.is_ok() {
+                let _ = app_handle_emit.emit("clipboard://changed", ());
             }
 
             paste::paste(&text_to_paste, &clipboard_handle, &config)

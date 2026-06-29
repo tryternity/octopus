@@ -91,12 +91,16 @@ pub fn find_by_content_hash(conn: &Connection, blob_hash: &str) -> Result<Option
     }
 }
 
-/// 按文本内容去重查找。存在返回 id。
-pub fn find_by_text(conn: &Connection, text: &str) -> Result<Option<i64>> {
+/// 按文本内容 + 类型去重查找。存在返回 id。
+///
+/// 文件（paths_json）与文本（text）都走此函数，按各自 `item_type` 匹配——
+/// 旧实现硬编码 `item_type = 'text'`，导致文件去重（item_type='file'）永远
+/// 返回 None，连续复制同一文件会源源不断写入重复记录。
+pub fn find_by_text(conn: &Connection, text: &str, item_type: ItemType) -> Result<Option<i64>> {
     let mut stmt = conn.prepare(
-        "SELECT id FROM clipboard_history WHERE content = ? AND source = 'clipboard' AND item_type = 'text' LIMIT 1"
+        "SELECT id FROM clipboard_history WHERE content = ? AND source = 'clipboard' AND item_type = ? LIMIT 1"
     )?;
-    let row = stmt.query_row(params![text], |r| r.get::<_, i64>(0));
+    let row = stmt.query_row(params![text, item_type.as_str()], |r| r.get::<_, i64>(0));
     match row {
         Ok(id) => Ok(Some(id)),
         Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
@@ -131,7 +135,7 @@ pub fn query_history(conn: &Connection, filter: &QueryFilter) -> Result<Vec<Clip
                 transcription_id, polish_status, engine, model
          FROM clipboard_history
          {}
-         ORDER BY created_at DESC
+         ORDER BY created_at DESC, id DESC
          LIMIT ? OFFSET ?",
         if where_clause.is_empty() { String::new() } else { format!("WHERE {}", where_clause) }
     );
@@ -200,7 +204,7 @@ fn query_with_search(
          JOIN clipboard_history c ON c.id = f.rowid
          WHERE f.search_text MATCH ?
          {}
-         ORDER BY c.created_at DESC
+         ORDER BY c.created_at DESC, c.id DESC
          LIMIT ? OFFSET ?",
         if extra_where.is_empty() { String::new() } else { format!("AND {}", extra_where) }
     );
@@ -573,6 +577,24 @@ mod tests {
         conn.execute_batch(sql).unwrap();
         conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
         conn
+    }
+
+    #[test]
+    fn test_find_by_text_file_dedup() {
+        // 文件去重：find_by_text 按 ItemType 匹配（回归 v2 审计 1.3——
+        // 旧实现硬编码 item_type='text'，文件去重永远 miss，连续复制同文件写重复记录）
+        let conn = open_test_db();
+        let paths_json = r#"["/tmp/a.txt"]"#;
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 9200, item_type: ItemType::File, content: paths_json.into(),
+            search_text: "/tmp/a.txt".into(), created_at: iso_now(),
+            blob_hash: None, width: None, height: None, has_thumbnail: None,
+            file_count: Some(1), is_rich: false,
+        }).unwrap();
+        // 文件类型能查到（修复后按 ItemType::File 匹配）
+        assert_eq!(find_by_text(&conn, paths_json, ItemType::File).unwrap(), Some(9200));
+        // 文本类型查不到（旧 bug 下文件走 text 查询恒 None）
+        assert_eq!(find_by_text(&conn, paths_json, ItemType::Text).unwrap(), None);
     }
 
     #[test]

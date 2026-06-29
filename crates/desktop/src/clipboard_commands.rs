@@ -357,7 +357,13 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
     }
     #[cfg(target_os = "windows")]
     {
-        std::process::Command::new("explorer").arg(path).spawn()
+        // explorer <file> 只在资源管理器里「定位并选中」文件，不会用默认程序打开
+        // （与 macOS `open` / Linux `xdg-open` 不一致）；改用 cmd /c start 调起默认
+        // 关联程序。"" 是 start 的窗口标题占位，不可省——否则含空格/特殊字符的路径
+        // 会被 start 误当作标题。注：此 Windows 分支未经本机编译/运行验证。
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", path.as_str()])
+            .spawn()
             .map_err(|e| e.to_string())?;
     }
     #[cfg(target_os = "linux")]

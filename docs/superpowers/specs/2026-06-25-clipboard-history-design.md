@@ -157,6 +157,8 @@ on_clipboard_change()
     前端 formatFilePaths 显示用 decodeURIComponent；后端 open_file_item 用 decode_file_uri（percent-encoding）
 ```
 
+**`open_file_item` 打开命令按平台**：macOS `open` / Linux `xdg-open` / Windows `cmd /c start ""`（调默认关联程序）。Windows 不用 `explorer <file>`——它只在资源管理器「定位并选中」文件、不打开（旧实现曾用 explorer，v2 审计 2.2 改 cmd start）。Windows 剪贴板文件恒为普通路径（`CF_HDROP`），`decode_file_uri` 的 `file://` 分支不会触发，故无 `file:///C:/` 前导斜杠问题（v2 审计 2.1 核实为非实际 bug）。
+
 文件被删除/移动 → 渲染时 `Path::exists()` 检测，失效条目灰显，不自动删除记录。
 
 ### 2.3 DB Schema（一次性定完，覆盖所有类型）
@@ -344,11 +346,15 @@ Store（DB 层）
 coordinator.rs do_paste()
   → 1. insert_asr_item(text, transcription_id, meta)
        → store 直接写 DB, source=asr（不经过剪贴板）
+  → 1.5 emit("clipboard://changed")  ← insert 成功后主动广播
   → 2. paste::paste() → write_text(text)
        → SUPPRESS_FLAG.store(true) → clipboard.set_text(text)
-  → watcher 检测到变化 → SUPPRESS_FLAG=true → 跳过（不重复记录）
+  → watcher 检测到变化 → on_clipboard_change 命中 SUPPRESS_FLAG=true
+       → 直接 return（on_change 闭包整体不执行）→ 不重复记录、也不 emit
   → enigo 模拟 Cmd+V（现有逻辑不变）
 ```
+
+**为何步骤 1.5 必须主动 emit**：watcher 的 `ChangeHandler::on_clipboard_change`（`watcher.rs`）在调用 `on_change` 闭包**之前**就 `check_and_clear_suppress`，命中即 return——而 emit 本就在 `on_change` 闭包内（`main.rs` 注入）。因此 ASR 粘贴触发的剪贴板变化**不会**自然产生 `clipboard://changed`。若不主动广播，前端浮窗（`useClipboardHistory`）/ 设置页（`ClipboardPanel`）收不到通知，ASR 记录虽已入库却无法即时渲染，需等用户手动复制外部内容触发 watcher、或重启窗口才刷新。主动 emit 仅在 `insert_asr_item` 成功后触发（失败无记录可显示，不广播）。
 
 ASR 历史记录 DB 写失败只记日志不阻断粘贴——ASR 粘贴优先级 > 历史记录。
 
@@ -373,6 +379,7 @@ desktop 退出
 3. **SUPPRESS_FLAG 是 AtomicBool**——无锁，跨线程安全
 4. **ASR 历史记录不经 watcher 路径**——走 `insert_asr_item` 直达 DB
 5. **paste.rs 恢复原剪贴板按类型**——`write_to_clipboard=false` 时 `paste_via_clipboard` 用 `ClipboardBackup` 备份原内容（files > image > text 优先级），ASR 文本粘贴后按类型还原（图片 `set_image` / 文件 `write_files` / 文本 `write_text`，均设 suppress flag；旧实现只 `read_text`，图片/文件被空串吞掉丢失）
+6. **去重按 ItemType 匹配**——文本走 `find_by_text(text, ItemType::Text)`、文件走 `find_by_text(paths_json, ItemType::File)`（同一函数，`item_type` 参数化）、图片走 `find_by_content_hash`。旧实现 `find_by_text` 硬编码 `item_type='text'`，文件去重永远 miss → 连续复制同一文件源源不断写重复记录（已修，加 `test_find_by_text_file_dedup` 回归）。
 
 ## 4. UI 架构
 
@@ -568,6 +575,10 @@ async fn clipboard_stats(filter: String, search: Option<String>) -> Result<i64, 
 
 **修改命令广播同步**：`toggle_clipboard_favorite` / `delete_clipboard_item` / `delete_clipboard_items` / `clear_clipboard_history` 成功后 `emit("clipboard://changed")`——浮窗（`useClipboardHistory`）+ 设置页（`ClipboardPanel`）均监听此事件刷新，避免双端列表状态不一致（旧实现仅 watcher 外部复制时 emit，手动删除/收藏后另一窗口不刷新）。
 
+**ASR 粘贴广播**：除上述手动修改命令外，`do_paste` 在 `insert_asr_item` 成功后也主动 `emit("clipboard://changed")`——ASR 粘贴写剪贴板时设 suppress flag，watcher 命中后跳过含 emit 的 `on_change` 闭包、不自然触发，故需主动广播前端才能即时渲染新 ASR 记录（详见 §3.3 路径 2）。
+
+**级联删除广播**：设置页 `delete_history`（删转译记录）级联调 `delete_by_transcription_ids` 清理剪贴板 ASR 条目，**删除行数 >0 时主动 `emit("clipboard://changed")`**——否则浮窗 stale 显示已删条目，双击粘贴查不到 id 失效。这是 settings 命令间接影响剪贴板列表、需向浮窗/设置页双端广播的又一处（与上述 clipboard 命令同事件）。
+
 **copy/paste 按类型还原**：`copy_clipboard_item` / `paste_clipboard_item` 经 `write_item_to_clipboard` 统一分发——文本 `write_text`、图片从 `image_data` 读 WebP 原图转 PNG 后 `write_image`、文件解析 JSON 路径后 `write_files`，还原真实内容（旧实现无视类型一律 `write_text`，导致图片粘出 blob_hash、文件粘出 JSON 字符串）。
 
 **底部计数随筛选/搜索变化**：`clipboard_stats(filter, search)` 转调 store `count_history`——与 `query_history` 同一套 `build_where`（类型过滤）+ LIKE-fallback/FTS5-MATCH（搜索）逻辑，保证底部「共 N 条」随当前标签/搜索框变化，而非恒为全表总数（旧 `count_all` 无视筛选，浮窗/设置页切「图片」或输入搜索词后计数仍显全表）。前端 `useClipboardHistory` + `ClipboardPanel` 两处 invoke 均传 `filter` + `debouncedSearch`。
@@ -607,9 +618,9 @@ async fn clipboard_stats(filter: String, search: Option<String>) -> Result<i64, 
 
 ### 5.2 错误处理
 
-**监听路径**：所有错误（`available_formats` / `get_*` / DB INSERT / 磁盘满）均跳过本轮 + 记日志，不中断监听线程。文本 >50MB / 图片 >40MB 跳过。
+**监听路径**：所有错误（`available_formats` / `get_*` / DB INSERT / 磁盘满）均跳过本轮 + 记日志，不中断监听线程。文本 >50MB / 图片 >40MB 跳过。**非 files/image/text 的自定义二进制格式**（Adobe/Office 等专有格式、空剪贴板）经 `else if has(Text)` 校验后静默跳过、不进 text 分支——避免 `read_text()` 失败触发 `error!` 日志污染。
 
-**ASR 写入路径**：`insert_asr_item` 失败记 warn 不阻断粘贴。`write_text` 失败传播给 coordinator（现有行为）。
+**ASR 写入路径**：`insert_asr_item` 成功后主动 `emit("clipboard://changed")`（paste 的 suppress flag 使 watcher 不自然触发，见 §3.3）；失败记 warn 不阻断粘贴、也不广播（无记录可显示）。`write_text` 失败传播给 coordinator（现有行为）。
 
 **paste.rs 迁移后**：Windows `set_text` 偶发 `ClipboardOccupied` → 重试 3 次（间隔 50ms）。`write_to_clipboard=false` 时 `paste_via_clipboard` 按 `files > image > text` 优先级用 `ClipboardBackup` 备份原内容，ASR 文本粘贴后按类型还原（图片 `set_image` / 文件 `write_files` / 文本 `write_text`），还原失败静默忽略（旧实现只 `read_text`，图片/文件被空串吞掉丢失）。
 

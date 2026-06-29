@@ -84,7 +84,7 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
 
             // 去重
             let existing = octopus_infra::db::with_db(|conn| {
-                store::find_by_text(conn, &paths_json)
+                store::find_by_text(conn, &paths_json, ItemType::File)
             })?;
 
             if let Some(id) = existing {
@@ -162,8 +162,9 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                     })
                 })?;
             }
-        } else {
-            // text 类型
+        } else if handle.has(ContentFormat::Text) {
+            // text 类型（非 files/image/text 的自定义二进制格式或空剪贴板 → 静默跳过，
+            // 避免 read_text() 失败触发 error! 日志污染——Adobe/Office 等专有格式常见）
             let text = handle.read_text()?;
             if text.is_empty() {
                 return Ok(());
@@ -179,7 +180,7 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
 
             // 去重
             let existing = octopus_infra::db::with_db(|conn| {
-                store::find_by_text(conn, &text)
+                store::find_by_text(conn, &text, ItemType::Text)
             })?;
 
             if let Some(id) = existing {
