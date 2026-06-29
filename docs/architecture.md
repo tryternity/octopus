@@ -137,7 +137,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 ### octopus-capx（屏幕截图）
 
-独立的截图 crate，仅依赖 xcap（本地路径引用）。封装截全屏 + 裁剪选区。
+独立的截图 crate，依赖 xcap 0.9.6（crates.io 发布版）。封装截全屏 + 裁剪选区。
 
 | 模块 | 职责 |
 |---|---|
@@ -145,9 +145,9 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **触发方式**：全局快捷键（`screenshot_shortcut`，默认 Alt+S）+ 托盘菜单「截图」。
 
-**多显示器**：每个显示器创建独立 Tauri 窗口（`screenshot_window` / `screenshot_window_N`），用 Tauri `available_monitors()` 获取逻辑坐标 + 尺寸（物理坐标除以 `scale_factor`），定位到对应屏幕。窗口初始 `visible(false)`，前端 Canvas 渲染完截图后调 `show_screenshot_window` 显示（消除白屏闪烁）。确认/取消时关闭所有 `screenshot_*` 窗口。
+**多显示器**：每个显示器创建独立 Tauri 窗口（`screenshot_window` / `screenshot_window_N`），用 Tauri `available_monitors()` 获取逻辑坐标 + 尺寸（物理坐标除以 `scale_factor`），定位到对应屏幕。窗口初始 `visible(false)`，前端 Canvas 渲染完截图后调 `show_screenshot_window` 显示（消除白屏闪烁）。确认/取消时关闭所有 `screenshot_*` 窗口。**窗口串行创建**（间隔 150ms）：macOS WKWebView 同时创建多个全屏窗口会 segfault，故 `start_screenshot` 逐个 `sleep(150ms)` 创建，单窗 build 失败则 `log::error!` + `continue` 跳过该屏。
 
-**截图流程**：`start_screenshot` → `capture_all_monitors` 截所有显示器 → 每屏创建不可见窗口 → 前端 `get_screenshot_image` 按 label 拉取各自截图 → Canvas 渲染（原图 + 暗遮罩 + 选区框 + 8 手柄 + 尺寸标注）→ `show_screenshot_window` 显示 → 选区下方弹出标注工具栏（矩形/箭头/文字/撤销）→ 标注在选区内 Canvas clip 绘制 → Enter 确认：临时 Canvas 合成标注到截图 → `crop_region` 裁剪 → SHA-256 去重 → WebP BLOB → DB image_data + clipboard_history + 系统剪贴板 → 关所有窗口。
+**截图流程**：`start_screenshot` → `capture_all_monitors` 截所有显示器 → 每屏创建不可见窗口 → 前端 `get_screenshot_image` 按 label 拉取各自截图 → Canvas 渲染（原图 + 暗遮罩 + 选区框 + 8 手柄 + 尺寸标注）→ `show_screenshot_window` 显示 → 选区下方弹出标注工具栏（矩形/箭头/文字/序号/撤销）→ 标注在选区内 Canvas clip 绘制 → Enter 确认：临时 Canvas 合成标注到截图 → `crop_region` 裁剪 → SHA-256 去重 → WebP BLOB → DB image_data + clipboard_history + 系统剪贴板 → 关所有窗口。
 
 **macOS 权限**：通过 `cargo run` 运行时，屏幕录制权限需授给终端应用（非二进制）。打包 .app 后绑定 octopus 本身。
 

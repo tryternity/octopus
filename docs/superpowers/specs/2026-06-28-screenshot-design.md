@@ -10,7 +10,7 @@
 
 独立 crate `octopus-capx`（目录 `crates/capx/`），封装 xcap 截图 + 裁剪。截图结果作为图片条目进入剪贴板历史，可 OCR / 保存 / 收藏 / 删除。
 
-二期加标注工具栏（矩形/箭头/文字），三期加滚动截图。
+二期加标注工具栏（矩形/箭头/文字/序号），三期加滚动截图。
 
 ## 1. 架构
 
@@ -33,7 +33,7 @@ crates/
 
 **依赖关系**：`infra ← capx ← desktop`
 
-### 1.2 为什么直接引用 xcap
+### 1.2 xcap 依赖
 
 xcap 是纯粹的截图引擎（跨平台底层 API 封装），只负责"把屏幕拍下来返回图片"。我们需要的所有功能（框选/裁剪/标注/滚动拼接）都不需要改 xcap：
 
@@ -45,21 +45,23 @@ xcap 是纯粹的截图引擎（跨平台底层 API 封装），只负责"把屏
 | 标注工具栏（二期） | 前端 Canvas 绘制 | 否 |
 | 滚动截图（三期） | 多次调 xcap 截图 → 像素匹配拼接 | 否 |
 
-依赖方式：`xcap = { path = "../../xcap" }`（本地路径引用）。
+依赖方式：`xcap = "0.9.6"`（crates.io 发布版；早期开发曾用 `path = "../../xcap"` 本地 fork，已弃用——本地 fork 声明了独立 `[workspace]` 与主 workspace 冲突，改 crates.io 版彻底规避）。
 
 ### 1.3 capture.rs 核心接口
 
 ```rust
 pub struct ScreenCapture {
-    pub png_bytes: Vec<u8>,   // 全屏 PNG
+    pub rgba_bytes: Vec<u8>,   // 全屏 RGBA（xcap 返回原始像素，非 PNG）
     pub width: u32,
     pub height: u32,
+    pub monitor_x: i32,        // 显示器原点物理坐标（多显示器定位）
+    pub monitor_y: i32,
 }
 
-/// 截取主显示器全屏
-pub fn capture_full_screen() -> Result<ScreenCapture>;
+/// 截取所有显示器（每个显示器一个 ScreenCapture + 其原点坐标）
+pub fn capture_all_monitors() -> Result<Vec<ScreenCapture>>;
 
-/// 从全屏图中裁剪指定矩形区域（物理像素坐标）
+/// 从全屏 RGBA 中裁剪指定矩形区域（物理像素坐标），返回 PNG bytes
 pub fn crop_region(full: &ScreenCapture, x: u32, y: u32, w: u32, h: u32) -> Result<Vec<u8>>;
 ```
 
@@ -279,7 +281,7 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 | 场景 | 处理 |
 |---|---|
 | macOS 屏幕录制权限未授权 | xcap 返回空/黑屏 → toast「请授予屏幕录制权限」 |
-| 多显示器 | ✅ 已实现：每个显示器独立窗口（screenshot_window / screenshot_window_N），用 Tauri monitor API 获取逻辑坐标 + 尺寸，鼠标在哪屏截哪屏 |
+| 多显示器 | ✅ 已实现：每个显示器独立窗口（screenshot_window / screenshot_window_N），用 Tauri monitor API 获取逻辑坐标 + 尺寸，鼠标在哪屏截哪屏。**串行创建**（窗口间 sleep 150ms）：macOS WKWebView 同时创建多个全屏窗口会 segfault，故逐个串行建窗 + 单窗 build 失败则 log+continue 跳过该屏 |
 | 选区太小（< 10×10） | Enter 无效，不确认 |
 | 选区超出屏幕边界 | clamp 到屏幕尺寸内 |
 | Retina/HiDPI 缩放 | 前端按 `devicePixelRatio` 换算后传物理坐标 |
@@ -295,7 +297,7 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 ## 7. 依赖变更
 
 **新增（Rust）**：
-- `xcap = { path = "../../xcap" }`（截图引擎，本地路径引用）
+- `xcap = "0.9.6"`（截图引擎，crates.io 发布版）
 - `image = "0.25"`（裁剪/编码，已有）
 
 **新增（前端）**：无额外依赖（React Canvas 原生 API）。
@@ -306,7 +308,7 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 |---|---|---|
 | **一期** | 基础截图：xcap 截主屏 + Canvas 框选 + 8 手柄调整 + Enter 确认 → 剪贴板历史 | 无 |
 | **1.1 期** | 多显示器支持：每个显示器独立窗口，鼠标在哪屏截哪屏 | ✅ 已实现 |
-| **二期** | 标注工具栏（矩形/箭头/文字/撤销），选区内 Canvas 绘制 | ✅ 已实现 |
+| **二期** | 标注工具栏（矩形/箭头/文字/序号/撤销），选区内 Canvas 绘制 | ✅ 已实现 |
 
 ### 二期实现详情
 
@@ -314,6 +316,7 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 - **矩形**：拖拽绘制红色矩形框（`#ef4444`）
 - **箭头**：拖拽绘制红色箭头（起点→终点 + 三角头部）
 - **文字**：点击弹 textarea 输入，失焦/点击其他位置确认
+- **序号**：点击选区放置实心彩色圆圈 + 白色递增数字（1→2→3...），圆圈大小 16-60 可调（属性浮窗滑轨），数字字号 = 圆圈 × 0.6；序号标注独立记忆 color + circleSize，切换到序号工具时重置计数器为 1
 - **撤销**：Cmd+Z / 工具栏按钮，删除最后一个标注
 
 **标注交互**：
@@ -338,4 +341,3 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 | xcap Linux Wayland 不完善 | 中 | Linux 截图失效 | 检测 Wayland → fallback `xdg-desktop-portal` 截图 |
 | Retina 坐标偏移导致裁剪错位 | 高 | 选区内容偏移 | 前端统一按 `devicePixelRatio` 换算 + 测试验证 |
 | 全屏透明窗口在部分 WM 闪烁 | 低 | UX 差 | 测试 macOS/Windows/Linux 三端 |
-| xcap 本地路径引用在 CI 环境 | 低 | 构建失败 | CI clone 时包含 xcap 仓库或改为 git 依赖 |

@@ -620,3 +620,19 @@ xcap 声明了 `[workspace]`，导致 octopus workspace 冲突。解决：`exclu
 
 原设计：前端传坐标 → 后端从 SCREENSHOT_DATA 裁剪。但标注在前端 Canvas 上，后端无法感知。
 改为：前端完整合成（原图 + 标注 → 裁剪选区 → base64 PNG）→ 新增 `confirm_screenshot_with_data` 命令接收最终 PNG → 后端跳过裁剪直接入库。
+
+### 偏差 12：序号标注工具（点击递增圆圈数字）
+
+二期标注工具栏新增「序号」工具（位于文字工具之后），commit `f95ccc7`：
+- 点击选区放置实心彩色圆圈 + 白色递增数字（1→2→3...）
+- 圆圈大小可调（属性浮窗第一行「圆圈」滑轨 16-60），数字字号 = 圆圈 × 0.6
+- 序号标注独立记忆 `color` + `circleSize`（与其他标注工具的状态隔离）
+- `drawAnnotation` / `drawAnnotationScaled` 支持 `number` 类型（`arc` 画圆 + `fillText` 写数字）
+- `annBounds` 支持 number 的圆形 bounding box（hit test / 拖动）
+- 切换到序号工具时重置计数器为 1
+
+### 偏差 13：自定义 SVG 工具栏图标 + 串行创建窗口修复崩溃
+
+两部分（同 commit `cc951e9`）：
+1. **自定义 SVG 图标**：工具栏全部换为自定义 SVG（square / straight-line / arrow-line / sketching / text / sequence-note / restore / save / copy / close，置于 `frontend/public/icons/`），替代原 emoji/字符。选中态 SVG 变白色（CSS `filter: brightness(0) invert(1)`）。
+2. **串行创建多显示器窗口**：原 `start_screenshot` 在多显示器时同时创建多个全屏 WebView 窗口，macOS WKWebView 同时创建会 **segfault 崩溃**。修复：窗口间 `std::thread::sleep(150ms)` 串行创建（`if i > 0 { sleep(150ms) }`）；单窗 build 失败则 `log::error!` + `continue` 跳过该屏（不阻断其余屏）。
