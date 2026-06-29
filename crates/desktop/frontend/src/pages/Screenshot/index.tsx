@@ -7,16 +7,18 @@ interface Selection {
 }
 
 type Mode = "idle" | "selecting" | "selected" | "move" | "resize";
-type Tool = "none" | "rect" | "line" | "arrow" | "pen" | "text";
+type Tool = "none" | "rect" | "line" | "arrow" | "pen" | "text" | "number";
 
 interface Annotation {
-  type: "rect" | "line" | "arrow" | "pen" | "text";
+  type: "rect" | "line" | "arrow" | "pen" | "text" | "number";
   x1: number; y1: number; x2: number; y2: number;
   text?: string;
   points?: number[][];
   color?: string;
   lineWidth?: number;
   fontSize?: number;
+  number?: number;
+  circleSize?: number;
 }
 
 const HANDLE_SIZE = 8;
@@ -39,10 +41,16 @@ export default function Screenshot() {
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; val: string } | null>(null);
   const textDraftRef = useRef<{ x: number; y: number; val: string } | null>(null);
+  const toolColorRef = useRef("#ef4444");
+  const toolFontSizeRef = useRef(16);
   const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
-  const [toolColor, setToolColor] = useState("#ef4444");
+  const [toolColor, setToolColorState] = useState("#ef4444");
   const [toolWidth, setToolWidth] = useState(3);
-  const [toolFontSize, setToolFontSize] = useState(16);
+  const [toolFontSize, setToolFontSizeState] = useState(16);
+  const setToolColor = (c: string) => { toolColorRef.current = c; setToolColorState(c); };
+  const setToolFontSize = (s: number) => { toolFontSizeRef.current = s; setToolFontSizeState(s); };
+  const [numberCounter, setNumberCounter] = useState(1);
+  const [toolCircleSize, setToolCircleSize] = useState(24);
   const annMoveStartRef = useRef<{ idx: number; mx: number; my: number; anns: Annotation[] } | null>(null);
 
   const dpr = window.devicePixelRatio || 1;
@@ -190,6 +198,18 @@ export default function Screenshot() {
       ctx.font = `${fs}px -apple-system, sans-serif`;
       ctx.textBaseline = "top";
       ctx.fillText(ann.text, ann.x1, ann.y1);
+    } else if (ann.type === "number" && ann.number) {
+      const r = (ann.circleSize || 24) / 2;
+      const fs = (ann.circleSize || 24) * 0.6;
+      ctx.beginPath();
+      ctx.arc(ann.x1, ann.y1, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `bold ${fs}px -apple-system, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(ann.number), ann.x1, ann.y1);
+      ctx.textAlign = "start";
     }
   }
 
@@ -245,6 +265,20 @@ export default function Screenshot() {
       ctx.font = `${fs}px -apple-system, sans-serif`;
       ctx.textBaseline = "top";
       ctx.fillText(ann.text, ann.x1 * scale, ann.y1 * scale);
+    } else if (ann.type === "number" && ann.number) {
+      const r = ((ann.circleSize || 24) * scale) / 2;
+      const fs = ((ann.circleSize || 24) * scale) * 0.6;
+      const cx = ann.x1 * scale;
+      const cy = ann.y1 * scale;
+      ctx.beginPath();
+      ctx.arc(cx, cy, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#ffffff";
+      ctx.font = `bold ${fs}px -apple-system, sans-serif`;
+      ctx.textAlign = "center";
+      ctx.textBaseline = "middle";
+      ctx.fillText(String(ann.number), cx, cy);
+      ctx.textAlign = "start";
     }
   }
 
@@ -274,7 +308,11 @@ export default function Screenshot() {
 
   function annBounds(ann: Annotation): { x: number; y: number; w: number; h: number } {
     if (ann.type === "text") {
-      return { x: ann.x1 - 2, y: ann.y1 - 2, w: 200, h: 22 };
+      return { x: ann.x1 - 2, y: ann.y1 - 2, w: 200, h: (ann.fontSize || 16) + 6 };
+    }
+    if (ann.type === "number") {
+      const r = (ann.circleSize || 24) / 2 + 2;
+      return { x: ann.x1 - r, y: ann.y1 - r, w: r * 2, h: r * 2 };
     }
     if (ann.type === "pen" && ann.points && ann.points.length > 0) {
       const xs = ann.points.map(p => p[0]);
@@ -313,7 +351,7 @@ export default function Screenshot() {
     if (textDraftRef.current) {
       const draft = textDraftRef.current;
       if (draft.val.trim()) {
-        setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val }]);
+        setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current }]);
       }
       textDraftRef.current = null;
       setTextDraft(null);
@@ -342,6 +380,14 @@ export default function Screenshot() {
         setTextDraft({ x: mx, y: my, val: "" });
         textDraftRef.current = { x: mx, y: my, val: "" };
         setTimeout(() => textInputRef.current?.focus(), 10);
+        return;
+      }
+      if (tool === "number") {
+        setAnnotations(prev => [...prev, {
+          type: "number", x1: mx, y1: my, x2: mx, y2: my,
+          number: numberCounter, color: toolColorRef.current, circleSize: toolCircleSize,
+        }]);
+        setNumberCounter(numberCounter + 1);
         return;
       }
       if (tool === "pen") {
@@ -621,7 +667,7 @@ export default function Screenshot() {
           onBlur={() => {
             const draft = textDraftRef.current;
             if (draft && draft.val.trim()) {
-              setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColor, fontSize: toolFontSize }]);
+              setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current }]);
             }
             textDraftRef.current = null;
             setTextDraft(null);
@@ -679,6 +725,9 @@ export default function Screenshot() {
           <ToolButton active={tool === "text"} onClick={() => setTool(tool === "text" ? "none" : "text")} label="文字" icon={
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><text x="4" y="14" fontSize="14" fontWeight="bold" fill="currentColor">A</text></svg>
           } />
+          <ToolButton active={tool === "number"} onClick={() => { setTool(tool === "number" ? "none" : "number"); setNumberCounter(1); }} label="序号" icon={
+            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="6.5" fill="currentColor"/><text x="9" y="13" fontSize="10" fontWeight="bold" fill="white" textAnchor="middle">1</text></svg>
+          } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
           <ToolButton onClick={() => setAnnotations(annotations.slice(0, -1))} label="撤销" icon={
             <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 8H11C13 8 15 10 15 12C15 14 13 16 11 16H7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M6 4L2 8L6 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
@@ -705,10 +754,13 @@ export default function Screenshot() {
           color={toolColor}
           width={toolWidth}
           fontSize={toolFontSize}
+          circleSize={toolCircleSize}
           isText={tool === "text"}
+          isNumber={tool === "number"}
           onColorChange={setToolColor}
           onWidthChange={setToolWidth}
           onFontSizeChange={setToolFontSize}
+          onCircleSizeChange={setToolCircleSize}
         />
       )}
     </>
@@ -739,19 +791,20 @@ function ToolButton({ active, onClick, label, icon }: { active?: boolean; onClic
 const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#000000", "#ffffff"];
 
 function ToolPropsPopover({
-  x, y, color, width, fontSize, isText, onColorChange, onWidthChange, onFontSizeChange,
+  x, y, color, width, fontSize, circleSize, isText, isNumber, onColorChange, onWidthChange, onFontSizeChange, onCircleSizeChange,
 }: {
   x: number; y: number;
-  color: string; width: number; fontSize: number; isText: boolean;
+  color: string; width: number; fontSize: number; circleSize: number; isText: boolean; isNumber: boolean;
   onColorChange: (c: string) => void;
   onWidthChange: (w: number) => void;
   onFontSizeChange: (s: number) => void;
+  onCircleSizeChange: (s: number) => void;
 }) {
-  const sizeValue = isText ? fontSize : width;
-  const setSize = isText ? onFontSizeChange : onWidthChange;
-  const min = isText ? 10 : 1;
-  const max = isText ? 48 : 10;
-  const label = isText ? "字号" : "粗细";
+  const sizeValue = isText ? fontSize : isNumber ? circleSize : width;
+  const setSize = isText ? onFontSizeChange : isNumber ? onCircleSizeChange : onWidthChange;
+  const min = isText ? 10 : isNumber ? 16 : 1;
+  const max = isText ? 48 : isNumber ? 60 : 10;
+  const label = isText ? "字号" : isNumber ? "圆圈" : "粗细";
 
   return (
     <div
