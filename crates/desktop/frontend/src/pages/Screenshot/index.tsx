@@ -622,7 +622,10 @@ export default function Screenshot() {
 
   function onContextMenu(e: React.MouseEvent) {
     e.preventDefault();
-    invoke("cancel_screenshot").catch(() => {});
+    // 右键：仅在选区外时取消截图，选区内不触发
+    if (!sel || !inSelection(e.clientX, e.clientY)) {
+      invoke("cancel_screenshot").catch(() => {});
+    }
   }
 
   function composeAndCrop(): string | null {
@@ -701,17 +704,21 @@ export default function Screenshot() {
     return { x, y, w, h };
   }
 
-  // 工具栏位置（选区下方优先，空间不够放上方，clamp 到屏幕内）
-  const toolbarAbove = sel ? sel.y - 48 < 0 : false;
+  // 工具栏位置：默认选区下方居中，下方空间不够时放上方居中
+  const toolbarWidth = 420; // 工具栏估算宽度（11 个按钮 + 间距 + 操作按钮）
+  const belowSpace = sel ? window.innerHeight - (sel.y + sel.h + 8) : 0;
+  const toolbarBelow = sel ? belowSpace >= 44 : true;
   const toolbarY = sel
     ? Math.max(0, Math.min(
-        toolbarAbove ? sel.y + sel.h + 8 : sel.y - 48,
+        toolbarBelow ? sel.y + sel.h + 8 : sel.y - 48,
         window.innerHeight - 44
       ))
     : 0;
-  const toolbarX = sel ? Math.max(0, Math.min(sel.x, window.innerWidth - 320)) : 0;
-  // 浮窗位置：工具栏在上方时浮窗也在上方，否则在下方
-  const popoverY = toolbarAbove ? Math.max(0, toolbarY - 100) : toolbarY + 44;
+  const toolbarX = sel ? Math.max(0, Math.min(
+    sel.x + sel.w / 2 - toolbarWidth / 2,
+    window.innerWidth - toolbarWidth - 8
+  )) : 0;
+  const popoverY = toolbarBelow ? toolbarY + 44 : Math.max(0, toolbarY - 100);
 
   if (!ready) {
     return <div style={{ width: "100vw", height: "100vh", background: "rgba(0,0,0,0.5)" }} />;
