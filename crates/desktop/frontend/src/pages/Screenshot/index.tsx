@@ -622,8 +622,17 @@ export default function Screenshot() {
 
   function onContextMenu(e: React.MouseEvent) {
     e.preventDefault();
-    // 右键：仅在选区外时取消截图，选区内不触发
-    if (!sel || !inSelection(e.clientX, e.clientY)) {
+    const mx = e.clientX;
+    const my = e.clientY;
+    if (sel && inSelection(mx, my)) {
+      // 选区内右键：清除当前选区 + 标注，回到重新框选状态
+      setSel(null);
+      setAnnotations([]);
+      setMode("idle");
+      setTool("none");
+      setSelectedAnn(null);
+    } else {
+      // 选区外右键：取消整个截图
       invoke("cancel_screenshot").catch(() => {});
     }
   }
@@ -794,6 +803,9 @@ export default function Screenshot() {
             alignItems: "center",
           }}
         >
+          <ToolButton active={tool === "none"} onClick={() => setTool("none")} label="选择" icon={
+            <img src="icons/arrow-pointer.svg" alt="选择" className="w-[18px] h-[18px]" style={{ filter: tool === "none" ? "brightness(0) invert(1)" : "none" }} />
+          } />
           <ToolButton active={tool === "rect"} onClick={() => setTool(tool === "rect" ? "none" : "rect")} label="矩形" icon={
             <img src="icons/square.svg" alt="矩形" className="w-[18px] h-[18px]" style={{ filter: tool === "rect" ? "brightness(0) invert(1)" : "none" }} />
           } />
