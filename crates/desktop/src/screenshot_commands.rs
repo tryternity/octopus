@@ -548,6 +548,23 @@ fn close_all_screenshot_windows(app_handle: &tauri::AppHandle) {
 
 static SCROLL_RECORDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// macOS: 模拟一次垂直滚轮事件（像素级）
+#[cfg(target_os = "macos")]
+fn send_scroll(delta: i32) {
+    use core_graphics::event::{CGEvent, ScrollEventUnit, CGEventTapLocation};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    if let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+        if let Ok(event) = CGEvent::new_scroll_event(
+            source, ScrollEventUnit::PIXEL, 1, delta, 0, 0,
+        ) {
+            event.post(CGEventTapLocation::Session);
+        }
+    }
+}
+
+#[cfg(not(target_os = "macos"))]
+fn send_scroll(_delta: i32) {}
+
 #[tauri::command]
 pub async fn start_scroll_recording(
     x: f64, y: f64, w: f64, h: f64,
@@ -568,97 +585,56 @@ pub async fn start_scroll_recording(
         let pw = (w * scale) as u32;
         let ph = (h * scale) as u32;
 
-        // 设置截图窗口 ignore cursor events（滚轮穿透到底层应用）
-        // 后端在录制循环中每帧检查鼠标位置，动态切换 ignore cursor
-        let scroll_labels: Vec<String> = ah
-            .webview_windows()
-            .keys()
-            .filter(|k| k.starts_with("screenshot_"))
-            .cloned()
-            .collect();
+        // 获取目标显示器偏移（副屏坐标修正）
+        let (target_mon_x, target_mon_y) = ah
+            .available_monitors()
+            .ok()
+            .and_then(|ms| ms.first().map(|m| (m.position().x, m.position().y)))
+            .unwrap_or((0, 0));
 
-        // 工具栏/预览的逻辑坐标区域（用于判断鼠标是否在交互区）
-        let toolbar_y = y + h + 8.0;
-        let toolbar_x_start = x;
-        let toolbar_x_end = x + 420.0;
-        let preview_right = x + w + 12.0 + 200.0 <= 1920.0;
-        let preview_x_start = if preview_right { x + w + 12.0 } else { x - 12.0 - 200.0 };
-        let preview_x_end = preview_x_start + 200.0;
-        let sel_y_start = y;
-        let sel_y_end = y + 600.0;
-
-        // 先设为穿透
-        for label in &scroll_labels {
-            if let Some(win) = ah.get_webview_window(label) {
-                let _ = win.set_ignore_cursor_events(true);
+        // 首帧
+        let first_result = tokio::task::spawn_blocking({
+            let tx = target_mon_x; let ty = target_mon_y;
+            move || {
+                let captures = octopus_capx::capture::capture_all_monitors()?;
+                let mut iter = captures.into_iter();
+                let full = iter.find(|c| c.monitor_x == tx && c.monitor_y == ty)
+                    .or_else(|| iter.next())
+                    .ok_or_else(|| anyhow::anyhow!("no monitor"))?;
+                let png = octopus_capx::capture::crop_region(&full, px, py, pw, ph)?;
+                let img = image::load_from_memory(&png)?.to_rgba8();
+                anyhow::Ok(img)
             }
-        }
-
-        // 首帧（spawn_blocking 避免阻塞 async runtime）
-        let first_result = tokio::task::spawn_blocking(move || {
-            let captures = octopus_capx::capture::capture_all_monitors()?;
-            let full = captures.into_iter().next().ok_or_else(|| anyhow::anyhow!("no monitor"))?;
-            let png = octopus_capx::capture::crop_region(&full, px, py, pw, ph)?;
-            let img = image::load_from_memory(&png)?.to_rgba8();
-            anyhow::Ok(img)
         }).await;
 
         let first_img = match first_result { Ok(Ok(img)) => img, _ => return };
         let mut stitcher = octopus_capx::stitch::Stitcher::new(first_img, Default::default());
 
-        // 通知前端：开始录制
         let _ = ah.emit("scroll://started", ());
 
-        let frame_duration = std::time::Duration::from_millis(100); // 10fps（降低 CPU 压力）
+        let frame_duration = std::time::Duration::from_millis(120);
         let mut interval = tokio::time::interval(frame_duration);
         interval.tick().await;
 
         let ah2 = ah.clone();
-        let mut last_passthrough = true;
+        let mut no_progress_count = 0u32;
+
         while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
             interval.tick().await;
 
-            // 检查鼠标位置，动态切换 cursor 穿透
-            #[cfg(target_os = "macos")]
-            {
-                use core_graphics::event::CGEvent;
-                use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-                let mouse_pos = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
-                    .ok()
-                    .and_then(|src| CGEvent::new(src).ok())
-                    .map(|e| {
-                        let loc = e.location();
-                        // CGEvent location: 逻辑坐标（points），原点在主屏左下角
-                        // 翻转 Y 到 CSS 坐标系（原点左上角）
-                        // 用 Tauri 的窗口尺寸近似屏幕高度
-                        (loc.x, loc.y) // 先不翻转，用 log 对比
-                    });
+            // auto 模式：先模拟滚轮，等应用响应后再截屏
+            send_scroll(40); // 向下滚 40 像素
+            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
 
-                if let Some((mx, my)) = mouse_pos {
-                    log::info!("scroll mouse: ({}, {}) toolbar_y={} preview=[{},{}]", mx, my, toolbar_y, preview_x_start, preview_x_end);
-                    let in_toolbar = my >= toolbar_y && my <= toolbar_y + 44.0
-                        && mx >= toolbar_x_start && mx <= toolbar_x_end;
-                    let in_preview = mx >= preview_x_start && mx <= preview_x_end
-                        && my >= sel_y_start && my <= sel_y_end;
-                    let want_passthrough = !in_toolbar && !in_preview;
-                    if want_passthrough != last_passthrough {
-                        log::info!("cursor passthrough: {} (in_toolbar={} in_preview={})", want_passthrough, in_toolbar, in_preview);
-                        for label in &scroll_labels {
-                            if let Some(win) = ah2.get_webview_window(label) {
-                                let _ = win.set_ignore_cursor_events(want_passthrough);
-                            }
-                        }
-                        last_passthrough = want_passthrough;
-                    }
-                }
-            }
-
-            // spawn_blocking 截屏（避免阻塞 event loop 导致 ESC 无响应）
+            // 截屏
             let capture_result = tokio::task::spawn_blocking({
-                let px = px; let py = py; let pw = pw; let ph = ph;
+                let tx = target_mon_x; let ty = target_mon_y;
                 move || {
                     let captures = octopus_capx::capture::capture_all_monitors()?;
-                    let full = captures.into_iter().next().ok_or_else(|| anyhow::anyhow!("no monitor"))?;
+                    let mut iter = captures.into_iter();
+                    let full = iter.find(|c| c.monitor_x == tx && c.monitor_y == ty)
+                        .or_else(|| iter.next())
+                        .ok_or_else(|| anyhow::anyhow!("no monitor"))?;
                     let png = octopus_capx::capture::crop_region(&full, px, py, pw, ph)?;
                     let img = image::load_from_memory(&png)?.to_rgba8();
                     anyhow::Ok(img)
@@ -667,16 +643,27 @@ pub async fn start_scroll_recording(
 
             let frame_rgba = match capture_result { Ok(Ok(img)) => img, _ => continue };
 
-            // 选区实时画面（JPEG base64，给前端 Canvas 重绘用）
+            // 选区实时画面 JPEG
             let mut frame_jpg = Vec::new();
             let frame_rgb = image::DynamicImage::ImageRgba8(frame_rgba.clone()).into_rgb8();
             let mut jpg_enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut frame_jpg, 80);
             let _ = jpg_enc.encode(&frame_rgb, frame_rgb.width(), frame_rgb.height(), image::ExtendedColorType::Rgb8);
             let frame_b64 = general_purpose::STANDARD.encode(&frame_jpg);
 
-            let _added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
+            let added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
 
-            // 拼接预览
+            // 自动停止检测：连续 3 帧无新内容
+            if added {
+                no_progress_count = 0;
+            } else {
+                no_progress_count += 1;
+                if no_progress_count >= 3 {
+                    log::info!("Auto scroll: no progress for 3 frames, stopping");
+                    break;
+                }
+            }
+
+            // 预览
             let canvas = stitcher.canvas();
             let preview_w = 200u32;
             let preview_h = (preview_w * canvas.height() / canvas.width()).min(600);
@@ -693,16 +680,9 @@ pub async fn start_scroll_recording(
             }));
         }
 
-        // 录制结束：恢复鼠标事件
-        for label in &scroll_labels {
-            if let Some(win) = ah.get_webview_window(label) {
-                let _ = win.set_ignore_cursor_events(false);
-            }
-        }
-
-        // 关闭截图窗口
-
         // 入库
+        close_all_screenshot_windows(&ah);
+
         let canvas = stitcher.canvas().clone();
         let mut png_bytes = Vec::new();
         let _ = canvas.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png);
@@ -736,14 +716,4 @@ pub async fn start_scroll_recording(
 #[tauri::command]
 pub fn stop_scroll_recording() {
     SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
-}
-
-/// 动态切换截图窗口的 cursor 事件穿透（区域化：工具栏区域恢复交互）
-#[tauri::command]
-pub fn set_cursor_passthrough(passthrough: bool, app_handle: tauri::AppHandle) {
-    for (label, win) in app_handle.webview_windows() {
-        if label.starts_with("screenshot_") {
-            let _ = win.set_ignore_cursor_events(passthrough);
-        }
-    }
 }

@@ -235,7 +235,6 @@ pub fn run() {
             screenshot_commands::ocr_screenshot,
             screenshot_commands::start_scroll_recording,
             screenshot_commands::stop_scroll_recording,
-            screenshot_commands::set_cursor_passthrough,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
