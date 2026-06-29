@@ -52,6 +52,7 @@ export default function Screenshot() {
   const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
   const [scrollPreview, setScrollPreview] = useState<string | null>(null);
   const [scrollHeight, setScrollHeight] = useState(0);
+  const scrollFrameRef = useRef<HTMLImageElement | null>(null);
   const [toolColor, setToolColorState] = useState("#ef4444");
   const [toolWidth, setToolWidth] = useState(3);
   const [toolFontSize, setToolFontSizeState] = useState(16);
@@ -85,8 +86,12 @@ export default function Screenshot() {
   useEffect(() => {
     let unlistenFrame: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
-    listen<{ image: string; height: number; phys_height: number }>("scroll://frame", (e) => {
-      setScrollPreview(e.payload.image);
+    listen<{ frame: string; preview: string; height: number; phys_height: number }>("scroll://frame", (e) => {
+      // 实时选区画面：加载为 Image → Canvas 重绘
+      const img = new Image();
+      img.onload = () => { scrollFrameRef.current = img; draw(); };
+      img.src = `data:image/jpeg;base64,${e.payload.frame}`;
+      setScrollPreview(e.payload.preview);
       setScrollHeight(e.payload.phys_height);
     }).then((fn) => { unlistenFrame = fn; });
     listen("scroll://done", () => {
@@ -120,6 +125,29 @@ export default function Screenshot() {
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
+
+    // 滚动模式：选区内显示实时画面，选区外用冻结的 bg + 暗遮罩
+    if (mode === "scrolling" && sel && scrollFrameRef.current) {
+      // 全屏冻结背景
+      ctx.drawImage(bg, 0, 0, cssW, cssH);
+      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+      ctx.fillRect(0, 0, cssW, cssH);
+      // 选区内：实时画面（clearRect 挖出选区 → drawImage 实时帧）
+      const { x, y, w, h } = sel;
+      ctx.save();
+      ctx.beginPath();
+      ctx.rect(x, y, w, h);
+      ctx.clip();
+      ctx.drawImage(scrollFrameRef.current, x, y, w, h);
+      ctx.restore();
+      // 绿色边框
+      ctx.strokeStyle = "#22c55e";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x, y, w, h);
+      return;
+    }
+
+    // 普通模式
     ctx.drawImage(bg, 0, 0, cssW, cssH);
 
     // 暗遮罩
@@ -559,6 +587,19 @@ export default function Screenshot() {
     const mx = e.clientX;
     const my = e.clientY;
 
+    // 滚动模式：区域化 cursor（工具栏/预览区域恢复交互）
+    if (mode === "scrolling") {
+      const inToolbar = my >= toolbarY && my <= toolbarY + 44
+        && mx >= toolbarX && mx <= toolbarX + 420;
+      const inPreview = scrollPreview && sel
+        && mx >= (sel.x + sel.w + 12 <= window.innerWidth - 200 ? sel.x + sel.w + 12 : sel.x - 212)
+        && mx <= (sel.x + sel.w + 12 <= window.innerWidth - 200 ? sel.x + sel.w + 212 : sel.x - 12)
+        && my >= sel.y && my <= sel.y + 600;
+      const needInteractive = inToolbar || inPreview;
+      invoke("set_cursor_passthrough", { passthrough: !needInteractive }).catch(() => {});
+      return;
+    }
+
     // 标注绘制中
     if (drawingRef.current && tool !== "none") {
       if (drawingRef.current.type === "pen" && drawingRef.current.points) {
@@ -918,7 +959,7 @@ export default function Screenshot() {
       )}
 
       {/* 工具栏 */}
-      {sel && mode === "selected" && (
+      {sel && (mode === "selected" || mode === "scrolling") && (
         <div
           style={{
             position: "fixed",
@@ -974,15 +1015,25 @@ export default function Screenshot() {
             <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
-          <button onClick={startScroll} title="滚动截图" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
-            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2V11M8 11L4 7M8 11L12 7" stroke="#333" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><rect x="3" y="13" width="10" height="2" rx="0.5" fill="#333"/></svg>
-          </button>
-          <button onClick={doSaveFile} title="保存到文件" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
-            <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" />
-          </button>
-          <button onClick={doConfirm} title="确认" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "#3b82f6", cursor: "pointer" }}>
-            <img src="icons/copy.svg" alt="确认" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} />
-          </button>
+          {mode !== "scrolling" ? (
+            <button onClick={startScroll} title="滚动截图" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
+              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2V11M8 11L4 7M8 11L12 7" stroke="#333" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><rect x="3" y="13" width="10" height="2" rx="0.5" fill="#333"/></svg>
+            </button>
+          ) : (
+            <button onClick={stopScroll} title="停止滚动" style={{ padding: "4px 10px", height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "#ef4444", cursor: "pointer", color: "#fff", fontSize: 11, fontWeight: 600 }}>
+              ⏹ 停止
+            </button>
+          )}
+          {mode !== "scrolling" && (
+            <button onClick={doSaveFile} title="保存到文件" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
+              <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" />
+            </button>
+          )}
+          {mode !== "scrolling" && (
+            <button onClick={doConfirm} title="确认" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "#3b82f6", cursor: "pointer" }}>
+              <img src="icons/copy.svg" alt="确认" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} />
+            </button>
+          )}
           <button onClick={() => invoke("cancel_screenshot").catch(() => {})} title="取消" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
             <img src="icons/close.svg" alt="取消" className="w-[18px] h-[18px]" />
           </button>

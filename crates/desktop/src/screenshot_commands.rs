@@ -568,7 +568,7 @@ pub async fn start_scroll_recording(
         let pw = (w * scale) as u32;
         let ph = (h * scale) as u32;
 
-        // 隐藏截图窗口（让用户可以正常操作底层应用滚动）
+        // 设置截图窗口 ignore cursor events（滚轮穿透到底层应用）
         let scroll_labels: Vec<String> = ah
             .webview_windows()
             .keys()
@@ -577,7 +577,7 @@ pub async fn start_scroll_recording(
             .collect();
         for label in &scroll_labels {
             if let Some(win) = ah.get_webview_window(label) {
-                let _ = win.hide();
+                let _ = win.set_ignore_cursor_events(true);
             }
         }
 
@@ -618,26 +618,40 @@ pub async fn start_scroll_recording(
 
             let frame_rgba = match capture_result { Ok(Ok(img)) => img, _ => continue };
 
+            // 选区实时画面（JPEG base64，给前端 Canvas 重绘用）
+            let mut frame_jpg = Vec::new();
+            let frame_rgb = image::DynamicImage::ImageRgba8(frame_rgba.clone()).into_rgb8();
+            let mut jpg_enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut frame_jpg, 80);
+            let _ = jpg_enc.encode(&frame_rgb, frame_rgb.width(), frame_rgb.height(), image::ExtendedColorType::Rgb8);
+            let frame_b64 = general_purpose::STANDARD.encode(&frame_jpg);
+
             let added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
 
-            if added {
-                let canvas = stitcher.canvas();
-                let preview_w = 200u32;
-                let preview_h = (preview_w * canvas.height() / canvas.width()).min(600);
-                let preview = image::imageops::resize(canvas, preview_w, preview_h, image::imageops::FilterType::Nearest);
-                let mut png_bytes = Vec::new();
-                let _ = preview.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png);
-                let b64 = general_purpose::STANDARD.encode(&png_bytes);
-                let _ = ah2.emit("scroll://frame", serde_json::json!({
-                    "image": b64,
-                    "height": stitcher.height(),
-                    "phys_height": (stitcher.height() as f64 / scale) as u32,
-                }));
+            // 拼接预览
+            let canvas = stitcher.canvas();
+            let preview_w = 200u32;
+            let preview_h = (preview_w * canvas.height() / canvas.width()).min(600);
+            let preview = image::imageops::resize(canvas, preview_w, preview_h, image::imageops::FilterType::Nearest);
+            let mut preview_png = Vec::new();
+            let _ = preview.write_to(&mut std::io::Cursor::new(&mut preview_png), image::ImageFormat::Png);
+            let preview_b64 = general_purpose::STANDARD.encode(&preview_png);
+
+            let _ = ah2.emit("scroll://frame", serde_json::json!({
+                "frame": frame_b64,
+                "preview": preview_b64,
+                "height": stitcher.height(),
+                "phys_height": (stitcher.height() as f64 / scale) as u32,
+            }));
+        }
+
+        // 录制结束：恢复鼠标事件
+        for label in &scroll_labels {
+            if let Some(win) = ah.get_webview_window(label) {
+                let _ = win.set_ignore_cursor_events(false);
             }
         }
 
-        // 录制结束：关闭截图窗口（不需要恢复，直接关闭）
-        close_all_screenshot_windows(&ah);
+        // 关闭截图窗口
 
         // 入库
         let canvas = stitcher.canvas().clone();
@@ -673,4 +687,14 @@ pub async fn start_scroll_recording(
 #[tauri::command]
 pub fn stop_scroll_recording() {
     SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 动态切换截图窗口的 cursor 事件穿透（区域化：工具栏区域恢复交互）
+#[tauri::command]
+pub fn set_cursor_passthrough(passthrough: bool, app_handle: tauri::AppHandle) {
+    for (label, win) in app_handle.webview_windows() {
+        if label.starts_with("screenshot_") {
+            let _ = win.set_ignore_cursor_events(passthrough);
+        }
+    }
 }
