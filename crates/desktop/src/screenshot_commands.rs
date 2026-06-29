@@ -574,23 +574,30 @@ pub async fn start_scroll_recording(
 
     let ah = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        let scale = ah.primary_monitor()
-            .ok()
-            .flatten()
-            .map(|m| m.scale_factor())
-            .unwrap_or(1.0);
-
-        let px = (x * scale) as u32;
-        let py = (y * scale) as u32;
-        let pw = (w * scale) as u32;
-        let ph = (h * scale) as u32;
-
-        // 获取目标显示器偏移（副屏坐标修正）
-        let (target_mon_x, target_mon_y) = ah
+        // 根据选区中心点找到对应的显示器（支持副屏）
+        let center_x = x + w / 2.0;
+        let center_y = y + h / 2.0;
+        let (target_mon_x, target_mon_y, scale) = ah
             .available_monitors()
             .ok()
-            .and_then(|ms| ms.first().map(|m| (m.position().x, m.position().y)))
-            .unwrap_or((0, 0));
+            .and_then(|ms| {
+                // 找包含选区中心的显示器
+                let hit = ms.iter().find(|m| {
+                    let mx = m.position().x as f64;
+                    let my = m.position().y as f64;
+                    let mw = m.size().width as f64;
+                    let mh = m.size().height as f64;
+                    center_x >= mx && center_x < mx + mw && center_y >= my && center_y < my + mh
+                }).or_else(|| ms.first());
+                hit.map(|m| (m.position().x, m.position().y, m.scale_factor()))
+            })
+            .unwrap_or((0, 0, 1.0));
+
+        // 选区坐标转为该显示器内的物理像素坐标
+        let px = ((x - target_mon_x as f64) * scale) as u32;
+        let py = ((y - target_mon_y as f64) * scale) as u32;
+        let pw = (w * scale) as u32;
+        let ph = (h * scale) as u32;
 
         // 首帧
         let first_result = tokio::task::spawn_blocking({
