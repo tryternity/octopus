@@ -43,6 +43,25 @@ pub fn encode_to_webp(png_bytes: &[u8], _width: u32, _height: u32) -> Result<Enc
     Ok(EncodedImage { webp_blob, thumb_blob })
 }
 
+/// 已解码的 DynamicImage → WebP 100% 无损 + 缩略图 WebP 20%（避免重复解码）。
+pub fn encode_to_webp_from_image(img: &::image::DynamicImage) -> Result<EncodedImage> {
+    let rgba = img.to_rgba8();
+
+    // 无损 WebP 原图
+    let encoder = webp::Encoder::from_rgba(&rgba, rgba.width(), rgba.height());
+    let webp_blob = encoder.encode_lossless();
+    let webp_blob = webp_blob.to_vec();
+
+    // 缩略图：resize 240×240 → WebP 20%
+    let thumb_img = img.resize(240, 240, ::image::imageops::FilterType::Lanczos3);
+    let thumb_rgba = thumb_img.to_rgba8();
+    let thumb_encoder = webp::Encoder::from_rgba(&thumb_rgba, thumb_rgba.width(), thumb_rgba.height());
+    let thumb_blob = thumb_encoder.encode(20.0);
+    let thumb_blob = thumb_blob.to_vec();
+
+    Ok(EncodedImage { webp_blob, thumb_blob })
+}
+
 pub fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);

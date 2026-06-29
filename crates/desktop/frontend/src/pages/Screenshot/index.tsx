@@ -66,12 +66,25 @@ export default function Screenshot() {
         img.onload = () => {
           bgImgRef.current = img;
           setReady(true);
-          setTimeout(() => { invoke("show_screenshot_window", { label: winLabel }).catch(() => {}); }, 50);
+          setTimeout(() => { invoke("show_screenshot_window").catch(() => {}); }, 50);
         };
-        img.src = `data:image/png;base64,${data.image}`;
+        img.src = `data:image/jpeg;base64,${data.image}`;
       })
       .catch((e) => console.error("Failed to get screenshot image:", e));
   }, []);
+
+  // 初始化 Canvas 尺寸（仅一次，避免高频重分配 GPU 缓冲区）
+  const canvasInitedRef = useRef(false);
+  useEffect(() => {
+    if (!ready || canvasInitedRef.current) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const cssW = window.innerWidth;
+    const cssH = window.innerHeight;
+    canvas.width = cssW * dpr;
+    canvas.height = cssH * dpr;
+    canvasInitedRef.current = true;
+  }, [ready, dpr]);
 
   // 绘制
   const draw = useCallback(() => {
@@ -81,10 +94,9 @@ export default function Screenshot() {
 
     const cssW = window.innerWidth;
     const cssH = window.innerHeight;
-    canvas.width = cssW * dpr;
-    canvas.height = cssH * dpr;
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.clearRect(0, 0, cssW, cssH);
     ctx.drawImage(bg, 0, 0, cssW, cssH);
 
     // 暗遮罩
@@ -205,7 +217,7 @@ export default function Screenshot() {
       const fs = ann.fontSize || 16;
       ctx.font = `${fs}px -apple-system, sans-serif`;
       ctx.textBaseline = "top";
-      ctx.fillText(ann.text, ann.x1, ann.y1);
+      drawMultilineText(ctx, ann.text, ann.x1, ann.y1, 200, fs);
     } else if (ann.type === "number" && ann.number) {
       const r = (ann.circleSize || 24) / 2;
       const fs = (ann.circleSize || 24) * 0.6;
@@ -218,6 +230,36 @@ export default function Screenshot() {
       ctx.textBaseline = "middle";
       ctx.fillText(String(ann.number), ann.x1, ann.y1);
       ctx.textAlign = "start";
+    }
+  }
+
+  // 多行文字绘制：支持 \n 换行 + 超宽自动折行
+  function drawMultilineText(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, maxWidth: number, fontSize: number) {
+    const lineHeight = fontSize * 1.3;
+    // 先按 \n 切割为段落，再每段按 maxWidth 自动折行
+    const paragraphs = text.split("\n");
+    let cy = y;
+    for (const para of paragraphs) {
+      if (para === "") {
+        cy += lineHeight;
+        continue;
+      }
+      // 按字符测宽折行（适用于 CJK + ASCII 混合）
+      let line = "";
+      for (const ch of para) {
+        const test = line + ch;
+        if (ctx.measureText(test).width > maxWidth && line.length > 0) {
+          ctx.fillText(line, x, cy);
+          cy += lineHeight;
+          line = ch;
+        } else {
+          line = test;
+        }
+      }
+      if (line) {
+        ctx.fillText(line, x, cy);
+        cy += lineHeight;
+      }
     }
   }
 
@@ -280,7 +322,7 @@ export default function Screenshot() {
       const fs = (ann.fontSize || 16) * scale;
       ctx.font = `${fs}px -apple-system, sans-serif`;
       ctx.textBaseline = "top";
-      ctx.fillText(ann.text, ann.x1 * scale, ann.y1 * scale);
+      drawMultilineText(ctx, ann.text, ann.x1 * scale, ann.y1 * scale, 200 * scale, fs);
     } else if (ann.type === "number" && ann.number) {
       const r = ((ann.circleSize || 24) * scale) / 2;
       const fs = ((ann.circleSize || 24) * scale) * 0.6;
@@ -380,8 +422,8 @@ export default function Screenshot() {
       return;
     }
 
-    // 任何工具状态下：优先检测是否点中了已有标注（选中+拖动）
-    if (sel && inSelection(mx, my)) {
+    // tool === "none" 时：优先检测是否点中了已有标注（选中+拖动）
+    if (tool === "none" && sel && inSelection(mx, my)) {
       const annIdx = hitTestAnnotation(mx, my);
       if (annIdx !== null) {
         setSelectedAnn(annIdx);
@@ -464,6 +506,7 @@ export default function Screenshot() {
         ...orig,
         x1: orig.x1 + dx, y1: orig.y1 + dy,
         x2: orig.x2 + dx, y2: orig.y2 + dy,
+        points: orig.points ? orig.points.map(([px, py]) => [px + dx, py + dy] as number[]) : undefined,
       };
       const newAnns = [...anns];
       newAnns[idx] = moved;
@@ -514,21 +557,29 @@ export default function Screenshot() {
     if (drawingRef.current) {
       const ann = drawingRef.current;
       drawingRef.current = null;
+      let added = false;
       // 过滤太小的
       if (ann.type === "rect" || ann.type === "oval") {
         if (Math.abs(ann.x2 - ann.x1) > 5 && Math.abs(ann.y2 - ann.y1) > 5) {
           setAnnotations(prev => [...prev, ann]);
+          added = true;
         }
       } else if (ann.type === "line" || ann.type === "arrow") {
         const dx = ann.x2 - ann.x1;
         const dy = ann.y2 - ann.y1;
         if (Math.sqrt(dx * dx + dy * dy) > 10) {
           setAnnotations(prev => [...prev, ann]);
+          added = true;
         }
       } else if (ann.type === "pen" && ann.points) {
         if (ann.points.length > 2) {
           setAnnotations(prev => [...prev, ann]);
+          added = true;
         }
+      }
+      // 丢弃时重绘 Canvas 消除残留影像
+      if (!added) {
+        draw();
       }
       return;
     }
@@ -550,7 +601,22 @@ export default function Screenshot() {
     } else if (e.key === "Enter" && sel && sel.w >= MIN_SIZE && sel.h >= MIN_SIZE) {
       doConfirm();
     } else if ((e.metaKey || e.ctrlKey) && e.key === "z") {
-      setAnnotations(annotations.slice(0, -1));
+      // 撤销：删除最后一个标注，序号回退
+      if (annotations.length > 0) {
+        const removed = annotations[annotations.length - 1];
+        if (removed.type === "number" && removed.number === numberCounter - 1) {
+          setNumberCounter(numberCounter - 1);
+        }
+        setAnnotations(annotations.slice(0, -1));
+      }
+    } else if ((e.key === "Delete" || e.key === "Backspace") && selectedAnn !== null) {
+      // 删除选中的标注
+      const removed = annotations[selectedAnn];
+      if (removed.type === "number" && removed.number === numberCounter - 1) {
+        setNumberCounter(numberCounter - 1);
+      }
+      setAnnotations(annotations.filter((_, i) => i !== selectedAnn));
+      setSelectedAnn(null);
     }
   }
 
@@ -564,12 +630,19 @@ export default function Screenshot() {
     const bg = bgImgRef.current;
     const scale = bg.naturalWidth / window.innerWidth;
 
+    // 合并已确认标注 + 未提交的文字输入（避免 onBlur 竞态丢失）
+    const allAnns = [...annotations];
+    const draft = textDraftRef.current;
+    if (draft && draft.val.trim()) {
+      allAnns.push({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current });
+    }
+
     const tmpCanvas = document.createElement("canvas");
     tmpCanvas.width = bg.naturalWidth;
     tmpCanvas.height = bg.naturalHeight;
     const tmpCtx = tmpCanvas.getContext("2d")!;
     tmpCtx.drawImage(bg, 0, 0);
-    for (const ann of annotations) {
+    for (const ann of allAnns) {
       drawAnnotationScaled(tmpCtx, ann, scale);
     }
 
@@ -610,21 +683,35 @@ export default function Screenshot() {
   }
 
   function normalize(x1: number, y1: number, x2: number, y2: number): Selection {
-    return { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
+    const cx = Math.max(0, Math.min(Math.min(x1, x2), window.innerWidth));
+    const cy = Math.max(0, Math.min(Math.min(y1, y2), window.innerHeight));
+    const cw = Math.min(Math.abs(x2 - x1), window.innerWidth - cx);
+    const ch = Math.min(Math.abs(y2 - y1), window.innerHeight - cy);
+    return { x: cx, y: cy, w: cw, h: ch };
   }
 
   function resizeSel(start: Selection, handle: string, mx: number, my: number): Selection {
+    const clampX = (v: number) => Math.max(0, Math.min(v, window.innerWidth));
+    const clampY = (v: number) => Math.max(0, Math.min(v, window.innerHeight));
     let { x, y, w, h } = start;
-    if (handle.includes("w")) { const rx = x + w; x = Math.min(mx, rx - MIN_SIZE); w = rx - x; }
-    if (handle.includes("e")) { w = Math.max(MIN_SIZE, mx - x); }
-    if (handle.includes("n")) { const by = y + h; y = Math.min(my, by - MIN_SIZE); h = by - y; }
-    if (handle.includes("s")) { h = Math.max(MIN_SIZE, my - y); }
+    if (handle.includes("w")) { const rx = x + w; x = clampX(Math.min(mx, rx - MIN_SIZE)); w = rx - x; }
+    if (handle.includes("e")) { w = Math.max(MIN_SIZE, clampX(mx) - x); }
+    if (handle.includes("n")) { const by = y + h; y = clampY(Math.min(my, by - MIN_SIZE)); h = by - y; }
+    if (handle.includes("s")) { h = Math.max(MIN_SIZE, clampY(my) - y); }
     return { x, y, w, h };
   }
 
-  // 工具栏位置（选区下方，如果空间不够放上方）
-  const toolbarY = sel ? (sel.y + sel.h + 8 + 44 < window.innerHeight ? sel.y + sel.h + 8 : sel.y - 48) : 0;
-  const toolbarX = sel ? Math.min(sel.x, window.innerWidth - 280) : 0;
+  // 工具栏位置（选区下方优先，空间不够放上方，clamp 到屏幕内）
+  const toolbarAbove = sel ? sel.y - 48 < 0 : false;
+  const toolbarY = sel
+    ? Math.max(0, Math.min(
+        toolbarAbove ? sel.y + sel.h + 8 : sel.y - 48,
+        window.innerHeight - 44
+      ))
+    : 0;
+  const toolbarX = sel ? Math.max(0, Math.min(sel.x, window.innerWidth - 320)) : 0;
+  // 浮窗位置：工具栏在上方时浮窗也在上方，否则在下方
+  const popoverY = toolbarAbove ? Math.max(0, toolbarY - 100) : toolbarY + 44;
 
   if (!ready) {
     return <div style={{ width: "100vw", height: "100vh", background: "rgba(0,0,0,0.5)" }} />;
@@ -722,7 +809,15 @@ export default function Screenshot() {
             <img src="icons/sequence-note.svg" alt="序号" className="w-[18px] h-[18px]" style={{ filter: tool === "number" ? "brightness(0) invert(1)" : "none" }} />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
-          <ToolButton onClick={() => setAnnotations(annotations.slice(0, -1))} label="撤销" icon={
+          <ToolButton onClick={() => {
+            if (annotations.length > 0) {
+              const removed = annotations[annotations.length - 1];
+              if (removed.type === "number" && removed.number === numberCounter - 1) {
+                setNumberCounter(numberCounter - 1);
+              }
+              setAnnotations(annotations.slice(0, -1));
+            }
+          }} label="撤销" icon={
             <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" />
           } />
           <ToolButton onClick={doOcr} label="OCR" icon={
@@ -745,7 +840,7 @@ export default function Screenshot() {
       {sel && mode === "selected" && tool !== "none" && (
         <ToolPropsPopover
           x={toolbarX}
-          y={toolbarY + 44}
+          y={popoverY}
           color={toolColor}
           width={toolWidth}
           fontSize={toolFontSize}

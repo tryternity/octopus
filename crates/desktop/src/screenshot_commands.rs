@@ -15,6 +15,9 @@ struct ScreenCaptureClone {
 static ALL_CAPTURES: Mutex<Vec<(String, ScreenCaptureClone)>> = Mutex::new(Vec::new());
 /// 待处理的图片 base64，按 window label 索引（前端 mount 后拉取）。
 static PENDING_IMAGES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
+/// 窗口 ready 计数（前端报告 ready 后累加，达到总数后统一 show）。
+static READY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+static TOTAL_WINDOWS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// 启动截图：截所有显示器 → 每个显示器一个窗口
 #[tauri::command]
@@ -30,6 +33,8 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     // 清理旧数据 + 旧窗口
     ALL_CAPTURES.lock().unwrap().clear();
     PENDING_IMAGES.lock().unwrap().clear();
+    READY_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
+    TOTAL_WINDOWS.store(0, std::sync::atomic::Ordering::SeqCst);
     let old_labels: Vec<String> = app_handle
         .webview_windows()
         .keys()
@@ -52,9 +57,12 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         let log_w = phys_w / scale;
         let log_h = phys_h / scale;
 
-        // 找到物理尺寸匹配的 xcap capture
+        // 用物理坐标匹配 xcap capture（避免双相同分辨率显示器匹配到同一个）
+        let target_x = tauri_mon.position().x;
+        let target_y = tauri_mon.position().y;
         let capture = captures.iter()
-            .find(|c| c.width as f64 == phys_w && c.height as f64 == phys_h)
+            .find(|c| c.monitor_x == target_x && c.monitor_y == target_y)
+            .or_else(|| captures.iter().find(|c| c.width as f64 == phys_w && c.height as f64 == phys_h))
             .or_else(|| captures.get(i));
 
         let capture = match capture {
@@ -68,13 +76,15 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
             format!("screenshot_window_{}", i)
         };
 
-        // RGBA → PNG base64
+        // RGBA → JPEG base64（截图背景只需视觉展示，JPEG 编码比 PNG 快 10×+）
         let img = ::image::RgbaImage::from_raw(capture.width, capture.height, capture.rgba_bytes.clone())
             .ok_or("图像处理失败")?;
-        let mut png_bytes = Vec::new();
-        img.write_to(&mut std::io::Cursor::new(&mut png_bytes), ::image::ImageFormat::Png)
-            .map_err(|e| format!("PNG 编码失败: {:?}", e))?;
-        let b64 = general_purpose::STANDARD.encode(&png_bytes);
+        let mut jpg_bytes = Vec::new();
+        let rgb_img = ::image::DynamicImage::ImageRgba8(img).into_rgb8();
+        let mut jpg_encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpg_bytes, 85);
+        jpg_encoder.encode(&rgb_img, rgb_img.width(), rgb_img.height(), ::image::ExtendedColorType::Rgb8)
+            .map_err(|e| format!("JPEG 编码失败: {:?}", e))?;
+        let b64 = general_purpose::STANDARD.encode(&jpg_bytes);
 
         // 暂存
         PENDING_IMAGES.lock().unwrap().push((label.clone(), b64));
@@ -108,6 +118,8 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
             log::error!("Failed to create screenshot window '{}': {}", label, e);
             continue;
         }
+
+        TOTAL_WINDOWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
         log::info!(
             "Screenshot window '{}' at ({},{}) {}x{} (monitor phys {}x{}, scale {})",
@@ -148,7 +160,7 @@ pub async fn ocr_screenshot(
             .map_err(|e| format!("解码失败: {:?}", e))?;
         let crop_w = img.width();
         let crop_h = img.height();
-        let encoded = octopus_clipboard::image::encode_to_webp(&png_bytes, crop_w, crop_h)
+        let encoded = octopus_clipboard::image::encode_to_webp_from_image(&img)
             .map_err(|e| format!("WebP 编码失败: {}", e))?;
 
         octopus_infra::db::with_db(|conn| {
@@ -220,12 +232,28 @@ end tell"#,
     }
 }
 
-/// 前端渲染完成后调用，显示指定截图窗口
+/// 前端渲染完成后调用。所有窗口都 ready 后统一 show（同步显示，避免逐个弹出）。
 #[tauri::command]
-pub fn show_screenshot_window(label: String, app_handle: tauri::AppHandle) {
-    if let Some(window) = app_handle.get_webview_window(&label) {
-        let _ = window.show();
-        let _ = window.set_focus();
+pub fn show_screenshot_window(app_handle: tauri::AppHandle) {
+    let count = READY_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+    let total = TOTAL_WINDOWS.load(std::sync::atomic::Ordering::SeqCst);
+    if count >= total && total > 0 {
+        // 所有窗口 ready，统一显示
+        let labels: Vec<String> = app_handle
+            .webview_windows()
+            .keys()
+            .filter(|k| k.starts_with("screenshot_"))
+            .cloned()
+            .collect();
+        for label in &labels {
+            if let Some(window) = app_handle.get_webview_window(label) {
+                let _ = window.show();
+            }
+        }
+        // 聚焦第一个窗口
+        if let Some(window) = app_handle.get_webview_window("screenshot_window") {
+            let _ = window.set_focus();
+        }
     }
 }
 
@@ -241,6 +269,9 @@ pub async fn save_screenshot_dialog(
     ALL_CAPTURES.lock().unwrap().clear();
     PENDING_IMAGES.lock().unwrap().clear();
 
+    // 先关闭截图窗口，恢复正常屏幕，再弹保存对话框
+    close_all_screenshot_windows(&app_handle);
+
     use tauri_plugin_dialog::DialogExt;
     let save_path = app_handle.dialog()
         .file()
@@ -254,7 +285,6 @@ pub async fn save_screenshot_dialog(
         log::info!("Screenshot saved to {}", path.display());
     }
 
-    close_all_screenshot_windows(&app_handle);
     Ok(())
 }
 
@@ -292,7 +322,7 @@ pub async fn confirm_screenshot_with_data(
             .map_err(|e| format!("解码失败: {:?}", e))?;
         let crop_w = img.width();
         let crop_h = img.height();
-        let encoded = octopus_clipboard::image::encode_to_webp(&png_bytes, crop_w, crop_h)
+        let encoded = octopus_clipboard::image::encode_to_webp_from_image(&img)
             .map_err(|e| format!("WebP 编码失败: {}", e))?;
 
         octopus_infra::db::with_db(|conn| {
