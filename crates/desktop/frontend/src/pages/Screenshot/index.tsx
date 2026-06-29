@@ -483,6 +483,11 @@ export default function Screenshot() {
       }
     }
 
+    // 选区外左键点击：已确定选区时忽略（避免误操作丢失标注），ESC 或取消按钮退出
+    if (sel && mode === "selected" && !inSelection(mx, my)) {
+      return;
+    }
+
     setSel({ x: mx, y: my, w: 0, h: 0 });
     setModeSafe("selecting");
   }
@@ -654,16 +659,13 @@ export default function Screenshot() {
     const mx = e.clientX;
     const my = e.clientY;
     if (sel && inSelection(mx, my)) {
-      // 选区内右键 = 同左键操作（模拟完整的 mousedown → mouseup 周期）
+      // 选区内右键 = 同左键操作
       const fakeEvent = { ...e, button: 0, clientX: mx, clientY: my } as React.MouseEvent;
       onMouseDown(fakeEvent);
-      // 用 modeRef 同步重置状态（避免 React 异步闭包读旧值）
       setResizeHandle(null);
       setModeSafe("selected");
-    } else {
-      // 选区外右键 = 取消整个截图
-      invoke("cancel_screenshot").catch(() => {});
     }
+    // 选区外右键：忽略（取消截图用 ESC 或工具栏取消按钮）
   }
 
   function composeAndCrop(): string | null {
