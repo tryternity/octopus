@@ -401,6 +401,7 @@ export default function Screenshot() {
 
   // 鼠标事件
   function onMouseDown(e: React.MouseEvent) {
+    if (e.button !== 0) return; // 仅左键
     const mx = e.clientX;
     const my = e.clientY;
     startPtRef.current = { x: mx, y: my };
@@ -625,14 +626,11 @@ export default function Screenshot() {
     const mx = e.clientX;
     const my = e.clientY;
     if (sel && inSelection(mx, my)) {
-      // 选区内右键：清除当前选区 + 标注，回到重新框选状态
-      setSel(null);
-      setAnnotations([]);
-      setMode("idle");
-      setTool("none");
-      setSelectedAnn(null);
+      // 选区内右键 = 同左键操作（模拟左键 mousedown）
+      const fakeEvent = { ...e, button: 0, clientX: mx, clientY: my } as React.MouseEvent;
+      onMouseDown(fakeEvent);
     } else {
-      // 选区外右键：取消整个截图
+      // 选区外右键 = 取消整个截图
       invoke("cancel_screenshot").catch(() => {});
     }
   }
