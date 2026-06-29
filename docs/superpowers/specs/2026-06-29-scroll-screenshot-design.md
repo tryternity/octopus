@@ -1,19 +1,34 @@
 # 截图三期：滚动截屏设计
 
 **日期**: 2026-06-29
-**状态**: 引擎已完成（stitch.rs + 录制循环），交互方案重构中
+**状态**: 引擎已完成（stitch.rs + 录制循环），auto 模式待实施
 **分支**: `feature/clipboard-research`
 
 ## 0. 概述
 
 截图三期实现滚动截屏——用户框选区域后点击工具栏「滚动截图」按钮进入录制模式。
 
-**交互方案（参考 Xnip）**：
-- 截图窗口**保持显示**（不隐藏），选区内亮、选区外暗遮罩
-- `set_ignore_cursor_events(true)` 让滚轮穿透到底层应用
-- Canvas 每帧用新的屏幕截图重绘选区（显示**实时滚动画面**，非冻结截图）
-- 工具栏在选区**正下方**（位置不变），可交互
-- 右侧弹出**预览窗口**显示拼接中的长图
+### 两种滚动模式（通过 `scroll_mode` 配置切换）
+
+**auto 模式**（默认，推荐）：
+- 用户点击「滚动截图」后，后端用 `CGEventCreateScrollWheelEvent` 自动模拟滚轮
+- 用户只需等录制完成或手动点击「停止」
+- 完全绕过窗口焦点/穿透问题——不需要 `set_ignore_cursor_events`、不需要 cursor 区域切换
+- 截图窗口保持显示（暗遮罩 + 选区绿色边框 + 实时画面 + 右侧预览）
+- 恒定滚动速度，NCC 匹配率高
+
+**manual 模式**（高级选项）：
+- 利用 `tauri-nspanel` 将截图窗口转为 NSPanel（`NonactivatingPanel` 不抢键盘焦点）
+- `set_ignore_cursor_events(true)` 让鼠标穿透
+- 用户手动滚动触控板，滚轮事件自然路由到底层应用
+- 体验类似 Xnip
+
+### 为什么 auto 优先
+
+- macOS 的 `always_on_top` 窗口与滚轮穿透有天然冲突（焦点被截图窗口抢占）
+- NSPanel 方案需要 `tauri-nspanel` 集成调试，复杂度高
+- auto 模式拼接更平滑（恒定速度），用户体验一致
+- manual 模式作为后续高级选项
 - 用户在任意位置滚动触控板，底层应用跟着滚动，选区内的画面变化被拼接
 - 点击工具栏「停止」或按 ESC 结束，长图入库
 
@@ -253,14 +268,84 @@ set_cursor_passthrough(bool) → ()         // 新增
 
 **降级**：滚动截图失败不影响普通截图功能。start_scroll_recording 返回 Err → 回到 selected 模式 + toast 提示。
 
-## 6. 实施分期
+## 6. Auto 模式实现（优先）
 
-| 阶段 | 范围 |
-|---|---|
-| **Step 1** | capx/stitch.rs 拼接引擎（Stitcher + NCC + sticky/active cols + 单元测试） |
-| **Step 2** | 后端录制循环 + start/stop_scroll_recording 命令 + 事件 |
-| **Step 3** | 前端状态机 + 预览窗口 + 工具栏按钮 |
-| **Step 4** | 端到端验证 |
+### 6.1 配置
+
+```sql
+INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
+  ('scroll_mode', 'auto', '滚动截图模式: auto | manual');
+```
+
+AppConfig 新增 `scroll_mode` 字段（默认 `auto`）。
+
+### 6.2 后端：CGEvent 模拟滚轮
+
+```rust
+/// auto 模式：模拟一次向下滚轮事件
+#[cfg(target_os = "macos")]
+fn send_scroll_event(lines: i32) {
+    use core_graphics::event::{CGEvent, CGEventType, ScrollEventUnit};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    let source = CGEventSource::new(CGEventSourceStateID::HIDSystemState).unwrap();
+    let event = CGEvent::new_scroll_wheel_event2(
+        &source,
+        ScrollEventUnit::Pixel, // 像素级滚动（更精细）
+        lines,                  // 垂直方向
+        0,                      // 水平方向
+    ).unwrap();
+    event.post(CGEventTapLocation::Session);
+}
+```
+
+### 6.3 auto 模式录制流程
+
+```
+start_scroll_recording(x, y, w, h, mode="auto")
+  │
+  ├─ 1. 初始化 Stitcher（首帧）
+  ├─ 2. 循环（每帧间隔 100ms）：
+  │     a. send_scroll_event(scroll_step)  // 模拟滚轮（在截屏前）
+  │     b. sleep(50ms)                     // 等待应用响应滚动
+  │     c. spawn_blocking: capture + crop → RGBA
+  │     d. stitcher.process_frame(rgba)
+  │     e. emit("scroll://frame", { frame, preview, height })
+  │     f. 如果连续 3 帧无新内容（到底了）→ 自动停止
+  ├─ 3. stop → 长图入库 → 关窗口
+  └─ 不需要 set_ignore_cursor_events、不需要 cursor 区域切换
+```
+
+**关键参数**：
+- `scroll_step`：每次滚 40 像素（约 2 行），可调
+- `auto_stop_threshold`：连续 3 帧无新内容自动停止
+
+### 6.4 manual 模式（后续）
+
+利用 `tauri-nspanel`：
+- 截图窗口创建后转为 NSPanel（`NSWindowStyleMaskNonactivatingPanel`）
+- 不抢键盘焦点 → 滚轮事件路由到底层应用
+- 仍需 `set_ignore_cursor_events(true)` 让鼠标穿透
+- 区域化 cursor 切换（后端 CGEvent 检查鼠标位置，坐标修正为全局坐标系）
+
+## 7. 副屏坐标修正
+
+诊断报告确认的坐标问题：
+- `start_scroll_recording` 的 x/y 是窗口局部坐标
+- CGEvent 鼠标位置是全局坐标系
+- 录制时应记录 monitor 偏移，crop 时用偏移修正
+
+修复：start 时获取对应 monitor 的 `position()`，crop 时用物理坐标匹配正确的 capture。
+
+## 8. 实施分期（修订）
+
+| 阶段 | 范围 | 状态 |
+|---|---|---|
+| **Step 1** | capx/stitch.rs 拼接引擎 | ✅ 已完成 |
+| **Step 2** | 后端录制循环（spawn_blocking + emit） | ✅ 已完成 |
+| **Step 3** | 前端 scrolling 模式 + 工具栏 | ✅ 已完成 |
+| **Step 4** | auto 模式（CGEvent 模拟滚轮 + 自动停止 + 配置） | 🔧 待实施 |
+| **Step 5** | 副屏坐标修正（monitor 偏移） | 🔧 待实施 |
+| **Step 6** | manual 模式（NSPanel + cursor 区域化） | 🔜 后续 |
 
 ## 7. 风险
 
