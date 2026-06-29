@@ -43,10 +43,12 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
         .expect("failed to create clipboard menu item");
     let screenshot = MenuItem::with_id(app, "screenshot", "截图", true, None::<&str>)
         .expect("failed to create screenshot menu item");
+    let stop_scroll = MenuItem::with_id(app, "stop_scroll", "停止滚动截图", true, None::<&str>)
+        .expect("failed to create stop_scroll menu item");
     let quit = MenuItem::with_id(app, "quit", "退出系统", true, None::<&str>)
         .expect("failed to create quit menu item");
 
-    let menu = Menu::with_items(app, &[&toggle, &engine_info, &clipboard, &screenshot, &settings, &quit])
+    let menu = Menu::with_items(app, &[&toggle, &engine_info, &clipboard, &screenshot, &stop_scroll, &settings, &quit])
         .expect("failed to create tray menu");
 
     // 存储 toggle 和 engine_info handle 供后续更新使用
@@ -88,6 +90,10 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
                 tauri::async_runtime::spawn(async move {
                     let _ = crate::screenshot_commands::start_screenshot(app_handle).await;
                 });
+            }
+            "stop_scroll" => {
+                info!("Tray: stop scroll recording");
+                crate::screenshot_commands::stop_scroll_recording();
             }
             "quit" => {
                 info!("Tray: quit");

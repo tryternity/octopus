@@ -568,7 +568,7 @@ pub async fn start_scroll_recording(
         let pw = (w * scale) as u32;
         let ph = (h * scale) as u32;
 
-        // 让截图窗口忽略鼠标事件（滚轮穿透到底层应用）
+        // 隐藏截图窗口（让用户可以正常操作底层应用滚动）
         let scroll_labels: Vec<String> = ah
             .webview_windows()
             .keys()
@@ -577,7 +577,7 @@ pub async fn start_scroll_recording(
             .collect();
         for label in &scroll_labels {
             if let Some(win) = ah.get_webview_window(label) {
-                let _ = win.set_ignore_cursor_events(true);
+                let _ = win.hide();
             }
         }
 
@@ -636,12 +636,8 @@ pub async fn start_scroll_recording(
             }
         }
 
-        // 录制结束：恢复鼠标事件
-        for label in &scroll_labels {
-            if let Some(win) = ah.get_webview_window(label) {
-                let _ = win.set_ignore_cursor_events(false);
-            }
-        }
+        // 录制结束：关闭截图窗口（不需要恢复，直接关闭）
+        close_all_screenshot_windows(&ah);
 
         // 入库
         let canvas = stitcher.canvas().clone();
