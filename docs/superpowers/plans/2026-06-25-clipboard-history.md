@@ -2095,3 +2095,13 @@ Phase 3 完成后的持续迭代，按实际实施顺序记录。
 - 「引擎接入」section 移除
 - 润色 section label 加「润色」前缀（润色模型/润色模式/润色提示词/润色间隔/润色停顿阈值）
 - 润色模型 select 用 `llm_models.find(m => m.current)?.name` 匹配当前选中（修 3-part spec 与裸名不匹配）
+
+### 迭代 14：启动同步修复 + 浮窗监听按钮样式（2026-06-29）
+
+**启动同步修复**（v5 审计 Issue 1.1，核实属实）：
+- 问题：`ClipboardHandle::new()` 默认 `recording_enabled = true`，而热重载只在运行时 `set_config` 路径触发——用户关掉「剪贴板监听」并重启后 flag 复活（DB 仍 `false`），watcher 又开始记录，设置形同虚设
+- 修复：`main.rs` setup 创建 handle 后、watcher 启动（同一 `Arc`，`main.rs:303`）前，按 `config.clipboard_enabled` 调一次 `set_recording_enabled`，让运行时 flag 与 DB 持久值在启动即一致
+
+**浮窗监听按钮样式**：
+- 原：低调灰 `Circle`（启用）/ amber `CircleOff`（禁用）——反馈"太低调"
+- 改：`CircleCheck`（绿圆+勾=监听中）/ `CircleX`（红圆+叉=已关闭），强对比状态符号；import 由 `Circle, CircleOff` 换为 `CircleCheck, CircleX`（lucide-react ^1.21.0）
