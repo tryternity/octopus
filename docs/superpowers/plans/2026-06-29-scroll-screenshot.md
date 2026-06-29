@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans.
 
-**Goal:** 用户框选后点「滚动截图」→ 手动滚动触控板 → NCC 拼接为长图 → 实时预览 → 停止后入库
+**Goal:** 用户框选后点「滚动截图」→ 截图窗口保持显示（选区实时画面）+ 滚轮穿透 + NCC 拼接 → 工具栏/预览可交互 → 停止后入库
 
-**Architecture:** capx/stitch.rs 拼接引擎（imageproc NCC + Sobel）+ 后端录制循环 + 前端预览浮层 + 状态机 scrolling
+**Architecture:** capx/stitch.rs 拼接引擎（✅ 已完成）+ 后端录制循环（✅ 已完成，需修订 emit）+ 前端 scrolling 模式（需重构：实时 Canvas + 区域化 cursor + 预览）
 
 **Tech Stack:** Rust + imageproc 0.25 + image 0.25 + xcap + Tauri + React
 
@@ -577,3 +577,43 @@ mouseDown/mouseMove 在 scrolling 模式下直接 return
 | §4.3 Tauri 命令 | Task 2 |
 | §4.4 事件 | Task 2 + 3 |
 | §5 错误处理 | Task 1 + 2 + 3 |
+
+---
+
+## 实施偏差与重构记录
+
+### 偏差 1：窗口隐藏方案（失败）
+
+原始实现录制时隐藏截图窗口，用户无法看到选区和工具栏。用户反馈"像取消了截图"。
+改为：窗口保持显示 + `set_ignore_cursor_events(true)` 滚轮穿透。
+
+### 偏差 2：ignore cursor 导致工具栏不可交互（失败）
+
+整个窗口 ignore cursor 后，工具栏/预览/停止按钮全部无法点击。
+改为：区域化 cursor events——鼠标在工具栏/预览区域时 `set_ignore_cursor_events(false)`，离开时恢复 true。
+
+### 偏差 3：spawn_blocking 避免阻塞 event loop
+
+`capture_all_monitors` 每帧 56MB，同步执行阻塞 tokio 导致 ESC 无响应。
+改为：每帧用 `tokio::task::spawn_blocking` 在独立线程截图。
+
+### 偏差 4：帧率 15fps → 10fps
+
+每帧 `capture_all_monitors`（56MB RGBA）+ NCC 计算开销大，15fps CPU 紧张。降为 10fps（100ms 间隔）。
+
+### 待实现（Task 5-7）
+
+**Task 5: 后端修订**
+- start_scroll_recording 改为不隐藏窗口，改用 `set_ignore_cursor_events(true)`
+- emit `scroll://frame` 增加 `frame` 字段（选区实时画面 base64）
+- 新增 `set_cursor_passthrough` 命令
+- stop 时 `set_ignore_cursor_events(false)` + 关窗口
+
+**Task 6: 前端区域化 cursor**
+- mousemove 检测鼠标是否在工具栏/预览区域
+- 调 `set_cursor_passthrough` 动态切换
+
+**Task 7: 前端实时 Canvas + 预览**
+- scroll://frame 的 `frame` base64 → 替换 Canvas 选区画面（实时滚动效果）
+- scroll://frame 的 `preview` base64 → 更新预览 `<img>`
+- 工具栏始终显示（不依赖 mode === "selected"）

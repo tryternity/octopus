@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use image::{GrayImage, GenericImage, Rgba, RgbaImage};
+use image::{GrayImage, GenericImage, RgbaImage};
 use imageproc::gradients::sobel_gradients;
 use std::ops::Range;
 

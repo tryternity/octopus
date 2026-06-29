@@ -568,16 +568,29 @@ pub async fn start_scroll_recording(
         let pw = (w * scale) as u32;
         let ph = (h * scale) as u32;
 
-        // 隐藏截图窗口（让用户可以正常操作底层应用滚动）
+        // 设置截图窗口 ignore cursor events（滚轮穿透到底层应用）
+        // 后端在录制循环中每帧检查鼠标位置，动态切换 ignore cursor
         let scroll_labels: Vec<String> = ah
             .webview_windows()
             .keys()
             .filter(|k| k.starts_with("screenshot_"))
             .cloned()
             .collect();
+
+        // 工具栏/预览的逻辑坐标区域（用于判断鼠标是否在交互区）
+        let toolbar_y = y + h + 8.0;
+        let toolbar_x_start = x;
+        let toolbar_x_end = x + 420.0;
+        let preview_right = x + w + 12.0 + 200.0 <= 1920.0;
+        let preview_x_start = if preview_right { x + w + 12.0 } else { x - 12.0 - 200.0 };
+        let preview_x_end = preview_x_start + 200.0;
+        let sel_y_start = y;
+        let sel_y_end = y + 600.0;
+
+        // 先设为穿透
         for label in &scroll_labels {
             if let Some(win) = ah.get_webview_window(label) {
-                let _ = win.hide();
+                let _ = win.set_ignore_cursor_events(true);
             }
         }
 
@@ -601,8 +614,44 @@ pub async fn start_scroll_recording(
         interval.tick().await;
 
         let ah2 = ah.clone();
+        let mut last_passthrough = true;
         while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
             interval.tick().await;
+
+            // 检查鼠标位置，动态切换 cursor 穿透
+            #[cfg(target_os = "macos")]
+            {
+                use core_graphics::event::CGEvent;
+                use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+                let mouse_pos = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+                    .ok()
+                    .and_then(|src| CGEvent::new(src).ok())
+                    .map(|e| {
+                        let loc = e.location();
+                        // CGEvent location: 逻辑坐标（points），原点在主屏左下角
+                        // 翻转 Y 到 CSS 坐标系（原点左上角）
+                        // 用 Tauri 的窗口尺寸近似屏幕高度
+                        (loc.x, loc.y) // 先不翻转，用 log 对比
+                    });
+
+                if let Some((mx, my)) = mouse_pos {
+                    log::info!("scroll mouse: ({}, {}) toolbar_y={} preview=[{},{}]", mx, my, toolbar_y, preview_x_start, preview_x_end);
+                    let in_toolbar = my >= toolbar_y && my <= toolbar_y + 44.0
+                        && mx >= toolbar_x_start && mx <= toolbar_x_end;
+                    let in_preview = mx >= preview_x_start && mx <= preview_x_end
+                        && my >= sel_y_start && my <= sel_y_end;
+                    let want_passthrough = !in_toolbar && !in_preview;
+                    if want_passthrough != last_passthrough {
+                        log::info!("cursor passthrough: {} (in_toolbar={} in_preview={})", want_passthrough, in_toolbar, in_preview);
+                        for label in &scroll_labels {
+                            if let Some(win) = ah2.get_webview_window(label) {
+                                let _ = win.set_ignore_cursor_events(want_passthrough);
+                            }
+                        }
+                        last_passthrough = want_passthrough;
+                    }
+                }
+            }
 
             // spawn_blocking 截屏（避免阻塞 event loop 导致 ESC 无响应）
             let capture_result = tokio::task::spawn_blocking({
@@ -618,26 +667,40 @@ pub async fn start_scroll_recording(
 
             let frame_rgba = match capture_result { Ok(Ok(img)) => img, _ => continue };
 
-            let added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
+            // 选区实时画面（JPEG base64，给前端 Canvas 重绘用）
+            let mut frame_jpg = Vec::new();
+            let frame_rgb = image::DynamicImage::ImageRgba8(frame_rgba.clone()).into_rgb8();
+            let mut jpg_enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut frame_jpg, 80);
+            let _ = jpg_enc.encode(&frame_rgb, frame_rgb.width(), frame_rgb.height(), image::ExtendedColorType::Rgb8);
+            let frame_b64 = general_purpose::STANDARD.encode(&frame_jpg);
 
-            if added {
-                let canvas = stitcher.canvas();
-                let preview_w = 200u32;
-                let preview_h = (preview_w * canvas.height() / canvas.width()).min(600);
-                let preview = image::imageops::resize(canvas, preview_w, preview_h, image::imageops::FilterType::Nearest);
-                let mut png_bytes = Vec::new();
-                let _ = preview.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png);
-                let b64 = general_purpose::STANDARD.encode(&png_bytes);
-                let _ = ah2.emit("scroll://frame", serde_json::json!({
-                    "image": b64,
-                    "height": stitcher.height(),
-                    "phys_height": (stitcher.height() as f64 / scale) as u32,
-                }));
+            let _added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
+
+            // 拼接预览
+            let canvas = stitcher.canvas();
+            let preview_w = 200u32;
+            let preview_h = (preview_w * canvas.height() / canvas.width()).min(600);
+            let preview = image::imageops::resize(canvas, preview_w, preview_h, image::imageops::FilterType::Nearest);
+            let mut preview_png = Vec::new();
+            let _ = preview.write_to(&mut std::io::Cursor::new(&mut preview_png), image::ImageFormat::Png);
+            let preview_b64 = general_purpose::STANDARD.encode(&preview_png);
+
+            let _ = ah2.emit("scroll://frame", serde_json::json!({
+                "frame": frame_b64,
+                "preview": preview_b64,
+                "height": stitcher.height(),
+                "phys_height": (stitcher.height() as f64 / scale) as u32,
+            }));
+        }
+
+        // 录制结束：恢复鼠标事件
+        for label in &scroll_labels {
+            if let Some(win) = ah.get_webview_window(label) {
+                let _ = win.set_ignore_cursor_events(false);
             }
         }
 
-        // 录制结束：关闭截图窗口（不需要恢复，直接关闭）
-        close_all_screenshot_windows(&ah);
+        // 关闭截图窗口
 
         // 入库
         let canvas = stitcher.canvas().clone();
@@ -673,4 +736,14 @@ pub async fn start_scroll_recording(
 #[tauri::command]
 pub fn stop_scroll_recording() {
     SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 动态切换截图窗口的 cursor 事件穿透（区域化：工具栏区域恢复交互）
+#[tauri::command]
+pub fn set_cursor_passthrough(passthrough: bool, app_handle: tauri::AppHandle) {
+    for (label, win) in app_handle.webview_windows() {
+        if label.starts_with("screenshot_") {
+            let _ = win.set_ignore_cursor_events(passthrough);
+        }
+    }
 }

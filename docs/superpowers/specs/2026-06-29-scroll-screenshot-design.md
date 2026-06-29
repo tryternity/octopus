@@ -1,40 +1,60 @@
 # 截图三期：滚动截屏设计
 
 **日期**: 2026-06-29
-**状态**: 设计完成，待实施
+**状态**: 引擎已完成（stitch.rs + 录制循环），交互方案重构中
 **分支**: `feature/clipboard-research`
 
 ## 0. 概述
 
-截图三期实现滚动截屏——用户框选区域后点击工具栏「滚动截图」按钮进入录制模式，手动滚动触控板，程序持续截取选区并通过 NCC 像素匹配拼接为长图，右侧/左侧实时预览。用户点击「停止滚动」结束，长图替换选区内容，回到正常截图流程（可标注/确认/保存）。
+截图三期实现滚动截屏——用户框选区域后点击工具栏「滚动截图」按钮进入录制模式。
 
-基于 `imageproc`（Sobel 梯度 + NCC 模板匹配）实现帧间拼接，参考 DigitShot 的 `stitch.rs`。新增 `crates/capx/src/stitch.rs` 拼接引擎。
+**交互方案（参考 Xnip）**：
+- 截图窗口**保持显示**（不隐藏），选区内亮、选区外暗遮罩
+- `set_ignore_cursor_events(true)` 让滚轮穿透到底层应用
+- Canvas 每帧用新的屏幕截图重绘选区（显示**实时滚动画面**，非冻结截图）
+- 工具栏在选区**正下方**（位置不变），可交互
+- 右侧弹出**预览窗口**显示拼接中的长图
+- 用户在任意位置滚动触控板，底层应用跟着滚动，选区内的画面变化被拼接
+- 点击工具栏「停止」或按 ESC 结束，长图入库
 
-## 1. 架构
+基于 `imageproc`（Sobel 梯度 + NCC 模板匹配）实现帧间拼接，参考 DigitShot 的 `stitch.rs`。`crates/capx/src/stitch.rs` 拼接引擎已实现。
+
+## 1. 架构（修订）
 
 ```
 选区确定 → 点击工具栏「滚动截图」按钮
          │
          ▼
-┌─────────────────────────────────────┐
-│  1. 进入滚动录制模式                  │
-│     - 工具栏按钮变为「停止滚动」       │
-│     - 旁边弹出实时预览窗口            │
-│     - 选区边框变为绿色（录制中）       │
-├─────────────────────────────────────┤
-│  2. 用户手动滚动触控板               │
-│     - 程序持续截取选区（~15fps）      │
-│     - 每帧与上一帧做 NCC 匹配        │
-│     - 检测重叠量 → 裁剪新内容        │
-│     - 追加到长图 canvas              │
-│     - 预览窗口实时更新               │
-├─────────────────────────────────────┤
-│  3. 用户点击「停止滚动」              │
-│     - 生成最终长图 PNG               │
-│     - 预览窗口关闭                   │
-│     - 回到正常截图状态（可标注/确认）  │
-└─────────────────────────────────────┘
+┌─────────────────────────────────────────────────┐
+│  1. 进入滚动录制模式                              │
+│     - 截图窗口 set_ignore_cursor_events(true)     │
+│     - 后端启动录制循环（spawn_blocking 截图）       │
+│     - 工具栏按钮变为「停止」                        │
+│     - 选区边框变为绿色（录制中）                    │
+│     - 右侧弹出预览窗口                             │
+├─────────────────────────────────────────────────┤
+│  2. 用户手动滚动触控板（任意位置）                  │
+│     - 滚轮穿透截图窗口到底层应用                    │
+│     - 后端 10fps 截取选区 → NCC 匹配 → 拼接        │
+│     - Canvas 每帧重绘选区（显示实时画面）           │
+│     - 预览窗口实时更新拼接长图                      │
+├─────────────────────────────────────────────────┤
+│  3. 用户点击工具栏「停止」或按 ESC                  │
+│     - set_ignore_cursor_events(false) 恢复         │
+│     - 生成最终长图 → 入库 → 关窗口                  │
+└─────────────────────────────────────────────────┘
 ```
+
+### 核心难点：ignore cursor 后工具栏可交互
+
+截图窗口整体 `ignore_cursor_events(true)` 后，工具栏/预览/停止按钮也无法点击。解决方案：
+
+**方案：区域化 cursor events**（macOS 原生支持）
+- 前端每帧 `mousemove` 时检测鼠标是否在工具栏/预览区域
+- 在工具栏区域 → `set_ignore_cursor_events(false)`（可交互）
+- 离开工具栏区域 → `set_ignore_cursor_events(true)`（滚轮穿透）
+
+前端通过 invoke 调 `set_cursor_passthrough(bool)` 命令动态切换。
 
 ### 新增模块
 
@@ -113,22 +133,21 @@ pub struct StitchConfig {
 
 ### 3.1 位置
 
-默认选区右侧，空间不足放左侧：
+默认选区右侧，空间不足放左侧（参考 Xnip 布局）：
 - `previewRight = sel.x + sel.w + 12 + 200 <= window.innerWidth`
 - 右侧：`x = sel.x + sel.w + 12`
 - 左侧：`x = sel.x - 12 - 200`
 - `y = sel.y`
 
 ```
-空间充足（默认右侧）：              空间不足（左侧）：
-┌────────┬──────────┐            ┌──────┬────────┐
-│        │ 预览     │            │ 预览 │        │
-│ 选区   │ ┌──────┐ │            │┌────┐│ 选区   │
-│        │ │ 长图  │ │            ││长图 ││        │
-│        │ │      │ │            ││    ││        │
-│        │ └──────┘ │            │└────┘│        │
-│        │ 停止     │            │停止  │        │
-└────────┴──────────┘            └──────┴────────┘
+┌────────┬──────────┐
+│        │ 预览     │
+│ 选区   │ ┌──────┐ │
+│（实时） │ │ 长图  │ │
+│        │ │      │ │
+├────────│ └──────┘ │
+│ 工具栏 │ 1234px   │
+└────────┴──────────┘
 ```
 
 ### 3.2 属性
@@ -137,71 +156,86 @@ pub struct StitchConfig {
 - 高度自适应内容（随拼接增长，最大不超屏幕高度的 80%）
 - 顶部状态条：绿色圆点 + 「录制中」+ 已拼接高度（px）
 - 追踪丢失：红色圆点 + 「追踪丢失」
-- 底部「停止」按钮（等同于工具栏的停止按钮）
 - 拼接图像通过 `canvas.toDataURL()` 缩放到预览宽度渲染
 
 ### 3.3 更新频率
 
-- 拼接引擎每处理一帧 → emit `scroll://frame`（canvas base64）
-- 前端监听事件 → 预览 `<img>` 替换 src（~15fps）
+- 后端拼接引擎每处理一帧 → emit `scroll://frame`（含选区实时画面 base64 + 预览 base64）
+- 前端监听事件 → Canvas 重绘选区 + 预览 `<img>` 替换 src
 
-## 4. 数据流与状态机
+## 4. 数据流与状态机（修订）
 
-### 4.1 前端状态机扩展
+### 4.1 前端状态机
 
 ```
-Mode 增加: "scrolling"
+Mode: "scrolling"
 
 selected → 点击「滚动截图」按钮 → scrolling
     │                                    │
     │     ┌──────────────────────────────┤
     │     │ scrolling 模式：              │
-    │     │ - 后端启动录制循环            │
-    │     │ - 前端监听 scroll://frame     │
-    │     │ - 预览窗口实时更新            │
-    │     │ - 工具栏变为「停止滚动」      │
-    │     │ - 选区边框变绿色              │
+    │     │ - 后端：spawn_blocking 录制   │
+    │     │ - 截图窗口 ignore_cursor=true │
+    │     │ - Canvas 显示实时画面         │
+    │     │ - 工具栏：停止 + 预览         │
+    │     │ - 鼠标在工具栏区域时恢复交互   │
     │     └──────────────────────────────┤
     │                                    │
-    │                              点击「停止滚动」
+    │                              点击「停止」或 ESC
     │                                    │
     ├←───────────────────────────────────┘
     │
     ▼
-selected（回到正常状态，长图作为选区内容）
+长图入库 → 关闭截图窗口
 ```
 
-### 4.2 后端录制循环
+### 4.2 后端录制循环（已实现，修订 emit 内容）
 
 ```
-start_scroll_recording(label, x, y, w, h)
+start_scroll_recording(x, y, w, h)
   │
-  ├─ 1. 初始化 Stitcher（首帧 → 检测 sticky/active cols）
-  ├─ 2. 循环（~15fps）：
-  │     a. xcap capture_region(x, y, w, h) → RGBA
-  │     b. stitcher.process_frame(rgba) → Option<new_rows>
-  │     c. 有新行 → emit("scroll://frame", canvas_base64)
-  │     d. 无新行（重复帧）→ 跳过
-  │     e. 低置信连续 ≥ 8 → emit("scroll://warning", "追踪丢失")
-  ├─ 3. stop_scroll_recording → 结束循环
-  │     a. 最终 canvas → PNG bytes
-  │     b. 入库（WebP BLOB + 剪贴板历史）
-  │     c. emit("scroll://done", item_id)
-  └─ 4. 前端收到 done → 回到 selected 模式
+  ├─ 1. set_ignore_cursor_events(true)
+  ├─ 2. 初始化 Stitcher（首帧）
+  ├─ 3. 循环（10fps，spawn_blocking）：
+  │     a. capture_all_monitors → crop_region → RGBA
+  │     b. stitcher.process_frame(rgba)
+  │     c. emit("scroll://frame", {
+  │          frame: base64,       // 选区实时画面（前端 Canvas 重绘）
+  │          preview: base64,     // 拼接长图缩略图
+  │          height: pixels       // 拼接高度
+  │        })
+  └─ 4. stop → ignore_cursor(false) → 长图入库 → 关窗口
 ```
 
-### 4.3 Tauri 命令
+### 4.3 区域化 cursor events
+
+前端 mousemove 时：
+```typescript
+if (mode === "scrolling") {
+  const inToolbar = mouseY >= toolbarY && mouseY <= toolbarY + 44;
+  const inPreview = mouseX >= previewX && mouseX <= previewX + 200;
+  const needInteractive = inToolbar || inPreview;
+  invoke("set_cursor_passthrough", { passthrough: !needInteractive });
+}
+```
+
+Tauri 命令：
+```rust
+#[tauri::command]
+pub fn set_cursor_passthrough(passthrough: bool, app_handle: tauri::AppHandle) {
+    if let Some(win) = /* 当前截图窗口 */ {
+        let _ = win.set_ignore_cursor_events(passthrough);
+    }
+}
+```
+
+### 4.4 Tauri 命令
 
 ```rust
-start_scroll_recording(label: String, x: f64, y: f64, w: f64, h: f64) → ()
-stop_scroll_recording() → ()
+start_scroll_recording(x, y, w, h) → ()  // 已实现
+stop_scroll_recording() → ()              // 已实现
+set_cursor_passthrough(bool) → ()         // 新增
 ```
-
-### 4.4 事件
-
-- `scroll://frame` — 每帧拼接后的 canvas base64（预览更新）
-- `scroll://warning` — 追踪丢失警告
-- `scroll://done` — 录制结束（含最终图片信息）
 
 ## 5. 错误处理与边界
 
