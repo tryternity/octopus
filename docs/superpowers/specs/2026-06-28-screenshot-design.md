@@ -1,16 +1,16 @@
 # 屏幕截图功能设计
 
 **日期**: 2026-06-28
-**状态**: ✅ 一期已实现（基础截图 + 框选 + 手柄调整 + 确认 → 剪贴板历史）
+**状态**: ✅ 一期 + 1.1 期（多显示器）+ 二期（标注工具栏）已实现，e2e 验证通过
 **分支**: `feature/clipboard-research`（worktree: `.worktrees/clipboard-research`）
 
 ## 0. 概述
 
-为 octopus 新增屏幕截图能力。一期实现基础截图：全局快捷键/托盘菜单触发 → 全屏遮罩 → 鼠标框选 + 8 手柄调整 + 拖拽平移 → Enter 确认 → 自动进剪贴板历史。基于 xcap（跨平台截图引擎）+ Tauri 全屏透明窗口 + React Canvas 选区 UI。
+为 octopus 新增屏幕截图能力。一期实现基础截图：全局快捷键/托盘菜单触发 → 全屏遮罩 → 鼠标框选 + 8 手柄调整 + 拖拽平移 → Enter 确认 → 自动进剪贴板历史。1.1 期多显示器支持（每屏独立窗口）。二期标注工具栏（矩形/椭圆/直线/箭头/画笔/文字/序号 + 颜色/粗细/大小浮窗 + OCR/保存/确认/取消）。三期滚动截图。
+
+基于 xcap（跨平台截图引擎）+ Tauri 全屏窗口 + React Canvas 选区 UI。
 
 独立 crate `octopus-capx`（目录 `crates/capx/`），封装 xcap 截图 + 裁剪。截图结果作为图片条目进入剪贴板历史，可 OCR / 保存 / 收藏 / 删除。
-
-二期加标注工具栏（矩形/箭头/文字），三期加滚动截图。
 
 ## 1. 架构
 
@@ -335,9 +335,11 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 **标注属性**：每个标注独立记忆 color + lineWidth（或 fontSize / circleSize），已画的不受新设置影响。
 
 **标注交互**：
-- 任何工具状态下优先检测已有标注命中（bounding box hit test）
-- 选中标注蓝色虚线高亮，可拖动移动（delta 偏移所有坐标）
-- 悬停标注显示 move 光标
+- **选择工具**（arrow-pointer，工具栏首位）激活时检测已有标注命中（bounding box hit test），可拖动移动
+- 其他标注工具激活时不检测已有标注（优先绘制）
+- 选中标注蓝色虚线高亮，可拖动移动（delta 偏移所有坐标 + pen points 数组）
+- 悬停标注显示 move 光标（仅 tool=none）
+- 选中后按 Delete/Backspace 可删除单个标注
 - 标注绘制限制在选区内（Canvas `clip()`）
 
 **确认合成**（`confirm_screenshot_with_data`）：
@@ -356,7 +358,28 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 **前端合成重构**：`composeAndCrop()` 公共函数（doOcr/doSaveFile/doConfirm 共用），消除重复代码。
 
 **多显示器崩溃修复**：串行创建窗口（150ms 间隔），避免 macOS WKWebView 同时创建崩溃
-| **三期** | 滚动截图（自动滚动 + 逐行像素匹配拼接） | 一期 |
+
+**多显示器同步显示**：READY_COUNT + TOTAL_WINDOWS barrier——所有窗口前端渲染完后统一 show，避免逐个弹出。3s 超时 fallback 强制显示防死锁。
+
+**背景图编码优化**：RGBA → JPEG 85%（比 PNG 快 10×+，4K 从 ~200ms → ~20ms），Base64 IPC 数据量从 ~20MB → ~3MB。
+
+**避免重复解码**：`encode_to_webp_from_image(&DynamicImage)` 直接接收已解码图像引用，跳过第二次 `load_from_memory`。
+
+**Canvas 性能**：Canvas 尺寸仅初始化一次（`canvasInitedRef`），draw 中用 `clearRect` 替代每帧重设 width/height，避免高频 GPU 缓冲区重分配。
+
+**选区外点击忽略**：选区确定后（`mode === "selected"`），选区外左右键均忽略——避免误操作丢失标注。取消仅通过 ESC 或工具栏取消按钮。
+
+**鼠标行为**：
+| 位置 | 左键 | 右键 |
+|---|---|---|
+| 选区内 | 绘制/选中（工具决定） | 同左键 |
+| 选区外 | 忽略（已确定选区时） | 忽略 |
+
+**文字标注编辑**：双击已有文字标注进入编辑（保留原颜色/字号，ESC 恢复，不修改全局工具状态）。`drawMultilineText` 支持 `\n` 换行 + 自动折行。
+
+**工具栏位置**：默认选区下方水平居中，下方空间不够时移到上方。工具栏纯白不透明背景，遮挡后面 Canvas 的选区边框/手柄。
+
+| **三期** | 滚动截图（自动滚动 + 逐行像素匹配拼接） | 待实施 |
 
 ## 9. 风险
 

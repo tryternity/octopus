@@ -633,3 +633,19 @@ xcap 声明了 `[workspace]`，导致 octopus workspace 冲突。解决：`exclu
 ### 偏差 13：多显示器窗口崩溃修复
 
 同时创建多个全屏 WebView 导致 macOS WKWebView 进程崩溃（segfault）。改为串行创建（150ms 间隔）+ 错误处理（创建失败跳过该显示器）。
+
+### 偏差 14：e2e 审计修复（7 bug + UX + 性能）
+
+**Bug**：双相同分辨率画面重合（坐标匹配）、自由曲线 points 未平移、文字输入竞态丢失、选区越界、工具激活时标注命中阻碍绘图、丢弃标注 Canvas 残留、文字多行不支持。
+
+**UX**：保存对话框先关窗口、工具栏 clamp、barrier 同步显示 + 3s 超时、Delete 删除标注、序号撤销回退、选择工具按钮、右键行为、双击编辑（ESC 恢复）、选区外点击忽略。
+
+**性能**：Canvas 尺寸仅初始化一次、PNG→JPEG 85%、encode_to_webp_from_image 避免重复解码。
+
+### 偏差 15：modeRef 同步（右键状态机卡死修复）
+
+React 异步闭包读旧 mode 导致右键模拟左键后状态卡死。引入 modeRef（useRef）+ setModeSafe 同步更新 ref。
+
+### 偏差 16：双击编辑文字——ESC 丢文字 + 篡改全局颜色
+
+不立即删除原标注（标记 text:"" 隐藏），ESC 从 editTextOrigRef 恢复。editTextColorRef/editTextFontSizeRef 独立存编辑颜色/字号，不修改全局。
