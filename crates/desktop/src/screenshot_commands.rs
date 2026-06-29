@@ -609,6 +609,22 @@ pub async fn start_scroll_recording(
         let pw = (w * scale) as u32;
         let ph = (h * scale) as u32;
 
+        // 隐藏所有截图窗口（避免 xcap 截到自身）
+        let scroll_labels: Vec<String> = ah
+            .webview_windows()
+            .keys()
+            .filter(|k| k.starts_with("screenshot_"))
+            .cloned()
+            .collect();
+        for label in &scroll_labels {
+            if let Some(win) = ah.get_webview_window(label) {
+                let _ = win.hide();
+            }
+        }
+
+        // 等一帧让窗口真正隐藏
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+
         // 首帧
         let first_result = tokio::task::spawn_blocking({
             let tx = target_mon_x_phys; let ty = target_mon_y_phys;
