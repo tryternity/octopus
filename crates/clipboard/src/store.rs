@@ -148,24 +148,47 @@ fn query_with_search(
     limit: i64,
     offset: i64,
 ) -> Result<Vec<ClipboardItem>> {
-    let pattern = format!("%{}%", search);
+    // FTS5 trigram tokenizer 以「3 个 Unicode 字符」为一个 token；
+    // 查询短于 3 字符（单个字母 / 两位字母 / 两个汉字如「天气」）无法形成 trigram，
+    // MATCH 匹配空，故 fallback 回 LIKE 子串扫表。按字符数而非字节数判断。
+    if search.chars().count() < 3 {
+        let pattern = format!("%{}%", search);
+        let sql = format!(
+            "SELECT id, item_type, source, content, is_favorite, created_at,
+                    blob_hash, width, height, has_thumbnail, file_count, is_rich,
+                    transcription_id, polish_status, engine, model
+             FROM clipboard_history
+             WHERE search_text LIKE ?
+             {}
+             ORDER BY created_at DESC
+             LIMIT ? OFFSET ?",
+            if extra_where.is_empty() { String::new() } else { format!("AND {}", extra_where) }
+        );
+        let mut stmt = conn.prepare(&sql)?;
+        let rows = stmt.query_map(params![pattern, limit, offset], row_to_item)?;
+        return Ok(rows.filter_map(|r| r.ok()).collect());
+    }
+
+    // 走 FTS5（clipboard_history_fts 虚表，trigram tokenizer）：
+    // 整个查询串包成 phrase（双引号包裹 + 内部 " 翻倍转义），等价子串匹配但命中索引，
+    // 且屏蔽 OR/AND/*/:/空格 等 FTS5 查询语法干扰。extra_where 的 source/item_type/
+    // is_favorite 仅存在于主表（虚表只暴露 search_text），裸用无歧义。
+    let phrase = format!("\"{}\"", search.replace('"', "\"\""));
     let sql = format!(
-        "SELECT id, item_type, source, content, is_favorite, created_at,
-                blob_hash, width, height, has_thumbnail, file_count, is_rich,
-                transcription_id, polish_status, engine, model
-         FROM clipboard_history
-         WHERE search_text LIKE ?
+        "SELECT c.id, c.item_type, c.source, c.content, c.is_favorite, c.created_at,
+                c.blob_hash, c.width, c.height, c.has_thumbnail, c.file_count, c.is_rich,
+                c.transcription_id, c.polish_status, c.engine, c.model
+         FROM clipboard_history_fts f
+         JOIN clipboard_history c ON c.id = f.rowid
+         WHERE f.search_text MATCH ?
          {}
-         ORDER BY created_at DESC
+         ORDER BY c.created_at DESC
          LIMIT ? OFFSET ?",
         if extra_where.is_empty() { String::new() } else { format!("AND {}", extra_where) }
     );
 
     let mut stmt = conn.prepare(&sql)?;
-    let rows = stmt.query_map(
-        params![pattern, limit, offset],
-        row_to_item,
-    )?;
+    let rows = stmt.query_map(params![phrase, limit, offset], row_to_item)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
@@ -507,6 +530,45 @@ mod tests {
         }).unwrap();
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].content, "今天天气很好");
+    }
+
+    #[test]
+    fn test_fts_search_short_fallback() {
+        // trigram 要求查询 >= 3 字节；2 字节 ASCII 走 LIKE fallback，仍能命中
+        let conn = open_test_db();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 7000, item_type: ItemType::Text,
+            content: "hello world".into(), search_text: "hello world".into(),
+            created_at: iso_now(), blob_hash: None, width: None, height: None,
+            has_thumbnail: None, file_count: None, is_rich: false,
+        }).unwrap();
+        let r = query_history(&conn, &QueryFilter {
+            filter: "all".into(), search: Some("el".into()), page: 1, size: 10,
+        }).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].content, "hello world");
+    }
+
+    #[test]
+    fn test_fts_search_phrase_substring() {
+        // 含空格的跨词子串，包成 phrase 后按子串命中（不被 FTS AND 拆成两个 token）
+        let conn = open_test_db();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 7100, item_type: ItemType::Text,
+            content: "hello world".into(), search_text: "hello world".into(),
+            created_at: iso_now(), blob_hash: None, width: None, height: None,
+            has_thumbnail: None, file_count: None, is_rich: false,
+        }).unwrap();
+        let r = query_history(&conn, &QueryFilter {
+            filter: "all".into(), search: Some("llo wor".into()), page: 1, size: 10,
+        }).unwrap();
+        assert_eq!(r.len(), 1);
+        assert_eq!(r[0].content, "hello world");
+        // 不存在的子串返回空（验证 MATCH 不会误命中）
+        let r2 = query_history(&conn, &QueryFilter {
+            filter: "all".into(), search: Some("xyzabc".into()), page: 1, size: 10,
+        }).unwrap();
+        assert!(r2.is_empty());
     }
 
     #[test]
