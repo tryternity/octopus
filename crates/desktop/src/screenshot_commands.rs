@@ -84,9 +84,12 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
             height: capture.height,
         }));
 
-        // 用 Tauri 的逻辑坐标 + 逻辑尺寸创建窗口
-        // visible=false：等前端渲染完成后再显示，避免白屏闪烁
-        let _ = WebviewWindowBuilder::new(
+        // 串行创建窗口（同时创建多个全屏 WebView 会导致 macOS segfault）
+        if i > 0 {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+        }
+
+        let window_result = WebviewWindowBuilder::new(
             &app_handle,
             &label,
             WebviewUrl::default(),
@@ -96,10 +99,15 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         .always_on_top(true)
         .skip_taskbar(true)
         .resizable(false)
-        .visible(false)       // 初始不可见
+        .visible(false)
         .position(pos_x, pos_y)
         .inner_size(log_w, log_h)
         .build();
+
+        if let Err(e) = &window_result {
+            log::error!("Failed to create screenshot window '{}': {}", label, e);
+            continue;
+        }
 
         log::info!(
             "Screenshot window '{}' at ({},{}) {}x{} (monitor phys {}x{}, scale {})",

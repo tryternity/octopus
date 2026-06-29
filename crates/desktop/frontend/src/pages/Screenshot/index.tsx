@@ -711,37 +711,36 @@ export default function Screenshot() {
           }}
         >
           <ToolButton active={tool === "rect"} onClick={() => setTool(tool === "rect" ? "none" : "rect")} label="矩形" icon={
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><rect x="3" y="4" width="12" height="10" rx="1" stroke="currentColor" strokeWidth="2"/></svg>
+            <img src="icons/square.svg" alt="矩形" className="w-[18px] h-[18px]" style={{ filter: tool === "rect" ? "brightness(0) invert(1)" : "none" }} />
           } />
           <ToolButton active={tool === "line"} onClick={() => setTool(tool === "line" ? "none" : "line")} label="直线" icon={
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><line x1="3" y1="15" x2="15" y2="3" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/></svg>
+            <img src="icons/straight-line.svg" alt="直线" className="w-[18px] h-[18px]" style={{ filter: tool === "line" ? "brightness(0) invert(1)" : "none" }} />
           } />
           <ToolButton active={tool === "arrow"} onClick={() => setTool(tool === "arrow" ? "none" : "arrow")} label="箭头" icon={
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 15L15 3M15 3L10 3M15 3L15 8" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <img src="icons/arrow-line.svg" alt="箭头" className="w-[18px] h-[18px]" style={{ filter: tool === "arrow" ? "brightness(0) invert(1)" : "none" }} />
           } />
           <ToolButton active={tool === "pen"} onClick={() => setTool(tool === "pen" ? "none" : "pen")} label="画笔" icon={
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M3 14C5 12 7 10 9 8C11 6 13 5 15 3" stroke="currentColor" strokeWidth="2" strokeLinecap="round"/><circle cx="3.5" cy="14.5" r="1.5" fill="currentColor"/></svg>
+            <img src="icons/sketching.svg" alt="画笔" className="w-[18px] h-[18px]" style={{ filter: tool === "pen" ? "brightness(0) invert(1)" : "none" }} />
           } />
           <ToolButton active={tool === "text"} onClick={() => setTool(tool === "text" ? "none" : "text")} label="文字" icon={
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><text x="4" y="14" fontSize="14" fontWeight="bold" fill="currentColor">A</text></svg>
+            <img src="icons/text.svg" alt="文字" className="w-[18px] h-[18px]" style={{ filter: tool === "text" ? "brightness(0) invert(1)" : "none" }} />
           } />
           <ToolButton active={tool === "number"} onClick={() => { setTool(tool === "number" ? "none" : "number"); setNumberCounter(1); }} label="序号" icon={
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><circle cx="9" cy="9" r="6.5" fill="currentColor"/><text x="9" y="13" fontSize="10" fontWeight="bold" fill="white" textAnchor="middle">1</text></svg>
+            <img src="icons/sequence-note.svg" alt="序号" className="w-[18px] h-[18px]" style={{ filter: tool === "number" ? "brightness(0) invert(1)" : "none" }} />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
           <ToolButton onClick={() => setAnnotations(annotations.slice(0, -1))} label="撤销" icon={
-            <svg width="18" height="18" viewBox="0 0 18 18" fill="none"><path d="M4 8H11C13 8 15 10 15 12C15 14 13 16 11 16H7" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/><path d="M6 4L2 8L6 12" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"/></svg>
+            <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
-          <button onClick={doSaveFile} title="保存到文件" style={{ padding: "4px 8px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.15)", background: "#fff", color: "#333", fontSize: 13, cursor: "pointer", display: "flex", alignItems: "center", gap: 4 }}>
-            <svg width="14" height="14" viewBox="0 0 14 14" fill="none"><path d="M7 1V9M7 9L4 6M7 9L10 6M2 11V13H12V11" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/></svg>
-            保存
+          <button onClick={doSaveFile} title="保存到文件" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
+            <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" />
           </button>
-          <button onClick={doConfirm} style={{ padding: "4px 12px", borderRadius: 6, border: "none", background: "#3b82f6", color: "#fff", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
-            ✓ 确认
+          <button onClick={doConfirm} title="确认" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "#3b82f6", cursor: "pointer" }}>
+            <img src="icons/copy.svg" alt="确认" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} />
           </button>
-          <button onClick={() => invoke("cancel_screenshot").catch(() => {})} style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid rgba(0,0,0,0.15)", background: "#fff", color: "#333", fontSize: 13, cursor: "pointer" }}>
-            ✕
+          <button onClick={() => invoke("cancel_screenshot").catch(() => {})} title="取消" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
+            <img src="icons/close.svg" alt="取消" className="w-[18px] h-[18px]" />
           </button>
         </div>
       )}
