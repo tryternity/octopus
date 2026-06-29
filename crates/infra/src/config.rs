@@ -176,6 +176,12 @@ pub struct AppConfig {
     #[serde(default = "default_clipboard_max_age_days")]
     pub clipboard_max_age_days: i64,
 
+    /// 是否启用剪贴板历史监听（ClipboardWatcher）。true→记录剪贴板历史；false→watcher 仍运行但不入库。
+    /// 设置页「交互」开关 + 浮窗 title bar 快捷按钮可配，热重载生效（运行时 AtomicBool flag，
+    /// 见 ClipboardHandle::recording_enabled；set_config 收到变更即翻转，无需重启）。默认 true。
+    #[serde(default = "default_clipboard_enabled")]
+    pub clipboard_enabled: bool,
+
     /// 截图全局快捷键（Tauri Accelerator 格式）。默认 "Alt+S"。
     #[serde(default = "default_screenshot_shortcut")]
     pub screenshot_shortcut: String,
@@ -257,6 +263,9 @@ fn default_clipboard_max_items() -> i64 {
 fn default_clipboard_max_age_days() -> i64 {
     30
 }
+fn default_clipboard_enabled() -> bool {
+    true
+}
 fn default_screenshot_shortcut() -> String {
     "Alt+S".into()
 }
@@ -299,6 +308,7 @@ impl Default for AppConfig {
             clipboard_shortcut: default_clipboard_shortcut(),
             clipboard_max_items: default_clipboard_max_items(),
             clipboard_max_age_days: default_clipboard_max_age_days(),
+            clipboard_enabled: default_clipboard_enabled(),
             screenshot_shortcut: default_screenshot_shortcut(),
             ocr_model: default_ocr_model(),
         }

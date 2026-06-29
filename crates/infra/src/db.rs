@@ -345,6 +345,7 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
             // i64 字段
             "clipboard_max_items" => { if let Ok(v) = value.parse() { cfg.clipboard_max_items = v; } }
             "clipboard_max_age_days" => { if let Ok(v) = value.parse() { cfg.clipboard_max_age_days = v; } }
+            "clipboard_enabled" => { if let Ok(v) = value.parse() { cfg.clipboard_enabled = v; } }
             "screenshot_shortcut" => cfg.screenshot_shortcut = value,
             // bool 字段：parse 失败保留 default
             "write_to_clipboard" => { if let Ok(v) = value.parse() { cfg.write_to_clipboard = v; } }
@@ -387,7 +388,7 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         PolishMode::FinalOnly => 1,
         PolishMode::Intermediate => 2,
     };
-    let fields: [(&str, String); 29] = [
+    let fields: [(&str, String); 30] = [
         ("engine_mode", cfg.engine_mode.clone()),
         ("remote_url", cfg.remote_url.clone()),
         ("grpc_endpoint", cfg.grpc_endpoint.clone()),
@@ -416,6 +417,7 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         ("polish_global_shortcut", cfg.polish_global_shortcut.clone()),
         ("clipboard_max_items", cfg.clipboard_max_items.to_string()),
         ("clipboard_max_age_days", cfg.clipboard_max_age_days.to_string()),
+        ("clipboard_enabled", cfg.clipboard_enabled.to_string()),
         ("screenshot_shortcut", cfg.screenshot_shortcut.clone()),
     ];
     for (key, value) in &fields {

@@ -333,7 +333,7 @@ octopus-cli config
 
 > **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（包括 `polish_mode`、`polish_interval` 和新字段 `polish_llm`），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`denoise_mode`（前缀 `denoise_`）控制麦克风环境降噪（采集层前置，VAD/ASR 前）。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。`active_polish_prompt` 属润色行为（与 `polish_*` 同组，但存独立 key，由 `db::load_active_prompt_id()` 读，不入 `AppConfig` struct）。
 
-> **快捷键字段**（`asr_shortcut` / `edit_shortcut` / `edit_global_shortcut` / `polish_global_shortcut` / `clipboard_shortcut` / `screenshot_shortcut`）均为 Tauri Accelerator 格式、GUI 设置页可配 + 热重载。`clipboard_*`（`clipboard_shortcut` / `clipboard_max_items` / `clipboard_max_age_days`）控制剪贴板历史（浮窗快捷键 + 容量/清理）；另有两个不入 `AppConfig` 的独立 app_config key：`clipboard_enabled`（默认 `true`，是否启用剪贴板历史监听）、`clipboard_auto_paste`（默认 `double`，列表项点击行为 `single`=复制 / `double`=粘贴）。`screenshot_shortcut` 控制截图触发。`download_mirror` 控制模型下载镜像源。`ocr_model` 控制 OCR 引擎选择（改后重启生效）。
+> **快捷键字段**（`asr_shortcut` / `edit_shortcut` / `edit_global_shortcut` / `polish_global_shortcut` / `clipboard_shortcut` / `screenshot_shortcut`）均为 Tauri Accelerator 格式、GUI 设置页可配 + 热重载。`clipboard_*`（`clipboard_shortcut` / `clipboard_max_items` / `clipboard_max_age_days` / `clipboard_enabled`）控制剪贴板历史（浮窗快捷键 + 容量/清理 + 是否监听）。`clipboard_enabled`（默认 `true`）是否启用剪贴板历史监听——已纳入 `AppConfig`，设置页「交互」开关 + 浮窗 title bar 快捷按钮可配，热重载生效（运行时翻转 watcher flag，无需重启）；列表项**双击默认粘贴**（固定行为，不可配）。`screenshot_shortcut` 控制截图触发。`download_mirror` 控制模型下载镜像源。`ocr_model` 控制 OCR 引擎选择（改后重启生效）。
 
 ### 模型选择 spec（`asr_engine` / `polish_llm` 统一 3-part 格式）
 

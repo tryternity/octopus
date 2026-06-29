@@ -1,20 +1,49 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
 import { useClipboardHistory } from "@/hooks/useClipboardHistory";
+import { useTauriEvent } from "@/hooks/useTauriEvent";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
-import { Pin, X, Settings2 } from "lucide-react";
+import { Pin, X, Settings2, Circle, CircleOff } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+interface ConfigResponse {
+  config: Record<string, string | number | boolean>;
+}
 
 export default function Clipboard() {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [pinned, setPinned] = useState(false);
   const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [recording, setRecording] = useState(true);
 
   const { items, total, refresh } = useClipboardHistory(filter, search);
+
+  // 监听开关：mount 读 get_config + 监听 config-changed 同步（与设置页 toggle 双向同步）。
+  const loadRecording = useCallback(async () => {
+    try {
+      const resp = await invoke<ConfigResponse>("get_config");
+      setRecording(resp.config.clipboard_enabled !== false);
+    } catch (e) {
+      console.error(e);
+    }
+  }, []);
+  useEffect(() => { loadRecording(); }, [loadRecording]);
+  useTauriEvent("config-changed", () => loadRecording());
+
+  const toggleRecording = useCallback(async () => {
+    const next = !recording;
+    setRecording(next); // 乐观更新；config-changed 回调会校正
+    try {
+      await invoke("set_config", { key: "clipboard_enabled", value: next });
+    } catch (e) {
+      setRecording(!next); // 回滚
+      console.error(e);
+    }
+  }, [recording]);
 
   const togglePin = useCallback(async () => {
     const next = !pinned;
@@ -40,16 +69,31 @@ export default function Clipboard() {
           <X className="w-3.5 h-3.5" />
         </button>
         <span className="text-[11px] font-medium tracking-wide text-muted-foreground">剪贴板</span>
-        <button
-          className={cn(
-            "p-1 rounded cursor-default transition-colors",
-            pinned ? "text-voice bg-voice/10" : "text-muted-foreground hover:bg-accent hover:text-foreground",
-          )}
-          onClick={togglePin}
-          title="置顶"
-        >
-          <Pin className="w-3.5 h-3.5" />
-        </button>
+        <div className="flex items-center gap-0.5">
+          {/* 监听开关：复制敏感内容前可在此快速暂停。与 Pin 同为状态 toggle，成组于右侧。 */}
+          <button
+            className={cn(
+              "p-1 rounded cursor-default transition-colors",
+              recording
+                ? "text-muted-foreground hover:bg-accent hover:text-foreground"
+                : "text-voice bg-voice/10",
+            )}
+            onClick={toggleRecording}
+            title={recording ? "暂停监听" : "恢复监听"}
+          >
+            {recording ? <Circle className="w-3.5 h-3.5" /> : <CircleOff className="w-3.5 h-3.5" />}
+          </button>
+          <button
+            className={cn(
+              "p-1 rounded cursor-default transition-colors",
+              pinned ? "text-voice bg-voice/10" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+            onClick={togglePin}
+            title="置顶"
+          >
+            <Pin className="w-3.5 h-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* Search + Filter */}

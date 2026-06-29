@@ -7,6 +7,10 @@ use std::sync::Mutex;
 pub struct ClipboardHandle {
     ctx: Mutex<ClipboardContext>,
     suppress_flag: AtomicBool,
+    /// 是否记录剪贴板历史（运行时开关，对应 AppConfig.clipboard_enabled）。
+    /// false 时 on_clipboard_change 直接 return（不存库、不 emit clipboard://changed）。
+    /// watcher 始终运行，仅由此 flag 控制是否入库——避免 stop/restart watcher 的线程开销。
+    recording_enabled: AtomicBool,
 }
 
 impl ClipboardHandle {
@@ -16,11 +20,22 @@ impl ClipboardHandle {
         Ok(Self {
             ctx: Mutex::new(ctx),
             suppress_flag: AtomicBool::new(false),
+            recording_enabled: AtomicBool::new(true),
         })
     }
 
     pub fn check_and_clear_suppress(&self) -> bool {
         self.suppress_flag.swap(false, Ordering::SeqCst)
+    }
+
+    /// 是否启用剪贴板历史记录（clipboard_enabled 的运行时镜像）。
+    pub fn is_recording_enabled(&self) -> bool {
+        self.recording_enabled.load(Ordering::SeqCst)
+    }
+
+    /// 设置是否记录（set_config 收到 clipboard_enabled 变更时热重载调用）。
+    pub fn set_recording_enabled(&self, enabled: bool) {
+        self.recording_enabled.store(enabled, Ordering::SeqCst);
     }
 
     pub fn write_text(&self, text: &str) -> Result<()> {

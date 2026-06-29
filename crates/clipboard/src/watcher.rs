@@ -58,6 +58,10 @@ impl<F: Fn() + Send + Sync + 'static> ClipboardHandler for ChangeHandler<F> {
         if self.handle.check_and_clear_suppress() {
             return;
         }
+        // 监听已禁用（clipboard_enabled=false）：不记录、不 emit，watcher 仍运行。
+        if !self.handle.is_recording_enabled() {
+            return;
+        }
         (self.on_change)();
     }
 }

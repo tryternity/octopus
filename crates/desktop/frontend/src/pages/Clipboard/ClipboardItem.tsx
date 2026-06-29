@@ -68,10 +68,12 @@ export default function ClipboardItemRow({
     onSelect();
   };
 
-  // 双击：复制到剪贴板（不关闭窗口，用户手动 Cmd+V 粘贴）
+  // 双击：写剪贴板 → 隐藏浮窗 → 恢复焦点 → 模拟 Cmd+V 粘贴（paste_clipboard_item，
+  // 后端串起 hide clipboard_window + focus_tracker.restore_focus + simulate_paste）。
+  // 仅浮窗双击走此路；显式「复制」按钮仍调 copy_clipboard_item（不隐藏窗口、不触发粘贴）。
   const handleDoubleClick = async () => {
     try {
-      await invoke("copy_clipboard_item", { id: item.id });
+      await invoke("paste_clipboard_item", { id: item.id });
     } catch (e) {
       console.error(e);
     }

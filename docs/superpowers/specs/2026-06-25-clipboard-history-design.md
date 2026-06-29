@@ -228,9 +228,13 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
   ('clipboard_enabled',      'true',  '是否启用剪贴板历史监听'),
   ('clipboard_shortcut',     'Alt+V', '剪贴板历史窗口快捷键'),
   ('clipboard_max_items',    '1000',  '最大保留条数（不含收藏）'),
-  ('clipboard_max_age_days', '30',    '自动清理天数（不含收藏）'),
-  ('clipboard_auto_paste',   'double','列表项点击行为: single(复制) | double(粘贴)');
+  ('clipboard_max_age_days', '30',    '自动清理天数（不含收藏）');
 ```
+
+> **`clipboard_enabled` 已落地（非 seed-only）**：纳入 `AppConfig`（bool，默认 `true`，`config.rs` 字段 + `db.rs` load/save 双向映射）。
+> 运行时热重载——`ClipboardHandle` 持 `recording_enabled: AtomicBool` 镜像，`on_clipboard_change` 在 suppress 检查后加 gate（`false` 直接 return，不存库、不 emit `clipboard://changed`）；`set_config` 收到 `clipboard_enabled` 变更即翻转该 flag（无需 stop/restart watcher，watcher 线程始终运行）。
+> 入口：设置页「交互」Card 开关 + 浮窗 title bar 快捷按钮（Pin 左侧，Circle/CircleOff），双向经 `config-changed` 事件同步。
+> **`clipboard_auto_paste` 已移除**：双击列表项固定 = 粘贴（`paste_clipboard_item`，见下交互表），不再可配。
 
 ### 2.4 Rust 数据结构
 
@@ -487,7 +491,7 @@ function App() {
 | 动作 | 行为 |
 |---|---|
 | 单击项 | 选中条目（不复制） |
-| 双击项 | 复制到剪贴板（不关闭窗口，用户手动 Cmd+V） |
+| 双击项 | 写剪贴板 → 隐藏浮窗 → 恢复焦点 → 模拟 Cmd+V 自动粘贴（`paste_clipboard_item`，后端串起 hide `clipboard_window` + `focus_tracker.restore_focus` + `simulate_paste`）。**固定行为**（`clipboard_auto_paste` 可配项已移除） |
 | 右键菜单 | 复制/粘贴/删除/收藏/备注 |
 | 收藏 | toggle `is_favorite`（乐观更新） |
 | 删除 | 两步确认（首次点击红色高亮 1.5s，再次点击执行） |
@@ -737,8 +741,8 @@ FTS5 可用性：`rusqlie` with `bundled` feature 默认启用 FTS5，需验证�
 剪贴板相关配置暴露到系统设置页（GeneralPanel）：
 - **快捷键 section** 新增「剪贴板浮窗」行（ShortcutButton kbd 标签风格，热重载）
 - **剪贴板 section**（新增 Card）：最大保留条数（100/200/300/500/1000）+ 自动清理天数（1/3/7/15/30）
-- AppConfig 新增 `clipboard_shortcut` / `clipboard_max_items` / `clipboard_max_age_days` 字段
-- `save_app_config` / `load_app_config` 同步更新（25 字段）
+- AppConfig 新增 `clipboard_shortcut` / `clipboard_max_items` / `clipboard_max_age_days` 字段（+ `clipboard_enabled` bool，已落地，见 §2.3）
+- `save_app_config` / `load_app_config` 同步更新（30 字段）
 
 ### 9.4 设置页 UI 优化
 

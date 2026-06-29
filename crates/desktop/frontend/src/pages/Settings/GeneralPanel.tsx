@@ -142,6 +142,9 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         <Row label="识别工具栏自动隐藏" effect="立即" hint="关闭后始终显示">
           <Toggle on={cfg.hide_toolbar as boolean} onClick={() => toggleVal("hide_toolbar")} />
         </Row>
+        <Row label="剪贴板监听" effect="立即" hint="关闭后不再记录剪贴板历史">
+          <Toggle on={cfg.clipboard_enabled as boolean} onClick={() => toggleVal("clipboard_enabled")} />
+        </Row>
       </Card>
 
       <Card icon={Layers} title="模型选择">

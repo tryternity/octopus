@@ -240,11 +240,15 @@ function ClipboardRow({
   }, []);
 
   useEffect(() => {
-    if (item.item_type === "image") {
-      invoke<string>("get_image_thumb", { id: item.id })
-        .then((dataUrl) => setThumbSrc(dataUrl))
-        .catch(() => {});
-    }
+    if (item.item_type !== "image") return;
+    // 列表项切换（翻页/滚动复用实例）时先清旧缩略图，避免新图 base64 经 IPC 传回前
+    // 短暂显示上一条（幽灵闪烁）；cancelled 防快速翻页/滚动时旧请求晚到覆盖新图。
+    setThumbSrc(null);
+    let cancelled = false;
+    invoke<string>("get_image_thumb", { id: item.id })
+      .then((dataUrl) => { if (!cancelled) setThumbSrc(dataUrl); })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, [item.id, item.item_type]);
 
   const handleCopy = async (e: React.MouseEvent) => {

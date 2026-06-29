@@ -2,6 +2,26 @@
 # 启动 octopus-desktop（release）+ 清 WKWebView 缓存，保证前端最新。
 set -euo pipefail
 
+REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
+
+# ocr-rs 默认从 GitHub 下载 MNN 预编译包（~7MB），断网/受限时会卡死 release 构建。
+# 把工程内 vendor 的 tarball 拷进 ocr-rs 的 OUT_DIR 缓存目录，build.rs 命中即跳过下载。
+# 该缓存目录由 cargo 在首次（失败的）构建时创建，故 cargo clean 后首次会失败、seed 后重试一次即可。
+seed_mnn_prebuilt() {
+  local tarball="$REPO_ROOT/crates/ocr/mnn-prebuilt/mnn-dev-macos-universal.tar.gz"
+  if [ ! -f "$tarball" ]; then
+    echo "[seed-mnn] 缺少 $tarball，跳过（将走在线下载）"
+    return 0
+  fi
+  for dir in "$REPO_ROOT"/target/*/build/ocr-rs-*/out/prebuilt; do
+    [ -d "$dir" ] || continue
+    if [ ! -f "$dir/mnn-dev-macos-universal.tar.gz" ]; then
+      cp "$tarball" "$dir/"
+      echo "[seed-mnn] 已填充 $dir/mnn-dev-macos-universal.tar.gz"
+    fi
+  done
+}
+
 # 1. 杀进程并等待真正退出（避免退出时把缓存写回 / 占用文件导致 rm 失败）
 pkill -f octopus-desktop 2>/dev/null || true
 sleep 1
@@ -28,6 +48,12 @@ cd "../"
 # 必须启用 cloud feature：云端引擎（Aliyun/ByteDance/Tencent/Baidu）的流式识别依赖此 feature，
 # 不启用时云端引擎无法使用（is_cloud_engine / DispatchEngine 均 cfg gated）。
 # RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run -p octopus-desktop --features "embedded cloud"
+# 预填 ocr-rs MNN 缓存（warm：prebuilt 目录已存在）；cargo clean 后首次构建失败则 seed 后重试一次。
+seed_mnn_prebuilt
+if ! cargo build --release -p octopus-desktop --features "embedded cloud"; then
+  seed_mnn_prebuilt
+  cargo build --release -p octopus-desktop --features "embedded cloud"
+fi
 RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --release -p octopus-desktop --features "embedded cloud"
 # 注意：去掉 --release，debug 模式能打出 panic 栈
 #RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --features "embedded cloud"

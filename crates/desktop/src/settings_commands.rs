@@ -186,8 +186,17 @@ pub fn set_config(
         coordinator.update_runtime();
     }
 
-    // hide_toolbar / edit_shortcut 改变时通知 result window 刷新
-    if key == "hide_toolbar" || key == "edit_shortcut" {
+    // clipboard_enabled 热重载：翻转 watcher 运行时 flag（无需 stop/restart watcher）。
+    if key == "clipboard_enabled" {
+        use tauri::Manager;
+        app_handle
+            .state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>()
+            .set_recording_enabled(cfg.clipboard_enabled);
+    }
+
+    // hide_toolbar / edit_shortcut / clipboard_enabled 改变时通知前端刷新：
+    // result window 刷 hide_toolbar；设置页 + 剪贴板浮窗刷 clipboard_enabled toggle（双向同步）。
+    if key == "hide_toolbar" || key == "edit_shortcut" || key == "clipboard_enabled" {
         use tauri::Emitter;
         let _ = app_handle.emit("config-changed", ());
     }
@@ -290,6 +299,9 @@ fn apply_config_value(
                 .ok_or("clipboard_max_age_days 需要整数")?;
             if v < 1 { return Err("clipboard_max_age_days 必须 >= 1".into()); }
             cfg.clipboard_max_age_days = v;
+        }
+        "clipboard_enabled" => {
+            cfg.clipboard_enabled = value.as_bool().ok_or("clipboard_enabled 需要 bool")?;
         }
         "screenshot_shortcut" => {
             cfg.screenshot_shortcut = value.as_str().ok_or("screenshot_shortcut 需要字符串")?.to_string();

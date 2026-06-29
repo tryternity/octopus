@@ -1897,11 +1897,11 @@ git commit -m "feat(desktop): ASR 识别完成写入剪贴板历史"
 - [x] **Step 1: 实现 ClipboardSettings 面板**
 
 配置项（已在 app_config seed）：
-- 启用/禁用监听（`clipboard_enabled`）→ shadcn Switch
+- 启用/禁用监听（`clipboard_enabled`）→ Toggle（设置页「交互」Card + 浮窗 title bar 快捷按钮）。**注**：v1 此项仅 seed，实为死配置；v4 起真正落地——纳入 `AppConfig` + watcher `recording_enabled` 运行时 gate，热重载生效
 - 快捷键（`clipboard_shortcut`）→ Input + 录制
 - 最大条数（`clipboard_max_items`）→ Select（500/1000/2000/5000）
 - 清理天数（`clipboard_max_age_days`）→ Select（7/30/90）
-- 点击行为（`clipboard_auto_paste`）→ Select（single/double）
+- ~~点击行为（`clipboard_auto_paste`）~~ → **v4 已移除**：双击列表项固定粘贴（`paste_clipboard_item`），不再可配
 
 - [x] **Step 2: 更新 Settings 侧边栏**
 
