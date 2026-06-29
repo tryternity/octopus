@@ -6,5 +6,7 @@ edition = "2021"
 [dependencies]
 xcap = "0.9.6"
 image = "0.25"
+imageproc = "0.25"
 anyhow = "1"
 log = "0.4"
+serde = { version = "1", features = ["derive"] }

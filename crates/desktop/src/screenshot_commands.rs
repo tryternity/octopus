@@ -543,3 +543,134 @@ fn close_all_screenshot_windows(app_handle: &tauri::AppHandle) {
         }
     }
 }
+
+// ── 滚动截图 ──
+
+static SCROLL_RECORDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+#[tauri::command]
+pub async fn start_scroll_recording(
+    x: f64, y: f64, w: f64, h: f64,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    SCROLL_RECORDING.store(true, std::sync::atomic::Ordering::SeqCst);
+
+    let ah = app_handle.clone();
+    tauri::async_runtime::spawn(async move {
+        let scale = ah.primary_monitor()
+            .ok()
+            .flatten()
+            .map(|m| m.scale_factor())
+            .unwrap_or(1.0);
+
+        let px = (x * scale) as u32;
+        let py = (y * scale) as u32;
+        let pw = (w * scale) as u32;
+        let ph = (h * scale) as u32;
+
+        // 隐藏截图窗口（让用户可以正常操作底层应用滚动）
+        let scroll_labels: Vec<String> = ah
+            .webview_windows()
+            .keys()
+            .filter(|k| k.starts_with("screenshot_"))
+            .cloned()
+            .collect();
+        for label in &scroll_labels {
+            if let Some(win) = ah.get_webview_window(label) {
+                let _ = win.hide();
+            }
+        }
+
+        // 首帧（spawn_blocking 避免阻塞 async runtime）
+        let first_result = tokio::task::spawn_blocking(move || {
+            let captures = octopus_capx::capture::capture_all_monitors()?;
+            let full = captures.into_iter().next().ok_or_else(|| anyhow::anyhow!("no monitor"))?;
+            let png = octopus_capx::capture::crop_region(&full, px, py, pw, ph)?;
+            let img = image::load_from_memory(&png)?.to_rgba8();
+            anyhow::Ok(img)
+        }).await;
+
+        let first_img = match first_result { Ok(Ok(img)) => img, _ => return };
+        let mut stitcher = octopus_capx::stitch::Stitcher::new(first_img, Default::default());
+
+        // 通知前端：开始录制
+        let _ = ah.emit("scroll://started", ());
+
+        let frame_duration = std::time::Duration::from_millis(100); // 10fps（降低 CPU 压力）
+        let mut interval = tokio::time::interval(frame_duration);
+        interval.tick().await;
+
+        let ah2 = ah.clone();
+        while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
+            interval.tick().await;
+
+            // spawn_blocking 截屏（避免阻塞 event loop 导致 ESC 无响应）
+            let capture_result = tokio::task::spawn_blocking({
+                let px = px; let py = py; let pw = pw; let ph = ph;
+                move || {
+                    let captures = octopus_capx::capture::capture_all_monitors()?;
+                    let full = captures.into_iter().next().ok_or_else(|| anyhow::anyhow!("no monitor"))?;
+                    let png = octopus_capx::capture::crop_region(&full, px, py, pw, ph)?;
+                    let img = image::load_from_memory(&png)?.to_rgba8();
+                    anyhow::Ok(img)
+                }
+            }).await;
+
+            let frame_rgba = match capture_result { Ok(Ok(img)) => img, _ => continue };
+
+            let added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
+
+            if added {
+                let canvas = stitcher.canvas();
+                let preview_w = 200u32;
+                let preview_h = (preview_w * canvas.height() / canvas.width()).min(600);
+                let preview = image::imageops::resize(canvas, preview_w, preview_h, image::imageops::FilterType::Nearest);
+                let mut png_bytes = Vec::new();
+                let _ = preview.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png);
+                let b64 = general_purpose::STANDARD.encode(&png_bytes);
+                let _ = ah2.emit("scroll://frame", serde_json::json!({
+                    "image": b64,
+                    "height": stitcher.height(),
+                    "phys_height": (stitcher.height() as f64 / scale) as u32,
+                }));
+            }
+        }
+
+        // 录制结束：关闭截图窗口（不需要恢复，直接关闭）
+        close_all_screenshot_windows(&ah);
+
+        // 入库
+        let canvas = stitcher.canvas().clone();
+        let mut png_bytes = Vec::new();
+        let _ = canvas.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png);
+
+        let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
+        let img = match image::load_from_memory(&png_bytes) { Ok(i) => i, Err(_) => return };
+        let encoded = match octopus_clipboard::image::encode_to_webp(&img) { Ok(e) => e, Err(_) => return };
+
+        let item_id = octopus_clipboard::store::chrono_millis();
+        let _ = octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::insert_image_data(conn, &hash, &encoded.webp_blob, &encoded.thumb_blob, img.width() as i64, img.height() as i64)
+        });
+        let _ = octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
+                id: item_id, item_type: octopus_clipboard::ItemType::Image,
+                content: hash.clone(), search_text: String::new(),
+                created_at: octopus_clipboard::store::iso_now(),
+                blob_hash: Some(hash), width: Some(img.width() as i64),
+                height: Some(img.height() as i64), has_thumbnail: Some(1),
+                file_count: None, is_rich: false,
+            })
+        });
+
+        let _ = ah.emit("scroll://done", serde_json::json!({ "id": item_id }));
+        let _ = ah.emit("clipboard://changed", ());
+    });
+
+    Ok(())
+}
+
+#[tauri::command]
+pub fn stop_scroll_recording() {
+    SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
+}
