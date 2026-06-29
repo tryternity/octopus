@@ -6,7 +6,7 @@ import { useTauriEvent } from "@/hooks/useTauriEvent";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
-import { Pin, X, Settings2, Circle, CircleOff } from "lucide-react";
+import { Pin, X, Settings2, CircleCheck, CircleX } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface ConfigResponse {
@@ -75,13 +75,15 @@ export default function Clipboard() {
             className={cn(
               "p-1 rounded cursor-default transition-colors",
               recording
-                ? "text-muted-foreground hover:bg-accent hover:text-foreground"
-                : "text-voice bg-voice/10",
+                ? "text-green-500 hover:bg-green-500/15"
+                : "text-red-500 bg-red-500/15 hover:bg-red-500/25",
             )}
             onClick={toggleRecording}
             title={recording ? "暂停监听" : "恢复监听"}
           >
-            {recording ? <Circle className="w-3.5 h-3.5" /> : <CircleOff className="w-3.5 h-3.5" />}
+            {recording
+              ? <CircleCheck className="w-3.5 h-3.5" />
+              : <CircleX className="w-3.5 h-3.5" />}
           </button>
           <button
             className={cn(

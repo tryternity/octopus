@@ -233,7 +233,8 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
 
 > **`clipboard_enabled` 已落地（非 seed-only）**：纳入 `AppConfig`（bool，默认 `true`，`config.rs` 字段 + `db.rs` load/save 双向映射）。
 > 运行时热重载——`ClipboardHandle` 持 `recording_enabled: AtomicBool` 镜像，`on_clipboard_change` 在 suppress 检查后加 gate（`false` 直接 return，不存库、不 emit `clipboard://changed`）；`set_config` 收到 `clipboard_enabled` 变更即翻转该 flag（无需 stop/restart watcher，watcher 线程始终运行）。
-> 入口：设置页「交互」Card 开关 + 浮窗 title bar 快捷按钮（Pin 左侧，Circle/CircleOff），双向经 `config-changed` 事件同步。
+> 启动同步——`ClipboardHandle::new()` 默认 `recording_enabled = true`，若仅靠 `set_config` 热重载，用户关掉监听后重启会让 flag 复活（DB 仍 `false`，watcher 又开始记录）。故 `main.rs` setup 创建 handle 后、watcher 启动（同一 `Arc`）前，立即按 `config.clipboard_enabled` 调一次 `set_recording_enabled`，让运行时 flag 与 DB 持久值一致。
+> 入口：设置页「交互」Card 开关 + 浮窗 title bar 快捷按钮（Pin 左侧，CircleCheck（绿圆勾=监听中）/ CircleX（红圆叉=已关闭）），双向经 `config-changed` 事件同步。
 > **`clipboard_auto_paste` 已移除**：双击列表项固定 = 粘贴（`paste_clipboard_item`，见下交互表），不再可配。
 
 ### 2.4 Rust 数据结构

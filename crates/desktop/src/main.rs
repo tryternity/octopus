@@ -244,6 +244,12 @@ pub fn run() {
             );
             app.manage(clipboard_handle.clone());
 
+            // 启动时把 DB 的 clipboard_enabled 同步到运行时 flag。
+            // ClipboardHandle::new() 默认 recording_enabled = true，而运行时改开关走的是
+            // set_config 热重载——若不在此补一次性同步，用户关掉「剪贴板监听」并重启后，
+            // watcher 又恢复录制（flag 回 true），但 DB 仍是 false，设置形同虚设。
+            clipboard_handle.set_recording_enabled(config.clipboard_enabled);
+
             // 启动时重建 FTS5 索引，清理上次运行遗留的空洞
             if let Err(e) = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::rebuild_fts_index(conn)
