@@ -335,12 +335,14 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 **标注属性**：每个标注独立记忆 color + lineWidth（或 fontSize / circleSize），已画的不受新设置影响。
 
 **标注交互**：
-- **选择工具**（arrow-pointer，工具栏首位）激活时检测已有标注命中（bounding box hit test），可拖动移动
+- **选择工具**（arrow-pointer，工具栏首位）激活时用精确命中检测已有标注（`hitTestAnnotationPrecise`：空心形状检查到线条距离 ≤8px，内部空白不命中）
+- **选区手柄优先**：手柄 hitTest 在所有逻辑之前，任何工具状态下可调整选区大小
 - 其他标注工具激活时不检测已有标注（优先绘制）
 - 选中标注蓝色虚线高亮，可拖动移动（delta 偏移所有坐标 + pen points 数组）
 - 悬停标注显示 move 光标（仅 tool=none）
 - 选中后按 Delete/Backspace 可删除单个标注
 - 标注绘制限制在选区内（Canvas `clip()`）
+- 右键仅 `preventDefault`，不执行任何操作（不模拟左键、不取消截图）
 
 **确认合成**（`confirm_screenshot_with_data`）：
 - 前端在临时 Canvas 上合成：原图 1:1（`naturalWidth × naturalHeight`）+ 标注
@@ -359,7 +361,7 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 
 **多显示器崩溃修复**：串行创建窗口（150ms 间隔），避免 macOS WKWebView 同时创建崩溃
 
-**多显示器同步显示**：READY_COUNT + TOTAL_WINDOWS barrier——所有窗口前端渲染完后统一 show，避免逐个弹出。3s 超时 fallback 强制显示防死锁。
+**多显示器同步显示**：READY_COUNT + TOTAL_WINDOWS barrier——所有窗口前端渲染完后统一 show，避免逐个弹出。3s 超时 fallback 强制显示防死锁。窗口 label 用 session ID（`screenshot_{timestamp}_{i}`）保证唯一，无需 sleep 等待旧窗口销毁。主显示器聚焦通过匹配 `_0` 结尾的 label。
 
 **背景图编码优化**：RGBA → JPEG 85%（比 PNG 快 10×+，4K 从 ~200ms → ~20ms），Base64 IPC 数据量从 ~20MB → ~3MB。
 
@@ -372,8 +374,8 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 **鼠标行为**：
 | 位置 | 左键 | 右键 |
 |---|---|---|
-| 选区内 | 绘制/选中（工具决定） | 同左键 |
-| 选区外 | 忽略（已确定选区时） | 忽略 |
+| 选区内 | 绘制/选中（工具决定） | 仅 preventDefault（无操作） |
+| 选区外 | 忽略（已确定选区时） | 仅 preventDefault（无操作） |
 
 **文字标注编辑**：双击已有文字标注进入编辑（保留原颜色/字号，ESC 恢复，不修改全局工具状态）。`drawMultilineText` 支持 `\n` 换行 + 自动折行。
 

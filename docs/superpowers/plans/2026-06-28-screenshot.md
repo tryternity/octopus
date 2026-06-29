@@ -649,3 +649,15 @@ React 异步闭包读旧 mode 导致右键模拟左键后状态卡死。引入 m
 ### 偏差 16：双击编辑文字——ESC 丢文字 + 篡改全局颜色
 
 不立即删除原标注（标记 text:"" 隐藏），ESC 从 editTextOrigRef 恢复。editTextColorRef/editTextFontSizeRef 独立存编辑颜色/字号，不修改全局。
+
+### 偏差 17：空心标注精确命中 + 手柄优先 + 右键简化 + session ID + 聚焦修复
+
+**空心标注精确命中**：新增 `hitTestAnnotationPrecise` 替代 bounding box——矩形检查到四条边距离 ≤8px，椭圆检查到轮廓距离 ≤8px，直线/箭头/画笔用点到线段距离 ≤8px。空心形状内部空白不命中。
+
+**手柄优先检测**：选区手柄 hitTest 提到 mousedown 最前（任何工具状态下可调整选区大小），标注 hitTest 在其之后。
+
+**右键简化**：彻底移除右键模拟左键逻辑，`onContextMenu` 仅 `preventDefault`——取消截图仅通过 ESC 或工具栏取消按钮。
+
+**session ID 窗口 label**：用 `screenshot_{timestamp}_{i}` 替代固定 label，移除 50ms sleep 等待 destroy——新旧窗口 label 不同即使旧窗口未完全销毁也不冲突。
+
+**主显示器聚焦修复**：`show_all_screenshot_windows` 中聚焦的 label 从硬编码 `"screenshot_window"` 改为从窗口列表查找以 `_0` 结尾的 label（匹配 session ID 格式）。
