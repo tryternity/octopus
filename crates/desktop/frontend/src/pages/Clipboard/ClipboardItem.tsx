@@ -30,11 +30,15 @@ export default function ClipboardItemRow({
   }, []);
 
   useEffect(() => {
-    if (item.item_type === "image") {
-      invoke<string>("get_image_thumb", { id: item.id })
-        .then((dataUrl) => setThumbSrc(dataUrl))
-        .catch(() => {});
-    }
+    if (item.item_type !== "image") return;
+    // 虚拟列表滚动会复用组件实例：item.id 切换时先清旧缩略图，避免新图 base64
+    // 经 IPC 传回前短暂显示上一条（幽灵闪烁）；cancelled 防快速滚动时旧请求晚到覆盖新图。
+    setThumbSrc(null);
+    let cancelled = false;
+    invoke<string>("get_image_thumb", { id: item.id })
+      .then((dataUrl) => { if (!cancelled) setThumbSrc(dataUrl); })
+      .catch(() => {});
+    return () => { cancelled = true; };
   }, [item.id, item.item_type]);
 
   const handleFavorite = async (e: React.MouseEvent) => {

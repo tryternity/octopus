@@ -182,7 +182,7 @@ fn query_with_search(
              FROM clipboard_history
              WHERE search_text LIKE ?
              {}
-             ORDER BY created_at DESC
+             ORDER BY created_at DESC, id DESC
              LIMIT ? OFFSET ?",
             if extra_where.is_empty() { String::new() } else { format!("AND {}", extra_where) }
         );
@@ -426,6 +426,12 @@ pub fn delete_by_transcription_ids(conn: &Connection, ids: &[i64]) -> Result<usi
         &format!("DELETE FROM clipboard_history WHERE transcription_id IN ({})", placeholders),
         params.as_slice(),
     )?;
+    if rows > 0 {
+        // transcription_id 仅存在于 source='asr' 的 text 项（无 blob_hash），
+        // 故无需 cleanup_unreferenced_images；但仍计入 FTS rebuild 阈值——与
+        // delete_items / clear_history 一致，否则大批删转译记录后影子表碎片不回收。
+        track_deletes(conn, rows as u32);
+    }
     Ok(rows)
 }
 
@@ -849,5 +855,59 @@ mod tests {
         assert_eq!(count_history(&conn, &f("all", Some("t1"))).unwrap(), 1);
         // 类型筛选 + 搜索组合：image 过滤下搜「今天天气」= 0
         assert_eq!(count_history(&conn, &f("image", Some("今天天气"))).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_like_search_stable_order_same_second() {
+        // v3 审计 1.1：LIKE fallback 分支（<3 字符查询）补 id DESC 二级排序——
+        // 同一秒（iso_now 秒级精度）写入多条命中记录时，须按 id DESC 稳定返回，
+        // 否则分页会漏重/抖动。主分支与 MATCH 分支已加，LIKE 分支此前漏了。
+        let conn = open_test_db();
+        let ts = "2026-06-29 10:00:00"; // 手动指定同一秒，绕开 iso_now 实时
+        for id in [100i64, 101, 102] {
+            insert_clipboard_item(&conn, &NewClipboardItem {
+                id, item_type: ItemType::Text,
+                content: format!("ab-{}", id), search_text: format!("ab-{}", id),
+                created_at: ts.into(), blob_hash: None, width: None, height: None,
+                has_thumbnail: None, file_count: None, is_rich: false,
+            }).unwrap();
+        }
+        // "ab" = 2 字符 → 走 LIKE fallback 分支
+        let r = query_history(&conn, &QueryFilter {
+            filter: "all".into(), search: Some("ab".into()), page: 1, size: 10,
+        }).unwrap();
+        assert_eq!(r.len(), 3);
+        // 同 created_at 下按 id DESC 稳定排序：102, 101, 100
+        assert_eq!(r[0].id, 102);
+        assert_eq!(r[1].id, 101);
+        assert_eq!(r[2].id, 100);
+    }
+
+    #[test]
+    fn test_delete_by_transcription_ids() {
+        // v3 审计 2.2：级联删除补 track_deletes——返回正确行数、残留 0、
+        // 空/不存在 id 安全；rows>0 走 track_deletes 路径（覆盖 FTS 计数接入）。
+        let conn = open_test_db();
+        for tid in [1i64, 2, 3] {
+            insert_asr_item(&conn, &format!("文本{}", tid), AsrMeta {
+                transcription_id: tid, polish_status: "off".into(),
+                engine: "sensevoice".into(), model: "".into(),
+            }).unwrap();
+        }
+        // 删 2 个 transcription_id
+        let deleted = delete_by_transcription_ids(&conn, &[1, 2]).unwrap();
+        assert_eq!(deleted, 2);
+        // 残留仅 tid=3
+        let remaining = query_history(&conn, &QueryFilter {
+            filter: "asr".into(), search: None, page: 1, size: 10,
+        }).unwrap();
+        assert_eq!(remaining.len(), 1);
+        // 空切片 noop
+        assert_eq!(delete_by_transcription_ids(&conn, &[]).unwrap(), 0);
+        // 不存在的 id 删 0 条（rows=0 不进 track_deletes 分支）
+        assert_eq!(delete_by_transcription_ids(&conn, &[999]).unwrap(), 0);
+        // 删最后 1 条（rows>0 进 track_deletes，累计未达阈值 10 不 rebuild，不报错）
+        assert_eq!(delete_by_transcription_ids(&conn, &[3]).unwrap(), 1);
+        assert_eq!(count_all(&conn).unwrap(), 0);
     }
 }

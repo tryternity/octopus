@@ -767,6 +767,7 @@ FTS5 可用性：`rusqlie` with `bundled` feature 默认启用 FTS5，需验证�
 
 - 发现旧数据 `transcription_id` 为 NULL 导致级联失效，清理后新记录正确关联
 - 单向级联：删识别记录 → 同步删剪贴板引用；反向不级联
+- 级联删除计入 FTS 维护：`delete_by_transcription_ids` 删除行数 >0 时同样调 `track_deletes`（与 `delete_items` / `clear_history` 一致），否则大批删转译记录后 FTS 影子表 `_data` 页空洞不回收、迟迟不触发阈值 rebuild；ASR 条目无 `blob_hash`，无需 `cleanup_unreferenced_images`
 
 ### 9.9 快捷键热重载
 
