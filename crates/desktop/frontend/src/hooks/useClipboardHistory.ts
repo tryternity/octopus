@@ -18,7 +18,7 @@ export function useClipboardHistory(filter: string, search: string) {
         size: 50,
       });
       setItems(result);
-      const count = await invoke<number>("clipboard_stats");
+      const count = await invoke<number>("clipboard_stats", { filter, search: debouncedSearch || null });
       setTotal(count);
     } catch (e) {
       console.error("Failed to fetch clipboard history:", e);

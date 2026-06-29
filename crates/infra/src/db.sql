@@ -270,7 +270,7 @@ CREATE TRIGGER IF NOT EXISTS clip_fts_ad AFTER DELETE ON clipboard_history BEGIN
     INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, search_text)
     VALUES('delete', old.id, old.search_text);
 END;
-CREATE TRIGGER IF NOT EXISTS clip_fts_au AFTER UPDATE ON clipboard_history BEGIN
+CREATE TRIGGER IF NOT EXISTS clip_fts_au AFTER UPDATE OF search_text ON clipboard_history BEGIN
     INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, search_text)
     VALUES('delete', old.id, old.search_text);
     INSERT INTO clipboard_history_fts(rowid, search_text) VALUES (new.id, new.search_text);

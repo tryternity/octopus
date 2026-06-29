@@ -139,13 +139,10 @@ pub fn set_config(
         if let Ok(old) = old_clipboard_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
             let _ = app_handle.global_shortcut().unregister(old);
         }
-        if let Ok(new) = cfg.clipboard_shortcut.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-            let ah = app_handle.clone();
-            let _ = app_handle.global_shortcut().on_shortcut(new, move |_app, _scut, event| {
-                if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                    let _ = crate::clipboard_window::toggle_clipboard_window(&ah);
-                }
-            });
+        if let Err(e) = crate::clipboard_window::register_clipboard_shortcut(&app_handle, &cfg.clipboard_shortcut) {
+            // 注册失败：恢复旧快捷键，避免用户完全失去快捷键
+            let _ = crate::clipboard_window::register_clipboard_shortcut(&app_handle, &old_clipboard_sc);
+            return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }
 
@@ -154,16 +151,9 @@ pub fn set_config(
         if let Ok(old) = old_screenshot_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
             let _ = app_handle.global_shortcut().unregister(old);
         }
-        if let Ok(new) = cfg.screenshot_shortcut.parse::<tauri_plugin_global_shortcut::Shortcut>() {
-            let ah = app_handle.clone();
-            let _ = app_handle.global_shortcut().on_shortcut(new, move |_app, _scut, event| {
-                if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                    let ah = ah.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let _ = crate::screenshot_commands::start_screenshot(ah).await;
-                    });
-                }
-            });
+        if let Err(e) = crate::screenshot_commands::register_screenshot_shortcut(&app_handle, &cfg.screenshot_shortcut) {
+            let _ = crate::screenshot_commands::register_screenshot_shortcut(&app_handle, &old_screenshot_sc);
+            return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }
 

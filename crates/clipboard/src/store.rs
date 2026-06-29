@@ -141,6 +141,24 @@ pub fn query_history(conn: &Connection, filter: &QueryFilter) -> Result<Vec<Clip
     Ok(rows.filter_map(|r| r.ok()).collect())
 }
 
+/// 按 id 精确读取单条记录（id 是 INTEGER PRIMARY KEY，rowid O(1) 查找）。
+/// 用于「按 id 操作单个条目」的命令（复制/粘贴/保存/打开/OCR/缩略图），
+/// 避免调 query_history 反序列化整页（曾 size:1000）再 .find 的线性扫描。
+pub fn get_item_by_id(conn: &Connection, id: i64) -> Result<Option<ClipboardItem>> {
+    let mut stmt = conn.prepare(
+        "SELECT id, item_type, source, content, is_favorite, created_at,
+                blob_hash, width, height, has_thumbnail, file_count, is_rich,
+                transcription_id, polish_status, engine, model
+         FROM clipboard_history
+         WHERE id = ?",
+    )?;
+    match stmt.query_row(params![id], row_to_item) {
+        Ok(item) => Ok(Some(item)),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+        Err(e) => Err(e.into()),
+    }
+}
+
 fn query_with_search(
     conn: &Connection,
     search: &str,
@@ -190,6 +208,62 @@ fn query_with_search(
     let mut stmt = conn.prepare(&sql)?;
     let rows = stmt.query_map(params![phrase, limit, offset], row_to_item)?;
     Ok(rows.filter_map(|r| r.ok()).collect())
+}
+
+/// 统计符合 filter（类型筛选 + 搜索）的条目数。与 [query_history] 走同一套
+/// `build_where` / `LIKE-fallback` / `FTS5 MATCH` 逻辑，保证计数与展示列表一致
+/// ——否则底部「共 N 条」会无视标签筛选/搜索框，恒显示全表总数。
+/// page/size 对计数无意义，调用方传 1/1 占位即可。
+pub fn count_history(conn: &Connection, filter: &QueryFilter) -> Result<i64> {
+    let where_clause = build_where(filter);
+
+    if let Some(ref search) = filter.search {
+        if !search.is_empty() {
+            return count_with_search(conn, search, &where_clause);
+        }
+    }
+
+    let sql = if where_clause.is_empty() {
+        "SELECT COUNT(*) FROM clipboard_history".to_string()
+    } else {
+        format!("SELECT COUNT(*) FROM clipboard_history WHERE {}", where_clause)
+    };
+    let count: i64 = conn.query_row(&sql, [], |r| r.get(0))?;
+    Ok(count)
+}
+
+/// 带搜索的计数：与 [query_with_search] 同一套 LIKE fallback / FTS5 MATCH，
+/// 只是 SELECT COUNT(*) 不取行、不分页。
+fn count_with_search(conn: &Connection, search: &str, extra_where: &str) -> Result<i64> {
+    // < 3 字符（trigram 无法成 token）→ LIKE 子串扫表，与 query_with_search 一致
+    if search.chars().count() < 3 {
+        let pattern = format!("%{}%", search);
+        let sql = if extra_where.is_empty() {
+            "SELECT COUNT(*) FROM clipboard_history WHERE search_text LIKE ?".to_string()
+        } else {
+            format!("SELECT COUNT(*) FROM clipboard_history WHERE search_text LIKE ? AND {}", extra_where)
+        };
+        let count: i64 = conn.query_row(&sql, params![pattern], |r| r.get(0))?;
+        return Ok(count);
+    }
+
+    // >= 3 字符 → FTS5 phrase 命中索引，与 query_with_search 一致
+    let phrase = format!("\"{}\"", search.replace('"', "\"\""));
+    let sql = if extra_where.is_empty() {
+        "SELECT COUNT(*) FROM clipboard_history_fts f \
+         JOIN clipboard_history c ON c.id = f.rowid \
+         WHERE f.search_text MATCH ?"
+            .to_string()
+    } else {
+        format!(
+            "SELECT COUNT(*) FROM clipboard_history_fts f \
+             JOIN clipboard_history c ON c.id = f.rowid \
+             WHERE f.search_text MATCH ? AND {}",
+            extra_where
+        )
+    };
+    let count: i64 = conn.query_row(&sql, params![phrase], |r| r.get(0))?;
+    Ok(count)
 }
 
 fn build_where(filter: &QueryFilter) -> String {
@@ -299,6 +373,27 @@ pub fn delete_item(conn: &Connection, id: i64) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// 批量删除多条。单 SQL `DELETE ... IN (...)` + 一次 `track_deletes(总数)`（最多触发
+/// 一次 FTS rebuild）+ 一次 `cleanup_unreferenced_images`。用于设置页批量删除，替代
+/// 前端循环调单条 `delete_item`（每条独立事务，且 `track_deletes(1)` 累计每 10 条就
+/// rebuild 一次 FTS——删 50 条会 rebuild 5 次）。
+pub fn delete_items(conn: &Connection, ids: &[i64]) -> Result<usize> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let params: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
+    let rows = conn.execute(
+        &format!("DELETE FROM clipboard_history WHERE id IN ({})", placeholders),
+        params.as_slice(),
+    )?;
+    if rows > 0 {
+        track_deletes(conn, rows as u32);
+        cleanup_unreferenced_images(conn)?;
+    }
+    Ok(rows)
 }
 
 /// 清空历史（可选保留收藏）。删除后回收无引用的 image_data BLOB。
@@ -651,5 +746,86 @@ mod tests {
         assert_eq!(found, Some(6000));
         let not_found = find_by_content_hash(&conn, "nonexistent").unwrap();
         assert_eq!(not_found, None);
+    }
+
+    #[test]
+    fn test_get_item_by_id() {
+        let conn = open_test_db();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 8000, item_type: ItemType::Text, content: "单条读取".into(),
+            search_text: "单条读取".into(), created_at: iso_now(),
+            blob_hash: None, width: None, height: None,
+            has_thumbnail: None, file_count: None, is_rich: false,
+        }).unwrap();
+
+        // 命中：返回对应条目
+        let item = get_item_by_id(&conn, 8000).unwrap();
+        assert!(item.is_some());
+        assert_eq!(item.unwrap().content, "单条读取");
+
+        // 未命中：返回 None（而非报错）
+        let missing = get_item_by_id(&conn, 9999).unwrap();
+        assert!(missing.is_none());
+    }
+
+    #[test]
+    fn test_delete_items() {
+        let conn = open_test_db();
+        for i in 0..3 {
+            insert_clipboard_item(&conn, &NewClipboardItem {
+                id: 9000 + i, item_type: ItemType::Text, content: format!("d{}", i),
+                search_text: format!("d{}", i), created_at: iso_now(),
+                blob_hash: None, width: None, height: None,
+                has_thumbnail: None, file_count: None, is_rich: false,
+            }).unwrap();
+        }
+        // 批量删 2 条
+        let deleted = delete_items(&conn, &[9000, 9001]).unwrap();
+        assert_eq!(deleted, 2);
+        assert_eq!(count_all(&conn).unwrap(), 1);
+        // 空切片是 noop
+        assert_eq!(delete_items(&conn, &[]).unwrap(), 0);
+        // 不存在的 id 删 0 条，不报错
+        assert_eq!(delete_items(&conn, &[9999]).unwrap(), 0);
+    }
+
+    #[test]
+    fn test_count_history_filter_and_search() {
+        // count_history 必须与 query_history 走同一过滤/搜索逻辑，计数才与列表一致
+        let conn = open_test_db();
+        // 2 条短文本 + 1 条含「今天天气」的长文本
+        for (i, t) in ["t1", "t2"].iter().enumerate() {
+            insert_clipboard_item(&conn, &NewClipboardItem {
+                id: 9100 + i as i64, item_type: ItemType::Text,
+                content: (*t).into(), search_text: (*t).into(),
+                created_at: iso_now(), blob_hash: None, width: None, height: None,
+                has_thumbnail: None, file_count: None, is_rich: false,
+            }).unwrap();
+        }
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 9105, item_type: ItemType::Text,
+            content: "今天天气很好".into(), search_text: "今天天气很好".into(),
+            created_at: iso_now(), blob_hash: None, width: None, height: None,
+            has_thumbnail: None, file_count: None, is_rich: false,
+        }).unwrap();
+
+        let f = |filter: &str, search: Option<&str>| QueryFilter {
+            filter: filter.into(), search: search.map(Into::into), page: 1, size: 1,
+        };
+
+        // 全部 = 3
+        assert_eq!(count_history(&conn, &f("all", None)).unwrap(), 3);
+        // sanity：query_history（取够大 size，不分页）与 count_history 同条件计数一致
+        let all_qf = QueryFilter { filter: "all".into(), search: None, page: 1, size: 50 };
+        assert_eq!(
+            query_history(&conn, &all_qf).unwrap().len(),
+            count_history(&conn, &all_qf).unwrap() as usize
+        );
+        // FTS5 trigram 搜索「今天天气」（>=3 字符）= 1
+        assert_eq!(count_history(&conn, &f("all", Some("今天天气"))).unwrap(), 1);
+        // 短查询 LIKE fallback「t1」（2 字符）= 1
+        assert_eq!(count_history(&conn, &f("all", Some("t1"))).unwrap(), 1);
+        // 类型筛选 + 搜索组合：image 过滤下搜「今天天气」= 0
+        assert_eq!(count_history(&conn, &f("image", Some("今天天气"))).unwrap(), 0);
     }
 }

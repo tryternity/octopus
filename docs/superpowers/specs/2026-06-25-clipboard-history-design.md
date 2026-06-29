@@ -146,11 +146,15 @@ on_clipboard_change()
 
 **file**
 ```
-变化 → has(Files) → get_files() → Vec<String> (file:// URI)
-  → 解析为 Vec<PathBuf>，过滤非法路径
+变化 → has(Files) → get_files() → Vec<String>
+  跨平台格式：Linux X11/Wayland = text/uri-list（file:// URI + 百分号编码）；
+              macOS（clipboard-rs 用 NSURL.path）/ Windows（FileList）= 已解码普通路径
+  → DB 存原始字符串（按平台原样，不在入库时解码——写回 write_files 各平台自洽）
   → 超过 50 个只记前 50 + file_count=实际数量
   → JSON.stringify(paths) → SHA-256 去重
   → DB insert: content=JSON(paths), file_count=N, search_text=paths.join(" ")
+  出口解码（仅 file:// 开头才解码，避免误伤含字面 %XX 的普通路径）：
+    前端 formatFilePaths 显示用 decodeURIComponent；后端 open_file_item 用 decode_file_uri（percent-encoding）
 ```
 
 文件被删除/移动 → 渲染时 `Path::exists()` 检测，失效条目灰显，不自动删除记录。
@@ -368,7 +372,7 @@ desktop 退出
 2. **Watcher 不共享 ClipboardContext**——用独立的 `ClipboardWatcherContext`
 3. **SUPPRESS_FLAG 是 AtomicBool**——无锁，跨线程安全
 4. **ASR 历史记录不经 watcher 路径**——走 `insert_asr_item` 直达 DB
-5. **paste.rs 恢复原剪贴板逻辑不变**——两次 `write_text` 都设 suppress flag
+5. **paste.rs 恢复原剪贴板按类型**——`write_to_clipboard=false` 时 `paste_via_clipboard` 用 `ClipboardBackup` 备份原内容（files > image > text 优先级），ASR 文本粘贴后按类型还原（图片 `set_image` / 文件 `write_files` / 文本 `write_text`，均设 suppress flag；旧实现只 `read_text`，图片/文件被空串吞掉丢失）
 
 ## 4. UI 架构
 
@@ -550,17 +554,29 @@ async fn toggle_clipboard_favorite(id: i64) -> Result<(), String>;
 async fn delete_clipboard_item(id: i64) -> Result<(), String>;
 
 #[tauri::command]
+async fn delete_clipboard_items(ids: Vec<i64>) -> Result<usize, String>;
+
+#[tauri::command]
 async fn clear_clipboard_history(keep_favorite: bool) -> Result<(), String>;
 
 #[tauri::command]
 async fn copy_clipboard_item(id: i64) -> Result<(), String>;
+
+#[tauri::command]
+async fn clipboard_stats(filter: String, search: Option<String>) -> Result<i64, String>;
 ```
+
+**修改命令广播同步**：`toggle_clipboard_favorite` / `delete_clipboard_item` / `delete_clipboard_items` / `clear_clipboard_history` 成功后 `emit("clipboard://changed")`——浮窗（`useClipboardHistory`）+ 设置页（`ClipboardPanel`）均监听此事件刷新，避免双端列表状态不一致（旧实现仅 watcher 外部复制时 emit，手动删除/收藏后另一窗口不刷新）。
+
+**copy/paste 按类型还原**：`copy_clipboard_item` / `paste_clipboard_item` 经 `write_item_to_clipboard` 统一分发——文本 `write_text`、图片从 `image_data` 读 WebP 原图转 PNG 后 `write_image`、文件解析 JSON 路径后 `write_files`，还原真实内容（旧实现无视类型一律 `write_text`，导致图片粘出 blob_hash、文件粘出 JSON 字符串）。
+
+**底部计数随筛选/搜索变化**：`clipboard_stats(filter, search)` 转调 store `count_history`——与 `query_history` 同一套 `build_where`（类型过滤）+ LIKE-fallback/FTS5-MATCH（搜索）逻辑，保证底部「共 N 条」随当前标签/搜索框变化，而非恒为全表总数（旧 `count_all` 无视筛选，浮窗/设置页切「图片」或输入搜索词后计数仍显全表）。前端 `useClipboardHistory` + `ClipboardPanel` 两处 invoke 均传 `filter` + `debouncedSearch`。
 
 ## 5. 清理策略、错误处理与边界
 
 ### 5.1 自动清理
 
-> ⚠️ `run_cleanup`（按天数/数量清理 + blob 回收）已实现但**尚未接入定时调用**。当前仅 FTS5 索引维护已接入（见下）。
+> ✅ `run_cleanup`（按天数/数量清理 + blob 回收）已接入定时调用：`main.rs` setup 启动时跑一次（image_migration 迁入旧图片后）+ 后台线程每小时从 DB 重读 `clipboard_max_items` / `clipboard_max_age_days` 跑一次（用户运行时改限额 1 小时内自动生效）。`run_cleanup` 仅在有删除/回收时重建 FTS，定时清理无删除时只做几次 COUNT（很轻）。
 
 **FTS5 索引维护**（已实现，防止影子表膨胀）：
 
@@ -576,14 +592,15 @@ async fn copy_clipboard_item(id: i64) -> Result<(), String>;
 边界：计数器是进程内存态，重启归零（启动时已 rebuild，逻辑自洽）。
 ```
 
-**完整清理（run_cleanup，待接入）**：
+**完整清理（run_cleanup，已接入）**：
 
 ```
+触发：a) main.rs setup 启动一次（image_migration 之后）；b) 后台线程每小时（从 DB 重读最新限额）
 执行步骤：
   1. DELETE 超过 max_age_days（默认 30）且 is_favorite=0
   2. DELETE 超出 max_items（默认 1000）且 is_favorite=0（按 created_at ASC）
-  3. 孤立 blob 回收：对比 DB blob_hash 与磁盘文件，无引用的删除
-  4. FTS5 索引重建
+  3. 孤立 blob 回收：cleanup_unreferenced_images（image_data 引用计数，无引用的删 DB 行）
+  4. FTS5 索引重建（仅在第 1-3 有删除/回收时；无删除跳过，定时清理保持轻量）
 
 豁免：is_favorite=1 永不被删
 ```
@@ -594,7 +611,7 @@ async fn copy_clipboard_item(id: i64) -> Result<(), String>;
 
 **ASR 写入路径**：`insert_asr_item` 失败记 warn 不阻断粘贴。`write_text` 失败传播给 coordinator（现有行为）。
 
-**paste.rs 迁移后**：Windows `set_text` 偶发 `ClipboardOccupied` → 重试 3 次（间隔 50ms）。恢复原剪贴板失败静默忽略。
+**paste.rs 迁移后**：Windows `set_text` 偶发 `ClipboardOccupied` → 重试 3 次（间隔 50ms）。`write_to_clipboard=false` 时 `paste_via_clipboard` 按 `files > image > text` 优先级用 `ClipboardBackup` 备份原内容，ASR 文本粘贴后按类型还原（图片 `set_image` / 文件 `write_files` / 文本 `write_text`），还原失败静默忽略（旧实现只 `read_text`，图片/文件被空串吞掉丢失）。
 
 ### 5.3 边界 case
 
@@ -642,7 +659,7 @@ FTS5 可用性：`rusqlie` with `bundled` feature 默认启用 FTS5，需验证�
 - **顶部**：搜索框 / 过滤标签（stone-50 底 + stone-200 描边）
 - **列表 header**：全选 checkbox（hover 或有选中时显示「已选 N 项 / 全选」）
 - **列表行**：checkbox + 类型图标 + 内容预览 + 元数据（时间/引擎/badge）+ hover 操作栏
-- **底部**：状态栏（共 N 条 / 显示 N 条），选中后浮现「删除选中」按钮（二次确认 3s）
+- **底部**：状态栏（共 N 条 / 显示 N 条，N 随当前类型筛选 + 搜索框变化，由 `clipboard_stats(filter, search)` 返回），选中后浮现「删除选中」按钮（二次确认 3s）
 - **分页**：手动「加载更多」按钮（每页 20/50 条），底部「— 没有更多了 —」提示
 
 **ClipboardPanel 行操作**（ClipboardRow 子组件，与浮窗一致）：复制、收藏、保存图片（SaveImagePopover）、打开文件、单条二次确认删除（1.5s）
@@ -701,7 +718,7 @@ FTS5 可用性：`rusqlie` with `bundled` feature 默认启用 FTS5，需验证�
 - WebP 无损原图 + WebP 20% 缩略图
 - 删除条目时引用计数为 0 才删 image_data 行
 - 启动时 `image_migration` 模块自动迁移旧文件到 DB，迁移后删除目录
-- 前端图片条目内联缩略图（`get_image_thumb` 命令 → base64 WebP）
+- 前端图片条目内联缩略图（`get_image_thumb` 命令 → 后端编码为 `data:image/webp;base64,...` data URL，前端直接 `<img src>`，避免 IPC 传 `Vec<u8>` 的 JSON 数字数组膨胀）
 - 详见 `docs/superpowers/specs/2026-06-27-image-storage-blob-design.md`
 
 ### 9.3 设置页配置暴露
@@ -742,5 +759,5 @@ FTS5 可用性：`rusqlie` with `bundled` feature 默认启用 FTS5，需验证�
 
 ### 9.9 快捷键热重载
 
-- `clipboard_shortcut` 在 `set_config` 中 unregister 旧 + register 新（与 `asr_shortcut` 一致）
+- `clipboard_shortcut` / `screenshot_shortcut` 在 `set_config` 中 unregister 旧 + register 新（经 `register_clipboard_shortcut` / `register_screenshot_shortcut` helper，与 `asr_shortcut` 一致：失败回滚旧值 + 返回 Err；旧实现 `let _ = on_shortcut(...)` 吞错——冲突时静默存入无效配置、重启后仍失败，已修复）
 - `save_app_config` / `load_app_config` 补齐三个剪贴板配置字段（原 bug：AppConfig 有字段但 DB 读写漏了）

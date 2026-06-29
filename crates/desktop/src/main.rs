@@ -38,7 +38,6 @@ use engine_embedded::EmbeddedEngine;
 use log::info;
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
-use tauri_plugin_global_shortcut::GlobalShortcutExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -217,6 +216,7 @@ pub fn run() {
             clipboard_commands::query_clipboard_history,
             clipboard_commands::toggle_clipboard_favorite,
             clipboard_commands::delete_clipboard_item,
+            clipboard_commands::delete_clipboard_items,
             clipboard_commands::clear_clipboard_history,
             clipboard_commands::copy_clipboard_item,
             clipboard_commands::clipboard_stats,
@@ -252,6 +252,36 @@ pub fn run() {
             // 迁移旧文件系统图片到 DB BLOB
             image_migration::migrate_images_to_db();
 
+            // 启动时按配置执行自动清理（删除超期/超量非收藏记录 + 回收孤立 BLOB）。
+            // clipboard_max_items / clipboard_max_age_days 此前是无处调用的摆设；
+            // 此处接入让设置页"最大保留条数 / 自动清理天数"真正生效。
+            // image_migration 已先迁入旧图片；run_cleanup 在有删除时内部重建 FTS。
+            {
+                let max_age = config.clipboard_max_age_days as u32;
+                let max_items = config.clipboard_max_items as u32;
+                if let Err(e) = octopus_infra::db::with_db(|conn| {
+                    octopus_clipboard::cleanup::run_cleanup(conn, max_age, max_items)
+                }) {
+                    log::warn!("Startup clipboard cleanup failed: {}", e);
+                }
+            }
+
+            // 后台定时清理（每小时）：从 DB 重读最新 config（用户可能在运行时改了限额）。
+            // cleanup 在无删除时只做几次 COUNT，很轻；有删除才重建 FTS。
+            std::thread::spawn(move || {
+                loop {
+                    std::thread::sleep(std::time::Duration::from_secs(3600));
+                    let cfg = octopus_infra::config::load_config().unwrap_or_default();
+                    let max_age = cfg.clipboard_max_age_days as u32;
+                    let max_items = cfg.clipboard_max_items as u32;
+                    if let Err(e) = octopus_infra::db::with_db(|conn| {
+                        octopus_clipboard::cleanup::run_cleanup(conn, max_age, max_items)
+                    }) {
+                        log::warn!("Scheduled clipboard cleanup failed: {}", e);
+                    }
+                }
+            });
+
             // Start focus tracker (macOS no-op, Windows/Linux TODO)
             let focus_tracker = std::sync::Arc::new(focus_tracker::FocusTracker::new());
             if let Err(e) = focus_tracker.start() {
@@ -276,32 +306,17 @@ pub fn run() {
                 }
             }
 
-            // Register clipboard window global shortcut (from config, default Alt+V)
-            {
-                let app_handle_for_clipboard = app.handle().clone();
-                let clipboard_sc = config.clipboard_shortcut.clone();
-                if !clipboard_sc.is_empty() {
-                    let _ = app.global_shortcut().on_shortcut(clipboard_sc.as_str(), move |_app, _scut, event| {
-                        if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                            let _ = clipboard_window::toggle_clipboard_window(&app_handle_for_clipboard);
-                        }
-                    });
+            // Register clipboard window global shortcut (from config)
+            if !config.clipboard_shortcut.is_empty() {
+                if let Err(e) = clipboard_window::register_clipboard_shortcut(app.handle(), &config.clipboard_shortcut) {
+                    log::error!("Failed to register clipboard shortcut: {}", e);
                 }
             }
 
-            // Register screenshot global shortcut
-            {
-                let app_handle_for_screenshot = app.handle().clone();
-                let screenshot_sc = config.screenshot_shortcut.clone();
-                if !screenshot_sc.is_empty() {
-                    let _ = app.global_shortcut().on_shortcut(screenshot_sc.as_str(), move |_app, _scut, event| {
-                        if event.state() == tauri_plugin_global_shortcut::ShortcutState::Pressed {
-                            let ah = app_handle_for_screenshot.clone();
-                            tauri::async_runtime::spawn(async move {
-                                let _ = screenshot_commands::start_screenshot(ah).await;
-                            });
-                        }
-                    });
+            // Register screenshot global shortcut (from config)
+            if !config.screenshot_shortcut.is_empty() {
+                if let Err(e) = screenshot_commands::register_screenshot_shortcut(app.handle(), &config.screenshot_shortcut) {
+                    log::error!("Failed to register screenshot shortcut: {}", e);
                 }
             }
 

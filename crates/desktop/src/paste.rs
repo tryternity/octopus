@@ -59,15 +59,67 @@ fn write_to_clipboard(text: &str, handle: &ClipboardHandle) -> Result<()> {
     Ok(())
 }
 
+/// 剪贴板备份：write_to_clipboard=false 粘贴后还原用户原内容。
+/// 按格式备份，避免 ASR 文本覆盖掉用户原有的图片 / 文件（旧实现只 read_text，
+/// 图片/文件被吞成空串 → 不还原 → 丢失）。
+enum ClipboardBackup {
+    Text(String),
+    Image(octopus_clipboard::RustImageData),
+    Files(Vec<String>),
+    Empty,
+}
+
+/// 探测当前剪贴板格式并备份（优先级 files > image > text，与 watcher 一致）。
+fn backup_clipboard(handle: &ClipboardHandle) -> ClipboardBackup {
+    use octopus_clipboard::ContentFormat;
+    if handle.has(ContentFormat::Files) {
+        if let Ok(files) = handle.read_files() {
+            if !files.is_empty() {
+                return ClipboardBackup::Files(files);
+            }
+        }
+    }
+    if handle.has(ContentFormat::Image) {
+        if let Ok(img) = handle.read_image() {
+            return ClipboardBackup::Image(img);
+        }
+    }
+    if handle.has(ContentFormat::Text) {
+        if let Ok(text) = handle.read_text() {
+            if !text.is_empty() {
+                return ClipboardBackup::Text(text);
+            }
+        }
+    }
+    ClipboardBackup::Empty
+}
+
+/// 还原备份到剪贴板（内部 write_*/set_image 均设 suppress，
+/// 避免还原被 watcher 当作新条目记录）。
+fn restore_clipboard(handle: &ClipboardHandle, backup: ClipboardBackup) {
+    match backup {
+        ClipboardBackup::Text(t) => {
+            let _ = handle.write_text(&t);
+        }
+        ClipboardBackup::Image(img) => {
+            let _ = handle.set_image(img);
+        }
+        ClipboardBackup::Files(f) => {
+            let _ = handle.write_files(f);
+        }
+        ClipboardBackup::Empty => {}
+    }
+}
+
 fn paste_via_clipboard(
     text: &str,
     handle: &ClipboardHandle,
     write_to_clipboard: bool,
 ) -> Result<()> {
     let saved = if !write_to_clipboard {
-        handle.read_text().unwrap_or_default()
+        backup_clipboard(handle)
     } else {
-        String::new()
+        ClipboardBackup::Empty
     };
 
     handle.write_text(text)?;
@@ -99,8 +151,8 @@ fn paste_via_clipboard(
 
     std::thread::sleep(PASTE_RESTORE_DELAY);
 
-    if !write_to_clipboard && !saved.is_empty() {
-        let _ = handle.write_text(&saved);
+    if !write_to_clipboard {
+        restore_clipboard(handle, saved);
     }
 
     Ok(())

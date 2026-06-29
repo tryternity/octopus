@@ -1,5 +1,6 @@
 use std::sync::Arc;
-use tauri::{Manager, State};
+use tauri::{Emitter, Manager, State};
+use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::{ClipboardHandle, ClipboardItem, QueryFilter};
 
 #[tauri::command]
@@ -22,27 +23,90 @@ pub async fn query_clipboard_history(
 }
 
 #[tauri::command]
-pub async fn toggle_clipboard_favorite(id: i64) -> Result<(), String> {
+pub async fn toggle_clipboard_favorite(
+    id: i64,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
     octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::toggle_favorite(conn, id)
     })
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    // 广播给浮窗 + 设置页同步刷新（否则两端列表状态不一致）
+    let _ = app_handle.emit("clipboard://changed", ());
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn delete_clipboard_item(id: i64) -> Result<(), String> {
+pub async fn delete_clipboard_item(
+    id: i64,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
     octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::delete_item(conn, id)
     })
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("clipboard://changed", ());
+    Ok(())
 }
 
 #[tauri::command]
-pub async fn clear_clipboard_history(keep_favorite: bool) -> Result<usize, String> {
-    octopus_infra::db::with_db(|conn| {
+pub async fn delete_clipboard_items(
+    ids: Vec<i64>,
+    app_handle: tauri::AppHandle,
+) -> Result<usize, String> {
+    let n = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::delete_items(conn, &ids)
+    })
+    .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("clipboard://changed", ());
+    Ok(n)
+}
+
+#[tauri::command]
+pub async fn clear_clipboard_history(
+    keep_favorite: bool,
+    app_handle: tauri::AppHandle,
+) -> Result<usize, String> {
+    let n = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::clear_history(conn, keep_favorite)
     })
-    .map_err(|e| e.to_string())
+    .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("clipboard://changed", ());
+    Ok(n)
+}
+
+/// 按条目类型把内容写到系统剪贴板（copy / paste 共用）：
+/// - Text: write_text(content)
+/// - Image: 从 image_data 读 WebP 原图 → 转 PNG → write_image（还原为真实图片，
+///   而非把 blob_hash 当文本写入）
+/// - File: 解析 content（JSON 路径数组）→ write_files（还原为真实文件，
+///   而非把 JSON 字符串当文本写入）
+fn write_item_to_clipboard(handle: &ClipboardHandle, item: &ClipboardItem) -> Result<(), String> {
+    match item.item_type {
+        octopus_clipboard::ItemType::Text => handle.write_text(&item.content).map_err(|e| e.to_string()),
+        octopus_clipboard::ItemType::Image => {
+            let blob_hash = item.image_meta.as_ref()
+                .map(|m| m.blob_hash.clone())
+                .ok_or("图片元数据缺失")?;
+            let webp_blob = octopus_infra::db::with_db(|conn| {
+                octopus_clipboard::store::get_image_blob(conn, &blob_hash)
+            })
+            .map_err(|e| e.to_string())?
+            .ok_or("图片数据不存在")?;
+            // image_data 存 WebP 无损 BLOB；write_image 契约是 PNG，转码一次
+            let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
+                .map_err(|e| format!("解码 WebP 失败: {}", e))?;
+            let mut png = Vec::new();
+            img.write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png)
+                .map_err(|e| format!("编码 PNG 失败: {}", e))?;
+            handle.write_image(&png).map_err(|e| e.to_string())
+        }
+        octopus_clipboard::ItemType::File => {
+            let paths: Vec<String> = serde_json::from_str(&item.content)
+                .map_err(|e| format!("解析文件路径失败: {}", e))?;
+            handle.write_files(paths).map_err(|e| e.to_string())
+        }
+    }
 }
 
 #[tauri::command]
@@ -50,30 +114,34 @@ pub async fn copy_clipboard_item(
     id: i64,
     handle: State<'_, Arc<ClipboardHandle>>,
 ) -> Result<(), String> {
-    let content = octopus_infra::db::with_db(|conn| {
-        let items = octopus_clipboard::store::query_history(conn, &QueryFilter {
-            filter: "all".into(),
-            search: None,
-            page: 1,
-            size: 1000,
-        })?;
-        Ok::<_, anyhow::Error>(items)
+    let item = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::get_item_by_id(conn, id)
     })
     .map_err(|e| e.to_string())?;
 
-    // 找到对应 id 的条目
-    if let Some(item) = content.into_iter().find(|i| i.id == id) {
-        if item.item_type == octopus_clipboard::ItemType::Text {
-            handle.write_text(&item.content).map_err(|e| e.to_string())?;
-        }
+    if let Some(item) = item {
+        let handle = handle.inner().clone();
+        write_item_to_clipboard(&handle, &item)?;
     }
     Ok(())
 }
 
+/// 统计符合当前 filter（类型筛选）+ search（搜索框）的条目数。
+/// 与 query_clipboard_history 同条件，保证底部「共 N 条」随筛选/搜索变化，
+/// 而非恒为全表总数。前端两处（浮窗 useClipboardHistory / 设置页 ClipboardPanel）均传参。
 #[tauri::command]
-pub async fn clipboard_stats() -> Result<i64, String> {
+pub async fn clipboard_stats(
+    filter: String,
+    search: Option<String>,
+) -> Result<i64, String> {
     octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::count_all(conn)
+        let qf = QueryFilter {
+            filter,
+            search,
+            page: 1,
+            size: 1,
+        };
+        octopus_clipboard::store::count_history(conn, &qf)
     })
     .map_err(|e| e.to_string())
 }
@@ -86,23 +154,16 @@ pub async fn paste_clipboard_item(
     handle: State<'_, Arc<ClipboardHandle>>,
     focus: State<'_, Arc<crate::focus_tracker::FocusTracker>>,
 ) -> Result<(), String> {
-    // 1. 从 DB 按 id 读条目内容
-    let content = octopus_infra::db::with_db(|conn| {
-        let items = octopus_clipboard::store::query_history(conn, &octopus_clipboard::QueryFilter {
-            filter: "all".into(),
-            search: None,
-            page: 1,
-            size: 1000,
-        })?;
-        Ok::<_, anyhow::Error>(items)
+    // 1. 从 DB 按 id 读条目内容（O(1) rowid 查找，不再整页反序列化）
+    let item = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::get_item_by_id(conn, id)
     })
     .map_err(|e| e.to_string())?;
 
-    let item = content.into_iter().find(|i| i.id == id);
-    if item.is_none() {
-        return Ok(());
-    }
-    let item = item.unwrap();
+    let item = match item {
+        Some(item) => item,
+        None => return Ok(()),
+    };
 
     // 2. hide 剪贴板窗口
     let win = app_handle.get_webview_window("clipboard_window");
@@ -112,12 +173,11 @@ pub async fn paste_clipboard_item(
     drop(win);
 
     // 3. 恢复焦点 + 粘贴（同一线程）
-    let text = item.content;
     let handle = handle.inner().clone();
     let focus = focus.inner().clone();
     std::thread::spawn(move || {
-        // 1. 写剪贴板
-        let _ = handle.write_text(&text);
+        // 1. 按类型写剪贴板（文本/图片/文件，还原真实内容而非 hash/JSON）
+        let _ = write_item_to_clipboard(&handle, &item);
         // 2. hide 后 macOS 自动还焦点（已确认 sublime_text 获得焦点）
         // 3. 等焦点稳定
         std::thread::sleep(std::time::Duration::from_millis(300));
@@ -147,13 +207,7 @@ pub async fn save_image_item(
 
     // 1. 从 DB 读条目
     let item = octopus_infra::db::with_db(|conn| {
-        let items = octopus_clipboard::store::query_history(conn, &QueryFilter {
-            filter: "all".into(),
-            search: None,
-            page: 1,
-            size: 1000,
-        })?;
-        Ok::<_, anyhow::Error>(items.into_iter().find(|i| i.id == id))
+        octopus_clipboard::store::get_item_by_id(conn, id)
     })
     .map_err(|e| e.to_string())?;
 
@@ -262,17 +316,24 @@ fn unique_path(dir: &std::path::Path, base: &str, ext: &str) -> std::path::PathB
     dir.join(format!("{}.{}", base, ext))
 }
 
+/// 解析剪贴板文件路径为本地路径。
+/// - Linux X11/Wayland：text/uri-list 存 `file://` URI + 百分号编码 → strip 前缀 + 解码
+/// - macOS（clipboard-rs 用 NSURL.path）/ Windows（FileList）：已解码的普通路径，无 `file://` 前缀
+/// 仅 `file://` 开头才解码，避免对含字面 `%XX` 的普通路径误伤（如 `50%20off.txt`）。
+fn decode_file_uri(raw: &str) -> String {
+    use percent_encoding::percent_decode_str;
+    if let Some(rest) = raw.strip_prefix("file://") {
+        percent_decode_str(rest).decode_utf8_lossy().into_owned()
+    } else {
+        raw.to_string()
+    }
+}
+
 /// 文件条目：用系统默认应用打开第一个文件
 #[tauri::command]
 pub async fn open_file_item(id: i64) -> Result<(), String> {
     let item = octopus_infra::db::with_db(|conn| {
-        let items = octopus_clipboard::store::query_history(conn, &QueryFilter {
-            filter: "all".into(),
-            search: None,
-            page: 1,
-            size: 1000,
-        })?;
-        Ok::<_, anyhow::Error>(items.into_iter().find(|i| i.id == id))
+        octopus_clipboard::store::get_item_by_id(conn, id)
     })
     .map_err(|e| e.to_string())?;
 
@@ -286,7 +347,7 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
         .map_err(|e| format!("解析路径失败: {}", e))?;
 
     let first = paths.first().ok_or("无文件路径")?;
-    let path = first.strip_prefix("file://").unwrap_or(first);
+    let path = decode_file_uri(first);
 
     // 用系统默认应用打开
     #[cfg(target_os = "macos")]
@@ -314,13 +375,7 @@ pub async fn ocr_image(
     handle: State<'_, Arc<ClipboardHandle>>,
 ) -> Result<String, String> {
     let item = octopus_infra::db::with_db(|conn| {
-        let items = octopus_clipboard::store::query_history(conn, &QueryFilter {
-            filter: "all".into(),
-            search: None,
-            page: 1,
-            size: 1000,
-        })?;
-        Ok::<_, anyhow::Error>(items.into_iter().find(|i| i.id == id))
+        octopus_clipboard::store::get_item_by_id(conn, id)
     })
     .map_err(|e| e.to_string())?;
 
@@ -385,17 +440,15 @@ end tell"#,
     }
 }
 
-/// 获取图片缩略图 BLOB（前端 base64 展示）。
+/// 获取图片缩略图 data URL（base64 编码：`data:image/webp;base64,...`）。
+///
+/// 返回完整 data URL 而非裸 `Vec<u8>`：Tauri IPC 把 `Vec<u8>` 序列化成 JSON 数字数组
+/// （4-5x 膨胀），前端还要 `map/join/btoa` 手动转 base64。后端一次编码成 data URL，
+/// 前端直接 `<img src={...}>`，省掉膨胀与转换开销（剪贴板窗口滚动时每个图片条目都触发）。
 #[tauri::command]
-pub async fn get_image_thumb(id: i64) -> Result<Vec<u8>, String> {
+pub async fn get_image_thumb(id: i64) -> Result<String, String> {
     let item = octopus_infra::db::with_db(|conn| {
-        let items = octopus_clipboard::store::query_history(conn, &QueryFilter {
-            filter: "all".into(),
-            search: None,
-            page: 1,
-            size: 1000,
-        })?;
-        Ok::<_, anyhow::Error>(items.into_iter().find(|i| i.id == id))
+        octopus_clipboard::store::get_item_by_id(conn, id)
     })
     .map_err(|e| e.to_string())?;
 
@@ -407,9 +460,14 @@ pub async fn get_image_thumb(id: i64) -> Result<Vec<u8>, String> {
     let blob_hash = item.image_meta.as_ref().map(|m| m.blob_hash.clone())
         .ok_or("图片元数据缺失")?;
 
-    octopus_infra::db::with_db(|conn| {
+    let thumb_blob = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_image_thumb(conn, &blob_hash)
     })
     .map_err(|e| e.to_string())?
-    .ok_or("缩略图不存在".into())
+    .ok_or_else(|| "缩略图不存在".to_string())?;
+
+    Ok(format!(
+        "data:image/webp;base64,{}",
+        general_purpose::STANDARD.encode(&thumb_blob)
+    ))
 }

@@ -45,6 +45,28 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+/// 注册剪贴板浮窗全局快捷键。main 启动注册 + set_config 热重载共用，
+/// 与 shortcut::register_shortcut / result_window::register_edit_global_shortcut 范式一致：
+/// 解析 + on_shortcut，失败返回 Err（供调用方回滚旧快捷键）。
+pub fn register_clipboard_shortcut(
+    app: &tauri::AppHandle,
+    shortcut_str: &str,
+) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+    let shortcut: Shortcut = shortcut_str
+        .parse()
+        .map_err(|e| format!("Failed to parse shortcut '{}': {}", shortcut_str, e))?;
+    let app_handle = app.clone();
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |_app, _scut, event| {
+            if event.state() == ShortcutState::Pressed {
+                let _ = toggle_clipboard_window(&app_handle);
+            }
+        })
+        .map_err(|e| format!("Failed to register clipboard shortcut '{}': {}", shortcut_str, e))?;
+    Ok(())
+}
+
 pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         // toggle 方向按"焦点"而非"可见性"判断：剪贴板窗口是 always-on-top，

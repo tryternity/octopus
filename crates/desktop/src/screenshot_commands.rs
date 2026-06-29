@@ -19,6 +19,30 @@ static PENDING_IMAGES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 static READY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static TOTAL_WINDOWS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// 注册截图全局快捷键。main 启动注册 + set_config 热重载共用，
+/// 与 shortcut::register_shortcut / result_window::register_edit_global_shortcut 范式一致。
+pub fn register_screenshot_shortcut(
+    app: &tauri::AppHandle,
+    shortcut_str: &str,
+) -> Result<(), String> {
+    use tauri_plugin_global_shortcut::{GlobalShortcutExt, Shortcut, ShortcutState};
+    let shortcut: Shortcut = shortcut_str
+        .parse()
+        .map_err(|e| format!("Failed to parse shortcut '{}': {}", shortcut_str, e))?;
+    let app_handle = app.clone();
+    app.global_shortcut()
+        .on_shortcut(shortcut, move |_app, _scut, event| {
+            if event.state() == ShortcutState::Pressed {
+                let ah = app_handle.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = start_screenshot(ah).await;
+                });
+            }
+        })
+        .map_err(|e| format!("Failed to register screenshot shortcut '{}': {}", shortcut_str, e))?;
+    Ok(())
+}
+
 /// 启动截图：截所有显示器 → 每个显示器一个窗口
 #[tauri::command]
 pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String> {
@@ -176,7 +200,7 @@ pub async fn ocr_screenshot(
             .map_err(|e| format!("解码失败: {:?}", e))?;
         let crop_w = img.width();
         let crop_h = img.height();
-        let encoded = octopus_clipboard::image::encode_to_webp_from_image(&img)
+        let encoded = octopus_clipboard::image::encode_to_webp(&img)
             .map_err(|e| format!("WebP 编码失败: {}", e))?;
 
         octopus_infra::db::with_db(|conn| {
@@ -340,7 +364,7 @@ pub async fn confirm_screenshot_with_data(
             .map_err(|e| format!("解码失败: {:?}", e))?;
         let crop_w = img.width();
         let crop_h = img.height();
-        let encoded = octopus_clipboard::image::encode_to_webp_from_image(&img)
+        let encoded = octopus_clipboard::image::encode_to_webp(&img)
             .map_err(|e| format!("WebP 编码失败: {}", e))?;
 
         octopus_infra::db::with_db(|conn| {
@@ -452,7 +476,7 @@ pub async fn confirm_screenshot(
             .map_err(|e| format!("解码裁剪图失败: {:?}", e))?;
         let crop_w = img.width();
         let crop_h = img.height();
-        let encoded = octopus_clipboard::image::encode_to_webp(&png_bytes, crop_w, crop_h)
+        let encoded = octopus_clipboard::image::encode_to_webp(&img)
             .map_err(|e| format!("WebP 编码失败: {}", e))?;
 
         // 6. 存 image_data BLOB

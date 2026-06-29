@@ -51,7 +51,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
       if (!resetPage && result.length > 0) {
         setPage(targetPage + 1);
       }
-      const count = await invoke<number>("clipboard_stats");
+      const count = await invoke<number>("clipboard_stats", { filter, search: debouncedSearch || null });
       setTotal(count);
     } catch (e) {
       showToast("加载失败：" + e);
@@ -84,9 +84,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
       return;
     }
     try {
-      for (const id of selectedIds) {
-        await invoke("delete_clipboard_item", { id });
-      }
+      await invoke("delete_clipboard_items", { ids: Array.from(selectedIds) });
       showToast(`已删除 ${selectedIds.size} 条`);
       setSelectedIds(new Set());
       setConfirmDelete(false);
@@ -243,11 +241,8 @@ function ClipboardRow({
 
   useEffect(() => {
     if (item.item_type === "image") {
-      invoke<number[]>("get_image_thumb", { id: item.id })
-        .then((bytes) => {
-          const base64 = btoa(bytes.map((b: number) => String.fromCharCode(b)).join(""));
-          setThumbSrc(`data:image/webp;base64,${base64}`);
-        })
+      invoke<string>("get_image_thumb", { id: item.id })
+        .then((dataUrl) => setThumbSrc(dataUrl))
         .catch(() => {});
     }
   }, [item.id, item.item_type]);
@@ -478,7 +473,10 @@ function formatFilePaths(content: string, count?: number): string {
   try {
     const paths: string[] = JSON.parse(content);
     const display = paths.slice(0, 3).map((raw) => {
-      const path = raw.replace(/^file:\/\//, "");
+      // Linux X11/Wayland 存 file:// URI + 百分号编码；macOS/Windows 存已解码的普通路径。
+      // 仅 file:// 开头才 decodeURIComponent，避免对含字面 %XX 的普通路径误伤。
+      const stripped = raw.replace(/^file:\/\//, "");
+      const path = raw.startsWith("file://") ? decodeURIComponent(stripped) : stripped;
       const parts = path.split("/").filter(Boolean);
       return "…/" + parts.slice(-2).join("/");
     });

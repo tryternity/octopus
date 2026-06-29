@@ -44,9 +44,10 @@ CREATE TABLE IF NOT EXISTS image_data (
 剪贴板图片事件
   │
   ├─ clipboard-rs get_image() → RGBA pixels
-  ├─ encode_and_hash() → PNG bytes + SHA-256
+  ├─ encode_and_hash() → PNG bytes（仅用于 SHA-256 去重 hash）
   ├─ 去重：hash 已在 image_data 表？→ 跳过编码，只插入 clipboard_history 行
-  ├─ PNG → WebP 100% 无损（webp crate Encoder::encode_lossless）
+  ├─ 复用原始 RGBA 构造 DynamicImage → WebP 100% 无损（webp crate Encoder::encode_lossless）
+  │  （encode_to_webp 接 &DynamicImage，不再二次解码上一步的 PNG）
   ├─ resize 240×240 (image crate Lanczos3) → WebP 20%（Encoder::encode(20.0)）
   └─ INSERT INTO image_data (hash, blob, thumb, width, height, created_at)
 ```
@@ -65,14 +66,14 @@ ocr_image 命令
 
 ### 4.2 前端缩略图展示
 
-新增 Tauri 命令 `get_image_thumb(id: i64) -> Vec<u8>`：
+Tauri 命令 `get_image_thumb(id: i64) -> String`（返回完整 data URL，非裸 `Vec<u8>`）：
 ```
 → clipboard_history.blob_hash
 → SELECT thumb FROM image_data WHERE hash = ?
-→ 返回 WebP bytes
+→ 后端 base64 编码 → 返回 "data:image/webp;base64,..."
 ```
 
-前端 `<img src="data:image/webp;base64,${base64}">` 内联展示。
+后端一次编码成 data URL，避免 Tauri IPC 把 `Vec<u8>` 序列化成 JSON 数字数组（4-5x 膨胀）+ 前端 `map/join/btoa` 转换。前端 `<img src={dataUrl}>` 直接展示。
 
 ### 4.3 导出保存
 

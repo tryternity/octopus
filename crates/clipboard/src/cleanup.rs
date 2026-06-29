@@ -24,11 +24,13 @@ pub fn run_cleanup(conn: &Connection, max_age_days: u32, max_items: u32) -> Resu
     // 3. 无引用 image_data BLOB 清理
     let reclaimed = crate::store::cleanup_unreferenced_images(conn)?;
 
-    // 4. FTS5 重建
-    let _ = conn.execute(
-        "INSERT INTO clipboard_history_fts(clipboard_history_fts) VALUES('rebuild')",
-        [],
-    );
+    // 4. FTS5 重建（仅在有删除 / 回收时；定时清理通常无删除，避免无谓全表重建）
+    if deleted > 0 || reclaimed > 0 {
+        let _ = conn.execute(
+            "INSERT INTO clipboard_history_fts(clipboard_history_fts) VALUES('rebuild')",
+            [],
+        );
+    }
 
     Ok(CleanupResult {
         deleted_items: deleted,

@@ -121,7 +121,9 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
             let rgba_img = img_data.to_rgba8()
                 .map_err(|e| anyhow::anyhow!("to_rgba8 failed: {}", e))?;
             let rgba = rgba_img.to_vec();
-            let (png_bytes, hash) = image::encode_and_hash(&rgba, w, h)?;
+            // PNG bytes 仅用于算 SHA-256 去重 hash；WebP 编码改走 DynamicImage（复用 RGBA，
+            // 不再让 encode_to_webp 内部把刚编出的 PNG 又解码一遍）。
+            let (_png_bytes, hash) = image::encode_and_hash(&rgba, w, h)?;
 
             // 去重
             let existing = octopus_infra::db::with_db(|conn| {
@@ -131,8 +133,12 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
             if let Some(id) = existing {
                 octopus_infra::db::with_db(|conn| store::touch_created_at(conn, id))?;
             } else {
-                // 编码 WebP 无损 + 缩略图
-                let encoded = image::encode_to_webp(&png_bytes, w, h)?;
+                // 编码 WebP 无损 + 缩略图：复用上面的 RGBA（不再二次解码 PNG）
+                let dyn_img = ::image::DynamicImage::ImageRgba8(
+                    ::image::RgbaImage::from_raw(w, h, rgba)
+                        .ok_or_else(|| anyhow::anyhow!("RgbaImage::from_raw failed"))?,
+                );
+                let encoded = image::encode_to_webp(&dyn_img)?;
 
                 // 存 image_data BLOB
                 octopus_infra::db::with_db(|conn| {

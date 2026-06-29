@@ -42,6 +42,25 @@ impl ClipboardHandle {
         Ok(())
     }
 
+    /// 写入文件路径列表到剪贴板（设置 suppress flag）。
+    pub fn write_files(&self, files: Vec<String>) -> Result<()> {
+        self.suppress_flag.store(true, Ordering::SeqCst);
+        let ctx = self.ctx.lock().unwrap();
+        ctx.set_files(files)
+            .map_err(|e| anyhow::anyhow!("Clipboard write files failed: {}", e))?;
+        Ok(())
+    }
+
+    /// 直接写入 RustImageData 到剪贴板（设置 suppress flag）。
+    /// 还原备份的图片时用，避免 write_image(&[u8]) 内部 from_bytes 二次解码。
+    pub fn set_image(&self, img: clipboard_rs::common::RustImageData) -> Result<()> {
+        self.suppress_flag.store(true, Ordering::SeqCst);
+        let ctx = self.ctx.lock().unwrap();
+        ctx.set_image(img)
+            .map_err(|e| anyhow::anyhow!("Clipboard set image failed: {}", e))?;
+        Ok(())
+    }
+
     pub fn read_text(&self) -> Result<String> {
         let ctx = self.ctx.lock().unwrap();
         ctx.get_text()

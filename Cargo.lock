@@ -5037,6 +5037,7 @@ dependencies = [
  "octopus-llm",
  "octopus-ocr",
  "once_cell",
+ "percent-encoding",
  "prost 0.13.5",
  "rubato 0.16.2",
  "serde",

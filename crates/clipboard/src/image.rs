@@ -22,10 +22,14 @@ pub struct EncodedImage {
     pub thumb_blob: Vec<u8>,
 }
 
-/// PNG bytes → WebP 100% 无损 + 缩略图 WebP 20%（240×240 Lanczos）。
-pub fn encode_to_webp(png_bytes: &[u8], _width: u32, _height: u32) -> Result<EncodedImage> {
-    let img = ::image::load_from_memory_with_format(png_bytes, ::image::ImageFormat::Png)
-        .context("Failed to decode PNG for WebP encoding")?;
+/// DynamicImage → WebP 100% 无损 + 缩略图 WebP 20%（240×240 Lanczos）。
+///
+/// 接收已解码的 `DynamicImage`，**不再**做 PNG 解码。
+/// 旧实现接收 PNG bytes 并在内部 `load_from_memory` 解码，导致调用方「RGBA→PNG(编码)→
+/// RGBA(解码)→WebP(编码)」的冗余编解码；watcher / screenshot 路径手里本就有解码好的
+/// 图像（watcher 从剪贴板 RGBA 构造，screenshot/migration 从 `load_from_memory` 得到），
+/// 直接传入即可省掉一次完整的 PNG 解码。
+pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let rgba = img.to_rgba8();
 
     // 无损 WebP 原图
@@ -44,24 +48,10 @@ pub fn encode_to_webp(png_bytes: &[u8], _width: u32, _height: u32) -> Result<Enc
 }
 
 /// 已解码的 DynamicImage → WebP 100% 无损 + 缩略图 WebP 20%（避免重复解码）。
-pub fn encode_to_webp_from_image(img: &::image::DynamicImage) -> Result<EncodedImage> {
-    let rgba = img.to_rgba8();
-
-    // 无损 WebP 原图
-    let encoder = webp::Encoder::from_rgba(&rgba, rgba.width(), rgba.height());
-    let webp_blob = encoder.encode_lossless();
-    let webp_blob = webp_blob.to_vec();
-
-    // 缩略图：resize 240×240 → WebP 20%
-    let thumb_img = img.resize(240, 240, ::image::imageops::FilterType::Lanczos3);
-    let thumb_rgba = thumb_img.to_rgba8();
-    let thumb_encoder = webp::Encoder::from_rgba(&thumb_rgba, thumb_rgba.width(), thumb_rgba.height());
-    let thumb_blob = thumb_encoder.encode(20.0);
-    let thumb_blob = thumb_blob.to_vec();
-
-    Ok(EncodedImage { webp_blob, thumb_blob })
-}
-
+///
+/// rebase 合并时与 main 的 `encode_to_webp_from_image` 重复——统一收敛到本函数
+/// （`encode_to_webp(img)`），watcher / image_migration / screenshot 全走它，
+/// 删除冗余的 `_from_image` 变体。
 pub fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
@@ -96,8 +86,10 @@ mod tests {
     #[test]
     fn test_encode_to_webp() {
         let rgba = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255];
-        let (png, _) = encode_and_hash(&rgba, 2, 2).unwrap();
-        let encoded = encode_to_webp(&png, 2, 2).unwrap();
+        let img = ::image::DynamicImage::ImageRgba8(
+            ::image::RgbaImage::from_raw(2, 2, rgba).unwrap()
+        );
+        let encoded = encode_to_webp(&img).unwrap();
         assert!(!encoded.webp_blob.is_empty());
         assert!(!encoded.thumb_blob.is_empty());
         assert_eq!(&encoded.webp_blob[..4], b"RIFF");

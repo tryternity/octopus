@@ -145,7 +145,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
         // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 7", [])?;
+        conn.execute("PRAGMA user_version = 8", [])?;
         log::info!("DB initialized (v7): schema + app_config(setting) + prompts + clipboard_history + image_data + yaml migration");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
@@ -155,19 +155,19 @@ fn init_schema(conn: &Connection) -> Result<()> {
             [],
         )?;
         conn.execute_batch(INIT_SQL).context("v2→v7: 重跑 db.sql 幂等补建 prompts + clipboard_history + image_data")?;
-        conn.execute("PRAGMA user_version = 7", [])?;
+        conn.execute("PRAGMA user_version = 8", [])?;
         log::info!("DB migrated to v7: app_config.category + prompts + clipboard_history + image_data");
     } else if v == 3 {
         // v3 → v4：prompts 表 + app_config.active_polish_prompt seed（INIT_SQL 幂等补建）
         log::info!("DB migrating v3 → v4: adding prompts table + active_polish_prompt seed...");
         conn.execute_batch(INIT_SQL).context("v3→v7: 重跑 db.sql 幂等补建 clipboard_history + image_data")?;
-        conn.execute("PRAGMA user_version = 7", [])?;
+        conn.execute("PRAGMA user_version = 8", [])?;
         log::info!("DB migrated to v7: prompts + clipboard_history + image_data");
     } else if v == 4 {
         // v4 → v5：clipboard_history 表 + FTS5 + 触发器 + app_config seed
         log::info!("DB migrating v4 → v5: adding clipboard_history table...");
         conn.execute_batch(INIT_SQL).context("v4→v5: 建 clipboard_history 表 + FTS5")?;
-        conn.execute("PRAGMA user_version = 7", [])?;
+        conn.execute("PRAGMA user_version = 8", [])?;
         log::info!("DB migrated v4→v7 (skip v5/v6): clipboard_history + FTS5 + image_data");
     } else if v == 5 {
         // v5 → v6：app_config category 'default' → 'setting'（语义化分组）
@@ -177,14 +177,32 @@ fn init_schema(conn: &Connection) -> Result<()> {
             [],
         )?;
         conn.execute_batch(INIT_SQL).context("v5→v7: 补建 image_data 表")?;
-        conn.execute("PRAGMA user_version = 7", [])?;
+        conn.execute("PRAGMA user_version = 8", [])?;
         log::info!("DB migrated v5→v7: app_config category renamed + image_data");
     } else if v == 6 {
         // v6 → v7：image_data 表
         log::info!("DB migrating v6 → v7: adding image_data table...");
         conn.execute_batch(INIT_SQL).context("v6→v7: 建 image_data 表")?;
-        conn.execute("PRAGMA user_version = 7", [])?;
+        conn.execute("PRAGMA user_version = 8", [])?;
         log::info!("DB migrated to v7: image_data");
+    } else if v == 7 {
+        // v7 → v8：FTS5 UPDATE 触发器收窄到 UPDATE OF search_text。
+        // 旧 clip_fts_au 是 AFTER UPDATE（任意列），touch_created_at（更新 created_at）
+        // 与 toggle_favorite（更新 is_favorite）等非搜索字段更新也会无谓 delete+insert
+        // FTS 索引项。db.sql 里已改 OF search_text，但 CREATE TRIGGER IF NOT EXISTS 对
+        // 已存在的旧库会跳过，故此处先 DROP 再重建，使现存库生效。
+        log::info!("DB migrating v7 → v8: 收窄 clip_fts_au 到 UPDATE OF search_text");
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS clip_fts_au;
+             CREATE TRIGGER clip_fts_au AFTER UPDATE OF search_text ON clipboard_history BEGIN
+                 INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, search_text)
+                 VALUES('delete', old.id, old.search_text);
+                 INSERT INTO clipboard_history_fts(rowid, search_text) VALUES (new.id, new.search_text);
+             END;",
+        )
+        .context("v7→v8: 重建 clip_fts_au 触发器")?;
+        conn.execute("PRAGMA user_version = 8", [])?;
+        log::info!("DB migrated to v8: clip_fts_au 限定 UPDATE OF search_text");
     }
     Ok(())
 }
