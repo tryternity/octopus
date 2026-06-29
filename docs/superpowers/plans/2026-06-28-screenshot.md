@@ -10,7 +10,7 @@
 
 **Spec:** `docs/superpowers/specs/2026-06-28-screenshot-design.md`
 
-> **实施状态（2026-06-28）**：一期（Task 1-6）+ 二期标注工具栏（矩形/箭头/文字 + 撤销 + 确认/取消）均已实现并合并 main，详见文末「实施偏差与补充记录」偏差 1-11。下方 Task 1-6 的 `[ ]` checkbox 为初版计划、**未回填完成状态**；实际实现以代码（`crates/capx`、`crates/desktop/src/screenshot_commands.rs`、`frontend/src/pages/Screenshot/`）+ 偏差记录为准。
+> **实施状态（2026-06-29）**：一期（Task 1-6）+ 二期标注工具栏（矩形/箭头/文字 + 撤销 + 确认/取消）均已实现并合并 main，下方 Task 1-6 的 checkbox 已回填完成状态，文末「实施偏差与补充记录」（偏差 1-11）记录实现与初版计划的差异。实际实现以代码（`crates/capx`、`crates/desktop/src/screenshot_commands.rs`、`frontend/src/pages/Screenshot/`）+ 偏差记录为准；各 Task 内的代码片段为初版计划示意，可能与最终实现略有出入（以偏差记录为准）。
 
 ---
 
@@ -44,7 +44,7 @@
 - Create: `crates/capx/src/capture.rs`
 - Modify: `Cargo.toml`（workspace root）
 
-- [ ] **Step 1: 创建 crate**
+- [x] **Step 1: 创建 crate**
 
 ```bash
 mkdir -p crates/capx/src
@@ -69,7 +69,7 @@ log = "0.4"
 pub mod capture;
 ```
 
-- [ ] **Step 2: 实现 capture.rs**
+- [x] **Step 2: 实现 capture.rs**
 
 ```rust
 use anyhow::{Context, Result};
@@ -141,17 +141,17 @@ pub fn crop_region(
 }
 ```
 
-- [ ] **Step 3: workspace Cargo.toml 加 member**
+- [x] **Step 3: workspace Cargo.toml 加 member**
 
 在 members 列表末尾加 `"crates/capx"`。
 
-- [ ] **Step 4: 验证编译**
+- [x] **Step 4: 验证编译**
 
 ```bash
 cargo build -p octopus-capx 2>&1 | tail -5
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/capx/ Cargo.toml
@@ -165,7 +165,7 @@ git commit -m "feat(capx): octopus-capx crate（xcap 截全屏 + 裁剪选区）
 **Files:**
 - Modify: `crates/clipboard/src/handle.rs`
 
-- [ ] **Step 1: 添加 write_image 方法**
+- [x] **Step 1: 添加 write_image 方法**
 
 在 `write_text` 方法之后添加：
 
@@ -182,14 +182,14 @@ pub fn write_image(&self, png_bytes: &[u8]) -> Result<()> {
 }
 ```
 
-- [ ] **Step 2: 验证编译 + 测试**
+- [x] **Step 2: 验证编译 + 测试**
 
 ```bash
 cargo build -p octopus-clipboard 2>&1 | tail -3
 cargo test -p octopus-clipboard 2>&1 | tail -5
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/clipboard/src/handle.rs
@@ -205,7 +205,7 @@ git commit -m "feat(clipboard): ClipboardHandle::write_image"
 - Modify: `crates/infra/src/db.rs`
 - Modify: `crates/infra/src/db.sql`
 
-- [ ] **Step 1: config.rs 新增字段**
+- [x] **Step 1: config.rs 新增字段**
 
 在 `clipboard_max_age_days` 之后添加：
 
@@ -227,7 +227,7 @@ Default impl 末尾加：
             screenshot_shortcut: default_screenshot_shortcut(),
 ```
 
-- [ ] **Step 2: db.rs save_app_config_at + load_app_config_at 补字段**
+- [x] **Step 2: db.rs save_app_config_at + load_app_config_at 补字段**
 
 save fields 数组 `[(&str, String); 25]` → `[(&str, String); 26]`，末尾加：
 ```rust
@@ -239,13 +239,13 @@ load match 分支加：
             "screenshot_shortcut" => cfg.screenshot_shortcut = value,
 ```
 
-- [ ] **Step 3: db.sql app_config seed 加**
+- [x] **Step 3: db.sql app_config seed 加**
 
 ```sql
     ('screenshot_shortcut',       'Alt+S',                                '截图快捷键'),
 ```
 
-- [ ] **Step 4: settings_commands apply_config_value 加字段**
+- [x] **Step 4: settings_commands apply_config_value 加字段**
 
 ```rust
         "screenshot_shortcut" => {
@@ -253,23 +253,23 @@ load match 分支加：
         }
 ```
 
-- [ ] **Step 5: set_config 热重载**
+- [x] **Step 5: set_config 热重载**
 
 在 `clipboard_shortcut` 热重载块之后添加 `screenshot_shortcut` 热重载（同模式：unregister 旧 + register 新 + on_shortcut 回调调 start_screenshot）。
 
-- [ ] **Step 6: 验证编译**
+- [x] **Step 6: 验证编译**
 
 ```bash
 cargo build -p octopus-infra -p octopus-desktop --features embedded 2>&1 | tail -5
 ```
 
-- [ ] **Step 7: 手动 seed DB**
+- [x] **Step 7: 手动 seed DB**
 
 ```bash
 sqlite3 ~/.octopus/octopus.db "INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES ('screenshot_shortcut', 'Alt+S', '截图快捷键');"
 ```
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/infra/ crates/desktop/src/settings_commands.rs
@@ -285,13 +285,13 @@ git commit -m "feat(infra): screenshot_shortcut 配置 + 热重载"
 - Modify: `crates/desktop/Cargo.toml`（加 octopus-capx + octopus-clipboard 依赖）
 - Modify: `crates/desktop/src/main.rs`（注册命令 + 快捷键 + 托盘菜单）
 
-- [ ] **Step 1: Cargo.toml 加依赖**
+- [x] **Step 1: Cargo.toml 加依赖**
 
 ```toml
 octopus-capx = { path = "../capx" }
 ```
 
-- [ ] **Step 2: 实现 screenshot_commands.rs**
+- [x] **Step 2: 实现 screenshot_commands.rs**
 
 ```rust
 use std::sync::Mutex;
@@ -416,7 +416,7 @@ pub async fn cancel_screenshot(app_handle: tauri::AppHandle) -> Result<(), Strin
 
 简化方案：在 capx 中新增 `crop_region_png` 返回 `Vec<u8>` PNG，confirm 中直接对 PNG bytes 算 SHA-256（绕过 encode_and_hash），然后解码 PNG → encode_to_webp。
 
-- [ ] **Step 3: main.rs 注册命令 + 快捷键**
+- [x] **Step 3: main.rs 注册命令 + 快捷键**
 
 mod 声明加 `mod screenshot_commands;`
 
@@ -431,13 +431,13 @@ setup 中加截图快捷键注册（从 config 读 `screenshot_shortcut`）。
 
 托盘菜单加「截图」项（tray.rs）。
 
-- [ ] **Step 4: 验证编译**
+- [x] **Step 4: 验证编译**
 
 ```bash
 cargo build -p octopus-desktop --features embedded 2>&1 | tail -5
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/
@@ -452,13 +452,13 @@ git commit -m "feat(desktop): screenshot 命令 + 快捷键 + 托盘菜单"
 - Create: `crates/desktop/frontend/src/pages/Screenshot/index.tsx`
 - Modify: `crates/desktop/frontend/src/main.tsx`（路由加 screenshot）
 
-- [ ] **Step 1: main.tsx 路由**
+- [x] **Step 1: main.tsx 路由**
 
 ```typescript
 // 路由判断：URL hash = #/screenshot 时渲染 Screenshot 组件
 ```
 
-- [ ] **Step 2: 实现 Screenshot/index.tsx**
+- [x] **Step 2: 实现 Screenshot/index.tsx**
 
 核心功能：
 - 监听 `screenshot://ready` 事件 → 拿到全屏 PNG base64
@@ -492,13 +492,13 @@ export default function Screenshot() {
 }
 ```
 
-- [ ] **Step 3: 构建前端**
+- [x] **Step 3: 构建前端**
 
 ```bash
 cd crates/desktop/frontend && npm run build 2>&1 | tail -5
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/
@@ -509,14 +509,14 @@ git commit -m "feat(screenshot): 前端选区 Canvas UI（框选 + 手柄调整 
 
 ### Task 6: 端到端验证
 
-- [ ] **Step 1: 完整构建**
+- [x] **Step 1: 完整构建**
 
 ```bash
 cd crates/desktop/frontend && npm run build
 cd .. && cargo build --features embedded 2>&1 | tail -5
 ```
 
-- [ ] **Step 2: 运行应用测试截图**
+- [x] **Step 2: 运行应用测试截图**
 
 ```bash
 ./run-octopus.sh
@@ -532,7 +532,7 @@ cd .. && cargo build --features embedded 2>&1 | tail -5
 7. 托盘菜单「截图」→ 同样触发
 8. 设置页「截图」快捷键可改 + 热重载
 
-- [ ] **Step 3: 最终 Commit（如有修复）**
+- [x] **Step 3: 最终 Commit（如有修复）**
 
 ---
 

@@ -306,7 +306,7 @@ octopus-cli config
 | `engine_mode` | string | `"embedded"` | desktop | embedded / websocket / grpc |
 | `remote_url` | string | `ws://127.0.0.1:3000/ws/stream` | desktop | websocket 模式远程地址 |
 | `grpc_endpoint` | string | `http://127.0.0.1:50051` | desktop | grpc 模式端点 |
-| `asr_shortcut` | string | `CmdOrCtrl+Shift+Space` | desktop | 全局 ASR 激活/关闭快捷键（Tauri Accelerator 格式）。GUI 设置页可配（快捷键捕获按钮 + `check_shortcut` 冲突检测 + 热重载）。旧字段名 `shortcut` 经 serde alias 向后兼容 |
+| `asr_shortcut` | string | `CmdOrCtrl+Shift+A` | desktop | 全局 ASR 激活/关闭快捷键（Tauri Accelerator 格式）。GUI 设置页可配（快捷键捕获按钮 + `check_shortcut` 冲突检测 + 热重载）。旧字段名 `shortcut` 经 serde alias 向后兼容 |
 | `paste_method` | string | `"clipboard"` | desktop | clipboard / direct / none |
 | `write_to_clipboard` | bool | `true` | desktop | 粘贴完成后是否把识别结果写入剪贴板（方便他处再粘贴）；`false` 时三模式等同重构前现状（不碰/恢复原剪贴板）。详见 [transcript-model spec §6](superpowers/specs/2026-06-14-archived-design.md) |
 | `overlay_position` | string | `"top"` | desktop | top / bottom / none。**已废弃**（2026-06-21 审查修复）：`recording_overlay` 窗口及 `overlay.rs` 模块已整体删除，UI 统一到 `result_window`。字段保留于 config 结构（避免 DB schema 迁移），但无任何使用方 |
@@ -321,9 +321,19 @@ octopus-cli config
 | `output_simplified` | bool | `true` | desktop | ASR 输出字形归一化：`true`→简体（繁→简），`false`→繁体（简→繁）。基于开放词典网 CC-BY 3.0 单字对照表（编译期嵌入），在 ASR 输出后做单字级字形转换（不转地域用词）。解决 Qwen3-ASR `auto` 模式输出繁体的问题。详见 [architecture.md](../architecture.md) |
 | `hide_toolbar` | bool | `true` | desktop | 结果展示区工具栏显隐模式：`true`→鼠标移入显示、移出隐藏（默认）；`false`→工具栏始终显示（窗口高度保持展开态 132px） |
 | `edit_shortcut` | string | `"Cmd+Enter"` | desktop | 结果展示区编辑 toggle 快捷键——**进入与保存（退出）编辑都用此键**（与 ✏️ 按钮同语义，Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。GUI 设置页可配（快捷键捕获按钮，不需冲突检测——仅窗口内 keydown 判定）。曾用双击进入（WKWebView `dblclick` 难触发而弃用）；曾拆分「Cmd+E 进 / Cmd+Enter 存」，因两者均窗口内 keydown（非全局、不 hijack 系统）已统一为单键 toggle |
+| `edit_global_shortcut` | string | `"CmdOrCtrl+Shift+E"` | desktop | 全局编辑快捷键——任意应用聚焦时唤起结果窗并进入/保存编辑（toggle，复用窗口内编辑语义）。与 `edit_shortcut`（窗口内、仅结果窗聚焦时生效）并存。GUI 设置页可配 + 热重载 |
+| `polish_global_shortcut` | string | `"CmdOrCtrl+Shift+S"` | desktop | 全局立即润色快捷键——任意应用聚焦时 show 结果窗（不聚焦）+ 触发 `polish_now`（复用工具栏「立即润色」按钮语义：空文本静默、幂等）。GUI 设置页可配 + 热重载 |
+| `clipboard_shortcut` | string | `"CmdOrCtrl+Shift+D"` | desktop | 剪贴板历史浮窗全局快捷键（Tauri Accelerator 格式）。GUI 设置页可配 + 热重载 |
+| `clipboard_max_items` | int | `1000` | desktop | 剪贴板最大保留条数（不含收藏，超出自动清理） |
+| `clipboard_max_age_days` | int | `30` | desktop | 剪贴板自动清理天数（超过此天数的非收藏记录自动删除） |
+| `screenshot_shortcut` | string | `"Alt+S"` | desktop | 截图全局快捷键（框选 → 标注 → 入剪贴板历史）。详见 [screenshot 设计](superpowers/specs/2026-06-28-screenshot-design.md)。GUI 设置页可配 + 热重载 |
+| `download_mirror` | string | `""` | cli + desktop | HF 模型下载镜像 host（如 `https://hf-mirror.com`），空 = 官方源 huggingface.co。cli `download --mirror` 可临时覆盖 |
+| `ocr_model` | string | `"PP-OCRv6-small"` | desktop | OCR 模型（当前激活），对应 `~/.octopus/models/ocr/<name>/` 目录名。改后重启生效（OnceLock 单例缓存） |
 | `active_polish_prompt` | string | `"1"` | desktop | 激活的润色 prompt id（`prompts` 表 `id` 字段，字符串形式存储）。默认 `"1"` 指向系统内置 prompt。设置窗口 prompt 管理页可切换（`set_active_prompt` 命令即时生效，下次润色用新 prompt）。详见 [prompts 表](#prompts-表-润色提示词管理) |
 
 > **前缀划分**：`segment_*` 控制 VAD 分段，`polish_*` 控制润色行为（包括 `polish_mode`、`polish_interval` 和新字段 `polish_llm`），`asr_*`（`asr_engine`、`asr_hardware_accelerated`、`asr_correct`）控制 ASR 引擎选择 / 推理后端 / 输出后处理。`denoise_mode`（前缀 `denoise_`）控制麦克风环境降噪（采集层前置，VAD/ASR 前）。`pause_polish_threshold_ms`（前缀 `pause_`）亦属润色行为——停顿触发中间润色的静音阈值。`write_to_clipboard` 属粘贴行为（与 `paste_method` 同组）。`microphone` 为 cli + desktop 跨端通用字段，其余为 desktop 行为参数。`active_polish_prompt` 属润色行为（与 `polish_*` 同组，但存独立 key，由 `db::load_active_prompt_id()` 读，不入 `AppConfig` struct）。
+
+> **快捷键字段**（`asr_shortcut` / `edit_shortcut` / `edit_global_shortcut` / `polish_global_shortcut` / `clipboard_shortcut` / `screenshot_shortcut`）均为 Tauri Accelerator 格式、GUI 设置页可配 + 热重载。`clipboard_*`（`clipboard_shortcut` / `clipboard_max_items` / `clipboard_max_age_days`）控制剪贴板历史（浮窗快捷键 + 容量/清理）；另有两个不入 `AppConfig` 的独立 app_config key：`clipboard_enabled`（默认 `true`，是否启用剪贴板历史监听）、`clipboard_auto_paste`（默认 `double`，列表项点击行为 `single`=复制 / `double`=粘贴）。`screenshot_shortcut` 控制截图触发。`download_mirror` 控制模型下载镜像源。`ocr_model` 控制 OCR 引擎选择（改后重启生效）。
 
 ### 模型选择 spec（`asr_engine` / `polish_llm` 统一 3-part 格式）
 
@@ -371,7 +381,7 @@ language: "auto"
 engine_mode: "embedded"          # embedded | websocket | grpc
 
 # 桌面交互
-asr_shortcut: "CmdOrCtrl+Shift+Space"  # 全局 ASR 激活/关闭快捷键（旧字段名 shortcut 仍兼容）
+asr_shortcut: "CmdOrCtrl+Shift+A"  # 全局 ASR 激活/关闭快捷键（旧字段名 shortcut 仍兼容）
 paste_method: "clipboard"        # clipboard | direct | none
 write_to_clipboard: true         # 粘贴后是否把识别结果留在剪贴板（false = 等同重构前现状）
 overlay_position: "top"          # top | bottom | none
@@ -390,6 +400,20 @@ denoise_mode: 1                  # 环境降噪：0=关闭直通 / 1=RNNoise（�
 output_simplified: true          # ASR 输出字形：true=简体（繁→简），false=繁体（简→繁）
 hide_toolbar: true               # 结果窗工具栏：true=hover 显隐（默认），false=始终显示
 edit_shortcut: "Cmd+Enter"       # 编辑 toggle 快捷键（窗口内，进入/保存都用此键）
+edit_global_shortcut: "CmdOrCtrl+Shift+E"  # 全局编辑（跨应用唤起结果窗 + toggle）
+polish_global_shortcut: "CmdOrCtrl+Shift+S"  # 全局立即润色（show 结果窗不聚焦 + polish_now）
+
+# 剪贴板历史浮窗
+clipboard_shortcut: "CmdOrCtrl+Shift+D"  # 剪贴板历史浮窗快捷键
+clipboard_max_items: 1000         # 最大保留条数（不含收藏）
+clipboard_max_age_days: 30        # 自动清理天数（不含收藏）
+
+# 截图
+screenshot_shortcut: "Alt+S"      # 截图快捷键（框选 → 标注 → 入剪贴板历史）
+
+# 下载 / OCR
+download_mirror: ""               # HF 下载镜像（空 = 官方源），cli download --mirror 可临时覆盖
+ocr_model: "PP-OCRv6-small"       # OCR 模型（对应 ~/.octopus/models/ocr/<name>/）
 ```
 
 ### 结果展示区编辑
