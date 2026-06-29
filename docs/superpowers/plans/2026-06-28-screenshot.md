@@ -618,3 +618,18 @@ xcap 声明了 `[workspace]`，导致 octopus workspace 冲突。解决：`exclu
 
 原设计：前端传坐标 → 后端从 SCREENSHOT_DATA 裁剪。但标注在前端 Canvas 上，后端无法感知。
 改为：前端完整合成（原图 + 标注 → 裁剪选区 → base64 PNG）→ 新增 `confirm_screenshot_with_data` 命令接收最终 PNG → 后端跳过裁剪直接入库。
+
+### 偏差 12：工具栏扩展——直线/画笔/序号 + 属性浮窗 + 自定义图标
+
+- 新增 line（直线）、pen（自由曲线，追加点序列）、number（序号，点击递增圆圈数字）三种标注
+- 序号：实心彩色圆圈 + 白色加粗数字，圆圈大小可调（16-60），数字字号 = 圆圈 × 0.6
+- 标注独立记忆 color + lineWidth/fontSize/circleSize（用 useRef 避免 onBlur 闭包陷阱）
+- 工具属性浮窗（ToolPropsPopover）三行→两行：第一行滑轨+当前色圆形指示器，第二行预设色+彩虹调色板
+- 三种模式：粗细(1-10) / 字号(10-48) / 圆圈(16-60)
+- 工具栏全部换为自定义 SVG 图标（square/straight-line/arrow-line/sketching/text/sequence-note/restore/save/copy/close）
+- 保存改为系统保存对话框（`save_screenshot_dialog`，tauri_plugin_dialog）
+- 撤销按钮使用 `restore.svg` 图标
+
+### 偏差 13：多显示器窗口崩溃修复
+
+同时创建多个全屏 WebView 导致 macOS WKWebView 进程崩溃（segfault）。改为串行创建（150ms 间隔）+ 错误处理（创建失败跳过该显示器）。

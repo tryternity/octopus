@@ -310,11 +310,22 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 
 ### 二期实现详情
 
-**标注工具**：
-- **矩形**：拖拽绘制红色矩形框（`#ef4444`）
-- **箭头**：拖拽绘制红色箭头（起点→终点 + 三角头部）
-- **文字**：点击弹 textarea 输入，失焦/点击其他位置确认
-- **撤销**：Cmd+Z / 工具栏按钮，删除最后一个标注
+**标注工具**（7 个，按工具栏顺序）：
+1. **矩形** — 拖拽绘制彩色矩形框
+2. **直线** — 拖拽绘制彩色直线（无箭头）
+3. **箭头** — 拖拽绘制彩色箭头（含三角头部）
+4. **画笔**（自由曲线）— 跟随鼠标轨迹，追加点序列
+5. **文字** — 点击弹 textarea 输入，失焦/点击其他位置确认
+6. **序号** — 点击递增（实心彩色圆圈 + 白色加粗数字 1→2→3...）
+7. **撤销** — Cmd+Z / 工具栏按钮，删除最后一个标注
+
+**工具属性浮窗**（ToolPropsPopover，两行布局）：
+- 第一行：粗细/字号/圆圈大小滑轨 + 数值 + **当前色圆形指示器**（20px 圆形，3px 白边 + 双层阴影，和预设色形状区分）
+- 分隔线
+- 第二行：8 个预设色（方形圆角，选中态 scale 1.1× + 不透明，未选中 0.45）+ 彩虹调色板（conic-gradient 圆形，弹原生 color picker）
+- 三种模式：粗细（1-10）/ 字号（10-48）/ 圆圈（16-60）
+
+**标注属性**：每个标注独立记忆 color + lineWidth（或 fontSize / circleSize），已画的不受新设置影响。
 
 **标注交互**：
 - 任何工具状态下优先检测已有标注命中（bounding box hit test）
@@ -324,10 +335,18 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 
 **确认合成**（`confirm_screenshot_with_data`）：
 - 前端在临时 Canvas 上合成：原图 1:1（`naturalWidth × naturalHeight`）+ 标注
-- 标注坐标/线宽/字号按 `scale = naturalWidth / innerWidth` 放大
+- 标注坐标/线宽/字号按 `scale = naturalWidth / innerWidth` 放大（`drawAnnotationScaled`）
 - 裁剪选区后 `toDataURL("image/png")` → base64 传给后端
 - 后端跳过裁剪，直接解码 → SHA-256 去重 → WebP BLOB → DB + 剪贴板
 - 保证截图全分辨率 + 标注比例正确
+
+**保存到文件**（`save_screenshot_dialog`）：
+- 弹系统保存对话框（`tauri_plugin_dialog`），用户选路径 + 文件名
+- 不进剪贴板历史
+
+**工具栏图标**：全部使用自定义 SVG（square/straight-line/arrow-line/sketching/text/sequence-note/restore/save/copy/close）
+
+**多显示器崩溃修复**：串行创建窗口（150ms 间隔），避免 macOS WKWebView 同时创建崩溃
 | **三期** | 滚动截图（自动滚动 + 逐行像素匹配拼接） | 一期 |
 
 ## 9. 风险
