@@ -310,14 +310,21 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 
 ### 二期实现详情
 
-**标注工具**（7 个，按工具栏顺序）：
+**标注工具**（8 个标注 + 4 个操作，按工具栏顺序）：
 1. **矩形** — 拖拽绘制彩色矩形框
-2. **直线** — 拖拽绘制彩色直线（无箭头）
-3. **箭头** — 拖拽绘制彩色箭头（含三角头部）
-4. **画笔**（自由曲线）— 跟随鼠标轨迹，追加点序列
-5. **文字** — 点击弹 textarea 输入，失焦/点击其他位置确认
-6. **序号** — 点击递增（实心彩色圆圈 + 白色加粗数字 1→2→3...）
-7. **撤销** — Cmd+Z / 工具栏按钮，删除最后一个标注
+2. **椭圆** — 拖拽绘制彩色椭圆轮廓（`ctx.ellipse`）
+3. **直线** — 拖拽绘制彩色直线（无箭头）
+4. **箭头** — 拖拽绘制彩色箭头（含三角头部）
+5. **画笔**（自由曲线）— 跟随鼠标轨迹，追加点序列
+6. **文字** — 点击弹 textarea 输入，失焦/点击其他位置确认
+7. **序号** — 点击递增（实心彩色圆圈 + 白色加粗数字 1→2→3...）
+8. **撤销** — Cmd+Z / 工具栏按钮，删除最后一个标注
+
+**操作按钮**：
+- **OCR** — 合成选区 → 入库 → OCR 识别 → 写 search_text + 剪贴板 + osascript 新建文档（`ocr_screenshot` 命令）
+- **保存** — 弹系统保存对话框（`save_screenshot_dialog`）
+- **确认** — 合成选区 → 入库 → 剪贴板历史（`confirm_screenshot_with_data`）
+- **取消** — 关闭所有截图窗口
 
 **工具属性浮窗**（ToolPropsPopover，两行布局）：
 - 第一行：粗细/字号/圆圈大小滑轨 + 数值 + **当前色圆形指示器**（20px 圆形，3px 白边 + 双层阴影，和预设色形状区分）
@@ -344,7 +351,9 @@ main.rs setup 从 config 读 `screenshot_shortcut` 注册全局快捷键。`set_
 - 弹系统保存对话框（`tauri_plugin_dialog`），用户选路径 + 文件名
 - 不进剪贴板历史
 
-**工具栏图标**：全部使用自定义 SVG（square/straight-line/arrow-line/sketching/text/sequence-note/restore/save/copy/close）
+**工具栏图标**：全部使用自定义 SVG（square/oval-vertical/straight-line/arrow-line/sketching/text/sequence-note/restore/ocr-ai/save/copy/close）
+
+**前端合成重构**：`composeAndCrop()` 公共函数（doOcr/doSaveFile/doConfirm 共用），消除重复代码。
 
 **多显示器崩溃修复**：串行创建窗口（150ms 间隔），避免 macOS WKWebView 同时创建崩溃
 | **三期** | 滚动截图（自动滚动 + 逐行像素匹配拼接） | 一期 |
