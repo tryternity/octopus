@@ -7,10 +7,10 @@ interface Selection {
 }
 
 type Mode = "idle" | "selecting" | "selected" | "move" | "resize";
-type Tool = "none" | "rect" | "line" | "arrow" | "pen" | "text" | "number";
+type Tool = "none" | "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number";
 
 interface Annotation {
-  type: "rect" | "line" | "arrow" | "pen" | "text" | "number";
+  type: "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number";
   x1: number; y1: number; x2: number; y2: number;
   text?: string;
   points?: number[][];
@@ -163,6 +163,14 @@ export default function Screenshot() {
       const w = Math.abs(ann.x2 - ann.x1);
       const h = Math.abs(ann.y2 - ann.y1);
       ctx.strokeRect(x, y, w, h);
+    } else if (ann.type === "oval") {
+      const cx = (ann.x1 + ann.x2) / 2;
+      const cy = (ann.y1 + ann.y2) / 2;
+      const rx = Math.max(1, Math.abs(ann.x2 - ann.x1) / 2);
+      const ry = Math.max(1, Math.abs(ann.y2 - ann.y1) / 2);
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
     } else if (ann.type === "line") {
       ctx.beginPath();
       ctx.moveTo(ann.x1, ann.y1);
@@ -229,6 +237,14 @@ export default function Screenshot() {
       const w = Math.abs(ann.x2 - ann.x1) * scale;
       const h = Math.abs(ann.y2 - ann.y1) * scale;
       ctx.strokeRect(x, y, w, h);
+    } else if (ann.type === "oval") {
+      const cx = (ann.x1 + ann.x2) / 2 * scale;
+      const cy = (ann.y1 + ann.y2) / 2 * scale;
+      const rx = Math.max(1, Math.abs(ann.x2 - ann.x1) / 2 * scale);
+      const ry = Math.max(1, Math.abs(ann.y2 - ann.y1) / 2 * scale);
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
+      ctx.stroke();
     } else if (ann.type === "line") {
       ctx.beginPath();
       ctx.moveTo(ann.x1 * scale, ann.y1 * scale);
@@ -499,7 +515,7 @@ export default function Screenshot() {
       const ann = drawingRef.current;
       drawingRef.current = null;
       // 过滤太小的
-      if (ann.type === "rect") {
+      if (ann.type === "rect" || ann.type === "oval") {
         if (Math.abs(ann.x2 - ann.x1) > 5 && Math.abs(ann.y2 - ann.y1) > 5) {
           setAnnotations(prev => [...prev, ann]);
         }
@@ -713,6 +729,9 @@ export default function Screenshot() {
           <ToolButton active={tool === "rect"} onClick={() => setTool(tool === "rect" ? "none" : "rect")} label="矩形" icon={
             <img src="icons/square.svg" alt="矩形" className="w-[18px] h-[18px]" style={{ filter: tool === "rect" ? "brightness(0) invert(1)" : "none" }} />
           } />
+          <ToolButton active={tool === "oval"} onClick={() => setTool(tool === "oval" ? "none" : "oval")} label="椭圆" icon={
+            <img src="icons/oval-vertical.svg" alt="椭圆" className="w-[18px] h-[18px]" style={{ filter: tool === "oval" ? "brightness(0) invert(1)" : "none" }} />
+          } />
           <ToolButton active={tool === "line"} onClick={() => setTool(tool === "line" ? "none" : "line")} label="直线" icon={
             <img src="icons/straight-line.svg" alt="直线" className="w-[18px] h-[18px]" style={{ filter: tool === "line" ? "brightness(0) invert(1)" : "none" }} />
           } />
@@ -811,66 +830,72 @@ function ToolPropsPopover({
         position: "fixed",
         left: x,
         top: y,
-        padding: "8px 10px",
-        background: "rgba(255,255,255,0.97)",
-        borderRadius: 8,
-        boxShadow: "0 4px 16px rgba(0,0,0,0.2)",
+        padding: "10px 12px",
+        background: "#fff",
+        borderRadius: 10,
+        boxShadow: "0 8px 24px -4px rgba(0,0,0,0.2), 0 2px 8px -2px rgba(0,0,0,0.1)",
         zIndex: 101,
         display: "flex",
         flexDirection: "column",
-        gap: 8,
-        width: 200,
+        gap: 10,
+        width: 240,
       }}
     >
-      {/* 第一行：粗细/字号滑轨 */}
-      <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-        <span style={{ fontSize: 10, color: "#888", width: 24 }}>{label}</span>
+      {/* 第一行：粗细滑轨 + 当前色（最右） */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <span style={{ fontSize: 10, color: "#999", width: 20, fontWeight: 500, flexShrink: 0 }}>{label}</span>
         <input
           type="range"
           min={min}
           max={max}
           value={sizeValue}
           onChange={(e) => setSize(Number(e.target.value))}
-          style={{ flex: 1, height: 3, accentColor: color, cursor: "pointer" }}
+          style={{ flex: 1, height: 4, borderRadius: 2, cursor: "pointer", accentColor: color }}
         />
-        <span style={{ fontSize: 10, color: "#555", fontVariantNumeric: "tabular-nums", width: 20, textAlign: "right" }}>{sizeValue}</span>
-      </div>
-
-      {/* 第二行：当前色 + 预设色 */}
-      <div style={{ display: "flex", alignItems: "center", gap: 5 }}>
+        <span style={{ fontSize: 10, color: "#666", fontVariantNumeric: "tabular-nums", width: 18, textAlign: "center", fontWeight: 600 }}>{sizeValue}</span>
+        {/* 当前色 — 带粗白边 + 阴影，和下方预设色区分 */}
         <div style={{
-          width: 18, height: 18, borderRadius: 4,
+          width: 20, height: 20, borderRadius: "50%",
           background: color,
-          border: "2px solid #fff",
-          boxShadow: "0 0 0 1px rgba(0,0,0,0.2)",
+          border: "3px solid #fff",
+          boxShadow: "0 0 0 1.5px rgba(0,0,0,0.2), 0 1px 3px rgba(0,0,0,0.15)",
           flexShrink: 0,
         }} />
+      </div>
+
+      {/* 分隔线 */}
+      <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
+
+      {/* 第二行：预设色 + 调色板 */}
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
         {PRESET_COLORS.map((c) => (
           <button
             key={c}
             onClick={() => onColorChange(c)}
             style={{
-              width: 16, height: 16, borderRadius: 4,
+              width: 18, height: 18, borderRadius: 5,
               background: c,
-              border: c === "#ffffff" ? "1px solid #ddd" : "none",
+              border: c === "#ffffff" ? "1px solid #e0e0e0" : "none",
               cursor: "pointer",
               padding: 0,
-              opacity: color === c ? 1 : 0.6,
-              transition: "opacity 0.15s",
+              opacity: color.toLowerCase() === c.toLowerCase() ? 1 : 0.45,
+              transform: color.toLowerCase() === c.toLowerCase() ? "scale(1.1)" : "scale(1)",
+              transition: "opacity 0.15s, transform 0.15s",
             }}
           />
         ))}
-      </div>
-
-      {/* 第三行：自定义调色板 */}
-      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-        <label style={{ position: "relative", display: "flex", alignItems: "center", gap: 4, cursor: "pointer" }}>
-          <span style={{ fontSize: 10, color: "#888" }}>自定义</span>
+        {/* 调色板 */}
+        <label style={{ cursor: "pointer", display: "flex", alignItems: "center", flexShrink: 0, marginLeft: 2 }}>
+          <div style={{
+            width: 18, height: 18, borderRadius: 5,
+            background: "conic-gradient(from 0deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)",
+            border: "1px solid rgba(0,0,0,0.1)",
+          }} />
           <input
             type="color"
             value={color}
             onChange={(e) => onColorChange(e.target.value)}
-            style={{ width: 24, height: 18, border: "1px solid #ddd", borderRadius: 4, cursor: "pointer", padding: 0 }}
+            style={{ width: 0, height: 0, opacity: 0, position: "absolute" }}
           />
         </label>
       </div>
