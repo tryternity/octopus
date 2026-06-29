@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for octopus-desktop",
-  "windows": ["main", "result_window", "settings_window", "clipboard_window"],
+  "windows": ["main", "result_window", "settings_window", "clipboard_window", "screenshot_*"],
   "permissions": [
     "core:default",
     "core:window:allow-show",
@@ -11,6 +11,7 @@
     "core:window:allow-set-size",
     "core:window:allow-set-always-on-top",
     "core:window:allow-set-focus",
+    "core:window:allow-set-ignore-cursor-events",
     "core:window:allow-start-dragging",
     "core:event:allow-emit",
     "core:event:allow-listen",

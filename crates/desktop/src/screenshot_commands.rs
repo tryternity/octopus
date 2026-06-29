@@ -563,34 +563,60 @@ pub async fn start_scroll_recording(
             .map(|m| m.scale_factor())
             .unwrap_or(1.0);
 
-        let px = (x * scale) as i32;
-        let py = (y * scale) as i32;
+        let px = (x * scale) as u32;
+        let py = (y * scale) as u32;
         let pw = (w * scale) as u32;
         let ph = (h * scale) as u32;
 
-        let captures = match octopus_capx::capture::capture_all_monitors() { Ok(c) => c, Err(_) => return };
-        let full = match captures.into_iter().next() { Some(c) => c, None => return };
-        let first_cropped = octopus_capx::capture::crop_region(&full, px as u32, py as u32, pw, ph);
-        let first_png = match first_cropped { Ok(p) => p, Err(_) => return };
-        let first_img = match image::load_from_memory(&first_png) { Ok(i) => i.to_rgba8(), Err(_) => return };
+        // 让截图窗口忽略鼠标事件（滚轮穿透到底层应用）
+        let scroll_labels: Vec<String> = ah
+            .webview_windows()
+            .keys()
+            .filter(|k| k.starts_with("screenshot_"))
+            .cloned()
+            .collect();
+        for label in &scroll_labels {
+            if let Some(win) = ah.get_webview_window(label) {
+                let _ = win.set_ignore_cursor_events(true);
+            }
+        }
 
+        // 首帧（spawn_blocking 避免阻塞 async runtime）
+        let first_result = tokio::task::spawn_blocking(move || {
+            let captures = octopus_capx::capture::capture_all_monitors()?;
+            let full = captures.into_iter().next().ok_or_else(|| anyhow::anyhow!("no monitor"))?;
+            let png = octopus_capx::capture::crop_region(&full, px, py, pw, ph)?;
+            let img = image::load_from_memory(&png)?.to_rgba8();
+            anyhow::Ok(img)
+        }).await;
+
+        let first_img = match first_result { Ok(Ok(img)) => img, _ => return };
         let mut stitcher = octopus_capx::stitch::Stitcher::new(first_img, Default::default());
 
-        let frame_duration = std::time::Duration::from_millis(66);
+        // 通知前端：开始录制
+        let _ = ah.emit("scroll://started", ());
+
+        let frame_duration = std::time::Duration::from_millis(100); // 10fps（降低 CPU 压力）
         let mut interval = tokio::time::interval(frame_duration);
         interval.tick().await;
 
+        let ah2 = ah.clone();
         while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
             interval.tick().await;
 
-            let captures = match octopus_capx::capture::capture_all_monitors() { Ok(c) => c, Err(_) => continue };
-            let full = match captures.into_iter().next() { Some(c) => c, None => continue };
-            let cropped = match octopus_capx::capture::crop_region(&full, px as u32, py as u32, pw, ph) {
-                Ok(p) => p, Err(_) => continue,
-            };
-            let frame_rgba = match image::load_from_memory(&cropped) {
-                Ok(i) => i.to_rgba8(), Err(_) => continue,
-            };
+            // spawn_blocking 截屏（避免阻塞 event loop 导致 ESC 无响应）
+            let capture_result = tokio::task::spawn_blocking({
+                let px = px; let py = py; let pw = pw; let ph = ph;
+                move || {
+                    let captures = octopus_capx::capture::capture_all_monitors()?;
+                    let full = captures.into_iter().next().ok_or_else(|| anyhow::anyhow!("no monitor"))?;
+                    let png = octopus_capx::capture::crop_region(&full, px, py, pw, ph)?;
+                    let img = image::load_from_memory(&png)?.to_rgba8();
+                    anyhow::Ok(img)
+                }
+            }).await;
+
+            let frame_rgba = match capture_result { Ok(Ok(img)) => img, _ => continue };
 
             let added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
 
@@ -602,7 +628,7 @@ pub async fn start_scroll_recording(
                 let mut png_bytes = Vec::new();
                 let _ = preview.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png);
                 let b64 = general_purpose::STANDARD.encode(&png_bytes);
-                let _ = ah.emit("scroll://frame", serde_json::json!({
+                let _ = ah2.emit("scroll://frame", serde_json::json!({
                     "image": b64,
                     "height": stitcher.height(),
                     "phys_height": (stitcher.height() as f64 / scale) as u32,
@@ -610,7 +636,14 @@ pub async fn start_scroll_recording(
             }
         }
 
-        // 录制结束：入库
+        // 录制结束：恢复鼠标事件
+        for label in &scroll_labels {
+            if let Some(win) = ah.get_webview_window(label) {
+                let _ = win.set_ignore_cursor_events(false);
+            }
+        }
+
+        // 入库
         let canvas = stitcher.canvas().clone();
         let mut png_bytes = Vec::new();
         let _ = canvas.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png);
