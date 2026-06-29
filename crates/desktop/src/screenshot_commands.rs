@@ -626,19 +626,23 @@ pub async fn start_scroll_recording(
                 let mouse_pos = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
                     .ok()
                     .and_then(|src| CGEvent::new(src).ok())
-                    .map(|e| (e.location().x, e.location().y));
+                    .map(|e| {
+                        let loc = e.location();
+                        // CGEvent location: 逻辑坐标（points），原点在主屏左下角
+                        // 翻转 Y 到 CSS 坐标系（原点左上角）
+                        // 用 Tauri 的窗口尺寸近似屏幕高度
+                        (loc.x, loc.y) // 先不翻转，用 log 对比
+                    });
 
-                if let Some((mx_phys, my_phys)) = mouse_pos {
-                    // CGEvent 返回物理坐标（含多显示器偏移），转为逻辑坐标
-                    let mx = mx_phys / scale;
-                    let my = (my_phys / scale); // macOS Y 从底部，但 CGEvent location 是全局坐标
-                    // 简化判断：鼠标在工具栏或预览区域 → 恢复交互
+                if let Some((mx, my)) = mouse_pos {
+                    log::info!("scroll mouse: ({}, {}) toolbar_y={} preview=[{},{}]", mx, my, toolbar_y, preview_x_start, preview_x_end);
                     let in_toolbar = my >= toolbar_y && my <= toolbar_y + 44.0
                         && mx >= toolbar_x_start && mx <= toolbar_x_end;
                     let in_preview = mx >= preview_x_start && mx <= preview_x_end
                         && my >= sel_y_start && my <= sel_y_end;
                     let want_passthrough = !in_toolbar && !in_preview;
                     if want_passthrough != last_passthrough {
+                        log::info!("cursor passthrough: {} (in_toolbar={} in_preview={})", want_passthrough, in_toolbar, in_preview);
                         for label in &scroll_labels {
                             if let Some(win) = ah2.get_webview_window(label) {
                                 let _ = win.set_ignore_cursor_events(want_passthrough);
@@ -670,7 +674,7 @@ pub async fn start_scroll_recording(
             let _ = jpg_enc.encode(&frame_rgb, frame_rgb.width(), frame_rgb.height(), image::ExtendedColorType::Rgb8);
             let frame_b64 = general_purpose::STANDARD.encode(&frame_jpg);
 
-            let added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
+            let _added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
 
             // 拼接预览
             let canvas = stitcher.canvas();
