@@ -621,14 +621,37 @@ export default function Screenshot() {
     }
   }
 
+  function onDoubleClick(e: React.MouseEvent) {
+    if (e.button !== 0) return;
+    const mx = e.clientX;
+    const my = e.clientY;
+    if (!sel || !inSelection(mx, my)) return;
+    const annIdx = hitTestAnnotation(mx, my);
+    if (annIdx === null) return;
+    const ann = annotations[annIdx];
+    if (ann.type !== "text" || !ann.text) return;
+    // 删除旧标注，打开编辑（保留原标注的颜色和字号）
+    setAnnotations(prev => prev.filter((_, i) => i !== annIdx));
+    setSelectedAnn(null);
+    setTextDraft({ x: ann.x1, y: ann.y1, val: ann.text });
+    textDraftRef.current = { x: ann.x1, y: ann.y1, val: ann.text };
+    // 临时切换全局颜色/字号为原标注的值，编辑期间 textarea 和确认时用这个值
+    const origColor = ann.color || "#ef4444";
+    const origFontSize = ann.fontSize || 16;
+    setToolColor(origColor);
+    setToolFontSize(origFontSize);
+    setTimeout(() => textInputRef.current?.focus(), 10);
+  }
+
   function onContextMenu(e: React.MouseEvent) {
     e.preventDefault();
     const mx = e.clientX;
     const my = e.clientY;
     if (sel && inSelection(mx, my)) {
-      // 选区内右键 = 同左键操作（模拟左键 mousedown）
+      // 选区内右键 = 同左键操作（模拟完整的 mousedown → mouseup 周期）
       const fakeEvent = { ...e, button: 0, clientX: mx, clientY: my } as React.MouseEvent;
       onMouseDown(fakeEvent);
+      onMouseUp();
     } else {
       // 选区外右键 = 取消整个截图
       invoke("cancel_screenshot").catch(() => {});
@@ -739,6 +762,7 @@ export default function Screenshot() {
         tabIndex={0}
         autoFocus
         onMouseDown={onMouseDown}
+        onDoubleClick={onDoubleClick}
         onMouseMove={onMouseMove}
         onMouseUp={onMouseUp}
         onKeyDown={onKeyDown}

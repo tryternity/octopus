@@ -44,6 +44,8 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     for label in &old_labels {
         if let Some(win) = app_handle.get_webview_window(label) {
             let _ = win.destroy();
+            // 给 macOS 一帧时间完成 destroy
+            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 
@@ -125,6 +127,20 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
             "Screenshot window '{}' at ({},{}) {}x{} (monitor phys {}x{}, scale {})",
             label, pos_x, pos_y, log_w, log_h, phys_w, phys_h, tauri_mon.scale_factor(),
         );
+    }
+
+    // 超时 fallback：3s 后如果仍有窗口未显示，强制全部显示（防死锁）
+    {
+        let ah = app_handle.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_secs(3));
+            let count = READY_COUNT.load(std::sync::atomic::Ordering::SeqCst);
+            let total = TOTAL_WINDOWS.load(std::sync::atomic::Ordering::SeqCst);
+            if count < total {
+                log::warn!("Screenshot show timeout: {}/{} ready, force showing", count, total);
+                show_all_screenshot_windows(&ah);
+            }
+        });
     }
 
     Ok(())
@@ -238,22 +254,24 @@ pub fn show_screenshot_window(app_handle: tauri::AppHandle) {
     let count = READY_COUNT.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     let total = TOTAL_WINDOWS.load(std::sync::atomic::Ordering::SeqCst);
     if count >= total && total > 0 {
-        // 所有窗口 ready，统一显示
-        let labels: Vec<String> = app_handle
-            .webview_windows()
-            .keys()
-            .filter(|k| k.starts_with("screenshot_"))
-            .cloned()
-            .collect();
-        for label in &labels {
-            if let Some(window) = app_handle.get_webview_window(label) {
-                let _ = window.show();
-            }
+        show_all_screenshot_windows(&app_handle);
+    }
+}
+
+fn show_all_screenshot_windows(app_handle: &tauri::AppHandle) {
+    let labels: Vec<String> = app_handle
+        .webview_windows()
+        .keys()
+        .filter(|k| k.starts_with("screenshot_"))
+        .cloned()
+        .collect();
+    for label in &labels {
+        if let Some(window) = app_handle.get_webview_window(label) {
+            let _ = window.show();
         }
-        // 聚焦第一个窗口
-        if let Some(window) = app_handle.get_webview_window("screenshot_window") {
-            let _ = window.set_focus();
-        }
+    }
+    if let Some(window) = app_handle.get_webview_window("screenshot_window") {
+        let _ = window.set_focus();
     }
 }
 
@@ -357,13 +375,13 @@ pub async fn confirm_screenshot_with_data(
 }
 #[tauri::command]
 pub fn get_screenshot_image(label: String) -> Result<serde_json::Value, String> {
-    // 取出对应的 base64
+    // 取出对应的 base64（克隆而非 remove，兼容 StrictMode 双 mount）
     let b64 = {
-        let mut pending = PENDING_IMAGES.lock().unwrap();
+        let pending = PENDING_IMAGES.lock().unwrap();
         pending
             .iter()
-            .position(|(l, _)| *l == label)
-            .map(|i| pending.remove(i).1)
+            .find(|(l, _)| *l == label)
+            .map(|(_, b64)| b64.clone())
     }
     .ok_or("无待处理截图数据")?;
 
