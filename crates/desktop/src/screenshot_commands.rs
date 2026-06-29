@@ -574,34 +574,44 @@ pub async fn start_scroll_recording(
 
     let ah = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        // 根据选区中心点找到对应的显示器（支持副屏）
-        let center_x = x + w / 2.0;
-        let center_y = y + h / 2.0;
-        let (target_mon_x, target_mon_y, scale) = ah
-            .available_monitors()
-            .ok()
-            .and_then(|ms| {
-                // 找包含选区中心的显示器
-                let hit = ms.iter().find(|m| {
-                    let mx = m.position().x as f64;
-                    let my = m.position().y as f64;
-                    let mw = m.size().width as f64;
-                    let mh = m.size().height as f64;
-                    center_x >= mx && center_x < mx + mw && center_y >= my && center_y < my + mh
-                }).or_else(|| ms.first());
-                hit.map(|m| (m.position().x, m.position().y, m.scale_factor()))
-            })
-            .unwrap_or((0, 0, 1.0));
+        // 获取所有显示器，用 Tauri 物理坐标判断选区在哪个屏
+        let monitors = ah.available_monitors().unwrap_or_default();
+        let (target_mon_x_phys, target_mon_y_phys, scale) = {
+            // Tauri Monitor::position() 返回物理坐标，size() 也是物理像素
+            // 前端 x/y 是逻辑坐标（CSS px），需 × scale 转物理坐标后再匹配
+            let cx_phys = (x * 2.0) as i32; // 假设 scale=2，后面用精确值覆盖
+            let cy_phys = (y * 2.0) as i32;
+            let hit = monitors.iter().find(|m| {
+                let mx = m.position().x;
+                let my = m.position().y;
+                let mw = m.size().width as i32;
+                let mh = m.size().height as i32;
+                let sf = m.scale_factor();
+                // 选区中心的物理坐标
+                let cx = ((x + w / 2.0) * sf) as i32;
+                let cy = ((y + h / 2.0) * sf) as i32;
+                cx >= mx && cx < mx + mw && cy >= my && cy < my + mh
+            }).or_else(|| monitors.first());
+            match hit {
+                Some(m) => (m.position().x, m.position().y, m.scale_factor()),
+                None => (0, 0, 1.0),
+            }
+        };
 
-        // 选区坐标转为该显示器内的物理像素坐标
-        let px = ((x - target_mon_x as f64) * scale) as u32;
-        let py = ((y - target_mon_y as f64) * scale) as u32;
+        // 选区在该显示器内的物理像素偏移
+        // 前端 x/y 是 CSS 逻辑坐标，Tauri 的全局虚拟桌面坐标和 CSS 坐标一致（逻辑像素）
+        // xcap 截图是物理像素，crop_region 的参数也是物理像素
+        // 所以 crop 的物理坐标 = (CSS坐标 - 显示器逻辑偏移) × scale
+        let mon_logical_x = target_mon_x_phys as f64 / scale;
+        let mon_logical_y = target_mon_y_phys as f64 / scale;
+        let px = ((x - mon_logical_x) * scale) as u32;
+        let py = ((y - mon_logical_y) * scale) as u32;
         let pw = (w * scale) as u32;
         let ph = (h * scale) as u32;
 
         // 首帧
         let first_result = tokio::task::spawn_blocking({
-            let tx = target_mon_x; let ty = target_mon_y;
+            let tx = target_mon_x_phys; let ty = target_mon_y_phys;
             move || {
                 let captures = octopus_capx::capture::capture_all_monitors()?;
                 let mut iter = captures.into_iter();
@@ -635,7 +645,7 @@ pub async fn start_scroll_recording(
 
             // 截屏
             let capture_result = tokio::task::spawn_blocking({
-                let tx = target_mon_x; let ty = target_mon_y;
+                let tx = target_mon_x_phys; let ty = target_mon_y_phys;
                 move || {
                     let captures = octopus_capx::capture::capture_all_monitors()?;
                     let mut iter = captures.into_iter();
