@@ -4974,8 +4974,6 @@ dependencies = [
  "anyhow",
  "image",
  "log",
- "objc2-app-kit",
- "serde",
  "xcap",
 ]
 
