@@ -270,8 +270,12 @@ fn show_all_screenshot_windows(app_handle: &tauri::AppHandle) {
             let _ = window.show();
         }
     }
-    if let Some(window) = app_handle.get_webview_window("screenshot_window") {
-        let _ = window.set_focus();
+    // 聚焦主显示器窗口（label 以 _0 结尾）
+    let main_label = labels.iter().find(|l| l.ends_with("_0"));
+    if let Some(ml) = main_label {
+        if let Some(window) = app_handle.get_webview_window(ml) {
+            let _ = window.set_focus();
+        }
     }
 }
 
