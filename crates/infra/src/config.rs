@@ -155,7 +155,7 @@ pub struct AppConfig {
 
     /// 全局立即润色快捷键——任意应用聚焦时 show 结果窗（不聚焦）+ 触发 polish_now
     /// （复用工具栏「立即润色」按钮语义：空文本静默、polishLoading 幂等）。
-    /// 默认 "CmdOrCtrl+Shift+L"，不与 asr/edit_global/clipboard/edit_shortcut 冲突。
+    /// 默认 "CmdOrCtrl+Shift+S"，不与 asr/edit_global/clipboard/edit_shortcut 冲突。
     #[serde(default = "default_polish_global_shortcut")]
     pub polish_global_shortcut: String,
 
@@ -164,7 +164,7 @@ pub struct AppConfig {
     #[serde(default = "default_download_mirror")]
     pub download_mirror: String,
 
-    /// 剪贴板历史浮窗全局快捷键（Tauri Accelerator 格式，如 "Alt+V"）。默认 "Alt+V"。
+    /// 剪贴板历史浮窗全局快捷键（Tauri Accelerator 格式，如 "CmdOrCtrl+Shift+D"）。默认 "CmdOrCtrl+Shift+D"。
     #[serde(default = "default_clipboard_shortcut")]
     pub clipboard_shortcut: String,
 
