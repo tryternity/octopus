@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans.
 
-**Goal:** 用户框选后点「滚动截图」→ 截图窗口保持显示（选区实时画面）+ 滚轮穿透 + NCC 拼接 → 工具栏/预览可交互 → 停止后入库
+**Goal:** 用户框选后点「滚动截图」→ auto 模式自动模拟滚轮 + NCC 拼接 + 实时预览 → 停止后入库（默认 auto，可配 manual）
 
-**Architecture:** capx/stitch.rs 拼接引擎（✅ 已完成）+ 后端录制循环（✅ 已完成，需修订 emit）+ 前端 scrolling 模式（需重构：实时 Canvas + 区域化 cursor + 预览）
+**Architecture:** capx/stitch.rs ✅ + 录制循环 ✅ + 前端 scrolling ✅。新增：CGEvent 模拟滚轮 + 自动停止 + scroll_mode 配置 + 副屏坐标修正
 
 **Tech Stack:** Rust + imageproc 0.25 + image 0.25 + xcap + Tauri + React
 
@@ -601,19 +601,58 @@ mouseDown/mouseMove 在 scrolling 模式下直接 return
 
 每帧 `capture_all_monitors`（56MB RGBA）+ NCC 计算开销大，15fps CPU 紧张。降为 10fps（100ms 间隔）。
 
-### 待实现（Task 5-7）
+### 偏差 5：auto 模式（CGEvent 模拟滚轮）替代 manual 模式
 
-**Task 5: 后端修订**
-- start_scroll_recording 改为不隐藏窗口，改用 `set_ignore_cursor_events(true)`
-- emit `scroll://frame` 增加 `frame` 字段（选区实时画面 base64）
-- 新增 `set_cursor_passthrough` 命令
-- stop 时 `set_ignore_cursor_events(false)` + 关窗口
+诊断报告确认 macOS `always_on_top` 窗口抢占键盘焦点，导致 `set_ignore_cursor_events(true)` 后滚轮事件不到达底层应用。改方案：
+- **auto 模式**（默认）：后端用 `CGEventCreateScrollWheelEvent` 模拟滚轮，不依赖焦点穿透
+- **manual 模式**（后续）：用 `tauri-nspanel` NSPanel（NonactivatingPanel 不抢焦点）
+- 配置 `scroll_mode`（auto | manual）
 
-**Task 6: 前端区域化 cursor**
-- mousemove 检测鼠标是否在工具栏/预览区域
-- 调 `set_cursor_passthrough` 动态切换
+### Task 8（Step 4）：auto 模式后端
 
-**Task 7: 前端实时 Canvas + 预览**
-- scroll://frame 的 `frame` base64 → 替换 Canvas 选区画面（实时滚动效果）
-- scroll://frame 的 `preview` base64 → 更新预览 `<img>`
-- 工具栏始终显示（不依赖 mode === "selected"）
+**Files:**
+- Modify: `crates/desktop/src/screenshot_commands.rs`
+- Modify: `crates/infra/src/config.rs`, `db.rs`, `db.sql`
+- Modify: `crates/desktop/src/settings_commands.rs`
+
+- [ ] **Step 1: scroll_mode 配置**
+
+AppConfig 加 `scroll_mode: String`（默认 `"auto"`），db.sql seed + save/load 补字段。
+
+- [ ] **Step 2: CGEvent 模拟滚轮函数**
+
+```rust
+#[cfg(target_os = "macos")]
+fn send_scroll_event(delta: i32) {
+    use core_graphics::event::{CGEvent, CGEventType, ScrollEventUnit, CGEventTapLocation};
+    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+    if let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+        if let Ok(event) = CGEvent::new_scroll_wheel_event2(
+            &source, ScrollEventUnit::Pixel, delta, 0
+        ) {
+            event.post(CGEventTapLocation::Session);
+        }
+    }
+}
+```
+
+- [ ] **Step 3: start_scroll_recording 增加 mode 参数**
+
+auto 模式：录制循环每帧先 `send_scroll_event(40)` → sleep(50ms) → capture → stitch。
+去掉 `set_ignore_cursor_events`。
+连续 3 帧无新内容 → 自动停止。
+
+manual 模式（占位）：保持现有 ignore cursor 逻辑（后续 NSPanel 替代）。
+
+- [ ] **Step 4: 副屏坐标修正**
+
+start 时记录 monitor 物理偏移 `(target_x, target_y)`。
+capture 循环用 `captures.find(|c| c.monitor_x == target_x && c.monitor_y == target_y)` 匹配正确显示器。
+
+- [ ] **Step 5: 验证编译 + 前端 build**
+
+### Task 9（Step 5）：前端适配
+
+- [ ] auto 模式下工具栏显示「停止」按钮（不显示滚动提示）
+- [ ] auto 模式预览正常更新
+- [ ] auto 模式停止后入库 + 剪贴板刷新
