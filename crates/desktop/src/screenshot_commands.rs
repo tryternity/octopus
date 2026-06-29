@@ -149,9 +149,11 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 /// 探测鼠标位置下的窗口（自动高亮用）
 #[tauri::command]
 pub fn get_window_at_point(x: f64, y: f64) -> Result<Option<serde_json::Value>, String> {
-    let scale = 2.0; // Retina 默认值，实际由前端 devicePixelRatio 决定
+    let scale = 2.0;
+    log::info!("get_window_at_point: css({}, {}) scale={}", x, y, scale);
     let rect = octopus_capx::window::window_at_point(x, y, scale)
         .map_err(|e| e.to_string())?;
+    log::info!("get_window_at_point result: {:?}", rect);
     Ok(rect.map(|r| serde_json::to_value(r).unwrap_or_default()))
 }
 

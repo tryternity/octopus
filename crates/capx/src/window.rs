@@ -18,6 +18,7 @@ pub fn window_at_point(x: f64, y: f64, scale_factor: f64) -> Result<Option<Windo
     let windows = Window::all().context("Failed to list windows")?;
     let phys_x = x * scale_factor;
     let phys_y = y * scale_factor;
+    log::info!("window_at_point: logical({}, {}) → phys({}, {}), {} windows total", x, y, phys_x, phys_y, windows.len());
 
     let mut filtered: Vec<_> = windows.into_iter()
         .filter(|w| {
@@ -40,6 +41,15 @@ pub fn window_at_point(x: f64, y: f64, scale_factor: f64) -> Result<Option<Windo
     filtered.sort_by(|a, b| {
         b.z().unwrap_or(0).cmp(&a.z().unwrap_or(0))
     });
+    log::info!("window_at_point: {} windows after filter", filtered.len());
+    for w in &filtered {
+        log::info!("  window: name={} title={} x={} y={} w={} h={} z={}",
+            w.app_name().unwrap_or_default(),
+            w.title().unwrap_or_default(),
+            w.x().unwrap_or(0), w.y().unwrap_or(0),
+            w.width().unwrap_or(0), w.height().unwrap_or(0),
+            w.z().unwrap_or(0));
+    }
 
     for w in filtered {
         let wx = w.x().unwrap_or(0) as f64;
@@ -68,12 +78,11 @@ pub fn activate_window(pid: u32, _window_id: u32) -> Result<()> {
     #[cfg(target_os = "macos")]
     {
         use objc2_app_kit::{NSRunningApplication, NSApplicationActivationOptions};
-        unsafe {
-            let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as i32);
-            if let Some(app) = &app {
-                app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps);
-                log::info!("Activated app pid={}", pid);
-            }
+        let app = NSRunningApplication::runningApplicationWithProcessIdentifier(pid as i32);
+        if let Some(app) = &app {
+            #[allow(deprecated)]
+            app.activateWithOptions(NSApplicationActivationOptions::ActivateIgnoringOtherApps);
+            log::info!("Activated app pid={}", pid);
         }
     }
     #[cfg(target_os = "windows")]
