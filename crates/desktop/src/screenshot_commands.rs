@@ -118,6 +118,108 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
+/// 截图 OCR：合成选区 → 入库 → OCR 识别 → 写 search_text + 剪贴板 + 新建文档
+#[tauri::command]
+pub async fn ocr_screenshot(
+    png_base64: String,
+    app_handle: tauri::AppHandle,
+    handle: State<'_, std::sync::Arc<ClipboardHandle>>,
+) -> Result<(), String> {
+    let png_bytes = general_purpose::STANDARD.decode(&png_base64)
+        .map_err(|e| format!("base64 解码失败: {}", e))?;
+
+    ALL_CAPTURES.lock().unwrap().clear();
+    PENDING_IMAGES.lock().unwrap().clear();
+
+    // SHA-256 去重 → WebP → 入库
+    let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
+
+    let existing = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::find_by_content_hash(conn, &hash)
+    }).map_err(|e| e.to_string())?;
+
+    let item_id = if let Some(id) = existing {
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::touch_created_at(conn, id)
+        }).map_err(|e| e.to_string())?;
+        id
+    } else {
+        let img = ::image::load_from_memory(&png_bytes)
+            .map_err(|e| format!("解码失败: {:?}", e))?;
+        let crop_w = img.width();
+        let crop_h = img.height();
+        let encoded = octopus_clipboard::image::encode_to_webp(&png_bytes, crop_w, crop_h)
+            .map_err(|e| format!("WebP 编码失败: {}", e))?;
+
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::insert_image_data(
+                conn, &hash, &encoded.webp_blob, &encoded.thumb_blob,
+                crop_w as i64, crop_h as i64,
+            )
+        }).map_err(|e| e.to_string())?;
+
+        let id = octopus_clipboard::store::chrono_millis();
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
+                id,
+                item_type: octopus_clipboard::ItemType::Image,
+                content: hash.clone(),
+                search_text: String::new(),
+                created_at: octopus_clipboard::store::iso_now(),
+                blob_hash: Some(hash),
+                width: Some(crop_w as i64),
+                height: Some(crop_h as i64),
+                has_thumbnail: Some(1),
+                file_count: None,
+                is_rich: false,
+            })
+        }).map_err(|e| e.to_string())?;
+        id
+    };
+
+    // OCR 识别
+    let engine = octopus_ocr::engine::OcrEngine::instance()
+        .map_err(|e| e.to_string())?;
+    let text = engine.recognize(&png_bytes).map_err(|e| e.to_string())?;
+
+    if !text.trim().is_empty() {
+        // 写 search_text
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::update_search_text(conn, item_id, &text)
+        }).map_err(|e| e.to_string())?;
+
+        // 写剪贴板
+        handle.write_text(&text).map_err(|e| e.to_string())?;
+
+        // 新建文档
+        open_text_editor_with_content(&text);
+    }
+
+    let _ = app_handle.emit("clipboard://changed", ());
+    close_all_screenshot_windows(&app_handle);
+
+    Ok(())
+}
+
+fn open_text_editor_with_content(text: &str) {
+    #[cfg(target_os = "macos")]
+    {
+        let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
+        let script = format!(
+            r#"tell application "TextEdit"
+    activate
+    make new document with properties {{text:"{}"}}
+end tell"#,
+            escaped
+        );
+        let _ = std::process::Command::new("osascript")
+            .args(["-e", &script])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+}
+
 /// 前端渲染完成后调用，显示指定截图窗口
 #[tauri::command]
 pub fn show_screenshot_window(label: String, app_handle: tauri::AppHandle) {

@@ -559,12 +559,10 @@ export default function Screenshot() {
     invoke("cancel_screenshot").catch(() => {});
   }
 
-  function doSaveFile() {
-    if (!sel || !bgImgRef.current) return;
+  function composeAndCrop(): string | null {
+    if (!sel || !bgImgRef.current) return null;
     const bg = bgImgRef.current;
-    const cssW = window.innerWidth;
-    const natW = bg.naturalWidth;
-    const scale = natW / cssW;
+    const scale = bg.naturalWidth / window.innerWidth;
 
     const tmpCanvas = document.createElement("canvas");
     tmpCanvas.width = bg.naturalWidth;
@@ -585,53 +583,29 @@ export default function Screenshot() {
     const croppedCtx = croppedCanvas.getContext("2d")!;
     croppedCtx.drawImage(tmpCanvas, px, py, pw, ph, 0, 0, pw, ph);
 
-    const dataUrl = croppedCanvas.toDataURL("image/png");
-    const base64 = dataUrl.split(",")[1];
-    // 弹系统保存对话框
-    invoke("save_screenshot_dialog", {
-      pngBase64: base64,
-    }).catch(() => {});
+    return croppedCanvas.toDataURL("image/png").split(",")[1];
+  }
+
+  function doOcr() {
+    const base64 = composeAndCrop();
+    if (!base64) return;
+    invoke("ocr_screenshot", { pngBase64: base64 }).catch(() => {});
+  }
+
+  function doSaveFile() {
+    const base64 = composeAndCrop();
+    if (!base64) return;
+    invoke("save_screenshot_dialog", { pngBase64: base64 }).catch(() => {});
   }
 
   function doConfirm() {
-    if (!sel || !bgImgRef.current) return;
-    const bg = bgImgRef.current;
-    const cssW = window.innerWidth;
-    const natW = bg.naturalWidth;
-    const natH = bg.naturalHeight;
-    const scale = natW / cssW; // 原图/显示比例（标注线宽和字号需放大）
-
-    // 临时 Canvas = 原图原始分辨率，1:1 无缩放
-    const tmpCanvas = document.createElement("canvas");
-    tmpCanvas.width = natW;
-    tmpCanvas.height = natH;
-    const tmpCtx = tmpCanvas.getContext("2d")!;
-    tmpCtx.drawImage(bg, 0, 0);
-
-    // 标注：坐标 × scale 转原图像素，线宽和字号也 × scale
-    for (const ann of annotations) {
-      drawAnnotationScaled(tmpCtx, ann, scale);
-    }
-
-    // 裁剪选区（CSS 坐标 × scale → 原图像素）
-    const px = Math.round(sel.x * scale);
-    const py = Math.round(sel.y * scale);
-    const pw = Math.round(sel.w * scale);
-    const ph = Math.round(sel.h * scale);
-    const croppedCanvas = document.createElement("canvas");
-    croppedCanvas.width = pw;
-    croppedCanvas.height = ph;
-    const croppedCtx = croppedCanvas.getContext("2d")!;
-    croppedCtx.drawImage(tmpCanvas, px, py, pw, ph, 0, 0, pw, ph);
-
-    // 转 base64 → 发送给后端
-    const dataUrl = croppedCanvas.toDataURL("image/png");
-    const base64 = dataUrl.split(",")[1];
+    const base64 = composeAndCrop();
+    if (!base64) return;
     invoke("confirm_screenshot_with_data", {
       label: winLabel,
       pngBase64: base64,
-      width: pw,
-      height: ph,
+      width: 0,
+      height: 0,
     }).catch(() => {});
   }
 
@@ -750,6 +724,9 @@ export default function Screenshot() {
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
           <ToolButton onClick={() => setAnnotations(annotations.slice(0, -1))} label="撤销" icon={
             <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" />
+          } />
+          <ToolButton onClick={doOcr} label="OCR" icon={
+            <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
           <button onClick={doSaveFile} title="保存到文件" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
