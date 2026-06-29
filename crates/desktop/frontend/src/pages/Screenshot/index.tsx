@@ -587,18 +587,8 @@ export default function Screenshot() {
     const mx = e.clientX;
     const my = e.clientY;
 
-    // 滚动模式：区域化 cursor（工具栏/预览区域恢复交互）
-    if (mode === "scrolling") {
-      const inToolbar = my >= toolbarY && my <= toolbarY + 44
-        && mx >= toolbarX && mx <= toolbarX + 420;
-      const inPreview = scrollPreview && sel
-        && mx >= (sel.x + sel.w + 12 <= window.innerWidth - 200 ? sel.x + sel.w + 12 : sel.x - 212)
-        && mx <= (sel.x + sel.w + 12 <= window.innerWidth - 200 ? sel.x + sel.w + 212 : sel.x - 12)
-        && my >= sel.y && my <= sel.y + 600;
-      const needInteractive = inToolbar || inPreview;
-      invoke("set_cursor_passthrough", { passthrough: !needInteractive }).catch(() => {});
-      return;
-    }
+    // 滚动模式：后端每帧检查鼠标位置自动切换 cursor 穿透，前端无需处理
+    if (mode === "scrolling") return;
 
     // 标注绘制中
     if (drawingRef.current && tool !== "none") {

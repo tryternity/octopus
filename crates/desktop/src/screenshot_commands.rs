@@ -569,12 +569,25 @@ pub async fn start_scroll_recording(
         let ph = (h * scale) as u32;
 
         // 设置截图窗口 ignore cursor events（滚轮穿透到底层应用）
+        // 后端在录制循环中每帧检查鼠标位置，动态切换 ignore cursor
         let scroll_labels: Vec<String> = ah
             .webview_windows()
             .keys()
             .filter(|k| k.starts_with("screenshot_"))
             .cloned()
             .collect();
+
+        // 工具栏/预览的逻辑坐标区域（用于判断鼠标是否在交互区）
+        let toolbar_y = y + h + 8.0;
+        let toolbar_x_start = x;
+        let toolbar_x_end = x + 420.0;
+        let preview_right = x + w + 12.0 + 200.0 <= 1920.0;
+        let preview_x_start = if preview_right { x + w + 12.0 } else { x - 12.0 - 200.0 };
+        let preview_x_end = preview_x_start + 200.0;
+        let sel_y_start = y;
+        let sel_y_end = y + 600.0;
+
+        // 先设为穿透
         for label in &scroll_labels {
             if let Some(win) = ah.get_webview_window(label) {
                 let _ = win.set_ignore_cursor_events(true);
@@ -601,8 +614,40 @@ pub async fn start_scroll_recording(
         interval.tick().await;
 
         let ah2 = ah.clone();
+        let mut last_passthrough = true;
         while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
             interval.tick().await;
+
+            // 检查鼠标位置，动态切换 cursor 穿透
+            #[cfg(target_os = "macos")]
+            {
+                use core_graphics::event::CGEvent;
+                use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+                let mouse_pos = CGEventSource::new(CGEventSourceStateID::HIDSystemState)
+                    .ok()
+                    .and_then(|src| CGEvent::new(src).ok())
+                    .map(|e| (e.location().x, e.location().y));
+
+                if let Some((mx_phys, my_phys)) = mouse_pos {
+                    // CGEvent 返回物理坐标（含多显示器偏移），转为逻辑坐标
+                    let mx = mx_phys / scale;
+                    let my = (my_phys / scale); // macOS Y 从底部，但 CGEvent location 是全局坐标
+                    // 简化判断：鼠标在工具栏或预览区域 → 恢复交互
+                    let in_toolbar = my >= toolbar_y && my <= toolbar_y + 44.0
+                        && mx >= toolbar_x_start && mx <= toolbar_x_end;
+                    let in_preview = mx >= preview_x_start && mx <= preview_x_end
+                        && my >= sel_y_start && my <= sel_y_end;
+                    let want_passthrough = !in_toolbar && !in_preview;
+                    if want_passthrough != last_passthrough {
+                        for label in &scroll_labels {
+                            if let Some(win) = ah2.get_webview_window(label) {
+                                let _ = win.set_ignore_cursor_events(want_passthrough);
+                            }
+                        }
+                        last_passthrough = want_passthrough;
+                    }
+                }
+            }
 
             // spawn_blocking 截屏（避免阻塞 event loop 导致 ESC 无响应）
             let capture_result = tokio::task::spawn_blocking({
