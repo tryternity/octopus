@@ -33,6 +33,7 @@ export default function Screenshot() {
   const drawingRef = useRef<Annotation | null>(null);
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
 
+  const setModeSafe = (m: Mode) => { modeRef.current = m; setMode(m); };
   const [mode, setMode] = useState<Mode>("idle");
   const [sel, setSel] = useState<Selection | null>(null);
   const [resizeHandle, setResizeHandle] = useState<string | null>(null);
@@ -41,8 +42,12 @@ export default function Screenshot() {
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; val: string } | null>(null);
   const textDraftRef = useRef<{ x: number; y: number; val: string } | null>(null);
+  const modeRef = useRef<Mode>("idle");
   const toolColorRef = useRef("#ef4444");
   const toolFontSizeRef = useRef(16);
+  const editTextColorRef = useRef<string | null>(null);
+  const editTextFontSizeRef = useRef<number | null>(null);
+  const editTextOrigRef = useRef<{ idx: number; text: string; color: string; fontSize: number } | null>(null);
   const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
   const [toolColor, setToolColorState] = useState("#ef4444");
   const [toolWidth, setToolWidth] = useState(3);
@@ -466,12 +471,12 @@ export default function Screenshot() {
       const handle = hitTest(mx, my);
       if (handle) {
         setResizeHandle(handle);
-        setMode("resize");
+        setModeSafe("resize");
         if (sel) selStartRef.current = { ...sel };
         return;
       }
       if (sel && inSelection(mx, my)) {
-        setMode("move");
+        setModeSafe("move");
         moveStartRef.current = { x: mx, y: my };
         selStartRef.current = { ...sel };
         return;
@@ -479,7 +484,7 @@ export default function Screenshot() {
     }
 
     setSel({ x: mx, y: my, w: 0, h: 0 });
-    setMode("selecting");
+    setModeSafe("selecting");
   }
 
   function onMouseMove(e: React.MouseEvent) {
@@ -586,10 +591,10 @@ export default function Screenshot() {
     }
 
     if (mode === "selecting" && sel) {
-      if (sel.w < MIN_SIZE || sel.h < MIN_SIZE) { setSel(null); setMode("idle"); }
-      else { setMode("selected"); }
+      if (sel.w < MIN_SIZE || sel.h < MIN_SIZE) { setSel(null); setModeSafe("idle"); }
+      else { setModeSafe("selected"); }
     } else if (mode === "move" || mode === "resize") {
-      setMode("selected");
+      setModeSafe("selected");
       setResizeHandle(null);
     }
   }
@@ -630,16 +635,17 @@ export default function Screenshot() {
     if (annIdx === null) return;
     const ann = annotations[annIdx];
     if (ann.type !== "text" || !ann.text) return;
-    // 删除旧标注，打开编辑（保留原标注的颜色和字号）
-    setAnnotations(prev => prev.filter((_, i) => i !== annIdx));
+    // 记住原标注（ESC 可恢复），不立即删除
+    const origColor = ann.color || "#ef4444";
+    const origFontSize = ann.fontSize || 16;
+    editTextOrigRef.current = { idx: annIdx, text: ann.text, color: origColor, fontSize: origFontSize };
+    editTextColorRef.current = origColor;
+    editTextFontSizeRef.current = origFontSize;
+    // 隐藏原标注（标记为编辑中，Canvas 不绘制）
+    setAnnotations(prev => prev.map((a, i) => i === annIdx ? { ...a, text: "" } : a));
     setSelectedAnn(null);
     setTextDraft({ x: ann.x1, y: ann.y1, val: ann.text });
     textDraftRef.current = { x: ann.x1, y: ann.y1, val: ann.text };
-    // 临时切换全局颜色/字号为原标注的值，编辑期间 textarea 和确认时用这个值
-    const origColor = ann.color || "#ef4444";
-    const origFontSize = ann.fontSize || 16;
-    setToolColor(origColor);
-    setToolFontSize(origFontSize);
     setTimeout(() => textInputRef.current?.focus(), 10);
   }
 
@@ -651,7 +657,9 @@ export default function Screenshot() {
       // 选区内右键 = 同左键操作（模拟完整的 mousedown → mouseup 周期）
       const fakeEvent = { ...e, button: 0, clientX: mx, clientY: my } as React.MouseEvent;
       onMouseDown(fakeEvent);
-      onMouseUp();
+      // 用 modeRef 同步重置状态（避免 React 异步闭包读旧值）
+      setResizeHandle(null);
+      setModeSafe("selected");
     } else {
       // 选区外右键 = 取消整个截图
       invoke("cancel_screenshot").catch(() => {});
@@ -667,7 +675,7 @@ export default function Screenshot() {
     const allAnns = [...annotations];
     const draft = textDraftRef.current;
     if (draft && draft.val.trim()) {
-      allAnns.push({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current });
+      allAnns.push({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: editTextColorRef.current || toolColorRef.current, fontSize: editTextFontSizeRef.current || toolFontSizeRef.current });
     }
 
     const tmpCanvas = document.createElement("canvas");
@@ -781,22 +789,49 @@ export default function Screenshot() {
           }}
           onBlur={() => {
             const draft = textDraftRef.current;
+            const editColor = editTextColorRef.current || toolColorRef.current;
+            const editFontSize = editTextFontSizeRef.current || toolFontSizeRef.current;
+            const editOrig = editTextOrigRef.current;
             if (draft && draft.val.trim()) {
-              setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current }]);
+              const newText = draft.val;
+              if (editOrig) {
+                // 编辑模式：更新原标注
+                setAnnotations(prev => prev.map((a, i) => i === editOrig.idx ? { ...a, text: newText, color: editColor, fontSize: editFontSize } : a));
+              } else {
+                // 新建模式
+                setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: newText, color: editColor, fontSize: editFontSize }]);
+              }
+            } else if (editOrig) {
+              // 内容为空：恢复原标注
+              setAnnotations(prev => prev.map((a, i) => i === editOrig.idx ? { ...a, text: editOrig.text, color: editOrig.color, fontSize: editOrig.fontSize } : a));
             }
             textDraftRef.current = null;
             setTextDraft(null);
+            editTextColorRef.current = null;
+            editTextFontSizeRef.current = null;
+            editTextOrigRef.current = null;
           }}
           onKeyDown={(e) => {
-            if (e.key === "Escape") { textDraftRef.current = null; setTextDraft(null); }
+            if (e.key === "Escape") {
+              const editOrig = editTextOrigRef.current;
+              if (editOrig) {
+                // ESC 恢复原标注
+                setAnnotations(prev => prev.map((a, i) => i === editOrig.idx ? { ...a, text: editOrig.text, color: editOrig.color, fontSize: editOrig.fontSize } : a));
+              }
+              textDraftRef.current = null;
+              setTextDraft(null);
+              editTextColorRef.current = null;
+              editTextFontSizeRef.current = null;
+              editTextOrigRef.current = null;
+            }
             e.stopPropagation();
           }}
           style={{
             position: "fixed",
             left: textDraft.x,
             top: textDraft.y,
-            fontSize: toolFontSize,
-            color: toolColor,
+            fontSize: editTextFontSizeRef.current || toolFontSize,
+            color: editTextColorRef.current || toolColor,
             background: "transparent",
             border: `1px dashed ${toolColor}`,
             outline: "none",
@@ -818,9 +853,9 @@ export default function Screenshot() {
             display: "flex",
             gap: 4,
             padding: "6px 8px",
-            background: "rgba(255,255,255,0.95)",
+            background: "#fff",
             borderRadius: 8,
-            boxShadow: "0 4px 16px rgba(0,0,0,0.25)",
+            boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
             zIndex: 100,
             alignItems: "center",
           }}
