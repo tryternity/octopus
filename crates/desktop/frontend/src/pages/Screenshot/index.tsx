@@ -43,12 +43,16 @@ export default function Screenshot() {
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; val: string } | null>(null);
   const textDraftRef = useRef<{ x: number; y: number; val: string } | null>(null);
   const modeRef = useRef<Mode>("idle");
+  const mousedownPtRef = useRef<{ x: number; y: number } | null>(null);
+  const hoverDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const hoverWindowRef = useRef<{ x: number; y: number; w: number; h: number; pid: number; id: number } | null>(null);
   const toolColorRef = useRef("#ef4444");
   const toolFontSizeRef = useRef(16);
   const editTextColorRef = useRef<string | null>(null);
   const editTextFontSizeRef = useRef<number | null>(null);
   const editTextOrigRef = useRef<{ idx: number; text: string; color: string; fontSize: number } | null>(null);
   const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
+  const [hoverVersion, setHoverVersion] = useState(0); // 触发 draw 重绘
   const [toolColor, setToolColorState] = useState("#ef4444");
   const [toolWidth, setToolWidth] = useState(3);
   const [toolFontSize, setToolFontSizeState] = useState(16);
@@ -149,19 +153,33 @@ export default function Screenshot() {
           ctx.fillRect(hx - HANDLE_SIZE / 2, hy - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE);
         }
 
-        // 尺寸标注
+        // 尺寸标注：工具栏在下方时标签在右上角，工具栏在上方时标签在右下角
         const label = `${Math.round(w * dpr)} × ${Math.round(h * dpr)}`;
         ctx.font = "12px -apple-system, sans-serif";
         const tw = ctx.measureText(label).width;
+        const labelBelow = !(sel.y + sel.h + 8 + 44 < window.innerHeight);
+        const lx = x + w - tw - 8;
+        const ly = labelBelow ? y + h + 4 : y - 22;
+        const lyText = labelBelow ? y + h + 17 : y - 9;
         ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-        ctx.fillRect(x + w - tw - 8, y + h + 4, tw + 8, 18);
+        ctx.fillRect(lx, ly, tw + 8, 18);
         ctx.fillStyle = "#1a1a1a";
-        ctx.fillText(label, x + w - tw - 4, y + h + 17);
+        ctx.fillText(label, lx + 4, lyText);
       }
     } else {
       ctx.fillRect(0, 0, cssW, cssH);
+
+      // 窗口探测高亮（idle + 无工具 + 无选区时）
+      const hw = hoverWindowRef.current;
+      if (hw) {
+        ctx.fillStyle = "rgba(255, 255, 255, 0.15)";
+        ctx.fillRect(hw.x, hw.y, hw.w, hw.h);
+        ctx.strokeStyle = "rgba(255, 255, 255, 0.8)";
+        ctx.lineWidth = 2;
+        ctx.strokeRect(hw.x, hw.y, hw.w, hw.h);
+      }
     }
-  }, [sel, mode, ready, dpr, annotations, textDraft, tool, selectedAnn]);
+  }, [sel, mode, ready, dpr, annotations, textDraft, tool, selectedAnn, hoverVersion]);
 
   useEffect(() => { draw(); }, [draw]);
 
@@ -455,6 +473,7 @@ export default function Screenshot() {
     const mx = e.clientX;
     const my = e.clientY;
     startPtRef.current = { x: mx, y: my };
+    mousedownPtRef.current = { x: mx, y: my };
 
     // 文字标注正在输入时，点击其他地方 = 确认当前文字
     if (textDraftRef.current) {
@@ -601,6 +620,21 @@ export default function Screenshot() {
     } else if (mode === "resize" && sel && resizeHandle) {
       setSel(resizeSel(selStartRef.current, resizeHandle, mx, my));
     }
+
+    // idle + 无工具时：防抖探测窗口（自动高亮）
+    if (!sel && mode === "idle" && tool === "none" && !textDraftRef.current) {
+      if (hoverDebounceRef.current) clearTimeout(hoverDebounceRef.current);
+      hoverDebounceRef.current = setTimeout(async () => {
+        try {
+          const result = await invoke<{ x: number; y: number; w: number; h: number; pid: number; id: number } | null>("get_window_at_point", { x: mx, y: my });
+          hoverWindowRef.current = result;
+          setHoverVersion(v => v + 1);
+        } catch { hoverWindowRef.current = null; }
+      }, 150);
+    } else if (hoverWindowRef.current) {
+      hoverWindowRef.current = null;
+      setHoverVersion(v => v + 1);
+    }
   }
 
   function onMouseUp() {
@@ -640,8 +674,23 @@ export default function Screenshot() {
     }
 
     if (mode === "selecting" && sel) {
-      if (sel.w < MIN_SIZE || sel.h < MIN_SIZE) { setSel(null); setModeSafe("idle"); }
-      else { setModeSafe("selected"); }
+      if (sel.w < MIN_SIZE || sel.h < MIN_SIZE) {
+        // 框选太小：检查是否是点击高亮窗口
+        const md = mousedownPtRef.current;
+        const moved = md ? Math.sqrt((sel.x - md.x) ** 2 + (sel.y - md.y) ** 2) : 999;
+        if (moved < 5 && hoverWindowRef.current) {
+          const hw = hoverWindowRef.current;
+          setSel({ x: hw.x, y: hw.y, w: hw.w, h: hw.h });
+          setModeSafe("selected");
+          // 激活应用
+          invoke("activate_window_cmd", { pid: hw.pid, windowId: hw.id }).catch(() => {});
+        } else {
+          setSel(null);
+          setModeSafe("idle");
+        }
+      } else {
+        setModeSafe("selected");
+      }
     } else if (mode === "move" || mode === "resize") {
       setModeSafe("selected");
       setResizeHandle(null);

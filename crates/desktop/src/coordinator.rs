@@ -811,7 +811,6 @@ fn handle_toggle(
             if !final_text.is_empty() {
                 transcript.set_full(&final_text);
             }
-            info!("Final streaming text: '{}'", transcript.db_text());
             let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
             finalize_after_stop(stage, tr, config, app_handle, tx);
         }

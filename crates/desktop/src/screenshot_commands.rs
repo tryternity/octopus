@@ -146,6 +146,22 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
+/// 探测鼠标位置下的窗口（自动高亮用）
+#[tauri::command]
+pub fn get_window_at_point(x: f64, y: f64) -> Result<Option<serde_json::Value>, String> {
+    let scale = 2.0; // Retina 默认值，实际由前端 devicePixelRatio 决定
+    let rect = octopus_capx::window::window_at_point(x, y, scale)
+        .map_err(|e| e.to_string())?;
+    Ok(rect.map(|r| serde_json::to_value(r).unwrap_or_default()))
+}
+
+/// 激活窗口到最前面
+#[tauri::command]
+pub fn activate_window_cmd(pid: u32, window_id: u32) -> Result<(), String> {
+    octopus_capx::window::activate_window(pid, window_id)
+        .map_err(|e| e.to_string())
+}
+
 /// 截图 OCR：合成选区 → 入库 → OCR 识别 → 写 search_text + 剪贴板 + 新建文档
 #[tauri::command]
 pub async fn ocr_screenshot(
