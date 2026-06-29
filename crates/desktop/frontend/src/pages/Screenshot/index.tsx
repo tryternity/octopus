@@ -1,12 +1,13 @@
 import { useState, useRef, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
+import { listen } from "@tauri-apps/api/event";
 
 interface Selection {
   x: number; y: number; w: number; h: number;
 }
 
-type Mode = "idle" | "selecting" | "selected" | "move" | "resize";
+type Mode = "idle" | "selecting" | "selected" | "move" | "resize" | "scrolling";
 type Tool = "none" | "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number";
 
 interface Annotation {
@@ -49,6 +50,8 @@ export default function Screenshot() {
   const editTextFontSizeRef = useRef<number | null>(null);
   const editTextOrigRef = useRef<{ idx: number; text: string; color: string; fontSize: number } | null>(null);
   const [selectedAnn, setSelectedAnn] = useState<number | null>(null);
+  const [scrollPreview, setScrollPreview] = useState<string | null>(null);
+  const [scrollHeight, setScrollHeight] = useState(0);
   const [toolColor, setToolColorState] = useState("#ef4444");
   const [toolWidth, setToolWidth] = useState(3);
   const [toolFontSize, setToolFontSizeState] = useState(16);
@@ -76,6 +79,21 @@ export default function Screenshot() {
         img.src = `data:image/jpeg;base64,${data.image}`;
       })
       .catch((e) => console.error("Failed to get screenshot image:", e));
+  }, []);
+
+  // 滚动截图事件监听
+  useEffect(() => {
+    let unlistenFrame: (() => void) | undefined;
+    let unlistenDone: (() => void) | undefined;
+    listen<{ image: string; height: number; phys_height: number }>("scroll://frame", (e) => {
+      setScrollPreview(e.payload.image);
+      setScrollHeight(e.payload.phys_height);
+    }).then((fn) => { unlistenFrame = fn; });
+    listen("scroll://done", () => {
+      setScrollPreview(null);
+      setModeSafe("selected");
+    }).then((fn) => { unlistenDone = fn; });
+    return () => { unlistenFrame?.(); unlistenDone?.(); };
   }, []);
 
   // 初始化 Canvas 尺寸（仅一次，避免高频重分配 GPU 缓冲区）
@@ -451,7 +469,8 @@ export default function Screenshot() {
 
   // 鼠标事件
   function onMouseDown(e: React.MouseEvent) {
-    if (e.button !== 0) return; // 仅左键
+    if (e.button !== 0) return;
+    if (mode === "scrolling") return;
     const mx = e.clientX;
     const my = e.clientY;
     startPtRef.current = { x: mx, y: my };
@@ -649,7 +668,11 @@ export default function Screenshot() {
   }
 
   function onKeyDown(e: React.KeyboardEvent) {
-    if (textDraft) return; // 文字输入时不处理
+    if (textDraft) return;
+    if (mode === "scrolling") {
+      if (e.key === "Escape") { stopScroll(); }
+      return;
+    }
     if (e.key === "Escape") {
       if (tool !== "none") { setTool("none"); return; }
       invoke("cancel_screenshot").catch(() => {});
@@ -700,8 +723,21 @@ export default function Screenshot() {
 
   function onContextMenu(e: React.MouseEvent) {
     e.preventDefault();
-    // 右键在任何位置都不执行操作（不模拟左键、不取消截图）
-    // 取消截图仅通过 ESC 或工具栏取消按钮
+  }
+
+  function startScroll() {
+    if (!sel) return;
+    setModeSafe("scrolling");
+    setTool("none");
+    setScrollPreview(null);
+    setScrollHeight(0);
+    invoke("start_scroll_recording", {
+      x: sel.x, y: sel.y, w: sel.w, h: sel.h,
+    }).catch(() => setModeSafe("selected"));
+  }
+
+  function stopScroll() {
+    invoke("stop_scroll_recording").catch(() => {});
   }
 
   function composeAndCrop(): string | null {
@@ -938,6 +974,9 @@ export default function Screenshot() {
             <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
+          <button onClick={startScroll} title="滚动截图" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
+            <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2V11M8 11L4 7M8 11L12 7" stroke="#333" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><rect x="3" y="13" width="10" height="2" rx="0.5" fill="#333"/></svg>
+          </button>
           <button onClick={doSaveFile} title="保存到文件" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
             <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" />
           </button>
@@ -966,6 +1005,38 @@ export default function Screenshot() {
           onFontSizeChange={setToolFontSize}
           onCircleSizeChange={setToolCircleSize}
         />
+      )}
+
+      {/* 滚动预览浮层 */}
+      {mode === "scrolling" && scrollPreview && (
+        <div style={{
+          position: "fixed",
+          left: sel && sel.x + sel.w + 12 + 200 <= window.innerWidth
+            ? sel.x + sel.w + 12
+            : sel ? sel.x - 12 - 200 : 0,
+          top: sel ? sel.y : 0,
+          width: 200,
+          maxHeight: "80vh",
+          background: "rgba(0,0,0,0.8)",
+          borderRadius: 8,
+          padding: 8,
+          display: "flex",
+          flexDirection: "column",
+          gap: 6,
+          zIndex: 102,
+          overflow: "hidden",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "#4ade80" }}>
+            <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ade80" }} />
+            录制中 · {scrollHeight}px
+          </div>
+          <div style={{ flex: 1, overflow: "hidden", borderRadius: 4 }}>
+            <img src={`data:image/png;base64,${scrollPreview}`} alt="preview" style={{ width: "100%", display: "block" }} />
+          </div>
+          <button onClick={stopScroll} style={{ padding: "4px", borderRadius: 4, border: "none", background: "#ef4444", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+            ⏹ 停止滚动
+          </button>
+        </div>
       )}
     </>
   );
