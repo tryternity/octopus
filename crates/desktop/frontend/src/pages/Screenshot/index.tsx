@@ -394,14 +394,59 @@ export default function Screenshot() {
     };
   }
 
-  function hitTestAnnotation(mx: number, my: number): number | null {
+  // 精确命中：空心标注（rect/oval/line/arrow）检查到线条的距离，填充标注用 bounding box
+  const HIT_DIST = 8;
+  function hitTestAnnotationPrecise(mx: number, my: number): number | null {
     for (let i = annotations.length - 1; i >= 0; i--) {
-      const b = annBounds(annotations[i]);
-      if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) {
-        return i;
+      const ann = annotations[i];
+      if (ann.type === "rect") {
+        // 矩形：检查到四条边的距离
+        const x = Math.min(ann.x1, ann.x2);
+        const y = Math.min(ann.y1, ann.y2);
+        const w = Math.abs(ann.x2 - ann.x1);
+        const h = Math.abs(ann.y2 - ann.y1);
+        const onEdge = (Math.abs(mx - x) <= HIT_DIST || Math.abs(mx - (x + w)) <= HIT_DIST) && my >= y - HIT_DIST && my <= y + h + HIT_DIST
+          || (Math.abs(my - y) <= HIT_DIST || Math.abs(my - (y + h)) <= HIT_DIST) && mx >= x - HIT_DIST && mx <= x + w + HIT_DIST;
+        if (onEdge) return i;
+      } else if (ann.type === "oval") {
+        // 椭圆：检查到椭圆轮廓的距离
+        const cx = (ann.x1 + ann.x2) / 2;
+        const cy = (ann.y1 + ann.y2) / 2;
+        const rx = Math.abs(ann.x2 - ann.x1) / 2;
+        const ry = Math.abs(ann.y2 - ann.y1) / 2;
+        if (rx < 1 || ry < 1) continue;
+        const dx = (mx - cx) / rx;
+        const dy = (my - cy) / ry;
+        const dist = Math.abs(Math.sqrt(dx * dx + dy * dy) - 1) * Math.min(rx, ry);
+        if (dist <= HIT_DIST) return i;
+      } else if (ann.type === "line" || ann.type === "arrow") {
+        // 线段：点到线段的距离
+        if (pointToSegmentDist(mx, my, ann.x1, ann.y1, ann.x2, ann.y2) <= HIT_DIST) return i;
+      } else if (ann.type === "pen" && ann.points) {
+        // 自由曲线：检查到任意一段的距离
+        for (let j = 1; j < ann.points.length; j++) {
+          const [px1, py1] = ann.points[j - 1];
+          const [px2, py2] = ann.points[j];
+          if (pointToSegmentDist(mx, my, px1, py1, px2, py2) <= HIT_DIST) return i;
+        }
+      } else {
+        // 文字/序号：bounding box
+        const b = annBounds(ann);
+        if (mx >= b.x && mx <= b.x + b.w && my >= b.y && my <= b.y + b.h) return i;
       }
     }
     return null;
+  }
+
+  function pointToSegmentDist(px: number, py: number, x1: number, y1: number, x2: number, y2: number): number {
+    const dx = x2 - x1, dy = y2 - y1;
+    const lenSq = dx * dx + dy * dy;
+    if (lenSq === 0) return Math.sqrt((px - x1) ** 2 + (py - y1) ** 2);
+    let t = ((px - x1) * dx + (py - y1) * dy) / lenSq;
+    t = Math.max(0, Math.min(1, t));
+    const projX = x1 + t * dx;
+    const projY = y1 + t * dy;
+    return Math.sqrt((px - projX) ** 2 + (py - projY) ** 2);
   }
 
   // 鼠标事件
@@ -428,9 +473,20 @@ export default function Screenshot() {
       return;
     }
 
-    // tool === "none" 时：优先检测是否点中了已有标注（选中+拖动）
+    // 任何工具状态下：优先检测选区手柄（保证随时可调整选区大小）
+    if (mode === "selected" || mode === "idle") {
+      const handle = hitTest(mx, my);
+      if (handle) {
+        setResizeHandle(handle);
+        setModeSafe("resize");
+        if (sel) selStartRef.current = { ...sel };
+        return;
+      }
+    }
+
+    // tool === "none" 时：检测是否点中了已有标注（精确命中，空心标注内部不算命中）
     if (tool === "none" && sel && inSelection(mx, my)) {
-      const annIdx = hitTestAnnotation(mx, my);
+      const annIdx = hitTestAnnotationPrecise(mx, my);
       if (annIdx !== null) {
         setSelectedAnn(annIdx);
         annMoveStartRef.current = { idx: annIdx, mx, my, anns: [...annotations] };
@@ -462,25 +518,13 @@ export default function Screenshot() {
       return;
     }
 
-    // tool 为 none 时：选区内空白点击取消选中
+    // tool 为 none 时：选区内空白点击取消选中 + 允许平移选区
     if (tool === "none" && sel && inSelection(mx, my)) {
       setSelectedAnn(null);
-    }
-
-    if (mode === "selected" || mode === "idle") {
-      const handle = hitTest(mx, my);
-      if (handle) {
-        setResizeHandle(handle);
-        setModeSafe("resize");
-        if (sel) selStartRef.current = { ...sel };
-        return;
-      }
-      if (sel && inSelection(mx, my)) {
-        setModeSafe("move");
-        moveStartRef.current = { x: mx, y: my };
-        selStartRef.current = { ...sel };
-        return;
-      }
+      setModeSafe("move");
+      moveStartRef.current = { x: mx, y: my };
+      selStartRef.current = { ...sel };
+      return;
     }
 
     // 选区外左键点击：已确定选区时忽略（避免误操作丢失标注），ESC 或取消按钮退出
@@ -527,7 +571,7 @@ export default function Screenshot() {
 
     if (mode === "idle" || mode === "selected") {
       // 悬停在标注上显示 move 光标
-      if (sel && inSelection(mx, my) && hitTestAnnotation(mx, my) !== null) {
+      if (sel && inSelection(mx, my) && hitTestAnnotationPrecise(mx, my) !== null) {
         (e.currentTarget as HTMLCanvasElement).style.cursor = "move";
       } else {
         const handle = hitTest(mx, my);
@@ -636,7 +680,7 @@ export default function Screenshot() {
     const mx = e.clientX;
     const my = e.clientY;
     if (!sel || !inSelection(mx, my)) return;
-    const annIdx = hitTestAnnotation(mx, my);
+    const annIdx = hitTestAnnotationPrecise(mx, my);
     if (annIdx === null) return;
     const ann = annotations[annIdx];
     if (ann.type !== "text" || !ann.text) return;
@@ -656,16 +700,8 @@ export default function Screenshot() {
 
   function onContextMenu(e: React.MouseEvent) {
     e.preventDefault();
-    const mx = e.clientX;
-    const my = e.clientY;
-    if (sel && inSelection(mx, my)) {
-      // 选区内右键 = 同左键操作
-      const fakeEvent = { ...e, button: 0, clientX: mx, clientY: my } as React.MouseEvent;
-      onMouseDown(fakeEvent);
-      setResizeHandle(null);
-      setModeSafe("selected");
-    }
-    // 选区外右键：忽略（取消截图用 ESC 或工具栏取消按钮）
+    // 右键在任何位置都不执行操作（不模拟左键、不取消截图）
+    // 取消截图仅通过 ESC 或工具栏取消按钮
   }
 
   function composeAndCrop(): string | null {

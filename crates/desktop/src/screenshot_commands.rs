@@ -44,12 +44,16 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     for label in &old_labels {
         if let Some(win) = app_handle.get_webview_window(label) {
             let _ = win.destroy();
-            // 给 macOS 一帧时间完成 destroy
-            std::thread::sleep(std::time::Duration::from_millis(50));
         }
     }
 
-    // 4. 按 Tauri monitor 匹配 xcap capture（用物理尺寸近似匹配）
+    // session ID 确保窗口 label 唯一（无需 sleep 等待 destroy）
+    let session_id = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+
+    // 4. 按 Tauri monitor 匹配 xcap capture（用物理坐标精确匹配）
     for (i, tauri_mon) in tauri_monitors.iter().enumerate() {
         let phys_w = tauri_mon.size().width as f64;
         let phys_h = tauri_mon.size().height as f64;
@@ -72,11 +76,7 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
             None => continue,
         };
 
-        let label = if i == 0 {
-            "screenshot_window".to_string()
-        } else {
-            format!("screenshot_window_{}", i)
-        };
+        let label = format!("screenshot_{}_{}", session_id, i);
 
         // RGBA → JPEG base64（截图背景只需视觉展示，JPEG 编码比 PNG 快 10×+）
         let img = ::image::RgbaImage::from_raw(capture.width, capture.height, capture.rgba_bytes.clone())
