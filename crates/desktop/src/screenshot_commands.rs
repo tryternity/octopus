@@ -177,10 +177,6 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 
         TOTAL_WINDOWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
 
-        // macOS: 将截图窗口转为 NSPanel（NonactivatingPanel，不抢键盘焦点）
-        #[cfg(target_os = "macos")]
-        nspanel::convert_to_panel(&app_handle, &label);
-
         log::info!(
             "Screenshot window '{}' at ({},{}) {}x{} (monitor phys {}x{}, scale {})",
             label, pos_x, pos_y, log_w, log_h, phys_w, phys_h, tauri_mon.scale_factor(),
@@ -643,13 +639,25 @@ pub async fn start_scroll_recording(
         let pw = (w * scale) as u32;
         let ph = (h * scale) as u32;
 
-        // manual 模式：NSPanel ignores_mouse_events = true（滚轮穿透，不隐藏窗口）
+        // 获取所有截图窗口 label
         let scroll_labels: Vec<String> = ah
             .webview_windows()
             .keys()
             .filter(|k| k.starts_with("screenshot_"))
             .cloned()
             .collect();
+
+        // manual 模式：将截图窗口转为 NSPanel（录制时才转，不影响普通截图）
+        #[cfg(target_os = "macos")]
+        {
+            for label in &scroll_labels {
+                nspanel::convert_to_panel(&ah, label);
+            }
+            // 等一帧让 NSPanel 转换完成
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        }
+
+        // NSPanel ignores_mouse_events = true（滚轮穿透，不隐藏窗口）
         #[cfg(target_os = "macos")]
         {
             for label in &scroll_labels {
