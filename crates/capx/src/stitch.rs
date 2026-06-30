@@ -135,18 +135,29 @@ impl Stitcher {
         eprintln!("[stitch] tpl_y_start={} tpl_h={} expected_offset={} search=[{},{}] cols={:?}",
             tpl_y_start, tpl_h, expected_offset, lo, hi, self.match_cols);
 
-        // 1. 局部搜索 (利用运动先验距离惩罚)
-        for offset in lo..=hi {
-            let score = ncc_score(
-                &self.last_edges, &curr_edges,
-                tpl_y_start, offset as u32, w, tpl_h, &self.match_cols,
-            );
-            let distance = (offset - expected_offset).abs() as f32;
-            let adjusted_score = score - distance * 0.001;
-            if adjusted_score > best_adjusted_score {
-                best_adjusted_score = adjusted_score;
-                best_score = score;
-                best_offset = offset;
+        // 1. 静态帧短路检测：如果上一帧与当前帧在 0 位移处的匹配得分极高（> 0.975），说明画面未滚动
+        let static_score = ncc_score(
+            &self.last_edges, &curr_edges,
+            tpl_y_start, tpl_y_start, w, tpl_h, &self.match_cols,
+        );
+
+        if static_score > 0.975 {
+            best_score = static_score;
+            best_offset = tpl_y_start as i32;
+        } else {
+            // 2. 局部搜索 (利用运动先验距离惩罚)
+            for offset in lo..=hi {
+                let score = ncc_score(
+                    &self.last_edges, &curr_edges,
+                    tpl_y_start, offset as u32, w, tpl_h, &self.match_cols,
+                );
+                let distance = (offset - expected_offset).abs() as f32;
+                let adjusted_score = score - distance * 0.001;
+                if adjusted_score > best_adjusted_score {
+                    best_adjusted_score = adjusted_score;
+                    best_score = score;
+                    best_offset = offset;
+                }
             }
         }
 
