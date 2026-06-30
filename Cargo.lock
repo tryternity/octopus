@@ -4990,6 +4990,7 @@ dependencies = [
  "image",
  "imageproc",
  "log",
+ "rustfft",
  "serde",
  "xcap",
 ]
