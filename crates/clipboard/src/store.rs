@@ -358,6 +358,16 @@ pub fn update_search_text(conn: &Connection, id: i64, search_text: &str) -> Resu
     Ok(())
 }
 
+/// 更新条目的 content 与 search_text（精简编辑器：用户编辑文本后回写剪贴板条目）。
+/// 两列同写：content 是展示/粘贴源，search_text 是 FTS5 索引源，编辑后须同步以保搜索命中。
+pub fn update_content(conn: &Connection, id: i64, text: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE clipboard_history SET content = ?, search_text = ? WHERE id = ?",
+        params![text, text, id],
+    )?;
+    Ok(())
+}
+
 /// 删除单条。若被删的是图片且无其他条目引用同一 blob，顺带删除 image_data 行。
 pub fn delete_item(conn: &Connection, id: i64) -> Result<()> {
     let blob_hash: Option<String> = conn
@@ -600,6 +610,31 @@ mod tests {
         conn.execute_batch(sql).unwrap();
         conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
         conn
+    }
+
+    #[test]
+    fn test_update_content() {
+        // update_content 同时改写 content 与 search_text（OCR/剪贴板文本编辑后回写）。
+        let conn = open_test_db();
+        let id: i64 = 1700;
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id, item_type: ItemType::Text, content: "原始文本".into(),
+            search_text: "原始文本".into(), created_at: iso_now(),
+            blob_hash: None, width: None, height: None, has_thumbnail: None,
+            file_count: None, is_rich: false,
+        }).unwrap();
+
+        update_content(&conn, id, "改后文本").unwrap();
+
+        // content 经 ClipboardItem 暴露
+        let item = get_item_by_id(&conn, id).unwrap().unwrap();
+        assert_eq!(item.content, "改后文本");
+        // search_text 不在 ClipboardItem 上，直接 SQL 断言
+        let search: String = conn.query_row(
+            "SELECT search_text FROM clipboard_history WHERE id = ?",
+            params![id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(search, "改后文本");
     }
 
     #[test]
