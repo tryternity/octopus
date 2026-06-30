@@ -867,15 +867,14 @@ pub async fn start_scroll_recording(
             }).copied().unwrap_or(0);
             let wid = get_window_number(&sel_win).unwrap_or(0);
 
-            // Find target window ID from the previously active application
+            // Find target window ID from the app under the selection area (not PREV_ACTIVE_APP).
+            // 用选区中心点检测下方的应用窗口，确保截到的是选区下方的真实内容。
             let target_wid = {
-                let pid_opt = {
-                    let guard = PREV_ACTIVE_APP.lock().unwrap();
-                    guard.as_ref().map(|p| p.0.processIdentifier())
-                };
-                if let Some(pid) = pid_opt {
+                let cx = sel_global_x + w / 2.0;
+                let cy = sel_global_y + h / 2.0;
+                if let Some(pid) = get_window_pid_at_point(cx, cy) {
                     let found = octopus_capx::capture::find_window_id_by_pid(pid);
-                    log::info!("Scroll capture: search PID {} yielded window ID {:?}", pid, found);
+                    log::info!("Scroll capture: app under selection (pid={}) yielded window ID {:?}", pid, found);
                     found
                 } else {
                     None
