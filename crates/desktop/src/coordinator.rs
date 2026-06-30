@@ -10,10 +10,26 @@ use crate::transcript::Transcript;
 use octopus_asr_local::streaming_engine::StreamingSession;
 use octopus_asr_local::streaming_runner::TranscriptEvent;
 use log::{debug, error, info, warn};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::sync::Arc;
 use tauri::{Emitter, Manager};
+
+/// 当前/最近一次录音会话的 transcription_id。
+/// 在会话起点（Transcript::new）写入，供 Result 窗口「存入记事本」溯源。
+/// 不在 mem::replace（id=0 sentinel）处清除 → 保留最近有效 id，粘贴后短时间内仍可保存。
+static CURRENT_TRANSCRIPTION_ID: AtomicI64 = AtomicI64::new(0);
+
+pub(crate) fn set_current_transcription_id(id: i64) {
+    CURRENT_TRANSCRIPTION_ID.store(id, Ordering::Relaxed);
+}
+
+/// Result 窗口取当前/最近 transcription_id（无会话返回 None）。
+#[tauri::command]
+pub async fn current_transcription_id() -> Option<i64> {
+    let id = CURRENT_TRANSCRIPTION_ID.load(Ordering::Relaxed);
+    if id > 0 { Some(id) } else { None }
+}
 
 /// 协调器命令
 enum Command {
@@ -585,9 +601,11 @@ fn handle_toggle(
                             let tick_active = Arc::new(AtomicBool::new(true));
                             start_cloud_streaming_tick_thread(tx.clone(), tick_active.clone());
 
+                            let tid = now_millis();
+                            set_current_transcription_id(tid);
                             *stage = Stage::Streaming {
                                 pipeline,
-                                transcript: Transcript::new(now_millis(), config.polish_mode),
+                                transcript: Transcript::new(tid, config.polish_mode),
                                 streaming_active: tick_active,
                             };
                         }
@@ -673,9 +691,11 @@ fn handle_toggle(
                 let streaming_active = Arc::new(AtomicBool::new(true));
                 start_tick_thread(tx.clone(), streaming_active.clone());
 
+                let tid = now_millis();
+                set_current_transcription_id(tid);
                 *stage = Stage::Streaming {
                     pipeline,
-                    transcript: Transcript::new(now_millis(), config.polish_mode),
+                    transcript: Transcript::new(tid, config.polish_mode),
                     streaming_active,
                 };
             } else {
@@ -696,9 +716,11 @@ fn handle_toggle(
                         let tick_active = Arc::new(AtomicBool::new(true));
                         start_vad_segmented_tick_thread(tx.clone(), tick_active.clone());
 
+                        let tid = now_millis();
+                        set_current_transcription_id(tid);
                         *stage = Stage::VadSegmented {
                             pipeline,
-                            transcript: Transcript::new(now_millis(), config.polish_mode),
+                            transcript: Transcript::new(tid, config.polish_mode),
                             tick_active,
                         };
                     }
