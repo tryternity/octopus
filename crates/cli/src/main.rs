@@ -391,7 +391,6 @@ fn select_model() -> Result<String> {
     for (i, e) in engines.iter().enumerate() {
         let cat_name = match e.category {
             octopus_asr_local::config::EngineCategory::Whisper => "Whisper",
-            octopus_asr_local::config::EngineCategory::SenseVoice => "SenseVoice",
             octopus_asr_local::config::EngineCategory::Paraformer => "Paraformer",
             octopus_asr_local::config::EngineCategory::Qwen3Asr => "Qwen3-ASR",
             octopus_asr_local::config::EngineCategory::Zipformer => "Zipformer",
@@ -400,6 +399,8 @@ fn select_model() -> Result<String> {
             octopus_asr_local::config::EngineCategory::ByteDance => "ByteDance(云)",
             octopus_asr_local::config::EngineCategory::Tencent => "Tencent(云)",
             octopus_asr_local::config::EngineCategory::Baidu => "Baidu(云)",
+            octopus_asr_local::config::EngineCategory::SenseVoiceOrig => "SenseVoice(原版)",
+            octopus_asr_local::config::EngineCategory::FireRed => "FireRed",
         };
         let desc = if e.description.is_empty() {
             String::new()
@@ -514,14 +515,6 @@ fn show_config() -> Result<()> {
             let onnx = octopus_asr_local::config::find_onnx_dir(&hf);
             println!("  Whisper [{}]: {}", id, entry.source);
             println!("    ONNX dir: {}", onnx.display());
-        }
-    }
-
-    if let Some(sensevoice) = &config.asr.sensevoice {
-        for (id, entry) in sensevoice {
-            let hf = octopus_asr_local::config::resolve_model_dir(&entry.source)?;
-            println!("  SenseVoice [{}]: {}", id, entry.source);
-            println!("    HF cache: {}", hf.display());
         }
     }
 

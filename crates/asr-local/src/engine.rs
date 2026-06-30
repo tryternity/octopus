@@ -5,9 +5,10 @@ use std::sync::{Arc, RwLock};
 use crate::config;
 use crate::qwen3_asr::Qwen3AsrEngine;
 use crate::whisper::WhisperEngine;
-use crate::sensevoice::SenseVoiceEngine;
+use crate::sensevoice_orig::SenseVoiceOrigEngine;
 use crate::paraformer::ParaformerEngine;
 use crate::zipformer::{ZipformerCtcEngine, ZipformerTransducerEngine};
+use crate::firered::FireRedEngine;
 use crate::moonshine::MoonshineEngine;
 
 /// Trait representing a reusable offline ASR model engine
@@ -72,7 +73,7 @@ impl AsrEngineManager {
 
             let new_eng: Arc<dyn OfflineAsrEngine> = match category {
                 config::EngineCategory::Whisper => Arc::new(WhisperEngine::new(entry)?),
-                config::EngineCategory::SenseVoice => Arc::new(SenseVoiceEngine::new(entry)?),
+                config::EngineCategory::SenseVoiceOrig => Arc::new(SenseVoiceOrigEngine::new(entry)?),
                 config::EngineCategory::Paraformer => Arc::new(ParaformerEngine::new(entry)?),
                 config::EngineCategory::Qwen3Asr => Arc::new(Qwen3AsrEngine::new(entry)?),
                 config::EngineCategory::Zipformer => {
@@ -91,6 +92,7 @@ impl AsrEngineManager {
                     model_name
                 ),
                 config::EngineCategory::Moonshine => Arc::new(MoonshineEngine::new(entry)?),
+                config::EngineCategory::FireRed => Arc::new(FireRedEngine::new(entry)?),
                 config::EngineCategory::ByteDance => anyhow::bail!(
                     "字节跳动云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
                     model_name
