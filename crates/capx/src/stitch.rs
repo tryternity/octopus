@@ -124,12 +124,12 @@ impl Stitcher {
         let expected_offset = tpl_y_start as i32 - self.last_scroll;
 
         // 设定搜索窗口限制：
-        // 1. 若为第一帧滚动 (last_scroll == 0)，由于没有历史速度，首帧必定是微小的起步阶段，搜索合理的 [0, 35] 像素区间，从物理上完全阻断对任何 40px/120px 处重复段落的误匹配；
-        // 2. 若为后续帧，在期望位置附近搜索（dy 变化在 [-100, +50] 像素内），由于全面积模板高度唯一，可以安全地放宽搜索窗口以支持更快的滑动。
+        // 1. 若为第一帧滚动 (last_scroll == 0)，由于没有历史速度，首帧在 30ms 极短间隔内必定是微小的起滑（位移在 0-20px），搜索区间为 [0, 20]，物理上完全排除一切重复段落；
+        // 2. 若为后续帧，在期望位置附近搜索（dy 变化在 [-60, +30] 像素内），支持 30fps 下的高频滑移。
         let (lo, hi) = if self.last_scroll == 0 {
-            ((tpl_y_start as i32 - 35).max(eff_top as i32), (tpl_y_start as i32 + 10).min(search_end as i32))
+            ((tpl_y_start as i32 - 20).max(eff_top as i32), (tpl_y_start as i32 + 5).min(search_end as i32))
         } else {
-            ((expected_offset - 100).max(eff_top as i32), (expected_offset + 50).min(search_end as i32))
+            ((expected_offset - 60).max(eff_top as i32), (expected_offset + 30).min(search_end as i32))
         };
 
         // 1. 静态帧短路检测：如果上一帧与当前帧在 0 位移处的匹配得分极高（> 0.975），说明画面未滚动
@@ -154,7 +154,7 @@ impl Stitcher {
                     tpl_y_start, offset as u32, w, tpl_h, &self.match_cols,
                 );
                 let distance = (offset - expected_offset).abs() as f32;
-                let adjusted_score = score - distance * 0.003;
+                let adjusted_score = score - distance * 0.004;
                 if adjusted_score > best_adjusted_score {
                     best_adjusted_score = adjusted_score;
                     best_score = score;
@@ -176,7 +176,7 @@ impl Stitcher {
                     tpl_y_start, offset as u32, w, tpl_h, &self.match_cols,
                 );
                 let distance = (offset - expected_offset).abs() as f32;
-                let adjusted_score = score - distance * 0.003;
+                let adjusted_score = score - distance * 0.004;
                 if adjusted_score > best_adjusted_score {
                     best_adjusted_score = adjusted_score;
                     best_score = score;
@@ -196,7 +196,7 @@ impl Stitcher {
                 "[stitch-diag] best_offset={}, best_score={:.4}, best_adjusted_score={:.4}, acceleration={}",
                 best_offset, best_score, best_adjusted_score, acceleration
             );
-            if acceleration > 65 {
+            if acceleration > 30 {
                 eprintln!(
                     "[stitch-diag] Match rejected due to excessive acceleration: {}px (expected_offset={}, matched={})",
                     acceleration, expected_offset, best_offset
@@ -412,11 +412,11 @@ mod tests {
                 frame_a.put_pixel(x, y, Rgba([checker, v, 128, 255]));
             }
         }
-        // frame_b = frame_a 向上滚动 50px
+        // frame_b = frame_a 向上滚动 15px
         let mut frame_b = RgbaImage::new(100, 200);
         for y in 0..200 {
             for x in 0..100 {
-                let src_y = (y + 50).min(199);
+                let src_y = (y + 15).min(199);
                 frame_b.put_pixel(x, y, frame_a.get_pixel(x, src_y).clone());
             }
         }

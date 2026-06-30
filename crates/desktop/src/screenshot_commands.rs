@@ -930,7 +930,7 @@ pub async fn start_scroll_recording(
 
         let _ = ah.emit("scroll://started", ());
 
-        let frame_duration = std::time::Duration::from_millis(120);
+        let frame_duration = std::time::Duration::from_millis(30);
         let mut interval = tokio::time::interval(frame_duration);
         interval.tick().await;
 
