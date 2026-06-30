@@ -124,12 +124,12 @@ impl Stitcher {
         let expected_offset = tpl_y_start as i32 - self.last_scroll;
 
         // 设定搜索窗口限制：
-        // 1. 若为第一帧滚动 (last_scroll == 0)，由于没有历史速度，搜索一个首帧合理向下滚动区间 [0, 80] 像素，防止首帧即越过界匹配到上方的重复段落；
-        // 2. 若为后续帧，在期望位置附近搜索（dy 变化在 [-60, +40] 像素内），由于全面积模板高度唯一，可以安全地放宽搜索窗口以支持更快的滑动。
+        // 1. 若为第一帧滚动 (last_scroll == 0)，由于没有历史速度，搜索一个首帧合理向下滚动区间 [0, 180] 像素，由运动先验自动过滤远距离重复段落；
+        // 2. 若为后续帧，在期望位置附近搜索（dy 变化在 [-100, +50] 像素内），由于全面积模板高度唯一，可以安全地放宽搜索窗口以支持更快的滑动。
         let (lo, hi) = if self.last_scroll == 0 {
-            ((tpl_y_start as i32 - 80).max(eff_top as i32), (tpl_y_start as i32 + 10).min(search_end as i32))
+            ((tpl_y_start as i32 - 180).max(eff_top as i32), (tpl_y_start as i32 + 10).min(search_end as i32))
         } else {
-            ((expected_offset - 60).max(eff_top as i32), (expected_offset + 40).min(search_end as i32))
+            ((expected_offset - 100).max(eff_top as i32), (expected_offset + 50).min(search_end as i32))
         };
 
         eprintln!("[stitch] tpl_y_start={} tpl_h={} expected_offset={} search=[{},{}] cols={:?}",
@@ -241,9 +241,9 @@ impl Stitcher {
     /// 录制结束时补全最后一帧的剩余内容（sticky footer 等）
     pub fn finalize(&mut self, last_frame: &RgbaImage) -> Result<()> {
         let (w, h) = (last_frame.width(), last_frame.height());
-        // 简单方案：最后一帧从 sticky_top 到帧底部全部追加（可能重叠少量行，但保证不缺底部）
+        // 补全最后一帧未拼接的底部区域（eff_bottom 到 h 之间的 footer 边距）
         let eff_bottom = h.saturating_sub(self.sticky_bottom);
-        let crop_start = (eff_bottom as i32 - self.last_scroll).max(0) as u32;
+        let crop_start = eff_bottom;
         if crop_start >= h {
             return Ok(());
         }
