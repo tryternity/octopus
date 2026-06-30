@@ -784,7 +784,7 @@ pub async fn start_scroll_recording(
 
         // ── macOS：获取 display_id + overlay windowNumber（spec §6.4 CGWindowList 排除）──
         #[cfg(target_os = "macos")]
-        let (_display_id, exclude_wid) = {
+        let (_display_id, exclude_wid, target_wid) = {
             use core_graphics::display::CGDisplay;
             let displays = match CGDisplay::active_displays() {
                 Ok(d) => d,
@@ -798,8 +798,25 @@ pub async fn start_scroll_recording(
                     && cy >= bounds.origin.y && cy < bounds.origin.y + bounds.size.height
             }).copied().unwrap_or(0);
             let wid = get_window_number(&sel_win).unwrap_or(0);
-            eprintln!("[scroll-diag] display_id={}, exclude_wid={} (windowNumber), displays={:?}", hit, wid, displays);
-            (hit, wid)
+
+            // Find target window ID from the previously active application
+            let target_wid = {
+                let pid_opt = {
+                    let guard = PREV_ACTIVE_APP.lock().unwrap();
+                    guard.as_ref().map(|p| p.0.processIdentifier())
+                };
+                if let Some(pid) = pid_opt {
+                    let found = octopus_capx::capture::find_window_id_by_pid(pid);
+                    log::info!("Scroll capture: search PID {} yielded window ID {:?}", pid, found);
+                    found
+                } else {
+                    None
+                }
+            };
+
+            eprintln!("[scroll-diag] display_id={}, exclude_wid={} (windowNumber), target_wid={:?}, displays={:?}",
+                hit, wid, target_wid, displays);
+            (hit, wid, target_wid)
         };
 
         // 获取所有截图窗口 label（用于 set_ignore_cursor_events）
@@ -876,12 +893,19 @@ pub async fn start_scroll_recording(
 
 
         // ── 首帧（只截选区区域，排除 overlay 窗口）──
+        let target_wid_first = target_wid;
         let first_result = tokio::task::spawn_blocking(move || {
             #[cfg(target_os = "macos")]
             {
-                let cap = octopus_capx::capture::capture_region_excluding_window(
-                    exclude_wid, sel_global_x, sel_global_y, w, h,
-                )?;
+                let cap = if let Some(wid) = target_wid_first {
+                    octopus_capx::capture::capture_window_region(
+                        wid, sel_global_x, sel_global_y, w, h,
+                    )?
+                } else {
+                    octopus_capx::capture::capture_region_excluding_window(
+                        exclude_wid, sel_global_x, sel_global_y, w, h,
+                    )?
+                };
                 let img = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba_bytes)
                     .ok_or_else(|| anyhow::anyhow!("failed to create RgbaImage"))?;
                 anyhow::Ok(img)
@@ -917,12 +941,19 @@ pub async fn start_scroll_recording(
             interval.tick().await;
 
             // 截屏：只截选区区域，CGWindowList 排除 overlay 窗口（只截底层应用内容）
+            let target_wid_loop = target_wid;
             let capture_result = tokio::task::spawn_blocking(move || {
                 #[cfg(target_os = "macos")]
                 {
-                    let cap = octopus_capx::capture::capture_region_excluding_window(
-                        exclude_wid, sel_global_x, sel_global_y, w, h,
-                    )?;
+                    let cap = if let Some(wid) = target_wid_loop {
+                        octopus_capx::capture::capture_window_region(
+                            wid, sel_global_x, sel_global_y, w, h,
+                        )?
+                    } else {
+                        octopus_capx::capture::capture_region_excluding_window(
+                            exclude_wid, sel_global_x, sel_global_y, w, h,
+                        )?
+                    };
                     let img = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba_bytes)
                         .ok_or_else(|| anyhow::anyhow!("failed to create RgbaImage"))?;
                     anyhow::Ok(img)

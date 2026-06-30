@@ -214,3 +214,119 @@ pub struct RgbaBytes {
     pub width: u32,
     pub height: u32,
 }
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGWindowListCopyWindowInfo(
+        option: u32,
+        relativeToWindow: u32,
+    ) -> core_foundation::array::CFArrayRef;
+}
+
+/// macOS: Find the main window ID associated with a process ID (PID).
+#[cfg(target_os = "macos")]
+pub fn find_window_id_by_pid(pid: i32) -> Option<u32> {
+    use core_foundation::array::CFArray;
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+    use core_foundation::base::TCFType;
+
+    // kCGWindowListOptionOnScreenOnly = 1 << 0
+    let option = 1 << 0;
+
+    unsafe {
+        let array_ref = CGWindowListCopyWindowInfo(option, 0); // kCGNullWindowID = 0
+        if array_ref.is_null() {
+            return None;
+        }
+        let array = CFArray::<CFDictionary>::wrap_under_create_rule(array_ref);
+
+        let pid_key = CFString::from_static_string("kCGWindowOwnerPID");
+        let layer_key = CFString::from_static_string("kCGWindowLayer");
+        let number_key = CFString::from_static_string("kCGWindowNumber");
+
+        for i in 0..array.len() {
+            let dict = array.get(i).unwrap();
+
+            // 1. Verify Owner PID
+            let pid_value = dict.find(pid_key.as_CFTypeRef());
+            if pid_value.is_none() { continue; }
+            let pid_num = CFNumber::wrap_under_get_rule(*pid_value.unwrap() as *const _);
+            let window_pid = pid_num.to_i32();
+            if window_pid != Some(pid) { continue; }
+
+            // 2. Verify Window Layer (0 means the main application window)
+            let layer_value = dict.find(layer_key.as_CFTypeRef());
+            if layer_value.is_none() { continue; }
+            let layer_num = CFNumber::wrap_under_get_rule(*layer_value.unwrap() as *const _);
+            let window_layer = layer_num.to_i32();
+            if window_layer != Some(0) { continue; }
+
+            // 3. Extract Window Number ID
+            let number_value = dict.find(number_key.as_CFTypeRef());
+            if number_value.is_none() { continue; }
+            let number_num = CFNumber::wrap_under_get_rule(*number_value.unwrap() as *const _);
+            if let Some(window_id) = number_num.to_i64() {
+                return Some(window_id as u32);
+            }
+        }
+    }
+    None
+}
+
+/// macOS: Capture ONLY the backing store layer of a specific window.
+#[cfg(target_os = "macos")]
+pub fn capture_window_region(
+    window_id: u32,
+    rect_x: f64,
+    rect_y: f64,
+    rect_w: f64,
+    rect_h: f64,
+) -> Result<RgbaBytes> {
+    use core_graphics::display::{
+        kCGWindowImageDefault, kCGWindowListOptionIncludingWindow,
+    };
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+
+    let capture_rect = CGRect {
+        origin: CGPoint { x: rect_x, y: rect_y },
+        size: CGSize { width: rect_w, height: rect_h },
+    };
+
+    // kCGWindowListOptionIncludingWindow ensures only the specified window is rendered
+    let cg_image = core_graphics::display::CGDisplay::screenshot(
+        capture_rect,
+        kCGWindowListOptionIncludingWindow,
+        window_id,
+        kCGWindowImageDefault,
+    )
+    .context("CGWindowListCreateImage for single window failed")?;
+
+    let width = cg_image.width() as u32;
+    let height = cg_image.height() as u32;
+    let bpr = cg_image.bytes_per_row();
+    let bpp = cg_image.bits_per_pixel();
+
+    let cf_data = cg_image.data();
+    let raw = cf_data.bytes();
+
+    if bpp != 32 {
+        anyhow::bail!("Unsupported screenshot format: {} bpp (expected 32)", bpp);
+    }
+
+    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+    for y in 0..height as usize {
+        let row_start = y * bpr;
+        let row = &raw[row_start..row_start + width as usize * 4];
+        for px in row.chunks_exact(4) {
+            rgba.push(px[2]);
+            rgba.push(px[1]);
+            rgba.push(px[0]);
+            rgba.push(px[3]);
+        }
+    }
+
+    Ok(RgbaBytes { rgba_bytes: rgba, width, height })
+}
