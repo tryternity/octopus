@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, Copy, ScanText, Loader2, Check, NotebookPen } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, Copy, ScanText, Loader2, Check, NotebookPen, SquarePen } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import { openCompactEditor } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
@@ -144,6 +144,16 @@ export default function ClipboardItemRow({
     }
   };
 
+  const handleEditText = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (item.item_type === "image" || item.item_type === "file") return;
+    openCompactEditor(item.content, (edited) => {
+      invoke("set_clipboard_item_text", { itemId: item.id, text: edited })
+        .then(onChanged)
+        .catch(console.error);
+    });
+  };
+
   const Icon = item.source === "asr" ? Mic
     : item.item_type === "image" ? ImageIcon
     : item.item_type === "file" ? FileText
@@ -209,6 +219,15 @@ export default function ClipboardItemRow({
         >
           <NotebookPen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
         </button>
+        {item.item_type !== "image" && item.item_type !== "file" && (
+          <button
+            className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+            onClick={handleEditText}
+            title="编辑"
+          >
+            <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+          </button>
+        )}
         <button
           className={cn(
             "p-0.5 transition-opacity hover:scale-110",
