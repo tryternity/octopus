@@ -3,6 +3,36 @@ use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::ClipboardHandle;
 
+#[cfg(target_os = "macos")]
+mod nspanel {
+    use tauri::Manager;
+    use tauri_nspanel::{tauri_panel, ManagerExt, WebviewWindowExt};
+
+    tauri_panel! {
+        panel!(ScrollPanel {
+            config: {
+                can_become_key_window: true,
+                can_become_main_window: false,
+                becomes_key_only_if_needed: true,
+                is_floating_panel: true
+            }
+        })
+        panel_event!(ScrollPanelEventHandler {})
+    }
+
+    pub fn convert_to_panel(app: &tauri::AppHandle, label: &str) {
+        if let Some(win) = app.get_webview_window(label) {
+            let _ = win.to_panel::<ScrollPanel>();
+        }
+    }
+
+    pub fn set_mouse_passthrough(app: &tauri::AppHandle, label: &str, passthrough: bool) {
+        let win = match app.get_webview_window(label) { Some(w) => w, None => return };
+        let panel = match win.to_panel::<ScrollPanel>() { Ok(p) => p, Err(_) => return };
+        panel.set_ignores_mouse_events(passthrough);
+    }
+}
+
 /// 截图数据副本（不含 monitor 坐标，仅像素数据用于裁剪）
 #[derive(Clone)]
 struct ScreenCaptureClone {
@@ -146,6 +176,10 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         }
 
         TOTAL_WINDOWS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+
+        // macOS: 将截图窗口转为 NSPanel（NonactivatingPanel，不抢键盘焦点）
+        #[cfg(target_os = "macos")]
+        nspanel::convert_to_panel(&app_handle, &label);
 
         log::info!(
             "Screenshot window '{}' at ({},{}) {}x{} (monitor phys {}x{}, scale {})",
@@ -609,21 +643,32 @@ pub async fn start_scroll_recording(
         let pw = (w * scale) as u32;
         let ph = (h * scale) as u32;
 
-        // 隐藏所有截图窗口（避免 xcap 截到自身）
+        // manual 模式：NSPanel ignores_mouse_events = true（滚轮穿透，不隐藏窗口）
         let scroll_labels: Vec<String> = ah
             .webview_windows()
             .keys()
             .filter(|k| k.starts_with("screenshot_"))
             .cloned()
             .collect();
-        for label in &scroll_labels {
-            if let Some(win) = ah.get_webview_window(label) {
-                let _ = win.hide();
+        #[cfg(target_os = "macos")]
+        {
+            for label in &scroll_labels {
+                nspanel::set_mouse_passthrough(&ah, label, true);
             }
         }
 
-        // 等一帧让窗口真正隐藏
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        // 工具栏区域坐标（用于区域化鼠标穿透切换）
+        let toolbar_y_local = y + h + 8.0;
+        let toolbar_x_start = x;
+        let toolbar_x_end = x + 420.0;
+
+        // 获取截图窗口的全局位置（用于坐标转换）
+        let first_label = scroll_labels.first().cloned().unwrap_or_default();
+        let (win_global_x, win_global_y) = ah
+            .get_webview_window(&first_label)
+            .and_then(|w| w.outer_position().ok())
+            .map(|p| (p.x as f64, p.y as f64))
+            .unwrap_or((0.0, 0.0));
 
         // 首帧
         let first_result = tokio::task::spawn_blocking({
@@ -651,15 +696,37 @@ pub async fn start_scroll_recording(
 
         let ah2 = ah.clone();
         let mut no_progress_count = 0u32;
+        let mut last_passthrough = true;
 
         while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
             interval.tick().await;
 
-            // auto 模式：先模拟滚轮，等应用响应后再截屏
-            send_scroll(40); // 向下滚 40 像素
-            tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+            // manual 模式：检查鼠标位置，区域化切换 mouse passthrough
+            #[cfg(target_os = "macos")]
+            {
+                use core_graphics::event::CGEvent;
+                use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+                if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+                    if let Ok(evt) = CGEvent::new(src) {
+                        let loc = evt.location();
+                        // CGEvent location 是全局逻辑坐标
+                        // 转为窗口局部坐标：减去窗口全局位置
+                        let local_x = loc.x - win_global_x;
+                        let local_y = loc.y - win_global_y;
+                        let in_toolbar = local_y >= toolbar_y_local && local_y <= toolbar_y_local + 44.0
+                            && local_x >= toolbar_x_start && local_x <= toolbar_x_end;
+                        let want_passthrough = !in_toolbar;
+                        if want_passthrough != last_passthrough {
+                            for label in &scroll_labels {
+                                nspanel::set_mouse_passthrough(&ah2, label, want_passthrough);
+                            }
+                            last_passthrough = want_passthrough;
+                        }
+                    }
+                }
+            }
 
-            // 截屏
+            // 截屏（用户手动滚动，不模拟滚轮）
             let capture_result = tokio::task::spawn_blocking({
                 let tx = target_mon_x_phys; let ty = target_mon_y_phys;
                 move || {
@@ -711,6 +778,14 @@ pub async fn start_scroll_recording(
                 "height": stitcher.height(),
                 "phys_height": (stitcher.height() as f64 / scale) as u32,
             }));
+        }
+
+        // 录制结束：恢复鼠标事件
+        #[cfg(target_os = "macos")]
+        {
+            for label in &scroll_labels {
+                nspanel::set_mouse_passthrough(&ah, label, false);
+            }
         }
 
         // 入库
