@@ -46,7 +46,7 @@
      d. 抛物线拟合精化：0.1px 精度
   ③ dy < 0（内容上移 = 用户向下滚）→ 追加当前帧底部 |dy| 行到画布
   ④ 更新参考投影为当前帧
-停止 → finalize：补全最后一帧的 sticky footer 区域
+停止 → finalize：补全最后一帧的 sticky footer 区域 → emit 最终预览
 ```
 
 ### 2.2 相比 NCC 的优势
@@ -109,9 +109,25 @@ start_scroll_recording(x, y, w, h, win_label, interactive_rects)
   │     a. capture_region_excluding_window → RGBA
   │     b. JPEG → emit("scroll://frame")
   │     c. stitcher.process_frame(rgba) → FFT 相位相关
-  │     d. 预览缩略图 → emit("scroll://frame")
-  └─ 5. stitcher.finalize() → activate(self) → 长图入库
+  │     d. 预览缩略图（底部裁剪，400px 宽，CatmullRom）→ emit("scroll://frame")
+  └─ 5. 先恢复鼠标事件 + activate(self)
+       → stitcher.finalize() + spawn_blocking 生成最终预览 → emit
+       → 长图入库
 ```
+
+### 3.1 预览
+
+- **底部固定**：预览窗 `bottom` 对齐选区底部，内容向上推
+- **底部裁剪**：只截画布底部最新区域（max 1200px 预览高度），始终看到最新拼接内容
+- **高质量缩放**：400px 宽，CatmullRom 双三次插值
+- **底部对齐**：容器 `justifyContent: flex-end`，图片比容器高时截顶部留底部
+- **finalize 后 emit**：停止时补全最后一帧后发送最终预览（spawn_blocking 不阻塞事件循环）
+
+### 3.2 停止流程（防鼠标假死）
+
+1. **先恢复鼠标**：`setIgnoresMouseEvents(false)` + `activate(self)`
+2. **再 finalize + 预览**：`spawn_blocking` 中生成，不阻塞 tokio
+3. **入库**：WebP 编码写 DB
 
 ## 4. 依赖
 
@@ -119,3 +135,19 @@ start_scroll_recording(x, y, w, h, win_label, interactive_rects)
 - `imageproc = "0.25"`（Sobel 梯度）
 - `objc2` + `objc2-app-kit`（焦点让出）
 - `core-graphics = "0.24"`（CGWindowList 截图）
+
+## 5. 前端
+
+### 5.1 预览窗布局
+
+```
+┌──────────┐
+│ 录制中·Npx│  ← 状态条（顶部）
+├──────────┤
+│ 预览图    │  ← 内容区（flex:1, justifyContent:flex-end, 向上推）
+│ ↑↑↑     │
+├──────────┤
+│ ⏹ 停止   │  ← 按钮（底部）
+└──────────┘
+   ↑ 底部对齐选区底部（bottom: innerHeight - sel.y - sel.h）
+```

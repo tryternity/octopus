@@ -168,6 +168,7 @@ impl Stitcher {
 }
 
 /// 将边缘图投影为垂直方向 1D 信号（每行所有列的平均边缘强度）。
+#[allow(dead_code)]
 fn project_vertical(edges: &GrayImage) -> Vec<f64> {
     let (w, h) = (edges.width(), edges.height());
     (0..h).map(|y| {

@@ -770,7 +770,8 @@ export default function Screenshot() {
     const previewLeft = sel.x + sel.w + 12 + 200 <= window.innerWidth
       ? sel.x + sel.w + 12
       : sel.x - 12 - 200;
-    interactiveRects.push({ x: previewLeft, y: sel.y, width: 200, height: window.innerHeight - sel.y });
+    // 预览窗底部固定，高度最大 80vh
+    interactiveRects.push({ x: previewLeft, y: window.innerHeight * 2 / 10, width: 200, height: window.innerHeight * 8 / 10 });
 
     invoke("start_scroll_recording", {
       x: sel.x, y: sel.y, w: sel.w, h: sel.h,
@@ -1061,13 +1062,13 @@ export default function Screenshot() {
       )}
 
       {/* 滚动预览浮层 */}
-      {mode === "scrolling" && scrollPreview && (
+      {mode === "scrolling" && scrollPreview && sel && (
         <div style={{
           position: "fixed",
-          left: sel && sel.x + sel.w + 12 + 200 <= window.innerWidth
+          left: sel.x + sel.w + 12 + 200 <= window.innerWidth
             ? sel.x + sel.w + 12
-            : sel ? sel.x - 12 - 200 : 0,
-          top: sel ? sel.y : 0,
+            : sel.x - 12 - 200,
+          bottom: window.innerHeight - sel.y - sel.h,
           width: 200,
           maxHeight: "80vh",
           background: "rgba(0,0,0,0.8)",
@@ -1083,7 +1084,7 @@ export default function Screenshot() {
             <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ade80" }} />
             录制中 · {scrollHeight}px
           </div>
-          <div style={{ flex: 1, overflow: "hidden", borderRadius: 4 }}>
+          <div style={{ flex: 1, overflow: "hidden", borderRadius: 4, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
             <img src={`data:image/png;base64,${scrollPreview}`} alt="preview" style={{ width: "100%", display: "block" }} />
           </div>
           <button onClick={stopScroll} style={{ padding: "4px", borderRadius: 4, border: "none", background: "#ef4444", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>

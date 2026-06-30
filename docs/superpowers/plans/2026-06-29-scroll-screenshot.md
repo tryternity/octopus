@@ -14,11 +14,9 @@
 
 ## Task 1: FFT 相位相关拼接引擎 ✅
 
-**Files:** `crates/capx/src/stitch.rs`, `Cargo.toml`
-
 - [x] Cargo.toml 加 `rustfft = "6.2"`
 - [x] Stitcher + StitchConfig（min_scroll_px=2.0, min_confidence=0.15）
-- [x] project_vertical / project_vertical_range：Sobel 边缘 → 每行平均边缘强度 → 1D 信号
+- [x] project_vertical_range：Sobel 边缘 → 每行平均边缘强度 → 1D 信号
 - [x] phase_correlation_dy：FFT → 归一化互功率谱 → IFFT → 峰值 + 抛物线亚像素
 - [x] process_frame：detect_sticky → 裁 canvas → FFT 求位移 → 追加底部行 → 更新参考投影
 - [x] finalize：补全最后一帧 sticky footer
@@ -34,7 +32,8 @@
 - [x] save_frontmost_app / activate_prev_app
 - [x] 33fps 截图循环
 - [x] 30ms 鼠标监视线程
-- [x] stitcher.finalize()
+- [x] 预览：底部裁剪 + 400px 宽 + CatmullRom
+- [x] 停止：先恢复鼠标 → finalize → spawn_blocking 预览 → 入库
 - [x] WebP 入库
 
 ## Task 4: 前端 scrolling 模式 ✅
@@ -42,12 +41,14 @@
 - [x] clearRect 挖透明孔
 - [x] startScroll / stopScroll
 - [x] scroll://frame 事件监听
-- [x] 预览浮层
+- [x] 预览浮层：底部固定 + 内容向上推 + 底部对齐选区
 
 ## Task 5: 端到端验证 ✅
 
 - [x] Cmd+Shift+D → 框选 → 滚动截图 → 停止 → 长图入库
 - [x] 拼接结果无重叠、无缺失、无模糊
+- [x] 预览清晰（400px CatmullRom）+ 底部最新内容可见
+- [x] 停止时无鼠标假死
 
 ---
 
@@ -69,10 +70,21 @@ NSPanel 崩溃、auto 模式体验差、简单 deactivate 不穿透、always_on_
 
 ### 偏差 11：FFT 实现调试 ✅
 
-- **dy 方向反了**：`conj(Fa)*Fb` 向下滚动时 dy<0（非 dy>0）→ 修正方向判断
+- **dy 方向反了**：`conj(Fa)*Fb` 向下滚动时 dy<0 → 修正方向判断
 - **投影长度不匹配**：`reference_proj` 全帧 vs `curr_proj` 有效区域 → detect_sticky 后重算
 - **首帧 sticky 重复**：canvas 初始为首帧全帧（含 sticky）→ 初始化时裁掉 sticky 区域
 - **最后一帧缺失**：finalize 空实现 → 补全 sticky footer 区域
+
+### 偏差 12：预览体验优化 ✅
+
+- **预览模糊**：200px Nearest → 400px CatmullRom
+- **看不到最后一行**：整图缩放改底部裁剪 + finalize 后 emit 预览
+- **预览底部固定**：`bottom` 对齐选区底部 + `justifyContent: flex-end` 底部对齐
+
+### 偏差 13：停止时鼠标假死 ✅
+
+- **根因**：finalize + 预览生成阻塞 tokio 事件循环，期间 `setIgnoresMouseEvents(false)` 未执行
+- **修复**：先恢复鼠标事件 + activate → 再 finalize → 预览生成移到 `spawn_blocking`
 
 ---
 
@@ -87,3 +99,5 @@ NSPanel 崩溃、auto 模式体验差、简单 deactivate 不穿透、always_on_
 | §2.4 Sticky 处理 | Task 1 |
 | §2.5 位移方向 | 偏差 11 |
 | §3 录制循环 | Task 3 |
+| §3.1 预览 | Task 3 + 4 |
+| §3.2 停止流程 | 偏差 13 |

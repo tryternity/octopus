@@ -667,6 +667,7 @@ fn set_app_active_on_main(win: &tauri::WebviewWindow, active: bool) {
         if let Some(mtm) = MainThreadMarker::new() {
             let app = NSApplication::sharedApplication(mtm);
             if active {
+                #[allow(deprecated)]
                 app.activateIgnoringOtherApps(true);
             } else {
                 app.deactivate();
@@ -998,11 +999,17 @@ pub async fn start_scroll_recording(
                 }
             }
 
-            // 预览
+            // 预览：只取画布底部最新区域，让用户看到最新的拼接内容
             let canvas = stitcher.canvas();
-            let preview_w = 200u32;
-            let preview_h = (preview_w * canvas.height() / canvas.width()).min(600);
-            let preview = image::imageops::resize(canvas, preview_w, preview_h, image::imageops::FilterType::Nearest);
+            let preview_w = 400u32;
+            let max_preview_h = 1200u32;
+            // 计算等效预览高度对应的源像素高度（考虑缩放比）
+            let src_h = (canvas.height() as u64 * canvas.width() as u64 / preview_w as u64).min(canvas.height() as u64) as u32;
+            let crop_src_h = src_h.min(max_preview_h * canvas.width() / preview_w).min(canvas.height());
+            let crop_y = canvas.height() - crop_src_h;
+            let canvas_cropped = image::imageops::crop_imm(canvas, 0, crop_y, canvas.width(), crop_src_h).to_image();
+            let preview_h = (preview_w * canvas_cropped.height() / canvas_cropped.width()).min(max_preview_h);
+            let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::CatmullRom);
             let mut preview_png = Vec::new();
             let _ = preview.write_to(&mut std::io::Cursor::new(&mut preview_png), image::ImageFormat::Png);
             let preview_b64 = general_purpose::STANDARD.encode(&preview_png);
@@ -1015,12 +1022,7 @@ pub async fn start_scroll_recording(
             }));
         }
 
-        // 录制结束：补全最后一帧的完整可见区域（含底部 sticky footer）
-        if let Some(ref lf) = last_frame {
-            let _ = stitcher.finalize(lf);
-        }
-
-        // 录制结束：恢复鼠标事件 + 重新激活 app
+        // 录制结束：先恢复鼠标事件 + 重新激活 app（避免假死）
         for label in &scroll_labels {
             if let Some(win) = ah.get_webview_window(label) {
                 set_window_ignores_mouse_events(&win, false);
@@ -1028,6 +1030,33 @@ pub async fn start_scroll_recording(
         }
         #[cfg(target_os = "macos")]
         set_app_active_on_main(&sel_win, true);
+
+        // 补全最后一帧的完整可见区域（含底部 sticky footer）
+        if let Some(ref lf) = last_frame {
+            let _ = stitcher.finalize(lf);
+
+            // finalize 后再 emit 一帧预览（spawn_blocking 避免阻塞事件循环）
+            let canvas = stitcher.canvas().clone();
+            let preview_b64 = tokio::task::spawn_blocking(move || {
+                let preview_w = 400u32;
+                let max_preview_h = 1200u32;
+                let crop_src_h = canvas.height().min(max_preview_h * canvas.width() / preview_w);
+                let crop_y = canvas.height() - crop_src_h;
+                let canvas_cropped = image::imageops::crop_imm(&canvas, 0, crop_y, canvas.width(), crop_src_h).to_image();
+                let preview_h = (preview_w * canvas_cropped.height() / canvas_cropped.width()).min(max_preview_h);
+                let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::CatmullRom);
+                let mut preview_png = Vec::new();
+                let _ = preview.write_to(&mut std::io::Cursor::new(&mut preview_png), image::ImageFormat::Png);
+                general_purpose::STANDARD.encode(&preview_png)
+            }).await.unwrap_or_default();
+            let final_height = stitcher.height();
+            let _ = ah2.emit("scroll://frame", serde_json::json!({
+                "frame": preview_b64,
+                "preview": preview_b64,
+                "height": final_height,
+                "phys_height": (final_height as f64 / scale) as u32,
+            }));
+        }
 
         // 入库
         close_all_screenshot_windows(&ah);
