@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, Copy, ScanText, Loader2, Check } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, Copy, ScanText, Loader2, Check, NotebookPen } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import type { ClipboardItem } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
@@ -123,6 +123,20 @@ export default function ClipboardItemRow({
     }
   };
 
+  const [noteSaving, setNoteSaving] = useState(false);
+  const handleSaveToNote = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (noteSaving) return;
+    setNoteSaving(true);
+    try {
+      await invoke("save_clipboard_to_note", { itemId: item.id });
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setNoteSaving(false);
+    }
+  };
+
   const Icon = item.source === "asr" ? Mic
     : item.item_type === "image" ? ImageIcon
     : item.item_type === "file" ? FileText
@@ -180,6 +194,13 @@ export default function ClipboardItemRow({
           title="复制"
         >
           <Copy className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+        </button>
+        <button
+          className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+          onClick={handleSaveToNote}
+          title="存入记事本"
+        >
+          <NotebookPen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
         </button>
         <button
           className={cn(
