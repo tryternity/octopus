@@ -228,6 +228,7 @@ pub fn run() {
             clipboard_commands::save_image_item,
             clipboard_commands::open_file_item,
             clipboard_commands::ocr_image,
+            clipboard_commands::set_clipboard_item_text,
             clipboard_commands::get_image_thumb,
             screenshot_commands::start_screenshot,
             screenshot_commands::confirm_screenshot,
@@ -256,6 +257,9 @@ pub fn run() {
             note_commands::save_clipboard_to_note,
             note_commands::save_ocr_to_note,
             notepad_window::open_notepad,
+            compact_editor_commands::open_compact_editor,
+            compact_editor_commands::get_pending_compact_edit,
+            compact_editor_commands::close_compact_editor,
             coordinator::current_transcription_id,
         ])
         .setup(move |app| {
