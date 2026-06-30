@@ -29,6 +29,7 @@ pub struct Stitcher {
     active_cols: Range<u32>,
     match_cols: Range<u32>,
     last_delta: i32,
+    last_dy: i32,
     low_conf_streak: u32,
     config: StitchConfig,
     frame_count: u32,
@@ -46,6 +47,7 @@ impl Stitcher {
             active_cols: 0..w,
             match_cols: 0..w,
             last_delta: 0,
+            last_dy: 0,
             low_conf_streak: 0,
             config,
             frame_count: 1,
@@ -98,11 +100,11 @@ impl Stitcher {
         };
 
         let (delta1, confidence1) = self.match_template(
-            &last, &edges, tpl_top1, eff_top, eff_bottom, tpl_h, w,
+            &last, &edges, tpl_top1, eff_top, eff_bottom, tpl_h, w, self.last_dy,
         );
 
         let (delta2, confidence2) = self.match_template(
-            &last, &edges, tpl_top2, eff_top, eff_bottom, tpl_h, w,
+            &last, &edges, tpl_top2, eff_top, eff_bottom, tpl_h, w, self.last_dy,
         );
 
         // 计算所选模板在 last 帧上的平均边缘强度以判断其是否包含纹理
@@ -147,11 +149,13 @@ impl Stitcher {
 
         if ok {
             self.low_conf_streak = 0;
-            self.last_delta = if match1_ok {
-                delta1
+            if match1_ok {
+                self.last_delta = delta1;
+                self.last_dy = tpl_top1 as i32 - (eff_top as i32 + delta1);
             } else {
-                delta2 - (tpl_top2 as i32 - tpl_top1 as i32)
-            };
+                self.last_delta = delta2 - (tpl_top2 as i32 - tpl_top1 as i32);
+                self.last_dy = tpl_top2 as i32 - (eff_top as i32 + delta2);
+            }
         } else {
             self.low_conf_streak += 1;
             if self.low_conf_streak >= self.config.max_lowconf_streak {
@@ -264,16 +268,36 @@ impl Stitcher {
         &self,
         last: &GrayImage, curr: &GrayImage,
         tpl_top: u32, eff_top: u32, eff_bottom: u32, tpl_h: u32, w: u32,
+        last_dy: i32,
     ) -> (i32, f32) {
+        let full_end = eff_bottom - eff_top - tpl_h;
+
+        // 1. 局部跟踪模式 (Tracking mode)
+        // dy 候选范围限制在 [last_dy - 20 ..= last_dy + 80]，可杜绝高度重复结构（如列表行）在全局范围找到其他周期性假匹配的问题
+        let dy_start = last_dy - 20;
+        let dy_end = last_dy + 80;
+
         let mut best_delta = 0;
         let mut best_score = -1.0f32;
 
-        let full_end = eff_bottom - eff_top - tpl_h;
-        for d in 0..=full_end {
-            let score = ncc_score(last, curr, tpl_top, eff_top + d, w, tpl_h, &self.match_cols);
+        for dy in dy_start..=dy_end {
+            let d = tpl_top as i32 - dy - eff_top as i32;
+            if d < 0 || d > full_end as i32 { continue; }
+            let score = ncc_score(last, curr, tpl_top, eff_top + d as u32, w, tpl_h, &self.match_cols);
             if score > best_score {
                 best_score = score;
-                best_delta = d as i32;
+                best_delta = d;
+            }
+        }
+
+        // 2. 重新捕获模式 (Re-acquisition mode)：若局部置信度太低，可能是大步长跳转或失锁，退回到全局搜索
+        if best_score < self.config.min_confidence {
+            for d in 0..=full_end {
+                let score = ncc_score(last, curr, tpl_top, eff_top + d, w, tpl_h, &self.match_cols);
+                if score > best_score {
+                    best_score = score;
+                    best_delta = d as i32;
+                }
             }
         }
 
