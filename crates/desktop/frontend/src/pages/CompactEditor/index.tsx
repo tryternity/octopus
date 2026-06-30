@@ -148,6 +148,9 @@ function CompactEditor() {
   // ── 快捷键 ──
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
+      // IME 组字期（中文/日文输入法）放行所有快捷键：让 Esc 等键交给 IME 取消候选词，
+      // 而非误触 doCancel 关窗丢文本。
+      if (e.isComposing || e.keyCode === 229) return;
       const mod = e.metaKey || e.ctrlKey;
       if (mod && e.key === "Enter") { e.preventDefault(); doSave(); return; }
       if (e.key === "Escape") {
