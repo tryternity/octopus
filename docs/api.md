@@ -22,7 +22,7 @@ octopus-server 提供的 HTTP 和 WebSocket 接口。
 
 ```json
 {
-  "asr_engine": "sensevoice",
+  "asr_engine": "sensevoice-orig",
   "vad_model": "/path/to/silero_vad_v4.onnx"
 }
 ```
@@ -39,7 +39,7 @@ octopus-server 提供的 HTTP 和 WebSocket 接口。
 
 | 参数 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| `engine` | string | `sensevoice` | ASR 引擎：`whisper`、`sensevoice`、`paraformer`、`qwen3-asr`、`zipformer` |
+| `engine` | string | `sensevoice-orig` | ASR 引擎：`whisper`、`sensevoice-orig`、`paraformer`、`qwen3-asr`、`zipformer`、`moonshine`、`firered` |
 | `language` | string | `auto` | 语言：`auto`、`zh`、`en`、`ja` 等 |
 
 **响应（成功）：**

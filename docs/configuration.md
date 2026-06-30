@@ -17,7 +17,7 @@ octopus 配置分两部分：
     ├── silero_vad_v4.onnx   # VAD（固定加载，不进 DB）
     └── zipformer/           # 默认 ASR（model.int8.onnx + tokens.txt）
 
-~/.cache/huggingface/hub/   # 大模型 HF 缓存（whisper/sensevoice/qwen3/paraformer 等，按需下载）
+~/.cache/huggingface/hub/   # 大模型 HF 缓存（whisper/sensevoice-orig/qwen3/paraformer/firered 等，按需下载）
 ```
 
 ## 模型配置（octopus.db）
@@ -30,7 +30,7 @@ octopus 配置分两部分：
 |---|---|
 | `domain` | `asr` / `llm` |
 | `provider` | **vendor / 运行位置**——`local`（本地）/ `aliyun`（阿里云 DashScope）/ `bytedance`（字节跳动火山引擎）/ `tencent`（腾讯云）/ `baidu`（百度智能云）/ `deepseek` / `bigmodel` |
-| `category` | ASR=引擎族（`zipformer`/`whisper`/`sensevoice`/`paraformer`/`qwen3-asr`/`Fun-ASR`）；LLM=模型系列（`qwen`/`glm`/`deepseek`） |
+| `category` | ASR=引擎族（`zipformer`/`whisper`/`sensevoice-orig`/`paraformer`/`qwen3-asr`/`moonshine`/`firered`/`Fun-ASR`）；LLM=模型系列（`qwen`/`glm`/`deepseek`） |
 | `model_name` | 具体模型标识（精确匹配） |
 | `source` | ASR=本地路径 / HF repo / 云 WS 端点；LLM=API Base URL |
 | `secret_key` | 远程 API Key（本地模型留空） |
@@ -46,7 +46,7 @@ octopus 配置分两部分：
 
 | `provider` | ASR（`category` = 引擎族） | LLM（`category` = 模型系列） |
 |---|---|---|
-| `local` | `zipformer` / `whisper` / `sensevoice` / `paraformer` / `qwen3-asr` | —（暂无本地 LLM） |
+| `local` | `zipformer` / `whisper` / `sensevoice-orig` / `paraformer` / `qwen3-asr` / `moonshine` / `firered` | —（暂无本地 LLM） |
 | `aliyun` | `Fun-ASR`（FunASR Realtime WS） | `qwen`（DashScope OpenAI 兼容端点） / `deepseek`（经 DashScope 代管） |
 | `bytedance` | `Doubao-ASR`（豆包大模型 ASR 双向流式） | — |
 | `tencent` | `Tencent-ASR`（腾讯云实时语音识别） | — |
@@ -54,26 +54,25 @@ octopus 配置分两部分：
 | `deepseek` | — | `deepseek`（直连 api.deepseek.com） |
 | `bigmodel` | — | `glm`（智谱开放平台） |
 
-### 默认 ASR seed（8 local + 1 aliyun + 2 bytedance + 2 tencent + 1 baidu）
+### 默认 ASR seed
 
-| provider | category | model_name | source | is_local | is_enabled | is_streaming |
-|---|---|---|---|---|---|---|
-| local | zipformer | zipformer-small-ctc | `models/zipformer`（本地打包，**兜底引擎**） | 1 | 1 | 1 |
-| local | zipformer | zipformer-multi | k2-fsa/sherpa-onnx-streaming-zipformer-ctc-multi-zh-hans-int8-2023-12-13 | 1 | 0 | 1 |
-| local | zipformer | zipformer-ctc | csukuangfj/sherpa-onnx-streaming-zipformer-ctc-zh-int8-2025-06-30 | 1 | 0 | 1 |
-| local | zipformer | zipformer-zh-transducer | csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30 | 1 | 0 | 1 |
-| local | zipformer | zipformer-xlarge-transducer | csukuangfj/sherpa-onnx-streaming-zipformer-zh-xlarge-int8-2025-06-30 | 1 | 0 | 1 |
-| local | paraformer | paraformer-streaming | csukuangfj/sherpa-onnx-streaming-paraformer-zh | 1 | 0 | 1 |
-| local | sensevoice | sherpa-onnx-sense-voice-funasr-nano-int8 | csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17 | 1 | 0 | 0 |
-| local | qwen3-asr | qwen3-asr-0.6B | csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25 | 1 | 0 | 0 |
-| local | qwen3-asr | qwen3-asr-1.7B | ilmina/qwen3-asr-1.7b-sherpa-onnx | 1 | 0 | 0 |
-| local | whisper | whisper-small | onnx-community/whisper-small.en | 1 | 0 | 0 |
-| aliyun | Fun-ASR | fun-asr-2025-11-07 | `wss://dashscope.aliyuncs.com/api-ws/v1/inference` | 0 | 0 | 0 |
-| bytedance | Doubao-ASR | doubao-asr-1.0-streaming | `volc.bigasr.sauc.duration` | 0 | 0 | 1 |
-| bytedance | Doubao-ASR | doubao-asr-2.0-streaming | `volc.seedasr.sauc.duration` | 0 | 0 | 0 |
-| tencent | Tencent-ASR | 16k_zh | `{appid}:{secretid}` | 0 | 0 | 1 |
-| tencent | Tencent-ASR-Multi | 16k_zh_en | `{appid}:{secretid}` | 0 | 0 | 0 |
-| baidu | Baidu-ASR | 15372 | `{appid}` | 0 | 0 | 1 |
+完整权威 seed 在 [`crates/infra/src/db.sql`](../crates/infra/src/db.sql)（编译期 `include_str!` 嵌入，首次建库写入）——**以它为准，下表仅作概览**。当前 ASR seed 共 21 行：13 local + 8 云端（aliyun 3 / bytedance 2 / tencent 2 / baidu 1）。
+
+| provider | category | 代表 model_name | 说明 |
+|---|---|---|---|
+| local | zipformer | `zipformer` / `zipformer-large` | 流式 CTC（`zipformer-small-ctc` 为本地打包**兜底引擎**，不在 seed、代码构造） |
+| local | paraformer | `paraformer-{streaming,zh,bilingual,multi-zh}` | 流式 ×4 |
+| local | sensevoice-orig | `sensevoice-orig-small`（`WisemeAI/sensevoice-small-quant`） | 原版 FunASR 4 输入，**is_enabled=1**，`skip_corrector` |
+| local | firered | `firered-asr2`（`VidraAI/FireRedASR2-onnx`） | FireRedASR2-AED CTC，**is_enabled=1** |
+| local | qwen3-asr | `qwen3-asr-{0.6B,1.7B}` | 非流式，`skip_corrector` |
+| local | moonshine | `moonshine-{base,tiny}-en` | 非流式 en-only |
+| local | whisper | `whisper-small`（`onnx-community/whisper-small.en`） | 非流式 en-only |
+| aliyun | `Fun-ASR` / `Paraformer-Realtime` / `Qwen-ASR` | 见 db.sql | 云端 WS 流式（DashScope key） |
+| bytedance | `Doubao-ASR` / `Doubao-ASR-2.0` | `doubao-asr-{1.0,2.0}-streaming` | 云端 bigmodel_async 流式 |
+| tencent | `Tencent-ASR` / `Tencent-ASR-Multi` | `16k_zh` / `16k_zh_en` | 云端 HMAC-SHA1 流式 |
+| baidu | `Baidu-ASR` | `15372` | 云端 START 帧鉴权流式 |
+
+> sherpa nano 简化版 SenseVoice（旧 category=`sensevoice`）已移除，仅留原版 `sensevoice-orig`，见 [removed-sensevoice-sherpa-nano.md](removed-sensevoice-sherpa-nano.md)。
 
 > **bytedance `source` 字段**是 Resource ID（如 `volc.bigasr.sauc.duration`），不是 endpoint URL。
 > **tencent `source` 字段**是 `{appid}:{secretid}` 复合格式（冒号分隔），`secret_key` 填 SecretKey（签名密钥）。endpoint 固定为 `wss://asr.cloud.tencent.com/asr/v2/<appid>?{params}`。
@@ -98,7 +97,7 @@ octopus 配置分两部分：
 
 > **`is_enabled` 字段**：标记是否启用。`1` 表示启用，`0` 表示禁用。只有启用的模型才会被系统加载或供识别/润色使用。阿里云 qwen / Fun-ASR seed 默认 `is_enabled=0`，用户填 API Key 后改为 `1` 启用。
 
-> **`is_streaming` 字段**：标记 ASR 模型是否支持流式识别。`1` 表示流式（zipformer CTC×3 + Transducer×2 / paraformer-streaming，走本地流式 partial），`0` 表示非流式（sensevoice / qwen3-asr / whisper / aliyun Fun-ASR，走 VAD 分段伪流式）。`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming`，数据驱动、不再按 category 硬编码。
+> **`is_streaming` 字段**：标记 ASR 模型是否支持流式识别。`1` 表示流式（zipformer×2 + paraformer×4，走本地流式 partial），`0` 表示非流式（sensevoice-orig / firered / qwen3-asr / moonshine / whisper / aliyun Fun-ASR，走 VAD 分段伪流式）。`is_streaming_engine(cfg)` = `resolve_active_engine(cfg.asr_engine).entry.is_streaming`，数据驱动、不再按 category 硬编码。
 
 > **远程 API Key 配置方式（`secret_key`）**：LLM / 云端 ASR 的所有参数（包括 Base URL / WS 端点 和 API Key）全部存储在 DB `models` 表。`source` 存端点 URL，`secret_key` 存 API Key。可通过 SQLite 客户端手动填入（具体填法见下方「阿里云云端 API」小节）。
 
@@ -479,7 +478,8 @@ pip install huggingface_hub
 
 # 下载（source 字段即 HF repo 名）
 huggingface-cli download onnx-community/whisper-small.en
-huggingface-cli download csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17
+huggingface-cli download WisemeAI/sensevoice-small-quant     # sensevoice-orig（原版 FunASR）
+huggingface-cli download VidraAI/FireRedASR2-onnx            # firered（FireRedASR2 CTC）
 huggingface-cli download csukuangfj/sherpa-onnx-streaming-paraformer-zh
 # Zipformer Transducer（RNN-T，三 session：encoder + decoder + joiner）
 huggingface-cli download csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30

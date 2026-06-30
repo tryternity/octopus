@@ -19,14 +19,14 @@
 
 ### 2.1 引擎抽象设计 (`OfflineAsrEngine` trait)
 
-为所有离线 ASR 模块定义了统一的 [OfflineAsrEngine](file:///Users/wudarui/workspace/agent/octopus/crates/asr/src/engine.rs) 接口：
+为所有离线 ASR 模块定义了统一的 [OfflineAsrEngine](file:///Users/wudarui/workspace/agent/octopus/crates/asr-local/src/engine.rs) 接口：
 
 ```rust
 pub trait OfflineAsrEngine: Send + Sync {
     /// 识别 16kHz mono f32 音频数据
     fn transcribe(&self, samples: &[f32], language: &str) -> Result<String>;
 
-    /// 是否跳过通用中文 corrector——仅「非语言原因」（如 qwen3 自带纠错）。
+    /// 是否跳过通用中文 corrector——仅「非语言原因」（如 qwen3 自带纠错、sensevoice-orig 高质量免纠错）。
     /// en-only 场景由 transcribe_with_vad 基于 language=en 自动跳过，不在此覆盖。
     fn skip_corrector(&self) -> bool {
         false
@@ -37,7 +37,8 @@ pub trait OfflineAsrEngine: Send + Sync {
 针对各个具体引擎实现了状态化的结构体：
 - `Qwen3AsrEngine` (持有一组 `Mutex<Session>` 与 `Tokenizer`)
 - `WhisperEngine` (持有 `Mutex<Session>` 编码器与解码器组，以及 `Tokenizer`)
-- `SenseVoiceEngine` (持有 `Mutex<Session>` 与 `vocab_list`)
+- `SenseVoiceOrigEngine` (持有 `Mutex<Session>` + `vocab` + CMVN `addshift`/`rescale`，见 [sensevoice_orig.rs](../crates/asr-local/src/sensevoice_orig.rs))
+- `FireRedEngine` (持有 `Mutex<Session>` + `vocab` + CMVN `mean`/`inv_stddev`，见 [firered.rs](../crates/asr-local/src/firered.rs))
 - `ParaformerEngine` (持有 `Mutex<Session>` 编解码器与词表)
 - `ZipformerEngine` (持有 `Mutex<Session>` 与词表)
 - `MoonshineEngine` (持有 4 个 `Mutex<Session>` 流水线：preprocess/encode/uncached_decode/cached_decode + `vocab`)
@@ -57,7 +58,7 @@ pub trait OfflineAsrEngine: Send + Sync {
 ### 3.1 预先计算窗函数与滤波器组
 
 我们将各模型中需要频繁创建的信号处理配置静态化，利用 `once_cell::sync::Lazy` 在初次调用时进行缓存并供后续所有推理共享：
-- **SenseVoice & Paraformer**：静态化了 Hamming 窗 `HAMMING_WINDOW` 和 Mel 滤波器组 `MEL_FILTERBANK`。
+- **fbank 共享设施（[`fbank.rs`](../crates/asr-local/src/fbank.rs)）**：静态化 Hamming 窗 `HAMMING_WINDOW` 与 Mel 滤波器组 `MEL_FILTERBANK`，供 SenseVoice-orig / FireRed 复用（`compute_fbank` 纯 80-bin、`compute_fbank_features` 含 LFR→560 维）；Paraformer / Zipformer / Qwen3 各有私有窗函数实现。
 - **Zipformer**：静态化了 Povey 窗 `POVEY_WINDOW` 和 `MEL_FILTERBANK`。
 - **Qwen3-ASR**：静态化了 Hann 窗 `HANN_WINDOW` 和 `MEL_FILTERBANK`。
 
@@ -74,7 +75,7 @@ for k in 0..n_freqs {
 
 ### 3.3 状态化重采样器 (`AudioResampler`)
 
-在流式录音识别中，为解决由于重采样器频繁重建带来的巨大 CPU 开销与音质损坏，我们于 [audio.rs](file:///Users/wudarui/workspace/agent/octopus/crates/asr/src/audio.rs) 中实现并集成了 `AudioResampler`：
+在流式录音识别中，为解决由于重采样器频繁重建带来的巨大 CPU 开销与音质损坏，我们于 [audio.rs](file:///Users/wudarui/workspace/agent/octopus/crates/asr-local/src/audio.rs) 中实现并集成了 `AudioResampler`：
 - **缓存 FFT 规划**：生命周期内仅在初始化时对 Rubato 的 FFT 规划执行一次，之后复用。
 - **边界零碎样点缓冲**：内部使用 `buffer: Vec<f32>` 暂存重采样周期中不满一帧的样本，并在下一次输入时拼接，彻底解决了边界点击爆音（Clicks）与音频断截的问题。
 - **流尾冲刷**：录音结束时，通过 `flush()` 进行零填充，输出最后一帧，确保 ASR 能够正确还原末尾音频。
@@ -102,7 +103,7 @@ Zipformer 模型（包括 `zipformer-ctc`、`zipformer-multi` 和 `zipformer-sma
 
 ### 4.1 引擎管理器 (`AsrEngineManager`)
 
-[AsrEngineManager](file:///Users/wudarui/workspace/agent/octopus/crates/asr/src/engine.rs) 负责集中管理离线引擎的生命周期：
+[AsrEngineManager](file:///Users/wudarui/workspace/agent/octopus/crates/asr-local/src/engine.rs) 负责集中管理离线引擎的生命周期：
 ```rust
 pub struct AsrEngineManager {
     cached_engines: RwLock<HashMap<String, Arc<dyn OfflineAsrEngine>>>,
@@ -116,7 +117,7 @@ pub struct AsrEngineManager {
 ### 4.2 Web 宿主 (`octopus-server`)
 
 - 将 `Arc<AsrEngineManager>` 注入 `AppState`。
-- 在 `main` 启动时调用 `switch_model` 对激活的模型（如 `sensevoice`）进行**背景预热（Preheat）**。
+- 在 `main` 启动时调用 `switch_model` 对激活的模型（如 `sensevoice-orig`）进行**背景预热（Preheat）**。
 - `/transcribe`（HTTP）与 `/ws/stream`（WebSocket）路由无需任何加载开销，实现毫秒级快速识别。
 
 ### 4.3 客户端宿主 (`octopus-desktop`)
