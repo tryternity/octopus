@@ -90,18 +90,21 @@ impl Stitcher {
         let mut best_offset: i32 = -1;
         let mut best_score: f32 = -1.0;
 
-        // 期望的当前帧匹配位置（基于上一帧的滚动速度）。
+        // 期望的当前帧匹配位置（基于上一帧的滚动位移速度）。
         // dy 是滚动位移（从上一帧到当前帧内容向上移动的像素数），正数表示向下滚动（内容向上移动）。
         let expected_offset = tpl_y_start as i32 - self.last_scroll;
 
-        // 局部搜索范围：在期望位置附近限制在较窄的窗口内（如 dy 在 [last_scroll - 15, last_scroll + 40] 之间，
-        // 对应 offset 在 [expected_offset - 40, expected_offset + 15] 之间）。
-        // 这不仅极大加速匹配，而且能物理上完全阻断在高度周期性重复的列表行上错误匹配到相邻行的问题（行高一般为 40-50px，超出该窗口）。
-        let lo = (expected_offset - 40).max(eff_top as i32);
-        let hi = (expected_offset + 15).min(search_end as i32);
+        // 设定搜索窗口限制：
+        // 1. 若为第一帧滚动 (last_scroll == 0)，由于没有历史速度，搜索一个稍宽的合理向下滚动区间 [0, 120] 像素，防止首帧即触发全局搜索；
+        // 2. 若为后续帧，在期望位置附近限制在极窄窗口内（dy 变化在 [-20, +30] 像素内），物理上阻断对周期性重复文本行的误匹配。
+        let (lo, hi) = if self.last_scroll == 0 {
+            ((tpl_y_start as i32 - 120).max(eff_top as i32), (tpl_y_start as i32 + 10).min(search_end as i32))
+        } else {
+            ((expected_offset - 30).max(eff_top as i32), (expected_offset + 20).min(search_end as i32))
+        };
 
-        eprintln!("[stitch] tpl_y_start={} tpl_h={} last_h={} expected_offset={} search=[{},{}] cols={:?}",
-            tpl_y_start, tpl_h, self.last_edges.height(), expected_offset, lo, hi, self.match_cols);
+        eprintln!("[stitch] tpl_y_start={} tpl_h={} expected_offset={} search=[{},{}] cols={:?}",
+            tpl_y_start, tpl_h, expected_offset, lo, hi, self.match_cols);
 
         // 1. 局部搜索
         for offset in lo..=hi {
@@ -117,6 +120,10 @@ impl Stitcher {
 
         // 2. 局部不够好（置信度低或失锁），退回到全局搜索以重新捕获匹配位置
         if best_score < self.config.min_confidence {
+            // 全局搜索需要显著更高的置信度（在原基础之上 +0.15，最高限制在 0.95），以防止在高度周期性重复文本中误匹配到假峰
+            let global_min_conf = (self.config.min_confidence + 0.15).min(0.95);
+            best_score = -1.0;
+            best_offset = -1;
             for offset in (eff_top as i32)..=(search_end as i32) {
                 let score = ncc_score(
                     &self.last_edges, &curr_edges,
@@ -127,10 +134,14 @@ impl Stitcher {
                     best_offset = offset;
                 }
             }
-            eprintln!("[stitch] global search: best_offset={} best_score={:.2}", best_offset, best_score);
+            if best_score < global_min_conf {
+                best_offset = -1; // 匹配置信度不足，拒绝此全局匹配
+            } else {
+                eprintln!("[stitch] global search re-acquired: best_offset={} best_score={:.2}", best_offset, best_score);
+            }
         }
 
-        if best_score < self.config.min_confidence || best_offset < 0 {
+        if best_offset < 0 {
             // 匹配置信度太低，跳过该帧（画面没动、滚动过快、或动态内容干扰）
             return Ok(false);
         }
