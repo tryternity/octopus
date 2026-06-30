@@ -18,6 +18,7 @@ mod engine_grpc;
 #[cfg(feature = "remote-ws")]
 mod engine_ws;
 mod model_commands;
+mod note_commands;
 mod paste;
 mod pipeline;
 mod result_window;
