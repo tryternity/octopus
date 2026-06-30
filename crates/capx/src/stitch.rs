@@ -82,8 +82,7 @@ impl Stitcher {
         // 模板：从 last_edges（上一帧 edges）底部取一个 strip。
         // 在当前帧中搜索该 strip 的匹配位置 → 上一帧底部内容在当前帧中的位置。
         let tpl_h = ((eff_h as f32 * self.config.template_ratio) as u32).max(20).min(eff_h / 2);
-        let last_h = self.last_edges.height();
-        let tpl_y_start = last_h.saturating_sub(tpl_h);
+        let tpl_y_start = eff_bottom.saturating_sub(tpl_h);
 
         // 在当前帧的 [eff_top, eff_bottom - tpl_h] 范围内搜索模板的最佳匹配位置
         let search_end = eff_bottom.saturating_sub(tpl_h);
@@ -102,7 +101,7 @@ impl Stitcher {
         let hi = (expected_offset + 15).min(search_end as i32);
 
         eprintln!("[stitch] tpl_y_start={} tpl_h={} last_h={} expected_offset={} search=[{},{}] cols={:?}",
-            tpl_y_start, tpl_h, last_h, expected_offset, lo, hi, self.match_cols);
+            tpl_y_start, tpl_h, self.last_edges.height(), expected_offset, lo, hi, self.match_cols);
 
         // 1. 局部搜索
         for offset in lo..=hi {
