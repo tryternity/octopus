@@ -12,6 +12,7 @@ const ICONS = {
   save: "/icons/save.svg",
   "cancel-editor": "/icons/cancel-edit.svg",
   note: "/icons/note.svg",
+  "expand-edit": "/icons/expand-edit.svg",
 } as const;
 
 export type IconName = keyof typeof ICONS;

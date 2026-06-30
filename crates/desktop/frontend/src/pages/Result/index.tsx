@@ -4,6 +4,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { SvgIcon, type IconName } from "@/components/SvgIcon";
+import { openCompactEditor } from "@/lib/compactEditor";
 
 const DIVERTED_DELAY_MS = 300;
 
@@ -272,6 +273,21 @@ function Result() {
     }
   }, [showToast, text]);
 
+  // 展开编辑回写：更新展示态 + 落库（enter_edit_mode 置 editing=true 后 commit_edit 才生效；
+  // 二者均门控于活跃 stage，与现有 toggleEdit 同窗口——会话结束后不落库，沿用既有契约）。
+  const applyResultText = useCallback((newText: string) => {
+    displayedRef.current = newText;
+    setText(newText);
+    invoke("enter_edit_mode");
+    invoke("commit_edit", { text: newText });
+  }, []);
+
+  // 「展开编辑」：用当前显示文本打开精简编辑器，保存后回写。
+  const openExpandEdit = useCallback(() => {
+    if (!text.trim()) return;
+    openCompactEditor(text, applyResultText);
+  }, [text, applyResultText]);
+
   // 全局编辑快捷键（edit_global_shortcut）：后端唤起窗口+focus 后 emit 此事件，
   // 复用 toggleEdit——未编辑则进入、已编辑则保存，与窗口内 Cmd+Enter 同语义。
   // 独立 useEffect（而非并入上面的事件数组）：toggleEdit 在此声明，前置使用会触发 TS2448。
@@ -384,6 +400,7 @@ function Result() {
     { id: "polish", icon: "polish", label: "润色模式", active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
     { id: "polish-now", icon: "polish-now", label: "立即润色", disabled: polishLoading, onClick: polishNow },
     { id: "note", icon: "note", label: "存入记事本", disabled: !text.trim(), onClick: saveToNote },
+    { id: "expand-edit", icon: "expand-edit" as IconName, label: "展开编辑", disabled: !text.trim(), onClick: openExpandEdit },
     ...(editing
       ? [
           { id: "cancel-edit", icon: "cancel-editor" as IconName, label: "取消编辑", onClick: cancelEdit },
