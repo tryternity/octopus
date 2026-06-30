@@ -11,7 +11,6 @@ const DIVERTED_DELAY_MS = 300;
 // ── 编辑框尺寸双模式（精简 520×116 / 长篇 720×480，长篇可拖拽且记忆）──
 const COMPACT_SIZE = { w: 520, h: 116 };
 const EXPANDED_DEFAULT = { w: 720, h: 480 };
-const EXPANDED_MIN = { w: 400, h: 200 }; // 长篇态可拖拽的最小尺寸
 const EXPANDED_SIZE_KEY = "result-expanded-size";
 
 function loadExpandedSize(): { w: number; h: number } {
@@ -89,13 +88,11 @@ function Result() {
   useEffect(() => { editingStateRef.current = editing; }, [editing]);
   useEffect(() => { expandedRef.current = expanded; }, [expanded]);
 
-  // 首帧锁精简态：窗口 resizable(true) 创建（setSize 需它），故默认用 min=max=520×116
-  // 锁死防用户拖。result_window 仅 show/hide 复用、组件不 unmount，首帧锁一次即可；
-  // 后续切长篇/切精简由 toggleExpand 重设 min/max。
+  // 首帧锁精简态 max=520×116（防拖）；窗口 resizable(true) 创建（setSize 需它）。
+  // 只设 max 不设 min，避免与 toggleExpand 切换时 min/max 冲突。
+  // result_window 仅 show/hide 复用、组件不 unmount，首帧锁一次即可。
   useEffect(() => {
-    const compact = new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h);
-    win.setMinSize(compact);
-    win.setMaxSize(compact);
+    win.setMaxSize(new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h));
   }, [win]);
 
   const showToast = useCallback((msg: string) => {
@@ -302,26 +299,32 @@ function Result() {
   }, [showToast, text]);
 
   // 放大/缩小开关：切换编辑框精简(520×116) ↔ 长篇(记忆尺寸或默认 720×480)。
-  // 窗口创建为 resizable(true)——resizable(false) 时 Tauri setSize 被忽略（文档），
-  // 故改用 min/max 锁控制可拖性，不调 setResizable：
-  //   精简态 min=max=520×116（锁死不可拖）；长篇态 min=400×200 + 无 max（可拖调大小）。
-  // 先同步 expandedRef，防 setSize 触发的 onResized 读到旧值污染长篇记忆。
+  // 窗口创建为 resizable(true)——resizable(false) 时 Tauri setSize 被忽略（文档）。
+  // 防拖只用 setMaxSize（不设 min，避免 min>max 冲突致 setMinSize 抛错、setSize 不执行）：
+  //   精简态 max=520×116（拖不大）；长篇态 max=4000 解除后 setSize 放大。
+  // 顺序很关键：切长篇先 setMaxSize(大) 再 setSize（否则被旧 max=116 截断）；
+  // 切精简先 setSize 再 setMaxSize(116)（先放开再锁）。先同步 expandedRef 防 onResized 读旧值。
   const toggleExpand = useCallback(async () => {
     const next = !expanded;
     expandedRef.current = next;
     setExpanded(next);
-    if (next) {
-      await win.setMinSize(new LogicalSize(EXPANDED_MIN.w, EXPANDED_MIN.h));
-      await win.setMaxSize(undefined);
-      const { w, h } = expandedSizeRef.current;
-      await win.setSize(new LogicalSize(w, h));
-    } else {
-      await win.setSize(new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h));
-      const compact = new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h);
-      await win.setMinSize(compact);
-      await win.setMaxSize(compact);
+    try {
+      if (next) {
+        await win.setMaxSize(new LogicalSize(4000, 4000));
+        const { w, h } = expandedSizeRef.current;
+        await win.setSize(new LogicalSize(w, h));
+      } else {
+        await win.setSize(new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h));
+        await win.setMaxSize(new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h));
+      }
+      // 临时诊断：读回实际逻辑尺寸（确认 setSize 生效；确认后删除）
+      const factor = await win.scaleFactor();
+      const s = await win.outerSize();
+      showToast(`尺寸→${Math.round(s.width / factor)}×${Math.round(s.height / factor)}`);
+    } catch (e) {
+      showToast("切换尺寸失败：" + String(e));
     }
-  }, [expanded, win]);
+  }, [expanded, win, showToast]);
 
   // 全局编辑快捷键（edit_global_shortcut）：后端唤起窗口+focus 后 emit 此事件，
   // 复用 toggleEdit——未编辑则进入、已编辑则保存，与窗口内 Cmd+Enter 同语义。
