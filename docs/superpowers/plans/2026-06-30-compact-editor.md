@@ -755,7 +755,96 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 
 ---
 
-## Task 7: 语音 Result 接入「展开编辑」
+## ⚠️ 设计修订（2026-06-30）：Task 7 废弃 → 改为 Task 11（Result 原地双模式）
+
+用户反馈（5 条逐步明确）：语音 Result **不弹独立编辑器窗**，改为**编辑框原地尺寸双模式**（精简 520×116 / 长篇 720×480）+ 工具栏「放大/缩小」开关切换，长篇模式可拖拽调整且记忆尺寸。
+
+- **Task 7（Result 接入独立窗「展开编辑」）废弃**——其 `applyResultText`/`openExpandEdit`/`openCompactEditor` 调用全部移除。
+- **Task 6/8/9 不变**——精简编辑器独立窗保留给 OCR 与剪贴板文本。
+- 替换为下方 **Task 11**。详见 spec §3.5① 重写。
+
+### Task 11: 语音 Result 编辑框尺寸双模式（替换 Task 7）
+
+**Files:**
+- Modify: `crates/desktop/frontend/src/pages/Result/index.tsx`
+- Create: `crates/desktop/frontend/public/icons/minimize.svg`（缩小态，四角向内）
+- Modify: `crates/desktop/frontend/src/components/SvgIcon.tsx`（ICONS 加 `"minimize"`）
+
+**实现要点（关键代码骨架）：**
+
+```tsx
+import { LogicalSize } from "@tauri-apps/api/dpi";
+// 移除：import { openCompactEditor } from "@/lib/compactEditor";
+
+const COMPACT = { w: 520, h: 116 };
+const EXPANDED_DEFAULT = { w: 720, h: 480 };
+const EXPANDED_SIZE_KEY = "result-expanded-size";
+
+function loadExpandedSize() {
+  const saved = localStorage.getItem(EXPANDED_SIZE_KEY);
+  if (saved) {
+    const [w, h] = saved.split(",").map(Number);
+    if (w > 0 && h > 0) return { w, h };
+  }
+  return EXPANDED_DEFAULT;
+}
+
+// state / ref
+const [expanded, setExpanded] = useState(false);
+const expandedRef = useRef(false);
+const expandedSizeRef = useRef(loadExpandedSize());
+useEffect(() => { expandedRef.current = expanded; }, [expanded]);
+
+const toggleExpand = useCallback(async () => {
+  const next = !expanded;
+  expandedRef.current = next;            // 先同步 ref，防 onResized 读旧值污染记忆
+  setExpanded(next);
+  await win.setResizable(next);
+  if (next) {
+    await win.setSize(new LogicalSize(expandedSizeRef.current.w, expandedSizeRef.current.h));
+  } else {
+    await win.setSize(new LogicalSize(COMPACT.w, COMPACT.h));
+  }
+}, [expanded, win]);
+
+// 长篇模式拖拽 → 记忆
+useEffect(() => {
+  let unlisten: UnlistenFn | undefined;
+  let cancelled = false;
+  win.onResized(async () => {
+    if (!expandedRef.current) return;    // 仅长篇记
+    const factor = await win.scaleFactor();
+    const s = await win.outerSize();
+    const w = s.width / factor, h = s.height / factor;
+    expandedSizeRef.current = { w, h };
+    localStorage.setItem(EXPANDED_SIZE_KEY, `${w},${h}`);
+  }).then((fn) => { if (cancelled) fn(); else unlisten = fn; });
+  return () => { cancelled = true; unlisten?.(); };
+}, [win]);
+
+// tools 数组：原 expand-edit 按钮改为 toggle（替换原 { id: "expand-edit", ... } 行）
+{ id: "toggle-size", icon: (expanded ? "minimize" : "expand-edit") as IconName,
+  label: expanded ? "缩小" : "放大", onClick: toggleExpand },
+
+// 文本区 className（原 max-h-[63px]）：按 expanded 切换
+expanded ? "h-full" : "max-h-[63px]",
+
+// 删除：applyResultText / openExpandEdit 两个 useCallback
+```
+
+- Rust 侧 `result_window.rs` **不改**（`resizable(false)` 创建，运行时由前端 `setResizable` 开关）。
+- 边界：长篇模式向下长高，若原位置近屏幕底可能部分超出——MVP 不重算位置，e2e 观察。
+
+- [ ] Step 1: 新建 `minimize.svg` + `SvgIcon` 加 `"minimize"` 映射
+- [ ] Step 2: Result 加 `expanded`/`expandedRef`/`expandedSizeRef` + `toggleExpand` + `onResized` 监听
+- [ ] Step 3: tools 改 toggle 按钮 + 文本区 className + 移除 `openCompactEditor` import / `applyResultText` / `openExpandEdit`
+- [ ] Step 4: 重建 dist（`npm run build`）
+- [ ] Step 5: 验证（`tsc -b`、`cargo test` desktop/clipboard）
+- [ ] Step 6: commit
+
+---
+
+## Task 7: 语音 Result 接入「展开编辑」 ⚠️ 已废弃（见上方修订节 → Task 11）
 
 **Files:**
 - Create: `crates/desktop/frontend/public/icons/expand-edit.svg`
