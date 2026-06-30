@@ -126,13 +126,11 @@ export default function Screenshot() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
 
-    // 滚动模式：选区内完全透明以露出底层的真实滚动画面，选区外用冻结的 bg + 暗遮罩
+    // 滚动模式：全透明露出底层，仅填充选区外部的半透明暗色遮罩，使截图区外也可以看到实时滚动
     if (mode === "scrolling" && sel) {
-      // 全屏冻结背景
-      ctx.drawImage(bg, 0, 0, cssW, cssH);
-      // 填充选区外部的暗遮罩
-      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
       const { x, y, w, h } = sel;
+      // 填充选区外部的暗遮罩（不画 bg 静态图，使外部同样保持透明以露出底层实时窗口）
+      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
       ctx.fillRect(0, 0, cssW, y);
       ctx.fillRect(0, y + h, cssW, cssH - y - h);
       ctx.fillRect(0, y, x, h);
