@@ -258,6 +258,19 @@ function Result() {
     catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
   }, [polishLoading, showToast]);
 
+  // 存入记事本：取当前会话识别记录 id → 存为新笔记。无活动记录时静默返回。
+  const saveToNote = useCallback(async () => {
+    try {
+      const tid = await invoke<number | null>("current_transcription_id");
+      if (tid == null) return;
+      await invoke<number>("save_transcription_to_note", { transcriptionId: tid });
+      showToast("已存入记事本");
+    } catch (e) {
+      console.error(e);
+      showToast("存入记事本失败：" + e);
+    }
+  }, [showToast]);
+
   // 全局编辑快捷键（edit_global_shortcut）：后端唤起窗口+focus 后 emit 此事件，
   // 复用 toggleEdit——未编辑则进入、已编辑则保存，与窗口内 Cmd+Enter 同语义。
   // 独立 useEffect（而非并入上面的事件数组）：toggleEdit 在此声明，前置使用会触发 TS2448。
@@ -369,6 +382,7 @@ function Result() {
     { id: "denoise", icon: "denoise", label: "降噪模式", active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
     { id: "polish", icon: "polish", label: "润色模式", active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
     { id: "polish-now", icon: "polish-now", label: "立即润色", disabled: polishLoading, onClick: polishNow },
+    { id: "note", icon: "note", label: "存入记事本", disabled: !text.trim(), onClick: saveToNote },
     ...(editing
       ? [
           { id: "cancel-edit", icon: "cancel-editor" as IconName, label: "取消编辑", onClick: cancelEdit },
