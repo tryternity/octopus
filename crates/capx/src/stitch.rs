@@ -34,6 +34,7 @@ pub struct Stitcher {
     last_edges: GrayImage,
     match_cols: Range<u32>,
     last_scroll: i32,
+    low_conf_streak: u32,
     sticky_top: u32,
     sticky_bottom: u32,
     detected: bool,
@@ -49,6 +50,7 @@ impl Stitcher {
             last_edges: edges,
             match_cols: 0..w,
             last_scroll: 0,
+            low_conf_streak: 0,
             sticky_top: 0,
             sticky_bottom: 0,
             detected: false,
@@ -144,10 +146,10 @@ impl Stitcher {
             }
         }
 
-        // 2. 局部不够好（置信度低或失锁），退回到全局搜索以重新捕获匹配位置
+        // 2. Fallback to global search if local search confidence is too low
         if best_score < self.config.min_confidence {
-            // 全局搜索需要显著更高的置信度（在原基础之上 +0.15，最高限制在 0.95），以防止在高度周期性重复文本中误匹配到假峰
-            let global_min_conf = (self.config.min_confidence + 0.15).min(0.95);
+            // Enforce a strict threshold (0.85) to avoid false matches on periodic text
+            let global_min_conf = 0.85f32;
             best_score = -1.0;
             best_offset = -1;
             for offset in (eff_top as i32)..=(search_end as i32) {
@@ -161,16 +163,25 @@ impl Stitcher {
                 }
             }
             if best_score < global_min_conf {
-                best_offset = -1; // 匹配置信度不足，拒绝此全局匹配
+                best_offset = -1;
             } else {
-                eprintln!("[stitch] global search re-acquired: best_offset={} best_score={:.2}", best_offset, best_score);
+                eprintln!("[stitch] global search re-acquired: best_offset={} best_score={:.4}", best_offset, best_score);
             }
         }
 
         if best_offset < 0 {
-            // 匹配置信度太低，跳过该帧（画面没动、滚动过快、或动态内容干扰）
+            // Match failed: update low_conf_streak and reset template to re-sync if stuck
+            self.low_conf_streak += 1;
+            if self.low_conf_streak >= 3 {
+                self.last_edges = curr_edges;
+                self.last_scroll = 0;
+                self.low_conf_streak = 0;
+                eprintln!("[stitch] lost track for 3 frames, resetting template to current frame bottom");
+            }
             return Ok(false);
         }
+
+        self.low_conf_streak = 0;
 
         // best_offset 是模板（画布底部 strip）在当前帧中的匹配位置。
         // 从 best_offset + tpl_h 到 eff_bottom 是真正新增的内容。
