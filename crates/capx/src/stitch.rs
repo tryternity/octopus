@@ -27,6 +27,7 @@ pub struct Stitcher {
     sticky_top: u32,
     sticky_bottom: u32,
     active_cols: Range<u32>,
+    match_cols: Range<u32>,
     last_delta: i32,
     low_conf_streak: u32,
     config: StitchConfig,
@@ -43,6 +44,7 @@ impl Stitcher {
             sticky_top: 0,
             sticky_bottom: 0,
             active_cols: 0..w,
+            match_cols: 0..w,
             last_delta: 0,
             low_conf_streak: 0,
             config,
@@ -82,7 +84,7 @@ impl Stitcher {
         // 模板 1 (在有效区域底部 1/3 寻找纹理最丰富的 Y 坐标)
         let search_range1 = middle_divider..bottom_limit;
         let tpl_top1 = if search_range1.start < search_range1.end {
-            find_best_template_y(&last, search_range1, tpl_h, w, &self.active_cols)
+            find_best_template_y(&last, search_range1, tpl_h, w, &self.match_cols)
         } else {
             bottom_limit
         };
@@ -90,7 +92,7 @@ impl Stitcher {
         // 模板 2 (在有效区域中上部 2/3 寻找纹理最丰富的 Y 坐标)
         let search_range2 = (eff_top + eff_h / 10)..(middle_divider.saturating_sub(tpl_h));
         let tpl_top2 = if search_range2.start < search_range2.end {
-            find_best_template_y(&last, search_range2, tpl_h, w, &self.active_cols)
+            find_best_template_y(&last, search_range2, tpl_h, w, &self.match_cols)
         } else {
             eff_top + eff_h / 3
         };
@@ -108,15 +110,8 @@ impl Stitcher {
             if tpl_h == 0 || cols.is_empty() { return 0.0; }
             let mut sum = 0u64;
             let mut count = 0u64;
-            let col_w_raw = cols.end - cols.start;
-            let cols_selected = if col_w_raw > 200 {
-                let mid = (cols.start + cols.end) / 2;
-                (mid - 100)..(mid + 100)
-            } else {
-                cols.clone()
-            };
             for y in 0..tpl_h {
-                for x in cols_selected.clone() {
+                for x in cols.clone() {
                     if x >= w { continue; }
                     sum += edges.get_pixel(x, tpl_y + y)[0] as u64;
                     count += 1;
@@ -126,8 +121,8 @@ impl Stitcher {
             sum as f64 / count as f64
         }
 
-        let mean1 = calc_mean_edge(&last, tpl_top1, tpl_h, w, &self.active_cols);
-        let mean2 = calc_mean_edge(&last, tpl_top2, tpl_h, w, &self.active_cols);
+        let mean1 = calc_mean_edge(&last, tpl_top1, tpl_h, w, &self.match_cols);
+        let mean2 = calc_mean_edge(&last, tpl_top2, tpl_h, w, &self.match_cols);
 
         let has_tex1 = mean1 > 3.0;
         let has_tex2 = mean2 > 3.0;
@@ -217,6 +212,30 @@ impl Stitcher {
         if min_col <= max_col {
             self.active_cols = min_col..max_col + 1;
         }
+
+        // 寻找 active_cols 中边缘投影最密集的 200px 列作为匹配特征列
+        let edges_b = compute_edges(frame_b);
+        let col_w = self.active_cols.end - self.active_cols.start;
+        if col_w > 200 {
+            let mut best_x = self.active_cols.start;
+            let mut max_sum = 0u64;
+            let limit = self.active_cols.end.saturating_sub(200);
+            for x in (self.active_cols.start..=limit).step_by(4) {
+                let mut sum = 0u64;
+                for y in (self.sticky_top..h.saturating_sub(self.sticky_bottom)).step_by(4) {
+                    for tx in 0..200 {
+                        sum += edges_b.get_pixel(x + tx, y)[0] as u64;
+                    }
+                }
+                if sum > max_sum {
+                    max_sum = sum;
+                    best_x = x;
+                }
+            }
+            self.match_cols = best_x..(best_x + 200);
+        } else {
+            self.match_cols = self.active_cols.clone();
+        }
     }
 
     fn is_duplicate(&self, frame: &RgbaImage) -> bool {
@@ -251,7 +270,7 @@ impl Stitcher {
 
         let full_end = eff_bottom - eff_top - tpl_h;
         for d in 0..=full_end {
-            let score = ncc_score(last, curr, tpl_top, eff_top + d, w, tpl_h, &self.active_cols);
+            let score = ncc_score(last, curr, tpl_top, eff_top + d, w, tpl_h, &self.match_cols);
             if score > best_score {
                 best_score = score;
                 best_delta = d as i32;
