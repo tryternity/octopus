@@ -74,34 +74,78 @@ impl Stitcher {
         };
 
         let tpl_h = ((eff_h as f32 * self.config.template_ratio) as u32).max(10);
-        let tpl_h = tpl_h.min(eff_h);
+        let tpl_h = tpl_h.min(eff_h / 4);
 
-        // 模板 1 (底部)
-        let tpl_top1 = eff_bottom.saturating_sub(tpl_h);
+        let bottom_limit = eff_bottom.saturating_sub(tpl_h);
+        let middle_divider = eff_top + eff_h * 2 / 3;
+
+        // 模板 1 (在有效区域底部 1/3 寻找纹理最丰富的 Y 坐标)
+        let search_range1 = middle_divider..bottom_limit;
+        let tpl_top1 = if search_range1.start < search_range1.end {
+            find_best_template_y(&last, search_range1, tpl_h, w, &self.active_cols)
+        } else {
+            bottom_limit
+        };
+
+        // 模板 2 (在有效区域中上部 2/3 寻找纹理最丰富的 Y 坐标)
+        let search_range2 = (eff_top + eff_h / 10)..(middle_divider.saturating_sub(tpl_h));
+        let tpl_top2 = if search_range2.start < search_range2.end {
+            find_best_template_y(&last, search_range2, tpl_h, w, &self.active_cols)
+        } else {
+            eff_top + eff_h / 3
+        };
+
         let (delta1, confidence1) = self.match_template(
             &last, &edges, tpl_top1, eff_top, eff_bottom, tpl_h, w,
         );
 
-        // 模板 2 (中部)
-        let tpl_top2 = eff_top + eff_h / 2 - tpl_h / 2;
         let (delta2, confidence2) = self.match_template(
             &last, &edges, tpl_top2, eff_top, eff_bottom, tpl_h, w,
         );
 
+        // 计算所选模板在 last 帧上的平均边缘强度以判断其是否包含纹理
+        fn calc_mean_edge(edges: &GrayImage, tpl_y: u32, tpl_h: u32, w: u32, cols: &Range<u32>) -> f64 {
+            if tpl_h == 0 || cols.is_empty() { return 0.0; }
+            let mut sum = 0u64;
+            let mut count = 0u64;
+            let col_w_raw = cols.end - cols.start;
+            let cols_selected = if col_w_raw > 200 {
+                let mid = (cols.start + cols.end) / 2;
+                (mid - 100)..(mid + 100)
+            } else {
+                cols.clone()
+            };
+            for y in 0..tpl_h {
+                for x in cols_selected.clone() {
+                    if x >= w { continue; }
+                    sum += edges.get_pixel(x, tpl_y + y)[0] as u64;
+                    count += 1;
+                }
+            }
+            if count == 0 { return 0.0; }
+            sum as f64 / count as f64
+        }
+
+        let mean1 = calc_mean_edge(&last, tpl_top1, tpl_h, w, &self.active_cols);
+        let mean2 = calc_mean_edge(&last, tpl_top2, tpl_h, w, &self.active_cols);
+
+        let has_tex1 = mean1 > 3.0;
+        let has_tex2 = mean2 > 3.0;
+
         let match1_ok = confidence1 >= self.config.min_confidence;
         let match2_ok = confidence2 >= self.config.min_confidence;
 
-        let ok = if match1_ok && match2_ok {
-            // 两个模板均匹配成功：进行双模板一致性（防撕裂）校验
-            let expected_diff = tpl_top2 as i32 - tpl_top1 as i32;
-            let actual_diff = delta2 - delta1;
-            (actual_diff - expected_diff).abs() <= 1
-        } else if match1_ok {
-            // 只有底部模板匹配成功（中部可能无纹理或滚出屏幕），信任底部
-            true
-        } else if match2_ok {
-            // 只有中部模板匹配成功（底部可能无纹理），信任中部并折算为 delta1
-            true
+        let ok = if has_tex1 && has_tex2 {
+            // 如果两个区域在上一帧都是有纹理的，那么为了防撕裂，在当前帧必须两个都匹配成功且位移一致！
+            match1_ok && match2_ok && {
+                let expected_diff = tpl_top2 as i32 - tpl_top1 as i32;
+                let actual_diff = delta2 - delta1;
+                (actual_diff - expected_diff).abs() <= 1
+            }
+        } else if has_tex1 {
+            match1_ok
+        } else if has_tex2 {
+            match2_ok
         } else {
             false
         };
@@ -251,14 +295,24 @@ fn ncc_score(
     tpl_y: u32, tgt_y: u32, w: u32, tpl_h: u32, cols: &Range<u32>,
 ) -> f32 {
     if tpl_h == 0 || cols.is_empty() { return 0.0; }
-    let col_w = cols.end - cols.start;
+    
+    // 限制最大匹配宽度为 200 像素，避免 Retina 屏幕下过宽导致 CPU 算力饱和
+    let col_w_raw = cols.end - cols.start;
+    let cols_selected = if col_w_raw > 200 {
+        let mid = (cols.start + cols.end) / 2;
+        (mid - 100)..(mid + 100)
+    } else {
+        cols.clone()
+    };
+
+    let col_w = cols_selected.end - cols_selected.start;
     let n = (tpl_h * col_w) as f64;
     if n < 1.0 { return 0.0; }
 
     let mut sum_t = 0.0f64;
     let mut sum_c = 0.0f64;
     for y in 0..tpl_h {
-        for x in cols.clone() {
+        for x in cols_selected.clone() {
             if x >= w { continue; }
             sum_t += last.get_pixel(x, tpl_y + y)[0] as f64;
             sum_c += curr.get_pixel(x, tgt_y + y)[0] as f64;
@@ -271,7 +325,7 @@ fn ncc_score(
     let mut den_t = 0.0f64;
     let mut den_c = 0.0f64;
     for y in 0..tpl_h {
-        for x in cols.clone() {
+        for x in cols_selected.clone() {
             if x >= w { continue; }
             let t = last.get_pixel(x, tpl_y + y)[0] as f64 - mean_t;
             let c = curr.get_pixel(x, tgt_y + y)[0] as f64 - mean_c;
@@ -284,6 +338,42 @@ fn ncc_score(
     if denom < 1e-6 { return 0.0; }
     (num / denom) as f32
 }
+
+fn find_best_template_y(
+    edges: &GrayImage,
+    search_range: Range<u32>,
+    tpl_h: u32,
+    w: u32,
+    cols: &Range<u32>,
+) -> u32 {
+    let mut best_y = search_range.start;
+    let mut max_sum = 0u64;
+
+    let col_w_raw = cols.end - cols.start;
+    let cols_selected = if col_w_raw > 200 {
+        let mid = (cols.start + cols.end) / 2;
+        (mid - 100)..(mid + 100)
+    } else {
+        cols.clone()
+    };
+
+    for y in search_range.step_by(2) {
+        if y + tpl_h > edges.height() { break; }
+        let mut sum = 0u64;
+        for ty in 0..tpl_h {
+            for x in cols_selected.clone().step_by(4) {
+                if x >= w { continue; }
+                sum += edges.get_pixel(x, y + ty)[0] as u64;
+            }
+        }
+        if sum > max_sum {
+            max_sum = sum;
+            best_y = y;
+        }
+    }
+    best_y
+}
+
 
 #[cfg(test)]
 mod tests {
