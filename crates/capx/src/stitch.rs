@@ -159,7 +159,9 @@ impl Stitcher {
             let global_min_conf = 0.85f32;
             best_score = -1.0;
             best_offset = -1;
-            for offset in (eff_top as i32)..=(search_end as i32) {
+            let global_lo = (expected_offset - 100).max(eff_top as i32);
+            let global_hi = (expected_offset + 40).min(search_end as i32);
+            for offset in global_lo..=global_hi {
                 let score = ncc_score(
                     &self.last_edges, &curr_edges,
                     tpl_y_start, offset as u32, w, tpl_h, &self.match_cols,
