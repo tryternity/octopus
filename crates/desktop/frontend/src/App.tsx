@@ -4,6 +4,7 @@ import Result from "@/pages/Result";
 import Settings from "@/pages/Settings";
 import Clipboard from "@/pages/Clipboard";
 import Screenshot from "@/pages/Screenshot";
+import Notepad from "@/pages/Notepad";
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -49,6 +50,8 @@ function App() {
             return <Settings />;
           case "clipboard_window":
             return <Clipboard />;
+          case "notepad_window":
+            return <Notepad />;
           default:
             if (label.startsWith("screenshot_")) {
               return <Screenshot />;
