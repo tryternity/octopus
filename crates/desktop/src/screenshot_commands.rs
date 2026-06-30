@@ -845,6 +845,8 @@ pub async fn start_scroll_recording(
         {
             activate_prev_app(&sel_win);
             eprintln!("[scroll] manual mode: activated previous app for scroll passthrough");
+            // Wait 120ms for window activation transition to complete and repaint in active state
+            tokio::time::sleep(std::time::Duration::from_millis(120)).await;
         }
 
         // 独立鼠标监听线程：30ms 高频轮询，与截图循环解耦。
