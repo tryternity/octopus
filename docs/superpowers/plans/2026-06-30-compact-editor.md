@@ -22,7 +22,7 @@
 
 **唯一剩余**：验收 e2e（手动，见文末）——需用户跑 `./run-octopus.sh` 逐项确认。
 
-**✅ 已修 bug（`2195c80`）**：Result 工具栏「放大」切换点击后窗口未变大——根因：Tauri `resizable(false)` 时 `setSize` 被忽略（文档），且透明无边框悬浮窗运行时 `setResizable(true)` 难生效。修复：窗口创建改 `resizable(true)` + 前端 `min/max` 锁控可拖性。详见文末「已修 bug」节。
+**✅ 已修 bug（真根因 `93f58a2`）**：Result 工具栏「放大」切换点击后窗口未变大——**真根因**：Tauri 2 **ACL 权限缺失**（`capabilities/default.json` 缺 `allow-set-max-size` 等，`await setMaxSize` 被拒抛错、`setSize` 因此未执行；toast 铁证 `Command plugin:window|set_max_size not allowed by ACL`）。修复：补 5 个窗口权限。另 `2195c80` 改 `resizable(true)` 为预防性双保险（文档称 `resizable(false)` 时 `setSize` 被忽略，未被独立证实但保留）。详见文末「已修 bug」节。
 
 ---
 
@@ -848,7 +848,7 @@ expanded ? "h-full" : "max-h-[63px]",
 // 删除：applyResultText / openExpandEdit 两个 useCallback
 ```
 
-- Rust 侧 `result_window.rs` **不改**（`resizable(false)` 创建，运行时由前端 `setResizable` 开关）。
+- Rust 侧 `result_window.rs` 创建改 `.resizable(true)`（`setSize` 需它），运行时由前端 `setMaxSize` 控可拖（不调 `setResizable`）。
 - 边界：长篇模式向下长高，若原位置近屏幕底可能部分超出——MVP 不重算位置，e2e 观察。
 
 - [x] Step 1: 新建 `minimize.svg` + `SvgIcon` 加 `"minimize"` 映射
@@ -1124,38 +1124,27 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 
 ## 验收 e2e（手动——**本计划唯一剩余项**，交给用户跑 `./run-octopus.sh` 后逐项确认）
 
-1. **Result 双模式**（bug 已修 `2195c80`，待复验）：识别中文 → 点「放大」→ 窗口变 720×480、编辑区撑满、可拖拽调大小 → 编辑 → 保存 → 文本落库 → 点「缩小」切回 520×116；再切长篇恢复上次拖拽尺寸（localStorage 记忆）。
+1. **Result 双模式**（ACL 权限已补 `93f58a2` + `resizable(true)` `2195c80`，待复验）：识别中文 → 点「放大」→ 窗口变 720×480、编辑区撑满、可拖拽调大小 → 编辑 → 保存 → 文本落库 → 点「缩小」切回 520×116；再切长篇恢复上次拖拽尺寸（localStorage 记忆）。
 2. **OCR**：剪贴板图片点 OCR → 编辑器自动开 → 改 → 保存 → 该条目内容 + 系统剪贴板更新；不再弹系统 TextEdit。
 3. **剪贴板文本**：文本/语音条目 hover 点「编辑」→ 编辑器开 → 改 → 保存 → 列表 + 系统剪贴板更新。
 4. **边界**：取消/Esc/X 关窗不回写；字号记忆生效；查找替换命中数与跳转正确；字符计数对中文按字计；并发开窗（Result + 剪贴板同时开）不串扰。
 
-## ✅ 已修 bug（`2195c80`）：Result「放大」切换无响应
+## ✅ 已修 bug（`93f58a2`）：Result「放大」切换无响应
 
 **现象**：语音结果窗工具栏点「放大」按钮，图标切到「缩小」但窗口尺寸没变（双模式切换失效）。
 
-**根因**：Tauri 文档明确——`resizable(false)` 时 `setSize()` 被忽略。窗口创建为 `.resizable(false).decorations(false).transparent(true)`，`toggleExpand` 里 `await setResizable(true)` 后 `setSize` 仍无效（透明无边框悬浮窗运行时难改 resizable）。**图标变（state 变）但窗口不变 = click 生效、setSize 失效**——用户确认图标会变，排除了「工具栏 `onMouseDown={onDragStart}` 吞 click」方向。
+**真根因（ACL 权限缺失，铁证）**：Tauri 2 要求每个前端窗口命令必须在 `capabilities/*.json` 显式授权，未授权的命令抛 `Command plugin:window|<cmd> not allowed by ACL`。`toggleExpand` 里 `await win.setMaxSize(...)` 排在 `setSize` 之前，而 `default.json` 缺 `core:window:allow-set-max-size`，`setMaxSize` 被拒抛错 → `await` 中断 → `setSize`（一直有 `allow-set-size` 权限）从未执行。诊断 toast 暴露了真正错误 `Command plugin:window|set_max_size not allowed by ACL`。**图标变（state 变）但窗口不变 = click 生效、窗口命令被 ACL 拒**——用户确认图标会变、且 toast 报 ACL 错，排除了「`resizable(false)` 忽略 `setSize`」「工具栏 drag 吞 click」两个误判方向（曾据此改 `2195c80`，未生效）。
 
-**修复**（`2195c80`）：
-- `result_window.rs`：创建改 `.resizable(true)`（`setSize` 永远生效）。
-- `Result/index.tsx::toggleExpand`：不再调 `setResizable`，改用 `setMinSize`/`setMaxSize` 控可拖性——精简态 `min=max=520×116` 锁死防拖，长篇态 `min=400×200` + `setMaxSize(undefined)` 可拖调大小。
-- 新增首帧 mount useEffect：`resizable(true)` 创建后默认用 `min=max=520×116` 锁精简态（组件不 unmount，result_window 仅 show/hide 复用，锁一次即可）。
+**修复**（`93f58a2`，真修复）：
+- `crates/desktop/capabilities/default.json`：补 `core:window:allow-set-min-size` / `allow-set-max-size` / `allow-set-resizable` / `allow-outer-size` / `allow-scale-factor`（原有 `allow-set-size`）。
 
-**待复验**：e2e 第 1 项（双模式切换 + 拖拽记忆）由用户跑 `./run-octopus.sh` 确认。
+**预防性改动**（`2195c80`，非根因但保留为双保险）：
+- `result_window.rs`：创建改 `.resizable(true)`——Tauri 文档称 `resizable(false)` 时 `setSize` 被忽略。虽未被独立证实为必要（ACL 才是真正阻塞），但 `resizable(true)` + `setMaxSize` 控拖更稳，保留。
+- `Result/index.tsx::toggleExpand`：不调 `setResizable`，改用 `setMaxSize` 控可拖——精简态 `max=520×116` 锁死防拖，长篇态 `max=4000` 解除后可拖；首帧 mount 锁一次精简态 max（不设 min，避免 `min>max` 冲突致 `setMinSize` 抛错、`setSize` 不执行）。
 
-**现象**：语音结果窗工具栏点「放大」按钮，窗口未变大（双模式切换失效）。
+**教训**：前端 `await` 窗口命令无 try/catch 时 ACL 错误被默默吞掉，外观似「窗口行为异常」实为「权限拒绝」。诊断 toast（读回实际尺寸 / 捕获并显示错误）是定位此类问题的关键工具。
 
-**相关代码**：`crates/desktop/frontend/src/pages/Result/index.tsx::toggleExpand`（L297）调 `win.setResizable(next)` + `win.setSize(new LogicalSize(...))`；窗口由 `result_window.rs::create_result_window`（L19）以 `.resizable(false).decorations(false).transparent(true).shadow(false).always_on_top(true)` 创建。
-
-**两个怀疑方向**：
-1. **`setSize` 对 `resizable(false)` 创建的透明无边框悬浮窗在 macOS 运行时不生效**——即便先 `setResizable(true)`，窗口管理器可能仍按创建期约束拒绝尺寸变更。
-2. **工具栏容器 `onMouseDown={onDragStart}` → `win.startDragging()` 抢占点击**（L475/L427）：mousedown 触发系统拖拽循环可能吞掉 mouseup，致按钮 `onClick` 不触发。但同工具栏其他按钮（编辑/润色/设置）可用 → 倾向排除此项，重点查方向 1。
-
-**排查步骤**：
-1. 结果窗 devtools（debug 构建 `open_devtools`）console：点「放大」看是否进 `toggleExpand`、`setSize`/`setResizable` Promise 是否 reject。
-2. 若 `toggleExpand` 未进 → 方向 2（drag 抢占）。
-3. 若进但窗口不变 → 方向 1：尝试创建期改 `.resizable(true)`，首帧前端立即 `setResizable(false)` 回精简态，运行时 toggle 再 `setResizable(true)`；或改用物理尺寸 `PhysicalSize` + `setScaleFactor` 显式换算。
-
-**临时状态**：未修，e2e 第 1 项（Result 双模式）被此项阻塞。
+**待复验**：e2e 第 1 项（双模式切换 + 拖拽记忆）由用户跑 `./run-octopus.sh` 确认——ACL 已补 + `resizable(true)`，理论上应生效；未实测前不谎报「已验证」。
 
 ## 不做（明确排除）
 

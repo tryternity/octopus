@@ -114,25 +114,26 @@ pub fn close_compact_editor(app_handle: AppHandle);
 
 **① 语音 Result（`pages/Result/index.tsx`）—— 编辑框尺寸双模式（原地展开，不弹独立窗）**
 
-Result 窗口（`result_window`，`resizable(false)` / `decorations(false)` / `transparent` / `always_on_top`，默认 **520×116** 矮悬浮条）支持两种尺寸模式，由工具栏开关切换，**独立于编辑态**：
+Result 窗口（`result_window`，`resizable(true)` / `decorations(false)` / `transparent` / `always_on_top`，默认 **520×116** 矮悬浮条）支持两种尺寸模式，由工具栏开关切换，**独立于编辑态**：
 
 | 维度 | 精简版（默认） | 长篇版 |
 |---|---|---|
 | 窗口尺寸 | 520×116（固定） | 默认 720×480，**用户可拖拽调整** |
 | 文本区 | `max-h-[63px]` | 撑满剩余空间（`h-full`，跟随窗口高度） |
-| resizable | 否（紧凑小条） | 是（`setResizable(true)`） |
+| 窗口 resizable | `true`（全程，`setSize` 需它） | `true`（同左） |
+| 可拖性 | 锁死（`setMaxSize=520×116`，拖不大） | 解锁（`setMaxSize=4000` 后可拖调大小） |
 | 尺寸记忆 | 固定 | 拖拽后存 localStorage，下次切长篇恢复 |
 
 - 工具栏「放大/缩小」开关按钮（替换原「展开编辑」按钮）：
   - 精简态显示「放大」图标（复用 `"expand-edit"`，四角向外）→ 点击切长篇。
   - 长篇态显示「缩小」图标（`SvgIcon` 新增 `"minimize"` + `public/icons/minimize.svg`，四角向内）→ 点击切精简。
-- 切换逻辑（`toggleExpand`）：先同步 `expandedRef.current = next`（防 `onResized` 闭包读到旧值污染记忆），`setExpanded(next)`，再 `win.setResizable(next)` + `win.setSize(LogicalSize)`：
-  - 切长篇：`setResizable(true)` + `setSize(记忆尺寸或默认 720×480)`。
-  - 切精简：`setResizable(false)` + `setSize(520×116)`。
+- 切换逻辑（`toggleExpand`）：先同步 `expandedRef.current = next`（防 `onResized` 闭包读到旧值污染记忆），`setExpanded(next)`，再用 `setMaxSize` + `setSize` 切换（窗口全程 `resizable(true)`，**不调 `setResizable`**）：
+  - 切长篇：`setMaxSize(4000)` 解除上限 + `setSize(记忆尺寸或默认 720×480)`。
+  - 切精简：`setSize(520×116)` + `setMaxSize(520×116)` 锁回。
 - **尺寸记忆**：长篇模式下监听 `win.onResized` → 取 `outerSize()/scaleFactor()` 逻辑尺寸 → 存 localStorage（key `result-expanded-size`，值 `"w,h"`）+ 更新 `expandedSizeRef`。精简模式（`expandedRef=false`）不存。`onResized` 在切精简的 `setSize` 时也会触发，但此时 ref 已 false → 不污染长篇记忆。
 - 编辑**完全不变**：仍走现有 `toggleEdit`（`contentEditable` + `enter_edit_mode`/`commit_edit`/`cancel_edit`/edit buffer），长篇模式只是把编辑区放大，零新编辑逻辑。两模式下均可编辑。
 - **移除**原 `openExpandEdit` / `applyResultText` 与 `openCompactEditor` import——Result 不再依赖精简编辑器窗口。
-- Rust 侧 `result_window.rs` **不改**（`resizable(false)` 创建），运行时由前端 `setResizable` 开关。窗口位置仍由现有 `window_position` 机制保存恢复；尺寸记忆独立用 localStorage（不与位置持久化耦合）。
+- Rust 侧 `result_window.rs` 创建改 `.resizable(true)`（`setSize` 需它——Tauri 文档称 `resizable(false)` 时 `setSize` 被忽略），可拖性全交前端 `setMaxSize` 控制（不依赖运行时 `setResizable` 翻转）。窗口位置仍由现有 `window_position` 机制保存恢复；尺寸记忆独立用 localStorage（不与位置持久化耦合）。
 - 边界：长篇模式窗口向下长高，若原位置近屏幕底部可能部分超出——MVP 不重算位置（用户可拖动窗口），e2e 观察。
 
 **② OCR（`clipboard_commands.rs::ocr_image` + `ClipboardItem.tsx::handleOcr`）**
