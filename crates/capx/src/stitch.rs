@@ -188,6 +188,17 @@ impl Stitcher {
             }
         }
 
+        if best_offset >= 0 {
+            let acceleration = (best_offset - expected_offset).abs();
+            if acceleration > 65 {
+                eprintln!(
+                    "[stitch] Match rejected due to excessive acceleration: {}px (expected_offset={}, matched={})",
+                    acceleration, expected_offset, best_offset
+                );
+                best_offset = -1;
+            }
+        }
+
         if best_offset < 0 {
             // Match failed: update low_conf_streak and reset template to re-sync if stuck
             self.low_conf_streak += 1;
