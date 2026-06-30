@@ -281,15 +281,19 @@ impl Stitcher {
         self.sticky_top = sticky_t;
         self.sticky_bottom = sticky_b;
 
-        // 找边缘投影最密集的 200px 列（用 frame 高度）
+        // Scan for the most edge-dense 200px columns in the bottom half of the active region.
+        // This ensures that the selected columns contain rich text features exactly where the template is extracted,
+        // preventing the matcher from selecting an empty/margin column that only contains horizontal scrollbar borders.
         let edges = compute_edges(frame);
         let mut best_x = 0u32;
         let mut max_sum = 0u64;
         let limit = w.saturating_sub(200);
-        if w > 200 {
+        let scan_y_start = self.sticky_top + (fh.saturating_sub(self.sticky_top).saturating_sub(self.sticky_bottom)) / 2;
+        let scan_y_end = fh.saturating_sub(self.sticky_bottom);
+        if w > 200 && scan_y_end > scan_y_start {
             for x in (0..=limit).step_by(8) {
                 let mut sum = 0u64;
-                for y in 0..fh {
+                for y in (scan_y_start..scan_y_end).step_by(4) {
                     for tx in (0..200).step_by(2) {
                         sum += edges.get_pixel(x + tx, y)[0] as u64;
                     }
