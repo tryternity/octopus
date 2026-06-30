@@ -197,7 +197,7 @@ impl Stitcher {
                 "[stitch-diag] best_offset={}, best_score={:.4}, best_adjusted_score={:.4}, acceleration={}",
                 best_offset, best_score, best_adjusted_score, acceleration
             );
-            if acceleration > 30 {
+            if acceleration > 80 {
                 eprintln!(
                     "[stitch-diag] Match rejected due to excessive acceleration: {}px (expected_offset={}, matched={})",
                     acceleration, expected_offset, best_offset
