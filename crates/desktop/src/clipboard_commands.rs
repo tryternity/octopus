@@ -418,6 +418,23 @@ pub async fn ocr_image(
     Ok(text)
 }
 
+/// 精简编辑器回写：更新剪贴板条目文本（content + search_text）并同步系统剪贴板。
+/// OCR 编辑、剪贴板文本条目编辑两处共用。
+#[tauri::command]
+pub async fn set_clipboard_item_text(
+    item_id: i64,
+    text: String,
+    handle: State<'_, Arc<ClipboardHandle>>,
+) -> Result<(), String> {
+    octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::update_content(conn, item_id, &text)
+    })
+    .map_err(|e| e.to_string())?;
+
+    handle.write_text(&text).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// 用系统文本编辑器新建无标题文档（不落盘临时文件）。
 fn open_text_editor_with_content(text: &str) {
     #[cfg(target_os = "macos")]
