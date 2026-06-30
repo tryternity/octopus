@@ -23,12 +23,20 @@
 
 - `save_frontmost_app()` 暂存前台 app PID
 - `activate_prev_app()` 主线程 `NSRunningApplication.activateWithOptions` 激活前台 app
-- 30ms 独立线程轮询鼠标位置，进入工具栏时 `setIgnoresMouseEvents(false)`
+- 30ms 独立线程轮询鼠标位置 + 周期性检测选区下方应用并激活
 
 ### 1.3 坐标映射
 
 - NSWindow Cocoa frame（原点左下）+ 主屏高度翻转 → Quartz 坐标
 - `CGWindowListCreateImage` 只截选区 + 排除截图窗口
+- `target_wid` 用选区中心点检测下方应用窗口（`get_window_pid_at_point`），而非 PREV_ACTIVE_APP
+
+### 1.4 选区下方应用自动激活
+
+- 30ms 监视线程每 ~500ms 用 `CGWindowListCopyWindowInfo` + bounds 命中检测鼠标下方应用
+- 跳过 `kCGWindowLayer != 0`（桌面壁纸、Dock、菜单栏）
+- 通过 PID `activateWithOptions` 激活（`run_on_main_thread` 主线程执行）
+- 用户不需要先点击目标应用，直接在选区内滚动即可
 
 ## 2. 拼接引擎（stitch.rs）— 1D FFT 相位相关
 
@@ -78,7 +86,7 @@ pub struct StitchConfig {
 
 ### 2.4 Sticky 处理
 
-- `detect_sticky`：首帧 vs 第二帧逐行比较，找顶部/底部不变的行（sticky header/footer）
+- `detect_sticky`：首帧 vs 第二帧逐行比较，找顶部/底部不变的行
 - canvas 初始化时**裁掉 sticky 区域**（只保留有效内容）
 - `finalize`：停止时补全最后一帧的 sticky footer
 
@@ -103,51 +111,78 @@ pub struct StitchConfig {
 start_scroll_recording(x, y, w, h, win_label, interactive_rects)
   │
   ├─ 1. set_ignore_cursor_events(true) + activate_prev_app()
-  ├─ 2. 30ms 鼠标监视线程（工具栏区域切换 ignore）
-  ├─ 3. Stitcher::new(首帧)
-  ├─ 4. 循环（30ms / 33fps）：
-  │     a. capture_region_excluding_window → RGBA
+  ├─ 2. 30ms 鼠标监视线程（预览区域切换 ignore + 自动激活选区下方应用）
+  ├─ 3. target_wid = 选区中心检测下方应用窗口
+  ├─ 4. Stitcher::new(首帧)
+  ├─ 5. 循环（30ms / 33fps）：
+  │     a. capture_region_excluding_window(target_wid) → RGBA
   │     b. JPEG → emit("scroll://frame")
   │     c. stitcher.process_frame(rgba) → FFT 相位相关
-  │     d. 预览缩略图（底部裁剪，400px 宽，CatmullRom）→ emit("scroll://frame")
-  └─ 5. 先恢复鼠标事件 + activate(self)
-       → stitcher.finalize() + spawn_blocking 生成最终预览 → emit
+  │     d. 预览（底部裁剪 400px CatmullRom）→ emit
+  └─ 6. 先恢复鼠标事件 + activate(self)
+       → stitcher.finalize() + spawn_blocking 最终预览 → emit
        → 长图入库
 ```
 
-### 3.1 预览
-
-- **底部固定**：预览窗 `bottom` 对齐选区底部，内容向上推
-- **底部裁剪**：只截画布底部最新区域（max 1200px 预览高度），始终看到最新拼接内容
-- **高质量缩放**：400px 宽，CatmullRom 双三次插值
-- **底部对齐**：容器 `justifyContent: flex-end`，图片比容器高时截顶部留底部
-- **finalize 后 emit**：停止时补全最后一帧后发送最终预览（spawn_blocking 不阻塞事件循环）
-
-### 3.2 停止流程（防鼠标假死）
+### 3.1 停止流程（防鼠标假死）
 
 1. **先恢复鼠标**：`setIgnoresMouseEvents(false)` + `activate(self)`
 2. **再 finalize + 预览**：`spawn_blocking` 中生成，不阻塞 tokio
 3. **入库**：WebP 编码写 DB
 
-## 4. 依赖
+## 4. 前端
+
+### 4.1 滚动模式 UI
+
+scrolling 模式下：
+- **工具栏完全隐藏**（操作按钮在预览面板中）
+- **选区遮罩用 DOM div**（不经过 Canvas，避免选区内像素残留变暗）
+- **Canvas 只画绿色边框**
+
+### 4.2 预览面板（HUD 风格）
+
+```
+┌──────────────────┐
+│ ● REC    1234px  │  ← 琥珀色脉冲点 + 等宽数字高度
+├──────────────────┤
+│ 预览图            │  ← 底部裁剪，最新内容可见
+│ ↑↑↑              │
+├──────────────────┤
+│ [停止录制] [取消]  │  ← 2:1 比例，等高 32px
+└──────────────────┘
+   ↑ 底部对齐选区底部
+```
+
+- 毛玻璃面板：`rgba(15,15,17,0.92)` + `backdrop-filter: blur(16px)`
+- 按钮带 hover 过渡
+- 停止录制 flex:2（红色实心），取消 flex:1（透明描边）
+
+### 4.3 interactiveRects
+
+scrolling 模式下只有预览面板区域（工具栏已隐藏），传给后端 30ms 监视线程用于鼠标穿透切换。
+
+## 5. 托盘菜单
+
+### 5.1 菜单结构
+
+```
+语音识别
+引擎  xxx · xxx
+───────────────
+开始截图
+剪  贴  板
+───────────────
+系统管理
+退出系统
+```
+
+- 分组用分隔线（PredefinedMenuItem::separator）
+- "剪  贴  板"每字间双半角空格对齐四字宽度
+- 截图进行中菜单灰掉（`set_enabled(false)`），不改文字避免跳动
+
+## 6. 依赖
 
 - `rustfft = "6.2"`（FFT 相位相关）
 - `imageproc = "0.25"`（Sobel 梯度）
-- `objc2` + `objc2-app-kit`（焦点让出）
-- `core-graphics = "0.24"`（CGWindowList 截图）
-
-## 5. 前端
-
-### 5.1 预览窗布局
-
-```
-┌──────────┐
-│ 录制中·Npx│  ← 状态条（顶部）
-├──────────┤
-│ 预览图    │  ← 内容区（flex:1, justifyContent:flex-end, 向上推）
-│ ↑↑↑     │
-├──────────┤
-│ ⏹ 停止   │  ← 按钮（底部）
-└──────────┘
-   ↑ 底部对齐选区底部（bottom: innerHeight - sel.y - sel.h）
-```
+- `objc2` + `objc2-app-kit`（焦点让出 + 应用激活）
+- `core-graphics = "0.24"` + `core-foundation = "0.10"`（CGWindowList 截图 + 窗口信息查询）

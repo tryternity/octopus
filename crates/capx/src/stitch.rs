@@ -67,7 +67,7 @@ impl Stitcher {
             // 用第二帧的有效区域初始化参考投影
             let frame_edges = compute_edges(frame);
             self.reference_proj = project_vertical_range(&frame_edges, eff_top0, h.saturating_sub(self.sticky_bottom));
-            eprintln!("[stitch] canvas trimmed to {}px (removed sticky)", self.canvas.height());
+    
             return Ok(false); // 第二帧用于初始化，不拼接
         }
 
@@ -85,10 +85,6 @@ impl Stitcher {
             Some(v) => v,
             None => return Ok(false),
         };
-
-        eprintln!("[stitch] dy={:.2} conf={:.4} (thresh {:.2}/{:.2}) sticky_t={} eff=[{},{}]",
-            dy, confidence, self.config.min_scroll_px, self.config.min_confidence,
-            self.sticky_top, eff_top, eff_bottom);
 
         // 置信度太低
         if confidence < self.config.min_confidence {
@@ -122,7 +118,7 @@ impl Stitcher {
         // 更新参考投影为当前帧
         self.reference_proj = curr_proj;
 
-        eprintln!("[stitch] appended {}px, canvas now {}px", new_rows, self.canvas.height());
+
         Ok(true)
     }
 
@@ -142,7 +138,7 @@ impl Stitcher {
         combined.copy_from(&self.canvas, 0, 0).context("finalize canvas")?;
         combined.copy_from(&footer, 0, old_h).context("finalize footer")?;
         self.canvas = combined;
-        eprintln!("[stitch] finalize: appended {}px footer", footer_h);
+
         Ok(())
     }
 
@@ -163,7 +159,7 @@ impl Stitcher {
         }
         self.sticky_top = sticky_t;
         self.sticky_bottom = sticky_b;
-        eprintln!("[stitch] sticky_top={} sticky_bottom={}", self.sticky_top, self.sticky_bottom);
+
     }
 }
 
