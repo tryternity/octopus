@@ -50,10 +50,13 @@ cd "../"
 # RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run -p octopus-desktop --features "embedded cloud"
 # 预填 ocr-rs MNN 缓存（warm：prebuilt 目录已存在）；cargo clean 后首次构建失败则 seed 后重试一次。
 seed_mnn_prebuilt
-if ! cargo build --release -p octopus-desktop --features "embedded cloud"; then
+#RELEASE="--release"
+RELEASE=""
+if ! cargo build ${RELEASE} -p octopus-desktop --features "embedded cloud"; then
   seed_mnn_prebuilt
-  cargo build --release -p octopus-desktop --features "embedded cloud"
+  cargo build ${RELEASE} -p octopus-desktop --features "embedded cloud"
 fi
-RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --release -p octopus-desktop --features "embedded cloud"
+#RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --release -p octopus-desktop --features "embedded cloud"
+RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run ${RELEASE} -p octopus-desktop --features "embedded cloud"
 # 注意：去掉 --release，debug 模式能打出 panic 栈
 #RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --features "embedded cloud"
