@@ -40,10 +40,9 @@ pub struct Stitcher {
 
 impl Stitcher {
     pub fn new(first_frame: RgbaImage, config: StitchConfig) -> Self {
-        let proj = project_vertical(&compute_edges(&first_frame));
         Self {
             canvas: first_frame,
-            reference_proj: proj,
+            reference_proj: Vec::new(),
             sticky_top: 0,
             sticky_bottom: 0,
             detected: false,
@@ -57,6 +56,19 @@ impl Stitcher {
         if !self.detected {
             self.detect_sticky(frame);
             self.detected = true;
+            // 裁掉画布（首帧）的 sticky 区域，只保留有效内容
+            let eff_top0 = self.sticky_top;
+            let eff_bottom0 = self.canvas.height().saturating_sub(self.sticky_bottom);
+            let w = self.canvas.width();
+            if eff_bottom0 > eff_top0 {
+                let cropped = image::imageops::crop_imm(&self.canvas.clone(), 0, eff_top0, w, eff_bottom0 - eff_top0).to_image();
+                self.canvas = cropped;
+            }
+            // 用第二帧的有效区域初始化参考投影
+            let frame_edges = compute_edges(frame);
+            self.reference_proj = project_vertical_range(&frame_edges, eff_top0, h.saturating_sub(self.sticky_bottom));
+            eprintln!("[stitch] canvas trimmed to {}px (removed sticky)", self.canvas.height());
+            return Ok(false); // 第二帧用于初始化，不拼接
         }
 
         let eff_top = self.sticky_top;
@@ -74,33 +86,30 @@ impl Stitcher {
             None => return Ok(false),
         };
 
-        eprintln!("[stitch] dy={:.2} conf={:.4} (thresh {:.2}/{:.2})",
-            dy, confidence, self.config.min_scroll_px, self.config.min_confidence);
+        eprintln!("[stitch] dy={:.2} conf={:.4} (thresh {:.2}/{:.2}) sticky_t={} eff=[{},{}]",
+            dy, confidence, self.config.min_scroll_px, self.config.min_confidence,
+            self.sticky_top, eff_top, eff_bottom);
 
         // 置信度太低
         if confidence < self.config.min_confidence {
             return Ok(false);
         }
 
-        let scroll = dy.abs();
-
-        // 静止
-        if scroll < self.config.min_scroll_px {
+        // dy < 0 = 用户向下滚动（内容上移），dy > 0 = 向上滚动（忽略）
+        if dy >= 0.0 {
             return Ok(false);
         }
 
-        // 向下滚动（dy < 0 表示内容上移 = 滚轮下滚）
-        // 只处理向下滚动
-        if dy > 0.0 {
+        let new_rows = (-dy).round() as u32;
+
+        // 静止或滚动超过选区高度（异常）
+        if new_rows < self.config.min_scroll_px as u32 || new_rows >= (eff_bottom - eff_top) {
             return Ok(false);
         }
 
-        let new_rows = scroll.round() as u32;
-        if new_rows >= (eff_bottom - eff_top) {
-            return Ok(false);
-        }
-
-        // 新内容在当前帧底部 new_rows 行
+        // 用户向下滚动了 new_rows 像素：帧底部 new_rows 行是新进入选区的内容。
+        // 但这些行可能与画布底部有重叠（帧间间隔内画面已部分更新），
+        // 相位相关给出的 new_rows 是精确位移，直接追加底部 new_rows 行即可。
         let crop_y = eff_bottom - new_rows;
         let new_content = image::imageops::crop_imm(frame, 0, crop_y, w, new_rows).to_image();
 
@@ -120,7 +129,20 @@ impl Stitcher {
     pub fn canvas(&self) -> &RgbaImage { &self.canvas }
     pub fn height(&self) -> u32 { self.canvas.height() }
 
-    pub fn finalize(&mut self, _last_frame: &RgbaImage) -> Result<()> {
+    pub fn finalize(&mut self, last_frame: &RgbaImage) -> Result<()> {
+        // 补全最后一帧的 sticky_bottom 区域
+        let h = last_frame.height();
+        let w = last_frame.width();
+        let eff_bottom = h.saturating_sub(self.sticky_bottom);
+        if eff_bottom >= h { return Ok(()); }
+        let footer_h = h - eff_bottom;
+        let footer = image::imageops::crop_imm(last_frame, 0, eff_bottom, w, footer_h).to_image();
+        let old_h = self.canvas.height();
+        let mut combined = RgbaImage::new(w, old_h + footer_h);
+        combined.copy_from(&self.canvas, 0, 0).context("finalize canvas")?;
+        combined.copy_from(&footer, 0, old_h).context("finalize footer")?;
+        self.canvas = combined;
+        eprintln!("[stitch] finalize: appended {}px footer", footer_h);
         Ok(())
     }
 
