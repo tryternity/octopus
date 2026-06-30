@@ -3,7 +3,7 @@
 //! 单例 + 关窗即销毁：open 时已存在则 show+focus（由 commands 层额外 emit load 推送新文本），
 //! 否则创建。macOS：开窗切 Regular（Dock 显图标），关窗切回 Accessory，与 notepad/settings 对称。
 
-use tauri::{Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{WebviewUrl, WebviewWindowBuilder};
 
 const WIDTH: f64 = 720.0;
 const HEIGHT: f64 = 560.0;
