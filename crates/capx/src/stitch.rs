@@ -123,12 +123,12 @@ impl Stitcher {
         let expected_offset = tpl_y_start as i32 - self.last_scroll;
 
         // 设定搜索窗口限制：
-        // 1. 若为第一帧滚动 (last_scroll == 0)，由于没有历史速度，搜索一个稍宽的合理向下滚动区间 [0, 120] 像素，防止首帧即触发全局搜索；
-        // 2. 若为后续帧，在期望位置附近限制在极窄窗口内（dy 变化在 [-20, +30] 像素内），物理上阻断对周期性重复文本行的误匹配。
+        // 1. 若为第一帧滚动 (last_scroll == 0)，由于没有历史速度，搜索一个稍宽的合理向下滚动区间 [0, 150] 像素，防止首帧即触发全局搜索；
+        // 2. 若为后续帧，在期望位置附近搜索（dy 变化在 [-60, +40] 像素内），由于全面积模板高度唯一，可以安全地放宽搜索窗口以支持更快的滑动。
         let (lo, hi) = if self.last_scroll == 0 {
-            ((tpl_y_start as i32 - 120).max(eff_top as i32), (tpl_y_start as i32 + 10).min(search_end as i32))
+            ((tpl_y_start as i32 - 150).max(eff_top as i32), (tpl_y_start as i32 + 10).min(search_end as i32))
         } else {
-            ((expected_offset - 30).max(eff_top as i32), (expected_offset + 20).min(search_end as i32))
+            ((expected_offset - 60).max(eff_top as i32), (expected_offset + 40).min(search_end as i32))
         };
 
         eprintln!("[stitch] tpl_y_start={} tpl_h={} expected_offset={} search=[{},{}] cols={:?}",
@@ -281,32 +281,11 @@ impl Stitcher {
         self.sticky_top = sticky_t;
         self.sticky_bottom = sticky_b;
 
-        // Scan for the most edge-dense 200px columns in the bottom half of the active region.
-        // This ensures that the selected columns contain rich text features exactly where the template is extracted,
-        // preventing the matcher from selecting an empty/margin column that only contains horizontal scrollbar borders.
-        let edges = compute_edges(frame);
-        let mut best_x = 0u32;
-        let mut max_sum = 0u64;
-        let limit = w.saturating_sub(200);
-        let scan_y_start = self.sticky_top + (fh.saturating_sub(self.sticky_top).saturating_sub(self.sticky_bottom)) / 2;
-        let scan_y_end = fh.saturating_sub(self.sticky_bottom);
-        if w > 200 && scan_y_end > scan_y_start {
-            for x in (0..=limit).step_by(8) {
-                let mut sum = 0u64;
-                for y in (scan_y_start..scan_y_end).step_by(4) {
-                    for tx in (0..200).step_by(2) {
-                        sum += edges.get_pixel(x + tx, y)[0] as u64;
-                    }
-                }
-                if sum > max_sum {
-                    max_sum = sum;
-                    best_x = x;
-                }
-            }
-            self.match_cols = best_x..(best_x + 200).min(w);
-        } else {
-            self.match_cols = 0..w;
-        }
+        // Use almost the entire width of the selection, excluding small left and right margins
+        // to avoid window borders on the left and vertical scrollbar elements on the right.
+        let margin_l = 15.min(w / 4);
+        let margin_r = 25.min(w / 4);
+        self.match_cols = margin_l..w.saturating_sub(margin_r);
         eprintln!("[stitch] sticky_top={} sticky_bottom={} match_cols={:?}",
             self.sticky_top, self.sticky_bottom, self.match_cols);
     }
