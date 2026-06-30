@@ -30,7 +30,9 @@ pub struct ModelEntry {
 #[derive(Debug, serde::Deserialize, serde::Serialize, Clone)]
 pub struct AsrSection {
     pub whisper: Option<HashMap<String, ModelEntry>>,
-    pub sensevoice: Option<HashMap<String, ModelEntry>>,
+    /// 原版 SenseVoice-Small（FunASR 4 输入 ONNX，非 sherpa 简化版）。provider='local' + category='sensevoice-orig' 路由入此。
+    #[serde(default)]
+    pub sensevoice_orig: Option<HashMap<String, ModelEntry>>,
     #[serde(default)]
     pub paraformer: Option<HashMap<String, ModelEntry>>,
     #[serde(default, rename = "qwen3-asr")]
@@ -493,7 +495,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
 
     let mut asr = AsrSection {
         whisper: None,
-        sensevoice: None,
+        sensevoice_orig: None,
         paraformer: None,
         qwen3_asr: None,
         zipformer: None,
@@ -523,7 +525,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
             ("tencent", _) => &mut asr.tencent,
             ("baidu", _) => &mut asr.baidu,
             (_, "whisper") => &mut asr.whisper,
-            (_, "sensevoice") => &mut asr.sensevoice,
+            (_, "sensevoice-orig") => &mut asr.sensevoice_orig,
             (_, "paraformer") => &mut asr.paraformer,
             (_, "qwen3-asr") => &mut asr.qwen3_asr,
             (_, "zipformer") => &mut asr.zipformer,
@@ -1118,8 +1120,8 @@ mod tests {
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM models WHERE domain='asr'", [], |r| r.get(0))
             .unwrap();
-        // 12 local + 2 bytedance + 2 tencent + 1 baidu + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
-        assert_eq!(count, 20);
+        // 13 local + 2 bytedance + 2 tencent + 1 baidu + 3 aliyun (Fun-ASR + Paraformer + Qwen-ASR)
+        assert_eq!(count, 21);
     }
 
     #[test]
@@ -1140,7 +1142,6 @@ mod tests {
         assert_eq!(cfg.asr.whisper.as_ref().unwrap().len(), 1);
         let whisper = cfg.asr.whisper.as_ref().unwrap().get("whisper-small").unwrap();
         assert!(!whisper.is_streaming, "Whisper 模型不应支持流式");
-        assert_eq!(cfg.asr.sensevoice.as_ref().unwrap().len(), 1);
         // c796cbc 后本地 paraformer 4 条：bilingual / multi-zh / streaming / zh
         assert_eq!(cfg.asr.paraformer.as_ref().unwrap().len(), 4);
         assert_eq!(cfg.asr.qwen3_asr.as_ref().unwrap().len(), 2);
@@ -1330,8 +1331,8 @@ mod tests {
         assert!(names.contains(&"paraformer-streaming"), "未过滤 is_enabled=0");
         assert!(rows.iter().any(|r| !r.is_enabled), "应含未就绪模型");
         // c796cbc 后兜底 zipformer-small-ctc 移出 seed，本地模型 source 全是 HF repo id；
-        // 验证列出全部 12 条本地 ASR，无 models/ 开头的随包行
-        assert_eq!(rows.len(), 12, "本地 ASR 清单应含 12 条");
+        // 验证列出全部 13 条本地 ASR，无 models/ 开头的随包行
+        assert_eq!(rows.len(), 13, "本地 ASR 清单应含 13 条");
         assert!(rows.iter().all(|r| r.source.contains('/')), "本地 source 均为 HF repo id 形式");
     }
 

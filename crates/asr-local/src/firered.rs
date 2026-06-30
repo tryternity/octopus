@@ -3,7 +3,7 @@ use ort::session::Session;
 use std::sync::Mutex;
 
 use crate::config;
-use crate::sensevoice::compute_fbank;
+use crate::fbank::compute_fbank;
 
 /// FireRedASR2 CTC 引擎 —— FireRedASR2-AED 的 encoder + CTC branch 导出（attention decoder 弃用）。
 ///
@@ -13,7 +13,7 @@ use crate::sensevoice::compute_fbank;
 /// （公式 `(fbank - mean) * inv_stddev`，**无** paraformer 的 `sqrt(enc_out)` scale——
 /// CTC encoder 直接吃 80 维 fbank）。
 ///
-/// 推理：80-bin fbank（复用 [`sensevoice::compute_fbank`]，无 LFR）→ CMVN
+/// 推理：80-bin fbank（复用 [`fbank::compute_fbank`]，无 LFR）→ CMVN
 ///       → `x[N,T,80]` + `x_lens[N]` → `log_probs[N,T,8667]` → greedy CTC（blank=0，
 ///       相邻去重）→ token 文本拼接（跳 `<...>` 特殊/方言 token，`▁`→空格）。
 pub struct FireRedEngine {

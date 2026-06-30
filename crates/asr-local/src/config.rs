@@ -164,7 +164,8 @@ fn find_latest_snapshot(model_dir: &Path) -> Result<PathBuf> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum EngineCategory {
     Whisper,
-    SenseVoice,
+    /// 原版 SenseVoice-Small（FunASR 4 输入 ONNX 导出，非 sherpa 简化版）。category='sensevoice-orig' 路由入此。
+    SenseVoiceOrig,
     Paraformer,
     Qwen3Asr,
     Zipformer,
@@ -182,13 +183,13 @@ pub enum EngineCategory {
 }
 
 /// DB `models.category` 字符串 → EngineCategory 映射。
-/// 仅映射 ASR 本地引擎类型（whisper/sensevoice/paraformer/qwen3-asr/zipformer），
+/// 仅映射 ASR 本地引擎类型（whisper/sensevoice-orig/paraformer/qwen3-asr/zipformer），
 /// 其他 category（如云端系列 `Fun-ASR`）返回 None——aliyun 等云端族由 provider 路由，
 /// 见 [`resolve_category`]。
 fn engine_category_from_str(s: &str) -> Option<EngineCategory> {
     match s {
         "whisper" => Some(EngineCategory::Whisper),
-        "sensevoice" => Some(EngineCategory::SenseVoice),
+        "sensevoice-orig" => Some(EngineCategory::SenseVoiceOrig),
         "paraformer" => Some(EngineCategory::Paraformer),
         "qwen3-asr" => Some(EngineCategory::Qwen3Asr),
         "zipformer" => Some(EngineCategory::Zipformer),
@@ -223,7 +224,7 @@ fn all_sections<'a>(
 ) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 11] {
     [
         (cfg.asr.whisper.as_ref(), EngineCategory::Whisper),
-        (cfg.asr.sensevoice.as_ref(), EngineCategory::SenseVoice),
+        (cfg.asr.sensevoice_orig.as_ref(), EngineCategory::SenseVoiceOrig),
         (cfg.asr.paraformer.as_ref(), EngineCategory::Paraformer),
         (cfg.asr.qwen3_asr.as_ref(), EngineCategory::Qwen3Asr),
         (cfg.asr.zipformer.as_ref(), EngineCategory::Zipformer),
@@ -304,7 +305,7 @@ pub fn category_label(c: EngineCategory) -> &'static str {
     use EngineCategory::*;
     match c {
         Whisper => "whisper",
-        SenseVoice => "sensevoice",
+        SenseVoiceOrig => "sensevoice-orig",
         Paraformer => "paraformer",
         Qwen3Asr => "qwen3-asr",
         Zipformer => "zipformer",
@@ -446,7 +447,7 @@ pub fn pick_entry<'a>(
 ) -> Option<&'a ModelEntry> {
     let map = match category {
         EngineCategory::Whisper => cfg.asr.whisper.as_ref(),
-        EngineCategory::SenseVoice => cfg.asr.sensevoice.as_ref(),
+        EngineCategory::SenseVoiceOrig => cfg.asr.sensevoice_orig.as_ref(),
         EngineCategory::Paraformer => cfg.asr.paraformer.as_ref(),
         EngineCategory::Qwen3Asr => cfg.asr.qwen3_asr.as_ref(),
         EngineCategory::Zipformer => cfg.asr.zipformer.as_ref(),
@@ -583,7 +584,7 @@ mod tests {
         AsrConfig {
             asr: AsrSection {
                 whisper: None,
-                sensevoice: None,
+                sensevoice_orig: None,
                 paraformer: None,
                 qwen3_asr: None,
                 zipformer: Some(zip),
@@ -615,7 +616,7 @@ mod tests {
         AsrConfig {
             asr: AsrSection {
                 whisper: None,
-                sensevoice: None,
+                sensevoice_orig: None,
                 paraformer: None,
                 qwen3_asr: None,
                 zipformer: None,
@@ -725,7 +726,7 @@ mod tests {
         let cfg = AsrConfig {
             asr: AsrSection {
                 whisper: None,
-                sensevoice: None,
+                sensevoice_orig: None,
                 paraformer: None,
                 qwen3_asr: None,
                 zipformer: None,
@@ -819,9 +820,8 @@ mod tests {
     }
 
     #[test]
-    fn engine_category_from_str_maps_five_types() {
+    fn engine_category_from_str_maps_local_types() {
         assert_eq!(engine_category_from_str("whisper"), Some(EngineCategory::Whisper));
-        assert_eq!(engine_category_from_str("sensevoice"), Some(EngineCategory::SenseVoice));
         assert_eq!(engine_category_from_str("paraformer"), Some(EngineCategory::Paraformer));
         assert_eq!(engine_category_from_str("qwen3-asr"), Some(EngineCategory::Qwen3Asr));
         assert_eq!(engine_category_from_str("zipformer"), Some(EngineCategory::Zipformer));

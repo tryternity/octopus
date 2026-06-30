@@ -1,10 +1,13 @@
-use anyhow::{Context, Result};
-use base64::Engine;
+//! 80-bin log-fbank 特征提取 + LFR 堆叠（共享设施）。
+//!
+//! 原服务于 SenseVoice（sherpa nano 简化版，已移除——见
+//! `docs/removed-sensevoice-sherpa-nano.md`），现被 [`crate::sensevoice_orig`]
+//! （fbank+LFR→560 维）与 [`crate::firered`]（纯 fbank，无 LFR）复用。
+
+use anyhow::Result;
 use ndarray::Array2;
 use once_cell::sync::Lazy;
-use ort::session::Session;
 
-use crate::config;
 use crate::paraformer::FBANK_FFT;
 
 // ── Fbank constants (matching kaldi_native_fbank defaults) ──
@@ -21,126 +24,15 @@ const LFR_WINDOW_SHIFT: usize = 6;
 static HAMMING_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hamming_window(FBANK_FRAME_LEN));
 static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank_fbank());
 
-// ── Public API ──
-
-// ── Public API ──
-
-/// Thread-safe, reusable engine for SenseVoice model
-pub struct SenseVoiceEngine {
-    session: std::sync::Mutex<Session>,
-    vocab_list: Vec<String>,
-}
-
-impl SenseVoiceEngine {
-    /// Create a new SenseVoice engine instance by loading model and vocab list
-    pub fn new(entry: &config::ModelEntry) -> Result<Self> {
-        let hf_path = config::resolve_model_dir(&entry.source)?;
-        let model_path = hf_path.join("model.int8.onnx");
-        if !model_path.exists() {
-            anyhow::bail!("model.int8.onnx not found at {}", hf_path.display());
-        }
-
-        let session = crate::config::apply_session_acceleration(Session::builder()?)?.commit_from_file(&model_path)?;
-
-        let tokens_path = hf_path.join("tokens.txt");
-        let tokens_text = std::fs::read_to_string(&tokens_path)
-            .with_context(|| format!("tokens.txt not found at {}", tokens_path.display()))?;
-        let vocab_list: Vec<String> = tokens_text
-            .lines()
-            .map(|l| l.rsplit_once(' ').map(|(t, _)| t.to_string()).unwrap_or_else(|| "".to_string()))
-            .collect();
-
-        Ok(Self {
-            session: std::sync::Mutex::new(session),
-            vocab_list,
-        })
-    }
-}
-
-impl crate::engine::OfflineAsrEngine for SenseVoiceEngine {
-    fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
-        let features = compute_fbank_features(samples)?;
-        let (n_frames, feat_dim) = (features.nrows(), features.ncols());
-
-        let input_tensor = ndarray::Array3::from_shape_vec((1, n_frames, feat_dim), {
-            let (v, _) = features.into_raw_vec_and_offset();
-            v
-        })?;
-
-        let mut session = self.session.lock().unwrap();
-        let outputs = session.run(ort::inputs! {
-            "x" => ort::value::TensorRef::from_array_view(input_tensor.view())?
-        })?;
-
-        // Decode CTC output
-        let (shape, logits) = outputs[0].try_extract_tensor::<f32>()?;
-        let dim: Vec<usize> = shape.iter().map(|&d| d as usize).collect();
-        if dim.len() != 3 {
-            anyhow::bail!("Unexpected output rank: {:?}", dim);
-        }
-        let (n_time, vocab) = (dim[1], dim[2]);
-
-        let blank_id: i64 = 60514;
-        let mut deduped: Vec<i64> = Vec::new();
-        let mut prev: i64 = -1;
-        for t in 0..n_time {
-            let offset = t * vocab;
-            let frame = &logits[offset..offset + vocab];
-            let best = frame
-                .iter()
-                .enumerate()
-                .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
-                .map(|(i, _)| i as i64)
-                .unwrap_or(0);
-            if best != prev && best != blank_id {
-                deduped.push(best);
-            }
-            prev = best;
-        }
-
-        let mut text = String::new();
-        for &tid in &deduped {
-            let idx = tid as usize;
-            if idx > 0 && idx < self.vocab_list.len() {
-                if let Ok(decoded) = base64::engine::general_purpose::STANDARD.decode(&self.vocab_list[idx]) {
-                    let s = String::from_utf8_lossy(&decoded).replace('\u{FFFD}', "");
-                    text.push_str(&s);
-                } else {
-                    text.push_str(&self.vocab_list[idx]);
-                }
-            }
-        }
-        let text = text.replace('▁', " ");
-        Ok(text.trim().to_string())
-    }
-}
-
-/// Transcribe audio using SenseVoice model
-/// Input: 16kHz mono f32 samples. Output: transcribed text.
-pub fn transcribe(name: &str, samples: &[f32], language: &str) -> Result<String> {
-    let cfg = config::load_config()?;
-    let sv_cfg = cfg
-        .asr
-        .sensevoice
-        .as_ref()
-        .context("No sensevoice models in config")?;
-    let entry = sv_cfg
-        .get(name)
-        .with_context(|| format!("sensevoice model '{}' not in DB", name))?;
-
-    let engine = SenseVoiceEngine::new(entry)?;
-    crate::engine::transcribe_with_vad(&engine, samples, language)
-}
-
-// ── Fbank feature extraction ──
-
-fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
+/// 80-bin log-fbank + LFR(m=7/n=6) → [T,560]（原版 SenseVoice 用）。
+pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
     let scaled: Vec<f32> = samples.iter().map(|&s| s * 32768.0).collect();
     let fbank = compute_fbank(&scaled)?;
     let lfr = apply_lfr(&fbank, LFR_WINDOW_SIZE, LFR_WINDOW_SHIFT);
     Ok(lfr)
 }
 
+/// 纯 80-bin log-fbank（frame_len=400 / shift=160 / hamming 窗，无 LFR）。FireRed 等用。
 pub(crate) fn compute_fbank(samples: &[f32]) -> Result<Array2<f32>> {
     let n_frames = if samples.len() >= FBANK_FRAME_LEN {
         (samples.len() - FBANK_FRAME_LEN) / FBANK_FRAME_SHIFT + 1

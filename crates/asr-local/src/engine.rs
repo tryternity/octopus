@@ -5,7 +5,7 @@ use std::sync::{Arc, RwLock};
 use crate::config;
 use crate::qwen3_asr::Qwen3AsrEngine;
 use crate::whisper::WhisperEngine;
-use crate::sensevoice::SenseVoiceEngine;
+use crate::sensevoice_orig::SenseVoiceOrigEngine;
 use crate::paraformer::ParaformerEngine;
 use crate::zipformer::{ZipformerCtcEngine, ZipformerTransducerEngine};
 use crate::firered::FireRedEngine;
@@ -73,7 +73,7 @@ impl AsrEngineManager {
 
             let new_eng: Arc<dyn OfflineAsrEngine> = match category {
                 config::EngineCategory::Whisper => Arc::new(WhisperEngine::new(entry)?),
-                config::EngineCategory::SenseVoice => Arc::new(SenseVoiceEngine::new(entry)?),
+                config::EngineCategory::SenseVoiceOrig => Arc::new(SenseVoiceOrigEngine::new(entry)?),
                 config::EngineCategory::Paraformer => Arc::new(ParaformerEngine::new(entry)?),
                 config::EngineCategory::Qwen3Asr => Arc::new(Qwen3AsrEngine::new(entry)?),
                 config::EngineCategory::Zipformer => {

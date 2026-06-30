@@ -55,7 +55,7 @@ VALUES
     ('asr','local','paraformer','paraformer-zh','csukuangfj/sherpa-onnx-streaming-paraformer-zh','zh','paraformer普通话版, 230M',1,0,1),
     ('asr','local','qwen3-asr','qwen3-asr-0.6B','csukuangfj2/sherpa-onnx-qwen3-asr-0.6B-int8-2026-03-25','auto','qwen3-asr-0.6B, 954M',1,0,0),
     ('asr','local','qwen3-asr','qwen3-asr-1.7B','ilmina/qwen3-asr-1.7b-sherpa-onnx','auto','qwen3-asr-1.7B, 2.2G',1,0,0),
-    ('asr','local','sensevoice','sense-voice-nano','csukuangfj/sherpa-onnx-sense-voice-funasr-nano-int8-2025-12-17','auto','SenseVoice FunASR Nano INT8, 265M',1,0,0),
+    ('asr','local','sensevoice-orig','sensevoice-orig-small','WisemeAI/sensevoice-small-quant','auto','原版 SenseVoice-Small quant (230M，FunASR 4输入，中/英/粤/日/韩)',1,1,0),
     ('asr','local','firered','firered-asr2','VidraAI/FireRedASR2-onnx','auto','FireRedASR2-AED CTC int8 (740M，中文+20方言+英)',1,1,0),
     ('asr','local','whisper','whisper-small','onnx-community/whisper-small.en','en','whisper-small.en, 372M',1,0,0),
     ('asr','local','zipformer','zipformer','csukuangfj/sherpa-onnx-streaming-zipformer-zh-int8-2025-06-30','zh','zipformer, 160M',1,0,1),
