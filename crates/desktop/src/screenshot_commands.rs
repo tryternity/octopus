@@ -600,6 +600,73 @@ fn activate_prev_app(win: &tauri::WebviewWindow) {
     });
 }
 
+/// macOS：获取指定坐标下最上层非截图应用的 window owner PID。
+#[cfg(target_os = "macos")]
+fn get_window_pid_at_point(x: f64, y: f64) -> Option<i32> {
+    use core_graphics::display::CGDisplay;
+    let windows = CGDisplay::window_list_info(
+        core_graphics::display::kCGWindowListOptionOnScreenOnly,
+        None,
+    )?;
+    let curr_pid = std::process::id() as i32;
+
+    use core_foundation::base::{CFTypeRef, TCFType};
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+    use core_foundation::number::CFNumber;
+
+    for item in windows.iter() {
+        let dict_ref = *item as CFTypeRef;
+        if dict_ref.is_null() { continue; }
+        let dict: CFDictionary<CFString, CFTypeRef> = unsafe { TCFType::wrap_under_get_rule(dict_ref as *const _) };
+
+        let key_pid = CFString::new("kCGWindowOwnerPID");
+        let pid_item = dict.get(&key_pid);
+        let pid_ptr: CFTypeRef = *pid_item;
+        if pid_ptr.is_null() { continue; }
+        let pid_num: CFNumber = unsafe { TCFType::wrap_under_get_rule(pid_ptr as *const _) };
+        let pid = pid_num.to_i32()?;
+        if pid == curr_pid { continue; }
+
+        // 检查窗口 bounds 是否包含该点
+        let key_bounds = CFString::new("kCGWindowBounds");
+        let bounds_item = dict.get(&key_bounds);
+        let bounds_ptr: CFTypeRef = *bounds_item;
+        if bounds_ptr.is_null() { continue; }
+        let bdict: CFDictionary<CFString, CFTypeRef> = unsafe { TCFType::wrap_under_get_rule(bounds_ptr as *const _) };
+        let get_f64 = |key: &str| -> f64 {
+            let k = CFString::new(key);
+            let item = bdict.get(&k);
+            let ptr: CFTypeRef = *item;
+            if ptr.is_null() { return 0.0; }
+            let n: CFNumber = unsafe { TCFType::wrap_under_get_rule(ptr as *const _) };
+            n.to_f64().unwrap_or(0.0)
+        };
+        let (bx, by, bw, bh) = (get_f64("X"), get_f64("Y"), get_f64("Width"), get_f64("Height"));
+        if x >= bx && x < bx + bw && y >= by && y < by + bh {
+            return Some(pid);
+        }
+    }
+    None
+}
+
+/// macOS：通过 PID 激活应用（主线程执行）。
+#[cfg(target_os = "macos")]
+fn activate_app_by_pid(ah: &tauri::AppHandle, pid: i32) {
+    use objc2_app_kit::NSRunningApplication;
+    // 通过任意窗口的 run_on_main_thread 在主线程执行激活
+    if let Some(win) = ah.webview_windows().values().next() {
+        let _ = win.run_on_main_thread(move || {
+            if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
+                let success = app.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions(1 << 1));
+                if success {
+                    eprintln!("[scroll] activated app pid={} for scroll focus", pid);
+                }
+            }
+        });
+    }
+}
+
 /// macOS：获取 NSWindow 的 windowNumber（用于 CGWindowListCreateImage 排除 overlay 窗口）
 #[cfg(target_os = "macos")]
 fn get_window_number(win: &tauri::WebviewWindow) -> Option<u32> {
@@ -800,15 +867,14 @@ pub async fn start_scroll_recording(
             }).copied().unwrap_or(0);
             let wid = get_window_number(&sel_win).unwrap_or(0);
 
-            // Find target window ID from the previously active application
+            // Find target window ID from the app under the selection area (not PREV_ACTIVE_APP).
+            // 用选区中心点检测下方的应用窗口，确保截到的是选区下方的真实内容。
             let target_wid = {
-                let pid_opt = {
-                    let guard = PREV_ACTIVE_APP.lock().unwrap();
-                    guard.as_ref().map(|p| p.0.processIdentifier())
-                };
-                if let Some(pid) = pid_opt {
+                let cx = sel_global_x + w / 2.0;
+                let cy = sel_global_y + h / 2.0;
+                if let Some(pid) = get_window_pid_at_point(cx, cy) {
                     let found = octopus_capx::capture::find_window_id_by_pid(pid);
-                    log::info!("Scroll capture: search PID {} yielded window ID {:?}", pid, found);
+                    log::info!("Scroll capture: app under selection (pid={}) yielded window ID {:?}", pid, found);
                     found
                 } else {
                     None
@@ -863,33 +929,46 @@ pub async fn start_scroll_recording(
             use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
             let mut poll = tokio::time::interval(std::time::Duration::from_millis(30));
             let mut cur_passthrough = true;
+            let mut last_active_pid: i32 = 0;
+            let mut activate_check_count = 0u32;
             while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
                 poll.tick().await;
-                let in_interactive = if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+                let (mouse_x, mouse_y) = if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
                     if let Ok(evt) = CGEvent::new(src) {
                         let loc = evt.location();
-                        let lx = loc.x - mon_winx;
-                        let ly = loc.y - mon_winy;
-                        mon_rects.iter().any(|r| {
-                            lx >= r.x && lx <= r.x + r.width && ly >= r.y && ly <= r.y + r.height
-                        })
-                    } else { false }
-                } else { false };
+                        (loc.x, loc.y)
+                    } else { (0.0, 0.0) }
+                } else { (0.0, 0.0) };
+
+                let lx = mouse_x - mon_winx;
+                let ly = mouse_y - mon_winy;
+                let in_interactive = mon_rects.iter().any(|r| {
+                    lx >= r.x && lx <= r.x + r.width && ly >= r.y && ly <= r.y + r.height
+                });
                 let want = !in_interactive;
                 if want != cur_passthrough {
-                    log::info!(
-                        "[scroll-diag] toggling passthrough: want={}, cur_passthrough={}, win_origin=({},{})",
-                        want,
-                        cur_passthrough,
-                        mon_winx,
-                        mon_winy
-                    );
                     for label in &mon_labels {
                         if let Some(win) = mon_ah.get_webview_window(label) {
                             set_window_ignores_mouse_events(&win, want);
                         }
                     }
                     cur_passthrough = want;
+                }
+
+                // 每 ~500ms（每 17 个 tick）检测鼠标下方的应用，如果未激活则激活它。
+                // 这样用户不需要先点击目标应用，直接在选区内滚动即可。
+                activate_check_count += 1;
+                if want && activate_check_count >= 17 {
+                    activate_check_count = 0;
+                    #[cfg(target_os = "macos")]
+                    {
+                        if let Some(pid) = get_window_pid_at_point(mouse_x, mouse_y) {
+                            if pid != last_active_pid {
+                                activate_app_by_pid(&mon_ah, pid);
+                                last_active_pid = pid;
+                            }
+                        }
+                    }
                 }
             }
         });
