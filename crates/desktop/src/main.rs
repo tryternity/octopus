@@ -3,6 +3,7 @@
 mod audio;
 mod config;
 mod clipboard_commands;
+mod compact_editor_commands;
 mod compact_editor_window;
 mod image_migration;
 mod clipboard_window;
