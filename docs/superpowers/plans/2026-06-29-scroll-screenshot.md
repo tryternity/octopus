@@ -656,3 +656,72 @@ capture 循环用 `captures.find(|c| c.monitor_x == target_x && c.monitor_y == t
 - [ ] auto 模式下工具栏显示「停止」按钮（不显示滚动提示）
 - [ ] auto 模式预览正常更新
 - [ ] auto 模式停止后入库 + 剪贴板刷新
+
+### Task 10（Step 6）：manual 模式 NSPanel 实现
+
+**Files:**
+- Modify: `crates/desktop/src/screenshot_commands.rs`（start_screenshot 中窗口创建后转 NSPanel）
+- Modify: `crates/desktop/src/main.rs`（tauri_panel! 宏 + plugin 注册）
+- Modify: `crates/desktop/src/screenshot_commands.rs`（录制循环用 NSPanel ignores_mouse_events）
+
+- [ ] **Step 1: 定义 ScrollPanel 宏 + 注册 plugin**
+
+```rust
+use tauri_nspanel::{tauri_panel, ManagerExt, WebviewWindowExt};
+
+tauri_panel! {
+    panel!(ScrollPanel {
+        config: {
+            can_become_key_window: true,
+            can_become_main_window: false,
+            becomes_key_only_if_needed: true,
+            is_floating_panel: true
+        }
+    })
+    panel_event!(ScrollPanelEventHandler {})
+}
+```
+
+main.rs Builder 加 `.plugin(tauri_nspanel::init())`。
+
+- [ ] **Step 2: 截图窗口创建后转 NSPanel**
+
+在 `start_screenshot` 中，每个窗口 `build()` 后：
+```rust
+if let Some(win) = app_handle.get_webview_window(&label) {
+    let _ = win.to_panel::<ScrollPanel>();
+}
+```
+
+- [ ] **Step 3: manual 录制循环**
+
+```rust
+// 录制时：NSPanel ignores_mouse_events = true（滚轮穿透）
+let panel = ah.get_webview_panel(&label).unwrap();
+panel.set_ignores_mouse_events(true);
+
+// 每帧 CGEvent 检查鼠标位置
+// 全局坐标减去窗口 outer_position = 窗口局部坐标
+let (win_x, win_y) = win.outer_position().map(|p| (p.x as f64, p.y as f64));
+let local_mx = global_mx - win_x;
+let local_my = global_my - win_y;
+// 判断是否在工具栏区域
+if in_toolbar {
+    panel.set_ignores_mouse_events(false);
+} else {
+    panel.set_ignores_mouse_events(true);
+}
+```
+
+- [ ] **Step 4: 用户手动滚动（不模拟滚轮）**
+
+录制循环去掉 `send_scroll()`，改为持续截屏 + 拼接。
+用户用触控板/滚轮自己滚动，底层应用保持焦点收到事件。
+
+- [ ] **Step 5: 停止时恢复**
+
+```rust
+panel.set_ignores_mouse_events(false);
+```
+
+- [ ] **Step 6: 验证编译 + e2e 测试**

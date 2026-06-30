@@ -319,13 +319,42 @@ start_scroll_recording(x, y, w, h, mode="auto")
 - `scroll_step`：每次滚 40 像素（约 2 行），可调
 - `auto_stop_threshold`：连续 3 帧无新内容自动停止
 
-### 6.4 manual 模式（后续）
+### 6.4 manual 模式（NSPanel 实现）
 
-利用 `tauri-nspanel`：
-- 截图窗口创建后转为 NSPanel（`NSWindowStyleMaskNonactivatingPanel`）
-- 不抢键盘焦点 → 滚轮事件路由到底层应用
-- 仍需 `set_ignore_cursor_events(true)` 让鼠标穿透
-- 区域化 cursor 切换（后端 CGEvent 检查鼠标位置，坐标修正为全局坐标系）
+**目标**：截图窗口转为 NSPanel（NonactivatingPanel），不抢键盘焦点，滚轮事件自然路由到底层应用。
+
+#### NSPanel 关键属性
+
+```
+can_become_key_window: true       → 工具栏区域可获取焦点点击
+can_become_main_window: false     → 不成为主窗口
+becomes_key_only_if_needed: true  → 仅在鼠标点击时获取焦点
+style_mask: NonactivatingPanel    → 不抢当前应用的键盘焦点
+ignores_mouse_events: 动态切换    → true 时滚轮穿透，false 时可交互
+```
+
+#### 实现路径
+
+1. **截图窗口创建后转 NSPanel**：
+   - 用 `tauri-nspanel` 的 `tauri_panel!` 宏定义 `ScrollPanel`
+   - `WebviewWindowExt::to_panel::<ScrollPanel>()` 将现有窗口转为 NSPanel
+   - 或用 `PanelBuilder` 直接创建（绕过普通 WebviewWindowBuilder）
+
+2. **录制时**：
+   - `panel.set_ignores_mouse_events(true)` → 滚轮穿透到底层应用
+   - 底层应用保持键盘焦点 → 滚轮事件到达
+   - Canvas 显示实时画面（选区内 drawImage）
+
+3. **工具栏可交互**：
+   - 后端定时检查鼠标位置（CGEvent 全局坐标，修正为窗口局部坐标）
+   - 鼠标在工具栏区域 → `set_ignores_mouse_events(false)` 恢复点击
+   - 离开工具栏 → `set_ignores_mouse_events(true)` 恢复穿透
+   - 坐标修正：全局坐标减去窗口的 `outer_position()` = 窗口局部坐标
+
+4. **副屏坐标修正**：
+   - start 时按选区中心匹配 Tauri Monitor（物理坐标）
+   - 截图用 `monitor_x/y` 匹配 xcap capture
+   - crop 坐标 = `(CSS坐标 - 显示器逻辑偏移) × scale`
 
 ## 7. 副屏坐标修正
 
@@ -343,9 +372,9 @@ start_scroll_recording(x, y, w, h, mode="auto")
 | **Step 1** | capx/stitch.rs 拼接引擎 | ✅ 已完成 |
 | **Step 2** | 后端录制循环（spawn_blocking + emit） | ✅ 已完成 |
 | **Step 3** | 前端 scrolling 模式 + 工具栏 | ✅ 已完成 |
-| **Step 4** | auto 模式（CGEvent 模拟滚轮 + 自动停止 + 配置） | 🔧 待实施 |
-| **Step 5** | 副屏坐标修正（monitor 偏移） | 🔧 待实施 |
-| **Step 6** | manual 模式（NSPanel + cursor 区域化） | 🔜 后续 |
+| **Step 4** | auto 模式（CGEvent 模拟滚轮 + 自动停止 + 配置） | ✅ 已实现（体验待改善） |
+| **Step 5** | 副屏坐标修正（monitor 偏移） | ✅ 已实现 |
+| **Step 6** | manual 模式（NSPanel NonactivatingPanel + ignores_mouse_events + CGEvent 区域化） | 🔧 本轮实现 |
 
 ## 7. 风险
 
