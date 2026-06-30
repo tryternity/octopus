@@ -37,3 +37,10 @@ pub fn open_notepad(app_handle: tauri::AppHandle) {
     .visible(true)
     .build();
 }
+
+/// macOS: 记事本窗口关闭时切回 Accessory（仅托盘，Dock 图标消失）。
+/// 与 settings_window::on_settings_closed 对称：开窗时切 Regular，关窗切回 Accessory。
+#[cfg(target_os = "macos")]
+pub fn on_notepad_closed(app_handle: &tauri::AppHandle) {
+    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+}

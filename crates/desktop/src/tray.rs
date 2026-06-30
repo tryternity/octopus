@@ -41,6 +41,8 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
         .expect("failed to create settings menu item");
     let clipboard = MenuItem::with_id(app, "clipboard", "剪贴板", true, None::<&str>)
         .expect("failed to create clipboard menu item");
+    let notepad = MenuItem::with_id(app, "notepad", "记事本", true, None::<&str>)
+        .expect("failed to create notepad menu item");
     let screenshot = MenuItem::with_id(app, "screenshot", "截图", true, None::<&str>)
         .expect("failed to create screenshot menu item");
     let stop_scroll = MenuItem::with_id(app, "stop_scroll", "停止滚动截图", true, None::<&str>)
@@ -48,7 +50,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
     let quit = MenuItem::with_id(app, "quit", "退出系统", true, None::<&str>)
         .expect("failed to create quit menu item");
 
-    let menu = Menu::with_items(app, &[&toggle, &engine_info, &clipboard, &screenshot, &stop_scroll, &settings, &quit])
+    let menu = Menu::with_items(app, &[&toggle, &engine_info, &clipboard, &notepad, &screenshot, &stop_scroll, &settings, &quit])
         .expect("failed to create tray menu");
 
     // 存储 toggle 和 engine_info handle 供后续更新使用
@@ -79,6 +81,10 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
             "clipboard" => {
                 info!("Tray: toggle clipboard");
                 let _ = crate::clipboard_window::toggle_clipboard_window(app);
+            }
+            "notepad" => {
+                info!("Tray: open notepad");
+                crate::notepad_window::open_notepad(app.clone());
             }
             "settings" => {
                 info!("Tray: open settings");
