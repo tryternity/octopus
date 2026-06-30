@@ -246,6 +246,9 @@ pub fn find_window_id_by_pid(pid: i32) -> Option<u32> {
         let pid_key = CFString::from_static_string("kCGWindowOwnerPID");
         let layer_key = CFString::from_static_string("kCGWindowLayer");
         let number_key = CFString::from_static_string("kCGWindowNumber");
+        let bounds_key = CFString::from_static_string("kCGWindowBounds");
+        let w_key = CFString::from_static_string("Width");
+        let h_key = CFString::from_static_string("Height");
 
         for i in 0..array.len() {
             let dict = array.get(i).unwrap();
@@ -255,21 +258,51 @@ pub fn find_window_id_by_pid(pid: i32) -> Option<u32> {
             if pid_value.is_none() { continue; }
             let pid_num = CFNumber::wrap_under_get_rule(*pid_value.unwrap() as *const _);
             let window_pid = pid_num.to_i32();
-            if window_pid != Some(pid) { continue; }
 
             // 2. Verify Window Layer (0 means the main application window)
             let layer_value = dict.find(layer_key.as_CFTypeRef());
             if layer_value.is_none() { continue; }
             let layer_num = CFNumber::wrap_under_get_rule(*layer_value.unwrap() as *const _);
             let window_layer = layer_num.to_i32();
-            if window_layer != Some(0) { continue; }
 
             // 3. Extract Window Number ID
             let number_value = dict.find(number_key.as_CFTypeRef());
             if number_value.is_none() { continue; }
             let number_num = CFNumber::wrap_under_get_rule(*number_value.unwrap() as *const _);
-            if let Some(window_id) = number_num.to_i64() {
-                return Some(window_id as u32);
+            let window_id = number_num.to_i64();
+
+            log::info!(
+                "[window-diag] Window: PID={:?}, target_pid={}, layer={:?}, id={:?}",
+                window_pid, pid, window_layer, window_id
+            );
+
+            if window_pid != Some(pid) { continue; }
+            if window_layer != Some(0) { continue; }
+
+            // 4. Optional: check bounds to skip tiny helper windows (e.g., width/height < 100)
+            if let Some(bounds_val) = dict.find(bounds_key.as_CFTypeRef()) {
+                let bounds_dict = CFDictionary::<*const std::ffi::c_void, *const std::ffi::c_void>::wrap_under_get_rule(*bounds_val as *const _);
+                let mut is_small = false;
+                if let Some(w_val) = bounds_dict.find(w_key.as_CFTypeRef()) {
+                    let w_num = CFNumber::wrap_under_get_rule(*w_val as *const _);
+                    if let Some(w) = w_num.to_i64() {
+                        if w < 100 { is_small = true; }
+                    }
+                }
+                if let Some(h_val) = bounds_dict.find(h_key.as_CFTypeRef()) {
+                    let h_num = CFNumber::wrap_under_get_rule(*h_val as *const _);
+                    if let Some(h) = h_num.to_i64() {
+                        if h < 100 { is_small = true; }
+                    }
+                }
+                if is_small {
+                    log::info!("[window-diag] Skipping small window id={:?}", window_id);
+                    continue;
+                }
+            }
+
+            if let Some(wid) = window_id {
+                return Some(wid as u32);
             }
         }
     }
