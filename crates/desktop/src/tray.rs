@@ -57,12 +57,14 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
 
     let settings = MenuItem::with_id(app, "settings", "系统管理", true, None::<&str>)
         .expect("failed to create settings menu item");
+    let notepad = MenuItem::with_id(app, "notepad", "记\u{3000}事\u{3000}本", true, None::<&str>)
+        .expect("failed to create notepad menu item");
     let quit = MenuItem::with_id(app, "quit", "退出系统", true, None::<&str>)
         .expect("failed to create quit menu item");
 
     let menu = Menu::with_items(app, &[
         &toggle, &engine_info, &sep1,
-        &screenshot, &clipboard, &sep2,
+        &screenshot, &clipboard, &notepad, &sep2,
         &settings, &quit,
     ])
     .expect("failed to create tray menu");
@@ -96,6 +98,10 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
             "clipboard" => {
                 info!("Tray: toggle clipboard");
                 let _ = crate::clipboard_window::toggle_clipboard_window(app);
+            }
+            "notepad" => {
+                info!("Tray: open notepad");
+                crate::notepad_window::open_notepad(app.clone());
             }
             "settings" => {
                 info!("Tray: open settings");

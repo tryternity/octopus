@@ -1,7 +1,8 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, Copy, ScanText, Loader2, Check } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, Copy, ScanText, Loader2, Check, NotebookPen, SquarePen } from "lucide-react";
 import { invoke } from "@/lib/tauri";
+import { openCompactEditor } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
 
@@ -89,18 +90,24 @@ export default function ClipboardItemRow({
     if (ocrLoading) return;
     setOcrLoading(true);
     try {
-      await invoke("ocr_image", { id: item.id });
+      const text = await invoke<string>("ocr_image", { id: item.id });
       setOcrLoading(false);
       setOcrDone(true);
       setTimeout(() => setOcrDone(false), 1000);
-    } catch (e) {
+      // 识别成功 → 打开精简编辑器，保存后回写剪贴板条目 + 刷新列表
+      openCompactEditor(text, (edited) => {
+        invoke("set_clipboard_item_text", { itemId: item.id, text: edited })
+          .then(onChanged)
+          .catch(console.error);
+      });
+    } catch (err) {
       setOcrLoading(false);
-      const msg = String(e);
+      const msg = String(err);
       if (msg.includes("未识别到文本")) {
         setOcrDone(true);
         setTimeout(() => setOcrDone(false), 1000);
       } else {
-        console.error(e);
+        console.error(err);
       }
     }
   };
@@ -121,6 +128,30 @@ export default function ClipboardItemRow({
     } catch (e) {
       console.error(e);
     }
+  };
+
+  const [noteSaving, setNoteSaving] = useState(false);
+  const handleSaveToNote = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (noteSaving) return;
+    setNoteSaving(true);
+    try {
+      await invoke("save_clipboard_to_note", { itemId: item.id });
+    } catch (err) {
+      console.error(err);
+    } finally {
+      setNoteSaving(false);
+    }
+  };
+
+  const handleEditText = (e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (item.item_type === "image" || item.item_type === "file") return;
+    openCompactEditor(item.content, (edited) => {
+      invoke("set_clipboard_item_text", { itemId: item.id, text: edited })
+        .then(onChanged)
+        .catch(console.error);
+    });
   };
 
   const Icon = item.source === "asr" ? Mic
@@ -181,6 +212,22 @@ export default function ClipboardItemRow({
         >
           <Copy className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
         </button>
+        <button
+          className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+          onClick={handleSaveToNote}
+          title="存入记事本"
+        >
+          <NotebookPen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+        </button>
+        {item.item_type !== "image" && item.item_type !== "file" && (
+          <button
+            className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+            onClick={handleEditText}
+            title="编辑"
+          >
+            <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+          </button>
+        )}
         <button
           className={cn(
             "p-0.5 transition-opacity hover:scale-110",

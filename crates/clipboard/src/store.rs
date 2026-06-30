@@ -358,6 +358,16 @@ pub fn update_search_text(conn: &Connection, id: i64, search_text: &str) -> Resu
     Ok(())
 }
 
+/// 更新条目的 content 与 search_text（精简编辑器：用户编辑文本后回写剪贴板条目）。
+/// 两列同写：content 是展示/粘贴源，search_text 是 FTS5 索引源，编辑后须同步以保搜索命中。
+pub fn update_content(conn: &Connection, id: i64, text: &str) -> Result<()> {
+    conn.execute(
+        "UPDATE clipboard_history SET content = ?, search_text = ? WHERE id = ?",
+        params![text, text, id],
+    )?;
+    Ok(())
+}
+
 /// 删除单条。若被删的是图片且无其他条目引用同一 blob，顺带删除 image_data 行。
 pub fn delete_item(conn: &Connection, id: i64) -> Result<()> {
     let blob_hash: Option<String> = conn
@@ -476,24 +486,41 @@ pub fn get_image_thumb(conn: &Connection, hash: &str) -> Result<Option<Vec<u8>>>
 }
 
 /// 删除 image_data 中无引用的 BLOB（引用计数为 0）。返回删除行数。
+///
+/// 引用来源有两处：剪贴板条目（clipboard_history.blob_hash）和笔记内嵌图片
+/// （notes.content_html 里的 `note-img:<hash>`）。两者都不引用才删——
+/// 否则会误删已存入笔记的图片（数据丢失）。
 pub fn cleanup_unreferenced_images(conn: &Connection) -> Result<usize> {
     let deleted = conn.execute(
-        "DELETE FROM image_data WHERE hash NOT IN (\n            SELECT DISTINCT blob_hash FROM clipboard_history WHERE blob_hash IS NOT NULL\n        )",
+        "DELETE FROM image_data WHERE hash NOT IN (\n            SELECT DISTINCT blob_hash FROM clipboard_history WHERE blob_hash IS NOT NULL\n        )\n        AND NOT EXISTS (\n            SELECT 1 FROM notes WHERE notes.content_html LIKE '%note-img:' || image_data.hash || '%'\n        )",
         [],
     )?;
     Ok(deleted)
 }
 
 /// 删除指定 hash 的 image_data（如果无其他条目引用）。
+///
+/// 同 `cleanup_unreferenced_images`：除剪贴板条目外，也要检查笔记是否引用
+/// （`note-img:<hash>`），避免删剪贴板项时连带误删笔记里的同图副本。
 fn delete_image_if_unreferenced(conn: &Connection, hash: &str) {
-    let count: i64 = conn
+    let cb_count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM clipboard_history WHERE blob_hash = ?",
             params![hash],
             |r| r.get(0),
         )
         .unwrap_or(0);
-    if count == 0 {
+    if cb_count > 0 {
+        return;
+    }
+    let note_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM notes WHERE content_html LIKE '%note-img:' || ? || '%'",
+            params![hash],
+            |r| r.get(0),
+        )
+        .unwrap_or(0);
+    if note_count == 0 {
         let _ = conn.execute("DELETE FROM image_data WHERE hash = ?", params![hash]);
     }
 }
@@ -583,6 +610,31 @@ mod tests {
         conn.execute_batch(sql).unwrap();
         conn.execute("PRAGMA foreign_keys = OFF", []).unwrap();
         conn
+    }
+
+    #[test]
+    fn test_update_content() {
+        // update_content 同时改写 content 与 search_text（OCR/剪贴板文本编辑后回写）。
+        let conn = open_test_db();
+        let id: i64 = 1700;
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id, item_type: ItemType::Text, content: "原始文本".into(),
+            search_text: "原始文本".into(), created_at: iso_now(),
+            blob_hash: None, width: None, height: None, has_thumbnail: None,
+            file_count: None, is_rich: false,
+        }).unwrap();
+
+        update_content(&conn, id, "改后文本").unwrap();
+
+        // content 经 ClipboardItem 暴露
+        let item = get_item_by_id(&conn, id).unwrap().unwrap();
+        assert_eq!(item.content, "改后文本");
+        // search_text 不在 ClipboardItem 上，直接 SQL 断言
+        let search: String = conn.query_row(
+            "SELECT search_text FROM clipboard_history WHERE id = ?",
+            params![id], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(search, "改后文本");
     }
 
     #[test]
@@ -909,5 +961,35 @@ mod tests {
         // 删最后 1 条（rows>0 进 track_deletes，累计未达阈值 10 不 rebuild，不报错）
         assert_eq!(delete_by_transcription_ids(&conn, &[3]).unwrap(), 1);
         assert_eq!(count_all(&conn).unwrap(), 0);
+    }
+
+    #[test]
+    fn cleanup_preserves_images_referenced_by_notes() {
+        // 回归 C1：笔记内嵌图片（note-img:<hash>）不得被剪贴板清理误删。
+        // image_data 同时被剪贴板条目（blob_hash）和笔记（content_html 的 note-img:）引用，
+        // 清理必须两处都不引用才删，否则删剪贴板项 / 定时清理会连带误删笔记里的图片（数据丢失）。
+        let conn = open_test_db();
+        insert_image_data(&conn, "hashA", b"webp", b"thumb", 10, 10).unwrap();
+
+        // 1. 一条笔记引用了 hashA，且无任何剪贴板条目引用 → 清理应保留
+        conn.execute(
+            "INSERT INTO notes (title, content_html, content_text, source, created_at, updated_at)\
+             VALUES ('n', '<img src=\"note-img:hashA\">', 'x', 'manual', '2026-06-30 10:00:00', '2026-06-30 10:00:00')",
+            [],
+        )
+        .unwrap();
+        assert_eq!(cleanup_unreferenced_images(&conn).unwrap(), 0);
+        let remains: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM image_data WHERE hash='hashA'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(remains, 1);
+
+        // 2. 删掉笔记引用 → 清理应删除 hashA
+        conn.execute("DELETE FROM notes", []).unwrap();
+        assert_eq!(cleanup_unreferenced_images(&conn).unwrap(), 1);
     }
 }

@@ -3,6 +3,8 @@
 mod audio;
 mod config;
 mod clipboard_commands;
+mod compact_editor_commands;
+mod compact_editor_window;
 mod image_migration;
 mod clipboard_window;
 mod coordinator;
@@ -18,6 +20,8 @@ mod engine_grpc;
 #[cfg(feature = "remote-ws")]
 mod engine_ws;
 mod model_commands;
+mod note_commands;
+mod notepad_window;
 mod paste;
 mod pipeline;
 mod result_window;
@@ -224,6 +228,7 @@ pub fn run() {
             clipboard_commands::save_image_item,
             clipboard_commands::open_file_item,
             clipboard_commands::ocr_image,
+            clipboard_commands::set_clipboard_item_text,
             clipboard_commands::get_image_thumb,
             screenshot_commands::start_screenshot,
             screenshot_commands::confirm_screenshot,
@@ -235,6 +240,26 @@ pub fn run() {
             screenshot_commands::ocr_screenshot,
             screenshot_commands::start_scroll_recording,
             screenshot_commands::stop_scroll_recording,
+            note_commands::list_notes,
+            note_commands::count_notes,
+            note_commands::get_note,
+            note_commands::create_note,
+            note_commands::update_note,
+            note_commands::delete_notes,
+            note_commands::toggle_note_pinned,
+            note_commands::toggle_note_favorite,
+            note_commands::export_note,
+            note_commands::import_note_from_file,
+            note_commands::get_note_image,
+            note_commands::insert_note_image,
+            note_commands::save_transcription_to_note,
+            note_commands::save_clipboard_to_note,
+            note_commands::save_ocr_to_note,
+            notepad_window::open_notepad,
+            compact_editor_commands::open_compact_editor,
+            compact_editor_commands::get_pending_compact_edit,
+            compact_editor_commands::close_compact_editor,
+            coordinator::current_transcription_id,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -462,6 +487,10 @@ pub fn run() {
             {
                 if label == "settings_window" {
                     settings_window::on_settings_closed(app);
+                } else if label == "notepad_window" {
+                    notepad_window::on_notepad_closed(app);
+                } else if label == "compact_editor_window" {
+                    compact_editor_window::on_compact_editor_closed(app);
                 }
             }
             // 应用退出前：排空后台 DB 写入队列，避免 Finalize 等命令入队未落库而丢失

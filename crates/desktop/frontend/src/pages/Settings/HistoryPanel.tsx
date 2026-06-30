@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Copy, Trash2, ChevronDown, Search, ChevronRight } from "lucide-react";
+import { Copy, Trash2, ChevronDown, Search, ChevronRight, NotebookPen } from "lucide-react";
 
 interface HistoryRecord {
   id: number;
@@ -295,6 +295,22 @@ function HistoryRow({
           title="复制"
         >
           <Copy className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
+        </button>
+        <button
+          className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+          onClick={async (e) => {
+            e.stopPropagation();
+            try {
+              await invoke("save_transcription_to_note", {
+                transcriptionId: rec.id,
+                text: rec.polished_text ?? rec.raw_text,
+              });
+              showToast("已存入记事本");
+            } catch (err) { console.error(err); }
+          }}
+          title="存入记事本"
+        >
+          <NotebookPen className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
         </button>
         <button
           className={cn(

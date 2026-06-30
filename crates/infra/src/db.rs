@@ -150,8 +150,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
         // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 8", [])?;
-        log::info!("DB initialized (v7): schema + app_config(setting) + prompts + clipboard_history + image_data + yaml migration");
+        conn.execute("PRAGMA user_version = 9", [])?;
+        log::info!("DB initialized (v9): schema + app_config(setting) + prompts + clipboard_history + image_data + notes + yaml migration");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
@@ -208,6 +208,13 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .context("v7→v8: 重建 clip_fts_au 触发器")?;
         conn.execute("PRAGMA user_version = 8", [])?;
         log::info!("DB migrated to v8: clip_fts_au 限定 UPDATE OF search_text");
+    } else if v == 8 {
+        // v8 → v9：notes / notes_fts 表 + 触发器（记事本功能）。
+        // INIT_SQL 已含 notes 建表（幂等 CREATE ... IF NOT EXISTS），重跑即给现存 v8 库补建。
+        log::info!("DB migrating v8 → v9: adding notes + notes_fts...");
+        conn.execute_batch(INIT_SQL).context("v8→v9: 建 notes + notes_fts 表")?;
+        conn.execute("PRAGMA user_version = 9", [])?;
+        log::info!("DB migrated to v9: notes + notes_fts");
     }
     Ok(())
 }
@@ -1049,6 +1056,7 @@ fn list_transcriptions_at(
     Ok(records)
 }
 
+
 // ── 时间戳工具（避免依赖 chrono）──
 
 /// 当前时间字符串 'YYYY-MM-DD HH:MM:SS'。
@@ -1802,5 +1810,18 @@ mod tests {
         let list = list_prompts_at(&conn).unwrap();
         let dup_count = list.iter().filter(|p| p.title == "同名").count();
         assert_eq!(dup_count, 2, "title 允许重复");
+    }
+
+    #[test]
+    fn notes_table_and_fts_created() {
+        let conn = open_init();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        let fts_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes_fts", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(fts_count, 0);
     }
 }

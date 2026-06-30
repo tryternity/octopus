@@ -28,7 +28,10 @@ pub fn create_result_window(app: &tauri::AppHandle) {
     )
     .title("Result")
     .inner_size(RESULT_WIDTH, RESULT_HEIGHT)
-    .resizable(false)
+    // 必须 resizable(true)：Tauri 在 resizable(false) 时忽略 setSize（见 set_size 文档），
+    // Result 编辑框双模式靠它切换尺寸。精简态用前端 setMinSize=setMaxSize=520×116 锁死防拖，
+    // 长篇态解锁 min=400×200 + 无 max 允许拖拽调大小。
+    .resizable(true)
     .decorations(false)
     .always_on_top(true)
     .skip_taskbar(true)

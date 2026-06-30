@@ -1,11 +1,26 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { LogicalSize } from "@tauri-apps/api/dpi";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { SvgIcon, type IconName } from "@/components/SvgIcon";
 
 const DIVERTED_DELAY_MS = 300;
+
+// ── 编辑框尺寸双模式（精简 520×116 / 长篇 720×480，长篇可拖拽且记忆）──
+const COMPACT_SIZE = { w: 520, h: 116 };
+const EXPANDED_DEFAULT = { w: 720, h: 480 };
+const EXPANDED_SIZE_KEY = "result-expanded-size";
+
+function loadExpandedSize(): { w: number; h: number } {
+  const saved = localStorage.getItem(EXPANDED_SIZE_KEY);
+  if (saved) {
+    const [w, h] = saved.split(",").map(Number);
+    if (w > 0 && h > 0) return { w, h };
+  }
+  return EXPANDED_DEFAULT;
+}
 
 const POLISH_OPTIONS = [
   { mode: 0, label: "关闭" },
@@ -40,6 +55,7 @@ function Result() {
   const [visible, setVisible] = useState(false);
   const [toolbarVisible, setToolbarVisible] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
   const [text, setText] = useState("");
   const [isRecording, setIsRecording] = useState(false);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -62,12 +78,22 @@ function Result() {
   const toolbarVisibleRef = useRef(false);
   const editingStateRef = useRef(false);
   const editSnapshotRef = useRef(""); // 编辑前原始文本快照
+  const expandedRef = useRef(false); // 同步 expanded 给 onResized 闭包（防读旧值）
+  const expandedSizeRef = useRef(loadExpandedSize()); // 长篇模式记忆的逻辑尺寸
 
   const win = getCurrentWindow();
 
   useEffect(() => { editingRef.current = editing; }, [editing]);
   useEffect(() => { toolbarVisibleRef.current = toolbarVisible; }, [toolbarVisible]);
   useEffect(() => { editingStateRef.current = editing; }, [editing]);
+  useEffect(() => { expandedRef.current = expanded; }, [expanded]);
+
+  // 首帧锁精简态 max=520×116（防拖）；窗口 resizable(true) 创建（setSize 需它）。
+  // 只设 max 不设 min，避免与 toggleExpand 切换时 min/max 冲突。
+  // result_window 仅 show/hide 复用、组件不 unmount，首帧锁一次即可。
+  useEffect(() => {
+    win.setMaxSize(new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h));
+  }, [win]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -258,6 +284,48 @@ function Result() {
     catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
   }, [polishLoading, showToast]);
 
+  // 存入记事本：把当前显示文本存为新笔记（内容由前端传入，根治 current_transcription_id
+  // 全局值与显示文本的跨信道竞态），transcription_id 仅作溯源。无活动记录时静默返回。
+  const saveToNote = useCallback(async () => {
+    try {
+      const tid = await invoke<number | null>("current_transcription_id");
+      if (tid == null) return;
+      await invoke<number>("save_transcription_to_note", { transcriptionId: tid, text });
+      showToast("已存入记事本");
+    } catch (e) {
+      console.error(e);
+      showToast("存入记事本失败：" + e);
+    }
+  }, [showToast, text]);
+
+  // 放大/缩小开关：切换编辑框精简(520×116) ↔ 长篇(记忆尺寸或默认 720×480)。
+  // 窗口创建为 resizable(true)——resizable(false) 时 Tauri setSize 被忽略（文档）。
+  // 防拖只用 setMaxSize（不设 min，避免 min>max 冲突致 setMinSize 抛错、setSize 不执行）：
+  //   精简态 max=520×116（拖不大）；长篇态 max=4000 解除后 setSize 放大。
+  // 顺序很关键：切长篇先 setMaxSize(大) 再 setSize（否则被旧 max=116 截断）；
+  // 切精简先 setSize 再 setMaxSize(116)（先放开再锁）。先同步 expandedRef 防 onResized 读旧值。
+  const toggleExpand = useCallback(async () => {
+    const next = !expanded;
+    expandedRef.current = next;
+    setExpanded(next);
+    try {
+      if (next) {
+        await win.setMaxSize(new LogicalSize(4000, 4000));
+        const { w, h } = expandedSizeRef.current;
+        await win.setSize(new LogicalSize(w, h));
+      } else {
+        await win.setSize(new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h));
+        await win.setMaxSize(new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h));
+      }
+      // 临时诊断：读回实际逻辑尺寸（确认 setSize 生效；确认后删除）
+      const factor = await win.scaleFactor();
+      const s = await win.outerSize();
+      showToast(`尺寸→${Math.round(s.width / factor)}×${Math.round(s.height / factor)}`);
+    } catch (e) {
+      showToast("切换尺寸失败：" + String(e));
+    }
+  }, [expanded, win, showToast]);
+
   // 全局编辑快捷键（edit_global_shortcut）：后端唤起窗口+focus 后 emit 此事件，
   // 复用 toggleEdit——未编辑则进入、已编辑则保存，与窗口内 Cmd+Enter 同语义。
   // 独立 useEffect（而非并入上面的事件数组）：toggleEdit 在此声明，前置使用会触发 TS2448。
@@ -283,6 +351,23 @@ function Result() {
     });
     return () => { cancelled = true; unlisten?.(); };
   }, [polishNow]);
+
+  // 长篇模式拖拽调整窗口 → 记忆逻辑尺寸到 localStorage，下次切长篇恢复。
+  // 精简模式（expandedRef=false）的 setSize 也会触发，但被门控跳过，不污染长篇记忆。
+  useEffect(() => {
+    let unlisten: UnlistenFn | undefined;
+    let cancelled = false;
+    win.onResized(async () => {
+      if (!expandedRef.current) return;
+      const factor = await win.scaleFactor();
+      const s = await win.outerSize();
+      const w = s.width / factor;
+      const h = s.height / factor;
+      expandedSizeRef.current = { w, h };
+      localStorage.setItem(EXPANDED_SIZE_KEY, `${w},${h}`);
+    }).then((fn) => { if (cancelled) fn(); else unlisten = fn; });
+    return () => { cancelled = true; unlisten?.(); };
+  }, [win]);
 
   const updateEditBuffer = useCallback(() => {
     if (!editingRef.current) return;
@@ -369,6 +454,8 @@ function Result() {
     { id: "denoise", icon: "denoise", label: "降噪模式", active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
     { id: "polish", icon: "polish", label: "润色模式", active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
     { id: "polish-now", icon: "polish-now", label: "立即润色", disabled: polishLoading, onClick: polishNow },
+    { id: "note", icon: "note", label: "存入记事本", disabled: !text.trim(), onClick: saveToNote },
+    { id: "toggle-size", icon: (expanded ? "minimize" : "expand-edit") as IconName, label: expanded ? "缩小" : "放大", onClick: toggleExpand },
     ...(editing
       ? [
           { id: "cancel-edit", icon: "cancel-editor" as IconName, label: "取消编辑", onClick: cancelEdit },
@@ -450,7 +537,8 @@ function Result() {
         <div
           ref={textRef}
           className={cn(
-            "text-sm leading-[1.6] text-foreground max-h-[63px] overflow-y-auto",
+            "text-sm leading-[1.6] text-foreground overflow-y-auto",
+            expanded ? "h-full" : "max-h-[63px]",
             "break-words outline-none thin-scrollbar",
             !editing && "cursor-text",
           )}

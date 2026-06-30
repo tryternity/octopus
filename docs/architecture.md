@@ -13,6 +13,7 @@ octopus/
 │   ├── clipboard/   # 剪贴板历史管理 (octopus-clipboard)
 │   ├── ocr/         # OCR 图片识别 (octopus-ocr)
 │   ├── capx/        # 屏幕截图 (octopus-capx)
+│   ├── notepad/     # 记事本/内容收集箱 (octopus-notepad)
 │   ├── llm/         # LLM 润色 (octopus-llm)
 │   ├── cli/         # 命令行工具 (octopus-cli)
 │   ├── server/      # HTTP/WebSocket 服务 (octopus-server)
@@ -27,7 +28,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表 / `image_data` 表）。DB 迁移至 v8。`with_db` 为公开 API 供其他 crate 调用。`image_util`（PNG 原样保存 + WebP 有损压缩（`webp` crate）+ JPEG 有损压缩（`image` crate JpegEncoder），均接受 quality 参数）。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表 / `image_data` 表 / `notes` 表 + `notes_fts` FTS5 虚表）。DB 迁移至 v9。`with_db` 为公开 API 供其他 crate 调用。`image_util`（PNG 原样保存 + WebP 有损压缩（`webp` crate）+ JPEG 有损压缩（`image` crate JpegEncoder），均接受 quality 参数）。
 
 ### octopus-asr-local（核心推理库）
 
@@ -154,6 +155,35 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 详见 [spec](superpowers/specs/2026-06-28-screenshot-design.md)。
 
+### octopus-notepad（记事本 / 内容收集箱）
+
+独立的记事本业务 crate，仅依赖 `octopus-infra`。定位为「内容收集箱」——ASR / OCR / 剪贴板的结果一键存为新笔记，富文本（TipTap / ProseMirror 内部模型）为主，md / txt / html 为序列化格式。序列化用 `scraper`（HTML→纯文本），文件 I/O 用 `std` + `dirs`。
+
+| 模块 | 职责 |
+|---|---|
+| `model` | `NoteSource` 枚举（`asr`/`ocr`/`clipboard`/`manual`，serde 小写，manual 默认）+ `as_str`/`from_str`；`Note`（10 字段）；`NoteFilter` |
+| `serialize` | `extract_text(html)`：scraper 解析 HTML → 纯文本（块级元素换行、`<img>`→「[图片]」、折叠空白），供 FTS 索引与导出 txt |
+| `store` | CRUD + FTS5 检索 + 计数 + 排序（`is_pinned DESC, updated_at DESC, id DESC`）+ 分页 + `toggle_pinned`/`toggle_favorite`；CJK 三元分词：≥3 字符走 MATCH 短语，<3 字符 LIKE 回退 |
+| `export` | 落盘 `~/Documents/octopus/notes/`（`dirs::document_dir` 跨平台）；`write_export`（stem 非法字符→`_` 防目录穿越 + 冲突 `-2/-3`）、`read_import`（读 .md 原文，md→HTML 解析在前端） |
+
+**DB**：`notes` 表（`crates/infra/src/db.sql`，`id INTEGER PRIMARY KEY AUTOINCREMENT`——与 clipboard/transcriptions 毫秒戳 id 不同，notes 有独立 `created_at`/`updated_at` 列；字段 title/content_html/content_text/source/source_ref_id/is_pinned/is_favorite/created_at/updated_at）+ `notes_fts`（FTS5 `trigram` 分词，`content='notes'`）+ 3 触发器（insert/update/delete 同步 fts）。迁移经 `init_schema` 的 `PRAGMA user_version` v8→v9（`crates/infra/src/db.rs`）。
+
+**溯源**：`source` 标来源类型，`source_ref_id` 关联原记录（transcription_id / clipboard item id）。`infra::get_transcription_display_text(id)`（`edited.or(polished).unwrap_or(raw)`）供 `save_transcription_to_note` 取展示文本。MVP 来源徽标点击仅打开 Settings 对应页，精确滚动高亮到 `source_ref_id` 行留作后续。
+
+**图片桥接**：notepad crate 不依赖 clipboard，图片 BLOB 由 desktop 命令层桥接——`get_note_image(hash)`（按 sha256 取 clipboard `image_data` 的 PNG）/ `insert_note_image`（写 image_data）。hash = `SHA-256(PNG bytes)`，与 clipboard `image_data.hash` 去重键一致，同图共享一份 BLOB。前端用自定义 `note-img:<hash>` 协议在 TipTap `Image` NodeView 里解析渲染。
+
+**桌面端集成**（`octopus-desktop`）：
+- `notepad_window.rs`：独立「记事本」窗口（单例 `get_webview_window`，1000×680，仿 `settings_window`），macOS 关窗回切 Accessory 策略。
+- `note_commands.rs`：15 个 Tauri 命令薄层 + 3 个集成入口（`save_transcription_to_note` / `save_clipboard_to_note` / `save_ocr_to_note`，写入即 `emit("notepad://changed")`）+ 图片桥接。
+- `compact_editor_commands.rs` + `compact_editor_window.rs`：**精简编辑器**（纯文本编辑工具，与完整版记事本并列——前者只编辑、结果经事件返回调用方、不落笔记；后者完整笔记：标题/分类/富文本/持久化）。窗口单例 + 关窗即销毁，原生标题栏 720×560 可调；3 个命令——`open_compact_editor`（开窗 + 文本写入 `PENDING_COMPACT_EDIT` 暂存）/ `get_pending_compact_edit`（前端拉取并 take 暂存）/ `close_compact_editor`（关窗）；macOS 开窗切 Regular、关窗切回 Accessory（与 notepad/settings 对称）。
+- `clipboard_commands.rs::set_clipboard_item_text`：编辑器回写剪贴板条目——同写 `content` + `search_text`（保 FTS 命中）+ 同步系统剪贴板，供 OCR / 剪贴板文本条目「编辑」按钮回写。
+- `coordinator.rs`：`static CURRENT_TRANSCRIPTION_ID: AtomicI64`（3 个会话起点记录）+ `current_transcription_id` 命令，供 Result 窗口溯源当前识别记录（无需改文本事件 payload）。
+- 前端：TipTap v3 编辑器（`pages/Notepad/`，工具栏 + 800ms 防抖自动保存 + 导入导出 + `note-img` 图片渲染），`useNotes` hook（列表 + 搜索防抖 + 分页 + `notepad://changed` 监听）。
+
+**入口**：托盘菜单「记事本」；识别结果窗口工具栏「存入记事本」；剪贴板浮窗条目 + Settings 剪贴板管理页「存入记事本」；Settings 历史记录管理页「存入记事本」。OCR 命令已注册，MVP 不在 OCR 自动流程强制加按钮。
+
+详见 [spec](superpowers/specs/2026-06-30-notepad-design.md) 与 [实施计划](superpowers/plans/2026-06-30-notepad.md)。
+
 ### octopus-desktop（桌面应用）
 
 基于 Tauri 2 的桌面应用，支持系统托盘、全局快捷键、结果窗口、流式识别。
@@ -169,10 +199,12 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 | 窗口 | 用途 |
 |------|------|
-| `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 116→148px），移出收起；工具精简为 5 个——**关闭**（首位，放弃内容保留 DB 记录）/ 系统设置 / 降噪模式 / 润色模式 / 立即润色 / 编辑（编辑态追加取消/保存；编辑入口两条——窗口内 `edit_shortcut` 固定 Cmd+Enter（结果窗聚焦时 toggle 进入/保存，不在设置页管理）+ 全局 `edit_global_shortcut` 默认 CmdOrCtrl+Shift+E（任意应用聚焦时唤起结果窗 show+set_focus 并 toggle 编辑，复用同一 toggleEdit，空文本只唤起不进编辑））。全局润色入口：`polish_global_shortcut` 默认 CmdOrCtrl+Shift+L（任意应用聚焦时 show 结果窗**不聚焦** + 触发 polish_now，复用前端 polishNow：空文本静默、polishLoading 幂等）。语音模型和润色模型入口已移至 Settings 页面（模型太多，下拉空间有限）。由 `app_config.hide_toolbar`（默认 `true`）控制：`true`=hover 显隐，`false`=始终显示。**运行时切换立即生效**：设置窗口改 `hide_toolbar` → emit `config-changed` 事件 → result window 的 `refreshActive()` 双向切换。**历史**：曾同时存在 `recording_overlay` 窗口（独立 WebView 渲染进程），UI 统一到 result_window 后 overlay 已废弃。 |
+| `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 116→148px），移出收起；工具精简为 5 个——**关闭**（首位，放弃内容保留 DB 记录）/ 系统设置 / 降噪模式 / 润色模式 / 立即润色 / 编辑（编辑态追加取消/保存；编辑入口两条——窗口内 `edit_shortcut` 固定 Cmd+Enter（结果窗聚焦时 toggle 进入/保存，不在设置页管理）+ 全局 `edit_global_shortcut` 默认 CmdOrCtrl+Shift+E（任意应用聚焦时唤起结果窗 show+set_focus 并 toggle 编辑，复用同一 toggleEdit，空文本只唤起不进编辑））。全局润色入口：`polish_global_shortcut` 默认 CmdOrCtrl+Shift+L（任意应用聚焦时 show 结果窗**不聚焦** + 触发 polish_now，复用前端 polishNow：空文本静默、polishLoading 幂等）。语音模型和润色模型入口已移至 Settings 页面（模型太多，下拉空间有限）。由 `app_config.hide_toolbar`（默认 `true`）控制：`true`=hover 显隐，`false`=始终显示。**运行时切换立即生效**：设置窗口改 `hide_toolbar` → emit `config-changed` 事件 → result window 的 `refreshActive()` 双向切换。**历史**：曾同时存在 `recording_overlay` 窗口（独立 WebView 渲染进程），UI 统一到 result_window 后 overlay 已废弃。**编辑框尺寸双模式**（2026-06-30）：默认精简 520×116 小条（文本区 `max-h-[63px]`）；工具栏「放大/缩小」开关 toggle 切长篇模式——`setMaxSize(4000)` 解上限 + `setSize(记忆尺寸或默认 720×480)`，文本区 `h-full` 撑满、可拖拽调大小，`onResized` 把逻辑尺寸存 localStorage（`result-expanded-size`），下次切长篇恢复；切精简 `setSize(520×116)` + `setMaxSize(520×116)` 锁回。尺寸与编辑态解耦（编辑仍走 `toggleEdit`/contentEditable）。窗口全程 `resizable(true)` 创建，控拖全靠前端 `setMaxSize`（不调 `setResizable`）；「放大无效」真根因曾误判为 resizable，实为 Tauri 2 ACL 权限缺失（`93f58a2` 在 `capabilities/default.json` 补 `allow-set-max-size`/`allow-set-min-size`/`allow-set-resizable`/`allow-outer-size`/`allow-scale-factor`，前端 `await` 的窗口命令未授权会抛 `not allowed by ACL`）。 |
 | `settings_window` | 独立设置窗口（原生标题栏、圆角、可调大小）。五页面侧边栏布局：系统设置 / 识别记录 / 剪贴板 / 模型管理 / 提示词。React 组件化，表单用 react-hook-form。窗口位置记忆。`open_settings` 支持初始页面参数（`PENDING_PAGE` 暂存 + `get_initial_page` 拉取 + `settings://navigate` 事件），剪贴板浮窗「管理」按钮直接跳转剪贴板 tab。 |
+| `notepad_window` | 独立「记事本（内容收集箱）」窗口（单例 `get_webview_window`，1000×680，原生标题栏，仿 `settings_window`）。三栏布局：左侧列表（搜索 + 来源 tab + 收藏过滤 + 分页）、中间 TipTap 富文本编辑器（工具栏 + 800ms 防抖自动保存 + md/txt/html 导入导出 + `note-img:<hash>` 图片渲染）、右侧空。托盘菜单「记事本」唤起；macOS 关窗 `Destroyed` 经 `on_notepad_closed` 回切 `Accessory` 激活策略（与 settings_window 对称）。业务逻辑见 [`octopus-notepad`](#octopus-notepad记事本--内容收集箱)。 |
+| `compact_editor_window` | 精简文本编辑器窗口（原生标题栏、720×560 可调、居中）。**与 `notepad_window` 并列但定位不同**——纯编辑工具：工具栏 + textarea，关窗即销毁，编辑结果经事件返回调用方（`get_pending_compact_edit` 拉取 PENDING 暂存），**不持久化为笔记**。完整版记事本（notepad_window）才是承载标题/分类/富文本/持久化的完整笔记。单例：open 时已存在则 show+focus 并重发 load 文本，否则创建；macOS 开窗切 Regular、关窗 `Destroyed` 经 `on_compact_editor_closed` 切回 Accessory（与 notepad/settings 对称）。入口：OCR 识别后、剪贴板文本条目「编辑」按钮（语音结果窗**不用**独立编辑器——改为原地尺寸双模式，见 `result_window` 行）。 |
 | `image_migration` | 一次性迁移：`~/.octopus/clipboard_images/` → DB `image_data` BLOB。幂等（已存在的 hash 跳过），迁移成功后删除目录。启动时 `main.rs` setup 阶段调用。 |
-| `clipboard_window` | 剪贴板历史浮窗（300×600，无边框圆角透明置顶，Alt+V 唤起——toggle 按焦点判断：失焦状态按快捷键直接 `show`+`set_focus` 激活，仅「可见且有焦点」才收起，避免 always-on-top 窗口失焦后仍 visible 导致需按两次；窗口位置记忆）。顶部标题栏（X + 「剪贴板」 + 右侧两 toggle 成组：监听开关 CircleCheck（绿圆+勾=监听中）/ CircleX（红圆+叉=已关闭）（`clipboard_enabled` 热重载，复制敏感内容前可快速暂停记录）+ Pin，`data-tauri-drag-region="deep"` + `cursor-grab`，点标题文本/空白均可拖动窗口，按钮因 clickable 元素被 drag.js 跳过、仍正常可点），搜索框 + 6 类过滤（全部/语音/文本/图片/文件/收藏，纯图标 tooltip），列表（hairline 分隔线，ASR 条目左侧 voice 色条，图片条目内联 WebP 缩略图，hover 显示复制/收藏/保存/OCR/打开/删除按钮）。单击选中不关闭，双击写剪贴板 → 隐藏浮窗 → 模拟 Cmd+V 自动粘贴（`paste_clipboard_item`，后端串起 hide `clipboard_window` + `focus_tracker.restore_focus` + `simulate_paste`；显式「复制」按钮才走 `copy_clipboard_item` 不隐藏窗口）。复制/粘贴按条目类型还原真实内容——文本 `write_text`、图片从 `image_data` 读 WebP 原图转 PNG 后 `write_image`、文件解析 JSON 路径后 `write_files`（`write_item_to_clipboard` 统一分发；旧实现无视类型一律 `write_text`，导致图片粘出 blob_hash、文件粘出 JSON 字符串）。图片条目可保存到 `~/Downloads/octopus/`（自定义浮层选格式 JPEG/WebP/PNG + 质量，默认 JPEG 85%，可选保存后打开文件夹）。OCR 识别文本写入 search_text + 剪贴板 + osascript 新建 TextEdit 文档。底部「管理」按钮跳转 Settings 剪贴板 tab（完整批量管理）。Settings 剪贴板/识别记录管理页手动「加载更多」分页，行操作与浮窗一致。修改命令（删除/清空/收藏/批量删除）成功后 `emit("clipboard://changed")` 广播，浮窗（`useClipboardHistory`）+ 设置页（`ClipboardPanel`）双端同步刷新。文件路径跨平台格式不同（Linux X11/Wayland = `file://` URI + 百分号编码；macOS/Windows = 已解码普通路径），显示（`formatFilePaths`）与打开（`open_file_item`）仅对 `file://` 开头解码，避免误伤含字面 `%XX` 的普通路径（Windows 剪贴板文件恒为已解码普通路径——clipboard-rs `win.rs` 走 `CF_HDROP`/`FileList` 返回普通 `C:\...` 路径，`file://` 分支不会触发，故无 `file:///C:/` 前导斜杠问题）。`open_file_item` 打开命令按平台：macOS `open` / Linux `xdg-open` / Windows `cmd /c start ""`（默认关联程序）；Windows **不用** `explorer <file>`——它只在资源管理器「定位并选中」文件、不调默认程序（旧实现用 explorer，已改 cmd start）。 |
+| `clipboard_window` | 剪贴板历史浮窗（300×600，无边框圆角透明置顶，Alt+V 唤起——toggle 按焦点判断：失焦状态按快捷键直接 `show`+`set_focus` 激活，仅「可见且有焦点」才收起，避免 always-on-top 窗口失焦后仍 visible 导致需按两次；窗口位置记忆）。顶部标题栏（X + 「剪贴板」 + 右侧两 toggle 成组：监听开关 CircleCheck（绿圆+勾=监听中）/ CircleX（红圆+叉=已关闭）（`clipboard_enabled` 热重载，复制敏感内容前可快速暂停记录）+ Pin，`data-tauri-drag-region="deep"` + `cursor-grab`，点标题文本/空白均可拖动窗口，按钮因 clickable 元素被 drag.js 跳过、仍正常可点），搜索框 + 6 类过滤（全部/语音/文本/图片/文件/收藏，纯图标 tooltip），列表（hairline 分隔线，ASR 条目左侧 voice 色条，图片条目内联 WebP 缩略图，hover 显示复制/收藏/保存/OCR/打开/删除按钮）。单击选中不关闭，双击写剪贴板 → 隐藏浮窗 → 模拟 Cmd+V 自动粘贴（`paste_clipboard_item`，后端串起 hide `clipboard_window` + `focus_tracker.restore_focus` + `simulate_paste`；显式「复制」按钮才走 `copy_clipboard_item` 不隐藏窗口）。复制/粘贴按条目类型还原真实内容——文本 `write_text`、图片从 `image_data` 读 WebP 原图转 PNG 后 `write_image`、文件解析 JSON 路径后 `write_files`（`write_item_to_clipboard` 统一分发；旧实现无视类型一律 `write_text`，导致图片粘出 blob_hash、文件粘出 JSON 字符串）。图片条目可保存到 `~/Downloads/octopus/`（自定义浮层选格式 JPEG/WebP/PNG + 质量，默认 JPEG 85%，可选保存后打开文件夹）。OCR 识别后写入 search_text + 系统剪贴板，并打开精简编辑器（`compact_editor_window`）供用户编辑、保存经 `set_clipboard_item_text` 回写剪贴板条目（不再 osascript 新建 TextEdit）。底部「管理」按钮跳转 Settings 剪贴板 tab（完整批量管理）。Settings 剪贴板/识别记录管理页手动「加载更多」分页，行操作与浮窗一致。修改命令（删除/清空/收藏/批量删除）成功后 `emit("clipboard://changed")` 广播，浮窗（`useClipboardHistory`）+ 设置页（`ClipboardPanel`）双端同步刷新。文件路径跨平台格式不同（Linux X11/Wayland = `file://` URI + 百分号编码；macOS/Windows = 已解码普通路径），显示（`formatFilePaths`）与打开（`open_file_item`）仅对 `file://` 开头解码，避免误伤含字面 `%XX` 的普通路径（Windows 剪贴板文件恒为已解码普通路径——clipboard-rs `win.rs` 走 `CF_HDROP`/`FileList` 返回普通 `C:\...` 路径，`file://` 分支不会触发，故无 `file:///C:/` 前导斜杠问题）。`open_file_item` 打开命令按平台：macOS `open` / Linux `xdg-open` / Windows `cmd /c start ""`（默认关联程序）；Windows **不用** `explorer <file>`——它只在资源管理器「定位并选中」文件、不调默认程序（旧实现用 explorer，已改 cmd start）。 |
 
 **macOS 动态激活策略（Dock 图标显隐）：** 应用启动即 `Accessory` 模式（无 Dock 图标，纯托盘应用）。用户打开设置窗口时 `open_settings` 切 `Regular`，并经 `set_dock_icon()` 用 `objc2` 手动 `setApplicationIconImage`（release 裸二进制无 .app bundle，Tauri 仅 debug 自动设图标，故需手动设 Dock + 应用图标）；设置窗口 `Destroyed` 事件触发 `on_settings_closed` 切回 `Accessory`。`#[cfg(target_os = "macos")]` 条件编译，Windows / Linux 无此逻辑。
 

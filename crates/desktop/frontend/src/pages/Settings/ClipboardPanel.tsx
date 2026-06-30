@@ -6,7 +6,7 @@ import type { ClipboardItem } from "@/types/clipboard";
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Copy, Download, FolderOpen,
-  ScanText, Loader2, Check,
+  ScanText, Loader2, Check, NotebookPen,
 } from "lucide-react";
 import SaveImagePopover from "../Clipboard/SaveImagePopover";
 
@@ -381,6 +381,19 @@ function ClipboardRow({
           title="复制"
         >
           <Copy className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
+        </button>
+        <button
+          className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+          onClick={async (e) => {
+            e.stopPropagation();
+            try {
+              await invoke("save_clipboard_to_note", { itemId: item.id });
+              showToast("已存入记事本");
+            } catch (err) { console.error(err); }
+          }}
+          title="存入记事本"
+        >
+          <NotebookPen className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
         </button>
         <button
           className={cn(
