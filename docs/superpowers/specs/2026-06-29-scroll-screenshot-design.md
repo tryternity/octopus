@@ -1,272 +1,153 @@
 # 截图三期：滚动截屏设计
 
-**日期**: 2026-06-29
-**状态**: 引擎已完成（stitch.rs + 录制循环），交互方案重构中
+**日期**: 2026-06-29（2026-06-30 重写拼接引擎为 FFT 相位相关）
+**状态**: manual 模式可用，FFT 拼接引擎稳定
 **分支**: `feature/clipboard-research`
 
 ## 0. 概述
 
-截图三期实现滚动截屏——用户框选区域后点击工具栏「滚动截图」按钮进入录制模式。
+截图三期实现滚动截屏——用户框选区域后点击工具栏「滚动截图」按钮进入录制模式，在选区外手动滚动触控板/滚轮，后端 33fps 截帧 + **1D FFT 相位相关**亚像素位移估计 + 拼接成长图。
 
-**交互方案（参考 Xnip）**：
-- 截图窗口**保持显示**（不隐藏），选区内亮、选区外暗遮罩
-- `set_ignore_cursor_events(true)` 让滚轮穿透到底层应用
-- Canvas 每帧用新的屏幕截图重绘选区（显示**实时滚动画面**，非冻结截图）
-- 工具栏在选区**正下方**（位置不变），可交互
-- 右侧弹出**预览窗口**显示拼接中的长图
-- 用户在任意位置滚动触控板，底层应用跟着滚动，选区内的画面变化被拼接
-- 点击工具栏「停止」或按 ESC 结束，长图入库
+### 核心架构
 
-基于 `imageproc`（Sobel 梯度 + NCC 模板匹配）实现帧间拼接，参考 DigitShot 的 `stitch.rs`。`crates/capx/src/stitch.rs` 拼接引擎已实现。
+**置顶透明覆盖层事件穿透 + 33fps 增量捕获 + 1D FFT 相位相关亚像素拼接**
 
-## 1. 架构（修订）
+## 1. 系统层
 
-```
-选区确定 → 点击工具栏「滚动截图」按钮
-         │
-         ▼
-┌─────────────────────────────────────────────────┐
-│  1. 进入滚动录制模式                              │
-│     - 截图窗口 set_ignore_cursor_events(true)     │
-│     - 后端启动录制循环（spawn_blocking 截图）       │
-│     - 工具栏按钮变为「停止」                        │
-│     - 选区边框变为绿色（录制中）                    │
-│     - 右侧弹出预览窗口                             │
-├─────────────────────────────────────────────────┤
-│  2. 用户手动滚动触控板（任意位置）                  │
-│     - 滚轮穿透截图窗口到底层应用                    │
-│     - 后端 10fps 截取选区 → NCC 匹配 → 拼接        │
-│     - Canvas 每帧重绘选区（显示实时画面）           │
-│     - 预览窗口实时更新拼接长图                      │
-├─────────────────────────────────────────────────┤
-│  3. 用户点击工具栏「停止」或按 ESC                  │
-│     - set_ignore_cursor_events(false) 恢复         │
-│     - 生成最终长图 → 入库 → 关窗口                  │
-└─────────────────────────────────────────────────┘
-```
+### 1.1 透明窗口 + Occlusion Throttling 破解
 
-### 核心难点：ignore cursor 后工具栏可交互
+- `.transparent(true)` + 前端 `ctx.clearRect(x, y, w, h)` 挖 100% 透明孔
+- macOS Window Server 识别底层窗口"可见"，保持底层应用持续 repainting
 
-截图窗口整体 `ignore_cursor_events(true)` 后，工具栏/预览/停止按钮也无法点击。解决方案：
+### 1.2 Key Window 焦点让出
 
-**方案：区域化 cursor events**（macOS 原生支持）
-- 前端每帧 `mousemove` 时检测鼠标是否在工具栏/预览区域
-- 在工具栏区域 → `set_ignore_cursor_events(false)`（可交互）
-- 离开工具栏区域 → `set_ignore_cursor_events(true)`（滚轮穿透）
+- `save_frontmost_app()` 暂存前台 app PID
+- `activate_prev_app()` 主线程 `NSRunningApplication.activateWithOptions` 激活前台 app
+- 30ms 独立线程轮询鼠标位置，进入工具栏时 `setIgnoresMouseEvents(false)`
 
-前端通过 invoke 调 `set_cursor_passthrough(bool)` 命令动态切换。
+### 1.3 坐标映射
 
-### 新增模块
+- NSWindow Cocoa frame（原点左下）+ 主屏高度翻转 → Quartz 坐标
+- `CGWindowListCreateImage` 只截选区 + 排除截图窗口
+
+## 2. 拼接引擎（stitch.rs）— 1D FFT 相位相关
+
+### 2.1 核心算法
 
 ```
-crates/capx/src/stitch.rs           # 拼接引擎：NCC 匹配 + 粘性检测 + 图像拼接
-crates/desktop/src/screenshot_commands.rs  # start/stop_scroll_recording 命令
-crates/desktop/frontend/src/pages/Screenshot/
-  ├── ScrollPreview.tsx             # 实时预览组件（DOM 浮层）
-  └── index.tsx                     # 滚动模式状态机扩展
+首帧 → 初始化 canvas
+第二帧 → detect_sticky → 裁掉 canvas 的 sticky 区域 → 用第二帧有效区域初始化参考投影
+后续帧 →
+  ① Sobel 边缘 → 垂直投影（每行平均边缘强度）→ 1D 信号
+  ② 1D FFT 相位相关（参考帧 vs 当前帧）：
+     a. FFT(a), FFT(b)
+     b. R = conj(Fa) * Fb / |conj(Fa) * Fb|  （归一化互功率谱）
+     c. IFFT(R) → 峰值位置 = 位移 dy（亚像素）
+     d. 抛物线拟合精化：0.1px 精度
+  ③ dy < 0（内容上移 = 用户向下滚）→ 追加当前帧底部 |dy| 行到画布
+  ④ 更新参考投影为当前帧
+停止 → finalize：补全最后一帧的 sticky footer 区域 → emit 最终预览
 ```
 
-### 依赖
+### 2.2 相比 NCC 的优势
 
-- `imageproc = "0.25"`（Sobel 梯度 + NCC 模板匹配）
-- 已有：`image`、`xcap`
+| 维度 | NCC 模板匹配 | FFT 相位相关 |
+|---|---|---|
+| 精度 | 整数像素 | 亚像素（抛物线拟合 ~0.1px） |
+| 周期性内容 | 模板在 d、d±45 处得分接近→假匹配 | 频率域全局主峰→鲁棒 |
+| 计算复杂度 | O(W×H×搜索范围) | O(N log N)，N=选区高度 |
+| 模板选择 | 需找"纹理丰富"的 strip | 全图参与，无需选模板 |
 
-## 2. 拼接引擎（stitch.rs）
-
-### 2.1 数据结构
+### 2.3 数据结构
 
 ```rust
 pub struct Stitcher {
-    canvas: RgbaImage,          // 当前拼接结果（不断增长的长图）
-    last_frame: GrayImage,      // 上一帧的边缘图（Sobel 梯度）
-    sticky_top: u32,            // 粘性 header 高度（像素行数）
-    sticky_bottom: u32,         // 粘性 footer 高度
-    active_cols: Range<u32>,    // 活跃列范围（排除静态侧边栏）
-    last_delta: i32,            // 上次重叠量（惯性预测）
-    low_conf_streak: u32,       // 连续低置信帧数
+    canvas: RgbaImage,
+    reference_proj: Vec<f64>,   // 参考帧的 1D 垂直投影（有效区域）
+    sticky_top: u32,
+    sticky_bottom: u32,
+    detected: bool,
+    config: StitchConfig,
 }
 
 pub struct StitchConfig {
-    template_ratio: f32,    // 模板高度 = 有效高度 × 0.2
-    min_confidence: f32,    // NCC 最低阈值 0.5
-    inertia_px: i32,        // 惯性搜索窗口 ±100
-    max_lowconf_streak: u32,// 连续低置信上限 8 帧
+    min_scroll_px: f64,    // 最小有效滚动（2.0px）
+    min_confidence: f64,   // 相位相关峰值置信度（0.15）
 }
 ```
 
-### 2.2 处理一帧的流程
+### 2.4 Sticky 处理
 
-```
-新帧 RGBA
-  │
-  ├─ 1. 预处理：RGBA → 灰度 → Sobel 梯度
-  ├─ 2. 首帧：初始化 sticky header/footer + active cols
-  │     - sticky_top：比较首帧和第二帧，找顶部不变的行数
-  │     - sticky_bottom：同理底部
-  │     - active_cols：比较两帧差异，定位变化的列范围
-  ├─ 3. 重复帧检测：稀疏采样比较（step=8），均值 < 2.0 → 跳过
-  ├─ 4. NCC 模板匹配：
-  │     - 从上一帧底部取模板（高度 = 有效高度 × 20%）
-  │     - 在当前帧顶部 ±inertia_px 范围内搜索
-  │     - 置信度 ≥ 0.5 → 命中；< 0.5 → 全范围重搜
-  ├─ 5. 拼接：裁剪当前帧的非重叠行 → 追加到 canvas
-  └─ 6. 更新状态：last_delta、缓存边缘图
-```
+- `detect_sticky`：首帧 vs 第二帧逐行比较，找顶部/底部不变的行（sticky header/footer）
+- canvas 初始化时**裁掉 sticky 区域**（只保留有效内容）
+- `finalize`：停止时补全最后一帧的 sticky footer
 
-### 2.3 粘性 header/footer 处理
+### 2.5 位移方向
 
-- 初始化时检测（首对帧逐行比较，相同的顶部行 = sticky header）
-- 每帧裁掉 sticky 区域后再做匹配
-- 最终长图只在最顶部和最底部各保留一次
+`R = conj(Fa) * Fb`：
+- 用户向下滚动 → 当前帧内容上移 → 峰值在 `n-d` → `dy = d-n < 0`
+- `dy < 0` → 向下滚动 → 追加当前帧底部 `|dy|` 行
 
-### 2.4 活跃列检测
-
-- 比较两帧差异，哪些列在变化 = 滚动内容区域
-- 只在活跃列范围内做 NCC（排除静态侧边栏干扰）
-
-### 2.5 降级策略
-
-- 连续低置信帧 < 8：保持上次 delta 硬拼接
-- 连续低置信帧 ≥ 8：停止拼接，emit 警告，等待用户停止
-
-## 3. 实时预览窗口（ScrollPreview）
-
-### 3.1 位置
-
-默认选区右侧，空间不足放左侧（参考 Xnip 布局）：
-- `previewRight = sel.x + sel.w + 12 + 200 <= window.innerWidth`
-- 右侧：`x = sel.x + sel.w + 12`
-- 左侧：`x = sel.x - 12 - 200`
-- `y = sel.y`
-
-```
-┌────────┬──────────┐
-│        │ 预览     │
-│ 选区   │ ┌──────┐ │
-│（实时） │ │ 长图  │ │
-│        │ │      │ │
-├────────│ └──────┘ │
-│ 工具栏 │ 1234px   │
-└────────┴──────────┘
-```
-
-### 3.2 属性
-
-- 宽度固定 200px（选区宽度的缩略图）
-- 高度自适应内容（随拼接增长，最大不超屏幕高度的 80%）
-- 顶部状态条：绿色圆点 + 「录制中」+ 已拼接高度（px）
-- 追踪丢失：红色圆点 + 「追踪丢失」
-- 拼接图像通过 `canvas.toDataURL()` 缩放到预览宽度渲染
-
-### 3.3 更新频率
-
-- 后端拼接引擎每处理一帧 → emit `scroll://frame`（含选区实时画面 base64 + 预览 base64）
-- 前端监听事件 → Canvas 重绘选区 + 预览 `<img>` 替换 src
-
-## 4. 数据流与状态机（修订）
-
-### 4.1 前端状态机
-
-```
-Mode: "scrolling"
-
-selected → 点击「滚动截图」按钮 → scrolling
-    │                                    │
-    │     ┌──────────────────────────────┤
-    │     │ scrolling 模式：              │
-    │     │ - 后端：spawn_blocking 录制   │
-    │     │ - 截图窗口 ignore_cursor=true │
-    │     │ - Canvas 显示实时画面         │
-    │     │ - 工具栏：停止 + 预览         │
-    │     │ - 鼠标在工具栏区域时恢复交互   │
-    │     └──────────────────────────────┤
-    │                                    │
-    │                              点击「停止」或 ESC
-    │                                    │
-    ├←───────────────────────────────────┘
-    │
-    ▼
-长图入库 → 关闭截图窗口
-```
-
-### 4.2 后端录制循环（已实现，修订 emit 内容）
-
-```
-start_scroll_recording(x, y, w, h)
-  │
-  ├─ 1. set_ignore_cursor_events(true)
-  ├─ 2. 初始化 Stitcher（首帧）
-  ├─ 3. 循环（10fps，spawn_blocking）：
-  │     a. capture_all_monitors → crop_region → RGBA
-  │     b. stitcher.process_frame(rgba)
-  │     c. emit("scroll://frame", {
-  │          frame: base64,       // 选区实时画面（前端 Canvas 重绘）
-  │          preview: base64,     // 拼接长图缩略图
-  │          height: pixels       // 拼接高度
-  │        })
-  └─ 4. stop → ignore_cursor(false) → 长图入库 → 关窗口
-```
-
-### 4.3 区域化 cursor events
-
-前端 mousemove 时：
-```typescript
-if (mode === "scrolling") {
-  const inToolbar = mouseY >= toolbarY && mouseY <= toolbarY + 44;
-  const inPreview = mouseX >= previewX && mouseX <= previewX + 200;
-  const needInteractive = inToolbar || inPreview;
-  invoke("set_cursor_passthrough", { passthrough: !needInteractive });
-}
-```
-
-Tauri 命令：
-```rust
-#[tauri::command]
-pub fn set_cursor_passthrough(passthrough: bool, app_handle: tauri::AppHandle) {
-    if let Some(win) = /* 当前截图窗口 */ {
-        let _ = win.set_ignore_cursor_events(passthrough);
-    }
-}
-```
-
-### 4.4 Tauri 命令
-
-```rust
-start_scroll_recording(x, y, w, h) → ()  // 已实现
-stop_scroll_recording() → ()              // 已实现
-set_cursor_passthrough(bool) → ()         // 新增
-```
-
-## 5. 错误处理与边界
+### 2.6 降级策略
 
 | 场景 | 处理 |
 |---|---|
-| 用户滚动太快 | 帧间重叠 < 20% → 置信度低于阈值 → 该帧丢弃不拼接 |
-| 追踪连续丢失（≥8帧） | 预览窗口红色「追踪丢失」+ 选区边框变红 |
-| 动态内容（广告/动画） | NCC 置信度低 → 帧被跳过，长图可能有缺口 |
-| 水平偏移 | 检测到水平 delta > 5px → 该帧丢弃（仅支持垂直） |
-| 选区含固定 header | 初始化时检测并裁剪，每帧跳过 sticky 区域 |
-| 反向滚动（向上） | delta 为负 → 跳过该帧（不支持向上修正） |
-| 长图过大（> 10000px） | 拼接正常但预览窗口限制显示高度，最终入库不受限 |
-| 停止后选区内容 | 长图替换原选区底图，可继续标注/确认/保存 |
-| 截图窗口关闭 | 录制循环自动停止（窗口不存在检测） |
+| 画面静止 | dy 接近 0 → 跳过 |
+| 置信度低 | conf < 0.15 → 跳过 |
+| 向上滚动 | dy > 0 → 跳过 |
+| 滚动超过选区高度 | 异常 → 跳过 |
 
-**降级**：滚动截图失败不影响普通截图功能。start_scroll_recording 返回 Err → 回到 selected 模式 + toast 提示。
+## 3. 录制循环
 
-## 6. 实施分期
+```
+start_scroll_recording(x, y, w, h, win_label, interactive_rects)
+  │
+  ├─ 1. set_ignore_cursor_events(true) + activate_prev_app()
+  ├─ 2. 30ms 鼠标监视线程（工具栏区域切换 ignore）
+  ├─ 3. Stitcher::new(首帧)
+  ├─ 4. 循环（30ms / 33fps）：
+  │     a. capture_region_excluding_window → RGBA
+  │     b. JPEG → emit("scroll://frame")
+  │     c. stitcher.process_frame(rgba) → FFT 相位相关
+  │     d. 预览缩略图（底部裁剪，400px 宽，CatmullRom）→ emit("scroll://frame")
+  └─ 5. 先恢复鼠标事件 + activate(self)
+       → stitcher.finalize() + spawn_blocking 生成最终预览 → emit
+       → 长图入库
+```
 
-| 阶段 | 范围 |
-|---|---|
-| **Step 1** | capx/stitch.rs 拼接引擎（Stitcher + NCC + sticky/active cols + 单元测试） |
-| **Step 2** | 后端录制循环 + start/stop_scroll_recording 命令 + 事件 |
-| **Step 3** | 前端状态机 + 预览窗口 + 工具栏按钮 |
-| **Step 4** | 端到端验证 |
+### 3.1 预览
 
-## 7. 风险
+- **底部固定**：预览窗 `bottom` 对齐选区底部，内容向上推
+- **底部裁剪**：只截画布底部最新区域（max 1200px 预览高度），始终看到最新拼接内容
+- **高质量缩放**：400px 宽，CatmullRom 双三次插值
+- **底部对齐**：容器 `justifyContent: flex-end`，图片比容器高时截顶部留底部
+- **finalize 后 emit**：停止时补全最后一帧后发送最终预览（spawn_blocking 不阻塞事件循环）
 
-| 风险 | 概率 | 影响 | 缓解 |
-|---|---|---|---|
-| NCC 匹配性能不足 | 中 | 帧率下降 | coarse-to-fine 搜索 + 活跃列裁剪 |
-| 粘性元素检测不准 | 中 | 长图有重复 | 手动阈值调整 + 用户可接受小幅重复 |
-| xcap capture_region 权限 | 低 | 无法截取选区 | 已有一期权限验证 |
-| 预览窗口性能 | 低 | 卡顿 | 限制预览更新频率到 15fps |
+### 3.2 停止流程（防鼠标假死）
+
+1. **先恢复鼠标**：`setIgnoresMouseEvents(false)` + `activate(self)`
+2. **再 finalize + 预览**：`spawn_blocking` 中生成，不阻塞 tokio
+3. **入库**：WebP 编码写 DB
+
+## 4. 依赖
+
+- `rustfft = "6.2"`（FFT 相位相关）
+- `imageproc = "0.25"`（Sobel 梯度）
+- `objc2` + `objc2-app-kit`（焦点让出）
+- `core-graphics = "0.24"`（CGWindowList 截图）
+
+## 5. 前端
+
+### 5.1 预览窗布局
+
+```
+┌──────────┐
+│ 录制中·Npx│  ← 状态条（顶部）
+├──────────┤
+│ 预览图    │  ← 内容区（flex:1, justifyContent:flex-end, 向上推）
+│ ↑↑↑     │
+├──────────┤
+│ ⏹ 停止   │  ← 按钮（底部）
+└──────────┘
+   ↑ 底部对齐选区底部（bottom: innerHeight - sel.y - sel.h）
+```

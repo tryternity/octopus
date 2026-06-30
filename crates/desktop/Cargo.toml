@@ -97,11 +97,10 @@ remote-grpc = ["tonic", "prost", "tonic-build"]
 cloud = ["tokio-tungstenite", "tokio-tungstenite?/native-tls", "uuid", "futures-util", "octopus-asr-cloud"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
-tauri-nspanel = { git = "https://github.com/ahkohd/tauri-nspanel", branch = "v2.1" }
 objc2 = "0.6"
-objc2-app-kit = "0.3"
-objc2-foundation = "0.3"
-core-graphics = "0.24"
+objc2-app-kit = { version = "0.3", features = ["NSWorkspace", "NSRunningApplication", "NSWindow", "NSApplication"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry"] }
+core-graphics = { version = "0.24", features = ["highsierra"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk-layer-shell = { version = "0.8", features = ["v0_6"] }

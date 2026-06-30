@@ -126,20 +126,19 @@ export default function Screenshot() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
 
-    // 滚动模式：选区内显示实时画面，选区外用冻结的 bg + 暗遮罩
-    if (mode === "scrolling" && sel && scrollFrameRef.current) {
-      // 全屏冻结背景
-      ctx.drawImage(bg, 0, 0, cssW, cssH);
-      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-      ctx.fillRect(0, 0, cssW, cssH);
-      // 选区内：实时画面（clearRect 挖出选区 → drawImage 实时帧）
+    // 滚动模式：全透明露出底层，仅填充选区外部的半透明暗色遮罩，使截图区外也可以看到实时滚动
+    if (mode === "scrolling" && sel) {
       const { x, y, w, h } = sel;
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(x, y, w, h);
-      ctx.clip();
-      ctx.drawImage(scrollFrameRef.current, x, y, w, h);
-      ctx.restore();
+      // 填充选区外部的暗遮罩（不画 bg 静态图，使外部同样保持透明以露出底层实时窗口）
+      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
+      ctx.fillRect(0, 0, cssW, y);
+      ctx.fillRect(0, y + h, cssW, cssH - y - h);
+      ctx.fillRect(0, y, x, h);
+      ctx.fillRect(x + w, y, cssW - x - w, h);
+
+      // 选区内清空为透明（挖孔）
+      ctx.clearRect(x, y, w, h);
+
       // 绿色边框
       ctx.strokeStyle = "#22c55e";
       ctx.lineWidth = 2;
@@ -762,8 +761,22 @@ export default function Screenshot() {
     setTool("none");
     setScrollPreview(null);
     setScrollHeight(0);
+
+    // 计算交互区域（工具栏 + 预览窗），传给后端用于鼠标穿透切换
+    const interactiveRects: Array<{x: number; y: number; width: number; height: number}> = [];
+    // 工具栏：与下方渲染逻辑一致（水平居中，空间不足移到上方）
+    interactiveRects.push({ x: toolbarX, y: toolbarY, width: toolbarWidth, height: 44 });
+    // 预览窗（右侧优先，空间不足放左侧）
+    const previewLeft = sel.x + sel.w + 12 + 200 <= window.innerWidth
+      ? sel.x + sel.w + 12
+      : sel.x - 12 - 200;
+    // 预览窗底部固定，高度最大 80vh
+    interactiveRects.push({ x: previewLeft, y: window.innerHeight * 2 / 10, width: 200, height: window.innerHeight * 8 / 10 });
+
     invoke("start_scroll_recording", {
       x: sel.x, y: sel.y, w: sel.w, h: sel.h,
+      winLabel: winLabel,
+      interactiveRects,
     }).catch(() => setModeSafe("selected"));
   }
 
@@ -1049,13 +1062,13 @@ export default function Screenshot() {
       )}
 
       {/* 滚动预览浮层 */}
-      {mode === "scrolling" && scrollPreview && (
+      {mode === "scrolling" && scrollPreview && sel && (
         <div style={{
           position: "fixed",
-          left: sel && sel.x + sel.w + 12 + 200 <= window.innerWidth
+          left: sel.x + sel.w + 12 + 200 <= window.innerWidth
             ? sel.x + sel.w + 12
-            : sel ? sel.x - 12 - 200 : 0,
-          top: sel ? sel.y : 0,
+            : sel.x - 12 - 200,
+          bottom: window.innerHeight - sel.y - sel.h,
           width: 200,
           maxHeight: "80vh",
           background: "rgba(0,0,0,0.8)",
@@ -1071,7 +1084,7 @@ export default function Screenshot() {
             <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ade80" }} />
             录制中 · {scrollHeight}px
           </div>
-          <div style={{ flex: 1, overflow: "hidden", borderRadius: 4 }}>
+          <div style={{ flex: 1, overflow: "hidden", borderRadius: 4, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
             <img src={`data:image/png;base64,${scrollPreview}`} alt="preview" style={{ width: "100%", display: "block" }} />
           </div>
           <button onClick={stopScroll} style={{ padding: "4px", borderRadius: 4, border: "none", background: "#ef4444", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>

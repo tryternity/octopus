@@ -331,6 +331,7 @@ mod tests {
             current_partial: &mut partial,
             is_closing: &mut is_closing,
             is_speaking: &mut is_speaking,
+            language: "zh",
         });
         assert!(evs.is_empty()); // 预览不发事件
         assert_eq!(partial, "你好");
@@ -352,6 +353,7 @@ mod tests {
             current_partial: &mut partial,
             is_closing: &mut is_closing,
             is_speaking: &mut is_speaking,
+            language: "zh",
         });
         assert_eq!(partial, "第二句");
         let _ = result_tx.send(StreamEvent::Finished);
@@ -361,6 +363,7 @@ mod tests {
             current_partial: &mut partial,
             is_closing: &mut is_closing,
             is_speaking: &mut is_speaking,
+            language: "zh",
         });
         assert_eq!(evs, vec![TranscriptEvent::Committed("第一句，第二句".to_string())]);
         assert_eq!(committed, "第一句，第二句");
@@ -385,6 +388,7 @@ mod tests {
             current_partial: &mut partial,
             is_closing: &mut is_closing,
             is_speaking: &mut is_speaking,
+            language: "zh",
         });
         assert_eq!(partial, "第二句");
         let _ = result_tx.send(StreamEvent::Finished);
@@ -394,6 +398,7 @@ mod tests {
             current_partial: &mut partial,
             is_closing: &mut is_closing,
             is_speaking: &mut is_speaking,
+            language: "zh",
         });
         assert_eq!(evs, vec![TranscriptEvent::Committed("第一句，第二句".to_string())]);
         assert_eq!(committed, "第一句，第二句"); // 不双逗号
@@ -411,6 +416,7 @@ mod tests {
             current_partial: &mut partial,
             is_closing: &mut is_closing,
             is_speaking: &mut is_speaking,
+            language: "zh",
         });
         assert!(evs.is_empty());
         assert_eq!(committed, "已有"); // 不变
@@ -431,6 +437,7 @@ mod tests {
             current_partial: &mut partial,
             is_closing: &mut is_closing,
             is_speaking: &mut is_speaking,
+            language: "zh",
         });
         assert_eq!(partial, "抖动");
         let _ = result_tx.send(StreamEvent::Failed("boom".to_string()));
@@ -440,6 +447,7 @@ mod tests {
             current_partial: &mut partial,
             is_closing: &mut is_closing,
             is_speaking: &mut is_speaking,
+            language: "zh",
         });
         assert_eq!(evs, vec![TranscriptEvent::Error("⚠️ 云端识别失败：boom".to_string())]);
         assert_eq!(partial, ""); // Failed 清零

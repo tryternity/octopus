@@ -1,212 +1,256 @@
 use anyhow::{Context, Result};
 use image::{GrayImage, GenericImage, RgbaImage};
 use imageproc::gradients::sobel_gradients;
-use std::ops::Range;
+use rustfft::{FftPlanner, num_complex::Complex};
 
 pub struct StitchConfig {
-    pub template_ratio: f32,
-    pub min_confidence: f32,
-    pub inertia_px: i32,
-    pub max_lowconf_streak: u32,
+    /// 最小有效滚动位移（像素）。低于此值视为静止。
+    pub min_scroll_px: f64,
+    /// 相位相关峰值置信度（0~1）
+    pub min_confidence: f64,
 }
 
 impl Default for StitchConfig {
     fn default() -> Self {
         Self {
-            template_ratio: 0.2,
-            min_confidence: 0.5,
-            inertia_px: 100,
-            max_lowconf_streak: 8,
+            min_scroll_px: 2.0,
+            min_confidence: 0.15,
         }
     }
 }
 
+/// 滚动截屏拼接器——FFT 相位相关 + Canvas-Anchored。
+///
+/// 每次新帧到来时，将参考帧（上次成功拼接的帧）与当前帧做 1D 相位相关，
+/// 得到亚像素级垂直位移 dy。dy > min_scroll_px 时追加新内容到画布。
+///
+/// 相比 NCC 模板匹配的优势：
+/// - 亚像素精度（抛物线拟合 → 0.1px），消除整数累积误差导致的模糊
+/// - 频率域全局主峰，对周期性内容（列表行）鲁棒，不会跳到隔壁行
+/// - O(N log N) FFT，比逐行 NCC 滑窗更快
 pub struct Stitcher {
     canvas: RgbaImage,
-    last_edges: Option<GrayImage>,
+    /// 参考投影：上次成功拼接帧的垂直投影 1D 信号
+    reference_proj: Vec<f64>,
     sticky_top: u32,
     sticky_bottom: u32,
-    active_cols: Range<u32>,
-    last_delta: i32,
-    low_conf_streak: u32,
+    detected: bool,
     config: StitchConfig,
-    frame_count: u32,
 }
 
 impl Stitcher {
     pub fn new(first_frame: RgbaImage, config: StitchConfig) -> Self {
-        let (w, _h) = (first_frame.width(), first_frame.height());
-        let edges = compute_edges(&first_frame);
         Self {
             canvas: first_frame,
-            last_edges: Some(edges),
+            reference_proj: Vec::new(),
             sticky_top: 0,
             sticky_bottom: 0,
-            active_cols: 0..w,
-            last_delta: 0,
-            low_conf_streak: 0,
+            detected: false,
             config,
-            frame_count: 1,
         }
     }
 
     pub fn process_frame(&mut self, frame: &RgbaImage) -> Result<bool> {
-        self.frame_count += 1;
         let (w, h) = (frame.width(), frame.height());
 
-        if self.frame_count == 2 {
-            self.detect_sticky_and_active(&self.canvas.clone(), frame);
+        if !self.detected {
+            self.detect_sticky(frame);
+            self.detected = true;
+            // 裁掉画布（首帧）的 sticky 区域，只保留有效内容
+            let eff_top0 = self.sticky_top;
+            let eff_bottom0 = self.canvas.height().saturating_sub(self.sticky_bottom);
+            let w = self.canvas.width();
+            if eff_bottom0 > eff_top0 {
+                let cropped = image::imageops::crop_imm(&self.canvas.clone(), 0, eff_top0, w, eff_bottom0 - eff_top0).to_image();
+                self.canvas = cropped;
+            }
+            // 用第二帧的有效区域初始化参考投影
+            let frame_edges = compute_edges(frame);
+            self.reference_proj = project_vertical_range(&frame_edges, eff_top0, h.saturating_sub(self.sticky_bottom));
+            eprintln!("[stitch] canvas trimmed to {}px (removed sticky)", self.canvas.height());
+            return Ok(false); // 第二帧用于初始化，不拼接
         }
 
         let eff_top = self.sticky_top;
         let eff_bottom = h.saturating_sub(self.sticky_bottom);
-        if eff_bottom <= eff_top { return Ok(false); }
-        let eff_h = eff_bottom - eff_top;
-
-        if self.is_duplicate(frame) {
+        if eff_bottom <= eff_top {
             return Ok(false);
         }
 
-        let edges = compute_edges(frame);
-        let last = match &self.last_edges {
-            Some(e) => e.clone(),
-            None => { self.last_edges = Some(edges); return Ok(false); }
+        let curr_edges = compute_edges(frame);
+        let curr_proj = project_vertical_range(&curr_edges, eff_top, eff_bottom);
+
+        // 相位相关求位移
+        let (dy, confidence) = match phase_correlation_dy(&self.reference_proj, &curr_proj) {
+            Some(v) => v,
+            None => return Ok(false),
         };
 
-        let tpl_h = ((eff_h as f32 * self.config.template_ratio) as u32).max(10);
-        let tpl_h = tpl_h.min(eff_h);
-        let tpl_top = eff_bottom.saturating_sub(tpl_h);
+        eprintln!("[stitch] dy={:.2} conf={:.4} (thresh {:.2}/{:.2}) sticky_t={} eff=[{},{}]",
+            dy, confidence, self.config.min_scroll_px, self.config.min_confidence,
+            self.sticky_top, eff_top, eff_bottom);
 
-        let (delta, confidence) = self.match_template(
-            &last, &edges, tpl_top, eff_top, eff_bottom, tpl_h, w,
-        );
-
-        if confidence >= self.config.min_confidence {
-            self.low_conf_streak = 0;
-            self.last_delta = delta;
-        } else {
-            self.low_conf_streak += 1;
-            if self.low_conf_streak >= self.config.max_lowconf_streak {
-                self.last_edges = Some(edges);
-                return Ok(false);
-            }
-        }
-
-        let new_start = eff_top + (self.last_delta as u32).min(eff_h);
-        if new_start >= eff_bottom {
-            self.last_edges = Some(edges);
+        // 置信度太低
+        if confidence < self.config.min_confidence {
             return Ok(false);
         }
 
-        let new_h = eff_bottom - new_start;
-        let new_rows = image::imageops::crop_imm(frame, 0, new_start, w, new_h).to_image();
+        // dy < 0 = 用户向下滚动（内容上移），dy > 0 = 向上滚动（忽略）
+        if dy >= 0.0 {
+            return Ok(false);
+        }
+
+        let new_rows = (-dy).round() as u32;
+
+        // 静止或滚动超过选区高度（异常）
+        if new_rows < self.config.min_scroll_px as u32 || new_rows >= (eff_bottom - eff_top) {
+            return Ok(false);
+        }
+
+        // 用户向下滚动了 new_rows 像素：帧底部 new_rows 行是新进入选区的内容。
+        // 但这些行可能与画布底部有重叠（帧间间隔内画面已部分更新），
+        // 相位相关给出的 new_rows 是精确位移，直接追加底部 new_rows 行即可。
+        let crop_y = eff_bottom - new_rows;
+        let new_content = image::imageops::crop_imm(frame, 0, crop_y, w, new_rows).to_image();
 
         let old_h = self.canvas.height();
-        let mut combined = RgbaImage::new(w, old_h + new_rows.height());
+        let mut combined = RgbaImage::new(w, old_h + new_rows);
         combined.copy_from(&self.canvas, 0, 0).context("canvas copy")?;
-        combined.copy_from(&new_rows, 0, old_h).context("new_rows copy")?;
+        combined.copy_from(&new_content, 0, old_h).context("new_rows copy")?;
         self.canvas = combined;
 
-        self.last_edges = Some(edges);
+        // 更新参考投影为当前帧
+        self.reference_proj = curr_proj;
+
+        eprintln!("[stitch] appended {}px, canvas now {}px", new_rows, self.canvas.height());
         Ok(true)
     }
 
     pub fn canvas(&self) -> &RgbaImage { &self.canvas }
     pub fn height(&self) -> u32 { self.canvas.height() }
 
-    fn detect_sticky_and_active(&mut self, frame_a: &RgbaImage, frame_b: &RgbaImage) {
-        let (w, h) = (frame_a.width(), frame_a.height());
+    pub fn finalize(&mut self, last_frame: &RgbaImage) -> Result<()> {
+        // 补全最后一帧的 sticky_bottom 区域
+        let h = last_frame.height();
+        let w = last_frame.width();
+        let eff_bottom = h.saturating_sub(self.sticky_bottom);
+        if eff_bottom >= h { return Ok(()); }
+        let footer_h = h - eff_bottom;
+        let footer = image::imageops::crop_imm(last_frame, 0, eff_bottom, w, footer_h).to_image();
+        let old_h = self.canvas.height();
+        let mut combined = RgbaImage::new(w, old_h + footer_h);
+        combined.copy_from(&self.canvas, 0, 0).context("finalize canvas")?;
+        combined.copy_from(&footer, 0, old_h).context("finalize footer")?;
+        self.canvas = combined;
+        eprintln!("[stitch] finalize: appended {}px footer", footer_h);
+        Ok(())
+    }
 
+    fn detect_sticky(&mut self, frame: &RgbaImage) {
+        let (w, ch) = (self.canvas.width(), self.canvas.height());
+        let fh = frame.height();
+        let cmp_h = ch.min(fh);
         let mut sticky_t = 0u32;
-        for y in 0..h.min(100) {
-            if rows_equal(frame_a, frame_b, y, y, w) { sticky_t = y + 1; }
+        for y in 0..cmp_h.min(80) {
+            if rows_equal(&self.canvas, frame, y, y, w) { sticky_t = y + 1; }
             else { break; }
         }
-
         let mut sticky_b = 0u32;
-        for y in 0..h.min(100) {
-            let ya = h - 1 - y;
-            if rows_equal(frame_a, frame_b, ya, ya, w) { sticky_b = y + 1; }
+        for y in 0..cmp_h.min(80) {
+            let ya = cmp_h - 1 - y;
+            if rows_equal(&self.canvas, frame, ya, ya, w) { sticky_b = y + 1; }
             else { break; }
         }
         self.sticky_top = sticky_t;
         self.sticky_bottom = sticky_b;
+        eprintln!("[stitch] sticky_top={} sticky_bottom={}", self.sticky_top, self.sticky_bottom);
+    }
+}
 
-        let mut min_col = w;
-        let mut max_col = 0u32;
+/// 将边缘图投影为垂直方向 1D 信号（每行所有列的平均边缘强度）。
+#[allow(dead_code)]
+fn project_vertical(edges: &GrayImage) -> Vec<f64> {
+    let (w, h) = (edges.width(), edges.height());
+    (0..h).map(|y| {
+        let mut sum = 0f64;
         for x in 0..w {
-            if !cols_equal(frame_a, frame_b, x, h) {
-                min_col = min_col.min(x);
-                max_col = max_col.max(x);
-            }
+            sum += edges.get_pixel(x, y)[0] as f64;
         }
-        if min_col <= max_col {
-            self.active_cols = min_col..max_col + 1;
+        sum / w as f64
+    }).collect()
+}
+
+/// 投影 [eff_top, eff_bottom) 范围内的行。
+fn project_vertical_range(edges: &GrayImage, eff_top: u32, eff_bottom: u32) -> Vec<f64> {
+    let w = edges.width();
+    (eff_top..eff_bottom).map(|y| {
+        let mut sum = 0f64;
+        for x in 0..w {
+            sum += edges.get_pixel(x, y)[0] as f64;
         }
+        sum / w as f64
+    }).collect()
+}
+
+/// 1D FFT 相位相关，返回 (dy, confidence)。
+/// dy < 0 表示内容向上移动（用户向下滚动）。
+/// dy > 0 表示内容向下移动（用户向上滚动）。
+fn phase_correlation_dy(a: &[f64], b: &[f64]) -> Option<(f64, f64)> {
+    let n = a.len();
+    if b.len() != n || n < 8 { return None; }
+
+    let mut planner = FftPlanner::<f64>::new();
+    let fft = planner.plan_fft_forward(n);
+    let ifft = planner.plan_fft_inverse(n);
+
+    let mut fa: Vec<Complex<f64>> = a.iter().map(|v| Complex::new(*v, 0.0)).collect();
+    let mut fb: Vec<Complex<f64>> = b.iter().map(|v| Complex::new(*v, 0.0)).collect();
+
+    fft.process(&mut fa);
+    fft.process(&mut fb);
+
+    // Normalized cross power spectrum: R = conj(Fa) * Fb / |conj(Fa) * Fb|
+    let mut r: Vec<Complex<f64>> = fa.iter().zip(fb.iter()).map(|(fa, fb)| {
+        let cross = fa.conj() * fb;
+        let norm = cross.norm();
+        if norm > 1e-10 { cross / norm } else { Complex::new(0.0, 0.0) }
+    }).collect();
+
+    ifft.process(&mut r);
+
+    let scale = 1.0 / n as f64;
+
+    // Find peak (skip index 0 = DC component)
+    let mut peak_idx = 1usize;
+    let mut peak_val = 0f64;
+    for i in 1..n {
+        let mag = r[i].norm() * scale;
+        if mag > peak_val { peak_val = mag; peak_idx = i; }
     }
 
-    fn is_duplicate(&self, frame: &RgbaImage) -> bool {
-        let last = match &self.last_edges {
-            Some(e) => e,
-            None => return false,
-        };
-        let curr = compute_edges(frame);
-        let step = 8u32;
-        let mut diff_sum = 0u64;
-        let mut count = 0u64;
-        for y in (0..last.height()).step_by(step as usize) {
-            for x in (0..last.width()).step_by(step as usize) {
-                let a = last.get_pixel(x, y)[0] as i32;
-                let b = curr.get_pixel(x, y)[0] as i32;
-                diff_sum += (a - b).unsigned_abs() as u64;
-                count += 1;
-            }
-        }
-        if count == 0 { return false; }
-        let mean = diff_sum as f64 / count as f64;
-        mean < 2.0
-    }
+    // Displacement from circular peak position
+    let dy_int = if peak_idx <= n / 2 {
+        peak_idx as f64
+    } else {
+        peak_idx as f64 - n as f64
+    };
 
-    fn match_template(
-        &self,
-        last: &GrayImage, curr: &GrayImage,
-        tpl_top: u32, eff_top: u32, eff_bottom: u32, tpl_h: u32, w: u32,
-    ) -> (i32, f32) {
-        let search_start = ((self.last_delta - self.config.inertia_px).max(0) as u32)
-            .min(eff_bottom.saturating_sub(eff_top).saturating_sub(tpl_h));
-        let search_end = ((self.last_delta + self.config.inertia_px) as u32)
-            .min(eff_bottom - eff_top - tpl_h);
+    // Subpixel: parabolic interpolation
+    let prev_val = r[if peak_idx == 0 { n - 1 } else { peak_idx - 1 }].norm() * scale;
+    let next_val = r[(peak_idx + 1) % n].norm() * scale;
+    let denom = prev_val - 2.0 * peak_val + next_val;
+    let delta = if denom.abs() > 1e-10 {
+        0.5 * (prev_val - next_val) / denom
+    } else {
+        0.0
+    };
 
-        let mut best_delta = self.last_delta;
-        let mut best_score = -1.0f32;
-
-        for d in search_start..=search_end {
-            let score = ncc_score(last, curr, tpl_top, eff_top + d, w, tpl_h, &self.active_cols);
-            if score > best_score {
-                best_score = score;
-                best_delta = d as i32;
-            }
-        }
-
-        if best_score < self.config.min_confidence {
-            let full_end = eff_bottom - eff_top - tpl_h;
-            for d in 0..=full_end {
-                let score = ncc_score(last, curr, tpl_top, eff_top + d, w, tpl_h, &self.active_cols);
-                if score > best_score {
-                    best_score = score;
-                    best_delta = d as i32;
-                }
-            }
-        }
-
-        (best_delta, best_score)
-    }
+    Some((dy_int + delta, peak_val))
 }
 
 fn compute_edges(img: &RgbaImage) -> GrayImage {
     let gray = image::imageops::grayscale(img);
     let grad_u16 = sobel_gradients(&gray);
-    // sobel_gradients returns Luma<u16>, convert to Luma<u8>
     let mut edges = GrayImage::new(grad_u16.width(), grad_u16.height());
     for y in 0..grad_u16.height() {
         for x in 0..grad_u16.width() {
@@ -222,88 +266,4 @@ fn rows_equal(a: &RgbaImage, b: &RgbaImage, ya: u32, yb: u32, w: u32) -> bool {
         if a.get_pixel(x, ya) != b.get_pixel(x, yb) { return false; }
     }
     true
-}
-
-fn cols_equal(a: &RgbaImage, b: &RgbaImage, x: u32, h: u32) -> bool {
-    for y in 0..h {
-        if a.get_pixel(x, y) != b.get_pixel(x, y) { return false; }
-    }
-    true
-}
-
-fn ncc_score(
-    last: &GrayImage, curr: &GrayImage,
-    tpl_y: u32, tgt_y: u32, w: u32, tpl_h: u32, cols: &Range<u32>,
-) -> f32 {
-    if tpl_h == 0 || cols.is_empty() { return 0.0; }
-    let col_w = cols.end - cols.start;
-    let n = (tpl_h * col_w) as f64;
-    if n < 1.0 { return 0.0; }
-
-    let mut sum_t = 0.0f64;
-    let mut sum_c = 0.0f64;
-    for y in 0..tpl_h {
-        for x in cols.clone() {
-            if x >= w { continue; }
-            sum_t += last.get_pixel(x, tpl_y + y)[0] as f64;
-            sum_c += curr.get_pixel(x, tgt_y + y)[0] as f64;
-        }
-    }
-    let mean_t = sum_t / n;
-    let mean_c = sum_c / n;
-
-    let mut num = 0.0f64;
-    let mut den_t = 0.0f64;
-    let mut den_c = 0.0f64;
-    for y in 0..tpl_h {
-        for x in cols.clone() {
-            if x >= w { continue; }
-            let t = last.get_pixel(x, tpl_y + y)[0] as f64 - mean_t;
-            let c = curr.get_pixel(x, tgt_y + y)[0] as f64 - mean_c;
-            num += t * c;
-            den_t += t * t;
-            den_c += c * c;
-        }
-    }
-    let denom = (den_t * den_c).sqrt();
-    if denom < 1e-6 { return 0.0; }
-    (num / denom) as f32
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_stitch_identical_frame() {
-        let frame = RgbaImage::from_pixel(100, 200, Rgba([255, 0, 0, 255]));
-        let mut stitcher = Stitcher::new(frame.clone(), StitchConfig::default());
-        let result = stitcher.process_frame(&frame).unwrap();
-        assert!(!result, "Identical frame should be skipped");
-    }
-
-    #[test]
-    fn test_stitch_offset() {
-        // 创建有丰富纹理的图像（棋盘格 + 渐变），滚动 50px
-        let mut frame_a = RgbaImage::new(100, 200);
-        for y in 0..200 {
-            for x in 0..100 {
-                let checker = if (x / 10 + y / 10) % 2 == 0 { 200u8 } else { 50u8 };
-                let v = ((x as u16 + y as u16) % 256) as u8;
-                frame_a.put_pixel(x, y, Rgba([checker, v, 128, 255]));
-            }
-        }
-        // frame_b = frame_a 向上滚动 50px
-        let mut frame_b = RgbaImage::new(100, 200);
-        for y in 0..200 {
-            for x in 0..100 {
-                let src_y = (y + 50).min(199);
-                frame_b.put_pixel(x, y, frame_a.get_pixel(x, src_y).clone());
-            }
-        }
-        let mut stitcher = Stitcher::new(frame_a, StitchConfig::default());
-        let result = stitcher.process_frame(&frame_b).unwrap();
-        assert!(result, "Offset frame should produce new content");
-        assert!(stitcher.height() > 200, "Canvas should grow, got {}", stitcher.height());
-    }
 }

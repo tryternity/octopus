@@ -7,6 +7,11 @@ edition = "2021"
 xcap = "0.9.6"
 image = "0.25"
 imageproc = "0.25"
+rustfft = "6.2"
 anyhow = "1"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+core-foundation = "0.10"

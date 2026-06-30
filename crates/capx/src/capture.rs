@@ -91,3 +91,275 @@ pub fn crop_region(
 
     Ok(png_bytes)
 }
+
+/// macOS：截取指定显示器，排除指定的 overlay 窗口。
+/// display_id = CGDirectDisplayID, exclude_window_id = NSWindow.windowNumber
+/// 返回 RGBA bytes + 物理像素尺寸。
+#[cfg(target_os = "macos")]
+#[allow(dead_code)]
+pub fn capture_display_excluding_window(
+    display_id: u32,
+    exclude_window_id: u32,
+) -> Result<ScreenCapture> {
+    use core_graphics::display::{
+        CGDisplay, kCGWindowImageDefault, kCGWindowListOptionOnScreenBelowWindow,
+    };
+
+    let display = CGDisplay::new(display_id);
+    let bounds = display.bounds();
+
+    let cg_image = CGDisplay::screenshot(
+        bounds,
+        kCGWindowListOptionOnScreenBelowWindow,
+        exclude_window_id,
+        kCGWindowImageDefault,
+    )
+    .context("CGWindowListCreateImage failed (display may be asleep)")?;
+
+    let width = cg_image.width() as u32;
+    let height = cg_image.height() as u32;
+    let bpr = cg_image.bytes_per_row();
+    let bpp = cg_image.bits_per_pixel();
+
+    let cf_data = cg_image.data();
+    let raw = cf_data.bytes();
+
+    if bpp != 32 {
+        anyhow::bail!("Unsupported screenshot format: {} bpp (expected 32)", bpp);
+    }
+
+    // macOS 截图 CGImage 通常为 BGRA（little-endian 32bit）。转为 RGBA。
+    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+    for y in 0..height as usize {
+        let row_start = y * bpr;
+        for x in 0..width as usize {
+            let off = row_start + x * 4;
+            rgba.push(raw[off + 2]); // R
+            rgba.push(raw[off + 1]); // G
+            rgba.push(raw[off]); // B
+            rgba.push(raw[off + 3]); // A
+        }
+    }
+
+    // CGDisplayBounds 返回全局逻辑坐标（points），与 xcap Monitor::x()/y() 一致。
+    Ok(ScreenCapture {
+        rgba_bytes: rgba,
+        width,
+        height,
+        monitor_x: bounds.origin.x as i32,
+        monitor_y: bounds.origin.y as i32,
+    })
+}
+
+/// macOS：只截取选区区域（排除 overlay 窗口）。
+/// 相比 capture_display_excluding_window + crop_region，避免截全屏 4K + PNG 编解码往返，
+/// 性能提升约 10×（截 ~2000×500 而非 3840×2160）。
+/// 坐标参数为全局逻辑坐标（points），返回物理像素 RGBA。
+#[cfg(target_os = "macos")]
+pub fn capture_region_excluding_window(
+    exclude_window_id: u32,
+    rect_x: f64,
+    rect_y: f64,
+    rect_w: f64,
+    rect_h: f64,
+) -> Result<RgbaBytes> {
+    use core_graphics::display::{
+        CGDisplay, kCGWindowImageDefault, kCGWindowListOptionOnScreenBelowWindow,
+    };
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+
+    let capture_rect = CGRect {
+        origin: CGPoint { x: rect_x, y: rect_y },
+        size: CGSize { width: rect_w, height: rect_h },
+    };
+
+    let cg_image = CGDisplay::screenshot(
+        capture_rect,
+        kCGWindowListOptionOnScreenBelowWindow,
+        exclude_window_id,
+        kCGWindowImageDefault,
+    )
+    .context("CGWindowListCreateImage failed (display may be asleep)")?;
+
+    let width = cg_image.width() as u32;
+    let height = cg_image.height() as u32;
+    let bpr = cg_image.bytes_per_row();
+    let bpp = cg_image.bits_per_pixel();
+
+    let cf_data = cg_image.data();
+    let raw = cf_data.bytes();
+
+    if bpp != 32 {
+        anyhow::bail!("Unsupported screenshot format: {} bpp (expected 32)", bpp);
+    }
+
+    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+    for y in 0..height as usize {
+        let row_start = y * bpr;
+        let row = &raw[row_start..row_start + width as usize * 4];
+        for px in row.chunks_exact(4) {
+            rgba.push(px[2]);
+            rgba.push(px[1]);
+            rgba.push(px[0]);
+            rgba.push(px[3]);
+        }
+    }
+
+    Ok(RgbaBytes { rgba_bytes: rgba, width, height })
+}
+
+/// RGBA 像素数据（不含 monitor 坐标）。
+pub struct RgbaBytes {
+    pub rgba_bytes: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+extern "C" {
+    fn CGWindowListCopyWindowInfo(
+        option: u32,
+        relativeToWindow: u32,
+    ) -> core_foundation::array::CFArrayRef;
+}
+
+/// macOS: Find the main window ID associated with a process ID (PID).
+#[cfg(target_os = "macos")]
+pub fn find_window_id_by_pid(pid: i32) -> Option<u32> {
+    use core_foundation::array::CFArray;
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::number::CFNumber;
+    use core_foundation::string::CFString;
+    use core_foundation::base::TCFType;
+
+    // kCGWindowListOptionOnScreenOnly = 1 << 0
+    let option = 1 << 0;
+
+    unsafe {
+        let array_ref = CGWindowListCopyWindowInfo(option, 0); // kCGNullWindowID = 0
+        if array_ref.is_null() {
+            return None;
+        }
+        let array = CFArray::<CFDictionary>::wrap_under_create_rule(array_ref);
+
+        let pid_key = CFString::from_static_string("kCGWindowOwnerPID");
+        let layer_key = CFString::from_static_string("kCGWindowLayer");
+        let number_key = CFString::from_static_string("kCGWindowNumber");
+        let bounds_key = CFString::from_static_string("kCGWindowBounds");
+        let w_key = CFString::from_static_string("Width");
+        let h_key = CFString::from_static_string("Height");
+
+        for i in 0..array.len() {
+            let dict = array.get(i).unwrap();
+
+            // 1. Verify Owner PID
+            let pid_value = dict.find(pid_key.as_CFTypeRef());
+            if pid_value.is_none() { continue; }
+            let pid_num = CFNumber::wrap_under_get_rule(*pid_value.unwrap() as *const _);
+            let window_pid = pid_num.to_i32();
+
+            // 2. Verify Window Layer (0 means the main application window)
+            let layer_value = dict.find(layer_key.as_CFTypeRef());
+            if layer_value.is_none() { continue; }
+            let layer_num = CFNumber::wrap_under_get_rule(*layer_value.unwrap() as *const _);
+            let window_layer = layer_num.to_i32();
+
+            // 3. Extract Window Number ID
+            let number_value = dict.find(number_key.as_CFTypeRef());
+            if number_value.is_none() { continue; }
+            let number_num = CFNumber::wrap_under_get_rule(*number_value.unwrap() as *const _);
+            let window_id = number_num.to_i64();
+
+            log::info!(
+                "[window-diag] Window: PID={:?}, target_pid={}, layer={:?}, id={:?}",
+                window_pid, pid, window_layer, window_id
+            );
+
+            if window_pid != Some(pid) { continue; }
+            if window_layer != Some(0) { continue; }
+
+            // 4. Optional: check bounds to skip tiny helper windows (e.g., width/height < 100)
+            if let Some(bounds_val) = dict.find(bounds_key.as_CFTypeRef()) {
+                let bounds_dict = CFDictionary::<*const std::ffi::c_void, *const std::ffi::c_void>::wrap_under_get_rule(*bounds_val as *const _);
+                let mut is_small = false;
+                if let Some(w_val) = bounds_dict.find(w_key.as_CFTypeRef()) {
+                    let w_num = CFNumber::wrap_under_get_rule(*w_val as *const _);
+                    if let Some(w) = w_num.to_i64() {
+                        if w < 100 { is_small = true; }
+                    }
+                }
+                if let Some(h_val) = bounds_dict.find(h_key.as_CFTypeRef()) {
+                    let h_num = CFNumber::wrap_under_get_rule(*h_val as *const _);
+                    if let Some(h) = h_num.to_i64() {
+                        if h < 100 { is_small = true; }
+                    }
+                }
+                if is_small {
+                    log::info!("[window-diag] Skipping small window id={:?}", window_id);
+                    continue;
+                }
+            }
+
+            if let Some(wid) = window_id {
+                return Some(wid as u32);
+            }
+        }
+    }
+    None
+}
+
+/// macOS: Capture ONLY the backing store layer of a specific window.
+#[cfg(target_os = "macos")]
+pub fn capture_window_region(
+    window_id: u32,
+    rect_x: f64,
+    rect_y: f64,
+    rect_w: f64,
+    rect_h: f64,
+) -> Result<RgbaBytes> {
+    use core_graphics::display::{
+        kCGWindowImageDefault, kCGWindowListOptionIncludingWindow,
+    };
+    use core_graphics::geometry::{CGPoint, CGRect, CGSize};
+
+    let capture_rect = CGRect {
+        origin: CGPoint { x: rect_x, y: rect_y },
+        size: CGSize { width: rect_w, height: rect_h },
+    };
+
+    // kCGWindowListOptionIncludingWindow ensures only the specified window is rendered
+    let cg_image = core_graphics::display::CGDisplay::screenshot(
+        capture_rect,
+        kCGWindowListOptionIncludingWindow,
+        window_id,
+        kCGWindowImageDefault,
+    )
+    .context("CGWindowListCreateImage for single window failed")?;
+
+    let width = cg_image.width() as u32;
+    let height = cg_image.height() as u32;
+    let bpr = cg_image.bytes_per_row();
+    let bpp = cg_image.bits_per_pixel();
+
+    let cf_data = cg_image.data();
+    let raw = cf_data.bytes();
+
+    if bpp != 32 {
+        anyhow::bail!("Unsupported screenshot format: {} bpp (expected 32)", bpp);
+    }
+
+    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
+    for y in 0..height as usize {
+        let row_start = y * bpr;
+        let row = &raw[row_start..row_start + width as usize * 4];
+        for px in row.chunks_exact(4) {
+            rgba.push(px[2]);
+            rgba.push(px[1]);
+            rgba.push(px[0]);
+            rgba.push(px[3]);
+        }
+    }
+
+    Ok(RgbaBytes { rgba_bytes: rgba, width, height })
+}
