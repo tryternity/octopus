@@ -13,8 +13,8 @@ pub struct StitchConfig {
 impl Default for StitchConfig {
     fn default() -> Self {
         Self {
-            template_ratio: 0.15,
-            min_confidence: 0.80,
+            template_ratio: 0.20,
+            min_confidence: 0.65,
         }
     }
 }
@@ -117,6 +117,7 @@ impl Stitcher {
 
         let mut best_offset: i32 = -1;
         let mut best_score: f32 = -1.0;
+        let mut best_adjusted_score: f32 = -10.0;
 
         // 期望的当前帧匹配位置（基于上一帧的滚动位移速度）。
         // dy 是滚动位移（从上一帧到当前帧内容向上移动的像素数），正数表示向下滚动（内容向上移动）。
@@ -134,20 +135,16 @@ impl Stitcher {
         eprintln!("[stitch] tpl_y_start={} tpl_h={} expected_offset={} search=[{},{}] cols={:?}",
             tpl_y_start, tpl_h, expected_offset, lo, hi, self.match_cols);
 
-        // 1. 局部搜索
+        // 1. 局部搜索 (利用运动先验距离惩罚)
         for offset in lo..=hi {
             let score = ncc_score(
                 &self.last_edges, &curr_edges,
                 tpl_y_start, offset as u32, w, tpl_h, &self.match_cols,
             );
-            let is_better = if score > best_score + 1e-4 {
-                true
-            } else if best_offset >= 0 && (score - best_score).abs() <= 1e-4 {
-                (offset - expected_offset).abs() < (best_offset - expected_offset).abs()
-            } else {
-                best_score < 0.0
-            };
-            if is_better {
+            let distance = (offset - expected_offset).abs() as f32;
+            let adjusted_score = score - distance * 0.001;
+            if adjusted_score > best_adjusted_score {
+                best_adjusted_score = adjusted_score;
                 best_score = score;
                 best_offset = offset;
             }
@@ -159,21 +156,16 @@ impl Stitcher {
             let global_min_conf = 0.85f32;
             best_score = -1.0;
             best_offset = -1;
-            let global_lo = (expected_offset - 100).max(eff_top as i32);
-            let global_hi = (expected_offset + 40).min(search_end as i32);
-            for offset in global_lo..=global_hi {
+            best_adjusted_score = -10.0;
+            for offset in (eff_top as i32)..=(search_end as i32) {
                 let score = ncc_score(
                     &self.last_edges, &curr_edges,
                     tpl_y_start, offset as u32, w, tpl_h, &self.match_cols,
                 );
-                let is_better = if score > best_score + 1e-4 {
-                    true
-                } else if best_offset >= 0 && (score - best_score).abs() <= 1e-4 {
-                    (offset - expected_offset).abs() < (best_offset - expected_offset).abs()
-                } else {
-                    best_score < 0.0
-                };
-                if is_better {
+                let distance = (offset - expected_offset).abs() as f32;
+                let adjusted_score = score - distance * 0.001;
+                if adjusted_score > best_adjusted_score {
+                    best_adjusted_score = adjusted_score;
                     best_score = score;
                     best_offset = offset;
                 }
