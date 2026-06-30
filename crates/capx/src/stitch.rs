@@ -124,10 +124,10 @@ impl Stitcher {
         let expected_offset = tpl_y_start as i32 - self.last_scroll;
 
         // 设定搜索窗口限制：
-        // 1. 若为第一帧滚动 (last_scroll == 0)，由于没有历史速度，搜索一个首帧合理向下滚动区间 [0, 180] 像素，由运动先验自动过滤远距离重复段落；
+        // 1. 若为第一帧滚动 (last_scroll == 0)，由于没有历史速度，首帧必定是微小的起步阶段，搜索合理的 [0, 35] 像素区间，从物理上完全阻断对任何 40px/120px 处重复段落的误匹配；
         // 2. 若为后续帧，在期望位置附近搜索（dy 变化在 [-100, +50] 像素内），由于全面积模板高度唯一，可以安全地放宽搜索窗口以支持更快的滑动。
         let (lo, hi) = if self.last_scroll == 0 {
-            ((tpl_y_start as i32 - 180).max(eff_top as i32), (tpl_y_start as i32 + 10).min(search_end as i32))
+            ((tpl_y_start as i32 - 35).max(eff_top as i32), (tpl_y_start as i32 + 10).min(search_end as i32))
         } else {
             ((expected_offset - 100).max(eff_top as i32), (expected_offset + 50).min(search_end as i32))
         };
@@ -152,7 +152,7 @@ impl Stitcher {
                     tpl_y_start, offset as u32, w, tpl_h, &self.match_cols,
                 );
                 let distance = (offset - expected_offset).abs() as f32;
-                let adjusted_score = score - distance * 0.001;
+                let adjusted_score = score - distance * 0.003;
                 if adjusted_score > best_adjusted_score {
                     best_adjusted_score = adjusted_score;
                     best_score = score;
@@ -161,7 +161,7 @@ impl Stitcher {
             }
         }
 
-        // 2. Fallback to global search if local search confidence is too low
+        // 3. Fallback to global search if local search confidence is too low
         if best_score < self.config.min_confidence {
             // Enforce a strict threshold (0.85) to avoid false matches on periodic text
             let global_min_conf = 0.85f32;
@@ -174,7 +174,7 @@ impl Stitcher {
                     tpl_y_start, offset as u32, w, tpl_h, &self.match_cols,
                 );
                 let distance = (offset - expected_offset).abs() as f32;
-                let adjusted_score = score - distance * 0.001;
+                let adjusted_score = score - distance * 0.003;
                 if adjusted_score > best_adjusted_score {
                     best_adjusted_score = adjusted_score;
                     best_score = score;
