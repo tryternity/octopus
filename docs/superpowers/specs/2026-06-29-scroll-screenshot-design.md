@@ -335,10 +335,11 @@ ignores_mouse_events: 动态切换    → true 时滚轮穿透，false 时可交
 
 #### 实现路径
 
-1. **截图窗口创建后转 NSPanel**：
-   - 用 `tauri-nspanel` 的 `tauri_panel!` 宏定义 `ScrollPanel`
-   - `WebviewWindowExt::to_panel::<ScrollPanel>()` 将现有窗口转为 NSPanel
-   - 或用 `PanelBuilder` 直接创建（绕过普通 WebviewWindowBuilder）
+1. **截图窗口从一开始就创建为 NSPanel**（用 `PanelBuilder` 替代 `WebviewWindowBuilder`）：
+   - `to_panel()` 在已有窗口上转换会导致 crash（Trace/BPT trap）
+   - `PanelBuilder::<_, ScrollPanel>::new(app, label)` 直接创建为 NSPanel
+   - 内部仍创建 WebviewWindow，`get_webview_window` 等现有 API 不受影响
+   - `StyleMask::new().borderless().nonactivating_panel()` 替代 `decorations(false) + always_on_top`
 
 2. **录制时**：
    - `panel.set_ignores_mouse_events(true)` → 滚轮穿透到底层应用
