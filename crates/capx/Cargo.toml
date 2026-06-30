@@ -10,3 +10,7 @@ imageproc = "0.25"
 anyhow = "1"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+core-graphics = "0.24"
+core-foundation = "0.10"

@@ -18,10 +18,21 @@
 - 恒定滚动速度，NCC 匹配率高
 
 **manual 模式**（高级选项）：
-- 利用 `tauri-nspanel` 将截图窗口转为 NSPanel（`NonactivatingPanel` 不抢键盘焦点）
-- `set_ignore_cursor_events(true)` 让鼠标穿透
+- 截图窗口保持为普通 WebviewWindow（不用 NSPanel）
+- 截屏时使用 `CGWindowListCreateImage` + `kCGWindowListOptionOnScreenBelowWindow` 排除截图窗口本身
+- `set_ignore_cursor_events(true)` 让滚轮穿透到底层应用
+- CGEvent 轮询鼠标位置，工具栏区域临时关闭穿透
 - 用户手动滚动触控板，滚轮事件自然路由到底层应用
 - 体验类似 Xnip
+
+### 为什么放弃 NSPanel 方案
+
+NSPanel 方案（`tauri-nspanel` PanelBuilder / `to_panel()`）在实现中验证发现：
+- `to_panel()` 对已有 WebviewWindow 做 class swizzling（`object_setClass`），在 WKWebView 已创建后执行会导致 **Trace/BPT trap 崩溃**（exit code 133）
+- `PanelBuilder` 内部也调用 `to_panel()`，同样崩溃
+- 即使不崩溃，NonactivatingPanel + `always_on_top` 的焦点竞争问题仍存在
+
+**新方案用 CGWindowList 排除截图窗口**，从截图中根本消除 overlay 干扰，无需改变窗口类型。
 
 ### 为什么 auto 优先
 
@@ -319,43 +330,46 @@ start_scroll_recording(x, y, w, h, mode="auto")
 - `scroll_step`：每次滚 40 像素（约 2 行），可调
 - `auto_stop_threshold`：连续 3 帧无新内容自动停止
 
-### 6.4 manual 模式（NSPanel 实现）
+### 6.4 manual 模式（CGWindowList 排除 + set_ignore_cursor_events 实现）
 
-**目标**：截图窗口转为 NSPanel（NonactivatingPanel），不抢键盘焦点，滚轮事件自然路由到底层应用。
+**目标**：截图窗口保持普通 WebviewWindow，截屏时用 CGWindowList 排除自身，滚轮用 `set_ignore_cursor_events` 穿透。
 
-#### NSPanel 关键属性
+#### 核心原理
 
-```
-can_become_key_window: true       → 工具栏区域可获取焦点点击
-can_become_main_window: false     → 不成为主窗口
-becomes_key_only_if_needed: true  → 仅在鼠标点击时获取焦点
-style_mask: NonactivatingPanel    → 不抢当前应用的键盘焦点
-ignores_mouse_events: 动态切换    → true 时滚轮穿透，false 时可交互
-```
+1. **CGWindowListCreateImage 排除 overlay 窗口**
+   - macOS 截屏 API `CGWindowListCreateImage(bounds, option, windowID, imageOption)`
+   - `kCGWindowListOptionOnScreenBelowWindow` + 截图窗口的 `windowNumber` → 只截该窗口下方的所有窗口（排除截图窗口自身）
+   - 截到的内容 = 底层应用的真实画面（不含截图 overlay）
+   - `crates/capx/src/capture.rs::capture_display_excluding_window(display_id, exclude_window_id)`
 
-#### 实现路径
+2. **获取 NSWindow windowNumber**
+   - `tauri::WebviewWindow::ns_window()` → NSWindow 指针
+   - `[nsWindow windowNumber]` → u32 windowID
+   - `screenshot_commands.rs::get_window_number()`
 
-1. **截图窗口从一开始就创建为 NSPanel**（用 `PanelBuilder` 替代 `WebviewWindowBuilder`）：
-   - `to_panel()` 在已有窗口上转换会导致 crash（Trace/BPT trap）
-   - `PanelBuilder::<_, ScrollPanel>::new(app, label)` 直接创建为 NSPanel
-   - 内部仍创建 WebviewWindow，`get_webview_window` 等现有 API 不受影响
-   - `StyleMask::new().borderless().nonactivating_panel()` 替代 `decorations(false) + always_on_top`
-
-2. **录制时**：
-   - `panel.set_ignores_mouse_events(true)` → 滚轮穿透到底层应用
+3. **set_ignore_cursor_events(true) → 滚轮穿透**
+   - Tauri 原生 API，不需要 NSPanel
+   - true 时所有鼠标事件（含滚轮）穿透到底层应用
    - 底层应用保持键盘焦点 → 滚轮事件到达
-   - Canvas 显示实时画面（选区内 drawImage）
 
-3. **工具栏可交互**：
-   - 后端定时检查鼠标位置（CGEvent 全局坐标，修正为窗口局部坐标）
-   - 鼠标在工具栏区域 → `set_ignores_mouse_events(false)` 恢复点击
-   - 离开工具栏 → `set_ignores_mouse_events(true)` 恢复穿透
-   - 坐标修正：全局坐标减去窗口的 `outer_position()` = 窗口局部坐标
+4. **工具栏可交互（区域化切换）**
+   - 后端每帧用 CGEvent 获取全局鼠标位置
+   - 转窗口局部坐标：全局 - `outer_position()`
+   - 鼠标在工具栏区域 → `set_ignore_cursor_events(false)` 恢复点击
+   - 离开工具栏 → `set_ignore_cursor_events(true)` 恢复穿透
 
-4. **副屏坐标修正**：
-   - start 时按选区中心匹配 Tauri Monitor（物理坐标）
-   - 截图用 `monitor_x/y` 匹配 xcap capture
-   - crop 坐标 = `(CSS坐标 - 显示器逻辑偏移) × scale`
+#### 坐标系
+
+- 前端 `x, y` = CSS 逻辑像素（窗口局部）
+- 选区全局逻辑坐标 = `outer_position() + (x, y)`
+- Tauri Monitor 物理坐标 → 逻辑坐标 = `position() / scale_factor()`
+- crop 物理坐标 = `(全局逻辑 - 显示器逻辑偏移) × scale`
+- CGDisplay bounds = 全局逻辑坐标（points）
+
+#### 依赖变更
+
+- **移除** `tauri-nspanel`（不再需要）
+- **新增** `crates/capx` → `core-graphics = "0.24"` + `core-foundation = "0.10"`（macOS only）
 
 ## 7. 副屏坐标修正
 

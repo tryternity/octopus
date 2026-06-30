@@ -3,36 +3,6 @@ use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::ClipboardHandle;
 
-#[cfg(target_os = "macos")]
-mod nspanel {
-    use tauri::Manager;
-    use tauri_nspanel::{tauri_panel, ManagerExt, WebviewWindowExt};
-
-    tauri_panel! {
-        panel!(ScrollPanel {
-            config: {
-                can_become_key_window: true,
-                can_become_main_window: false,
-                becomes_key_only_if_needed: true,
-                is_floating_panel: true
-            }
-        })
-        panel_event!(ScrollPanelEventHandler {})
-    }
-
-    pub fn convert_to_panel(app: &tauri::AppHandle, label: &str) {
-        if let Some(win) = app.get_webview_window(label) {
-            let _ = win.to_panel::<ScrollPanel>();
-        }
-    }
-
-    pub fn set_mouse_passthrough(app: &tauri::AppHandle, label: &str, passthrough: bool) {
-        let win = match app.get_webview_window(label) { Some(w) => w, None => return };
-        let panel = match win.to_panel::<ScrollPanel>() { Ok(p) => p, Err(_) => return };
-        panel.set_ignores_mouse_events(passthrough);
-    }
-}
-
 /// 截图数据副本（不含 monitor 坐标，仅像素数据用于裁剪）
 #[derive(Clone)]
 struct ScreenCaptureClone {
@@ -76,6 +46,10 @@ pub fn register_screenshot_shortcut(
 /// 启动截图：截所有显示器 → 每个显示器一个窗口
 #[tauri::command]
 pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    save_frontmost_app();
+
+
     // 1. 截所有显示器
     let captures = octopus_capx::capture::capture_all_monitors()
         .map_err(|e| format!("截图失败: {}", e))?;
@@ -163,6 +137,7 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         .title("")
         .decorations(false)
         .always_on_top(true)
+        .transparent(true)
         .skip_taskbar(true)
         .resizable(false)
         .visible(false)
@@ -578,8 +553,133 @@ fn close_all_screenshot_windows(app_handle: &tauri::AppHandle) {
 
 static SCROLL_RECORDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+#[cfg(target_os = "macos")]
+struct SendApp(objc2::rc::Retained<objc2_app_kit::NSRunningApplication>);
+unsafe impl Send for SendApp {}
+unsafe impl Sync for SendApp {}
+
+#[cfg(target_os = "macos")]
+static PREV_ACTIVE_APP: Mutex<Option<SendApp>> = Mutex::new(None);
+
+#[cfg(target_os = "macos")]
+fn save_frontmost_app() {
+    use objc2_app_kit::{NSWorkspace, NSRunningApplication};
+    let workspace = NSWorkspace::sharedWorkspace();
+    if let Some(app) = workspace.frontmostApplication() {
+        let curr = NSRunningApplication::currentApplication();
+        let is_current = app.processIdentifier() == curr.processIdentifier();
+        if !is_current {
+            if let Some(name) = app.localizedName() {
+                log::info!("Scroll screenshot: saved frontmost app '{}'", name.to_string());
+            }
+            let mut guard = PREV_ACTIVE_APP.lock().unwrap();
+            *guard = Some(SendApp(app));
+        } else {
+            log::info!("Scroll screenshot: ignored saving current app");
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn activate_prev_app(win: &tauri::WebviewWindow) {
+    let app_opt = {
+        let guard = PREV_ACTIVE_APP.lock().unwrap();
+        guard.as_ref().map(|p| p.0.clone())
+    };
+    let _ = win.run_on_main_thread(move || {
+        if let Some(app) = app_opt {
+            let success = app.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions(1 << 1));
+            log::info!("Scroll screenshot: activated previous app on main thread, success={}", success);
+        } else {
+            log::info!("Scroll screenshot: no previous app to activate, deactivating ourselves");
+            if let Some(mtm) = objc2::MainThreadMarker::new() {
+                let app = objc2_app_kit::NSApplication::sharedApplication(mtm);
+                app.deactivate();
+            }
+        }
+    });
+}
+
+/// macOS：获取 NSWindow 的 windowNumber（用于 CGWindowListCreateImage 排除 overlay 窗口）
+#[cfg(target_os = "macos")]
+fn get_window_number(win: &tauri::WebviewWindow) -> Option<u32> {
+    let ptr = win.ns_window().ok()?;
+    if ptr.is_null() { return None; }
+    let ns_win = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+    Some(ns_win.windowNumber() as u32)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn get_window_number(_win: &tauri::WebviewWindow) -> Option<u32> { None }
+
+#[cfg(target_os = "macos")]
+fn get_primary_screen_height() -> f64 {
+    use objc2::{class, msg_send, runtime::AnyObject};
+    unsafe {
+        let screens: *mut AnyObject = msg_send![class!(NSScreen), screens];
+        let primary: *mut AnyObject = msg_send![screens, objectAtIndex: 0];
+        let frame: objc2_foundation::NSRect = msg_send![primary, frame];
+        frame.size.height as f64
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn get_window_cocoa_frame(win: &tauri::WebviewWindow) -> Option<(f64, f64, f64, f64)> {
+    use objc2::{msg_send, runtime::AnyObject};
+    let ptr = win.ns_window().ok()?;
+    if ptr.is_null() { return None; }
+    
+    let rect: objc2_foundation::NSRect = unsafe { msg_send![ptr as *mut AnyObject, frame] };
+    Some((rect.origin.x as f64, rect.origin.y as f64, rect.size.width as f64, rect.size.height as f64))
+}
+
+#[cfg(target_os = "macos")]
+fn set_window_ignores_mouse_events(win: &tauri::WebviewWindow, ignore: bool) {
+    let win_clone = win.clone();
+    let label = win.label().to_string();
+    let _ = win.run_on_main_thread(move || {
+        if let Ok(ptr) = win_clone.ns_window() {
+            if !ptr.is_null() {
+                let ns_win = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                ns_win.setIgnoresMouseEvents(ignore);
+                log::info!("[scroll-diag] NSWindow '{}' setIgnoresMouseEvents({}) completed on main thread", label, ignore);
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_window_ignores_mouse_events(win: &tauri::WebviewWindow, ignore: bool) {
+    let _ = win.set_ignore_cursor_events(ignore);
+}
+
+
+
+
+
+#[cfg(target_os = "macos")]
+fn set_app_active_on_main(win: &tauri::WebviewWindow, active: bool) {
+    use objc2_app_kit::NSApplication;
+    use objc2::MainThreadMarker;
+    use std::sync::mpsc;
+    let (tx, rx) = mpsc::channel();
+    let _ = win.run_on_main_thread(move || {
+        if let Some(mtm) = MainThreadMarker::new() {
+            let app = NSApplication::sharedApplication(mtm);
+            if active {
+                app.activateIgnoringOtherApps(true);
+            } else {
+                app.deactivate();
+            }
+        }
+        let _ = tx.send(());
+    });
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(1));
+}
+
 /// macOS: 模拟一次垂直滚轮事件（像素级）
 #[cfg(target_os = "macos")]
+#[allow(dead_code)]
 fn send_scroll(delta: i32) {
     use core_graphics::event::{CGEvent, ScrollEventUnit, CGEventTapLocation};
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
@@ -595,51 +695,114 @@ fn send_scroll(delta: i32) {
 #[cfg(not(target_os = "macos"))]
 fn send_scroll(_delta: i32) {}
 
+/// 前端传递的交互区域（工具栏、预览窗等），窗口局部逻辑坐标。
+#[derive(Debug, Clone, serde::Deserialize)]
+pub struct InteractiveRect {
+    x: f64,
+    y: f64,
+    width: f64,
+    height: f64,
+}
+
 #[tauri::command]
 pub async fn start_scroll_recording(
     x: f64, y: f64, w: f64, h: f64,
+    win_label: String,
+    interactive_rects: Vec<InteractiveRect>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     SCROLL_RECORDING.store(true, std::sync::atomic::Ordering::SeqCst);
 
     let ah = app_handle.clone();
     tauri::async_runtime::spawn(async move {
-        // 获取所有显示器，用 Tauri 物理坐标判断选区在哪个屏
+        // ── 通过 win_label 定位选区所在的截图窗口（spec §6.4）──
+        let sel_win = match ah.get_webview_window(&win_label) {
+            Some(w) => w,
+            None => {
+                log::error!("start_scroll_recording: window '{}' not found", win_label);
+                return;
+            }
+        };
+
+        // 窗口原点：用 CGDisplay::bounds() 获取 Quartz 逻辑原点（最可靠）。
+        // 截图窗口全屏覆盖显示器，所以窗口原点 = 显示器逻辑原点。
+        // outer_position()/sf 在混合 DPI 下可能不准（Tauri 物理 vs Quartz 逻辑断层）。
+        #[cfg(target_os = "macos")]
+        let (win_origin_x, win_origin_y) = {
+            let primary_h = get_primary_screen_height();
+            if let Some((cx, cy, _, ch)) = get_window_cocoa_frame(&sel_win) {
+                (cx, primary_h - (cy + ch))
+            } else {
+                (0.0, 0.0)
+            }
+        };
+        #[cfg(not(target_os = "macos"))]
+        let (win_origin_x, win_origin_y) = {
+            let sf = sel_win.scale_factor().unwrap_or(1.0);
+            match sel_win.outer_position() {
+                Ok(p) => (p.x as f64 / sf, p.y as f64 / sf),
+                Err(_) => (0.0, 0.0),
+            }
+        };
+        eprintln!("[scroll] win_origin=({},{}) sel_local=({},{},{},{})", win_origin_x, win_origin_y, x, y, w, h);
+        // 选区的全局逻辑坐标 = 窗口原点 + CSS 偏移
+        let sel_global_x = win_origin_x + x;
+        let sel_global_y = win_origin_y + y;
+
+        // ── 找到选区所在的显示器 + scale ──
         let monitors = ah.available_monitors().unwrap_or_default();
-        let (target_mon_x_phys, target_mon_y_phys, scale) = {
-            // Tauri Monitor::position() 返回物理坐标，size() 也是物理像素
-            // 前端 x/y 是逻辑坐标（CSS px），需 × scale 转物理坐标后再匹配
-            let cx_phys = (x * 2.0) as i32; // 假设 scale=2，后面用精确值覆盖
-            let cy_phys = (y * 2.0) as i32;
+        let (scale, mon_logical_x, mon_logical_y, _mon_phys_x, _mon_phys_y): (f64, f64, f64, i32, i32) = {
             let hit = monitors.iter().find(|m| {
-                let mx = m.position().x;
-                let my = m.position().y;
-                let mw = m.size().width as i32;
-                let mh = m.size().height as i32;
-                let sf = m.scale_factor();
-                // 选区中心的物理坐标
-                let cx = ((x + w / 2.0) * sf) as i32;
-                let cy = ((y + h / 2.0) * sf) as i32;
+                let mx = m.position().x as f64 / m.scale_factor();
+                let my = m.position().y as f64 / m.scale_factor();
+                let mw = m.size().width as f64 / m.scale_factor();
+                let mh = m.size().height as f64 / m.scale_factor();
+                let cx = sel_global_x + w / 2.0;
+                let cy = sel_global_y + h / 2.0;
                 cx >= mx && cx < mx + mw && cy >= my && cy < my + mh
             }).or_else(|| monitors.first());
             match hit {
-                Some(m) => (m.position().x, m.position().y, m.scale_factor()),
-                None => (0, 0, 1.0),
+                Some(m) => {
+                    let sf = m.scale_factor();
+                    (sf, m.position().x as f64 / sf, m.position().y as f64 / sf, m.position().x, m.position().y)
+                }
+                None => (1.0, 0.0, 0.0, 0, 0),
             }
         };
 
         // 选区在该显示器内的物理像素偏移
-        // 前端 x/y 是 CSS 逻辑坐标，Tauri 的全局虚拟桌面坐标和 CSS 坐标一致（逻辑像素）
-        // xcap 截图是物理像素，crop_region 的参数也是物理像素
-        // 所以 crop 的物理坐标 = (CSS坐标 - 显示器逻辑偏移) × scale
-        let mon_logical_x = target_mon_x_phys as f64 / scale;
-        let mon_logical_y = target_mon_y_phys as f64 / scale;
-        let px = ((x - mon_logical_x) * scale) as u32;
-        let py = ((y - mon_logical_y) * scale) as u32;
+        let px = ((sel_global_x - mon_logical_x) * scale) as u32;
+        let py = ((sel_global_y - mon_logical_y) * scale) as u32;
         let pw = (w * scale) as u32;
         let ph = (h * scale) as u32;
 
-        // 获取所有截图窗口 label
+        log::info!(
+            "Scroll recording: win_label={}, sel=({},{},{},{}), global=({},{},{}), scale={}, crop phys=({},{},{},{})",
+            win_label, x, y, w, h, sel_global_x, sel_global_y, scale, scale,
+            px, py, pw, ph,
+        );
+
+        // ── macOS：获取 display_id + overlay windowNumber（spec §6.4 CGWindowList 排除）──
+        #[cfg(target_os = "macos")]
+        let (_display_id, exclude_wid) = {
+            use core_graphics::display::CGDisplay;
+            let displays = match CGDisplay::active_displays() {
+                Ok(d) => d,
+                Err(_) => { log::error!("CGGetActiveDisplayList failed"); return; }
+            };
+            let hit = displays.iter().find(|&&id| {
+                let bounds = CGDisplay::new(id).bounds();
+                let cx = sel_global_x + w / 2.0;
+                let cy = sel_global_y + h / 2.0;
+                cx >= bounds.origin.x && cx < bounds.origin.x + bounds.size.width
+                    && cy >= bounds.origin.y && cy < bounds.origin.y + bounds.size.height
+            }).copied().unwrap_or(0);
+            let wid = get_window_number(&sel_win).unwrap_or(0);
+            eprintln!("[scroll-diag] display_id={}, exclude_wid={} (windowNumber), displays={:?}", hit, wid, displays);
+            (hit, wid)
+        };
+
+        // 获取所有截图窗口 label（用于 set_ignore_cursor_events）
         let scroll_labels: Vec<String> = ah
             .webview_windows()
             .keys()
@@ -647,47 +810,90 @@ pub async fn start_scroll_recording(
             .cloned()
             .collect();
 
-        // manual 模式：将截图窗口转为 NSPanel（录制时才转，不影响普通截图）
+        // 录制开始：保持 always_on_top(true) + set_ignore_cursor_events(true) + deactivate
         #[cfg(target_os = "macos")]
         {
             for label in &scroll_labels {
-                nspanel::convert_to_panel(&ah, label);
+                if let Some(win) = ah.get_webview_window(label) {
+                    let _ = win.set_always_on_top(true);
+                }
             }
-            // 等一帧让 NSPanel 转换完成
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         }
-
-        // NSPanel ignores_mouse_events = true（滚轮穿透，不隐藏窗口）
+        for label in &scroll_labels {
+            if let Some(win) = ah.get_webview_window(label) {
+                set_window_ignores_mouse_events(&win, true);
+            }
+        }
         #[cfg(target_os = "macos")]
         {
-            for label in &scroll_labels {
-                nspanel::set_mouse_passthrough(&ah, label, true);
-            }
+            activate_prev_app(&sel_win);
+            eprintln!("[scroll] manual mode: activated previous app for scroll passthrough");
         }
 
-        // 工具栏区域坐标（用于区域化鼠标穿透切换）
-        let toolbar_y_local = y + h + 8.0;
-        let toolbar_x_start = x;
-        let toolbar_x_end = x + 420.0;
+        // 独立鼠标监听线程：30ms 高频轮询，与截图循环解耦。
+        // 鼠标在任意交互区域（工具栏/预览窗）→ set_ignore_cursor_events(false)（可点击）；
+        // 离开 → set_ignore_cursor_events(true)（滚动穿透）。不调 activate/deactivate。
+        let mon_labels = scroll_labels.clone();
+        let mon_ah = ah.clone();
+        let mon_winx = win_origin_x;
+        let mon_winy = win_origin_y;
+        let mon_rects = interactive_rects;
+        tauri::async_runtime::spawn(async move {
+            use core_graphics::event::CGEvent;
+            use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+            let mut poll = tokio::time::interval(std::time::Duration::from_millis(30));
+            let mut cur_passthrough = true;
+            while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
+                poll.tick().await;
+                let in_interactive = if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+                    if let Ok(evt) = CGEvent::new(src) {
+                        let loc = evt.location();
+                        let lx = loc.x - mon_winx;
+                        let ly = loc.y - mon_winy;
+                        mon_rects.iter().any(|r| {
+                            lx >= r.x && lx <= r.x + r.width && ly >= r.y && ly <= r.y + r.height
+                        })
+                    } else { false }
+                } else { false };
+                let want = !in_interactive;
+                if want != cur_passthrough {
+                    log::info!(
+                        "[scroll-diag] toggling passthrough: want={}, cur_passthrough={}, win_origin=({},{})",
+                        want,
+                        cur_passthrough,
+                        mon_winx,
+                        mon_winy
+                    );
+                    for label in &mon_labels {
+                        if let Some(win) = mon_ah.get_webview_window(label) {
+                            set_window_ignores_mouse_events(&win, want);
+                        }
+                    }
+                    cur_passthrough = want;
+                }
+            }
+        });
 
-        // 获取截图窗口的全局位置（用于坐标转换）
-        let first_label = scroll_labels.first().cloned().unwrap_or_default();
-        let (win_global_x, win_global_y) = ah
-            .get_webview_window(&first_label)
-            .and_then(|w| w.outer_position().ok())
-            .map(|p| (p.x as f64, p.y as f64))
-            .unwrap_or((0.0, 0.0));
 
-        // 首帧
-        let first_result = tokio::task::spawn_blocking({
-            let tx = target_mon_x_phys; let ty = target_mon_y_phys;
-            move || {
+        // ── 首帧（只截选区区域，排除 overlay 窗口）──
+        let first_result = tokio::task::spawn_blocking(move || {
+            #[cfg(target_os = "macos")]
+            {
+                let cap = octopus_capx::capture::capture_region_excluding_window(
+                    exclude_wid, sel_global_x, sel_global_y, w, h,
+                )?;
+                let img = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba_bytes)
+                    .ok_or_else(|| anyhow::anyhow!("failed to create RgbaImage"))?;
+                anyhow::Ok(img)
+            }
+            #[cfg(not(target_os = "macos"))]
+            {
                 let captures = octopus_capx::capture::capture_all_monitors()?;
-                let mut iter = captures.into_iter();
-                let full = iter.find(|c| c.monitor_x == tx && c.monitor_y == ty)
-                    .or_else(|| iter.next())
-                    .ok_or_else(|| anyhow::anyhow!("no monitor"))?;
-                let png = octopus_capx::capture::crop_region(&full, px, py, pw, ph)?;
+                let full = captures.iter()
+                    .find(|c| c.monitor_x == mon_phys_x && c.monitor_y == mon_phys_y)
+                    .or_else(|| captures.first())
+                    .ok_or_else(|| anyhow::anyhow!("no matching monitor"))?;
+                let png = octopus_capx::capture::crop_region(full, px, py, pw, ph)?;
                 let img = image::load_from_memory(&png)?.to_rgba8();
                 anyhow::Ok(img)
             }
@@ -704,46 +910,30 @@ pub async fn start_scroll_recording(
 
         let ah2 = ah.clone();
         let mut no_progress_count = 0u32;
-        let mut last_passthrough = true;
 
+        // manual 模式：由用户手动滚动触控板/滚轮，后台只进行高频截帧与拼接
         while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
             interval.tick().await;
 
-            // manual 模式：检查鼠标位置，区域化切换 mouse passthrough
-            #[cfg(target_os = "macos")]
-            {
-                use core_graphics::event::CGEvent;
-                use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-                if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-                    if let Ok(evt) = CGEvent::new(src) {
-                        let loc = evt.location();
-                        // CGEvent location 是全局逻辑坐标
-                        // 转为窗口局部坐标：减去窗口全局位置
-                        let local_x = loc.x - win_global_x;
-                        let local_y = loc.y - win_global_y;
-                        let in_toolbar = local_y >= toolbar_y_local && local_y <= toolbar_y_local + 44.0
-                            && local_x >= toolbar_x_start && local_x <= toolbar_x_end;
-                        let want_passthrough = !in_toolbar;
-                        if want_passthrough != last_passthrough {
-                            for label in &scroll_labels {
-                                nspanel::set_mouse_passthrough(&ah2, label, want_passthrough);
-                            }
-                            last_passthrough = want_passthrough;
-                        }
-                    }
+            // 截屏：只截选区区域，CGWindowList 排除 overlay 窗口（只截底层应用内容）
+            let capture_result = tokio::task::spawn_blocking(move || {
+                #[cfg(target_os = "macos")]
+                {
+                    let cap = octopus_capx::capture::capture_region_excluding_window(
+                        exclude_wid, sel_global_x, sel_global_y, w, h,
+                    )?;
+                    let img = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba_bytes)
+                        .ok_or_else(|| anyhow::anyhow!("failed to create RgbaImage"))?;
+                    anyhow::Ok(img)
                 }
-            }
-
-            // 截屏（用户手动滚动，不模拟滚轮）
-            let capture_result = tokio::task::spawn_blocking({
-                let tx = target_mon_x_phys; let ty = target_mon_y_phys;
-                move || {
+                #[cfg(not(target_os = "macos"))]
+                {
                     let captures = octopus_capx::capture::capture_all_monitors()?;
-                    let mut iter = captures.into_iter();
-                    let full = iter.find(|c| c.monitor_x == tx && c.monitor_y == ty)
-                        .or_else(|| iter.next())
-                        .ok_or_else(|| anyhow::anyhow!("no monitor"))?;
-                    let png = octopus_capx::capture::crop_region(&full, px, py, pw, ph)?;
+                    let full = captures.iter()
+                        .find(|c| c.monitor_x == mon_phys_x && c.monitor_y == mon_phys_y)
+                        .or_else(|| captures.first())
+                        .ok_or_else(|| anyhow::anyhow!("no matching monitor"))?;
+                    let png = octopus_capx::capture::crop_region(full, px, py, pw, ph)?;
                     let img = image::load_from_memory(&png)?.to_rgba8();
                     anyhow::Ok(img)
                 }
@@ -765,8 +955,10 @@ pub async fn start_scroll_recording(
                 no_progress_count = 0;
             } else {
                 no_progress_count += 1;
-                if no_progress_count >= 3 {
-                    log::info!("Auto scroll: no progress for 3 frames, stopping");
+                // manual 模式：用户需要时间移动到选区外开始滚动，不自动停止。
+                // 用一个大阈值（250 帧 ≈ 30s）仅作安全兜底，防止忘记停止。
+                if no_progress_count >= 250 {
+                    log::info!("Scroll: no progress for 250 frames (~30s), auto-stopping");
                     break;
                 }
             }
@@ -788,13 +980,13 @@ pub async fn start_scroll_recording(
             }));
         }
 
-        // 录制结束：恢复鼠标事件
-        #[cfg(target_os = "macos")]
-        {
-            for label in &scroll_labels {
-                nspanel::set_mouse_passthrough(&ah, label, false);
+        for label in &scroll_labels {
+            if let Some(win) = ah.get_webview_window(label) {
+                set_window_ignores_mouse_events(&win, false);
             }
         }
+        #[cfg(target_os = "macos")]
+        set_app_active_on_main(&sel_win, true);
 
         // 入库
         close_all_screenshot_windows(&ah);

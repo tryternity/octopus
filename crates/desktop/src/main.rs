@@ -178,7 +178,6 @@ pub fn run() {
                 .build(),
         )
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
-        .plugin(tauri_nspanel::init())
         .invoke_handler(tauri::generate_handler![
             runtime_config::toolbar_state,
             runtime_config::list_asr_engines,

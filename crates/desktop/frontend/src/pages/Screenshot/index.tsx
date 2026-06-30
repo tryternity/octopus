@@ -126,20 +126,21 @@ export default function Screenshot() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
 
-    // 滚动模式：选区内显示实时画面，选区外用冻结的 bg + 暗遮罩
-    if (mode === "scrolling" && sel && scrollFrameRef.current) {
+    // 滚动模式：选区内完全透明以露出底层的真实滚动画面，选区外用冻结的 bg + 暗遮罩
+    if (mode === "scrolling" && sel) {
       // 全屏冻结背景
       ctx.drawImage(bg, 0, 0, cssW, cssH);
+      // 填充选区外部的暗遮罩
       ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-      ctx.fillRect(0, 0, cssW, cssH);
-      // 选区内：实时画面（clearRect 挖出选区 → drawImage 实时帧）
       const { x, y, w, h } = sel;
-      ctx.save();
-      ctx.beginPath();
-      ctx.rect(x, y, w, h);
-      ctx.clip();
-      ctx.drawImage(scrollFrameRef.current, x, y, w, h);
-      ctx.restore();
+      ctx.fillRect(0, 0, cssW, y);
+      ctx.fillRect(0, y + h, cssW, cssH - y - h);
+      ctx.fillRect(0, y, x, h);
+      ctx.fillRect(x + w, y, cssW - x - w, h);
+
+      // 选区内清空为透明（挖孔）
+      ctx.clearRect(x, y, w, h);
+
       // 绿色边框
       ctx.strokeStyle = "#22c55e";
       ctx.lineWidth = 2;
@@ -762,8 +763,21 @@ export default function Screenshot() {
     setTool("none");
     setScrollPreview(null);
     setScrollHeight(0);
+
+    // 计算交互区域（工具栏 + 预览窗），传给后端用于鼠标穿透切换
+    const interactiveRects: Array<{x: number; y: number; width: number; height: number}> = [];
+    // 工具栏：与下方渲染逻辑一致（水平居中，空间不足移到上方）
+    interactiveRects.push({ x: toolbarX, y: toolbarY, width: toolbarWidth, height: 44 });
+    // 预览窗（右侧优先，空间不足放左侧）
+    const previewLeft = sel.x + sel.w + 12 + 200 <= window.innerWidth
+      ? sel.x + sel.w + 12
+      : sel.x - 12 - 200;
+    interactiveRects.push({ x: previewLeft, y: sel.y, width: 200, height: window.innerHeight - sel.y });
+
     invoke("start_scroll_recording", {
       x: sel.x, y: sel.y, w: sel.w, h: sel.h,
+      winLabel: winLabel,
+      interactiveRects,
     }).catch(() => setModeSafe("selected"));
   }
 

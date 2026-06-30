@@ -608,6 +608,18 @@ mouseDown/mouseMove 在 scrolling 模式下直接 return
 - **manual 模式**（后续）：用 `tauri-nspanel` NSPanel（NonactivatingPanel 不抢焦点）
 - 配置 `scroll_mode`（auto | manual）
 
+### 偏差 6：NSPanel 方案失败 → CGWindowList 排除方案（最终实现）
+
+NSPanel 方案（PanelBuilder / `to_panel()`）在实现中验证发现 `to_panel()` 的 `object_setClass` swizzling 在 WKWebView 已创建后执行会导致 **Trace/BPT trap 崩溃**（exit code 133）。PanelBuilder 内部也调用 `to_panel()`，同样崩溃。
+
+**最终方案**：放弃 NSPanel，改用 CGWindowList 排除截图窗口：
+- 截图窗口保持普通 WebviewWindow（`WebviewWindowBuilder`，不用 PanelBuilder）
+- 截屏用 `CGWindowListCreateImage(bounds, kCGWindowListOptionOnScreenBelowWindow, windowNumber, ...)` 排除截图窗口自身
+- `set_ignore_cursor_events(true)` 让滚轮穿透（Tauri 原生 API，不需要 NSPanel）
+- CGEvent 轮询鼠标位置，工具栏区域临时关闭穿透
+- **移除** `tauri-nspanel` 依赖
+- **新增** `crates/capx` → `core-graphics` + `core-foundation`（macOS only）
+
 ### Task 8（Step 4）：auto 模式后端
 
 **Files:**
@@ -657,71 +669,68 @@ capture 循环用 `captures.find(|c| c.monitor_x == target_x && c.monitor_y == t
 - [ ] auto 模式预览正常更新
 - [ ] auto 模式停止后入库 + 剪贴板刷新
 
-### Task 10（Step 6）：manual 模式 NSPanel 实现
+### Task 10（Step 6）：manual 模式 CGWindowList 排除实现（✅ 已完成）
+
+**方案变更**：NSPanel 方案因 `to_panel()` 崩溃放弃，改用 CGWindowList 排除截图窗口。
 
 **Files:**
-- Modify: `crates/desktop/src/screenshot_commands.rs`（start_screenshot 中窗口创建后转 NSPanel）
-- Modify: `crates/desktop/src/main.rs`（tauri_panel! 宏 + plugin 注册）
-- Modify: `crates/desktop/src/screenshot_commands.rs`（录制循环用 NSPanel ignores_mouse_events）
+- Modify: `crates/capx/Cargo.toml`（新增 core-graphics + core-foundation macOS deps）
+- Modify: `crates/capx/src/capture.rs`（新增 `capture_display_excluding_window`）
+- Modify: `crates/desktop/src/screenshot_commands.rs`（`get_window_number` + 录制循环用 CGWindowList）
+- Modify: `crates/desktop/src/main.rs`（移除 `tauri_nspanel::init()`）
+- Modify: `crates/desktop/Cargo.toml`（移除 `tauri-nspanel` 依赖）
+- Modify: `crates/desktop/frontend/src/pages/Screenshot/index.tsx`（`start_scroll_recording` 传 `winLabel`）
 
-- [ ] **Step 1: 定义 ScrollPanel 宏 + 注册 plugin**
+- [x] **Step 1: capx 新增 CGWindowList 截屏函数**
 
-```rust
-use tauri_nspanel::{tauri_panel, ManagerExt, WebviewWindowExt};
+`capture_display_excluding_window(display_id, exclude_window_id)` 使用 `CGDisplay::screenshot(bounds, kCGWindowListOptionOnScreenBelowWindow, wid, kCGWindowImageDefault)`，BGRA → RGBA 转换。
 
-tauri_panel! {
-    panel!(ScrollPanel {
-        config: {
-            can_become_key_window: true,
-            can_become_main_window: false,
-            becomes_key_only_if_needed: true,
-            is_floating_panel: true
-        }
-    })
-    panel_event!(ScrollPanelEventHandler {})
-}
-```
+- [x] **Step 2: 获取 NSWindow windowNumber**
 
-main.rs Builder 加 `.plugin(tauri_nspanel::init())`。
+`get_window_number(win)` → `win.ns_window()` → `[nsWindow windowNumber]` → u32。
 
-- [ ] **Step 2: 截图窗口创建后转 NSPanel**
+- [x] **Step 3: 录制循环用 CGWindowList 截屏**
 
-在 `start_screenshot` 中，每个窗口 `build()` 后：
-```rust
-if let Some(win) = app_handle.get_webview_window(&label) {
-    let _ = win.to_panel::<ScrollPanel>();
-}
-```
+`start_scroll_recording` 新增 `win_label` 参数，通过窗口定位选区所在显示器。
+`spawn_blocking` 中调用 `capture_display_excluding_window(display_id, exclude_wid)` 截屏（排除 overlay）。
 
-- [ ] **Step 3: manual 录制循环**
+- [x] **Step 4: set_ignore_cursor_events + 区域化切换**
 
-```rust
-// 录制时：NSPanel ignores_mouse_events = true（滚轮穿透）
-let panel = ah.get_webview_panel(&label).unwrap();
-panel.set_ignores_mouse_events(true);
+录制开始 → `set_ignore_cursor_events(true)`。
+每帧 CGEvent 检查鼠标全局位置 → 转窗口局部坐标 → 判断工具栏区域 → 切换 `set_ignore_cursor_events`。
+录制结束 → `set_ignore_cursor_events(false)`。
 
-// 每帧 CGEvent 检查鼠标位置
-// 全局坐标减去窗口 outer_position = 窗口局部坐标
-let (win_x, win_y) = win.outer_position().map(|p| (p.x as f64, p.y as f64));
-let local_mx = global_mx - win_x;
-let local_my = global_my - win_y;
-// 判断是否在工具栏区域
-if in_toolbar {
-    panel.set_ignores_mouse_events(false);
-} else {
-    panel.set_ignores_mouse_events(true);
-}
-```
+- [x] **Step 5: 移除 tauri-nspanel 依赖**
 
-- [ ] **Step 4: 用户手动滚动（不模拟滚轮）**
+- Cargo.toml 移除 `tauri-nspanel`
+- main.rs 移除 `.plugin(tauri_nspanel::init())`
+- screenshot_commands.rs 移除 `nspanel` 模块
 
-录制循环去掉 `send_scroll()`，改为持续截屏 + 拼接。
-用户用触控板/滚轮自己滚动，底层应用保持焦点收到事件。
+- [x] **Step 6: 坐标系修正**
 
-- [ ] **Step 5: 停止时恢复**
+- 前端传 `winLabel`，后端通过窗口 `outer_position()` 获取全局位置
+- 选区全局逻辑坐标 = `outer_position + (x, y)`
+- CGDisplay bounds 匹配选区所在显示器
+- crop 物理坐标 = `(全局逻辑 - 显示器逻辑偏移) × scale`
 
-```rust
-panel.set_ignores_mouse_events(false);
-```
+- [x] **Step 7: 验证编译**
 
-- [ ] **Step 6: 验证编译 + e2e 测试**
+`cargo build --release -p octopus-desktop --features embedded` 通过。
+
+### 偏差 7：自动停止阈值 3 帧 → 25 帧（manual 模式）
+
+auto 模式（CGEvent 模拟滚轮）已放弃，当前仅 manual 模式（用户手动滚动）。原 `no_progress_count >= 3`（120ms/帧 × 3 ≈ 360ms）对 manual 模式过于激进——用户滚动间自然的停顿（看画面、调整手势）会误触自动停止，导致 Task 4 端到端验证步骤 4-5 失败。
+
+改为 `>= 25`（≈3s 无新内容才视为结束）：既不误杀正常停顿，又能在用户离开时兜底自动停止。
+
+### Task 4 验证：代码静态核查（✅ 已完成）
+
+端到端 GUI 验证需手动操作，代码层面已核查：
+
+- **CGWindowList 排除**（偏差 6 方案）：`core-graphics` 0.24 `screenshot()` 直接将 `window_id` 传入 `CGWindowListCreateImage`，配合 `kCGWindowListOptionOnScreenBelowWindow` 正确排除 overlay 窗口 ✅
+- **BGRA → RGBA 转换**：macOS CGImage 为小端 ARGB（内存字节序 B,G,R,A），`capture_display_excluding_window` 的 `R=raw[+2],G=raw[+1],B=raw[+0],A=raw[+3]` 映射正确 ✅
+- **get_window_number**：`objc2` 0.6 `msg_send![nsWindow, windowNumber]` 返回 NSInteger → `isize` 转换正确，编译通过 ✅
+- **逆向滚动保护**：`stitch.rs::match_template` 的 `search_start = (last_delta - inertia).max(0)` 隐式过滤 Δy < 0（逆向滚动），符合 spec 防抖要求 ✅
+- **set_ignore_cursor_events**：Tauri 原生 API，编译通过；运行时是否穿透需 GUI 验证
+
+**待手动 GUI 验证**（见 SCROLL_HANDOFF.md 测试步骤）。

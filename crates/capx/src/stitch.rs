@@ -51,6 +51,10 @@ impl Stitcher {
     }
 
     pub fn process_frame(&mut self, frame: &RgbaImage) -> Result<bool> {
+        if self.is_duplicate(frame) {
+            return Ok(false);
+        }
+
         self.frame_count += 1;
         let (w, h) = (frame.width(), frame.height());
 
@@ -63,10 +67,6 @@ impl Stitcher {
         if eff_bottom <= eff_top { return Ok(false); }
         let eff_h = eff_bottom - eff_top;
 
-        if self.is_duplicate(frame) {
-            return Ok(false);
-        }
-
         let edges = compute_edges(frame);
         let last = match &self.last_edges {
             Some(e) => e.clone(),
@@ -75,31 +75,61 @@ impl Stitcher {
 
         let tpl_h = ((eff_h as f32 * self.config.template_ratio) as u32).max(10);
         let tpl_h = tpl_h.min(eff_h);
-        let tpl_top = eff_bottom.saturating_sub(tpl_h);
 
-        let (delta, confidence) = self.match_template(
-            &last, &edges, tpl_top, eff_top, eff_bottom, tpl_h, w,
+        // 模板 1 (底部)
+        let tpl_top1 = eff_bottom.saturating_sub(tpl_h);
+        let (delta1, confidence1) = self.match_template(
+            &last, &edges, tpl_top1, eff_top, eff_bottom, tpl_h, w,
         );
 
-        if confidence >= self.config.min_confidence {
+        // 模板 2 (中部)
+        let tpl_top2 = eff_top + eff_h / 2 - tpl_h / 2;
+        let (delta2, confidence2) = self.match_template(
+            &last, &edges, tpl_top2, eff_top, eff_bottom, tpl_h, w,
+        );
+
+        let match1_ok = confidence1 >= self.config.min_confidence;
+        let match2_ok = confidence2 >= self.config.min_confidence;
+
+        let ok = if match1_ok && match2_ok {
+            // 两个模板均匹配成功：进行双模板一致性（防撕裂）校验
+            let expected_diff = tpl_top2 as i32 - tpl_top1 as i32;
+            let actual_diff = delta2 - delta1;
+            (actual_diff - expected_diff).abs() <= 1
+        } else if match1_ok {
+            // 只有底部模板匹配成功（中部可能无纹理或滚出屏幕），信任底部
+            true
+        } else if match2_ok {
+            // 只有中部模板匹配成功（底部可能无纹理），信任中部并折算为 delta1
+            true
+        } else {
+            false
+        };
+
+        if ok {
             self.low_conf_streak = 0;
-            self.last_delta = delta;
+            self.last_delta = if match1_ok {
+                delta1
+            } else {
+                delta2 - (tpl_top2 as i32 - tpl_top1 as i32)
+            };
         } else {
             self.low_conf_streak += 1;
             if self.low_conf_streak >= self.config.max_lowconf_streak {
                 self.last_edges = Some(edges);
-                return Ok(false);
             }
+            return Ok(false);
         }
 
         let new_start = eff_top + (self.last_delta as u32).min(eff_h);
-        if new_start >= eff_bottom {
+        let new_start_actual = new_start + tpl_h;
+        if new_start_actual >= eff_bottom {
             self.last_edges = Some(edges);
             return Ok(false);
         }
 
-        let new_h = eff_bottom - new_start;
-        let new_rows = image::imageops::crop_imm(frame, 0, new_start, w, new_h).to_image();
+        let new_h = eff_bottom - new_start_actual;
+        let new_rows = image::imageops::crop_imm(frame, 0, new_start_actual, w, new_h).to_image();
 
         let old_h = self.canvas.height();
         let mut combined = RgbaImage::new(w, old_h + new_rows.height());
@@ -172,30 +202,15 @@ impl Stitcher {
         last: &GrayImage, curr: &GrayImage,
         tpl_top: u32, eff_top: u32, eff_bottom: u32, tpl_h: u32, w: u32,
     ) -> (i32, f32) {
-        let search_start = ((self.last_delta - self.config.inertia_px).max(0) as u32)
-            .min(eff_bottom.saturating_sub(eff_top).saturating_sub(tpl_h));
-        let search_end = ((self.last_delta + self.config.inertia_px) as u32)
-            .min(eff_bottom - eff_top - tpl_h);
-
-        let mut best_delta = self.last_delta;
+        let mut best_delta = 0;
         let mut best_score = -1.0f32;
 
-        for d in search_start..=search_end {
+        let full_end = eff_bottom - eff_top - tpl_h;
+        for d in 0..=full_end {
             let score = ncc_score(last, curr, tpl_top, eff_top + d, w, tpl_h, &self.active_cols);
             if score > best_score {
                 best_score = score;
                 best_delta = d as i32;
-            }
-        }
-
-        if best_score < self.config.min_confidence {
-            let full_end = eff_bottom - eff_top - tpl_h;
-            for d in 0..=full_end {
-                let score = ncc_score(last, curr, tpl_top, eff_top + d, w, tpl_h, &self.active_cols);
-                if score > best_score {
-                    best_score = score;
-                    best_delta = d as i32;
-                }
             }
         }
 
@@ -273,6 +288,7 @@ fn ncc_score(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use image::Rgba;
 
     #[test]
     fn test_stitch_identical_frame() {
