@@ -3,6 +3,7 @@
 mod audio;
 mod config;
 mod clipboard_commands;
+mod compact_editor_window;
 mod image_migration;
 mod clipboard_window;
 mod coordinator;
@@ -484,6 +485,8 @@ pub fn run() {
                     settings_window::on_settings_closed(app);
                 } else if label == "notepad_window" {
                     notepad_window::on_notepad_closed(app);
+                } else if label == "compact_editor_window" {
+                    compact_editor_window::on_compact_editor_closed(app);
                 }
             }
             // 应用退出前：排空后台 DB 写入队列，避免 Finalize 等命令入队未落库而丢失
