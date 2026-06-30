@@ -910,6 +910,7 @@ pub async fn start_scroll_recording(
 
         let ah2 = ah.clone();
         let mut no_progress_count = 0u32;
+        let mut last_frame: Option<image::RgbaImage> = None;
 
         // manual 模式：由用户手动滚动触控板/滚轮，后台只进行高频截帧与拼接
         while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
@@ -940,6 +941,7 @@ pub async fn start_scroll_recording(
             }).await;
 
             let frame_rgba = match capture_result { Ok(Ok(img)) => img, _ => continue };
+            last_frame = Some(frame_rgba.clone());
 
             // 选区实时画面 JPEG
             let mut frame_jpg = Vec::new();
@@ -980,6 +982,12 @@ pub async fn start_scroll_recording(
             }));
         }
 
+        // 录制结束：补全最后一帧的完整可见区域（含底部 sticky footer）
+        if let Some(ref lf) = last_frame {
+            let _ = stitcher.finalize(lf);
+        }
+
+        // 录制结束：恢复鼠标事件 + 重新激活 app
         for label in &scroll_labels {
             if let Some(win) = ah.get_webview_window(label) {
                 set_window_ignores_mouse_events(&win, false);
