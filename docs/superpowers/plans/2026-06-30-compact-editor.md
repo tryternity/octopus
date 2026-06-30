@@ -10,6 +10,22 @@
 
 ---
 
+## ✅ 实现状态（2026-06-30 同步）
+
+本计划 **Task 1-6、8-11 已全部实现并提交**（git log：`b2e45c0`…`0d7a061`），后端 `cargo test` 全绿（55 passed, 0 failed）。
+
+- **Task 1-6** ✅：store `update_content` / `set_clipboard_item_text` 命令 / `compact_editor_window` 窗口模块 / `compact_editor_commands` 命令层 + 单测 / `generate_handler!` 注册 4 命令 / CompactEditor 组件 + App 路由 + `compactEditor.ts` helper。
+- **Task 7** ⚠️ **废弃**：旧方案（Result 弹独立编辑器窗）曾以 `85660ef` 实现，后因设计改为原地双模式，被 **Task 11 覆盖移除**（Result 不再 `openCompactEditor`）。checkbox 保持未勾。
+- **Task 8-9** ✅：OCR 接入（移除系统 TextEdit）+ 剪贴板文本条目「编辑」按钮（`SquarePen`）。
+- **Task 10** ✅：`architecture.md` 同步 + 全量后端 `cargo test` 绿。
+- **Task 11** ✅：语音 Result 编辑框尺寸双模式（`toggleExpand` + 放大/缩小开关 + localStorage 记忆）。
+
+**唯一剩余**：验收 e2e（手动，见文末）——需用户跑 `./run-octopus.sh` 逐项确认。
+
+**🔴 当前已知 bug（e2e 暴露，待修）**：Result 工具栏「放大」切换点击后窗口**未变大**。初判 `win.setSize`/`win.setResizable` 对创建时 `resizable(false)` + `transparent(true)` + `decorations(false)` 的悬浮窗运行时生效有疑点；详见文末「待修 bug」节。
+
+---
+
 ## ⚠️ 执行环境约束（每个任务都必须遵守）
 
 1. **worktree cwd 陷阱**：Bash 的 cwd 实测可能是**主仓库**而非本 worktree。所有 cargo/npm/git 命令必须显式指向 worktree 绝对路径：
@@ -52,7 +68,7 @@
 - Modify: `crates/clipboard/src/store.rs`（在 `update_search_text` 后，约 L359 后新增函数）
 - Test: `crates/clipboard/src/store.rs` 的 `mod tests`（约 L594+）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 在 `crates/clipboard/src/store.rs` 的 `mod tests {` 内（参考 L605 `test_find_by_text_file_dedup` 的写法）新增：
 
@@ -83,7 +99,7 @@
     }
 ```
 
-- [ ] **Step 2: 跑测试确认失败**
+- [x] **Step 2: 跑测试确认失败**
 
 Run:
 ```bash
@@ -91,7 +107,7 @@ cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktr
 ```
 Expected: 编译失败，`cannot find function update_content`。
 
-- [ ] **Step 3: 实现 `update_content`**
+- [x] **Step 3: 实现 `update_content`**
 
 在 `update_search_text` 函数后（L359 之后）新增：
 
@@ -107,7 +123,7 @@ pub fn update_content(conn: &Connection, id: i64, text: &str) -> Result<()> {
 }
 ```
 
-- [ ] **Step 4: 跑测试确认通过**
+- [x] **Step 4: 跑测试确认通过**
 
 Run:
 ```bash
@@ -115,7 +131,7 @@ cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktr
 ```
 Expected: PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad add crates/clipboard/src/store.rs
@@ -129,7 +145,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 **Files:**
 - Modify: `crates/desktop/src/clipboard_commands.rs`（新增命令，参考 `ocr_image` L379 的 `State<'_, Arc<ClipboardHandle>>` + `with_db` + `handle.write_text` 写法）
 
-- [ ] **Step 1: 新增命令**
+- [x] **Step 1: 新增命令**
 
 在 `crates/desktop/src/clipboard_commands.rs` 中（`ocr_image` 函数之后）新增：
 
@@ -154,7 +170,7 @@ pub async fn set_clipboard_item_text(
 
 > 命令是 `ClipboardHandle` + `with_db` 的薄封装，逻辑已在 Task 1 的 `update_content` 单测覆盖；本命令不另写单测（无 Tauri 运行时单测基建），靠 Task 8/9 的 e2e 验证。
 
-- [ ] **Step 2: 编译确认（命令注册在 Task 5，此处仅确认本文件编译）**
+- [x] **Step 2: 编译确认（命令注册在 Task 5，此处仅确认本文件编译）**
 
 Run:
 ```bash
@@ -162,7 +178,7 @@ cargo build --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/workt
 ```
 Expected: 编译通过（可能有 `unused` 警告，因尚未注册/调用，正常）。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad add crates/desktop/src/clipboard_commands.rs
@@ -177,7 +193,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 - Create: `crates/desktop/src/compact_editor_window.rs`
 - Modify: `crates/desktop/src/main.rs`（`mod compact_editor_window;` 声明 + Destroyed 分支挂 `on_compact_editor_closed`）
 
-- [ ] **Step 1: 创建窗口模块**
+- [x] **Step 1: 创建窗口模块**
 
 创建 `crates/desktop/src/compact_editor_window.rs`：
 
@@ -225,7 +241,7 @@ pub fn on_compact_editor_closed(app_handle: &tauri::AppHandle) {
 }
 ```
 
-- [ ] **Step 2: 在 main.rs 声明模块 + 挂载关窗回调**
+- [x] **Step 2: 在 main.rs 声明模块 + 挂载关窗回调**
 
 在 `crates/desktop/src/main.rs` 顶部 `mod` 声明区（找 `mod notepad_window;` 那一行，在其旁）新增：
 
@@ -242,7 +258,7 @@ mod compact_editor_window;
 
 （即整体变成 `if label == "settings_window" {...} else if label == "notepad_window" {...} else if label == "compact_editor_window" {...}`。注意此块在 `#[cfg(target_os = "macos")]` 下，与非 mac 平台的 `on_compact_editor_closed` 缺省一致——该函数仅 mac 定义，非 mac 不引用，编译通过。）
 
-- [ ] **Step 3: 编译确认**
+- [x] **Step 3: 编译确认**
 
 Run:
 ```bash
@@ -250,7 +266,7 @@ cargo build --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/workt
 ```
 Expected: 编译通过。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad add crates/desktop/src/compact_editor_window.rs crates/desktop/src/main.rs
@@ -265,7 +281,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 - Create: `crates/desktop/src/compact_editor_commands.rs`
 - Modify: `crates/desktop/src/main.rs`（`mod compact_editor_commands;` 声明；命令注册放 Task 5 统一做）
 
-- [ ] **Step 1: 写失败测试（先建文件含测试 + helper，命令后补）**
+- [x] **Step 1: 写失败测试（先建文件含测试 + helper，命令后补）**
 
 创建 `crates/desktop/src/compact_editor_commands.rs`：
 
@@ -352,7 +368,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 跑测试确认通过（helper 与测试同批落地，故直接验证）**
+- [x] **Step 2: 跑测试确认通过（helper 与测试同批落地，故直接验证）**
 
 在 `main.rs` 顶部 `mod` 区加：
 
@@ -366,7 +382,7 @@ cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktr
 ```
 Expected: PASS（`pending_store_and_take_roundtrip`）。命令本体是 Tauri 集成层，不单测。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad add crates/desktop/src/compact_editor_commands.rs crates/desktop/src/main.rs
@@ -380,7 +396,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 **Files:**
 - Modify: `crates/desktop/src/main.rs` 的 `generate_handler!`（约 L218-258）
 
-- [ ] **Step 1: 注册 4 个新命令**
+- [x] **Step 1: 注册 4 个新命令**
 
 在 `generate_handler![ ... ]` 数组中：
 - 紧跟 `clipboard_commands::ocr_image,`（L228）后加：`clipboard_commands::set_clipboard_item_text,`
@@ -391,7 +407,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
             compact_editor_commands::close_compact_editor,
   ```
 
-- [ ] **Step 2: 编译确认**
+- [x] **Step 2: 编译确认**
 
 Run:
 ```bash
@@ -399,7 +415,7 @@ cargo build --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/workt
 ```
 Expected: 编译通过，无 warning（所有命令已注册+被前端待用）。
 
-- [ ] **Step 3: 提交**
+- [x] **Step 3: 提交**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad add crates/desktop/src/main.rs
@@ -415,7 +431,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 - Create: `crates/desktop/frontend/src/lib/compactEditor.ts`
 - Modify: `crates/desktop/frontend/src/App.tsx`（L46 switch 加 case）
 
-- [ ] **Step 1: 创建共享 helper `lib/compactEditor.ts`**
+- [x] **Step 1: 创建共享 helper `lib/compactEditor.ts`**
 
 创建 `crates/desktop/frontend/src/lib/compactEditor.ts`：
 
@@ -462,7 +478,7 @@ export async function openCompactEditor(
 }
 ```
 
-- [ ] **Step 2: 创建编辑器组件 `pages/CompactEditor/index.tsx`**
+- [x] **Step 2: 创建编辑器组件 `pages/CompactEditor/index.tsx`**
 
 创建 `crates/desktop/frontend/src/pages/CompactEditor/index.tsx`：
 
@@ -727,7 +743,7 @@ export default CompactEditor;
 
 > 注：`emit` 用 `@tauri-apps/api/event` 的原版（broadcast 到所有窗口，调用方按 rid 过滤）；`invoke`/`listen` 用 `@/lib/tauri` 封装（listen 已解包 payload）。
 
-- [ ] **Step 3: App.tsx 加路由**
+- [x] **Step 3: App.tsx 加路由**
 
 在 `crates/desktop/frontend/src/App.tsx`：
 - 顶部 import 区加：`import CompactEditor from "@/pages/CompactEditor";`
@@ -738,7 +754,7 @@ export default CompactEditor;
             return <CompactEditor />;
 ```
 
-- [ ] **Step 4: 类型检查 + 构建（含 dist）**
+- [x] **Step 4: 类型检查 + 构建（含 dist）**
 
 Run:
 ```bash
@@ -746,7 +762,7 @@ npm --prefix /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-no
 ```
 Expected: `tsc -b` 无类型错误，`vite build` 产出新 dist。
 
-- [ ] **Step 5: 提交（含 dist）**
+- [x] **Step 5: 提交（含 dist）**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad add crates/desktop/frontend/src/pages/CompactEditor/index.tsx crates/desktop/frontend/src/lib/compactEditor.ts crates/desktop/frontend/src/App.tsx crates/desktop/dist
@@ -835,12 +851,12 @@ expanded ? "h-full" : "max-h-[63px]",
 - Rust 侧 `result_window.rs` **不改**（`resizable(false)` 创建，运行时由前端 `setResizable` 开关）。
 - 边界：长篇模式向下长高，若原位置近屏幕底可能部分超出——MVP 不重算位置，e2e 观察。
 
-- [ ] Step 1: 新建 `minimize.svg` + `SvgIcon` 加 `"minimize"` 映射
-- [ ] Step 2: Result 加 `expanded`/`expandedRef`/`expandedSizeRef` + `toggleExpand` + `onResized` 监听
-- [ ] Step 3: tools 改 toggle 按钮 + 文本区 className + 移除 `openCompactEditor` import / `applyResultText` / `openExpandEdit`
-- [ ] Step 4: 重建 dist（`npm run build`）
-- [ ] Step 5: 验证（`tsc -b`、`cargo test` desktop/clipboard）
-- [ ] Step 6: commit
+- [x] Step 1: 新建 `minimize.svg` + `SvgIcon` 加 `"minimize"` 映射
+- [x] Step 2: Result 加 `expanded`/`expandedRef`/`expandedSizeRef` + `toggleExpand` + `onResized` 监听
+- [x] Step 3: tools 改 toggle 按钮 + 文本区 className + 移除 `openCompactEditor` import / `applyResultText` / `openExpandEdit`
+- [x] Step 4: 重建 dist（`npm run build`）
+- [x] Step 5: 验证（`tsc -b`、`cargo test` desktop/clipboard）
+- [x] Step 6: commit
 
 ---
 
@@ -928,7 +944,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 - Modify: `crates/desktop/src/clipboard_commands.rs`（`ocr_image` 删 TextEdit 调用 + 删 `open_text_editor_with_content` 函数）
 - Modify: `crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx`（`handleOcr` 取返回值 + 开编辑器 + 回写）
 
-- [ ] **Step 1: 后端 `ocr_image` 移除 TextEdit**
+- [x] **Step 1: 后端 `ocr_image` 移除 TextEdit**
 
 在 `crates/desktop/src/clipboard_commands.rs`：
 - 删除 `ocr_image` 中的 `open_text_editor_with_content(&text);`（约 L416）这一行。
@@ -953,7 +969,7 @@ Expected: 仅 `clipboard_commands.rs` 内的定义处出现（调用已在上一
 }
 ```
 
-- [ ] **Step 2: 后端编译确认**
+- [x] **Step 2: 后端编译确认**
 
 Run:
 ```bash
@@ -961,7 +977,7 @@ cargo build --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/workt
 ```
 Expected: 编译通过，无 dead_code 警告。
 
-- [ ] **Step 3: 前端 `handleOcr` 改造**
+- [x] **Step 3: 前端 `handleOcr` 改造**
 
 在 `crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx`：
 - 顶部 import 加：`import { openCompactEditor } from "@/lib/compactEditor";`
@@ -996,7 +1012,7 @@ Expected: 编译通过，无 dead_code 警告。
   };
 ```
 
-- [ ] **Step 4: 类型检查 + 构建（含 dist）**
+- [x] **Step 4: 类型检查 + 构建（含 dist）**
 
 Run:
 ```bash
@@ -1004,7 +1020,7 @@ npm --prefix /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-no
 ```
 Expected: tsc 通过，dist 更新。
 
-- [ ] **Step 5: 提交（含 dist）**
+- [x] **Step 5: 提交（含 dist）**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad add crates/desktop/src/clipboard_commands.rs crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx crates/desktop/dist
@@ -1018,7 +1034,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 **Files:**
 - Modify: `crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx`（import + `handleEditText` + 操作区加按钮）
 
-- [ ] **Step 1: 加文本编辑处理 + 按钮**
+- [x] **Step 1: 加文本编辑处理 + 按钮**
 
 在 `crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx`：
 - 顶部 lucide import 中加 `SquarePen`（即 `import { ..., NotebookPen, SquarePen } from "lucide-react";`）。
@@ -1050,7 +1066,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
         )}
 ```
 
-- [ ] **Step 2: 类型检查 + 构建（含 dist）**
+- [x] **Step 2: 类型检查 + 构建（含 dist）**
 
 Run:
 ```bash
@@ -1058,7 +1074,7 @@ npm --prefix /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-no
 ```
 Expected: tsc 通过，dist 更新。
 
-- [ ] **Step 3: 提交（含 dist）**
+- [x] **Step 3: 提交（含 dist）**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad add crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx crates/desktop/dist
@@ -1072,7 +1088,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 **Files:**
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: 同步 architecture.md**
+- [x] **Step 1: 同步 architecture.md**
 
 在 `docs/architecture.md`：
 - 窗口列表（已有 `notepad_window` 等的位置）加一行：`compact_editor_window` — 精简文本编辑器（工具栏+textarea，关窗即销毁，编辑结果事件返回调用方）。
@@ -1081,7 +1097,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 
 （具体小标题与行号以文件实际结构为准，新增条目风格对齐已有 `notepad` 条目。）
 
-- [ ] **Step 2: 全量后端测试**
+- [x] **Step 2: 全量后端测试**
 
 Run:
 ```bash
@@ -1089,7 +1105,7 @@ cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktr
 ```
 Expected: 全绿（含 Task 1 的 `test_update_content`、Task 4 的 `pending_store_and_take_roundtrip`，且未破坏既有测试）。
 
-- [ ] **Step 3: desktop 整体编译**
+- [x] **Step 3: desktop 整体编译**
 
 Run:
 ```bash
@@ -1097,7 +1113,7 @@ cargo build --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/workt
 ```
 Expected: 编译通过。
 
-- [ ] **Step 4: 提交文档**
+- [x] **Step 4: 提交文档**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad add docs/architecture.md
@@ -1106,12 +1122,29 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 
 ---
 
-## 验收 e2e（手动，交给用户跑 `./run-octopus.sh` 后逐项确认）
+## 验收 e2e（手动——**本计划唯一剩余项**，交给用户跑 `./run-octopus.sh` 后逐项确认）
 
-1. **Result 展开**：识别一段中文 → 结果窗点「展开编辑」→ 编辑器开 → 改 → 保存 → 结果窗显示更新文本且（会话活跃期内）落库。
+1. **Result 双模式**（⚠️ 第 1 项当前被已知 bug 阻塞，见下方「待修 bug」）：识别中文 → 点「放大」→ 窗口变 720×480、编辑区撑满、可拖拽调大小 → 编辑 → 保存 → 文本落库 → 点「缩小」切回 520×116；再切长篇恢复上次拖拽尺寸（localStorage 记忆）。
 2. **OCR**：剪贴板图片点 OCR → 编辑器自动开 → 改 → 保存 → 该条目内容 + 系统剪贴板更新；不再弹系统 TextEdit。
 3. **剪贴板文本**：文本/语音条目 hover 点「编辑」→ 编辑器开 → 改 → 保存 → 列表 + 系统剪贴板更新。
 4. **边界**：取消/Esc/X 关窗不回写；字号记忆生效；查找替换命中数与跳转正确；字符计数对中文按字计；并发开窗（Result + 剪贴板同时开）不串扰。
+
+## 🔴 待修 bug：Result「放大」切换无响应
+
+**现象**：语音结果窗工具栏点「放大」按钮，窗口未变大（双模式切换失效）。
+
+**相关代码**：`crates/desktop/frontend/src/pages/Result/index.tsx::toggleExpand`（L297）调 `win.setResizable(next)` + `win.setSize(new LogicalSize(...))`；窗口由 `result_window.rs::create_result_window`（L19）以 `.resizable(false).decorations(false).transparent(true).shadow(false).always_on_top(true)` 创建。
+
+**两个怀疑方向**：
+1. **`setSize` 对 `resizable(false)` 创建的透明无边框悬浮窗在 macOS 运行时不生效**——即便先 `setResizable(true)`，窗口管理器可能仍按创建期约束拒绝尺寸变更。
+2. **工具栏容器 `onMouseDown={onDragStart}` → `win.startDragging()` 抢占点击**（L475/L427）：mousedown 触发系统拖拽循环可能吞掉 mouseup，致按钮 `onClick` 不触发。但同工具栏其他按钮（编辑/润色/设置）可用 → 倾向排除此项，重点查方向 1。
+
+**排查步骤**：
+1. 结果窗 devtools（debug 构建 `open_devtools`）console：点「放大」看是否进 `toggleExpand`、`setSize`/`setResizable` Promise 是否 reject。
+2. 若 `toggleExpand` 未进 → 方向 2（drag 抢占）。
+3. 若进但窗口不变 → 方向 1：尝试创建期改 `.resizable(true)`，首帧前端立即 `setResizable(false)` 回精简态，运行时 toggle 再 `setResizable(true)`；或改用物理尺寸 `PhysicalSize` + `setScaleFactor` 显式换算。
+
+**临时状态**：未修，e2e 第 1 项（Result 双模式）被此项阻塞。
 
 ## 不做（明确排除）
 

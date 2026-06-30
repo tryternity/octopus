@@ -1,7 +1,8 @@
 # 精简编辑器（Compact Editor）设计
 
 > 日期：2026-06-30
-> 状态：设计已获用户确认（方案 A：专用窗口 + 基于事件的返回）
+> 状态：**已实现**（OCR/剪贴板走独立精简编辑器窗；语音 Result 改为原地编辑框尺寸双模式）。后端 `cargo test` 全绿；e2e 待用户手动验证。详见 plan 顶部「实现状态」。
+> 关联：`docs/superpowers/plans/2026-06-30-compact-editor.md`
 > 关联：`docs/superpowers/specs/2026-06-30-notepad-design.md`（完整版记事本，本设计与之并列、不替代）
 
 > **2026-06-30 设计修订（语音 Result 改为原地双模式）：** 原 §3.5① 让语音 Result「展开编辑」弹独立精简编辑器窗——**取消**。
