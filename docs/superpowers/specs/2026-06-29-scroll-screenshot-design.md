@@ -10,24 +10,25 @@
 
 ### 核心架构
 
-**置顶透明覆盖层事件穿透 + 独立线程增量捕获 + 双模板特征动态锁定 + 锁相环滚动跟踪拼图**
+**置顶透明覆盖层事件穿透 + 独立线程增量捕获 + 底部 strip NCC 模板匹配拼接**
 
 ```
 前端 React WebView ──1. 挖出透明孔/显示控制栏──▶ Tauri Rust 后端
                                                    │
                    ┌───────────────────────────────┘
                    ├─ 2. 释放 Key Focus / 穿透滚轮事件 ──▶ 目标滚动应用 (Chrome)
-                   └─ 3. 定期截图 (CGWindowListCreateImage) ──▶ 拼图模块 (stitch.rs)
+                   └─ 3. 高频截图 33fps (CGWindowListCreateImage) ──▶ 拼图模块 (stitch.rs)
                                                                     │
-                                          4. 特征投影定位 / PLL 跟───┘
+                                          4. 底部 strip NCC 匹配───┘
                                           5. 拼图画布实时更新 ──▶ 前端预览
 ```
 
 ### 已放弃的方案
 
-1. **NSPanel（tauri-nspanel）**：`to_panel()` 的 `object_setClass` swizzling 在 WKWebView 创建后执行 → Trace/BPT trap 崩溃（exit 133）。NonactivatingPanel 还会阻断 IME 输入。
-2. **auto 模式（CGEvent 模拟滚轮）**：机械上可行但体验差（截到截图窗口自身 + 副屏坐标错 + 不可控速度）。
+1. **NSPanel（tauri-nspanel）**：`to_panel()` 的 `object_setClass` swizzling 在 WKWebView 创建后执行 → Trace/BPT trap 崩溃（exit 133）。
+2. **auto 模式（CGEvent 模拟滚轮）**：体验差，用户明确需要手动滚动。
 3. **简单 deactivate**：`NSApp.deactivate()` 无法可靠让 trackpad scrollWheel 路由到底层应用。
+4. **双模板 + PLL 跟踪**：复杂且不稳定，周期性内容导致假匹配。改为单一底部 strip 全局搜索。
 
 ## 1. 架构
 
@@ -36,8 +37,8 @@
 | 层 | 文件 | 职责 |
 |---|---|---|
 | 前端渲染 | `frontend/src/pages/Screenshot/index.tsx` | 拉框交互；scrolling 模式用 `ctx.clearRect` 挖透明孔；控制栏 |
-| 桌面系统管理 | `desktop/src/screenshot_commands.rs` | DPI 坐标映射；焦点让出 + 滚轮穿透；增量截图循环 |
-| 拼图引擎 | `capx/src/stitch.rs` | Sobel 边缘 + NCC 模板匹配 + PLL 位移跟踪 + 双模板一致性校验 |
+| 桌面系统管理 | `desktop/src/screenshot_commands.rs` | DPI 坐标映射；焦点让出 + 滚轮穿透；33fps 增量截图循环 |
+| 拼图引擎 | `capx/src/stitch.rs` | Sobel 边缘 + 底部 strip NCC 匹配 + 距离惩罚 + 重复帧检测 |
 
 ### 1.2 前端：透明孔挖孔
 
@@ -69,7 +70,7 @@ WebviewWindowBuilder::new(&app_handle, &label, WebviewUrl::default())
 
 **现象**：开始滚动截图时，选区内的 Chrome 页面完全不动。
 
-**根因**：Tauri 窗口默认不透明。当置顶的不透明窗口遮挡底层窗口时，macOS Window Server 的 **Occlusion Throttling** 机制自动挂起底层窗口的 GPU 渲染以省电。Chrome 停止 repainting 后看起来卡死，也不响应滚轮渲染。
+**根因**：Tauri 窗口默认不透明。当置顶的不透明窗口遮挡底层窗口时，macOS Window Server 的 **Occlusion Throttling** 机制自动挂起底层窗口的 GPU 渲染以省电。
 
 **解决**：
 1. `WebviewWindowBuilder` 初始化时 `.transparent(true)`
@@ -80,29 +81,19 @@ WebviewWindowBuilder::new(&app_handle, &label, WebviewUrl::default())
 
 **现象**：即使 `setIgnoresMouseEvents(true)`，滚轮仍无法穿透。
 
-**根因**：macOS Window Server 路由事件时，若截图窗口仍是 **Key Window**，即使设置 Click-through（忽略鼠标事件），滚轮事件仍强行发送给 Key Window 的 WebView，不路由到目标窗口。
+**根因**：macOS Window Server 路由事件时，若截图窗口仍是 **Key Window**，滚轮事件强行发送给 Key Window 的 WebView，不路由到目标窗口。
 
 **解决——协同焦点让出**：
-1. 截图启动时 `save_frontmost_app()` 暂存前台应用 PID（如 Chrome）
+1. 截图启动时 `save_frontmost_app()` 暂存前台应用 PID
 2. 滚动录制开始时 `activate_prev_app()` 在主线程激活该应用，使其夺回 Key Focus
 3. 若无记录到前台应用，调用 `NSApp.deactivate()`
-4. 窗口失去 Key 状态后，滚轮事件穿透透明孔到达 Chrome
-
-```rust
-// save_frontmost_app: NSWorkspace.sharedWorkspace().frontmostApplication()
-// activate_prev_app: app.activateWithOptions(NSApplicationActivationOptions(1 << 1))
-```
 
 ### 2.3 副屏与 Retina 屏坐标错位（Mixed DPI Mapping）
 
-**根因**：前端 WebView 用逻辑像素坐标；macOS CGEvent/Quartz 用物理像素或基于主屏左上角的点坐标。副屏 origin 偏移 + Retina scale 导致坐标膨胀。
-
 **解决——Cocoa frame 坐标转换**：
 ```rust
-// 获取 NSWindow 的 Cocoa frame（原点在左下角）
 let (cx, cy, _, ch) = get_window_cocoa_frame(&sel_win);
-// 翻转为 Quartz 坐标（原点在左上角）
-let win_origin_y = primary_screen_height - (cy + ch);
+let win_origin_y = primary_screen_height - (cy + ch);  // Cocoa(左下) → Quartz(左上)
 ```
 
 裁切公式：
@@ -116,67 +107,80 @@ Phys_Y = (Logic_Y - Display_Origin_Y) × Scale
 ```rust
 CGDisplay::screenshot(
     rect,
-    kCGWindowListOptionOnScreenBelowWindow,  // 只截该窗口下方
-    exclude_window_id,                        // 截图窗口的 windowNumber
+    kCGWindowListOptionOnScreenBelowWindow,
+    exclude_window_id,    // 截图窗口的 windowNumber
     kCGWindowImageDefault,
 )
 ```
 
-只截选区区域（`capture_region_excluding_window`），不截全屏，性能提升约 10×。
+只截选区区域（`capture_region_excluding_window`），不截全屏。
 
 ## 3. 拼接引擎（stitch.rs）
 
-### 3.1 数据结构
+### 3.1 核心思路
+
+每次新帧到来时，从 **last_edges（上一帧 edges）底部**取一个 strip（模板），在当前帧中搜索最佳匹配位置。该位置即为"上一帧底部内容在当前帧中的位置"，之后到帧底部的内容就是真正新增的像素行。
+
+```
+新帧 RGBA
+  │
+  ├─ 1. 重复帧检测：稀疏采样比较 last_edges vs curr_edges 均值差 < 3.0 → 跳过
+  ├─ 2. 计算 curr_edges (Sobel)
+  ├─ 3. 从 last_edges 底部向上找首个边缘密度 > 4.0 的 strip 作为模板
+  ├─ 4. NCC 匹配搜索：
+  │     a. 静态帧短路：0 位移处 score > 0.975 → 判定未滚动
+  │     b. 局部搜索：期望位置 ±窗口，距离惩罚 adjusted_score
+  │     c. 全局搜索：局部不够好时，阈值提高到 0.85
+  │     d. 加速度检查：匹配位置 vs 期望位置差 > 30px → 拒绝
+  ├─ 5. 裁剪新内容：crop_start = best_offset + (eff_bottom - tpl_y_start)
+  └─ 6. 追加到 canvas + 更新 last_edges / last_scroll
+```
+
+### 3.2 数据结构
 
 ```rust
 pub struct Stitcher {
     canvas: RgbaImage,          // 拼接结果（不断增长的长图）
     last_edges: GrayImage,      // 上一帧 Sobel 边缘图
+    match_cols: Range<u32>,     // 匹配列范围（排除窗口边框/滚动条）
+    last_scroll: i32,           // 上次滚动位移（用于期望位置预测）
     sticky_top: u32,            // 粘性 header 行数
     sticky_bottom: u32,         // 粘性 footer 行数
-    active_cols: Range<u32>,    // 活跃列范围
-    match_cols: Range<u32>,     // 黄金匹配列（边缘投影最密集的 200px）
-    last_dy: i32,               // 上次滚动位移（PLL 跟踪基准）
-    low_conf_streak: u32,       // 连续低置信帧数
+    detected: bool,             // sticky/match_cols 是否已初始化
+    low_conf_streak: u32,       // 连续匹配失败次数
     config: StitchConfig,
-    frame_count: u32,
+}
+
+pub struct StitchConfig {
+    template_ratio: f32,    // 模板高度比例 0.20
+    min_confidence: f32,    // NCC 最低阈值 0.65
 }
 ```
 
-### 3.2 黄金列锁定（match_cols）
+### 3.3 搜索窗口策略
 
-第二帧时，在 `active_cols` 内对 Sobel 边缘灰度做水平投影，找边缘能量最密集的 200px 列宽区域。后续所有 NCC 匹配锁定在此列，避开空旷区域（如 Commit 备注、日期列），提高唯一性。
+- **首帧（last_scroll == 0）**：窗口 `[tpl_y - 20, tpl_y + 5]`，30ms 间隔内位移极小
+- **后续帧**：期望位置 `expected_offset = tpl_y_start - last_scroll`，窗口 `[expected - 60, expected + 30]`
+- **距离惩罚**：`adjusted_score = score - distance × 0.004`，偏向连续运动
+- **全局搜索**：局部 score < 0.65 时全范围搜索，阈值提高到 0.85
+- **加速度拒绝**：`|best_offset - expected_offset| > 30` → 拒绝匹配
 
-### 3.3 双模板动态 Y 寻优（find_best_template_y）
+### 3.4 失锁恢复
 
-在有效区域底部 1/3 和中上部 2/3 各找一个边缘能量最大的 Y 坐标作为模板。双模板必须同时匹配成功且位移一致才追加帧——防撕裂和周期性混淆。
+连续 3 帧匹配失败 → `last_edges = curr_edges`（用当前帧重锁）+ `last_scroll = 0`（重置位移）。
 
-### 3.4 锁相环位移跟踪（PLL-Style match_template）
+### 3.5 finalize
 
-```
-局部跟踪：dy ∈ [last_dy - 20, last_dy + 80]
-  → 窗口宽度 100px < 列表行周期（~45px × N）
-  → 物理上排除匹配到隔壁行的假极值
-
-失锁重捕：局部置信度 < min_confidence
-  → 降级全局搜索重锁
-  → 锁死后恢复局部跟踪
-```
-
-### 3.5 严格置信度过滤 + 裁剪修正
-
-- 低置信帧一律丢弃（不再猜测位移）
-- 裁剪起点 `new_start + tpl_h`（修正了原版模板重叠导致的行重复）
+录制结束时补全最后一帧的 sticky_bottom 区域（eff_bottom 到 h）。
 
 ### 3.6 降级策略
 
 | 场景 | 处理 |
 |---|---|
-| 用户滚动太快 | 重叠 < 20% → 置信度低 → 帧丢弃 |
-| 追踪连续丢失（≥8帧） | 更新 last_edges，等待重锁 |
+| 画面静止 | 重复帧检测（均值差 < 3.0）→ 跳过 |
+| 滚动太快 | 局部搜索失败 → 全局搜索 → 加速度检查拒绝 |
+| 追踪连续丢失（≥3帧） | 重锁模板 + 重置位移 |
 | 动态内容（广告/动画） | NCC 置信度低 → 帧跳过 |
-| 反向滚动（向上） | delta 为负 → PLL 窗口排除 → 帧丢弃 |
-| 重复帧 | 稀疏采样均值 < 2.0 → 跳过 |
 
 ## 4. 数据流与状态机
 
@@ -206,12 +210,12 @@ start_scroll_recording(x, y, w, h, win_label, interactive_rects)
   ├─ 2. activate_prev_app()（让出 Key Focus）
   ├─ 3. 30ms 监视线程（工具栏区域切换 ignore）
   ├─ 4. 初始化 Stitcher（首帧）
-  ├─ 5. 循环（120ms / 8fps）：
+  ├─ 5. 循环（30ms / 33fps）：
   │     a. spawn_blocking: capture_region_excluding_window → RGBA
   │     b. JPEG 编码选区画面 → emit("scroll://frame")
   │     c. stitcher.process_frame(rgba)
   │     d. 预览缩略图 → emit("scroll://frame")
-  └─ 6. stop → activate(self) → 长图入库 → 关窗口
+  └─ 6. stitcher.finalize() → activate(self) → 长图入库 → 关窗口
 ```
 
 ### 4.3 区域化 cursor events
@@ -219,8 +223,6 @@ start_scroll_recording(x, y, w, h, win_label, interactive_rects)
 独立 30ms 轮询线程（与截图循环解耦）：
 - 鼠标在 `interactive_rects`（工具栏/预览窗）→ `set_ignore_cursor_events(false)`（可点击）
 - 离开 → `set_ignore_cursor_events(true)`（滚动穿透）
-
-前端启动时传递 `interactiveRects: [{x, y, width, height}, ...]`。
 
 ## 5. Tauri 命令
 
@@ -239,6 +241,6 @@ stop_scroll_recording() → ()
 ## 7. 后续优化方向
 
 1. **模板匹配并行化**：`rayon` 多线程或 Metal/Vulkan Compute Shader
-2. **卡尔曼滤波位移预测**：基于最近 3 帧 dy 速度/加速度预测下一帧，自适应搜索窗口
+2. **卡尔曼滤波位移预测**：基于最近 3 帧 dy 速度/加速度预测下一帧
 3. **动态捕获间隔**：滚动事件监听驱动捕获，无滚动时降频防抖
 4. **多窗口架构**（可选）：拆分全屏穿透窗口 + 独立工具栏窗口，消除 30ms 竞态
