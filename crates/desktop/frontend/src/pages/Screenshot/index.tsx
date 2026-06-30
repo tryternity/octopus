@@ -126,19 +126,11 @@ export default function Screenshot() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, cssW, cssH);
 
-    // 滚动模式：全透明露出底层，仅填充选区外部的半透明暗色遮罩，使截图区外也可以看到实时滚动
+    // 滚动模式：Canvas 只画绿色边框，遮罩用 DOM div 实现（避免 Canvas clearRect 残留）
     if (mode === "scrolling" && sel) {
       const { x, y, w, h } = sel;
-      // 填充选区外部的暗遮罩（不画 bg 静态图，使外部同样保持透明以露出底层实时窗口）
-      ctx.fillStyle = "rgba(0, 0, 0, 0.5)";
-      ctx.fillRect(0, 0, cssW, y);
-      ctx.fillRect(0, y + h, cssW, cssH - y - h);
-      ctx.fillRect(0, y, x, h);
-      ctx.fillRect(x + w, y, cssW - x - w, h);
-
-      // 选区内清空为透明（挖孔）
-      ctx.clearRect(x, y, w, h);
-
+      // 全屏清空（Canvas 不画遮罩，避免选区内有任何像素残留）
+      ctx.clearRect(0, 0, cssW, cssH);
       // 绿色边框
       ctx.strokeStyle = "#22c55e";
       ctx.lineWidth = 2;
@@ -880,8 +872,12 @@ export default function Screenshot() {
     return <div style={{ width: "100vw", height: "100vh", background: "rgba(0,0,0,0.5)" }} />;
   }
 
+  // scrolling 模式下让整个页面背景透明（消除 WebView 白底透过来的感觉）
+  const pageBg = mode === "scrolling" ? "transparent" : undefined;
+
   return (
     <>
+      <div style={{ position: "fixed", inset: 0, background: pageBg }} />
       <canvas
         ref={canvasRef}
         style={{ position: "fixed", top: 0, left: 0, width: "100vw", height: "100vh", cursor: "crosshair", outline: "none" }}
@@ -894,6 +890,16 @@ export default function Screenshot() {
         onKeyDown={onKeyDown}
         onContextMenu={onContextMenu}
       />
+
+      {/* 滚动模式：选区外暗遮罩（DOM div，不经过 Canvas，避免选区内有像素残留导致变暗） */}
+      {mode === "scrolling" && sel && (
+        <>
+          <div style={{ position: "fixed", left: 0, top: 0, right: 0, height: sel.y, background: "rgba(0,0,0,0.5)", pointerEvents: "none", zIndex: 50 }} />
+          <div style={{ position: "fixed", left: 0, top: sel.y + sel.h, right: 0, bottom: 0, background: "rgba(0,0,0,0.5)", pointerEvents: "none", zIndex: 50 }} />
+          <div style={{ position: "fixed", left: 0, top: sel.y, width: sel.x, height: sel.h, background: "rgba(0,0,0,0.5)", pointerEvents: "none", zIndex: 50 }} />
+          <div style={{ position: "fixed", left: sel.x + sel.w, top: sel.y, right: 0, height: sel.h, background: "rgba(0,0,0,0.5)", pointerEvents: "none", zIndex: 50 }} />
+        </>
+      )}
 
       {/* 文字输入浮层 */}
       {textDraft && (
