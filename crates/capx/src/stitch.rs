@@ -32,6 +32,7 @@ impl Default for StitchConfig {
 pub struct Stitcher {
     canvas: RgbaImage,
     last_edges: GrayImage,
+    last_luma: GrayImage,
     match_cols: Range<u32>,
     last_scroll: i32,
     low_conf_streak: u32,
@@ -45,9 +46,11 @@ impl Stitcher {
     pub fn new(first_frame: RgbaImage, config: StitchConfig) -> Self {
         let (w, _h) = (first_frame.width(), first_frame.height());
         let edges = compute_edges(&first_frame);
+        let luma = image::imageops::grayscale(&first_frame);
         Self {
             canvas: first_frame,
             last_edges: edges,
+            last_luma: luma,
             match_cols: 0..w,
             last_scroll: 0,
             low_conf_streak: 0,
@@ -70,6 +73,7 @@ impl Stitcher {
         // 重复帧检测：画面没动时 NCC 仍会匹配成功（score 高），但不应追加内容。
         // 用当前帧 edges 和 last_edges 的稀疏采样均值差判断是否重复。
         let curr_edges = compute_edges(frame);
+        let curr_luma = image::imageops::grayscale(frame);
         if self.is_duplicate_fast(&curr_edges) {
             return Ok(false);
         }
@@ -134,7 +138,7 @@ impl Stitcher {
 
         // 1. 静态帧短路检测：如果上一帧与当前帧在 0 位移处的匹配得分极高（> 0.975），说明画面未滚动
         let static_score = ncc_score(
-            &self.last_edges, &curr_edges,
+            &self.last_luma, &curr_luma,
             tpl_y_start, tpl_y_start, w, tpl_h, &self.match_cols,
         );
 
@@ -150,7 +154,7 @@ impl Stitcher {
             // 2. 局部搜索 (利用运动先验距离惩罚)
             for offset in lo..=hi {
                 let score = ncc_score(
-                    &self.last_edges, &curr_edges,
+                    &self.last_luma, &curr_luma,
                     tpl_y_start, offset as u32, w, tpl_h, &self.match_cols,
                 );
                 let distance = (offset - expected_offset).abs() as f32;
@@ -172,7 +176,7 @@ impl Stitcher {
             best_adjusted_score = -10.0;
             for offset in (eff_top as i32)..=(search_end as i32) {
                 let score = ncc_score(
-                    &self.last_edges, &curr_edges,
+                    &self.last_luma, &curr_luma,
                     tpl_y_start, offset as u32, w, tpl_h, &self.match_cols,
                 );
                 let distance = (offset - expected_offset).abs() as f32;
@@ -212,6 +216,7 @@ impl Stitcher {
             self.low_conf_streak += 1;
             if self.low_conf_streak >= 3 {
                 self.last_edges = curr_edges;
+                self.last_luma = curr_luma;
                 self.last_scroll = 0;
                 self.low_conf_streak = 0;
                 eprintln!("[stitch] lost track for 3 frames, resetting template to current frame bottom");
@@ -245,6 +250,7 @@ impl Stitcher {
         // 更新滚动位移状态 (dy = tpl_y_start - best_offset)
         self.last_scroll = tpl_y_start as i32 - best_offset;
         self.last_edges = curr_edges;
+        self.last_luma = curr_luma;
 
         eprintln!(
             "[stitch] match@{} score={:.2} crop {}+{}→{} new={} canvas={}",
