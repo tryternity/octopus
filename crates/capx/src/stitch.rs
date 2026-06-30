@@ -13,8 +13,8 @@ pub struct StitchConfig {
 impl Default for StitchConfig {
     fn default() -> Self {
         Self {
-            template_ratio: 0.3,
-            min_confidence: 0.55,
+            template_ratio: 0.15,
+            min_confidence: 0.80,
         }
     }
 }
