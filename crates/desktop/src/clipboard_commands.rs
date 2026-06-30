@@ -413,8 +413,6 @@ pub async fn ocr_image(
 
     handle.write_text(&text).map_err(|e| e.to_string())?;
 
-    open_text_editor_with_content(&text);
-
     Ok(text)
 }
 
@@ -433,34 +431,6 @@ pub async fn set_clipboard_item_text(
 
     handle.write_text(&text).map_err(|e| e.to_string())?;
     Ok(())
-}
-
-/// 用系统文本编辑器新建无标题文档（不落盘临时文件）。
-fn open_text_editor_with_content(text: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!(
-            r#"tell application "TextEdit"
-    activate
-    make new document with properties {{text:"{}"}}
-end tell"#,
-            escaped
-        );
-        let _ = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("notepad").spawn();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg("text://").spawn();
-    }
 }
 
 /// 获取图片缩略图 data URL（base64 编码：`data:image/webp;base64,...`）。
