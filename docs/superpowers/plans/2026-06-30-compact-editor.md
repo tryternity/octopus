@@ -22,7 +22,7 @@
 
 **唯一剩余**：验收 e2e（手动，见文末）——需用户跑 `./run-octopus.sh` 逐项确认。
 
-**🔴 当前已知 bug（e2e 暴露，待修）**：Result 工具栏「放大」切换点击后窗口**未变大**。初判 `win.setSize`/`win.setResizable` 对创建时 `resizable(false)` + `transparent(true)` + `decorations(false)` 的悬浮窗运行时生效有疑点；详见文末「待修 bug」节。
+**✅ 已修 bug（`2195c80`）**：Result 工具栏「放大」切换点击后窗口未变大——根因：Tauri `resizable(false)` 时 `setSize` 被忽略（文档），且透明无边框悬浮窗运行时 `setResizable(true)` 难生效。修复：窗口创建改 `resizable(true)` + 前端 `min/max` 锁控可拖性。详见文末「已修 bug」节。
 
 ---
 
@@ -1124,12 +1124,23 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 
 ## 验收 e2e（手动——**本计划唯一剩余项**，交给用户跑 `./run-octopus.sh` 后逐项确认）
 
-1. **Result 双模式**（⚠️ 第 1 项当前被已知 bug 阻塞，见下方「待修 bug」）：识别中文 → 点「放大」→ 窗口变 720×480、编辑区撑满、可拖拽调大小 → 编辑 → 保存 → 文本落库 → 点「缩小」切回 520×116；再切长篇恢复上次拖拽尺寸（localStorage 记忆）。
+1. **Result 双模式**（bug 已修 `2195c80`，待复验）：识别中文 → 点「放大」→ 窗口变 720×480、编辑区撑满、可拖拽调大小 → 编辑 → 保存 → 文本落库 → 点「缩小」切回 520×116；再切长篇恢复上次拖拽尺寸（localStorage 记忆）。
 2. **OCR**：剪贴板图片点 OCR → 编辑器自动开 → 改 → 保存 → 该条目内容 + 系统剪贴板更新；不再弹系统 TextEdit。
 3. **剪贴板文本**：文本/语音条目 hover 点「编辑」→ 编辑器开 → 改 → 保存 → 列表 + 系统剪贴板更新。
 4. **边界**：取消/Esc/X 关窗不回写；字号记忆生效；查找替换命中数与跳转正确；字符计数对中文按字计；并发开窗（Result + 剪贴板同时开）不串扰。
 
-## 🔴 待修 bug：Result「放大」切换无响应
+## ✅ 已修 bug（`2195c80`）：Result「放大」切换无响应
+
+**现象**：语音结果窗工具栏点「放大」按钮，图标切到「缩小」但窗口尺寸没变（双模式切换失效）。
+
+**根因**：Tauri 文档明确——`resizable(false)` 时 `setSize()` 被忽略。窗口创建为 `.resizable(false).decorations(false).transparent(true)`，`toggleExpand` 里 `await setResizable(true)` 后 `setSize` 仍无效（透明无边框悬浮窗运行时难改 resizable）。**图标变（state 变）但窗口不变 = click 生效、setSize 失效**——用户确认图标会变，排除了「工具栏 `onMouseDown={onDragStart}` 吞 click」方向。
+
+**修复**（`2195c80`）：
+- `result_window.rs`：创建改 `.resizable(true)`（`setSize` 永远生效）。
+- `Result/index.tsx::toggleExpand`：不再调 `setResizable`，改用 `setMinSize`/`setMaxSize` 控可拖性——精简态 `min=max=520×116` 锁死防拖，长篇态 `min=400×200` + `setMaxSize(undefined)` 可拖调大小。
+- 新增首帧 mount useEffect：`resizable(true)` 创建后默认用 `min=max=520×116` 锁精简态（组件不 unmount，result_window 仅 show/hide 复用，锁一次即可）。
+
+**待复验**：e2e 第 1 项（双模式切换 + 拖拽记忆）由用户跑 `./run-octopus.sh` 确认。
 
 **现象**：语音结果窗工具栏点「放大」按钮，窗口未变大（双模式切换失效）。
 
