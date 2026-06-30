@@ -301,7 +301,10 @@ function HistoryRow({
           onClick={async (e) => {
             e.stopPropagation();
             try {
-              await invoke("save_transcription_to_note", { transcriptionId: rec.id });
+              await invoke("save_transcription_to_note", {
+                transcriptionId: rec.id,
+                text: rec.polished_text ?? rec.raw_text,
+              });
               showToast("已存入记事本");
             } catch (err) { console.error(err); }
           }}

@@ -258,18 +258,19 @@ function Result() {
     catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
   }, [polishLoading, showToast]);
 
-  // 存入记事本：取当前会话识别记录 id → 存为新笔记。无活动记录时静默返回。
+  // 存入记事本：把当前显示文本存为新笔记（内容由前端传入，根治 current_transcription_id
+  // 全局值与显示文本的跨信道竞态），transcription_id 仅作溯源。无活动记录时静默返回。
   const saveToNote = useCallback(async () => {
     try {
       const tid = await invoke<number | null>("current_transcription_id");
       if (tid == null) return;
-      await invoke<number>("save_transcription_to_note", { transcriptionId: tid });
+      await invoke<number>("save_transcription_to_note", { transcriptionId: tid, text });
       showToast("已存入记事本");
     } catch (e) {
       console.error(e);
       showToast("存入记事本失败：" + e);
     }
-  }, [showToast]);
+  }, [showToast, text]);
 
   // 全局编辑快捷键（edit_global_shortcut）：后端唤起窗口+focus 后 emit 此事件，
   // 复用 toggleEdit——未编辑则进入、已编辑则保存，与窗口内 Cmd+Enter 同语义。

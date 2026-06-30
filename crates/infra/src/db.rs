@@ -1056,29 +1056,6 @@ fn list_transcriptions_at(
     Ok(records)
 }
 
-/// 取某条识别记录的展示文本：edited_text ?? polished_text ?? raw_text。
-/// 供 save_transcription_to_note 把语音结果转成笔记正文。不存在返回 None。
-pub fn get_transcription_display_text(id: i64) -> Result<Option<String>> {
-    with_db(|conn| get_transcription_display_text_at(conn, id))
-}
-
-fn get_transcription_display_text_at(conn: &Connection, id: i64) -> Result<Option<String>> {
-    let row = conn.query_row(
-        "SELECT edited_text, polished_text, raw_text FROM transcriptions WHERE id=?1",
-        params![id],
-        |r| {
-            let edited: Option<String> = r.get(0)?;
-            let polished: Option<String> = r.get(1)?;
-            let raw: String = r.get(2)?;
-            Ok(edited.or(polished).unwrap_or(raw))
-        },
-    );
-    match row {
-        Ok(text) => Ok(Some(text)),
-        Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
-        Err(e) => Err(e.into()),
-    }
-}
 
 // ── 时间戳工具（避免依赖 chrono）──
 
@@ -1846,32 +1823,5 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM notes_fts", [], |r| r.get(0))
             .unwrap();
         assert_eq!(fts_count, 0);
-    }
-
-    #[test]
-    fn get_transcription_display_text_priority() {
-        let conn = open_init();
-        // 只有 raw → 返回 raw
-        conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
-             VALUES (100, '2026-06-30 10:00:00', 'sensevoice', 'raw原文', 'off')",
-            [],
-        ).unwrap();
-        assert_eq!(get_transcription_display_text_at(&conn, 100).unwrap(), Some("raw原文".to_string()));
-
-        // 有 polished → 返回 polished
-        conn.execute(
-            "UPDATE transcriptions SET polished_text='润色稿' WHERE id=100", [],
-        ).unwrap();
-        assert_eq!(get_transcription_display_text_at(&conn, 100).unwrap(), Some("润色稿".to_string()));
-
-        // 有 edited → edited 优先
-        conn.execute(
-            "UPDATE transcriptions SET edited_text='手改稿' WHERE id=100", [],
-        ).unwrap();
-        assert_eq!(get_transcription_display_text_at(&conn, 100).unwrap(), Some("手改稿".to_string()));
-
-        // 不存在 → None
-        assert_eq!(get_transcription_display_text_at(&conn, 9999).unwrap(), None);
     }
 }

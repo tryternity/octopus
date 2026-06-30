@@ -174,15 +174,15 @@ pub async fn insert_note_image(path: String) -> Result<String, String> {
 
 // ── 集成入口：识别结果 → 笔记 ──
 
-/// 语音结果 → 新建笔记：查 transcriptions 取展示文本 → <p> 包裹 → create_note(Asr, Some(id))。
+/// 语音结果 → 新建笔记：内容由前端传入（= Result 窗口当前显示文本，根治
+/// current_transcription_id 全局值与显示文本的跨信道竞态），transcription_id
+/// 作 source_ref_id 溯源（best-effort）。`<p>` 包裹 → create_note(Asr, Some(id))。
 #[tauri::command]
 pub async fn save_transcription_to_note(
     transcription_id: i64,
+    text: String,
     app_handle: tauri::AppHandle,
 ) -> Result<i64, String> {
-    let text = octopus_infra::db::get_transcription_display_text(transcription_id)
-        .map_err(|e| e.to_string())?
-        .ok_or("原识别记录不存在")?;
     let html = format!("<p>{}</p>", html_escape(&text));
     let id = octopus_notepad::store::create_note(NoteSource::Asr, Some(transcription_id), &html)
         .map_err(|e| e.to_string())?;
