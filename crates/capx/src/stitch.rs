@@ -132,13 +132,15 @@ impl Stitcher {
             ((expected_offset - 100).max(eff_top as i32), (expected_offset + 50).min(search_end as i32))
         };
 
-        eprintln!("[stitch] tpl_y_start={} tpl_h={} expected_offset={} search=[{},{}] cols={:?}",
-            tpl_y_start, tpl_h, expected_offset, lo, hi, self.match_cols);
-
         // 1. 静态帧短路检测：如果上一帧与当前帧在 0 位移处的匹配得分极高（> 0.975），说明画面未滚动
         let static_score = ncc_score(
             &self.last_edges, &curr_edges,
             tpl_y_start, tpl_y_start, w, tpl_h, &self.match_cols,
+        );
+
+        eprintln!(
+            "[stitch-diag] tpl_y_start={}, tpl_h={}, expected_offset={}, last_scroll={}, static_score={:.4}",
+            tpl_y_start, tpl_h, expected_offset, self.last_scroll, static_score
         );
 
         if static_score > 0.975 {
@@ -190,13 +192,19 @@ impl Stitcher {
 
         if best_offset >= 0 {
             let acceleration = (best_offset - expected_offset).abs();
+            eprintln!(
+                "[stitch-diag] best_offset={}, best_score={:.4}, best_adjusted_score={:.4}, acceleration={}",
+                best_offset, best_score, best_adjusted_score, acceleration
+            );
             if acceleration > 65 {
                 eprintln!(
-                    "[stitch] Match rejected due to excessive acceleration: {}px (expected_offset={}, matched={})",
+                    "[stitch-diag] Match rejected due to excessive acceleration: {}px (expected_offset={}, matched={})",
                     acceleration, expected_offset, best_offset
                 );
                 best_offset = -1;
             }
+        } else {
+            eprintln!("[stitch-diag] No match found!");
         }
 
         if best_offset < 0 {
