@@ -169,6 +169,8 @@ pub enum EngineCategory {
     Qwen3Asr,
     Zipformer,
     Moonshine,
+    /// FireRedASR2-AED CTC（小红书，本地）。provider='local' + category='firered' 路由入此。
+    FireRed,
     /// 阿里云云端 ASR（DashScope Fun-ASR 实时）。provider='aliyun' 路由入此。
     Aliyun,
     /// 字节跳动云端 ASR（豆包大模型 bigmodel_async 双向流式优化版）。provider='bytedance' 路由入此。
@@ -191,6 +193,7 @@ fn engine_category_from_str(s: &str) -> Option<EngineCategory> {
         "qwen3-asr" => Some(EngineCategory::Qwen3Asr),
         "zipformer" => Some(EngineCategory::Zipformer),
         "moonshine" => Some(EngineCategory::Moonshine),
+        "firered" => Some(EngineCategory::FireRed),
         _ => None,
     }
 }
@@ -213,11 +216,11 @@ fn resolve_category(provider: &str, category: &str) -> Option<EngineCategory> {
     engine_category_from_str(category)
 }
 
-/// 按固定顺序遍历 AsrConfig 的 10 个 section（用于 NameOnly 裸名查找）。
+/// 按固定顺序遍历 AsrConfig 的 11 个 section（用于 NameOnly 裸名查找）。
 /// 顺序与本地引擎优先一致（aliyun / bytedance / tencent / baidu 云端放最后）。
 fn all_sections<'a>(
     cfg: &'a AsrConfig,
-) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 10] {
+) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 11] {
     [
         (cfg.asr.whisper.as_ref(), EngineCategory::Whisper),
         (cfg.asr.sensevoice.as_ref(), EngineCategory::SenseVoice),
@@ -225,6 +228,7 @@ fn all_sections<'a>(
         (cfg.asr.qwen3_asr.as_ref(), EngineCategory::Qwen3Asr),
         (cfg.asr.zipformer.as_ref(), EngineCategory::Zipformer),
         (cfg.asr.moonshine.as_ref(), EngineCategory::Moonshine),
+        (cfg.asr.firered.as_ref(), EngineCategory::FireRed),
         (cfg.asr.aliyun.as_ref(), EngineCategory::Aliyun),
         (cfg.asr.bytedance.as_ref(), EngineCategory::ByteDance),
         (cfg.asr.tencent.as_ref(), EngineCategory::Tencent),
@@ -305,6 +309,7 @@ pub fn category_label(c: EngineCategory) -> &'static str {
         Qwen3Asr => "qwen3-asr",
         Zipformer => "zipformer",
         Moonshine => "moonshine",
+        FireRed => "firered",
         Aliyun => "Fun-ASR",
         ByteDance => "Doubao-ASR",
         Tencent => "Tencent-ASR",
@@ -446,6 +451,7 @@ pub fn pick_entry<'a>(
         EngineCategory::Qwen3Asr => cfg.asr.qwen3_asr.as_ref(),
         EngineCategory::Zipformer => cfg.asr.zipformer.as_ref(),
         EngineCategory::Moonshine => cfg.asr.moonshine.as_ref(),
+        EngineCategory::FireRed => cfg.asr.firered.as_ref(),
         EngineCategory::Aliyun => cfg.asr.aliyun.as_ref(),
         EngineCategory::ByteDance => cfg.asr.bytedance.as_ref(),
         EngineCategory::Tencent => cfg.asr.tencent.as_ref(),
@@ -582,6 +588,7 @@ mod tests {
                 qwen3_asr: None,
                 zipformer: Some(zip),
                 moonshine: None,
+                firered: None,
                 bytedance: None,
                 tencent: None,
                 baidu: None,
@@ -613,6 +620,7 @@ mod tests {
                 qwen3_asr: None,
                 zipformer: None,
                 moonshine: None,
+                firered: None,
                 bytedance: None,
                 tencent: None,
                 baidu: None,
@@ -722,6 +730,7 @@ mod tests {
                 qwen3_asr: None,
                 zipformer: None,
                 moonshine: None,
+                firered: None,
                 bytedance: None,
                 tencent: None,
                 baidu: None,

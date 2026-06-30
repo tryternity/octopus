@@ -8,6 +8,7 @@ use crate::whisper::WhisperEngine;
 use crate::sensevoice::SenseVoiceEngine;
 use crate::paraformer::ParaformerEngine;
 use crate::zipformer::{ZipformerCtcEngine, ZipformerTransducerEngine};
+use crate::firered::FireRedEngine;
 use crate::moonshine::MoonshineEngine;
 
 /// Trait representing a reusable offline ASR model engine
@@ -91,6 +92,7 @@ impl AsrEngineManager {
                     model_name
                 ),
                 config::EngineCategory::Moonshine => Arc::new(MoonshineEngine::new(entry)?),
+                config::EngineCategory::FireRed => Arc::new(FireRedEngine::new(entry)?),
                 config::EngineCategory::ByteDance => anyhow::bail!(
                     "字节跳动云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
                     model_name

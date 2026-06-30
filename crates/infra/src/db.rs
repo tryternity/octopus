@@ -40,6 +40,9 @@ pub struct AsrSection {
     /// Moonshine 端侧 ASR（Useful Sensors）。provider='local' + category='moonshine' 路由入此。
     #[serde(default)]
     pub moonshine: Option<HashMap<String, ModelEntry>>,
+    /// FireRedASR2-AED CTC（小红书，本地）。provider='local' + category='firered' 路由入此。
+    #[serde(default)]
+    pub firered: Option<HashMap<String, ModelEntry>>,
     /// 阿里云云端 ASR（DashScope Fun-ASR 实时）。provider='aliyun' 路由入此。
     #[serde(default)]
     pub aliyun: Option<HashMap<String, ModelEntry>>,
@@ -495,6 +498,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
         qwen3_asr: None,
         zipformer: None,
         moonshine: None,
+        firered: None,
         aliyun: None,
         bytedance: None,
         tencent: None,
@@ -524,6 +528,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
             (_, "qwen3-asr") => &mut asr.qwen3_asr,
             (_, "zipformer") => &mut asr.zipformer,
             (_, "moonshine") => &mut asr.moonshine,
+            (_, "firered") => &mut asr.firered,
             _ => continue,
         };
         map.get_or_insert_with(HashMap::new).insert(model_name, entry);

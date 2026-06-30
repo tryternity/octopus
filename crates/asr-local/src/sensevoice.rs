@@ -141,7 +141,7 @@ fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
     Ok(lfr)
 }
 
-fn compute_fbank(samples: &[f32]) -> Result<Array2<f32>> {
+pub(crate) fn compute_fbank(samples: &[f32]) -> Result<Array2<f32>> {
     let n_frames = if samples.len() >= FBANK_FRAME_LEN {
         (samples.len() - FBANK_FRAME_LEN) / FBANK_FRAME_SHIFT + 1
     } else {
