@@ -79,10 +79,36 @@ impl Stitcher {
         }
         let eff_h = eff_bottom - eff_top;
 
-        // 模板：从 last_edges（上一帧 edges）底部取一个 strip。
-        // 在当前帧中搜索该 strip 的匹配位置 → 上一帧底部内容在当前帧中的位置。
+        // 计算边缘密度的辅助闭包
+        let calc_mean_edge = |edges: &GrayImage, tpl_y: u32, tpl_h: u32, w: u32, cols: &Range<u32>| -> f64 {
+            if tpl_h == 0 || cols.is_empty() { return 0.0; }
+            let mut sum = 0u64;
+            let mut count = 0u64;
+            for y in (0..tpl_h).step_by(2) {
+                for x in cols.clone().step_by(2) {
+                    if x >= w { continue; }
+                    sum += edges.get_pixel(x, tpl_y + y)[0] as u64;
+                    count += 1;
+                }
+            }
+            if count == 0 { return 0.0; }
+            sum as f64 / count as f64
+        };
+
+        // 模板高度
         let tpl_h = ((eff_h as f32 * self.config.template_ratio) as u32).max(20).min(eff_h / 2);
-        let tpl_y_start = eff_bottom.saturating_sub(tpl_h);
+
+        // 模板：从 last_edges（上一帧 edges）底部向上寻找首个包含足够纹理（边缘密度 > 4.0）的 strip，
+        // 避免底部的空白背景区导致 NCC 匹配退化或产生周期性假匹配。
+        let mut tpl_y_start = eff_bottom.saturating_sub(tpl_h);
+        let min_y = eff_top.max(eff_bottom.saturating_sub(eff_h / 2));
+        for y in (min_y..=eff_bottom.saturating_sub(tpl_h)).rev().step_by(4) {
+            let mean = calc_mean_edge(&self.last_edges, y, tpl_h, w, &self.match_cols);
+            if mean > 4.0 {
+                tpl_y_start = y;
+                break;
+            }
+        }
 
         // 在当前帧的 [eff_top, eff_bottom - tpl_h] 范围内搜索模板的最佳匹配位置
         let search_end = eff_bottom.saturating_sub(tpl_h);
@@ -148,7 +174,9 @@ impl Stitcher {
 
         // best_offset 是模板（画布底部 strip）在当前帧中的匹配位置。
         // 从 best_offset + tpl_h 到 eff_bottom 是真正新增的内容。
-        let crop_start = best_offset as u32 + tpl_h;
+        // crop_start 是真正新增内容在当前帧中的起始 Y 坐标。
+        // 无论模板 tpl_y_start 在何处，crop_start 在数学上均等价于：best_offset + (eff_bottom - tpl_y_start)
+        let crop_start = best_offset as u32 + (eff_bottom - tpl_y_start);
         if crop_start >= eff_bottom {
             return Ok(false);
         }
