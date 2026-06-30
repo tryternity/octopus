@@ -285,3 +285,40 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('clipboard_max_age_days', '30',    '自动清理天数（不含收藏）'),
     ('ocr_model',              'PP-OCRv6-small', 'OCR 模型（当前激活）'),
     ('screenshot_shortcut',     'Alt+S',                                '截图快捷键');
+
+-- ── 记事本（notes 表）─────────────────────────────────────────────────────
+-- 内容收集箱：ASR/OCR/剪贴板结果一键存入 + 富文本整理。
+-- 富文本 content_html 为内部模型（TipTap getHTML），content_text 为抽取纯文本（FTS + 列表预览）。
+CREATE TABLE IF NOT EXISTS notes (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    title         TEXT,
+    content_html  TEXT    NOT NULL DEFAULT '',
+    content_text  TEXT    NOT NULL DEFAULT '',
+    source        TEXT    NOT NULL DEFAULT 'manual',
+    source_ref_id INTEGER,
+    is_pinned     INTEGER NOT NULL DEFAULT 0,
+    is_favorite   INTEGER NOT NULL DEFAULT 0,
+    created_at    TEXT    NOT NULL,
+    updated_at    TEXT    NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_notes_source  ON notes(source);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
+    title, content_text,
+    content='notes', content_rowid='id', tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS note_fts_ai AFTER INSERT ON notes BEGIN
+    INSERT INTO notes_fts(rowid, title, content_text) VALUES (new.id, new.title, new.content_text);
+END;
+CREATE TRIGGER IF NOT EXISTS note_fts_ad AFTER DELETE ON notes BEGIN
+    INSERT INTO notes_fts(notes_fts, rowid, title, content_text)
+    VALUES('delete', old.id, old.title, old.content_text);
+END;
+CREATE TRIGGER IF NOT EXISTS note_fts_au AFTER UPDATE OF title, content_text ON notes BEGIN
+    INSERT INTO notes_fts(notes_fts, rowid, title, content_text)
+    VALUES('delete', old.id, old.title, old.content_text);
+    INSERT INTO notes_fts(rowid, title, content_text) VALUES (new.id, new.title, new.content_text);
+END;
