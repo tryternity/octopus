@@ -11,6 +11,7 @@ const DIVERTED_DELAY_MS = 300;
 // ── 编辑框尺寸双模式（精简 520×116 / 长篇 720×480，长篇可拖拽且记忆）──
 const COMPACT_SIZE = { w: 520, h: 116 };
 const EXPANDED_DEFAULT = { w: 720, h: 480 };
+const EXPANDED_MIN = { w: 400, h: 200 }; // 长篇态可拖拽的最小尺寸
 const EXPANDED_SIZE_KEY = "result-expanded-size";
 
 function loadExpandedSize(): { w: number; h: number } {
@@ -87,6 +88,15 @@ function Result() {
   useEffect(() => { toolbarVisibleRef.current = toolbarVisible; }, [toolbarVisible]);
   useEffect(() => { editingStateRef.current = editing; }, [editing]);
   useEffect(() => { expandedRef.current = expanded; }, [expanded]);
+
+  // 首帧锁精简态：窗口 resizable(true) 创建（setSize 需它），故默认用 min=max=520×116
+  // 锁死防用户拖。result_window 仅 show/hide 复用、组件不 unmount，首帧锁一次即可；
+  // 后续切长篇/切精简由 toggleExpand 重设 min/max。
+  useEffect(() => {
+    const compact = new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h);
+    win.setMinSize(compact);
+    win.setMaxSize(compact);
+  }, [win]);
 
   const showToast = useCallback((msg: string) => {
     setToast(msg);
@@ -292,18 +302,24 @@ function Result() {
   }, [showToast, text]);
 
   // 放大/缩小开关：切换编辑框精简(520×116) ↔ 长篇(记忆尺寸或默认 720×480)。
+  // 窗口创建为 resizable(true)——resizable(false) 时 Tauri setSize 被忽略（文档），
+  // 故改用 min/max 锁控制可拖性，不调 setResizable：
+  //   精简态 min=max=520×116（锁死不可拖）；长篇态 min=400×200 + 无 max（可拖调大小）。
   // 先同步 expandedRef，防 setSize 触发的 onResized 读到旧值污染长篇记忆。
-  // 尺寸与编辑态解耦——任一模式均可编辑（toggleEdit）。
   const toggleExpand = useCallback(async () => {
     const next = !expanded;
     expandedRef.current = next;
     setExpanded(next);
-    await win.setResizable(next);
     if (next) {
+      await win.setMinSize(new LogicalSize(EXPANDED_MIN.w, EXPANDED_MIN.h));
+      await win.setMaxSize(undefined);
       const { w, h } = expandedSizeRef.current;
       await win.setSize(new LogicalSize(w, h));
     } else {
       await win.setSize(new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h));
+      const compact = new LogicalSize(COMPACT_SIZE.w, COMPACT_SIZE.h);
+      await win.setMinSize(compact);
+      await win.setMaxSize(compact);
     }
   }, [expanded, win]);
 
