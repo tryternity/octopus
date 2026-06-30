@@ -19,6 +19,7 @@ mod engine_grpc;
 mod engine_ws;
 mod model_commands;
 mod note_commands;
+mod notepad_window;
 mod paste;
 mod pipeline;
 mod result_window;
