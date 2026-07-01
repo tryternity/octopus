@@ -4,7 +4,7 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::net::TcpListener;
 use std::sync::mpsc::Sender;
 
@@ -80,6 +80,7 @@ pub fn start(tx: Sender<IpcMsg>) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
     use std::net::TcpStream;
     use std::sync::mpsc;
     use std::time::Duration;
