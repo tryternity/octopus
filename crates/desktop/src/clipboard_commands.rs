@@ -464,3 +464,77 @@ pub async fn get_image_thumb(id: i64) -> Result<String, String> {
         general_purpose::STANDARD.encode(&thumb_blob)
     ))
 }
+
+/// 取图片全分辨率（image_data.blob）→ data URL（base64 + WebP 前缀）。
+///
+/// 前端 ImagePreview 用它加载到 <img>/canvas 做标注。镜像 get_image_thumb，
+/// 仅取 blob（全分辨率）而非 thumb。返回 data URL 同样为避免 IPC 序列化膨胀。
+#[tauri::command]
+pub async fn get_image_full(id: i64) -> Result<String, String> {
+    let item = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::get_item_by_id(conn, id)
+    })
+    .map_err(|e| e.to_string())?;
+
+    let item = item.ok_or("条目不存在")?;
+    if item.item_type != octopus_clipboard::ItemType::Image {
+        return Err("非图片条目".into());
+    }
+
+    let blob_hash = item.image_meta.as_ref().map(|m| m.blob_hash.clone())
+        .ok_or("图片元数据缺失")?;
+
+    let blob = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::get_image_blob(conn, &blob_hash)
+    })
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| "图片数据缺失".to_string())?;
+
+    Ok(format!(
+        "data:image/webp;base64,{}",
+        general_purpose::STANDARD.encode(&blob)
+    ))
+}
+
+/// 弹系统保存对话框，把前端合成的标注 PNG（base64）存到用户指定路径。
+///
+/// 镜像 screenshot_commands::save_screenshot_dialog，去掉截图专属清理
+/// （ALL_CAPTURES / close_all_screenshot_windows）。预览窗保持打开。
+#[tauri::command]
+pub async fn save_image_dialog(
+    png_base64: String,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let png_bytes = general_purpose::STANDARD
+        .decode(&png_base64)
+        .map_err(|e| format!("base64 解码失败: {}", e))?;
+
+    use tauri_plugin_dialog::DialogExt;
+    let save_path = app_handle
+        .dialog()
+        .file()
+        .add_filter("PNG 图片", &["png"])
+        .set_file_name("image.png")
+        .blocking_save_file();
+
+    if let Some(path) = save_path {
+        let path = path.as_path().ok_or("无效路径")?;
+        std::fs::write(path, &png_bytes).map_err(|e| e.to_string())?;
+        log::info!("Image preview saved to {}", path.display());
+    }
+    Ok(())
+}
+
+/// 把前端合成的标注 PNG（base64）写入系统剪贴板。
+///
+/// ClipboardHandle::write_image 内部已 from_bytes + set_image，无需直接碰 RustImageData。
+#[tauri::command]
+pub async fn copy_image_to_clipboard(
+    png_base64: String,
+    handle: State<'_, Arc<ClipboardHandle>>,
+) -> Result<(), String> {
+    let png_bytes = general_purpose::STANDARD
+        .decode(&png_base64)
+        .map_err(|e| format!("base64 解码失败: {}", e))?;
+    handle.write_image(&png_bytes).map_err(|e| e.to_string())
+}
