@@ -2,6 +2,7 @@
 //! 第一阶段仅 NotepadView。Tauri 主进程经本地 TCP IPC spawn 并驱动。
 
 mod ipc;
+mod macos;
 mod notepad_view;
 
 use ipc::IpcMsg;
@@ -12,6 +13,7 @@ fn main() -> eframe::Result {
     // IPC 接收通道：后台 server 线程收 TCP 消息 → 推给主线程
     let (tx, rx) = mpsc::channel::<IpcMsg>();
     ipc::start(tx);
+    macos::set_accessory_policy();
 
     let opts = eframe::NativeOptions::default();
     eframe::run_native(

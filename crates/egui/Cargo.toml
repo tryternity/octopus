@@ -19,3 +19,8 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
 log = "0.4"
+
+# macOS Accessory 激活策略（无 Dock 图标）；非 macOS 走 macos.rs 的 no-op
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication"] }
