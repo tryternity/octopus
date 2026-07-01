@@ -30,6 +30,8 @@ pub fn setup(ctx: &egui::Context) {
     // widget 配色：inactive 用 zinc-800，hover/active 用强调色半透
     // （egui 0.29 的 Widgets 无 selected 变体——选中态由 selection.bg_fill 统一承担）
     v.widgets.noninteractive.bg_fill = Color32::from_rgb(39, 39, 42);
+    // panel 间分隔线（SidePanel↔CentralPanel 边界）：默认偏黑偏突兀，调 zinc-700 细线弱化。
+    v.widgets.noninteractive.bg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(63, 63, 70));
     v.widgets.inactive.bg_fill = Color32::from_rgb(39, 39, 42); // zinc-800
     v.widgets.inactive.fg_stroke = egui::Stroke::new(1.0, Color32::from_rgb(212, 212, 216));
     v.widgets.hovered.bg_fill = ACCENT.linear_multiply(0.35);
