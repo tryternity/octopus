@@ -562,6 +562,17 @@ fn close_all_screenshot_windows(app_handle: &tauri::AppHandle) {
 
 // ── 滚动截图 ──
 
+/// 用户停止时的操作模式：保存文件 / 复制入库 / 取消
+#[repr(u8)]
+#[derive(Clone, Copy, PartialEq)]
+enum ScrollStopMode {
+    Copy = 0,
+    Save = 1,
+    Cancel = 2,
+}
+
+static SCROLL_STOP_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::AtomicU8::new(0);
+
 static SCROLL_RECORDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 #[cfg(target_os = "macos")]
@@ -938,7 +949,7 @@ pub async fn start_scroll_recording(
         tauri::async_runtime::spawn(async move {
             use core_graphics::event::CGEvent;
             use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-            let mut poll = tokio::time::interval(std::time::Duration::from_millis(30));
+            let mut poll = tokio::time::interval(std::time::Duration::from_millis(16));
             let mut cur_passthrough = true;
             let mut last_active_pid: i32 = 0;
             let mut activate_check_count = 0u32;
@@ -1148,8 +1159,19 @@ pub async fn start_scroll_recording(
             }));
         }
 
-        // 入库
-        close_all_screenshot_windows(&ah);
+        // 写入 DB（不在此处关窗口，等 emit scroll://done 后前端处理完再关）
+        let stop_mode = match SCROLL_STOP_MODE.load(std::sync::atomic::Ordering::SeqCst) {
+            1 => ScrollStopMode::Save,
+            2 => ScrollStopMode::Cancel,
+            _ => ScrollStopMode::Copy,
+        };
+        SCROLL_STOP_MODE.store(0, std::sync::atomic::Ordering::SeqCst);
+
+        if stop_mode == ScrollStopMode::Cancel {
+            // 取消：不入库，直接关窗口
+            close_all_screenshot_windows(&ah);
+            return;
+        }
 
         let canvas = stitcher.canvas().clone();
         let mut png_bytes = Vec::new();
@@ -1174,8 +1196,33 @@ pub async fn start_scroll_recording(
             })
         });
 
-        let _ = ah.emit("scroll://done", serde_json::json!({ "id": item_id }));
+        let png_b64 = general_purpose::STANDARD.encode(&png_bytes);
+
+        // 写入系统剪贴板（让用户可以直接粘贴）
+        if let Some(handle) = ah.try_state::<std::sync::Arc<ClipboardHandle>>() {
+            let _ = handle.write_image(&png_bytes);
+        }
+
+        let _ = ah.emit("scroll://done", serde_json::json!({ "id": item_id, "png_base64": png_b64 }));
         let _ = ah.emit("clipboard://changed", ());
+
+        // 关闭截图窗口
+        close_all_screenshot_windows(&ah);
+
+        // 保存模式：弹保存对话框
+        if stop_mode == ScrollStopMode::Save {
+            use tauri_plugin_dialog::DialogExt;
+            let save_path = ah.dialog()
+                .file()
+                .add_filter("PNG 图片", &["png"])
+                .set_file_name("scroll-screenshot.png")
+                .blocking_save_file();
+            if let Some(path) = save_path {
+                if let Some(p) = path.as_path() {
+                    let _ = std::fs::write(p, &png_bytes);
+                }
+            }
+        }
     });
 
     Ok(())
@@ -1183,5 +1230,17 @@ pub async fn start_scroll_recording(
 
 #[tauri::command]
 pub fn stop_scroll_recording() {
+    SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// 前端设置停止模式（保存/复制/取消），然后停止录制
+#[tauri::command]
+pub fn stop_scroll_recording_with_mode(mode: String) {
+    let m = match mode.as_str() {
+        "save" => ScrollStopMode::Save,
+        "cancel" => ScrollStopMode::Cancel,
+        _ => ScrollStopMode::Copy,
+    };
+    SCROLL_STOP_MODE.store(m as u8, std::sync::atomic::Ordering::SeqCst);
     SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
 }

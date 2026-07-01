@@ -58,6 +58,7 @@ export default function Screenshot() {
   const [toolFontSize, setToolFontSizeState] = useState(16);
   const setToolColor = (c: string) => { toolColorRef.current = c; setToolColorState(c); };
   const setToolFontSize = (s: number) => { toolFontSizeRef.current = s; setToolFontSizeState(s); };
+  const scrollSaveAfterStopRef = useRef(false);
   const [numberCounter, setNumberCounter] = useState(1);
   const [toolCircleSize, setToolCircleSize] = useState(24);
   const annMoveStartRef = useRef<{ idx: number; mx: number; my: number; anns: Annotation[] } | null>(null);
@@ -94,9 +95,15 @@ export default function Screenshot() {
       setScrollPreview(e.payload.preview);
       setScrollHeight(e.payload.phys_height);
     }).then((fn) => { unlistenFrame = fn; });
-    listen("scroll://done", () => {
+    listen("scroll://done", (e: { payload: { id?: string; png_base64?: string } }) => {
       setScrollPreview(null);
       setModeSafe("selected");
+      // 如果用户点的是"保存"，触发保存文件对话框
+      if (scrollSaveAfterStopRef.current && e.payload.png_base64) {
+        scrollSaveAfterStopRef.current = false;
+        invoke("save_screenshot_dialog", { pngBase64: e.payload.png_base64 }).catch(() => {});
+      }
+      scrollSaveAfterStopRef.current = false;
     }).then((fn) => { unlistenDone = fn; });
     return () => { unlistenFrame?.(); unlistenDone?.(); };
   }, []);
@@ -1093,19 +1100,29 @@ export default function Screenshot() {
           <div style={{ flex: 1, overflow: "hidden", borderRadius: 6, display: "flex", flexDirection: "column", justifyContent: "flex-end", background: "rgba(0,0,0,0.3)" }}>
             <img src={`data:image/png;base64,${scrollPreview}`} alt="preview" style={{ width: "100%", display: "block" }} />
           </div>
-          {/* 按钮区：停止 2:1 取消 */}
+          {/* 按钮区：保存 复制 取消 */}
           <div style={{ display: "flex", gap: 6, height: 32 }}>
-            <button onClick={stopScroll} style={{
-              flex: 2, borderRadius: 6, border: "none",
-              background: "#ef4444", color: "#fff",
+            <button onClick={() => invoke("stop_scroll_recording_with_mode", { mode: "save" }).catch(() => {})} style={{
+              flex: 1, borderRadius: 6, border: "none",
+              background: "#3b82f6", color: "#fff",
               fontSize: 12, fontWeight: 600, cursor: "pointer",
               transition: "background 0.15s",
             }}
-            onMouseEnter={(e) => e.currentTarget.style.background = "#dc2626"}
-            onMouseLeave={(e) => e.currentTarget.style.background = "#ef4444"}>
-              停止录制
+            onMouseEnter={(e) => e.currentTarget.style.background = "#2563eb"}
+            onMouseLeave={(e) => e.currentTarget.style.background = "#3b82f6"}>
+              保存
             </button>
-            <button onClick={() => invoke("cancel_screenshot").catch(() => {})} style={{
+            <button onClick={() => invoke("stop_scroll_recording_with_mode", { mode: "copy" }).catch(() => {})} style={{
+              flex: 1, borderRadius: 6, border: "none",
+              background: "#22c55e", color: "#fff",
+              fontSize: 12, fontWeight: 600, cursor: "pointer",
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = "#16a34a"}
+            onMouseLeave={(e) => e.currentTarget.style.background = "#22c55e"}>
+              复制
+            </button>
+            <button onClick={() => invoke("stop_scroll_recording_with_mode", { mode: "cancel" }).catch(() => {})} style={{
               flex: 1, borderRadius: 6,
               border: "1px solid rgba(255,255,255,0.15)",
               background: "transparent", color: "rgba(255,255,255,0.5)",
