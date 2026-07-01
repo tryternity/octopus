@@ -28,7 +28,12 @@ fn main() -> eframe::Result {
     // macOS Accessory（无 Dock 图标）。run_native 前设一次。
     macos::set_accessory_policy();
 
-    let opts = eframe::NativeOptions::default();
+    // 显式窗口尺寸 + 最小尺寸：default() 给的初始窗口偏小/不确定，叠加 SidePanel 260 默认宽
+    // 会让 CentralPanel 余量为 0（编辑区整个消失）。固定后中央永远有显示空间。
+    let viewport = egui::ViewportBuilder::default()
+        .with_inner_size([1024.0, 720.0])
+        .with_min_inner_size([760.0, 480.0]);
+    let opts = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native(
         "octopus 记事本",
         opts,

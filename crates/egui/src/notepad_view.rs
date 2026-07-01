@@ -137,12 +137,21 @@ impl NotepadView {
             self.reload_notes();
         }
 
-        // 左栏：列表（来源徽标色 + pinned 星标）
-        egui::SidePanel::left("list").resizable(true).default_width(260.0).show(ctx, |ui| {
+        // 左栏：列表（来源徽标色 + pinned 星标）。
+        // min/max_width 钳制：resizable 无上限时 panel 会被记忆成接近窗口宽，把 CentralPanel
+        // 挤成 0（编辑区整个消失且拖分隔条缩不动）。钳在 [200,420] 保证中央永远有余量。
+        egui::SidePanel::left("list")
+            .resizable(true)
+            .min_width(200.0)
+            .default_width(260.0)
+            .max_width(420.0)
+            .show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("笔记").strong().size(15.0));
-                ui.allocate_space(ui.available_size()); // 推「+ 新建」到右
+                // 只占剩余宽度把按钮推到右，y 用 0：available_size() 的 y 是整列高度，
+                // 在 horizontal 里会撑爆本行高度、挤压下方列表。
+                ui.allocate_space(egui::vec2(ui.available_width(), 0.0));
                 if ui.button("+ 新建").clicked() {
                     self.create_new();
                 }
@@ -196,7 +205,7 @@ impl NotepadView {
                 if resp.changed() {
                     self.mark_dirty();
                 }
-                ui.allocate_space(ui.available_size()); // 推「保存」到右
+                ui.allocate_space(egui::vec2(ui.available_width(), 0.0)); // 推「保存」到右（只占宽不撑高）
                 let label = if self.body_dirty { "保存 *" } else { "保存" };
                 if ui.button(label).clicked() {
                     self.save_current();
