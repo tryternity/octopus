@@ -126,18 +126,42 @@ impl NotepadView {
             self.reload_notes();
         }
 
-        egui::SidePanel::left("list").resizable(true).default_width(240.0).show(ctx, |ui| {
-            ui.heading("笔记");
+        // 左栏：列表（来源徽标色 + pinned 星标）
+        egui::SidePanel::left("list").resizable(true).default_width(260.0).show(ctx, |ui| {
+            ui.add_space(4.0);
+            ui.label(egui::RichText::new("笔记").strong().size(15.0));
+            ui.add_space(6.0);
+            ui.separator();
+
             let mut select_id: Option<i64> = None;
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for n in &self.notes {
                     let selected = self.current_id == Some(n.id);
-                    let label = n.title.clone().unwrap_or_else(|| {
-                        n.content_text.chars().take(20).collect()
+                    let label_text = n.title.clone().unwrap_or_else(|| {
+                        n.content_text.chars().take(24).collect::<String>()
                     });
-                    if ui.selectable_label(selected, &label).clicked() {
-                        select_id = Some(n.id);
-                    }
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = 4.0;
+                        // 来源徽标色点 ●
+                        ui.label(
+                            egui::RichText::new("●")
+                                .color(crate::theme::source_color(n.source))
+                                .size(9.0),
+                        );
+                        // pinned 星标 ★
+                        if n.is_pinned {
+                            ui.label(
+                                egui::RichText::new("★")
+                                    .color(egui::Color32::from_rgb(250, 204, 21))
+                                    .size(11.0),
+                            );
+                        }
+                        let rt = egui::RichText::new(&label_text);
+                        let rt = if selected { rt.strong().color(egui::Color32::WHITE) } else { rt };
+                        if ui.selectable_label(selected, rt).clicked() {
+                            select_id = Some(n.id);
+                        }
+                    });
                 }
             });
             if let Some(id) = select_id {
@@ -145,15 +169,18 @@ impl NotepadView {
             }
         });
 
+        // 右栏：编辑器
         egui::CentralPanel::default().show(ctx, |ui| {
-            // 标题
+            ui.add_space(2.0);
             ui.horizontal(|ui| {
-                ui.label("标题:");
+                ui.spacing_mut().item_spacing.x = 8.0;
+                ui.label(egui::RichText::new("标题").small().color(crate::theme::MUTED));
                 let resp = ui.text_edit_singleline(&mut self.title);
                 if resp.changed() {
                     self.mark_dirty();
                 }
             });
+            ui.add_space(2.0);
             ui.separator();
 
             // 工具栏（5 按钮：选中文本→包 md 语法）
@@ -165,7 +192,13 @@ impl NotepadView {
             ui.horizontal(|ui| {
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.set_min_size(half);
-                    ui.label("Markdown 源码");
+                    ui.label(
+                        egui::RichText::new("Markdown 源码")
+                            .small()
+                            .color(crate::theme::MUTED)
+                            .strong(),
+                    );
+                    ui.add_space(2.0);
                     let resp = ui.add(
                         egui::TextEdit::multiline(&mut self.body)
                             .desired_width(f32::MAX)
@@ -177,7 +210,13 @@ impl NotepadView {
                 });
                 egui::Frame::group(ui.style()).show(ui, |ui| {
                     ui.set_min_size(half);
-                    ui.label("预览");
+                    ui.label(
+                        egui::RichText::new("预览")
+                            .small()
+                            .color(crate::theme::MUTED)
+                            .strong(),
+                    );
+                    ui.add_space(2.0);
                     egui::ScrollArea::vertical().show(ui, |ui| {
                         CommonMarkViewer::new().show(ui, &mut self.md_cache, &self.body);
                     });
@@ -192,7 +231,7 @@ impl NotepadView {
     }
 }
 
-/// 5 按钮工具栏：选中文本包 md 语法。
+/// 5 按钮工具栏：点按钮在末尾插入 md 语法标记。
 fn toolbar(
     ui: &mut egui::Ui,
     body: &mut String,
@@ -201,20 +240,21 @@ fn toolbar(
 ) {
     ui.horizontal_wrapped(|ui| {
         let pairs: &[(&str, &str, &str)] = &[
-            ("B 粗体", "**", "**"),
-            ("I 斜体", "*", "*"),
-            ("H 标题", "# ", ""),
-            ("• 列表", "- ", ""),
-            ("` 代码", "`", "`"),
+            ("粗体", "**", "**"),
+            ("斜体", "*", "*"),
+            ("标题", "# ", ""),
+            ("列表", "- ", ""),
+            ("代码", "`", "`"),
         ];
         for (label, pre, post) in pairs {
-            if ui.small_button(*label).clicked() {
+            if ui.small_button(egui::RichText::new(*label).small()).clicked() {
                 wrap_selection_or_append(body, pre, post);
                 *dirty = true;
                 *last_edit = Some(Instant::now());
             }
         }
     });
+    ui.add_space(2.0);
     ui.separator();
 }
 

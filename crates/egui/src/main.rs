@@ -4,6 +4,7 @@
 mod ipc;
 mod macos;
 mod notepad_view;
+mod theme;
 
 use ipc::IpcMsg;
 use notepad_view::NotepadView;
@@ -42,6 +43,8 @@ struct NotepadApp {
 
 impl NotepadApp {
     fn new(cc: &eframe::CreationContext<'_>, rx: mpsc::Receiver<IpcMsg>) -> Self {
+        // 主题：深色 + indigo 强调色 + spacing（快速美化）。
+        theme::setup(&cc.egui_ctx);
         // CJK 字体（egui 默认无中文，不加载则中文显方块）。
         setup_fonts(&cc.egui_ctx);
         // Accessory 再设一次（事件循环已起，确保 Dock 图标隐藏生效）。
