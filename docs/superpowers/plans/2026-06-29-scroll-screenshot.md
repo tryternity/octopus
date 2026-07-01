@@ -136,6 +136,19 @@ scrolling 模式下隐藏工具栏，停止/取消按钮移到预览面板中。
 - tiptap 依赖拆分为独立 chunk（消除 bundle 过大警告）
 - 清理 `[window-diag]` 诊断日志
 
+### 偏差 21：保存/复制/取消三按钮 ✅
+
+- `stop_scroll_recording_with_mode(save/copy/cancel)` 后端处理停止模式
+- 保存：入库 + 写系统剪贴板 + 弹 `blocking_save_file` 对话框（后端执行，不依赖前端窗口存活）
+- 复制：入库 + 写系统剪贴板（`handle.write_image`）
+- 取消：不入库，直接关窗口
+- Enum 值对齐：Copy=0, Save=1, Cancel=2（`#[repr(u8)]`）
+
+### 偏差 22：监视线程提速 ✅
+
+- 鼠标监视线程从 30ms 降到 16ms（60fps），降低首次点击穿透概率
+- macOS `setIgnoresMouseEvents` 仍有异步延迟，彻底解决需多窗口架构（暂不实施）
+
 ---
 
 ## Spec Coverage
