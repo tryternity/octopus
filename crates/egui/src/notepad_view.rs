@@ -337,9 +337,8 @@ impl NotepadView {
     }
 }
 
-/// 文本编辑区：标签 + 滚动 multiline TextEdit。changed 时置 dirty + last_edit
+/// 文本编辑区：标签 + multiline TextEdit（满高占满视口）。changed 时置 dirty + last_edit
 /// （防抖 flush_if_dirty 依赖 last_edit，仅置 dirty 不置 last_edit 会导致永不落库）。
-#[allow(deprecated)] // drag_to_scroll 在 egui 0.34 deprecated，替代 API ScrollSource 未 re-export 到 crate root
 fn editor_pane(
     ui: &mut egui::Ui,
     body: &mut String,
@@ -349,34 +348,18 @@ fn editor_pane(
 ) {
     ui.label(egui::RichText::new(label).small().color(crate::theme::MUTED).strong());
     ui.add_space(2.0);
-    // 编辑器撑满视口 + 内容超出可滚动。egui TextEdit 本身无可见滚动条：固定高度
-    // (add_sized) 时内容超出会截断底部、无法手动滚动（用户反馈「下面文字看不见」）。
-    // 正确做法：外层 ScrollArea 占 available_height；内层 TextEdit desired_rows 取
-    // max(视口可容行数, 实际内容行)——短内容占满视口不留白，长内容超出由 ScrollArea 滚动，
-    // 且输入光标自动 scroll_to_cursor 跟入视野。
-    let line_h = ui.text_style_height(&egui::TextStyle::Body);
-    let min_rows = ((ui.available_height() / line_h).floor() as usize).max(1);
-    egui::ScrollArea::vertical()
-        .auto_shrink([false; 2])
-        // drag_to_scroll(false) 关掉 content 拖动滚动：默认 true（ScrollSource::ALL），内容超出视口时
-        // egui 会在 content 渲染前用 Sense::DRAG interact 整个 content rect（egui 源码注释自承「会偷
-        // 内部 widget 输入」），与 TextEdit 抢 pointer → 内容较长的 markdown 编辑框点击无法获焦点、
-        // 无法编辑。滚轮 + 滚动条默认仍开，滚动照旧，焦点不受影响。
-        .drag_to_scroll(false)
-        .show(ui, |ui| {
-            let resp = ui.add(
-                egui::TextEdit::multiline(body)
-                    // 显式固定 id：避免子 ui id 不稳导致焦点/光标 memory 跨帧丢失（尤其
-                    // markdown 分屏嵌套布局下）。text/markdown 互斥显示，共用同 id 安全。
-                    .id(egui::Id::new("notepad_editor"))
-                    .desired_width(f32::INFINITY)
-                    .desired_rows(min_rows),
-            );
-            if resp.changed() {
-                *dirty = true;
-                *last_edit = Some(Instant::now());
-            }
-        });
+    // 编辑器满高占满视口。egui fixed-height TextEdit 内容超出时，光标自动 scroll_to_cursor 跟入
+    // 视野（输入 / 键盘上下移动光标即可查看全部内容），但无鼠标滚动条（egui TextEdit 不响应滚轮，
+    // text_offset 为 pub(crate) 无法外部调整）。取「能编辑」优先于「鼠标滚动条」，后者待后续。
+    let height = ui.available_height().max(80.0);
+    let resp = ui.add_sized(
+        egui::vec2(ui.available_width(), height),
+        egui::TextEdit::multiline(body).desired_width(f32::INFINITY),
+    );
+    if resp.changed() {
+        *dirty = true;
+        *last_edit = Some(Instant::now());
+    }
 }
 
 /// 5 按钮工具栏：点按钮在末尾插入 md 语法标记。
