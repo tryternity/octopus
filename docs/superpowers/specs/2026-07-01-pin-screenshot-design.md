@@ -78,47 +78,39 @@ NSImageView:
 
 | 操作 | 实现 | 行为 |
 |---|---|---|
-| 左键拖拽 | `mouseDown` → `mouseDragged` → `setFrameOrigin` | 移动贴图 |
-| 滚轮 | `scrollWheel` → delta × 0.01 缩放因子 → 以鼠标为中心 `setFrame` | 等比缩放 0.2×~5× |
-| 右键 | `rightMouseDown` → 弹出 NSMenu（单项「关闭」）→ `orderOut` + 释放 | 关闭贴图 |
-| Esc | `keyDown(Esc)` → 同右键关闭 | 关闭贴图（需焦点） |
+| 左键拖拽 | `PinNSImageView.mouseDown` → `window.performWindowDragWithEvent` | 系统原生拖拽，零抖动 |
+| 滚轮 | `PinNSWindow.scrollWheel` → delta × 0.01 缩放因子 → 以鼠标为中心 `setFrame_display` | 等比缩放 0.2×~5× |
+| 右键 | `PinNSWindow.rightMouseDown` → 弹出 NSMenu（单项「关闭」）→ `close` | 关闭贴图 |
 
 ### 3.3 事件处理
 
-用 objc2 创建 NSWindow 子类（或用 `objc2::declare::ClassBuilder` 动态创建），重写：
-- `mouseDown:` / `mouseDragged:` — 拖拽
-- `scrollWheel:` — 缩放
-- `rightMouseDown:` — 右键菜单
-- `keyDown:` — Esc 关闭
+**双类架构**（职责分离）：
+- `PinNSImageView`（继承 NSImageView）— 只处理 `mouseDown`，委托给 `window.performWindowDragWithEvent` 触发系统原生拖拽
+- `PinNSWindow`（继承 NSWindow）— 处理 `scrollWheel`（缩放）和 `rightMouseDown`（右键菜单）
 
-拖拽细节：
-```
-mouseDown: 记录 initialMouseLocation + initialFrameOrigin
-mouseDragged:
-  delta = currentMouseLocation - initialMouseLocation
-  newOrigin = initialFrameOrigin + delta
-  setFrameOrigin(newOrigin)
-```
+拖拽用 `performWindowDragWithEvent` 而非手动 `mouseDragged` + `setFrameOrigin`：
+- 系统内部处理，跨屏正确，无抖动
+- 不需要记录初始坐标，不依赖 `locationInWindow`/`mouseLocation`（避免坐标计算 bug）
 
 缩放细节：
 ```
 scrollWheel:
   scale = 1.0 + deltaY * 0.01
-  newWidth = currentWidth * scale（限制 0.2×~5×）
-  newHeight = currentHeight * scale
-  // 以鼠标位置为中心：调整 origin 使鼠标下方的图片点不动
-  ratio = (mouseLocation.x - frame.origin.x) / frame.size.width
-  newOriginX = mouseLocation.x - ratio * newWidth
-  setFrame(frame with newWidth, newHeight, newOriginX, ...)
+  newWidth/Height = current × scale（限制 20~10000）
+  ratio = mouseInWindow / frameSize
+  newOrigin = frameOrigin + mouseInWindow - ratio × newSize
+  setFrame_display(newFrame, true)
 ```
 
 ### 3.4 右键菜单
 
 ```
 rightMouseDown:
-  menu = NSMenu
-  menu.addItem("关闭", action: #selector(close))
-  menu.popUp(positioning: at: mouseLocation)
+  menu = NSMenu()
+  item = NSMenuItem("关闭", action: close, keyEquivalent: "")
+  item.setTarget(self)
+  menu.addItem(item)
+  NSMenu.popUpContextMenu(menu, event, contentView)
 ```
 
 ## 4. 多实例管理

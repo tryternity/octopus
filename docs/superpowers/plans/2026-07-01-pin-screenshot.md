@@ -275,84 +275,42 @@ Expected: 编译通过
 
 ### Task 5: 拖拽移动
 
-**Files:**
-- Modify: `crates/desktop/src/pin_window.rs`
+**Files:** `crates/desktop/src/pin_window.rs`
 
-- [ ] **Step 1: 用 ClassBuilder 创建 NSWindow 子类处理鼠标事件**
+- [x] **PinNSImageView（继承 NSImageView）处理 mouseDown**
 
-需要用 objc2 的 `define_class!` 或 `declare::ClassBuilder` 创建自定义 NSWindow 子类，重写 `mouseDown:` / `mouseDragged:`。
-
-```rust
-// 在 mouseDown 中记录初始鼠标位置和窗口位置
-// 在 mouseDragged 中计算 delta 并 setFrameOrigin
-```
-
-- [ ] **Step 2: 验证拖拽工作**
-
-手动测试：创建贴图 → 鼠标拖拽 → 贴图跟随移动
+`PinNSImageView` 重写 `mouseDown:` → 调用 `window.performWindowDragWithEvent(event)`。
+系统原生拖拽，零抖动、跨屏正确，不需要手动记录坐标。
 
 ---
 
 ### Task 6: 滚轮缩放
 
-**Files:**
-- Modify: `crates/desktop/src/pin_window.rs`
+**Files:** `crates/desktop/src/pin_window.rs`
 
-- [ ] **Step 1: 重写 scrollWheel: 事件**
+- [x] **PinNSWindow 重写 scrollWheel:**
 
-```rust
-// scrollWheel:
-//   scale = 1.0 + deltaY * 0.01
-//   限制 0.2×~5×
-//   以鼠标位置为中心缩放（调整 origin）
-```
-
-- [ ] **Step 2: 验证缩放工作**
-
-手动测试：滚轮向上放大，向下缩小，鼠标位置为中心
+`scrollWheel:` → `scrollingDeltaY` × 0.01 缩放因子 → 以鼠标为中心 `setFrame_display`。
+限制 20~10000px，NSImageView autoresizingMask 自动同步。
 
 ---
 
-### Task 7: 右键菜单关闭 + Esc 关闭
+### Task 7: 右键菜单关闭
 
-**Files:**
-- Modify: `crates/desktop/src/pin_window.rs`
+**Files:** `crates/desktop/src/pin_window.rs`
 
-- [ ] **Step 1: 重写 rightMouseDown: 弹出 NSMenu**
+- [x] **PinNSWindow 重写 rightMouseDown: 弹出 NSMenu**
 
-```rust
-// rightMouseDown:
-//   menu = NSMenu
-//   menu.addItem("关闭")
-//   menu.popUp(positioning:at:)
-```
-
-- [ ] **Step 2: 重写 keyDown: 处理 Esc**
-
-```rust
-// keyDown: 如果 keyCode == 53 (Esc) → close
-```
-
-- [ ] **Step 3: 验证关闭工作**
-
-手动测试：右键弹菜单 → 点关闭 → 窗口消失
+`rightMouseDown:` → `NSMenu` + `NSMenuItem("关闭", action: close)` → `popUpContextMenu`。
+target-action 模式，点击后窗口 close。
 
 ---
 
 ### Task 8: 端到端验证
 
-- [ ] **Step 1: 全流程测试**
+- [x] **全流程测试通过**
 
-1. Cmd+Shift+D 触发截图
-2. 框选区域
-3. 点工具栏钉子按钮
-4. 截图窗口关闭，贴图出现在选区位置
-5. 拖拽贴图移动
-6. 滚轮缩放
-7. 右键弹菜单关闭
-8. 多次钉图（多实例）
-
-- [ ] **Step 2: 同步 spec/plan 偏差记录**
+贴图创建 + 拖拽 + 缩放 + 右键关闭全部正常工作。
 
 ---
 
