@@ -571,6 +571,32 @@ mod tests {
     const TH: u32 = 600;
 
     #[test]
+    fn test_sticky_detection() {
+        // 使用 make_frame_with_sticky 构造带固定顶/底区域的帧
+        let top_h = 30;
+        let bot_h = 25;
+        let f0 = make_frame_with_sticky(TW, TH, top_h, bot_h, 0);
+        let mut s = Stitcher::new(f0.clone(), StitchConfig::default());
+        // init 帧：sticky 区域相同，中间内容也相同
+        let f1 = make_frame_with_sticky(TW, TH, top_h, bot_h, 0);
+        s.process_frame(&f1).unwrap();
+        // 检测到的 sticky 应接近构造值（允许部分偏差）
+        assert!(s.sticky_top >= top_h / 2, "sticky_top {} 应接近 {}", s.sticky_top, top_h);
+        assert!(s.sticky_bottom >= bot_h / 2, "sticky_bottom {} 应接近 {}", s.sticky_bottom, bot_h);
+    }
+
+    #[test]
+    fn test_graybuf_color_pixel_luma() {
+        // 验证彩色像素的灰度公式（非灰度输入）
+        // R=100, G=150, B=200 → luma = (2126*100 + 7152*150 + 722*200) / 10000
+        //                         = (212600 + 1072800 + 144400) / 10000 = 1429800 / 10000 = 142
+        let mut img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> = image::ImageBuffer::new(1, 1);
+        img.put_pixel(0, 0, image::Rgba([100, 150, 200, 255]));
+        let buf = GrayBuf::from_rgba(&img);
+        assert_eq!(buf.row(0)[0], 142, "彩色像素灰度公式验证");
+    }
+
+    #[test]
     fn test_stationary_frame_returns_false() {
         // 两帧完全相同 → 无滚动，process_frame 返回 Ok(false)
         let f0 = make_frame(TW, TH, 0);
@@ -590,15 +616,17 @@ mod tests {
         // 第一次调用：初始化（detect_sticky + reference），返回 false
         let f1 = make_frame(TW, TH, 0);
         s.process_frame(&f1).unwrap();
+        let h_after_init = s.height();
         // 第二次调用：实际滚动检测
         let f2 = make_frame(TW, TH, 40);
         let added = s.process_frame(&f2).unwrap();
         assert!(added, "滚动 40px 应追加内容");
         let h_after = s.height();
+        // 追加后应 > init 后高度（init 会裁掉 sticky_bottom）
         assert!(
-            h_after > TH - STRIP_H,
-            "追加后画布高度 {} 应大于裁剪后首帧高度，表示有新行追加",
-            h_after
+            h_after > h_after_init,
+            "追加后画布高度 {} 应 > init 后 {}，确认有新行追加",
+            h_after, h_after_init
         );
     }
 

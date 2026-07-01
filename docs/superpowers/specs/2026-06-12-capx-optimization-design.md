@@ -1,9 +1,11 @@
 # CAPX 模块综合优化设计
 
 **日期**: 2026-06-12
-**状态**: 设计已确认，待实施
+**状态**: ✅ 实施完成（P1-P5 全部落地，10 测试全绿，API 零改动）
 **分支**: `optimize-capx`
 **关联文档**: [`2026-06-30-scroll-stitch-research.md`](./2026-06-30-scroll-stitch-research.md)（算法调研）、[`2026-06-29-scroll-screenshot-design.md`](./2026-06-29-scroll-screenshot-design.md)（滚动截屏整体设计）
+
+> **实施记录**：无偏差。`estimate_confidence` 的口径改进（稀疏 best vs 稀疏 mean，替代原密集 best vs 稀疏 mean）如 spec 预期正常工作，未触发回退。`canvas()` 惰性缓存用 `UnsafeCell` 实现（非 `unsafe` 裸指针）。函数拆分追加 `decide_match` 和 `sparse_sad_at_offset` 两个 helper（原 spec 列出 3 个，实际拆为 5 个以满足 ≤50 行约束）。
 
 ---
 
