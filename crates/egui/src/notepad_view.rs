@@ -362,11 +362,11 @@ fn editor_pane(
     // 对比 textedit_h（内容高）判断滚动空间；screen_h 看窗口高度。
     if resp.hovered() {
         log::info!(
-            "[editor_diag] screen_h={} viewport_rect={:?} (h={}) textedit_h={}",
+            "[editor_diag] screen_h={} viewport_h={} content_h={} offset_y={}",
             ui.ctx().screen_rect().height(),
-            scroll_out.response.rect,
-            scroll_out.response.rect.height(),
-            resp.rect.height()
+            scroll_out.inner_rect.height(),
+            scroll_out.content_size.y,
+            scroll_out.state.offset.y
         );
     }
     if resp.changed() {
