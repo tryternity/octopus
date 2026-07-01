@@ -143,7 +143,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 | 模块 | 职责 |
 |---|---|
-| `capture` | `capture_all_monitors()`：截取所有显示器（每个返回 RGBA + 物理像素尺寸 + 显示器坐标）。`crop_region()`：从全屏 RGBA 裁剪矩形 → PNG。黑屏检测日志（权限诊断） |
+| `capture` | `capture_all_monitors()`：截取所有显示器（每个返回 RGBA + 物理像素尺寸 + 显示器坐标）。`crop_region()` / `crop_region_raw()`：从全屏 RGBA 裁剪矩形 → PNG。黑屏检测日志（权限诊断） |
+| `stitch` | 滚动截屏拼接引擎：**2D SAD 空间模板匹配**。参考帧底部 80px strip 为模板，在全量区间 [-220, 0] 做无状态全局搜索（SAD 最小值）。静止锚点交叉验证（avg_sad_0 < min_sad + 1.0 → 判定静止）。排除左 10%/右 20% 干扰列。阈值 min_sad < 4.5, confidence > 0.20。替代了之前的 FFT 1D 相位相关（周期性列表行假匹配）。`capture_region_excluding_window`：CGWindowList 截图排除 overlay 窗口 |
 
 **触发方式**：全局快捷键（`screenshot_shortcut`，默认 Alt+S）+ 托盘菜单「截图」。
 
