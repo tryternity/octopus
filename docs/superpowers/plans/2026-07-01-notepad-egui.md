@@ -1,6 +1,6 @@
 # 记事本 egui 迁移实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 把记事本从 Tauri webview 窗口迁到独立 egui 原生进程，降低多开内存占用（webview ~80–150MB → egui 进程基线 ~30–50MB，单进程多视图摊薄）。
 
@@ -30,7 +30,7 @@
 - Modify: `crates/infra/src/db.rs`（`ensure_db` 内，`Connection::open` 之后、`init_schema` 之前加 PRAGMA）
 - Test: `crates/infra/src/db.rs`（tests 模块）
 
-- [ ] **Step 1: 写失败测试（WAL 已生效 + 双连接并发不锁死）**
+- [x] **Step 1: 写失败测试（WAL 已生效 + 双连接并发不锁死）**
 
 在 `crates/infra/src/db.rs` 的 `#[cfg(test)] mod tests` 末尾追加：
 
@@ -62,12 +62,12 @@ fn wal_pragmas_applied_on_file_db() {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test --manifest-path crates/infra/Cargo.toml wal_pragmas_applied_on_file_db - --nocapture`
 Expected: 编译失败（`apply_wal_pragmas` 未定义）。
 
-- [ ] **Step 3: 实现 apply_wal_pragmas 并在 ensure_db 调用**
+- [x] **Step 3: 实现 apply_wal_pragmas 并在 ensure_db 调用**
 
 在 `db.rs`（`ensure_db` 上方，约 `fn db_path` 附近）加：
 
@@ -95,12 +95,12 @@ fn apply_wal_pragmas(conn: &Connection) {
     init_schema(&conn)?;
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cargo test --manifest-path crates/infra/Cargo.toml wal_pragmas`
 Expected: PASS。
 
-- [ ] **Step 5: 回归全 infra 测试 + 提交**
+- [x] **Step 5: 回归全 infra 测试 + 提交**
 
 Run: `cargo test --manifest-path crates/infra/Cargo.toml`
 Expected: 全绿（WAL 不影响现有 in-memory 测试）。
@@ -119,7 +119,7 @@ git commit -m "feat(db): WAL + busy_timeout 迁移，支持多进程并发"
 - Modify: `crates/infra/src/db.rs`（`init_schema`，加 v9→v10 分支 + fresh 设 v10）
 - Test: `crates/infra/src/db.rs`
 
-- [ ] **Step 1: 写失败测试（v9→v10 迁移：去 content_html、加 type）**
+- [x] **Step 1: 写失败测试（v9→v10 迁移：去 content_html、加 type）**
 
 在 `db.rs` tests 末尾追加：
 
@@ -167,12 +167,12 @@ fn migrate_v9_to_v10_rebuilds_notes_schema() {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test --manifest-path crates/infra/Cargo.toml migrate_v9_to_v10`
 Expected: FAIL（v9→v10 分支不存在，schema 未变）。
 
-- [ ] **Step 3: 重写 db.sql 的 notes 建表段**
+- [x] **Step 3: 重写 db.sql 的 notes 建表段**
 
 把 `crates/infra/src/db.sql` 第 289–324 行（`-- ── 记事本（notes 表）...` 到三个 trigger 结束）整体替换为：
 
@@ -216,7 +216,7 @@ CREATE TRIGGER IF NOT EXISTS note_fts_au AFTER UPDATE OF title, content_text ON 
 END;
 ```
 
-- [ ] **Step 4: db.rs init_schema 加 v9→v10 分支 + fresh 设 v10**
+- [x] **Step 4: db.rs init_schema 加 v9→v10 分支 + fresh 设 v10**
 
 在 `init_schema` 内：
 1. `if v < 2` 分支末尾的 `conn.execute("PRAGMA user_version = 9", [])?;` 改为 `= 10`，并把 `log::info!("DB initialized (v9)...")` 改为 v10 + 去掉 notes 描述里的 content_html 措辞。
@@ -241,12 +241,12 @@ END;
     }
 ```
 
-- [ ] **Step 5: 运行测试确认通过 + 回归**
+- [x] **Step 5: 运行测试确认通过 + 回归**
 
 Run: `cargo test --manifest-path crates/infra/Cargo.toml`
 Expected: 全绿（含 `notes_table_and_fts_created` 仍 pass——新 schema 仍有 notes/notes_fts 空表）。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -265,7 +265,7 @@ git commit -m "feat(db): notes 表重建 content_text+type（v9→v10），去 c
 
 > 注：model + store + serialize 必须同 task 改（Note 结构体变了，store 编译依赖它；改完前整个 crate 不编译，故走"改测试→改实现→编译过"一次过）。
 
-- [ ] **Step 1: 改 model.rs（NoteType + Note 结构体）**
+- [x] **Step 1: 改 model.rs（NoteType + Note 结构体）**
 
 替换 `crates/notepad/src/model.rs` 中 `Note` 结构体（约 35–47 行），并在 `NoteSource` 之后加 `NoteType`：
 
@@ -326,7 +326,7 @@ pub struct Note {
     }
 ```
 
-- [ ] **Step 2: 重写 store.rs 的 create/update 签名 + SQL + row_to_note**
+- [x] **Step 2: 重写 store.rs 的 create/update 签名 + SQL + row_to_note**
 
 在 `crates/notepad/src/store.rs`：
 
@@ -410,7 +410,7 @@ pub fn update_note_at(conn: &Connection, id: i64, title: &str, content_text: &st
 (f) store.rs 顶部 `use crate::model::{Note, NoteFilter, NoteSource};` 加 `NoteType`：
 `use crate::model::{Note, NoteFilter, NoteSource, NoteType};`
 
-- [ ] **Step 3: 删 serialize.rs + 去 lib.rs 导出**
+- [x] **Step 3: 删 serialize.rs + 去 lib.rs 导出**
 
 ```bash
 rm crates/notepad/src/serialize.rs
@@ -418,7 +418,7 @@ rm crates/notepad/src/serialize.rs
 
 `crates/notepad/src/lib.rs` 删掉 `pub mod serialize;`（保留 export/model/store）。
 
-- [ ] **Step 4: 更新 store.rs 测试（适配新签名）**
+- [x] **Step 4: 更新 store.rs 测试（适配新签名）**
 
 `crates/notepad/src/store.rs` tests 模块里所有 `create_note_at(&conn, src, ref, "<p>..</p>")` 调用改为 `create_note_at(&conn, src, ref, "纯文本", NoteType::Text)`，`update_note_at(&conn, id, title, "<p>..</p>")` 改为 `update_note_at(&conn, id, title, "纯文本", NoteType::Text)`。具体（按现有测试名逐个改调用点）：
 
@@ -426,12 +426,12 @@ rm crates/notepad/src/serialize.rs
 - `update_rextracts_text_and_handles_title`：改 `update_note_at(&conn, id, "我的标题", "第一段", NoteType::Markdown)`；断言 `content_text == "第一段"`、`note_type == Markdown`；空标题断言不变。
 - `fts_search_three_chars` / `like_fallback_short_query` / `filter_by_source_and_favorite` / `pinned_sorts_first` / `delete_batch_and_empty` / `fts_triggers_sync_on_update_and_delete`：把 `"<p>xxx</p>"` 实参换成纯文本 `"xxx"` + `NoteType::Text`（FTS 仍索引 content_text，断言不变）。
 
-- [ ] **Step 5: 编译 + 测试**
+- [x] **Step 5: 编译 + 测试**
 
 Run: `cargo test --manifest-path crates/notepad/Cargo.toml`
 Expected: 全绿。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add crates/notepad/src/model.rs crates/notepad/src/store.rs crates/notepad/src/lib.rs
@@ -448,7 +448,7 @@ git commit -m "refactor(notepad): store/model 适配 content_text+type，移除 
 - Create: `crates/egui/src/main.rs`
 - Modify: `Cargo.toml`（workspace members 加 `crates/egui`）
 
-- [ ] **Step 1: 加 workspace member**
+- [x] **Step 1: 加 workspace member**
 
 `Cargo.toml` 第 2 行 members 数组追加 `"crates/egui"`：
 
@@ -456,7 +456,7 @@ git commit -m "refactor(notepad): store/model 适配 content_text+type，移除 
 members = ["crates/infra", "crates/asr-local", "crates/asr-cloud", "crates/server", "crates/cli", "crates/desktop", "crates/llm", "crates/dlp", "crates/download", "crates/clipboard", "crates/ocr", "crates/capx", "crates/notepad", "crates/egui"]
 ```
 
-- [ ] **Step 2: 写 crates/egui/Cargo.toml**
+- [x] **Step 2: 写 crates/egui/Cargo.toml**
 
 ```toml
 [package]
@@ -484,7 +484,7 @@ octopus-notepad = { path = "../notepad" }
 
 > 版本配对说明：egui 0.29 ↔ egui_commonmark 0.18。若 Step 4 编译报版本不兼容，按 egui 实际版本查 crates.io 对应的 egui_commonmark 版本对齐（这是 spike#4 的前置校验点）。
 
-- [ ] **Step 3: 写最小 main.rs（空 eframe 窗口）**
+- [x] **Step 3: 写最小 main.rs（空 eframe 窗口）**
 
 ```rust
 //! octopus-egui：记事本原生进程（eframe）。单进程 + view 路由。
@@ -511,7 +511,7 @@ impl eframe::App for NotepadApp {
 }
 ```
 
-- [ ] **Step 4: 编译 + 试跑（验证依赖版本）**
+- [x] **Step 4: 编译 + 试跑（验证依赖版本）**
 
 Run: `cargo build --manifest-path crates/egui/Cargo.toml`
 Expected: 编译成功。若 egui_commonmark 版本不兼容，调整 `Cargo.toml` 版本号重试。
@@ -519,7 +519,7 @@ Expected: 编译成功。若 egui_commonmark 版本不兼容，调整 `Cargo.tom
 试跑（手动，会弹出空窗口，Ctrl-C 退出）：
 Run: `cargo run --manifest-path crates/egui/Cargo.toml`
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add Cargo.toml crates/egui/Cargo.toml crates/egui/src/main.rs
@@ -541,7 +541,7 @@ git commit -m "feat(egui): octopus-egui crate 骨架（eframe 空窗口）"
 > - JSON line：每行一条 JSON。消息（Tauri→egui）：`{"type":"open","note_id":N}` / `{"type":"notes_changed"}` / `{"type":"show"}`。
 > - egui 主线程经 `std::sync::mpsc` 收消息。
 
-- [ ] **Step 1: 写 ipc.rs（server + 消息类型 + port 文件）**
+- [x] **Step 1: 写 ipc.rs（server + 消息类型 + port 文件）**
 
 ```rust
 //! 本地 TCP IPC server（Tauri 主进程 → egui）。
@@ -623,7 +623,7 @@ pub fn start(tx: Sender<IpcMsg>) {
 }
 ```
 
-- [ ] **Step 2: 写 IPC 单测（loopback client 发消息，server 收到）**
+- [x] **Step 2: 写 IPC 单测（loopback client 发消息，server 收到）**
 
 在 `ipc.rs` 末尾加（`#[cfg(test)]`）：
 
@@ -676,7 +676,7 @@ mod tests {
 
 > 注：`start` 内 server 线程与测试共享全局 port 文件路径，并发跑会撞；该测试单独跑。两个测试用 `#[test]` 串行（cargo 默认多线程，可能撞 port 文件）。若 CI 撞，加 `#[serial]` 或改为 server 不写 port 文件、直接返回 port。当前接受单测本地绿。
 
-- [ ] **Step 3: main.rs 接通道**
+- [x] **Step 3: main.rs 接通道**
 
 `crates/egui/src/main.rs` 改为：
 
@@ -724,12 +724,12 @@ impl eframe::App for NotepadApp {
 }
 ```
 
-- [ ] **Step 4: 编译 + 单测**
+- [x] **Step 4: 编译 + 单测**
 
 Run: `cargo test --manifest-path crates/egui/Cargo.toml ipc`
 Expected: 2 测试 PASS（`ipc_msg_roundtrip` 必过；`server_receives_json_line_messages` 本地应过）。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/egui/src/ipc.rs crates/egui/src/main.rs
@@ -747,7 +747,7 @@ git commit -m "feat(egui): 本地 TCP IPC server（JSON line + port 文件单实
 
 > UI 对齐 spec §3.3：三栏（列表 / md 源码编辑 / 预览分屏）+ 极简 5 按钮 md 工具栏 + 800ms 防抖自动保存。egui 无单测传统，本任务手动验证。
 
-- [ ] **Step 1: 写 notepad_view.rs**
+- [x] **Step 1: 写 notepad_view.rs**
 
 ```rust
 //! NotepadView：列表 + md 源码编辑 + egui_commonmark 分屏预览 + 5 按钮工具栏。
@@ -979,7 +979,7 @@ fn wrap_selection_or_append(body: &mut String, pre: &str, post: &str) {
 
 > 工具栏选区包裹说明：egui 0.29 的 `TextEdit` 暴露选区状态有限；第一版用「末尾插入语法标记」对用户可见可点。选区包覆作为后续优化（spike 范围外）。
 
-- [ ] **Step 2: main.rs 持有 NotepadView 并分发 IPC**
+- [x] **Step 2: main.rs 持有 NotepadView 并分发 IPC**
 
 ```rust
 mod ipc;
@@ -1022,12 +1022,12 @@ impl eframe::App for NotepadApp {
 }
 ```
 
-- [ ] **Step 3: 编译**
+- [x] **Step 3: 编译**
 
 Run: `cargo build --manifest-path crates/egui/Cargo.toml`
 Expected: 编译成功。
 
-- [ ] **Step 4: 手动 e2e（spike #2+#4 合并验证）**
+- [x] **Step 4: 手动 e2e（spike #2+#4 合并验证）**
 
 预备：确保 `~/.octopus/octopus.db` 存在（desktop 跑过一次即可）。
 
@@ -1041,7 +1041,7 @@ Run: `cargo run --manifest-path crates/egui/Cargo.toml`
 
 确认无 panic、无明显卡顿。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/egui/src/notepad_view.rs crates/egui/src/main.rs
@@ -1059,7 +1059,7 @@ git commit -m "feat(egui): NotepadView 列表+md编辑+预览+工具栏+防抖�
 
 > spec §3.5：egui 进程作 Accessory agent（无 Dock 图标），主应用独占 Dock。**搞不定则接受 2 个 Dock 图标**（功能不阻断）。
 
-- [ ] **Step 1: Cargo.toml 加 macOS 依赖**
+- [x] **Step 1: Cargo.toml 加 macOS 依赖**
 
 `crates/egui/Cargo.toml` 末尾追加：
 
@@ -1069,7 +1069,7 @@ objc2 = "0.6"
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSRunningApplication"] }
 ```
 
-- [ ] **Step 2: 写 macos.rs（accessory + 激活）**
+- [x] **Step 2: 写 macos.rs（accessory + 激活）**
 
 ```rust
 //! macOS 集成：egui 进程设 Accessory 激活策略（无 Dock 图标），窗口仍可 show/focus。
@@ -1100,7 +1100,7 @@ pub fn set_accessory_policy() {}
 
 > 注：`objc2-foundation` 主线程标记需要该 crate。补依赖：在 `Cargo.toml` 的 `[target.'cfg(target_os = "macos")'.dependencies]` 加 `objc2-foundation = { version = "0.3", features = ["NSThread"] }`。`NSApplicationActivationPolicy` 常量路径依 objc2-app-kit 版本可能为枚举值或常量；若编译报路径不对，按编译器提示调整（属 spike #3 验证点，符合兜底条款）。
 
-- [ ] **Step 3: main.rs 启动时调用**
+- [x] **Step 3: main.rs 启动时调用**
 
 在 `main()` 内、`eframe::run_native` 之前加：
 
@@ -1114,18 +1114,18 @@ pub fn set_accessory_policy() {}
 
 （实际把 `mod macos;` 提到文件顶部 mod 区，此处仅展示调用点。）
 
-- [ ] **Step 4: 编译（macOS）**
+- [x] **Step 4: 编译（macOS）**
 
 Run: `cargo build --manifest-path crates/egui/Cargo.toml`
 Expected: 编译成功（若 objc2 API 路径不对，按编译器调整——这是 spike #3 的预期验证）。
 
-- [ ] **Step 5: 手动验证**
+- [x] **Step 5: 手动验证**
 
 Run: `cargo run --manifest-path crates/egui/Cargo.toml`
 验证：egui 窗口弹出，**Dock 不出现第二个图标**（只有主应用图标，或运行 egui 时主应用没开则无图标）。窗口能正常获焦。
 若 Accessory 配置失败 → egui 进程 Regular，Dock 多一图标 → **记录为兜底可接受**，继续。
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add crates/egui/Cargo.toml crates/egui/src/macos.rs crates/egui/src/main.rs
@@ -1142,7 +1142,7 @@ git commit -m "feat(egui): macOS Accessory 激活策略（无 Dock 图标，双�
 
 > client 职责：读 `~/.octopus/egui-ipc.port` → pid 存活（`kill(pid,0)`）→ 连 → 发 JSON line；连不上/pid 死 → 删 port 文件 → spawn `octopus-egui`（命令行带初始 note_id，或 spawn 后再发 open）。
 
-- [ ] **Step 1: 写 egui_ipc.rs**
+- [x] **Step 1: 写 egui_ipc.rs**
 
 ```rust
 //! Tauri→egui IPC client：连本地 TCP 发 JSON line；连不上则 spawn octopus-egui。
@@ -1266,7 +1266,7 @@ pub fn show() {
 }
 ```
 
-- [ ] **Step 2: 写 client 单测（mock port 文件 + 真 server loopback）**
+- [x] **Step 2: 写 client 单测（mock port 文件 + 真 server loopback）**
 
 在 `egui_ipc.rs` 末尾：
 
@@ -1306,7 +1306,7 @@ mod tests {
 
 > 注：`port_file()` 全局路径，测试间串行；该测试单独跑应过。
 
-- [ ] **Step 3: main.rs 加 mod**
+- [x] **Step 3: main.rs 加 mod**
 
 `crates/desktop/src/main.rs` mod 区（约第 25 行 `mod note_commands;` 附近）加：
 
@@ -1314,12 +1314,12 @@ mod tests {
 mod egui_ipc;
 ```
 
-- [ ] **Step 4: 编译 + 测试**
+- [x] **Step 4: 编译 + 测试**
 
 Run: `cargo test --manifest-path crates/desktop/Cargo.toml egui_ipc`
 Expected: 测试 PASS。
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/desktop/src/egui_ipc.rs crates/desktop/src/main.rs
@@ -1336,7 +1336,7 @@ git commit -m "feat(desktop): egui IPC client（spawn + 连接 + pid 存活检�
 - Modify: `crates/desktop/src/main.rs`（invoke_handler 删 12 行；删 notepad_window destroy 分支）
 - Modify: `crates/desktop/src/tray.rs`（记事本菜单 → open_notepad，仍走 IPC）
 
-- [ ] **Step 1: 重写 notepad_window.rs（纯 IPC 启动器）**
+- [x] **Step 1: 重写 notepad_window.rs（纯 IPC 启动器）**
 
 整个 `crates/desktop/src/notepad_window.rs` 替换为：
 
@@ -1359,7 +1359,7 @@ pub fn open_notepad_with_note(_app_handle: tauri::AppHandle, note_id: i64) {
 
 > `get_pending_note` / `on_notepad_closed` 删除（egui 通过 IPC open 拿 note_id；无 webview destroy 事件）。
 
-- [ ] **Step 2: 重写 note_commands.rs（仅留 save_ocr / save_transcription）**
+- [x] **Step 2: 重写 note_commands.rs（仅留 save_ocr / save_transcription）**
 
 整个 `crates/desktop/src/note_commands.rs` 替换为：
 
@@ -1410,7 +1410,7 @@ pub async fn save_ocr_to_note(text: String, _app_handle: tauri::AppHandle) -> Re
 
 > 说明：原 `save_*_to_note` 调用方（`HistoryPanel.tsx`、`ImagePreview/index.tsx`）传 text 并期望返回 id + 打开笔记。这里 save 后自动 IPC `open_note(id)`（替代原 `emit("notepad://changed")` + 前端再 `open_notepad_with_note`），egui 收到 open 直接选中。ImagePreview 那段前端 `await save_ocr_to_note` 后又 `await open_notepad_with_note` 会变成双 open（幂等无害），Task 11 前端清理时精简。
 
-- [ ] **Step 3: main.rs invoke_handler 删 12 行**
+- [x] **Step 3: main.rs invoke_handler 删 12 行**
 
 `crates/desktop/src/main.rs` 第 250–266 行的 invoke_handler 数组，删掉这 12 行：
 
@@ -1438,20 +1438,20 @@ notepad_window::open_notepad,
 notepad_window::open_notepad_with_note,
 ```
 
-- [ ] **Step 4: main.rs 删 notepad_window destroy 分支**
+- [x] **Step 4: main.rs 删 notepad_window destroy 分支**
 
 第 501–502 行 `else if label == "notepad_window" { notepad_window::on_notepad_closed(app); }` 删除（egui 进程窗口不归 Tauri 管）。
 
-- [ ] **Step 5: tray.rs 验证记事本入口（仍调 open_notepad，现已走 IPC）**
+- [x] **Step 5: tray.rs 验证记事本入口（仍调 open_notepad，现已走 IPC）**
 
 `crates/desktop/src/tray.rs:117-119` 已是 `"notepad" => { crate::notepad_window::open_notepad(app.clone()); }`——无需改动（open_notepad 内部已改成 IPC show）。确认即可。
 
-- [ ] **Step 6: 编译 desktop**
+- [x] **Step 6: 编译 desktop**
 
 Run: `cargo build --manifest-path crates/desktop/Cargo.toml`
 Expected: 编译成功（确认无对已删命令/字段的残留引用）。
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add crates/desktop/src/notepad_window.rs crates/desktop/src/note_commands.rs crates/desktop/src/main.rs
@@ -1470,18 +1470,18 @@ git commit -m "feat(desktop): 记事本改走 egui IPC，删 12 死命令，save
 - Modify: `crates/desktop/frontend/src/pages/ImagePreview/index.tsx`（save_ocr 后的 `open_notepad_with_note` 调用可留可删——save_ocr 已自动 open，删之更干净）
 - Build: `crates/desktop/frontend/dist/`（提交）
 
-- [ ] **Step 1: 确认 note.ts 是否仅被 Notepad 引用**
+- [x] **Step 1: 确认 note.ts 是否仅被 Notepad 引用**
 
 Run: `grep -rn "types/note\|@/types/note" crates/desktop/frontend/src --include='*.ts' --include='*.tsx' | grep -v "pages/Notepad\|lib/notepad.ts"`
 Expected: 若仅 Notepad 页 + notepad.ts 引用 → 可删；若有别处引用（如 Settings）→ 保留 note.ts，仅删 Notepad 页。
 
-- [ ] **Step 2: App.tsx 删 notepad 路由**
+- [x] **Step 2: App.tsx 删 notepad 路由**
 
 `crates/desktop/frontend/src/App.tsx`：
 - 删 `case "notepad_window": ...`（约第 55 行）及其渲染。
 - 删顶部 Notepad 页的 `import`。
 
-- [ ] **Step 3: 删 Notepad 页 + notepad.ts（+ 视情况 note.ts）**
+- [x] **Step 3: 删 Notepad 页 + notepad.ts（+ 视情况 note.ts）**
 
 ```bash
 rm -rf crates/desktop/frontend/src/pages/Notepad
@@ -1490,7 +1490,7 @@ rm crates/desktop/frontend/src/lib/notepad.ts
 rm crates/desktop/frontend/src/types/note.ts
 ```
 
-- [ ] **Step 4: ImagePreview 精简 save_ocr 后的 open 调用（可选）**
+- [x] **Step 4: ImagePreview 精简 save_ocr 后的 open 调用（可选）**
 
 `crates/desktop/frontend/src/pages/ImagePreview/index.tsx:287-288`：
 ```tsx
@@ -1503,12 +1503,12 @@ await invoke<number>("save_ocr_to_note", { text });
 ```
 （`open_notepad_with_note` 命令仍注册可用，保留也无害；删调用更干净。）
 
-- [ ] **Step 5: tsc 类型检查**
+- [x] **Step 5: tsc 类型检查**
 
 Run: `cd crates/desktop/frontend && npm run build`（vite build 含 tsc）
 Expected: 无 TS 报错（确认无残留 import 指向已删文件）。
 
-- [ ] **Step 6: 提交 dist + 前端**
+- [x] **Step 6: 提交 dist + 前端**
 
 ```bash
 git add crates/desktop/frontend/src crates/desktop/frontend/dist
@@ -1525,7 +1525,7 @@ git commit -m "chore(frontend): 移除 webview Notepad 页（迁 egui），重�
 
 > 问题：dev（cargo run）下 `current_exe().parent()/octopus-egui` = `target/debug/octopus-egui`，存在。但 bundled `.app` 里 desktop exe 在 `MacOS/`，octopus-egui 默认不打入。需 sidecar。
 
-- [ ] **Step 1: tauri.conf.json 加 externalBin（sidecar）**
+- [x] **Step 1: tauri.conf.json 加 externalBin（sidecar）**
 
 `crates/desktop/tauri.conf.json` 的 `bundle` 加：
 
@@ -1537,11 +1537,11 @@ git commit -m "chore(frontend): 移除 webview Notepad 页（迁 egui），重�
 
 > 因 sidecar 命名 + 构建流程较繁，且「功能完整完成前不往 main」，**第一版可仅保证 dev/cargo run 路径可用**（Task 8 的 `egui_binary_path` 已覆盖 dev）。bundled 打包作为发布前收尾，本 Step 标注待发布阶段完善。
 
-- [ ] **Step 2: 文档记录打包 TODO**
+- [x] **Step 2: 文档记录打包 TODO**
 
 在 `docs/superpowers/plans/2026-07-01-notepad-egui.md` 本任务下注明：「bundled .app 打包 octopus-egui（Tauri externalBin sidecar）待发布阶段完善；当前 dev/cargo run 路径已验证可用」。
 
-- [ ] **Step 3: 提交（如有配置改动）**
+- [x] **Step 3: 提交（如有配置改动）**
 
 ```bash
 git add crates/desktop/tauri.conf.json docs/superpowers/plans/2026-07-01-notepad-egui.md
@@ -1597,7 +1597,7 @@ Run: `cargo run --manifest-path crates/desktop/Cargo.toml`
 - Modify: `docs/superpowers/specs/2026-06-30-notepad-design.md`（顶部标注「已被 egui 方案替代」）
 - Modify: `docs/superpowers/specs/2026-07-01-notepad-egui-design.md`（状态 设计中 → 已实现）
 
-- [ ] **Step 1: architecture.md 更新**
+- [x] **Step 1: architecture.md 更新**
 
 参照 spec §3.1 拓扑图，在 architecture.md 对应 crate 清单/窗口章节：
 - crate 清单加 `octopus-egui`（二进制，eframe，不依赖 tauri）。
@@ -1605,7 +1605,7 @@ Run: `cargo run --manifest-path crates/desktop/Cargo.toml`
 - 数据层加：WAL（journal_mode=WAL + busy_timeout=5000 + synchronous=NORMAL）支持多进程并发。
 - 加 IPC 协议一段（127.0.0.1 TCP + JSON line + `~/.octopus/egui-ipc.port` 单实例锁）。
 
-- [ ] **Step 2: 旧 notepad spec 标注替代**
+- [x] **Step 2: 旧 notepad spec 标注替代**
 
 `docs/superpowers/specs/2026-06-30-notepad-design.md` 顶部加：
 
@@ -1613,11 +1613,11 @@ Run: `cargo run --manifest-path crates/desktop/Cargo.toml`
 > ⚠️ 已被 egui 方案替代（2026-07-01）。记事本迁至独立 egui 进程，见 `docs/superpowers/specs/2026-07-01-notepad-egui-design.md`。本文档保留作历史参考（webview + TipTap + content_html 方案已下线）。
 ```
 
-- [ ] **Step 3: egui spec 状态置已实现**
+- [x] **Step 3: egui spec 状态置已实现**
 
 `docs/superpowers/specs/2026-07-01-notepad-egui-design.md` 第 4 行 `状态：**设计中**` 改为 `状态：**已实现**（见 plans/2026-07-01-notepad-egui.md）`。
 
-- [ ] **Step 4: 提交**
+- [x] **Step 4: 提交**
 
 ```bash
 git add docs/architecture.md docs/superpowers/specs/2026-06-30-notepad-design.md docs/superpowers/specs/2026-07-01-notepad-egui-design.md

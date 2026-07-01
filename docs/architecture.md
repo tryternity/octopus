@@ -18,6 +18,7 @@ octopus/
 │   ├── cli/         # 命令行工具 (octopus-cli)
 │   ├── server/      # HTTP/WebSocket 服务 (octopus-server)
 │   ├── desktop/     # Tauri 桌面应用 (octopus-desktop)
+│   ├── egui/        # 记事本独立进程 (octopus-egui，eframe)
 │   ├── download/    # 模型下载 (octopus-download)
 │   └── dlp/         # 视频音频下载 (octopus-dlp)
 ├── docs/            # 文档
@@ -28,7 +29,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表 / `image_data` 表 / `notes` 表 + `notes_fts` FTS5 虚表）。DB 迁移至 v9。`with_db` 为公开 API 供其他 crate 调用。`image_util`（PNG 原样保存 + WebP 有损压缩（`webp` crate）+ JPEG 有损压缩（`image` crate JpegEncoder），均接受 quality 参数）。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表 / `image_data` 表 / `notes` 表 + `notes_fts` FTS5 虚表）。DB 迁移至 v10（WAL 模式：journal_mode=WAL + busy_timeout=5000 + synchronous=NORMAL，支持 desktop 与 octopus-egui 多进程并发）。`with_db` 为公开 API 供其他 crate 调用。`image_util`（PNG 原样保存 + WebP 有损压缩（`webp` crate）+ JPEG 有损压缩（`image` crate JpegEncoder），均接受 quality 参数）。
 
 ### octopus-asr-local（核心推理库）
 
@@ -157,34 +158,51 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 ### octopus-notepad（记事本 / 内容收集箱）
 
-独立的记事本业务 crate，仅依赖 `octopus-infra`。定位为「内容收集箱」——ASR / OCR / 转译记录的结果一键存为新笔记，富文本（TipTap / ProseMirror 内部模型）为主，md / txt / html 为序列化格式。序列化用 `scraper`（HTML→纯文本），文件 I/O 用 `std` + `dirs`。
+独立的记事本业务 crate，仅依赖 `octopus-infra`。定位为「内容收集箱」——ASR / OCR 的结果一键存为新笔记。
+
+> 2026-07-01 起记事本从 Tauri webview（TipTap 富文本）迁至**独立 egui 进程**（[`octopus-egui`](#octopus-egui记事本独立进程)）。crate 不再依赖 `scraper`/`dirs`，`serialize` 模块已删，笔记一律纯文本（`type='text'`/`'markdown'`）。
 
 | 模块 | 职责 |
 |---|---|
-| `model` | `NoteSource` 枚举（`asr`/`ocr`/`clipboard`/`manual`，serde 小写，manual 默认）+ `as_str`/`from_str`；`Note`（10 字段）；`NoteFilter` |
-| `serialize` | `extract_text(html)`：scraper 解析 HTML → 纯文本（块级元素换行、`<img>`→「[图片]」、折叠空白），供 FTS 索引与导出 txt |
-| `store` | CRUD + FTS5 检索 + 计数 + 排序（`is_pinned DESC, updated_at DESC, id DESC`）+ 分页 + `toggle_pinned`/`toggle_favorite`；CJK 三元分词：≥3 字符走 MATCH 短语，<3 字符 LIKE 回退 |
-| `export` | 落盘 `~/Documents/octopus/notes/`（`dirs::document_dir` 跨平台）；`write_export`（stem 非法字符→`_` 防目录穿越 + 冲突 `-2/-3`）、`read_import`（读 .md 原文，md→HTML 解析在前端） |
+| `model` | `NoteSource` 枚举（`asr`/`ocr`/`clipboard`/`manual`，serde 小写，manual 默认）+ `as_str`/`from_str`；`NoteType` 枚举（`text`/`markdown`，默认 `text`）；`Note`（`type` 字段替代旧 `content_html`） |
+| `store` | CRUD + FTS5 检索 + 计数 + 排序（`is_pinned DESC, updated_at DESC, id DESC`）+ 分页 + `toggle_pinned`/`toggle_favorite`；CJK 三元分词：≥3 字符走 MATCH 短语，<3 字符 LIKE 回退。egui 进程直连 `with_db`，不走 Tauri 命令 |
 
-**DB**：`notes` 表（`crates/infra/src/db.sql`，`id INTEGER PRIMARY KEY AUTOINCREMENT`——与 clipboard/transcriptions 毫秒戳 id 不同，notes 有独立 `created_at`/`updated_at` 列；字段 title/content_html/content_text/source/source_ref_id/is_pinned/is_favorite/created_at/updated_at）+ `notes_fts`（FTS5 `trigram` 分词，`content='notes'`）+ 3 触发器（insert/update/delete 同步 fts）。迁移经 `init_schema` 的 `PRAGMA user_version` v8→v9（`crates/infra/src/db.rs`）。
+**DB**：`notes` 表（`crates/infra/src/db.sql`，`id INTEGER PRIMARY KEY AUTOINCREMENT`——与 clipboard/transcriptions 毫秒戳 id 不同，notes 有独立 `created_at`/`updated_at` 列；字段 id/title/content_text/type/source/source_ref_id/is_pinned/is_favorite/created_at/updated_at；**`content_html` 列已删，`type` 列新增（默认 `'text'`）**）+ `notes_fts`（FTS5 `trigram` 分词，`content='notes'`）+ 3 触发器（insert/update/delete 同步 fts）。迁移经 `init_schema` 的 `PRAGMA user_version` v9→v10（`crates/infra/src/db.rs::migrate_v9_to_v10_rebuilds_notes_schema`，drop+重建 notes/notes_fts + 触发器，content_text 从旧 content_html 抽取纯文本回填）。
 
 **溯源**：`source` 标来源类型，`source_ref_id` 关联原记录（transcription_id / clipboard item id）。`infra::get_transcription_display_text(id)`（`edited.or(polished).unwrap_or(raw)`）供 `save_transcription_to_note` 取展示文本。MVP 来源徽标点击仅打开 Settings 对应页，精确滚动高亮到 `source_ref_id` 行留作后续。
 
-**图片桥接**：notepad crate 不依赖 clipboard，图片 BLOB 由 desktop 命令层桥接——`get_note_image(hash)`（按 sha256 取 clipboard `image_data` 的 PNG）/ `insert_note_image`（写 image_data）。hash = `SHA-256(PNG bytes)`，与 clipboard `image_data.hash` 去重键一致，同图共享一份 BLOB。前端用自定义 `note-img:<hash>` 协议在 TipTap `Image` NodeView 里解析渲染。
+**图片桥接（已废弃）**：随 TipTap 富文本移除，`get_note_image`/`insert_note_image` 命令 + `note-img:<hash>` 协议 + clipboard image_data 引用计数中的 notes 触点一并删除——记事本纯文本无内联图片。
 
 **桌面端集成**（`octopus-desktop`）：
-- `notepad_window.rs`：独立「记事本」窗口（单例 `get_webview_window`，1000×680，仿 `settings_window`），macOS 关窗回切 Accessory 策略。
-- `note_commands.rs`：14 个 Tauri 命令薄层 + 2 个集成入口（`save_transcription_to_note` / `save_ocr_to_note`，写入即 `emit("notepad://changed")`）+ 图片桥接。（`save_clipboard_to_note` 已于 2026-07-01 移除——剪贴板条目不再存入记事本；`NoteSource::Clipboard` 变体保留供 DB 历史数据反序列化。）
+- `egui_ipc.rs`：Tauri→egui 本地 TCP IPC client（127.0.0.1，JSON line）。port 文件 `~/.octopus/egui-ipc.port`（`{pid,port}`）+ pid 存活检测做单例锁；连不上则 spawn `octopus-egui`，带 ~2s 连接重试。公开 `open_note(id)`/`notes_changed()`/`show()`。
+- `notepad_window.rs`：纯 IPC 启动器——`open_notepad`→`egui_ipc::show()`、`open_notepad_with_note`→`egui_ipc::open_note(id)`。webview/PENDING/get_pending_note/on_notepad_closed 全删。
+- `note_commands.rs`：仅 2 个 Tauri 命令——`save_transcription_to_note` / `save_ocr_to_note`（写 type='text' 笔记，fire-and-forget IPC 通知 egui 刷新+定位）。12 个旧 CRUD/图片命令已删（egui 直连 store）。`save_clipboard_to_note` 早已移除；`NoteSource::Clipboard` 变体保留供 DB 历史数据反序列化。
+- `screenshot_commands.rs::open_notepad_with_content`：截图 OCR 结果存笔记改走 `save_ocr_to_note`（不再 HTML 包裹，内部自动 IPC 定位新笔记）。
 - `compact_editor_commands.rs` + `compact_editor_window.rs`：**精简编辑器**（纯文本编辑工具，与完整版记事本并列——前者只编辑、结果经事件返回调用方、不落笔记；后者完整笔记：标题/分类/富文本/持久化）。窗口单例 + 关窗即销毁，原生标题栏 720×560 可调；3 个命令——`open_compact_editor`（开窗 + 文本写入 `PENDING_COMPACT_EDIT` 暂存）/ `get_pending_compact_edit`（前端拉取并 take 暂存）/ `close_compact_editor`（关窗）；macOS 开窗切 Regular、关窗切回 Accessory（与 notepad/settings 对称）。
 - `image_preview_commands.rs` + `image_preview_window.rs`：**图片预览**（剪贴板图片项的轻工具栏预览窗，为未来「贴图钉屏」打共享基础）。窗口 880×620（min 400×320，原生标题栏、可调、居中），按需创建；3 命令——`open_image_preview`（写 `PENDING` 暂存 imageId + 建窗/聚焦，并发再开 emit `image-preview://load`）/ `get_pending_image`（前端 mount 拉取并 take）/ `close_image_preview`（关窗）；macOS 开窗切 Regular、关窗 `Destroyed` 经 `on_image_preview_closed` 切回 Accessory（与 compact_editor 对称）。前端 `pages/ImagePreview/`（`index.tsx` 主组件 + `Toolbar.tsx`）：**frontend-design 重做的浮动白卡工具栏**（对齐截图主工具栏）+ 属性浮窗复刻截图 `ToolPropsPopover` + 灯箱暗场画布（棋盘格底显透明 PNG）+ 底部 EXIF 状态条；标注用**自然像素坐标空间**（图像本征分辨率，默认 1:1、zoom 0.1–8× 缩放、超窗滚动条 + 抓手平移，不错位）——绘制 `ctx.scale(zoom)`，鼠标 `/zoom` 反算，合成保存/复制在自然尺寸画布 1:1 重绘。工具：选择/矩形/椭圆/直线/**箭头/画笔**/文字 + 撤销 + 颜色·粗细浮窗（选工具自动浮出、跟随按钮、再点收起）+ 保存/复制/OCR/缩放/置顶（无关闭按钮，用 × 或 Esc）。复制 = `copy_image_to_clipboard`（写系统剪贴板 + 主动入库历史）；OCR = `ocr_image` → `save_ocr_to_note` → `open_notepad_with_note`（存笔记并在记事本打开）。标注纯函数从 Screenshot 抽到共享 `frontend/src/lib/annotation.ts`（DRY，Screenshot 改 import；`hitTestAnnotationPrecise` 改 `(mx,my,anns)` 参数；含 arrow/pen 类型与绘制）。
 - `clipboard_commands.rs` 新增 3 命令（图片预览专用）：`get_image_full`（取 `image_data.blob` 全分辨率 → data URL，镜像 `get_image_thumb`）/ `save_image_dialog`（系统保存对话框存前端合成 PNG，镜像截图保存去截图专属清理）/ `copy_image_to_clipboard`（base64 解码 → `ClipboardHandle::write_image` 写系统剪贴板，**再主动调 `octopus_clipboard::watcher::handle_clipboard_change` 入库**——`write_image` 置 suppress flag 致 watcher 跳过自身写入防回环，但预览「复制」期望这条带标注图进入剪贴板历史，故手动走与系统复制相同的入库路径：去重 hash + WebP + 缩略图 + image_data BLOB；+ `emit clipboard://changed` 刷新浮窗/设置页）。
 - `clipboard_commands.rs::set_clipboard_item_text`：编辑器回写剪贴板条目——同写 `content` + `search_text`（保 FTS 命中）+ 同步系统剪贴板，供 OCR / 剪贴板文本条目「编辑」按钮回写。
 - `coordinator.rs`：`static CURRENT_TRANSCRIPTION_ID: AtomicI64`（3 个会话起点记录）+ `current_transcription_id` 命令，供 Result 窗口溯源当前识别记录（无需改文本事件 payload）。
-- 前端：TipTap v3 编辑器（`pages/Notepad/`，工具栏 + 800ms 防抖自动保存 + 导入导出 + `note-img` 图片渲染），`useNotes` hook（列表 + 搜索防抖 + 分页 + `notepad://changed` 监听）。
+- 前端：TipTap `pages/Notepad/`、`lib/notepad.ts`、`types/note.ts`、`hooks/useNotes.ts` 已全部删除；`App.tsx` 移除 `notepad_window` 路由（记事本 UI 迁 egui 进程）。
 
 **入口**：托盘菜单「记事本」；Settings 历史记录管理页「存入记事本」（调 `save_transcription_to_note`）。（剪贴板浮窗条目 + Settings 剪贴板管理页的「存入记事本」入口已于 2026-07-01 移除——剪贴板条目不再存入记事本，后端 `save_clipboard_to_note` 命令 + `saveClipboardToNote` helper 一并删除；语音结果窗「存入记事本」按钮亦已于此前移除——长篇模式直接在结果窗编辑。）OCR 命令已注册，MVP 不在 OCR 自动流程强制加按钮。
 
-详见 [spec](superpowers/specs/2026-06-30-notepad-design.md) 与 [实施计划](superpowers/plans/2026-06-30-notepad.md)。
+详见 [egui spec](superpowers/specs/2026-07-01-notepad-egui-design.md) 与 [实施计划](superpowers/plans/2026-07-01-notepad-egui.md)（原 webview 方案 [spec](superpowers/specs/2026-06-30-notepad-design.md) 已标注替代）。
+
+### octopus-egui（记事本独立进程）
+
+独立的 egui 二进制（eframe 0.29 + egui_commonmark 0.18 markdown 预览），**不依赖 tauri**。解决「多 webview 窗口 + 模型常驻」内存占用大问题——记事本从 80–150MB 的 WKWebView 换成原生 egui 进程。
+
+| 模块 | 职责 |
+|---|---|
+| `main` | `eframe` 启动；起 IPC server（后台线程）+ `macos::set_accessory_policy()`；持 `NotepadView` + IPC channel rx |
+| `ipc` | 本地 TCP server（127.0.0.1:0），JSON line 协议；port 写 `~/.octopus/egui-ipc.port`（`{pid,port}`）；消息 `Open{note_id}`/`NotesChanged`/`Show` |
+| `notepad_view` | 三栏 UI：左侧列表（搜索 + 来源 tab + 收藏过滤 + 分页）+ 右侧编辑区（text/markdown 切换、commonmark 预览、800ms 防抖自动保存）。直连 `octopus_notepad::store` |
+| `macos` | macOS `Accessory` 激活策略（无 Dock 图标，与 desktop 主进程共一个 Dock）。objc2 0.6 + objc2-app-kit 0.3 |
+
+**进程拓扑**：desktop（Tauri，模型常驻）+ octopus-egui（记事本，按需 spawn）。两者经 SQLite（WAL 多进程并发）+ 本地 TCP IPC 通信。egui 进程由 desktop 托盘/OCR 触发 spawn，单例（pid 存活锁），崩溃后 desktop 检测 pid 死自动重启。
+
+**打包**：dev/cargo run 下 `egui_binary_path()` = `current_exe().parent()/octopus-egui`（= `target/debug/octopus-egui`），已验证可用；bundled `.app` 内打入 octopus-egui（Tauri externalBin sidecar）**待发布阶段完善**。
 
 ### octopus-desktop（桌面应用）
 
@@ -203,7 +221,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 |------|------|
 | `result_window` | 识别结果展示（可拖拽、多行滚动、透明无边框、置顶）。顶部悬停工具栏：鼠标移入展开（窗口高度 116→148px），移出收起；工具精简为 5 个——**关闭**（首位，放弃内容保留 DB 记录）/ 系统设置 / 降噪模式 / 润色模式 / 立即润色 / 编辑（编辑态追加取消/保存；编辑入口两条——窗口内 `edit_shortcut` 固定 Cmd+Enter（结果窗聚焦时 toggle 进入/保存，不在设置页管理）+ 全局 `edit_global_shortcut` 默认 CmdOrCtrl+Shift+E（任意应用聚焦时唤起结果窗 show+set_focus 并 toggle 编辑，复用同一 toggleEdit，空文本只唤起不进编辑））。全局润色入口：`polish_global_shortcut` 默认 CmdOrCtrl+Shift+L（任意应用聚焦时 show 结果窗**不聚焦** + 触发 polish_now，复用前端 polishNow：空文本静默、polishLoading 幂等）。语音模型和润色模型入口已移至 Settings 页面（模型太多，下拉空间有限）。由 `app_config.hide_toolbar`（默认 `true`）控制：`true`=hover 显隐，`false`=始终显示。**运行时切换立即生效**：设置窗口改 `hide_toolbar` → emit `config-changed` 事件 → result window 的 `refreshActive()` 双向切换。**历史**：曾同时存在 `recording_overlay` 窗口（独立 WebView 渲染进程），UI 统一到 result_window 后 overlay 已废弃。**编辑框尺寸双模式**（2026-06-30，CSS 伪装方案）：物理窗口固定 720×480（创建即定死，**不再运行时 setSize**——`transparent`+`decorations(false)` 悬浮窗上 NSWindow 拒绝 setFrame：min/max 全放宽到 [100,4000]、720×480 在区间内仍读回 520×116，setSize 路径 100% 失效，非约束/非权限问题）。前端 CSS 按模式切「可见容器」尺寸：默认精简态只渲染顶部居中 520×116 小条（文本区 `max-h-[63px]`），容器外靠 `body{background:transparent}` 透明；工具栏「放大/缩小」toggle 切长篇态——容器撑满 720×480、文本区 `h-full`，纯 CSS（`toggleExpand` 只 `setExpanded` + `invoke("set_result_click_through")`，零 setSize）。**透明区点击穿透**：精简态小条下方透明区须穿透到后方应用——前端 `setIgnoreCursorEvents` 不可行（ignore=true 后 NSWindow 零鼠标事件、检测不到光标重入 → 重入失效），故 Rust 后台轮询线程 `start_click_through_poller` 读全局鼠标 `CGEvent.location()` 判光标是否在小条矩形内，据此在 NSWindow 直调 `setIgnoresMouseEvents` 切穿透（复用 `screenshot_commands` 同款做法）。尺寸与编辑态解耦（编辑仍走 `toggleEdit`/contentEditable）。**历史踩坑**：「放大无效」曾误判 resizable（`2195c80`）、误判 ACL（`93f58a2` 补全 5 权限——真实但不足：ACL 补全后 setSize 仍失效），最终确认为 NSWindow 拒绝 setFrame，转 CSS 伪装方案解决（e2e 通过：精简态穿透确认）。 |
 | `settings_window` | 独立设置窗口（原生标题栏、圆角、可调大小）。五页面侧边栏布局：系统设置 / 识别记录 / 剪贴板 / 模型管理 / 提示词。React 组件化，表单用 react-hook-form。窗口位置记忆。`open_settings` 支持初始页面参数（`PENDING_PAGE` 暂存 + `get_initial_page` 拉取 + `settings://navigate` 事件），剪贴板浮窗「管理」按钮直接跳转剪贴板 tab。 |
-| `notepad_window` | 独立「记事本（内容收集箱）」窗口（单例 `get_webview_window`，1000×680，原生标题栏，仿 `settings_window`）。三栏布局：左侧列表（搜索 + 来源 tab + 收藏过滤 + 分页）、中间 TipTap 富文本编辑器（工具栏 + 800ms 防抖自动保存 + md/txt/html 导入导出 + `note-img:<hash>` 图片渲染）、右侧空。命令：`open_notepad`（纯开窗）/ `open_notepad_with_note(noteId)`（存 `PENDING_NOTE` + 已开则 emit `notepad://select-note`、未开建窗；供 OCR 等场景「存笔记 + 打开并选中」）/ `get_pending_note`（前端 mount take）。托盘菜单「记事本」唤起；macOS 关窗 `Destroyed` 经 `on_notepad_closed` 回切 `Accessory` 激活策略（与 settings_window 对称）。业务逻辑见 [`octopus-notepad`](#octopus-notepad记事本--内容收集箱)。 |
+| `notepad_window`（命令） | **不再开 webview 窗口**——`open_notepad`/`open_notepad_with_note` 改为向独立 [`octopus-egui`](#octopus-egui记事本独立进程) 进程发本地 TCP IPC（已运行则 show/定位，未运行则 spawn）。记事本 UI 由 egui 原生渲染（三栏 + markdown 预览）；macOS Dock 由 egui 进程设 Accessory（与 desktop 主进程共一个 Dock）。业务逻辑见 [`octopus-notepad`](#octopus-notepad记事本--内容收集箱)。 |
 | `compact_editor_window` | 精简文本编辑器窗口（原生标题栏、720×560 可调、居中）。**与 `notepad_window` 并列但定位不同**——纯编辑工具：工具栏 + textarea，关窗即销毁，编辑结果经事件返回调用方（`get_pending_compact_edit` 拉取 PENDING 暂存），**不持久化为笔记**。完整版记事本（notepad_window）才是承载标题/分类/富文本/持久化的完整笔记。单例：open 时已存在则 show+focus 并重发 load 文本，否则创建；macOS 开窗切 Regular、关窗 `Destroyed` 经 `on_compact_editor_closed` 切回 Accessory（与 notepad/settings 对称）。入口：OCR 识别后、剪贴板文本条目「编辑」按钮（语音结果窗**不用**独立编辑器——改为原地尺寸双模式，见 `result_window` 行）。 |
 | `image_preview_window` | 图片预览窗口（原生标题栏、880×620 可调、居中、min 400×320）。剪贴板图片项的轻工具栏预览——**frontend-design 浮动白卡工具栏 + 灯箱暗场棋盘格画布 + 底部 EXIF 条**；画布显示全分辨率图（默认 1:1、zoom 0.1–8×、超窗滚动 + 抓手平移）+ 标注（选择/矩形/椭圆/直线/箭头/画笔/文字 + 撤销 + 跟随按钮的属性浮窗）+ 动作（保存/复制/OCR/缩放/置顶）。标注用自然像素坐标（缩放不错位）；复制=写系统剪贴板+主动入库历史；OCR=`ocr_image`→`save_ocr_to_note`→`open_notepad_with_note`（存笔记并开记事本）。单例：open 时已存在则 show+focus 并 emit `image-preview://load` 推送新 imageId，否则创建；macOS 开窗切 Regular、关窗 `Destroyed` 经 `on_image_preview_closed` 切回 Accessory（与 compact_editor 对称）。入口：剪贴板浮窗图片条目「预览」按钮（Maximize2 图标，`open_image_preview({imageId})`）；与双击粘贴互不冲突。共享标注核心 `frontend/src/lib/annotation.ts`。 |
 | `image_migration` | 一次性迁移：`~/.octopus/clipboard_images/` → DB `image_data` BLOB。幂等（已存在的 hash 跳过），迁移成功后删除目录。启动时 `main.rs` setup 阶段调用。 |

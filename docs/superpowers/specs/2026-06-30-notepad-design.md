@@ -1,5 +1,7 @@
 # 记事本（内容收集箱）功能设计
 
+> ⚠️ 已被 egui 方案替代（2026-07-01）。记事本迁至独立 egui 进程，见 `docs/superpowers/specs/2026-07-01-notepad-egui-design.md`。本文档保留作历史参考（webview + TipTap + content_html 方案已下线）。
+
 **日期**: 2026-06-30
 **状态**: 设计稿，待评审
 **分支**: `worktree-feature-notepad`（worktree: `.claude/worktrees/feature-notepad`）

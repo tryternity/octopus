@@ -1,7 +1,7 @@
 # 记事本 egui 迁移设计
 
 > 日期：2026-07-01
-> 状态：**设计中**（spec 已写，待评审 → writing-plans）。
+> 状态：**已实现**（见 `plans/2026-07-01-notepad-egui.md`；e2e 待 Task 12 用户验证）。
 > 关联：`docs/superpowers/specs/2026-06-30-notepad-design.md`（原 webview 记事本）、`docs/superpowers/specs/2026-07-01-image-preview-design.md`（窗口/PENDING/ACL 模板）。
 > 分支：`worktree-feature-notepad`。**功能完整完成前不往 main 同步。**
 
