@@ -143,6 +143,7 @@ impl NotepadView {
         egui::SidePanel::left("list")
             .resizable(false)
             .exact_width(260.0)
+            .show_separator_line(false) // 不画 panel 边界竖线（dark 主题下偏粗黑，panel.rs:354 vline）
             .show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
