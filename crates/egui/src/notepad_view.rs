@@ -352,28 +352,27 @@ fn editor_pane(
     // 之前 desired_rows(min_rows) 强制占满视口高度，疑似导致 GUI 真实窗口里 TextEdit 交互 rect 与
     // ScrollArea viewport 错位、点击毫无反应（headless 测试模拟点击零位移测不出）。先去 desired_rows
     // 验证，并打印交互日志定位真根因。
-    egui::ScrollArea::vertical()
+    let scroll_out = egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
         .show(ui, |ui| {
-            let resp = ui.add(
-                egui::TextEdit::multiline(body).desired_width(f32::INFINITY),
-            );
-            // 滚动诊断：viewport（ScrollArea 可视高）vs content（实际内容高），
-            // content_h > viewport_h 才有滚动空间；screen_h 看窗口实际高度。
-            if resp.hovered() {
-                log::info!(
-                    "[editor_diag] screen_h={} viewport_h={} content_h={} textedit_h={}",
-                    ui.ctx().screen_rect().height(),
-                    ui.max_rect().height(),
-                    ui.min_rect().height(),
-                    resp.rect.height()
-                );
-            }
-            if resp.changed() {
-                *dirty = true;
-                *last_edit = Some(Instant::now());
-            }
+            ui.add(egui::TextEdit::multiline(body).desired_width(f32::INFINITY))
         });
+    let resp = scroll_out.inner;
+    // 滚动诊断：scroll_out.response.rect 才是 ScrollArea 真正可视区（viewport），
+    // 对比 textedit_h（内容高）判断滚动空间；screen_h 看窗口高度。
+    if resp.hovered() {
+        log::info!(
+            "[editor_diag] screen_h={} viewport_rect={:?} (h={}) textedit_h={}",
+            ui.ctx().screen_rect().height(),
+            scroll_out.response.rect,
+            scroll_out.response.rect.height(),
+            resp.rect.height()
+        );
+    }
+    if resp.changed() {
+        *dirty = true;
+        *last_edit = Some(Instant::now());
+    }
 }
 
 /// 5 按钮工具栏：点按钮在末尾插入 md 语法标记。
