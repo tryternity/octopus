@@ -137,6 +137,7 @@ where
 /// - v3（v3 升级）: 重跑 INIT_SQL（幂等，补建 prompts 表 + seed）→ v5
 /// - v4（v4 升级）: 重跑 INIT_SQL（幂等，补建 clipboard_history + FTS5）→ v5
 /// - v5+: 跳过
+/// - v9 → v10: notes 加 type 列（ALTER ADD，幂等）
 ///
 /// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等安全重跑。
 fn init_schema(conn: &Connection) -> Result<()> {
@@ -150,8 +151,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
         // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 9", [])?;
-        log::info!("DB initialized (v9): schema + app_config(setting) + prompts + clipboard_history + image_data + notes + yaml migration");
+        conn.execute("PRAGMA user_version = 10", [])?;
+        log::info!("DB initialized (v10): schema + app_config(setting) + prompts + clipboard_history + image_data + notes(content_text+content_html+type) + yaml migration");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
@@ -215,6 +216,23 @@ fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(INIT_SQL).context("v8→v9: 建 notes + notes_fts 表")?;
         conn.execute("PRAGMA user_version = 9", [])?;
         log::info!("DB migrated to v9: notes + notes_fts");
+    } else if v == 9 {
+        // v9 → v10：notes 加 type 列（html/text/markdown）。
+        // 幂等：v8→v9 重跑 INIT_SQL 建 notes 时已含 type（db.sql 已改），此处先查列存在再 ALTER。
+        let has_type: bool = conn
+            .prepare("PRAGMA table_info(notes)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .any(|c| c == "type");
+        if !has_type {
+            conn.execute(
+                "ALTER TABLE notes ADD COLUMN type TEXT NOT NULL DEFAULT 'html'",
+                [],
+            )
+            .context("v9→v10: ALTER notes ADD type")?;
+            log::info!("DB migrated to v10: notes.type 列已加（历史笔记默认 html）");
+        }
+        conn.execute("PRAGMA user_version = 10", [])?;
     }
     Ok(())
 }
@@ -1119,6 +1137,75 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         conn
+    }
+
+    #[test]
+    fn migrate_v9_to_v10_adds_type_column_keeps_data() {
+        // 模拟旧 v9 库：notes 有 content_html/content_text，无 type → init_schema 应 ALTER 加 type，保留数据
+        let dir = std::env::temp_dir().join(format!("octopus-type-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = Connection::open(dir.join("mig.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT,
+                content_html TEXT NOT NULL DEFAULT '', content_text TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'manual', source_ref_id INTEGER,
+                is_pinned INTEGER NOT NULL DEFAULT 0, is_favorite INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             INSERT INTO notes (title, content_html, content_text, source, created_at, updated_at)
+                VALUES ('旧富文本', '<p>你好</p>', '你好', 'manual', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
+             PRAGMA user_version = 9;",
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+
+        // type 列存在，content_html 保留
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(notes)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(cols.contains(&"type".to_string()), "应有 type 列");
+        assert!(cols.contains(&"content_html".to_string()), "content_html 应保留");
+
+        // 旧数据保留，type 默认 html
+        let row: (String, String, String) = conn
+            .query_row(
+                "SELECT content_html, content_text, type FROM notes WHERE title='旧富文本'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "<p>你好</p>");
+        assert_eq!(row.1, "你好");
+        assert_eq!(row.2, "html", "历史笔记默认 type=html");
+
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 10);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_v9_to_v10_is_idempotent() {
+        // notes 已有 type 列 + user_version=9 → init_schema 应跳过 ALTER，不报 duplicate column
+        let dir = std::env::temp_dir().join(format!("octopus-type-mig-idem-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = Connection::open(dir.join("mig.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT, content_html TEXT DEFAULT '', content_text TEXT DEFAULT '', type TEXT DEFAULT 'html', source TEXT DEFAULT 'manual', source_ref_id INTEGER, is_pinned INTEGER DEFAULT 0, is_favorite INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT);
+             PRAGMA user_version = 9;",
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 10);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
