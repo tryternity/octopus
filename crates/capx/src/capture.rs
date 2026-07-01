@@ -271,11 +271,6 @@ pub fn find_window_id_by_pid(pid: i32) -> Option<u32> {
             let number_num = CFNumber::wrap_under_get_rule(*number_value.unwrap() as *const _);
             let window_id = number_num.to_i64();
 
-            log::info!(
-                "[window-diag] Window: PID={:?}, target_pid={}, layer={:?}, id={:?}",
-                window_pid, pid, window_layer, window_id
-            );
-
             if window_pid != Some(pid) { continue; }
             if window_layer != Some(0) { continue; }
 
@@ -296,7 +291,7 @@ pub fn find_window_id_by_pid(pid: i32) -> Option<u32> {
                     }
                 }
                 if is_small {
-                    log::info!("[window-diag] Skipping small window id={:?}", window_id);
+
                     continue;
                 }
             }

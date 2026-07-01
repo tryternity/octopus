@@ -14,6 +14,16 @@ export default defineConfig({
   build: {
     outDir: "../dist",
     emptyOutDir: true,
+    chunkSizeWarningLimit: 1000,
+    rollupOptions: {
+      output: {
+        manualChunks(id) {
+          if (id.includes("node_modules") && (id.includes("@tiptap") || id.includes("tiptap-markdown") || id.includes("prosemirror"))) {
+            return "tiptap";
+          }
+        },
+      },
+    },
   },
   server: {
     port: 1420,

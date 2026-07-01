@@ -26,12 +26,25 @@ struct TrayItems<R: Runtime> {
 static TRAY_ITEMS: once_cell::sync::Lazy<Mutex<Option<TrayItems<tauri::Wry>>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(None));
 
+/// 存储 asr_shortcut 用于 update_tray_label 动态文案
+static ASR_SHORTCUT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// 将 Tauri Accelerator 格式（CmdOrCtrl+Shift+A）转为用户可读格式（⌘⇧A）
+fn fmt_shortcut(s: &str) -> String {
+    if s.is_empty() { return String::new(); }
+    s.replace("CmdOrCtrl+", "⌘").replace("Cmd+", "⌘")
+     .replace("Shift+", "⇧").replace("Alt+", "⌥")
+     .replace("Control+", "⌃").replace("Super+", "⌘")
+}
+
 /// Create the system tray icon and its context menu.
 ///
-/// 菜单文案设计：操作项统一四字宽度，状态项带前缀符号（▶/■/⏳）。
-/// 分组：语音识别 → 引擎信息（只读分隔线）→ 截图/剪贴板 → 设置/退出。
+/// 菜单文案设计：操作项统一四字宽度 + 括号快捷键。
+/// 分组：语音识别 → 引擎信息（只读分隔线）→ 截图/剪贴板/记事本 → 设置/退出。
 pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
-    let toggle = MenuItem::with_id(app, "toggle", "语音识别", true, None::<&str>)
+    let _ = ASR_SHORTCUT.set(config.asr_shortcut.clone());
+    let toggle_text = format!("语音识别（{}）", fmt_shortcut(&config.asr_shortcut));
+    let toggle = MenuItem::with_id(app, "toggle", &toggle_text, true, None::<&str>)
         .expect("failed to create toggle menu item");
     let engine_info = MenuItem::with_id(
         app,
@@ -46,10 +59,14 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
     let sep1 = PredefinedMenuItem::separator(app)
         .expect("failed to create separator");
 
-    let screenshot = MenuItem::with_id(app, "screenshot", "开始截图", true, None::<&str>)
+    let screenshot_text = format!("开始截图（{}）", fmt_shortcut(&config.screenshot_shortcut));
+    let screenshot = MenuItem::with_id(app, "screenshot", &screenshot_text, true, None::<&str>)
         .expect("failed to create screenshot menu item");
-    let clipboard = MenuItem::with_id(app, "clipboard", "剪  贴  板", true, None::<&str>)
+    let clipboard_text = format!("剪  贴  板（{}）", fmt_shortcut(&config.clipboard_shortcut));
+    let clipboard = MenuItem::with_id(app, "clipboard", &clipboard_text, true, None::<&str>)
         .expect("failed to create clipboard menu item");
+    let notepad = MenuItem::with_id(app, "notepad", "记  事  本", true, None::<&str>)
+        .expect("failed to create notepad menu item");
 
     // 分隔线：功能区 vs 设置/退出
     let sep2 = PredefinedMenuItem::separator(app)
@@ -57,8 +74,6 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
 
     let settings = MenuItem::with_id(app, "settings", "系统管理", true, None::<&str>)
         .expect("failed to create settings menu item");
-    let notepad = MenuItem::with_id(app, "notepad", "记\u{3000}事\u{3000}本", true, None::<&str>)
-        .expect("failed to create notepad menu item");
     let quit = MenuItem::with_id(app, "quit", "退出系统", true, None::<&str>)
         .expect("failed to create quit menu item");
 
@@ -126,10 +141,11 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
 
 /// Update the toggle menu item label based on the current state.
 pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
+    let sc = ASR_SHORTCUT.get().map(|s| fmt_shortcut(s)).unwrap_or_default();
     let label = match state {
-        TrayState::Idle => "语音识别",
-        TrayState::Recording => "停止识别",
-        TrayState::Processing => "处理中…",
+        TrayState::Idle => format!("语音识别（{}）", sc),
+        TrayState::Recording => "停止识别".to_string(),
+        TrayState::Processing => "处理中…".to_string(),
     };
 
     let items = TRAY_ITEMS.lock().unwrap();
