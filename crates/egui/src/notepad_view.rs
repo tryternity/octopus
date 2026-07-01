@@ -138,13 +138,11 @@ impl NotepadView {
         }
 
         // 左栏：列表（来源徽标色 + pinned 星标）。
-        // min/max_width 钳制：resizable 无上限时 panel 会被记忆成接近窗口宽，把 CentralPanel
-        // 挤成 0（编辑区整个消失且拖分隔条缩不动）。钳在 [200,420] 保证中央永远有余量。
+        // 固定宽度（exact_width）：resizable 的拖动 handle 在本主题下渲染成粗黑线、且放开后
+        // 弹回默认宽（egui memory 不落盘，进程内也不持久）。列表 260 固定够用，去掉 handle。
         egui::SidePanel::left("list")
-            .resizable(true)
-            .min_width(200.0)
-            .default_width(260.0)
-            .max_width(420.0)
+            .resizable(false)
+            .exact_width(260.0)
             .show(ctx, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {

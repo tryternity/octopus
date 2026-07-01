@@ -23,9 +23,12 @@ seed_mnn_prebuilt() {
 }
 
 # 1. 杀进程并等待真正退出（避免退出时把缓存写回 / 占用文件导致 rm 失败）
+#    连 octopus-egui 一起杀：desktop 运行时 spawn 它，不杀会复用旧实例（egui 改动不生效）。
 pkill -f octopus-desktop 2>/dev/null || true
+pkill -f octopus-egui 2>/dev/null || true
 sleep 1
 pkill -9 -f octopus-desktop 2>/dev/null || true   # 强杀残留
+pkill -9 -f octopus-egui 2>/dev/null || true
 sleep 0.5
 
 # 2. 清 WebView 缓存（identifier=com.octopus.desktop）
@@ -52,6 +55,11 @@ cd "../"
 seed_mnn_prebuilt
 RELEASE="--release"
 #RELEASE=""
+# 编译 octopus-egui（记事本原生进程）：被 desktop 运行时 spawn 的独立二进制（非 cargo 依赖），
+# cargo build -p octopus-desktop 不会编译它——必须单独 build，否则 desktop spawn 到旧二进制
+# （记事本 egui 端改动不生效）。
+echo "[build] octopus-egui（记事本原生进程）"
+cargo build ${RELEASE} -p octopus-egui
 if ! cargo build ${RELEASE} -p octopus-desktop --features "embedded cloud"; then
   seed_mnn_prebuilt
   cargo build ${RELEASE} -p octopus-desktop --features "embedded cloud"
