@@ -92,6 +92,40 @@ pub fn crop_region(
     Ok(png_bytes)
 }
 
+/// macOS CGImage 解析 + BGRA→RGBA 转换的公共 helper。
+/// 返回 (rgba_bytes, width, height)。三处捕获函数共用，消除重复样板。
+#[cfg(target_os = "macos")]
+fn cgimage_to_rgba(
+    cg_image: &core_graphics::image::CGImage,
+) -> Result<(Vec<u8>, u32, u32)> {
+    let width = cg_image.width() as u32;
+    let height = cg_image.height() as u32;
+    let bpr = cg_image.bytes_per_row();
+    let bpp = cg_image.bits_per_pixel();
+
+    if bpp != 32 {
+        anyhow::bail!("Unsupported screenshot format: {} bpp (expected 32)", bpp);
+    }
+
+    let cf_data = cg_image.data();
+    let raw = cf_data.bytes();
+
+    // macOS 截图 CGImage 通常为 BGRA（little-endian 32bit）。转为 RGBA。
+    let mut rgba = Vec::with_capacity(width as usize * height as usize * 4);
+    for y in 0..height as usize {
+        let row_start = y * bpr;
+        let row = &raw[row_start..row_start + width as usize * 4];
+        for px in row.chunks_exact(4) {
+            rgba.push(px[2]); // R
+            rgba.push(px[1]); // G
+            rgba.push(px[0]); // B
+            rgba.push(px[3]); // A
+        }
+    }
+
+    Ok((rgba, width, height))
+}
+
 /// macOS：截取指定显示器，排除指定的 overlay 窗口。
 /// display_id = CGDirectDisplayID, exclude_window_id = NSWindow.windowNumber
 /// 返回 RGBA bytes + 物理像素尺寸。
@@ -116,30 +150,7 @@ pub fn capture_display_excluding_window(
     )
     .context("CGWindowListCreateImage failed (display may be asleep)")?;
 
-    let width = cg_image.width() as u32;
-    let height = cg_image.height() as u32;
-    let bpr = cg_image.bytes_per_row();
-    let bpp = cg_image.bits_per_pixel();
-
-    let cf_data = cg_image.data();
-    let raw = cf_data.bytes();
-
-    if bpp != 32 {
-        anyhow::bail!("Unsupported screenshot format: {} bpp (expected 32)", bpp);
-    }
-
-    // macOS 截图 CGImage 通常为 BGRA（little-endian 32bit）。转为 RGBA。
-    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
-    for y in 0..height as usize {
-        let row_start = y * bpr;
-        for x in 0..width as usize {
-            let off = row_start + x * 4;
-            rgba.push(raw[off + 2]); // R
-            rgba.push(raw[off + 1]); // G
-            rgba.push(raw[off]); // B
-            rgba.push(raw[off + 3]); // A
-        }
-    }
+    let (rgba, width, height) = cgimage_to_rgba(&cg_image)?;
 
     // CGDisplayBounds 返回全局逻辑坐标（points），与 xcap Monitor::x()/y() 一致。
     Ok(ScreenCapture {
@@ -181,29 +192,7 @@ pub fn capture_region_excluding_window(
     )
     .context("CGWindowListCreateImage failed (display may be asleep)")?;
 
-    let width = cg_image.width() as u32;
-    let height = cg_image.height() as u32;
-    let bpr = cg_image.bytes_per_row();
-    let bpp = cg_image.bits_per_pixel();
-
-    let cf_data = cg_image.data();
-    let raw = cf_data.bytes();
-
-    if bpp != 32 {
-        anyhow::bail!("Unsupported screenshot format: {} bpp (expected 32)", bpp);
-    }
-
-    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
-    for y in 0..height as usize {
-        let row_start = y * bpr;
-        let row = &raw[row_start..row_start + width as usize * 4];
-        for px in row.chunks_exact(4) {
-            rgba.push(px[2]);
-            rgba.push(px[1]);
-            rgba.push(px[0]);
-            rgba.push(px[3]);
-        }
-    }
+    let (rgba, width, height) = cgimage_to_rgba(&cg_image)?;
 
     Ok(RgbaBytes { rgba_bytes: rgba, width, height })
 }
@@ -332,29 +321,7 @@ pub fn capture_window_region(
     )
     .context("CGWindowListCreateImage for single window failed")?;
 
-    let width = cg_image.width() as u32;
-    let height = cg_image.height() as u32;
-    let bpr = cg_image.bytes_per_row();
-    let bpp = cg_image.bits_per_pixel();
-
-    let cf_data = cg_image.data();
-    let raw = cf_data.bytes();
-
-    if bpp != 32 {
-        anyhow::bail!("Unsupported screenshot format: {} bpp (expected 32)", bpp);
-    }
-
-    let mut rgba = Vec::with_capacity((width as usize) * (height as usize) * 4);
-    for y in 0..height as usize {
-        let row_start = y * bpr;
-        let row = &raw[row_start..row_start + width as usize * 4];
-        for px in row.chunks_exact(4) {
-            rgba.push(px[2]);
-            rgba.push(px[1]);
-            rgba.push(px[0]);
-            rgba.push(px[3]);
-        }
-    }
+    let (rgba, width, height) = cgimage_to_rgba(&cg_image)?;
 
     Ok(RgbaBytes { rgba_bytes: rgba, width, height })
 }
