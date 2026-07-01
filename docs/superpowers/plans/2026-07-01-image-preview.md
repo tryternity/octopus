@@ -736,16 +736,19 @@ export default function ImagePreview() {
   }, [annotations]);
 ```
 
-- [ ] **Step 5：渲染（canvas + 文字草稿 textarea + 工具栏）**
+- [ ] **Step 5：渲染（灯箱暗场 + 棋盘格画布 canvas + 文字草稿 textarea + 浮动工具栏 + 底部 EXIF 条）**
+
+> 2026-07-01 按 frontend-design 重做：外层从「贴顶深条 flex-col」改为「灯箱暗场 `#1c1917` + 全屏滚动画布 + 浮动白卡工具栏（fixed 居中）+ 底部 EXIF 状态条」。canvas 加棋盘格 CSS 底（透明 PNG 可读）。默认 1:1（zoom=1），缩放/平移见 §3.4。
 
 ```tsx
   return (
-    <div className="flex flex-col h-screen bg-neutral-900">
+    // 灯箱暗场：工具卡与底部 EXIF 条均 fixed 浮于其上
+    <div className="relative h-screen overflow-hidden select-none" style={{ background: "#1c1917" }}>
       <Toolbar
         tool={tool} setTool={setTool}
-        toolColor={toolColor} setToolColor={setToolColor}
-        toolWidth={toolWidth} setToolWidth={setToolWidth}
-        toolFontSize={toolFontSize} setToolFontSize={setToolFontSize}
+        toolColor={toolColor} setToolColor={setToolColorSync}
+        toolWidth={toolWidth} setToolWidth={setToolWidthSync}
+        toolFontSize={toolFontSize} setToolFontSize={setToolFontSizeSync}
         alwaysOnTop={alwaysOnTop} onToggleTop={toggleAlwaysOnTop}
         onSave={handleSave} onCopy={handleCopy} onOcr={handleOcr}
         onUndo={undo} canUndo={annotations.length > 0}
@@ -808,124 +811,19 @@ git -C <WT> commit -m "feat(desktop): ImagePreview 组件（画布 + 标注交�
 **Files:**
 - Create: `<WT>/crates/desktop/frontend/src/pages/ImagePreview/Toolbar.tsx`
 
-**设计**（镜像 Screenshot 工具栏 ToolButton 样式：32×32，激活 `#3b82f6`；颜色·粗细浮窗 PRESET_COLORS + slider）：
-- 工具组：选择(MousePointer2)/矩形(Square)/椭圆(Circle)/直线(Minus)/文字(Type)/撤销(Undo2)
-- 浮窗：颜色色块 + 粗细 slider（1–10）+ 文字字号 slider（文字工具时）
-- 动作组：保存(Download)/复制(Copy)/OCR(ScanText)/置顶(Pin/PinOff)
+**设计**（2026-07-01 按 frontend-design 重做：浮动白卡对齐截图主工具栏，属性浮窗 1:1 复刻截图 `ToolPropsPopover`；内联 style 与截图同出处）：
+- 工具卡：`position:fixed; left:50%; top:8; translateX(-50%)`，白底 r8 + `box-shadow:0 4px 16px rgba(0,0,0,0.3)`（截图同款）。
+- `ToolButton`：32×32 r6，激活 `#3b82f6` 蓝底白字、否则透明 `#44403c` hover `rgba(0,0,0,0.06)`，图标 18px。`Divider` 竖线 `rgba(0,0,0,0.08)`。
+- 布局分组（左→右）：操作(保存/复制/OCR) ｜ 标注(选择/矩形/椭圆/直线/文字/撤销) ｜ 缩放(缩小/百分比/放大) ｜ 置顶。
+- 属性浮窗：`tool !== "none"` 时从工具卡左下 `absolute top:calc(100%+6px)` 自动浮出（无单独调色板按钮）；白卡 r10 + 两行（滑轨+当前色圆 / 8 预设色 active 蓝环）；文字→字号 10–48、其余→粗细 1–10；不放 `<input type="color">` 调色板（YAGNI）。
+- 缩放百分比等宽 `SF Mono` + `tabular-nums`，点击重置 100%；OCR 成功后按钮换绿勾 1.5s。
 - 无关闭按钮（用窗口右上角 × 或 Esc）
 
-- [ ] **Step 1：新建 Toolbar.tsx**
+- [x] **Step 1：新建 Toolbar.tsx**
 
-```tsx
-import { useState } from "react";
-import { cn } from "@/lib/utils";
-import {
-  MousePointer2, Square, Circle, Minus, Type, Undo2,
-  Download, Copy, ScanText, Pin, PinOff, Palette,
-} from "lucide-react";
-import type { Tool } from "@/lib/annotation";
-
-const PRESET_COLORS = ["#ef4444", "#f59e0b", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#ec4899", "#000000"];
-
-export default function Toolbar(props: {
-  tool: Tool; setTool: (t: Tool) => void;
-  toolColor: string; setToolColor: (c: string) => void;
-  toolWidth: number; setToolWidth: (n: number) => void;
-  toolFontSize: number; setToolFontSize: (n: number) => void;
-  alwaysOnTop: boolean; onToggleTop: () => void;
-  onSave: () => void; onCopy: () => void; onOcr: () => void;
-  onUndo: () => void; canUndo: boolean;
-}) {
-  const [showProps, setShowProps] = useState(false);
-
-  const ToolButton = ({ active, onClick, title, children }: {
-    active: boolean; onClick: () => void; title: string; children: React.ReactNode;
-  }) => (
-    <button
-      type="button"
-      title={title}
-      onClick={onClick}
-      className={cn(
-        "flex h-8 w-8 items-center justify-center rounded transition-colors",
-        active ? "bg-blue-500 text-white" : "text-neutral-300 hover:bg-neutral-700",
-      )}
-    >
-      {children}
-    </button>
-  );
-
-  const tools: { key: Tool; icon: React.ReactNode; title: string }[] = [
-    { key: "none", icon: <MousePointer2 className="h-4 w-4" />, title: "选择/移动" },
-    { key: "rect", icon: <Square className="h-4 w-4" />, title: "矩形" },
-    { key: "oval", icon: <Circle className="h-4 w-4" />, title: "椭圆" },
-    { key: "line", icon: <Minus className="h-4 w-4" />, title: "直线" },
-    { key: "text", icon: <Type className="h-4 w-4" />, title: "文字" },
-  ];
-
-  return (
-    <div className="flex items-center gap-1 px-2 py-1.5 bg-neutral-800 border-b border-neutral-700">
-      {tools.map((t) => (
-        <ToolButton key={t.key} title={t.title} active={props.tool === t.key}
-          onClick={() => props.setTool(t.key)}>
-          {t.icon}
-        </ToolButton>
-      ))}
-      <ToolButton title="撤销 (Cmd/Ctrl+Z)" active={false}
-        onClick={props.onUndo}>
-        <Undo2 className={cn("h-4 w-4", !props.canUndo && "opacity-30")} />
-      </ToolButton>
-
-      {/* 颜色·粗细浮窗 */}
-      <div className="relative ml-1">
-        <ToolButton title="颜色 / 粗细" active={showProps}
-          onClick={() => setShowProps((v) => !v)}>
-          <Palette className="h-4 w-4" />
-        </ToolButton>
-        {showProps && (
-          <div className="absolute left-0 top-9 z-10 w-44 rounded-lg bg-neutral-800 p-2 shadow-xl border border-neutral-700">
-            <div className="mb-2 flex flex-wrap gap-1.5">
-              {PRESET_COLORS.map((c) => (
-                <button key={c} type="button"
-                  onClick={() => props.setToolColor(c)}
-                  className={cn("h-5 w-5 rounded-full border",
-                    props.toolColor === c ? "ring-2 ring-white" : "border-neutral-600")}
-                  style={{ backgroundColor: c }} />
-              ))}
-            </div>
-            <label className="block text-[11px] text-neutral-400">粗细 {props.toolWidth}</label>
-            <input type="range" min={1} max={10} value={props.toolWidth}
-              onChange={(e) => props.setToolWidth(Number(e.target.value))}
-              className="w-full" />
-            {props.tool === "text" && (
-              <>
-                <label className="mt-1 block text-[11px] text-neutral-400">字号 {props.toolFontSize}</label>
-                <input type="range" min={10} max={48} value={props.toolFontSize}
-                  onChange={(e) => props.setToolFontSize(Number(e.target.value))}
-                  className="w-full" />
-              </>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="mx-1 h-5 w-px bg-neutral-700" />
-
-      <ToolButton title="保存为文件" active={false} onClick={props.onSave}>
-        <Download className="h-4 w-4" />
-      </ToolButton>
-      <ToolButton title="复制到剪贴板" active={false} onClick={props.onCopy}>
-        <Copy className="h-4 w-4" />
-      </ToolButton>
-      <ToolButton title="OCR 识别" active={false} onClick={props.onOcr}>
-        <ScanText className="h-4 w-4" />
-      </ToolButton>
-      <ToolButton title={props.alwaysOnTop ? "取消置顶" : "窗口置顶"}
-        active={props.alwaysOnTop} onClick={props.onToggleTop}>
-        {props.alwaysOnTop ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
-      </ToolButton>
-    </div>
-  );
-}
+> 已实现（`crates/desktop/frontend/src/pages/ImagePreview/Toolbar.tsx`）。结构见本 Task 顶部「设计」段：浮动白卡（fixed 居中）+ `ToolButton`(32×32/激活 `#3b82f6`) + `Divider`，分组 操作｜标注｜缩放｜置顶，属性浮窗 `tool!=="none"` 时自动浮出。
+>
+> **演进**：初版是贴顶 `neutral-800` 横条 + 单独 `Palette` 按钮触发浮窗；2026-07-01 按 frontend-design 重做为浮动白卡 + 自动浮出（对齐截图），旧版代码已废弃不再保留于此。
 ```
 
 - [ ] **Step 2：类型检查 + 构建**

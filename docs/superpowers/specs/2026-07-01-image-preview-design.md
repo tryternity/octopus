@@ -10,14 +10,14 @@
 剪贴板文本条目已能用精简编辑器（compact editor）打开编辑。图片条目目前只能看 8×8 缩略图 + 尺寸，**无法看原图、无法在图上做标注**。本期补一个「图片预览 / 标注窗」：
 
 - 从剪贴板图片条目**单击缩略图**唤起，打开原图。
-- 顶部**轻工具栏**：标注工具（矩形/椭圆/直线/文字）+ 颜色·粗细 + 保存 + 复制 + OCR + 置顶（关窗走原生 × / Esc，工具栏不放关闭按钮）。
+- **浮动白卡工具栏**（对齐截图主工具栏的漂浮白卡形态）：标注工具（矩形/椭圆/直线/文字）+ 颜色·粗细属性浮窗 + 保存 + 复制 + OCR + 缩放 + 置顶（关窗走原生 × / Esc，工具栏不放关闭按钮）。
 - 标注能力**复用截图工具栏已有的标注引擎**（抽取成共享模块，截图与预览共用）。
 
 用户视野里有**两种图片展示形态**，本需求只做第一种，但为第二种留好基础：
 
 | 形态 | 触发 | 长相 | 本需求 |
 |---|---|---|---|
-| **① 轻工具栏预览** | 剪贴板条目缩略图单击 | 原生窗口 + 顶部轻工具栏，可标注 | ✅ 做 |
+| **① 轻工具栏预览** | 剪贴板条目缩略图单击 | 原生窗口 + 灯箱画布 + 浮动白卡工具栏，可标注 | ✅ 做 |
 | **② 贴图模式** | 按需（主要给**截图钉住**用） | 无工具栏、就一张图、钉屏置顶（Snipaste 风格，hover 浮出关闭/图钉按钮） | ❌ 不做，留基础 |
 
 ## 2. 范围
@@ -33,7 +33,7 @@
 **不做（YAGNI / 留给未来）：**
 - **贴图模式（形态②）**：无边框置顶、hover 工具栏、多实例——本需求不建窗口、不写交互，仅在 §9 文档化基础。
 - 标注**持久化到剪贴板条目**：本次标注是「按需预览」的临时操作，关窗即失；保存走「导出带标注的新图到文件」。未来可再持久化。
-- 缩放控件（滚轮/按钮放大）：用户选「轻工具栏」而非「完整」；窗口可拖大拖小即等效放大（fit-to-window 自适应）。
+- ~~缩放控件（滚轮/按钮放大）~~：**已做**（见 §3.4）——默认 1:1 自然分辨率打开，工具栏放大/缩小按钮调 `zoom`（0.1×–8×），超出窗口自动滚动条 + 选择工具下抓手拖拽平移。标注用自然像素坐标空间，缩放/调窗不错位。
 - 箭头/画笔/序号工具：截图有，但用户列的是「矩形/椭圆/直线/文字」四样，保持简单。共享核心仍含全部类型，预览工具栏只暴露这四种。
 
 ## 3. 架构
@@ -124,26 +124,33 @@ export function pointToSegmentDist(px, py, x1, y1, x2, y2): number;
 
 ### 3.4 ImagePreview 组件（`frontend/src/pages/ImagePreview/index.tsx`）
 
-**布局**：
+**布局**（灯箱形态——深暗场让图片本身发光，工具卡与状态条均浮动其上）：
 
 ```
-┌─ 工具栏（顶部固定横条，见 §3.5）─────────────────────┐
-├──────────────────────────────────────────────────────┤
-│  neutral-800 画布区（flex-1，居中）                   │
-│        ┌──────────────────────────────┐              │
-│        │  <img> fit (displayW×displayH) │             │
-│        │  <canvas> 绝对覆盖同尺寸       │             │
-│        └──────────────────────────────┘              │
+    ┌─ 浮动白卡工具栏（fixed 居中贴顶，见 §3.5）──┐    ← position:fixed, top:8, translateX(-50%)
+    └──────────────────────────────────────────┘
+┌──────────────────────────────────────────────────────┐
+│  灯箱暗场 #1c1917（absolute inset-0 overflow-auto）  │
+│      ┌────────────────────────────────┐              │
+│      │ <canvas> 棋盘格底（透明区可见）  │             │  ← dispW=nw*zoom, dispH=nh*zoom
+│      │ <img> display:none（仅作解码源） │             │     居中，超出视口自动滚动条
+│      │ <textarea> 文字草稿（相对 canvas）│            │
+│      └────────────────────────────────┘              │
+│                  ┌─────────────────┐                 │
+│                  │ 1920 × 1080 · PNG│                │  ← 底部 EXIF 状态条（fixed 居中贴底）
+│                  └─────────────────┘                 │     半透+blur，等宽 tabular-nums
 └──────────────────────────────────────────────────────┘
 ```
 
-- 外层 `flex flex-col h-full bg-background`；画布区 `flex-1 relative bg-neutral-800 flex items-center justify-center overflow-hidden`。
-- 图片框：一个 `relative` div，尺寸 = 显示尺寸（`displayW × displayH`）。`<img>` 撑满；`<canvas>` 绝对定位 `inset-0`，像素尺寸 `displayW*dpr × displayH*dpr`，`ctx.scale(dpr,dpr)`。
-- **显示尺寸计算**：图片 natural `(nw, nh)`，容器 `(cw, ch)`，`scale = min(cw/nw, ch/nh)`（不放大：`scale = min(scale, 1)` 可选；预览允许放大看清细节，故不封顶 1）。`displayW = nw*scale, displayH = nh*scale`。窗口 resize 时重算 + 重绘。
+- 外层 `relative h-screen overflow-hidden`，背景 `#1c1917`（灯箱暗场）。
+- 滚动画布容器 `absolute inset-0 overflow-auto`（图片大于视口自动出上下/左右滚动条；小于则 `flex items-center justify-center p-12` 居中）。
+- 画布外层 `relative` div，尺寸 = 显示尺寸（`dispW × dispH`）。`<canvas>` 像素尺寸 `dispW*dpr × dispH*dpr`，`ctx.setTransform(dpr,…)` 后 `ctx.scale(zoom, zoom)` 画标注；`<img>` `display:none` 仅作解码源（onload 取 naturalWidth/Height）。
+- **棋盘格底**（canvas CSS 背景）：`#292524` + 20px 棋盘格纹 —— 透明 PNG 的透明区可见，专业看图工具信号；不透明区自然盖住。合成导出时另用自然尺寸画布（默认透明背景），PNG 保留透明。
+- **显示尺寸 = 1:1 × zoom**：默认 `zoom=1`（自然分辨率），工具栏放大/缩小按钮调 `zoom`（0.1×–8×，步长 1.25×）。`dispW = nw*zoom, dispH = nh*zoom`。选 `tool==="none"` 时鼠标在画布上呈抓手，按住拖拽平移视口（window 级 mousemove/up，鼠标出画布仍跟随），免拖滚动条。
 
-**坐标转换**：
-- 鼠标事件 `e.clientX/Y` → 相对 canvas 左上角的显示坐标 `(dx, dy)` → 原始像素坐标 `nx = dx / displayW * nw`，`ny = dy / displayH * nh`。
-- 标注存原始像素坐标；显示用 `drawAnnotationScaled(ctx, ann, displayW/nw)`；命中用转换后的原始坐标调 `hitTestAnnotationPrecise(annotations, nx, ny)`。
+**坐标转换**（标注存自然像素坐标，与 zoom 解耦）：
+- 鼠标事件 `e.clientX/Y` → 相对 canvas 的 CSS 坐标 `(cssX, cssY)` → 自然坐标 `nx = cssX / zoom`，`ny = cssY / zoom`。
+- 显示用 `ctx.scale(zoom, zoom)` 后 `drawAnnotation(ctx, ann)`（自然坐标）；命中用自然坐标调 `hitTestAnnotationPrecise(nx, ny, annotations)`。
 
 **交互（无选区，比截图简单）**：
 - `tool === "none"`：点中标注 → 选中（可拖动移动，复用截图的拖动平移逻辑思路）；空白点击 → 取消选中。
@@ -162,7 +169,7 @@ function composeAnnotated(): string | null {
 ```
 
 - 保存：`composeAnnotated()` → base64 PNG → `invoke("save_image_dialog", { pngBase64 })`（新增薄命令，见 §3.6）。
-- OCR：`invoke<string>("ocr_image", { id: imageId })`（整图识别，无裁剪）→ 文本 → `openCompactEditor(text, 回写 set_clipboard_item_text)`，复用剪贴板条目 `handleOcr` 同款流程。
+- OCR：`invoke<string>("ocr_image", { id: imageId })`（整图识别，无裁剪）→ 文本非空则 `navigator.clipboard.writeText` + `ocrCopied=true` 1.5s 反馈（工具栏 OCR 按钮换绿勾）。不开编辑器（轻量预览场景，结果直接进剪贴板）。
 
 **mount / 事件**：
 - mount：`get_pending_image()` → `{ imageId }` → `invoke<string>("get_image_full", { id: imageId })` → `new Image()` onload 后存 `bgImgRef`、计算显示尺寸、`setReady(true)`。
@@ -171,26 +178,36 @@ function composeAnnotated(): string | null {
 
 ### 3.5 轻工具栏组件（`frontend/src/pages/ImagePreview/Toolbar.tsx`）
 
-> 原计划用 frontend-design skill 设计，但该 skill 本环境未安装。故按两处现有参考（CompactEditor 顶部栏 + Screenshot 标注栏）直接给可落地方案，评审环节统一把关。
+> 用 frontend-design skill 设计（2026-07-01 重做）：用户要求「浮窗的出现方式跟使用方式与截图的工具栏浮窗保持一致」，故工具栏复刻截图主工具栏的**浮动白卡**形态（非贴顶深色横条），属性浮窗 1:1 复刻截图 `ToolPropsPopover`。视觉 Vernacular 来自「看图工具/灯箱」：深暗场 + 棋盘格画布底 + 底部 EXIF 状态条，是与截图区分、且体现专业看图工具气质的 signature。
 
-**风格基准**：顶部固定横条，完全对齐 CompactEditor 工具栏——`flex-shrink-0 flex items-center gap-0.5 px-2 py-1.5 border-b border-border bg-stone-50`；按钮 `ToolBtn` 风格 `p-1.5 rounded-md text-stone-600 hover:bg-stone-100 hover:text-stone-900 disabled:opacity-30`；分隔线 `w-px h-4 bg-stone-200 mx-1`。标注工具激活态借用截图的 `#3b82f6` 蓝底白图标（与截图视觉一致）。图标统一 lucide-react（不走截图的本地 SVG，减少依赖）。
+**风格基准**（对齐截图主工具栏 + `ToolPropsPopover`，内联 style 与截图同出处以便两处同步微调）：
+- **工具卡**：`position:fixed; left:50%; top:8px; translateX(-50%)`，`padding:6px 8px`，`background:#fff`，`border-radius:8`，`box-shadow:0 4px 16px rgba(0,0,0,0.3)`（截图同款）。
+- **按钮 `ToolButton`**：32×32，`border-radius:6`，激活 `background:#3b82f6; color:#fff`、否则透明 `color:#44403c` hover `rgba(0,0,0,0.06)`。图标 18px（`h-[18px] w-[18px]`）。与截图 `ToolButton` 完全一致。
+- **分隔线**：`width:1; height:20; background:rgba(0,0,0,0.08); margin:0 4px`（截图 0.1，微调柔和）。
+- **缩放百分比**：等宽 `SF Mono/Menlo` + `tabular-nums`，点击重置 100%。
+- 图标统一 lucide-react（不走截图的本地 SVG，减少依赖）。
 
-**布局（左→右）**：
+**布局（左→右，同一张白卡内分组）**：
 
 | 组 | 按钮（lucide） | 行为 |
 |---|---|---|
-| 标注工具 | `MousePointer2` 选择 / `Square` 矩形 / `Circle` 椭圆 / `Minus` 直线 / `Type` 文字 | 单选互斥；激活 `#3b82f6` 蓝底白图标 |
-| | `Undo2` 撤销 | 删最后标注；`canUndo=false` 时 disabled |
+| 操作 | `Download` 保存 / `Copy` 复制 / `ScanText` OCR（成功后换 `Check` 绿勾 1.5s） | 保存→`composePngBase64`+`save_image_dialog`；复制→`composePngBase64`+`copy_image_to_clipboard`；OCR→`ocr_image` 结果写系统剪贴板 + `ocrCopied` 反馈 |
 | ｜ | 分隔线 | |
-| 属性 | `Palette` 颜色·粗细 | 仅当 `tool ∈ {rect,oval,line,text}` 时可见/可点；点出浮窗（见下） |
-| （弹性间距 `flex-1`） | | |
+| 标注工具 | `MousePointer2` 选择 / `Square` 矩形 / `Circle` 椭圆 / `Minus` 直线 / `Type` 文字 | 单选互斥；激活 `#3b82f6` 蓝底白图标；选中任一标注工具即自动浮出属性浮窗（见下），切回选择即收起 |
+| | `Undo2` 撤销 | 删最后标注；`canUndo=false` 时图标 opacity 0.3 |
 | ｜ | 分隔线 | |
-| 操作 | `Download` 保存 / `Copy` 复制 / `ScanText`（OCR 中换 `Loader2` 旋转） | 保存→`composeAnnotated`+`save_image_dialog`；复制→`composeAnnotated`+`copy_image_to_clipboard`（成功闪「已复制」1.5s）；OCR→`ocr_image`+开编辑器 |
-| | `Pin` 置顶 | toggle always-on-top；激活 `#3b82f6` + 图标 fill |
+| 缩放 | `ZoomOut` 缩小 / 百分比（点击重置 100%）/ `ZoomIn` 放大 | `zoom` 0.1×–8×，步长 1.25×；百分比等宽 tabular-nums |
+| ｜ | 分隔线 | |
+| 置顶 | `Pin`/`PinOff` | toggle always-on-top；激活 `#3b82f6` |
 
 > **不放「关闭」按钮**：窗口有原生标题栏（右上角 ×）已能关窗，工具栏再放一个冗余。关窗走原生 ×（鼠标）或 Esc（键盘）。
 
-**属性浮窗**（参考截图 `ToolPropsPopover`，改为 stone 风格小卡）：当绘制工具激活时，在工具栏「属性」按钮下方浮出 —— 8 预设色（`["#ef4444","#f97316","#eab308","#22c55e","#3b82f6","#8b5cf6","#000000","#ffffff"]`）+ 调色板（`<input type="color">`）+ 一条滑轨（文字工具显「字号 10–48」、其余显「粗细 1–10」）。预设色/调色板/滑轨逻辑直接搬截图 `ToolPropsPopover`。
+**属性浮窗**（1:1 复刻截图 `ToolPropsPopover`）：选中任一标注工具（`tool !== "none"`）时，从工具卡左下方 `absolute; left:0; top:calc(100%+6px)` 自动浮出 —— 白卡 `border-radius:10` + `box-shadow:0 8px 24px -4px…`，宽 240，两行：
+- 行 1：label（粗细/字号，10px `#a8a29e`）+ `<input type="range">`（`accentColor` 跟当前色）+ 数值（等宽 tabular-nums）+ 当前色圆（20px，3px 白边 + 阴影，与下方预设色区分）。
+- 分隔线 `rgba(0,0,0,0.06)`。
+- 行 2：8 预设色（`["#ef4444","#f97316","#eab308","#22c55e","#3b82f6","#8b5cf6","#000000","#ffffff"]`），18×18 r5，全 opacity；active 用蓝 ring（`box-shadow:0 0 0 2px #fff, 0 0 0 3.5px #3b82f6`）—— 比截图（靠上方当前色圆反映）更清晰，白色加细边。文字工具显「字号 10–48」、其余显「粗细 1–10」。
+
+> 不放截图原版的「调色板 `<input type="color">`」——8 预设色已覆盖常用，保持简单（YAGNI）。
 
 **组件 API**：
 
