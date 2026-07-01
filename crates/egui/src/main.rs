@@ -67,10 +67,14 @@ impl NotepadApp {
 
 /// 加载系统 CJK 字体注入 egui。失败保留默认（中文显方块但能跑）。
 fn setup_fonts(ctx: &egui::Context) {
-    // 候选：单 ttf 优先（ab_glyph 必支持），ttc 次之（PingFang 漂亮但需 collection 支持）。
+    // 候选：macOS 首选 PingFang（苹果现代中文 UI 字体，字形最漂亮；参考 egui-chinese-font）。
+    // 旧版首选 Arial Unicode——老式字体，中文方正老气（「字丑」根因）。PingFang.ttc 是 collection，
+    // egui/ab_glyph 取 face 0（PingFang SC Regular）。加载失败则回落第二候选。
+    // 保持末尾 push（非 insert(0)）：拉丁字符仍走 egui 默认 Ubuntu-Latin（专门拉丁字体，优于
+    // PingFang 拉丁字形），仅中文回落 PingFang——两头最优。
     let candidates: &[&str] = &[
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf", // macOS 单 ttf（含全 CJK）
-        "/System/Library/Fonts/PingFang.ttc",                     // macOS ttc
+        "/System/Library/Fonts/PingFang.ttc",                     // macOS 首选（现代中文 UI 字体）
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",   // macOS 备用（老式，含全 CJK）
         "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc", // Linux
         "/usr/share/fonts/noto-cjk/NotoSansCJK-Regular.ttc",
         "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",

@@ -12,12 +12,14 @@ const DEBOUNCE: Duration = Duration::from_millis(800);
 pub struct NotepadView {
     notes: Vec<Note>,
     current_id: Option<i64>,
+    current_type: NoteType,            // 当前笔记类型（text→纯编辑器；markdown→md 工具栏+可收起预览）
     title: String,
-    body: String,                       // md 源码（编辑缓冲）
+    body: String,                       // md/text 源码（编辑缓冲）
     body_dirty: bool,
     last_edit: Option<Instant>,
     pending_select: Option<i64>,        // IPC open 收到、待选中
     refresh_pending: bool,              // IPC notes_changed
+    show_preview: bool,                 // markdown 预览开关（仅 Markdown 笔记生效，可手动收起）
     md_cache: CommonMarkCache,          // egui_commonmark 解析缓存（跨帧复用）
 }
 
@@ -26,12 +28,14 @@ impl Default for NotepadView {
         let mut v = Self {
             notes: Vec::new(),
             current_id: None,
+            current_type: NoteType::Text,
             title: String::new(),
             body: String::new(),
             body_dirty: false,
             last_edit: None,
             pending_select: None,
             refresh_pending: false,
+            show_preview: false,
             md_cache: CommonMarkCache::default(),
         };
         v.reload_notes();
@@ -76,10 +80,13 @@ impl NotepadView {
         .flatten();
         if let Some(n) = note {
             self.current_id = Some(n.id);
+            self.current_type = n.note_type;
             self.title = n.title.unwrap_or_default();
             self.body = n.content_text;
             self.body_dirty = false;
             self.last_edit = None;
+            // 预览仅 markdown 默认开（text 无需预览）；切笔记按新 type 重置。
+            self.show_preview = matches!(self.current_type, NoteType::Markdown);
         }
     }
 
@@ -105,7 +112,7 @@ impl NotepadView {
         let title = self.title.clone();
         let body = self.body.clone();
         let _ = octopus_infra::db::with_db(|conn| {
-            octopus_notepad::store::update_note_at(conn, id, &title, &body, NoteType::Markdown)
+            octopus_notepad::store::update_note_at(conn, id, &title, &body, self.current_type)
         });
         self.body_dirty = false;
         self.last_edit = None;
@@ -219,55 +226,96 @@ impl NotepadView {
                     if ui.button(label).clicked() {
                         self.save_current();
                     }
+                    // 预览切换（仅 markdown；right_to_left 下先 add 者在最右，故预览在保存左侧）
+                    if matches!(self.current_type, NoteType::Markdown) {
+                        let plabel = if self.show_preview { "预览 ✓" } else { "预览" };
+                        if ui.button(plabel).clicked() {
+                            self.show_preview = !self.show_preview;
+                        }
+                    }
                 });
             });
             ui.add_space(2.0);
             ui.separator();
 
-            // 工具栏（5 按钮：选中文本→包 md 语法）
-            toolbar(ui, &mut self.body, &mut self.body_dirty, &mut self.last_edit);
+            // markdown 笔记：md 工具栏 + 编辑/预览（可收起）；
+            // text 笔记：纯文本编辑器（无 md 工具栏、无预览——纯文本无需 md 语法/预览）。
+            if matches!(self.current_type, NoteType::Markdown) {
+                toolbar(ui, &mut self.body, &mut self.body_dirty, &mut self.last_edit);
 
-            // 编辑 / 预览分屏：ui.columns 等宽两列（egui 标准等宽分栏 API，内部 allocate，
-            // 不依赖手算 avail —— 手算的 allocate_ui_with_layout 在非交互帧尺寸会漂移，
-            // 内容被分配到 0 高度区域而不绘制，表现为「编辑区默认空白、拖一下才出现」）
-            ui.columns(2, |cols| {
-                // 左：Markdown 源码
-                cols[0].vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new("Markdown 源码")
-                            .small()
-                            .color(crate::theme::MUTED)
-                            .strong(),
-                    );
-                    ui.add_space(2.0);
-                    let resp = ui.add(
-                        egui::TextEdit::multiline(&mut self.body)
-                            .desired_width(f32::INFINITY)
-                            .desired_rows(20),
-                    );
-                    if resp.changed() {
-                        self.mark_dirty();
-                    }
-                });
-                // 右：预览
-                cols[1].vertical(|ui| {
-                    ui.label(
-                        egui::RichText::new("预览")
-                            .small()
-                            .color(crate::theme::MUTED)
-                            .strong(),
-                    );
-                    ui.add_space(2.0);
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        CommonMarkViewer::new().show(ui, &mut self.md_cache, &self.body);
+                if self.show_preview {
+                    // 编辑 / 预览分屏：ui.columns 等宽两列（egui 标准等宽分栏 API，内部 allocate，
+                    // 不依赖手算 avail —— 手算的 allocate_ui_with_layout 在非交互帧尺寸会漂移）
+                    ui.columns(2, |cols| {
+                        cols[0].vertical(|ui| {
+                            editor_pane(
+                                ui,
+                                &mut self.body,
+                                &mut self.body_dirty,
+                                &mut self.last_edit,
+                                "Markdown 源码",
+                            );
+                        });
+                        cols[1].vertical(|ui| {
+                            ui.label(
+                                egui::RichText::new("预览")
+                                    .small()
+                                    .color(crate::theme::MUTED)
+                                    .strong(),
+                            );
+                            ui.add_space(2.0);
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                CommonMarkViewer::new().show(ui, &mut self.md_cache, &self.body);
+                            });
+                        });
                     });
-                });
-            });
+                } else {
+                    // 预览收起：编辑器单列占满
+                    editor_pane(
+                        ui,
+                        &mut self.body,
+                        &mut self.body_dirty,
+                        &mut self.last_edit,
+                        "Markdown 源码",
+                    );
+                }
+            } else {
+                // text 笔记：纯文本编辑器占满
+                editor_pane(
+                    ui,
+                    &mut self.body,
+                    &mut self.body_dirty,
+                    &mut self.last_edit,
+                    "正文",
+                );
+            }
         });
         // 持续 repaint 让防抖 timer 可被 poll
         if self.body_dirty {
             ui.ctx().request_repaint_after(DEBOUNCE);
         }
+    }
+}
+
+/// 文本编辑区：标签 + multiline TextEdit（desired_width=∞ 撑满）。changed 时置 dirty + last_edit
+/// （防抖 flush_if_dirty 依赖 last_edit，仅置 dirty 不置 last_edit 会导致永不落库）。
+fn editor_pane(
+    ui: &mut egui::Ui,
+    body: &mut String,
+    dirty: &mut bool,
+    last_edit: &mut Option<Instant>,
+    label: &str,
+) {
+    ui.label(egui::RichText::new(label).small().color(crate::theme::MUTED).strong());
+    ui.add_space(2.0);
+    let resp = ui.add(
+        egui::TextEdit::multiline(body)
+            .desired_width(f32::INFINITY)
+            .desired_rows(20),
+    );
+    if resp.changed() {
+        *dirty = true;
+        *last_edit = Some(Instant::now());
     }
 }
 
