@@ -44,10 +44,19 @@ pub fn register_screenshot_shortcut(
 }
 
 /// 启动截图：截所有显示器 → 每个显示器一个窗口
+/// 截图是否处于活动状态（有截图窗口存在）
+#[allow(dead_code)]
+pub fn is_screenshot_active() -> bool {
+    TOTAL_WINDOWS.load(std::sync::atomic::Ordering::SeqCst) > 0
+        || SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 #[tauri::command]
 pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
     save_frontmost_app();
+
+    crate::tray::update_tray_screenshot_label(true);
 
 
     // 1. 截所有显示器
@@ -547,6 +556,8 @@ fn close_all_screenshot_windows(app_handle: &tauri::AppHandle) {
             let _ = win.destroy();
         }
     }
+    TOTAL_WINDOWS.store(0, std::sync::atomic::Ordering::SeqCst);
+    crate::tray::update_tray_screenshot_label(false);
 }
 
 // ── 滚动截图 ──

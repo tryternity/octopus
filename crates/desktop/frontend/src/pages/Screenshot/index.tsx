@@ -754,10 +754,8 @@ export default function Screenshot() {
     setScrollPreview(null);
     setScrollHeight(0);
 
-    // 计算交互区域（工具栏 + 预览窗），传给后端用于鼠标穿透切换
+    // 计算交互区域（只有预览窗，scrolling 模式下工具栏已隐藏）
     const interactiveRects: Array<{x: number; y: number; width: number; height: number}> = [];
-    // 工具栏：与下方渲染逻辑一致（水平居中，空间不足移到上方）
-    interactiveRects.push({ x: toolbarX, y: toolbarY, width: toolbarWidth, height: 44 });
     // 预览窗（右侧优先，空间不足放左侧）
     const previewLeft = sel.x + sel.w + 12 + 200 <= window.innerWidth
       ? sel.x + sel.w + 12
@@ -967,8 +965,8 @@ export default function Screenshot() {
         />
       )}
 
-      {/* 工具栏 */}
-      {sel && (mode === "selected" || mode === "scrolling") && (
+      {/* 工具栏（scrolling 模式下隐藏，操作按钮在预览图中） */}
+      {sel && mode !== "scrolling" && (
         <div
           style={{
             position: "fixed",
@@ -1024,27 +1022,17 @@ export default function Screenshot() {
             <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
-          {mode !== "scrolling" ? (
-            <button onClick={startScroll} title="滚动截图" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
-              <svg width="16" height="16" viewBox="0 0 16 16" fill="none"><path d="M8 2V11M8 11L4 7M8 11L12 7" stroke="#333" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/><rect x="3" y="13" width="10" height="2" rx="0.5" fill="#333"/></svg>
-            </button>
-          ) : (
-            <button onClick={stopScroll} title="停止滚动" style={{ padding: "4px 10px", height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "#ef4444", cursor: "pointer", color: "#fff", fontSize: 11, fontWeight: 600 }}>
-              ⏹ 停止
-            </button>
-          )}
-          {mode !== "scrolling" && (
-            <button onClick={doSaveFile} title="保存到文件" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
-              <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" />
-            </button>
-          )}
-          {mode !== "scrolling" && (
-            <button onClick={doConfirm} title="确认" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "#3b82f6", cursor: "pointer" }}>
-              <img src="icons/copy.svg" alt="确认" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} />
-            </button>
-          )}
+          <button onClick={startScroll} title="滚动截图" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
+            <img src="icons/scroll.svg" alt="滚动截图" className="w-[18px] h-[18px]" />
+          </button>
+          <button onClick={doSaveFile} title="保存到文件" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
+            <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" />
+          </button>
+          <button onClick={doConfirm} title="确认" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "#3b82f6", cursor: "pointer" }}>
+            <img src="icons/copy.svg" alt="确认" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} />
+          </button>
           <button onClick={() => invoke("cancel_screenshot").catch(() => {})} title="取消" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
-            <img src="icons/close.svg" alt="取消" className="w-[18px] h-[18px]" />
+            <img src="icons/close.svg" alt="取消" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) saturate(100%) invert(40%) sepia(94%) saturate(7470%) hue-rotate(346deg) brightness(95%) contrast(91%)" }} />
           </button>
         </div>
       )}
@@ -1077,25 +1065,60 @@ export default function Screenshot() {
           bottom: window.innerHeight - sel.y - sel.h,
           width: 200,
           maxHeight: "80vh",
-          background: "rgba(0,0,0,0.8)",
-          borderRadius: 8,
-          padding: 8,
+          background: "rgba(15,15,17,0.92)",
+          backdropFilter: "blur(16px)",
+          WebkitBackdropFilter: "blur(16px)",
+          borderRadius: 10,
+          padding: 10,
           display: "flex",
           flexDirection: "column",
-          gap: 6,
+          gap: 8,
           zIndex: 102,
           overflow: "hidden",
+          boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06)",
         }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 10, color: "#4ade80" }}>
-            <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4ade80" }} />
-            录制中 · {scrollHeight}px
+          {/* 状态条：脉冲录制点 + 等宽高度计数器 */}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 2px" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <div style={{
+                width: 7, height: 7, borderRadius: "50%", background: "#f59e0b",
+                boxShadow: "0 0 6px #f59e0b",
+                animation: "pulse 1.5s ease-in-out infinite",
+              }} />
+              <span style={{ fontSize: 10, color: "#f59e0b", fontWeight: 600, letterSpacing: 0.3 }}>REC</span>
+            </div>
+            <span style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", fontFamily: "SF Mono, Menlo, monospace", fontVariantNumeric: "tabular-nums" }}>
+              {scrollHeight}px
+            </span>
           </div>
-          <div style={{ flex: 1, overflow: "hidden", borderRadius: 4, display: "flex", flexDirection: "column", justifyContent: "flex-end" }}>
+          {/* 预览图 */}
+          <div style={{ flex: 1, overflow: "hidden", borderRadius: 6, display: "flex", flexDirection: "column", justifyContent: "flex-end", background: "rgba(0,0,0,0.3)" }}>
             <img src={`data:image/png;base64,${scrollPreview}`} alt="preview" style={{ width: "100%", display: "block" }} />
           </div>
-          <button onClick={stopScroll} style={{ padding: "4px", borderRadius: 4, border: "none", background: "#ef4444", color: "#fff", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
-            ⏹ 停止滚动
-          </button>
+          {/* 按钮区：停止 2:1 取消 */}
+          <div style={{ display: "flex", gap: 6, height: 32 }}>
+            <button onClick={stopScroll} style={{
+              flex: 2, borderRadius: 6, border: "none",
+              background: "#ef4444", color: "#fff",
+              fontSize: 12, fontWeight: 600, cursor: "pointer",
+              transition: "background 0.15s",
+            }}
+            onMouseEnter={(e) => e.currentTarget.style.background = "#dc2626"}
+            onMouseLeave={(e) => e.currentTarget.style.background = "#ef4444"}>
+              停止录制
+            </button>
+            <button onClick={() => invoke("cancel_screenshot").catch(() => {})} style={{
+              flex: 1, borderRadius: 6,
+              border: "1px solid rgba(255,255,255,0.15)",
+              background: "transparent", color: "rgba(255,255,255,0.5)",
+              fontSize: 12, cursor: "pointer",
+              transition: "all 0.15s",
+            }}
+            onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.3)"; e.currentTarget.style.color = "rgba(255,255,255,0.8)"; }}
+            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; e.currentTarget.style.color = "rgba(255,255,255,0.5)"; }}>
+              取消
+            </button>
+          </div>
         </div>
       )}
     </>

@@ -4,7 +4,7 @@ use crate::config::AppConfig;
 use log::info;
 use std::sync::Mutex;
 use tauri::image::Image;
-use tauri::menu::{Menu, MenuItem};
+use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
 use tauri::{Manager, Runtime};
 
@@ -19,46 +19,78 @@ pub enum TrayState {
 struct TrayItems<R: Runtime> {
     toggle: MenuItem<R>,
     engine_info: MenuItem<R>,
+    screenshot: MenuItem<R>,
 }
 
 /// 模块级存储，避免 MenuItem::with_id 重复 ID 导致的 panic
 static TRAY_ITEMS: once_cell::sync::Lazy<Mutex<Option<TrayItems<tauri::Wry>>>> =
     once_cell::sync::Lazy::new(|| Mutex::new(None));
 
+/// 存储 asr_shortcut 用于 update_tray_label 动态文案
+static ASR_SHORTCUT: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+
+/// 将 Tauri Accelerator 格式（CmdOrCtrl+Shift+A）转为用户可读格式（⌘⇧A）
+fn fmt_shortcut(s: &str) -> String {
+    if s.is_empty() { return String::new(); }
+    s.replace("CmdOrCtrl+", "⌘").replace("Cmd+", "⌘")
+     .replace("Shift+", "⇧").replace("Alt+", "⌥")
+     .replace("Control+", "⌃").replace("Super+", "⌘")
+}
+
 /// Create the system tray icon and its context menu.
+///
+/// 菜单文案设计：操作项统一四字宽度 + 括号快捷键。
+/// 分组：语音识别 → 引擎信息（只读分隔线）→ 截图/剪贴板/记事本 → 设置/退出。
 pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
-    let toggle = MenuItem::with_id(app, "toggle", "语音识别", true, None::<&str>)
+    let _ = ASR_SHORTCUT.set(config.asr_shortcut.clone());
+    let toggle_text = format!("语音识别（{}）", fmt_shortcut(&config.asr_shortcut));
+    let toggle = MenuItem::with_id(app, "toggle", &toggle_text, true, None::<&str>)
         .expect("failed to create toggle menu item");
     let engine_info = MenuItem::with_id(
         app,
         "engine_info",
-        format!("引擎: {} ({})", config.asr_engine, config.engine_mode),
+        format!("引擎  {} · {}", config.asr_engine, config.engine_mode),
         false,
         None::<&str>,
     )
     .expect("failed to create engine_info menu item");
+
+    // 分隔线：引擎信息 vs 功能区
+    let sep1 = PredefinedMenuItem::separator(app)
+        .expect("failed to create separator");
+
+    let screenshot_text = format!("开始截图（{}）", fmt_shortcut(&config.screenshot_shortcut));
+    let screenshot = MenuItem::with_id(app, "screenshot", &screenshot_text, true, None::<&str>)
+        .expect("failed to create screenshot menu item");
+    let clipboard_text = format!("剪  贴  板（{}）", fmt_shortcut(&config.clipboard_shortcut));
+    let clipboard = MenuItem::with_id(app, "clipboard", &clipboard_text, true, None::<&str>)
+        .expect("failed to create clipboard menu item");
+    let notepad = MenuItem::with_id(app, "notepad", "记  事  本", true, None::<&str>)
+        .expect("failed to create notepad menu item");
+
+    // 分隔线：功能区 vs 设置/退出
+    let sep2 = PredefinedMenuItem::separator(app)
+        .expect("failed to create separator2");
+
     let settings = MenuItem::with_id(app, "settings", "系统管理", true, None::<&str>)
         .expect("failed to create settings menu item");
-    let clipboard = MenuItem::with_id(app, "clipboard", "剪贴板", true, None::<&str>)
-        .expect("failed to create clipboard menu item");
-    let notepad = MenuItem::with_id(app, "notepad", "记事本", true, None::<&str>)
-        .expect("failed to create notepad menu item");
-    let screenshot = MenuItem::with_id(app, "screenshot", "截图", true, None::<&str>)
-        .expect("failed to create screenshot menu item");
-    let stop_scroll = MenuItem::with_id(app, "stop_scroll", "停止滚动截图", true, None::<&str>)
-        .expect("failed to create stop_scroll menu item");
     let quit = MenuItem::with_id(app, "quit", "退出系统", true, None::<&str>)
         .expect("failed to create quit menu item");
 
-    let menu = Menu::with_items(app, &[&toggle, &engine_info, &clipboard, &notepad, &screenshot, &stop_scroll, &settings, &quit])
-        .expect("failed to create tray menu");
+    let menu = Menu::with_items(app, &[
+        &toggle, &engine_info, &sep1,
+        &screenshot, &clipboard, &notepad, &sep2,
+        &settings, &quit,
+    ])
+    .expect("failed to create tray menu");
 
-    // 存储 toggle 和 engine_info handle 供后续更新使用
+    // 存储 handle 供后续更新使用
     {
         let mut items = TRAY_ITEMS.lock().unwrap();
         *items = Some(TrayItems {
             toggle: toggle.clone(),
             engine_info: engine_info.clone(),
+            screenshot: screenshot.clone(),
         });
     }
 
@@ -70,7 +102,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
         )
         .menu(&menu)
         .show_menu_on_left_click(true)
-        .tooltip("octopus - Speech to Text")
+        .tooltip("octopus")
         .on_menu_event(|app, event| match event.id.as_ref() {
             "toggle" => {
                 info!("Tray: toggle recording");
@@ -91,15 +123,11 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
                 crate::settings_window::open_settings(app.clone(), None);
             }
             "screenshot" => {
-                info!("Tray: screenshot");
+                info!("Tray: start screenshot");
                 let app_handle = app.clone();
                 tauri::async_runtime::spawn(async move {
                     let _ = crate::screenshot_commands::start_screenshot(app_handle).await;
                 });
-            }
-            "stop_scroll" => {
-                info!("Tray: stop scroll recording");
-                crate::screenshot_commands::stop_scroll_recording();
             }
             "quit" => {
                 info!("Tray: quit");
@@ -112,14 +140,12 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
 }
 
 /// Update the toggle menu item label based on the current state.
-///
-/// 使用 `set_text` 更新已有 MenuItem 的文本，避免 `MenuItem::with_id`
-/// 重复创建同 ID 项导致的 panic。
 pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
+    let sc = ASR_SHORTCUT.get().map(|s| fmt_shortcut(s)).unwrap_or_default();
     let label = match state {
-        TrayState::Idle => "语音识别",
-        TrayState::Recording => "■ 停止识别",
-        TrayState::Processing => "⏳ 处理中...",
+        TrayState::Idle => format!("语音识别（{}）", sc),
+        TrayState::Recording => "停止识别".to_string(),
+        TrayState::Processing => "处理中…".to_string(),
     };
 
     let items = TRAY_ITEMS.lock().unwrap();
@@ -130,10 +156,17 @@ pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
 
 /// Update the engine info menu item label dynamically.
 pub fn update_tray_engine_label(_app: &tauri::AppHandle, engine_name: &str, engine_mode: &str) {
-    let label = format!("引擎: {} ({})", engine_name, engine_mode);
+    let label = format!("引擎  {} · {}", engine_name, engine_mode);
     let items = TRAY_ITEMS.lock().unwrap();
     if let Some(tray_items) = items.as_ref() {
         let _ = tray_items.engine_info.set_text(label);
     }
 }
 
+/// Update the screenshot menu item: 正常 ↔ 灰掉
+pub fn update_tray_screenshot_label(active: bool) {
+    let items = TRAY_ITEMS.lock().unwrap();
+    if let Some(tray_items) = items.as_ref() {
+        let _ = tray_items.screenshot.set_enabled(!active);
+    }
+}
