@@ -88,10 +88,26 @@ fn setup_fonts(ctx: &egui::Context) {
 
 impl eframe::App for NotepadApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 排空 IPC 消息（非阻塞），分发到 view
+        // 排空 IPC 消息（非阻塞）。Show 在此直接唤起窗口（viewport 命令），
+        // 其余分发到 view。egui 关窗后窗口常被隐藏而非进程退出，Show 必须显式唤起。
         while let Ok(msg) = self.rx.try_recv() {
-            self.view.handle_ipc(msg);
+            match msg {
+                IpcMsg::Show => {
+                    log::info!("IPC Show: 唤起窗口");
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Minimized(false));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Visible(true));
+                    ctx.send_viewport_cmd(egui::ViewportCommand::Focus);
+                }
+                other => self.view.handle_ipc(other),
+            }
         }
         self.view.show(ctx);
+    }
+}
+
+impl Drop for NotepadApp {
+    fn drop(&mut self) {
+        // 退出清理：删 singleton 锁 + port 文件，避免残留让 desktop 误判实例还在
+        ipc::cleanup();
     }
 }

@@ -54,6 +54,13 @@ pub fn acquire_singleton() -> bool {
     true
 }
 
+/// 退出清理：删 singleton 锁 + port 文件（避免残留让 desktop 误判实例还在）。
+/// 正常关窗退出时由 NotepadApp::drop 调用；kill -9 不调，靠 desktop pid 存活检测兜底。
+pub fn cleanup() {
+    let _ = std::fs::remove_file(singleton_file());
+    let _ = std::fs::remove_file(port_file());
+}
+
 /// IPC 消息（Tauri → egui）。JSON line，`type` tag 区分。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
