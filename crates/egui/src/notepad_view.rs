@@ -4,7 +4,7 @@
 
 use crate::ipc::IpcMsg;
 use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
-use octopus_notepad::{Note, NoteFilter, NoteType};
+use octopus_notepad::{Note, NoteFilter, NoteSource, NoteType};
 use std::time::{Duration, Instant};
 
 const DEBOUNCE: Duration = Duration::from_millis(800);
@@ -112,6 +112,17 @@ impl NotepadView {
         self.reload_notes(); // 列表 updated_at 刷新
     }
 
+    /// 新建空笔记（source=manual, type=text）并选中。
+    fn create_new(&mut self) {
+        self.flush_if_dirty(); // 先存当前未保存内容
+        if let Ok(id) = octopus_infra::db::with_db(|conn| {
+            octopus_notepad::store::create_note_at(conn, NoteSource::Manual, None, "", NoteType::Text)
+        }) {
+            self.reload_notes();
+            self.select(id);
+        }
+    }
+
     pub fn show(&mut self, ctx: &egui::Context) {
         // 退出前 flush（ctx 即将 drop 不易感知，靠防抖 + 切换笔记 flush 兜底）
         self.flush_if_dirty();
@@ -129,7 +140,13 @@ impl NotepadView {
         // 左栏：列表（来源徽标色 + pinned 星标）
         egui::SidePanel::left("list").resizable(true).default_width(260.0).show(ctx, |ui| {
             ui.add_space(4.0);
-            ui.label(egui::RichText::new("笔记").strong().size(15.0));
+            ui.horizontal(|ui| {
+                ui.label(egui::RichText::new("笔记").strong().size(15.0));
+                ui.allocate_space(ui.available_size()); // 推「+ 新建」到右
+                if ui.button("+ 新建").clicked() {
+                    self.create_new();
+                }
+            });
             ui.add_space(6.0);
             ui.separator();
 
@@ -178,6 +195,11 @@ impl NotepadView {
                 let resp = ui.text_edit_singleline(&mut self.title);
                 if resp.changed() {
                     self.mark_dirty();
+                }
+                ui.allocate_space(ui.available_size()); // 推「保存」到右
+                let label = if self.body_dirty { "保存 *" } else { "保存" };
+                if ui.button(label).clicked() {
+                    self.save_current();
                 }
             });
             ui.add_space(2.0);
