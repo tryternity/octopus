@@ -1,0 +1,321 @@
+# 图片预览 / 标注窗（Image Preview）设计
+
+> 日期：2026-07-01
+> 状态：**设计中**（spec 已写，待评审 → writing-plans）。
+> 关联：`docs/superpowers/specs/2026-06-30-compact-editor-design.md`（窗口/命令/PENDING 模式模板）、`docs/superpowers/specs/2026-06-30-notepad-design.md`。
+> 分支：`worktree-feature-notepad`。**功能完整完成前不往 main 同步。**
+
+## 1. 背景与目标
+
+剪贴板文本条目已能用精简编辑器（compact editor）打开编辑。图片条目目前只能看 8×8 缩略图 + 尺寸，**无法看原图、无法在图上做标注**。本期补一个「图片预览 / 标注窗」：
+
+- 从剪贴板图片条目**单击缩略图**唤起，打开原图。
+- 顶部**轻工具栏**：标注工具（矩形/椭圆/直线/文字）+ 颜色·粗细 + 保存 + 复制 + OCR + 置顶（关窗走原生 × / Esc，工具栏不放关闭按钮）。
+- 标注能力**复用截图工具栏已有的标注引擎**（抽取成共享模块，截图与预览共用）。
+
+用户视野里有**两种图片展示形态**，本需求只做第一种，但为第二种留好基础：
+
+| 形态 | 触发 | 长相 | 本需求 |
+|---|---|---|---|
+| **① 轻工具栏预览** | 剪贴板条目缩略图单击 | 原生窗口 + 顶部轻工具栏，可标注 | ✅ 做 |
+| **② 贴图模式** | 按需（主要给**截图钉住**用） | 无工具栏、就一张图、钉屏置顶（Snipaste 风格，hover 浮出关闭/图钉按钮） | ❌ 不做，留基础 |
+
+## 2. 范围
+
+**做：**
+- 新建独立窗口 `image_preview_window`（原生标题栏、可调大小、单例销毁、macOS 激活策略切换）。
+- 后端命令：`open_image_preview` / `get_pending_image` / `close_image_preview` / `get_image_full`。
+- **抽取共享标注核心** `frontend/src/lib/annotation.ts`：类型（`Tool`/`Annotation`）+ 纯绘制/命中函数。`Screenshot/index.tsx` 改为 import（行为零变化），`ImagePreview` 复用。
+- `ImagePreview` 组件：全图画布（fit-to-window、无选区），点击拖拽画标注、文字点选输入、撤销、选中移动。
+- 轻工具栏组件（标注工具 + 属性浮窗 + 保存/复制/OCR/置顶）。
+- 入口：剪贴板图片条目缩略图单击 → 唤起预览。
+
+**不做（YAGNI / 留给未来）：**
+- **贴图模式（形态②）**：无边框置顶、hover 工具栏、多实例——本需求不建窗口、不写交互，仅在 §9 文档化基础。
+- 标注**持久化到剪贴板条目**：本次标注是「按需预览」的临时操作，关窗即失；保存走「导出带标注的新图到文件」。未来可再持久化。
+- 缩放控件（滚轮/按钮放大）：用户选「轻工具栏」而非「完整」；窗口可拖大拖小即等效放大（fit-to-window 自适应）。
+- 箭头/画笔/序号工具：截图有，但用户列的是「矩形/椭圆/直线/文字」四样，保持简单。共享核心仍含全部类型，预览工具栏只暴露这四种。
+
+## 3. 架构
+
+### 3.1 窗口与生命周期（`crates/desktop/src/image_preview_window.rs`）
+
+镜像 `compact_editor_window.rs`：
+
+- `WINDOW_LABEL = "image_preview_window"`。
+- `create_image_preview_window(app)`：`.title("图片预览")`、`.inner_size(880, 620)`、`.min_inner_size(400, 320)`、`.decorations(true)`、`.resizable(true)`、`.center()`、`.visible(true)`。
+- 单例：`get_webview_window` 命中已存在则 `show + set_focus` 并 emit load 推新 imageId（并发再开）；否则创建。
+- macOS 激活策略：开窗切 `Regular`（Dock 显图标），关窗切回 `Accessory`。新增 `on_image_preview_closed(app)`，在 `main.rs` 的 `RunEvent::WindowEvent { Destroyed }` 按 label 挂载（紧邻 `on_compact_editor_closed`）。
+- 生命周期：**关窗即销毁**（destroy-on-close）。
+
+> **ACL（必做，踩过的坑）**：动态窗口 label 必须加进 `capabilities/default.json` 的 `windows` 数组，否则该窗口前端 `emit`/`invoke`/`listen` 全被静默拦。当前数组补 `image_preview_window`：
+> `["main","result_window","settings_window","clipboard_window","notepad_window","compact_editor_window","image_preview_window","screenshot_*"]`。
+
+### 3.2 后端命令（`crates/desktop/src/image_preview_commands.rs`，薄层）
+
+镜像 `compact_editor_commands.rs` 的「写 PENDING → 建窗/聚焦 → 前端 mount 拉取」：
+
+```rust
+// 静态 PENDING：open 时写，前端 mount 时 take。
+static PENDING: Mutex<Option<PendingImage>> = Mutex::new(None);
+
+// mode 字段为贴图模式（形态②）预留：本需求仅 "preview"，pin 分支将来再加。
+// 现在带上 mode 是「打好基础」的显式标记——窗口创建暂只走 preview 分支。
+struct PendingImage { image_id: i64, mode: String }  // mode: "preview"（now）/ "pin"（future）
+
+#[tauri::command]
+pub fn open_image_preview(image_id: i64, mode: Option<String>, app_handle: AppHandle);
+//   → *PENDING = Some({ image_id, mode: mode.unwrap_or("preview".into()) })
+//   → 窗口已存在：emit("image-preview://load", { imageId, mode }) + show + focus
+//   → 否则：建窗
+
+#[tauri::command]
+pub fn get_pending_image() -> Option<PendingImage>;  // 前端 mount 时 take
+
+#[tauri::command]
+pub fn close_image_preview(app_handle: AppHandle);   // close() → Destroyed → macOS 切 Accessory
+```
+
+三个命令在 `main.rs` 的 `generate_handler!` 注册（紧邻 compact_editor 三命令）。
+
+> `PendingImage` 经 IPC 序列化为 camelCase：`{ imageId, mode }`。
+
+**取原图命令（`crates/desktop/src/clipboard_commands.rs`，紧邻 `get_image_thumb`）：**
+
+```rust
+#[tauri::command]
+pub async fn get_image_full(id: i64) -> Result<String, String> {
+    // 镜像 get_image_thumb，但读 blob（原图）而非 thumb，复用 store::get_image_blob
+    // 返回 "data:image/webp;base64,..."
+}
+```
+
+store 层 `get_image_blob(conn, hash)` 已存在（`crates/clipboard/src/store.rs:467`），无需新增 store 函数。
+
+### 3.3 共享标注核心抽取（`frontend/src/lib/annotation.ts`）= 「打好基础」
+
+把 `Screenshot/index.tsx` 里**纯函数 / 纯类型**抽到 `lib/annotation.ts`，截图改为 import（行为零变化）：
+
+```ts
+// lib/annotation.ts
+export type Tool = "none" | "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number";
+export interface Annotation {
+  type: "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number";
+  x1: number; y1: number; x2: number; y2: number;
+  text?: string; points?: number[][]; color?: string;
+  lineWidth?: number; fontSize?: number; number?: number; circleSize?: number;
+}
+
+// 坐标系约定（重要）：Annotation 的坐标统一用「图片原始像素空间」（natural px）。
+// - 显示时：scale = 显示宽 / naturalWidth，调 drawAnnotationScaled(ctx, ann, scale)。
+// - 导出时：在 natural 尺寸 canvas 上 scale=1 直接画 drawAnnotation(ctx, ann)。
+
+export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation): void;
+export function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotation, scale: number): void;
+export function drawMultilineText(ctx, text, x, y, maxWidth, fontSize): void;
+export function annBounds(ann: Annotation): { x: number; y: number; w: number; h: number };
+export function hitTestAnnotationPrecise(anns: Annotation[], mx: number, my: number): number | null;
+export function pointToSegmentDist(px, py, x1, y1, x2, y2): number;
+```
+
+> **截图坐标系的注意点**：截图现有代码里 `Annotation` 坐标是「窗口显示空间」（`window.innerWidth` 系），导出时 `scale = bg.naturalWidth / window.innerWidth` 放大。抽取时**不改截图的行为**——截图继续用自己的显示空间坐标。`ImagePreview` 则采用**原始像素空间**坐标（见 §3.4）。两套坐标都用同一组纯函数（`drawAnnotationScaled` 的 `scale` 参数天然适配两套），函数本身不绑定任何坐标约定，只是「按 ann 里存的坐标 + 给定 scale 画」。抽取只搬函数体，不语义改动，截图回归风险低。
+
+**截图侧改动（最小）**：`Screenshot/index.tsx` 删除这 6 个函数/2 个类型的本地定义，改为 `import { Tool, Annotation, drawAnnotation, drawAnnotationScaled, drawMultilineText, annBounds, hitTestAnnotationPrecise, pointToSegmentDist } from "@/lib/annotation"`。`hitTestAnnotationPrecise` 抽取时把内部对 `annotations` 闭包的依赖改成接收 `anns: Annotation[]` 参数（截图调用处传 `annotations`）。
+
+### 3.4 ImagePreview 组件（`frontend/src/pages/ImagePreview/index.tsx`）
+
+**布局**：
+
+```
+┌─ 工具栏（顶部固定横条，见 §3.5）─────────────────────┐
+├──────────────────────────────────────────────────────┤
+│  neutral-800 画布区（flex-1，居中）                   │
+│        ┌──────────────────────────────┐              │
+│        │  <img> fit (displayW×displayH) │             │
+│        │  <canvas> 绝对覆盖同尺寸       │             │
+│        └──────────────────────────────┘              │
+└──────────────────────────────────────────────────────┘
+```
+
+- 外层 `flex flex-col h-full bg-background`；画布区 `flex-1 relative bg-neutral-800 flex items-center justify-center overflow-hidden`。
+- 图片框：一个 `relative` div，尺寸 = 显示尺寸（`displayW × displayH`）。`<img>` 撑满；`<canvas>` 绝对定位 `inset-0`，像素尺寸 `displayW*dpr × displayH*dpr`，`ctx.scale(dpr,dpr)`。
+- **显示尺寸计算**：图片 natural `(nw, nh)`，容器 `(cw, ch)`，`scale = min(cw/nw, ch/nh)`（不放大：`scale = min(scale, 1)` 可选；预览允许放大看清细节，故不封顶 1）。`displayW = nw*scale, displayH = nh*scale`。窗口 resize 时重算 + 重绘。
+
+**坐标转换**：
+- 鼠标事件 `e.clientX/Y` → 相对 canvas 左上角的显示坐标 `(dx, dy)` → 原始像素坐标 `nx = dx / displayW * nw`，`ny = dy / displayH * nh`。
+- 标注存原始像素坐标；显示用 `drawAnnotationScaled(ctx, ann, displayW/nw)`；命中用转换后的原始坐标调 `hitTestAnnotationPrecise(annotations, nx, ny)`。
+
+**交互（无选区，比截图简单）**：
+- `tool === "none"`：点中标注 → 选中（可拖动移动，复用截图的拖动平移逻辑思路）；空白点击 → 取消选中。
+- `tool ∈ {rect, oval, line}`：mousedown 记起点（原始坐标）→ mousemove 更新 `drawingRef` → mouseup 过滤太小的后入 `annotations`。
+- `tool === "text"`：click → 在该点浮一个 `<textarea>`（样式同截图文字浮层：透明背景、虚线边、200 宽）；blur/Esc 确认或取消 → 入 `annotations`。
+- 撤销：删最后一个标注（工具栏按钮 / Cmd+Z）。
+- 选中删除：Delete/Backspace 删选中标注。
+- 双击文字标注：进入编辑（复用截图 `editTextOrigRef` 思路）。
+
+**导出（保存 / 复制用）**：
+
+```ts
+function composeAnnotated(): string | null {
+  // 在 natural 尺寸 canvas 上 drawImage(bg) + 逐个 drawAnnotation(ann)（scale=1）→ toDataURL("image/png").split(",")[1]
+}
+```
+
+- 保存：`composeAnnotated()` → base64 PNG → `invoke("save_image_dialog", { pngBase64 })`（新增薄命令，见 §3.6）。
+- OCR：`invoke<string>("ocr_image", { id: imageId })`（整图识别，无裁剪）→ 文本 → `openCompactEditor(text, 回写 set_clipboard_item_text)`，复用剪贴板条目 `handleOcr` 同款流程。
+
+**mount / 事件**：
+- mount：`get_pending_image()` → `{ imageId }` → `invoke<string>("get_image_full", { id: imageId })` → `new Image()` onload 后存 `bgImgRef`、计算显示尺寸、`setReady(true)`。
+- `listen("image-preview://load")`：并发再开时载入新 imageId。
+- Esc → 关窗（`invoke("close_image_preview")`，键盘快捷）。鼠标关窗走原生标题栏 ×（两者都触发 Destroyed → macOS 切回 Accessory）。
+
+### 3.5 轻工具栏组件（`frontend/src/pages/ImagePreview/Toolbar.tsx`）
+
+> 原计划用 frontend-design skill 设计，但该 skill 本环境未安装。故按两处现有参考（CompactEditor 顶部栏 + Screenshot 标注栏）直接给可落地方案，评审环节统一把关。
+
+**风格基准**：顶部固定横条，完全对齐 CompactEditor 工具栏——`flex-shrink-0 flex items-center gap-0.5 px-2 py-1.5 border-b border-border bg-stone-50`；按钮 `ToolBtn` 风格 `p-1.5 rounded-md text-stone-600 hover:bg-stone-100 hover:text-stone-900 disabled:opacity-30`；分隔线 `w-px h-4 bg-stone-200 mx-1`。标注工具激活态借用截图的 `#3b82f6` 蓝底白图标（与截图视觉一致）。图标统一 lucide-react（不走截图的本地 SVG，减少依赖）。
+
+**布局（左→右）**：
+
+| 组 | 按钮（lucide） | 行为 |
+|---|---|---|
+| 标注工具 | `MousePointer2` 选择 / `Square` 矩形 / `Circle` 椭圆 / `Minus` 直线 / `Type` 文字 | 单选互斥；激活 `#3b82f6` 蓝底白图标 |
+| | `Undo2` 撤销 | 删最后标注；`canUndo=false` 时 disabled |
+| ｜ | 分隔线 | |
+| 属性 | `Palette` 颜色·粗细 | 仅当 `tool ∈ {rect,oval,line,text}` 时可见/可点；点出浮窗（见下） |
+| （弹性间距 `flex-1`） | | |
+| ｜ | 分隔线 | |
+| 操作 | `Download` 保存 / `Copy` 复制 / `ScanText`（OCR 中换 `Loader2` 旋转） | 保存→`composeAnnotated`+`save_image_dialog`；复制→`composeAnnotated`+`copy_image_to_clipboard`（成功闪「已复制」1.5s）；OCR→`ocr_image`+开编辑器 |
+| | `Pin` 置顶 | toggle always-on-top；激活 `#3b82f6` + 图标 fill |
+
+> **不放「关闭」按钮**：窗口有原生标题栏（右上角 ×）已能关窗，工具栏再放一个冗余。关窗走原生 ×（鼠标）或 Esc（键盘）。
+
+**属性浮窗**（参考截图 `ToolPropsPopover`，改为 stone 风格小卡）：当绘制工具激活时，在工具栏「属性」按钮下方浮出 —— 8 预设色（`["#ef4444","#f97316","#eab308","#22c55e","#3b82f6","#8b5cf6","#000000","#ffffff"]`）+ 调色板（`<input type="color">`）+ 一条滑轨（文字工具显「字号 10–48」、其余显「粗细 1–10」）。预设色/调色板/滑轨逻辑直接搬截图 `ToolPropsPopover`。
+
+**组件 API**：
+
+```tsx
+type PreviewTool = "none" | "rect" | "oval" | "line" | "text";
+
+interface ToolbarProps {
+  tool: PreviewTool; onTool: (t: PreviewTool) => void;
+  color: string; onColor: (c: string) => void;
+  size: number; onSize: (n: number) => void;   // 粗细 or 字号（按 tool 切含义/范围）
+  onUndo: () => void; canUndo: boolean;
+  onSave: () => void;
+  onCopy: () => Promise<void>;   // 复制带标注图到系统剪贴板（composeAnnotated → copy_image_to_clipboard）
+  onOcr: () => void; ocrLoading: boolean;
+  pinned: boolean; onTogglePin: () => void;
+}
+```
+
+### 3.6 新增薄命令：保存对话框 + 复制到剪贴板
+
+`crates/desktop/src/clipboard_commands.rs` 新增两条薄命令：
+
+```rust
+#[tauri::command]
+pub async fn save_image_dialog(png_base64: String, app_handle: AppHandle) -> Result<(), String> {
+    // tauri_plugin_dialog::DialogExt save dialog → 写 PNG 字节。
+    // 实现与 screenshot_commands::save_screenshot_dialog 等价（可抽公共 fn write_png_dialog(ah, base64)）。
+}
+
+#[tauri::command]
+pub async fn copy_image_to_clipboard(
+    png_base64: String,
+    handle: State<'_, Arc<ClipboardHandle>>,
+) -> Result<(), String> {
+    // base64 decode → RustImageData::from_bytes → handle.set_image（写系统剪贴板）。
+    // 与条目行 copy_clipboard_item 区别：这里写的是 composeAnnotated 合成的「带标注图」，非原图。
+}
+```
+
+两条都注册到 `generate_handler!`。
+
+## 4. 数据流
+
+```
+ClipboardItem 缩略图 click
+  │ invoke open_image_preview(imageId)          // mode 默认 "preview"
+  ▼
+image_preview_commands::open_image_preview
+  │ PENDING = { imageId, mode:"preview" }
+  │ 建窗(首次) 或 emit load + focus(已存在)
+  ▼
+ImagePreview mount ──get_pending_image──► PENDING.take()
+  │ invoke get_image_full(imageId) → webp dataUrl → bgImg
+  │ 计算显示尺寸 → canvas 就绪
+  │ 工具栏选工具 → 画标注（存原始像素坐标）→ 撤销/选中移动
+  │ 保存: composeAnnotated() → save_image_dialog
+  │ 复制: composeAnnotated() → copy_image_to_clipboard（带标注图进系统剪贴板）
+  │ OCR:  ocr_image(imageId) → openCompactEditor → set_clipboard_item_text 回写
+  │ 置顶: getCurrentWindow().setAlwaysOnTop(b)
+  ▼
+关闭 → close_image_preview → 销毁窗（macOS 切回 Accessory）
+```
+
+## 5. 入口（`ClipboardItem.tsx`）
+
+剪贴板图片条目（`item.item_type === "image"`）的缩略图改为可点击：
+
+- 当前缩略图 `<img>`（ClipboardItem.tsx:196）外包一层 `button`（或直接给 img 加 onClick），`onClick` → `e.stopPropagation()` + `invoke("open_image_preview", { imageId: item.id })`。
+- 光标 `cursor-zoom-in`，`title="点击预览"`，hover 轻微放大（`hover:scale-105 transition`）。
+- 单击预览**不**与「双击粘贴」「单击选中」冲突：缩略图是独立点击目标，`stopPropagation` 拦住行级 click/dblclick。
+
+> Settings 剪贴板页（`ClipboardPanel.tsx`）若同样展示图片缩略图，后续按相同模式接入（次要，可在 plan 末尾追加）。
+
+## 6. 错误处理与边界
+
+| 场景 | 处理 |
+|---|---|
+| 原图缺失（`get_image_blob` 返回 None） | `get_image_full` `Err("图片数据不存在")` → 前端画布区显示「图片数据缺失」+ 关闭按钮 |
+| 并发再开（A 预览中，B 再开） | 后端 emit load 推 B 的 `{imageId}`；A 的内容被替换（单例，预览是短时操作，可接受） |
+| ACL 未授权 | `image_preview_window` 必须在 capability `windows` 数组（§3.1）；前端跨窗口 emit/invoke 一律 `await`+`try/catch`，拒绝时显式日志（不静默吞） |
+| 大图 base64 经 IPC | 原图已存 WebP（有压），可接受；缩略图仍用于列表，仅预览时拉原图 |
+| WebP 解码 | 浏览器原生支持 WebP，dataUrl 直接渲染 |
+| 窗口缩放 | 显示尺寸随 resize 重算，标注按原始像素坐标自动跟随缩放（不变形） |
+| 文字标注 IME | 用 `<textarea>` 浮层（IME 安全），与截图文字标注一致 |
+| 标注未持久化 | 关窗即失；保存走导出新图（已在 §2 声明） |
+
+## 7. 测试
+
+**后端单测（`image_preview_commands.rs`）：**
+- `open_image_preview` 写 PENDING → `get_pending_image` 读回正确 `{imageId, mode}` 并 take 清空（镜像 compact_editor 测试）。
+- `get_image_full`：内存 DB 插 image_data → 取回正确 base64（镜像 `get_image_thumb` 测试）。
+
+**共享核心单测（`lib/annotation.ts`，纯函数易测）：**
+- `drawAnnotationScaled` 的 scale 正确缩放坐标/线宽/字号（用 mock ctx 断言调用参数）。
+- `annBounds` 各类型返回正确包围盒；`hitTestAnnotationPrecise` 空心标注命中边、不命中内部。
+- 回归保障：截图改 import 后，截图既有行为不变（靠 e2e 兜，见下）。
+
+**前端组件（ImagePreview / Toolbar）：**
+- Toolbar：工具单选互斥、置顶 toggle 切换、OCR loading 态、属性浮窗显隐（mock invoke/emit）。
+
+**e2e（手动，跨窗口 + canvas + IME，单测覆盖不到）：**
+1. 剪贴板图片条目 → 单击缩略图 → 预览窗打开、显示原图。
+2. 画矩形/椭圆/直线/文字标注 → 显示正确 → 撤销撤销 → 选中移动 → 双击改文字。
+3. 保存 → 对话框 → 文件内容含标注；复制 → 系统剪贴板含带标注图（粘贴到别处验证）。
+4. OCR → 文本进编辑器 → 保存回写剪贴板条目 search_text。
+5. 置顶 → 窗口浮于其他应用之上。
+6. Esc / 关闭按钮 → 窗销毁，macOS Dock 图标切回。
+7. 回归：截图工具栏标注功能仍正常（抽取未破坏截图）。
+
+## 8. 文档同步
+
+- `docs/architecture.md`：窗口列表 + `image_preview_window`；命令清单 + `open_image_preview` / `get_pending_image` / `close_image_preview` / `get_image_full` / `save_image_dialog` / `copy_image_to_clipboard`；前端模块树 + `lib/annotation.ts`（共享标注核心）、`pages/ImagePreview/`。
+- 本 spec → `docs/superpowers/plans/2026-07-01-image-preview.md`（writing-plans 产出）。
+- `docs/superpowers/specs/2026-06-30-compact-editor-design.md`：可在末尾加一行「图片预览窗复用同款窗口/PENDING 模式」交叉引用（可选）。
+
+## 9. 贴图模式（形态②）—— 未来，仅留基础
+
+**目标长相**（用户参考图，Snipaste 风格）：无边框、透明、置顶；就一张带阴影的图；hover 时右上角浮出「×关闭 / 📌钉住」、右下角缩放比例。
+
+**本需求已为其留的基础：**
+- `lib/annotation.ts` 共享标注核心——贴图窗将来可直接复用（贴图上也能标注）。
+- `get_image_full` 命令——贴图窗加载图片用同一个。
+- `PendingImage.mode` 字段——`"pin"` 分支预留（窗口创建按 mode 切 `decorations(false)/transparent/always_on_top`，现仅 preview 分支）。
+- 项目已有的透明无边框置顶 + 点击穿透机器（`result_window.rs` 的 `start_click_through_poller` / `setIgnoresMouseEvents` / CSS 伪装尺寸）——贴图窗的「钉屏 + hover 显隐工具栏」可复用这套。
+
+**本需求不做**：不建 `image_pin_window`、不写贴图交互、不接入截图「钉住」按钮。截图工具栏的「钉住」入口属截图功能域，未来单独立项。
+
+**多实例说明**：预览是单例（短时操作）；贴图将来需多实例（每张钉图一个窗），届时用「label 加后缀」或独立 label 方案，不影响本期预览。
