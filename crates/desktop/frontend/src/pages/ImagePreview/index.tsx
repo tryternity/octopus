@@ -24,6 +24,7 @@ const ZOOM_STEP = 1.25;
 export default function ImagePreview() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
+  const scrollContainerRef = useRef<HTMLDivElement>(null);
 
   const [imageId, setImageId] = useState<number | null>(null);
   const [dataUrl, setDataUrl] = useState<string | null>(null);
@@ -31,6 +32,8 @@ export default function ImagePreview() {
   const [natH, setNatH] = useState(0);
   // zoom 倍率，1.0 = 1:1 自然分辨率（默认）
   const [zoom, setZoom] = useState(1);
+  // 抓手平移中（tool==="none" 未命中标注时按住拖拽平移视口，免拖滚动条）
+  const [panning, setPanning] = useState(false);
 
   const [tool, setTool] = useState<Tool>("none");
   const [toolColor, setToolColor] = useState("#ef4444");
@@ -138,6 +141,29 @@ export default function ImagePreview() {
     setTextDraft(null);
   };
 
+  // 抓手平移：tool==="none" 未命中标注时，按住拖动平移滚动视口（免拖滚动条）。
+  // 用 window 监听 mousemove/up，鼠标移出 canvas 仍跟随。
+  const startPan = (e: React.MouseEvent) => {
+    const sc = scrollContainerRef.current;
+    if (!sc) return;
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startLeft = sc.scrollLeft;
+    const startTop = sc.scrollTop;
+    setPanning(true);
+    const onMove = (ev: MouseEvent) => {
+      sc.scrollLeft = startLeft - (ev.clientX - startX);
+      sc.scrollTop = startTop - (ev.clientY - startY);
+    };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      setPanning(false);
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   const onMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
     const { cssX, cssY } = canvasCoords(e);
@@ -152,6 +178,9 @@ export default function ImagePreview() {
       const idx = hitTestAnnotationPrecise(nx, ny, annotations);
       if (idx != null) {
         dragRef.current = { idx, dx: nx - annotations[idx].x1, dy: ny - annotations[idx].y1 };
+      } else {
+        // 未命中标注 → 抓手拖拽平移视口
+        startPan(e);
       }
       return;
     }
@@ -289,14 +318,14 @@ export default function ImagePreview() {
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
       />
       {/* 滚动容器：图片大于视口时自动出上下/左右滚动条；小于则居中 */}
-      <div className="relative flex-1 overflow-auto">
+      <div ref={scrollContainerRef} className="relative flex-1 overflow-auto">
         <div className="flex min-h-full min-w-full items-center justify-center p-4">
           {/* canvas wrapper：relative 让 textarea 相对 canvas 定位、随滚动移动 */}
           <div className="relative" style={{ width: dispW || undefined, height: dispH || undefined }}>
             <canvas
               ref={canvasRef}
               className="block"
-              style={{ width: dispW, height: dispH, cursor: tool === "none" ? "default" : "crosshair" }}
+              style={{ width: dispW, height: dispH, cursor: tool === "none" ? (panning ? "grabbing" : "grab") : "crosshair" }}
               onMouseDown={onMouseDown}
               onMouseMove={onMouseMove}
               onMouseUp={onMouseUp}
