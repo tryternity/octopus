@@ -337,7 +337,7 @@ impl NotepadView {
     }
 }
 
-/// 文本编辑区：标签 + multiline TextEdit（满高占满视口）。changed 时置 dirty + last_edit
+/// 文本编辑区：标签 + 可滚动 multiline TextEdit。changed 时置 dirty + last_edit
 /// （防抖 flush_if_dirty 依赖 last_edit，仅置 dirty 不置 last_edit 会导致永不落库）。
 fn editor_pane(
     ui: &mut egui::Ui,
@@ -348,18 +348,31 @@ fn editor_pane(
 ) {
     ui.label(egui::RichText::new(label).small().color(crate::theme::MUTED).strong());
     ui.add_space(2.0);
-    // 编辑器满高占满视口。egui fixed-height TextEdit 内容超出时，光标自动 scroll_to_cursor 跟入
-    // 视野（输入 / 键盘上下移动光标即可查看全部内容），但无鼠标滚动条（egui TextEdit 不响应滚轮，
-    // text_offset 为 pub(crate) 无法外部调整）。取「能编辑」优先于「鼠标滚动条」，后者待后续。
-    let height = ui.available_height().max(80.0);
-    let resp = ui.add_sized(
-        egui::vec2(ui.available_width(), height),
-        egui::TextEdit::multiline(body).desired_width(f32::INFINITY),
-    );
-    if resp.changed() {
-        *dirty = true;
-        *last_edit = Some(Instant::now());
-    }
+    // 【诊断中】egui demo 写法：ScrollArea + multiline TextEdit（按内容 grow，不设 desired_rows）。
+    // 之前 desired_rows(min_rows) 强制占满视口高度，疑似导致 GUI 真实窗口里 TextEdit 交互 rect 与
+    // ScrollArea viewport 错位、点击毫无反应（headless 测试模拟点击零位移测不出）。先去 desired_rows
+    // 验证，并打印交互日志定位真根因。
+    egui::ScrollArea::vertical()
+        .auto_shrink([false; 2])
+        .show(ui, |ui| {
+            let resp = ui.add(
+                egui::TextEdit::multiline(body).desired_width(f32::INFINITY),
+            );
+            // 诊断日志：仅 hovered/clicked 时打印，看 pointer 是否命中 TextEdit rect、click 是否触发
+            if resp.hovered() || resp.clicked() {
+                log::info!(
+                    "[editor_diag] hovered={} clicked={} rect={:?} pointer={:?}",
+                    resp.hovered(),
+                    resp.clicked(),
+                    resp.rect,
+                    ui.input(|i| i.pointer.interact_pos())
+                );
+            }
+            if resp.changed() {
+                *dirty = true;
+                *last_edit = Some(Instant::now());
+            }
+        });
 }
 
 /// 5 按钮工具栏：点按钮在末尾插入 md 语法标记。
