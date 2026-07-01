@@ -1,5 +1,5 @@
-use anyhow::{Context, Result};
-use image::{GrayImage, GenericImage, RgbaImage};
+use anyhow::Result;
+use image::RgbaImage;
 
 // ===== 拼接算法常量（原散落在 find_overlap_spatial_ext 与 process_frame 中的魔法数字）=====
 
@@ -74,9 +74,14 @@ impl Default for StitchConfig {
 
 /// 滚动截屏拼接器——全局 2D 空间模板匹配 (SAD) + 软速度罚分 + Finalize 补缝。
 pub struct Stitcher {
-    canvas: RgbaImage,
-    /// 2D 灰度参考帧，用于空间模板匹配
-    reference_gray: GrayImage,
+    canvas_w: u32,
+    canvas_h: u32,
+    /// 连续 RGBA 画布数据（真实数据源，增量 extend 追加）。
+    canvas_buf: Vec<u8>,
+    /// 惰性重建缓存。append 后置 None，canvas() 调用时按需重建。
+    canvas_cache: std::cell::UnsafeCell<Option<RgbaImage>>,
+    /// 灰度参考帧（连续 buffer），用于空间模板匹配
+    reference: GrayBuf,
     sticky_top: u32,
     sticky_bottom: u32,
     detected: bool,
@@ -87,9 +92,14 @@ pub struct Stitcher {
 
 impl Stitcher {
     pub fn new(first_frame: RgbaImage, config: StitchConfig) -> Self {
+        let w = first_frame.width();
+        let h = first_frame.height();
         Self {
-            canvas: first_frame,
-            reference_gray: GrayImage::new(0, 0),
+            canvas_w: w,
+            canvas_h: h,
+            canvas_buf: first_frame.into_raw(),
+            canvas_cache: std::cell::UnsafeCell::new(None),
+            reference: GrayBuf { data: Vec::new(), width: 0, height: 0 },
             sticky_top: 0,
             sticky_bottom: 0,
             detected: false,
@@ -104,18 +114,16 @@ impl Stitcher {
         if !self.detected {
             self.detect_sticky(frame);
             self.detected = true;
-            // 裁掉画布（首帧）的 sticky 区域，只保留有效内容
-            let eff_top0 = self.sticky_top;
-            let eff_bottom0 = self.canvas.height().saturating_sub(self.sticky_bottom);
-            let w = self.canvas.width();
-            if eff_bottom0 > eff_top0 {
-                // 仅裁掉底部的 sticky_bottom 区域，保留顶部的 sticky_top 区域
-                let cropped = image::imageops::crop_imm(&self.canvas.clone(), 0, 0, w, eff_bottom0).to_image();
-                self.canvas = cropped;
+            // 裁掉画布（首帧）的 sticky_bottom 区域，保留 sticky_top。
+            let eff_bottom0 = self.canvas_h.saturating_sub(self.sticky_bottom);
+            if eff_bottom0 > self.sticky_top {
+                self.canvas_buf.truncate(eff_bottom0 as usize * self.canvas_w as usize * 4);
+                self.canvas_h = eff_bottom0;
+                self.invalidate_cache();
             }
-            // 用第二帧初始化参考帧灰度图
-            self.reference_gray = image::imageops::grayscale(frame);
-    
+            // 用第二帧初始化参考灰度
+            self.reference = GrayBuf::from_rgba(frame);
+
             return Ok(false); // 第二帧用于初始化，不拼接
         }
 
@@ -125,25 +133,14 @@ impl Stitcher {
             return Ok(false);
         }
 
-        let curr_gray = image::imageops::grayscale(frame);
+        let curr_buf = GrayBuf::from_rgba(frame);
 
         let x_start = (w as f64 * X_START_RATIO) as u32;
         let x_end = (w as f64 * X_END_RATIO) as u32;
 
         let max_scroll = MAX_SCROLL;
-        // Task 7 过渡：临时从 GrayImage 转 GrayBuf（Task 8 改字段后消除）
-        let ref_buf = GrayBuf {
-            data: self.reference_gray.as_raw().clone(),
-            width: self.reference_gray.width() as usize,
-            height: self.reference_gray.height() as usize,
-        };
-        let curr_buf = GrayBuf {
-            data: curr_gray.as_raw().clone(),
-            width: curr_gray.width() as usize,
-            height: curr_gray.height() as usize,
-        };
         let (dy, confidence) = match find_overlap_spatial_ext(
-            &ref_buf,
+            &self.reference,
             &curr_buf,
             x_start,
             x_end,
@@ -178,26 +175,50 @@ impl Stitcher {
         }
 
         log::info!("[stitch] dy={:.1} conf={:.4} new_rows={} eff=[{},{}] canvas_h={}",
-            dy, confidence, new_rows, eff_top, eff_bottom, self.canvas.height());
+            dy, confidence, new_rows, eff_top, eff_bottom, self.canvas_h);
 
+        // 增量追加：从 frame 直接切出 new_rows 行 RGBA，extend 到 canvas_buf
         let crop_y = eff_bottom - new_rows;
-        let new_content = image::imageops::crop_imm(frame, 0, crop_y, w, new_rows).to_image();
+        let row_bytes = w as usize * 4;
+        let start = crop_y as usize * row_bytes;
+        let end = start + new_rows as usize * row_bytes;
+        let frame_raw = frame.as_raw();
+        self.canvas_buf.extend_from_slice(&frame_raw[start..end]);
+        self.canvas_h += new_rows;
+        self.invalidate_cache();
 
-        let old_h = self.canvas.height();
-        let mut combined = RgbaImage::new(w, old_h + new_rows);
-        combined.copy_from(&self.canvas, 0, 0).context("canvas copy")?;
-        combined.copy_from(&new_content, 0, old_h).context("new_rows copy")?;
-        self.canvas = combined;
-
-        // 更新参考灰度图与速度缓存
-        self.reference_gray = curr_gray;
+        // 更新参考灰度与速度缓存
+        self.reference = curr_buf;
         self.last_dy = Some(dy);
 
         Ok(true)
     }
 
-    pub fn canvas(&self) -> &RgbaImage { &self.canvas }
-    pub fn height(&self) -> u32 { self.canvas.height() }
+    /// 使画布缓存失效。每次 append/truncate 后调用。
+    #[inline]
+    fn invalidate_cache(&mut self) {
+        // 安全：&mut self 保证独占访问，UnsafeCell 内部可安全写 None
+        unsafe {
+            *self.canvas_cache.get() = None;
+        }
+    }
+
+    pub fn canvas(&self) -> &RgbaImage {
+        // 惰性重建：cache 为 None（append 后 invalidate）时从 canvas_buf 重建。
+        // 因调用端总是 .clone()，借用不跨多次 append 存活，无生命周期问题。
+        // 安全：单线程访问，UnsafeCell 用于 &self 下的惰性初始化。
+        unsafe {
+            let slot = self.canvas_cache.get();
+            if (*slot).is_none() {
+                let rebuilt = RgbaImage::from_raw(self.canvas_w, self.canvas_h, self.canvas_buf.clone())
+                    .expect("canvas_buf 长度与 canvas_w/h 不匹配");
+                *slot = Some(rebuilt);
+            }
+            (*slot).as_ref().unwrap()
+        }
+    }
+
+    pub fn height(&self) -> u32 { self.canvas_h }
 
     pub fn finalize(&mut self, last_frame: &RgbaImage) -> Result<()> {
         let h = last_frame.height();
@@ -209,25 +230,14 @@ impl Stitcher {
         }
 
         // 1. 尝试将最后一帧与参考帧对齐，补全因为丢帧/快速滑动积累的剩余未拼接区域
-        let last_gray = image::imageops::grayscale(last_frame);
+        let last_buf = GrayBuf::from_rgba(last_frame);
         let x_start = (w as f64 * X_START_RATIO) as u32;
         let x_end = (w as f64 * X_END_RATIO) as u32;
 
         // 允许最大对齐位移为有效高度的 90%
         let max_finalize_scroll = ((eff_bottom - eff_top) as f64 * 0.90) as u32;
-        // Task 7 过渡：临时从 GrayImage 转 GrayBuf（Task 8 改字段后消除）
-        let ref_buf = GrayBuf {
-            data: self.reference_gray.as_raw().clone(),
-            width: self.reference_gray.width() as usize,
-            height: self.reference_gray.height() as usize,
-        };
-        let last_buf = GrayBuf {
-            data: last_gray.as_raw().clone(),
-            width: last_gray.width() as usize,
-            height: last_gray.height() as usize,
-        };
         if let Some((dy, confidence)) = find_overlap_spatial_ext(
-            &ref_buf,
+            &self.reference,
             &last_buf,
             x_start,
             x_end,
@@ -241,12 +251,13 @@ impl Stitcher {
                 if new_rows < eff_bottom - eff_top {
                     log::info!("[stitch] finalize: stitching remaining {} rows (conf={:.4})", new_rows, confidence);
                     let crop_y = eff_bottom - new_rows;
-                    let new_content = image::imageops::crop_imm(last_frame, 0, crop_y, w, new_rows).to_image();
-                    let old_h = self.canvas.height();
-                    let mut combined = RgbaImage::new(w, old_h + new_rows);
-                    combined.copy_from(&self.canvas, 0, 0).context("finalize copy canvas")?;
-                    combined.copy_from(&new_content, 0, old_h).context("finalize copy new_rows")?;
-                    self.canvas = combined;
+                    let row_bytes = w as usize * 4;
+                    let start = crop_y as usize * row_bytes;
+                    let end = start + new_rows as usize * row_bytes;
+                    let frame_raw = last_frame.as_raw();
+                    self.canvas_buf.extend_from_slice(&frame_raw[start..end]);
+                    self.canvas_h += new_rows;
+                    self.invalidate_cache();
                 }
             }
         }
@@ -254,30 +265,32 @@ impl Stitcher {
         // 2. 补全最后一帧的 sticky_bottom 区域
         let footer_h = h - eff_bottom;
         if footer_h > 0 {
-            let footer = image::imageops::crop_imm(last_frame, 0, eff_bottom, w, footer_h).to_image();
-            let old_h = self.canvas.height();
-            let mut combined = RgbaImage::new(w, old_h + footer_h);
-            combined.copy_from(&self.canvas, 0, 0).context("finalize canvas footer")?;
-            combined.copy_from(&footer, 0, old_h).context("finalize footer")?;
-            self.canvas = combined;
+            let row_bytes = w as usize * 4;
+            let start = eff_bottom as usize * row_bytes;
+            let end = start + footer_h as usize * row_bytes;
+            let frame_raw = last_frame.as_raw();
+            self.canvas_buf.extend_from_slice(&frame_raw[start..end]);
+            self.canvas_h += footer_h;
+            self.invalidate_cache();
         }
 
         Ok(())
     }
 
     fn detect_sticky(&mut self, frame: &RgbaImage) {
-        let (w, ch) = (self.canvas.width(), self.canvas.height());
+        let w = self.canvas_w;
+        let ch = self.canvas_h;
         let fh = frame.height();
         let cmp_h = ch.min(fh);
         let mut sticky_t = 0u32;
         for y in 0..cmp_h.min(STICKY_DETECT_MAX) {
-            if rows_equal(&self.canvas, frame, y, y, w) { sticky_t = y + 1; }
+            if rows_equal_buf(&self.canvas_buf, w, frame, y, y) { sticky_t = y + 1; }
             else { break; }
         }
         let mut sticky_b = 0u32;
         for y in 0..cmp_h.min(STICKY_DETECT_MAX) {
             let ya = cmp_h - 1 - y;
-            if rows_equal(&self.canvas, frame, ya, ya, w) { sticky_b = y + 1; }
+            if rows_equal_buf(&self.canvas_buf, w, frame, ya, ya) { sticky_b = y + 1; }
             else { break; }
         }
         self.sticky_top = sticky_t;
@@ -475,11 +488,15 @@ fn sparse_sad_at_offset(
     if count > 0 { sad as f64 / count as f64 } else { 0.0 }
 }
 
-fn rows_equal(a: &RgbaImage, b: &RgbaImage, ya: u32, yb: u32, w: u32) -> bool {
-    for x in 0..w {
-        if a.get_pixel(x, ya) != b.get_pixel(x, yb) { return false; }
-    }
-    true
+/// 比较连续 RGBA buffer 的 ya 行 与 RgbaImage 的 yb 行是否逐像素相等。
+fn rows_equal_buf(a: &[u8], a_w: u32, b: &RgbaImage, ya: u32, yb: u32) -> bool {
+    let row_bytes = a_w as usize * 4;
+    let a_start = ya as usize * row_bytes;
+    let a_row = &a[a_start..a_start + row_bytes];
+    let b_raw = b.as_raw();
+    let b_start = yb as usize * row_bytes;
+    let b_row = &b_raw[b_start..b_start + row_bytes];
+    a_row == b_row
 }
 
 #[cfg(test)]
