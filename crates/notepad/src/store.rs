@@ -4,7 +4,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 
-use crate::model::{Note, NoteFilter, NoteSource};
+use crate::model::{Note, NoteFilter, NoteSource, NoteType};
 use crate::serialize::extract_text;
 
 // ── 时间辅助（与 infra/clipboard 一致的手写实现，避免 chrono 依赖）──
@@ -69,7 +69,7 @@ pub fn list_notes_at(conn: &Connection, filter: &NoteFilter) -> Result<Vec<Note>
 
     let sql = format!(
         "SELECT id, title, content_html, content_text, source, source_ref_id,
-                is_pinned, is_favorite, created_at, updated_at
+                is_pinned, is_favorite, created_at, updated_at, type
          FROM notes
          {}
          ORDER BY is_pinned DESC, updated_at DESC, id DESC
@@ -93,7 +93,7 @@ fn query_with_search(
         let pattern = format!("%{}%", search);
         let sql = format!(
             "SELECT id, title, content_html, content_text, source, source_ref_id,
-                    is_pinned, is_favorite, created_at, updated_at
+                    is_pinned, is_favorite, created_at, updated_at, type
              FROM notes
              WHERE (content_text LIKE ? OR IFNULL(title,'') LIKE ?)
              {}
@@ -110,7 +110,7 @@ fn query_with_search(
     let phrase = format!("\"{}\"", search.replace('"', "\"\""));
     let sql = format!(
         "SELECT n.id, n.title, n.content_html, n.content_text, n.source, n.source_ref_id,
-                n.is_pinned, n.is_favorite, n.created_at, n.updated_at
+                n.is_pinned, n.is_favorite, n.created_at, n.updated_at, n.type
          FROM notes_fts f JOIN notes n ON n.id = f.rowid
          WHERE notes_fts MATCH ?
          {}
@@ -181,11 +181,13 @@ fn build_where(filter: &NoteFilter) -> String {
 
 fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
     let source_str: String = row.get(4)?;
+    let type_str: String = row.get(10)?;
     Ok(Note {
         id: row.get(0)?,
         title: row.get(1)?,
         content_html: row.get(2)?,
         content_text: row.get(3)?,
+        note_type: NoteType::from_str(&type_str),
         source: NoteSource::from_str(&source_str),
         source_ref_id: row.get(5)?,
         is_pinned: row.get::<_, i64>(6)? != 0,
@@ -203,7 +205,7 @@ pub fn get_note(id: i64) -> Result<Option<Note>> {
 pub fn get_note_at(conn: &Connection, id: i64) -> Result<Option<Note>> {
     let mut stmt = conn.prepare(
         "SELECT id, title, content_html, content_text, source, source_ref_id,
-                is_pinned, is_favorite, created_at, updated_at
+                is_pinned, is_favorite, created_at, updated_at, type
          FROM notes WHERE id = ?",
     )?;
     match stmt.query_row(params![id], row_to_note) {
@@ -213,41 +215,62 @@ pub fn get_note_at(conn: &Connection, id: i64) -> Result<Option<Note>> {
     }
 }
 
-/// 新建笔记。content_text 由 initial_html 抽取；title 初始为 NULL。
+/// 新建笔记。type=Html 时 content_text 由 body(html) 抽取；text/markdown 时 content_text=body 原文。
 /// 返回新 id（AUTOINCREMENT last_insert_rowid）。
-pub fn create_note(source: NoteSource, source_ref_id: Option<i64>, initial_html: &str) -> Result<i64> {
-    octopus_infra::db::with_db(|conn| create_note_at(conn, source, source_ref_id, initial_html))
+pub fn create_note(
+    source: NoteSource,
+    source_ref_id: Option<i64>,
+    body: &str,
+    note_type: NoteType,
+) -> Result<i64> {
+    octopus_infra::db::with_db(|conn| create_note_at(conn, source, source_ref_id, body, note_type))
 }
 
 pub fn create_note_at(
     conn: &Connection,
     source: NoteSource,
     source_ref_id: Option<i64>,
-    initial_html: &str,
+    body: &str,
+    note_type: NoteType,
 ) -> Result<i64> {
-    let content_text = extract_text(initial_html);
+    let (content_html, content_text) = split_body(body, note_type);
     let now = iso_now();
     conn.execute(
-        "INSERT INTO notes (title, content_html, content_text, source, source_ref_id, is_pinned, is_favorite, created_at, updated_at)
-         VALUES (NULL, ?, ?, ?, ?, 0, 0, ?, ?)",
-        params![initial_html, content_text, source.as_str(), source_ref_id, now, now],
+        "INSERT INTO notes (title, content_text, content_html, type, source, source_ref_id, is_pinned, is_favorite, created_at, updated_at)
+         VALUES (NULL, ?, ?, ?, ?, ?, 0, 0, ?, ?)",
+        params![content_text, content_html, note_type.as_str(), source.as_str(), source_ref_id, now, now],
     )
     .context("insert note")?;
     Ok(conn.last_insert_rowid())
 }
 
-/// 更新正文/标题。content_text 由 content_html 重抽；updated_at = now。
-/// title 空串 → 存 NULL（列表显示用 content_text 截取）。
-pub fn update_note(id: i64, title: &str, content_html: &str) -> Result<()> {
-    octopus_infra::db::with_db(|conn| update_note_at(conn, id, title, content_html))
+/// 按 type 拆 body → (content_html, content_text)。
+/// Html：html 存原始，text 存抽取纯文本。Text/Markdown：text 存原文/源码，html 空。
+fn split_body(body: &str, note_type: NoteType) -> (String, String) {
+    match note_type {
+        NoteType::Html => (body.to_string(), extract_text(body)),
+        NoteType::Text | NoteType::Markdown => (String::new(), body.to_string()),
+    }
 }
 
-pub fn update_note_at(conn: &Connection, id: i64, title: &str, content_html: &str) -> Result<()> {
-    let content_text = extract_text(content_html);
+/// 更新正文/标题。type=Html 时 content_text 由 body(html) 重抽；text/markdown 直存原文。updated_at = now。
+/// title 空串 → 存 NULL（列表显示用 content_text 截取）。
+pub fn update_note(id: i64, title: &str, body: &str, note_type: NoteType) -> Result<()> {
+    octopus_infra::db::with_db(|conn| update_note_at(conn, id, title, body, note_type))
+}
+
+pub fn update_note_at(
+    conn: &Connection,
+    id: i64,
+    title: &str,
+    body: &str,
+    note_type: NoteType,
+) -> Result<()> {
+    let (content_html, content_text) = split_body(body, note_type);
     let title_db: Option<&str> = if title.trim().is_empty() { None } else { Some(title) };
     conn.execute(
-        "UPDATE notes SET title = ?, content_html = ?, content_text = ?, updated_at = ? WHERE id = ?",
-        params![title_db, content_html, content_text, iso_now(), id],
+        "UPDATE notes SET title = ?, content_text = ?, content_html = ?, type = ?, updated_at = ? WHERE id = ?",
+        params![title_db, content_text, content_html, note_type.as_str(), iso_now(), id],
     )?;
     Ok(())
 }
@@ -315,7 +338,7 @@ mod tests {
     #[test]
     fn create_and_get_roundtrip() {
         let conn = open_test_db();
-        let id = create_note_at(&conn, NoteSource::Asr, Some(123), "<p>识别文本</p>").unwrap();
+        let id = create_note_at(&conn, NoteSource::Asr, Some(123), "<p>识别文本</p>", NoteType::Html).unwrap();
         assert!(id > 0);
         let note = get_note_at(&conn, id).unwrap().unwrap();
         assert_eq!(note.content_html, "<p>识别文本</p>");
@@ -328,13 +351,13 @@ mod tests {
     #[test]
     fn update_rextracts_text_and_handles_title() {
         let conn = open_test_db();
-        let id = create_note_at(&conn, NoteSource::Manual, None, "").unwrap();
-        update_note_at(&conn, id, "我的标题", "<p>第一段</p><p>第二段</p>").unwrap();
+        let id = create_note_at(&conn, NoteSource::Manual, None, "", NoteType::Html).unwrap();
+        update_note_at(&conn, id, "我的标题", "<p>第一段</p><p>第二段</p>", NoteType::Html).unwrap();
         let note = get_note_at(&conn, id).unwrap().unwrap();
         assert_eq!(note.title.as_deref(), Some("我的标题"));
         assert_eq!(note.content_text, "第一段\n第二段");
         // 空标题 → NULL
-        update_note_at(&conn, id, "   ", "<p>x</p>").unwrap();
+        update_note_at(&conn, id, "   ", "<p>x</p>", NoteType::Html).unwrap();
         let note = get_note_at(&conn, id).unwrap().unwrap();
         assert!(note.title.is_none());
     }
@@ -342,8 +365,8 @@ mod tests {
     #[test]
     fn fts_search_three_chars() {
         let conn = open_test_db();
-        create_note_at(&conn, NoteSource::Manual, None, "<p>今天天气很好</p>").unwrap();
-        create_note_at(&conn, NoteSource::Manual, None, "<p>不相关内容</p>").unwrap();
+        create_note_at(&conn, NoteSource::Manual, None, "<p>今天天气很好</p>", NoteType::Html).unwrap();
+        create_note_at(&conn, NoteSource::Manual, None, "<p>不相关内容</p>", NoteType::Html).unwrap();
         let mut filter = f();
         filter.search = Some("今天天气".into()); // ≥3 字符 → FTS
         let rows = list_notes_at(&conn, &filter).unwrap();
@@ -355,7 +378,7 @@ mod tests {
     #[test]
     fn like_fallback_short_query() {
         let conn = open_test_db();
-        create_note_at(&conn, NoteSource::Manual, None, "<p>hello world</p>").unwrap();
+        create_note_at(&conn, NoteSource::Manual, None, "<p>hello world</p>", NoteType::Html).unwrap();
         let mut filter = f();
         filter.search = Some("el".into()); // <3 字符 → LIKE
         let rows = list_notes_at(&conn, &filter).unwrap();
@@ -365,8 +388,8 @@ mod tests {
     #[test]
     fn filter_by_source_and_favorite() {
         let conn = open_test_db();
-        let a = create_note_at(&conn, NoteSource::Asr, None, "<p>a</p>").unwrap();
-        let _b = create_note_at(&conn, NoteSource::Ocr, None, "<p>b</p>").unwrap();
+        let a = create_note_at(&conn, NoteSource::Asr, None, "<p>a</p>", NoteType::Html).unwrap();
+        let _b = create_note_at(&conn, NoteSource::Ocr, None, "<p>b</p>", NoteType::Html).unwrap();
         toggle_favorite_at(&conn, a).unwrap();
 
         let mut sf = f();
@@ -382,8 +405,8 @@ mod tests {
     fn pinned_sorts_first() {
         let conn = open_test_db();
         // 同一秒写入（iso_now 秒级精度），靠 is_pinned DESC 优先
-        let first = create_note_at(&conn, NoteSource::Manual, None, "<p>first</p>").unwrap();
-        let second = create_note_at(&conn, NoteSource::Manual, None, "<p>second</p>").unwrap();
+        let first = create_note_at(&conn, NoteSource::Manual, None, "<p>first</p>", NoteType::Html).unwrap();
+        let second = create_note_at(&conn, NoteSource::Manual, None, "<p>second</p>", NoteType::Html).unwrap();
         toggle_pinned_at(&conn, first).unwrap();
         let rows = list_notes_at(&conn, &f()).unwrap();
         // pinned 的 first 应在 second 之前（即便 second 更新更晚）
@@ -394,7 +417,7 @@ mod tests {
     #[test]
     fn delete_batch_and_empty() {
         let conn = open_test_db();
-        let ids: Vec<i64> = (0..3).map(|_| create_note_at(&conn, NoteSource::Manual, None, "<p>x</p>").unwrap()).collect();
+        let ids: Vec<i64> = (0..3).map(|_| create_note_at(&conn, NoteSource::Manual, None, "<p>x</p>", NoteType::Html).unwrap()).collect();
         let n = delete_notes_at(&conn, &ids[0..2]).unwrap();
         assert_eq!(n, 2);
         assert_eq!(count_notes_at(&conn, &f()).unwrap(), 1);
@@ -404,17 +427,67 @@ mod tests {
     #[test]
     fn fts_triggers_sync_on_update_and_delete() {
         let conn = open_test_db();
-        let id = create_note_at(&conn, NoteSource::Manual, None, "<p>旧内容关键字</p>").unwrap();
+        let id = create_note_at(&conn, NoteSource::Manual, None, "<p>旧内容关键字</p>", NoteType::Html).unwrap();
         let mut filter = f();
         filter.search = Some("关键字".into());
         assert_eq!(count_notes_at(&conn, &filter).unwrap(), 1);
         // update 改掉关键字 → FTS 不再命中
-        update_note_at(&conn, id, "", "<p>全新内容</p>").unwrap();
+        update_note_at(&conn, id, "", "<p>全新内容</p>", NoteType::Html).unwrap();
         assert_eq!(count_notes_at(&conn, &filter).unwrap(), 0);
         // delete → 计数归零
         delete_notes_at(&conn, &[id]).unwrap();
         let mut filter2 = f();
         filter2.search = Some("全新内容".into());
         assert_eq!(count_notes_at(&conn, &filter2).unwrap(), 0);
+    }
+
+    #[test]
+    fn create_note_html_extracts_text() {
+        let conn = open_test_db();
+        let id = create_note_at(&conn, NoteSource::Manual, None, "<p>富文本<b>内容</b></p>", NoteType::Html).unwrap();
+        let note = get_note_at(&conn, id).unwrap().unwrap();
+        assert_eq!(note.note_type, NoteType::Html);
+        // html 存原始 body
+        assert_eq!(note.content_html, "<p>富文本<b>内容</b></p>");
+        // content_text 为抽取的纯文本（无标签）
+        assert_eq!(note.content_text, "富文本内容");
+    }
+
+    #[test]
+    fn create_note_text_stores_raw_no_extract() {
+        let conn = open_test_db();
+        let raw = "纯文本\n第二行 <不应被解析>";
+        let id = create_note_at(&conn, NoteSource::Clipboard, None, raw, NoteType::Text).unwrap();
+        let note = get_note_at(&conn, id).unwrap().unwrap();
+        assert_eq!(note.note_type, NoteType::Text);
+        // text：content_html 空，content_text 存原文（尖括号不解析）
+        assert_eq!(note.content_html, "");
+        assert_eq!(note.content_text, raw);
+    }
+
+    #[test]
+    fn create_note_markdown_stores_source() {
+        let conn = open_test_db();
+        let md = "# 标题\n\n正文 **加粗**";
+        let id = create_note_at(&conn, NoteSource::Manual, None, md, NoteType::Markdown).unwrap();
+        let note = get_note_at(&conn, id).unwrap().unwrap();
+        assert_eq!(note.note_type, NoteType::Markdown);
+        // markdown：content_html 空，content_text 存源码（预览端渲染）
+        assert_eq!(note.content_html, "");
+        assert_eq!(note.content_text, md);
+    }
+
+    #[test]
+    fn update_note_dispatches_by_type() {
+        let conn = open_test_db();
+        // 先建 html（content_html 有值，content_text 抽取）
+        let id = create_note_at(&conn, NoteSource::Manual, None, "<p>html</p>", NoteType::Html).unwrap();
+        // 更新为 text：content_html 清空，content_text 存原文
+        update_note_at(&conn, id, "标题", "纯文本内容", NoteType::Text).unwrap();
+        let note = get_note_at(&conn, id).unwrap().unwrap();
+        assert_eq!(note.note_type, NoteType::Text);
+        assert_eq!(note.content_html, "");
+        assert_eq!(note.content_text, "纯文本内容");
+        assert_eq!(note.title.as_deref(), Some("标题"));
     }
 }
