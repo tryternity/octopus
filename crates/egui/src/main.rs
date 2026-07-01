@@ -164,4 +164,69 @@ mod tests {
             });
         });
     }
+
+    /// 回归保护（富内容）：复刻线上 show() 结构（ScrollArea + 动态列表项 + header 按钮 +
+    /// TextEdit desired_width(INFINITY) + columns 分屏），跨多帧（PanelState 持久化路径）断言
+    /// side.rect.width == 260、gap ≈ 0。背景：header 曾用 `allocate_space(available_width)` 推
+    /// 按钮到右，该 API 在 panel content ui 内返回值超出 content 区，把 horizontal min_rect 撑过
+    /// panel 宽 → frame response rect 外扩（panel 260→276，显黑区且跨帧抖）。修法：right_to_left 子布局。
+    #[test]
+    fn left_panel_with_content_stays_260() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::empty());
+        for frame in 0..6usize {
+            let n_items = 3 + frame;
+            let mut side_w = 0.0_f32;
+            let mut gap = 0.0_f32;
+            let mut body = String::from("# 标题\n\n正文");
+            body.push_str(&"很长".repeat(frame * 2));
+            let _ = ctx.run_ui(Default::default(), |ui| {
+                let side = egui::Panel::left("list")
+                    .resizable(false)
+                    .exact_size(260.0)
+                    .show_separator_line(false)
+                    .show_inside(ui, |ui| {
+                        ui.add_space(4.0);
+                        ui.horizontal(|ui| {
+                            ui.label(egui::RichText::new("笔记").strong().size(15.0));
+                            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                                let _ = ui.button("+ 新建");
+                            });
+                        });
+                        ui.add_space(6.0);
+                        ui.separator();
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            for i in 0..n_items {
+                                ui.horizontal(|ui| {
+                                    ui.label(egui::RichText::new("●").size(9.0));
+                                    let text = format!("笔记标题 {}", "长字".repeat(i + 1));
+                                    let _ = ui.selectable_label(i == 0, egui::RichText::new(&text));
+                                });
+                            }
+                        });
+                    });
+                let central = egui::CentralPanel::default().show_inside(ui, |ui| {
+                    ui.columns(2, |cols| {
+                        cols[0].vertical(|ui| {
+                            ui.add(
+                                egui::TextEdit::multiline(&mut body)
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(20),
+                            );
+                        });
+                        cols[1].vertical(|ui| {
+                            ui.label(egui::RichText::new("预览"));
+                        });
+                    });
+                });
+                side_w = side.response.rect.width();
+                gap = central.response.rect.min.x - side.response.rect.max.x;
+            });
+            assert!(
+                (side_w - 260.0).abs() < 1.0,
+                "frame={frame} 富内容下侧栏宽度 = {side_w}, 期望 260（内容不得撑大 panel）"
+            );
+            assert!(gap.abs() < 2.0, "frame={frame} panel 间隙 = {gap}, 期望 ≈0");
+        }
+    }
 }

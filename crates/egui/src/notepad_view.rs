@@ -148,12 +148,14 @@ impl NotepadView {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("笔记").strong().size(15.0));
-                // 只占剩余宽度把按钮推到右，y 用 0：available_size() 的 y 是整列高度，
-                // 在 horizontal 里会撑爆本行高度、挤压下方列表。
-                ui.allocate_space(egui::vec2(ui.available_width(), 0.0));
-                if ui.button("+ 新建").clicked() {
-                    self.create_new();
-                }
+                // 按钮推到右：用 right_to_left 子布局，而非 allocate_space(available_width)。
+                // 后者在 panel content ui 内返回值超出 content 区，把 horizontal 的 min_rect
+                // 撑过 panel 宽 → frame response rect 外扩（实测 panel 从 260 撑到 276，显黑区且会抖）。
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    if ui.button("+ 新建").clicked() {
+                        self.create_new();
+                    }
+                });
             });
             ui.add_space(6.0);
             ui.separator();
@@ -211,11 +213,13 @@ impl NotepadView {
                 if resp.changed() {
                     self.mark_dirty();
                 }
-                ui.allocate_space(egui::vec2(ui.available_width(), 0.0)); // 推「保存」到右（只占宽不撑高）
-                let label = if self.body_dirty { "保存 *" } else { "保存" };
-                if ui.button(label).clicked() {
-                    self.save_current();
-                }
+                // 保存按钮推到右：right_to_left 子布局（同 list header，避免 allocate_space 撑宽）
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    let label = if self.body_dirty { "保存 *" } else { "保存" };
+                    if ui.button(label).clicked() {
+                        self.save_current();
+                    }
+                });
             });
             ui.add_space(2.0);
             ui.separator();
