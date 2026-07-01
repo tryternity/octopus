@@ -10,7 +10,7 @@
 剪贴板文本条目已能用精简编辑器（compact editor）打开编辑。图片条目目前只能看 8×8 缩略图 + 尺寸，**无法看原图、无法在图上做标注**。本期补一个「图片预览 / 标注窗」：
 
 - 从剪贴板图片条目**单击缩略图**唤起，打开原图。
-- **浮动白卡工具栏**（对齐截图主工具栏的漂浮白卡形态）：标注工具（矩形/椭圆/直线/文字）+ 颜色·粗细属性浮窗 + 保存 + 复制 + OCR + 缩放 + 置顶（关窗走原生 × / Esc，工具栏不放关闭按钮）。
+- **浮动白卡工具栏**（对齐截图主工具栏的漂浮白卡形态）：标注工具（选择/矩形/椭圆/直线/箭头/画笔/文字）+ 颜色·粗细属性浮窗 + 保存 + 复制 + OCR + 缩放 + 置顶（关窗走原生 × / Esc，工具栏不放关闭按钮）。
 - 标注能力**复用截图工具栏已有的标注引擎**（抽取成共享模块，截图与预览共用）。
 
 用户视野里有**两种图片展示形态**，本需求只做第一种，但为第二种留好基础：
@@ -34,7 +34,7 @@
 - **贴图模式（形态②）**：无边框置顶、hover 工具栏、多实例——本需求不建窗口、不写交互，仅在 §9 文档化基础。
 - 标注**持久化到剪贴板条目**：本次标注是「按需预览」的临时操作，关窗即失；保存走「导出带标注的新图到文件」。未来可再持久化。
 - ~~缩放控件（滚轮/按钮放大）~~：**已做**（见 §3.4）——默认 1:1 自然分辨率打开，工具栏放大/缩小按钮调 `zoom`（0.1×–8×），超出窗口自动滚动条 + 选择工具下抓手拖拽平移。标注用自然像素坐标空间，缩放/调窗不错位。
-- 箭头/画笔/序号工具：截图有，但用户列的是「矩形/椭圆/直线/文字」四样，保持简单。共享核心仍含全部类型，预览工具栏只暴露这四种。
+- ~~箭头/画笔/序号工具~~：**箭头/画笔已加**（用户后续要求补齐截图已有的 arrow/pen，共享核心本就支持）；序号（number）仍不暴露（预览场景少用）。
 
 ## 3. 架构
 
@@ -169,7 +169,7 @@ function composeAnnotated(): string | null {
 ```
 
 - 保存：`composeAnnotated()` → base64 PNG → `invoke("save_image_dialog", { pngBase64 })`（新增薄命令，见 §3.6）。
-- OCR：`invoke<string>("ocr_image", { id: imageId })`（整图识别，无裁剪）→ 文本非空则 `navigator.clipboard.writeText` + `ocrCopied=true` 1.5s 反馈（工具栏 OCR 按钮换绿勾）。不开编辑器（轻量预览场景，结果直接进剪贴板）。
+- OCR：`invoke<string>("ocr_image", { id: imageId })`（整图识别，无裁剪）→ 文本非空则 `save_ocr_to_note(text)`（存为 `source=ocr` 笔记，返回 noteId）→ `open_notepad_with_note(noteId)` 打开记事本并选中该笔记，供用户在笔记里编辑；同时 `ocrCopied=true` 1.5s 反馈（工具栏 OCR 按钮换绿勾）。识别结果落进记事本（笔记系统），不再写系统剪贴板。
 
 **mount / 事件**：
 - mount：`get_pending_image()` → `{ imageId }` → `invoke<string>("get_image_full", { id: imageId })` → `new Image()` onload 后存 `bgImgRef`、计算显示尺寸、`setReady(true)`。
@@ -191,9 +191,9 @@ function composeAnnotated(): string | null {
 
 | 组 | 按钮（lucide） | 行为 |
 |---|---|---|
-| 操作 | `Download` 保存 / `Copy` 复制 / `ScanText` OCR（成功后换 `Check` 绿勾 1.5s） | 保存→`composePngBase64`+`save_image_dialog`；复制→`composePngBase64`+`copy_image_to_clipboard`；OCR→`ocr_image` 结果写系统剪贴板 + `ocrCopied` 反馈 |
+| 操作 | `Download` 保存 / `Copy` 复制 / `ScanText` OCR（成功后换 `Check` 绿勾 1.5s） | 保存→`composePngBase64`+`save_image_dialog`；复制→`composePngBase64`+`copy_image_to_clipboard`（写系统剪贴板 + 主动入库，见下）；OCR→`ocr_image`→`save_ocr_to_note`→`open_notepad_with_note`（存笔记并开记事本）+ `ocrCopied` 反馈 |
 | ｜ | 分隔线 | |
-| 标注工具 | `MousePointer2` 选择 / `Square` 矩形 / `Circle` 椭圆 / `Minus` 直线 / `Type` 文字 | 单选互斥；激活 `#3b82f6` 蓝底白图标；选中任一标注工具即自动浮出属性浮窗（见下），切回选择即收起 |
+| 标注工具 | `MousePointer2` 选择 / `Square` 矩形 / `Circle` 椭圆 / `Minus` 直线 / `ArrowUpRight` 箭头 / `Pen` 画笔（自由曲线） / `Type` 文字 | 单选互斥（再点已激活 = 回选择，浮窗收起）；激活 `#3b82f6` 蓝底白图标；选中任一标注工具即自动浮出属性浮窗（见下） |
 | | `Undo2` 撤销 | 删最后标注；`canUndo=false` 时图标 opacity 0.3 |
 | ｜ | 分隔线 | |
 | 缩放 | `ZoomOut` 缩小 / 百分比（点击重置 100%）/ `ZoomIn` 放大 | `zoom` 0.1×–8×，步长 1.25×；百分比等宽 tabular-nums |
@@ -241,9 +241,14 @@ pub async fn save_image_dialog(png_base64: String, app_handle: AppHandle) -> Res
 pub async fn copy_image_to_clipboard(
     png_base64: String,
     handle: State<'_, Arc<ClipboardHandle>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    // base64 decode → RustImageData::from_bytes → handle.set_image（写系统剪贴板）。
-    // 与条目行 copy_clipboard_item 区别：这里写的是 composeAnnotated 合成的「带标注图」，非原图。
+    // base64 decode → handle.write_image（写系统剪贴板，置 suppress flag）。
+    // 与条目行 copy_clipboard_item 区别：这里写的是 composePngBase64 合成的「带标注图」，非原图。
+    // write_image 置 suppress 致 watcher 跳过自身写入（防回环），但预览的「复制」
+    // 期望这条图进入剪贴板历史 → 主动调 octopus_clipboard::watcher::handle_clipboard_change
+    // 入库（与系统复制同路径：去重 hash + WebP + 缩略图 + image_data BLOB），
+    // 再 emit clipboard://changed 刷新浮窗/设置页。
 }
 ```
 
@@ -262,10 +267,10 @@ image_preview_commands::open_image_preview
 ImagePreview mount ──get_pending_image──► PENDING.take()
   │ invoke get_image_full(imageId) → webp dataUrl → bgImg
   │ 计算显示尺寸 → canvas 就绪
-  │ 工具栏选工具 → 画标注（存原始像素坐标）→ 撤销/选中移动
-  │ 保存: composeAnnotated() → save_image_dialog
-  │ 复制: composeAnnotated() → copy_image_to_clipboard（带标注图进系统剪贴板）
-  │ OCR:  ocr_image(imageId) → openCompactEditor → set_clipboard_item_text 回写
+  │ 工具栏选工具 → 画标注（存自然像素坐标）→ 撤销/选中移动
+  │ 保存: composePngBase64() → save_image_dialog
+  │ 复制: composePngBase64() → copy_image_to_clipboard（写系统剪贴板 + 主动入库历史）
+  │ OCR:  ocr_image(imageId) → save_ocr_to_note(text) → open_notepad_with_note(noteId)
   │ 置顶: getCurrentWindow().setAlwaysOnTop(b)
   ▼
 关闭 → close_image_preview → 销毁窗（macOS 切回 Accessory）
@@ -309,12 +314,12 @@ ImagePreview mount ──get_pending_image──► PENDING.take()
 - Toolbar：工具单选互斥、置顶 toggle 切换、OCR loading 态、属性浮窗显隐（mock invoke/emit）。
 
 **e2e（手动，跨窗口 + canvas + IME，单测覆盖不到）：**
-1. 剪贴板图片条目 → 单击缩略图 → 预览窗打开、显示原图。
-2. 画矩形/椭圆/直线/文字标注 → 显示正确 → 撤销撤销 → 选中移动 → 双击改文字。
-3. 保存 → 对话框 → 文件内容含标注；复制 → 系统剪贴板含带标注图（粘贴到别处验证）。
-4. OCR → 文本进编辑器 → 保存回写剪贴板条目 search_text。
-5. 置顶 → 窗口浮于其他应用之上。
-6. Esc / 关闭按钮 → 窗销毁，macOS Dock 图标切回。
+1. 剪贴板图片条目 → 单击缩略图 → 预览窗打开、显示原图（默认 1:1，超窗滚动条 + 抓手平移）。
+2. 画矩形/椭圆/直线/箭头/画笔/文字标注 → 显示正确 → 撤销 → 选中移动 → 双击改文字。
+3. 保存 → 对话框 → 文件内容含标注；复制 → **剪贴板历史出现这条带标注图**（浮窗刷新）+ 系统剪贴板可粘贴。
+4. OCR → 识别文本 → 记事本打开并选中新建的 source=ocr 笔记，可在笔记里编辑。
+5. 置顶 → 窗口浮于其他应用之上；缩放按钮放大/缩小/重置，标注不错位。
+6. Esc / 原生 × → 窗销毁，macOS Dock 图标切回。
 7. 回归：截图工具栏标注功能仍正常（抽取未破坏截图）。
 
 ## 8. 文档同步
