@@ -6,6 +6,7 @@ import Clipboard from "@/pages/Clipboard";
 import Screenshot from "@/pages/Screenshot";
 import Notepad from "@/pages/Notepad";
 import CompactEditor from "@/pages/CompactEditor";
+import ImagePreview from "@/pages/ImagePreview";
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -55,6 +56,8 @@ function App() {
             return <Notepad />;
           case "compact_editor_window":
             return <CompactEditor />;
+          case "image_preview_window":
+            return <ImagePreview />;
           default:
             if (label.startsWith("screenshot_")) {
               return <Screenshot />;

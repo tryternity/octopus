@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, Loader2, Check, SquarePen } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, Loader2, Check, SquarePen, Maximize2 } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import { openCompactEditor } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
@@ -233,6 +233,18 @@ export default function ClipboardItemRow({
             title="编辑"
           >
             <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+          </button>
+        )}
+        {item.item_type === "image" && (
+          <button
+            className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+            onClick={(e) => {
+              e.stopPropagation();
+              invoke("open_image_preview", { imageId: item.id }).catch(console.error);
+            }}
+            title="预览"
+          >
+            <Maximize2 className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
           </button>
         )}
         {item.item_type === "image" && (
