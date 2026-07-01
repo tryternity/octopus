@@ -197,9 +197,9 @@ eframe 0.34 App trait 主入口为 `fn ui(&mut self, ui, frame)`（非旧 `updat
 
 | 模块 | 职责 |
 |---|---|
-| `main` | `eframe` 启动；起 IPC server（后台线程）+ `macos::set_accessory_policy()` + 锁 `theme_preference=Dark` + 注入 CJK 字体；eframe 0.34 App：`logic()` 排空 IPC/唤起窗口、`ui()` 绘 `NotepadView`、`clear_color` 覆写 zinc-950 |
+| `main` | `eframe` 启动；起 IPC server（后台线程）+ `macos::set_accessory_policy()` + 锁 `theme_preference=Dark` + 注入 CJK 字体（macOS 首选 PingFang，参考 egui-chinese-font，保持末尾 fallback 让拉丁走 Ubuntu-Latin）；eframe 0.34 App：`logic()` 排空 IPC/唤起窗口、`ui()` 绘 `NotepadView`、`clear_color` 覆写 zinc-950 |
 | `ipc` | 本地 TCP server（127.0.0.1:0），JSON line 协议；port 写 `~/.octopus/egui-ipc.port`（`{pid,port}`）；消息 `Open{note_id}`/`NotesChanged`/`Show` |
-| `notepad_view` | 三栏 UI：左侧列表（搜索 + 来源 tab + 收藏过滤 + 分页）+ 右侧编辑区（text/markdown 切换、commonmark 预览、800ms 防抖自动保存）。直连 `octopus_notepad::store` |
+| `notepad_view` | 左侧列表（来源徽标色 ● + pinned ★ + 标题/内容预览，固定 260 宽）+ 右侧编辑区按笔记 type 分流：markdown 有 md 工具栏 + 可收起的 commonmark 预览分屏（「预览」按钮切换），text 为纯文本编辑器（无 md 工具栏/预览）。800ms 防抖自动保存（按 type 存）。直连 `octopus_notepad::store` |
 | `macos` | macOS `Accessory` 激活策略（无 Dock 图标，与 desktop 主进程共一个 Dock）。objc2 0.6 + objc2-app-kit 0.3 |
 
 **进程拓扑**：desktop（Tauri，模型常驻）+ octopus-egui（记事本，按需 spawn）。两者经 SQLite（WAL 多进程并发）+ 本地 TCP IPC 通信。egui 进程由 desktop 托盘/OCR 触发 spawn，单例（pid 存活锁），崩溃后 desktop 检测 pid 死自动重启。
