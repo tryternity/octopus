@@ -425,5 +425,102 @@ mod tests {
         img
     }
 
-    // 行为测试在 Task 5 追加
+    // 行为测试
+    /// 默认测试尺寸：宽度需足够大让 X_START_RATIO..X_END_RATIO 区间有意义，
+    /// 高度需远大于 STRIP_H + MAX_SCROLL。
+    const TW: u32 = 400;
+    const TH: u32 = 600;
+
+    #[test]
+    fn test_stationary_frame_returns_false() {
+        // 两帧完全相同 → 无滚动，process_frame 返回 Ok(false)
+        let f0 = make_frame(TW, TH, 0);
+        let mut s = Stitcher::new(f0.clone(), StitchConfig::default());
+        // 第一帧用于初始化（detect_sticky + reference），返回 false
+        let f1 = make_frame(TW, TH, 0);
+        let added = s.process_frame(&f1).unwrap();
+        assert!(!added, "静止帧不应追加内容");
+    }
+
+    #[test]
+    fn test_known_scroll_appends_rows() {
+        // 首帧 scroll=0，init 帧 scroll=0（建立 reference），第三帧 scroll=40
+        // 期望：第二次 process_frame 返回 true，canvas 高度增加约 40px
+        let f0 = make_frame(TW, TH, 0);
+        let mut s = Stitcher::new(f0.clone(), StitchConfig::default());
+        // 第一次调用：初始化（detect_sticky + reference），返回 false
+        let f1 = make_frame(TW, TH, 0);
+        s.process_frame(&f1).unwrap();
+        // 第二次调用：实际滚动检测
+        let f2 = make_frame(TW, TH, 40);
+        let added = s.process_frame(&f2).unwrap();
+        assert!(added, "滚动 40px 应追加内容");
+        let h_after = s.height();
+        assert!(
+            h_after > TH - STRIP_H,
+            "追加后画布高度 {} 应大于裁剪后首帧高度，表示有新行追加",
+            h_after
+        );
+    }
+
+    #[test]
+    fn test_scroll_direction_dy_negative() {
+        // 验证 dy 符号约定：用户向下滚 → dy < 0。
+        let f0 = make_frame(TW, TH, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default());
+        let f1 = make_frame(TW, TH, 0);
+        s.process_frame(&f1).unwrap(); // init
+        let f2 = make_frame(TW, TH, 30);
+        let added = s.process_frame(&f2).unwrap();
+        assert!(added, "向下滚 30px 应被接受（dy<0）");
+    }
+
+    #[test]
+    fn test_repeated_scroll_grows_canvas() {
+        // 连续多次小步滚动，画布应单调增长
+        let f0 = make_frame(TW, TH, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default());
+        let f1 = make_frame(TW, TH, 0);
+        s.process_frame(&f1).unwrap(); // init
+        let mut last_h = s.height();
+        for offset in (30..=150).step_by(30) {
+            let f = make_frame(TW, TH, offset);
+            if s.process_frame(&f).unwrap() {
+                let h = s.height();
+                assert!(h >= last_h, "画布高度不应回退：{} -> {}", last_h, h);
+                last_h = h;
+            }
+        }
+        assert!(last_h > TH, "多次滚动后画布应显著增长：{}", last_h);
+    }
+
+    #[test]
+    fn test_canvas_returns_valid_rgba() {
+        // canvas() 返回的 RgbaImage 可 clone，尺寸与 height() 一致
+        let f0 = make_frame(TW, TH, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default());
+        let f1 = make_frame(TW, TH, 0);
+        s.process_frame(&f1).unwrap(); // init
+        let f2 = make_frame(TW, TH, 50);
+        s.process_frame(&f2).unwrap();
+        let canvas = s.canvas().clone();
+        assert_eq!(canvas.height(), s.height());
+        assert_eq!(canvas.width(), TW);
+    }
+
+    #[test]
+    fn test_finalize_appends_footer() {
+        // finalize 应补全最后一帧的 sticky_bottom 区域，画布高度应 >= finalize 前
+        let f0 = make_frame(TW, TH, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default());
+        let f1 = make_frame(TW, TH, 0);
+        s.process_frame(&f1).unwrap(); // init
+        let f2 = make_frame(TW, TH, 60);
+        s.process_frame(&f2).unwrap();
+        let h_before = s.height();
+        let last = make_frame(TW, TH, 90);
+        s.finalize(&last).unwrap();
+        let h_after = s.height();
+        assert!(h_after >= h_before, "finalize 不应缩减画布：{} -> {}", h_before, h_after);
+    }
 }
