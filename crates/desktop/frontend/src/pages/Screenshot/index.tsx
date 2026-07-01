@@ -204,14 +204,16 @@ export default function Screenshot() {
           ctx.fillRect(hx - HANDLE_SIZE / 2, hy - HANDLE_SIZE / 2, HANDLE_SIZE, HANDLE_SIZE);
         }
 
-        // 尺寸标注
+        // 尺寸标注（左上角或左下角，取决于工具栏位置）
         const label = `${Math.round(w * dpr)} × ${Math.round(h * dpr)}`;
         ctx.font = "12px -apple-system, sans-serif";
         const tw = ctx.measureText(label).width;
+        const labelY = toolbarBelow ? (y - 18) : (y + h + 4);
+        const labelVisibleY = Math.max(0, labelY);
         ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
-        ctx.fillRect(x + w - tw - 8, y + h + 4, tw + 8, 18);
+        ctx.fillRect(x, labelVisibleY, tw + 8, 18);
         ctx.fillStyle = "#1a1a1a";
-        ctx.fillText(label, x + w - tw - 4, y + h + 17);
+        ctx.fillText(label, x + 4, labelVisibleY + 13);
       }
     } else {
       ctx.fillRect(0, 0, cssW, cssH);
@@ -1047,9 +1049,6 @@ export default function Screenshot() {
             <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
-          <button onClick={doPin} title="贴图" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
-            <img src="icons/pin.svg" alt="贴图" className="w-[18px] h-[18px]" />
-          </button>
           <button onClick={startScroll} title="滚动截图" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
             <img src="icons/scroll.svg" alt="滚动截图" className="w-[18px] h-[18px]" />
           </button>
@@ -1063,6 +1062,23 @@ export default function Screenshot() {
             <img src="icons/close.svg" alt="取消" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) saturate(100%) invert(40%) sepia(94%) saturate(7470%) hue-rotate(346deg) brightness(95%) contrast(91%)" }} />
           </button>
         </div>
+      )}
+
+      {/* 贴图按钮：选区右上角（工具栏在上方时放右下角） */}
+      {sel && mode !== "scrolling" && (
+        <button onClick={doPin} title="贴图" style={{
+          position: "fixed",
+          left: sel.x + sel.w - 32,
+          top: toolbarBelow ? (sel.y - 36) : (sel.y + sel.h + 4),
+          width: 32, height: 32,
+          display: "flex", alignItems: "center", justifyContent: "center",
+          borderRadius: 6, border: "none",
+          background: "rgba(255,255,255,0.9)",
+          boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
+          cursor: "pointer", zIndex: 101,
+        }}>
+          <img src="icons/pin.svg" alt="贴图" className="w-[18px] h-[18px]" />
+        </button>
       )}
 
       {/* 工具属性浮窗 */}
