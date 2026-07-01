@@ -358,14 +358,15 @@ fn editor_pane(
             let resp = ui.add(
                 egui::TextEdit::multiline(body).desired_width(f32::INFINITY),
             );
-            // 诊断日志：仅 hovered/clicked 时打印，看 pointer 是否命中 TextEdit rect、click 是否触发
-            if resp.hovered() || resp.clicked() {
+            // 滚动诊断：viewport（ScrollArea 可视高）vs content（实际内容高），
+            // content_h > viewport_h 才有滚动空间；screen_h 看窗口实际高度。
+            if resp.hovered() {
                 log::info!(
-                    "[editor_diag] hovered={} clicked={} rect={:?} pointer={:?}",
-                    resp.hovered(),
-                    resp.clicked(),
-                    resp.rect,
-                    ui.input(|i| i.pointer.interact_pos())
+                    "[editor_diag] screen_h={} viewport_h={} content_h={} textedit_h={}",
+                    ui.ctx().screen_rect().height(),
+                    ui.max_rect().height(),
+                    ui.min_rect().height(),
+                    resp.rect.height()
                 );
             }
             if resp.changed() {
