@@ -215,15 +215,6 @@ export default function ClipboardItemRow({
 
       {/* 右侧操作：收藏 + 保存/打开 + 删除（复制已移至左侧类型图标单击） */}
       <div className="flex-shrink-0 flex items-center gap-0.5">
-        {item.item_type !== "image" && item.item_type !== "file" && (
-          <button
-            className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
-            onClick={handleEditText}
-            title="编辑"
-          >
-            <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-          </button>
-        )}
         <button
           className={cn(
             "p-0.5 transition-opacity hover:scale-110",
@@ -235,6 +226,15 @@ export default function ClipboardItemRow({
             className={cn("w-3.5 h-3.5", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
           />
         </button>
+        {item.item_type !== "image" && item.item_type !== "file" && (
+          <button
+            className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+            onClick={handleEditText}
+            title="编辑"
+          >
+            <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+          </button>
+        )}
         {item.item_type === "image" && (
           <div className="relative">
             <button
