@@ -123,7 +123,7 @@ impl NotepadView {
         }
     }
 
-    pub fn show(&mut self, ctx: &egui::Context) {
+    pub fn show(&mut self, ui: &mut egui::Ui) {
         // 退出前 flush（ctx 即将 drop 不易感知，靠防抖 + 切换笔记 flush 兜底）
         self.flush_if_dirty();
 
@@ -140,11 +140,11 @@ impl NotepadView {
         // 左栏：列表（来源徽标色 + pinned 星标）。
         // 固定宽度（exact_width）：resizable 的拖动 handle 在本主题下渲染成粗黑线、且放开后
         // 弹回默认宽（egui memory 不落盘，进程内也不持久）。列表 260 固定够用，去掉 handle。
-        egui::SidePanel::left("list")
+        egui::Panel::left("list")
             .resizable(false)
-            .exact_width(260.0)
-            .show_separator_line(false) // 不画 panel 边界竖线（dark 主题下偏粗黑，panel.rs:354 vline）
-            .show(ctx, |ui| {
+            .exact_size(260.0)
+            .show_separator_line(false) // 不画 panel 边界竖线（dark 主题下偏粗黑）
+            .show_inside(ui, |ui| {
             ui.add_space(4.0);
             ui.horizontal(|ui| {
                 ui.label(egui::RichText::new("笔记").strong().size(15.0));
@@ -195,11 +195,11 @@ impl NotepadView {
         });
 
         // 右栏：编辑器
-        egui::CentralPanel::default().show(ctx, |ui| {
+        egui::CentralPanel::default().show_inside(ui, |ui| {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
-                // 笔记总数（兼诊断：能显示说明 CentralPanel 闭包执行了）
+                // 笔记总数
                 ui.label(
                     egui::RichText::new(format!("共 {} 条", self.notes.len()))
                         .small()
@@ -260,10 +260,9 @@ impl NotepadView {
                 });
             });
         });
-
         // 持续 repaint 让防抖 timer 可被 poll
         if self.body_dirty {
-            ctx.request_repaint_after(DEBOUNCE);
+            ui.ctx().request_repaint_after(DEBOUNCE);
         }
     }
 }

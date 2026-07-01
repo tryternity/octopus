@@ -48,6 +48,10 @@ struct NotepadApp {
 
 impl NotepadApp {
     fn new(cc: &eframe::CreationContext<'_>, rx: mpsc::Receiver<IpcMsg>) -> Self {
+        // 强制 dark：eframe 默认 theme_preference=System，macOS 浅色模式会用 light visuals
+        //（panel_fill=248 近白）覆盖 set_visuals，且 clear_color 读 light panel_fill → 白底。
+        // 显式锁 Dark，自定义深色主题才稳定生效（不必每帧重设）。
+        cc.egui_ctx.options_mut(|o| o.theme_preference = egui::ThemePreference::Dark);
         // 主题：深色 + indigo 强调色 + spacing（快速美化）。
         theme::setup(&cc.egui_ctx);
         // CJK 字体（egui 默认无中文，不加载则中文显方块）。
@@ -78,7 +82,7 @@ fn setup_fonts(ctx: &egui::Context) {
             let mut fonts = egui::FontDefinitions::default();
             fonts.font_data.insert(
                 "cjk".to_owned(),
-                egui::FontData::from_owned(bytes),
+                std::sync::Arc::new(egui::FontData::from_owned(bytes)),
             );
             // Proportional / Monospace 都把 cjk 加到末尾作 fallback（拉丁优先，缺字回退 cjk）
             for fam in [egui::FontFamily::Proportional, egui::FontFamily::Monospace] {
@@ -95,9 +99,18 @@ fn setup_fonts(ctx: &egui::Context) {
 }
 
 impl eframe::App for NotepadApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        // 排空 IPC 消息（非阻塞）。Show 在此直接唤起窗口（viewport 命令），
-        // 其余分发到 view。egui 关窗后窗口常被隐藏而非进程退出，Show 必须显式唤起。
+    /// 清屏色：与 theme panel_fill 一致的深色（硬编码）。
+    /// 默认 epi::clear_color 是 (12,12,12,180) 半透明黑，在 macOS 上显灰；
+    /// 而 clear_color 在 update 前用上一帧 visuals，读 visuals.panel_fill 首帧可能尚未应用 theme。
+    /// 硬编码深色保证首帧即深，且与面板同色，掩盖 SidePanel↔CentralPanel 的 sub-pixel 间隙。
+    fn clear_color(&self, _visuals: &egui::Visuals) -> [f32; 4] {
+        egui::Color32::from_rgb(24, 24, 27).to_normalized_gamma_f32()
+    }
+
+    /// 逻辑层（每帧 ui 前调用，不可 paint）：排空 IPC、唤起窗口、分发消息。
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        // Show 在此唤起窗口（viewport 命令），其余分发到 view。
+        // egui 关窗后窗口常被隐藏而非进程退出，Show 必须显式唤起。
         while let Ok(msg) = self.rx.try_recv() {
             match msg {
                 IpcMsg::Show => {
@@ -109,7 +122,11 @@ impl eframe::App for NotepadApp {
                 other => self.view.handle_ipc(other),
             }
         }
-        self.view.show(ctx);
+    }
+
+    /// UI 层（每帧重绘）。eframe 0.34 起 App 主入口为 ui（非 update）。
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        self.view.show(ui);
     }
 }
 
@@ -117,5 +134,34 @@ impl Drop for NotepadApp {
     fn drop(&mut self) {
         // 退出清理：删 singleton 锁 + port 文件，避免残留让 desktop 误判实例还在
         ipc::cleanup();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    /// 回归保护：侧栏 Panel::left().exact_size(260).resizable(false) 在 show_inside（根 ui 内）
+    /// 必须精确产出 260 宽、且与 CentralPanel 无缝（gap≈0）。
+    /// 背景：曾怀疑 egui 0.34 的 exact_size 不生效（线上诊断出 324.28），后用 __run_test_ctx
+    /// 确认是旧二进制——egui 行为正确。本测试固化该结论，防回归。
+    #[test]
+    #[allow(deprecated)]
+    fn left_panel_exact_size_is_honored() {
+        egui::__run_test_ctx(|ctx| {
+            egui::CentralPanel::default().show(ctx, |ui| {
+                let side = egui::Panel::left("list")
+                    .resizable(false)
+                    .exact_size(260.0)
+                    .show_separator_line(false)
+                    .show_inside(ui, |_ui| {});
+                let central = egui::CentralPanel::default().show_inside(ui, |_ui| {});
+                let gap = central.response.rect.min.x - side.response.rect.max.x;
+                assert!(
+                    (side.response.rect.width() - 260.0).abs() < 1.0,
+                    "侧栏宽度 = {}, 期望 260",
+                    side.response.rect.width()
+                );
+                assert!(gap.abs() < 2.0, "panel 间隙 = {gap}, 期望 ≈0 无缝");
+            });
+        });
     }
 }

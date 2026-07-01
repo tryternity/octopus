@@ -10,9 +10,9 @@ path = "src/main.rs"
 # 依赖按 task 渐进：Task 4 eframe 核心；Task 5 IPC（infra/serde/anyhow/log）；
 # Task 6 NotepadView（notepad store + egui_commonmark，后者届时做版本配对）。
 [dependencies]
-eframe = "0.29"
-egui = "0.29"
-egui_commonmark = "0.18"          # md 预览（与 egui 0.29 配对）
+eframe = "0.34"
+egui = "0.34"
+egui_commonmark = "0.23"          # md 预览（0.23 尚未适配 egui 0.35，配 0.34）
 octopus-infra = { path = "../infra" }
 octopus-notepad = { path = "../notepad" }
 serde = { version = "1", features = ["derive"] }

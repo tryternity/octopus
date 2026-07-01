@@ -191,11 +191,13 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 ### octopus-egui（记事本独立进程）
 
-独立的 egui 二进制（eframe 0.29 + egui_commonmark 0.18 markdown 预览），**不依赖 tauri**。解决「多 webview 窗口 + 模型常驻」内存占用大问题——记事本从 80–150MB 的 WKWebView 换成原生 egui 进程。
+独立的 egui 二进制（eframe/egui **0.34** + egui_commonmark **0.23** markdown 预览），**不依赖 tauri**。解决「多 webview 窗口 + 模型常驻」内存占用大问题——记事本从 80–150MB 的 WKWebView 换成原生 egui 进程。（曾尝试升 0.35，但 egui_commonmark 0.23 仅适配到 0.34，0.35 被阻塞——待 commonmark 发新版再升。）
+
+eframe 0.34 App trait 主入口为 `fn ui(&mut self, ui, frame)`（非旧 `update`）；逻辑层（IPC 排空、viewport 唤起）放 `fn logic()`。两个关键陷阱已固化：①`new()` 内 `options_mut(|o| o.theme_preference = ThemePreference::Dark)`——eframe 默认 `System`，macOS 浅色模式会用 light visuals 覆盖 `set_visuals` 且 `clear_color` 读 light panel_fill → 白底；②覆写 `clear_color` 为 zinc-950 与 panel_fill 同色，掩盖 panel sub-pixel 间隙。布局：`Panel::left("list").exact_size(260).resizable(false).show_separator_line(false).show_inside` + `CentralPanel::show_inside`，gap=0 无缝（`__run_test_ctx` 单测固化：exact_size 精确 260、跨帧稳定）。
 
 | 模块 | 职责 |
 |---|---|
-| `main` | `eframe` 启动；起 IPC server（后台线程）+ `macos::set_accessory_policy()`；持 `NotepadView` + IPC channel rx |
+| `main` | `eframe` 启动；起 IPC server（后台线程）+ `macos::set_accessory_policy()` + 锁 `theme_preference=Dark` + 注入 CJK 字体；eframe 0.34 App：`logic()` 排空 IPC/唤起窗口、`ui()` 绘 `NotepadView`、`clear_color` 覆写 zinc-950 |
 | `ipc` | 本地 TCP server（127.0.0.1:0），JSON line 协议；port 写 `~/.octopus/egui-ipc.port`（`{pid,port}`）；消息 `Open{note_id}`/`NotesChanged`/`Show` |
 | `notepad_view` | 三栏 UI：左侧列表（搜索 + 来源 tab + 收藏过滤 + 分页）+ 右侧编辑区（text/markdown 切换、commonmark 预览、800ms 防抖自动保存）。直连 `octopus_notepad::store` |
 | `macos` | macOS `Accessory` 激活策略（无 Dock 图标，与 desktop 主进程共一个 Dock）。objc2 0.6 + objc2-app-kit 0.3 |

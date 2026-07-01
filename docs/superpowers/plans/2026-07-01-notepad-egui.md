@@ -6,7 +6,7 @@
 
 **Architecture:** 新增二进制 crate `octopus-egui`（eframe，不依赖 tauri），直连共享 SQLite（先迁 WAL 支持多进程并发）。Tauri 主进程通过本地 TCP（JSON line + port 文件/pid 单实例锁）spawn 并驱动 egui 进程。notes 表重建为 `content_text + type`（去 `content_html`），egui 用 markdown 源码 + `egui_commonmark` 实时分屏预览。
 
-**Tech Stack:** Rust + eframe/egui 0.29 + egui_commonmark（md 预览）+ rusqlite（WAL）+ std::net TCP IPC；Tauri 2（spawn + 命令薄层删减）。
+**Tech Stack:** Rust + eframe/egui **0.34** + egui_commonmark **0.23**（md 预览）+ rusqlite（WAL）+ std::net TCP IPC；Tauri 2（spawn + 命令薄层删减）。（实现阶段曾升 0.35，因 egui_commonmark 0.23 仅适配 0.34 而回退 0.34。）
 
 **关联 spec：** `docs/superpowers/specs/2026-07-01-notepad-egui-design.md`
 **分支：** `worktree-feature-notepad`。**功能完整完成前不往 main 同步。**
@@ -469,9 +469,9 @@ name = "octopus-egui"
 path = "src/main.rs"
 
 [dependencies]
-eframe = "0.29"
-egui = "0.29"
-egui_commonmark = "0.18"          # md 预览（与 egui 0.29 配对）
+eframe = "0.34"
+egui = "0.34"
+egui_commonmark = "0.23"          # md 预览（0.23 尚未适配 egui 0.35，配 0.34）
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
@@ -482,7 +482,7 @@ octopus-infra = { path = "../infra" }
 octopus-notepad = { path = "../notepad" }
 ```
 
-> 版本配对说明：egui 0.29 ↔ egui_commonmark 0.18。若 Step 4 编译报版本不兼容，按 egui 实际版本查 crates.io 对应的 egui_commonmark 版本对齐（这是 spike#4 的前置校验点）。
+> 版本配对说明：egui 0.34 ↔ egui_commonmark 0.23。egui 0.34 起 App trait 主入口为 `fn ui()`（非 `update`），逻辑层（IPC/viewport）放 `fn logic()`；`new()` 须 `options_mut(|o| o.theme_preference = ThemePreference::Dark)` 锁暗色（否则 macOS 浅色模式 light visuals 覆盖 `set_visuals`），并覆写 `clear_color` 为 zinc-950。曾尝试 0.35，但 commonmark 0.23 不兼容 → 回退 0.34（待 commonmark 发新版再升）。下方 `fn update` 代码块为原始 0.29 计划文本，权威实现见 `crates/egui/src/main.rs`。
 
 - [x] **Step 3: 写最小 main.rs（空 eframe 窗口）**
 

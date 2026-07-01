@@ -190,7 +190,7 @@ Tauri 托盘「记事本」
 - **store 层**：`octopus_notepad` store 单测适配 `content_text` + `type`（create/update/list/FTS）。
 - **WAL**：两进程（或两线程各持 Connection）并发读写压测，不 locked。
 - **IPC**：client/server 往返单测（本地 TCP，mock `open`/`notes_changed`/`show`）。
-- **egui UI + macOS 集成**：手动 e2e（egui 无单测传统；eframe headless 价值低）。
+- **egui UI + macOS 集成**：布局逻辑用 `egui::__run_test_ctx` 单测固化（如侧栏 `exact_size(260)` 实际宽度、panel 间 gap=0——可在无 GUI 下确定性断言，曾据此证伪「线上诊断出的 324.28 黑区」实为旧二进制）；macOS Accessory / focus / 托盘唤起走手动 e2e。
 - **端到端**：Tauri spawn egui → OCR→notepad 打开选中 → 编辑保存 → 托盘唤起。
 
 ## 7. spike（写代码前先过 4 项）
