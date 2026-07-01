@@ -23,6 +23,7 @@ mod model_commands;
 mod note_commands;
 mod notepad_window;
 mod paste;
+mod pin_window;
 mod pipeline;
 mod result_window;
 mod screenshot_commands;
@@ -242,6 +243,7 @@ pub fn run() {
             screenshot_commands::start_scroll_recording,
             screenshot_commands::stop_scroll_recording,
             screenshot_commands::stop_scroll_recording_with_mode,
+            screenshot_commands::pin_screenshot,
             note_commands::list_notes,
             note_commands::count_notes,
             note_commands::get_note,

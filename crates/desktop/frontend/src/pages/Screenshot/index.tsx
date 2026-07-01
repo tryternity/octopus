@@ -83,6 +83,17 @@ export default function Screenshot() {
       .catch((e) => console.error("Failed to get screenshot image:", e));
   }, []);
 
+  // 全局 Escape 监听（保险：Canvas 未获取焦点时也能 ESC 取消）
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if (e.key === "Escape" && modeRef.current === "idle") {
+        invoke("cancel_screenshot").catch(() => {});
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   // 滚动截图事件监听
   useEffect(() => {
     let unlistenFrame: (() => void) | undefined;
@@ -752,6 +763,10 @@ export default function Screenshot() {
 
   function onContextMenu(e: React.MouseEvent) {
     e.preventDefault();
+    // idle 模式（未框选）右键取消截图
+    if (mode === "idle") {
+      invoke("cancel_screenshot").catch(() => {});
+    }
   }
 
   function startScroll() {
@@ -825,6 +840,11 @@ export default function Screenshot() {
     const base64 = composeAndCrop();
     if (!base64) return;
     invoke("save_screenshot_dialog", { pngBase64: base64 }).catch(() => {});
+  }
+
+  function doPin() {
+    if (!sel) return;
+    invoke("pin_screenshot", { label: winLabel, x: sel.x, y: sel.y, w: sel.w, h: sel.h }).catch(() => {});
   }
 
   function doConfirm() {
@@ -1027,6 +1047,9 @@ export default function Screenshot() {
             <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
+          <button onClick={doPin} title="贴图" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
+            <img src="icons/pin.svg" alt="贴图" className="w-[18px] h-[18px]" />
+          </button>
           <button onClick={startScroll} title="滚动截图" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
             <img src="icons/scroll.svg" alt="滚动截图" className="w-[18px] h-[18px]" />
           </button>
