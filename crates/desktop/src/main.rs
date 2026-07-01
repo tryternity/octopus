@@ -241,6 +241,7 @@ pub fn run() {
             screenshot_commands::ocr_screenshot,
             screenshot_commands::start_scroll_recording,
             screenshot_commands::stop_scroll_recording,
+            screenshot_commands::stop_scroll_recording_with_mode,
             note_commands::list_notes,
             note_commands::count_notes,
             note_commands::get_note,
