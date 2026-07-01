@@ -359,3 +359,71 @@ fn rows_equal(a: &RgbaImage, b: &RgbaImage, ya: u32, yb: u32, w: u32) -> bool {
     }
     true
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use image::{ImageBuffer, Rgba};
+
+    /// 合成 RGBA 测试帧：宽 W × 高 H，包含可识别空间特征以便 SAD 匹配。
+    /// - 背景按 y 线性渐变（值 = y % 256），提供垂直方向唯一性
+    /// - 每 45 行一条强对比水平线（模拟文件列表行高），值翻转
+    /// - 每 7 列一个亮列（模拟文字竖排），提供水平方向特征
+    /// - 叠加少量确定性格点噪点（非随机，保证测试可复现）
+    ///
+    /// `scroll_offset` 模拟"用户向下滚动 scroll_offset 像素"：
+    /// 即内容整体上移 scroll_offset，顶部 scroll_offset 行用新内容填充。
+    fn make_frame(width: u32, height: u32, scroll_offset: u32) -> RgbaImage {
+        let mut img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                // 基础渐变（y 方向唯一）
+                let mut v = ((y + scroll_offset) % 256) as u8;
+                // 每 45 行水平分隔线：强对比
+                if (y + scroll_offset) % 45 == 0 {
+                    v = 255 - v;
+                }
+                // 每 7 列亮列
+                if x % 7 == 0 {
+                    v = v.saturating_add(80);
+                }
+                // 确定性格点噪点（(x*3+y*5) % 11 == 0 处加亮）
+                if (x as u32 * 3 + (y + scroll_offset) * 5) % 11 == 0 {
+                    v = v.saturating_add(40);
+                }
+                let px = Rgba([v, v, v, 255]);
+                img.put_pixel(x, y, px);
+            }
+        }
+        img
+    }
+
+    /// 构造一个带 sticky 顶/底区域的帧：顶部 `top_h` 行和底部 `bot_h` 行固定不变，
+    /// 中间内容随 `scroll_offset` 变化。
+    fn make_frame_with_sticky(
+        width: u32,
+        height: u32,
+        top_h: u32,
+        bot_h: u32,
+        scroll_offset: u32,
+    ) -> RgbaImage {
+        let mut img = make_frame(width, height, scroll_offset);
+        // 顶部 sticky：固定内容（与 scroll_offset 无关）
+        let sticky_top = make_frame(width, top_h, 999);
+        // 底部 sticky
+        let sticky_bot = make_frame(width, bot_h, 888);
+        for y in 0..top_h {
+            for x in 0..width {
+                img.put_pixel(x, y, sticky_top.get_pixel(x, y).clone());
+            }
+        }
+        for y in 0..bot_h {
+            for x in 0..width {
+                img.put_pixel(x, height - bot_h + y, sticky_bot.get_pixel(x, y).clone());
+            }
+        }
+        img
+    }
+
+    // 行为测试在 Task 5 追加
+}
