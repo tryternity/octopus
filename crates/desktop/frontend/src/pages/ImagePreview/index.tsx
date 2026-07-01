@@ -194,7 +194,16 @@ export default function ImagePreview() {
       return;
     }
 
-    // rect/oval/line 开始绘制（自然坐标）
+    // 画笔（自由曲线）：起 points 点序列
+    if (tool === "pen") {
+      drawingRef.current = {
+        type: "pen", x1: nx, y1: ny, x2: nx, y2: ny,
+        points: [[nx, ny]],
+        color: toolColorRef.current, lineWidth: toolWidthRef.current,
+      };
+      return;
+    }
+    // rect/oval/line/arrow 开始绘制（自然坐标）
     drawingRef.current = {
       type: tool as Annotation["type"],
       x1: nx, y1: ny, x2: nx, y2: ny,
@@ -216,7 +225,12 @@ export default function ImagePreview() {
       return;
     }
     if (drawingRef.current) {
-      drawingRef.current = { ...drawingRef.current, x2: nx, y2: ny };
+      // 画笔：push 新点到 points（自然坐标）
+      if (drawingRef.current.type === "pen" && drawingRef.current.points) {
+        drawingRef.current.points.push([nx, ny]);
+      } else {
+        drawingRef.current = { ...drawingRef.current, x2: nx, y2: ny };
+      }
       draw();
     }
   };
@@ -225,8 +239,11 @@ export default function ImagePreview() {
     if (drawingRef.current) {
       const ann = drawingRef.current;
       drawingRef.current = null;
-      // 过滤误触（过小）
-      if (Math.abs(ann.x2 - ann.x1) > 3 || Math.abs(ann.y2 - ann.y1) > 3) {
+      // 过滤误触：画笔按点数（≥2 才算画了一笔），其余按尺寸
+      const ok = ann.type === "pen"
+        ? (ann.points?.length ?? 0) >= 2
+        : (Math.abs(ann.x2 - ann.x1) > 3 || Math.abs(ann.y2 - ann.y1) > 3);
+      if (ok) {
         setAnnotations((prev) => [...prev, ann]);
       } else {
         draw();
@@ -374,8 +391,13 @@ export default function ImagePreview() {
                   if (e.key === "Escape") { textDraftRef.current = null; setTextDraft(null); }
                 }}
                 placeholder="输入文字…"
-                className="absolute rounded bg-white/95 px-1 py-0.5 text-black shadow outline-none resize-none"
-                style={{ left: draftBox.left, top: draftBox.top, fontSize: draftBox.fs, minWidth: 120, lineHeight: 1.3 }}
+                className="absolute rounded bg-white/95 px-1 py-0.5 shadow outline-none resize-none"
+                style={{
+                  left: draftBox.left, top: draftBox.top, fontSize: draftBox.fs, minWidth: 120, lineHeight: 1.3,
+                  // 按选定色显示（写时即所见）；白色字加细深描边防在白底上丢失
+                  color: toolColor,
+                  WebkitTextStroke: toolColor.toLowerCase() === "#ffffff" ? "0.4px #999" : "none",
+                }}
               />
             )}
           </div>
