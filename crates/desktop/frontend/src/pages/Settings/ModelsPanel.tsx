@@ -86,7 +86,7 @@ export default function ModelsPanel({ showToast }: { showToast: (msg: string) =>
   const handleVerify = async (model: DownloadableModel) => {
     if (busyRepo) return;
     setBusyRepo(model.repo);
-    try { await invoke("verify_model", { repo: model.repo }); showToast("校验完成"); loadModels(); }
+    try { await invoke("verify_model", { modelName: model.name, repo: model.repo }); showToast("校验完成"); loadModels(); }
     catch (e) { showToast("校验失败：" + e); }
     finally { setBusyRepo(null); }
   };
@@ -146,7 +146,7 @@ export default function ModelsPanel({ showToast }: { showToast: (msg: string) =>
                   <div className="flex items-center gap-1.5">
                     <span className="text-sm font-medium">{model.name}</span>
                     <span className="text-[10px] text-muted-foreground/60 px-1.5 py-0.5 rounded bg-muted">{model.category}</span>
-                    {model.is_enabled && <CheckCircle2 className="w-3.5 h-3.5 text-voice" />}
+                    {model.is_enabled && <CheckCircle2 className="w-3.5 h-3.5 text-emerald-500" />}
                   </div>
                   <span className="text-xs text-muted-foreground/70">{model.description}</span>
                   {prog && (

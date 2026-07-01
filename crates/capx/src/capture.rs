@@ -61,6 +61,39 @@ pub fn capture_all_monitors() -> Result<Vec<ScreenCapture>> {
     Ok(captures)
 }
 
+/// 从 RGBA 像素缓冲裁剪矩形区域，返回 PNG bytes。坐标为物理像素。
+/// 比 crop_region 少一次 clone（直接传 bytes slice + 维度）。
+pub fn crop_region_raw(
+    rgba_bytes: &[u8],
+    width: u32,
+    height: u32,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+) -> Result<Vec<u8>> {
+    let img =
+        ::image::RgbaImage::from_raw(width, height, rgba_bytes.to_vec())
+            .context("Failed to create RgbaImage from raw bytes")?;
+
+    let x = x.min(width.saturating_sub(1));
+    let y = y.min(height.saturating_sub(1));
+    let w = w.min(width - x);
+    let h = h.min(height - y);
+
+    let cropped = ::image::imageops::crop_imm(&img, x, y, w, h).to_image();
+
+    let mut png_bytes = Vec::new();
+    cropped
+        .write_to(
+            &mut std::io::Cursor::new(&mut png_bytes),
+            ::image::ImageFormat::Png,
+        )
+        .context("Failed to encode cropped PNG")?;
+
+    Ok(png_bytes)
+}
+
 /// 从全屏 RGBA 中裁剪矩形区域，返回 PNG bytes。
 /// 坐标为物理像素。
 pub fn crop_region(

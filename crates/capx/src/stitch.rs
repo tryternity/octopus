@@ -86,8 +86,8 @@ impl Stitcher {
             None => return Ok(false),
         };
 
-        // 置信度太低
-        if confidence < self.config.min_confidence {
+        // 置信度太低——跳过此帧（不拼接、不更新参考帧）
+        if confidence < 0.5 {
             return Ok(false);
         }
 
@@ -102,6 +102,9 @@ impl Stitcher {
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= (eff_bottom - eff_top) {
             return Ok(false);
         }
+
+        eprintln!("[stitch] dy={:.1} conf={:.4} new_rows={} eff=[{},{}] canvas_h={}",
+            dy, confidence, new_rows, eff_top, eff_bottom, self.canvas.height());
 
         // 用户向下滚动了 new_rows 像素：帧底部 new_rows 行是新进入选区的内容。
         // 但这些行可能与画布底部有重叠（帧间间隔内画面已部分更新），

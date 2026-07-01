@@ -132,6 +132,7 @@ mod macos {
     }
 
     /// 关闭所有贴图窗口
+    #[allow(dead_code)]
     pub fn close_all_pin_windows() {
         PIN_WINDOWS.lock().unwrap().clear();
     }

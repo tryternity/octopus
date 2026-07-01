@@ -5144,6 +5144,7 @@ dependencies = [
  "percent-encoding",
  "prost 0.13.5",
  "rubato 0.16.2",
+ "scroll-capture",
  "serde",
  "serde_json",
  "serde_yaml",
@@ -6919,6 +6920,22 @@ dependencies = [
  "once_cell",
  "selectors 0.25.0",
  "tendril 0.4.3",
+]
+
+[[package]]
+name = "scroll-capture"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "core-foundation 0.10.1",
+ "core-graphics 0.24.0",
+ "image",
+ "log",
+ "objc2",
+ "objc2-app-kit",
+ "objc2-foundation",
+ "octopus-capx",
+ "rustfft",
 ]
 
 [[package]]

@@ -24,6 +24,7 @@ octopus-asr-local = { path = "../asr-local", optional = true }
 octopus-ocr = { path = "../ocr" }
 # Screenshot
 octopus-capx = { path = "../capx" }
+scroll-capture = { path = "../scroll-capture" }
 image = { version = "0.25", features = ["png", "webp", "jpeg"] }
 
 # Audio

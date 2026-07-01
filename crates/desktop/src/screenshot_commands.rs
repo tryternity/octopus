@@ -19,6 +19,13 @@ static PENDING_IMAGES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 static READY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static TOTAL_WINDOWS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
+/// 清空截图暂存数据（ALL_CAPTURES + PENDING_IMAGES）。
+/// 在所有截图命令的开头/结束时调用，替代重复的 lock+clear 两行。
+fn clear_screenshot_state() {
+    ALL_CAPTURES.lock().unwrap().clear();
+    PENDING_IMAGES.lock().unwrap().clear();
+}
+
 /// 注册截图全局快捷键。main 启动注册 + set_config 热重载共用，
 /// 与 shortcut::register_shortcut / result_window::register_edit_global_shortcut 范式一致。
 pub fn register_screenshot_shortcut(
@@ -68,8 +75,7 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         .map_err(|e| format!("获取显示器失败: {}", e))?;
 
     // 清理旧数据 + 旧窗口
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    clear_screenshot_state();
     READY_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
     TOTAL_WINDOWS.store(0, std::sync::atomic::Ordering::SeqCst);
     let old_labels: Vec<String> = app_handle
@@ -194,8 +200,7 @@ pub async fn ocr_screenshot(
     let png_bytes = general_purpose::STANDARD.decode(&png_base64)
         .map_err(|e| format!("base64 解码失败: {}", e))?;
 
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    clear_screenshot_state();
 
     // SHA-256 去重 → WebP → 入库
     let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
@@ -327,8 +332,7 @@ pub async fn save_screenshot_dialog(
     let png_bytes = general_purpose::STANDARD.decode(&png_base64)
         .map_err(|e| format!("base64 解码失败: {}", e))?;
 
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    clear_screenshot_state();
 
     // 先关闭截图窗口，恢复正常屏幕，再弹保存对话框
     close_all_screenshot_windows(&app_handle);
@@ -364,8 +368,7 @@ pub async fn confirm_screenshot_with_data(
         .map_err(|e| format!("base64 解码失败: {}", e))?;
 
     // 清空所有暂存
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    clear_screenshot_state();
 
     // SHA-256 去重
     let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
@@ -463,19 +466,13 @@ pub async fn confirm_screenshot(
     .ok_or("无截图数据")?;
 
     // 清空所有暂存
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    clear_screenshot_state();
 
     // 2. 裁剪选区
-    let fake_full = octopus_capx::capture::ScreenCapture {
-        rgba_bytes: full.rgba_bytes.clone(),
-        width: full.width,
-        height: full.height,
-        monitor_x: 0,
-        monitor_y: 0,
-    };
-    let png_bytes = octopus_capx::capture::crop_region(&fake_full, x, y, w, h)
-        .map_err(|e| format!("裁剪失败: {}", e))?;
+    let png_bytes = octopus_capx::capture::crop_region_raw(
+        &full.rgba_bytes, full.width, full.height, x, y, w, h,
+    )
+    .map_err(|e| format!("裁剪失败: {}", e))?;
 
     // 3. SHA-256 去重
     let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
@@ -539,8 +536,7 @@ pub async fn confirm_screenshot(
 /// 取消截图：关所有窗口
 #[tauri::command]
 pub async fn cancel_screenshot(app_handle: tauri::AppHandle) -> Result<(), String> {
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    clear_screenshot_state();
     close_all_screenshot_windows(&app_handle);
     Ok(())
 }
@@ -560,8 +556,7 @@ pub async fn pin_screenshot(
     }
     .ok_or("无截图数据")?;
 
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    clear_screenshot_state();
 
     let sel_win = app_handle
         .get_webview_window(&label)
@@ -571,15 +566,9 @@ pub async fn pin_screenshot(
     {
         let scale = sel_win.scale_factor().unwrap_or(1.0) as f64;
 
-        let fake_full = octopus_capx::capture::ScreenCapture {
-            rgba_bytes: full.rgba_bytes.clone(),
-            width: full.width,
-            height: full.height,
-            monitor_x: 0,
-            monitor_y: 0,
-        };
-        let png_bytes = octopus_capx::capture::crop_region(
-            &fake_full,
+        let png_bytes = octopus_capx::capture::crop_region_raw(
+            &full.rgba_bytes,
+            full.width, full.height,
             (x * scale) as u32,
             (y * scale) as u32,
             (w * scale) as u32,
@@ -837,23 +826,6 @@ fn set_app_active_on_main(win: &tauri::WebviewWindow, active: bool) {
 }
 
 /// macOS: 模拟一次垂直滚轮事件（像素级）
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn send_scroll(delta: i32) {
-    use core_graphics::event::{CGEvent, ScrollEventUnit, CGEventTapLocation};
-    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-    if let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-        if let Ok(event) = CGEvent::new_scroll_event(
-            source, ScrollEventUnit::PIXEL, 1, delta, 0, 0,
-        ) {
-            event.post(CGEventTapLocation::Session);
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn send_scroll(_delta: i32) {}
-
 /// 前端传递的交互区域（工具栏、预览窗等），窗口局部逻辑坐标。
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct InteractiveRect {
