@@ -190,34 +190,6 @@ pub async fn save_transcription_to_note(
     Ok(id)
 }
 
-/// 剪贴板条目 → 新建笔记：文本转 <p>；图片转 <img src="note-img:<hash>">。
-#[tauri::command]
-pub async fn save_clipboard_to_note(
-    item_id: i64,
-    app_handle: tauri::AppHandle,
-) -> Result<i64, String> {
-    let item = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::get_item_by_id(conn, item_id)
-    })
-    .map_err(|e| e.to_string())?
-    .ok_or("原剪贴板记录不存在")?;
-    let html = match item.item_type {
-        octopus_clipboard::ItemType::Image => {
-            let hash = item
-                .image_meta
-                .as_ref()
-                .map(|m| m.blob_hash.as_str())
-                .unwrap_or("");
-            format!(r#"<img src="note-img:{}" alt="剪贴板图片">"#, hash)
-        }
-        _ => format!("<p>{}</p>", html_escape(&item.content)),
-    };
-    let id = octopus_notepad::store::create_note(NoteSource::Clipboard, Some(item_id), &html)
-        .map_err(|e| e.to_string())?;
-    let _ = app_handle.emit("notepad://changed", ());
-    Ok(id)
-}
-
 /// OCR 结果 → 新建笔记：text → <p> 包裹 → create_note(Ocr, None)。
 #[tauri::command]
 pub async fn save_ocr_to_note(text: String, app_handle: tauri::AppHandle) -> Result<i64, String> {

@@ -254,7 +254,6 @@ pub fn run() {
             note_commands::get_note_image,
             note_commands::insert_note_image,
             note_commands::save_transcription_to_note,
-            note_commands::save_clipboard_to_note,
             note_commands::save_ocr_to_note,
             notepad_window::open_notepad,
             compact_editor_commands::open_compact_editor,

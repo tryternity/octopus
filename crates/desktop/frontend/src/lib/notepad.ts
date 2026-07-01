@@ -47,6 +47,4 @@ export const insertNoteImage = (path: string) => invoke<string>("insert_note_ima
 export const currentTranscriptionId = () => invoke<number | null>("current_transcription_id");
 export const saveTranscriptionToNote = (transcriptionId: number, text: string) =>
   invoke<number>("save_transcription_to_note", { transcriptionId, text });
-export const saveClipboardToNote = (itemId: number) =>
-  invoke<number>("save_clipboard_to_note", { itemId });
 export const saveOcrToNote = (text: string) => invoke<number>("save_ocr_to_note", { text });

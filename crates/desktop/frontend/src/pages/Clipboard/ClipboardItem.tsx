@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, Copy, ScanText, Loader2, Check, NotebookPen, SquarePen } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, Loader2, Check, SquarePen } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import { openCompactEditor } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
@@ -25,9 +25,14 @@ export default function ClipboardItemRow({
   const [ocrDone, setOcrDone] = useState(false);
   const [thumbSrc, setThumbSrc] = useState<string | null>(null);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    return () => { if (deleteTimer.current) clearTimeout(deleteTimer.current); };
+    return () => {
+      if (deleteTimer.current) clearTimeout(deleteTimer.current);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -121,26 +126,17 @@ export default function ClipboardItemRow({
     }
   };
 
+  // 单击左侧类型图标 → 复制（copy_clipboard_item，不隐藏浮窗、不触发粘贴）。
+  // 触效：icon 放大回弹 + 闪绿；右侧弹「已复制」气泡 1.5s。
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       await invoke("copy_clipboard_item", { id: item.id });
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 1500);
     } catch (e) {
       console.error(e);
-    }
-  };
-
-  const [noteSaving, setNoteSaving] = useState(false);
-  const handleSaveToNote = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (noteSaving) return;
-    setNoteSaving(true);
-    try {
-      await invoke("save_clipboard_to_note", { itemId: item.id });
-    } catch (err) {
-      console.error(err);
-    } finally {
-      setNoteSaving(false);
     }
   };
 
@@ -175,10 +171,24 @@ export default function ClipboardItemRow({
         <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-voice/60" />
       )}
 
-      <Icon className={cn(
-        "w-4 h-4 mt-px flex-shrink-0 transition-colors",
-        isVoice ? "text-voice" : "text-muted-foreground group-hover:text-foreground",
-      )} />
+      <button
+        type="button"
+        onClick={handleCopy}
+        onDoubleClick={(e) => e.stopPropagation()}
+        title="单击复制"
+        className="relative flex-shrink-0 mt-px -m-0.5 cursor-pointer rounded p-0.5 transition-transform duration-150 hover:scale-110 active:scale-90"
+      >
+        <Icon className={cn(
+          "w-4 h-4 transition-all duration-150",
+          isVoice ? "text-voice" : "text-muted-foreground group-hover:text-foreground",
+          copied && "scale-125 text-emerald-500",
+        )} />
+        {copied && (
+          <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1 -translate-y-1/2 whitespace-nowrap rounded bg-emerald-500 px-1.5 py-0.5 text-[10px] font-medium text-white shadow">
+            已复制
+          </span>
+        )}
+      </button>
       <div className="flex-1 min-w-0">
         {item.item_type === "image" && item.image_meta ? (
           <div className="flex items-center gap-1.5">
@@ -203,22 +213,8 @@ export default function ClipboardItemRow({
         )}
       </div>
 
-      {/* 右侧操作：复制 + 收藏 + 保存/打开 + 删除 */}
+      {/* 右侧操作：收藏 + 保存/打开 + 删除（复制已移至左侧类型图标单击） */}
       <div className="flex-shrink-0 flex items-center gap-0.5">
-        <button
-          className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
-          onClick={handleCopy}
-          title="复制"
-        >
-          <Copy className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-        </button>
-        <button
-          className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
-          onClick={handleSaveToNote}
-          title="存入记事本"
-        >
-          <NotebookPen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-        </button>
         {item.item_type !== "image" && item.item_type !== "file" && (
           <button
             className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
