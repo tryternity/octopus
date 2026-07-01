@@ -54,6 +54,9 @@ impl NotepadApp {
         setup_fonts(&cc.egui_ctx);
         // Accessory 再设一次（事件循环已起，确保 Dock 图标隐藏生效）。
         macos::set_accessory_policy();
+        // 强制首帧后再画一帧：eframe 首帧窗口 size 可能未定（macOS 窗口刚创建），
+        // CentralPanel 内容若按 0 尺寸布局会画空，且无交互不重绘 → 默认空白。
+        cc.egui_ctx.request_repaint();
         Self { rx, view: NotepadView::default() }
     }
 }

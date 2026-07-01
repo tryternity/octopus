@@ -200,6 +200,13 @@ impl NotepadView {
             ui.add_space(2.0);
             ui.horizontal(|ui| {
                 ui.spacing_mut().item_spacing.x = 8.0;
+                // 笔记总数（兼诊断：能显示说明 CentralPanel 闭包执行了）
+                ui.label(
+                    egui::RichText::new(format!("共 {} 条", self.notes.len()))
+                        .small()
+                        .color(crate::theme::MUTED),
+                );
+                ui.separator();
                 ui.label(egui::RichText::new("标题").small().color(crate::theme::MUTED));
                 let resp = ui.text_edit_singleline(&mut self.title);
                 if resp.changed() {
@@ -217,52 +224,41 @@ impl NotepadView {
             // 工具栏（5 按钮：选中文本→包 md 语法）
             toolbar(ui, &mut self.body, &mut self.body_dirty, &mut self.last_edit);
 
-            // 编辑 / 预览分屏（allocate_ui 精确分配宽度，避免 Frame::group + set_min_size
-            // 导致总宽溢出 → 每帧重算 half 抖动「拉出来又缩回去」）
-            let avail = ui.available_size();
-            let col_w = (avail.x / 2.0).max(120.0);
-            ui.horizontal_top(|ui| {
-                ui.spacing_mut().item_spacing.x = 0.0;
-                // 左：md 源码（限定宽度，不用 MAX 撑爆）
-                ui.allocate_ui_with_layout(
-                    egui::Vec2::new(col_w, avail.y),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        ui.label(
-                            egui::RichText::new("Markdown 源码")
-                                .small()
-                                .color(crate::theme::MUTED)
-                                .strong(),
-                        );
-                        ui.add_space(2.0);
-                        let resp = ui.add(
-                            egui::TextEdit::multiline(&mut self.body)
-                                .desired_width(col_w)
-                                .desired_rows(20),
-                        );
-                        if resp.changed() {
-                            self.mark_dirty();
-                        }
-                    },
-                );
-                ui.separator(); // 竖向分隔线
-                // 右：预览（占剩余宽度）
-                ui.allocate_ui_with_layout(
-                    egui::Vec2::new(ui.available_width(), avail.y),
-                    egui::Layout::top_down(egui::Align::LEFT),
-                    |ui| {
-                        ui.label(
-                            egui::RichText::new("预览")
-                                .small()
-                                .color(crate::theme::MUTED)
-                                .strong(),
-                        );
-                        ui.add_space(2.0);
-                        egui::ScrollArea::vertical().show(ui, |ui| {
-                            CommonMarkViewer::new().show(ui, &mut self.md_cache, &self.body);
-                        });
-                    },
-                );
+            // 编辑 / 预览分屏：ui.columns 等宽两列（egui 标准等宽分栏 API，内部 allocate，
+            // 不依赖手算 avail —— 手算的 allocate_ui_with_layout 在非交互帧尺寸会漂移，
+            // 内容被分配到 0 高度区域而不绘制，表现为「编辑区默认空白、拖一下才出现」）
+            ui.columns(2, |cols| {
+                // 左：Markdown 源码
+                cols[0].vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new("Markdown 源码")
+                            .small()
+                            .color(crate::theme::MUTED)
+                            .strong(),
+                    );
+                    ui.add_space(2.0);
+                    let resp = ui.add(
+                        egui::TextEdit::multiline(&mut self.body)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(20),
+                    );
+                    if resp.changed() {
+                        self.mark_dirty();
+                    }
+                });
+                // 右：预览
+                cols[1].vertical(|ui| {
+                    ui.label(
+                        egui::RichText::new("预览")
+                            .small()
+                            .color(crate::theme::MUTED)
+                            .strong(),
+                    );
+                    ui.add_space(2.0);
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        CommonMarkViewer::new().show(ui, &mut self.md_cache, &self.body);
+                    });
+                });
             });
         });
 
