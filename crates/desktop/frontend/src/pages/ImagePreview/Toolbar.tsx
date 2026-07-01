@@ -63,6 +63,20 @@ export default function Toolbar(props: {
   return (
     <div className="relative">
       <div className="flex items-center gap-1 px-2 py-1.5 bg-neutral-800 border-b border-neutral-700">
+        {/* 输出操作：保存 / 复制 / OCR（最前） */}
+        <ToolButton title="保存为文件" active={false} onClick={props.onSave}>
+          <Download className="h-4 w-4" />
+        </ToolButton>
+        <ToolButton title="复制到剪贴板" active={false} onClick={props.onCopy}>
+          <Copy className="h-4 w-4" />
+        </ToolButton>
+        <ToolButton title="OCR 识别（结果复制到剪贴板）" active={false} onClick={props.onOcr}>
+          {props.ocrCopied ? <Check className="h-4 w-4 text-emerald-400" /> : <ScanText className="h-4 w-4" />}
+        </ToolButton>
+
+        <div className="mx-1 h-5 w-px bg-neutral-700" />
+
+        {/* 标注工具：选择/矩形/椭圆/直线/文字/撤销 */}
         {tools.map((t) => (
           <ToolButton key={t.key} title={t.title} active={props.tool === t.key}
             onClick={() => props.setTool(t.key)}>
@@ -91,21 +105,13 @@ export default function Toolbar(props: {
           </ToolButton>
         </div>
 
-        <div className="mx-1 h-5 w-px bg-neutral-700" />
-
-        <ToolButton title="保存为文件" active={false} onClick={props.onSave}>
-          <Download className="h-4 w-4" />
-        </ToolButton>
-        <ToolButton title="复制到剪贴板" active={false} onClick={props.onCopy}>
-          <Copy className="h-4 w-4" />
-        </ToolButton>
-        <ToolButton title="OCR 识别（结果复制到剪贴板）" active={false} onClick={props.onOcr}>
-          {props.ocrCopied ? <Check className="h-4 w-4 text-emerald-400" /> : <ScanText className="h-4 w-4" />}
-        </ToolButton>
-        <ToolButton title={props.alwaysOnTop ? "取消置顶" : "窗口置顶"}
-          active={props.alwaysOnTop} onClick={props.onToggleTop}>
-          {props.alwaysOnTop ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
-        </ToolButton>
+        {/* 置顶单独推到最右 */}
+        <div className="ml-auto flex items-center">
+          <ToolButton title={props.alwaysOnTop ? "取消置顶" : "窗口置顶"}
+            active={props.alwaysOnTop} onClick={props.onToggleTop}>
+            {props.alwaysOnTop ? <PinOff className="h-4 w-4" /> : <Pin className="h-4 w-4" />}
+          </ToolButton>
+        </div>
       </div>
 
       {/* 属性浮窗：选了标注工具后自动浮在工具栏下方（对齐截图 ToolPropsPopover） */}
