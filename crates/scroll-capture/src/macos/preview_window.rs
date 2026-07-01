@@ -54,12 +54,19 @@ pub fn create_preview(x: f64, y: f64) {
 
 pub fn update_preview(png_data: Vec<u8>, height: u32) {
     *PENDING_PREVIEW.lock().unwrap() = Some((png_data, height));
+    // NSView 操作必须在主线程。用 dispatch_async_f 派发。
     let window_opt = PREVIEW_WINDOW.lock().unwrap();
     if let Some(ref sw) = *window_opt {
         let win = &sw.0;
         unsafe {
+            // 用 performSelectorOnMainThread 触发重绘
             let content: Retained<NSView> = msg_send![win, contentView];
-            let _: () = msg_send![&content, setNeedsDisplay: true];
+            let _: () = msg_send![
+                Retained::as_ptr(&content) as *mut NSView,
+                performSelectorOnMainThread: objc2::sel!(setNeedsDisplay:),
+                withObject: std::ptr::null::<objc2::runtime::AnyObject>(),
+                waitUntilDone: false,
+            ];
         }
     }
 }
