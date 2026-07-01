@@ -255,8 +255,8 @@ define_class!(
                 let state = self.ivars().state.get();
 
                 if state == 2 {
-                    // recording: 只画绿色边框
-                    draw_green_border(self, &bounds);
+                    // recording: 选区外遮罩 + 选区内透明 + 绿色边框
+                    draw_overlay(self, &bounds);
                     return;
                 }
 
@@ -318,6 +318,28 @@ unsafe fn draw_overlay(view: &NSScrollOverlayView, bounds: &NSRect) {
 /// 在后台线程启动录制循环。
 fn start_recording_thread(global_x: f64, global_y: f64, sel_w: f64, sel_h: f64, exclude_wid: u32) {
     crate::set_recording(true);
+
+    // 创建预览窗口（选区右下角右侧）
+    let preview_x = global_x + sel_w + 12.0;
+    let preview_y = global_y;
+    super::preview_window::create_preview(preview_x, preview_y);
+
+    // 设置按钮回调（1=save, 2=copy, 3=cancel）
+    super::preview_window::set_button_callback(Box::new(|action| {
+        match action {
+            1 | 2 => {
+                // save or copy → stop recording (backend handles on_complete)
+                crate::stop();
+            }
+            3 => {
+                // cancel → stop without saving
+                // 设标志让 on_complete 不入库
+                crate::set_cancelled(true);
+                crate::stop();
+            }
+            _ => {}
+        }
+    }));
 
     // 设置所有覆盖窗口为滚轮穿透
     {
@@ -422,7 +444,17 @@ fn start_recording_thread(global_x: f64, global_y: f64, sel_w: f64, sel_h: f64, 
                     
                     match stitcher.process_frame(&frame) {
                         Ok(true) => {
-                            log::info!("[scroll-capture] Frame stitched successfully! Canvas height: {}", stitcher.height());
+                            log::info!("[scroll-capture] stitched! canvas_h={}", stitcher.height());
+                            // 更新预览
+                            let canvas = stitcher.canvas();
+                            let preview_w = 184u32;
+                            let preview_h = (preview_w * canvas.height() / canvas.width()).min(200);
+                            let preview_img = image::imageops::resize(canvas, preview_w, preview_h, image::imageops::FilterType::CatmullRom);
+                            let mut preview_png = Vec::new();
+                            use image::ImageEncoder;
+                            let enc = image::codecs::png::PngEncoder::new(&mut preview_png);
+                            let _ = enc.write_image(preview_img.as_raw(), preview_w, preview_h, image::ExtendedColorType::Rgba8);
+                            super::preview_window::update_preview(preview_png, stitcher.height());
                         }
                         Ok(false) => {
                             log::info!("[scroll-capture] Frame skipped (not stitched)");
@@ -448,6 +480,16 @@ fn start_recording_thread(global_x: f64, global_y: f64, sel_w: f64, sel_h: f64, 
         if let Some(ref lf) = last_frame {
             let _ = stitcher.finalize(lf);
         }
+
+        // 关闭预览窗口
+        super::preview_window::close_preview();
+
+        if crate::is_cancelled() {
+            log::info!("[scroll-capture] cancelled, skipping on_complete");
+            cleanup();
+            return;
+        }
+
         let canvas = stitcher.canvas().clone();
         let mut png_bytes = Vec::new();
         use image::ImageEncoder;

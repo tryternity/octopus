@@ -1,6 +1,7 @@
 mod overlay_impl;
 mod capture;
 mod helpers;
+pub mod preview_window;
 
 use std::sync::Mutex;
 use objc2::rc::Retained;

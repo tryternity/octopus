@@ -7,10 +7,12 @@ mod macos;
 use std::sync::atomic::{AtomicBool, Ordering};
 
 static RECORDING: AtomicBool = AtomicBool::new(false);
+static CANCELLED: AtomicBool = AtomicBool::new(false);
 
 /// Start scroll capture: create overlay windows, wait for user selection, then record.
 pub fn start(on_complete: Box<dyn FnOnce(Vec<u8>) + Send + 'static>) {
     RECORDING.store(false, Ordering::SeqCst);
+    CANCELLED.store(false, Ordering::SeqCst);
     #[cfg(target_os = "macos")]
     macos::run(on_complete);
     #[cfg(not(target_os = "macos"))]
@@ -35,4 +37,12 @@ pub(crate) fn is_recording() -> bool {
 
 pub(crate) fn set_recording(v: bool) {
     RECORDING.store(v, Ordering::SeqCst);
+}
+
+pub(crate) fn set_cancelled(v: bool) {
+    CANCELLED.store(v, Ordering::SeqCst);
+}
+
+pub(crate) fn is_cancelled() -> bool {
+    CANCELLED.load(Ordering::SeqCst)
 }

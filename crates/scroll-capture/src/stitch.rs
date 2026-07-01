@@ -17,11 +17,7 @@ impl Default for StitchConfig {
     }
 }
 
-/// 滚动截屏拼接器——无状态全局 2D 空间模板匹配 (SAD)。
-///
-/// 每次新帧到来时，在全量区间 [-220, 0] 内进行 2D 块匹配。
-/// 相比 1D 投影或局部速度跟踪，全局 2D 空间匹配充分利用了字符的 2D 独特排布，
-/// 使得真正的对齐点总是具有绝对最小的 SAD，从根本上消除了对速度预测和精细调参的依赖。
+/// 滚动截屏拼接器——全局 2D 空间模板匹配 (SAD) + 软速度罚分 + Finalize 补缝。
 pub struct Stitcher {
     canvas: RgbaImage,
     /// 2D 灰度参考帧，用于空间模板匹配
@@ -30,6 +26,8 @@ pub struct Stitcher {
     sticky_bottom: u32,
     detected: bool,
     config: StitchConfig,
+    /// 上一次成功拼接的滚动位移，用于软速度罚分防止周期跳变
+    last_dy: Option<f64>,
 }
 
 impl Stitcher {
@@ -41,6 +39,7 @@ impl Stitcher {
             sticky_bottom: 0,
             detected: false,
             config,
+            last_dy: None,
         }
     }
 
@@ -77,17 +76,22 @@ impl Stitcher {
         let x_start = (w as f64 * 0.10) as u32;
         let x_end = (w as f64 * 0.80) as u32;
 
-        let (dy, confidence) = match find_overlap_spatial(
+        // 全量搜索范围 220 像素
+        let max_scroll = 220u32;
+        let (dy, confidence) = match find_overlap_spatial_ext(
             &self.reference_gray,
             &curr_gray,
             x_start,
             x_end,
             eff_top,
             eff_bottom,
+            max_scroll,
+            self.last_dy,
         ) {
             Some(v) => v,
             None => {
                 log::info!("[stitch] find_overlap_spatial returned None");
+                self.last_dy = None;
                 return Ok(false);
             }
         };
@@ -95,15 +99,17 @@ impl Stitcher {
         // dy < 0 = 用户向下滚动（内容上移），dy > 0 = 向上滚动（忽略）
         if dy >= 0.0 {
             log::info!("[stitch] skipped frame: dy={:.1} >= 0.0 (conf={:.4})", dy, confidence);
+            self.last_dy = None;
             return Ok(false);
         }
 
         let new_rows = (-dy).round() as u32;
-        let max_scroll = (eff_bottom - eff_top) * 2 / 3;
+        let max_scroll_limit = (eff_bottom - eff_top) * 4 / 5; // 允许最大滚动比例扩大到 80%
 
         // 静止或滚动超过限额
-        if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll {
-            log::info!("[stitch] skipped frame: new_rows={} invalid (min={}, max={}) (conf={:.4})", new_rows, self.config.min_scroll_px, max_scroll, confidence);
+        if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
+            log::info!("[stitch] skipped frame: new_rows={} invalid (min={}, max={}) (conf={:.4})", new_rows, self.config.min_scroll_px, max_scroll_limit, confidence);
+            self.last_dy = None;
             return Ok(false);
         }
 
@@ -119,8 +125,9 @@ impl Stitcher {
         combined.copy_from(&new_content, 0, old_h).context("new_rows copy")?;
         self.canvas = combined;
 
-        // 更新参考灰度图为当前帧
+        // 更新参考灰度图与速度缓存
         self.reference_gray = curr_gray;
+        self.last_dy = Some(dy);
 
         Ok(true)
     }
@@ -129,18 +136,56 @@ impl Stitcher {
     pub fn height(&self) -> u32 { self.canvas.height() }
 
     pub fn finalize(&mut self, last_frame: &RgbaImage) -> Result<()> {
-        // 补全最后一帧的 sticky_bottom 区域
         let h = last_frame.height();
         let w = last_frame.width();
+        let eff_top = self.sticky_top;
         let eff_bottom = h.saturating_sub(self.sticky_bottom);
-        if eff_bottom >= h { return Ok(()); }
+        if eff_bottom <= eff_top {
+            return Ok(());
+        }
+
+        // 1. 尝试将最后一帧与参考帧对齐，补全因为丢帧/快速滑动积累的剩余未拼接区域
+        let last_gray = image::imageops::grayscale(last_frame);
+        let x_start = (w as f64 * 0.10) as u32;
+        let x_end = (w as f64 * 0.80) as u32;
+
+        // 允许最大对齐位移为有效高度的 90%
+        let max_finalize_scroll = ((eff_bottom - eff_top) as f64 * 0.90) as u32;
+        if let Some((dy, confidence)) = find_overlap_spatial_ext(
+            &self.reference_gray,
+            &last_gray,
+            x_start,
+            x_end,
+            eff_top,
+            eff_bottom,
+            max_finalize_scroll,
+            None, // 最后一帧匹配不施加速度限制
+        ) {
+            if dy < 0.0 {
+                let new_rows = (-dy).round() as u32;
+                if new_rows < eff_bottom - eff_top {
+                    log::info!("[stitch] finalize: stitching remaining {} rows (conf={:.4})", new_rows, confidence);
+                    let crop_y = eff_bottom - new_rows;
+                    let new_content = image::imageops::crop_imm(last_frame, 0, crop_y, w, new_rows).to_image();
+                    let old_h = self.canvas.height();
+                    let mut combined = RgbaImage::new(w, old_h + new_rows);
+                    combined.copy_from(&self.canvas, 0, 0).context("finalize copy canvas")?;
+                    combined.copy_from(&new_content, 0, old_h).context("finalize copy new_rows")?;
+                    self.canvas = combined;
+                }
+            }
+        }
+
+        // 2. 补全最后一帧的 sticky_bottom 区域
         let footer_h = h - eff_bottom;
-        let footer = image::imageops::crop_imm(last_frame, 0, eff_bottom, w, footer_h).to_image();
-        let old_h = self.canvas.height();
-        let mut combined = RgbaImage::new(w, old_h + footer_h);
-        combined.copy_from(&self.canvas, 0, 0).context("finalize canvas")?;
-        combined.copy_from(&footer, 0, old_h).context("finalize footer")?;
-        self.canvas = combined;
+        if footer_h > 0 {
+            let footer = image::imageops::crop_imm(last_frame, 0, eff_bottom, w, footer_h).to_image();
+            let old_h = self.canvas.height();
+            let mut combined = RgbaImage::new(w, old_h + footer_h);
+            combined.copy_from(&self.canvas, 0, 0).context("finalize canvas footer")?;
+            combined.copy_from(&footer, 0, old_h).context("finalize footer")?;
+            self.canvas = combined;
+        }
 
         Ok(())
     }
@@ -167,13 +212,15 @@ impl Stitcher {
 
 /// 空间域 2D 模板匹配算法，查找最匹配的垂直位移 dy。
 /// 采用 SAD (Sum of Absolute Differences) 准则与列抽样加速，保留 2D 空间排布，彻底避免 1D 投影带来的周期列表混淆。
-fn find_overlap_spatial(
+fn find_overlap_spatial_ext(
     ref_img: &GrayImage,
     curr_img: &GrayImage,
     x_start: u32,
     x_end: u32,
     eff_top: u32,
     eff_bottom: u32,
+    max_scroll: u32,
+    last_dy: Option<f64>,
 ) -> Option<(f64, f64)> {
     let strip_h = 80u32; // 模板条的高度，包含更多文本特征
     if eff_bottom - eff_top <= strip_h + 10 {
@@ -204,15 +251,15 @@ fn find_overlap_spatial(
         return Some((0.0, 1.0));
     }
 
-    // 限制滚动搜索的最大位移，在全量 [0, 220] 像素内进行全局匹配，无需保存历史状态或担心预测失准
-    let max_scroll = 220u32;
+    // 限制滚动搜索的位移范围
     let min_y_offset = (template_y as i32 - max_scroll as i32).max(eff_top as i32) as u32;
     let max_y_offset = template_y;
 
     let mut best_y_offset = 0u32;
-    let mut min_sad = f64::MAX;
+    let mut min_penalized_sad = f64::MAX;
+    let mut best_original_sad = f64::MAX;
 
-    // 在全量范围内查找 SAD 最小的偏移点
+    // 在指定范围内查找 SAD 最小的偏移点
     for y_offset in min_y_offset..=max_y_offset {
         let mut sad = 0.0;
         let mut count = 0.0;
@@ -226,16 +273,26 @@ fn find_overlap_spatial(
                 count += 1.0;
             }
         }
-        let avg_sad = sad / count;
-        if avg_sad < min_sad {
-            min_sad = avg_sad;
+        let original_sad = sad / count;
+        let mut penalized_sad = original_sad;
+        
+        // 软速度罚分 (Regularization)：拉近与上一帧速度的距离，防止在快速滚动与模糊行中误跳变到邻近周期行
+        if let Some(ldy) = last_dy {
+            let dy = y_offset as f64 - template_y as f64;
+            let penalty = 0.04 * (dy - ldy).abs();
+            penalized_sad += penalty;
+        }
+
+        if penalized_sad < min_penalized_sad {
+            min_penalized_sad = penalized_sad;
+            best_original_sad = original_sad;
             best_y_offset = y_offset;
         }
     }
 
     // 对比静止锚点：如果当前帧在 dy = 0 处的对齐误差比搜索到的最佳值还要小（或者几乎一样小），
     // 说明真实的位移其实是 0.0（静止状态），搜索窗口内的最小值只是周期性假匹配。
-    if avg_sad_0 < min_sad + 1.0 {
+    if avg_sad_0 < best_original_sad + 1.0 {
         return Some((0.0, 1.0));
     }
 
@@ -262,12 +319,12 @@ fn find_overlap_spatial(
     let mean_sad = sum_sad / sample_count;
     let mut confidence = 0.0;
     if mean_sad > 1e-5 {
-        confidence = 1.0 - (min_sad / mean_sad);
+        confidence = 1.0 - (best_original_sad / mean_sad);
     }
 
-    // 限制匹配质量：只接收未发生严重运动模糊与屏幕拖影的清晰对齐帧 (SAD < 4.5 且 confidence > 0.20)
-    // 2D 匹配由于极强的文字排布空间唯一性，SAD < 4.5 确保对齐点绝对精准，防止拖影帧误配导致丢行
-    if min_sad < 4.5 && confidence > 0.20 {
+    // 限制匹配质量：只接收对齐良好的对齐帧 (SAD < 7.5 且 confidence > 0.15)
+    // 2D 匹配由于极强的文字排布空间唯一性与软速度罚分保护，SAD < 7.5 即可确保在各种滚动状态下都十分精准
+    if best_original_sad < 7.5 && confidence > 0.15 {
         let dy = best_y_offset as f64 - template_y as f64;
         Some((dy, confidence))
     } else {

@@ -1,12 +1,10 @@
 use anyhow::{Context, Result};
 use image::{GrayImage, GenericImage, RgbaImage};
-use imageproc::gradients::sobel_gradients;
-use rustfft::{FftPlanner, num_complex::Complex};
 
 pub struct StitchConfig {
     /// 最小有效滚动位移（像素）。低于此值视为静止。
     pub min_scroll_px: f64,
-    /// 相位相关峰值置信度（0~1）
+    /// 置信度阈值 (空间匹配)
     pub min_confidence: f64,
 }
 
@@ -19,34 +17,29 @@ impl Default for StitchConfig {
     }
 }
 
-/// 滚动截屏拼接器——FFT 相位相关 + Canvas-Anchored。
-///
-/// 每次新帧到来时，将参考帧（上次成功拼接的帧）与当前帧做 1D 相位相关，
-/// 得到亚像素级垂直位移 dy。dy > min_scroll_px 时追加新内容到画布。
-///
-/// 相比 NCC 模板匹配的优势：
-/// - 亚像素精度（抛物线拟合 → 0.1px），消除整数累积误差导致的模糊
-/// - 频率域全局主峰，对周期性内容（列表行）鲁棒，不会跳到隔壁行
-/// - O(N log N) FFT，比逐行 NCC 滑窗更快
+/// 滚动截屏拼接器——全局 2D 空间模板匹配 (SAD) + 软速度罚分 + Finalize 补缝。
 pub struct Stitcher {
     canvas: RgbaImage,
-    /// 参考投影：上次成功拼接帧的垂直投影 1D 信号
-    reference_proj: Vec<f64>,
+    /// 2D 灰度参考帧，用于空间模板匹配
+    reference_gray: GrayImage,
     sticky_top: u32,
     sticky_bottom: u32,
     detected: bool,
     config: StitchConfig,
+    /// 上一次成功拼接的滚动位移，用于软速度罚分防止周期跳变
+    last_dy: Option<f64>,
 }
 
 impl Stitcher {
     pub fn new(first_frame: RgbaImage, config: StitchConfig) -> Self {
         Self {
             canvas: first_frame,
-            reference_proj: Vec::new(),
+            reference_gray: GrayImage::new(0, 0),
             sticky_top: 0,
             sticky_bottom: 0,
             detected: false,
             config,
+            last_dy: None,
         }
     }
 
@@ -61,12 +54,12 @@ impl Stitcher {
             let eff_bottom0 = self.canvas.height().saturating_sub(self.sticky_bottom);
             let w = self.canvas.width();
             if eff_bottom0 > eff_top0 {
-                let cropped = image::imageops::crop_imm(&self.canvas.clone(), 0, eff_top0, w, eff_bottom0 - eff_top0).to_image();
+                // 仅裁掉底部的 sticky_bottom 区域，保留顶部的 sticky_top 区域
+                let cropped = image::imageops::crop_imm(&self.canvas.clone(), 0, 0, w, eff_bottom0).to_image();
                 self.canvas = cropped;
             }
-            // 用第二帧的有效区域初始化参考投影
-            let frame_edges = compute_edges(frame);
-            self.reference_proj = project_vertical_range(&frame_edges, eff_top0, h.saturating_sub(self.sticky_bottom));
+            // 用第二帧初始化参考帧灰度图
+            self.reference_gray = image::imageops::grayscale(frame);
     
             return Ok(false); // 第二帧用于初始化，不拼接
         }
@@ -77,38 +70,52 @@ impl Stitcher {
             return Ok(false);
         }
 
-        let curr_edges = compute_edges(frame);
-        let curr_proj = project_vertical_range(&curr_edges, eff_top, eff_bottom);
+        let curr_gray = image::imageops::grayscale(frame);
+        
+        // 排除最左侧的 10% (通常有图标/树状图) 和最右侧的 20% (通常有滚动条/时间戳)
+        let x_start = (w as f64 * 0.10) as u32;
+        let x_end = (w as f64 * 0.80) as u32;
 
-        // 相位相关求位移
-        let (dy, confidence) = match phase_correlation_dy(&self.reference_proj, &curr_proj) {
+        // 全量搜索范围 220 像素
+        let max_scroll = 220u32;
+        let (dy, confidence) = match find_overlap_spatial_ext(
+            &self.reference_gray,
+            &curr_gray,
+            x_start,
+            x_end,
+            eff_top,
+            eff_bottom,
+            max_scroll,
+            self.last_dy,
+        ) {
             Some(v) => v,
-            None => return Ok(false),
+            None => {
+                log::info!("[stitch] find_overlap_spatial returned None");
+                self.last_dy = None;
+                return Ok(false);
+            }
         };
-
-        // 置信度太低——跳过此帧（不拼接、不更新参考帧）
-        if confidence < 0.5 {
-            return Ok(false);
-        }
 
         // dy < 0 = 用户向下滚动（内容上移），dy > 0 = 向上滚动（忽略）
         if dy >= 0.0 {
+            log::info!("[stitch] skipped frame: dy={:.1} >= 0.0 (conf={:.4})", dy, confidence);
+            self.last_dy = None;
             return Ok(false);
         }
 
         let new_rows = (-dy).round() as u32;
+        let max_scroll_limit = (eff_bottom - eff_top) * 4 / 5; // 允许最大滚动比例扩大到 80%
 
-        // 静止或滚动超过选区高度（异常）
-        if new_rows < self.config.min_scroll_px as u32 || new_rows >= (eff_bottom - eff_top) {
+        // 静止或滚动超过限额
+        if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
+            log::info!("[stitch] skipped frame: new_rows={} invalid (min={}, max={}) (conf={:.4})", new_rows, self.config.min_scroll_px, max_scroll_limit, confidence);
+            self.last_dy = None;
             return Ok(false);
         }
 
-        eprintln!("[stitch] dy={:.1} conf={:.4} new_rows={} eff=[{},{}] canvas_h={}",
+        log::info!("[stitch] dy={:.1} conf={:.4} new_rows={} eff=[{},{}] canvas_h={}",
             dy, confidence, new_rows, eff_top, eff_bottom, self.canvas.height());
 
-        // 用户向下滚动了 new_rows 像素：帧底部 new_rows 行是新进入选区的内容。
-        // 但这些行可能与画布底部有重叠（帧间间隔内画面已部分更新），
-        // 相位相关给出的 new_rows 是精确位移，直接追加底部 new_rows 行即可。
         let crop_y = eff_bottom - new_rows;
         let new_content = image::imageops::crop_imm(frame, 0, crop_y, w, new_rows).to_image();
 
@@ -118,9 +125,9 @@ impl Stitcher {
         combined.copy_from(&new_content, 0, old_h).context("new_rows copy")?;
         self.canvas = combined;
 
-        // 更新参考投影为当前帧
-        self.reference_proj = curr_proj;
-
+        // 更新参考灰度图与速度缓存
+        self.reference_gray = curr_gray;
+        self.last_dy = Some(dy);
 
         Ok(true)
     }
@@ -129,18 +136,56 @@ impl Stitcher {
     pub fn height(&self) -> u32 { self.canvas.height() }
 
     pub fn finalize(&mut self, last_frame: &RgbaImage) -> Result<()> {
-        // 补全最后一帧的 sticky_bottom 区域
         let h = last_frame.height();
         let w = last_frame.width();
+        let eff_top = self.sticky_top;
         let eff_bottom = h.saturating_sub(self.sticky_bottom);
-        if eff_bottom >= h { return Ok(()); }
+        if eff_bottom <= eff_top {
+            return Ok(());
+        }
+
+        // 1. 尝试将最后一帧与参考帧对齐，补全因为丢帧/快速滑动积累的剩余未拼接区域
+        let last_gray = image::imageops::grayscale(last_frame);
+        let x_start = (w as f64 * 0.10) as u32;
+        let x_end = (w as f64 * 0.80) as u32;
+
+        // 允许最大对齐位移为有效高度的 90%
+        let max_finalize_scroll = ((eff_bottom - eff_top) as f64 * 0.90) as u32;
+        if let Some((dy, confidence)) = find_overlap_spatial_ext(
+            &self.reference_gray,
+            &last_gray,
+            x_start,
+            x_end,
+            eff_top,
+            eff_bottom,
+            max_finalize_scroll,
+            None, // 最后一帧匹配不施加速度限制
+        ) {
+            if dy < 0.0 {
+                let new_rows = (-dy).round() as u32;
+                if new_rows < eff_bottom - eff_top {
+                    log::info!("[stitch] finalize: stitching remaining {} rows (conf={:.4})", new_rows, confidence);
+                    let crop_y = eff_bottom - new_rows;
+                    let new_content = image::imageops::crop_imm(last_frame, 0, crop_y, w, new_rows).to_image();
+                    let old_h = self.canvas.height();
+                    let mut combined = RgbaImage::new(w, old_h + new_rows);
+                    combined.copy_from(&self.canvas, 0, 0).context("finalize copy canvas")?;
+                    combined.copy_from(&new_content, 0, old_h).context("finalize copy new_rows")?;
+                    self.canvas = combined;
+                }
+            }
+        }
+
+        // 2. 补全最后一帧的 sticky_bottom 区域
         let footer_h = h - eff_bottom;
-        let footer = image::imageops::crop_imm(last_frame, 0, eff_bottom, w, footer_h).to_image();
-        let old_h = self.canvas.height();
-        let mut combined = RgbaImage::new(w, old_h + footer_h);
-        combined.copy_from(&self.canvas, 0, 0).context("finalize canvas")?;
-        combined.copy_from(&footer, 0, old_h).context("finalize footer")?;
-        self.canvas = combined;
+        if footer_h > 0 {
+            let footer = image::imageops::crop_imm(last_frame, 0, eff_bottom, w, footer_h).to_image();
+            let old_h = self.canvas.height();
+            let mut combined = RgbaImage::new(w, old_h + footer_h);
+            combined.copy_from(&self.canvas, 0, 0).context("finalize canvas footer")?;
+            combined.copy_from(&footer, 0, old_h).context("finalize footer")?;
+            self.canvas = combined;
+        }
 
         Ok(())
     }
@@ -162,102 +207,129 @@ impl Stitcher {
         }
         self.sticky_top = sticky_t;
         self.sticky_bottom = sticky_b;
-
     }
 }
 
-/// 将边缘图投影为垂直方向 1D 信号（每行所有列的平均边缘强度）。
-#[allow(dead_code)]
-fn project_vertical(edges: &GrayImage) -> Vec<f64> {
-    let (w, h) = (edges.width(), edges.height());
-    (0..h).map(|y| {
-        let mut sum = 0f64;
-        for x in 0..w {
-            sum += edges.get_pixel(x, y)[0] as f64;
+/// 空间域 2D 模板匹配算法，查找最匹配的垂直位移 dy。
+/// 采用 SAD (Sum of Absolute Differences) 准则与列抽样加速，保留 2D 空间排布，彻底避免 1D 投影带来的周期列表混淆。
+fn find_overlap_spatial_ext(
+    ref_img: &GrayImage,
+    curr_img: &GrayImage,
+    x_start: u32,
+    x_end: u32,
+    eff_top: u32,
+    eff_bottom: u32,
+    max_scroll: u32,
+    last_dy: Option<f64>,
+) -> Option<(f64, f64)> {
+    let strip_h = 80u32; // 模板条的高度，包含更多文本特征
+    if eff_bottom - eff_top <= strip_h + 10 {
+        return None;
+    }
+    let template_y = eff_bottom - strip_h;
+
+    // 每隔 2 列采样一次，提供双倍的空间特征解析度，消除 Retina 屏幕亚像素渲染带来的对齐模糊
+    let step_x = 2u32;
+
+    // 先计算 dy = 0.0 (即 y_offset = template_y) 的平均像素差值作为静止锚点
+    let mut sad_0 = 0.0;
+    let mut count_0 = 0.0;
+    for dy in 0..strip_h {
+        let ref_y = template_y + dy;
+        let curr_y = template_y + dy;
+        for x in (x_start..x_end).step_by(step_x as usize) {
+            let p_ref = ref_img.get_pixel(x, ref_y)[0] as f64;
+            let p_curr = curr_img.get_pixel(x, curr_y)[0] as f64;
+            sad_0 += (p_ref - p_curr).abs();
+            count_0 += 1.0;
         }
-        sum / w as f64
-    }).collect()
-}
-
-/// 投影 [eff_top, eff_bottom) 范围内的行。
-fn project_vertical_range(edges: &GrayImage, eff_top: u32, eff_bottom: u32) -> Vec<f64> {
-    let w = edges.width();
-    (eff_top..eff_bottom).map(|y| {
-        let mut sum = 0f64;
-        for x in 0..w {
-            sum += edges.get_pixel(x, y)[0] as f64;
-        }
-        sum / w as f64
-    }).collect()
-}
-
-/// 1D FFT 相位相关，返回 (dy, confidence)。
-/// dy < 0 表示内容向上移动（用户向下滚动）。
-/// dy > 0 表示内容向下移动（用户向上滚动）。
-fn phase_correlation_dy(a: &[f64], b: &[f64]) -> Option<(f64, f64)> {
-    let n = a.len();
-    if b.len() != n || n < 8 { return None; }
-
-    let mut planner = FftPlanner::<f64>::new();
-    let fft = planner.plan_fft_forward(n);
-    let ifft = planner.plan_fft_inverse(n);
-
-    let mut fa: Vec<Complex<f64>> = a.iter().map(|v| Complex::new(*v, 0.0)).collect();
-    let mut fb: Vec<Complex<f64>> = b.iter().map(|v| Complex::new(*v, 0.0)).collect();
-
-    fft.process(&mut fa);
-    fft.process(&mut fb);
-
-    // Normalized cross power spectrum: R = conj(Fa) * Fb / |conj(Fa) * Fb|
-    let mut r: Vec<Complex<f64>> = fa.iter().zip(fb.iter()).map(|(fa, fb)| {
-        let cross = fa.conj() * fb;
-        let norm = cross.norm();
-        if norm > 1e-10 { cross / norm } else { Complex::new(0.0, 0.0) }
-    }).collect();
-
-    ifft.process(&mut r);
-
-    let scale = 1.0 / n as f64;
-
-    // Find peak (skip index 0 = DC component)
-    let mut peak_idx = 1usize;
-    let mut peak_val = 0f64;
-    for i in 1..n {
-        let mag = r[i].norm() * scale;
-        if mag > peak_val { peak_val = mag; peak_idx = i; }
+    }
+    let avg_sad_0 = sad_0 / count_0;
+    
+    // 如果 dy = 0 时的平均像素差值小于 2.0，说明内容基本没有发生滚动位移（静止状态）
+    if avg_sad_0 < 2.0 {
+        return Some((0.0, 1.0));
     }
 
-    // Displacement from circular peak position
-    let dy_int = if peak_idx <= n / 2 {
-        peak_idx as f64
+    // 限制滚动搜索的位移范围
+    let min_y_offset = (template_y as i32 - max_scroll as i32).max(eff_top as i32) as u32;
+    let max_y_offset = template_y;
+
+    let mut best_y_offset = 0u32;
+    let mut min_penalized_sad = f64::MAX;
+    let mut best_original_sad = f64::MAX;
+
+    // 在指定范围内查找 SAD 最小 of 偏移点
+    for y_offset in min_y_offset..=max_y_offset {
+        let mut sad = 0.0;
+        let mut count = 0.0;
+        for dy in 0..strip_h {
+            let ref_y = template_y + dy;
+            let curr_y = y_offset + dy;
+            for x in (x_start..x_end).step_by(step_x as usize) {
+                let p_ref = ref_img.get_pixel(x, ref_y)[0] as f64;
+                let p_curr = curr_img.get_pixel(x, curr_y)[0] as f64;
+                sad += (p_ref - p_curr).abs();
+                count += 1.0;
+            }
+        }
+        let original_sad = sad / count;
+        let mut penalized_sad = original_sad;
+        
+        // 软速度罚分 (Regularization)：拉近与上一帧速度的距离，防止在快速滚动与模糊行中误跳变到邻近周期行
+        if let Some(ldy) = last_dy {
+            let dy = y_offset as f64 - template_y as f64;
+            let penalty = 0.04 * (dy - ldy).abs();
+            penalized_sad += penalty;
+        }
+
+        if penalized_sad < min_penalized_sad {
+            min_penalized_sad = penalized_sad;
+            best_original_sad = original_sad;
+            best_y_offset = y_offset;
+        }
+    }
+
+    // 对比静止锚点：如果当前帧在 dy = 0 处的对齐误差比搜索到的最佳值还要小（或者几乎一样小），
+    // 说明真实的位移其实是 0.0（静止状态），搜索窗口内的最小值只是周期性假匹配。
+    if avg_sad_0 < best_original_sad + 1.0 {
+        return Some((0.0, 1.0));
+    }
+
+    // 估计置信度：评估最佳 SAD 与其他偏移处的平均 SAD 的差距比例
+    let mut sum_sad = 0.0;
+    let mut sample_count = 0.0;
+    // 稀疏采样以快速计算均值
+    for y_offset in (min_y_offset..=max_y_offset).step_by(10) {
+        let mut sad = 0.0;
+        let mut count = 0.0;
+        for dy in (0..strip_h).step_by(2) {
+            let ref_y = template_y + dy;
+            let curr_y = y_offset + dy;
+            for x in (x_start..x_end).step_by(step_x as usize * 2) {
+                let p_ref = ref_img.get_pixel(x, ref_y)[0] as f64;
+                let p_curr = curr_img.get_pixel(x, curr_y)[0] as f64;
+                sad += (p_ref - p_curr).abs();
+                count += 1.0;
+            }
+        }
+        sum_sad += sad / count;
+        sample_count += 1.0;
+    }
+    let mean_sad = sum_sad / sample_count;
+    let mut confidence = 0.0;
+    if mean_sad > 1e-5 {
+        confidence = 1.0 - (best_original_sad / mean_sad);
+    }
+
+    // 限制匹配质量：只接收对齐良好的对齐帧 (SAD < 7.5 且 confidence > 0.15)
+    // 2D 匹配由于极强的文字排布空间唯一性与软速度罚分保护，SAD < 7.5 即可确保在各种滚动状态下都十分精准
+    if best_original_sad < 7.5 && confidence > 0.15 {
+        let dy = best_y_offset as f64 - template_y as f64;
+        Some((dy, confidence))
     } else {
-        peak_idx as f64 - n as f64
-    };
-
-    // Subpixel: parabolic interpolation
-    let prev_val = r[if peak_idx == 0 { n - 1 } else { peak_idx - 1 }].norm() * scale;
-    let next_val = r[(peak_idx + 1) % n].norm() * scale;
-    let denom = prev_val - 2.0 * peak_val + next_val;
-    let delta = if denom.abs() > 1e-10 {
-        0.5 * (prev_val - next_val) / denom
-    } else {
-        0.0
-    };
-
-    Some((dy_int + delta, peak_val))
-}
-
-fn compute_edges(img: &RgbaImage) -> GrayImage {
-    let gray = image::imageops::grayscale(img);
-    let grad_u16 = sobel_gradients(&gray);
-    let mut edges = GrayImage::new(grad_u16.width(), grad_u16.height());
-    for y in 0..grad_u16.height() {
-        for x in 0..grad_u16.width() {
-            let v = grad_u16.get_pixel(x, y)[0].min(255) as u8;
-            edges.put_pixel(x, y, image::Luma([v]));
-        }
+        None
     }
-    edges
 }
 
 fn rows_equal(a: &RgbaImage, b: &RgbaImage, ya: u32, yb: u32, w: u32) -> bool {
