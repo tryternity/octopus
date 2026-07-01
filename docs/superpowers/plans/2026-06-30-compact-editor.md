@@ -18,11 +18,11 @@
 - **Task 7** ⚠️ **废弃**：旧方案（Result 弹独立编辑器窗）曾以 `85660ef` 实现，后因设计改为原地双模式，被 **Task 11 覆盖移除**（Result 不再 `openCompactEditor`）。checkbox 保持未勾。
 - **Task 8-9** ✅：OCR 接入（移除系统 TextEdit）+ 剪贴板文本条目「编辑」按钮（`SquarePen`）。
 - **Task 10** ✅：`architecture.md` 同步 + 全量后端 `cargo test` 绿。
-- **Task 11** ✅：语音 Result 编辑框尺寸双模式（`toggleExpand` + 放大/缩小开关 + localStorage 记忆）。
+- **Task 11** ✅：语音 Result 编辑框尺寸双模式——**CSS 伪装方案**（物理固定 720×480 + CSS 切容器尺寸 + Rust 轮询点击穿透），已替换原 setSize/setMaxSize/localStorage 方案（用户实测 setSize 在透明悬浮窗被 NSWindow 拒绝、ACL 补全后仍无效）。
 
-**唯一剩余**：验收 e2e（手动，见文末）——需用户跑 `./run-octopus.sh` 逐项确认。
+**唯一剩余**：验收 e2e（手动，见文末）——CSS 伪装方案 e2e 已通过（精简态穿透到后方应用确认），其余项需用户跑 `./run-octopus.sh` 逐项确认。
 
-**✅ 已修 bug（真根因 `93f58a2`）**：Result 工具栏「放大」切换点击后窗口未变大——**真根因**：Tauri 2 **ACL 权限缺失**（`capabilities/default.json` 缺 `allow-set-max-size` 等，`await setMaxSize` 被拒抛错、`setSize` 因此未执行；toast 铁证 `Command plugin:window|set_max_size not allowed by ACL`）。修复：补 5 个窗口权限。另 `2195c80` 改 `resizable(true)` 为预防性双保险（文档称 `resizable(false)` 时 `setSize` 被忽略，未被独立证实但保留）。详见文末「已修 bug」节。
+**⚠️ 已修 bug（最终结论）**：Result「放大」切换窗口未变大。**完整踩坑链**：①误判 resizable（`2195c80`，未解决）；②补全 ACL 5 权限（`93f58a2`）——**真实但不足**；③ACL 补全后 setSize 仍读回 520×116（min/max 已放宽、720×480 在区间内）→ **真根因：透明+无边框悬浮窗 NSWindow 拒绝 setFrame，setSize 路径 100% 失效**。最终方案：放弃 setSize，转 CSS 伪装 + Rust 轮询点击穿透。详见文末「已修 bug」节。
 
 ---
 
@@ -779,84 +779,81 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 - **Task 6/8/9 不变**——精简编辑器独立窗保留给 OCR 与剪贴板文本。
 - 替换为下方 **Task 11**。详见 spec §3.5① 重写。
 
-### Task 11: 语音 Result 编辑框尺寸双模式（替换 Task 7）
+### Task 11: 语音 Result 编辑框尺寸双模式——CSS 伪装 + 点击穿透（替换 Task 7）
 
 **Files:**
-- Modify: `crates/desktop/frontend/src/pages/Result/index.tsx`
+- Modify: `crates/desktop/src/result_window.rs`（固定 720×480 + 删 `set_result_window_mode` + 加 `set_result_click_through` + `start_click_through_poller` + `set_result_ignores_mouse`）
+- Modify: `crates/desktop/src/main.rs`（注册命令 `set_result_window_mode` → `set_result_click_through`）
+- Modify: `crates/desktop/frontend/src/pages/Result/index.tsx`（纯 CSS 双模式）
 - Create: `crates/desktop/frontend/public/icons/minimize.svg`（缩小态，四角向内）
 - Modify: `crates/desktop/frontend/src/components/SvgIcon.tsx`（ICONS 加 `"minimize"`）
 
+**背景**：setSize/setMaxSize/localStorage 方案（min/max 放宽、ACL 补全）实测无效——`transparent`+`decorations(false)` 悬浮窗上 NSWindow 拒绝 setFrame，`outerSize()` 恒读回 520×116。改 CSS 伪装：物理窗口固定大尺寸，前端按模式切可见容器尺寸，透明区用 Rust 轮询点击穿透。详见 spec §3.5①。
+
 **实现要点（关键代码骨架）：**
 
-```tsx
-import { LogicalSize } from "@tauri-apps/api/dpi";
-// 移除：import { openCompactEditor } from "@/lib/compactEditor";
+`result_window.rs`：
+```rust
+const RESULT_WIDTH: f64 = 720.0;
+const RESULT_HEIGHT: f64 = 480.0;
+const BAR_W: f64 = 520.0; const BAR_H: f64 = 116.0;
+const BAR_OFFSET_X: f64 = (RESULT_WIDTH - BAR_W) / 2.0; // =100，与前端居中一致
+static RESULT_CLICK_THROUGH: AtomicBool = AtomicBool::new(true); // 精简态=true
 
-const COMPACT = { w: 520, h: 116 };
-const EXPANDED_DEFAULT = { w: 720, h: 480 };
-const EXPANDED_SIZE_KEY = "result-expanded-size";
+// 创建：.inner_size(RESULT_WIDTH, RESULT_HEIGHT).resizable(true)
+//       .transparent(true).decorations(false).always_on_top(true).accept_first_mouse(true)
+// Ok 分支：start_click_through_poller(app.clone());
 
-function loadExpandedSize() {
-  const saved = localStorage.getItem(EXPANDED_SIZE_KEY);
-  if (saved) {
-    const [w, h] = saved.split(",").map(Number);
-    if (w > 0 && h > 0) return { w, h };
-  }
-  return EXPANDED_DEFAULT;
+#[tauri::command]
+pub fn set_result_click_through(app: tauri::AppHandle, expanded: bool) {
+    RESULT_CLICK_THROUGH.store(!expanded, Ordering::Relaxed);
+    if expanded { // 长篇：立即关穿透
+        if let Some(win) = app.get_webview_window(WINDOW_LABEL) { set_result_ignores_mouse(&win, false); }
+    }
+    // 精简：交由轮询线程按光标位置决定
 }
 
-// state / ref
-const [expanded, setExpanded] = useState(false);
-const expandedRef = useRef(false);
-const expandedSizeRef = useRef(loadExpandedSize());
-useEffect(() => { expandedRef.current = expanded; }, [expanded]);
+// start_click_through_poller（仅 macOS）：~33ms tokio interval，读 CGEvent.location()，
+// 按窗口 outer_position()/scale_factor 算小条屏幕矩形 [wx+100..wx+620]×[wy..wy+116]，
+// 光标在矩形外 → 穿透、在内 → 可交互；仅在 want != cur_ignore 时切 setIgnoresMouseEvents。
+// 窗口隐藏或长篇态（!need_through）时不穿透。
 
-const toggleExpand = useCallback(async () => {
-  const next = !expanded;
-  expandedRef.current = next;            // 先同步 ref，防 onResized 读旧值污染记忆
-  setExpanded(next);
-  await win.setResizable(next);
-  if (next) {
-    await win.setSize(new LogicalSize(expandedSizeRef.current.w, expandedSizeRef.current.h));
-  } else {
-    await win.setSize(new LogicalSize(COMPACT.w, COMPACT.h));
-  }
-}, [expanded, win]);
-
-// 长篇模式拖拽 → 记忆
-useEffect(() => {
-  let unlisten: UnlistenFn | undefined;
-  let cancelled = false;
-  win.onResized(async () => {
-    if (!expandedRef.current) return;    // 仅长篇记
-    const factor = await win.scaleFactor();
-    const s = await win.outerSize();
-    const w = s.width / factor, h = s.height / factor;
-    expandedSizeRef.current = { w, h };
-    localStorage.setItem(EXPANDED_SIZE_KEY, `${w},${h}`);
-  }).then((fn) => { if (cancelled) fn(); else unlisten = fn; });
-  return () => { cancelled = true; unlisten?.(); };
-}, [win]);
-
-// tools 数组：原 expand-edit 按钮改为 toggle（替换原 { id: "expand-edit", ... } 行）
-{ id: "toggle-size", icon: (expanded ? "minimize" : "expand-edit") as IconName,
-  label: expanded ? "缩小" : "放大", onClick: toggleExpand },
-
-// 文本区 className（原 max-h-[63px]）：按 expanded 切换
-expanded ? "h-full" : "max-h-[63px]",
-
-// 删除：applyResultText / openExpandEdit 两个 useCallback
+// set_result_ignores_mouse：macOS → run_on_main_thread + ns_win.setIgnoresMouseEvents(ignore)
+//   （objc2_app_kit::NSWindow，比 Tauri set_ignore_cursor_events 封装可靠）；其他平台 → set_ignore_cursor_events
 ```
 
-- Rust 侧 `result_window.rs` 创建改 `.resizable(true)`（`setSize` 需它），运行时由前端 `setMaxSize` 控可拖（不调 `setResizable`）。
-- 边界：长篇模式向下长高，若原位置近屏幕底可能部分超出——MVP 不重算位置，e2e 观察。
+`Result/index.tsx`：
+```tsx
+const win = useMemo(() => getCurrentWindow(), []);
+const toggleExpand = useCallback(() => {
+  const next = !expanded;
+  setExpanded(next);
+  invoke("set_result_click_through", { expanded: next }); // 通知后端切穿透模式
+}, [expanded]);
+
+// 外层透明包裹 + 内层条件尺寸容器
+<div className="relative w-full h-full">
+  <div id="result-container" className={cn(
+    "absolute top-0 left-1/2 -translate-x-1/2 bg-background rounded-lg border ... transition-all duration-200",
+    expanded ? "w-[720px] h-[480px]" : "w-[520px] h-[116px]",
+    visible ? "opacity-100" : "opacity-0",
+  )}>...</div>
+</div>
+// 文本区 className：expanded ? "h-full" : "max-h-[63px]"
+// tools：{ id: "toggle-size", icon: expanded ? "minimize" : "expand-edit", ... }
+// 移除：LogicalSize import / saveToNote / note 工具条目 / setSize 诊断 toast / onResized 监听 / expandedSizeRef
+```
+
+- 编辑逻辑零改动（仍走 `toggleEdit`/contentEditable）。
+- 「存入记事本」工具按钮已移除（大窗口原地编辑已够用，无需导入记事本）；后端 `save_transcription_to_note`/`current_transcription_id` 命令保留作基础设施。
+- 边界：长篇态向下展开占满 720×480，若原位置近屏幕底可能部分超出——MVP 不重算位置，e2e 观察。
 
 - [x] Step 1: 新建 `minimize.svg` + `SvgIcon` 加 `"minimize"` 映射
-- [x] Step 2: Result 加 `expanded`/`expandedRef`/`expandedSizeRef` + `toggleExpand` + `onResized` 监听
-- [x] Step 3: tools 改 toggle 按钮 + 文本区 className + 移除 `openCompactEditor` import / `applyResultText` / `openExpandEdit`
-- [x] Step 4: 重建 dist（`npm run build`）
-- [x] Step 5: 验证（`tsc -b`、`cargo test` desktop/clipboard）
-- [x] Step 6: commit
+- [x] Step 2: `result_window.rs` 固定 720×480 + `start_click_through_poller` + `set_result_ignores_mouse` + `set_result_click_through` 命令；删 `set_result_window_mode`
+- [x] Step 3: `main.rs` 注册 `set_result_click_through`（替换 `set_result_window_mode`）
+- [x] Step 4: `Result/index.tsx` 纯 CSS 双模式 + `toggleExpand` 调 `set_result_click_through`；移除 setSize/saveToNote/note 按钮/onResized
+- [x] Step 5: 重建 dist（`npm run build`）+ 验证（`tsc -b`、`cargo test`）
+- [x] Step 6: commit + 同步文档（spec/plan/architecture/memory）
 
 ---
 
@@ -1124,27 +1121,29 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/feature-notepad 
 
 ## 验收 e2e（手动——**本计划唯一剩余项**，交给用户跑 `./run-octopus.sh` 后逐项确认）
 
-1. **Result 双模式**（ACL 权限已补 `93f58a2` + `resizable(true)` `2195c80`，待复验）：识别中文 → 点「放大」→ 窗口变 720×480、编辑区撑满、可拖拽调大小 → 编辑 → 保存 → 文本落库 → 点「缩小」切回 520×116；再切长篇恢复上次拖拽尺寸（localStorage 记忆）。
+1. **Result 双模式**（CSS 伪装方案，**e2e 已通过**——精简态穿透确认）：识别中文 → 点「放大」→ 可见容器撑满 720×480、编辑区撑满 → 编辑 → 保存 → 文本落库 → 点「缩小」切回 520×116 小条；精简态小条下方透明区点击穿透到后方应用。
 2. **OCR**：剪贴板图片点 OCR → 编辑器自动开 → 改 → 保存 → 该条目内容 + 系统剪贴板更新；不再弹系统 TextEdit。
 3. **剪贴板文本**：文本/语音条目 hover 点「编辑」→ 编辑器开 → 改 → 保存 → 列表 + 系统剪贴板更新。
 4. **边界**：取消/Esc/X 关窗不回写；字号记忆生效；查找替换命中数与跳转正确；字符计数对中文按字计；并发开窗（Result + 剪贴板同时开）不串扰。
 
-## ✅ 已修 bug（`93f58a2`）：Result「放大」切换无响应
+## ✅ 已修 bug：Result「放大」切换无响应（最终结论：CSS 伪装方案）
 
 **现象**：语音结果窗工具栏点「放大」按钮，图标切到「缩小」但窗口尺寸没变（双模式切换失效）。
 
-**真根因（ACL 权限缺失，铁证）**：Tauri 2 要求每个前端窗口命令必须在 `capabilities/*.json` 显式授权，未授权的命令抛 `Command plugin:window|<cmd> not allowed by ACL`。`toggleExpand` 里 `await win.setMaxSize(...)` 排在 `setSize` 之前，而 `default.json` 缺 `core:window:allow-set-max-size`，`setMaxSize` 被拒抛错 → `await` 中断 → `setSize`（一直有 `allow-set-size` 权限）从未执行。诊断 toast 暴露了真正错误 `Command plugin:window|set_max_size not allowed by ACL`。**图标变（state 变）但窗口不变 = click 生效、窗口命令被 ACL 拒**——用户确认图标会变、且 toast 报 ACL 错，排除了「`resizable(false)` 忽略 `setSize`」「工具栏 drag 吞 click」两个误判方向（曾据此改 `2195c80`，未生效）。
+**完整踩坑链（三段误判 → 真根因 → 最终方案）：**
 
-**修复**（`93f58a2`，真修复）：
-- `crates/desktop/capabilities/default.json`：补 `core:window:allow-set-min-size` / `allow-set-max-size` / `allow-set-resizable` / `allow-outer-size` / `allow-scale-factor`（原有 `allow-set-size`）。
+1. **误判 resizable**（`2195c80`）：据 Tauri 文档「`resizable(false)` 时 `setSize` 被忽略」改 `.resizable(true)`。未解决。
 
-**预防性改动**（`2195c80`，非根因但保留为双保险）：
-- `result_window.rs`：创建改 `.resizable(true)`——Tauri 文档称 `resizable(false)` 时 `setSize` 被忽略。虽未被独立证实为必要（ACL 才是真正阻塞），但 `resizable(true)` + `setMaxSize` 控拖更稳，保留。
-- `Result/index.tsx::toggleExpand`：不调 `setResizable`，改用 `setMaxSize` 控可拖——精简态 `max=520×116` 锁死防拖，长篇态 `max=4000` 解除后可拖；首帧 mount 锁一次精简态 max（不设 min，避免 `min>max` 冲突致 `setMinSize` 抛错、`setSize` 不执行）。
+2. **误判 ACL（真实但不足，`93f58a2`）**：诊断 toast 报 `Command plugin:window|set_max_size not allowed by ACL`，在 `capabilities/default.json` 补 `allow-set-min-size`/`allow-set-max-size`/`allow-set-resizable`/`allow-outer-size`/`allow-scale-factor`。**ACL 缺失是真实的**（确实抛错中断 setSize），但补全后 **setSize 仍失效**——ACL 不是终点。
 
-**教训**：前端 `await` 窗口命令无 try/catch 时 ACL 错误被默默吞掉，外观似「窗口行为异常」实为「权限拒绝」。诊断 toast（读回实际尺寸 / 捕获并显示错误）是定位此类问题的关键工具。
+3. **真根因（NSWindow 拒绝 setFrame）**：ACL 补全 + min/max 全放宽到 [100,4000]、目标 720×480 完全在区间内，`outerSize()` 仍读回 520×116。证明在 `transparent(true)`+`decorations(false)` 悬浮窗上，NSWindow **根本拒绝** setFrame/setSize——不是约束、不是权限、是 frame 不可变。setSize 路径 100% 失效，无解。
 
-**待复验**：e2e 第 1 项（双模式切换 + 拖拽记忆）由用户跑 `./run-octopus.sh` 确认——ACL 已补 + `resizable(true)`，理论上应生效；未实测前不谎报「已验证」。
+**最终方案**：放弃运行时 setSize，改 **CSS 伪装 + 点击穿透**——窗口物理固定 720×480，前端 CSS 切可见容器尺寸（精简 520×116 小条 / 长篇撑满），透明区由 Rust 后台轮询线程（`CGEvent` 读全局鼠标）在 NSWindow 直调 `setIgnoresMouseEvents` 切穿透。详见 Task 11。e2e 已通过（精简态穿透确认）。
+
+**教训**：
+- 前端 `await` 窗口命令无 try/catch 时 ACL 错误被默默吞掉——诊断 toast（捕获并显示错误 + 读回 outerSize）是定位关键。
+- **别把「ACL 补全」当 setSize 失效的终点**：透明无边框悬浮窗上 ACL 齐全 setSize 仍会被 NSWindow 拒绝；ACL 补全后若读回尺寸仍不变，即命中此真凶，应立即转 CSS 伪装。
+- setSize 读回旧值（而非抛错）是「NSWindow 拒绝 setFrame」区别于 ACL（抛错）的判别信号。
 
 ## 不做（明确排除）
 

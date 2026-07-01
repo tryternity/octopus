@@ -5,13 +5,25 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{Emitter, Manager};
 
-const RESULT_WIDTH: f64 = 520.0;
-const RESULT_HEIGHT: f64 = 116.0;
+// 窗口物理固定 720×480：setSize/setFrame 在 transparent + decorations(false) 悬浮窗上被
+// NSWindow 拒绝（min/max 全放宽到 [100,4000]、720×480 完全在区间内仍读回 520×116，实锤），
+// 故放弃运行时改尺寸，改用「CSS 伪装 + 点击穿透」——精简态只渲染顶部 520×116 小条，
+// 下方透明区由轮询线程 setIgnoreCursorEvents 穿透到后方应用；长篇态容器撑满 720×480。
+const RESULT_WIDTH: f64 = 720.0;
+const RESULT_HEIGHT: f64 = 480.0;
 const WINDOW_LABEL: &str = "result_window";
+
+// 精简态小条在 720 宽窗口内水平居中的左边距（= (720-520)/2），与前端 CSS 定位一致。
+// 轮询线程据此判光标是否在小条内（内→可交互，外→穿透）。
+const BAR_W: f64 = 520.0;
+const BAR_H: f64 = 116.0;
+const BAR_OFFSET_X: f64 = (RESULT_WIDTH - BAR_W) / 2.0;
 
 static WINDOW_READY: AtomicBool = AtomicBool::new(false);
 static PENDING_TEXT: Mutex<Option<String>> = Mutex::new(None);
 static SESSION_COUNTER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+// 精简态=true（顶部小条可点 + 下方透明区穿透）；长篇态=false（整窗 720×480 可交互）。
+static RESULT_CLICK_THROUGH: AtomicBool = AtomicBool::new(true);
 
 // ── 窗口管理 ──
 
@@ -28,9 +40,8 @@ pub fn create_result_window(app: &tauri::AppHandle) {
     )
     .title("Result")
     .inner_size(RESULT_WIDTH, RESULT_HEIGHT)
-    // 必须 resizable(true)：Tauri 在 resizable(false) 时忽略 setSize（见 set_size 文档），
-    // Result 编辑框双模式靠它切换尺寸。精简态用前端 setMinSize=setMaxSize=520×116 锁死防拖，
-    // 长篇态解锁 min=400×200 + 无 max 允许拖拽调大小。
+    // 物理尺寸固定 720×480（CSS 伪装方案）：精简/长篇双模式由前端 CSS 切容器尺寸，
+    // 不再运行时 setSize（transparent 无边框窗上被 NSWindow 拒绝）。resizable(true) 保留。
     .resizable(true)
     .decorations(false)
     .always_on_top(true)
@@ -67,6 +78,9 @@ pub fn create_result_window(app: &tauri::AppHandle) {
                 }
             });
 
+            // 启动点击穿透轮询（窗口生命周期内常驻；仅 macOS 真实生效）
+            start_click_through_poller(app.clone());
+
             debug!("Result window created");
         }
         Err(e) => debug!("Failed to create result window: {}", e),
@@ -81,6 +95,102 @@ pub fn result_window_ready(app_handle: tauri::AppHandle) {
     if let Some(text) = pending {
         show_result(&app_handle, &text);
     }
+}
+
+/// 切换 Result 窗口的点击穿透模式（CSS 伪装方案：窗口物理固定 720×480）。
+/// - expanded=true（长篇）：整窗可交互，关闭穿透。
+/// - expanded=false（精简）：仅顶部 520×116 小条可点，下方透明区穿透到后方应用。
+/// 精简态的穿透由 start_click_through_poller 按光标位置实时切换。
+#[tauri::command]
+pub fn set_result_click_through(app: tauri::AppHandle, expanded: bool) {
+    // 需穿透 = 精简态（!expanded）
+    RESULT_CLICK_THROUGH.store(!expanded, Ordering::Relaxed);
+    if expanded {
+        // 切到长篇：整窗可交互，立即停止穿透
+        if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
+            set_result_ignores_mouse(&win, false);
+        }
+    }
+    // 切到精简：交由轮询线程按光标位置决定（下一 tick 生效）
+}
+
+/// 启动点击穿透轮询线程（窗口生命周期内常驻）。
+///
+/// 为什么必须 Rust 轮询、不能用前端 setIgnoreCursorEvents+mousemove：一旦
+/// setIgnoreCursorEvents(true)，NSWindow 完全不收鼠标事件（连 tracking area 都禁），
+/// 前端 mousemove 不再触发 → 无法检测光标重新进入小条 → 重入失效。故读全局鼠标
+/// CGEvent（不依赖窗口收事件），~30ms 轮询判光标是否在小条矩形内，据此切换穿透。
+#[cfg(target_os = "macos")]
+pub fn start_click_through_poller(app: tauri::AppHandle) {
+    tauri::async_runtime::spawn(async move {
+        use core_graphics::event::CGEvent;
+        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+        let mut poll = tokio::time::interval(std::time::Duration::from_millis(33));
+        let mut cur_ignore = false; // 当前是否正在穿透（ignore mouse events）
+        loop {
+            poll.tick().await;
+            let Some(win) = app.get_webview_window(WINDOW_LABEL) else { continue };
+            // 窗口隐藏或长篇态（整窗可交互）时不穿透
+            let visible = win.is_visible().unwrap_or(false);
+            let need_through = RESULT_CLICK_THROUGH.load(Ordering::Relaxed);
+            if !visible || !need_through {
+                if cur_ignore {
+                    set_result_ignores_mouse(&win, false);
+                    cur_ignore = false;
+                }
+                continue;
+            }
+            // 精简态 + 可见：读全局鼠标，判是否在顶部小条矩形内
+            let (mx, my) = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+                Ok(src) => match CGEvent::new(src) {
+                    Ok(evt) => {
+                        let loc = evt.location();
+                        (loc.x, loc.y)
+                    }
+                    Err(_) => continue,
+                },
+                Err(_) => continue,
+            };
+            let sf = win.scale_factor().unwrap_or(1.0);
+            let (wx, wy) = match win.outer_position() {
+                Ok(p) => (p.x as f64 / sf, p.y as f64 / sf),
+                Err(_) => continue,
+            };
+            // 小条屏幕矩形（逻辑坐标，左上原点 y-down，与 CGEvent.location 一致）
+            let bx0 = wx + BAR_OFFSET_X;
+            let in_bar = mx >= bx0 && mx <= bx0 + BAR_W && my >= wy && my <= wy + BAR_H;
+            let want = !in_bar; // 小条外 → 穿透
+            if want != cur_ignore {
+                set_result_ignores_mouse(&win, want);
+                cur_ignore = want;
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn start_click_through_poller(_app: tauri::AppHandle) {
+    // 非 macOS：点击穿透暂未实现，精简态窗口会阻挡后方应用（octopus 桌面端以 macOS 为主）
+}
+
+#[cfg(target_os = "macos")]
+fn set_result_ignores_mouse(win: &tauri::WebviewWindow, ignore: bool) {
+    // 直调 NSWindow setIgnoresMouseEvents（比 Tauri set_ignore_cursor_events 封装更可靠，
+    // 复用 screenshot_commands::set_window_ignores_mouse_events 的做法）。需 run_on_main_thread。
+    let win_clone = win.clone();
+    let _ = win.run_on_main_thread(move || {
+        if let Ok(ptr) = win_clone.ns_window() {
+            if !ptr.is_null() {
+                let ns_win = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
+                ns_win.setIgnoresMouseEvents(ignore);
+            }
+        }
+    });
+}
+
+#[cfg(not(target_os = "macos"))]
+fn set_result_ignores_mouse(win: &tauri::WebviewWindow, ignore: bool) {
+    let _ = win.set_ignore_cursor_events(ignore);
 }
 
 /// 显示结果窗口并展示识别文本。
