@@ -166,8 +166,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
         // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 9", [])?;
-        log::info!("DB initialized (v9): schema + app_config(setting) + prompts + clipboard_history + image_data + notes + yaml migration");
+        conn.execute("PRAGMA user_version = 10", [])?;
+        log::info!("DB initialized (v10): schema + app_config(setting) + prompts + clipboard_history + image_data + notes(content_text+type) + yaml migration");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
@@ -231,6 +231,21 @@ fn init_schema(conn: &Connection) -> Result<()> {
         conn.execute_batch(INIT_SQL).context("v8→v9: 建 notes + notes_fts 表")?;
         conn.execute("PRAGMA user_version = 9", [])?;
         log::info!("DB migrated to v9: notes + notes_fts");
+    } else if v == 9 {
+        // v9 → v10：notes 表重建（去 content_html，加 type；egui 迁移）。
+        // 旧数据不迁移（已确认接受）。先 DROP 旧 trigger/fts/table，再重跑 INIT_SQL 建新 schema。
+        log::info!("DB migrating v9 → v10: rebuild notes table (drop content_html, add type)...");
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS note_fts_ai;
+             DROP TRIGGER IF EXISTS note_fts_ad;
+             DROP TRIGGER IF EXISTS note_fts_au;
+             DROP TABLE IF EXISTS notes_fts;
+             DROP TABLE IF EXISTS notes;",
+        )
+        .context("v9→v10: DROP 旧 notes")?;
+        conn.execute_batch(INIT_SQL).context("v9→v10: 重建 notes 新 schema")?;
+        conn.execute("PRAGMA user_version = 10", [])?;
+        log::info!("DB migrated to v10: notes (content_text + type)");
     }
     Ok(())
 }
@@ -1863,6 +1878,48 @@ mod tests {
         conn.execute_batch("CREATE TABLE IF NOT EXISTS t(x); INSERT INTO t VALUES(1);").unwrap();
         let v: i64 = conn2.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
         assert_eq!(v, 1, "第二连接应能读到第一连接的写入（WAL 并发）");
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_v9_to_v10_rebuilds_notes_schema() {
+        // 模拟旧 v9 库：建旧 notes 表（带 content_html，无 type）→ 设 user_version=9
+        let dir = std::env::temp_dir().join(format!("octopus-notes-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("mig.db");
+        let conn = Connection::open(&path).unwrap();
+        apply_wal_pragmas(&conn);
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT,
+                content_html TEXT NOT NULL DEFAULT '', content_text TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'manual', source_ref_id INTEGER,
+                is_pinned INTEGER NOT NULL DEFAULT 0, is_favorite INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             INSERT INTO notes (title, content_html, content_text, created_at, updated_at)
+                VALUES ('旧', '<p>x</p>', 'x', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
+             PRAGMA user_version = 9;",
+        ).unwrap();
+        // 旧数据存在
+        let old_count: i64 = conn.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0)).unwrap();
+        assert_eq!(old_count, 1);
+
+        // 执行迁移（init_schema 按 user_version 走 v9 分支）
+        init_schema(&conn).unwrap();
+
+        // 新 schema：无 content_html，有 type
+        let cols: Vec<String> = conn.prepare("PRAGMA table_info(notes)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .filter_map(|r| r.ok()).collect();
+        assert!(!cols.contains(&"content_html".to_string()), "content_html 应被删除");
+        assert!(cols.contains(&"type".to_string()), "应有 type 列");
+        // 旧数据被丢弃（drop+recreate）
+        let new_count: i64 = conn.query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0)).unwrap();
+        assert_eq!(new_count, 0, "drop+recreate 应丢弃旧数据");
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 10);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -287,13 +287,14 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('screenshot_shortcut',     'Alt+S',                                '截图快捷键');
 
 -- ── 记事本（notes 表）─────────────────────────────────────────────────────
--- 内容收集箱：ASR/OCR/剪贴板结果一键存入 + 富文本整理。
--- 富文本 content_html 为内部模型（TipTap getHTML），content_text 为抽取纯文本（FTS + 列表预览）。
+-- 内容收集箱：ASR/OCR/剪贴板结果一键存入 + markdown/纯文本整理。
+-- type: 'text'（纯文本，ASR/OCR/剪贴板存入）| 'markdown'（egui 编辑的 md 源码）。
+-- content_text = 源文本（FTS 索引 + 列表预览 + md 渲染源）；无 content_html（egui 方案去富文本）。
 CREATE TABLE IF NOT EXISTS notes (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     title         TEXT,
-    content_html  TEXT    NOT NULL DEFAULT '',
     content_text  TEXT    NOT NULL DEFAULT '',
+    type          TEXT    NOT NULL DEFAULT 'text',
     source        TEXT    NOT NULL DEFAULT 'manual',
     source_ref_id INTEGER,
     is_pinned     INTEGER NOT NULL DEFAULT 0,
