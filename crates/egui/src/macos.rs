@@ -12,6 +12,7 @@ pub fn set_accessory_policy() {
     };
     let app = NSApplication::sharedApplication(mt);
     let ok = app.setActivationPolicy(NSApplicationActivationPolicy::Accessory);
+    eprintln!("[octopus-egui] setActivationPolicy(Accessory) 返回 {}", ok);
     if !ok {
         log::warn!("setActivationPolicy(Accessory) 返回 false");
     }

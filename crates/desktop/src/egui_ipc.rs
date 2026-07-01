@@ -46,59 +46,61 @@ fn egui_binary_path() -> PathBuf {
     p
 }
 
-/// 连已运行的 egui 进程；连不上/pid 死 → spawn 新进程。
-/// 关键：pid 活但连不上 = egui 启动中（bind 未就绪），此时**不删 port 文件、不重复 spawn**，
-/// 仅返回 None 让调用方重试（避免误杀 live 进程 + 起 dup）。
-fn ensure_running() -> Option<TcpStream> {
-    if let Some((pid, port)) = read_port_file() {
-        if pid_alive(pid) {
-            return TcpStream::connect_timeout(
-                &format!("127.0.0.1:{}", port).parse().ok()?,
-                Duration::from_millis(500),
-            )
-            .ok(); // 连得上 → Some；启动中连不上 → None（不清理、不 spawn）
-        }
-        // pid 死 → 清理 stale port 文件
+/// 只探测连接已运行的 egui（**不 spawn**）。pid 死则清 stale port 文件。
+fn try_connect() -> Option<TcpStream> {
+    let (pid, port) = read_port_file()?;
+    if !pid_alive(pid) {
         let _ = std::fs::remove_file(port_file());
+        return None;
     }
-    // 无 port 文件 / pid 死 → spawn
-    spawn_egui();
-    None
+    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
+    TcpStream::connect_timeout(&addr, Duration::from_millis(500)).ok()
 }
 
-/// spawn octopus-egui（后台，不阻塞）。
-fn spawn_egui() {
+/// spawn octopus-egui（后台，不阻塞）。返回 spawn 是否成功（失败通常是二进制未编译）。
+fn spawn_egui() -> std::io::Result<()> {
     let bin = egui_binary_path();
     match std::process::Command::new(&bin).spawn() {
-        Ok(_) => log::info!("已 spawn octopus-egui: {}", bin.display()),
-        Err(e) => log::error!("spawn octopus-egui 失败 ({}): {}", bin.display(), e),
+        Ok(_) => {
+            log::info!("已 spawn octopus-egui: {}", bin.display());
+            Ok(())
+        }
+        Err(e) => {
+            log::error!(
+                "spawn octopus-egui 失败 ({}): {} —— 若未编译，请 `cargo build -p octopus-egui`（与 desktop 同 profile：debug/release）",
+                bin.display(),
+                e
+            );
+            Err(e)
+        }
     }
 }
 
-/// 发一条 JSON line；带最多 ~2s 的 spawn-后连接重试。
+/// 发一条 JSON line。无运行实例时 spawn **一次**（避免循环反复 spawn 出多实例），
+/// 随后轮询连接 ~3s；spawn 失败（二进制缺失等）立即放弃。
 fn send(payload: serde_json::Value) {
-    // 先尝试连已有进程
-    for _attempt in 0..20 {
-        let stream = ensure_running().or_else(|| {
-            // 刚 spawn，轮询 port 文件 + 直连
-            read_port_file().and_then(|(_pid, port)| {
-                TcpStream::connect_timeout(
-                    &format!("127.0.0.1:{}", port).parse().ok()?,
-                    Duration::from_millis(200),
-                )
-                .ok()
-            })
-        });
-        if let Some(mut stream) = stream {
+    let mut spawned = false;
+    for _attempt in 0..30 {
+        if let Some(mut stream) = try_connect() {
             let line = format!("{}\n", payload);
             if stream.write_all(line.as_bytes()).is_ok() {
                 let _ = stream.flush();
                 return;
             }
         }
+        // 连不上：若尚未 spawn 过，spawn 一次（不重复——egui 端另有单例锁双保险）
+        if !spawned {
+            match spawn_egui() {
+                Ok(()) => spawned = true,
+                Err(_) => {
+                    log::warn!("IPC 发送放弃（octopus-egui spawn 失败）: {}", payload);
+                    return;
+                }
+            }
+        }
         std::thread::sleep(Duration::from_millis(100));
     }
-    log::warn!("IPC 发送失败（egui 进程未就绪）: {}", payload);
+    log::warn!("IPC 发送失败（egui 进程未就绪 ~3s）: {}", payload);
 }
 
 /// 打开并选中笔记（OCR/ASR→notepad 场景）。

@@ -13,6 +13,47 @@ pub fn port_file() -> std::path::PathBuf {
     octopus_infra::octopus_config_home().join("egui-ipc.port")
 }
 
+/// 单例锁文件路径：~/.octopus/egui.singleton（与 port 文件分工——port 是 IPC 凭证，singleton 是进程唯一性锁）。
+fn singleton_file() -> std::path::PathBuf {
+    octopus_infra::octopus_config_home().join("egui.singleton")
+}
+
+/// pid 是否存活（Unix kill(pid,0) 语义：返回 0 = 存活）。
+#[cfg(unix)]
+fn pid_alive(pid: u32) -> bool {
+    unsafe {
+        extern "C" {
+            fn kill(pid: i32, sig: i32) -> i32;
+        }
+        kill(pid as i32, 0) == 0
+    }
+}
+#[cfg(not(unix))]
+fn pid_alive(_pid: u32) -> bool {
+    true // Windows 第一版不检 pid，靠 port 文件连接失败兜底
+}
+
+/// 尝试获取单例锁。已有活实例 → false（调用方应退出）。stale 锁（pid 死/解析失败）→ 抢占。
+pub fn acquire_singleton() -> bool {
+    let path = singleton_file();
+    if let Ok(text) = std::fs::read_to_string(&path) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+            if let Some(pid) = v["pid"].as_u64().map(|p| p as u32) {
+                if pid_alive(pid) {
+                    return false; // 已有活实例
+                }
+            }
+        }
+        // stale（解析失败或 pid 死）→ 清理后抢占
+        let _ = std::fs::remove_file(&path);
+    }
+    let body = serde_json::json!({ "pid": std::process::id() }).to_string();
+    if std::fs::write(&path, body).is_err() {
+        log::warn!("写 singleton 锁失败: {}", path.display());
+    }
+    true
+}
+
 /// IPC 消息（Tauri → egui）。JSON line，`type` tag 区分。
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
