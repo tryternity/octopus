@@ -171,9 +171,16 @@ impl NotepadView {
             egui::ScrollArea::vertical().show(ui, |ui| {
                 for n in &self.notes {
                     let selected = self.current_id == Some(n.id);
-                    let label_text = n.title.clone().unwrap_or_else(|| {
-                        n.content_text.chars().take(24).collect::<String>()
+                    // 无标题时用内容当标题：split_whitespace 去掉所有分行/多余空白成单行
+                    // （多行内容直接显示会撑高列表项、很难看），统一截断 24 字符 + …。
+                    let raw = n.title.clone().unwrap_or_else(|| {
+                        n.content_text.split_whitespace().collect::<Vec<_>>().join(" ")
                     });
+                    let label_text = if raw.trim().is_empty() {
+                        "（空）".to_owned()
+                    } else {
+                        truncate_label(&raw, 24)
+                    };
                     ui.horizontal(|ui| {
                         ui.spacing_mut().item_spacing.x = 4.0;
                         // 来源徽标色点 ●
@@ -351,4 +358,16 @@ fn toolbar(
 fn wrap_selection_or_append(body: &mut String, pre: &str, post: &str) {
     body.push_str(pre);
     body.push_str(post);
+}
+
+/// 截断到 max_chars 字符，超出加省略号「…」（列表项标题/内容预览单行显示用）。
+fn truncate_label(s: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max_chars {
+        s.to_owned()
+    } else {
+        let mut t: String = chars[..max_chars].iter().collect();
+        t.push('…');
+        t
+    }
 }
