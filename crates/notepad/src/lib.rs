@@ -9,4 +9,4 @@ pub mod model;
 pub mod serialize;
 pub mod store;
 
-pub use model::{Note, NoteFilter, NoteSource};
+pub use model::{Note, NoteFilter, NoteSource, NoteType};
