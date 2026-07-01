@@ -532,9 +532,16 @@ pub async fn save_image_dialog(
 pub async fn copy_image_to_clipboard(
     png_base64: String,
     handle: State<'_, Arc<ClipboardHandle>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let png_bytes = general_purpose::STANDARD
         .decode(&png_base64)
         .map_err(|e| format!("base64 解码失败: {}", e))?;
-    handle.write_image(&png_bytes).map_err(|e| e.to_string())
+    handle.write_image(&png_bytes).map_err(|e| e.to_string())?;
+    // write_image 置 suppress flag，watcher 会跳过自身写入（防回环）。
+    // 但图片预览的「复制」期望这条图进入剪贴板历史 → 主动调 watcher 的入库逻辑
+    // （与系统复制图片走完全相同的路径：去重 hash + WebP + 缩略图 + image_data BLOB）。
+    octopus_clipboard::watcher::handle_clipboard_change(handle.inner().as_ref());
+    let _ = app_handle.emit("clipboard://changed", ());
+    Ok(())
 }

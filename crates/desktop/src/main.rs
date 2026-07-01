@@ -262,6 +262,8 @@ pub fn run() {
             note_commands::save_transcription_to_note,
             note_commands::save_ocr_to_note,
             notepad_window::open_notepad,
+            notepad_window::open_notepad_with_note,
+            notepad_window::get_pending_note,
             compact_editor_commands::open_compact_editor,
             compact_editor_commands::get_pending_compact_edit,
             compact_editor_commands::close_compact_editor,

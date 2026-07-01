@@ -283,7 +283,9 @@ export default function ImagePreview() {
     try {
       const text = await invoke<string>("ocr_image", { id: imageId });
       if (text) {
-        await navigator.clipboard.writeText(text).catch(() => {});
+        // 识别结果存为 source=ocr 的笔记 → 打开记事本并选中（用户可在笔记里编辑）
+        const noteId = await invoke<number>("save_ocr_to_note", { text });
+        await invoke("open_notepad_with_note", { noteId });
         setOcrCopied(true);
         setTimeout(() => setOcrCopied(false), 1500);
       }
