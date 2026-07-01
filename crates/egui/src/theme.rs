@@ -6,7 +6,7 @@ use egui::Color32;
 use octopus_notepad::NoteSource;
 
 /// 强调色（indigo-400，暗底下够亮），用于选中/hover/链接。
-const ACCENT: Color32 = Color32::from_rgb(129, 140, 248);
+pub const ACCENT: Color32 = Color32::from_rgb(129, 140, 248);
 const ACCENT_DIM: Color32 = Color32::from_rgb(99, 102, 241); // indigo-500（选中底）
 
 /// 次要文字色（zinc-400），用于标签/元信息。

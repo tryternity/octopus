@@ -181,27 +181,41 @@ impl NotepadView {
                     } else {
                         truncate_label(&raw, 24)
                     };
-                    ui.horizontal(|ui| {
-                        ui.spacing_mut().item_spacing.x = 4.0;
-                        // 来源徽标色点 ●
-                        ui.label(
-                            egui::RichText::new("●")
-                                .color(crate::theme::source_color(n.source))
-                                .size(9.0),
-                        );
-                        // pinned 星标 ★
-                        if n.is_pinned {
+                    // 选中态背景条（indigo 半透 + 圆角），比仅文字加粗更醒目；
+                    // Frame 在 panel content ui 内、不用 available_width，不撑宽 panel（有测试保障）。
+                    let frame = egui::Frame::NONE
+                        .corner_radius(egui::CornerRadius::same(4))
+                        .inner_margin(egui::Margin::symmetric(6, 3))
+                        .fill(if selected {
+                            crate::theme::ACCENT.linear_multiply(0.2)
+                        } else {
+                            egui::Color32::TRANSPARENT
+                        });
+                    frame.show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.spacing_mut().item_spacing.x = 4.0;
                             ui.label(
-                                egui::RichText::new("★")
-                                    .color(egui::Color32::from_rgb(250, 204, 21))
-                                    .size(11.0),
+                                egui::RichText::new("●")
+                                    .color(crate::theme::source_color(n.source))
+                                    .size(9.0),
                             );
-                        }
-                        let rt = egui::RichText::new(&label_text);
-                        let rt = if selected { rt.strong().color(egui::Color32::WHITE) } else { rt };
-                        if ui.selectable_label(selected, rt).clicked() {
-                            select_id = Some(n.id);
-                        }
+                            if n.is_pinned {
+                                ui.label(
+                                    egui::RichText::new("★")
+                                        .color(egui::Color32::from_rgb(250, 204, 21))
+                                        .size(11.0),
+                                );
+                            }
+                            let rt = egui::RichText::new(&label_text);
+                            let rt = if selected {
+                                rt.strong().color(egui::Color32::WHITE)
+                            } else {
+                                rt
+                            };
+                            if ui.selectable_label(selected, rt).clicked() {
+                                select_id = Some(n.id);
+                            }
+                        });
                     });
                 }
             });

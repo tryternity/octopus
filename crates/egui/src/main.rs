@@ -201,10 +201,25 @@ mod tests {
                         ui.separator();
                         egui::ScrollArea::vertical().show(ui, |ui| {
                             for i in 0..n_items {
-                                ui.horizontal(|ui| {
-                                    ui.label(egui::RichText::new("●").size(9.0));
-                                    let text = format!("笔记标题 {}", "长字".repeat(i + 1));
-                                    let _ = ui.selectable_label(i == 0, egui::RichText::new(&text));
+                                // 复刻生产：列表项 Frame 包裹 + selected 背景条（须确认不撑宽 panel）
+                                let selected = i == 0;
+                                let frame = egui::Frame::NONE
+                                    .corner_radius(egui::CornerRadius::same(4))
+                                    .inner_margin(egui::Margin::symmetric(6, 3))
+                                    .fill(if selected {
+                                        egui::Color32::from_rgb(129, 140, 248).linear_multiply(0.2)
+                                    } else {
+                                        egui::Color32::TRANSPARENT
+                                    });
+                                frame.show(ui, |ui| {
+                                    ui.horizontal(|ui| {
+                                        ui.label(egui::RichText::new("●").size(9.0));
+                                        let text = format!("笔记标题 {}", "长字".repeat(i + 1));
+                                        let _ = ui.selectable_label(
+                                            selected,
+                                            egui::RichText::new(&text),
+                                        );
+                                    });
                                 });
                             }
                         });
