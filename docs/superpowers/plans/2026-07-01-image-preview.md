@@ -1,5 +1,7 @@
 # 图片预览（剪贴板图片项）实施计划
 
+> **状态（2026-07-01）：Task 1–7 已全部实施完成，双向同步合并 main（`e387933`）。** 下方代码块为实施时指引快照；**Task 4 的 draw/坐标方案在落地时由「contain-fit」改为「1:1 + zoom 倍率」**（Step 2–3 的 contain-fit 代码块已废弃，实际见 `index.tsx` 及各 Step 注）；**OCR 在落地时由「写系统剪贴板+贴画面」改为「`save_ocr_to_note` + `open_notepad_with_note` 存笔记开记事本」**（见 Task 4 Step 4）。**以实际源码为准。**
+
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:subagent-driven-development（推荐）或 superpowers:executing-plans 逐任务实施。步骤用 checkbox（`- [ ]`）跟踪。
 
 **Goal:** 为剪贴板图片项新增一个轻工具栏预览窗口（含画圈/直线/矩形/文字标注 + 撤销 + 保存/复制/OCR/置顶），并为未来「贴图钉屏」模式打好共享基础。
@@ -505,7 +507,9 @@ export default function ImagePreview() {
 }
 ```
 
-- [ ] **Step 2：`draw` —— contain-fit + 图片 + 标注 + 草稿**
+- [x] **Step 2：`draw`** ~~—— contain-fit + 图片 + 标注 + 草稿~~
+
+  > ⚠️ **方案已改（2026-07-01）**：落地时放弃 contain-fit，改为 **默认 1:1（zoom=1）+ zoom 倍率缩放 + 超窗滚动条 + 抓手平移**。下方 contain-fit 代码块**已废弃**，实际 `draw` 见 `index.tsx`（`dispW=natW*zoom`、`ctx.scale(zoom,zoom)` 画标注、`onLoad` 取 naturalWidth/Height、棋盘格 CSS 底）。保留此块仅作历史。
 
 ```tsx
   const draw = useCallback(() => {
@@ -568,7 +572,9 @@ export default function ImagePreview() {
   )}
 ```
 
-- [ ] **Step 3：鼠标交互（自然坐标转换 + 各工具）**
+- [x] **Step 3：鼠标交互（自然坐标转换 + 各工具）**
+
+  > ⚠️ **方案已改（2026-07-01）**：下方 `toNatural` 用 `dispRef`（contain-fit 的 ox/oy/scale）**已废弃**；实际用 zoom：`nx = cssX / zoom, ny = cssY / zoom`（见 `index.tsx` 的 `toNatural`/`canvasCoords`）。鼠标交互逻辑（down/move/up、文字草稿、撤销）本身不变；实际还补了 **pen（画笔点序列 push）** 与 **抓手平移 `startPan`**（tool==="none" 未命中标注时拖拽平移视口，window 级 mousemove/up）。
 
 ```tsx
   // CSS 坐标（相对 canvas）→ 自然坐标
@@ -697,18 +703,17 @@ export default function ImagePreview() {
     } catch (e) { console.error(e); }
   };
 
+  // ⚠️ 实际落地版（2026-07-01 改）：OCR 结果不再写系统剪贴板、不贴画面，
+  //    而是 save_ocr_to_note 存为笔记 + open_notepad_with_note 打开记事本选中。
   const handleOcr = async () => {
     if (imageId == null) return;
     try {
-      // 复用现有 ocr_image（对原图 OCR）；标注仅用于视觉，不影响识别
       const text = await invoke<string>("ocr_image", { id: imageId });
-      await navigator.clipboard.writeText(text).catch(() => {});
-      // 简单反馈：把识别文本作为文字标注贴到画面左上
       if (text) {
-        setAnnotations((prev) => [...prev, {
-          type: "text", x1: 16, y1: 16, x2: 16, y2: 16,
-          text, color: "#f59e0b", fontSize: 24,
-        }]);
+        const noteId = await invoke<number>("save_ocr_to_note", { text });
+        await invoke("open_notepad_with_note", { noteId });
+        setOcrCopied(true);
+        setTimeout(() => setOcrCopied(false), 1500);  // OCR 按钮换 Check 绿勾 1.5s
       }
     } catch (e) { console.error(e); }
   };

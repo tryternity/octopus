@@ -1,9 +1,9 @@
 # 图片预览 / 标注窗（Image Preview）设计
 
 > 日期：2026-07-01
-> 状态：**设计中**（spec 已写，待评审 → writing-plans）。
+> 状态：**已实现**（功能全部落地，双向同步已合并 main `e387933`；e2e 验证中）。
 > 关联：`docs/superpowers/specs/2026-06-30-compact-editor-design.md`（窗口/命令/PENDING 模式模板）、`docs/superpowers/specs/2026-06-30-notepad-design.md`。
-> 分支：`worktree-feature-notepad`。**功能完整完成前不往 main 同步。**
+> 分支：`worktree-feature-notepad`（已与 main 双向同步）。
 
 ## 1. 背景与目标
 
@@ -59,14 +59,16 @@
 // 静态 PENDING：open 时写，前端 mount 时 take。
 static PENDING: Mutex<Option<PendingImage>> = Mutex::new(None);
 
-// mode 字段为贴图模式（形态②）预留：本需求仅 "preview"，pin 分支将来再加。
-// 现在带上 mode 是「打好基础」的显式标记——窗口创建暂只走 preview 分支。
-struct PendingImage { image_id: i64, mode: String }  // mode: "preview"（now）/ "pin"（future）
+// 载荷仅 image_id——mode 字段在落地时按 YAGNI 去掉：贴图模式将来另开窗、用独立
+// label 区分，不必在 PENDING 上预留 mode（见 §9）。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]  // → 前端拿到 { imageId }
+struct PendingImage { image_id: i64 }
 
 #[tauri::command]
-pub fn open_image_preview(image_id: i64, mode: Option<String>, app_handle: AppHandle);
-//   → *PENDING = Some({ image_id, mode: mode.unwrap_or("preview".into()) })
-//   → 窗口已存在：emit("image-preview://load", { imageId, mode }) + show + focus
+pub fn open_image_preview(image_id: i64, app_handle: AppHandle);
+//   → PENDING = Some({ image_id })
+//   → 窗口已存在：emit("image-preview://load", { imageId }) + show + focus
 //   → 否则：建窗
 
 #[tauri::command]
@@ -163,12 +165,13 @@ export function pointToSegmentDist(px, py, x1, y1, x2, y2): number;
 **导出（保存 / 复制用）**：
 
 ```ts
-function composeAnnotated(): string | null {
-  // 在 natural 尺寸 canvas 上 drawImage(bg) + 逐个 drawAnnotation(ann)（scale=1）→ toDataURL("image/png").split(",")[1]
+function composePngBase64(): string {
+  // 在 natural 尺寸 canvas 上 drawImage(img) + 逐个 drawAnnotation(ann)（scale=1）
+  // → toDataURL("image/png").split(",")[1]（返回不含 data: 前缀的 base64）
 }
 ```
 
-- 保存：`composeAnnotated()` → base64 PNG → `invoke("save_image_dialog", { pngBase64 })`（新增薄命令，见 §3.6）。
+- 保存：`composePngBase64()` → base64 PNG → `invoke("save_image_dialog", { pngBase64 })`（新增薄命令，见 §3.6）。
 - OCR：`invoke<string>("ocr_image", { id: imageId })`（整图识别，无裁剪）→ 文本非空则 `save_ocr_to_note(text)`（存为 `source=ocr` 笔记，返回 noteId）→ `open_notepad_with_note(noteId)` 打开记事本并选中该笔记，供用户在笔记里编辑；同时 `ocrCopied=true` 1.5s 反馈（工具栏 OCR 按钮换绿勾）。识别结果落进记事本（笔记系统），不再写系统剪贴板。
 
 **mount / 事件**：
@@ -209,20 +212,22 @@ function composeAnnotated(): string | null {
 
 > 不放截图原版的「调色板 `<input type="color">`」——8 预设色已覆盖常用，保持简单（YAGNI）。
 
-**组件 API**：
+**组件 API**（实际 props —— Toolbar 是纯展示组件，状态全由父 `ImagePreview` 驱动，事件回调上抛）：
 
 ```tsx
-type PreviewTool = "none" | "rect" | "oval" | "line" | "text";
+// Tool 复用 lib/annotation.ts（含 arrow/pen/number；预览暴露 none/rect/oval/line/arrow/pen/text）
+type Tool = "none" | "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number";
 
-interface ToolbarProps {
-  tool: PreviewTool; onTool: (t: PreviewTool) => void;
-  color: string; onColor: (c: string) => void;
-  size: number; onSize: (n: number) => void;   // 粗细 or 字号（按 tool 切含义/范围）
+props: {
+  tool: Tool; setTool: (t: Tool) => void;            // 再点已激活工具 = 回 none，浮窗收起
+  toolColor: string; setToolColor: (c: string) => void;
+  toolWidth: number; setToolWidth: (n: number) => void;       // 粗细 1–10（非文字工具）
+  toolFontSize: number; setToolFontSize: (n: number) => void; // 字号 10–48（文字工具）
+  alwaysOnTop: boolean; onToggleTop: () => void;
+  onSave: () => void; onCopy: () => void; onOcr: () => void;  // 输出动作
   onUndo: () => void; canUndo: boolean;
-  onSave: () => void;
-  onCopy: () => Promise<void>;   // 复制带标注图到系统剪贴板（composeAnnotated → copy_image_to_clipboard）
-  onOcr: () => void; ocrLoading: boolean;
-  pinned: boolean; onTogglePin: () => void;
+  ocrCopied: boolean;   // OCR 成功后 true 1.5s，按钮换 Check 绿勾
+  zoom: number; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;  // 缩放集成进工具栏（0.1–8×）
 }
 ```
 
@@ -335,7 +340,7 @@ ImagePreview mount ──get_pending_image──► PENDING.take()
 **本需求已为其留的基础：**
 - `lib/annotation.ts` 共享标注核心——贴图窗将来可直接复用（贴图上也能标注）。
 - `get_image_full` 命令——贴图窗加载图片用同一个。
-- `PendingImage.mode` 字段——`"pin"` 分支预留（窗口创建按 mode 切 `decorations(false)/transparent/always_on_top`，现仅 preview 分支）。
+- ~~`PendingImage.mode` 字段~~：落地时按 YAGNI 去掉（见 §3.2）。贴图窗将来另开独立 label，不必在 PENDING 上预留 mode。
 - 项目已有的透明无边框置顶 + 点击穿透机器（`result_window.rs` 的 `start_click_through_poller` / `setIgnoresMouseEvents` / CSS 伪装尺寸）——贴图窗的「钉屏 + hover 显隐工具栏」可复用这套。
 
 **本需求不做**：不建 `image_pin_window`、不写贴图交互、不接入截图「钉住」按钮。截图工具栏的「钉住」入口属截图功能域，未来单独立项。
