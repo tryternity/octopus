@@ -1,7 +1,7 @@
 import { cn } from "@/lib/utils";
 import {
   MousePointer2, Square, Circle, Minus, Type, Undo2,
-  Download, Copy, ScanText, Pin, PinOff, Check,
+  Download, Copy, ScanText, Pin, PinOff, Check, ZoomIn, ZoomOut,
 } from "lucide-react";
 import type { Tool } from "@/lib/annotation";
 
@@ -26,6 +26,7 @@ export default function Toolbar(props: {
   onSave: () => void; onCopy: () => void; onOcr: () => void;
   onUndo: () => void; canUndo: boolean;
   ocrCopied: boolean;
+  zoom: number; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
 }) {
   const isText = props.tool === "text";
   const showProps = props.tool !== "none";
@@ -71,6 +72,24 @@ export default function Toolbar(props: {
         <ToolButton title="撤销 (Cmd/Ctrl+Z)" active={false} onClick={props.onUndo}>
           <Undo2 className={cn("h-4 w-4", !props.canUndo && "opacity-30")} />
         </ToolButton>
+
+        {/* 缩放：缩小 + 当前百分比(点击重置 100%) + 放大 */}
+        <div className="mx-1 flex items-center gap-0.5">
+          <ToolButton title="缩小" active={false} onClick={props.onZoomOut}>
+            <ZoomOut className="h-4 w-4" />
+          </ToolButton>
+          <button
+            type="button"
+            title="重置为 100%"
+            onClick={props.onZoomReset}
+            className="flex h-8 min-w-[3rem] items-center justify-center rounded px-1 text-[11px] font-medium tabular-nums text-neutral-300 transition-colors hover:bg-neutral-700"
+          >
+            {Math.round(props.zoom * 100)}%
+          </button>
+          <ToolButton title="放大" active={false} onClick={props.onZoomIn}>
+            <ZoomIn className="h-4 w-4" />
+          </ToolButton>
+        </div>
 
         <div className="mx-1 h-5 w-px bg-neutral-700" />
 
