@@ -101,6 +101,19 @@ fn db_path() -> std::path::PathBuf {
     crate::paths::octopus_config_home().join("octopus.db")
 }
 
+/// 设 WAL + busy_timeout + synchronous=NORMAL（多进程并发读写前提）。
+/// - WAL：DB 级持久（设一次），产生 -wal/-shm 副文件。
+/// - busy_timeout=5000：连接级，遇锁自动重试 5s。
+/// - synchronous=NORMAL：WAL 下安全且更快。
+fn apply_wal_pragmas(conn: &Connection) {
+    // journal_mode 返回新值，execute_batch 不捕获返回行也能生效。
+    let _ = conn.execute_batch(
+        "PRAGMA journal_mode=WAL;\
+         PRAGMA busy_timeout=5000;\
+         PRAGMA synchronous=NORMAL;",
+    );
+}
+
 /// 幂等初始化：打开/创建 DB，user_version=0 时执行 INIT_SQL 建表+seed。
 pub fn ensure_db() -> Result<()> {
     if DB.get().is_some() {
@@ -112,6 +125,7 @@ pub fn ensure_db() -> Result<()> {
     }
     let conn = Connection::open(&path)
         .with_context(|| format!("Failed to open DB at {}", path.display()))?;
+    apply_wal_pragmas(&conn); // WAL 必须在建表前设
     init_schema(&conn)?;
     let _ = DB.set(Mutex::new(conn));
     Ok(())
@@ -1823,5 +1837,31 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM notes_fts", [], |r| r.get(0))
             .unwrap();
         assert_eq!(fts_count, 0);
+    }
+
+    #[test]
+    fn wal_pragmas_applied_on_file_db() {
+        // WAL 不适用于内存 DB，必须用临时文件
+        let dir = std::env::temp_dir().join(format!("octopus-wal-test-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("wal.db");
+
+        let conn = Connection::open(&path).unwrap();
+        apply_wal_pragmas(&conn);
+
+        let mode: String = conn.query_row("PRAGMA journal_mode", [], |r| r.get(0)).unwrap();
+        assert_eq!(mode.to_lowercase(), "wal", "journal_mode 应为 WAL");
+        let busy: i64 = conn.query_row("PRAGMA busy_timeout", [], |r| r.get(0)).unwrap();
+        assert_eq!(busy, 5000);
+
+        // 第二个连接并发读（同一 DB 文件，WAL 下不阻塞）
+        let conn2 = Connection::open(&path).unwrap();
+        apply_wal_pragmas(&conn2);
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS t(x); INSERT INTO t VALUES(1);").unwrap();
+        let v: i64 = conn2.query_row("SELECT x FROM t", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 1, "第二连接应能读到第一连接的写入（WAL 并发）");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
