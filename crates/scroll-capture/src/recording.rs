@@ -29,7 +29,7 @@ pub fn run_loop<C: CaptureSource>(
     on_complete: Box<dyn FnOnce(Vec<u8>) + Send>,
 ) {
     let mut stitcher = match capture_first(capture) {
-        Some(img) => octopus_capx::stitch::Stitcher::new(img, Default::default()),
+        Some(img) => crate::stitch::Stitcher::new(img, Default::default()),
         None => {
             log::error!("scroll-capture: failed to capture first frame");
             return;

@@ -1,4 +1,5 @@
 pub mod overlay;
+pub mod stitch;
 mod recording;
 #[cfg(target_os = "macos")]
 mod macos;
@@ -21,6 +22,11 @@ pub fn start(on_complete: Box<dyn FnOnce(Vec<u8>) + Send + 'static>) {
 /// Stop recording (tray menu / ESC).
 pub fn stop() {
     RECORDING.store(false, Ordering::SeqCst);
+}
+
+/// 是否正在录制（托盘菜单切换用）。
+pub fn is_recording_active() -> bool {
+    RECORDING.load(Ordering::SeqCst)
 }
 
 pub(crate) fn is_recording() -> bool {

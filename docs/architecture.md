@@ -13,6 +13,7 @@ octopus/
 │   ├── clipboard/   # 剪贴板历史管理 (octopus-clipboard)
 │   ├── ocr/         # OCR 图片识别 (octopus-ocr)
 │   ├── capx/        # 屏幕截图 (octopus-capx)
+│   ├── scroll-capture/ # 原生滚动截屏 (scroll-capture)
 │   ├── notepad/     # 记事本/内容收集箱 (octopus-notepad)
 │   ├── llm/         # LLM 润色 (octopus-llm)
 │   ├── cli/         # 命令行工具 (octopus-cli)
@@ -154,6 +155,26 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 **macOS 权限**：通过 `cargo run` 运行时，屏幕录制权限需授给终端应用（非二进制）。打包 .app 后绑定 octopus 本身。
 
 详见 [spec](superpowers/specs/2026-06-28-screenshot-design.md)。
+
+### scroll-capture（原生 NSView 滚动截屏）
+
+独立的滚动截屏 crate，**不依赖 WebView/Tauri 窗口管理**，纯原生 macOS NSWindow + NSView 实现。解决 WebView 方案中滚轮穿透、焦点竞争、Occlusion Throttling 等不可靠问题。
+
+| 模块 | 职责 |
+|---|---|
+| `lib.rs` | 公共接口 `start(on_complete)` / `stop()` / `is_recording_active()` |
+| `stitch.rs` | 2D SAD 空间模板匹配拼接引擎（无状态全局搜索 + 静止锚点交叉验证） |
+| `macos/overlay_impl.rs` | NSScrollOverlayWindow + NSScrollOverlayView（选区拉框 + 绿色边框 + 录制循环） |
+| `macos/capture.rs` | CGWindowListCreateImage 截图 + 排除覆盖窗口 |
+| `macos/helpers.rs` | 焦点让出（get_window_pid_at_point + activateWithOptions）+ 主屏高度 |
+
+**拼接引擎**：2D SAD（Sum of Absolute Differences）块匹配。模板高度 80px，列采样 step=2，排除左 10%/右 20% 干扰列。静止锚点交叉验证防止周期性假匹配。阈值 min_sad < 4.5, confidence > 0.20。
+
+**窗口管理**：borderless NSWindow + `isOpaque=false` + `CGContextClearRect` 真正擦除（录制状态下完全透明，底层应用可见且不被 Occlusion Throttling 挂起）。`setIgnoresMouseEvents(true)` 滚轮穿透。录制结束 `performSelectorOnMainThread:close`。
+
+**触发方式**：托盘菜单「滚动截屏」切换（空闲→启动/录制中→停止）。
+
+详见 [spec](superpowers/specs/2026-07-01-native-scroll-capture-design.md)。
 
 ### octopus-notepad（记事本 / 内容收集箱）
 

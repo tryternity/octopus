@@ -83,3 +83,79 @@ pub fn get_primary_screen_height() -> f64 {
         frame.size.height as f64
     }
 }
+
+pub struct TargetWindowInfo {
+    pub pid: i32,
+    pub window_id: u32,
+}
+
+pub fn get_target_window_at_point(x: f64, y: f64) -> Option<TargetWindowInfo> {
+    use core_graphics::display::CGDisplay;
+    let windows = CGDisplay::window_list_info(
+        core_graphics::display::kCGWindowListOptionOnScreenOnly,
+        None,
+    )?;
+
+    use core_foundation::base::{CFTypeRef, TCFType};
+    use core_foundation::dictionary::CFDictionary;
+    use core_foundation::string::CFString;
+    use core_foundation::number::CFNumber;
+
+    let curr_pid = std::process::id() as i32;
+
+    for item in windows.iter() {
+        let dict_ref = *item as CFTypeRef;
+        if dict_ref.is_null() { continue; }
+        let dict: CFDictionary<CFString, CFTypeRef> = unsafe { TCFType::wrap_under_get_rule(dict_ref as *const _) };
+
+        let key_pid = CFString::new("kCGWindowOwnerPID");
+        let pid_item = dict.get(&key_pid);
+        let pid_ptr: CFTypeRef = *pid_item;
+        if pid_ptr.is_null() { continue; }
+        let pid_num: CFNumber = unsafe { TCFType::wrap_under_get_rule(pid_ptr as *const _) };
+        let pid = pid_num.to_i32()?;
+        if pid == curr_pid { continue; }
+
+        let key_layer = CFString::new("kCGWindowLayer");
+        let layer_item = dict.get(&key_layer);
+        let layer_ptr: CFTypeRef = *layer_item;
+        if !layer_ptr.is_null() {
+            let layer_num: CFNumber = unsafe { TCFType::wrap_under_get_rule(layer_ptr as *const _) };
+            if let Some(layer) = layer_num.to_i32() {
+                if layer != 0 { continue; }
+            }
+        }
+
+        let key_bounds = CFString::new("kCGWindowBounds");
+        let bounds_item = dict.get(&key_bounds);
+        let bounds_ptr: CFTypeRef = *bounds_item;
+        if !bounds_ptr.is_null() {
+            let bdict: CFDictionary<CFString, CFTypeRef> = unsafe { TCFType::wrap_under_get_rule(bounds_ptr as *const _) };
+            let get_f64 = |key: &str| -> f64 {
+                let k = CFString::new(key);
+                let item = bdict.get(&k);
+                let ptr: CFTypeRef = *item;
+                if ptr.is_null() { return 0.0; }
+                let n: CFNumber = unsafe { TCFType::wrap_under_get_rule(ptr as *const _) };
+                n.to_f64().unwrap_or(0.0)
+            };
+            let (bx, by, bw, bh) = (get_f64("X"), get_f64("Y"), get_f64("Width"), get_f64("Height"));
+            if x >= bx && x < bx + bw && y >= by && y < by + bh {
+                // 获取窗口 Number
+                let key_num = CFString::new("kCGWindowNumber");
+                let num_item = dict.get(&key_num);
+                let num_ptr: CFTypeRef = *num_item;
+                if !num_ptr.is_null() {
+                    let num_val: CFNumber = unsafe { TCFType::wrap_under_get_rule(num_ptr as *const _) };
+                    if let Some(window_id) = num_val.to_i32() {
+                        return Some(TargetWindowInfo {
+                            pid,
+                            window_id: window_id as u32,
+                        });
+                    }
+                }
+            }
+        }
+    }
+    None
+}

@@ -56,6 +56,7 @@ unsafe fn start_overlay_inner(on_complete: Box<dyn FnOnce(Vec<u8>) + Send + 'sta
 
         let _: () = msg_send![&window, setLevel: 3i64]; // floating
         let _: () = msg_send![&window, setOpaque: false];
+        let _: () = msg_send![&window, setReleasedWhenClosed: false];
         let clear: Retained<NSColor> = msg_send![class!(NSColor), clearColor];
         let clear_ptr = (&*clear) as *const NSColor as *mut NSColor;
         let _: () = msg_send![&window, setBackgroundColor: clear_ptr];
@@ -302,7 +303,10 @@ unsafe fn draw_overlay(view: &NSScrollOverlayView, bounds: &NSRect) {
             NSSize::new(sel_w, sel_h),
         );
         // 选区内透明：用 NSCompositeClear 清除
+        let ctx: *mut objc2::runtime::AnyObject = msg_send![class!(NSGraphicsContext), currentContext];
+        let _: () = msg_send![ctx, setCompositingOperation: 0u64]; // NSCompositingOperationClear = 0
         let _: () = msg_send![class!(NSBezierPath), fillRect: sel_rect];
+        let _: () = msg_send![ctx, setCompositingOperation: 2u64]; // NSCompositingOperationSourceOver = 2
         // 绿色边框
         let green: Retained<NSColor> = msg_send![class!(NSColor), colorWithRed: 0.13f64 green: 0.77f64 blue: 0.37f64 alpha: 1.0f64];
         let green_ptr = (&*green) as *const NSColor as *mut NSColor;
@@ -326,14 +330,13 @@ fn start_recording_thread(global_x: f64, global_y: f64, sel_w: f64, sel_h: f64, 
         }
     }
 
-    // 激活选区下方的应用
+    // 激活选区下方的应用并获取目标窗口 ID
     let center_x = global_x + sel_w / 2.0;
     let center_y = global_y + sel_h / 2.0;
-    // Quartz → Cocoa Y for pid lookup (CGWindowList uses Quartz coords)
-    if let Some(pid) = super::helpers::get_window_pid_at_point(center_x, center_y) {
-        // 激活必须在主线程
-        // TODO: dispatch to main thread
-        super::helpers::activate_app_by_pid(pid);
+    let mut target_wid = None;
+    if let Some(info) = super::helpers::get_target_window_at_point(center_x, center_y) {
+        super::helpers::activate_app_by_pid(info.pid);
+        target_wid = Some(info.window_id);
     }
 
     let on_complete = {
@@ -351,39 +354,100 @@ fn start_recording_thread(global_x: f64, global_y: f64, sel_w: f64, sel_h: f64, 
         std::thread::sleep(std::time::Duration::from_millis(200));
 
         // 首帧
-        let first = match super::capture::capture_region_excluding(
-            exclude_wid, global_x, global_y, sel_w, sel_h,
-        ) {
-            Ok(img) => img,
-            Err(e) => {
-                log::error!("[scroll-capture] first frame failed: {}", e);
-                cleanup();
-                return;
+        let first = if let Some(wid) = target_wid {
+            match super::capture::capture_region_window(wid, global_x, global_y, sel_w, sel_h) {
+                Ok(img) => img,
+                Err(e) => {
+                    log::warn!("[scroll-capture] first frame target capture failed: {}, falling back...", e);
+                    match super::capture::capture_region_excluding(exclude_wid, global_x, global_y, sel_w, sel_h) {
+                        Ok(img) => img,
+                        Err(err) => {
+                            log::error!("[scroll-capture] fallback first frame failed: {}", err);
+                            cleanup();
+                            return;
+                        }
+                    }
+                }
             }
-        };
-
-        let mut stitcher = octopus_capx::stitch::Stitcher::new(first, Default::default());
-
-        let frame_duration = std::time::Duration::from_millis(100);
-
-        loop {
-            std::thread::sleep(frame_duration);
-            if !crate::is_recording() {
-                break;
-            }
+        } else {
             match super::capture::capture_region_excluding(
                 exclude_wid, global_x, global_y, sel_w, sel_h,
             ) {
+                Ok(img) => img,
+                Err(e) => {
+                    log::error!("[scroll-capture] first frame failed: {}", e);
+                    cleanup();
+                    return;
+                }
+            }
+        };
+
+        let mut config = crate::stitch::StitchConfig::default();
+        config.min_confidence = 0.25;
+        let mut stitcher = crate::stitch::Stitcher::new(first, config);
+
+        let frame_interval = std::time::Duration::from_millis(30); // 目标帧率：30ms (约 33fps)
+        let mut last_frame = None;
+
+        loop {
+            let start_time = std::time::Instant::now();
+            if !crate::is_recording() {
+                break;
+            }
+            let frame_res = if let Some(wid) = target_wid {
+                super::capture::capture_region_window(wid, global_x, global_y, sel_w, sel_h)
+            } else {
+                super::capture::capture_region_excluding(exclude_wid, global_x, global_y, sel_w, sel_h)
+            };
+
+            match frame_res {
                 Ok(frame) => {
-                    let _ = stitcher.process_frame(&frame);
+                    let (fw, fh) = (frame.width(), frame.height());
+                    let p = frame.get_pixel(fw / 2, fh / 2);
+                    log::info!("[scroll-capture] captured frame {}x{} center pixel=({},{},{})", fw, fh, p[0], p[1], p[2]);
+                    
+                    // 保存前 30 帧用于排查捕获画面是否正确
+                    static FRAME_COUNTER: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+                    let count = FRAME_COUNTER.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    if count < 30 {
+                        let dir = "/Users/wudarui/workspace/agent/octopus/debug_frames";
+                        let _ = std::fs::create_dir_all(dir);
+                        let path = format!("{}/frame_{}.png", dir, count);
+                        if let Err(e) = frame.save(&path) {
+                            log::warn!("[scroll-capture] failed to save debug frame: {}", e);
+                        } else {
+                            log::info!("[scroll-capture] saved debug frame to {}", path);
+                        }
+                    }
+                    
+                    match stitcher.process_frame(&frame) {
+                        Ok(true) => {
+                            log::info!("[scroll-capture] Frame stitched successfully! Canvas height: {}", stitcher.height());
+                        }
+                        Ok(false) => {
+                            log::info!("[scroll-capture] Frame skipped (not stitched)");
+                        }
+                        Err(e) => {
+                            log::error!("[scroll-capture] Stitcher error: {}", e);
+                        }
+                    }
+                    last_frame = Some(frame);
                 }
                 Err(e) => {
                     log::warn!("[scroll-capture] capture failed: {}", e);
                 }
             }
+
+            let elapsed = start_time.elapsed();
+            if elapsed < frame_interval {
+                std::thread::sleep(frame_interval - elapsed);
+            }
         }
 
         // Finalize
+        if let Some(ref lf) = last_frame {
+            let _ = stitcher.finalize(lf);
+        }
         let canvas = stitcher.canvas().clone();
         let mut png_bytes = Vec::new();
         use image::ImageEncoder;
@@ -401,14 +465,38 @@ fn start_recording_thread(global_x: f64, global_y: f64, sel_w: f64, sel_h: f64, 
     });
 }
 
+extern "C" {
+    static _dispatch_main_q: std::ffi::c_void;
+    fn dispatch_async_f(
+        queue: *const std::ffi::c_void,
+        context: *mut std::ffi::c_void,
+        work: extern "C" fn(*mut std::ffi::c_void),
+    );
+}
+
+extern "C" fn cleanup_on_main_thread(ctx: *mut std::ffi::c_void) {
+    let state_ptr = ctx as *mut GlobalState;
+    unsafe {
+        let state = Box::from_raw(state_ptr);
+        for win in &state.windows {
+            let w = &win.0;
+            // 隐藏窗口
+            let _: () = msg_send![w, orderOut: std::ptr::null::<objc2::runtime::AnyObject>()];
+            // 关闭窗口 (因为设置了 setReleasedWhenClosed: false, Rust 的 Retained 在这里 drop 时会安全地释放其内存)
+            let _: () = msg_send![w, close];
+        }
+    }
+}
+
 /// 清理：在主线程销毁所有覆盖窗口。
 fn cleanup() {
     let mut state = STATE.lock().unwrap();
     if let Some(s) = state.take() {
-        // 销毁窗口需要在主线程
-        for win in &s.windows {
-            let w = &win.0;
-            let _: () = unsafe { msg_send![w, orderOut: std::ptr::null::<objc2::runtime::AnyObject>()] };
+        let boxed = Box::new(s);
+        let raw_ptr = Box::into_raw(boxed);
+        unsafe {
+            let main_q = &_dispatch_main_q as *const std::ffi::c_void;
+            dispatch_async_f(main_q, raw_ptr as *mut std::ffi::c_void, cleanup_on_main_thread);
         }
     }
 }

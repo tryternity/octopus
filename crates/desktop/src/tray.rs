@@ -133,10 +133,14 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
                 });
             }
             "scroll_capture" => {
-                info!("Tray: scroll capture");
-                let app_handle2 = app.clone();
-                let app_handle3 = app.clone();
-                let _ = app_handle2.run_on_main_thread(move || {
+                if scroll_capture::is_recording_active() {
+                    info!("Tray: stop scroll capture");
+                    scroll_capture::stop();
+                } else {
+                    info!("Tray: start scroll capture");
+                    let app_handle2 = app.clone();
+                    let app_handle3 = app.clone();
+                    let _ = app_handle2.run_on_main_thread(move || {
                     scroll_capture::start(Box::new(move |png_bytes| {
                         let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
                         let img = match image::load_from_memory(&png_bytes) { Ok(i) => i, Err(_) => return };
@@ -161,6 +165,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
                         let _ = app_handle3.emit("clipboard://changed", ());
                     }));
                 });
+                }
             }
             "quit" => {
                 info!("Tray: quit");
