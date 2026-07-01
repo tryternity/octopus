@@ -1921,6 +1921,39 @@ mod tests {
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v, 10);
 
+        // M1：验证 FTS 触发器迁移后真的重挂——插入一行后 notes_fts 应自动同步命中。
+        // notes 表其余 NOT NULL 列（type/source/is_pinned/is_favorite/content_text）均有默认值，
+        // 仅 created_at/updated_at 无默认值，故显式提供 title/content_text/created_at/updated_at 即可。
+        conn.execute(
+            "INSERT INTO notes (title, content_text, created_at, updated_at) \
+             VALUES ('t', 'probekeycheck', '2026-01-01', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        // FTS5 MATCH 参数是 query 表达式：裸串含 '-' 会被误解析为操作符/列名（报
+        // 'no such column'），故用纯字母 token；trigram 切分后 content_text 中整体存在即命中。
+        let fts_hit: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM notes_fts WHERE notes_fts MATCH 'probekeycheck'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(fts_hit, 1, "note_fts_ai 触发器应在插入时同步 FTS 索引");
+
+        // M2：验证 type 列默认值为 'text'（SQLite dflt_value 字面量带单引号返回）。
+        let type_default: String = conn
+            .query_row(
+                "SELECT dflt_value FROM pragma_table_info('notes') WHERE name='type'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            type_default, "'text'",
+            "type 列 DEFAULT 应为 'text'（SQLite dflt_value 带引号返回）"
+        );
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
