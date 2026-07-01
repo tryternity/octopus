@@ -16,6 +16,7 @@ pub fn create_image_preview_window(app_handle: &tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
         let _ = app_handle.set_activation_policy(ActivationPolicy::Regular);
+        crate::settings_window::set_dock_icon();
     }
     let _ = WebviewWindowBuilder::new(app_handle, WINDOW_LABEL, WebviewUrl::default())
         .title("图片预览")

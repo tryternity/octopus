@@ -24,6 +24,7 @@ pub fn open_notepad(app_handle: tauri::AppHandle) {
     #[cfg(target_os = "macos")]
     {
         let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+        crate::settings_window::set_dock_icon();
     }
     let _ = WebviewWindowBuilder::new(
         &app_handle,

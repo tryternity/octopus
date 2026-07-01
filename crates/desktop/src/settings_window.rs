@@ -69,7 +69,7 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
 /// macOS: 手动设置 Dock 图标（release 裸二进制无 .app bundle，Tauri 仅在
 /// debug 模式自动设置）。
 #[cfg(target_os = "macos")]
-fn set_dock_icon() {
+pub fn set_dock_icon() {
     use objc2::{AnyThread, MainThreadMarker};
     use objc2_app_kit::{NSApplication, NSImage};
     use objc2_foundation::NSData;
