@@ -322,7 +322,7 @@ impl NotepadView {
     }
 }
 
-/// 文本编辑区：标签 + multiline TextEdit（desired_width=∞ 撑满）。changed 时置 dirty + last_edit
+/// 文本编辑区：标签 + 滚动 multiline TextEdit。changed 时置 dirty + last_edit
 /// （防抖 flush_if_dirty 依赖 last_edit，仅置 dirty 不置 last_edit 会导致永不落库）。
 fn editor_pane(
     ui: &mut egui::Ui,
@@ -333,19 +333,26 @@ fn editor_pane(
 ) {
     ui.label(egui::RichText::new(label).small().color(crate::theme::MUTED).strong());
     ui.add_space(2.0);
-    // 编辑器撑满剩余垂直空间：desired_rows(N) 只是「期望行数」建议值，不会自动伸展到
-    // 可用高度，导致编辑区只占窗体约一半、下方一片留白。改用 add_sized 按 available_height
-    // 精确分配，编辑器与窗体同高。add_sized 在 panel content ui 内用 available_width/height
-    // 分配，不依赖 allocate_space(available_width)，故不撑宽 panel（宽度回归测试保障）。
-    let height = ui.available_height().max(80.0);
-    let resp = ui.add_sized(
-        egui::vec2(ui.available_width(), height),
-        egui::TextEdit::multiline(body).desired_width(f32::INFINITY),
-    );
-    if resp.changed() {
-        *dirty = true;
-        *last_edit = Some(Instant::now());
-    }
+    // 编辑器撑满视口 + 内容超出可滚动。egui TextEdit 本身无可见滚动条：固定高度
+    // (add_sized) 时内容超出会截断底部、无法手动滚动（用户反馈「下面文字看不见」）。
+    // 正确做法：外层 ScrollArea 占 available_height；内层 TextEdit desired_rows 取
+    // max(视口可容行数, 实际内容行)——短内容占满视口不留白，长内容超出由 ScrollArea 滚动，
+    // 且输入光标自动 scroll_to_cursor 跟入视野。
+    let line_h = ui.text_style_height(&egui::TextStyle::Body);
+    let min_rows = ((ui.available_height() / line_h).floor() as usize).max(1);
+    egui::ScrollArea::vertical()
+        .auto_shrink([false; 2])
+        .show(ui, |ui| {
+            let resp = ui.add(
+                egui::TextEdit::multiline(body)
+                    .desired_width(f32::INFINITY)
+                    .desired_rows(min_rows),
+            );
+            if resp.changed() {
+                *dirty = true;
+                *last_edit = Some(Instant::now());
+            }
+        });
 }
 
 /// 5 按钮工具栏：点按钮在末尾插入 md 语法标记。
