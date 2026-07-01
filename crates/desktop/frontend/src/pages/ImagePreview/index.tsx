@@ -39,6 +39,8 @@ export default function ImagePreview() {
   // 交互 refs（避免重渲染抖动 + 拖拽用最新值）
   const drawingRef = useRef<Annotation | null>(null);
   const dragRef = useRef<{ idx: number; dx: number; dy: number } | null>(null);
+  // 文字输入框 ref：autoFocus 对动态挂载的 textarea 不可靠，改 setTimeout focus（对齐截图）
+  const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   const toolColorRef = useRef("#ef4444");
   const toolWidthRef = useRef(3);
   const toolFontSizeRef = useRef(20);
@@ -160,6 +162,8 @@ export default function ImagePreview() {
       const d = { nx, ny, val: "" };
       textDraftRef.current = d;
       setTextDraft(d);
+      // autoFocus 不可靠：等 textarea 挂载后手动聚焦
+      setTimeout(() => textInputRef.current?.focus(), 10);
       return;
     }
 
@@ -308,7 +312,7 @@ export default function ImagePreview() {
         )}
         {draftBox && (
           <textarea
-            autoFocus
+            ref={textInputRef}
             value={textDraft!.val}
             onChange={(e) => {
               const val = e.target.value;
