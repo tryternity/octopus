@@ -208,7 +208,7 @@ export default function Screenshot() {
         const label = `${Math.round(w * dpr)} × ${Math.round(h * dpr)}`;
         ctx.font = "12px -apple-system, sans-serif";
         const tw = ctx.measureText(label).width;
-        const labelY = toolbarBelow ? (y - 18) : (y + h + 4);
+        const labelY = toolbarBelow ? (y - 24) : (y + h + 6);
         const labelVisibleY = Math.max(0, labelY);
         ctx.fillStyle = "rgba(255, 255, 255, 0.9)";
         ctx.fillRect(x, labelVisibleY, tw + 8, 18);
@@ -1068,16 +1068,16 @@ export default function Screenshot() {
       {sel && mode !== "scrolling" && (
         <button onClick={doPin} title="贴图" style={{
           position: "fixed",
-          left: sel.x + sel.w - 32,
-          top: toolbarBelow ? (sel.y - 36) : (sel.y + sel.h + 4),
-          width: 32, height: 32,
+          left: sel.x + sel.w - 28,
+          top: toolbarBelow ? (sel.y - 28) : (sel.y + sel.h + 6),
+          width: 24, height: 24,
           display: "flex", alignItems: "center", justifyContent: "center",
-          borderRadius: 6, border: "none",
+          borderRadius: 5, border: "none",
           background: "rgba(255,255,255,0.9)",
           boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
           cursor: "pointer", zIndex: 101,
         }}>
-          <img src="icons/pin.svg" alt="贴图" className="w-[18px] h-[18px]" />
+          <img src="icons/pin.svg" alt="贴图" style={{ width: 14, height: 14 }} />
         </button>
       )}
 
