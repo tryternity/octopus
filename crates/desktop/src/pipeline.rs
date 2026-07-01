@@ -63,7 +63,7 @@ pub(crate) fn apply_segment_result(
     *active_count = active_count.saturating_sub(1);
     match seg.text {
         Ok(t) if !t.is_empty() => {
-            log::info!("VadSegmented seq={}: '{}'", seg.seq, t);
+            // log::info!("VadSegmented seq={}: '{}'", seg.seq, t);
             results.insert(seg.seq, t);
         }
         Ok(_) => {
@@ -423,16 +423,16 @@ impl VadSegmentedPipeline {
         let asr_engine = self.asr_engine.clone();
         let tx = self.tx.clone();
         let samples_len = speech_samples.len();
-        let duration = samples_len as f64 / 16000.0;
+        let _duration = samples_len as f64 / 16000.0;
         tauri::async_runtime::spawn(async move {
             let start = std::time::Instant::now();
             let result = engine.transcribe(&speech_samples, &language, &asr_engine).await;
-            let elapsed = start.elapsed();
-            log::info!(
-                "Transcription seq={} took {:.2}s (audio: {:.2}s, RTF: {:.2})",
-                seq, elapsed.as_secs_f64(), duration,
-                elapsed.as_secs_f64() / duration.max(0.001)
-            );
+            let _elapsed = start.elapsed();
+            // log::info!(
+            //     "Transcription seq={} took {:.2}s (audio: {:.2}s, RTF: {:.2})",
+            //     seq, elapsed.as_secs_f64(), duration,
+            //     elapsed.as_secs_f64() / duration.max(0.001)
+            // );
             let _ = tx.send(SegmentResult {
                 seq,
                 text: result.map_err(|e| e.to_string()),
@@ -495,11 +495,11 @@ impl VadSegmentedPipeline {
                     let seq = self.next_seq;
                     self.next_seq += 1;
                     self.active_count += 1;
-                    log::debug!(
-                        "VadSegmented: {} cut, seq={}, samples={}, active_count={}",
-                        if force_cut { "force" } else { "silence" },
-                        seq, speech_samples.len(), self.active_count,
-                    );
+                    // log::debug!(
+                    //     "VadSegmented: {} cut, seq={}, samples={}, active_count={}",
+                    //     if force_cut { "force" } else { "silence" },
+                    //     seq, speech_samples.len(), self.active_count,
+                    // );
                     self.spawn_offline(speech_samples, seq);
                 }
             }
