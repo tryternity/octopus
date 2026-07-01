@@ -208,41 +208,52 @@ impl NotepadView {
             // 工具栏（5 按钮：选中文本→包 md 语法）
             toolbar(ui, &mut self.body, &mut self.body_dirty, &mut self.last_edit);
 
-            // 编辑 / 预览分屏
-            let available = ui.available_size();
-            let half = egui::Vec2::new(available.x / 2.0, available.y);
-            ui.horizontal(|ui| {
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.set_min_size(half);
-                    ui.label(
-                        egui::RichText::new("Markdown 源码")
-                            .small()
-                            .color(crate::theme::MUTED)
-                            .strong(),
-                    );
-                    ui.add_space(2.0);
-                    let resp = ui.add(
-                        egui::TextEdit::multiline(&mut self.body)
-                            .desired_width(f32::MAX)
-                            .desired_rows(20),
-                    );
-                    if resp.changed() {
-                        self.mark_dirty();
-                    }
-                });
-                egui::Frame::group(ui.style()).show(ui, |ui| {
-                    ui.set_min_size(half);
-                    ui.label(
-                        egui::RichText::new("预览")
-                            .small()
-                            .color(crate::theme::MUTED)
-                            .strong(),
-                    );
-                    ui.add_space(2.0);
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        CommonMarkViewer::new().show(ui, &mut self.md_cache, &self.body);
-                    });
-                });
+            // 编辑 / 预览分屏（allocate_ui 精确分配宽度，避免 Frame::group + set_min_size
+            // 导致总宽溢出 → 每帧重算 half 抖动「拉出来又缩回去」）
+            let avail = ui.available_size();
+            let col_w = (avail.x / 2.0).max(120.0);
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                // 左：md 源码（限定宽度，不用 MAX 撑爆）
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(col_w, avail.y),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new("Markdown 源码")
+                                .small()
+                                .color(crate::theme::MUTED)
+                                .strong(),
+                        );
+                        ui.add_space(2.0);
+                        let resp = ui.add(
+                            egui::TextEdit::multiline(&mut self.body)
+                                .desired_width(col_w)
+                                .desired_rows(20),
+                        );
+                        if resp.changed() {
+                            self.mark_dirty();
+                        }
+                    },
+                );
+                ui.separator(); // 竖向分隔线
+                // 右：预览（占剩余宽度）
+                ui.allocate_ui_with_layout(
+                    egui::Vec2::new(ui.available_width(), avail.y),
+                    egui::Layout::top_down(egui::Align::LEFT),
+                    |ui| {
+                        ui.label(
+                            egui::RichText::new("预览")
+                                .small()
+                                .color(crate::theme::MUTED)
+                                .strong(),
+                        );
+                        ui.add_space(2.0);
+                        egui::ScrollArea::vertical().show(ui, |ui| {
+                            CommonMarkViewer::new().show(ui, &mut self.md_cache, &self.body);
+                        });
+                    },
+                );
             });
         });
 
