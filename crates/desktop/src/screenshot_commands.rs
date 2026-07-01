@@ -267,23 +267,13 @@ pub async fn ocr_screenshot(
     Ok(())
 }
 
-/// 创建 OCR 文本笔记并打开记事本窗口。
+/// 创建 OCR 文本笔记并打开记事本（egui 进程，定位到新笔记）。
 fn open_notepad_with_content(app_handle: &tauri::AppHandle, text: &str) {
-    // 把纯文本转为简单 HTML（每行 <p> 包裹）
-    let html = text.lines()
-        .map(|line| format!("<p>{}</p>", line))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // type='text' 纯文本，不转 HTML；save_ocr_to_note 写库后 IPC 通知 egui 刷新并打开该笔记。
+    let text = text.to_string();
     let ah = app_handle.clone();
-    let html_owned = html;
     tauri::async_runtime::spawn(async move {
-        let _ = crate::note_commands::create_note(
-            "Ocr".to_string(),
-            None,
-            html_owned,
-            ah.clone(),
-        ).await;
-        crate::notepad_window::open_notepad(ah);
+        let _ = crate::note_commands::save_ocr_to_note(text, ah).await;
     });
 }
 
