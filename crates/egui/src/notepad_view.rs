@@ -352,20 +352,22 @@ fn editor_pane(
     // 之前 desired_rows(min_rows) 强制占满视口高度，疑似导致 GUI 真实窗口里 TextEdit 交互 rect 与
     // ScrollArea viewport 错位、点击毫无反应（headless 测试模拟点击零位移测不出）。先去 desired_rows
     // 验证，并打印交互日志定位真根因。
-    let scroll_out = egui::ScrollArea::vertical()
-        .auto_shrink([false; 2])
-        .show(ui, |ui| {
-            ui.add(egui::TextEdit::multiline(body).desired_width(f32::INFINITY))
-        });
+    // egui 官方写法：ScrollArea + code_editor（去掉我加的 auto_shrink，验证是否配置问题）。
+    let scroll_out = egui::ScrollArea::vertical().show(ui, |ui| {
+        ui.add(
+            egui::TextEdit::multiline(body)
+                .desired_width(f32::INFINITY)
+                .code_editor(),
+        )
+    });
     let resp = scroll_out.inner;
-    // 滚动诊断：scroll_out.response.rect 才是 ScrollArea 真正可视区（viewport），
-    // 对比 textedit_h（内容高）判断滚动空间；screen_h 看窗口高度。
     if resp.hovered() {
+        let max_off = (scroll_out.content_size.y - scroll_out.inner_rect.height()).max(0.0);
         log::info!(
-            "[editor_diag] screen_h={} viewport_h={} content_h={} offset_y={}",
-            ui.ctx().screen_rect().height(),
+            "[editor_diag] viewport_h={} content_h={} max_offset={} offset_y={}",
             scroll_out.inner_rect.height(),
             scroll_out.content_size.y,
+            max_off,
             scroll_out.state.offset.y
         );
     }
