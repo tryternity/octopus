@@ -126,14 +126,25 @@ impl Stitcher {
         }
 
         let curr_gray = image::imageops::grayscale(frame);
-        
+
         let x_start = (w as f64 * X_START_RATIO) as u32;
         let x_end = (w as f64 * X_END_RATIO) as u32;
 
         let max_scroll = MAX_SCROLL;
+        // Task 7 过渡：临时从 GrayImage 转 GrayBuf（Task 8 改字段后消除）
+        let ref_buf = GrayBuf {
+            data: self.reference_gray.as_raw().clone(),
+            width: self.reference_gray.width() as usize,
+            height: self.reference_gray.height() as usize,
+        };
+        let curr_buf = GrayBuf {
+            data: curr_gray.as_raw().clone(),
+            width: curr_gray.width() as usize,
+            height: curr_gray.height() as usize,
+        };
         let (dy, confidence) = match find_overlap_spatial_ext(
-            &self.reference_gray,
-            &curr_gray,
+            &ref_buf,
+            &curr_buf,
             x_start,
             x_end,
             eff_top,
@@ -204,9 +215,20 @@ impl Stitcher {
 
         // 允许最大对齐位移为有效高度的 90%
         let max_finalize_scroll = ((eff_bottom - eff_top) as f64 * 0.90) as u32;
+        // Task 7 过渡：临时从 GrayImage 转 GrayBuf（Task 8 改字段后消除）
+        let ref_buf = GrayBuf {
+            data: self.reference_gray.as_raw().clone(),
+            width: self.reference_gray.width() as usize,
+            height: self.reference_gray.height() as usize,
+        };
+        let last_buf = GrayBuf {
+            data: last_gray.as_raw().clone(),
+            width: last_gray.width() as usize,
+            height: last_gray.height() as usize,
+        };
         if let Some((dy, confidence)) = find_overlap_spatial_ext(
-            &self.reference_gray,
-            &last_gray,
+            &ref_buf,
+            &last_buf,
             x_start,
             x_end,
             eff_top,
@@ -264,10 +286,13 @@ impl Stitcher {
 }
 
 /// 空间域 2D 模板匹配算法，查找最匹配的垂直位移 dy。
-/// 采用 SAD (Sum of Absolute Differences) 准则与列抽样加速，保留 2D 空间排布，彻底避免 1D 投影带来的周期列表混淆。
+/// 采用 SAD (Sum of Absolute Differences) 准则与列抽样加速，保留 2D 空间排布。
+///
+/// 优化：模板条预提取为连续 buffer；整数 u64 累加；切片直访（无 get_pixel 边界检查）；
+/// 静止检测合并进主搜索（省一次预扫描）。
 fn find_overlap_spatial_ext(
-    ref_img: &GrayImage,
-    curr_img: &GrayImage,
+    ref_buf: &GrayBuf,
+    curr_buf: &GrayBuf,
     x_start: u32,
     x_end: u32,
     eff_top: u32,
@@ -275,114 +300,179 @@ fn find_overlap_spatial_ext(
     max_scroll: u32,
     last_dy: Option<f64>,
 ) -> Option<(f64, f64)> {
-    let strip_h = 80u32; // 模板条的高度，包含更多文本特征
-    if eff_bottom - eff_top <= strip_h + 10 {
+    if eff_bottom <= eff_top + STRIP_H + 10 {
         return None;
     }
-    let template_y = eff_bottom - strip_h;
+    let template_y = eff_bottom - STRIP_H;
 
-    // 每隔 2 列采样一次，提供双倍的空间特征解析度，消除 Retina 屏幕亚像素渲染带来的对齐模糊
-    let step_x = 2u32;
-
-    // 先计算 dy = 0.0 (即 y_offset = template_y) 的平均像素差值作为静止锚点
-    let mut sad_0 = 0.0;
-    let mut count_0 = 0.0;
-    for dy in 0..strip_h {
-        let ref_y = template_y + dy;
-        let curr_y = template_y + dy;
-        for x in (x_start..x_end).step_by(step_x as usize) {
-            let p_ref = ref_img.get_pixel(x, ref_y)[0] as f64;
-            let p_curr = curr_img.get_pixel(x, curr_y)[0] as f64;
-            sad_0 += (p_ref - p_curr).abs();
-            count_0 += 1.0;
-        }
-    }
-    let avg_sad_0 = sad_0 / count_0;
-    
-    // 如果 dy = 0 时的平均像素差值小于 2.0，说明内容基本没有发生滚动位移（静止状态）
-    if avg_sad_0 < 2.0 {
-        return Some((0.0, 1.0));
+    // 抽样列索引（只算一次）
+    let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
+        .step_by(SAMPLE_STEP_X)
+        .collect();
+    if sample_cols.is_empty() {
+        return None;
     }
 
-    // 限制滚动搜索的位移范围
+    // 模板条预提取
+    let tpl = extract_template(ref_buf, template_y, &sample_cols);
+
     let min_y_offset = (template_y as i32 - max_scroll as i32).max(eff_top as i32) as u32;
     let max_y_offset = template_y;
 
-    let mut best_y_offset = 0u32;
-    let mut min_penalized_sad = f64::MAX;
-    let mut best_original_sad = f64::MAX;
+    // 主搜索
+    let (best_y_offset, best_sad_avg, stationary_sad_avg) = search_best_offset(
+        &tpl,
+        curr_buf,
+        &sample_cols,
+        min_y_offset,
+        max_y_offset,
+        template_y,
+        last_dy,
+    );
 
-    // 在指定范围内查找 SAD 最小 of 偏移点
-    for y_offset in min_y_offset..=max_y_offset {
-        let mut sad = 0.0;
-        let mut count = 0.0;
-        for dy in 0..strip_h {
-            let ref_y = template_y + dy;
-            let curr_y = y_offset + dy;
-            for x in (x_start..x_end).step_by(step_x as usize) {
-                let p_ref = ref_img.get_pixel(x, ref_y)[0] as f64;
-                let p_curr = curr_img.get_pixel(x, curr_y)[0] as f64;
-                sad += (p_ref - p_curr).abs();
-                count += 1.0;
-            }
-        }
-        let original_sad = sad / count;
-        let mut penalized_sad = original_sad;
-        
-        // 软速度罚分 (Regularization)：拉近与上一帧速度的距离，防止在快速滚动与模糊行中误跳变到邻近周期行
-        if let Some(ldy) = last_dy {
-            let dy = y_offset as f64 - template_y as f64;
-            let penalty = 0.04 * (dy - ldy).abs();
-            penalized_sad += penalty;
-        }
+    // 静止判定 + 置信度估计 + 接受门控
+    let confidence = estimate_confidence(
+        ref_buf, curr_buf, &sample_cols, best_y_offset, min_y_offset, max_y_offset, template_y,
+    );
+    decide_match(best_y_offset, best_sad_avg, stationary_sad_avg, confidence, template_y)
+}
 
-        if penalized_sad < min_penalized_sad {
-            min_penalized_sad = penalized_sad;
-            best_original_sad = original_sad;
-            best_y_offset = y_offset;
-        }
-    }
-
-    // 对比静止锚点：如果当前帧在 dy = 0 处的对齐误差比搜索到的最佳值还要小（或者几乎一样小），
-    // 说明真实的位移其实是 0.0（静止状态），搜索窗口内的最小值只是周期性假匹配。
-    if avg_sad_0 < best_original_sad + 1.0 {
+/// 根据搜索结果做最终判定：静止 / 接受 / 拒绝。
+fn decide_match(
+    best_y_offset: u32,
+    best_sad_avg: f64,
+    stationary_sad_avg: f64,
+    confidence: f64,
+    template_y: u32,
+) -> Option<(f64, f64)> {
+    if stationary_sad_avg < STATIONARY_SAD || stationary_sad_avg < best_sad_avg + 1.0 {
         return Some((0.0, 1.0));
     }
-
-    // 估计置信度：评估最佳 SAD 与其他偏移处的平均 SAD 的差距比例
-    let mut sum_sad = 0.0;
-    let mut sample_count = 0.0;
-    // 稀疏采样以快速计算均值
-    for y_offset in (min_y_offset..=max_y_offset).step_by(10) {
-        let mut sad = 0.0;
-        let mut count = 0.0;
-        for dy in (0..strip_h).step_by(2) {
-            let ref_y = template_y + dy;
-            let curr_y = y_offset + dy;
-            for x in (x_start..x_end).step_by(step_x as usize * 2) {
-                let p_ref = ref_img.get_pixel(x, ref_y)[0] as f64;
-                let p_curr = curr_img.get_pixel(x, curr_y)[0] as f64;
-                sad += (p_ref - p_curr).abs();
-                count += 1.0;
-            }
-        }
-        sum_sad += sad / count;
-        sample_count += 1.0;
-    }
-    let mean_sad = sum_sad / sample_count;
-    let mut confidence = 0.0;
-    if mean_sad > 1e-5 {
-        confidence = 1.0 - (best_original_sad / mean_sad);
-    }
-
-    // 限制匹配质量：只接收对齐良好的对齐帧 (SAD < 7.5 且 confidence > 0.15)
-    // 2D 匹配由于极强的文字排布空间唯一性与软速度罚分保护，SAD < 7.5 即可确保在各种滚动状态下都十分精准
-    if best_original_sad < 7.5 && confidence > 0.15 {
+    if best_sad_avg < SAD_ACCEPT && confidence > MIN_CONFIDENCE {
         let dy = best_y_offset as f64 - template_y as f64;
         Some((dy, confidence))
     } else {
         None
     }
+}
+
+/// 提取模板条到连续 buffer（STRIP_H × n_cols）。
+fn extract_template(ref_buf: &GrayBuf, template_y: u32, sample_cols: &[usize]) -> Vec<u8> {
+    let mut tpl = Vec::with_capacity(STRIP_H as usize * sample_cols.len());
+    for dy in 0..STRIP_H {
+        let row = ref_buf.row((template_y + dy) as usize);
+        for &x in sample_cols {
+            tpl.push(row[x]);
+        }
+    }
+    tpl
+}
+
+/// 整数 SAD 主搜索，返回 (best_y_offset, best_sad_avg, stationary_sad_avg)。
+/// stationary_sad_avg = y_offset == template_y 那次迭代的 SAD 均值。
+fn search_best_offset(
+    tpl: &[u8],
+    curr: &GrayBuf,
+    sample_cols: &[usize],
+    min_y_offset: u32,
+    max_y_offset: u32,
+    template_y: u32,
+    last_dy: Option<f64>,
+) -> (u32, f64, f64) {
+    let strip_h = STRIP_H as usize;
+    let total = (strip_h * sample_cols.len()) as f64;
+
+    let mut best_y_offset = min_y_offset;
+    let mut min_penalized = f64::MAX;
+    let mut best_sad_avg = f64::MAX;
+    let mut stationary_sad_avg = f64::MAX;
+
+    for y_offset in min_y_offset..=max_y_offset {
+        let mut sad: u64 = 0;
+        let mut i = 0;
+        for dy in 0..strip_h {
+            let row = curr.row((y_offset as usize) + dy);
+            for &x in sample_cols {
+                let diff = (tpl[i] as i32 - row[x] as i32).unsigned_abs() as u64;
+                sad += diff;
+                i += 1;
+            }
+        }
+        let sad_avg = sad as f64 / total;
+
+        if y_offset == template_y {
+            stationary_sad_avg = sad_avg;
+        }
+
+        let mut penalized = sad_avg;
+        if let Some(ldy) = last_dy {
+            let dy = y_offset as f64 - template_y as f64;
+            penalized += SPEED_PENALTY * (dy - ldy).abs();
+        }
+        if penalized < min_penalized {
+            min_penalized = penalized;
+            best_sad_avg = sad_avg;
+            best_y_offset = y_offset;
+        }
+    }
+
+    (best_y_offset, best_sad_avg, stationary_sad_avg)
+}
+
+/// 稀疏采样估计置信度：1 - best_sad / mean_sad。
+fn estimate_confidence(
+    ref_buf: &GrayBuf,
+    curr_buf: &GrayBuf,
+    sample_cols: &[usize],
+    best_y_offset: u32,
+    min_y_offset: u32,
+    max_y_offset: u32,
+    template_y: u32,
+) -> f64 {
+    let sparse_cols: Vec<usize> = sample_cols.iter().step_by(2).copied().collect();
+    if sparse_cols.is_empty() {
+        return 0.0;
+    }
+
+    let mut sum_sad = 0.0f64;
+    let mut sample_count = 0.0f64;
+    for y_offset in (min_y_offset..=max_y_offset).step_by(10) {
+        sum_sad += sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, template_y, y_offset);
+        sample_count += 1.0;
+    }
+
+    if sample_count < 1.0 {
+        return 0.0;
+    }
+    let mean_sad = sum_sad / sample_count;
+    if mean_sad < 1e-5 {
+        return 0.0;
+    }
+
+    let best_sad_avg = sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, template_y, best_y_offset);
+    1.0 - (best_sad_avg / mean_sad)
+}
+
+/// 计算指定 y_offset 处的稀疏 SAD 均值（每隔 2 行 × 稀疏列）。
+fn sparse_sad_at_offset(
+    ref_buf: &GrayBuf,
+    curr_buf: &GrayBuf,
+    sparse_cols: &[usize],
+    template_y: u32,
+    y_offset: u32,
+) -> f64 {
+    let strip_h = STRIP_H as usize;
+    let mut sad: u64 = 0;
+    let mut count = 0u64;
+    for dy in (0..strip_h).step_by(2) {
+        let ref_row = ref_buf.row((template_y as usize) + dy);
+        let curr_row = curr_buf.row((y_offset as usize) + dy);
+        for &x in sparse_cols {
+            sad += (ref_row[x] as i32 - curr_row[x] as i32).unsigned_abs() as u64;
+            count += 1;
+        }
+    }
+    if count > 0 { sad as f64 / count as f64 } else { 0.0 }
 }
 
 fn rows_equal(a: &RgbaImage, b: &RgbaImage, ya: u32, yb: u32, w: u32) -> bool {
