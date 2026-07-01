@@ -285,9 +285,13 @@ impl NotepadView {
                                     .strong(),
                             );
                             ui.add_space(2.0);
-                            egui::ScrollArea::vertical().show(ui, |ui| {
-                                CommonMarkViewer::new().show(ui, &mut self.md_cache, &self.body);
-                            });
+                            // auto_shrink 默认 true：预览内容短时 ScrollArea 会缩到内容高度，
+                            // 与左列编辑器底部不对齐、下方留白。关掉，固定占满列高。
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    CommonMarkViewer::new().show(ui, &mut self.md_cache, &self.body);
+                                });
                         });
                     });
                 } else {
@@ -329,10 +333,14 @@ fn editor_pane(
 ) {
     ui.label(egui::RichText::new(label).small().color(crate::theme::MUTED).strong());
     ui.add_space(2.0);
-    let resp = ui.add(
-        egui::TextEdit::multiline(body)
-            .desired_width(f32::INFINITY)
-            .desired_rows(20),
+    // 编辑器撑满剩余垂直空间：desired_rows(N) 只是「期望行数」建议值，不会自动伸展到
+    // 可用高度，导致编辑区只占窗体约一半、下方一片留白。改用 add_sized 按 available_height
+    // 精确分配，编辑器与窗体同高。add_sized 在 panel content ui 内用 available_width/height
+    // 分配，不依赖 allocate_space(available_width)，故不撑宽 panel（宽度回归测试保障）。
+    let height = ui.available_height().max(80.0);
+    let resp = ui.add_sized(
+        egui::vec2(ui.available_width(), height),
+        egui::TextEdit::multiline(body).desired_width(f32::INFINITY),
     );
     if resp.changed() {
         *dirty = true;
