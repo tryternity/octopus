@@ -24,6 +24,38 @@ const SAMPLE_STEP_X: usize = 2;
 /// sticky 区域检测的最大高度（像素），顶部/底部各扫此高度。
 const STICKY_DETECT_MAX: u32 = 80;
 
+/// 连续 row-major 灰度 buffer，替代 image::GrayImage。
+/// 消除 get_pixel() 的坐标计算 + 边界检查开销，用整行切片直访。
+struct GrayBuf {
+    data: Vec<u8>,
+    width: usize,
+    height: usize,
+}
+
+impl GrayBuf {
+    /// 从 RGBA 图像转换灰度。公式必须与 image::imageops::grayscale 一致：
+    /// luma = (2126*R + 7152*G + 722*B) / 10000（整数除法，image 0.25 SRGB_LUMA）。
+    fn from_rgba(rgba: &RgbaImage) -> Self {
+        let width = rgba.width() as usize;
+        let height = rgba.height() as usize;
+        let mut data = Vec::with_capacity(width * height);
+        for px in rgba.pixels() {
+            let r = px[0] as u32;
+            let g = px[1] as u32;
+            let b = px[2] as u32;
+            let luma = (2126 * r + 7152 * g + 722 * b) / 10000;
+            data.push(luma as u8);
+        }
+        Self { data, width, height }
+    }
+
+    /// 整行切片直访，无边界检查。调用方需保证 y < height。
+    #[inline]
+    fn row(&self, y: usize) -> &[u8] {
+        &self.data[y * self.width..(y + 1) * self.width]
+    }
+}
+
 pub struct StitchConfig {
     /// 最小有效滚动位移（像素）。低于此值视为静止。
     pub min_scroll_px: f64,
@@ -522,5 +554,22 @@ mod tests {
         s.finalize(&last).unwrap();
         let h_after = s.height();
         assert!(h_after >= h_before, "finalize 不应缩减画布：{} -> {}", h_before, h_after);
+    }
+
+    #[test]
+    fn test_graybuf_matches_image_grayscale() {
+        // 验证 GrayBuf::from_rgba 与 image::imageops::grayscale 逐像素相等
+        let img = make_frame(TW, TH, 0);
+        let reference = image::imageops::grayscale(&img);
+        let buf = GrayBuf::from_rgba(&img);
+        assert_eq!(buf.width, TW as usize);
+        assert_eq!(buf.height, TH as usize);
+        for y in 0..TH as usize {
+            for x in 0..TW as usize {
+                let a = reference.get_pixel(x as u32, y as u32)[0];
+                let b = buf.row(y)[x];
+                assert_eq!(a, b, "灰度不一致 @ ({},{})", x, y);
+            }
+        }
     }
 }
