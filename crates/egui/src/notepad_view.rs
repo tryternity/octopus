@@ -339,6 +339,7 @@ impl NotepadView {
 
 /// 文本编辑区：标签 + 滚动 multiline TextEdit。changed 时置 dirty + last_edit
 /// （防抖 flush_if_dirty 依赖 last_edit，仅置 dirty 不置 last_edit 会导致永不落库）。
+#[allow(deprecated)] // drag_to_scroll 在 egui 0.34 deprecated，替代 API ScrollSource 未 re-export 到 crate root
 fn editor_pane(
     ui: &mut egui::Ui,
     body: &mut String,
@@ -357,6 +358,11 @@ fn editor_pane(
     let min_rows = ((ui.available_height() / line_h).floor() as usize).max(1);
     egui::ScrollArea::vertical()
         .auto_shrink([false; 2])
+        // drag_to_scroll(false) 关掉 content 拖动滚动：默认 true（ScrollSource::ALL），内容超出视口时
+        // egui 会在 content 渲染前用 Sense::DRAG interact 整个 content rect（egui 源码注释自承「会偷
+        // 内部 widget 输入」），与 TextEdit 抢 pointer → 内容较长的 markdown 编辑框点击无法获焦点、
+        // 无法编辑。滚轮 + 滚动条默认仍开，滚动照旧，焦点不受影响。
+        .drag_to_scroll(false)
         .show(ui, |ui| {
             let resp = ui.add(
                 egui::TextEdit::multiline(body)
@@ -416,5 +422,177 @@ fn truncate_label(s: &str, max_chars: usize) -> String {
         let mut t: String = chars[..max_chars].iter().collect();
         t.push('…');
         t
+    }
+}
+
+#[cfg(test)]
+mod editor_focus_tests {
+    use egui_commonmark::{CommonMarkCache, CommonMarkViewer};
+
+    /// 验证 drag_to_scroll 对 ScrollArea 内 TextEdit 焦点的影响（egui 焦点陷阱回归保护）。
+    /// 背景：ScrollArea 默认 drag_to_scroll=true，内容超出视口时 egui 用 Sense::DRAG
+    /// interact 整个 content rect（源码注释自承「会偷内部 widget 输入」），与 TextEdit 抢
+    /// pointer → 点击无法获焦点编辑。本测试 headless 复现：drag=false 点击获焦点；
+    /// drag=true 且内容超出时焦点被抢（为 None）。
+    fn base_input() -> egui::RawInput {
+        let mut i = egui::RawInput::default();
+        // 小屏 + 高 desired_rows：让 TextEdit 内容超出视口，触发 content_is_too_large
+        // （drag_to_scroll 仅在内容超出时才 interact content rect）。
+        i.screen_rect = Some(egui::Rect::from_min_size(
+            egui::pos2(0.0, 0.0),
+            egui::vec2(300.0, 200.0),
+        ));
+        i
+    }
+
+    #[allow(clippy::too_many_arguments, deprecated)]
+    fn render(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        drag_to_scroll: bool,
+        editor_id: egui::Id,
+        body: &mut String,
+    ) -> egui::Rect {
+        let mut rect = egui::Rect::NOTHING;
+        let _ = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                let sa = egui::ScrollArea::vertical()
+                    .auto_shrink([false; 2])
+                    .drag_to_scroll(drag_to_scroll); // true=默认(复现偷焦点), false=修复
+                sa.show(ui, |ui| {
+                    let resp = ui.add(
+                        egui::TextEdit::multiline(body)
+                            .id(editor_id)
+                            .desired_width(f32::INFINITY)
+                            .desired_rows(30), // 30 行 ≫ 视口 200px，确保超出
+                    );
+                    rect = resp.rect;
+                });
+            });
+        });
+        rect
+    }
+
+    /// 模拟一次点击：pointer move + down 一帧，up 下一帧（跨帧 click，贴近真实）。
+    fn click(ctx: &egui::Context, drag_to_scroll: bool, editor_id: egui::Id, pos: egui::Pos2) {
+        let mut body = String::from("内容");
+        let mut i1 = base_input();
+        i1.events.push(egui::Event::PointerMoved(pos));
+        i1.events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        });
+        let _ = render(ctx, i1, drag_to_scroll, editor_id, &mut body);
+        let mut i2 = base_input();
+        i2.events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        let _ = render(ctx, i2, drag_to_scroll, editor_id, &mut body);
+    }
+
+    #[test]
+    fn drag_to_scroll_off_lets_textedit_gain_focus() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::empty());
+        let editor_id = egui::Id::new("notepad_editor");
+        let mut body = String::from("内容");
+        let rect = render(&ctx, base_input(), false, editor_id, &mut body);
+        click(&ctx, false, editor_id, rect.center());
+        let focused = ctx.memory(|m| m.focused());
+        assert_eq!(
+            focused,
+            Some(editor_id),
+            "drag_to_scroll(false)：点击 TextEdit 应获焦点，实际 focused={focused:?}"
+        );
+    }
+
+    /// headless 复刻 markdown 分屏（horizontal + allocate_ui_with_layout 两栏 + 左 TextEdit），
+    /// 验证点击左栏 TextEdit 获焦点。用于排查「markdown 编辑框点不进去」是否由分屏嵌套导致。
+    fn render_split(
+        ctx: &egui::Context,
+        input: egui::RawInput,
+        body: &mut String,
+        editor_id: egui::Id,
+        md_cache: &mut CommonMarkCache,
+    ) -> egui::Rect {
+        let mut rect = egui::Rect::NOTHING;
+        let _ = ctx.run_ui(input, |ui| {
+            egui::CentralPanel::default().show_inside(ui, |ui| {
+                let gap = 8.0;
+                let h = ui.available_height();
+                let col_w = ((ui.available_width() - gap) / 2.0).max(120.0);
+                ui.horizontal(|ui| {
+                    ui.spacing_mut().item_spacing.x = gap;
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(col_w, h),
+                        egui::Layout::top_down(egui::Align::LEFT),
+                        |ui| {
+                            let resp = ui.add(
+                                egui::TextEdit::multiline(body)
+                                    .id(editor_id)
+                                    .desired_width(f32::INFINITY)
+                                    .desired_rows(5),
+                            );
+                            rect = resp.rect;
+                        },
+                    );
+                    ui.allocate_ui_with_layout(
+                        egui::vec2(col_w, h),
+                        egui::Layout::top_down(egui::Align::LEFT),
+                        |ui| {
+                            ui.label("预览");
+                            egui::ScrollArea::vertical()
+                                .auto_shrink([false; 2])
+                                .show(ui, |ui| {
+                                    // snapshot 避免 &body 与左栏 &mut body 借用冲突
+                                    let snap = body.clone();
+                                    CommonMarkViewer::new().show(ui, md_cache, &snap);
+                                });
+                        },
+                    );
+                });
+            });
+        });
+        rect
+    }
+
+    #[test]
+    fn split_pane_textedit_gains_focus() {
+        let ctx = egui::Context::default();
+        ctx.set_fonts(egui::FontDefinitions::empty());
+        let editor_id = egui::Id::new("notepad_editor");
+        let mut body = String::from("内容");
+        let mut cache = CommonMarkCache::default();
+        let rect = render_split(&ctx, base_input(), &mut body, editor_id, &mut cache);
+        // 模拟点击 TextEdit 中心：down 一帧 + up 下一帧
+        let pos = rect.center();
+        let mut i1 = base_input();
+        i1.events.push(egui::Event::PointerMoved(pos));
+        i1.events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: true,
+            modifiers: egui::Modifiers::default(),
+        });
+        let _ = render_split(&ctx, i1, &mut body, editor_id, &mut cache);
+        let mut i2 = base_input();
+        i2.events.push(egui::Event::PointerButton {
+            pos,
+            button: egui::PointerButton::Primary,
+            pressed: false,
+            modifiers: egui::Modifiers::default(),
+        });
+        let _ = render_split(&ctx, i2, &mut body, editor_id, &mut cache);
+        let focused = ctx.memory(|m| m.focused());
+        assert_eq!(
+            focused,
+            Some(editor_id),
+            "带 CommonMarkViewer 预览的分屏下点击 TextEdit 应获焦点，实际 focused={focused:?}；rect={rect:?}"
+        );
     }
 }
