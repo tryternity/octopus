@@ -257,8 +257,8 @@ pub async fn ocr_screenshot(
         // 写剪贴板
         handle.write_text(&text).map_err(|e| e.to_string())?;
 
-        // 新建文档
-        open_text_editor_with_content(&text);
+        // 新建笔记并打开记事本
+        open_notepad_with_content(&app_handle, &text);
     }
 
     let _ = app_handle.emit("clipboard://changed", ());
@@ -267,23 +267,24 @@ pub async fn ocr_screenshot(
     Ok(())
 }
 
-fn open_text_editor_with_content(text: &str) {
-    #[cfg(target_os = "macos")]
-    {
-        let escaped = text.replace('\\', "\\\\").replace('"', "\\\"");
-        let script = format!(
-            r#"tell application "TextEdit"
-    activate
-    make new document with properties {{text:"{}"}}
-end tell"#,
-            escaped
-        );
-        let _ = std::process::Command::new("osascript")
-            .args(["-e", &script])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .spawn();
-    }
+/// 创建 OCR 文本笔记并打开记事本窗口。
+fn open_notepad_with_content(app_handle: &tauri::AppHandle, text: &str) {
+    // 把纯文本转为简单 HTML（每行 <p> 包裹）
+    let html = text.lines()
+        .map(|line| format!("<p>{}</p>", line))
+        .collect::<Vec<_>>()
+        .join("\n");
+    let ah = app_handle.clone();
+    let html_owned = html;
+    tauri::async_runtime::spawn(async move {
+        let _ = crate::note_commands::create_note(
+            "Ocr".to_string(),
+            None,
+            html_owned,
+            ah.clone(),
+        ).await;
+        crate::notepad_window::open_notepad(ah);
+    });
 }
 
 /// 前端渲染完成后调用。所有窗口都 ready 后统一 show（同步显示，避免逐个弹出）。
