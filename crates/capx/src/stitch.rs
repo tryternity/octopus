@@ -1,6 +1,29 @@
 use anyhow::{Context, Result};
 use image::{GrayImage, GenericImage, RgbaImage};
 
+// ===== 拼接算法常量（原散落在 find_overlap_spatial_ext 与 process_frame 中的魔法数字）=====
+
+/// 模板条高度（像素）。从参考帧底部取此高度的条带做空间模板匹配。
+const STRIP_H: u32 = 80;
+/// 全量搜索范围（像素）。`process_frame` 中限制滚动位移搜索上界。
+const MAX_SCROLL: u32 = 220;
+/// 静止判定阈值。dy=0 处的平均像素差值小于此值视为内容未滚动。
+const STATIONARY_SAD: f64 = 2.0;
+/// 匹配接受阈值。最佳 SAD 必须小于此值才接受拼接。
+const SAD_ACCEPT: f64 = 7.5;
+/// 置信度下限。估计置信度必须大于此值才接受拼接。
+const MIN_CONFIDENCE: f64 = 0.15;
+/// 软速度罚分系数。拉近与上一帧速度的距离，防止周期跳变。
+const SPEED_PENALTY: f64 = 0.04;
+/// 排除最左侧的比例（通常有图标/树状图）。
+const X_START_RATIO: f64 = 0.10;
+/// 排除最右侧的比例截止点（通常有滚动条/时间戳），即保留 10%~80% 横向区间。
+const X_END_RATIO: f64 = 0.80;
+/// 列抽样步长（像素）。每隔此值采样一列，提供双倍空间特征解析度。
+const SAMPLE_STEP_X: usize = 2;
+/// sticky 区域检测的最大高度（像素），顶部/底部各扫此高度。
+const STICKY_DETECT_MAX: u32 = 80;
+
 pub struct StitchConfig {
     /// 最小有效滚动位移（像素）。低于此值视为静止。
     pub min_scroll_px: f64,
@@ -72,12 +95,10 @@ impl Stitcher {
 
         let curr_gray = image::imageops::grayscale(frame);
         
-        // 排除最左侧的 10% (通常有图标/树状图) 和最右侧的 20% (通常有滚动条/时间戳)
-        let x_start = (w as f64 * 0.10) as u32;
-        let x_end = (w as f64 * 0.80) as u32;
+        let x_start = (w as f64 * X_START_RATIO) as u32;
+        let x_end = (w as f64 * X_END_RATIO) as u32;
 
-        // 全量搜索范围 220 像素
-        let max_scroll = 220u32;
+        let max_scroll = MAX_SCROLL;
         let (dy, confidence) = match find_overlap_spatial_ext(
             &self.reference_gray,
             &curr_gray,
@@ -146,8 +167,8 @@ impl Stitcher {
 
         // 1. 尝试将最后一帧与参考帧对齐，补全因为丢帧/快速滑动积累的剩余未拼接区域
         let last_gray = image::imageops::grayscale(last_frame);
-        let x_start = (w as f64 * 0.10) as u32;
-        let x_end = (w as f64 * 0.80) as u32;
+        let x_start = (w as f64 * X_START_RATIO) as u32;
+        let x_end = (w as f64 * X_END_RATIO) as u32;
 
         // 允许最大对齐位移为有效高度的 90%
         let max_finalize_scroll = ((eff_bottom - eff_top) as f64 * 0.90) as u32;
@@ -195,12 +216,12 @@ impl Stitcher {
         let fh = frame.height();
         let cmp_h = ch.min(fh);
         let mut sticky_t = 0u32;
-        for y in 0..cmp_h.min(80) {
+        for y in 0..cmp_h.min(STICKY_DETECT_MAX) {
             if rows_equal(&self.canvas, frame, y, y, w) { sticky_t = y + 1; }
             else { break; }
         }
         let mut sticky_b = 0u32;
-        for y in 0..cmp_h.min(80) {
+        for y in 0..cmp_h.min(STICKY_DETECT_MAX) {
             let ya = cmp_h - 1 - y;
             if rows_equal(&self.canvas, frame, ya, ya, w) { sticky_b = y + 1; }
             else { break; }
