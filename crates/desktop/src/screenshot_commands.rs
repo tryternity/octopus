@@ -545,6 +545,74 @@ pub async fn cancel_screenshot(app_handle: tauri::AppHandle) -> Result<(), Strin
     Ok(())
 }
 
+/// 贴图到桌面：裁剪选区 → 创建原生浮动窗口显示截图
+#[tauri::command]
+pub async fn pin_screenshot(
+    label: String,
+    x: f64, y: f64, w: f64, h: f64,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let full = {
+        let mut all = ALL_CAPTURES.lock().unwrap();
+        all.iter()
+            .position(|(l, _)| *l == label)
+            .map(|i| all.remove(i).1)
+    }
+    .ok_or("无截图数据")?;
+
+    ALL_CAPTURES.lock().unwrap().clear();
+    PENDING_IMAGES.lock().unwrap().clear();
+
+    let sel_win = app_handle
+        .get_webview_window(&label)
+        .ok_or("截图窗口不存在")?;
+
+    #[cfg(target_os = "macos")]
+    {
+        let scale = sel_win.scale_factor().unwrap_or(1.0) as f64;
+
+        let fake_full = octopus_capx::capture::ScreenCapture {
+            rgba_bytes: full.rgba_bytes.clone(),
+            width: full.width,
+            height: full.height,
+            monitor_x: 0,
+            monitor_y: 0,
+        };
+        let png_bytes = octopus_capx::capture::crop_region(
+            &fake_full,
+            (x * scale) as u32,
+            (y * scale) as u32,
+            (w * scale) as u32,
+            (h * scale) as u32,
+        )
+        .map_err(|e| format!("裁剪失败: {}", e))?;
+
+        let (pin_x, pin_y) = if let Some((cx, cy, _cw, ch)) = get_window_cocoa_frame(&sel_win) {
+            (cx + x, cy + ch - y - h)
+        } else {
+            (x, y)
+        };
+
+        let (tx, rx) = std::sync::mpsc::channel();
+        let _ = sel_win.run_on_main_thread(move || {
+            <crate::pin_window::MacPinWindow as crate::pin_window::PinWindow>::create(
+                &png_bytes, pin_x, pin_y, w, h,
+            );
+            let _ = tx.send(());
+        });
+        let _ = rx.recv_timeout(std::time::Duration::from_secs(2));
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        log::warn!("贴图功能仅支持 macOS");
+        let _ = (x, y, w, h, full);
+    }
+
+    close_all_screenshot_windows(&app_handle);
+    Ok(())
+}
+
 fn close_all_screenshot_windows(app_handle: &tauri::AppHandle) {
     let labels: Vec<String> = app_handle
         .webview_windows()
