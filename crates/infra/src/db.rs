@@ -107,11 +107,13 @@ fn db_path() -> std::path::PathBuf {
 /// - synchronous=NORMAL：WAL 下安全且更快。
 fn apply_wal_pragmas(conn: &Connection) {
     // journal_mode 返回新值，execute_batch 不捕获返回行也能生效。
-    let _ = conn.execute_batch(
+    if let Err(e) = conn.execute_batch(
         "PRAGMA journal_mode=WAL;\
          PRAGMA busy_timeout=5000;\
          PRAGMA synchronous=NORMAL;",
-    );
+    ) {
+        log::warn!("apply_wal_pragmas 失败: {e}; 多进程并发可能受影响（database is locked 风险）");
+    }
 }
 
 /// 幂等初始化：打开/创建 DB，user_version=0 时执行 INIT_SQL 建表+seed。
