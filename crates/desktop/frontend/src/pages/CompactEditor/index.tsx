@@ -62,10 +62,17 @@ function CompactEditor() {
 
   const charCount = [...text].length;
 
-  const doSave = useCallback(() => {
+  const doSave = useCallback(async () => {
     if (!requestIdRef.current) return;
     savedRef.current = true;
-    emit("compact-editor://result", { requestId: requestIdRef.current, text });
+    // await emit：跨窗口事件先发到后端再关窗（防 close 先于 emit 完成的竞态）；
+    // catch 兜底——若 compact_editor_window 未被 capability 授权 allow-emit，emit 会 reject，
+    // 显式打日志而非静默吞（曾因 ACL 缺失导致保存不回传且无报错，极难定位）。
+    try {
+      await emit("compact-editor://result", { requestId: requestIdRef.current, text });
+    } catch (e) {
+      console.error("compact-editor emit result 失败（检查 capability allow-emit）：", e);
+    }
     invoke("close_compact_editor");
   }, [text]);
 

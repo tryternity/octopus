@@ -6,7 +6,7 @@
 
 ## 0. 概述
 
-为 octopus 新增一个「内容收集箱」式的记事本：ASR / OCR / 剪贴板的识别结果可一键存入记事本做整理，并在记事本内继续编辑。形态为独立窗口（左侧笔记列表 + 右侧富文本编辑器）。
+为 octopus 新增一个「内容收集箱」式的记事本：ASR / OCR / 转译记录的识别结果可一键存入记事本做整理，并在记事本内继续编辑。形态为独立窗口（左侧笔记列表 + 右侧富文本编辑器）。
 
 - **编辑格式**：富文本为内部模型（所见即所得），Markdown / 纯文本作为序列化与导入导出格式——一个引擎三种格式互通。
 - **存入语义**：每次「存入记事本」= 新建一条笔记，自动记录来源（语音 / OCR / 剪贴板）与时间戳，关联原记录 id，来源徽标可点击回溯。
@@ -211,14 +211,11 @@ pub fn read_import(path: &Path) -> Result<String>;
 /// 语音结果 → 新建笔记：取转写文本 → <p> 包裹 → create_note(Asr, Some(transcription_id))
 #[tauri::command] fn save_transcription_to_note(transcription_id: i64) -> Result<i64, String>;
 
-/// 剪贴板条目 → 新建笔记：文本转 <p>；图片转 <img src="note-img:<hash>">（复用 image_data）
-#[tauri::command] fn save_clipboard_to_note(item_id: i64) -> Result<i64, String>;
-
 /// OCR 结果 → 新建笔记：text → <p> 包裹 → create_note(Ocr, None)
 #[tauri::command] fn save_ocr_to_note(text: String) -> Result<i64, String>;
 ```
 
-`save_transcription_to_note` / `save_clipboard_to_note` 内部查 `transcriptions` / `clipboard_history` 拿内容；查不到对应记录时返回错误（不静默建空笔记）。成功后同样 `emit("notepad://changed")`。
+`save_transcription_to_note` 内部查 `transcriptions` 拿内容；查不到对应记录时返回错误（不静默建空笔记）。成功后 `emit("notepad://changed")`。（`save_clipboard_to_note` 已于 2026-07-01 移除——剪贴板条目不再存入记事本。）
 
 ### 4.2 溯源回溯
 
@@ -241,15 +238,14 @@ pub fn read_import(path: &Path) -> Result<String>;
 
 ### 5.3 各识别结果「存入记事本」入口
 
-四处加 lucide `NotebookPen` 图标按钮，点击调对应 §4.1 command：
+lucide `NotebookPen` 图标按钮，点击调对应 §4.1 command：
 
 | 位置 | 调用 |
 |---|---|
-| `Result/index.tsx` 结果窗工具栏 | `save_transcription_to_note(transcription_id)` |
-| `Clipboard/ClipboardItem.tsx` 剪贴板浮窗条目 | `save_clipboard_to_note(item_id)` |
 | `Settings/HistoryPanel.tsx` 识别记录行操作 | `save_transcription_to_note(...)` |
-| `Settings/ClipboardPanel.tsx` 剪贴板管理页行操作 | `save_clipboard_to_note(...)` |
 | OCR 流程（OCR 后文本） | `save_ocr_to_note(text)` |
+
+> **已移除入口**（2026-07-01）：`Result/index.tsx` 结果窗工具栏（长篇模式原地编辑替代）、`Clipboard/ClipboardItem.tsx` 剪贴板浮窗条目、`Settings/ClipboardPanel.tsx` 剪贴板管理页行操作的「存入记事本」按钮均已移除——后端 `save_clipboard_to_note` 命令 + `saveClipboardToNote` helper 一并删除。
 
 存入成功 toast 提示「已存入记事本」（不强制弹出窗口，避免打断当前流程）。
 
@@ -345,7 +341,7 @@ pub fn read_import(path: &Path) -> Result<String>;
 - export：文件读写 + 路径安全（stem 含特殊字符转义）
 
 **后端 desktop note_commands**（集成）：
-- `save_transcription_to_note` / `save_clipboard_to_note` / `save_ocr_to_note` → 笔记存在 + `source`/`source_ref_id`/`content_html` 正确；原记录不存在时报错
+- `save_transcription_to_note` / `save_ocr_to_note` → 笔记存在 + `source`/`source_ref_id`/`content_html` 正确；原记录不存在时报错
 
 **前端**（组件 + 序列化）：
 - TipTap 渲染 content_html + 反序列化一致

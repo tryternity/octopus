@@ -6,7 +6,7 @@
 > 关联：`docs/superpowers/specs/2026-06-30-notepad-design.md`（完整版记事本，本设计与之并列、不替代）
 
 > **2026-06-30 设计修订（语音 Result 改为原地双模式）：** 原 §3.5① 让语音 Result「展开编辑」弹独立精简编辑器窗——**取消**。
-> 语音 Result 改为**编辑框尺寸双模式**（精简 520×116 / 长篇 720×480）+ 工具栏「放大/缩小」开关切换，长篇模式可拖拽调整且记忆尺寸。Result **不再调用** `openCompactEditor`。
+> 语音 Result 改为**编辑框尺寸双模式**（精简 520×116 小条 / 长篇 720×480 撑满）+ 工具栏「放大/缩小」开关切换。窗口物理固定 720×480（setSize 在透明无边框悬浮窗被 NSWindow 拒绝，改 CSS 伪装切容器尺寸 + 透明区点击穿透）。Result **不再调用** `openCompactEditor`。
 > 精简编辑器（独立窗）**仅保留给 OCR 与剪贴板文本**。详见 §3.5① 重写。
 
 ## 1. 背景与目标
@@ -112,29 +112,27 @@ pub fn close_compact_editor(app_handle: AppHandle);
 
 ### 3.5 三处集成
 
-**① 语音 Result（`pages/Result/index.tsx`）—— 编辑框尺寸双模式（原地展开，不弹独立窗）**
+**① 语音 Result（`pages/Result/index.tsx`）—— 编辑框尺寸双模式（CSS 伪装，不弹独立窗）**
 
-Result 窗口（`result_window`，`resizable(true)` / `decorations(false)` / `transparent` / `always_on_top`，默认 **520×116** 矮悬浮条）支持两种尺寸模式，由工具栏开关切换，**独立于编辑态**：
+物理窗口固定 **720×480**（`result_window`，`resizable(true)` / `decorations(false)` / `transparent` / `always_on_top`，创建即定死尺寸），前端按模式用 CSS 切「可见容器」尺寸，**全程不调 setSize**——透明无边框悬浮窗上 `setSize`/`setFrame` 被 NSWindow 拒绝（min/max 放宽到 [100,4000]、720×480 在区间内仍读回旧值，实锤），故改 CSS 伪装 + 透明区点击穿透：
 
-| 维度 | 精简版（默认） | 长篇版 |
+| 维度 | 精简态（默认） | 长篇态 |
 |---|---|---|
-| 窗口尺寸 | 520×116（固定） | 默认 720×480，**用户可拖拽调整** |
-| 文本区 | `max-h-[63px]` | 撑满剩余空间（`h-full`，跟随窗口高度） |
-| 窗口 resizable | `true`（全程，`setSize` 需它） | `true`（同左） |
-| 可拖性 | 锁死（`setMaxSize=520×116`，拖不大） | 解锁（`setMaxSize=4000` 后可拖调大小） |
-| 尺寸记忆 | 固定 | 拖拽后存 localStorage，下次切长篇恢复 |
+| 物理窗口 | 720×480（固定） | 720×480（同左） |
+| 可见容器（CSS） | 顶部居中 520×116 小条 | 撑满 720×480 |
+| 文本区 | `max-h-[63px]` | `h-full` 撑满 |
+| 透明区 | 小条下方透明（`body{background:transparent}`） | 无 |
+| 点击穿透 | 透明区穿透到后方应用 | 整窗可交互 |
 
-- 工具栏「放大/缩小」开关按钮（替换原「展开编辑」按钮）：
-  - 精简态显示「放大」图标（复用 `"expand-edit"`，四角向外）→ 点击切长篇。
-  - 长篇态显示「缩小」图标（`SvgIcon` 新增 `"minimize"` + `public/icons/minimize.svg`，四角向内）→ 点击切精简。
-- 切换逻辑（`toggleExpand`）：先同步 `expandedRef.current = next`（防 `onResized` 闭包读到旧值污染记忆），`setExpanded(next)`，再用 `setMaxSize` + `setSize` 切换（窗口全程 `resizable(true)`，**不调 `setResizable`**）：
-  - 切长篇：`setMaxSize(4000)` 解除上限 + `setSize(记忆尺寸或默认 720×480)`。
-  - 切精简：`setSize(520×116)` + `setMaxSize(520×116)` 锁回。
-- **尺寸记忆**：长篇模式下监听 `win.onResized` → 取 `outerSize()/scaleFactor()` 逻辑尺寸 → 存 localStorage（key `result-expanded-size`，值 `"w,h"`）+ 更新 `expandedSizeRef`。精简模式（`expandedRef=false`）不存。`onResized` 在切精简的 `setSize` 时也会触发，但此时 ref 已 false → 不污染长篇记忆。
-- 编辑**完全不变**：仍走现有 `toggleEdit`（`contentEditable` + `enter_edit_mode`/`commit_edit`/`cancel_edit`/edit buffer），长篇模式只是把编辑区放大，零新编辑逻辑。两模式下均可编辑。
+- 外层透明包裹 `relative w-full h-full`，内层 `#result-container` 绝对定位 `top-0 left-1/2 -translate-x-1/2`，className 按 `expanded` 切 `w-[720px] h-[480px]`（长篇）或 `w-[520px] h-[116px]`（精简），加 `transition-all duration-200`；`visible` 控 `opacity-0/100` 显隐。
+- 工具栏「放大/缩小」开关按钮：精简态「放大」（`expand-edit` 四角向外）→ 长篇；长篇态「缩小」（`minimize` 四角向内）→ 精简。
+- `toggleExpand`（纯 CSS，无 setSize）：`setExpanded(next)` + `invoke("set_result_click_through", { expanded: next })`。
+- **点击穿透（必须 Rust 轮询）**：精简态小条下方透明区要穿透到后方应用。前端 `setIgnoreCursorEvents(true)` 不可行——一旦 ignore，NSWindow 零鼠标事件、连 tracking area 都禁，前端检测不到光标重新进入小条 → 重入失效。故 `result_window.rs::start_click_through_poller` 后台线程（~33ms）读全局鼠标 `CGEvent.location()`，按窗口 `outer_position()`/`scale_factor` 算小条屏幕矩形，光标在矩形外 → `setIgnoresMouseEvents(true)` 穿透、在内 → `false` 可交互；直调 NSWindow `setIgnoresMouseEvents`（比 Tauri `set_ignore_cursor_events` 封装可靠，复用 `screenshot_commands` 同款）。切长篇时前端调 `set_result_click_through(expanded=true)` 立即关穿透。
+- 编辑**完全不变**：仍走现有 `toggleEdit`（`contentEditable` + `enter_edit_mode`/`commit_edit`/`cancel_edit`），两种模式下均可编辑，零新编辑逻辑。
 - **移除**原 `openExpandEdit` / `applyResultText` 与 `openCompactEditor` import——Result 不再依赖精简编辑器窗口。
-- Rust 侧 `result_window.rs` 创建改 `.resizable(true)`（`setSize` 需它——Tauri 文档称 `resizable(false)` 时 `setSize` 被忽略），可拖性全交前端 `setMaxSize` 控制（不依赖运行时 `setResizable` 翻转）。窗口位置仍由现有 `window_position` 机制保存恢复；尺寸记忆独立用 localStorage（不与位置持久化耦合）。
-- 边界：长篇模式窗口向下长高，若原位置近屏幕底部可能部分超出——MVP 不重算位置（用户可拖动窗口），e2e 观察。
+- **移除**「存入记事本」工具按钮 + `saveToNote` 回调——长篇模式已可直接原地大窗口编辑，无需导入记事本（后端 `save_transcription_to_note`/`current_transcription_id` 命令保留作基础设施）。
+- Rust 侧 `result_window.rs` 创建 `.resizable(true)` + 固定 `.inner_size(720,480)`；移除 `set_result_window_mode` 命令，新增 `set_result_click_through`。窗口位置仍由 `window_position` 机制保存恢复。
+- 边界：长篇态向下展开占满 720×480，若原位置近屏幕底部可能部分超出——MVP 不重算位置（用户可拖动窗口），e2e 观察。
 
 **② OCR（`clipboard_commands.rs::ocr_image` + `ClipboardItem.tsx::handleOcr`）**
 - 后端：`ocr_image` **删除** `open_text_editor_with_content(&text)` 调用（不再打开系统 TextEdit）；`open_text_editor_with_content` 函数本身若仅此处引用则一并删除。`ocr_image` 仍返回 `text`（前端拿到）。
@@ -198,7 +196,7 @@ CompactEditor mount  ──get_pending_compact_edit──► PENDING.take()
 - 保存/取消 emit 事件（mock `invoke`/`emit`，断言 payload `{requestId, text}`）。
 
 **e2e（手动，跨窗口+IME，单测覆盖不到）：**
-1. Result（双模式）：识别中文 → 点「放大」切长篇 → 窗口变 720×480、编辑区撑满、可拖拽调大小 → 编辑 → 保存 → 文本落库 → 点「缩小」切回 520×116；再切长篇恢复上次拖拽尺寸（localStorage 记忆）。
+1. Result（双模式）：识别中文 → 点「放大」切长篇 → 可见容器撑满 720×480、编辑区撑满 → 编辑 → 保存 → 文本落库 → 点「缩小」切回 520×116 小条；精简态小条下方透明区可点击穿透到后方应用。
 2. OCR：图片识别 → 自动开编辑器 → 改文本 → 保存 → 确认剪贴板条目内容 + 系统剪贴板均更新。
 3. 剪贴板文本条目：点「编辑」→ 改 → 保存 → 确认列表与系统剪贴板更新。
 4. 边界：取消 / X 关窗不应用文本；并发开窗不串扰。

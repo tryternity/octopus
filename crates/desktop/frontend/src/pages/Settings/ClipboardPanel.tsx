@@ -5,8 +5,8 @@ import { useTauriEvent } from "@/hooks/useTauriEvent";
 import type { ClipboardItem } from "@/types/clipboard";
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
-  LayoutGrid, Search, Trash2, Copy, Download, FolderOpen,
-  ScanText, Loader2, Check, NotebookPen,
+  LayoutGrid, Search, Trash2, Download, FolderOpen,
+  ScanText, Loader2, Check,
 } from "lucide-react";
 import SaveImagePopover from "../Clipboard/SaveImagePopover";
 
@@ -234,9 +234,14 @@ function ClipboardRow({
   const [ocrDone, setOcrDone] = useState(false);
   const [thumbSrc, setThumbSrc] = useState<string | null>(null);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [copied, setCopied] = useState(false);
+  const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
-    return () => { if (deleteTimer.current) clearTimeout(deleteTimer.current); };
+    return () => {
+      if (deleteTimer.current) clearTimeout(deleteTimer.current);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+    };
   }, []);
 
   useEffect(() => {
@@ -251,11 +256,14 @@ function ClipboardRow({
     return () => { cancelled = true; };
   }, [item.id, item.item_type]);
 
+  // 单击左侧类型图标 → 复制（触效：放大回弹 + 闪绿 + 「已复制」气泡 1.5s；失败走 page toast）。
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
       await invoke("copy_clipboard_item", { id: item.id });
-      showToast("已复制");
+      setCopied(true);
+      if (copyTimer.current) clearTimeout(copyTimer.current);
+      copyTimer.current = setTimeout(() => setCopied(false), 1500);
     } catch (e) {
       showToast("复制失败：" + e);
     }
@@ -344,10 +352,24 @@ function ClipboardRow({
         onChange={(e) => { e.stopPropagation(); onToggleSelect(); }}
         onClick={(e) => e.stopPropagation()}
       />
-      <Icon className={cn(
-        "w-3.5 h-3.5 mt-1 flex-shrink-0",
-        isVoice ? "text-amber-600" : "text-stone-400",
-      )} />
+      <button
+        type="button"
+        onClick={handleCopy}
+        onDoubleClick={(e) => e.stopPropagation()}
+        title="单击复制"
+        className="relative flex-shrink-0 mt-1 -m-0.5 cursor-pointer rounded p-0.5 transition-transform duration-150 hover:scale-110 active:scale-90"
+      >
+        <Icon className={cn(
+          "w-3.5 h-3.5 transition-all duration-150",
+          isVoice ? "text-amber-600" : "text-stone-400 group-hover:text-stone-600",
+          copied && "scale-125 text-emerald-500",
+        )} />
+        {copied && (
+          <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1 -translate-y-1/2 whitespace-nowrap rounded bg-emerald-500 px-1.5 py-0.5 text-[10px] font-medium text-white shadow">
+            已复制
+          </span>
+        )}
+      </button>
       <div className="flex-1 min-w-0">
         {item.item_type === "image" && item.image_meta ? (
           <div className="flex items-center gap-1.5">
@@ -373,28 +395,8 @@ function ClipboardRow({
         <span className="ml-2 text-[10px] text-stone-300">{item.created_at}</span>
       </div>
 
-      {/* 右侧操作栏：复制 + 收藏 + 保存图片/打开文件 + 删除 */}
+      {/* 右侧操作栏：收藏 + 保存图片/打开文件 + 删除（复制已移至左侧类型图标单击） */}
       <div className="flex-shrink-0 flex items-center gap-0.5">
-        <button
-          className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-          onClick={handleCopy}
-          title="复制"
-        >
-          <Copy className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
-        </button>
-        <button
-          className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-          onClick={async (e) => {
-            e.stopPropagation();
-            try {
-              await invoke("save_clipboard_to_note", { itemId: item.id });
-              showToast("已存入记事本");
-            } catch (err) { console.error(err); }
-          }}
-          title="存入记事本"
-        >
-          <NotebookPen className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
-        </button>
         <button
           className={cn(
             "p-1 rounded transition-opacity hover:scale-110",
