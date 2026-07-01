@@ -265,34 +265,49 @@ impl NotepadView {
                 toolbar(ui, &mut self.body, &mut self.body_dirty, &mut self.last_edit);
 
                 if self.show_preview {
-                    // 编辑 / 预览分屏：ui.columns 等宽两列（egui 标准等宽分栏 API，内部 allocate，
-                    // 不依赖手算 avail —— 手算的 allocate_ui_with_layout 在非交互帧尺寸会漂移）
-                    ui.columns(2, |cols| {
-                        cols[0].vertical(|ui| {
-                            editor_pane(
-                                ui,
-                                &mut self.body,
-                                &mut self.body_dirty,
-                                &mut self.last_edit,
-                                "Markdown 源码",
-                            );
-                        });
-                        cols[1].vertical(|ui| {
-                            ui.label(
-                                egui::RichText::new("预览")
-                                    .small()
-                                    .color(crate::theme::MUTED)
-                                    .strong(),
-                            );
-                            ui.add_space(2.0);
-                            // auto_shrink 默认 true：预览内容短时 ScrollArea 会缩到内容高度，
-                            // 与左列编辑器底部不对齐、下方留白。关掉，固定占满列高。
-                            egui::ScrollArea::vertical()
-                                .auto_shrink([false; 2])
-                                .show(ui, |ui| {
-                                    CommonMarkViewer::new().show(ui, &mut self.md_cache, &self.body);
-                                });
-                        });
+                    // 编辑 / 预览分屏：手动并排两栏（horizontal + allocate_ui_with_layout）。
+                    // 不用 ui.columns——egui 0.34 的 columns 是 legacy，其子 ui（new_child 未传
+                    // id_salt）id 由 rect 推断、跨帧不稳，TextEdit 焦点/光标 memory（按 id 持久化）
+                    // 丢失，实测 markdown 编辑框点不进去无法编辑。手动分配两块等宽 top_down 区域，
+                    // rect 稳定 → 焦点正常。
+                    let gap = 8.0;
+                    let h = ui.available_height();
+                    let col_w = ((ui.available_width() - gap) / 2.0).max(120.0);
+                    ui.horizontal(|ui| {
+                        ui.spacing_mut().item_spacing.x = gap;
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(col_w, h),
+                            egui::Layout::top_down(egui::Align::LEFT),
+                            |ui| {
+                                editor_pane(
+                                    ui,
+                                    &mut self.body,
+                                    &mut self.body_dirty,
+                                    &mut self.last_edit,
+                                    "Markdown 源码",
+                                );
+                            },
+                        );
+                        ui.allocate_ui_with_layout(
+                            egui::vec2(col_w, h),
+                            egui::Layout::top_down(egui::Align::LEFT),
+                            |ui| {
+                                ui.label(
+                                    egui::RichText::new("预览")
+                                        .small()
+                                        .color(crate::theme::MUTED)
+                                        .strong(),
+                                );
+                                ui.add_space(2.0);
+                                // auto_shrink 默认 true：预览内容短时 ScrollArea 会缩到内容高度，
+                                // 与左列编辑器底部不对齐、下方留白。关掉，固定占满列高。
+                                egui::ScrollArea::vertical()
+                                    .auto_shrink([false; 2])
+                                    .show(ui, |ui| {
+                                        CommonMarkViewer::new().show(ui, &mut self.md_cache, &self.body);
+                                    });
+                            },
+                        );
                     });
                 } else {
                     // 预览收起：编辑器单列占满
@@ -345,6 +360,9 @@ fn editor_pane(
         .show(ui, |ui| {
             let resp = ui.add(
                 egui::TextEdit::multiline(body)
+                    // 显式固定 id：避免子 ui id 不稳导致焦点/光标 memory 跨帧丢失（尤其
+                    // markdown 分屏嵌套布局下）。text/markdown 互斥显示，共用同 id 安全。
+                    .id(egui::Id::new("notepad_editor"))
                     .desired_width(f32::INFINITY)
                     .desired_rows(min_rows),
             );
