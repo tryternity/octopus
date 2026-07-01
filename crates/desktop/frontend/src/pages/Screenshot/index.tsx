@@ -851,7 +851,6 @@ export default function Screenshot() {
   }
 
   // 工具栏位置：默认选区下方居中，下方空间不够时放上方居中
-  const toolbarWidth = 420; // 工具栏估算宽度（11 个按钮 + 间距 + 操作按钮）
   const belowSpace = sel ? window.innerHeight - (sel.y + sel.h + 8) : 0;
   const toolbarBelow = sel ? belowSpace >= 44 : true;
   const toolbarY = sel
@@ -860,10 +859,8 @@ export default function Screenshot() {
         window.innerHeight - 44
       ))
     : 0;
-  const toolbarX = sel ? Math.max(0, Math.min(
-    sel.x + sel.w / 2 - toolbarWidth / 2,
-    window.innerWidth - toolbarWidth - 8
-  )) : 0;
+  // 用选区中心 + translateX(-50%) 实现真正居中，不受工具栏实际宽度影响
+  const toolbarCenterX = sel ? sel.x + sel.w / 2 : 0;
   const popoverY = toolbarBelow ? toolbarY + 44 : Math.max(0, toolbarY - 100);
 
   if (!ready) {
@@ -970,8 +967,9 @@ export default function Screenshot() {
         <div
           style={{
             position: "fixed",
-            left: toolbarX,
+            left: toolbarCenterX,
             top: toolbarY,
+            transform: "translateX(-50%)",
             display: "flex",
             gap: 4,
             padding: "6px 8px",
@@ -1040,7 +1038,7 @@ export default function Screenshot() {
       {/* 工具属性浮窗 */}
       {sel && mode === "selected" && tool !== "none" && (
         <ToolPropsPopover
-          x={toolbarX}
+          x={toolbarCenterX}
           y={popoverY}
           color={toolColor}
           width={toolWidth}
