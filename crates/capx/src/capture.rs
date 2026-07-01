@@ -92,6 +92,18 @@ pub fn crop_region(
     Ok(png_bytes)
 }
 
+/// BGRA→RGBA 字节重排（平台无关纯函数，便于测试）。
+/// 输入：已去 bpr padding 的紧凑 BGRA 行数据。
+#[cfg(target_os = "macos")]
+fn bgra_to_rgba(raw: &[u8], rgba: &mut Vec<u8>) {
+    for px in raw.chunks_exact(4) {
+        rgba.push(px[2]); // R
+        rgba.push(px[1]); // G
+        rgba.push(px[0]); // B
+        rgba.push(px[3]); // A
+    }
+}
+
 /// macOS CGImage 解析 + BGRA→RGBA 转换的公共 helper。
 /// 返回 (rgba_bytes, width, height)。三处捕获函数共用，消除重复样板。
 #[cfg(target_os = "macos")]
@@ -115,12 +127,7 @@ fn cgimage_to_rgba(
     for y in 0..height as usize {
         let row_start = y * bpr;
         let row = &raw[row_start..row_start + width as usize * 4];
-        for px in row.chunks_exact(4) {
-            rgba.push(px[2]); // R
-            rgba.push(px[1]); // G
-            rgba.push(px[0]); // B
-            rgba.push(px[3]); // A
-        }
+        bgra_to_rgba(row, &mut rgba);
     }
 
     Ok((rgba, width, height))
@@ -324,4 +331,33 @@ pub fn capture_window_region(
     let (rgba, width, height) = cgimage_to_rgba(&cg_image)?;
 
     Ok(RgbaBytes { rgba_bytes: rgba, width, height })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_bgra_to_rgba_basic() {
+        // BGRA: B=10, G=20, R=30, A=255 → RGBA: 30,20,10,255
+        let bgra = [10u8, 20, 30, 255];
+        let mut rgba = Vec::new();
+        bgra_to_rgba(&bgra, &mut rgba);
+        assert_eq!(rgba, vec![30, 20, 10, 255]);
+    }
+
+    #[test]
+    fn test_bgra_to_rgba_multiple_pixels() {
+        let bgra = [1u8, 2, 3, 4, 5, 6, 7, 8];
+        let mut rgba = Vec::new();
+        bgra_to_rgba(&bgra, &mut rgba);
+        assert_eq!(rgba, vec![3, 2, 1, 4, 7, 6, 5, 8]);
+    }
+
+    #[test]
+    fn test_bgra_to_rgba_empty() {
+        let mut rgba = Vec::new();
+        bgra_to_rgba(&[], &mut rgba);
+        assert!(rgba.is_empty());
+    }
 }
