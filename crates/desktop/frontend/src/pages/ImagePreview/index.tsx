@@ -298,6 +298,8 @@ export default function ImagePreview() {
 
   const dispW = natW * zoom;
   const dispH = natH * zoom;
+  // 图像格式：从 dataUrl 前缀解析（data:image/png;base64,… → PNG），底部 EXIF 条显示
+  const fmt = dataUrl ? (dataUrl.match(/^data:image\/([a-zA-Z0-9.+-]+)/)?.[1] ?? "").toUpperCase() : "";
 
   // 文字草稿 textarea 显示位置（相对 canvas wrapper：自然 ×zoom）
   const draftBox = textDraft
@@ -305,7 +307,8 @@ export default function ImagePreview() {
     : null;
 
   return (
-    <div className="flex h-screen flex-col bg-neutral-900 select-none">
+    // 灯箱暗场：深 stone 让图片本身发光；工具卡与底部 EXIF 条均 fixed 浮于其上
+    <div className="relative h-screen overflow-hidden select-none" style={{ background: "#1c1917" }}>
       <Toolbar
         tool={tool} setTool={setTool}
         toolColor={toolColor} setToolColor={setToolColorSync}
@@ -317,15 +320,27 @@ export default function ImagePreview() {
         ocrCopied={ocrCopied}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
       />
-      {/* 滚动容器：图片大于视口时自动出上下/左右滚动条；小于则居中 */}
-      <div ref={scrollContainerRef} className="relative flex-1 overflow-auto">
-        <div className="flex min-h-full min-w-full items-center justify-center p-4">
+      {/* 滚动容器：全屏画布，图片大于视口自动出滚动条；小于则居中 */}
+      <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar">
+        <div className="flex min-h-full min-w-full items-center justify-center p-12">
           {/* canvas wrapper：relative 让 textarea 相对 canvas 定位、随滚动移动 */}
           <div className="relative" style={{ width: dispW || undefined, height: dispH || undefined }}>
             <canvas
               ref={canvasRef}
               className="block"
-              style={{ width: dispW, height: dispH, cursor: tool === "none" ? (panning ? "grabbing" : "grab") : "crosshair" }}
+              style={{
+                width: dispW, height: dispH,
+                // 棋盘格底：透明 PNG 的透明区可见，专业看图工具信号（图片不透明区自然盖住）
+                backgroundColor: "#292524",
+                backgroundImage:
+                  "linear-gradient(45deg, #1c1917 25%, transparent 25%)," +
+                  "linear-gradient(-45deg, #1c1917 25%, transparent 25%)," +
+                  "linear-gradient(45deg, transparent 75%, #1c1917 75%)," +
+                  "linear-gradient(-45deg, transparent 75%, #1c1917 75%)",
+                backgroundSize: "20px 20px",
+                backgroundPosition: "0 0, 0 10px, 10px -10px, -10px 0px",
+                cursor: tool === "none" ? (panning ? "grabbing" : "grab") : "crosshair",
+              }}
               onMouseDown={onMouseDown}
               onMouseMove={onMouseMove}
               onMouseUp={onMouseUp}
@@ -366,6 +381,26 @@ export default function ImagePreview() {
           </div>
         </div>
       </div>
+
+      {/* 底部 EXIF 状态条：只承载工具栏没有的尺寸/格式信息（缩放已在工具栏），等宽 tabular-nums */}
+      {natW > 0 && (
+        <div style={{
+          position: "fixed", bottom: 10, left: "50%", transform: "translateX(-50%)", zIndex: 100,
+          padding: "4px 12px", borderRadius: 8,
+          background: "rgba(28,25,23,0.72)",
+          backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
+          color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: 500,
+          fontFamily: "SF Mono, Menlo, monospace", fontVariantNumeric: "tabular-nums",
+          boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
+          display: "flex", gap: 10, alignItems: "center", pointerEvents: "none",
+        }}>
+          <span>{natW} × {natH}</span>
+          {fmt && <>
+            <span style={{ opacity: 0.4 }}>·</span>
+            <span>{fmt}</span>
+          </>}
+        </div>
+      )}
     </div>
   );
 }
