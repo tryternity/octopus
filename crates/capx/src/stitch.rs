@@ -183,7 +183,7 @@ impl Stitcher {
         let x_end = (w as f64 * X_END_RATIO) as u32;
 
         let max_scroll = MAX_SCROLL;
-        let (dy, confidence) = match find_overlap_spatial_ext(
+        let (dy, confidence, _best_sad) = match find_overlap_spatial_ext(
             &self.reference,
             &curr_buf,
             x_start,
@@ -192,6 +192,8 @@ impl Stitcher {
             eff_bottom,
             max_scroll,
             self.last_dy,
+            SAD_ACCEPT,
+            STRIP_H,
         ) {
             Some(v) => v,
             None => {
@@ -256,6 +258,17 @@ impl Stitcher {
         (SAD_ACCEPT + texture_bonus).min(baseline_cap).max(SAD_ACCEPT)
     }
 
+    /// 判断当前是否为静止状态（基于历史 dy 均值）。
+    /// 回弹帧 dy 可能抖动到 -3，但历史 [-15,-12,-10,-3] 均值 -10，不判静止。
+    fn is_stationary(&self) -> bool {
+        if self.dy_history.len() < 3 {
+            return false; // 不足 3 帧，不判静止（让 SAD 主匹配决定）
+        }
+        let n = self.dy_history.len().min(5);
+        let recent: f64 = self.dy_history.iter().rev().take(n).sum::<f64>() / n as f64;
+        recent.abs() < STATIONARY_DY_THRESHOLD
+    }
+
     pub fn canvas(&self) -> &RgbaImage {
         // 惰性重建：cache 为 None（append 后 invalidate）时从 canvas_buf 重建。
         // 因调用端总是 .clone()，借用不跨多次 append 存活，无生命周期问题。
@@ -289,7 +302,7 @@ impl Stitcher {
 
         // 允许最大对齐位移为有效高度的 90%
         let max_finalize_scroll = ((eff_bottom - eff_top) as f64 * 0.90) as u32;
-        if let Some((dy, confidence)) = find_overlap_spatial_ext(
+        if let Some((dy, confidence, _)) = find_overlap_spatial_ext(
             &self.reference,
             &last_buf,
             x_start,
@@ -298,6 +311,8 @@ impl Stitcher {
             eff_bottom,
             max_finalize_scroll,
             None, // 最后一帧匹配不施加速度限制
+            SAD_ACCEPT,
+            STRIP_H,
         ) {
             if dy < 0.0 {
                 let new_rows = (-dy).round() as u32;
@@ -365,11 +380,13 @@ fn find_overlap_spatial_ext(
     eff_bottom: u32,
     max_scroll: u32,
     last_dy: Option<f64>,
-) -> Option<(f64, f64)> {
-    if eff_bottom <= eff_top + STRIP_H + 10 {
+    sad_accept: f64,
+    strip_h: u32,
+) -> Option<(f64, f64, f64)> {
+    if eff_bottom <= eff_top + strip_h + 10 {
         return None;
     }
-    let template_y = eff_bottom - STRIP_H;
+    let template_y = eff_bottom - strip_h;
 
     // 抽样列索引（只算一次）
     let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
@@ -380,7 +397,7 @@ fn find_overlap_spatial_ext(
     }
 
     // 模板条预提取
-    let tpl = extract_template(ref_buf, template_y, &sample_cols);
+    let tpl = extract_template(ref_buf, template_y, &sample_cols, strip_h);
 
     let min_y_offset = (template_y as i32 - max_scroll as i32).max(eff_top as i32) as u32;
     let max_y_offset = template_y;
@@ -394,13 +411,14 @@ fn find_overlap_spatial_ext(
         max_y_offset,
         template_y,
         last_dy,
+        strip_h,
     );
 
     // 静止判定 + 置信度估计 + 接受门控
     let confidence = estimate_confidence(
-        ref_buf, curr_buf, &sample_cols, best_y_offset, min_y_offset, max_y_offset, template_y,
+        ref_buf, curr_buf, &sample_cols, best_y_offset, min_y_offset, max_y_offset, template_y, strip_h,
     );
-    decide_match(best_y_offset, best_sad_avg, stationary_sad_avg, confidence, template_y)
+    decide_match(best_y_offset, best_sad_avg, stationary_sad_avg, confidence, template_y, sad_accept)
 }
 
 /// 根据搜索结果做最终判定：静止 / 接受 / 拒绝。
@@ -410,22 +428,25 @@ fn decide_match(
     stationary_sad_avg: f64,
     confidence: f64,
     template_y: u32,
-) -> Option<(f64, f64)> {
-    if stationary_sad_avg < STATIONARY_SAD || stationary_sad_avg < best_sad_avg + 1.0 {
-        return Some((0.0, 1.0));
+    sad_accept: f64,
+) -> Option<(f64, f64, f64)> {
+    // 保留绝对静止快速路径（画面完全没动时 stationary_sad 极低）
+    if stationary_sad_avg < STATIONARY_SAD {
+        return Some((0.0, 1.0, 0.0));
     }
-    if best_sad_avg < SAD_ACCEPT && confidence > MIN_CONFIDENCE {
+    // 移除 stationary < best + 1.0 硬覆盖——交由 is_stationary() 时序判断
+    if best_sad_avg < sad_accept && confidence > MIN_CONFIDENCE {
         let dy = best_y_offset as f64 - template_y as f64;
-        Some((dy, confidence))
+        Some((dy, confidence, best_sad_avg))
     } else {
         None
     }
 }
 
 /// 提取模板条到连续 buffer（STRIP_H × n_cols）。
-fn extract_template(ref_buf: &GrayBuf, template_y: u32, sample_cols: &[usize]) -> Vec<u8> {
-    let mut tpl = Vec::with_capacity(STRIP_H as usize * sample_cols.len());
-    for dy in 0..STRIP_H {
+fn extract_template(ref_buf: &GrayBuf, template_y: u32, sample_cols: &[usize], strip_h: u32) -> Vec<u8> {
+    let mut tpl = Vec::with_capacity(strip_h as usize * sample_cols.len());
+    for dy in 0..strip_h {
         let row = ref_buf.row((template_y + dy) as usize);
         for &x in sample_cols {
             tpl.push(row[x]);
@@ -444,8 +465,9 @@ fn search_best_offset(
     max_y_offset: u32,
     template_y: u32,
     last_dy: Option<f64>,
+    strip_h: u32,
 ) -> (u32, f64, f64) {
-    let strip_h = STRIP_H as usize;
+    let strip_h = strip_h as usize;
     let total = (strip_h * sample_cols.len()) as f64;
 
     let mut best_y_offset = min_y_offset;
@@ -494,6 +516,7 @@ fn estimate_confidence(
     min_y_offset: u32,
     max_y_offset: u32,
     template_y: u32,
+    strip_h: u32,
 ) -> f64 {
     let sparse_cols: Vec<usize> = sample_cols.iter().step_by(2).copied().collect();
     if sparse_cols.is_empty() {
@@ -503,7 +526,7 @@ fn estimate_confidence(
     let mut sum_sad = 0.0f64;
     let mut sample_count = 0.0f64;
     for y_offset in (min_y_offset..=max_y_offset).step_by(10) {
-        sum_sad += sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, template_y, y_offset);
+        sum_sad += sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, template_y, y_offset, strip_h);
         sample_count += 1.0;
     }
 
@@ -515,7 +538,7 @@ fn estimate_confidence(
         return 0.0;
     }
 
-    let best_sad_avg = sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, template_y, best_y_offset);
+    let best_sad_avg = sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, template_y, best_y_offset, strip_h);
     1.0 - (best_sad_avg / mean_sad)
 }
 
@@ -526,8 +549,9 @@ fn sparse_sad_at_offset(
     sparse_cols: &[usize],
     template_y: u32,
     y_offset: u32,
+    strip_h: u32,
 ) -> f64 {
-    let strip_h = STRIP_H as usize;
+    let strip_h = strip_h as usize;
     let mut sad: u64 = 0;
     let mut count = 0u64;
     for dy in (0..strip_h).step_by(2) {
