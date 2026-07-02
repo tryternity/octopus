@@ -1278,6 +1278,9 @@ pub async fn start_scroll_recording(
                 image::codecs::png::FilterType::Up,
             );
             let _ = img.write_with_encoder(png_encoder);
+            if png.is_empty() {
+                log::error!("[scroll] PNG encoding produced empty bytes");
+            }
             png
         };
         let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
@@ -1288,7 +1291,9 @@ pub async fn start_scroll_recording(
         let ah_clipboard = ah4.clone();
         let clipboard_task = tokio::task::spawn_blocking(move || {
             if let Some(handle) = ah_clipboard.try_state::<std::sync::Arc<ClipboardHandle>>() {
-                let _ = handle.write_image(&png_for_clipboard);
+                if let Err(e) = handle.write_image(&png_for_clipboard) {
+                    log::error!("[scroll] Failed to write clipboard: {}", e);
+                }
             }
         });
 
@@ -1302,10 +1307,12 @@ pub async fn start_scroll_recording(
                 Ok(e) => e,
                 Err(_) => return,
             };
-            let _ = octopus_infra::db::with_db(|conn| {
+            if let Err(e) = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::insert_image_data(conn, &hash_for_db, &encoded.webp_blob, &encoded.thumb_blob, img.width() as i64, img.height() as i64)
-            });
-            let _ = octopus_infra::db::with_db(|conn| {
+            }) {
+                log::error!("[scroll] Failed to insert image_data: {}", e);
+            }
+            if let Err(e) = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
                     id: id_for_db, item_type: octopus_clipboard::ItemType::Image,
                     content: hash_for_db.clone(), search_text: String::new(),
@@ -1314,7 +1321,9 @@ pub async fn start_scroll_recording(
                     height: Some(img.height() as i64), has_thumbnail: Some(1),
                     file_count: None, is_rich: false,
                 })
-            });
+            }) {
+                log::error!("[scroll] Failed to insert clipboard_item: {}", e);
+            }
         });
 
         // 等剪贴板写入完成（~1s），DB 入库在后台继续
