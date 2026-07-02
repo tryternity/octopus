@@ -42,9 +42,6 @@ export const exportNote = (stem: string, ext: string, content: string) =>
 export const importNoteFromFile = (path: string) =>
   invoke<string>("import_note_from_file", { path });
 
-export const getNoteImage = (hash: string) => invoke<string>("get_note_image", { hash });
-export const insertNoteImage = (path: string) => invoke<string>("insert_note_image", { path });
-
 // 集成入口
 export const currentTranscriptionId = () => invoke<number | null>("current_transcription_id");
 export const saveTranscriptionToNote = (transcriptionId: number, text: string) =>

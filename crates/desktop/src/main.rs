@@ -259,8 +259,6 @@ pub fn run() {
             note_commands::toggle_note_favorite,
             note_commands::export_note,
             note_commands::import_note_from_file,
-            note_commands::get_note_image,
-            note_commands::insert_note_image,
             note_commands::save_transcription_to_note,
             note_commands::save_ocr_to_note,
             notepad_window::open_notepad,

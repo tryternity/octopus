@@ -287,15 +287,16 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('screenshot_shortcut',     'Alt+S',                                '截图快捷键');
 
 -- ── 记事本（notes 表）─────────────────────────────────────────────────────
--- 内容收集箱：ASR/OCR/剪贴板结果一键存入 + 富文本/markdown/纯文本整理。
--- type: 'html'(TipTap 富文本，默认) | 'text'(纯文本) | 'markdown'(md 源码)。
--- content_text = 纯文本/md源码/html抽取（FTS + 列表预览）；content_html = 富文本原始（仅 type=html）。
+-- 内容收集箱：ASR/OCR/剪贴板结果一键存入 + 纯文本/Markdown 整理。
+-- type: 'text'(纯文本，默认) | 'markdown'(md 源码)。
+-- content_text = 纯文本/md源码（FTS + 列表预览）；content_html 列保留但不再使用
+-- （富文本功能已移除，历史 type=html 笔记由 v11→v12 迁移删除）。
 CREATE TABLE IF NOT EXISTS notes (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     title         TEXT,
     content_text  TEXT    NOT NULL DEFAULT '',
     content_html  TEXT    NOT NULL DEFAULT '',
-    type          TEXT    NOT NULL DEFAULT 'html',
+    type          TEXT    NOT NULL DEFAULT 'text',
     source        TEXT    NOT NULL DEFAULT 'manual',
     source_ref_id INTEGER,
     is_pinned     INTEGER NOT NULL DEFAULT 0,

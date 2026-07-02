@@ -1,7 +1,7 @@
 export type NoteSource = "asr" | "ocr" | "clipboard" | "manual";
 
-/** 笔记内容格式（后端 notes.type 列）。html=富文本 / text=纯文本 / markdown=md 源码。 */
-export type NoteType = "html" | "text" | "markdown";
+/** 笔记内容格式（后端 notes.type 列）。text=纯文本 / markdown=md 源码（富文本已移除）。 */
+export type NoteType = "text" | "markdown";
 
 export interface Note {
   id: number;

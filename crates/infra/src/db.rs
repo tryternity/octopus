@@ -139,6 +139,7 @@ where
 /// - v5+: 跳过
 /// - v9 → v10: notes 加 type 列（ALTER ADD，幂等）
 /// - v10 → v11: 补 notes.content_html 列（兼容 egui 分支重建过的库——egui 的 v10 无 content_html；幂等 ALTER ADD DEFAULT ''）
+/// - v11 → v12: 移除富文本功能——删除所有 type='html' 笔记（富文本功能下线，TipTap 依赖一并移除）
 ///
 /// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等安全重跑。
 fn init_schema(conn: &Connection) -> Result<()> {
@@ -152,8 +153,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
         // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 11", [])?;
-        log::info!("DB initialized (v11): schema + app_config(setting) + prompts + clipboard_history + image_data + notes(content_text+content_html+type) + yaml migration");
+        conn.execute("PRAGMA user_version = 12", [])?;
+        log::info!("DB initialized (v12): schema + app_config(setting) + prompts + clipboard_history + image_data + notes(content_text+content_html+type=text/markdown) + yaml migration");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
@@ -255,6 +256,17 @@ fn init_schema(conn: &Connection) -> Result<()> {
             log::info!("DB migrated to v11: 补 notes.content_html 列（兼容 egui 分支库；历史笔记 content_html 空、按 content_text 显示）");
         }
         conn.execute("PRAGMA user_version = 11", [])?;
+    } else if v == 11 {
+        // v11 → v12：移除富文本功能。删除所有 type='html' 笔记（TipTap 富文本下线，
+        // 依赖与前端编辑器一并移除；保留 type=text/markdown 笔记不动）。
+        // content_html 列保留（DDL 不再依赖，旧库不 DROP 列以免重建索引/触发器开销）。
+        let deleted: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes WHERE type = 'html'", [], |r| r.get(0))
+            .unwrap_or(0);
+        conn.execute("DELETE FROM notes WHERE type = 'html'", [])
+            .context("v11→v12: DELETE type='html' notes")?;
+        conn.execute("PRAGMA user_version = 12", [])?;
+        log::info!("DB migrated to v12: 移除富文本（删除 {} 条 type=html 笔记）", deleted);
     }
     Ok(())
 }
@@ -1297,6 +1309,80 @@ mod tests {
         init_schema(&conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v, 11);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_v11_to_v12_deletes_html_keeps_text_markdown() {
+        // 富文本功能下线：v11 库混存 html/text/markdown 笔记 → init_schema 应删 html、保留其余、v→12
+        let dir = std::env::temp_dir().join(format!("octopus-html-rm-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = Connection::open(dir.join("mig.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT,
+                content_text TEXT NOT NULL DEFAULT '', content_html TEXT NOT NULL DEFAULT '',
+                type TEXT NOT NULL DEFAULT 'html', source TEXT NOT NULL DEFAULT 'manual',
+                source_ref_id INTEGER, is_pinned INTEGER NOT NULL DEFAULT 0,
+                is_favorite INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             INSERT INTO notes (title, content_html, content_text, type, created_at, updated_at)
+                VALUES ('富文本1', '<p>a</p>', 'a', 'html', '2026-01-01 00:00:00', '2026-01-01 00:00:00'),
+                       ('富文本2', '<p>b</p>', 'b', 'html', '2026-01-01 00:00:00', '2026-01-01 00:00:00'),
+                       ('纯文本', '', '纯文本内容', 'text', '2026-01-01 00:00:00', '2026-01-01 00:00:00'),
+                       ('md', '', '# 标题', 'markdown', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
+             PRAGMA user_version = 11;",
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+
+        // html 笔记全删；text/markdown 保留
+        let remaining_types: Vec<String> = conn
+            .prepare("SELECT type FROM notes ORDER BY id")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert_eq!(remaining_types, vec!["text", "markdown"], "仅剩 text/markdown");
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 2, "2 条 html 已删");
+
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 12);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_v11_to_v12_no_html_is_noop() {
+        // 无 html 笔记的 v11 库 → DELETE 命中 0 行，v→12 不报错
+        let dir = std::env::temp_dir().join(format!("octopus-html-rm-noop-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = Connection::open(dir.join("mig.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT,
+                content_text TEXT NOT NULL DEFAULT '', content_html TEXT NOT NULL DEFAULT '',
+                type TEXT NOT NULL DEFAULT 'text', source TEXT NOT NULL DEFAULT 'manual',
+                source_ref_id INTEGER, is_pinned INTEGER NOT NULL DEFAULT 0,
+                is_favorite INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             INSERT INTO notes (content_text, type, created_at, updated_at)
+                VALUES ('只有文本', 'text', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
+             PRAGMA user_version = 11;",
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        let total: i64 = conn
+            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(total, 1, "无 html 时不误删");
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 12);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

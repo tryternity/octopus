@@ -5,7 +5,6 @@ edition = "2021"
 
 [dependencies]
 octopus-infra = { path = "../infra" }
-scraper = "0.20"
 rusqlite = { version = "0.31", features = ["bundled"] }
 anyhow = "1"
 serde = { version = "1", features = ["derive"] }

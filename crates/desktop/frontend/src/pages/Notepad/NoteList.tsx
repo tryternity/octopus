@@ -19,10 +19,9 @@ import {
   toggleNoteFavorite,
 } from "@/lib/notepad";
 
-// 侧边栏 type tab：全部 / 富文本 / 纯文本 / Markdown（替代旧的来源 tab）
+// 侧边栏 type tab：全部 / 纯文本 / Markdown（替代旧的来源 tab）
 const TYPE_TABS: { key: NoteType | null; label: string }[] = [
   { key: null, label: "全部" },
-  { key: "html", label: "富文本" },
   { key: "text", label: "纯文本" },
   { key: "markdown", label: "Markdown" },
 ];
@@ -87,7 +86,6 @@ export default function NoteList({
             <div className="absolute right-0 top-full mt-1 z-10 w-28 rounded-md border border-border bg-background shadow-md py-0.5">
               {(
                 [
-                  { type: "html", label: "富文本" },
                   { type: "text", label: "纯文本" },
                   { type: "markdown", label: "Markdown" },
                 ] as { type: NoteType; label: string }[]
@@ -199,11 +197,9 @@ function NoteRow({
         {SourceIcon && (
           <SourceIcon className="w-3 h-3 flex-shrink-0 text-muted-foreground" />
         )}
-        {note.note_type !== "html" && (
-          <span className="flex-shrink-0 px-1 text-[9px] leading-tight rounded bg-muted text-muted-foreground">
-            {note.note_type === "markdown" ? "MD" : "T"}
-          </span>
-        )}
+        <span className="flex-shrink-0 px-1 text-[9px] leading-tight rounded bg-muted text-muted-foreground">
+          {note.note_type === "markdown" ? "MD" : "T"}
+        </span>
         <span className="flex-1 truncate text-sm font-medium">{preview}</span>
         <button
           className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100"
