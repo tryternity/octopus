@@ -178,8 +178,7 @@ impl Stitcher {
                 self.canvas_h = eff_bottom0;
                 self.invalidate_cache();
             }
-            // 用第二帧初始化参考灰度
-            self.reference = GrayBuf::from_rgba(frame);
+            // Canvas-Anchored：下一帧直接从 canvas 底部提取模板，无需存 reference
 
             return Ok(false); // 第二帧用于初始化，不拼接
         }
@@ -191,22 +190,22 @@ impl Stitcher {
         }
 
         let curr_buf = GrayBuf::from_rgba(frame);
+        let canvas_ref = self.extract_canvas_bottom_gray(STRIP_H);
 
         let x_start = (w as f64 * X_START_RATIO) as u32;
         let x_end = (w as f64 * X_END_RATIO) as u32;
 
         let max_scroll = MAX_SCROLL;
 
-        // 动态阈值：根据当前帧纹理密度 + 历史基线计算
+        // 动态阈值：根据画布底部纹理密度 + 历史基线计算
         let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
             .step_by(SAMPLE_STEP_X)
             .collect();
-        let template_y = eff_bottom.saturating_sub(STRIP_H);
-        let texture = estimate_texture_density(&curr_buf, &sample_cols, template_y);
+        let texture = estimate_texture_density(&canvas_ref, &sample_cols, 0);
         let sad_accept = self.dynamic_sad_accept(texture);
 
         let (dy, confidence, best_sad) = match find_overlap_spatial_ext(
-            &self.reference,
+            &canvas_ref,
             &curr_buf,
             x_start,
             x_end,
@@ -224,7 +223,7 @@ impl Stitcher {
 
                 // 降级 1：扩大搜索范围 ×2
                 if let Some((dy, conf, sad)) = self.try_match(
-                    &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll * 2, sad_accept, STRIP_H,
+                    &canvas_ref, &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll * 2, sad_accept, STRIP_H,
                 ) {
                     log::info!("[stitch] fallback 1: expanded search range, dy={:.1} conf={:.4}", dy, conf);
                     return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
@@ -232,7 +231,7 @@ impl Stitcher {
 
                 // 降级 2：缩小模板 + 放宽阈值
                 if let Some((dy, conf, sad)) = self.try_match(
-                    &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll,
+                    &canvas_ref, &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll,
                     sad_accept * FALLBACK_SAD_MULTIPLIER, FALLBACK_STRIP_H,
                 ) {
                     log::info!("[stitch] fallback 2: reduced strip height, dy={:.1} conf={:.4}", dy, conf);
@@ -241,7 +240,7 @@ impl Stitcher {
 
                 // 降级 3：1D 灰度投影匹配
                 if let Some((dy, conf, sad)) = self.try_match_1d_projection(
-                    &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll, sad_accept,
+                    &canvas_ref, &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll, sad_accept,
                 ) {
                     log::info!("[stitch] fallback 3: 1D projection match, dy={:.1} conf={:.4}", dy, conf);
                     return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
@@ -289,8 +288,7 @@ impl Stitcher {
         self.canvas_h += new_rows;
         self.invalidate_cache();
 
-        // 更新参考灰度与速度缓存
-        self.reference = curr_buf;
+        // Canvas-Anchored：无需更新 reference（每帧从 canvas 提取）
         self.last_dy = Some(dy);
 
         // 更新 dy_history（时序平滑）和 sad_baseline（动态阈值 EMA）
@@ -316,6 +314,26 @@ impl Stitcher {
         }
     }
 
+    /// 从画布底部提取 strip_h 行 RGBA 转灰度，作为 Canvas-Anchored 匹配模板。
+    /// 无论多少帧匹配失败，画布底部始终是最新已确认内容 → 消除累积漂移。
+    fn extract_canvas_bottom_gray(&self, strip_h: u32) -> GrayBuf {
+        let row_bytes = self.canvas_w as usize * 4;
+        let start_row = self.canvas_h.saturating_sub(strip_h);
+        let mut data = Vec::with_capacity(strip_h as usize * self.canvas_w as usize);
+        for y in start_row..self.canvas_h {
+            let row_start = y as usize * row_bytes;
+            for x in 0..self.canvas_w as usize {
+                let off = row_start + x * 4;
+                let r = self.canvas_buf[off] as u32;
+                let g = self.canvas_buf[off + 1] as u32;
+                let b = self.canvas_buf[off + 2] as u32;
+                let luma = (2126 * r + 7152 * g + 722 * b) / 10000;
+                data.push(luma as u8);
+            }
+        }
+        GrayBuf { data, width: self.canvas_w as usize }
+    }
+
     /// 根据当前帧纹理密度 + 历史 SAD 基线动态计算 SAD 接受阈值。
     fn dynamic_sad_accept(&self, texture: f64) -> f64 {
         // 纹理越丰富 → 绝对 SAD 天然更高 → 允许更高阈值
@@ -339,6 +357,7 @@ impl Stitcher {
     /// 主匹配封装：调用 find_overlap_spatial_ext。
     fn try_match(
         &self,
+        ref_buf: &GrayBuf,
         curr: &GrayBuf,
         x_start: u32,
         x_end: u32,
@@ -349,7 +368,7 @@ impl Stitcher {
         strip_h: u32,
     ) -> Option<(f64, f64, f64)> {
         find_overlap_spatial_ext(
-            &self.reference,
+            ref_buf,
             curr,
             x_start,
             x_end,
@@ -367,6 +386,7 @@ impl Stitcher {
     /// 对纯色/低纹理场景（2D SAD 缺乏特征）更鲁棒。
     fn try_match_1d_projection(
         &self,
+        ref_buf: &GrayBuf,
         curr: &GrayBuf,
         x_start: u32,
         x_end: u32,
@@ -388,7 +408,7 @@ impl Stitcher {
             return None;
         }
 
-        let ref_proj = row_projection_means(&self.reference, &cols, template_y, template_y + strip_h);
+        let ref_proj = row_projection_means(ref_buf, &cols, 0, strip_h);
         let search_start = (template_y as i32 - max_scroll as i32).max(eff_top as i32) as u32;
 
         let mut best_offset = template_y;
@@ -479,7 +499,7 @@ impl Stitcher {
         self.canvas_h += new_rows;
         self.invalidate_cache();
 
-        self.reference = curr_buf.clone();
+        // Canvas-Anchored：无需更新 reference
         self.last_dy = Some(dy);
         self.dy_history.push_back(dy);
         if self.dy_history.len() > DY_HISTORY_LEN {
@@ -520,15 +540,16 @@ impl Stitcher {
             return Ok(());
         }
 
-        // 1. 尝试将最后一帧与参考帧对齐，补全因为丢帧/快速滑动积累的剩余未拼接区域
+        // 1. 尝试将最后一帧与画布底部对齐，补全因为丢帧/快速滑动积累的剩余未拼接区域
         let last_buf = GrayBuf::from_rgba(last_frame);
+        let canvas_ref = self.extract_canvas_bottom_gray(STRIP_H);
         let x_start = (w as f64 * X_START_RATIO) as u32;
         let x_end = (w as f64 * X_END_RATIO) as u32;
 
         // 允许最大对齐位移为有效高度的 90%
         let max_finalize_scroll = ((eff_bottom - eff_top) as f64 * 0.90) as u32;
         if let Some((dy, confidence, _)) = find_overlap_spatial_ext(
-            &self.reference,
+            &canvas_ref,
             &last_buf,
             x_start,
             x_end,
@@ -621,8 +642,8 @@ fn find_overlap_spatial_ext(
         return None;
     }
 
-    // 模板条预提取
-    let tpl = extract_template(ref_buf, template_y, &sample_cols, strip_h);
+    // 模板条预提取（Canvas-Anchored：ref_buf 行号从 0 开始）
+    let tpl = extract_template(ref_buf, 0, &sample_cols, strip_h);
 
     let min_y_offset = (template_y as i32 - max_scroll as i32).max(eff_top as i32) as u32;
     let max_y_offset = template_y;
@@ -641,7 +662,7 @@ fn find_overlap_spatial_ext(
 
     // 静止判定 + 置信度估计 + 接受门控
     let confidence = estimate_confidence(
-        ref_buf, curr_buf, &sample_cols, best_y_offset, min_y_offset, max_y_offset, template_y, strip_h,
+        ref_buf, curr_buf, &sample_cols, best_y_offset, min_y_offset, max_y_offset, strip_h,
     );
     decide_match(best_y_offset, best_sad_avg, stationary_sad_avg, confidence, template_y, sad_accept)
 }
@@ -740,7 +761,6 @@ fn estimate_confidence(
     best_y_offset: u32,
     min_y_offset: u32,
     max_y_offset: u32,
-    template_y: u32,
     strip_h: u32,
 ) -> f64 {
     let sparse_cols: Vec<usize> = sample_cols.iter().step_by(2).copied().collect();
@@ -751,7 +771,7 @@ fn estimate_confidence(
     let mut sum_sad = 0.0f64;
     let mut sample_count = 0.0f64;
     for y_offset in (min_y_offset..=max_y_offset).step_by(10) {
-        sum_sad += sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, template_y, y_offset, strip_h);
+        sum_sad += sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, y_offset, strip_h);
         sample_count += 1.0;
     }
 
@@ -763,7 +783,7 @@ fn estimate_confidence(
         return 0.0;
     }
 
-    let best_sad_avg = sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, template_y, best_y_offset, strip_h);
+    let best_sad_avg = sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, best_y_offset, strip_h);
     1.0 - (best_sad_avg / mean_sad)
 }
 
@@ -772,7 +792,6 @@ fn sparse_sad_at_offset(
     ref_buf: &GrayBuf,
     curr_buf: &GrayBuf,
     sparse_cols: &[usize],
-    template_y: u32,
     y_offset: u32,
     strip_h: u32,
 ) -> f64 {
@@ -780,7 +799,7 @@ fn sparse_sad_at_offset(
     let mut sad: u64 = 0;
     let mut count = 0u64;
     for dy in (0..strip_h).step_by(2) {
-        let ref_row = ref_buf.row((template_y as usize) + dy);
+        let ref_row = ref_buf.row(dy);
         let curr_row = curr_buf.row((y_offset as usize) + dy);
         for &x in sparse_cols {
             sad += (ref_row[x] as i32 - curr_row[x] as i32).unsigned_abs() as u64;
