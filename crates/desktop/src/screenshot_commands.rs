@@ -417,7 +417,7 @@ pub async fn confirm_screenshot_with_data(
     Ok(())
 }
 #[tauri::command]
-pub fn get_screenshot_image(label: String) -> Result<serde_json::Value, String> {
+pub fn get_screenshot_image(label: String) -> Result<tauri::ipc::Response, String> {
     // 取出对应的 base64（克隆而非 remove，兼容 StrictMode 双 mount）
     let b64 = {
         let pending = PENDING_IMAGES.lock().unwrap();
@@ -428,18 +428,11 @@ pub fn get_screenshot_image(label: String) -> Result<serde_json::Value, String> 
     }
     .ok_or("无待处理截图数据")?;
 
-    // 找到对应的截图尺寸
-    let (w, h) = ALL_CAPTURES.lock().unwrap()
-        .iter()
-        .find(|(l, _)| *l == label)
-        .map(|(_, c)| (c.width, c.height))
-        .unwrap_or((0, 0));
+    // base64 → 原始 JPEG 字节
+    let jpeg_bytes = general_purpose::STANDARD.decode(&b64)
+        .map_err(|e| format!("base64 解码失败: {}", e))?;
 
-    Ok(serde_json::json!({
-        "image": b64,
-        "width": w,
-        "height": h,
-    }))
+    Ok(tauri::ipc::Response::new(jpeg_bytes))
 }
 
 /// 确认截图：从指定窗口的截图裁剪选区 → 写剪贴板历史 → 关所有窗口

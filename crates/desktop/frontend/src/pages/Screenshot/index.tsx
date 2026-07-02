@@ -58,15 +58,16 @@ export default function Screenshot() {
   })();
 
   useEffect(() => {
-    invoke<{ image: string; width: number; height: number }>("get_screenshot_image", { label: winLabel })
-      .then((data) => {
+    invoke<ArrayBuffer>("get_screenshot_image", { label: winLabel })
+      .then((buf) => {
         const img = new Image();
         img.onload = () => {
           bgImgRef.current = img;
           setReady(true);
           setTimeout(() => { invoke("show_screenshot_window").catch(() => {}); }, 50);
         };
-        img.src = `data:image/jpeg;base64,${data.image}`;
+        const blob = new Blob([buf], { type: "image/jpeg" });
+        img.src = URL.createObjectURL(blob);
       })
       .catch((e) => console.error("Failed to get screenshot image:", e));
   }, []);
@@ -93,7 +94,7 @@ export default function Screenshot() {
       setScrollPreview(e.payload.preview);
       setScrollHeight(e.payload.phys_height);
     }).then((fn) => { unlistenFrame = fn; });
-    listen("scroll://done", (e: { payload: { id?: string } }) => {
+    listen("scroll://done", () => {
       setScrollPreview(null);
       setModeSafe("selected");
       // 保存模式由 Rust 端直接弹对话框，前端不再中转 base64
@@ -521,7 +522,7 @@ export default function Screenshot() {
     invoke("stop_scroll_recording").catch(() => {});
   }
 
-  function composeAndCrop(): string | null {
+  async function composeAndCropBytes(): Promise<ArrayBuffer | null> {
     if (!sel || !bgImgRef.current) return null;
     const bg = bgImgRef.current;
     const scale = bg.naturalWidth / window.innerWidth;
@@ -552,52 +553,21 @@ export default function Screenshot() {
     const croppedCtx = croppedCanvas.getContext("2d")!;
     croppedCtx.drawImage(tmpCanvas, px, py, pw, ph, 0, 0, pw, ph);
 
-  async function composeAndCropBytes(): Promise<Uint8Array | null> {
-    if (!sel || !bgImgRef.current) return null;
-    const bg = bgImgRef.current;
-    const scale = bg.naturalWidth / window.innerWidth;
-
-    // 合并已确认标注 + 未提交的文字输入（避免 onBlur 竞态丢失）
-    const allAnns = [...annotations];
-    const draft = textDraftRef.current;
-    if (draft && draft.val.trim()) {
-      allAnns.push({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: editTextColorRef.current || toolColorRef.current, fontSize: editTextFontSizeRef.current || toolFontSizeRef.current });
-    }
-
-    const tmpCanvas = document.createElement("canvas");
-    tmpCanvas.width = bg.naturalWidth;
-    tmpCanvas.height = bg.naturalHeight;
-    const tmpCtx = tmpCanvas.getContext("2d")!;
-    tmpCtx.drawImage(bg, 0, 0);
-    for (const ann of allAnns) {
-      drawAnnotationScaled(tmpCtx, ann, scale);
-    }
-
-    const px = Math.round(sel.x * scale);
-    const py = Math.round(sel.y * scale);
-    const pw = Math.round(sel.w * scale);
-    const ph = Math.round(sel.h * scale);
-    const croppedCanvas = document.createElement("canvas");
-    croppedCanvas.width = pw;
-    croppedCanvas.height = ph;
-    const croppedCtx = croppedCanvas.getContext("2d")!;
-    croppedCtx.drawImage(tmpCanvas, px, py, pw, ph, 0, 0, pw, ph);
-
-    const blob: Blob = await new Promise((resolve) => croppedCanvas.toBlob(resolve, "image/png"));
-    return new Uint8Array(await blob.arrayBuffer());
+    const blob: Blob = await new Promise((resolve, reject) => croppedCanvas.toBlob((b) => b ? resolve(b) : reject("toBlob failed"), "image/png"));
+    return await blob.arrayBuffer();
   }
 
   function doOcr() {
     composeAndCropBytes().then((bytes) => {
       if (!bytes) return;
-      invoke("ocr_screenshot", bytes).catch(() => {});
+      invoke("ocr_screenshot", bytes as unknown as Record<string, unknown>).catch(() => {});
     });
   }
 
   function doSaveFile() {
     composeAndCropBytes().then((bytes) => {
       if (!bytes) return;
-      invoke("save_screenshot_dialog", bytes).catch(() => {});
+      invoke("save_screenshot_dialog", bytes as unknown as Record<string, unknown>).catch(() => {});
     });
   }
 
@@ -609,9 +579,7 @@ export default function Screenshot() {
   function doConfirm() {
     composeAndCropBytes().then((bytes) => {
       if (!bytes) return;
-      invoke("confirm_screenshot_with_data", bytes, {
-        headers: { "X-Label": winLabel },
-      }).catch(() => {});
+      invoke("confirm_screenshot_with_data", bytes as unknown as Record<string, unknown>).catch(() => {});
     });
   }
 

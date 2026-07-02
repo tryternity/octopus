@@ -82,11 +82,13 @@ export default function ImagePreview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // —— imageId 变 → 拉全图 ——
+  // —— imageId 变 → 拉全图（Raw body 二进制 → objectURL）——
   useEffect(() => {
     if (imageId == null) return;
-    invoke<string>("get_image_full", { id: imageId })
-      .then((url) => {
+    invoke<ArrayBuffer>("get_image_full", { id: imageId })
+      .then((buf) => {
+        const blob = new Blob([buf], { type: "image/webp" });
+        const url = URL.createObjectURL(blob);
         setDataUrl(url);
         setAnnotations([]);
         setZoomSync(1);
@@ -255,28 +257,28 @@ export default function ImagePreview() {
   const undo = () => setAnnotations((prev) => prev.slice(0, -1));
 
   // —— compose：图像 + 标注 合成到自然尺寸 PNG → Uint8Array（Raw body 二进制传输）——
-  const composePngBytes = async (): Promise<Uint8Array> => {
+  const composePngBytes = async (): Promise<ArrayBuffer> => {
     const img = imgRef.current!;
     const c = document.createElement("canvas");
     c.width = natW; c.height = natH;
     const ctx = c.getContext("2d")!;
     ctx.drawImage(img, 0, 0, natW, natH);
     for (const ann of annotations) drawAnnotation(ctx, ann);
-    const blob: Blob = await new Promise((resolve) => c.toBlob(resolve, "image/png"));
-    return new Uint8Array(await blob.arrayBuffer());
+    const blob: Blob = await new Promise((resolve, reject) => c.toBlob((b) => b ? resolve(b) : reject("toBlob failed"), "image/png"));
+    return await blob.arrayBuffer();
   };
 
   const handleSave = async () => {
     try {
       const pngBytes = await composePngBytes();
-      await invoke("save_image_dialog", pngBytes);
+      await invoke("save_image_dialog", pngBytes as unknown as Record<string, unknown>);
     } catch (e) { console.error(e); }
   };
 
   const handleCopy = async () => {
     try {
       const pngBytes = await composePngBytes();
-      await invoke("copy_image_to_clipboard", pngBytes);
+      await invoke("copy_image_to_clipboard", pngBytes as unknown as Record<string, unknown>);
     } catch (e) { console.error(e); }
   };
 

@@ -476,7 +476,7 @@ pub async fn get_image_thumb(id: i64) -> Result<String, String> {
 /// 前端 ImagePreview 用它加载到 <img>/canvas 做标注。镜像 get_image_thumb，
 /// 仅取 blob（全分辨率）而非 thumb。返回 data URL 同样为避免 IPC 序列化膨胀。
 #[tauri::command]
-pub async fn get_image_full(id: i64) -> Result<String, String> {
+pub async fn get_image_full(id: i64) -> Result<tauri::ipc::Response, String> {
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, id)
     })
@@ -496,10 +496,8 @@ pub async fn get_image_full(id: i64) -> Result<String, String> {
     .map_err(|e| e.to_string())?
     .ok_or_else(|| "图片数据缺失".to_string())?;
 
-    Ok(format!(
-        "data:image/webp;base64,{}",
-        general_purpose::STANDARD.encode(&blob)
-    ))
+    // 返回原始 WebP 字节（Raw body），前端用 URL.createObjectURL 加载
+    Ok(tauri::ipc::Response::new(blob))
 }
 
 /// 弹系统保存对话框，把前端合成的标注 PNG（base64）存到用户指定路径。
