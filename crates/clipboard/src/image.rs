@@ -39,13 +39,19 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     // 但不需要逐级——超尺寸时高质量和低质量行为一致（都基于 VP8 尺寸限制），
     // 只需试一次最低质量。成功就用，失败就放弃。
     let webp_blob = if w > 16383 || h > 16383 {
-        log::warn!("[clipboard] Image exceeds WebP max dimension ({}×{}), trying q50", w, h);
+        log::warn!("[clipboard] Image exceeds WebP max dimension ({}×{}), trying q85", w, h);
         let encoder = webp::Encoder::from_rgba(&rgba, w, h);
-        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(50.0).to_vec())) {
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(85.0).to_vec())) {
             Ok(blob) if !blob.is_empty() => blob,
             _ => {
-                log::error!("[clipboard] WebP q50 failed for {}×{}, skipping", w, h);
-                return Err(anyhow::anyhow!("WebP encoding failed for {}×{}", w, h));
+                log::warn!("[clipboard] WebP q85 failed ({}×{}), trying q50", w, h);
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(50.0).to_vec())) {
+                    Ok(blob) if !blob.is_empty() => blob,
+                    _ => {
+                        log::error!("[clipboard] WebP q50 also failed for {}×{}, skipping", w, h);
+                        return Err(anyhow::anyhow!("WebP encoding failed for {}×{}", w, h));
+                    }
+                }
             }
         }
     } else {
@@ -56,17 +62,21 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
             Err(_) => log::warn!("[clipboard] lossless WebP failed ({}×{}), trying lossy", w, h),
         }
         if blob.is_none() {
-            for quality in [90.0f32, 80.0, 70.0, 60.0, 50.0] {
-                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    encoder.encode(quality).to_vec()
-                }));
-                if let Ok(b) = result {
-                    if !b.is_empty() {
-                        log::info!("[clipboard] WebP lossy q{}: {} bytes", quality, b.len());
-                        blob = Some(b);
-                        break;
-                    }
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(85.0).to_vec())) {
+                Ok(b) if !b.is_empty() => {
+                    log::info!("[clipboard] WebP q85: {} bytes", b.len());
+                    blob = Some(b);
                 }
+                _ => log::warn!("[clipboard] WebP q85 failed ({}×{}), trying q50", w, h),
+            }
+        }
+        if blob.is_none() {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(50.0).to_vec())) {
+                Ok(b) if !b.is_empty() => {
+                    log::info!("[clipboard] WebP q50: {} bytes", b.len());
+                    blob = Some(b);
+                }
+                _ => {}
             }
         }
         match blob {
