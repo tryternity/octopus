@@ -1,7 +1,7 @@
 # IPC 二进制传输改造
 
 **日期**: 2026-07-02
-**状态**: 设计已确认，待实施
+**状态**: ✅ 实施完成（3 层全部落地：scroll://done 双向往返消除 + 前端→Rust Raw body + Rust→前端 ipc::Response）
 **分支**: `optimize-capx`
 
 ---
