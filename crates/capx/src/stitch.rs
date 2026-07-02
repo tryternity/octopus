@@ -13,7 +13,8 @@ const STATIONARY_SAD: f64 = 2.0;
 /// 匹配接受阈值。最佳 SAD 必须小于此值才接受拼接。
 const SAD_ACCEPT: f64 = 7.5;
 /// 置信度下限。估计置信度必须大于此值才接受拼接。
-const MIN_CONFIDENCE: f64 = 0.15;
+/// 低置信度匹配（如 0.3-0.4）大概率是周期性假匹配，会腐蚀画布底部导致后续连锁失败。
+const MIN_CONFIDENCE: f64 = 0.5;
 /// 软速度罚分系数。拉近与上一帧速度的距离，防止周期跳变。
 const SPEED_PENALTY: f64 = 0.04;
 /// 排除最左侧的比例（通常有图标/树状图）。
