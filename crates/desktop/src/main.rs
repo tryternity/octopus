@@ -266,7 +266,6 @@ pub fn run() {
             notepad_window::open_notepad_with_note,
             notepad_window::get_pending_note,
             compact_editor_commands::open_compact_editor,
-            compact_editor_commands::get_pending_compact_edit,
             compact_editor_commands::close_compact_editor,
             image_preview_commands::open_image_preview,
             image_preview_commands::get_pending_image,

@@ -1,21 +1,38 @@
-//! macOS 原生 compact editor:NSWindow + NSScrollView + NSTextView。
-//! 试水 spike:验证原生控件能挂、中文 IME/滚动/取文本可行。
+//! macOS 原生 compact editor:NSWindow + NSScrollView + NSTextView(无 webview)。
+//! 正式实现(Task 5+)。objc2 写法复用 spike 验证的模式。
 //! 非 macOS 不编译本文件内容,回退 webview(见 compact_editor_window.rs 分流)。
 
 #[cfg(target_os = "macos")]
 mod imp {
+    use objc2::rc::Retained;
     use objc2::MainThreadMarker;
     use objc2_app_kit::{NSFont, NSScrollView, NSTextView, NSWindow};
     use objc2_foundation::NSString;
-    use tauri::WebviewWindow;
+    use tauri::Manager;
 
-    /// 临时 spike 入口:在给定 webview 窗口上(借用其底层 NSWindow)挂一个 NSTextView
-    /// 显示静态中文。spike 验证完即删,正式实现见 Task 5+(WindowBuilder 原生窗)。
-    ///
-    /// spike 阶段先复用一个普通 webview 窗的 NSWindow 来挂 NSTextView——绕开
-    /// WindowBuilder 尚未接入,先验证「挂控件 + IME + 滚动 + 取文本」这条链
-    /// (NSWindow 路径与 result_window/pin_window 已验证的用法一致)。
-    pub fn spike_attach_textview(window: &WebviewWindow) {
+    use crate::compact_editor_window::WINDOW_LABEL;
+
+    /// 建无 webview 原生窗(`WindowBuilder`)+ 挂 NSScrollView/NSTextView。返回后窗口已显示。
+    /// 文本由 `set_text` 塞(open 时首次塞 / 并发再开换文本)。
+    pub fn create_native_window(app: &tauri::AppHandle) {
+        use tauri::WindowBuilder;
+        match WindowBuilder::new(app, WINDOW_LABEL)
+            .title("编辑")
+            .inner_size(720.0, 560.0)
+            .min_inner_size(480.0, 360.0)
+            .decorations(true)
+            .resizable(true)
+            .center()
+            .visible(true)
+            .build()
+        {
+            Ok(w) => attach_textview(&w),
+            Err(e) => log::warn!("native compact editor build failed: {e}"),
+        }
+    }
+
+    /// 在原生窗上挂 NSScrollView+NSTextView(初始为空)。objc2 写法复用 spike 验证模式。
+    fn attach_textview(window: &tauri::window::Window) {
         let win = window.clone();
         let _ = window.run_on_main_thread(move || {
             let Ok(ptr) = win.ns_window() else {
@@ -24,39 +41,67 @@ mod imp {
             if ptr.is_null() {
                 return;
             }
-            // run_on_main_thread 保证主线程,可安全取 MainThreadMarker
             let mtm = MainThreadMarker::new().expect("run_on_main_thread 在主线程执行");
             let ns_win: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
 
-            // 建 NSTextView(纯文本)——objc2 0.6 的 new() 需 MainThreadMarker
             let text_view = NSTextView::new(mtm);
             text_view.setRichText(false);
-            text_view.setString(&NSString::from_str(
-                "这是一段用于 spike 的中文文本。\n你可以用输入法编辑我。\n",
-            ));
             let font = NSFont::systemFontOfSize(15.0);
             text_view.setFont(Some(&font));
             text_view.setEditable(true);
             text_view.setSelectable(true);
 
-            // 包进 NSScrollView,frame 取自窗口 contentView
             let scroll = NSScrollView::new(mtm);
             if let Some(cv) = ns_win.contentView() {
                 scroll.setFrame(cv.frame());
             }
-            // 子类(NSTextView/NSScrollView)→ NSView 靠 objc2 多步 deref coercion
-            // (同 pin_window.rs `content.addSubview(&image_view)` 已验证模式)
+            // 子类 → NSView 靠 objc2 多步 deref coercion(spike 验证)
             scroll.setDocumentView(Some(&text_view));
             scroll.setHasVerticalScroller(true);
             scroll.setAutoresizesSubviews(true);
             ns_win.setContentView(Some(&scroll));
 
-            // 取文本验证:打印字符数到日志,证明能读回
-            let s = text_view.string();
-            log::info!(
-                "[spike] NSTextView attached, chars={}",
-                s.to_string().chars().count()
-            );
+            log::info!("[native] compact editor NSTextView attached");
+        });
+    }
+
+    /// 主线程上取当前窗的 NSTextView(contentView=ScrollView → documentView=TextView)。
+    /// 仅在 run_on_main_thread 闭包内调用(NSView 系主线程对象)。
+    /// 返回 owned Retained(对 textview 额外 retain,scroll 已持有一份,无妨)。
+    fn current_text_view(window: &tauri::window::Window) -> Option<Retained<NSTextView>> {
+        let Ok(ptr) = window.ns_window() else {
+            return None;
+        };
+        if ptr.is_null() {
+            return None;
+        }
+        let ns_win: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
+        // contentView → NSScrollView(attach_textview 设的)
+        let content = ns_win.contentView()?;
+        let scroll = content.downcast::<NSScrollView>().ok()?;
+        // documentView → NSTextView
+        let doc = scroll.documentView()?;
+        doc.downcast::<NSTextView>().ok()
+    }
+
+    /// 把 text 塞进当前窗的 NSTextView(首次塞文本 / 并发再开换文本共用)。
+    /// 取窗走 Manager::get_window(原生 Window,非 webview)。
+    /// 与 attach_textview 都经 run_on_main_thread 排队,attach 先于 set_text 执行,
+    /// 故 set_text 跑到时 textview 已挂好。
+    pub fn set_text(app: &tauri::AppHandle, text: &str) {
+        let Some(window) = app.get_window(WINDOW_LABEL) else {
+            log::warn!("[native] set_text: window {WINDOW_LABEL} not found");
+            return;
+        };
+        let win = window.clone();
+        let text = text.to_string();
+        let _ = window.run_on_main_thread(move || {
+            let Some(tv) = current_text_view(&win) else {
+                log::warn!("[native] set_text: textview not attached yet");
+                return;
+            };
+            tv.setString(&NSString::from_str(&text));
+            log::info!("[native] compact editor text set ({} 字节)", text.len());
         });
     }
 }

@@ -9,7 +9,7 @@ tonic-build = { version = "0.12", optional = true }
 
 [dependencies]
 # Tauri
-tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api"] }
+tauri = { version = "2", features = ["tray-icon", "image-png", "macos-private-api", "unstable"] }
 tauri-plugin-global-shortcut = "2"
 tauri-plugin-single-instance = "2"
 tauri-plugin-store = "2"
