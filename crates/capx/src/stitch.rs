@@ -240,6 +240,10 @@ pub struct Stitcher {
     best_guess_streak: u32,
     /// 连续 NCC 验证失败且 score 几乎相同的次数（检测“画面静止但 NCC 不匹配”状态）。
     ncc_stuck_count: u32,
+    /// 上一次成功追加的 dy（用于检测连续相同 dy → 周期性假匹配/静止）。
+    last_appended_dy: Option<f64>,
+    /// 连续相同 dy 追加次数。
+    same_dy_count: u32,
 }
 
 impl Stitcher {
@@ -259,6 +263,8 @@ impl Stitcher {
             dy_history: VecDeque::with_capacity(DY_HISTORY_LEN),
             best_guess_streak: 0,
             ncc_stuck_count: 0,
+            last_appended_dy: None,
+            same_dy_count: 0,
         }
     }
 
@@ -361,6 +367,26 @@ impl Stitcher {
                 new_rows, self.config.min_scroll_px, max_scroll_limit, ncc.best_score);
             return Ok(false);
         }
+
+        // 周期性假匹配检测：连续 3 次以上 dy 几乎相同 → 画面实际没滚动，
+        // NCC 在周期性内容中找到的是假匹配（如文件列表行高倍数）。
+        let dy_rounded = (-dy).round();
+        if let Some(prev_dy) = self.last_appended_dy {
+            if (dy_rounded - prev_dy).abs() < 2.0 {
+                self.same_dy_count += 1;
+                if self.same_dy_count >= 3 {
+                    log::info!("[stitch] periodic false match detected (dy={:.0} ×{}), treating as stationary", dy_rounded, self.same_dy_count + 1);
+                    self.dy_history.clear();
+                    self.last_dy = None;
+                    self.same_dy_count = 0;
+                    self.last_appended_dy = None;
+                    return Ok(false);
+                }
+            } else {
+                self.same_dy_count = 0;
+            }
+        }
+        self.last_appended_dy = Some(dy_rounded);
 
         log::info!("[stitch] ncc={:.4} dy={:.1} new_rows={} canvas_h={}",
             ncc.best_score, dy, new_rows, self.canvas_h);
