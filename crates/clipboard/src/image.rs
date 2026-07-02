@@ -34,33 +34,51 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let w = rgba.width();
     let h = rgba.height();
 
-    // WebP 最大尺寸 16383px。超过则逐级降质量，50% 仍失败则放弃。
+    // WebP 最大尺寸 16383px（VP8 限制）。超过则直接用最低质量（50%）试一次。
+    // webp crate 的 encode() 超尺寸时 panic（内部 unwrap），所以需要 catch_unwind。
+    // 但不需要逐级——超尺寸时高质量和低质量行为一致（都基于 VP8 尺寸限制），
+    // 只需试一次最低质量。成功就用，失败就放弃。
     let webp_blob = if w > 16383 || h > 16383 {
-        log::warn!("[clipboard] Image too large for lossless WebP ({}×{}), trying lossy", w, h);
-        match encode_webp_lossy_with_budget(&rgba) {
-            Some(blob) => blob,
-            None => {
-                log::error!("[clipboard] WebP encoding failed at all quality levels, skipping");
+        log::warn!("[clipboard] Image exceeds WebP max dimension ({}×{}), trying q50", w, h);
+        let encoder = webp::Encoder::from_rgba(&rgba, w, h);
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(50.0).to_vec())) {
+            Ok(blob) if !blob.is_empty() => blob,
+            _ => {
+                log::error!("[clipboard] WebP q50 failed for {}×{}, skipping", w, h);
                 return Err(anyhow::anyhow!("WebP encoding failed for {}×{}", w, h));
             }
         }
     } else {
         let encoder = webp::Encoder::from_rgba(&rgba, w, h);
-        // 无损
+        let mut blob = None;
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode_lossless().to_vec())) {
-            Ok(blob) => blob,
-            Err(_) => {
-                log::warn!("[clipboard] lossless WebP failed ({}×{}), trying lossy", w, h);
-                match encode_webp_lossy_with_budget(&rgba) {
-                    Some(blob) => blob,
-                    None => {
-                        log::error!("[clipboard] All WebP encoding failed, skipping");
-                        return Err(anyhow::anyhow!("WebP encoding failed for {}×{}", w, h));
+            Ok(b) => blob = Some(b),
+            Err(_) => log::warn!("[clipboard] lossless WebP failed ({}×{}), trying lossy", w, h),
+        }
+        if blob.is_none() {
+            for quality in [90.0f32, 80.0, 70.0, 60.0, 50.0] {
+                let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    encoder.encode(quality).to_vec()
+                }));
+                if let Ok(b) = result {
+                    if !b.is_empty() {
+                        log::info!("[clipboard] WebP lossy q{}: {} bytes", quality, b.len());
+                        blob = Some(b);
+                        break;
                     }
                 }
             }
         }
+        match blob {
+            Some(b) => b,
+            None => {
+                log::error!("[clipboard] All WebP encoding failed for {}×{}", w, h);
+                return Err(anyhow::anyhow!("WebP encoding failed for {}×{}", w, h));
+            }
+        }
     };
+
+    // 缩略图：resize 240×240 → WebP 20%
 
 /// WebP 有损编码，逐级降质量（90%→80%→70%→60%→50%）。
 /// 每级用 catch_unwind 防 panic。50% 仍失败则返回 None。
