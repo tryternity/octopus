@@ -1062,4 +1062,34 @@ mod tests {
             }
         }
     }
+
+    #[test]
+    fn test_sobel_pure_color_degrades() {
+        // 真正的纯色帧（固定像素值，无渐变）
+        let img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> = image::ImageBuffer::from_pixel(TW, TH, image::Rgba([128, 128, 128, 255]));
+        let gray = GrayBuf::from_rgba_roi(&img, 0, TH as usize);
+        let (_feat, has_feat) = to_feature_map(&gray);
+        assert!(!has_feat, "纯色帧应无 Sobel 特征");
+    }
+
+    #[test]
+    fn test_sobel_textured_has_features() {
+        let f = make_frame_textured(TW, TH, 0, 2);
+        let gray = GrayBuf::from_rgba_roi(&f, 0, TH as usize);
+        let (_feat, has_feat) = to_feature_map(&gray);
+        assert!(has_feat, "密集条纹帧应有 Sobel 特征");
+    }
+
+    #[test]
+    fn test_ncc_matches_known_offset() {
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 30);
+        let canvas_strip = GrayBuf::from_rgba_roi(&f0, (TH - STRIP_H) as usize, TH as usize);
+        let template = canvas_strip.to_gray_image();
+        let search_region = GrayBuf::from_rgba_roi(&f1, 0, TH as usize).to_gray_image();
+        let result = ncc_match(&template, &search_region);
+        assert!(result.is_some(), "NCC 应返回匹配结果");
+        let ncc = result.unwrap();
+        assert!(ncc.best_score > 0.75, "NCC 分数应 > 0.75: {}", ncc.best_score);
+    }
 }
