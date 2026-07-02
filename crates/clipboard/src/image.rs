@@ -34,14 +34,10 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let w = rgba.width();
     let h = rgba.height();
 
-    // WebP 最大尺寸 16383px（无损和有损都是）。超长图降级为 JPEG。
+    // WebP 最大尺寸 16383px。超长图降级为 JPEG（逐级降质量直到体积可接受）。
     let webp_blob = if w > 16383 || h > 16383 {
         log::warn!("[clipboard] Image too large for WebP ({}×{}), falling back to JPEG", w, h);
-        let mut jpeg_buf = Vec::new();
-        let mut jpeg_encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 90);
-        jpeg_encoder.encode_image(img)
-            .map_err(|e| anyhow::anyhow!("JPEG encoding failed: {}", e))?;
-        jpeg_buf
+        encode_jpeg_with_budget(img, 10)?
     } else {
         let encoder = webp::Encoder::from_rgba(&rgba, w, h);
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode_lossless().to_vec())) {
@@ -52,18 +48,39 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
                     Ok(blob) => blob,
                     Err(_) => {
                         log::warn!("[clipboard] lossy WebP also failed, falling back to JPEG");
-                        let mut jpeg_buf = Vec::new();
-                        let mut jpeg_encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 90);
-                        jpeg_encoder.encode_image(img)
-                            .map_err(|e| anyhow::anyhow!("JPEG fallback encoding failed: {}", e))?;
-                        jpeg_buf
+                        encode_jpeg_with_budget(img, 10)?
                     }
                 }
             }
         }
     };
 
-    // 缩略图：resize 240×240 → WebP 20%
+/// JPEG 编码，逐级降质量（90→70→50→30→10）直到体积低于原始像素的 min_ratio_pct%。
+/// 超长图（>16383px）无法用 WebP 时使用。
+fn encode_jpeg_with_budget(img: &::image::DynamicImage, min_ratio_pct: u8) -> Result<Vec<u8>> {
+    let raw_size = (img.width() as usize) * (img.height() as usize) * 4; // RGBA 原始字节
+    let budget = raw_size * min_ratio_pct as usize / 100;
+
+    for quality in [90u8, 70, 50, 30, 10] {
+        let mut buf = Vec::new();
+        let mut enc = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
+        if enc.encode_image(img).is_err() {
+            continue;
+        }
+        log::info!("[clipboard] JPEG q{}: {} bytes (budget {})", quality, buf.len(), budget);
+        if buf.len() <= budget || quality == 10 {
+            return Ok(buf);
+        }
+    }
+
+    let mut buf = Vec::new();
+    let mut enc = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 10);
+    enc.encode_image(img).map_err(|e| anyhow::anyhow!("JPEG encoding failed at q10: {}", e))?;
+    log::warn!("[clipboard] JPEG budget exceeded, using q10 ({} bytes)", buf.len());
+    Ok(buf)
+}
+
+// 缩略图：resize 240×240 → WebP 20%
     // 针对超大长图，Lanczos3 插值开销过大；改用轻量级 Triangle (双线性) 过滤大幅降低 CPU 计算耗时
     let thumb_img = img.resize(240, 240, ::image::imageops::FilterType::Triangle);
     let thumb_rgba = thumb_img.to_rgba8();
