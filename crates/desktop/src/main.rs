@@ -5,6 +5,7 @@ mod config;
 mod clipboard_commands;
 mod compact_editor_commands;
 mod compact_editor_window;
+mod compact_editor_native;
 mod image_preview_commands;
 mod image_preview_window;
 mod image_migration;

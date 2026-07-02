@@ -19,19 +19,24 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
         let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
         crate::settings_window::set_dock_icon();
     }
-    let _ = WebviewWindowBuilder::new(
-        app_handle,
-        WINDOW_LABEL,
-        WebviewUrl::default(),
-    )
-    .title("编辑")
-    .inner_size(WIDTH, HEIGHT)
-    .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
-    .decorations(true)
-    .resizable(true)
-    .center()
-    .visible(true)
-    .build();
+    match WebviewWindowBuilder::new(app_handle, WINDOW_LABEL, WebviewUrl::default())
+        .title("编辑")
+        .inner_size(WIDTH, HEIGHT)
+        .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
+        .decorations(true)
+        .resizable(true)
+        .center()
+        .visible(true)
+        .build()
+    {
+        Ok(window) => {
+            // 临时 spike:建 webview 窗后挂 NSTextView 覆盖在 webview 上方验证
+            // (Task 5 会把这里整体换成无 webview 的 WindowBuilder 原生窗)
+            #[cfg(target_os = "macos")]
+            crate::compact_editor_native::spike_attach_textview(&window);
+        }
+        Err(e) => log::warn!("compact editor window build failed: {e}"),
+    }
 }
 
 /// macOS: 精简编辑器窗口关闭时切回 Accessory（仅托盘）。
