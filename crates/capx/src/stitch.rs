@@ -333,7 +333,7 @@ impl Stitcher {
         }
 
         let new_rows = (-dy).round() as u32;
-        let max_scroll_limit = (eff_bottom - eff_top) * 4 / 5;
+        let max_scroll_limit = (eff_bottom - eff_top) * 9 / 10;
 
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
             log::info!("[stitch] skipped frame: new_rows={} invalid (min={}, max={}) (ncc={:.4})",
@@ -588,7 +588,7 @@ impl Stitcher {
             return Ok(false);
         }
         let new_rows = (-dy).round() as u32;
-        let max_scroll_limit = (eff_bottom - eff_top) * 4 / 5;
+        let max_scroll_limit = (eff_bottom - eff_top) * 9 / 10;
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
             self.last_dy = None;
             return Ok(false);
