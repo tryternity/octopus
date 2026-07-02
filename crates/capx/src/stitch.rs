@@ -434,7 +434,7 @@ impl Stitcher {
 
         // 降级：1D 灰度投影匹配
         if let Some((dy, conf, sad)) = self.try_match_1d_projection(
-            canvas_gray, curr_gray, x_start, x_end, eff_top, eff_bottom, max_scroll, 0.0,
+            canvas_gray, curr_gray, x_start, x_end, eff_top, eff_bottom, max_scroll, 10.0,
         ) {
             log::info!("[stitch] fallback: 1D projection match, dy={:.1} conf={:.4}", dy, conf);
             self.best_guess_streak = 0;

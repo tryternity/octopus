@@ -970,6 +970,11 @@ pub async fn start_scroll_recording(
             (hit, wid, target_wid)
         };
 
+        #[cfg(not(target_os = "macos"))]
+        let exclude_wid: u32 = 0;
+        #[cfg(not(target_os = "macos"))]
+        let target_wid: Option<u32> = None;
+
         // 获取所有截图窗口 label（用于 set_ignore_cursor_events）
         let scroll_labels: Vec<String> = ah
             .webview_windows()
