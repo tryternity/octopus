@@ -135,7 +135,7 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 
         // 串行创建窗口（同时创建多个全屏 WebView 会导致 macOS segfault）
         if i > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(150));
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         }
 
         let window_result = WebviewWindowBuilder::new(
@@ -168,10 +168,11 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     }
 
     // 超时 fallback：3s 后如果仍有窗口未显示，强制全部显示（防死锁）
+    // 用 tokio::spawn 避免 std::thread 泄漏（tokio task 在运行时回收）
     {
         let ah = app_handle.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(3));
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             let count = READY_COUNT.load(std::sync::atomic::Ordering::SeqCst);
             let total = TOTAL_WINDOWS.load(std::sync::atomic::Ordering::SeqCst);
             if count < total {
