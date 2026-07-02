@@ -312,8 +312,8 @@ impl Stitcher {
             return Ok(false);
         }
 
-        // ROI 灰度转换：覆盖最大可能搜索范围
-        let roi_top = eff_top.max(eff_bottom.saturating_sub(STRIP_H + MAX_SCROLL * 2)) as usize;
+        // 全有效区域灰度转换（不限制 ROI——快速滚动时内容可能出现在有效区任意位置）
+        let roi_top = eff_top as usize;
         let roi_bottom = eff_bottom as usize;
         let curr_gray = GrayBuf::from_rgba_roi(frame, roi_top, roi_bottom);
         let canvas_gray = self.extract_canvas_bottom_gray(STRIP_H);
@@ -354,10 +354,10 @@ impl Stitcher {
         let dy = -new_rows_raw;
 
         // dy 方向检查
+        // 注意：dy≈0 的帧不写入 dy_history，避免稀释滚动速度中位数导致 best-guess 失效。
+        // 只有真正追加内容（dy < 0 且通过幅度检查）或 quick_stationary_check 确认静止时才更新 history。
         if dy >= 0.0 {
             log::info!("[stitch] skipped frame: dy={:.1} >= 0.0 (ncc={:.4})", dy, ncc.best_score);
-            self.dy_history.push_back(dy);
-            if self.dy_history.len() > DY_HISTORY_LEN { self.dy_history.pop_front(); }
             return Ok(false);
         }
 
@@ -367,8 +367,6 @@ impl Stitcher {
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
             log::info!("[stitch] skipped frame: new_rows={} invalid (min={}, max={}) (ncc={:.4})",
                 new_rows, self.config.min_scroll_px, max_scroll_limit, ncc.best_score);
-            self.dy_history.push_back(dy);
-            if self.dy_history.len() > DY_HISTORY_LEN { self.dy_history.pop_front(); }
             return Ok(false);
         }
 
