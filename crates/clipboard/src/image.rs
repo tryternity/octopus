@@ -89,34 +89,7 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     };
 
     // 缩略图：resize 240×240 → WebP 20%
-
-/// WebP 有损编码，逐级降质量（90%→80%→70%→60%→50%）。
-/// 每级用 catch_unwind 防 panic。50% 仍失败则返回 None。
-fn encode_webp_lossy_with_budget(rgba: &::image::RgbaImage) -> Option<Vec<u8>> {
-    let encoder = webp::Encoder::from_rgba(rgba, rgba.width(), rgba.height());
-    for quality in [90.0f32, 80.0, 70.0, 60.0, 50.0] {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            encoder.encode(quality).to_vec()
-        }));
-        match result {
-            Ok(blob) if !blob.is_empty() => {
-                log::info!("[clipboard] WebP lossy q{}: {} bytes ({}×{})",
-                    quality, blob.len(), rgba.width(), rgba.height());
-                return Some(blob);
-            }
-            Ok(_) => {
-                log::warn!("[clipboard] WebP lossy q{} produced empty blob", quality);
-            }
-            Err(_) => {
-                log::warn!("[clipboard] WebP lossy q{} panicked", quality);
-            }
-        }
-    }
-    None
-}
-
-// 缩略图：resize 240×240 → WebP 20%
-    // 针对超大长图，Lanczos3 插值开销过大；改用轻量级 Triangle (双线性) 过滤大幅降低 CPU 计算耗时
+    // 针对超大长图，Triangle 插值降低 CPU 开销
     let thumb_img = img.resize(240, 240, ::image::imageops::FilterType::Triangle);
     let thumb_rgba = thumb_img.to_rgba8();
     let thumb_encoder = webp::Encoder::from_rgba(&thumb_rgba, thumb_rgba.width(), thumb_rgba.height());
@@ -126,18 +99,16 @@ fn encode_webp_lossy_with_budget(rgba: &::image::RgbaImage) -> Option<Vec<u8>> {
     Ok(EncodedImage { webp_blob, thumb_blob })
 }
 
-/// 已解码的 DynamicImage → WebP 100% 无损 + 缩略图 WebP 20%（避免重复解码）。
-///
-/// rebase 合并时与 main 的 `encode_to_webp_from_image` 重复——统一收敛到本函数
-/// （`encode_to_webp(img)`），watcher / image_migration / screenshot 全走它，
-/// 删除冗余的 `_from_image` 变体。
+/// SHA-256 十六进制哈希。
 pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest;
     let mut hasher = Sha256::new();
     hasher.update(data);
     let result = hasher.finalize();
     let mut hex = String::with_capacity(64);
     for byte in result {
-        hex.push_str(&format!("{:02x}", byte));
+        use std::fmt::Write;
+        write!(&mut hex, "{:02x}", byte).unwrap();
     }
     hex
 }
