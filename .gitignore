@@ -10,6 +10,7 @@ test.pcm
 tmp.wav
 /.worktrees/
 /node_modules/
+/crates/desktop/dist/
 fanjian
 /fanjian/
 DeepFilterNet

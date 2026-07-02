@@ -1174,7 +1174,7 @@ pub async fn start_scroll_recording(
             let src_h = (canvas.height() as u64 * canvas.width() as u64 / preview_w as u64).min(canvas.height() as u64) as u32;
             let crop_src_h = src_h.min(max_preview_h * canvas.width() / preview_w).min(canvas.height());
             let crop_y = canvas.height() - crop_src_h;
-            let canvas_cropped = image::imageops::crop_imm(canvas, 0, crop_y, canvas.width(), crop_src_h).to_image();
+            let canvas_cropped = image::imageops::crop_imm(&canvas, 0, crop_y, canvas.width(), crop_src_h).to_image();
             let preview_h = (preview_w * canvas_cropped.height() / canvas_cropped.width()).min(max_preview_h);
             let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::CatmullRom);
             let mut preview_png = Vec::new();
@@ -1203,7 +1203,7 @@ pub async fn start_scroll_recording(
             let _ = stitcher.finalize(lf);
 
             // finalize 后再 emit 一帧预览（spawn_blocking 避免阻塞事件循环）
-            let canvas = stitcher.canvas().clone();
+            let canvas = stitcher.canvas();
             let preview_b64 = tokio::task::spawn_blocking(move || {
                 let preview_w = 400u32;
                 let max_preview_h = 1200u32;
@@ -1239,56 +1239,62 @@ pub async fn start_scroll_recording(
             return;
         }
 
-        let canvas = stitcher.canvas().clone();
-        let mut png_bytes = Vec::new();
-        let _ = canvas.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png);
+        let canvas = stitcher.canvas();
+        let ah3 = ah.clone();
+        let result = tokio::task::spawn_blocking(move || {
+            let mut png_bytes = Vec::new();
+            let _ = canvas.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png);
 
-        let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
-        let img = match image::load_from_memory(&png_bytes) { Ok(i) => i, Err(_) => return };
-        let encoded = match octopus_clipboard::image::encode_to_webp(&img) { Ok(e) => e, Err(_) => return };
+            let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
+            let img = match image::load_from_memory(&png_bytes) { Ok(i) => i, Err(_) => return None };
+            let encoded = match octopus_clipboard::image::encode_to_webp(&img) { Ok(e) => e, Err(_) => return None };
 
-        let item_id = octopus_clipboard::store::chrono_millis();
-        let _ = octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::insert_image_data(conn, &hash, &encoded.webp_blob, &encoded.thumb_blob, img.width() as i64, img.height() as i64)
-        });
-        let _ = octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
-                id: item_id, item_type: octopus_clipboard::ItemType::Image,
-                content: hash.clone(), search_text: String::new(),
-                created_at: octopus_clipboard::store::iso_now(),
-                blob_hash: Some(hash), width: Some(img.width() as i64),
-                height: Some(img.height() as i64), has_thumbnail: Some(1),
-                file_count: None, is_rich: false,
-            })
-        });
+            let item_id = octopus_clipboard::store::chrono_millis();
+            let _ = octopus_infra::db::with_db(|conn| {
+                octopus_clipboard::store::insert_image_data(conn, &hash, &encoded.webp_blob, &encoded.thumb_blob, img.width() as i64, img.height() as i64)
+            });
+            let _ = octopus_infra::db::with_db(|conn| {
+                octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
+                    id: item_id, item_type: octopus_clipboard::ItemType::Image,
+                    content: hash.clone(), search_text: String::new(),
+                    created_at: octopus_clipboard::store::iso_now(),
+                    blob_hash: Some(hash.clone()), width: Some(img.width() as i64),
+                    height: Some(img.height() as i64), has_thumbnail: Some(1),
+                    file_count: None, is_rich: false,
+                })
+            });
 
-        let png_b64 = general_purpose::STANDARD.encode(&png_bytes);
+            // 写入系统剪贴板
+            if let Some(handle) = ah3.try_state::<std::sync::Arc<ClipboardHandle>>() {
+                let _ = handle.write_image(&png_bytes);
+            }
 
-        // 写入系统剪贴板（让用户可以直接粘贴）
-        if let Some(handle) = ah.try_state::<std::sync::Arc<ClipboardHandle>>() {
-            let _ = handle.write_image(&png_bytes);
-        }
+            let png_b64 = general_purpose::STANDARD.encode(&png_bytes);
+            Some((serde_json::json!({ "id": item_id, "png_base64": png_b64 }), png_bytes))
+        }).await.unwrap_or(None);
 
-        let _ = ah.emit("scroll://done", serde_json::json!({ "id": item_id, "png_base64": png_b64 }));
-        let _ = ah.emit("clipboard://changed", ());
+        if let Some((done_payload, png_bytes)) = result {
+            let _ = ah.emit("scroll://done", done_payload);
+            let _ = ah.emit("clipboard://changed", ());
 
-        // 关闭截图窗口
-        close_all_screenshot_windows(&ah);
-
-        // 保存模式：弹保存对话框
-        if stop_mode == ScrollStopMode::Save {
-            use tauri_plugin_dialog::DialogExt;
-            let save_path = ah.dialog()
-                .file()
-                .add_filter("PNG 图片", &["png"])
-                .set_file_name("scroll-screenshot.png")
-                .blocking_save_file();
-            if let Some(path) = save_path {
-                if let Some(p) = path.as_path() {
-                    let _ = std::fs::write(p, &png_bytes);
+            // 保存模式：弹保存对话框
+            if stop_mode == ScrollStopMode::Save {
+                use tauri_plugin_dialog::DialogExt;
+                let save_path = ah.dialog()
+                    .file()
+                    .add_filter("PNG 图片", &["png"])
+                    .set_file_name("scroll-screenshot.png")
+                    .blocking_save_file();
+                if let Some(path) = save_path {
+                    if let Some(p) = path.as_path() {
+                        let _ = std::fs::write(p, &png_bytes);
+                    }
                 }
             }
         }
+
+        // 关闭截图窗口
+        close_all_screenshot_windows(&ah);
     });
 
     Ok(())
