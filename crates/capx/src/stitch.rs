@@ -132,8 +132,6 @@ pub struct Stitcher {
     canvas_buf: Vec<u8>,
     /// 惰性重建缓存。append 后置 None，canvas() 调用时按需重建。
     canvas_cache: std::cell::UnsafeCell<Option<RgbaImage>>,
-    /// 灰度参考帧（连续 buffer），用于空间模板匹配
-    reference: GrayBuf,
     sticky_top: u32,
     sticky_bottom: u32,
     detected: bool,
@@ -155,7 +153,6 @@ impl Stitcher {
             canvas_h: h,
             canvas_buf: first_frame.into_raw(),
             canvas_cache: std::cell::UnsafeCell::new(None),
-            reference: GrayBuf { data: Vec::new(), width: 0 },
             sticky_top: 0,
             sticky_bottom: 0,
             detected: false,
@@ -502,7 +499,7 @@ impl Stitcher {
         _confidence: f64,
         best_sad: f64,
         frame: &RgbaImage,
-        curr_buf: &GrayBuf,
+        _curr_buf: &GrayBuf,
         w: u32,
         eff_top: u32,
         eff_bottom: u32,
