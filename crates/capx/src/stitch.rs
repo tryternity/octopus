@@ -1,5 +1,6 @@
 use anyhow::Result;
 use image::RgbaImage;
+use std::collections::VecDeque;
 
 // ===== 拼接算法常量（原散落在 find_overlap_spatial_ext 与 process_frame 中的魔法数字）=====
 
@@ -23,6 +24,27 @@ const X_END_RATIO: f64 = 0.80;
 const SAMPLE_STEP_X: usize = 2;
 /// sticky 区域检测的最大高度（像素），顶部/底部各扫此高度。
 const STICKY_DETECT_MAX: u32 = 80;
+
+// ===== 健壮性优化常量 =====
+
+/// 时序平滑：静止判断的 dy 均值阈值（近 N 帧 |dy| 均值 < 此值 → 静止）
+const STATIONARY_DY_THRESHOLD: f64 = 2.0;
+/// dy 历史长度
+const DY_HISTORY_LEN: usize = 8;
+/// 纹理密度评估：水平梯度阈值
+const TEXTURE_EDGE_THRESHOLD: i32 = 20;
+/// 动态阈值：纹理密度奖励系数（texture ∈ [0,1] × 30 → 最多加 30）
+const TEXTURE_BONUS_FACTOR: f64 = 30.0;
+/// 动态阈值：历史基线倍数（sad_baseline × 1.5 + 5）
+const SAD_BASELINE_MULTIPLIER: f64 = 1.5;
+/// 动态阈值：历史基线 padding
+const SAD_BASELINE_PADDING: f64 = 5.0;
+/// 动态阈值：EMA 平滑系数
+const SAD_BASELINE_ALPHA: f64 = 0.3;
+/// 降级 2：缩小模板高度
+const FALLBACK_STRIP_H: u32 = 40;
+/// 降级 2：阈值放宽倍数
+const FALLBACK_SAD_MULTIPLIER: f64 = 1.5;
 
 /// 连续 row-major 灰度 buffer，替代 image::GrayImage。
 /// 消除 get_pixel() 的坐标计算 + 边界检查开销，用整行切片直访。
@@ -86,6 +108,10 @@ pub struct Stitcher {
     config: StitchConfig,
     /// 上一次成功拼接的滚动位移，用于软速度罚分防止周期跳变
     last_dy: Option<f64>,
+    /// 最近若干帧的 dy 历史，用于时序平滑判断静止。
+    dy_history: VecDeque<f64>,
+    /// 历史成功匹配的 SAD 均值（EMA）。
+    sad_baseline: f64,
 }
 
 impl Stitcher {
@@ -103,6 +129,8 @@ impl Stitcher {
             detected: false,
             config,
             last_dy: None,
+            dy_history: VecDeque::with_capacity(DY_HISTORY_LEN),
+            sad_baseline: 0.0,
         }
     }
 
