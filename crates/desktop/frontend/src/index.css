@@ -109,3 +109,19 @@ html, body {
   border-radius: 0.5px;
   background: rgba(120, 113, 108, 0.15);
 }
+
+/* TipTap / ProseMirror 富文本区。
+   WKWebView 下空文档需保证足够点击区域（min-height），并显式声明可编辑语义，
+   避免 contenteditable 聚焦/输入异常。 */
+.ProseMirror {
+  outline: none;
+  min-height: 50vh;
+  -webkit-user-modify: read-write;
+  word-break: break-word;
+}
+.ProseMirror:focus {
+  outline: none;
+}
+.ProseMirror p:first-child {
+  margin-top: 0;
+}

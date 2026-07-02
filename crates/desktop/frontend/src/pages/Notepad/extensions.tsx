@@ -61,7 +61,10 @@ export function useNoteEditor(
   onUpdate: (html: string) => void,
 ) {
   const editor = useEditor({
-    immediatelyRender: false, // SSR/桌面端安全：返回 Editor | null
+    // 桌面端纯客户端：同步创建 editor。
+    // 用 true 避免 editor 从 null→实例时 EditorContent 内部 key 抖动（unmount/remount
+    // 会清空 NodeViews 并移动 view.dom），在 WKWebView 下该异步时序更脆弱。
+    immediatelyRender: true,
     extensions: [
       StarterKit,
       Link.configure({ openOnClick: false }),
