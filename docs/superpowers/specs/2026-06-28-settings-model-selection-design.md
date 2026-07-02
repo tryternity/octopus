@@ -1,7 +1,7 @@
 # 设置页「模型选择」Card 设计
 
 > 日期：2026-06-28
-> 状态：设计中（待实施）
+> 状态：✅ 实施完成（ASR引擎/LLM模型/OCR模型选择 + 热重载预热 + 前端 select 下拉）
 > 关联：[model-mgmt-ui GUI 模型管理页](./)（侧栏「模型管理」Tab，下载/校验）、[ocr 引擎](../../../crates/ocr/src/engine.rs)（`OcrEngine::instance` OnceLock 单例）
 
 ## 1. 背景 / 动机
