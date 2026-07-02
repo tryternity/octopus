@@ -428,14 +428,13 @@ impl Stitcher {
         }
 
         // Best-Guess：历史 dy 中位数估算
-        if self.best_guess_streak < 1 {
+        // 熔断后仍重试：当用户重新开始滚动时 NCC 恢复匹配会重置 streak
+        if self.best_guess_streak < 3 {
             if let Some(dy) = self.estimate_dy_hint() {
                 log::info!("[stitch] best-guess dy={:.1} (streak={})", dy, self.best_guess_streak + 1);
                 self.best_guess_streak += 1;
                 return self.apply_fallback_match(dy, 0.0, 0.0, frame, curr_gray, w, eff_top, eff_bottom);
             }
-        } else {
-            log::info!("[stitch] best-guess circuit breaker tripped");
         }
 
         log::info!("[stitch] all fallbacks exhausted, skipping frame");
