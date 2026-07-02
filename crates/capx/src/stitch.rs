@@ -238,6 +238,8 @@ pub struct Stitcher {
     dy_history: VecDeque<f64>,
     /// 连续 best-guess 次数（主匹配成功时归零，超过 3 次熔断）。
     best_guess_streak: u32,
+    /// 连续 NCC 验证失败且 score 几乎相同的次数（检测“画面静止但 NCC 不匹配”状态）。
+    ncc_stuck_count: u32,
 }
 
 impl Stitcher {
@@ -256,6 +258,7 @@ impl Stitcher {
             last_dy: None,
             dy_history: VecDeque::with_capacity(DY_HISTORY_LEN),
             best_guess_streak: 0,
+            ncc_stuck_count: 0,
         }
     }
 
@@ -315,9 +318,21 @@ impl Stitcher {
 
         // 多道验证
         if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32) {
-            log::info!("[stitch] NCC match failed validation (score={:.4})", ncc.best_score);
+            // NCC stuck 检测：连续失败且 score 几乎相同 → 画面静止但有渲染差异
+            if self.ncc_stuck_count >= 5 {
+                log::info!("[stitch] NCC stuck (score={:.4}, count={}), treating as stationary", ncc.best_score, self.ncc_stuck_count);
+                self.dy_history.clear();
+                self.best_guess_streak = 0;
+                self.last_dy = None;
+                return Ok(false);
+            }
+            log::info!("[stitch] NCC match failed validation (score={:.4}, stuck={})", ncc.best_score, self.ncc_stuck_count);
+            self.ncc_stuck_count += 1;
             return self.try_fallback(frame, &curr_gray, &canvas_gray, w, eff_top, eff_bottom);
         }
+
+        // NCC 成功：重置 stuck 计数
+        self.ncc_stuck_count = 0;
 
         // 亚像素插值
         let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
