@@ -76,6 +76,24 @@ impl GrayBuf {
     }
 }
 
+/// 评估模板条区域的纹理密度（边缘像素占比）。
+/// 复用 sample_cols 的相邻列对做水平差分，O(STRIP_H × n_cols)，开销极低。
+fn estimate_texture_density(buf: &GrayBuf, sample_cols: &[usize], template_y: u32) -> f64 {
+    let mut edge_count = 0u32;
+    let mut total = 0u32;
+    for dy in 0..STRIP_H {
+        let row = buf.row((template_y + dy) as usize);
+        for w in sample_cols.windows(2) {
+            total += 1;
+            if (row[w[0]] as i32 - row[w[1]] as i32).abs() > TEXTURE_EDGE_THRESHOLD {
+                edge_count += 1;
+            }
+        }
+    }
+    if total == 0 { return 0.0; }
+    edge_count as f64 / total as f64
+}
+
 pub struct StitchConfig {
     /// 最小有效滚动位移（像素）。低于此值视为静止。
     pub min_scroll_px: f64,
@@ -227,6 +245,15 @@ impl Stitcher {
         unsafe {
             *self.canvas_cache.get() = None;
         }
+    }
+
+    /// 根据当前帧纹理密度 + 历史 SAD 基线动态计算 SAD 接受阈值。
+    fn dynamic_sad_accept(&self, texture: f64) -> f64 {
+        // 纹理越丰富 → 绝对 SAD 天然更高 → 允许更高阈值
+        let texture_bonus = texture * TEXTURE_BONUS_FACTOR;
+        // 历史基线浮动：EMA 均值的倍数 + padding 作为上界
+        let baseline_cap = self.sad_baseline * SAD_BASELINE_MULTIPLIER + SAD_BASELINE_PADDING;
+        (SAD_ACCEPT + texture_bonus).min(baseline_cap).max(SAD_ACCEPT)
     }
 
     pub fn canvas(&self) -> &RgbaImage {
