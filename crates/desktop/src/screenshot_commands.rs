@@ -1022,6 +1022,8 @@ pub async fn start_scroll_recording(
             let mut cur_passthrough = true;
             let mut last_active_pid: i32 = 0;
             let mut activate_check_count = 0u32;
+            let mut last_check_x: f64 = 0.0;
+            let mut last_check_y: f64 = 0.0;
             while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
                 poll.tick().await;
                 let (mouse_x, mouse_y) = if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
@@ -1046,17 +1048,22 @@ pub async fn start_scroll_recording(
                     cur_passthrough = want;
                 }
 
-                // 每 ~500ms（每 17 个 tick）检测鼠标下方的应用，如果未激活则激活它。
-                // 这样用户不需要先点击目标应用，直接在选区内滚动即可。
+                // 每 ~800ms（每 50 个 tick）且鼠标移动超过 10px 时检测鼠标下方的应用。
+                // CGWindowListCopyWindowInfo 是昂贵的系统 API，避免高频空转。
                 activate_check_count += 1;
-                if want && activate_check_count >= 17 {
+                if want && activate_check_count >= 50 {
                     activate_check_count = 0;
-                    #[cfg(target_os = "macos")]
-                    {
-                        if let Some(pid) = get_window_pid_at_point(mouse_x, mouse_y) {
-                            if pid != last_active_pid {
-                                activate_app_by_pid(&mon_ah, pid);
-                                last_active_pid = pid;
+                    let moved = (mouse_x - last_check_x).abs() + (mouse_y - last_check_y).abs();
+                    if moved > 10.0 {
+                        last_check_x = mouse_x;
+                        last_check_y = mouse_y;
+                        #[cfg(target_os = "macos")]
+                        {
+                            if let Some(pid) = get_window_pid_at_point(mouse_x, mouse_y) {
+                                if pid != last_active_pid {
+                                    activate_app_by_pid(&mon_ah, pid);
+                                    last_active_pid = pid;
+                                }
                             }
                         }
                     }
