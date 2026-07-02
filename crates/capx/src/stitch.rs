@@ -839,6 +839,31 @@ mod tests {
         img
     }
 
+    /// 合成不同纹理密度的测试帧。
+    /// texture_level: 0=纯色背景, 1=稀疏文字, 2=密集条纹
+    fn make_frame_textured(width: u32, height: u32, scroll_offset: u32, texture_level: u32) -> RgbaImage {
+        let mut img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let mut v = ((y + scroll_offset) % 256) as u8;
+                match texture_level {
+                    0 => {}, // 纯色，仅渐变
+                    1 => { // 稀疏文字：每 20 行、每 50 列一个亮点
+                        if y % 20 == 0 && x % 50 == 0 { v = v.saturating_add(100); }
+                    }
+                    2 => { // 密集条纹：每 5 行强对比
+                        if (y + scroll_offset) % 5 == 0 { v = 255 - v; }
+                        if x % 3 == 0 { v = v.saturating_add(60); }
+                    }
+                    _ => {},
+                }
+                let px = Rgba([v, v, v, 255]);
+                img.put_pixel(x, y, px);
+            }
+        }
+        img
+    }
+
     /// 构造一个带 sticky 顶/底区域的帧：顶部 `top_h` 行和底部 `bot_h` 行固定不变，
     /// 中间内容随 `scroll_offset` 变化。
     fn make_frame_with_sticky(
@@ -1008,5 +1033,66 @@ mod tests {
                 assert_eq!(a, b, "灰度不一致 @ ({},{})", x, y);
             }
         }
+    }
+
+    #[test]
+    fn test_is_stationary_with_history() {
+        let f0 = make_frame(TW, TH, 0);
+        let s = Stitcher::new(f0, StitchConfig::default());
+
+        // 无 dy_history → 不静止
+        assert!(!s.is_stationary(), "空 history 不应判静止");
+
+        // 手动注入 dy_history 模拟持续滚动 + 回弹
+        let mut s2 = Stitcher::new(make_frame(TW, TH, 0), StitchConfig::default());
+        s2.dy_history.extend(vec![-15.0, -12.0, -10.0, -3.0]);
+        assert!(!s2.is_stationary(), "回弹帧 history 均值 -10 不应判静止");
+
+        // 手动注入接近静止的 history
+        let mut s3 = Stitcher::new(make_frame(TW, TH, 0), StitchConfig::default());
+        s3.dy_history.extend(vec![-1.0, 0.0, -0.5, 1.0, 0.0]);
+        assert!(s3.is_stationary(), "均值接近 0 应判静止");
+    }
+
+    #[test]
+    fn test_dynamic_sad_accept_scales_with_texture() {
+        let mut s = Stitcher::new(make_frame(TW, TH, 0), StitchConfig::default());
+
+        // sad_baseline = 0 时，baseline_cap = 5.0
+        // 低纹理且 baseline=0 → max(SAD_ACCEPT, min(bonus, 5)) = max(7.5, min(...)) = 7.5
+        let low = s.dynamic_sad_accept(0.05);
+        assert_eq!(low, SAD_ACCEPT, "低纹理且 baseline=0 应返回基础阈值");
+
+        // 设定 baseline 后
+        s.sad_baseline = 10.0;
+        // baseline_cap = 10*1.5+5 = 20
+        // 高纹理：texture=0.5 → bonus=15 → (7.5+15).min(20).max(7.5) = 20
+        let high = s.dynamic_sad_accept(0.5);
+        assert!(high > SAD_ACCEPT, "高纹理应放宽阈值: {}", high);
+        assert!(high <= 20.0, "不应超过 baseline_cap: {}", high);
+    }
+
+    #[test]
+    fn test_fallback_expanded_search_range() {
+        // 构造超出 MAX_SCROLL 的快速滚动：init 后直接跳 300px
+        let f0 = make_frame(TW, TH, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default());
+        let f1 = make_frame(TW, TH, 0);
+        s.process_frame(&f1).unwrap(); // init
+        // 300px 超出 MAX_SCROLL=220，主匹配应失败，降级 1 扩大到 440 应成功
+        let f2 = make_frame(TW, TH, 300);
+        let added = s.process_frame(&f2).unwrap();
+        assert!(added, "快速滚动应通过降级 1（扩大搜索范围）匹配");
+    }
+
+    #[test]
+    fn test_fallback_1d_projection_low_texture() {
+        // 低纹理场景：纯色背景 + 稀疏文字
+        let f0 = make_frame_textured(TW, TH, 0, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default());
+        let f1 = make_frame_textured(TW, TH, 0, 0);
+        s.process_frame(&f1).unwrap(); // init
+        let f2 = make_frame_textured(TW, TH, 30, 0);
+        let _ = s.process_frame(&f2).unwrap(); // 验证不 panic
     }
 }
