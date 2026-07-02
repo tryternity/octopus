@@ -692,14 +692,14 @@ fn find_overlap_spatial_ext(
 
     // 静止判定 + 置信度估计 + 接受门控
     let confidence = estimate_confidence(
-        ref_buf, curr_buf, &sample_cols, best_y_offset, min_y_offset, max_y_offset, strip_h,
+        ref_buf, curr_buf, &sample_cols, best_y_offset.round() as u32, min_y_offset, max_y_offset, strip_h,
     );
     decide_match(best_y_offset, best_sad_avg, stationary_sad_avg, confidence, template_y, sad_accept)
 }
 
 /// 根据搜索结果做最终判定：静止 / 接受 / 拒绝。
 fn decide_match(
-    best_y_offset: u32,
+    best_y_offset: f64,
     best_sad_avg: f64,
     stationary_sad_avg: f64,
     confidence: f64,
@@ -712,7 +712,7 @@ fn decide_match(
     }
     // 移除 stationary < best + 1.0 硬覆盖——交由 is_stationary() 时序判断
     if best_sad_avg < sad_accept && confidence > MIN_CONFIDENCE {
-        let dy = best_y_offset as f64 - template_y as f64;
+        let dy = best_y_offset - template_y as f64;
         Some((dy, confidence, best_sad_avg))
     } else {
         None
@@ -731,7 +731,7 @@ fn extract_template(ref_buf: &GrayBuf, template_y: u32, sample_cols: &[usize], s
     tpl
 }
 
-/// 整数 SAD 主搜索，返回 (best_y_offset, best_sad_avg, stationary_sad_avg)。
+/// 整数 SAD 主搜索 + 亚像素抛物线插值，返回 (best_y_offset_f64, best_sad_avg, stationary_sad_avg)。
 /// stationary_sad_avg = y_offset == template_y 那次迭代的 SAD 均值。
 fn search_best_offset(
     tpl: &[u8],
@@ -742,7 +742,7 @@ fn search_best_offset(
     template_y: u32,
     last_dy: Option<f64>,
     strip_h: u32,
-) -> (u32, f64, f64) {
+) -> (f64, f64, f64) {
     let strip_h = strip_h as usize;
     let total = (strip_h * sample_cols.len()) as f64;
 
@@ -750,6 +750,12 @@ fn search_best_offset(
     let mut min_penalized = f64::MAX;
     let mut best_sad_avg = f64::MAX;
     let mut stationary_sad_avg = f64::MAX;
+
+    // 记录每个 y_offset 的原始 SAD（用于亚像素插值）
+    let range_size = (max_y_offset - min_y_offset + 1) as usize;
+    let mut sad_curve: Vec<f64> = Vec::with_capacity(range_size);
+    let mut penalized_curve: Vec<f64> = Vec::with_capacity(range_size);
+    let mut best_idx: usize = 0;
 
     for y_offset in min_y_offset..=max_y_offset {
         let mut sad: u64 = 0;
@@ -773,14 +779,37 @@ fn search_best_offset(
             let dy = y_offset as f64 - template_y as f64;
             penalized += SPEED_PENALTY * (dy - ldy).abs();
         }
+
+        let idx = sad_curve.len();
+        sad_curve.push(sad_avg);
+        penalized_curve.push(penalized);
+
         if penalized < min_penalized {
             min_penalized = penalized;
             best_sad_avg = sad_avg;
             best_y_offset = y_offset;
+            best_idx = idx;
         }
     }
 
-    (best_y_offset, best_sad_avg, stationary_sad_avg)
+    // 亚像素抛物线插值：在 best 处用 sad_curve（原始 SAD，非罚分值）拟合
+    let best_f64 = if best_idx > 0 && best_idx + 1 < sad_curve.len() {
+        let left = sad_curve[best_idx - 1];
+        let center = sad_curve[best_idx];
+        let right = sad_curve[best_idx + 1];
+        let denom = left - 2.0 * center + right;
+        if denom.abs() > 1e-10 {
+            let delta = 0.5 * (left - right) / denom;
+            // delta ∈ [-0.5, +0.5]，正值表示峰偏向左（更小 y_offset）
+            (best_y_offset as f64) + delta
+        } else {
+            best_y_offset as f64
+        }
+    } else {
+        best_y_offset as f64
+    };
+
+    (best_f64, best_sad_avg, stationary_sad_avg)
 }
 
 /// 稀疏采样估计置信度：1 - best_sad / mean_sad。
