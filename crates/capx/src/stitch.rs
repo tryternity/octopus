@@ -763,39 +763,39 @@ impl Stitcher {
             return Ok(());
         }
 
-        // 1. 尝试将最后一帧与画布底部对齐，补全因为丢帧/快速滑动积累的剩余未拼接区域
-        // ROI 灰度转换：finalize 搜索范围达 90% 有效高度，需要覆盖全部有效行
-        let last_buf = GrayBuf::from_rgba_roi(last_frame, eff_top as usize, eff_bottom as usize);
-        let canvas_ref = self.extract_canvas_bottom_gray(STRIP_H);
-        let x_start = (w as f64 * X_START_RATIO) as u32;
-        let x_end = (w as f64 * X_END_RATIO) as u32;
+        // 1. NCC 匹配：将最后一帧与画布底部对齐，补全剩余未拼接区域
+        let last_gray = GrayBuf::from_rgba_roi(last_frame, eff_top as usize, eff_bottom as usize);
+        let canvas_gray = self.extract_canvas_bottom_gray(STRIP_H);
 
-        // 允许最大对齐位移为有效高度的 90%
-        let max_finalize_scroll = ((eff_bottom - eff_top) as f64 * 0.90) as u32;
-        if let Some((dy, confidence, _)) = find_overlap_spatial_ext(
-            &canvas_ref,
-            &last_buf,
-            x_start,
-            x_end,
-            eff_top,
-            eff_bottom,
-            max_finalize_scroll,
-            None, // 最后一帧匹配不施加速度限制
-            SAD_ACCEPT,
-            STRIP_H,
-        ) {
-            if dy < 0.0 {
-                let new_rows = (-dy).round() as u32;
-                if new_rows < eff_bottom - eff_top {
-                    log::info!("[stitch] finalize: stitching remaining {} rows (conf={:.4})", new_rows, confidence);
-                    let crop_y = eff_bottom - new_rows;
-                    let row_bytes = w as usize * 4;
-                    let start = crop_y as usize * row_bytes;
-                    let end = start + new_rows as usize * row_bytes;
-                    let frame_raw = last_frame.as_raw();
-                    self.canvas_buf.extend_from_slice(&frame_raw[start..end]);
-                    self.canvas_h += new_rows;
-                    self.invalidate_cache();
+        // Sobel 特征图 + NCC 匹配
+        let (canvas_feat, canvas_has_feat) = to_feature_map(&canvas_gray);
+        let (last_feat, last_has_feat) = to_feature_map(&last_gray);
+        let (template, search_region) = if canvas_has_feat && last_has_feat {
+            (canvas_feat, last_feat)
+        } else {
+            (canvas_gray.to_gray_image(), last_gray.to_gray_image())
+        };
+
+        if let Some(ncc) = ncc_match(&template, &search_region) {
+            if validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32) {
+                let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
+                let roi_height = (eff_bottom - eff_top) as f64;
+                let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
+                let dy = -new_rows_raw;
+
+                if dy < 0.0 {
+                    let new_rows = (-dy).round() as u32;
+                    if new_rows < eff_bottom - eff_top {
+                        log::info!("[stitch] finalize: stitching remaining {} rows (ncc={:.4})", new_rows, ncc.best_score);
+                        let crop_y = eff_bottom - new_rows;
+                        let row_bytes = w as usize * 4;
+                        let start = crop_y as usize * row_bytes;
+                        let end = start + new_rows as usize * row_bytes;
+                        let frame_raw = last_frame.as_raw();
+                        self.canvas_buf.extend_from_slice(&frame_raw[start..end]);
+                        self.canvas_h += new_rows;
+                        self.invalidate_cache();
+                    }
                 }
             }
         }
