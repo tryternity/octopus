@@ -17,7 +17,6 @@ import {
   Code,
   Minus,
   Link as LinkIcon,
-  Image as ImageIcon,
   Undo,
   Redo,
   Download,
@@ -35,7 +34,6 @@ import {
   toggleNoteFavorite,
   exportNote,
   importNoteFromFile,
-  insertNoteImage,
 } from "@/lib/notepad";
 import { useNoteEditor, getMarkdownFromEditor } from "./extensions";
 import { EditorContent } from "@tiptap/react";
@@ -116,23 +114,6 @@ export default function NoteEditor({ noteId }: { noteId: number | null }) {
 
   const exec = (fn: () => void) => () => {
     if (editor && !editor.isDestroyed) fn();
-  };
-
-  const insertImage = async () => {
-    const selected = await openDialog({
-      filters: [{ name: "图片", extensions: ["png", "jpg", "jpeg", "webp"] }],
-    });
-    if (!selected) return;
-    try {
-      const hash = await insertNoteImage(selected);
-      editor
-        ?.chain()
-        .focus()
-        .setImage({ src: `note-img:${hash}`, alt: "图片" })
-        .run();
-    } catch (e) {
-      flash("插入图片失败: " + String(e));
-    }
   };
 
   // 导出：按 noteType 决定格式（html→md 富文本序列化，text→txt，markdown→md 源码）
@@ -231,7 +212,6 @@ export default function NoteEditor({ noteId }: { noteId: number | null }) {
         setLinkInput(typeof prev === "string" ? prev : "");
       }),
     },
-    { icon: ImageIcon, title: "图片", onClick: insertImage },
     {
       icon: Undo,
       title: "撤销",
