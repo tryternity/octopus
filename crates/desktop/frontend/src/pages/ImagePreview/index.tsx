@@ -270,15 +270,27 @@ export default function ImagePreview() {
 
   const handleSave = async () => {
     try {
-      const pngBytes = await composePngBytes();
-      await invoke("save_image_dialog", pngBytes as unknown as Record<string, unknown>);
+      if (annotations.length > 0) {
+        // 有标注：前端 Canvas 合成 → Raw body 传后端
+        const pngBytes = await composePngBytes();
+        await invoke("save_image_dialog", pngBytes as unknown as Record<string, unknown>);
+      } else if (imageId != null) {
+        // 无标注：后端直接从 DB 保存原始数据
+        await invoke("save_image_item", { id: imageId, format: "png" });
+      }
     } catch (e) { console.error(e); }
   };
 
   const handleCopy = async () => {
     try {
-      const pngBytes = await composePngBytes();
-      await invoke("copy_image_to_clipboard", pngBytes as unknown as Record<string, unknown>);
+      if (annotations.length > 0) {
+        // 有标注：前端 Canvas 合成 → Raw body 传后端
+        const pngBytes = await composePngBytes();
+        await invoke("copy_image_to_clipboard", pngBytes as unknown as Record<string, unknown>);
+      } else if (imageId != null) {
+        // 无标注：后端直接从 DB 读取写剪贴板（0 IPC 传输）
+        await invoke("copy_clipboard_item", { id: imageId });
+      }
     } catch (e) { console.error(e); }
   };
 
