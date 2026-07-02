@@ -28,13 +28,7 @@ const DY_HISTORY_LEN: usize = 8;
 // ===== NCC 匹配参数 =====
 
 /// 最低 NCC 分数阈值
-const NCC_SCORE_THRESHOLD: f32 = 0.75;
-/// 局部置信度 delta：best vs 次优差值
-const LOCAL_CONFIDENCE_DELTA: f32 = 0.005;
-/// 全局置信度 delta：best vs 距离≥4px 的差值
-const GLOBAL_CONFIDENCE_DELTA: f32 = 0.002;
-/// 全局置信度最小距离（像素）
-const GLOBAL_CONFIDENCE_MIN_DIST: usize = 4;
+const NCC_SCORE_THRESHOLD: f32 = 0.65;
 
 /// 连续 row-major 灰度 buffer，替代 image::GrayImage。
 /// 消除 get_pixel() 的坐标计算 + 边界检查开销，用整行切片直访。
@@ -155,7 +149,7 @@ fn ncc_match(
 }
 
 /// 多道验证 NCC 匹配结果。返回 true 表示匹配可信。
-fn validate_ncc_match(response: &Image<image::Luma<f32>>, best_y: usize, best_score: f32) -> bool {
+fn validate_ncc_match(response: &Image<image::Luma<f32>>, _best_y: usize, best_score: f32) -> bool {
     // 1. 最低分数
     if best_score < NCC_SCORE_THRESHOLD {
         return false;
@@ -166,41 +160,6 @@ fn validate_ncc_match(response: &Image<image::Luma<f32>>, best_y: usize, best_sc
     let h = response.height() as usize;
     let min_score: f32 = (0..h).map(|y| response.get_pixel(0, y as u32)[0]).fold(f32::MAX, f32::min);
     if min_score >= 0.99 {
-        return false;
-    }
-
-    // score 极高时跳过 delta 验证：周期性内容中多个位置都给 ~1.0，
-    // delta 检查会误拒，但任一高分位置都是有效对齐
-    if best_score >= 0.99 {
-        return true;
-    }
-
-    // 2. 局部置信度：best vs best±1 的最大值差
-    let local_alt = {
-        let mut alt = 0.0f32;
-        if best_y > 0 {
-            alt = alt.max(response.get_pixel(0, best_y as u32 - 1)[0]);
-        }
-        if best_y + 1 < h {
-            alt = alt.max(response.get_pixel(0, best_y as u32 + 1)[0]);
-        }
-        alt
-    };
-    if best_score - local_alt < LOCAL_CONFIDENCE_DELTA {
-        return false;
-    }
-
-    // 3. 全局置信度：best vs 距离≥GLOBAL_CONFIDENCE_MIN_DIST 的最大值差
-    let distant_alt = {
-        let mut alt = 0.0f32;
-        for y in 0..h {
-            if (y as isize - best_y as isize).abs() >= GLOBAL_CONFIDENCE_MIN_DIST as isize {
-                alt = alt.max(response.get_pixel(0, y as u32)[0]);
-            }
-        }
-        alt
-    };
-    if best_score - distant_alt < GLOBAL_CONFIDENCE_DELTA {
         return false;
     }
 
@@ -469,7 +428,7 @@ impl Stitcher {
         }
 
         // Best-Guess：历史 dy 中位数估算
-        if self.best_guess_streak < 3 {
+        if self.best_guess_streak < 1 {
             if let Some(dy) = self.estimate_dy_hint() {
                 log::info!("[stitch] best-guess dy={:.1} (streak={})", dy, self.best_guess_streak + 1);
                 self.best_guess_streak += 1;
