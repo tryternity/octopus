@@ -268,9 +268,10 @@ impl Stitcher {
         }
 
         // dy < 0 = 用户向下滚动（内容上移），dy > 0 = 向上滚动（忽略）
+        // dy=0（静止或慢速滚动）时保留 last_dy，维持速度上下文供下一帧搜索
         if dy >= 0.0 {
             log::info!("[stitch] skipped frame: dy={:.1} >= 0.0 (conf={:.4})", dy, confidence);
-            self.last_dy = None;
+            // 不清除 last_dy：慢速滚动时帧间 dy=0 是正常的，速度上下文仍有价值
             return Ok(false);
         }
 
@@ -280,7 +281,7 @@ impl Stitcher {
         // 静止或滚动超过限额
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
             log::info!("[stitch] skipped frame: new_rows={} invalid (min={}, max={}) (conf={:.4})", new_rows, self.config.min_scroll_px, max_scroll_limit, confidence);
-            self.last_dy = None;
+            // 不清除 last_dy：微小位移帧不意味着速度上下文失效
             return Ok(false);
         }
 
