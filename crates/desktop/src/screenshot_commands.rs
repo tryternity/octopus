@@ -1177,7 +1177,7 @@ pub async fn start_scroll_recording(
             let src_h = (canvas.height() as u64 * canvas.width() as u64 / preview_w as u64).min(canvas.height() as u64) as u32;
             let crop_src_h = src_h.min(max_preview_h * canvas.width() / preview_w).min(canvas.height());
             let crop_y = canvas.height() - crop_src_h;
-            let canvas_cropped = image::imageops::crop_imm(canvas, 0, crop_y, canvas.width(), crop_src_h).to_image();
+            let canvas_cropped = image::imageops::crop_imm(&canvas, 0, crop_y, canvas.width(), crop_src_h).to_image();
             let preview_h = (preview_w * canvas_cropped.height() / canvas_cropped.width()).min(max_preview_h);
             let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::CatmullRom);
             let mut preview_png = Vec::new();
@@ -1206,7 +1206,7 @@ pub async fn start_scroll_recording(
             let _ = stitcher.finalize(lf);
 
             // finalize 后再 emit 一帧预览（spawn_blocking 避免阻塞事件循环）
-            let canvas = stitcher.canvas().clone();
+            let canvas = stitcher.canvas();
             let preview_b64 = tokio::task::spawn_blocking(move || {
                 let preview_w = 400u32;
                 let max_preview_h = 1200u32;
@@ -1242,7 +1242,7 @@ pub async fn start_scroll_recording(
             return;
         }
 
-        let canvas = stitcher.canvas().clone();
+        let canvas = stitcher.canvas();
         let ah3 = ah.clone();
         let result = tokio::task::spawn_blocking(move || {
             let mut png_bytes = Vec::new();

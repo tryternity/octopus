@@ -131,7 +131,7 @@ pub struct Stitcher {
     /// 连续 RGBA 画布数据（真实数据源，增量 extend 追加）。
     canvas_buf: Vec<u8>,
     /// 惰性重建缓存。append 后置 None，canvas() 调用时按需重建。
-    canvas_cache: std::cell::UnsafeCell<Option<RgbaImage>>,
+    canvas_cache: Option<RgbaImage>,
     sticky_top: u32,
     sticky_bottom: u32,
     detected: bool,
@@ -142,6 +142,8 @@ pub struct Stitcher {
     dy_history: VecDeque<f64>,
     /// 历史成功匹配的 SAD 均值（EMA）。
     sad_baseline: f64,
+    /// 连续 best-guess 次数（主匹配成功时归零，超过 3 次熔断）。
+    best_guess_streak: u32,
 }
 
 impl Stitcher {
@@ -152,7 +154,7 @@ impl Stitcher {
             canvas_w: w,
             canvas_h: h,
             canvas_buf: first_frame.into_raw(),
-            canvas_cache: std::cell::UnsafeCell::new(None),
+            canvas_cache: None,
             sticky_top: 0,
             sticky_bottom: 0,
             detected: false,
@@ -160,6 +162,7 @@ impl Stitcher {
             last_dy: None,
             dy_history: VecDeque::with_capacity(DY_HISTORY_LEN),
             sad_baseline: 0.0,
+            best_guess_streak: 0,
         }
     }
 
@@ -254,9 +257,15 @@ impl Stitcher {
 
                 // 降级 4：Best-Guess——用历史 dy 估算位移，宁可轻微错位也不丢内容。
                 // 打破"匹配失败 → canvas 不长 → 位移差扩大 → 永久失败"的死亡螺旋。
-                if let Some(dy) = self.estimate_dy_hint() {
-                    log::info!("[stitch] fallback 4: best-guess dy={:.1} (from history)", dy);
-                    return self.apply_fallback_match(dy, 0.0, 0.0, frame, &curr_buf, w, eff_top, eff_bottom);
+                // 熔断：连续 best-guess 超过 3 次则停止猜测，避免拼出严重错位的长图。
+                if self.best_guess_streak < 3 {
+                    if let Some(dy) = self.estimate_dy_hint() {
+                        log::info!("[stitch] fallback 4: best-guess dy={:.1} (streak={})", dy, self.best_guess_streak + 1);
+                        self.best_guess_streak += 1;
+                        return self.apply_fallback_match(dy, 0.0, 0.0, frame, &curr_buf, w, eff_top, eff_bottom);
+                    }
+                } else {
+                    log::info!("[stitch] best-guess circuit breaker tripped (streak >= 3), skipping");
                 }
 
                 log::info!("[stitch] best-guess also unavailable, skipping frame");
@@ -297,6 +306,9 @@ impl Stitcher {
         log::info!("[stitch] dy={:.1} conf={:.4} new_rows={} eff=[{},{}] canvas_h={}",
             dy, confidence, new_rows, eff_top, eff_bottom, self.canvas_h);
 
+        // 主匹配成功：重置 best-guess 连续计数
+        self.best_guess_streak = 0;
+
         // 增量追加：从 frame 直接切出 new_rows 行 RGBA，extend 到 canvas_buf
         let crop_y = eff_bottom - new_rows;
         let row_bytes = w as usize * 4;
@@ -327,10 +339,7 @@ impl Stitcher {
     /// 使画布缓存失效。每次 append/truncate 后调用。
     #[inline]
     fn invalidate_cache(&mut self) {
-        // 安全：&mut self 保证独占访问，UnsafeCell 内部可安全写 None
-        unsafe {
-            *self.canvas_cache.get() = None;
-        }
+        self.canvas_cache = None;
     }
 
     /// 从画布底部提取 strip_h 行 RGBA 转灰度，作为 Canvas-Anchored 匹配模板。
@@ -553,19 +562,14 @@ impl Stitcher {
         Ok(true)
     }
 
-    pub fn canvas(&self) -> &RgbaImage {
+    pub fn canvas(&mut self) -> RgbaImage {
         // 惰性重建：cache 为 None（append 后 invalidate）时从 canvas_buf 重建。
-        // 因调用端总是 .clone()，借用不跨多次 append 存活，无生命周期问题。
-        // 安全：单线程访问，UnsafeCell 用于 &self 下的惰性初始化。
-        unsafe {
-            let slot = self.canvas_cache.get();
-            if (*slot).is_none() {
-                let rebuilt = RgbaImage::from_raw(self.canvas_w, self.canvas_h, self.canvas_buf.clone())
-                    .expect("canvas_buf 长度与 canvas_w/h 不匹配");
-                *slot = Some(rebuilt);
-            }
-            (*slot).as_ref().unwrap()
+        if self.canvas_cache.is_none() {
+            let rebuilt = RgbaImage::from_raw(self.canvas_w, self.canvas_h, self.canvas_buf.clone())
+                .expect("canvas_buf 长度与 canvas_w/h 不匹配");
+            self.canvas_cache = Some(rebuilt);
         }
+        self.canvas_cache.as_ref().unwrap().clone()
     }
 
     pub fn height(&self) -> u32 { self.canvas_h }
