@@ -19,6 +19,7 @@ export interface Note {
 
 export interface NoteListParams {
   source?: NoteSource | null;
+  noteType?: NoteType | null;
   favorite?: boolean;
   pinned?: boolean;
   search?: string | null;

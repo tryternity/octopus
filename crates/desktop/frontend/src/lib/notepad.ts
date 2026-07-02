@@ -4,6 +4,7 @@ import type { Note, NoteListParams, NoteSource, NoteType } from "@/types/note";
 export async function listNotes(params: NoteListParams): Promise<Note[]> {
   return invoke<Note[]>("list_notes", {
     source: params.source ?? null,
+    noteType: params.noteType ?? null,
     favorite: params.favorite ?? false,
     pinned: params.pinned ?? false,
     search: params.search ?? null,
@@ -15,6 +16,7 @@ export async function listNotes(params: NoteListParams): Promise<Note[]> {
 export async function countNotes(params: NoteListParams): Promise<number> {
   return invoke<number>("count_notes", {
     source: params.source ?? null,
+    noteType: params.noteType ?? null,
     favorite: params.favorite ?? false,
     pinned: params.pinned ?? false,
     search: params.search ?? null,

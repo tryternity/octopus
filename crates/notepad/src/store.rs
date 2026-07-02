@@ -170,6 +170,9 @@ fn build_where(filter: &NoteFilter) -> String {
     if let Some(src) = filter.source {
         conds.push(format!("source = '{}'", src.as_str()));
     }
+    if let Some(t) = filter.note_type {
+        conds.push(format!("type = '{}'", t.as_str()));
+    }
     if filter.favorite {
         conds.push("is_favorite = 1".to_string());
     }
@@ -332,7 +335,15 @@ mod tests {
     }
 
     fn f() -> NoteFilter {
-        NoteFilter { source: None, favorite: false, pinned: false, search: None, limit: 50, offset: 0 }
+        NoteFilter {
+            source: None,
+            note_type: None,
+            favorite: false,
+            pinned: false,
+            search: None,
+            limit: 50,
+            offset: 0,
+        }
     }
 
     #[test]
@@ -422,6 +433,36 @@ mod tests {
         assert_eq!(n, 2);
         assert_eq!(count_notes_at(&conn, &f()).unwrap(), 1);
         assert_eq!(delete_notes_at(&conn, &[]).unwrap(), 0);
+    }
+
+    #[test]
+    fn list_filter_by_note_type() {
+        // 侧边栏 type tab 过滤：html/text/markdown 各一条，按 type 过滤应只返回对应类型
+        let conn = open_test_db();
+        create_note_at(&conn, NoteSource::Manual, None, "<p>富文本</p>", NoteType::Html).unwrap();
+        create_note_at(&conn, NoteSource::Manual, None, "纯文本", NoteType::Text).unwrap();
+        create_note_at(&conn, NoteSource::Manual, None, "# 标题", NoteType::Markdown).unwrap();
+        create_note_at(&conn, NoteSource::Manual, None, "<p>又一富文本</p>", NoteType::Html).unwrap();
+
+        // 全部（note_type=None）= 4
+        assert_eq!(list_notes_at(&conn, &f()).unwrap().len(), 4);
+
+        let mut only = |t: NoteType| {
+            let mut filter = f();
+            filter.note_type = Some(t);
+            list_notes_at(&conn, &filter).unwrap()
+        };
+        // 各类型计数 + 类型一致
+        let html = only(NoteType::Html);
+        assert_eq!(html.len(), 2);
+        assert!(html.iter().all(|n| n.note_type == NoteType::Html));
+        assert_eq!(only(NoteType::Text).len(), 1);
+        assert_eq!(only(NoteType::Markdown).len(), 1);
+
+        // type 过滤 + 计数一致
+        let mut cnt = f();
+        cnt.note_type = Some(NoteType::Html);
+        assert_eq!(count_notes_at(&conn, &cnt).unwrap(), 2);
     }
 
     #[test]

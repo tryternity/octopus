@@ -2,11 +2,11 @@ import { useState, useEffect, useCallback } from "react";
 import { listNotes, countNotes } from "@/lib/notepad";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { useDebouncedValue } from "@/hooks/useClipboardHistory";
-import type { Note, NoteSource } from "@/types/note";
+import type { Note, NoteType } from "@/types/note";
 
 const PAGE_SIZE = 30;
 
-export function useNotes(source: NoteSource | null, search: string, favoriteOnly: boolean) {
+export function useNotes(noteType: NoteType | null, search: string, favoriteOnly: boolean) {
   const [items, setItems] = useState<Note[]>([]);
   const [total, setTotal] = useState(0);
   const [offset, setOffset] = useState(0); // 加载更多累计 offset
@@ -14,13 +14,13 @@ export function useNotes(source: NoteSource | null, search: string, favoriteOnly
 
   const fetchFirst = useCallback(async () => {
     const [rows, count] = await Promise.all([
-      listNotes({ source, search: debouncedSearch || null, favorite: favoriteOnly, limit: PAGE_SIZE, offset: 0 }),
-      countNotes({ source, search: debouncedSearch || null, favorite: favoriteOnly }),
+      listNotes({ noteType, search: debouncedSearch || null, favorite: favoriteOnly, limit: PAGE_SIZE, offset: 0 }),
+      countNotes({ noteType, search: debouncedSearch || null, favorite: favoriteOnly }),
     ]);
     setItems(rows);
     setTotal(count);
     setOffset(PAGE_SIZE);
-  }, [source, debouncedSearch, favoriteOnly]);
+  }, [noteType, debouncedSearch, favoriteOnly]);
 
   useEffect(() => {
     fetchFirst().catch(console.error);
@@ -32,10 +32,10 @@ export function useNotes(source: NoteSource | null, search: string, favoriteOnly
   });
 
   const loadMore = useCallback(async () => {
-    const rows = await listNotes({ source, search: debouncedSearch || null, favorite: favoriteOnly, limit: PAGE_SIZE, offset });
+    const rows = await listNotes({ noteType, search: debouncedSearch || null, favorite: favoriteOnly, limit: PAGE_SIZE, offset });
     setItems((prev) => [...prev, ...rows]);
     setOffset((o) => o + PAGE_SIZE);
-  }, [source, debouncedSearch, favoriteOnly, offset]);
+  }, [noteType, debouncedSearch, favoriteOnly, offset]);
 
   return { items, total, refresh: fetchFirst, loadMore, hasMore: items.length < total };
 }

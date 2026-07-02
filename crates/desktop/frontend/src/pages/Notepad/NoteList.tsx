@@ -8,20 +8,23 @@ import {
   Mic,
   ScanText,
   Clipboard as ClipIcon,
+  Trash2,
 } from "lucide-react";
-import type { Note, NoteSource, NoteType } from "@/types/note";
+import type { Note, NoteType } from "@/types/note";
 import { useNotes } from "@/hooks/useNotes";
 import {
   createNote,
+  deleteNotes,
   toggleNotePinned,
   toggleNoteFavorite,
 } from "@/lib/notepad";
 
-const SOURCE_TABS: { key: NoteSource | null; label: string }[] = [
+// 侧边栏 type tab：全部 / 富文本 / 纯文本 / Markdown（替代旧的来源 tab）
+const TYPE_TABS: { key: NoteType | null; label: string }[] = [
   { key: null, label: "全部" },
-  { key: "asr", label: "语音" },
-  { key: "ocr", label: "OCR" },
-  { key: "clipboard", label: "剪贴板" },
+  { key: "html", label: "富文本" },
+  { key: "text", label: "纯文本" },
+  { key: "markdown", label: "Markdown" },
 ];
 
 export default function NoteList({
@@ -29,9 +32,9 @@ export default function NoteList({
   onSelect,
 }: {
   selectedId: number | null;
-  onSelect: (id: number) => void;
+  onSelect: (id: number | null) => void;
 }) {
-  const [tab, setTab] = useState<NoteSource | null>(null);
+  const [tab, setTab] = useState<NoteType | null>(null);
   const [search, setSearch] = useState("");
   const [favOnly, setFavOnly] = useState(false);
   const [showNewMenu, setShowNewMenu] = useState(false);
@@ -51,6 +54,12 @@ export default function NoteList({
   const handleFav = async (e: React.MouseEvent, id: number) => {
     e.stopPropagation();
     await toggleNoteFavorite(id);
+  };
+  const handleDelete = async (e: React.MouseEvent, id: number) => {
+    e.stopPropagation();
+    await deleteNotes([id]);
+    if (id === selectedId) onSelect(null); // 删的是当前选中 → 清空编辑区
+    // useNotes 会经 notepad://changed 自动刷新列表
   };
 
   return (
@@ -95,9 +104,9 @@ export default function NoteList({
           )}
         </div>
       </div>
-      {/* 来源 tab + 收藏 */}
+      {/* type tab + 收藏 */}
       <div className="px-2 py-1.5 flex items-center gap-1 border-b border-border overflow-x-auto">
-        {SOURCE_TABS.map((t) => (
+        {TYPE_TABS.map((t) => (
           <button
             key={t.label}
             className={cn(
@@ -132,6 +141,7 @@ export default function NoteList({
             onSelect={onSelect}
             onPin={handlePin}
             onFav={handleFav}
+            onDelete={handleDelete}
           />
         ))}
         {items.length === 0 && (
@@ -158,12 +168,14 @@ function NoteRow({
   onSelect,
   onPin,
   onFav,
+  onDelete,
 }: {
   note: Note;
   active: boolean;
-  onSelect: (id: number) => void;
+  onSelect: (id: number | null) => void;
   onPin: (e: React.MouseEvent, id: number) => void;
   onFav: (e: React.MouseEvent, id: number) => void;
+  onDelete: (e: React.MouseEvent, id: number) => void;
 }) {
   const preview =
     note.title || note.content_text.slice(0, 60) || "（空笔记）";
@@ -220,6 +232,13 @@ function NoteRow({
                 : "text-muted-foreground",
             )}
           />
+        </button>
+        <button
+          className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 hover:text-red-500"
+          onClick={(e) => onDelete(e, note.id)}
+          title="删除"
+        >
+          <Trash2 className="w-3 h-3" />
         </button>
       </div>
       <div className="mt-0.5 text-[10px] text-muted-foreground">

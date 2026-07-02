@@ -83,6 +83,8 @@ pub struct Note {
 #[derive(Debug, Clone, Default)]
 pub struct NoteFilter {
     pub source: Option<NoteSource>,
+    /// 按内容格式过滤（侧边栏 type tab）。None = 全部类型。
+    pub note_type: Option<NoteType>,
     pub favorite: bool,
     pub pinned: bool,
     /// None 或 <3 字符 → LIKE 子串；≥3 字符 → FTS5 phrase MATCH

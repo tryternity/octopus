@@ -11,6 +11,7 @@ use octopus_notepad::{Note, NoteFilter, NoteSource, NoteType};
 #[tauri::command]
 pub async fn list_notes(
     source: Option<String>,
+    note_type: Option<String>,
     favorite: Option<bool>,
     pinned: Option<bool>,
     search: Option<String>,
@@ -19,6 +20,7 @@ pub async fn list_notes(
 ) -> Result<Vec<Note>, String> {
     let filter = NoteFilter {
         source: source.as_deref().map(NoteSource::from_str),
+        note_type: note_type.as_deref().map(NoteType::from_str),
         favorite: favorite.unwrap_or(false),
         pinned: pinned.unwrap_or(false),
         search,
@@ -32,12 +34,14 @@ pub async fn list_notes(
 #[tauri::command]
 pub async fn count_notes(
     source: Option<String>,
+    note_type: Option<String>,
     favorite: Option<bool>,
     pinned: Option<bool>,
     search: Option<String>,
 ) -> Result<i64, String> {
     let filter = NoteFilter {
         source: source.as_deref().map(NoteSource::from_str),
+        note_type: note_type.as_deref().map(NoteType::from_str),
         favorite: favorite.unwrap_or(false),
         pinned: pinned.unwrap_or(false),
         search,
