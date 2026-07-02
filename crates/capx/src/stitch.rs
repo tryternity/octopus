@@ -444,6 +444,10 @@ impl Stitcher {
         if eff_bottom <= eff_top + strip_h + 10 {
             return None;
         }
+        // 防御性校验：ref_buf 必须至少有 strip_h 行
+        if (ref_buf.data.len() / ref_buf.width) < strip_h as usize {
+            return None;
+        }
         let template_y = eff_bottom - strip_h;
 
         let cols: Vec<usize> = (x_start as usize..x_end as usize)
