@@ -34,10 +34,7 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let w = rgba.width();
     let h = rgba.height();
 
-    // WebP 最大尺寸 16383px（VP8 限制）。超过则直接用最低质量（50%）试一次。
-    // webp crate 的 encode() 超尺寸时 panic（内部 unwrap），所以需要 catch_unwind。
-    // 但不需要逐级——超尺寸时高质量和低质量行为一致（都基于 VP8 尺寸限制），
-    // 只需试一次最低质量。成功就用，失败就放弃。
+    // WebP 最大尺寸 16383px（VP8 限制）。超尺寸 WebP 全失败时降级 JPEG。
     let webp_blob = if w > 16383 || h > 16383 {
         log::warn!("[clipboard] Image exceeds WebP max dimension ({}×{}), trying q85", w, h);
         let encoder = webp::Encoder::from_rgba(&rgba, w, h);
@@ -48,8 +45,13 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(50.0).to_vec())) {
                     Ok(blob) if !blob.is_empty() => blob,
                     _ => {
-                        log::error!("[clipboard] WebP q50 also failed for {}×{}, skipping", w, h);
-                        return Err(anyhow::anyhow!("WebP encoding failed for {}×{}", w, h));
+                        log::warn!("[clipboard] WebP q50 also failed ({}×{}), trying JPEG q10", w, h);
+                        let mut jpeg_buf = Vec::new();
+                        let mut jpeg_enc = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 10);
+                        jpeg_enc.encode_image(img)
+                            .map_err(|e| anyhow::anyhow!("JPEG q10 failed: {}", e))?;
+                        log::info!("[clipboard] JPEG q10 fallback: {} bytes ({}×{})", jpeg_buf.len(), w, h);
+                        jpeg_buf
                     }
                 }
             }
