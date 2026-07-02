@@ -9,11 +9,11 @@ mod imp {
     use std::time::Duration;
 
     use objc2::rc::Retained;
-    use objc2::runtime::NSObject;
+    use objc2::runtime::{AnyObject, Bool, NSObject};
     use objc2::{define_class, msg_send, sel, ClassType, MainThreadMarker};
     use objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSBezelStyle, NSButton, NSColor, NSControl, NSFont, NSScrollView,
-        NSTextField, NSTextView, NSView, NSWindow,
+        NSAutoresizingMaskOptions, NSBezelStyle, NSButton, NSColor, NSControl, NSEvent,
+        NSEventModifierFlags, NSFont, NSScrollView, NSTextField, NSTextView, NSView, NSWindow,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
     use tauri::Manager;
@@ -61,7 +61,10 @@ mod imp {
         app: tauri::AppHandle,
         text_view: Retained<NSTextView>,
         font_label: Retained<NSTextField>,
+        char_label: Retained<NSTextField>,
         clear_button: Retained<NSButton>,
+        /// find 按钮也作 Cmd+F 的 sender（tag=1 = NSFindPanelActionShow）。
+        find_button: Retained<NSButton>,
         #[allow(dead_code)]
         target: Retained<CompactEditorButtonTarget>,
     }
@@ -87,6 +90,99 @@ mod imp {
             f.size,
         ));
     }
+
+    /// 更新工具栏字数统计（读 textview 全文 → char_label「N 字」）。
+    fn update_char_count() {
+        let guard = STATE.lock().unwrap();
+        let Some(s) = guard.as_ref() else {
+            return;
+        };
+        let n = s.text_view.string().to_string().chars().count();
+        let x = s.char_label.frame().origin.x;
+        s.char_label.setStringValue(&NSString::from_str(&format!("{n} 字")));
+        recenter_label(&s.char_label, x);
+    }
+
+    // ── container 自定义 NSView：键盘快捷键 + 字数统计 delegate ──
+    // container 作 contentView（响应链内），textview 是其子树。textview 原生不处理
+    // undo/find 的按键等价，冒泡到 container 时拦截；其余交 super 让 textview 原生
+    // 处理 Cmd+C/V/A 等。同时兼 textview 的 delegate（textDidChange: → 字数）。
+    define_class!(
+        #[unsafe(super(NSView))]
+        #[name = "CompactEditorContainerView"]
+        struct CompactEditorContainerView;
+
+        impl CompactEditorContainerView {
+            #[unsafe(method(performKeyEquivalent:))]
+            fn perform_key_equivalent(&self, event: &NSEvent) -> Bool {
+                let mods = event.modifierFlags();
+                let cmd = mods.contains(NSEventModifierFlags::Command);
+                let shift = mods.contains(NSEventModifierFlags::Shift);
+                let code = event.keyCode();
+                let app_of = || STATE.lock().unwrap().as_ref().map(|s| s.app.clone());
+
+                // Cmd+Return(keyCode 36) → 保存
+                if cmd && code == 36 {
+                    if let Some(app) = app_of() {
+                        crate::compact_editor_commands::do_save(&app);
+                    }
+                    return Bool::YES;
+                }
+                // Esc(keyCode 53) → 取消
+                if code == 53 {
+                    if let Some(app) = app_of() {
+                        crate::compact_editor_commands::do_cancel(&app);
+                    }
+                    return Bool::YES;
+                }
+                if cmd {
+                    let key = event
+                        .charactersIgnoringModifiers()
+                        .map(|s| s.to_string())
+                        .unwrap_or_default();
+                    match key.as_str() {
+                        "z" if !shift => {
+                            with_tv(|tv| {
+                                if let Some(u) = tv.undoManager() {
+                                    u.undo();
+                                }
+                            });
+                            return Bool::YES;
+                        }
+                        "z" if shift => {
+                            with_tv(|tv| {
+                                if let Some(u) = tv.undoManager() {
+                                    u.redo();
+                                }
+                            });
+                            return Bool::YES;
+                        }
+                        "f" => {
+                            // find_button.tag()=1 = Show；作 sender 传给 performFindPanelAction
+                            let g = STATE.lock().unwrap();
+                            if let Some(s) = g.as_ref() {
+                                unsafe {
+                                    let _: () = msg_send![
+                                        &*s.text_view,
+                                        performFindPanelAction: &*s.find_button
+                                    ];
+                                }
+                            }
+                            return Bool::YES;
+                        }
+                        _ => {}
+                    }
+                }
+                // 其余交 super：NSView 默认转发到子树 textview，处理 Cmd+C/V/A 等
+                unsafe { msg_send![super(self), performKeyEquivalent: event] }
+            }
+
+            #[unsafe(method(textDidChange:))]
+            fn text_did_change(&self, _notif: &AnyObject) {
+                update_char_count();
+            }
+        }
+    );
 
     // ── 按钮 target：无 ivar，onClick: 读 sender.tag() 分发到 Rust ──
     define_class!(
@@ -262,7 +358,8 @@ mod imp {
             // container 作为 contentView：setContentView 会把它 resize 到填满 content rect
             // （保证尺寸正确——默认 contentView 在 attach 闭包跑时 frame 可能仍是 0×0，
             // 据它算坐标会让所有子视图 frame 归零/变负而不可见）。
-            let container = NSView::new(mtm);
+            let container: Retained<CompactEditorContainerView> =
+                unsafe { msg_send![CompactEditorContainerView::class(), new] };
             ns_win.setContentView(Some(&container));
             // contentLayoutRect = 标题栏以下的可用区。Tauri 原生窗为 fullSizeContent，
             // contentView 含标题栏区（顶部 ~32px 被标题栏盖住）。工具栏须钉在可用区顶部，
@@ -374,10 +471,20 @@ mod imp {
                 NSRect::new(NSPoint::new(cw - 6. - 56. - 6. - 52., y), NSSize::new(52., bh)),
             );
 
+            // 字数统计 label（取消左侧）
+            let char_label = NSTextField::new(mtm);
+            char_label.setBezeled(false);
+            char_label.setDrawsBackground(false);
+            char_label.setEditable(false);
+            char_label.setSelectable(false);
+            char_label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
+            recenter_label(&char_label, cw - 6. - 56. - 6. - 52. - 6. - 44.);
+
             for btn in [&undo, &redo, &fdec, &finc, &find, &clear, &cancel, &save] {
                 toolbar.addSubview(btn);
             }
             toolbar.addSubview(&font_label);
+            toolbar.addSubview(&char_label);
 
             // 文本区（占 toolbar 以下）
             let text_view = NSTextView::new(mtm);
@@ -394,6 +501,11 @@ mod imp {
             unsafe {
                 let _: () = msg_send![&*find, setTarget: &*text_view];
                 let _: () = msg_send![&*find, setAction: sel!(performFindPanelAction:)];
+            }
+
+            // container 兼 textview delegate：textDidChange: → 字数统计
+            unsafe {
+                let _: () = msg_send![&*text_view, setDelegate: &*container];
             }
 
             let scroll = NSScrollView::new(mtm);
@@ -413,13 +525,17 @@ mod imp {
 
             // 存 STATE（reopen 时覆盖，旧的在主线程闭包内 drop，安全）
             let clear_btn = clear.clone();
+            let find_btn = find.clone();
             *STATE.lock().unwrap() = Some(SendState {
                 app: app.clone(),
                 text_view,
                 font_label,
+                char_label,
                 clear_button: clear_btn,
+                find_button: find_btn,
                 target,
             });
+            update_char_count(); // 初始字数
             log::info!("[native] compact editor toolbar + textview attached");
         });
     }
@@ -440,6 +556,11 @@ mod imp {
             };
             s.text_view.setString(&NSString::from_str(&text));
             log::info!("[native] compact editor text set ({} 字节)", text.len());
+            // setString 不触发 textDidChange；同一锁内顺手刷字数（避免 update_char_count 重入死锁）
+            let clx = s.char_label.frame().origin.x;
+            let n = text.chars().count();
+            s.char_label.setStringValue(&NSString::from_str(&format!("{n} 字")));
+            recenter_label(&s.char_label, clx);
         });
     }
 
