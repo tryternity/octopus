@@ -37,7 +37,13 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     // WebP 最大尺寸 16383px。超长图降级为 JPEG（逐级降质量直到体积可接受）。
     let webp_blob = if w > 16383 || h > 16383 {
         log::warn!("[clipboard] Image too large for WebP ({}×{}), falling back to JPEG", w, h);
-        encode_jpeg_with_budget(img, 10)?
+        match encode_jpeg_with_budget(img) {
+            Some(blob) => blob,
+            None => {
+                log::error!("[clipboard] Image too large even for JPEG q50, skipping DB insert");
+                return Err(anyhow::anyhow!("Image too large to encode ({}×{})", w, h));
+            }
+        }
     } else {
         let encoder = webp::Encoder::from_rgba(&rgba, w, h);
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode_lossless().to_vec())) {
@@ -48,36 +54,38 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
                     Ok(blob) => blob,
                     Err(_) => {
                         log::warn!("[clipboard] lossy WebP also failed, falling back to JPEG");
-                        encode_jpeg_with_budget(img, 10)?
+                        match encode_jpeg_with_budget(img) {
+                            Some(blob) => blob,
+                            None => {
+                                log::error!("[clipboard] All encoding failed, skipping");
+                                return Err(anyhow::anyhow!("All image encoding failed"));
+                            }
+                        }
                     }
                 }
             }
         }
     };
 
-/// JPEG 编码，逐级降质量（90→70→50→30→10）直到体积低于原始像素的 min_ratio_pct%。
-/// 超长图（>16383px）无法用 WebP 时使用。
-fn encode_jpeg_with_budget(img: &::image::DynamicImage, min_ratio_pct: u8) -> Result<Vec<u8>> {
-    let raw_size = (img.width() as usize) * (img.height() as usize) * 4; // RGBA 原始字节
-    let budget = raw_size * min_ratio_pct as usize / 100;
-
-    for quality in [90u8, 70, 50, 30, 10] {
+/// JPEG 编码，逐级降质量（无损→90%→80%→70%→60%→50%）。
+/// 50% 仍无法编码则返回 None（放弃入库）。
+fn encode_jpeg_with_budget(img: &::image::DynamicImage) -> Option<Vec<u8>> {
+    // 无损（质量 100）→ JPEG 无意义，直接从 90% 开始
+    for quality in [90u8, 80, 70, 60, 50] {
         let mut buf = Vec::new();
         let mut enc = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
-        if enc.encode_image(img).is_err() {
-            continue;
-        }
-        log::info!("[clipboard] JPEG q{}: {} bytes (budget {})", quality, buf.len(), budget);
-        if buf.len() <= budget || quality == 10 {
-            return Ok(buf);
+        match enc.encode_image(img) {
+            Ok(()) => {
+                log::info!("[clipboard] JPEG q{}: {} bytes", quality, buf.len());
+                return Some(buf);
+            }
+            Err(e) => {
+                log::warn!("[clipboard] JPEG q{} failed: {}", quality, e);
+            }
         }
     }
-
-    let mut buf = Vec::new();
-    let mut enc = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, 10);
-    enc.encode_image(img).map_err(|e| anyhow::anyhow!("JPEG encoding failed at q10: {}", e))?;
-    log::warn!("[clipboard] JPEG budget exceeded, using q10 ({} bytes)", buf.len());
-    Ok(buf)
+    log::error!("[clipboard] JPEG encoding failed at all quality levels");
+    None
 }
 
 // 缩略图：resize 240×240 → WebP 20%
