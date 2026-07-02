@@ -1114,4 +1114,55 @@ mod tests {
         let f2 = make_frame_textured(TW, TH, 30, 0);
         let _ = s.process_frame(&f2).unwrap(); // 验证不 panic
     }
+
+    #[test]
+    fn test_canvas_anchored_recovers_after_failures() {
+        // Canvas-Anchored 核心验证：中间帧匹配失败后，后续帧能与画布底部正确对齐
+        let f0 = make_frame(TW, TH, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default());
+        let f1 = make_frame(TW, TH, 0);
+        s.process_frame(&f1).unwrap(); // init
+
+        // 帧 2: 滚动 30px，成功追加
+        let f2 = make_frame(TW, TH, 30);
+        let added2 = s.process_frame(&f2).unwrap();
+        assert!(added2);
+        let h_after_2 = s.height();
+
+        // 帧 3: 相同帧（静止），不追加
+        let f3 = make_frame(TW, TH, 30);
+        s.process_frame(&f3).unwrap();
+
+        // 帧 4: 滚动到 60px，应能与画布底部正确对齐
+        let f4 = make_frame(TW, TH, 60);
+        let added4 = s.process_frame(&f4).unwrap();
+        assert!(added4, "Canvas-Anchored 应在中间静止帧后恢复匹配");
+        let h_after_4 = s.height();
+        assert!(h_after_4 > h_after_2, "恢复后画布应继续增长: {} > {}", h_after_4, h_after_2);
+    }
+
+    #[test]
+    fn test_extract_canvas_bottom_gray() {
+        // 验证 extract_canvas_bottom_gray 提取的灰度与 canvas 底部 strip 一致
+        let f0 = make_frame(TW, TH, 0);
+        let mut s = Stitcher::new(f0.clone(), StitchConfig::default());
+        let f1 = make_frame(TW, TH, 0);
+        s.process_frame(&f1).unwrap(); // init
+
+        let bottom_gray = s.extract_canvas_bottom_gray(STRIP_H);
+        assert_eq!(bottom_gray.width, TW as usize);
+
+        // 手动从 canvas 计算底部 strip 灰度比对
+        let canvas = s.canvas();
+        let canvas_h = canvas.height();
+        assert!(canvas_h >= STRIP_H);
+        for y in 0..STRIP_H {
+            for x in 0..TW {
+                let px = canvas.get_pixel(x, canvas_h - STRIP_H + y);
+                let luma = (2126 * px[0] as u32 + 7152 * px[1] as u32 + 722 * px[2] as u32) / 10000;
+                assert_eq!(bottom_gray.row(y as usize)[x as usize], luma as u8,
+                    "底部 strip 灰度不一致 @ ({},{})", x, y);
+            }
+        }
+    }
 }
