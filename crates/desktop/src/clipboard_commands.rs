@@ -127,7 +127,11 @@ pub async fn copy_clipboard_item(
 
     if let Some(item) = item {
         let handle = handle.inner().clone();
-        write_item_to_clipboard(&handle, &item)?;
+        // DB 读 + WebP 解码 + PNG 编码 + 剪贴板写入全是 CPU 密集操作，
+        // 移入 spawn_blocking 避免阻塞 Tauri UI 线程
+        tokio::task::spawn_blocking(move || {
+            write_item_to_clipboard(&handle, &item)
+        }).await.map_err(|e| e.to_string())??;
     }
     Ok(())
 }
