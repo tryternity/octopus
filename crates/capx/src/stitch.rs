@@ -347,37 +347,12 @@ impl Stitcher {
         // 主匹配成功：重置 best-guess 计数
         self.best_guess_streak = 0;
 
-        // 接缝寻找：在 NCC 确定的 crop_y ±5 行内，找与画布底部最后一行 SAD 最小的行。
-        // 避免在文字行中间切割产生可见接缝。
-        let crop_y_initial = eff_bottom - new_rows;
+        // 画布追加（NCC + 抛物线插值已给出精准切割点，不需要额外接缝寻找）
+        let crop_y = eff_bottom - new_rows;
         let row_bytes = w as usize * 4;
-        let frame_raw = frame.as_raw();
-        let canvas_last_row_start = (self.canvas_h as usize - 1) * row_bytes;
-        let canvas_last_row = &self.canvas_buf[canvas_last_row_start..canvas_last_row_start + row_bytes];
-        let seam_search_start = crop_y_initial.saturating_sub(5).max(eff_top);
-        let seam_search_end = (crop_y_initial + 5).min(eff_bottom - new_rows);
-        let mut best_seam = crop_y_initial;
-        let mut best_sad = u64::MAX;
-        for y in seam_search_start..=seam_search_end {
-            let row_start = y as usize * row_bytes;
-            let frame_row = &frame_raw[row_start..row_start + row_bytes];
-            let sad: u64 = canvas_last_row.chunks_exact(4)
-                .zip(frame_row.chunks_exact(4))
-                .map(|(a, b)| (a[0] as i32 - b[0] as i32).unsigned_abs() as u64
-                    + (a[1] as i32 - b[1] as i32).unsigned_abs() as u64
-                    + (a[2] as i32 - b[2] as i32).unsigned_abs() as u64)
-                .sum();
-            if sad < best_sad {
-                best_sad = sad;
-                best_seam = y;
-            }
-        }
-        let crop_y = best_seam;
-        let new_rows = eff_bottom - crop_y;
-
-        // 画布追加
         let start = crop_y as usize * row_bytes;
         let end = start + new_rows as usize * row_bytes;
+        let frame_raw = frame.as_raw();
         self.canvas_buf.extend_from_slice(&frame_raw[start..end]);
         self.canvas_h += new_rows;
         self.invalidate_cache();
