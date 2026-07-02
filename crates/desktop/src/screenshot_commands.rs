@@ -906,7 +906,7 @@ pub async fn start_scroll_recording(
 
         // ── 找到选区所在的显示器 + scale ──
         let monitors = ah.available_monitors().unwrap_or_default();
-        let (scale, mon_logical_x, mon_logical_y, mon_phys_x, mon_phys_y): (f64, f64, f64, i32, i32) = {
+        let (scale, mon_logical_x, mon_logical_y, _mon_phys_x, _mon_phys_y): (f64, f64, f64, i32, i32) = {
             let hit = monitors.iter().find(|m| {
                 let mx = m.position().x as f64 / m.scale_factor();
                 let my = m.position().y as f64 / m.scale_factor();

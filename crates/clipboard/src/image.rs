@@ -2,7 +2,7 @@
 //! 替代旧文件系统方案，不再写 ~/.octopus/clipboard_images/。
 
 use anyhow::{Context, Result};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 /// RGBA 像素 → PNG bytes + SHA-256 hash。
 /// hash 用于去重（同一张图只存一份 BLOB）。
