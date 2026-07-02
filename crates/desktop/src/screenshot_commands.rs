@@ -1113,7 +1113,6 @@ pub async fn start_scroll_recording(
         interval.tick().await;
 
         let ah2 = ah.clone();
-        let mut no_progress_count = 0u32;
         let mut last_frame: Option<image::RgbaImage> = None;
 
         // manual 模式：由用户手动滚动触控板/滚轮，后台只进行高频截帧与拼接
@@ -1154,18 +1153,7 @@ pub async fn start_scroll_recording(
             let frame_rgba = match capture_result { Ok(Ok(img)) => img, _ => continue };
             last_frame = Some(frame_rgba.clone());
 
-            let added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
-
-            // 自动停止检测：连续无新内容超过 ~6 秒（200 帧 @ 30ms 间隔）
-            if added {
-                no_progress_count = 0;
-            } else {
-                no_progress_count += 1;
-                if no_progress_count >= 200 {
-                    log::info!("Scroll: no progress for {} frames (~6s), auto-stopping", no_progress_count);
-                    break;
-                }
-            }
+            let _added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
 
             // 截图帧 JPEG + 预览图编码移入 spawn_blocking（CPU 密集，避免阻塞 async 线程）
             let preview_w = 400u32;
