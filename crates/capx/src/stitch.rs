@@ -369,34 +369,29 @@ impl Stitcher {
         }
 
         // 周期性假匹配检测：连续 3 次以上 dy 几乎相同 → 画面实际没滚动，
-        // NCC 在周期性内容中找到的是假匹配（如文件列表行高倍数）。
-        // 一旦触发，锁定（same_dy_count 保持 ≥3）直到 dy 发生真实变化才解锁。
+        // NCC 在周期性内容中找到的是假匹配。一旦锁定，拒绝所有相同 dy。
         let dy_rounded = (-dy).round();
         if self.same_dy_count >= 3 {
-            // 已锁定：检查 dy 是否真正变化（用户恢复滚动）
             if let Some(locked_dy) = self.last_appended_dy {
                 if (dy_rounded - locked_dy).abs() < 2.0 {
-                    // 仍是同一个周期性 dy → 继续拒绝
                     return Ok(false);
                 }
             }
-            // dy 变了 → 解锁
             log::info!("[stitch] periodic lock released (dy={:.0})", dy_rounded);
             self.same_dy_count = 0;
         }
         if let Some(prev_dy) = self.last_appended_dy {
             if (dy_rounded - prev_dy).abs() < 2.0 {
                 self.same_dy_count += 1;
+                if self.same_dy_count >= 3 {
+                    log::info!("[stitch] periodic false match locked (dy={:.0})", dy_rounded);
+                    return Ok(false);
+                }
             } else {
                 self.same_dy_count = 0;
             }
         }
         self.last_appended_dy = Some(dy_rounded);
-
-        // 累计到 3 次时仍追加这一帧（这是第 3 帧），但下一次开始锁定
-        if self.same_dy_count >= 3 && self.same_dy_count < 4 {
-            log::info!("[stitch] periodic false match suspected (dy={:.0} ×{}), locking", dy_rounded, self.same_dy_count + 1);
-        }
 
         log::info!("[stitch] ncc={:.4} dy={:.1} new_rows={} canvas_h={}",
             ncc.best_score, dy, new_rows, self.canvas_h);
