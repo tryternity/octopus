@@ -1193,6 +1193,9 @@ pub async fn start_scroll_recording(
         #[cfg(target_os = "macos")]
         set_app_active_on_main(&sel_win, true);
 
+        // 先关闭截图窗口（用户感知"立即停止"）
+        close_all_screenshot_windows(&ah);
+
         // 补全最后一帧的完整可见区域（含底部 sticky footer）
         if let Some(ref lf) = last_frame {
             let _ = stitcher.finalize(lf);
@@ -1296,8 +1299,7 @@ pub async fn start_scroll_recording(
             }
         }
 
-        // 关闭截图窗口
-        close_all_screenshot_windows(&ah);
+        // 窗口已在上方提前关闭
     });
 
     Ok(())
