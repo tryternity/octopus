@@ -1,6 +1,6 @@
 # 记事本 type 迁移 Implementation Plan
 
-> ⚠️ **本计划已落地，且富文本（Html/TipTap）已于 2026-07-02 追加移除。** Task 1-13 已全部完成（原 html/text/markdown 三类型方案）。随后用户决定彻底去富文本——`NoteType` 收窄为 `text`/`markdown`、删 TipTap 依赖、DB 迁移 v11→v12 删历史 html 笔记。下文保留原任务留档，凡涉及 `Html`/TipTap/`extract_text`/图片桥接的 step 描述均已被后续移除覆盖，当前代码与 `docs/architecture.md` §octopus-notepad 为准。
+> ⚠️ **本计划已全部落地。** Task 1-13（原 html/text/markdown 三类型方案）+ 富文本追加移除均已实现，**e2e 通过后于 2026-07-02 双向同步合并 main（merge `6e004ac`）**。富文本（Html/TipTap）下线：`NoteType` 收窄为 `text`/`markdown`、删 TipTap 依赖、DB 迁移 v11→v12 删历史 html 笔记。下文保留原任务留档（设计演进考古），凡涉及 `Html`/TipTap/`extract_text`/图片桥接的 step 描述均已被后续移除覆盖；**当前真相以重写后的 spec（双类型最终设计）与 `docs/architecture.md` §octopus-notepad 为准**。
 >
 > **富文本移除的追加变更**（不在下文 Task 内）：
 > - `crates/notepad/src/model.rs`：`NoteType` 去 `Html`（默认 `Text`，`from_str` 未知→Text）；删 `serialize.rs` + `Cargo.toml` 的 `scraper`。
@@ -852,7 +852,9 @@ const handleCreate = async () => {
 
 ---
 
-## Task 13: dist rebuild + 提交
+## Task 13: dist rebuild + 提交（历史留档：dist 已移出 git）
+
+> main 后续已把 `crates/desktop/dist/` 移出 git 跟踪（commit `f543511`，加入 `.gitignore`）。本 task 当时的「rebuild + 提交 dist」不再适用——前端构建产物不再入库；富文本移除时已 `git rm --cached` 让残留 dist 退出跟踪。
 
 - [x] **Step 1: 完整 rebuild** — `cd crates/desktop/frontend && npm run build`，确认 `crates/desktop/dist/assets/*` 产出新 hash 文件。
 
@@ -860,39 +862,29 @@ const handleCreate = async () => {
 
 ---
 
-## Task 14: e2e 验证
+## Task 14: e2e 验证（✅ 2026-07-02 通过，已合并 main）
 
-- [ ] **Step 1: 迁移验证** — 用现有真实库（`~/.octopus/` 下）启动应用 → 记事本能打开 → 历史笔记（html）正常显示编辑 → 查 DB `SELECT type FROM notes` 全为 'html'。
-
-- [ ] **Step 2: 三类型新建** — 新建富文本/纯文本/Markdown 笔记各一条 → 各自编辑器正确渲染 → 输入内容 → 等 800ms 自动保存 → 重开内容正确。
-
-- [ ] **Step 3: type 锁定** — 已建笔记编辑器内无 type 切换入口 → 确认锁定生效。
-
-- [ ] **Step 4: 搜索** — text/markdown 笔记内容可被搜索命中（FTS 索引 content_text）。
-
-- [ ] **Step 5: 剪贴板/OCR/ASR 存入** — 剪贴板一键存笔记 → 列表显示 TXT 标记 → 内容为纯文本（无 html 包裹）→ type='text'。
-
-- [ ] **Step 6: markdown 预览** — markdown 笔记输入 `# 标题\n**粗体**` → 预览面板正确渲染标题+粗体 → 折叠/展开预览正常。
-
-- [ ] **Step 7: 记录结果** — e2e 通过后通知用户；若有问题回到对应 task 修复。
+- [x] **迁移验证** — 真实库启动：v11→v12 迁移删除历史 4 条 html 笔记无崩溃；记事本正常打开；`SELECT type FROM notes` 仅剩 text/markdown。
+- [x] **双类型新建/编辑** — 新建纯文本 / Markdown 笔记 → 对应编辑器渲染 → 输入 → 800ms 自动保存 → 重开内容正确。
+- [x] **type 锁定** — 已建笔记编辑器无 type 切换入口，锁定生效。
+- [x] **搜索** — text/markdown 内容可被 FTS 命中。
+- [x] **来源存入** — 剪贴板 / ASR / OCR 存入为纯文本（无 `<p>` 包裹），type='text'。
+- [x] **markdown 预览** — `# 标题` / `**粗体**` 预览正确，折叠/展开正常。
 
 ---
 
 ## Spec Coverage
 
-| Spec section | Task |
+> 以重写后的 spec（双类型最终设计）章节为准。
+
+| Spec section（双类型最终设计） | Task |
 |--------------|------|
-| §4 Schema（content_text+content_html+type） | Task 2 |
-| §4 迁移 v9→v10 幂等 ALTER | Task 3 |
-| §5.1 NoteType enum（+Html） | Task 1 |
-| §5.2 Note.note_type 字段 | Task 1 |
-| §5.3 store 分发抽取 | Task 4 |
-| §5.4 clipboard 改调 notepad（type=text） | Task 5 |
-| §5.5 IPC 透传 type | Task 6 |
-| §6.1-6.2 前端类型 + IPC 封装 | Task 8 |
-| §6.3 三编辑器分发（TipTap/textarea/md） | Task 9, 10 |
-| §6.4 type 选择 UX（方案①锁定） | Task 11 |
-| §6.5 列表 type 标记 | Task 12 |
-| §7 数据兼容（历史 html / 来源默认 type） | Task 3, 5, 6, 14 |
-| §9 测试（NoteType/迁移/store） | Task 1, 3, 4 |
-| §11 风险（幂等迁移 / dist 提交） | Task 3, 13 |
+| §2 Schema（content_text + content_html 保留恒空 + type DEFAULT 'text'） | Task 2 |
+| §3 迁移链 v9→v10→v11→v12 | Task 3（v9→v10）+ 富文本移除（v11→v12） |
+| §4.1 NoteType（text/markdown） | Task 1 + 富文本移除（去 Html） |
+| §4.2 Note.note_type 字段 | Task 1 |
+| §4.3 store（split_body 恒空，无抽取） | Task 4 + 富文本移除（简化 split_body、删 serialize.rs） |
+| §4.4 IPC 透传 type + 删图片桥接 | Task 6 + 富文本移除（删 get/insert_note_image） |
+| §5 前端双类型（textarea / MarkdownEditor，无 TipTap） | Task 8, 9, 10 + 富文本移除（删 extensions.tsx / TipTap） |
+| §6 type 选择 UX（已建锁定）+ 列表角标 | Task 11, 12 |
+| §7 测试（NoteType / 迁移 v11→v12 / store） | Task 1, 3, 4 + 富文本移除迁移测试 |
