@@ -254,27 +254,29 @@ export default function ImagePreview() {
 
   const undo = () => setAnnotations((prev) => prev.slice(0, -1));
 
-  // —— compose：图像 + 标注 合成到自然尺寸 PNG → base64（与 zoom 无关，1:1 全分辨率）——
-  const composePngBase64 = (): string => {
+  // —— compose：图像 + 标注 合成到自然尺寸 PNG → Uint8Array（Raw body 二进制传输）——
+  const composePngBytes = async (): Promise<Uint8Array> => {
     const img = imgRef.current!;
     const c = document.createElement("canvas");
     c.width = natW; c.height = natH;
     const ctx = c.getContext("2d")!;
     ctx.drawImage(img, 0, 0, natW, natH);
     for (const ann of annotations) drawAnnotation(ctx, ann);
-    const url = c.toDataURL("image/png");
-    return url.substring(url.indexOf(",") + 1);
+    const blob: Blob = await new Promise((resolve) => c.toBlob(resolve, "image/png"));
+    return new Uint8Array(await blob.arrayBuffer());
   };
 
   const handleSave = async () => {
     try {
-      await invoke("save_image_dialog", { pngBase64: composePngBase64() });
+      const pngBytes = await composePngBytes();
+      await invoke("save_image_dialog", pngBytes);
     } catch (e) { console.error(e); }
   };
 
   const handleCopy = async () => {
     try {
-      await invoke("copy_image_to_clipboard", { pngBase64: composePngBase64() });
+      const pngBytes = await composePngBytes();
+      await invoke("copy_image_to_clipboard", pngBytes);
     } catch (e) { console.error(e); }
   };
 

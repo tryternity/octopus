@@ -187,12 +187,14 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 /// 截图 OCR：合成选区 → 入库 → OCR 识别 → 写 search_text + 剪贴板 + 新建文档
 #[tauri::command]
 pub async fn ocr_screenshot(
-    png_base64: String,
+    request: tauri::ipc::Request<'_>,
     app_handle: tauri::AppHandle,
     handle: State<'_, std::sync::Arc<ClipboardHandle>>,
 ) -> Result<(), String> {
-    let png_bytes = general_purpose::STANDARD.decode(&png_base64)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
+    let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
+        return Err("expected raw binary body".into());
+    };
+    let png_bytes = png_bytes.clone();
 
     ALL_CAPTURES.lock().unwrap().clear();
     PENDING_IMAGES.lock().unwrap().clear();
@@ -318,11 +320,13 @@ fn show_all_screenshot_windows(app_handle: &tauri::AppHandle) {
 /// 弹系统保存对话框，保存截图到用户指定路径
 #[tauri::command]
 pub async fn save_screenshot_dialog(
-    png_base64: String,
+    request: tauri::ipc::Request<'_>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let png_bytes = general_purpose::STANDARD.decode(&png_base64)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
+    let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
+        return Err("expected raw binary body".into());
+    };
+    let png_bytes = png_bytes.clone();
 
     ALL_CAPTURES.lock().unwrap().clear();
     PENDING_IMAGES.lock().unwrap().clear();
@@ -346,19 +350,18 @@ pub async fn save_screenshot_dialog(
     Ok(())
 }
 
-/// 前端合成标注+裁剪后，直接发送最终 PNG base64（含标注）
+/// 前端合成标注+裁剪后，直接发送最终 PNG（Raw body 二进制）
+/// 元数据（label/width/height）通过 headers 传递
 #[tauri::command]
 pub async fn confirm_screenshot_with_data(
-    _label: String,
-    png_base64: String,
-    _width: u32,
-    _height: u32,
+    request: tauri::ipc::Request<'_>,
     app_handle: tauri::AppHandle,
     handle: State<'_, std::sync::Arc<ClipboardHandle>>,
 ) -> Result<(), String> {
-    // 解码 base64 → PNG bytes
-    let png_bytes = general_purpose::STANDARD.decode(&png_base64)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
+    let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
+        return Err("expected raw binary body".into());
+    };
+    let png_bytes = png_bytes.clone();
 
     // 清空所有暂存
     ALL_CAPTURES.lock().unwrap().clear();
