@@ -1153,15 +1153,14 @@ pub async fn start_scroll_recording(
 
             let added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
 
-            // 自动停止检测：连续 3 帧无新内容
+            // 自动停止检测：连续无新内容超过 ~6 秒（200 帧 @ 30ms 间隔）
+            // 判定滚到底部或用户已停止，自动结束拼接
             if added {
                 no_progress_count = 0;
             } else {
                 no_progress_count += 1;
-                // manual 模式：用户需要时间移动到选区外开始滚动，不自动停止。
-                // 用一个大阈值（250 帧 ≈ 30s）仅作安全兜底，防止忘记停止。
-                if no_progress_count >= 250 {
-                    log::info!("Scroll: no progress for 250 frames (~30s), auto-stopping");
+                if no_progress_count >= 200 {
+                    log::info!("Scroll: no progress for {} frames (~6s), auto-stopping", no_progress_count);
                     break;
                 }
             }
