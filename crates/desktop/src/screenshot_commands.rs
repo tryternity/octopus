@@ -1242,11 +1242,20 @@ pub async fn start_scroll_recording(
         let canvas = stitcher.canvas().clone();
         let ah3 = ah.clone();
         let result = tokio::task::spawn_blocking(move || {
+            // 直接从 canvas 转 DynamicImage，避免 PNG 编码→解码冗余往返
+            let img = image::DynamicImage::ImageRgba8(canvas);
+
+            // PNG 编码用快速压缩（写剪贴板/base64 传前端，不需要高压缩率）
             let mut png_bytes = Vec::new();
-            let _ = canvas.write_to(&mut std::io::Cursor::new(&mut png_bytes), image::ImageFormat::Png);
+            let mut cursor = std::io::Cursor::new(&mut png_bytes);
+            let png_encoder = image::codecs::png::PngEncoder::new_with_quality(
+                &mut cursor,
+                image::codecs::png::CompressionType::Fast,
+                image::codecs::png::FilterType::Up,
+            );
+            let _ = img.write_with_encoder(png_encoder);
 
             let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
-            let img = match image::load_from_memory(&png_bytes) { Ok(i) => i, Err(_) => return None };
             let encoded = match octopus_clipboard::image::encode_to_webp(&img) { Ok(e) => e, Err(_) => return None };
 
             let item_id = octopus_clipboard::store::chrono_millis();
