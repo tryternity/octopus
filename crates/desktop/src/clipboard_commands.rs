@@ -547,7 +547,11 @@ pub async fn copy_image_to_clipboard(
     // write_image 置 suppress flag，watcher 会跳过自身写入（防回环）。
     // 但图片预览的「复制」期望这条图进入剪贴板历史 → 主动调 watcher 的入库逻辑
     // （与系统复制图片走完全相同的路径：去重 hash + WebP + 缩略图 + image_data BLOB）。
-    octopus_clipboard::watcher::handle_clipboard_change(handle.inner().as_ref());
+    // 将耗时的大图 WebP 编码与落库异步移至后台，避免阻塞 Tauri 命令返回
+    let handle_clone = handle.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        octopus_clipboard::watcher::handle_clipboard_change(handle_clone.as_ref());
+    });
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(())
 }

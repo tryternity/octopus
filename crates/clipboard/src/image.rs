@@ -38,7 +38,8 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let webp_blob = webp_blob.to_vec();
 
     // 缩略图：resize 240×240 → WebP 20%
-    let thumb_img = img.resize(240, 240, ::image::imageops::FilterType::Lanczos3);
+    // 针对超大长图，Lanczos3 插值开销过大；改用轻量级 Triangle (双线性) 过滤大幅降低 CPU 计算耗时
+    let thumb_img = img.resize(240, 240, ::image::imageops::FilterType::Triangle);
     let thumb_rgba = thumb_img.to_rgba8();
     let thumb_encoder = webp::Encoder::from_rgba(&thumb_rgba, thumb_rgba.width(), thumb_rgba.height());
     let thumb_blob = thumb_encoder.encode(20.0);
