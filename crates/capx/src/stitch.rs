@@ -58,20 +58,6 @@ struct GrayBuf {
 }
 
 impl GrayBuf {
-    /// 从 RGBA 图像转换灰度（全帧）。y_offset = 0。
-    fn from_rgba(rgba: &RgbaImage) -> Self {
-        let width = rgba.width() as usize;
-        let mut data = Vec::with_capacity(width * rgba.height() as usize);
-        for px in rgba.pixels() {
-            let r = px[0] as u32;
-            let g = px[1] as u32;
-            let b = px[2] as u32;
-            let luma = (2126 * r + 7152 * g + 722 * b) / 10000;
-            data.push(luma as u8);
-        }
-        Self { data, width, y_offset: 0 }
-    }
-
     /// 从 RGBA 图像的指定行范围 [y_start, y_end) 转换灰度（ROI 优化）。
     /// 仅转换需要参与匹配的行，减少 60%+ 的灰度计算量。
     fn from_rgba_roi(rgba: &RgbaImage, y_start: usize, y_end: usize) -> Self {
@@ -1053,7 +1039,7 @@ mod tests {
         //                         = (212600 + 1072800 + 144400) / 10000 = 1429800 / 10000 = 142
         let mut img: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> = image::ImageBuffer::new(1, 1);
         img.put_pixel(0, 0, image::Rgba([100, 150, 200, 255]));
-        let buf = GrayBuf::from_rgba(&img);
+        let buf = GrayBuf::from_rgba_roi(&img, 0, img.height() as usize);
         assert_eq!(buf.row(0)[0], 142, "彩色像素灰度公式验证");
     }
 
@@ -1157,7 +1143,7 @@ mod tests {
         // 验证 GrayBuf::from_rgba 与 image::imageops::grayscale 逐像素相等
         let img = make_frame(TW, TH, 0);
         let reference = image::imageops::grayscale(&img);
-        let buf = GrayBuf::from_rgba(&img);
+        let buf = GrayBuf::from_rgba_roi(&img, 0, img.height() as usize);
         assert_eq!(buf.width, TW as usize);
         assert_eq!(buf.data.len(), TW as usize * TH as usize);
         for y in 0..TH as usize {
