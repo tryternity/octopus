@@ -102,15 +102,16 @@ fn to_feature_map(gray: &GrayBuf) -> (image::GrayImage, bool) {
 }
 
 /// 计算 u16 灰度图的均值和标准差。
+/// 内部用 f64 累加避免大图像 f32 精度丢失（300 万像素 sum 可达 30 亿）。
 fn mean_stddev_u16(img: &imageproc::definitions::Image<image::Luma<u16>>) -> (f32, f32) {
-    let n = (img.width() * img.height()) as f32;
-    let sum: f32 = img.iter().map(|&p| p as f32).sum();
+    let n = (img.width() * img.height()) as f64;
+    let sum: f64 = img.iter().map(|&p| p as f64).sum();
     let mean = sum / n;
-    let var: f32 = img.iter().map(|&p| {
-        let d = p as f32 - mean;
+    let var: f64 = img.iter().map(|&p| {
+        let d = p as f64 - mean;
         d * d
-    }).sum::<f32>() / n;
-    (mean, var.sqrt())
+    }).sum::<f64>() / n;
+    (mean as f32, var.sqrt() as f32)
 }
 
 // ===== NCC 匹配引擎 =====
