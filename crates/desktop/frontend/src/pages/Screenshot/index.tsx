@@ -87,21 +87,16 @@ export default function Screenshot() {
     let unlistenFrame: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
     listen<{ frame: string; preview: string; height: number; phys_height: number }>("scroll://frame", (e) => {
-      // 实时选区画面：加载为 Image → Canvas 重绘
       const img = new Image();
       img.onload = () => { scrollFrameRef.current = img; draw(); };
       img.src = `data:image/jpeg;base64,${e.payload.frame}`;
       setScrollPreview(e.payload.preview);
       setScrollHeight(e.payload.phys_height);
     }).then((fn) => { unlistenFrame = fn; });
-    listen("scroll://done", (e: { payload: { id?: string; png_base64?: string } }) => {
+    listen("scroll://done", (e: { payload: { id?: string } }) => {
       setScrollPreview(null);
       setModeSafe("selected");
-      // 如果用户点的是"保存"，触发保存文件对话框
-      if (scrollSaveAfterStopRef.current && e.payload.png_base64) {
-        scrollSaveAfterStopRef.current = false;
-        invoke("save_screenshot_dialog", { pngBase64: e.payload.png_base64 }).catch(() => {});
-      }
+      // 保存模式由 Rust 端直接弹对话框，前端不再中转 base64
       scrollSaveAfterStopRef.current = false;
     }).then((fn) => { unlistenDone = fn; });
     return () => { unlistenFrame?.(); unlistenDone?.(); };

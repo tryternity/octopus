@@ -1277,15 +1277,14 @@ pub async fn start_scroll_recording(
                 let _ = handle.write_image(&png_bytes);
             }
 
-            let png_b64 = general_purpose::STANDARD.encode(&png_bytes);
-            Some((serde_json::json!({ "id": item_id, "png_base64": png_b64 }), png_bytes))
+            Some((serde_json::json!({ "id": item_id }), png_bytes))
         }).await.unwrap_or(None);
 
         if let Some((done_payload, png_bytes)) = result {
             let _ = ah.emit("scroll://done", done_payload);
             let _ = ah.emit("clipboard://changed", ());
 
-            // 保存模式：弹保存对话框
+            // 保存模式：Rust 端直接弹对话框（无需前端中转 base64）
             if stop_mode == ScrollStopMode::Save {
                 use tauri_plugin_dialog::DialogExt;
                 let save_path = ah.dialog()
