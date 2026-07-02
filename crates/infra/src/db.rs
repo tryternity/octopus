@@ -138,6 +138,7 @@ where
 /// - v4（v4 升级）: 重跑 INIT_SQL（幂等，补建 clipboard_history + FTS5）→ v5
 /// - v5+: 跳过
 /// - v9 → v10: notes 加 type 列（ALTER ADD，幂等）
+/// - v10 → v11: 补 notes.content_html 列（兼容 egui 分支重建过的库——egui 的 v10 无 content_html；幂等 ALTER ADD DEFAULT ''）
 ///
 /// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等安全重跑。
 fn init_schema(conn: &Connection) -> Result<()> {
@@ -151,8 +152,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
         // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 10", [])?;
-        log::info!("DB initialized (v10): schema + app_config(setting) + prompts + clipboard_history + image_data + notes(content_text+content_html+type) + yaml migration");
+        conn.execute("PRAGMA user_version = 11", [])?;
+        log::info!("DB initialized (v11): schema + app_config(setting) + prompts + clipboard_history + image_data + notes(content_text+content_html+type) + yaml migration");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
@@ -233,6 +234,27 @@ fn init_schema(conn: &Connection) -> Result<()> {
             log::info!("DB migrated to v10: notes.type 列已加（历史笔记默认 html）");
         }
         conn.execute("PRAGMA user_version = 10", [])?;
+    } else if v == 10 {
+        // v10 → v11：补 notes.content_html 列。
+        // v10 来源：①webview v9→v10（已有 content_html）；②egui 分支重建（无 content_html，
+        //   仅 content_text+type，type 默认 'text'）。egui 分支虽未合并 main，但用户跑过会污染库，
+        //   致 webview 的 SELECT content_html 报 no such column → 记事本空白。
+        //   幂等：先查 content_html 列存在再 ALTER ADD DEFAULT ''。
+        //   egui 历史 content_html 空、type='text' → webview 按 text 读 content_text 显示。
+        let has_html: bool = conn
+            .prepare("PRAGMA table_info(notes)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .any(|c| c == "content_html");
+        if !has_html {
+            conn.execute(
+                "ALTER TABLE notes ADD COLUMN content_html TEXT NOT NULL DEFAULT ''",
+                [],
+            )
+            .context("v10→v11: ALTER notes ADD content_html")?;
+            log::info!("DB migrated to v11: 补 notes.content_html 列（兼容 egui 分支库；历史笔记 content_html 空、按 content_text 显示）");
+        }
+        conn.execute("PRAGMA user_version = 11", [])?;
     }
     Ok(())
 }
@@ -1205,6 +1227,76 @@ mod tests {
         init_schema(&conn).unwrap();
         let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
         assert_eq!(v, 10);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_v10_egui_to_v11_adds_content_html() {
+        // 模拟 egui 分支污染的库：v10，notes 有 content_text+type 但无 content_html
+        // （egui 重建丢了 content_html，type 默认 'text'）。webview SELECT content_html 会报错。
+        let dir = std::env::temp_dir().join(format!("octopus-html-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = Connection::open(dir.join("mig.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (
+                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT,
+                content_text TEXT NOT NULL DEFAULT '',
+                type TEXT NOT NULL DEFAULT 'text',
+                source TEXT NOT NULL DEFAULT 'manual', source_ref_id INTEGER,
+                is_pinned INTEGER NOT NULL DEFAULT 0, is_favorite INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
+             INSERT INTO notes (title, content_text, type, source, created_at, updated_at)
+                VALUES ('egui 笔记', 'egui 时代的纯文本', 'text', 'manual', '2026-06-01 00:00:00', '2026-06-01 00:00:00');
+             PRAGMA user_version = 10;",
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+
+        // content_html 列已补（DEFAULT ''）
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(notes)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(cols.contains(&"content_html".to_string()), "应补 content_html 列");
+
+        // egui 历史 content_text 保留、type=text、content_html 空（webview 按 text 读 content_text 显示）
+        let row: (String, String, String) = conn
+            .query_row(
+                "SELECT content_text, content_html, type FROM notes WHERE title='egui 笔记'",
+                [],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(row.0, "egui 时代的纯文本");
+        assert_eq!(row.1, "", "content_html 补为空");
+        assert_eq!(row.2, "text");
+
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 11);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_v10_to_v11_is_idempotent() {
+        // webview 自己的 v10 库已有 content_html → init_schema 应跳过 ALTER，v→11 不报 duplicate column
+        let dir = std::env::temp_dir().join(format!("octopus-html-mig-idem-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = Connection::open(dir.join("mig.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT, content_text TEXT DEFAULT '', content_html TEXT DEFAULT '', type TEXT DEFAULT 'html', source TEXT DEFAULT 'manual', source_ref_id INTEGER, is_pinned INTEGER DEFAULT 0, is_favorite INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT);
+             PRAGMA user_version = 10;",
+        )
+        .unwrap();
+        init_schema(&conn).unwrap();
+        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 11);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
