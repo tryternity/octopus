@@ -103,8 +103,9 @@ objc2-app-kit = { version = "0.3", features = [
     "NSImage", "NSImageView", "NSView", "NSColor",
     "NSTextView", "NSText", "NSScrollView",
     "NSButton", "NSControl", "NSTextField", "NSFont",
+    "NSResponder",
 ] }
-objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSData"] }
+objc2-foundation = { version = "0.3", features = ["NSGeometry", "NSData", "NSUndoManager"] }
 core-graphics = { version = "0.24", features = ["highsierra"] }
 core-foundation = "0.10"
 
