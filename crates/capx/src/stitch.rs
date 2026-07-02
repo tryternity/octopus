@@ -292,6 +292,11 @@ impl Stitcher {
         // 静止双重校验：dy ≈ 0 且时序也确认静止才跳过
         if dy.abs() < 0.5 && self.is_stationary() {
             log::info!("[stitch] stationary confirmed by temporal smoothing");
+            // 写入 dy_history 持续稀释旧滚动速度，防止后续 best-guess 误触发
+            self.dy_history.push_back(dy);
+            if self.dy_history.len() > DY_HISTORY_LEN {
+                self.dy_history.pop_front();
+            }
             return Ok(false);
         }
 
