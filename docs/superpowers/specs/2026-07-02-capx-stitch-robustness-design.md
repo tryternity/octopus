@@ -1,7 +1,7 @@
 # 滚动拼接健壮性优化设计
 
 **日期**: 2026-07-02
-**状态**: 设计已确认，待实施
+**状态**: ✅ 实施完成（3 改造 + 16 测试全绿，API 零改动）
 **分支**: `optimize-capx`
 **关联文档**: [`2026-06-12-capx-optimization-design.md`](./2026-06-12-capx-optimization-design.md)（性能优化，已完成）、[`2026-06-30-scroll-stitch-research.md`](./2026-06-30-scroll-stitch-research.md)（算法调研）
 
