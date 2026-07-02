@@ -23,7 +23,7 @@
 - Modify: `crates/notepad/src/model.rs`
 - Modify: `crates/notepad/src/lib.rs`
 
-- [ ] **Step 1: 写失败测试** — 在 `model.rs` 的 `#[cfg(test)] mod tests` 内追加：
+- [x] **Step 1: 写失败测试** — 在 `model.rs` 的 `#[cfg(test)] mod tests` 内追加：
 
 ```rust
     #[test]
@@ -41,9 +41,9 @@
     }
 ```
 
-- [ ] **Step 2: 跑测试确认失败** — `cargo test --manifest-path crates/notepad/Cargo.toml -p octopus-notepad note_type` → 编译失败（`NoteType` 未定义）。
+- [x] **Step 2: 跑测试确认失败** — `cargo test --manifest-path crates/notepad/Cargo.toml -p octopus-notepad note_type` → 编译失败（`NoteType` 未定义）。
 
-- [ ] **Step 3: 实现 NoteType** — 在 `model.rs` 的 `NoteSource` impl 之后、`Note` struct 之前插入：
+- [x] **Step 3: 实现 NoteType** — 在 `model.rs` 的 `NoteSource` impl 之后、`Note` struct 之前插入：
 
 ```rust
 /// 笔记内容格式（DB `notes.type` 列）。
@@ -79,7 +79,7 @@ impl NoteType {
 }
 ```
 
-- [ ] **Step 4: Note struct 加字段** — 把 `Note` struct 改为（在 `content_text` 后加 `note_type`）：
+- [x] **Step 4: Note struct 加字段** — 把 `Note` struct 改为（在 `content_text` 后加 `note_type`）：
 
 ```rust
 pub struct Note {
@@ -97,15 +97,15 @@ pub struct Note {
 }
 ```
 
-- [ ] **Step 5: lib.rs 导出 NoteType** — `pub use model::{Note, NoteFilter, NoteSource};` 改为：
+- [x] **Step 5: lib.rs 导出 NoteType** — `pub use model::{Note, NoteFilter, NoteSource};` 改为：
 
 ```rust
 pub use model::{Note, NoteFilter, NoteSource, NoteType};
 ```
 
-- [ ] **Step 6: 跑测试确认通过** — `cargo test --manifest-path crates/notepad/Cargo.toml -p octopus-notepad` → NoteType 测试 PASS（store 测试此时可能编译失败，Task 4 修，本步只看 model 测试通过即可；若 store 编译错阻碍，临时 `cargo test -p octopus-notepad --lib model::tests`）。
+- [x] **Step 6: 跑测试确认通过** — `cargo test --manifest-path crates/notepad/Cargo.toml -p octopus-notepad` → NoteType 测试 PASS（store 测试此时可能编译失败，Task 4 修，本步只看 model 测试通过即可；若 store 编译错阻碍，临时 `cargo test -p octopus-notepad --lib model::tests`）。
 
-- [ ] **Step 7: 提交** — `git add crates/notepad/src/model.rs crates/notepad/src/lib.rs && git commit -m "feat(notepad): NoteType enum (html/text/markdown) + Note.note_type 字段"`
+- [x] **Step 7: 提交** — `git add crates/notepad/src/model.rs crates/notepad/src/lib.rs && git commit -m "feat(notepad): NoteType enum (html/text/markdown) + Note.note_type 字段"`
 
 ---
 
@@ -114,7 +114,7 @@ pub use model::{Note, NoteFilter, NoteSource, NoteType};
 **Files:**
 - Modify: `crates/infra/src/db.sql`
 
-- [ ] **Step 1: 改 notes 建表** — 把 `db.sql` 中 notes 建表改为（加 `type` 列 + 更新注释）：
+- [x] **Step 1: 改 notes 建表** — 把 `db.sql` 中 notes 建表改为（加 `type` 列 + 更新注释）：
 
 ```sql
 -- ── 记事本（notes 表）─────────────────────────────────────────────────────
@@ -138,7 +138,7 @@ CREATE TABLE IF NOT EXISTS notes (
 
 > FTS5 表 + 触发器不变（仍索引 `content_text`，`type` 不进 FTS）。
 
-- [ ] **Step 2: 提交** — `git add crates/infra/src/db.sql && git commit -m "feat(infra): notes 表加 type 列 (html/text/markdown)"`
+- [x] **Step 2: 提交** — `git add crates/infra/src/db.sql && git commit -m "feat(infra): notes 表加 type 列 (html/text/markdown)"`
 
 ---
 
@@ -148,7 +148,7 @@ CREATE TABLE IF NOT EXISTS notes (
 - Modify: `crates/infra/src/db.rs`
 - Test: `crates/infra/src/db.rs`（同文件 `#[cfg(test)]`）
 
-- [ ] **Step 1: 写失败测试** — 在 db.rs 测试模块追加（参考 egui 分支 `migrate_v9_to_v10_rebuilds_notes_schema` 结构，但断言**保留数据**）：
+- [x] **Step 1: 写失败测试** — 在 db.rs 测试模块追加（参考 egui 分支 `migrate_v9_to_v10_rebuilds_notes_schema` 结构，但断言**保留数据**）：
 
 ```rust
     #[test]
@@ -216,9 +216,9 @@ CREATE TABLE IF NOT EXISTS notes (
     }
 ```
 
-- [ ] **Step 2: 跑测试确认失败** — `cargo test --manifest-path crates/infra/Cargo.toml -p octopus-infra migrate_v9_to_v10` → 失败（无 v9→v10 分支，user_version 停在 9）。
+- [x] **Step 2: 跑测试确认失败** — `cargo test --manifest-path crates/infra/Cargo.toml -p octopus-infra migrate_v9_to_v10` → 失败（无 v9→v10 分支，user_version 停在 9）。
 
-- [ ] **Step 3: 实现迁移** — 在 db.rs `init_schema` 的 `} else if v == 8 { ... }` 分支之后、函数结束前追加：
+- [x] **Step 3: 实现迁移** — 在 db.rs `init_schema` 的 `} else if v == 8 { ... }` 分支之后、函数结束前追加：
 
 ```rust
     } else if v == 9 {
@@ -241,13 +241,13 @@ CREATE TABLE IF NOT EXISTS notes (
     }
 ```
 
-- [ ] **Step 4: v0/v1 新库直跳 v10** — 把 v0/v1 分支（`if v < 2 { ... conn.execute("PRAGMA user_version = 9", [])?; }`）的 `= 9` 改为 `= 10`（INIT_SQL 建的 notes 已带 type，新库直接 v10）。
+- [x] **Step 4: v0/v1 新库直跳 v10** — 把 v0/v1 分支（`if v < 2 { ... conn.execute("PRAGMA user_version = 9", [])?; }`）的 `= 9` 改为 `= 10`（INIT_SQL 建的 notes 已带 type，新库直接 v10）。
 
-- [ ] **Step 5: 更新顶部 version 流转注释** — 在 init_schema 文档注释的版本流转说明里补一行 `/// - v9 → v10: notes 加 type 列（ALTER ADD，幂等）`，并把 v0/v1 注释里的 → v9 改 → v10。
+- [x] **Step 5: 更新顶部 version 流转注释** — 在 init_schema 文档注释的版本流转说明里补一行 `/// - v9 → v10: notes 加 type 列（ALTER ADD，幂等）`，并把 v0/v1 注释里的 → v9 改 → v10。
 
-- [ ] **Step 6: 跑测试确认通过** — `cargo test --manifest-path crates/infra/Cargo.toml -p octopus-infra` → migrate_v9_to_v10_adds_type / _is_idempotent 均 PASS，且不破坏现有 db 测试。
+- [x] **Step 6: 跑测试确认通过** — `cargo test --manifest-path crates/infra/Cargo.toml -p octopus-infra` → migrate_v9_to_v10_adds_type / _is_idempotent 均 PASS，且不破坏现有 db 测试。
 
-- [ ] **Step 7: 提交** — `git add crates/infra/src/db.rs && git commit -m "feat(infra): v9→v10 迁移 notes 加 type 列（幂等 ALTER，保留历史数据）"`
+- [x] **Step 7: 提交** — `git add crates/infra/src/db.rs && git commit -m "feat(infra): v9→v10 迁移 notes 加 type 列（幂等 ALTER，保留历史数据）"`
 
 ---
 
@@ -256,7 +256,7 @@ CREATE TABLE IF NOT EXISTS notes (
 **Files:**
 - Modify: `crates/notepad/src/store.rs`
 
-- [ ] **Step 1: 写失败测试** — 在 store.rs 测试模块追加（覆盖三类型 create + 抽取分发 + update）：
+- [x] **Step 1: 写失败测试** — 在 store.rs 测试模块追加（覆盖三类型 create + 抽取分发 + update）：
 
 ```rust
     #[test]
@@ -314,9 +314,9 @@ CREATE TABLE IF NOT EXISTS notes (
 > }
 > ```
 
-- [ ] **Step 2: 跑测试确认失败** — `cargo test --manifest-path crates/notepad/Cargo.toml -p octopus-notepad create_note` → 编译失败（签名不匹配）。
+- [x] **Step 2: 跑测试确认失败** — `cargo test --manifest-path crates/notepad/Cargo.toml -p octopus-notepad create_note` → 编译失败（签名不匹配）。
 
-- [ ] **Step 3: 改 create 签名 + 分发抽取** — 替换 `create_note` / `create_note_at`：
+- [x] **Step 3: 改 create 签名 + 分发抽取** — 替换 `create_note` / `create_note_at`：
 
 ```rust
 /// 新建笔记。type=Html 时 content_text 由 body(html) 抽取；text/markdown 时 content_text=body 原文。
@@ -357,7 +357,7 @@ fn split_body(body: &str, note_type: NoteType) -> (String, String) {
 }
 ```
 
-- [ ] **Step 4: 改 update 签名** — 替换 `update_note` / `update_note_at`：
+- [x] **Step 4: 改 update 签名** — 替换 `update_note` / `update_note_at`：
 
 ```rust
 pub fn update_note(id: i64, title: &str, body: &str, note_type: NoteType) -> Result<()> {
@@ -375,7 +375,7 @@ pub fn update_note_at(conn: &Connection, id: i64, title: &str, body: &str, note_
 }
 ```
 
-- [ ] **Step 5: row_to_note + 3 处 SELECT 加 type** — `row_to_note` 改为（SELECT 多一列 `type`，索引顺移）：
+- [x] **Step 5: row_to_note + 3 处 SELECT 加 type** — `row_to_note` 改为（SELECT 多一列 `type`，索引顺移）：
 
 ```rust
 fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
@@ -403,25 +403,27 @@ fn row_to_note(row: &rusqlite::Row) -> rusqlite::Result<Note> {
 - `query_with_search` FTS 分支: `... n.updated_at, n.type FROM notes_fts ...`
 - `get_note_at`: `... updated_at, type FROM notes WHERE id = ?`
 
-- [ ] **Step 6: import NoteType** — store.rs 顶部 `use` 加 `NoteType`（如 `use crate::model::{Note, NoteFilter, NoteSource, NoteType};` 或现有 import 风格）。
+- [x] **Step 6: import NoteType** — store.rs 顶部 `use` 加 `NoteType`（如 `use crate::model::{Note, NoteFilter, NoteSource, NoteType};` 或现有 import 风格）。
 
-- [ ] **Step 7: 跑测试确认通过** — `cargo test --manifest-path crates/notepad/Cargo.toml -p octopus-notepad` → 全 PASS。
+- [x] **Step 7: 跑测试确认通过** — `cargo test --manifest-path crates/notepad/Cargo.toml -p octopus-notepad` → 全 PASS。
 
 > **备注（test_db helper）**：若 `infra::db` 无 `init_for_test` 公开入口，测试 helper 改为直接执行建表 SQL：在 `test_db()` 内 `conn.execute_batch(include_str!("../../infra/src/db.sql 的 notes 部分"))`。实现时按 store.rs 现有测试模式对齐（读现有 store 测试怎么建临时库，照搬）。
 
-- [ ] **Step 8: 提交** — `git add crates/notepad/src/store.rs && git commit -m "feat(notepad): store 按 type 分发 create/update/读取（html 抽取，text/md 直存）"`
+- [x] **Step 8: 提交** — `git add crates/notepad/src/store.rs && git commit -m "feat(notepad): store 按 type 分发 create/update/读取（html 抽取，text/md 直存）"`
 
 ---
 
 ## Task 5: clipboard 剪贴板存入改调 notepad（type=text）
 
+> **实际结论（实现时重新判定 → 本 task 无需改动，下方 step 仅作审查标记）**：plan 误把 `clipboard/src/store.rs:976` 的 INSERT 当生产逻辑，实为 `cleanup_preserves_images_referenced_by_notes` 测试代码（语义=html 笔记嵌 `note-img:` 图片）。clipboard crate 生产代码不写 notes（只读检查 image 引用），剪贴板存笔记的真实入口是前端 IPC `create_note`（Task 6 已透传 type）。若照原 step 改 type=text 会清空 content_html、破坏 image 引用测试，且违反架构边界（note_commands.rs:2 明示 notepad 不依赖 clipboard，反向亦不应依赖）。`:976` 测试 INSERT 显式列名 + `type` DEFAULT 'html' 已兼容新 schema，clipboard 测试通过（`test_delete_by_transcription_ids` 的 `clipboard_history.id` 失败为 pre-existing flaky，main 同样失败，与本次无关）。
+
 **Files:**
 - Modify: `crates/clipboard/src/store.rs`（约 :976）
 - Modify: `crates/clipboard/Cargo.toml`（加 octopus-notepad 依赖，若未有）
 
-- [ ] **Step 1: 读现状** — 读 `clipboard/src/store.rs:960-990` 确认当前 INSERT notes 的完整上下文（标题来源、source 值、是否事务内）。
+- [x] **Step 1: 读现状** — 读 `clipboard/src/store.rs:960-990` 确认当前 INSERT notes 的完整上下文（标题来源、source 值、是否事务内）。
 
-- [ ] **Step 2: 改调 notepad 统一入口** — 把直写 SQL 的 INSERT 替换为：
+- [x] **Step 2: 改调 notepad 统一入口** — 把直写 SQL 的 INSERT 替换为：
 
 ```rust
 use octopus_notepad::{NoteSource, NoteType};
@@ -437,11 +439,11 @@ let id = octopus_notepad::store::create_note_at(
 
 > 保留原函数的 conn 传递（若原代码在 `with_db` 闭包内，调 `create_note_at(conn, ...)` 即可）。删除原 `extract_text` 调用（notepad 内部按 type=text 直存，无需抽取）。
 
-- [ ] **Step 3: Cargo.toml 加依赖** — 若 `crates/clipboard/Cargo.toml` 未列 `octopus-notepad`，加 `octopus-notepad = { path = "../notepad" }`。
+- [x] **Step 3: Cargo.toml 加依赖** — 若 `crates/clipboard/Cargo.toml` 未列 `octopus-notepad`，加 `octopus-notepad = { path = "../notepad" }`。
 
-- [ ] **Step 4: 编译 + 测试** — `cargo build --manifest-path crates/clipboard/Cargo.toml -p octopus-clipboard` 通过；跑 clipboard 现有测试不破坏。
+- [x] **Step 4: 编译 + 测试** — `cargo build --manifest-path crates/clipboard/Cargo.toml -p octopus-clipboard` 通过；跑 clipboard 现有测试不破坏。
 
-- [ ] **Step 5: 提交** — `git add crates/clipboard/src/store.rs crates/clipboard/Cargo.toml && git commit -m "refactor(clipboard): 剪贴板存笔记改调 notepad create_note_at (type=text 统一入口)"`
+- [x] **Step 5: 提交** — `git add crates/clipboard/src/store.rs crates/clipboard/Cargo.toml && git commit -m "refactor(clipboard): 剪贴板存笔记改调 notepad create_note_at (type=text 统一入口)"`
 
 ---
 
@@ -450,7 +452,7 @@ let id = octopus_notepad::store::create_note_at(
 **Files:**
 - Modify: `crates/desktop/src/note_commands.rs`
 
-- [ ] **Step 1: create_note / update_note 命令加参数** —
+- [x] **Step 1: create_note / update_note 命令加参数** —
 
 ```rust
 use octopus_notepad::{Note, NoteFilter, NoteSource, NoteType};
@@ -494,7 +496,7 @@ pub async fn update_note(
 }
 ```
 
-- [ ] **Step 2: save_transcription_to_note / save_ocr_to_note 固定 type=text** — 找到这两个命令内调 `create_note_at` / `<p>` 包裹处，改为传 `NoteType::Text`（ASR/OCR 是纯文本来源，不再 `<p>` 包裹成 html）：
+- [x] **Step 2: save_transcription_to_note / save_ocr_to_note 固定 type=text** — 找到这两个命令内调 `create_note_at` / `<p>` 包裹处，改为传 `NoteType::Text`（ASR/OCR 是纯文本来源，不再 `<p>` 包裹成 html）：
 
 ```rust
 // 原：let html = format!("<p>{}</p>", text); create_note_at(conn, Asr, id, &html)
@@ -503,23 +505,23 @@ octopus_notepad::store::create_note_at(conn, NoteSource::Asr, transcription_id, 
 // OCR 同理：NoteSource::Ocr, NoteType::Text
 ```
 
-- [ ] **Step 3: 检查 invoke_handler 注册** — create_note/update_note 签名变了，但命令名不变，`invoke_handler!` 注册处无需改（参数由前端按名传）。
+- [x] **Step 3: 检查 invoke_handler 注册** — create_note/update_note 签名变了，但命令名不变，`invoke_handler!` 注册处无需改（参数由前端按名传）。
 
-- [ ] **Step 4: 编译** — `cargo build --manifest-path crates/desktop/Cargo.toml -p octopus-desktop` 通过。
+- [x] **Step 4: 编译** — `cargo build --manifest-path crates/desktop/Cargo.toml -p octopus-desktop` 通过。
 
-- [ ] **Step 5: 提交** — `git add crates/desktop/src/note_commands.rs && git commit -m "feat(desktop): create/update_note IPC 透传 type；ASR/OCR 存入固定 type=text"`
+- [x] **Step 5: 提交** — `git add crates/desktop/src/note_commands.rs && git commit -m "feat(desktop): create/update_note IPC 透传 type；ASR/OCR 存入固定 type=text"`
 
 ---
 
 ## Task 7: 后端整体编译 + 测试收口
 
-- [ ] **Step 1: workspace 编译** — `cargo build --manifest-path Cargo.toml` 全 workspace 通过。
+- [x] **Step 1: workspace 编译** — `cargo build --manifest-path Cargo.toml` 全 workspace 通过。
 
-- [ ] **Step 2: workspace 测试** — `cargo test --manifest-path Cargo.toml -p octopus-notepad -p octopus-infra -p octopus-clipboard` 全 PASS。
+- [x] **Step 2: workspace 测试** — `cargo test --manifest-path Cargo.toml -p octopus-notepad -p octopus-infra -p octopus-clipboard` 全 PASS。
 
-- [ ] **Step 3: 修复回归** — 若其他 crate 因 Note 字段/签名变更编译失败（如 capx/server 引用 Note），按编译错误逐一适配（grep `create_note`/`update_note`/`Note {` 调用点）。
+- [x] **Step 3: 修复回归** — 若其他 crate 因 Note 字段/签名变更编译失败（如 capx/server 引用 Note），按编译错误逐一适配（grep `create_note`/`update_note`/`Note {` 调用点）。
 
-- [ ] **Step 4: 提交（若有修复）** — `git add -A && git commit -m "fix: 适配 NoteType 透传的下游调用点"`
+- [x] **Step 4: 提交（若有修复）** — `git add -A && git commit -m "fix: 适配 NoteType 透传的下游调用点"`
 
 ---
 
@@ -529,7 +531,7 @@ octopus_notepad::store::create_note_at(conn, NoteSource::Asr, transcription_id, 
 - Modify: `crates/desktop/frontend/src/types/note.ts`
 - Modify: `crates/desktop/frontend/src/lib/notepad.ts`
 
-- [ ] **Step 1: types/note.ts 加 NoteType** —
+- [x] **Step 1: types/note.ts 加 NoteType** —
 
 ```ts
 export type NoteSource = "asr" | "ocr" | "clipboard" | "manual";
@@ -551,7 +553,7 @@ export interface Note {
 // NoteListParams 不变
 ```
 
-- [ ] **Step 2: lib/notepad.ts create/update 加 noteType** —
+- [x] **Step 2: lib/notepad.ts create/update 加 noteType** —
 
 ```ts
 import type { Note, NoteListParams, NoteSource, NoteType } from "@/types/note";
@@ -573,7 +575,7 @@ export const updateNote = (
 
 > 其余导出（list/count/get/delete/pin/favorite/export/import/image）不变。
 
-- [ ] **Step 3: 提交** — `git add crates/desktop/frontend/src/types/note.ts crates/desktop/frontend/src/lib/notepad.ts && git commit -m "feat(frontend): NoteType 类型 + createNote/updateNote 透传 noteType"`
+- [x] **Step 3: 提交** — `git add crates/desktop/frontend/src/types/note.ts crates/desktop/frontend/src/lib/notepad.ts && git commit -m "feat(frontend): NoteType 类型 + createNote/updateNote 透传 noteType"`
 
 ---
 
@@ -583,9 +585,9 @@ export const updateNote = (
 - Create: `crates/desktop/frontend/src/pages/Notepad/MarkdownEditor.tsx`
 - Modify: `crates/desktop/frontend/package.json`
 
-- [ ] **Step 1: 加 marked 依赖** — `cd crates/desktop/frontend && npm install marked`，确认 `package.json` 出现 `"marked"`。
+- [x] **Step 1: 加 marked 依赖** — `cd crates/desktop/frontend && npm install marked`，确认 `package.json` 出现 `"marked"`。
 
-- [ ] **Step 2: 创建 MarkdownEditor.tsx** —
+- [x] **Step 2: 创建 MarkdownEditor.tsx** —
 
 ```tsx
 import { useState, useMemo } from "react";
@@ -672,7 +674,7 @@ export default function MarkdownEditor({ value, onChange }: Props) {
 }
 ```
 
-- [ ] **Step 3: 提交** — `git add crates/desktop/frontend/src/pages/Notepad/MarkdownEditor.tsx crates/desktop/frontend/package.json crates/desktop/frontend/package-lock.json && git commit -m "feat(frontend): MarkdownEditor 组件（源码+工具栏+marked 可折叠预览）"`
+- [x] **Step 3: 提交** — `git add crates/desktop/frontend/src/pages/Notepad/MarkdownEditor.tsx crates/desktop/frontend/package.json crates/desktop/frontend/package-lock.json && git commit -m "feat(frontend): MarkdownEditor 组件（源码+工具栏+marked 可折叠预览）"`
 
 ---
 
@@ -681,7 +683,7 @@ export default function MarkdownEditor({ value, onChange }: Props) {
 **Files:**
 - Modify: `crates/desktop/frontend/src/pages/Notepad/NoteEditor.tsx`
 
-- [ ] **Step 1: doSave 透传 type** — 把 `doSave` 改为按当前 note 的 type 调用：
+- [x] **Step 1: doSave 透传 type** — 把 `doSave` 改为按当前 note 的 type 调用：
 
 ```tsx
   const doSave = useCallback(
@@ -696,7 +698,7 @@ export default function MarkdownEditor({ value, onChange }: Props) {
 
 标题 debounce 保存同理：`updateNote(noteId, title, editor.getHTML(), note.note_type)`。
 
-- [ ] **Step 2: 编辑区分发** — 在 return 的编辑区（`{/* 编辑器 */}` 处）按 `note.note_type` 分发。保留现有 TipTap 工具栏仅在 html 时显示；text/markdown 用各自编辑器：
+- [x] **Step 2: 编辑区分发** — 在 return 的编辑区（`{/* 编辑器 */}` 处）按 `note.note_type` 分发。保留现有 TipTap 工具栏仅在 html 时显示；text/markdown 用各自编辑器：
 
 ```tsx
       {/* 编辑区：按 type 分发 */}
@@ -727,7 +729,7 @@ export default function MarkdownEditor({ value, onChange }: Props) {
 
 > 收藏/置顶/导出按钮在 text/markdown 也需要：抽出公共 Header 组件或在每个分支重复。为控制 scope，建议把标题 + 收藏/置顶/导出抽成 `NoteHeader` 子组件（接收 note + setters），三种编辑器共用。实现时按现有结构重构。
 
-- [ ] **Step 3: 内联 TextEditor（纯 textarea）** — 在 NoteEditor.tsx 内或新建 `TextEditor.tsx`：
+- [x] **Step 3: 内联 TextEditor（纯 textarea）** — 在 NoteEditor.tsx 内或新建 `TextEditor.tsx`：
 
 ```tsx
 function TextEditor({ note, title, onTitle, onSave }: EditorProps) {
@@ -753,7 +755,7 @@ function TextEditor({ note, title, onTitle, onSave }: EditorProps) {
 }
 ```
 
-- [ ] **Step 4: MarkdownEditor 接入（外层包 debounce + header）** —
+- [x] **Step 4: MarkdownEditor 接入（外层包 debounce + header）** —
 
 ```tsx
 function MarkdownEditorOuter({ note, title, onTitle, onSave }: EditorProps) {
@@ -776,9 +778,9 @@ function MarkdownEditorOuter({ note, title, onTitle, onSave }: EditorProps) {
 
 > `EditorProps = { note: Note; title: string; onTitle: (t: string) => void; onSave: (body: string) => void }`。`NoteHeader` 抽出标题 input + 收藏/置顶/导出按钮（从现有 html 分支搬出，三种复用）。
 
-- [ ] **Step 5: 类型检查 + 构建** — `cd crates/desktop/frontend && npm run build` → 通过（dist 产出）。修复 TS 报错（如 doSave 依赖、未用 import）。
+- [x] **Step 5: 类型检查 + 构建** — `cd crates/desktop/frontend && npm run build` → 通过（dist 产出）。修复 TS 报错（如 doSave 依赖、未用 import）。
 
-- [ ] **Step 6: 提交** — `git add crates/desktop/frontend/src/pages/Notepad/ && git commit -m "feat(frontend): NoteEditor 按 note_type 分发 html/text/markdown 编辑器"`
+- [x] **Step 6: 提交** — `git add crates/desktop/frontend/src/pages/Notepad/ && git commit -m "feat(frontend): NoteEditor 按 note_type 分发 html/text/markdown 编辑器"`
 
 ---
 
@@ -787,9 +789,9 @@ function MarkdownEditorOuter({ note, title, onTitle, onSave }: EditorProps) {
 **Files:**
 - Modify: `crates/desktop/frontend/src/pages/Notepad/NoteList.tsx`（新建按钮处）
 
-- [ ] **Step 1: 读 NoteList 新建逻辑** — 确认新建按钮当前如何调 `createNote`（默认 source=manual）。
+- [x] **Step 1: 读 NoteList 新建逻辑** — 确认新建按钮当前如何调 `createNote`（默认 source=manual）。
 
-- [ ] **Step 2: 新建按钮加 type 选择** — 新建时默认 `html`（与现状一致），并提供 type 切换。实现为：新建按钮旁加一个 type 下拉（`select`），或新建按钮改为弹出三个选项（富文本/纯文本/Markdown）。推荐下拉：
+- [x] **Step 2: 新建按钮加 type 选择** — 新建时默认 `html`（与现状一致），并提供 type 切换。实现为：新建按钮旁加一个 type 下拉（`select`），或新建按钮改为弹出三个选项（富文本/纯文本/Markdown）。推荐下拉：
 
 ```tsx
 const [newType, setNewType] = useState<NoteType>("html");
@@ -813,9 +815,9 @@ const handleCreate = async () => {
 
 > 已建笔记 type 锁定：编辑器内不提供 type 切换（NoteEditor 只读 `note.note_type`）。新建空笔记 body="" 按 type 存（html 空、text 空、md 空）。
 
-- [ ] **Step 3: 构建检查** — `npm run build` 通过。
+- [x] **Step 3: 构建检查** — `npm run build` 通过。
 
-- [ ] **Step 4: 提交** — `git add crates/desktop/frontend/src/pages/Notepad/NoteList.tsx && git commit -m "feat(frontend): 新建笔记可选 type（富文本/纯文本/Markdown），已建锁定"`
+- [x] **Step 4: 提交** — `git add crates/desktop/frontend/src/pages/Notepad/NoteList.tsx && git commit -m "feat(frontend): 新建笔记可选 type（富文本/纯文本/Markdown），已建锁定"`
 
 ---
 
@@ -824,7 +826,7 @@ const handleCreate = async () => {
 **Files:**
 - Modify: `crates/desktop/frontend/src/pages/Notepad/NoteList.tsx`
 
-- [ ] **Step 1: 列表项加 type 角标** — 在每条笔记标题旁，非 html 类型显示小标记：
+- [x] **Step 1: 列表项加 type 角标** — 在每条笔记标题旁，非 html 类型显示小标记：
 
 ```tsx
 {note.note_type === "markdown" && <span className="text-[10px] text-blue-500">MD</span>}
@@ -832,17 +834,17 @@ const handleCreate = async () => {
 {/* html 不标（默认） */}
 ```
 
-- [ ] **Step 2: 构建检查** — `npm run build` 通过。
+- [x] **Step 2: 构建检查** — `npm run build` 通过。
 
-- [ ] **Step 3: 提交** — `git add crates/desktop/frontend/src/pages/Notepad/NoteList.tsx && git commit -m "feat(frontend): 列表项显示 md/txt 类型标记"`
+- [x] **Step 3: 提交** — `git add crates/desktop/frontend/src/pages/Notepad/NoteList.tsx && git commit -m "feat(frontend): 列表项显示 md/txt 类型标记"`
 
 ---
 
 ## Task 13: dist rebuild + 提交
 
-- [ ] **Step 1: 完整 rebuild** — `cd crates/desktop/frontend && npm run build`，确认 `crates/desktop/dist/assets/*` 产出新 hash 文件。
+- [x] **Step 1: 完整 rebuild** — `cd crates/desktop/frontend && npm run build`，确认 `crates/desktop/dist/assets/*` 产出新 hash 文件。
 
-- [ ] **Step 2: 提交 dist** — `git add crates/desktop/dist/ && git commit -m "chore: rebuild dist（notepad type 三类型编辑器）"`
+- [x] **Step 2: 提交 dist** — `git add crates/desktop/dist/ && git commit -m "chore: rebuild dist（notepad type 三类型编辑器）"`
 
 ---
 
