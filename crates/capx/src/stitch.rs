@@ -29,7 +29,6 @@ const STICKY_DETECT_MAX: u32 = 80;
 struct GrayBuf {
     data: Vec<u8>,
     width: usize,
-    height: usize,
 }
 
 impl GrayBuf {
@@ -37,8 +36,7 @@ impl GrayBuf {
     /// luma = (2126*R + 7152*G + 722*B) / 10000（整数除法，image 0.25 SRGB_LUMA）。
     fn from_rgba(rgba: &RgbaImage) -> Self {
         let width = rgba.width() as usize;
-        let height = rgba.height() as usize;
-        let mut data = Vec::with_capacity(width * height);
+        let mut data = Vec::with_capacity(width * rgba.height() as usize);
         for px in rgba.pixels() {
             let r = px[0] as u32;
             let g = px[1] as u32;
@@ -46,7 +44,7 @@ impl GrayBuf {
             let luma = (2126 * r + 7152 * g + 722 * b) / 10000;
             data.push(luma as u8);
         }
-        Self { data, width, height }
+        Self { data, width }
     }
 
     /// 整行切片直访，无边界检查。调用方需保证 y < height。
@@ -99,7 +97,7 @@ impl Stitcher {
             canvas_h: h,
             canvas_buf: first_frame.into_raw(),
             canvas_cache: std::cell::UnsafeCell::new(None),
-            reference: GrayBuf { data: Vec::new(), width: 0, height: 0 },
+            reference: GrayBuf { data: Vec::new(), width: 0 },
             sticky_top: 0,
             sticky_bottom: 0,
             detected: false,
@@ -698,7 +696,7 @@ mod tests {
         let reference = image::imageops::grayscale(&img);
         let buf = GrayBuf::from_rgba(&img);
         assert_eq!(buf.width, TW as usize);
-        assert_eq!(buf.height, TH as usize);
+        assert_eq!(buf.data.len(), TW as usize * TH as usize);
         for y in 0..TH as usize {
             for x in 0..TW as usize {
                 let a = reference.get_pixel(x as u32, y as u32)[0];
