@@ -183,7 +183,16 @@ impl Stitcher {
         let x_end = (w as f64 * X_END_RATIO) as u32;
 
         let max_scroll = MAX_SCROLL;
-        let (dy, confidence, _best_sad) = match find_overlap_spatial_ext(
+
+        // 动态阈值：根据当前帧纹理密度 + 历史基线计算
+        let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
+            .step_by(SAMPLE_STEP_X)
+            .collect();
+        let template_y = eff_bottom.saturating_sub(STRIP_H);
+        let texture = estimate_texture_density(&curr_buf, &sample_cols, template_y);
+        let sad_accept = self.dynamic_sad_accept(texture);
+
+        let (dy, confidence, best_sad) = match find_overlap_spatial_ext(
             &self.reference,
             &curr_buf,
             x_start,
@@ -192,16 +201,23 @@ impl Stitcher {
             eff_bottom,
             max_scroll,
             self.last_dy,
-            SAD_ACCEPT,
+            sad_accept,
             STRIP_H,
         ) {
             Some(v) => v,
             None => {
-                log::info!("[stitch] find_overlap_spatial returned None");
+                // 降级链在 Task 5 实现
+                log::info!("[stitch] main match failed, entering fallback (Task 5)");
                 self.last_dy = None;
                 return Ok(false);
             }
         };
+
+        // 静止双重校验：dy ≈ 0 且时序也确认静止才跳过
+        if dy.abs() < 0.5 && self.is_stationary() {
+            log::info!("[stitch] stationary confirmed by temporal smoothing");
+            return Ok(false);
+        }
 
         // dy < 0 = 用户向下滚动（内容上移），dy > 0 = 向上滚动（忽略）
         if dy >= 0.0 {
@@ -236,6 +252,17 @@ impl Stitcher {
         // 更新参考灰度与速度缓存
         self.reference = curr_buf;
         self.last_dy = Some(dy);
+
+        // 更新 dy_history（时序平滑）和 sad_baseline（动态阈值 EMA）
+        self.dy_history.push_back(dy);
+        if self.dy_history.len() > DY_HISTORY_LEN {
+            self.dy_history.pop_front();
+        }
+        if self.sad_baseline == 0.0 {
+            self.sad_baseline = best_sad;
+        } else {
+            self.sad_baseline = SAD_BASELINE_ALPHA * best_sad + (1.0 - SAD_BASELINE_ALPHA) * self.sad_baseline;
+        }
 
         Ok(true)
     }
