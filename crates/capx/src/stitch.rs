@@ -53,11 +53,12 @@ const FALLBACK_SAD_MULTIPLIER: f64 = 1.5;
 struct GrayBuf {
     data: Vec<u8>,
     width: usize,
+    /// 该 buffer 的首行在原始图像中的 y 坐标。ROI 灰度转换时 > 0。
+    y_offset: usize,
 }
 
 impl GrayBuf {
-    /// 从 RGBA 图像转换灰度。公式必须与 image::imageops::grayscale 一致：
-    /// luma = (2126*R + 7152*G + 722*B) / 10000（整数除法，image 0.25 SRGB_LUMA）。
+    /// 从 RGBA 图像转换灰度（全帧）。y_offset = 0。
     fn from_rgba(rgba: &RgbaImage) -> Self {
         let width = rgba.width() as usize;
         let mut data = Vec::with_capacity(width * rgba.height() as usize);
@@ -68,13 +69,35 @@ impl GrayBuf {
             let luma = (2126 * r + 7152 * g + 722 * b) / 10000;
             data.push(luma as u8);
         }
-        Self { data, width }
+        Self { data, width, y_offset: 0 }
     }
 
-    /// 整行切片直访，无边界检查。调用方需保证 y < height。
+    /// 从 RGBA 图像的指定行范围 [y_start, y_end) 转换灰度（ROI 优化）。
+    /// 仅转换需要参与匹配的行，减少 60%+ 的灰度计算量。
+    fn from_rgba_roi(rgba: &RgbaImage, y_start: usize, y_end: usize) -> Self {
+        let width = rgba.width() as usize;
+        let row_bytes = width * 4;
+        let raw = rgba.as_raw();
+        let mut data = Vec::with_capacity(width * (y_end - y_start));
+        for y in y_start..y_end {
+            let row_start = y * row_bytes;
+            for x in 0..width {
+                let off = row_start + x * 4;
+                let r = raw[off] as u32;
+                let g = raw[off + 1] as u32;
+                let b = raw[off + 2] as u32;
+                let luma = (2126 * r + 7152 * g + 722 * b) / 10000;
+                data.push(luma as u8);
+            }
+        }
+        Self { data, width, y_offset: y_start }
+    }
+
+    /// 整行切片直访，无边界检查。y 为原始图像坐标（自动减去 y_offset）。
     #[inline]
     fn row(&self, y: usize) -> &[u8] {
-        &self.data[y * self.width..(y + 1) * self.width]
+        let local_y = y - self.y_offset;
+        &self.data[local_y * self.width..(local_y + 1) * self.width]
     }
 }
 
@@ -196,7 +219,10 @@ impl Stitcher {
             return Ok(false);
         }
 
-        let curr_buf = GrayBuf::from_rgba(frame);
+        // ROI 灰度转换：覆盖最大可能搜索范围（含降级 1 的 ×2 扩大）
+        let roi_top = eff_top.max(eff_bottom.saturating_sub(STRIP_H + MAX_SCROLL * 2)) as usize;
+        let roi_bottom = eff_bottom as usize;
+        let curr_buf = GrayBuf::from_rgba_roi(frame, roi_top, roi_bottom);
         let canvas_ref = self.extract_canvas_bottom_gray(STRIP_H);
 
         let x_start = (w as f64 * X_START_RATIO) as u32;
@@ -362,7 +388,7 @@ impl Stitcher {
                 data.push(luma as u8);
             }
         }
-        GrayBuf { data, width: self.canvas_w as usize }
+        GrayBuf { data, width: self.canvas_w as usize, y_offset: 0 }
     }
 
     /// 根据当前帧纹理密度 + 历史 SAD 基线动态计算 SAD 接受阈值。
@@ -569,14 +595,13 @@ impl Stitcher {
         Ok(true)
     }
 
-    pub fn canvas(&mut self) -> RgbaImage {
-        // 惰性重建：cache 为 None（append 后 invalidate）时从 canvas_buf 重建。
+    pub fn canvas(&mut self) -> &RgbaImage {
         if self.canvas_cache.is_none() {
             let rebuilt = RgbaImage::from_raw(self.canvas_w, self.canvas_h, self.canvas_buf.clone())
                 .expect("canvas_buf 长度与 canvas_w/h 不匹配");
             self.canvas_cache = Some(rebuilt);
         }
-        self.canvas_cache.as_ref().unwrap().clone()
+        self.canvas_cache.as_ref().unwrap()
     }
 
     pub fn height(&self) -> u32 { self.canvas_h }
@@ -596,7 +621,8 @@ impl Stitcher {
         }
 
         // 1. 尝试将最后一帧与画布底部对齐，补全因为丢帧/快速滑动积累的剩余未拼接区域
-        let last_buf = GrayBuf::from_rgba(last_frame);
+        // ROI 灰度转换：finalize 搜索范围达 90% 有效高度，需要覆盖全部有效行
+        let last_buf = GrayBuf::from_rgba_roi(last_frame, eff_top as usize, eff_bottom as usize);
         let canvas_ref = self.extract_canvas_bottom_gray(STRIP_H);
         let x_start = (w as f64 * X_START_RATIO) as u32;
         let x_end = (w as f64 * X_END_RATIO) as u32;
