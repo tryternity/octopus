@@ -48,9 +48,7 @@ use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // 安装 panic hook：把 panic 信息（含 backtrace）打到 log，避免 tauri 默认吞掉。
-    // SIGTRAP 类 trap（NSException / Cocoa assertion）不会被 Rust panic 捕获，
-    // 但至少能区分 panic vs 真正的 trap。
+    // panic hook：只记 log.error（不含 backtrace，避免日志爆炸）
     std::panic::set_hook(Box::new(|info| {
         let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_default();
         let payload = info.payload();
@@ -62,11 +60,6 @@ pub fn run() {
             "<non-string panic payload>".to_string()
         };
         log::error!("PANIC at {}: {}", location, msg);
-        eprintln!("PANIC at {}: {}", location, msg);
-        // 打印 backtrace
-        let bt = std::backtrace::Backtrace::force_capture();
-        log::error!("Backtrace:\n{}", bt);
-        eprintln!("Backtrace:\n{}", bt);
     }));
 
     let config = octopus_infra::config::load_config().expect("Failed to load config");
