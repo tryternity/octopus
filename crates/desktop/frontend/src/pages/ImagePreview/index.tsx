@@ -282,16 +282,14 @@ export default function ImagePreview() {
   };
 
   const handleCopy = async () => {
-    try {
-      if (annotations.length > 0) {
-        // 有标注：前端 Canvas 合成 → Raw body 传后端
+    if (annotations.length > 0) {
+      // 有标注：前端 Canvas 合成 → Raw body 传后端写剪贴板
+      try {
         const pngBytes = await composePngBytes();
         await invoke("copy_image_to_clipboard", pngBytes as unknown as Record<string, unknown>);
-      } else if (imageId != null) {
-        // 无标注：后端直接从 DB 读取写剪贴板（0 IPC 传输）
-        await invoke("copy_clipboard_item", { id: imageId });
-      }
-    } catch (e) { console.error(e); }
+      } catch (e) { console.error(e); }
+    }
+    // 无标注：剪贴板已有数据（截图/滚动截图停止时已写入），无需操作
   };
 
   const handleOcr = async () => {
