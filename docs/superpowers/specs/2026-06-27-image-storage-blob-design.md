@@ -1,7 +1,7 @@
 # 图片存储迁移：文件系统 → DB BLOB
 
 **日期**: 2026-06-27
-**状态**: 设计完成，待实施
+**状态**: ✅ 实施完成（image_data 表 + insert/get API + image_migration 自动迁移，DB v7+）
 **分支**: `feature/clipboard-research`
 
 ## 0. 概述
