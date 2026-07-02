@@ -233,6 +233,7 @@ impl Stitcher {
                     &canvas_ref, &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll * 2, sad_accept, STRIP_H,
                 ) {
                     log::info!("[stitch] fallback 1: expanded search range, dy={:.1} conf={:.4}", dy, conf);
+                    self.best_guess_streak = 0;
                     return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
                 }
 
@@ -242,6 +243,7 @@ impl Stitcher {
                     sad_accept * FALLBACK_SAD_MULTIPLIER, FALLBACK_STRIP_H,
                 ) {
                     log::info!("[stitch] fallback 2: reduced strip height, dy={:.1} conf={:.4}", dy, conf);
+                    self.best_guess_streak = 0;
                     return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
                 }
 
@@ -250,6 +252,7 @@ impl Stitcher {
                     &canvas_ref, &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll, sad_accept,
                 ) {
                     log::info!("[stitch] fallback 3: 1D projection match, dy={:.1} conf={:.4}", dy, conf);
+                    self.best_guess_streak = 0;
                     return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
                 }
 
