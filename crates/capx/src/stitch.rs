@@ -353,142 +353,73 @@ impl Stitcher {
             return Ok(false);
         }
 
-        // ROI 灰度转换：覆盖最大可能搜索范围（含降级 1 的 ×2 扩大）
+        // ROI 灰度转换：覆盖最大可能搜索范围
         let roi_top = eff_top.max(eff_bottom.saturating_sub(STRIP_H + MAX_SCROLL * 2)) as usize;
         let roi_bottom = eff_bottom as usize;
-        let curr_buf = GrayBuf::from_rgba_roi(frame, roi_top, roi_bottom);
-        let canvas_ref = self.extract_canvas_bottom_gray(STRIP_H);
+        let curr_gray = GrayBuf::from_rgba_roi(frame, roi_top, roi_bottom);
+        let canvas_gray = self.extract_canvas_bottom_gray(STRIP_H);
 
-        let x_start = (w as f64 * X_START_RATIO) as u32;
-        let x_end = (w as f64 * X_END_RATIO) as u32;
+        // Sobel 特征图 + 纯色退化
+        let (canvas_feat, canvas_has_feat) = to_feature_map(&canvas_gray);
+        let (curr_feat, curr_has_feat) = to_feature_map(&curr_gray);
+        let (template, search_region) = if canvas_has_feat && curr_has_feat {
+            (canvas_feat, curr_feat)
+        } else {
+            (canvas_gray.to_gray_image(), curr_gray.to_gray_image())
+        };
 
-        let max_scroll = MAX_SCROLL;
-
-        // 动态阈值：根据画布底部纹理密度 + 历史基线计算
-        let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
-            .step_by(SAMPLE_STEP_X)
-            .collect();
-        let texture = estimate_texture_density(&canvas_ref, &sample_cols, 0);
-        let sad_accept = self.dynamic_sad_accept(texture);
-
-        let (dy, confidence, best_sad) = match find_overlap_spatial_ext(
-            &canvas_ref,
-            &curr_buf,
-            x_start,
-            x_end,
-            eff_top,
-            eff_bottom,
-            max_scroll,
-            self.last_dy,
-            sad_accept,
-            STRIP_H,
-        ) {
-            Some(v) => v,
+        // NCC 匹配
+        let ncc = match ncc_match(&template, &search_region) {
+            Some(r) => r,
             None => {
-                // 三级降级链
-                log::info!("[stitch] main match failed, entering fallback chain");
-
-                // 降级 1：扩大搜索范围 ×2
-                if let Some((dy, conf, sad)) = self.try_match(
-                    &canvas_ref, &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll * 2, sad_accept, STRIP_H,
-                ) {
-                    log::info!("[stitch] fallback 1: expanded search range, dy={:.1} conf={:.4}", dy, conf);
-                    self.best_guess_streak = 0;
-                    return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
-                }
-
-                // 降级 2：缩小模板 + 放宽阈值
-                if let Some((dy, conf, sad)) = self.try_match(
-                    &canvas_ref, &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll,
-                    sad_accept * FALLBACK_SAD_MULTIPLIER, FALLBACK_STRIP_H,
-                ) {
-                    log::info!("[stitch] fallback 2: reduced strip height, dy={:.1} conf={:.4}", dy, conf);
-                    self.best_guess_streak = 0;
-                    return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
-                }
-
-                // 降级 3：1D 灰度投影匹配
-                if let Some((dy, conf, sad)) = self.try_match_1d_projection(
-                    &canvas_ref, &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll, sad_accept,
-                ) {
-                    log::info!("[stitch] fallback 3: 1D projection match, dy={:.1} conf={:.4}", dy, conf);
-                    self.best_guess_streak = 0;
-                    return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
-                }
-
-                log::info!("[stitch] all fallbacks exhausted, trying best-guess");
-
-                // 静止检测：匹配全失败时，先检查画面是否实际没动。
-                // 计算当前帧底部 strip 与画布底部 strip 的全局 SAD，极低说明静止。
-                let stationary_sad = self.quick_stationary_check(&curr_buf, &canvas_ref, &sample_cols);
-                if stationary_sad < STATIONARY_SAD {
-                    log::info!("[stitch] stationary detected before best-guess (sad={:.2}), clearing history", stationary_sad);
-                    self.dy_history.clear();
-                    self.best_guess_streak = 0;
-                    self.last_dy = None;
-                    return Ok(false);
-                }
-
-                // 降级 4：Best-Guess——用历史 dy 估算位移，宁可轻微错位也不丢内容。
-                // 打破"匹配失败 → canvas 不长 → 位移差扩大 → 永久失败"的死亡螺旋。
-                // 熔断：连续 best-guess 超过 3 次则停止猜测，避免拼出严重错位的长图。
-                if self.best_guess_streak < 3 {
-                    if let Some(dy) = self.estimate_dy_hint() {
-                        log::info!("[stitch] fallback 4: best-guess dy={:.1} (streak={})", dy, self.best_guess_streak + 1);
-                        self.best_guess_streak += 1;
-                        return self.apply_fallback_match(dy, 0.0, 0.0, frame, &curr_buf, w, eff_top, eff_bottom);
-                    }
-                } else {
-                    log::info!("[stitch] best-guess circuit breaker tripped (streak >= 3), skipping");
-                }
-
-                log::info!("[stitch] best-guess also unavailable, skipping frame");
-                self.last_dy = None;
-                return Ok(false);
+                log::info!("[stitch] ncc_match returned None (size mismatch)");
+                return self.try_fallback(frame, &curr_gray, &canvas_gray, w, eff_top, eff_bottom);
             }
         };
 
-        // 静止双重校验：dy ≈ 0 且时序也确认静止才跳过
-        if dy.abs() < 0.5 && self.is_stationary() {
-            log::info!("[stitch] stationary confirmed by temporal smoothing");
-            // 写入 dy_history 持续稀释旧滚动速度，防止后续 best-guess 误触发
-            self.dy_history.push_back(dy);
-            if self.dy_history.len() > DY_HISTORY_LEN {
-                self.dy_history.pop_front();
-            }
-            return Ok(false);
+        // 多道验证
+        if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32) {
+            log::info!("[stitch] NCC match failed validation (score={:.4})", ncc.best_score);
+            return self.try_fallback(frame, &curr_gray, &canvas_gray, w, eff_top, eff_bottom);
         }
 
-        // dy < 0 = 用户向下滚动（内容上移），dy > 0 = 向上滚动（忽略）
-        // dy=0（静止或慢速滚动）时保留 last_dy，维持速度上下文供下一帧搜索
+        // 亚像素插值
+        let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
+
+        // 坐标推导：
+        // response y = 模板顶部在搜索区域（curr ROI）中的偏移量
+        // new_rows = ROI高度 - response_y - STRIP_H
+        // dy = -(new_rows)（负值=向下滚动）
+        let roi_height = (roi_bottom - roi_top) as f64;
+        let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
+        let dy = -new_rows_raw;
+
+        // dy 方向检查
         if dy >= 0.0 {
-            log::info!("[stitch] skipped frame: dy={:.1} >= 0.0 (conf={:.4})", dy, confidence);
-            // 更新 dy_history：静止帧(0)和向上滚动帧(>0)也写入历史，
-            // 使中位数收敛到真实速度，防止停止后 best-guess 幽灵滚动
+            log::info!("[stitch] skipped frame: dy={:.1} >= 0.0 (ncc={:.4})", dy, ncc.best_score);
             self.dy_history.push_back(dy);
-            if self.dy_history.len() > DY_HISTORY_LEN {
-                self.dy_history.pop_front();
-            }
+            if self.dy_history.len() > DY_HISTORY_LEN { self.dy_history.pop_front(); }
             return Ok(false);
         }
 
         let new_rows = (-dy).round() as u32;
-        let max_scroll_limit = (eff_bottom - eff_top) * 4 / 5; // 允许最大滚动比例扩大到 80%
+        let max_scroll_limit = (eff_bottom - eff_top) * 4 / 5;
 
-        // 静止或滚动超过限额
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
-            log::info!("[stitch] skipped frame: new_rows={} invalid (min={}, max={}) (conf={:.4})", new_rows, self.config.min_scroll_px, max_scroll_limit, confidence);
-            // 不清除 last_dy：微小位移帧不意味着速度上下文失效
+            log::info!("[stitch] skipped frame: new_rows={} invalid (min={}, max={}) (ncc={:.4})",
+                new_rows, self.config.min_scroll_px, max_scroll_limit, ncc.best_score);
+            self.dy_history.push_back(dy);
+            if self.dy_history.len() > DY_HISTORY_LEN { self.dy_history.pop_front(); }
             return Ok(false);
         }
 
-        log::info!("[stitch] dy={:.1} conf={:.4} new_rows={} eff=[{},{}] canvas_h={}",
-            dy, confidence, new_rows, eff_top, eff_bottom, self.canvas_h);
+        log::info!("[stitch] ncc={:.4} dy={:.1} new_rows={} canvas_h={}",
+            ncc.best_score, dy, new_rows, self.canvas_h);
 
-        // 主匹配成功：重置 best-guess 连续计数
+        // 主匹配成功：重置 best-guess 计数
         self.best_guess_streak = 0;
 
-        // 增量追加：从 frame 直接切出 new_rows 行 RGBA，extend 到 canvas_buf
+        // 画布追加
         let crop_y = eff_bottom - new_rows;
         let row_bytes = w as usize * 4;
         let start = crop_y as usize * row_bytes;
@@ -498,21 +429,65 @@ impl Stitcher {
         self.canvas_h += new_rows;
         self.invalidate_cache();
 
-        // Canvas-Anchored：无需更新 reference（每帧从 canvas 提取）
         self.last_dy = Some(dy);
-
-        // 更新 dy_history（时序平滑）和 sad_baseline（动态阈值 EMA）
         self.dy_history.push_back(dy);
         if self.dy_history.len() > DY_HISTORY_LEN {
             self.dy_history.pop_front();
         }
-        if self.sad_baseline == 0.0 {
-            self.sad_baseline = best_sad;
-        } else {
-            self.sad_baseline = SAD_BASELINE_ALPHA * best_sad + (1.0 - SAD_BASELINE_ALPHA) * self.sad_baseline;
-        }
 
         Ok(true)
+    }
+
+    /// 降级链：NCC 匹配失败时的兜底处理。
+    fn try_fallback(
+        &mut self,
+        frame: &RgbaImage,
+        curr_gray: &GrayBuf,
+        canvas_gray: &GrayBuf,
+        w: u32,
+        eff_top: u32,
+        eff_bottom: u32,
+    ) -> Result<bool> {
+        let x_start = (w as f64 * X_START_RATIO) as u32;
+        let x_end = (w as f64 * X_END_RATIO) as u32;
+        let max_scroll = MAX_SCROLL;
+
+        // 降级：1D 灰度投影匹配
+        if let Some((dy, conf, sad)) = self.try_match_1d_projection(
+            canvas_gray, curr_gray, x_start, x_end, eff_top, eff_bottom, max_scroll, 0.0,
+        ) {
+            log::info!("[stitch] fallback: 1D projection match, dy={:.1} conf={:.4}", dy, conf);
+            self.best_guess_streak = 0;
+            return self.apply_fallback_match(dy, conf, sad, frame, curr_gray, w, eff_top, eff_bottom);
+        }
+
+        // 静止检测：匹配全失败时检查画面是否实际没动
+        let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
+            .step_by(SAMPLE_STEP_X)
+            .collect();
+        let stationary_sad = self.quick_stationary_check(curr_gray, canvas_gray, &sample_cols);
+        if stationary_sad < STATIONARY_SAD {
+            log::info!("[stitch] stationary detected before best-guess (sad={:.2})", stationary_sad);
+            self.dy_history.clear();
+            self.best_guess_streak = 0;
+            self.last_dy = None;
+            return Ok(false);
+        }
+
+        // Best-Guess：历史 dy 中位数估算
+        if self.best_guess_streak < 3 {
+            if let Some(dy) = self.estimate_dy_hint() {
+                log::info!("[stitch] best-guess dy={:.1} (streak={})", dy, self.best_guess_streak + 1);
+                self.best_guess_streak += 1;
+                return self.apply_fallback_match(dy, 0.0, 0.0, frame, curr_gray, w, eff_top, eff_bottom);
+            }
+        } else {
+            log::info!("[stitch] best-guess circuit breaker tripped");
+        }
+
+        log::info!("[stitch] all fallbacks exhausted, skipping frame");
+        self.last_dy = None;
+        Ok(false)
     }
 
     /// 使画布缓存失效。每次 append/truncate 后调用。
