@@ -1239,62 +1239,75 @@ pub async fn start_scroll_recording(
 
         let canvas = stitcher.canvas().clone();
         let ah3 = ah.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            // 直接从 canvas 转 DynamicImage，避免 PNG 编码→解码冗余往返
-            let img = image::DynamicImage::ImageRgba8(canvas);
+        let ah4 = ah.clone();
 
-            // PNG 编码用快速压缩（写剪贴板/base64 传前端，不需要高压缩率）
-            let mut png_bytes = Vec::new();
-            let mut cursor = std::io::Cursor::new(&mut png_bytes);
+        // 先做 PNG 快速编码（剪贴板和入库都需要的基础数据）
+        let png_bytes = {
+            let img = image::DynamicImage::ImageRgba8(canvas.clone());
+            let mut png = Vec::new();
+            let mut cursor = std::io::Cursor::new(&mut png);
             let png_encoder = image::codecs::png::PngEncoder::new_with_quality(
                 &mut cursor,
                 image::codecs::png::CompressionType::Fast,
                 image::codecs::png::FilterType::Up,
             );
             let _ = img.write_with_encoder(png_encoder);
+            png
+        };
+        let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
+        let item_id = octopus_clipboard::store::chrono_millis();
 
-            let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
-            let encoded = match octopus_clipboard::image::encode_to_webp(&img) { Ok(e) => e, Err(_) => return None };
+        // 线程一：立即写剪贴板（用户最关心，~1s）
+        let png_for_clipboard = png_bytes.clone();
+        let ah_clipboard = ah4.clone();
+        let clipboard_task = tokio::task::spawn_blocking(move || {
+            if let Some(handle) = ah_clipboard.try_state::<std::sync::Arc<ClipboardHandle>>() {
+                let _ = handle.write_image(&png_for_clipboard);
+            }
+        });
 
-            let item_id = octopus_clipboard::store::chrono_millis();
+        // 线程二：WebP 编码 + DB 入库（后台，~2-3s）
+        let canvas_for_db = canvas;
+        let hash_for_db = hash.clone();
+        let id_for_db = item_id;
+        let db_task = tokio::task::spawn_blocking(move || {
+            let img = image::DynamicImage::ImageRgba8(canvas_for_db);
+            let encoded = match octopus_clipboard::image::encode_to_webp(&img) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
             let _ = octopus_infra::db::with_db(|conn| {
-                octopus_clipboard::store::insert_image_data(conn, &hash, &encoded.webp_blob, &encoded.thumb_blob, img.width() as i64, img.height() as i64)
+                octopus_clipboard::store::insert_image_data(conn, &hash_for_db, &encoded.webp_blob, &encoded.thumb_blob, img.width() as i64, img.height() as i64)
             });
             let _ = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
-                    id: item_id, item_type: octopus_clipboard::ItemType::Image,
-                    content: hash.clone(), search_text: String::new(),
+                    id: id_for_db, item_type: octopus_clipboard::ItemType::Image,
+                    content: hash_for_db.clone(), search_text: String::new(),
                     created_at: octopus_clipboard::store::iso_now(),
-                    blob_hash: Some(hash.clone()), width: Some(img.width() as i64),
+                    blob_hash: Some(hash_for_db.clone()), width: Some(img.width() as i64),
                     height: Some(img.height() as i64), has_thumbnail: Some(1),
                     file_count: None, is_rich: false,
                 })
             });
+        });
 
-            // 写入系统剪贴板
-            if let Some(handle) = ah3.try_state::<std::sync::Arc<ClipboardHandle>>() {
-                let _ = handle.write_image(&png_bytes);
-            }
+        // 等剪贴板写入完成（~1s），DB 入库在后台继续
+        let _ = clipboard_task.await;
 
-            Some((serde_json::json!({ "id": item_id }), png_bytes))
-        }).await.unwrap_or(None);
+        let _ = ah3.emit("scroll://done", serde_json::json!({ "id": item_id }));
+        let _ = ah3.emit("clipboard://changed", ());
 
-        if let Some((done_payload, png_bytes)) = result {
-            let _ = ah.emit("scroll://done", done_payload);
-            let _ = ah.emit("clipboard://changed", ());
-
-            // 保存模式：Rust 端直接弹对话框（无需前端中转 base64）
-            if stop_mode == ScrollStopMode::Save {
-                use tauri_plugin_dialog::DialogExt;
-                let save_path = ah.dialog()
-                    .file()
-                    .add_filter("PNG 图片", &["png"])
-                    .set_file_name("scroll-screenshot.png")
-                    .blocking_save_file();
-                if let Some(path) = save_path {
-                    if let Some(p) = path.as_path() {
-                        let _ = std::fs::write(p, &png_bytes);
-                    }
+        // 保存模式：Rust 端直接弹对话框（无需前端中转）
+        if stop_mode == ScrollStopMode::Save {
+            use tauri_plugin_dialog::DialogExt;
+            let save_path = ah.dialog()
+                .file()
+                .add_filter("PNG 图片", &["png"])
+                .set_file_name("scroll-screenshot.png")
+                .blocking_save_file();
+            if let Some(path) = save_path {
+                if let Some(p) = path.as_path() {
+                    let _ = std::fs::write(p, &png_bytes);
                 }
             }
         }
