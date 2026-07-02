@@ -27,7 +27,7 @@ import {
   type LucideProps,
 } from "lucide-react";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
-import type { Note } from "@/types/note";
+import type { Note, NoteType } from "@/types/note";
 import {
   getNote,
   updateNote,
@@ -36,17 +36,21 @@ import {
   exportNote,
   importNoteFromFile,
   insertNoteImage,
-  getNoteImage,
 } from "@/lib/notepad";
 import { useNoteEditor, getMarkdownFromEditor } from "./extensions";
 import { EditorContent } from "@tiptap/react";
+import MarkdownEditor from "./MarkdownEditor";
 
 export default function NoteEditor({ noteId }: { noteId: number | null }) {
   const [note, setNote] = useState<Note | null>(null);
   const [title, setTitle] = useState("");
+  // text/markdown 的 body（html 用 TipTap editor，不经此 state）
+  const [textBody, setTextBody] = useState("");
   const [toast, setToast] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentId = useRef<number | null>(null);
+
+  const noteType: NoteType = note?.note_type ?? "html";
 
   // 加载笔记
   useEffect(() => {
@@ -59,34 +63,41 @@ export default function NoteEditor({ noteId }: { noteId: number | null }) {
       if (currentId.current !== noteId) return; // 切换防竞态
       setNote(n ?? null);
       setTitle(n?.title ?? "");
+      setTextBody(n?.content_text ?? ""); // text/markdown body；html 不用
     });
   }, [noteId]);
 
-  const doSave = useCallback(
+  const onHtmlUpdate = useCallback(
     (html: string) => {
+      if (noteType !== "html") return; // 非 html 笔记不经 TipTap 保存
       const id = currentId.current;
       if (id == null) return;
-      updateNote(id, title, html).catch(console.error);
+      // debounce 800ms 自动保存
+      if (saveTimer.current) clearTimeout(saveTimer.current);
+      saveTimer.current = setTimeout(
+        () => updateNote(id, title, html, noteType).catch(console.error),
+        800,
+      );
     },
-    [title],
+    [noteType, title],
   );
 
-  const editor = useNoteEditor(note?.content_html ?? "", (html) => {
-    // debounce 800ms 自动保存
-    if (saveTimer.current) clearTimeout(saveTimer.current);
-    saveTimer.current = setTimeout(() => doSave(html), 800);
-  });
+  const editor = useNoteEditor(note?.content_html ?? "", onHtmlUpdate);
 
-  // 标题变更也 debounce 保存
+  // 标题 / text body 变更 debounce 保存（按 type）
   useEffect(() => {
     if (noteId == null) return;
     const t = setTimeout(() => {
-      if (editor && !editor.isDestroyed) {
-        updateNote(noteId, title, editor.getHTML()).catch(console.error);
+      if (noteType === "html") {
+        if (editor && !editor.isDestroyed) {
+          updateNote(noteId, title, editor.getHTML(), noteType).catch(console.error);
+        }
+      } else {
+        updateNote(noteId, title, textBody, noteType).catch(console.error);
       }
     }, 800);
     return () => clearTimeout(t);
-  }, [title, noteId, editor]);
+  }, [title, textBody, noteId, noteType, editor]);
 
   const flash = (msg: string) => {
     setToast(msg);
@@ -122,37 +133,32 @@ export default function NoteEditor({ noteId }: { noteId: number | null }) {
     }
   };
 
-  const doExport = async (ext: "md" | "txt" | "html") => {
-    if (!editor) return;
-    let content: string;
-    if (ext === "md") {
-      content = getMarkdownFromEditor(editor) || editor.getText();
-    } else if (ext === "txt") {
-      content = editor.getText();
-    } else {
-      // html：把 note-img:<hash> 替换为 data URL（自包含）
-      content = editor.getHTML();
-      const re = /note-img:([a-f0-9]+)/g;
-      const hashes = [
-        ...new Set([...content.matchAll(re)].map((m) => m[1])),
-      ];
-      for (const h of hashes) {
-        try {
-          const dataUrl = await getNoteImage(h);
-          content = content.split(`note-img:${h}`).join(dataUrl);
-        } catch {
-          /* 替换失败保留占位 */
-        }
-      }
+  // 导出：按 noteType 决定格式（html→md 富文本序列化，text→txt，markdown→md 源码）
+  const doExport = async () => {
+    const stem = (
+      title ||
+      (noteType === "html" ? note.content_text.slice(0, 20) : textBody.slice(0, 20)) ||
+      "note"
+    ).replace(/\s+/g, "_");
+
+    if (noteType === "html") {
+      if (!editor) return;
+      const content = getMarkdownFromEditor(editor) || editor.getText();
+      const path = await exportNote(stem, "md", content);
+      flash("已导出: " + path);
+      return;
     }
-    const stem = (title || note.content_text.slice(0, 20) || "note").replace(
-      /\s+/g,
-      "_",
-    );
-    const path = await exportNote(stem, ext, content);
+    if (noteType === "markdown") {
+      const path = await exportNote(stem, "md", textBody);
+      flash("已导出: " + path);
+      return;
+    }
+    // text
+    const path = await exportNote(stem, "txt", textBody);
     flash("已导出: " + path);
   };
 
+  // 导入：仅 html（依赖 TipTap 解析 md）
   const doImport = async () => {
     const selected = await openDialog({
       filters: [{ name: "Markdown", extensions: ["md", "txt"] }],
@@ -237,30 +243,38 @@ export default function NoteEditor({ noteId }: { noteId: number | null }) {
 
   return (
     <div className="flex-1 flex flex-col bg-background relative">
-      {/* 工具栏 */}
+      {/* 顶部栏：html=富文本工具；text/markdown=类型标签 */}
       <div className="flex items-center gap-0.5 px-2 py-1 border-b border-border flex-wrap">
-        {tools.map(({ icon: Icon, title, onClick }, i) => (
-          <button
-            key={i}
-            className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
-            title={title}
-            onClick={onClick}
-          >
-            <Icon className="w-4 h-4" />
-          </button>
-        ))}
+        {noteType === "html" ? (
+          tools.map(({ icon: Icon, title, onClick }, i) => (
+            <button
+              key={i}
+              className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
+              title={title}
+              onClick={onClick}
+            >
+              <Icon className="w-4 h-4" />
+            </button>
+          ))
+        ) : (
+          <span className="px-2 py-0.5 text-[11px] rounded bg-muted text-muted-foreground">
+            {noteType === "markdown" ? "Markdown" : "纯文本"}
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-0.5">
+          {noteType === "html" && (
+            <button
+              className="p-1 rounded hover:bg-accent text-muted-foreground"
+              title="导入 md"
+              onClick={doImport}
+            >
+              <Upload className="w-4 h-4" />
+            </button>
+          )}
           <button
             className="p-1 rounded hover:bg-accent text-muted-foreground"
-            title="导入 md"
-            onClick={doImport}
-          >
-            <Upload className="w-4 h-4" />
-          </button>
-          <button
-            className="p-1 rounded hover:bg-accent text-muted-foreground"
-            title="导出 md"
-            onClick={() => doExport("md")}
+            title="导出"
+            onClick={doExport}
           >
             <Download className="w-4 h-4" />
           </button>
@@ -305,12 +319,27 @@ export default function NoteEditor({ noteId }: { noteId: number | null }) {
         value={title}
         onChange={(e) => setTitle(e.target.value)}
       />
-      {/* 编辑器 */}
-      <div className="flex-1 overflow-y-auto px-4 pb-4">
-        <div className="prose prose-sm max-w-none [&_img]:max-w-full">
-          <EditorContent editor={editor} />
+      {/* 编辑区：按 type 分发 */}
+      {noteType === "html" && (
+        <div className="flex-1 overflow-y-auto px-4 pb-4">
+          <div className="prose prose-sm max-w-none [&_img]:max-w-full">
+            <EditorContent editor={editor} />
+          </div>
         </div>
-      </div>
+      )}
+      {noteType === "text" && (
+        <textarea
+          className="flex-1 mx-4 mb-4 mt-1 resize-none bg-transparent focus:outline-none text-sm leading-relaxed font-mono"
+          placeholder="输入纯文本…"
+          value={textBody}
+          onChange={(e) => setTextBody(e.target.value)}
+        />
+      )}
+      {noteType === "markdown" && (
+        <div className="flex-1 mx-4 mb-4 mt-1">
+          <MarkdownEditor value={textBody} onChange={setTextBody} />
+        </div>
+      )}
       {toast && (
         <div className="absolute bottom-3 right-3 px-3 py-1.5 rounded bg-foreground text-background text-xs">
           {toast}

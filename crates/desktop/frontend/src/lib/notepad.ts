@@ -1,5 +1,5 @@
 import { invoke } from "@/lib/tauri";
-import type { Note, NoteListParams, NoteSource } from "@/types/note";
+import type { Note, NoteListParams, NoteSource, NoteType } from "@/types/note";
 
 export async function listNotes(params: NoteListParams): Promise<Note[]> {
   return invoke<Note[]>("list_notes", {
@@ -23,11 +23,11 @@ export async function countNotes(params: NoteListParams): Promise<number> {
 
 export const getNote = (id: number) => invoke<Note | null>("get_note", { id });
 
-export const createNote = (source: NoteSource, sourceRefId: number | null, initialHtml: string) =>
-  invoke<number>("create_note", { source, sourceRefId, initialHtml });
+export const createNote = (source: NoteSource, sourceRefId: number | null, body: string, noteType: NoteType) =>
+  invoke<number>("create_note", { source, sourceRefId, body, noteType });
 
-export const updateNote = (id: number, title: string, contentHtml: string) =>
-  invoke<void>("update_note", { id, title, contentHtml });
+export const updateNote = (id: number, title: string, body: string, noteType: NoteType) =>
+  invoke<void>("update_note", { id, title, body, noteType });
 
 export const deleteNotes = (ids: number[]) => invoke<number>("delete_notes", { ids });
 

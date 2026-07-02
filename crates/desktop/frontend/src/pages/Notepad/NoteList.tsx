@@ -9,7 +9,7 @@ import {
   ScanText,
   Clipboard as ClipIcon,
 } from "lucide-react";
-import type { Note, NoteSource } from "@/types/note";
+import type { Note, NoteSource, NoteType } from "@/types/note";
 import { useNotes } from "@/hooks/useNotes";
 import {
   createNote,
@@ -34,10 +34,13 @@ export default function NoteList({
   const [tab, setTab] = useState<NoteSource | null>(null);
   const [search, setSearch] = useState("");
   const [favOnly, setFavOnly] = useState(false);
+  const [showNewMenu, setShowNewMenu] = useState(false);
   const { items, total, loadMore, hasMore } = useNotes(tab, search, favOnly);
 
-  const handleNew = async () => {
-    const id = await createNote("manual", null, "");
+  // 新建笔记：选 type（已建笔记 type 锁定，不可改）
+  const handleNew = async (type: NoteType) => {
+    setShowNewMenu(false);
+    const id = await createNote("manual", null, "", type);
     onSelect(id);
   };
 
@@ -63,13 +66,34 @@ export default function NoteList({
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <button
-          className="p-1 rounded hover:bg-accent text-foreground"
-          onClick={handleNew}
-          title="新建笔记"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
+        <div className="relative">
+          <button
+            className="p-1 rounded hover:bg-accent text-foreground"
+            onClick={() => setShowNewMenu((v) => !v)}
+            title="新建笔记"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+          {showNewMenu && (
+            <div className="absolute right-0 top-full mt-1 z-10 w-28 rounded-md border border-border bg-background shadow-md py-0.5">
+              {(
+                [
+                  { type: "html", label: "富文本" },
+                  { type: "text", label: "纯文本" },
+                  { type: "markdown", label: "Markdown" },
+                ] as { type: NoteType; label: string }[]
+              ).map((opt) => (
+                <button
+                  key={opt.type}
+                  className="block w-full text-left px-3 py-1 text-xs hover:bg-accent"
+                  onClick={() => handleNew(opt.type)}
+                >
+                  {opt.label}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
       {/* 来源 tab + 收藏 */}
       <div className="px-2 py-1.5 flex items-center gap-1 border-b border-border overflow-x-auto">
@@ -162,6 +186,11 @@ function NoteRow({
       <div className="flex items-center gap-1.5">
         {SourceIcon && (
           <SourceIcon className="w-3 h-3 flex-shrink-0 text-muted-foreground" />
+        )}
+        {note.note_type !== "html" && (
+          <span className="flex-shrink-0 px-1 text-[9px] leading-tight rounded bg-muted text-muted-foreground">
+            {note.note_type === "markdown" ? "MD" : "T"}
+          </span>
         )}
         <span className="flex-1 truncate text-sm font-medium">{preview}</span>
         <button
