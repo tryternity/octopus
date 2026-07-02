@@ -28,13 +28,7 @@ const DY_HISTORY_LEN: usize = 8;
 // ===== NCC 匹配参数 =====
 
 /// 最低 NCC 分数阈值
-const NCC_SCORE_THRESHOLD: f32 = 0.75;
-/// 局部置信度 delta：best vs 次优差值
-const LOCAL_CONFIDENCE_DELTA: f32 = 0.005;
-/// 全局置信度 delta：best vs 距离≥4px 的差值
-const GLOBAL_CONFIDENCE_DELTA: f32 = 0.002;
-/// 全局置信度最小距离（像素）
-const GLOBAL_CONFIDENCE_MIN_DIST: usize = 4;
+const NCC_SCORE_THRESHOLD: f32 = 0.65;
 
 /// 连续 row-major 灰度 buffer，替代 image::GrayImage。
 /// 消除 get_pixel() 的坐标计算 + 边界检查开销，用整行切片直访。
@@ -108,15 +102,16 @@ fn to_feature_map(gray: &GrayBuf) -> (image::GrayImage, bool) {
 }
 
 /// 计算 u16 灰度图的均值和标准差。
+/// 内部用 f64 累加避免大图像 f32 精度丢失（300 万像素 sum 可达 30 亿）。
 fn mean_stddev_u16(img: &imageproc::definitions::Image<image::Luma<u16>>) -> (f32, f32) {
-    let n = (img.width() * img.height()) as f32;
-    let sum: f32 = img.iter().map(|&p| p as f32).sum();
+    let n = (img.width() * img.height()) as f64;
+    let sum: f64 = img.iter().map(|&p| p as f64).sum();
     let mean = sum / n;
-    let var: f32 = img.iter().map(|&p| {
-        let d = p as f32 - mean;
+    let var: f64 = img.iter().map(|&p| {
+        let d = p as f64 - mean;
         d * d
-    }).sum::<f32>() / n;
-    (mean, var.sqrt())
+    }).sum::<f64>() / n;
+    (mean as f32, var.sqrt() as f32)
 }
 
 // ===== NCC 匹配引擎 =====
@@ -155,46 +150,23 @@ fn ncc_match(
 }
 
 /// 多道验证 NCC 匹配结果。返回 true 表示匹配可信。
-fn validate_ncc_match(response: &Image<image::Luma<f32>>, best_y: usize, best_score: f32) -> bool {
+fn validate_ncc_match(response: &Image<image::Luma<f32>>, _best_y: usize, best_score: f32) -> bool {
     // 1. 最低分数
     if best_score < NCC_SCORE_THRESHOLD {
         return false;
     }
 
-    // score 极高时跳过 delta 验证：周期性内容中多个位置都给 ~1.0，
-    // delta 检查会误拒，但任一高分位置都是有效对齐
-    if best_score >= 0.99 {
-        return true;
-    }
-
+    // 无区分度检测：response 的 max - min 差值 < 0.1 说明所有位置得分几乎相同，
+    // NCC 无足够区分力来确定真实偏移（纯色/空白/极低纹理）。拒绝匹配。
     let h = response.height() as usize;
-
-    // 2. 局部置信度：best vs best±1 的最大值差
-    let local_alt = {
-        let mut alt = 0.0f32;
-        if best_y > 0 {
-            alt = alt.max(response.get_pixel(0, best_y as u32 - 1)[0]);
-        }
-        if best_y + 1 < h {
-            alt = alt.max(response.get_pixel(0, best_y as u32 + 1)[0]);
-        }
-        alt
-    };
-    if best_score - local_alt < LOCAL_CONFIDENCE_DELTA {
-        return false;
+    let mut min_score = f32::MAX;
+    let mut max_score = f32::MIN;
+    for y in 0..h {
+        let v = response.get_pixel(0, y as u32)[0];
+        if v < min_score { min_score = v; }
+        if v > max_score { max_score = v; }
     }
-
-    // 3. 全局置信度：best vs 距离≥GLOBAL_CONFIDENCE_MIN_DIST 的最大值差
-    let distant_alt = {
-        let mut alt = 0.0f32;
-        for y in 0..h {
-            if (y as isize - best_y as isize).abs() >= GLOBAL_CONFIDENCE_MIN_DIST as isize {
-                alt = alt.max(response.get_pixel(0, y as u32)[0]);
-            }
-        }
-        alt
-    };
-    if best_score - distant_alt < GLOBAL_CONFIDENCE_DELTA {
+    if max_score - min_score < 0.1 {
         return false;
     }
 
@@ -267,6 +239,12 @@ pub struct Stitcher {
     dy_history: VecDeque<f64>,
     /// 连续 best-guess 次数（主匹配成功时归零，超过 3 次熔断）。
     best_guess_streak: u32,
+    /// 连续 NCC 验证失败且 score 几乎相同的次数（检测“画面静止但 NCC 不匹配”状态）。
+    ncc_stuck_count: u32,
+    /// 上一次成功追加的 dy（用于检测连续相同 dy → 周期性假匹配/静止）。
+    last_appended_dy: Option<f64>,
+    /// 连续相同 dy 追加次数。
+    same_dy_count: u32,
 }
 
 impl Stitcher {
@@ -285,6 +263,9 @@ impl Stitcher {
             last_dy: None,
             dy_history: VecDeque::with_capacity(DY_HISTORY_LEN),
             best_guess_streak: 0,
+            ncc_stuck_count: 0,
+            last_appended_dy: None,
+            same_dy_count: 0,
         }
     }
 
@@ -344,9 +325,21 @@ impl Stitcher {
 
         // 多道验证
         if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32) {
-            log::info!("[stitch] NCC match failed validation (score={:.4})", ncc.best_score);
+            // NCC stuck 检测：连续失败且 score 几乎相同 → 画面静止但有渲染差异
+            if self.ncc_stuck_count >= 5 {
+                log::info!("[stitch] NCC stuck (score={:.4}, count={}), treating as stationary", ncc.best_score, self.ncc_stuck_count);
+                self.dy_history.clear();
+                self.best_guess_streak = 0;
+                self.last_dy = None;
+                return Ok(false);
+            }
+            log::info!("[stitch] NCC match failed validation (score={:.4}, stuck={})", ncc.best_score, self.ncc_stuck_count);
+            self.ncc_stuck_count += 1;
             return self.try_fallback(frame, &curr_gray, &canvas_gray, w, eff_top, eff_bottom);
         }
+
+        // NCC 成功：重置 stuck 计数
+        self.ncc_stuck_count = 0;
 
         // 亚像素插值
         let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
@@ -368,7 +361,7 @@ impl Stitcher {
         }
 
         let new_rows = (-dy).round() as u32;
-        let max_scroll_limit = (eff_bottom - eff_top) * 4 / 5;
+        let max_scroll_limit = (eff_bottom - eff_top) * 9 / 10;
 
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
             log::info!("[stitch] skipped frame: new_rows={} invalid (min={}, max={}) (ncc={:.4})",
@@ -376,13 +369,39 @@ impl Stitcher {
             return Ok(false);
         }
 
+        // 周期性假匹配检测：连续 3 次以上 dy≥100 且几乎相同 → 周期性假匹配。
+        // 正常均匀滚动（触控板恒速）dy 通常 <100，不会被误杀。
+        // 假匹配 dy 值大（如文件列表行高倍数 449/674），且画面没滚动时 NCC 在周期内容中找假匹配。
+        let dy_rounded = (-dy).round();
+        if self.same_dy_count >= 3 {
+            if let Some(locked_dy) = self.last_appended_dy {
+                if (dy_rounded - locked_dy).abs() < 2.0 {
+                    return Ok(false);
+                }
+            }
+            log::info!("[stitch] periodic lock released (dy={:.0})", dy_rounded);
+            self.same_dy_count = 0;
+        }
+        if let Some(prev_dy) = self.last_appended_dy {
+            if (dy_rounded - prev_dy).abs() < 2.0 && dy_rounded >= 100.0 {
+                self.same_dy_count += 1;
+                if self.same_dy_count >= 3 {
+                    log::info!("[stitch] periodic false match locked (dy={:.0})", dy_rounded);
+                    return Ok(false);
+                }
+            } else {
+                self.same_dy_count = 0;
+            }
+        }
+        self.last_appended_dy = Some(dy_rounded);
+
         log::info!("[stitch] ncc={:.4} dy={:.1} new_rows={} canvas_h={}",
             ncc.best_score, dy, new_rows, self.canvas_h);
 
         // 主匹配成功：重置 best-guess 计数
         self.best_guess_streak = 0;
 
-        // 画布追加
+        // 画布追加（NCC + 抛物线插值已给出精准切割点，不需要额外接缝寻找）
         let crop_y = eff_bottom - new_rows;
         let row_bytes = w as usize * 4;
         let start = crop_y as usize * row_bytes;
@@ -417,7 +436,7 @@ impl Stitcher {
 
         // 降级：1D 灰度投影匹配
         if let Some((dy, conf, sad)) = self.try_match_1d_projection(
-            canvas_gray, curr_gray, x_start, x_end, eff_top, eff_bottom, max_scroll, 0.0,
+            canvas_gray, curr_gray, x_start, x_end, eff_top, eff_bottom, max_scroll, 10.0,
         ) {
             log::info!("[stitch] fallback: 1D projection match, dy={:.1} conf={:.4}", dy, conf);
             self.best_guess_streak = 0;
@@ -438,14 +457,13 @@ impl Stitcher {
         }
 
         // Best-Guess：历史 dy 中位数估算
+        // 熔断后仍重试：当用户重新开始滚动时 NCC 恢复匹配会重置 streak
         if self.best_guess_streak < 3 {
             if let Some(dy) = self.estimate_dy_hint() {
                 log::info!("[stitch] best-guess dy={:.1} (streak={})", dy, self.best_guess_streak + 1);
                 self.best_guess_streak += 1;
                 return self.apply_fallback_match(dy, 0.0, 0.0, frame, curr_gray, w, eff_top, eff_bottom);
             }
-        } else {
-            log::info!("[stitch] best-guess circuit breaker tripped");
         }
 
         log::info!("[stitch] all fallbacks exhausted, skipping frame");
@@ -624,7 +642,7 @@ impl Stitcher {
             return Ok(false);
         }
         let new_rows = (-dy).round() as u32;
-        let max_scroll_limit = (eff_bottom - eff_top) * 4 / 5;
+        let max_scroll_limit = (eff_bottom - eff_top) * 9 / 10;
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
             self.last_dy = None;
             return Ok(false);
@@ -659,6 +677,16 @@ impl Stitcher {
     }
 
     pub fn height(&self) -> u32 { self.canvas_h }
+    pub fn canvas_w(&self) -> u32 { self.canvas_w }
+
+    /// 从 canvas_buf 中提取指定行范围 [y_start, y_start+height) 的 RGBA 字节切片。
+    /// 用于生成预览，避免 clone 整个 canvas_buf。
+    pub fn canvas_buf_slice(&self, y_start: u32, height: u32) -> Vec<u8> {
+        let row_bytes = self.canvas_w as usize * 4;
+        let start = y_start as usize * row_bytes;
+        let end = start + height as usize * row_bytes;
+        self.canvas_buf[start..end].to_vec()
+    }
 
     pub fn finalize(&mut self, last_frame: &RgbaImage) -> Result<()> {
         let h = last_frame.height();

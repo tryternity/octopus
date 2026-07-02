@@ -1,7 +1,7 @@
 # OCR 模块设计
 
 **日期**: 2026-06-27
-**状态**: 设计完成，待实施
+**状态**: ✅ 实施完成（OcrEngine + 模型管理 + 3 个 Tauri 命令：ocr_image/ocr_screenshot/save_ocr_to_note）
 **分支**: `feature/clipboard-research`（worktree: `.worktrees/clipboard-research`）
 
 ## 0. 概述

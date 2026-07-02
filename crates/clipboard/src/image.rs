@@ -31,13 +31,91 @@ pub struct EncodedImage {
 /// 直接传入即可省掉一次完整的 PNG 解码。
 pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let rgba = img.to_rgba8();
+    let w = rgba.width();
+    let h = rgba.height();
 
-    // 无损 WebP 原图
-    let encoder = webp::Encoder::from_rgba(&rgba, rgba.width(), rgba.height());
-    let webp_blob = encoder.encode_lossless();
-    let webp_blob = webp_blob.to_vec();
+    // WebP 最大尺寸 16383px（VP8 限制）。超过则直接用最低质量（50%）试一次。
+    // webp crate 的 encode() 超尺寸时 panic（内部 unwrap），所以需要 catch_unwind。
+    // 但不需要逐级——超尺寸时高质量和低质量行为一致（都基于 VP8 尺寸限制），
+    // 只需试一次最低质量。成功就用，失败就放弃。
+    let webp_blob = if w > 16383 || h > 16383 {
+        log::warn!("[clipboard] Image exceeds WebP max dimension ({}×{}), trying q85", w, h);
+        let encoder = webp::Encoder::from_rgba(&rgba, w, h);
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(85.0).to_vec())) {
+            Ok(blob) if !blob.is_empty() => blob,
+            _ => {
+                log::warn!("[clipboard] WebP q85 failed ({}×{}), trying q50", w, h);
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(50.0).to_vec())) {
+                    Ok(blob) if !blob.is_empty() => blob,
+                    _ => {
+                        log::error!("[clipboard] WebP q50 also failed for {}×{}, skipping", w, h);
+                        return Err(anyhow::anyhow!("WebP encoding failed for {}×{}", w, h));
+                    }
+                }
+            }
+        }
+    } else {
+        let encoder = webp::Encoder::from_rgba(&rgba, w, h);
+        let mut blob = None;
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode_lossless().to_vec())) {
+            Ok(b) => blob = Some(b),
+            Err(_) => log::warn!("[clipboard] lossless WebP failed ({}×{}), trying lossy", w, h),
+        }
+        if blob.is_none() {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(85.0).to_vec())) {
+                Ok(b) if !b.is_empty() => {
+                    log::info!("[clipboard] WebP q85: {} bytes", b.len());
+                    blob = Some(b);
+                }
+                _ => log::warn!("[clipboard] WebP q85 failed ({}×{}), trying q50", w, h),
+            }
+        }
+        if blob.is_none() {
+            match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(50.0).to_vec())) {
+                Ok(b) if !b.is_empty() => {
+                    log::info!("[clipboard] WebP q50: {} bytes", b.len());
+                    blob = Some(b);
+                }
+                _ => {}
+            }
+        }
+        match blob {
+            Some(b) => b,
+            None => {
+                log::error!("[clipboard] All WebP encoding failed for {}×{}", w, h);
+                return Err(anyhow::anyhow!("WebP encoding failed for {}×{}", w, h));
+            }
+        }
+    };
 
     // 缩略图：resize 240×240 → WebP 20%
+
+/// WebP 有损编码，逐级降质量（90%→80%→70%→60%→50%）。
+/// 每级用 catch_unwind 防 panic。50% 仍失败则返回 None。
+fn encode_webp_lossy_with_budget(rgba: &::image::RgbaImage) -> Option<Vec<u8>> {
+    let encoder = webp::Encoder::from_rgba(rgba, rgba.width(), rgba.height());
+    for quality in [90.0f32, 80.0, 70.0, 60.0, 50.0] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            encoder.encode(quality).to_vec()
+        }));
+        match result {
+            Ok(blob) if !blob.is_empty() => {
+                log::info!("[clipboard] WebP lossy q{}: {} bytes ({}×{})",
+                    quality, blob.len(), rgba.width(), rgba.height());
+                return Some(blob);
+            }
+            Ok(_) => {
+                log::warn!("[clipboard] WebP lossy q{} produced empty blob", quality);
+            }
+            Err(_) => {
+                log::warn!("[clipboard] WebP lossy q{} panicked", quality);
+            }
+        }
+    }
+    None
+}
+
+// 缩略图：resize 240×240 → WebP 20%
     // 针对超大长图，Lanczos3 插值开销过大；改用轻量级 Triangle (双线性) 过滤大幅降低 CPU 计算耗时
     let thumb_img = img.resize(240, 240, ::image::imageops::FilterType::Triangle);
     let thumb_rgba = thumb_img.to_rgba8();

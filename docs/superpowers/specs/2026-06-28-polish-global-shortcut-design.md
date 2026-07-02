@@ -1,7 +1,7 @@
 # 全局立即润色快捷键（polish_global_shortcut）设计
 
 > 日期：2026-06-28
-> 状态：设计中（待实施）
+> 状态：✅ 实施完成
 > 关联：[global-edit-shortcut-design](./2026-06-27-global-edit-shortcut-design.md)（同模式复刻）、coordinator `PolishNow`、result_window 窗口管理
 
 ## 1. 背景 / 动机

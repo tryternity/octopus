@@ -58,15 +58,16 @@ export default function Screenshot() {
   })();
 
   useEffect(() => {
-    invoke<{ image: string; width: number; height: number }>("get_screenshot_image", { label: winLabel })
-      .then((data) => {
+    invoke<ArrayBuffer>("get_screenshot_image", { label: winLabel })
+      .then((buf) => {
         const img = new Image();
         img.onload = () => {
           bgImgRef.current = img;
           setReady(true);
           setTimeout(() => { invoke("show_screenshot_window").catch(() => {}); }, 50);
         };
-        img.src = `data:image/jpeg;base64,${data.image}`;
+        const blob = new Blob([buf], { type: "image/jpeg" });
+        img.src = URL.createObjectURL(blob);
       })
       .catch((e) => console.error("Failed to get screenshot image:", e));
   }, []);
@@ -87,21 +88,16 @@ export default function Screenshot() {
     let unlistenFrame: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
     listen<{ frame: string; preview: string; height: number; phys_height: number }>("scroll://frame", (e) => {
-      // 实时选区画面：加载为 Image → Canvas 重绘
       const img = new Image();
       img.onload = () => { scrollFrameRef.current = img; draw(); };
       img.src = `data:image/jpeg;base64,${e.payload.frame}`;
       setScrollPreview(e.payload.preview);
       setScrollHeight(e.payload.phys_height);
     }).then((fn) => { unlistenFrame = fn; });
-    listen("scroll://done", (e: { payload: { id?: string; png_base64?: string } }) => {
+    listen("scroll://done", () => {
       setScrollPreview(null);
       setModeSafe("selected");
-      // 如果用户点的是"保存"，触发保存文件对话框
-      if (scrollSaveAfterStopRef.current && e.payload.png_base64) {
-        scrollSaveAfterStopRef.current = false;
-        invoke("save_screenshot_dialog", { pngBase64: e.payload.png_base64 }).catch(() => {});
-      }
+      // 保存模式由 Rust 端直接弹对话框，前端不再中转 base64
       scrollSaveAfterStopRef.current = false;
     }).then((fn) => { unlistenDone = fn; });
     return () => { unlistenFrame?.(); unlistenDone?.(); };
@@ -526,7 +522,7 @@ export default function Screenshot() {
     invoke("stop_scroll_recording").catch(() => {});
   }
 
-  function composeAndCrop(): string | null {
+  async function composeAndCropBytes(): Promise<ArrayBuffer | null> {
     if (!sel || !bgImgRef.current) return null;
     const bg = bgImgRef.current;
     const scale = bg.naturalWidth / window.innerWidth;
@@ -557,19 +553,22 @@ export default function Screenshot() {
     const croppedCtx = croppedCanvas.getContext("2d")!;
     croppedCtx.drawImage(tmpCanvas, px, py, pw, ph, 0, 0, pw, ph);
 
-    return croppedCanvas.toDataURL("image/png").split(",")[1];
+    const blob: Blob = await new Promise((resolve, reject) => croppedCanvas.toBlob((b) => b ? resolve(b) : reject("toBlob failed"), "image/png"));
+    return await blob.arrayBuffer();
   }
 
   function doOcr() {
-    const base64 = composeAndCrop();
-    if (!base64) return;
-    invoke("ocr_screenshot", { pngBase64: base64 }).catch(() => {});
+    composeAndCropBytes().then((bytes) => {
+      if (!bytes) return;
+      invoke("ocr_screenshot", bytes as unknown as Record<string, unknown>).catch(() => {});
+    });
   }
 
   function doSaveFile() {
-    const base64 = composeAndCrop();
-    if (!base64) return;
-    invoke("save_screenshot_dialog", { pngBase64: base64 }).catch(() => {});
+    composeAndCropBytes().then((bytes) => {
+      if (!bytes) return;
+      invoke("save_screenshot_dialog", bytes as unknown as Record<string, unknown>).catch(() => {});
+    });
   }
 
   function doPin() {
@@ -578,14 +577,10 @@ export default function Screenshot() {
   }
 
   function doConfirm() {
-    const base64 = composeAndCrop();
-    if (!base64) return;
-    invoke("confirm_screenshot_with_data", {
-      label: winLabel,
-      pngBase64: base64,
-      width: 0,
-      height: 0,
-    }).catch(() => {});
+    composeAndCropBytes().then((bytes) => {
+      if (!bytes) return;
+      invoke("confirm_screenshot_with_data", bytes as unknown as Record<string, unknown>).catch(() => {});
+    });
   }
 
   function normalize(x1: number, y1: number, x2: number, y2: number): Selection {

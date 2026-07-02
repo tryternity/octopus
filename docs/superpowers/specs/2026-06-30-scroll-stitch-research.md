@@ -1,7 +1,7 @@
 # 滚动截屏拼接技术调研方案
 
 **日期**: 2026-06-30
-**状态**: 调研完成，待实施
+**状态**: ✅ 调研完成，实施已完成（最终采用 Canvas-Anchored NCC + Sobel，非原推荐的 FFT）
 **分支**: `feature/clipboard-research`
 
 ---

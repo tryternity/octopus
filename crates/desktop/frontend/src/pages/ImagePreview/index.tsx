@@ -82,11 +82,13 @@ export default function ImagePreview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // —— imageId 变 → 拉全图 ——
+  // —— imageId 变 → 拉全图（Raw body 二进制 → objectURL）——
   useEffect(() => {
     if (imageId == null) return;
-    invoke<string>("get_image_full", { id: imageId })
-      .then((url) => {
+    invoke<ArrayBuffer>("get_image_full", { id: imageId })
+      .then((buf) => {
+        const blob = new Blob([buf], { type: "image/webp" });
+        const url = URL.createObjectURL(blob);
         setDataUrl(url);
         setAnnotations([]);
         setZoomSync(1);
@@ -254,28 +256,40 @@ export default function ImagePreview() {
 
   const undo = () => setAnnotations((prev) => prev.slice(0, -1));
 
-  // —— compose：图像 + 标注 合成到自然尺寸 PNG → base64（与 zoom 无关，1:1 全分辨率）——
-  const composePngBase64 = (): string => {
+  // —— compose：图像 + 标注 合成到自然尺寸 PNG → Uint8Array（Raw body 二进制传输）——
+  const composePngBytes = async (): Promise<ArrayBuffer> => {
     const img = imgRef.current!;
     const c = document.createElement("canvas");
     c.width = natW; c.height = natH;
     const ctx = c.getContext("2d")!;
     ctx.drawImage(img, 0, 0, natW, natH);
     for (const ann of annotations) drawAnnotation(ctx, ann);
-    const url = c.toDataURL("image/png");
-    return url.substring(url.indexOf(",") + 1);
+    const blob: Blob = await new Promise((resolve, reject) => c.toBlob((b) => b ? resolve(b) : reject("toBlob failed"), "image/png"));
+    return await blob.arrayBuffer();
   };
 
   const handleSave = async () => {
     try {
-      await invoke("save_image_dialog", { pngBase64: composePngBase64() });
+      if (annotations.length > 0) {
+        // 有标注：前端 Canvas 合成 → Raw body 传后端
+        const pngBytes = await composePngBytes();
+        await invoke("save_image_dialog", pngBytes as unknown as Record<string, unknown>);
+      } else if (imageId != null) {
+        // 无标注：后端直接从 DB 保存原始数据
+        await invoke("save_image_item", { id: imageId, format: "png" });
+      }
     } catch (e) { console.error(e); }
   };
 
   const handleCopy = async () => {
-    try {
-      await invoke("copy_image_to_clipboard", { pngBase64: composePngBase64() });
-    } catch (e) { console.error(e); }
+    if (annotations.length > 0) {
+      // 有标注：前端 Canvas 合成 → Raw body 传后端写剪贴板
+      try {
+        const pngBytes = await composePngBytes();
+        await invoke("copy_image_to_clipboard", pngBytes as unknown as Record<string, unknown>);
+      } catch (e) { console.error(e); }
+    }
+    // 无标注：剪贴板已有数据（截图/滚动截图停止时已写入），无需操作
   };
 
   const handleOcr = async () => {

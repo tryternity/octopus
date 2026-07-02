@@ -1,7 +1,7 @@
 # NCC + Sobel 梯度匹配引擎重写
 
 **日期**: 2026-07-02
-**状态**: 设计已确认，待实施
+**状态**: ✅ 实施完成（NCC + Sobel 匹配落地，19 测试全绿，API 零改动）
 **分支**: `optimize-capx`
 **关联文档**: [`2026-07-02-capx-canvas-anchored-design.md`](./2026-07-02-capx-canvas-anchored-design.md)、[`2026-06-30-scroll-stitch-research.md`](./2026-06-30-scroll-stitch-research.md)
 

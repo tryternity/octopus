@@ -187,12 +187,14 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 /// 截图 OCR：合成选区 → 入库 → OCR 识别 → 写 search_text + 剪贴板 + 新建文档
 #[tauri::command]
 pub async fn ocr_screenshot(
-    png_base64: String,
+    request: tauri::ipc::Request<'_>,
     app_handle: tauri::AppHandle,
     handle: State<'_, std::sync::Arc<ClipboardHandle>>,
 ) -> Result<(), String> {
-    let png_bytes = general_purpose::STANDARD.decode(&png_base64)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
+    let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
+        return Err("expected raw binary body".into());
+    };
+    let png_bytes = png_bytes.clone();
 
     ALL_CAPTURES.lock().unwrap().clear();
     PENDING_IMAGES.lock().unwrap().clear();
@@ -318,11 +320,13 @@ fn show_all_screenshot_windows(app_handle: &tauri::AppHandle) {
 /// 弹系统保存对话框，保存截图到用户指定路径
 #[tauri::command]
 pub async fn save_screenshot_dialog(
-    png_base64: String,
+    request: tauri::ipc::Request<'_>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let png_bytes = general_purpose::STANDARD.decode(&png_base64)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
+    let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
+        return Err("expected raw binary body".into());
+    };
+    let png_bytes = png_bytes.clone();
 
     ALL_CAPTURES.lock().unwrap().clear();
     PENDING_IMAGES.lock().unwrap().clear();
@@ -346,19 +350,18 @@ pub async fn save_screenshot_dialog(
     Ok(())
 }
 
-/// 前端合成标注+裁剪后，直接发送最终 PNG base64（含标注）
+/// 前端合成标注+裁剪后，直接发送最终 PNG（Raw body 二进制）
+/// 元数据（label/width/height）通过 headers 传递
 #[tauri::command]
 pub async fn confirm_screenshot_with_data(
-    _label: String,
-    png_base64: String,
-    _width: u32,
-    _height: u32,
+    request: tauri::ipc::Request<'_>,
     app_handle: tauri::AppHandle,
     handle: State<'_, std::sync::Arc<ClipboardHandle>>,
 ) -> Result<(), String> {
-    // 解码 base64 → PNG bytes
-    let png_bytes = general_purpose::STANDARD.decode(&png_base64)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
+    let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
+        return Err("expected raw binary body".into());
+    };
+    let png_bytes = png_bytes.clone();
 
     // 清空所有暂存
     ALL_CAPTURES.lock().unwrap().clear();
@@ -414,7 +417,7 @@ pub async fn confirm_screenshot_with_data(
     Ok(())
 }
 #[tauri::command]
-pub fn get_screenshot_image(label: String) -> Result<serde_json::Value, String> {
+pub fn get_screenshot_image(label: String) -> Result<tauri::ipc::Response, String> {
     // 取出对应的 base64（克隆而非 remove，兼容 StrictMode 双 mount）
     let b64 = {
         let pending = PENDING_IMAGES.lock().unwrap();
@@ -425,18 +428,11 @@ pub fn get_screenshot_image(label: String) -> Result<serde_json::Value, String> 
     }
     .ok_or("无待处理截图数据")?;
 
-    // 找到对应的截图尺寸
-    let (w, h) = ALL_CAPTURES.lock().unwrap()
-        .iter()
-        .find(|(l, _)| *l == label)
-        .map(|(_, c)| (c.width, c.height))
-        .unwrap_or((0, 0));
+    // base64 → 原始 JPEG 字节
+    let jpeg_bytes = general_purpose::STANDARD.decode(&b64)
+        .map_err(|e| format!("base64 解码失败: {}", e))?;
 
-    Ok(serde_json::json!({
-        "image": b64,
-        "width": w,
-        "height": h,
-    }))
+    Ok(tauri::ipc::Response::new(jpeg_bytes))
 }
 
 /// 确认截图：从指定窗口的截图裁剪选区 → 写剪贴板历史 → 关所有窗口
@@ -867,7 +863,9 @@ pub async fn start_scroll_recording(
     interactive_rects: Vec<InteractiveRect>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    SCROLL_RECORDING.store(true, std::sync::atomic::Ordering::SeqCst);
+    if SCROLL_RECORDING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("Scroll recording is already in progress".into());
+    }
 
     let ah = app_handle.clone();
     tauri::async_runtime::spawn(async move {
@@ -974,6 +972,11 @@ pub async fn start_scroll_recording(
             (hit, wid, target_wid)
         };
 
+        #[cfg(not(target_os = "macos"))]
+        let exclude_wid: u32 = 0;
+        #[cfg(not(target_os = "macos"))]
+        let target_wid: Option<u32> = None;
+
         // 获取所有截图窗口 label（用于 set_ignore_cursor_events）
         let scroll_labels: Vec<String> = ah
             .webview_windows()
@@ -1019,6 +1022,8 @@ pub async fn start_scroll_recording(
             let mut cur_passthrough = true;
             let mut last_active_pid: i32 = 0;
             let mut activate_check_count = 0u32;
+            let mut last_check_x: f64 = 0.0;
+            let mut last_check_y: f64 = 0.0;
             while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
                 poll.tick().await;
                 let (mouse_x, mouse_y) = if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
@@ -1043,17 +1048,22 @@ pub async fn start_scroll_recording(
                     cur_passthrough = want;
                 }
 
-                // 每 ~500ms（每 17 个 tick）检测鼠标下方的应用，如果未激活则激活它。
-                // 这样用户不需要先点击目标应用，直接在选区内滚动即可。
+                // 每 ~800ms（每 50 个 tick）且鼠标移动超过 10px 时检测鼠标下方的应用。
+                // CGWindowListCopyWindowInfo 是昂贵的系统 API，避免高频空转。
                 activate_check_count += 1;
-                if want && activate_check_count >= 17 {
+                if want && activate_check_count >= 50 {
                     activate_check_count = 0;
-                    #[cfg(target_os = "macos")]
-                    {
-                        if let Some(pid) = get_window_pid_at_point(mouse_x, mouse_y) {
-                            if pid != last_active_pid {
-                                activate_app_by_pid(&mon_ah, pid);
-                                last_active_pid = pid;
+                    let moved = (mouse_x - last_check_x).abs() + (mouse_y - last_check_y).abs();
+                    if moved > 10.0 {
+                        last_check_x = mouse_x;
+                        last_check_y = mouse_y;
+                        #[cfg(target_os = "macos")]
+                        {
+                            if let Some(pid) = get_window_pid_at_point(mouse_x, mouse_y) {
+                                if pid != last_active_pid {
+                                    activate_app_by_pid(&mon_ah, pid);
+                                    last_active_pid = pid;
+                                }
                             }
                         }
                     }
@@ -1103,7 +1113,6 @@ pub async fn start_scroll_recording(
         interval.tick().await;
 
         let ah2 = ah.clone();
-        let mut no_progress_count = 0u32;
         let mut last_frame: Option<image::RgbaImage> = None;
 
         // manual 模式：由用户手动滚动触控板/滚轮，后台只进行高频截帧与拼接
@@ -1144,49 +1153,49 @@ pub async fn start_scroll_recording(
             let frame_rgba = match capture_result { Ok(Ok(img)) => img, _ => continue };
             last_frame = Some(frame_rgba.clone());
 
-            // 选区实时画面 JPEG
-            let mut frame_jpg = Vec::new();
-            let frame_rgb = image::DynamicImage::ImageRgba8(frame_rgba.clone()).into_rgb8();
-            let mut jpg_enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut frame_jpg, 80);
-            let _ = jpg_enc.encode(&frame_rgb, frame_rgb.width(), frame_rgb.height(), image::ExtendedColorType::Rgb8);
-            let frame_b64 = general_purpose::STANDARD.encode(&frame_jpg);
+            let _added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
 
-            let added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
-
-            // 自动停止检测：连续 3 帧无新内容
-            if added {
-                no_progress_count = 0;
-            } else {
-                no_progress_count += 1;
-                // manual 模式：用户需要时间移动到选区外开始滚动，不自动停止。
-                // 用一个大阈值（250 帧 ≈ 30s）仅作安全兜底，防止忘记停止。
-                if no_progress_count >= 250 {
-                    log::info!("Scroll: no progress for 250 frames (~30s), auto-stopping");
-                    break;
-                }
-            }
-
-            // 预览：只取画布底部最新区域，让用户看到最新的拼接内容
-            let canvas = stitcher.canvas();
+            // 截图帧 JPEG + 预览图编码移入 spawn_blocking（CPU 密集，避免阻塞 async 线程）
             let preview_w = 400u32;
             let max_preview_h = 1200u32;
-            // 计算等效预览高度对应的源像素高度（考虑缩放比）
-            let src_h = (canvas.height() as u64 * canvas.width() as u64 / preview_w as u64).min(canvas.height() as u64) as u32;
-            let crop_src_h = src_h.min(max_preview_h * canvas.width() / preview_w).min(canvas.height());
-            let crop_y = canvas.height() - crop_src_h;
-            let canvas_cropped = image::imageops::crop_imm(canvas, 0, crop_y, canvas.width(), crop_src_h).to_image();
-            let preview_h = (preview_w * canvas_cropped.height() / canvas_cropped.width()).min(max_preview_h);
-            let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::CatmullRom);
-            let mut preview_png = Vec::new();
-            let _ = preview.write_to(&mut std::io::Cursor::new(&mut preview_png), image::ImageFormat::Png);
-            let preview_b64 = general_purpose::STANDARD.encode(&preview_png);
+            let canvas_h_now = stitcher.height();
+            let canvas_w_now = stitcher.canvas_w();
+            // 直接从 canvas_buf 底部切片（不 clone 全量）
+            let src_h = ((canvas_h_now as u64 * canvas_w_now as u64 / preview_w as u64).min(canvas_h_now as u64)) as u32;
+            let crop_src_h = src_h.min(max_preview_h * canvas_w_now / preview_w).min(canvas_h_now);
+            let crop_y = canvas_h_now - crop_src_h;
+            let canvas_buf_slice = stitcher.canvas_buf_slice(crop_y, crop_src_h);
+            let frame_for_jpg = frame_rgba.clone();
+            let scale_for_phys = scale;
 
-            let _ = ah2.emit("scroll://frame", serde_json::json!({
-                "frame": frame_b64,
-                "preview": preview_b64,
-                "height": stitcher.height(),
-                "phys_height": (stitcher.height() as f64 / scale) as u32,
-            }));
+            let emit_data = tokio::task::spawn_blocking(move || {
+                // 选区实时画面 JPEG
+                let mut frame_jpg = Vec::new();
+                let frame_rgb = image::DynamicImage::ImageRgba8(frame_for_jpg).into_rgb8();
+                let mut jpg_enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut frame_jpg, 80);
+                let _ = jpg_enc.encode(&frame_rgb, frame_rgb.width(), frame_rgb.height(), image::ExtendedColorType::Rgb8);
+                let frame_b64 = general_purpose::STANDARD.encode(&frame_jpg);
+
+                // 预览图：从 canvas_buf 底部切片重建小 RgbaImage
+                let canvas_cropped = image::RgbaImage::from_raw(canvas_w_now, crop_src_h, canvas_buf_slice)
+                    .unwrap_or_else(|| image::RgbaImage::new(canvas_w_now, crop_src_h));
+                let preview_h = (preview_w * canvas_cropped.height() / canvas_cropped.width()).min(max_preview_h);
+                let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::Triangle);
+                let mut preview_png = Vec::new();
+                let _ = preview.write_to(&mut std::io::Cursor::new(&mut preview_png), image::ImageFormat::Png);
+                let preview_b64 = general_purpose::STANDARD.encode(&preview_png);
+
+                let phys_height = (canvas_h_now as f64 / scale_for_phys) as u32;
+
+                serde_json::json!({
+                    "frame": frame_b64,
+                    "preview": preview_b64,
+                    "height": canvas_h_now,
+                    "phys_height": phys_height,
+                })
+            }).await.unwrap_or_else(|_| serde_json::json!({}));
+
+            let _ = ah2.emit("scroll://frame", emit_data);
         }
 
         // 录制结束：先恢复鼠标事件 + 重新激活 app（避免假死）
@@ -1197,6 +1206,9 @@ pub async fn start_scroll_recording(
         }
         #[cfg(target_os = "macos")]
         set_app_active_on_main(&sel_win, true);
+
+        // 先关闭截图窗口（用户感知"立即停止"）
+        close_all_screenshot_windows(&ah);
 
         // 补全最后一帧的完整可见区域（含底部 sticky footer）
         if let Some(ref lf) = last_frame {
@@ -1241,69 +1253,89 @@ pub async fn start_scroll_recording(
 
         let canvas = stitcher.canvas().clone();
         let ah3 = ah.clone();
-        let result = tokio::task::spawn_blocking(move || {
-            // 直接从 canvas 转 DynamicImage，避免 PNG 编码→解码冗余往返
-            let img = image::DynamicImage::ImageRgba8(canvas);
+        let ah4 = ah.clone();
 
-            // PNG 编码用快速压缩（写剪贴板/base64 传前端，不需要高压缩率）
-            let mut png_bytes = Vec::new();
-            let mut cursor = std::io::Cursor::new(&mut png_bytes);
+        // 先做 PNG 快速编码（剪贴板和入库都需要的基础数据）
+        let png_bytes = {
+            let img = image::DynamicImage::ImageRgba8(canvas.clone());
+            let mut png = Vec::new();
+            let mut cursor = std::io::Cursor::new(&mut png);
             let png_encoder = image::codecs::png::PngEncoder::new_with_quality(
                 &mut cursor,
                 image::codecs::png::CompressionType::Fast,
                 image::codecs::png::FilterType::Up,
             );
             let _ = img.write_with_encoder(png_encoder);
+            if png.is_empty() {
+                log::error!("[scroll] PNG encoding produced empty bytes");
+            }
+            png
+        };
+        let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
+        let item_id = octopus_clipboard::store::chrono_millis();
 
-            let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
-            let encoded = match octopus_clipboard::image::encode_to_webp(&img) { Ok(e) => e, Err(_) => return None };
+        // 线程一：立即写剪贴板（用户最关心，~1s）
+        let png_for_clipboard = png_bytes.clone();
+        let ah_clipboard = ah4.clone();
+        let clipboard_task = tokio::task::spawn_blocking(move || {
+            if let Some(handle) = ah_clipboard.try_state::<std::sync::Arc<ClipboardHandle>>() {
+                if let Err(e) = handle.write_image(&png_for_clipboard) {
+                    log::error!("[scroll] Failed to write clipboard: {}", e);
+                }
+            }
+        });
 
-            let item_id = octopus_clipboard::store::chrono_millis();
-            let _ = octopus_infra::db::with_db(|conn| {
-                octopus_clipboard::store::insert_image_data(conn, &hash, &encoded.webp_blob, &encoded.thumb_blob, img.width() as i64, img.height() as i64)
-            });
-            let _ = octopus_infra::db::with_db(|conn| {
+        // 线程二：WebP 编码 + DB 入库（后台，~2-3s）
+        let canvas_for_db = canvas;
+        let hash_for_db = hash.clone();
+        let id_for_db = item_id;
+        let _db_task = tokio::task::spawn_blocking(move || {
+            let img = image::DynamicImage::ImageRgba8(canvas_for_db);
+            let encoded = match octopus_clipboard::image::encode_to_webp(&img) {
+                Ok(e) => e,
+                Err(_) => return,
+            };
+            if let Err(e) = octopus_infra::db::with_db(|conn| {
+                octopus_clipboard::store::insert_image_data(conn, &hash_for_db, &encoded.webp_blob, &encoded.thumb_blob, img.width() as i64, img.height() as i64)
+            }) {
+                log::error!("[scroll] Failed to insert image_data: {}", e);
+            }
+            if let Err(e) = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
-                    id: item_id, item_type: octopus_clipboard::ItemType::Image,
-                    content: hash.clone(), search_text: String::new(),
+                    id: id_for_db, item_type: octopus_clipboard::ItemType::Image,
+                    content: hash_for_db.clone(), search_text: String::new(),
                     created_at: octopus_clipboard::store::iso_now(),
-                    blob_hash: Some(hash.clone()), width: Some(img.width() as i64),
+                    blob_hash: Some(hash_for_db.clone()), width: Some(img.width() as i64),
                     height: Some(img.height() as i64), has_thumbnail: Some(1),
                     file_count: None, is_rich: false,
                 })
-            });
-
-            // 写入系统剪贴板
-            if let Some(handle) = ah3.try_state::<std::sync::Arc<ClipboardHandle>>() {
-                let _ = handle.write_image(&png_bytes);
+            }) {
+                log::error!("[scroll] Failed to insert clipboard_item: {}", e);
             }
+        });
 
-            let png_b64 = general_purpose::STANDARD.encode(&png_bytes);
-            Some((serde_json::json!({ "id": item_id, "png_base64": png_b64 }), png_bytes))
-        }).await.unwrap_or(None);
+        // 等剪贴板写入完成（~1s），DB 入库在后台继续
+        let _ = clipboard_task.await;
 
-        if let Some((done_payload, png_bytes)) = result {
-            let _ = ah.emit("scroll://done", done_payload);
-            let _ = ah.emit("clipboard://changed", ());
+        let _ = ah3.emit("scroll://done", serde_json::json!({ "id": item_id }));
+        let _ = ah3.emit("clipboard://changed", ());
 
-            // 保存模式：弹保存对话框
-            if stop_mode == ScrollStopMode::Save {
-                use tauri_plugin_dialog::DialogExt;
-                let save_path = ah.dialog()
-                    .file()
-                    .add_filter("PNG 图片", &["png"])
-                    .set_file_name("scroll-screenshot.png")
-                    .blocking_save_file();
-                if let Some(path) = save_path {
-                    if let Some(p) = path.as_path() {
-                        let _ = std::fs::write(p, &png_bytes);
-                    }
+        // 保存模式：Rust 端直接弹对话框（无需前端中转）
+        if stop_mode == ScrollStopMode::Save {
+            use tauri_plugin_dialog::DialogExt;
+            let save_path = ah.dialog()
+                .file()
+                .add_filter("PNG 图片", &["png"])
+                .set_file_name("scroll-screenshot.png")
+                .blocking_save_file();
+            if let Some(path) = save_path {
+                if let Some(p) = path.as_path() {
+                    let _ = std::fs::write(p, &png_bytes);
                 }
             }
         }
 
-        // 关闭截图窗口
-        close_all_screenshot_windows(&ah);
+        // 窗口已在上方提前关闭
     });
 
     Ok(())

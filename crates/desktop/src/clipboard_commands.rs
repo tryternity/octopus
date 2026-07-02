@@ -127,7 +127,11 @@ pub async fn copy_clipboard_item(
 
     if let Some(item) = item {
         let handle = handle.inner().clone();
-        write_item_to_clipboard(&handle, &item)?;
+        // DB 读 + WebP 解码 + PNG 编码 + 剪贴板写入全是 CPU 密集操作，
+        // 移入 spawn_blocking 避免阻塞 Tauri UI 线程
+        tokio::task::spawn_blocking(move || {
+            write_item_to_clipboard(&handle, &item)
+        }).await.map_err(|e| e.to_string())??;
     }
     Ok(())
 }
@@ -476,7 +480,7 @@ pub async fn get_image_thumb(id: i64) -> Result<String, String> {
 /// 前端 ImagePreview 用它加载到 <img>/canvas 做标注。镜像 get_image_thumb，
 /// 仅取 blob（全分辨率）而非 thumb。返回 data URL 同样为避免 IPC 序列化膨胀。
 #[tauri::command]
-pub async fn get_image_full(id: i64) -> Result<String, String> {
+pub async fn get_image_full(id: i64) -> Result<tauri::ipc::Response, String> {
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, id)
     })
@@ -496,24 +500,46 @@ pub async fn get_image_full(id: i64) -> Result<String, String> {
     .map_err(|e| e.to_string())?
     .ok_or_else(|| "图片数据缺失".to_string())?;
 
-    Ok(format!(
-        "data:image/webp;base64,{}",
-        general_purpose::STANDARD.encode(&blob)
-    ))
+    // 返回原始 WebP 字节（Raw body），前端用 URL.createObjectURL 加载
+    Ok(tauri::ipc::Response::new(blob))
 }
 
 /// 弹系统保存对话框，把前端合成的标注 PNG（base64）存到用户指定路径。
 ///
-/// 镜像 screenshot_commands::save_screenshot_dialog，去掉截图专属清理
-/// （ALL_CAPTURES / close_all_screenshot_windows）。预览窗保持打开。
+/// 把前端合成的标注 PNG（Raw body 二进制）写入系统剪贴板。
+/// 前端调用：invoke("copy_image_to_clipboard", uint8array)
 #[tauri::command]
-pub async fn save_image_dialog(
-    png_base64: String,
+pub async fn copy_image_to_clipboard(
+    request: tauri::ipc::Request<'_>,
+    handle: State<'_, Arc<ClipboardHandle>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let png_bytes = general_purpose::STANDARD
-        .decode(&png_base64)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
+    let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
+        return Err("expected raw binary body".into());
+    };
+    let png_bytes = png_bytes.clone();
+    // write_image（PNG 解码 + set_image）和 watcher 入库都是 CPU 密集操作，
+    // 全部移入 spawn_blocking 避免阻塞 Tauri 命令返回
+    let handle_clone = handle.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        handle_clone.write_image(&png_bytes).map_err(|e| e.to_string())?;
+        octopus_clipboard::watcher::handle_clipboard_change(handle_clone.as_ref());
+        Ok::<(), String>(())
+    }).await.map_err(|e| e.to_string())??;
+    let _ = app_handle.emit("clipboard://changed", ());
+    Ok(())
+}
+
+/// 预览窗保存图片：前端传 Raw body 二进制 PNG。
+/// 前端调用：invoke("save_image_dialog", uint8array)
+#[tauri::command]
+pub async fn save_image_dialog(
+    request: tauri::ipc::Request<'_>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
+        return Err("expected raw binary body".into());
+    };
 
     use tauri_plugin_dialog::DialogExt;
     let save_path = app_handle
@@ -528,30 +554,5 @@ pub async fn save_image_dialog(
         std::fs::write(path, &png_bytes).map_err(|e| e.to_string())?;
         log::info!("Image preview saved to {}", path.display());
     }
-    Ok(())
-}
-
-/// 把前端合成的标注 PNG（base64）写入系统剪贴板。
-///
-/// ClipboardHandle::write_image 内部已 from_bytes + set_image，无需直接碰 RustImageData。
-#[tauri::command]
-pub async fn copy_image_to_clipboard(
-    png_base64: String,
-    handle: State<'_, Arc<ClipboardHandle>>,
-    app_handle: tauri::AppHandle,
-) -> Result<(), String> {
-    let png_bytes = general_purpose::STANDARD
-        .decode(&png_base64)
-        .map_err(|e| format!("base64 解码失败: {}", e))?;
-    handle.write_image(&png_bytes).map_err(|e| e.to_string())?;
-    // write_image 置 suppress flag，watcher 会跳过自身写入（防回环）。
-    // 但图片预览的「复制」期望这条图进入剪贴板历史 → 主动调 watcher 的入库逻辑
-    // （与系统复制图片走完全相同的路径：去重 hash + WebP + 缩略图 + image_data BLOB）。
-    // 将耗时的大图 WebP 编码与落库异步移至后台，避免阻塞 Tauri 命令返回
-    let handle_clone = handle.inner().clone();
-    tokio::task::spawn_blocking(move || {
-        octopus_clipboard::watcher::handle_clipboard_change(handle_clone.as_ref());
-    });
-    let _ = app_handle.emit("clipboard://changed", ());
     Ok(())
 }

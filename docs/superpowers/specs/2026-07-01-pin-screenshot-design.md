@@ -1,7 +1,7 @@
 # 贴图功能（Pin to Desktop）设计
 
 **日期**: 2026-07-01
-**状态**: 设计完成，待实施
+**状态**: ✅ 实施完成（一期 macOS：MacPinWindow + pin_screenshot 命令）
 **分支**: `feature/clipboard-research`
 **分期**: 一期 macOS，二期 Windows/Linux
 

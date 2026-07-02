@@ -1,7 +1,7 @@
 # 图片预览 / 标注窗（Image Preview）设计
 
 > 日期：2026-07-01
-> 状态：**设计中**（spec 已写，待评审 → writing-plans）。
+> 状态：✅ 实施完成（图片预览窗 + 标注工具栏 + OCR + 复制/保存）
 > 关联：`docs/superpowers/specs/2026-06-30-compact-editor-design.md`（窗口/命令/PENDING 模式模板）、`docs/superpowers/specs/2026-06-30-notepad-design.md`。
 > 分支：`worktree-feature-notepad`。**功能完整完成前不往 main 同步。**
 
