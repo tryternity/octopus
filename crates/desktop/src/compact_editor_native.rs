@@ -72,11 +72,17 @@ mod imp {
     unsafe impl Sync for SendState {}
     static STATE: Mutex<Option<SendState>> = Mutex::new(None);
 
-    /// 主线程闭包内对当前 textview 做事（undo/redo/find 等同步操作）。
+    /// 主线程闭包内对当前 textview 做事（undo/redo 等）。
+    /// ⚠️ 必须**先 clone 出 textview 再释放锁**后调 f：undo/redo 会同步触发
+    /// textDidChange → update_char_count → 再锁 STATE；若此处持锁则 Mutex 不可重入死锁。
     fn with_tv<F: FnOnce(&NSTextView)>(f: F) {
-        let guard = STATE.lock().unwrap();
-        if let Some(s) = guard.as_ref() {
-            f(&s.text_view);
+        let tv = STATE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| s.text_view.clone());
+        if let Some(tv) = tv {
+            f(&tv);
         }
     }
 
@@ -158,14 +164,15 @@ mod imp {
                             return Bool::YES;
                         }
                         "f" => {
-                            // find_button.tag()=1 = Show；作 sender 传给 performFindPanelAction
-                            let g = STATE.lock().unwrap();
-                            if let Some(s) = g.as_ref() {
+                            // find_button.tag()=1 = Show；作 sender 传给 performFindPanelAction。
+                            // 先 clone 出引用再释放锁，避免持锁调 AppKit。
+                            let refs = STATE.lock().unwrap().as_ref().map(|s| {
+                                (s.text_view.clone(), s.find_button.clone())
+                            });
+                            if let Some((tv, fb)) = refs {
                                 unsafe {
-                                    let _: () = msg_send![
-                                        &*s.text_view,
-                                        performFindPanelAction: &*s.find_button
-                                    ];
+                                    let _: () =
+                                        msg_send![&*tv, performFindPanelAction: &*fb];
                                 }
                             }
                             return Bool::YES;
@@ -240,26 +247,32 @@ mod imp {
             return;
         };
         let _ = w.run_on_main_thread(move || {
-            let guard = STATE.lock().unwrap();
-            let Some(s) = guard.as_ref() else {
+            // clone 出引用再释放锁（不持锁调 AppKit）
+            let refs = STATE
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|s| (s.text_view.clone(), s.font_label.clone()));
+            let Some((tv, fl)) = refs else {
                 return;
             };
-            s.text_view.setFont(Some(&NSFont::systemFontOfSize(new)));
-            s.font_label.setStringValue(&NSString::from_str(&format!("{}", new as i64)));
-            let lx = s.font_label.frame().origin.x;
-            recenter_label(&s.font_label, lx);
+            tv.setFont(Some(&NSFont::systemFontOfSize(new)));
+            fl.setStringValue(&NSString::from_str(&format!("{}", new as i64)));
+            recenter_label(&fl, fl.frame().origin.x);
         });
     }
 
     /// 清空二次确认：首次点→切「确认清空」+ 2s 复位；2s 内再点→真正清空。
     fn on_clear_clicked(app: &tauri::AppHandle) {
         if !CLEAR_PENDING.swap(true, Ordering::Relaxed) {
-            // 首次：切确认态（已在主线程，直接改 title）
-            {
-                let guard = STATE.lock().unwrap();
-                if let Some(s) = guard.as_ref() {
-                    s.clear_button.setTitle(&NSString::from_str("确认清空?"));
-                }
+            // 首次：切确认态（clone 出 clear_button 再改 title，不持锁）
+            let cb = STATE
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|s| s.clear_button.clone());
+            if let Some(cb) = cb {
+                cb.setTitle(&NSString::from_str("确认清空?"));
             }
             let app2 = app.clone();
             tauri::async_runtime::spawn(async move {
@@ -267,23 +280,31 @@ mod imp {
                 CLEAR_PENDING.store(false, Ordering::Relaxed);
                 if let Some(w) = app2.get_window(WINDOW_LABEL) {
                     let _ = w.run_on_main_thread(move || {
-                        let guard = STATE.lock().unwrap();
-                        if let Some(s) = guard.as_ref() {
-                            s.clear_button.setTitle(&NSString::from_str("清空"));
+                        let cb = STATE
+                            .lock()
+                            .unwrap()
+                            .as_ref()
+                            .map(|s| s.clear_button.clone());
+                        if let Some(cb) = cb {
+                            cb.setTitle(&NSString::from_str("清空"));
                         }
                     });
                 }
             });
             return;
         }
-        // 二次：清空文本 + 复位按钮
+        // 二次：清空文本 + 复位按钮（clone 出再操作；setString 可能触发 textDidChange，
+        // 故不持锁，update_char_count 自己另取锁无死锁）
         CLEAR_PENDING.store(false, Ordering::Relaxed);
-        {
-            let guard = STATE.lock().unwrap();
-            if let Some(s) = guard.as_ref() {
-                s.text_view.setString(&NSString::from_str(""));
-                s.clear_button.setTitle(&NSString::from_str("清空"));
-            }
+        let refs = STATE
+            .lock()
+            .unwrap()
+            .as_ref()
+            .map(|s| (s.text_view.clone(), s.clear_button.clone()));
+        if let Some((tv, cb)) = refs {
+            tv.setString(&NSString::from_str(""));
+            cb.setTitle(&NSString::from_str("清空"));
+            update_char_count();
         }
     }
 
@@ -549,18 +570,23 @@ mod imp {
         };
         let text = text.to_string();
         let _ = window.run_on_main_thread(move || {
-            let guard = STATE.lock().unwrap();
-            let Some(s) = guard.as_ref() else {
+            // clone 出引用再释放锁（不持锁调 setString，防 textDidChange 重入死锁）
+            let refs = STATE
+                .lock()
+                .unwrap()
+                .as_ref()
+                .map(|s| (s.text_view.clone(), s.char_label.clone()));
+            let Some((tv, cl)) = refs else {
                 log::warn!("[native] set_text: STATE not set");
                 return;
             };
-            s.text_view.setString(&NSString::from_str(&text));
+            tv.setString(&NSString::from_str(&text));
             log::info!("[native] compact editor text set ({} 字节)", text.len());
-            // setString 不触发 textDidChange；同一锁内顺手刷字数（避免 update_char_count 重入死锁）
-            let clx = s.char_label.frame().origin.x;
+            // setString 不触发 textDidChange，手动刷字数
+            let clx = cl.frame().origin.x;
             let n = text.chars().count();
-            s.char_label.setStringValue(&NSString::from_str(&format!("{n} 字")));
-            recenter_label(&s.char_label, clx);
+            cl.setStringValue(&NSString::from_str(&format!("{n} 字")));
+            recenter_label(&cl, clx);
         });
     }
 
