@@ -34,57 +34,56 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let w = rgba.width();
     let h = rgba.height();
 
-    // WebP 最大尺寸 16383px。超长图降级为 JPEG（逐级降质量直到体积可接受）。
+    // WebP 最大尺寸 16383px。超过则逐级降质量，50% 仍失败则放弃。
     let webp_blob = if w > 16383 || h > 16383 {
-        log::warn!("[clipboard] Image too large for WebP ({}×{}), falling back to JPEG", w, h);
-        match encode_jpeg_with_budget(img) {
+        log::warn!("[clipboard] Image too large for lossless WebP ({}×{}), trying lossy", w, h);
+        match encode_webp_lossy_with_budget(&rgba) {
             Some(blob) => blob,
             None => {
-                log::error!("[clipboard] Image too large even for JPEG q50, skipping DB insert");
-                return Err(anyhow::anyhow!("Image too large to encode ({}×{})", w, h));
+                log::error!("[clipboard] WebP encoding failed at all quality levels, skipping");
+                return Err(anyhow::anyhow!("WebP encoding failed for {}×{}", w, h));
             }
         }
     } else {
         let encoder = webp::Encoder::from_rgba(&rgba, w, h);
+        // 无损
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode_lossless().to_vec())) {
             Ok(blob) => blob,
             Err(_) => {
-                log::warn!("[clipboard] lossless WebP failed (size {}×{}), falling back to lossy", w, h);
-                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(90.0).to_vec())) {
-                    Ok(blob) => blob,
-                    Err(_) => {
-                        log::warn!("[clipboard] lossy WebP also failed, falling back to JPEG");
-                        match encode_jpeg_with_budget(img) {
-                            Some(blob) => blob,
-                            None => {
-                                log::error!("[clipboard] All encoding failed, skipping");
-                                return Err(anyhow::anyhow!("All image encoding failed"));
-                            }
-                        }
+                log::warn!("[clipboard] lossless WebP failed ({}×{}), trying lossy", w, h);
+                match encode_webp_lossy_with_budget(&rgba) {
+                    Some(blob) => blob,
+                    None => {
+                        log::error!("[clipboard] All WebP encoding failed, skipping");
+                        return Err(anyhow::anyhow!("WebP encoding failed for {}×{}", w, h));
                     }
                 }
             }
         }
     };
 
-/// JPEG 编码，逐级降质量（无损→90%→80%→70%→60%→50%）。
-/// 50% 仍无法编码则返回 None（放弃入库）。
-fn encode_jpeg_with_budget(img: &::image::DynamicImage) -> Option<Vec<u8>> {
-    // 无损（质量 100）→ JPEG 无意义，直接从 90% 开始
-    for quality in [90u8, 80, 70, 60, 50] {
-        let mut buf = Vec::new();
-        let mut enc = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, quality);
-        match enc.encode_image(img) {
-            Ok(()) => {
-                log::info!("[clipboard] JPEG q{}: {} bytes", quality, buf.len());
-                return Some(buf);
+/// WebP 有损编码，逐级降质量（90%→80%→70%→60%→50%）。
+/// 每级用 catch_unwind 防 panic。50% 仍失败则返回 None。
+fn encode_webp_lossy_with_budget(rgba: &::image::RgbaImage) -> Option<Vec<u8>> {
+    let encoder = webp::Encoder::from_rgba(rgba, rgba.width(), rgba.height());
+    for quality in [90.0f32, 80.0, 70.0, 60.0, 50.0] {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            encoder.encode(quality).to_vec()
+        }));
+        match result {
+            Ok(blob) if !blob.is_empty() => {
+                log::info!("[clipboard] WebP lossy q{}: {} bytes ({}×{})",
+                    quality, blob.len(), rgba.width(), rgba.height());
+                return Some(blob);
             }
-            Err(e) => {
-                log::warn!("[clipboard] JPEG q{} failed: {}", quality, e);
+            Ok(_) => {
+                log::warn!("[clipboard] WebP lossy q{} produced empty blob", quality);
+            }
+            Err(_) => {
+                log::warn!("[clipboard] WebP lossy q{} panicked", quality);
             }
         }
     }
-    log::error!("[clipboard] JPEG encoding failed at all quality levels");
     None
 }
 
