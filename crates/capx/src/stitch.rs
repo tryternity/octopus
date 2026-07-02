@@ -368,8 +368,9 @@ impl Stitcher {
             return Ok(false);
         }
 
-        // 周期性假匹配检测：连续 3 次以上 dy 几乎相同 → 画面实际没滚动，
-        // NCC 在周期性内容中找到的是假匹配。一旦锁定，拒绝所有相同 dy。
+        // 周期性假匹配检测：连续 3 次以上 dy≥100 且几乎相同 → 周期性假匹配。
+        // 正常均匀滚动（触控板恒速）dy 通常 <100，不会被误杀。
+        // 假匹配 dy 值大（如文件列表行高倍数 449/674），且画面没滚动时 NCC 在周期内容中找假匹配。
         let dy_rounded = (-dy).round();
         if self.same_dy_count >= 3 {
             if let Some(locked_dy) = self.last_appended_dy {
@@ -381,7 +382,7 @@ impl Stitcher {
             self.same_dy_count = 0;
         }
         if let Some(prev_dy) = self.last_appended_dy {
-            if (dy_rounded - prev_dy).abs() < 2.0 {
+            if (dy_rounded - prev_dy).abs() < 2.0 && dy_rounded >= 100.0 {
                 self.same_dy_count += 1;
                 if self.same_dy_count >= 3 {
                     log::info!("[stitch] periodic false match locked (dy={:.0})", dy_rounded);

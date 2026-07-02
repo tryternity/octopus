@@ -863,7 +863,9 @@ pub async fn start_scroll_recording(
     interactive_rects: Vec<InteractiveRect>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    SCROLL_RECORDING.store(true, std::sync::atomic::Ordering::SeqCst);
+    if SCROLL_RECORDING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return Err("Scroll recording is already in progress".into());
+    }
 
     let ah = app_handle.clone();
     tauri::async_runtime::spawn(async move {
