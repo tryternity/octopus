@@ -513,14 +513,15 @@ pub async fn copy_image_to_clipboard(
     let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
         return Err("expected raw binary body".into());
     };
-    handle.write_image(&png_bytes).map_err(|e| e.to_string())?;
-    // write_image 置 suppress flag，watcher 会跳过自身写入（防回环）。
-    // 但图片预览的「复制」期望这条图进入剪贴板历史 → 主动调 watcher 的入库逻辑
-    // 将耗时的大图 WebP 编码与落库异步移至后台，避免阻塞 Tauri 命令返回
+    let png_bytes = png_bytes.clone();
+    // write_image（PNG 解码 + set_image）和 watcher 入库都是 CPU 密集操作，
+    // 全部移入 spawn_blocking 避免阻塞 Tauri 命令返回
     let handle_clone = handle.inner().clone();
     tokio::task::spawn_blocking(move || {
+        handle_clone.write_image(&png_bytes).map_err(|e| e.to_string())?;
         octopus_clipboard::watcher::handle_clipboard_change(handle_clone.as_ref());
-    });
+        Ok::<(), String>(())
+    }).await.map_err(|e| e.to_string())??;
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(())
 }
