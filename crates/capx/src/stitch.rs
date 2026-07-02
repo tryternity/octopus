@@ -141,6 +141,100 @@ fn mean_stddev_u16(img: &imageproc::definitions::Image<image::Luma<u16>>) -> (f3
     (mean, var.sqrt())
 }
 
+// ===== NCC 匹配引擎 =====
+
+use imageproc::definitions::Image;
+use imageproc::template_matching::{find_extremes, match_template, MatchTemplateMethod};
+
+/// NCC 匹配结果。
+struct NccResult {
+    /// 最佳偏移（response 坐标，即模板顶部在搜索区域中的 y 偏移）
+    best_y: f64,
+    /// NCC 分数 [0, 1]，越大越好
+    best_score: f64,
+    /// 完整 response map
+    response: Image<image::Luma<f32>>,
+}
+
+/// NCC 匹配：在搜索区域中找模板的最佳对齐位置。
+fn ncc_match(
+    template: &image::GrayImage,
+    search_region: &image::GrayImage,
+) -> Option<NccResult> {
+    // 模板必须严格小于搜索区域（match_template 的要求）
+    if template.width() > search_region.width() || template.height() >= search_region.height() {
+        return None;
+    }
+    let response = match_template(
+        search_region,
+        template,
+        MatchTemplateMethod::CrossCorrelationNormalized,
+    );
+    let extremes = find_extremes(&response);
+    let best_y = extremes.max_value_location.1 as f64;
+    let best_score = extremes.max_value as f64;
+    Some(NccResult { best_y, best_score, response })
+}
+
+/// 多道验证 NCC 匹配结果。返回 true 表示匹配可信。
+fn validate_ncc_match(response: &Image<image::Luma<f32>>, best_y: usize, best_score: f32) -> bool {
+    // 1. 最低分数
+    if best_score < NCC_SCORE_THRESHOLD {
+        return false;
+    }
+
+    let h = response.height() as usize;
+
+    // 2. 局部置信度：best vs best±1 的最大值差
+    let local_alt = {
+        let mut alt = 0.0f32;
+        if best_y > 0 {
+            alt = alt.max(response.get_pixel(0, best_y as u32 - 1)[0]);
+        }
+        if best_y + 1 < h {
+            alt = alt.max(response.get_pixel(0, best_y as u32 + 1)[0]);
+        }
+        alt
+    };
+    if best_score - local_alt < LOCAL_CONFIDENCE_DELTA {
+        return false;
+    }
+
+    // 3. 全局置信度：best vs 距离≥GLOBAL_CONFIDENCE_MIN_DIST 的最大值差
+    let distant_alt = {
+        let mut alt = 0.0f32;
+        for y in 0..h {
+            if (y as isize - best_y as isize).abs() >= GLOBAL_CONFIDENCE_MIN_DIST as isize {
+                alt = alt.max(response.get_pixel(0, y as u32)[0]);
+            }
+        }
+        alt
+    };
+    if best_score - distant_alt < GLOBAL_CONFIDENCE_DELTA {
+        return false;
+    }
+
+    true
+}
+
+/// 从 NCC response map 在最佳 y 处做抛物线拟合，返回亚像素偏移。
+fn parabolic_refine_from_response(response: &Image<image::Luma<f32>>, best_y: f64) -> f64 {
+    let by = best_y as usize;
+    if by == 0 || by + 1 >= response.height() as usize {
+        return best_y;
+    }
+    let left = response.get_pixel(0, by as u32 - 1)[0] as f64;
+    let center = response.get_pixel(0, by as u32)[0] as f64;
+    let right = response.get_pixel(0, by as u32 + 1)[0] as f64;
+    let denom = left - 2.0 * center + right;
+    if denom.abs() > 1e-10 {
+        let delta = 0.5 * (left - right) / denom;
+        best_y + delta.clamp(-0.5, 0.5)
+    } else {
+        best_y
+    }
+}
+
 /// 评估模板条区域的纹理密度（边缘像素占比）。
 /// 复用 sample_cols 的相邻列对做水平差分，O(STRIP_H × n_cols)，开销极低。
 fn estimate_texture_density(buf: &GrayBuf, sample_cols: &[usize], template_y: u32) -> f64 {
