@@ -48,6 +48,7 @@ const FALLBACK_SAD_MULTIPLIER: f64 = 1.5;
 
 /// 连续 row-major 灰度 buffer，替代 image::GrayImage。
 /// 消除 get_pixel() 的坐标计算 + 边界检查开销，用整行切片直访。
+#[derive(Clone)]
 struct GrayBuf {
     data: Vec<u8>,
     width: usize,
@@ -92,6 +93,18 @@ fn estimate_texture_density(buf: &GrayBuf, sample_cols: &[usize], template_y: u3
     }
     if total == 0 { return 0.0; }
     edge_count as f64 / total as f64
+}
+
+/// 计算灰度 buffer 指定行范围 [y_start, y_end) 的每行抽样列均值，降为一维信号。
+fn row_projection_means(buf: &GrayBuf, cols: &[usize], y_start: u32, y_end: u32) -> Vec<f64> {
+    let n = (y_end - y_start) as usize;
+    let mut proj = Vec::with_capacity(n);
+    for y in y_start..y_end {
+        let row = buf.row(y as usize);
+        let sum: u64 = cols.iter().map(|&x| row[x] as u64).sum();
+        proj.push(sum as f64 / cols.len() as f64);
+    }
+    proj
 }
 
 pub struct StitchConfig {
@@ -206,8 +219,35 @@ impl Stitcher {
         ) {
             Some(v) => v,
             None => {
-                // 降级链在 Task 5 实现
-                log::info!("[stitch] main match failed, entering fallback (Task 5)");
+                // 三级降级链
+                log::info!("[stitch] main match failed, entering fallback chain");
+
+                // 降级 1：扩大搜索范围 ×2
+                if let Some((dy, conf, sad)) = self.try_match(
+                    &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll * 2, sad_accept, STRIP_H,
+                ) {
+                    log::info!("[stitch] fallback 1: expanded search range, dy={:.1} conf={:.4}", dy, conf);
+                    return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
+                }
+
+                // 降级 2：缩小模板 + 放宽阈值
+                if let Some((dy, conf, sad)) = self.try_match(
+                    &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll,
+                    sad_accept * FALLBACK_SAD_MULTIPLIER, FALLBACK_STRIP_H,
+                ) {
+                    log::info!("[stitch] fallback 2: reduced strip height, dy={:.1} conf={:.4}", dy, conf);
+                    return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
+                }
+
+                // 降级 3：1D 灰度投影匹配
+                if let Some((dy, conf, sad)) = self.try_match_1d_projection(
+                    &curr_buf, x_start, x_end, eff_top, eff_bottom, max_scroll, sad_accept,
+                ) {
+                    log::info!("[stitch] fallback 3: 1D projection match, dy={:.1} conf={:.4}", dy, conf);
+                    return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
+                }
+
+                log::info!("[stitch] all fallbacks exhausted, skipping frame");
                 self.last_dy = None;
                 return Ok(false);
             }
@@ -294,6 +334,164 @@ impl Stitcher {
         let n = self.dy_history.len().min(5);
         let recent: f64 = self.dy_history.iter().rev().take(n).sum::<f64>() / n as f64;
         recent.abs() < STATIONARY_DY_THRESHOLD
+    }
+
+    /// 主匹配封装：调用 find_overlap_spatial_ext。
+    fn try_match(
+        &self,
+        curr: &GrayBuf,
+        x_start: u32,
+        x_end: u32,
+        eff_top: u32,
+        eff_bottom: u32,
+        max_scroll: u32,
+        sad_accept: f64,
+        strip_h: u32,
+    ) -> Option<(f64, f64, f64)> {
+        find_overlap_spatial_ext(
+            &self.reference,
+            curr,
+            x_start,
+            x_end,
+            eff_top,
+            eff_bottom,
+            max_scroll,
+            self.last_dy,
+            sad_accept,
+            strip_h,
+        )
+    }
+
+    /// 降级 3：1D 灰度投影匹配。
+    /// 将每行像素按抽样列取均值降为一维信号，对一维信号做 SAD 搜索。
+    /// 对纯色/低纹理场景（2D SAD 缺乏特征）更鲁棒。
+    fn try_match_1d_projection(
+        &self,
+        curr: &GrayBuf,
+        x_start: u32,
+        x_end: u32,
+        eff_top: u32,
+        eff_bottom: u32,
+        max_scroll: u32,
+        sad_accept: f64,
+    ) -> Option<(f64, f64, f64)> {
+        let strip_h = STRIP_H;
+        if eff_bottom <= eff_top + strip_h + 10 {
+            return None;
+        }
+        let template_y = eff_bottom - strip_h;
+
+        let cols: Vec<usize> = (x_start as usize..x_end as usize)
+            .step_by(SAMPLE_STEP_X)
+            .collect();
+        if cols.is_empty() {
+            return None;
+        }
+
+        let ref_proj = row_projection_means(&self.reference, &cols, template_y, template_y + strip_h);
+        let search_start = (template_y as i32 - max_scroll as i32).max(eff_top as i32) as u32;
+
+        let mut best_offset = template_y;
+        let mut min_sad = f64::MAX;
+        let total = strip_h as f64;
+
+        for y_offset in search_start..=template_y {
+            let curr_proj = row_projection_means(curr, &cols, y_offset, y_offset + strip_h);
+            let mut sad = 0.0f64;
+            for i in 0..strip_h as usize {
+                sad += (ref_proj[i] - curr_proj[i]).abs();
+            }
+            let sad_avg = sad / total;
+            if sad_avg < min_sad {
+                min_sad = sad_avg;
+                best_offset = y_offset;
+            }
+        }
+
+        // 静止检查
+        let curr_proj_stationary = row_projection_means(curr, &cols, template_y, template_y + strip_h);
+        let mut stationary_sad = 0.0f64;
+        for i in 0..strip_h as usize {
+            stationary_sad += (ref_proj[i] - curr_proj_stationary[i]).abs();
+        }
+        let stationary_sad_avg = stationary_sad / total;
+        if stationary_sad_avg < STATIONARY_SAD {
+            return Some((0.0, 1.0, 0.0));
+        }
+
+        // 置信度（1D 最佳与均值比）
+        let mut sum_sad = 0.0f64;
+        let mut count = 0.0f64;
+        for y_offset in (search_start..=template_y).step_by(10) {
+            let curr_proj = row_projection_means(curr, &cols, y_offset, y_offset + strip_h);
+            let mut sad = 0.0f64;
+            for i in 0..strip_h as usize {
+                sad += (ref_proj[i] - curr_proj[i]).abs();
+            }
+            sum_sad += sad / total;
+            count += 1.0;
+        }
+        let mean_sad = sum_sad / count;
+        let confidence = if mean_sad > 1e-5 {
+            1.0 - (min_sad / mean_sad)
+        } else {
+            0.0
+        };
+
+        // 1D 投影置信度要求更严（0.25 vs 0.15）
+        if min_sad < sad_accept && confidence > 0.25 {
+            let dy = best_offset as f64 - template_y as f64;
+            Some((dy, confidence, min_sad))
+        } else {
+            None
+        }
+    }
+
+    /// 降级匹配结果的处理（复用主匹配的 dy 检查 + 画布追加 + 状态更新）。
+    fn apply_fallback_match(
+        &mut self,
+        dy: f64,
+        _confidence: f64,
+        best_sad: f64,
+        frame: &RgbaImage,
+        curr_buf: &GrayBuf,
+        w: u32,
+        eff_top: u32,
+        eff_bottom: u32,
+    ) -> Result<bool> {
+        if dy >= 0.0 {
+            self.last_dy = None;
+            return Ok(false);
+        }
+        let new_rows = (-dy).round() as u32;
+        let max_scroll_limit = (eff_bottom - eff_top) * 4 / 5;
+        if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
+            self.last_dy = None;
+            return Ok(false);
+        }
+
+        let crop_y = eff_bottom - new_rows;
+        let row_bytes = w as usize * 4;
+        let start = crop_y as usize * row_bytes;
+        let end = start + new_rows as usize * row_bytes;
+        let frame_raw = frame.as_raw();
+        self.canvas_buf.extend_from_slice(&frame_raw[start..end]);
+        self.canvas_h += new_rows;
+        self.invalidate_cache();
+
+        self.reference = curr_buf.clone();
+        self.last_dy = Some(dy);
+        self.dy_history.push_back(dy);
+        if self.dy_history.len() > DY_HISTORY_LEN {
+            self.dy_history.pop_front();
+        }
+        if self.sad_baseline == 0.0 {
+            self.sad_baseline = best_sad;
+        } else {
+            self.sad_baseline = SAD_BASELINE_ALPHA * best_sad + (1.0 - SAD_BASELINE_ALPHA) * self.sad_baseline;
+        }
+
+        Ok(true)
     }
 
     pub fn canvas(&self) -> &RgbaImage {
