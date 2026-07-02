@@ -246,7 +246,16 @@ impl Stitcher {
                     return self.apply_fallback_match(dy, conf, sad, frame, &curr_buf, w, eff_top, eff_bottom);
                 }
 
-                log::info!("[stitch] all fallbacks exhausted, skipping frame");
+                log::info!("[stitch] all fallbacks exhausted, trying best-guess");
+
+                // 降级 4：Best-Guess——用历史 dy 估算位移，宁可轻微错位也不丢内容。
+                // 打破"匹配失败 → canvas 不长 → 位移差扩大 → 永久失败"的死亡螺旋。
+                if let Some(dy) = self.estimate_dy_hint() {
+                    log::info!("[stitch] fallback 4: best-guess dy={:.1} (from history)", dy);
+                    return self.apply_fallback_match(dy, 0.0, 0.0, frame, &curr_buf, w, eff_top, eff_bottom);
+                }
+
+                log::info!("[stitch] best-guess also unavailable, skipping frame");
                 self.last_dy = None;
                 return Ok(false);
             }
@@ -352,6 +361,23 @@ impl Stitcher {
         let n = self.dy_history.len().min(5);
         let recent: f64 = self.dy_history.iter().rev().take(n).sum::<f64>() / n as f64;
         recent.abs() < STATIONARY_DY_THRESHOLD
+    }
+
+    /// 用历史 dy 中位数估算当前预期位移（Best-Guess 提示）。
+    /// 当所有匹配策略失败时，用此值追加内容，打破死亡螺旋。
+    fn estimate_dy_hint(&self) -> Option<f64> {
+        if self.dy_history.len() < 2 {
+            return None;
+        }
+        let mut recent: Vec<f64> = self.dy_history.iter().rev().take(5).copied().collect();
+        recent.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+        let median = recent[recent.len() / 2];
+        // 只在用户持续向下滚（median < 0）时提供 hint
+        if median < -1.0 {
+            Some(median)
+        } else {
+            None
+        }
     }
 
     /// 主匹配封装：调用 find_overlap_spatial_ext。
@@ -505,10 +531,13 @@ impl Stitcher {
         if self.dy_history.len() > DY_HISTORY_LEN {
             self.dy_history.pop_front();
         }
-        if self.sad_baseline == 0.0 {
-            self.sad_baseline = best_sad;
-        } else {
-            self.sad_baseline = SAD_BASELINE_ALPHA * best_sad + (1.0 - SAD_BASELINE_ALPHA) * self.sad_baseline;
+        // 更新 sad_baseline（仅当有真实 SAD 值时；best-guess 传 0.0 跳过）
+        if best_sad > 0.0 {
+            if self.sad_baseline == 0.0 {
+                self.sad_baseline = best_sad;
+            } else {
+                self.sad_baseline = SAD_BASELINE_ALPHA * best_sad + (1.0 - SAD_BASELINE_ALPHA) * self.sad_baseline;
+            }
         }
 
         Ok(true)
