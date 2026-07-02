@@ -166,3 +166,23 @@ objc2-app-kit = { version = "0.3", features = [
 
 - **Linux / Windows**:补平台原生(`GtkTextView` / Win32 `Edit`),或此时(已有 macOS 经验底气)再评估跨平台框架
 - **推广**:语音识别窗、剪贴板窗(常驻 ~100M 大头)按验证路径做原生改造,才是真正的常驻内存收益
+
+## 9. 实施结果（2026-07-03）
+
+**三红线全过，试水通过**（分支 `compact-editor-native`，未合 main）：
+
+- 🔴 IME：✅（拼音/候选词/选词正常，NSTextView 系统级）
+- 🔴 长文本滚动：✅（NSScrollView+NSTextView 滚到底正常）
+- 🔴 内存：✅ **per-window 原生增量 ~2 MB（个位数）**。首开 +32 MB 经二次开窗对照证明是** app 级一次性预热**（activation policy Accessory→Regular 切换加载 Dock/窗口服务器 AppKit 状态 + 中文 IME 冷启动 + AppKit 资源缓存），关窗不释放、重开不重复计——与「WindowBuilder 底层开销」（§7.2 担忧项）无关，纯 objc2 自建窗退路也省不掉这部分。per-window 2 MB 才是常驻窗场景的真正指标。
+
+**实现要点（spec 之外、落地时确认的）**：
+- emit 全走后端 Rust（`do_save`/`do_cancel` + `on_window_destroyed` 关窗兜底 cancel），原生窗无前端 → 前端 ACL emit 授权坑天然消失。
+- 快捷键 + 字数统计用一个自定义 container NSView（`CompactEditorContainerView`）担二职：`performKeyEquivalent:` 拦 Cmd+Z/Shift+Z/F/Return/Esc（其余交 super 让 textview 原生处理 Cmd+C/V/A）+ 兼 textview delegate `textDidChange:`。localized，不动全局菜单（避免影响 Tauri tray/其他 webview 窗）。
+- **死锁坑**：任何「持 STATE 锁调可能重入的 AppKit 方法」会死锁（undo/redo 同步触发 textDidChange → update_char_count 再锁 STATE，Mutex 不可重入 → beachball）。修法：锁内只 clone Retained 引用、释放后再调。setString 不触发 textDidChange 故未暴露。
+- 工具栏按 `contentLayoutRect` 布局（Tauri 原生窗为 fullSizeContent，标题栏占顶部 ~32px，按 contentRect 算才不遮工具栏）。
+
+**已知限制（非红线，归后续）**：
+- find bar 英文（系统 NSTextFinder 按 app 本地化语言渲染；octopus 未做 zh-Hans 本地化，且仅打包 .app 生效）。
+- 非 macOS webview fallback 初始文本传递随 PENDING 移除（macOS 试水阶段，项目以 macOS 为主）。
+
+**推广条件达成**：per-window ~2 MB + 三红线过 → 可推广到常驻大窗（ASR 结果窗 / 剪贴板窗）的原生改造。详见 [VALIDATION.md](../../../VALIDATION.md)。
