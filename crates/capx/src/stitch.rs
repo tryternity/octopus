@@ -142,6 +142,8 @@ pub struct Stitcher {
     dy_history: VecDeque<f64>,
     /// 历史成功匹配的 SAD 均值（EMA）。
     sad_baseline: f64,
+    /// 亚像素累加器：跨帧保留小数余数，避免每帧 round() 丢失累积。
+    dy_accum: f64,
 }
 
 impl Stitcher {
@@ -160,6 +162,7 @@ impl Stitcher {
             last_dy: None,
             dy_history: VecDeque::with_capacity(DY_HISTORY_LEN),
             sad_baseline: 0.0,
+            dy_accum: 0.0,
         }
     }
 
@@ -273,11 +276,16 @@ impl Stitcher {
             return Ok(false);
         }
 
-        let new_rows = (-dy).round() as u32;
+        // 亚像素累加：保留小数余数跨帧传递，避免每帧 round() 丢失累积
+        self.dy_accum += -dy;
+        let new_rows = self.dy_accum.round() as u32;
+        self.dy_accum -= new_rows as f64;
         let max_scroll_limit = (eff_bottom - eff_top) * 4 / 5; // 允许最大滚动比例扩大到 80%
 
         // 静止或滚动超过限额
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
+            // 回退累加器（此帧不追加）
+            self.dy_accum += new_rows as f64;
             log::info!("[stitch] skipped frame: new_rows={} invalid (min={}, max={}) (conf={:.4})", new_rows, self.config.min_scroll_px, max_scroll_limit, confidence);
             // 不清除 last_dy：微小位移帧不意味着速度上下文失效
             return Ok(false);
@@ -508,9 +516,13 @@ impl Stitcher {
             self.last_dy = None;
             return Ok(false);
         }
-        let new_rows = (-dy).round() as u32;
+        // 亚像素累加（与主匹配一致）
+        self.dy_accum += -dy;
+        let new_rows = self.dy_accum.round() as u32;
+        self.dy_accum -= new_rows as f64;
         let max_scroll_limit = (eff_bottom - eff_top) * 4 / 5;
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
+            self.dy_accum += new_rows as f64; // 回退
             self.last_dy = None;
             return Ok(false);
         }
