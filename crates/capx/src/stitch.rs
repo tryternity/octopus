@@ -10,13 +10,6 @@ const STRIP_H: u32 = 80;
 const MAX_SCROLL: u32 = 220;
 /// 静止判定阈值。dy=0 处的平均像素差值小于此值视为内容未滚动。
 const STATIONARY_SAD: f64 = 2.0;
-/// 匹配接受阈值。最佳 SAD 必须小于此值才接受拼接。
-const SAD_ACCEPT: f64 = 7.5;
-/// 置信度下限。估计置信度必须大于此值才接受拼接。
-/// 低置信度匹配（如 0.3-0.4）大概率是周期性假匹配，会腐蚀画布底部导致后续连锁失败。
-const MIN_CONFIDENCE: f64 = 0.5;
-/// 软速度罚分系数。拉近与上一帧速度的距离，防止周期跳变。
-const SPEED_PENALTY: f64 = 0.04;
 /// 排除最左侧的比例（通常有图标/树状图）。
 const X_START_RATIO: f64 = 0.10;
 /// 排除最右侧的比例截止点（通常有滚动条/时间戳），即保留 10%~80% 横向区间。
@@ -29,23 +22,8 @@ const STICKY_DETECT_MAX: u32 = 80;
 // ===== 健壮性优化常量 =====
 
 /// 时序平滑：静止判断的 dy 均值阈值（近 N 帧 |dy| 均值 < 此值 → 静止）
-const STATIONARY_DY_THRESHOLD: f64 = 2.0;
 /// dy 历史长度
 const DY_HISTORY_LEN: usize = 8;
-/// 纹理密度评估：水平梯度阈值
-const TEXTURE_EDGE_THRESHOLD: i32 = 20;
-/// 动态阈值：纹理密度奖励系数（texture ∈ [0,1] × 30 → 最多加 30）
-const TEXTURE_BONUS_FACTOR: f64 = 30.0;
-/// 动态阈值：历史基线倍数（sad_baseline × 1.5 + 5）
-const SAD_BASELINE_MULTIPLIER: f64 = 1.5;
-/// 动态阈值：历史基线 padding
-const SAD_BASELINE_PADDING: f64 = 5.0;
-/// 动态阈值：EMA 平滑系数
-const SAD_BASELINE_ALPHA: f64 = 0.3;
-/// 降级 2：缩小模板高度
-const FALLBACK_STRIP_H: u32 = 40;
-/// 降级 2：阈值放宽倍数
-const FALLBACK_SAD_MULTIPLIER: f64 = 1.5;
 
 // ===== NCC 匹配参数 =====
 
@@ -235,23 +213,7 @@ fn parabolic_refine_from_response(response: &Image<image::Luma<f32>>, best_y: f6
     }
 }
 
-/// 评估模板条区域的纹理密度（边缘像素占比）。
-/// 复用 sample_cols 的相邻列对做水平差分，O(STRIP_H × n_cols)，开销极低。
-fn estimate_texture_density(buf: &GrayBuf, sample_cols: &[usize], template_y: u32) -> f64 {
-    let mut edge_count = 0u32;
-    let mut total = 0u32;
-    for dy in 0..STRIP_H {
-        let row = buf.row((template_y + dy) as usize);
-        for w in sample_cols.windows(2) {
-            total += 1;
-            if (row[w[0]] as i32 - row[w[1]] as i32).abs() > TEXTURE_EDGE_THRESHOLD {
-                edge_count += 1;
-            }
-        }
-    }
-    if total == 0 { return 0.0; }
-    edge_count as f64 / total as f64
-}
+
 
 /// 计算灰度 buffer 指定行范围 [y_start, y_end) 的每行抽样列均值，降为一维信号。
 fn row_projection_means(buf: &GrayBuf, cols: &[usize], y_start: u32, y_end: u32) -> Vec<f64> {
@@ -297,8 +259,6 @@ pub struct Stitcher {
     last_dy: Option<f64>,
     /// 最近若干帧的 dy 历史，用于时序平滑判断静止。
     dy_history: VecDeque<f64>,
-    /// 历史成功匹配的 SAD 均值（EMA）。
-    sad_baseline: f64,
     /// 连续 best-guess 次数（主匹配成功时归零，超过 3 次熔断）。
     best_guess_streak: u32,
 }
@@ -318,7 +278,6 @@ impl Stitcher {
             config,
             last_dy: None,
             dy_history: VecDeque::with_capacity(DY_HISTORY_LEN),
-            sad_baseline: 0.0,
             best_guess_streak: 0,
         }
     }
@@ -516,17 +475,8 @@ impl Stitcher {
         GrayBuf { data, width: self.canvas_w as usize, y_offset: 0 }
     }
 
-    /// 根据当前帧纹理密度 + 历史 SAD 基线动态计算 SAD 接受阈值。
-    fn dynamic_sad_accept(&self, texture: f64) -> f64 {
-        // 纹理越丰富 → 绝对 SAD 天然更高 → 允许更高阈值
-        let texture_bonus = texture * TEXTURE_BONUS_FACTOR;
-        // 历史基线浮动：EMA 均值的倍数 + padding 作为上界
-        let baseline_cap = self.sad_baseline * SAD_BASELINE_MULTIPLIER + SAD_BASELINE_PADDING;
-        (SAD_ACCEPT + texture_bonus).min(baseline_cap).max(SAD_ACCEPT)
-    }
 
     /// 轻量静止检测：比较当前帧底部 strip 与画布底部 strip 的全局 SAD。
-    /// 用于 best-guess 前判断画面是否实际没动（如滚到底部）。
     fn quick_stationary_check(&self, curr: &GrayBuf, canvas_ref: &GrayBuf, sample_cols: &[usize]) -> f64 {
         let mut sad: u64 = 0;
         let mut count: u64 = 0;
@@ -543,16 +493,6 @@ impl Stitcher {
         if count > 0 { sad as f64 / count as f64 } else { f64::MAX }
     }
 
-    /// 判断当前是否为静止状态（基于历史 dy 均值）。
-    /// 回弹帧 dy 可能抖动到 -3，但历史 [-15,-12,-10,-3] 均值 -10，不判静止。
-    fn is_stationary(&self) -> bool {
-        if self.dy_history.len() < 3 {
-            return false; // 不足 3 帧，不判静止（让 SAD 主匹配决定）
-        }
-        let n = self.dy_history.len().min(5);
-        let recent: f64 = self.dy_history.iter().rev().take(n).sum::<f64>() / n as f64;
-        recent.abs() < STATIONARY_DY_THRESHOLD
-    }
 
     /// 用历史 dy 中位数估算当前预期位移（Best-Guess 提示）。
     /// 当所有匹配策略失败时，用此值追加内容，打破死亡螺旋。
@@ -572,31 +512,6 @@ impl Stitcher {
     }
 
     /// 主匹配封装：调用 find_overlap_spatial_ext。
-    fn try_match(
-        &self,
-        ref_buf: &GrayBuf,
-        curr: &GrayBuf,
-        x_start: u32,
-        x_end: u32,
-        eff_top: u32,
-        eff_bottom: u32,
-        max_scroll: u32,
-        sad_accept: f64,
-        strip_h: u32,
-    ) -> Option<(f64, f64, f64)> {
-        find_overlap_spatial_ext(
-            ref_buf,
-            curr,
-            x_start,
-            x_end,
-            eff_top,
-            eff_bottom,
-            max_scroll,
-            self.last_dy,
-            sad_accept,
-            strip_h,
-        )
-    }
 
     /// 降级 3：1D 灰度投影匹配。
     /// 将每行像素按抽样列取均值降为一维信号，对一维信号做 SAD 搜索。
@@ -693,7 +608,7 @@ impl Stitcher {
         &mut self,
         dy: f64,
         _confidence: f64,
-        best_sad: f64,
+        _best_sad: f64,
         frame: &RgbaImage,
         _curr_buf: &GrayBuf,
         w: u32,
@@ -725,14 +640,6 @@ impl Stitcher {
         self.dy_history.push_back(dy);
         if self.dy_history.len() > DY_HISTORY_LEN {
             self.dy_history.pop_front();
-        }
-        // 更新 sad_baseline（仅当有真实 SAD 值时；best-guess 传 0.0 跳过）
-        if best_sad > 0.0 {
-            if self.sad_baseline == 0.0 {
-                self.sad_baseline = best_sad;
-            } else {
-                self.sad_baseline = SAD_BASELINE_ALPHA * best_sad + (1.0 - SAD_BASELINE_ALPHA) * self.sad_baseline;
-            }
         }
 
         Ok(true)
@@ -834,237 +741,6 @@ impl Stitcher {
         self.sticky_top = sticky_t;
         self.sticky_bottom = sticky_b;
     }
-}
-
-/// 空间域 2D 模板匹配算法，查找最匹配的垂直位移 dy。
-/// 采用 SAD (Sum of Absolute Differences) 准则与列抽样加速，保留 2D 空间排布。
-///
-/// 优化：模板条预提取为连续 buffer；整数 u64 累加；切片直访（无 get_pixel 边界检查）；
-/// 静止检测合并进主搜索（省一次预扫描）。
-fn find_overlap_spatial_ext(
-    ref_buf: &GrayBuf,
-    curr_buf: &GrayBuf,
-    x_start: u32,
-    x_end: u32,
-    eff_top: u32,
-    eff_bottom: u32,
-    max_scroll: u32,
-    last_dy: Option<f64>,
-    sad_accept: f64,
-    strip_h: u32,
-) -> Option<(f64, f64, f64)> {
-    if eff_bottom <= eff_top + strip_h + 10 {
-        return None;
-    }
-    // 防御性校验：ref_buf 必须至少有 strip_h 行，否则 row() 越界 panic
-    if (ref_buf.data.len() / ref_buf.width) < strip_h as usize {
-        return None;
-    }
-    let template_y = eff_bottom - strip_h;
-
-    // 抽样列索引（只算一次）
-    let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
-        .step_by(SAMPLE_STEP_X)
-        .collect();
-    if sample_cols.is_empty() {
-        return None;
-    }
-
-    // 模板条预提取（Canvas-Anchored：ref_buf 行号从 0 开始）
-    let tpl = extract_template(ref_buf, 0, &sample_cols, strip_h);
-
-    let min_y_offset = (template_y as i32 - max_scroll as i32).max(eff_top as i32) as u32;
-    let max_y_offset = template_y;
-
-    // 主搜索
-    let (best_y_offset, best_sad_avg, stationary_sad_avg) = search_best_offset(
-        &tpl,
-        curr_buf,
-        &sample_cols,
-        min_y_offset,
-        max_y_offset,
-        template_y,
-        last_dy,
-        strip_h,
-    );
-
-    // 静止判定 + 置信度估计 + 接受门控
-    let confidence = estimate_confidence(
-        ref_buf, curr_buf, &sample_cols, best_y_offset.round() as u32, min_y_offset, max_y_offset, strip_h,
-    );
-    decide_match(best_y_offset, best_sad_avg, stationary_sad_avg, confidence, template_y, sad_accept)
-}
-
-/// 根据搜索结果做最终判定：静止 / 接受 / 拒绝。
-fn decide_match(
-    best_y_offset: f64,
-    best_sad_avg: f64,
-    stationary_sad_avg: f64,
-    confidence: f64,
-    template_y: u32,
-    sad_accept: f64,
-) -> Option<(f64, f64, f64)> {
-    // 保留绝对静止快速路径（画面完全没动时 stationary_sad 极低）
-    if stationary_sad_avg < STATIONARY_SAD {
-        return Some((0.0, 1.0, 0.0));
-    }
-    // 移除 stationary < best + 1.0 硬覆盖——交由 is_stationary() 时序判断
-    if best_sad_avg < sad_accept && confidence > MIN_CONFIDENCE {
-        let dy = best_y_offset - template_y as f64;
-        Some((dy, confidence, best_sad_avg))
-    } else {
-        None
-    }
-}
-
-/// 提取模板条到连续 buffer（STRIP_H × n_cols）。
-fn extract_template(ref_buf: &GrayBuf, template_y: u32, sample_cols: &[usize], strip_h: u32) -> Vec<u8> {
-    let mut tpl = Vec::with_capacity(strip_h as usize * sample_cols.len());
-    for dy in 0..strip_h {
-        let row = ref_buf.row((template_y + dy) as usize);
-        for &x in sample_cols {
-            tpl.push(row[x]);
-        }
-    }
-    tpl
-}
-
-/// 整数 SAD 主搜索 + 亚像素抛物线插值，返回 (best_y_offset_f64, best_sad_avg, stationary_sad_avg)。
-/// stationary_sad_avg = y_offset == template_y 那次迭代的 SAD 均值。
-fn search_best_offset(
-    tpl: &[u8],
-    curr: &GrayBuf,
-    sample_cols: &[usize],
-    min_y_offset: u32,
-    max_y_offset: u32,
-    template_y: u32,
-    last_dy: Option<f64>,
-    strip_h: u32,
-) -> (f64, f64, f64) {
-    let strip_h = strip_h as usize;
-    let total = (strip_h * sample_cols.len()) as f64;
-
-    let mut best_y_offset = min_y_offset;
-    let mut min_penalized = f64::MAX;
-    let mut best_sad_avg = f64::MAX;
-    let mut stationary_sad_avg = f64::MAX;
-
-    // 记录每个 y_offset 的原始 SAD（用于亚像素插值）
-    let range_size = (max_y_offset - min_y_offset + 1) as usize;
-    let mut sad_curve: Vec<f64> = Vec::with_capacity(range_size);
-    let mut penalized_curve: Vec<f64> = Vec::with_capacity(range_size);
-    let mut best_idx: usize = 0;
-
-    for y_offset in min_y_offset..=max_y_offset {
-        let mut sad: u64 = 0;
-        let mut i = 0;
-        for dy in 0..strip_h {
-            let row = curr.row((y_offset as usize) + dy);
-            for &x in sample_cols {
-                let diff = (tpl[i] as i32 - row[x] as i32).unsigned_abs() as u64;
-                sad += diff;
-                i += 1;
-            }
-        }
-        let sad_avg = sad as f64 / total;
-
-        if y_offset == template_y {
-            stationary_sad_avg = sad_avg;
-        }
-
-        let mut penalized = sad_avg;
-        if let Some(ldy) = last_dy {
-            let dy = y_offset as f64 - template_y as f64;
-            penalized += SPEED_PENALTY * (dy - ldy).abs();
-        }
-
-        let idx = sad_curve.len();
-        sad_curve.push(sad_avg);
-        penalized_curve.push(penalized);
-
-        if penalized < min_penalized {
-            min_penalized = penalized;
-            best_sad_avg = sad_avg;
-            best_y_offset = y_offset;
-            best_idx = idx;
-        }
-    }
-
-    // 亚像素抛物线插值：在 best 处用 sad_curve（原始 SAD，非罚分值）拟合
-    let best_f64 = if best_idx > 0 && best_idx + 1 < sad_curve.len() {
-        let left = sad_curve[best_idx - 1];
-        let center = sad_curve[best_idx];
-        let right = sad_curve[best_idx + 1];
-        let denom = left - 2.0 * center + right;
-        if denom.abs() > 1e-10 {
-            let delta = 0.5 * (left - right) / denom;
-            // Clamp delta 到 [-0.5, +0.5]，防止极小 denom 导致大偏移
-            let delta = delta.clamp(-0.5, 0.5);
-            (best_y_offset as f64) + delta
-        } else {
-            best_y_offset as f64
-        }
-    } else {
-        best_y_offset as f64
-    };
-
-    (best_f64, best_sad_avg, stationary_sad_avg)
-}
-
-/// 稀疏采样估计置信度：1 - best_sad / mean_sad。
-fn estimate_confidence(
-    ref_buf: &GrayBuf,
-    curr_buf: &GrayBuf,
-    sample_cols: &[usize],
-    best_y_offset: u32,
-    min_y_offset: u32,
-    max_y_offset: u32,
-    strip_h: u32,
-) -> f64 {
-    let sparse_cols: Vec<usize> = sample_cols.iter().step_by(2).copied().collect();
-    if sparse_cols.is_empty() {
-        return 0.0;
-    }
-
-    let mut sum_sad = 0.0f64;
-    let mut sample_count = 0.0f64;
-    for y_offset in (min_y_offset..=max_y_offset).step_by(10) {
-        sum_sad += sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, y_offset, strip_h);
-        sample_count += 1.0;
-    }
-
-    if sample_count < 1.0 {
-        return 0.0;
-    }
-    let mean_sad = sum_sad / sample_count;
-    if mean_sad < 1e-5 {
-        return 0.0;
-    }
-
-    let best_sad_avg = sparse_sad_at_offset(ref_buf, curr_buf, &sparse_cols, best_y_offset, strip_h);
-    1.0 - (best_sad_avg / mean_sad)
-}
-
-/// 计算指定 y_offset 处的稀疏 SAD 均值（每隔 2 行 × 稀疏列）。
-fn sparse_sad_at_offset(
-    ref_buf: &GrayBuf,
-    curr_buf: &GrayBuf,
-    sparse_cols: &[usize],
-    y_offset: u32,
-    strip_h: u32,
-) -> f64 {
-    let strip_h = strip_h as usize;
-    let mut sad: u64 = 0;
-    let mut count = 0u64;
-    for dy in (0..strip_h).step_by(2) {
-        let ref_row = ref_buf.row(dy);
-        let curr_row = curr_buf.row((y_offset as usize) + dy);
-        for &x in sparse_cols {
-            sad += (ref_row[x] as i32 - curr_row[x] as i32).unsigned_abs() as u64;
-            count += 1;
-        }
-    }
-    if count > 0 { sad as f64 / count as f64 } else { 0.0 }
 }
 
 /// 比较连续 RGBA buffer 的 ya 行 与 RgbaImage 的 yb 行是否逐像素相等。
@@ -1310,43 +986,6 @@ mod tests {
                 assert_eq!(a, b, "灰度不一致 @ ({},{})", x, y);
             }
         }
-    }
-
-    #[test]
-    fn test_is_stationary_with_history() {
-        let f0 = make_frame(TW, TH, 0);
-        let s = Stitcher::new(f0, StitchConfig::default());
-
-        // 无 dy_history → 不静止
-        assert!(!s.is_stationary(), "空 history 不应判静止");
-
-        // 手动注入 dy_history 模拟持续滚动 + 回弹
-        let mut s2 = Stitcher::new(make_frame(TW, TH, 0), StitchConfig::default());
-        s2.dy_history.extend(vec![-15.0, -12.0, -10.0, -3.0]);
-        assert!(!s2.is_stationary(), "回弹帧 history 均值 -10 不应判静止");
-
-        // 手动注入接近静止的 history
-        let mut s3 = Stitcher::new(make_frame(TW, TH, 0), StitchConfig::default());
-        s3.dy_history.extend(vec![-1.0, 0.0, -0.5, 1.0, 0.0]);
-        assert!(s3.is_stationary(), "均值接近 0 应判静止");
-    }
-
-    #[test]
-    fn test_dynamic_sad_accept_scales_with_texture() {
-        let mut s = Stitcher::new(make_frame(TW, TH, 0), StitchConfig::default());
-
-        // sad_baseline = 0 时，baseline_cap = 5.0
-        // 低纹理且 baseline=0 → max(SAD_ACCEPT, min(bonus, 5)) = max(7.5, min(...)) = 7.5
-        let low = s.dynamic_sad_accept(0.05);
-        assert_eq!(low, SAD_ACCEPT, "低纹理且 baseline=0 应返回基础阈值");
-
-        // 设定 baseline 后
-        s.sad_baseline = 10.0;
-        // baseline_cap = 10*1.5+5 = 20
-        // 高纹理：texture=0.5 → bonus=15 → (7.5+15).min(20).max(7.5) = 20
-        let high = s.dynamic_sad_accept(0.5);
-        assert!(high > SAD_ACCEPT, "高纹理应放宽阈值: {}", high);
-        assert!(high <= 20.0, "不应超过 baseline_cap: {}", high);
     }
 
     #[test]
