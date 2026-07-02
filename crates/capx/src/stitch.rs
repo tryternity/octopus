@@ -47,6 +47,17 @@ const FALLBACK_STRIP_H: u32 = 40;
 /// 降级 2：阈值放宽倍数
 const FALLBACK_SAD_MULTIPLIER: f64 = 1.5;
 
+// ===== NCC 匹配参数 =====
+
+/// 最低 NCC 分数阈值
+const NCC_SCORE_THRESHOLD: f32 = 0.75;
+/// 局部置信度 delta：best vs 次优差值
+const LOCAL_CONFIDENCE_DELTA: f32 = 0.005;
+/// 全局置信度 delta：best vs 距离≥4px 的差值
+const GLOBAL_CONFIDENCE_DELTA: f32 = 0.002;
+/// 全局置信度最小距离（像素）
+const GLOBAL_CONFIDENCE_MIN_DIST: usize = 4;
+
 /// 连续 row-major 灰度 buffer，替代 image::GrayImage。
 /// 消除 get_pixel() 的坐标计算 + 边界检查开销，用整行切片直访。
 #[derive(Clone)]
@@ -85,6 +96,49 @@ impl GrayBuf {
         let local_y = y - self.y_offset;
         &self.data[local_y * self.width..(local_y + 1) * self.width]
     }
+
+    /// 转为 image::GrayImage（供 imageproc 使用）。
+    fn to_gray_image(&self) -> image::GrayImage {
+        let h = (self.data.len() / self.width) as u32;
+        image::GrayImage::from_raw(self.width as u32, h, self.data.clone())
+            .expect("GrayBuf → GrayImage 失败")
+    }
+}
+
+/// 将 GrayBuf 转为 Sobel 梯度特征图 + 归一化。
+/// 纯色区域（max_gradient=0）返回 (空白, false)，调用方退回灰度。
+fn to_feature_map(gray: &GrayBuf) -> (image::GrayImage, bool) {
+    use imageproc::gradients::sobel_gradients;
+    let luma_img = gray.to_gray_image();
+    let gradients = sobel_gradients(&luma_img);
+
+    let max_gradient = gradients.iter().copied().max().unwrap_or(0);
+    if max_gradient == 0 {
+        return (image::GrayImage::new(luma_img.width(), luma_img.height()), false);
+    }
+
+    // 归一化：mean + 3σ
+    let (mean, stddev) = mean_stddev_u16(&gradients);
+    let normalizer = (mean + 3.0 * stddev).max(1.0);
+
+    let normalized = image::GrayImage::from_fn(gradients.width(), gradients.height(), |x, y| {
+        let g = gradients.get_pixel(x, y)[0] as f32;
+        let scaled = (g / normalizer) * 255.0;
+        image::Luma([scaled.round().clamp(0.0, 255.0) as u8])
+    });
+    (normalized, true)
+}
+
+/// 计算 u16 灰度图的均值和标准差。
+fn mean_stddev_u16(img: &imageproc::definitions::Image<image::Luma<u16>>) -> (f32, f32) {
+    let n = (img.width() * img.height()) as f32;
+    let sum: f32 = img.iter().map(|&p| p as f32).sum();
+    let mean = sum / n;
+    let var: f32 = img.iter().map(|&p| {
+        let d = p as f32 - mean;
+        d * d
+    }).sum::<f32>() / n;
+    (mean, var.sqrt())
 }
 
 /// 评估模板条区域的纹理密度（边缘像素占比）。
