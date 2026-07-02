@@ -7,7 +7,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::Manager;
+use tauri::{Emitter, Manager};
 
 use crate::compact_editor_window::{create_compact_editor_window, WINDOW_LABEL};
 
@@ -74,13 +74,79 @@ pub fn open_compact_editor(
     }
 }
 
-/// 关闭精简编辑器窗口（触发 Destroyed → macOS 切 Accessory）。
+/// 关窗:macOS 原生 Window(get_window) / 非 macOS webview(get_webview_window)。
+fn close_window(app: &tauri::AppHandle) {
+    if let Some(window) = app.get_window(WINDOW_LABEL) {
+        let _ = window.close();
+    } else if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let _ = window.close();
+    }
+}
+
+/// 关闭精简编辑器窗口（触发 Destroyed → on_window_destroyed 兜底 + 切 Accessory）。
 #[tauri::command]
 pub fn close_compact_editor(app_handle: tauri::AppHandle) {
-    if let Some(window) = app_handle.get_window(WINDOW_LABEL) {
-        let _ = window.close();
-    } else if let Some(window) = app_handle.get_webview_window(WINDOW_LABEL) {
-        let _ = window.close();
+    close_window(&app_handle);
+}
+
+// ── 保存/取消 emit 出口（工具栏按钮 / 快捷键调用；Task 8 工具栏复用这两个出口）──
+
+/// 保存结果载荷。rename_all=camelCase → 前端收 {requestId, text}。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ResultPayload {
+    request_id: String,
+    text: String,
+}
+
+/// 取消载荷。rename_all=camelCase → 前端收 {requestId}。
+#[derive(Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CancelPayload {
+    request_id: String,
+}
+
+/// 保存：取 NSTextView 文本 → emit result → 关窗。
+/// 整体在主线程闭包内完成（run_on_main_thread 异步，无法跨线程回传文本，
+/// 故 mark_saved/emit/close 全进 with_text 回调，与关窗兜底无竞态：close 触发的
+/// Destroyed 在本闭包之后才到，届时 SAVED 已 true，take_unsaved_cancel 返回 None）。
+#[cfg(target_os = "macos")]
+pub fn do_save(app: &tauri::AppHandle) {
+    let Some(rid) = current_request_id() else {
+        return;
+    };
+    let app2 = app.clone();
+    crate::compact_editor_native::with_text(app, move |text| {
+        mark_saved();
+        let _ = app2.emit(
+            "compact-editor://result",
+            ResultPayload {
+                request_id: rid,
+                text,
+            },
+        );
+        close_window(&app2);
+    });
+}
+
+/// 取消：emit cancel → 关窗（无需文本）。
+pub fn do_cancel(app: &tauri::AppHandle) {
+    if let Some(rid) = current_request_id() {
+        mark_saved();
+        let _ = app.emit("compact-editor://cancel", CancelPayload { request_id: rid });
+    }
+    close_window(app);
+}
+
+/// 关窗兜底（挂在窗口 Destroyed 事件）：未 saved 则补 cancel，并切回 Accessory。
+/// 与 do_save/do_cancel 配合：显式保存/取消会先 mark_saved，故此处分支只兜底「直接关窗」。
+pub fn on_window_destroyed(app: &tauri::AppHandle) {
+    if let Some(rid) = take_unsaved_cancel() {
+        let _ = app.emit("compact-editor://cancel", CancelPayload { request_id: rid });
+    }
+    #[cfg(target_os = "macos")]
+    {
+        crate::compact_editor_window::on_compact_editor_closed(app);
     }
 }
 

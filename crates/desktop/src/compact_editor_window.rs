@@ -6,10 +6,10 @@
 #[cfg(not(target_os = "macos"))]
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
-const WIDTH: f64 = 720.0;
-const HEIGHT: f64 = 560.0;
-const MIN_WIDTH: f64 = 480.0;
-const MIN_HEIGHT: f64 = 360.0;
+pub const WIDTH: f64 = 720.0;
+pub const HEIGHT: f64 = 560.0;
+pub const MIN_WIDTH: f64 = 480.0;
+pub const MIN_HEIGHT: f64 = 360.0;
 pub const WINDOW_LABEL: &str = "compact_editor_window";
 
 /// 创建精简编辑器窗口（调用方已确保当前不存在同名窗口）。

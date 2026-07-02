@@ -10,7 +10,7 @@ mod imp {
     use objc2_foundation::NSString;
     use tauri::Manager;
 
-    use crate::compact_editor_window::WINDOW_LABEL;
+    use crate::compact_editor_window::{HEIGHT, MIN_HEIGHT, MIN_WIDTH, WIDTH, WINDOW_LABEL};
 
     /// 建无 webview 原生窗(`WindowBuilder`)+ 挂 NSScrollView/NSTextView。返回后窗口已显示。
     /// 文本由 `set_text` 塞(open 时首次塞 / 并发再开换文本)。
@@ -18,15 +18,24 @@ mod imp {
         use tauri::WindowBuilder;
         match WindowBuilder::new(app, WINDOW_LABEL)
             .title("编辑")
-            .inner_size(720.0, 560.0)
-            .min_inner_size(480.0, 360.0)
+            .inner_size(WIDTH, HEIGHT)
+            .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
             .decorations(true)
             .resizable(true)
             .center()
             .visible(true)
             .build()
         {
-            Ok(w) => attach_textview(&w),
+            Ok(w) => {
+                attach_textview(&w);
+                // 关窗兜底：Destroyed 时补 cancel（未 saved）+ 切回 Accessory。
+                let app_clone = app.clone();
+                let _ = w.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Destroyed = event {
+                        crate::compact_editor_commands::on_window_destroyed(&app_clone);
+                    }
+                });
+            }
             Err(e) => log::warn!("native compact editor build failed: {e}"),
         }
     }
@@ -102,6 +111,30 @@ mod imp {
             };
             tv.setString(&NSString::from_str(&text));
             log::info!("[native] compact editor text set ({} 字节)", text.len());
+        });
+    }
+
+    /// 主线程读 NSTextView 全文并回调 `f(text)`。
+    ///
+    /// run_on_main_thread 异步排队(非阻塞),无法把文本同步回传给调用方,故 do_save
+    /// 须把「emit result / mark_saved / 关窗」全放进 `f` 内,在主线程闭包里一并完成
+    /// (plan Task 6 标注的「排队(异步)」分支)。`f` 收到 owned String,无生命周期耦合。
+    pub fn with_text<F>(app: &tauri::AppHandle, f: F)
+    where
+        F: FnOnce(String) + Send + 'static,
+    {
+        let Some(window) = app.get_window(WINDOW_LABEL) else {
+            log::warn!("[native] with_text: window {WINDOW_LABEL} not found");
+            return;
+        };
+        let win = window.clone();
+        let _ = window.run_on_main_thread(move || {
+            let Some(tv) = current_text_view(&win) else {
+                log::warn!("[native] with_text: textview not attached");
+                return;
+            };
+            let text = tv.string().to_string(); // Retained<NSString> → String(impl Display)
+            f(text);
         });
     }
 }
