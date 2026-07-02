@@ -1,7 +1,7 @@
 # Canvas-Anchored 匹配设计
 
 **日期**: 2026-07-02
-**状态**: 设计已确认，待实施
+**状态**: ✅ 实施完成（Canvas-Anchored 匹配落地，18 测试全绿，API 零改动）
 **分支**: `optimize-capx`
 **关联文档**: [`2026-07-02-capx-stitch-robustness-design.md`](./2026-07-02-capx-stitch-robustness-design.md)（健壮性优化前置）、[`2026-06-30-scroll-stitch-research.md`](./2026-06-30-scroll-stitch-research.md)（调研第四节首次提出）
 
