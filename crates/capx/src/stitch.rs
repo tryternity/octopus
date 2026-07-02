@@ -161,6 +161,12 @@ fn validate_ncc_match(response: &Image<image::Luma<f32>>, best_y: usize, best_sc
         return false;
     }
 
+    // score 极高时跳过 delta 验证：周期性内容中多个位置都给 ~1.0，
+    // delta 检查会误拒，但任一高分位置都是有效对齐
+    if best_score >= 0.99 {
+        return true;
+    }
+
     let h = response.height() as usize;
 
     // 2. 局部置信度：best vs best±1 的最大值差
