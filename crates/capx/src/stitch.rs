@@ -676,6 +676,16 @@ impl Stitcher {
     }
 
     pub fn height(&self) -> u32 { self.canvas_h }
+    pub fn canvas_w(&self) -> u32 { self.canvas_w }
+
+    /// 从 canvas_buf 中提取指定行范围 [y_start, y_start+height) 的 RGBA 字节切片。
+    /// 用于生成预览，避免 clone 整个 canvas_buf。
+    pub fn canvas_buf_slice(&self, y_start: u32, height: u32) -> Vec<u8> {
+        let row_bytes = self.canvas_w as usize * 4;
+        let start = y_start as usize * row_bytes;
+        let end = start + height as usize * row_bytes;
+        self.canvas_buf[start..end].to_vec()
+    }
 
     pub fn finalize(&mut self, last_frame: &RgbaImage) -> Result<()> {
         let h = last_frame.height();

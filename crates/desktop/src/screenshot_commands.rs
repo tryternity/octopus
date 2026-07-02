@@ -1147,17 +1147,9 @@ pub async fn start_scroll_recording(
             let frame_rgba = match capture_result { Ok(Ok(img)) => img, _ => continue };
             last_frame = Some(frame_rgba.clone());
 
-            // 选区实时画面 JPEG
-            let mut frame_jpg = Vec::new();
-            let frame_rgb = image::DynamicImage::ImageRgba8(frame_rgba.clone()).into_rgb8();
-            let mut jpg_enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut frame_jpg, 80);
-            let _ = jpg_enc.encode(&frame_rgb, frame_rgb.width(), frame_rgb.height(), image::ExtendedColorType::Rgb8);
-            let frame_b64 = general_purpose::STANDARD.encode(&frame_jpg);
-
             let added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
 
             // 自动停止检测：连续无新内容超过 ~6 秒（200 帧 @ 30ms 间隔）
-            // 判定滚到底部或用户已停止，自动结束拼接
             if added {
                 no_progress_count = 0;
             } else {
@@ -1168,27 +1160,47 @@ pub async fn start_scroll_recording(
                 }
             }
 
-            // 预览：只取画布底部最新区域，让用户看到最新的拼接内容
-            let canvas = stitcher.canvas();
+            // 截图帧 JPEG + 预览图编码移入 spawn_blocking（CPU 密集，避免阻塞 async 线程）
             let preview_w = 400u32;
             let max_preview_h = 1200u32;
-            // 计算等效预览高度对应的源像素高度（考虑缩放比）
-            let src_h = (canvas.height() as u64 * canvas.width() as u64 / preview_w as u64).min(canvas.height() as u64) as u32;
-            let crop_src_h = src_h.min(max_preview_h * canvas.width() / preview_w).min(canvas.height());
-            let crop_y = canvas.height() - crop_src_h;
-            let canvas_cropped = image::imageops::crop_imm(canvas, 0, crop_y, canvas.width(), crop_src_h).to_image();
-            let preview_h = (preview_w * canvas_cropped.height() / canvas_cropped.width()).min(max_preview_h);
-            let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::CatmullRom);
-            let mut preview_png = Vec::new();
-            let _ = preview.write_to(&mut std::io::Cursor::new(&mut preview_png), image::ImageFormat::Png);
-            let preview_b64 = general_purpose::STANDARD.encode(&preview_png);
+            let canvas_h_now = stitcher.height();
+            let canvas_w_now = stitcher.canvas_w();
+            // 直接从 canvas_buf 底部切片（不 clone 全量）
+            let src_h = ((canvas_h_now as u64 * canvas_w_now as u64 / preview_w as u64).min(canvas_h_now as u64)) as u32;
+            let crop_src_h = src_h.min(max_preview_h * canvas_w_now / preview_w).min(canvas_h_now);
+            let crop_y = canvas_h_now - crop_src_h;
+            let canvas_buf_slice = stitcher.canvas_buf_slice(crop_y, crop_src_h);
+            let frame_for_jpg = frame_rgba.clone();
+            let scale_for_phys = scale;
 
-            let _ = ah2.emit("scroll://frame", serde_json::json!({
-                "frame": frame_b64,
-                "preview": preview_b64,
-                "height": stitcher.height(),
-                "phys_height": (stitcher.height() as f64 / scale) as u32,
-            }));
+            let emit_data = tokio::task::spawn_blocking(move || {
+                // 选区实时画面 JPEG
+                let mut frame_jpg = Vec::new();
+                let frame_rgb = image::DynamicImage::ImageRgba8(frame_for_jpg).into_rgb8();
+                let mut jpg_enc = image::codecs::jpeg::JpegEncoder::new_with_quality(&mut frame_jpg, 80);
+                let _ = jpg_enc.encode(&frame_rgb, frame_rgb.width(), frame_rgb.height(), image::ExtendedColorType::Rgb8);
+                let frame_b64 = general_purpose::STANDARD.encode(&frame_jpg);
+
+                // 预览图：从 canvas_buf 底部切片重建小 RgbaImage
+                let canvas_cropped = image::RgbaImage::from_raw(canvas_w_now, crop_src_h, canvas_buf_slice)
+                    .unwrap_or_else(|| image::RgbaImage::new(canvas_w_now, crop_src_h));
+                let preview_h = (preview_w * canvas_cropped.height() / canvas_cropped.width()).min(max_preview_h);
+                let preview = image::imageops::resize(&canvas_cropped, preview_w, preview_h, image::imageops::FilterType::Triangle);
+                let mut preview_png = Vec::new();
+                let _ = preview.write_to(&mut std::io::Cursor::new(&mut preview_png), image::ImageFormat::Png);
+                let preview_b64 = general_purpose::STANDARD.encode(&preview_png);
+
+                let phys_height = (canvas_h_now as f64 / scale_for_phys) as u32;
+
+                serde_json::json!({
+                    "frame": frame_b64,
+                    "preview": preview_b64,
+                    "height": canvas_h_now,
+                    "phys_height": phys_height,
+                })
+            }).await.unwrap_or_else(|_| serde_json::json!({}));
+
+            let _ = ah2.emit("scroll://frame", emit_data);
         }
 
         // 录制结束：先恢复鼠标事件 + 重新激活 app（避免假死）
