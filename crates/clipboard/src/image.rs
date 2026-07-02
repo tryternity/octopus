@@ -31,17 +31,34 @@ pub struct EncodedImage {
 /// 直接传入即可省掉一次完整的 PNG 解码。
 pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let rgba = img.to_rgba8();
+    let w = rgba.width();
+    let h = rgba.height();
 
-    // WebP 最大尺寸 16383px，超长图改用有损编码（有损上限更高）
-    // 如果超大有损也失败，则 panic 被 caller 的 spawn_blocking 捕获
-    let webp_blob = {
-        let encoder = webp::Encoder::from_rgba(&rgba, rgba.width(), rgba.height());
-        // 先试无损，失败则降级有损 90%
+    // WebP 最大尺寸 16383px（无损和有损都是）。超长图降级为 JPEG。
+    let webp_blob = if w > 16383 || h > 16383 {
+        log::warn!("[clipboard] Image too large for WebP ({}×{}), falling back to JPEG", w, h);
+        let mut jpeg_buf = Vec::new();
+        let mut jpeg_encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 90);
+        jpeg_encoder.encode_image(img)
+            .map_err(|e| anyhow::anyhow!("JPEG encoding failed: {}", e))?;
+        jpeg_buf
+    } else {
+        let encoder = webp::Encoder::from_rgba(&rgba, w, h);
         match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode_lossless().to_vec())) {
             Ok(blob) => blob,
             Err(_) => {
-                log::warn!("[clipboard] lossless WebP failed (size {}×{}), falling back to lossy", rgba.width(), rgba.height());
-                encoder.encode(90.0).to_vec()
+                log::warn!("[clipboard] lossless WebP failed (size {}×{}), falling back to lossy", w, h);
+                match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(90.0).to_vec())) {
+                    Ok(blob) => blob,
+                    Err(_) => {
+                        log::warn!("[clipboard] lossy WebP also failed, falling back to JPEG");
+                        let mut jpeg_buf = Vec::new();
+                        let mut jpeg_encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 90);
+                        jpeg_encoder.encode_image(img)
+                            .map_err(|e| anyhow::anyhow!("JPEG fallback encoding failed: {}", e))?;
+                        jpeg_buf
+                    }
+                }
             }
         }
     };
