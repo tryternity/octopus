@@ -1,5 +1,17 @@
 # 记事本 type 迁移 Implementation Plan
 
+> ⚠️ **本计划已落地，且富文本（Html/TipTap）已于 2026-07-02 追加移除。** Task 1-13 已全部完成（原 html/text/markdown 三类型方案）。随后用户决定彻底去富文本——`NoteType` 收窄为 `text`/`markdown`、删 TipTap 依赖、DB 迁移 v11→v12 删历史 html 笔记。下文保留原任务留档，凡涉及 `Html`/TipTap/`extract_text`/图片桥接的 step 描述均已被后续移除覆盖，当前代码与 `docs/architecture.md` §octopus-notepad 为准。
+>
+> **富文本移除的追加变更**（不在下文 Task 内）：
+> - `crates/notepad/src/model.rs`：`NoteType` 去 `Html`（默认 `Text`，`from_str` 未知→Text）；删 `serialize.rs` + `Cargo.toml` 的 `scraper`。
+> - `crates/notepad/src/store.rs`：`split_body` 简化（content_html 恒空），测试 `NoteType::Html`→`Text`。
+> - `crates/infra/src/db.rs` + `db.sql`：v11→v12 迁移删 html 笔记；notes.type 默认 `'text'`。
+> - `crates/desktop/src/note_commands.rs` + `main.rs`：删 `get_note_image`/`insert_note_image` + 注销。
+> - 前端：删 `extensions.tsx`、`NoteEditor.tsx` 去 html 分支/工具栏/linkInput、`NoteList.tsx` 去 html tab/选项、`index.css` 删 `.ProseMirror`、`package.json` 删 `@tiptap/*`+`tiptap-markdown`。
+> - 提交：`b86f53d`。
+
+---
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 在 webview（TipTap）现役记事本上采纳 egui 分支的 `content_text + type` 表结构（保留 `content_html`），把 `type` 放开到 text/markdown/html 三态，提供安全迁移与三类型编辑器。

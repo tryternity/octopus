@@ -1,5 +1,16 @@
 # 记事本 type 迁移：webview 适配 content_text + type 表结构
 
+> ⚠️ **本文档为历史设计稿，富文本方案已于 2026-07-02 废弃。** 原设计把 `type` 放开到 `html`/`text`/`markdown` 三态（html 为主）。实际落地后用户判定富文本对本应用无用且难控制，**彻底移除富文本**——`NoteType` 收窄为 `text`/`markdown`（text 默认），TipTap 依赖全删，历史 `type=html` 笔记由 DB 迁移 v11→v12 删除。下文凡涉及 `Html`/TipTap/`content_html` 为 source of truth/`extract_text` 的描述均已过时，仅作设计演进留档。当前真实设计以 `docs/architecture.md` §octopus-notepad 为准。
+>
+> **移除富文本的关键差异**（相对下文）：
+> - `NoteType` 去掉 `Html`，默认 `Text`，`from_str` 未知值/历史 `html`→`Text` 容错（非 Html）。
+> - `store::split_body` 简化：`content_html` 恒空、`content_text`=body（text 原文 / markdown 源码），无 html 抽取。
+> - 删 `serialize.rs` + `scraper` 依赖（`extract_text` 仅 html 用，已无）。
+> - DB 迁移链延伸到 v12（`DELETE FROM notes WHERE type='html'`），`db.sql` notes.type 默认改 `'text'`。
+> - 前端删 `extensions.tsx`（TipTap 编辑器）、`.ProseMirror` 样式、`@tiptap/*`+`tiptap-markdown` 依赖；`NoteEditor`/`NoteList` 收窄到 text/markdown；删图片桥接命令 `get_note_image`/`insert_note_image`。
+
+---
+
 > **状态**：设计阶段（brainstorming 产出，待用户 review）
 > **背景**：egui 记事本方案已暂停（分支 `tag-egui-notebook`），但其数据库表结构重构（引入 `type` 列区分内容格式）有保留价值。本方案在 **webview（TipTap 富文本）现役实现**上采纳该重构，并把 `type` 放开到 `text` / `markdown` / `html`（富文本）三态。
 
