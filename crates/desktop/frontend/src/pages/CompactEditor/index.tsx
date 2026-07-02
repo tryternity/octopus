@@ -1,15 +1,10 @@
 import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
-import { invoke, listen } from "@/lib/tauri";
+import { invoke } from "@/lib/tauri";
 import { emit } from "@tauri-apps/api/event";
 import {
   Undo2, Redo2, ZoomIn, ZoomOut, Search, Eraser, Save, X,
   ChevronUp, ChevronDown, Replace, Check,
 } from "lucide-react";
-
-interface PendingEdit {
-  text: string;
-  requestId: string;
-}
 
 const FONT_KEY = "compact-editor-font-size";
 const FONT_MIN = 12;
@@ -31,28 +26,14 @@ function CompactEditor() {
   const requestIdRef = useRef<string>("");
   const savedRef = useRef(false); // 区分 unmount 时该发 result 还是 cancel
 
-  // ── mount：拉取初始文本 + 监听并发再开 ──
+  // ── mount：仅保留 unmount 兜底 cancel ──
+  // macOS 走原生窗（NSWindow+NSTextView，无 webview），不加载本页，初始文本/保存/取消
+  // 全在后端 Rust（compact_editor_native + compact_editor_commands）。本页仅非 macOS
+  // webview fallback 加载；get_pending/load 已随 PENDING 一并移除（macOS 试水阶段，非
+  // macOS fallback 的初始文本/requestId 暂不维护→requestIdRef 恒为空→下列兜底当前不生效，
+  // 结构保留待 fallback 补全）。
   useEffect(() => {
-    let unlisten: (() => void) | undefined;
-    (async () => {
-      const pending = await invoke<PendingEdit | null>("get_pending_compact_edit");
-      if (pending) {
-        setText(pending.text);
-        requestIdRef.current = pending.requestId;
-        setTimeout(() => taRef.current?.focus(), 0);
-      }
-      unlisten = await listen("compact-editor://load", (payload) => {
-        const p = payload as PendingEdit;
-        setText(p.text);
-        requestIdRef.current = p.requestId;
-        savedRef.current = false;
-        setMatches([]);
-        setMatchIdx(-1);
-        setTimeout(() => taRef.current?.focus(), 0);
-      });
-    })();
     return () => {
-      unlisten?.();
       // 兜底：未保存的卸载（X 关窗/系统关闭）发 cancel，防调用方监听悬空。
       if (!savedRef.current && requestIdRef.current) {
         emit("compact-editor://cancel", { requestId: requestIdRef.current });
