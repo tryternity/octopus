@@ -4,7 +4,7 @@
 use base64::{engine::general_purpose, Engine};
 use tauri::Emitter;
 
-use octopus_notepad::{Note, NoteFilter, NoteSource};
+use octopus_notepad::{Note, NoteFilter, NoteSource, NoteType};
 
 // ── 基础 CRUD ──
 
@@ -58,7 +58,8 @@ pub async fn get_note(id: i64) -> Result<Option<Note>, String> {
 pub async fn create_note(
     source: String,
     source_ref_id: Option<i64>,
-    initial_html: String,
+    body: String,
+    note_type: String,
     app_handle: tauri::AppHandle,
 ) -> Result<i64, String> {
     let id = octopus_infra::db::with_db(|conn| {
@@ -66,7 +67,8 @@ pub async fn create_note(
             conn,
             NoteSource::from_str(&source),
             source_ref_id,
-            &initial_html,
+            &body,
+            NoteType::from_str(&note_type),
         )
     })
     .map_err(|e| e.to_string())?;
@@ -78,11 +80,12 @@ pub async fn create_note(
 pub async fn update_note(
     id: i64,
     title: String,
-    content_html: String,
+    body: String,
+    note_type: String,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     octopus_infra::db::with_db(|conn| {
-        octopus_notepad::store::update_note_at(conn, id, &title, &content_html)
+        octopus_notepad::store::update_note_at(conn, id, &title, &body, NoteType::from_str(&note_type))
     })
     .map_err(|e| e.to_string())?;
     let _ = app_handle.emit("notepad://changed", ());
@@ -174,36 +177,25 @@ pub async fn insert_note_image(path: String) -> Result<String, String> {
 
 // ── 集成入口：识别结果 → 笔记 ──
 
-/// 语音结果 → 新建笔记：内容由前端传入（= Result 窗口当前显示文本，根治
-/// current_transcription_id 全局值与显示文本的跨信道竞态），transcription_id
-/// 作 source_ref_id 溯源（best-effort）。`<p>` 包裹 → create_note(Asr, Some(id))。
+/// 语音结果 → 新建笔记：text 原文直存（type=text，不再 <p> 包裹）。
+/// transcription_id 作 source_ref_id 溯源（best-effort）。
 #[tauri::command]
 pub async fn save_transcription_to_note(
     transcription_id: i64,
     text: String,
     app_handle: tauri::AppHandle,
 ) -> Result<i64, String> {
-    let html = format!("<p>{}</p>", html_escape(&text));
-    let id = octopus_notepad::store::create_note(NoteSource::Asr, Some(transcription_id), &html)
+    let id = octopus_notepad::store::create_note(NoteSource::Asr, Some(transcription_id), &text, NoteType::Text)
         .map_err(|e| e.to_string())?;
     let _ = app_handle.emit("notepad://changed", ());
     Ok(id)
 }
 
-/// OCR 结果 → 新建笔记：text → <p> 包裹 → create_note(Ocr, None)。
+/// OCR 结果 → 新建笔记：text 原文直存（type=text，不再 <p> 包裹）。
 #[tauri::command]
 pub async fn save_ocr_to_note(text: String, app_handle: tauri::AppHandle) -> Result<i64, String> {
-    let html = format!("<p>{}</p>", html_escape(&text));
-    let id = octopus_notepad::store::create_note(NoteSource::Ocr, None, &html)
+    let id = octopus_notepad::store::create_note(NoteSource::Ocr, None, &text, NoteType::Text)
         .map_err(|e| e.to_string())?;
     let _ = app_handle.emit("notepad://changed", ());
     Ok(id)
-}
-
-/// 转义 HTML 特殊字符（识别文本/剪贴板内容插入笔记时，避免被当 HTML 解析）。
-fn html_escape(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-        .replace('\n', "</p><p>")
 }

@@ -269,18 +269,15 @@ pub async fn ocr_screenshot(
 
 /// 创建 OCR 文本笔记并打开记事本窗口。
 fn open_notepad_with_content(app_handle: &tauri::AppHandle, text: &str) {
-    // 把纯文本转为简单 HTML（每行 <p> 包裹）
-    let html = text.lines()
-        .map(|line| format!("<p>{}</p>", line))
-        .collect::<Vec<_>>()
-        .join("\n");
+    // OCR 是纯文本，type=text 直存原文（不再 <p> 包裹成 html）
     let ah = app_handle.clone();
-    let html_owned = html;
+    let text_owned = text.to_string();
     tauri::async_runtime::spawn(async move {
         let _ = crate::note_commands::create_note(
             "Ocr".to_string(),
             None,
-            html_owned,
+            text_owned,
+            "text".to_string(),
             ah.clone(),
         ).await;
         crate::notepad_window::open_notepad(ah);
