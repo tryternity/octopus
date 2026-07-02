@@ -32,10 +32,19 @@ pub struct EncodedImage {
 pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let rgba = img.to_rgba8();
 
-    // 无损 WebP 原图
-    let encoder = webp::Encoder::from_rgba(&rgba, rgba.width(), rgba.height());
-    let webp_blob = encoder.encode_lossless();
-    let webp_blob = webp_blob.to_vec();
+    // WebP 最大尺寸 16383px，超长图改用有损编码（有损上限更高）
+    // 如果超大有损也失败，则 panic 被 caller 的 spawn_blocking 捕获
+    let webp_blob = {
+        let encoder = webp::Encoder::from_rgba(&rgba, rgba.width(), rgba.height());
+        // 先试无损，失败则降级有损 90%
+        match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode_lossless().to_vec())) {
+            Ok(blob) => blob,
+            Err(_) => {
+                log::warn!("[clipboard] lossless WebP failed (size {}×{}), falling back to lossy", rgba.width(), rgba.height());
+                encoder.encode(90.0).to_vec()
+            }
+        }
+    };
 
     // 缩略图：resize 240×240 → WebP 20%
     // 针对超大长图，Lanczos3 插值开销过大；改用轻量级 Triangle (双线性) 过滤大幅降低 CPU 计算耗时

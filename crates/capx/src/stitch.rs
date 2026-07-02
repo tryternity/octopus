@@ -155,11 +155,17 @@ fn validate_ncc_match(response: &Image<image::Luma<f32>>, _best_y: usize, best_s
         return false;
     }
 
-    // 纯色/空白区域检测：response 的最低值也 ≥0.99 说明所有位置都完美匹配，
-    // 即画面无特征区分度（纯色背景）。拒绝匹配——画面实际没滚动。
+    // 无区分度检测：response 的 max - min 差值 < 0.1 说明所有位置得分几乎相同，
+    // NCC 无足够区分力来确定真实偏移（纯色/空白/极低纹理）。拒绝匹配。
     let h = response.height() as usize;
-    let min_score: f32 = (0..h).map(|y| response.get_pixel(0, y as u32)[0]).fold(f32::MAX, f32::min);
-    if min_score >= 0.99 {
+    let mut min_score = f32::MAX;
+    let mut max_score = f32::MIN;
+    for y in 0..h {
+        let v = response.get_pixel(0, y as u32)[0];
+        if v < min_score { min_score = v; }
+        if v > max_score { max_score = v; }
+    }
+    if max_score - min_score < 0.1 {
         return false;
     }
 
