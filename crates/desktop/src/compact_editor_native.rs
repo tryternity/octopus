@@ -12,7 +12,7 @@ mod imp {
     use objc2::runtime::NSObject;
     use objc2::{define_class, msg_send, sel, ClassType, MainThreadMarker};
     use objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSBezelStyle, NSButton, NSControl, NSFont, NSScrollView,
+        NSAutoresizingMaskOptions, NSBezelStyle, NSButton, NSColor, NSControl, NSFont, NSScrollView,
         NSTextField, NSTextView, NSView, NSWindow,
     };
     use objc2_foundation::{NSPoint, NSRect, NSSize, NSString};
@@ -77,6 +77,17 @@ mod imp {
         }
     }
 
+    /// 字号 label sizeToFit 后在工具栏内垂直居中。
+    /// NSTextField 默认文本顶对齐到 cell 顶部，比按钮标题（垂直居中）高出半行。
+    fn recenter_label(label: &NSTextField, x: f64) {
+        label.sizeToFit();
+        let f = label.frame();
+        label.setFrame(NSRect::new(
+            NSPoint::new(x, (TOOLBAR_H - f.size.height) / 2.),
+            f.size,
+        ));
+    }
+
     // ── 按钮 target：无 ivar，onClick: 读 sender.tag() 分发到 Rust ──
     define_class!(
         #[unsafe(super(NSObject))]
@@ -114,9 +125,6 @@ mod imp {
                     }
                 }
             }),
-            TAG_FIND => with_tv(|tv| unsafe {
-                let _ = tv.performFindPanelAction(None);
-            }),
             TAG_FONT_DEC => set_font_size(app, -1.0),
             TAG_FONT_INC => set_font_size(app, 1.0),
             TAG_CLEAR => on_clear_clicked(app),
@@ -141,8 +149,9 @@ mod imp {
                 return;
             };
             s.text_view.setFont(Some(&NSFont::systemFontOfSize(new)));
-            s.font_label
-                .setStringValue(&NSString::from_str(&format!("{}", new as i64)));
+            s.font_label.setStringValue(&NSString::from_str(&format!("{}", new as i64)));
+            let lx = s.font_label.frame().origin.x;
+            recenter_label(&s.font_label, lx);
         });
     }
 
@@ -183,10 +192,12 @@ mod imp {
     }
 
     /// 建一个工具栏按钮（标题/tag/frame/绑定 target-action）。
+    /// bezeled=false：扁平无边框（工具按钮）；true：Push 立体（主/次动作如保存/取消）。
     fn make_button(
         mtm: MainThreadMarker,
         title: &str,
         tag: isize,
+        bezeled: bool,
         target: &CompactEditorButtonTarget,
         frame: NSRect,
     ) -> Retained<NSButton> {
@@ -194,7 +205,12 @@ mod imp {
         btn.setTitle(&NSString::from_str(title));
         btn.setFrame(frame);
         btn.setTag(tag);
-        btn.setBezelStyle(NSBezelStyle::Push);
+        if bezeled {
+            btn.setBezelStyle(NSBezelStyle::Push);
+        } else {
+            btn.setBordered(false);
+            btn.setWantsLayer(true);
+        }
         unsafe {
             let _: () = msg_send![&*btn, setTarget: target];
             let _: () = msg_send![&*btn, setAction: sel!(onClick:)];
@@ -243,22 +259,29 @@ mod imp {
             }
             let mtm = MainThreadMarker::new().expect("run_on_main_thread 在主线程执行");
             let ns_win: &NSWindow = unsafe { &*(ptr as *const NSWindow) };
-            let content = ns_win
-                .contentView()
-                .expect("window must have content view");
-            let (cw, ch) = {
-                let sz = content.frame().size;
-                (sz.width, sz.height)
-            };
+            // container 作为 contentView：setContentView 会把它 resize 到填满 content rect
+            // （保证尺寸正确——默认 contentView 在 attach 闭包跑时 frame 可能仍是 0×0，
+            // 据它算坐标会让所有子视图 frame 归零/变负而不可见）。
+            let container = NSView::new(mtm);
+            ns_win.setContentView(Some(&container));
+            // contentLayoutRect = 标题栏以下的可用区。Tauri 原生窗为 fullSizeContent，
+            // contentView 含标题栏区（顶部 ~32px 被标题栏盖住）。工具栏须钉在可用区顶部，
+            // 否则落在标题栏遮挡区不可见。
+            let lr = ns_win.contentLayoutRect();
+            let cw = lr.size.width;
+            let uh = lr.size.height; // 可用高度（不含标题栏）
+            log::info!("[native] attach: layoutRect {:.0}×{:.0}", cw, uh);
 
-            // 工具栏容器（顶部 TOOLBAR_H，宽度跟窗口，顶部钉住）
+            // 工具栏：可用区顶部 TOOLBAR_H；MaxYMargin 钉住与 contentView 顶（=标题栏底）的间距，
+            // resize 时仍贴在标题栏正下方。
             let toolbar = NSView::new(mtm);
+            let toolbar_y = uh - TOOLBAR_H;
             toolbar.setFrame(NSRect::new(
-                NSPoint::new(0., ch - TOOLBAR_H),
+                NSPoint::new(0., toolbar_y),
                 NSSize::new(cw, TOOLBAR_H),
             ));
             toolbar.setAutoresizingMask(
-                NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMinYMargin,
+                NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewMaxYMargin,
             );
 
             // target（单例，所有按钮共用；STATE 持有其 Retained 保活——NSControl target 是弱引用）
@@ -279,6 +302,7 @@ mod imp {
                 mtm,
                 "撤销",
                 TAG_UNDO,
+                false,
                 &target,
                 NSRect::new(NSPoint::new(step(38., 2.), y), NSSize::new(38., bh)),
             );
@@ -286,6 +310,7 @@ mod imp {
                 mtm,
                 "重做",
                 TAG_REDO,
+                false,
                 &target,
                 NSRect::new(NSPoint::new(step(38., 8.), y), NSSize::new(38., bh)),
             );
@@ -293,6 +318,7 @@ mod imp {
                 mtm,
                 "−",
                 TAG_FONT_DEC,
+                false,
                 &target,
                 NSRect::new(NSPoint::new(step(22., 0.), y), NSSize::new(22., bh)),
             );
@@ -304,11 +330,12 @@ mod imp {
             font_label.setSelectable(false);
             font_label.setFont(Some(&NSFont::systemFontOfSize(11.0)));
             font_label.setStringValue(&NSString::from_str(&format!("{}", font_size as i64)));
-            font_label.setFrame(NSRect::new(NSPoint::new(step(26., 0.), y), NSSize::new(26., bh)));
+            recenter_label(&font_label, step(26., 0.));
             let finc = make_button(
                 mtm,
                 "+",
                 TAG_FONT_INC,
+                false,
                 &target,
                 NSRect::new(NSPoint::new(step(22., 8.), y), NSSize::new(22., bh)),
             );
@@ -316,6 +343,7 @@ mod imp {
                 mtm,
                 "查找",
                 TAG_FIND,
+                false,
                 &target,
                 NSRect::new(NSPoint::new(step(40., 6.), y), NSSize::new(40., bh)),
             );
@@ -323,21 +351,25 @@ mod imp {
                 mtm,
                 "清空",
                 TAG_CLEAR,
+                false,
                 &target,
                 NSRect::new(NSPoint::new(step(44., 6.), y), NSSize::new(44., bh)),
             );
-            // 右侧组：保存(右贴边) / 取消
+            // 右侧组：保存(扁平+蓝色 accent 强调主动作，右贴边) / 取消(扁平)
             let save = make_button(
                 mtm,
                 "保存",
                 TAG_SAVE,
+                false,
                 &target,
                 NSRect::new(NSPoint::new(cw - 6. - 56., y), NSSize::new(56., bh)),
             );
+            save.setContentTintColor(Some(&NSColor::controlAccentColor()));
             let cancel = make_button(
                 mtm,
                 "取消",
                 TAG_CANCEL,
+                false,
                 &target,
                 NSRect::new(NSPoint::new(cw - 6. - 56. - 6. - 52., y), NSSize::new(52., bh)),
             );
@@ -354,11 +386,20 @@ mod imp {
             text_view.setEditable(true);
             text_view.setSelectable(true);
             text_view.setUsesFindBar(true);
+            text_view.setAllowsUndo(true); // 默认 false：不设则 typing 不进 undo 栈，撤销/重做无效
+
+            // 查找按钮改直达 textview：performFindPanelAction: 读 sender.tag，
+            // tag=1(NSFindPanelActionShow) 才弹 find bar（nil/tag=0 无动作）。
+            find.setTag(1);
+            unsafe {
+                let _: () = msg_send![&*find, setTarget: &*text_view];
+                let _: () = msg_send![&*find, setAction: sel!(performFindPanelAction:)];
+            }
 
             let scroll = NSScrollView::new(mtm);
             scroll.setFrame(NSRect::new(
                 NSPoint::new(0., 0.),
-                NSSize::new(cw, ch - TOOLBAR_H),
+                NSSize::new(cw, toolbar_y),
             ));
             scroll.setAutoresizingMask(
                 NSAutoresizingMaskOptions::ViewWidthSizable | NSAutoresizingMaskOptions::ViewHeightSizable,
@@ -367,8 +408,8 @@ mod imp {
             scroll.setHasVerticalScroller(true);
             scroll.setAutoresizesSubviews(true);
 
-            content.addSubview(&toolbar);
-            content.addSubview(&scroll);
+            container.addSubview(&toolbar);
+            container.addSubview(&scroll);
 
             // 存 STATE（reopen 时覆盖，旧的在主线程闭包内 drop，安全）
             let clear_btn = clear.clone();
