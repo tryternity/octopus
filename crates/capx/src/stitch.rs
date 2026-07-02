@@ -269,7 +269,12 @@ impl Stitcher {
         // dy=0（静止或慢速滚动）时保留 last_dy，维持速度上下文供下一帧搜索
         if dy >= 0.0 {
             log::info!("[stitch] skipped frame: dy={:.1} >= 0.0 (conf={:.4})", dy, confidence);
-            // 不清除 last_dy：慢速滚动时帧间 dy=0 是正常的，速度上下文仍有价值
+            // 更新 dy_history：静止帧(0)和向上滚动帧(>0)也写入历史，
+            // 使中位数收敛到真实速度，防止停止后 best-guess 幽灵滚动
+            self.dy_history.push_back(dy);
+            if self.dy_history.len() > DY_HISTORY_LEN {
+                self.dy_history.pop_front();
+            }
             return Ok(false);
         }
 
@@ -658,6 +663,10 @@ fn find_overlap_spatial_ext(
     strip_h: u32,
 ) -> Option<(f64, f64, f64)> {
     if eff_bottom <= eff_top + strip_h + 10 {
+        return None;
+    }
+    // 防御性校验：ref_buf 必须至少有 strip_h 行，否则 row() 越界 panic
+    if (ref_buf.data.len() / ref_buf.width) < strip_h as usize {
         return None;
     }
     let template_y = eff_bottom - strip_h;
