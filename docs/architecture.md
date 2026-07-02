@@ -144,9 +144,9 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 | 模块 | 职责 |
 |---|---|
 | `capture` | `capture_all_monitors()`：截取所有显示器（每个返回 RGBA + 物理像素尺寸 + 显示器坐标）。`crop_region()`：从全屏 RGBA 裁剪矩形 → PNG。黑屏检测日志（权限诊断）。macOS 三处 CGImage 捕获（`capture_display_excluding_window` / `capture_region_excluding_window` / `capture_window_region`）共用 `cgimage_to_rgba` helper（BGRA→RGBA 统一转换） |
-| `stitch` | 滚动截屏拼接引擎：**Canvas-Anchored 2D SAD 空间模板匹配**。每帧从画布底部提取 80px strip 转灰度作为匹配模板（替代帧间比较），消除累积漂移。**健壮性优化**：① 时序平滑静止判断（dy_history 近 N 帧均值，替代单帧静态校验硬覆盖）；② 动态自适应 SAD 阈值（纹理密度评估 + EMA 历史基线）；③ 三级兜底降级链（扩大搜索范围→缩小模板→1D 灰度投影匹配）+ best-guess（历史 dy 中位数，连续 3 次熔断）；④ 亚像素抛物线插值（消除整数像素对齐的 3-4 行重复）。置信度阈值 conf > 0.5。**性能优化**：ROI 灰度转换（只转搜索范围行，省 60%+ 计算）+ 连续 `GrayBuf`（`y_offset` 坐标映射，切片直访），SAD 整数 u64 累加 + 模板条预提取，画布用 `Vec<u8>` 增量 `extend` 追加 + 惰性 `RgbaImage` 缓存（`canvas()` 返回引用，热循环不深拷贝）。保存/复制时 PNG+WebP+base64 编码全部移入 `spawn_blocking` 不阻塞 UI |
+| `stitch` | 滚动截屏拼接引擎：**Canvas-Anchored NCC + Sobel 梯度匹配**。每帧从画布底部提取 80px strip → Sobel 梯度特征图（`imageproc`，纯色退化回灰度）→ NCC 模板匹配（`imageproc::template_matching::match_template`，CrossCorrelationNormalized）→ 多道验证（score≥0.75 + 局部 delta≥0.005 + 全局 delta≥0.002，score≥0.99 跳过验证）→ 抛物线亚像素插值。Canvas-Anchored 消除累积漂移。降级链：1D 灰度投影 + best-guess（历史 dy 中位数，连续 3 次熔断）。画布用 `Vec<u8>` 增量追加 + 惰性缓存（`canvas()` 返回引用）。保存/复制时 PNG+WebP 编码移入 `spawn_blocking`。替代了之前的手写 SAD（周期性内容假匹配根治） |
 
-**触发方式**：全局快捷键（`screenshot_shortcut`，默认 Alt+S）+ 托盘菜单「截图」。
+**触发方式**：全局快捷键（`screenshot_shortcut`，默认 Cmd+Shift+D）+ 托盘菜单「截图」。
 
 **多显示器**：每个显示器创建独立 Tauri 窗口（`screenshot_window` / `screenshot_window_N`），用 Tauri `available_monitors()` 获取逻辑坐标 + 尺寸（物理坐标除以 `scale_factor`），定位到对应屏幕。窗口初始 `visible(false)`，前端 Canvas 渲染完截图后调 `show_screenshot_window` 显示（消除白屏闪烁）。确认/取消时关闭所有 `screenshot_*` 窗口。**窗口串行创建**（间隔 150ms）：macOS WKWebView 同时创建多个全屏窗口会 segfault，故 `start_screenshot` 逐个 `sleep(150ms)` 创建，单窗 build 失败则 `log::error!` + `continue` 跳过该屏。
 
