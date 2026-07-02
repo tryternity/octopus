@@ -270,6 +270,17 @@ impl Stitcher {
 
                 log::info!("[stitch] all fallbacks exhausted, trying best-guess");
 
+                // 静止检测：匹配全失败时，先检查画面是否实际没动。
+                // 计算当前帧底部 strip 与画布底部 strip 的全局 SAD，极低说明静止。
+                let stationary_sad = self.quick_stationary_check(&curr_buf, &canvas_ref, &sample_cols);
+                if stationary_sad < STATIONARY_SAD {
+                    log::info!("[stitch] stationary detected before best-guess (sad={:.2}), clearing history", stationary_sad);
+                    self.dy_history.clear();
+                    self.best_guess_streak = 0;
+                    self.last_dy = None;
+                    return Ok(false);
+                }
+
                 // 降级 4：Best-Guess——用历史 dy 估算位移，宁可轻微错位也不丢内容。
                 // 打破"匹配失败 → canvas 不长 → 位移差扩大 → 永久失败"的死亡螺旋。
                 // 熔断：连续 best-guess 超过 3 次则停止猜测，避免拼出严重错位的长图。
@@ -389,6 +400,24 @@ impl Stitcher {
         // 历史基线浮动：EMA 均值的倍数 + padding 作为上界
         let baseline_cap = self.sad_baseline * SAD_BASELINE_MULTIPLIER + SAD_BASELINE_PADDING;
         (SAD_ACCEPT + texture_bonus).min(baseline_cap).max(SAD_ACCEPT)
+    }
+
+    /// 轻量静止检测：比较当前帧底部 strip 与画布底部 strip 的全局 SAD。
+    /// 用于 best-guess 前判断画面是否实际没动（如滚到底部）。
+    fn quick_stationary_check(&self, curr: &GrayBuf, canvas_ref: &GrayBuf, sample_cols: &[usize]) -> f64 {
+        let mut sad: u64 = 0;
+        let mut count: u64 = 0;
+        for dy in 0..STRIP_H {
+            let ref_row = canvas_ref.row(dy as usize);
+            // curr 底部 strip：y_offset + (curr 行数 - STRIP_H + dy)
+            let curr_bottom_start = (curr.data.len() / curr.width).saturating_sub(STRIP_H as usize);
+            let curr_row = curr.row((curr_bottom_start + dy as usize) + curr.y_offset);
+            for &x in sample_cols {
+                sad += (ref_row[x] as i32 - curr_row[x] as i32).unsigned_abs() as u64;
+                count += 1;
+            }
+        }
+        if count > 0 { sad as f64 / count as f64 } else { f64::MAX }
     }
 
     /// 判断当前是否为静止状态（基于历史 dy 均值）。

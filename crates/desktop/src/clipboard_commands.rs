@@ -97,7 +97,13 @@ fn write_item_to_clipboard(handle: &ClipboardHandle, item: &ClipboardItem) -> Re
             let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
                 .map_err(|e| format!("解码 WebP 失败: {}", e))?;
             let mut png = Vec::new();
-            img.write_to(&mut std::io::Cursor::new(&mut png), ::image::ImageFormat::Png)
+            let mut cursor = std::io::Cursor::new(&mut png);
+            let png_encoder = ::image::codecs::png::PngEncoder::new_with_quality(
+                &mut cursor,
+                ::image::codecs::png::CompressionType::Fast,
+                ::image::codecs::png::FilterType::Up,
+            );
+            img.write_with_encoder(png_encoder)
                 .map_err(|e| format!("编码 PNG 失败: {}", e))?;
             handle.write_image(&png).map_err(|e| e.to_string())
         }
