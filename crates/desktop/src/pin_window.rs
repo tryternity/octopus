@@ -59,6 +59,12 @@ mod macos {
                     if let Some(content) = self.contentView() {
                         NSMenu::popUpContextMenu_withEvent_forView(&menu, event, &content);
                     }
+                    // 右键菜单关闭后清理已关闭的窗口引用（防泄漏）
+                    // 延迟 0.1s 执行，等 NSWindow.close() 完成
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_millis(100));
+                        super::macos::cleanup_closed_pin_windows();
+                    });
                 }
             }
         }
@@ -83,16 +89,20 @@ mod macos {
     impl super::PinWindow for MacPinWindow {
         fn create(png_data: &[u8], x: f64, y: f64, width: f64, height: f64) {
             unsafe {
-                // 1. NSImage
                 let ns_data = NSData::with_bytes(png_data);
                 let ns_data_ptr = &*ns_data as *const NSData as *mut NSData;
                 let image: Option<Retained<NSImage>> = msg_send![
                     NSImage::alloc(),
                     initWithData: ns_data_ptr
                 ];
-                let image = image.expect("failed to init NSImage");
+                let image = match image {
+                    Some(img) => img,
+                    None => {
+                        log::error!("Pin window: failed to init NSImage (invalid PNG data {} bytes)", png_data.len());
+                        return;
+                    }
+                };
 
-                // 2. NSImageView
                 let mtm = MainThreadMarker::new().expect("must be main thread");
                 let iv_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
                 let image_view: Retained<PinNSImageView> = msg_send![
@@ -101,7 +111,6 @@ mod macos {
                 ];
                 image_view.setImage(Some(&image));
 
-                // 3. PinNSWindow
                 let win_frame = NSRect::new(NSPoint::new(x, y), NSSize::new(width, height));
                 let window: Retained<PinNSWindow> = msg_send![
                     PinNSWindow::alloc(mtm),
@@ -121,14 +130,35 @@ mod macos {
                 content.addSubview(&image_view);
                 image_view.setAutoresizingMask(NSAutoresizingMaskOptions(18));
 
-                // 4. Show
                 window.makeKeyAndOrderFront(None);
 
-                // 5. Retain
                 PIN_WINDOWS.lock().unwrap().push(SendWindow(window));
                 log::info!("Pin window created at ({},{}) {}x{}", x, y, width, height);
             }
         }
+    }
+
+    /// 关闭所有贴图窗口并清理引用（防 NSWindow 泄漏）。
+    pub fn close_all_pin_windows() {
+        let mut windows = PIN_WINDOWS.lock().unwrap();
+        if let Some(mtm) = MainThreadMarker::new() {
+            for w in windows.drain(..) {
+                unsafe {
+                    let _: () = msg_send![&w.0, close];
+                }
+            }
+        } else {
+            windows.clear();
+        }
+    }
+
+    /// 清理已关闭的贴图窗口引用（右键关闭后调用）。
+    pub fn cleanup_closed_pin_windows() {
+        let mut windows = PIN_WINDOWS.lock().unwrap();
+        windows.retain(|w| {
+            let is_closed: bool = unsafe { msg_send![&w.0, isVisible] };
+            is_closed
+        });
     }
 }
 
