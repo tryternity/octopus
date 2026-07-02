@@ -1270,7 +1270,7 @@ pub async fn start_scroll_recording(
         let canvas_for_db = canvas;
         let hash_for_db = hash.clone();
         let id_for_db = item_id;
-        let db_task = tokio::task::spawn_blocking(move || {
+        let _db_task = tokio::task::spawn_blocking(move || {
             let img = image::DynamicImage::ImageRgba8(canvas_for_db);
             let encoded = match octopus_clipboard::image::encode_to_webp(&img) {
                 Ok(e) => e,
