@@ -166,6 +166,12 @@ impl Stitcher {
     pub fn process_frame(&mut self, frame: &RgbaImage) -> Result<bool> {
         let (w, h) = (frame.width(), frame.height());
 
+        // 防御性校验：帧宽度必须与画布一致，否则切片越界或数据污染
+        if w != self.canvas_w {
+            log::warn!("[stitch] frame width {} != canvas_w {}, skipping", w, self.canvas_w);
+            return Ok(false);
+        }
+
         if !self.detected {
             self.detect_sticky(frame);
             self.detected = true;
@@ -567,6 +573,11 @@ impl Stitcher {
     pub fn finalize(&mut self, last_frame: &RgbaImage) -> Result<()> {
         let h = last_frame.height();
         let w = last_frame.width();
+        // 防御性校验：帧宽度必须与画布一致
+        if w != self.canvas_w {
+            log::warn!("[stitch] finalize: frame width {} != canvas_w {}, skipping", w, self.canvas_w);
+            return Ok(());
+        }
         let eff_top = self.sticky_top;
         let eff_bottom = h.saturating_sub(self.sticky_bottom);
         if eff_bottom <= eff_top {
@@ -807,7 +818,8 @@ fn search_best_offset(
         let denom = left - 2.0 * center + right;
         if denom.abs() > 1e-10 {
             let delta = 0.5 * (left - right) / denom;
-            // delta ∈ [-0.5, +0.5]，正值表示峰偏向左（更小 y_offset）
+            // Clamp delta 到 [-0.5, +0.5]，防止极小 denom 导致大偏移
+            let delta = delta.clamp(-0.5, 0.5);
             (best_y_offset as f64) + delta
         } else {
             best_y_offset as f64
