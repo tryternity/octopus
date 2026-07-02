@@ -47,6 +47,8 @@ export default function NoteEditor({ noteId }: { noteId: number | null }) {
   // text/markdown 的 body（html 用 TipTap editor，不经此 state）
   const [textBody, setTextBody] = useState("");
   const [toast, setToast] = useState<string | null>(null);
+  // 链接 URL 输入：WKWebView 默认禁用 window.prompt()，改用内联输入框
+  const [linkInput, setLinkInput] = useState<string | null>(null);
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const currentId = useRef<number | null>(null);
 
@@ -224,8 +226,9 @@ export default function NoteEditor({ noteId }: { noteId: number | null }) {
       icon: LinkIcon,
       title: "链接",
       onClick: exec(() => {
-        const url = prompt("链接 URL");
-        if (url) editor?.chain().focus().setLink({ href: url }).run();
+        // WKWebView 禁用 window.prompt()，改弹内联输入框（预填当前 href）
+        const prev = editor?.getAttributes("link").href;
+        setLinkInput(typeof prev === "string" ? prev : "");
       }),
     },
     { icon: ImageIcon, title: "图片", onClick: insertImage },
@@ -338,6 +341,47 @@ export default function NoteEditor({ noteId }: { noteId: number | null }) {
       {noteType === "markdown" && (
         <div className="flex-1 mx-4 mb-4 mt-1">
           <MarkdownEditor value={textBody} onChange={setTextBody} />
+        </div>
+      )}
+      {linkInput !== null && (
+        <div className="absolute top-12 right-3 z-20 flex items-center gap-1 p-2 rounded-md border border-border bg-background shadow-md">
+          <input
+            autoFocus
+            className="px-2 py-1 text-xs border border-border rounded bg-background w-48 focus:outline-none"
+            placeholder="https:// 链接地址"
+            value={linkInput}
+            onChange={(e) => setLinkInput(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") {
+                const url = linkInput.trim();
+                if (url) editor?.chain().focus().setLink({ href: url }).run();
+                setLinkInput(null);
+              } else if (e.key === "Escape") {
+                setLinkInput(null);
+              }
+            }}
+          />
+          <button
+            className="px-2 py-1 text-xs rounded bg-primary text-primary-foreground"
+            onClick={() => {
+              const url = linkInput.trim();
+              if (url) editor?.chain().focus().setLink({ href: url }).run();
+              setLinkInput(null);
+            }}
+          >
+            确定
+          </button>
+          {editor?.isActive("link") && (
+            <button
+              className="px-2 py-1 text-xs rounded hover:bg-accent"
+              onClick={() => {
+                editor?.chain().focus().unsetLink().run();
+                setLinkInput(null);
+              }}
+            >
+              移除
+            </button>
+          )}
         </div>
       )}
       {toast && (
