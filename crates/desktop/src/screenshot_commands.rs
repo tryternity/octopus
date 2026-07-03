@@ -258,7 +258,16 @@ pub async fn ocr_screenshot(
                 crate::clipboard_commands::current_ocr_meta(),
             )
         }).map_err(|e| e.to_string())?;
-        crate::compact_editor_commands::open_compact_editor_tab(ocr_id, app_handle.clone());
+        // ⚠️ 建窗含 macOS AppKit 主线程操作（open_compact_editor_tab →
+        // create_compact_editor_window → set_activation_policy + set_dock_icon；
+        // set_dock_icon 用 MainThreadMarker::new_unchecked 强制假定主线程）。
+        // ocr_screenshot 跑在 async worker 线程，直接同步调用会从 worker 触发
+        // AppKit 主线程违规，整个应用僵死（点任何按钮无响应，只能托盘退出）。
+        // 投递到主线程执行，与「前端 invoke open_compact_editor_tab」同路径。
+        let ah = app_handle.clone();
+        let _ = app_handle.run_on_main_thread(move || {
+            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, ah);
+        });
     }
 
     let _ = app_handle.emit("clipboard://changed", ());
