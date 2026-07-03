@@ -89,33 +89,6 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     };
 
     // 缩略图：resize 240×240 → WebP 20%
-
-/// WebP 有损编码，逐级降质量（90%→80%→70%→60%→50%）。
-/// 每级用 catch_unwind 防 panic。50% 仍失败则返回 None。
-fn encode_webp_lossy_with_budget(rgba: &::image::RgbaImage) -> Option<Vec<u8>> {
-    let encoder = webp::Encoder::from_rgba(rgba, rgba.width(), rgba.height());
-    for quality in [90.0f32, 80.0, 70.0, 60.0, 50.0] {
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            encoder.encode(quality).to_vec()
-        }));
-        match result {
-            Ok(blob) if !blob.is_empty() => {
-                log::info!("[clipboard] WebP lossy q{}: {} bytes ({}×{})",
-                    quality, blob.len(), rgba.width(), rgba.height());
-                return Some(blob);
-            }
-            Ok(_) => {
-                log::warn!("[clipboard] WebP lossy q{} produced empty blob", quality);
-            }
-            Err(_) => {
-                log::warn!("[clipboard] WebP lossy q{} panicked", quality);
-            }
-        }
-    }
-    None
-}
-
-// 缩略图：resize 240×240 → WebP 20%
     // 针对超大长图，Lanczos3 插值开销过大；改用轻量级 Triangle (双线性) 过滤大幅降低 CPU 计算耗时
     let thumb_img = img.resize(240, 240, ::image::imageops::FilterType::Triangle);
     let thumb_rgba = thumb_img.to_rgba8();
