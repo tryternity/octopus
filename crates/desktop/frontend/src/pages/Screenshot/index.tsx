@@ -46,6 +46,8 @@ export default function Screenshot() {
   const [toolColor, setToolColorState] = useState("#ef4444");
   const [toolWidth, setToolWidth] = useState(3);
   const [toolFontSize, setToolFontSizeState] = useState(16);
+  const [toolFilled, setToolFilled] = useState(false);
+  const toolFilledRef = useRef(false);
   const setToolColor = (c: string) => { toolColorRef.current = c; setToolColorState(c); };
   const setToolFontSize = (s: number) => { toolFontSizeRef.current = s; setToolFontSizeState(s); };
   const scrollSaveAfterStopRef = useRef(false);
@@ -326,7 +328,7 @@ export default function Screenshot() {
       if (tool === "pen") {
         drawingRef.current = { type: "pen", x1: mx, y1: my, x2: mx, y2: my, points: [[mx, my]], color: toolColor, lineWidth: toolWidth };
       } else {
-        drawingRef.current = { type: tool, x1: mx, y1: my, x2: mx, y2: my, color: toolColor, lineWidth: toolWidth };
+        drawingRef.current = { type: tool, x1: mx, y1: my, x2: mx, y2: my, color: toolColor, lineWidth: toolWidth, filled: (tool === "rect" || tool === "oval") ? toolFilledRef.current : undefined };
       }
       return;
     }
@@ -887,10 +889,13 @@ export default function Screenshot() {
           circleSize={toolCircleSize}
           isText={tool === "text"}
           isNumber={tool === "number"}
+          isShape={tool === "rect" || tool === "oval"}
+          filled={toolFilled}
           onColorChange={setToolColor}
           onWidthChange={setToolWidth}
           onFontSizeChange={setToolFontSize}
           onCircleSizeChange={setToolCircleSize}
+          onFilledChange={(f) => { setToolFilled(f); toolFilledRef.current = f; }}
         />
       )}
 
@@ -1011,14 +1016,15 @@ function ToolButton({ active, onClick, label, icon }: { active?: boolean; onClic
 const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#000000", "#ffffff"];
 
 function ToolPropsPopover({
-  x, y, color, width, fontSize, circleSize, isText, isNumber, onColorChange, onWidthChange, onFontSizeChange, onCircleSizeChange,
+  x, y, color, width, fontSize, circleSize, isText, isNumber, isShape, filled, onColorChange, onWidthChange, onFontSizeChange, onCircleSizeChange, onFilledChange,
 }: {
   x: number; y: number;
-  color: string; width: number; fontSize: number; circleSize: number; isText: boolean; isNumber: boolean;
+  color: string; width: number; fontSize: number; circleSize: number; isText: boolean; isNumber: boolean; isShape: boolean; filled: boolean;
   onColorChange: (c: string) => void;
   onWidthChange: (w: number) => void;
   onFontSizeChange: (s: number) => void;
   onCircleSizeChange: (s: number) => void;
+  onFilledChange: (f: boolean) => void;
 }) {
   const sizeValue = isText ? fontSize : isNumber ? circleSize : width;
   const setSize = isText ? onFontSizeChange : isNumber ? onCircleSizeChange : onWidthChange;
@@ -1101,6 +1107,31 @@ function ToolPropsPopover({
           />
         </label>
       </div>
+
+      {/* 行 3：实心开关（仅 rect/oval） */}
+      {isShape && (
+        <>
+          <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <span style={{ fontSize: 10, color: "#999", fontWeight: 500 }}>实心填充</span>
+            <button
+              type="button"
+              onClick={() => onFilledChange(!filled)}
+              style={{
+                width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
+                background: filled ? "#3b82f6" : "rgba(0,0,0,0.15)",
+                position: "relative", transition: "background 0.2s",
+              }}
+            >
+              <span style={{
+                position: "absolute", top: 2, left: filled ? 16 : 2,
+                width: 14, height: 14, borderRadius: "50%", background: "#fff",
+                transition: "left 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
+              }} />
+            </button>
+          </div>
+        </>
+      )}
     </div>
   );
 }
