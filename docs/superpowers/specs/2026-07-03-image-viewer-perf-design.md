@@ -176,6 +176,9 @@ const computeFitZoom = (w: number, h: number): number => {
 - 原设计：默认 zoom=1（1:1 自然分辨率），超出窗口出滚动条
 - 新设计：首次打开时 fit-to-window（zoom < 1 时缩放显示，无滚动条），用户手动缩放后尊重用户选择
 - 用 `userZoomedRef` 标记用户是否手动改过 zoom：thumb→full 替换时只在用户未手动缩放时重算 fitZoom
+- **fit 模式跟踪**（`fitModeRef`）：`'fitWindow'` | `'fitWidth'` | `'manual'`。打开图片默认 `fitWindow`，点自适应宽度按钮切 `fitWidth`，手动缩放切 `manual`。
+- **自适应宽度**（fit-to-width）：图片宽度 = 窗口宽度（`containerW / natW`，允许 > 1 放大，上限 MAX_ZOOM），高度可超出窗口 → 垂直滚动。工具栏 `Expand` 按钮触发。
+- **ResizeObserver 自适应**：窗口 resize 时，若 `fitModeRef` 非 `manual`，按当前 fit 模式自动重算 zoom（fitWindow 重算 fitZoom，fitWidth 重算 fitToWidthZoom）。手动缩放后不再自动调整。
 
 ## 4. 拖动标注（drag）与抓手平移（pan）的处理
 

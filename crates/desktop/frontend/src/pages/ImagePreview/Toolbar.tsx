@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import {
   MousePointer2, Square, Circle, Minus, ArrowUpRight, Pen, Type, Undo2,
-  Download, Copy, ScanText, Pin, PinOff, Check, ZoomIn, ZoomOut,
+  Download, Copy, ScanText, Pin, PinOff, Check, ZoomIn, ZoomOut, Expand,
 } from "lucide-react";
 import type { Tool } from "@/lib/annotation";
 
@@ -63,6 +63,7 @@ export default function Toolbar(props: {
   onUndo: () => void; canUndo: boolean;
   ocrCopied: boolean;
   zoom: number; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
+  onZoomFitWidth: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   // 浮窗左偏移（相对工具卡），跟随被点击的标注按钮
@@ -160,6 +161,9 @@ export default function Toolbar(props: {
         </button>
         <ToolButton title="放大" active={false} onClick={() => props.onZoomIn()}>
           <ZoomIn className="h-[18px] w-[18px]" />
+        </ToolButton>
+        <ToolButton title="自适应宽度" active={false} onClick={() => props.onZoomFitWidth()}>
+          <Expand className="h-[18px] w-[18px]" />
         </ToolButton>
 
         {/* 置顶单独推到最右 */}

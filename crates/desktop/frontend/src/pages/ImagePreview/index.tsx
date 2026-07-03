@@ -16,10 +16,16 @@ const ZOOM_STEP = 1.25;
 
 // fit-to-window：图片完整显示在窗口内，最大不超过 1:1
 const FIT_PADDING = 96; // p-12 = 48px per side × 2
+// fit-to-window：完整显示在窗口内（宽高都不超出），不放大
 const computeFitZoom = (w: number, h: number): number => {
   const containerW = window.innerWidth - FIT_PADDING;
   const containerH = window.innerHeight - FIT_PADDING;
   return Math.min(1, containerW / w, containerH / h);
+};
+// fit-to-width：图片宽度 = 窗口宽度（高度可超出 → 垂直滚动）
+const computeFitToWidthZoom = (w: number): number => {
+  const containerW = window.innerWidth - FIT_PADDING;
+  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, containerW / w));
 };
 
 /**
@@ -69,6 +75,8 @@ export default function ImagePreview() {
   const scaledBitmapRef = useRef<ImageBitmap | null>(null);
   const zoomVersionRef = useRef(0);
   const userZoomedRef = useRef(false);
+  // fit 模式：'fitWindow' | 'fitWidth' | 'manual'。ResizeObserver 据此决定是否自动重算
+  const fitModeRef = useRef<'fitWindow' | 'fitWidth' | 'manual'>('fitWindow');
   // 文字输入框 ref：autoFocus 对动态挂载的 textarea 不可靠，改 setTimeout focus（对齐截图）
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   // 文字草稿：state 驱动 textarea 渲染，ref 镜像供 commitText 读最新输入
@@ -81,12 +89,42 @@ export default function ImagePreview() {
   const setZoomSync = (z: number, userInitiated = false) => {
     const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
     zoomRef.current = clamped;
-    if (userInitiated) userZoomedRef.current = true;
+    if (userInitiated) {
+      userZoomedRef.current = true;
+      fitModeRef.current = 'manual';
+    }
     setZoom(clamped);
   };
   const zoomIn = () => setZoomSync(zoomRef.current * ZOOM_STEP, true);
   const zoomOut = () => setZoomSync(zoomRef.current / ZOOM_STEP, true);
   const zoomReset = () => setZoomSync(1, true);
+  // 自适应宽度：图片宽度 = 窗口宽度
+  const zoomFitWidth = () => {
+    if (!natW) return;
+    fitModeRef.current = 'fitWidth';
+    const z = computeFitToWidthZoom(natW);
+    zoomRef.current = z;
+    setZoom(z);
+  };
+
+  // —— ResizeObserver：fit 模式下窗口 resize 自动重算缩放 ——
+  useEffect(() => {
+    const onResize = () => {
+      const mode = fitModeRef.current;
+      if (mode === 'manual' || !natW || !natH) return;
+      if (mode === 'fitWindow') {
+        const z = computeFitZoom(natW, natH);
+        zoomRef.current = z;
+        setZoom(z);
+      } else if (mode === 'fitWidth') {
+        const z = computeFitToWidthZoom(natW);
+        zoomRef.current = z;
+        setZoom(z);
+      }
+    };
+    window.addEventListener('resize', onResize);
+    return () => window.removeEventListener('resize', onResize);
+  }, [natW, natH]);
 
   // —— unmount：revoke objectURL + close bitmap，防内存泄漏 ——
   useEffect(() => {
@@ -123,6 +161,7 @@ export default function ImagePreview() {
     }
     zoomVersionRef.current++;
     userZoomedRef.current = false;
+    fitModeRef.current = 'fitWindow';
     drawingRef.current = null;
     setAnnotations([]);
     setNatW(0);
@@ -503,6 +542,7 @@ export default function ImagePreview() {
         onUndo={undo} canUndo={annotations.length > 0}
         ocrCopied={ocrCopied}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
+        onZoomFitWidth={zoomFitWidth}
       />
       {/* 滚动容器：全屏画布，图片大于视口自动出滚动条；小于则居中 */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar">
