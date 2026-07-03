@@ -157,7 +157,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **macOS 权限**：通过 `cargo run` 运行时，屏幕录制权限需授给终端应用（非二进制）。打包 .app 后绑定 octopus 本身。
 
-详见 [spec](superpowers/specs/2026-06-28-screenshot-design.md)。
+详见 [spec](superpowers/specs/2026-06-28-archived-specs.md)。
 
 ### octopus-notepad（已移除）
 
