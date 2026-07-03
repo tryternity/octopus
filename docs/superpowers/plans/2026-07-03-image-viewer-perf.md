@@ -532,3 +532,27 @@ git commit -m "docs: 同步图片查看器性能优化到 architecture.md"
 - **computeFitZoom padding 修正（Minor）**：原 plan `-24` 不匹配实际容器 `p-12`（48px×2=96px），改为 `FIT_PADDING=96`。
 - **blob URL 泄漏（Minor）**：`objectUrlRef` 跟踪当前 objectURL，图片切换/卸载时 `revokeObjectURL`。unmount cleanup effect 兜底 revoke + `bitmap.close()`。
 - **EXIF 条显示 thumb 尺寸（Minor）**：新增 `fullNatW/fullNatH` state，EXIF 条用 `fullNatW || natW`，thumb 期间不显示缩略图尺寸。
+
+### 架构演进：双 canvas → SVG overlay（用户反馈驱动）
+
+原 plan 设计为双 canvas（bgCanvas + drawCanvas）。实施后用户测试 2032×15796 超长图仍感觉标注卡顿，经历三轮迭代：
+
+1. **RAF 节流 + 跳过无变化 canvas 尺寸重设**（commit `203be9d`）——稍好但仍慢
+2. **pen 增量线段 + shape 脏区域重绘**（commit `6379614`）——再好一点，但 drawCanvas 的 GPU 合成 45M 像素本身有固定成本
+3. **canvas + SVG overlay**（commit `237713a`）——最终方案，标注完全不参与 canvas 操作
+
+**最终架构**：单 canvas（底图，zoom/imageId 变化才重绘）+ SVG overlay（标注，`AnnotationSvg.tsx`，浏览器合成器独立处理）。标注变化（增删改、实时预览）只更新 SVG DOM 属性，零 canvas 操作。
+
+### 后续追加需求
+
+- **自适应宽度按钮**（commit `bdfa8fa`→`ad65e02`）：默认打开模式从 fitWindow 改为 fitWidth（图片宽度=窗口宽度）。工具栏加 `MoveHorizontal`（自适应宽度）+ `Expand`（自适应窗口）两个按钮。`fitModeRef` 三态跟踪。
+- **ResizeObserver**（commit `bdfa8fa`）：窗口 resize 时按 fit 模式自动重算 zoom（借鉴 RapidRAW `useImageRenderSize`）。
+- **灯箱暗场重构**（commit `2dc2ccf`）：左右 padding 48→8px、zinc 冷灰背景、棋盘格 14px、EXIF 条收敛。
+- **工具栏重叠修复**（commit `5bc1b4d`）：顶部 padding `pt-14`。
+
+### 不与 Screenshot 共享渲染层的决策
+
+`lib/annotation.ts`（类型 + 纯函数）两端共享。渲染层各自实现：
+- Screenshot 用单 canvas 全量重绘——屏幕尺寸 ~2M 像素，全量重绘 <1ms，无性能问题
+- Screenshot 涉及选区裁剪逻辑，坐标系为窗口显示空间（非自然像素），改造量大
+- 为 DRY 承担大改动 + 回归风险换不到可感知的性能提升——当前共享边界（纯函数 DRY + 渲染各自实现）是合理的

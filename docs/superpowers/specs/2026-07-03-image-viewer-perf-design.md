@@ -32,83 +32,40 @@
 
 ## 3. 架构
 
-### 3.1 双 canvas 分层（解决 C）
+### 3.1 单 canvas（底图）+ SVG overlay（标注）= 标注零 canvas 开销
 
-**核心思路**：将「已确认内容」和「正在绘制的内容」分离到两个叠放的 canvas 上，mousemove 只操作顶层（增量追加），不触发底层重绘。
-
-```
-┌─ drawCanvas（顶层，透明底）────────────────┐  ← 正在绘制的笔迹/形状预览
-│  mousedown→mousemove: 增量追加线段（pen）     │     mouseup 时提交→清空
-│  mousedown→mousemove: 清空→重画当前形状（其他）  │
-└──────────────────────────────────────────────┘
-┌─ bgCanvas（底层，底图+已确认标注）────────────┐  ← imageId/zoom/annotations 变化时重绘
-│  drawImage(预缩放位图) + drawAnnotation(anns)  │
-└──────────────────────────────────────────────┘
-```
-
-**HTML 结构**（两个 canvas 叠放在同一个 relative 容器内）：
+**演进**：初版用双 canvas（bgCanvas + drawCanvas），在超大图（2032×15796，45M 像素）上 drawCanvas 的 GPU 合成开销仍然卡顿。最终改为 canvas 只画底图 + 标注用 SVG overlay，标注变化不再触发任何 canvas 操作。
 
 ```tsx
-<div className="relative" style={{ width: dispW, height: dispH }}>
-  <canvas ref={bgCanvasRef} className="absolute inset-0 block" style={{ width: dispW, height: dispH }} />
-  <canvas ref={drawCanvasRef} className="absolute inset-0 block" style={{ width: dispW, height: dispH, cursor: ... }}
+<div className="relative" style={{ width: dispW, height: dispH, ...棋盘格 }}>
+  <canvas ref={bgCanvasRef} className="absolute inset-0 block"         // 只画底图
+    style={{ width: dispW, height: dispH, cursor: ... }}
     onMouseDown={onMouseDown} onMouseMove={onMouseMove} onMouseUp={onMouseUp} />
-  <img ref={imgRef} ... /> {/* display:none，解码源 */}
+  <svg className="absolute inset-0 block"                                  // 标注 overlay
+    viewBox={`0 0 ${natW} ${natH}`} preserveAspectRatio="none"
+    style={{ width: dispW, height: dispH, pointerEvents: "none" }}>
+    {annotations.map((ann, i) => <AnnotationSvg key={i} ann={ann} />)}
+    {draftAnn && <AnnotationSvg ann={draftAnn} />}
+  </svg>
 </div>
 ```
 
-**事件绑定**：pointer 事件只绑 drawCanvas（顶层），穿透无需处理（drawCanvas 透明区自然穿透到 bgCanvas 视觉上，事件已由顶层捕获）。
+**SVG overlay 原理**：SVG 元素（`<rect>`/`<ellipse>`/`<line>`/`<polyline>`/`<text>`）由浏览器合成器独立处理，不参与 canvas GPU 合成。标注变化（增删改、实时预览）只更新 SVG DOM 属性，零 canvas 操作。
 
-**draw 拆分**：
+**坐标系统**：SVG `viewBox="0 0 natW natH"` + `preserveAspectRatio="none"` → SVG 内部坐标 = 自然像素空间，CSS 尺寸 = `dispW×dispH`。标注坐标定义不变（自然像素），SVG 自动缩放。
 
-```ts
-// drawBg：imageId / zoom / annotations 变化时调用（含 createImageBitmap 预缩放）
-const drawBg = useCallback(async () => {
-  const bitmap = await createImageBitmap(img, {
-    resizeWidth: natW * zoom * dpr,
-    resizeHeight: natH * zoom * dpr,
-  });
-  bgCanvas.width = bitmap.width;
-  bgCanvas.height = bitmap.height;
-  bgCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  bgCtx.drawImage(bitmap, 0, 0, dispW, dispH);
-  bgCtx.save();
-  bgCtx.scale(zoom, zoom);
-  for (const ann of annotations) drawAnnotation(bgCtx, ann);
-  bgCtx.restore();
-  bitmap.close();
-}, [natW, natH, zoom, annotations]);
-
-// drawActive：mousemove 调用，只操作 drawCanvas
-const drawActive = useCallback(() => {
-  drawCanvas.width = dispW * dpr;  // 清空
-  drawCanvas.height = dispH * dpr;
-  drawCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  if (drawingRef.current) {
-    drawCtx.save();
-    drawCtx.scale(zoom, zoom);
-    drawAnnotation(drawCtx, drawingRef.current);
-    drawCtx.restore();
-  }
-}, [dispW, dispH, zoom]);
-```
-
-**mouseup 提交流程**：
+**bgCanvas**：只画底图（预缩放位图），只在 imageId/zoom 变化时重绘（annotations 变化不触发）：
 
 ```ts
-const onMouseUp = () => {
-  if (drawingRef.current) {
-    const ann = drawingRef.current;
-    drawingRef.current = null;
-    // 过滤误触后入 annotations
-    if (ok) setAnnotations(prev => [...prev, ann]);
-    else drawActive(); // 清掉不合法的绘制预览
-  }
-  dragRef.current = null;
-};
+const drawBg = useCallback(() => {
+  canvas.width = Math.round(natW * zoom * dpr);
+  canvas.height = Math.round(natH * zoom * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  ctx.drawImage(scaledBitmapRef.current || img, 0, 0, natW * zoom, natH * zoom);
+}, [natW, natH, zoom]);  // 注意：annotations 不在依赖里
 ```
 
-annotations state 更新 → useEffect 触发 drawBg → 底层重绘含新标注，drawCanvas 无需额外清空（下次 drawActive 会清）。
+**实时预览**：正在绘制的标注存为 `draftAnn` state（React），mousemove 时 `setDraftAnn(...)` → React 只渲染一个 SVG 元素的属性 diff（浏览器内部优化，极快）。mouseup 后 `draftAnn` 入 `annotations` 或清空。
 
 ### 3.2 createImageBitmap 异步预缩放（解决 B）
 
@@ -195,7 +152,7 @@ const computeFitZoom = (w: number, h: number): number => {
 
 - **zoom 期间快速连续点击**：每个 zoom 值都触发 createImageBitmap，中间结果被最新的一次覆盖（旧 bitmap 在 drawBg 中 close）。最终只有最新 zoom 值的位图画上 bgCanvas。
 - **thumb→full 替换期间用户正在绘制标注**：thumb 和 full 的 `naturalWidth/Height` 不同（thumb 是缩略图尺寸），如果允许在 thumb 期间画标注，坐标会存在 thumb 坐标系，full 加载后被重新诠释为 full 坐标系 → 标注错位。**解决方案**：`loadingFullRef` 门控——全图加载完成前禁止标注（`onMouseDown` 中 `loadingFullRef.current && tool !== "none"` 时 return）。用户在此期间只能选择/平移，不能新建标注。
-- **drawCanvas 尺寸同步**：dispW/dispH 变化时（zoom 变化）两个 canvas 的 CSS 尺寸同步更新，bgCanvas 的像素尺寸由 drawBg 内部设，drawCanvas 的像素尺寸由 drawActive 设。
+- **SVG overlay 尺寸同步**：dispW/dispH 变化时（zoom 变化）bgCanvas 和 SVG 的 CSS 尺寸同步更新。SVG 的 viewBox 不变（自然空间），浏览器自动按 CSS 尺寸缩放内容。
 - **撤退路径**：如果 `createImageBitmap` 不支持（极老浏览器），fallback 到当前直接 `drawImage` 方式（原逻辑不变）。
 - **blob URL 泄漏**：`objectUrlRef` 跟踪当前全图的 objectURL，图片切换时 `revokeObjectURL` 旧的、unmount cleanup effect 兜底 revoke + `bitmap.close()`。
 - **EXIF 条显示 thumb 尺寸**：`fullNatW/fullNatH` state 仅在全图 onload 后赋值，EXIF 条用 `fullNatW || natW`——thumb 期间不显示缩略图尺寸。
@@ -203,6 +160,20 @@ const computeFitZoom = (w: number, h: number): number => {
 ## 6. 不变量
 
 1. 标注坐标始终在**自然像素空间**（与 zoom 解耦），zoom 变化/底图替换不影响标注正确性
-2. drawCanvas 始终是"正在绘制中"的临时层，mouseup 后内容要么入 annotations 要么被清空
-3. bgCanvas 是"已确认状态"的权威渲染，imageId/zoom/annotations 任一变化都触发完整重绘
-4. composePngBytes（保存/复制）不受双 canvas 影响，仍在独立 offscreen canvas 上自然尺寸 1:1 合成
+2. 标注是纯数据（`Annotation[]`），渲染由 SVG overlay 处理，不碰底图像素
+3. bgCanvas 只画底图，只在 imageId/zoom 变化时重绘（annotations 变化不触发 canvas 操作）
+4. composePngBytes（保存/复制）不受影响，仍在独立 offscreen canvas 上自然尺寸 1:1 合成（`drawImage(原图) + drawAnnotation(ann)`，仅保存时执行）
+
+## 7. 与 Screenshot 标注的关系
+
+**共享层**：`lib/annotation.ts`（`Annotation`/`Tool` 类型 + `drawAnnotation`/`drawAnnotationScaled`/`hitTestAnnotationPrecise`/`annBounds` 纯函数）——两端的标注数据模型、绘制逻辑、命中检测完全统一。
+
+**渲染层不共享**（各自实现）：
+
+| | ImagePreview | Screenshot |
+|---|---|---|
+| 渲染方式 | canvas（底图）+ **SVG overlay**（标注） | 单 canvas（底图+标注全量重绘） |
+| 坐标空间 | **自然像素**（图像本征分辨率） | **窗口显示空间**（`window.innerWidth` 系） |
+| canvas 尺寸 | 超大图可达 45M 像素 | 屏幕尺寸 ~2M 像素 |
+
+**不统一的原因**：Screenshot 的 canvas 是屏幕尺寸（~2M 像素），全量重绘 <1ms，无性能问题；且截图涉及选区裁剪逻辑，改造量大。为 DRY 承担大改动 + 回归风险换不到可感知的性能提升。当前的共享边界（纯函数 DRY + 渲染各自实现）是合理的。
