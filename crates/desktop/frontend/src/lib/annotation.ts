@@ -2,10 +2,10 @@
 // 坐标空间由调用方决定：这些函数对坐标数值本身不做假设，
 // 调用方负责把 ctx 变换（translate/scale）设好后再传入标注坐标。
 
-export type Tool = "none" | "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number";
+export type Tool = "none" | "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number" | "blur";
 
 export interface Annotation {
-  type: "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number";
+  type: "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number" | "blur";
   x1: number; y1: number; x2: number; y2: number;
   text?: string;
   points?: number[][];
@@ -91,6 +91,8 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
     ctx.fillText(String(ann.number), ann.x1, ann.y1);
     ctx.textAlign = "start";
   }
+  // blur 类型在 composePngBytes 时由调用方做像素级马赛克（drawAnnotation 不处理，
+  // 因为它无法访问底图像素）。SVG overlay 用 blur filter + 半透矩形模拟预览。
 }
 
 // 多行文字绘制：支持 \n 换行 + 超宽自动折行（模块私有，仅 drawAnnotation 内部用）

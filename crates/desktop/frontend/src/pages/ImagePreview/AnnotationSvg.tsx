@@ -79,6 +79,45 @@ function AnnotationSvgImpl({ ann }: { ann: Annotation }) {
         </g>
       );
     }
+    case "number": {
+      if (!ann.number) return null;
+      const r = (ann.circleSize || 24) / 2;
+      const fs = (ann.circleSize || 24) * 0.6;
+      return (
+        <g>
+          <circle cx={ann.x1} cy={ann.y1} r={r} fill={color} />
+          <text
+            x={ann.x1}
+            y={ann.y1}
+            fontSize={fs}
+            fill="#ffffff"
+            fontWeight="bold"
+            fontFamily="-apple-system, sans-serif"
+            textAnchor="middle"
+            dominantBaseline="central"
+          >
+            {ann.number}
+          </text>
+        </g>
+      );
+    }
+    case "blur": {
+      const x = Math.min(ann.x1, ann.x2);
+      const y = Math.min(ann.y1, ann.y2);
+      const w = Math.abs(ann.x2 - ann.x1);
+      const h = Math.abs(ann.y2 - ann.y1);
+      // SVG 模糊预览：用 blur filter + 半透矢矩形覆盖区域
+      return (
+        <rect
+          x={x} y={y} width={w} height={h}
+          fill="rgba(120,120,120,0.7)"
+          stroke="rgba(255,255,255,0.3)"
+          strokeWidth={1}
+          strokeDasharray="4 2"
+          rx={2}
+        />
+      );
+    }
     default:
       return null;
   }

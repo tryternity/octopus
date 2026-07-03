@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import {
   MousePointer2, Square, Circle, Minus, ArrowUpRight, Pen, Type, Undo2,
   Download, Copy, ScanText, Pin, PinOff, Check, ZoomIn, ZoomOut, Expand, MoveHorizontal, AlertTriangle,
+  Hash, Grid2x2,
 } from "lucide-react";
 import type { Tool } from "@/lib/annotation";
 
@@ -103,6 +104,8 @@ export default function Toolbar(props: {
     { key: "arrow", icon: <ArrowUpRight className="h-[18px] w-[18px]" />, title: "箭头" },
     { key: "pen", icon: <Pen className="h-[18px] w-[18px]" />, title: "画笔（自由曲线）" },
     { key: "text", icon: <Type className="h-[18px] w-[18px]" />, title: "文字" },
+    { key: "number", icon: <Hash className="h-[18px] w-[18px]" />, title: "序号" },
+    { key: "blur", icon: <Grid2x2 className="h-[18px] w-[18px]" />, title: "马赛克" },
   ];
 
   return (

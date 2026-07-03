@@ -452,6 +452,24 @@ export default function ImagePreview() {
       return;
     }
 
+    // 序号：点击放置，自动递增编号
+    if (tool === "number") {
+      const maxNum = annotations.reduce((max, a) => {
+        if (a.type === "number" && a.number && a.number > max) return a.number;
+        return max;
+      }, 0);
+      const ann: Annotation = {
+        type: "number", x1: nx, y1: ny, x2: nx, y2: ny,
+        number: maxNum + 1,
+        color: toolColorRef.current, circleSize: 28,
+      };
+      drawingRef.current = ann;
+      setAnnotations((prev) => [...prev, ann]);
+      drawingRef.current = null;
+      setDraftAnn(null);
+      return;
+    }
+
     // 画笔（自由曲线）：起 points 点序列
     if (tool === "pen") {
       drawingRef.current = {
@@ -521,6 +539,26 @@ export default function ImagePreview() {
     c.width = natW; c.height = natH;
     const ctx = c.getContext("2d")!;
     ctx.drawImage(img, 0, 0, natW, natH);
+    // 先处理 blur（像素马赛克），再画其他标注
+    for (const ann of annotations) {
+      if (ann.type !== "blur") continue;
+      const bx = Math.round(Math.min(ann.x1, ann.x2));
+      const by = Math.round(Math.min(ann.y1, ann.y2));
+      const bw = Math.round(Math.abs(ann.x2 - ann.x1));
+      const bh = Math.round(Math.abs(ann.y2 - ann.y1));
+      if (bw < 2 || bh < 2) continue;
+      // 马赛克：缩小再放大（降采样）
+      const tmp = document.createElement("canvas");
+      const block = Math.max(4, Math.floor(Math.min(bw, bh) / 8));
+      tmp.width = Math.max(1, Math.floor(bw / block));
+      tmp.height = Math.max(1, Math.floor(bh / block));
+      const tctx = tmp.getContext("2d")!;
+      tctx.imageSmoothingEnabled = false;
+      tctx.drawImage(c, bx, by, bw, bh, 0, 0, tmp.width, tmp.height);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(tmp, 0, 0, tmp.width, tmp.height, bx, by, bw, bh);
+      ctx.imageSmoothingEnabled = true;
+    }
     for (const ann of annotations) drawAnnotation(ctx, ann);
     const blob: Blob = await new Promise((resolve, reject) => c.toBlob((b) => b ? resolve(b) : reject("toBlob failed"), "image/png"));
     return await blob.arrayBuffer();
