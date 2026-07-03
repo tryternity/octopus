@@ -68,6 +68,8 @@ export default function ImagePreview() {
   const [ocrWarn, setOcrWarn] = useState(false);
   // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
   const loadingFullRef = useRef(false);
+  // 全图已加载：true 时缩略图后到直接丢弃（防竞态降级）
+  const fullLoadedRef = useRef(false);
   // 当前 objectURL（图片切换/卸载时 revoke，防内存泄漏）
   const objectUrlRef = useRef<string | null>(null);
   // 全图自然尺寸（thumb 期间为 0，full 加载后赋值；EXIF 条用此而非 natW/natH）
@@ -186,6 +188,7 @@ export default function ImagePreview() {
     setFullNatW(0);
     setFullNatH(0);
     loadingFullRef.current = true;
+    fullLoadedRef.current = false;
 
     const thumbPromise = invoke<string>("get_image_thumb", { id: imageId });
     const fullPromise = invoke<ArrayBuffer>("get_image_full", { id: imageId });
@@ -196,7 +199,7 @@ export default function ImagePreview() {
       const thumbImg = new Image();
       thumbImg.crossOrigin = "anonymous";
       thumbImg.onload = () => {
-        if (cancelled) return;
+        if (cancelled || fullLoadedRef.current) return; // 全图已加载→丢弃滞后的缩略图
         imgRef.current = thumbImg;
         setDataUrl(thumbDataUrl);
         const fitZoom = computeFitZoom(thumbImg.naturalWidth, thumbImg.naturalHeight);
@@ -223,6 +226,7 @@ export default function ImagePreview() {
         if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
         objectUrlRef.current = url;
         loadingFullRef.current = false;
+        fullLoadedRef.current = true;
         imgRef.current = fullImg;
         setDataUrl(url);
         setFullNatW(fullImg.naturalWidth);
@@ -626,6 +630,10 @@ export default function ImagePreview() {
           position: "relative",
           width: Math.max(dispW + FIT_PADDING, viewport.w),
           height: Math.max(dispH + TOOLBAR_H + 8, viewport.h),
+        }}
+        onMouseDown={(e) => {
+          // 点击暗区（content 空白，非 wrapper）关闭窗口——仅选择工具
+          if (tool === "none" && e.target === e.currentTarget) close();
         }}>
           {/* wrapper：absolute 定位（手算居中），透明背景（canvas 在下层画底图）+ SVG + 鼠标 */}
           <div ref={wrapperRef}
