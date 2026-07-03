@@ -272,7 +272,8 @@ export default function ImagePreview() {
     const sc = scrollContainerRef.current;
     if (!canvas || !img || !natW || !natH || !sc) return;
     const sl = sc.scrollLeft, st = sc.scrollTop;
-    const vw = sc.clientWidth, vh = sc.clientHeight;
+    const vw = viewport.w || sc.clientWidth;
+    const vh = viewport.h || sc.clientHeight;
     const dpr = window.devicePixelRatio || 1;
     const cw = Math.round(vw * dpr);
     const ch = Math.round(vh * dpr);
