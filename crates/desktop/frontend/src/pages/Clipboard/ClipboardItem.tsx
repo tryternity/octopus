@@ -2,7 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, Loader2, Check, SquarePen, Maximize2 } from "lucide-react";
 import { invoke } from "@/lib/tauri";
-import { openCompactEditor } from "@/lib/compactEditor";
+import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
 
@@ -99,12 +99,10 @@ export default function ClipboardItemRow({
       setOcrLoading(false);
       setOcrDone(true);
       setTimeout(() => setOcrDone(false), 1000);
-      // 识别成功 → 打开精简编辑器，保存后回写剪贴板条目 + 刷新列表
-      openCompactEditor(text, (edited) => {
-        invoke("set_clipboard_item_text", { itemId: item.id, text: edited })
-          .then(onChanged)
-          .catch(console.error);
-      });
+      // 识别文本 → 统一入库 source=ocr → 打开 CompactEditor tab 编辑
+      const ocrId = await invoke<number>("insert_ocr_clipboard_item", { text });
+      await openCompactEditorTab(ocrId);
+      onChanged();
     } catch (err) {
       setOcrLoading(false);
       const msg = String(err);
@@ -143,14 +141,11 @@ export default function ClipboardItemRow({
   const handleEditText = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (item.item_type === "image" || item.item_type === "file") return;
-    openCompactEditor(item.content, (edited) => {
-      invoke("set_clipboard_item_text", { itemId: item.id, text: edited })
-        .then(onChanged)
-        .catch(console.error);
-    });
+    openCompactEditorTab(item.id);
   };
 
   const Icon = item.source === "asr" ? Mic
+    : item.source === "ocr" ? ScanText
     : item.item_type === "image" ? ImageIcon
     : item.item_type === "file" ? FileText
     : Type;

@@ -9,6 +9,7 @@ import {
   hitTestAnnotationPrecise,
 } from "@/lib/annotation";
 import Toolbar from "./Toolbar";
+import { openCompactEditorTab } from "@/lib/compactEditor";
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
@@ -297,9 +298,9 @@ export default function ImagePreview() {
     try {
       const text = await invoke<string>("ocr_image", { id: imageId });
       if (text) {
-        // 识别结果存为 source=ocr 的笔记 → 打开记事本并选中（用户可在笔记里编辑）
-        const noteId = await invoke<number>("save_ocr_to_note", { text });
-        await invoke("open_notepad_with_note", { noteId });
+        // 识别文本 → 统一入库 source=ocr → 打开 CompactEditor tab 编辑
+        const ocrId = await invoke<number>("insert_ocr_clipboard_item", { text });
+        await openCompactEditorTab(ocrId);
         setOcrCopied(true);
         setTimeout(() => setOcrCopied(false), 1500);
       }

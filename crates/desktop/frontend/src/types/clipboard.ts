@@ -1,5 +1,5 @@
 export type ItemType = "text" | "image" | "file";
-export type Source = "clipboard" | "asr";
+export type Source = "clipboard" | "asr" | "ocr";
 
 export interface ImageMeta {
   blob_hash: string;
@@ -20,6 +20,11 @@ export interface AsrMeta {
   model: string;
 }
 
+export interface OcrMeta {
+  engine: string;
+  model: string;
+}
+
 export interface ClipboardItem {
   id: number;
   item_type: ItemType;
@@ -30,5 +35,6 @@ export interface ClipboardItem {
   image_meta?: ImageMeta;
   file_meta?: FileMeta;
   asr_meta?: AsrMeta;
+  ocr_meta?: OcrMeta;
   is_rich: boolean;
 }
