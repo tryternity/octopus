@@ -565,7 +565,7 @@ export default function Screenshot() {
       invoke("ocr_screenshot", bytes as unknown as Record<string, unknown>).catch((e) => {
         // 全局互斥：他处正在 OCR → 屏幕中央提示稍后重试；其余错误打日志（截图无 toast 框架）
         const msg = String(e);
-        if (msg.includes("正在 OCR 中")) {
+        if (msg.includes("还未完成")) {
           setOcrWarn(true);
           setTimeout(() => setOcrWarn(false), 1800);
         } else {
@@ -919,7 +919,7 @@ export default function Screenshot() {
           fontSize: 14, fontWeight: 500, boxShadow: "0 8px 24px rgba(0,0,0,0.3)",
           pointerEvents: "none",
         }}>
-          正在 OCR 中，请稍后重试
+          前一个 OCR 还未完成，请稍后
         </div>
       )}
     </>

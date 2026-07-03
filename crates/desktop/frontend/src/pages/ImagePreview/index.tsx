@@ -490,7 +490,7 @@ export default function ImagePreview() {
     } catch (e) {
       // 全局互斥：他处正在 OCR → 工具栏显琥珀三角 1.8s 提示稍后重试
       const msg = String(e);
-      if (msg.includes("正在 OCR 中")) {
+      if (msg.includes("还未完成")) {
         setOcrWarn(true);
         setTimeout(() => setOcrWarn(false), 1800);
       } else {

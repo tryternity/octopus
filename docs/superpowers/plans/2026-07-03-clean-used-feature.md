@@ -825,12 +825,12 @@ Task 1-11 完成进入 e2e 验收后发现并修复的 4 个问题。均**已实
 - Modify: `crates/ocr/tests/ocr_smoke.rs`（`instance` 并发返回同引擎测试）
 - Modify: `crates/desktop/src/clipboard_commands.rs`（`ocr_image` 加互斥守卫；`insert_ocr_clipboard_item` 修 with_db 重入；`set_clipboard_item_text` 加 emit）
 - Modify: `crates/desktop/src/screenshot_commands.rs`（`ocr_screenshot` 加互斥守卫）
-- Modify: 前端 4 入口（`ClipboardItem` / `ImagePreview` index+Toolbar / `Screenshot` / `ClipboardPanel`）加「正在 OCR 中」可见提示
+- Modify: 前端 4 入口（`ClipboardItem` / `ImagePreview` index+Toolbar / `Screenshot` / `ClipboardPanel`）加「前一个 OCR 还未完成」可见提示
 
 - [x] **Step 1: with_db 重入死锁修复** — `insert_ocr_clipboard_item` 把 `current_ocr_meta()` 移出 `with_db` 闭包（`std::Mutex` 非递归，闭包内调 `current_ocr_meta`→`load_config_key`→`with_db` = 同线程重入死锁；症状：async `await` 卡住不报错 + DB 查询全阻塞 + 应用不全僵死）。详见 `architecture.md` db 模块重入警告。
 - [x] **Step 2: CompactEditor 保存同步** — `set_clipboard_item_text` 成功后 `emit("clipboard://changed")`：编辑器是独立窗口，剪贴板列表窗口靠此事件感知条目变化并刷新（`useClipboardHistory` 监听→fetchItems），否则编辑后列表仍显旧文本。FTS5 经 `clip_fts_au AFTER UPDATE OF search_text` 触发器自动同步。
 - [x] **Step 3: 超长图 OCR 切分** — `engine.rs` 加 `recognize_long_image` / `plan_chunks`（`SPLIT_HEIGHT_THRESHOLD=1600` / `CHUNK_HEIGHT=1280` / `CHUNK_OVERLAP=200`），`recognize` 对 `height>1600` 长图按块切分逐块识别 + 跳过与上一块末行相同的起始行去重；解决 2032×15796 长图 det 等比缩放后短边过小、text_len=0。`plan_chunks` 3 个单测绿。设计见 spec §6.3 / OCR spec §10.4。
-- [x] **Step 4: OCR 全局并发互斥** — `OcrLockGuard`（`OCR_BUSY: AtomicBool` + `compare_exchange` RAII，drop 释放）在 `ocr_image` / `ocr_screenshot` 入口 `try_acquire`，忙则立即 `Err("正在 OCR 中，请稍后重试")`、不进推理；前端 4 入口 catch 该错误给出可见提示（剪贴板列表 / 图片预览按钮显琥珀三角 `ocrWarn`、截图屏幕中央 toast、设置页 `showToast`）。设计见 spec §6.3 / OCR spec §10.5。
+- [x] **Step 4: OCR 全局并发互斥** — `OcrLockGuard`（`OCR_BUSY: AtomicBool` + `compare_exchange` RAII，drop 释放）在 `ocr_image` / `ocr_screenshot` 入口 `try_acquire`，忙则立即 `Err("前一个 OCR 还未完成，请稍后")`、不进推理；前端 4 入口 catch 该错误给出可见提示（剪贴板列表 / 图片预览按钮显琥珀三角 `ocrWarn`、截图屏幕中央 toast、设置页 `showToast`）。设计见 spec §6.3 / OCR spec §10.5。
 - [x] **Step 5: 文档同步** — `architecture.md` octopus-ocr 节补长图切分 + `OcrLockGuard` + 前端提示；clean-used-feature spec §6.3；OCR spec §10.4/§10.5。
 
 > **OCR 僵死归因（技术债，用户定调不深究）**：e2e 期间 OCR 曾僵死，多轮归因（建窗 worker 线程 / 并发首次加载 / MNN C++ 包）均被独立进程 smoke test **证伪**，真因未最终坐实；当前版本（DCL + with_db 修 + emit + 互斥）稳定。`INIT_LOCK` DCL 保留为无害串行化优化（非「修复并发死锁」）。详见 `tests/ocr_concurrent_smoke.rs` + memory `tauri-async-cmd-window-main-thread`。

@@ -321,7 +321,7 @@ function ClipboardRow({
       if (msg.includes("未识别到文本")) {
         setOcrDone(true);
         setTimeout(() => setOcrDone(false), 1000);
-      } else if (msg.includes("正在 OCR 中")) {
+      } else if (msg.includes("还未完成")) {
         // 全局互斥：他处正在 OCR → 直接显示该提示（不加"OCR 失败"前缀）
         showToast(msg);
       } else {

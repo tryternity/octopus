@@ -333,4 +333,4 @@ osascript 创建 TextEdit 文档时会在 stderr 输出「document 未命名」�
 
 ### 10.5 全局并发互斥（2026-07-03）
 
-同一时刻仅允许一个 OCR 任务：`OcrLockGuard`（`static OCR_BUSY: AtomicBool` + `compare_exchange(false, true, Acquire, Acquire)` 的 RAII guard，`Drop` 时 `store(false, Release)`）在 `ocr_image` / `ocr_screenshot` 入口 `try_acquire`，忙则立即 `Err("正在 OCR 中，请稍后重试")`。guard 绑定命令返回值生命周期，async future 被 cancel 时正常 drop 释放（不会泄漏锁）。前端 4 入口（ClipboardItem / ImagePreview / Screenshot / ClipboardPanel）catch 该错误给出可见提示。详见 `architecture.md`。
+同一时刻仅允许一个 OCR 任务：`OcrLockGuard`（`static OCR_BUSY: AtomicBool` + `compare_exchange(false, true, Acquire, Acquire)` 的 RAII guard，`Drop` 时 `store(false, Release)`）在 `ocr_image` / `ocr_screenshot` 入口 `try_acquire`，忙则立即 `Err("前一个 OCR 还未完成，请稍后")`。guard 绑定命令返回值生命周期，async future 被 cancel 时正常 drop 释放（不会泄漏锁）。前端 4 入口（ClipboardItem / ImagePreview / Screenshot / ClipboardPanel）catch 该错误给出可见提示。详见 `architecture.md`。

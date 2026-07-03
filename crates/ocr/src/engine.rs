@@ -162,14 +162,14 @@ impl OcrEngine {
 
 /// OCR 全局互斥：同一时刻仅允许一个 OCR 任务。
 /// 任一 OCR 入口（ocr_image / ocr_screenshot）须先 `try_acquire`，忙则报
-/// "正在 OCR 中，请稍后重试"；guard drop（含 async future 被 cancel）时自动释放。
+/// "前一个 OCR 还未完成，请稍后"；guard drop（含 async future 被 cancel）时自动释放。
 static OCR_BUSY: AtomicBool = AtomicBool::new(false);
 
 /// OCR 互斥 guard：drop 释放 busy。`try_acquire` 忙时返回 None。
 pub struct OcrLockGuard(());
 
 impl OcrLockGuard {
-    /// 占住全局 OCR 锁；已忙返回 None（调用方应报"正在 OCR 中，请稍后重试"）。
+    /// 占住全局 OCR 锁；已忙返回 None（调用方应报"前一个 OCR 还未完成，请稍后"）。
     pub fn try_acquire() -> Option<Self> {
         OCR_BUSY
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)

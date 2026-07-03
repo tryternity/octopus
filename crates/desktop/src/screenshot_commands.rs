@@ -197,7 +197,7 @@ pub async fn ocr_screenshot(
 ) -> Result<(), String> {
     // 全局 OCR 互斥：已有 OCR 在跑则立即拒绝，避免多任务并发进入推理。
     let _ocr_lock = octopus_ocr::engine::OcrLockGuard::try_acquire()
-        .ok_or_else(|| "正在 OCR 中，请稍后重试".to_string())?;
+        .ok_or_else(|| "前一个 OCR 还未完成，请稍后".to_string())?;
     let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
         return Err("expected raw binary body".into());
     };

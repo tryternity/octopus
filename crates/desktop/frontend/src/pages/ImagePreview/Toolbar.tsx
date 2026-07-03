@@ -121,9 +121,21 @@ export default function Toolbar(props: {
         <ToolButton title="复制到剪贴板" active={false} onClick={() => props.onCopy()}>
           <Copy className="h-[18px] w-[18px]" />
         </ToolButton>
-        <ToolButton title="OCR 识别（结果复制到剪贴板）" active={props.ocrCopied || props.ocrWarn} onClick={() => props.onOcr()}>
-          {props.ocrCopied ? <Check className="h-[18px] w-[18px]" /> : props.ocrWarn ? <AlertTriangle className="h-[18px] w-[18px]" style={{ color: "#f59e0b" }} /> : <ScanText className="h-[18px] w-[18px]" />}
-        </ToolButton>
+        <div style={{ position: "relative" }}>
+          <ToolButton title={props.ocrWarn ? "前一个 OCR 还未完成，请稍后" : "OCR 识别（结果复制到剪贴板）"} active={props.ocrCopied || props.ocrWarn} onClick={() => props.onOcr()}>
+            {props.ocrCopied ? <Check className="h-[18px] w-[18px]" /> : props.ocrWarn ? <AlertTriangle className="h-[18px] w-[18px]" style={{ color: "#f59e0b" }} /> : <ScanText className="h-[18px] w-[18px]" />}
+          </ToolButton>
+          {props.ocrWarn && (
+            <span style={{
+              position: "absolute", top: "calc(100% + 6px)", left: "50%", transform: "translateX(-50%)",
+              whiteSpace: "nowrap", background: "#f59e0b", color: "#fff",
+              fontSize: 10, fontWeight: 500, padding: "3px 8px", borderRadius: 5,
+              boxShadow: "0 2px 8px rgba(0,0,0,0.2)", pointerEvents: "none", zIndex: 110,
+            }}>
+              前一个 OCR 还未完成，请稍后
+            </span>
+          )}
+        </div>
 
         <Divider />
 
