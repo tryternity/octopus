@@ -556,3 +556,23 @@ git commit -m "docs: 同步图片查看器性能优化到 architecture.md"
 - Screenshot 用单 canvas 全量重绘——屏幕尺寸 ~2M 像素，全量重绘 <1ms，无性能问题
 - Screenshot 涉及选区裁剪逻辑，坐标系为窗口显示空间（非自然像素），改造量大
 - 为 DRY 承担大改动 + 回归风险换不到可感知的性能提升——当前共享边界（纯函数 DRY + 渲染各自实现）是合理的
+
+### 视口渲染（viewport rendering）演进
+
+用户反馈超大图（2032×15796）在 M2 Ultra 上仍迟钝。分析发现：canvas = 整张图（~45M 像素 / 174MB buffer），GPU 每帧合成 91% 不可见区域。
+
+**演进过程**（3 次迭代）：
+
+1. **DPR 自适应限制**（commit `5653b31`，已废弃）：`MAX_CANVAS_PIXELS=20M`，canvas 超限时降 DPR。buffer 从 174MB→80MB。后续被视口渲染取代，常量已删除。
+
+2. **视口渲染 v1**（commit `7e69f17`，已回退）：canvas 移出 scrollContainer，用 `getBoundingClientRect` 算偏移。**失败**——flex 居中 + padding + scroll 组合导致坐标偏移不可靠，两次修复仍画不出图（commit `9f0564b`、`9fa2ad8`）。
+
+3. **视口渲染 v2**（commit `9bca0de` + `a9faa39`，**最终方案**）：
+   - 彻底放弃 flex 居中，wrapper 用 `position:absolute` + JS 手算 `left/top`
+   - canvas 在 scrollContainer 外面，`absolute inset-0`，恒定窗口大小（~2M 像素）
+   - drawBg 纯手算：`scrollLeft/scrollTop + imgLeft/imgTop` → 裁剪可见区域 drawImage
+   - wrapper 透明背景（不遮 canvas），canvas zIndex:1 / scrollContainer zIndex:2
+   - viewport state（ResizeObserver）+ scrollPos state（RAF scroll）触发 drawBg
+   - canvas CSS `width:100% height:100%`（canvas 在外层 relative 容器内铺满）
+
+**最终效果**：GPU 合成量从 174MB → ~8MB（降 20×），canvas 恒定窗口大小，不管图片多大。详见 [视口渲染 v2 spec](specs/2026-07-03-viewport-rendering-v2-design.md)。
