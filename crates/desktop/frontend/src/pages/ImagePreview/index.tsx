@@ -15,16 +15,17 @@ const MAX_ZOOM = 8;
 const ZOOM_STEP = 1.25;
 
 // fit-to-window：图片完整显示在窗口内，最大不超过 1:1
+const FIT_PADDING = 96; // p-12 = 48px per side × 2
 const computeFitZoom = (w: number, h: number): number => {
-  const containerW = window.innerWidth - 24;
-  const containerH = window.innerHeight - 24;
+  const containerW = window.innerWidth - FIT_PADDING;
+  const containerH = window.innerHeight - FIT_PADDING;
   return Math.min(1, containerW / w, containerH / h);
 };
 
 /**
  * 剪贴板图片项的预览窗口（轻工具栏形态）。
  *
- * 显示：默认 1:1（自然分辨率）打开；图片超出窗口则滚动容器自动出滚动条（上下+左右），
+ * 显示：默认 fit-to-window 打开（缩略图秒开 → 全图异步替换）；图片超出窗口则滚动容器自动出滚动条（上下+左右），
  * 工具栏放大/缩小按钮调 zoom。标注用「自然像素」坐标（与 zoom 解耦）——绘制时
  * ctx.scale(zoom)，鼠标 /zoom 反算；合成保存/复制在自然尺寸画布 1:1 重绘（与 zoom 无关）。
  */
@@ -50,6 +51,8 @@ export default function ImagePreview() {
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [ocrCopied, setOcrCopied] = useState(false);
+  // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
+  const loadingFullRef = useRef(false);
 
   // 交互 refs（避免重渲染抖动 + 拖拽用最新值）
   const drawingRef = useRef<Annotation | null>(null);
@@ -107,6 +110,7 @@ export default function ImagePreview() {
     setAnnotations([]);
     setNatW(0);
     setNatH(0);
+    loadingFullRef.current = true;
 
     const thumbPromise = invoke<string>("get_image_thumb", { id: imageId });
     const fullPromise = invoke<ArrayBuffer>("get_image_full", { id: imageId });
@@ -137,6 +141,7 @@ export default function ImagePreview() {
       fullImg.crossOrigin = "anonymous";
       fullImg.onload = () => {
         if (cancelled) return;
+        loadingFullRef.current = false;
         imgRef.current = fullImg;
         setDataUrl(url);
         if (!userZoomedRef.current) {
@@ -290,6 +295,9 @@ export default function ImagePreview() {
     if (textDraftRef.current) {
       commitText();
     }
+
+    // 全图加载中：仅允许选择/平移，禁止标注（thumb 坐标系 ≠ full 坐标系）
+    if (loadingFullRef.current && tool !== "none") return;
 
     if (tool === "none") {
       const idx = hitTestAnnotationPrecise(nx, ny, annotations);
