@@ -17,8 +17,6 @@ const ZOOM_STEP = 1.25;
 
 // fit-to-window：图片完整显示在窗口内，最大不超过 1:1
 const FIT_PADDING = 16; // px-2 左右各 8px（画布间隙最小化，图片最大化展示）
-// canvas 物理像素上限（超过则自动降 DPR，防超大图 GPU 合成卡顿）
-const MAX_CANVAS_PIXELS = 20_000_000; // 20M
 // fit-to-window：完整显示在窗口内（宽高都不超出），不放大
 const computeFitZoom = (w: number, h: number): number => {
   const containerW = window.innerWidth - FIT_PADDING;
@@ -42,6 +40,8 @@ export default function ImagePreview() {
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
+  // 视口渲染：canvas 固定窗口大小，滚动时只画可见部分。viewportScroll 跟踪滚动偏移
+  const [viewportScroll, setViewportScroll] = useState({ left: 0, top: 0 });
 
   const [imageId, setImageId] = useState<number | null>(null);
   const [dataUrl, setDataUrl] = useState<string | null>(null);
@@ -245,40 +245,80 @@ export default function ImagePreview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageId]);
 
-  // —— drawBg：底层只画底图（标注由 SVG overlay 渲染，不触发 canvas 重绘）——
+  // —— drawBg：视口渲染——canvas 固定窗口大小，只画可见区域的图片部分 ——
   const drawBg = useCallback(() => {
     const canvas = bgCanvasRef.current;
     const img = imgRef.current;
-    if (!canvas || !img || !natW || !natH) return;
+    const sc = scrollContainerRef.current;
+    if (!canvas || !img || !natW || !natH || !sc) return;
     const dw = natW * zoom;
     const dh = natH * zoom;
-    const sysDpr = window.devicePixelRatio || 1;
-    // 超大图自动降 DPR：物理像素超过上限时线性降低
-    const dpr = Math.min(sysDpr, MAX_CANVAS_PIXELS / (dw * dh));
-    canvas.width = Math.round(dw * dpr);
-    canvas.height = Math.round(dh * dpr);
+    const dpr = window.devicePixelRatio || 1;
+    // canvas 尺寸 = 可视区域（不包括 padding）
+    const viewW = sc.clientWidth;
+    const viewH = sc.clientHeight;
+    canvas.width = Math.round(viewW * dpr);
+    canvas.height = Math.round(viewH * dpr);
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, dw, dh);
+    ctx.clearRect(0, 0, viewW, viewH);
+    // 图片在 scrollContainer 内的位置（居中 + padding）
+    const { scrollLeft, scrollTop } = sc;
+    // 图片左上角在 container 内的偏移（居中定位）
+    const imgOffsetX = Math.max(0, (viewW - dw) / 2);
+    const imgOffsetY = parseInt(getComputedStyle(sc.firstElementChild as Element).paddingTop || '56');
+    // 图片在 viewport 中的位置
+    const imgScreenX = imgOffsetX - scrollLeft;
+    const imgScreenY = imgOffsetY - scrollTop;
+    // 计算可见的图片区域（显示坐标）
+    const visImgLeft = Math.max(0, -imgScreenX);
+    const visImgTop = Math.max(0, -imgScreenY);
+    const visImgRight = Math.min(dw, viewW - imgScreenX);
+    const visImgBottom = Math.min(dh, viewH - imgScreenY);
+    if (visImgRight <= visImgLeft || visImgBottom <= visImgTop) return; // 图片不可见
+    // 从源图（scaledBitmap 或原图）裁剪可见部分画到 canvas
     const bitmap = scaledBitmapRef.current;
-    ctx.drawImage(bitmap || img, 0, 0, dw, dh);
-  }, [natW, natH, zoom]);
+    const srcW = bitmap ? bitmap.width : img.naturalWidth;
+    const srcH = bitmap ? bitmap.height : img.naturalHeight;
+    // 可见区域 → 源图坐标
+    const sx = (visImgLeft / dw) * srcW;
+    const sy = (visImgTop / dh) * srcH;
+    const sw = ((visImgRight - visImgLeft) / dw) * srcW;
+    const sh = ((visImgBottom - visImgTop) / dh) * srcH;
+    // 画到 canvas 上对应位置
+    const dx = visImgLeft + imgScreenX;
+    const dy = visImgTop + imgScreenY;
+    ctx.drawImage(bitmap || img, sx, sy, sw, sh, dx, dy, visImgRight - visImgLeft, visImgBottom - visImgTop);
+  }, [natW, natH, zoom, viewportScroll]);
 
-  // bgCanvas 只在 imageId/zoom 变化时重绘（annotations 变化由 SVG 处理，不触发 canvas）
+  // bgCanvas 重绘触发：imageId/zoom/scroll 变化
   useEffect(() => { drawBg(); }, [drawBg]);
 
-  // zoom 变化 → 异步生成预缩放位图 → drawBg（不阻塞主线程）
+  // scroll → 更新 viewportScroll（触发 drawBg 重绘可见区域）
+  useEffect(() => {
+    const sc = scrollContainerRef.current;
+    if (!sc) return;
+    let raf = 0;
+    const onScroll = () => {
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => {
+        setViewportScroll({ left: sc.scrollLeft, top: sc.scrollTop });
+      });
+    };
+    sc.addEventListener('scroll', onScroll, { passive: true });
+    return () => { sc.removeEventListener('scroll', onScroll); cancelAnimationFrame(raf); };
+  }, []);
+
+  // zoom 变化 → 异步生成预缩放位图（按实际显示尺寸，不限 DPR——视口渲染 canvas 只有窗口大小）→ drawBg
   useEffect(() => {
     const img = imgRef.current;
     if (!img || !natW || !natH) return;
     const version = ++zoomVersionRef.current;
     const dw = natW * zoom;
     const dh = natH * zoom;
-    const sysDpr = window.devicePixelRatio || 1;
-    const dpr = Math.min(sysDpr, MAX_CANVAS_PIXELS / (dw * dh));
+    const dpr = window.devicePixelRatio || 1;
     const pw = Math.round(dw * dpr);
     const ph = Math.round(dh * dpr);
-    // 极小尺寸（zoom 接近 0）跳过
     if (pw < 1 || ph < 1) return;
 
     createImageBitmap(img, {
@@ -298,14 +338,21 @@ export default function ImagePreview() {
     }).catch(() => {});
   }, [zoom, natW, natH]); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // CSS 坐标（相对 canvas，已含滚动偏移）→ 自然坐标（/zoom）
+  // CSS 坐标（相对图片左上角，含滚动偏移）→ 自然坐标（/zoom）
   const toNatural = (cssX: number, cssY: number) => {
     return { nx: cssX / zoomRef.current, ny: cssY / zoomRef.current };
   };
 
   const canvasCoords = (e: React.MouseEvent) => {
-    const rect = bgCanvasRef.current!.getBoundingClientRect();
-    return { cssX: e.clientX - rect.left, cssY: e.clientY - rect.top };
+    // canvas 是 fixed 视口位置，但鼠标坐标需要映射到图片自然空间
+    const sc = scrollContainerRef.current!;
+    const viewW = sc.clientWidth;
+    const imgOffsetX = Math.max(0, (viewW - natW * zoomRef.current) / 2);
+    const imgOffsetY = 56; // pt-14
+    // 鼠标相对图片左上角的显示坐标
+    const cssX = e.clientX - sc.getBoundingClientRect().left + sc.scrollLeft - imgOffsetX;
+    const cssY = e.clientY - sc.getBoundingClientRect().top + sc.scrollTop - imgOffsetY;
+    return { cssX, cssY };
   };
 
   const commitText = () => {
@@ -535,33 +582,33 @@ export default function ImagePreview() {
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
       />
-      {/* 滚动容器：全屏画布，图片大于视口自动出滚动条；小于则居中 */}
-      <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar">
+      {/* 视口渲染 canvas：fixed 在 scrollContainer 上方，尺寸=可视区域，随滚动只画可见部分 */}
+      <canvas
+        ref={bgCanvasRef}
+        className="absolute inset-0 block pointer-events-none"
+        style={{ zIndex: 1 }}
+      />
+      {/* 滚动容器：撑起 dispW×dispH 滚动条；SVG overlay + textarea 在内部随滚动移动 */}
+      <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>
         <div className="flex min-h-full min-w-full items-center justify-center px-2 pt-14 pb-2">
-          {/* canvas wrapper：棋盘格底显透明 PNG（zinc 冷灰系，不干扰色彩判断）*/}
-          <div className="relative" style={{
-            width: dispW || undefined, height: dispH || undefined,
-            backgroundColor: "#27272a",
-            backgroundImage:
-              "linear-gradient(45deg, #1e1e22 25%, transparent 25%)," +
-              "linear-gradient(-45deg, #1e1e22 25%, transparent 25%)," +
-              "linear-gradient(45deg, transparent 75%, #1e1e22 75%)," +
-              "linear-gradient(-45deg, transparent 75%, #1e1e22 75%)",
-            backgroundSize: "14px 14px",
-            backgroundPosition: "0 0, 0 7px, 7px -7px, -7px 0px",
-          }}>
-            {/* 底层 canvas：只画底图（标注由 SVG overlay 渲染）+ 接收鼠标事件 */}
-            <canvas
-              ref={bgCanvasRef}
-              className="absolute inset-0 block"
-              style={{
-                width: dispW, height: dispH,
-                cursor: tool === "none" ? (panning ? "grabbing" : "grab") : "crosshair",
-              }}
-              onMouseDown={onMouseDown}
-              onMouseMove={onMouseMove}
-              onMouseUp={onMouseUp}
-            />
+          {/* canvas 占位 wrapper：撑滚动条 + 棋盘格底 + SVG overlay + 鼠标事件 */}
+          <div className="relative"
+            style={{
+              width: dispW || undefined, height: dispH || undefined,
+              backgroundColor: "#27272a",
+              backgroundImage:
+                "linear-gradient(45deg, #1e1e22 25%, transparent 25%)," +
+                "linear-gradient(-45deg, #1e1e22 25%, transparent 25%)," +
+                "linear-gradient(45deg, transparent 75%, #1e1e22 75%)," +
+                "linear-gradient(-45deg, transparent 75%, #1e1e22 75%)",
+              backgroundSize: "14px 14px",
+              backgroundPosition: "0 0, 0 7px, 7px -7px, -7px 0px",
+              cursor: tool === "none" ? (panning ? "grabbing" : "grab") : "crosshair",
+            }}
+            onMouseDown={onMouseDown}
+            onMouseMove={onMouseMove}
+            onMouseUp={onMouseUp}
+          >
             {/* SVG overlay：标注（已确认 + 正在绘制）。viewBox 自然坐标，pointer-events:none */}
             {natW > 0 && (
               <svg
