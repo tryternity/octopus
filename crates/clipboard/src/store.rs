@@ -80,6 +80,20 @@ pub fn insert_asr_item(conn: &Connection, text: &str, asr_meta: AsrMeta) -> Resu
     Ok(id)
 }
 
+/// 插入 OCR 识别文本条目（source='ocr'，复用 engine/model 列）。返回插入的 id。
+pub fn insert_ocr_item(conn: &Connection, text: &str, ocr_meta: OcrMeta) -> Result<i64> {
+    let id = chrono_millis();
+    conn.execute(
+        "INSERT INTO clipboard_history
+         (id, item_type, source, content, search_text, is_favorite, created_at,
+          engine, model)
+         VALUES (?, 'text', 'ocr', ?, ?, 0, ?, ?, ?)",
+        params![id, text, text, iso_now(), ocr_meta.engine, ocr_meta.model],
+    )
+    .context("insert ocr clipboard_history")?;
+    Ok(id)
+}
+
 /// 按 hash 去重查找。存在返回 id，不存在返回 None。
 pub fn find_by_content_hash(conn: &Connection, blob_hash: &str) -> Result<Option<i64>> {
     let mut stmt = conn.prepare("SELECT id FROM clipboard_history WHERE blob_hash = ? LIMIT 1")?;
@@ -276,6 +290,7 @@ fn build_where(filter: &QueryFilter) -> String {
     match filter.filter.as_str() {
         "all" | "" => {}
         "asr" => { conditions.push("source = 'asr'".to_string()); }
+        "ocr" => { conditions.push("source = 'ocr'".to_string()); }
         "text" => {
             conditions.push("item_type = 'text'".to_string());
             conditions.push("source = 'clipboard'".to_string());
@@ -319,6 +334,15 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ClipboardItem> {
         Some(AsrMeta {
             transcription_id: transcription_id.unwrap(),
             polish_status: polish_status.unwrap_or_default(),
+            engine: engine.clone().unwrap_or_default(),
+            model: model.clone().unwrap_or_default(),
+        })
+    } else {
+        None
+    };
+
+    let ocr_meta = if source_str == "ocr" {
+        Some(OcrMeta {
             engine: engine.unwrap_or_default(),
             model: model.unwrap_or_default(),
         })
@@ -336,6 +360,7 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ClipboardItem> {
         image_meta,
         file_meta,
         asr_meta,
+        ocr_meta,
         is_rich: row.get::<_, i64>(11)? != 0,
     })
 }
@@ -688,6 +713,24 @@ mod tests {
         assert_eq!(result[0].asr_meta.as_ref().unwrap().engine, "sensevoice");
         // 验证 transcription_id 正确写入并读回
         assert_eq!(result[0].asr_meta.as_ref().unwrap().transcription_id, 12345);
+    }
+
+    #[test]
+    fn test_insert_and_query_ocr() {
+        let conn = open_test_db();
+        let id = insert_ocr_item(&conn, "识别文本", OcrMeta {
+            engine: "ocr_rs".into(), model: "m1".into(),
+        }).unwrap();
+        assert!(id > 0);
+        let result = query_history(&conn, &QueryFilter {
+            filter: "ocr".into(), search: None, page: 1, size: 10,
+        }).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].source, Source::Ocr);
+        assert_eq!(result[0].content, "识别文本");
+        let om = result[0].ocr_meta.as_ref().expect("ocr_meta 应填充");
+        assert_eq!(om.engine, "ocr_rs");
+        assert_eq!(om.model, "m1");
     }
 
     #[test]
