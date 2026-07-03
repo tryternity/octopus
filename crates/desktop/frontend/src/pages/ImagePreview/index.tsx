@@ -10,6 +10,7 @@ import {
 } from "@/lib/annotation";
 import Toolbar from "./Toolbar";
 import { AnnotationSvg } from "./AnnotationSvg";
+import { openCompactEditorTab } from "@/lib/compactEditor";
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
@@ -61,6 +62,8 @@ export default function ImagePreview() {
   const [draftAnn, setDraftAnn] = useState<Annotation | null>(null);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [ocrCopied, setOcrCopied] = useState(false);
+  // 全局 OCR 互斥提示（他处正在 OCR 时显琥珀三角）
+  const [ocrWarn, setOcrWarn] = useState(false);
   // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
   const loadingFullRef = useRef(false);
   // 当前 objectURL（图片切换/卸载时 revoke，防内存泄漏）
@@ -519,13 +522,22 @@ export default function ImagePreview() {
     try {
       const text = await invoke<string>("ocr_image", { id: imageId });
       if (text) {
-        // 识别结果存为 source=ocr 的笔记 → 打开记事本并选中（用户可在笔记里编辑）
-        const noteId = await invoke<number>("save_ocr_to_note", { text });
-        await invoke("open_notepad_with_note", { noteId });
+        // 识别文本 → 统一入库 source=ocr → 打开 CompactEditor tab 编辑
+        const ocrId = await invoke<number>("insert_ocr_clipboard_item", { text });
+        await openCompactEditorTab(ocrId);
         setOcrCopied(true);
         setTimeout(() => setOcrCopied(false), 1500);
       }
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      // 全局互斥：他处正在 OCR → 工具栏显琥珀三角 1.8s 提示稍后重试
+      const msg = String(e);
+      if (msg.includes("正在 OCR 中")) {
+        setOcrWarn(true);
+        setTimeout(() => setOcrWarn(false), 1800);
+      } else {
+        console.error(e);
+      }
+    }
   };
 
   const toggleAlwaysOnTop = async () => {
@@ -572,7 +584,7 @@ export default function ImagePreview() {
         alwaysOnTop={alwaysOnTop} onToggleTop={toggleAlwaysOnTop}
         onSave={handleSave} onCopy={handleCopy} onOcr={handleOcr}
         onUndo={undo} canUndo={annotations.length > 0}
-        ocrCopied={ocrCopied}
+        ocrCopied={ocrCopied} ocrWarn={ocrWarn}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
       />

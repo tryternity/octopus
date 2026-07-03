@@ -324,3 +324,13 @@ OCR spec 原设计从文件系统 `~/.octopus/clipboard_images/<hash>.png` 读�
 ### 10.3 osascript 输出静默
 
 osascript 创建 TextEdit 文档时会在 stderr 输出「document 未命名」，需 `.stdout(Stdio::null()).stderr(Stdio::null())` 静默。
+
+> **注**：§3.2 的「写 search_text + 系统剪贴板 + osascript TextEdit」三步落库流程已被后续 `clean-used-feature` 改造取代——OCR 现为纯识别 → `insert_ocr_clipboard_item` 入 `source=ocr` 剪贴板条目 → CompactEditor 多 tab 打开编辑（详见 `2026-07-03-clean-used-feature-design.md`）。本节保留作历史决策记录。
+
+### 10.4 超长图切分（2026-07-03）
+
+`recognize` 对 `height > 1600`px 的长图（如长截图 2032×15796）按块切分逐块识别：常量 `SPLIT_HEIGHT_THRESHOLD=1600` / `CHUNK_HEIGHT=1280` / `CHUNK_OVERLAP=200`；`plan_chunks(h)` 纯函数规划 `(top, chunk_h)` 列表（步长 = 块高 − 重叠，末块补齐到 h），`recognize_long_image` 逐块 `crop_imm` + 识别 + 跳过与上一块末行相同的起始连续行去重。动机：det `max_side_len=960` 会等比缩放长边，超长图短边过小致检测不到文本（曾返回 text_len=0）。算法 + 单测见 `crates/ocr/src/engine.rs`。详见 `architecture.md` octopus-ocr 节。
+
+### 10.5 全局并发互斥（2026-07-03）
+
+同一时刻仅允许一个 OCR 任务：`OcrLockGuard`（`static OCR_BUSY: AtomicBool` + `compare_exchange(false, true, Acquire, Acquire)` 的 RAII guard，`Drop` 时 `store(false, Release)`）在 `ocr_image` / `ocr_screenshot` 入口 `try_acquire`，忙则立即 `Err("正在 OCR 中，请稍后重试")`。guard 绑定命令返回值生命周期，async future 被 cancel 时正常 drop 释放（不会泄漏锁）。前端 4 入口（ClipboardItem / ImagePreview / Screenshot / ClipboardPanel）catch 该错误给出可见提示。详见 `architecture.md`。

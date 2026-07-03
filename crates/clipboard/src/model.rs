@@ -33,6 +33,7 @@ pub enum Source {
     #[default]
     Clipboard,
     Asr,
+    Ocr,
 }
 
 impl Source {
@@ -40,12 +41,14 @@ impl Source {
         match self {
             Source::Clipboard => "clipboard",
             Source::Asr => "asr",
+            Source::Ocr => "ocr",
         }
     }
 
     pub fn from_str(s: &str) -> Self {
         match s {
             "asr" => Source::Asr,
+            "ocr" => Source::Ocr,
             _ => Source::Clipboard,
         }
     }
@@ -73,6 +76,12 @@ pub struct AsrMeta {
     pub model: String,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct OcrMeta {
+    pub engine: String,
+    pub model: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ClipboardItem {
     pub id: i64,
@@ -87,6 +96,8 @@ pub struct ClipboardItem {
     pub file_meta: Option<FileMeta>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub asr_meta: Option<AsrMeta>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ocr_meta: Option<OcrMeta>,
     pub is_rich: bool,
 }
 
@@ -113,10 +124,15 @@ mod tests {
 
     #[test]
     fn test_source_roundtrip() {
-        for s in [Source::Clipboard, Source::Asr] {
+        for s in [Source::Clipboard, Source::Asr, Source::Ocr] {
             let str = s.as_str();
             assert_eq!(Source::from_str(str), s);
         }
+    }
+
+    #[test]
+    fn test_source_ocr_unknown_fallback() {
+        assert_eq!(Source::from_str("xxx"), Source::Clipboard);
     }
 
     #[test]

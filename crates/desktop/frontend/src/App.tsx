@@ -4,7 +4,6 @@ import Result from "@/pages/Result";
 import Settings from "@/pages/Settings";
 import Clipboard from "@/pages/Clipboard";
 import Screenshot from "@/pages/Screenshot";
-import Notepad from "@/pages/Notepad";
 import CompactEditor from "@/pages/CompactEditor";
 import ImagePreview from "@/pages/ImagePreview";
 
@@ -52,8 +51,6 @@ function App() {
             return <Settings />;
           case "clipboard_window":
             return <Clipboard />;
-          case "notepad_window":
-            return <Notepad />;
           case "compact_editor_window":
             return <CompactEditor />;
           case "image_preview_window":

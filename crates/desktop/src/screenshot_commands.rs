@@ -134,6 +134,8 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         }));
 
         // 串行创建窗口（同时创建多个全屏 WebView 会导致 macOS segfault）
+        // 必须用 tokio::sleep（本函数是 async）：std::thread::sleep 会阻塞整个 tokio
+        // worker 线程，干扰同 runtime 的其他 async 命令调度。
         if i > 0 {
             tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         }
@@ -168,7 +170,8 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     }
 
     // 超时 fallback：3s 后如果仍有窗口未显示，强制全部显示（防死锁）
-    // 用 tokio::spawn 避免 std::thread 泄漏（tokio task 在运行时回收）
+    // 用 tokio::spawn + tokio::time::sleep：task 在 runtime 回收，避免 std::thread 泄漏，
+    // 且 std::thread::sleep 在 async 上下文会阻塞 OS 线程。
     {
         let ah = app_handle.clone();
         tokio::spawn(async move {
@@ -185,13 +188,16 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
-/// 截图 OCR：合成选区 → 入库 → OCR 识别 → 写 search_text + 剪贴板 + 新建文档
+/// 截图 OCR：合成选区 → 图片入库 → OCR 识别 → 新建 ocr 条目 → 打开 CompactEditor tab。
+/// 图片仍入库为剪贴板图片条目（截图历史）；识别文本独立进 source=ocr 条目并在编辑 tab 打开。
 #[tauri::command]
 pub async fn ocr_screenshot(
     request: tauri::ipc::Request<'_>,
     app_handle: tauri::AppHandle,
-    handle: State<'_, std::sync::Arc<ClipboardHandle>>,
 ) -> Result<(), String> {
+    // 全局 OCR 互斥：已有 OCR 在跑则立即拒绝，避免多任务并发进入推理。
+    let _ocr_lock = octopus_ocr::engine::OcrLockGuard::try_acquire()
+        .ok_or_else(|| "正在 OCR 中，请稍后重试".to_string())?;
     let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
         return Err("expected raw binary body".into());
     };
@@ -200,14 +206,14 @@ pub async fn ocr_screenshot(
     ALL_CAPTURES.lock().unwrap().clear();
     PENDING_IMAGES.lock().unwrap().clear();
 
-    // SHA-256 去重 → WebP → 入库
+    // SHA-256 去重 → WebP → 图片入库
     let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
 
     let existing = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::find_by_content_hash(conn, &hash)
     }).map_err(|e| e.to_string())?;
 
-    let item_id = if let Some(id) = existing {
+    let _image_id = if let Some(id) = existing {
         octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::touch_created_at(conn, id)
         }).map_err(|e| e.to_string())?;
@@ -246,45 +252,54 @@ pub async fn ocr_screenshot(
         id
     };
 
-    // OCR 识别
+    // OCR 识别 → 新建 ocr 条目 → 打开绑定 tab 编辑
+    log::info!("[ocr-screenshot] before instance");
     let engine = octopus_ocr::engine::OcrEngine::instance()
         .map_err(|e| e.to_string())?;
+    log::info!(
+        "[ocr-screenshot] after instance; before recognize png_bytes={} bytes",
+        png_bytes.len()
+    );
     let text = engine.recognize(&png_bytes).map_err(|e| e.to_string())?;
+    log::info!("[ocr-screenshot] after recognize text_len={}", text.len());
 
-    if !text.trim().is_empty() {
-        // 写 search_text
-        octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::update_search_text(conn, item_id, &text)
-        }).map_err(|e| e.to_string())?;
-
-        // 写剪贴板
-        handle.write_text(&text).map_err(|e| e.to_string())?;
-
-        // 新建笔记并打开记事本
-        open_notepad_with_content(&app_handle, &text);
-    }
+    let ocr_id_opt: Option<i64> = if !text.trim().is_empty() {
+        // ⚠️ current_ocr_meta 在 with_db 外取：内部 load_config_key→with_db，闭包内调
+        // = std::Mutex 同线程重入死锁（详见 insert_ocr_clipboard_item 注释）。
+        let meta = crate::clipboard_commands::current_ocr_meta();
+        log::info!("[ocr-screenshot] before insert_ocr_item");
+        let ocr_id = octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::insert_ocr_item(conn, &text, meta)
+        })
+        .map_err(|e| e.to_string())?;
+        log::info!("[ocr-screenshot] after insert_ocr_item id={}", ocr_id);
+        Some(ocr_id)
+    } else {
+        None
+    };
 
     let _ = app_handle.emit("clipboard://changed", ());
-    close_all_screenshot_windows(&app_handle);
+
+    // ⚠️ 必须先销毁截图窗，再建 CompactEditor。CompactEditor 建窗含
+    // set_activation_policy(Accessory→Regular)——重量级 app 激活；在截图全屏透明
+    // always_on_top 窗口仍存在时触发会致 macOS AppKit 死锁、整个应用僵死
+    //（先前经 run_on_main_thread 改主线程执行仍复现 → 与线程无关、与截图窗共存
+    // 有关；start_screenshot 同在 worker 线程建窗却不僵死，因它不改 activation
+    // policy 且建窗时无其他截图窗）。两者同在主线程顺序执行，确保建窗时截图窗
+    // 已销毁——与 settings 打开（无截图窗时 set_activation_policy）对称。
+    log::info!("[ocr-screenshot] dispatch close+open to main thread");
+    let ah = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        log::info!("[ocr-screenshot] main: closing screenshot windows");
+        close_all_screenshot_windows(&ah);
+        if let Some(ocr_id) = ocr_id_opt {
+            log::info!("[ocr-screenshot] main: open compact editor tab {}", ocr_id);
+            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, ah);
+        }
+        log::info!("[ocr-screenshot] main: done");
+    });
 
     Ok(())
-}
-
-/// 创建 OCR 文本笔记并打开记事本窗口。
-fn open_notepad_with_content(app_handle: &tauri::AppHandle, text: &str) {
-    // OCR 是纯文本，type=text 直存原文（不再 <p> 包裹成 html）
-    let ah = app_handle.clone();
-    let text_owned = text.to_string();
-    tauri::async_runtime::spawn(async move {
-        let _ = crate::note_commands::create_note(
-            "Ocr".to_string(),
-            None,
-            text_owned,
-            "text".to_string(),
-            ah.clone(),
-        ).await;
-        crate::notepad_window::open_notepad(ah);
-    });
 }
 
 /// 前端渲染完成后调用。所有窗口都 ready 后统一 show（同步显示，避免逐个弹出）。

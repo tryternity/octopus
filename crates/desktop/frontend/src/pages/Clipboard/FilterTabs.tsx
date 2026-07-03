@@ -1,10 +1,11 @@
 import { cn } from "@/lib/utils";
-import { LayoutGrid } from "lucide-react";
+import { LayoutGrid, ScanText } from "lucide-react";
 
 const TABS = [
   { value: "all", icon: LayoutGrid, label: "全部", svg: undefined as string | undefined },
   { value: "asr", icon: null, label: "语音", svg: "voice" },
   { value: "text", icon: null, label: "文本", svg: "text" },
+  { value: "ocr", icon: ScanText, label: "OCR", svg: undefined },
   { value: "image", icon: null, label: "图片", svg: "images" },
   { value: "file", icon: null, label: "文件", svg: "files" },
   { value: "favorite", icon: null, label: "收藏", svg: "favorite" },

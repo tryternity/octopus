@@ -59,25 +59,37 @@ pub fn insert_clipboard_item(conn: &Connection, item: &NewClipboardItem) -> Resu
 
 /// 插入 ASR 识别文本条目。返回插入的 id。
 pub fn insert_asr_item(conn: &Connection, text: &str, asr_meta: AsrMeta) -> Result<i64> {
-    let id = chrono_millis();
-    conn.execute(
-        "INSERT INTO clipboard_history
-         (id, item_type, source, content, search_text, is_favorite, created_at,
-          transcription_id, polish_status, engine, model)
-         VALUES (?, 'text', 'asr', ?, ?, 0, ?, ?, ?, ?, ?)",
-        params![
-            id,
-            text,
-            text,
-            iso_now(),
-            asr_meta.transcription_id,
-            asr_meta.polish_status,
-            asr_meta.engine,
-            asr_meta.model,
-        ],
-    )
-    .context("insert asr clipboard_history")?;
-    Ok(id)
+    insert_with_unique_id(|id| {
+        conn.execute(
+            "INSERT INTO clipboard_history
+             (id, item_type, source, content, search_text, is_favorite, created_at,
+              transcription_id, polish_status, engine, model)
+             VALUES (?, 'text', 'asr', ?, ?, 0, ?, ?, ?, ?, ?)",
+            params![
+                id,
+                text,
+                text,
+                iso_now(),
+                asr_meta.transcription_id,
+                asr_meta.polish_status,
+                asr_meta.engine,
+                asr_meta.model,
+            ],
+        )
+    })
+}
+
+/// 插入 OCR 识别文本条目（source='ocr'，复用 engine/model 列）。返回插入的 id。
+pub fn insert_ocr_item(conn: &Connection, text: &str, ocr_meta: OcrMeta) -> Result<i64> {
+    insert_with_unique_id(|id| {
+        conn.execute(
+            "INSERT INTO clipboard_history
+             (id, item_type, source, content, search_text, is_favorite, created_at,
+              engine, model)
+             VALUES (?, 'text', 'ocr', ?, ?, 0, ?, ?, ?)",
+            params![id, text, text, iso_now(), ocr_meta.engine, ocr_meta.model],
+        )
+    })
 }
 
 /// 按 hash 去重查找。存在返回 id，不存在返回 None。
@@ -276,6 +288,7 @@ fn build_where(filter: &QueryFilter) -> String {
     match filter.filter.as_str() {
         "all" | "" => {}
         "asr" => { conditions.push("source = 'asr'".to_string()); }
+        "ocr" => { conditions.push("source = 'ocr'".to_string()); }
         "text" => {
             conditions.push("item_type = 'text'".to_string());
             conditions.push("source = 'clipboard'".to_string());
@@ -319,6 +332,15 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ClipboardItem> {
         Some(AsrMeta {
             transcription_id: transcription_id.unwrap(),
             polish_status: polish_status.unwrap_or_default(),
+            engine: engine.clone().unwrap_or_default(),
+            model: model.clone().unwrap_or_default(),
+        })
+    } else {
+        None
+    };
+
+    let ocr_meta = if source_str == "ocr" {
+        Some(OcrMeta {
             engine: engine.unwrap_or_default(),
             model: model.unwrap_or_default(),
         })
@@ -336,6 +358,7 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ClipboardItem> {
         image_meta,
         file_meta,
         asr_meta,
+        ocr_meta,
         is_rich: row.get::<_, i64>(11)? != 0,
     })
 }
@@ -487,12 +510,11 @@ pub fn get_image_thumb(conn: &Connection, hash: &str) -> Result<Option<Vec<u8>>>
 
 /// 删除 image_data 中无引用的 BLOB（引用计数为 0）。返回删除行数。
 ///
-/// 引用来源有两处：剪贴板条目（clipboard_history.blob_hash）和笔记内嵌图片
-/// （notes.content_html 里的 `note-img:<hash>`）。两者都不引用才删——
-/// 否则会误删已存入笔记的图片（数据丢失）。
+/// 引用来源：剪贴板条目（clipboard_history.blob_hash）。无任何剪贴板条目引用才删。
+/// （笔记内嵌图片功能随 notes 表于 v12→v13 迁移移除，不再有 note-img: 引用。）
 pub fn cleanup_unreferenced_images(conn: &Connection) -> Result<usize> {
     let deleted = conn.execute(
-        "DELETE FROM image_data WHERE hash NOT IN (\n            SELECT DISTINCT blob_hash FROM clipboard_history WHERE blob_hash IS NOT NULL\n        )\n        AND NOT EXISTS (\n            SELECT 1 FROM notes WHERE notes.content_html LIKE '%note-img:' || image_data.hash || '%'\n        )",
+        "DELETE FROM image_data WHERE hash NOT IN (\n            SELECT DISTINCT blob_hash FROM clipboard_history WHERE blob_hash IS NOT NULL\n        )",
         [],
     )?;
     Ok(deleted)
@@ -500,8 +522,7 @@ pub fn cleanup_unreferenced_images(conn: &Connection) -> Result<usize> {
 
 /// 删除指定 hash 的 image_data（如果无其他条目引用）。
 ///
-/// 同 `cleanup_unreferenced_images`：除剪贴板条目外，也要检查笔记是否引用
-/// （`note-img:<hash>`），避免删剪贴板项时连带误删笔记里的同图副本。
+/// 仅检查剪贴板条目引用（clipboard_history.blob_hash）——notes 表已移除，不再有 note-img: 引用。
 fn delete_image_if_unreferenced(conn: &Connection, hash: &str) {
     let cb_count: i64 = conn
         .query_row(
@@ -510,17 +531,7 @@ fn delete_image_if_unreferenced(conn: &Connection, hash: &str) {
             |r| r.get(0),
         )
         .unwrap_or(0);
-    if cb_count > 0 {
-        return;
-    }
-    let note_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM notes WHERE content_html LIKE '%note-img:' || ? || '%'",
-            params![hash],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    if note_count == 0 {
+    if cb_count == 0 {
         let _ = conn.execute("DELETE FROM image_data WHERE hash = ?", params![hash]);
     }
 }
@@ -555,6 +566,31 @@ pub fn chrono_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// 用毫秒戳作主键插入；遇 UNIQUE 冲突（同毫秒并发 / 测试密集插入）自增重试，最多 1000 次。
+/// clipboard_history.id 是毫秒戳，连续插入可能同毫秒撞主键——生产罕见（ASR/OCR 不毫秒级并发），
+/// 但单元测试循环插多条必然命中，故统一在此兜底。
+fn insert_with_unique_id<F>(mut insert_fn: F) -> Result<i64>
+where
+    F: FnMut(i64) -> rusqlite::Result<usize>,
+{
+    let base = chrono_millis();
+    let mut id = base;
+    loop {
+        match insert_fn(id) {
+            Ok(_) => return Ok(id),
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                id += 1;
+                if id > base + 1000 {
+                    anyhow::bail!("insert_with_unique_id: 主键冲突，1000 次自增重试仍失败");
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 pub fn iso_now() -> String {
@@ -688,6 +724,24 @@ mod tests {
         assert_eq!(result[0].asr_meta.as_ref().unwrap().engine, "sensevoice");
         // 验证 transcription_id 正确写入并读回
         assert_eq!(result[0].asr_meta.as_ref().unwrap().transcription_id, 12345);
+    }
+
+    #[test]
+    fn test_insert_and_query_ocr() {
+        let conn = open_test_db();
+        let id = insert_ocr_item(&conn, "识别文本", OcrMeta {
+            engine: "ocr_rs".into(), model: "m1".into(),
+        }).unwrap();
+        assert!(id > 0);
+        let result = query_history(&conn, &QueryFilter {
+            filter: "ocr".into(), search: None, page: 1, size: 10,
+        }).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].source, Source::Ocr);
+        assert_eq!(result[0].content, "识别文本");
+        let om = result[0].ocr_meta.as_ref().expect("ocr_meta 应填充");
+        assert_eq!(om.engine, "ocr_rs");
+        assert_eq!(om.model, "m1");
     }
 
     #[test]
@@ -961,35 +1015,5 @@ mod tests {
         // 删最后 1 条（rows>0 进 track_deletes，累计未达阈值 10 不 rebuild，不报错）
         assert_eq!(delete_by_transcription_ids(&conn, &[3]).unwrap(), 1);
         assert_eq!(count_all(&conn).unwrap(), 0);
-    }
-
-    #[test]
-    fn cleanup_preserves_images_referenced_by_notes() {
-        // 回归 C1：笔记内嵌图片（note-img:<hash>）不得被剪贴板清理误删。
-        // image_data 同时被剪贴板条目（blob_hash）和笔记（content_html 的 note-img:）引用，
-        // 清理必须两处都不引用才删，否则删剪贴板项 / 定时清理会连带误删笔记里的图片（数据丢失）。
-        let conn = open_test_db();
-        insert_image_data(&conn, "hashA", b"webp", b"thumb", 10, 10).unwrap();
-
-        // 1. 一条笔记引用了 hashA，且无任何剪贴板条目引用 → 清理应保留
-        conn.execute(
-            "INSERT INTO notes (title, content_html, content_text, source, created_at, updated_at)\
-             VALUES ('n', '<img src=\"note-img:hashA\">', 'x', 'manual', '2026-06-30 10:00:00', '2026-06-30 10:00:00')",
-            [],
-        )
-        .unwrap();
-        assert_eq!(cleanup_unreferenced_images(&conn).unwrap(), 0);
-        let remains: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM image_data WHERE hash='hashA'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(remains, 1);
-
-        // 2. 删掉笔记引用 → 清理应删除 hashA
-        conn.execute("DELETE FROM notes", []).unwrap();
-        assert_eq!(cleanup_unreferenced_images(&conn).unwrap(), 1);
     }
 }
