@@ -250,28 +250,40 @@ pub async fn ocr_screenshot(
         .map_err(|e| e.to_string())?;
     let text = engine.recognize(&png_bytes).map_err(|e| e.to_string())?;
 
-    if !text.trim().is_empty() {
+    let ocr_id_opt: Option<i64> = if !text.trim().is_empty() {
         let ocr_id = octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::insert_ocr_item(
                 conn,
                 &text,
                 crate::clipboard_commands::current_ocr_meta(),
             )
-        }).map_err(|e| e.to_string())?;
-        // ⚠️ 建窗含 macOS AppKit 主线程操作（open_compact_editor_tab →
-        // create_compact_editor_window → set_activation_policy + set_dock_icon；
-        // set_dock_icon 用 MainThreadMarker::new_unchecked 强制假定主线程）。
-        // ocr_screenshot 跑在 async worker 线程，直接同步调用会从 worker 触发
-        // AppKit 主线程违规，整个应用僵死（点任何按钮无响应，只能托盘退出）。
-        // 投递到主线程执行，与「前端 invoke open_compact_editor_tab」同路径。
-        let ah = app_handle.clone();
-        let _ = app_handle.run_on_main_thread(move || {
-            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, ah);
-        });
-    }
+        })
+        .map_err(|e| e.to_string())?;
+        Some(ocr_id)
+    } else {
+        None
+    };
 
     let _ = app_handle.emit("clipboard://changed", ());
-    close_all_screenshot_windows(&app_handle);
+
+    // ⚠️ 必须先销毁截图窗，再建 CompactEditor。CompactEditor 建窗含
+    // set_activation_policy(Accessory→Regular)——重量级 app 激活；在截图全屏透明
+    // always_on_top 窗口仍存在时触发会致 macOS AppKit 死锁、整个应用僵死
+    //（先前经 run_on_main_thread 改主线程执行仍复现 → 与线程无关、与截图窗共存
+    // 有关；start_screenshot 同在 worker 线程建窗却不僵死，因它不改 activation
+    // policy 且建窗时无其他截图窗）。两者同在主线程顺序执行，确保建窗时截图窗
+    // 已销毁——与 settings 打开（无截图窗时 set_activation_policy）对称。
+    log::info!("[ocr-screenshot] dispatch close+open to main thread");
+    let ah = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        log::info!("[ocr-screenshot] main: closing screenshot windows");
+        close_all_screenshot_windows(&ah);
+        if let Some(ocr_id) = ocr_id_opt {
+            log::info!("[ocr-screenshot] main: open compact editor tab {}", ocr_id);
+            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, ah);
+        }
+        log::info!("[ocr-screenshot] main: done");
+    });
 
     Ok(())
 }
