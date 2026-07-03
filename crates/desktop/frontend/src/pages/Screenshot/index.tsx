@@ -418,6 +418,11 @@ export default function Screenshot() {
           setAnnotations(prev => [...prev, ann]);
           added = true;
         }
+      } else if (ann.type === "blur") {
+        if (Math.abs(ann.x2 - ann.x1) > 5 && Math.abs(ann.y2 - ann.y1) > 5) {
+          setAnnotations(prev => [...prev, ann]);
+          added = true;
+        }
       }
       // 丢弃时重绘 Canvas 消除残留影像
       if (!added) {
