@@ -22,7 +22,8 @@ const ZOOM_STEP = 1.25;
  * ctx.scale(zoom)，鼠标 /zoom 反算；合成保存/复制在自然尺寸画布 1:1 重绘（与 zoom 无关）。
  */
 export default function ImagePreview() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const bgCanvasRef = useRef<HTMLCanvasElement>(null);
+  const drawCanvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -50,6 +51,7 @@ export default function ImagePreview() {
   const toolWidthRef = useRef(3);
   const toolFontSizeRef = useRef(20);
   const zoomRef = useRef(1);
+  const scaledBitmapRef = useRef<ImageBitmap | null>(null);
   // 文字输入框 ref：autoFocus 对动态挂载的 textarea 不可靠，改 setTimeout focus（对齐截图）
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   // 文字草稿：state 驱动 textarea 渲染，ref 镜像供 commitText 读最新输入
@@ -97,29 +99,49 @@ export default function ImagePreview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageId]);
 
-  // —— draw：1:1 × zoom，图片 + 标注（自然坐标 × zoom）——
-  const draw = useCallback(() => {
-    const canvas = canvasRef.current;
+  // —— drawBg：底层重绘（底图 + 已确认标注），imageId/zoom/annotations 变化时调用 ——
+  const drawBg = useCallback(() => {
+    const canvas = bgCanvasRef.current;
     const img = imgRef.current;
     if (!canvas || !img || !natW || !natH) return;
-    const dispW = natW * zoom;
-    const dispH = natH * zoom;
+    const dw = natW * zoom;
+    const dh = natH * zoom;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(dispW * dpr);
-    canvas.height = Math.round(dispH * dpr);
+    canvas.width = Math.round(dw * dpr);
+    canvas.height = Math.round(dh * dpr);
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, dispW, dispH);
-    ctx.drawImage(img, 0, 0, dispW, dispH);
+    ctx.clearRect(0, 0, dw, dh);
+    // 优先用预缩放位图（Task 2 异步生成），fallback 原图
+    const bitmap = scaledBitmapRef.current;
+    ctx.drawImage(bitmap || img, 0, 0, dw, dh);
     // 标注：自然坐标 → ×zoom 缩放到显示空间
     ctx.save();
     ctx.scale(zoom, zoom);
     for (const ann of annotations) drawAnnotation(ctx, ann);
-    if (drawingRef.current) drawAnnotation(ctx, drawingRef.current);
     ctx.restore();
   }, [natW, natH, zoom, annotations]);
 
-  useEffect(() => { draw(); }, [draw]);
+  // —— drawActive：顶层重绘（仅正在绘制的笔迹/形状预览），mousemove 调用 ——
+  const drawActive = useCallback(() => {
+    const canvas = drawCanvasRef.current;
+    if (!canvas || !natW || !natH) return;
+    const dw = natW * zoom;
+    const dh = natH * zoom;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(dw * dpr);   // 赋值即清空
+    canvas.height = Math.round(dh * dpr);
+    if (!drawingRef.current) return;
+    const ctx = canvas.getContext("2d")!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.save();
+    ctx.scale(zoom, zoom);
+    drawAnnotation(ctx, drawingRef.current);
+    ctx.restore();
+  }, [natW, natH, zoom]);
+
+  // bgCanvas 同步触发：imageId/zoom/annotations 任一变化 → 完整重绘底层
+  useEffect(() => { drawBg(); }, [drawBg]);
 
   // CSS 坐标（相对 canvas，已含滚动偏移）→ 自然坐标（/zoom）
   const toNatural = (cssX: number, cssY: number) => {
@@ -127,7 +149,7 @@ export default function ImagePreview() {
   };
 
   const canvasCoords = (e: React.MouseEvent) => {
-    const rect = canvasRef.current!.getBoundingClientRect();
+    const rect = drawCanvasRef.current!.getBoundingClientRect();
     return { cssX: e.clientX - rect.left, cssY: e.clientY - rect.top };
   };
 
@@ -233,7 +255,7 @@ export default function ImagePreview() {
       } else {
         drawingRef.current = { ...drawingRef.current, x2: nx, y2: ny };
       }
-      draw();
+      drawActive();
     }
   };
 
@@ -247,8 +269,9 @@ export default function ImagePreview() {
         : (Math.abs(ann.x2 - ann.x1) > 3 || Math.abs(ann.y2 - ann.y1) > 3);
       if (ok) {
         setAnnotations((prev) => [...prev, ann]);
+        drawActive();  // drawingRef 已 null → 清空 drawCanvas
       } else {
-        draw();
+        drawActive();
       }
     }
     dragRef.current = null;
@@ -357,21 +380,30 @@ export default function ImagePreview() {
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar">
         <div className="flex min-h-full min-w-full items-center justify-center p-12">
           {/* canvas wrapper：relative 让 textarea 相对 canvas 定位、随滚动移动 */}
-          <div className="relative" style={{ width: dispW || undefined, height: dispH || undefined }}>
+          {/* 棋盘格底移到容器，两个 canvas 都能看到 */}
+          <div className="relative" style={{
+            width: dispW || undefined, height: dispH || undefined,
+            backgroundColor: "#292524",
+            backgroundImage:
+              "linear-gradient(45deg, #1c1917 25%, transparent 25%)," +
+              "linear-gradient(-45deg, #1c1917 25%, transparent 25%)," +
+              "linear-gradient(45deg, transparent 75%, #1c1917 75%)," +
+              "linear-gradient(-45deg, transparent 75%, #1c1917 75%)",
+            backgroundSize: "20px 20px",
+            backgroundPosition: "0 0, 0 10px, 10px -10px, -10px 0px",
+          }}>
+            {/* 底层：底图 + 已确认标注 */}
             <canvas
-              ref={canvasRef}
-              className="block"
+              ref={bgCanvasRef}
+              className="absolute inset-0 block"
+              style={{ width: dispW, height: dispH }}
+            />
+            {/* 顶层：正在绘制的笔迹/形状预览；pointer 事件绑此层 */}
+            <canvas
+              ref={drawCanvasRef}
+              className="absolute inset-0 block"
               style={{
                 width: dispW, height: dispH,
-                // 棋盘格底：透明 PNG 的透明区可见，专业看图工具信号（图片不透明区自然盖住）
-                backgroundColor: "#292524",
-                backgroundImage:
-                  "linear-gradient(45deg, #1c1917 25%, transparent 25%)," +
-                  "linear-gradient(-45deg, #1c1917 25%, transparent 25%)," +
-                  "linear-gradient(45deg, transparent 75%, #1c1917 75%)," +
-                  "linear-gradient(-45deg, transparent 75%, #1c1917 75%)",
-                backgroundSize: "20px 20px",
-                backgroundPosition: "0 0, 0 10px, 10px -10px, -10px 0px",
                 cursor: tool === "none" ? (panning ? "grabbing" : "grab") : "crosshair",
               }}
               onMouseDown={onMouseDown}
