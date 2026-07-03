@@ -432,7 +432,7 @@ export default function Screenshot() {
       drawingRef.current = null;
       let added = false;
       // 过滤太小的
-      if (ann.type === "rect" || ann.type === "oval") {
+      if (ann.type === "rect" || ann.type === "oval" || ann.type === "diamond") {
         if (Math.abs(ann.x2 - ann.x1) > 5 && Math.abs(ann.y2 - ann.y1) > 5) {
           addAnnotation(ann);
           added = true;
