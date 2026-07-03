@@ -15,7 +15,7 @@
 
 ## 1. 背景与问题
 
-现状（已核实）：
+现状（改造前旧实现，已被 §3 段模型替代；保留以说明改造动机）：
 
 - Result 语音识别窗在非编辑态是 `<div contentEditable={false}>`，**无光标**（hover 仅 `cursor-text` 视觉提示）。
 - 识别文本由 `Transcript` 的单一 `full: String` 承载，**只从末尾增长**：
@@ -370,3 +370,9 @@ pub fn set_selection(&mut self, start: usize, end: usize) {
 - `set_caret_clears_pending_delete`：选中后点别处 → 后续 apply 不删、文字保留。
 - `pending_delete_consumed_once`：首词消费后第二词普通中插（不再删）。
 - `pending_delete_consumed_in_take_polish_input`：润色快照基于删后文本。
+
+### 11.6 同期修复：编辑保存后光标归末尾（f32f1a9）
+
+选中替换 e2e 时发现独立 bug：编辑态保存（`commitEdit`）后闪烁光标错落**首位**（应末尾）。根因：`CaretBlink` 原把 `container={textRef.current}` 当 **prop**——render 阶段求值时 `textRef.current` 是旧值（ref 在 commit 后才更新），而保存时 `editing` true→false 致 textRef 的 `key` 从 `"edit"`→`"view"` 重挂载，此时 `textRef.current` 仍是**即将卸载的旧 contentEditable div**。effect 去量这个 detached 旧 div，`getBoundingClientRect()` 返回 `(0,0)` → 光标落首位，且后续无 state 变化不重测 → 卡死首位。
+
+修复：`CaretBlink` 改接收 `RefObject`，在 effect（commit 后执行）内读 `.current` 拿到已挂载的新 view div，量到真实末尾。中插/点击场景 `editing` 不变、textRef 不重挂，行为不变。**通用教训**：React 中把 `ref.current` 作为子组件 prop 传递有 render-commit 滞后陷阱，重挂载场景应传 RefObject 在 effect 内读取。

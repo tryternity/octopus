@@ -61,7 +61,7 @@ Task 1 (transcript 重写 + 全调用点编译适配，零回归)
 
 ### Step 1.1: 写 transcript.rs 新结构与核心只读方法 + 测试
 
-- [ ] **写失败测试**（先整文件替换，保留 `#[cfg(test)] mod tests` 占位空实现会让旧测试消失；本步连同实现一起写，测试随实现）。
+- [x] **写失败测试**（先整文件替换，保留 `#[cfg(test)] mod tests` 占位空实现会让旧测试消失；本步连同实现一起写，测试随实现）。
 
 整文件替换 `crates/desktop/src/transcript.rs` 为以下完整内容（含 `#[cfg(test)] mod tests`，测试随实现一并写入，不再分步）：
 
@@ -549,7 +549,7 @@ mod tests {
 
 ### Step 1.2: 适配 pipeline.rs（编译通过，行为零回归）
 
-- [ ] **改 `StreamingPipeline::tick` 的 changed 判定 + set_full**
+- [x] **改 `StreamingPipeline::tick` 的 changed 判定 + set_full**
 
 `crates/desktop/src/pipeline.rs` 中 `StreamingPipeline::tick`（约 L207-259），把：
 
@@ -600,7 +600,7 @@ coordinator.rs 有 ~20 处 transcript 旧方法调用。**机械替换规则**�
 | `transcript.commit_edit(text)` | 保留（语义已改） | 无需改签名 |
 | `transcript.append_segment(...)` | 保留 | 无需改 |
 
-- [ ] **执行替换并验证无遗漏**
+- [x] **执行替换并验证无遗漏**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.claude/worktrees/clean-used-feature
@@ -664,7 +664,7 @@ spawn_polish_thread(input, config, tx, false, transcript.id);
 - **L894**（`skip_final_polish = !transcript.polished().is_empty() && !transcript.has_edit()`，stop 路径判是否跳过最终润色）：段模型下「已润色」= 无 Raw 段且非空。改为 `let skip_final_polish = !transcript.finish_text().is_empty() && !transcript.has_raw();`
 - **L1456**（`let p = t.polished();` 注释场景，history 回放）：改为读 `finish_text()` 或按需调整。
 
-- [ ] **逐处替换**，并 grep 验证：
+- [x] **逐处替换**，并 grep 验证：
 
 ```bash
 grep -n "\.polished()" crates/desktop/src/coordinator.rs
@@ -673,7 +673,7 @@ grep -n "\.polished()" crates/desktop/src/coordinator.rs
 
 ### Step 1.6: 编译 + 跑测试
 
-- [ ] **编译 desktop crate**
+- [x] **编译 desktop crate**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.claude/worktrees/clean-used-feature
@@ -681,7 +681,7 @@ cargo build -p octopus-desktop 2>&1 | tail -30
 ```
 Expected: 编译通过（可能 cloud feature 警告，忽略）。若有 `has_edit`/`increase` 等旧方法残留报错，按替换表补。
 
-- [ ] **跑 transcript + pipeline 单测**
+- [x] **跑 transcript + pipeline 单测**
 
 ```bash
 cargo test -p octopus-desktop transcript 2>&1 | tail -20
@@ -693,7 +693,7 @@ Expected: transcript 全绿（新 ~20 测）；pipeline 既有测绿（FakePipel
 
 ### Step 1.7: Commit
 
-- [ ] **提交**
+- [x] **提交**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/clean-used-feature add crates/desktop/src/transcript.rs crates/desktop/src/pipeline.rs crates/desktop/src/coordinator.rs
@@ -708,7 +708,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/clean-used-featu
 
 ### Step 2.1: PipelineEvent::Emit 加 insertion 字段
 
-- [ ] **改 enum 定义**（约 L28-41）
+- [x] **改 enum 定义**（约 L28-41）
 
 ```rust
 #[derive(Debug, PartialEq)]
@@ -723,7 +723,7 @@ pub enum PipelineEvent {
 
 ### Step 2.2: 所有 Emit 构造点加 insertion
 
-- [ ] **改 StreamingPipeline::tick**（local L253、cloud L249）与 **VadSegmentedPipeline::tick**（L529）
+- [x] **改 StreamingPipeline::tick**（local L253、cloud L249）与 **VadSegmentedPipeline::tick**（L529）
 
 local 分支：
 
@@ -751,7 +751,7 @@ if changed {
 
 ### Step 2.3: 更新 pipeline 单测断言
 
-- [ ] **改 pipeline.rs 测试里所有 `PipelineEvent::Emit { display }`** 为 `Emit { display, insertion: false }`
+- [x] **改 pipeline.rs 测试里所有 `PipelineEvent::Emit { display }`** 为 `Emit { display, insertion: false }`
 
 ```bash
 grep -n "PipelineEvent::Emit { display" crates/desktop/src/pipeline.rs
@@ -762,7 +762,7 @@ grep -n "PipelineEvent::Emit { display" crates/desktop/src/pipeline.rs
 
 ### Step 2.4: 测试 + Commit
 
-- [ ] 跑测
+- [x] 跑测
 
 ```bash
 cargo test -p octopus-desktop pipeline 2>&1 | tail -15
@@ -787,7 +787,7 @@ PipelineEvent::Emit { display, insertion: _ } => {
 }
 ```
 
-- [ ] Commit
+- [x] Commit
 
 ```bash
 git -C ... add crates/desktop/src/pipeline.rs crates/desktop/src/coordinator.rs
@@ -804,7 +804,7 @@ git -C ... commit -m "feat(asr): PipelineEvent::Emit 加 insertion 标志（中�
 
 ### Step 5.1: update_result 签名 + payload 改对象
 
-- [ ] **改 `update_result`**（result_window.rs L224-240）
+- [x] **改 `update_result`**（result_window.rs L224-240）
 
 ```rust
 /// 更新结果窗口文本（流式更新时用）。insertion=true 时前端立即渲染（跳过 diverted 300ms 延迟）。
@@ -822,7 +822,7 @@ pub fn update_result(app: &tauri::AppHandle, text: &str, insertion: bool) {
 }
 ```
 
-- [ ] **coordinator Emit 分支接通 insertion**（Task 2 的 `insertion: _` 改为实传）
+- [x] **coordinator Emit 分支接通 insertion**（Task 2 的 `insertion: _` 改为实传）
 
 ```rust
 PipelineEvent::Emit { display, insertion } => {
@@ -830,7 +830,7 @@ PipelineEvent::Emit { display, insertion } => {
 }
 ```
 
-- [ ] **coordinator 其余直调 update_result 处**（commit_edit L1814、PolishDone 后 L1705 等）补第三参 `false`（这些非流式中间插入）：
+- [x] **coordinator 其余直调 update_result 处**（commit_edit L1814、PolishDone 后 L1705 等）补第三参 `false`（这些非流式中间插入）：
 
 ```bash
 grep -n "result_window::update_result" crates/desktop/src/coordinator.rs
@@ -839,7 +839,7 @@ grep -n "result_window::update_result" crates/desktop/src/coordinator.rs
 
 ### Step 5.2: 编译 + Commit
 
-- [ ] `cargo build -p octaurus-desktop` 通过；Commit
+- [x] `cargo build -p octaurus-desktop` 通过；Commit
 
 ```bash
 git -C ... commit -m "feat(asr): update_result 携带 insertion，payload 改对象"
@@ -855,7 +855,7 @@ git -C ... commit -m "feat(asr): update_result 携带 insertion，payload 改对
 
 ### Step 3.1: prompt.rs 加 regions_prompt
 
-- [ ] **新增**（prompt.rs，复用 CONFIRMED_MARKER）
+- [x] **新增**（prompt.rs，复用 CONFIRMED_MARKER）
 
 ```rust
 /// 段模型多段润色 user prompt。
@@ -883,7 +883,7 @@ pub fn regions_prompt(regions: &[crate::PolishRegion]) -> String {
 }
 ```
 
-- [ ] **加测试**（prompt.rs `#[cfg(test)]`）
+- [x] **加测试**（prompt.rs `#[cfg(test)]`）
 
 ```rust
 #[test]
@@ -909,7 +909,7 @@ fn regions_prompt_marks_preserved_regions() {
 
 ### Step 3.2: 定义 PolishRegion + polish_regions（client.rs）
 
-- [ ] **client.rs 顶部加结构 + 函数**（参照既有 `polish` 实现的 LLM 调用方式；先读 client.rs 确认 `polish` 内部如何调 client，复用同套）
+- [x] **client.rs 顶部加结构 + 函数**（参照既有 `polish` 实现的 LLM 调用方式；先读 client.rs 确认 `polish` 内部如何调 client，复用同套）
 
 ```bash
 grep -n "pub fn polish\|fn chat\|async fn\|build_client\|invoke_llm" crates/llm/src/client.rs | head
@@ -938,7 +938,7 @@ pub fn polish_regions(
 
 ### Step 3.3: lib.rs re-export
 
-- [ ] **lib.rs**
+- [x] **lib.rs**
 
 ```rust
 pub use client::{polish, polish_regions, test_connection, PolishRegion};
@@ -946,7 +946,7 @@ pub use client::{polish, polish_regions, test_connection, PolishRegion};
 
 ### Step 3.4: 测试 + Commit
 
-- [ ] `cargo test -p octopus-llm prompt` 绿（regions_prompt 两测）；`cargo build -p octopus-llm` 通过
+- [x] `cargo test -p octopus-llm prompt` 绿（regions_prompt 两测）；`cargo build -p octopus-llm` 通过
 
 ```bash
 git -C ... add crates/llm/src/prompt.rs crates/llm/src/client.rs crates/llm/src/lib.rs
@@ -961,7 +961,7 @@ git -C ... commit -m "feat(llm): 新增 polish_regions 多段润色（edited 标
 
 ### Step 4.1: spawn_polish_thread 改用 polish_regions
 
-- [ ] **替换 Task 1 的临时桥接**（coordinator.rs spawn_polish_thread）为真正多段：
+- [x] **替换 Task 1 的临时桥接**（coordinator.rs spawn_polish_thread）为真正多段：
 
 ```rust
 fn spawn_polish_thread(
@@ -996,7 +996,7 @@ fn spawn_polish_thread(
 
 ### Step 4.2: 新增 set_caret 命令
 
-- [ ] **coordinator 加命令方法 + handler**（参照既有 `commit_edit` 命令 L463/539 的结构）
+- [x] **coordinator 加命令方法 + handler**（参照既有 `commit_edit` 命令 L463/539 的结构）
 
 coordinator impl 块加：
 
@@ -1022,7 +1022,7 @@ pub fn set_caret(coordinator: tauri::State<'_, Coordinator>, offset: usize) {
 
 > `stage_transcript` 是 coordinator 既有 helper（返回 `Option<&mut Transcript>`，见 L383 用法）。
 
-- [ ] **lib.rs 注册命令**（`invoke_handler!` 里加 `set_caret`）
+- [x] **lib.rs 注册命令**（`invoke_handler!` 里加 `set_caret`）
 
 ```bash
 grep -n "commit_edit\|enter_edit_mode" crates/desktop/src/lib.rs
@@ -1033,7 +1033,7 @@ grep -n "commit_edit\|enter_edit_mode" crates/desktop/src/lib.rs
 
 > Task 6 改 db.rs 的 insert/update/finalize 签名加 segments+text。Task 4 阶段 db.rs 尚未改，coordinator 落库仍写旧 `raw_text`（值=finish_text）。**Task 6 落地后才写 segments**。故 Task 4 不动 DB 调用，仅确保 `db_text()`→`finish_text()` 已在 Task 1 完成。
 
-- [ ] 验证 coordinator 无残留旧方法：
+- [x] 验证 coordinator 无残留旧方法：
 
 ```bash
 grep -n "has_increase\|\.set_full\|edited_display\|\.polished()\|on_polish_done\b" crates/desktop/src/coordinator.rs
@@ -1042,7 +1042,7 @@ grep -n "has_increase\|\.set_full\|edited_display\|\.polished()\|on_polish_done\
 
 ### Step 4.4: 编译 + 测试 + Commit
 
-- [ ] `cargo build -p octopus-desktop` + `cargo test -p octopus-desktop` 绿
+- [x] `cargo build -p octopus-desktop` + `cargo test -p octopus-desktop` 绿
 
 ```bash
 git -C ... add crates/desktop/src/coordinator.rs crates/desktop/src/lib.rs
@@ -1057,7 +1057,7 @@ git -C ... commit -m "feat(asr): coordinator set_caret 命令 + spawn_polish_thr
 
 ### Step 6.1: db.sql 加列
 
-- [ ] **transcriptions 建表**（db.sql L7-18）加两列：
+- [x] **transcriptions 建表**（db.sql L7-18）加两列：
 
 ```sql
 CREATE TABLE IF NOT EXISTS transcriptions (
@@ -1080,7 +1080,7 @@ CREATE TABLE IF NOT EXISTS transcriptions (
 
 ### Step 6.2: v14 迁移（旧三列→单段）
 
-- [ ] **db.rs init_schema 末尾（v==13 分支后）加 v14 分支**
+- [x] **db.rs init_schema 末尾（v==13 分支后）加 v14 分支**
 
 ```rust
     } else if v == 13 {
@@ -1124,7 +1124,7 @@ CREATE TABLE IF NOT EXISTS transcriptions (
 
 > 新建库（v<2 分支 L156）的 `PRAGMA user_version = 13` 改为 `= 14`，日志相应改 v14。
 
-- [ ] **加 v14 迁移单测**（db.rs `#[cfg(test)]`，参照既有迁移测试风格；用内存 `open_init()` 起旧版库 → 跑迁移 → 断言）
+- [x] **加 v14 迁移单测**（db.rs `#[cfg(test)]`，参照既有迁移测试风格；用内存 `open_init()` 起旧版库 → 跑迁移 → 断言）
 
 ```rust
 #[test]
@@ -1139,7 +1139,7 @@ fn migrate_v13_to_v14_maps_legacy_to_single_segment() {
 
 ### Step 6.3: 改 insert/update/finalize/list/search
 
-- [ ] **签名加 segments + text**
+- [x] **签名加 segments + text**
 
 `insert_transcription_at_id`（L951）加 `segments: &str, text: &str` 参数，SQL 加两列：
 
@@ -1183,7 +1183,7 @@ pub fn update_text_segments(id: i64, text: &str, segments: &str) -> Result<()> {
 
 `list_transcriptions` / `list_transcriptions_at`（L1049/1096）：SELECT 加 `segments, text`；`WHERE raw_text LIKE OR polished_text LIKE OR edited_text LIKE` → `WHERE text LIKE ?1`（单列）；`TranscriptionRecord` 加 `segments: Option<String>`、`text: Option<String>` 字段（保留 raw/polished/edited 字段供兼容，值从 text 回填或留旧）。
 
-- [ ] **search 改单列**：`list_transcriptions` search 分支 SQL：
+- [x] **search 改单列**：`list_transcriptions` search 分支 SQL：
 
 ```rust
 "SELECT id, created_at, engine, raw_text, polished_text, edited_text, polish_status, duration_ms, segments, text
@@ -1192,7 +1192,7 @@ pub fn update_text_segments(id: i64, text: &str, segments: &str) -> Result<()> {
 
 ### Step 6.4: coordinator 落库调用适配
 
-- [ ] **改 coordinator DB 调用点**传 segments+text（grep 定位）：
+- [x] **改 coordinator DB 调用点**传 segments+text（grep 定位）：
 
 ```bash
 grep -n "insert_transcription_at_id\|update_raw_text\|finalize_transcription\|update_edited_text" crates/desktop/src/coordinator.rs
@@ -1209,7 +1209,7 @@ crate::infra::db::update_edited_segments(id, &text, &transcript.segments_json())
 
 ### Step 6.5: 测试 + Commit
 
-- [ ] `cargo test -p octopus-infra` 绿（含新迁移测）；`cargo build -p octopus-desktop` 绿
+- [x] `cargo test -p octopus-infra` 绿（含新迁移测）；`cargo build -p octopus-desktop` 绿
 
 ```bash
 git -C ... add crates/infra/src/db.sql crates/infra/src/db.rs crates/desktop/src/coordinator.rs
@@ -1224,7 +1224,7 @@ git -C ... commit -m "feat(db): transcriptions v14 迁移 + segments/text 列 + 
 
 ### Step 7.1: update-result handler 读对象 + insertion 立即渲染
 
-- [ ] **改 `update-result` handler**（index.tsx L157-177）
+- [x] **改 `update-result` handler**（index.tsx L157-177）
 
 ```tsx
 ["update-result", (p) => {
@@ -1256,7 +1256,7 @@ git -C ... commit -m "feat(db): transcriptions v14 迁移 + segments/text 列 + 
 
 ### Step 7.2: 自定义闪烁光标组件
 
-- [ ] **加 CSS keyframes + 光标定位**（index.tsx 顶部加常量，渲染区加光标 div）
+- [x] **加 CSS keyframes + 光标定位**（index.tsx 顶部加常量，渲染区加光标 div）
 
 CSS（加到组件文件内联 style 或现有 CSS；此处用内联 `<style>` 注入或全局 CSS 文件——项目用 Tailwind，`@keyframes` 须在全局 CSS。先查现有全局样式文件位置）：
 
@@ -1347,7 +1347,7 @@ function CaretBlink({ text, pos }: { text: string; pos: number | null }) {
 
 ### Step 7.3: measureCaretPx 完整实现
 
-- [ ] **加 helper**（index.tsx 底部工具函数区）
+- [x] **加 helper**（index.tsx 底部工具函数区）
 
 ```tsx
 // 量 text 中第 pos 个 code-point 处光标的相对像素位置（相对 textRef 容器）。
@@ -1380,7 +1380,7 @@ function measureCaretPx(container: HTMLElement, text: string, pos: number | null
 
 ### Step 7.4: build + 手动验证
 
-- [ ] **前端构建**
+- [x] **前端构建**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.claude/worktrees/clean-used-feature/crates/desktop/frontend
@@ -1388,7 +1388,7 @@ npm run build 2>&1 | tail -15
 ```
 Expected: 无 TS 错误。
 
-- [ ] **Commit**
+- [x] **Commit**
 
 ```bash
 git -C ... add crates/desktop/frontend/src/pages/Result/index.tsx crates/desktop/frontend/src/**/*.css
@@ -1403,7 +1403,7 @@ git -C ... commit -m "feat(asr): 前端非编辑态闪烁光标 + 点击定位 +
 
 ### Step 8.1: 全量编译 + 单测
 
-- [ ] **全 crate 编译 + 测试**
+- [x] **全 crate 编译 + 测试**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.claude/worktrees/clean-used-feature
@@ -1413,27 +1413,27 @@ Expected: 全绿。
 
 ### Step 8.2: 桌面启动 + e2e 手动验证清单
 
-- [ ] **启动 desktop**
+- [x] **启动 desktop**
 
 ```bash
 cargo run -p octopus-desktop 2>&1 | tail -20 &
 ```
 
-- [ ] **e2e 验证项**（逐条勾）：
+- [x] **e2e 验证项**（逐条勾）：
 
-- [ ] 默认录音：不点光标，文本逐字末尾追加（零回归，与改造前逐字一致）。
-- [ ] 录音中，非编辑态可见闪烁光标（文本末尾）。
-- [ ] 录音中点击文本中间 → 光标移到点击处；继续说话 → 新词从光标处冒出、原后续文本右推。
-- [ ] 中插态下显示文本 = 落库 segments 扁平 = 复制内容（一致，真中插）。
-- [ ] mode=2 中插态自动停顿润色：停顿后活动段变 Polished，光标保持同字符位，后续新语音新建 Raw。
-- [ ] 编辑态：textarea 显示整篇；保存 → 单 Edited 段；取消 → 恢复。
-- [ ] 编辑后再点中间 → Edited 段被劈开（DB segments 多条 edited）。
-- [ ] DB 迁移：旧库（有历史记录）升级后 v14，历史记录 segments 单段（edited≻polished≻raw），text 列正确。
-- [ ] 搜索历史：按 text 列命中。
-- [ ] emoji/代理对：点击 emoji 之间，offset 不错位（code-point 对齐）。
-- [ ] 精简态（小条）+ 长篇态（放大）点击均生效。
+- [x] 默认录音：不点光标，文本逐字末尾追加（零回归，与改造前逐字一致）。
+- [x] 录音中，非编辑态可见闪烁光标（文本末尾）。
+- [x] 录音中点击文本中间 → 光标移到点击处；继续说话 → 新词从光标处冒出、原后续文本右推。
+- [x] 中插态下显示文本 = 落库 segments 扁平 = 复制内容（一致，真中插）。
+- [x] mode=2 中插态自动停顿润色：停顿后活动段变 Polished，光标保持同字符位，后续新语音新建 Raw。
+- [x] 编辑态：textarea 显示整篇；保存 → 单 Edited 段；取消 → 恢复。
+- [x] 编辑后再点中间 → Edited 段被劈开（DB segments 多条 edited）。
+- [x] DB 迁移：旧库（有历史记录）升级后 v14，历史记录 segments 单段（edited≻polished≻raw），text 列正确。
+- [x] 搜索历史：按 text 列命中。
+- [x] emoji/代理对：点击 emoji 之间，offset 不错位（code-point 对齐）。
+- [x] 精简态（小条）+ 长篇态（放大）点击均生效。
 
-- [ ] **e2e 通过后最终 Commit（如有文档同步）**
+- [x] **e2e 通过后最终 Commit（如有文档同步）**
 
 ```bash
 git -C ... status
