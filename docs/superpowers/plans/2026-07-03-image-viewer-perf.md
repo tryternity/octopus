@@ -321,7 +321,7 @@ git commit -m "perf(ImagePreview): zoom 缩放走 createImageBitmap 异步预缩
 ```ts
 // fit-to-window：图片完整显示在窗口内，最大不超过 1:1
 const computeFitZoom = (w: number, h: number): number => {
-  const containerW = window.innerWidth - 24;  // 减去两侧 padding
+  const containerW = window.innerWidth - FIT_PADDING;  // FIT_PADDING=96
   const containerH = window.innerHeight - 24;
   return Math.min(1, containerW / w, containerH / h);
 };
@@ -525,3 +525,10 @@ git commit -m "docs: 同步图片查看器性能优化到 architecture.md"
 - **Review 修复 1（race condition）**：plan 原文用 `if (imgRef.current?.src === thumbDataUrl) return` 防重复，但快速切换图片时旧 promise 的 onload 仍会覆盖新图。改为 effect 内 `let cancelled = false` + cleanup `return () => { cancelled = true }`，thumb/full 的 `.then` 和 `onload` 均检查 `cancelled`。
 - **Review 修复 2（drawBg 边界）**：thumb 和 full 同尺寸 + 用户未缩放时，`setNatW/H` + `setZoomSync` 无状态变化 → `drawBg` 的 useCallback 不重建 → useEffect 不触发 → canvas 保留已 close 的旧 bitmap。在 full onload 末尾补 `drawBg()` 显式重绘。
 - **`loading` state 未实现**：plan Step 1 "Produces" 声明了 `loading` state 但无任何 Step 使用它，跳过（YAGNI）。
+
+### 最终 review 后追加修复
+
+- **thumb→full 标注坐标系错位（Important）**：thumb 的 `naturalWidth/Height` ≠ full，thumb 期间画的标注在全图加载后坐标系错位。改为 `loadingFullRef` 门控——全图加载完成前 `onMouseDown` 禁止标注（`tool !== "none"` 时 return）。
+- **computeFitZoom padding 修正（Minor）**：原 plan `-24` 不匹配实际容器 `p-12`（48px×2=96px），改为 `FIT_PADDING=96`。
+- **blob URL 泄漏（Minor）**：`objectUrlRef` 跟踪当前 objectURL，图片切换/卸载时 `revokeObjectURL`。unmount cleanup effect 兜底 revoke + `bitmap.close()`。
+- **EXIF 条显示 thumb 尺寸（Minor）**：新增 `fullNatW/fullNatH` state，EXIF 条用 `fullNatW || natW`，thumb 期间不显示缩略图尺寸。

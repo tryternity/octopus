@@ -166,8 +166,8 @@ imageId 变化
 
 ```ts
 const computeFitZoom = (w: number, h: number): number => {
-  const containerW = window.innerWidth - 24;  // 减 padding
-  const containerH = window.innerHeight - 24;
+  const containerW = window.innerWidth - FIT_PADDING;  // FIT_PADDING=96（p-12 = 48px×2）
+  const containerH = window.innerHeight - FIT_PADDING;
   return Math.min(1, containerW / w, containerH / h);
 };
 ```
@@ -191,9 +191,11 @@ const computeFitZoom = (w: number, h: number): number => {
 ## 5. 边界情况
 
 - **zoom 期间快速连续点击**：每个 zoom 值都触发 createImageBitmap，中间结果被最新的一次覆盖（旧 bitmap 在 drawBg 中 close）。最终只有最新 zoom 值的位图画上 bgCanvas。
-- **thumb→full 替换期间用户正在绘制标注**：full 就绪后重绘 bgCanvas（底图更新），drawCanvas 保持正在绘制的笔迹不受影响。mouseup 提交后 annotations 在全图坐标系下是正确的（标注坐标是自然像素空间，与底图分辨率无关）。
+- **thumb→full 替换期间用户正在绘制标注**：thumb 和 full 的 `naturalWidth/Height` 不同（thumb 是缩略图尺寸），如果允许在 thumb 期间画标注，坐标会存在 thumb 坐标系，full 加载后被重新诠释为 full 坐标系 → 标注错位。**解决方案**：`loadingFullRef` 门控——全图加载完成前禁止标注（`onMouseDown` 中 `loadingFullRef.current && tool !== "none"` 时 return）。用户在此期间只能选择/平移，不能新建标注。
 - **drawCanvas 尺寸同步**：dispW/dispH 变化时（zoom 变化）两个 canvas 的 CSS 尺寸同步更新，bgCanvas 的像素尺寸由 drawBg 内部设，drawCanvas 的像素尺寸由 drawActive 设。
 - **撤退路径**：如果 `createImageBitmap` 不支持（极老浏览器），fallback 到当前直接 `drawImage` 方式（原逻辑不变）。
+- **blob URL 泄漏**：`objectUrlRef` 跟踪当前全图的 objectURL，图片切换时 `revokeObjectURL` 旧的、unmount cleanup effect 兜底 revoke + `bitmap.close()`。
+- **EXIF 条显示 thumb 尺寸**：`fullNatW/fullNatH` state 仅在全图 onload 后赋值，EXIF 条用 `fullNatW || natW`——thumb 期间不显示缩略图尺寸。
 
 ## 6. 不变量
 
