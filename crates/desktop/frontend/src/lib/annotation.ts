@@ -57,7 +57,7 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
     ctx.lineTo(ann.x2, ann.y2);
     ctx.stroke();
     const angle = Math.atan2(dy, dx);
-    const headLen = 12;
+    const headLen = Math.max(12, lw * 3);
     ctx.beginPath();
     ctx.moveTo(ann.x2, ann.y2);
     ctx.lineTo(ann.x2 - headLen * Math.cos(angle - Math.PI / 6), ann.y2 - headLen * Math.sin(angle - Math.PI / 6));

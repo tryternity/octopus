@@ -38,7 +38,7 @@ function AnnotationSvgImpl({ ann }: { ann: Annotation }) {
       const len = Math.sqrt(dx * dx + dy * dy);
       if (len < 5) return null;
       const angle = Math.atan2(dy, dx);
-      const headLen = 12;
+      const headLen = Math.max(12, lw * 3);
       const p2x = ann.x2 - headLen * Math.cos(angle - Math.PI / 6);
       const p2y = ann.y2 - headLen * Math.sin(angle - Math.PI / 6);
       const p3x = ann.x2 - headLen * Math.cos(angle + Math.PI / 6);
