@@ -94,9 +94,14 @@ export default function Toolbar(props: {
   // 标注工具点击：已激活→收起浮窗+切回 none；未激活→切换工具+弹出浮窗
   const onToolClick = (key: Tool, e: React.MouseEvent<HTMLButtonElement>) => {
     if (props.tool === key) {
-      // 已激活→收起浮窗+切回 none（选择/移动模式）
-      setShowPopover(false);
-      props.setTool("none");
+      if (showPopover) {
+        // 浮窗已显示 → 收起 + 切回 none
+        setShowPopover(false);
+        props.setTool("none");
+      } else {
+        // 浮窗已收起（画完后）→ 重新弹出
+        setShowPopover(true);
+      }
       return;
     }
     props.setTool(key);
