@@ -612,3 +612,10 @@ Screenshot 的 text 标注调用同一 `annotation.ts` 纯函数，#6 修复自�
 **根因**：视口渲染中 `imgLeft`（render 时从 `viewport.w` state 算）与 drawBg 的 `vw`（从 `sc.clientWidth` DOM 取）来自不同数据源。窗口 resize 后 React state 异步更新、DOM 同步更新 → 短暂不一致 → 图片漂移/消失。
 
 **修复**（commit `5401118`）：render 里 `imgLeft` 直接读 `sc.clientWidth`（与 drawBg 同源同帧），drawBg 内 `liveImgLeft` 也用 `sc.clientWidth`。`viewport.w` state 仅用于触发 ResizeObserver re-render，不参与坐标计算。
+
+### 第四轮代码审查修复（V4）
+
+| # | 问题 | 判定 | 处理 | commit |
+|---|------|------|------|--------|
+| 1 | 缩略图竞态降级（full 先到 thumb 后到覆盖） | ✅ 真 bug | `fullLoadedRef` 门控，全图已加载后丢弃滞后的缩略图 | `245315d` |
+| 2 | 缺少快速关闭预览窗口的交互 | ⚠️ 合理 | `tool=none` 时点击暗区（content 空白）关闭预览窗 | `245315d` |
