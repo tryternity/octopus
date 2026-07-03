@@ -2023,7 +2023,9 @@ fn apply_pipeline_events(
                     warn!("DB ({}) failed: {}", engine_mode, e);
                 }
             }
-            PipelineEvent::Emit { display } => {
+            PipelineEvent::Emit { display, insertion: _ } => {
+                // Task 5 起把 insertion 传给 result_window::update_result（改第三参）；
+                // 当前 Task 2 阶段暂忽略 insertion，仍调两参 update_result 避免跨任务破坏编译。
                 if !display.is_empty() {
                     crate::result_window::update_result(app_handle, &display);
                 }
