@@ -80,9 +80,6 @@ octopus-download = { path = "../download" }
 # 剪贴板历史管理（clipboard-rs 监听 + 存储 + 图片处理）
 octopus-clipboard = { path = "../clipboard" }
 
-# 记事本（内容收集箱）业务逻辑
-octopus-notepad = { path = "../notepad" }
-
 # file:// URI 百分号解码（Linux X11/Wayland 的 text/uri-list 文件路径）
 percent-encoding = "2"
 

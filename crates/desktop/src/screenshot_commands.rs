@@ -258,32 +258,12 @@ pub async fn ocr_screenshot(
 
         // 写剪贴板
         handle.write_text(&text).map_err(|e| e.to_string())?;
-
-        // 新建笔记并打开记事本
-        open_notepad_with_content(&app_handle, &text);
     }
 
     let _ = app_handle.emit("clipboard://changed", ());
     close_all_screenshot_windows(&app_handle);
 
     Ok(())
-}
-
-/// 创建 OCR 文本笔记并打开记事本窗口。
-fn open_notepad_with_content(app_handle: &tauri::AppHandle, text: &str) {
-    // OCR 是纯文本，type=text 直存原文（不再 <p> 包裹成 html）
-    let ah = app_handle.clone();
-    let text_owned = text.to_string();
-    tauri::async_runtime::spawn(async move {
-        let _ = crate::note_commands::create_note(
-            "Ocr".to_string(),
-            None,
-            text_owned,
-            "text".to_string(),
-            ah.clone(),
-        ).await;
-        crate::notepad_window::open_notepad(ah);
-    });
 }
 
 /// 前端渲染完成后调用。所有窗口都 ready 后统一 show（同步显示，避免逐个弹出）。

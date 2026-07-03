@@ -22,8 +22,6 @@ mod engine_grpc;
 #[cfg(feature = "remote-ws")]
 mod engine_ws;
 mod model_commands;
-mod note_commands;
-mod notepad_window;
 mod paste;
 mod pin_window;
 mod pipeline;
@@ -249,21 +247,6 @@ pub fn run() {
             screenshot_commands::stop_scroll_recording,
             screenshot_commands::stop_scroll_recording_with_mode,
             screenshot_commands::pin_screenshot,
-            note_commands::list_notes,
-            note_commands::count_notes,
-            note_commands::get_note,
-            note_commands::create_note,
-            note_commands::update_note,
-            note_commands::delete_notes,
-            note_commands::toggle_note_pinned,
-            note_commands::toggle_note_favorite,
-            note_commands::export_note,
-            note_commands::import_note_from_file,
-            note_commands::save_transcription_to_note,
-            note_commands::save_ocr_to_note,
-            notepad_window::open_notepad,
-            notepad_window::open_notepad_with_note,
-            notepad_window::get_pending_note,
             compact_editor_commands::open_compact_editor,
             compact_editor_commands::get_pending_compact_edit,
             compact_editor_commands::close_compact_editor,
@@ -498,8 +481,6 @@ pub fn run() {
             {
                 if label == "settings_window" {
                     settings_window::on_settings_closed(app);
-                } else if label == "notepad_window" {
-                    notepad_window::on_notepad_closed(app);
                 } else if label == "compact_editor_window" {
                     compact_editor_window::on_compact_editor_closed(app);
                 } else if label == "image_preview_window" {

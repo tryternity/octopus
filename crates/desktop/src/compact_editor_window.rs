@@ -1,7 +1,7 @@
 //! 精简编辑器窗口：独立 Tauri 窗口，原生标题栏，720×560 可调大小，居中。
 //!
 //! 单例 + 关窗即销毁：open 时已存在则 show+focus（由 commands 层额外 emit load 推送新文本），
-//! 否则创建。macOS：开窗切 Regular（Dock 显图标），关窗切回 Accessory，与 notepad/settings 对称。
+//! 否则创建。macOS：开窗切 Regular（Dock 显图标），关窗切回 Accessory，与 settings 对称。
 
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
@@ -13,7 +13,7 @@ pub const WINDOW_LABEL: &str = "compact_editor_window";
 
 /// 创建精简编辑器窗口（调用方已确保当前不存在同名窗口）。
 pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
-    // macOS：编辑窗口切 Regular 让 Dock 显示图标（与 settings/notepad 一致）。
+    // macOS：编辑窗口切 Regular 让 Dock 显示图标（与 settings 一致）。
     #[cfg(target_os = "macos")]
     {
         let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
@@ -35,7 +35,7 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
 }
 
 /// macOS: 精简编辑器窗口关闭时切回 Accessory（仅托盘）。
-/// 与 notepad_window::on_notepad_closed 对称。
+/// 与 settings_window::on_settings_closed 对称。
 #[cfg(target_os = "macos")]
 pub fn on_compact_editor_closed(app_handle: &tauri::AppHandle) {
     let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);

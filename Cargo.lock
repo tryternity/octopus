@@ -5055,7 +5055,6 @@ dependencies = [
  "octopus-download",
  "octopus-infra",
  "octopus-llm",
- "octopus-notepad",
  "octopus-ocr",
  "once_cell",
  "percent-encoding",
@@ -5139,19 +5138,6 @@ dependencies = [
  "serde",
  "serde_json",
  "serde_yaml",
-]
-
-[[package]]
-name = "octopus-notepad"
-version = "0.1.0"
-dependencies = [
- "anyhow",
- "dirs 5.0.1",
- "log",
- "octopus-infra",
- "rusqlite",
- "serde",
- "serde_json",
 ]
 
 [[package]]

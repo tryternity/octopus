@@ -40,7 +40,7 @@ fn fmt_shortcut(s: &str) -> String {
 /// Create the system tray icon and its context menu.
 ///
 /// 菜单文案设计：操作项统一四字宽度 + 括号快捷键。
-/// 分组：语音识别 → 引擎信息（只读分隔线）→ 截图/剪贴板/记事本 → 设置/退出。
+/// 分组：语音识别 → 引擎信息（只读分隔线）→ 截图/剪贴板 → 设置/退出。
 pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
     let _ = ASR_SHORTCUT.set(config.asr_shortcut.clone());
     let toggle_text = format!("语音识别（{}）", fmt_shortcut(&config.asr_shortcut));
@@ -65,8 +65,6 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
     let clipboard_text = format!("剪  贴  板（{}）", fmt_shortcut(&config.clipboard_shortcut));
     let clipboard = MenuItem::with_id(app, "clipboard", &clipboard_text, true, None::<&str>)
         .expect("failed to create clipboard menu item");
-    let notepad = MenuItem::with_id(app, "notepad", "记  事  本", true, None::<&str>)
-        .expect("failed to create notepad menu item");
 
     // 分隔线：功能区 vs 设置/退出
     let sep2 = PredefinedMenuItem::separator(app)
@@ -79,7 +77,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
 
     let menu = Menu::with_items(app, &[
         &toggle, &engine_info, &sep1,
-        &screenshot, &clipboard, &notepad, &sep2,
+        &screenshot, &clipboard, &sep2,
         &settings, &quit,
     ])
     .expect("failed to create tray menu");
@@ -113,10 +111,6 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
             "clipboard" => {
                 info!("Tray: toggle clipboard");
                 let _ = crate::clipboard_window::toggle_clipboard_window(app);
-            }
-            "notepad" => {
-                info!("Tray: open notepad");
-                crate::notepad_window::open_notepad(app.clone());
             }
             "settings" => {
                 info!("Tray: open settings");
