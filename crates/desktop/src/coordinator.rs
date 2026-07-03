@@ -1689,6 +1689,7 @@ fn handle_polish_done(
                             text: transcript.finish_text(),
                             status: "done".to_string(),
                             model: Some(config.polish_llm.clone()),
+                            segments: transcript.segments_json(),
                         }
                     };
                     if let Err(e) = get_db_sender().send(cmd) {
@@ -1756,6 +1757,7 @@ fn handle_polish_done(
                         text: transcript.finish_text(),
                         status: "done".to_string(),
                         model: Some(config.polish_llm.clone()),
+                        segments: transcript.segments_json(),
                     }
                 };
                 if let Err(e) = get_db_sender().send(cmd) {
@@ -1921,6 +1923,8 @@ enum DbCommand {
         text: String,
         status: String,
         model: Option<String>,
+        /// 润色后段 JSON（修复 I-1：写 segments 列保持「segments 是真相源」一致）。
+        segments: String,
     },
     Finalize {
         id: i64,
@@ -1973,12 +1977,15 @@ fn process_db_command(cmd: DbCommand) {
                 warn!("Background DB update_text_segments failed: {}", e);
             }
         }
-        DbCommand::UpdatePolished { id, text, status, model } => {
+        DbCommand::UpdatePolished { id, text, status, model, segments } => {
+            // polished_text 与 text 列同值（= finish_text 润色后扁平），与 segments 对应。
             if let Err(e) = octopus_asr_local::db::update_polished(
                 id,
                 &text,
                 &status,
                 model.as_deref(),
+                &segments,
+                &text,
             ) {
                 warn!("Background DB update_polished failed: {}", e);
             }

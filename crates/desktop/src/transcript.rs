@@ -323,15 +323,42 @@ mod tests {
     }
 
     #[test]
-    fn apply_engine_full_diverted_drops_delta_no_rollback() {
+    fn apply_engine_full_diverted_buffers_and_replays_next_tick() {
+        // diverted（非前缀纠正）→ 当次不展示（buffered），下次前缀 apply 时连同 delta 一次性补发。
         let mut t = Transcript::new(3, PolishMode::Intermediate);
         t.apply_engine_full("你好");
         let changed = t.apply_engine_full("替换全文"); // 非「你好」前缀 = diverted
         assert!(!changed);
         assert_eq!(t.finish_text(), "你好"); // 不回退已展示
-        // 重算基准后，后续正常追加
+        // 下次前缀 apply：pending「替换全文」+ 新 delta「后」拼成「替换全文后」追加
         assert!(t.apply_engine_full("替换全文后"));
         assert_eq!(t.finish_text(), "你好替换全文后");
+    }
+
+    #[test]
+    fn apply_engine_full_consecutive_diverted_accumulate_pending() {
+        // 连续两次 diverted：pending 累积，第三次前缀 apply 一次性补发全部累积。
+        let mut t = Transcript::new(31, PolishMode::Intermediate);
+        t.apply_engine_full("你好");
+        assert!(!t.apply_engine_full("甲乙")); // diverted #1：pending = "甲乙"
+        assert_eq!(t.finish_text(), "你好");
+        assert!(!t.apply_engine_full("丙丁")); // diverted #2：pending = "甲乙丙丁"
+        assert_eq!(t.finish_text(), "你好");
+        // 第三次是 "丙丁" 的前缀扩展：delta = "后"，flush pending 在前 → "甲乙丙丁后"
+        assert!(t.apply_engine_full("丙丁后"));
+        assert_eq!(t.finish_text(), "你好甲乙丙丁后");
+    }
+
+    #[test]
+    fn apply_engine_full_diverted_then_prefix_combines_pending_and_delta() {
+        // diverted pending + 新前缀 delta 正确拼接顺序（pending 在前，delta 在后）。
+        let mut t = Transcript::new(32, PolishMode::Intermediate);
+        t.apply_engine_full("开头");
+        assert!(!t.apply_engine_full("纠正")); // diverted：pending = "纠正"
+        assert_eq!(t.finish_text(), "开头");
+        // 新 full = "纠正" + "尾巴"：combined = pending("纠正") + delta("尾巴") = "纠正尾巴"
+        assert!(t.apply_engine_full("纠正尾巴"));
+        assert_eq!(t.finish_text(), "开头纠正尾巴");
     }
 
     #[test]

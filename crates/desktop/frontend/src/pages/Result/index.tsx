@@ -221,6 +221,7 @@ function Result() {
     editSnapshotRef.current = displayedRef.current; // 保存快照
     setEditing(true);
     setIsRecording(false);
+    setCaretPos(null); // 进入编辑态：光标位失效（交由 DOM 选区控制）
     showToolbar();
     invoke("enter_edit_mode");
     setTimeout(() => {
@@ -242,6 +243,7 @@ function Result() {
     const el = textRef.current;
     const editedText = el?.innerText ?? "";
     setEditing(false);
+    setCaretPos(null); // 退出编辑态：光标位失效，待下次 measure 重建
     invoke("commit_edit", { text: editedText });
   }, []);
 
@@ -250,6 +252,7 @@ function Result() {
     if (editBufTimer.current) clearTimeout(editBufTimer.current);
     const original = editSnapshotRef.current;
     setEditing(false);
+    setCaretPos(null); // 退出编辑态：光标位失效，待下次 measure 重建
     // 恢复 contentEditable DOM 到编辑前文本
     displayedRef.current = original;
     setText(original);

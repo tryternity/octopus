@@ -1024,17 +1024,24 @@ pub fn update_text_segments(id: i64, text: &str, segments: &str) -> Result<()> {
     })
 }
 
-/// 停顿润色后更新 polished_text。
+/// 停顿润色后更新 polished_text + segments/text 列。
+/// `polished_text` = 润色后扁平（与 segments 段拼接一致）；
+/// `segments` = segments_json（润色后段，Polished/Edited）；
+/// `text` = 润色后扁平，与 segments 对应（落 text 列，保持 segments 是真相源一致）。
+/// 修复 I-1（数据一致性）：原仅写 polished_text/polish_status/polish_model，润色后进程崩溃在
+/// Finalize 前 → DB polished_text 有值、segments/text 停留 raw，与「segments 是真相源」设计不符。
 pub fn update_polished(
     id: i64,
     polished_text: &str,
     polish_status: &str,
     polish_model: Option<&str>,
+    segments: &str,
+    text: &str,
 ) -> Result<()> {
     with_db(|conn| {
         conn.execute(
-            "UPDATE transcriptions SET polished_text=?1, polish_status=?2, polish_model=?3 WHERE id=?4",
-            params![polished_text, polish_status, polish_model, id],
+            "UPDATE transcriptions SET polished_text=?1, polish_status=?2, polish_model=?3, segments=?4, text=?5 WHERE id=?6",
+            params![polished_text, polish_status, polish_model, segments, text, id],
         )?;
         Ok(())
     })
