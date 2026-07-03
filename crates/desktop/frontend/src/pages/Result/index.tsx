@@ -55,6 +55,9 @@ function Result() {
   const [popupItems, setPopupItems] = useState<PopupItem[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [polishLoading, setPolishLoading] = useState(false);
+  // 光标 char offset（code-point 计数，与后端 Rust char 对齐）。null = 文本末尾（活动 Raw 段尾）。
+  // 简化策略：中插态光标固定在点击 offset（插入点），不随新词推进（新词右推、光标自然落在插入点）。
+  const [caretPos, setCaretPos] = useState<number | null>(null);
 
   const textRef = useRef<HTMLDivElement>(null);
   const editingRef = useRef(false);
@@ -145,10 +148,11 @@ function Result() {
           setIsRecording(true);
           refreshActive();
           if (isPlaceholder) {
-            // 新录音开始：清空上次残留
+            // 新录音开始：清空上次残留 + 光标回到末尾（null）
             setText("");
             displayedRef.current = "";
             pendingDiverted.current = null;
+            setCaretPos(null);
             if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
           } else {
             renderResultNow(text);
@@ -156,13 +160,18 @@ function Result() {
         }],
         ["update-result", (p) => {
           if (editingRef.current) return;
-          const newText = p as string;
+          // Task 5 起 payload 改对象 { text, insertion }（旧纯 string 已废弃）。
+          const payload = p as { text: string; insertion: boolean };
+          const newText = payload.text;
+          const insertion = payload.insertion;
           if (newText === displayedRef.current || newText === pendingDiverted.current) return;
-          if (newText.startsWith(displayedRef.current)) {
+          // 插入态（光标在中间）或纯追加（startsWith）：立即渲染（跳过 diverted 300ms 延迟）。
+          if (insertion || newText.startsWith(displayedRef.current)) {
             if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
             pendingDiverted.current = null;
             renderResultNow(newText);
           } else {
+            // diverted（光标在末尾 + 引擎纠正早前文本）：300ms 延迟整体替换。
             pendingDiverted.current = newText;
             if (!divertedTimer.current) {
               divertedTimer.current = setTimeout(() => {
@@ -178,6 +187,7 @@ function Result() {
         ["clear-result", () => {
           setText("");
           displayedRef.current = "";
+          setCaretPos(null);
           setVisible(false);
           setIsRecording(false);
         }],
@@ -345,6 +355,20 @@ function Result() {
     editBufTimer.current = setTimeout(updateEditBuffer, 150);
   };
 
+  // ── 非编辑态点击文本 → 算 code-point offset → setCaretPos + invoke set_caret ──
+  // caretRangeFromPoint 是非标准 API（Chromium 有），webkit（Tauri macOS）支持。
+  const handleTextClick = (e: React.MouseEvent) => {
+    const el = textRef.current;
+    if (!el || !text) return;
+    const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
+    if (!range) return;
+    const sel = window.getSelection();
+    sel?.removeAllRanges();
+    const offset = codePointOffsetBefore(el, range);
+    setCaretPos(offset);
+    invoke("set_caret", { offset });
+  };
+
   // ── Popup actions ──
   const openPolishPopup = async () => {
     setPopupItems(POLISH_OPTIONS.map(o => ({
@@ -476,8 +500,10 @@ function Result() {
           contentEditable={editing}
           suppressContentEditableWarning
           onInput={onTextInput}
+          onClick={!editing ? handleTextClick : undefined}
         >
           {text}
+          {!editing && <CaretBlink container={textRef.current} text={text} pos={caretPos} />}
         </div>
       </div>
 
@@ -542,4 +568,69 @@ function matchShortcut(e: KeyboardEvent, sc: ReturnType<typeof parseShortcut>) {
     if (e.ctrlKey !== sc.ctrl) return false;
   }
   return e.altKey === sc.alt && e.shiftKey === sc.shift;
+}
+
+// ── ASR 光标 helpers ──
+
+// 点击处 → 容器起始的 code-point offset。
+// 用 Range 量从容器起点到点击点的纯文本，按 code-point 计数（与后端 Rust char 对齐）。
+function codePointOffsetBefore(container: HTMLElement, range: Range): number {
+  const pre = range.cloneRange();
+  pre.selectNodeContents(container);
+  pre.setEnd(range.startContainer, range.startOffset);
+  const str = pre.toString();
+  return Array.from(str).length;
+}
+
+// 量 container 内 text 第 pos 个 code-point 处光标的相对像素位置。
+// pos=null/超出 → 末尾。code-point 计数（Array.from 语义），UTF-16 offset 转换为 Range API 所需。
+function measureCaretPx(
+  container: HTMLElement | null,
+  text: string,
+  pos: number | null,
+): { left: number; top: number; height: number } | null {
+  if (!container) return null;
+  const chars = Array.from(text);
+  const target = pos == null ? chars.length : Math.min(pos, chars.length);
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const firstText = walker.nextNode() as Text | null;
+  if (!firstText) {
+    // 空文本：光标在容器左上
+    return { left: 0, top: 0, height: 18 };
+  }
+  // firstText.nodeValue 应为纯文本（CaretBlink 是 span，不影响首文本节点）。
+  const cp = Array.from(firstText.nodeValue ?? "");
+  const offsetInNode = Math.min(target, cp.length);
+  // Range API 的 offset 是 UTF-16 code unit；code-point → code unit 累加（代理对 length=2，其余 length=1）。
+  const utf16Offset = cp.slice(0, offsetInNode).reduce((acc, ch) => acc + ch.length, 0);
+  const r = document.createRange();
+  r.setStart(firstText, utf16Offset);
+  r.collapse(true);
+  const rect = r.getBoundingClientRect();
+  const cRect = container.getBoundingClientRect();
+  return { left: rect.left - cRect.left, top: rect.top - cRect.top, height: rect.height || 18 };
+}
+
+// 闪烁光标：绝对定位到 pos 处的像素位置（相对文本容器）。
+// 依赖 text/pos 变化重新量像素；container 经 textRef.current 透传。
+function CaretBlink({
+  container,
+  text,
+  pos,
+}: {
+  container: HTMLElement | null;
+  text: string;
+  pos: number | null;
+}) {
+  const [px, setPx] = useState<{ left: number; top: number; height: number } | null>(null);
+  useEffect(() => {
+    setPx(measureCaretPx(container, text, pos));
+  }, [container, text, pos]);
+  if (!px) return null;
+  return (
+    <span
+      className="asr-caret"
+      style={{ left: px.left, top: px.top, height: px.height }}
+    />
+  );
 }
