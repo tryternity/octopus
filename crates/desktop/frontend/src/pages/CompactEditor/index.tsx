@@ -80,13 +80,26 @@ function CompactEditor() {
   const doSave = useCallback(async () => {
     if (!active) return;
     try {
+      if (active.text.trim() === "") {
+        // 清空后保存 = 删除条目（空内容无意义）；后端 delete_clipboard_item 已 emit clipboard://changed 通知列表刷新
+        await invoke("delete_clipboard_item", { id: active.itemId });
+        // 关闭该 tab：仅剩一个则关窗，否则移除并修正 activeIdx
+        if (tabs.length <= 1) {
+          invoke("close_compact_editor");
+          return;
+        }
+        const idx = activeIdx;
+        setTabs(prev => prev.filter((_, i) => i !== idx));
+        setActiveIdx(i => (idx < i ? i - 1 : idx === i ? Math.min(i, tabs.length - 2) : i));
+        return;
+      }
       await invoke("set_clipboard_item_text", { itemId: active.itemId, text: active.text });
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 1200);
     } catch (e) {
       console.error("保存失败:", e);
     }
-  }, [active]);
+  }, [active, activeIdx, tabs.length]);
 
   // 关闭 tab：仅剩一个则关窗；否则移除并修正 activeIdx。
   const closeTab = (idx: number) => {
