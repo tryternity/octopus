@@ -14,6 +14,13 @@ const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
 const ZOOM_STEP = 1.25;
 
+// fit-to-window：图片完整显示在窗口内，最大不超过 1:1
+const computeFitZoom = (w: number, h: number): number => {
+  const containerW = window.innerWidth - 24;
+  const containerH = window.innerHeight - 24;
+  return Math.min(1, containerW / w, containerH / h);
+};
+
 /**
  * 剪贴板图片项的预览窗口（轻工具栏形态）。
  *
@@ -53,6 +60,7 @@ export default function ImagePreview() {
   const zoomRef = useRef(1);
   const scaledBitmapRef = useRef<ImageBitmap | null>(null);
   const zoomVersionRef = useRef(0);
+  const userZoomedRef = useRef(false);
   // 文字输入框 ref：autoFocus 对动态挂载的 textarea 不可靠，改 setTimeout focus（对齐截图）
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   // 文字草稿：state 驱动 textarea 渲染，ref 镜像供 commitText 读最新输入
@@ -62,14 +70,15 @@ export default function ImagePreview() {
   const setToolColorSync = (c: string) => { toolColorRef.current = c; setToolColor(c); };
   const setToolWidthSync = (n: number) => { toolWidthRef.current = n; setToolWidth(n); };
   const setToolFontSizeSync = (n: number) => { toolFontSizeRef.current = n; setToolFontSize(n); };
-  const setZoomSync = (z: number) => {
+  const setZoomSync = (z: number, userInitiated = false) => {
     const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
     zoomRef.current = clamped;
+    if (userInitiated) userZoomedRef.current = true;
     setZoom(clamped);
   };
-  const zoomIn = () => setZoomSync(zoomRef.current * ZOOM_STEP);
-  const zoomOut = () => setZoomSync(zoomRef.current / ZOOM_STEP);
-  const zoomReset = () => setZoomSync(1);
+  const zoomIn = () => setZoomSync(zoomRef.current * ZOOM_STEP, true);
+  const zoomOut = () => setZoomSync(zoomRef.current / ZOOM_STEP, true);
+  const zoomReset = () => setZoomSync(1, true);
 
   // —— mount：取 PENDING + 监听并发再开的 load 事件 ——
   useEffect(() => {
@@ -78,30 +87,78 @@ export default function ImagePreview() {
     });
     const unlisten = listen<{ imageId: number }>("image-preview://load", (e) => {
       setImageId(e.payload.imageId);
-      setAnnotations([]);
-      setZoomSync(1);
+      // setAnnotations 和 setZoomSync 已在 imageId useEffect 中处理
     });
     return () => { unlisten.then((f) => f()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // —— imageId 变 → 拉全图（Raw body 二进制 → objectURL）——
+  // —— imageId 变 → 并行拉缩略图（秒开）+ 全图（异步替换） ——
   useEffect(() => {
     if (imageId == null) return;
-    // 清理旧位图
+    let cancelled = false;
+    // 清理旧资源
     const old = scaledBitmapRef.current;
     scaledBitmapRef.current = null;
     if (old) old.close();
     zoomVersionRef.current++;
-    invoke<ArrayBuffer>("get_image_full", { id: imageId })
-      .then((buf) => {
-        const blob = new Blob([buf], { type: "image/webp" });
-        const url = URL.createObjectURL(blob);
+    userZoomedRef.current = false;
+    drawingRef.current = null;
+    setAnnotations([]);
+    setNatW(0);
+    setNatH(0);
+
+    const thumbPromise = invoke<string>("get_image_thumb", { id: imageId });
+    const fullPromise = invoke<ArrayBuffer>("get_image_full", { id: imageId });
+
+    // 缩略图先到 → 立即显示
+    thumbPromise.then((thumbDataUrl) => {
+      if (cancelled) return;
+      const thumbImg = new Image();
+      thumbImg.crossOrigin = "anonymous";
+      thumbImg.onload = () => {
+        if (cancelled) return;
+        imgRef.current = thumbImg;
+        setDataUrl(thumbDataUrl);
+        const fitZoom = computeFitZoom(thumbImg.naturalWidth, thumbImg.naturalHeight);
+        setNatW(thumbImg.naturalWidth);
+        setNatH(thumbImg.naturalHeight);
+        setZoomSync(fitZoom);
+      };
+      thumbImg.src = thumbDataUrl;
+    }).catch((e) => console.error("thumb failed:", e));
+
+    // 全图后到 → 无缝替换
+    fullPromise.then((buf) => {
+      if (cancelled) return;
+      const blob = new Blob([buf], { type: "image/webp" });
+      const url = URL.createObjectURL(blob);
+      const fullImg = new Image();
+      fullImg.crossOrigin = "anonymous";
+      fullImg.onload = () => {
+        if (cancelled) return;
+        imgRef.current = fullImg;
         setDataUrl(url);
-        setAnnotations([]);
-        setZoomSync(1);
-      })
-      .catch((e) => console.error(e));
+        if (!userZoomedRef.current) {
+          const fitZoom = computeFitZoom(fullImg.naturalWidth, fullImg.naturalHeight);
+          setNatW(fullImg.naturalWidth);
+          setNatH(fullImg.naturalHeight);
+          setZoomSync(fitZoom);
+        } else {
+          setNatW(fullImg.naturalWidth);
+          setNatH(fullImg.naturalHeight);
+        }
+        // 强制重新生成位图（全图替换缩略图后 zoom 可能不变，不触发 zoom effect）
+        const oldBitmap = scaledBitmapRef.current;
+        scaledBitmapRef.current = null;
+        if (oldBitmap) oldBitmap.close();
+        zoomVersionRef.current++;
+        drawBg();  // 显式重绘（覆盖 thumb/full 同尺寸时 zoom effect 不触发的边界）
+      };
+      fullImg.src = url;
+    }).catch((e) => console.error("full failed:", e));
+
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageId]);
 
@@ -454,8 +511,11 @@ export default function ImagePreview() {
                 crossOrigin="anonymous"
                 style={{ display: "none" }}
                 onLoad={(e) => {
-                  setNatW(e.currentTarget.naturalWidth);
-                  setNatH(e.currentTarget.naturalHeight);
+                  // natW/natH 已在 useEffect 加载流程中设置
+                  // 此处仅兜底：确保 imgRef.current 指向 React 渲染的最新 img
+                  if (!imgRef.current || imgRef.current !== e.currentTarget) {
+                    imgRef.current = e.currentTarget;
+                  }
                 }}
               />
             )}
