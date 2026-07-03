@@ -60,6 +60,7 @@ export default function ImagePreview() {
   const [toolWidth, setToolWidth] = useState(3);
   const [toolFontSize, setToolFontSize] = useState(20);
   const [filled, setFilled] = useState(false);
+  const [popoverDismissKey, setPopoverDismissKey] = useState(0);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const redoStackRef = useRef<Annotation[]>([]);
   const [redoAvailable, setRedoAvailable] = useState(false);
@@ -417,6 +418,8 @@ export default function ImagePreview() {
 
   const onMouseDown = (e: React.MouseEvent) => {
     if (e.button !== 0) return;
+    // 用户开始操作画布 → 收起工具栏浮窗
+    setPopoverDismissKey((k) => k + 1);
     const { cssX, cssY } = canvasCoords(e);
     const { nx, ny } = toNatural(cssX, cssY);
 
@@ -690,6 +693,7 @@ export default function ImagePreview() {
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
         filled={filled} setFilled={setFilled}
+        popoverDismissKey={popoverDismissKey}
       />
       {/* 滚动容器：canvas + wrapper 撑滚动条 + SVG overlay + 鼠标事件，全部在同一 scroll context */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>

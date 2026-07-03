@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import {
   ZoomIn, ZoomOut, Expand, MoveHorizontal,
 } from "lucide-react";
@@ -86,28 +86,37 @@ export default function Toolbar(props: {
   zoom: number; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
   onZoomFitWidth: () => void; onZoomFitWindow: () => void;
   filled: boolean; setFilled: (f: boolean) => void;
+  popoverDismissKey: number;  // 变化时收起浮窗
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   // 浮窗左偏移（相对工具卡），跟随被点击的标注按钮
+  // 浮窗显隐：独立 state，不绑死 tool。用户操作画布时自动收起，需要改属性时重新点按钮弹出。
+  const [showPopover, setShowPopover] = useState(false);
+  // 用户在画布上操作时收起浮窗（popoverDismissKey 由 index.tsx mousedown 时递增）
+  useEffect(() => { setShowPopover(false); }, [props.popoverDismissKey]);
+
   const [popoverLeft, setPopoverLeft] = useState(0);
 
   const isText = props.tool === "text";
   const isBlur = props.tool === "blur";
-  const showProps = props.tool !== "none";
+  const showProps = showPopover && props.tool !== "none";
   const sizeValue = isText ? props.toolFontSize : props.toolWidth;
   const setSize = isText ? props.setToolFontSize : props.setToolWidth;
   const min = isText ? 10 : 1;
   const max = isText ? 48 : 10;
   const label = isText ? "字号" : isBlur ? "遮挡" : "粗细";
 
-  // 标注工具点击：toggle（再点已激活→回 none→收起），并算浮窗跟随位置
+  // 标注工具点击：已激活→收起浮窗+切回 none；未激活→切换工具+弹出浮窗
   const onToolClick = (key: Tool, e: React.MouseEvent<HTMLButtonElement>) => {
     if (props.tool === key) {
+      // 已激活→收起浮窗+切回 none（选择/移动模式）
+      setShowPopover(false);
       props.setTool("none");
       return;
     }
     props.setTool(key);
-    // 浮窗跟随按钮：按钮中心相对工具卡的偏移，clamp 到 [0, cardW - POPOVER_W]
+    setShowPopover(true);
+    // 浮窗跟随按钮
     const btn = e.currentTarget;
     const card = containerRef.current;
     if (card) {
