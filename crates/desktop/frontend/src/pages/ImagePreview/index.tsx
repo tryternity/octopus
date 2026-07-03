@@ -261,35 +261,40 @@ export default function ImagePreview() {
     const dw = natW * zoom;
     const dh = natH * zoom;
     const dpr = window.devicePixelRatio || 1;
+    // canvas CSS 尺寸 = scrollContainer 可视区（canvas 100% 父容器）
     const viewW = sc.clientWidth;
     const viewH = sc.clientHeight;
-    canvas.width = Math.round(viewW * dpr);
-    canvas.height = Math.round(viewH * dpr);
+    const cw = Math.round(viewW * dpr);
+    const ch = Math.round(viewH * dpr);
+    if (canvas.width !== cw) canvas.width = cw;
+    if (canvas.height !== ch) canvas.height = ch;
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, viewW, viewH);
-    // canvas 和 scrollContainer 都是 absolute inset-0 → 同一坐标系
-    // wrapper（图片左上角）在 viewport 中的位置 = wrapper rect - scrollContainer rect
-    const scRect = sc.getBoundingClientRect();
+    // wrapper 在视口中的实际位置（getBoundingClientRect 是相对浏览器窗口的，
+    // canvas 也是 absolute inset-0 即覆盖整个父容器 = 同一参考系）
     const wRect = wrapper.getBoundingClientRect();
-    const imgScreenX = wRect.left - scRect.left;
-    const imgScreenY = wRect.top - scRect.top;
-    // 可见区域（显示坐标，相对图片左上角）
-    const visLeft = Math.max(0, -imgScreenX);
-    const visTop = Math.max(0, -imgScreenY);
-    const visRight = Math.min(dw, viewW - imgScreenX);
-    const visBottom = Math.min(dh, viewH - imgScreenY);
-    if (visRight <= visLeft || visBottom <= visTop) return;
+    const scRect = sc.getBoundingClientRect();
+    // wrapper 左上角在 canvas 坐标系中的位置（canvas 原点 = scRect.left/top）
+    const imgX = wRect.left - scRect.left;
+    const imgY = wRect.top - scRect.top;
+    // 图片可见部分（显示坐标，相对图片左上角）
+    const visL = Math.max(0, -imgX);
+    const visT = Math.max(0, -imgY);
+    const visR = Math.min(dw, viewW - imgX);
+    const visB = Math.min(dh, viewH - imgY);
+    if (visR <= visL || visB <= visT) return;
     const bitmap = scaledBitmapRef.current;
     const srcW = bitmap ? bitmap.width : img.naturalWidth;
     const srcH = bitmap ? bitmap.height : img.naturalHeight;
-    const sx = (visLeft / dw) * srcW;
-    const sy = (visTop / dh) * srcH;
-    const sw = ((visRight - visLeft) / dw) * srcW;
-    const sh = ((visBottom - visTop) / dh) * srcH;
-    const dx = visLeft + imgScreenX;
-    const dy = visTop + imgScreenY;
-    ctx.drawImage(bitmap || img, sx, sy, sw, sh, dx, dy, visRight - visLeft, visBottom - visTop);
+    const sx = (visL / dw) * srcW;
+    const sy = (visT / dh) * srcH;
+    const sw = ((visR - visL) / dw) * srcW;
+    const sh = ((visB - visT) / dh) * srcH;
+    // 目标位置：图片可见区左上角在 canvas 坐标系中的位置
+    const dx = visL + imgX;
+    const dy = visT + imgY;
+    ctx.drawImage(bitmap || img, sx, sy, sw, sh, dx, dy, visR - visL, visB - visT);
   }, [natW, natH, zoom, viewportScroll]);
 
   // bgCanvas 重绘触发：imageId/zoom/scroll 变化
@@ -588,11 +593,11 @@ export default function ImagePreview() {
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
       />
-      {/* 视口渲染 canvas：fixed 在 scrollContainer 上方，尺寸=可视区域，随滚动只画可见部分 */}
+      {/* 视口渲染 canvas：absolute inset-0 覆盖整个窗口，尺寸由 drawBg 设为 scrollContainer 可视区 */}
       <canvas
         ref={bgCanvasRef}
         className="absolute inset-0 block pointer-events-none"
-        style={{ zIndex: 1 }}
+        style={{ zIndex: 1, width: "100%", height: "100%" }}
       />
       {/* 滚动容器：撑起 dispW×dispH 滚动条；SVG overlay + textarea 在内部随滚动移动 */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>
