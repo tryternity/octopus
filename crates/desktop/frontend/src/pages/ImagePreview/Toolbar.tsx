@@ -85,6 +85,7 @@ export default function Toolbar(props: {
   ocrWarn: boolean;
   zoom: number; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
   onZoomFitWidth: () => void; onZoomFitWindow: () => void;
+  filled: boolean; setFilled: (f: boolean) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   // 浮窗左偏移（相对工具卡），跟随被点击的标注按钮
@@ -268,6 +269,30 @@ export default function Toolbar(props: {
               );
             })}
           </div>
+          {/* 行 3：实心开关（仅 rect/oval） */}
+          {(props.tool === "rect" || props.tool === "oval") && (
+            <>
+              <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 10, color: "#a8a29e", fontWeight: 500 }}>实心填充</span>
+                <button
+                  type="button"
+                  onClick={() => props.setFilled(!props.filled)}
+                  style={{
+                    width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
+                    background: props.filled ? "#3b82f6" : "rgba(0,0,0,0.15)",
+                    position: "relative", transition: "background 0.2s",
+                  }}
+                >
+                  <span style={{
+                    position: "absolute", top: 2, left: props.filled ? 16 : 2,
+                    width: 14, height: 14, borderRadius: "50%", background: "#fff",
+                    transition: "left 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
+                  }} />
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

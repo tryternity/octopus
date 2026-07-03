@@ -59,6 +59,7 @@ export default function ImagePreview() {
   const [toolColor, setToolColor] = useState("#ef4444");
   const [toolWidth, setToolWidth] = useState(3);
   const [toolFontSize, setToolFontSize] = useState(20);
+  const [filled, setFilled] = useState(false);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const redoStackRef = useRef<Annotation[]>([]);
   const [redoAvailable, setRedoAvailable] = useState(false);
@@ -479,6 +480,7 @@ export default function ImagePreview() {
       type: tool as Annotation["type"],
       x1: nx, y1: ny, x2: nx, y2: ny,
       color: toolColorRef.current, lineWidth: toolWidthRef.current,
+      filled: (tool === "rect" || tool === "oval") ? filled : undefined,
     };
   };
 
@@ -687,6 +689,7 @@ export default function ImagePreview() {
         ocrCopied={ocrCopied} ocrWarn={ocrWarn}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
+        filled={filled} setFilled={setFilled}
       />
       {/* 滚动容器：canvas + wrapper 撑滚动条 + SVG overlay + 鼠标事件，全部在同一 scroll context */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>

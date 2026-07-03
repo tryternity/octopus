@@ -15,6 +15,7 @@ export interface Annotation {
   number?: number;
   circleSize?: number;
   textWidth?: number; // 文本最大宽度（自然像素），不折行时省略
+  filled?: boolean; // rect/oval 是否实心填充
 }
 
 const HIT_DIST = 8;
@@ -33,7 +34,7 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
     const y = Math.min(ann.y1, ann.y2);
     const w = Math.abs(ann.x2 - ann.x1);
     const h = Math.abs(ann.y2 - ann.y1);
-    ctx.strokeRect(x, y, w, h);
+    if (ann.filled) { ctx.fillRect(x, y, w, h); } else { ctx.strokeRect(x, y, w, h); }
   } else if (ann.type === "oval") {
     const cx = (ann.x1 + ann.x2) / 2;
     const cy = (ann.y1 + ann.y2) / 2;
@@ -41,7 +42,7 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
     const ry = Math.max(1, Math.abs(ann.y2 - ann.y1) / 2);
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    if (ann.filled) ctx.fill(); else ctx.stroke();
   } else if (ann.type === "line") {
     ctx.beginPath();
     ctx.moveTo(ann.x1, ann.y1);
@@ -161,7 +162,7 @@ export function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotat
     const y = Math.min(ann.y1, ann.y2) * scale;
     const w = Math.abs(ann.x2 - ann.x1) * scale;
     const h = Math.abs(ann.y2 - ann.y1) * scale;
-    ctx.strokeRect(x, y, w, h);
+    if (ann.filled) { ctx.fillRect(x, y, w, h); } else { ctx.strokeRect(x, y, w, h); }
   } else if (ann.type === "oval") {
     const cx = (ann.x1 + ann.x2) / 2 * scale;
     const cy = (ann.y1 + ann.y2) / 2 * scale;
@@ -169,7 +170,7 @@ export function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotat
     const ry = Math.max(1, Math.abs(ann.y2 - ann.y1) / 2 * scale);
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    if (ann.filled) ctx.fill(); else ctx.stroke();
   } else if (ann.type === "line") {
     ctx.beginPath();
     ctx.moveTo(ann.x1 * scale, ann.y1 * scale);
