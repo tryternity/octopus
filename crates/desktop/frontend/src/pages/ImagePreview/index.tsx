@@ -52,6 +52,7 @@ export default function ImagePreview() {
   const toolFontSizeRef = useRef(20);
   const zoomRef = useRef(1);
   const scaledBitmapRef = useRef<ImageBitmap | null>(null);
+  const zoomVersionRef = useRef(0);
   // 文字输入框 ref：autoFocus 对动态挂载的 textarea 不可靠，改 setTimeout focus（对齐截图）
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   // 文字草稿：state 驱动 textarea 渲染，ref 镜像供 commitText 读最新输入
@@ -87,6 +88,11 @@ export default function ImagePreview() {
   // —— imageId 变 → 拉全图（Raw body 二进制 → objectURL）——
   useEffect(() => {
     if (imageId == null) return;
+    // 清理旧位图
+    const old = scaledBitmapRef.current;
+    scaledBitmapRef.current = null;
+    if (old) old.close();
+    zoomVersionRef.current++;
     invoke<ArrayBuffer>("get_image_full", { id: imageId })
       .then((buf) => {
         const blob = new Blob([buf], { type: "image/webp" });
@@ -142,6 +148,36 @@ export default function ImagePreview() {
 
   // bgCanvas 同步触发：imageId/zoom/annotations 任一变化 → 完整重绘底层
   useEffect(() => { drawBg(); }, [drawBg]);
+
+  // zoom 变化 → 异步生成预缩放位图 → drawBg（不阻塞主线程）
+  useEffect(() => {
+    const img = imgRef.current;
+    if (!img || !natW || !natH) return;
+    const version = ++zoomVersionRef.current;
+    const dw = natW * zoom;
+    const dh = natH * zoom;
+    const dpr = window.devicePixelRatio || 1;
+    const pw = Math.round(dw * dpr);
+    const ph = Math.round(dh * dpr);
+    // 极小尺寸（zoom 接近 0）跳过
+    if (pw < 1 || ph < 1) return;
+
+    createImageBitmap(img, {
+      resizeWidth: pw,
+      resizeHeight: ph,
+      resizeQuality: "high",
+    }).then((bitmap) => {
+      // 版本不匹配 → 用户已切换到另一个 zoom，丢弃
+      if (version !== zoomVersionRef.current) {
+        bitmap.close();
+        return;
+      }
+      const old = scaledBitmapRef.current;
+      scaledBitmapRef.current = bitmap;
+      if (old) old.close();
+      drawBg();
+    }).catch(() => {});
+  }, [zoom, natW, natH]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // CSS 坐标（相对 canvas，已含滚动偏移）→ 自然坐标（/zoom）
   const toNatural = (cssX: number, cssY: number) => {
