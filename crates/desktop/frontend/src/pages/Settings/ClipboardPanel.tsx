@@ -14,12 +14,20 @@ const PAGE_SIZE = 50;
 const TABS = [
   { value: "all", icon: LayoutGrid, label: "全部", svg: undefined },
   { value: "asr", icon: null, label: "语音", svg: "voice" },
+  { value: "ocr", icon: ScanText, label: "OCR", svg: undefined },
   { value: "text", icon: null, label: "文本", svg: "text" },
   { value: "image", icon: null, label: "图片", svg: "images" },
   { value: "file", icon: null, label: "文件", svg: "files" },
   { value: "favorite", icon: Star, label: "收藏", svg: "favorite" },
   { value: "unfavorite", icon: Star, label: "非收藏", svg: "un-favorite" },
 ] as const;
+
+/** 字节数 → 人类可读大小：<1M 显示 K（整数）、≥1M 显示 M（1 位小数）。 */
+function formatSize(bytes: number): string {
+  if (bytes <= 0) return "";
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))}K`;
+  return `${(bytes / 1024 / 1024).toFixed(1)}M`;
+}
 
 export default function ClipboardPanel({ showToast }: { showToast: (msg: string) => void }) {
   const [items, setItems] = useState<ClipboardItem[]>([]);
@@ -72,7 +80,8 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
   };
 
   const toggleSelectAll = (checked: boolean) => {
-    setSelectedIds(checked ? new Set(items.map((i) => i.id)) : new Set());
+    // 全选排除收藏：全选通常为批量删除，避免误把收藏条目带入选中
+    setSelectedIds(checked ? new Set(items.filter((i) => !i.is_favorite).map((i) => i.id)) : new Set());
     setConfirmDelete(false);
   };
 
@@ -94,7 +103,9 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
     }
   };
 
-  const allChecked = items.length > 0 && selectedIds.size === items.length;
+  // 全选状态：所有「非收藏」条目都被选中才算（收藏不参与全选，但仍可手动单个选）
+  const selectableItems = items.filter((i) => !i.is_favorite);
+  const allChecked = selectableItems.length > 0 && selectableItems.every((i) => selectedIds.has(i.id));
   const hasSelection = selectedIds.size > 0;
 
   return (
@@ -396,6 +407,9 @@ function ClipboardRow({
           </span>
         )}
         <span className="ml-2 text-[10px] text-stone-300">{item.created_at}</span>
+        {item.item_type === "image" && item.image_meta && item.image_meta.size > 0 && (
+          <span className="ml-1 text-[11px] text-sky-700 font-medium tabular-nums">{formatSize(item.image_meta.size)}</span>
+        )}
       </div>
 
       {/* 右侧操作栏：收藏 + 保存图片/打开文件 + 删除（复制已移至左侧类型图标单击） */}

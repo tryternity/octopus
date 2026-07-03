@@ -60,6 +60,8 @@ pub struct ImageMeta {
     pub width: u32,
     pub height: u32,
     pub has_thumbnail: bool,
+    /// 原图 BLOB 字节数（image_data.blob length），用于列表显示存储大小
+    pub size: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
