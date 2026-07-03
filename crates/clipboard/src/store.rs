@@ -512,12 +512,11 @@ pub fn get_image_thumb(conn: &Connection, hash: &str) -> Result<Option<Vec<u8>>>
 
 /// 删除 image_data 中无引用的 BLOB（引用计数为 0）。返回删除行数。
 ///
-/// 引用来源有两处：剪贴板条目（clipboard_history.blob_hash）和笔记内嵌图片
-/// （notes.content_html 里的 `note-img:<hash>`）。两者都不引用才删——
-/// 否则会误删已存入笔记的图片（数据丢失）。
+/// 引用来源：剪贴板条目（clipboard_history.blob_hash）。无任何剪贴板条目引用才删。
+/// （笔记内嵌图片功能随 notes 表于 v12→v13 迁移移除，不再有 note-img: 引用。）
 pub fn cleanup_unreferenced_images(conn: &Connection) -> Result<usize> {
     let deleted = conn.execute(
-        "DELETE FROM image_data WHERE hash NOT IN (\n            SELECT DISTINCT blob_hash FROM clipboard_history WHERE blob_hash IS NOT NULL\n        )\n        AND NOT EXISTS (\n            SELECT 1 FROM notes WHERE notes.content_html LIKE '%note-img:' || image_data.hash || '%'\n        )",
+        "DELETE FROM image_data WHERE hash NOT IN (\n            SELECT DISTINCT blob_hash FROM clipboard_history WHERE blob_hash IS NOT NULL\n        )",
         [],
     )?;
     Ok(deleted)
@@ -525,8 +524,7 @@ pub fn cleanup_unreferenced_images(conn: &Connection) -> Result<usize> {
 
 /// 删除指定 hash 的 image_data（如果无其他条目引用）。
 ///
-/// 同 `cleanup_unreferenced_images`：除剪贴板条目外，也要检查笔记是否引用
-/// （`note-img:<hash>`），避免删剪贴板项时连带误删笔记里的同图副本。
+/// 仅检查剪贴板条目引用（clipboard_history.blob_hash）——notes 表已移除，不再有 note-img: 引用。
 fn delete_image_if_unreferenced(conn: &Connection, hash: &str) {
     let cb_count: i64 = conn
         .query_row(
@@ -535,17 +533,7 @@ fn delete_image_if_unreferenced(conn: &Connection, hash: &str) {
             |r| r.get(0),
         )
         .unwrap_or(0);
-    if cb_count > 0 {
-        return;
-    }
-    let note_count: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM notes WHERE content_html LIKE '%note-img:' || ? || '%'",
-            params![hash],
-            |r| r.get(0),
-        )
-        .unwrap_or(0);
-    if note_count == 0 {
+    if cb_count == 0 {
         let _ = conn.execute("DELETE FROM image_data WHERE hash = ?", params![hash]);
     }
 }
@@ -1004,35 +992,5 @@ mod tests {
         // 删最后 1 条（rows>0 进 track_deletes，累计未达阈值 10 不 rebuild，不报错）
         assert_eq!(delete_by_transcription_ids(&conn, &[3]).unwrap(), 1);
         assert_eq!(count_all(&conn).unwrap(), 0);
-    }
-
-    #[test]
-    fn cleanup_preserves_images_referenced_by_notes() {
-        // 回归 C1：笔记内嵌图片（note-img:<hash>）不得被剪贴板清理误删。
-        // image_data 同时被剪贴板条目（blob_hash）和笔记（content_html 的 note-img:）引用，
-        // 清理必须两处都不引用才删，否则删剪贴板项 / 定时清理会连带误删笔记里的图片（数据丢失）。
-        let conn = open_test_db();
-        insert_image_data(&conn, "hashA", b"webp", b"thumb", 10, 10).unwrap();
-
-        // 1. 一条笔记引用了 hashA，且无任何剪贴板条目引用 → 清理应保留
-        conn.execute(
-            "INSERT INTO notes (title, content_html, content_text, source, created_at, updated_at)\
-             VALUES ('n', '<img src=\"note-img:hashA\">', 'x', 'manual', '2026-06-30 10:00:00', '2026-06-30 10:00:00')",
-            [],
-        )
-        .unwrap();
-        assert_eq!(cleanup_unreferenced_images(&conn).unwrap(), 0);
-        let remains: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM image_data WHERE hash='hashA'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(remains, 1);
-
-        // 2. 删掉笔记引用 → 清理应删除 hashA
-        conn.execute("DELETE FROM notes", []).unwrap();
-        assert_eq!(cleanup_unreferenced_images(&conn).unwrap(), 1);
     }
 }
