@@ -54,18 +54,34 @@
 
 **坐标系统**：SVG `viewBox="0 0 natW natH"` + `preserveAspectRatio="none"` → SVG 内部坐标 = 自然像素空间，CSS 尺寸 = `dispW×dispH`。标注坐标定义不变（自然像素），SVG 自动缩放。
 
-**bgCanvas**：只画底图（预缩放位图），只在 imageId/zoom 变化时重绘（annotations 变化不触发）：
+**bgCanvas（视口渲染）**：canvas 固定窗口大小，只画可见区域的图片部分。滚动时 RAF 触发 drawBg 裁剪可见区域。所有定位用 absolute + JS 手算（不依赖 flex 居中）。
 
 ```ts
 const drawBg = useCallback(() => {
-  canvas.width = Math.round(natW * zoom * dpr);
-  canvas.height = Math.round(natH * zoom * dpr);
-  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-  ctx.drawImage(scaledBitmapRef.current || img, 0, 0, natW * zoom, natH * zoom);
-}, [natW, natH, zoom]);  // 注意：annotations 不在依赖里
+  const sl = sc.scrollLeft, st = sc.scrollTop;
+  const vw = sc.clientWidth, vh = sc.clientHeight;
+  canvas.width = vw * dpr; canvas.height = vh * dpr;  // canvas = 窗口大小
+  // 图片在 viewport 中的位置（手算）
+  const imgVpX = imgLeft - sl;   // imgLeft = JS 算的居中位置
+  const imgVpY = imgTop - st;    // imgTop = 56px（工具栏空间）
+  // 裁剪可见区域 → drawImage
+  const visL = Math.max(0, -imgVpX), visT = Math.max(0, -imgVpY);
+  const visR = Math.min(dispW, vw - imgVpX), visB = Math.min(dispH, vh - imgVpY);
+  ctx.drawImage(bitmap || img,
+    (visL/dispW)*srcW, (visT/dispH)*srcH,     // 源裁剪
+    ((visR-visL)/dispW)*srcW, ((visB-visT)/dispH)*srcH,
+    visL+imgVpX, visT+imgVpY,                   // 目标位置
+    visR-visL, visB-visT);
+}, [natW, natH, zoom, viewport, imgLeft, imgTop, dispW, dispH]);
 ```
 
-**实时预览**：正在绘制的标注存为 `draftAnn` state（React），mousemove 时 `setDraftAnn(...)` → React 只渲染一个 SVG 元素的属性 diff（浏览器内部优化，极快）。mouseup 后 `draftAnn` 入 `annotations` 或清空。
+**布局**（彻底放弃 flex，所有定位 absolute + JS 手算）：
+- canvas 在 scrollContainer **外面**（兄弟节点），`absolute inset-0 pointer-events:none zIndex:1`
+- scrollContainer 内有 content div（relative，撑滚动条）+ wrapper（absolute，手算 left/top 居中）
+- wrapper 透明背景（不遮 canvas），含 SVG overlay + 鼠标事件
+- `viewport` state（ResizeObserver）触发 drawBg；滚动 RAF 直接调 `drawBg()`（不走 React state，避免全组件重渲染）
+
+**实时预览**：正在绘制的标注存为 `draftAnn` state（React），mousemove 时 `setDraftAnn(...)` → React 只渲染一个 SVG 元素的属性 diff。mouseup 后 `draftAnn` 入 `annotations` 或清空。
 
 ### 3.2 createImageBitmap 异步预缩放（解决 B）
 
@@ -123,7 +139,7 @@ imageId 变化
 
 ```ts
 const computeFitZoom = (w: number, h: number): number => {
-  const containerW = window.innerWidth - FIT_PADDING;  // FIT_PADDING=96（p-12 = 48px×2）
+  const containerW = window.innerWidth - FIT_PADDING;  // FIT_PADDING=16（px-2 左右各 8px）
   const containerH = window.innerHeight - FIT_PADDING;
   return Math.min(1, containerW / w, containerH / h);
 };
@@ -133,16 +149,15 @@ const computeFitZoom = (w: number, h: number): number => {
 - 原设计：默认 zoom=1（1:1 自然分辨率），超出窗口出滚动条
 - 新设计：首次打开时 fit-to-window（zoom < 1 时缩放显示，无滚动条），用户手动缩放后尊重用户选择
 - 用 `userZoomedRef` 标记用户是否手动改过 zoom：thumb→full 替换时只在用户未手动缩放时重算 fitZoom
-- **fit 模式跟踪**（`fitModeRef`）：`'fitWindow'` | `'fitWidth'` | `'manual'`。打开图片默认 `fitWindow`，点自适应宽度按钮切 `fitWidth`，手动缩放切 `manual`。
-- **自适应宽度**（fit-to-width）：图片宽度 = 窗口宽度（`containerW / natW`，允许 > 1 放大，上限 MAX_ZOOM），高度可超出窗口 → 垂直滚动。工具栏 `Expand` 按钮触发。
+- **fit 模式跟踪**（`fitModeRef`）：`'fitWindow'` | `'fitWidth'` | `'manual'`。打开图片默认 `fitWidth`，点自适应窗口按钮切 `fitWindow`，手动缩放切 `manual`。
+- **自适应宽度**（fit-to-width）：图片宽度 = 窗口宽度（`containerW / natW`），高度可超出窗口 → 垂直滚动。工具栏 `MoveHorizontal` 按钮触发。自适应窗口 = `Expand` 按钮。
 - **ResizeObserver 自适应**：窗口 resize 时，若 `fitModeRef` 非 `manual`，按当前 fit 模式自动重算 zoom（fitWindow 重算 fitZoom，fitWidth 重算 fitToWidthZoom）。手动缩放后不再自动调整。
 
 ## 4. 拖动标注（drag）与抓手平移（pan）的处理
 
 **拖动已确认标注**（tool=none + hitTest 命中）：
-- mousemove 更新 annotation 坐标 → `setAnnotations` → useEffect 触发 drawBg 重绘底层
-- 顶层 drawCanvas 不参与（无正在绘制的内容）
-- 此场景无增量优化，但标注数量通常很少（<20），全量重绘成本低
+- mousemove 更新 annotation 坐标 → `setAnnotations` → React 重新渲染被拖动的 SVG 元素
+- canvas 不参与（标注由 SVG overlay 渲染）
 
 **抓手平移**（tool=none + 未命中标注 + 按住拖拽）：
 - 只操作 `scrollContainerRef.scrollLeft/Top`，不触发任何 canvas 重绘
@@ -152,7 +167,7 @@ const computeFitZoom = (w: number, h: number): number => {
 
 - **zoom 期间快速连续点击**：每个 zoom 值都触发 createImageBitmap，中间结果被最新的一次覆盖（旧 bitmap 在 drawBg 中 close）。最终只有最新 zoom 值的位图画上 bgCanvas。
 - **thumb→full 替换期间用户正在绘制标注**：thumb 和 full 的 `naturalWidth/Height` 不同（thumb 是缩略图尺寸），如果允许在 thumb 期间画标注，坐标会存在 thumb 坐标系，full 加载后被重新诠释为 full 坐标系 → 标注错位。**解决方案**：`loadingFullRef` 门控——全图加载完成前禁止标注（`onMouseDown` 中 `loadingFullRef.current && tool !== "none"` 时 return）。用户在此期间只能选择/平移，不能新建标注。
-- **SVG overlay 尺寸同步**：dispW/dispH 变化时（zoom 变化）bgCanvas 和 SVG 的 CSS 尺寸同步更新。SVG 的 viewBox 不变（自然空间），浏览器自动按 CSS 尺寸缩放内容。
+- **SVG overlay 尺寸同步**：dispW/dispH 变化时（zoom 变化）wrapper 的 CSS 尺寸同步更新。SVG 的 viewBox 不变（自然空间），浏览器自动按 CSS 尺寸缩放内容。canvas 保持窗口大小，只裁剪可见区域。
 - **撤退路径**：如果 `createImageBitmap` 不支持（极老浏览器），fallback 到当前直接 `drawImage` 方式（原逻辑不变）。
 - **blob URL 泄漏**：`objectUrlRef` 跟踪当前全图的 objectURL，图片切换时 `revokeObjectURL` 旧的、unmount cleanup effect 兜底 revoke + `bitmap.close()`。
 - **EXIF 条显示 thumb 尺寸**：`fullNatW/fullNatH` state 仅在全图 onload 后赋值，EXIF 条用 `fullNatW || natW`——thumb 期间不显示缩略图尺寸。
@@ -161,8 +176,9 @@ const computeFitZoom = (w: number, h: number): number => {
 
 1. 标注坐标始终在**自然像素空间**（与 zoom 解耦），zoom 变化/底图替换不影响标注正确性
 2. 标注是纯数据（`Annotation[]`），渲染由 SVG overlay 处理，不碰底图像素
-3. bgCanvas 只画底图，只在 imageId/zoom 变化时重绘（annotations 变化不触发 canvas 操作）
-4. composePngBytes（保存/复制）不受影响，仍在独立 offscreen canvas 上自然尺寸 1:1 合成（`drawImage(原图) + drawAnnotation(ann)`，仅保存时执行）
+3. canvas 固定窗口大小（视口渲染），只画可见区域——不管图多大，canvas 恒定 ~2M 像素 / ~8MB buffer
+4. 所有定位用 absolute + JS 手算，不依赖 CSS flex 居中推导
+5. composePngBytes（保存/复制）不受影响，仍在独立 offscreen canvas 上自然尺寸 1:1 合成（`drawImage(原图) + drawAnnotation(ann)`，仅保存时执行）
 
 ## 7. 与 Screenshot 标注的关系
 
@@ -172,8 +188,8 @@ const computeFitZoom = (w: number, h: number): number => {
 
 | | ImagePreview | Screenshot |
 |---|---|---|
-| 渲染方式 | canvas（底图）+ **SVG overlay**（标注） | 单 canvas（底图+标注全量重绘） |
+| 渲染方式 | 视口渲染 canvas（窗口大小）+ **SVG overlay**（标注） | 单 canvas（底图+标注全量重绘） |
 | 坐标空间 | **自然像素**（图像本征分辨率） | **窗口显示空间**（`window.innerWidth` 系） |
-| canvas 尺寸 | 超大图可达 45M 像素 | 屏幕尺寸 ~2M 像素 |
+| canvas 尺寸 | 恒定窗口大小 ~2M 像素 | 屏幕尺寸 ~2M 像素 |
 
 **不统一的原因**：Screenshot 的 canvas 是屏幕尺寸（~2M 像素），全量重绘 <1ms，无性能问题；且截图涉及选区裁剪逻辑，改造量大。为 DRY 承担大改动 + 回归风险换不到可感知的性能提升。当前的共享边界（纯函数 DRY + 渲染各自实现）是合理的。

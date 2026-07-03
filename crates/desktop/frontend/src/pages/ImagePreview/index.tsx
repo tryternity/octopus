@@ -45,8 +45,6 @@ export default function ImagePreview() {
   const wrapperRef = useRef<HTMLDivElement>(null);
   // 视口尺寸（ResizeObserver 跟踪，用于手算居中 + drawBg 裁剪）
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
-  // 滚动偏移（RAF 节流，触发 drawBg 重画可见区）
-  const [scrollPos, setScrollPos] = useState({ x: 0, y: 0 });
 
   const [imageId, setImageId] = useState<number | null>(null);
   const [dataUrl, setDataUrl] = useState<string | null>(null);
@@ -235,8 +233,14 @@ export default function ImagePreview() {
           setNatH(fullImg.naturalHeight);
           setZoomSync(fitZoom);
         } else {
+          // 用户已手动缩放：等比例修正 zoom 保持视觉大小不变
+          const prevNatW = natW;
+          const ratio = prevNatW / fullImg.naturalWidth;
           setNatW(fullImg.naturalWidth);
           setNatH(fullImg.naturalHeight);
+          if (ratio > 0 && ratio !== 1) {
+            setZoomSync(zoomRef.current * ratio, true);
+          }
         }
         // 强制重新生成位图（全图替换缩略图后 zoom 可能不变，不触发 zoom effect）
         const oldBitmap = scaledBitmapRef.current;
@@ -296,7 +300,7 @@ export default function ImagePreview() {
     const dx = visL + imgVpX;
     const dy = visT + imgVpY;
     ctx.drawImage(bitmap || img, sx, sy, sw, sh, dx, dy, visR - visL, visB - visT);
-  }, [natW, natH, zoom, viewport, scrollPos, imgLeft, imgTop, dispW, dispH]);
+  }, [natW, natH, zoom, viewport, imgLeft, imgTop, dispW, dispH]);
 
   useEffect(() => { drawBg(); }, [drawBg]);
 
@@ -311,46 +315,47 @@ export default function ImagePreview() {
     return () => ro.disconnect();
   }, []);
 
-  // scroll RAF 节流 → setScrollPos → drawBg
+  // scroll RAF 节流 → 直接 drawBg（不走 React state，避免全组件重渲染）
   useEffect(() => {
     const sc = scrollContainerRef.current;
     if (!sc) return;
     let raf = 0;
     const onScroll = () => {
       cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => {
-        setScrollPos({ x: sc.scrollLeft, y: sc.scrollTop });
-      });
+      raf = requestAnimationFrame(() => { drawBg(); });
     };
     sc.addEventListener('scroll', onScroll, { passive: true });
     return () => { sc.removeEventListener('scroll', onScroll); cancelAnimationFrame(raf); };
-  }, []);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [drawBg]);
 
-  // zoom 变化 → 异步生成预缩放位图 → drawBg
+  // zoom 变化 → 异步生成预缩放位图（debounce 150ms，期间 drawBg 用原图拉伸占位）→ drawBg
   useEffect(() => {
     const img = imgRef.current;
     if (!img || !natW || !natH) return;
-    const version = ++zoomVersionRef.current;
     const dpr = window.devicePixelRatio || 1;
     const pw = Math.round(dispW * dpr);
     const ph = Math.round(dispH * dpr);
     if (pw < 1 || ph < 1) return;
-
-    createImageBitmap(img, {
-      resizeWidth: pw,
-      resizeHeight: ph,
-      resizeQuality: "high",
-    }).then((bitmap) => {
-      // 版本不匹配 → 用户已切换到另一个 zoom，丢弃
-      if (version !== zoomVersionRef.current) {
-        bitmap.close();
-        return;
-      }
-      const old = scaledBitmapRef.current;
-      scaledBitmapRef.current = bitmap;
-      if (old) old.close();
-      drawBg();
-    }).catch(() => {});
+    // 防抖：快速缩放时等用户停下来再生成高质量位图
+    const timer = setTimeout(() => {
+      const version = ++zoomVersionRef.current;
+      createImageBitmap(img, {
+        resizeWidth: pw,
+        resizeHeight: ph,
+        resizeQuality: "high",
+      }).then((bitmap) => {
+        if (version !== zoomVersionRef.current) {
+          bitmap.close();
+          return;
+        }
+        const old = scaledBitmapRef.current;
+        scaledBitmapRef.current = bitmap;
+        if (old) old.close();
+        drawBg();
+      }).catch(() => {});
+    }, 150);
+    return () => { clearTimeout(timer); zoomVersionRef.current++; };
   }, [zoom, natW, natH]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // CSS 坐标（相对图片左上角，含滚动偏移）→ 自然坐标（/zoom）
@@ -370,9 +375,14 @@ export default function ImagePreview() {
   const commitText = () => {
     const d = textDraftRef.current;
     if (d && d.val.trim()) {
+      // 记录 textarea 实际宽度（自然像素），供导出时折行参考
+      const textWidth = textInputRef.current
+        ? textInputRef.current.clientWidth / zoomRef.current
+        : undefined;
       setAnnotations((prev) => [...prev, {
         type: "text", x1: d.nx, y1: d.ny, x2: d.nx, y2: d.ny,
         text: d.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current,
+        textWidth,
       }]);
     }
     textDraftRef.current = null;
@@ -498,7 +508,8 @@ export default function ImagePreview() {
 
   // —— compose：图像 + 标注 合成到自然尺寸 PNG → Uint8Array（Raw body 二进制传输）——
   const composePngBytes = async (): Promise<ArrayBuffer> => {
-    const img = imgRef.current!;
+    const img = imgRef.current;
+    if (!img || !natW || !natH) throw new Error("图片尚未加载完成");
     const c = document.createElement("canvas");
     c.width = natW; c.height = natH;
     const ctx = c.getContext("2d")!;
@@ -510,14 +521,9 @@ export default function ImagePreview() {
 
   const handleSave = async () => {
     try {
-      if (annotations.length > 0) {
-        // 有标注：前端 Canvas 合成 → Raw body 传后端
-        const pngBytes = await composePngBytes();
-        await invoke("save_image_dialog", pngBytes as unknown as Record<string, unknown>);
-      } else if (imageId != null) {
-        // 无标注：后端直接从 DB 保存原始数据
-        await invoke("save_image_item", { id: imageId, format: "png" });
-      }
+      // 统一走前端合成 → save_image_dialog 弹窗（有标注画标注，无标注只画原图）
+      const pngBytes = await composePngBytes();
+      await invoke("save_image_dialog", pngBytes as unknown as Record<string, unknown>);
     } catch (e) { console.error(e); }
   };
 
@@ -528,8 +534,12 @@ export default function ImagePreview() {
         const pngBytes = await composePngBytes();
         await invoke("copy_image_to_clipboard", pngBytes as unknown as Record<string, unknown>);
       } catch (e) { console.error(e); }
+    } else if (imageId != null) {
+      // 无标注：从 DB 重新写原图到系统剪贴板（剪贴板内容可能已被覆盖）
+      try {
+        await invoke("copy_clipboard_item", { id: imageId });
+      } catch (e) { console.error(e); }
     }
-    // 无标注：剪贴板已有数据（截图/滚动截图停止时已写入），无需操作
   };
 
   const handleOcr = async () => {
@@ -670,7 +680,7 @@ export default function ImagePreview() {
                 onBlur={commitText}
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitText(); }
-                  if (e.key === "Escape") { textDraftRef.current = null; setTextDraft(null); }
+                  if (e.key === "Escape") { e.stopPropagation(); textDraftRef.current = null; setTextDraft(null); }
                 }}
                 placeholder="输入文字…"
                 className="absolute rounded bg-white/95 px-1 py-0.5 shadow outline-none resize-none"
