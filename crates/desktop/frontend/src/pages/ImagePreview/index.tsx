@@ -245,16 +245,19 @@ export default function ImagePreview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageId]);
 
+  // wrapper div ref（撑滚动条的 div，图片左上角 = wrapper 左上角 + padding）
+  const wrapperRef = useRef<HTMLDivElement>(null);
+
   // —— drawBg：视口渲染——canvas 固定窗口大小，只画可见区域的图片部分 ——
   const drawBg = useCallback(() => {
     const canvas = bgCanvasRef.current;
     const img = imgRef.current;
     const sc = scrollContainerRef.current;
-    if (!canvas || !img || !natW || !natH || !sc) return;
+    const wrapper = wrapperRef.current;
+    if (!canvas || !img || !natW || !natH || !sc || !wrapper) return;
     const dw = natW * zoom;
     const dh = natH * zoom;
     const dpr = window.devicePixelRatio || 1;
-    // canvas 尺寸 = 可视区域（不包括 padding）
     const viewW = sc.clientWidth;
     const viewH = sc.clientHeight;
     canvas.width = Math.round(viewW * dpr);
@@ -262,33 +265,28 @@ export default function ImagePreview() {
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, viewW, viewH);
-    // 图片在 scrollContainer 内的位置（居中 + padding）
-    const { scrollLeft, scrollTop } = sc;
-    // 图片左上角在 container 内的偏移（居中定位）
-    const imgOffsetX = Math.max(0, (viewW - dw) / 2);
-    const imgOffsetY = parseInt(getComputedStyle(sc.firstElementChild as Element).paddingTop || '56');
-    // 图片在 viewport 中的位置
-    const imgScreenX = imgOffsetX - scrollLeft;
-    const imgScreenY = imgOffsetY - scrollTop;
-    // 计算可见的图片区域（显示坐标）
-    const visImgLeft = Math.max(0, -imgScreenX);
-    const visImgTop = Math.max(0, -imgScreenY);
-    const visImgRight = Math.min(dw, viewW - imgScreenX);
-    const visImgBottom = Math.min(dh, viewH - imgScreenY);
-    if (visImgRight <= visImgLeft || visImgBottom <= visImgTop) return; // 图片不可见
-    // 从源图（scaledBitmap 或原图）裁剪可见部分画到 canvas
+    // canvas 和 scrollContainer 都是 absolute inset-0 → 同一坐标系
+    // wrapper（图片左上角）在 viewport 中的位置 = wrapper rect - scrollContainer rect
+    const scRect = sc.getBoundingClientRect();
+    const wRect = wrapper.getBoundingClientRect();
+    const imgScreenX = wRect.left - scRect.left;
+    const imgScreenY = wRect.top - scRect.top;
+    // 可见区域（显示坐标，相对图片左上角）
+    const visLeft = Math.max(0, -imgScreenX);
+    const visTop = Math.max(0, -imgScreenY);
+    const visRight = Math.min(dw, viewW - imgScreenX);
+    const visBottom = Math.min(dh, viewH - imgScreenY);
+    if (visRight <= visLeft || visBottom <= visTop) return;
     const bitmap = scaledBitmapRef.current;
     const srcW = bitmap ? bitmap.width : img.naturalWidth;
     const srcH = bitmap ? bitmap.height : img.naturalHeight;
-    // 可见区域 → 源图坐标
-    const sx = (visImgLeft / dw) * srcW;
-    const sy = (visImgTop / dh) * srcH;
-    const sw = ((visImgRight - visImgLeft) / dw) * srcW;
-    const sh = ((visImgBottom - visImgTop) / dh) * srcH;
-    // 画到 canvas 上对应位置
-    const dx = visImgLeft + imgScreenX;
-    const dy = visImgTop + imgScreenY;
-    ctx.drawImage(bitmap || img, sx, sy, sw, sh, dx, dy, visImgRight - visImgLeft, visImgBottom - visImgTop);
+    const sx = (visLeft / dw) * srcW;
+    const sy = (visTop / dh) * srcH;
+    const sw = ((visRight - visLeft) / dw) * srcW;
+    const sh = ((visBottom - visTop) / dh) * srcH;
+    const dx = visLeft + imgScreenX;
+    const dy = visTop + imgScreenY;
+    ctx.drawImage(bitmap || img, sx, sy, sw, sh, dx, dy, visRight - visLeft, visBottom - visTop);
   }, [natW, natH, zoom, viewportScroll]);
 
   // bgCanvas 重绘触发：imageId/zoom/scroll 变化
@@ -344,15 +342,11 @@ export default function ImagePreview() {
   };
 
   const canvasCoords = (e: React.MouseEvent) => {
-    // canvas 是 fixed 视口位置，但鼠标坐标需要映射到图片自然空间
-    const sc = scrollContainerRef.current!;
-    const viewW = sc.clientWidth;
-    const imgOffsetX = Math.max(0, (viewW - natW * zoomRef.current) / 2);
-    const imgOffsetY = 56; // pt-14
-    // 鼠标相对图片左上角的显示坐标
-    const cssX = e.clientX - sc.getBoundingClientRect().left + sc.scrollLeft - imgOffsetX;
-    const cssY = e.clientY - sc.getBoundingClientRect().top + sc.scrollTop - imgOffsetY;
-    return { cssX, cssY };
+    // 鼠标坐标 → 图片左上角为原点的显示坐标
+    const wrapper = wrapperRef.current;
+    if (!wrapper) return { cssX: 0, cssY: 0 };
+    const wRect = wrapper.getBoundingClientRect();
+    return { cssX: e.clientX - wRect.left, cssY: e.clientY - wRect.top };
   };
 
   const commitText = () => {
@@ -592,7 +586,7 @@ export default function ImagePreview() {
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>
         <div className="flex min-h-full min-w-full items-center justify-center px-2 pt-14 pb-2">
           {/* canvas 占位 wrapper：撑滚动条 + 棋盘格底 + SVG overlay + 鼠标事件 */}
-          <div className="relative"
+          <div ref={wrapperRef} className="relative"
             style={{
               width: dispW || undefined, height: dispH || undefined,
               backgroundColor: "#27272a",
