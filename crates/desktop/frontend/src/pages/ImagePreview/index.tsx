@@ -259,10 +259,12 @@ export default function ImagePreview() {
   // wrapper div ref（鼠标坐标用）
   // 视口渲染：canvas 固定窗口大小，只画可见区域。全部坐标手算，不依赖 flex 居中。
 
-  // 图片在 content 空间中的 left/top（手算居中，不用 flex）
+  // 图片在 content 空间中的 left/top（直接读 DOM，与 drawBg 同源同步）
   const dispW = natW * zoom;
   const dispH = natH * zoom;
-  const imgLeft = Math.max(FIT_PADDING / 2, (viewport.w - dispW) / 2);
+  const scForLayout = scrollContainerRef.current;
+  const currentVW = scForLayout?.clientWidth || viewport.w;
+  const imgLeft = Math.max(FIT_PADDING / 2, (currentVW - dispW) / 2);
   const imgTop = TOOLBAR_H;
 
   // —— drawBg：视口渲染——canvas = 窗口大小，裁剪画可见区域 ——
@@ -273,6 +275,7 @@ export default function ImagePreview() {
     if (!canvas || !img || !natW || !natH || !sc) return;
     const sl = sc.scrollLeft, st = sc.scrollTop;
     const vw = sc.clientWidth, vh = sc.clientHeight;
+    const liveImgLeft = Math.max(FIT_PADDING / 2, (vw - dispW) / 2);
     const dpr = window.devicePixelRatio || 1;
     const cw = Math.round(vw * dpr);
     const ch = Math.round(vh * dpr);
@@ -282,7 +285,7 @@ export default function ImagePreview() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, vw, vh);
     // 图片左上角在 viewport（canvas 坐标系）中的位置
-    const imgVpX = imgLeft - sl;
+    const imgVpX = liveImgLeft - sl;
     const imgVpY = imgTop - st;
     // 图片可见部分（相对图片左上角，显示坐标）
     const visL = Math.max(0, -imgVpX);
@@ -611,7 +614,6 @@ export default function ImagePreview() {
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
       />
-      {/* 视口渲染 canvas：absolute inset-0 覆盖窗口，pointer-events:none */}
       <canvas
         ref={bgCanvasRef}
         className="absolute inset-0 block pointer-events-none"
@@ -619,11 +621,11 @@ export default function ImagePreview() {
       />
       {/* 滚动容器：wrapper 撑滚动条 + SVG overlay + 鼠标事件 */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>
-        {/* content：撑起滚动区域，尺寸 = 图片显示尺寸 + padding */}
+        {/* content：撑起滚动区域，至少 = viewport 尺寸（保证居中正确） */}
         <div style={{
           position: "relative",
-          width: dispW + FIT_PADDING,
-          height: dispH + TOOLBAR_H + 8,
+          width: Math.max(dispW + FIT_PADDING, viewport.w),
+          height: Math.max(dispH + TOOLBAR_H + 8, viewport.h),
         }}>
           {/* wrapper：absolute 定位（手算居中），透明背景（canvas 在下层画底图）+ SVG + 鼠标 */}
           <div ref={wrapperRef}
