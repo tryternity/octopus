@@ -1,10 +1,13 @@
 import { useRef, useState } from "react";
 import {
-  MousePointer2, Square, Circle, Minus, ArrowUpRight, Pen, Type, Undo2,
-  Download, Copy, ScanText, Pin, PinOff, Check, ZoomIn, ZoomOut, Expand, MoveHorizontal, AlertTriangle,
-  Hash,
+  ZoomIn, ZoomOut, Expand, MoveHorizontal,
 } from "lucide-react";
 import type { Tool } from "@/lib/annotation";
+
+// SVG 图标 img（与截图工具一致，激活时变白）
+const SvgIcon = ({ src, alt, active }: { src: string; alt: string; active?: boolean }) => (
+  <img src={src} alt={alt} className="w-[18px] h-[18px]" style={{ filter: active ? "brightness(0) invert(1)" : "none" }} />
+);
 
 // 马赛克图标（3×3 色块网格，与截图工具一致）
 const MosaicIcon = ({ className }: { className?: string }) => (
@@ -113,14 +116,14 @@ export default function Toolbar(props: {
   };
 
   const tools: { key: Tool; icon: React.ReactNode; title: string }[] = [
-    { key: "none", icon: <MousePointer2 className="h-[18px] w-[18px]" />, title: "选择/移动" },
-    { key: "rect", icon: <Square className="h-[18px] w-[18px]" />, title: "矩形" },
-    { key: "oval", icon: <Circle className="h-[18px] w-[18px]" />, title: "椭圆" },
-    { key: "line", icon: <Minus className="h-[18px] w-[18px]" />, title: "直线" },
-    { key: "arrow", icon: <ArrowUpRight className="h-[18px] w-[18px]" />, title: "箭头" },
-    { key: "pen", icon: <Pen className="h-[18px] w-[18px]" />, title: "画笔（自由曲线）" },
-    { key: "text", icon: <Type className="h-[18px] w-[18px]" />, title: "文字" },
-    { key: "number", icon: <Hash className="h-[18px] w-[18px]" />, title: "序号" },
+    { key: "none", icon: <SvgIcon src="icons/arrow-pointer.svg" alt="选择" active={props.tool === "none"} />, title: "选择/移动" },
+    { key: "rect", icon: <SvgIcon src="icons/square.svg" alt="矩形" active={props.tool === "rect"} />, title: "矩形" },
+    { key: "oval", icon: <SvgIcon src="icons/circle.svg" alt="椭圆" active={props.tool === "oval"} />, title: "椭圆" },
+    { key: "line", icon: <SvgIcon src="icons/straight-line.svg" alt="直线" active={props.tool === "line"} />, title: "直线" },
+    { key: "arrow", icon: <SvgIcon src="icons/arrow-line.svg" alt="箭头" active={props.tool === "arrow"} />, title: "箭头" },
+    { key: "pen", icon: <SvgIcon src="icons/sketching.svg" alt="画笔" active={props.tool === "pen"} />, title: "画笔（自由曲线）" },
+    { key: "text", icon: <SvgIcon src="icons/text.svg" alt="文字" active={props.tool === "text"} />, title: "文字" },
+    { key: "number", icon: <SvgIcon src="icons/sequence-note.svg" alt="序号" active={props.tool === "number"} />, title: "序号" },
     { key: "blur", icon: <MosaicIcon className="h-[18px] w-[18px]" />, title: "马赛克" },
   ];
 
@@ -133,16 +136,16 @@ export default function Toolbar(props: {
         padding: "6px 8px", background: "#fff", borderRadius: 8,
         boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
       }}>
-        {/* 输出操作：保存 / 复制 / OCR（最前） */}
+        {/* 输出操作：保存 / 复制 / OCR（截图 SVG 图标） */}
         <ToolButton title="保存为文件" active={false} onClick={() => props.onSave()}>
-          <Download className="h-[18px] w-[18px]" />
+          <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" />
         </ToolButton>
         <ToolButton title="复制到剪贴板" active={false} onClick={() => props.onCopy()}>
-          <Copy className="h-[18px] w-[18px]" />
+          <img src="icons/copy.svg" alt="复制" className="w-[18px] h-[18px]" />
         </ToolButton>
         <div style={{ position: "relative" }}>
-          <ToolButton title={props.ocrWarn ? "前一个 OCR 还未完成，请稍后" : "OCR 识别（结果复制到剪贴板）"} active={props.ocrCopied || props.ocrWarn} onClick={() => props.onOcr()}>
-            {props.ocrCopied ? <Check className="h-[18px] w-[18px]" /> : props.ocrWarn ? <AlertTriangle className="h-[18px] w-[18px]" style={{ color: "#f59e0b" }} /> : <ScanText className="h-[18px] w-[18px]" />}
+          <ToolButton title={props.ocrWarn ? "前一个 OCR 还未完成，请稍后" : "OCR 识别"} active={props.ocrCopied || props.ocrWarn} onClick={() => props.onOcr()}>
+            {props.ocrCopied ? <img src="icons/check.svg" alt="完成" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" style={{ filter: props.ocrWarn ? "none" : "none" }} />}
           </ToolButton>
           {props.ocrWarn && (
             <span style={{
@@ -166,7 +169,7 @@ export default function Toolbar(props: {
           </ToolButton>
         ))}
         <ToolButton title="撤销 (Cmd/Ctrl+Z)" active={false} onClick={() => props.onUndo()}>
-          <Undo2 className="h-[18px] w-[18px]" style={{ opacity: props.canUndo ? 1 : 0.3 }} />
+          <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" style={{ opacity: props.canUndo ? 1 : 0.3 }} />
         </ToolButton>
 
         {/* 缩放：缩小 + 当前百分比(点击重置 100%) + 放大 */}
@@ -205,7 +208,7 @@ export default function Toolbar(props: {
         <Divider />
         <ToolButton title={props.alwaysOnTop ? "取消置顶" : "窗口置顶"}
           active={props.alwaysOnTop} onClick={() => props.onToggleTop()}>
-          {props.alwaysOnTop ? <PinOff className="h-[18px] w-[18px]" /> : <Pin className="h-[18px] w-[18px]" />}
+          <img src="icons/pin.svg" alt="置顶" className="w-[18px] h-[18px]" style={{ filter: props.alwaysOnTop ? "brightness(0) invert(1)" : "none" }} />
         </ToolButton>
       </div>
 
