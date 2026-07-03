@@ -59,39 +59,37 @@ pub fn insert_clipboard_item(conn: &Connection, item: &NewClipboardItem) -> Resu
 
 /// 插入 ASR 识别文本条目。返回插入的 id。
 pub fn insert_asr_item(conn: &Connection, text: &str, asr_meta: AsrMeta) -> Result<i64> {
-    let id = chrono_millis();
-    conn.execute(
-        "INSERT INTO clipboard_history
-         (id, item_type, source, content, search_text, is_favorite, created_at,
-          transcription_id, polish_status, engine, model)
-         VALUES (?, 'text', 'asr', ?, ?, 0, ?, ?, ?, ?, ?)",
-        params![
-            id,
-            text,
-            text,
-            iso_now(),
-            asr_meta.transcription_id,
-            asr_meta.polish_status,
-            asr_meta.engine,
-            asr_meta.model,
-        ],
-    )
-    .context("insert asr clipboard_history")?;
-    Ok(id)
+    insert_with_unique_id(conn, |id| {
+        conn.execute(
+            "INSERT INTO clipboard_history
+             (id, item_type, source, content, search_text, is_favorite, created_at,
+              transcription_id, polish_status, engine, model)
+             VALUES (?, 'text', 'asr', ?, ?, 0, ?, ?, ?, ?, ?)",
+            params![
+                id,
+                text,
+                text,
+                iso_now(),
+                asr_meta.transcription_id,
+                asr_meta.polish_status,
+                asr_meta.engine,
+                asr_meta.model,
+            ],
+        )
+    })
 }
 
 /// 插入 OCR 识别文本条目（source='ocr'，复用 engine/model 列）。返回插入的 id。
 pub fn insert_ocr_item(conn: &Connection, text: &str, ocr_meta: OcrMeta) -> Result<i64> {
-    let id = chrono_millis();
-    conn.execute(
-        "INSERT INTO clipboard_history
-         (id, item_type, source, content, search_text, is_favorite, created_at,
-          engine, model)
-         VALUES (?, 'text', 'ocr', ?, ?, 0, ?, ?, ?)",
-        params![id, text, text, iso_now(), ocr_meta.engine, ocr_meta.model],
-    )
-    .context("insert ocr clipboard_history")?;
-    Ok(id)
+    insert_with_unique_id(conn, |id| {
+        conn.execute(
+            "INSERT INTO clipboard_history
+             (id, item_type, source, content, search_text, is_favorite, created_at,
+              engine, model)
+             VALUES (?, 'text', 'ocr', ?, ?, 0, ?, ?, ?)",
+            params![id, text, text, iso_now(), ocr_meta.engine, ocr_meta.model],
+        )
+    })
 }
 
 /// 按 hash 去重查找。存在返回 id，不存在返回 None。
@@ -568,6 +566,31 @@ pub fn chrono_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// 用毫秒戳作主键插入；遇 UNIQUE 冲突（同毫秒并发 / 测试密集插入）自增重试，最多 1000 次。
+/// clipboard_history.id 是毫秒戳，连续插入可能同毫秒撞主键——生产罕见（ASR/OCR 不毫秒级并发），
+/// 但单元测试循环插多条必然命中，故统一在此兜底。
+fn insert_with_unique_id<F>(conn: &Connection, mut insert_fn: F) -> Result<i64>
+where
+    F: FnMut(i64) -> rusqlite::Result<usize>,
+{
+    let base = chrono_millis();
+    let mut id = base;
+    loop {
+        match insert_fn(id) {
+            Ok(_) => return Ok(id),
+            Err(rusqlite::Error::SqliteFailure(err, _))
+                if err.code == rusqlite::ErrorCode::ConstraintViolation =>
+            {
+                id += 1;
+                if id > base + 1000 {
+                    anyhow::bail!("insert_with_unique_id: 主键冲突，1000 次自增重试仍失败");
+                }
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
 }
 
 pub fn iso_now() -> String {
