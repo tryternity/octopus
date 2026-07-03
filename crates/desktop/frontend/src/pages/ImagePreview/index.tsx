@@ -15,7 +15,7 @@ const MAX_ZOOM = 8;
 const ZOOM_STEP = 1.25;
 
 // fit-to-window：图片完整显示在窗口内，最大不超过 1:1
-const FIT_PADDING = 96; // p-12 = 48px per side × 2
+const FIT_PADDING = 16; // px-2 左右各 8px（画布间隙最小化，图片最大化展示）
 // fit-to-window：完整显示在窗口内（宽高都不超出），不放大
 const computeFitZoom = (w: number, h: number): number => {
   const containerW = window.innerWidth - FIT_PADDING;
@@ -539,7 +539,7 @@ export default function ImagePreview() {
 
   return (
     // 灯箱暗场：深 stone 让图片本身发光；工具卡与底部 EXIF 条均 fixed 浮于其上
-    <div className="relative h-screen overflow-hidden select-none" style={{ background: "#1c1917" }}>
+    <div className="relative h-screen overflow-hidden select-none" style={{ background: "#18181b" }}>
       <Toolbar
         tool={tool} setTool={setTool}
         toolColor={toolColor} setToolColor={setToolColorSync}
@@ -554,19 +554,18 @@ export default function ImagePreview() {
       />
       {/* 滚动容器：全屏画布，图片大于视口自动出滚动条；小于则居中 */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar">
-        <div className="flex min-h-full min-w-full items-center justify-center p-12 pt-14">
-          {/* canvas wrapper：relative 让 textarea 相对 canvas 定位、随滚动移动 */}
-          {/* 棋盘格底移到容器，两个 canvas 都能看到 */}
+        <div className="flex min-h-full min-w-full items-center justify-center px-2 pt-14 pb-2">
+          {/* canvas wrapper：棋盘格底显透明 PNG（zinc 冷灰系，不干扰色彩判断）*/}
           <div className="relative" style={{
             width: dispW || undefined, height: dispH || undefined,
-            backgroundColor: "#292524",
+            backgroundColor: "#27272a",
             backgroundImage:
-              "linear-gradient(45deg, #1c1917 25%, transparent 25%)," +
-              "linear-gradient(-45deg, #1c1917 25%, transparent 25%)," +
-              "linear-gradient(45deg, transparent 75%, #1c1917 75%)," +
-              "linear-gradient(-45deg, transparent 75%, #1c1917 75%)",
-            backgroundSize: "20px 20px",
-            backgroundPosition: "0 0, 0 10px, 10px -10px, -10px 0px",
+              "linear-gradient(45deg, #1e1e22 25%, transparent 25%)," +
+              "linear-gradient(-45deg, #1e1e22 25%, transparent 25%)," +
+              "linear-gradient(45deg, transparent 75%, #1e1e22 75%)," +
+              "linear-gradient(-45deg, transparent 75%, #1e1e22 75%)",
+            backgroundSize: "14px 14px",
+            backgroundPosition: "0 0, 0 7px, 7px -7px, -7px 0px",
           }}>
             {/* 底层：底图 + 已确认标注 */}
             <canvas
@@ -631,21 +630,21 @@ export default function ImagePreview() {
         </div>
       </div>
 
-      {/* 底部 EXIF 状态条：只承载工具栏没有的尺寸/格式信息（缩放已在工具栏），等宽 tabular-nums */}
+      {/* 底部 EXIF 状态条：等宽 tabular-nums，半透 blur 融于暗场 */}
       {natW > 0 && (
         <div style={{
-          position: "fixed", bottom: 10, left: "50%", transform: "translateX(-50%)", zIndex: 100,
-          padding: "4px 12px", borderRadius: 8,
-          background: "rgba(28,25,23,0.72)",
+          position: "fixed", bottom: 6, left: "50%", transform: "translateX(-50%)", zIndex: 100,
+          padding: "3px 10px", borderRadius: 6,
+          background: "rgba(24,24,27,0.72)",
           backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
-          color: "rgba(255,255,255,0.6)", fontSize: 11, fontWeight: 500,
+          color: "rgba(255,255,255,0.5)", fontSize: 10, fontWeight: 500,
           fontFamily: "SF Mono, Menlo, monospace", fontVariantNumeric: "tabular-nums",
-          boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
-          display: "flex", gap: 10, alignItems: "center", pointerEvents: "none",
+          boxShadow: "0 1px 8px rgba(0,0,0,0.25)",
+          display: "flex", gap: 8, alignItems: "center", pointerEvents: "none",
         }}>
           <span>{fullNatW || natW} × {fullNatH || natH}</span>
           {fmt && <>
-            <span style={{ opacity: 0.4 }}>·</span>
+            <span style={{ opacity: 0.3 }}>·</span>
             <span>{fmt}</span>
           </>}
         </div>
