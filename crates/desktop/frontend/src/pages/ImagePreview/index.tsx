@@ -278,6 +278,9 @@ export default function ImagePreview() {
     const ch = Math.round(vh * dpr);
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
+    // CSS 尺寸同步 = scrollContainer 可视区（不用 100%，避免与 clientWidth 滚动条差异）
+    if (canvas.style.width !== `${vw}px`) canvas.style.width = `${vw}px`;
+    if (canvas.style.height !== `${vh}px`) canvas.style.height = `${vh}px`;
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, vw, vh);
@@ -611,11 +614,11 @@ export default function ImagePreview() {
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
       />
-      {/* 视口渲染 canvas：absolute inset-0 覆盖窗口，pointer-events:none */}
+      {/* 视口渲染 canvas：与 scrollContainer 同坐标系，尺寸由 drawBg 同步 */}
       <canvas
         ref={bgCanvasRef}
         className="absolute inset-0 block pointer-events-none"
-        style={{ zIndex: 1, width: "100%", height: "100%" }}
+        style={{ zIndex: 1 }}
       />
       {/* 滚动容器：wrapper 撑滚动条 + SVG overlay + 鼠标事件 */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>
