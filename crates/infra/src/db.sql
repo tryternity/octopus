@@ -286,42 +286,6 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('ocr_model',              'PP-OCRv6-small', 'OCR 模型（当前激活）'),
     ('screenshot_shortcut',     'Alt+S',                                '截图快捷键');
 
--- ── 记事本（notes 表）─────────────────────────────────────────────────────
--- 内容收集箱：ASR/OCR/剪贴板结果一键存入 + 纯文本/Markdown 整理。
--- type: 'text'(纯文本，默认) | 'markdown'(md 源码)。
--- content_text = 纯文本/md源码（FTS + 列表预览）；content_html 列保留但不再使用
--- （富文本功能已移除，历史 type=html 笔记由 v11→v12 迁移删除）。
-CREATE TABLE IF NOT EXISTS notes (
-    id            INTEGER PRIMARY KEY AUTOINCREMENT,
-    title         TEXT,
-    content_text  TEXT    NOT NULL DEFAULT '',
-    content_html  TEXT    NOT NULL DEFAULT '',
-    type          TEXT    NOT NULL DEFAULT 'text',
-    source        TEXT    NOT NULL DEFAULT 'manual',
-    source_ref_id INTEGER,
-    is_pinned     INTEGER NOT NULL DEFAULT 0,
-    is_favorite   INTEGER NOT NULL DEFAULT 0,
-    created_at    TEXT    NOT NULL,
-    updated_at    TEXT    NOT NULL
-);
-
-CREATE INDEX IF NOT EXISTS idx_notes_updated ON notes(updated_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_notes_source  ON notes(source);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS notes_fts USING fts5(
-    title, content_text,
-    content='notes', content_rowid='id', tokenize='trigram'
-);
-
-CREATE TRIGGER IF NOT EXISTS note_fts_ai AFTER INSERT ON notes BEGIN
-    INSERT INTO notes_fts(rowid, title, content_text) VALUES (new.id, new.title, new.content_text);
-END;
-CREATE TRIGGER IF NOT EXISTS note_fts_ad AFTER DELETE ON notes BEGIN
-    INSERT INTO notes_fts(notes_fts, rowid, title, content_text)
-    VALUES('delete', old.id, old.title, old.content_text);
-END;
-CREATE TRIGGER IF NOT EXISTS note_fts_au AFTER UPDATE OF title, content_text ON notes BEGIN
-    INSERT INTO notes_fts(notes_fts, rowid, title, content_text)
-    VALUES('delete', old.id, old.title, old.content_text);
-    INSERT INTO notes_fts(rowid, title, content_text) VALUES (new.id, new.title, new.content_text);
-END;
+-- ── 记事本（notes/notes_fts 表）已移除（DB v13）──────────────────────────
+-- OCR/ASR/剪贴板文本统一走 clipboard_history（OCR 类别 source='ocr'）。
+-- 历史 v12 库的 notes/notes_fts 由 v12→v13 迁移 DROP。

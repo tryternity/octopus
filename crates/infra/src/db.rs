@@ -153,8 +153,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
         // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 12", [])?;
-        log::info!("DB initialized (v12): schema + app_config(setting) + prompts + clipboard_history + image_data + notes(content_text+content_html+type=text/markdown) + yaml migration");
+        conn.execute("PRAGMA user_version = 13", [])?;
+        log::info!("DB initialized (v13): schema + app_config(setting) + prompts + clipboard_history + image_data + yaml migration (notepad removed)");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
@@ -267,6 +267,19 @@ fn init_schema(conn: &Connection) -> Result<()> {
             .context("v11→v12: DELETE type='html' notes")?;
         conn.execute("PRAGMA user_version = 12", [])?;
         log::info!("DB migrated to v12: 移除富文本（删除 {} 条 type=html 笔记）", deleted);
+    } else if v == 12 {
+        // v12 → v13：移除记事本功能——DROP notes_fts（含触发器）+ notes 表
+        log::info!("DB migrating v12 → v13: dropping notes + notes_fts (notepad removed)...");
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS note_fts_ai;
+             DROP TRIGGER IF EXISTS note_fts_ad;
+             DROP TRIGGER IF EXISTS note_fts_au;
+             DROP TABLE IF EXISTS notes_fts;
+             DROP TABLE IF EXISTS notes;",
+        )
+        .context("v12→v13: drop notes tables")?;
+        conn.execute("PRAGMA user_version = 13", [])?;
+        log::info!("DB migrated to v13: notes tables dropped");
     }
     Ok(())
 }
@@ -1174,6 +1187,40 @@ mod tests {
     }
 
     #[test]
+    fn migrate_v12_to_v13_drops_notes_tables() {
+        let dir = std::env::temp_dir().join(format!("octopus-v13-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = Connection::open(dir.join("mig.db")).unwrap();
+        // 模拟 v12 库：含 notes + notes_fts
+        conn.execute_batch(
+            "CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT, content_text TEXT DEFAULT '');
+             CREATE VIRTUAL TABLE notes_fts USING fts5(title, content_text, tokenize='trigram');
+             INSERT INTO notes (title, content_text) VALUES ('a','b');
+             PRAGMA user_version = 12;",
+        )
+        .unwrap();
+        assert_eq!(
+            conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM notes", [], |r| r.get(0)).unwrap(),
+            1
+        );
+
+        init_schema(&conn).unwrap();
+
+        let uv: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(uv, 13);
+        let n: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='notes'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(n, 0, "notes 表应被 DROP");
+        let f: i64 = conn
+            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='notes_fts'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(f, 0, "notes_fts 表应被 DROP");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
     fn migrate_v9_to_v10_adds_type_column_keeps_data() {
         // 模拟旧 v9 库：notes 有 content_html/content_text，无 type → init_schema 应 ALTER 加 type，保留数据
         let dir = std::env::temp_dir().join(format!("octopus-type-mig-{}", std::process::id()));
@@ -2075,18 +2122,5 @@ mod tests {
         let list = list_prompts_at(&conn).unwrap();
         let dup_count = list.iter().filter(|p| p.title == "同名").count();
         assert_eq!(dup_count, 2, "title 允许重复");
-    }
-
-    #[test]
-    fn notes_table_and_fts_created() {
-        let conn = open_init();
-        let count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(count, 0);
-        let fts_count: i64 = conn
-            .query_row("SELECT COUNT(*) FROM notes_fts", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(fts_count, 0);
     }
 }
