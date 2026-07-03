@@ -22,4 +22,4 @@ pub const SEGMENT_DURATION_S: f64 = 20.0;
 pub const SEGMENT_OVERLAP_MS: f64 = 200.0;
 
 /// 超长截图（>16383px）WebP 编码全失败时的 JPEG 兜底质量。
-pub const BOTTOM_JPEG_QUALITY: u8 = 30;
+pub const BOTTOM_JPEG_QUALITY: u8 = 50;
