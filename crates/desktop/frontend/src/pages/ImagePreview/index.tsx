@@ -547,9 +547,9 @@ export default function ImagePreview() {
       const bw = Math.round(Math.abs(ann.x2 - ann.x1));
       const bh = Math.round(Math.abs(ann.y2 - ann.y1));
       if (bw < 2 || bh < 2) continue;
-      // 马赛克：缩小再放大（降采样）
-      const tmp = document.createElement("canvas");
+      // 马赛克：先降采样模糊原图，再叠加色块（颜色 + 不透明度）
       const block = Math.max(4, Math.floor(Math.min(bw, bh) / 8));
+      const tmp = document.createElement("canvas");
       tmp.width = Math.max(1, Math.floor(bw / block));
       tmp.height = Math.max(1, Math.floor(bh / block));
       const tctx = tmp.getContext("2d")!;
@@ -558,6 +558,21 @@ export default function ImagePreview() {
       ctx.imageSmoothingEnabled = false;
       ctx.drawImage(tmp, 0, 0, tmp.width, tmp.height, bx, by, bw, bh);
       ctx.imageSmoothingEnabled = true;
+      // 叠加色块：选定颜色 + 不透明度（粗细控制遮挡程度）
+      const opacity = ((ann.lineWidth || 5) / 10) * 0.85 + 0.1;
+      const blurColor = ann.color || "#808080";
+      const cols = Math.ceil(bw / block);
+      const rows = Math.ceil(bh / block);
+      for (let r = 0; r < rows; r++) {
+        for (let col = 0; col < cols; col++) {
+          const hash = (col * 73856093 ^ r * 19349663) >>> 0;
+          const variance = ((hash % 100) - 50) / 200;
+          ctx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
+          ctx.fillStyle = blurColor;
+          ctx.fillRect(bx + col * block, by + r * block, block, block);
+        }
+      }
+      ctx.globalAlpha = 1;
     }
     for (const ann of annotations) drawAnnotation(ctx, ann);
     const blob: Blob = await new Promise((resolve, reject) => c.toBlob((b) => b ? resolve(b) : reject("toBlob failed"), "image/png"));

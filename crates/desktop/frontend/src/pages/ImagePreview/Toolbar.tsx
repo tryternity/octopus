@@ -72,12 +72,13 @@ export default function Toolbar(props: {
   const [popoverLeft, setPopoverLeft] = useState(0);
 
   const isText = props.tool === "text";
+  const isBlur = props.tool === "blur";
   const showProps = props.tool !== "none";
   const sizeValue = isText ? props.toolFontSize : props.toolWidth;
   const setSize = isText ? props.setToolFontSize : props.setToolWidth;
   const min = isText ? 10 : 1;
   const max = isText ? 48 : 10;
-  const label = isText ? "字号" : "粗细";
+  const label = isText ? "字号" : isBlur ? "遮挡" : "粗细";
 
   // 标注工具点击：toggle（再点已激活→回 none→收起），并算浮窗跟随位置
   const onToolClick = (key: Tool, e: React.MouseEvent<HTMLButtonElement>) => {
