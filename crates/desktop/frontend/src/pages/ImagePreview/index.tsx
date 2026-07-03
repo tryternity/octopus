@@ -514,14 +514,9 @@ export default function ImagePreview() {
 
   const handleSave = async () => {
     try {
-      if (annotations.length > 0) {
-        // 有标注：前端 Canvas 合成 → Raw body 传后端
-        const pngBytes = await composePngBytes();
-        await invoke("save_image_dialog", pngBytes as unknown as Record<string, unknown>);
-      } else if (imageId != null) {
-        // 无标注：后端直接从 DB 保存原始数据
-        await invoke("save_image_item", { id: imageId, format: "png" });
-      }
+      // 统一走前端合成 → save_image_dialog 弹窗（有标注画标注，无标注只画原图）
+      const pngBytes = await composePngBytes();
+      await invoke("save_image_dialog", pngBytes as unknown as Record<string, unknown>);
     } catch (e) { console.error(e); }
   };
 
