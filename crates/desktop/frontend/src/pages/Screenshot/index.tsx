@@ -29,6 +29,8 @@ export default function Screenshot() {
   const [ready, setReady] = useState(false);
   const [tool, setTool] = useState<Tool>("none");
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const redoStackRef = useRef<Annotation[]>([]);
+  const [redoAvailable, setRedoAvailable] = useState(false);
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; val: string } | null>(null);
   const textDraftRef = useRef<{ x: number; y: number; val: string } | null>(null);
   const modeRef = useRef<Mode>("idle");
@@ -117,6 +119,33 @@ export default function Screenshot() {
     canvas.height = cssH * dpr;
     canvasInitedRef.current = true;
   }, [ready, dpr]);
+
+  // undo/redo
+  const undoAnnotation = () => {
+    setAnnotations((prev) => {
+      if (prev.length === 0) return prev;
+      const removed = prev[prev.length - 1];
+      redoStackRef.current.push(removed);
+      setRedoAvailable(true);
+      if (removed.type === "number" && removed.number === numberCounter - 1) {
+        setNumberCounter(numberCounter - 1);
+      }
+      return prev.slice(0, -1);
+    });
+  };
+  const redoAnnotation = () => {
+    const ann = redoStackRef.current.pop();
+    if (ann) {
+      if (ann.type === "number") setNumberCounter(numberCounter + 1);
+      setAnnotations((prev) => [...prev, ann]);
+      setRedoAvailable(redoStackRef.current.length > 0);
+    }
+  };
+  const addAnnotation = (ann: Annotation) => {
+    redoStackRef.current = [];
+    setRedoAvailable(false);
+    setAnnotations((prev) => [...prev, ann]);
+  };
 
   // 绘制
   const draw = useCallback(() => {
@@ -244,7 +273,7 @@ export default function Screenshot() {
     if (textDraftRef.current) {
       const draft = textDraftRef.current;
       if (draft.val.trim()) {
-        setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current, textWidth: 200 }]);
+        addAnnotation({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current, textWidth: 200 });
       }
       textDraftRef.current = null;
       setTextDraft(null);
@@ -287,10 +316,10 @@ export default function Screenshot() {
         return;
       }
       if (tool === "number") {
-        setAnnotations(prev => [...prev, {
+        addAnnotation({
           type: "number", x1: mx, y1: my, x2: mx, y2: my,
           number: numberCounter, color: toolColorRef.current, circleSize: toolCircleSize,
-        }]);
+        });
         setNumberCounter(numberCounter + 1);
         return;
       }
@@ -403,24 +432,24 @@ export default function Screenshot() {
       // 过滤太小的
       if (ann.type === "rect" || ann.type === "oval") {
         if (Math.abs(ann.x2 - ann.x1) > 5 && Math.abs(ann.y2 - ann.y1) > 5) {
-          setAnnotations(prev => [...prev, ann]);
+          addAnnotation(ann);
           added = true;
         }
       } else if (ann.type === "line" || ann.type === "arrow") {
         const dx = ann.x2 - ann.x1;
         const dy = ann.y2 - ann.y1;
         if (Math.sqrt(dx * dx + dy * dy) > 10) {
-          setAnnotations(prev => [...prev, ann]);
+          addAnnotation(ann);
           added = true;
         }
       } else if (ann.type === "pen" && ann.points) {
         if (ann.points.length > 2) {
-          setAnnotations(prev => [...prev, ann]);
+          addAnnotation(ann);
           added = true;
         }
       } else if (ann.type === "blur") {
         if (Math.abs(ann.x2 - ann.x1) > 5 && Math.abs(ann.y2 - ann.y1) > 5) {
-          setAnnotations(prev => [...prev, ann]);
+          addAnnotation(ann);
           added = true;
         }
       }
@@ -451,15 +480,11 @@ export default function Screenshot() {
       invoke("cancel_screenshot").catch(() => {});
     } else if (e.key === "Enter" && sel && sel.w >= MIN_SIZE && sel.h >= MIN_SIZE) {
       doConfirm();
+    } else if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "z") {
+      e.preventDefault();
+      redoAnnotation();
     } else if ((e.metaKey || e.ctrlKey) && e.key === "z") {
-      // 撤销：删除最后一个标注，序号回退
-      if (annotations.length > 0) {
-        const removed = annotations[annotations.length - 1];
-        if (removed.type === "number" && removed.number === numberCounter - 1) {
-          setNumberCounter(numberCounter - 1);
-        }
-        setAnnotations(annotations.slice(0, -1));
-      }
+      undoAnnotation();
     } else if ((e.key === "Delete" || e.key === "Backspace") && selectedAnn !== null) {
       // 删除选中的标注
       const removed = annotations[selectedAnn];
@@ -719,7 +744,7 @@ export default function Screenshot() {
                 setAnnotations(prev => prev.map((a, i) => i === editOrig.idx ? { ...a, text: newText, color: editColor, fontSize: editFontSize, textWidth: 200 } : a));
               } else {
                 // 新建模式
-                setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: newText, color: editColor, fontSize: editFontSize, textWidth: 200 }]);
+                addAnnotation({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: newText, color: editColor, fontSize: editFontSize, textWidth: 200 });
               }
             } else if (editOrig) {
               // 内容为空：恢复原标注
@@ -809,16 +834,11 @@ export default function Screenshot() {
             <img src="icons/mosaic.svg" alt="马赛克" className="w-[18px] h-[18px]" style={{ filter: tool === "blur" ? "brightness(0) invert(1)" : "none" }} />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
-          <ToolButton onClick={() => {
-            if (annotations.length > 0) {
-              const removed = annotations[annotations.length - 1];
-              if (removed.type === "number" && removed.number === numberCounter - 1) {
-                setNumberCounter(numberCounter - 1);
-              }
-              setAnnotations(annotations.slice(0, -1));
-            }
-          }} label="撤销" icon={
-            <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" />
+          <ToolButton onClick={undoAnnotation} label="撤销" icon={
+            <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" style={{ opacity: annotations.length > 0 ? 1 : 0.3 }} />
+          } />
+          <ToolButton onClick={redoAnnotation} label="重做" icon={
+            <img src="icons/redo.svg" alt="重做" className="w-[18px] h-[18px]" style={{ opacity: redoAvailable ? 1 : 0.3 }} />
           } />
           <ToolButton onClick={doOcr} label="OCR" icon={
             <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" />

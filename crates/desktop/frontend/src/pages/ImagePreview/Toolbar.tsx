@@ -80,6 +80,7 @@ export default function Toolbar(props: {
   alwaysOnTop: boolean; onToggleTop: () => void;
   onSave: () => void; onCopy: () => void; onOcr: () => void;
   onUndo: () => void; canUndo: boolean;
+  onRedo: () => void; canRedo: boolean;
   ocrCopied: boolean;
   ocrWarn: boolean;
   zoom: number; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
@@ -170,6 +171,9 @@ export default function Toolbar(props: {
         ))}
         <ToolButton title="撤销 (Cmd/Ctrl+Z)" active={false} onClick={() => props.onUndo()}>
           <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" style={{ opacity: props.canUndo ? 1 : 0.3 }} />
+        </ToolButton>
+        <ToolButton title="重做 (Cmd/Ctrl+Shift+Z)" active={false} onClick={() => props.onRedo()}>
+          <img src="icons/redo.svg" alt="重做" className="w-[18px] h-[18px]" style={{ opacity: props.canRedo ? 1 : 0.3 }} />
         </ToolButton>
 
         {/* 缩放：缩小 + 当前百分比(点击重置 100%) + 放大 */}

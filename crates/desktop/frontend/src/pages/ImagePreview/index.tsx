@@ -60,6 +60,8 @@ export default function ImagePreview() {
   const [toolWidth, setToolWidth] = useState(3);
   const [toolFontSize, setToolFontSize] = useState(20);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  const redoStackRef = useRef<Annotation[]>([]);
+  const [redoAvailable, setRedoAvailable] = useState(false);
   // 正在绘制的标注预览（SVG overlay 渲染，不触发 canvas 重绘）
   const [draftAnn, setDraftAnn] = useState<Annotation | null>(null);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
@@ -379,11 +381,11 @@ export default function ImagePreview() {
       const textWidth = textInputRef.current
         ? textInputRef.current.clientWidth / zoomRef.current
         : undefined;
-      setAnnotations((prev) => [...prev, {
+      addAnnotation({
         type: "text", x1: d.nx, y1: d.ny, x2: d.nx, y2: d.ny,
         text: d.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current,
         textWidth,
-      }]);
+      });
     }
     textDraftRef.current = null;
     setTextDraft(null);
@@ -457,7 +459,7 @@ export default function ImagePreview() {
         color: toolColorRef.current, circleSize: 28,
       };
       drawingRef.current = ann;
-      setAnnotations((prev) => [...prev, ann]);
+      addAnnotation(ann);
       drawingRef.current = null;
       setDraftAnn(null);
       return;
@@ -515,14 +517,34 @@ export default function ImagePreview() {
         ? (ann.points?.length ?? 0) >= 2
         : (Math.abs(ann.x2 - ann.x1) > 3 || Math.abs(ann.y2 - ann.y1) > 3);
       if (ok) {
-        setAnnotations((prev) => [...prev, ann]);
+        addAnnotation(ann);
       }
       setDraftAnn(null);
     }
     dragRef.current = null;
   };
 
-  const undo = () => setAnnotations((prev) => prev.slice(0, -1));
+  const undo = () => {
+    setAnnotations((prev) => {
+      if (prev.length === 0) return prev;
+      redoStackRef.current.push(prev[prev.length - 1]);
+      setRedoAvailable(true);
+      return prev.slice(0, -1);
+    });
+  };
+  const redo = () => {
+    const ann = redoStackRef.current.pop();
+    if (ann) {
+      addAnnotation(ann);
+      setRedoAvailable(redoStackRef.current.length > 0);
+    }
+  };
+  // 新增标注时清空 redo stack
+  const addAnnotation = (ann: Annotation) => {
+    redoStackRef.current = [];
+    setRedoAvailable(false);
+    addAnnotation(ann);
+  };
 
   // —— compose：图像 + 标注 合成到自然尺寸 PNG → Uint8Array（Raw body 二进制传输）——
   const composePngBytes = async (): Promise<ArrayBuffer> => {
@@ -634,6 +656,7 @@ export default function ImagePreview() {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") close();
+      if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "z") { e.preventDefault(); redo(); return; }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); undo(); }
     };
     window.addEventListener("keydown", onKey);
@@ -660,6 +683,7 @@ export default function ImagePreview() {
         alwaysOnTop={alwaysOnTop} onToggleTop={toggleAlwaysOnTop}
         onSave={handleSave} onCopy={handleCopy} onOcr={handleOcr}
         onUndo={undo} canUndo={annotations.length > 0}
+        onRedo={redo} canRedo={redoAvailable}
         ocrCopied={ocrCopied} ocrWarn={ocrWarn}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
