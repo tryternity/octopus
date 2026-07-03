@@ -134,11 +134,12 @@ export default function ImagePreview() {
     return () => window.removeEventListener('resize', onResize);
   }, [natW, natH]);
 
-  // —— unmount：revoke objectURL + close bitmap，防内存泄漏 ——
+  // —— unmount：revoke objectURL + close bitmap + cancel RAF，防内存泄漏 ——
   useEffect(() => {
     return () => {
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
       if (scaledBitmapRef.current) scaledBitmapRef.current.close();
+      if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
   }, []);
 
@@ -265,21 +266,41 @@ export default function ImagePreview() {
   }, [natW, natH, zoom, annotations]);
 
   // —— drawActive：顶层重绘（仅正在绘制的笔迹/形状预览），mousemove 调用 ——
-  const drawActive = useCallback(() => {
+  // RAF 节流：多次 mousemove 合并到一帧，避免高频重绘
+  const rafRef = useRef<number | null>(null);
+  const drawActiveScheduledRef = useRef(false);
+
+  // 同步清空 drawCanvas（mouseUp 提交后用，不走 RAF）
+  const clearDrawCanvas = useCallback(() => {
     const canvas = drawCanvasRef.current;
-    if (!canvas || !natW || !natH) return;
-    const dw = natW * zoom;
-    const dh = natH * zoom;
-    const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(dw * dpr);   // 赋值即清空
-    canvas.height = Math.round(dh * dpr);
-    if (!drawingRef.current) return;
+    if (!canvas) return;
     const ctx = canvas.getContext("2d")!;
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.save();
-    ctx.scale(zoom, zoom);
-    drawAnnotation(ctx, drawingRef.current);
-    ctx.restore();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }, []);
+
+  const drawActive = useCallback(() => {
+    if (drawActiveScheduledRef.current) return;
+    drawActiveScheduledRef.current = true;
+    rafRef.current = requestAnimationFrame(() => {
+      drawActiveScheduledRef.current = false;
+      const canvas = drawCanvasRef.current;
+      if (!canvas || !natW || !natH) return;
+      const dw = natW * zoom;
+      const dh = natH * zoom;
+      const dpr = window.devicePixelRatio || 1;
+      const pw = Math.round(dw * dpr);
+      const ph = Math.round(dh * dpr);
+      // 只在尺寸真正变化时才重设（避免每次 mousemove 强制清空 buffer）
+      if (canvas.width !== pw) canvas.width = pw;
+      if (canvas.height !== ph) canvas.height = ph;
+      const ctx = canvas.getContext("2d")!;
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      ctx.save();
+      ctx.scale(zoom, zoom);
+      if (drawingRef.current) drawAnnotation(ctx, drawingRef.current);
+      ctx.restore();
+    });
   }, [natW, natH, zoom]);
 
   // bgCanvas 同步触发：imageId/zoom/annotations 任一变化 → 完整重绘底层
@@ -431,10 +452,17 @@ export default function ImagePreview() {
         drawingRef.current = { ...drawingRef.current, x2: nx, y2: ny };
       }
       drawActive();
+      return;
     }
   };
 
   const onMouseUp = () => {
+    // flush 待处理的 RAF（确保最后一帧已画）
+    if (rafRef.current) {
+      cancelAnimationFrame(rafRef.current);
+      rafRef.current = null;
+      drawActiveScheduledRef.current = false;
+    }
     if (drawingRef.current) {
       const ann = drawingRef.current;
       drawingRef.current = null;
@@ -444,9 +472,9 @@ export default function ImagePreview() {
         : (Math.abs(ann.x2 - ann.x1) > 3 || Math.abs(ann.y2 - ann.y1) > 3);
       if (ok) {
         setAnnotations((prev) => [...prev, ann]);
-        drawActive();  // drawingRef 已 null → 清空 drawCanvas
+        clearDrawCanvas();  // 同步清空（不走 RAF）
       } else {
-        drawActive();
+        clearDrawCanvas();
       }
     }
     dragRef.current = null;
