@@ -591,3 +591,11 @@ git commit -m "docs: 同步图片查看器性能优化到 architecture.md"
 | 8 | thumb→full 尺寸跳变 | ✅ 成立 | 等比例修正 zoom | `f9c7e9d` |
 
 Screenshot 的 text 标注调用同一 `annotation.ts` 纯函数，#6 修复自动覆盖两端。
+
+### 第二轮代码审查修复（V2）
+
+| # | 问题 | 判定 | 处理 | commit |
+|---|------|------|------|--------|
+| 1 | createImageBitmap 无 debounce | ✅ 合理 | setTimeout 150ms 防抖，期间 drawBg 用原图拉伸占位 | `ebf9426` |
+| 2 | commitText 未存 textWidth | ⚠️ 防御性 | 存 textarea clientWidth / zoom = textWidth | `ebf9426` |
+| 3 | 文字框缩放时 1-2px 抖动 | ❌ 不成立 | SVG/textarea 同坐标系，亚像素抖动通性，且编辑中不会缩放 | — |
