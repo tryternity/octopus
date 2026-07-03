@@ -242,6 +242,10 @@ function Result() {
     if (editBufTimer.current) clearTimeout(editBufTimer.current);
     const el = textRef.current;
     const editedText = el?.innerText ?? "";
+    // textRef 的 key 随 editing 切换，退出编辑时 view 会重新挂载；必须把编辑结果写回 text
+    // state，否则重挂后会回退到进入编辑前的旧 text。
+    displayedRef.current = editedText;
+    setText(editedText);
     setEditing(false);
     setCaretPos(null); // 退出编辑态：光标位失效，待下次 measure 重建
     invoke("commit_edit", { text: editedText });
@@ -492,20 +496,30 @@ function Result() {
           editing && "bg-voice/[0.06]",
         )}
       >
-        <div
-          ref={textRef}
-          className={cn(
-            "text-sm leading-[1.6] text-foreground overflow-y-auto",
-            expanded ? "h-full" : "max-h-[63px]",
-            "break-words outline-none thin-scrollbar",
-            !editing && "cursor-text",
-          )}
-          contentEditable={editing}
-          suppressContentEditableWarning
-          onInput={onTextInput}
-          onClick={!editing ? handleTextClick : undefined}
-        >
-          {text}
+        {/* tight relative wrapper：CaretBlink 浮层的定位基准（与 textRef 同原点、无 padding
+            偏移，故 measureCaretPx 相对 textRef 量得的 px 直接可用）。
+            textRef 的 contentEditable 子节点不让 React 跨编辑边界做 in-place reconcile：
+            key 随 editing 切换 → view/edit 走 unmount/mount 而非在原地增删子节点，杜绝
+            React 在用户浏览器 mutate 过的 contentEditable 上 removeChild 抛
+            "The object can not be found here"。CaretBlink 移出 contentEditable 当兄弟浮层，
+            避免与用户编辑的 DOM 抢同一个父节点的子节点位。 */}
+        <div className="relative h-full">
+          <div
+            key={editing ? "edit" : "view"}
+            ref={textRef}
+            className={cn(
+              "text-sm leading-[1.6] text-foreground overflow-y-auto",
+              expanded ? "h-full" : "max-h-[63px]",
+              "break-words outline-none thin-scrollbar",
+              !editing && "cursor-text",
+            )}
+            contentEditable={editing}
+            suppressContentEditableWarning
+            onInput={onTextInput}
+            onClick={!editing ? handleTextClick : undefined}
+          >
+            {text}
+          </div>
           {!editing && <CaretBlink container={textRef.current} text={text} pos={caretPos} />}
         </div>
       </div>
