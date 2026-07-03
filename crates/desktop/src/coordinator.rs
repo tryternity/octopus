@@ -391,7 +391,7 @@ impl Coordinator {
                             // 恢复展示当前 segments 扁平文本（编辑态修改在前端 editBuffer，未 commit → transcript 不变）
                             let display = stage_transcript(&mut stage).map(|t| t.display_text()).unwrap_or_default();
                             if !display.is_empty() {
-                                crate::result_window::update_result(&app_handle, &display, false);
+                                crate::result_window::update_result(&app_handle, &display, false, 0);
                             }
                         }
                     }
@@ -1764,7 +1764,7 @@ fn handle_polish_done(
                     warn!("Queue DB update_polish_result failed: {}", e);
                 }
                 if !transcript.full().is_empty() {
-                    crate::result_window::update_result(app_handle, &transcript.display_text(), false);
+                    crate::result_window::update_result(app_handle, &transcript.display_text(), false, 0);
                 }
             }
         }
@@ -1874,7 +1874,7 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
             warn!("Queue DB UpdateEditedSegments failed: {}", e);
         }
     }
-    crate::result_window::update_result(app_handle, &transcript.display_text(), false);
+    crate::result_window::update_result(app_handle, &transcript.display_text(), false, 0);
     info!("Edit committed ({} chars)", text.chars().count());
 }
 
@@ -2102,17 +2102,18 @@ fn apply_pipeline_events(
                     warn!("DB ({}) failed: {}", engine_mode, e);
                 }
             }
-            PipelineEvent::Emit { display, insertion } => {
-                // 把 pipeline 的 insertion 标志实传给 result_window（前端跳过 diverted 300ms 延迟立即渲染）。
+            PipelineEvent::Emit { display, insertion, caret } => {
+                // 把 pipeline 的 insertion 标志 + caret 偏移实传给 result_window（前端跳过 diverted 300ms 延迟
+                // 立即渲染；insertion=true 时用 caret 定位闪烁光标，使其跟在最后插入的文字后右移）。
                 if !display.is_empty() {
-                    crate::result_window::update_result(app_handle, &display, insertion);
+                    crate::result_window::update_result(app_handle, &display, insertion, caret);
                 }
             }
             PipelineEvent::Polish { silence } => {
                 check_and_trigger_polish(transcript, silence, config, tx);
             }
             PipelineEvent::Error(e) => {
-                crate::result_window::update_result(app_handle, &e, false);
+                crate::result_window::update_result(app_handle, &e, false, 0);
             }
         }
     }

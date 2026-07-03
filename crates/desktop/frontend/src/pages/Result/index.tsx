@@ -55,8 +55,9 @@ function Result() {
   const [popupItems, setPopupItems] = useState<PopupItem[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [polishLoading, setPolishLoading] = useState(false);
-  // 光标 char offset（code-point 计数，与后端 Rust char 对齐）。null = 文本末尾（活动 Raw 段尾）。
-  // 简化策略：中插态光标固定在点击 offset（插入点），不随新词推进（新词右推、光标自然落在插入点）。
+  // 光标 char offset（code-point 计数，与后端 Rust char 对齐）。null = 文本末尾。
+  // 点击中间 → setCaretPos(offset)；中插态每 tick 由后端 caret（=已插入字数累加）驱动右移，
+  // 故光标始终跟在最后插入的文字后；非中插态回 null（末尾）。
   const [caretPos, setCaretPos] = useState<number | null>(null);
 
   const textRef = useRef<HTMLDivElement>(null);
@@ -160,11 +161,13 @@ function Result() {
         }],
         ["update-result", (p) => {
           if (editingRef.current) return;
-          // Task 5 起 payload 改对象 { text, insertion }（旧纯 string 已废弃）。
-          const payload = p as { text: string; insertion: boolean };
+          // payload { text, insertion, caret }：insertion=true 中插态，caret = 光标 char 偏移（随插入增长）。
+          const payload = p as { text: string; insertion: boolean; caret: number };
           const newText = payload.text;
           const insertion = payload.insertion;
           if (newText === displayedRef.current || newText === pendingDiverted.current) return;
+          // 光标定位：中插态跟后端 caret（每插一字光标右移一字）；非中插态（末尾追加/diverted）回末尾。
+          setCaretPos(insertion ? payload.caret : null);
           // 插入态（光标在中间）或纯追加（startsWith）：立即渲染（跳过 diverted 300ms 延迟）。
           if (insertion || newText.startsWith(displayedRef.current)) {
             if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }

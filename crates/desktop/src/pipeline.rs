@@ -31,8 +31,9 @@ pub enum PipelineEvent {
     PersistRaw { engine_mode: &'static str },
     /// 刷新结果窗口。display 已由 pipeline 算好（local=transcript.display_text()；cloud=display+current_partial）。
     /// `insertion=true` 表示中间插入态（caret_gap < segments.len()），前端立即渲染（跳过 300ms diverted 延迟）。
-    /// coordinator 调 result_window::update_result(app_handle, &display)（Task 5 起加第三参 insertion）。
-    Emit { display: String, insertion: bool },
+    /// `caret` = transcript.caret_char_offset()（扁平文本里光标的 char 偏移，随插入自然增长；前端据此定位闪烁
+    /// 光标，使其跟在最后插入的文字后右移，而非停在点击点）。insertion=false 时前端忽略 caret。
+    Emit { display: String, insertion: bool, caret: usize },
     /// 触发停顿润色。silence = 停顿时长（streaming 传 silence_duration；vad-seg 段边界传 f64::INFINITY 必过，
     /// 等价原 after_vad_tick 传 pause_polish_threshold_ms 让 check_and_trigger_polish 静音检查自动达标）。
     /// coordinator 调 check_and_trigger_polish(&mut transcript, silence, config, tx)（防抖五重检查原样在彼处）。
@@ -244,11 +245,11 @@ impl StreamingPipeline {
             } else {
                 format!("{}{}", base, partial)
             };
-            events.push(PipelineEvent::Emit { display, insertion: transcript.is_inserting() });
+            events.push(PipelineEvent::Emit { display, insertion: transcript.is_inserting(), caret: transcript.caret_char_offset() });
         } else {
             if changed {
                 events.push(PipelineEvent::PersistRaw { engine_mode: "streaming" });
-                events.push(PipelineEvent::Emit { display: transcript.display_text(), insertion: transcript.is_inserting() });
+                events.push(PipelineEvent::Emit { display: transcript.display_text(), insertion: transcript.is_inserting(), caret: transcript.caret_char_offset() });
             }
             // local 每 tick 查停顿润色（等价原 handle_streaming_tick L1408）
             events.push(PipelineEvent::Polish { silence: self.engine.silence_duration() });
@@ -524,7 +525,7 @@ impl VadSegmentedPipeline {
         let mut events = Vec::new();
         if changed {
             events.push(PipelineEvent::PersistRaw { engine_mode: "vad_segmented" });
-            events.push(PipelineEvent::Emit { display: transcript.display_text(), insertion: transcript.is_inserting() });
+            events.push(PipelineEvent::Emit { display: transcript.display_text(), insertion: transcript.is_inserting(), caret: transcript.caret_char_offset() });
         }
         if segment_cut {
             events.push(PipelineEvent::Polish { silence: f64::INFINITY });
@@ -699,7 +700,7 @@ mod tests {
         let events = p.tick(&[0.0; 1600], &mut t);
         assert_eq!(events, vec![
             PipelineEvent::PersistRaw { engine_mode: "streaming" },
-            PipelineEvent::Emit { display: "你好".to_string(), insertion: false },
+            PipelineEvent::Emit { display: "你好".to_string(), insertion: false, caret: 2 },
             PipelineEvent::Polish { silence: 0.0 },
         ]);
     }
@@ -733,7 +734,7 @@ mod tests {
         let events = p.tick(&[0.0; 1600], &mut t);
         // changed → PersistRaw + Polish；每 tick Emit(display+partial) = "已提交预览中"
         assert!(events.contains(&PipelineEvent::PersistRaw { engine_mode: "streaming" }));
-        assert!(events.iter().any(|e| matches!(e, PipelineEvent::Emit { display, insertion: false } if display == "已提交预览中")));
+        assert!(events.iter().any(|e| matches!(e, PipelineEvent::Emit { display, insertion: false, .. } if display == "已提交预览中")));
     }
 
     #[test]
