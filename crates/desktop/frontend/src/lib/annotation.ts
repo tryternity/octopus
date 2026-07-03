@@ -14,6 +14,7 @@ export interface Annotation {
   fontSize?: number;
   number?: number;
   circleSize?: number;
+  textWidth?: number; // 文本最大宽度（自然像素），不折行时省略
 }
 
 const HIT_DIST = 8;
@@ -73,9 +74,10 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
     ctx.stroke();
   } else if (ann.type === "text" && ann.text) {
     const fs = ann.fontSize || 16;
+    const maxW = ann.textWidth || Infinity;
     ctx.font = `${fs}px -apple-system, sans-serif`;
     ctx.textBaseline = "top";
-    drawMultilineText(ctx, ann.text, ann.x1, ann.y1, 200, fs);
+    drawMultilineText(ctx, ann.text, ann.x1, ann.y1, maxW, fs);
   } else if (ann.type === "number" && ann.number) {
     const r = (ann.circleSize || 24) / 2;
     const fs = (ann.circleSize || 24) * 0.6;
@@ -178,9 +180,10 @@ export function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotat
     ctx.stroke();
   } else if (ann.type === "text" && ann.text) {
     const fs = (ann.fontSize || 16) * scale;
+    const maxW = (ann.textWidth || Infinity) * scale;
     ctx.font = `${fs}px -apple-system, sans-serif`;
     ctx.textBaseline = "top";
-    drawMultilineText(ctx, ann.text, ann.x1 * scale, ann.y1 * scale, 200 * scale, fs);
+    drawMultilineText(ctx, ann.text, ann.x1 * scale, ann.y1 * scale, maxW, fs);
   } else if (ann.type === "number" && ann.number) {
     const r = ((ann.circleSize || 24) * scale) / 2;
     const fs = ((ann.circleSize || 24) * scale) * 0.6;
