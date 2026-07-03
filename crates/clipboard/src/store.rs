@@ -63,8 +63,7 @@ pub fn insert_asr_item(conn: &Connection, text: &str, asr_meta: AsrMeta) -> Resu
         conn.execute(
             "INSERT INTO clipboard_history
              (id, item_type, source, content, search_text, is_favorite, created_at,
-              transcription_id, polish_status, engine, model,
-                (SELECT length(blob) FROM image_data WHERE hash = blob_hash) AS img_size)
+              transcription_id, polish_status, engine, model)
              VALUES (?, 'text', 'asr', ?, ?, 0, ?, ?, ?, ?, ?)",
             params![
                 id,
