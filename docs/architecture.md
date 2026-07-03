@@ -27,7 +27,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表 / `image_data` 表）。DB 迁移至 v13（v12→v13 DROP 已移除的 `notes` 表 + `notes_fts` + 触发器）。`with_db` 为公开 API 供其他 crate 调用。`image_util`（PNG 原样保存 + WebP 有损压缩（`webp` crate）+ JPEG 有损压缩（`image` crate JpegEncoder），均接受 quality 参数）。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表（category 分组：`setting`用户配置 / `system`窗口位置等系统状态）/ `models` 表 / `transcriptions` 表 / `prompts` 表 / `clipboard_history` 表 + FTS5 虚表 / `image_data` 表）。DB 迁移至 v13（v12→v13 DROP 已移除的 `notes` 表 + `notes_fts` + 触发器）。`with_db` 为公开 API 供其他 crate 调用。**⚠️ 并发约束（重入死锁）**：`with_db` 内部用 `std::sync::Mutex`（**非递归**），闭包内**严禁再调任何走 `with_db` 的函数**（`load_config_key` / `load_config` / `save_config` / `current_*_meta` 等）——同线程重入 = 第二次 `lock()` 永久等第一次释放，DB 锁被该线程永久持有。症状极具迷惑性：async 命令 `await` 卡住**不报错**（前端 `.catch` 不触发）+ 其它 `with_db` 查询（如剪贴板过滤刷新）全阻塞 + 应用不全僵死（主线程 UI 仍活）。规则：**闭包内只做纯 SQL**，需读 config/meta 的在闭包外先取好再 move 进去（`let meta = current_ocr_meta(); with_db(|conn| insert(conn, meta))`）。排查：`grep with_db` 每个闭包体确认无 `load_config_key`/`current_*_meta`/嵌套 `with_db`。`image_util`（PNG 原样保存 + WebP 有损压缩（`webp` crate）+ JPEG 有损压缩（`image` crate JpegEncoder），均接受 quality 参数）。
 
 ### octopus-asr-local（核心推理库）
 
@@ -127,14 +127,14 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 | 模块 | 职责 |
 |---|---|
-| `engine` | `OcrEngine`：全局单例（`OnceLock`），懒加载模型。`recognize(image_bytes)` 支持任意格式（image crate 自动检测）。模型名从 `app_config.ocr_model` 读取 |
+| `engine` | `OcrEngine`：全局单例（`OnceLock`），懒加载模型。`recognize(image_bytes)` 支持任意格式（image crate 自动检测）。模型名从 `app_config.ocr_model` 读取。`instance()` 用 double-checked locking（`INIT_LOCK: Mutex<()>`）串行化首次加载、保证模型只加载一次。**注**：曾怀疑「并发首次加载致 MNN C++ 死锁」是 OCR 僵死根因，已被 `tests/ocr_concurrent_smoke.rs` **证伪**——4 线程经 Barrier 同时首次调 `ocr_rs::OcrEngine::new`，全 `ok=true` ~180ms 返回，MNN 并发安全；main 用 check-then-set 同样不僵死。worktree 原始 OCR 僵死真因未最终坐实（MNN 包/并发均已排除，可疑残留见 db 模块的 with_db 重入说明）。DCL 保留为无害的串行化优化，非「修复并发死锁」。**超长图切分**：`recognize` 对 `height > 1600`px 的长截图（如 2032×15796）按块切分（`CHUNK_HEIGHT=1280` / `CHUNK_OVERLAP=200`）逐块识别 + 跳过与上一块末行相同的起始连续行去重合并（`recognize_long_image` / `plan_chunks` 纯函数 + 单测），避免整图等比缩放到 det `max_side_len=960` 致短边过小、det 检测不到文本（曾返回 text_len=0）。**全局并发互斥**：`OcrLockGuard`（`static OCR_BUSY: AtomicBool` + `compare_exchange`）做 RAII 互斥——同一时刻仅一个 OCR 任务，`ocr_image` / `ocr_screenshot` 入口 `try_acquire`，忙则立即返回 `Err("正在 OCR 中，请稍后重试")`，guard drop（含 async future 被 cancel）自动释放 |
 | `model` | 模型路径管理（`~/.octopus/models/ocr/<name>/`）+ `is_model_ready`（det.mnn + rec.mnn + keys.txt 三件套检测） |
 
 **模型**：PP-OCRv6 small（det 4.7M + rec 10M + keys 73K），从 ocr-rs GitHub 仓库下载。DB `models` 表 `domain='ocr'` 记录，source=det URL、secret_key=rec URL。
 
 **触发方式**：手动——剪贴板浮窗/管理页图片条目点 OCR 按钮（ScanText 图标）。不支持自动 OCR。
 
-**结果处理**：三处入口（截图工具栏 / 图片预览 / 剪贴板图片条目）识别文本后统一走 `insert_ocr_clipboard_item`（desktop 命令：新建 source=ocr 剪贴板条目，engine/model 复用 clipboard_history 列）→ `open_compact_editor_tab(itemId)` 在精简编辑器打开绑定 tab 编辑（Ctrl+S 经 `set_clipboard_item_text` 回写）。截图 OCR 后端闭环（`ocr_screenshot` 内 insert_ocr + 同进程 open tab），其余两入口前端 `ocr_image` 纯识别 → insert → open tab。不再写 search_text / 系统剪贴板 / osascript TextEdit。
+**结果处理**：三处入口（截图工具栏 / 图片预览 / 剪贴板图片条目）识别文本后统一走 `insert_ocr_clipboard_item`（desktop 命令：新建 source=ocr 剪贴板条目，engine/model 复用 clipboard_history 列）→ `open_compact_editor_tab(itemId)` 在精简编辑器打开绑定 tab 编辑（Ctrl+S 经 `set_clipboard_item_text` 回写）。截图 OCR 后端闭环（`ocr_screenshot` 内 insert_ocr + 同进程 open tab），其余两入口前端 `ocr_image` 纯识别 → insert → open tab。不再写 search_text / 系统剪贴板 / osascript TextEdit。**并发互斥可见提示**：某入口 OCR 进行中、他入口再点被 `OcrLockGuard` 拒绝时，前端 4 处给出「正在 OCR 中」反馈——剪贴板列表 / 图片预览 OCR 按钮显琥珀三角（`ocrWarn` 1.8s）、截图屏幕中央黑底 toast、设置页 `showToast`（该错误去掉原 `OCR 失败：` 前缀直接显示）。
 
 ### octopus-capx（屏幕截图）
 
@@ -168,7 +168,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - `image_preview_commands.rs` + `image_preview_window.rs`：**图片预览**（剪贴板图片项的轻工具栏预览窗）。窗口 880×620（min 400×320，原生标题栏、可调、居中），按需创建；3 命令——`open_image_preview` / `get_pending_image` / `close_image_preview`。前端浮动白卡工具栏 + 灯箱暗场棋盘格画布 + 自然像素坐标标注（选择/矩形/椭圆/直线/箭头/画笔/文字 + 撤销 + 跟随按钮属性浮窗）+ 动作（保存/复制/OCR/缩放/置顶）。OCR = `ocr_image`（纯识别）→ `insert_ocr_clipboard_item` → `openCompactEditorTab`（新建 source=ocr 条目并在精简编辑器打开绑定 tab）。共享标注核心 `frontend/src/lib/annotation.ts`。
 - `clipboard_commands.rs` 图片预览 3 命令：`get_image_full`（取 `image_data.blob` 全分辨率 → `ipc::Response` 原始 WebP 字节）/ `save_image_dialog`（`ipc::Request` Raw body）/ `copy_image_to_clipboard`（`ipc::Request` Raw body → `write_image` + `handle_clipboard_change` 全部 `spawn_blocking`）。`copy_clipboard_item` 移入 `spawn_blocking` 避免 UI 冻结。
 - `clipboard_commands.rs::insert_ocr_clipboard_item`：OCR 统一入库——识别文本 → `store::insert_ocr_item`（source=ocr，engine/model 复用 clipboard_history 列）→ `emit("clipboard://changed")` → 返回新 id；`current_ocr_meta()` helper 读 `ocr_model` 配置（默认 PP-OCRv6-small，engine 固定 paddle），供此命令与 `ocr_screenshot` 复用。三处 OCR 入口（截图 / 图片预览 / 剪贴板图片条目）识别出文本后统一走此命令入库 + `openCompactEditorTab` 打开绑定 tab。
-- `clipboard_commands.rs::set_clipboard_item_text`：编辑器回写——同写 `content` + `search_text`（保 FTS 命中）+ 同步系统剪贴板，供 CompactEditor Ctrl+S / 剪贴板文本条目「编辑」回写。
+- `clipboard_commands.rs::set_clipboard_item_text`：编辑器回写——同写 `content` + `search_text`（保 FTS 命中，`clip_fts_au AFTER UPDATE OF search_text` 触发器自动同步 FTS5 索引）+ 同步系统剪贴板，**成功后 `emit("clipboard://changed")`**（编辑器是独立窗口，剪贴板列表窗口靠此事件感知条目变化并 `fetchItems()` 重新拉取，否则编辑后列表仍显示旧文本）。供 CompactEditor Ctrl+S / 剪贴板文本条目「编辑」回写。
 - `screenshot_commands.rs::ocr_screenshot`：截图 OCR 后端闭环——图片入库（截图历史）+ `ocr_rs` 识别 → `insert_ocr_item` → 同进程调 `open_compact_editor_tab` + `emit("clipboard://changed")`；不再 write_text / update_search_text（编辑保存时才写剪贴板）。
 - `coordinator.rs`：`static CURRENT_TRANSCRIPTION_ID: AtomicI64`（3 个会话起点记录）+ `current_transcription_id` 命令，供 Result 窗口溯源当前识别记录（无需改文本事件 payload）。
 - 前端：`pages/CompactEditor/`（多 tab：tab 栏 + 工具栏撤销/重做/字号/查找替换/清空/保存 + textarea）；`lib/compactEditor.ts::openCompactEditorTab(itemId)`。`pages/Notepad/` 已删除。

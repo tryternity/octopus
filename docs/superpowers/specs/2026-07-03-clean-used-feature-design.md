@@ -144,6 +144,12 @@ Tab { itemId: number, text: string, dirty: boolean, title: string }
 
 - OCR 入库后条目即持久化；用户在 tab 里编辑后 Ctrl+S 回写该 OCR 条目；不编辑直接关 tab 也保留（由剪贴板列表自管删除）。
 
+### 6.3 运行时约束（e2e 阶段增强）
+
+- **全局并发互斥**：同一时刻仅允许一个 OCR 任务。`ocr_image` / `ocr_screenshot` 入口经 `OcrLockGuard`（`octopus-ocr::engine`，`AtomicBool` + `compare_exchange` 的 RAII guard）`try_acquire`，忙则立即返回 `Err("正在 OCR 中，请稍后重试")`、不进推理；guard drop（含 async future cancel）自动释放。任一入口 OCR 进行中时，其他入口再点 OCR → 前端可见提示（剪贴板列表 / 图片预览按钮显琥珀三角 `ocrWarn`、截图屏幕中央 toast、设置页 `showToast`）。
+- **超长图切分**：`height > 1600`px 的长截图按块（高 1280、重叠 200）切分逐块识别 + 末行去重合并，避免整图缩放到 det `max_side_len=960` 致短边过小、检测不到文本（2032×15796 长图曾 text_len=0）。
+- 这两项是 engine 层能力，详见 `docs/architecture.md` octopus-ocr 节（单一权威）。
+
 ## 7. 任务 4：OCR 类别数据结构
 
 ### 7.1 后端（`crates/clipboard`）

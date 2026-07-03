@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import {
   MousePointer2, Square, Circle, Minus, ArrowUpRight, Pen, Type, Undo2,
-  Download, Copy, ScanText, Pin, PinOff, Check, ZoomIn, ZoomOut,
+  Download, Copy, ScanText, Pin, PinOff, Check, ZoomIn, ZoomOut, AlertTriangle,
 } from "lucide-react";
 import type { Tool } from "@/lib/annotation";
 
@@ -62,6 +62,7 @@ export default function Toolbar(props: {
   onSave: () => void; onCopy: () => void; onOcr: () => void;
   onUndo: () => void; canUndo: boolean;
   ocrCopied: boolean;
+  ocrWarn: boolean;
   zoom: number; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
@@ -119,8 +120,8 @@ export default function Toolbar(props: {
         <ToolButton title="复制到剪贴板" active={false} onClick={() => props.onCopy()}>
           <Copy className="h-[18px] w-[18px]" />
         </ToolButton>
-        <ToolButton title="OCR 识别（结果复制到剪贴板）" active={props.ocrCopied} onClick={() => props.onOcr()}>
-          {props.ocrCopied ? <Check className="h-[18px] w-[18px]" /> : <ScanText className="h-[18px] w-[18px]" />}
+        <ToolButton title="OCR 识别（结果复制到剪贴板）" active={props.ocrCopied || props.ocrWarn} onClick={() => props.onOcr()}>
+          {props.ocrCopied ? <Check className="h-[18px] w-[18px]" /> : props.ocrWarn ? <AlertTriangle className="h-[18px] w-[18px]" style={{ color: "#f59e0b" }} /> : <ScanText className="h-[18px] w-[18px]" />}
         </ToolButton>
 
         <Divider />

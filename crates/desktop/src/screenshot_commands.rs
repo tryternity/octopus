@@ -134,8 +134,10 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         }));
 
         // 串行创建窗口（同时创建多个全屏 WebView 会导致 macOS segfault）
+        // 必须用 tokio::sleep（本函数是 async）：std::thread::sleep 会阻塞整个 tokio
+        // worker 线程，干扰同 runtime 的其他 async 命令调度。
         if i > 0 {
-            std::thread::sleep(std::time::Duration::from_millis(150));
+            tokio::time::sleep(std::time::Duration::from_millis(150)).await;
         }
 
         let window_result = WebviewWindowBuilder::new(
@@ -168,10 +170,12 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     }
 
     // 超时 fallback：3s 后如果仍有窗口未显示，强制全部显示（防死锁）
+    // 用 tokio::spawn + tokio::time::sleep：task 在 runtime 回收，避免 std::thread 泄漏，
+    // 且 std::thread::sleep 在 async 上下文会阻塞 OS 线程。
     {
         let ah = app_handle.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_secs(3));
+        tokio::spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(3)).await;
             let count = READY_COUNT.load(std::sync::atomic::Ordering::SeqCst);
             let total = TOTAL_WINDOWS.load(std::sync::atomic::Ordering::SeqCst);
             if count < total {
@@ -191,6 +195,9 @@ pub async fn ocr_screenshot(
     request: tauri::ipc::Request<'_>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    // 全局 OCR 互斥：已有 OCR 在跑则立即拒绝，避免多任务并发进入推理。
+    let _ocr_lock = octopus_ocr::engine::OcrLockGuard::try_acquire()
+        .ok_or_else(|| "正在 OCR 中，请稍后重试".to_string())?;
     let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
         return Err("expected raw binary body".into());
     };
@@ -246,19 +253,26 @@ pub async fn ocr_screenshot(
     };
 
     // OCR 识别 → 新建 ocr 条目 → 打开绑定 tab 编辑
+    log::info!("[ocr-screenshot] before instance");
     let engine = octopus_ocr::engine::OcrEngine::instance()
         .map_err(|e| e.to_string())?;
+    log::info!(
+        "[ocr-screenshot] after instance; before recognize png_bytes={} bytes",
+        png_bytes.len()
+    );
     let text = engine.recognize(&png_bytes).map_err(|e| e.to_string())?;
+    log::info!("[ocr-screenshot] after recognize text_len={}", text.len());
 
     let ocr_id_opt: Option<i64> = if !text.trim().is_empty() {
+        // ⚠️ current_ocr_meta 在 with_db 外取：内部 load_config_key→with_db，闭包内调
+        // = std::Mutex 同线程重入死锁（详见 insert_ocr_clipboard_item 注释）。
+        let meta = crate::clipboard_commands::current_ocr_meta();
+        log::info!("[ocr-screenshot] before insert_ocr_item");
         let ocr_id = octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::insert_ocr_item(
-                conn,
-                &text,
-                crate::clipboard_commands::current_ocr_meta(),
-            )
+            octopus_clipboard::store::insert_ocr_item(conn, &text, meta)
         })
         .map_err(|e| e.to_string())?;
+        log::info!("[ocr-screenshot] after insert_ocr_item id={}", ocr_id);
         Some(ocr_id)
     } else {
         None

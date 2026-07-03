@@ -43,6 +43,8 @@ export default function ImagePreview() {
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [ocrCopied, setOcrCopied] = useState(false);
+  // OCR 全局互斥：他处正在识别时本入口被拒 → 工具栏显琥珀三角 1.8s 提示稍后重试
+  const [ocrWarn, setOcrWarn] = useState(false);
 
   // 交互 refs（避免重渲染抖动 + 拖拽用最新值）
   const drawingRef = useRef<Annotation | null>(null);
@@ -304,7 +306,16 @@ export default function ImagePreview() {
         setOcrCopied(true);
         setTimeout(() => setOcrCopied(false), 1500);
       }
-    } catch (e) { console.error(e); }
+    } catch (e) {
+      // 全局互斥：他处正在 OCR → 工具栏显琥珀三角 1.8s 提示稍后重试
+      const msg = String(e);
+      if (msg.includes("正在 OCR 中")) {
+        setOcrWarn(true);
+        setTimeout(() => setOcrWarn(false), 1800);
+      } else {
+        console.error(e);
+      }
+    }
   };
 
   const toggleAlwaysOnTop = async () => {
@@ -351,7 +362,7 @@ export default function ImagePreview() {
         alwaysOnTop={alwaysOnTop} onToggleTop={toggleAlwaysOnTop}
         onSave={handleSave} onCopy={handleCopy} onOcr={handleOcr}
         onUndo={undo} canUndo={annotations.length > 0}
-        ocrCopied={ocrCopied}
+        ocrCopied={ocrCopied} ocrWarn={ocrWarn}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
       />
       {/* 滚动容器：全屏画布，图片大于视口自动出滚动条；小于则居中 */}

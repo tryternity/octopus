@@ -406,10 +406,19 @@ pub async fn insert_ocr_clipboard_item(
     text: String,
     app_handle: tauri::AppHandle,
 ) -> Result<i64, String> {
+    // ⚠️ current_ocr_meta 必须在 with_db 外取：其内部 load_config_key → with_db，
+    // 在 with_db 闭包内调 = std::Mutex 同线程重入死锁（DB 锁永久持有 → 所有 with_db
+    // 操作阻塞 = 过滤失灵；本命令永不返回 = CompactEditor 不弹）。
+    let meta = current_ocr_meta();
+    log::info!("[insert-ocr] before insert text_len={}", text.len());
     let id = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::insert_ocr_item(conn, &text, current_ocr_meta())
+        octopus_clipboard::store::insert_ocr_item(conn, &text, meta)
     })
-    .map_err(|e| e.to_string())?;
+    .map_err(|e| {
+        log::error!("[insert-ocr] insert FAILED: {:?}", e);
+        e.to_string()
+    })?;
+    log::info!("[insert-ocr] after insert id={}", id);
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(id)
 }
@@ -418,10 +427,19 @@ pub async fn insert_ocr_clipboard_item(
 /// 入库由前端统一调 insert_ocr_clipboard_item 完成（三入口一致），再 openCompactEditorTab 编辑。
 #[tauri::command]
 pub async fn ocr_image(id: i64) -> Result<String, String> {
+    // 全局 OCR 互斥：已有 OCR 在跑则立即拒绝，避免多任务并发进入推理。
+    let _ocr_lock = octopus_ocr::engine::OcrLockGuard::try_acquire()
+        .ok_or_else(|| "正在 OCR 中，请稍后重试".to_string())?;
+    log::info!(
+        "[ocr-image] start id={} thread={:?}",
+        id,
+        std::thread::current().id()
+    );
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, id)
     })
     .map_err(|e| e.to_string())?;
+    log::info!("[ocr-image] got item");
 
     let item = item.ok_or("条目不存在")?;
     if item.item_type != octopus_clipboard::ItemType::Image {
@@ -436,10 +454,16 @@ pub async fn ocr_image(id: i64) -> Result<String, String> {
     })
     .map_err(|e| e.to_string())?
     .ok_or("图片数据不存在")?;
+    log::info!("[ocr-image] got blob {} bytes", webp_blob.len());
 
+    log::info!("[ocr-image] before OcrEngine::instance()");
     let engine = octopus_ocr::engine::OcrEngine::instance()
         .map_err(|e| e.to_string())?;
+    log::info!("[ocr-image] after OcrEngine::instance()");
+
+    log::info!("[ocr-image] before recognize()");
     let text = engine.recognize(&webp_blob).map_err(|e| e.to_string())?;
+    log::info!("[ocr-image] after recognize() text_len={}", text.len());
 
     if text.trim().is_empty() {
         return Err("未识别到文本".into());
@@ -455,6 +479,7 @@ pub async fn set_clipboard_item_text(
     item_id: i64,
     text: String,
     handle: State<'_, Arc<ClipboardHandle>>,
+    app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::update_content(conn, item_id, &text)
@@ -462,6 +487,8 @@ pub async fn set_clipboard_item_text(
     .map_err(|e| e.to_string())?;
 
     handle.write_text(&text).map_err(|e| e.to_string())?;
+    // 编辑器是独立窗口，剪贴板列表窗口需靠此事件感知条目变化并重新拉取。
+    let _ = app_handle.emit("clipboard://changed", ());
     Ok(())
 }
 

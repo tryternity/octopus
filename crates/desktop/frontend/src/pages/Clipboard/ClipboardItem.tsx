@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, Loader2, Check, SquarePen, Maximize2 } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, Loader2, Check, SquarePen, Maximize2, AlertTriangle } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
@@ -23,6 +23,8 @@ export default function ClipboardItemRow({
   const [showSavePopover, setShowSavePopover] = useState(false);
   const [ocrLoading, setOcrLoading] = useState(false);
   const [ocrDone, setOcrDone] = useState(false);
+  // OCR 全局互斥：他处正在识别时本入口被拒 → 按钮显琥珀三角 1.8s 提示稍后重试
+  const [ocrWarn, setOcrWarn] = useState(false);
   const [thumbSrc, setThumbSrc] = useState<string | null>(null);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [copied, setCopied] = useState(false);
@@ -109,6 +111,9 @@ export default function ClipboardItemRow({
       if (msg.includes("未识别到文本")) {
         setOcrDone(true);
         setTimeout(() => setOcrDone(false), 1000);
+      } else if (msg.includes("正在 OCR 中")) {
+        setOcrWarn(true);
+        setTimeout(() => setOcrWarn(false), 1800);
       } else {
         console.error(err);
       }
@@ -268,7 +273,7 @@ export default function ClipboardItemRow({
           <button
             className={cn(
               "p-0.5 transition-opacity",
-              ocrLoading || ocrDone
+              ocrLoading || ocrDone || ocrWarn
                 ? "opacity-100"
                 : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
             )}
@@ -280,6 +285,8 @@ export default function ClipboardItemRow({
               <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />
             ) : ocrDone ? (
               <Check className="w-3.5 h-3.5 text-emerald-600" />
+            ) : ocrWarn ? (
+              <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
             ) : (
               <ScanText className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
             )}

@@ -49,6 +49,8 @@ export default function Screenshot() {
   const scrollSaveAfterStopRef = useRef(false);
   const [numberCounter, setNumberCounter] = useState(1);
   const [toolCircleSize, setToolCircleSize] = useState(24);
+  // OCR 全局互斥：他处正在识别时本入口被拒 → 屏幕中央短暂提示 1.8s
+  const [ocrWarn, setOcrWarn] = useState(false);
   const annMoveStartRef = useRef<{ idx: number; mx: number; my: number; anns: Annotation[] } | null>(null);
 
   const dpr = window.devicePixelRatio || 1;
@@ -560,7 +562,16 @@ export default function Screenshot() {
   function doOcr() {
     composeAndCropBytes().then((bytes) => {
       if (!bytes) return;
-      invoke("ocr_screenshot", bytes as unknown as Record<string, unknown>).catch(() => {});
+      invoke("ocr_screenshot", bytes as unknown as Record<string, unknown>).catch((e) => {
+        // 全局互斥：他处正在 OCR → 屏幕中央提示稍后重试；其余错误打日志（截图无 toast 框架）
+        const msg = String(e);
+        if (msg.includes("正在 OCR 中")) {
+          setOcrWarn(true);
+          setTimeout(() => setOcrWarn(false), 1800);
+        } else {
+          console.error(e);
+        }
+      });
     });
   }
 
@@ -896,6 +907,19 @@ export default function Screenshot() {
               取消
             </button>
           </div>
+        </div>
+      )}
+
+      {/* OCR 全局互斥提示：他处正在 OCR → 屏幕中央短暂提示稍后重试 */}
+      {ocrWarn && (
+        <div style={{
+          position: "fixed", left: "50%", top: "50%", transform: "translate(-50%, -50%)",
+          zIndex: 200, padding: "12px 20px", borderRadius: 10,
+          background: "rgba(28,25,23,0.92)", color: "#fff",
+          fontSize: 14, fontWeight: 500, boxShadow: "0 8px 24px rgba(0,0,0,0.3)",
+          pointerEvents: "none",
+        }}>
+          正在 OCR 中，请稍后重试
         </div>
       )}
     </>
