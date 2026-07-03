@@ -259,10 +259,12 @@ export default function ImagePreview() {
   // wrapper div ref（鼠标坐标用）
   // 视口渲染：canvas 固定窗口大小，只画可见区域。全部坐标手算，不依赖 flex 居中。
 
-  // 图片在 content 空间中的 left/top（手算居中，不用 flex）
+  // 图片在 content 空间中的 left/top（直接读 DOM，与 drawBg 同源同步）
   const dispW = natW * zoom;
   const dispH = natH * zoom;
-  const imgLeft = Math.max(FIT_PADDING / 2, (viewport.w - dispW) / 2);
+  const scForLayout = scrollContainerRef.current;
+  const currentVW = scForLayout?.clientWidth || viewport.w;
+  const imgLeft = Math.max(FIT_PADDING / 2, (currentVW - dispW) / 2);
   const imgTop = TOOLBAR_H;
 
   // —— drawBg：视口渲染——canvas = 窗口大小，裁剪画可见区域 ——
@@ -272,21 +274,18 @@ export default function ImagePreview() {
     const sc = scrollContainerRef.current;
     if (!canvas || !img || !natW || !natH || !sc) return;
     const sl = sc.scrollLeft, st = sc.scrollTop;
-    const vw = viewport.w || sc.clientWidth;
-    const vh = viewport.h || sc.clientHeight;
+    const vw = sc.clientWidth, vh = sc.clientHeight;
+    const liveImgLeft = Math.max(FIT_PADDING / 2, (vw - dispW) / 2);
     const dpr = window.devicePixelRatio || 1;
     const cw = Math.round(vw * dpr);
     const ch = Math.round(vh * dpr);
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
-    // CSS 尺寸同步 = scrollContainer 可视区（不用 100%，避免与 clientWidth 滚动条差异）
-    if (canvas.style.width !== `${vw}px`) canvas.style.width = `${vw}px`;
-    if (canvas.style.height !== `${vh}px`) canvas.style.height = `${vh}px`;
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, vw, vh);
     // 图片左上角在 viewport（canvas 坐标系）中的位置
-    const imgVpX = imgLeft - sl;
+    const imgVpX = liveImgLeft - sl;
     const imgVpY = imgTop - st;
     // 图片可见部分（相对图片左上角，显示坐标）
     const visL = Math.max(0, -imgVpX);
@@ -615,11 +614,10 @@ export default function ImagePreview() {
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
       />
-      {/* 视口渲染 canvas：与 scrollContainer 同坐标系，尺寸由 drawBg 同步 */}
       <canvas
         ref={bgCanvasRef}
         className="absolute inset-0 block pointer-events-none"
-        style={{ zIndex: 1 }}
+        style={{ zIndex: 1, width: "100%", height: "100%" }}
       />
       {/* 滚动容器：wrapper 撑滚动条 + SVG overlay + 鼠标事件 */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>
