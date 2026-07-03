@@ -215,7 +215,7 @@ pub struct StitchConfig {
 impl Default for StitchConfig {
     fn default() -> Self {
         Self {
-            min_scroll_px: 2.0,
+            min_scroll_px: 1.0,
             min_confidence: 0.15,
         }
     }
@@ -352,11 +352,10 @@ impl Stitcher {
         let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
         let dy = -new_rows_raw;
 
-        // dy 方向检查
-        // 注意：dy≈0 的帧不写入 dy_history，避免稀释滚动速度中位数导致 best-guess 失效。
-        // 只有真正追加内容（dy < 0 且通过幅度检查）或 quick_stationary_check 确认静止时才更新 history。
-        if dy >= 0.0 {
-            log::info!("[stitch] skipped frame: dy={:.1} >= 0.0 (ncc={:.4})", dy, ncc.best_score);
+        // dy > 0 = 向上滚动（忽略）。dy≤0 不跳过，交给 min_scroll_px 过滤，
+        // 避免慢速滚动时亚像素位移被 dy>=0.0 检查丢弃导致内容缺失。
+        if dy > 0.0 {
+            log::info!("[stitch] skipped frame: dy={:.1} > 0.0 (ncc={:.4})", dy, ncc.best_score);
             return Ok(false);
         }
 
