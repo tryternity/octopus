@@ -20,3 +20,6 @@ pub const SEGMENT_DURATION_S: f64 = 20.0;
 /// 强制切断时生效（语句被硬切，需重叠保连贯）；静音切分是自然语句边界，不带 overlap。
 /// 200ms ≈ 一个音节，给 ASR 引擎足够声学线索补全段首残字。原为 config 字段，因属实现细节改为常量。
 pub const SEGMENT_OVERLAP_MS: f64 = 200.0;
+
+/// 超长截图（>16383px）WebP 编码全失败时的 JPEG 兜底质量。
+pub const BOTTOM_JPEG_QUALITY: u8 = 50;

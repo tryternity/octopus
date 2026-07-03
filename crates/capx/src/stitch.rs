@@ -215,7 +215,7 @@ pub struct StitchConfig {
 impl Default for StitchConfig {
     fn default() -> Self {
         Self {
-            min_scroll_px: 2.0,
+            min_scroll_px: 1.0,
             min_confidence: 0.15,
         }
     }
@@ -352,11 +352,10 @@ impl Stitcher {
         let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
         let dy = -new_rows_raw;
 
-        // dy 方向检查
-        // 注意：dy≈0 的帧不写入 dy_history，避免稀释滚动速度中位数导致 best-guess 失效。
-        // 只有真正追加内容（dy < 0 且通过幅度检查）或 quick_stationary_check 确认静止时才更新 history。
-        if dy >= 0.0 {
-            log::info!("[stitch] skipped frame: dy={:.1} >= 0.0 (ncc={:.4})", dy, ncc.best_score);
+        // dy > 0 = 向上滚动（忽略）。dy≤0 不跳过，交给 min_scroll_px 过滤，
+        // 避免慢速滚动时亚像素位移被 dy>=0.0 检查丢弃导致内容缺失。
+        if dy > 0.0 {
+            log::info!("[stitch] skipped frame: dy={:.1} > 0.0 (ncc={:.4})", dy, ncc.best_score);
             return Ok(false);
         }
 
@@ -369,9 +368,8 @@ impl Stitcher {
             return Ok(false);
         }
 
-        // 周期性假匹配检测：连续 3 次以上 dy≥100 且几乎相同 → 周期性假匹配。
-        // 正常均匀滚动（触控板恒速）dy 通常 <100，不会被误杀。
-        // 假匹配 dy 值大（如文件列表行高倍数 449/674），且画面没滚动时 NCC 在周期内容中找假匹配。
+        // 周期性假匹配检测：连续 3 次以上 dy 相同 → 用 quick_stationary_check
+        // 区分"均匀滚动"（画面在动，合法）和"周期性假匹配"（画面没动，NCC 在周期内容找假匹配）。
         let dy_rounded = (-dy).round();
         if self.same_dy_count >= 3 {
             if let Some(locked_dy) = self.last_appended_dy {
@@ -383,11 +381,24 @@ impl Stitcher {
             self.same_dy_count = 0;
         }
         if let Some(prev_dy) = self.last_appended_dy {
-            if (dy_rounded - prev_dy).abs() < 2.0 && dy_rounded >= 100.0 {
+            if (dy_rounded - prev_dy).abs() < 2.0 {
                 self.same_dy_count += 1;
                 if self.same_dy_count >= 3 {
-                    log::info!("[stitch] periodic false match locked (dy={:.0})", dy_rounded);
-                    return Ok(false);
+                    // 连续相同 dy：检查画面是否真的在动
+                    let x_start = (w as f64 * X_START_RATIO) as u32;
+                    let x_end = (w as f64 * X_END_RATIO) as u32;
+                    let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
+                        .step_by(SAMPLE_STEP_X)
+                        .collect();
+                    let stationary_sad = self.quick_stationary_check(&curr_gray, &canvas_gray, &sample_cols);
+                    if stationary_sad < STATIONARY_SAD * 5.0 {
+                        // 画面没动 → 周期性假匹配
+                        log::info!("[stitch] periodic false match locked (dy={:.0}, sad={:.1})", dy_rounded, stationary_sad);
+                        return Ok(false);
+                    } else {
+                        // 画面在动 → 合法均匀滚动，继续
+                        log::info!("[stitch] uniform scroll detected (dy={:.0}, sad={:.1}), not locking", dy_rounded, stationary_sad);
+                    }
                 }
             } else {
                 self.same_dy_count = 0;
@@ -532,8 +543,6 @@ impl Stitcher {
             None
         }
     }
-
-    /// 主匹配封装：调用 find_overlap_spatial_ext。
 
     /// 降级 3：1D 灰度投影匹配。
     /// 将每行像素按抽样列取均值降为一维信号，对一维信号做 SAD 搜索。

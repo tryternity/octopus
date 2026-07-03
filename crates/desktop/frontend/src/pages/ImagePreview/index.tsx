@@ -15,15 +15,24 @@ const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
 const ZOOM_STEP = 1.25;
 
+// fit-to-window：图片完整显示在窗口内，最大不超过 1:1
+const FIT_PADDING = 96; // p-12 = 48px per side × 2
+const computeFitZoom = (w: number, h: number): number => {
+  const containerW = window.innerWidth - FIT_PADDING;
+  const containerH = window.innerHeight - FIT_PADDING;
+  return Math.min(1, containerW / w, containerH / h);
+};
+
 /**
  * 剪贴板图片项的预览窗口（轻工具栏形态）。
  *
- * 显示：默认 1:1（自然分辨率）打开；图片超出窗口则滚动容器自动出滚动条（上下+左右），
+ * 显示：默认 fit-to-window 打开（缩略图秒开 → 全图异步替换）；图片超出窗口则滚动容器自动出滚动条（上下+左右），
  * 工具栏放大/缩小按钮调 zoom。标注用「自然像素」坐标（与 zoom 解耦）——绘制时
  * ctx.scale(zoom)，鼠标 /zoom 反算；合成保存/复制在自然尺寸画布 1:1 重绘（与 zoom 无关）。
  */
 export default function ImagePreview() {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const bgCanvasRef = useRef<HTMLCanvasElement>(null);
+  const drawCanvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -45,6 +54,13 @@ export default function ImagePreview() {
   const [ocrCopied, setOcrCopied] = useState(false);
   // OCR 全局互斥：他处正在识别时本入口被拒 → 工具栏显琥珀三角 1.8s 提示稍后重试
   const [ocrWarn, setOcrWarn] = useState(false);
+  // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
+  const loadingFullRef = useRef(false);
+  // 当前 objectURL（图片切换/卸载时 revoke，防内存泄漏）
+  const objectUrlRef = useRef<string | null>(null);
+  // 全图自然尺寸（thumb 期间为 0，full 加载后赋值；EXIF 条用此而非 natW/natH）
+  const [fullNatW, setFullNatW] = useState(0);
+  const [fullNatH, setFullNatH] = useState(0);
 
   // 交互 refs（避免重渲染抖动 + 拖拽用最新值）
   const drawingRef = useRef<Annotation | null>(null);
@@ -53,6 +69,9 @@ export default function ImagePreview() {
   const toolWidthRef = useRef(3);
   const toolFontSizeRef = useRef(20);
   const zoomRef = useRef(1);
+  const scaledBitmapRef = useRef<ImageBitmap | null>(null);
+  const zoomVersionRef = useRef(0);
+  const userZoomedRef = useRef(false);
   // 文字输入框 ref：autoFocus 对动态挂载的 textarea 不可靠，改 setTimeout focus（对齐截图）
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
   // 文字草稿：state 驱动 textarea 渲染，ref 镜像供 commitText 读最新输入
@@ -62,14 +81,23 @@ export default function ImagePreview() {
   const setToolColorSync = (c: string) => { toolColorRef.current = c; setToolColor(c); };
   const setToolWidthSync = (n: number) => { toolWidthRef.current = n; setToolWidth(n); };
   const setToolFontSizeSync = (n: number) => { toolFontSizeRef.current = n; setToolFontSize(n); };
-  const setZoomSync = (z: number) => {
+  const setZoomSync = (z: number, userInitiated = false) => {
     const clamped = Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, z));
     zoomRef.current = clamped;
+    if (userInitiated) userZoomedRef.current = true;
     setZoom(clamped);
   };
-  const zoomIn = () => setZoomSync(zoomRef.current * ZOOM_STEP);
-  const zoomOut = () => setZoomSync(zoomRef.current / ZOOM_STEP);
-  const zoomReset = () => setZoomSync(1);
+  const zoomIn = () => setZoomSync(zoomRef.current * ZOOM_STEP, true);
+  const zoomOut = () => setZoomSync(zoomRef.current / ZOOM_STEP, true);
+  const zoomReset = () => setZoomSync(1, true);
+
+  // —— unmount：revoke objectURL + close bitmap，防内存泄漏 ——
+  useEffect(() => {
+    return () => {
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+      if (scaledBitmapRef.current) scaledBitmapRef.current.close();
+    };
+  }, []);
 
   // —— mount：取 PENDING + 监听并发再开的 load 事件 ——
   useEffect(() => {
@@ -78,51 +106,170 @@ export default function ImagePreview() {
     });
     const unlisten = listen<{ imageId: number }>("image-preview://load", (e) => {
       setImageId(e.payload.imageId);
-      setAnnotations([]);
-      setZoomSync(1);
+      // setAnnotations 和 setZoomSync 已在 imageId useEffect 中处理
     });
     return () => { unlisten.then((f) => f()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // —— imageId 变 → 拉全图（Raw body 二进制 → objectURL）——
+  // —— imageId 变 → 并行拉缩略图（秒开）+ 全图（异步替换） ——
   useEffect(() => {
     if (imageId == null) return;
-    invoke<ArrayBuffer>("get_image_full", { id: imageId })
-      .then((buf) => {
-        const blob = new Blob([buf], { type: "image/webp" });
-        const url = URL.createObjectURL(blob);
+    let cancelled = false;
+    // 清理旧资源
+    const old = scaledBitmapRef.current;
+    scaledBitmapRef.current = null;
+    if (old) old.close();
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
+    zoomVersionRef.current++;
+    userZoomedRef.current = false;
+    drawingRef.current = null;
+    setAnnotations([]);
+    setNatW(0);
+    setNatH(0);
+    setFullNatW(0);
+    setFullNatH(0);
+    loadingFullRef.current = true;
+
+    const thumbPromise = invoke<string>("get_image_thumb", { id: imageId });
+    const fullPromise = invoke<ArrayBuffer>("get_image_full", { id: imageId });
+
+    // 缩略图先到 → 立即显示
+    thumbPromise.then((thumbDataUrl) => {
+      if (cancelled) return;
+      const thumbImg = new Image();
+      thumbImg.crossOrigin = "anonymous";
+      thumbImg.onload = () => {
+        if (cancelled) return;
+        imgRef.current = thumbImg;
+        setDataUrl(thumbDataUrl);
+        const fitZoom = computeFitZoom(thumbImg.naturalWidth, thumbImg.naturalHeight);
+        setNatW(thumbImg.naturalWidth);
+        setNatH(thumbImg.naturalHeight);
+        setZoomSync(fitZoom);
+      };
+      thumbImg.src = thumbDataUrl;
+    }).catch((e) => console.error("thumb failed:", e));
+
+    // 全图后到 → 无缝替换
+    fullPromise.then((buf) => {
+      if (cancelled) return;
+      const blob = new Blob([buf], { type: "image/webp" });
+      const url = URL.createObjectURL(blob);
+      const fullImg = new Image();
+      fullImg.crossOrigin = "anonymous";
+      fullImg.onload = () => {
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        // revoke 上一张的 objectURL（thumb data URL 不需 revoke）
+        if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = url;
+        loadingFullRef.current = false;
+        imgRef.current = fullImg;
         setDataUrl(url);
-        setAnnotations([]);
-        setZoomSync(1);
-      })
-      .catch((e) => console.error(e));
+        setFullNatW(fullImg.naturalWidth);
+        setFullNatH(fullImg.naturalHeight);
+        if (!userZoomedRef.current) {
+          const fitZoom = computeFitZoom(fullImg.naturalWidth, fullImg.naturalHeight);
+          setNatW(fullImg.naturalWidth);
+          setNatH(fullImg.naturalHeight);
+          setZoomSync(fitZoom);
+        } else {
+          setNatW(fullImg.naturalWidth);
+          setNatH(fullImg.naturalHeight);
+        }
+        // 强制重新生成位图（全图替换缩略图后 zoom 可能不变，不触发 zoom effect）
+        const oldBitmap = scaledBitmapRef.current;
+        scaledBitmapRef.current = null;
+        if (oldBitmap) oldBitmap.close();
+        zoomVersionRef.current++;
+        drawBg();  // 显式重绘（覆盖 thumb/full 同尺寸时 zoom effect 不触发的边界）
+      };
+      fullImg.src = url;
+    }).catch((e) => console.error("full failed:", e));
+
+    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageId]);
 
-  // —— draw：1:1 × zoom，图片 + 标注（自然坐标 × zoom）——
-  const draw = useCallback(() => {
-    const canvas = canvasRef.current;
+  // —— drawBg：底层重绘（底图 + 已确认标注），imageId/zoom/annotations 变化时调用 ——
+  const drawBg = useCallback(() => {
+    const canvas = bgCanvasRef.current;
     const img = imgRef.current;
     if (!canvas || !img || !natW || !natH) return;
-    const dispW = natW * zoom;
-    const dispH = natH * zoom;
+    const dw = natW * zoom;
+    const dh = natH * zoom;
     const dpr = window.devicePixelRatio || 1;
-    canvas.width = Math.round(dispW * dpr);
-    canvas.height = Math.round(dispH * dpr);
+    canvas.width = Math.round(dw * dpr);
+    canvas.height = Math.round(dh * dpr);
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, dispW, dispH);
-    ctx.drawImage(img, 0, 0, dispW, dispH);
+    ctx.clearRect(0, 0, dw, dh);
+    // 优先用预缩放位图（Task 2 异步生成），fallback 原图
+    const bitmap = scaledBitmapRef.current;
+    ctx.drawImage(bitmap || img, 0, 0, dw, dh);
     // 标注：自然坐标 → ×zoom 缩放到显示空间
     ctx.save();
     ctx.scale(zoom, zoom);
     for (const ann of annotations) drawAnnotation(ctx, ann);
-    if (drawingRef.current) drawAnnotation(ctx, drawingRef.current);
     ctx.restore();
   }, [natW, natH, zoom, annotations]);
 
-  useEffect(() => { draw(); }, [draw]);
+  // —— drawActive：顶层重绘（仅正在绘制的笔迹/形状预览），mousemove 调用 ——
+  const drawActive = useCallback(() => {
+    const canvas = drawCanvasRef.current;
+    if (!canvas || !natW || !natH) return;
+    const dw = natW * zoom;
+    const dh = natH * zoom;
+    const dpr = window.devicePixelRatio || 1;
+    canvas.width = Math.round(dw * dpr);   // 赋值即清空
+    canvas.height = Math.round(dh * dpr);
+    if (!drawingRef.current) return;
+    const ctx = canvas.getContext("2d")!;
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    ctx.save();
+    ctx.scale(zoom, zoom);
+    drawAnnotation(ctx, drawingRef.current);
+    ctx.restore();
+  }, [natW, natH, zoom]);
+
+  // bgCanvas 同步触发：imageId/zoom/annotations 任一变化 → 完整重绘底层
+  useEffect(() => { drawBg(); }, [drawBg]);
+
+  // zoom 变化 → 异步生成预缩放位图 → drawBg（不阻塞主线程）
+  useEffect(() => {
+    const img = imgRef.current;
+    if (!img || !natW || !natH) return;
+    const version = ++zoomVersionRef.current;
+    const dw = natW * zoom;
+    const dh = natH * zoom;
+    const dpr = window.devicePixelRatio || 1;
+    const pw = Math.round(dw * dpr);
+    const ph = Math.round(dh * dpr);
+    // 极小尺寸（zoom 接近 0）跳过
+    if (pw < 1 || ph < 1) return;
+
+    createImageBitmap(img, {
+      resizeWidth: pw,
+      resizeHeight: ph,
+      resizeQuality: "high",
+    }).then((bitmap) => {
+      // 版本不匹配 → 用户已切换到另一个 zoom，丢弃
+      if (version !== zoomVersionRef.current) {
+        bitmap.close();
+        return;
+      }
+      const old = scaledBitmapRef.current;
+      scaledBitmapRef.current = bitmap;
+      if (old) old.close();
+      drawBg();
+    }).catch(() => {});
+  }, [zoom, natW, natH]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // CSS 坐标（相对 canvas，已含滚动偏移）→ 自然坐标（/zoom）
   const toNatural = (cssX: number, cssY: number) => {
@@ -130,7 +277,7 @@ export default function ImagePreview() {
   };
 
   const canvasCoords = (e: React.MouseEvent) => {
-    const rect = canvasRef.current!.getBoundingClientRect();
+    const rect = drawCanvasRef.current!.getBoundingClientRect();
     return { cssX: e.clientX - rect.left, cssY: e.clientY - rect.top };
   };
 
@@ -178,6 +325,9 @@ export default function ImagePreview() {
     if (textDraftRef.current) {
       commitText();
     }
+
+    // 全图加载中：仅允许选择/平移，禁止标注（thumb 坐标系 ≠ full 坐标系）
+    if (loadingFullRef.current && tool !== "none") return;
 
     if (tool === "none") {
       const idx = hitTestAnnotationPrecise(nx, ny, annotations);
@@ -236,7 +386,7 @@ export default function ImagePreview() {
       } else {
         drawingRef.current = { ...drawingRef.current, x2: nx, y2: ny };
       }
-      draw();
+      drawActive();
     }
   };
 
@@ -250,8 +400,9 @@ export default function ImagePreview() {
         : (Math.abs(ann.x2 - ann.x1) > 3 || Math.abs(ann.y2 - ann.y1) > 3);
       if (ok) {
         setAnnotations((prev) => [...prev, ann]);
+        drawActive();  // drawingRef 已 null → 清空 drawCanvas
       } else {
-        draw();
+        drawActive();
       }
     }
     dragRef.current = null;
@@ -369,21 +520,30 @@ export default function ImagePreview() {
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar">
         <div className="flex min-h-full min-w-full items-center justify-center p-12">
           {/* canvas wrapper：relative 让 textarea 相对 canvas 定位、随滚动移动 */}
-          <div className="relative" style={{ width: dispW || undefined, height: dispH || undefined }}>
+          {/* 棋盘格底移到容器，两个 canvas 都能看到 */}
+          <div className="relative" style={{
+            width: dispW || undefined, height: dispH || undefined,
+            backgroundColor: "#292524",
+            backgroundImage:
+              "linear-gradient(45deg, #1c1917 25%, transparent 25%)," +
+              "linear-gradient(-45deg, #1c1917 25%, transparent 25%)," +
+              "linear-gradient(45deg, transparent 75%, #1c1917 75%)," +
+              "linear-gradient(-45deg, transparent 75%, #1c1917 75%)",
+            backgroundSize: "20px 20px",
+            backgroundPosition: "0 0, 0 10px, 10px -10px, -10px 0px",
+          }}>
+            {/* 底层：底图 + 已确认标注 */}
             <canvas
-              ref={canvasRef}
-              className="block"
+              ref={bgCanvasRef}
+              className="absolute inset-0 block"
+              style={{ width: dispW, height: dispH }}
+            />
+            {/* 顶层：正在绘制的笔迹/形状预览；pointer 事件绑此层 */}
+            <canvas
+              ref={drawCanvasRef}
+              className="absolute inset-0 block"
               style={{
                 width: dispW, height: dispH,
-                // 棋盘格底：透明 PNG 的透明区可见，专业看图工具信号（图片不透明区自然盖住）
-                backgroundColor: "#292524",
-                backgroundImage:
-                  "linear-gradient(45deg, #1c1917 25%, transparent 25%)," +
-                  "linear-gradient(-45deg, #1c1917 25%, transparent 25%)," +
-                  "linear-gradient(45deg, transparent 75%, #1c1917 75%)," +
-                  "linear-gradient(-45deg, transparent 75%, #1c1917 75%)",
-                backgroundSize: "20px 20px",
-                backgroundPosition: "0 0, 0 10px, 10px -10px, -10px 0px",
                 cursor: tool === "none" ? (panning ? "grabbing" : "grab") : "crosshair",
               }}
               onMouseDown={onMouseDown}
@@ -398,8 +558,11 @@ export default function ImagePreview() {
                 crossOrigin="anonymous"
                 style={{ display: "none" }}
                 onLoad={(e) => {
-                  setNatW(e.currentTarget.naturalWidth);
-                  setNatH(e.currentTarget.naturalHeight);
+                  // natW/natH 已在 useEffect 加载流程中设置
+                  // 此处仅兜底：确保 imgRef.current 指向 React 渲染的最新 img
+                  if (!imgRef.current || imgRef.current !== e.currentTarget) {
+                    imgRef.current = e.currentTarget;
+                  }
                 }}
               />
             )}
@@ -444,7 +607,7 @@ export default function ImagePreview() {
           boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
           display: "flex", gap: 10, alignItems: "center", pointerEvents: "none",
         }}>
-          <span>{natW} × {natH}</span>
+          <span>{fullNatW || natW} × {fullNatH || natH}</span>
           {fmt && <>
             <span style={{ opacity: 0.4 }}>·</span>
             <span>{fmt}</span>

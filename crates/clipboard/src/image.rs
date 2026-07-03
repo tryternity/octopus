@@ -2,7 +2,7 @@
 //! 替代旧文件系统方案，不再写 ~/.octopus/clipboard_images/。
 
 use anyhow::{Context, Result};
-use sha2::{Digest, Sha256};
+use sha2::Sha256;
 
 /// RGBA 像素 → PNG bytes + SHA-256 hash。
 /// hash 用于去重（同一张图只存一份 BLOB）。
@@ -34,10 +34,7 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     let w = rgba.width();
     let h = rgba.height();
 
-    // WebP 最大尺寸 16383px（VP8 限制）。超过则直接用最低质量（50%）试一次。
-    // webp crate 的 encode() 超尺寸时 panic（内部 unwrap），所以需要 catch_unwind。
-    // 但不需要逐级——超尺寸时高质量和低质量行为一致（都基于 VP8 尺寸限制），
-    // 只需试一次最低质量。成功就用，失败就放弃。
+    // WebP 最大尺寸 16383px（VP8 限制）。超尺寸 WebP 全失败时降级 JPEG。
     let webp_blob = if w > 16383 || h > 16383 {
         log::warn!("[clipboard] Image exceeds WebP max dimension ({}×{}), trying q85", w, h);
         let encoder = webp::Encoder::from_rgba(&rgba, w, h);
@@ -48,8 +45,13 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(50.0).to_vec())) {
                     Ok(blob) if !blob.is_empty() => blob,
                     _ => {
-                        log::error!("[clipboard] WebP q50 also failed for {}×{}, skipping", w, h);
-                        return Err(anyhow::anyhow!("WebP encoding failed for {}×{}", w, h));
+                        log::warn!("[clipboard] WebP q50 also failed ({}×{}), trying JPEG q{}", w, h, octopus_infra::consts::BOTTOM_JPEG_QUALITY);
+                        let mut jpeg_buf = Vec::new();
+                        let mut jpeg_enc = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, octopus_infra::consts::BOTTOM_JPEG_QUALITY);
+                        jpeg_enc.encode_image(img)
+                            .map_err(|e| anyhow::anyhow!("JPEG q{} failed: {}", octopus_infra::consts::BOTTOM_JPEG_QUALITY, e))?;
+                        log::info!("[clipboard] JPEG q{} fallback: {} bytes ({}×{})", octopus_infra::consts::BOTTOM_JPEG_QUALITY, jpeg_buf.len(), w, h);
+                        jpeg_buf
                     }
                 }
             }
@@ -99,18 +101,16 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
     Ok(EncodedImage { webp_blob, thumb_blob })
 }
 
-/// 已解码的 DynamicImage → WebP 100% 无损 + 缩略图 WebP 20%（避免重复解码）。
-///
-/// rebase 合并时与 main 的 `encode_to_webp_from_image` 重复——统一收敛到本函数
-/// （`encode_to_webp(img)`），watcher / image_migration / screenshot 全走它，
-/// 删除冗余的 `_from_image` 变体。
+/// SHA-256 十六进制哈希。
 pub fn sha256_hex(data: &[u8]) -> String {
+    use sha2::Digest;
     let mut hasher = Sha256::new();
     hasher.update(data);
     let result = hasher.finalize();
     let mut hex = String::with_capacity(64);
     for byte in result {
-        hex.push_str(&format!("{:02x}", byte));
+        use std::fmt::Write;
+        write!(&mut hex, "{:02x}", byte).unwrap();
     }
     hex
 }

@@ -1167,9 +1167,10 @@ pub async fn start_scroll_recording(
             }).await;
 
             let frame_rgba = match capture_result { Ok(Ok(img)) => img, _ => continue };
-            last_frame = Some(frame_rgba.clone());
-
+            // last_frame 用于 finalize，process_frame 只借用——避免双重 clone
+            // 先借用给 process_frame，再 move 给 last_frame
             let _added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
+            last_frame = Some(frame_rgba);
 
             // 截图帧 JPEG + 预览图编码移入 spawn_blocking（CPU 密集，避免阻塞 async 线程）
             let preview_w = 400u32;
@@ -1181,7 +1182,7 @@ pub async fn start_scroll_recording(
             let crop_src_h = src_h.min(max_preview_h * canvas_w_now / preview_w).min(canvas_h_now);
             let crop_y = canvas_h_now - crop_src_h;
             let canvas_buf_slice = stitcher.canvas_buf_slice(crop_y, crop_src_h);
-            let frame_for_jpg = frame_rgba.clone();
+            let frame_for_jpg = last_frame.as_ref().unwrap().clone();
             let scale_for_phys = scale;
 
             let emit_data = tokio::task::spawn_blocking(move || {
