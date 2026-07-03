@@ -73,6 +73,9 @@ enum Command {
     /// 用于 polish_llm / polish_mode / asr_correct / output_simplified / hide_toolbar 等
     /// 运行时可变字段。`asr_engine` 不在此列（引擎实例已创建，需 Toggle 重建）。
     UpdateRuntime,
+    /// 光标定位：前端非编辑态点击 → char offset → set_caret（劈段/段界）。
+    /// 非活跃 stage（无 transcript）时 no-op。
+    SetCaret { offset: usize },
 }
 
 enum Stage {
@@ -395,6 +398,15 @@ impl Coordinator {
                         debug!("UpdateRuntime: polish_llm='{}', polish_mode={:?}",
                                config.polish_llm, config.polish_mode);
                     }
+                    Command::SetCaret { offset } => {
+                        // 非编辑态点击定位光标：调 stage_transcript.set_caret（劈段/段界/clamp）。
+                        // 非活跃 stage（Idle/Polishing/Pasting 等）→ no-op。
+                        if !editing {
+                            if let Some(t) = stage_transcript(&mut stage) {
+                                t.set_caret(offset);
+                            }
+                        }
+                    }
                 }
             }
             debug!("Coordinator thread exited");
@@ -477,6 +489,16 @@ impl Coordinator {
         }
     }
 
+    /// 前端点击光标定位：char offset → 通过命令通道投递（stage 在 spawn 线程，
+    /// 主线程不持有）。命令循环里 handle_set_caret 调 stage_transcript.set_caret。
+    pub fn set_caret(&self, offset: usize) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::SetCaret { offset }).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
+
     /// 通知 coordinator 重读 RuntimeConfig 同步可变字段到 config 快照。
     /// 设置窗口 / 工具栏改完 RuntimeConfig 后调用，让 polish_llm 等字段立即生效。
     pub fn update_runtime(&self) {
@@ -538,6 +560,13 @@ pub fn update_edit_buffer(coordinator: tauri::State<'_, Coordinator>, text: Stri
 #[tauri::command]
 pub fn commit_edit(coordinator: tauri::State<'_, Coordinator>, text: String) {
     coordinator.commit_edit(text);
+}
+
+/// 前端命令：非编辑态点击文本 → 定位光标（后续流式从该处插入）。
+/// offset = 点击处在整篇文本的 code-point（char）偏移。
+#[tauri::command]
+pub fn set_caret(coordinator: tauri::State<'_, Coordinator>, offset: usize) {
+    coordinator.set_caret(offset);
 }
 
 /// 前端命令：取消编辑（恢复原始文本，不写 edited_text 到 DB）。
@@ -958,14 +987,9 @@ fn start_final_polish_or_paste(
 
             let id = transcript.id;
             let raw_text = transcript.db_text();
-            // Task 1 临时桥接：take_polish_input 返回 PolishInput，折成旧 preserved+to_polish（Task 4 改 polish_regions）
+            // 段模型多段润色：Edited preserve，其余润色（与 spawn_polish_thread 共用转换）。
             let input = transcript.take_polish_input();
-            let preserved: Option<String> = input.segments.iter()
-                .find(|s| s.kind == crate::transcript::SegmentKind::Edited)
-                .map(|s| s.text.clone());
-            let to_polish: String = input.segments.iter()
-                .filter(|s| s.kind != crate::transcript::SegmentKind::Edited)
-                .map(|s| s.text.as_str()).collect();
+            let regions = polish_input_to_regions(&input);
 
             *stage = Stage::Polishing {
                 id,
@@ -981,7 +1005,7 @@ fn start_final_polish_or_paste(
             // polishing id 是否匹配，否则丢弃。
             let session_id = id;
             std::thread::spawn(move || {
-                let result = match octopus_llm::polish(preserved.as_deref(), &to_polish, &llm_config) {
+                let result = match octopus_llm::polish_regions(&regions, &llm_config) {
                     Ok(polished) => {
                         if polished.is_empty() {
                             Err("Final polish returned empty".to_string())
@@ -1288,7 +1312,7 @@ fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<Atomi
 
 /// 启动润色线程
 /// `ignore_mode`=true 时跳过 polish_mode 检查（供「立即润色」用）。
-/// `preserved` 非空时告知 LLM 须原样保留的 edited 文本，仅润色 `to_polish`（新增）部分（spec §12）。
+/// `input.segments` 转多段润色协议（Edited 段 preserve 原样保留，其余润色，spec §12 / §2.C）。
 /// `session_id` = 发起润色时的 transcript.id，原样塞进 PolishDone 回传，供 handle_polish_done
 /// 做跨会话护栏（审查 一1：润色线程不持 transcript 引用，回来时当前 transcript 可能已是新会话）。
 fn spawn_polish_thread(
@@ -1298,13 +1322,8 @@ fn spawn_polish_thread(
     ignore_mode: bool,
     session_id: i64,
 ) {
-    // Task 1 临时桥接：把 segments 折成旧 preserved+to_polish（Task 4 改 polish_regions 多段）
-    let preserved: Option<String> = input.segments.iter()
-        .find(|s| s.kind == crate::transcript::SegmentKind::Edited)
-        .map(|s| s.text.clone());
-    let to_polish: String = input.segments.iter()
-        .filter(|s| s.kind != crate::transcript::SegmentKind::Edited)
-        .map(|s| s.text.as_str()).collect();
+    // 段模型多段润色：Edited 段 preserve=true（LLM 原样保留），其余待润色。
+    let regions = polish_input_to_regions(&input);
     let llm_config = if ignore_mode {
         crate::config::llm_config_ignore_mode(&config)
     } else {
@@ -1316,7 +1335,7 @@ fn spawn_polish_thread(
     };
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let result = match octopus_llm::polish(preserved.as_deref(), &to_polish, &llm_config) {
+        let result = match octopus_llm::polish_regions(&regions, &llm_config) {
             Ok(polished) => Ok(polished),
             Err(e) => {
                 log::warn!("Polish thread error: {}", e);
@@ -1325,6 +1344,16 @@ fn spawn_polish_thread(
         };
         let _ = tx.send(Command::PolishDone { result, session_id });
     });
+}
+
+/// 把 transcript 的 PolishInput（segments 快照）转成 octopus_llm 多段润色输入。
+/// Edited 段 preserve=true（人工校对，原样保留）；Raw/Polished 段 preserve=false（待润色）。
+/// 两处润色触发点（spawn_polish_thread + 最终润色内联）共用，避免折叠逻辑重复。
+fn polish_input_to_regions(input: &crate::transcript::PolishInput) -> Vec<octopus_llm::PolishRegion> {
+    input.segments.iter().map(|s| octopus_llm::PolishRegion {
+        preserve: s.kind == crate::transcript::SegmentKind::Edited,
+        text: s.text.clone(),
+    }).collect()
 }
 
 /// 停顿驱动润色：流式 silence≥阈值 / 伪流式段边界 → 对完整 ASR 全量润色（mode=2 only）。

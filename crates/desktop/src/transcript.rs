@@ -211,6 +211,10 @@ impl Transcript {
     }
 
     pub fn polish_pending(&self) -> bool { self.polish_pending }
+    /// 标记润色 pending（快照 segments + caret）。
+    /// 段模型下 take_polish_input 内部已内置 pending 标记 + 快照，本方法当前无调用方。
+    /// 保留：供未来「直接标记 pending（不取输入）」场景复用快照逻辑。
+    #[allow(dead_code)]
     pub fn mark_polish_pending(&mut self) {
         self.polish_snapshot = self.segments.clone();
         self.polish_caret_offset = self.caret_char_offset();
