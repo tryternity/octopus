@@ -606,3 +606,9 @@ Screenshot 的 text 标注调用同一 `annotation.ts` 纯函数，#6 修复自�
 |---|------|------|------|--------|
 | 1 | Screenshot 文本提交遗漏 textWidth | ✅ 真 bug | 4 处文本提交补 `textWidth: 200`（与 textarea 固定宽度一致） | `83620a8` |
 | 2 | composePngBytes 图片未加载时 TypeError | ✅ 真 bug | 首行防御性校验 `imgRef/natW/natH`，提前 throw | `83620a8` |
+
+### 窗口 resize 居中漂移修复
+
+**根因**：视口渲染中 `imgLeft`（render 时从 `viewport.w` state 算）与 drawBg 的 `vw`（从 `sc.clientWidth` DOM 取）来自不同数据源。窗口 resize 后 React state 异步更新、DOM 同步更新 → 短暂不一致 → 图片漂移/消失。
+
+**修复**（commit `5401118`）：render 里 `imgLeft` 直接读 `sc.clientWidth`（与 drawBg 同源同帧），drawBg 内 `liveImgLeft` 也用 `sc.clientWidth`。`viewport.w` state 仅用于触发 ResizeObserver re-render，不参与坐标计算。
