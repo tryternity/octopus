@@ -545,7 +545,7 @@ export default function ImagePreview() {
   const addAnnotation = (ann: Annotation) => {
     redoStackRef.current = [];
     setRedoAvailable(false);
-    addAnnotation(ann);
+    setAnnotations((prev) => [...prev, ann]);
   };
 
   // —— compose：图像 + 标注 合成到自然尺寸 PNG → Uint8Array（Raw body 二进制传输）——
