@@ -605,7 +605,7 @@ export default function ImagePreview() {
       <canvas
         ref={bgCanvasRef}
         className="absolute inset-0 block pointer-events-none"
-        style={{ zIndex: 1 }}
+        style={{ zIndex: 1, width: "100%", height: "100%" }}
       />
       {/* 滚动容器：wrapper 撑滚动条 + SVG overlay + 鼠标事件 */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>
@@ -615,20 +615,12 @@ export default function ImagePreview() {
           width: dispW + FIT_PADDING,
           height: dispH + TOOLBAR_H + 8,
         }}>
-          {/* wrapper：absolute 定位（手算居中，不用 flex），棋盘格底 + SVG + 鼠标 */}
+          {/* wrapper：absolute 定位（手算居中），透明背景（canvas 在下层画底图）+ SVG + 鼠标 */}
           <div ref={wrapperRef}
             style={{
               position: "absolute",
               left: imgLeft, top: imgTop,
               width: dispW || undefined, height: dispH || undefined,
-              backgroundColor: "#27272a",
-              backgroundImage:
-                "linear-gradient(45deg, #1e1e22 25%, transparent 25%)," +
-                "linear-gradient(-45deg, #1e1e22 25%, transparent 25%)," +
-                "linear-gradient(45deg, transparent 75%, #1e1e22 75%)," +
-                "linear-gradient(-45deg, transparent 75%, #1e1e22 75%)",
-              backgroundSize: "14px 14px",
-              backgroundPosition: "0 0, 0 7px, 7px -7px, -7px 0px",
               cursor: tool === "none" ? (panning ? "grabbing" : "grab") : "crosshair",
             }}
             onMouseDown={onMouseDown}
