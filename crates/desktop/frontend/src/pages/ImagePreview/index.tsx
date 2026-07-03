@@ -329,32 +329,33 @@ export default function ImagePreview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [drawBg]);
 
-  // zoom 变化 → 异步生成预缩放位图 → drawBg
+  // zoom 变化 → 异步生成预缩放位图（debounce 150ms，期间 drawBg 用原图拉伸占位）→ drawBg
   useEffect(() => {
     const img = imgRef.current;
     if (!img || !natW || !natH) return;
-    const version = ++zoomVersionRef.current;
     const dpr = window.devicePixelRatio || 1;
     const pw = Math.round(dispW * dpr);
     const ph = Math.round(dispH * dpr);
     if (pw < 1 || ph < 1) return;
-
-    createImageBitmap(img, {
-      resizeWidth: pw,
-      resizeHeight: ph,
-      resizeQuality: "high",
-    }).then((bitmap) => {
-      // 版本不匹配 → 用户已切换到另一个 zoom，丢弃
-      if (version !== zoomVersionRef.current) {
-        bitmap.close();
-        return;
-      }
-      const old = scaledBitmapRef.current;
-      scaledBitmapRef.current = bitmap;
-      if (old) old.close();
-      drawBg();
-    }).catch(() => {});
-    return () => { zoomVersionRef.current++; };  // 卸载/cleanup：使 pending bitmap 版本失效
+    // 防抖：快速缩放时等用户停下来再生成高质量位图
+    const timer = setTimeout(() => {
+      const version = ++zoomVersionRef.current;
+      createImageBitmap(img, {
+        resizeWidth: pw,
+        resizeHeight: ph,
+        resizeQuality: "high",
+      }).then((bitmap) => {
+        if (version !== zoomVersionRef.current) {
+          bitmap.close();
+          return;
+        }
+        const old = scaledBitmapRef.current;
+        scaledBitmapRef.current = bitmap;
+        if (old) old.close();
+        drawBg();
+      }).catch(() => {});
+    }, 150);
+    return () => { clearTimeout(timer); zoomVersionRef.current++; };
   }, [zoom, natW, natH]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // CSS 坐标（相对图片左上角，含滚动偏移）→ 自然坐标（/zoom）
@@ -374,9 +375,14 @@ export default function ImagePreview() {
   const commitText = () => {
     const d = textDraftRef.current;
     if (d && d.val.trim()) {
+      // 记录 textarea 实际宽度（自然像素），供导出时折行参考
+      const textWidth = textInputRef.current
+        ? textInputRef.current.clientWidth / zoomRef.current
+        : undefined;
       setAnnotations((prev) => [...prev, {
         type: "text", x1: d.nx, y1: d.ny, x2: d.nx, y2: d.ny,
         text: d.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current,
+        textWidth,
       }]);
     }
     textDraftRef.current = null;
