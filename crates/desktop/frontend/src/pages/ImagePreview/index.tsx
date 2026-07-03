@@ -271,32 +271,27 @@ export default function ImagePreview() {
   const imgLeft = Math.max(FIT_PADDING / 2, (currentVW - dispW) / 2);
   const imgTop = TOOLBAR_H;
 
-  // —— drawBg：视口渲染——canvas = 窗口大小，裁剪画可见区域 ——
+  // —— drawBg：canvas 在 wrapper 内部（和 SVG 同一 scroll context），buffer = dispW×dispH，只画可见区域 ——
   const drawBg = useCallback(() => {
     const canvas = bgCanvasRef.current;
     const img = imgRef.current;
     const sc = scrollContainerRef.current;
     if (!canvas || !img || !natW || !natH || !sc) return;
-    const sl = sc.scrollLeft, st = sc.scrollTop;
-    const vw = sc.clientWidth, vh = sc.clientHeight;
-    const liveImgLeft = Math.max(FIT_PADDING / 2, (vw - dispW) / 2);
     const dpr = window.devicePixelRatio || 1;
-    const cw = Math.round(vw * dpr);
-    const ch = Math.round(vh * dpr);
+    const cw = Math.round(dispW * dpr);
+    const ch = Math.round(dispH * dpr);
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, vw, vh);
-    // 图片左上角在 viewport（canvas 坐标系）中的位置
-    const imgVpX = liveImgLeft - sl;
-    const imgVpY = imgTop - st;
-    // 图片可见部分（相对图片左上角，显示坐标）
-    const visL = Math.max(0, -imgVpX);
-    const visT = Math.max(0, -imgVpY);
-    const visR = Math.min(dispW, vw - imgVpX);
-    const visB = Math.min(dispH, vh - imgVpY);
+    // 只画可见区域（scrollLeft/Top 相对 scrollContainer，图片在 content 中的偏移 = imgLeft/imgTop）
+    const visL = Math.max(0, sc.scrollLeft - imgLeft);
+    const visT = Math.max(0, sc.scrollTop - imgTop);
+    const visR = Math.min(dispW, sc.scrollLeft + sc.clientWidth - imgLeft);
+    const visB = Math.min(dispH, sc.scrollTop + sc.clientHeight - imgTop);
     if (visR <= visL || visB <= visT) return;
+    // 清可见区 + 画
+    ctx.clearRect(visL, visT, visR - visL, visB - visT);
     const bitmap = scaledBitmapRef.current;
     const srcW = bitmap ? bitmap.width : img.naturalWidth;
     const srcH = bitmap ? bitmap.height : img.naturalHeight;
@@ -304,9 +299,7 @@ export default function ImagePreview() {
     const sy = (visT / dispH) * srcH;
     const sw = ((visR - visL) / dispW) * srcW;
     const sh = ((visB - visT) / dispH) * srcH;
-    const dx = visL + imgVpX;
-    const dy = visT + imgVpY;
-    ctx.drawImage(bitmap || img, sx, sy, sw, sh, dx, dy, visR - visL, visB - visT);
+    ctx.drawImage(bitmap || img, sx, sy, sw, sh, visL, visT, visR - visL, visB - visT);
   }, [natW, natH, zoom, viewport, imgLeft, imgTop, dispW, dispH]);
 
   useEffect(() => { drawBg(); }, [drawBg]);
@@ -322,7 +315,7 @@ export default function ImagePreview() {
     return () => ro.disconnect();
   }, []);
 
-  // scroll RAF 节流 → 直接 drawBg（不走 React state，避免全组件重渲染）
+  // scroll RAF：canvas 在 wrapper 内随滚动原生移动，RAF 只画新暴露的区域
   useEffect(() => {
     const sc = scrollContainerRef.current;
     if (!sc) return;
@@ -452,6 +445,24 @@ export default function ImagePreview() {
       return;
     }
 
+    // 序号：点击放置，自动递增编号
+    if (tool === "number") {
+      const maxNum = annotations.reduce((max, a) => {
+        if (a.type === "number" && a.number && a.number > max) return a.number;
+        return max;
+      }, 0);
+      const ann: Annotation = {
+        type: "number", x1: nx, y1: ny, x2: nx, y2: ny,
+        number: maxNum + 1,
+        color: toolColorRef.current, circleSize: 28,
+      };
+      drawingRef.current = ann;
+      setAnnotations((prev) => [...prev, ann]);
+      drawingRef.current = null;
+      setDraftAnn(null);
+      return;
+    }
+
     // 画笔（自由曲线）：起 points 点序列
     if (tool === "pen") {
       drawingRef.current = {
@@ -521,6 +532,41 @@ export default function ImagePreview() {
     c.width = natW; c.height = natH;
     const ctx = c.getContext("2d")!;
     ctx.drawImage(img, 0, 0, natW, natH);
+    // 先处理 blur（像素马赛克），再画其他标注
+    for (const ann of annotations) {
+      if (ann.type !== "blur") continue;
+      const bx = Math.round(Math.min(ann.x1, ann.x2));
+      const by = Math.round(Math.min(ann.y1, ann.y2));
+      const bw = Math.round(Math.abs(ann.x2 - ann.x1));
+      const bh = Math.round(Math.abs(ann.y2 - ann.y1));
+      if (bw < 2 || bh < 2) continue;
+      // 马赛克：先降采样模糊原图，再叠加色块（颜色 + 不透明度）
+      const block = Math.max(4, Math.floor(Math.min(bw, bh) / 8));
+      const tmp = document.createElement("canvas");
+      tmp.width = Math.max(1, Math.floor(bw / block));
+      tmp.height = Math.max(1, Math.floor(bh / block));
+      const tctx = tmp.getContext("2d")!;
+      tctx.imageSmoothingEnabled = false;
+      tctx.drawImage(c, bx, by, bw, bh, 0, 0, tmp.width, tmp.height);
+      ctx.imageSmoothingEnabled = false;
+      ctx.drawImage(tmp, 0, 0, tmp.width, tmp.height, bx, by, bw, bh);
+      ctx.imageSmoothingEnabled = true;
+      // 叠加色块：选定颜色 + 不透明度（粗细控制遮挡程度）
+      const opacity = ((ann.lineWidth || 5) / 10) * 0.85 + 0.1;
+      const blurColor = ann.color || "#808080";
+      const cols = Math.ceil(bw / block);
+      const rows = Math.ceil(bh / block);
+      for (let r = 0; r < rows; r++) {
+        for (let col = 0; col < cols; col++) {
+          const hash = (col * 73856093 ^ r * 19349663) >>> 0;
+          const variance = ((hash % 100) - 50) / 200;
+          ctx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
+          ctx.fillStyle = blurColor;
+          ctx.fillRect(bx + col * block, by + r * block, block, block);
+        }
+      }
+      ctx.globalAlpha = 1;
+    }
     for (const ann of annotations) drawAnnotation(ctx, ann);
     const blob: Blob = await new Promise((resolve, reject) => c.toBlob((b) => b ? resolve(b) : reject("toBlob failed"), "image/png"));
     return await blob.arrayBuffer();
@@ -618,12 +664,7 @@ export default function ImagePreview() {
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
       />
-      <canvas
-        ref={bgCanvasRef}
-        className="absolute inset-0 block pointer-events-none"
-        style={{ zIndex: 1, width: "100%", height: "100%" }}
-      />
-      {/* 滚动容器：wrapper 撑滚动条 + SVG overlay + 鼠标事件 */}
+      {/* 滚动容器：canvas + wrapper 撑滚动条 + SVG overlay + 鼠标事件，全部在同一 scroll context */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>
         {/* content：撑起滚动区域，至少 = viewport 尺寸（保证居中正确） */}
         <div style={{
@@ -647,6 +688,12 @@ export default function ImagePreview() {
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
           >
+            {/* canvas：底图，CSS 尺寸 = dispW×dispH（随滚动移动，与 SVG 同步） */}
+            <canvas
+              ref={bgCanvasRef}
+              className="absolute inset-0 block pointer-events-none"
+              style={{ width: dispW, height: dispH }}
+            />
             {/* SVG overlay：标注。viewBox 自然坐标，随 wrapper 滚动 */}
             {natW > 0 && (
               <svg

@@ -2,6 +2,7 @@ import { useRef, useState } from "react";
 import {
   MousePointer2, Square, Circle, Minus, ArrowUpRight, Pen, Type, Undo2,
   Download, Copy, ScanText, Pin, PinOff, Check, ZoomIn, ZoomOut, Expand, MoveHorizontal, AlertTriangle,
+  Hash, Grid2x2,
 } from "lucide-react";
 import type { Tool } from "@/lib/annotation";
 
@@ -71,12 +72,13 @@ export default function Toolbar(props: {
   const [popoverLeft, setPopoverLeft] = useState(0);
 
   const isText = props.tool === "text";
+  const isBlur = props.tool === "blur";
   const showProps = props.tool !== "none";
   const sizeValue = isText ? props.toolFontSize : props.toolWidth;
   const setSize = isText ? props.setToolFontSize : props.setToolWidth;
   const min = isText ? 10 : 1;
   const max = isText ? 48 : 10;
-  const label = isText ? "字号" : "粗细";
+  const label = isText ? "字号" : isBlur ? "遮挡" : "粗细";
 
   // 标注工具点击：toggle（再点已激活→回 none→收起），并算浮窗跟随位置
   const onToolClick = (key: Tool, e: React.MouseEvent<HTMLButtonElement>) => {
@@ -103,6 +105,8 @@ export default function Toolbar(props: {
     { key: "arrow", icon: <ArrowUpRight className="h-[18px] w-[18px]" />, title: "箭头" },
     { key: "pen", icon: <Pen className="h-[18px] w-[18px]" />, title: "画笔（自由曲线）" },
     { key: "text", icon: <Type className="h-[18px] w-[18px]" />, title: "文字" },
+    { key: "number", icon: <Hash className="h-[18px] w-[18px]" />, title: "序号" },
+    { key: "blur", icon: <Grid2x2 className="h-[18px] w-[18px]" />, title: "马赛克" },
   ];
 
   return (

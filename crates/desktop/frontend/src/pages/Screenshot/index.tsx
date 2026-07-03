@@ -541,6 +541,39 @@ export default function Screenshot() {
     tmpCanvas.height = bg.naturalHeight;
     const tmpCtx = tmpCanvas.getContext("2d")!;
     tmpCtx.drawImage(bg, 0, 0);
+    // 先处理 blur（像素马赛克），再画其他标注
+    for (const ann of allAnns) {
+      if (ann.type !== "blur") continue;
+      const bx = Math.round(Math.min(ann.x1, ann.x2) * scale);
+      const by = Math.round(Math.min(ann.y1, ann.y2) * scale);
+      const bw = Math.round(Math.abs(ann.x2 - ann.x1) * scale);
+      const bh = Math.round(Math.abs(ann.y2 - ann.y1) * scale);
+      if (bw < 2 || bh < 2) continue;
+      const block = Math.max(4, Math.floor(Math.min(bw, bh) / 8));
+      const tmp = document.createElement("canvas");
+      tmp.width = Math.max(1, Math.floor(bw / block));
+      tmp.height = Math.max(1, Math.floor(bh / block));
+      const tctx = tmp.getContext("2d")!;
+      tctx.imageSmoothingEnabled = false;
+      tctx.drawImage(tmpCanvas, bx, by, bw, bh, 0, 0, tmp.width, tmp.height);
+      tmpCtx.imageSmoothingEnabled = false;
+      tmpCtx.drawImage(tmp, 0, 0, tmp.width, tmp.height, bx, by, bw, bh);
+      tmpCtx.imageSmoothingEnabled = true;
+      const opacity = ((ann.lineWidth || 5) / 10) * 0.85 + 0.1;
+      const blurColor = ann.color || "#808080";
+      const cols = Math.ceil(bw / block);
+      const rows = Math.ceil(bh / block);
+      for (let r = 0; r < rows; r++) {
+        for (let col = 0; col < cols; col++) {
+          const hash = (col * 73856093 ^ r * 19349663) >>> 0;
+          const variance = ((hash % 100) - 50) / 200;
+          tmpCtx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
+          tmpCtx.fillStyle = blurColor;
+          tmpCtx.fillRect(bx + col * block, by + r * block, block, block);
+        }
+      }
+      tmpCtx.globalAlpha = 1;
+    }
     for (const ann of allAnns) {
       drawAnnotationScaled(tmpCtx, ann, scale);
     }
@@ -766,6 +799,9 @@ export default function Screenshot() {
           } />
           <ToolButton active={tool === "number"} onClick={() => { setTool(tool === "number" ? "none" : "number"); setNumberCounter(1); }} label="序号" icon={
             <img src="icons/sequence-note.svg" alt="序号" className="w-[18px] h-[18px]" style={{ filter: tool === "number" ? "brightness(0) invert(1)" : "none" }} />
+          } />
+          <ToolButton active={tool === "blur"} onClick={() => setTool(tool === "blur" ? "none" : "blur")} label="马赛克" icon={
+            <img src="icons/mosaic.svg" alt="马赛克" className="w-[18px] h-[18px]" style={{ filter: tool === "blur" ? "brightness(0) invert(1)" : "none" }} />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
           <ToolButton onClick={() => {

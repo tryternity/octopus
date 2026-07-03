@@ -38,7 +38,7 @@ function AnnotationSvgImpl({ ann }: { ann: Annotation }) {
       const len = Math.sqrt(dx * dx + dy * dy);
       if (len < 5) return null;
       const angle = Math.atan2(dy, dx);
-      const headLen = 12;
+      const headLen = Math.max(12, lw * 3);
       const p2x = ann.x2 - headLen * Math.cos(angle - Math.PI / 6);
       const p2y = ann.y2 - headLen * Math.sin(angle - Math.PI / 6);
       const p3x = ann.x2 - headLen * Math.cos(angle + Math.PI / 6);
@@ -78,6 +78,57 @@ function AnnotationSvgImpl({ ann }: { ann: Annotation }) {
           ))}
         </g>
       );
+    }
+    case "number": {
+      if (!ann.number) return null;
+      const r = (ann.circleSize || 24) / 2;
+      const fs = (ann.circleSize || 24) * 0.6;
+      return (
+        <g>
+          <circle cx={ann.x1} cy={ann.y1} r={r} fill={color} />
+          <text
+            x={ann.x1}
+            y={ann.y1}
+            fontSize={fs}
+            fill="#ffffff"
+            fontWeight="bold"
+            fontFamily="-apple-system, sans-serif"
+            textAnchor="middle"
+            dominantBaseline="central"
+          >
+            {ann.number}
+          </text>
+        </g>
+      );
+    }
+    case "blur": {
+      const x = Math.min(ann.x1, ann.x2);
+      const y = Math.min(ann.y1, ann.y2);
+      const w = Math.abs(ann.x2 - ann.x1);
+      const h = Math.abs(ann.y2 - ann.y1);
+      // 粗细映射为不透明度（1=几乎透明 … 10=几乎不透明）
+      const opacity = ((ann.lineWidth || 5) / 10) * 0.85 + 0.1;
+      const cell = Math.max(8, Math.min(w, h) / 8);  // 马赛克块大小
+      const cols = Math.ceil(w / cell);
+      const rows = Math.ceil(h / cell);
+      const blocks: React.ReactNode[] = [];
+      for (let r = 0; r < rows; r++) {
+        for (let c = 0; c < cols; c++) {
+          // 每块用伪随机色调（基于坐标 hash），模拟马赛克色块
+          const hash = (c * 73856093 ^ r * 19349663) >>> 0;
+          const variance = ((hash % 100) - 50) / 200;  // ±0.25 色调偏移
+          blocks.push(
+            <rect
+              key={`${r}-${c}`}
+              x={x + c * cell} y={y + r * cell}
+              width={cell} height={cell}
+              fill={color}
+              opacity={opacity + variance}
+            />
+          );
+        }
+      }
+      return <g>{blocks}</g>;
     }
     default:
       return null;

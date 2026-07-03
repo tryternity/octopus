@@ -619,3 +619,14 @@ Screenshot 的 text 标注调用同一 `annotation.ts` 纯函数，#6 修复自�
 |---|------|------|------|--------|
 | 1 | 缩略图竞态降级（full 先到 thumb 后到覆盖） | ✅ 真 bug | `fullLoadedRef` 门控，全图已加载后丢弃滞后的缩略图 | `245315d` |
 | 2 | 缺少快速关闭预览窗口的交互 | ⚠️ 合理 | `tool=none` 时点击暗区（content 空白）关闭预览窗 | `245315d` |
+
+### 序号 + 马赛克工具
+
+| 改动 | commit |
+|------|--------|
+| 序号工具（Hash 图标，点击放置自动递增编号） | `2fe0383` |
+| 马赛克工具（Grid2x2 图标，拖拽选区域，色块拼接 + 颜色/遮挡控制） | `2fe0383` → `c1519ef` |
+| ASR insert SQL 残留 img_size 子查询修复（main 合并遗留） | `604d896` |
+| 滚动时 canvas/SVG 错位晃动 → canvas 移入 wrapper 同一 scroll context | `8101e60` |
+| 箭头头部随线宽缩放（headLen=max(12, lw*3)） | `66f3da7` |
+| 截图工具栏加马赛克工具（mosaic.svg 临时图标 + drawAnnotation blur 预览 + composeAllBytes 像素马赛克） | `d71dee0` |
