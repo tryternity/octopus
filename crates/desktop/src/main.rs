@@ -48,9 +48,9 @@ use tauri::{Emitter, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    // panic hook：只记 log.error（不含 backtrace，避免日志爆炸）
+    // panic hook：catch_unwind 已处理降级，panic 仅记 warning（不刷屏）
     std::panic::set_hook(Box::new(|info| {
-        let location = info.location().map(|l| format!("{}:{}:{}", l.file(), l.line(), l.column())).unwrap_or_default();
+        let location = info.location().map(|l| format!("{}:{}", l.file(), l.line())).unwrap_or_default();
         let payload = info.payload();
         let msg = if let Some(s) = payload.downcast_ref::<&str>() {
             (*s).to_string()
@@ -59,7 +59,7 @@ pub fn run() {
         } else {
             "<non-string panic payload>".to_string()
         };
-        log::error!("PANIC at {}: {}", location, msg);
+        log::warn!("Recovered panic at {}: {}", location, msg);
     }));
 
     let config = octopus_infra::config::load_config().expect("Failed to load config");
