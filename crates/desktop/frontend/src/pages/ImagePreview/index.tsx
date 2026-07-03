@@ -508,7 +508,8 @@ export default function ImagePreview() {
 
   // —— compose：图像 + 标注 合成到自然尺寸 PNG → Uint8Array（Raw body 二进制传输）——
   const composePngBytes = async (): Promise<ArrayBuffer> => {
-    const img = imgRef.current!;
+    const img = imgRef.current;
+    if (!img || !natW || !natH) throw new Error("图片尚未加载完成");
     const c = document.createElement("canvas");
     c.width = natW; c.height = natH;
     const ctx = c.getContext("2d")!;

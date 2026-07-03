@@ -244,7 +244,7 @@ export default function Screenshot() {
     if (textDraftRef.current) {
       const draft = textDraftRef.current;
       if (draft.val.trim()) {
-        setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current }]);
+        setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: toolColorRef.current, fontSize: toolFontSizeRef.current, textWidth: 200 }]);
       }
       textDraftRef.current = null;
       setTextDraft(null);
@@ -533,7 +533,7 @@ export default function Screenshot() {
     const allAnns = [...annotations];
     const draft = textDraftRef.current;
     if (draft && draft.val.trim()) {
-      allAnns.push({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: editTextColorRef.current || toolColorRef.current, fontSize: editTextFontSizeRef.current || toolFontSizeRef.current });
+      allAnns.push({ type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: draft.val, color: editTextColorRef.current || toolColorRef.current, fontSize: editTextFontSizeRef.current || toolFontSizeRef.current, textWidth: 200 });
     }
 
     const tmpCanvas = document.createElement("canvas");
@@ -678,10 +678,10 @@ export default function Screenshot() {
               const newText = draft.val;
               if (editOrig) {
                 // 编辑模式：更新原标注
-                setAnnotations(prev => prev.map((a, i) => i === editOrig.idx ? { ...a, text: newText, color: editColor, fontSize: editFontSize } : a));
+                setAnnotations(prev => prev.map((a, i) => i === editOrig.idx ? { ...a, text: newText, color: editColor, fontSize: editFontSize, textWidth: 200 } : a));
               } else {
                 // 新建模式
-                setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: newText, color: editColor, fontSize: editFontSize }]);
+                setAnnotations(prev => [...prev, { type: "text", x1: draft.x, y1: draft.y, x2: draft.x, y2: draft.y, text: newText, color: editColor, fontSize: editFontSize, textWidth: 200 }]);
               }
             } else if (editOrig) {
               // 内容为空：恢复原标注
