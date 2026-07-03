@@ -322,14 +322,25 @@ export default function ImagePreview() {
     return () => ro.disconnect();
   }, []);
 
-  // scroll RAF 节流 → 直接 drawBg（不走 React state，避免全组件重渲染）
+  // scroll RAF：canvas 先用 transform 同步跟随滚动（零延迟），再在 RAF 里画新内容并重置 transform
   useEffect(() => {
     const sc = scrollContainerRef.current;
-    if (!sc) return;
+    const canvas = bgCanvasRef.current;
+    if (!sc || !canvas) return;
     let raf = 0;
+    let pending = false;
     const onScroll = () => {
-      cancelAnimationFrame(raf);
-      raf = requestAnimationFrame(() => { drawBg(); });
+      // 同步：canvas 跟随滚动偏移（与 SVG overlay 视觉同步）
+      canvas.style.transform = `translate(${-sc.scrollLeft}px, ${-sc.scrollTop}px)`;
+      if (!pending) {
+        pending = true;
+        raf = requestAnimationFrame(() => {
+          pending = false;
+          // RAF：画新可见区域，重置 transform（内容已更新到位）
+          canvas.style.transform = '';
+          drawBg();
+        });
+      }
     };
     sc.addEventListener('scroll', onScroll, { passive: true });
     return () => { sc.removeEventListener('scroll', onScroll); cancelAnimationFrame(raf); };
