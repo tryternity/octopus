@@ -540,7 +540,7 @@ function Result() {
           >
             {text}
           </div>
-          {!editing && <CaretBlink container={textRef.current} text={text} pos={caretPos} />}
+          {!editing && <CaretBlink containerRef={textRef} text={text} pos={caretPos} />}
         </div>
       </div>
 
@@ -654,19 +654,23 @@ function measureCaretPx(
 
 // 闪烁光标：绝对定位到 pos 处的像素位置（相对文本容器）。
 // 依赖 text/pos 变化重新量像素；container 经 textRef.current 透传。
+// containerRef 而非 container：editing 切换致 textRef 重挂载（key edit→view）时，render 阶段
+// 求值的 textRef.current 是**即将卸载的旧 div**（ref 在 commit 后才更新），传其 .current 会测到
+// detached 旧 div → getBoundingClientRect 返回 (0,0) → 光标错落首位且不再重测。改传 RefObject，
+// effect（commit 后执行）内读 .current 拿到已挂载的新 view div，量到真实末尾。
 function CaretBlink({
-  container,
+  containerRef,
   text,
   pos,
 }: {
-  container: HTMLElement | null;
+  containerRef: React.RefObject<HTMLDivElement | null>;
   text: string;
   pos: number | null;
 }) {
   const [px, setPx] = useState<{ left: number; top: number; height: number } | null>(null);
   useEffect(() => {
-    setPx(measureCaretPx(container, text, pos));
-  }, [container, text, pos]);
+    setPx(measureCaretPx(containerRef.current, text, pos));
+  }, [containerRef, text, pos]);
   if (!px) return null;
   return (
     <span
