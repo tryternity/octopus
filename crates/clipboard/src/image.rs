@@ -45,12 +45,12 @@ pub fn encode_to_webp(img: &::image::DynamicImage) -> Result<EncodedImage> {
                 match std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| encoder.encode(50.0).to_vec())) {
                     Ok(blob) if !blob.is_empty() => blob,
                     _ => {
-                        log::warn!("[clipboard] WebP q50 also failed ({}×{}), trying JPEG q30", w, h);
+                        log::warn!("[clipboard] WebP q50 also failed ({}×{}), trying JPEG q{}", w, h, octopus_infra::consts::BOTTOM_JPEG_QUALITY);
                         let mut jpeg_buf = Vec::new();
-                        let mut jpeg_enc = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, 30);
+                        let mut jpeg_enc = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg_buf, octopus_infra::consts::BOTTOM_JPEG_QUALITY);
                         jpeg_enc.encode_image(img)
-                            .map_err(|e| anyhow::anyhow!("JPEG q30 failed: {}", e))?;
-                        log::info!("[clipboard] JPEG q30 fallback: {} bytes ({}×{})", jpeg_buf.len(), w, h);
+                            .map_err(|e| anyhow::anyhow!("JPEG q{} failed: {}", octopus_infra::consts::BOTTOM_JPEG_QUALITY, e))?;
+                        log::info!("[clipboard] JPEG q{} fallback: {} bytes ({}×{})", octopus_infra::consts::BOTTOM_JPEG_QUALITY, jpeg_buf.len(), w, h);
                         jpeg_buf
                     }
                 }
