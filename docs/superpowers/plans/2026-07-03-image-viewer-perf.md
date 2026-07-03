@@ -576,3 +576,18 @@ git commit -m "docs: 同步图片查看器性能优化到 architecture.md"
    - canvas CSS `width:100% height:100%`（canvas 在外层 relative 容器内铺满）
 
 **最终效果**：GPU 合成量从 174MB → ~8MB（降 20×），canvas 恒定窗口大小，不管图片多大。详见 [视口渲染 v2 spec](specs/2026-07-03-viewport-rendering-v2-design.md)。
+
+### 代码审查修复（8 项复查）
+
+| # | 问题 | 判定 | 处理 | commit |
+|---|------|------|------|--------|
+| 1 | 无标注复制失效 | ✅ 真 bug | handleCopy 补 `copy_clipboard_item` | `f9c7e9d` |
+| 2 | textarea Esc 关窗 | ✅ 真 bug | `stopPropagation` | `f9c7e9d` |
+| 3 | scroll 触发全组件重渲染 | ✅ 真 bug | 删除 scrollPos state，RAF 直接调 drawBg | `f9c7e9d` |
+| 4 | createImageBitmap 无 debounce | ⚠️ 部分 | 有版本保护，留后续加 debounce | — |
+| 5 | createImageBitmap 卸载泄漏 | ✅ 真 bug | useEffect cleanup `zoomVersionRef++` | `f9c7e9d` |
+| 6 | 文本折行硬编码 200px | ✅ 低优 | `ann.textWidth \|\| Infinity`，默认不折行 | `2f9be52` |
+| 7 | 保存行为不一致 | ⚠️ 设计问题 | 统一走 `save_image_dialog` 弹窗 | `0454382` |
+| 8 | thumb→full 尺寸跳变 | ✅ 成立 | 等比例修正 zoom | `f9c7e9d` |
+
+Screenshot 的 text 标注调用同一 `annotation.ts` 纯函数，#6 修复自动覆盖两端。

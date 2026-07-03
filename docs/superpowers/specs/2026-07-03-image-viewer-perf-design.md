@@ -72,14 +72,14 @@ const drawBg = useCallback(() => {
     ((visR-visL)/dispW)*srcW, ((visB-visT)/dispH)*srcH,
     visL+imgVpX, visT+imgVpY,                   // 目标位置
     visR-visL, visB-visT);
-}, [natW, natH, zoom, viewport, scrollPos]);
+}, [natW, natH, zoom, viewport, imgLeft, imgTop, dispW, dispH]);
 ```
 
 **布局**（彻底放弃 flex，所有定位 absolute + JS 手算）：
 - canvas 在 scrollContainer **外面**（兄弟节点），`absolute inset-0 pointer-events:none zIndex:1`
 - scrollContainer 内有 content div（relative，撑滚动条）+ wrapper（absolute，手算 left/top 居中）
 - wrapper 透明背景（不遮 canvas），含 SVG overlay + 鼠标事件
-- `viewport` state（ResizeObserver）+ `scrollPos` state（RAF scroll）触发 drawBg
+- `viewport` state（ResizeObserver）触发 drawBg；滚动 RAF 直接调 `drawBg()`（不走 React state，避免全组件重渲染）
 
 **实时预览**：正在绘制的标注存为 `draftAnn` state（React），mousemove 时 `setDraftAnn(...)` → React 只渲染一个 SVG 元素的属性 diff。mouseup 后 `draftAnn` 入 `annotations` 或清空。
 
