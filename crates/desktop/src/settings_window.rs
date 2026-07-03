@@ -60,10 +60,10 @@ pub fn get_initial_page() -> Option<String> {
     PENDING_PAGE.lock().unwrap().take()
 }
 
-/// 设置窗口关闭后回调：切回 Accessory（仅托盘）。
+/// 设置窗口关闭后回调：仅当无其他常规窗口存活时才切回 Accessory（仅托盘）。
 #[cfg(target_os = "macos")]
 pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
-    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    crate::activation::restore_accessory_if_no_regular_window(app_handle);
 }
 
 /// macOS: 手动设置 Dock 图标（release 裸二进制无 .app bundle，Tauri 仅在

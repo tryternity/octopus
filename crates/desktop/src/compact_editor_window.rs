@@ -46,9 +46,9 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
     log::info!("[compact-editor] after build");
 }
 
-/// macOS: 精简编辑器窗口关闭时切回 Accessory（仅托盘）。
+/// macOS: 精简编辑器窗口关闭后，仅当无其他常规窗口存活时才切回 Accessory（仅托盘）。
 /// 与 settings_window::on_settings_closed 对称。
 #[cfg(target_os = "macos")]
 pub fn on_compact_editor_closed(app_handle: &tauri::AppHandle) {
-    let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Accessory);
+    crate::activation::restore_accessory_if_no_regular_window(app_handle);
 }

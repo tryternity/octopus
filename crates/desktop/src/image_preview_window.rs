@@ -29,8 +29,8 @@ pub fn create_image_preview_window(app_handle: &tauri::AppHandle) {
         .build();
 }
 
-/// 窗口销毁后恢复 Accessory（Dock 图标隐藏），与 compact_editor 一致。
+/// 窗口销毁后，仅当无其他常规窗口存活时才切回 Accessory（Dock 图标隐藏），与 compact_editor 一致。
 #[cfg(target_os = "macos")]
 pub fn on_image_preview_closed(app_handle: &tauri::AppHandle) {
-    let _ = app_handle.set_activation_policy(ActivationPolicy::Accessory);
+    crate::activation::restore_accessory_if_no_regular_window(app_handle);
 }
