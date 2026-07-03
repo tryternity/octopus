@@ -122,6 +122,8 @@ enum Stage {
     Polishing {
         id: i64,
         raw_text: String,
+        /// 段 JSON（落库 segments 列；最终润色后 paste → Finalize 用）
+        segments: String,
         /// 最终润色失败时的兜底粘贴文本（= 停止时的 display，含编辑；成功时不用）
         fallback_text: String,
     },
@@ -131,6 +133,8 @@ enum Stage {
         id: i64,
         /// 原生全文（入库用，不受编辑影响）
         raw_text: String,
+        /// 段 JSON（落库 segments 列；PasteDone finalize 用）
+        segments: String,
         /// 展示/入库的修正版（初始=润色结果，用户编辑会更新）
         polished_text: String,
         /// "off" | "done" | "failed"
@@ -316,6 +320,7 @@ impl Coordinator {
                         if let Stage::Pasting {
                             id,
                             raw_text,
+                            segments,
                             polished_text,
                             polish_status,
                         } = &stage
@@ -335,6 +340,7 @@ impl Coordinator {
                             let cmd = DbCommand::Finalize {
                                 id: *id,
                                 raw_text: raw_text.clone(),
+                                segments: segments.clone(),
                                 polished_text: polished_for_db.map(|s| s.to_string()),
                                 polish_status: polish_status.clone(),
                                 polish_model: polish_model.map(|s| s.to_string()),
@@ -942,7 +948,8 @@ fn finalize_after_stop(
         info!("Toggle stop: skip final polish (polished covers all, no increase)");
         let display = transcript.display_text();
         let raw = transcript.db_text();
-        do_paste(stage, &display, transcript.id, &raw, "done", config, app_handle, tx);
+        let segs = transcript.segments_json();
+        do_paste(stage, &display, transcript.id, &raw, &segs, "done", config, app_handle, tx);
     } else {
         // 走原 final 路径（按 polish_mode 决定是否润色）
         start_final_polish_or_paste(stage, &combined, transcript, config, app_handle, tx);
@@ -974,6 +981,7 @@ fn start_final_polish_or_paste(
                 text,
                 transcript.id,
                 &transcript.db_text(),
+                &transcript.segments_json(),
                 "off",
                 config,
                 app_handle,
@@ -987,6 +995,7 @@ fn start_final_polish_or_paste(
 
             let id = transcript.id;
             let raw_text = transcript.db_text();
+            let segments = transcript.segments_json();
             // 段模型多段润色：Edited preserve，其余润色（与 spawn_polish_thread 共用转换）。
             let input = transcript.take_polish_input();
             let regions = polish_input_to_regions(&input);
@@ -994,6 +1003,7 @@ fn start_final_polish_or_paste(
             *stage = Stage::Polishing {
                 id,
                 raw_text: raw_text.clone(),
+                segments: segments.clone(),
                 // Part A 后 text = finish_text（段模型含 edited/raw 全部）或 raw-with-」，失败时 paste 它
                 fallback_text: text.to_string(),
             };
@@ -1027,6 +1037,7 @@ fn do_paste(
     text_to_paste: &str,
     id: i64,
     raw_text: &str,
+    segments: &str,
     polish_status: &str,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
@@ -1037,6 +1048,7 @@ fn do_paste(
     *stage = Stage::Pasting {
         id,
         raw_text: raw_text.to_string(),
+        segments: segments.to_string(),
         polished_text: if polish_status == "done" {
             text_to_paste.to_string()
         } else {
@@ -1208,10 +1220,11 @@ fn handle_final_polish_done(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
-    let (id, raw_text, fallback_text) = match stage {
+    let (id, raw_text, segments, fallback_text) = match stage {
         Stage::Polishing {
             id,
             raw_text,
+            segments,
             fallback_text,
         } => {
             if *id != session_id {
@@ -1221,7 +1234,7 @@ fn handle_final_polish_done(
                 );
                 return;
             }
-            (*id, raw_text.clone(), fallback_text.clone())
+            (*id, raw_text.clone(), segments.clone(), fallback_text.clone())
         }
         _ => {
             debug!("FinalPolishDone ignored in stage {:?}", stage_name(stage));
@@ -1241,6 +1254,7 @@ fn handle_final_polish_done(
                 &polished,
                 id,
                 &raw_text,
+                &segments,
                 "done",
                 config,
                 app_handle,
@@ -1254,6 +1268,7 @@ fn handle_final_polish_done(
                 &fallback_text,
                 id,
                 &raw_text,
+                &segments,
                 "failed",
                 config,
                 app_handle,
@@ -1465,6 +1480,7 @@ fn handle_cancel(
 struct DiscardDbInfo {
     id: i64,
     raw_text: String,
+    segments: String,
     polished_text: Option<String>,
     polish_status: String,
     polish_model: Option<String>,
@@ -1507,6 +1523,7 @@ fn handle_discard(
             Some(DiscardDbInfo {
                 id: transcript.id,
                 raw_text: transcript.db_text(),
+                segments: transcript.segments_json(),
                 polished_text: p,
                 polish_status: s,
                 polish_model: m,
@@ -1518,16 +1535,18 @@ fn handle_discard(
             Some(DiscardDbInfo {
                 id: transcript.id,
                 raw_text: transcript.db_text(),
+                segments: transcript.segments_json(),
                 polished_text: p,
                 polish_status: s,
                 polish_model: m,
             })
         }
         Stage::Polishing { id, raw_text, .. } => {
-            // 最终润色中（非立即润色路径）：polished 尚未产出
+            // 最终润色中（非立即润色路径）：polished 尚未产出；无 transcript 引用，segments 空
             Some(DiscardDbInfo {
                 id: *id,
                 raw_text: raw_text.clone(),
+                segments: "[]".to_string(),
                 polished_text: None,
                 polish_status: "off".to_string(),
                 polish_model: None,
@@ -1538,6 +1557,7 @@ fn handle_discard(
             Some(DiscardDbInfo {
                 id: transcript.id,
                 raw_text: transcript.db_text(),
+                segments: transcript.segments_json(),
                 polished_text: p,
                 polish_status: s,
                 polish_model: m,
@@ -1596,6 +1616,7 @@ fn handle_discard(
             let cmd = DbCommand::Finalize {
                 id: info.id,
                 raw_text: info.raw_text,
+                segments: info.segments,
                 polished_text: info.polished_text,
                 polish_status: info.polish_status,
                 polish_model: info.polish_model,
@@ -1657,9 +1678,10 @@ fn handle_polish_done(
                 } else {
                     transcript.polish_apply(&polished);
                     let cmd = if transcript.has_edit() {
-                        DbCommand::UpdateEdited {
+                        DbCommand::UpdateEditedSegments {
                             id: transcript.id,
-                            edited_text: transcript.finish_text(),
+                            text: transcript.finish_text(),
+                            segments: transcript.segments_json(),
                         }
                     } else {
                         DbCommand::UpdatePolished {
@@ -1720,11 +1742,12 @@ fn handle_polish_done(
             } else {
                 // 段模型回填（polish_apply 内部按 edited 串匹配定位 + 间隙 Polished）
                 transcript.polish_apply(&polished);
-                // 含 Edited 段→UpdateEdited（保持 edited_text 与 display 一致）；否则 UpdatePolished（现状）
+                // 含 Edited 段→UpdateEditedSegments（保持 edited/text/segments 一致）；否则 UpdatePolished（现状）
                 let cmd = if transcript.has_edit() {
-                    DbCommand::UpdateEdited {
+                    DbCommand::UpdateEditedSegments {
                         id: transcript.id,
-                        edited_text: transcript.finish_text(),
+                        text: transcript.finish_text(),
+                        segments: transcript.segments_json(),
                     }
                 } else {
                     // 中间润色入库 polished（polish_model 传 config.polish_llm，与 PasteDone 一致，便于统计）
@@ -1840,11 +1863,13 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
     transcript.commit_edit(text);
     if transcript.db_inserted() {
         let id = transcript.id;
-        if let Err(e) = get_db_sender().send(DbCommand::UpdateEdited {
+        let segments = transcript.segments_json();
+        if let Err(e) = get_db_sender().send(DbCommand::UpdateEditedSegments {
             id,
-            edited_text: text.to_string(),
+            text: text.to_string(),
+            segments,
         }) {
-            warn!("Queue DB UpdateEdited failed: {}", e);
+            warn!("Queue DB UpdateEditedSegments failed: {}", e);
         }
     }
     crate::result_window::update_result(app_handle, &transcript.display_text(), false);
@@ -1882,12 +1907,14 @@ enum DbCommand {
     Insert {
         id: i64,
         text: String,
+        segments: String,
         engine: String,
         engine_mode: Option<String>,
     },
-    UpdateRaw {
+    UpdateTextSegments {
         id: i64,
         text: String,
+        segments: String,
     },
     UpdatePolished {
         id: i64,
@@ -1898,14 +1925,16 @@ enum DbCommand {
     Finalize {
         id: i64,
         raw_text: String,
+        segments: String,
         polished_text: Option<String>,
         polish_status: String,
         polish_model: Option<String>,
         duration_ms: Option<i64>,
     },
-    UpdateEdited {
+    UpdateEditedSegments {
         id: i64,
-        edited_text: String,
+        text: String,
+        segments: String,
     },
     /// 取消录音时删除未完成的 DB 记录（审查 Issue 6）
     Delete {
@@ -1926,19 +1955,22 @@ static DB_HANDLE: std::sync::OnceLock<std::sync::Mutex<Option<std::thread::JoinH
 /// 处理单条 DB 命令（主循环与关机排空共用）。
 fn process_db_command(cmd: DbCommand) {
     match cmd {
-        DbCommand::Insert { id, text, engine, engine_mode } => {
+        DbCommand::Insert { id, text, segments, engine, engine_mode } => {
             if let Err(e) = octopus_asr_local::db::insert_transcription_at_id(
                 id,
                 &text,
+                &segments,
                 &engine,
                 engine_mode.as_deref(),
             ) {
                 warn!("Background DB insert failed: {}", e);
             }
         }
-        DbCommand::UpdateRaw { id, text } => {
-            if let Err(e) = octopus_asr_local::db::update_raw_text(id, &text) {
-                warn!("Background DB update_raw_text failed: {}", e);
+        DbCommand::UpdateTextSegments { id, text, segments } => {
+            if let Err(e) =
+                octopus_asr_local::db::update_text_segments(id, &text, &segments)
+            {
+                warn!("Background DB update_text_segments failed: {}", e);
             }
         }
         DbCommand::UpdatePolished { id, text, status, model } => {
@@ -1951,10 +1983,19 @@ fn process_db_command(cmd: DbCommand) {
                 warn!("Background DB update_polished failed: {}", e);
             }
         }
-        DbCommand::Finalize { id, raw_text, polished_text, polish_status, polish_model, duration_ms } => {
+        DbCommand::Finalize {
+            id,
+            raw_text,
+            segments,
+            polished_text,
+            polish_status,
+            polish_model,
+            duration_ms,
+        } => {
             if let Err(e) = octopus_asr_local::db::finalize_transcription(
                 id,
                 &raw_text,
+                &segments,
                 polished_text.as_deref(),
                 &polish_status,
                 polish_model.as_deref(),
@@ -1963,9 +2004,11 @@ fn process_db_command(cmd: DbCommand) {
                 warn!("Background DB finalize failed: {}", e);
             }
         }
-        DbCommand::UpdateEdited { id, edited_text } => {
-            if let Err(e) = octopus_asr_local::db::update_edited_text(id, &edited_text) {
-                warn!("Background DB update_edited_text failed: {}", e);
+        DbCommand::UpdateEditedSegments { id, text, segments } => {
+            if let Err(e) =
+                octopus_asr_local::db::update_edited_segments(id, &text, &segments)
+            {
+                warn!("Background DB update_edited_segments failed: {}", e);
             }
         }
         DbCommand::Delete { id } => {
@@ -2117,17 +2160,21 @@ fn update_transcription_raw(
         let cmd = DbCommand::Insert {
             id: transcript.id,
             text: transcript.db_text(),
+            segments: transcript.segments_json(),
             engine: engine.to_string(),
             engine_mode: Some(engine_mode.to_string()),
         };
         sender.send(cmd).map_err(|e| format!("Queue DB insert failed: {}", e))?;
         transcript.mark_db_inserted();
     } else {
-        let cmd = DbCommand::UpdateRaw {
+        let cmd = DbCommand::UpdateTextSegments {
             id: transcript.id,
             text: transcript.db_text(),
+            segments: transcript.segments_json(),
         };
-        sender.send(cmd).map_err(|e| format!("Queue DB update_raw failed: {}", e))?;
+        sender
+            .send(cmd)
+            .map_err(|e| format!("Queue DB update_text_segments failed: {}", e))?;
     }
     Ok(())
 }

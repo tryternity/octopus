@@ -9,13 +9,15 @@ CREATE TABLE IF NOT EXISTS transcriptions (
     created_at    TEXT    NOT NULL,
     engine        TEXT    NOT NULL,
     engine_mode   TEXT,
-    raw_text      TEXT    NOT NULL,
-    polished_text TEXT,
-    edited_text   TEXT,                     -- 用户编辑后的最终文本（未编辑为 NULL）
+    raw_text      TEXT    NOT NULL,          -- 兼容旧（= finish_text 扁平；段模型下仍写保持向后兼容）
+    polished_text TEXT,                       -- 兼容旧；段模型下不再单独驱动展示
+    edited_text   TEXT,                       -- 兼容旧（未编辑为 NULL）
     polish_status TEXT    NOT NULL DEFAULT 'off',
     polish_model  TEXT,
     duration_ms   INTEGER,
-    char_count    INTEGER
+    char_count    INTEGER,
+    segments      TEXT,                       -- 段 JSON [{kind:raw|polished|edited, text}]（段模型真相源）
+    text          TEXT                        -- = finish_text 扁平（search/clipboard/history 直读）
 );
 
 CREATE INDEX IF NOT EXISTS idx_trans_created ON transcriptions(created_at DESC);
