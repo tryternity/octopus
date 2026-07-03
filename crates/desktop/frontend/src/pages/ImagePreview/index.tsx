@@ -6,10 +6,10 @@ import {
   type Annotation,
   type Tool,
   drawAnnotation,
-  annBounds,
   hitTestAnnotationPrecise,
 } from "@/lib/annotation";
 import Toolbar from "./Toolbar";
+import { AnnotationSvg } from "./AnnotationSvg";
 
 const MIN_ZOOM = 0.1;
 const MAX_ZOOM = 8;
@@ -38,7 +38,6 @@ const computeFitToWidthZoom = (w: number): number => {
  */
 export default function ImagePreview() {
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
-  const drawCanvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
 
@@ -56,6 +55,8 @@ export default function ImagePreview() {
   const [toolWidth, setToolWidth] = useState(3);
   const [toolFontSize, setToolFontSize] = useState(20);
   const [annotations, setAnnotations] = useState<Annotation[]>([]);
+  // 正在绘制的标注预览（SVG overlay 渲染，不触发 canvas 重绘）
+  const [draftAnn, setDraftAnn] = useState<Annotation | null>(null);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [ocrCopied, setOcrCopied] = useState(false);
   // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
@@ -140,7 +141,6 @@ export default function ImagePreview() {
     return () => {
       if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
       if (scaledBitmapRef.current) scaledBitmapRef.current.close();
-      if (rafRef.current) cancelAnimationFrame(rafRef.current);
     };
   }, []);
 
@@ -243,7 +243,7 @@ export default function ImagePreview() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageId]);
 
-  // —— drawBg：底层重绘（底图 + 已确认标注），imageId/zoom/annotations 变化时调用 ——
+  // —— drawBg：底层只画底图（标注由 SVG overlay 渲染，不触发 canvas 重绘）——
   const drawBg = useCallback(() => {
     const canvas = bgCanvasRef.current;
     const img = imgRef.current;
@@ -256,82 +256,11 @@ export default function ImagePreview() {
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, dw, dh);
-    // 优先用预缩放位图（Task 2 异步生成），fallback 原图
     const bitmap = scaledBitmapRef.current;
     ctx.drawImage(bitmap || img, 0, 0, dw, dh);
-    // 标注：自然坐标 → ×zoom 缩放到显示空间
-    ctx.save();
-    ctx.scale(zoom, zoom);
-    for (const ann of annotations) drawAnnotation(ctx, ann);
-    ctx.restore();
-  }, [natW, natH, zoom, annotations]);
-
-  // —— drawActive：顶层重绘（仅正在绘制的笔迹/形状预览），mousemove 调用 ——
-  // RAF 节流：多次 mousemove 合并到一帧，避免高频重绘
-  const rafRef = useRef<number | null>(null);
-  const drawActiveScheduledRef = useRef(false);
-
-  // 同步清空 drawCanvas（mouseUp 提交后用，不走 RAF）
-  const clearDrawCanvas = useCallback(() => {
-    const canvas = drawCanvasRef.current;
-    if (!canvas) return;
-    const ctx = canvas.getContext("2d")!;
-    ctx.setTransform(1, 0, 0, 1, 0, 0);
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }, []);
-
-  const drawActive = useCallback(() => {
-    if (drawActiveScheduledRef.current) return;
-    drawActiveScheduledRef.current = true;
-    rafRef.current = requestAnimationFrame(() => {
-      drawActiveScheduledRef.current = false;
-      const canvas = drawCanvasRef.current;
-      if (!canvas || !natW || !natH) return;
-      const dpr = window.devicePixelRatio || 1;
-      const dw = natW * zoom;
-      const dh = natH * zoom;
-      const pw = Math.round(dw * dpr);
-      const ph = Math.round(dh * dpr);
-      if (canvas.width !== pw) canvas.width = pw;
-      if (canvas.height !== ph) canvas.height = ph;
-      const ctx = canvas.getContext("2d")!;
-      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-      const drawing = drawingRef.current;
-      if (!drawing) return;
-
-      if (drawing.type === "pen" && drawing.points && drawing.points.length >= 2) {
-        // 增量：只画最后一段（O(1)，与总点数和 canvas 尺寸无关）
-        const pts = drawing.points;
-        const [px, py] = pts[pts.length - 2];
-        const [cx, cy] = pts[pts.length - 1];
-        ctx.save();
-        ctx.scale(zoom, zoom);
-        ctx.strokeStyle = drawing.color || "#ef4444";
-        ctx.lineWidth = drawing.lineWidth || 3;
-        ctx.lineCap = "round";
-        ctx.lineJoin = "round";
-        ctx.beginPath();
-        ctx.moveTo(px, py);
-        ctx.lineTo(cx, cy);
-        ctx.stroke();
-        ctx.restore();
-      } else {
-        // 形状：只 clear + 重绘边界框区域（不碰整个超大 canvas）
-        const b = annBounds(drawing);
-        const pad = (drawing.lineWidth || 3) + 4;
-        // 边界框从自然坐标转到显示坐标
-        ctx.clearRect(b.x * zoom - pad, b.y * zoom - pad,
-                      b.w * zoom + pad * 2, b.h * zoom + pad * 2);
-        ctx.save();
-        ctx.scale(zoom, zoom);
-        drawAnnotation(ctx, drawing);
-        ctx.restore();
-      }
-    });
   }, [natW, natH, zoom]);
 
-  // bgCanvas 同步触发：imageId/zoom/annotations 任一变化 → 完整重绘底层
+  // bgCanvas 只在 imageId/zoom 变化时重绘（annotations 变化由 SVG 处理，不触发 canvas）
   useEffect(() => { drawBg(); }, [drawBg]);
 
   // zoom 变化 → 异步生成预缩放位图 → drawBg（不阻塞主线程）
@@ -370,7 +299,7 @@ export default function ImagePreview() {
   };
 
   const canvasCoords = (e: React.MouseEvent) => {
-    const rect = drawCanvasRef.current!.getBoundingClientRect();
+    const rect = bgCanvasRef.current!.getBoundingClientRect();
     return { cssX: e.clientX - rect.left, cssY: e.clientY - rect.top };
   };
 
@@ -476,21 +405,16 @@ export default function ImagePreview() {
       // 画笔：push 新点到 points（自然坐标）
       if (drawingRef.current.type === "pen" && drawingRef.current.points) {
         drawingRef.current.points.push([nx, ny]);
+        setDraftAnn({ ...drawingRef.current, points: [...drawingRef.current.points] });
       } else {
         drawingRef.current = { ...drawingRef.current, x2: nx, y2: ny };
+        setDraftAnn({ ...drawingRef.current });
       }
-      drawActive();
       return;
     }
   };
 
   const onMouseUp = () => {
-    // flush 待处理的 RAF（确保最后一帧已画）
-    if (rafRef.current) {
-      cancelAnimationFrame(rafRef.current);
-      rafRef.current = null;
-      drawActiveScheduledRef.current = false;
-    }
     if (drawingRef.current) {
       const ann = drawingRef.current;
       drawingRef.current = null;
@@ -500,10 +424,8 @@ export default function ImagePreview() {
         : (Math.abs(ann.x2 - ann.x1) > 3 || Math.abs(ann.y2 - ann.y1) > 3);
       if (ok) {
         setAnnotations((prev) => [...prev, ann]);
-        clearDrawCanvas();  // 同步清空（不走 RAF）
-      } else {
-        clearDrawCanvas();
       }
+      setDraftAnn(null);
     }
     dragRef.current = null;
   };
@@ -623,15 +545,9 @@ export default function ImagePreview() {
             backgroundSize: "14px 14px",
             backgroundPosition: "0 0, 0 7px, 7px -7px, -7px 0px",
           }}>
-            {/* 底层：底图 + 已确认标注 */}
+            {/* 底层 canvas：只画底图（标注由 SVG overlay 渲染）+ 接收鼠标事件 */}
             <canvas
               ref={bgCanvasRef}
-              className="absolute inset-0 block"
-              style={{ width: dispW, height: dispH }}
-            />
-            {/* 顶层：正在绘制的笔迹/形状预览；pointer 事件绑此层 */}
-            <canvas
-              ref={drawCanvasRef}
               className="absolute inset-0 block"
               style={{
                 width: dispW, height: dispH,
@@ -641,6 +557,20 @@ export default function ImagePreview() {
               onMouseMove={onMouseMove}
               onMouseUp={onMouseUp}
             />
+            {/* SVG overlay：标注（已确认 + 正在绘制）。viewBox 自然坐标，pointer-events:none */}
+            {natW > 0 && (
+              <svg
+                className="absolute inset-0 block"
+                viewBox={`0 0 ${natW} ${natH}`}
+                preserveAspectRatio="none"
+                style={{ width: dispW, height: dispH, pointerEvents: "none" }}
+              >
+                {annotations.map((ann, i) => (
+                  <AnnotationSvg key={i} ann={ann} />
+                ))}
+                {draftAnn && <AnnotationSvg ann={draftAnn} />}
+              </svg>
+            )}
             {dataUrl && (
               <img
                 ref={imgRef}
