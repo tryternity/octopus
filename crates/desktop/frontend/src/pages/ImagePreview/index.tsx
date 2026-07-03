@@ -271,32 +271,27 @@ export default function ImagePreview() {
   const imgLeft = Math.max(FIT_PADDING / 2, (currentVW - dispW) / 2);
   const imgTop = TOOLBAR_H;
 
-  // —— drawBg：视口渲染——canvas = 窗口大小，裁剪画可见区域 ——
+  // —— drawBg：canvas 在 wrapper 内部（和 SVG 同一 scroll context），buffer = dispW×dispH，只画可见区域 ——
   const drawBg = useCallback(() => {
     const canvas = bgCanvasRef.current;
     const img = imgRef.current;
     const sc = scrollContainerRef.current;
     if (!canvas || !img || !natW || !natH || !sc) return;
-    const sl = sc.scrollLeft, st = sc.scrollTop;
-    const vw = sc.clientWidth, vh = sc.clientHeight;
-    const liveImgLeft = Math.max(FIT_PADDING / 2, (vw - dispW) / 2);
     const dpr = window.devicePixelRatio || 1;
-    const cw = Math.round(vw * dpr);
-    const ch = Math.round(vh * dpr);
+    const cw = Math.round(dispW * dpr);
+    const ch = Math.round(dispH * dpr);
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    ctx.clearRect(0, 0, vw, vh);
-    // 图片左上角在 viewport（canvas 坐标系）中的位置
-    const imgVpX = liveImgLeft - sl;
-    const imgVpY = imgTop - st;
-    // 图片可见部分（相对图片左上角，显示坐标）
-    const visL = Math.max(0, -imgVpX);
-    const visT = Math.max(0, -imgVpY);
-    const visR = Math.min(dispW, vw - imgVpX);
-    const visB = Math.min(dispH, vh - imgVpY);
+    // 只画可见区域（scrollLeft/Top 相对 scrollContainer，图片在 content 中的偏移 = imgLeft/imgTop）
+    const visL = Math.max(0, sc.scrollLeft - imgLeft);
+    const visT = Math.max(0, sc.scrollTop - imgTop);
+    const visR = Math.min(dispW, sc.scrollLeft + sc.clientWidth - imgLeft);
+    const visB = Math.min(dispH, sc.scrollTop + sc.clientHeight - imgTop);
     if (visR <= visL || visB <= visT) return;
+    // 清可见区 + 画
+    ctx.clearRect(visL, visT, visR - visL, visB - visT);
     const bitmap = scaledBitmapRef.current;
     const srcW = bitmap ? bitmap.width : img.naturalWidth;
     const srcH = bitmap ? bitmap.height : img.naturalHeight;
@@ -304,9 +299,7 @@ export default function ImagePreview() {
     const sy = (visT / dispH) * srcH;
     const sw = ((visR - visL) / dispW) * srcW;
     const sh = ((visB - visT) / dispH) * srcH;
-    const dx = visL + imgVpX;
-    const dy = visT + imgVpY;
-    ctx.drawImage(bitmap || img, sx, sy, sw, sh, dx, dy, visR - visL, visB - visT);
+    ctx.drawImage(bitmap || img, sx, sy, sw, sh, visL, visT, visR - visL, visB - visT);
   }, [natW, natH, zoom, viewport, imgLeft, imgTop, dispW, dispH]);
 
   useEffect(() => { drawBg(); }, [drawBg]);
@@ -322,25 +315,14 @@ export default function ImagePreview() {
     return () => ro.disconnect();
   }, []);
 
-  // scroll RAF：canvas 先用 transform 同步跟随滚动（零延迟），再在 RAF 里画新内容并重置 transform
+  // scroll RAF：canvas 在 wrapper 内随滚动原生移动，RAF 只画新暴露的区域
   useEffect(() => {
     const sc = scrollContainerRef.current;
-    const canvas = bgCanvasRef.current;
-    if (!sc || !canvas) return;
+    if (!sc) return;
     let raf = 0;
-    let pending = false;
     const onScroll = () => {
-      // 同步：canvas 跟随滚动偏移（与 SVG overlay 视觉同步）
-      canvas.style.transform = `translate(${-sc.scrollLeft}px, ${-sc.scrollTop}px)`;
-      if (!pending) {
-        pending = true;
-        raf = requestAnimationFrame(() => {
-          pending = false;
-          // RAF：画新可见区域，重置 transform（内容已更新到位）
-          canvas.style.transform = '';
-          drawBg();
-        });
-      }
+      cancelAnimationFrame(raf);
+      raf = requestAnimationFrame(() => { drawBg(); });
     };
     sc.addEventListener('scroll', onScroll, { passive: true });
     return () => { sc.removeEventListener('scroll', onScroll); cancelAnimationFrame(raf); };
@@ -682,12 +664,7 @@ export default function ImagePreview() {
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
       />
-      <canvas
-        ref={bgCanvasRef}
-        className="absolute inset-0 block pointer-events-none"
-        style={{ zIndex: 1, width: "100%", height: "100%" }}
-      />
-      {/* 滚动容器：wrapper 撑滚动条 + SVG overlay + 鼠标事件 */}
+      {/* 滚动容器：canvas + wrapper 撑滚动条 + SVG overlay + 鼠标事件，全部在同一 scroll context */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>
         {/* content：撑起滚动区域，至少 = viewport 尺寸（保证居中正确） */}
         <div style={{
@@ -711,6 +688,12 @@ export default function ImagePreview() {
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
           >
+            {/* canvas：底图，CSS 尺寸 = dispW×dispH（随滚动移动，与 SVG 同步） */}
+            <canvas
+              ref={bgCanvasRef}
+              className="absolute inset-0 block pointer-events-none"
+              style={{ width: dispW, height: dispH }}
+            />
             {/* SVG overlay：标注。viewBox 自然坐标，随 wrapper 滚动 */}
             {natW > 0 && (
               <svg
