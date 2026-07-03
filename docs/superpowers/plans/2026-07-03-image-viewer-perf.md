@@ -12,7 +12,7 @@
 
 - 工作目录：`<WT>` = `/Users/wudarui/workspace/agent/octopus/.worktrees/image-viewer-perf`
 - 分支：`image-viewer-perf`，不往 main 同步
-- dist 已纳入 git：前端变更必须 `npm run build` 并提交 `crates/desktop/dist`
+- dist 已 gitignore（**计划有误**：plan 原写「dist 已纳入 git」，实际 `.gitignore` 排除了 `/crates/desktop/dist/`）。前端变更只需 `npm run build` 验证类型+构建，**不提交 dist**。
 - 标注坐标始终在自然像素空间（与 zoom 解耦）
 - composePngBytes（保存/复制）不受双 canvas 影响，仍在 offscreen canvas 自然尺寸 1:1 合成
 - 不新增后端命令（`get_image_thumb` 和 `get_image_full` 已有）
@@ -506,3 +506,22 @@ cd <WT>
 git add docs/
 git commit -m "docs: 同步图片查看器性能优化到 architecture.md"
 ```
+
+---
+
+## 实施记录（回写）
+
+### Task 1 实施偏差
+
+- **Review 修复**：mouseup 成功提交标注后未清空 drawCanvas → 补 `drawActive()` 调用（`drawingRef` 已 null 时 early-return 但 `canvas.width` 赋值已清空画布）。
+- **dist 不提交**：`.gitignore` 排除 `/crates/desktop/dist/`，plan 原描述有误，实际只提交源文件。
+
+### Task 2 实施偏差
+
+- 无偏差，按 plan 逐字实施。Review Approved。
+
+### Task 3 实施偏差
+
+- **Review 修复 1（race condition）**：plan 原文用 `if (imgRef.current?.src === thumbDataUrl) return` 防重复，但快速切换图片时旧 promise 的 onload 仍会覆盖新图。改为 effect 内 `let cancelled = false` + cleanup `return () => { cancelled = true }`，thumb/full 的 `.then` 和 `onload` 均检查 `cancelled`。
+- **Review 修复 2（drawBg 边界）**：thumb 和 full 同尺寸 + 用户未缩放时，`setNatW/H` + `setZoomSync` 无状态变化 → `drawBg` 的 useCallback 不重建 → useEffect 不触发 → canvas 保留已 close 的旧 bitmap。在 full onload 末尾补 `drawBg()` 显式重绘。
+- **`loading` state 未实现**：plan Step 1 "Produces" 声明了 `loading` state 但无任何 Step 使用它，跳过（YAGNI）。
