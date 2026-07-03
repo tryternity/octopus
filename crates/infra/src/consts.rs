@@ -21,5 +21,6 @@ pub const SEGMENT_DURATION_S: f64 = 20.0;
 /// 200ms ≈ 一个音节，给 ASR 引擎足够声学线索补全段首残字。原为 config 字段，因属实现细节改为常量。
 pub const SEGMENT_OVERLAP_MS: f64 = 200.0;
 
-/// 超长截图（>16383px）WebP 编码全失败时的 JPEG 兜底质量。
-pub const BOTTOM_JPEG_QUALITY: u8 = 50;
+/// 图片编码降级链：lossless WebP 失败后依次尝试的 `<格式>:<质量>` 列表（`;` 分割）。
+/// 由 `clipboard::image::encode_to_webp` 解析。新增条目只需改本常量（如 `webp:80;webp:50;jpeg:80`）。
+pub const IMAGE_SAVE_QUALITY: &str = "webp:80;jpeg:80";

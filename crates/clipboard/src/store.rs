@@ -63,7 +63,8 @@ pub fn insert_asr_item(conn: &Connection, text: &str, asr_meta: AsrMeta) -> Resu
         conn.execute(
             "INSERT INTO clipboard_history
              (id, item_type, source, content, search_text, is_favorite, created_at,
-              transcription_id, polish_status, engine, model)
+              transcription_id, polish_status, engine, model,
+                (SELECT length(blob) FROM image_data WHERE hash = blob_hash) AS img_size)
              VALUES (?, 'text', 'asr', ?, ?, 0, ?, ?, ?, ?, ?)",
             params![
                 id,
@@ -144,7 +145,8 @@ pub fn query_history(conn: &Connection, filter: &QueryFilter) -> Result<Vec<Clip
     let sql = format!(
         "SELECT id, item_type, source, content, is_favorite, created_at,
                 blob_hash, width, height, has_thumbnail, file_count, is_rich,
-                transcription_id, polish_status, engine, model
+                transcription_id, polish_status, engine, model,
+                (SELECT length(blob) FROM image_data WHERE hash = blob_hash) AS img_size
          FROM clipboard_history
          {}
          ORDER BY created_at DESC, id DESC
@@ -164,7 +166,8 @@ pub fn get_item_by_id(conn: &Connection, id: i64) -> Result<Option<ClipboardItem
     let mut stmt = conn.prepare(
         "SELECT id, item_type, source, content, is_favorite, created_at,
                 blob_hash, width, height, has_thumbnail, file_count, is_rich,
-                transcription_id, polish_status, engine, model
+                transcription_id, polish_status, engine, model,
+                (SELECT length(blob) FROM image_data WHERE hash = blob_hash) AS img_size
          FROM clipboard_history
          WHERE id = ?",
     )?;
@@ -190,7 +193,8 @@ fn query_with_search(
         let sql = format!(
             "SELECT id, item_type, source, content, is_favorite, created_at,
                     blob_hash, width, height, has_thumbnail, file_count, is_rich,
-                    transcription_id, polish_status, engine, model
+                    transcription_id, polish_status, engine, model,
+                (SELECT length(blob) FROM image_data WHERE hash = blob_hash) AS img_size
              FROM clipboard_history
              WHERE search_text LIKE ?
              {}
@@ -211,7 +215,8 @@ fn query_with_search(
     let sql = format!(
         "SELECT c.id, c.item_type, c.source, c.content, c.is_favorite, c.created_at,
                 c.blob_hash, c.width, c.height, c.has_thumbnail, c.file_count, c.is_rich,
-                c.transcription_id, c.polish_status, c.engine, c.model
+                c.transcription_id, c.polish_status, c.engine, c.model,
+                (SELECT length(blob) FROM image_data WHERE hash = c.blob_hash) AS img_size
          FROM clipboard_history_fts f
          JOIN clipboard_history c ON c.id = f.rowid
          WHERE f.search_text MATCH ?
@@ -315,12 +320,14 @@ fn row_to_item(row: &rusqlite::Row) -> rusqlite::Result<ClipboardItem> {
     let polish_status: Option<String> = row.get(13)?;
     let engine: Option<String> = row.get(14)?;
     let model: Option<String> = row.get(15)?;
+    let img_size: Option<i64> = row.get(16)?;
 
     let image_meta = blob_hash.as_ref().map(|h| ImageMeta {
         blob_hash: h.clone(),
         width: width.unwrap_or(0) as u32,
         height: height.unwrap_or(0) as u32,
         has_thumbnail: has_thumb.unwrap_or(0) == 1,
+        size: img_size.unwrap_or(0) as u64,
     });
 
     let file_meta = file_count.map(|c| FileMeta {

@@ -6,6 +6,7 @@ export interface ImageMeta {
   width: number;
   height: number;
   has_thumbnail: boolean;
+  size: number;
 }
 
 export interface FileMeta {
