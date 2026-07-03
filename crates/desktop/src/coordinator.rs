@@ -379,7 +379,7 @@ impl Coordinator {
                     Command::CancelEdit => {
                         if editing {
                             editing = false;
-                            // 恢复展示原始文本（edited 清空 → display_text 回退到 polished/raw）
+                            // 恢复展示当前 segments 扁平文本（编辑态修改在前端 editBuffer，未 commit → transcript 不变）
                             let display = stage_transcript(&mut stage).map(|t| t.display_text()).unwrap_or_default();
                             if !display.is_empty() {
                                 crate::result_window::update_result(&app_handle, &display);
@@ -822,16 +822,14 @@ fn handle_toggle(
                 TranscriptEvent::Final(text) => text,
                 TranscriptEvent::Error(e) => {
                     error!("Streaming finish failed: {}", e);
-                    // 引擎兜底：edited 非空优先（保留编辑），否则 raw
-                    transcript
-                        .edited_display()
-                        .unwrap_or_else(|| transcript.db_text())
+                    // 引擎兜底：finish_text（段模型已含 edited/raw 全部）
+                    transcript.finish_text()
                 }
-                _ => transcript.edited_display().unwrap_or_else(|| transcript.db_text()),
+                _ => transcript.finish_text(),
             };
             pipeline.reset();
             if !final_text.is_empty() {
-                transcript.set_full(&final_text);
+                transcript.apply_engine_full(&final_text);
             }
             info!("Final streaming text: '{}'", transcript.db_text());
             let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
@@ -872,7 +870,7 @@ fn handle_toggle(
 /// 现在的语义：若仍有 pending 的立即润色，进入 `StoppingPolish` 持有 transcript，
 /// `PolishDone` 到达后在 `handle_polish_done` 中走 final 路径，把立即润色结果纳入最终文本。
 ///
-/// **优化**：若 polished 非空且无新增 ASR（has_increase=false），立即润色已覆盖全部文本，
+/// **优化**：若无 Raw 段且非空（has_raw=false），立即润色已覆盖全部文本，
 /// 跳过最终润色（mode=1/2 也跳过），直接 paste，避免平白多一次 LLM 调用。
 fn finalize_after_stop(
     stage: &mut Stage,
@@ -890,12 +888,10 @@ fn finalize_after_stop(
         return;
     }
     // 2. 无 pending：检查是否可以跳过最终润色
-    //    若 polished 非空且无新增 ASR（has_increase=false），立即润色已覆盖全部文本
-    let skip_final_polish = !transcript.polished().is_empty() && !transcript.has_increase();
-    // 3. 句末标点补全 + display_text 计算（与原 final 路径一致）
-    let combined = if let Some(edited) = transcript.edited_display() {
-        edited
-    } else if transcript.full().is_empty() {
+    //    段模型下「已润色覆盖全部」= 无 Raw 段且非空（has_raw=false）。
+    let skip_final_polish = !transcript.finish_text().is_empty() && !transcript.has_raw();
+    // 3. 句末标点补全 + finish_text 计算（与原 final 路径一致）
+    let combined = if transcript.full().is_empty() {
         String::new()
     } else if transcript
         .full()
@@ -962,12 +958,19 @@ fn start_final_polish_or_paste(
 
             let id = transcript.id;
             let raw_text = transcript.db_text();
-            let (preserved, to_polish) = transcript.take_polish_input();
+            // Task 1 临时桥接：take_polish_input 返回 PolishInput，折成旧 preserved+to_polish（Task 4 改 polish_regions）
+            let input = transcript.take_polish_input();
+            let preserved: Option<String> = input.segments.iter()
+                .find(|s| s.kind == crate::transcript::SegmentKind::Edited)
+                .map(|s| s.text.clone());
+            let to_polish: String = input.segments.iter()
+                .filter(|s| s.kind != crate::transcript::SegmentKind::Edited)
+                .map(|s| s.text.as_str()).collect();
 
             *stage = Stage::Polishing {
                 id,
                 raw_text: raw_text.clone(),
-                // Part A 后 text = edited_display（含编辑）或 raw-with-」，失败时 paste 它
+                // Part A 后 text = finish_text（段模型含 edited/raw 全部）或 raw-with-」，失败时 paste 它
                 fallback_text: text.to_string(),
             };
 
@@ -1149,9 +1152,9 @@ fn handle_cloud_streaming_done(
                 );
                 return;
             }
-            // close 返回的是整个 session 的完整文本，非空则 set_full 覆盖
+            // close 返回的是整个 session 的完整文本，非空则 apply_engine_full 喂回（前缀追加；diverted 重算基准）
             match &text {
-                Ok(text) if !text.is_empty() => transcript.set_full(text),
+                Ok(text) if !text.is_empty() => { transcript.apply_engine_full(text); }
                 Ok(_) => {}
                 Err(e) => warn!("CloudStreaming close WSS failed: {}", e),
             }
@@ -1289,13 +1292,19 @@ fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<Atomi
 /// `session_id` = 发起润色时的 transcript.id，原样塞进 PolishDone 回传，供 handle_polish_done
 /// 做跨会话护栏（审查 一1：润色线程不持 transcript 引用，回来时当前 transcript 可能已是新会话）。
 fn spawn_polish_thread(
-    preserved: Option<String>,
-    to_polish: String,
+    input: crate::transcript::PolishInput,
     config: &AppConfig,
     tx: &Sender<Command>,
     ignore_mode: bool,
     session_id: i64,
 ) {
+    // Task 1 临时桥接：把 segments 折成旧 preserved+to_polish（Task 4 改 polish_regions 多段）
+    let preserved: Option<String> = input.segments.iter()
+        .find(|s| s.kind == crate::transcript::SegmentKind::Edited)
+        .map(|s| s.text.clone());
+    let to_polish: String = input.segments.iter()
+        .filter(|s| s.kind != crate::transcript::SegmentKind::Edited)
+        .map(|s| s.text.as_str()).collect();
     let llm_config = if ignore_mode {
         crate::config::llm_config_ignore_mode(&config)
     } else {
@@ -1335,8 +1344,8 @@ fn check_and_trigger_polish(
     {
         return;
     }
-    // 无新增内容（increase 空）→ 跳过
-    if !transcript.has_increase() {
+    // 无 Raw 段（无待润色的新语音）→ 跳过（段模型：has_raw 替代旧 has_increase）
+    if !transcript.has_raw() {
         return;
     }
     // 停顿未达标 → 跳过（流式传真实 silence；伪流式传阈值自动达标）
@@ -1349,10 +1358,9 @@ fn check_and_trigger_polish(
     {
         return;
     }
-    // 取润色输入（编辑态分块：preserved=edited、to_polish=increase；否则全量）+ 标记 pending + 送 LLM
-    let (preserved, to_polish) = transcript.take_polish_input();
-    transcript.mark_polish_pending();
-    spawn_polish_thread(preserved, to_polish, config, tx, false, transcript.id);
+    // 取润色输入（段模型快照）+ 标记 pending（take_polish_input 内部已置 pending）+ 送 LLM
+    let input = transcript.take_polish_input();
+    spawn_polish_thread(input, config, tx, false, transcript.id);
 }
 
 /// 处理 Cancel 命令
@@ -1449,15 +1457,15 @@ fn handle_discard(
     }
 
     // 从 transcript 提取 (polished_text, polish_status, polish_model) for Finalize：
-    //   polished 非空 → 入库为 "done"；空 → "off"。
+    //   段模型下「已润色覆盖全部」= 无 Raw 段且非空 → 入库 "done" + finish_text；否则 "off"。
     // 修复：原版硬编码 None / "off"，把已完成的立即润色结果擦掉
     // （用户场景：立即润色→PolishDone 入库→点关闭→Finalize 覆盖 polished=None）。
     let polished_info = |t: &Transcript| -> (Option<String>, String, Option<String>) {
-        let p = t.polished();
-        if p.is_empty() {
-            (None, "off".to_string(), None)
+        let text = t.finish_text();
+        if !text.is_empty() && !t.has_raw() {
+            (Some(text), "done".to_string(), Some(config.polish_llm.clone()))
         } else {
-            (Some(p.to_string()), "done".to_string(), Some(config.polish_llm.clone()))
+            (None, "off".to_string(), None)
         }
     };
 
@@ -1618,16 +1626,16 @@ fn handle_polish_done(
                     warn!("Polish returned empty, keeping previous");
                     transcript.on_polish_failed();
                 } else {
-                    transcript.on_polish_done(polished.clone());
+                    transcript.polish_apply(&polished);
                     let cmd = if transcript.has_edit() {
                         DbCommand::UpdateEdited {
                             id: transcript.id,
-                            edited_text: polished,
+                            edited_text: transcript.finish_text(),
                         }
                     } else {
                         DbCommand::UpdatePolished {
                             id: transcript.id,
-                            text: transcript.polished().to_string(),
+                            text: transcript.finish_text(),
                             status: "done".to_string(),
                             model: Some(config.polish_llm.clone()),
                         }
@@ -1681,19 +1689,19 @@ fn handle_polish_done(
                 warn!("Polish returned empty, keeping previous");
                 transcript.on_polish_failed();
             } else {
-                // 先折回 transcript（on_polish_done 内部决定写 edited 或 polished）
-                transcript.on_polish_done(polished.clone());
-                // 折回→UpdateEdited（保持 edited_text 与 display 一致）；否则 UpdatePolished（现状）
+                // 段模型回填（polish_apply 内部按 edited 串匹配定位 + 间隙 Polished）
+                transcript.polish_apply(&polished);
+                // 含 Edited 段→UpdateEdited（保持 edited_text 与 display 一致）；否则 UpdatePolished（现状）
                 let cmd = if transcript.has_edit() {
                     DbCommand::UpdateEdited {
                         id: transcript.id,
-                        edited_text: polished,
+                        edited_text: transcript.finish_text(),
                     }
                 } else {
                     // 中间润色入库 polished（polish_model 传 config.polish_llm，与 PasteDone 一致，便于统计）
                     DbCommand::UpdatePolished {
                         id: transcript.id,
-                        text: transcript.polished().to_string(),
+                        text: transcript.finish_text(),
                         status: "done".to_string(),
                         model: Some(config.polish_llm.clone()),
                     }
@@ -1718,7 +1726,7 @@ fn handle_polish_done(
 
 /// 处理立即润色命令：不管 polish_mode，取当前完整 ASR 文本送 LLM 润色。
 /// 仅在 Streaming / VadSegmented 阶段生效（需有 transcript）；其他阶段忽略。
-/// 与 `check_and_trigger_polish` 区别：不检查 mode/threshold/interval/has_increase，
+/// 与 `check_and_trigger_polish` 区别：不检查 mode/threshold/interval/has_raw，
 /// 直接快照全量文本送 LLM。
 fn handle_polish_now(
     stage: &mut Stage,
@@ -1764,10 +1772,9 @@ fn handle_polish_now(
     if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "streaming") {
         warn!("PolishNow ensure INSERT failed: {}", e);
     }
-    let (preserved, to_polish) = transcript.take_polish_input();
-    transcript.mark_polish_pending();
-    info!("PolishNow triggered, polishing {} chars", to_polish.chars().count());
-    spawn_polish_thread(preserved, to_polish, config, tx, true, transcript.id);
+    let input = transcript.take_polish_input();
+    info!("PolishNow triggered, polishing {} chars", input.segments.iter().map(|s| s.text.chars().count()).sum::<usize>());
+    spawn_polish_thread(input, config, tx, true, transcript.id);
 }
 
 /// 进入编辑态：仅活跃会话（Streaming/VadSegmented）有效；初始化 edit_buffer = 当前 display。
