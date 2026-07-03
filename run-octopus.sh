@@ -1,6 +1,12 @@
 #!/usr/bin/env bash
-# 启动 octopus-desktop（release）+ 清 WKWebView 缓存，保证前端最新。
+# 启动 octopus-desktop + 清 WKWebView 缓存，保证前端最新。
+# 用法：./run-octopus.sh [--debug]   不带 --debug 默认 release 模式。
 set -euo pipefail
+
+RELEASE="--release"
+if [[ "${1:-}" == "--debug" ]]; then
+  RELEASE=""
+fi
 
 REPO_ROOT="$(cd "$(dirname "$0")" && pwd)"
 
@@ -44,19 +50,12 @@ npm run build
 #    运行时按 CWD 解析，CWD = crates/desktop 最保险。
 cd "../"
 
-# 5. 编译 + 运行（debug 模式：能看到 panic 栈 + 自动开 devtools 排查前端）
+# 5. 编译 + 运行（--debug 模式：能看到 panic 栈 + 自动开 devtools 排查前端）
 # 必须启用 cloud feature：云端引擎（Aliyun/ByteDance/Tencent/Baidu）的流式识别依赖此 feature，
 # 不启用时云端引擎无法使用（is_cloud_engine / DispatchEngine 均 cfg gated）。
-# RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run -p octopus-desktop --features "embedded cloud"
-# 预填 ocr-rs MNN 缓存（warm：prebuilt 目录已存在）；cargo clean 后首次构建失败则 seed 后重试一次。
 seed_mnn_prebuilt
-RELEASE="--release"
-#RELEASE=""
 if ! cargo build ${RELEASE} -p octopus-desktop --features "embedded cloud"; then
   seed_mnn_prebuilt
   cargo build ${RELEASE} -p octopus-desktop --features "embedded cloud"
 fi
-#RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --release -p octopus-desktop --features "embedded cloud"
 RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run ${RELEASE} -p octopus-desktop --features "embedded cloud"
-# 注意：去掉 --release，debug 模式能打出 panic 栈
-#RUST_BACKTRACE=full RUST_LIB_BACKTRACE=1 cargo run --features "embedded cloud"
