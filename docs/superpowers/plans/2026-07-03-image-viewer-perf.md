@@ -634,3 +634,7 @@ Screenshot 的 text 标注调用同一 `annotation.ts` 纯函数，#6 修复自�
 | 图片预览马赛克图标统一为截图风格 3×3 色块 | `b1ab7f7` |
 | 图片预览工具栏全部图标统一为截图 SVG 风格 | `1e30e97` |
 | 截图 + 图片预览统一加 redo 功能（redoStack + 快捷键 Cmd+Shift+Z + redo.svg 按钮） | `ba1351f` |
+| 矩形/椭圆实心填充开关（属性浮窗 toggle + Annotation.filled + drawAnnotation/AnnotationSvg 支持） | `7be749d` |
+| addAnnotation 无限递归修复（sed 误替换） | `b8c54ee` |
+| 截图实心填充开关同步（ToolPropsPopover 加 isShape/filled） | `108b471` |
+| 菱形工具（截图 + 图片预览，diamond.svg，支持 filled） | `51f72b9` |
