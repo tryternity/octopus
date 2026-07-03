@@ -1,7 +1,7 @@
 {
   "identifier": "default",
   "description": "Default capabilities for octopus-desktop",
-  "windows": ["main", "result_window", "settings_window", "clipboard_window", "notepad_window", "compact_editor_window", "image_preview_window", "screenshot_*"],
+  "windows": ["main", "result_window", "settings_window", "clipboard_window", "compact_editor_window", "image_preview_window", "screenshot_*"],
   "permissions": [
     "core:default",
     "core:window:allow-show",
