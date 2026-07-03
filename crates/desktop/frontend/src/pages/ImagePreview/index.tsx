@@ -619,11 +619,11 @@ export default function ImagePreview() {
       />
       {/* 滚动容器：wrapper 撑滚动条 + SVG overlay + 鼠标事件 */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar" style={{ zIndex: 2 }}>
-        {/* content：撑起滚动区域，尺寸 = 图片显示尺寸 + padding */}
+        {/* content：撑起滚动区域，至少 = viewport 尺寸（保证居中正确） */}
         <div style={{
           position: "relative",
-          width: dispW + FIT_PADDING,
-          height: dispH + TOOLBAR_H + 8,
+          width: Math.max(dispW + FIT_PADDING, viewport.w),
+          height: Math.max(dispH + TOOLBAR_H + 8, viewport.h),
         }}>
           {/* wrapper：absolute 定位（手算居中），透明背景（canvas 在下层画底图）+ SVG + 鼠标 */}
           <div ref={wrapperRef}
