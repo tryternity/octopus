@@ -599,3 +599,10 @@ Screenshot 的 text 标注调用同一 `annotation.ts` 纯函数，#6 修复自�
 | 1 | createImageBitmap 无 debounce | ✅ 合理 | setTimeout 150ms 防抖，期间 drawBg 用原图拉伸占位 | `ebf9426` |
 | 2 | commitText 未存 textWidth | ⚠️ 防御性 | 存 textarea clientWidth / zoom = textWidth | `ebf9426` |
 | 3 | 文字框缩放时 1-2px 抖动 | ❌ 不成立 | SVG/textarea 同坐标系，亚像素抖动通性，且编辑中不会缩放 | — |
+
+### 第三轮代码审查修复（V3）
+
+| # | 问题 | 判定 | 处理 | commit |
+|---|------|------|------|--------|
+| 1 | Screenshot 文本提交遗漏 textWidth | ✅ 真 bug | 4 处文本提交补 `textWidth: 200`（与 textarea 固定宽度一致） | `83620a8` |
+| 2 | composePngBytes 图片未加载时 TypeError | ✅ 真 bug | 首行防御性校验 `imgRef/natW/natH`，提前 throw | `83620a8` |
