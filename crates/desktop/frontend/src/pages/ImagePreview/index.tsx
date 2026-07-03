@@ -53,6 +53,11 @@ export default function ImagePreview() {
   const [ocrCopied, setOcrCopied] = useState(false);
   // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
   const loadingFullRef = useRef(false);
+  // 当前 objectURL（图片切换/卸载时 revoke，防内存泄漏）
+  const objectUrlRef = useRef<string | null>(null);
+  // 全图自然尺寸（thumb 期间为 0，full 加载后赋值；EXIF 条用此而非 natW/natH）
+  const [fullNatW, setFullNatW] = useState(0);
+  const [fullNatH, setFullNatH] = useState(0);
 
   // 交互 refs（避免重渲染抖动 + 拖拽用最新值）
   const drawingRef = useRef<Annotation | null>(null);
@@ -83,6 +88,14 @@ export default function ImagePreview() {
   const zoomOut = () => setZoomSync(zoomRef.current / ZOOM_STEP, true);
   const zoomReset = () => setZoomSync(1, true);
 
+  // —— unmount：revoke objectURL + close bitmap，防内存泄漏 ——
+  useEffect(() => {
+    return () => {
+      if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+      if (scaledBitmapRef.current) scaledBitmapRef.current.close();
+    };
+  }, []);
+
   // —— mount：取 PENDING + 监听并发再开的 load 事件 ——
   useEffect(() => {
     invoke<{ imageId: number } | null>("get_pending_image").then((p) => {
@@ -104,12 +117,18 @@ export default function ImagePreview() {
     const old = scaledBitmapRef.current;
     scaledBitmapRef.current = null;
     if (old) old.close();
+    if (objectUrlRef.current) {
+      URL.revokeObjectURL(objectUrlRef.current);
+      objectUrlRef.current = null;
+    }
     zoomVersionRef.current++;
     userZoomedRef.current = false;
     drawingRef.current = null;
     setAnnotations([]);
     setNatW(0);
     setNatH(0);
+    setFullNatW(0);
+    setFullNatH(0);
     loadingFullRef.current = true;
 
     const thumbPromise = invoke<string>("get_image_thumb", { id: imageId });
@@ -140,10 +159,18 @@ export default function ImagePreview() {
       const fullImg = new Image();
       fullImg.crossOrigin = "anonymous";
       fullImg.onload = () => {
-        if (cancelled) return;
+        if (cancelled) {
+          URL.revokeObjectURL(url);
+          return;
+        }
+        // revoke 上一张的 objectURL（thumb data URL 不需 revoke）
+        if (objectUrlRef.current) URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = url;
         loadingFullRef.current = false;
         imgRef.current = fullImg;
         setDataUrl(url);
+        setFullNatW(fullImg.naturalWidth);
+        setFullNatH(fullImg.naturalHeight);
         if (!userZoomedRef.current) {
           const fitZoom = computeFitZoom(fullImg.naturalWidth, fullImg.naturalHeight);
           setNatW(fullImg.naturalWidth);
@@ -568,7 +595,7 @@ export default function ImagePreview() {
           boxShadow: "0 2px 12px rgba(0,0,0,0.3)",
           display: "flex", gap: 10, alignItems: "center", pointerEvents: "none",
         }}>
-          <span>{natW} × {natH}</span>
+          <span>{fullNatW || natW} × {fullNatH || natH}</span>
           {fmt && <>
             <span style={{ opacity: 0.4 }}>·</span>
             <span>{fmt}</span>
