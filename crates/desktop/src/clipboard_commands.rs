@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 use base64::{Engine, engine::general_purpose};
-use octopus_clipboard::{ClipboardHandle, ClipboardItem, QueryFilter};
+use octopus_clipboard::{ClipboardHandle, ClipboardItem, OcrMeta, QueryFilter};
 
 #[tauri::command]
 pub async fn query_clipboard_history(
@@ -384,12 +384,40 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
     Ok(())
 }
 
-/// 图片条目 OCR：识别文本 → 写 search_text + 写剪贴板 + 新建文档。
+/// 当前 OCR 引擎/模型元数据：engine 固定 paddle（ocr_rs 基于 PaddleOCR）；
+/// model 从 app_config.ocr_model 读，默认 PP-OCRv6-small。insert_ocr_clipboard_item
+/// 与 ocr_screenshot 两处复用，保证 ocr 条目 meta 一致。
+pub(crate) fn current_ocr_meta() -> OcrMeta {
+    let model_name = octopus_infra::db::load_config_key("ocr_model")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| octopus_ocr::model::DEFAULT_OCR_MODEL.to_string());
+    OcrMeta {
+        engine: "paddle".to_string(),
+        model: model_name,
+    }
+}
+
+/// OCR 统一入库：识别文本 → 新建 source=ocr 剪贴板条目 → 广播刷新 → 返回新 id。
+/// 三处 OCR 入口（截图/图片预览/剪贴板图片条目）识别出文本后统一走此命令入库，
+/// 再由前端 openCompactEditorTab(id) 打开绑定 tab 编辑。
 #[tauri::command]
-pub async fn ocr_image(
-    id: i64,
-    handle: State<'_, Arc<ClipboardHandle>>,
-) -> Result<String, String> {
+pub async fn insert_ocr_clipboard_item(
+    text: String,
+    app_handle: tauri::AppHandle,
+) -> Result<i64, String> {
+    let id = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::insert_ocr_item(conn, &text, current_ocr_meta())
+    })
+    .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("clipboard://changed", ());
+    Ok(id)
+}
+
+/// 图片条目 OCR：识别文本并返回（纯识别，不入库不写剪贴板）。
+/// 入库由前端统一调 insert_ocr_clipboard_item 完成（三入口一致），再 openCompactEditorTab 编辑。
+#[tauri::command]
+pub async fn ocr_image(id: i64) -> Result<String, String> {
     let item = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, id)
     })
@@ -416,12 +444,6 @@ pub async fn ocr_image(
     if text.trim().is_empty() {
         return Err("未识别到文本".into());
     }
-
-    octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::update_search_text(conn, id, &text)
-    }).map_err(|e| e.to_string())?;
-
-    handle.write_text(&text).map_err(|e| e.to_string())?;
 
     Ok(text)
 }

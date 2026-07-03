@@ -184,12 +184,12 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
-/// 截图 OCR：合成选区 → 入库 → OCR 识别 → 写 search_text + 剪贴板 + 新建文档
+/// 截图 OCR：合成选区 → 图片入库 → OCR 识别 → 新建 ocr 条目 → 打开 CompactEditor tab。
+/// 图片仍入库为剪贴板图片条目（截图历史）；识别文本独立进 source=ocr 条目并在编辑 tab 打开。
 #[tauri::command]
 pub async fn ocr_screenshot(
     request: tauri::ipc::Request<'_>,
     app_handle: tauri::AppHandle,
-    handle: State<'_, std::sync::Arc<ClipboardHandle>>,
 ) -> Result<(), String> {
     let tauri::ipc::InvokeBody::Raw(png_bytes) = request.body() else {
         return Err("expected raw binary body".into());
@@ -199,14 +199,14 @@ pub async fn ocr_screenshot(
     ALL_CAPTURES.lock().unwrap().clear();
     PENDING_IMAGES.lock().unwrap().clear();
 
-    // SHA-256 去重 → WebP → 入库
+    // SHA-256 去重 → WebP → 图片入库
     let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
 
     let existing = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::find_by_content_hash(conn, &hash)
     }).map_err(|e| e.to_string())?;
 
-    let item_id = if let Some(id) = existing {
+    let _image_id = if let Some(id) = existing {
         octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::touch_created_at(conn, id)
         }).map_err(|e| e.to_string())?;
@@ -245,19 +245,20 @@ pub async fn ocr_screenshot(
         id
     };
 
-    // OCR 识别
+    // OCR 识别 → 新建 ocr 条目 → 打开绑定 tab 编辑
     let engine = octopus_ocr::engine::OcrEngine::instance()
         .map_err(|e| e.to_string())?;
     let text = engine.recognize(&png_bytes).map_err(|e| e.to_string())?;
 
     if !text.trim().is_empty() {
-        // 写 search_text
-        octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::update_search_text(conn, item_id, &text)
+        let ocr_id = octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::insert_ocr_item(
+                conn,
+                &text,
+                crate::clipboard_commands::current_ocr_meta(),
+            )
         }).map_err(|e| e.to_string())?;
-
-        // 写剪贴板
-        handle.write_text(&text).map_err(|e| e.to_string())?;
+        crate::compact_editor_commands::open_compact_editor_tab(ocr_id, app_handle.clone());
     }
 
     let _ = app_handle.emit("clipboard://changed", ());

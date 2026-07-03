@@ -230,6 +230,7 @@ pub fn run() {
             clipboard_commands::save_image_item,
             clipboard_commands::open_file_item,
             clipboard_commands::ocr_image,
+            clipboard_commands::insert_ocr_clipboard_item,
             clipboard_commands::set_clipboard_item_text,
             clipboard_commands::get_image_thumb,
             clipboard_commands::get_image_full,
