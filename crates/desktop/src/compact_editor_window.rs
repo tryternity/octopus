@@ -18,12 +18,18 @@ pub const WINDOW_LABEL: &str = "compact_editor_window";
 /// 从 async worker 线程同步调用会导致整个应用僵死。若需从 worker 触发建窗，
 /// 用 `app_handle.run_on_main_thread(...)` 投递（见 screenshot_commands::ocr_screenshot）。
 pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
+    log::info!("[compact-editor] create start");
     // macOS：编辑窗口切 Regular 让 Dock 显示图标（与 settings 一致）。
     #[cfg(target_os = "macos")]
     {
+        log::info!("[compact-editor] before set_activation_policy(Regular)");
         let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+        log::info!("[compact-editor] after set_activation_policy(Regular)");
+        log::info!("[compact-editor] before set_dock_icon");
         crate::settings_window::set_dock_icon();
+        log::info!("[compact-editor] after set_dock_icon");
     }
+    log::info!("[compact-editor] before build");
     let _ = WebviewWindowBuilder::new(
         app_handle,
         WINDOW_LABEL,
@@ -37,6 +43,7 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
     .center()
     .visible(true)
     .build();
+    log::info!("[compact-editor] after build");
 }
 
 /// macOS: 精简编辑器窗口关闭时切回 Accessory（仅托盘）。

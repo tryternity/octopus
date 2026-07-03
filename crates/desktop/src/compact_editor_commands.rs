@@ -38,13 +38,16 @@ fn take_pending_tab() -> Option<i64> {
 /// 写 PENDING_TAB；窗口已存在则 emit open-tab 推送新 item_id + 聚焦，否则建窗。
 #[tauri::command]
 pub fn open_compact_editor_tab(item_id: i64, app_handle: tauri::AppHandle) {
+    log::info!("[compact-editor] open_tab item_id={}", item_id);
     store_pending_tab(item_id);
     if let Some(window) = app_handle.get_webview_window(WINDOW_LABEL) {
         // 并发再开：窗口已 mount，PENDING_TAB 已被首次 take，改用事件推送新 item_id。
+        log::info!("[compact-editor] window exists → emit open-tab");
         let _ = window.emit("compact-editor://open-tab", OpenTabPayload { item_id });
         let _ = window.show();
         let _ = window.set_focus();
     } else {
+        log::info!("[compact-editor] window absent → create");
         create_compact_editor_window(&app_handle);
     }
 }
