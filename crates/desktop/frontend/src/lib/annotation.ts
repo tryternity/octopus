@@ -91,8 +91,29 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
     ctx.fillText(String(ann.number), ann.x1, ann.y1);
     ctx.textAlign = "start";
   }
-  // blur 类型在 composePngBytes 时由调用方做像素级马赛克（drawAnnotation 不处理，
-  // 因为它无法访问底图像素）。SVG overlay 用 blur filter + 半透矩形模拟预览。
+  // blur 类型：canvas 预览画半透色块网格（导出时由调用方做像素马赛克）
+  if (ann.type === "blur") {
+    const bx = Math.min(ann.x1, ann.x2);
+    const by = Math.min(ann.y1, ann.y2);
+    const bw = Math.abs(ann.x2 - ann.x1);
+    const bh = Math.abs(ann.y2 - ann.y1);
+    if (bw < 2 || bh < 2) return;
+    const opacity = ((lw || 5) / 10) * 0.85 + 0.1;
+    const cell = Math.max(8, Math.min(bw, bh) / 8);
+    const cols = Math.ceil(bw / cell);
+    const rows = Math.ceil(bh / cell);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const hash = (c * 73856093 ^ r * 19349663) >>> 0;
+        const variance = ((hash % 100) - 50) / 200;
+        ctx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
+        ctx.fillStyle = color;
+        ctx.fillRect(bx + c * cell, by + r * cell, cell, cell);
+      }
+    }
+    ctx.globalAlpha = 1;
+    return;
+  }
 }
 
 // 多行文字绘制：支持 \n 换行 + 超宽自动折行（模块私有，仅 drawAnnotation 内部用）
@@ -200,6 +221,26 @@ export function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotat
     ctx.textBaseline = "middle";
     ctx.fillText(String(ann.number), cx, cy);
     ctx.textAlign = "start";
+  } else if (ann.type === "blur") {
+    const bx = Math.min(ann.x1, ann.x2) * scale;
+    const by = Math.min(ann.y1, ann.y2) * scale;
+    const bw = Math.abs(ann.x2 - ann.x1) * scale;
+    const bh = Math.abs(ann.y2 - ann.y1) * scale;
+    if (bw < 2 || bh < 2) return;
+    const opacity = ((lw || 5) / 10) * 0.85 + 0.1;
+    const cell = Math.max(8, Math.min(bw, bh) / 8);
+    const cols = Math.ceil(bw / cell);
+    const rows = Math.ceil(bh / cell);
+    for (let r = 0; r < rows; r++) {
+      for (let c = 0; c < cols; c++) {
+        const hash = (c * 73856093 ^ r * 19349663) >>> 0;
+        const variance = ((hash % 100) - 50) / 200;
+        ctx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
+        ctx.fillStyle = color;
+        ctx.fillRect(bx + c * cell, by + r * cell, cell, cell);
+      }
+    }
+    ctx.globalAlpha = 1;
   }
 }
 
