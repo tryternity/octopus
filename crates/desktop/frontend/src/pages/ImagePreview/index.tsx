@@ -17,6 +17,8 @@ const ZOOM_STEP = 1.25;
 
 // fit-to-window：图片完整显示在窗口内，最大不超过 1:1
 const FIT_PADDING = 16; // px-2 左右各 8px（画布间隙最小化，图片最大化展示）
+// canvas 物理像素上限（超过则自动降 DPR，防超大图 GPU 合成卡顿）
+const MAX_CANVAS_PIXELS = 20_000_000; // 20M
 // fit-to-window：完整显示在窗口内（宽高都不超出），不放大
 const computeFitZoom = (w: number, h: number): number => {
   const containerW = window.innerWidth - FIT_PADDING;
@@ -250,7 +252,9 @@ export default function ImagePreview() {
     if (!canvas || !img || !natW || !natH) return;
     const dw = natW * zoom;
     const dh = natH * zoom;
-    const dpr = window.devicePixelRatio || 1;
+    const sysDpr = window.devicePixelRatio || 1;
+    // 超大图自动降 DPR：物理像素超过上限时线性降低
+    const dpr = Math.min(sysDpr, MAX_CANVAS_PIXELS / (dw * dh));
     canvas.width = Math.round(dw * dpr);
     canvas.height = Math.round(dh * dpr);
     const ctx = canvas.getContext("2d")!;
@@ -270,7 +274,8 @@ export default function ImagePreview() {
     const version = ++zoomVersionRef.current;
     const dw = natW * zoom;
     const dh = natH * zoom;
-    const dpr = window.devicePixelRatio || 1;
+    const sysDpr = window.devicePixelRatio || 1;
+    const dpr = Math.min(sysDpr, MAX_CANVAS_PIXELS / (dw * dh));
     const pw = Math.round(dw * dpr);
     const ph = Math.round(dh * dpr);
     // 极小尺寸（zoom 接近 0）跳过
