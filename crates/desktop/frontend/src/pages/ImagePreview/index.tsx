@@ -554,7 +554,7 @@ export default function ImagePreview() {
       />
       {/* 滚动容器：全屏画布，图片大于视口自动出滚动条；小于则居中 */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar">
-        <div className="flex min-h-full min-w-full items-center justify-center p-12">
+        <div className="flex min-h-full min-w-full items-center justify-center p-12 pt-14">
           {/* canvas wrapper：relative 让 textarea 相对 canvas 定位、随滚动移动 */}
           {/* 棋盘格底移到容器，两个 canvas 都能看到 */}
           <div className="relative" style={{
