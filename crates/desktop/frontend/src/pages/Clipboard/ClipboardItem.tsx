@@ -213,19 +213,9 @@ export default function ClipboardItemRow({
         )}
       </div>
 
-      {/* 右侧操作：收藏 + 保存/打开 + 删除（复制已移至左侧类型图标单击） */}
-      <div className="flex-shrink-0 flex items-center gap-0.5">
-        <button
-          className={cn(
-            "p-0.5 transition-opacity hover:scale-110",
-            item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
-          )}
-          onClick={handleFavorite}
-        >
-          <Star
-            className={cn("w-3.5 h-3.5", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
-          />
-        </button>
+      {/* 右侧操作：编辑/预览/保存/OCR/打开/删除 + 收藏置末（已收藏常显高亮，置首会使其后 hover 按钮被遮、视觉怪）。
+          dblclick 阻止冒泡：连续快速点操作按钮（如删多条）不应被条目 onDoubleClick 误判为双击 → 粘贴 + 隐藏浮窗。 */}
+      <div className="flex-shrink-0 flex items-center gap-0.5" onDoubleClick={(e) => e.stopPropagation()}>
         {item.item_type !== "image" && item.item_type !== "file" && (
           <button
             className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
@@ -320,6 +310,17 @@ export default function ClipboardItemRow({
             "w-3.5 h-3.5 transition-colors",
             deletePending ? "text-red-600" : "text-muted-foreground hover:text-red-500",
           )} />
+        </button>
+        <button
+          className={cn(
+            "p-0.5 transition-opacity hover:scale-110",
+            item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+          )}
+          onClick={handleFavorite}
+        >
+          <Star
+            className={cn("w-3.5 h-3.5", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
+          />
         </button>
       </div>
 

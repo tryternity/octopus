@@ -412,20 +412,8 @@ function ClipboardRow({
         )}
       </div>
 
-      {/* 右侧操作栏：收藏 + 保存图片/打开文件 + 删除（复制已移至左侧类型图标单击） */}
+      {/* 右侧操作栏：保存图片/OCR/打开文件/删除 + 收藏置末（已收藏常显高亮，置首会使其后 hover 按钮被遮、视觉怪） */}
       <div className="flex-shrink-0 flex items-center gap-0.5">
-        <button
-          className={cn(
-            "p-1 rounded transition-opacity hover:scale-110",
-            item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
-          )}
-          onClick={handleFavorite}
-        >
-          <Star className={cn(
-            "w-3.5 h-3.5",
-            item.is_favorite ? "fill-amber-400 text-amber-400" : "text-stone-500",
-          )} />
-        </button>
         {item.item_type === "image" && (
           <div className="relative">
             <button
@@ -489,6 +477,18 @@ function ClipboardRow({
           <Trash2 className={cn(
             "w-3.5 h-3.5 transition-colors",
             deletePending ? "text-red-600" : "text-stone-500 hover:text-red-500",
+          )} />
+        </button>
+        <button
+          className={cn(
+            "p-1 rounded transition-opacity hover:scale-110",
+            item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+          )}
+          onClick={handleFavorite}
+        >
+          <Star className={cn(
+            "w-3.5 h-3.5",
+            item.is_favorite ? "fill-amber-400 text-amber-400" : "text-stone-500",
           )} />
         </button>
       </div>
