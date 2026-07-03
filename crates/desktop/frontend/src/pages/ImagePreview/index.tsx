@@ -6,6 +6,7 @@ import {
   type Annotation,
   type Tool,
   drawAnnotation,
+  annBounds,
   hitTestAnnotationPrecise,
 } from "@/lib/annotation";
 import Toolbar from "./Toolbar";
@@ -286,20 +287,47 @@ export default function ImagePreview() {
       drawActiveScheduledRef.current = false;
       const canvas = drawCanvasRef.current;
       if (!canvas || !natW || !natH) return;
+      const dpr = window.devicePixelRatio || 1;
       const dw = natW * zoom;
       const dh = natH * zoom;
-      const dpr = window.devicePixelRatio || 1;
       const pw = Math.round(dw * dpr);
       const ph = Math.round(dh * dpr);
-      // 只在尺寸真正变化时才重设（避免每次 mousemove 强制清空 buffer）
       if (canvas.width !== pw) canvas.width = pw;
       if (canvas.height !== ph) canvas.height = ph;
       const ctx = canvas.getContext("2d")!;
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-      ctx.save();
-      ctx.scale(zoom, zoom);
-      if (drawingRef.current) drawAnnotation(ctx, drawingRef.current);
-      ctx.restore();
+
+      const drawing = drawingRef.current;
+      if (!drawing) return;
+
+      if (drawing.type === "pen" && drawing.points && drawing.points.length >= 2) {
+        // 增量：只画最后一段（O(1)，与总点数和 canvas 尺寸无关）
+        const pts = drawing.points;
+        const [px, py] = pts[pts.length - 2];
+        const [cx, cy] = pts[pts.length - 1];
+        ctx.save();
+        ctx.scale(zoom, zoom);
+        ctx.strokeStyle = drawing.color || "#ef4444";
+        ctx.lineWidth = drawing.lineWidth || 3;
+        ctx.lineCap = "round";
+        ctx.lineJoin = "round";
+        ctx.beginPath();
+        ctx.moveTo(px, py);
+        ctx.lineTo(cx, cy);
+        ctx.stroke();
+        ctx.restore();
+      } else {
+        // 形状：只 clear + 重绘边界框区域（不碰整个超大 canvas）
+        const b = annBounds(drawing);
+        const pad = (drawing.lineWidth || 3) + 4;
+        // 边界框从自然坐标转到显示坐标
+        ctx.clearRect(b.x * zoom - pad, b.y * zoom - pad,
+                      b.w * zoom + pad * 2, b.h * zoom + pad * 2);
+        ctx.save();
+        ctx.scale(zoom, zoom);
+        drawAnnotation(ctx, drawing);
+        ctx.restore();
+      }
     });
   }, [natW, natH, zoom]);
 
