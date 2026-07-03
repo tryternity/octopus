@@ -76,6 +76,9 @@ enum Command {
     /// 光标定位：前端非编辑态点击 → char offset → set_caret（劈段/段界）。
     /// 非活跃 stage（无 transcript）时 no-op。
     SetCaret { offset: usize },
+    /// 选中替换：前端非编辑态拖选 → char 范围 [start,end) → set_selection（记录待删范围 +
+    /// 劈 caret 到 start，不立即删字，首个 delta 到达时真删）。非活跃 stage → no-op。
+    SetSelection { start: usize, end: usize },
 }
 
 enum Stage {
@@ -413,6 +416,15 @@ impl Coordinator {
                             }
                         }
                     }
+                    Command::SetSelection { start, end } => {
+                        // 非编辑态拖选：调 stage_transcript.set_selection（记录待删范围 [start,end) +
+                        // 劈 caret 到 start，不立即删字——首个 delta 到达时真删）。非活跃 stage → no-op。
+                        if !editing {
+                            if let Some(t) = stage_transcript(&mut stage) {
+                                t.set_selection(start, end);
+                            }
+                        }
+                    }
                 }
             }
             debug!("Coordinator thread exited");
@@ -505,6 +517,16 @@ impl Coordinator {
         }
     }
 
+    /// 前端拖选选中替换：char 范围 [start,end) → 通过命令通道投递。命令循环里调
+    /// stage_transcript.set_selection（记录待删 + 劈 caret 到 start）。首个 delta 到达时真删。
+    pub fn set_selection(&self, start: usize, end: usize) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::SetSelection { start, end }).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
+
     /// 通知 coordinator 重读 RuntimeConfig 同步可变字段到 config 快照。
     /// 设置窗口 / 工具栏改完 RuntimeConfig 后调用，让 polish_llm 等字段立即生效。
     pub fn update_runtime(&self) {
@@ -573,6 +595,13 @@ pub fn commit_edit(coordinator: tauri::State<'_, Coordinator>, text: String) {
 #[tauri::command]
 pub fn set_caret(coordinator: tauri::State<'_, Coordinator>, offset: usize) {
     coordinator.set_caret(offset);
+}
+
+/// 前端命令：非编辑态拖选文本 → 选中替换（首个 delta 到达时删除 [start,end) 并从 start 插入）。
+/// start/end = 选区在整篇文本的 code-point（char）偏移（左闭右开）。
+#[tauri::command]
+pub fn set_selection(coordinator: tauri::State<'_, Coordinator>, start: usize, end: usize) {
+    coordinator.set_selection(start, end);
 }
 
 /// 前端命令：取消编辑（恢复原始文本，不写 edited_text 到 DB）。

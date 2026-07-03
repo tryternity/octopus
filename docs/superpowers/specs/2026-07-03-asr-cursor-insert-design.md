@@ -297,3 +297,76 @@ pub fn commit_edit(&mut self, flat: &str) {
 - **`pending_caret` 延迟切换**：若立即切换的劈词体感难受，加「点击记 pending，下次静音 / 段尾再切」。纯增量，不动数据结构。
 - **审计 raw 保留**：若需保留编辑前的原始 ASR，单独加 `raw_audit` 字段（不进 segments 主结构）。
 - **per-segment 独立润色调用** / 段拖拽重排 / 多光标。
+
+---
+
+## 11. 追加特性：选中替换（Selection Replace，2026-07-04）
+
+中插特性（§1–§10）合入并 e2e 通过后追加。需求：非编辑态**拖选**一段文字 → 在选中处说话 → **说话时（首个词到达）**删掉选中文字、识别文字从该处插入。区别于中插（保留原字、新词右推）：选中替换是「删旧换新」。用户原话「在这部分文字上面说话，**这时**就把选中那部分文字给删掉」——明确是**开口才删**，非选中即删。
+
+### 11.1 关键决策：延迟到首词删（pending_delete）
+
+`Transcript` 加运行时态字段 `pending_delete: Option<(usize, usize)>`（扁平 char 范围 [start, end)）。`set_selection(start,end)` 只**记录**待删范围 + 把 `caret_gap` 劈到 `start`（**不删字**，保留浏览器原生高亮反馈）。`apply_engine_full` 在**首个非空 delta** 插入前消费 `pending_delete`：`delete_range(start,end)` 真删 + 随后走已有 `push_delta_at_caret`（= 普通中插）。第二个 delta 起就是普通中插，自动衔接。
+
+不采用「立即删」（选中即删）的理由：① 与用户「说话时才删」意图相悖；② 误操作不可逆；③ 延迟到首词保留高亮反馈、取消容易（点别处 `set_caret` 清 `pending_delete`，文字不动）。
+
+`pending_delete` 是运行时态，**不入库**：选中后未开口就停录，`pending_delete` 残留但 segments 未变，落库的是完整文本（正确）。
+
+### 11.2 数据结构与方法（transcript.rs）
+
+```rust
+pub struct Transcript {
+    // ...既有字段...
+    /// 选中替换待删范围（扁平 char [start,end)）。运行时态，不入库。
+    pending_delete: Option<(usize, usize)>,
+}
+
+/// 在 char_off 处劈段，返回劈后 gap index。幂等（char_off 已在段界则不重复劈）。
+/// 从 set_caret 抽出，set_caret 与 delete_range 共用（DRY）。
+fn split_at(&mut self, char_off: usize) -> usize { /* 遍历段累计 char，落段内劈成两段返回 i+1；落段界返回 i；超出返回 len */ }
+
+/// 前端点击 → 定位光标（= 取消待删选区）。
+pub fn set_caret(&mut self, char_off: usize) {
+    self.caret_gap = self.split_at(char_off);
+    self.pending_delete = None; // 点击定位 = 取消选中
+}
+
+/// 删除扁平 char 范围 [start,end)：split_at(start) → split_at(end) → drain 中间段，caret 落 start。
+fn delete_range(&mut self, start: usize, end: usize) { /* split_at 幂等 */ }
+
+/// 选中替换：记录待删范围 + 劈 caret 到 start（不立即删字，保留高亮直到开口）。
+pub fn set_selection(&mut self, start: usize, end: usize) {
+    self.pending_delete = Some((start, end));
+    self.caret_gap = self.split_at(start);
+}
+```
+
+**消费点**：
+- `apply_engine_full`：`combined_delta.is_empty()` 检查之后、`push_delta_at_caret` 之前，`if let Some((s,e)) = self.pending_delete.take() { self.delete_range(s,e); }`。
+- `take_polish_input`：方法开头先删待删区，避免润色快照含选中旧字。
+
+**清除点**：`set_caret`（取消）、`on_polish_failed`、`commit_edit`、`new`（重置）。润色成功走 `take_polish_input` 已消费。
+
+### 11.3 命令通道（coordinator.rs，镜像 set_caret 六处）
+
+`Command::SetSelection { start, end }` → 命令循环 match 臂（`if !editing { if let Some(t) = stage_transcript(&mut stage) { t.set_selection(start, end); } }`）← `Coordinator::set_selection` ← `#[tauri::command] set_selection(coordinator, start, end)` ← main.rs invoke_handler 注册。`stage_transcript` 复用 set_caret 同一组活跃 stage（Streaming/VadSegmented/WaitingCompletion/StoppingPolish/CloudClosing）。
+
+### 11.4 前端拖选（Result/index.tsx）
+
+- textRef 的 JSX：`onClick` → **`onMouseUp`**（拖选选区在 mouseup 才完整）。
+- `handleTextMouseUp`（原 `handleTextClick` 改名）按 `window.getSelection().isCollapsed` 分流：
+  - **折叠（纯点击）**：`caretRangeFromPoint` → `codePointOffsetBefore` → `setCaretPos(offset)` + `invoke("set_caret", { offset })`（普通中插，原逻辑）。
+  - **非折叠（拖选）**：`start = codePointOffsetBefore(el, range)`、`end = codePointOffsetTo(el, range.endContainer, range.endOffset)` → `setCaretPos(null)`（隐藏闪烁光标，交浏览器原生蓝色高亮）+ `invoke("set_selection", { start, end })`。
+- 选区须落在文本容器内（`el.contains(range.commonAncestorContainer)`，排除工具栏按钮）。
+- **首词后衔接**：后端删待删 + 插入 → `caret_char_offset` 增长 → `Emit{caret}` → `update_result` → 前端 `setCaretPos(caret)` → CaretBlink 复现并跟随右移（复用 §3 caret 透传链，零额外改动）。React 重渲染 textRef.textContent={text} 自然清除浏览器选区（DOM 文本节点被替换）。
+
+**offset 工具**：抽 `codePointOffsetTo(container, node, offset)` 支持任意 Range 端点（end 复用），`codePointOffsetBefore` 退化为它的 wrapper（start 端点）。
+
+### 11.5 测试（transcript.rs，6 个单测）
+
+- `delete_range_basic`：删单段中间范围，caret 落删除点。
+- `delete_range_spans_segments`：跨段（Raw/Edited 混合）删除。
+- `set_selection_then_first_delta_replaces`：拖选 → 首词删旧插新、caret 跟随增长。
+- `set_caret_clears_pending_delete`：选中后点别处 → 后续 apply 不删、文字保留。
+- `pending_delete_consumed_once`：首词消费后第二词普通中插（不再删）。
+- `pending_delete_consumed_in_take_polish_input`：润色快照基于删后文本。

@@ -32,6 +32,9 @@ pub struct Transcript {
     /// diverted（引擎纠正早前文本）时，新 full 与已展示 finish_text 的 LCP 之后的差异。
     /// 不立即展示（避免引擎抖动），下次 apply_engine_full 时连同本次 delta 补发。
     diverted_pending: String,
+    /// 选中替换待删范围（扁平 char [start,end)）。set_selection 记录，apply_engine_full
+    /// 首个非空 delta 或 take_polish_input 消费时真删。运行时态，不入库。
+    pending_delete: Option<(usize, usize)>,
     last_polish_time: Instant,
     polish_pending: bool,
     /// 润色发起时的 segments 快照（PolishDone 回填比对用）。
@@ -51,6 +54,7 @@ impl Transcript {
         Self {
             id, mode, segments: Vec::new(), caret_gap: 0,
             engine_cumulative: String::new(), engine_consumed_chars: 0, diverted_pending: String::new(),
+            pending_delete: None,
             last_polish_time: Instant::now(), polish_pending: false,
             polish_snapshot: Vec::new(), polish_caret_offset: 0, polish_caret_at_tail: true,
             pending_delta: String::new(), db_inserted: false,
@@ -101,6 +105,10 @@ impl Transcript {
             combined_delta = s;
         }
         if combined_delta.is_empty() { return false; }
+        // 选中替换：首个非空 delta 插入前，删除 set_selection 记录的待删范围。
+        if let Some((s, e)) = self.pending_delete.take() {
+            self.delete_range(s, e);
+        }
         if self.polish_pending { self.pending_delta.push_str(&combined_delta); }
         else { self.push_delta_at_caret(&combined_delta); }
         true
@@ -127,29 +135,53 @@ impl Transcript {
         }
     }
 
-    /// 前端点击 → char offset → 定位光标。落段内→劈段（同 kind 一分为二）；落段界→置 gap。clamp [0,len]。
-    pub fn set_caret(&mut self, char_off: usize) {
+    /// 在 char_off 处劈段，返回劈后 gap index（落段内→劈成两段返回 i+1；落段界→返回 i；
+    /// 超出末尾→返回 segments.len()）。幂等：char_off 已在段界则不重复劈。set_caret 与
+    /// delete_range 共用（DRY）。
+    fn split_at(&mut self, char_off: usize) -> usize {
         let mut acc = 0usize;
         for (i, seg) in self.segments.iter().enumerate() {
             let len = seg.text.chars().count();
             if char_off < acc + len {
                 if char_off == acc {
-                    self.caret_gap = i;
-                } else {
-                    let rel = char_off - acc;
-                    let chars: Vec<char> = seg.text.chars().collect();
-                    let left: String = chars[..rel].iter().collect();
-                    let right: String = chars[rel..].iter().collect();
-                    let kind = seg.kind;
-                    self.segments[i] = Segment { kind, text: left };
-                    self.segments.insert(i + 1, Segment { kind, text: right });
-                    self.caret_gap = i + 1;
+                    return i;
                 }
-                return;
+                let rel = char_off - acc;
+                let chars: Vec<char> = seg.text.chars().collect();
+                let left: String = chars[..rel].iter().collect();
+                let right: String = chars[rel..].iter().collect();
+                let kind = seg.kind;
+                self.segments[i] = Segment { kind, text: left };
+                self.segments.insert(i + 1, Segment { kind, text: right });
+                return i + 1;
             }
             acc += len;
         }
-        self.caret_gap = self.segments.len();
+        self.segments.len()
+    }
+
+    /// 前端点击 → char offset → 定位光标（= 取消待删选区）。落段内→劈段；落段界→置 gap。clamp [0,len]。
+    pub fn set_caret(&mut self, char_off: usize) {
+        self.caret_gap = self.split_at(char_off);
+        self.pending_delete = None;
+    }
+
+    /// 删除扁平 char 范围 [start,end)。先 split_at(start) 再 split_at(end)，drain 中间段，
+    /// caret_gap 落到 start 位置。split_at 幂等（start 已段界不重复劈）。
+    fn delete_range(&mut self, start: usize, end: usize) {
+        let g1 = self.split_at(start);
+        let g2 = self.split_at(end);
+        if g1 < g2 {
+            self.segments.drain(g1..g2);
+        }
+        self.caret_gap = g1.min(self.segments.len());
+    }
+
+    /// 选中替换：记录待删范围 + 劈 caret_gap 到 start（**不立即删字**，保留浏览器原生高亮
+    /// 反馈直到开口）。apply_engine_full 首个非空 delta / take_polish_input 时真删。
+    pub fn set_selection(&mut self, start: usize, end: usize) {
+        self.pending_delete = Some((start, end));
+        self.caret_gap = self.split_at(start);
     }
 
     /// 当前 caret 在 finish_text 的 char offset（前端光标像素定位用）。
@@ -163,6 +195,7 @@ impl Transcript {
 
     /// 编辑提交：整篇压成一条 Edited；raw/polished 清零。空串→清空。
     pub fn commit_edit(&mut self, flat: &str) {
+        self.pending_delete = None;
         if flat.is_empty() { self.segments.clear(); self.caret_gap = 0; return; }
         self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() }];
         self.caret_gap = 1;
@@ -176,6 +209,10 @@ impl Transcript {
 
     /// 取润色输入：快照 segments + 记 caret offset/末尾态 + 标记 pending。
     pub fn take_polish_input(&mut self) -> PolishInput {
+        // 选中替换：润色前删除待删范围，避免快照含选中旧字。
+        if let Some((s, e)) = self.pending_delete.take() {
+            self.delete_range(s, e);
+        }
         self.polish_snapshot = self.segments.clone();
         self.polish_caret_offset = self.caret_char_offset();
         self.polish_caret_at_tail = self.caret_gap >= self.segments.len();
@@ -205,6 +242,7 @@ impl Transcript {
     /// 润色失败：清 pending；flush pending_delta（保留新语音）。segments 不变。
     pub fn on_polish_failed(&mut self) {
         self.polish_pending = false;
+        self.pending_delete = None;
         self.polish_snapshot.clear();
         let pending = std::mem::take(&mut self.pending_delta);
         if !pending.is_empty() { self.push_delta_at_caret(&pending); }
@@ -544,5 +582,74 @@ mod tests {
         assert!(j.contains("\"kind\":\"raw\""));
         assert!(j.contains("\"kind\":\"edited\""));
         assert!(j.contains("\"text\":\"a\""));
+    }
+
+    // ── 选中替换（delete_range / set_selection / pending_delete）──
+    #[test]
+    fn delete_range_basic() {
+        // "你好世界再见" 删 [2,4)（"世界"）→ "你好再见"，caret 落 "你好" 后。
+        let mut t = Transcript::new(101, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界再见"); // 单 Raw 段
+        t.delete_range(2, 4);
+        assert_eq!(t.finish_text(), "你好再见");
+        assert_eq!(t.caret_char_offset(), 2); // "你好" 后
+    }
+
+    #[test]
+    fn delete_range_spans_segments() {
+        // 多段跨段删除：[raw 甲][edited 乙丙][raw 丁]，删 [1,3)（"乙丙"）→ "甲丁"。
+        let mut t = Transcript::new(102, PolishMode::Intermediate);
+        t.segments = vec![raw("甲"), edt("乙丙"), raw("丁")];
+        t.delete_range(1, 3);
+        assert_eq!(t.finish_text(), "甲丁");
+    }
+
+    #[test]
+    fn set_selection_then_first_delta_replaces() {
+        // 拖选 [2,4)（"世界"）→ 首词到达时删选中、新词从 start 插、caret 跟随增长。
+        let mut t = Transcript::new(103, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_selection(2, 4);
+        assert_eq!(t.caret_char_offset(), 2); // 选中态 caret 在 start
+        let off_before = t.caret_char_offset();
+        assert!(t.apply_engine_full("你好世界新词"));
+        assert_eq!(t.finish_text(), "你好新词"); // "世界" 被删、"新词" 插入
+        assert!(t.caret_char_offset() > off_before); // caret 随插入右移
+    }
+
+    #[test]
+    fn set_caret_clears_pending_delete() {
+        // 选中后点别处（set_caret）→ 待删清除；后续 apply 不删，文字保留。
+        let mut t = Transcript::new(104, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_selection(2, 4);
+        t.set_caret(0); // 取消选区
+        t.apply_engine_full("你好世界后"); // delta "后"，不删
+        assert_eq!(t.finish_text(), "后你好世界"); // "世界" 保留（证明未删）
+    }
+
+    #[test]
+    fn pending_delete_consumed_once() {
+        // 首词消费待删后，第二词是普通中插（不再删）。
+        let mut t = Transcript::new(105, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_selection(2, 4);
+        t.apply_engine_full("你好世界甲"); // 首词"甲"：删"世界"、插"甲"→"你好甲"
+        assert_eq!(t.finish_text(), "你好甲");
+        t.apply_engine_full("你好世界甲乙"); // 第二词"乙"：普通中插→"你好甲乙"
+        assert_eq!(t.finish_text(), "你好甲乙");
+    }
+
+    #[test]
+    fn pending_delete_consumed_in_take_polish_input() {
+        // 选中后润色：take_polish_input 先删待删区，快照基于删后文本。
+        let mut t = Transcript::new(106, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_selection(2, 4);
+        let input = t.take_polish_input();
+        // 删"世界"后 segments 只剩 [raw 你好]
+        assert_eq!(input.segments.len(), 1);
+        assert_eq!(input.segments[0].text, "你好");
+        assert!(!t.polish_snapshot.iter().any(|s| s.text.contains("世界")));
     }
 }

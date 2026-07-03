@@ -365,14 +365,31 @@ function Result() {
     editBufTimer.current = setTimeout(updateEditBuffer, 150);
   };
 
-  // ── 非编辑态点击文本 → 算 code-point offset → setCaretPos + invoke set_caret ──
-  // caretRangeFromPoint 是非标准 API（Chromium 有），webkit（Tauri macOS）支持。
-  const handleTextClick = (e: React.MouseEvent) => {
+  // ── 非编辑态鼠标释放文本：拖选→选中替换；纯点击→光标定位 ──
+  // mouseup 时选区才完整。caretRangeFromPoint 是非标准 API（Chromium 有），webkit 支持。
+  // 拖选（非折叠）→ 算 [start,end) code-point 范围 + 隐藏闪烁光标（交浏览器原生高亮）+
+  //   invoke set_selection（后端记录待删，首个 delta 到达时删旧插新）。
+  // 纯点击（折叠）→ caretRangeFromPoint 定位 + invoke set_caret（普通中插）。
+  const handleTextMouseUp = (e: React.MouseEvent) => {
     const el = textRef.current;
     if (!el || !text) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      // 选区须落在文本容器内（排除工具栏按钮等）
+      if (el.contains(range.commonAncestorContainer)) {
+        const start = codePointOffsetBefore(el, range);
+        const end = codePointOffsetTo(el, range.endContainer, range.endOffset);
+        if (end > start) {
+          setCaretPos(null); // 隐藏闪烁光标，交浏览器原生高亮
+          invoke("set_selection", { start, end });
+          return;
+        }
+      }
+    }
+    // 折叠（纯点击）→ 定位光标
     const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
     if (!range) return;
-    const sel = window.getSelection();
     sel?.removeAllRanges();
     const offset = codePointOffsetBefore(el, range);
     setCaretPos(offset);
@@ -519,7 +536,7 @@ function Result() {
             contentEditable={editing}
             suppressContentEditableWarning
             onInput={onTextInput}
-            onClick={!editing ? handleTextClick : undefined}
+            onMouseUp={!editing ? handleTextMouseUp : undefined}
           >
             {text}
           </div>
@@ -592,14 +609,18 @@ function matchShortcut(e: KeyboardEvent, sc: ReturnType<typeof parseShortcut>) {
 
 // ── ASR 光标 helpers ──
 
+// 容器起点 → (node, offset) 的 code-point 计数（与后端 Rust char 对齐）。
+function codePointOffsetTo(container: HTMLElement, node: Node, offset: number): number {
+  const pre = document.createRange();
+  pre.selectNodeContents(container);
+  pre.setEnd(node, offset);
+  const str = pre.toString();
+  return Array.from(str).length;
+}
 // 点击处 → 容器起始的 code-point offset。
 // 用 Range 量从容器起点到点击点的纯文本，按 code-point 计数（与后端 Rust char 对齐）。
 function codePointOffsetBefore(container: HTMLElement, range: Range): number {
-  const pre = range.cloneRange();
-  pre.selectNodeContents(container);
-  pre.setEnd(range.startContainer, range.startOffset);
-  const str = pre.toString();
-  return Array.from(str).length;
+  return codePointOffsetTo(container, range.startContainer, range.startOffset);
 }
 
 // 量 container 内 text 第 pos 个 code-point 处光标的相对像素位置。
