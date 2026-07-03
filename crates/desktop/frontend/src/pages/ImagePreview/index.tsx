@@ -480,7 +480,7 @@ export default function ImagePreview() {
       type: tool as Annotation["type"],
       x1: nx, y1: ny, x2: nx, y2: ny,
       color: toolColorRef.current, lineWidth: toolWidthRef.current,
-      filled: (tool === "rect" || tool === "oval") ? filled : undefined,
+      filled: (tool === "rect" || tool === "oval" || tool === "diamond") ? filled : undefined,
     };
   };
 

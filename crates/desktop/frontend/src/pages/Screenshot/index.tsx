@@ -328,7 +328,7 @@ export default function Screenshot() {
       if (tool === "pen") {
         drawingRef.current = { type: "pen", x1: mx, y1: my, x2: mx, y2: my, points: [[mx, my]], color: toolColor, lineWidth: toolWidth };
       } else {
-        drawingRef.current = { type: tool, x1: mx, y1: my, x2: mx, y2: my, color: toolColor, lineWidth: toolWidth, filled: (tool === "rect" || tool === "oval") ? toolFilledRef.current : undefined };
+        drawingRef.current = { type: tool, x1: mx, y1: my, x2: mx, y2: my, color: toolColor, lineWidth: toolWidth, filled: (tool === "rect" || tool === "oval" || tool === "diamond") ? toolFilledRef.current : undefined };
       }
       return;
     }
@@ -817,6 +817,9 @@ export default function Screenshot() {
           <ToolButton active={tool === "oval"} onClick={() => setTool(tool === "oval" ? "none" : "oval")} label="椭圆" icon={
             <img src="icons/oval-vertical.svg" alt="椭圆" className="w-[18px] h-[18px]" style={{ filter: tool === "oval" ? "brightness(0) invert(1)" : "none" }} />
           } />
+          <ToolButton active={tool === "diamond"} onClick={() => setTool(tool === "diamond" ? "none" : "diamond")} label="菱形" icon={
+            <img src="icons/diamond.svg" alt="菱形" className="w-[18px] h-[18px]" style={{ filter: tool === "diamond" ? "brightness(0) invert(1)" : "none" }} />
+          } />
           <ToolButton active={tool === "line"} onClick={() => setTool(tool === "line" ? "none" : "line")} label="直线" icon={
             <img src="icons/straight-line.svg" alt="直线" className="w-[18px] h-[18px]" style={{ filter: tool === "line" ? "brightness(0) invert(1)" : "none" }} />
           } />
@@ -889,7 +892,7 @@ export default function Screenshot() {
           circleSize={toolCircleSize}
           isText={tool === "text"}
           isNumber={tool === "number"}
-          isShape={tool === "rect" || tool === "oval"}
+          isShape={tool === "rect" || tool === "oval" || tool === "diamond"}
           filled={toolFilled}
           onColorChange={setToolColor}
           onWidthChange={setToolWidth}

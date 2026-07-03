@@ -30,6 +30,14 @@ function AnnotationSvgImpl({ ann }: { ann: Annotation }) {
       const ry = Math.max(1, Math.abs(ann.y2 - ann.y1) / 2);
       return <ellipse cx={cx} cy={cy} rx={rx} ry={ry} fill={ann.filled ? color : "none"} stroke={color} strokeWidth={lw} />;
     }
+    case "diamond": {
+      const x = Math.min(ann.x1, ann.x2);
+      const y = Math.min(ann.y1, ann.y2);
+      const w = Math.abs(ann.x2 - ann.x1);
+      const h = Math.abs(ann.y2 - ann.y1);
+      const cx = x + w / 2, cy = y + h / 2;
+      return <polygon points={`${cx},${y} ${x + w},${cy} ${cx},${y + h} ${x},${cy}`} fill={ann.filled ? color : "none"} stroke={color} strokeWidth={lw} strokeLinejoin="round" />;
+    }
     case "line":
       return <line x1={ann.x1} y1={ann.y1} x2={ann.x2} y2={ann.y2} {...strokeProps} />;
     case "arrow": {

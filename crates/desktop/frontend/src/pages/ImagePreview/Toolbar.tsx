@@ -121,6 +121,7 @@ export default function Toolbar(props: {
     { key: "none", icon: <SvgIcon src="icons/arrow-pointer.svg" alt="选择" active={props.tool === "none"} />, title: "选择/移动" },
     { key: "rect", icon: <SvgIcon src="icons/square.svg" alt="矩形" active={props.tool === "rect"} />, title: "矩形" },
     { key: "oval", icon: <SvgIcon src="icons/circle.svg" alt="椭圆" active={props.tool === "oval"} />, title: "椭圆" },
+    { key: "diamond", icon: <SvgIcon src="icons/diamond.svg" alt="菱形" active={props.tool === "diamond"} />, title: "菱形" },
     { key: "line", icon: <SvgIcon src="icons/straight-line.svg" alt="直线" active={props.tool === "line"} />, title: "直线" },
     { key: "arrow", icon: <SvgIcon src="icons/arrow-line.svg" alt="箭头" active={props.tool === "arrow"} />, title: "箭头" },
     { key: "pen", icon: <SvgIcon src="icons/sketching.svg" alt="画笔" active={props.tool === "pen"} />, title: "画笔（自由曲线）" },
@@ -270,7 +271,7 @@ export default function Toolbar(props: {
             })}
           </div>
           {/* 行 3：实心开关（仅 rect/oval） */}
-          {(props.tool === "rect" || props.tool === "oval") && (
+          {(props.tool === "rect" || props.tool === "oval" || props.tool === "diamond") && (
             <>
               <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
