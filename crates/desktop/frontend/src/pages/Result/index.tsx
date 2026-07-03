@@ -55,6 +55,10 @@ function Result() {
   const [popupItems, setPopupItems] = useState<PopupItem[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [polishLoading, setPolishLoading] = useState(false);
+  // 光标 char offset（code-point 计数，与后端 Rust char 对齐）。null = 文本末尾。
+  // 点击中间 → setCaretPos(offset)；中插态每 tick 由后端 caret（=已插入字数累加）驱动右移，
+  // 故光标始终跟在最后插入的文字后；非中插态回 null（末尾）。
+  const [caretPos, setCaretPos] = useState<number | null>(null);
 
   const textRef = useRef<HTMLDivElement>(null);
   const editingRef = useRef(false);
@@ -145,10 +149,11 @@ function Result() {
           setIsRecording(true);
           refreshActive();
           if (isPlaceholder) {
-            // 新录音开始：清空上次残留
+            // 新录音开始：清空上次残留 + 光标回到末尾（null）
             setText("");
             displayedRef.current = "";
             pendingDiverted.current = null;
+            setCaretPos(null);
             if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
           } else {
             renderResultNow(text);
@@ -156,13 +161,20 @@ function Result() {
         }],
         ["update-result", (p) => {
           if (editingRef.current) return;
-          const newText = p as string;
+          // payload { text, insertion, caret }：insertion=true 中插态，caret = 光标 char 偏移（随插入增长）。
+          const payload = p as { text: string; insertion: boolean; caret: number };
+          const newText = payload.text;
+          const insertion = payload.insertion;
           if (newText === displayedRef.current || newText === pendingDiverted.current) return;
-          if (newText.startsWith(displayedRef.current)) {
+          // 光标定位：中插态跟后端 caret（每插一字光标右移一字）；非中插态（末尾追加/diverted）回末尾。
+          setCaretPos(insertion ? payload.caret : null);
+          // 插入态（光标在中间）或纯追加（startsWith）：立即渲染（跳过 diverted 300ms 延迟）。
+          if (insertion || newText.startsWith(displayedRef.current)) {
             if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
             pendingDiverted.current = null;
             renderResultNow(newText);
           } else {
+            // diverted（光标在末尾 + 引擎纠正早前文本）：300ms 延迟整体替换。
             pendingDiverted.current = newText;
             if (!divertedTimer.current) {
               divertedTimer.current = setTimeout(() => {
@@ -178,6 +190,7 @@ function Result() {
         ["clear-result", () => {
           setText("");
           displayedRef.current = "";
+          setCaretPos(null);
           setVisible(false);
           setIsRecording(false);
         }],
@@ -211,6 +224,7 @@ function Result() {
     editSnapshotRef.current = displayedRef.current; // 保存快照
     setEditing(true);
     setIsRecording(false);
+    setCaretPos(null); // 进入编辑态：光标位失效（交由 DOM 选区控制）
     showToolbar();
     invoke("enter_edit_mode");
     setTimeout(() => {
@@ -231,7 +245,12 @@ function Result() {
     if (editBufTimer.current) clearTimeout(editBufTimer.current);
     const el = textRef.current;
     const editedText = el?.innerText ?? "";
+    // textRef 的 key 随 editing 切换，退出编辑时 view 会重新挂载；必须把编辑结果写回 text
+    // state，否则重挂后会回退到进入编辑前的旧 text。
+    displayedRef.current = editedText;
+    setText(editedText);
     setEditing(false);
+    setCaretPos(null); // 退出编辑态：光标位失效，待下次 measure 重建
     invoke("commit_edit", { text: editedText });
   }, []);
 
@@ -240,6 +259,7 @@ function Result() {
     if (editBufTimer.current) clearTimeout(editBufTimer.current);
     const original = editSnapshotRef.current;
     setEditing(false);
+    setCaretPos(null); // 退出编辑态：光标位失效，待下次 measure 重建
     // 恢复 contentEditable DOM 到编辑前文本
     displayedRef.current = original;
     setText(original);
@@ -343,6 +363,37 @@ function Result() {
   const onTextInput = () => {
     if (editBufTimer.current) clearTimeout(editBufTimer.current);
     editBufTimer.current = setTimeout(updateEditBuffer, 150);
+  };
+
+  // ── 非编辑态鼠标释放文本：拖选→选中替换；纯点击→光标定位 ──
+  // mouseup 时选区才完整。caretRangeFromPoint 是非标准 API（Chromium 有），webkit 支持。
+  // 拖选（非折叠）→ 算 [start,end) code-point 范围 + 隐藏闪烁光标（交浏览器原生高亮）+
+  //   invoke set_selection（后端记录待删，首个 delta 到达时删旧插新）。
+  // 纯点击（折叠）→ caretRangeFromPoint 定位 + invoke set_caret（普通中插）。
+  const handleTextMouseUp = (e: React.MouseEvent) => {
+    const el = textRef.current;
+    if (!el || !text) return;
+    const sel = window.getSelection();
+    if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+      const range = sel.getRangeAt(0);
+      // 选区须落在文本容器内（排除工具栏按钮等）
+      if (el.contains(range.commonAncestorContainer)) {
+        const start = codePointOffsetBefore(el, range);
+        const end = codePointOffsetTo(el, range.endContainer, range.endOffset);
+        if (end > start) {
+          setCaretPos(null); // 隐藏闪烁光标，交浏览器原生高亮
+          invoke("set_selection", { start, end });
+          return;
+        }
+      }
+    }
+    // 折叠（纯点击）→ 定位光标
+    const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
+    if (!range) return;
+    sel?.removeAllRanges();
+    const offset = codePointOffsetBefore(el, range);
+    setCaretPos(offset);
+    invoke("set_caret", { offset });
   };
 
   // ── Popup actions ──
@@ -465,19 +516,31 @@ function Result() {
           editing && "bg-voice/[0.06]",
         )}
       >
-        <div
-          ref={textRef}
-          className={cn(
-            "text-sm leading-[1.6] text-foreground overflow-y-auto",
-            expanded ? "h-full" : "max-h-[63px]",
-            "break-words outline-none thin-scrollbar",
-            !editing && "cursor-text",
-          )}
-          contentEditable={editing}
-          suppressContentEditableWarning
-          onInput={onTextInput}
-        >
-          {text}
+        {/* tight relative wrapper：CaretBlink 浮层的定位基准（与 textRef 同原点、无 padding
+            偏移，故 measureCaretPx 相对 textRef 量得的 px 直接可用）。
+            textRef 的 contentEditable 子节点不让 React 跨编辑边界做 in-place reconcile：
+            key 随 editing 切换 → view/edit 走 unmount/mount 而非在原地增删子节点，杜绝
+            React 在用户浏览器 mutate 过的 contentEditable 上 removeChild 抛
+            "The object can not be found here"。CaretBlink 移出 contentEditable 当兄弟浮层，
+            避免与用户编辑的 DOM 抢同一个父节点的子节点位。 */}
+        <div className="relative h-full">
+          <div
+            key={editing ? "edit" : "view"}
+            ref={textRef}
+            className={cn(
+              "text-sm leading-[1.6] text-foreground overflow-y-auto",
+              expanded ? "h-full" : "max-h-[63px]",
+              "break-words outline-none thin-scrollbar",
+              !editing && "cursor-text",
+            )}
+            contentEditable={editing}
+            suppressContentEditableWarning
+            onInput={onTextInput}
+            onMouseUp={!editing ? handleTextMouseUp : undefined}
+          >
+            {text}
+          </div>
+          {!editing && <CaretBlink containerRef={textRef} text={text} pos={caretPos} />}
         </div>
       </div>
 
@@ -542,4 +605,77 @@ function matchShortcut(e: KeyboardEvent, sc: ReturnType<typeof parseShortcut>) {
     if (e.ctrlKey !== sc.ctrl) return false;
   }
   return e.altKey === sc.alt && e.shiftKey === sc.shift;
+}
+
+// ── ASR 光标 helpers ──
+
+// 容器起点 → (node, offset) 的 code-point 计数（与后端 Rust char 对齐）。
+function codePointOffsetTo(container: HTMLElement, node: Node, offset: number): number {
+  const pre = document.createRange();
+  pre.selectNodeContents(container);
+  pre.setEnd(node, offset);
+  const str = pre.toString();
+  return Array.from(str).length;
+}
+// 点击处 → 容器起始的 code-point offset。
+// 用 Range 量从容器起点到点击点的纯文本，按 code-point 计数（与后端 Rust char 对齐）。
+function codePointOffsetBefore(container: HTMLElement, range: Range): number {
+  return codePointOffsetTo(container, range.startContainer, range.startOffset);
+}
+
+// 量 container 内 text 第 pos 个 code-point 处光标的相对像素位置。
+// pos=null/超出 → 末尾。code-point 计数（Array.from 语义），UTF-16 offset 转换为 Range API 所需。
+function measureCaretPx(
+  container: HTMLElement | null,
+  text: string,
+  pos: number | null,
+): { left: number; top: number; height: number } | null {
+  if (!container) return null;
+  const chars = Array.from(text);
+  const target = pos == null ? chars.length : Math.min(pos, chars.length);
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const firstText = walker.nextNode() as Text | null;
+  if (!firstText) {
+    // 空文本：光标在容器左上
+    return { left: 0, top: 0, height: 18 };
+  }
+  // firstText.nodeValue 应为纯文本（CaretBlink 是 span，不影响首文本节点）。
+  const cp = Array.from(firstText.nodeValue ?? "");
+  const offsetInNode = Math.min(target, cp.length);
+  // Range API 的 offset 是 UTF-16 code unit；code-point → code unit 累加（代理对 length=2，其余 length=1）。
+  const utf16Offset = cp.slice(0, offsetInNode).reduce((acc, ch) => acc + ch.length, 0);
+  const r = document.createRange();
+  r.setStart(firstText, utf16Offset);
+  r.collapse(true);
+  const rect = r.getBoundingClientRect();
+  const cRect = container.getBoundingClientRect();
+  return { left: rect.left - cRect.left, top: rect.top - cRect.top, height: rect.height || 18 };
+}
+
+// 闪烁光标：绝对定位到 pos 处的像素位置（相对文本容器）。
+// 依赖 text/pos 变化重新量像素；container 经 textRef.current 透传。
+// containerRef 而非 container：editing 切换致 textRef 重挂载（key edit→view）时，render 阶段
+// 求值的 textRef.current 是**即将卸载的旧 div**（ref 在 commit 后才更新），传其 .current 会测到
+// detached 旧 div → getBoundingClientRect 返回 (0,0) → 光标错落首位且不再重测。改传 RefObject，
+// effect（commit 后执行）内读 .current 拿到已挂载的新 view div，量到真实末尾。
+function CaretBlink({
+  containerRef,
+  text,
+  pos,
+}: {
+  containerRef: React.RefObject<HTMLDivElement | null>;
+  text: string;
+  pos: number | null;
+}) {
+  const [px, setPx] = useState<{ left: number; top: number; height: number } | null>(null);
+  useEffect(() => {
+    setPx(measureCaretPx(containerRef.current, text, pos));
+  }, [containerRef, text, pos]);
+  if (!px) return null;
+  return (
+    <span
+      className="asr-caret"
+      style={{ left: px.left, top: px.top, height: px.height }}
+    />
+  );
 }

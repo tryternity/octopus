@@ -5123,6 +5123,7 @@ dependencies = [
  "once_cell",
  "rusqlite",
  "serde",
+ "serde_json",
  "serde_yaml",
  "webp",
 ]

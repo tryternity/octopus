@@ -54,6 +54,33 @@ pub fn user_prompt(preserved: Option<&str>, to_polish: &str) -> String {
     }
 }
 
+/// 段模型多段润色 user prompt。
+/// preserve=true 的段（edited）用【已确认部分】标记原样保留；其余段待润色。
+/// LLM 输出整篇（edited 区 verbatim + 润色后的非 edited 区拼接），仅纯文本。
+///
+/// 无 preserve 段时走全量润色分支（与旧 user_prompt(None) 等价语义）。
+/// CONFIRMED_MARKER 字面须与 INCREMENTAL_RULE 中的【已确认部分】一致（const 拼装）。
+pub fn regions_prompt(regions: &[crate::PolishRegion]) -> String {
+    if regions.iter().all(|r| !r.preserve) {
+        // 无 edited 段 → 全量润色（与旧 user_prompt(None) 等价语义）
+        let full: String = regions.iter().map(|r| r.text.as_str()).collect();
+        return format!("请润色以下语音识别文本：\n{}", full);
+    }
+    let m = CONFIRMED_MARKER;
+    let mut body = String::new();
+    for r in regions {
+        if r.preserve {
+            body.push_str(&format!("【{m}（原样保留）】{}\n", r.text));
+        } else {
+            body.push_str(&format!("【待润色】{}\n", r.text));
+        }
+    }
+    format!(
+        "以下文本中，【{m}】已经用户人工校对，必须逐字原样保留、严禁修改；仅对【待润色】区域润色。\n\n\
+         {body}\n请输出：所有区域按原顺序拼接为完整文本（{m} 原样），仅输出纯文本。",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -96,5 +123,25 @@ mod tests {
         assert!(got.contains("增量保留"));
         // 清理
         *SYSTEM_PROMPT.write().unwrap() = String::new();
+    }
+
+    #[test]
+    fn regions_prompt_no_preserve_is_plain() {
+        let rs = vec![crate::PolishRegion { preserve: false, text: "你好".into() }];
+        let p = regions_prompt(&rs);
+        assert!(p.contains("请润色以下语音识别文本"));
+        assert!(!p.contains("原样保留"));
+    }
+
+    #[test]
+    fn regions_prompt_marks_preserved_regions() {
+        let rs = vec![
+            crate::PolishRegion { preserve: true, text: "已确认".into() },
+            crate::PolishRegion { preserve: false, text: "待润色".into() },
+        ];
+        let p = regions_prompt(&rs);
+        assert!(p.contains("已确认部分"));
+        assert!(p.contains("原样保留"));
+        assert!(p.contains("待润色"));
     }
 }

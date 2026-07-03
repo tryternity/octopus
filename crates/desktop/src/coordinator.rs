@@ -73,6 +73,12 @@ enum Command {
     /// 用于 polish_llm / polish_mode / asr_correct / output_simplified / hide_toolbar 等
     /// 运行时可变字段。`asr_engine` 不在此列（引擎实例已创建，需 Toggle 重建）。
     UpdateRuntime,
+    /// 光标定位：前端非编辑态点击 → char offset → set_caret（劈段/段界）。
+    /// 非活跃 stage（无 transcript）时 no-op。
+    SetCaret { offset: usize },
+    /// 选中替换：前端非编辑态拖选 → char 范围 [start,end) → set_selection（记录待删范围 +
+    /// 劈 caret 到 start，不立即删字，首个 delta 到达时真删）。非活跃 stage → no-op。
+    SetSelection { start: usize, end: usize },
 }
 
 enum Stage {
@@ -119,6 +125,8 @@ enum Stage {
     Polishing {
         id: i64,
         raw_text: String,
+        /// 段 JSON（落库 segments 列；最终润色后 paste → Finalize 用）
+        segments: String,
         /// 最终润色失败时的兜底粘贴文本（= 停止时的 display，含编辑；成功时不用）
         fallback_text: String,
     },
@@ -128,6 +136,8 @@ enum Stage {
         id: i64,
         /// 原生全文（入库用，不受编辑影响）
         raw_text: String,
+        /// 段 JSON（落库 segments 列；PasteDone finalize 用）
+        segments: String,
         /// 展示/入库的修正版（初始=润色结果，用户编辑会更新）
         polished_text: String,
         /// "off" | "done" | "failed"
@@ -313,6 +323,7 @@ impl Coordinator {
                         if let Stage::Pasting {
                             id,
                             raw_text,
+                            segments,
                             polished_text,
                             polish_status,
                         } = &stage
@@ -332,6 +343,7 @@ impl Coordinator {
                             let cmd = DbCommand::Finalize {
                                 id: *id,
                                 raw_text: raw_text.clone(),
+                                segments: segments.clone(),
                                 polished_text: polished_for_db.map(|s| s.to_string()),
                                 polish_status: polish_status.clone(),
                                 polish_model: polish_model.map(|s| s.to_string()),
@@ -379,10 +391,10 @@ impl Coordinator {
                     Command::CancelEdit => {
                         if editing {
                             editing = false;
-                            // 恢复展示原始文本（edited 清空 → display_text 回退到 polished/raw）
+                            // 恢复展示当前 segments 扁平文本（编辑态修改在前端 editBuffer，未 commit → transcript 不变）
                             let display = stage_transcript(&mut stage).map(|t| t.display_text()).unwrap_or_default();
                             if !display.is_empty() {
-                                crate::result_window::update_result(&app_handle, &display);
+                                crate::result_window::update_result(&app_handle, &display, false, 0);
                             }
                         }
                     }
@@ -394,6 +406,24 @@ impl Coordinator {
                         sync_runtime_fields(&mut config, &rc);
                         debug!("UpdateRuntime: polish_llm='{}', polish_mode={:?}",
                                config.polish_llm, config.polish_mode);
+                    }
+                    Command::SetCaret { offset } => {
+                        // 非编辑态点击定位光标：调 stage_transcript.set_caret（劈段/段界/clamp）。
+                        // 非活跃 stage（Idle/Polishing/Pasting 等）→ no-op。
+                        if !editing {
+                            if let Some(t) = stage_transcript(&mut stage) {
+                                t.set_caret(offset);
+                            }
+                        }
+                    }
+                    Command::SetSelection { start, end } => {
+                        // 非编辑态拖选：调 stage_transcript.set_selection（记录待删范围 [start,end) +
+                        // 劈 caret 到 start，不立即删字——首个 delta 到达时真删）。非活跃 stage → no-op。
+                        if !editing {
+                            if let Some(t) = stage_transcript(&mut stage) {
+                                t.set_selection(start, end);
+                            }
+                        }
                     }
                 }
             }
@@ -477,6 +507,26 @@ impl Coordinator {
         }
     }
 
+    /// 前端点击光标定位：char offset → 通过命令通道投递（stage 在 spawn 线程，
+    /// 主线程不持有）。命令循环里 handle_set_caret 调 stage_transcript.set_caret。
+    pub fn set_caret(&self, offset: usize) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::SetCaret { offset }).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
+
+    /// 前端拖选选中替换：char 范围 [start,end) → 通过命令通道投递。命令循环里调
+    /// stage_transcript.set_selection（记录待删 + 劈 caret 到 start）。首个 delta 到达时真删。
+    pub fn set_selection(&self, start: usize, end: usize) {
+        if let Ok(tx) = self.tx.lock() {
+            if tx.send(Command::SetSelection { start, end }).is_err() {
+                error!("Coordinator channel closed");
+            }
+        }
+    }
+
     /// 通知 coordinator 重读 RuntimeConfig 同步可变字段到 config 快照。
     /// 设置窗口 / 工具栏改完 RuntimeConfig 后调用，让 polish_llm 等字段立即生效。
     pub fn update_runtime(&self) {
@@ -538,6 +588,20 @@ pub fn update_edit_buffer(coordinator: tauri::State<'_, Coordinator>, text: Stri
 #[tauri::command]
 pub fn commit_edit(coordinator: tauri::State<'_, Coordinator>, text: String) {
     coordinator.commit_edit(text);
+}
+
+/// 前端命令：非编辑态点击文本 → 定位光标（后续流式从该处插入）。
+/// offset = 点击处在整篇文本的 code-point（char）偏移。
+#[tauri::command]
+pub fn set_caret(coordinator: tauri::State<'_, Coordinator>, offset: usize) {
+    coordinator.set_caret(offset);
+}
+
+/// 前端命令：非编辑态拖选文本 → 选中替换（首个 delta 到达时删除 [start,end) 并从 start 插入）。
+/// start/end = 选区在整篇文本的 code-point（char）偏移（左闭右开）。
+#[tauri::command]
+pub fn set_selection(coordinator: tauri::State<'_, Coordinator>, start: usize, end: usize) {
+    coordinator.set_selection(start, end);
 }
 
 /// 前端命令：取消编辑（恢复原始文本，不写 edited_text 到 DB）。
@@ -822,16 +886,14 @@ fn handle_toggle(
                 TranscriptEvent::Final(text) => text,
                 TranscriptEvent::Error(e) => {
                     error!("Streaming finish failed: {}", e);
-                    // 引擎兜底：edited 非空优先（保留编辑），否则 raw
-                    transcript
-                        .edited_display()
-                        .unwrap_or_else(|| transcript.db_text())
+                    // 引擎兜底：finish_text（段模型已含 edited/raw 全部）
+                    transcript.finish_text()
                 }
-                _ => transcript.edited_display().unwrap_or_else(|| transcript.db_text()),
+                _ => transcript.finish_text(),
             };
             pipeline.reset();
             if !final_text.is_empty() {
-                transcript.set_full(&final_text);
+                transcript.apply_engine_full(&final_text);
             }
             info!("Final streaming text: '{}'", transcript.db_text());
             let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
@@ -872,7 +934,7 @@ fn handle_toggle(
 /// 现在的语义：若仍有 pending 的立即润色，进入 `StoppingPolish` 持有 transcript，
 /// `PolishDone` 到达后在 `handle_polish_done` 中走 final 路径，把立即润色结果纳入最终文本。
 ///
-/// **优化**：若 polished 非空且无新增 ASR（has_increase=false），立即润色已覆盖全部文本，
+/// **优化**：若无 Raw 段且非空（has_raw=false），立即润色已覆盖全部文本，
 /// 跳过最终润色（mode=1/2 也跳过），直接 paste，避免平白多一次 LLM 调用。
 fn finalize_after_stop(
     stage: &mut Stage,
@@ -890,12 +952,10 @@ fn finalize_after_stop(
         return;
     }
     // 2. 无 pending：检查是否可以跳过最终润色
-    //    若 polished 非空且无新增 ASR（has_increase=false），立即润色已覆盖全部文本
-    let skip_final_polish = !transcript.polished().is_empty() && !transcript.has_increase();
-    // 3. 句末标点补全 + display_text 计算（与原 final 路径一致）
-    let combined = if let Some(edited) = transcript.edited_display() {
-        edited
-    } else if transcript.full().is_empty() {
+    //    段模型下「已润色覆盖全部」= 无 Raw 段且非空（has_raw=false）。
+    let skip_final_polish = !transcript.finish_text().is_empty() && !transcript.has_raw();
+    // 3. 句末标点补全 + finish_text 计算（与原 final 路径一致）
+    let combined = if transcript.full().is_empty() {
         String::new()
     } else if transcript
         .full()
@@ -917,7 +977,8 @@ fn finalize_after_stop(
         info!("Toggle stop: skip final polish (polished covers all, no increase)");
         let display = transcript.display_text();
         let raw = transcript.db_text();
-        do_paste(stage, &display, transcript.id, &raw, "done", config, app_handle, tx);
+        let segs = transcript.segments_json();
+        do_paste(stage, &display, transcript.id, &raw, &segs, "done", config, app_handle, tx);
     } else {
         // 走原 final 路径（按 polish_mode 决定是否润色）
         start_final_polish_or_paste(stage, &combined, transcript, config, app_handle, tx);
@@ -949,6 +1010,7 @@ fn start_final_polish_or_paste(
                 text,
                 transcript.id,
                 &transcript.db_text(),
+                &transcript.segments_json(),
                 "off",
                 config,
                 app_handle,
@@ -962,12 +1024,16 @@ fn start_final_polish_or_paste(
 
             let id = transcript.id;
             let raw_text = transcript.db_text();
-            let (preserved, to_polish) = transcript.take_polish_input();
+            let segments = transcript.segments_json();
+            // 段模型多段润色：Edited preserve，其余润色（与 spawn_polish_thread 共用转换）。
+            let input = transcript.take_polish_input();
+            let regions = polish_input_to_regions(&input);
 
             *stage = Stage::Polishing {
                 id,
                 raw_text: raw_text.clone(),
-                // Part A 后 text = edited_display（含编辑）或 raw-with-」，失败时 paste 它
+                segments: segments.clone(),
+                // Part A 后 text = finish_text（段模型含 edited/raw 全部）或 raw-with-」，失败时 paste 它
                 fallback_text: text.to_string(),
             };
 
@@ -978,7 +1044,7 @@ fn start_final_polish_or_paste(
             // polishing id 是否匹配，否则丢弃。
             let session_id = id;
             std::thread::spawn(move || {
-                let result = match octopus_llm::polish(preserved.as_deref(), &to_polish, &llm_config) {
+                let result = match octopus_llm::polish_regions(&regions, &llm_config) {
                     Ok(polished) => {
                         if polished.is_empty() {
                             Err("Final polish returned empty".to_string())
@@ -1000,6 +1066,7 @@ fn do_paste(
     text_to_paste: &str,
     id: i64,
     raw_text: &str,
+    segments: &str,
     polish_status: &str,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
@@ -1010,6 +1077,7 @@ fn do_paste(
     *stage = Stage::Pasting {
         id,
         raw_text: raw_text.to_string(),
+        segments: segments.to_string(),
         polished_text: if polish_status == "done" {
             text_to_paste.to_string()
         } else {
@@ -1149,9 +1217,9 @@ fn handle_cloud_streaming_done(
                 );
                 return;
             }
-            // close 返回的是整个 session 的完整文本，非空则 set_full 覆盖
+            // close 返回的是整个 session 的完整文本，非空则 apply_engine_full 喂回（前缀追加；diverted 重算基准）
             match &text {
-                Ok(text) if !text.is_empty() => transcript.set_full(text),
+                Ok(text) if !text.is_empty() => { transcript.apply_engine_full(text); }
                 Ok(_) => {}
                 Err(e) => warn!("CloudStreaming close WSS failed: {}", e),
             }
@@ -1181,10 +1249,11 @@ fn handle_final_polish_done(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
-    let (id, raw_text, fallback_text) = match stage {
+    let (id, raw_text, segments, fallback_text) = match stage {
         Stage::Polishing {
             id,
             raw_text,
+            segments,
             fallback_text,
         } => {
             if *id != session_id {
@@ -1194,7 +1263,7 @@ fn handle_final_polish_done(
                 );
                 return;
             }
-            (*id, raw_text.clone(), fallback_text.clone())
+            (*id, raw_text.clone(), segments.clone(), fallback_text.clone())
         }
         _ => {
             debug!("FinalPolishDone ignored in stage {:?}", stage_name(stage));
@@ -1214,6 +1283,7 @@ fn handle_final_polish_done(
                 &polished,
                 id,
                 &raw_text,
+                &segments,
                 "done",
                 config,
                 app_handle,
@@ -1227,6 +1297,7 @@ fn handle_final_polish_done(
                 &fallback_text,
                 id,
                 &raw_text,
+                &segments,
                 "failed",
                 config,
                 app_handle,
@@ -1285,17 +1356,18 @@ fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<Atomi
 
 /// 启动润色线程
 /// `ignore_mode`=true 时跳过 polish_mode 检查（供「立即润色」用）。
-/// `preserved` 非空时告知 LLM 须原样保留的 edited 文本，仅润色 `to_polish`（新增）部分（spec §12）。
+/// `input.segments` 转多段润色协议（Edited 段 preserve 原样保留，其余润色，spec §12 / §2.C）。
 /// `session_id` = 发起润色时的 transcript.id，原样塞进 PolishDone 回传，供 handle_polish_done
 /// 做跨会话护栏（审查 一1：润色线程不持 transcript 引用，回来时当前 transcript 可能已是新会话）。
 fn spawn_polish_thread(
-    preserved: Option<String>,
-    to_polish: String,
+    input: crate::transcript::PolishInput,
     config: &AppConfig,
     tx: &Sender<Command>,
     ignore_mode: bool,
     session_id: i64,
 ) {
+    // 段模型多段润色：Edited 段 preserve=true（LLM 原样保留），其余待润色。
+    let regions = polish_input_to_regions(&input);
     let llm_config = if ignore_mode {
         crate::config::llm_config_ignore_mode(&config)
     } else {
@@ -1307,7 +1379,7 @@ fn spawn_polish_thread(
     };
     let tx = tx.clone();
     std::thread::spawn(move || {
-        let result = match octopus_llm::polish(preserved.as_deref(), &to_polish, &llm_config) {
+        let result = match octopus_llm::polish_regions(&regions, &llm_config) {
             Ok(polished) => Ok(polished),
             Err(e) => {
                 log::warn!("Polish thread error: {}", e);
@@ -1316,6 +1388,16 @@ fn spawn_polish_thread(
         };
         let _ = tx.send(Command::PolishDone { result, session_id });
     });
+}
+
+/// 把 transcript 的 PolishInput（segments 快照）转成 octopus_llm 多段润色输入。
+/// Edited 段 preserve=true（人工校对，原样保留）；Raw/Polished 段 preserve=false（待润色）。
+/// 两处润色触发点（spawn_polish_thread + 最终润色内联）共用，避免折叠逻辑重复。
+fn polish_input_to_regions(input: &crate::transcript::PolishInput) -> Vec<octopus_llm::PolishRegion> {
+    input.segments.iter().map(|s| octopus_llm::PolishRegion {
+        preserve: s.kind == crate::transcript::SegmentKind::Edited,
+        text: s.text.clone(),
+    }).collect()
 }
 
 /// 停顿驱动润色：流式 silence≥阈值 / 伪流式段边界 → 对完整 ASR 全量润色（mode=2 only）。
@@ -1335,8 +1417,8 @@ fn check_and_trigger_polish(
     {
         return;
     }
-    // 无新增内容（increase 空）→ 跳过
-    if !transcript.has_increase() {
+    // 无 Raw 段（无待润色的新语音）→ 跳过（段模型：has_raw 替代旧 has_increase）
+    if !transcript.has_raw() {
         return;
     }
     // 停顿未达标 → 跳过（流式传真实 silence；伪流式传阈值自动达标）
@@ -1349,10 +1431,9 @@ fn check_and_trigger_polish(
     {
         return;
     }
-    // 取润色输入（编辑态分块：preserved=edited、to_polish=increase；否则全量）+ 标记 pending + 送 LLM
-    let (preserved, to_polish) = transcript.take_polish_input();
-    transcript.mark_polish_pending();
-    spawn_polish_thread(preserved, to_polish, config, tx, false, transcript.id);
+    // 取润色输入（段模型快照）+ 标记 pending（take_polish_input 内部已置 pending）+ 送 LLM
+    let input = transcript.take_polish_input();
+    spawn_polish_thread(input, config, tx, false, transcript.id);
 }
 
 /// 处理 Cancel 命令
@@ -1428,6 +1509,7 @@ fn handle_cancel(
 struct DiscardDbInfo {
     id: i64,
     raw_text: String,
+    segments: String,
     polished_text: Option<String>,
     polish_status: String,
     polish_model: Option<String>,
@@ -1449,15 +1531,15 @@ fn handle_discard(
     }
 
     // 从 transcript 提取 (polished_text, polish_status, polish_model) for Finalize：
-    //   polished 非空 → 入库为 "done"；空 → "off"。
+    //   段模型下「已润色覆盖全部」= 无 Raw 段且非空 → 入库 "done" + finish_text；否则 "off"。
     // 修复：原版硬编码 None / "off"，把已完成的立即润色结果擦掉
     // （用户场景：立即润色→PolishDone 入库→点关闭→Finalize 覆盖 polished=None）。
     let polished_info = |t: &Transcript| -> (Option<String>, String, Option<String>) {
-        let p = t.polished();
-        if p.is_empty() {
-            (None, "off".to_string(), None)
+        let text = t.finish_text();
+        if !text.is_empty() && !t.has_raw() {
+            (Some(text), "done".to_string(), Some(config.polish_llm.clone()))
         } else {
-            (Some(p.to_string()), "done".to_string(), Some(config.polish_llm.clone()))
+            (None, "off".to_string(), None)
         }
     };
 
@@ -1470,6 +1552,7 @@ fn handle_discard(
             Some(DiscardDbInfo {
                 id: transcript.id,
                 raw_text: transcript.db_text(),
+                segments: transcript.segments_json(),
                 polished_text: p,
                 polish_status: s,
                 polish_model: m,
@@ -1481,16 +1564,18 @@ fn handle_discard(
             Some(DiscardDbInfo {
                 id: transcript.id,
                 raw_text: transcript.db_text(),
+                segments: transcript.segments_json(),
                 polished_text: p,
                 polish_status: s,
                 polish_model: m,
             })
         }
         Stage::Polishing { id, raw_text, .. } => {
-            // 最终润色中（非立即润色路径）：polished 尚未产出
+            // 最终润色中（非立即润色路径）：polished 尚未产出；无 transcript 引用，segments 空
             Some(DiscardDbInfo {
                 id: *id,
                 raw_text: raw_text.clone(),
+                segments: "[]".to_string(),
                 polished_text: None,
                 polish_status: "off".to_string(),
                 polish_model: None,
@@ -1501,6 +1586,7 @@ fn handle_discard(
             Some(DiscardDbInfo {
                 id: transcript.id,
                 raw_text: transcript.db_text(),
+                segments: transcript.segments_json(),
                 polished_text: p,
                 polish_status: s,
                 polish_model: m,
@@ -1559,6 +1645,7 @@ fn handle_discard(
             let cmd = DbCommand::Finalize {
                 id: info.id,
                 raw_text: info.raw_text,
+                segments: info.segments,
                 polished_text: info.polished_text,
                 polish_status: info.polish_status,
                 polish_model: info.polish_model,
@@ -1618,18 +1705,20 @@ fn handle_polish_done(
                     warn!("Polish returned empty, keeping previous");
                     transcript.on_polish_failed();
                 } else {
-                    transcript.on_polish_done(polished.clone());
+                    transcript.polish_apply(&polished);
                     let cmd = if transcript.has_edit() {
-                        DbCommand::UpdateEdited {
+                        DbCommand::UpdateEditedSegments {
                             id: transcript.id,
-                            edited_text: polished,
+                            text: transcript.finish_text(),
+                            segments: transcript.segments_json(),
                         }
                     } else {
                         DbCommand::UpdatePolished {
                             id: transcript.id,
-                            text: transcript.polished().to_string(),
+                            text: transcript.finish_text(),
                             status: "done".to_string(),
                             model: Some(config.polish_llm.clone()),
+                            segments: transcript.segments_json(),
                         }
                     };
                     if let Err(e) = get_db_sender().send(cmd) {
@@ -1681,28 +1770,30 @@ fn handle_polish_done(
                 warn!("Polish returned empty, keeping previous");
                 transcript.on_polish_failed();
             } else {
-                // 先折回 transcript（on_polish_done 内部决定写 edited 或 polished）
-                transcript.on_polish_done(polished.clone());
-                // 折回→UpdateEdited（保持 edited_text 与 display 一致）；否则 UpdatePolished（现状）
+                // 段模型回填（polish_apply 内部按 edited 串匹配定位 + 间隙 Polished）
+                transcript.polish_apply(&polished);
+                // 含 Edited 段→UpdateEditedSegments（保持 edited/text/segments 一致）；否则 UpdatePolished（现状）
                 let cmd = if transcript.has_edit() {
-                    DbCommand::UpdateEdited {
+                    DbCommand::UpdateEditedSegments {
                         id: transcript.id,
-                        edited_text: polished,
+                        text: transcript.finish_text(),
+                        segments: transcript.segments_json(),
                     }
                 } else {
                     // 中间润色入库 polished（polish_model 传 config.polish_llm，与 PasteDone 一致，便于统计）
                     DbCommand::UpdatePolished {
                         id: transcript.id,
-                        text: transcript.polished().to_string(),
+                        text: transcript.finish_text(),
                         status: "done".to_string(),
                         model: Some(config.polish_llm.clone()),
+                        segments: transcript.segments_json(),
                     }
                 };
                 if let Err(e) = get_db_sender().send(cmd) {
                     warn!("Queue DB update_polish_result failed: {}", e);
                 }
                 if !transcript.full().is_empty() {
-                    crate::result_window::update_result(app_handle, &transcript.display_text());
+                    crate::result_window::update_result(app_handle, &transcript.display_text(), false, 0);
                 }
             }
         }
@@ -1718,7 +1809,7 @@ fn handle_polish_done(
 
 /// 处理立即润色命令：不管 polish_mode，取当前完整 ASR 文本送 LLM 润色。
 /// 仅在 Streaming / VadSegmented 阶段生效（需有 transcript）；其他阶段忽略。
-/// 与 `check_and_trigger_polish` 区别：不检查 mode/threshold/interval/has_increase，
+/// 与 `check_and_trigger_polish` 区别：不检查 mode/threshold/interval/has_raw，
 /// 直接快照全量文本送 LLM。
 fn handle_polish_now(
     stage: &mut Stage,
@@ -1764,10 +1855,9 @@ fn handle_polish_now(
     if let Err(e) = update_transcription_raw(transcript, &config.asr_engine, "streaming") {
         warn!("PolishNow ensure INSERT failed: {}", e);
     }
-    let (preserved, to_polish) = transcript.take_polish_input();
-    transcript.mark_polish_pending();
-    info!("PolishNow triggered, polishing {} chars", to_polish.chars().count());
-    spawn_polish_thread(preserved, to_polish, config, tx, true, transcript.id);
+    let input = transcript.take_polish_input();
+    info!("PolishNow triggered, polishing {} chars", input.segments.iter().map(|s| s.text.chars().count()).sum::<usize>());
+    spawn_polish_thread(input, config, tx, true, transcript.id);
 }
 
 /// 进入编辑态：仅活跃会话（Streaming/VadSegmented）有效；初始化 edit_buffer = 当前 display。
@@ -1804,14 +1894,16 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
     transcript.commit_edit(text);
     if transcript.db_inserted() {
         let id = transcript.id;
-        if let Err(e) = get_db_sender().send(DbCommand::UpdateEdited {
+        let segments = transcript.segments_json();
+        if let Err(e) = get_db_sender().send(DbCommand::UpdateEditedSegments {
             id,
-            edited_text: text.to_string(),
+            text: text.to_string(),
+            segments,
         }) {
-            warn!("Queue DB UpdateEdited failed: {}", e);
+            warn!("Queue DB UpdateEditedSegments failed: {}", e);
         }
     }
-    crate::result_window::update_result(app_handle, &transcript.display_text());
+    crate::result_window::update_result(app_handle, &transcript.display_text(), false, 0);
     info!("Edit committed ({} chars)", text.chars().count());
 }
 
@@ -1846,30 +1938,36 @@ enum DbCommand {
     Insert {
         id: i64,
         text: String,
+        segments: String,
         engine: String,
         engine_mode: Option<String>,
     },
-    UpdateRaw {
+    UpdateTextSegments {
         id: i64,
         text: String,
+        segments: String,
     },
     UpdatePolished {
         id: i64,
         text: String,
         status: String,
         model: Option<String>,
+        /// 润色后段 JSON（修复 I-1：写 segments 列保持「segments 是真相源」一致）。
+        segments: String,
     },
     Finalize {
         id: i64,
         raw_text: String,
+        segments: String,
         polished_text: Option<String>,
         polish_status: String,
         polish_model: Option<String>,
         duration_ms: Option<i64>,
     },
-    UpdateEdited {
+    UpdateEditedSegments {
         id: i64,
-        edited_text: String,
+        text: String,
+        segments: String,
     },
     /// 取消录音时删除未完成的 DB 记录（审查 Issue 6）
     Delete {
@@ -1890,35 +1988,50 @@ static DB_HANDLE: std::sync::OnceLock<std::sync::Mutex<Option<std::thread::JoinH
 /// 处理单条 DB 命令（主循环与关机排空共用）。
 fn process_db_command(cmd: DbCommand) {
     match cmd {
-        DbCommand::Insert { id, text, engine, engine_mode } => {
+        DbCommand::Insert { id, text, segments, engine, engine_mode } => {
             if let Err(e) = octopus_asr_local::db::insert_transcription_at_id(
                 id,
                 &text,
+                &segments,
                 &engine,
                 engine_mode.as_deref(),
             ) {
                 warn!("Background DB insert failed: {}", e);
             }
         }
-        DbCommand::UpdateRaw { id, text } => {
-            if let Err(e) = octopus_asr_local::db::update_raw_text(id, &text) {
-                warn!("Background DB update_raw_text failed: {}", e);
+        DbCommand::UpdateTextSegments { id, text, segments } => {
+            if let Err(e) =
+                octopus_asr_local::db::update_text_segments(id, &text, &segments)
+            {
+                warn!("Background DB update_text_segments failed: {}", e);
             }
         }
-        DbCommand::UpdatePolished { id, text, status, model } => {
+        DbCommand::UpdatePolished { id, text, status, model, segments } => {
+            // polished_text 与 text 列同值（= finish_text 润色后扁平），与 segments 对应。
             if let Err(e) = octopus_asr_local::db::update_polished(
                 id,
                 &text,
                 &status,
                 model.as_deref(),
+                &segments,
+                &text,
             ) {
                 warn!("Background DB update_polished failed: {}", e);
             }
         }
-        DbCommand::Finalize { id, raw_text, polished_text, polish_status, polish_model, duration_ms } => {
+        DbCommand::Finalize {
+            id,
+            raw_text,
+            segments,
+            polished_text,
+            polish_status,
+            polish_model,
+            duration_ms,
+        } => {
             if let Err(e) = octopus_asr_local::db::finalize_transcription(
                 id,
                 &raw_text,
+                &segments,
                 polished_text.as_deref(),
                 &polish_status,
                 polish_model.as_deref(),
@@ -1927,9 +2040,11 @@ fn process_db_command(cmd: DbCommand) {
                 warn!("Background DB finalize failed: {}", e);
             }
         }
-        DbCommand::UpdateEdited { id, edited_text } => {
-            if let Err(e) = octopus_asr_local::db::update_edited_text(id, &edited_text) {
-                warn!("Background DB update_edited_text failed: {}", e);
+        DbCommand::UpdateEditedSegments { id, text, segments } => {
+            if let Err(e) =
+                octopus_asr_local::db::update_edited_segments(id, &text, &segments)
+            {
+                warn!("Background DB update_edited_segments failed: {}", e);
             }
         }
         DbCommand::Delete { id } => {
@@ -2016,16 +2131,18 @@ fn apply_pipeline_events(
                     warn!("DB ({}) failed: {}", engine_mode, e);
                 }
             }
-            PipelineEvent::Emit { display } => {
+            PipelineEvent::Emit { display, insertion, caret } => {
+                // 把 pipeline 的 insertion 标志 + caret 偏移实传给 result_window（前端跳过 diverted 300ms 延迟
+                // 立即渲染；insertion=true 时用 caret 定位闪烁光标，使其跟在最后插入的文字后右移）。
                 if !display.is_empty() {
-                    crate::result_window::update_result(app_handle, &display);
+                    crate::result_window::update_result(app_handle, &display, insertion, caret);
                 }
             }
             PipelineEvent::Polish { silence } => {
                 check_and_trigger_polish(transcript, silence, config, tx);
             }
             PipelineEvent::Error(e) => {
-                crate::result_window::update_result(app_handle, &e);
+                crate::result_window::update_result(app_handle, &e, false, 0);
             }
         }
     }
@@ -2080,17 +2197,21 @@ fn update_transcription_raw(
         let cmd = DbCommand::Insert {
             id: transcript.id,
             text: transcript.db_text(),
+            segments: transcript.segments_json(),
             engine: engine.to_string(),
             engine_mode: Some(engine_mode.to_string()),
         };
         sender.send(cmd).map_err(|e| format!("Queue DB insert failed: {}", e))?;
         transcript.mark_db_inserted();
     } else {
-        let cmd = DbCommand::UpdateRaw {
+        let cmd = DbCommand::UpdateTextSegments {
             id: transcript.id,
             text: transcript.db_text(),
+            segments: transcript.segments_json(),
         };
-        sender.send(cmd).map_err(|e| format!("Queue DB update_raw failed: {}", e))?;
+        sender
+            .send(cmd)
+            .map_err(|e| format!("Queue DB update_text_segments failed: {}", e))?;
     }
     Ok(())
 }

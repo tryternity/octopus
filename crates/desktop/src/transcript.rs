@@ -1,493 +1,655 @@
 // crates/desktop/src/transcript.rs
-//! 识别过程文本状态机：统一管理原生(raw)/润色(polished)/增量(increase)三文本。
+//! 识别过程文本状态机：段（segment）模型。
 //!
-//! 内部用 `full`（当前完整 ASR）+ `raw_len`（上次停顿快照的 char 长度）派生 raw/increase：
-//! - raw      = full[..raw_len]   （停顿快照，润色基准）
-//! - increase = full[raw_len..]   （停顿后新增）
-//! 停顿触发润色时 raw_len 推进到 full 长度，increase 自动清空。
-//! mode=0/1 不做中间润色，display/db 直接用 full。
+//! `segments` = 结构化真相源（`Vec<Segment>`，每段带 `kind`）；`caret_gap` = 新语音生长缝隙
+//! （0..=segments.len()，==len 即末尾追加）。`finish_text()` 段扁平纯文本（= display = 落库搜索
+//! = clipboard，派生）。默认 `segments=[]`+`caret_gap=0` 等价旧空文档；`caret_gap==len` 等价
+//! 旧末尾追加（零回归）。润色全篇一次：edited 冻结、raw/polished 重润（best-effort 串匹配回填）。
 
 use crate::config::PolishMode;
 use std::time::Instant;
 
+/// 段类型。后态覆盖前态：Raw → Polished → Edited。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SegmentKind { Raw, Polished, Edited }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Segment { pub kind: SegmentKind, pub text: String }
+
+/// 给 octopus_llm 的润色输入（segments 快照）。edited 段标 preserve，其余待润色。
+#[derive(Debug, Clone)]
+pub struct PolishInput { pub segments: Vec<Segment> }
+
 pub struct Transcript {
-    /// 识别开始时刻毫秒时间戳（DB 主键 + 时长计算基准）
     pub id: i64,
     mode: PolishMode,
-    /// 当前完整 ASR（流式 set_full / 伪流式 append_segment）
-    full: String,
-    /// 上次停顿快照的 char 长度（raw 的边界）
-    raw_len: usize,
-    /// 对 raw 的润色结果（仅 mode=2 中间润色 / 各 mode 最终润色后填值）
-    polished: String,
-    /// 用户编辑后的 committed 文本（空 = 未编辑；非空时覆盖 polished/raw，优先级最高）。
-    edited: String,
+    segments: Vec<Segment>,
+    /// 新语音生长缝隙，0..=segments.len()。
+    caret_gap: usize,
+    /// 引擎累积全量，仅作 delta 提取基准。不显示、不落库。
+    engine_cumulative: String,
+    engine_consumed_chars: usize,
+    /// diverted（引擎纠正早前文本）时，新 full 与已展示 finish_text 的 LCP 之后的差异。
+    /// 不立即展示（避免引擎抖动），下次 apply_engine_full 时连同本次 delta 补发。
+    diverted_pending: String,
+    /// 选中替换待删范围（扁平 char [start,end)）。set_selection 记录，apply_engine_full
+    /// 首个非空 delta 或 take_polish_input 消费时真删。运行时态，不入库。
+    pending_delete: Option<(usize, usize)>,
     last_polish_time: Instant,
     polish_pending: bool,
-    /// take_polish_input 时 full 的 char 长度（on_polish_done 时推进 raw_len 到此值）。
-    /// 避免润色 pending 期间 display_text 因 raw_len 已推进而丢失 increase（flicker bug）。
-    polish_snapshot_len: usize,
-    /// 是否已 INSERT 过 DB（首次有文本时 INSERT 后置 true，之后走 UPDATE）
+    /// 润色发起时的 segments 快照（PolishDone 回填比对用）。
+    polish_snapshot: Vec<Segment>,
+    /// 润色发起时的 caret char offset（PolishDone 后恢复光标到同位置）。
+    polish_caret_offset: usize,
+    /// 润色发起时 caret 是否在末尾（caret_gap==segments.len()）。
+    /// true → polish 后 caret 停新末尾；false → 精确恢复 char offset（中插态）。
+    polish_caret_at_tail: bool,
+    /// pending 期间缓存的新 delta（pending 不写 segments，PolishDone 后 flush）。
+    pending_delta: String,
     db_inserted: bool,
 }
 
 impl Transcript {
     pub fn new(id: i64, mode: PolishMode) -> Self {
         Self {
-            id,
-            mode,
-            full: String::new(),
-            raw_len: 0,
-            polished: String::new(),
-            edited: String::new(),
-            last_polish_time: Instant::now(),
-            polish_pending: false,
-            polish_snapshot_len: 0,
-            db_inserted: false,
+            id, mode, segments: Vec::new(), caret_gap: 0,
+            engine_cumulative: String::new(), engine_consumed_chars: 0, diverted_pending: String::new(),
+            pending_delete: None,
+            last_polish_time: Instant::now(), polish_pending: false,
+            polish_snapshot: Vec::new(), polish_caret_offset: 0, polish_caret_at_tail: true,
+            pending_delta: String::new(), db_inserted: false,
         }
     }
 
-    pub fn db_inserted(&self) -> bool {
-        self.db_inserted
+    pub fn db_inserted(&self) -> bool { self.db_inserted }
+    pub fn mark_db_inserted(&mut self) { self.db_inserted = true; }
+
+    /// 段顺序拼接 → 纯文本（= display = 落库搜索 = clipboard）。派生。
+    pub fn finish_text(&self) -> String {
+        self.segments.iter().map(|s| s.text.as_str()).collect()
+    }
+    /// 兼容旧名；段模型下 == finish_text。
+    pub fn display_text(&self) -> String { self.finish_text() }
+    /// 兼容旧名（pipeline/coordinator 调用点过渡用）；== finish_text。
+    pub fn full(&self) -> String { self.finish_text() }
+    /// 兼容旧名；== finish_text。
+    pub fn db_text(&self) -> String { self.finish_text() }
+
+    /// 引擎累积全量 → 取尾部 delta → 在 caret_gap 生长。返回是否变化（delta 非空）。
+    /// diverted（非前缀，引擎纠正早前文本）→ 新 full 与已展示 finish_text 的 LCP 之后差异
+    /// 暂存 diverted_pending（不立即展示，避免抖动），重算基准；下次 apply 时连同补发。
+    /// （不回退已展示——no rollback。）
+    pub fn apply_engine_full(&mut self, full: &str) -> bool {
+        // 先 flush 上次 diverted 暂存（连同本次一起处理）
+        let mut combined_delta;
+        let is_prefix = full.starts_with(self.engine_cumulative.as_str());
+        if is_prefix {
+            combined_delta = full.chars().skip(self.engine_consumed_chars).collect::<String>();
+        } else {
+            // diverted：算新 full 与当前 finish_text 的 LCP，之后的差异暂存
+            let shown = self.finish_text();
+            let lcp = common_prefix_len(&shown, full);
+            let diff: String = full.chars().skip(lcp).collect();
+            self.diverted_pending.push_str(&diff);
+            self.engine_cumulative = full.to_string();
+            self.engine_consumed_chars = full.chars().count();
+            return false; // 当次不展示（diverted 延迟确认）
+        }
+        self.engine_cumulative = full.to_string();
+        self.engine_consumed_chars = full.chars().count();
+        // flush diverted_pending（若有）到本次 delta 前
+        if !self.diverted_pending.is_empty() {
+            let dp = std::mem::take(&mut self.diverted_pending);
+            let mut s = dp;
+            s.push_str(&combined_delta);
+            combined_delta = s;
+        }
+        if combined_delta.is_empty() { return false; }
+        // 选中替换：首个非空 delta 插入前，删除 set_selection 记录的待删范围。
+        if let Some((s, e)) = self.pending_delete.take() {
+            self.delete_range(s, e);
+        }
+        if self.polish_pending { self.pending_delta.push_str(&combined_delta); }
+        else { self.push_delta_at_caret(&combined_delta); }
+        true
     }
 
-    pub fn mark_db_inserted(&mut self) {
-        self.db_inserted = true;
-    }
-
-    /// 流式：设置当前完整 ASR（引擎 accept_samples/flush 返回全量）。
-    pub fn set_full(&mut self, text: &str) {
-        self.full = text.to_string();
-    }
-
-    /// 伪流式：追加一段识别文本（delta）。
+    /// VadSegmented append_segment（delta 直接生长，不经 engine_cumulative）。
     pub fn append_segment(&mut self, delta: &str) {
-        self.full.push_str(delta);
+        if delta.is_empty() { return; }
+        if self.polish_pending { self.pending_delta.push_str(delta); }
+        else { self.push_delta_at_caret(delta); }
     }
 
-    /// 当前完整 ASR（= raw + increase）。
-    pub fn full(&self) -> &str {
-        &self.full
-    }
-
-    /// 停顿后增量（仅 mode=2 有意义；mode=0/1 恒空，符合 spec §2.2 不变量）。
-    #[cfg(test)]
-    pub fn increase(&self) -> String {
-        if self.mode == PolishMode::Intermediate {
-            self.full.chars().skip(self.raw_len).collect()
+    /// 在 caret_gap 处确保有 Raw 段并追加 delta：
+    /// - 前邻段（caret_gap-1）为 Raw → 追加到该段。
+    /// - 否则插入一条 Raw 段到 caret_gap，caret_gap 后移到新段之后。
+    fn push_delta_at_caret(&mut self, delta: &str) {
+        if delta.is_empty() { return; }
+        let gap = self.caret_gap.min(self.segments.len());
+        if gap > 0 && self.segments[gap - 1].kind == SegmentKind::Raw {
+            self.segments[gap - 1].text.push_str(delta);
         } else {
-            String::new()
+            self.segments.insert(gap, Segment { kind: SegmentKind::Raw, text: delta.to_string() });
+            self.caret_gap = gap + 1;
         }
     }
 
-    /// 检查是否有新增内容（避免分配 String 的开销）
-    pub fn has_increase(&self) -> bool {
-        self.mode == PolishMode::Intermediate && self.full.chars().count() > self.raw_len
-    }
-
-    /// 取润色输入并记录快照边界（不立即推进 raw_len）。
-    /// - has_edit：(Some(edited), increase) —— 已确认=edited（LLM 须原样保留），待润色=increase（新增）
-    /// - 否则：(None, full) —— 全量原始 ASR（保持现状）
-    ///
-    /// raw_len 推进延迟到 on_polish_done，避免润色 pending 期间 display_text
-    /// 因 raw_len 已推进而丢失 increase（展示区文字变少的 flicker bug）。
-    pub fn take_polish_input(&mut self) -> (Option<String>, String) {
-        let preserved = if self.has_edit() {
-            Some(self.edited.clone())
-        } else {
-            None
-        };
-        let to_polish = if self.has_edit() {
-            self.full.chars().skip(self.raw_len).collect()
-        } else {
-            self.full.clone()
-        };
-        self.polish_snapshot_len = self.full.chars().count();
-        (preserved, to_polish)
-    }
-
-    /// 润色完成：
-    /// - has_edit：折回。edited 为主展示层；同步写 polished，保证空提交回退（display 优先级链 edited ≻ polished ≻ raw）
-    ///   时不丢最新润色结果（spec §12）。
-    /// - 否则：写 polished（raw_len 已在 take_polish_input 推进）。
-    pub fn on_polish_done(&mut self, result: String) {
-        if self.has_edit() {
-            // 折回：edited 为主展示层；同步写 polished，保证空提交回退时不丢最新润色结果（spec §12）
-            self.edited = result.clone();
-            self.polished = result;
-        } else {
-            self.polished = result;
+    /// 在 char_off 处劈段，返回劈后 gap index（落段内→劈成两段返回 i+1；落段界→返回 i；
+    /// 超出末尾→返回 segments.len()）。幂等：char_off 已在段界则不重复劈。set_caret 与
+    /// delete_range 共用（DRY）。
+    fn split_at(&mut self, char_off: usize) -> usize {
+        let mut acc = 0usize;
+        for (i, seg) in self.segments.iter().enumerate() {
+            let len = seg.text.chars().count();
+            if char_off < acc + len {
+                if char_off == acc {
+                    return i;
+                }
+                let rel = char_off - acc;
+                let chars: Vec<char> = seg.text.chars().collect();
+                let left: String = chars[..rel].iter().collect();
+                let right: String = chars[rel..].iter().collect();
+                let kind = seg.kind;
+                self.segments[i] = Segment { kind, text: left };
+                self.segments.insert(i + 1, Segment { kind, text: right });
+                return i + 1;
+            }
+            acc += len;
         }
-        // 推进 raw_len 到 take_polish_input 时的快照边界——
-        // 延迟推进保证 pending 期间 display_text 不变（increase 不丢）
-        self.raw_len = self.polish_snapshot_len;
+        self.segments.len()
+    }
+
+    /// 前端点击 → char offset → 定位光标（= 取消待删选区）。落段内→劈段；落段界→置 gap。clamp [0,len]。
+    pub fn set_caret(&mut self, char_off: usize) {
+        self.caret_gap = self.split_at(char_off);
+        self.pending_delete = None;
+    }
+
+    /// 删除扁平 char 范围 [start,end)。先 split_at(start) 再 split_at(end)，drain 中间段，
+    /// caret_gap 落到 start 位置。split_at 幂等（start 已段界不重复劈）。
+    fn delete_range(&mut self, start: usize, end: usize) {
+        let g1 = self.split_at(start);
+        let g2 = self.split_at(end);
+        if g1 < g2 {
+            self.segments.drain(g1..g2);
+        }
+        self.caret_gap = g1.min(self.segments.len());
+    }
+
+    /// 选中替换：记录待删范围 + 劈 caret_gap 到 start（**不立即删字**，保留浏览器原生高亮
+    /// 反馈直到开口）。apply_engine_full 首个非空 delta / take_polish_input 时真删。
+    pub fn set_selection(&mut self, start: usize, end: usize) {
+        self.pending_delete = Some((start, end));
+        self.caret_gap = self.split_at(start);
+    }
+
+    /// 当前 caret 在 finish_text 的 char offset（前端光标像素定位用）。
+    pub fn caret_char_offset(&self) -> usize {
+        let gap = self.caret_gap.min(self.segments.len());
+        self.segments[..gap].iter().map(|s| s.text.chars().count()).sum()
+    }
+
+    /// 是否处于中间插入态（caret_gap < 段数）。pipeline Emit insertion 标志用。
+    pub fn is_inserting(&self) -> bool { self.caret_gap < self.segments.len() }
+
+    /// 编辑提交：整篇压成一条 Edited；raw/polished 清零。空串→清空。
+    pub fn commit_edit(&mut self, flat: &str) {
+        self.pending_delete = None;
+        if flat.is_empty() { self.segments.clear(); self.caret_gap = 0; return; }
+        self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() }];
+        self.caret_gap = 1;
+    }
+
+    /// 是否含 Raw 段（mode=2 中间润色触发判定，替代旧 has_increase）。
+    pub fn has_raw(&self) -> bool { self.segments.iter().any(|s| s.kind == SegmentKind::Raw) }
+
+    /// 是否含 Edited 段（替代旧 has_edit，PolishDone 落库分支用）。
+    pub fn has_edit(&self) -> bool { self.segments.iter().any(|s| s.kind == SegmentKind::Edited) }
+
+    /// 取润色输入：快照 segments + 记 caret offset/末尾态 + 标记 pending。
+    pub fn take_polish_input(&mut self) -> PolishInput {
+        // 选中替换：润色前删除待删范围，避免快照含选中旧字。
+        if let Some((s, e)) = self.pending_delete.take() {
+            self.delete_range(s, e);
+        }
+        self.polish_snapshot = self.segments.clone();
+        self.polish_caret_offset = self.caret_char_offset();
+        self.polish_caret_at_tail = self.caret_gap >= self.segments.len();
+        self.polish_pending = true;
+        PolishInput { segments: self.polish_snapshot.clone() }
+    }
+
+    /// 润色完成回填：snapshot 的 edited 段在 full 里串匹配定位 → Edited；间隙 → Polished。
+    /// 恢复 caret：发起时末尾态→停新末尾；中插态→精确恢复 char offset。flush pending_delta。
+    pub fn polish_apply(&mut self, full: &str) {
+        let snapshot = std::mem::take(&mut self.polish_snapshot);
+        let caret_off = self.polish_caret_offset;
+        let at_tail = self.polish_caret_at_tail;
         self.polish_pending = false;
+        self.segments = rebuild_after_polish(&snapshot, full);
+        if at_tail {
+            self.caret_gap = self.segments.len();
+        } else {
+            let total = self.finish_text().chars().count();
+            self.set_caret(caret_off.min(total));
+        }
+        let pending = std::mem::take(&mut self.pending_delta);
+        if !pending.is_empty() { self.push_delta_at_caret(&pending); }
         self.last_polish_time = Instant::now();
     }
 
-    /// 润色失败：保持 polished 不变，清 pending。
+    /// 润色失败：清 pending；flush pending_delta（保留新语音）。segments 不变。
     pub fn on_polish_failed(&mut self) {
         self.polish_pending = false;
+        self.pending_delete = None;
+        self.polish_snapshot.clear();
+        let pending = std::mem::take(&mut self.pending_delta);
+        if !pending.is_empty() { self.push_delta_at_caret(&pending); }
     }
 
-    /// 用户提交编辑：edited = 文本，raw_len 推进到 full 末尾（increase 清空），full（raw）不变。
-    /// 空串 → 清空 edited（回退到 polished/raw）。
-    pub fn commit_edit(&mut self, text: &str) {
-        if text.is_empty() {
-            self.edited.clear();
-        } else {
-            self.edited = text.to_string();
-            self.raw_len = self.full.chars().count();
-        }
-    }
-
-    /// 是否已编辑（edited 非空）。
-    pub fn has_edit(&self) -> bool {
-        !self.edited.is_empty()
-    }
-
-    /// edited 文本（未编辑返回 None）。
-    #[allow(dead_code)] // 合理访问器（对应 DB edited_text 列）；生产路径用 has_edit/display，测试用此
-    pub fn edited_text(&self) -> Option<&str> {
-        if self.edited.is_empty() {
-            None
-        } else {
-            Some(&self.edited)
-        }
-    }
-
-    /// 停止时喂给「无润色粘贴/兜底」的文本。
-    /// edited 非空 → display（用户编辑结果 + 新增，不补标点）。
-    /// 否则 None → 调用方走原 raw 逻辑（db_text + 按需补「。」）。
-    pub fn edited_display(&self) -> Option<String> {
-        if self.edited.is_empty() {
-            None
-        } else {
-            Some(self.display_text())
-        }
-    }
-
-    pub fn polish_pending(&self) -> bool {
-        self.polish_pending
-    }
-
+    pub fn polish_pending(&self) -> bool { self.polish_pending }
+    /// 标记润色 pending（快照 segments + caret）。
+    /// 段模型下 take_polish_input 内部已内置 pending 标记 + 快照，本方法当前无调用方。
+    /// 保留：供未来「直接标记 pending（不取输入）」场景复用快照逻辑。
+    #[allow(dead_code)]
     pub fn mark_polish_pending(&mut self) {
+        self.polish_snapshot = self.segments.clone();
+        self.polish_caret_offset = self.caret_char_offset();
+        self.polish_caret_at_tail = self.caret_gap >= self.segments.len();
         self.polish_pending = true;
     }
+    #[allow(dead_code)] pub fn clear_polish_pending(&mut self) { self.polish_pending = false; }
+    pub fn last_polish_time(&self) -> Instant { self.last_polish_time }
+    pub fn set_mode(&mut self, mode: PolishMode) { self.mode = mode; }
 
-    #[allow(dead_code)] // 合理访问器；生产路径已改为等待 pending（StoppingPolish）而非清除
-    pub fn clear_polish_pending(&mut self) {
-        self.polish_pending = false;
+    /// 段序列化给 DB（JSON）。 [{"kind":"raw|polished|edited","text":"..."}]
+    pub fn segments_json(&self) -> String {
+        serde_json::to_string(
+            &self.segments.iter().map(|s| {
+                let k = match s.kind {
+                    SegmentKind::Raw => "raw", SegmentKind::Polished => "polished", SegmentKind::Edited => "edited",
+                };
+                serde_json::json!({ "kind": k, "text": s.text })
+            }).collect::<Vec<_>>(),
+        ).unwrap_or_else(|_| "[]".to_string())
     }
+}
 
-    pub fn last_polish_time(&self) -> Instant {
-        self.last_polish_time
+/// 润色回填：snapshot + LLM 输出 full → 新 segments（edited 串匹配定位，间隙 Polished，无 Raw）。
+fn rebuild_after_polish(snapshot: &[Segment], full: &str) -> Vec<Segment> {
+    let edited: Vec<&str> = snapshot.iter()
+        .filter(|s| s.kind == SegmentKind::Edited).map(|s| s.text.as_str()).collect();
+    if edited.is_empty() {
+        return vec![Segment { kind: SegmentKind::Polished, text: full.to_string() }];
     }
+    let full_chars: Vec<char> = full.chars().collect();
+    let mut segs = Vec::new();
+    let mut cursor = 0usize;
+    for ed in &edited {
+        let ed_chars: Vec<char> = ed.chars().collect();
+        match find_from(&full_chars, &ed_chars, cursor) {
+            Some(start) => {
+                if start > cursor {
+                    let gap: String = full_chars[cursor..start].iter().collect();
+                    if !gap.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: gap }); }
+                }
+                let end = start + ed_chars.len();
+                segs.push(Segment { kind: SegmentKind::Edited, text: full_chars[start..end].iter().collect() });
+                cursor = end;
+            }
+            None => {
+                // 匹配不到（LLM 擅改）：剩余全作 Polished，停止（best-effort）
+                if cursor < full_chars.len() {
+                    segs.push(Segment { kind: SegmentKind::Polished, text: full_chars[cursor..].iter().collect() });
+                    cursor = full_chars.len();
+                }
+                break;
+            }
+        }
+    }
+    if cursor < full_chars.len() {
+        let rest: String = full_chars[cursor..].iter().collect();
+        if !rest.is_empty() { segs.push(Segment { kind: SegmentKind::Polished, text: rest }); }
+    }
+    segs
+}
 
-    /// 运行时更新润色模式（工具栏 live 切换用）。Coordinator 单线程访问，无需同步。
-    pub fn set_mode(&mut self, mode: PolishMode) {
-        self.mode = mode;
+/// chars 里从 from 找子串 sub（返回起始 char index）。
+fn find_from(chars: &[char], sub: &[char], from: usize) -> Option<usize> {
+    if sub.is_empty() { return Some(from); }
+    let mut i = from;
+    while i + sub.len() <= chars.len() {
+        if chars[i..i + sub.len()] == *sub { return Some(i); }
+        i += 1;
     }
+    None
+}
 
-    /// 展示文本：committed 前缀 + increase。
-    /// committed 优先级：edited ≻ polished ≻ full[..raw_len]。
-    /// edited 为空时与旧行为等价（full[..raw_len] + full[raw_len..] = full）。
-    pub fn display_text(&self) -> String {
-        let committed = if !self.edited.is_empty() {
-            self.edited.clone()
-        } else if !self.polished.is_empty() {
-            self.polished.clone()
-        } else {
-            self.full.chars().take(self.raw_len).collect()
-        };
-        let inc: String = self.full.chars().skip(self.raw_len).collect();
-        let mut s = committed;
-        s.push_str(&inc);
-        s
-    }
-
-    /// 落库文本：完整 ASR（raw + increase）。
-    pub fn db_text(&self) -> String {
-        self.full.clone()
-    }
-
-    /// polished（最终润色后有值；否则空）。
-    pub fn polished(&self) -> &str {
-        &self.polished
-    }
+/// 两字符串的公共前缀 char 长度。
+fn common_prefix_len(a: &str, b: &str) -> usize {
+    a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    fn raw(t: &str) -> Segment { Segment { kind: SegmentKind::Raw, text: t.into() } }
+    fn pol(t: &str) -> Segment { kind_seg(SegmentKind::Polished, t) }
+    fn edt(t: &str) -> Segment { kind_seg(SegmentKind::Edited, t) }
+    fn kind_seg(k: SegmentKind, t: &str) -> Segment { Segment { kind: k, text: t.into() } }
+
+    // ── 默认零回归 ──
     #[test]
-    fn mode_disabled_display_is_full() {
-        let mut t = Transcript::new(1, PolishMode::Disabled);
-        t.set_full("你好世界");
-        assert_eq!(t.display_text(), "你好世界");
-        assert_eq!(t.db_text(), "你好世界");
-        assert_eq!(t.increase(), ""); // mode=0 恒空（spec §2.2）
-        assert_eq!(t.db_inserted(), false);
+    fn empty_default_finish_empty() {
+        let t = Transcript::new(1, PolishMode::Intermediate);
+        assert_eq!(t.finish_text(), "");
+        assert_eq!(t.display_text(), "");
+        assert!(!t.is_inserting());
+        assert!(!t.has_raw());
     }
 
     #[test]
-    fn mode_finalonly_display_is_full() {
-        let mut t = Transcript::new(2, PolishMode::FinalOnly);
-        t.append_segment("第一段");
-        t.append_segment("第二段");
-        assert_eq!(t.display_text(), "第一段第二段");
-        assert_eq!(t.db_text(), "第一段第二段");
+    fn apply_engine_full_appends_at_tail_by_default() {
+        // 默认 caret_gap==0==len：首 delta 新建 Raw 段，后续追加同段（≡ 旧末尾追加）
+        let mut t = Transcript::new(2, PolishMode::Intermediate);
+        assert!(t.apply_engine_full("你好"));
+        assert!(t.apply_engine_full("你好世界"));
+        assert_eq!(t.finish_text(), "你好世界");
+        assert!(!t.is_inserting()); // caret_gap==len
     }
 
     #[test]
-    fn mode_intermediate_snapshot_and_merge() {
+    fn apply_engine_full_diverted_buffers_and_replays_next_tick() {
+        // diverted（非前缀纠正）→ 当次不展示（buffered），下次前缀 apply 时连同 delta 一次性补发。
         let mut t = Transcript::new(3, PolishMode::Intermediate);
-        // 说了一段
-        t.set_full("你好世界");
-        assert_eq!(t.display_text(), "你好世界"); // polished 空，increase=full
-
-        // 停顿快照 → 送润色
-        let (preserved, snap) = t.take_polish_input();
-        assert_eq!(preserved, None);
-        assert_eq!(snap, "你好世界");
-        // raw_len 未推进——pending 期间 increase 不丢（flicker 修复）
-        assert_eq!(t.increase(), "你好世界");
-
-        // 润色完成 → raw_len 推进，increase 清空
-        t.on_polish_done("你好，世界。".into());
-        assert_eq!(t.display_text(), "你好，世界。"); // polished + 空 increase
-        assert_eq!(t.increase(), "");
+        t.apply_engine_full("你好");
+        let changed = t.apply_engine_full("替换全文"); // 非「你好」前缀 = diverted
+        assert!(!changed);
+        assert_eq!(t.finish_text(), "你好"); // 不回退已展示
+        // 下次前缀 apply：pending「替换全文」+ 新 delta「后」拼成「替换全文后」追加
+        assert!(t.apply_engine_full("替换全文后"));
+        assert_eq!(t.finish_text(), "你好替换全文后");
     }
 
     #[test]
-    fn mode_intermediate_increase_after_snapshot() {
-        // 验证：快照后新内容进 increase，display = polished + increase
-        let mut t = Transcript::new(4, PolishMode::Intermediate);
-        t.set_full("原始文本");
-        let _ = t.take_polish_input();
-        t.on_polish_done("润色文本".into());
-
-        // 流式：raw 前缀稳定，full 追加新内容
-        t.set_full("原始文本新增部分");
-        assert_eq!(t.increase(), "新增部分"); // raw 前缀稳定，新增进 increase
-        assert_eq!(t.display_text(), "润色文本新增部分");
-    }
-
-    #[test]
-    fn append_segment_accumulates() {
-        let mut t = Transcript::new(5, PolishMode::Intermediate);
-        t.append_segment("A");
-        t.append_segment("B");
-        assert_eq!(t.full(), "AB");
-    }
-
-    #[test]
-    fn polish_failed_keeps_polished() {
-        let mut t = Transcript::new(6, PolishMode::Intermediate);
-        t.set_full("原文");
-        let _ = t.take_polish_input();
-        t.on_polish_done("润色".into());
-        t.mark_polish_pending();
-        t.on_polish_failed(); // 失败
-        assert_eq!(t.polished(), "润色"); // 保持上次值
-        assert!(!t.polish_pending());
-    }
-
-    #[test]
-    fn empty_full_initial_state() {
-        let t = Transcript::new(10, PolishMode::Intermediate);
-        assert_eq!(t.display_text(), ""); // 空 full → display 空
-        assert_eq!(t.full(), "");
-        assert_eq!(t.increase(), ""); // increase 空
-        assert!(!t.polish_pending());
-        assert!(!t.db_inserted());
-
-        // 空快照：返回空串，raw_len 保持 0
-        let mut t2 = Transcript::new(11, PolishMode::Intermediate);
-        let (_preserved, snap) = t2.take_polish_input();
-        assert_eq!(snap, "");
-        assert_eq!(t2.increase(), "");
-    }
-
-    #[test]
-    fn consecutive_snapshots_overwrite_polished() {
-        let mut t = Transcript::new(12, PolishMode::Intermediate);
-
-        // 第一次停顿快照 + 润色
-        t.set_full("第一段");
-        let (_p1, s1) = t.take_polish_input();
-        assert_eq!(s1, "第一段");
-        t.on_polish_done("润色一".into());
-        assert_eq!(t.display_text(), "润色一"); // polished + 空 increase
-
-        // 继续说 → increase 出现
-        t.set_full("第一段第二段");
-        assert_eq!(t.increase(), "第二段");
-        assert_eq!(t.display_text(), "润色一第二段");
-
-        // 第二次停顿快照 + 润色（覆盖第一次 polished）
-        let (_p2, s2) = t.take_polish_input();
-        assert_eq!(s2, "第一段第二段");
-        // raw_len 未推进——pending 期间 increase 不丢
-        assert_eq!(t.increase(), "第二段");
-        t.on_polish_done("润色一二".into());
-        assert_eq!(t.display_text(), "润色一二"); // 第二次润色覆盖第一次
-    }
-
-    #[test]
-    fn set_mode_changes_intermediate_behavior_live() {
-        // 起始 mode=2（中间润色）：说一段 + 快照 + 润色
-        let mut t = Transcript::new(20, PolishMode::Intermediate);
-        t.set_full("原文");
-        let _ = t.take_polish_input();
-        t.on_polish_done("润色".into());
-        assert_eq!(t.display_text(), "润色");
-
-        // 继续说 → increase 出现（mode=2 行为）
-        t.set_full("原文新增");
-        assert_eq!(t.increase(), "新增");
-        assert_eq!(t.display_text(), "润色新增");
-
-        // live 切到 mode=0（关闭）：increase（公开 API）立即恒空；
-        // display 仍展示 polished + 新增（polished 非空时 display 不看 mode）
-        t.set_mode(PolishMode::Disabled);
-        assert_eq!(t.increase(), "");
-        assert_eq!(t.display_text(), "润色新增"); // polished + display_increase
-    }
-
-    #[test]
-    fn commit_edit_sets_edited_and_advances_boundary() {
-        let mut t = Transcript::new(30, PolishMode::Intermediate);
-        t.set_full("你好世界");
-        let _ = t.take_polish_input();
-        t.on_polish_done("你好，世界。".into());
-        assert_eq!(t.display_text(), "你好，世界。");
-
-        t.commit_edit("你好世界（手改）");
-        assert_eq!(t.edited_text(), Some("你好世界（手改）"));
-        assert!(t.has_edit());
-        // raw_len 推进到 full 末尾 → increase 清空
-        assert_eq!(t.display_text(), "你好世界（手改）");
-    }
-
-    #[test]
-    fn commit_edit_preserves_raw_and_appends_new() {
+    fn apply_engine_full_consecutive_diverted_accumulate_pending() {
+        // 连续两次 diverted：pending 累积，第三次前缀 apply 一次性补发全部累积。
         let mut t = Transcript::new(31, PolishMode::Intermediate);
-        t.set_full("原文");
-        t.commit_edit("原文（手改）");
-        assert_eq!(t.full(), "原文"); // raw（full）原样保留
-        t.set_full("原文新增");
-        assert_eq!(t.display_text(), "原文（手改）新增"); // edited + 新增
+        t.apply_engine_full("你好");
+        assert!(!t.apply_engine_full("甲乙")); // diverted #1：pending = "甲乙"
+        assert_eq!(t.finish_text(), "你好");
+        assert!(!t.apply_engine_full("丙丁")); // diverted #2：pending = "甲乙丙丁"
+        assert_eq!(t.finish_text(), "你好");
+        // 第三次是 "丙丁" 的前缀扩展：delta = "后"，flush pending 在前 → "甲乙丙丁后"
+        assert!(t.apply_engine_full("丙丁后"));
+        assert_eq!(t.finish_text(), "你好甲乙丙丁后");
     }
 
     #[test]
-    fn edited_takes_priority_over_polished_and_raw() {
+    fn apply_engine_full_diverted_then_prefix_combines_pending_and_delta() {
+        // diverted pending + 新前缀 delta 正确拼接顺序（pending 在前，delta 在后）。
         let mut t = Transcript::new(32, PolishMode::Intermediate);
-        t.set_full("raw文本");
-        let _ = t.take_polish_input();
-        t.on_polish_done("polished文本".into());
-        t.commit_edit("edited文本".into());
-        assert_eq!(t.display_text(), "edited文本"); // edited ≻ polished ≻ raw
+        t.apply_engine_full("开头");
+        assert!(!t.apply_engine_full("纠正")); // diverted：pending = "纠正"
+        assert_eq!(t.finish_text(), "开头");
+        // 新 full = "纠正" + "尾巴"：combined = pending("纠正") + delta("尾巴") = "纠正尾巴"
+        assert!(t.apply_engine_full("纠正尾巴"));
+        assert_eq!(t.finish_text(), "开头纠正尾巴");
     }
 
     #[test]
-    fn empty_commit_clears_edit_falls_back() {
-        let mut t = Transcript::new(33, PolishMode::Intermediate);
-        t.set_full("原文");
-        t.commit_edit("手改".into());
-        assert!(t.has_edit());
+    fn append_segment_vad_accumulates() {
+        let mut t = Transcript::new(4, PolishMode::FinalOnly);
+        t.append_segment("甲");
+        t.append_segment("乙");
+        assert_eq!(t.finish_text(), "甲乙");
+    }
+
+    // ── set_caret（劈段/段界/clamp）──
+    #[test]
+    fn set_caret_at_segment_boundary_sets_gap() {
+        let mut t = Transcript::new(5, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_caret(2); // 段界（「你好」|「世界」在单 Raw 段内 offset 2）
+        assert!(t.is_inserting());
+        assert_eq!(t.caret_char_offset(), 2);
+        t.apply_engine_full("你好世界中间");
+        // 新 delta 在 offset 2 生长：前「你好」+ 新「中间」+ 后「世界」
+        assert_eq!(t.finish_text(), "你好中间世界");
+    }
+
+    #[test]
+    fn set_caret_splits_edited_segment() {
+        let mut t = Transcript::new(6, PolishMode::Intermediate);
+        t.commit_edit("abcdef"); // 单 Edited 段，caret_gap=1
+        t.set_caret(3); // 劈 Edited → [Edited(abc)][Edited(def)]，caret_gap=1
+        assert_eq!(t.segments.len(), 2);
+        assert_eq!(t.segments[0].kind, SegmentKind::Edited);
+        assert_eq!(t.segments[0].text, "abc");
+        assert_eq!(t.segments[1].text, "def");
+        assert!(t.is_inserting());
+    }
+
+    #[test]
+    fn set_caret_clamps_beyond_end() {
+        let mut t = Transcript::new(7, PolishMode::Intermediate);
+        t.apply_engine_full("abc");
+        t.set_caret(999); // 超出 → 末尾
+        assert!(!t.is_inserting());
+    }
+
+    #[test]
+    fn set_caret_empty_doc_clamps_zero() {
+        let mut t = Transcript::new(8, PolishMode::Intermediate);
+        t.set_caret(5);
+        assert_eq!(t.caret_gap, 0);
+    }
+
+    // ── push_delta_at_caret 边界 ──
+    #[test]
+    fn push_delta_creates_new_raw_when_prev_not_raw() {
+        let mut t = Transcript::new(9, PolishMode::Intermediate);
+        t.commit_edit("edited"); // [Edited], caret_gap=1
+        t.set_caret(0); // caret_gap=0（Edited 段之前）
+        t.apply_engine_full("新语音");
+        // caret_gap=0，前邻无 → 新建 Raw 段插入到 0，caret_gap=1
+        assert_eq!(t.finish_text(), "新语音edited");
+        assert_eq!(t.segments[0].kind, SegmentKind::Raw);
+        assert_eq!(t.segments[1].kind, SegmentKind::Edited);
+    }
+
+    // ── commit_edit ──
+    #[test]
+    fn commit_edit_flattens_to_single_edited_clears_others() {
+        let mut t = Transcript::new(10, PolishMode::Intermediate);
+        t.apply_engine_full("raw1");
+        t.commit_edit("手改");
+        assert_eq!(t.segments, vec![edt("手改")]);
+        assert_eq!(t.caret_gap, 1);
+    }
+
+    #[test]
+    fn commit_edit_empty_clears_all() {
+        let mut t = Transcript::new(11, PolishMode::Intermediate);
+        t.apply_engine_full("raw");
         t.commit_edit("");
-        assert!(!t.has_edit());
-        assert_eq!(t.edited_text(), None);
-        assert_eq!(t.display_text(), "原文"); // 回退 raw
+        assert!(t.segments.is_empty());
+        assert_eq!(t.caret_gap, 0);
+    }
+
+    // ── polish_apply（润色回填）──
+    #[test]
+    fn polish_apply_raw_only_becomes_single_polished() {
+        let mut t = Transcript::new(12, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        let _input = t.take_polish_input();
+        assert!(t.polish_pending);
+        t.polish_apply("你好，世界。");
+        assert_eq!(t.segments, vec![pol("你好，世界。")]);
+        assert!(!t.has_raw()); // 不变量：润色后无 Raw
+        assert!(!t.polish_pending);
     }
 
     #[test]
-    fn edited_display_returns_display_when_edited_else_none() {
-        let mut t = Transcript::new(34, PolishMode::Intermediate);
-        t.set_full("原文");
-        assert_eq!(t.edited_display(), None); // 未编辑
-        t.commit_edit("手改".into());
-        assert_eq!(t.edited_display().as_deref(), Some("手改"));
-        t.set_full("原文新增");
-        assert_eq!(t.edited_display().as_deref(), Some("手改新增")); // = display
+    fn polish_apply_preserves_edited_and_polishes_gap() {
+        let mut t = Transcript::new(13, PolishMode::Intermediate);
+        t.commit_edit("用户编辑");
+        t.set_caret(4); // 中间
+        t.apply_engine_full("raw尾"); // [Edited(用户编)][Raw 辑raw尾] → 实际 push 到 gap
+        // 构造明确快照：手动设 segments
+        t.segments = vec![edt("已确认"), raw("待润色")];
+        t.caret_gap = 1;
+        let _input = t.take_polish_input();
+        t.polish_apply("已确认润色后");
+        // edited「已确认」在 full 定位 → Edited；间隙/尾部 → Polished
+        assert_eq!(t.segments[0].kind, SegmentKind::Edited);
+        assert_eq!(t.segments[0].text, "已确认");
+        assert!(t.segments.iter().all(|s| s.kind != SegmentKind::Raw));
     }
 
     #[test]
-    fn take_polish_input_no_edit_returns_full() {
-        let mut t = Transcript::new(40, PolishMode::Intermediate);
-        t.set_full("第一段第二段");
-        let (preserved, to_polish) = t.take_polish_input();
-        assert_eq!(preserved, None);
-        assert_eq!(to_polish, "第一段第二段");
+    fn polish_apply_edited_not_found_best_effort_all_polished() {
+        let mut t = Transcript::new(14, PolishMode::Intermediate);
+        t.segments = vec![edt("原文edited"), raw("x")];
+        let _input = t.take_polish_input();
+        // LLM 擅改，找不到「原文edited」→ 剩余全 Polished
+        t.polish_apply("完全不同的润色");
+        assert!(t.segments.iter().all(|s| s.kind == SegmentKind::Polished));
+        assert_eq!(t.finish_text(), "完全不同的润色");
     }
 
     #[test]
-    fn take_polish_input_after_edit_returns_preserved_and_increase() {
-        let mut t = Transcript::new(41, PolishMode::Intermediate);
-        t.set_full("原文");
-        t.commit_edit("原文（手改）"); // edited="原文（手改）", raw_len=2
-        t.set_full("原文新增"); // increase="新增"
-        let (preserved, to_polish) = t.take_polish_input();
-        assert_eq!(preserved.as_deref(), Some("原文（手改）"));
-        assert_eq!(to_polish, "新增");
+    fn polish_apply_restores_caret_char_offset() {
+        let mut t = Transcript::new(15, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_caret(2);
+        let off_before = t.caret_char_offset(); // 2
+        let _input = t.take_polish_input();
+        t.polish_apply("你好，世界。");
+        assert_eq!(t.caret_char_offset(), off_before); // 润色后光标回同字符位
     }
 
     #[test]
-    fn on_polish_done_folds_into_edited_when_has_edit() {
-        let mut t = Transcript::new(42, PolishMode::Intermediate);
-        t.set_full("原文");
-        t.commit_edit("原文（手改）");
-        t.set_full("原文新增");
-        let _ = t.take_polish_input(); // 推进 raw_len
-        t.on_polish_done("原文（手改）新增（润色）".into());
-        assert_eq!(t.edited_text(), Some("原文（手改）新增（润色）"));
-        assert_eq!(t.display_text(), "原文（手改）新增（润色）"); // 折回 edited，无丢字
+    fn polish_apply_pending_delta_flushed_after() {
+        let mut t = Transcript::new(16, PolishMode::Intermediate);
+        t.apply_engine_full("你好");
+        let _input = t.take_polish_input();
+        // pending 期间新 delta 进 pending_delta（不写 segments）
+        t.apply_engine_full("你好新语音");
+        assert_eq!(t.finish_text(), "你好"); // pending 期间段不变
+        t.polish_apply("你好。");
+        // flush pending_delta → 新建 Raw「新语音」
+        assert!(t.finish_text().ends_with("新语音"));
     }
 
     #[test]
-    fn on_polish_done_no_edit_writes_polished() {
-        let mut t = Transcript::new(43, PolishMode::Intermediate);
-        t.set_full("原文");
-        let _ = t.take_polish_input();
-        t.on_polish_done("润色".into());
-        assert_eq!(t.polished(), "润色");
-        assert_eq!(t.display_text(), "润色");
+    fn on_polish_failed_flushes_pending_delta() {
+        let mut t = Transcript::new(17, PolishMode::Intermediate);
+        t.apply_engine_full("你好");
+        let _input = t.take_polish_input();
+        t.apply_engine_full("你好新");
+        t.on_polish_failed();
+        assert!(!t.polish_pending);
+        assert!(t.finish_text().ends_with("新")); // pending_delta 已 flush
+    }
+
+    // ── 类型不变量 ──
+    #[test]
+    fn invariant_no_raw_after_polish() {
+        let mut t = Transcript::new(18, PolishMode::Intermediate);
+        t.segments = vec![raw("a"), edt("b"), raw("c")];
+        let _input = t.take_polish_input();
+        t.polish_apply("a润b润c润");
+        assert!(t.segments.iter().all(|s| s.kind != SegmentKind::Raw));
     }
 
     #[test]
-    fn empty_commit_after_fold_falls_back_to_polished_not_empty() {
-        // I1 回归：编辑→折回→空提交，display 应回退到折回结果（不丢字）
-        let mut t = Transcript::new(44, PolishMode::Intermediate);
-        t.set_full("原文");
-        t.commit_edit("原文（手改）");
-        t.set_full("原文新增");
-        let _ = t.take_polish_input();
-        t.on_polish_done("原文（手改）新增（润色）".into()); // 折回
-        assert_eq!(t.display_text(), "原文（手改）新增（润色）");
-        t.commit_edit(""); // 空提交清空 edited
-        assert!(!t.has_edit());
-        assert_eq!(t.display_text(), "原文（手改）新增（润色）"); // 回退 polished（折回值），不丢字
+    fn invariant_only_edited_after_commit() {
+        let mut t = Transcript::new(19, PolishMode::Intermediate);
+        t.segments = vec![raw("a"), pol("b")];
+        t.commit_edit("flat");
+        assert!(t.segments.iter().all(|s| s.kind == SegmentKind::Edited));
+    }
+
+    // ── segments_json ──
+    #[test]
+    fn segments_json_roundtrip_shape() {
+        let mut t = Transcript::new(20, PolishMode::Intermediate);
+        t.segments = vec![raw("a"), edt("b")];
+        let j = t.segments_json();
+        assert!(j.contains("\"kind\":\"raw\""));
+        assert!(j.contains("\"kind\":\"edited\""));
+        assert!(j.contains("\"text\":\"a\""));
+    }
+
+    // ── 选中替换（delete_range / set_selection / pending_delete）──
+    #[test]
+    fn delete_range_basic() {
+        // "你好世界再见" 删 [2,4)（"世界"）→ "你好再见"，caret 落 "你好" 后。
+        let mut t = Transcript::new(101, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界再见"); // 单 Raw 段
+        t.delete_range(2, 4);
+        assert_eq!(t.finish_text(), "你好再见");
+        assert_eq!(t.caret_char_offset(), 2); // "你好" 后
     }
 
     #[test]
-    fn multiple_folds_accumulate_without_loss() {
-        // M3：编辑→折回→再编辑→再折回，raw_len 单调推进、edited 累积无丢字
-        let mut t = Transcript::new(45, PolishMode::Intermediate);
-        t.set_full("原文");
-        t.commit_edit("原文（手改）");
-        t.set_full("原文新增");
-        let _ = t.take_polish_input();
-        t.on_polish_done("原文（手改）新增（润色一）".into());
-        assert_eq!(t.display_text(), "原文（手改）新增（润色一）");
+    fn delete_range_spans_segments() {
+        // 多段跨段删除：[raw 甲][edited 乙丙][raw 丁]，删 [1,3)（"乙丙"）→ "甲丁"。
+        let mut t = Transcript::new(102, PolishMode::Intermediate);
+        t.segments = vec![raw("甲"), edt("乙丙"), raw("丁")];
+        t.delete_range(1, 3);
+        assert_eq!(t.finish_text(), "甲丁");
+    }
 
-        // 继续说 → 再折回
-        t.set_full("原文新增更多");
-        let (preserved, to_polish) = t.take_polish_input();
-        assert_eq!(preserved.as_deref(), Some("原文（手改）新增（润色一）"));
-        assert_eq!(to_polish, "更多");
-        t.on_polish_done("原文（手改）新增（润色一）更多（润色二）".into());
-        assert_eq!(t.display_text(), "原文（手改）新增（润色一）更多（润色二）");
+    #[test]
+    fn set_selection_then_first_delta_replaces() {
+        // 拖选 [2,4)（"世界"）→ 首词到达时删选中、新词从 start 插、caret 跟随增长。
+        let mut t = Transcript::new(103, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_selection(2, 4);
+        assert_eq!(t.caret_char_offset(), 2); // 选中态 caret 在 start
+        let off_before = t.caret_char_offset();
+        assert!(t.apply_engine_full("你好世界新词"));
+        assert_eq!(t.finish_text(), "你好新词"); // "世界" 被删、"新词" 插入
+        assert!(t.caret_char_offset() > off_before); // caret 随插入右移
+    }
+
+    #[test]
+    fn set_caret_clears_pending_delete() {
+        // 选中后点别处（set_caret）→ 待删清除；后续 apply 不删，文字保留。
+        let mut t = Transcript::new(104, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_selection(2, 4);
+        t.set_caret(0); // 取消选区
+        t.apply_engine_full("你好世界后"); // delta "后"，不删
+        assert_eq!(t.finish_text(), "后你好世界"); // "世界" 保留（证明未删）
+    }
+
+    #[test]
+    fn pending_delete_consumed_once() {
+        // 首词消费待删后，第二词是普通中插（不再删）。
+        let mut t = Transcript::new(105, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_selection(2, 4);
+        t.apply_engine_full("你好世界甲"); // 首词"甲"：删"世界"、插"甲"→"你好甲"
+        assert_eq!(t.finish_text(), "你好甲");
+        t.apply_engine_full("你好世界甲乙"); // 第二词"乙"：普通中插→"你好甲乙"
+        assert_eq!(t.finish_text(), "你好甲乙");
+    }
+
+    #[test]
+    fn pending_delete_consumed_in_take_polish_input() {
+        // 选中后润色：take_polish_input 先删待删区，快照基于删后文本。
+        let mut t = Transcript::new(106, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_selection(2, 4);
+        let input = t.take_polish_input();
+        // 删"世界"后 segments 只剩 [raw 你好]
+        assert_eq!(input.segments.len(), 1);
+        assert_eq!(input.segments[0].text, "你好");
+        assert!(!t.polish_snapshot.iter().any(|s| s.text.contains("世界")));
     }
 }
