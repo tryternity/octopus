@@ -9,21 +9,6 @@ const SvgIcon = ({ src, alt, active }: { src: string; alt: string; active?: bool
   <img src={src} alt={alt} className="w-[18px] h-[18px]" style={{ filter: active ? "brightness(0) invert(1)" : "none" }} />
 );
 
-// 马赛克图标（3×3 色块网格，与截图工具一致）
-const MosaicIcon = ({ className }: { className?: string }) => (
-  <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 18 18" fill="none" className={className}>
-    <rect x="1" y="1" width="5" height="5" fill="currentColor" opacity={0.9} />
-    <rect x="6.5" y="1" width="5" height="5" fill="currentColor" opacity={0.5} />
-    <rect x="12" y="1" width="5" height="5" fill="currentColor" opacity={0.8} />
-    <rect x="1" y="6.5" width="5" height="5" fill="currentColor" opacity={0.6} />
-    <rect x="6.5" y="6.5" width="5" height="5" fill="currentColor" opacity={0.9} />
-    <rect x="12" y="6.5" width="5" height="5" fill="currentColor" opacity={0.4} />
-    <rect x="1" y="12" width="5" height="5" fill="currentColor" opacity={0.7} />
-    <rect x="6.5" y="12" width="5" height="5" fill="currentColor" opacity={0.3} />
-    <rect x="12" y="12" width="5" height="5" fill="currentColor" opacity={0.8} />
-  </svg>
-);
-
 // 预设色与截图 ToolPropsPopover 一致（含白色）
 const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#000000", "#ffffff"];
 const POPOVER_W = 240;
@@ -136,7 +121,7 @@ export default function Toolbar(props: {
     { key: "pen", icon: <SvgIcon src="icons/sketching.svg" alt="画笔" active={props.tool === "pen"} />, title: "画笔（自由曲线）" },
     { key: "text", icon: <SvgIcon src="icons/text.svg" alt="文字" active={props.tool === "text"} />, title: "文字" },
     { key: "number", icon: <SvgIcon src="icons/sequence-note.svg" alt="序号" active={props.tool === "number"} />, title: "序号" },
-    { key: "blur", icon: <MosaicIcon className="h-[18px] w-[18px]" />, title: "马赛克" },
+    { key: "blur", icon: <SvgIcon src="icons/mosaic.svg" alt="马赛克" active={props.tool === "blur"} />, title: "马赛克" },
   ];
 
   return (
