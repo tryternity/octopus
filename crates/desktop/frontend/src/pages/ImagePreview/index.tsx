@@ -106,6 +106,14 @@ export default function ImagePreview() {
     zoomRef.current = z;
     setZoom(z);
   };
+  // 自适应窗口：图片完整显示在窗口内（宽高均不超出）
+  const zoomFitWindow = () => {
+    if (!natW || !natH) return;
+    fitModeRef.current = 'fitWindow';
+    const z = computeFitZoom(natW, natH);
+    zoomRef.current = z;
+    setZoom(z);
+  };
 
   // —— ResizeObserver：fit 模式下窗口 resize 自动重算缩放 ——
   useEffect(() => {
@@ -542,7 +550,7 @@ export default function ImagePreview() {
         onUndo={undo} canUndo={annotations.length > 0}
         ocrCopied={ocrCopied}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
-        onZoomFitWidth={zoomFitWidth}
+        onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
       />
       {/* 滚动容器：全屏画布，图片大于视口自动出滚动条；小于则居中 */}
       <div ref={scrollContainerRef} className="absolute inset-0 overflow-auto thin-scrollbar">
