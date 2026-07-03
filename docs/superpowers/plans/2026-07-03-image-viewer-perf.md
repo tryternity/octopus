@@ -638,3 +638,7 @@ Screenshot 的 text 标注调用同一 `annotation.ts` 纯函数，#6 修复自�
 | addAnnotation 无限递归修复（sed 误替换） | `b8c54ee` |
 | 截图实心填充开关同步（ToolPropsPopover 加 isShape/filled） | `108b471` |
 | 菱形工具（截图 + 图片预览，diamond.svg，支持 filled） | `51f72b9` |
+| 截图菱形画完消失修复 | `b6110ca` |
+| 剪贴板预览图标 Maximize2 → eye-edit.svg | `d4c8b15` |
+| 属性浮窗用户操作时自动收起（图片预览 + 截图，showPopover 独立 state） | `907a9c8` `f97daa2` |
+| MosaicIcon 内联 → icons/mosaic.svg（统一 SVG 文件） | `641952c` |
