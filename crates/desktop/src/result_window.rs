@@ -221,7 +221,9 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
 }
 
 /// 更新结果窗口文本（流式更新时使用）。
-pub fn update_result(app: &tauri::AppHandle, text: &str) {
+/// insertion=true 表示中间插入态（光标在中间），前端立即渲染、跳过 diverted 300ms 延迟。
+/// payload 从纯 string 改对象 `{ text, insertion }`，前端 handler 在 Task 7 同步改为读对象。
+pub fn update_result(app: &tauri::AppHandle, text: &str, insertion: bool) {
     // 同 show_result：判 ready + 写 pending 进同一锁，消除与 result_window_ready 的竞态。
     let need_emit = {
         let mut guard = PENDING_TEXT.lock().unwrap();
@@ -234,7 +236,10 @@ pub fn update_result(app: &tauri::AppHandle, text: &str) {
     };
     if need_emit {
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-            let _ = window.emit("update-result", text);
+            let _ = window.emit(
+                "update-result",
+                serde_json::json!({ "text": text, "insertion": insertion }),
+            );
         }
     }
 }
