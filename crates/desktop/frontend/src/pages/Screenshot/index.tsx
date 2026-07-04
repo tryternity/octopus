@@ -691,7 +691,7 @@ export default function Screenshot() {
     : 0;
   // 用选区中心 + translateX(-50%) 实现真正居中，不受工具栏实际宽度影响
   const toolbarCenterX = sel ? sel.x + sel.w / 2 : 0;
-  const popoverY = toolbarBelow ? toolbarY + 44 : Math.max(0, toolbarY - 100);
+  const popoverY = toolbarY + 44;  // 浮窗始终在工具栏下方
 
   if (!ready) {
     return <div style={{ width: "100vw", height: "100vh", background: "rgba(0,0,0,0.5)" }} />;
