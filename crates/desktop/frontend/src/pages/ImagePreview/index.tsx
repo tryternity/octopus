@@ -750,7 +750,8 @@ export default function ImagePreview() {
                     stroke={ocrOverlay === 'mask' ? "rgba(0,0,0,0.1)" : "rgba(59,130,246,0.4)"}
                     strokeWidth={1} rx={2}
                     style={{ cursor: 'text' }}
-                    onClick={() => {
+                    onMouseDown={(e) => {
+                      e.stopPropagation();
                       navigator.clipboard?.writeText(b.text).then(() => {
                         setOcrCopied(true);
                         setTimeout(() => setOcrCopied(false), 1000);
