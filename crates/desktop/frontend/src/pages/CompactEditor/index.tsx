@@ -217,34 +217,41 @@ function CompactEditor() {
     // 可见，WebKit 按实际渲染行（soft-wrap / 硬换行都准确）定位，无需手算行高。
   };
 
-  const runFind = useCallback(() => {
-    if (!findQuery || !active) { setMatches([]); setMatchIdx(-1); return; }
+  // 返回新算出的 idxs：setMatches 是异步 state，调用方同帧读闭包 matches 会读到旧值，
+  // 故需要跳转的场景（findQuery 变化）改用同步返回值，不读异步 state。
+  const runFind = useCallback((): number[] => {
+    if (!findQuery || !active) { setMatches([]); setMatchIdx(-1); return []; }
     const idxs = collectMatches(active.text || "", findQuery);
     setMatches(idxs);
     setMatchIdx(idxs.length > 0 ? 0 : -1);
     // 不在 runFind 里 selectRange——打字时 active.text 变化会触发 runFind，
     // selectRange 会抢焦点拽回顶部，导致查找模式下无法编辑。
-    // selectRange 只在用户手动跳转（gotoMatch）或首次开查找时调用。
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [findQuery, active, fontSize]);
+    // selectRange 只在用户手动跳转（gotoMatch）或 findQuery 变化时（见下方 effect）调用。
+    return idxs;
+  }, [findQuery, active]);
 
   // 仅在 findQuery 变化（用户输入查找词）时跳转到第一个匹配，不在 text 变化时跳
   const prevFindQuery = useRef("");
   const findDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!showFind) return;
-    // findQuery 变化 → 立即重新匹配 + 跳转
+    // findQuery 变化 → 立即重新匹配 + 跳转。用 runFind 同步返回的 idxs 跳转，不读 matches：
+    // setMatches 异步，同帧闭包 matches 是旧值（首次为 []）→ 跳转失效或落到旧匹配错位。
     if (findQuery !== prevFindQuery.current) {
       prevFindQuery.current = findQuery;
       if (findDebounce.current) clearTimeout(findDebounce.current);
-      runFind();
-      if (matches.length > 0) selectRange(matches[0], findQuery.length);
+      const idxs = runFind();
+      if (idxs.length > 0) selectRange(idxs[0], findQuery.length);
       return;
     }
     // text 变化（打字/编辑）→ debounce 150ms 后更新匹配计数（避免每键扫描全文）
     if (findDebounce.current) clearTimeout(findDebounce.current);
     findDebounce.current = setTimeout(() => runFind(), 150);
-  }, [findQuery, showFind, matches, runFind]);
+    // 清理：关查找栏（showFind→false 重跑本 effect）或卸载时取消 pending timer，避免到期后
+    // runFind 在已隐藏/已卸载组件上跑全文扫描。deps 不含 matches——否则 runFind 设 matches
+    // （每次新数组引用）→ effect 重跑 → 再设 timer → 每 150ms 空转循环扫描全文。
+    return () => { if (findDebounce.current) clearTimeout(findDebounce.current); };
+  }, [findQuery, showFind, runFind]);
 
   const gotoMatch = (delta: number) => {
     if (matches.length === 0) return;
