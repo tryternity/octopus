@@ -1051,13 +1051,14 @@ pub fn insert_transcription_at_id(
     with_db(|conn| {
         let created_at = now_string();
         let char_count = text.chars().count() as i64;
-        let meta = serde_json::json!({
-            "engine": engine,
-            "engine_mode": engine_mode.unwrap_or(""),
-            "char_count": char_count,
-            "polished": false,
-        });
-        let meta_json = serde_json::to_string(&meta)?;
+        let mut meta = serde_json::Map::new();
+        meta.insert("engine".into(), serde_json::Value::String(engine.to_string()));
+        meta.insert("char_count".into(), serde_json::Value::Number(char_count.into()));
+        meta.insert("polished".into(), serde_json::Value::Bool(false));
+        if let Some(mode) = engine_mode.filter(|m| !m.is_empty()) {
+            meta.insert("engine_mode".into(), serde_json::Value::String(mode.to_string()));
+        }
+        let meta_json = serde_json::to_string(&serde_json::Value::Object(meta))?;
         conn.execute(
             "INSERT INTO clipboard_history
                 (id, item_type, content, ref_data, meta_info, is_favorite, is_rich, created_at, has_thumbnail, segments)

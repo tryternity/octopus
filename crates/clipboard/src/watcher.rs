@@ -66,6 +66,15 @@ impl<F: Fn() + Send + Sync + 'static> ClipboardHandler for ChangeHandler<F> {
     }
 }
 
+/// 字节数 → 人类可读大小：<1M 显示 K（整数）、≥1M 显示 M（1 位小数）。
+fn format_file_size(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{}K", (bytes + 511) / 1024)
+    } else {
+        format!("{:.1}M", bytes as f64 / 1024.0 / 1024.0)
+    }
+}
+
 /// 处理剪贴板变化：判断类型 → 读内容 → 去重 → 存 DB。
 /// 在 watcher 回调线程中调用。
 pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
@@ -83,6 +92,12 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                 return Ok(());
             }
             let paths_json = serde_json::to_string(&files).unwrap_or_default();
+            let file_metas: Vec<crate::model::FileEntry> = files.iter().filter_map(|p| {
+                let path = std::path::Path::new(p);
+                let size = std::fs::metadata(path).ok().map(|m| format_file_size(m.len()));
+                let file_type = path.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase());
+                Some(crate::model::FileEntry { size, file_type })
+            }).collect();
 
             // 去重
             let existing = octopus_infra::db::with_db(|conn| {
@@ -98,7 +113,10 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                         item_type: ItemType::File,
                         content: String::new(),
                         ref_data: Some(paths_json),
-                        meta_info: None,
+                        meta_info: Some(crate::model::MetaInfo {
+                            files: Some(file_metas),
+                            ..Default::default()
+                        }),
                         created_at: store::iso_now(),
                         has_thumbnail: None,
                         is_rich: false,
@@ -138,6 +156,7 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                         .ok_or_else(|| anyhow::anyhow!("RgbaImage::from_raw failed"))?,
                 );
                 let encoded = image::encode_to_webp(&dyn_img)?;
+                let img_size = format_file_size(encoded.webp_blob.len() as u64);
 
                 // 存 image_data BLOB
                 octopus_infra::db::with_db(|conn| {
@@ -152,7 +171,8 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                         content: String::new(),
                         ref_data: Some(hash.clone()),
                         meta_info: Some(crate::model::MetaInfo {
-                            w: Some(w), h: Some(h), ..Default::default()
+                            w: Some(w), h: Some(h), size: Some(img_size),
+                            ..Default::default()
                         }),
                         created_at: store::iso_now(),
                         has_thumbnail: Some(1),
@@ -190,7 +210,10 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                         item_type: ItemType::Text,
                         content: text.clone(),
                         ref_data: None,
-                        meta_info: None,
+                        meta_info: Some(crate::model::MetaInfo {
+                            char_count: Some(text.chars().count()),
+                            ..Default::default()
+                        }),
                         created_at: store::iso_now(),
                         has_thumbnail: None,
                         is_rich,

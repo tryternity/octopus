@@ -3,6 +3,15 @@ use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::ClipboardHandle;
 
+/// 字节数 → 人类可读大小：<1M 显示 K（整数）、≥1M 显示 M（1 位小数）。
+fn format_file_size(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{}K", (bytes + 511) / 1024)
+    } else {
+        format!("{:.1}M", bytes as f64 / 1024.0 / 1024.0)
+    }
+}
+
 /// 截图数据副本（不含 monitor 坐标，仅像素数据用于裁剪）
 #[derive(Clone)]
 struct ScreenCaptureClone {
@@ -241,7 +250,8 @@ pub async fn ocr_screenshot(
                 content: String::new(),
                 ref_data: Some(hash.clone()),
                 meta_info: Some(octopus_clipboard::MetaInfo {
-                    w: Some(crop_w), h: Some(crop_h), ..Default::default()
+                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
+                    ..Default::default()
                 }),
                 created_at: octopus_clipboard::store::iso_now(),
                 has_thumbnail: Some(1),
@@ -424,7 +434,8 @@ pub async fn confirm_screenshot_with_data(
                 content: String::new(),
                 ref_data: Some(hash.clone()),
                 meta_info: Some(octopus_clipboard::MetaInfo {
-                    w: Some(crop_w), h: Some(crop_h), ..Default::default()
+                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
+                    ..Default::default()
                 }),
                 created_at: octopus_clipboard::store::iso_now(),
                 has_thumbnail: Some(1),
@@ -530,7 +541,8 @@ pub async fn confirm_screenshot(
                 content: String::new(),
                 ref_data: Some(hash.clone()),
                 meta_info: Some(octopus_clipboard::MetaInfo {
-                    w: Some(crop_w), h: Some(crop_h), ..Default::default()
+                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
+                    ..Default::default()
                 }),
                 created_at: octopus_clipboard::store::iso_now(),
                 has_thumbnail: Some(1),
@@ -1329,7 +1341,8 @@ pub async fn start_scroll_recording(
                     content: String::new(),
                     ref_data: Some(hash_for_db.clone()),
                     meta_info: Some(octopus_clipboard::MetaInfo {
-                        w: Some(img.width()), h: Some(img.height()), ..Default::default()
+                        w: Some(img.width()), h: Some(img.height()), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
+                        ..Default::default()
                     }),
                     created_at: octopus_clipboard::store::iso_now(),
                     has_thumbnail: Some(1), is_rich: false,
