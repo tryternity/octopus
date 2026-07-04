@@ -741,20 +741,32 @@ export default function ImagePreview() {
               <svg className="absolute inset-0 block"
                 viewBox={`0 0 ${natW} ${natH}`}
                 preserveAspectRatio="none"
-                style={{ width: dispW, height: dispH, pointerEvents: "none" }}>
+                style={{ width: dispW, height: dispH }}
+              >
+                {/* 第一遍：所有遮罩底（避免后面的 rect 盖住前面的 text） */}
                 {ocrBlocks.map((b, i) => (
-                  <g key={i}>
-                    <rect x={b.x} y={b.y} width={b.w} height={b.h}
-                      fill={ocrOverlay === 'mask' ? "rgba(255,255,255,0.92)" : "rgba(59,130,246,0.08)"}
-                      stroke={ocrOverlay === 'mask' ? "rgba(0,0,0,0.1)" : "rgba(59,130,246,0.4)"}
-                      strokeWidth={1} rx={2} />
-                    <text x={b.x + 2} y={b.y + b.h - 2}
-                      fontSize={Math.min(b.h * 0.8, 14)}
-                      fill={ocrOverlay === 'mask' ? "rgba(0,0,0,0.85)" : "rgba(59,130,246,0.7)"}
-                      dominantBaseline="alphabetic">
-                      {b.text}
-                    </text>
-                  </g>
+                  <rect key={`bg-${i}`} x={b.x} y={b.y} width={b.w} height={b.h}
+                    fill={ocrOverlay === 'mask' ? "rgba(255,255,255,0.92)" : "rgba(59,130,246,0.08)"}
+                    stroke={ocrOverlay === 'mask' ? "rgba(0,0,0,0.1)" : "rgba(59,130,246,0.4)"}
+                    strokeWidth={1} rx={2}
+                    style={{ cursor: 'text' }}
+                    onClick={() => {
+                      navigator.clipboard?.writeText(b.text).then(() => {
+                        setOcrCopied(true);
+                        setTimeout(() => setOcrCopied(false), 1000);
+                      }).catch(() => {});
+                    }}
+                  />
+                ))}
+                {/* 第二遍：所有文字（保证在前面的 rect 之上） */}
+                {ocrBlocks.map((b, i) => (
+                  <text key={`tx-${i}`} x={b.x + 2} y={b.y + b.h - 2}
+                    fontSize={Math.min(b.h * 0.8, 14)}
+                    fill={ocrOverlay === 'mask' ? "rgba(0,0,0,0.85)" : "rgba(59,130,246,0.7)"}
+                    dominantBaseline="alphabetic"
+                    style={{ pointerEvents: 'none', userSelect: 'none' }}>
+                    {b.text}
+                  </text>
                 ))}
               </svg>
             )}
