@@ -30,6 +30,8 @@
 
 ## Task 1: 双 canvas 分层 + draw 拆分
 
+> **⚠️ 演进注（2026-07-03/04）**：本 Task 的双 canvas（bgCanvas + drawCanvas）方案**已实施**（commit 见下实施记录），但最终**演进为单 canvas + SVG overlay**——超大图（2032×15796）标注卡顿，drawCanvas 的 GPU 合成 ~45M 像素有固定成本，标注改走 SVG（`AnnotationSvg.tsx`）零 canvas 操作。最终方案详见本文件实施记录「架构演进：双 canvas → SVG overlay」（commit `237713a`）。本 Task step 按初始设计回写 [x]，**不代表当前实现是双 canvas**。
+
 **Files:**
 - Modify: `<WT>/crates/desktop/frontend/src/pages/ImagePreview/index.tsx`
 
@@ -39,7 +41,7 @@
 
 本任务将单个 canvas 拆为 bgCanvas（底图+已确认标注）+ drawCanvas（正在绘制的笔迹），所有标注工具的实时预览统一走 drawCanvas 增量绘制。这是三个优化点的骨架，后续 Task 2/3 在此基础上叠加。
 
-- [ ] **Step 1：替换 canvas refs + HTML 结构**
+- [x] **Step 1：替换 canvas refs + HTML 结构**
 
 删除 `canvasRef`，新增 `bgCanvasRef` + `drawCanvasRef`：
 
@@ -108,7 +110,7 @@ HTML 中 canvas 区域改为两个叠放 canvas + 棋盘格底背景移到容器
 
 注意：原来 `<canvas>` 上的 `onMouseDown/onMouseMove/onMouseUp`、`cursor`、`backgroundColor`/`backgroundImage`/`backgroundSize`/`backgroundPosition` 全部移到 drawCanvas 或容器 div 上。
 
-- [ ] **Step 2：拆分 draw → drawBg + drawActive**
+- [x] **Step 2：拆分 draw → drawBg + drawActive**
 
 删除现有 `draw` 函数和 `useEffect(() => { draw(); }, [draw]);`。新增：
 
@@ -160,7 +162,7 @@ const drawActive = useCallback(() => {
 useEffect(() => { drawBg(); }, [drawBg]);
 ```
 
-- [ ] **Step 3：改 onMouseMove / onMouseUp 用 drawActive**
+- [x] **Step 3：改 onMouseMove / onMouseUp 用 drawActive**
 
 `onMouseMove` 中 `draw()` 调用改为 `drawActive()`：
 
@@ -185,7 +187,7 @@ if (drawingRef.current) {
 }
 ```
 
-- [ ] **Step 4：改 canvasCoords 使用 drawCanvas ref**
+- [x] **Step 4：改 canvasCoords 使用 drawCanvas ref**
 
 `canvasCoords` 函数中 `canvasRef.current` 改为 `drawCanvasRef.current`：
 
@@ -196,16 +198,16 @@ const canvasCoords = (e: React.MouseEvent) => {
 };
 ```
 
-- [ ] **Step 5：改 composePngBytes 使用 imgRef**
+- [x] **Step 5：改 composePngBytes 使用 imgRef**
 
 `composePngBytes` 不变（它创建 offscreen canvas + drawImage(imgRef) + drawAnnotation，与 canvas 分层无关）。但确认其内部仍然引用 `imgRef.current`（已确认是正确的，不动）。
 
-- [ ] **Step 6：类型检查 + 构建验证**
+- [x] **Step 6：类型检查 + 构建验证**
 
 Run: `npm --prefix <WT>/crates/desktop/frontend run build`
 Expected: tsc + vite 构建成功，无 type error。
 
-- [ ] **Step 7：提交**
+- [x] **Step 7：提交**
 
 ```bash
 cd <WT>
@@ -224,7 +226,7 @@ git commit -m "refactor(ImagePreview): 双 canvas 分层 — bgCanvas(底图+标
 - Consumes: Task 1 的 `scaledBitmapRef`、`drawBg`
 - Produces: 新 ref `zoomVersionRef`（防止过时 zoom 值覆盖最新帧）
 
-- [ ] **Step 1：新增缩放预缩放逻辑**
+- [x] **Step 1：新增缩放预缩放逻辑**
 
 在 `drawBg` 的 `useEffect` 之后，新增 zoom 变化时的异步预缩放 effect：
 
@@ -264,7 +266,7 @@ useEffect(() => {
 
 注意：首次加载（img onload 后）也需要生成位图。这由 Task 3 的加载流程处理（img onload 后设 zoom → zoom effect 自动触发 createImageBitmap）。zoom=1 时 `createImageBitmap` 的 resizeWidth/Height 等于 canvas 像素尺寸，仍有意义——浏览器可 GPU 缩放替代 CPU drawImage 降采样。
 
-- [ ] **Step 2：imageId 变化时清理旧位图**
+- [x] **Step 2：imageId 变化时清理旧位图**
 
 在 imageId 变化的 useEffect（原代码 86-98 行）中，清理 scaledBitmapRef：
 
@@ -290,12 +292,12 @@ useEffect(() => {
 }, [imageId]);
 ```
 
-- [ ] **Step 3：类型检查 + 构建验证**
+- [x] **Step 3：类型检查 + 构建验证**
 
 Run: `npm --prefix <WT>/crates/desktop/frontend run build`
 Expected: 构建成功。
 
-- [ ] **Step 4：提交**
+- [x] **Step 4：提交**
 
 ```bash
 cd <WT>
@@ -307,6 +309,8 @@ git commit -m "perf(ImagePreview): zoom 缩放走 createImageBitmap 异步预缩
 
 ## Task 3: 先 thumb 再 full 渐进加载
 
+> **⚠️ 演进注**：thumb/full 渐进加载 + fit-to-window 已实施并保留；但其上的 canvas 渲染层后续叠加了**视口渲染 v2**（commit `9bca0de` + `a9faa39`）——canvas 恒定窗口大小只裁剪可见区域（GPU 合成 buffer 174MB→~8MB，降 20×）。详见实施记录「视口渲染（viewport rendering）演进」。Step 4 的 `listen("image-preview://load")` 废弃演进见统一查看器（ImagePreview 改可控组件）。
+
 **Files:**
 - Modify: `<WT>/crates/desktop/frontend/src/pages/ImagePreview/index.tsx`
 
@@ -314,7 +318,7 @@ git commit -m "perf(ImagePreview): zoom 缩放走 createImageBitmap 异步预缩
 - Consumes: Task 1 的 `drawBg`、`imgRef`，Task 2 的 `zoomVersionRef`、`scaledBitmapRef`
 - Produces: 新 ref `userZoomedRef`（标记用户是否手动缩放过）、新 state `loading`（加载中指示）
 
-- [ ] **Step 1：新增 fit-to-window 计算函数 + userZoomedRef**
+- [x] **Step 1：新增 fit-to-window 计算函数 + userZoomedRef**
 
 在组件顶部（常量区后）新增：
 
@@ -352,7 +356,7 @@ const zoomOut = () => setZoomSync(zoomRef.current / ZOOM_STEP, true);
 const zoomReset = () => setZoomSync(1, true);
 ```
 
-- [ ] **Step 2：替换 imageId 加载逻辑为并行 thumb + full**
+- [x] **Step 2：替换 imageId 加载逻辑为并行 thumb + full**
 
 将现有 imageId useEffect（原代码 86-98 行）替换为：
 
@@ -430,7 +434,7 @@ useEffect(() => {
 - `dataUrl` 更新触发 React 中的 `<img>` 渲染（仍需 DOM img 用于 `crossOrigin` 等属性），但 `imgRef` 是实际绘制源
 - 全图替换时如果 zoom 未变（computeFitZoom 返回值与缩略图时相同），zoom effect 不触发 createImageBitmap——所以手动 `zoomVersionRef.current++` 强制触发
 
-- [ ] **Step 3：修改 dataUrl 的 img DOM 渲染**
+- [x] **Step 3：修改 dataUrl 的 img DOM 渲染**
 
 现有 JSX 中 `<img ref={imgRef} src={dataUrl} ...>` 的 `onLoad` 回调需要适配——现在 natW/natH 由 useEffect 内直接设置，`onLoad` 不再需要设置它们。但保留 `onLoad` 用于安全兜底（React 渲染的 img 与 imgRef 不是同一个时）：
 
@@ -453,7 +457,7 @@ useEffect(() => {
 )}
 ```
 
-- [ ] **Step 4：新图片载入时重置状态**
+- [x] **Step 4：新图片载入时重置状态**
 
 > **演进（2026-07-04，统一查看器）**：ImagePreview 改为可控组件（props `imageId`），原 `listen("image-preview://load")` 已删除。新图片载入触发由「事件监听」改为「`imageId` prop 变化」。
 
@@ -466,12 +470,12 @@ useEffect(() => {
 }, [imageId]);
 ```
 
-- [ ] **Step 5：类型检查 + 构建验证**
+- [x] **Step 5：类型检查 + 构建验证**
 
 Run: `npm --prefix <WT>/crates/desktop/frontend run build`
 Expected: tsc + vite 构建成功。
 
-- [ ] **Step 6：提交**
+- [x] **Step 6：提交**
 
 ```bash
 cd <WT>
@@ -486,20 +490,20 @@ git commit -m "perf(ImagePreview): 先 thumb 再 full 渐进加载 + fit-to-wind
 **Files:**
 - Modify: `<WT>/docs/architecture.md`（ImagePreview 性能优化说明）
 
-- [ ] **Step 1：更新 architecture.md**
+- [x] **Step 1：更新 architecture.md**
 
 在 ImagePreview 相关章节补充双 canvas 架构 + 性能优化说明。
 
-- [ ] **Step 2：更新实施计划（本文件）**
+- [x] **Step 2：更新实施计划（本文件）**
 
 回写实际偏差到计划文档——plan 是「实施记录」而非「一次性待办」。
 
-- [ ] **Step 3：最终构建验证**
+- [x] **Step 3：最终构建验证**
 
 Run: `npm --prefix <WT>/crates/desktop/frontend run build`
 Expected: 构建成功，无 error。
 
-- [ ] **Step 4：最终提交**
+- [x] **Step 4：最终提交**
 
 ```bash
 cd <WT>

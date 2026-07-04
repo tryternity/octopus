@@ -18,9 +18,9 @@
 - Create/Modify: `crates/desktop/src/main.rs`（注册新命令 + Destroyed 记忆）
 - Modify: `crates/infra/src/db.rs`（窗口记忆读写）
 
-- [ ] **Step 1：compact_editor_window.rs 尺寸改 880×620 + 读记忆**
+- [x] **Step 1：compact_editor_window.rs 尺寸改 880×620 + 读记忆**
 
-- [ ] **Step 2：compact_editor_commands.rs open_compact_editor_tab 加 source 参数**
+- [x] **Step 2：compact_editor_commands.rs open_compact_editor_tab 加 source 参数**
 
 ```rust
 pub fn open_compact_editor_tab(
@@ -32,7 +32,7 @@ pub fn open_compact_editor_tab(
 
 source 写入 PENDING_TAB，前端 mount 读。
 
-- [ ] **Step 3：get_transcription_text 命令**
+- [x] **Step 3：get_transcription_text 命令**
 
 ```rust
 #[tauri::command]
@@ -41,9 +41,9 @@ pub fn get_transcription_text(id: i64) -> Result<String, String>
 
 读 transcriptions 表的 text 列（segments 合并后的全文）。
 
-- [ ] **Step 4：窗口记忆持久化（Destroyed 时写 DB）**
+- [x] **Step 4：窗口记忆持久化（Destroyed 时写 DB）**
 
-- [ ] **Step 5：编译 + 提交**
+- [x] **Step 5：编译 + 提交**
 
 ---
 
@@ -52,7 +52,7 @@ pub fn get_transcription_text(id: i64) -> Result<String, String>
 **Files:**
 - Modify: `crates/desktop/frontend/src/pages/CompactEditor/index.tsx`
 
-- [ ] **Step 1：Tab 接口升级**
+- [x] **Step 1：Tab 接口升级**
 
 ```ts
 interface Tab {
@@ -64,15 +64,15 @@ interface Tab {
 }
 ```
 
-- [ ] **Step 2：loadAndAddTab 升级**
+- [x] **Step 2：loadAndAddTab 升级**
 
 接受 source + itemId，查 item_type（clipboard 时调 get_item_type 或从 get_clipboard_item_text 返回值推断），transcription 时调 get_transcription_text。
 
-- [ ] **Step 3：图片 tab ≤5 限制**
+- [x] **Step 3：图片 tab ≤5 限制**
 
 新增图片 tab 时检查图片 tab 数量，超 5 删最旧。
 
-- [ ] **Step 4：内容区渲染（hidden 挂载）**
+- [x] **Step 4：内容区渲染（hidden 挂载）**
 
 ```tsx
 {tabs.map((tab, i) => (
@@ -88,9 +88,9 @@ interface Tab {
 ))}
 ```
 
-- [ ] **Step 5：tab 栏图标（文字/图片/语音区分）**
+- [x] **Step 5：tab 栏图标（文字/图片/语音区分）**
 
-- [ ] **Step 6：构建 + 提交**
+- [x] **Step 6：构建 + 提交**
 
 ---
 
@@ -100,7 +100,7 @@ interface Tab {
 - Modify: `crates/desktop/frontend/src/pages/ImagePreview/index.tsx`
 - Modify: `crates/desktop/frontend/src/App.tsx`（删 image_preview_window 路由）
 
-- [ ] **Step 1：ImagePreview 接受 props**
+- [x] **Step 1：ImagePreview 接受 props**
 
 ```tsx
 export default function ImagePreview({ imageId: propImageId }: { imageId: number }) {
@@ -108,11 +108,11 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 
 去掉 `get_pending_image` / `listen("image-preview://load")`，用 propImageId 驱动 imageId state。
 
-- [ ] **Step 2：App.tsx 删除 image_preview_window 路由 case**
+- [x] **Step 2：App.tsx 删除 image_preview_window 路由 case**
 
-- [ ] **Step 3：保留 listen("ocr-screenshot://result")**
+- [x] **Step 3：保留 listen("ocr-screenshot://result")**
 
-- [ ] **Step 4：构建 + 提交**
+- [x] **Step 4：构建 + 提交**
 
 ---
 
@@ -124,13 +124,13 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 - Modify: `crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx`
 - Modify: `crates/desktop/frontend/src/lib/compactEditor.ts`
 
-- [ ] **Step 1：ocr_screenshot 改为 open_compact_editor_tab（不再开预览窗）**
+- [x] **Step 1：ocr_screenshot 改为 open_compact_editor_tab（不再开预览窗）**
 
-- [ ] **Step 2：ClipboardItem 图片「预览」改为 openCompactEditorTab**
+- [x] **Step 2：ClipboardItem 图片「预览」改为 openCompactEditorTab**
 
-- [ ] **Step 3：openCompactEditorTab helper 加 source 参数**
+- [x] **Step 3：openCompactEditorTab helper 加 source 参数**
 
-- [ ] **Step 4：编译 + 构建 + 提交**
+- [x] **Step 4：编译 + 构建 + 提交**
 
 ---
 
@@ -140,11 +140,11 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 - Modify: `crates/desktop/src/main.rs`（移除 image_preview 命令注册 + Destroyed 路由）
 - Modify: `crates/desktop/capabilities/default.json`（移除 image_preview_window）
 
-- [ ] **Step 1：移除 image_preview 命令注册**
+- [x] **Step 1：移除 image_preview 命令注册**
 
-- [ ] **Step 2：移除 image_preview_window ACL**
+- [x] **Step 2：移除 image_preview_window ACL**
 
-- [ ] **Step 3：编译 + 提交**
+- [x] **Step 3：编译 + 提交**
 
 ---
 
