@@ -77,77 +77,22 @@ FTS5 触发器只用 `content` 做索引源。image/file 的 content 为空字�
 
 DB 版本号 v16 → v17。
 
-### 3.1 新建临时表 + 数据迁移
+**不迁移历史数据**（用户确认：历史数据可丢弃）。直接 DROP + CREATE：
 
 ```sql
--- 1. 创建新表（临时名）
-CREATE TABLE clipboard_history_new (...);
+-- 1. 废弃旧表
+DROP TABLE IF EXISTS clipboard_history_fts;
+DROP TABLE IF EXISTS clipboard_history;
+DROP TABLE IF EXISTS transcriptions;
 
--- 2. 从旧 clipboard_history 迁移（含 JOIN transcriptions 补全 meta_info）
-INSERT INTO clipboard_history_new (id, item_type, content, ref_data, meta_info, ...)
-SELECT
-    ch.id,
-    CASE
-        WHEN ch.source = 'asr' THEN 'voice'
-        WHEN ch.source = 'ocr' THEN 'ocr'
-        ELSE ch.item_type  -- text/image/file
-    END,
-    CASE WHEN ch.item_type IN ('image', 'file') THEN '' ELSE ch.content END,
-    CASE WHEN ch.item_type = 'image' THEN ch.blob_hash
-         WHEN ch.item_type = 'file' THEN ch.content
-         ELSE NULL END,
-    -- meta_info：按类型组装 JSON
-    CASE
-        WHEN ch.source = 'asr' THEN json_object(
-            'engine', ch.engine,
-            'model', ch.model,
-            'duration_ms', t.duration_ms,
-            'char_count', t.char_count,
-            'engine_mode', t.engine_mode,
-            'polish_model', t.polish_model,
-            'polished', CASE WHEN t.polish_status IN ('applied', 'edited') THEN 1 ELSE 0 END
-        )
-        WHEN ch.source = 'ocr' THEN json_object(
-            'engine', ch.engine,
-            'char_count', length(ch.content)
-        )
-        WHEN ch.item_type = 'image' THEN json_object(
-            'w', ch.width, 'h', ch.height
-        )
-        WHEN ch.item_type = 'text' THEN json_object(
-            'char_count', length(ch.content)
-        )
-        WHEN ch.item_type = 'file' THEN json_object()
-    END,
-    ch.is_favorite, ch.is_rich, ch.created_at, ch.has_thumbnail,
-    CASE WHEN ch.source = 'asr' THEN t.segments ELSE NULL END
-FROM clipboard_history ch
-LEFT JOIN transcriptions t ON ch.transcription_id = t.id;
-
--- 3. 替换旧表
-DROP TABLE clipboard_history;
-ALTER TABLE clipboard_history_new RENAME TO clipboard_history;
-
--- 4. 重建索引 + FTS5
-CREATE INDEX ...;
+-- 2. 建新表（db.sql 更新）
+CREATE TABLE IF NOT EXISTS clipboard_history (...);
 CREATE VIRTUAL TABLE clipboard_history_fts USING fts5(...);
-CREATE TRIGGER ...;
-
--- 5. 废弃 transcriptions
-DROP TABLE transcriptions;
+CREATE TRIGGER clip_fts_ai / clip_fts_ad / clip_fts_au ...;
+CREATE INDEX idx_clip_created ON clipboard_history(created_at DESC);
 ```
 
-### 3.2 image size 补充
-
-image_data 表的 blob 大小在迁移时 JOIN 查：
-```sql
-LEFT JOIN image_data id ON ch.blob_hash = id.hash
--- meta_info 加 'size': format_size(length(id.blob))
-```
-
-### 3.3 file size/type 补充
-
-file 条目的 content 是 JSON 路径数组。迁移时无法从 DB 查文件大小（需文件系统访问）。**迁移时 meta_info 留空 JSON `{}`，后续条目写入时填充。**
+无数据迁移、无 JOIN、无临时表。db.sql 里 transcriptions 建表 + 索引删除，clipboard_history 改为新 schema。init_schema 里 v16→v17 跑 DROP + 重跑 INIT_SQL。
 
 ## 4. 代码影响
 
@@ -211,7 +156,6 @@ pub struct MetaInfo {
 
 ## 6. 风险
 
-- **迁移不可逆**：DROP transcriptions 后无法回退。需要在迁移前备份。
-- **file size 缺失**：迁移时无法补充，旧 file 条目 meta_info 为 `{}`。
-- **FTS5 重建**：迁移期间搜索不可用（瞬间完成，无感知）。
-- **segments 迁移**：transcription_id 为 NULL 的旧 voice 条目（如有）segments 会丢失。
+- **无数据迁移**：用户确认历史数据可丢弃（DROP + CREATE）。
+- **file meta_info 初始为空**：旧 file 条目已随 DROP 清空，新 file 条目写入时从文件系统获取 size/type。
+- **FTS5 重建**：新表创建时自动重建，无历史数据瞬间完成。
