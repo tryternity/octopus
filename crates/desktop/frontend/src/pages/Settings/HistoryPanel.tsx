@@ -193,7 +193,9 @@ function HistoryRow({
     return () => { if (deleteTimer.current) clearTimeout(deleteTimer.current); };
   }, []);
 
-  const primaryText = rec.text;
+  const primaryText = [...rec.text].length > 200
+    ? [...rec.text].slice(0, 200).join("") + "……"
+    : rec.text;
   const isPolished = rec.polish_status === "done";
   const duration = rec.duration_ms ? (rec.duration_ms / 1000).toFixed(1) + "s" : null;
 
