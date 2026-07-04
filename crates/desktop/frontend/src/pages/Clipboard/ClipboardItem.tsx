@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen, Link as LinkIcon, Copy as CopyIcon } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
@@ -117,6 +117,8 @@ export default function ClipboardItemRow({
     openCompactEditorTab(item.id);
   };
 
+  const isUrl = item.item_type === "text" && /^https?:\/\//i.test(item.content.trim());
+
   const Icon = item.source === "asr" ? Mic
     : item.source === "ocr" ? ScanText
     : item.item_type === "image" ? ImageIcon
@@ -157,6 +159,16 @@ export default function ClipboardItemRow({
           </span>
         )}
       </button>
+      {/* 复制图标（紧随类型图标，点击触发同样复制操作） */}
+      <button
+        type="button"
+        onClick={handleCopy}
+        onDoubleClick={(e) => e.stopPropagation()}
+        title="复制"
+        className="flex-shrink-0 mt-px -m-0.5 cursor-pointer rounded p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+      >
+        <CopyIcon className="w-3 h-3 text-muted-foreground hover:text-foreground" />
+      </button>
       <div className="flex-1 min-w-0">
         {item.item_type === "image" && item.image_meta ? (
           <div className="flex items-center gap-1.5">
@@ -184,6 +196,18 @@ export default function ClipboardItemRow({
       {/* 右侧操作：编辑/预览/保存/OCR/打开/删除 + 收藏置末（已收藏常显高亮，置首会使其后 hover 按钮被遮、视觉怪）。
           dblclick 阻止冒泡：连续快速点操作按钮（如删多条）不应被条目 onDoubleClick 误判为双击 → 粘贴 + 隐藏浮窗。 */}
       <div className="flex-shrink-0 flex items-center gap-0.5" onDoubleClick={(e) => e.stopPropagation()}>
+        {isUrl && (
+          <button
+            className="p-0.5 opacity-60 hover:!opacity-100 transition-opacity"
+            onClick={(e) => {
+              e.stopPropagation();
+              window.open(item.content.trim(), "_blank");
+            }}
+            title="打开链接"
+          >
+            <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />
+          </button>
+        )}
         {item.item_type !== "image" && item.item_type !== "file" && (
           <button
             className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"

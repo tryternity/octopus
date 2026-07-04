@@ -6,7 +6,7 @@ import type { ClipboardItem } from "@/types/clipboard";
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Download, FolderOpen,
-  ScanText, Loader2, Check,
+  ScanText, Loader2, Check, Link as LinkIcon,
 } from "lucide-react";
 import SaveImagePopover from "../Clipboard/SaveImagePopover";
 
@@ -412,8 +412,17 @@ function ClipboardRow({
         )}
       </div>
 
-      {/* 右侧操作栏：保存图片/OCR/打开文件/删除 + 收藏置末（已收藏常显高亮，置首会使其后 hover 按钮被遮、视觉怪） */}
+      {/* 右侧操作栏：链接/保存图片/OCR/打开文件/删除 + 收藏置末 */}
       <div className="flex-shrink-0 flex items-center gap-0.5">
+        {item.item_type === "text" && /^https?:\/\//i.test(item.content.trim()) && (
+          <button
+            className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+            onClick={() => window.open(item.content.trim(), "_blank")}
+            title="打开链接"
+          >
+            <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />
+          </button>
+        )}
         {item.item_type === "image" && (
           <div className="relative">
             <button
