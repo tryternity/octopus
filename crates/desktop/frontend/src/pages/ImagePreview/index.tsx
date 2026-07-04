@@ -68,8 +68,10 @@ export default function ImagePreview() {
   const [draftAnn, setDraftAnn] = useState<Annotation | null>(null);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [ocrCopied, setOcrCopied] = useState(false);
-  // 全局 OCR 互斥提示（他处正在 OCR 时显琥珀三角）
   const [ocrWarn, setOcrWarn] = useState(false);
+  interface OcrBlock { text: string; x: number; y: number; w: number; h: number; score: number; }
+  const [ocrBlocks, setOcrBlocks] = useState<OcrBlock[]>([]);
+  const [ocrOverlay, setOcrOverlay] = useState(false);
   // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
   const loadingFullRef = useRef(false);
   // 全图已加载：true 时缩略图后到直接丢弃（防竞态降级）
@@ -175,6 +177,8 @@ export default function ImagePreview() {
     if (imageId == null) return;
     let cancelled = false;
     // 清理旧资源
+    setOcrBlocks([]);
+    setOcrOverlay(false);
     const old = scaledBitmapRef.current;
     scaledBitmapRef.current = null;
     if (old) old.close();
@@ -624,17 +628,24 @@ export default function ImagePreview() {
 
   const handleOcr = async () => {
     if (imageId == null) return;
+    // 已有结果 → toggle 显示/隐藏（不重新识别）
+    if (ocrBlocks.length > 0) {
+      setOcrOverlay(!ocrOverlay);
+      return;
+    }
+    // 首次识别
     try {
-      const text = await invoke<string>("ocr_image", { id: imageId });
-      if (text) {
-        // 识别文本 → 统一入库 source=ocr → 打开 CompactEditor tab 编辑
-        const ocrId = await invoke<number>("insert_ocr_clipboard_item", { text });
+      const result = await invoke<{text: string; blocks: OcrBlock[]}>("ocr_image", { id: imageId });
+      if (result.text) {
+        setOcrBlocks(result.blocks);
+        setOcrOverlay(true);
+        // 保持现有行为：入库 + 打开编辑器
+        const ocrId = await invoke<number>("insert_ocr_clipboard_item", { text: result.text });
         await openCompactEditorTab(ocrId);
         setOcrCopied(true);
         setTimeout(() => setOcrCopied(false), 1500);
       }
     } catch (e) {
-      // 全局互斥：他处正在 OCR → 工具栏显琥珀三角 1.8s 提示稍后重试
       const msg = String(e);
       if (msg.includes("还未完成")) {
         setOcrWarn(true);
@@ -689,7 +700,7 @@ export default function ImagePreview() {
         onSave={handleSave} onCopy={handleCopy} onOcr={handleOcr}
         onUndo={undo} canUndo={annotations.length > 0}
         onRedo={redo} canRedo={redoAvailable}
-        ocrCopied={ocrCopied} ocrWarn={ocrWarn}
+        ocrCopied={ocrCopied || ocrOverlay} ocrWarn={ocrWarn}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
         filled={filled} setFilled={setFilled}
@@ -725,6 +736,27 @@ export default function ImagePreview() {
               className="absolute inset-0 block pointer-events-none"
               style={{ width: dispW, height: dispH }}
             />
+            {/* OCR 文本块叠加层（独立 toggle，与标注 tool 正交） */}
+            {ocrOverlay && ocrBlocks.length > 0 && (
+              <svg className="absolute inset-0 block"
+                viewBox={`0 0 ${natW} ${natH}`}
+                preserveAspectRatio="none"
+                style={{ width: dispW, height: dispH, pointerEvents: "none" }}>
+                {ocrBlocks.map((b, i) => (
+                  <g key={i}>
+                    <rect x={b.x} y={b.y} width={b.w} height={b.h}
+                      fill="rgba(59,130,246,0.08)"
+                      stroke="rgba(59,130,246,0.4)" strokeWidth={1} rx={2} />
+                    <text x={b.x + 2} y={b.y + b.h - 2}
+                      fontSize={Math.min(b.h * 0.8, 14)}
+                      fill="rgba(59,130,246,0.7)"
+                      dominantBaseline="alphabetic">
+                      {b.text}
+                    </text>
+                  </g>
+                ))}
+              </svg>
+            )}
             {/* SVG overlay：标注。viewBox 自然坐标，随 wrapper 滚动 */}
             {natW > 0 && (
               <svg
