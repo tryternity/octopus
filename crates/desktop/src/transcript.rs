@@ -215,6 +215,11 @@ impl Transcript {
         self.segments[..gap].iter().map(|s| s.text.chars().count()).sum()
     }
 
+    /// 取消选中（取消编辑 / 失焦 / 新会话）时调用：清 pending_delete 防幽灵删除。
+    pub fn clear_pending_delete(&mut self) {
+        self.pending_delete = None;
+    }
+
     /// 是否处于中间插入态（caret_gap < 段数）。pipeline Emit insertion 标志用。
     pub fn is_inserting(&self) -> bool { self.caret_gap < self.segments.len() }
 

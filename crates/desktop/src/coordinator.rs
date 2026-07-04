@@ -395,6 +395,10 @@ impl Coordinator {
                     Command::CancelEdit => {
                         if editing {
                             editing = false;
+                            // 取消编辑：清残留的 pending_delete（防选中后取消→下次说话误删）
+                            if let Some(t) = stage_transcript(&mut stage) {
+                                t.clear_pending_delete();
+                            }
                             // 恢复展示当前 segments 扁平文本（编辑态修改在前端 editBuffer，未 commit → transcript 不变）
                             let display = stage_transcript(&mut stage).map(|t| t.display_text()).unwrap_or_default();
                             if !display.is_empty() {
