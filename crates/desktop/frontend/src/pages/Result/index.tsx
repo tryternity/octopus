@@ -73,6 +73,9 @@ function Result() {
   // 是否自动跟随底部（流式追加时滚到底）。用户手动上滚 → false（停止跟随，便于查看历史）；
   // 滚回底部附近（距底 < 24px）→ true（恢复跟随）。新录音重置为 true。
   const stickToBottomRef = useRef(true);
+  // 滚底 rAF 句柄：流式高频 tick（100-200ms）时去重合并到单帧，避免每 tick 排一个 rAF；
+  // 且延迟到 React commit + DOM 更新后再读 scrollHeight（同步读是旧文本高度，会滞后一帧）。
+  const rafScrollRef = useRef<number | null>(null);
 
   // 经 useMemo 稳定：getCurrentWindow() 每次返回新包装对象，若写在渲染体里会让依赖 [win]
   // 的 effect 每次 re-render 都重跑。
@@ -81,6 +84,10 @@ function Result() {
   useEffect(() => { editingRef.current = editing; }, [editing]);
   useEffect(() => { toolbarVisibleRef.current = toolbarVisible; }, [toolbarVisible]);
   useEffect(() => { editingStateRef.current = editing; }, [editing]);
+  // 卸载时取消待执行的滚底 rAF（避免对已卸载 textRef 操作）。
+  useEffect(() => () => {
+    if (rafScrollRef.current != null) cancelAnimationFrame(rafScrollRef.current);
+  }, []);
 
   const showToast = useCallback((msg: string, ms = 2000) => {
     setToast(msg);
@@ -113,9 +120,16 @@ function Result() {
   const renderResultNow = useCallback((newText: string) => {
     displayedRef.current = newText;
     setText(newText);
-    // 仅在跟随底部态时自动滚底（用户手动上滚查看历史时不打断）。
-    if (stickToBottomRef.current && textRef.current) {
-      textRef.current.scrollTop = textRef.current.scrollHeight;
+    // rAF 延迟滚底到 DOM 更新后（读 scrollHeight 才是新文本高度，修同步读滞后一帧；
+    // 且移出 setText 同步路径，与同帧 CaretBlink measure 不叠加成 layout thrashing）。
+    // rafScrollRef 去重：高频 tick 合并到单帧一次。
+    if (rafScrollRef.current == null) {
+      rafScrollRef.current = requestAnimationFrame(() => {
+        rafScrollRef.current = null;
+        if (stickToBottomRef.current && textRef.current) {
+          textRef.current.scrollTop = textRef.current.scrollHeight;
+        }
+      });
     }
     // 标记正在说话
     setIsSpeaking(true);
