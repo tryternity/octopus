@@ -306,7 +306,7 @@ pub fn commit_edit(&mut self, flat: &str) {
 
 ### 11.1 关键决策：延迟到首词删（pending_delete）
 
-`Transcript` 加运行时态字段 `pending_delete: Option<(usize, usize)>`（扁平 char 范围 [start, end)）。`set_selection(start,end)` 只**记录**待删范围 + 把 `caret_gap` 劈到 `start`（**不删字**，保留浏览器原生高亮反馈）。`apply_engine_full` 在**首个非空 delta** 插入前消费 `pending_delete`：`delete_range(start,end)` 真删 + 随后走已有 `push_delta_at_caret`（= 普通中插）。第二个 delta 起就是普通中插，自动衔接。
+`Transcript` 加运行时态字段 `pending_delete: Option<(usize, usize)>`（扁平 char 范围 [start, end)）。`set_selection(start,end)` 只**记录**待删范围 + 把 `caret_gap` 劈到 `start`（**不删字**，保留浏览器原生高亮反馈）。**两条 delta 入口**——`apply_engine_full`（流式 local：zipformer/paraformer streaming）与 `append_segment`（VadSegmented 离线：sensevoice/firered/qwen3/whisper + cloud partial 拼接）——都在**首个非空 delta** 插入前消费 `pending_delete`：`delete_range(start,end)` 真删 + 随后走已有 `push_delta_at_caret`（= 普通中插）。第二个 delta 起就是普通中插，自动衔接。⚠️ 两入口**必须对称消费**（见 §11.7）：漏任一即在该类引擎下选中替换失效——初版漏 `append_segment`，离线/cloud 引擎选中后首词只插不删、选中文本残留，已修（9d4a654）。
 
 不采用「立即删」（选中即删）的理由：① 与用户「说话时才删」意图相悖；② 误操作不可逆；③ 延迟到首词保留高亮反馈、取消容易（点别处 `set_caret` 清 `pending_delete`，文字不动）。
 
@@ -341,8 +341,9 @@ pub fn set_selection(&mut self, start: usize, end: usize) {
 }
 ```
 
-**消费点**：
+**消费点**（三个，缺一不可——见 §11.7 bug 教训）：
 - `apply_engine_full`：`combined_delta.is_empty()` 检查之后、`push_delta_at_caret` 之前，`if let Some((s,e)) = self.pending_delete.take() { self.delete_range(s,e); }`。
+- `append_segment`：`delta.is_empty()` 检查之后、`push_delta_at_caret`/`pending_delta` 之前，同样 `if let Some((s,e)) = self.pending_delete.take() { self.delete_range(s,e); }`（与 `apply_engine_full` 对称——VadSegmented 离线引擎 sensevoice/firered/qwen3/whisper + cloud partial 拼接的首词走此路径）。
 - `take_polish_input`：方法开头先删待删区，避免润色快照含选中旧字。
 
 **清除点**：`set_caret`（取消）、`on_polish_failed`、`commit_edit`、`new`（重置）。润色成功走 `take_polish_input` 已消费。
@@ -362,11 +363,12 @@ pub fn set_selection(&mut self, start: usize, end: usize) {
 
 **offset 工具**：抽 `codePointOffsetTo(container, node, offset)` 支持任意 Range 端点（end 复用），`codePointOffsetBefore` 退化为它的 wrapper（start 端点）。
 
-### 11.5 测试（transcript.rs，6 个单测）
+### 11.5 测试（transcript.rs，7 个单测）
 
 - `delete_range_basic`：删单段中间范围，caret 落删除点。
 - `delete_range_spans_segments`：跨段（Raw/Edited 混合）删除。
-- `set_selection_then_first_delta_replaces`：拖选 → 首词删旧插新、caret 跟随增长。
+- `set_selection_then_first_delta_replaces`：拖选 → 流式路径（`apply_engine_full`）首词删旧插新、caret 跟随增长。
+- `set_selection_then_first_append_segment_replaces`：拖选 → VadSegmented/cloud 路径（`append_segment`）首词同样删旧插新（bug 回归测试，9d4a654；初版漏此路径消费 `pending_delete`，断言 `"你好新词世界"` 失败，修后得 `"你好新词"`）。
 - `set_caret_clears_pending_delete`：选中后点别处 → 后续 apply 不删、文字保留。
 - `pending_delete_consumed_once`：首词消费后第二词普通中插（不再删）。
 - `pending_delete_consumed_in_take_polish_input`：润色快照基于删后文本。
@@ -376,3 +378,9 @@ pub fn set_selection(&mut self, start: usize, end: usize) {
 选中替换 e2e 时发现独立 bug：编辑态保存（`commitEdit`）后闪烁光标错落**首位**（应末尾）。根因：`CaretBlink` 原把 `container={textRef.current}` 当 **prop**——render 阶段求值时 `textRef.current` 是旧值（ref 在 commit 后才更新），而保存时 `editing` true→false 致 textRef 的 `key` 从 `"edit"`→`"view"` 重挂载，此时 `textRef.current` 仍是**即将卸载的旧 contentEditable div**。effect 去量这个 detached 旧 div，`getBoundingClientRect()` 返回 `(0,0)` → 光标落首位，且后续无 state 变化不重测 → 卡死首位。
 
 修复：`CaretBlink` 改接收 `RefObject`，在 effect（commit 后执行）内读 `.current` 拿到已挂载的新 view div，量到真实末尾。中插/点击场景 `editing` 不变、textRef 不重挂，行为不变。**通用教训**：React 中把 `ref.current` 作为子组件 prop 传递有 render-commit 滞后陷阱，重挂载场景应传 RefObject 在 effect 内读取。
+
+### 11.7 同期修复：append_segment 漏消费 pending_delete（9d4a654）
+
+选中替换 e2e（用户用 VadSegmented 离线引擎）发现：选中后说话，选中文本未删、识别字插在选中文本**前面**。根因：`pending_delete` 只在 `apply_engine_full`（流式路径）首词消费，`append_segment`（VadSegmented 离线 sensevoice/firered/qwen3/whisper + cloud partial 路径）漏了同样逻辑——`set_selection` 劈 `caret_gap` 到 start 但不立即删，首词经 `append_segment` 插到 start（选中文字前）却永不触发 `delete_range`，选中文字残留。流式引擎（zipformer/paraformer streaming）走 `apply_engine_full` 不受影响，故 bug 未在中插特性 e2e（流式）暴露。
+
+修复：`append_segment` 开头（delta 非空检查后）消费 `pending_delete`，与 `apply_engine_full` 对称。新增 `set_selection_then_first_append_segment_replaces` 回归测试（§11.5）。**通用教训**：`Transcript` 有两条 delta 入口（流式 `apply_engine_full` / 分段 `append_segment`），任何「首词触发」型运行时状态（如 `pending_delete`）都必须在两入口对称消费，否则只在对应引擎下失效——两入口相关改动务必成对核对。

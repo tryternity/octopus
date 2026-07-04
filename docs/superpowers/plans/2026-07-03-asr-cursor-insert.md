@@ -1486,9 +1486,13 @@ git -C ... commit -m "docs(asr): 同步光标中插改造到文档" --allow-empt
 
 **实施任务（6 步，全部完成）**：
 
-1. **transcript.rs**：加 `pending_delete: Option<(usize,usize)>` 字段（new 初始化 None）；从 `set_caret` 抽 `fn split_at(char_off)->usize`（DRY）；新 `fn delete_range(start,end)` + `pub fn set_selection(start,end)`；`apply_engine_full` 首个非空 delta 前消费 pending_delete；`take_polish_input` 开头消费；`set_caret`/`on_polish_failed`/`commit_edit` 清除。6 个单测全绿。
+1. **transcript.rs**：加 `pending_delete: Option<(usize,usize)>` 字段（new 初始化 None）；从 `set_caret` 抽 `fn split_at(char_off)->usize`（DRY）；新 `fn delete_range(start,end)` + `pub fn set_selection(start,end)`；`apply_engine_full` 首个非空 delta 前消费 pending_delete；`take_polish_input` 开头消费；`set_caret`/`on_polish_failed`/`commit_edit` 清除。6 个单测全绿。⚠️ 初版**仅 `apply_engine_full` 消费** `pending_delete`，`append_segment`（VadSegmented/cloud 路径）漏，离线/cloud 引擎选中替换失效——e2e 后修（见本节末「后续修复 9d4a654」）。
 2. **coordinator.rs**：`Command::SetSelection{start,end}` 变体 + 命令循环 match 臂（!editing 门控 + stage_transcript）+ `Coordinator::set_selection` + `#[tauri::command] set_selection`（镜像 set_caret 六处）。
 3. **main.rs**：invoke_handler 注册 `coordinator::set_selection`（紧邻 set_caret）。
 4. **Result/index.tsx**：`onClick`→`onMouseUp`，`handleTextClick`→`handleTextMouseUp`（按 `isCollapsed` 分流：折叠→set_caret，非折叠→setCaretPos(null)+invoke set_selection）；抽 `codePointOffsetTo`（end 端点），`codePointOffsetBefore` 退化为 wrapper。
 5. **文档**：spec §11 增补（本节同步）。
 6. **验证**：`cargo test -p octopus-desktop` 64 passed（含新 6）、`npm run build` tsc+vite 通过。e2e 清单（用户执行）：拖选中间字（高亮出现、闪烁光标消失）→ 开口 → 高亮消失、选中字删、识别字从该处插、闪烁光标复现跟随；选中后点别处取消（文字保留）；选中替换后继续说话接中插（不再删）；光标中插原行为不回归。
+
+---
+
+**后续修复（2026-07-04，9d4a654）**：选中替换 e2e（用户用 VadSegmented 离线引擎）发现选中后说话、选中文本未删、识别字插在前面——根因 `append_segment` 漏消费 `pending_delete`（初版仅 `apply_engine_full` 消费，见步骤 1 注）。`append_segment` 开头（delta 非空检查后）补 `if let Some((s,e)) = self.pending_delete.take() { self.delete_range(s,e); }`，与 `apply_engine_full` 完全对称。新增 `set_selection_then_first_append_segment_replaces` 回归测试（拖选 → append_segment 首词删旧插新），`cargo test -p octopus-desktop` **65 passed**（原 64 + 1）。e2e 用户验证通过。详见 spec §11.7。
