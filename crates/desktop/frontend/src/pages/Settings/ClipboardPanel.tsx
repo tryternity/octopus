@@ -157,8 +157,8 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
           </div>
         ) : (
           <div className="flex flex-col">
-            {/* 列表 header：全选 */}
-            <div className="flex items-center gap-2 px-3 py-1.5 border-b border-stone-100 group/header">
+            {/* 列表 header：全选（sticky 固定不随滚动） */}
+            <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 border-b border-stone-100 bg-stone-50 group/header">
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
                   type="checkbox"

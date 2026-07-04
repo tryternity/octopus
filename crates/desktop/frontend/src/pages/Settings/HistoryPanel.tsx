@@ -94,9 +94,9 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
 
       {/* ── 列表 ── */}
       <div className="flex-1 overflow-y-auto thin-scrollbar -mx-1 px-1">
-        {/* 列表 header：全选 */}
+        {/* 列表 header：全选（sticky 固定不随滚动） */}
         {records.length > 0 && (
-          <div className="flex items-center gap-2 px-3 py-1.5 border-b border-stone-100 group/header">
+          <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 border-b border-stone-100 bg-stone-50 group/header">
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input
                 type="checkbox"
