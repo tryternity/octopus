@@ -43,24 +43,22 @@ fn save_window_state(state: &WindowState) {
 pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
     if let Some(win) = app_handle.get_webview_window(WINDOW_LABEL) {
         let maximized = win.is_maximized().unwrap_or(false);
+        let scale = win.scale_factor().unwrap_or(1.0);
         let state = if maximized {
-            // 最大化时存标志 + 退出前的大小/位置（非全屏尺寸）
-            // macOS is_maximized 返回 true 时 inner_size/outer_position 可能是全屏值
-            WindowState {
-                width: WIDTH, height: HEIGHT, x: 0.0, y: 0.0, maximized: true,
-            }
+            WindowState { width: WIDTH, height: HEIGHT, x: 0.0, y: 0.0, maximized: true }
         } else if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
+            // 物理像素 → 逻辑像素（除以 scale factor，Retina=2.0）
             WindowState {
-                width: size.width as f64,
-                height: size.height as f64,
-                x: pos.x as f64,
-                y: pos.y as f64,
+                width: size.width as f64 / scale,
+                height: size.height as f64 / scale,
+                x: pos.x as f64 / scale,
+                y: pos.y as f64 / scale,
                 maximized: false,
             }
         } else {
             return;
         };
-        log::info!("[compact-editor] save window state {:?}", state);
+        log::info!("[compact-editor] save window state {:?} (scale={})", state, scale);
         save_window_state(&state);
     }
 }
