@@ -694,7 +694,7 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 
   return (
     // 灯箱暗场（填满 CompactEditor tab 内容区，不再用 h-screen/fixed）
-    <div className="relative h-full w-full overflow-hidden select-none" style={{ background: "#18181b" }}>
+    <div className="relative h-full w-full overflow-hidden select-none bg-background">
       <Toolbar
         tool={tool} setTool={setTool}
         toolColor={toolColor} setToolColor={setToolColorSync}
