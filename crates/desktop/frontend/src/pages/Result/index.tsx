@@ -147,17 +147,20 @@ function Result() {
     }
   }, []);
 
-  // VAD 驱动波纹：后端 emit("update-speaking", bool) → 有语音即亮，静音 200ms 后灭
+  // VAD 驱动波纹：后端 emit("update-speaking", bool) → 有语音即亮，静音即灭
   useEffect(() => {
-    const unlisten = listen<boolean>("update-speaking", (e) => {
-      const speaking = e as unknown as boolean;
+    const unlisten = listen<boolean>("update-speaking", (payload) => {
+      const speaking = payload as unknown as boolean;
+      console.log("[speaking] event received:", speaking);
       if (speaking) {
         if (speakingTimer.current) clearTimeout(speakingTimer.current);
         setIsSpeaking(true);
       } else {
-        // 200ms 防抖灭（消除 VAD 边界抖动）
         if (speakingTimer.current) clearTimeout(speakingTimer.current);
-        speakingTimer.current = setTimeout(() => setIsSpeaking(false), 200);
+        speakingTimer.current = setTimeout(() => {
+          console.log("[speaking] timer fired → setIsSpeaking(false)");
+          setIsSpeaking(false);
+        }, 200);
       }
     });
     return () => { unlisten.then((f) => f()); };
