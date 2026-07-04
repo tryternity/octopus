@@ -689,8 +689,8 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
     : null;
 
   return (
-    // 灯箱暗场：深 stone 让图片本身发光；工具卡与底部 EXIF 条均 fixed 浮于其上
-    <div className="relative h-screen overflow-hidden select-none" style={{ background: "#18181b" }}>
+    // 灯箱暗场（填满 CompactEditor tab 内容区，不再用 h-screen/fixed）
+    <div className="relative h-full w-full overflow-hidden select-none" style={{ background: "#18181b" }}>
       <Toolbar
         tool={tool} setTool={setTool}
         toolColor={toolColor} setToolColor={setToolColorSync}
@@ -833,7 +833,7 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
       {/* 底部 EXIF 状态条：等宽 tabular-nums，半透 blur 融于暗场 */}
       {natW > 0 && (
         <div style={{
-          position: "fixed", bottom: 6, left: "50%", transform: "translateX(-50%)", zIndex: 100,
+          position: "absolute", bottom: 6, left: "50%", transform: "translateX(-50%)", zIndex: 100,
           padding: "3px 10px", borderRadius: 6,
           background: "rgba(24,24,27,0.72)",
           backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
@@ -853,7 +853,7 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
       {/* OCR 双击复制提示浮泡 */}
       {ocrCopiedText && (
         <div style={{
-          position: "fixed", top: 60, left: "50%", transform: "translateX(-50%)", zIndex: 200,
+          position: "absolute", top: 50, left: "50%", transform: "translateX(-50%)", zIndex: 200,
           padding: "6px 14px", borderRadius: 8,
           background: "rgba(34,197,94,0.95)", color: "#fff",
           fontSize: 12, fontWeight: 600, fontFamily: "-apple-system, sans-serif",
