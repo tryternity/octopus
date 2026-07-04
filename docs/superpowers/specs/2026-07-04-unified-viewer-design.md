@@ -1,7 +1,7 @@
 # 统一内容查看器设计（CompactEditor 升级）
 
 > 日期：2026-07-04
-> 状态：📋 设计中
+> 状态：🔧 实施中（Task 1-4 完成，Task 5-6 待做）
 > 前置：`2026-07-03-image-viewer-perf-design.md`（图片预览视口渲染 + SVG overlay）、`2026-07-04-ocr-text-blocks-design.md`（OCR 文本块可视化）
 > 分支：`image-viewer-perf`
 
