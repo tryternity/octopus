@@ -537,8 +537,8 @@ impl VadSegmentedPipeline {
         let segment_cut = self.segment_cut_this_tick;
         let mut events = Vec::new();
         // VAD 说话状态变化 → Speaking 事件
-        // 用 silence_duration 判断（has_speech 只在切段时清，延迟 = 段静音阈值 1-2s 太慢）
-        let speaking = self.silence_duration < 0.3;
+        // has_speech=true 才算说话（开口后才亮）；has_speech=false 时一定不算
+        let speaking = self.has_speech && self.silence_duration < 0.3;
         if speaking != self.prev_speaking {
             self.prev_speaking = speaking;
             events.push(PipelineEvent::Speaking(speaking));
