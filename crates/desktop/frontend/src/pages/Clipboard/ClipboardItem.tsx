@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen, Link as LinkIcon, Copy as CopyIcon } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen, Link as LinkIcon } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { openCompactEditorTab } from "@/lib/compactEditor";
@@ -131,7 +131,7 @@ export default function ClipboardItemRow({
   return (
     <div
       className={cn(
-        "group relative flex items-start gap-2 px-2.5 py-2 cursor-pointer transition-colors",
+        "group relative flex items-start gap-2.5 px-3 py-2.5 cursor-pointer transition-colors",
         isSelected && !deletePending ? "bg-accent" : "hover:bg-accent",
         deletePending && "bg-red-50",
       )}
@@ -139,15 +139,16 @@ export default function ClipboardItemRow({
       onDoubleClick={handleDoubleClick}
     >
       {isVoice && (
-        <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-voice/60" />
+        <div className="absolute left-0 top-2 bottom-2 w-[2px] rounded-r bg-voice/50" />
       )}
 
+      {/* 类型图标 = 单击复制（合并为一个按钮，减少视觉碎片） */}
       <button
         type="button"
         onClick={handleCopy}
         onDoubleClick={(e) => e.stopPropagation()}
         title="单击复制"
-        className="relative flex-shrink-0 mt-px -m-0.5 cursor-pointer rounded p-0.5 transition-transform duration-150 hover:scale-110 active:scale-90"
+        className="relative flex-shrink-0 mt-px cursor-pointer rounded p-0.5 transition-transform duration-150 hover:scale-110 active:scale-90"
       >
         <Icon className={cn(
           "w-4 h-4 transition-all duration-150",
@@ -155,51 +156,41 @@ export default function ClipboardItemRow({
           copied && "scale-125 text-emerald-500",
         )} />
         {copied && (
-          <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1 -translate-y-1/2 whitespace-nowrap rounded bg-emerald-500 px-1.5 py-0.5 text-[10px] font-medium text-white shadow">
+          <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1.5 -translate-y-1/2 whitespace-nowrap rounded-md bg-emerald-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-md">
             已复制
           </span>
         )}
       </button>
-      {/* 复制图标（紧随类型图标，点击触发同样复制操作） */}
-      <button
-        type="button"
-        onClick={handleCopy}
-        onDoubleClick={(e) => e.stopPropagation()}
-        title="复制"
-        className="flex-shrink-0 mt-px -m-0.5 cursor-pointer rounded p-0.5 opacity-30 hover:!opacity-100 transition-opacity"
-      >
-        <CopyIcon className="w-3 h-3 text-muted-foreground hover:text-foreground" />
-      </button>
+
       <div className="flex-1 min-w-0">
         {item.item_type === "image" && item.image_meta ? (
-          <div className="flex items-center gap-1.5">
+          <div className="flex items-center gap-2">
             {thumbSrc && (
-              <img src={thumbSrc} className="w-8 h-8 rounded object-cover flex-shrink-0" alt="" />
+              <img src={thumbSrc} className="w-9 h-9 rounded-md object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
             )}
-            <span className="text-xs text-muted-foreground">
+            <span className="text-[11px] text-muted-foreground tabular-nums">
               {item.image_meta.width}×{item.image_meta.height}
             </span>
           </div>
         ) : item.item_type === "file" ? (
-          <div className="text-xs text-muted-foreground truncate">
+          <div className="text-[12px] text-muted-foreground truncate">
             {formatFilePaths(item.content, item.file_meta?.file_count)}
           </div>
         ) : (
-          <p className="text-xs leading-relaxed text-foreground/90 break-all line-clamp-2">{[...item.content].length > 200 ? [...item.content].slice(0, 200).join("") + "……" : item.content}</p>
+          <p className="text-[12.5px] leading-snug text-foreground/90 break-all line-clamp-2">{[...item.content].length > 200 ? [...item.content].slice(0, 200).join("") + "……" : item.content}</p>
         )}
         {isVoice && (
-          <span className="inline-block mt-0.5 text-[10px] text-voice/70 font-medium">
+          <span className="inline-block mt-1 text-[10px] text-voice/60 font-medium tabular-nums">
             {item.created_at}
           </span>
         )}
       </div>
 
-      {/* 右侧操作：编辑/预览/保存/OCR/打开/删除 + 收藏置末（已收藏常显高亮，置首会使其后 hover 按钮被遮、视觉怪）。
-          dblclick 阻止冒泡：连续快速点操作按钮（如删多条）不应被条目 onDoubleClick 误判为双击 → 粘贴 + 隐藏浮窗。 */}
-      <div className="flex-shrink-0 flex items-center gap-0.5" onDoubleClick={(e) => e.stopPropagation()}>
+      {/* 右侧操作：统一 hover 显示（收藏除外） */}
+      <div className="flex-shrink-0 flex items-center gap-1" onDoubleClick={(e) => e.stopPropagation()}>
         {isUrl && (
           <button
-            className="p-0.5 opacity-60 hover:!opacity-100 transition-opacity"
+            className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
             onClick={(e) => {
               e.stopPropagation();
               openUrl(item.content.trim()).catch(console.error);
@@ -211,7 +202,7 @@ export default function ClipboardItemRow({
         )}
         {item.item_type !== "image" && item.item_type !== "file" && (
           <button
-            className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+            className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
             onClick={handleEditText}
             title="编辑"
           >
@@ -220,7 +211,7 @@ export default function ClipboardItemRow({
         )}
         {item.item_type === "image" && (
           <button
-            className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+            className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
             onClick={(e) => {
               e.stopPropagation();
               openCompactEditorTab(item.id);
@@ -254,7 +245,7 @@ export default function ClipboardItemRow({
         )}
         {item.item_type === "file" && (
           <button
-            className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+            className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
             onClick={handleOpenFile}
             title="打开文件"
           >
