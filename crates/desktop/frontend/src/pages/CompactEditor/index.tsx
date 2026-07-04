@@ -228,18 +228,20 @@ function CompactEditor() {
     // 不手算 scrollTop：split("\n").length 在 soft wrap 下低估实际渲染行 → 算出的
     // scrollTop 偏上 → 目标匹配挡在视口下方看不见。setSelectionRange 原生会滚动使选区
     // 可见，WebKit 按实际渲染行（soft-wrap / 硬换行都准确）定位，无需手算行高。
+    // 焦点留在正文（不还回查找框）：WKWebView 下 textarea 失焦后选区高亮不渲染，必须保持
+    // focus 才能看到匹配被选中。查找模式下的连续 Enter 跳转 / 防误删换行改由正文 onKeyDown
+    // 拦截 Enter 实现（见下方 textarea），而非靠查找框持焦。
   };
 
-  // 返回新算出的 idxs：setMatches 是异步 state，调用方同帧读闭包 matches 会读到旧值，
-  // 故需要跳转的场景（findQuery 变化）改用同步返回值，不读异步 state。
+  // runFind 只负责「重算匹配 + 更新计数」，绝不 selectRange：selectRange 内部 ta.focus()
+  // 会把焦点从查找框抢到正文，导致用户在查找框每打一个字符就被拽走、输不全查找词。
+  // matchIdx 统一重置为 -1（未定位哨兵）：计数显示 0/N；跳转交给 Enter / ↑↓ 按钮（gotoMatch），
+  // 首次 gotoMatch(1) 落第一项、gotoMatch(-1) 落末项。
   const runFind = useCallback((): number[] => {
     if (!findQuery || !active) { setMatches([]); setMatchIdx(-1); return []; }
     const idxs = collectMatches(active.text || "", findQuery);
     setMatches(idxs);
-    setMatchIdx(idxs.length > 0 ? 0 : -1);
-    // 不在 runFind 里 selectRange——打字时 active.text 变化会触发 runFind，
-    // selectRange 会抢焦点拽回顶部，导致查找模式下无法编辑。
-    // selectRange 只在用户手动跳转（gotoMatch）或 findQuery 变化时（见下方 effect）调用。
+    setMatchIdx(-1);
     return idxs;
   }, [findQuery, active]);
 
@@ -251,10 +253,12 @@ function CompactEditor() {
     // findQuery 变化 → 立即重新匹配 + 跳转。用 runFind 同步返回的 idxs 跳转，不读 matches：
     // setMatches 异步，同帧闭包 matches 是旧值（首次为 []）→ 跳转失效或落到旧匹配错位。
     if (findQuery !== prevFindQuery.current) {
+      // 用户在查找框输入 → 立即重算匹配计数，但【不跳转/不 selectRange】：selectRange 的
+      // ta.focus() 会抢走查找框焦点，导致每输一个字符就被拽到正文、输不全查找词。
+      // 计数由 runFind 更新（matchIdx=-1 → 显示 0/N）；跳转交给 Enter / ↑↓ 按钮（gotoMatch）。
       prevFindQuery.current = findQuery;
       if (findDebounce.current) clearTimeout(findDebounce.current);
-      const idxs = runFind();
-      if (idxs.length > 0) selectRange(idxs[0], findQuery.length);
+      runFind();
       return;
     }
     // text 变化（打字/编辑）→ debounce 150ms 后更新匹配计数（避免每键扫描全文）
@@ -268,7 +272,14 @@ function CompactEditor() {
 
   const gotoMatch = (delta: number) => {
     if (matches.length === 0) return;
-    const next = (matchIdx + delta + matches.length) % matches.length;
+    // matchIdx=-1（未定位，刚改完查找词）时，Enter/↓ 落第一项、Shift+Enter/↑ 落末项；
+    // 否则按 delta 环形跳转。-1 是哨兵不是真实索引，不能直接进模运算。
+    let next: number;
+    if (matchIdx < 0) {
+      next = delta > 0 ? 0 : matches.length - 1;
+    } else {
+      next = (matchIdx + delta + matches.length) % matches.length;
+    }
     setMatchIdx(next);
     selectRange(matches[next], findQuery.length);
   };
@@ -406,7 +417,7 @@ function CompactEditor() {
             autoFocus
             value={findQuery}
             onChange={e => setFindQuery(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") gotoMatch(e.shiftKey ? -1 : 1); }}
+            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); gotoMatch(e.shiftKey ? -1 : 1); } }}
             placeholder="查找"
             className="w-32 px-2 py-0.5 text-xs border border-stone-300 rounded bg-white outline-none focus:border-[#007aff]"
           />
@@ -441,6 +452,11 @@ function CompactEditor() {
                 onChange={e => {
                   const idx = tabs.findIndex(t => t.key === tab.key);
                   if (idx >= 0) updateActiveTextAt(e.target.value, idx);
+                }}
+                onKeyDown={e => {
+                  // 查找栏打开时，正文里的 Enter/Shift+Enter 走跳转（不插换行、不替换选区），
+                  // 与查找框 Enter 行为一致，支持跳转后连续跳；Esc 关查找栏恢复正常编辑。
+                  if (showFind && e.key === "Enter") { e.preventDefault(); gotoMatch(e.shiftKey ? -1 : 1); }
                 }}
                 readOnly={tab.source === 'transcription'}
                 style={{ fontSize: `${fontSize}px`, lineHeight: 1.6 }}
