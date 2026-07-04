@@ -32,6 +32,7 @@ export default function Screenshot() {
   const redoStackRef = useRef<Annotation[]>([]);
   const [redoAvailable, setRedoAvailable] = useState(false);
   const [showPopover, setShowPopover] = useState(false);
+  const [popoverX, setPopoverX] = useState(0);
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; val: string } | null>(null);
   const textDraftRef = useRef<{ x: number; y: number; val: string } | null>(null);
   const modeRef = useRef<Mode>("idle");
@@ -151,6 +152,20 @@ export default function Screenshot() {
   };
 
   // 绘制
+  // 工具按钮点击：切换工具 + 记录按钮中心 x（浮窗跟随按钮）
+  const onToolSelect = (e: React.MouseEvent, t: Tool, extra?: () => void) => {
+    const btn = e.currentTarget as HTMLElement;
+    const rect = btn.getBoundingClientRect();
+    setPopoverX(rect.left + rect.width / 2);
+    if (tool === t) {
+      if (showPopover) { setShowPopover(false); setTool("none"); }
+      else { setShowPopover(true); }
+    } else {
+      setTool(t); setShowPopover(true);
+      extra?.();
+    }
+  };
+
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
     const bg = bgImgRef.current;
@@ -691,7 +706,7 @@ export default function Screenshot() {
     : 0;
   // 用选区中心 + translateX(-50%) 实现真正居中，不受工具栏实际宽度影响
   const toolbarCenterX = sel ? sel.x + sel.w / 2 : 0;
-  const popoverY = toolbarBelow ? toolbarY + 44 : Math.max(0, toolbarY - 100);
+  const popoverY = toolbarY + 44;  // 浮窗始终在工具栏下方
 
   if (!ready) {
     return <div style={{ width: "100vw", height: "100vh", background: "rgba(0,0,0,0.5)" }} />;
@@ -813,31 +828,31 @@ export default function Screenshot() {
           <ToolButton active={tool === "none"} onClick={() => setTool("none")} label="选择" icon={
             <img src="icons/arrow-pointer.svg" alt="选择" className="w-[18px] h-[18px]" style={{ filter: tool === "none" ? "brightness(0) invert(1)" : "none" }} />
           } />
-          <ToolButton active={tool === "rect"} onClick={() => { if (tool === "rect") { if (showPopover) { setShowPopover(false); setTool("none"); } else { setShowPopover(true); } } else { setTool("rect"); setShowPopover(true); } }} label="矩形" icon={
+          <ToolButton active={tool === "rect"} onClick={(e) => onToolSelect(e, "rect")} label="矩形" icon={
             <img src="icons/square.svg" alt="矩形" className="w-[18px] h-[18px]" style={{ filter: tool === "rect" ? "brightness(0) invert(1)" : "none" }} />
           } />
-          <ToolButton active={tool === "oval"} onClick={() => { if (tool === "oval") { if (showPopover) { setShowPopover(false); setTool("none"); } else { setShowPopover(true); } } else { setTool("oval"); setShowPopover(true); } }} label="椭圆" icon={
+          <ToolButton active={tool === "oval"} onClick={(e) => onToolSelect(e, "oval")} label="椭圆" icon={
             <img src="icons/oval-vertical.svg" alt="椭圆" className="w-[18px] h-[18px]" style={{ filter: tool === "oval" ? "brightness(0) invert(1)" : "none" }} />
           } />
-          <ToolButton active={tool === "diamond"} onClick={() => { if (tool === "diamond") { if (showPopover) { setShowPopover(false); setTool("none"); } else { setShowPopover(true); } } else { setTool("diamond"); setShowPopover(true); } }} label="菱形" icon={
+          <ToolButton active={tool === "diamond"} onClick={(e) => onToolSelect(e, "diamond")} label="菱形" icon={
             <img src="icons/diamond.svg" alt="菱形" className="w-[18px] h-[18px]" style={{ filter: tool === "diamond" ? "brightness(0) invert(1)" : "none" }} />
           } />
-          <ToolButton active={tool === "line"} onClick={() => { if (tool === "line") { if (showPopover) { setShowPopover(false); setTool("none"); } else { setShowPopover(true); } } else { setTool("line"); setShowPopover(true); } }} label="直线" icon={
+          <ToolButton active={tool === "line"} onClick={(e) => onToolSelect(e, "line")} label="直线" icon={
             <img src="icons/straight-line.svg" alt="直线" className="w-[18px] h-[18px]" style={{ filter: tool === "line" ? "brightness(0) invert(1)" : "none" }} />
           } />
-          <ToolButton active={tool === "arrow"} onClick={() => { if (tool === "arrow") { if (showPopover) { setShowPopover(false); setTool("none"); } else { setShowPopover(true); } } else { setTool("arrow"); setShowPopover(true); } }} label="箭头" icon={
+          <ToolButton active={tool === "arrow"} onClick={(e) => onToolSelect(e, "arrow")} label="箭头" icon={
             <img src="icons/arrow-line.svg" alt="箭头" className="w-[18px] h-[18px]" style={{ filter: tool === "arrow" ? "brightness(0) invert(1)" : "none" }} />
           } />
-          <ToolButton active={tool === "pen"} onClick={() => { if (tool === "pen") { if (showPopover) { setShowPopover(false); setTool("none"); } else { setShowPopover(true); } } else { setTool("pen"); setShowPopover(true); } }} label="画笔" icon={
+          <ToolButton active={tool === "pen"} onClick={(e) => onToolSelect(e, "pen")} label="画笔" icon={
             <img src="icons/sketching.svg" alt="画笔" className="w-[18px] h-[18px]" style={{ filter: tool === "pen" ? "brightness(0) invert(1)" : "none" }} />
           } />
-          <ToolButton active={tool === "text"} onClick={() => { if (tool === "text") { if (showPopover) { setShowPopover(false); setTool("none"); } else { setShowPopover(true); } } else { setTool("text"); setShowPopover(true); } }} label="文字" icon={
+          <ToolButton active={tool === "text"} onClick={(e) => onToolSelect(e, "text")} label="文字" icon={
             <img src="icons/text.svg" alt="文字" className="w-[18px] h-[18px]" style={{ filter: tool === "text" ? "brightness(0) invert(1)" : "none" }} />
           } />
-          <ToolButton active={tool === "number"} onClick={() => { if (tool === "number") { if (showPopover) { setShowPopover(false); setTool("none"); } else { setShowPopover(true); } } else { setTool("number"); setShowPopover(true); setNumberCounter(1); } }} label="序号" icon={
+          <ToolButton active={tool === "number"} onClick={(e) => onToolSelect(e, "number", () => setNumberCounter(1))} label="序号" icon={
             <img src="icons/sequence-note.svg" alt="序号" className="w-[18px] h-[18px]" style={{ filter: tool === "number" ? "brightness(0) invert(1)" : "none" }} />
           } />
-          <ToolButton active={tool === "blur"} onClick={() => { if (tool === "blur") { if (showPopover) { setShowPopover(false); setTool("none"); } else { setShowPopover(true); } } else { setTool("blur"); setShowPopover(true); } }} label="马赛克" icon={
+          <ToolButton active={tool === "blur"} onClick={(e) => onToolSelect(e, "blur")} label="马赛克" icon={
             <img src="icons/mosaic.svg" alt="马赛克" className="w-[18px] h-[18px]" style={{ filter: tool === "blur" ? "brightness(0) invert(1)" : "none" }} />
           } />
           <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
@@ -886,8 +901,9 @@ export default function Screenshot() {
       {/* 工具属性浮窗 */}
       {sel && mode === "selected" && tool !== "none" && showPopover && (
         <ToolPropsPopover
-          x={toolbarCenterX}
+          x={popoverX}
           y={popoverY}
+          key={`${toolbarCenterX}-${popoverY}-${tool}`}
           color={toolColor}
           width={toolWidth}
           fontSize={toolFontSize}
@@ -997,7 +1013,7 @@ export default function Screenshot() {
   );
 }
 
-function ToolButton({ active, onClick, label, icon }: { active?: boolean; onClick: () => void; label: string; icon: React.ReactNode }) {
+function ToolButton({ active, onClick, label, icon }: { active?: boolean; onClick: (e: React.MouseEvent<HTMLButtonElement>) => void; label: string; icon: React.ReactNode }) {
   return (
     <button
       onClick={onClick}
@@ -1043,6 +1059,7 @@ function ToolPropsPopover({
         position: "fixed",
         left: x,
         top: y,
+        transform: "translateX(-50%)",
         padding: "10px 12px",
         background: "#fff",
         borderRadius: 10,
