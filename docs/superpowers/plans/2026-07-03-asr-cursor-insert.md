@@ -1542,3 +1542,14 @@ git -C ... commit -m "docs(asr): 同步光标中插改造到文档" --allow-empt
 
 - `npm run build` tsc+vite 通过。
 - e2e（用户）：4 bug 全部修复后逐条复现验证通过（流式文字滚动后正常渲染、上滚光标隐藏、滚回底部立即跟随、编辑换行保留）。
+
+---
+
+## 追加：前端最小测试基建（2026-07-04）
+
+4-bug 排查耗时（flushSync 失败 2 次才定位 contentEditable 不 reconcile）暴露前端无单测框架的代价。引入 vitest 4 + jsdom 29（commit e797e0f）：
+
+- `measureCaretPx` / `codePointOffsetTo` / `codePointOffsetBefore` 从 `Result/index.tsx` 抽到 `./caret.ts`（纯函数，隔离可测，不拉整个组件模块）。
+- `caret.test.ts`（9 测全绿）锁住 **code-point → UTF-16 offset 对齐**（光标错位/首位 bug 的核心）与 null/空容器分支。
+- jsdom 未实现 `Range.prototype.getBoundingClientRect`（Element 有），`defineProperty` 补零矩形；像素级光标位仍留给 e2e（jsdom 量不了）。
+- `renderResultNow` 耦合组件/Tauri，组件级测试留后续。
