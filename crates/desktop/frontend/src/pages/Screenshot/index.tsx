@@ -33,6 +33,10 @@ export default function Screenshot() {
   const [redoAvailable, setRedoAvailable] = useState(false);
   const [showPopover, setShowPopover] = useState(false);
   const [popoverX, setPopoverX] = useState(0);
+  interface OcrBlock { text: string; x: number; y: number; w: number; h: number; score: number; }
+  const [ocrBlocks, setOcrBlocks] = useState<OcrBlock[]>([]);
+  const [ocrOverlay, setOcrOverlay] = useState<'off' | 'overlay' | 'mask'>('off');
+  const [ocrCopiedText, setOcrCopiedText] = useState<string | null>(null);
   const [textDraft, setTextDraft] = useState<{ x: number; y: number; val: string } | null>(null);
   const textDraftRef = useRef<{ x: number; y: number; val: string } | null>(null);
   const modeRef = useRef<Mode>("idle");
@@ -642,10 +646,18 @@ export default function Screenshot() {
   }
 
   function doOcr() {
+    // 已有结果 → 三态循环：off → overlay → mask → off
+    if (ocrBlocks.length > 0) {
+      setOcrOverlay(ocrOverlay === 'off' ? 'overlay' : ocrOverlay === 'overlay' ? 'mask' : 'off');
+      return;
+    }
+    // 首次识别
     composeAndCropBytes().then((bytes) => {
       if (!bytes) return;
-      invoke("ocr_screenshot", bytes as unknown as Record<string, unknown>).catch((e) => {
-        // 全局互斥：他处正在 OCR → 屏幕中央提示稍后重试；其余错误打日志（截图无 toast 框架）
+      invoke<{text: string; blocks: OcrBlock[]}>("ocr_screenshot", bytes as unknown as Record<string, unknown>).then((result) => {
+        setOcrBlocks(result.blocks);
+        setOcrOverlay('overlay');
+      }).catch((e) => {
         const msg = String(e);
         if (msg.includes("还未完成")) {
           setOcrWarn(true);
@@ -881,7 +893,54 @@ export default function Screenshot() {
         </div>
       )}
 
-      {/* 贴图按钮：选区右上角（工具栏在上方时放右下角） */}
+      {/* OCR 文本块叠加层（三态：off / overlay / mask，坐标 = sel 偏移 + block 自然坐标） */}
+      {ocrOverlay !== 'off' && ocrBlocks.length > 0 && sel && (
+        <svg style={{ position: "fixed", left: 0, top: 0, width: "100vw", height: "100vh", pointerEvents: "none", zIndex: 99 }}>
+          {/* 第一遍：所有遮罩底 */}
+          {ocrBlocks.map((b, i) => (
+            <rect key={`bg-${i}`}
+              x={sel.x + b.x} y={sel.y + b.y} width={b.w} height={b.h}
+              fill={ocrOverlay === 'mask' ? "rgba(255,255,255,0.92)" : "rgba(59,130,246,0.08)"}
+              stroke={ocrOverlay === 'mask' ? "rgba(0,0,0,0.1)" : "rgba(59,130,246,0.4)"}
+              strokeWidth={1} rx={2}
+              style={{ pointerEvents: 'all', cursor: 'pointer' }}
+              onDoubleClick={(e) => {
+                e.stopPropagation();
+                navigator.clipboard?.writeText(b.text).then(() => {
+                  setOcrCopiedText(`已复制：${b.text.length > 20 ? b.text.slice(0, 20) + '…' : b.text}`);
+                  setTimeout(() => setOcrCopiedText(null), 2000);
+                }).catch(() => {});
+              }}
+            />
+          ))}
+          {/* 第二遍：所有文字 */}
+          {ocrBlocks.map((b, i) => (
+            <text key={`tx-${i}`}
+              x={sel.x + b.x + 2} y={sel.y + b.y + b.h - 2}
+              fontSize={Math.min(b.h * 0.8, 14)}
+              fill={ocrOverlay === 'mask' ? "rgba(0,0,0,0.85)" : "rgba(59,130,246,0.7)"}
+              dominantBaseline="alphabetic"
+              style={{ pointerEvents: 'none', userSelect: 'none' }}>
+              {b.text}
+            </text>
+          ))}
+        </svg>
+      )}
+
+      {/* OCR 复制提示浮泡 */}
+      {ocrCopiedText && (
+        <div style={{
+          position: "fixed", top: 60, left: "50%", transform: "translateX(-50%)", zIndex: 200,
+          padding: "6px 14px", borderRadius: 8,
+          background: "rgba(34,197,94,0.95)", color: "#fff",
+          fontSize: 12, fontWeight: 600, fontFamily: "-apple-system, sans-serif",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.2)", pointerEvents: "none",
+        }}>
+          {ocrCopiedText}
+        </div>
+      )}
+
+      {/* 贴图按钮 */}
       {sel && mode !== "scrolling" && (
         <button onClick={doPin} title="贴图" style={{
           position: "fixed",

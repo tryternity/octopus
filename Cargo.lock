@@ -5150,6 +5150,7 @@ dependencies = [
  "log",
  "ocr-rs",
  "octopus-infra",
+ "serde",
 ]
 
 [[package]]
