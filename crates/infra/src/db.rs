@@ -153,8 +153,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
         // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 15", [])?;
-        log::info!("DB initialized (v15): schema + app_config(setting) + prompts + clipboard_history + image_data + yaml migration (notepad removed; transcriptions segments+text; legacy raw/polished/edited columns dropped)");
+        conn.execute("PRAGMA user_version = 16", [])?;
+        log::info!("DB initialized (v16): schema + app_config(setting) + prompts + clipboard_history + image_data + yaml migration (notepad removed; transcriptions segments+text; legacy raw/polished/edited columns dropped; edit_shortcut 跨平台 CmdOrCtrl+Enter)");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
@@ -334,6 +334,17 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .context("v14→v15: drop legacy text columns")?;
         conn.execute("PRAGMA user_version = 15", [])?;
         log::info!("DB migrated to v15: legacy text columns dropped");
+    } else if v == 15 {
+        // v15 → v16：edit_shortcut 旧默认 'Cmd+Enter' 在 Win/Linux 下需 Win+Enter（meta 键），Ctrl+Enter 无效；
+        // 改 'CmdOrCtrl+Enter' 跨平台（Mac=Cmd，Win/Linux=Ctrl）。仅改仍为旧默认的行，用户自定义值不动。
+        log::info!("DB migrating v15 → v16: edit_shortcut Cmd+Enter → CmdOrCtrl+Enter");
+        conn.execute_batch(
+            "UPDATE app_config SET config_value = 'CmdOrCtrl+Enter'
+             WHERE config_key = 'edit_shortcut' AND config_value = 'Cmd+Enter';",
+        )
+        .context("v15→v16: fix edit_shortcut cross-platform")?;
+        conn.execute("PRAGMA user_version = 16", [])?;
+        log::info!("DB migrated to v16: edit_shortcut 跨平台");
     }
     Ok(())
 }
@@ -1369,9 +1380,9 @@ mod tests {
 
     #[test]
     fn migrate_v13_to_v14_is_idempotent() {
-        // v13 库连跑 init_schema：v13→v14（加 segments/text + 迁数据）→ v14→v15（DROP 旧三列）。
-        // 第三次 v=15 无分支，早退 no-op（验证收敛后重复调用幂等、不崩）。
-        let dir = std::env::temp_dir().join(format!("octopus-v15-idem-{}", std::process::id()));
+        // v13 库连跑 init_schema：v13→v14（加 segments/text + 迁数据）→ v14→v15（DROP 旧三列）
+        // → v15→v16（edit_shortcut 跨平台）。第四次 v=16 无分支，早退 no-op（验证收敛后幂等、不崩）。
+        let dir = std::env::temp_dir().join(format!("octopus-v16-idem-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let conn = Connection::open(dir.join("mig.db")).unwrap();
@@ -1381,18 +1392,26 @@ mod tests {
                 engine_mode TEXT, raw_text TEXT NOT NULL, polished_text TEXT,
                 edited_text TEXT, polish_status TEXT NOT NULL DEFAULT 'off',
                 polish_model TEXT, duration_ms INTEGER, char_count INTEGER);
+             CREATE TABLE app_config (
+                category TEXT NOT NULL DEFAULT 'setting',
+                config_key TEXT PRIMARY KEY,
+                config_value TEXT NOT NULL,
+                description TEXT);
              INSERT INTO transcriptions (id, created_at, engine, raw_text) VALUES
                 (1, '2026-07-04 10:00:00', 'whisper', '原始文');
+             INSERT INTO app_config (config_key, config_value) VALUES
+                ('edit_shortcut', 'Cmd+Enter');
              PRAGMA user_version = 13;",
         )
         .unwrap();
 
         init_schema(&conn).unwrap(); // v13 → v14
         init_schema(&conn).unwrap(); // v14 → v15
-        init_schema(&conn).unwrap(); // v15：无分支，幂等早退
+        init_schema(&conn).unwrap(); // v15 → v16
+        init_schema(&conn).unwrap(); // v16：无分支，幂等早退
 
         let uv: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(uv, 15);
+        assert_eq!(uv, 16);
         // 数据经全链迁移保留
         let text: String = conn
             .query_row("SELECT text FROM transcriptions WHERE id=1", [], |r| r.get(0))
@@ -1407,6 +1426,15 @@ mod tests {
             .filter_map(|r| r.ok())
             .collect();
         assert!(!cols.iter().any(|c| c == "raw_text"));
+        // edit_shortcut 经 v15→v16 改为跨平台
+        let es: String = conn
+            .query_row(
+                "SELECT config_value FROM app_config WHERE config_key = 'edit_shortcut'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(es, "CmdOrCtrl+Enter");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1460,6 +1488,53 @@ mod tests {
             .unwrap();
         assert_eq!(text, "润色");
         assert!(segments.contains("\"kind\":\"polished\""));
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_v15_to_v16_fixes_edit_shortcut() {
+        // v15 库 app_config 里 edit_shortcut 还是旧默认 'Cmd+Enter'（Win/Linux 需 Win+Enter，Ctrl+Enter 无效）。
+        // v15→v16 仅改仍为 'Cmd+Enter' 的行 → 'CmdOrCtrl+Enter'（Mac=Cmd / Win,Linux=Ctrl），其他快捷键不动。
+        let dir = std::env::temp_dir().join(format!("octopus-v16-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = Connection::open(dir.join("mig.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE app_config (
+                category TEXT NOT NULL DEFAULT 'setting',
+                config_key TEXT PRIMARY KEY,
+                config_value TEXT NOT NULL,
+                description TEXT);
+             INSERT INTO app_config (config_key, config_value, description) VALUES
+                ('edit_shortcut', 'Cmd+Enter', '旧默认'),
+                ('asr_shortcut', 'CmdOrCtrl+Shift+A', '不应被改');
+             PRAGMA user_version = 15;",
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+
+        let uv: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(uv, 16);
+
+        let es: String = conn
+            .query_row(
+                "SELECT config_value FROM app_config WHERE config_key = 'edit_shortcut'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(es, "CmdOrCtrl+Enter");
+        // WHERE config_value = 'Cmd+Enter' 不命中其他快捷键
+        let asr: String = conn
+            .query_row(
+                "SELECT config_value FROM app_config WHERE config_key = 'asr_shortcut'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(asr, "CmdOrCtrl+Shift+A");
 
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -2179,7 +2254,7 @@ mod tests {
         assert_eq!(cfg.segment_silence, 400.0);
         assert_eq!(cfg.polish_min_interval, 5.0);
         assert_eq!(cfg.denoise_mode, 1);
-        assert_eq!(cfg.edit_shortcut, "Cmd+Enter");
+        assert_eq!(cfg.edit_shortcut, "CmdOrCtrl+Enter");
         assert_eq!(cfg.download_mirror, "");
     }
 

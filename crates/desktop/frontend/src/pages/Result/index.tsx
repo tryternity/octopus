@@ -5,7 +5,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { SvgIcon, type IconName } from "@/components/SvgIcon";
-import { codePointOffsetTo, codePointOffsetBefore, measureCaretPx } from "./caret";
+import { codePointOffsetTo, codePointOffsetBefore, measureCaretPx, placeCaretAtCodePoint } from "./caret";
 
 const DIVERTED_DELAY_MS = 300;
 
@@ -51,7 +51,7 @@ function Result() {
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [toolbarState, setToolbarState] = useState<ToolbarState>({
     polish_mode: 0, denoise_mode: 1, polish_llm_valid: false,
-    hide_toolbar: true, edit_shortcut: "Cmd+Enter",
+    hide_toolbar: true, edit_shortcut: "CmdOrCtrl+Enter",
   });
   const [popupType, setPopupType] = useState<PopupType>(null);
   const [popupItems, setPopupItems] = useState<PopupItem[]>([]);
@@ -61,6 +61,10 @@ function Result() {
   // 点击中间 → setCaretPos(offset)；中插态每 tick 由后端 caret（=已插入字数累加）驱动右移，
   // 故光标始终跟在最后插入的文字后；非中插态回 null（末尾）。
   const [caretPos, setCaretPos] = useState<number | null>(null);
+  // caretPos 的 ref 镜像：enterEdit 需在 setCaretPos(null) 前读到进入前的点击位（恢复编辑态光标），
+  // 用 ref 取最新值避免 enterEdit 闭包 stale（enterEdit deps 仅 showToolbar）。
+  const caretPosRef = useRef(caretPos);
+  useEffect(() => { caretPosRef.current = caretPos; }, [caretPos]);
 
   const textRef = useRef<HTMLDivElement>(null);
   const editingRef = useRef(false);
@@ -185,6 +189,10 @@ function Result() {
             stickToBottomRef.current = true;
             if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
           } else {
+            // 最终文本到达：清掉可能 pending 的 diverted 延迟，否则 300ms 后定时器回调会用旧暂存
+            // 纠正文本覆盖刚渲染的最终结果（录音在 diverted 300ms 内结束的竞态）。
+            if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
+            pendingDiverted.current = null;
             renderResultNow(text);
           }
         }],
@@ -250,6 +258,9 @@ function Result() {
   const enterEdit = useCallback(() => {
     if (editingRef.current) return;
     if (!displayedRef.current.trim()) return;
+    // 进入编辑前捕获点击位（null=无点击/拖选 → 末尾兜底）；必须在 setCaretPos(null) 前取，
+    // 否则编辑态光标无条件落末尾，长文本下用户得重新找刚才要改的位置。
+    const restorePos = caretPosRef.current;
     editSnapshotRef.current = displayedRef.current; // 保存快照
     setEditing(true);
     setIsRecording(false);
@@ -262,6 +273,8 @@ function Result() {
       el.focus();
       const sel = window.getSelection();
       sel?.removeAllRanges();
+      // 恢复进入前的点击位（非编辑态点击定位过）；restorePos=null 或定位失败 → 置末尾兜底
+      if (restorePos != null && placeCaretAtCodePoint(el, restorePos)) return;
       const range = document.createRange();
       range.selectNodeContents(el);
       range.collapse(false);
@@ -669,19 +682,27 @@ function CaretBlink({
   // 值（随 scrollTop 变），不重测会停在旧位（流式末尾在容器底，用户上滚后末尾滚到视口下方，但光标仍
   // 停在容器底闪烁误导）。rAF 节流滚动高频，合并每帧一次 getBoundingClientRect。
   useEffect(() => {
-    const measure = () => setPx(measureCaretPx(containerRef.current, pos));
-    measure();
     const el = containerRef.current;
-    if (!el) return;
-    let raf = 0;
+    const measure = () => setPx(measureCaretPx(el, pos));
+    // 初始测量推到下一帧：renderResultNow 同帧已 flushSync 写 textContent + 同步 re-render（DOM 写），
+    // 若同帧立即 measure() 会同步 getBoundingClientRect → force reflow（layout thrashing；高频 ASR
+    // 10-20Hz 下每帧叠加）。rAF 让 DOM 写先落地、布局稳定后再读——代价仅 1 帧（~16ms）光标滞后，肉眼
+    // 无感，且天然合并到帧边界。滚动同样走 rAF 节流（见下）。
+    let raf = requestAnimationFrame(measure);
+    if (!el) {
+      cancelAnimationFrame(raf);
+      return;
+    }
+    let scrollRaf = 0;
     const onScroll = () => {
-      if (raf) return;
-      raf = requestAnimationFrame(() => { raf = 0; measure(); });
+      if (scrollRaf) return;
+      scrollRaf = requestAnimationFrame(() => { scrollRaf = 0; measure(); });
     };
     el.addEventListener("scroll", onScroll, { passive: true });
     return () => {
+      cancelAnimationFrame(raf);
       el.removeEventListener("scroll", onScroll);
-      if (raf) cancelAnimationFrame(raf);
+      if (scrollRaf) cancelAnimationFrame(scrollRaf);
     };
   }, [containerRef, text, pos]);
   if (!px) return null;

@@ -1553,3 +1553,44 @@ git -C ... commit -m "docs(asr): 同步光标中插改造到文档" --allow-empt
 - `caret.test.ts`（9 测全绿）锁住 **code-point → UTF-16 offset 对齐**（光标错位/首位 bug 的核心）与 null/空容器分支。
 - jsdom 未实现 `Range.prototype.getBoundingClientRect`（Element 有），`defineProperty` 补零矩形；像素级光标位仍留给 e2e（jsdom 量不了）。
 - `renderResultNow` 耦合组件/Tauri，组件级测试留后续。
+
+---
+
+## 追加修复：代码审查 2 bug（2026-07-04）
+
+第三轮代码审查（测试基建落地后）发现 2 个 Result 窗前端渲染 bug，详见 spec §13。前端仍无组件级单测（renderResultNow 耦合 Tauri），靠 `npm run build` + `npm run test`（caret 纯函数）+ 用户 e2e 验证。
+
+### Bug 1.1：最终文本被 pending diverted 延迟覆盖
+
+- **文件**：`Result/index.tsx` show-result handler 的 else 分支（最终/插入态立即渲染）。
+- **症状**：中途误判 diverted 启动 300ms 计时器后，最终文本立即渲染，但 300ms 后旧回调仍触发、用旧基准整体替换覆盖最终文本（文字闪回旧值）。
+- **修复**：else 分支显式 `clearTimeout(divertedTimer.current)` + `pendingDiverted.current = null`，确保最终文本落地后 diverted 路径不再触发。
+- **验证**：`npm run build` 绿。
+
+### Bug 2.1：CaretBlink 初始 measure 同步 layout thrashing
+
+- **文件**：`Result/index.tsx` `CaretBlink` 的 `useEffect[containerRef,text,pos]`。
+- **症状**：初始 `measure()` 同步 `getBoundingClientRect`，与同帧 `flushSync(setText)`+`textContent` DOM 写叠加 → 强制回流（layout thrashing）；高频 ASR（10-20Hz）每帧叠加。
+- **修复**：初始 `measure()` 改 `requestAnimationFrame`（DOM 写先落地、布局稳定后再读，代价 1 帧 ~16ms 光标滞后）；初始 raf 与 scroll raf 分变量（`raf`/`scrollRaf`）独立 cancel，`!el` 提前返回也 cancel 初始 raf 防泄漏。`flushSync` 保留驱动 state 让 effect 同步 schedule rAF。
+- **验证**：`npm run build` + `npm run test`（caret.test.ts 9 测不受影响，measureCaretPx 签名未变）绿。
+
+---
+
+## 追加修复：代码审查 3.1 + 3.4（caret 多节点 + enterEdit 光标恢复，2026-07-04）
+
+§13（审查 2 bug）之后第四/五轮审查又发现 2 个 `Result/` 前端 bug。详见 spec §14。前端靠 `npm run build` + `npm run test`（caret 纯函数）+ 用户 e2e。
+
+### Bug 3.1：measureCaretPx 仅定位首文本节点
+
+- **文件**：`Result/caret.ts` `measureCaretPx`。
+- **症状**：`whitespace-pre-wrap`（§12.4）多行 / 编辑残留 `<br>` 使容器含多 text node；`pos` 超首节点长度时旧实现 clamp 首节点末尾 → 光标测量错位。当前结果窗 `textContent` 单行通常单节点，e2e 未触发，属防御性正确化。
+- **修复**：抽共享 helper `locateCpOffset(container, pos)`（TreeWalker 收集全部 text node，按各节点 code-point 长度累加定位落点 + UTF-16 offset；`pos=null`/越界→末节点末尾）；`measureCaretPx` 改用它。单节点主路径行为不变。长度仍读 DOM `nodeValue`（§12.1）。
+- **验证**：caret.test.ts 加 2 测（多节点 pos 越首节点→setStart 到后续节点；pos=null→末节点末尾），**14 测全绿**。
+
+### Bug 3.4：进编辑态光标无条件落末尾
+
+- **文件**：`Result/index.tsx` `enterEdit`（~L258）。
+- **症状**：`setCaretPos(null)` 后 `range.collapse(false)` 无条件置末尾；长文本点过中间再进编辑，光标跑末尾。
+- **修复**：`setCaretPos(null)` 前 `caretPosRef` 捕获 `restorePos`（caretPos 的 ref 镜像，useRef + 同步 effect，避免闭包 stale）；setTimeout 内 `restorePos != null && placeCaretAtCodePoint(el, restorePos)` 精准恢复，否则末尾兜底。新增 `placeCaretAtCodePoint`（复用 `locateCpOffset`）。
+- **边界**：caretPos 仅纯点击设值（handleTextMouseUp 折叠分支）；拖选置 null。故拖选后进编辑仍落末尾（设计如此）。
+- **验证**：caret.test.ts 加 3 测（placeCaretAtCodePoint 定位 / 空容器 false / 多节点越界→末节点末尾），14 测全绿 + `npm run build` 绿。e2e（用户）：点文本中间 → 编辑快捷键 → 光标在点击位。
