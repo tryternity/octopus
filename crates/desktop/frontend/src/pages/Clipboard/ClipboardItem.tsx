@@ -186,9 +186,9 @@ export default function ClipboardItemRow({
         ) : (
           <p className="text-xs leading-relaxed text-foreground/90 break-all line-clamp-2">{[...item.content].length > 200 ? [...item.content].slice(0, 200).join("") + "……" : item.content}</p>
         )}
-        {isVoice && item.asr_meta && (
+        {isVoice && (
           <span className="inline-block mt-0.5 text-[10px] text-voice/70 font-medium">
-            {item.asr_meta.engine}
+            {item.created_at}
           </span>
         )}
       </div>
