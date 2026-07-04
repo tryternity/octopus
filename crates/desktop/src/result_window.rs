@@ -123,8 +123,6 @@ pub fn set_result_click_through(app: tauri::AppHandle, expanded: bool) {
 #[cfg(target_os = "macos")]
 pub fn start_click_through_poller(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
-        use core_graphics::event::CGEvent;
-        use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
         let mut poll = tokio::time::interval(std::time::Duration::from_millis(33));
         let mut cur_ignore = false; // 当前是否正在穿透（ignore mouse events）
         loop {
@@ -140,25 +138,23 @@ pub fn start_click_through_poller(app: tauri::AppHandle) {
                 }
                 continue;
             }
-            // 精简态 + 可见：读全局鼠标，判是否在顶部小条矩形内
-            let (mx, my) = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-                Ok(src) => match CGEvent::new(src) {
-                    Ok(evt) => {
-                        let loc = evt.location();
-                        (loc.x, loc.y)
-                    }
-                    Err(_) => continue,
-                },
+            // 精简态 + 可见：读全局鼠标位置，判是否在顶部小条矩形内
+            // 统一用物理坐标：cursor_position() 和 outer_position() 都是 PhysicalPosition，
+            // 避免多屏不同缩放率下逻辑/物理混合换算错误
+            let (mx, my) = match win.cursor_position() {
+                Ok(p) => (p.x as f64, p.y as f64),
                 Err(_) => continue,
             };
-            let sf = win.scale_factor().unwrap_or(1.0);
             let (wx, wy) = match win.outer_position() {
-                Ok(p) => (p.x as f64 / sf, p.y as f64 / sf),
+                Ok(p) => (p.x as f64, p.y as f64),
                 Err(_) => continue,
             };
-            // 小条屏幕矩形（逻辑坐标，左上原点 y-down，与 CGEvent.location 一致）
-            let bx0 = wx + BAR_OFFSET_X;
-            let in_bar = mx >= bx0 && mx <= bx0 + BAR_W && my >= wy && my <= wy + BAR_H;
+            // 小条屏幕矩形（物理坐标——BAR 常量是逻辑像素，乘 scale_factor 转物理）
+            let sf = win.scale_factor().unwrap_or(1.0);
+            let bx0 = wx + BAR_OFFSET_X * sf;
+            let bar_w = BAR_W * sf;
+            let bar_h = BAR_H * sf;
+            let in_bar = mx >= bx0 && mx <= bx0 + bar_w && my >= wy && my <= wy + bar_h;
             let want = !in_bar; // 小条外 → 穿透
             if want != cur_ignore {
                 set_result_ignores_mouse(&win, want);
