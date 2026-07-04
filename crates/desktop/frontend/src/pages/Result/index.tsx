@@ -70,6 +70,9 @@ function Result() {
   const toolbarVisibleRef = useRef(false);
   const editingStateRef = useRef(false);
   const editSnapshotRef = useRef(""); // 编辑前原始文本快照
+  // 是否自动跟随底部（流式追加时滚到底）。用户手动上滚 → false（停止跟随，便于查看历史）；
+  // 滚回底部附近（距底 < 24px）→ true（恢复跟随）。新录音重置为 true。
+  const stickToBottomRef = useRef(true);
 
   // 经 useMemo 稳定：getCurrentWindow() 每次返回新包装对象，若写在渲染体里会让依赖 [win]
   // 的 effect 每次 re-render 都重跑。
@@ -110,7 +113,8 @@ function Result() {
   const renderResultNow = useCallback((newText: string) => {
     displayedRef.current = newText;
     setText(newText);
-    if (textRef.current) {
+    // 仅在跟随底部态时自动滚底（用户手动上滚查看历史时不打断）。
+    if (stickToBottomRef.current && textRef.current) {
       textRef.current.scrollTop = textRef.current.scrollHeight;
     }
     // 标记正在说话
@@ -149,11 +153,12 @@ function Result() {
           setIsRecording(true);
           refreshActive();
           if (isPlaceholder) {
-            // 新录音开始：清空上次残留 + 光标回到末尾（null）
+            // 新录音开始：清空上次残留 + 光标回到末尾（null）+ 恢复底部跟随
             setText("");
             displayedRef.current = "";
             pendingDiverted.current = null;
             setCaretPos(null);
+            stickToBottomRef.current = true;
             if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
           } else {
             renderResultNow(text);
@@ -537,6 +542,11 @@ function Result() {
             suppressContentEditableWarning
             onInput={onTextInput}
             onMouseUp={!editing ? handleTextMouseUp : undefined}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              stickToBottomRef.current =
+                el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+            }}
           >
             {text}
           </div>
