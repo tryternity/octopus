@@ -41,6 +41,8 @@ pub async fn delete_clipboard_item(
     id: i64,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    // 级联删除：source=asr 的条目删 transcriptions 对应记录
+    cascade_delete_transcriptions(&[id]);
     octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::delete_item(conn, id)
     })
@@ -54,6 +56,7 @@ pub async fn delete_clipboard_items(
     ids: Vec<i64>,
     app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
+    cascade_delete_transcriptions(&ids);
     let n = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::delete_items(conn, &ids)
     })
@@ -67,12 +70,43 @@ pub async fn clear_clipboard_history(
     keep_favorite: bool,
     app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
+    // 清空前查出所有 asr 条目，级联删 transcriptions
+    let ids: Vec<i64> = octopus_infra::db::with_db(|conn| {
+        let sql = if keep_favorite {
+            "SELECT id FROM clipboard_history WHERE source = 'asr' AND is_favorite = 0"
+        } else {
+            "SELECT id FROM clipboard_history WHERE source = 'asr'"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
+        Ok::<_, anyhow::Error>(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
+    })
+    .unwrap_or_default();
+    cascade_delete_transcriptions(&ids);
     let n = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::clear_history(conn, keep_favorite)
     })
     .map_err(|e| e.to_string())?;
     let _ = app_handle.emit("clipboard://changed", ());
     Ok(n)
+}
+
+/// 级联删除 transcriptions：查 clipboard_history 的 transcription_id，删对应 transcriptions 记录。
+fn cascade_delete_transcriptions(ids: &[i64]) {
+    if ids.is_empty() { return; }
+    let _ = octopus_infra::db::with_db(|conn| {
+        for id in ids {
+            let result: Option<i64> = conn.query_row(
+                "SELECT transcription_id FROM clipboard_history WHERE id = ?1 AND transcription_id IS NOT NULL",
+                [id],
+                |r| r.get::<_, Option<i64>>(0).map(|v| v.unwrap_or(0)),
+            ).ok().filter(|v| *v > 0);
+            if let Some(tid) = result {
+                let _ = conn.execute("DELETE FROM transcriptions WHERE id = ?1", [tid]);
+            }
+        }
+        Ok::<(), anyhow::Error>(())
+    });
 }
 
 /// 按条目类型把内容写到系统剪贴板（copy / paste 共用）：
