@@ -230,7 +230,7 @@ export default function ClipboardItemRow({
             className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
             onClick={(e) => {
               e.stopPropagation();
-              invoke("open_image_preview", { imageId: item.id }).catch(console.error);
+              openCompactEditorTab(item.id);
             }}
             title="预览"
           >
