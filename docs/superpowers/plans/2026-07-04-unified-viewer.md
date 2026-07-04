@@ -180,4 +180,29 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 | 语音识别记录文本截断 200 字 + …… 省略 | `dde0529` |
 | 识别记录 + 剪贴板管理页全选 header sticky 固定 | `41c35b1` |
 
+### VAD 驱动波纹（#3.4 后续优化）
+
+| 改动 | commit |
+|------|--------|
+| PipelineEvent::Speaking(bool) + pipeline emit + 前端 200ms 防抖 | `b8fe71f` |
+| 删 renderResultNow 里残留的 setIsSpeaking(true) | `fd71550` |
+| VadSegmented has_speech 门控（开口后才亮） | `7d0fdb6` |
+| Speaking 事件单元测试 | `3257ddc` |
+| 前端 payload 提取修复（Tauri bool 被 wrap） | `9d6071d` |
+
+**经验教训（Tauri bool 事件 payload 被 wrap）**：
+- 后端 `emit("event", true)` → Tauri v2 在 WKWebView 中把 bool 序列化时多包一层 `{ event, payload: true, id }`
+- 前端 `listen` 的 `rawListen` callback `e.payload` 拿到的是整个 Event 对象而非裸 bool
+- **防御性提取**：`typeof payload === "boolean" ? payload : (payload as any)?.payload ?? false`
+- 后续 Tauri 事件传 bool 时统一用此模式，或改用 string/number（`emit("event", speaking ? 1 : 0)`）
+
+### 代码审查修复（第二轮）
+
+| 改动 | commit |
+|------|--------|
+| CompactEditor 查找模式打字光标拽回顶部 | `54c508f` |
+| CompactEditor 查找匹配 debounce 150ms | `56af793` |
+| CancelEdit 清 pending_delete（防幽灵删除） | `c92955e` |
+| result_window 多屏不同缩放率穿透失效 | `2f4690b` |
+
 **动机**：识别记录管理页单条文本可达数百字，全文铺开致列表过长、不便浏览；截断至 200 字 +「……」后，靠条目「查看」按钮经统一查看器 transcription 只读 tab（`openCompactEditorTab(id,'transcription')`）看全文兜底（截断仅识别记录管理页 HistoryPanel，剪贴板管理页 ClipboardPanel 不截断）。sticky header 让全选复选框在长列表滚动时始终可见。
