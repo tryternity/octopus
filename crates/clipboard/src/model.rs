@@ -38,18 +38,29 @@ impl ItemType {
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct MetaInfo {
     // image
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub w: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub h: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub size: Option<String>,
     // voice / ocr
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub engine: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub duration_ms: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub char_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub engine_mode: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub polish_model: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub polished: Option<bool>,
     // file
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub files: Option<Vec<FileEntry>>,
 }
 
