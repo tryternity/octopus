@@ -642,3 +642,4 @@ Screenshot 的 text 标注调用同一 `annotation.ts` 纯函数，#6 修复自�
 | 剪贴板预览图标 Maximize2 → eye-edit.svg | `d4c8b15` |
 | 属性浮窗用户操作时自动收起（图片预览 + 截图，showPopover 独立 state） | `907a9c8` `f97daa2` |
 | MosaicIcon 内联 → icons/mosaic.svg（统一 SVG 文件） | `641952c` |
+| 浮窗画完后再点重新弹出（不切回选择）—截图 9 按钮 + 图片预览 onToolClick | `4604623` |
