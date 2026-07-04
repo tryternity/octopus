@@ -95,9 +95,9 @@ mod tests {
         let (y, mo, d, h, mi, s) = store::epoch_to_ymd_hms(old_secs);
         let created = format!("{:04}-{:02}-{:02} {:02}:{:02}:{:02}", y, mo, d, h, mi, s);
         conn.execute(
-            "INSERT INTO clipboard_history (id, item_type, source, content, search_text, created_at, is_rich)
-             VALUES (?, 'text', 'clipboard', ?, ?, ?, 0)",
-            rusqlite::params![id, text, text, created],
+            "INSERT INTO clipboard_history (id, item_type, content, created_at, is_rich)
+             VALUES (?, 'text', ?, ?, 0)",
+            rusqlite::params![id, text, created],
         ).unwrap();
     }
 
