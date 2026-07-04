@@ -468,6 +468,17 @@ pub fn run() {
     app.set_activation_policy(tauri::ActivationPolicy::Accessory);
 
     app.run(move |app, event| {
+            // 统一查看器窗口关窗前保存状态（Destroyed 时窗口已销毁，get_webview_window 返回 None）
+            if let tauri::RunEvent::WindowEvent {
+                event: tauri::WindowEvent::CloseRequested { .. },
+                label,
+                ..
+            } = &event
+            {
+                if label == "compact_editor_window" {
+                    compact_editor_window::on_compact_editor_save_state(app);
+                }
+            }
             // 设置窗口关闭 → macOS 切回 Accessory（仅托盘，Dock 图标消失）
             #[cfg(target_os = "macos")]
             if let tauri::RunEvent::WindowEvent {

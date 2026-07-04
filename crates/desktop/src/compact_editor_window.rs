@@ -116,9 +116,8 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
 }
 
 /// macOS: 统一查看器窗口关闭后，仅当无其他常规窗口存活时才切回 Accessory（仅托盘）。
-/// 同时保存窗口状态到 DB。
+/// 窗口状态保存已在 CloseRequested 里完成（Destroyed 时窗口已销毁）。
 #[cfg(target_os = "macos")]
 pub fn on_compact_editor_closed(app_handle: &tauri::AppHandle) {
-    on_compact_editor_save_state(app_handle);
     crate::activation::restore_accessory_if_no_regular_window(app_handle);
 }
