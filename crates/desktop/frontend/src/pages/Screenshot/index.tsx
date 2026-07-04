@@ -888,6 +888,7 @@ export default function Screenshot() {
         <ToolPropsPopover
           x={toolbarCenterX}
           y={popoverY}
+          key={`${toolbarCenterX}-${popoverY}-${tool}`}
           color={toolColor}
           width={toolWidth}
           fontSize={toolFontSize}
@@ -1043,6 +1044,7 @@ function ToolPropsPopover({
         position: "fixed",
         left: x,
         top: y,
+        transform: "translateX(-50%)",
         padding: "10px 12px",
         background: "#fff",
         borderRadius: 10,
