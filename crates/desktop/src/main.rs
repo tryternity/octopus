@@ -247,6 +247,8 @@ pub fn run() {
             compact_editor_commands::open_compact_editor_tab,
             compact_editor_commands::get_pending_compact_tab,
             compact_editor_commands::get_clipboard_item_text,
+            compact_editor_commands::get_clipboard_item_type,
+            compact_editor_commands::get_transcription_text,
             compact_editor_commands::close_compact_editor,
             image_preview_commands::open_image_preview,
             image_preview_commands::get_pending_image,

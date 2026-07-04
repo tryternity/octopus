@@ -1,12 +1,13 @@
-//! 精简编辑器窗口：独立 Tauri 窗口，原生标题栏，720×560 可调大小，居中。
+//! 统一内容查看器窗口：独立 Tauri 窗口，原生标题栏，880×620 可调大小，居中。
+//! 支持 tab 切换文本/图片/语音条目。窗口尺寸可调 + 记忆。
 //!
 //! 单例 + 关窗即销毁：open 时已存在则 show+focus（由 commands 层额外 emit load 推送新文本），
 //! 否则创建。macOS：开窗切 Regular（Dock 显图标），关窗切回 Accessory，与 settings 对称。
 
 use tauri::{WebviewUrl, WebviewWindowBuilder};
 
-const WIDTH: f64 = 720.0;
-const HEIGHT: f64 = 560.0;
+const WIDTH: f64 = 880.0;
+const HEIGHT: f64 = 620.0;
 const MIN_WIDTH: f64 = 480.0;
 const MIN_HEIGHT: f64 = 360.0;
 pub const WINDOW_LABEL: &str = "compact_editor_window";

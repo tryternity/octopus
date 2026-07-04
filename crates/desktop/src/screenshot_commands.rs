@@ -296,11 +296,11 @@ pub async fn ocr_screenshot(
         close_all_screenshot_windows(&ah);
         if let Some(ocr_id) = ocr_id_opt {
             log::info!("[ocr-screenshot] main: open compact editor tab {}", ocr_id);
-            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, ah.clone());
+            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, None, ah.clone());
         }
         if let Some(img_id) = image_id_opt {
-            log::info!("[ocr-screenshot] main: open image preview {}", img_id);
-            crate::image_preview_commands::open_image_preview(img_id, ah);
+            log::info!("[ocr-screenshot] main: open image tab in compact editor {}", img_id);
+            crate::compact_editor_commands::open_compact_editor_tab(img_id, None, ah);
         }
     });
 
