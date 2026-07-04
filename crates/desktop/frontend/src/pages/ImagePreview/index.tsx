@@ -74,6 +74,7 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
   interface OcrBlock { text: string; x: number; y: number; w: number; h: number; score: number; }
   const [ocrBlocks, setOcrBlocks] = useState<OcrBlock[]>([]);
   const [ocrOverlay, setOcrOverlay] = useState<'off' | 'overlay' | 'mask'>('off');
+  const ocrDoneRef = useRef(false);  // 防重复 OCR（截图 OCR 已推送 blocks 后不再重跑）
   // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
   const loadingFullRef = useRef(false);
   // 全图已加载：true 时缩略图后到直接丢弃（防竞态降级）
@@ -169,6 +170,7 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
   useEffect(() => {
     const unlistenOcr = listen<{ text: string; blocks: OcrBlock[] }>("ocr-screenshot://result", (e) => {
       if (e.payload.blocks.length > 0) {
+        ocrDoneRef.current = true;
         setOcrBlocks(e.payload.blocks);
         setOcrOverlay('overlay');
       }
@@ -184,6 +186,7 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
     // 清理旧资源
     setOcrBlocks([]);
     setOcrOverlay('off');
+    ocrDoneRef.current = false;
     const old = scaledBitmapRef.current;
     scaledBitmapRef.current = null;
     if (old) old.close();
@@ -633,8 +636,8 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 
   const handleOcr = async () => {
     if (imageId == null) return;
-    // 已有结果 → 三态循环：off → overlay → mask → off
-    if (ocrBlocks.length > 0) {
+    // 已识别过 → 三态循环：off → overlay → mask → off（不重新识别）
+    if (ocrDoneRef.current) {
       setOcrOverlay(ocrOverlay === 'off' ? 'overlay' : ocrOverlay === 'overlay' ? 'mask' : 'off');
       return;
     }
@@ -642,6 +645,7 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
     try {
       const result = await invoke<{text: string; blocks: OcrBlock[]}>("ocr_image", { id: imageId });
       if (result.text) {
+        ocrDoneRef.current = true;
         setOcrBlocks(result.blocks);
         setOcrOverlay('overlay');
         // 保持现有行为：入库 + 打开编辑器
