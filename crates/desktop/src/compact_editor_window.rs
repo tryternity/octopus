@@ -20,6 +20,7 @@ struct WindowState {
     height: f64,
     x: f64,
     y: f64,
+    maximized: bool,
 }
 
 /// 读窗口状态记忆（DB app_config）。无记忆用默认 880×620 居中。
@@ -41,16 +42,26 @@ fn save_window_state(state: &WindowState) {
 /// 关窗时调用：保存当前窗口位置/大小到 DB。
 pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
     if let Some(win) = app_handle.get_webview_window(WINDOW_LABEL) {
-        if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
-            let state = WindowState {
+        let maximized = win.is_maximized().unwrap_or(false);
+        let state = if maximized {
+            // 最大化时存标志 + 退出前的大小/位置（非全屏尺寸）
+            // macOS is_maximized 返回 true 时 inner_size/outer_position 可能是全屏值
+            WindowState {
+                width: WIDTH, height: HEIGHT, x: 0.0, y: 0.0, maximized: true,
+            }
+        } else if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
+            WindowState {
                 width: size.width as f64,
                 height: size.height as f64,
                 x: pos.x as f64,
                 y: pos.y as f64,
-            };
-            log::info!("[compact-editor] save window state {:?}", state);
-            save_window_state(&state);
-        }
+                maximized: false,
+            }
+        } else {
+            return;
+        };
+        log::info!("[compact-editor] save window state {:?}", state);
+        save_window_state(&state);
     }
 }
 
@@ -93,8 +104,15 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
         builder = builder.inner_size(WIDTH, HEIGHT).center();
     }
 
-    let _ = builder.build();
+    let win = builder.build();
     log::info!("[compact-editor] after build");
+
+    // 记忆了最大化 → 建窗后 maximize
+    if state.maximized {
+        if let Ok(ref win) = win {
+            let _ = win.maximize();
+        }
+    }
 }
 
 /// macOS: 统一查看器窗口关闭后，仅当无其他常规窗口存活时才切回 Accessory（仅托盘）。
