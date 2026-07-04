@@ -2,26 +2,39 @@ import { useState, useRef, useEffect, useCallback, type ReactNode } from "react"
 import { invoke, listen } from "@/lib/tauri";
 import {
   Undo2, Redo2, ZoomIn, ZoomOut, Search, Eraser, Save, X,
-  ChevronUp, ChevronDown, Replace, Check,
+  ChevronUp, ChevronDown, Replace, Check, Type, Eye, Mic,
 } from "lucide-react";
+// ImagePreviewComponent 在 Task 3 接入（改为接受 props 的组件）
+// import ImagePreviewComponent from "@/pages/ImagePreview";
 
 interface Tab {
+  key: string;
+  source: 'clipboard' | 'transcription';
   itemId: number;
-  text: string;
+  itemType?: 'text' | 'image';
+  text?: string;
 }
 interface OpenTabPayload {
   itemId: number;
+  source: string;
 }
 
 const FONT_KEY = "compact-editor-font-size";
 const FONT_MIN = 12;
 const FONT_MAX = 24;
+const MAX_IMAGE_TABS = 5;
 
-/** tab 标题：文本前 5 字 + "-" + id hex 后 5 位。空白用「空」占位。 */
-function tabTitle(itemId: number, text: string): string {
-  const head = text.slice(0, 5).replace(/\s+/g, " ").trim() || "空";
-  const tail = itemId.toString(16).slice(-5);
+function tabTitle(tab: Tab): string {
+  const text = tab.text || "";
+  const head = text.slice(0, 5).replace(/\s+/g, " ").trim() || (tab.itemType === 'image' ? "图片" : "空");
+  const tail = tab.itemId.toString(16).slice(-5);
   return `${head}-${tail}`;
+}
+
+function tabIcon(tab: Tab) {
+  if (tab.source === 'transcription') return <Mic className="w-3 h-3 text-violet-500 flex-shrink-0" />;
+  if (tab.itemType === 'image') return <Eye className="w-3 h-3 text-blue-500 flex-shrink-0" />;
+  return <Type className="w-3 h-3 text-stone-400 flex-shrink-0" />;
 }
 
 function CompactEditor() {
@@ -43,35 +56,61 @@ function CompactEditor() {
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
 
   const active = tabs[activeIdx];
+  const isReadOnly = active?.source === 'transcription';
 
   const updateActiveText = useCallback((next: string) => {
     setTabs(prev => prev.map((t, i) => (i === activeIdx ? { ...t, text: next } : t)));
   }, [activeIdx]);
 
-  // 加载某 itemId 文本并新增 tab；已存在则切过去。用 tabsRef 读最新，保持回调稳定。
-  const loadAndAddTab = useCallback(async (itemId: number) => {
-    const existIdx = tabsRef.current.findIndex(t => t.itemId === itemId);
-    if (existIdx >= 0) { setActiveIdx(existIdx); return; }
-    const text = await invoke<string>("get_clipboard_item_text", { itemId }).catch(() => "");
-    setTabs(prev => [...prev, { itemId, text }]);
-    setActiveIdx(tabsRef.current.length);
-    setTimeout(() => taRef.current?.focus(), 0);
+  // 按 index 更新任意 tab 文本（hidden 挂载的 textarea 需要）
+  const updateActiveTextAt = useCallback((next: string, idx: number) => {
+    setTabs(prev => prev.map((t, i) => (i === idx ? { ...t, text: next } : t)));
   }, []);
 
-  // mount：取首个 pending itemId → 首个 tab；监听并发再开的 open-tab 事件
+  // 加载某 item 并新增 tab；已存在则切过去。source 决定从哪个表读 + 是否只读。
+  const loadAndAddTab = useCallback(async (itemId: number, source: string) => {
+    const key = `${source}:${itemId}`;
+    const existIdx = tabsRef.current.findIndex(t => t.key === key);
+    if (existIdx >= 0) { setActiveIdx(existIdx); return; }
+
+    if (source === 'transcription') {
+      const text = await invoke<string>("get_transcription_text", { id: itemId }).catch(() => "");
+      setTabs(prev => [...prev, { key, source: 'transcription', itemId, text }]);
+      setActiveIdx(tabsRef.current.length);
+      return;
+    }
+
+    // clipboard：先查类型，再加载
+    const itemType = await invoke<string>("get_clipboard_item_type", { itemId }).catch(() => "text");
+    if (itemType === 'image') {
+      // 图片 tab ≤5 限制
+      setTabs(prev => {
+        const imageTabs = prev.filter(t => t.itemType === 'image');
+        let next = prev;
+        if (imageTabs.length >= MAX_IMAGE_TABS) {
+          const oldestKey = imageTabs[0].key;
+          next = prev.filter(t => t.key !== oldestKey);
+        }
+        return [...next, { key, source: 'clipboard' as const, itemId, itemType: 'image' as const }];
+      });
+    } else {
+      const text = await invoke<string>("get_clipboard_item_text", { itemId }).catch(() => "");
+      setTabs(prev => [...prev, { key, source: 'clipboard' as const, itemId, itemType: 'text' as const, text }]);
+    }
+    setActiveIdx(tabsRef.current.length);
+  }, []);
+
+  // mount：取首个 pending tab；监听并发再开的 open-tab 事件
   useEffect(() => {
     let unlisten: (() => void) | undefined;
     (async () => {
-      const itemId = await invoke<number | null>("get_pending_compact_tab");
-      if (itemId != null) {
-        const text = await invoke<string>("get_clipboard_item_text", { itemId }).catch(() => "");
-        setTabs([{ itemId, text }]);
-        setActiveIdx(0);
-        setTimeout(() => taRef.current?.focus(), 0);
+      const pending = await invoke<{ itemId: number; source: string } | null>("get_pending_compact_tab");
+      if (pending) {
+        await loadAndAddTab(pending.itemId, pending.source);
       }
       unlisten = await listen("compact-editor://open-tab", (payload) => {
         const p = payload as OpenTabPayload;
-        loadAndAddTab(p.itemId);
+        loadAndAddTab(p.itemId, p.source);
       });
     })();
     return () => { unlisten?.(); };
@@ -80,7 +119,7 @@ function CompactEditor() {
   const doSave = useCallback(async () => {
     if (!active) return;
     try {
-      if (active.text.trim() === "") {
+      if (active.text || "".trim() === "") {
         // 清空后保存 = 删除条目（空内容无意义）；后端 delete_clipboard_item 已 emit clipboard://changed 通知列表刷新
         await invoke("delete_clipboard_item", { id: active.itemId });
         // 关闭该 tab：仅剩一个则关窗，否则移除并修正 activeIdx
@@ -93,7 +132,7 @@ function CompactEditor() {
         setActiveIdx(i => (idx < i ? i - 1 : idx === i ? Math.min(i, tabs.length - 2) : i));
         return;
       }
-      await invoke("set_clipboard_item_text", { itemId: active.itemId, text: active.text });
+      await invoke("set_clipboard_item_text", { itemId: active.itemId, text: active.text || "" });
       setSavedFlash(true);
       setTimeout(() => setSavedFlash(false), 1200);
     } catch (e) {
@@ -116,7 +155,7 @@ function CompactEditor() {
     });
   };
 
-  const charCount = active ? [...active.text].length : 0;
+  const charCount = active ? [...(active.text || "" || "")].length : 0;
 
   // ── 字号 ──
   const decFont = () => setFontSize(f => Math.max(FONT_MIN, f - 1));
@@ -134,21 +173,21 @@ function CompactEditor() {
     updateActiveText(""); setClearPending(false); setMatches([]); setMatchIdx(-1);
   };
 
-  // ── 查找/替换（基于 active.text）──
+  // ── 查找/替换（基于 active.text || ""）──
   const selectRange = (start: number, len: number) => {
     const ta = taRef.current;
     if (!ta || !active) return;
     ta.focus();
     ta.setSelectionRange(start, start + len);
     const lineHeight = fontSize * 1.6;
-    const lineNum = active.text.slice(0, start).split("\n").length;
+    const lineNum = (active.text || "").slice(0, start).split("\n").length;
     ta.scrollTop = Math.max(0, (lineNum - 2) * lineHeight);
   };
 
   const runFind = useCallback(() => {
     const q = findQuery;
     if (!q || !active) { setMatches([]); setMatchIdx(-1); return; }
-    const lower = active.text.toLowerCase();
+    const lower = active.text || "".toLowerCase();
     const needle = q.toLowerCase();
     const idxs: number[] = [];
     let from = 0;
@@ -176,14 +215,14 @@ function CompactEditor() {
   const replaceOne = () => {
     if (matchIdx < 0 || !findQuery || !active) return;
     const start = matches[matchIdx];
-    const next = active.text.slice(0, start) + replaceQuery + active.text.slice(start + findQuery.length);
+    const next = active.text || "".slice(0, start) + replaceQuery + active.text || "".slice(start + findQuery.length);
     updateActiveText(next);
     setTimeout(runFind, 0);
   };
 
   const replaceAll = () => {
     if (!findQuery || !active) return;
-    updateActiveText(active.text.split(findQuery).join(replaceQuery));
+    updateActiveText(active.text || "".split(findQuery).join(replaceQuery));
     setTimeout(runFind, 0);
   };
 
@@ -223,7 +262,7 @@ function CompactEditor() {
         <div className="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-1 border-b border-border bg-stone-50 overflow-x-auto thin-scrollbar">
           {tabs.map((t, i) => (
             <div
-              key={t.itemId}
+              key={t.key}
               className={`group/tab flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md text-xs whitespace-nowrap cursor-pointer transition-colors ${
                 i === activeIdx
                   ? "bg-white text-stone-900 shadow-sm border border-stone-200"
@@ -231,7 +270,8 @@ function CompactEditor() {
               }`}
               onClick={() => setActiveIdx(i)}
             >
-              <span className="max-w-[140px] truncate">{tabTitle(t.itemId, t.text)}</span>
+              {tabIcon(t)}
+              <span className="max-w-[140px] truncate">{tabTitle(t)}</span>
               <button
                 type="button"
                 title="关闭"
@@ -245,8 +285,8 @@ function CompactEditor() {
         </div>
       )}
 
-      {/* 工具栏 */}
-      {active && (
+      {/* 工具栏（仅文本 tab 显示） */}
+      {active && active.itemType !== 'image' && !isReadOnly && (
         <div className="flex-shrink-0 flex items-center gap-0.5 px-2 py-1.5 border-b border-border bg-stone-50">
           <ToolBtn onClick={undo} title="撤销 (Cmd+Z)"><Undo2 className="w-4 h-4" /></ToolBtn>
           <ToolBtn onClick={redo} title="重做 (Cmd+Shift+Z)"><Redo2 className="w-4 h-4" /></ToolBtn>
@@ -276,7 +316,7 @@ function CompactEditor() {
       )}
 
       {/* 查找/替换条 */}
-      {showFind && active && (
+      {showFind && active && active.itemType !== 'image' && !isReadOnly && (
         <div className="flex-shrink-0 flex flex-wrap items-center gap-1.5 px-2 py-1.5 border-b border-border bg-stone-100">
           <input
             autoFocus
@@ -304,17 +344,28 @@ function CompactEditor() {
         </div>
       )}
 
-      {/* 文本区 */}
-      {active ? (
-        <textarea
-          ref={taRef}
-          value={active.text}
-          onChange={e => updateActiveText(e.target.value)}
-          style={{ fontSize: `${fontSize}px`, lineHeight: 1.6 }}
-          spellCheck={false}
-          className="flex-1 w-full resize-none outline-none p-4 bg-background text-foreground thin-scrollbar"
-          placeholder="在此编辑…"
-        />
+      {/* 内容区：所有 tab hidden 挂载（图片保持状态），仅活跃 tab 可见 */}
+      {tabs.length > 0 ? (
+        tabs.map((tab, i) => (
+          <div key={tab.key} className="flex-1 flex flex-col" style={{ display: i === activeIdx ? 'flex' : 'none' }}>
+            {tab.itemType === 'image' ? (
+              <div className="flex-1 flex items-center justify-center text-sm text-stone-400">图片预览（Task 3 接入）</div>
+            ) : (
+              <textarea
+                value={tab.text || ''}
+                onChange={e => {
+                  const idx = tabs.findIndex(t => t.key === tab.key);
+                  if (idx >= 0) updateActiveTextAt(e.target.value, idx);
+                }}
+                readOnly={tab.source === 'transcription'}
+                style={{ fontSize: `${fontSize}px`, lineHeight: 1.6 }}
+                spellCheck={false}
+                className="flex-1 w-full resize-none outline-none p-4 bg-background text-foreground thin-scrollbar"
+                placeholder={tab.source === 'transcription' ? "语音识别记录（只读）" : "在此编辑…"}
+              />
+            )}
+          </div>
+        ))
       ) : (
         <div className="flex-1 flex items-center justify-center text-sm text-stone-400">没有打开的条目</div>
       )}
