@@ -1,7 +1,7 @@
 # OCR 文本块可视化设计
 
 > 日期：2026-07-04
-> 状态：📋 设计中
+> 状态：✅ 已实现（图片预览三态 toggle + 截图关窗→预览展示）
 > 前置：`2026-07-03-image-viewer-perf-design.md`（图片预览视口渲染 + SVG overlay）
 > 分析参考：`2026-07-03-snow-shot-analysis.md`（snow-shot OCR 功能对比）
 > 分支：`image-viewer-perf`
@@ -108,15 +108,25 @@ fn recognize_long_image_with_blocks(&self, img: &DynamicImage) -> Result<Vec<Ocr
 
 ### 3.2 前端：OCR 文本块叠加层
 
-**数据流**：
+**数据流（图片预览 OCR）**：
 
 ```
 点 OCR 按钮 → invoke("ocr_image", {id})
   → 返回 { text, blocks: [{text,x,y,w,h,score}] }
   → blocks 存入 ocrBlocks state
-  → ocrOverlay state = true
+  → ocrOverlay state = 'overlay'（三态：off → overlay → mask → off）
   → SVG 渲染文本块（独立 overlay layer）
   → text 入库 + openCompactEditorTab（保持现有行为）
+```
+
+**数据流（截图 OCR）**：
+
+```
+截图点 OCR → invoke("ocr_screenshot", bytes)
+  → 后端：识别 + 入库 + 关截图窗 + 开编辑器 + 开图片预览
+  → emit("ocr-screenshot://result", { text, blocks })
+  → 图片预览 listen → setOcrBlocks + setOcrOverlay('overlay')
+  → 截图窗已关，叠加层显示在图片预览中
 ```
 
 **SVG 渲染**（与标注 overlay 并列，在标注层下面）：
@@ -148,24 +158,23 @@ fn recognize_long_image_with_blocks(&self, img: &DynamicImage) -> Result<Vec<Ocr
 
 **坐标空间**：文本块坐标在自然像素空间（和标注一样），SVG viewBox = `0 0 natW natH`，自动随 zoom 缩放。
 
-### 3.3 OCR 按钮双态
+### 3.3 OCR 按钮三态 toggle
 
 ```ts
-const [ocrBlocks, setOcrBlocks] = useState<{text:string;x:number;y:number;w:number;h:number;score:number}[]>([]);
-const [ocrOverlay, setOcrOverlay] = useState(false);
+const [ocrBlocks, setOcrBlocks] = useState<OcrBlock[]>([]);
+const [ocrOverlay, setOcrOverlay] = useState<'off' | 'overlay' | 'mask'>('off');
 
 const handleOcr = async () => {
-  // 已有识别结果 → toggle 显示/隐藏（不重新识别）
+  // 已有结果 → 三态循环：off → overlay → mask → off
   if (ocrBlocks.length > 0) {
-    setOcrOverlay(!ocrOverlay);
+    setOcrOverlay(ocrOverlay === 'off' ? 'overlay' : ocrOverlay === 'overlay' ? 'mask' : 'off');
     return;
   }
   // 首次识别
   const result = await invoke<{text:string; blocks:OcrBlock[]}>("ocr_image", { id: imageId });
   if (result.text) {
     setOcrBlocks(result.blocks);
-    setOcrOverlay(true);
-    // 保持现有行为：入库 + 打开编辑器
+    setOcrOverlay('overlay');
     const ocrId = await invoke<number>("insert_ocr_clipboard_item", { text: result.text });
     await openCompactEditorTab(ocrId);
     setOcrCopied(true);
@@ -174,9 +183,24 @@ const handleOcr = async () => {
 };
 ```
 
-**OCR 按钮 active 状态**：`ocrCopied || ocrWarn || ocrOverlay`（已有结果 toggle 时也高亮）。
+**三态效果**：
+| 状态 | 效果 | 图标 |
+|------|------|------|
+| overlay | 半透蓝边框 + 蓝字浮在原图上 | ocr-all.svg |
+| mask | 白底覆盖原文 + 黑字（密集文本不干扰） | ocr-text.svg |
+| off | 无叠加 | ocr-ai.svg |
 
-### 3.4 换图重置
+**双击复制**：双击任意文本块 rect → `clipboard.writeText(b.text)` + 绿色浮泡提示 2 秒消失。两遍渲染（先所有 rect 后所有 text）防遮挡。
+
+**OCR 按钮 active 状态**：`ocrCopied || ocrWarn || ocrMode !== 'off'`。
+
+### 3.4 截图 OCR → 图片预览展示
+
+截图 OCR 不在截图全屏窗叠加（信息过载 + 全屏窗遮挡），改为：
+1. 后端 `ocr_screenshot` 识别 + 入库 + **关截图窗** + 开编辑器 + 开图片预览
+2. `emit("ocr-screenshot://result", { text, blocks })` 推送结果
+3. 图片预览 `listen` 收到 → `setOcrBlocks + setOcrOverlay('overlay')`
+4. 截图窗已关，叠加层在图片预览中展示（三态 toggle / 双击复制 / 标注 / 缩放）
 
 imageId useEffect 中清空：
 

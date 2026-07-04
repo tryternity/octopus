@@ -2,11 +2,13 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:subagent-driven-development 或 superpowers:executing-plans 逐任务实施。
 
-**Goal:** OCR 后在图片预览窗叠加文本块可视化层（边界框 + 文字），独立 toggle，与标注正交。
+**Goal:** OCR 后在图片预览窗叠加文本块可视化层（三态 toggle：叠加/遮罩/隐藏），独立 toggle，与标注正交。
 
-**Architecture:** 后端 `ocr_image` 返回结构化 `{text, blocks}`；前端 SVG 叠加层渲染文本块；OCR 按钮双态（首次识别 + 后续 toggle）。
+**Architecture:** 后端 `ocr_image` + `ocr_screenshot` 返回结构化 `{text, blocks}`；前端 SVG 叠加层渲染文本块（三态 + 双击复制）；截图 OCR 关窗→开预览（预览展示叠加层）。
 
 **Tech Stack:** Rust（ocr-rs → octopus-ocr → octopus-desktop）、React + SVG overlay。
+
+**状态：✅ 全部完成**
 
 ---
 
@@ -274,3 +276,23 @@ git commit -m "feat(ImagePreview): OCR 文本块可视化叠加层 + 按钮双�
 git add docs/
 git commit -m "docs: 同步 OCR 文本块可视化到 architecture.md"
 ```
+
+---
+
+## 实施记录（回写）
+
+| Task | 状态 | commit |
+|------|------|--------|
+| 1. 后端 engine recognize_with_blocks | ✅ | `284e797` |
+| 2. 后端命令 ocr_image 结构化 | ✅ | `bd6c3a6` |
+| 3. 前端叠加层 + 按钮双态 | ✅ | `84417d1` |
+| — 三态 toggle（overlay/mask/off） | ✅ | `f085264` |
+| — 遮罩遮挡修复（两遍渲染） | ✅ | `81b7dbe` |
+| — 双击复制 + 浮泡提示 | ✅ | `e356071` |
+| — 截图 OCR 三态（已废弃，改为关窗→预览） | ❌ 已回退 | `9487af5` → `b5a9975` |
+| — 截图关窗→开预览展示叠加层 | ✅ | `b5a9975` |
+| — 三态图标（ocr-ai/ocr-all/ocr-text） | ✅ | `bbdfe83` |
+| — 图标不切换修复（ocrCopied 挡 ocrMode） | ✅ | `0e82607` |
+| 4. 文档同步 | ✅ 本 z-sync | — |
+
+**架构决策**：截图 OCR 不在全屏透明窗叠加（信息过载 + 全屏窗遮挡其他窗口），改为关截图窗→开图片预览。图片预览是完善的 OCR 叠加载体（三态 toggle / 双击复制 / 标注 / 缩放），截图只做触发入口。
