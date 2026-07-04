@@ -4,8 +4,7 @@ import {
   Undo2, Redo2, ZoomIn, ZoomOut, Search, Eraser, Save, X,
   ChevronUp, ChevronDown, Replace, Check, Type, Eye, Mic,
 } from "lucide-react";
-// ImagePreviewComponent 在 Task 3 接入（改为接受 props 的组件）
-// import ImagePreviewComponent from "@/pages/ImagePreview";
+import ImagePreviewComponent from "@/pages/ImagePreview";
 
 interface Tab {
   key: string;
@@ -349,7 +348,7 @@ function CompactEditor() {
         tabs.map((tab, i) => (
           <div key={tab.key} className="flex-1 flex flex-col" style={{ display: i === activeIdx ? 'flex' : 'none' }}>
             {tab.itemType === 'image' ? (
-              <div className="flex-1 flex items-center justify-center text-sm text-stone-400">图片预览（Task 3 接入）</div>
+              <ImagePreviewComponent imageId={tab.itemId} />
             ) : (
               <textarea
                 value={tab.text || ''}

@@ -38,7 +38,8 @@ const computeFitToWidthZoom = (w: number): number => {
  * 工具栏放大/缩小按钮调 zoom。标注用「自然像素」坐标（与 zoom 解耦）——绘制时
  * ctx.scale(zoom)，鼠标 /zoom 反算；合成保存/复制在自然尺寸画布 1:1 重绘（与 zoom 无关）。
  */
-export default function ImagePreview() {
+
+export default function ImagePreview({ imageId: propImageId }: { imageId: number }) {
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -46,7 +47,7 @@ export default function ImagePreview() {
   // 视口尺寸（ResizeObserver 跟踪，用于手算居中 + drawBg 裁剪）
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
 
-  const [imageId, setImageId] = useState<number | null>(null);
+  const [imageId, setImageId] = useState<number | null>(propImageId);
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [natW, setNatW] = useState(0);
   const [natH, setNatH] = useState(0);
@@ -161,21 +162,18 @@ export default function ImagePreview() {
   }, []);
 
   // —— mount：取 PENDING + 监听并发再开的 load 事件 ——
+  // imageId 由 props 驱动
+  useEffect(() => { setImageId(propImageId); }, [propImageId]);
+
+  // 截图 OCR → 推送 OCR blocks
   useEffect(() => {
-    invoke<{ imageId: number } | null>("get_pending_image").then((p) => {
-      if (p) setImageId(p.imageId);
-    });
-    const unlisten = listen<{ imageId: number }>("image-preview://load", (e) => {
-      setImageId(e.payload.imageId);
-    });
-    // 截图 OCR → 关窗 → 开预览 + 推送 OCR blocks
     const unlistenOcr = listen<{ text: string; blocks: OcrBlock[] }>("ocr-screenshot://result", (e) => {
       if (e.payload.blocks.length > 0) {
         setOcrBlocks(e.payload.blocks);
         setOcrOverlay('overlay');
       }
     });
-    return () => { unlisten.then((f) => f()); unlistenOcr.then((f) => f()); };
+    return () => { unlistenOcr.then((f) => f()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -671,14 +669,9 @@ export default function ImagePreview() {
     } catch (e) { console.error(e); }
   };
 
-  const close = async () => {
-    try { await invoke("close_image_preview"); } catch (e) { console.error(e); }
-  };
-
-  // Esc 关闭 / Cmd/Ctrl+Z 撤销
+  // Esc 撤销 / Cmd/Ctrl+Z 撤销（不再关窗——ImagePreview 是 CompactEditor 的 tab）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "z") { e.preventDefault(); redo(); return; }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); undo(); }
     };
@@ -722,9 +715,8 @@ export default function ImagePreview() {
           width: Math.max(dispW + FIT_PADDING, viewport.w),
           height: Math.max(dispH + TOOLBAR_H + 8, viewport.h),
         }}
-        onMouseDown={(e) => {
-          // 点击暗区（content 空白，非 wrapper）关闭窗口——仅选择工具
-          if (tool === "none" && e.target === e.currentTarget) close();
+        onMouseDown={() => {
+          // 暗区点击不再关窗（CompactEditor tab 模式）
         }}>
           {/* wrapper：absolute 定位（手算居中），透明背景（canvas 在下层画底图）+ SVG + 鼠标 */}
           <div ref={wrapperRef}
