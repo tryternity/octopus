@@ -655,24 +655,34 @@ function measureCaretPx(
   pos: number | null,
 ): { left: number; top: number; height: number } | null {
   if (!container) return null;
+  const cRect = container.getBoundingClientRect();
+  // 末尾态（pos=null）：流式追加的高频路径，O(1)——Range 折到容器末尾，跳过 Array.from(text) O(n)。
+  if (pos == null) {
+    const r = document.createRange();
+    r.selectNodeContents(container);
+    r.collapse(false); // 折到末尾
+    const rect = r.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      // 空文本：光标在容器左上
+      return { left: 0, top: 0, height: 18 };
+    }
+    return { left: rect.left - cRect.left, top: rect.top - cRect.top, height: rect.height || 18 };
+  }
+  // 中插/点击态（pos=数字，交互低频）：Array.from 定位 code-point（代理对 length=2，其余 length=1）。
   const chars = Array.from(text);
-  const target = pos == null ? chars.length : Math.min(pos, chars.length);
+  const target = Math.min(pos, chars.length);
   const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
   const firstText = walker.nextNode() as Text | null;
-  if (!firstText) {
-    // 空文本：光标在容器左上
-    return { left: 0, top: 0, height: 18 };
-  }
+  if (!firstText) return { left: 0, top: 0, height: 18 };
   // firstText.nodeValue 应为纯文本（CaretBlink 是 span，不影响首文本节点）。
   const cp = Array.from(firstText.nodeValue ?? "");
   const offsetInNode = Math.min(target, cp.length);
-  // Range API 的 offset 是 UTF-16 code unit；code-point → code unit 累加（代理对 length=2，其余 length=1）。
+  // Range API 的 offset 是 UTF-16 code unit；code-point → code unit 累加。
   const utf16Offset = cp.slice(0, offsetInNode).reduce((acc, ch) => acc + ch.length, 0);
   const r = document.createRange();
   r.setStart(firstText, utf16Offset);
   r.collapse(true);
   const rect = r.getBoundingClientRect();
-  const cRect = container.getBoundingClientRect();
   return { left: rect.left - cRect.left, top: rect.top - cRect.top, height: rect.height || 18 };
 }
 
