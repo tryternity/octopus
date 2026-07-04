@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, Loader2, Check, SquarePen, AlertTriangle } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
@@ -21,10 +21,6 @@ export default function ClipboardItemRow({
 }) {
   const [deletePending, setDeletePending] = useState(false);
   const [showSavePopover, setShowSavePopover] = useState(false);
-  const [ocrLoading, setOcrLoading] = useState(false);
-  const [ocrDone, setOcrDone] = useState(false);
-  // OCR 全局互斥：他处正在识别时本入口被拒 → 按钮显琥珀三角 1.8s 提示稍后重试
-  const [ocrWarn, setOcrWarn] = useState(false);
   const [thumbSrc, setThumbSrc] = useState<string | null>(null);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [copied, setCopied] = useState(false);
@@ -90,34 +86,6 @@ export default function ClipboardItemRow({
   const handleSaveImage = (e: React.MouseEvent) => {
     e.stopPropagation();
     setShowSavePopover((v) => !v);
-  };
-
-  const handleOcr = async (e: React.MouseEvent) => {
-    e.stopPropagation();
-    if (ocrLoading) return;
-    setOcrLoading(true);
-    try {
-      const text = await invoke<string>("ocr_image", { id: item.id });
-      setOcrLoading(false);
-      setOcrDone(true);
-      setTimeout(() => setOcrDone(false), 1000);
-      // 识别文本 → 统一入库 source=ocr → 打开 CompactEditor tab 编辑
-      const ocrId = await invoke<number>("insert_ocr_clipboard_item", { text });
-      await openCompactEditorTab(ocrId);
-      onChanged();
-    } catch (err) {
-      setOcrLoading(false);
-      const msg = String(err);
-      if (msg.includes("未识别到文本")) {
-        setOcrDone(true);
-        setTimeout(() => setOcrDone(false), 1000);
-      } else if (msg.includes("还未完成")) {
-        setOcrWarn(true);
-        setTimeout(() => setOcrWarn(false), 1800);
-      } else {
-        console.error(err);
-      }
-    }
   };
 
   const handleOpenFile = async (e: React.MouseEvent) => {
@@ -230,7 +198,7 @@ export default function ClipboardItemRow({
             className="p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
             onClick={(e) => {
               e.stopPropagation();
-              invoke("open_image_preview", { imageId: item.id }).catch(console.error);
+              openCompactEditorTab(item.id);
             }}
             title="预览"
           >
@@ -258,34 +226,6 @@ export default function ClipboardItemRow({
               <SaveImagePopover id={item.id} onClose={() => setShowSavePopover(false)} />
             )}
           </div>
-        )}
-        {item.item_type === "image" && (
-          <button
-            className={cn(
-              "relative p-0.5 transition-opacity",
-              ocrLoading || ocrDone || ocrWarn
-                ? "opacity-100"
-                : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
-            )}
-            onClick={handleOcr}
-            disabled={ocrLoading}
-            title={ocrWarn ? "前一个 OCR 还未完成，请稍后" : "OCR 识别"}
-          >
-            {ocrLoading ? (
-              <Loader2 className="w-3.5 h-3.5 text-muted-foreground animate-spin" />
-            ) : ocrDone ? (
-              <Check className="w-3.5 h-3.5 text-emerald-600" />
-            ) : ocrWarn ? (
-              <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
-            ) : (
-              <ScanText className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-            )}
-            {ocrWarn && (
-              <span className="pointer-events-none absolute right-0 top-full z-10 mt-1 whitespace-nowrap rounded bg-amber-500 px-1.5 py-0.5 text-[10px] font-medium text-white shadow">
-                前一个 OCR 还未完成，请稍后
-              </span>
-            )}
-          </button>
         )}
         {item.item_type === "file" && (
           <button

@@ -38,7 +38,8 @@ const computeFitToWidthZoom = (w: number): number => {
  * 工具栏放大/缩小按钮调 zoom。标注用「自然像素」坐标（与 zoom 解耦）——绘制时
  * ctx.scale(zoom)，鼠标 /zoom 反算；合成保存/复制在自然尺寸画布 1:1 重绘（与 zoom 无关）。
  */
-export default function ImagePreview() {
+
+export default function ImagePreview({ imageId: propImageId }: { imageId: number }) {
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -46,7 +47,7 @@ export default function ImagePreview() {
   // 视口尺寸（ResizeObserver 跟踪，用于手算居中 + drawBg 裁剪）
   const [viewport, setViewport] = useState({ w: 0, h: 0 });
 
-  const [imageId, setImageId] = useState<number | null>(null);
+  const [imageId, setImageId] = useState<number | null>(propImageId);
   const [dataUrl, setDataUrl] = useState<string | null>(null);
   const [natW, setNatW] = useState(0);
   const [natH, setNatH] = useState(0);
@@ -73,6 +74,7 @@ export default function ImagePreview() {
   interface OcrBlock { text: string; x: number; y: number; w: number; h: number; score: number; }
   const [ocrBlocks, setOcrBlocks] = useState<OcrBlock[]>([]);
   const [ocrOverlay, setOcrOverlay] = useState<'off' | 'overlay' | 'mask'>('off');
+  const ocrDoneRef = useRef(false);  // 防重复 OCR（截图 OCR 已推送 blocks 后不再重跑）
   // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
   const loadingFullRef = useRef(false);
   // 全图已加载：true 时缩略图后到直接丢弃（防竞态降级）
@@ -161,21 +163,19 @@ export default function ImagePreview() {
   }, []);
 
   // —— mount：取 PENDING + 监听并发再开的 load 事件 ——
+  // imageId 由 props 驱动
+  useEffect(() => { setImageId(propImageId); }, [propImageId]);
+
+  // 截图 OCR → 推送 OCR blocks
   useEffect(() => {
-    invoke<{ imageId: number } | null>("get_pending_image").then((p) => {
-      if (p) setImageId(p.imageId);
-    });
-    const unlisten = listen<{ imageId: number }>("image-preview://load", (e) => {
-      setImageId(e.payload.imageId);
-    });
-    // 截图 OCR → 关窗 → 开预览 + 推送 OCR blocks
     const unlistenOcr = listen<{ text: string; blocks: OcrBlock[] }>("ocr-screenshot://result", (e) => {
       if (e.payload.blocks.length > 0) {
+        ocrDoneRef.current = true;
         setOcrBlocks(e.payload.blocks);
         setOcrOverlay('overlay');
       }
     });
-    return () => { unlisten.then((f) => f()); unlistenOcr.then((f) => f()); };
+    return () => { unlistenOcr.then((f) => f()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -186,6 +186,7 @@ export default function ImagePreview() {
     // 清理旧资源
     setOcrBlocks([]);
     setOcrOverlay('off');
+    ocrDoneRef.current = false;
     const old = scaledBitmapRef.current;
     scaledBitmapRef.current = null;
     if (old) old.close();
@@ -635,8 +636,8 @@ export default function ImagePreview() {
 
   const handleOcr = async () => {
     if (imageId == null) return;
-    // 已有结果 → 三态循环：off → overlay → mask → off
-    if (ocrBlocks.length > 0) {
+    // 已识别过 → 三态循环：off → overlay → mask → off（不重新识别）
+    if (ocrDoneRef.current) {
       setOcrOverlay(ocrOverlay === 'off' ? 'overlay' : ocrOverlay === 'overlay' ? 'mask' : 'off');
       return;
     }
@@ -644,6 +645,7 @@ export default function ImagePreview() {
     try {
       const result = await invoke<{text: string; blocks: OcrBlock[]}>("ocr_image", { id: imageId });
       if (result.text) {
+        ocrDoneRef.current = true;
         setOcrBlocks(result.blocks);
         setOcrOverlay('overlay');
         // 保持现有行为：入库 + 打开编辑器
@@ -671,14 +673,9 @@ export default function ImagePreview() {
     } catch (e) { console.error(e); }
   };
 
-  const close = async () => {
-    try { await invoke("close_image_preview"); } catch (e) { console.error(e); }
-  };
-
-  // Esc 关闭 / Cmd/Ctrl+Z 撤销
+  // Esc 撤销 / Cmd/Ctrl+Z 撤销（不再关窗——ImagePreview 是 CompactEditor 的 tab）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") close();
       if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "z") { e.preventDefault(); redo(); return; }
       if ((e.metaKey || e.ctrlKey) && e.key === "z") { e.preventDefault(); undo(); }
     };
@@ -696,8 +693,8 @@ export default function ImagePreview() {
     : null;
 
   return (
-    // 灯箱暗场：深 stone 让图片本身发光；工具卡与底部 EXIF 条均 fixed 浮于其上
-    <div className="relative h-screen overflow-hidden select-none" style={{ background: "#18181b" }}>
+    // 灯箱暗场（填满 CompactEditor tab 内容区，不再用 h-screen/fixed）
+    <div className="relative h-full w-full overflow-hidden select-none bg-background">
       <Toolbar
         tool={tool} setTool={setTool}
         toolColor={toolColor} setToolColor={setToolColorSync}
@@ -722,9 +719,8 @@ export default function ImagePreview() {
           width: Math.max(dispW + FIT_PADDING, viewport.w),
           height: Math.max(dispH + TOOLBAR_H + 8, viewport.h),
         }}
-        onMouseDown={(e) => {
-          // 点击暗区（content 空白，非 wrapper）关闭窗口——仅选择工具
-          if (tool === "none" && e.target === e.currentTarget) close();
+        onMouseDown={() => {
+          // 暗区点击不再关窗（CompactEditor tab 模式）
         }}>
           {/* wrapper：absolute 定位（手算居中），透明背景（canvas 在下层画底图）+ SVG + 鼠标 */}
           <div ref={wrapperRef}
@@ -841,7 +837,7 @@ export default function ImagePreview() {
       {/* 底部 EXIF 状态条：等宽 tabular-nums，半透 blur 融于暗场 */}
       {natW > 0 && (
         <div style={{
-          position: "fixed", bottom: 6, left: "50%", transform: "translateX(-50%)", zIndex: 100,
+          position: "absolute", bottom: 6, left: "50%", transform: "translateX(-50%)", zIndex: 100,
           padding: "3px 10px", borderRadius: 6,
           background: "rgba(24,24,27,0.72)",
           backdropFilter: "blur(12px)", WebkitBackdropFilter: "blur(12px)",
@@ -861,7 +857,7 @@ export default function ImagePreview() {
       {/* OCR 双击复制提示浮泡 */}
       {ocrCopiedText && (
         <div style={{
-          position: "fixed", top: 60, left: "50%", transform: "translateX(-50%)", zIndex: 200,
+          position: "absolute", top: 50, left: "50%", transform: "translateX(-50%)", zIndex: 200,
           padding: "6px 14px", borderRadius: 8,
           background: "rgba(34,197,94,0.95)", color: "#fff",
           fontSize: 12, fontWeight: 600, fontFamily: "-apple-system, sans-serif",

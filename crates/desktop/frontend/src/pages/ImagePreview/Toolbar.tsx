@@ -131,8 +131,8 @@ export default function Toolbar(props: {
   ];
 
   return (
-    // 外层 fixed 容器：宽 = 工具卡宽；浮窗 absolute 相对它定位（跟随按钮）
-    <div ref={containerRef} style={{ position: "fixed", left: "50%", top: 8, transform: "translateX(-50%)", zIndex: 100 }}>
+    // 外层 absolute 容器（相对 ImagePreview 父容器定位）
+    <div ref={containerRef} style={{ position: "absolute", left: "50%", top: 6, transform: "translateX(-50%)", zIndex: 100 }}>
       {/* 工具卡：白底 r8 + 截图同款 shadow */}
       <div style={{
         display: "flex", alignItems: "center", gap: 4,
