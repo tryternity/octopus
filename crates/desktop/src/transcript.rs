@@ -117,6 +117,12 @@ impl Transcript {
     /// VadSegmented append_segment（delta 直接生长，不经 engine_cumulative）。
     pub fn append_segment(&mut self, delta: &str) {
         if delta.is_empty() { return; }
+        // 选中替换：首个非空 delta 插入前，删除 set_selection 记录的待删范围
+        // （与 apply_engine_full 对称——VadSegmented / cloud partial 路径同样要消费 pending_delete，
+        // 否则离线/cloud 引擎下选中后首词只插不删，选中文本残留）。
+        if let Some((s, e)) = self.pending_delete.take() {
+            self.delete_range(s, e);
+        }
         if self.polish_pending { self.pending_delta.push_str(delta); }
         else { self.push_delta_at_caret(delta); }
     }
@@ -615,6 +621,18 @@ mod tests {
         assert!(t.apply_engine_full("你好世界新词"));
         assert_eq!(t.finish_text(), "你好新词"); // "世界" 被删、"新词" 插入
         assert!(t.caret_char_offset() > off_before); // caret 随插入右移
+    }
+
+    #[test]
+    fn set_selection_then_first_append_segment_replaces() {
+        // VadSegmented / cloud partial 路径（append_segment）须与流式路径对称：
+        // 拖选 [2,4)（"世界"）→ 首词到达时删选中、新词从 start 插。
+        let mut t = Transcript::new(105, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界"); // 建初始文本（单 Raw 段）
+        t.set_selection(2, 4);
+        assert_eq!(t.caret_char_offset(), 2); // 选中态 caret 在 start
+        t.append_segment("新词"); // VadSegmented 首词
+        assert_eq!(t.finish_text(), "你好新词"); // "世界" 被删、"新词" 插入
     }
 
     #[test]
