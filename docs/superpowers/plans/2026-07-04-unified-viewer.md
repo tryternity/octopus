@@ -172,3 +172,10 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 | 6. 文档同步 | ✅ 本 z-sync | — | — |
 
 **架构决策**：图片 tab 背景从暗灯箱 `#18181b` 改为 `bg-background`（与文本 tab 白底统一）。ImagePreview 不再用 fixed/Esc/暗区关闭（嵌入 tab 内不需要）。剪贴板图片条目删除独立 OCR 按钮（统一在图片预览 tab 工具栏 OCR）。
+
+### 后续优化（z-sync 补记）
+
+| 改动 | commit |
+|------|--------|
+| 语音识别记录文本截断 200 字 + …… 省略 | `dde0529` |
+| 识别记录 + 剪贴板管理页全选 header sticky 固定 | `41c35b1` |
