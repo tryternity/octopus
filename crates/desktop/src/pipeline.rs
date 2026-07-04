@@ -833,4 +833,52 @@ mod tests {
         assert_eq!(completed_seq, 3);
         assert!(results.is_empty());
     }
+
+    // ── Speaking 事件测试 ──
+
+    /// StreamingPipeline：silence_duration < 0.3 时 Speaking(true)，≥0.3 时 Speaking(false)
+    #[test]
+    fn streaming_speaking_event_on_silence_change() {
+        let mut t = Transcript::new(0, PolishMode::Disabled);
+
+        // tick 1: silence=0 → speaking=true
+        let mut fake1 = FakePipelineEngine::new(vec![], "", TranscriptEvent::Final("".to_string()));
+        fake1.silence = 0.0;
+        let mut p = StreamingPipeline::new(Box::new(fake1)).unwrap();
+        let events = p.tick(&[0.0; 1600], &mut t);
+        assert!(events.iter().any(|e| matches!(e, PipelineEvent::Speaking(true))),
+            "silence=0 < 0.3 → should emit Speaking(true)");
+
+        // tick 2: silence=0.5 → speaking=false
+        let mut fake2 = FakePipelineEngine::new(vec![], "", TranscriptEvent::Final("".to_string()));
+        fake2.silence = 0.5;
+        p.engine = Box::new(fake2);
+        let events = p.tick(&[0.0; 1600], &mut t);
+        assert!(events.iter().any(|e| matches!(e, PipelineEvent::Speaking(false))),
+            "silence=0.5 ≥ 0.3 → should emit Speaking(false)");
+
+        // tick 3: silence=0 → speaking=true again
+        let mut fake3 = FakePipelineEngine::new(vec![], "", TranscriptEvent::Final("".to_string()));
+        fake3.silence = 0.0;
+        p.engine = Box::new(fake3);
+        let events = p.tick(&[0.0; 1600], &mut t);
+        assert!(events.iter().any(|e| matches!(e, PipelineEvent::Speaking(true))),
+            "silence back to 0 → should emit Speaking(true)");
+    }
+
+    /// StreamingPipeline：状态不变时不重复 emit
+    #[test]
+    fn streaming_no_speaking_event_when_unchanged() {
+        let mut fake = FakePipelineEngine::new(vec![], "", TranscriptEvent::Final("".to_string()));
+        fake.silence = 0.0;
+        let mut p = StreamingPipeline::new(Box::new(fake)).unwrap();
+        let mut t = Transcript::new(0, PolishMode::Disabled);
+        // 第 1 tick：emit Speaking(true)
+        let events = p.tick(&[0.0; 1600], &mut t);
+        assert!(events.iter().any(|e| matches!(e, PipelineEvent::Speaking(true))));
+        // 第 2 tick：silence 仍 0 → 不应重复 emit
+        let events = p.tick(&[0.0; 1600], &mut t);
+        assert!(!events.iter().any(|e| matches!(e, PipelineEvent::Speaking(_))),
+            "silence unchanged → no Speaking event");
+    }
 }
