@@ -165,7 +165,10 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 | 4. 入口统一 | ✅ | `3286885` `83a6548` | ClipboardItem 预览→compactEditor + 删 OCR 按钮 |
 | — 截图 OCR 防重复 | ✅ | `bf8fc92` | ocrDoneRef |
 | — 工具栏 top 6px | ✅ | `11ff198` `e10f846` | 黑边对称 |
-| 5. 废弃 ImagePreview 窗口 | ❌ 待做 | — | image_preview 命令注册/ACL 移除 |
+| 5. 废弃 ImagePreview 窗口 | ✅ | `1928e62` | image_preview 命令注册/ACL/activation 移除 |
+| — 窗口尺寸+位置记忆 | ✅ | `3d27e53` `0e9a042` `c4eca38` | CloseRequested 保存 + DPR 缩放 + maximized |
+| — 语音管理查看入口 | ✅ | `0266534` | HistoryPanel 加查看按钮→openCompactEditorTab(id,"transcription") |
+| — 截图 OCR tab 顺序 | ✅ | `0266534` | 图片 tab 在前，文本 tab 活跃 |
 | 6. 文档同步 | ✅ 本 z-sync | — | — |
 
 **架构决策**：图片 tab 背景从暗灯箱 `#18181b` 改为 `bg-background`（与文本 tab 白底统一）。ImagePreview 不再用 fixed/Esc/暗区关闭（嵌入 tab 内不需要）。剪贴板图片条目删除独立 OCR 按钮（统一在图片预览 tab 工具栏 OCR）。
