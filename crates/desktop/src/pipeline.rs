@@ -540,6 +540,7 @@ impl VadSegmentedPipeline {
         // has_speech=true 才算说话（开口后才亮）；has_speech=false 时一定不算
         let speaking = self.has_speech && self.silence_duration < 0.3;
         if speaking != self.prev_speaking {
+            log::info!("[vad-seg] speaking {} → {} (has_speech={}, silence={:.2})", self.prev_speaking, speaking, self.has_speech, self.silence_duration);
             self.prev_speaking = speaking;
             events.push(PipelineEvent::Speaking(speaking));
         }
