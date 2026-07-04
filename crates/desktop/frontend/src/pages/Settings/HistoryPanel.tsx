@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Copy, Trash2, Search } from "lucide-react";
+import { Copy, Trash2, Search, Eye } from "lucide-react";
 
 interface HistoryRecord {
   id: number;
@@ -171,6 +171,8 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
 }
 
 /// 单条识别记录行——含 checkbox + 文本 + 折叠原始 + hover 操作（复制/单条删除）
+import { openCompactEditorTab } from "@/lib/compactEditor";
+
 function HistoryRow({
   rec,
   isSelected,
@@ -256,8 +258,15 @@ function HistoryRow({
         <p className="text-xs leading-relaxed text-stone-800 break-words">{primaryText}</p>
       </div>
 
-      {/* 右侧操作：复制 + 删除 */}
+      {/* 右侧操作：查看 + 复制 + 删除 */}
       <div className="flex-shrink-0 flex items-center gap-0.5">
+        <button
+          className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+          onClick={(e) => { e.stopPropagation(); openCompactEditorTab(rec.id, "transcription"); }}
+          title="查看"
+        >
+          <Eye className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
+        </button>
         <button
           className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
           onClick={copyRecord}
