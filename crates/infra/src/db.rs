@@ -153,8 +153,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
         // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 16", [])?;
-        log::info!("DB initialized (v16): schema + app_config(setting) + prompts + clipboard_history + image_data + yaml migration (notepad removed; transcriptions segments+text; legacy raw/polished/edited columns dropped; edit_shortcut 跨平台 CmdOrCtrl+Enter)");
+        conn.execute("PRAGMA user_version = 17", [])?;
+        log::info!("DB initialized (v17): schema + app_config(setting) + prompts + clipboard_history(unified) + image_data + yaml migration");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
@@ -345,6 +345,22 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .context("v15→v16: fix edit_shortcut cross-platform")?;
         conn.execute("PRAGMA user_version = 16", [])?;
         log::info!("DB migrated to v16: edit_shortcut 跨平台");
+    } else if v == 16 {
+        // v16 → v17：clipboard_history 吞并 transcriptions。
+        // DROP 旧表 + FTS5 + 触发器，重跑 INIT_SQL 建新 schema。不迁移历史数据（用户确认可丢弃）。
+        log::info!("DB migrating v16 → v17: clipboard_history 吞并 transcriptions（DROP + CREATE）");
+        conn.execute_batch(
+            "DROP TRIGGER IF EXISTS clip_fts_ai;
+             DROP TRIGGER IF EXISTS clip_fts_ad;
+             DROP TRIGGER IF EXISTS clip_fts_au;
+             DROP TABLE IF EXISTS clipboard_history_fts;
+             DROP TABLE IF EXISTS clipboard_history;
+             DROP TABLE IF EXISTS transcriptions;",
+        )
+        .context("v16→v17: drop clipboard_history + transcriptions")?;
+        conn.execute_batch(INIT_SQL).context("v16→v17: rebuild new schema")?;
+        conn.execute("PRAGMA user_version = 17", [])?;
+        log::info!("DB migrated to v17: clipboard_history 吞并 transcriptions");
     }
     Ok(())
 }
