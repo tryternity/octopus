@@ -26,7 +26,7 @@ use octopus_infra::consts::{SEGMENT_DURATION_S, SEGMENT_OVERLAP_MS};
 /// ——只携带「决定 + 必要字符串」。（2d，spec §3.2）
 #[derive(Debug, PartialEq)]
 pub enum PipelineEvent {
-    /// 落库 raw_text（pipeline 已判文本变化）。engine_mode = DB engine_mode 列（"streaming"/"vad_segmented"）。
+    /// 落库 text/segments（pipeline 已判文本变化，写 raw 段）。engine_mode = DB engine_mode 列（"streaming"/"vad_segmented"）。
     /// coordinator 调 update_transcription_raw(&mut transcript, &config.asr_engine, engine_mode)。
     PersistRaw { engine_mode: &'static str },
     /// 刷新结果窗口。display 已由 pipeline 算好（local=transcript.display_text()；cloud=display+current_partial）。

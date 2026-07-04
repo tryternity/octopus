@@ -66,7 +66,7 @@ enum Command {
     UpdateEditBuffer { text: String },
     /// 提交编辑（edit_shortcut toggle 再按一次 / ✏️(💾) 按钮触发）
     CommitEdit { text: String },
-    /// 取消编辑（恢复原始文本，不写 edited_text 到 DB）
+    /// 取消编辑（恢复原始文本，不落库）
     CancelEdit,
     /// 运行时配置更新——外部（设置窗口 / 工具栏）修改 RuntimeConfig 后，
     /// 通过此命令通知 coordinator 立即把变更同步到 config 快照（无需等 Toggle）。
@@ -604,7 +604,7 @@ pub fn set_selection(coordinator: tauri::State<'_, Coordinator>, start: usize, e
     coordinator.set_selection(start, end);
 }
 
-/// 前端命令：取消编辑（恢复原始文本，不写 edited_text 到 DB）。
+/// 前端命令：取消编辑（恢复原始文本，不落库）。
 #[tauri::command]
 pub fn exit_edit_without_commit(coordinator: tauri::State<'_, Coordinator>) {
     coordinator.cancel_edit();
@@ -2007,10 +2007,9 @@ fn process_db_command(cmd: DbCommand) {
             }
         }
         DbCommand::UpdatePolished { id, text, status, model, segments } => {
-            // polished_text 与 text 列同值（= finish_text 润色后扁平），与 segments 对应。
+            // text = 润色后扁平（落 text 列），与 segments 对应；polished_text 列已随段模型移除。
             if let Err(e) = octopus_asr_local::db::update_polished(
                 id,
-                &text,
                 &status,
                 model.as_deref(),
                 &segments,
@@ -2028,11 +2027,12 @@ fn process_db_command(cmd: DbCommand) {
             polish_model,
             duration_ms,
         } => {
+            // 段模型下 DB 只存 text（= finish_text 扁平）：润色 done 用 polished_text，否则 raw_text。
+            let text = polished_text.as_deref().unwrap_or(&raw_text);
             if let Err(e) = octopus_asr_local::db::finalize_transcription(
                 id,
-                &raw_text,
+                text,
                 &segments,
-                polished_text.as_deref(),
                 &polish_status,
                 polish_model.as_deref(),
                 duration_ms,

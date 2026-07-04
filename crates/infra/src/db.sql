@@ -1,6 +1,6 @@
 -- octopus DB 初始化脚本
 -- 首次启动（user_version=0）时由 init_schema 执行一次，之后不再重复执行。
--- 开发阶段无需迁移逻辑：调整 schema 时直接删除 ~/.octopus/octopus.db 重新初始化。
+-- schema 变更走 db.rs init_schema 的版本化迁移链（PRAGMA user_version），勿直接删库。
 
 -- ── 表结构 ──────────────────────────────────────────────────────────────────
 
@@ -9,9 +9,6 @@ CREATE TABLE IF NOT EXISTS transcriptions (
     created_at    TEXT    NOT NULL,
     engine        TEXT    NOT NULL,
     engine_mode   TEXT,
-    raw_text      TEXT    NOT NULL,          -- 兼容旧（= finish_text 扁平；段模型下仍写保持向后兼容）
-    polished_text TEXT,                       -- 兼容旧；段模型下不再单独驱动展示
-    edited_text   TEXT,                       -- 兼容旧（未编辑为 NULL）
     polish_status TEXT    NOT NULL DEFAULT 'off',
     polish_model  TEXT,
     duration_ms   INTEGER,

@@ -153,8 +153,8 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // 一次性 yaml → DB 迁移
         migrate_yaml_to_db(conn)?;
         // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 14", [])?;
-        log::info!("DB initialized (v14): schema + app_config(setting) + prompts + clipboard_history + image_data + yaml migration (notepad removed; transcriptions segments+text)");
+        conn.execute("PRAGMA user_version = 15", [])?;
+        log::info!("DB initialized (v15): schema + app_config(setting) + prompts + clipboard_history + image_data + yaml migration (notepad removed; transcriptions segments+text; legacy raw/polished/edited columns dropped)");
     } else if v == 2 {
         // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
         log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
@@ -321,6 +321,19 @@ fn init_schema(conn: &Connection) -> Result<()> {
         }
         conn.execute("PRAGMA user_version = 14", [])?;
         log::info!("DB migrated to v14: transcriptions segments + text");
+    } else if v == 14 {
+        // v14 → v15：段模型下 segments + text 是真相源，删除三冗余兼容列。
+        // v13→v14 块已把这三列内容迁进 segments/text；旧库升级链 v13→v14→v15 跨启动顺序执行，
+        // v13→v14 块先读三列写 segments/text，本块再 DROP，时序安全。
+        log::info!("DB migrating v14 → v15: drop legacy raw_text/polished_text/edited_text");
+        conn.execute_batch(
+            "ALTER TABLE transcriptions DROP COLUMN raw_text;
+             ALTER TABLE transcriptions DROP COLUMN polished_text;
+             ALTER TABLE transcriptions DROP COLUMN edited_text;",
+        )
+        .context("v14→v15: drop legacy text columns")?;
+        conn.execute("PRAGMA user_version = 15", [])?;
+        log::info!("DB migrated to v15: legacy text columns dropped");
     }
     Ok(())
 }
@@ -989,7 +1002,7 @@ pub fn save_active_prompt_id(id: i64) -> Result<()> {
 // ── 识别历史写入（desktop coordinator 用）──
 
 /// 首次有 ASR 文本时插入（应用写入毫秒戳 id）。
-/// `text` = finish_text 扁平（同时写入 raw_text + text 两列，向后兼容旧读路径）；
+/// `text` = finish_text 扁平（落 text 列，search/clipboard/history 直读）；
 /// `segments` = transcript.segments_json()（段 JSON 真相源）。
 pub fn insert_transcription_at_id(
     id: i64,
@@ -1003,36 +1016,32 @@ pub fn insert_transcription_at_id(
         let char_count = text.chars().count() as i64;
         conn.execute(
             "INSERT INTO transcriptions
-                (id, created_at, engine, engine_mode, raw_text, polished_text, polish_status, char_count, segments, text)
-             VALUES (?1, ?2, ?3, ?4, ?5, NULL, 'off', ?6, ?7, ?5)",
-            params![id, created_at, engine, engine_mode, text, char_count, segments],
+                (id, created_at, engine, engine_mode, polish_status, char_count, segments, text)
+             VALUES (?1, ?2, ?3, ?4, 'off', ?5, ?6, ?7)",
+            params![id, created_at, engine, engine_mode, char_count, segments, text],
         )?;
         Ok(())
     })
 }
 
-/// 流式分段后更新 raw/text/segments（完整 ASR = raw + increase）。
-/// `text` = finish_text 扁平（同时写 raw_text + text 两列）；`segments` = segments_json。
+/// 流式分段后更新 text/segments（完整 ASR 扁平 + 段 JSON）。
 pub fn update_text_segments(id: i64, text: &str, segments: &str) -> Result<()> {
     with_db(|conn| {
         let char_count = text.chars().count() as i64;
         conn.execute(
-            "UPDATE transcriptions SET raw_text=?1, text=?1, segments=?2, char_count=?3 WHERE id=?4",
+            "UPDATE transcriptions SET text=?1, segments=?2, char_count=?3 WHERE id=?4",
             params![text, segments, char_count, id],
         )?;
         Ok(())
     })
 }
 
-/// 停顿润色后更新 polished_text + segments/text 列。
-/// `polished_text` = 润色后扁平（与 segments 段拼接一致）；
-/// `segments` = segments_json（润色后段，Polished/Edited）；
-/// `text` = 润色后扁平，与 segments 对应（落 text 列，保持 segments 是真相源一致）。
-/// 修复 I-1（数据一致性）：原仅写 polished_text/polish_status/polish_model，润色后进程崩溃在
-/// Finalize 前 → DB polished_text 有值、segments/text 停留 raw，与「segments 是真相源」设计不符。
+/// 停顿润色后更新 polish_status/polish_model + segments/text 列。
+/// `text` = 润色后扁平（与 segments 段拼接一致）；`segments` = segments_json（润色后段，Polished/Edited）。
+/// 修复 I-1（数据一致性）：润色须同写 segments + text，否则进程崩溃在 Finalize 前 →
+/// DB 停留 raw，与「segments 是真相源」设计不符。
 pub fn update_polished(
     id: i64,
-    polished_text: &str,
     polish_status: &str,
     polish_model: Option<&str>,
     segments: &str,
@@ -1040,8 +1049,8 @@ pub fn update_polished(
 ) -> Result<()> {
     with_db(|conn| {
         conn.execute(
-            "UPDATE transcriptions SET polished_text=?1, polish_status=?2, polish_model=?3, segments=?4, text=?5 WHERE id=?6",
-            params![polished_text, polish_status, polish_model, segments, text, id],
+            "UPDATE transcriptions SET polish_status=?1, polish_model=?2, segments=?3, text=?4 WHERE id=?5",
+            params![polish_status, polish_model, segments, text, id],
         )?;
         Ok(())
     })
@@ -1064,28 +1073,26 @@ fn update_edited_segments_at(
     segments: &str,
 ) -> Result<usize> {
     Ok(conn.execute(
-        "UPDATE transcriptions SET edited_text=?1, text=?1, segments=?2 WHERE id=?3",
+        "UPDATE transcriptions SET text=?1, segments=?2 WHERE id=?3",
         params![text, segments, id],
     )?)
 }
 
-/// 识别结束 finalize：写最终 raw/polished/text/segments/status/char_count/duration_ms。
-/// `segments` = transcript.segments_json()（最终段）；text 列与 raw_text 同值（finish_text 扁平）。
+/// 识别结束 finalize：写最终 text/segments/status/char_count/duration_ms。
+/// `text` = transcript.db_text()（finish_text 扁平，最终展示文本）；`segments` = segments_json（最终段）。
 pub fn finalize_transcription(
     id: i64,
-    raw_text: &str,
+    text: &str,
     segments: &str,
-    polished_text: Option<&str>,
     polish_status: &str,
     polish_model: Option<&str>,
     duration_ms: Option<i64>,
 ) -> Result<()> {
     with_db(|conn| {
-        let display = polished_text.unwrap_or(raw_text);
-        let char_count = display.chars().count() as i64;
+        let char_count = text.chars().count() as i64;
         conn.execute(
-            "UPDATE transcriptions SET raw_text=?1, polished_text=?2, text=?1, segments=?3, polish_status=?4, polish_model=?5, char_count=?6, duration_ms=?7 WHERE id=?8",
-            params![raw_text, polished_text, segments, polish_status, polish_model, char_count, duration_ms, id],
+            "UPDATE transcriptions SET text=?1, segments=?2, polish_status=?3, polish_model=?4, char_count=?5, duration_ms=?6 WHERE id=?7",
+            params![text, segments, polish_status, polish_model, char_count, duration_ms, id],
         )?;
         Ok(())
     })
@@ -1097,10 +1104,6 @@ pub struct TranscriptionRecord {
     pub id: i64,
     pub created_at: String,
     pub engine: String,
-    pub raw_text: String,
-    pub polished_text: Option<String>,
-    /// 用户编辑后的最终文本（None=未编辑，回退用 polished_text/raw_text）。
-    pub edited_text: Option<String>,
     pub polish_status: String,
     pub duration_ms: Option<i64>,
     /// 段 JSON（[{kind, text}]，段模型真相源）。
@@ -1126,7 +1129,7 @@ fn list_transcriptions_search_at(
         if !q.is_empty() {
             let pattern = format!("%{}%", q);
             let mut stmt = conn.prepare(
-                "SELECT id, created_at, engine, raw_text, polished_text, edited_text, polish_status, duration_ms, segments, text
+                "SELECT id, created_at, engine, polish_status, duration_ms, segments, text
                  FROM transcriptions
                  WHERE text LIKE ?1
                  ORDER BY id DESC LIMIT ?2 OFFSET ?3"
@@ -1134,9 +1137,8 @@ fn list_transcriptions_search_at(
             let rows = stmt.query_map(params![pattern, limit, offset], |row| {
                 Ok(TranscriptionRecord {
                     id: row.get(0)?, created_at: row.get(1)?, engine: row.get(2)?,
-                    raw_text: row.get(3)?, polished_text: row.get(4)?, edited_text: row.get(5)?,
-                    polish_status: row.get(6)?, duration_ms: row.get(7)?,
-                    segments: row.get(8)?, text: row.get(9)?,
+                    polish_status: row.get(3)?, duration_ms: row.get(4)?,
+                    segments: row.get(5)?, text: row.get(6)?,
                 })
             })?;
             return Ok(rows.filter_map(|r| r.ok()).collect());
@@ -1173,7 +1175,7 @@ fn list_transcriptions_at(
     offset: u32,
 ) -> Result<Vec<TranscriptionRecord>> {
     let mut stmt = conn.prepare(
-        "SELECT id, created_at, engine, raw_text, polished_text, edited_text, polish_status, duration_ms, segments, text
+        "SELECT id, created_at, engine, polish_status, duration_ms, segments, text
          FROM transcriptions ORDER BY id DESC LIMIT ?1 OFFSET ?2"
     )?;
     let rows = stmt.query_map(params![limit, offset], |row| {
@@ -1181,13 +1183,10 @@ fn list_transcriptions_at(
             id: row.get(0)?,
             created_at: row.get(1)?,
             engine: row.get(2)?,
-            raw_text: row.get(3)?,
-            polished_text: row.get(4)?,
-            edited_text: row.get(5)?,
-            polish_status: row.get(6)?,
-            duration_ms: row.get(7)?,
-            segments: row.get(8)?,
-            text: row.get(9)?,
+            polish_status: row.get(3)?,
+            duration_ms: row.get(4)?,
+            segments: row.get(5)?,
+            text: row.get(6)?,
         })
     })?;
     let mut records = Vec::new();
@@ -1370,8 +1369,9 @@ mod tests {
 
     #[test]
     fn migrate_v13_to_v14_is_idempotent() {
-        // 跑两次迁移：第二次不应崩（segments/text 列已存在，PRAGMA 仍跳过 ALTER）
-        let dir = std::env::temp_dir().join(format!("octopus-v14-idem-{}", std::process::id()));
+        // v13 库连跑 init_schema：v13→v14（加 segments/text + 迁数据）→ v14→v15（DROP 旧三列）。
+        // 第三次 v=15 无分支，早退 no-op（验证收敛后重复调用幂等、不崩）。
+        let dir = std::env::temp_dir().join(format!("octopus-v15-idem-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).unwrap();
         let conn = Connection::open(dir.join("mig.db")).unwrap();
@@ -1387,16 +1387,80 @@ mod tests {
         )
         .unwrap();
 
-        init_schema(&conn).unwrap();
-        // 第二次：v=14，init_schema 早退（无 v==14 分支），不会重复迁移
-        init_schema(&conn).unwrap();
+        init_schema(&conn).unwrap(); // v13 → v14
+        init_schema(&conn).unwrap(); // v14 → v15
+        init_schema(&conn).unwrap(); // v15：无分支，幂等早退
 
         let uv: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(uv, 14);
+        assert_eq!(uv, 15);
+        // 数据经全链迁移保留
         let text: String = conn
             .query_row("SELECT text FROM transcriptions WHERE id=1", [], |r| r.get(0))
             .unwrap();
         assert_eq!(text, "原始文");
+        // 旧三列在 v15 已 DROP
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(transcriptions)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(!cols.iter().any(|c| c == "raw_text"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrate_v14_to_v15_drops_legacy_columns() {
+        // 模拟 v14 库：transcriptions 同时含旧三列（raw/polished/edited）+ 新 segments/text，且有数据。
+        // v13→v14 块迁完后的真实形态：旧三列内容已拷进 segments/text，但列本身还在。
+        let dir = std::env::temp_dir().join(format!("octopus-v15-mig-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = Connection::open(dir.join("mig.db")).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE transcriptions (
+                id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, engine TEXT NOT NULL,
+                engine_mode TEXT, raw_text TEXT NOT NULL, polished_text TEXT,
+                edited_text TEXT, polish_status TEXT NOT NULL DEFAULT 'off',
+                polish_model TEXT, duration_ms INTEGER, char_count INTEGER,
+                segments TEXT, text TEXT);
+             INSERT INTO transcriptions (id, created_at, engine, raw_text, polished_text, polish_status, segments, text) VALUES
+                (1, '2026-07-04 10:00:00', 'whisper', '原始', '润色', 'done',
+                 '[{\"kind\":\"polished\",\"text\":\"润色\"}]', '润色');
+             PRAGMA user_version = 14;",
+        )
+        .unwrap();
+
+        init_schema(&conn).unwrap();
+
+        let uv: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(uv, 15);
+
+        // 旧三列已 DROP
+        let cols: Vec<String> = conn
+            .prepare("PRAGMA table_info(transcriptions)")
+            .unwrap()
+            .query_map([], |r| r.get::<_, String>(1))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+        assert!(!cols.contains(&"raw_text".to_string()), "raw_text 应已 DROP");
+        assert!(!cols.contains(&"polished_text".to_string()), "polished_text 应已 DROP");
+        assert!(!cols.contains(&"edited_text".to_string()), "edited_text 应已 DROP");
+        // segments/text 保留
+        assert!(cols.contains(&"segments".to_string()));
+        assert!(cols.contains(&"text".to_string()));
+
+        // 段模型迁移结果不丢
+        let (text, segments): (String, String) = conn
+            .query_row("SELECT text, segments FROM transcriptions WHERE id=1", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(text, "润色");
+        assert!(segments.contains("\"kind\":\"polished\""));
+
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1927,37 +1991,41 @@ mod tests {
     #[test]
     fn update_and_finalize_round_trip() {
         let conn = open_init();
+        // 段模型：text（扁平）+ segments（段 JSON）替代旧 raw/polished/edited 三列。
         conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polished_text, polish_status, char_count)
-             VALUES (100, '2026-06-14 00:00:00', 'sensevoice', '首段', NULL, 'off', 2)",
+            "INSERT INTO transcriptions (id, created_at, engine, text, segments, polish_status, char_count)
+             VALUES (100, '2026-06-14 00:00:00', 'sensevoice', '首段', '[{\"kind\":\"raw\",\"text\":\"首段\"}]', 'off', 2)",
             [],
         )
         .unwrap();
+        // 流式补段 → 更新 text/segments
         conn.execute(
-            "UPDATE transcriptions SET raw_text='首段二段', char_count=4 WHERE id=100",
+            "UPDATE transcriptions SET text='首段二段', segments='[{\"kind\":\"raw\",\"text\":\"首段二段\"}]', char_count=4 WHERE id=100",
             [],
         )
         .unwrap();
+        // 润色 → 同写 polish_status + segments/text（段模型润色是 Raw 段原地替换为 Polished）
         conn.execute(
-            "UPDATE transcriptions SET polished_text='润色', polish_status='done', polish_model='deepseek' WHERE id=100",
+            "UPDATE transcriptions SET polish_status='done', polish_model='deepseek', segments='[{\"kind\":\"polished\",\"text\":\"润色\"}]', text='润色' WHERE id=100",
             [],
         )
         .unwrap();
+        // finalize → 写最终 text/segments/char_count/duration_ms
         conn.execute(
-            "UPDATE transcriptions SET raw_text='首段二段', polished_text='润色', polish_status='done', char_count=2, duration_ms=5000 WHERE id=100",
+            "UPDATE transcriptions SET text='润色', segments='[{\"kind\":\"polished\",\"text\":\"润色\"}]', polish_status='done', char_count=2, duration_ms=5000 WHERE id=100",
             [],
         )
         .unwrap();
 
-        let (raw, polished, status, dur): (String, Option<String>, String, Option<i64>) = conn
+        let (text, segments, status, dur): (String, String, String, Option<i64>) = conn
             .query_row(
-                "SELECT raw_text, polished_text, polish_status, duration_ms FROM transcriptions WHERE id=100",
+                "SELECT text, segments, polish_status, duration_ms FROM transcriptions WHERE id=100",
                 [],
                 |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
             )
             .unwrap();
-        assert_eq!(raw, "首段二段");
-        assert_eq!(polished, Some("润色".into()));
+        assert_eq!(text, "润色");
+        assert!(segments.contains("\"kind\":\"polished\""));
         assert_eq!(status, "done");
         assert_eq!(dur, Some(5000));
     }
@@ -1966,14 +2034,14 @@ mod tests {
     fn list_transcriptions_returns_records_descending() {
         let conn = open_init();
         conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+            "INSERT INTO transcriptions (id, created_at, engine, text, polish_status)
              VALUES (100, '2026-06-17 10:00:00', 'whisper', '你好', 'off')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polished_text, polish_status)
-             VALUES (200, '2026-06-17 11:00:00', 'qwen3', '你好世界', '你好，世界。', 'done')",
+            "INSERT INTO transcriptions (id, created_at, engine, text, segments, polish_status)
+             VALUES (200, '2026-06-17 11:00:00', 'qwen3', '你好，世界。', '[{\"kind\":\"polished\",\"text\":\"你好，世界。\"}]', 'done')",
             [],
         )
         .unwrap();
@@ -1981,8 +2049,8 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, 200, "最新在前（id 降序）");
         assert_eq!(rows[1].id, 100);
-        assert_eq!(rows[0].raw_text, "你好世界");
-        assert_eq!(rows[0].polished_text.as_deref(), Some("你好，世界。"));
+        assert_eq!(rows[0].text.as_deref(), Some("你好，世界。"));
+        assert_eq!(rows[0].polish_status, "done");
         let page1 = list_transcriptions_at(&conn, 1, 0).unwrap();
         assert_eq!(page1.len(), 1);
         assert_eq!(page1[0].id, 200);
@@ -1997,19 +2065,19 @@ mod tests {
     fn delete_transcriptions_removes_specified_ids() {
         let conn = open_init();
         conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+            "INSERT INTO transcriptions (id, created_at, engine, text, polish_status)
              VALUES (100, '2026-06-17 10:00:00', 'whisper', '你好', 'off')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+            "INSERT INTO transcriptions (id, created_at, engine, text, polish_status)
              VALUES (200, '2026-06-17 11:00:00', 'qwen3', '你好世界', 'off')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+            "INSERT INTO transcriptions (id, created_at, engine, text, polish_status)
              VALUES (300, '2026-06-17 12:00:00', 'sensevoice', '测试', 'off')",
             [],
         )
@@ -2027,7 +2095,7 @@ mod tests {
     fn delete_transcriptions_at_empty_is_noop() {
         let conn = open_init();
         conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+            "INSERT INTO transcriptions (id, created_at, engine, text, polish_status)
              VALUES (100, '2026-06-17 10:00:00', 'whisper', '你好', 'off')",
             [],
         )
@@ -2043,13 +2111,13 @@ mod tests {
     fn delete_transcriptions_at_via_internal_fn() {
         let conn = open_init();
         conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+            "INSERT INTO transcriptions (id, created_at, engine, text, polish_status)
              VALUES (100, '2026-06-17 10:00:00', 'whisper', '你好', 'off')",
             [],
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+            "INSERT INTO transcriptions (id, created_at, engine, text, polish_status)
              VALUES (200, '2026-06-17 11:00:00', 'qwen3', '世界', 'off')",
             [],
         )
@@ -2064,14 +2132,14 @@ mod tests {
         let conn = open_init();
         // id=100：将被编辑的记录
         conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polished_text, polish_status)
-             VALUES (100, '2026-06-18 10:00:00', 'whisper', 'raw原文', '润色稿', 'done')",
+            "INSERT INTO transcriptions (id, created_at, engine, text, segments, polish_status)
+             VALUES (100, '2026-06-18 10:00:00', 'whisper', '润色稿', '[{\"kind\":\"polished\",\"text\":\"润色稿\"}]', 'done')",
             [],
         )
         .unwrap();
-        // id=200：未编辑的对照记录（验证 NULL → None 映射）
+        // id=200：未编辑的对照记录
         conn.execute(
-            "INSERT INTO transcriptions (id, created_at, engine, raw_text, polish_status)
+            "INSERT INTO transcriptions (id, created_at, engine, text, polish_status)
              VALUES (200, '2026-06-18 11:00:00', 'qwen3', '另一条', 'off')",
             [],
         )
@@ -2087,11 +2155,10 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, 200, "最新在前（id 降序）");
         assert_eq!(rows[1].id, 100);
-        assert_eq!(rows[1].edited_text.as_deref(), Some("手改文本"));
         assert_eq!(rows[1].text.as_deref(), Some("手改文本"));
         assert_eq!(rows[1].segments.as_deref(), Some(segs));
-        // 未编辑记录：edited_text 为 NULL → Option None
-        assert_eq!(rows[0].edited_text, None);
+        // 未编辑记录：text 仍是原值
+        assert_eq!(rows[0].text.as_deref(), Some("另一条"));
 
         // 不存在的 id：返回 0 行更新
         let missing = update_edited_segments_at(&conn, 9999, "无效", "[]").unwrap();

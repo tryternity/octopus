@@ -266,7 +266,7 @@ function Result() {
     if (textRef.current) {
       textRef.current.innerText = original;
     }
-    // 只退出编辑态，不 commit（不写 edited_text 到 DB）
+    // 只退出编辑态，不 commit（不写 edited 段到 DB）
     invoke("exit_edit_without_commit");
   }, []);
 

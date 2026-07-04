@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Copy, Trash2, ChevronDown, Search, ChevronRight } from "lucide-react";
+import { Copy, Trash2, Search } from "lucide-react";
 
 interface HistoryRecord {
   id: number;
   created_at: string;
   engine: string;
-  raw_text: string;
-  polished_text: string | null;
+  text: string;
   polish_status: string;
   duration_ms: number;
 }
@@ -185,7 +184,6 @@ function HistoryRow({
   showToast: (msg: string) => void;
   onDeleted: () => void;
 }) {
-  const [expanded, setExpanded] = useState(false);
   const [deletePending, setDeletePending] = useState(false);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -193,16 +191,14 @@ function HistoryRow({
     return () => { if (deleteTimer.current) clearTimeout(deleteTimer.current); };
   }, []);
 
-  const hasPolished = !!rec.polished_text;
-  const primaryText = hasPolished ? rec.polished_text! : rec.raw_text;
-  const secondaryText = hasPolished ? rec.raw_text : null;
+  const primaryText = rec.text;
   const isPolished = rec.polish_status === "done";
   const duration = rec.duration_ms ? (rec.duration_ms / 1000).toFixed(1) + "s" : null;
 
   const copyRecord = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
-      await navigator.clipboard.writeText(rec.polished_text || rec.raw_text);
+      await navigator.clipboard.writeText(rec.text);
       showToast("已复制");
     } catch (e) { showToast("复制失败：" + e); }
   };
@@ -256,35 +252,8 @@ function HistoryRow({
           </span>
           <span className="text-[10px] text-stone-300">{rec.engine}</span>
         </div>
-        {/* Primary text */}
+        {/* Primary text（段模型下仅展示最终扁平文本；润色状态见 polish_status 标签） */}
         <p className="text-xs leading-relaxed text-stone-800 break-words">{primaryText}</p>
-        {/* Secondary (raw) text — collapsible */}
-        {secondaryText && (
-          <div className="mt-1">
-            {expanded ? (
-              <div>
-                <div className="text-[11px] leading-relaxed text-stone-400 break-words pl-2 border-l border-stone-200">
-                  {secondaryText}
-                </div>
-                <button
-                  className="flex items-center gap-0.5 text-[10px] text-stone-400 hover:text-stone-700 mt-0.5 transition-colors"
-                  onClick={(e) => { e.stopPropagation(); setExpanded(false); }}
-                >
-                  <ChevronDown className="w-2.5 h-2.5" />
-                  收起原始
-                </button>
-              </div>
-            ) : (
-              <button
-                className="flex items-center gap-0.5 text-[10px] text-stone-400 hover:text-stone-700 transition-colors"
-                onClick={(e) => { e.stopPropagation(); setExpanded(true); }}
-              >
-                <ChevronRight className="w-2.5 h-2.5" />
-                展开原始
-              </button>
-            )}
-          </div>
-        )}
       </div>
 
       {/* 右侧操作：复制 + 删除 */}
