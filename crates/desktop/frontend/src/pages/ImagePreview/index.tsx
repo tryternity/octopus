@@ -69,6 +69,7 @@ export default function ImagePreview() {
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [ocrCopied, setOcrCopied] = useState(false);
   const [ocrWarn, setOcrWarn] = useState(false);
+  const [ocrCopiedText, setOcrCopiedText] = useState<string | null>(null);
   interface OcrBlock { text: string; x: number; y: number; w: number; h: number; score: number; }
   const [ocrBlocks, setOcrBlocks] = useState<OcrBlock[]>([]);
   const [ocrOverlay, setOcrOverlay] = useState<'off' | 'overlay' | 'mask'>('off');
@@ -749,6 +750,14 @@ export default function ImagePreview() {
                     fill={ocrOverlay === 'mask' ? "rgba(255,255,255,0.92)" : "rgba(59,130,246,0.08)"}
                     stroke={ocrOverlay === 'mask' ? "rgba(0,0,0,0.1)" : "rgba(59,130,246,0.4)"}
                     strokeWidth={1} rx={2}
+                    style={{ cursor: 'pointer', pointerEvents: 'all' }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      navigator.clipboard?.writeText(b.text).then(() => {
+                        setOcrCopiedText(`已复制：${b.text.length > 20 ? b.text.slice(0, 20) + '…' : b.text}`);
+                        setTimeout(() => setOcrCopiedText(null), 2000);
+                      }).catch(() => {});
+                    }}
                   />
                 ))}
                 {/* 第二遍：所有文字（保证在前面的 rect 之上） */}
@@ -839,6 +848,20 @@ export default function ImagePreview() {
             <span style={{ opacity: 0.3 }}>·</span>
             <span>{fmt}</span>
           </>}
+        </div>
+      )}
+
+      {/* OCR 双击复制提示浮泡 */}
+      {ocrCopiedText && (
+        <div style={{
+          position: "fixed", top: 60, left: "50%", transform: "translateX(-50%)", zIndex: 200,
+          padding: "6px 14px", borderRadius: 8,
+          background: "rgba(34,197,94,0.95)", color: "#fff",
+          fontSize: 12, fontWeight: 600, fontFamily: "-apple-system, sans-serif",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.2)", pointerEvents: "none",
+          animation: "fadeIn 0.2s ease",
+        }}>
+          {ocrCopiedText}
         </div>
       )}
     </div>
