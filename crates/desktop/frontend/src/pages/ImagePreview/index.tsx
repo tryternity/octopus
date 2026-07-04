@@ -68,8 +68,11 @@ export default function ImagePreview() {
   const [draftAnn, setDraftAnn] = useState<Annotation | null>(null);
   const [alwaysOnTop, setAlwaysOnTop] = useState(false);
   const [ocrCopied, setOcrCopied] = useState(false);
-  // 全局 OCR 互斥提示（他处正在 OCR 时显琥珀三角）
   const [ocrWarn, setOcrWarn] = useState(false);
+  const [ocrCopiedText, setOcrCopiedText] = useState<string | null>(null);
+  interface OcrBlock { text: string; x: number; y: number; w: number; h: number; score: number; }
+  const [ocrBlocks, setOcrBlocks] = useState<OcrBlock[]>([]);
+  const [ocrOverlay, setOcrOverlay] = useState<'off' | 'overlay' | 'mask'>('off');
   // 全图加载中：true 时禁止标注（避免 thumb 坐标系与 full 坐标系不一致）
   const loadingFullRef = useRef(false);
   // 全图已加载：true 时缩略图后到直接丢弃（防竞态降级）
@@ -164,9 +167,15 @@ export default function ImagePreview() {
     });
     const unlisten = listen<{ imageId: number }>("image-preview://load", (e) => {
       setImageId(e.payload.imageId);
-      // setAnnotations 和 setZoomSync 已在 imageId useEffect 中处理
     });
-    return () => { unlisten.then((f) => f()); };
+    // 截图 OCR → 关窗 → 开预览 + 推送 OCR blocks
+    const unlistenOcr = listen<{ text: string; blocks: OcrBlock[] }>("ocr-screenshot://result", (e) => {
+      if (e.payload.blocks.length > 0) {
+        setOcrBlocks(e.payload.blocks);
+        setOcrOverlay('overlay');
+      }
+    });
+    return () => { unlisten.then((f) => f()); unlistenOcr.then((f) => f()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
@@ -175,6 +184,8 @@ export default function ImagePreview() {
     if (imageId == null) return;
     let cancelled = false;
     // 清理旧资源
+    setOcrBlocks([]);
+    setOcrOverlay('off');
     const old = scaledBitmapRef.current;
     scaledBitmapRef.current = null;
     if (old) old.close();
@@ -624,17 +635,24 @@ export default function ImagePreview() {
 
   const handleOcr = async () => {
     if (imageId == null) return;
+    // 已有结果 → 三态循环：off → overlay → mask → off
+    if (ocrBlocks.length > 0) {
+      setOcrOverlay(ocrOverlay === 'off' ? 'overlay' : ocrOverlay === 'overlay' ? 'mask' : 'off');
+      return;
+    }
+    // 首次识别
     try {
-      const text = await invoke<string>("ocr_image", { id: imageId });
-      if (text) {
-        // 识别文本 → 统一入库 source=ocr → 打开 CompactEditor tab 编辑
-        const ocrId = await invoke<number>("insert_ocr_clipboard_item", { text });
+      const result = await invoke<{text: string; blocks: OcrBlock[]}>("ocr_image", { id: imageId });
+      if (result.text) {
+        setOcrBlocks(result.blocks);
+        setOcrOverlay('overlay');
+        // 保持现有行为：入库 + 打开编辑器
+        const ocrId = await invoke<number>("insert_ocr_clipboard_item", { text: result.text });
         await openCompactEditorTab(ocrId);
         setOcrCopied(true);
         setTimeout(() => setOcrCopied(false), 1500);
       }
     } catch (e) {
-      // 全局互斥：他处正在 OCR → 工具栏显琥珀三角 1.8s 提示稍后重试
       const msg = String(e);
       if (msg.includes("还未完成")) {
         setOcrWarn(true);
@@ -690,6 +708,7 @@ export default function ImagePreview() {
         onUndo={undo} canUndo={annotations.length > 0}
         onRedo={redo} canRedo={redoAvailable}
         ocrCopied={ocrCopied} ocrWarn={ocrWarn}
+        ocrMode={ocrOverlay}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
         filled={filled} setFilled={setFilled}
@@ -725,6 +744,41 @@ export default function ImagePreview() {
               className="absolute inset-0 block pointer-events-none"
               style={{ width: dispW, height: dispH }}
             />
+            {/* OCR 文本块叠加层（三态：off / overlay / mask） */}
+            {ocrOverlay !== 'off' && ocrBlocks.length > 0 && (
+              <svg className="absolute inset-0 block"
+                viewBox={`0 0 ${natW} ${natH}`}
+                preserveAspectRatio="none"
+                style={{ width: dispW, height: dispH, pointerEvents: "none" }}
+              >
+                {/* 第一遍：所有遮罩底（避免后面的 rect 盖住前面的 text） */}
+                {ocrBlocks.map((b, i) => (
+                  <rect key={`bg-${i}`} x={b.x} y={b.y} width={b.w} height={b.h}
+                    fill={ocrOverlay === 'mask' ? "rgba(255,255,255,0.92)" : "rgba(59,130,246,0.08)"}
+                    stroke={ocrOverlay === 'mask' ? "rgba(0,0,0,0.1)" : "rgba(59,130,246,0.4)"}
+                    strokeWidth={1} rx={2}
+                    style={{ cursor: 'pointer', pointerEvents: 'all' }}
+                    onDoubleClick={(e) => {
+                      e.stopPropagation();
+                      navigator.clipboard?.writeText(b.text).then(() => {
+                        setOcrCopiedText(`已复制：${b.text.length > 20 ? b.text.slice(0, 20) + '…' : b.text}`);
+                        setTimeout(() => setOcrCopiedText(null), 2000);
+                      }).catch(() => {});
+                    }}
+                  />
+                ))}
+                {/* 第二遍：所有文字（保证在前面的 rect 之上） */}
+                {ocrBlocks.map((b, i) => (
+                  <text key={`tx-${i}`} x={b.x + 2} y={b.y + b.h - 2}
+                    fontSize={Math.min(b.h * 0.8, 14)}
+                    fill={ocrOverlay === 'mask' ? "rgba(0,0,0,0.85)" : "rgba(59,130,246,0.7)"}
+                    dominantBaseline="alphabetic"
+                    style={{ pointerEvents: 'none', userSelect: 'none' }}>
+                    {b.text}
+                  </text>
+                ))}
+              </svg>
+            )}
             {/* SVG overlay：标注。viewBox 自然坐标，随 wrapper 滚动 */}
             {natW > 0 && (
               <svg
@@ -801,6 +855,20 @@ export default function ImagePreview() {
             <span style={{ opacity: 0.3 }}>·</span>
             <span>{fmt}</span>
           </>}
+        </div>
+      )}
+
+      {/* OCR 双击复制提示浮泡 */}
+      {ocrCopiedText && (
+        <div style={{
+          position: "fixed", top: 60, left: "50%", transform: "translateX(-50%)", zIndex: 200,
+          padding: "6px 14px", borderRadius: 8,
+          background: "rgba(34,197,94,0.95)", color: "#fff",
+          fontSize: 12, fontWeight: 600, fontFamily: "-apple-system, sans-serif",
+          boxShadow: "0 4px 12px rgba(0,0,0,0.2)", pointerEvents: "none",
+          animation: "fadeIn 0.2s ease",
+        }}>
+          {ocrCopiedText}
         </div>
       )}
     </div>

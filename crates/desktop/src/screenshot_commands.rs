@@ -213,7 +213,7 @@ pub async fn ocr_screenshot(
         octopus_clipboard::store::find_by_content_hash(conn, &hash)
     }).map_err(|e| e.to_string())?;
 
-    let _image_id = if let Some(id) = existing {
+    let image_id = if let Some(id) = existing {
         octopus_infra::db::with_db(|conn| {
             octopus_clipboard::store::touch_created_at(conn, id)
         }).map_err(|e| e.to_string())?;
@@ -251,6 +251,7 @@ pub async fn ocr_screenshot(
         }).map_err(|e| e.to_string())?;
         id
     };
+    let image_id_opt: Option<i64> = Some(image_id);
 
     // OCR 识别 → 新建 ocr 条目 → 打开绑定 tab 编辑
     log::info!("[ocr-screenshot] before instance");
@@ -260,8 +261,8 @@ pub async fn ocr_screenshot(
         "[ocr-screenshot] after instance; before recognize png_bytes={} bytes",
         png_bytes.len()
     );
-    let text = engine.recognize(&png_bytes).map_err(|e| e.to_string())?;
-    log::info!("[ocr-screenshot] after recognize text_len={}", text.len());
+    let (text, blocks) = engine.recognize_with_blocks(&png_bytes).map_err(|e| e.to_string())?;
+    log::info!("[ocr-screenshot] after recognize text_len={} blocks={}", text.len(), blocks.len());
 
     let ocr_id_opt: Option<i64> = if !text.trim().is_empty() {
         // ⚠️ current_ocr_meta 在 with_db 外取：内部 load_config_key→with_db，闭包内调
@@ -280,13 +281,14 @@ pub async fn ocr_screenshot(
 
     let _ = app_handle.emit("clipboard://changed", ());
 
-    // ⚠️ 必须先销毁截图窗，再建 CompactEditor。CompactEditor 建窗含
-    // set_activation_policy(Accessory→Regular)——重量级 app 激活；在截图全屏透明
-    // always_on_top 窗口仍存在时触发会致 macOS AppKit 死锁、整个应用僵死
-    //（先前经 run_on_main_thread 改主线程执行仍复现 → 与线程无关、与截图窗共存
-    // 有关；start_screenshot 同在 worker 线程建窗却不僵死，因它不改 activation
-    // policy 且建窗时无其他截图窗）。两者同在主线程顺序执行，确保建窗时截图窗
-    // 已销毁——与 settings 打开（无截图窗时 set_activation_policy）对称。
+    // 关截图窗 → 开编辑器 + 图片预览 + 推送 OCR blocks 给预览窗
+    let ocr_result = crate::clipboard_commands::OcrResult {
+        text: text.clone(),
+        blocks: blocks.iter().map(|b| crate::clipboard_commands::OcrTextBlock {
+            text: b.text.clone(), x: b.x, y: b.y, w: b.w, h: b.h, score: b.score,
+        }).collect(),
+    };
+
     log::info!("[ocr-screenshot] dispatch close+open to main thread");
     let ah = app_handle.clone();
     let _ = app_handle.run_on_main_thread(move || {
@@ -294,10 +296,17 @@ pub async fn ocr_screenshot(
         close_all_screenshot_windows(&ah);
         if let Some(ocr_id) = ocr_id_opt {
             log::info!("[ocr-screenshot] main: open compact editor tab {}", ocr_id);
-            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, ah);
+            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, ah.clone());
         }
-        log::info!("[ocr-screenshot] main: done");
+        if let Some(img_id) = image_id_opt {
+            log::info!("[ocr-screenshot] main: open image preview {}", img_id);
+            crate::image_preview_commands::open_image_preview(img_id, ah);
+        }
     });
+
+    // 先 emit OCR blocks（图片预览 mount 后会 listen 到，或已 mount 则直接收到）
+    use tauri::Emitter;
+    let _ = app_handle.emit("ocr-screenshot://result", &ocr_result);
 
     Ok(())
 }

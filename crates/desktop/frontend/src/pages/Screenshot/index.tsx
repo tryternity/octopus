@@ -645,7 +645,6 @@ export default function Screenshot() {
     composeAndCropBytes().then((bytes) => {
       if (!bytes) return;
       invoke("ocr_screenshot", bytes as unknown as Record<string, unknown>).catch((e) => {
-        // 全局互斥：他处正在 OCR → 屏幕中央提示稍后重试；其余错误打日志（截图无 toast 框架）
         const msg = String(e);
         if (msg.includes("还未完成")) {
           setOcrWarn(true);
@@ -881,7 +880,7 @@ export default function Screenshot() {
         </div>
       )}
 
-      {/* 贴图按钮：选区右上角（工具栏在上方时放右下角） */}
+      {/* 贴图按钮 */}
       {sel && mode !== "scrolling" && (
         <button onClick={doPin} title="贴图" style={{
           position: "fixed",

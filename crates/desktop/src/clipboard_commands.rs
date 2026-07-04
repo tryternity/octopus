@@ -425,8 +425,23 @@ pub async fn insert_ocr_clipboard_item(
 
 /// 图片条目 OCR：识别文本并返回（纯识别，不入库不写剪贴板）。
 /// 入库由前端统一调 insert_ocr_clipboard_item 完成（三入口一致），再 openCompactEditorTab 编辑。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrTextBlock {
+    pub text: String,
+    pub x: f64, pub y: f64, pub w: f64, pub h: f64,
+    pub score: f64,
+}
+
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrResult {
+    pub text: String,
+    pub blocks: Vec<OcrTextBlock>,
+}
+
 #[tauri::command]
-pub async fn ocr_image(id: i64) -> Result<String, String> {
+pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
     // 全局 OCR 互斥：已有 OCR 在跑则立即拒绝，避免多任务并发进入推理。
     let _ocr_lock = octopus_ocr::engine::OcrLockGuard::try_acquire()
         .ok_or_else(|| "前一个 OCR 还未完成，请稍后".to_string())?;
@@ -462,14 +477,17 @@ pub async fn ocr_image(id: i64) -> Result<String, String> {
     log::info!("[ocr-image] after OcrEngine::instance()");
 
     log::info!("[ocr-image] before recognize()");
-    let text = engine.recognize(&webp_blob).map_err(|e| e.to_string())?;
-    log::info!("[ocr-image] after recognize() text_len={}", text.len());
+    let (text, blocks) = engine.recognize_with_blocks(&webp_blob).map_err(|e| e.to_string())?;
+    log::info!("[ocr-image] after recognize() text_len={} blocks={}", text.len(), blocks.len());
 
     if text.trim().is_empty() {
         return Err("未识别到文本".into());
     }
 
-    Ok(text)
+    let blocks = blocks.into_iter().map(|b| OcrTextBlock {
+        text: b.text, x: b.x, y: b.y, w: b.w, h: b.h, score: b.score,
+    }).collect();
+    Ok(OcrResult { text, blocks })
 }
 
 /// 精简编辑器回写：更新剪贴板条目文本（content + search_text）并同步系统剪贴板。

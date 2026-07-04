@@ -68,6 +68,7 @@ export default function Toolbar(props: {
   onRedo: () => void; canRedo: boolean;
   ocrCopied: boolean;
   ocrWarn: boolean;
+  ocrMode: 'off' | 'overlay' | 'mask';
   zoom: number; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
   onZoomFitWidth: () => void; onZoomFitWindow: () => void;
   filled: boolean; setFilled: (f: boolean) => void;
@@ -146,8 +147,8 @@ export default function Toolbar(props: {
           <img src="icons/copy.svg" alt="复制" className="w-[18px] h-[18px]" />
         </ToolButton>
         <div style={{ position: "relative" }}>
-          <ToolButton title={props.ocrWarn ? "前一个 OCR 还未完成，请稍后" : "OCR 识别"} active={props.ocrCopied || props.ocrWarn} onClick={() => props.onOcr()}>
-            {props.ocrCopied ? <img src="icons/check.svg" alt="完成" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" style={{ filter: props.ocrWarn ? "none" : "none" }} />}
+          <ToolButton title={props.ocrWarn ? "前一个 OCR 还未完成，请稍后" : "OCR 识别"} active={props.ocrCopied || props.ocrWarn || props.ocrMode !== 'off'} onClick={() => props.onOcr()}>
+            {props.ocrCopied ? <img src="icons/check.svg" alt="完成" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : props.ocrMode === 'overlay' ? <img src="icons/ocr-all.svg" alt="OCR 叠加" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : props.ocrMode === 'mask' ? <img src="icons/ocr-text.svg" alt="OCR 遮罩" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" />}
           </ToolButton>
           {props.ocrWarn && (
             <span style={{
