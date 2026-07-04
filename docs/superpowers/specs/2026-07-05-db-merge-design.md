@@ -59,8 +59,8 @@ CREATE TABLE IF NOT EXISTS clipboard_history (
 // text
 {"char_count": 42}
 
-// file
-{"size": "1.2M", "type": "pdf"}
+// file（多文件时为数组）
+[{"size": "1.2M", "type": "pdf"}]
 ```
 
 ### 2.4 FTS5 索引
