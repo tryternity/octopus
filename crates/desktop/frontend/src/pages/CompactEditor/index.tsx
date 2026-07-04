@@ -222,11 +222,26 @@ function CompactEditor() {
     const idxs = collectMatches(active.text || "", findQuery);
     setMatches(idxs);
     setMatchIdx(idxs.length > 0 ? 0 : -1);
-    if (idxs.length > 0) selectRange(idxs[0], findQuery.length);
+    // 不在 runFind 里 selectRange——打字时 active.text 变化会触发 runFind，
+    // selectRange 会抢焦点拽回顶部，导致查找模式下无法编辑。
+    // selectRange 只在用户手动跳转（gotoMatch）或首次开查找时调用。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findQuery, active, fontSize]);
 
-  useEffect(() => { if (showFind) runFind(); }, [runFind, showFind]);
+  // 仅在 findQuery 变化（用户输入查找词）时跳转到第一个匹配，不在 text 变化时跳
+  const prevFindQuery = useRef("");
+  useEffect(() => {
+    if (!showFind) return;
+    // findQuery 变化 → 重新匹配 + 跳转到第一个
+    if (findQuery !== prevFindQuery.current) {
+      prevFindQuery.current = findQuery;
+      runFind();
+      if (matches.length > 0) selectRange(matches[0], findQuery.length);
+      return;
+    }
+    // text 变化（打字/编辑）→ 仅更新匹配计数，不 selectRange（不抢焦点/不重置滚动）
+    runFind();
+  }, [findQuery, showFind, matches, runFind]);
 
   const gotoMatch = (delta: number) => {
     if (matches.length === 0) return;
