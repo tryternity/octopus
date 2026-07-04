@@ -7,7 +7,7 @@
 //! 旧末尾追加（零回归）。润色全篇一次：edited 冻结、raw/polished 重润（best-effort 串匹配回填）。
 
 use crate::config::PolishMode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 /// 段类型。后态覆盖前态：Raw → Polished → Edited。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +47,8 @@ pub struct Transcript {
     /// pending 期间缓存的新 delta（pending 不写 segments，PolishDone 后 flush）。
     pending_delta: String,
     db_inserted: bool,
+    /// 最近一次 DB 落库时间（落库节流用，Finalize 兜底完整写入）。None=未落库过。
+    last_db_write: Option<Instant>,
 }
 
 impl Transcript {
@@ -58,11 +60,18 @@ impl Transcript {
             last_polish_time: Instant::now(), polish_pending: false,
             polish_snapshot: Vec::new(), polish_caret_offset: 0, polish_caret_at_tail: true,
             pending_delta: String::new(), db_inserted: false,
+            last_db_write: None,
         }
     }
 
     pub fn db_inserted(&self) -> bool { self.db_inserted }
     pub fn mark_db_inserted(&mut self) { self.db_inserted = true; }
+    /// 标记已落库（更新 last_db_write = now，落库节流计时基准）。
+    pub fn mark_db_written(&mut self) { self.last_db_write = Some(Instant::now()); }
+    /// 距上次落库是否 ≥ threshold（节流判定）。未落库过 → true（应落库）。
+    pub fn db_flush_due(&self, threshold: Duration) -> bool {
+        self.last_db_write.map(|t| t.elapsed() >= threshold).unwrap_or(true)
+    }
 
     /// 段顺序拼接 → 纯文本（= display = 落库搜索 = clipboard）。派生。
     pub fn finish_text(&self) -> String {
@@ -669,5 +678,17 @@ mod tests {
         assert_eq!(input.segments.len(), 1);
         assert_eq!(input.segments[0].text, "你好");
         assert!(!t.polish_snapshot.iter().any(|s| s.text.contains("世界")));
+    }
+
+    #[test]
+    fn db_flush_due_respects_threshold() {
+        let mut t = Transcript::new(107, PolishMode::Intermediate);
+        // 未落库过 → due（即便 threshold 很大）
+        assert!(t.db_flush_due(Duration::from_secs(3600)));
+        t.mark_db_written();
+        // threshold 0 → 总 due（elapsed ≥ 0）
+        assert!(t.db_flush_due(Duration::from_millis(0)));
+        // threshold 远大于已 elapsed（刚写入）→ not due
+        assert!(!t.db_flush_due(Duration::from_secs(3600)));
     }
 }
