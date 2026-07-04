@@ -399,7 +399,7 @@ function ClipboardRow({
             {formatFilePaths(item.content, item.file_meta?.file_count)}
           </div>
         ) : (
-          <p className="text-xs leading-relaxed text-stone-800 break-words line-clamp-2">{item.content}</p>
+          <p className="text-xs leading-relaxed text-stone-800 break-words line-clamp-2">{[...item.content].length > 200 ? [...item.content].slice(0, 200).join("") + "……" : item.content}</p>
         )}
         {isVoice && item.asr_meta && (
           <span className="inline-block mt-0.5 text-[10px] text-amber-700/60 font-medium">
