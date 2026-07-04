@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
 import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen, Link as LinkIcon, Copy as CopyIcon } from "lucide-react";
 import { invoke } from "@/lib/tauri";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
@@ -165,7 +166,7 @@ export default function ClipboardItemRow({
         onClick={handleCopy}
         onDoubleClick={(e) => e.stopPropagation()}
         title="复制"
-        className="flex-shrink-0 mt-px -m-0.5 cursor-pointer rounded p-0.5 opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity"
+        className="flex-shrink-0 mt-px -m-0.5 cursor-pointer rounded p-0.5 opacity-30 hover:!opacity-100 transition-opacity"
       >
         <CopyIcon className="w-3 h-3 text-muted-foreground hover:text-foreground" />
       </button>
@@ -201,7 +202,7 @@ export default function ClipboardItemRow({
             className="p-0.5 opacity-60 hover:!opacity-100 transition-opacity"
             onClick={(e) => {
               e.stopPropagation();
-              window.open(item.content.trim(), "_blank");
+              openUrl(item.content.trim()).catch(console.error);
             }}
             title="打开链接"
           >

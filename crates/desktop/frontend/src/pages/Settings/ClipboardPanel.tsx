@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { invoke } from "@/lib/tauri";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "@/lib/utils";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import type { ClipboardItem } from "@/types/clipboard";
@@ -419,7 +420,7 @@ function ClipboardRow({
         {item.item_type === "text" && /^https?:\/\//i.test(item.content.trim()) && (
           <button
             className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-            onClick={() => window.open(item.content.trim(), "_blank")}
+            onClick={() => openUrl(item.content.trim()).catch(console.error)}
             title="打开链接"
           >
             <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />
