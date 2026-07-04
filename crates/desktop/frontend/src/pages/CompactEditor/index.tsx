@@ -212,9 +212,9 @@ function CompactEditor() {
     if (!ta || !active) return;
     ta.focus();
     ta.setSelectionRange(start, start + len);
-    const lineHeight = fontSize * 1.6;
-    const lineNum = (active.text || "").slice(0, start).split("\n").length;
-    ta.scrollTop = Math.max(0, (lineNum - 2) * lineHeight);
+    // 不手算 scrollTop：split("\n").length 在 soft wrap 下低估实际渲染行 → 算出的
+    // scrollTop 偏上 → 目标匹配挡在视口下方看不见。setSelectionRange 原生会滚动使选区
+    // 可见，WebKit 按实际渲染行（soft-wrap / 硬换行都准确）定位，无需手算行高。
   };
 
   const runFind = useCallback(() => {
