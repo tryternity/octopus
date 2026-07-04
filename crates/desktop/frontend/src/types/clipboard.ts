@@ -1,41 +1,31 @@
-export type ItemType = "text" | "image" | "file";
-export type Source = "clipboard" | "asr" | "ocr";
+export type ItemType = "text" | "voice" | "ocr" | "image" | "file";
 
-export interface ImageMeta {
-  blob_hash: string;
-  width: number;
-  height: number;
-  has_thumbnail: boolean;
-  size: number;
-}
-
-export interface FileMeta {
-  file_count: number;
-  paths: string[];
-}
-
-export interface AsrMeta {
-  transcription_id: number;
-  polish_status: string;
-  engine: string;
-  model: string;
-}
-
-export interface OcrMeta {
-  engine: string;
-  model: string;
+export interface MetaInfo {
+  // image
+  w?: number;
+  h?: number;
+  size?: string;
+  // voice / ocr
+  engine?: string;
+  model?: string;
+  duration_ms?: number;
+  char_count?: number;
+  engine_mode?: string;
+  polish_model?: string;
+  polished?: boolean;
+  // file
+  files?: Array<{ size?: string; type?: string }>;
 }
 
 export interface ClipboardItem {
   id: number;
   item_type: ItemType;
-  source: Source;
   content: string;
+  ref_data?: string;
+  meta_info?: MetaInfo;
   is_favorite: boolean;
   created_at: string;
-  image_meta?: ImageMeta;
-  file_meta?: FileMeta;
-  asr_meta?: AsrMeta;
-  ocr_meta?: OcrMeta;
   is_rich: boolean;
+  has_thumbnail: boolean;
+  segments?: string;
 }

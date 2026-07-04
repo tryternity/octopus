@@ -120,13 +120,13 @@ export default function ClipboardItemRow({
 
   const isUrl = item.item_type === "text" && /^https?:\/\//i.test(item.content.trim());
 
-  const Icon = item.source === "asr" ? Mic
-    : item.source === "ocr" ? ScanText
+  const Icon = item.item_type === "voice" ? Mic
+    : item.item_type === "ocr" ? ScanText
     : item.item_type === "image" ? ImageIcon
     : item.item_type === "file" ? FileText
     : Type;
 
-  const isVoice = item.source === "asr";
+  const isVoice = item.item_type === "voice";
 
   return (
     <div
@@ -163,18 +163,18 @@ export default function ClipboardItemRow({
       </button>
 
       <div className="flex-1 min-w-0">
-        {item.item_type === "image" && item.image_meta ? (
+        {item.item_type === "image" ? (
           <div className="flex items-center gap-2">
             {thumbSrc && (
               <img src={thumbSrc} className="w-9 h-9 rounded-md object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
             )}
             <span className="text-[11px] text-muted-foreground tabular-nums">
-              {item.image_meta.width}×{item.image_meta.height}
+              {item.meta_info?.w}×{item.meta_info?.h}
             </span>
           </div>
         ) : item.item_type === "file" ? (
           <div className="text-[12px] text-muted-foreground truncate">
-            {formatFilePaths(item.content, item.file_meta?.file_count)}
+            {formatFilePaths(item.ref_data)}
           </div>
         ) : (
           <p className="text-[12.5px] leading-snug text-foreground/90 break-all line-clamp-2">{[...item.content].length > 200 ? [...item.content].slice(0, 200).join("") + "……" : item.content}</p>
@@ -285,10 +285,11 @@ export default function ClipboardItemRow({
   );
 }
 
-/// content 是 JSON 路径数组，取每个路径最后 2 段显示。
-function formatFilePaths(content: string, count?: number): string {
+/// ref_data 是 JSON 路径数组，取每个路径最后 2 段显示。
+function formatFilePaths(refData?: string): string {
+  if (!refData) return "文件";
   try {
-    const paths: string[] = JSON.parse(content);
+    const paths: string[] = JSON.parse(refData);
     const display = paths.slice(0, 3).map((raw) => {
       // Linux X11/Wayland 存 file:// URI + 百分号编码；macOS/Windows 存已解码的普通路径。
       // 仅 file:// 开头才 decodeURIComponent，避免对含字面 %XX 的普通路径误伤。
@@ -301,8 +302,8 @@ function formatFilePaths(content: string, count?: number): string {
     if (paths.length > 3) {
       return display.join("  ") + `  +${paths.length - 3}`;
     }
-    return display.join("  ") + (count ? ` (${count})` : "");
+    return display.join("  ") + (paths.length > 1 ? ` (${paths.length})` : "");
   } catch {
-    return count ? `${count} 个文件` : "文件";
+    return "文件";
   }
 }
