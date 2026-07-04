@@ -1,8 +1,8 @@
 # ASR 光标定位与中间插入 — 设计
 
-- 日期：2026-07-03
-- 状态：设计中（待审阅）
-- worktree / 分支：`clean-used-feature` / `worktree-clean-used-feature`（分支名无关，编码亦在此）
+- 日期：2026-07-03（§11 选中替换 / §12-§14 前端渲染修复 2026-07-04 追加）
+- 状态：✅ 已实现——中插（§1-§10，8 任务，段模型基石 `c20eb35` / `set_caret` `f2ca142`）+ 选中替换（§11，`b961f8e`）+ 前端渲染修复（§12-§14）全部合入 main。关键修复：`9d4a654`（`append_segment` 漏消费 `pending_delete`，离线/cloud 引擎选中替换失效）/ `f32f1a9`（编辑保存后光标归末尾）/ `e797e0f`（前端 vitest 单测基建）。
+- worktree / 分支：`clean-used-feature` / `worktree-clean-used-feature`（分支名无关，编码亦在此；已合 main）
 - 相关代码：
   - `crates/desktop/src/transcript.rs`（核心数据结构，重构）
   - `crates/desktop/src/coordinator.rs`（编排：caret 命令、delta 注入、polish、stop 落库）
@@ -346,7 +346,7 @@ pub fn set_selection(&mut self, start: usize, end: usize) {
 - `append_segment`：`delta.is_empty()` 检查之后、`push_delta_at_caret`/`pending_delta` 之前，同样 `if let Some((s,e)) = self.pending_delete.take() { self.delete_range(s,e); }`（与 `apply_engine_full` 对称——VadSegmented 离线引擎 sensevoice/firered/qwen3/whisper + cloud partial 拼接的首词走此路径）。
 - `take_polish_input`：方法开头先删待删区，避免润色快照含选中旧字。
 
-**清除点**：`set_caret`（取消）、`on_polish_failed`、`commit_edit`、`new`（重置）。润色成功走 `take_polish_input` 已消费。
+**清除点**：`set_caret`（取消）、`on_polish_failed`、`commit_edit`、**`exit_edit_without_commit`（CancelEdit）**、`new`（重置）。润色成功走 `take_polish_input` 已消费。⚠️ CancelEdit 必须清（`clear_pending_delete()`，c92955e）——否则用户选中→Esc 取消编辑→`pending_delete` 残留→下次说话 `apply_engine_full` 误删该范围（幽灵删除）。
 
 ### 11.3 命令通道（coordinator.rs，镜像 set_caret 六处）
 

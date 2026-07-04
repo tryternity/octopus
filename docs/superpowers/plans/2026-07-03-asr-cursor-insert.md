@@ -12,6 +12,8 @@
 
 **spec：** `docs/superpowers/specs/2026-07-03-asr-cursor-insert-design.md`（已批准 commit `2e64efe`）
 
+**状态：** ✅ 全部完成——53 步 checkbox 全勾，中插 8 任务（段模型基石 `c20eb35` / `set_caret` `f2ca142`）+ 选中替换追加（§11，`b961f8e`）+ 前端渲染修复（§12-§14）全合入 main。关键修复：`9d4a654`（`append_segment` 漏消费 `pending_delete`，离线/cloud 引擎选中替换失效）、`f32f1a9`（编辑保存后光标归末尾）、`e797e0f`（前端 vitest 单测基建）。
+
 ---
 
 ## 文件结构
