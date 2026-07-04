@@ -184,7 +184,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('asr_engine',               '',                                     'ASR 引擎选择（DB models 表 model_name 精确匹配；空=代码兜底引擎 zipformer-small-ctc，随包打包）'),
     ('language',                 'auto',                                 '识别语言: auto | zh | en | ja | ko'),
     ('asr_shortcut',             'CmdOrCtrl+Shift+A',                      '全局 ASR 激活/关闭快捷键'),
-    ('edit_shortcut',            'Cmd+Enter',                            '结果窗编辑 toggle 快捷键（进入/保存同键）'),
+    ('edit_shortcut',            'CmdOrCtrl+Enter',                            '结果窗编辑 toggle 快捷键（进入/保存同键）'),
     ('edit_global_shortcut',     'CmdOrCtrl+Shift+E',                      '全局编辑结果窗快捷键（跨应用唤起窗口+进入/保存编辑）'),
     ('polish_global_shortcut',   'CmdOrCtrl+Shift+S',                      '全局立即润色快捷键（跨应用 show 结果窗不聚焦 + 触发 polish_now）'),
     ('paste_method',             'clipboard',                            '粘贴方式: clipboard | direct | none'),

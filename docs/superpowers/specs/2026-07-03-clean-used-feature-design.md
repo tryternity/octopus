@@ -195,3 +195,45 @@ Tab { itemId: number, text: string, dirty: boolean, title: string }
 ## 10. 文档同步
 - `docs/architecture.md`：移除 notepad 模块章节；CompactEditor 改述为多 tab 常驻编辑器；clipboard 类别表新增 OCR。
 - 本 spec 配套 plan（`docs/superpowers/plans/2026-07-03-clean-used-feature.md`）。
+
+## 11. 代码审查追加修复（CompactEditor，2026-07-04）
+
+多 tab CompactEditor 合入后，第三轮代码审查发现 4 个前端健壮性 bug，全在 `pages/CompactEditor/index.tsx`。
+
+### 11.1 Bug 1.2：replaceOne 焦点跳转（替换后光标错位）
+
+`replaceOne` 替换匹配后，`runFind` 重算匹配列表用的基准文本与替换后的实际文本不一致（基于替换前的 `active.text` 算 offset），导致替换后 matchIdx 错位、焦点跳到错误位置。
+
+修复：replaceOne 基于**替换后的 next 文本**重新 `collectMatches`，`matchIdx = Math.min(matchIdx, len-1)` 钳制到新匹配列表有效区间。`collectMatches`：大小写不敏感 `indexOf` 循环收集所有匹配 offset。
+
+### 11.2 Bug 1.3：replaceAll 大小写不匹配
+
+`replaceAll` 用 `String.split(separator)` 精确大小写分割，大写匹配词（如缩写）替换不到。
+
+修复：`new RegExp(escaped, "gi")`（escape 正则元字符 + 全局大小写不敏感）替换，`escaped = match.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")`。
+
+### 11.3 Bug 1.4：mount 监听泄露（异步 unlisten 竞态）
+
+`useEffect` mount 时 `let unlisten = await listen(...)`，但 React StrictMode / 快速 unmount 时 cleanup 在 `listen` resolve 前触发，`unlisten` 仍 undefined → 监听器泄漏。
+
+修复：加 `cancelled` 标志，cleanup 置 `cancelled=true`；listen resolve 后 `if (cancelled) fn()`（立即卸载刚注册的），`else unlisten = fn`。
+
+### 11.4 Bug 2.2：keydown 监听器每键重建（GC 压力）
+
+keydown `useEffect` deps 含 `doSave`，而 `doSave` deps 含 `active`（`active.text` 每键变）→ doSave 每键新引用 → `document.addEventListener("keydown")` 监听器每键 remove+add（GC 压力；非「绑定空档」——cleanup→setup 同步无击键漏）。
+
+修复：`doSaveRef = useRef(doSave)` + 同步赋值 effect，keydown 监听器改调 `doSaveRef.current()`，deps 去掉 `doSave` 只留 `showFind`（低频开关），监听器挂载一次。`doSave` 本身不变，仍供按钮 `onClick` 直接用。
+
+## 12. 代码审查追加修复 — CompactEditor 键盘 undo/redo（2026-07-04）
+
+§11（审查 4 bug）之后，第四轮审查发现 CompactEditor 撤销/重做的键盘与按钮行为不一致。前端无组件级单测，靠 `npm run build`（tsc+vite）+ 用户 e2e 验证。
+
+### 12.1 Bug 3.2：键盘 Cmd/Ctrl+Z 失灵（按钮 undo/redo 正常）
+
+**现象**（实测，与初判相反）：工具栏撤销/重做按钮**可用**（`execCommand` 走文档级编辑事务栈），但键盘 Cmd+Z / Cmd+Shift+Z / Ctrl+Y **无响应**。
+
+**根因**：textarea 是受控组件（`value={active.text}` + onChange→`updateActiveText` 重建 tab 数组）。每次输入后 React 把新 value 同步到 DOM，**WebKit 在受控 textarea 设 value 时清空原生 undo 栈**（浏览器行为，防与框架状态冲突）→ 键盘 Cmd+Z 读到的原生栈为空 → 失灵。按钮路径走 `document.execCommand("undo")`——该 API 操作的是**文档级编辑事务栈**（与受控 value 同步独立），故仍有效。
+
+**修复**：keydown 监听器拦截 `mod+(z|y)` → `preventDefault` + `taRef.focus()` + `document.execCommand(isRedo?"redo":"undo")`（与按钮同路径）。按钮撤销/重做保留（实测可用；§11 时曾被误判为损坏后恢复——教训：bug 报告的方向可能反，须实测验证）。
+
+**教训**：受控 textarea 的原生 undo 栈不可靠（每次 value 同步被清）；`execCommand`（虽 deprecated）在 WKWebView 对 textarea 的文档级 undo 仍有效。键盘与按钮须统一走 `execCommand`。

@@ -319,7 +319,7 @@ octopus-cli config
 | `denoise_mode` | u8 | `1` | desktop | 环境降噪模式：`0`=关闭（直通）、`1`=RNNoise（`nnnoiseless`，默认，纯 Rust 内置默认模型，48kHz→频带增益+OLA，GRU 状态跨帧保持）、`2`=DeepFilterNet3（libDF v0.5.6 + tract 0.19，48kHz 全频带，编译期内嵌 ~7.9MB 模型，质量最佳）。降噪为可插拔后端（`FrameDenoise` trait），由 mode 选后端；亦可由工具栏运行时切换（`set_denoise_mode` 命令）并持久化回 DB `app_config` 表。初始化/推理失败自动降级直通（warn），不阻断录音。详见 [architecture.md](../architecture.md) |
 | `output_simplified` | bool | `true` | desktop | ASR 输出字形归一化：`true`→简体（繁→简），`false`→繁体（简→繁）。基于开放词典网 CC-BY 3.0 单字对照表（编译期嵌入），在 ASR 输出后做单字级字形转换（不转地域用词）。解决 Qwen3-ASR `auto` 模式输出繁体的问题。详见 [architecture.md](../architecture.md) |
 | `hide_toolbar` | bool | `true` | desktop | 结果展示区工具栏显隐模式：`true`→鼠标移入显示、移出隐藏（默认）；`false`→工具栏始终显示（窗口高度保持展开态 132px） |
-| `edit_shortcut` | string | `"Cmd+Enter"` | desktop | 结果展示区编辑 toggle 快捷键——**进入与保存（退出）编辑都用此键**（与 ✏️ 按钮同语义，Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。GUI 设置页可配（快捷键捕获按钮，不需冲突检测——仅窗口内 keydown 判定）。曾用双击进入（WKWebView `dblclick` 难触发而弃用）；曾拆分「Cmd+E 进 / Cmd+Enter 存」，因两者均窗口内 keydown（非全局、不 hijack 系统）已统一为单键 toggle |
+| `edit_shortcut` | string | `"CmdOrCtrl+Enter"` | desktop | 结果展示区编辑 toggle 快捷键——**进入与保存（退出）编辑都用此键**（与 ✏️ 按钮同语义，Tauri Accelerator 格式，窗口内、仅结果窗聚焦时生效）。**跨平台**：`CmdOrCtrl` 在 macOS=⌘、Win/Linux=Ctrl（前端 `parseShortcut` 按 `e.metaKey||e.ctrlKey` 判定）；旧默认 `Cmd+Enter` 仅匹配 macOS、Win/Linux 下 Ctrl+Enter 失效——**DB v15→v16 迁移**自动把 `Cmd+Enter` 升级为 `CmdOrCtrl+Enter`（仅动等于旧默认的行，保留用户自定义值）。GUI 设置页可配（快捷键捕获按钮，不需冲突检测——仅窗口内 keydown 判定）。曾用双击进入（WKWebView `dblclick` 难触发而弃用）；曾拆分「Cmd+E 进 / Cmd+Enter 存」，因两者均窗口内 keydown（非全局、不 hijack 系统）已统一为单键 toggle |
 | `edit_global_shortcut` | string | `"CmdOrCtrl+Shift+E"` | desktop | 全局编辑快捷键——任意应用聚焦时唤起结果窗并进入/保存编辑（toggle，复用窗口内编辑语义）。与 `edit_shortcut`（窗口内、仅结果窗聚焦时生效）并存。GUI 设置页可配 + 热重载 |
 | `polish_global_shortcut` | string | `"CmdOrCtrl+Shift+S"` | desktop | 全局立即润色快捷键——任意应用聚焦时 show 结果窗（不聚焦）+ 触发 `polish_now`（复用工具栏「立即润色」按钮语义：空文本静默、幂等）。GUI 设置页可配 + 热重载 |
 | `clipboard_shortcut` | string | `"CmdOrCtrl+Shift+D"` | desktop | 剪贴板历史浮窗全局快捷键（Tauri Accelerator 格式）。GUI 设置页可配 + 热重载 |
@@ -398,7 +398,7 @@ asr_correct: false               # true 对 ASR 输出做拼音+bigram 轻量纠
 denoise_mode: 1                  # 环境降噪：0=关闭直通 / 1=RNNoise（默认）/ 2=DeepFilterNet3（48kHz 全频带，~7.9MB 模型）；亦可工具栏运行时切换（set_denoise_mode）
 output_simplified: true          # ASR 输出字形：true=简体（繁→简），false=繁体（简→繁）
 hide_toolbar: true               # 结果窗工具栏：true=hover 显隐（默认），false=始终显示
-edit_shortcut: "Cmd+Enter"       # 编辑 toggle 快捷键（窗口内，进入/保存都用此键）
+edit_shortcut: "CmdOrCtrl+Enter"  # 编辑 toggle 快捷键（窗口内，进入/保存都用此键；CmdOrCtrl 跨平台=⌘/Ctrl）
 edit_global_shortcut: "CmdOrCtrl+Shift+E"  # 全局编辑（跨应用唤起结果窗 + toggle）
 polish_global_shortcut: "CmdOrCtrl+Shift+S"  # 全局立即润色（show 结果窗不聚焦 + polish_now）
 

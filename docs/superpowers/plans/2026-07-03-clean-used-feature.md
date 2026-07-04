@@ -842,3 +842,31 @@ Task 1-11 完成进入 e2e 验收后发现并修复的 4 个问题。均**已实
 - **Spec 覆盖**：§4 记事本清除 → Task 3/4/5；§5 多 tab → Task 6/7；§6 OCR 统一 → Task 8/9；§7 OCR 类别 → Task 1/2/10；文档 → Task 11；§6.3 e2e 阶段增强（长图切分 + 全局互斥 + emit + 死锁）→ Task 12。全覆盖。
 - **占位符**：无 TBD/TODO（Task 7/8 的「确认现有参数」是实施时读文件确认，已标注具体文件，非占位）。
 - **类型一致**：`insert_ocr_item(conn, &str, OcrMeta)` / `OcrMeta{engine,model}` / `open_compact_editor_tab(item_id)` / `get_clipboard_item_text(id)->String` / `insert_ocr_clipboard_item(text)->i64` 在所有任务签名一致。
+
+---
+
+## Task 13: 代码审查追加修复 — CompactEditor 前端（2026-07-04）
+
+第三轮代码审查发现 4 个 `pages/CompactEditor/index.tsx` 健壮性 bug。详见 spec §11。前端无组件级单测，靠 `npm run build`（tsc+vite）+ 用户 e2e 验证。
+
+**Files:**
+- Modify: `crates/desktop/frontend/src/pages/CompactEditor/index.tsx`
+
+- [x] **Step 1: replaceOne 焦点跳转（Bug 1.2）** — replaceOne 基于**替换后 next 文本**重新 `collectMatches`，`matchIdx = Math.min(matchIdx, len-1)` 钳制到新匹配列表有效区间。`collectMatches`：大小写不敏感 `indexOf` 循环收集所有匹配 offset（供 runFind/replaceOne/replaceAll 共用）。
+- [x] **Step 2: replaceAll 大小写（Bug 1.3）** — `new RegExp(escaped, "gi")`（`escaped` escape 正则元字符 + `gi` 全局大小写不敏感）替换，修复大写缩写等匹配不到。
+- [x] **Step 3: mount 监听泄露（Bug 1.4）** — mount `useEffect` 加 `cancelled` 标志：cleanup 置 true，`listen` resolve 后 `if (cancelled) fn() else unlisten = fn`，防 StrictMode / 快速 unmount 下 `unlisten` undefined 泄漏。
+- [x] **Step 4: keydown 监听器重建（Bug 2.2）** — `doSaveRef = useRef(doSave)` + `useEffect(() => { doSaveRef.current = doSave }, [doSave])`，keydown 监听器改调 `doSaveRef.current()`、deps 去 `doSave` 只留 `showFind`，监听器挂载一次（消除 active.text 每键变 → doSave 新引用 → 监听器每键 remove+add 的 GC 压力）。
+- [x] **Step 5: 验证** — `npm run build` + `npm run test` 绿。
+
+---
+
+## Task 14: 代码审查追加修复 — CompactEditor 键盘 undo/redo（2026-07-04）
+
+§11（Task 13，审查 4 bug）之后第四轮审查。详见 spec §12。前端无组件级单测，靠 `npm run build` + 用户 e2e。
+
+**Files:**
+- Modify: `crates/desktop/frontend/src/pages/CompactEditor/index.tsx`
+
+- [x] **Step 1: 键盘 undo/redo 拦截（Bug 3.2）** — keydown `useEffect` 内（`const mod` 之后、doSave 拦截之前）加 `mod && (e.key.toLowerCase()==="z"||e.key.toLowerCase()==="y")` → `preventDefault` + `taRef.focus()` + `document.execCommand(isRedo?"redo":"undo")`（isRedo = y 或 shift）。受控 textarea 每次 value 同步清空 WebKit 原生 undo 栈 → 键盘失灵；按钮 execCommand 走文档级事务栈可用，键盘须统一走 execCommand。
+- [x] **Step 2: 按钮 undo/redo 保留** — 撤销/重做按钮（`undo`/`redo` 函数 + 工具栏 JSX）保留，实测在 WKWebView 可用（§11 时曾被误判损坏后恢复）。注释更正为「按钮路径；实测在 WKWebView 工作」。
+- [x] **Step 3: 验证** — `npm run build` 绿；e2e（用户）验证键盘 Cmd+Z / Shift+Z 与按钮均撤销/重做。

@@ -16,29 +16,65 @@ export function codePointOffsetBefore(container: HTMLElement, range: Range): num
   return codePointOffsetTo(container, range.startContainer, range.startOffset);
 }
 
-// 量 container 内第 pos 个 code-point 处光标的相对像素位置（长度读 DOM firstText.nodeValue）。
-// pos=null/超出 → 末尾。code-point 计数（Array.from 语义），UTF-16 offset 转换为 Range API 所需。
+// 定位 container 内第 pos 个 code-point 落在哪个 text node 的哪个 UTF-16 offset。
+// pos=null → 末尾。返回 null 表示容器无文本节点。measureCaretPx（量像素）与 placeCaretAtCodePoint
+// （设选区）共用此遍历——多 text node（whitespace-pre-wrap 多行 / 编辑残留）下累加各 node 长度定位，
+// 单 node（textContent 写入主路径）行为与旧实现一致。
+function locateCpOffset(
+  container: HTMLElement,
+  pos: number | null,
+): { node: Text; utf16Offset: number } | null {
+  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
+  const nodes: Text[] = [];
+  let n: Node | null;
+  while ((n = walker.nextNode())) nodes.push(n as Text);
+  if (nodes.length === 0) return null;
+  // 长度基于 DOM 实际文本节点（非 React state text）：textRef 由 imperative textContent 同步写
+  // （React 对 contentEditable children 的 commit 不更新 DOM），用 state text 会与 DOM 不一致 → clamp 错位。
+  const cps = nodes.map((t) => Array.from(t.nodeValue ?? ""));
+  const total = cps.reduce((acc, cp) => acc + cp.length, 0);
+  const target = pos == null ? total : Math.min(pos, total);
+  let consumed = 0;
+  for (let i = 0; i < nodes.length; i++) {
+    const len = cps[i].length;
+    const isLast = i === nodes.length - 1;
+    if (target <= consumed + len || isLast) {
+      const offsetInNode = Math.min(Math.max(target - consumed, 0), len); // code-point，clamp 进 [0, len]
+      // Range API 的 offset 是 UTF-16 code unit；code-point → code unit 累加。
+      const utf16Offset = cps[i].slice(0, offsetInNode).reduce((acc, ch) => acc + ch.length, 0);
+      return { node: nodes[i], utf16Offset };
+    }
+    consumed += len;
+  }
+  return null; // 不可达：循环 isLast 分支必返回
+}
+
+// 量 container 内第 pos 个 code-point 处光标的相对像素位置（pos=null/超出 → 末尾）。
 export function measureCaretPx(
   container: HTMLElement | null,
   pos: number | null,
 ): { left: number; top: number; height: number } | null {
   if (!container) return null;
   const cRect = container.getBoundingClientRect();
-  // 长度基于 DOM 实际文本（firstText.nodeValue），不用 text 参数：text 来自 React state，而 textRef
-  // 的 DOM 由 imperative textContent 同步写（React 对 contentEditable children 的 commit 不更新 DOM），
-  // 用 state text 算 target 会与 DOM 不一致 → clamp 到 DOM 旧末尾 → 光标错位。pos（中插 code-point
-  // offset，与后端 char 对齐）按参数定位；imperative 已保证 DOM == state，pos 对应 DOM 同位。
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-  const firstText = walker.nextNode() as Text | null;
-  if (!firstText) return { left: 0, top: 0, height: 18 };
-  const cp = Array.from(firstText.nodeValue ?? "");
-  const target = pos == null ? cp.length : Math.min(pos, cp.length);
-  const offsetInNode = target;
-  // Range API 的 offset 是 UTF-16 code unit；code-point → code unit 累加。
-  const utf16Offset = cp.slice(0, offsetInNode).reduce((acc, ch) => acc + ch.length, 0);
+  const loc = locateCpOffset(container, pos);
+  if (!loc) return { left: 0, top: 0, height: 18 };
   const r = document.createRange();
-  r.setStart(firstText, utf16Offset);
+  r.setStart(loc.node, loc.utf16Offset);
   r.collapse(true);
   const rect = r.getBoundingClientRect();
   return { left: rect.left - cRect.left, top: rect.top - cRect.top, height: rect.height || 18 };
+}
+
+// 把光标（collapsed Selection）定位到 container 内第 pos 个 code-point 处（进入编辑态恢复点击位用）。
+// pos 超出总长 → 末尾。返回 false 表示容器无文本节点（调用方应自行兜底，如置末尾）。
+export function placeCaretAtCodePoint(container: HTMLElement, pos: number): boolean {
+  const loc = locateCpOffset(container, pos);
+  if (!loc) return false;
+  const r = document.createRange();
+  r.setStart(loc.node, loc.utf16Offset);
+  r.collapse(true);
+  const sel = window.getSelection();
+  sel?.removeAllRanges();
+  sel?.addRange(r);
+  return true;
 }

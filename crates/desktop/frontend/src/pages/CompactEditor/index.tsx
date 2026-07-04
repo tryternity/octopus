@@ -101,24 +101,36 @@ function CompactEditor() {
 
   // mount：取首个 pending tab；监听并发再开的 open-tab 事件
   useEffect(() => {
+    // cancelled 守护：listen 是异步的，若组件在 listen 解析前卸载，cleanup 时 unlisten 仍 undefined，
+    // 监听器会永久泄露并在后台触发已卸载组件的回调。cancelled 让卸载后解析到的监听器立即销毁、
+    // 且 await 后的 setState 被跳过（避免 setState on unmounted）。
+    let cancelled = false;
     let unlisten: (() => void) | undefined;
     (async () => {
       const pending = await invoke<{ itemId: number; source: string } | null>("get_pending_compact_tab");
+      if (cancelled) return;
       if (pending) {
         await loadAndAddTab(pending.itemId, pending.source);
+        if (cancelled) return;
+        setTimeout(() => taRef.current?.focus(), 0);
       }
-      unlisten = await listen("compact-editor://open-tab", (payload) => {
+      const fn = await listen("compact-editor://open-tab", (payload) => {
         const p = payload as OpenTabPayload;
         loadAndAddTab(p.itemId, p.source);
       });
+      if (cancelled) fn();
+      else unlisten = fn;
     })();
-    return () => { unlisten?.(); };
+    return () => {
+      cancelled = true;
+      unlisten?.();
+    };
   }, [loadAndAddTab]);
 
   const doSave = useCallback(async () => {
     if (!active) return;
     try {
-      if (active.text || "".trim() === "") {
+      if ((active.text || "").trim() === "") {
         // 清空后保存 = 删除条目（空内容无意义）；后端 delete_clipboard_item 已 emit clipboard://changed 通知列表刷新
         await invoke("delete_clipboard_item", { id: active.itemId });
         // 关闭该 tab：仅剩一个则关窗，否则移除并修正 activeIdx
@@ -139,6 +151,12 @@ function CompactEditor() {
     }
   }, [active, activeIdx, tabs.length]);
 
+  // keydown 监听器稳定化：doSave 依赖 [active, activeIdx, tabs.length]，active.text 每键变 → doSave
+  // 每键拿新引用；若 keydown useEffect deps 含 doSave，监听器每键 remove+add（GC 压力）。改用 ref：
+  // 监听器只挂载一次，调 doSaveRef.current() 取最新；doSave 本身仍供按钮 onClick 直接用。
+  const doSaveRef = useRef(doSave);
+  useEffect(() => { doSaveRef.current = doSave; }, [doSave]);
+
   // 关闭 tab：仅剩一个则关窗；否则移除并修正 activeIdx。
   const closeTab = (idx: number) => {
     if (tabs.length <= 1) {
@@ -154,14 +172,14 @@ function CompactEditor() {
     });
   };
 
-  const charCount = active ? [...(active.text || "" || "")].length : 0;
+  const charCount = active ? [...(active.text || "")].length : 0;
 
   // ── 字号 ──
   const decFont = () => setFontSize(f => Math.max(FONT_MIN, f - 1));
   const incFont = () => setFontSize(f => Math.min(FONT_MAX, f + 1));
   useEffect(() => { localStorage.setItem(FONT_KEY, String(fontSize)); }, [fontSize]);
 
-  // ── 撤销/重做：execCommand 触发 textarea 原生栈（Cmd+Z/Y 原生亦生效，作可靠兜底）──
+  // ── 撤销/重做：execCommand 触发 textarea 原生栈（按钮路径；实测在 WKWebView 工作）──
   const undo = () => { taRef.current?.focus(); document.execCommand("undo"); };
   const redo = () => { taRef.current?.focus(); document.execCommand("redo"); };
 
@@ -172,7 +190,23 @@ function CompactEditor() {
     updateActiveText(""); setClearPending(false); setMatches([]); setMatchIdx(-1);
   };
 
-  // ── 查找/替换（基于 active.text || ""）──
+  // ── 查找/替换（基于 active.text；图片 tab text=undefined → ""）──
+  // 收集 text 中 q 的所有匹配起点（大小写不敏感，runFind/replaceOne/replaceAll 共用同一口径）。
+  const collectMatches = (text: string, q: string): number[] => {
+    if (!q) return [];
+    const lower = text.toLowerCase();
+    const needle = q.toLowerCase();
+    const idxs: number[] = [];
+    let from = 0;
+    while (true) {
+      const i = lower.indexOf(needle, from);
+      if (i === -1) break;
+      idxs.push(i);
+      from = i + needle.length;
+    }
+    return idxs;
+  };
+
   const selectRange = (start: number, len: number) => {
     const ta = taRef.current;
     if (!ta || !active) return;
@@ -184,21 +218,11 @@ function CompactEditor() {
   };
 
   const runFind = useCallback(() => {
-    const q = findQuery;
-    if (!q || !active) { setMatches([]); setMatchIdx(-1); return; }
-    const lower = active.text || "".toLowerCase();
-    const needle = q.toLowerCase();
-    const idxs: number[] = [];
-    let from = 0;
-    while (true) {
-      const i = lower.indexOf(needle, from);
-      if (i === -1) break;
-      idxs.push(i);
-      from = i + needle.length;
-    }
+    if (!findQuery || !active) { setMatches([]); setMatchIdx(-1); return; }
+    const idxs = collectMatches(active.text || "", findQuery);
     setMatches(idxs);
     setMatchIdx(idxs.length > 0 ? 0 : -1);
-    if (idxs.length > 0) selectRange(idxs[0], q.length);
+    if (idxs.length > 0) selectRange(idxs[0], findQuery.length);
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findQuery, active, fontSize]);
 
@@ -214,15 +238,27 @@ function CompactEditor() {
   const replaceOne = () => {
     if (matchIdx < 0 || !findQuery || !active) return;
     const start = matches[matchIdx];
-    const next = active.text || "".slice(0, start) + replaceQuery + active.text || "".slice(start + findQuery.length);
+    const next = (active.text || "").slice(0, start) + replaceQuery + (active.text || "").slice(start + findQuery.length);
     updateActiveText(next);
-    setTimeout(runFind, 0);
+    // 基于 next 重算（setTimeout(runFind) 闭包会拿到旧 active，在替换前文本上匹配/选中错位）。
+    // 替换当前项后该位置匹配消失、后续前移 → 原 matchIdx 即指向下一项；clamp 防越界（末项被替后回退到新末项）。
+    const idxs = collectMatches(next, findQuery);
+    setMatches(idxs);
+    const nextIdx = idxs.length > 0 ? Math.min(matchIdx, idxs.length - 1) : -1;
+    setMatchIdx(nextIdx);
+    if (nextIdx >= 0) selectRange(idxs[nextIdx], findQuery.length);
   };
 
   const replaceAll = () => {
     if (!findQuery || !active) return;
-    updateActiveText(active.text || "".split(findQuery).join(replaceQuery));
-    setTimeout(runFind, 0);
+    // 大小写不敏感全局替换（与 runFind 的 toLowerCase 口径一致；split 是大小写敏感的，会漏替大小写不同的匹配）。
+    const escaped = findQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const next = (active.text || "").replace(new RegExp(escaped, "gi"), replaceQuery);
+    updateActiveText(next);
+    const idxs = collectMatches(next, findQuery);
+    setMatches(idxs);
+    setMatchIdx(idxs.length > 0 ? 0 : -1);
+    if (idxs.length > 0) selectRange(idxs[0], findQuery.length);
   };
 
   // ── 快捷键 ──
@@ -231,8 +267,19 @@ function CompactEditor() {
       // IME 组字期放行所有快捷键：让 Esc 等键交给 IME 取消候选词。
       if (e.isComposing || e.keyCode === 229) return;
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key === "Enter") { e.preventDefault(); doSave(); return; }
-      if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); doSave(); return; }
+      // Cmd/Ctrl+Z undo、+Shift 或 +Y redo：受控 textarea 的原生 undo 栈被每次输入后 React value
+      // 同步清空（WebKit 行为）→ 键盘失灵；改走 execCommand（同按钮路径，文档级 transaction 栈，可用）。
+      if (mod && (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y")) {
+        e.preventDefault();
+        taRef.current?.focus();
+        const isRedo = e.key.toLowerCase() === "y" || e.shiftKey;
+        document.execCommand(isRedo ? "redo" : "undo");
+        return;
+      }
+      // doSave 经 ref 调用：监听器只挂载一次（deps 仅 showFind），避免 active.text 每键变 → doSave
+      // 新引用 → 监听器每键 remove+add 的 GC 压力。
+      if (mod && e.key === "Enter") { e.preventDefault(); doSaveRef.current(); return; }
+      if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); doSaveRef.current(); return; }
       if (e.key === "Escape") {
         if (showFind) { setShowFind(false); return; }
       }
@@ -240,7 +287,7 @@ function CompactEditor() {
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [doSave, showFind]);
+  }, [showFind]);
 
   const ToolBtn = ({ onClick, title, disabled, children }: {
     onClick: () => void; title: string; disabled?: boolean; children: ReactNode;

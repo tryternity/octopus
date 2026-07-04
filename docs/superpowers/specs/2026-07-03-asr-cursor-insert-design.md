@@ -427,3 +427,39 @@ view 态 div 默认 `white-space:normal`，把编辑态 `innerText` 提取的 `\
 - **视口相对像素须随 scroll 重测**（12.2）——`getBoundingClientRect()` 差值随滚动变，光标定位组件要监听 scroll。
 - **CSS `white-space` 决定 `\n` 可见性**（12.4）——contentEditable innerText 的 `\n` 在 normal 下折叠，需 pre-wrap。
 - **collapsed range 的 `getBoundingClientRect` 锚点敏感**（12.5）——锚容器边界常返 zero rect，应锚文本节点内 offset。
+
+## 13. 前端渲染健壮性追加修复（代码审查，2026-07-04）
+
+§12 的 e2e 4 bug 之后，第三轮代码审查又发现 2 个 Result 窗前端渲染 bug，同在 `Result/index.tsx`。
+
+### 13.1 Bug 1.1：最终文本被 pending diverted 延迟覆盖
+
+show-result handler 的 diverted 容错（§5.A / §12 关联）：光标在末尾且引擎纠正早前文本时，前端走 300ms `divertedTimer` 延迟整体替换（防抖，等下一帧 delta）。但 **else 分支（最终文本到达，`insertion` 态或纯追加）漏清 pending 的 diverted 计时器**——若中途某帧误判 diverted 启动了计时器，最终文本立即渲染后，300ms 后旧的 diverted 回调仍触发，用**旧基准的整体替换**覆盖掉刚渲染的最终文本（视觉：文字闪回旧值）。
+
+修复：show-result 的 else（最终/插入态立即渲染）分支显式 `clearTimeout(divertedTimer)` + 清 `pendingDiverted`，确保最终文本落地后 diverted 路径不再触发。
+
+### 13.2 Bug 2.1：CaretBlink 初始 measure 同步触发 layout thrashing
+
+`renderResultNow` 同帧 `flushSync(setText)` + imperative `textRef.textContent = newText`（DOM 写，§12.1），紧接 `CaretBlink` 的 `useEffect[text,pos]` **同步**调 `measure()` → `measureCaretPx` 同步 `getBoundingClientRect`。同帧 write→read = 强制回流（layout thrashing）；高频 ASR（10-20Hz）下每帧叠加。§12.2 的 scroll 重测已用 rAF 节流，但**初始 measure 漏改同步**。
+
+修复：初始 `measure()` 推到 `requestAnimationFrame`——DOM 写先落地、布局稳定后再读。代价 1 帧（~16ms）光标滞后，肉眼无感，且天然合并到帧边界。初始 raf 与 scroll raf 分变量（`raf`/`scrollRaf`）独立 cancel；`!el` 提前返回也 cancel 初始 raf 防泄漏。`flushSync` 保留（驱动 state 让 effect 同步 schedule rAF）。
+
+## 14. 前端渲染健壮性第三轮修复（代码审查 4/5，2026-07-04）
+
+§12（e2e 4 bug）、§13（审查 2 bug）之后，第四/五轮代码审查又发现 2 个 Result 窗前端 bug，同在 `Result/`（`caret.ts` + `index.tsx`）。前端无组件级单测（`renderResultNow` 耦合 Tauri），靠 `npm run build` + `npm run test`（caret 纯函数）+ 用户 e2e。
+
+### 14.1 Bug 3.1：measureCaretPx 仅定位首文本节点（多节点错位）
+
+`measureCaretPx` 原只取 `TreeWalker` 的**第一个** text node，用首节点长度 clamp `pos`。`whitespace-pre-wrap`（§12.4）下多行文本 / 编辑残留 `<br>` 可能使容器含**多个** text node；当 `pos` 超出首节点长度时本应跳到后续节点，旧实现却 clamp 在首节点末尾 → 光标测量错位。
+
+当前结果窗 `textContent` 单行写入（§12.1 imperative）通常单节点，此 bug 未被 e2e 触发，修复属**防御性**正确化。
+
+修复：抽共享 helper `locateCpOffset(container, pos)`——`TreeWalker` 收集所有 text node，按各节点 code-point 长度累加，定位 `pos` 落在哪个节点的哪个 UTF-16 offset（`pos=null`→末节点末尾，越界→末节点末尾）；code-point → UTF-16 offset 转换沿用 §6 对齐（与 Rust `char` 一致）。`measureCaretPx`（量像素）与新增的 `placeCaretAtCodePoint`（设选区，§14.2）共用此遍历（DRY）。单节点主路径行为与旧实现一致。长度仍读 DOM `nodeValue`（§12.1），非 state text。
+
+### 14.2 Bug 3.4：进编辑态光标无条件落末尾
+
+`enterEdit` 进入编辑态时 `setCaretPos(null)`（闪烁光标交还 DOM 选区），随后 `setTimeout` 内 `range.selectNodeContents(el)+collapse(false)` **无条件**把光标置到末尾。长文本下用户在非编辑态点过中间某处再进编辑，光标跑到末尾、得重新找位置。
+
+修复：`enterEdit` 在 `setCaretPos(null)` **之前**用 `caretPosRef`（caretPos 的 ref 镜像，`useRef` + 同步赋值 effect，避免闭包 stale）捕获点击位 `restorePos`；`setTimeout` 内若 `restorePos != null` → `placeCaretAtCodePoint(el, restorePos)` 精准恢复，失败 / `null` 再走末尾兜底。新增 `placeCaretAtCodePoint`（复用 §14.1 `locateCpOffset` 设 collapsed Selection）。
+
+**边界**：`caretPos` 仅**纯点击**设值（`handleTextMouseUp` 折叠分支）；**拖选**置 `null`（交 `set_selection`）。故拖选后进编辑仍落末尾（设计如此——拖选态本就无单点光标位）。

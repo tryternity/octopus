@@ -149,7 +149,7 @@ pub struct AppConfig {
     /// 全局编辑快捷键——任意应用聚焦时唤起结果窗并进入/保存编辑（toggle，复用窗口内编辑语义）。
     /// 与 edit_shortcut（窗口内、仅结果窗聚焦时生效）并存：edit_global 负责跨应用唤起+toggle，
     /// edit_shortcut 负责结果窗已聚焦时的编辑 toggle（用户明确要求保留不动）。
-    /// Tauri Accelerator 格式，默认 "CmdOrCtrl+Shift+E"（与 asr_shortcut 同系列，不与 Alt+V/Cmd+Enter 冲突）。
+    /// Tauri Accelerator 格式，默认 "CmdOrCtrl+Shift+E"（与 asr_shortcut 同系列，不与 Alt+V/CmdOrCtrl+Enter 冲突）。
     #[serde(default = "default_edit_global_shortcut")]
     pub edit_global_shortcut: String,
 
@@ -243,7 +243,7 @@ fn default_denoise_mode() -> u8 {
     1
 }
 fn default_edit_shortcut() -> String {
-    "Cmd+Enter".into()
+    "CmdOrCtrl+Enter".into()
 }
 fn default_edit_global_shortcut() -> String {
     "CmdOrCtrl+Shift+E".into()
@@ -354,7 +354,7 @@ mod tests {
         assert!(!cfg.asr_hardware_accelerated);
         assert!(!cfg.asr_correct);
         assert_eq!(cfg.denoise_mode, 1);
-        assert_eq!(cfg.edit_shortcut, "Cmd+Enter");
+        assert_eq!(cfg.edit_shortcut, "CmdOrCtrl+Enter");
         assert_eq!(cfg.edit_global_shortcut, "CmdOrCtrl+Shift+E");
         assert_eq!(cfg.polish_global_shortcut, "CmdOrCtrl+Shift+S");
         assert_eq!(cfg.ocr_model, "PP-OCRv6-small");

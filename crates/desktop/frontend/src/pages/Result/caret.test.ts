@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeAll } from "vitest";
-import { measureCaretPx, codePointOffsetTo, codePointOffsetBefore } from "./caret";
+import { measureCaretPx, codePointOffsetTo, codePointOffsetBefore, placeCaretAtCodePoint } from "./caret";
 
 // jsdom 的 getBoundingClientRect 返回零矩形，测不了真实像素；本测试锁住**逻辑分支
 // 与 code-point → UTF-16 offset 对齐**（光标错位/首位 bug 的核心），像素断言留给 e2e。
@@ -62,6 +62,37 @@ describe("measureCaretPx", () => {
     const el = divWithText("😀ab");
     expect(capturedUtf16Offset(el, 2)).toBe(3); // 'a' 后
   });
+
+  it("多文本节点：pos 越过首节点 → setStart 到后续节点", () => {
+    // whitespace-pre-wrap 多行 / 编辑残留 <br> 可能使容器含多个 text node；
+    // pos 超首节点长度时不应 clamp 到首节点末尾，而应定位到后续节点。
+    const el = document.createElement("div");
+    const t1 = document.createTextNode("abc");
+    const br = document.createElement("br");
+    const t2 = document.createTextNode("XYZ");
+    el.appendChild(t1); el.appendChild(br); el.appendChild(t2);
+    document.body.appendChild(el);
+    // total code-point = 3 + 3 = 6；pos=4 落在 t2 第 1 位（4-3=1）
+    const spy = vi.spyOn(Range.prototype, "setStart");
+    measureCaretPx(el, 4);
+    expect(spy.mock.calls[0]![0]).toBe(t2); // node 是第二个文本节点（非首节点）
+    expect(spy.mock.calls[0]![1]).toBe(1); // t2 内 UTF-16 offset 1（"X" 前）
+    spy.mockRestore();
+  });
+
+  it("多文本节点：pos=null → setStart 到最后节点末尾", () => {
+    const el = document.createElement("div");
+    const t1 = document.createTextNode("abc");
+    const br = document.createElement("br");
+    const t2 = document.createTextNode("XY");
+    el.appendChild(t1); el.appendChild(br); el.appendChild(t2);
+    document.body.appendChild(el);
+    const spy = vi.spyOn(Range.prototype, "setStart");
+    measureCaretPx(el, null);
+    expect(spy.mock.calls[0]![0]).toBe(t2);
+    expect(spy.mock.calls[0]![1]).toBe(2); // t2 末尾（全文末尾）
+    spy.mockRestore();
+  });
 });
 
 describe("codePointOffsetTo / Before", () => {
@@ -81,5 +112,37 @@ describe("codePointOffsetTo / Before", () => {
     range.setStart(el.firstChild!, 2);
     range.collapse(true);
     expect(codePointOffsetBefore(el, range)).toBe(2);
+  });
+});
+
+describe("placeCaretAtCodePoint", () => {
+  it("定位光标到指定 code-point：setStart 落点 + offset 正确", () => {
+    const el = divWithText("abc");
+    const spy = vi.spyOn(Range.prototype, "setStart");
+    expect(placeCaretAtCodePoint(el, 2)).toBe(true);
+    const last = spy.mock.calls.at(-1)!;
+    expect(last[0]).toBe(el.firstChild); // text node
+    expect(last[1]).toBe(2); // utf16 offset（ASCII = code-point）
+    spy.mockRestore();
+  });
+
+  it("空容器返回 false", () => {
+    const el = document.createElement("div");
+    document.body.appendChild(el);
+    expect(placeCaretAtCodePoint(el, 0)).toBe(false);
+  });
+
+  it("多节点 pos 越界 → 最后节点末尾", () => {
+    const el = document.createElement("div");
+    const t1 = document.createTextNode("ab");
+    const t2 = document.createTextNode("cd");
+    el.appendChild(t1); el.appendChild(t2);
+    document.body.appendChild(el);
+    const spy = vi.spyOn(Range.prototype, "setStart");
+    expect(placeCaretAtCodePoint(el, 99)).toBe(true);
+    const last = spy.mock.calls.at(-1)!;
+    expect(last[0]).toBe(t2);
+    expect(last[1]).toBe(2);
+    spy.mockRestore();
   });
 });
