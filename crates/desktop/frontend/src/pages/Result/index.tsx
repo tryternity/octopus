@@ -68,7 +68,6 @@ function Result() {
   const editBufTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const speakingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolbarVisibleRef = useRef(false);
-  const editingStateRef = useRef(false);
   const editSnapshotRef = useRef(""); // 编辑前原始文本快照
   // 是否自动跟随底部（流式追加时滚到底）。用户手动上滚 → false（停止跟随，便于查看历史）；
   // 滚回底部附近（距底 < 24px）→ true（恢复跟随）。新录音重置为 true。
@@ -83,7 +82,6 @@ function Result() {
 
   useEffect(() => { editingRef.current = editing; }, [editing]);
   useEffect(() => { toolbarVisibleRef.current = toolbarVisible; }, [toolbarVisible]);
-  useEffect(() => { editingStateRef.current = editing; }, [editing]);
   // 卸载时取消待执行的滚底 rAF（避免对已卸载 textRef 操作）。
   useEffect(() => () => {
     if (rafScrollRef.current != null) cancelAnimationFrame(rafScrollRef.current);
@@ -100,7 +98,7 @@ function Result() {
   }, []);
 
   const hideToolbar = useCallback(() => {
-    if (!toolbarVisibleRef.current || editingStateRef.current) return;
+    if (!toolbarVisibleRef.current || editingRef.current) return;
     setToolbarVisible(false);
     setPopupType(null);
   }, []);
