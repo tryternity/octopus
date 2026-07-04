@@ -8,6 +8,17 @@ pub struct OcrEngine {
     inner: ocr_rs::engine::OcrEngine,
 }
 
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OcrBlock {
+    pub text: String,
+    pub x: f64,
+    pub y: f64,
+    pub w: f64,
+    pub h: f64,
+    pub score: f64,
+}
+
 static INSTANCE: OnceLock<Arc<OcrEngine>> = OnceLock::new();
 /// 串行化首次加载（double-checked locking）：保证 MNN 模型只加载一次，省重复加载。
 static INIT_LOCK: Mutex<()> = Mutex::new(());
@@ -99,6 +110,65 @@ impl OcrEngine {
             self.recognize_image(&img)?
         };
         Ok(lines.join("\n"))
+    }
+
+    /// 识别图片字节，返回完整文本 + 带坐标的文本块。
+    pub fn recognize_with_blocks(&self, image_bytes: &[u8]) -> Result<(String, Vec<OcrBlock>)> {
+        let img = ::image::load_from_memory(image_bytes)
+            .context("Failed to decode image")?;
+        let blocks = if img.height() > SPLIT_HEIGHT_THRESHOLD {
+            log::info!(
+                "[ocr-engine] long image {}x{} → 切分识别（块高 {} 重叠 {}）",
+                img.width(), img.height(), CHUNK_HEIGHT, CHUNK_OVERLAP
+            );
+            self.recognize_long_image_with_blocks(&img)?
+        } else {
+            self.recognize_image_with_blocks(&img)?
+        };
+        let text = blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join("\n");
+        Ok((text, blocks))
+    }
+
+    /// 单图识别，返回带坐标的文本块。
+    fn recognize_image_with_blocks(&self, img: &::image::DynamicImage) -> Result<Vec<OcrBlock>> {
+        let results = self
+            .inner
+            .recognize(img)
+            .map_err(|e| anyhow::anyhow!("OCR recognize failed: {:?}", e))?;
+        Ok(results.into_iter().map(|r| OcrBlock {
+            text: r.text,
+            x: r.bbox.rect.left() as f64,
+            y: r.bbox.rect.top() as f64,
+            w: r.bbox.rect.width() as f64,
+            h: r.bbox.rect.height() as f64,
+            score: r.confidence as f64,
+        }).collect())
+    }
+
+    /// 超长图按高度切分（带重叠）逐块识别，合并坐标。
+    fn recognize_long_image_with_blocks(&self, img: &::image::DynamicImage) -> Result<Vec<OcrBlock>> {
+        let (w, h) = (img.width(), img.height());
+        let mut all_blocks: Vec<OcrBlock> = Vec::new();
+        let mut prev_last_text: Option<String> = None;
+        for (idx, &(top, chunk_h)) in Self::plan_chunks(h).iter().enumerate() {
+            let sub = ::image::imageops::crop_imm(img, 0, top, w, chunk_h);
+            let chunk = ::image::DynamicImage::from(sub.to_image());
+            let mut blocks = self.recognize_image_with_blocks(&chunk)?;
+            log::info!(
+                "[ocr-engine] chunk#{} top={} h={} → {} blocks",
+                idx, top, chunk_h, blocks.len()
+            );
+            // 去重：跳过与上一块末行 text 相同的起始 blocks
+            if let Some(ref last_text) = prev_last_text {
+                let skip = blocks.iter().position(|b| b.text != *last_text).unwrap_or(blocks.len());
+                blocks.drain(..skip);
+            }
+            // offset y 加 top（chunk 在原图中的 y 偏移）
+            for b in &mut blocks { b.y += top as f64; }
+            prev_last_text = blocks.last().map(|b| b.text.clone());
+            all_blocks.extend(blocks);
+        }
+        Ok(all_blocks)
     }
 
     /// 单图识别，返回文本行列表（保持 ocr_rs 的逐行从上到下顺序）。
