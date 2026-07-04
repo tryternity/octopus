@@ -453,18 +453,18 @@ useEffect(() => {
 )}
 ```
 
-- [ ] **Step 4：更新 load 事件处理器**
+- [ ] **Step 4：新图片载入时重置状态**
 
-`listen("image-preview://load")` 回调中，重置 `userZoomedRef`：
+> **演进（2026-07-04，统一查看器）**：ImagePreview 改为可控组件（props `imageId`），原 `listen("image-preview://load")` 已删除。新图片载入触发由「事件监听」改为「`imageId` prop 变化」。
+
+`userZoomedRef` / annotations / zoom 的 reset 放在 `useEffect(() => {...}, [imageId])` 中——父 tab 切换图片时 props 更新即触发，无事件监听、无需 unlisten 清理。
 
 ```ts
-const unlisten = listen<{ imageId: number }>("image-preview://load", (e) => {
-  setImageId(e.payload.imageId);
-  // setAnnotations 和 setZoomSync 已在 imageId useEffect 中处理
-});
+// imageId 为 props（父 tab 控制）；原 listen("image-preview://load") 已废弃
+useEffect(() => {
+  // reset userZoomedRef / annotations / zoom on imageId change
+}, [imageId]);
 ```
-
-无需额外清理——imageId useEffect 的清理逻辑已覆盖。
 
 - [ ] **Step 5：类型检查 + 构建验证**
 
