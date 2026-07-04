@@ -707,7 +707,7 @@ export default function ImagePreview() {
         onSave={handleSave} onCopy={handleCopy} onOcr={handleOcr}
         onUndo={undo} canUndo={annotations.length > 0}
         onRedo={redo} canRedo={redoAvailable}
-        ocrCopied={ocrCopied || ocrOverlay !== 'off'} ocrWarn={ocrWarn}
+        ocrCopied={ocrCopied} ocrWarn={ocrWarn}
         ocrMode={ocrOverlay}
         zoom={zoom} onZoomIn={zoomIn} onZoomOut={zoomOut} onZoomReset={zoomReset}
         onZoomFitWidth={zoomFitWidth} onZoomFitWindow={zoomFitWindow}
