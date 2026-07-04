@@ -1496,3 +1496,60 @@ git -C ... commit -m "docs(asr): 同步光标中插改造到文档" --allow-empt
 ---
 
 **后续修复（2026-07-04，9d4a654）**：选中替换 e2e（用户用 VadSegmented 离线引擎）发现选中后说话、选中文本未删、识别字插在前面——根因 `append_segment` 漏消费 `pending_delete`（初版仅 `apply_engine_full` 消费，见步骤 1 注）。`append_segment` 开头（delta 非空检查后）补 `if let Some((s,e)) = self.pending_delete.take() { self.delete_range(s,e); }`，与 `apply_engine_full` 完全对称。新增 `set_selection_then_first_append_segment_replaces` 回归测试（拖选 → append_segment 首词删旧插新），`cargo test -p octopus-desktop` **65 passed**（原 64 + 1）。e2e 用户验证通过。详见 spec §11.7。
+
+---
+
+## 追加修复：前端渲染 4 bug + 性能优化（2026-07-04）
+
+选中替换 e2e 后深度使用暴露 Result 窗前端渲染问题，全在 `crates/desktop/frontend/src/pages/Result/index.tsx`。详见 spec §12。**前端无单测框架**（无 vitest/jest），靠 `npm run build`（tsc+vite）+ 用户 e2e 验证。
+
+### 修复 1：文字不渲染（最关键，contentEditable 子项不 reconcile）
+
+- **现象**：识别中文本上滚后再下滚，新识别文字**空白**、闪烁光标落在旧末尾；继续说话积压文字一次性出现。
+- **根因**：`textRef` 是 `contentEditable={editing}` div，React 19（`createRoot` concurrent）对其 children 的 commit **不写 DOM**——设计上保护用户在 contentEditable 里的编辑不被覆盖，`flushSync` 强制 commit 也无效（commit 本身就跳过 children 写入）。故流式 `setText(newText)` 改了 state，但 DOM textNode 始终旧的 → 文字不渲染。
+- **修法**（`renderResultNow` 内，非编辑态）：
+  1. imperative `textRef.current.textContent = newText` 绕过 React 强制 DOM = state（核心）。
+  2. `measureCaretPx` 长度改读 DOM `firstText.nodeValue`（移除 `text` 参数）——否则按 state 新 text 算 target、DOM `firstText` 旧文本 clamp 到旧末尾 → 光标错位。
+  3. 保留 `flushSync(() => setText(newText))` 驱动 state 让子组件 `CaretBlink` 的 `useEffect[text]` 触发重测。
+
+### 修复 2：光标滚动错位 + 视口外隐藏
+
+- **现象**：文字多时上滚，末尾滚出视口，光标仍停容器底旧位闪烁（视觉错位）。
+- **根因**：`CaretBlink` 的 `px.top` 是视口相对值（随 `scrollTop` 变），原只在 `text`/`pos` 变时重算，滚动后不更新。
+- **修法**：`CaretBlink` 加 scroll 监听（`{ passive: true }` + rAF 节流）重测 px；渲染时 `px.top < -2 || px.top > clientHeight + 2` 则 return null 隐藏。
+
+### 修复 3：滚动跟随间隙（onScroll 立即滚底）
+
+- **现象**：滚回底部区域后，最新识别文字滞留视口下方一段空白，下个 tick 才归位。
+- **根因**：onScroll 设了 `stickToBottomRef = true`，但实际滚到底部等下个渲染 tick。
+- **修法**：onScroll 检测 stick 恢复 true 时立即 `el.scrollTop = el.scrollHeight`（不等 tick）。
+
+### 修复 4：换行符显示（whitespace-pre-wrap）
+
+- **现象**：编辑态的 `\n` 编辑时起作用、退出编辑后失效（行变一坨）。
+- **根因**：textRef div 默认 `white-space:normal`，`innerText` 的 `\n` 折叠成空格。后端 `commit_edit`/`finish_text`/DB `text` 列全保留 `\n`，纯前端 CSS 问题。
+- **修法**：textRef div 加 `whitespace-pre-wrap` 类。
+
+### 性能优化（同期，#34-38）
+
+- 滚底跟随 `stickToBottomRef`（修识别中无法上滚 + 减 reflow）、rAF 合并渲染（消 layout thrashing）、CaretBlink 光标路径统一、DB 落库节流（≥500ms UPDATE，Finalize 兜底）、`diverted_pending` 上限 + 删 dead_code（`mark_polish_pending`/`clear_polish_pending`）。
+
+### 光标首位（修复 1 派生，O(1) 优化回归）
+
+`measureCaretPx` 末尾态曾改 `selectNodeContents + collapse(false)`（锚容器边界）Chrome 返 zero rect 触发兜底 `(0,0)` → 光标首位。回退为文本节点内 `setStart(firstText, offset) + collapse(true)`。教训：collapsed range `getBoundingClientRect` 对锚点敏感。
+
+### 验证
+
+- `npm run build` tsc+vite 通过。
+- e2e（用户）：4 bug 全部修复后逐条复现验证通过（流式文字滚动后正常渲染、上滚光标隐藏、滚回底部立即跟随、编辑换行保留）。
+
+---
+
+## 追加：前端最小测试基建（2026-07-04）
+
+4-bug 排查耗时（flushSync 失败 2 次才定位 contentEditable 不 reconcile）暴露前端无单测框架的代价。引入 vitest 4 + jsdom 29（commit e797e0f）：
+
+- `measureCaretPx` / `codePointOffsetTo` / `codePointOffsetBefore` 从 `Result/index.tsx` 抽到 `./caret.ts`（纯函数，隔离可测，不拉整个组件模块）。
+- `caret.test.ts`（9 测全绿）锁住 **code-point → UTF-16 offset 对齐**（光标错位/首位 bug 的核心）与 null/空容器分支。
+- jsdom 未实现 `Range.prototype.getBoundingClientRect`（Element 有），`defineProperty` 补零矩形；像素级光标位仍留给 e2e（jsdom 量不了）。
+- `renderResultNow` 耦合组件/Tauri，组件级测试留后续。

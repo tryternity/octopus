@@ -175,6 +175,10 @@ pub struct Coordinator {
 /// 流式识别 tick 间隔（毫秒）
 const STREAMING_TICK_INTERVAL_MS: u64 = 200;
 
+/// 过程落库（update_text_segments）节流间隔：同条记录 ≥此值才 UPDATE，
+/// Finalize 兜底完整写入（长录音避免每 changed≈每 tick 一次 UPDATE 的写放大）。
+const DB_FLUSH_INTERVAL_MS: u64 = 500;
+
 impl Coordinator {
     pub fn new(
         engine: Arc<dyn TranscriptionEngine>,
@@ -2203,7 +2207,13 @@ fn update_transcription_raw(
         };
         sender.send(cmd).map_err(|e| format!("Queue DB insert failed: {}", e))?;
         transcript.mark_db_inserted();
+        transcript.mark_db_written();
     } else {
+        // 落库节流：距上次落库 < DB_FLUSH_INTERVAL_MS 则跳过本次 UPDATE（Finalize 兜底完整写入，
+        // 最坏落后一帧文本；避免长录音每 changed≈每 tick 一次 UPDATE 的写放大）。
+        if !transcript.db_flush_due(std::time::Duration::from_millis(DB_FLUSH_INTERVAL_MS)) {
+            return Ok(());
+        }
         let cmd = DbCommand::UpdateTextSegments {
             id: transcript.id,
             text: transcript.db_text(),
@@ -2212,6 +2222,7 @@ fn update_transcription_raw(
         sender
             .send(cmd)
             .map_err(|e| format!("Queue DB update_text_segments failed: {}", e))?;
+        transcript.mark_db_written();
     }
     Ok(())
 }

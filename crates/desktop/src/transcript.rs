@@ -7,7 +7,11 @@
 //! 旧末尾追加（零回归）。润色全篇一次：edited 冻结、raw/polished 重润（best-effort 串匹配回填）。
 
 use crate::config::PolishMode;
-use std::time::Instant;
+use std::time::{Duration, Instant};
+
+/// diverted_pending（引擎纠正延迟确认暂存）累积上限（char）。超限强制 flush 展示，
+/// 避免引擎持续异常纠正时无限累积、用户看空白。
+const DIVERTED_PENDING_LIMIT: usize = 500;
 
 /// 段类型。后态覆盖前态：Raw → Polished → Edited。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -47,6 +51,8 @@ pub struct Transcript {
     /// pending 期间缓存的新 delta（pending 不写 segments，PolishDone 后 flush）。
     pending_delta: String,
     db_inserted: bool,
+    /// 最近一次 DB 落库时间（落库节流用，Finalize 兜底完整写入）。None=未落库过。
+    last_db_write: Option<Instant>,
 }
 
 impl Transcript {
@@ -58,11 +64,18 @@ impl Transcript {
             last_polish_time: Instant::now(), polish_pending: false,
             polish_snapshot: Vec::new(), polish_caret_offset: 0, polish_caret_at_tail: true,
             pending_delta: String::new(), db_inserted: false,
+            last_db_write: None,
         }
     }
 
     pub fn db_inserted(&self) -> bool { self.db_inserted }
     pub fn mark_db_inserted(&mut self) { self.db_inserted = true; }
+    /// 标记已落库（更新 last_db_write = now，落库节流计时基准）。
+    pub fn mark_db_written(&mut self) { self.last_db_write = Some(Instant::now()); }
+    /// 距上次落库是否 ≥ threshold（节流判定）。未落库过 → true（应落库）。
+    pub fn db_flush_due(&self, threshold: Duration) -> bool {
+        self.last_db_write.map(|t| t.elapsed() >= threshold).unwrap_or(true)
+    }
 
     /// 段顺序拼接 → 纯文本（= display = 落库搜索 = clipboard）。派生。
     pub fn finish_text(&self) -> String {
@@ -93,7 +106,13 @@ impl Transcript {
             self.diverted_pending.push_str(&diff);
             self.engine_cumulative = full.to_string();
             self.engine_consumed_chars = full.chars().count();
-            return false; // 当次不展示（diverted 延迟确认）
+            // 上限保护：diverted 累积过多（引擎持续异常纠正，迟迟不回前缀）→ 强制展示，
+            // 避免用户看空白。fall through 把 diverted_pending 当 delta 展示。
+            if self.diverted_pending.chars().count() < DIVERTED_PENDING_LIMIT {
+                return false; // 当次不展示（diverted 延迟确认）
+            }
+            log::warn!("diverted_pending 累积超限({}), 强制 flush 展示", DIVERTED_PENDING_LIMIT);
+            combined_delta = std::mem::take(&mut self.diverted_pending);
         }
         self.engine_cumulative = full.to_string();
         self.engine_consumed_chars = full.chars().count();
@@ -255,17 +274,6 @@ impl Transcript {
     }
 
     pub fn polish_pending(&self) -> bool { self.polish_pending }
-    /// 标记润色 pending（快照 segments + caret）。
-    /// 段模型下 take_polish_input 内部已内置 pending 标记 + 快照，本方法当前无调用方。
-    /// 保留：供未来「直接标记 pending（不取输入）」场景复用快照逻辑。
-    #[allow(dead_code)]
-    pub fn mark_polish_pending(&mut self) {
-        self.polish_snapshot = self.segments.clone();
-        self.polish_caret_offset = self.caret_char_offset();
-        self.polish_caret_at_tail = self.caret_gap >= self.segments.len();
-        self.polish_pending = true;
-    }
-    #[allow(dead_code)] pub fn clear_polish_pending(&mut self) { self.polish_pending = false; }
     pub fn last_polish_time(&self) -> Instant { self.last_polish_time }
     pub fn set_mode(&mut self, mode: PolishMode) { self.mode = mode; }
 
@@ -669,5 +677,35 @@ mod tests {
         assert_eq!(input.segments.len(), 1);
         assert_eq!(input.segments[0].text, "你好");
         assert!(!t.polish_snapshot.iter().any(|s| s.text.contains("世界")));
+    }
+
+    #[test]
+    fn db_flush_due_respects_threshold() {
+        let mut t = Transcript::new(107, PolishMode::Intermediate);
+        // 未落库过 → due（即便 threshold 很大）
+        assert!(t.db_flush_due(Duration::from_secs(3600)));
+        t.mark_db_written();
+        // threshold 0 → 总 due（elapsed ≥ 0）
+        assert!(t.db_flush_due(Duration::from_millis(0)));
+        // threshold 远大于已 elapsed（刚写入）→ not due
+        assert!(!t.db_flush_due(Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn diverted_pending_flushes_when_over_limit() {
+        // 引擎持续纠正（每次 full 非前缀）→ diverted_pending 累积，超 DIVERTED_PENDING_LIMIT
+        // 后强制 flush 展示，避免用户看空白。
+        let mut t = Transcript::new(108, PolishMode::Intermediate);
+        t.apply_engine_full("基"); // engine_cumulative="基", shown="基"
+        // 每次「基+递增数字」非 engine_cumulative 前缀 → 持续 diverted 累积
+        for i in 0..400 {
+            t.apply_engine_full(&format!("基{}", i));
+        }
+        // 超限（500 char）后强制 flush → finish_text 增长（不再卡在"基"）
+        assert!(
+            t.finish_text().chars().count() > 100,
+            "diverted 超限应强制 flush，finish_text={}",
+            t.finish_text()
+        );
     }
 }

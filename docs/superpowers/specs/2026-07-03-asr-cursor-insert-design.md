@@ -384,3 +384,46 @@ pub fn set_selection(&mut self, start: usize, end: usize) {
 选中替换 e2e（用户用 VadSegmented 离线引擎）发现：选中后说话，选中文本未删、识别字插在选中文本**前面**。根因：`pending_delete` 只在 `apply_engine_full`（流式路径）首词消费，`append_segment`（VadSegmented 离线 sensevoice/firered/qwen3/whisper + cloud partial 路径）漏了同样逻辑——`set_selection` 劈 `caret_gap` 到 start 但不立即删，首词经 `append_segment` 插到 start（选中文字前）却永不触发 `delete_range`，选中文字残留。流式引擎（zipformer/paraformer streaming）走 `apply_engine_full` 不受影响，故 bug 未在中插特性 e2e（流式）暴露。
 
 修复：`append_segment` 开头（delta 非空检查后）消费 `pending_delete`，与 `apply_engine_full` 对称。新增 `set_selection_then_first_append_segment_replaces` 回归测试（§11.5）。**通用教训**：`Transcript` 有两条 delta 入口（流式 `apply_engine_full` / 分段 `append_segment`），任何「首词触发」型运行时状态（如 `pending_delete`）都必须在两入口对称消费，否则只在对应引擎下失效——两入口相关改动务必成对核对。
+
+---
+
+## 12. 前端渲染健壮性修复（2026-07-04，e2e 后 4 bug）
+
+§1–§11 合入并 e2e 通过后，深度使用暴露 4 个 Result 窗前端渲染 bug，全集中在 `crates/desktop/frontend/src/pages/Result/index.tsx`。
+
+### 12.1 文字不渲染 — contentEditable 容器的 React children 不 reconcile（最关键）
+
+`textRef` 是 `contentEditable={editing}` 的 div（view 态 `contentEditable={false}`）。React 19（`createRoot` concurrent）对带 `contentEditable` 属性的 div **reconcile 时不写其 text children 的 DOM**——commit 阶段跳过 children 写入（保护用户编辑不被覆盖），即使 `contentEditable={false}`、即使 `flushSync` 强制 commit 也无效（commit 本身就跳过 children）。后果：流式 `setText(newText)` 改了 state，DOM textNode 始终旧 → 文字不渲染（空白），继续说话时积压文字一次性出现。查 `setTextContent` 源码不检查 contentEditable 会误判「会更新」。
+
+修复：`renderResultNow` 里 imperative `textRef.textContent = newText`（非编辑态），绕过 React 强制 DOM = state。`measureCaretPx` 长度改读 DOM `firstText.nodeValue`（移除 `text` 参数）——否则按 state 新 text 算 `target`、DOM `firstText` 旧文本 clamp 到旧末尾 → 光标错位到旧末尾、新文字位置空白。`flushSync(setText)` 保留驱动 state 让 `CaretBlink` 的 `useEffect[text]` 触发重测。
+
+判别：非 contentEditable 元素 React 正常 reconcile，imperative 写冗余但无害（`textContent === newText` 条件不成立、零开销）；只有 contentEditable 容器需要。触发条件：同一 div 既是 contentEditable 编辑容器又是流式展示容器（`key={editing?"edit":"view"}` 切换但 DOM 元素复用 contentEditable 属性）。
+
+### 12.2 闪烁光标滚动错位 + 视口外隐藏
+
+`CaretBlink` 的 px 原只在 `text/pos` 变时重算。但 `px.top = rect.top - cRect.top` 是**视口相对值，随 `scrollTop` 变**。流式 stickToBottom 时末尾在容器底；用户上滚后末尾滚到视口下方，但 `text` 未变 → px 不更新 → 光标停在容器底旧位闪烁，视觉错位（像跑到前面）。
+
+修复：`CaretBlink` 加 scroll 监听（passive，rAF 节流）重测 px；渲染时 `px.top < -2 || px.top > clientHeight + 2` 则 `return null`（视口外隐藏）。stickToBottom 时 `px.top ≈ clientH - 行高 < clientH`（显示），上滚后 `px.top > clientH`（隐藏）。`CaretBlink` 只在 `!editing` 渲染，editing 切换即重挂载 → effect 重跑绑新 div，无监听漂移。
+
+### 12.3 滚动跟随间隙 — onScroll 恢复 stickToBottom 立即滚底
+
+用户上滚（`stickToBottom=false`）后滚回底部区域，原 `onScroll` 只更新 `stickToBottomRef`，实际滚底要等下个 tick（100-200ms）的 rAF → 间隙内最新文字滞留视口下方「空白」。
+
+修复：`onScroll` 检测 stick 恢复 true 时立即 `scrollTop = scrollHeight`，不等 tick。tick 的 rAF 滚底保留用于持续跟随。
+
+### 12.4 换行符显示 — whitespace-pre-wrap
+
+view 态 div 默认 `white-space:normal`，把编辑态 `innerText` 提取的 `\n` 折叠成空格 → 编辑加的换行存库不丢（`commit_edit`/`finish_text`/DB `text` 列全保留 `\n`）但显示丢。纯前端 CSS 问题。
+
+修复：textRef div 加 `whitespace-pre-wrap`。编辑态与 view 态共用同一 div（key 切换），pre-wrap 对 contentEditable 输入无副作用；流式识别文本通常无 `\n`，不受影响。
+
+### 12.5 光标首位 — collapsed range 锚点敏感（O(1) 优化回归）
+
+曾优化 `measureCaretPx` 末尾态为 `selectNodeContents(container)+collapse(false)`（锚容器边界，省 `Array.from(text)`），但**容器边界的 collapsed range 在 Chrome 常返回 zero rect** → 触发兜底 `{left:0,top:0}` → 光标落首位。两路径 reflow 相同（都一次 `getBoundingClientRect`），省的纯 CPU 对流式短文本微不足道。回退为文本节点内 `setStart(firstText, offset)+collapse(true)`（锚文本节点内 offset，rect 可靠）。
+
+### 12.6 通用教训汇总
+
+- **contentEditable 容器的 React children reconcile 不可靠**（12.1）——流式/高频更新 contentEditable div 的文本须 imperative 同步。
+- **视口相对像素须随 scroll 重测**（12.2）——`getBoundingClientRect()` 差值随滚动变，光标定位组件要监听 scroll。
+- **CSS `white-space` 决定 `\n` 可见性**（12.4）——contentEditable innerText 的 `\n` 在 normal 下折叠，需 pre-wrap。
+- **collapsed range 的 `getBoundingClientRect` 锚点敏感**（12.5）——锚容器边界常返 zero rect，应锚文本节点内 offset。

@@ -1,9 +1,11 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from "react";
+import { flushSync } from "react-dom";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { SvgIcon, type IconName } from "@/components/SvgIcon";
+import { codePointOffsetTo, codePointOffsetBefore, measureCaretPx } from "./caret";
 
 const DIVERTED_DELAY_MS = 300;
 
@@ -68,8 +70,13 @@ function Result() {
   const editBufTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const speakingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolbarVisibleRef = useRef(false);
-  const editingStateRef = useRef(false);
   const editSnapshotRef = useRef(""); // 编辑前原始文本快照
+  // 是否自动跟随底部（流式追加时滚到底）。用户手动上滚 → false（停止跟随，便于查看历史）；
+  // 滚回底部附近（距底 < 24px）→ true（恢复跟随）。新录音重置为 true。
+  const stickToBottomRef = useRef(true);
+  // 滚底 rAF 句柄：流式高频 tick（100-200ms）时去重合并到单帧，避免每 tick 排一个 rAF；
+  // 且延迟到 React commit + DOM 更新后再读 scrollHeight（同步读是旧文本高度，会滞后一帧）。
+  const rafScrollRef = useRef<number | null>(null);
 
   // 经 useMemo 稳定：getCurrentWindow() 每次返回新包装对象，若写在渲染体里会让依赖 [win]
   // 的 effect 每次 re-render 都重跑。
@@ -77,7 +84,10 @@ function Result() {
 
   useEffect(() => { editingRef.current = editing; }, [editing]);
   useEffect(() => { toolbarVisibleRef.current = toolbarVisible; }, [toolbarVisible]);
-  useEffect(() => { editingStateRef.current = editing; }, [editing]);
+  // 卸载时取消待执行的滚底 rAF（避免对已卸载 textRef 操作）。
+  useEffect(() => () => {
+    if (rafScrollRef.current != null) cancelAnimationFrame(rafScrollRef.current);
+  }, []);
 
   const showToast = useCallback((msg: string, ms = 2000) => {
     setToast(msg);
@@ -90,7 +100,7 @@ function Result() {
   }, []);
 
   const hideToolbar = useCallback(() => {
-    if (!toolbarVisibleRef.current || editingStateRef.current) return;
+    if (!toolbarVisibleRef.current || editingRef.current) return;
     setToolbarVisible(false);
     setPopupType(null);
   }, []);
@@ -109,9 +119,27 @@ function Result() {
 
   const renderResultNow = useCallback((newText: string) => {
     displayedRef.current = newText;
-    setText(newText);
-    if (textRef.current) {
-      textRef.current.scrollTop = textRef.current.scrollHeight;
+    // 同步写 DOM（绕过 React commit）：textRef 是 contentEditable div，React 对其 children 的
+    // commit 不更新 DOM（保护用户编辑，flushSync 强制 commit 也无效）→ 文字滞后/空白。imperative
+    // 写 textContent 强制 DOM = state，文字立即渲染。仅非编辑态写（编辑态 DOM 由用户控制）。
+    if (textRef.current && !editingRef.current && textRef.current.textContent !== newText) {
+      textRef.current.textContent = newText;
+    }
+    // setText 驱动 state（CaretBlink text prop + effect 重测）；flushSync 强制同步 commit，避免
+    // state 被 scheduler 延迟（否则 CaretBlink effect 滞后 → 光标滞后）。
+    flushSync(() => {
+      setText(newText);
+    });
+    // rAF 延迟滚底到 DOM 更新后（读 scrollHeight 才是新文本高度，修同步读滞后一帧；
+    // 且移出 setText 同步路径，与同帧 CaretBlink measure 不叠加成 layout thrashing）。
+    // rafScrollRef 去重：高频 tick 合并到单帧一次。
+    if (rafScrollRef.current == null) {
+      rafScrollRef.current = requestAnimationFrame(() => {
+        rafScrollRef.current = null;
+        if (stickToBottomRef.current && textRef.current) {
+          textRef.current.scrollTop = textRef.current.scrollHeight;
+        }
+      });
     }
     // 标记正在说话
     setIsSpeaking(true);
@@ -149,11 +177,12 @@ function Result() {
           setIsRecording(true);
           refreshActive();
           if (isPlaceholder) {
-            // 新录音开始：清空上次残留 + 光标回到末尾（null）
+            // 新录音开始：清空上次残留 + 光标回到末尾（null）+ 恢复底部跟随
             setText("");
             displayedRef.current = "";
             pendingDiverted.current = null;
             setCaretPos(null);
+            stickToBottomRef.current = true;
             if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
           } else {
             renderResultNow(text);
@@ -531,12 +560,23 @@ function Result() {
               "text-sm leading-[1.6] text-foreground overflow-y-auto",
               expanded ? "h-full" : "max-h-[63px]",
               "break-words outline-none thin-scrollbar",
+              // whitespace-pre-wrap：编辑态 innerText 提取的 \n 在退出编辑（view 态）正确换行，
+              // 否则 white-space:normal 把 \n 折叠成空格——编辑加的换行后端原样存（segment/DB 都不丢），仅显示丢。
+              "whitespace-pre-wrap",
               !editing && "cursor-text",
             )}
             contentEditable={editing}
             suppressContentEditableWarning
             onInput={onTextInput}
             onMouseUp={!editing ? handleTextMouseUp : undefined}
+            onScroll={(e) => {
+              const el = e.currentTarget;
+              const stick = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
+              stickToBottomRef.current = stick;
+              // 滚回底部区域（stick 恢复 true）→ 立即跟随到最新，不等下个 tick：tick 间隔 100-200ms，
+              // 间隙内最新文字滞留视口下方"空白"，下个 tick 才 rAF 滚底 → 视觉上"连同最新一起出现"。
+              if (stick) el.scrollTop = el.scrollHeight;
+            }}
           >
             {text}
           </div>
@@ -607,50 +647,7 @@ function matchShortcut(e: KeyboardEvent, sc: ReturnType<typeof parseShortcut>) {
   return e.altKey === sc.alt && e.shiftKey === sc.shift;
 }
 
-// ── ASR 光标 helpers ──
-
-// 容器起点 → (node, offset) 的 code-point 计数（与后端 Rust char 对齐）。
-function codePointOffsetTo(container: HTMLElement, node: Node, offset: number): number {
-  const pre = document.createRange();
-  pre.selectNodeContents(container);
-  pre.setEnd(node, offset);
-  const str = pre.toString();
-  return Array.from(str).length;
-}
-// 点击处 → 容器起始的 code-point offset。
-// 用 Range 量从容器起点到点击点的纯文本，按 code-point 计数（与后端 Rust char 对齐）。
-function codePointOffsetBefore(container: HTMLElement, range: Range): number {
-  return codePointOffsetTo(container, range.startContainer, range.startOffset);
-}
-
-// 量 container 内 text 第 pos 个 code-point 处光标的相对像素位置。
-// pos=null/超出 → 末尾。code-point 计数（Array.from 语义），UTF-16 offset 转换为 Range API 所需。
-function measureCaretPx(
-  container: HTMLElement | null,
-  text: string,
-  pos: number | null,
-): { left: number; top: number; height: number } | null {
-  if (!container) return null;
-  const chars = Array.from(text);
-  const target = pos == null ? chars.length : Math.min(pos, chars.length);
-  const walker = document.createTreeWalker(container, NodeFilter.SHOW_TEXT);
-  const firstText = walker.nextNode() as Text | null;
-  if (!firstText) {
-    // 空文本：光标在容器左上
-    return { left: 0, top: 0, height: 18 };
-  }
-  // firstText.nodeValue 应为纯文本（CaretBlink 是 span，不影响首文本节点）。
-  const cp = Array.from(firstText.nodeValue ?? "");
-  const offsetInNode = Math.min(target, cp.length);
-  // Range API 的 offset 是 UTF-16 code unit；code-point → code unit 累加（代理对 length=2，其余 length=1）。
-  const utf16Offset = cp.slice(0, offsetInNode).reduce((acc, ch) => acc + ch.length, 0);
-  const r = document.createRange();
-  r.setStart(firstText, utf16Offset);
-  r.collapse(true);
-  const rect = r.getBoundingClientRect();
-  const cRect = container.getBoundingClientRect();
-  return { left: rect.left - cRect.left, top: rect.top - cRect.top, height: rect.height || 18 };
-}
+// ASR 光标 helpers（codePointOffsetTo/Before、measureCaretPx）已抽到 ./caret.ts。
 
 // 闪烁光标：绝对定位到 pos 处的像素位置（相对文本容器）。
 // 依赖 text/pos 变化重新量像素；container 经 textRef.current 透传。
@@ -668,10 +665,30 @@ function CaretBlink({
   pos: number | null;
 }) {
   const [px, setPx] = useState<{ left: number; top: number; height: number } | null>(null);
+  // text/pos 变（流式追加 / 中插）量像素；用户滚动也须重测——px.top = rect.top-cRect.top 是视口相对
+  // 值（随 scrollTop 变），不重测会停在旧位（流式末尾在容器底，用户上滚后末尾滚到视口下方，但光标仍
+  // 停在容器底闪烁误导）。rAF 节流滚动高频，合并每帧一次 getBoundingClientRect。
   useEffect(() => {
-    setPx(measureCaretPx(containerRef.current, text, pos));
+    const measure = () => setPx(measureCaretPx(containerRef.current, pos));
+    measure();
+    const el = containerRef.current;
+    if (!el) return;
+    let raf = 0;
+    const onScroll = () => {
+      if (raf) return;
+      raf = requestAnimationFrame(() => { raf = 0; measure(); });
+    };
+    el.addEventListener("scroll", onScroll, { passive: true });
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      if (raf) cancelAnimationFrame(raf);
+    };
   }, [containerRef, text, pos]);
   if (!px) return null;
+  // 末尾滚出容器可见区（用户上滚看历史）→ 隐藏光标。stickToBottom 时 px.top≈clientH-行高 < clientH
+  // （显示）；上滚后末尾滚到视口下方 px.top>clientH → 隐藏。
+  const el = containerRef.current;
+  if (el && (px.top < -2 || px.top > el.clientHeight + 2)) return null;
   return (
     <span
       className="asr-caret"
