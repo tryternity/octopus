@@ -1077,6 +1077,8 @@ CREATE TABLE IF NOT EXISTS transcriptions (
 ```
 
 > 保留 raw_text/polished_text/edited_text 列（nullable），v14 迁移把数据迁到 segments+text 后**不删列**（SQLite 删列需重建表，开销大；spec §4 允许先保留 nullable 一个版本）。新写入只写 segments+text+raw_text(=finish_text)。
+>
+> **后续（v15，2026-07-04 已落地）**：rusqlite `bundled` feature 自带 SQLite ≥ 3.45，支持 `ALTER TABLE ... DROP COLUMN` 无需重建表，故 v15 迁移已 DROP 这三列（信息全在 segments/text）。详见 `docs/superpowers/plans/2026-07-04-clean-transcriptions-legacy-columns.md`（若有）与 architecture.md「transcriptions 表 schema v15」。
 
 ### Step 6.2: v14 迁移（旧三列→单段）
 
