@@ -40,6 +40,8 @@ pub enum PipelineEvent {
     Polish { silence: f64 },
     /// 用户可见错误（cloud WSS 开启失败 / StreamEvent::Failed；local 错误只在承载层 warn，不产此事件）。
     Error(String),
+    /// VAD 说话状态变化（有语音→无语音 或 无语音→有语音）。coordinator emit("update-speaking")。
+    Speaking(bool),
 }
 
 /// VadSegmented 段识别结果（pipeline 内部回传类型，2c-3）。
@@ -195,12 +197,14 @@ pub struct StreamingPipeline {
     /// 上一 tick 承载层捕获的用户可见错误（cloud WSS 开启失败 / `StreamEvent::Failed`）。
     /// 由 `tick` 在下个调用取出注入 `PipelineEvent::Error`（2d 收敛）；local 错误只在承载层 warn。
     last_error: Option<String>,
+    /// 上一 tick 的 has_speech 状态（变化时产 Speaking 事件）
+    prev_speaking: bool,
 }
 
 impl StreamingPipeline {
     /// 构造 pipeline。`engine` 由调用方创建（`LocalPipelineEngine` 或 `CloudPipelineEngine`）。
     pub fn new(engine: Box<dyn StreamingPipelineEngine>) -> anyhow::Result<Self> {
-        Ok(Self { engine, last_error: None })
+        Ok(Self { engine, last_error: None, prev_speaking: false })
     }
 
     /// 喂一帧已降噪 16k 样本：engine 产事件 → apply_engine_full，返回 tick 事件流（2d 合并）。
@@ -229,6 +233,12 @@ impl StreamingPipeline {
             }
         }
         let mut events = Vec::new();
+        // VAD 说话状态变化 → Speaking 事件
+        let speaking = self.engine.silence_duration() < 0.3;
+        if speaking != self.prev_speaking {
+            self.prev_speaking = speaking;
+            events.push(PipelineEvent::Speaking(speaking));
+        }
         if is_cloud {
             if changed {
                 events.push(PipelineEvent::PersistRaw { engine_mode: "streaming" });
@@ -385,6 +395,8 @@ pub(crate) struct VadSegmentedPipeline {
     rx: std::sync::mpsc::Receiver<SegmentResult>,
     /// 本 tick 是否发生「有语音的切段」（停顿润色触发用，plan 细化 1）。
     segment_cut_this_tick: bool,
+    /// 上一 tick 的 has_speech 状态（变化时产 Speaking 事件）
+    prev_speaking: bool,
 }
 
 impl VadSegmentedPipeline {
@@ -409,6 +421,7 @@ impl VadSegmentedPipeline {
             active_count: 0, next_seq: 0, completed_seq: 0,
             completed_results: HashMap::new(),
             tx, rx, segment_cut_this_tick: false,
+            prev_speaking: false,
         })
     }
 
@@ -523,6 +536,12 @@ impl VadSegmentedPipeline {
         let changed = self.run_tick(samples, transcript);
         let segment_cut = self.segment_cut_this_tick;
         let mut events = Vec::new();
+        // VAD 说话状态变化 → Speaking 事件
+        let speaking = self.has_speech;
+        if speaking != self.prev_speaking {
+            self.prev_speaking = speaking;
+            events.push(PipelineEvent::Speaking(speaking));
+        }
         if changed {
             events.push(PipelineEvent::PersistRaw { engine_mode: "vad_segmented" });
             events.push(PipelineEvent::Emit { display: transcript.display_text(), insertion: transcript.is_inserting(), caret: transcript.caret_char_offset() });

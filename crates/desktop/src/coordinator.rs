@@ -2152,6 +2152,9 @@ fn apply_pipeline_events(
             PipelineEvent::Error(e) => {
                 crate::result_window::update_result(app_handle, &e, false, 0);
             }
+            PipelineEvent::Speaking(speaking) => {
+                let _ = app_handle.emit("update-speaking", speaking);
+            }
         }
     }
 }
