@@ -83,8 +83,6 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                 return Ok(());
             }
             let paths_json = serde_json::to_string(&files).unwrap_or_default();
-            let search_text = files.join(" ");
-            let count = files.len();
 
             // 去重
             let existing = octopus_infra::db::with_db(|conn| {

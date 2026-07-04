@@ -1,7 +1,7 @@
 use std::sync::Arc;
 use tauri::{Emitter, Manager, State};
 use base64::{Engine, engine::general_purpose};
-use octopus_clipboard::{ClipboardHandle, ClipboardItem, OcrMeta, QueryFilter};
+use octopus_clipboard::{ClipboardHandle, ClipboardItem, QueryFilter};
 
 #[tauri::command]
 pub async fn query_clipboard_history(
@@ -41,8 +41,6 @@ pub async fn delete_clipboard_item(
     id: i64,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    // 级联删除：source=asr 的条目删 transcriptions 对应记录
-    cascade_delete_transcriptions(&[id]);
     octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::delete_item(conn, id)
     })
@@ -56,7 +54,6 @@ pub async fn delete_clipboard_items(
     ids: Vec<i64>,
     app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
-    cascade_delete_transcriptions(&ids);
     let n = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::delete_items(conn, &ids)
     })
@@ -70,19 +67,6 @@ pub async fn clear_clipboard_history(
     keep_favorite: bool,
     app_handle: tauri::AppHandle,
 ) -> Result<usize, String> {
-    // 清空前查出所有 asr 条目，级联删 transcriptions
-    let ids: Vec<i64> = octopus_infra::db::with_db(|conn| {
-        let sql = if keep_favorite {
-            "SELECT id FROM clipboard_history WHERE source = 'asr' AND is_favorite = 0"
-        } else {
-            "SELECT id FROM clipboard_history WHERE source = 'asr'"
-        };
-        let mut stmt = conn.prepare(sql)?;
-        let rows = stmt.query_map([], |r| r.get::<_, i64>(0))?;
-        Ok::<_, anyhow::Error>(rows.filter_map(|r| r.ok()).collect::<Vec<_>>())
-    })
-    .unwrap_or_default();
-    cascade_delete_transcriptions(&ids);
     let n = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::clear_history(conn, keep_favorite)
     })
@@ -91,36 +75,17 @@ pub async fn clear_clipboard_history(
     Ok(n)
 }
 
-/// 级联删除 transcriptions：查 clipboard_history 的 transcription_id，删对应 transcriptions 记录。
-fn cascade_delete_transcriptions(ids: &[i64]) {
-    if ids.is_empty() { return; }
-    let _ = octopus_infra::db::with_db(|conn| {
-        for id in ids {
-            let result: Option<i64> = conn.query_row(
-                "SELECT transcription_id FROM clipboard_history WHERE id = ?1 AND transcription_id IS NOT NULL",
-                [id],
-                |r| r.get::<_, Option<i64>>(0).map(|v| v.unwrap_or(0)),
-            ).ok().filter(|v| *v > 0);
-            if let Some(tid) = result {
-                let _ = conn.execute("DELETE FROM transcriptions WHERE id = ?1", [tid]);
-            }
-        }
-        Ok::<(), anyhow::Error>(())
-    });
-}
-
 /// 按条目类型把内容写到系统剪贴板（copy / paste 共用）：
-/// - Text: write_text(content)
-/// - Image: 从 image_data 读 WebP 原图 → 转 PNG → write_image（还原为真实图片，
-///   而非把 blob_hash 当文本写入）
-/// - File: 解析 content（JSON 路径数组）→ write_files（还原为真实文件，
-///   而非把 JSON 字符串当文本写入）
+/// - Text/Voice/Ocr: write_text(content)
+/// - Image: ref_data 存 blob_hash → 从 image_data 读 WebP 原图 → 转 PNG → write_image
+/// - File: ref_data 存 JSON 路径数组 → write_files
 fn write_item_to_clipboard(handle: &ClipboardHandle, item: &ClipboardItem) -> Result<(), String> {
     match item.item_type {
-        octopus_clipboard::ItemType::Text => handle.write_text(&item.content).map_err(|e| e.to_string()),
+        octopus_clipboard::ItemType::Text
+        | octopus_clipboard::ItemType::Voice
+        | octopus_clipboard::ItemType::Ocr => handle.write_text(&item.content).map_err(|e| e.to_string()),
         octopus_clipboard::ItemType::Image => {
-            let blob_hash = item.image_meta.as_ref()
-                .map(|m| m.blob_hash.clone())
+            let blob_hash = item.ref_data.clone()
                 .ok_or("图片元数据缺失")?;
             let webp_blob = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::get_image_blob(conn, &blob_hash)
@@ -142,7 +107,9 @@ fn write_item_to_clipboard(handle: &ClipboardHandle, item: &ClipboardItem) -> Re
             handle.write_image(&png).map_err(|e| e.to_string())
         }
         octopus_clipboard::ItemType::File => {
-            let paths: Vec<String> = serde_json::from_str(&item.content)
+            let paths_json = item.ref_data.as_ref()
+                .ok_or("文件路径缺失")?;
+            let paths: Vec<String> = serde_json::from_str(paths_json)
                 .map_err(|e| format!("解析文件路径失败: {}", e))?;
             handle.write_files(paths).map_err(|e| e.to_string())
         }
@@ -261,7 +228,7 @@ pub async fn save_image_item(
         return Err("非图片条目".into());
     }
 
-    let blob_hash = item.image_meta.as_ref().map(|m| m.blob_hash.clone())
+    let blob_hash = item.ref_data.clone()
         .ok_or("图片元数据缺失")?;
 
     // 2. 从 DB 读 WebP 无损 BLOB
@@ -421,15 +388,13 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
 /// 当前 OCR 引擎/模型元数据：engine 固定 paddle（ocr_rs 基于 PaddleOCR）；
 /// model 从 app_config.ocr_model 读，默认 PP-OCRv6-small。insert_ocr_clipboard_item
 /// 与 ocr_screenshot 两处复用，保证 ocr 条目 meta 一致。
-pub(crate) fn current_ocr_meta() -> OcrMeta {
+/// 返回 (engine, model) 元组，匹配 insert_ocr_item(text, engine, model) 签名。
+pub(crate) fn current_ocr_meta() -> (String, String) {
     let model_name = octopus_infra::db::load_config_key("ocr_model")
         .ok()
         .flatten()
         .unwrap_or_else(|| octopus_ocr::model::DEFAULT_OCR_MODEL.to_string());
-    OcrMeta {
-        engine: "paddle".to_string(),
-        model: model_name,
-    }
+    ("paddle".to_string(), model_name)
 }
 
 /// OCR 统一入库：识别文本 → 新建 source=ocr 剪贴板条目 → 广播刷新 → 返回新 id。
@@ -443,10 +408,10 @@ pub async fn insert_ocr_clipboard_item(
     // ⚠️ current_ocr_meta 必须在 with_db 外取：其内部 load_config_key → with_db，
     // 在 with_db 闭包内调 = std::Mutex 同线程重入死锁（DB 锁永久持有 → 所有 with_db
     // 操作阻塞 = 过滤失灵；本命令永不返回 = CompactEditor 不弹）。
-    let meta = current_ocr_meta();
+    let (ocr_engine, ocr_model) = current_ocr_meta();
     log::info!("[insert-ocr] before insert text_len={}", text.len());
     let id = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::insert_ocr_item(conn, &text, meta)
+        octopus_clipboard::store::insert_ocr_item(conn, &text, &ocr_engine, &ocr_model)
     })
     .map_err(|e| {
         log::error!("[insert-ocr] insert FAILED: {:?}", e);
@@ -495,7 +460,7 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
         return Err("非图片条目".into());
     }
 
-    let blob_hash = item.image_meta.as_ref().map(|m| m.blob_hash.clone())
+    let blob_hash = item.ref_data.clone()
         .ok_or("图片元数据缺失")?;
 
     let webp_blob = octopus_infra::db::with_db(|conn| {
@@ -524,7 +489,7 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
     Ok(OcrResult { text, blocks })
 }
 
-/// 精简编辑器回写：更新剪贴板条目文本（content + search_text）并同步系统剪贴板。
+/// 精简编辑器回写：更新剪贴板条目文本（content）并同步系统剪贴板。
 /// OCR 编辑、剪贴板文本条目编辑两处共用。
 #[tauri::command]
 pub async fn set_clipboard_item_text(
@@ -561,7 +526,7 @@ pub async fn get_image_thumb(id: i64) -> Result<String, String> {
         return Err("非图片条目".into());
     }
 
-    let blob_hash = item.image_meta.as_ref().map(|m| m.blob_hash.clone())
+    let blob_hash = item.ref_data.clone()
         .ok_or("图片元数据缺失")?;
 
     let thumb_blob = octopus_infra::db::with_db(|conn| {
@@ -592,7 +557,7 @@ pub async fn get_image_full(id: i64) -> Result<tauri::ipc::Response, String> {
         return Err("非图片条目".into());
     }
 
-    let blob_hash = item.image_meta.as_ref().map(|m| m.blob_hash.clone())
+    let blob_hash = item.ref_data.clone()
         .ok_or("图片元数据缺失")?;
 
     let blob = octopus_infra::db::with_db(|conn| {

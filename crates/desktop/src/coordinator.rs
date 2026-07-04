@@ -1101,7 +1101,6 @@ fn do_paste(
         .inner()
         .clone();
     let text_to_paste = text_to_paste.to_string();
-    let polish_status_owned = polish_status.to_string();
 
     let app_handle_emit = app_handle.clone();
     tauri::async_runtime::spawn(async move {
@@ -1111,12 +1110,9 @@ fn do_paste(
                 octopus_clipboard::store::insert_asr_item(
                     conn,
                     &text_to_paste,
-                    octopus_clipboard::model::AsrMeta {
-                        transcription_id: id,
-                        polish_status: polish_status_owned,
-                        engine: config.asr_engine.clone(),
-                        model: String::new(),
-                    },
+                    &config.asr_engine,
+                    "",
+                    None,
                 )
             });
             if let Err(e) = &inserted {

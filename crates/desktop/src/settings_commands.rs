@@ -370,10 +370,10 @@ pub fn delete_history(ids: Vec<i64>, app_handle: tauri::AppHandle) -> Result<usi
     use tauri::Emitter;
     // 删除转译记录，同步删除剪贴板中引用这些记录的条目
     let deleted = octopus_infra::db::delete_transcriptions(&ids).map_err(|e| e.to_string())?;
-    // 级联删除剪贴板 ASR 条目；有删除才广播 clipboard://changed，避免设置页与浮窗
+    // 级联删除剪贴板 voice 条目；有删除才广播 clipboard://changed，避免设置页与浮窗
     // 列表不一致（浮窗 stale 显示已删条目，双击粘贴查不到 id 失效）
     let clipboard_deleted = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::delete_by_transcription_ids(conn, &ids)
+        octopus_clipboard::store::delete_items(conn, &ids)
     })
     .unwrap_or(0);
     if clipboard_deleted > 0 {
