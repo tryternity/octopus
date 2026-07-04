@@ -53,6 +53,9 @@ function CompactEditor() {
   const taRef = useRef<HTMLTextAreaElement>(null);
   const tabsRef = useRef<Tab[]>([]);
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
+  // 并发加载占位：loadAndAddTab 的 await 期间 tabsRef 尚未更新，快速连点同一 item 会
+  // 两路都过 findIndex（-1）→ setTabs 各加一份 → 重复 key。await 前同步占位拦截。
+  const pendingKeysRef = useRef<Set<string>>(new Set());
 
   const active = tabs[activeIdx];
   const isReadOnly = active?.source === 'transcription';
@@ -71,32 +74,41 @@ function CompactEditor() {
     const key = `${source}:${itemId}`;
     const existIdx = tabsRef.current.findIndex(t => t.key === key);
     if (existIdx >= 0) { setActiveIdx(existIdx); return; }
+    // 并发拦截：await invoke 期间 tabsRef 尚未更新，同一 key 的二次调用会重复添加。
+    // pendingKeysRef 在 await 前同步占位（JS 单线程，await 前同步段不被中断）；setTabs
+    // 内再 prev.some 双保险（防 tabsRef 本身 stale）。finally 释放，失败可重试。
+    if (pendingKeysRef.current.has(key)) return;
+    pendingKeysRef.current.add(key);
+    try {
+      if (source === 'transcription') {
+        const text = await invoke<string>("get_transcription_text", { id: itemId }).catch(() => "");
+        setTabs(prev => prev.some(t => t.key === key) ? prev : [...prev, { key, source: 'transcription', itemId, text }]);
+        setActiveIdx(tabsRef.current.length);
+        return;
+      }
 
-    if (source === 'transcription') {
-      const text = await invoke<string>("get_transcription_text", { id: itemId }).catch(() => "");
-      setTabs(prev => [...prev, { key, source: 'transcription', itemId, text }]);
+      // clipboard：先查类型，再加载
+      const itemType = await invoke<string>("get_clipboard_item_type", { itemId }).catch(() => "text");
+      if (itemType === 'image') {
+        // 图片 tab ≤5 限制
+        setTabs(prev => {
+          if (prev.some(t => t.key === key)) return prev;
+          const imageTabs = prev.filter(t => t.itemType === 'image');
+          let next = prev;
+          if (imageTabs.length >= MAX_IMAGE_TABS) {
+            const oldestKey = imageTabs[0].key;
+            next = prev.filter(t => t.key !== oldestKey);
+          }
+          return [...next, { key, source: 'clipboard' as const, itemId, itemType: 'image' as const }];
+        });
+      } else {
+        const text = await invoke<string>("get_clipboard_item_text", { itemId }).catch(() => "");
+        setTabs(prev => prev.some(t => t.key === key) ? prev : [...prev, { key, source: 'clipboard' as const, itemId, itemType: 'text' as const, text }]);
+      }
       setActiveIdx(tabsRef.current.length);
-      return;
+    } finally {
+      pendingKeysRef.current.delete(key);
     }
-
-    // clipboard：先查类型，再加载
-    const itemType = await invoke<string>("get_clipboard_item_type", { itemId }).catch(() => "text");
-    if (itemType === 'image') {
-      // 图片 tab ≤5 限制
-      setTabs(prev => {
-        const imageTabs = prev.filter(t => t.itemType === 'image');
-        let next = prev;
-        if (imageTabs.length >= MAX_IMAGE_TABS) {
-          const oldestKey = imageTabs[0].key;
-          next = prev.filter(t => t.key !== oldestKey);
-        }
-        return [...next, { key, source: 'clipboard' as const, itemId, itemType: 'image' as const }];
-      });
-    } else {
-      const text = await invoke<string>("get_clipboard_item_text", { itemId }).catch(() => "");
-      setTabs(prev => [...prev, { key, source: 'clipboard' as const, itemId, itemType: 'text' as const, text }]);
-    }
-    setActiveIdx(tabsRef.current.length);
   }, []);
 
   // mount：取首个 pending tab；监听并发再开的 open-tab 事件
@@ -163,11 +175,12 @@ function CompactEditor() {
       invoke("close_compact_editor");
       return;
     }
-    const next = tabs.filter((_, i) => i !== idx);
-    setTabs(next);
+    // 函数式更新：快速连点关两个 tab 时，非函数式 setTabs(next) 基于闭包 tabs（stale），
+    // 第二次覆盖第一次 → 被关的 tab 复活。setTabs 走 prev 链式（setActiveIdx 本就函数式）。
+    setTabs(prev => prev.filter((_, i) => i !== idx));
     setActiveIdx(i => {
       if (idx < i) return i - 1;
-      if (idx === i) return Math.min(i, next.length - 1);
+      if (idx === i) return Math.min(i, tabs.length - 2); // 过滤后 length=tabs.length-1，max idx=tabs.length-2
       return i;
     });
   };
@@ -423,6 +436,7 @@ function CompactEditor() {
               <ImagePreviewComponent imageId={tab.itemId} />
             ) : (
               <textarea
+                ref={i === activeIdx ? taRef : undefined}
                 value={tab.text || ''}
                 onChange={e => {
                   const idx = tabs.findIndex(t => t.key === tab.key);
