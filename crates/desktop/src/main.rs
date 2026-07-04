@@ -6,8 +6,7 @@ mod config;
 mod clipboard_commands;
 mod compact_editor_commands;
 mod compact_editor_window;
-mod image_preview_commands;
-mod image_preview_window;
+
 mod image_migration;
 mod clipboard_window;
 mod coordinator;
@@ -250,9 +249,7 @@ pub fn run() {
             compact_editor_commands::get_clipboard_item_type,
             compact_editor_commands::get_transcription_text,
             compact_editor_commands::close_compact_editor,
-            image_preview_commands::open_image_preview,
-            image_preview_commands::get_pending_image,
-            image_preview_commands::close_image_preview,
+
             coordinator::current_transcription_id,
         ])
         .setup(move |app| {
@@ -483,8 +480,7 @@ pub fn run() {
                     settings_window::on_settings_closed(app);
                 } else if label == "compact_editor_window" {
                     compact_editor_window::on_compact_editor_closed(app);
-                } else if label == "image_preview_window" {
-                    image_preview_window::on_image_preview_closed(app);
+
                 }
             }
             // 应用退出前：排空后台 DB 写入队列，避免 Finalize 等命令入队未落库而丢失

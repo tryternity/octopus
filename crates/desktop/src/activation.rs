@@ -1,17 +1,16 @@
 //! macOS 常规窗口激活策略协调。
 //!
-//! settings / compact_editor / image_preview 三个常规窗口开窗时把 app 升为 Regular
+//! settings / compact_editor 两个常规窗口开窗时把 app 升为 Regular
 //!（Dock 显图标），关窗时降回 Accessory（纯托盘）。但关某一个时若其余常规窗口仍开着，
-//! 不能直接降级——app 降为 Accessory 会令 macOS 收掉剩余的常规窗口（「关文本编辑器
-//! 连带关掉图片查看器」即此）。故关窗后仅当三个常规窗口**全无存活**才降级。
+//! 不能直接降级——app 降为 Accessory 会令 macOS 收掉剩余的常规窗口。故关窗后仅当
+//! 常规窗口**全无存活**才降级。
 
 use tauri::{ActivationPolicy, Manager};
 
-/// 三个常规窗口 label：任一存活 → app 须保持 Regular。
+/// 常规窗口 label：任一存活 → app 须保持 Regular。
 const REGULAR_WINDOWS: &[&str] = &[
     "settings_window",
     "compact_editor_window",
-    "image_preview_window",
 ];
 
 /// 某常规窗口关闭后调用：仅当无其他常规窗口存活时才切回 Accessory。
