@@ -403,10 +403,12 @@ function ClipboardRow({
         )}
         {isVoice && item.asr_meta && (
           <span className="inline-block mt-0.5 text-[10px] text-amber-700/60 font-medium">
-            {item.asr_meta.engine}
+            {item.created_at} · {item.asr_meta.engine}
           </span>
         )}
-        <span className="ml-2 text-[10px] text-stone-300">{item.created_at}</span>
+        {!isVoice && (
+          <span className="inline-block mt-0.5 ml-2 text-[10px] text-stone-300">{item.created_at}</span>
+        )}
         {item.item_type === "image" && item.image_meta && item.image_meta.size > 0 && (
           <span className="ml-1 text-[11px] text-sky-700 font-medium tabular-nums">{formatSize(item.image_meta.size)}</span>
         )}
