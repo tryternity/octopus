@@ -1,4 +1,4 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rusqlite::{params, Connection};
 use std::sync::atomic::{AtomicU32, Ordering};
 
