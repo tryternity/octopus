@@ -230,17 +230,20 @@ function CompactEditor() {
 
   // 仅在 findQuery 变化（用户输入查找词）时跳转到第一个匹配，不在 text 变化时跳
   const prevFindQuery = useRef("");
+  const findDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => {
     if (!showFind) return;
-    // findQuery 变化 → 重新匹配 + 跳转到第一个
+    // findQuery 变化 → 立即重新匹配 + 跳转
     if (findQuery !== prevFindQuery.current) {
       prevFindQuery.current = findQuery;
+      if (findDebounce.current) clearTimeout(findDebounce.current);
       runFind();
       if (matches.length > 0) selectRange(matches[0], findQuery.length);
       return;
     }
-    // text 变化（打字/编辑）→ 仅更新匹配计数，不 selectRange（不抢焦点/不重置滚动）
-    runFind();
+    // text 变化（打字/编辑）→ debounce 150ms 后更新匹配计数（避免每键扫描全文）
+    if (findDebounce.current) clearTimeout(findDebounce.current);
+    findDebounce.current = setTimeout(() => runFind(), 150);
   }, [findQuery, showFind, matches, runFind]);
 
   const gotoMatch = (delta: number) => {
