@@ -18,23 +18,26 @@
 ## 2. 范围
 
 **做：**
-- 双 canvas 分层（bgCanvas + drawCanvas），绘制操作增量追加到顶层
-- 缩放时 `createImageBitmap` 异步预缩放底图
-- 大图先 thumb 再 full 渐进加载
-- 缩略图显示期间 fit-to-window 自适应缩放
-- 相关重构：`draw()` 拆分为 `drawBg()` + `drawActive()`，缩放逻辑调优
+- 视口渲染 canvas（固定窗口大小 ~2M 像素，只画可见区域）+ SVG overlay（标注）
+- 缩放时 `createImageBitmap` 异步预缩放底图（150ms debounce）
+- 大图先 thumb 再 full 渐进加载（`fullLoadedRef` 防竞态降级）
+- fit-to-width 默认 + fitModeRef 三态（fitWidth/fitWindow/manual）+ ResizeObserver
+- 标注工具扩展：序号/马赛克/菱形 + 实心填充 + redo
+- 属性浮窗交互：点击工具弹出，画布操作时自动收起，再点按钮重新弹出
+- 图标统一为截图 SVG 风格（icons/*.svg）
 
 **不做（YAGNI）：**
-- 多级缩放位图缓存（用户不会连续缩放十几个级别，单级异步足够）
+- 多级缩放位图缓存（单级异步 + debounce 足够）
 - WebP 渐进解码（浏览器行为不可控）
-- 后端变更（`get_image_thumb`、`get_image_full` 已有，无需新增命令）
-- 滚轮缩放 / 触控手势（当前只有按钮缩放，不做新交互）
+- 后端变更（`get_image_thumb`、`get_image_full` 已有）
+- 滚轮缩放 / 触控手势（当前只有按钮缩放）
+- OCR 文本块可视化（独立需求）
 
 ## 3. 架构
 
 ### 3.1 单 canvas（底图）+ SVG overlay（标注）= 标注零 canvas 开销
 
-**演进**：初版用双 canvas（bgCanvas + drawCanvas），在超大图（2032×15796，45M 像素）上 drawCanvas 的 GPU 合成开销仍然卡顿。最终改为 canvas 只画底图 + 标注用 SVG overlay，标注变化不再触发任何 canvas 操作。
+**演进**：单 canvas（整张图）→ SVG overlay（标注脱离 canvas）→ 视口渲染（canvas 在 wrapper 内只画可见区域，与 SVG 同一 scroll context 零晃动）。
 
 ```tsx
 <div className="relative" style={{ width: dispW, height: dispH, ...棋盘格 }}>

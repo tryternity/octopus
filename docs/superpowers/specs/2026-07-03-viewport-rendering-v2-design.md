@@ -1,7 +1,7 @@
 # 图片查看器视口渲染 v2 设计
 
 > 日期：2026-07-03
-> 状态：📋 设计中
+> 状态：✅ 已实现（canvas 移入 wrapper 内，与 SVG 同一 scroll context）
 > 前置：`2026-07-03-image-viewer-perf-design.md`（SVG overlay + DPR 自适应已合入 main）
 
 ## 1. 背景

@@ -1,10 +1,13 @@
-import { useRef, useState } from "react";
+import { useRef, useState, useEffect } from "react";
 import {
-  MousePointer2, Square, Circle, Minus, ArrowUpRight, Pen, Type, Undo2,
-  Download, Copy, ScanText, Pin, PinOff, Check, ZoomIn, ZoomOut, Expand, MoveHorizontal, AlertTriangle,
-  Hash, Grid2x2,
+  ZoomIn, ZoomOut, Expand, MoveHorizontal,
 } from "lucide-react";
 import type { Tool } from "@/lib/annotation";
+
+// SVG 图标 img（与截图工具一致，激活时变白）
+const SvgIcon = ({ src, alt, active }: { src: string; alt: string; active?: boolean }) => (
+  <img src={src} alt={alt} className="w-[18px] h-[18px]" style={{ filter: active ? "brightness(0) invert(1)" : "none" }} />
+);
 
 // 预设色与截图 ToolPropsPopover 一致（含白色）
 const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#000000", "#ffffff"];
@@ -62,32 +65,48 @@ export default function Toolbar(props: {
   alwaysOnTop: boolean; onToggleTop: () => void;
   onSave: () => void; onCopy: () => void; onOcr: () => void;
   onUndo: () => void; canUndo: boolean;
+  onRedo: () => void; canRedo: boolean;
   ocrCopied: boolean;
   ocrWarn: boolean;
   zoom: number; onZoomIn: () => void; onZoomOut: () => void; onZoomReset: () => void;
   onZoomFitWidth: () => void; onZoomFitWindow: () => void;
+  filled: boolean; setFilled: (f: boolean) => void;
+  popoverDismissKey: number;  // 变化时收起浮窗
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   // 浮窗左偏移（相对工具卡），跟随被点击的标注按钮
+  // 浮窗显隐：独立 state，不绑死 tool。用户操作画布时自动收起，需要改属性时重新点按钮弹出。
+  const [showPopover, setShowPopover] = useState(false);
+  // 用户在画布上操作时收起浮窗（popoverDismissKey 由 index.tsx mousedown 时递增）
+  useEffect(() => { setShowPopover(false); }, [props.popoverDismissKey]);
+
   const [popoverLeft, setPopoverLeft] = useState(0);
 
   const isText = props.tool === "text";
   const isBlur = props.tool === "blur";
-  const showProps = props.tool !== "none";
+  const showProps = showPopover && props.tool !== "none";
   const sizeValue = isText ? props.toolFontSize : props.toolWidth;
   const setSize = isText ? props.setToolFontSize : props.setToolWidth;
   const min = isText ? 10 : 1;
   const max = isText ? 48 : 10;
   const label = isText ? "字号" : isBlur ? "遮挡" : "粗细";
 
-  // 标注工具点击：toggle（再点已激活→回 none→收起），并算浮窗跟随位置
+  // 标注工具点击：已激活→收起浮窗+切回 none；未激活→切换工具+弹出浮窗
   const onToolClick = (key: Tool, e: React.MouseEvent<HTMLButtonElement>) => {
     if (props.tool === key) {
-      props.setTool("none");
+      if (showPopover) {
+        // 浮窗已显示 → 收起 + 切回 none
+        setShowPopover(false);
+        props.setTool("none");
+      } else {
+        // 浮窗已收起（画完后）→ 重新弹出
+        setShowPopover(true);
+      }
       return;
     }
     props.setTool(key);
-    // 浮窗跟随按钮：按钮中心相对工具卡的偏移，clamp 到 [0, cardW - POPOVER_W]
+    setShowPopover(true);
+    // 浮窗跟随按钮
     const btn = e.currentTarget;
     const card = containerRef.current;
     if (card) {
@@ -98,15 +117,16 @@ export default function Toolbar(props: {
   };
 
   const tools: { key: Tool; icon: React.ReactNode; title: string }[] = [
-    { key: "none", icon: <MousePointer2 className="h-[18px] w-[18px]" />, title: "选择/移动" },
-    { key: "rect", icon: <Square className="h-[18px] w-[18px]" />, title: "矩形" },
-    { key: "oval", icon: <Circle className="h-[18px] w-[18px]" />, title: "椭圆" },
-    { key: "line", icon: <Minus className="h-[18px] w-[18px]" />, title: "直线" },
-    { key: "arrow", icon: <ArrowUpRight className="h-[18px] w-[18px]" />, title: "箭头" },
-    { key: "pen", icon: <Pen className="h-[18px] w-[18px]" />, title: "画笔（自由曲线）" },
-    { key: "text", icon: <Type className="h-[18px] w-[18px]" />, title: "文字" },
-    { key: "number", icon: <Hash className="h-[18px] w-[18px]" />, title: "序号" },
-    { key: "blur", icon: <Grid2x2 className="h-[18px] w-[18px]" />, title: "马赛克" },
+    { key: "none", icon: <SvgIcon src="icons/arrow-pointer.svg" alt="选择" active={props.tool === "none"} />, title: "选择/移动" },
+    { key: "rect", icon: <SvgIcon src="icons/square.svg" alt="矩形" active={props.tool === "rect"} />, title: "矩形" },
+    { key: "oval", icon: <SvgIcon src="icons/circle.svg" alt="椭圆" active={props.tool === "oval"} />, title: "椭圆" },
+    { key: "diamond", icon: <SvgIcon src="icons/diamond.svg" alt="菱形" active={props.tool === "diamond"} />, title: "菱形" },
+    { key: "line", icon: <SvgIcon src="icons/straight-line.svg" alt="直线" active={props.tool === "line"} />, title: "直线" },
+    { key: "arrow", icon: <SvgIcon src="icons/arrow-line.svg" alt="箭头" active={props.tool === "arrow"} />, title: "箭头" },
+    { key: "pen", icon: <SvgIcon src="icons/sketching.svg" alt="画笔" active={props.tool === "pen"} />, title: "画笔（自由曲线）" },
+    { key: "text", icon: <SvgIcon src="icons/text.svg" alt="文字" active={props.tool === "text"} />, title: "文字" },
+    { key: "number", icon: <SvgIcon src="icons/sequence-note.svg" alt="序号" active={props.tool === "number"} />, title: "序号" },
+    { key: "blur", icon: <SvgIcon src="icons/mosaic.svg" alt="马赛克" active={props.tool === "blur"} />, title: "马赛克" },
   ];
 
   return (
@@ -118,16 +138,16 @@ export default function Toolbar(props: {
         padding: "6px 8px", background: "#fff", borderRadius: 8,
         boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
       }}>
-        {/* 输出操作：保存 / 复制 / OCR（最前） */}
+        {/* 输出操作：保存 / 复制 / OCR（截图 SVG 图标） */}
         <ToolButton title="保存为文件" active={false} onClick={() => props.onSave()}>
-          <Download className="h-[18px] w-[18px]" />
+          <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" />
         </ToolButton>
         <ToolButton title="复制到剪贴板" active={false} onClick={() => props.onCopy()}>
-          <Copy className="h-[18px] w-[18px]" />
+          <img src="icons/copy.svg" alt="复制" className="w-[18px] h-[18px]" />
         </ToolButton>
         <div style={{ position: "relative" }}>
-          <ToolButton title={props.ocrWarn ? "前一个 OCR 还未完成，请稍后" : "OCR 识别（结果复制到剪贴板）"} active={props.ocrCopied || props.ocrWarn} onClick={() => props.onOcr()}>
-            {props.ocrCopied ? <Check className="h-[18px] w-[18px]" /> : props.ocrWarn ? <AlertTriangle className="h-[18px] w-[18px]" style={{ color: "#f59e0b" }} /> : <ScanText className="h-[18px] w-[18px]" />}
+          <ToolButton title={props.ocrWarn ? "前一个 OCR 还未完成，请稍后" : "OCR 识别"} active={props.ocrCopied || props.ocrWarn} onClick={() => props.onOcr()}>
+            {props.ocrCopied ? <img src="icons/check.svg" alt="完成" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" style={{ filter: props.ocrWarn ? "none" : "none" }} />}
           </ToolButton>
           {props.ocrWarn && (
             <span style={{
@@ -151,7 +171,10 @@ export default function Toolbar(props: {
           </ToolButton>
         ))}
         <ToolButton title="撤销 (Cmd/Ctrl+Z)" active={false} onClick={() => props.onUndo()}>
-          <Undo2 className="h-[18px] w-[18px]" style={{ opacity: props.canUndo ? 1 : 0.3 }} />
+          <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" style={{ opacity: props.canUndo ? 1 : 0.3 }} />
+        </ToolButton>
+        <ToolButton title="重做 (Cmd/Ctrl+Shift+Z)" active={false} onClick={() => props.onRedo()}>
+          <img src="icons/redo.svg" alt="重做" className="w-[18px] h-[18px]" style={{ opacity: props.canRedo ? 1 : 0.3 }} />
         </ToolButton>
 
         {/* 缩放：缩小 + 当前百分比(点击重置 100%) + 放大 */}
@@ -190,7 +213,7 @@ export default function Toolbar(props: {
         <Divider />
         <ToolButton title={props.alwaysOnTop ? "取消置顶" : "窗口置顶"}
           active={props.alwaysOnTop} onClick={() => props.onToggleTop()}>
-          {props.alwaysOnTop ? <PinOff className="h-[18px] w-[18px]" /> : <Pin className="h-[18px] w-[18px]" />}
+          <img src="icons/pin.svg" alt="置顶" className="w-[18px] h-[18px]" style={{ filter: props.alwaysOnTop ? "brightness(0) invert(1)" : "none" }} />
         </ToolButton>
       </div>
 
@@ -246,6 +269,30 @@ export default function Toolbar(props: {
               );
             })}
           </div>
+          {/* 行 3：实心开关（仅 rect/oval） */}
+          {(props.tool === "rect" || props.tool === "oval" || props.tool === "diamond") && (
+            <>
+              <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                <span style={{ fontSize: 10, color: "#a8a29e", fontWeight: 500 }}>实心填充</span>
+                <button
+                  type="button"
+                  onClick={() => props.setFilled(!props.filled)}
+                  style={{
+                    width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
+                    background: props.filled ? "#3b82f6" : "rgba(0,0,0,0.15)",
+                    position: "relative", transition: "background 0.2s",
+                  }}
+                >
+                  <span style={{
+                    position: "absolute", top: 2, left: props.filled ? 16 : 2,
+                    width: 14, height: 14, borderRadius: "50%", background: "#fff",
+                    transition: "left 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
+                  }} />
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
     </div>

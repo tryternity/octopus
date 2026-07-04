@@ -2,10 +2,10 @@
 // 坐标空间由调用方决定：这些函数对坐标数值本身不做假设，
 // 调用方负责把 ctx 变换（translate/scale）设好后再传入标注坐标。
 
-export type Tool = "none" | "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number" | "blur";
+export type Tool = "none" | "rect" | "oval" | "diamond" | "line" | "arrow" | "pen" | "text" | "number" | "blur";
 
 export interface Annotation {
-  type: "rect" | "oval" | "line" | "arrow" | "pen" | "text" | "number" | "blur";
+  type: "rect" | "oval" | "diamond" | "line" | "arrow" | "pen" | "text" | "number" | "blur";
   x1: number; y1: number; x2: number; y2: number;
   text?: string;
   points?: number[][];
@@ -15,6 +15,7 @@ export interface Annotation {
   number?: number;
   circleSize?: number;
   textWidth?: number; // 文本最大宽度（自然像素），不折行时省略
+  filled?: boolean; // rect/oval/diamond 是否实心填充
 }
 
 const HIT_DIST = 8;
@@ -33,7 +34,7 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
     const y = Math.min(ann.y1, ann.y2);
     const w = Math.abs(ann.x2 - ann.x1);
     const h = Math.abs(ann.y2 - ann.y1);
-    ctx.strokeRect(x, y, w, h);
+    if (ann.filled) { ctx.fillRect(x, y, w, h); } else { ctx.strokeRect(x, y, w, h); }
   } else if (ann.type === "oval") {
     const cx = (ann.x1 + ann.x2) / 2;
     const cy = (ann.y1 + ann.y2) / 2;
@@ -41,7 +42,20 @@ export function drawAnnotation(ctx: CanvasRenderingContext2D, ann: Annotation) {
     const ry = Math.max(1, Math.abs(ann.y2 - ann.y1) / 2);
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    if (ann.filled) ctx.fill(); else ctx.stroke();
+  } else if (ann.type === "diamond") {
+    const x = Math.min(ann.x1, ann.x2);
+    const y = Math.min(ann.y1, ann.y2);
+    const w = Math.abs(ann.x2 - ann.x1);
+    const h = Math.abs(ann.y2 - ann.y1);
+    const cx = x + w / 2, cy = y + h / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, y);
+    ctx.lineTo(x + w, cy);
+    ctx.lineTo(cx, y + h);
+    ctx.lineTo(x, cy);
+    ctx.closePath();
+    if (ann.filled) ctx.fill(); else ctx.stroke();
   } else if (ann.type === "line") {
     ctx.beginPath();
     ctx.moveTo(ann.x1, ann.y1);
@@ -161,7 +175,7 @@ export function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotat
     const y = Math.min(ann.y1, ann.y2) * scale;
     const w = Math.abs(ann.x2 - ann.x1) * scale;
     const h = Math.abs(ann.y2 - ann.y1) * scale;
-    ctx.strokeRect(x, y, w, h);
+    if (ann.filled) { ctx.fillRect(x, y, w, h); } else { ctx.strokeRect(x, y, w, h); }
   } else if (ann.type === "oval") {
     const cx = (ann.x1 + ann.x2) / 2 * scale;
     const cy = (ann.y1 + ann.y2) / 2 * scale;
@@ -169,7 +183,20 @@ export function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotat
     const ry = Math.max(1, Math.abs(ann.y2 - ann.y1) / 2 * scale);
     ctx.beginPath();
     ctx.ellipse(cx, cy, rx, ry, 0, 0, Math.PI * 2);
-    ctx.stroke();
+    if (ann.filled) ctx.fill(); else ctx.stroke();
+  } else if (ann.type === "diamond") {
+    const x = Math.min(ann.x1, ann.x2) * scale;
+    const y = Math.min(ann.y1, ann.y2) * scale;
+    const w = Math.abs(ann.x2 - ann.x1) * scale;
+    const h = Math.abs(ann.y2 - ann.y1) * scale;
+    const cx = x + w / 2, cy = y + h / 2;
+    ctx.beginPath();
+    ctx.moveTo(cx, y);
+    ctx.lineTo(x + w, cy);
+    ctx.lineTo(cx, y + h);
+    ctx.lineTo(x, cy);
+    ctx.closePath();
+    if (ann.filled) ctx.fill(); else ctx.stroke();
   } else if (ann.type === "line") {
     ctx.beginPath();
     ctx.moveTo(ann.x1 * scale, ann.y1 * scale);

@@ -629,4 +629,17 @@ Screenshot 的 text 标注调用同一 `annotation.ts` 纯函数，#6 修复自�
 | ASR insert SQL 残留 img_size 子查询修复（main 合并遗留） | `604d896` |
 | 滚动时 canvas/SVG 错位晃动 → canvas 移入 wrapper 同一 scroll context | `8101e60` |
 | 箭头头部随线宽缩放（headLen=max(12, lw*3)） | `66f3da7` |
-| 截图工具栏加马赛克工具（mosaic.svg 临时图标 + drawAnnotation blur 预览 + composeAllBytes 像素马赛克） | `d71dee0` |
+| 截图工具栏加马赛克工具（mosaic.svg 图标 + drawAnnotation blur 预览 + composeAllBytes 像素马赛克） | `d71dee0` |
+| 截图马赛克松手消失修复（onMouseUp 缺 blur 提交分支） | `731a68f` |
+| 图片预览马赛克图标统一为截图风格 3×3 色块 | `b1ab7f7` |
+| 图片预览工具栏全部图标统一为截图 SVG 风格 | `1e30e97` |
+| 截图 + 图片预览统一加 redo 功能（redoStack + 快捷键 Cmd+Shift+Z + redo.svg 按钮） | `ba1351f` |
+| 矩形/椭圆实心填充开关（属性浮窗 toggle + Annotation.filled + drawAnnotation/AnnotationSvg 支持） | `7be749d` |
+| addAnnotation 无限递归修复（sed 误替换） | `b8c54ee` |
+| 截图实心填充开关同步（ToolPropsPopover 加 isShape/filled） | `108b471` |
+| 菱形工具（截图 + 图片预览，diamond.svg，支持 filled） | `51f72b9` |
+| 截图菱形画完消失修复 | `b6110ca` |
+| 剪贴板预览图标 Maximize2 → eye-edit.svg | `d4c8b15` |
+| 属性浮窗用户操作时自动收起（图片预览 + 截图，showPopover 独立 state） | `907a9c8` `f97daa2` |
+| MosaicIcon 内联 → icons/mosaic.svg（统一 SVG 文件） | `641952c` |
+| 浮窗画完后再点重新弹出（不切回选择）—截图 9 按钮 + 图片预览 onToolClick | `4604623` |

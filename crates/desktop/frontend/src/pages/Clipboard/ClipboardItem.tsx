@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, Loader2, Check, SquarePen, Maximize2, AlertTriangle } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, Loader2, Check, SquarePen, AlertTriangle } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
@@ -234,7 +234,7 @@ export default function ClipboardItemRow({
             }}
             title="预览"
           >
-            <Maximize2 className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+            <img src="icons/eye-edit.svg" alt="预览" className="w-3.5 h-3.5" />
           </button>
         )}
         {item.item_type === "image" && (
