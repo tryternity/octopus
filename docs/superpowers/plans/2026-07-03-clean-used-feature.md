@@ -487,6 +487,8 @@ export function openCompactEditorTab(itemId: number): Promise<void> {
 
 - [x] **Step 2: 重写 pages/CompactEditor/index.tsx 为多 tab**
 
+> **演进注（2026-07-04）**：下方 `Tab { itemId, text, dirty, title }` + `dirty` 跟踪 + 关 tab 提示为**初始实现**，已被 [统一查看器 spec](../specs/2026-07-04-unified-viewer-design.md) §3.1 取代——Tab 扩展为多 source（clipboard/transcription）+ itemType（text/image），移除 `dirty`/`title`（unified-viewer 不做 dirty 跟踪）。代码保留此处的初始结构作历史记录。
+
 核心结构（替换单文档实现）：
 ```tsx
 import { useState, useEffect, useRef } from "react";
@@ -808,7 +810,7 @@ git commit -m "docs: 同步——移除 notepad 模块 + CompactEditor 多 tab +
 3. 剪贴板图片条目 OCR → 新 OCR 条目 + 原图片条目保留
 4. 多 tab：连续打开多个条目 → tab 栏多个；切换；Ctrl+S 回写；重复打开同 item 激活而非新 tab
 5. tab 标题格式 `前5字-hex后5`
-6. 关 dirty tab 提示
+6. ~~关 dirty tab 提示~~（**已失效**：统一查看器移除 dirty 字段，2026-07-04）
 7. FilterTabs「OCR」筛选只列 source=ocr
 8. 托盘/路由无记事本入口
 9. ASR 仍入「语音」类别，文本/ASR 编辑开 tab 可用
