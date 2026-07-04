@@ -102,6 +102,11 @@ interface Tab {
 pub fn get_transcription_text(id: i64) -> Result<String, String> {
     // 读 transcriptions 表的 text/segments 合并文本
 }
+
+#[tauri::command]
+pub async fn get_clipboard_item_type(item_id: i64) -> Result<String, String> {
+    // 读 clipboard_history.item_type（"text" | "image"），前端据此渲染 textarea 或 ImagePreview
+}
 ```
 
 **open_compact_editor_tab 升级**：

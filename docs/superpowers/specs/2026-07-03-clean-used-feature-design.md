@@ -97,6 +97,8 @@
 ## 5. 任务 2：CompactEditor 多 tab 改造
 
 ### 5.1 形态
+> **演进注（2026-07-04）**：本节为**初始实现**设计（单 source=clipboard、`dirty`/`title` 字段、`item_id: i64`）。已被 [统一查看器 spec §3.1](2026-07-04-unified-viewer-design.md) 取代——Tab 扩展为 `{ key:'${source}:${itemId}', source:'clipboard'|'transcription', itemId, itemType?, text? }`，`dirty`/`title` 移除（unified-viewer 不再做 dirty 跟踪 / 关 tab 提示），`get_pending_compact_tab` 返回 `{item_id, source}`。命令签名以 §5.3 演进版为准。
+
 单例窗口内多 tab，每个 tab 绑定一个剪贴板条目 `item_id`。tab 状态由前端持有：
 ```
 Tab { itemId: number, text: string, dirty: boolean, title: string }
@@ -113,8 +115,8 @@ Tab { itemId: number, text: string, dirty: boolean, title: string }
 - **tab 标题**：`text.slice(0,5) + "-" + itemId.toString(16).slice(-5)`（如 `识别结果-bcd15`）；`text` 不足 5 字按实际；hex 不足 5 位按实际。内容变更保存后刷新标题。
 
 ### 5.3 后端命令变化（`compact_editor_commands.rs` / `compact_editor_window.rs`）
-- **新增** `open_compact_editor_tab(item_id)`：窗口未开 → 开窗 + store pending `item_id`；窗口已开 → `emit compact-editor://open-tab { itemId }`。
-- **新增** `get_pending_compact_tab() -> Option<i64>`：CompactEditor mount 时 take pending `item_id`（开首个 tab）。
+- **新增** `open_compact_editor_tab(item_id, source?)`：窗口未开 → 开窗 + store pending `{item_id, source}`；窗口已开 → `emit compact-editor://open-tab { item_id, source }`。（`source` 由统一查看器演进加入）
+- **新增** `get_pending_compact_tab() -> Option<{item_id, source}>`：CompactEditor mount 时 take pending（开首个 tab）。
 - **新增 / 复用** `get_clipboard_item_text(item_id) -> String`：供 tab 加载内容（若已存在等价命令则复用）。
 - **删除** 旧的请求-响应机制：`open_compact_editor(initialText, requestId)`、`get_pending_compact_edit`、`compact-editor://load` / `://result` / `://cancel` 事件、`CompactEditPayload`。
 - 保留 `close_compact_editor`、`set_clipboard_item_text`。

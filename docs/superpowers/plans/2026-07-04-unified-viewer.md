@@ -179,3 +179,5 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 |------|--------|
 | 语音识别记录文本截断 200 字 + …… 省略 | `dde0529` |
 | 识别记录 + 剪贴板管理页全选 header sticky 固定 | `41c35b1` |
+
+**动机**：识别记录管理页单条文本可达数百字，全文铺开致列表过长、不便浏览；截断至 200 字 +「……」后，靠条目「查看」按钮经统一查看器 transcription 只读 tab（`openCompactEditorTab(id,'transcription')`）看全文兜底（截断仅识别记录管理页 HistoryPanel，剪贴板管理页 ClipboardPanel 不截断）。sticky header 让全选复选框在长列表滚动时始终可见。
