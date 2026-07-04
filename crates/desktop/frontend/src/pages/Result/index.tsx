@@ -145,8 +145,6 @@ function Result() {
         }
       });
     }
-    // 标记正在说话（文本变化时仍亮——VAD 事件做精确控制）
-    setIsSpeaking(true);
   }, []);
 
   // VAD 驱动波纹：后端 emit("update-speaking", bool) → 有语音即亮，静音 200ms 后灭
