@@ -196,7 +196,7 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 - **防御性提取**：`typeof payload === "boolean" ? payload : (payload as any)?.payload ?? false`
 - 后续 Tauri 事件传 bool 时统一用此模式，或改用 string/number（`emit("event", speaking ? 1 : 0)`）
 
-### 代码审查修复（第二~四轮）
+### 代码审查修复（第二~五轮）
 
 | 改动 | commit |
 |------|--------|
@@ -206,5 +206,6 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 | result_window 多屏不同缩放率穿透失效 | `2f4690b` |
 | CompactEditor 查找跳转 soft wrap 滚动偏差（依赖原生滚动，第三轮 3.1） | `0b8c622` |
 | CompactEditor 查找跳转读旧 matches + debounce 循环/未清理 timer（第四轮 1.1+2.1） | `8de65fd` |
+| CompactEditor 查找栏输入抢焦点/Enter 删匹配/失焦无高亮（第五轮手测回归修复） | `509b460` |
 
 **动机**：识别记录管理页单条文本可达数百字，全文铺开致列表过长、不便浏览；截断至 200 字 +「……」后，靠条目「查看」按钮经统一查看器 transcription 只读 tab（`openCompactEditorTab(id,'transcription')`）看全文兜底（截断仅识别记录管理页 HistoryPanel，剪贴板管理页 ClipboardPanel 不截断）。sticky header 让全选复选框在长列表滚动时始终可见。
