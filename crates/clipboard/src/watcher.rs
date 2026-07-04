@@ -98,14 +98,11 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                     store::insert_clipboard_item(conn, &store::NewClipboardItem {
                         id: store::chrono_millis(),
                         item_type: ItemType::File,
-                        content: paths_json,
-                        search_text,
+                        content: String::new(),
+                        ref_data: Some(paths_json),
+                        meta_info: None,
                         created_at: store::iso_now(),
-                        blob_hash: None,
-                        width: None,
-                        height: None,
                         has_thumbnail: None,
-                        file_count: Some(count as i64),
                         is_rich: false,
                     })
                 })?;
@@ -154,14 +151,13 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                     store::insert_clipboard_item(conn, &store::NewClipboardItem {
                         id: store::chrono_millis(),
                         item_type: ItemType::Image,
-                        content: hash.clone(),
-                        search_text: String::new(),
+                        content: String::new(),
+                        ref_data: Some(hash.clone()),
+                        meta_info: Some(crate::model::MetaInfo {
+                            w: Some(w), h: Some(h), ..Default::default()
+                        }),
                         created_at: store::iso_now(),
-                        blob_hash: Some(hash),
-                        width: Some(w as i64),
-                        height: Some(h as i64),
                         has_thumbnail: Some(1),
-                        file_count: None,
                         is_rich: false,
                     })
                 })?;
@@ -195,13 +191,10 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                         id: store::chrono_millis(),
                         item_type: ItemType::Text,
                         content: text.clone(),
-                        search_text: text,
+                        ref_data: None,
+                        meta_info: None,
                         created_at: store::iso_now(),
-                        blob_hash: None,
-                        width: None,
-                        height: None,
                         has_thumbnail: None,
-                        file_count: None,
                         is_rich,
                     })
                 })?;
