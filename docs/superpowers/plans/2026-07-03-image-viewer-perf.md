@@ -629,7 +629,7 @@ Screenshot 的 text 标注调用同一 `annotation.ts` 纯函数，#6 修复自�
 | ASR insert SQL 残留 img_size 子查询修复（main 合并遗留） | `604d896` |
 | 滚动时 canvas/SVG 错位晃动 → canvas 移入 wrapper 同一 scroll context | `8101e60` |
 | 箭头头部随线宽缩放（headLen=max(12, lw*3)） | `66f3da7` |
-| 截图工具栏加马赛克工具（mosaic.svg 临时图标 + drawAnnotation blur 预览 + composeAllBytes 像素马赛克） | `d71dee0` |
+| 截图工具栏加马赛克工具（mosaic.svg 图标 + drawAnnotation blur 预览 + composeAllBytes 像素马赛克） | `d71dee0` |
 | 截图马赛克松手消失修复（onMouseUp 缺 blur 提交分支） | `731a68f` |
 | 图片预览马赛克图标统一为截图风格 3×3 色块 | `b1ab7f7` |
 | 图片预览工具栏全部图标统一为截图 SVG 风格 | `1e30e97` |
