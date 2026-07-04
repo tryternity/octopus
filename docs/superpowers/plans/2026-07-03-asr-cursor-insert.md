@@ -1596,3 +1596,11 @@ git -C ... commit -m "docs(asr): 同步光标中插改造到文档" --allow-empt
 - **修复**：`setCaretPos(null)` 前 `caretPosRef` 捕获 `restorePos`（caretPos 的 ref 镜像，useRef + 同步 effect，避免闭包 stale）；setTimeout 内 `restorePos != null && placeCaretAtCodePoint(el, restorePos)` 精准恢复，否则末尾兜底。新增 `placeCaretAtCodePoint`（复用 `locateCpOffset`）。
 - **边界**：caretPos 仅纯点击设值（handleTextMouseUp 折叠分支）；拖选置 null。故拖选后进编辑仍落末尾（设计如此）。
 - **验证**：caret.test.ts 加 3 测（placeCaretAtCodePoint 定位 / 空容器 false / 多节点越界→末节点末尾），14 测全绿 + `npm run build` 绿。e2e（用户）：点文本中间 → 编辑快捷键 → 光标在点击位。
+
+### Bug（第四轮 1.2）：editingRef 异步更新致 update-result 覆盖编辑态
+
+- **文件**：`Result/index.tsx` `enterEdit` / `commitEdit` / `cancelEdit`。
+- **症状**：`editingRef` 原仅由 `useEffect([editing])` 在 commit 后同步（L89）。`setEditing(true)` 到 commit 间存在窗口；此间若 `update-result` 到达、`editingRef` 仍 false → 守护（L1235 `if (editingRef.current) return`）放行 → `renderResultNow` 写 `textContent` 覆盖刚进入的 contentEditable、打断光标。`invoke("enter_edit_mode")` 往返期间后端仍可能推 update-result，放大窗口。
+- **修复**（`797e7f3`）：三个回调内 `setEditing(...)` 后**同步**置 `editingRef.current`（enterEdit=true / commitEdit+cancelEdit=false），零延迟拦截，不依赖 commit 后的 effect。
+- **验证**：`tsc` 绿；e2e（用户待测）：ASR 录音中点编辑，文本不被覆盖。
+- **注**：同 commit `797e7f3` 另含 polishNow 改 `polishLoadingRef` 门控（润色 listen 不随 polishLoading 重建，第四轮 2.2），与光标无关，此 plan 不展开。

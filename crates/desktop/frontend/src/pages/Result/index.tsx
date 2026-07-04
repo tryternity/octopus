@@ -279,6 +279,10 @@ function Result() {
     const restorePos = caretPosRef.current;
     editSnapshotRef.current = displayedRef.current; // 保存快照
     setEditing(true);
+    // 同步置 ref：editingRef 靠 useEffect 在 commit 后才更新，setEditing(true) 到 commit 间有窗口；
+    // 此间若 update-result 到达、editingRef 仍 false → renderResultNow 写 textContent 覆盖刚进入
+    // 的编辑框、打断光标。invoke("enter_edit_mode") 往返期间后端也可能还在推 update-result。
+    editingRef.current = true;
     setIsRecording(false);
     setCaretPos(null); // 进入编辑态：光标位失效（交由 DOM 选区控制）
     showToolbar();
@@ -308,6 +312,9 @@ function Result() {
     displayedRef.current = editedText;
     setText(editedText);
     setEditing(false);
+    // 同步放开守护：退出编辑即恢复接收 update-result，不等 commit 后的 useEffect（否则会
+    // 误拦退出后第一帧的流式更新）。
+    editingRef.current = false;
     setCaretPos(null); // 退出编辑态：光标位失效，待下次 measure 重建
     invoke("commit_edit", { text: editedText });
   }, []);
@@ -317,6 +324,7 @@ function Result() {
     if (editBufTimer.current) clearTimeout(editBufTimer.current);
     const original = editSnapshotRef.current;
     setEditing(false);
+    editingRef.current = false; // 同步放开守护（同 commitEdit）
     setCaretPos(null); // 退出编辑态：光标位失效，待下次 measure 重建
     // 恢复 contentEditable DOM 到编辑前文本
     displayedRef.current = original;
@@ -332,15 +340,21 @@ function Result() {
     editingRef.current ? commitEdit() : enterEdit();
   }, [commitEdit, enterEdit]);
 
+  // polishLoading 的 ref 镜像：polishNow 的幂等门控改读 ref，使其 useCallback 引用不随
+  // polishLoading 变化——否则 global-polish-trigger 的 listen 每次 polishLoading 翻转都
+  // 注销重建（每次润色开始/结束各一次）。state polishLoading 保留（按钮 disabled 用）。
+  const polishLoadingRef = useRef(false);
+  useEffect(() => { polishLoadingRef.current = polishLoading; }, [polishLoading]);
+
   // 立即润色：工具栏按钮 + 全局 polish_global_shortcut 共用。
-  // polishLoading 门控（幂等，与按钮 disabled 一致）+ 空文本判空（无结果静默）。
+  // polishLoadingRef 门控（幂等，与按钮 disabled 一致）+ 空文本判空（无结果静默）。
   const polishNow = useCallback(async () => {
-    if (polishLoading) return;
+    if (polishLoadingRef.current) return;
     if (!displayedRef.current.trim()) return;
     setPolishLoading(true);
     try { await invoke("polish_now"); showToast("润色中…"); }
     catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
-  }, [polishLoading, showToast]);
+  }, [showToast]);
 
   // 放大/缩小开关：纯 CSS 切换（窗口物理固定 720×480，setSize 在 transparent 无边框窗
   // 被 NSWindow 拒绝，无法运行时改尺寸）。精简态容器缩为顶部 520×116 小条、下方透明区
