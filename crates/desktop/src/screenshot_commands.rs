@@ -194,7 +194,7 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 pub async fn ocr_screenshot(
     request: tauri::ipc::Request<'_>,
     app_handle: tauri::AppHandle,
-) -> Result<crate::clipboard_commands::OcrResult, String> {
+) -> Result<(), String> {
     // 全局 OCR 互斥：已有 OCR 在跑则立即拒绝，避免多任务并发进入推理。
     let _ocr_lock = octopus_ocr::engine::OcrLockGuard::try_acquire()
         .ok_or_else(|| "前一个 OCR 还未完成，请稍后".to_string())?;
@@ -281,21 +281,34 @@ pub async fn ocr_screenshot(
 
     let _ = app_handle.emit("clipboard://changed", ());
 
-    // 不关截图窗——开编辑器 + 图片预览（截图窗保持，OCR 文本块叠加在截图上）
-    if let Some(ocr_id) = ocr_id_opt {
-        let ah = app_handle.clone();
-        let _ = app_handle.run_on_main_thread(move || {
-            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, ah.clone());
-            if let Some(id) = image_id_opt {
-                crate::image_preview_commands::open_image_preview(id, ah);
-            }
-        });
-    }
+    // 关截图窗 → 开编辑器 + 图片预览 + 推送 OCR blocks 给预览窗
+    let ocr_result = crate::clipboard_commands::OcrResult {
+        text: text.clone(),
+        blocks: blocks.iter().map(|b| crate::clipboard_commands::OcrTextBlock {
+            text: b.text.clone(), x: b.x, y: b.y, w: b.w, h: b.h, score: b.score,
+        }).collect(),
+    };
 
-    let blocks = blocks.into_iter().map(|b| crate::clipboard_commands::OcrTextBlock {
-        text: b.text, x: b.x, y: b.y, w: b.w, h: b.h, score: b.score,
-    }).collect();
-    Ok(crate::clipboard_commands::OcrResult { text, blocks })
+    log::info!("[ocr-screenshot] dispatch close+open to main thread");
+    let ah = app_handle.clone();
+    let _ = app_handle.run_on_main_thread(move || {
+        log::info!("[ocr-screenshot] main: closing screenshot windows");
+        close_all_screenshot_windows(&ah);
+        if let Some(ocr_id) = ocr_id_opt {
+            log::info!("[ocr-screenshot] main: open compact editor tab {}", ocr_id);
+            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, ah.clone());
+        }
+        if let Some(img_id) = image_id_opt {
+            log::info!("[ocr-screenshot] main: open image preview {}", img_id);
+            crate::image_preview_commands::open_image_preview(img_id, ah);
+        }
+    });
+
+    // 先 emit OCR blocks（图片预览 mount 后会 listen 到，或已 mount 则直接收到）
+    use tauri::Emitter;
+    let _ = app_handle.emit("ocr-screenshot://result", &ocr_result);
+
+    Ok(())
 }
 
 /// 前端渲染完成后调用。所有窗口都 ready 后统一 show（同步显示，避免逐个弹出）。

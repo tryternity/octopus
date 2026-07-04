@@ -167,9 +167,15 @@ export default function ImagePreview() {
     });
     const unlisten = listen<{ imageId: number }>("image-preview://load", (e) => {
       setImageId(e.payload.imageId);
-      // setAnnotations 和 setZoomSync 已在 imageId useEffect 中处理
     });
-    return () => { unlisten.then((f) => f()); };
+    // 截图 OCR → 关窗 → 开预览 + 推送 OCR blocks
+    const unlistenOcr = listen<{ text: string; blocks: OcrBlock[] }>("ocr-screenshot://result", (e) => {
+      if (e.payload.blocks.length > 0) {
+        setOcrBlocks(e.payload.blocks);
+        setOcrOverlay('overlay');
+      }
+    });
+    return () => { unlisten.then((f) => f()); unlistenOcr.then((f) => f()); };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
