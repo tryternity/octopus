@@ -77,8 +77,9 @@ enum Command {
     /// 非活跃 stage（无 transcript）时 no-op。
     SetCaret { offset: usize },
     /// 选中替换：前端非编辑态拖选 → char 范围 [start,end) → set_selection（记录待删范围 +
-    /// 劈 caret 到 start，不立即删字，首个 delta 到达时真删）。非活跃 stage → no-op。
-    SetSelection { start: usize, end: usize },
+    /// 劈 caret 到 start，不立即删字，首个 delta 到达时真删）。非活跃 stage → 暂存 (text,start,end)，
+    /// Toggle 开新会话时种子 transcript（跨会话选中替换）。
+    SetSelection { start: usize, end: usize, text: String },
 }
 
 enum Stage {
@@ -202,6 +203,9 @@ impl Coordinator {
             let mut editing = false;
             // 编辑缓冲：前端 input 防抖推送的最新文本；Toggle-期间-编辑 时用作提交文本。
             let mut edit_buffer: Option<String> = None;
+            // Idle 态跨会话选中替换：前端拖选时暂存 (text, start, end)，
+            // Toggle 开新会话时种子 transcript（保留旧文本 + 删选区 + 新词插入）。
+            let mut idle_selection: Option<(String, usize, usize)> = None;
 
             loop {
                 let cmd = match rx.recv() {
@@ -256,6 +260,7 @@ impl Coordinator {
                             &app_handle,
                             &tx,
                             use_streaming,
+                            &mut idle_selection,
                             #[cfg(feature = "cloud")]
                             use_cloud_streaming,
                         );
@@ -312,6 +317,7 @@ impl Coordinator {
                             edit_buffer = None;
                             let _ = app_handle.emit("edit-force-exit", ());
                         }
+                        idle_selection = None;
                         handle_cancel(&mut stage, &audio, &app_handle);
                     }
                     Command::Discard => {
@@ -320,6 +326,7 @@ impl Coordinator {
                             edit_buffer = None;
                             let _ = app_handle.emit("edit-force-exit", ());
                         }
+                        idle_selection = None;
                         handle_discard(&mut stage, &audio, &app_handle, &config);
                     }
                     Command::PasteDone => {
@@ -424,12 +431,14 @@ impl Coordinator {
                             }
                         }
                     }
-                    Command::SetSelection { start, end } => {
-                        // 非编辑态拖选：调 stage_transcript.set_selection（记录待删范围 [start,end) +
-                        // 劈 caret 到 start，不立即删字——首个 delta 到达时真删）。非活跃 stage → no-op。
+                    Command::SetSelection { start, end, text } => {
+                        // 非编辑态拖选：活跃 stage → set_selection（记录待删，不立即删——
+                        // 保留浏览器原生高亮，用户可重新选择）；Idle → 暂存跨会话用。
                         if !editing {
                             if let Some(t) = stage_transcript(&mut stage) {
                                 t.set_selection(start, end);
+                            } else if matches!(stage, Stage::Idle) {
+                                idle_selection = Some((text, start, end));
                             }
                         }
                     }
@@ -518,9 +527,9 @@ impl Coordinator {
 
     /// 前端拖选选中替换：char 范围 [start,end) → 通过命令通道投递。命令循环里调
     /// stage_transcript.set_selection（记录待删 + 劈 caret 到 start）。首个 delta 到达时真删。
-    pub fn set_selection(&self, start: usize, end: usize) {
+    pub fn set_selection(&self, start: usize, end: usize, text: String) {
         let tx = self.tx.lock();
-            if tx.send(Command::SetSelection { start, end }).is_err() {
+            if tx.send(Command::SetSelection { start, end, text }).is_err() {
                 error!("Coordinator channel closed");
             }
     }
@@ -596,9 +605,10 @@ pub fn set_caret(coordinator: tauri::State<'_, Coordinator>, offset: usize) {
 
 /// 前端命令：非编辑态拖选文本 → 选中替换（首个 delta 到达时删除 [start,end) 并从 start 插入）。
 /// start/end = 选区在整篇文本的 code-point（char）偏移（左闭右开）。
+/// text = 当前展示全文（Idle 态跨会话选中替换用：种子新会话 transcript）。
 #[tauri::command]
-pub fn set_selection(coordinator: tauri::State<'_, Coordinator>, start: usize, end: usize) {
-    coordinator.set_selection(start, end);
+pub fn set_selection(coordinator: tauri::State<'_, Coordinator>, start: usize, end: usize, text: String) {
+    coordinator.set_selection(start, end, text);
 }
 
 /// 前端命令：取消编辑（恢复原始文本，不落库）。
@@ -608,6 +618,7 @@ pub fn exit_edit_without_commit(coordinator: tauri::State<'_, Coordinator>) {
 }
 
 /// 处理 Toggle 命令
+#[allow(clippy::too_many_arguments)]
 fn handle_toggle(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
@@ -616,6 +627,7 @@ fn handle_toggle(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
     use_streaming: bool,
+    idle_selection: &mut Option<(String, usize, usize)>,
     #[cfg(feature = "cloud")] use_cloud_streaming: bool,
 ) {
     match stage {
@@ -715,7 +727,25 @@ fn handle_toggle(
                 };
 
                 // 流式模式：只显示 result window
-                crate::result_window::show_result(app_handle, "正在聆听…");
+                // 跨会话选中替换：有 idle_selection → 种子 transcript（保留旧文本 + 删选区）
+                let tid = now_millis();
+                set_current_transcription_id(tid);
+                let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = idle_selection.take() {
+                    let mut t = Transcript::new(tid, config.polish_mode);
+                    t.commit_edit(&text);
+                    t.set_selection(s, e);
+                    (t, text, true)
+                } else {
+                    (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)
+                };
+                if is_continuation {
+                    // 延续态：展示旧文本但不走 show-result（前端会把非占位符当最终文本→清空 caret）。
+                    // 直接 update_result 展示旧文本，保持前端 displayedRef 同步，caret 由后续 update-result 驱动。
+                    crate::result_window::show_result(app_handle, "正在聆听…");
+                    crate::result_window::update_result(app_handle, &show_text, false, 0);
+                } else {
+                    crate::result_window::show_result(app_handle, &show_text);
+                }
                 crate::tray::update_tray_label(
                     app_handle,
                     crate::tray::TrayState::Recording,
@@ -752,11 +782,9 @@ fn handle_toggle(
                 let streaming_active = Arc::new(AtomicBool::new(true));
                 start_tick_thread(tx.clone(), streaming_active.clone());
 
-                let tid = now_millis();
-                set_current_transcription_id(tid);
                 *stage = Stage::Streaming {
                     pipeline,
-                    transcript: Transcript::new(tid, config.polish_mode),
+                    transcript,
                     streaming_active,
                 };
             } else {
@@ -768,7 +796,23 @@ fn handle_toggle(
                     config.segment_silence,
                 ) {
                     Ok(pipeline) => {
-                        crate::result_window::show_result(app_handle, "正在聆听…");
+                        // 跨会话选中替换（同 streaming 路径）
+                        let tid = now_millis();
+                        set_current_transcription_id(tid);
+                        let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = idle_selection.take() {
+                            let mut t = Transcript::new(tid, config.polish_mode);
+                            t.commit_edit(&text);
+                            t.set_selection(s, e);
+                            (t, text, true)
+                        } else {
+                            (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)
+                        };
+                        if is_continuation {
+                            crate::result_window::show_result(app_handle, "正在聆听…");
+                            crate::result_window::update_result(app_handle, &show_text, false, 0);
+                        } else {
+                            crate::result_window::show_result(app_handle, &show_text);
+                        }
                         crate::tray::update_tray_label(
                             app_handle,
                             crate::tray::TrayState::Recording,
@@ -777,11 +821,9 @@ fn handle_toggle(
                         let tick_active = Arc::new(AtomicBool::new(true));
                         start_vad_segmented_tick_thread(tx.clone(), tick_active.clone());
 
-                        let tid = now_millis();
-                        set_current_transcription_id(tid);
                         *stage = Stage::VadSegmented {
                             pipeline,
-                            transcript: Transcript::new(tid, config.polish_mode),
+                            transcript,
                             tick_active,
                         };
                     }
