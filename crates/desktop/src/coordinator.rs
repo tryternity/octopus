@@ -428,6 +428,11 @@ impl Coordinator {
                         if !editing {
                             if let Some(t) = stage_transcript(&mut stage) {
                                 t.set_caret(offset);
+                            } else if matches!(stage, Stage::Idle) {
+                                // Idle 下点击 = 放弃之前的拖选（与活跃态 set_caret 清
+                                // pending_delete 对称），防止「Idle 拖选→点击别处→
+                                // 下次录音误用过时 idle_selection」删错位置。
+                                idle_selection = None;
                             }
                         }
                     }
@@ -992,11 +997,14 @@ fn handle_toggle(
 /// 跳过最终润色（mode=1/2 也跳过），直接 paste，避免平白多一次 LLM 调用。
 fn finalize_after_stop(
     stage: &mut Stage,
-    transcript: Transcript,
+    mut transcript: Transcript,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
+    // 0. flush 滞留 diverted（引擎 end-of-stream 纠正）：stop 后不再有 apply 补发，
+    //    不 flush 会被 finish_text 读取时静默丢弃（末尾文字丢失）。
+    transcript.flush_diverted();
     // 1. 立即润色仍在途：等其完成再走 final 路径（避免丢弃润色结果）
     if transcript.polish_pending() {
         info!("Toggle stop: polish_pending=true, entering StoppingPolish");
@@ -1201,6 +1209,9 @@ fn finalize_cloud(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
+    // flush 滞留 diverted（cloud close 返回整段最终文本，常与 tentative partial 发散→diverted）：
+    // 不 flush 会被下方 db_text() 读取时丢弃。
+    transcript.flush_diverted();
     // 即使无 session 或 close 无返回，也提交未 commit 的 partial
     if !current_partial.is_empty() {
         let sep = octopus_asr_local::sentence_separator(&config.language);
@@ -1469,6 +1480,11 @@ fn check_and_trigger_polish(
     }
     // 无 Raw 段（无待润色的新语音）→ 跳过（段模型：has_raw 替代旧 has_increase）
     if !transcript.has_raw() {
+        return;
+    }
+    // 有待删选区（用户拖选尚未说话）→ 跳过：take_polish_input 会消费 pending_delete
+    // 提前删选区，违背「说话才删」。等用户开口（首个 delta 消费 pending_delete）后再润色。
+    if transcript.has_pending_delete() {
         return;
     }
     // 停顿未达标 → 跳过（流式传真实 silence；伪流式传阈值自动达标）

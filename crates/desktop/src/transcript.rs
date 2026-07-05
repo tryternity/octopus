@@ -251,6 +251,23 @@ impl Transcript {
         self.selection_insert_offset = None;
     }
 
+    /// 录音结束收尾：把滞留的 `diverted_pending`（引擎 end-of-stream 纠正，非前缀差异）
+    /// 补进 segments / pending_delta。
+    ///
+    /// `apply_engine_full` 的 diverted 分支延迟确认（< `DIVERTED_PENDING_LIMIT` 字早返回），
+    /// 指望「下次 apply 连同补发」。但 stop/close 后不再有下次 apply——若不 flush，
+    /// `finalize_*` 只读 `finish_text`（= segments）会把这段纠正**静默丢弃**（末尾文字丢失）。
+    /// 与流式内 flush 同语义：polish_pending → pending_delta，否则 push_delta_at_caret。
+    pub fn flush_diverted(&mut self) {
+        if self.diverted_pending.is_empty() { return; }
+        let dp = std::mem::take(&mut self.diverted_pending);
+        if self.polish_pending {
+            self.pending_delta.push_str(&dp);
+        } else {
+            self.push_delta_at_caret(&dp);
+        }
+    }
+
     /// 是否处于中间插入态（caret_gap < 段数）。pipeline Emit insertion 标志用。
     pub fn is_inserting(&self) -> bool { self.caret_gap < self.segments.len() }
 
@@ -269,6 +286,10 @@ impl Transcript {
 
     /// 是否含 Raw 段（mode=2 中间润色触发判定，替代旧 has_increase）。
     pub fn has_raw(&self) -> bool { self.segments.iter().any(|s| s.kind == SegmentKind::Raw) }
+
+    /// 是否有待删选区（set_selection 记录、待首个 delta 消费）。
+    /// pause-polish 据此跳过：用户选中尚未说话，自动润色不应提前删（守「说话才删」）。
+    pub fn has_pending_delete(&self) -> bool { self.pending_delete.is_some() }
 
     /// 是否含 Edited 段（替代旧 has_edit，PolishDone 落库分支用）。
     pub fn has_edit(&self) -> bool { self.segments.iter().any(|s| s.kind == SegmentKind::Edited) }
@@ -884,5 +905,40 @@ mod user_scenario_tests {
         // 新语音
         t.apply_engine_full("你好新世界，欢迎来到"); // delta "，欢迎来到"
         assert_eq!(t.finish_text(), "你好，欢迎来到", "中间选区替换");
+    }
+
+    // ── diverted 末尾丢失（Bug：finalize 丢弃滞留 diverted_pending）──
+    #[test]
+    fn diverted_pending_flushed_not_dropped() {
+        // 末尾引擎纠正（非前缀，< 500 字）→ diverted 分支早返回，diff 滞留 diverted_pending。
+        // 修复前 finalize 只读 segments（finish_text）→ 纠正被静默丢弃。
+        let mut t = Transcript::new(110, PolishMode::Intermediate);
+        t.apply_engine_full("你好世"); // engine_cumulative="你好世"，segments=[raw("你好世")]
+        // 引擎 end-of-stream 纠正：与最后 partial 发散（"界"≠"世"，非前缀）→ diverted，
+        // diff="界" 滞留（< 500 字早返回，未入 segments）。
+        t.apply_engine_full("你好界");
+        assert!(!t.finish_text().contains('界'),
+            "修复前 diverted 应滞留、未进 segments（finish_text={}）", t.finish_text());
+
+        // finalize 顶部调用 flush_diverted → 滞留纠正补回，不再丢弃。
+        t.flush_diverted();
+        assert!(t.finish_text().contains('界'),
+            "flush 后 diverted 纠正应保留（finish_text={}）", t.finish_text());
+        assert!(t.diverted_pending.is_empty(), "flush 后 diverted_pending 应清空");
+    }
+
+    #[test]
+    fn diverted_pending_flushed_into_pending_delta_when_polish_pending() {
+        // polish_pending 时 flush 走 pending_delta（润色回填后由 polish_apply 统一 flush），
+        // 不直接改 segments——避免与润色快照竞争。
+        let mut t = Transcript::new(111, PolishMode::Intermediate);
+        t.apply_engine_full("你好世");
+        t.apply_engine_full("你好界"); // diverted，"界" 滞留
+        let _ = t.take_polish_input(); // 标记 polish_pending
+        let before = t.finish_text();
+        t.flush_diverted();
+        // segments 不变（进了 pending_delta，待 polish_apply）；diverted 已清。
+        assert_eq!(t.finish_text(), before, "polish_pending 时不应直接改 segments");
+        assert!(t.diverted_pending.is_empty());
     }
 }

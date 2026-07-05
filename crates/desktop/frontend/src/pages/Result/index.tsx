@@ -476,6 +476,10 @@ function Result() {
     // 折叠（纯点击）→ 定位光标
     const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
     if (!range) return;
+    // 容器归属校验（与上方拖选路径的 el.contains 对称）：点击落在 padding / 浮层等非文本
+    // 区域时，caretRangeFromPoint 可能返回容器外的节点；codePointOffsetTo 内 setEnd 跨容器
+    // 会量出错误 offset（甚至抛 IndexSizeError）。此时放弃定位，不向后端发错误 caret。
+    if (!el.contains(range.startContainer)) return;
     sel?.removeAllRanges();
     const offset = codePointOffsetBefore(el, range);
     setCaretPos(offset);
