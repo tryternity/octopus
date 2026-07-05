@@ -1,8 +1,12 @@
 # octopus-download 架构与 TLS 依赖分析
 
-> 2026-06-21 整理。记录 `octopus-download` crate 接入 workspace 后的 TLS 栈分布、体积影响，
-> 以及既有 `llm` / `dlp` crate 为何依赖 native-tls。本文聚焦 TLS 选型与体积，crate 功能设计详见
+> 2026-06-21 整理；2026-07-12 更新（llm/dlp 已切 rustls）。记录 `octopus-download` crate 接入后的
+> TLS 栈分布、体积影响，以及 native-tls 的剩余来源。本文聚焦 TLS 选型与体积，crate 功能设计详见
 > `docs/superpowers/specs/2026-06-21-model-download-design.md`。
+>
+> **2026-07-12 更新**：`llm`/`dlp` 已按本文 §5 启示②切到 `rustls-tls`（commit 225ed76）。下文 §3
+> 关于「llm/dlp 依赖 native-tls」的描述已成历史，workspace 内 native-tls 现仅来自 `tokio-tungstenite`
+>（asr-cloud / desktop cloud 的 wss:// 云端 ASR）。
 
 ---
 
@@ -20,19 +24,24 @@
 
 ---
 
-## 2. TLS 选型：download 选 rustls，workspace 其余走 native-tls
+## 2. TLS 选型：download / llm / dlp 均走 rustls，仅 tungstenite WSS 留 native-tls
 
 | crate | reqwest 配置（`Cargo.toml`） | TLS 栈 | 选型方式 |
 |---|---|---|---|
-| **download** | `default-features = false`, `features = ["stream", "http2", "rustls-tls", "json"]` | **rustls**（ring，静态编进 bin） | 主动显式选 |
-| **llm** | `features = ["blocking", "json"]`（未禁 default-features） | **native-tls** | reqwest 默认（被动） |
-| **dlp** | `features = ["json", "stream"]`（未禁 default-features） | **native-tls** | reqwest 默认（被动） |
+| **download** | `default-features = false`, `features = ["stream", "http2", "rustls-tls", "json"]` | **rustls** | 主动显式选 |
+| **llm** | `default-features = false`, `features = ["blocking", "json", "rustls-tls"]` | **rustls** | 2026-07-12 由 native-tls 切入（225ed76） |
+| **dlp** | `default-features = false`, `features = ["json", "stream", "rustls-tls"]` | **rustls** | 2026-07-12 由 native-tls 切入（225ed76） |
+| **asr-cloud / desktop cloud** | `tokio-tungstenite` 的 `native-tls` feature | **native-tls** | wss:// 云端 ASR 用（证书敏感，未切 rustls） |
 
-download 选 rustls 的动机：它要替代 hf-cli 给**终端用户**下大模型，必须零系统依赖、跨平台分发友好——rustls 把 TLS 实现静态编进二进制（ring），代价是约 1.5 MB 体积。
+download 选 rustls 的动机：它要替代 hf-cli 给**终端用户**下大模型，必须零系统依赖、跨平台分发友好——rustls 把 TLS 实现静态编进二进制（ring），代价是约 1.5 MB 体积。2026-07-12 起 llm/dlp 同步切 rustls（纯 HTTPS 客户端，行为等价），workspace 内 reqwest 已无 native-tls。
 
 ---
 
-## 3. llm / dlp 依赖 native-tls 的场景与路径
+## 3. （历史）llm / dlp 曾依赖 native-tls —— 2026-07-12 已切 rustls
+
+> **更新**：llm/dlp 的 reqwest 已于 2026-07-12（225ed76）切到 `rustls-tls`，下文「依赖 native-tls」
+> 的描述为切前存照。当前 workspace 内 native-tls 仅来自 `tokio-tungstenite`（asr-cloud / desktop
+> cloud 的 wss:// 云端 ASR），见 §2 表格。
 
 ### 3.1 场景：两者都是对外 HTTPS，但用途不同
 
@@ -92,17 +101,17 @@ download 接入后，release 二进制体积增量主要来自其 **rustls 栈**
 
 ## 5. 对比与启示
 
-| | llm / dlp（native-tls） | download（rustls） |
-|---|---|---|
-| TLS 实现 | 系统库，动态链接 | ring，静态编进 bin |
-| bin 体积 | ≈ 0 | +1.5 MB |
-| 系统依赖 | 需 OpenSSL（Linux 痛点） | 无（纯静态，跨平台分发友好） |
-| 选型方式 | reqwest 默认（被动） | 显式 `rustls-tls`（主动） |
+| | llm / dlp（已切 rustls） | download（rustls） | tungstenite WSS（仍 native-tls） |
+|---|---|---|---|
+| TLS 实现 | ring，静态编进 bin | ring，静态编进 bin | 系统库，动态链接 |
+| bin 体积 | 与 download 共享 rustls 栈 | +1.5 MB | ≈ 0 |
+| 系统依赖 | 无 | 无 | 需 OpenSSL（Linux 痛点） |
+| 选型方式 | 显式 `rustls-tls`（2026-07-12 切入） | 显式 `rustls-tls` | tungstenite `native-tls` feature |
 
 **启示：**
 
 1. **download 选 rustls 是对的**——替代 hf-cli 给终端用户下大模型，零系统依赖是硬约束；1.5 MB 是合理代价。
-2. **若将来想统一去 native-tls**（消除 Linux OpenSSL 分发隐患 + 顺带省掉双 TLS 栈），改法很小：给 llm / dlp 的 reqwest 加 `default-features = false, features = ["blocking"/"json"/"stream", "rustls-tls"]`。llm 的 `blocking` 在 rustls 下支持正常。属跨 crate 改动，且当前未引发问题，优先级低。
+2. **~~若将来想统一去 native-tls~~**（✅ 已实施 2026-07-12，225ed76）：给 llm/dlp 的 reqwest 加 `default-features = false, features = ["blocking"/"json"/"stream", "rustls-tls"]`。llm 的 `blocking` 在 rustls 下支持正常。**注意**：此次只消除 llm/dlp 自身的 OpenSSL 依赖，并未省下桌面整体二进制体积——`tokio-tungstenite`（WSS 云端 ASR）仍把 native-tls 链路留在 bin 里。要彻底去 native-tls 需连 tungstenite 一起换 rustls（wss:// 证书验证敏感，未做）。
 3. **dlp 的 `download_file` 与 octopus-download 功能重叠**——dlp 现在用裸 `reqwest::get` 流式下载（无断点续传 / 校验）。未来 yt-dlp binary 下载可改用 `octopus-download`（带校验，防半截损坏）。不过 yt-dlp 才几 MB，收益有限，仅作架构观察。
 
 ---

@@ -109,16 +109,20 @@ pub struct AsrEngineManager {
     cached_engines: RwLock<HashMap<String, Arc<dyn OfflineAsrEngine>>>,
     active_engine: RwLock<Option<Arc<dyn OfflineAsrEngine>>>,
     active_engine_name: RwLock<String>,
+    max_cache: usize, // 缓存上限（桌面默认 2 控内存；server 多模型并发放大）
 }
 ```
-- **秒级按需切换**：首次 `switch_model` 会加载并放入 `cached_engines`。若切回已存在的模型，可以直接从缓存中返回，耗时为 0ms。
-- **并发分发**：上层接口只与 `AsrEngineManager` 进行交互，简化了状态路由。
+- **秒级按需切换**：首次 `switch_model`/`get_engine` 会加载并放入 `cached_engines`。若切回已存在的模型，可以直接从缓存中返回，耗时为 0ms。
+- **两种获取路径**：
+  - `switch_model`（设全局 active）—— 单路场景（cli/desktop），active 单例语义合理。
+  - `get_engine`（只读返回 `Arc`，不改 active）—— 多并发场景（server）。同模型并发受引擎内部 `Mutex<Session>` 串行化（见 `ParaformerEngine`/`SenseVoiceOrigEngine`），跨模型天然并行，无需 server 级全局锁。
+- **缓存上限可配**：`new()` 默认 2；`new_with_capacity(max)` 供 server 等多模型场景放大。
 
 ### 4.2 Web 宿主 (`octopus-server`)
 
-- 将 `Arc<AsrEngineManager>` 注入 `AppState`。
-- 在 `main` 启动时调用 `switch_model` 对激活的模型（如 `sensevoice-orig`）进行**背景预热（Preheat）**。
-- `/transcribe`（HTTP）与 `/ws/stream`（WebSocket）路由无需任何加载开销，实现毫秒级快速识别。
+- 将 `Arc<AsrEngineManager>` 注入 `AppState`（`new_with_capacity(8)` 放大缓存，适配多模型并发）。
+- `main` 启动时 `switch_model` 预热激活模型；`/transcribe`（HTTP）改用 `get_engine` 取引擎 `Arc` 直接转写——**不再持全局 `inference_lock`**，跨模型请求天然并行（同模型排队于引擎内 `Mutex<Session>`）。
+- `/ws/stream`（WebSocket）每连接独立 `StreamingSession`，本就不受 batch 锁影响，毫秒级快速识别。
 
 ### 4.3 客户端宿主 (`octopus-desktop`)
 
