@@ -29,11 +29,11 @@
 |----|------|------|---------|
 | C1 | mel filterbank 权重在 Hz 空间计算（paraformer 已修，fbank/zipformer 未修） | `asr-local/src/fbank.rs:128-134`、`zipformer.rs:1283-1291` | 抽取 `asr-local/src/feature.rs` 公共模块，统一 mel 空间 filterbank 实现（参考 `paraformer.rs:599-614`），fbank/zipformer 复用 |
 | C2 | whisper.rs 每次 `new` 都 `Box::leak` 24-48 个字符串 | `asr-local/src/whisper.rs:268-275` | 改为全局 `Lazy<Vec<...>>`（参考 `qwen3_asr.rs:67-78` 的 `CACHE_NAMES`） |
-| I-1 | whisper 归一化用 `(v+1e-10).log10()` 而非 `v.max(1e-10).log10()` | `asr-local/src/whisper.rs:87-92` | 改为 `.max(1e-10).log10()` 对齐 sherpa-onnx `NormalizeWhisperFeatures` |
-| I-2 | `audio.rs:19,44` hound sample `.unwrap()` 在 WAV 损坏时 panic | `asr-local/src/audio.rs` | 改 `collect::<Result<Vec<_>,_>>()?` |
-| I-3 | `streaming_paraformer.rs` `raw_samples` 全会话累积无界增长 | `asr-local/src/streaming_paraformer.rs:169-172` | chunk 处理后 drain 已消费样本，仅保留必要 history（fbank 帧对齐的边界） |
-| I-4 | `moonshine.rs:137` `uncached_out.len()-1` 空输出时下溢 panic | `asr-local/src/moonshine.rs:137` | 改 `.saturating_sub(1)` |
-| I-5 | whisper.rs:268 注释（说 mean/std）与实现（max-based log）不符 | `asr-local/src/whisper.rs:678-679` | 修正注释 |
+| I-1 | whisper 归一化用 `(v+1e-10).log10()` 而非 `v.max(1e-10).log10()` | `asr-local/src/whisper.rs:87-92` | ✅ P0 已修：改为 `.max(1e-10).log10()` 对齐 sherpa-onnx |
+| I-2 | `audio.rs:19,44` hound sample `.unwrap()` 在 WAV 损坏时 panic | `asr-local/src/audio.rs` | ✅ P0 已修：改 `collect::<Result<Vec<_>,_>>()?` |
+| I-3 | `streaming_paraformer.rs` `raw_samples` 全会话累积无界增长 | `asr-local/src/streaming_paraformer.rs:169-172` | ✅ P0 已修：chunk 处理后 drain 已消费样本（:193-199） |
+| I-4 | `moonshine.rs:137` `uncached_out.len()-1` 空输出时下溢 panic | `asr-local/src/moonshine.rs:137` | ✅ P0 已修：改 `.saturating_sub(1)` |
+| I-5 | whisper.rs:268 注释（说 mean/std）与实现（max-based log）不符 | `asr-local/src/whisper.rs:678-679` | ✅ P0 已修：修正注释 |
 
 **抽取决策（C1 的修复手段）**：先修 bug 再抽取。创建 `asr-local/src/feature.rs`，包含：
 - `pub fn mel_filterbank(...)` — mel 空间 filterbank（参数化 high_freq）✅
@@ -101,7 +101,7 @@ pub const FILE_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
 | C7 | ASR 推理直接阻塞 tokio event loop | `server/src/main.rs:126-127,247` | 用 `tokio::task::spawn_blocking` 包裹 `transcribe_batch`；WS `stream.feed` 同理或独立线程 |
 | C8 | 并发请求引擎切换竞态 | `server/src/main.rs:126` | 用 `engine_manager` 内部锁或请求级 `Mutex` 保护 switch+transcribe 原子性 |
 | C9 | 默认 0.0.0.0 + 无认证 + permissive CORS | `server/src/main.rs:27,294` | 默认改 `127.0.0.1`；CORS 改为同源策略（`CorsLayer::new()`）；~~加可选 API token~~（实施时跳过——绑定 localhost 已足够本地工具安全） |
-| I-D1 | 手工 JSON 转义不完整 | `server/src/pipeline.rs:51-55` | 用 `serde_json::to_string` 替代手工拼接 |
+| I-D1 | 手工 JSON 转义不完整 | `server/src/pipeline.rs:51-55` | ✅ 已用 `serde_json::Value::String().to_string()` 替代手工拼接（转义 \t \r 等控制字符，测试 `event_to_json_escapes_control_chars` 覆盖） |
 | I-D2 | `/transcribe` 无 body limit | `server/src/main.rs:93` | 加 `DefaultBodyLimit::max(100 * 1024 * 1024)`（100MB 音频上限） |
 | I-D3 | 无优雅关闭 | `server/src/main.rs:300` | 加 `axum::serve(...).with_graceful_shutdown(signal_handler)` |
 
@@ -128,7 +128,7 @@ pub const FILE_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
 
 | ID | 问题 | 位置 | 修复方案 |
 |----|------|------|---------|
-| I-F1 | coordinator unreachable!() stage 重构后 panic | `desktop/src/coordinator.rs:814,1601,1642` | 改为 `log::error + return`（防御性降级） |
+| I-F1 | unreachable!() stage 重构后 panic | `desktop/src/main.rs:102`（coordinator.rs 原三处已在 stage 重构中消失） | ✅ 改为穷举 match（显式 `PolishMode::Disabled` 分支），消除 panic 风险 |
 | I-F2 | 截图全局静态量无并发互斥 | `desktop/src/screenshot_commands.rs:24-29` | ⏳ P2：用 `AtomicBool` 门控（parking_lot 迁移已完成，并发门控待加） |
 | I-F3 | 启动期 expect 直接扼杀应用 | `desktop/src/main.rs:63,260`、`tray.rs`、`clipboard_commands.rs:243` | ✅ main.rs config 加载改 fallback default。⏳ tray/clipboard_commands 的 expect 待 P2 降级 |
 
@@ -141,6 +141,22 @@ pub const FILE_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
 | C14 capx 跨平台编译 | `capx/src/capture.rs:340` 测试块加 `#[cfg(target_os = "macos")]` |
 | 调试输出清理 | `asr-local/whisper.rs` 8 处 eprintln!→log::debug!；`paraformer.rs:319`；`desktop/screenshot_commands.rs` eprintln!；前端 `Result/index.tsx:155,162` console.log 删除；`asr-cloud/aliyun_stream.rs:198,442` info!→debug! |
 | clippy | `cargo clippy --fix --workspace` 清理 118 个 lint；补 `#![warn(clippy::all)]` 到各 crate lib.rs |
+
+### 子项目 H：infra DB 健壮性（后续迭代，2026-07-05 follow-up）
+
+| ID | 问题 | 位置 | 修复方案 |
+|----|------|------|---------|
+| I-H1 | `save_app_config_at` 30 条写入无事务 | `infra/src/db.rs:332` | ✅ 包 `unchecked_transaction` → `commit`，中途崩溃全部回滚（配置不再半更新） |
+| I-H2 | DB 无 WAL 模式、无 busy_timeout | `infra/src/db.rs:113-118` | ✅ `ensure_db` 打开后设 `PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000`（server 多任务访问不再 SQLITE_BUSY） |
+| I-H3 | 识别历史搜索用 LIKE 而非 FTS5 | `infra/src/db.rs:984` | ✅ >=3 字符走 FTS5 MATCH（trigram 倒排索引），<3 字符回退 LIKE。v18 backfill 迁移补齐历史行。独立 spec：`2026-07-05-fts5-search-design.md` |
+
+### 子项目 I：Follow-up Minor 精选（2026-07-05）
+
+| ID | 问题 | 位置 | 修复方案 |
+|----|------|------|---------|
+| M-1 | llm `max_tokens = chars × 1.2` 对中文偏低 | `llm/src/client.rs:160,182` | ✅ 改为 `× 2.0`（中文 1-2 token/char，×1.2 致润色截断；max_tokens 是上限非目标值，英文多分配无副作用） |
+| M-2 | Aliyun Fun-ASR `Authorization: bearer` 小写不统一 | `asr-cloud/src/aliyun_stream.rs:95` | ✅ 改为 `Bearer`（同文件 Qwen-ASR 路径已用大写且正常工作；RFC 7235 auth scheme case-insensitive） |
+| M-3 | 选中替换偶发失败缺诊断证据 | `desktop/src/transcript.rs` | ✅ 加 `log::debug!("[select] ...")` 覆盖 pending_delete 全生命周期（8 处），`coordinator.rs` 跨会话播种 2 处 correlation log |
 
 ## 3. 技术决策汇总
 

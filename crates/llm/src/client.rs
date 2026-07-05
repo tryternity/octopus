@@ -84,7 +84,7 @@ fn thinking_flags(config: &CompatibleLlmConfig) -> (Option<Thinking>, Option<boo
 /// `polish`（单段，user_prompt）与 `polish_regions`（多段，regions_prompt）共用此 helper，
 /// 避免 LLM 调用逻辑（HTTP / provider 分派 / 错误处理 / 空 content bail）复制粘贴。
 ///
-/// `max_tokens` 由调用方按「LLM 预期输出整篇字符数 × 1.2」算好传入：
+/// `max_tokens` 由调用方按「LLM 预期输出整篇字符数 × 2.0」算好传入：
 /// - 单段 polish：输出 = preserved(原样) + 润色后 to_polish，按两者总长。
 /// - 多段 polish_regions：输出 = 所有 regions 拼接（edited verbatim + 润色后非 edited），按 regions 总长。
 fn chat_text(
@@ -147,9 +147,9 @@ fn chat_text(
 /// - preserved=None：全量润色 to_polish。
 ///   返回润色后的完整文本。
 ///
-/// max_tokens 基于 preserved + to_polish 的总字符数（×1.2 冗余系数），
-/// 因为增量模式下 LLM 输出 = preserved（原样）+ 润色后的 to_polish，
-/// 仅按 to_polish 算会导致长编辑时输出被截断。
+/// max_tokens 基于 preserved + to_polish 的总字符数（×2.0 冗余系数）。
+/// 中文每字符在多数 tokenizer 中约 1-2 token，×1.2 曾导致润色截断；×2.0 更安全，
+/// max_tokens 是上限非目标值，英文场景多分配无副作用。
 pub fn polish(preserved: Option<&str>, to_polish: &str, config: &CompatibleLlmConfig) -> Result<String> {
     if to_polish.trim().is_empty() {
         return Ok(to_polish.to_string());
@@ -157,7 +157,7 @@ pub fn polish(preserved: Option<&str>, to_polish: &str, config: &CompatibleLlmCo
 
     let total_chars = to_polish.chars().count()
         + preserved.map(|p| p.chars().count()).unwrap_or(0);
-    let max_tokens = ((total_chars as f64) * 1.2).ceil() as u64;
+    let max_tokens = ((total_chars as f64) * 2.0).ceil() as u64;
 
     chat_text(
         &prompt::system_prompt(),
@@ -169,7 +169,8 @@ pub fn polish(preserved: Option<&str>, to_polish: &str, config: &CompatibleLlmCo
 
 /// 多段润色：按 regions 顺序，edited 区（preserve=true）verbatim 保留、其余润色，返回整篇。
 ///
-/// max_tokens 按所有 regions 文本总字符数 × 1.2 算（输出整篇 = edited 原样 + 润色后非 edited 拼接）。
+/// max_tokens 按所有 regions 文本总字符数 × 2.0 算（中文 1-2 token/char，
+/// ×1.2 曾致润色截断；max_tokens 是上限非目标值，英文多分配无副作用）。
 /// 无 regions 或全部空 → 返回空串（不调 LLM）。
 pub fn polish_regions(
     regions: &[PolishRegion],
@@ -179,7 +180,7 @@ pub fn polish_regions(
     if total_chars == 0 {
         return Ok(String::new());
     }
-    let max_tokens = ((total_chars as f64) * 1.2).ceil() as u64;
+    let max_tokens = ((total_chars as f64) * 2.0).ceil() as u64;
 
     chat_text(
         &prompt::system_prompt(),

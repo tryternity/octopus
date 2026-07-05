@@ -105,6 +105,11 @@ impl Transcript {
         if let Some((s, e)) = self.pending_delete.take() {
             self.delete_range(s, e);
             selection_deleted = true;
+            log::debug!(
+                "[select] consumed apply_engine_full t={} range=[{},{}] full_len={} cum_len={} prefix={}",
+                self.id, s, e, full.chars().count(),
+                self.engine_cumulative.chars().count(),
+                full.starts_with(self.engine_cumulative.as_str()));
         }
 
         let mut combined_delta;
@@ -149,6 +154,9 @@ impl Transcript {
         if let Some((s, e)) = self.pending_delete.take() {
             self.delete_range(s, e);
             selection_deleted = true;
+            log::debug!(
+                "[select] consumed append_segment t={} range=[{},{}] delta_len={}",
+                self.id, s, e, delta.chars().count());
         }
         if delta.is_empty() && !selection_deleted { return; }
         if !delta.is_empty() {
@@ -199,6 +207,10 @@ impl Transcript {
     /// 前端点击 → char offset → 定位光标（= 取消待删选区）。落段内→劈段；落段界→置 gap。clamp [0,len]。
     pub fn set_caret(&mut self, char_off: usize) {
         self.caret_gap = self.split_at(char_off);
+        if self.pending_delete.is_some() {
+            log::debug!("[select] cleared set_caret t={} off={} range={:?}",
+                self.id, char_off, self.pending_delete);
+        }
         self.pending_delete = None;
         self.selection_insert_offset = None;
     }
@@ -217,6 +229,7 @@ impl Transcript {
     /// 选中替换：记录待删范围 + 劈 caret_gap 到 start。**不立即删字**（保留浏览器原生
     /// 高亮反馈，用户可重新选择）。apply_engine_full / append_segment 下次调用时消费。
     pub fn set_selection(&mut self, start: usize, end: usize) {
+        log::debug!("[select] set t={} range=[{},{}]", self.id, start, end);
         self.pending_delete = Some((start, end));
         self.selection_insert_offset = Some(start);
         self.caret_gap = self.split_at(start);
@@ -230,6 +243,10 @@ impl Transcript {
 
     /// 取消选中（取消编辑 / 失焦 / 新会话）时调用：清 pending_delete 防幽灵删除。
     pub fn clear_pending_delete(&mut self) {
+        if self.pending_delete.is_some() {
+            log::debug!("[select] cleared clear_pending_delete t={} range={:?}",
+                self.id, self.pending_delete);
+        }
         self.pending_delete = None;
         self.selection_insert_offset = None;
     }
@@ -239,6 +256,10 @@ impl Transcript {
 
     /// 编辑提交：整篇压成一条 Edited；raw/polished 清零。空串→清空。
     pub fn commit_edit(&mut self, flat: &str) {
+        if self.pending_delete.is_some() {
+            log::debug!("[select] cleared commit_edit t={} range={:?}",
+                self.id, self.pending_delete);
+        }
         self.pending_delete = None;
         self.selection_insert_offset = None;
         if flat.is_empty() { self.segments.clear(); self.caret_gap = 0; return; }
@@ -259,6 +280,7 @@ impl Transcript {
         // （selection start），polish 后 caret 须精确恢复到该位置，而非跑到新末尾。
         if let Some((s, e)) = self.pending_delete.take() {
             self.delete_range(s, e);
+            log::debug!("[select] consumed take_polish_input t={} range=[{},{}]", self.id, s, e);
         }
         self.polish_snapshot = self.segments.clone();
         self.polish_caret_offset = self.caret_char_offset();
@@ -293,6 +315,10 @@ impl Transcript {
     /// 润色失败：清 pending；flush pending_delta（保留新语音）。segments 不变。
     pub fn on_polish_failed(&mut self) {
         self.polish_pending = false;
+        if self.pending_delete.is_some() {
+            log::debug!("[select] cleared on_polish_failed t={} range={:?}",
+                self.id, self.pending_delete);
+        }
         self.pending_delete = None;
         self.polish_snapshot.clear();
         let pending = std::mem::take(&mut self.pending_delta);

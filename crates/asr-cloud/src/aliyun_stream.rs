@@ -92,7 +92,7 @@ async fn run_ws_session(
         .context("aliyun WS 请求构造失败")?;
     request.headers_mut().insert(
         AUTHORIZATION,
-        format!("bearer {}", key)
+        format!("Bearer {}", key)
             .parse()
             .context("aliyun Authorization header 构造失败")?,
     );
@@ -339,7 +339,7 @@ fn pcm_s16le_to_base64(pcm: &[u8]) -> String {
 ///
 /// 与 `run_ws_session`（Fun-ASR 任务型协议）的关键区别：
 /// - URL：模型名通过查询参数 `?model=<name>` 传递，而非 payload
-/// - 鉴权：`Authorization: Bearer <key>`（注意大写 B）
+/// - 鉴权：`Authorization: Bearer <key>`
 /// - 音频传输：base64 编码的 PCM 封装在 JSON `input_audio_buffer.append` 事件中（文本帧），
 ///   而非二进制 WS 帧
 /// - 结束：发 `session.finish`（而非 `finish-task`），等服务端回 `session.finished`

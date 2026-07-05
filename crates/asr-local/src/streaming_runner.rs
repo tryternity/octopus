@@ -205,6 +205,18 @@ impl StreamingRunner {
         })
     }
 
+    /// 不加载 VAD 的构造（vad=None → 不门控、不标点、不冲刷）。供测试与无 VAD 模型环境使用。
+    pub fn new_no_vad(engine: Box<dyn StreamingEngine>, correct: bool) -> Result<Self> {
+        Ok(Self {
+            engine,
+            vad: None,
+            silence_duration: 0.0,
+            flushed: false,
+            correct,
+            seen_speech: false,
+        })
+    }
+
     /// 喂一帧**已降噪的 16k** 样本，返回本帧产生的事件（0..n）。
     ///
     /// 收编 `handle_streaming_tick:1989-2032` 的 ASR 部分：detect_silence_gap →

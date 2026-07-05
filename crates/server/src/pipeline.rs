@@ -20,6 +20,14 @@ impl WsStreamSession {
         })
     }
 
+    /// 测试辅助：不加载 VAD（跳过门控），验证纯 relay 管线。
+    #[cfg(test)]
+    pub fn new_no_vad(engine: Box<dyn StreamingEngine>, correct: bool) -> Result<Self> {
+        Ok(Self {
+            runner: StreamingRunner::new_no_vad(engine, correct)?,
+        })
+    }
+
     /// 喂一帧已降噪 16k 样本，返回本帧事件流（0..n 个 TranscriptEvent）。
     pub fn feed(&mut self, samples_16k: &[f32]) -> Vec<TranscriptEvent> {
         self.runner.push_samples(samples_16k)
@@ -122,9 +130,9 @@ mod tests {
             next_accept: Mutex::new(Some("hi".into())),
             finish_text: "final".into(),
         };
-        let mut s = WsStreamSession::new(Box::new(engine), false).unwrap();
-        // 单帧 512 静音样本（32ms < 500ms 阈值），无论 VAD 是否存在都不触发 flush，
-        // 只走 accept_samples → Partial（detect_silence_gap 在 vad=None 时返回 (false,false)）。
+        let mut s = WsStreamSession::new_no_vad(Box::new(engine), false).unwrap();
+        // 无 VAD（vad=None）→ detect_silence_gap 返回 (false,false,false)，不门控不冲刷，
+        // 只走 accept_samples → Partial。VAD 门控行为由 asr-local 自身测试覆盖。
         assert_eq!(
             s.feed(&[0.0_f32; 512]),
             vec![TranscriptEvent::Partial("hi".into())]

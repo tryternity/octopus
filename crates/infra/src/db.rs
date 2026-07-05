@@ -112,6 +112,10 @@ pub fn ensure_db() -> Result<()> {
     }
     let conn = Connection::open(&path)
         .with_context(|| format!("Failed to open DB at {}", path.display()))?;
+    // WAL 模式（读写并发友好，server 多任务访问不 SQLITE_BUSY）+ busy_timeout（锁竞争时
+    // 等待 5s 而非立即报错）。journal_mode 持久化在 db 头（设一次即生效），重复设置幂等。
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")
+        .context("set WAL + busy_timeout")?;
     init_schema(&conn)?;
     let _ = DB.set(parking_lot::Mutex::new(conn));
     Ok(())
@@ -139,19 +143,34 @@ where
 /// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等。
 /// schema 变更流程：改 db.sql + 升下方 user_version 数值，勿新增 ALTER 迁移分支。
 /// 开发期无历史库需兼容（用户确认），故不保留 v1-v16 迁移/DROP 兜底。
+/// v18：新增 FTS5 backfill（历史行补入索引），搜索走 MATCH。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 17 {
+    if v >= 18 {
         return Ok(()); // 已最新
+    }
+    if v >= 17 {
+        // v17→v18：backfill FTS5 索引——触发器（clip_fts_ai）仅维护建表后的新行，
+        // 历史 voice 行（建表前已有或从旧 schema 迁移来的）不在索引中，需一次性回填。
+        // 幂等：NOT IN 排除已索引行；空文本不索引（与触发器行为一致）。
+        conn.execute_batch(
+            "INSERT INTO clipboard_history_fts(rowid, content)
+             SELECT id, content FROM clipboard_history
+             WHERE content != ''
+               AND id NOT IN (SELECT rowid FROM clipboard_history_fts)"
+        ).context("FTS5 backfill")?;
+        conn.execute("PRAGMA user_version = 18", [])?;
+        log::info!("FTS5 backfill 完成 (v17→v18)");
+        return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 17", [])?;
-    log::info!("DB initialized (v17): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 18", [])?;
+    log::info!("DB initialized (v18): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -368,13 +387,17 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         ("clipboard_enabled", cfg.clipboard_enabled.to_string()),
         ("screenshot_shortcut", cfg.screenshot_shortcut.clone()),
     ];
+    // 包事务：30 条写入要么全部成功要么全部回滚，避免中途崩溃导致配置半更新。
+    // unchecked_transaction 可在已有事务上下文中调用（不会 panic），commit 原子提交。
+    let tx = conn.unchecked_transaction()?;
     for (key, value) in &fields {
-        conn.execute(
+        tx.execute(
             "INSERT INTO app_config (config_key, config_value) VALUES (?1, ?2)
              ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value",
             params![key, value],
         )?;
     }
+    tx.commit()?;
     Ok(())
 }
 
@@ -964,37 +987,58 @@ pub fn list_transcriptions(limit: u32, offset: u32, search: Option<&str>) -> Res
 }
 
 /// 接裸连接版本（供测试用 `open_init()` 内存 conn 走真实代码）。
-/// search = None / "" → 全列；否则按 content 列 LIKE 搜索。
+/// search = None / "" → 全列；>=3 字符走 FTS5 MATCH（倒排索引）；<3 字符回退 LIKE（trigram 无法生成 3-gram）。
 fn list_transcriptions_search_at(
     conn: &Connection,
     limit: u32,
     offset: u32,
     search: Option<&str>,
 ) -> Result<Vec<TranscriptionRecord>> {
-    if let Some(q) = search {
-        if !q.is_empty() {
-            let pattern = format!("%{}%", q);
-            let mut stmt = conn.prepare(
-                "SELECT id, created_at,
-                        COALESCE(json_extract(meta_info, '$.engine'), '') as engine,
-                        CASE WHEN json_extract(meta_info, '$.polished') = 1 THEN 'done' ELSE 'off' END as polish_status,
-                        CAST(json_extract(meta_info, '$.duration_ms') AS INTEGER) as duration_ms,
-                        segments, content
-                 FROM clipboard_history
-                 WHERE item_type = 'voice' AND content LIKE ?1
+    if let Some(q) = search.filter(|s| !s.is_empty()) {
+        let row_mapper = |row: &rusqlite::Row| -> rusqlite::Result<TranscriptionRecord> {
+            Ok(TranscriptionRecord {
+                id: row.get(0)?, created_at: row.get(1)?, engine: row.get(2)?,
+                polish_status: row.get(3)?, duration_ms: row.get(4)?,
+                segments: row.get(5)?, text: row.get(6)?,
+            })
+        };
+        let select_cols = "SELECT id, created_at,
+                COALESCE(json_extract(meta_info, '$.engine'), '') as engine,
+                CASE WHEN json_extract(meta_info, '$.polished') = 1 THEN 'done' ELSE 'off' END as polish_status,
+                CAST(json_extract(meta_info, '$.duration_ms') AS INTEGER) as duration_ms,
+                segments, content
+         FROM clipboard_history";
+
+        if q.chars().count() >= 3 {
+            // FTS5 MATCH：trigram tokenizer 对 >=3 字符生成 3-gram 做倒排索引查找（子串语义）
+            let escaped = escape_fts5_match(q);
+            let mut stmt = conn.prepare(&format!(
+                "{select_cols}
+                 WHERE item_type = 'voice'
+                   AND id IN (SELECT rowid FROM clipboard_history_fts
+                              WHERE clipboard_history_fts MATCH ?1)
                  ORDER BY id DESC LIMIT ?2 OFFSET ?3"
-            )?;
-            let rows = stmt.query_map(params![pattern, limit, offset], |row| {
-                Ok(TranscriptionRecord {
-                    id: row.get(0)?, created_at: row.get(1)?, engine: row.get(2)?,
-                    polish_status: row.get(3)?, duration_ms: row.get(4)?,
-                    segments: row.get(5)?, text: row.get(6)?,
-                })
-            })?;
+            ))?;
+            let rows = stmt.query_map(params![escaped, limit, offset], row_mapper)?;
             return Ok(rows.filter_map(|r| r.ok()).collect());
         }
+        // <3 字符回退 LIKE：trigram 无法生成 3-gram，MATCH 会无结果
+        let pattern = format!("%{}%", q);
+        let mut stmt = conn.prepare(&format!(
+            "{select_cols}
+             WHERE item_type = 'voice' AND content LIKE ?1
+             ORDER BY id DESC LIMIT ?2 OFFSET ?3"
+        ))?;
+        let rows = stmt.query_map(params![pattern, limit, offset], row_mapper)?;
+        return Ok(rows.filter_map(|r| r.ok()).collect());
     }
     list_transcriptions_at(conn, limit, offset)
+}
+
+/// 转义 FTS5 MATCH 查询：用双引号包裹为 phrase，内部双引号双写。
+/// trigram tokenizer 对 phrase 做连续 3-gram 匹配，语义等价子串匹配。
+fn escape_fts5_match(q: &str) -> String {
+    format!("\"{}\"", q.replace('"', "\"\""))
 }
 
 /// 批量删除识别记录（按 id）。返回实际删除的行数。
@@ -1118,13 +1162,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v17() {
+    fn init_schema_fresh_db_builds_v18() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 17, "全新库 init_schema 后应到 v17");
+        assert_eq!(v, 18, "全新库 init_schema 后应到 v18");
         // 五张核心表都已建好
         let n: i64 = conn
             .query_row(
@@ -1138,16 +1182,16 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_v17_is_noop() {
-        // 已是 v17 的库再调 init_schema 应早退（不重跑、不报错）
+    fn init_schema_v18_is_noop() {
+        // 已是 v18 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 17", []).unwrap();
+        conn.execute("PRAGMA user_version = 18", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 17);
+        assert_eq!(v, 18);
     }
 
     #[test]
@@ -1830,5 +1874,91 @@ mod tests {
         let list = list_prompts_at(&conn).unwrap();
         let dup_count = list.iter().filter(|p| p.title == "同名").count();
         assert_eq!(dup_count, 2, "title 允许重复");
+    }
+
+    // ── FTS5 搜索（trigram MATCH >=3 char，LIKE 回退 <3 char）──
+
+    /// 辅助：插入 voice 行，返回连接
+    fn open_with_voice(rows: &[(i64, &str)]) -> Connection {
+        let conn = open_init();
+        for &(id, text) in rows {
+            conn.execute(
+                "INSERT INTO clipboard_history (id, item_type, content, meta_info, created_at)
+                 VALUES (?1, 'voice', ?2, '{\"engine\":\"test\"}', '2026-07-05 10:00:00')",
+                params![id, text],
+            ).unwrap();
+        }
+        conn
+    }
+
+    #[test]
+    fn fts5_search_long_query_uses_match() {
+        let conn = open_with_voice(&[
+            (100, "今天的会议纪要很详细"),
+            (200, "明天去爬山"),
+        ]);
+        // 4 字符 → FTS5 MATCH 路径
+        let rows = list_transcriptions_search_at(&conn, 10, 0, Some("会议纪要")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, 100);
+        assert_eq!(rows[0].text.as_deref(), Some("今天的会议纪要很详细"));
+    }
+
+    #[test]
+    fn fts5_search_short_query_falls_back_to_like() {
+        let conn = open_with_voice(&[
+            (100, "你好世界"),
+            (200, "再见"),
+        ]);
+        // 2 字符 → LIKE 回退（trigram 无法生成 3-gram）
+        let rows = list_transcriptions_search_at(&conn, 10, 0, Some("你好")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, 100);
+    }
+
+    #[test]
+    fn fts5_search_special_chars_no_panic() {
+        let conn = open_with_voice(&[(100, "test*result"), (200, "a\"quoted\"b")]);
+        // 含 FTS5 特殊字符的查询不应 panic 或 SQL 错误
+        let _ = list_transcriptions_search_at(&conn, 10, 0, Some("test*resu")).unwrap();
+        let _ = list_transcriptions_search_at(&conn, 10, 0, Some("AND")).unwrap();
+        let _ = list_transcriptions_search_at(&conn, 10, 0, Some("quoted")).unwrap();
+    }
+
+    #[test]
+    fn fts5_search_empty_content_not_indexed() {
+        let conn = open_with_voice(&[(100, ""), (200, "有内容的记录")]);
+        // 空 content 不索引，但搜索应正常返回有内容的行
+        let rows = list_transcriptions_search_at(&conn, 10, 0, Some("有内容的")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, 200);
+    }
+
+    #[test]
+    fn fts5_backfill_sql_is_idempotent() {
+        // 验证 backfill SQL 本身的正确性与幂等性（实际触发器行为由 FTS5 外部内容表保证）
+        let conn = open_with_voice(&[(100, "历史遗留的会议记录"), (200, "另一条记录")]);
+        // backfill SQL（与 init_schema v17→v18 相同）
+        let backfill = "INSERT INTO clipboard_history_fts(rowid, content)
+             SELECT id, content FROM clipboard_history
+             WHERE content != ''
+               AND id NOT IN (SELECT rowid FROM clipboard_history_fts)";
+        // 触发器已索引这些行（NOT IN 排除）→ backfill 不插入（幂等）
+        conn.execute_batch(backfill).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM clipboard_history_fts WHERE rowid IN (100,200)", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 2, "行已在索引中，backfill 幂等不重复");
+        // backfill 后搜索仍正常
+        let rows = list_transcriptions_search_at(&conn, 10, 0, Some("会议记录")).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, 100);
+    }
+
+    #[test]
+    fn fts5_escape_wraps_in_phrase() {
+        assert_eq!(escape_fts5_match("会议纪要"), "\"会议纪要\"");
+        assert_eq!(escape_fts5_match("a\"b"), "\"a\"\"b\"");
+        assert_eq!(escape_fts5_match("AND"), "\"AND\"");
     }
 }

@@ -734,6 +734,7 @@ fn handle_toggle(
                     let mut t = Transcript::new(tid, config.polish_mode);
                     t.commit_edit(&text);
                     t.set_selection(s, e);
+                    debug!("[select] cross-session seeded t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
                     (t, text, true)
                 } else {
                     (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)
@@ -803,6 +804,7 @@ fn handle_toggle(
                             let mut t = Transcript::new(tid, config.polish_mode);
                             t.commit_edit(&text);
                             t.set_selection(s, e);
+                            debug!("[select] cross-session seeded (cloud) t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
                             (t, text, true)
                         } else {
                             (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)

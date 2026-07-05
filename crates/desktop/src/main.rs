@@ -99,7 +99,9 @@ pub fn run() {
                 let mode_str = match config.polish_mode {
                     PolishMode::FinalOnly => "仅最终润色",
                     PolishMode::Intermediate => "中间+最终",
-                    _ => unreachable!(),
+                    // Disabled 理论上不会进 Some(llm_cfg) 分支（llm_config 返回 None），
+                    // 但显式列出避免新增变体时 unreachable! panic 扼杀启动。
+                    PolishMode::Disabled => "已禁用",
                 };
                 if config.polish_mode == PolishMode::Intermediate {
                     log::info!(

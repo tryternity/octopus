@@ -1,6 +1,6 @@
 # 代码审查修复 P2 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:executing-plans 或 superpowers:subagent-driven-development 逐任务实施。Steps 用 checkbox (`- [ ]`) 跟踪。
+> **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:executing-plans 或 superpowers:subagent-driven-development 逐任务实施。Steps 用 checkbox (`- [x]`) 跟踪。
 
 **Goal:** 清理死代码、死依赖、生产路径调试输出，修跨平台编译，清理 118 个 clippy lint。机械化操作为主，风险低。
 
@@ -34,14 +34,14 @@
 - Modify: `crates/dlp/Cargo.toml`（删 tempfile，如 P0 未删）
 - Modify: `crates/llm/Cargo.toml`（删 serde_yaml dev-dep）
 
-- [ ] **Step 1：验证 image_util 零调用**
+- [x] **Step 1：验证 image_util 零调用**
 
 ```bash
 rg "save_as_webp|save_as_png|save_as_jpeg|image_util" crates/ --glob '!crates/infra/src/image_util.rs'
 ```
 Expected: 无命中（仅定义处）。
 
-- [ ] **Step 2：删除 image_util.rs + lib.rs 声明 + Cargo.toml 依赖**
+- [x] **Step 2：删除 image_util.rs + lib.rs 声明 + Cargo.toml 依赖**
 
 ```bash
 rm crates/infra/src/image_util.rs
@@ -49,7 +49,7 @@ rm crates/infra/src/image_util.rs
 编辑 `lib.rs` 删 `pub mod image_util;`（或 `mod image_util;`）。
 编辑 `Cargo.toml`：确认 `image` 和 `webp` 是否仅被 image_util 使用（`rg "use image\|use webp\|image::\|webp::" crates/infra/src/`），如否则删除。
 
-- [ ] **Step 3：验证并删除 desktop 死代码**
+- [x] **Step 3：验证并删除 desktop 死代码**
 
 逐个验证零调用后删除（含 `#[allow(dead_code)]` 标注的）：
 ```bash
@@ -59,7 +59,7 @@ rg "send_scroll" crates/desktop/src/ --glob '!*screenshot_commands.rs'
 rg "close_all_pin_windows" crates/desktop/src/ --glob '!*pin_window.rs'
 ```
 
-- [ ] **Step 4：验证并删除 download/capx/asr-cloud 死代码**
+- [x] **Step 4：验证并删除 download/capx/asr-cloud 死代码**
 
 ```bash
 rg "if_range_value" crates/download/src/ --glob '!*verify.rs'
@@ -69,18 +69,18 @@ rg "COMP_NONE|\.serialization" crates/asr-cloud/src/ --glob '!*bytedance_stream.
 
 删除 downlownloader.rs:202-206 不可达 416 else 分支。
 
-- [ ] **Step 5：删除死依赖**
+- [x] **Step 5：删除死依赖**
 
 `dlp/Cargo.toml` 删 `tempfile`（如 P0 未删）。`llm/Cargo.toml` 删 `serde_yaml`（dev-dep）。
 
-- [ ] **Step 6：编译验证**
+- [x] **Step 6：编译验证**
 
 ```bash
 cargo build --workspace
 ```
 Expected: 编译通过。如有遗漏的引用，编译器会报错，逐个修复。
 
-- [ ] **Step 7：提交**
+- [x] **Step 7：提交**
 
 ```bash
 git add -A
@@ -103,18 +103,18 @@ fixes 共性5"
 **Files:**
 - Modify: `crates/capx/src/capture.rs:340-362`
 
-- [ ] **Step 1：测试块加 cfg 门控**
+- [x] **Step 1：测试块加 cfg 门控**
 
 `capture.rs:340` 的 `#[cfg(test)] mod tests` 改为 `#[cfg(all(test, target_os = "macos"))] mod tests`，或给每个调用 `bgra_to_rgba` 的测试加 `#[cfg(target_os = "macos")]`。
 
-- [ ] **Step 2：验证非 macOS 编译（如有 Linux 环境）**
+- [x] **Step 2：验证非 macOS 编译（如有 Linux 环境）**
 
 ```bash
 # macOS 上无法直接验证 Linux 编译，但可以检查 cfg 一致性
 cargo test -p octopus-capx  # macOS 上应 PASS
 ```
 
-- [ ] **Step 3：提交**
+- [x] **Step 3：提交**
 
 ```bash
 git add crates/capx/src/capture.rs
@@ -136,24 +136,24 @@ fixes C14"
 - Modify: `crates/asr-cloud/src/aliyun_stream.rs:198-201,442-445`（info! → debug!）
 - Modify: `crates/desktop/frontend/src/pages/Result/index.tsx:155,162`（删 console.log）
 
-- [ ] **Step 1：asr-local eprintln! → log::debug!**
+- [x] **Step 1：asr-local eprintln! → log::debug!**
 
 ```bash
 rg "eprintln!" crates/asr-local/src/ -n
 ```
 逐个改为 `log::debug!`（保留信息内容）。确认 asr-local 已有 `log` 依赖（`rg "log" crates/asr-local/Cargo.toml`）。
 
-- [ ] **Step 2：desktop screenshot_commands eprintln! → log::debug!**
+- [x] **Step 2：desktop screenshot_commands eprintln! → log::debug!**
 
 ```bash
 rg "eprintln!" crates/desktop/src/screenshot_commands.rs -n
 ```
 
-- [ ] **Step 3：asr-cloud aliyun info! → debug!（热路径日志洪水）**
+- [x] **Step 3：asr-cloud aliyun info! → debug!（热路径日志洪水）**
 
 `aliyun_stream.rs:198-201` 和 `:442-445` 的 `log::info!` 改为 `log::debug!`。
 
-- [ ] **Step 4：前端删 console.log**
+- [x] **Step 4：前端删 console.log**
 
 `Result/index.tsx:155,162` 删除两行 `console.log`。
 ```bash
@@ -161,14 +161,14 @@ rg "console.log" crates/desktop/frontend/src/ -n
 ```
 删除所有进生产的 `console.log`（保留 dev-only 的如有标注）。
 
-- [ ] **Step 5：编译 + 测试**
+- [x] **Step 5：编译 + 测试**
 
 ```bash
 cargo build -p octopus-asr-local -p octopus-desktop -p octopus-asr-cloud
 cargo test -p octopus-asr-local -p octopus-asr-cloud
 ```
 
-- [ ] **Step 6：提交**
+- [x] **Step 6：提交**
 
 ```bash
 git add -A
@@ -187,33 +187,33 @@ fixes 共性4"
 **Files:**
 - 各 crate（自动修复）
 
-- [ ] **Step 1：自动修复可修的 lint**
+- [x] **Step 1：自动修复可修的 lint**
 
 ```bash
 cargo clippy --fix --workspace --allow-dirty --allow-staged 2>&1 | tail -20
 ```
 
-- [ ] **Step 2：检查剩余 lint**
+- [x] **Step 2：检查剩余 lint**
 
 ```bash
 cargo clippy --workspace --all-targets 2>&1 | grep "^warning:" | head -30
 ```
 
-- [ ] **Step 3：手动修复剩余 lint**
+- [x] **Step 3：手动修复剩余 lint**
 
 常见手动修复：
 - `needless_range_loop`(19) → `enumerate()` 或直接索引
 - `manual_is_multiple_of`(12) → `.is_multiple_of()`
 - `too_many_arguments`(3) → 参数封装为 struct
 
-- [ ] **Step 4：加 clippy gate 到各 lib.rs**
+- [x] **Step 4：加 clippy gate 到各 lib.rs**
 
 在各 crate 的 `lib.rs` 顶部加（如未有）：
 ```rust
 #![warn(clippy::all)]
 ```
 
-- [ ] **Step 5：编译 + 测试 + clippy 零警告验证**
+- [x] **Step 5：编译 + 测试 + clippy 零警告验证**
 
 ```bash
 cargo build --workspace
@@ -222,7 +222,7 @@ cargo clippy --workspace --all-targets -- -D warnings 2>&1 | grep -c "^warning"
 ```
 Expected: clippy 0 warning（desktop 前端 dist 除外）。
 
-- [ ] **Step 6：提交**
+- [x] **Step 6：提交**
 
 ```bash
 git add -A
@@ -238,33 +238,33 @@ fixes 共性4(clippy)"
 
 ## Task P2-Final: 全量回归验证
 
-- [ ] **Step 1：全量编译 + 测试**
+- [x] **Step 1：全量编译 + 测试**
 
 ```bash
 cargo build --workspace
 cargo test --workspace
 ```
 
-- [ ] **Step 2：clippy 零警告**
+- [x] **Step 2：clippy 零警告**
 
 ```bash
 cargo clippy --workspace --all-targets -- -D warnings
 ```
 
-- [ ] **Step 3：前端构建验证**
+- [x] **Step 3：前端构建验证**
 
 ```bash
 cd crates/desktop/frontend && npm run build
 ```
 Expected: 前端构建通过，无 console.log 残留导致的 lint 错误。
 
-- [ ] **Step 4：更新审查报告 — 标注全部已修复**
+- [x] **Step 4：更新审查报告 — 标注全部已修复**
 
 在 `docs/code-review-2026-07-05.md` 检查所有条目是否标注 `✅ 已修复`。
 
-- [ ] **Step 5：更新 architecture.md**
+- [x] **Step 5：更新 architecture.md**
 
-- [ ] **Step 6：提交收尾**
+- [x] **Step 6：提交收尾**
 
 ```bash
 git add docs/
@@ -295,5 +295,28 @@ git commit -m "docs: P2 清理完成，全量审查修复收官"
 
 ### P2-Final 偏差
 
-- **server/pipeline.rs 1 个 pre-existing test failure**：`ws_stream_session_feed_partial_then_empty_finish_final` — `feed(&[0.0; 512])` 返回空而非预期 `Partial("hi")`。在 P2 前（c962b0b）已失败，非本次引入。根因待查（StreamingRunner 的 push_samples 行为变化，512 样本可能不够触发 accept）。
+- **server/pipeline.rs pre-existing test failure**：`ws_stream_session_feed_partial_then_empty_finish_final` — 512 静音样本在有 VAD 模型环境下被门控（`seen_speech` 不置 true）→ accept_samples 不调用 → 返回空。**已在 follow-up 修复**：`StreamingRunner` 新增 `new_no_vad` 构造（vad=None 跳过门控），server 测试用此验证纯 relay 管线。
+
+### Follow-up（2026-07-05，审查报告 Important + Minor + FTS5）
+
+> P2 完成后的 follow-up 轮次，处理审查报告遗留项。
+
+- **Important 清单（I-H 系列）**：
+  - I-H1 `save_app_config_at` 30 条写入包 `unchecked_transaction` → `commit`（原子，中途崩溃全回滚）
+  - I-H2 `ensure_db` 打开后设 `PRAGMA journal_mode=WAL; busy_timeout=5000`（多任务并发友好）
+  - I-H3 voice 历史搜索切 FTS5 MATCH（详见独立 spec `2026-07-05-fts5-search-design.md`）
+  - I-D1 JSON 转义已确认用 serde_json（P2 期间完成，spec 补标 ✅）
+  - I-F1 `main.rs:102` `unreachable!()` → 穷举 match（coordinator.rs 原三处已在 stage 重构中消失）
+- **Minor 精选**：
+  - `llm/client.rs` max_tokens 系数 `×1.2` → `×2.0`（中文 1-2 token/char，×1.2 致润色截断；3 处）
+  - `asr-cloud/aliyun_stream.rs` `bearer` → `Bearer` 统一（RFC 7235 case-insensitive，同文件 Qwen-ASR 路径已用大写）
+  - moonshine saturating_sub 已在 P0 Task A3 完成
+- **FTS5 搜索切换**（I-H3，独立 spec）：
+  - v18 迁移：backfill 历史 voice 行进 `clipboard_history_fts` 索引（幂等 `NOT IN`）
+  - `list_transcriptions_search_at`：>=3 字符走 MATCH（trigram 倒排索引），<3 字符回退 LIKE
+  - `escape_fts5_match`：双引号包裹 phrase，内部双引号双写转义
+  - 6 个新测试全过
+- **选中替换诊断日志**（为偶发失败定位做证据采集）：
+  - `transcript.rs` 8 处 `log::debug!("[select] ...")` 覆盖 pending_delete 全生命周期
+  - `coordinator.rs` 2 处跨会话播种 correlation log
 
