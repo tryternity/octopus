@@ -10,6 +10,7 @@
 //! runner 输入即已降噪的 16k 样本。
 
 use anyhow::Result;
+use std::sync::Arc;
 
 use crate::streaming_engine::StreamingSession;
 use crate::vad::SileroVad;
@@ -30,7 +31,7 @@ pub enum TranscriptEvent {
 /// 流式引擎 trait。`&self` + 内部可变（`StreamingSession` 用 `Mutex`），故要求 `Send + Sync`。
 ///
 /// local `StreamingSession` 与（阶段2c）cloud WS 实现本 trait；`StreamingRunner` 持
-/// `Box<dyn StreamingEngine>`，对本地/云端无感（spec §3.4）。
+/// `Arc<dyn StreamingEngine>`，对本地/云端无感（spec §3.4）。
 pub trait StreamingEngine: Send + Sync {
     /// 送 16k 样本，返回累积全文（有新结果时）。
     /// - `was_silent`：上一轮静音≥阈值（触发插逗号/分段）。
@@ -171,7 +172,7 @@ fn detect_silence_gap(
 /// **不持 denoise/resample**（留 `desktop/audio.rs`，见 plan「设计调整」）；输入为已降噪 16k 样本。
 /// 润色/DB/Tauri emit 留端；本 runner 只产 [`TranscriptEvent`]。
 pub struct StreamingRunner {
-    engine: Box<dyn StreamingEngine>,
+    engine: Arc<dyn StreamingEngine>,
     vad: Option<SileroVad>,
     silence_duration: f64,
     flushed: bool,
@@ -188,7 +189,7 @@ pub struct StreamingRunner {
 impl StreamingRunner {
     /// 构造 runner。`engine` 由调用方创建（local `StreamingSession` 或 cloud WS）。
     /// VAD 经 `find_silero_vad` 解析模型路径，缺失则 `None`（不加标点，与现状一致）。
-    pub fn new(engine: Box<dyn StreamingEngine>, correct: bool) -> Result<Self> {
+    pub fn new(engine: Arc<dyn StreamingEngine>, correct: bool) -> Result<Self> {
         let mut vad = crate::config::find_silero_vad()
             .ok()
             .and_then(|p| SileroVad::new(&p).ok());
@@ -206,7 +207,7 @@ impl StreamingRunner {
     }
 
     /// 不加载 VAD 的构造（vad=None → 不门控、不标点、不冲刷）。供测试与无 VAD 模型环境使用。
-    pub fn new_no_vad(engine: Box<dyn StreamingEngine>, correct: bool) -> Result<Self> {
+    pub fn new_no_vad(engine: Arc<dyn StreamingEngine>, correct: bool) -> Result<Self> {
         Ok(Self {
             engine,
             vad: None,
@@ -377,7 +378,7 @@ mod tests {
     }
 
     fn runner(fake: FakeStreamingEngine) -> StreamingRunner {
-        let mut r = StreamingRunner::new(Box::new(fake), false).unwrap();
+        let mut r = StreamingRunner::new(Arc::new(fake), false).unwrap();
         // 以下用例验 accept/flush/finish 的 relay 管线，与开口前门控无关——预置 seen_speech=true
         // 跳过门控（喂入即视为已开口）。门控行为由 push_samples_gates_silence_* 专测覆盖。
         r.seen_speech = true;
@@ -435,7 +436,7 @@ mod tests {
         // engine → 无 Partial/Committed 事件（这是消除启动 spurious「嗯」的核心）。
         // dev 环境 silero 可用 → 门控激活；无 silero 的环境（vad=None）→ 门控不激活，自动跳过。
         let mut r = StreamingRunner::new(
-            Box::new(FakeStreamingEngine::new(
+            Arc::new(FakeStreamingEngine::new(
                 vec!["你好"],
                 vec!["不应到达"],
                 "x",
