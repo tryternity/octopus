@@ -162,9 +162,46 @@ pub struct FileEntry {
 
 ### 4.3 前端
 
-- `ClipboardItem` 类型：`source` 删除，`item_type` 加 'voice'/'ocr'
+**类型系统适配：**
+- `ClipboardItem` 类型：`source` 删除，`item_type` 加 'voice'/'ocr'，新增 `ref_data` / `meta_info` / `has_thumbnail` / `segments`
 - 展示逻辑：按 `item_type` 决定图标（Mic/ScanText/Type/ImageIcon/FileText）
 - `meta_info` 前端解析为显示文本
+
+**元数据展示（visual design）：**
+
+每条条目底部统一显示元数据行，按 item_type 展示不同信息：
+
+| item_type | content 区 | 底部元数据行 |
+|-----------|-----------|-------------|
+| text | 文本预览（≤200字截断） | `时间 · N字` |
+| voice | 文本预览 | `时间 · N字 · Xs` |
+| ocr | 文本预览 | `时间 · N字` |
+| image | `[缩略图] WxH · size` | `时间` |
+| file | 文件路径（ref_data JSON 解析） | `时间` |
+
+三层视觉层次（content > 类型元数据 > 时间）：
+- 内容文本 12.5px foreground → 最强
+- 类型元数据 10px typeAccent → 中（分隔点 `·` 更淡 30%）
+- 时间戳 10px muted/50% → 最弱
+
+**类型色编码（signature element）：**
+```ts
+typeAccent = {
+  text: "text-stone-500",
+  voice: "text-amber-600",
+  ocr: "text-teal-600",
+  image: "text-indigo-500",
+  file: "text-emerald-600",
+}
+```
+色编码仅用于类型图标 + 元数据数字，不侵入内容区——保持克制。voice 额外保留左侧 2px 竖条。
+
+**Helper 函数（types/clipboard.ts）：**
+- `metaParts(item)`：生成底部元数据片段（text/voice/ocr 的字数/时长）
+- `imageMeta(item)`：生成图片条目 `WxH · size`（放在缩略图旁，不在底部行）
+- `typeAccent[item.item_type]`：类型强调色 class
+
+两处组件（浮窗 ClipboardItem.tsx + 设置页 ClipboardPanel.tsx）共用以上 helper。
 
 ## 5. 不变量
 
