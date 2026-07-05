@@ -73,9 +73,9 @@ function Result() {
   // enterEdit/commitEdit/cancelEdit/show-result/clear-result/hide-result 时清。
   // prepare-record 事件回读它推给后端，作为跨会话选中替换种子。
   const currentSelectionRef = useRef<{ start: number; end: number; text: string } | null>(null);
-  // 拖选过程中 selectionchange 缓存的 raw 选区——mouseup 时 live selection 可能已被
-  // WKWebView re-render 清除，用此缓存兜底。只存 4 个属性读取（纳秒级），不做 Range 计算。
-  const dragSelectionCacheRef = useRef<{ start: number; end: number } | null>(null);
+  // mousedown 时的 char offset——mouseup 时用 caretRangeFromPoint 算终点 offset，
+  // 两者 min/max 得出选区范围。完全不依赖 window.getSelection()（WKWebView 会清选区）。
+  const mouseDownOffsetRef = useRef<number | null>(null);
   const pendingDiverted = useRef<string | null>(null);
   const divertedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editBufTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -101,33 +101,16 @@ function Result() {
   useEffect(() => {
     const onSelectionChange = () => {
       const sel = window.getSelection();
-      if (sel && sel.isCollapsed) {
-        currentSelectionRef.current = null;
-      } else if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
-        // 拖选中途持续缓存 char offset——mouseup 时选区可能已被 re-render 清除。
-        // selectionchange 高频但 codePointOffsetTo 只做一次 createRange+toString，
-        // 比 textContent 重写 + flushSync re-render 轻得多（实测不卡）。
-        const el = textRef.current;
-        if (el && text) {
-          const range = sel.getRangeAt(0);
-          if (el.contains(range.commonAncestorContainer)) {
-            try {
-              const s = codePointOffsetBefore(el, range);
-              const en = codePointOffsetTo(el, range.endContainer, range.endOffset);
-              if (en > s) dragSelectionCacheRef.current = { start: s, end: en };
-            } catch { /* */ }
-          }
-        }
-      }
+      if (sel && sel.isCollapsed) currentSelectionRef.current = null;
     };
-    const onBlur = () => { currentSelectionRef.current = null; dragSelectionCacheRef.current = null; };
+    const onBlur = () => { currentSelectionRef.current = null; };
     document.addEventListener("selectionchange", onSelectionChange);
     window.addEventListener("blur", onBlur);
     return () => {
       document.removeEventListener("selectionchange", onSelectionChange);
       window.removeEventListener("blur", onBlur);
     };
-  }, [text]);
+  }, []);
   useEffect(() => { toolbarVisibleRef.current = toolbarVisible; }, [toolbarVisible]);
   // 卸载时取消待执行的滚底 rAF（避免对已卸载 textRef 操作）。
   useEffect(() => () => {
@@ -515,37 +498,44 @@ function Result() {
   // 纯点击（折叠）→ caretRangeFromPoint 定位 + invoke set_caret（普通中插）。
   const handleTextMouseUp = (e: React.MouseEvent) => {
     const el = textRef.current;
-    if (!el || !text) return;
-    const sel = window.getSelection();
+    if (!el || !text) { mouseDownOffsetRef.current = null; return; }
 
-    // 先尝试 live Selection
-    let dragStart = -1, dragEnd = -1;
+    // 方案 1：live Selection（从左往右选通常可用）
+    const sel = window.getSelection();
     if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
       const range = sel.getRangeAt(0);
       if (el.contains(range.commonAncestorContainer)) {
         try {
-          dragStart = codePointOffsetBefore(el, range);
-          dragEnd = codePointOffsetTo(el, range.endContainer, range.endOffset);
+          const start = codePointOffsetBefore(el, range);
+          const end = codePointOffsetTo(el, range.endContainer, range.endOffset);
+          if (end > start) {
+            setCaretPos(null);
+            currentSelectionRef.current = { start, end, text: displayedRef.current };
+            invoke("set_selection", { start, end, text: displayedRef.current });
+            mouseDownOffsetRef.current = null;
+            return;
+          }
         } catch { /* */ }
       }
     }
 
-    // live selection 丢失 → 用 selectionchange 缓存兜底
-    if (dragStart < 0 || dragEnd <= dragStart) {
-      const cached = dragSelectionCacheRef.current;
-      if (cached && cached.end > cached.start) {
-        dragStart = cached.start;
-        dragEnd = cached.end;
-        console.debug('[seldbg] restored from cache', cached);
+    // 方案 2：live selection 丢失 → 用 mousedown offset + mouseup 的 caretRangeFromPoint 重建
+    const downOff = mouseDownOffsetRef.current;
+    if (downOff !== null) {
+      const upRange = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
+      if (upRange && el.contains(upRange.startContainer)) {
+        const upOff = codePointOffsetBefore(el, upRange);
+        if (upOff !== downOff) {
+          const start = Math.min(downOff, upOff);
+          const end = Math.max(downOff, upOff);
+          setCaretPos(null);
+          currentSelectionRef.current = { start, end, text: displayedRef.current };
+          invoke("set_selection", { start, end, text: displayedRef.current });
+          mouseDownOffsetRef.current = null;
+          return;
+        }
       }
-    }
-    dragSelectionCacheRef.current = null;
-
-    if (dragEnd > dragStart && dragStart >= 0) {
-      setCaretPos(null);
-      currentSelectionRef.current = { start: dragStart, end: dragEnd, text: displayedRef.current };
-      invoke("set_selection", { start: dragStart, end: dragEnd, text: displayedRef.current });
-      return;
+      mouseDownOffsetRef.current = null;
     }
 
     // 折叠（纯点击）→ 定位光标
@@ -700,7 +690,15 @@ function Result() {
             contentEditable={editing}
             suppressContentEditableWarning
             onInput={onTextInput}
-                        onMouseUp={!editing ? handleTextMouseUp : undefined}
+                        onMouseDown={!editing ? (e) => {
+              const el = textRef.current;
+              if (!el) return;
+              const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
+              if (range && el.contains(range.startContainer)) {
+                mouseDownOffsetRef.current = codePointOffsetBefore(el, range);
+              }
+            } : undefined}
+            onMouseUp={!editing ? handleTextMouseUp : undefined}
             onScroll={(e) => {
               const el = e.currentTarget;
               const stick = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
