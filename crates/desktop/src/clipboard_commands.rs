@@ -353,8 +353,12 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
         return Err("非文件条目".into());
     }
 
-    // 解析 JSON 路径数组
-    let paths: Vec<String> = serde_json::from_str(&item.content)
+    // 解析 JSON 路径数组。file 条目入库时 content 为空、路径存 ref_data
+    // （watcher.rs insert_clipboard_item + store.rs File 分支强制 content=空），
+    // 与 write_item_to_clipboard File 分支一致读 ref_data。旧代码误读 content
+    // 导致 serde_json::from_str("") 全平台失败、「打开文件」按钮失效。
+    let paths_json = item.ref_data.as_ref().ok_or("文件路径缺失")?;
+    let paths: Vec<String> = serde_json::from_str(paths_json)
         .map_err(|e| format!("解析路径失败: {}", e))?;
 
     let first = paths.first().ok_or("无文件路径")?;

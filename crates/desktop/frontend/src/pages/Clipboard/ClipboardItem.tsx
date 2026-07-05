@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, memo, useMemo } from "react";
 import { cn } from "@/lib/utils";
 import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen, Link as LinkIcon } from "lucide-react";
 import { invoke } from "@/lib/tauri";
@@ -8,7 +8,7 @@ import type { ClipboardItem } from "@/types/clipboard";
 import { metaParts, typeAccent, imageMeta } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
 
-export default function ClipboardItemRow({
+function ClipboardItemRow({
   item,
   isLast,
   isSelected,
@@ -18,7 +18,7 @@ export default function ClipboardItemRow({
   item: ClipboardItem;
   isLast: boolean;
   isSelected: boolean;
-  onSelect: () => void;
+  onSelect: (id: number) => void;
   onChanged: () => void;
 }) {
   const [deletePending, setDeletePending] = useState(false);
@@ -27,6 +27,9 @@ export default function ClipboardItemRow({
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Download 触发按钮 ref：传给 SaveImagePopover，让其 outside-click 检测忽略它，
+  // 否则 mousedown 关闭与 click toggle 时序冲突，表现为再次点击 Download 关不掉 popover。
+  const saveBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     return () => {
@@ -71,7 +74,7 @@ export default function ClipboardItemRow({
   // 单击：选中条目（不复制）
   const handleClick = () => {
     if (deletePending) return;
-    onSelect();
+    onSelect(item.id);
   };
 
   // 双击：写剪贴板 → 隐藏浮窗 → 恢复焦点 → 模拟 Cmd+V 粘贴（paste_clipboard_item，
@@ -120,6 +123,15 @@ export default function ClipboardItemRow({
   };
 
   const isUrl = item.item_type === "text" && /^https?:\/\//i.test(item.content.trim());
+
+  // 预览文本：码元数 ≤200 时字符数必 ≤200（emoji 占多码元），直接返回原串零开销；
+  // 超过才展开字符数组精确按字符截断。原代码每次渲染两次 [...content] 全量展开，
+  // 长文本（几万字）滚动时掉帧。useMemo 在 item.content 不变（如选中行切换）时复用。
+  const preview = useMemo(() => {
+    if (item.content.length <= 200) return item.content;
+    const chars = [...item.content];
+    return chars.length > 200 ? chars.slice(0, 200).join("") + "……" : item.content;
+  }, [item.content]);
 
   const Icon = item.item_type === "voice" ? Mic
     : item.item_type === "ocr" ? ScanText
@@ -180,7 +192,7 @@ export default function ClipboardItemRow({
             {formatFilePaths(item.ref_data)}
           </div>
         ) : (
-          <p className="text-[12.5px] leading-snug text-foreground/90 break-all line-clamp-2">{[...item.content].length > 200 ? [...item.content].slice(0, 200).join("") + "……" : item.content}</p>
+          <p className="text-[12.5px] leading-snug text-foreground/90 break-all line-clamp-2">{preview}</p>
         )}
         <div className="flex items-center gap-1.5 mt-0.5">
           <span className="text-[10px] text-muted-foreground/50 tabular-nums">{item.created_at}</span>
@@ -231,6 +243,7 @@ export default function ClipboardItemRow({
         {item.item_type === "image" && (
           <div className="relative">
             <button
+              ref={saveBtnRef}
               className={cn(
                 "p-0.5 transition-opacity hover:scale-110",
                 showSavePopover
@@ -246,7 +259,7 @@ export default function ClipboardItemRow({
               )} />
             </button>
             {showSavePopover && (
-              <SaveImagePopover id={item.id} onClose={() => setShowSavePopover(false)} />
+              <SaveImagePopover id={item.id} triggerRef={saveBtnRef} onClose={() => setShowSavePopover(false)} />
             )}
           </div>
         )}
@@ -292,6 +305,12 @@ export default function ClipboardItemRow({
   );
 }
 
+// memo：selectedId 变化时父组件重绘，仅原选中行与新选中行（isSelected 变）需更新，
+// 其余行 props 浅比较不变即跳过（重绘数 50 → 2）。需配合 index.tsx 稳定的
+// onSelect（useCallback）/ onChanged（refresh useCallback）句柄，否则 inline 箭头
+// 令每行 prop 引用每帧变化、memo 形同虚设。
+export default memo(ClipboardItemRow);
+
 /// ref_data 是 JSON 路径数组，取每个路径最后 2 段显示。
 function formatFilePaths(refData?: string): string {
   if (!refData) return "文件";
@@ -302,7 +321,9 @@ function formatFilePaths(refData?: string): string {
       // 仅 file:// 开头才 decodeURIComponent，避免对含字面 %XX 的普通路径误伤。
       const stripped = raw.replace(/^file:\/\//, "");
       const path = raw.startsWith("file://") ? decodeURIComponent(stripped) : stripped;
-      const parts = path.split("/").filter(Boolean);
+      // 同时按 / 与 \ 切割：Linux/macOS 用正斜杠，Windows（clipboard-rs FileList）
+      // 存反斜杠普通路径 C:\\…，仅 split("/") 会无法截断而整段溢出。
+      const parts = path.split(/[\\/]/).filter(Boolean);
       const tail = parts.slice(-2).join("/");
       return "…/" + tail;
     });

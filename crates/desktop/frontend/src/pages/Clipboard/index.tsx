@@ -22,6 +22,11 @@ export default function Clipboard() {
 
   const { items, total, refresh } = useClipboardHistory(filter, search);
 
+  // 稳定选中句柄：ClipboardItemRow 已 memo，inline 箭头 onSelect={() => ...} 会让
+  // 每行 prop 引用每帧变化 → memo 失效、50 行全重绘。setSelectedId 来自 useState 稳定，
+  // useCallback([]) 产出恒定引用，行内再以 onSelect(item.id) 回带 id。
+  const handleSelect = useCallback((id: number) => setSelectedId(id), []);
+
   // 监听开关：mount 读 get_config + 监听 config-changed 同步（与设置页 toggle 双向同步）。
   const loadRecording = useCallback(async () => {
     try {
@@ -117,7 +122,7 @@ export default function Clipboard() {
               item={item}
               isLast={index === items.length - 1}
               isSelected={selectedId === item.id}
-              onSelect={() => setSelectedId(item.id)}
+              onSelect={handleSelect}
               onChanged={refresh}
             />
           ))

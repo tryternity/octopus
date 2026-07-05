@@ -242,6 +242,9 @@ function ClipboardRow({
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [copied, setCopied] = useState(false);
   const copyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Download 触发按钮 ref：传给 SaveImagePopover，outside-click 检测忽略它，
+  // 避免再次点击 Download 关不掉 popover（与 ClipboardItem 同款修复）。
+  const saveBtnRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     return () => {
@@ -424,6 +427,7 @@ function ClipboardRow({
         {item.item_type === "image" && (
           <div className="relative">
             <button
+              ref={saveBtnRef}
               className={cn(
                 "p-1 rounded transition-opacity hover:scale-110",
                 showSavePopover ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
@@ -437,7 +441,7 @@ function ClipboardRow({
               )} />
             </button>
             {showSavePopover && (
-              <SaveImagePopover id={item.id} onClose={() => setShowSavePopover(false)} />
+              <SaveImagePopover id={item.id} triggerRef={saveBtnRef} onClose={() => setShowSavePopover(false)} />
             )}
           </div>
         )}
