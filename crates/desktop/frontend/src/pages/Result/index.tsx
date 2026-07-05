@@ -717,15 +717,21 @@ function Result() {
             contentEditable={editing}
             suppressContentEditableWarning
             onInput={onTextInput}
-                        onMouseDown={!editing ? (e) => {
+            onMouseDown={!editing ? (e) => {
               const el = textRef.current;
               if (!el) return;
               const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
               if (range && el.contains(range.startContainer)) {
                 mouseDownOffsetRef.current = codePointOffsetBefore(el, range);
               }
+              // 在 document 上注册一次性 mouseup listener——鼠标可能移出 textRef 甚至浮窗，
+              // React onMouseUp 不会触发。document listener 保证任何位置的 mouseup 都能捕获。
+              const upHandler = (ue: MouseEvent) => {
+                document.removeEventListener('mouseup', upHandler);
+                handleTextMouseUp(ue as any);
+              };
+              document.addEventListener('mouseup', upHandler);
             } : undefined}
-            onMouseUp={!editing ? handleTextMouseUp : undefined}
             onScroll={(e) => {
               const el = e.currentTarget;
               const stick = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
