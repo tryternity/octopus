@@ -96,9 +96,9 @@ CREATE TRIGGER clip_fts_ai / clip_fts_ad / clip_fts_au ...;
 CREATE INDEX idx_clip_created ON clipboard_history(created_at DESC);
 ```
 
-无数据迁移、无 JOIN、无临时表。db.sql 里 transcriptions 建表 + 索引删除，clipboard_history 改为新 schema。init_schema 里 v16→v17 跑 DROP + 重跑 INIT_SQL。
+无数据迁移、无 JOIN、无临时表。db.sql 里 transcriptions 建表 + 索引删除，clipboard_history 改为新 schema。
 
-`ensure_db` 改为 loop `init_schema` 直到 v17——`init_schema` 每次只走一个分支（一步迁移），旧版库（v2-v16）需多次调用才能到 v17，loop 保证一次 `ensure_db` 跑到最新。
+**开发期简化（2026-07-05，迁移落地后清理）**：因无 v<17 旧库需兼容，`init_schema` 移除整条历史迁移链与 DROP 兜底——`user_version >= 17` 跳过；其他（含全新库）跑 db.sql 建表+seed+yaml 导入一次性到 v17，`ensure_db` 不再 loop（单次 `init_schema` 即到 v17）。v16→v17 的 DROP+CREATE 是该次合并一次性完成的历史过程，简化后不再保留为可执行迁移分支。
 
 ## 4. 代码影响
 

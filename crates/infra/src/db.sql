@@ -1,6 +1,7 @@
--- octopus DB 初始化脚本
--- 首次启动（user_version=0）时由 init_schema 执行一次，之后不再重复执行。
--- schema 变更走 db.rs init_schema 的版本化迁移链（PRAGMA user_version），勿直接删库。
+-- octopus DB 初始化脚本（开发期简化版，schema 唯一真相）
+-- 由 db.rs init_schema 执行：v17 跳过；其他（含全新库）跑本脚本建表+seed → v17。
+-- schema 变更：直接改本文件 + 升 db.rs 的 user_version 数值，勿新增 ALTER 迁移分支。
+-- 全部 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等。
 
 -- ── 表结构 ──────────────────────────────────────────────────────────────────
 
@@ -253,6 +254,5 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('ocr_model',              'PP-OCRv6-small', 'OCR 模型（当前激活）'),
     ('screenshot_shortcut',     'Alt+S',                                '截图快捷键');
 
--- ── 记事本（notes/notes_fts 表）已移除（DB v13）──────────────────────────
--- OCR/ASR/剪贴板文本统一走 clipboard_history（OCR 类别 source='ocr'）。
--- 历史 v12 库的 notes/notes_fts 由 v12→v13 迁移 DROP。
+-- ── 记事本（notes/notes_fts 表）已移除──────────────────────────
+-- OCR/ASR/剪贴板文本统一走 clipboard_history（OCR 类别 item_type='ocr'）。

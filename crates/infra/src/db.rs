@@ -101,7 +101,7 @@ fn db_path() -> std::path::PathBuf {
     crate::paths::octopus_config_home().join("octopus.db")
 }
 
-/// 幂等初始化：打开/创建 DB，user_version=0 时执行 INIT_SQL 建表+seed。
+/// 幂等初始化：打开/创建 DB，以 db.sql 为准建表（开发期简化，无历史迁移链）。
 pub fn ensure_db() -> Result<()> {
     if DB.get().is_some() {
         return Ok(());
@@ -112,16 +112,7 @@ pub fn ensure_db() -> Result<()> {
     }
     let conn = Connection::open(&path)
         .with_context(|| format!("Failed to open DB at {}", path.display()))?;
-    // init_schema 每次只走一步迁移（if/else if 链），loop 到最新版本。
-    // 单次 ensure_db 调用即可把旧版库（v2-v16）一路跑到 v17。
-    loop {
-        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
-        if v >= 17 { break; }
-        let prev = v;
-        init_schema(&conn)?;
-        let curr: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap_or(0);
-        if curr <= prev { break; } // 无进展则退出（幂等早退分支）
-    }
+    init_schema(&conn)?;
     let _ = DB.set(Mutex::new(conn));
     Ok(())
 }
@@ -139,238 +130,28 @@ where
     f(&conn)
 }
 
-/// 初始化 schema + 迁移：
-/// - v0（全新安装）: 执行 INIT_SQL → yaml 迁移 → v4
-/// - v1（旧版升级）: 重跑 INIT_SQL（幂等，补建 app_config + prompts + seed）→ yaml 迁移 → v4
-/// - v2（v2 升级）: ALTER TABLE app_config ADD COLUMN category → 重跑 INIT_SQL → v5
-/// - v3（v3 升级）: 重跑 INIT_SQL（幂等，补建 prompts 表 + seed）→ v5
-/// - v4（v4 升级）: 重跑 INIT_SQL（幂等，补建 clipboard_history + FTS5）→ v5
-/// - v5+: 跳过
-/// - v9 → v10: notes 加 type 列（ALTER ADD，幂等）
-/// - v10 → v11: 补 notes.content_html 列（兼容 egui 分支重建过的库——egui 的 v10 无 content_html；幂等 ALTER ADD DEFAULT ''）
-/// - v11 → v12: 移除富文本功能——删除所有 type='html' 笔记（富文本功能下线，TipTap 依赖一并移除）
+
+/// 初始化 schema（开发期简化版）：以 db.sql 为唯一表结构真相，无历史迁移链。
 ///
-/// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等安全重跑。
+/// - v17（已最新）: 跳过
+/// - 其他（v0 全新库）: 跑 INIT_SQL 建表 + seed → 一次性 yaml 配置导入 → v17
+///
+/// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等。
+/// schema 变更流程：改 db.sql + 升下方 user_version 数值，勿新增 ALTER 迁移分支。
+/// 开发期无历史库需兼容（用户确认），故不保留 v1-v16 迁移/DROP 兜底。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v < 2 {
-        // v0: 首次建表 + seed；v1: 幂等重跑（旧表跳过，app_config 新建 + seed）
-        conn.execute_batch(INIT_SQL).context("执行 db.sql 初始化失败")?;
-        // 一次性 yaml → DB 迁移
-        migrate_yaml_to_db(conn)?;
-        // v0/v1 跳过 v2-v5，直接到 v6（INIT_SQL 建全部表，category 默认 'setting'）
-        conn.execute("PRAGMA user_version = 17", [])?;
-        log::info!("DB initialized (v17): schema + app_config(setting) + prompts + clipboard_history(unified) + image_data + yaml migration");
-    } else if v == 2 {
-        // v2 → v4：app_config 补 category 列；prompts 表 + app_config seed 由 INIT_SQL 幂等补建
-        log::info!("DB migrating v2 → v4: adding app_config.category column + prompts table...");
-        conn.execute(
-            "ALTER TABLE app_config ADD COLUMN category TEXT NOT NULL DEFAULT 'setting'",
-            [],
-        )?;
-        conn.execute_batch(INIT_SQL).context("v2→v7: 重跑 db.sql 幂等补建 prompts + clipboard_history + image_data")?;
-        conn.execute("PRAGMA user_version = 8", [])?;
-        log::info!("DB migrated to v7: app_config.category + prompts + clipboard_history + image_data");
-    } else if v == 3 {
-        // v3 → v4：prompts 表 + app_config.active_polish_prompt seed（INIT_SQL 幂等补建）
-        log::info!("DB migrating v3 → v4: adding prompts table + active_polish_prompt seed...");
-        conn.execute_batch(INIT_SQL).context("v3→v7: 重跑 db.sql 幂等补建 clipboard_history + image_data")?;
-        conn.execute("PRAGMA user_version = 8", [])?;
-        log::info!("DB migrated to v7: prompts + clipboard_history + image_data");
-    } else if v == 4 {
-        // v4 → v5：clipboard_history 表 + FTS5 + 触发器 + app_config seed
-        log::info!("DB migrating v4 → v5: adding clipboard_history table...");
-        conn.execute_batch(INIT_SQL).context("v4→v5: 建 clipboard_history 表 + FTS5")?;
-        conn.execute("PRAGMA user_version = 8", [])?;
-        log::info!("DB migrated v4→v7 (skip v5/v6): clipboard_history + FTS5 + image_data");
-    } else if v == 5 {
-        // v5 → v6：app_config category 'default' → 'setting'（语义化分组）
-        log::info!("DB migrating v5 → v6: app_config category 'default' → 'setting'...");
-        conn.execute(
-            "UPDATE app_config SET category = 'setting' WHERE category = 'default'",
-            [],
-        )?;
-        conn.execute_batch(INIT_SQL).context("v5→v7: 补建 image_data 表")?;
-        conn.execute("PRAGMA user_version = 8", [])?;
-        log::info!("DB migrated v5→v7: app_config category renamed + image_data");
-    } else if v == 6 {
-        // v6 → v7：image_data 表
-        log::info!("DB migrating v6 → v7: adding image_data table...");
-        conn.execute_batch(INIT_SQL).context("v6→v7: 建 image_data 表")?;
-        conn.execute("PRAGMA user_version = 8", [])?;
-        log::info!("DB migrated to v7: image_data");
-    } else if v == 7 {
-        // v7 → v8：FTS5 UPDATE 触发器收窄到 UPDATE OF search_text。
-        // 旧 clip_fts_au 是 AFTER UPDATE（任意列），touch_created_at（更新 created_at）
-        // 与 toggle_favorite（更新 is_favorite）等非搜索字段更新也会无谓 delete+insert
-        // FTS 索引项。db.sql 里已改 OF search_text，但 CREATE TRIGGER IF NOT EXISTS 对
-        // 已存在的旧库会跳过，故此处先 DROP 再重建，使现存库生效。
-        log::info!("DB migrating v7 → v8: 收窄 clip_fts_au 到 UPDATE OF search_text");
-        conn.execute_batch(
-            "DROP TRIGGER IF EXISTS clip_fts_au;
-             CREATE TRIGGER clip_fts_au AFTER UPDATE OF search_text ON clipboard_history BEGIN
-                 INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, search_text)
-                 VALUES('delete', old.id, old.search_text);
-                 INSERT INTO clipboard_history_fts(rowid, search_text) VALUES (new.id, new.search_text);
-             END;",
-        )
-        .context("v7→v8: 重建 clip_fts_au 触发器")?;
-        conn.execute("PRAGMA user_version = 8", [])?;
-        log::info!("DB migrated to v8: clip_fts_au 限定 UPDATE OF search_text");
-    } else if v == 8 {
-        // v8 → v9：notes / notes_fts 表 + 触发器（记事本功能）。
-        // INIT_SQL 已含 notes 建表（幂等 CREATE ... IF NOT EXISTS），重跑即给现存 v8 库补建。
-        log::info!("DB migrating v8 → v9: adding notes + notes_fts...");
-        conn.execute_batch(INIT_SQL).context("v8→v9: 建 notes + notes_fts 表")?;
-        conn.execute("PRAGMA user_version = 9", [])?;
-        log::info!("DB migrated to v9: notes + notes_fts");
-    } else if v == 9 {
-        // v9 → v10：notes 加 type 列（html/text/markdown）。
-        // 幂等：v8→v9 重跑 INIT_SQL 建 notes 时已含 type（db.sql 已改），此处先查列存在再 ALTER。
-        let has_type: bool = conn
-            .prepare("PRAGMA table_info(notes)")?
-            .query_map([], |r| r.get::<_, String>(1))?
-            .filter_map(|r| r.ok())
-            .any(|c| c == "type");
-        if !has_type {
-            conn.execute(
-                "ALTER TABLE notes ADD COLUMN type TEXT NOT NULL DEFAULT 'html'",
-                [],
-            )
-            .context("v9→v10: ALTER notes ADD type")?;
-            log::info!("DB migrated to v10: notes.type 列已加（历史笔记默认 html）");
-        }
-        conn.execute("PRAGMA user_version = 10", [])?;
-    } else if v == 10 {
-        // v10 → v11：补 notes.content_html 列。
-        // v10 来源：①webview v9→v10（已有 content_html）；②egui 分支重建（无 content_html，
-        //   仅 content_text+type，type 默认 'text'）。egui 分支虽未合并 main，但用户跑过会污染库，
-        //   致 webview 的 SELECT content_html 报 no such column → 记事本空白。
-        //   幂等：先查 content_html 列存在再 ALTER ADD DEFAULT ''。
-        //   egui 历史 content_html 空、type='text' → webview 按 text 读 content_text 显示。
-        let has_html: bool = conn
-            .prepare("PRAGMA table_info(notes)")?
-            .query_map([], |r| r.get::<_, String>(1))?
-            .filter_map(|r| r.ok())
-            .any(|c| c == "content_html");
-        if !has_html {
-            conn.execute(
-                "ALTER TABLE notes ADD COLUMN content_html TEXT NOT NULL DEFAULT ''",
-                [],
-            )
-            .context("v10→v11: ALTER notes ADD content_html")?;
-            log::info!("DB migrated to v11: 补 notes.content_html 列（兼容 egui 分支库；历史笔记 content_html 空、按 content_text 显示）");
-        }
-        conn.execute("PRAGMA user_version = 11", [])?;
-    } else if v == 11 {
-        // v11 → v12：移除富文本功能。删除所有 type='html' 笔记（TipTap 富文本下线，
-        // 依赖与前端编辑器一并移除；保留 type=text/markdown 笔记不动）。
-        // content_html 列保留（DDL 不再依赖，旧库不 DROP 列以免重建索引/触发器开销）。
-        let deleted: i64 = conn
-            .query_row("SELECT COUNT(*) FROM notes WHERE type = 'html'", [], |r| r.get(0))
-            .unwrap_or(0);
-        conn.execute("DELETE FROM notes WHERE type = 'html'", [])
-            .context("v11→v12: DELETE type='html' notes")?;
-        conn.execute("PRAGMA user_version = 12", [])?;
-        log::info!("DB migrated to v12: 移除富文本（删除 {} 条 type=html 笔记）", deleted);
-    } else if v == 12 {
-        // v12 → v13：移除记事本功能——DROP notes_fts（含触发器）+ notes 表
-        log::info!("DB migrating v12 → v13: dropping notes + notes_fts (notepad removed)...");
-        conn.execute_batch(
-            "DROP TRIGGER IF EXISTS note_fts_ai;
-             DROP TRIGGER IF EXISTS note_fts_ad;
-             DROP TRIGGER IF EXISTS note_fts_au;
-             DROP TABLE IF EXISTS notes_fts;
-             DROP TABLE IF EXISTS notes;",
-        )
-        .context("v12→v13: drop notes tables")?;
-        conn.execute("PRAGMA user_version = 13", [])?;
-        log::info!("DB migrated to v13: notes tables dropped");
-    } else if v == 13 {
-        // v13 → v14：transcriptions 加 segments + text 列；旧记录按 edited≻polished≻raw 映射为单段。
-        // Rust 读旧三列 + serde_json 构造 segments（纯 SQL 拼 JSON 无法转义换行/控制字符会破坏 JSON）。
-        log::info!("DB migrating v13 → v14: transcriptions 加 segments + text（段模型）...");
-        let has_segments: bool = conn
-            .prepare("PRAGMA table_info(transcriptions)")?
-            .query_map([], |r| r.get::<_, String>(1))?
-            .filter_map(|r| r.ok())
-            .any(|c| c == "segments");
-        if !has_segments {
-            conn.execute("ALTER TABLE transcriptions ADD COLUMN segments TEXT", [])?;
-            conn.execute("ALTER TABLE transcriptions ADD COLUMN text TEXT", [])?;
-        }
-        // 旧记录迁移：edited≻polished≻raw → 单段；text = 该段文本。
-        let rows: Vec<(i64, String, Option<String>, Option<String>)> = {
-            let mut stmt = conn.prepare(
-                "SELECT id, raw_text, polished_text, edited_text FROM transcriptions",
-            )?;
-            let iter = stmt.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
-            let mut out = Vec::new();
-            for r in iter {
-                out.push(r?);
-            }
-            out
-        };
-        for (id, raw, polished, edited) in rows {
-            let (kind, text) = if let Some(e) = edited.as_ref().filter(|s| !s.is_empty()) {
-                ("edited", e.clone())
-            } else if let Some(p) = polished.as_ref().filter(|s| !s.is_empty()) {
-                ("polished", p.clone())
-            } else {
-                ("raw", raw.clone())
-            };
-            let segs = serde_json::to_string(&serde_json::json!([{ "kind": kind, "text": text }]))?;
-            conn.execute(
-                "UPDATE transcriptions SET segments=?1, text=?2 WHERE id=?3",
-                rusqlite::params![segs, text, id],
-            )?;
-        }
-        conn.execute("PRAGMA user_version = 14", [])?;
-        log::info!("DB migrated to v14: transcriptions segments + text");
-    } else if v == 14 {
-        // v14 → v15：段模型下 segments + text 是真相源，删除三冗余兼容列。
-        // v13→v14 块已把这三列内容迁进 segments/text；旧库升级链 v13→v14→v15 跨启动顺序执行，
-        // v13→v14 块先读三列写 segments/text，本块再 DROP，时序安全。
-        log::info!("DB migrating v14 → v15: drop legacy raw_text/polished_text/edited_text");
-        conn.execute_batch(
-            "ALTER TABLE transcriptions DROP COLUMN raw_text;
-             ALTER TABLE transcriptions DROP COLUMN polished_text;
-             ALTER TABLE transcriptions DROP COLUMN edited_text;",
-        )
-        .context("v14→v15: drop legacy text columns")?;
-        conn.execute("PRAGMA user_version = 15", [])?;
-        log::info!("DB migrated to v15: legacy text columns dropped");
-    } else if v == 15 {
-        // v15 → v16：edit_shortcut 旧默认 'Cmd+Enter' 在 Win/Linux 下需 Win+Enter（meta 键），Ctrl+Enter 无效；
-        // 改 'CmdOrCtrl+Enter' 跨平台（Mac=Cmd，Win/Linux=Ctrl）。仅改仍为旧默认的行，用户自定义值不动。
-        log::info!("DB migrating v15 → v16: edit_shortcut Cmd+Enter → CmdOrCtrl+Enter");
-        conn.execute_batch(
-            "UPDATE app_config SET config_value = 'CmdOrCtrl+Enter'
-             WHERE config_key = 'edit_shortcut' AND config_value = 'Cmd+Enter';",
-        )
-        .context("v15→v16: fix edit_shortcut cross-platform")?;
-        conn.execute("PRAGMA user_version = 16", [])?;
-        log::info!("DB migrated to v16: edit_shortcut 跨平台");
-    } else if v == 16 {
-        // v16 → v17：clipboard_history 吞并 transcriptions。
-        // DROP 旧表 + FTS5 + 触发器，重跑 INIT_SQL 建新 schema。不迁移历史数据（用户确认可丢弃）。
-        log::info!("DB migrating v16 → v17: clipboard_history 吞并 transcriptions（DROP + CREATE）");
-        conn.execute_batch(
-            "DROP TRIGGER IF EXISTS clip_fts_ai;
-             DROP TRIGGER IF EXISTS clip_fts_ad;
-             DROP TRIGGER IF EXISTS clip_fts_au;
-             DROP TABLE IF EXISTS clipboard_history_fts;
-             DROP TABLE IF EXISTS clipboard_history;
-             DROP TABLE IF EXISTS transcriptions;",
-        )
-        .context("v16→v17: drop clipboard_history + transcriptions")?;
-        conn.execute_batch(INIT_SQL).context("v16→v17: rebuild new schema")?;
-        conn.execute("PRAGMA user_version = 17", [])?;
-        log::info!("DB migrated to v17: clipboard_history 吞并 transcriptions");
+    if v >= 17 {
+        return Ok(()); // 已最新
     }
+
+    conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
+    migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
+    conn.execute("PRAGMA user_version = 17", [])?;
+    log::info!("DB initialized (v17): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1336,485 +1117,36 @@ mod tests {
     }
 
     #[test]
-    fn migrate_v12_to_v13_drops_notes_tables() {
-        let dir = std::env::temp_dir().join(format!("octopus-v13-mig-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("mig.db")).unwrap();
-        // 模拟 v12 库：含 notes + notes_fts
-        conn.execute_batch(
-            "CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT, content_text TEXT DEFAULT '');
-             CREATE VIRTUAL TABLE notes_fts USING fts5(title, content_text, tokenize='trigram');
-             INSERT INTO notes (title, content_text) VALUES ('a','b');
-             PRAGMA user_version = 12;",
-        )
-        .unwrap();
-        assert_eq!(
-            conn.query_row::<i64, _, _>("SELECT COUNT(*) FROM notes", [], |r| r.get(0)).unwrap(),
-            1
-        );
-
+    fn init_schema_fresh_db_builds_v17() {
+        let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
-
-        let uv: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(uv, 13);
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(v, 17, "全新库 init_schema 后应到 v17");
+        // 五张核心表都已建好
         let n: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='notes'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(n, 0, "notes 表应被 DROP");
-        let f: i64 = conn
-            .query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='notes_fts'", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(f, 0, "notes_fts 表应被 DROP");
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    #[ignore = "v17 drops transcriptions; intermediate v13→v14 migration results are discarded"]
-    fn migrate_v13_to_v14_maps_legacy_to_single_segment() {
-        // 模拟 v13 库：transcriptions 无 segments/text 列，含三种旧记录
-        let dir = std::env::temp_dir().join(format!("octopus-v14-mig-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("mig.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE transcriptions (
-                id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, engine TEXT NOT NULL,
-                engine_mode TEXT, raw_text TEXT NOT NULL, polished_text TEXT,
-                edited_text TEXT, polish_status TEXT NOT NULL DEFAULT 'off',
-                polish_model TEXT, duration_ms INTEGER, char_count INTEGER);
-             INSERT INTO transcriptions (id, created_at, engine, raw_text, polished_text, edited_text, polish_status) VALUES
-                (1, '2026-07-04 10:00:00', 'whisper', '原始文', '润色稿', '用户编辑', 'done'),
-                (2, '2026-07-04 11:00:00', 'qwen3',   '原始文2', '润色稿2', NULL,       'done'),
-                (3, '2026-07-04 12:00:00', 'zipformer', '纯原始', NULL,     NULL,       'off');
-             PRAGMA user_version = 13;",
-        )
-        .unwrap();
-
-        init_schema(&conn).unwrap();
-
-        let uv: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(uv, 14);
-        // segments/text 列已加
-        let cols: Vec<String> = conn
-            .prepare("PRAGMA table_info(transcriptions)")
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(1))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-        assert!(cols.contains(&"segments".to_string()));
-        assert!(cols.contains(&"text".to_string()));
-
-        // edited≻polished≻raw 映射
-        let r1: (String, String) = conn
-            .query_row("SELECT segments, text FROM transcriptions WHERE id=1", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .unwrap();
-        assert_eq!(r1.1, "用户编辑");
-        assert!(r1.0.contains("\"kind\":\"edited\""), "edited 记录应映射为 edited 段");
-        assert!(r1.0.contains("\"text\":\"用户编辑\""));
-
-        let r2: (String, String) = conn
-            .query_row("SELECT segments, text FROM transcriptions WHERE id=2", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .unwrap();
-        assert_eq!(r2.1, "润色稿2");
-        assert!(r2.0.contains("\"kind\":\"polished\""), "polished-only 记录映射为 polished 段");
-
-        let r3: (String, String) = conn
-            .query_row("SELECT segments, text FROM transcriptions WHERE id=3", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
-            .unwrap();
-        assert_eq!(r3.1, "纯原始");
-        assert!(r3.0.contains("\"kind\":\"raw\""), "raw-only 记录映射为 raw 段");
-
-        // search 走 text 列（命中 id=2 的 polish 文本，不命中 raw）
-        let rows = list_transcriptions_at(&conn, 10, 0).unwrap();
-        assert_eq!(rows.len(), 3);
-        let searched = list_transcriptions_search_at(&conn, 10, 0, Some("润色稿2")).unwrap();
-        assert_eq!(searched.len(), 1);
-        assert_eq!(searched[0].id, 2);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    #[ignore = "v17 drops transcriptions; intermediate v13→v16 chain results are discarded"]
-    fn migrate_v13_to_v14_is_idempotent() {
-        // v13 库连跑 init_schema：v13→v14（加 segments/text + 迁数据）→ v14→v15（DROP 旧三列）
-        // → v15→v16（edit_shortcut 跨平台）。第四次 v=16 无分支，早退 no-op（验证收敛后幂等、不崩）。
-        let dir = std::env::temp_dir().join(format!("octopus-v16-idem-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("mig.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE transcriptions (
-                id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, engine TEXT NOT NULL,
-                engine_mode TEXT, raw_text TEXT NOT NULL, polished_text TEXT,
-                edited_text TEXT, polish_status TEXT NOT NULL DEFAULT 'off',
-                polish_model TEXT, duration_ms INTEGER, char_count INTEGER);
-             CREATE TABLE app_config (
-                category TEXT NOT NULL DEFAULT 'setting',
-                config_key TEXT PRIMARY KEY,
-                config_value TEXT NOT NULL,
-                description TEXT);
-             INSERT INTO transcriptions (id, created_at, engine, raw_text) VALUES
-                (1, '2026-07-04 10:00:00', 'whisper', '原始文');
-             INSERT INTO app_config (config_key, config_value) VALUES
-                ('edit_shortcut', 'Cmd+Enter');
-             PRAGMA user_version = 13;",
-        )
-        .unwrap();
-
-        init_schema(&conn).unwrap(); // v13 → v14
-        init_schema(&conn).unwrap(); // v14 → v15
-        init_schema(&conn).unwrap(); // v15 → v16
-        init_schema(&conn).unwrap(); // v16：无分支，幂等早退
-
-        let uv: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(uv, 16);
-        // 数据经全链迁移保留
-        let text: String = conn
-            .query_row("SELECT text FROM transcriptions WHERE id=1", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(text, "原始文");
-        // 旧三列在 v15 已 DROP
-        let cols: Vec<String> = conn
-            .prepare("PRAGMA table_info(transcriptions)")
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(1))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-        assert!(!cols.iter().any(|c| c == "raw_text"));
-        // edit_shortcut 经 v15→v16 改为跨平台
-        let es: String = conn
             .query_row(
-                "SELECT config_value FROM app_config WHERE config_key = 'edit_shortcut'",
+                "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
+                 AND name IN ('models','prompts','app_config','clipboard_history','image_data')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(es, "CmdOrCtrl+Enter");
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(n, 5, "五张核心表都应建好");
     }
 
     #[test]
-    fn migrate_v14_to_v15_drops_legacy_columns() {
-        // 模拟 v14 库：transcriptions 同时含旧三列（raw/polished/edited）+ 新 segments/text，且有数据。
-        // v13→v14 块迁完后的真实形态：旧三列内容已拷进 segments/text，但列本身还在。
-        let dir = std::env::temp_dir().join(format!("octopus-v15-mig-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("mig.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE transcriptions (
-                id INTEGER PRIMARY KEY, created_at TEXT NOT NULL, engine TEXT NOT NULL,
-                engine_mode TEXT, raw_text TEXT NOT NULL, polished_text TEXT,
-                edited_text TEXT, polish_status TEXT NOT NULL DEFAULT 'off',
-                polish_model TEXT, duration_ms INTEGER, char_count INTEGER,
-                segments TEXT, text TEXT);
-             INSERT INTO transcriptions (id, created_at, engine, raw_text, polished_text, polish_status, segments, text) VALUES
-                (1, '2026-07-04 10:00:00', 'whisper', '原始', '润色', 'done',
-                 '[{\"kind\":\"polished\",\"text\":\"润色\"}]', '润色');
-             PRAGMA user_version = 14;",
-        )
-        .unwrap();
-
+    fn init_schema_v17_is_noop() {
+        // 已是 v17 的库再调 init_schema 应早退（不重跑、不报错）
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("PRAGMA user_version = 17", []).unwrap();
         init_schema(&conn).unwrap();
-
-        let uv: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(uv, 15);
-
-        // 旧三列已 DROP
-        let cols: Vec<String> = conn
-            .prepare("PRAGMA table_info(transcriptions)")
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(1))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-        assert!(!cols.contains(&"raw_text".to_string()), "raw_text 应已 DROP");
-        assert!(!cols.contains(&"polished_text".to_string()), "polished_text 应已 DROP");
-        assert!(!cols.contains(&"edited_text".to_string()), "edited_text 应已 DROP");
-        // segments/text 保留
-        assert!(cols.contains(&"segments".to_string()));
-        assert!(cols.contains(&"text".to_string()));
-
-        // 段模型迁移结果不丢
-        let (text, segments): (String, String) = conn
-            .query_row("SELECT text, segments FROM transcriptions WHERE id=1", [], |r| {
-                Ok((r.get(0)?, r.get(1)?))
-            })
+        let v: u32 = conn
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(text, "润色");
-        assert!(segments.contains("\"kind\":\"polished\""));
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn migrate_v15_to_v16_fixes_edit_shortcut() {
-        // v15 库 app_config 里 edit_shortcut 还是旧默认 'Cmd+Enter'（Win/Linux 需 Win+Enter，Ctrl+Enter 无效）。
-        // v15→v16 仅改仍为 'Cmd+Enter' 的行 → 'CmdOrCtrl+Enter'（Mac=Cmd / Win,Linux=Ctrl），其他快捷键不动。
-        let dir = std::env::temp_dir().join(format!("octopus-v16-mig-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("mig.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE app_config (
-                category TEXT NOT NULL DEFAULT 'setting',
-                config_key TEXT PRIMARY KEY,
-                config_value TEXT NOT NULL,
-                description TEXT);
-             INSERT INTO app_config (config_key, config_value, description) VALUES
-                ('edit_shortcut', 'Cmd+Enter', '旧默认'),
-                ('asr_shortcut', 'CmdOrCtrl+Shift+A', '不应被改');
-             PRAGMA user_version = 15;",
-        )
-        .unwrap();
-
-        init_schema(&conn).unwrap();
-
-        let uv: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(uv, 16);
-
-        let es: String = conn
-            .query_row(
-                "SELECT config_value FROM app_config WHERE config_key = 'edit_shortcut'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(es, "CmdOrCtrl+Enter");
-        // WHERE config_value = 'Cmd+Enter' 不命中其他快捷键
-        let asr: String = conn
-            .query_row(
-                "SELECT config_value FROM app_config WHERE config_key = 'asr_shortcut'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(asr, "CmdOrCtrl+Shift+A");
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn migrate_v9_to_v10_adds_type_column_keeps_data() {
-        // 模拟旧 v9 库：notes 有 content_html/content_text，无 type → init_schema 应 ALTER 加 type，保留数据
-        let dir = std::env::temp_dir().join(format!("octopus-type-mig-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("mig.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT,
-                content_html TEXT NOT NULL DEFAULT '', content_text TEXT NOT NULL DEFAULT '',
-                source TEXT NOT NULL DEFAULT 'manual', source_ref_id INTEGER,
-                is_pinned INTEGER NOT NULL DEFAULT 0, is_favorite INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-             INSERT INTO notes (title, content_html, content_text, source, created_at, updated_at)
-                VALUES ('旧富文本', '<p>你好</p>', '你好', 'manual', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
-             PRAGMA user_version = 9;",
-        )
-        .unwrap();
-
-        init_schema(&conn).unwrap();
-
-        // type 列存在，content_html 保留
-        let cols: Vec<String> = conn
-            .prepare("PRAGMA table_info(notes)")
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(1))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-        assert!(cols.contains(&"type".to_string()), "应有 type 列");
-        assert!(cols.contains(&"content_html".to_string()), "content_html 应保留");
-
-        // 旧数据保留，type 默认 html
-        let row: (String, String, String) = conn
-            .query_row(
-                "SELECT content_html, content_text, type FROM notes WHERE title='旧富文本'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(row.0, "<p>你好</p>");
-        assert_eq!(row.1, "你好");
-        assert_eq!(row.2, "html", "历史笔记默认 type=html");
-
-        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 10);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn migrate_v9_to_v10_is_idempotent() {
-        // notes 已有 type 列 + user_version=9 → init_schema 应跳过 ALTER，不报 duplicate column
-        let dir = std::env::temp_dir().join(format!("octopus-type-mig-idem-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("mig.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT, content_html TEXT DEFAULT '', content_text TEXT DEFAULT '', type TEXT DEFAULT 'html', source TEXT DEFAULT 'manual', source_ref_id INTEGER, is_pinned INTEGER DEFAULT 0, is_favorite INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT);
-             PRAGMA user_version = 9;",
-        )
-        .unwrap();
-        init_schema(&conn).unwrap();
-        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 10);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn migrate_v10_egui_to_v11_adds_content_html() {
-        // 模拟 egui 分支污染的库：v10，notes 有 content_text+type 但无 content_html
-        // （egui 重建丢了 content_html，type 默认 'text'）。webview SELECT content_html 会报错。
-        let dir = std::env::temp_dir().join(format!("octopus-html-mig-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("mig.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT,
-                content_text TEXT NOT NULL DEFAULT '',
-                type TEXT NOT NULL DEFAULT 'text',
-                source TEXT NOT NULL DEFAULT 'manual', source_ref_id INTEGER,
-                is_pinned INTEGER NOT NULL DEFAULT 0, is_favorite INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-             INSERT INTO notes (title, content_text, type, source, created_at, updated_at)
-                VALUES ('egui 笔记', 'egui 时代的纯文本', 'text', 'manual', '2026-06-01 00:00:00', '2026-06-01 00:00:00');
-             PRAGMA user_version = 10;",
-        )
-        .unwrap();
-
-        init_schema(&conn).unwrap();
-
-        // content_html 列已补（DEFAULT ''）
-        let cols: Vec<String> = conn
-            .prepare("PRAGMA table_info(notes)")
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(1))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-        assert!(cols.contains(&"content_html".to_string()), "应补 content_html 列");
-
-        // egui 历史 content_text 保留、type=text、content_html 空（webview 按 text 读 content_text 显示）
-        let row: (String, String, String) = conn
-            .query_row(
-                "SELECT content_text, content_html, type FROM notes WHERE title='egui 笔记'",
-                [],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(row.0, "egui 时代的纯文本");
-        assert_eq!(row.1, "", "content_html 补为空");
-        assert_eq!(row.2, "text");
-
-        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 11);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn migrate_v10_to_v11_is_idempotent() {
-        // webview 自己的 v10 库已有 content_html → init_schema 应跳过 ALTER，v→11 不报 duplicate column
-        let dir = std::env::temp_dir().join(format!("octopus-html-mig-idem-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("mig.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE notes (id INTEGER PRIMARY KEY, title TEXT, content_text TEXT DEFAULT '', content_html TEXT DEFAULT '', type TEXT DEFAULT 'html', source TEXT DEFAULT 'manual', source_ref_id INTEGER, is_pinned INTEGER DEFAULT 0, is_favorite INTEGER DEFAULT 0, created_at TEXT, updated_at TEXT);
-             PRAGMA user_version = 10;",
-        )
-        .unwrap();
-        init_schema(&conn).unwrap();
-        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 11);
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn migrate_v11_to_v12_deletes_html_keeps_text_markdown() {
-        // 富文本功能下线：v11 库混存 html/text/markdown 笔记 → init_schema 应删 html、保留其余、v→12
-        let dir = std::env::temp_dir().join(format!("octopus-html-rm-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("mig.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT,
-                content_text TEXT NOT NULL DEFAULT '', content_html TEXT NOT NULL DEFAULT '',
-                type TEXT NOT NULL DEFAULT 'html', source TEXT NOT NULL DEFAULT 'manual',
-                source_ref_id INTEGER, is_pinned INTEGER NOT NULL DEFAULT 0,
-                is_favorite INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-             INSERT INTO notes (title, content_html, content_text, type, created_at, updated_at)
-                VALUES ('富文本1', '<p>a</p>', 'a', 'html', '2026-01-01 00:00:00', '2026-01-01 00:00:00'),
-                       ('富文本2', '<p>b</p>', 'b', 'html', '2026-01-01 00:00:00', '2026-01-01 00:00:00'),
-                       ('纯文本', '', '纯文本内容', 'text', '2026-01-01 00:00:00', '2026-01-01 00:00:00'),
-                       ('md', '', '# 标题', 'markdown', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
-             PRAGMA user_version = 11;",
-        )
-        .unwrap();
-
-        init_schema(&conn).unwrap();
-
-        // html 笔记全删；text/markdown 保留
-        let remaining_types: Vec<String> = conn
-            .prepare("SELECT type FROM notes ORDER BY id")
-            .unwrap()
-            .query_map([], |r| r.get::<_, String>(0))
-            .unwrap()
-            .filter_map(|r| r.ok())
-            .collect();
-        assert_eq!(remaining_types, vec!["text", "markdown"], "仅剩 text/markdown");
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(total, 2, "2 条 html 已删");
-
-        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 12);
-
-        let _ = std::fs::remove_dir_all(&dir);
-    }
-
-    #[test]
-    fn migrate_v11_to_v12_no_html_is_noop() {
-        // 无 html 笔记的 v11 库 → DELETE 命中 0 行，v→12 不报错
-        let dir = std::env::temp_dir().join(format!("octopus-html-rm-noop-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        std::fs::create_dir_all(&dir).unwrap();
-        let conn = Connection::open(dir.join("mig.db")).unwrap();
-        conn.execute_batch(
-            "CREATE TABLE notes (
-                id INTEGER PRIMARY KEY AUTOINCREMENT, title TEXT,
-                content_text TEXT NOT NULL DEFAULT '', content_html TEXT NOT NULL DEFAULT '',
-                type TEXT NOT NULL DEFAULT 'text', source TEXT NOT NULL DEFAULT 'manual',
-                source_ref_id INTEGER, is_pinned INTEGER NOT NULL DEFAULT 0,
-                is_favorite INTEGER NOT NULL DEFAULT 0, created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
-             INSERT INTO notes (content_text, type, created_at, updated_at)
-                VALUES ('只有文本', 'text', '2026-01-01 00:00:00', '2026-01-01 00:00:00');
-             PRAGMA user_version = 11;",
-        )
-        .unwrap();
-        init_schema(&conn).unwrap();
-        let total: i64 = conn
-            .query_row("SELECT COUNT(*) FROM notes", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(total, 1, "无 html 时不误删");
-        let v: i64 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 12);
-        let _ = std::fs::remove_dir_all(&dir);
+        assert_eq!(v, 17);
     }
 
     #[test]
