@@ -198,6 +198,7 @@ pub fn run() {
             coordinator::commit_edit,
             coordinator::set_caret,
             coordinator::set_selection,
+            coordinator::start_recording,
             coordinator::exit_edit_without_commit,
             result_window::result_window_ready,
             result_window::set_result_click_through,

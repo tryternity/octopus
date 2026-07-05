@@ -80,6 +80,12 @@ enum Command {
     /// 劈 caret 到 start，不立即删字，首个 delta 到达时真删）。非活跃 stage → 暂存 (text,start,end)，
     /// Toggle 开新会话时种子 transcript（跨会话选中替换）。
     SetSelection { start: usize, end: usize, text: String },
+    /// 前端响应 prepare-record 事件：携带 prepare_id（跨会话/超时护栏）+ 前端缓存的选区。
+    /// selection=None → 普通开录音；Some((text,start,end)) → 跨会话选中替换种子。
+    /// C3：coordinator 校验 prepare_id 匹配 pending_prepare 后调 begin_recording。
+    StartRecording { prepare_id: i64, selection: Option<(String, usize, usize)> },
+    /// 看门狗超时兜底：prepare-record 发出后 200ms 前端未响应 → 普通开录音（selection=None）。
+    FallbackStart { prepare_id: i64 },
 }
 
 enum Stage {
@@ -205,7 +211,9 @@ impl Coordinator {
             let mut edit_buffer: Option<String> = None;
             // Idle 态跨会话选中替换：前端拖选时暂存 (text, start, end)，
             // Toggle 开新会话时种子 transcript（保留旧文本 + 删选区 + 新词插入）。
-            let mut idle_selection: Option<(String, usize, usize)> = None;
+            // C3 两阶段 Toggle：Idle→Toggle 进等待，存 prepare_id 校验前端 StartRecording / 看门狗
+            // FallbackStart。前端 200ms 内回推选区→StartRecording；超时→FallbackStart 普通开。
+            let mut pending_prepare: Option<i64> = None;
 
             loop {
                 let cmd = match rx.recv() {
@@ -226,17 +234,35 @@ impl Coordinator {
                             editing = false;
                             let _ = app_handle.emit("edit-force-exit", ());
                         }
-                        // 仅在 Idle（开新会话）时同步运行时覆盖；STOP 时不动 asr_engine
-                        if matches!(stage, Stage::Idle) {
+                        if !matches!(stage, Stage::Idle) {
+                            // 活跃录音态 → 停录音（handle_toggle 走非 Idle 分支）
+                            handle_toggle(
+                                &mut stage,
+                                &audio,
+                                &engine,
+                                &config,
+                                &app_handle,
+                                &tx,
+                                use_streaming,
+                                #[cfg(feature = "cloud")]
+                                use_cloud_streaming,
+                            );
+                        } else if pending_prepare.is_some() {
+                            // 等待态（已 emit prepare-record）再按 Toggle → 取消等待。
+                            // 看门狗的 FallbackStart 到达时 prepare_id 不匹配被丢弃，不会重复开录音。
+                            pending_prepare = None;
+                            debug!("Toggle: cancel pending prepare (user re-press)");
+                        } else {
+                            // Idle → 两阶段开录音：sync runtime + emit prepare-record + spawn 200ms 看门狗。
+                            // 前端 listen prepare-record 后回推 currentSelectionRef（或 null）→ StartRecording；
+                            // 200ms 未响应 → FallbackStart 普通开（selection=None）。
                             let rc = runtime_config.read();
                             config.asr_engine = match octopus_asr_local::config::resolve_active_engine(&rc.asr_engine) {
                                 Ok(_) => rc.asr_engine.clone(),
                                 Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
                             };
-                            // 审查 二2：microphone / engine_mode 此前从不刷新——audio.start 用
-                            // stale config.microphone（改设置后下次录音仍用旧设备）、use_streaming
-                            // 用 stale engine_mode。开新会话时从 rc 拉最新值（与 asr_engine 同策略，
-                            // 下次录音生效；mic/引擎不能会话中热切）。
+                            // mic/engine_mode 开新会话时从 rc 拉最新（与 asr_engine 同策略，下次录音生效；
+                            // mic/引擎不能会话中热切）。
                             config.microphone = rc.microphone.clone();
                             config.engine_mode = rc.engine_mode.clone();
                             sync_runtime_fields(&mut config, &rc);
@@ -251,19 +277,17 @@ impl Coordinator {
                                     use_streaming = false;
                                 }
                             }
+                            let prepare_id = now_millis();
+                            pending_prepare = Some(prepare_id);
+                            let _ = app_handle.emit("prepare-record", prepare_id);
+                            // 看门狗：200ms 后若仍在等待态（前端未回推），发 FallbackStart 兜底普通开。
+                            let tx_clone = tx.clone();
+                            tauri::async_runtime::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                                let _ = tx_clone.send(Command::FallbackStart { prepare_id });
+                            });
+                            debug!("Toggle: Idle → pending prepare_id={}", prepare_id);
                         }
-                        handle_toggle(
-                            &mut stage,
-                            &audio,
-                            &engine,
-                            &config,
-                            &app_handle,
-                            &tx,
-                            use_streaming,
-                            &mut idle_selection,
-                            #[cfg(feature = "cloud")]
-                            use_cloud_streaming,
-                        );
                     }
                     Command::StreamingTick => {
                         {
@@ -317,7 +341,7 @@ impl Coordinator {
                             edit_buffer = None;
                             let _ = app_handle.emit("edit-force-exit", ());
                         }
-                        idle_selection = None;
+                        pending_prepare = None; // 取消等待中的 prepare-record（若有）
                         handle_cancel(&mut stage, &audio, &app_handle);
                     }
                     Command::Discard => {
@@ -326,7 +350,7 @@ impl Coordinator {
                             edit_buffer = None;
                             let _ = app_handle.emit("edit-force-exit", ());
                         }
-                        idle_selection = None;
+                        pending_prepare = None; // 取消等待中的 prepare-record（若有）
                         handle_discard(&mut stage, &audio, &app_handle, &config);
                     }
                     Command::PasteDone => {
@@ -424,27 +448,70 @@ impl Coordinator {
                     }
                     Command::SetCaret { offset } => {
                         // 非编辑态点击定位光标：调 stage_transcript.set_caret（劈段/段界/clamp）。
-                        // 非活跃 stage（Idle/Polishing/Pasting 等）→ no-op。
-                        if !editing {
+                        // 非活跃 stage（Idle/Polishing/Pasting 等）→ no-op。等待态（pending_prepare）→ no-op。
+                        if !editing && pending_prepare.is_none() {
                             if let Some(t) = stage_transcript(&mut stage) {
                                 t.set_caret(offset);
-                            } else if matches!(stage, Stage::Idle) {
-                                // Idle 下点击 = 放弃之前的拖选（与活跃态 set_caret 清
-                                // pending_delete 对称），防止「Idle 拖选→点击别处→
-                                // 下次录音误用过时 idle_selection」删错位置。
-                                idle_selection = None;
                             }
                         }
                     }
-                    Command::SetSelection { start, end, text } => {
+                    Command::SetSelection { start, end, .. } => {
                         // 非编辑态拖选：活跃 stage → set_selection（记录待删，不立即删——
-                        // 保留浏览器原生高亮，用户可重新选择）；Idle → 暂存跨会话用。
-                        if !editing {
+                        // 保留浏览器原生高亮，用户可重新选择）。Idle/等待态 → no-op（C5：跨会话
+                        // 选中替换改由前端 currentSelectionRef 在 prepare-record 推回，不再后端缓存）。
+                        if !editing && pending_prepare.is_none() {
                             if let Some(t) = stage_transcript(&mut stage) {
                                 t.set_selection(start, end);
-                            } else if matches!(stage, Stage::Idle) {
-                                idle_selection = Some((text, start, end));
                             }
+                        }
+                    }
+                    Command::StartRecording { prepare_id, selection } => {
+                        // 前端响应 prepare-record：校验 prepare_id 匹配 pending_prepare 后开录音。
+                        // 不匹配（跨会话/超时后迟到/重复）→ 丢弃，防重复开录音。
+                        if pending_prepare == Some(prepare_id) {
+                            pending_prepare = None;
+                            info!("StartRecording prepare_id={} selection={}", prepare_id, selection.is_some());
+                            begin_recording(
+                                &mut stage,
+                                &audio,
+                                &engine,
+                                &config,
+                                &app_handle,
+                                &tx,
+                                use_streaming,
+                                selection,
+                                #[cfg(feature = "cloud")]
+                                use_cloud_streaming,
+                            );
+                        } else {
+                            debug!(
+                                "StartRecording discarded: prepare_id mismatch (incoming={}, pending={:?})",
+                                prepare_id, pending_prepare
+                            );
+                        }
+                    }
+                    Command::FallbackStart { prepare_id } => {
+                        // 看门狗 200ms 超时兜底：前端未响应 prepare-record → 普通开录音（selection=None）。
+                        if pending_prepare == Some(prepare_id) {
+                            pending_prepare = None;
+                            warn!("FallbackStart prepare_id={} (frontend did not respond in 200ms)", prepare_id);
+                            begin_recording(
+                                &mut stage,
+                                &audio,
+                                &engine,
+                                &config,
+                                &app_handle,
+                                &tx,
+                                use_streaming,
+                                None,
+                                #[cfg(feature = "cloud")]
+                                use_cloud_streaming,
+                            );
+                        } else {
+                            debug!(
+                                "FallbackStart discarded: prepare_id mismatch (incoming={}, pending={:?})",
+                                prepare_id, pending_prepare
+                            );
                         }
                     }
                 }
@@ -539,6 +606,15 @@ impl Coordinator {
             }
     }
 
+    /// 前端响应 prepare-record：回推选区（或 None=普通开录音）触发实际开录音。
+    /// prepare_id 跨会话/超时护栏（看门狗的 FallbackStart 也带同 id，校验后丢弃迟到者）。
+    pub fn start_recording(&self, prepare_id: i64, selection: Option<(String, usize, usize)>) {
+        let tx = self.tx.lock();
+        if tx.send(Command::StartRecording { prepare_id, selection }).is_err() {
+            error!("Coordinator channel closed");
+        }
+    }
+
     /// 通知 coordinator 重读 RuntimeConfig 同步可变字段到 config 快照。
     /// 设置窗口 / 工具栏改完 RuntimeConfig 后调用，让 polish_llm 等字段立即生效。
     pub fn update_runtime(&self) {
@@ -616,10 +692,223 @@ pub fn set_selection(coordinator: tauri::State<'_, Coordinator>, start: usize, e
     coordinator.set_selection(start, end, text);
 }
 
+/// 前端命令：响应 prepare-record 事件，回推选区（selection=null=普通开录音）触发实际开录音。
+/// prepare_id 由 prepare-record 事件携带，coordinator 校验后防跨会话/超时重复开录音。
+#[tauri::command]
+pub fn start_recording(
+    coordinator: tauri::State<'_, Coordinator>,
+    prepare_id: i64,
+    selection: Option<(String, usize, usize)>,
+) {
+    coordinator.start_recording(prepare_id, selection);
+}
+
 /// 前端命令：取消编辑（恢复原始文本，不落库）。
 #[tauri::command]
 pub fn exit_edit_without_commit(coordinator: tauri::State<'_, Coordinator>) {
     coordinator.cancel_edit();
+}
+
+/// 实际开录音：从 Idle 进入活跃录音态（cloud / streaming / vad 三分支）。
+/// 抽自 handle_toggle 的 Idle 分支，供 C3 两阶段 Toggle 的 StartRecording / FallbackStart 复用。
+/// selection = 跨会话选中替换种子（None=普通开录音；Some((text,start,end)) → 种子 transcript）。
+#[allow(clippy::too_many_arguments)]
+fn begin_recording(
+    stage: &mut Stage,
+    audio: &Arc<SharedAudioState>,
+    engine: &Arc<dyn TranscriptionEngine>,
+    config: &AppConfig,
+    app_handle: &tauri::AppHandle,
+    tx: &Sender<Command>,
+    use_streaming: bool,
+    selection: Option<(String, usize, usize)>,
+    #[cfg(feature = "cloud")] use_cloud_streaming: bool,
+) {
+    info!("Toggle: starting {}", {
+        #[cfg(feature = "cloud")]
+        { if use_cloud_streaming { "cloud streaming" } else if use_streaming { "streaming" } else { "VAD segmented" } }
+        #[cfg(not(feature = "cloud"))]
+        { if use_streaming { "streaming" } else { "VAD segmented" } }
+    });
+
+    if let Err(e) = audio.start(&config.microphone) {
+        error!("Failed to start recording: {}", e);
+        return;
+    }
+
+    #[cfg(feature = "cloud")]
+    if use_cloud_streaming {
+        match octopus_asr_local::config::find_silero_vad() {
+            Ok(path) => match octopus_asr_local::vad::SileroVad::new(&path) {
+                Ok(mut vad) => {
+                    crate::pipeline::vad_preroll(&mut vad);
+                    crate::result_window::show_result(app_handle, "正在聆听…");
+                    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
+
+                    let cloud_engine = crate::cloud_pipeline::CloudPipelineEngine::new(
+                        vad,
+                        config.asr_engine.clone(),
+                        config.language.clone(),
+                        config.pause_polish_threshold_ms,
+                    );
+                    let pipeline = match StreamingPipeline::new(Box::new(cloud_engine)) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            error!("StreamingPipeline (cloud) init failed: {}, abort", e);
+                            let _ = audio.stop();
+                            crate::result_window::hide_result(app_handle);
+                            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                            return;
+                        }
+                    };
+
+                    // cloud 用独立 100ms tick 线程（STREAMING=200/CLOUD=100，不可合并）
+                    let tick_active = Arc::new(AtomicBool::new(true));
+                    start_cloud_streaming_tick_thread(tx.clone(), tick_active.clone());
+
+                    let tid = now_millis();
+                    set_current_transcription_id(tid);
+                    *stage = Stage::Streaming {
+                        pipeline,
+                        transcript: Transcript::new(tid, config.polish_mode),
+                        streaming_active: tick_active,
+                    };
+                }
+                Err(e) => {
+                    error!("VAD init failed for cloud streaming: {}, falling back to VadSegmented", e);
+                    let _ = audio.stop();
+                    return;
+                }
+            },
+            Err(e) => {
+                error!("VAD not found for cloud streaming: {}, falling back to VadSegmented", e);
+                let _ = audio.stop();
+                return;
+            }
+        }
+        return;
+    }
+
+    if use_streaming {
+        // 流式模式：创建 StreamingSession 并启动 tick 线程。
+        // 引擎不可用时降级到默认引擎（zipformer-small-ctc），而非直接放弃录音。
+        const FALLBACK_STREAMING_SPEC: &str = "local:zipformer:zipformer-small-ctc";
+        let streaming_engine = match StreamingSession::new(&config.asr_engine, &config.language) {
+            Ok(session) => session,
+            Err(e) => {
+                warn!(
+                    "StreamingSession '{}' 创建失败 ({}), 降级到默认引擎 '{}'",
+                    config.asr_engine, e, FALLBACK_STREAMING_SPEC
+                );
+                match StreamingSession::new(FALLBACK_STREAMING_SPEC, &config.language) {
+                    Ok(session) => session,
+                    Err(e2) => {
+                        error!("默认引擎 StreamingSession 也失败: {}", e2);
+                        let _ = audio.stop();
+                        crate::result_window::hide_result(app_handle);
+                        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                        return;
+                    }
+                }
+            }
+        };
+
+        // 跨会话选中替换：有 selection → 种子 transcript（保留旧文本 + 删选区）
+        let tid = now_millis();
+        set_current_transcription_id(tid);
+        let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
+            let mut t = Transcript::new(tid, config.polish_mode);
+            t.commit_edit(&text);
+            t.set_selection(s, e);
+            debug!("[select] cross-session seeded t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
+            (t, text, true)
+        } else {
+            (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)
+        };
+        if is_continuation {
+            // 延续态：展示旧文本但不走 show-result（前端会把非占位符当最终文本→清空 caret）。
+            // 直接 update_result 展示旧文本，保持前端 displayedRef 同步，caret 由后续 update-result 驱动。
+            crate::result_window::show_result(app_handle, "正在聆听…");
+            crate::result_window::update_result(app_handle, &show_text, false, 0);
+        } else {
+            crate::result_window::show_result(app_handle, &show_text);
+        }
+        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
+
+        // StreamingPipeline 内部构造 StreamingRunner（VAD + 预热，阶段2a/2b）
+        let local_engine = match crate::pipeline::LocalPipelineEngine::from_session(streaming_engine, false) {
+            Ok(e) => e,
+            Err(e) => {
+                error!("LocalPipelineEngine init failed: {}, abort streaming", e);
+                let _ = audio.stop();
+                crate::result_window::hide_result(app_handle);
+                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                return;
+            }
+        };
+        let pipeline = match StreamingPipeline::new(Box::new(local_engine)) {
+            Ok(p) => p,
+            Err(e) => {
+                error!("StreamingPipeline init failed: {}, abort streaming", e);
+                let _ = audio.stop();
+                crate::result_window::hide_result(app_handle);
+                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+                return;
+            }
+        };
+
+        let streaming_active = Arc::new(AtomicBool::new(true));
+        start_tick_thread(tx.clone(), streaming_active.clone());
+
+        *stage = Stage::Streaming {
+            pipeline,
+            transcript,
+            streaming_active,
+        };
+    } else {
+        // 非流式模式：使用 VAD 伪流式分段识别（2c-3：编排收进 VadSegmentedPipeline）
+        match crate::pipeline::VadSegmentedPipeline::new(
+            engine.clone(),
+            config.language.clone(),
+            config.asr_engine.clone(),
+            config.segment_silence,
+        ) {
+            Ok(pipeline) => {
+                // 跨会话选中替换（同 streaming 路径）
+                let tid = now_millis();
+                set_current_transcription_id(tid);
+                let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
+                    let mut t = Transcript::new(tid, config.polish_mode);
+                    t.commit_edit(&text);
+                    t.set_selection(s, e);
+                    debug!("[select] cross-session seeded (vad) t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
+                    (t, text, true)
+                } else {
+                    (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)
+                };
+                if is_continuation {
+                    crate::result_window::show_result(app_handle, "正在聆听…");
+                    crate::result_window::update_result(app_handle, &show_text, false, 0);
+                } else {
+                    crate::result_window::show_result(app_handle, &show_text);
+                }
+                crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
+
+                let tick_active = Arc::new(AtomicBool::new(true));
+                start_vad_segmented_tick_thread(tx.clone(), tick_active.clone());
+
+                *stage = Stage::VadSegmented {
+                    pipeline,
+                    transcript,
+                    tick_active,
+                };
+            }
+            Err(e) => {
+                error!("VAD init failed for VadSegmented: {}, falling back to offline", e);
+                let _ = audio.stop();
+            }
+        }
+    }
 }
 
 /// 处理 Toggle 命令
@@ -632,214 +921,12 @@ fn handle_toggle(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
     use_streaming: bool,
-    idle_selection: &mut Option<(String, usize, usize)>,
     #[cfg(feature = "cloud")] use_cloud_streaming: bool,
 ) {
     match stage {
         Stage::Idle => {
-            info!("Toggle: starting {}", {
-                #[cfg(feature = "cloud")]
-                { if use_cloud_streaming { "cloud streaming" } else if use_streaming { "streaming" } else { "VAD segmented" } }
-                #[cfg(not(feature = "cloud"))]
-                { if use_streaming { "streaming" } else { "VAD segmented" } }
-            });
-
-            if let Err(e) = audio.start(&config.microphone) {
-                error!("Failed to start recording: {}", e);
-                return;
-            }
-
-            #[cfg(feature = "cloud")]
-            if use_cloud_streaming {
-                match octopus_asr_local::config::find_silero_vad() {
-                    Ok(path) => match octopus_asr_local::vad::SileroVad::new(&path) {
-                        Ok(mut vad) => {
-                            crate::pipeline::vad_preroll(&mut vad);
-                            crate::result_window::show_result(app_handle, "正在聆听…");
-                            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
-
-                            let cloud_engine = crate::cloud_pipeline::CloudPipelineEngine::new(
-                                vad,
-                                config.asr_engine.clone(),
-                                config.language.clone(),
-                                config.pause_polish_threshold_ms,
-                            );
-                            let pipeline = match StreamingPipeline::new(Box::new(cloud_engine)) {
-                                Ok(p) => p,
-                                Err(e) => {
-                                    error!("StreamingPipeline (cloud) init failed: {}, abort", e);
-                                    let _ = audio.stop();
-                                    crate::result_window::hide_result(app_handle);
-                                    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
-                                    return;
-                                }
-                            };
-
-                            // cloud 用独立 100ms tick 线程（STREAMING=200/CLOUD=100，不可合并）
-                            let tick_active = Arc::new(AtomicBool::new(true));
-                            start_cloud_streaming_tick_thread(tx.clone(), tick_active.clone());
-
-                            let tid = now_millis();
-                            set_current_transcription_id(tid);
-                            *stage = Stage::Streaming {
-                                pipeline,
-                                transcript: Transcript::new(tid, config.polish_mode),
-                                streaming_active: tick_active,
-                            };
-                        }
-                        Err(e) => {
-                            error!("VAD init failed for cloud streaming: {}, falling back to VadSegmented", e);
-                            let _ = audio.stop();
-                            return;
-                        }
-                    },
-                    Err(e) => {
-                        error!("VAD not found for cloud streaming: {}, falling back to VadSegmented", e);
-                        let _ = audio.stop();
-                        return;
-                    }
-                }
-                return;
-            }
-
-            if use_streaming {
-                // 流式模式：创建 StreamingSession 并启动 tick 线程。
-                // 引擎不可用时降级到默认引擎（zipformer-small-ctc），而非直接放弃录音。
-                const FALLBACK_STREAMING_SPEC: &str = "local:zipformer:zipformer-small-ctc";
-                let streaming_engine = match StreamingSession::new(&config.asr_engine, &config.language) {
-                    Ok(session) => session,
-                    Err(e) => {
-                        warn!(
-                            "StreamingSession '{}' 创建失败 ({}), 降级到默认引擎 '{}'",
-                            config.asr_engine, e, FALLBACK_STREAMING_SPEC
-                        );
-                        match StreamingSession::new(FALLBACK_STREAMING_SPEC, &config.language) {
-                            Ok(session) => session,
-                            Err(e2) => {
-                                error!(
-                                    "默认引擎 StreamingSession 也失败: {}", e2
-                                );
-                                let _ = audio.stop();
-                                crate::result_window::hide_result(app_handle);
-                                crate::tray::update_tray_label(
-                                    app_handle,
-                                    crate::tray::TrayState::Idle,
-                                );
-                                return;
-                            }
-                        }
-                    }
-                };
-
-                // 流式模式：只显示 result window
-                // 跨会话选中替换：有 idle_selection → 种子 transcript（保留旧文本 + 删选区）
-                let tid = now_millis();
-                set_current_transcription_id(tid);
-                let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = idle_selection.take() {
-                    let mut t = Transcript::new(tid, config.polish_mode);
-                    t.commit_edit(&text);
-                    t.set_selection(s, e);
-                    debug!("[select] cross-session seeded t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
-                    (t, text, true)
-                } else {
-                    (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)
-                };
-                if is_continuation {
-                    // 延续态：展示旧文本但不走 show-result（前端会把非占位符当最终文本→清空 caret）。
-                    // 直接 update_result 展示旧文本，保持前端 displayedRef 同步，caret 由后续 update-result 驱动。
-                    crate::result_window::show_result(app_handle, "正在聆听…");
-                    crate::result_window::update_result(app_handle, &show_text, false, 0);
-                } else {
-                    crate::result_window::show_result(app_handle, &show_text);
-                }
-                crate::tray::update_tray_label(
-                    app_handle,
-                    crate::tray::TrayState::Recording,
-                );
-
-                // StreamingPipeline 内部构造 StreamingRunner（VAD + 预热，阶段2a/2b）
-                let local_engine = match crate::pipeline::LocalPipelineEngine::from_session(streaming_engine, false) {
-                    Ok(e) => e,
-                    Err(e) => {
-                        error!("LocalPipelineEngine init failed: {}, abort streaming", e);
-                        let _ = audio.stop();
-                        crate::result_window::hide_result(app_handle);
-                        crate::tray::update_tray_label(
-                            app_handle,
-                            crate::tray::TrayState::Idle,
-                        );
-                        return;
-                    }
-                };
-                let pipeline = match StreamingPipeline::new(Box::new(local_engine)) {
-                    Ok(p) => p,
-                    Err(e) => {
-                        error!("StreamingPipeline init failed: {}, abort streaming", e);
-                        let _ = audio.stop();
-                        crate::result_window::hide_result(app_handle);
-                        crate::tray::update_tray_label(
-                            app_handle,
-                            crate::tray::TrayState::Idle,
-                        );
-                        return;
-                    }
-                };
-
-                let streaming_active = Arc::new(AtomicBool::new(true));
-                start_tick_thread(tx.clone(), streaming_active.clone());
-
-                *stage = Stage::Streaming {
-                    pipeline,
-                    transcript,
-                    streaming_active,
-                };
-            } else {
-                // 非流式模式：使用 VAD 伪流式分段识别（2c-3：编排收进 VadSegmentedPipeline）
-                match crate::pipeline::VadSegmentedPipeline::new(
-                    engine.clone(),
-                    config.language.clone(),
-                    config.asr_engine.clone(),
-                    config.segment_silence,
-                ) {
-                    Ok(pipeline) => {
-                        // 跨会话选中替换（同 streaming 路径）
-                        let tid = now_millis();
-                        set_current_transcription_id(tid);
-                        let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = idle_selection.take() {
-                            let mut t = Transcript::new(tid, config.polish_mode);
-                            t.commit_edit(&text);
-                            t.set_selection(s, e);
-                            debug!("[select] cross-session seeded (cloud) t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
-                            (t, text, true)
-                        } else {
-                            (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)
-                        };
-                        if is_continuation {
-                            crate::result_window::show_result(app_handle, "正在聆听…");
-                            crate::result_window::update_result(app_handle, &show_text, false, 0);
-                        } else {
-                            crate::result_window::show_result(app_handle, &show_text);
-                        }
-                        crate::tray::update_tray_label(
-                            app_handle,
-                            crate::tray::TrayState::Recording,
-                        );
-
-                        let tick_active = Arc::new(AtomicBool::new(true));
-                        start_vad_segmented_tick_thread(tx.clone(), tick_active.clone());
-
-                        *stage = Stage::VadSegmented {
-                            pipeline,
-                            transcript,
-                            tick_active,
-                        };
-                    }
-                    Err(e) => {
-                        error!("VAD init failed for VadSegmented: {}, falling back to offline", e);
-                        let _ = audio.stop();
-                    }
-                }
-            }
+            // 不可达：主循环 Toggle 在 Idle 走两阶段（emit prepare-record → StartRecording），
+            // 仅在活跃态调 handle_toggle 停录音。保留 no-op 分支使 match 穷尽。
         }
 
         Stage::VadSegmented { .. } => {

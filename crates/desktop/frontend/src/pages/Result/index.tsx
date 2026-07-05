@@ -69,6 +69,10 @@ function Result() {
   const textRef = useRef<HTMLDivElement>(null);
   const editingRef = useRef(false);
   const displayedRef = useRef("");
+  // C4：拖选选区缓存（{start,end,text} 或 null）。mouseup 拖选时写，blur/选区折叠/
+  // enterEdit/commitEdit/cancelEdit/show-result/clear-result/hide-result 时清。
+  // prepare-record 事件回读它推给后端，作为跨会话选中替换种子。
+  const currentSelectionRef = useRef<{ start: number; end: number; text: string } | null>(null);
   const pendingDiverted = useRef<string | null>(null);
   const divertedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editBufTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -87,6 +91,22 @@ function Result() {
   const win = useMemo(() => getCurrentWindow(), []);
 
   useEffect(() => { editingRef.current = editing; }, [editing]);
+
+  // C4：拖选选区随 DOM 选区消失/窗口失焦而失效——清缓存，防 stale 选区被下次 prepare-record 推回。
+  // selectionchange 仅在选区折叠（用户点击/键盘取消选择）时清；拖选中途（isCollapsed=false）不清。
+  useEffect(() => {
+    const onSelectionChange = () => {
+      const sel = window.getSelection();
+      if (sel && sel.isCollapsed) currentSelectionRef.current = null;
+    };
+    const onBlur = () => { currentSelectionRef.current = null; };
+    document.addEventListener("selectionchange", onSelectionChange);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      document.removeEventListener("selectionchange", onSelectionChange);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, []);
   useEffect(() => { toolbarVisibleRef.current = toolbarVisible; }, [toolbarVisible]);
   // 卸载时取消待执行的滚底 rAF（避免对已卸载 textRef 操作）。
   useEffect(() => () => {
@@ -199,6 +219,7 @@ function Result() {
             setText("");
             displayedRef.current = "";
             pendingDiverted.current = null;
+            currentSelectionRef.current = null; // 新会话开始，旧选区已消费/失效
             setCaretPos(null);
             stickToBottomRef.current = true;
             if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
@@ -246,6 +267,7 @@ function Result() {
           setText("");
           displayedRef.current = "";
           setCaretPos(null);
+          currentSelectionRef.current = null;
           setVisible(false);
           setIsRecording(false);
         }],
@@ -253,6 +275,7 @@ function Result() {
           // 同 clear-result：隐藏窗时丢弃 pending diverted，避免后台定时器到期写脏 state。
           if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
           pendingDiverted.current = null;
+          currentSelectionRef.current = null;
           setVisible(false);
           setIsRecording(false);
         }],
@@ -263,6 +286,16 @@ function Result() {
             setEditing(false);
             if (editBufTimer.current) clearTimeout(editBufTimer.current);
           }
+        }],
+        ["prepare-record", (p) => {
+          // C4：后端 Toggle Idle 后 emit（payload=prepare_id）。把缓存的拖选（或 null）推回，
+          // 触发实际开录音。后端校验 prepare_id 后 begin_recording（selection 种子 / 普通开）。
+          // selection 转 tuple [text,start,end]：后端 Option<(String,usize,usize)> serde 按数组反序列化。
+          const sel = currentSelectionRef.current;
+          invoke("start_recording", {
+            prepare_id: p as number,
+            selection: sel ? [sel.text, sel.start, sel.end] : null,
+          });
         }],
       ];
       for (const [event, handler] of handlers) {
@@ -292,6 +325,7 @@ function Result() {
     // 否则编辑态光标无条件落末尾，长文本下用户得重新找刚才要改的位置。
     const restorePos = caretPosRef.current;
     editSnapshotRef.current = displayedRef.current; // 保存快照
+    currentSelectionRef.current = null; // 编辑态不参与选中替换
     setEditing(true);
     // 同步置 ref：editingRef 靠 useEffect 在 commit 后才更新，setEditing(true) 到 commit 间有窗口；
     // 此间若 update-result 到达、editingRef 仍 false → renderResultNow 写 textContent 覆盖刚进入
@@ -325,6 +359,7 @@ function Result() {
     // state，否则重挂后会回退到进入编辑前的旧 text。
     displayedRef.current = editedText;
     setText(editedText);
+    currentSelectionRef.current = null; // 文本已变，旧选区偏移失效
     setEditing(false);
     // 同步放开守护：退出编辑即恢复接收 update-result，不等 commit 后的 useEffect（否则会
     // 误拦退出后第一帧的流式更新）。
@@ -339,6 +374,7 @@ function Result() {
     const original = editSnapshotRef.current;
     setEditing(false);
     editingRef.current = false; // 同步放开守护（同 commitEdit）
+    currentSelectionRef.current = null;
     setCaretPos(null); // 退出编辑态：光标位失效，待下次 measure 重建
     // 恢复 contentEditable DOM 到编辑前文本
     displayedRef.current = original;
@@ -468,6 +504,9 @@ function Result() {
         const end = codePointOffsetTo(el, range.endContainer, range.endOffset);
         if (end > start) {
           setCaretPos(null); // 隐藏闪烁光标，交浏览器原生高亮
+          // 缓存选区供 prepare-record 回读：Toggle 时后端 emit prepare-record，前端 invoke
+          // start_recording 把此缓存推回，作跨会话选中替换种子（替代旧后端 idle_selection 长期缓存）。
+          currentSelectionRef.current = { start, end, text: displayedRef.current };
           invoke("set_selection", { start, end, text: displayedRef.current });
           return;
         }
