@@ -134,7 +134,7 @@ impl MoonshineEngine {
         })?;
 
         // logits (index 0) + N KV caches (index 1.., N=层数×2，base 模型=32)
-        let num_caches = uncached_out.len() - 1;
+        let num_caches = uncached_out.len().saturating_sub(1);
         // vocab_size 固定（= logits 末维），argmax 仅限此范围。
         let vocab_size = {
             let (shape, _data) = uncached_out[0].try_extract_tensor::<f32>()?;

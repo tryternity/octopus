@@ -16,8 +16,8 @@ pub fn read_wav_16k(path: &str) -> Result<Vec<f32>> {
         hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<Vec<_>, _>>()?,
         hound::SampleFormat::Int => reader
             .samples::<i16>()
-            .map(|s| s.unwrap() as f32 / i16::MAX as f32)
-            .collect(),
+            .map(|s| s.map(|v| v as f32 / i16::MAX as f32))
+            .collect::<Result<Vec<_>, _>>()?,
     };
     let channels = spec.channels as usize;
     let mono: Vec<f32> = samples
@@ -41,8 +41,8 @@ pub fn read_wav_16k_from_bytes(data: &[u8]) -> Result<Vec<f32>> {
         hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<Vec<_>, _>>()?,
         hound::SampleFormat::Int => reader
             .samples::<i16>()
-            .map(|s| s.unwrap() as f32 / i16::MAX as f32)
-            .collect(),
+            .map(|s| s.map(|v| v as f32 / i16::MAX as f32))
+            .collect::<Result<Vec<_>, _>>()?,
     };
     let channels = spec.channels as usize;
     let mono: Vec<f32> = samples

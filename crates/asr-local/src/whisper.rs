@@ -110,7 +110,7 @@ fn compute_mel(audio: &[f32]) -> Result<Array3<f32>> {
     // Whisper normalization: log10, clamp, shift+scale
     let max_val = mel_data.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
     for v in mel_data.iter_mut() {
-        *v = (*v + 1e-10).log10();
+        *v = (*v).max(1e-10).log10();
         *v = v.max(max_val.log10() - 8.0);
         *v = (*v + 4.0) / 4.0;
     }
