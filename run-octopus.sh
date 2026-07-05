@@ -44,7 +44,11 @@ rm -rf ~/Library/HTTPStorages/com.octopus.desktop
 cd "$(dirname "$0")/crates/desktop/"
 rm -rf ./dist
 cd ./frontend
-npm install typescript --save-dev
+# 判断项目本地是否有 tsc
+if [ ! -f "./node_modules/.bin/tsc" ]; then
+  echo "未检测到本地typescript，开始安装..."
+  npm install typescript --save-dev
+fi
 npm run build
 
 # 4. 切到 desktop crate 目录：frontendDist:"dist" 相对 tauri.conf.json 所在目录，
