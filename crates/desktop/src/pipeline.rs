@@ -109,31 +109,6 @@ pub(crate) fn consume_completed_results_vad(
     }
 }
 
-/// desktop ASR pipeline 统一上层抽象（2c-3，spec §3.1）。
-///
-/// `StreamingPipeline`（流式，内持 `StreamingPipelineEngine`）与 `VadSegmentedPipeline`
-///（VAD 分段伪流式）各 impl。coordinator 调 tick/finish 统一接口。
-/// emit/DB/polish/transcript 留 coordinator（2d 收敛）。
-///
-/// 当前 coordinator 持具体类型（走 inherent 同名方法），trait 方法在 Task 5 改 `Box<dyn Pipeline>`
-/// 后方经 trait 对象调用，此前用 `#[allow(dead_code)]` 抑制。
-#[allow(dead_code)]
-pub trait Pipeline: Send {
-    /// 喂一帧已降噪 16k 样本，返回本 tick 事件流（PersistRaw/Emit/Polish/Error）。
-    /// coordinator `apply_pipeline_events` 据此执行 DB/emit/polish/错误上报。（2d）
-    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> Vec<PipelineEvent>;
-    /// 收尾：流式 flush（tail 已由 stop 路径的 tick 喂入 accept）；vad-seg 仅 drain 剩余 rx。
-    fn finish(&mut self, transcript: &mut Transcript) -> TranscriptEvent;
-    /// 重置（会话间复用）。
-    fn reset(&mut self);
-    /// cloud engine 的 async close 句柄（stop 时 coordinator 取出 spawn `close_async`）。
-    /// local/vad-seg 返回 `None`（默认）。cfg cloud（与 `StreamingPipelineEngine` 同步门控）。
-    #[cfg(feature = "cloud")]
-    fn take_close_handle(&mut self) -> Option<octopus_asr_cloud::CloudStreamHandle> { None }
-    /// 是否 cloud 引擎（§4.2/§4.3 不对称判别）。vad-seg 恒 false。
-    fn is_cloud(&self) -> bool { false }
-}
-
 /// desktop 流式 pipeline 引擎（上层抽象，spec §3.4 阶段2c-2）。
 ///
 /// local（包 `StreamingRunner`）与 cloud（持 `CloudStreamHandle`）各 impl。
@@ -277,6 +252,8 @@ impl StreamingPipeline {
     }
 
     /// cloud 预览（`current_partial`），local 恒空。coordinator display 拼接用。
+    /// 仅 cloud feature 下由 coordinator 调用（默认构建无 cloud 时为 dead code）。
+    #[allow(dead_code)]
     pub fn current_partial(&self) -> &str {
         self.engine.current_partial()
     }
@@ -289,6 +266,8 @@ impl StreamingPipeline {
     }
 
     /// 是否 cloud 引擎（§4.2/§4.3 不对称判别）。
+    /// 仅 cloud feature 下由 coordinator 调用（默认构建无 cloud 时为 dead code）。
+    #[allow(dead_code)]
     pub fn is_cloud(&self) -> bool {
         self.engine.is_cloud()
     }
@@ -296,27 +275,6 @@ impl StreamingPipeline {
     /// 重置（会话间复用）。委托 engine（cloud 同时 drop session）。
     pub fn reset(&mut self) {
         self.engine.reset();
-    }
-}
-
-impl Pipeline for StreamingPipeline {
-    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> Vec<PipelineEvent> {
-        // 转发 inherent StreamingPipeline::tick（同名，trait impl 内 self.tick 调的是 inherent）。
-        self.tick(samples, transcript)
-    }
-    fn finish(&mut self, _transcript: &mut Transcript) -> TranscriptEvent {
-        // tail 已由 stop 路径 tick 喂入 accept；此处仅 flush。
-        self.engine.finish()
-    }
-    fn reset(&mut self) {
-        self.engine.reset();
-    }
-    #[cfg(feature = "cloud")]
-    fn take_close_handle(&mut self) -> Option<octopus_asr_cloud::CloudStreamHandle> {
-        self.engine.take_close_handle()
-    }
-    fn is_cloud(&self) -> bool {
-        self.engine.is_cloud()
     }
 }
 
@@ -553,25 +511,20 @@ impl VadSegmentedPipeline {
         }
         events
     }
-}
 
-impl Pipeline for VadSegmentedPipeline {
-    fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> Vec<PipelineEvent> {
-        // 转发 inherent VadSegmentedPipeline::tick（同名，trait impl 内 self.tick 调的是 inherent）。
-        self.tick(samples, transcript)
-    }
-
-    fn finish(&mut self, transcript: &mut Transcript) -> TranscriptEvent {
-        // drain rx 至空 + 消费在途段（unbounded channel 不丢；active_count 归零由 drain 递减）。
-        // 无 tail（tail 已由 coordinator stop 路径的 tick 喂入，可能触发最后一轮切段）。
+    /// 收尾：drain rx 至空 + 消费在途段（unbounded channel 不丢；active_count 归零由 drain 递减）。
+    /// 无 tail（tail 已由 coordinator stop 路径的 tick 喂入，可能触发最后一轮切段）。
+    pub fn finish(&mut self, transcript: &mut Transcript) -> TranscriptEvent {
         self.drain_rx_and_consume(transcript);
         // VadSegmented 不产 Final 事件（文本经 append_segment 累积），返回空 Committed 作占位
-        //（coordinator stop 路径不读 vad-seg 的 finish 返回值，见 Task 5）。
+        //（coordinator stop 路径不读 vad-seg 的 finish 返回值）。
         TranscriptEvent::Committed(String::new())
     }
 
-    fn reset(&mut self) {
-        // 会话间复用：清缓冲 + VAD 状态。rx 内残余旧段丢弃（新会话 seq 从 0 重来）。
+    /// 重置（会话间复用）：清缓冲 + VAD 状态。rx 内残余旧段丢弃（新会话 seq 从 0 重来）。
+    /// 当前 coordinator 在 stage 切换时直接 drop pipeline（未调 reset），保留供未来会话复用场景。
+    #[allow(dead_code)]
+    pub fn reset(&mut self) {
         self.audio_buffer.clear();
         self.overlap_tail.clear();
         self.silence_duration = 0.0;
@@ -585,9 +538,6 @@ impl Pipeline for VadSegmentedPipeline {
         while self.rx.try_recv().is_ok() {}
         self.segment_cut_this_tick = false;
     }
-
-    // take_close_handle / is_cloud 用默认（None / false）——VadSegmented 仅非流式本地引擎。
-    // 删原 trait silence_duration / took_segment_cut（信息进 Polish 事件）。
 }
 
 #[cfg(test)]

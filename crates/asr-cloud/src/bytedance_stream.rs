@@ -68,8 +68,6 @@ const FLAG_NEG_SEQUENCE: u8 = 0x2; // 末帧（负包）
 const SER_NONE: u8 = 0x0;
 const SER_JSON: u8 = 0x1;
 
-#[allow(dead_code)]
-const COMP_NONE: u8 = 0x0;
 const COMP_GZIP: u8 = 0x1;
 
 /// 建连 + 发初始 config + 推 pre-roll PCM + 启动后台 WS task。
@@ -327,7 +325,6 @@ fn build_client_frame(
 struct ParsedServerFrame {
     msg_type: u8,
     flags: u8,
-    serialization: u8,
     compression: u8,
     sequence: u32,
     payload: Vec<u8>,
@@ -341,17 +338,12 @@ fn parse_server_frame(data: &[u8]) -> Result<ParsedServerFrame> {
     if data.len() < 4 {
         bail!("帧太短（{} bytes < 4）", data.len());
     }
-    let byte0 = data[0];
     let byte1 = data[1];
     let byte2 = data[2];
-    let _byte3 = data[3];
 
     let msg_type = (byte1 >> 4) & 0x0F;
     let flags = byte1 & 0x0F;
-    let serialization = (byte2 >> 4) & 0x0F;
     let compression = byte2 & 0x0F;
-
-    let _ = byte0; // version + header_size（固定 0x11，不校验）
 
     // seq/error_code (4B) + payload/error_msg_size (4B)
     if data.len() < 12 {
@@ -376,7 +368,6 @@ fn parse_server_frame(data: &[u8]) -> Result<ParsedServerFrame> {
     Ok(ParsedServerFrame {
         msg_type,
         flags,
-        serialization,
         compression,
         sequence,
         payload,

@@ -41,21 +41,3 @@ pub fn register_shortcut<R: Runtime>(
     info!("Registered global shortcut: {}", shortcut_str);
     Ok(())
 }
-
-/// Unregister a previously registered global shortcut.
-#[allow(dead_code)] // 预留：未来支持运行时热重载快捷键时使用（当前 config.yaml shortcut 启动读一次）
-pub fn unregister_shortcut<R: Runtime>(
-    app: &tauri::AppHandle<R>,
-    shortcut_str: &str,
-) -> Result<(), String> {
-    let shortcut: Shortcut = shortcut_str
-        .parse()
-        .map_err(|e| format!("Failed to parse shortcut '{}': {}", shortcut_str, e))?;
-
-    app.global_shortcut()
-        .unregister(shortcut)
-        .map_err(|e| format!("Failed to unregister shortcut '{}': {}", shortcut_str, e))?;
-
-    info!("Unregistered global shortcut: {}", shortcut_str);
-    Ok(())
-}

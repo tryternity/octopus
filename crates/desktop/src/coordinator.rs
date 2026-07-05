@@ -5,7 +5,7 @@ use crate::config::AppConfig;
 use crate::config::PolishMode;
 use crate::engine::TranscriptionEngine;
 use crate::paste;
-use crate::pipeline::{Pipeline, StreamingPipeline};
+use crate::pipeline::StreamingPipeline;
 use crate::transcript::Transcript;
 use octopus_asr_local::streaming_engine::StreamingSession;
 use octopus_asr_local::streaming_runner::TranscriptEvent;

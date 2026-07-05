@@ -133,42 +133,6 @@ fn cgimage_to_rgba(
     Ok((rgba, width, height))
 }
 
-/// macOS：截取指定显示器，排除指定的 overlay 窗口。
-/// display_id = CGDirectDisplayID, exclude_window_id = NSWindow.windowNumber
-/// 返回 RGBA bytes + 物理像素尺寸。
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-pub fn capture_display_excluding_window(
-    display_id: u32,
-    exclude_window_id: u32,
-) -> Result<ScreenCapture> {
-    use core_graphics::display::{
-        CGDisplay, kCGWindowImageDefault, kCGWindowListOptionOnScreenBelowWindow,
-    };
-
-    let display = CGDisplay::new(display_id);
-    let bounds = display.bounds();
-
-    let cg_image = CGDisplay::screenshot(
-        bounds,
-        kCGWindowListOptionOnScreenBelowWindow,
-        exclude_window_id,
-        kCGWindowImageDefault,
-    )
-    .context("CGWindowListCreateImage failed (display may be asleep)")?;
-
-    let (rgba, width, height) = cgimage_to_rgba(&cg_image)?;
-
-    // CGDisplayBounds 返回全局逻辑坐标（points），与 xcap Monitor::x()/y() 一致。
-    Ok(ScreenCapture {
-        rgba_bytes: rgba,
-        width,
-        height,
-        monitor_x: bounds.origin.x as i32,
-        monitor_y: bounds.origin.y as i32,
-    })
-}
-
 /// macOS：只截取选区区域（排除 overlay 窗口）。
 /// 相比 capture_display_excluding_window + crop_region，避免截全屏 4K + PNG 编解码往返，
 /// 性能提升约 10×（截 ~2000×500 而非 3840×2160）。

@@ -52,14 +52,6 @@ pub fn register_screenshot_shortcut(
     Ok(())
 }
 
-/// 启动截图：截所有显示器 → 每个显示器一个窗口
-/// 截图是否处于活动状态（有截图窗口存在）
-#[allow(dead_code)]
-pub fn is_screenshot_active() -> bool {
-    TOTAL_WINDOWS.load(std::sync::atomic::Ordering::SeqCst) > 0
-        || SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst)
-}
-
 #[tauri::command]
 pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -862,24 +854,6 @@ fn set_app_active_on_main(win: &tauri::WebviewWindow, active: bool) {
     });
     let _ = rx.recv_timeout(std::time::Duration::from_secs(1));
 }
-
-/// macOS: 模拟一次垂直滚轮事件（像素级）
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn send_scroll(delta: i32) {
-    use core_graphics::event::{CGEvent, ScrollEventUnit, CGEventTapLocation};
-    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-    if let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-        if let Ok(event) = CGEvent::new_scroll_event(
-            source, ScrollEventUnit::PIXEL, 1, delta, 0, 0,
-        ) {
-            event.post(CGEventTapLocation::Session);
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn send_scroll(_delta: i32) {}
 
 /// 前端传递的交互区域（工具栏、预览窗等），窗口局部逻辑坐标。
 #[derive(Debug, Clone, serde::Deserialize)]

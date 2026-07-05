@@ -138,21 +138,6 @@ mod macos {
         }
     }
 
-    /// 关闭所有贴图窗口并清理引用（防 NSWindow 泄漏）。
-    #[allow(dead_code)]
-    pub fn close_all_pin_windows() {
-        let mut windows = PIN_WINDOWS.lock();
-        if let Some(_mtm) = MainThreadMarker::new() {
-            for w in windows.drain(..) {
-                unsafe {
-                    let _: () = msg_send![&w.0, close];
-                }
-            }
-        } else {
-            windows.clear();
-        }
-    }
-
     /// 清理已关闭的贴图窗口引用（右键关闭后调用）。
     pub fn cleanup_closed_pin_windows() {
         let mut windows = PIN_WINDOWS.lock();
