@@ -158,6 +158,9 @@ pub const FILE_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
 | M-2 | Aliyun Fun-ASR `Authorization: bearer` 小写不统一 | `asr-cloud/src/aliyun_stream.rs:95` | ✅ 改为 `Bearer`（同文件 Qwen-ASR 路径已用大写且正常工作；RFC 7235 auth scheme case-insensitive） |
 | M-3 | 选中替换偶发失败缺诊断证据 | `desktop/src/transcript.rs` | ✅ 加 `log::debug!("[select] ...")` 覆盖 pending_delete 全生命周期（8 处），`coordinator.rs` 跨会话播种 2 处 correlation log |
 | M-4 | `filter_map(\|r\| r.ok())` 静默丢弃失败行 | `infra/src/db.rs` 4 处（load_models_at、fts5 search、like search、test） | ✅ 生产代码 3 处改 `collect_rows(rows, context)` helper——失败行 `log::warn` 并跳过（非静默）。测试代码保留 filter_map |
+| M-5 | baidu `Message::Close` 当 Finished 掩盖服务端错误关闭 | `asr-cloud/src/baidu_stream.rs:214` | ✅ Close 时若已收到有效结果（display 非空）发 Finished；空结果发 Failed 暴露异常关闭 |
+| M-6 | capx `stitch.rs` 2 处 `from_raw().expect()` 数据不一致时 panic | `capx/src/stitch.rs:76,684` | ✅ 改 match `Some/None`——None 时 `log::error` + 返回 1×1 空图降级（不扼杀整个截图拼接流程） |
+| M-7 | asr-cloud 4 provider `tokio::spawn` JoinHandle 丢弃 | `asr-cloud/src/*_stream.rs` | ⏳ **评估后决定不修**：`close_async` 有 30s 超时兜底（coordinator 看门狗），panic task 由 tokio runtime 自动回收不泄漏。持有 JoinHandle 不改善 panic 可见性（`if let Err(e) = result` 已有 error log） |
 
 ## 3. 技术决策汇总
 

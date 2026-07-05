@@ -216,8 +216,14 @@ async fn run_baidu_session(
                         let display = accumulate_display(&fin_texts, &current_partial);
                         if !display.is_empty() {
                             let _ = result_tx.send(StreamEvent::Text(display));
+                            let _ = result_tx.send(StreamEvent::Finished);
+                        } else {
+                            // Close 时未收到任何有效结果——可能是服务端错误关闭（鉴权失败/超时等），
+                            // 发 Failed 而非 Finished 以暴露异常（其他三家在 WS stream 结束时不发 Finished）。
+                            let _ = result_tx.send(StreamEvent::Failed(
+                                "baidu WS 连接关闭但未收到识别结果".into()
+                            ));
                         }
-                        let _ = result_tx.send(StreamEvent::Finished);
                         return Ok(());
                     }
                     Message::Binary(_) => {

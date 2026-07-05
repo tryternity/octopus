@@ -72,8 +72,15 @@ impl GrayBuf {
     /// 转为 image::GrayImage（供 imageproc 使用）。
     fn to_gray_image(&self) -> image::GrayImage {
         let h = (self.data.len() / self.width) as u32;
-        image::GrayImage::from_raw(self.width as u32, h, self.data.clone())
-            .expect("GrayBuf → GrayImage 失败")
+        match image::GrayImage::from_raw(self.width as u32, h, self.data.clone()) {
+            Some(img) => img,
+            None => {
+                // 数据不一致（width * height != data.len()）→ 返回 1×1 空图降级，
+                // 避免 panic 扼杀整个截图拼接流程。
+                log::error!("GrayBuf → GrayImage 失败: width={}, data_len={}", self.width, self.data.len());
+                image::GrayImage::new(1, 1)
+            }
+        }
     }
 }
 
@@ -680,8 +687,14 @@ impl Stitcher {
 
     pub fn canvas(&mut self) -> &RgbaImage {
         if self.canvas_cache.is_none() {
-            let rebuilt = RgbaImage::from_raw(self.canvas_w, self.canvas_h, self.canvas_buf.clone())
-                .expect("canvas_buf 长度与 canvas_w/h 不匹配");
+            let rebuilt = match RgbaImage::from_raw(self.canvas_w, self.canvas_h, self.canvas_buf.clone()) {
+                Some(img) => img,
+                None => {
+                    log::error!("canvas_buf 长度与 canvas_w/h 不匹配: {}x{} buf_len={}",
+                        self.canvas_w, self.canvas_h, self.canvas_buf.len());
+                    RgbaImage::new(1, 1)
+                }
+            };
             self.canvas_cache = Some(rebuilt);
         }
         self.canvas_cache.as_ref().unwrap()

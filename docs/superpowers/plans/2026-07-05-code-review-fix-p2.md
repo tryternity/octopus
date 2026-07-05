@@ -323,4 +323,8 @@ git commit -m "docs: P2 清理完成，全量审查修复收官"
   - I-F2 `screenshot_commands.rs` `AtomicBool` CAS 门控 + `BusyGuard` RAII（Drop 释放），`start_screenshot` 入口门控，覆盖快捷键 + 托盘两个调用路径
   - I-F3 `create_tray` 返回 `Result`（11 处 `expect`→`map_err?`），调用方 log 降级（无托盘菜单仍可用快捷键）；clipboard handle `expect`→`?`；`home_dir().expect`→`or_else(dirs::home_dir).ok_or?`。`main.rs:470` tauri build `expect` 保留（真正 fatal 无降级路径）
   - M-4 `infra/db.rs` 3 处生产代码 `filter_map(|r| r.ok())` → `collect_rows(rows, context)` helper（失败行 `log::warn` 跳过而非静默丢弃）。测试代码保留 filter_map
+- **Minor 收尾**（M-5/M-6/M-7）：
+  - M-5 `baidu_stream.rs` `Message::Close` 不再无条件发 Finished——空结果时发 Failed 暴露异常关闭
+  - M-6 `capx/stitch.rs` 2 处 `from_raw().expect()` → match `Some/None` 降级（log + 1×1 空图，不 panic）
+  - M-7 asr-cloud 4 provider JoinHandle 丢弃——评估后**决定不修**（close_async 30s 超时兜底 + panic task 自动回收 + 已有 error log）
 
