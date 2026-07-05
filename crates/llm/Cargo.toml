@@ -8,8 +8,8 @@ reqwest = { version = "0.12", features = ["blocking", "json"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+once_cell = "1"
 octopus-infra = { path = "../infra" }
 
 [dev-dependencies]
-serde_yaml = "0.9"
 octopus-asr-local = { path = "../asr-local" }

@@ -1,9 +1,18 @@
 // crates/llm/src/client.rs
 
 use anyhow::{Context, Result};
+use once_cell::sync::Lazy;
 use crate::CompatibleLlmConfig;
 use crate::prompt;
 use serde::{Deserialize, Serialize};
+
+/// 共享 HTTP Client（带超时），避免每次调用新建（无连接池）+ 统一超时。
+static HTTP_CLIENT: Lazy<reqwest::blocking::Client> = Lazy::new(|| {
+    reqwest::blocking::Client::builder()
+        .timeout(std::time::Duration::from_secs(octopus_infra::net::HTTP_TIMEOUT_SECS))
+        .build()
+        .expect("failed to build LLM HTTP client")
+});
 
 /// DeepSeek 专有：关闭思考模式的参数体。
 #[derive(Serialize)]
@@ -99,7 +108,7 @@ fn chat_text(
         enable_thinking,
     };
 
-    let client = reqwest::blocking::Client::new();
+    let client = &*HTTP_CLIENT;
     let response = client
         .post(&url)
         .header("Content-Type", "application/json")
@@ -199,10 +208,7 @@ pub fn test_connection(config: &CompatibleLlmConfig) -> Result<()> {
         enable_thinking,
     };
 
-    let client = reqwest::blocking::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .context("构建 HTTP 客户端失败")?;
+    let client = &*HTTP_CLIENT;
 
     let response = client
         .post(&url)
