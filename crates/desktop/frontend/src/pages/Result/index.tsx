@@ -73,13 +73,9 @@ function Result() {
   // enterEdit/commitEdit/cancelEdit/show-result/clear-result/hide-result 时清。
   // prepare-record 事件回读它推给后端，作为跨会话选中替换种子。
   const currentSelectionRef = useRef<{ start: number; end: number; text: string } | null>(null);
-  // 拖选标志：mousedown 置 true、mouseup 处理完置 false。
-  // renderResultNow 期间为 true → 跳过 flushSync（不清浏览器选区）。
-  // mouseup 时若 live Selection 已被 WKWebView 清除，从此缓存兜底。
-  const isSelectingRef = useRef(false);
-  // mousedown 时缓存的 selection anchor/focus offset（不做重量级计算，仅存 raw 值）。
-  // mouseup 时若 live selection 丢失，用 selectionchange 最后写入的此值兜底。
-  const lastSelOffsetsRef = useRef<{ anchorOff: number; focusOff: number; anchorNode: Node | null; focusNode: Node | null } | null>(null);
+  // 拖选过程中 selectionchange 缓存的 raw 选区——mouseup 时 live selection 可能已被
+  // WKWebView re-render 清除，用此缓存兜底。只存 4 个属性读取（纳秒级），不做 Range 计算。
+  const dragSelectionCacheRef = useRef<{ start: number; end: number } | null>(null);
   const pendingDiverted = useRef<string | null>(null);
   const divertedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editBufTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -107,24 +103,31 @@ function Result() {
       const sel = window.getSelection();
       if (sel && sel.isCollapsed) {
         currentSelectionRef.current = null;
-      } else if (sel && !sel.isCollapsed && isSelectingRef.current) {
-        // 仅缓存 raw offset（极轻量），mouseup 时再用 codePointOffset 算实际 char 范围
-        lastSelOffsetsRef.current = {
-          anchorOff: sel.anchorOffset,
-          focusOff: sel.focusOffset,
-          anchorNode: sel.anchorNode,
-          focusNode: sel.focusNode,
-        };
+      } else if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
+        // 拖选中途持续缓存 char offset——mouseup 时选区可能已被 re-render 清除。
+        // selectionchange 高频但 codePointOffsetTo 只做一次 createRange+toString，
+        // 比 textContent 重写 + flushSync re-render 轻得多（实测不卡）。
+        const el = textRef.current;
+        if (el && text) {
+          const range = sel.getRangeAt(0);
+          if (el.contains(range.commonAncestorContainer)) {
+            try {
+              const s = codePointOffsetBefore(el, range);
+              const en = codePointOffsetTo(el, range.endContainer, range.endOffset);
+              if (en > s) dragSelectionCacheRef.current = { start: s, end: en };
+            } catch { /* */ }
+          }
+        }
       }
     };
-    const onBlur = () => { currentSelectionRef.current = null; };
+    const onBlur = () => { currentSelectionRef.current = null; dragSelectionCacheRef.current = null; };
     document.addEventListener("selectionchange", onSelectionChange);
     window.addEventListener("blur", onBlur);
     return () => {
       document.removeEventListener("selectionchange", onSelectionChange);
       window.removeEventListener("blur", onBlur);
     };
-  }, []);
+  }, [text]);
   useEffect(() => { toolbarVisibleRef.current = toolbarVisible; }, [toolbarVisible]);
   // 卸载时取消待执行的滚底 rAF（避免对已卸载 textRef 操作）。
   useEffect(() => () => {
@@ -160,10 +163,6 @@ function Result() {
   }, [showToolbar, hideToolbar]);
 
   const renderResultNow = useCallback((newText: string) => {
-    // 用户正在拖选 → 完全跳过：textContent 重写 + setText 的 flushSync re-render 都会
-    // 清除浏览器选区，导致 mouseup 时 isCollapsed=true → 走 set_caret 而非 set_selection。
-    // 丢失的 tick 数据由下个 tick（拖选完成后）自动补上。
-    if (isSelectingRef.current) return;
     displayedRef.current = newText;
     // 同步写 DOM（绕过 React commit）：textRef 是 contentEditable div，React 对其 children 的
     // commit 不更新 DOM（保护用户编辑，flushSync 强制 commit 也无效）→ 文字滞后/空白。imperative
@@ -515,12 +514,11 @@ function Result() {
   //   invoke set_selection（后端记录待删，首个 delta 到达时删旧插新）。
   // 纯点击（折叠）→ caretRangeFromPoint 定位 + invoke set_caret（普通中插）。
   const handleTextMouseUp = (e: React.MouseEvent) => {
-    const cleanup = () => { isSelectingRef.current = false; lastSelOffsetsRef.current = null; };
     const el = textRef.current;
-    if (!el || !text) { cleanup(); return; }
+    if (!el || !text) return;
     const sel = window.getSelection();
 
-    // 尝试从 live Selection 取选区
+    // 先尝试 live Selection
     let dragStart = -1, dragEnd = -1;
     if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
       const range = sel.getRangeAt(0);
@@ -532,40 +530,34 @@ function Result() {
       }
     }
 
-    // live selection 已丢失（WKWebView re-render 清除）→ 用缓存的 raw offset 算
+    // live selection 丢失 → 用 selectionchange 缓存兜底
     if (dragStart < 0 || dragEnd <= dragStart) {
-      const cached = lastSelOffsetsRef.current;
-      if (cached && cached.anchorNode && cached.focusNode
-          && el.contains(cached.anchorNode) && el.contains(cached.focusNode)) {
-        try {
-          const off1 = codePointOffsetTo(el, cached.anchorNode, cached.anchorOff);
-          const off2 = codePointOffsetTo(el, cached.focusNode, cached.focusOff);
-          dragStart = Math.min(off1, off2);
-          dragEnd = Math.max(off1, off2);
-          console.debug('[seldbg] restored from cached offsets', { dragStart, dragEnd });
-        } catch { /* */ }
+      const cached = dragSelectionCacheRef.current;
+      if (cached && cached.end > cached.start) {
+        dragStart = cached.start;
+        dragEnd = cached.end;
+        console.debug('[seldbg] restored from cache', cached);
       }
     }
+    dragSelectionCacheRef.current = null;
 
     if (dragEnd > dragStart && dragStart >= 0) {
       setCaretPos(null);
       currentSelectionRef.current = { start: dragStart, end: dragEnd, text: displayedRef.current };
       invoke("set_selection", { start: dragStart, end: dragEnd, text: displayedRef.current });
-      cleanup();
       return;
     }
 
-    // 折叠（纯点击）-> 定位光标
+    // 折叠（纯点击）→ 定位光标
     const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
-    if (!range) { cleanup(); return; }
-    if (!el.contains(range.startContainer)) { cleanup(); return; }
+    if (!range) return;
+    if (!el.contains(range.startContainer)) return;
     sel?.removeAllRanges();
     const offset = codePointOffsetBefore(el, range);
     setCaretPos(offset);
     invoke("set_caret", { offset });
-    cleanup();
   };
-  // ── Popup actions ──
+
   const openPolishPopup = async () => {
     setPopupItems(POLISH_OPTIONS.map(o => ({
       label: o.label, current: o.mode === toolbarState.polish_mode, mode: o.mode,
@@ -708,8 +700,7 @@ function Result() {
             contentEditable={editing}
             suppressContentEditableWarning
             onInput={onTextInput}
-            onMouseDown={!editing ? () => { isSelectingRef.current = true; } : undefined}
-            onMouseUp={!editing ? handleTextMouseUp : undefined}
+                        onMouseUp={!editing ? handleTextMouseUp : undefined}
             onScroll={(e) => {
               const el = e.currentTarget;
               const stick = el.scrollHeight - el.scrollTop - el.clientHeight < 24;
