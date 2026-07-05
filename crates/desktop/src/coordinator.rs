@@ -79,7 +79,7 @@ enum Command {
     /// 选中替换：前端非编辑态拖选 → char 范围 [start,end) → set_selection（记录待删范围 +
     /// 劈 caret 到 start，不立即删字，首个 delta 到达时真删）。非活跃 stage → 暂存 (text,start,end)，
     /// Toggle 开新会话时种子 transcript（跨会话选中替换）。
-    SetSelection { start: usize, end: usize, text: String },
+    SetSelection { start: usize, end: usize, #[allow(dead_code)] text: String },
     /// 前端响应 prepare-record 事件：携带 prepare_id（跨会话/超时护栏）+ 前端缓存的选区。
     /// selection=None → 普通开录音；Some((text,start,end)) → 跨会话选中替换种子。
     /// C3：coordinator 校验 prepare_id 匹配 pending_prepare 后调 begin_recording。
@@ -916,12 +916,12 @@ fn begin_recording(
 fn handle_toggle(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
-    engine: &Arc<dyn TranscriptionEngine>,
+    _engine: &Arc<dyn TranscriptionEngine>,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
-    use_streaming: bool,
-    #[cfg(feature = "cloud")] use_cloud_streaming: bool,
+    _use_streaming: bool,
+    #[cfg(feature = "cloud")] _use_cloud_streaming: bool,
 ) {
     match stage {
         Stage::Idle => {
