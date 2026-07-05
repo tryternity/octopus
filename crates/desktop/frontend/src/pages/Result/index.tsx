@@ -528,7 +528,7 @@ function Result() {
         if (end > start) {
           setCaretPos(null);
           currentSelectionRef.current = { start, end, text: displayedRef.current };
-          invoke("set_selection", { start, end, text: displayedRef.current });
+          invoke("set_selection", { start, end });
           mouseDownOffsetRef.current = null;
           return;
         }
@@ -558,7 +558,7 @@ function Result() {
         const end = Math.max(downOff, upOff);
         setCaretPos(null);
         currentSelectionRef.current = { start, end, text: displayedRef.current };
-        invoke("set_selection", { start, end, text: displayedRef.current });
+        invoke("set_selection", { start, end });
         mouseDownOffsetRef.current = null;
         return;
       }
