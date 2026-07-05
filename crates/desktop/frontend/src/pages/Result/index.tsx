@@ -272,6 +272,12 @@ function Result() {
       }
       if (!cancelled) {
         invoke("result_window_ready");
+        // 冷启动主动拉取一次工具栏配置（edit_shortcut / polish_mode / denoise_mode 等），
+        // 不依赖 show-result（录音开始）或 config-changed（设置改动）才同步——否则从挂载到
+        // 首次这两事件之间，窗口内 keydown 监听器读的是 edit_shortcut 初始默认值，用户
+        // 自定义快捷键在此窗口期内不生效。防御性初始化：当前窗口可见即聚焦的路径（录音 /
+        // global-edit）多已间接触发 refreshActive，但就绪即拉取消除对该副作用的隐式依赖。
+        refreshActive();
       }
     })();
 
