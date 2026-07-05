@@ -738,7 +738,28 @@ fn begin_recording(
             Ok(path) => match octopus_asr_local::vad::SileroVad::new(&path) {
                 Ok(mut vad) => {
                     crate::pipeline::vad_preroll(&mut vad);
-                    crate::result_window::show_result(app_handle, "正在聆听…");
+
+                    // 跨会话选中替换：有 selection → 种子 transcript（保留旧文本 + 删选区）。
+                    // cloud 与本地 streaming/vad 共用 Stage::Streaming + Transcript，下游 paste 由
+                    // pending_delete 驱动（首个 delta → delete_range），三条路径必须对称植入，否则 cloud 退化为追加。
+                    let tid = now_millis();
+                    set_current_transcription_id(tid);
+                    let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
+                        let mut t = Transcript::new(tid, config.polish_mode);
+                        t.commit_edit(&text);
+                        t.set_selection(s, e);
+                        debug!("[select] cross-session seeded (cloud) t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
+                        (t, text, true)
+                    } else {
+                        (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)
+                    };
+                    if is_continuation {
+                        // 延续态：展示旧文本但不走 show-result（前端会把非占位符当最终文本→清空 caret）。
+                        crate::result_window::show_result(app_handle, "正在聆听…");
+                        crate::result_window::update_result(app_handle, &show_text, false, 0);
+                    } else {
+                        crate::result_window::show_result(app_handle, &show_text);
+                    }
                     crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Recording);
 
                     let cloud_engine = crate::cloud_pipeline::CloudPipelineEngine::new(
@@ -762,11 +783,9 @@ fn begin_recording(
                     let tick_active = Arc::new(AtomicBool::new(true));
                     start_cloud_streaming_tick_thread(tx.clone(), tick_active.clone());
 
-                    let tid = now_millis();
-                    set_current_transcription_id(tid);
                     *stage = Stage::Streaming {
                         pipeline,
-                        transcript: Transcript::new(tid, config.polish_mode),
+                        transcript,
                         streaming_active: tick_active,
                     };
                 }
