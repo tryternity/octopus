@@ -110,6 +110,12 @@ impl Transcript {
                 self.id, s, e, full.chars().count(),
                 self.engine_cumulative.chars().count(),
                 full.starts_with(self.engine_cumulative.as_str()));
+            // 删除后的关键状态快照——用于排查 diverted LCP 失配
+            log::debug!(
+                "[seldbg] post-delete t={} shown='{}' cum='{}' consumed={} gap={} segs={}",
+                self.id, self.finish_text(), self.engine_cumulative,
+                self.engine_consumed_chars, self.caret_gap,
+                self.debug_segments_str());
         }
 
         let mut combined_delta;
@@ -121,6 +127,10 @@ impl Transcript {
             let shown = self.finish_text();
             let lcp = common_prefix_len(&shown, full);
             let diff: String = full.chars().skip(lcp).collect();
+            log::debug!(
+                "[seldbg] DIVERTED t={} shown='{}' full='{}' lcp={} diff='{}' sel_del={} dp_len={}",
+                self.id, shown, full, lcp, diff, selection_deleted,
+                self.diverted_pending.chars().count() + diff.chars().count());
             self.diverted_pending.push_str(&diff);
             self.engine_cumulative = full.to_string();
             self.engine_consumed_chars = full.chars().count();
@@ -143,6 +153,12 @@ impl Transcript {
         if !combined_delta.is_empty() {
             if self.polish_pending { self.pending_delta.push_str(&combined_delta); }
             else { self.push_delta_at_caret(&combined_delta); }
+        }
+        if selection_deleted || is_prefix {
+            log::debug!(
+                "[seldbg] emit t={} delta='{}' final='{}' gap={} segs={}",
+                self.id, combined_delta, self.finish_text(),
+                self.caret_gap, self.debug_segments_str());
         }
         true
     }
@@ -249,6 +265,20 @@ impl Transcript {
         }
         self.pending_delete = None;
         self.selection_insert_offset = None;
+    }
+
+    /// 调试用：segments 的紧凑表示（kind:text | kind:text ...）。
+    fn debug_segments_str(&self) -> String {
+        self.segments.iter()
+            .map(|s| match s.kind {
+                SegmentKind::Raw => "R",
+                SegmentKind::Polished => "P",
+                SegmentKind::Edited => "E",
+            })
+            .zip(self.segments.iter().map(|s| s.text.as_str()))
+            .map(|(k, t)| format!("{}:\"{}\"", k, t))
+            .collect::<Vec<_>>()
+            .join(" | ")
     }
 
     /// 录音结束收尾：把滞留的 `diverted_pending`（引擎 end-of-stream 纠正，非前缀差异）
