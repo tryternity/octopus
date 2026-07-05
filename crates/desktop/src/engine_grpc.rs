@@ -28,17 +28,19 @@ impl TranscriptionEngine for GrpcRemoteEngine {
         let engine = engine.to_string();
 
         let endpoint = self.endpoint.clone();
-        let channel = self.channel.get_or_try_init(|| async {
-            tonic::transport::Channel::from_shared(endpoint.clone())?
-                .connect()
-                .await
-                .with_context(|| format!("gRPC connect to {} failed", endpoint))
-        }).await?.clone();
+        let channel_cell = &self.channel;
 
         let fut = async move {
+            // connect 也受 timeout 保护（get_or_try_init 移入 fut）
+            let channel = channel_cell.get_or_try_init(|| async {
+                tonic::transport::Channel::from_shared(endpoint.clone())?
+                    .connect()
+                    .await
+                    .with_context(|| format!("gRPC connect to {} failed", endpoint))
+            }).await?.clone();
+
             let mut client = asr::asr_service_client::AsrServiceClient::new(channel);
 
-            // f32 samples → little-endian bytes
             let audio_bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_le_bytes()).collect();
 
             let request = tonic::Request::new(asr::TranscribeRequest {
@@ -57,7 +59,10 @@ impl TranscriptionEngine for GrpcRemoteEngine {
             Ok(result.text)
         };
 
-        tokio::time::timeout(std::time::Duration::from_secs(8), fut)
+        tokio::time::timeout(
+            std::time::Duration::from_secs(octopus_infra::net::GRPC_REQUEST_TIMEOUT_SECS),
+            fut,
+        )
             .await
             .map_err(|_| anyhow::anyhow!("gRPC transcription timeout"))?
     }
