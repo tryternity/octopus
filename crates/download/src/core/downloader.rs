@@ -194,7 +194,7 @@ impl Downloader {
 
         use std::io::{SeekFrom, Write, Seek};
         let mut file = std::fs::OpenOptions::new().write(true).open(part_path)?;
-        let write_offset = if status == 206 || status == 200 {
+        let _write_offset = if status == 206 || status == 200 {
             // 206=续传从 start；200=服务端忽略 Range，从头覆盖该段
             let off = if status == 200 { seg.begin } else { start };
             file.seek(SeekFrom::Start(off))?;

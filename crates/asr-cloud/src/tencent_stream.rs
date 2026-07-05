@@ -110,7 +110,7 @@ async fn run_tencent_session(
     )
     .await
     .map_err(|_| anyhow::anyhow!("tencent WS connect timeout"))?
-    .with_context(|| "tencent WS 连接失败")?;;
+    .context("tencent WS 连接失败")?;
 
     // 4. 推 pre-roll PCM
     if !pre_roll_samples.is_empty() {

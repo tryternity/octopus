@@ -13,6 +13,7 @@ pub fn hz_to_mel(hz: f64) -> f64 {
     1127.0 * (1.0 + hz / 700.0).ln()
 }
 
+#[allow(dead_code)]
 pub fn mel_to_hz(mel: f64) -> f64 {
     700.0 * ((mel / 1127.0).exp() - 1.0)
 }
