@@ -867,9 +867,19 @@ fn handle_toggle(
                     // transcript.id），handler 校验当前 closing transcript.id 是否匹配，否则丢弃。
                     let session_id = tr.id;
                     rt.spawn(async move {
-                        let result = handle.close_async().await;
+                        // 看门狗：close 超时也必须发 CloudStreamingDone，否则 stage 永久卡死
+                        let result = tokio::time::timeout(
+                            std::time::Duration::from_secs(30),
+                            handle.close_async(),
+                        )
+                        .await;
+                        let text_result = match result {
+                            Ok(Ok(text)) => Ok(text),
+                            Ok(Err(e)) => Err(e.to_string()),
+                            Err(_) => Err("cloud close timeout (30s)".to_string()),
+                        };
                         let _ = tx_clone.send(Command::CloudStreamingDone {
-                            text: result.map_err(|e| e.to_string()),
+                            text: text_result,
                             session_id,
                         });
                     });
