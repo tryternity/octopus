@@ -55,6 +55,12 @@ fn get_fuzzy_pinyin(word: &str) -> String {
     }
 }
 
+impl Default for LightCorrector {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl LightCorrector {
     pub fn new() -> Self {
         let mut unigram_scores: HashMap<String, f64> = HashMap::new();
@@ -289,9 +295,7 @@ impl LightCorrector {
                     // 在 baseline_ctx 副本中做局部替换再评分
                     let mut ctx_chars: Vec<char> = baseline_ctx.chars().collect();
                     let cand_chars: Vec<char> = cand.chars().collect();
-                    for k in 0..sz {
-                        ctx_chars[offset + k] = cand_chars[k];
-                    }
+                    ctx_chars[offset..(sz + offset)].copy_from_slice(&cand_chars[..sz]);
                     let cand_ctx: String = ctx_chars.iter().collect();
                     let cand_score = self.score_sentence(&cand_ctx);
 
@@ -315,9 +319,7 @@ impl LightCorrector {
                         best_gain
                     );
                     let best_chars: Vec<char> = best_cand.chars().collect();
-                    for k in 0..sz {
-                        chars[i + k] = best_chars[k];
-                    }
+                    chars[i..(sz + i)].copy_from_slice(&best_chars[..sz]);
                     replaced_sz = sz;
                     break; // 跳出 sz 循环，i 前进续扫
                 }

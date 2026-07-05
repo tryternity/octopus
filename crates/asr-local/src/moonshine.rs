@@ -342,7 +342,7 @@ mod tests {
             .expect("read_dir 失败")
             .filter_map(|e| e.ok())
             .map(|e| e.path())
-            .filter(|p| p.extension().map_or(false, |e| e == "wav"))
+            .filter(|p| p.extension().is_some_and(|e| e == "wav"))
             .collect();
 
         for path in entries {

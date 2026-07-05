@@ -191,15 +191,14 @@ async fn run_ws_session(
                                 let sentence_end = sentence["sentence_end"].as_bool().unwrap_or(false);
 
                                 // sentence_id 变化 = 新句开始，提交前一句
-                                if sentence_id != current_sentence_id && current_sentence_id > 0 {
-                                    if !current_sentence.is_empty() {
+                                if sentence_id != current_sentence_id && current_sentence_id > 0
+                                    && !current_sentence.is_empty() {
                                         if !committed.is_empty() && !committed.ends_with(sep) {
                                             committed.push_str(sep);
                                         }
                                         committed.push_str(&current_sentence);
                                         current_sentence.clear();
                                     }
-                                }
                                 current_sentence_id = sentence_id;
                                 current_sentence = text.to_string();
 
@@ -214,7 +213,7 @@ async fn run_ws_session(
                                 }
 
                                 let combined = format!("{}{}", committed, current_sentence);
-                                log::info!(
+                                log::debug!(
                                     "[FunASR-Stream] sid={} end={} text={:?} combined={:?}",
                                     sentence_id, sentence_end, text, combined
                                 );
@@ -229,7 +228,7 @@ async fn run_ws_session(
                                     committed.push_str(&current_sentence);
                                     current_sentence.clear();
                                 }
-                                log::info!("[FunASR-Stream] task-finished total={:?}", committed);
+                                log::debug!("[FunASR-Stream] task-finished total={:?}", committed);
                                 if !committed.is_empty() {
                                     let _ = result_tx.send(StreamEvent::Text(committed.clone()));
                                 }
@@ -466,7 +465,7 @@ async fn run_qwen_realtime_session(
                                 let stash = v["stash"].as_str().unwrap_or("");
                                 let partial = format!("{}{}", text, stash);
                                 let combined = format!("{}{}", accumulated_text, partial);
-                                log::info!(
+                                log::debug!(
                                     "[Qwen-Stream] partial text={:?} stash={:?} combined={:?}",
                                     text, stash, combined
                                 );
@@ -477,7 +476,7 @@ async fn run_qwen_realtime_session(
                             // 最终结果（per-utterance）：累积 transcript
                             "conversation.item.input_audio_transcription.completed" => {
                                 if let Some(t) = v["transcript"].as_str() {
-                                    log::info!(
+                                    log::debug!(
                                         "[Qwen-Stream] completed transcript={:?} prev_accumulated={:?}",
                                         t, accumulated_text
                                     );

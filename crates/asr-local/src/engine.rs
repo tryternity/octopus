@@ -32,6 +32,12 @@ pub struct AsrEngineManager {
     active_engine_name: RwLock<String>,
 }
 
+impl Default for AsrEngineManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl AsrEngineManager {
     pub fn new() -> Self {
         Self {

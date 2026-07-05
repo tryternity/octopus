@@ -30,8 +30,8 @@ mod macos {
                 if delta_y == 0.0 { return; }
                 let frame = self.frame();
                 let sc = 1.0 + delta_y * 0.01;
-                let new_w = (frame.size.width * sc).max(20.0).min(10000.0);
-                let new_h = (frame.size.height * sc).max(20.0).min(10000.0);
+                let new_w = (frame.size.width * sc).clamp(20.0, 10000.0);
+                let new_h = (frame.size.height * sc).clamp(20.0, 10000.0);
                 let mouse_in_win = event.locationInWindow();
                 let ratio_x = if frame.size.width > 0.0 { mouse_in_win.x / frame.size.width } else { 0.5 };
                 let ratio_y = if frame.size.height > 0.0 { mouse_in_win.y / frame.size.height } else { 0.5 };
@@ -135,21 +135,6 @@ mod macos {
                 PIN_WINDOWS.lock().push(SendWindow(window));
                 log::info!("Pin window created at ({},{}) {}x{}", x, y, width, height);
             }
-        }
-    }
-
-    /// 关闭所有贴图窗口并清理引用（防 NSWindow 泄漏）。
-    #[allow(dead_code)]
-    pub fn close_all_pin_windows() {
-        let mut windows = PIN_WINDOWS.lock();
-        if let Some(_mtm) = MainThreadMarker::new() {
-            for w in windows.drain(..) {
-                unsafe {
-                    let _: () = msg_send![&w.0, close];
-                }
-            }
-        } else {
-            windows.clear();
         }
     }
 

@@ -194,15 +194,14 @@ impl Downloader {
 
         use std::io::{SeekFrom, Write, Seek};
         let mut file = std::fs::OpenOptions::new().write(true).open(part_path)?;
-        let _write_offset = if status == 206 || status == 200 {
-            // 206=续传从 start；200=服务端忽略 Range，从头覆盖该段
-            let off = if status == 200 { seg.begin } else { start };
-            file.seek(SeekFrom::Start(off))?;
-            off
-        } else {
-            // 416 等：该段重头
+        // classify_status 已过滤 4xx/5xx（含 416），reqwest 自动跟随 3xx，
+        // 故此处仅可能是 200（服务端忽略 Range 从头覆盖该段）或 206（续传从 start）。
+        let _write_offset = if status == 200 {
             file.seek(SeekFrom::Start(seg.begin))?;
             seg.begin
+        } else {
+            file.seek(SeekFrom::Start(start))?;
+            start
         };
 
         let mut writer = std::io::BufWriter::with_capacity(self.config.buf_kb * 1024, file);

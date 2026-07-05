@@ -115,7 +115,7 @@ async fn run_tencent_session(
     // 4. 推 pre-roll PCM
     if !pre_roll_samples.is_empty() {
         let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
-        ws.send(Message::Binary(pcm.into()))
+        ws.send(Message::Binary(pcm))
             .await
             .context("tencent WS 发送 pre-roll PCM 失败")?;
     }
@@ -131,7 +131,7 @@ async fn run_tencent_session(
             frame = pcm_rx.recv() => {
                 match frame {
                     Some(PcmFrame::Samples(pcm)) => {
-                        ws.send(Message::Binary(pcm.into()))
+                        ws.send(Message::Binary(pcm))
                             .await
                             .context("tencent WS 发送音频帧失败")?;
                     }
@@ -266,7 +266,7 @@ fn build_signed_url(
         ("voice_format", "1".to_string()), // PCM
         ("voice_id", voice_id.to_string()),
     ];
-    params.sort_by(|a, b| a.0.cmp(&b.0));
+    params.sort_by(|a, b| a.0.cmp(b.0));
 
     // 拼查询串
     let query: String = params

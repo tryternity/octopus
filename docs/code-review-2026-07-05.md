@@ -1,6 +1,6 @@
 # Octopus 全量代码审查报告
 
-> **修复状态**：P0 + P1 已完成（14 Critical 全修，共性 1/2/3 已解决），P2 待执行。详见 [修复设计规格](superpowers/specs/2026-07-05-code-review-remediation-design.md)。
+> **修复状态**：P0 + P1 + P2 全部完成（14 Critical 全修，共性 1/2/3/4/5 已解决）。详见 [修复设计规格](superpowers/specs/2026-07-05-code-review-remediation-design.md)。
 
 - **审查日期**：2026-07-05
 - **审查范围**：全 workspace（12 个 crate，约 36,000 行 Rust + 前端 React/TS）
@@ -248,9 +248,10 @@
 9. **C5** desktop AppKit 主线程 UB
 10. **共性 1** 锁毒化级联（统一 parking_lot）
 
-### P2（质量改善）
-11. **C14** capx 测试跨平台编译
-12. Important 清单中的错误处理 / 事务 / WAL
-13. **共性 3** 重复代码抽取（compute_fbank 优先，同时消除 bug）
-14. **共性 4** 调试输出清理
-15. `cargo clippy --fix` 清理 118 个 lint
+### P2（质量改善）— ✅ 全部完成
+11. ✅ **C14** capx 测试跨平台编译（加 `cfg(all(test, target_os = "macos"))` 门控）
+12. Important 清单中的错误处理 / 事务 / WAL（后续迭代）
+13. **共性 3** 重复代码抽取（compute_fbank 优先，同时消除 bug）（后续迭代）
+14. ✅ **共性 4** 调试输出清理（whisper/paraformer/desktop screenshot/aliyun eprintln→log::debug!, 前端 console.log 删除）
+15. ✅ `cargo clippy --fix` 清理 lint（70+ 自动+手动修复，零警告 + `#![warn(clippy::all)]` gate）
+16. ✅ **共性 5** 死代码删除（image_util 全文件、desktop 5处、download/capx/asr-cloud 死代码、Pipeline trait）

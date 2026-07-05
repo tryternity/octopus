@@ -330,7 +330,7 @@ fn unique_path(dir: &std::path::Path, base: &str, ext: &str) -> std::path::PathB
 /// 解析剪贴板文件路径为本地路径。
 /// - Linux X11/Wayland：text/uri-list 存 `file://` URI + 百分号编码 → strip 前缀 + 解码
 /// - macOS（clipboard-rs 用 NSURL.path）/ Windows（FileList）：已解码的普通路径，无 `file://` 前缀
-/// 仅 `file://` 开头才解码，避免对含字面 `%XX` 的普通路径误伤（如 `50%20off.txt`）。
+///   仅 `file://` 开头才解码，避免对含字面 `%XX` 的普通路径误伤（如 `50%20off.txt`）。
 fn decode_file_uri(raw: &str) -> String {
     use percent_encoding::percent_decode_str;
     if let Some(rest) = raw.strip_prefix("file://") {

@@ -1,3 +1,4 @@
+#![warn(clippy::all)]
 pub mod cleanup;
 pub mod handle;
 pub mod image;

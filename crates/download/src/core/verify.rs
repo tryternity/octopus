@@ -45,11 +45,6 @@ pub async fn verify(path: &Path, expected: &Hash) -> Result<bool, std::io::Error
     }
 }
 
-/// 构造 If-Range header 值。优先用 etag（带引号包裹语义由调用方决定，这里原样）。
-pub fn if_range_value(etag: Option<&str>) -> Option<String> {
-    etag.map(|s| s.to_string())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,11 +74,5 @@ mod tests {
         let bad = Hash::Sha256("0000000000000000000000000000000000000000000000000000000000000000".into());
         assert!(verify(&p, &good).await.unwrap());
         assert!(!verify(&p, &bad).await.unwrap());
-    }
-
-    #[test]
-    fn if_range_from_etag() {
-        assert_eq!(if_range_value(Some("abc123")), Some("abc123".into()));
-        assert_eq!(if_range_value(None), None);
     }
 }

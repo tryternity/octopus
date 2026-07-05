@@ -82,31 +82,31 @@ fn transcribe_segments(
     let vad_path = match crate::config::find_silero_vad() {
         Ok(p) => Some(p),
         Err(e) => {
-            eprintln!(
-                "Warning: Silero VAD not found, falling back to full audio transcription: {}", e);
+            log::warn!(
+                "Silero VAD not found, falling back to full audio transcription: {}", e);
             None
         }
     };
     let vad = vad_path.and_then(|p| match crate::vad::SileroVad::new(&p) {
         Ok(v) => Some(v),
         Err(e) => {
-            eprintln!(
-                "Warning: Failed to initialize Silero VAD, falling back to full audio transcription: {}", e);
+            log::warn!(
+                "Failed to initialize Silero VAD, falling back to full audio transcription: {}", e);
             None
         }
     });
 
     if let Some(mut v) = vad {
         let total_secs = samples.len() as f64 / 16000.0;
-        eprintln!("[ASR] Long audio detected ({:.2}s). Segmenting audio using VAD...", total_secs);
+        log::info!("[ASR] Long audio detected ({:.2}s). Segmenting audio using VAD...", total_secs);
         let segments = crate::audio::segment_audio_vad(samples, &mut v, 480, 0.4, 500, 25000);
-        eprintln!("[ASR] Audio segmented into {} speech chunks.", segments.len());
+        log::info!("[ASR] Audio segmented into {} speech chunks.", segments.len());
 
         let mut final_text = String::new();
         for (idx, seg) in segments.iter().enumerate() {
             if !seg.is_empty() {
                 let seg_secs = seg.len() as f64 / 16000.0;
-                eprintln!(
+                log::debug!(
                     "[ASR] Transcribing segment {}/{} ({:.2}s)...", idx + 1, segments.len(), seg_secs);
                 let text = engine.transcribe(seg, language)?;
                 let text_cleaned = text.replace("<|nospeech|>", "");

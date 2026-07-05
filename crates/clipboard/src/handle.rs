@@ -102,6 +102,6 @@ impl ClipboardHandle {
     pub fn available_formats(&self) -> Result<Vec<String>> {
         let ctx = self.ctx.lock();
         ctx.available_formats()
-            .map_err(|e| anyhow::anyhow!("Clipboard available_formats failed: {}", e).into())
+            .map_err(|e| anyhow::anyhow!("Clipboard available_formats failed: {}", e))
     }
 }

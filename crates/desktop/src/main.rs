@@ -323,7 +323,7 @@ pub fn run() {
                 let watcher_handle = clipboard_handle.clone();
                 match octopus_clipboard::ClipboardWatcher::start(watcher_handle, move || {
                     octopus_clipboard::watcher::handle_clipboard_change(
-                        &app_handle_for_watcher
+                        app_handle_for_watcher
                             .state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>()
                             .inner(),
                     );

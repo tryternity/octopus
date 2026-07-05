@@ -43,19 +43,19 @@ pub fn mel_filterbank(
     let fft_bin_width = sample_rate as f64 / fft_size as f64;
 
     let mut filters = vec![vec![0.0f64; n_freqs]; num_bins];
-    for bin in 0..num_bins {
+    for (bin, filter_row) in filters.iter_mut().enumerate().take(num_bins) {
         let left_mel = mel_low + bin as f64 * mel_delta;
         let center_mel = mel_low + (bin as f64 + 1.0) * mel_delta;
         let right_mel = mel_low + (bin as f64 + 2.0) * mel_delta;
 
-        for j in 0..n_freqs {
+        for (j, filter_val) in filter_row.iter_mut().enumerate().take(n_freqs) {
             let freq = fft_bin_width * j as f64;
             let mel = hz_to_mel(freq);
             if mel > left_mel && mel < right_mel {
                 if mel <= center_mel {
-                    filters[bin][j] = (mel - left_mel) / (center_mel - left_mel);
+                    *filter_val = (mel - left_mel) / (center_mel - left_mel);
                 } else {
-                    filters[bin][j] = (right_mel - mel) / (right_mel - center_mel);
+                    *filter_val = (right_mel - mel) / (right_mel - center_mel);
                 }
             }
         }

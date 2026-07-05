@@ -38,7 +38,7 @@ const REPETITION_LIMIT: usize = 8;
 const EOS_TOKEN_ID: i64 = 151645; // <|im_end|>
 
 static HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hann_window(MEL_FRAME_LEN));
-static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank());
+static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(mel_filterbank);
 
 /// 400 点 FFT 规划器（全局缓存，对齐 zipformer.rs 的 Z_FFT / WHISPER_FFT）：
 /// compute_mel_features 每帧调 `fft.process`，规划器下沉避免每次转写重建 twiddle factors。
@@ -184,7 +184,7 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
         // conv_output is [1, T', 896]
         let conv_tensor = ArrayView3::from_shape(
             (conv_dims[0], conv_dims[1], conv_dims[2]),
-            &*conv_data,
+            conv_data,
         )?;
 
         // Build token mask using FeatToAudioTokensLen (matching sherpa-onnx)
@@ -193,8 +193,8 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
         let valid_frames = expected_audio_tokens.min(conv_num_frames);
 
         let mut mask_vec = vec![false; conv_num_frames];
-        for i in 0..valid_frames {
-            mask_vec[i] = true;
+        for val in mask_vec.iter_mut().take(valid_frames) {
+            *val = true;
         }
         let tok_mask = ndarray::Array2::from_shape_vec((1, conv_num_frames), mask_vec)?;
 
@@ -209,7 +209,7 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
 
         let audio_features_view = ArrayView3::from_shape(
             (enc_dims[0], enc_dims[1], enc_dims[2]),
-            &*enc_data,
+            enc_data,
         )?;
 
         // Trim trailing silent padding from audio features
@@ -253,7 +253,7 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
         let prompt_cache_pos: ndarray::Array1<i64> = (0..s0 as i64).collect();
 
         let logit_vec = run_decoder_step(
-            &mut *decoder_session,
+            &mut decoder_session,
             &prompt_ids_arr,
             &audio_features,
             &prompt_attn,
@@ -289,7 +289,7 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
             let step_pos = ndarray::Array1::from_vec(vec![cur_len as i64]);
 
             let logit_vec = run_decoder_step(
-                &mut *decoder_session,
+                &mut decoder_session,
                 &step_ids,
                 &audio_features,
                 &step_attn,
@@ -523,9 +523,7 @@ fn build_prompt_ids(
     ids.push(AUDIO_START);
 
     // Audio placeholders: <|audio_pad|> × audio_token_len
-    for _ in 0..audio_token_len {
-        ids.push(AUDIO_PAD);
-    }
+    ids.extend(std::iter::repeat_n(AUDIO_PAD, audio_token_len));
 
     // After audio: <|audio_end|><|im_end|>\n<|im_start|>assistant\n
     ids.push(AUDIO_END);
@@ -567,6 +565,7 @@ fn decoder_kv_max_len(decoder: &Session) -> Option<usize> {
 }
 
 /// Run a single decoder step (prefill or generate) and return logits for the last token
+#[allow(clippy::too_many_arguments)]
 fn run_decoder_step(
     decoder: &mut Session,
     input_ids: &ndarray::Array2<i64>,
@@ -574,7 +573,7 @@ fn run_decoder_step(
     attention_mask: &ndarray::Array2<i64>,
     cache_position: &ndarray::Array1<i64>,
     cur_len: usize,
-    caches: &mut Vec<ndarray::Array4<f32>>,
+    caches: &mut [ndarray::Array4<f32>],
     max_total_len: usize,
     cache_names: &[(&'static str, &'static str)],
 ) -> Result<Vec<f32>> {
@@ -614,7 +613,7 @@ fn run_decoder_step(
                 if kd.len() == 4 && kd[1] == s {
                     if let Ok(delta) = ArrayView4::from_shape(
                         (kd[0], kd[1], kd[2], kd[3]),
-                        &*kd_data,
+                        kd_data,
                     ) {
                         if cur_len + s <= max_total_len {
                             let mut slice = caches[2 * i].slice_mut(ndarray::s![
@@ -635,7 +634,7 @@ fn run_decoder_step(
                 if vd.len() == 4 && vd[1] == s {
                     if let Ok(delta) = ArrayView4::from_shape(
                         (vd[0], vd[1], vd[2], vd[3]),
-                        &*vd_data,
+                        vd_data,
                     ) {
                         if cur_len + s <= max_total_len {
                             let mut slice = caches[2 * i + 1].slice_mut(ndarray::s![
@@ -720,9 +719,9 @@ fn feat_to_audio_tokens_len(feat_frames: usize, chunk_size: usize) -> usize {
     }
 
     let conv_out_len_3x_stride2 = |n: usize| -> usize {
-        let x = (n + 1) / 2;
-        let x = (x + 1) / 2;
-        (x + 1) / 2
+        let x = n.div_ceil(2);
+        let x = x.div_ceil(2);
+        x.div_ceil(2)
     };
 
     let aftercnn = |mut x: usize| -> usize {
@@ -850,7 +849,7 @@ fn mel_filterbank() -> Vec<Vec<f64>> {
 
     let mut filters = vec![vec![0.0f64; num_fft_bins + 1]; num_bins];
 
-    for bin in 0..num_bins {
+    for (bin, filter_row) in filters.iter_mut().enumerate().take(num_bins) {
         let left_mel = mel_low_freq + bin as f64 * mel_freq_delta;
         let center_mel = mel_low_freq + (bin + 1) as f64 * mel_freq_delta;
         let right_mel = mel_low_freq + (bin + 2) as f64 * mel_freq_delta;
@@ -859,7 +858,7 @@ fn mel_filterbank() -> Vec<Vec<f64>> {
         let center_hz = mel_to_hz_slaney(center_mel);
         let right_hz = mel_to_hz_slaney(right_mel);
 
-        for i in 0..=num_fft_bins {
+        for (i, filter_val) in filter_row.iter_mut().enumerate().take(num_fft_bins + 1) {
             let hz = fft_bin_width * i as f64;
             if hz > left_hz && hz < right_hz {
                 let mut weight = if hz <= center_hz {
@@ -869,7 +868,7 @@ fn mel_filterbank() -> Vec<Vec<f64>> {
                 };
                 // Slaney normalization
                 weight *= 2.0 / (right_hz - left_hz);
-                filters[bin][i] = weight;
+                *filter_val = weight;
             }
         }
     }

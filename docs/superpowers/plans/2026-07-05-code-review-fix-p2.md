@@ -277,4 +277,23 @@ git commit -m "docs: P2 清理完成，全量审查修复收官"
 
 > 本节在实施过程中回写实际偏差。
 
-（待实施时填写）
+### G1 实施偏差
+
+- **Pipeline trait 删除额外影响**：trait impl 块（`impl Pipeline for StreamingPipeline` 和 `impl Pipeline for VadSegmentedPipeline`）也需删除。`VadSegmentedPipeline` 的 `finish`/`reset` 原仅在 trait impl 中定义，删除后需补为 inherent 方法。
+- **feature-gated 死代码**：`StreamingPipeline::current_partial`/`is_cloud` 仅 cloud feature 下调用，`VadSegmentedPipeline::reset` 当前未被 coordinator 调用（stage 切换直接 drop）。三者保留并加 `#[allow(dead_code)]`（功能完整、未来可能启用）。
+- **dlp/llm 死依赖**：P0/P1 已删除 `tempfile`（dlp）和 `serde_yaml`（llm dev-dep），G1 确认无残留。
+- **downloader.rs 416 分支**：原 else 分支注释 "416 等" 有误（416 被 classify_status 归为 Fatal 早已 return）。重构为 `if 200 → seg.begin else → start`，注释更正为 "仅 200/206 可达"。
+
+### G4 实施偏差
+
+- **clippy lint 总数**：原计划 "118 个"，实际 auto-fix 后剩余 70 个手动修，最终全部清零。
+- **needless_range_loop 在 CIF 热路径**：`streaming_paraformer.rs` 的 `run_cif`/`run_cif_final` 各 3 处 `for j in 0..feat` 索引 enc_row + cache，改 iterator 后可读性下降，加 `#[allow(clippy::needless_range_loop)]` 函数级标注。
+- **too_many_arguments (4处)**：`run_decoder_step`/`try_match_1d_projection`/`apply_fallback_match`/`do_paste` 均为内部函数、参数语义独立无法封装为 struct，加 `#[allow]`。
+- **type_complexity (2处)**：`extract_kv` 返回 4-tuple（ONNX KV cache 语义）、DB 行映射 10-tuple，加 `#[allow]`（type alias 增加间接层无收益）。
+- **vec_init_then_push**：`config.rs` 的 cfg-gated EP push 改用 `vec![#[cfg(...)] ...]` 宏内 cfg（比 `#[allow]` 更干净）。
+- **测试同步**：`desktop/pipeline.rs` 3 个测试预期未含 `Speaking(true)` 首帧事件（pre-existing 不同步），补齐。
+
+### P2-Final 偏差
+
+- **server/pipeline.rs 1 个 pre-existing test failure**：`ws_stream_session_feed_partial_then_empty_finish_final` — `feed(&[0.0; 512])` 返回空而非预期 `Partial("hi")`。在 P2 前（c962b0b）已失败，非本次引入。根因待查（StreamingRunner 的 push_samples 行为变化，512 样本可能不够触发 accept）。
+

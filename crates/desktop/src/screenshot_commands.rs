@@ -52,14 +52,6 @@ pub fn register_screenshot_shortcut(
     Ok(())
 }
 
-/// 启动截图：截所有显示器 → 每个显示器一个窗口
-/// 截图是否处于活动状态（有截图窗口存在）
-#[allow(dead_code)]
-pub fn is_screenshot_active() -> bool {
-    TOTAL_WINDOWS.load(std::sync::atomic::Ordering::SeqCst) > 0
-        || SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst)
-}
-
 #[tauri::command]
 pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String> {
     #[cfg(target_os = "macos")]
@@ -103,7 +95,7 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     for (i, tauri_mon) in tauri_monitors.iter().enumerate() {
         let phys_w = tauri_mon.size().width as f64;
         let phys_h = tauri_mon.size().height as f64;
-        let scale = tauri_mon.scale_factor() as f64;
+        let scale = tauri_mon.scale_factor();
         let pos_x = tauri_mon.position().x as f64 / scale;  // 物理 → 逻辑
         let pos_y = tauri_mon.position().y as f64 / scale;
         let log_w = phys_w / scale;
@@ -596,7 +588,7 @@ pub async fn pin_screenshot(
 
     #[cfg(target_os = "macos")]
     {
-        let scale = sel_win.scale_factor().unwrap_or(1.0) as f64;
+        let scale = sel_win.scale_factor().unwrap_or(1.0);
 
         let fake_full = octopus_capx::capture::ScreenCapture {
             rgba_bytes: full.rgba_bytes.clone(),
@@ -688,7 +680,7 @@ fn save_frontmost_app() {
         let is_current = app.processIdentifier() == curr.processIdentifier();
         if !is_current {
             if let Some(name) = app.localizedName() {
-                log::info!("Scroll screenshot: saved frontmost app '{}'", name.to_string());
+                log::info!("Scroll screenshot: saved frontmost app '{}'", name);
             }
             let mut guard = PREV_ACTIVE_APP.lock();
             *guard = Some(SendApp(app));
@@ -778,7 +770,7 @@ fn activate_app_by_pid(ah: &tauri::AppHandle, pid: i32) {
             if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
                 let success = app.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions(1 << 1));
                 if success {
-                    eprintln!("[scroll] activated app pid={} for scroll focus", pid);
+                    log::debug!("[scroll] activated app pid={} for scroll focus", pid);
                 }
             }
         });
@@ -863,24 +855,6 @@ fn set_app_active_on_main(win: &tauri::WebviewWindow, active: bool) {
     let _ = rx.recv_timeout(std::time::Duration::from_secs(1));
 }
 
-/// macOS: 模拟一次垂直滚轮事件（像素级）
-#[cfg(target_os = "macos")]
-#[allow(dead_code)]
-fn send_scroll(delta: i32) {
-    use core_graphics::event::{CGEvent, ScrollEventUnit, CGEventTapLocation};
-    use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-    if let Ok(source) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-        if let Ok(event) = CGEvent::new_scroll_event(
-            source, ScrollEventUnit::PIXEL, 1, delta, 0, 0,
-        ) {
-            event.post(CGEventTapLocation::Session);
-        }
-    }
-}
-
-#[cfg(not(target_os = "macos"))]
-fn send_scroll(_delta: i32) {}
-
 /// 前端传递的交互区域（工具栏、预览窗等），窗口局部逻辑坐标。
 #[derive(Debug, Clone, serde::Deserialize)]
 pub struct InteractiveRect {
@@ -932,7 +906,7 @@ pub async fn start_scroll_recording(
                 Err(_) => (0.0, 0.0),
             }
         };
-        eprintln!("[scroll] win_origin=({},{}) sel_local=({},{},{},{})", win_origin_x, win_origin_y, x, y, w, h);
+        log::debug!("[scroll] win_origin=({},{}) sel_local=({},{},{},{})", win_origin_x, win_origin_y, x, y, w, h);
         // 选区的全局逻辑坐标 = 窗口原点 + CSS 偏移
         let sel_global_x = win_origin_x + x;
         let sel_global_y = win_origin_y + y;
@@ -1001,7 +975,7 @@ pub async fn start_scroll_recording(
                 }
             };
 
-            eprintln!("[scroll-diag] display_id={}, exclude_wid={} (windowNumber), target_wid={:?}, displays={:?}",
+            log::debug!("[scroll-diag] display_id={}, exclude_wid={} (windowNumber), target_wid={:?}, displays={:?}",
                 hit, wid, target_wid, displays);
             (hit, wid, target_wid)
         };
@@ -1036,7 +1010,7 @@ pub async fn start_scroll_recording(
         #[cfg(target_os = "macos")]
         {
             activate_prev_app(&sel_win);
-            eprintln!("[scroll] manual mode: activated previous app for scroll passthrough");
+            log::debug!("[scroll] manual mode: activated previous app for scroll passthrough");
             // Wait 120ms for window activation transition to complete and repaint in active state
             tokio::time::sleep(std::time::Duration::from_millis(120)).await;
         }

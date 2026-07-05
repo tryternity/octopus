@@ -273,13 +273,12 @@ impl StreamingRunner {
     pub fn finish_with_tail(&mut self, tail: &[f32]) -> TranscriptEvent {
         // 开口前门控：未见语音（纯噪声会话）时不喂 tail——避免噪声尾巴触发 spurious token，
         // finish 返回空。VAD 缺失则维持原行为（喂 tail）。
-        if self.seen_speech || self.vad.is_none() {
-            if !tail.is_empty() {
+        if (self.seen_speech || self.vad.is_none())
+            && !tail.is_empty() {
                 if let Err(e) = self.engine.accept_samples(tail, false, false) {
                     log::warn!("StreamingRunner finish_with_tail accept error: {e}");
                 }
             }
-        }
         self.finish()
     }
 

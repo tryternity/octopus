@@ -342,10 +342,7 @@ pub(crate) fn initial_encoder_states(session: &Session) -> Vec<(String, StateVal
                 .iter()
                 .map(|&d| if d <= 0 { 1 } else { d as usize })
                 .collect();
-            let is_int64 = match input.dtype().tensor_type() {
-                Some(TensorElementType::Int64) => true,
-                _ => false,
-            };
+            let is_int64 = matches!(input.dtype().tensor_type(), Some(TensorElementType::Int64));
             if is_int64 {
                 let arr = ArrayD::<i64>::zeros(dims);
                 initial_states.push((name.to_string(), StateValue::I64(arr)));
@@ -683,8 +680,7 @@ pub(crate) fn decode_token_ids(vocab: &[String], is_bbpe: bool, token_ids: &[usi
                 && token.len() == 6
                 && token.starts_with("<0x")
                 && token.ends_with('>')
-            {
-                if tid >= id_for_0x00 && tid <= id_for_0x00 + 255 {
+                && tid >= id_for_0x00 && tid <= id_for_0x00 + 255 {
                     if let Ok(hex_val) = u8::from_str_radix(&token[3..5], 16) {
                         if hex_val == (tid - id_for_0x00) as u8 {
                             bytes.push(hex_val);
@@ -692,7 +688,6 @@ pub(crate) fn decode_token_ids(vocab: &[String], is_bbpe: bool, token_ids: &[usi
                         }
                     }
                 }
-            }
 
             // For BPE-based models, we replace ▁ (U+2581, utf8 \xe2\x96\x81) with a space " "
             if token.len() >= 3 && token.starts_with('▁') {
@@ -1062,7 +1057,7 @@ pub(crate) fn decode_byte_bpe(text: &str, is_streaming: bool) -> String {
         if char_str == "▁" {
             if !ans.is_empty() {
                 let last_byte = *ans.last().unwrap();
-                if last_byte != b' ' && last_byte >= 32 && last_byte <= 126 {
+                if last_byte > b' ' && last_byte <= 126 {
                     ans.push(b' ');
                 }
             }
@@ -1070,7 +1065,7 @@ pub(crate) fn decode_byte_bpe(text: &str, is_streaming: bool) -> String {
             ans.push(byte_val);
         } else if char_str.len() == 1 {
             let b = char_val as u32;
-            if b >= 32 && b <= 126 {
+            if (32..=126).contains(&b) {
                 ans.push(b as u8);
             }
         }
@@ -1110,7 +1105,7 @@ pub(crate) fn compute_whisper_features_linear(samples: &[f32]) -> Result<Array2<
 
         let mut frame = vec![0.0f32; Z_FRAME_LEN];
         let wave_dim = samples.len() as isize;
-        for s in 0..Z_FRAME_LEN {
+        for (s, frame_val) in frame.iter_mut().enumerate().take(Z_FRAME_LEN) {
             let mut s_in_wave = s as isize + wave_start;
             while s_in_wave < 0 || s_in_wave >= wave_dim {
                 if s_in_wave < 0 {
@@ -1119,7 +1114,7 @@ pub(crate) fn compute_whisper_features_linear(samples: &[f32]) -> Result<Array2<
                     s_in_wave = 2 * wave_dim - 1 - s_in_wave;
                 }
             }
-            frame[s] = samples[s_in_wave as usize];
+            *frame_val = samples[s_in_wave as usize];
         }
 
         // Apply Hann window
@@ -1204,7 +1199,7 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
 
         let mut frame = vec![0.0f32; Z_FRAME_LEN];
         let wave_dim = samples.len() as isize;
-        for s in 0..Z_FRAME_LEN {
+        for (s, frame_val) in frame.iter_mut().enumerate().take(Z_FRAME_LEN) {
             let mut s_in_wave = s as isize + wave_start;
             while s_in_wave < 0 || s_in_wave >= wave_dim {
                 if s_in_wave < 0 {
@@ -1213,7 +1208,7 @@ pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
                     s_in_wave = 2 * wave_dim - 1 - s_in_wave;
                 }
             }
-            frame[s] = samples[s_in_wave as usize];
+            *frame_val = samples[s_in_wave as usize];
         }
 
         // 1. Remove DC offset
@@ -1403,12 +1398,11 @@ mod tests {
                 }
             }
 
-            if engine.is_whisper {
-                if frame_idx == 96 {
+            if engine.is_whisper
+                && frame_idx == 96 {
                     let first_20: Vec<f32> = (0..20).map(|j| chunk[[4, j]]).collect();
                     println!("Frame 100 first 20 values in Rust: {:?}", first_20);
                 }
-            }
 
             let (chunk_vec, _) = chunk.into_raw_vec_and_offset();
             let chunk_input = ndarray::Array3::from_shape_vec(

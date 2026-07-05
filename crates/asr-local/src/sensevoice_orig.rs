@@ -15,7 +15,7 @@ use crate::fbank::compute_fbank_features;
 /// `config.yaml` 的 `cmvn_file: null` 是训练残留字段，导出后由 frontend 用 am.mvn 做）。
 /// ONNX I/O：
 /// - 输入：`speech[N,T,560]`（fbank+LFR m=7/n=6，**已 CMVN**）+ `speech_lengths[N]` int32
-///        + `language[N]` int32（0=auto）+ `textnorm[N]` int32（1=不插标点 itn）
+///   + `language[N]` int32（0=auto）+ `textnorm[N]` int32（1=不插标点 itn）
 /// - 输出：`ctc_logits[N,T,vocab]` + `encoder_out_lens[N]`
 ///
 /// 推理：80-bin fbank + LFR（复用 [`fbank::compute_fbank_features`]，出 560 维）

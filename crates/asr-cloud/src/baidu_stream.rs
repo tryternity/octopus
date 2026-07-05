@@ -107,14 +107,14 @@ async fn run_baidu_session(
             "sample": 16000,
         }
     });
-    ws.send(Message::Text(start_frame.to_string().into()))
+    ws.send(Message::Text(start_frame.to_string()))
         .await
         .context("baidu WS 发送 START 帧失败")?;
 
     // 5. 推 pre-roll PCM
     if !pre_roll_samples.is_empty() {
         let pcm = crate::cloud_types::samples_to_pcm_s16le(&pre_roll_samples);
-        ws.send(Message::Binary(pcm.into()))
+        ws.send(Message::Binary(pcm))
             .await
             .context("baidu WS 发送 pre-roll PCM 失败")?;
     }
@@ -130,7 +130,7 @@ async fn run_baidu_session(
             frame = pcm_rx.recv() => {
                 match frame {
                     Some(PcmFrame::Samples(pcm)) => {
-                        ws.send(Message::Binary(pcm.into()))
+                        ws.send(Message::Binary(pcm))
                             .await
                             .context("baidu WS 发送音频帧失败")?;
                     }
