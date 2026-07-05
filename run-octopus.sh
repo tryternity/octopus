@@ -44,6 +44,7 @@ rm -rf ~/Library/HTTPStorages/com.octopus.desktop
 cd "$(dirname "$0")/crates/desktop/"
 rm -rf ./dist
 cd ./frontend
+npm install typescript --save-dev
 npm run build
 
 # 4. 切到 desktop crate 目录：frontendDist:"dist" 相对 tauri.conf.json 所在目录，
