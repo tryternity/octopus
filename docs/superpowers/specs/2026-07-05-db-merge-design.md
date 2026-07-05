@@ -1,7 +1,7 @@
 # DB 表合并重构设计（clipboard_history 吞并 transcriptions）
 
 > 日期：2026-07-05
-> 状态：📋 设计中
+> 状态：✅ 已实现（e2e 通过）
 > 分支：`image-viewer-perf`
 
 ## 1. 背景与目标
@@ -46,21 +46,25 @@ CREATE TABLE IF NOT EXISTS clipboard_history (
 
 ### 2.3 meta_info JSON（按 item_type）
 
+所有 Option 字段序列化时 `skip_serializing_if` —— None 字段不出现在 JSON 中，避免 null 膨胀。
+
 ```jsonc
 // image
-{"w": 1920, "h": 1080, "size": "2.3M"}
+{"w": 1386, "h": 916, "size": "2.3M"}
 
 // voice
-{"engine": "sensevoice", "duration_ms": 5000, "char_count": 42, "model": "...", "engine_mode": "vad_segmented", "polish_model": "...", "polished": false}
+{"engine": "sensevoice", "asr_mode": "streaming", "char_count": 42, "polished": false}
+//   ASR 侧：engine + asr_mode（streaming/vad_segmented）
+//   LLM 侧：polish_model + polished
 
 // ocr
-{"engine": "PP-OCRv6-small", "char_count": 42}
+{"engine": "paddle", "model": "PP-OCRv6-small", "char_count": 42}
 
 // text
 {"char_count": 42}
 
-// file（多文件时为数组）
-[{"size": "1.2M", "type": "pdf"}]
+// file
+{"files": [{"size": "1.2M", "type": "pdf"}]}
 ```
 
 ### 2.4 FTS5 索引
@@ -94,16 +98,23 @@ CREATE INDEX idx_clip_created ON clipboard_history(created_at DESC);
 
 无数据迁移、无 JOIN、无临时表。db.sql 里 transcriptions 建表 + 索引删除，clipboard_history 改为新 schema。init_schema 里 v16→v17 跑 DROP + 重跑 INIT_SQL。
 
+`ensure_db` 改为 loop `init_schema` 直到 v17——`init_schema` 每次只走一个分支（一步迁移），旧版库（v2-v16）需多次调用才能到 v17，loop 保证一次 `ensure_db` 跑到最新。
+
 ## 4. 代码影响
 
 ### 4.1 Rust（clipboard crate）
 
 `store.rs` — 所有 CRUD 改为新表结构：
-- `insert_asr_item`：item_type='voice'，content=text，meta_info={engine,duration_ms,...}，segments=...
-- `insert_ocr_item`：item_type='ocr'，content=text，meta_info={engine,char_count}
-- `insert_clipboard_item`：按类型填 content/ref_data/meta_info
+- `insert_asr_item(conn, text, engine, model, segments)`：item_type='voice'，content=text，meta_info={engine,model,char_count}，segments=...
+- `insert_ocr_item(conn, text, engine, model)`：item_type='ocr'，content=text，meta_info={engine,model,char_count}
+- `insert_clipboard_item(conn, &NewClipboardItem)`：按类型填 content/ref_data/meta_info
 - `delete_item`：不需要级联删 transcriptions（已废弃）
 - 查询：`row_to_item` 按 item_type 从 content 或 ref_data 取数据，meta_info JSON 解析
+
+`watcher.rs` — 剪贴板监听写入也补全 meta_info：
+- text：`{char_count}`
+- image：`{w, h, size}`（size = WebP blob 字节数可读化）
+- file：`{files: [{size, type}]}`（stat 每个路径）
 
 `model.rs` — `ClipboardItem` 结构体改为：
 ```rust
@@ -123,22 +134,31 @@ pub struct ClipboardItem {
 pub struct MetaInfo {
     // image
     pub w: Option<u32>, pub h: Option<u32>, pub size: Option<String>,
-    // voice
+    // voice（ASR 侧）
     pub engine: Option<String>, pub model: Option<String>,
+    pub asr_mode: Option<String>,
+    // voice（LLM 侧）
+    pub polish_model: Option<String>, pub polished: Option<bool>,
+    // voice / ocr / text
     pub duration_ms: Option<u64>, pub char_count: Option<usize>,
-    pub engine_mode: Option<String>, pub polish_model: Option<String>,
-    pub polished: Option<bool>,
     // file
-    pub file_type: Option<String>, pub file_size: Option<String>,
+    pub files: Option<Vec<FileEntry>>,
+}
+
+pub struct FileEntry {
+    pub size: Option<String>,  // "1.2M"
+    pub file_type: Option<String>,  // 扩展名 "pdf"
 }
 ```
 
 ### 4.2 Rust（desktop crate）
 
-- `coordinator.rs`：`set_current_transcription_id` → 废弃（不再写 transcriptions）
-- `transcript.rs`：`update_transcription_raw` 改为直接写 clipboard_history segments
-- `clipboard_commands.rs`：`cascade_delete_transcriptions` 废弃（不再跨表）
-- `compact_editor_commands.rs`：`get_transcription_text` 改为从 clipboard_history 读（source/voice 类）
+- `coordinator.rs`：paste 路径不再 `insert_asr_item`（重复），改 `touch_created_at` 顶到列表顶部（录音过程 `insert_transcription_at_id` 已建条目）
+- `coordinator.rs`：`update_transcription_raw` 走 `DbCommand::Insert/UpdateTextSegments/Finalize`，对应 `infra::db` 改写后的函数（全部写 clipboard_history）
+- `clipboard_commands.rs`：`cascade_delete_transcriptions` 废弃（不再跨表）；`image_meta.blob_hash` → `ref_data`；`current_ocr_meta()` 返回 `(engine, model)` 元组
+- `screenshot_commands.rs`：4 处 `NewClipboardItem` 适配新字段 + meta_info 补 size
+- `compact_editor_commands.rs`：`get_transcription_text` 改为从 clipboard_history 读（voice 条目的 content 列）
+- `settings_commands.rs`：`delete_history` 直接调 `delete_transcriptions`（已写 clipboard_history），不再重复 `delete_items`
 
 ### 4.3 前端
 
