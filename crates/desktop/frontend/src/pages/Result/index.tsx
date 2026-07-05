@@ -518,11 +518,9 @@ function Result() {
     if (!el || !text) { mouseDownOffsetRef.current = null; return; }
     const sel = window.getSelection();
 
-    // 方案 1：live Selection + Range clamping
+    // 方案 1：live Selection 非折叠 → clamp 后算 offset
     if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
       const range = sel.getRangeAt(0);
-      // 从右往左选到开头时 commonAncestorContainer 可能飘到父容器，
-      // clamp 后边界强制收敛到 el 内 → offset 计算精确
       const clamped = clampRangeToContainer(el, range);
       try {
         const start = codePointOffsetBefore(el, clamped);
@@ -537,21 +535,22 @@ function Result() {
       } catch { /* */ }
     }
 
-    // 方案 2：live selection 折叠/丢失 → 用 mousedown offset + mouseup offset 重建
+    // 方案 2：live selection 折叠/丢失 → mousedown offset + mouseup 坐标推算终点
     const downOff = mouseDownOffsetRef.current;
     if (downOff !== null) {
       let upOff = -1;
-      const upRange = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
-      if (upRange) {
-        // mouseup 鼠标可能在容器外 → clamp 到容器范围
-        const containerRange = document.createRange();
-        containerRange.selectNodeContents(el);
-        if (el.contains(upRange.startContainer)) {
+      const rect = el.getBoundingClientRect();
+      // 鼠标在容器左边界外 → 终点 = 开头（offset 0）
+      if (e.clientX < rect.left) {
+        upOff = 0;
+      } else if (e.clientX > rect.right) {
+        // 鼠标在容器右边界外 → 终点 = 末尾
+        upOff = Array.from(el.textContent ?? "").length;
+      } else {
+        // 鼠标在容器内 → caretRangeFromPoint 精确定位
+        const upRange = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
+        if (upRange && el.contains(upRange.startContainer)) {
           upOff = codePointOffsetBefore(el, upRange);
-        } else if (upRange.compareBoundaryPoints(Range.START_TO_START, containerRange) <= 0) {
-          upOff = 0; // 鼠标在容器左边界外 → 开头
-        } else {
-          upOff = Array.from(el.textContent ?? "").length; // 鼠标在右边界外 → 末尾
         }
       }
       if (upOff >= 0 && upOff !== downOff) {
