@@ -4988,6 +4988,7 @@ dependencies = [
  "octopus-llm",
  "once_cell",
  "ort",
+ "parking_lot",
  "pinyin",
  "rubato 0.16.2",
  "rustfft",
@@ -5040,6 +5041,7 @@ dependencies = [
  "image",
  "log",
  "octopus-infra",
+ "parking_lot",
  "rusqlite",
  "serde",
  "serde_json",
@@ -5076,6 +5078,7 @@ dependencies = [
  "octopus-llm",
  "octopus-ocr",
  "once_cell",
+ "parking_lot",
  "percent-encoding",
  "prost 0.13.5",
  "rubato 0.16.2",
@@ -5110,7 +5113,6 @@ dependencies = [
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "tempfile",
  "tokio",
 ]
 
@@ -5141,6 +5143,7 @@ dependencies = [
  "image",
  "log",
  "once_cell",
+ "parking_lot",
  "rusqlite",
  "serde",
  "serde_json",
@@ -5155,10 +5158,10 @@ dependencies = [
  "anyhow",
  "octopus-asr-local",
  "octopus-infra",
+ "once_cell",
  "reqwest 0.12.28",
  "serde",
  "serde_json",
- "serde_yaml",
 ]
 
 [[package]]
@@ -5170,6 +5173,7 @@ dependencies = [
  "log",
  "ocr-rs",
  "octopus-infra",
+ "parking_lot",
  "serde",
 ]
 
