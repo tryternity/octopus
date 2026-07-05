@@ -1,5 +1,7 @@
 # 代码审查修复设计规格
 
+> **实施状态**：P0 + P1 已完成（20 commits, `2394e34..9e567e9`），P2 待执行。
+>
 > 关联文档：
 > - 审查报告：`docs/code-review-2026-07-05.md`
 > - 实施计划：`docs/superpowers/plans/2026-07-05-code-review-fix-p0.md`（及 P1/P2）
@@ -34,12 +36,14 @@
 | I-5 | whisper.rs:268 注释（说 mean/std）与实现（max-based log）不符 | `asr-local/src/whisper.rs:678-679` | 修正注释 |
 
 **抽取决策（C1 的修复手段）**：先修 bug 再抽取。创建 `asr-local/src/feature.rs`，包含：
-- `pub fn compute_fbank(...)` — 统一 fbank 提取（参数化窗口类型：hamming / povey）
-- `pub fn mel_filterbank(...)` — mel 空间 filterbank（参数化 high_freq）
-- `pub fn apply_lfr(...)` — LFR 合并
-- `pub fn hz_to_mel(hz) / mel_to_hz(mel)` — 统一公式
+- `pub fn mel_filterbank(...)` — mel 空间 filterbank（参数化 high_freq）✅
+- `pub fn apply_lfr(...)` — LFR 合并 ✅（公式保持原始 `(n_frames - window_size) / shift + 1`，零行为变更）
+- `pub fn hz_to_mel(hz) / mel_to_hz(mel)` — 统一公式 ✅
+- `pub fn hamming_window / povey_window` — 窗口函数 ✅
 
-fbank.rs / paraformer.rs / zipformer.rs 改为引用公共模块，删除各自的私有副本。注意：whisper 特征路径（mel matrix）不共用 fbank，保持独立。
+**实施偏差**：`compute_fbank` **未统一抽取**——fbank.rs 无 DC removal/pre-emphasis（与 paraformer 是不同算法），不能直接合并。feature.rs 只统一了 mel filterbank + apply_lfr + window + hz_to_mel/mel_to_hz。
+
+fbank.rs / paraformer.rs / zipformer.rs 的 filterbank/window/lfr 改引用 feature.rs，删除各自的私有副本。whisper 特征路径（mel matrix）保持独立。
 
 ### 子项目 B：全局锁毒化整改（P1）
 
@@ -57,7 +61,7 @@ fbank.rs / paraformer.rs / zipformer.rs 改为引用公共模块，删除各自�
 | infra | `db.rs:129` 全局 DB 连接 Mutex | `std::sync::Mutex` → `parking_lot::Mutex` | 去 `.unwrap()` |
 | clipboard | `handle.rs:43-103`（9 处） | `std::sync::Mutex` → `parking_lot::Mutex` | 去 `.unwrap()` |
 | ocr | `engine.rs:55,91` INIT_LOCK | `std::sync::Mutex` → `parking_lot::Mutex` | 去 `.unwrap()` |
-| asr-local | `qwen3_asr.rs:156-158`、各引擎 session Mutex | `std::sync::Mutex` → `parking_lot::Mutex` | 去 `.unwrap()`；qwen3 三锁改分阶段加锁 |
+| asr-local | `qwen3_asr.rs:156-158`、各引擎 session Mutex | `std::sync::Mutex` → `parking_lot::Mutex` | 去 `.unwrap()`。~~qwen3 三锁改分阶段加锁~~（实施时跳过——parking_lot 无毒化后同时持三锁无级联风险） |
 | desktop | `runtime_config.rs`、`settings_commands.rs`、`coordinator.rs`、`model_commands.rs` 的 `RwLock<AppConfig>` | `std::sync::RwLock` → `parking_lot::RwLock` | 去 `.unwrap()` |
 | desktop | `coordinator.rs:2084` shutdown_db `cell.lock().unwrap()` | → `parking_lot::Mutex` | 去 `.unwrap()` |
 | desktop | `screenshot_commands.rs:24-29` 全局 `Mutex<Vec>` | `std::sync::Mutex` → `parking_lot::Mutex` | 去 `.unwrap()` |
@@ -96,7 +100,7 @@ pub const FILE_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
 |----|------|------|---------|
 | C7 | ASR 推理直接阻塞 tokio event loop | `server/src/main.rs:126-127,247` | 用 `tokio::task::spawn_blocking` 包裹 `transcribe_batch`；WS `stream.feed` 同理或独立线程 |
 | C8 | 并发请求引擎切换竞态 | `server/src/main.rs:126` | 用 `engine_manager` 内部锁或请求级 `Mutex` 保护 switch+transcribe 原子性 |
-| C9 | 默认 0.0.0.0 + 无认证 + permissive CORS | `server/src/main.rs:27,294` | 默认改 `127.0.0.1`；CORS 改为可配置（默认同源）；加可选 API token header 校验 |
+| C9 | 默认 0.0.0.0 + 无认证 + permissive CORS | `server/src/main.rs:27,294` | 默认改 `127.0.0.1`；CORS 改为同源策略（`CorsLayer::new()`）；~~加可选 API token~~（实施时跳过——绑定 localhost 已足够本地工具安全） |
 | I-D1 | 手工 JSON 转义不完整 | `server/src/pipeline.rs:51-55` | 用 `serde_json::to_string` 替代手工拼接 |
 | I-D2 | `/transcribe` 无 body limit | `server/src/main.rs:93` | 加 `DefaultBodyLimit::max(100 * 1024 * 1024)`（100MB 音频上限） |
 | I-D3 | 无优雅关闭 | `server/src/main.rs:300` | 加 `axum::serve(...).with_graceful_shutdown(signal_handler)` |
@@ -106,9 +110,9 @@ pub const FILE_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
 | ID | 问题 | 位置 | 修复方案 |
 |----|------|------|---------|
 | C3 | download 多段遇 200 响应数据错位/静默损坏 | `download/src/core/downloader.rs:557,570-580` | 200 路径采用**截断写入**：仅写入 `[seg.begin, seg.end]` 区间（`written` 累计到 `seg.end - seg.begin + 1` 字节后丢弃多余），`new_downloaded = seg.end - seg.begin + 1`。这样多段文件大小不变、内容正确；已有 hash 校验不变 |
-| C13 | dlp stderr 元数据 JSON 不是首行（协议违反） | `dlp/src/main.rs:226` | 把所有 `eprintln!` 改为 `eprintln!("[log] ...")` 前缀或移到 stdout；确保元数据 JSON 是 stderr 首行（移到 `Command::new(yt_dlp)` 之前不打印任何 stderr） |
-| I-E1 | download 失败/取消时 .part 与 sidecar 未清理 | `download/src/core/downloader.rs:413` | 失败时清理 .part 文件（保留 sidecar 用于续传判断）；或文档化"保留用于续传"策略 |
-| I-E2 | `download_segment_once` 416 分支不可达（死代码） | `download/src/core/downloader.rs:202-206` | 删除不可达分支 |
+| C13 | dlp stderr 元数据 JSON 不是首行（协议违反） | `dlp/src/main.rs:226` | 元数据 JSON 之前的所有日志改 stdout（`println!`），确保 stderr 首行是 JSON |
+| I-E1 | download 失败/取消时 .part 与 sidecar 未清理 | `download/src/core/downloader.rs:413` | ⏳ P2：保留 sidecar 用于续传判断（当前策略，文档化即可） |
+| I-E2 | `download_segment_once` 416 分支不可达（死代码） | `download/src/core/downloader.rs:202-206` | ⏳ P2：删除不可达分支 |
 | I-E3 | dlp tempfile 死依赖 | `dlp/Cargo.toml:13` | 删除 `tempfile` 依赖 |
 
 ### 子项目 F：desktop 协调器健壮性（P0/P1）
@@ -125,8 +129,8 @@ pub const FILE_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
 | ID | 问题 | 位置 | 修复方案 |
 |----|------|------|---------|
 | I-F1 | coordinator unreachable!() stage 重构后 panic | `desktop/src/coordinator.rs:814,1601,1642` | 改为 `log::error + return`（防御性降级） |
-| I-F2 | 截图全局静态量无并发互斥 | `desktop/src/screenshot_commands.rs:24-29` | 用 `AtomicBool`（`compare_exchange`）门控，进行中则拒绝重复触发 |
-| I-F3 | 启动期 expect 直接扼杀应用 | `desktop/src/main.rs:63,260`、`tray.rs`、`clipboard_commands.rs:243` | 配置加载失败 fallback default + warn；托盘失败进入"无托盘"模式；home_dir 失败返回错误而非 panic |
+| I-F2 | 截图全局静态量无并发互斥 | `desktop/src/screenshot_commands.rs:24-29` | ⏳ P2：用 `AtomicBool` 门控（parking_lot 迁移已完成，并发门控待加） |
+| I-F3 | 启动期 expect 直接扼杀应用 | `desktop/src/main.rs:63,260`、`tray.rs`、`clipboard_commands.rs:243` | ✅ main.rs config 加载改 fallback default。⏳ tray/clipboard_commands 的 expect 待 P2 降级 |
 
 ### 子项目 G：死代码 + clippy + 调试输出清理（P2）
 

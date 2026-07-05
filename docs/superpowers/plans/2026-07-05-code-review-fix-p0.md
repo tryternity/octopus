@@ -1,6 +1,6 @@
 # 代码审查修复 P0 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:executing-plans 或 superpowers:subagent-driven-development 逐任务实施。Steps 用 checkbox (`- [ ]`) 跟踪。
+> **For agentic workers:** REQUIRED SUB-SKILL: 用 superpowers:executing-plans 或 superpowers:subagent-driven-development 逐任务实施。Steps 用 checkbox (`- [x]`) 跟踪。
 
 **Goal:** 修复 P0 优先级的 Critical 缺陷——asr-local 正确性 bug（C1/C2）、download 静默损坏（C3）、dlp 协议违反（C13）、desktop 用户可感知崩溃（C5/C6），每个修复配回归测试。
 
@@ -32,7 +32,7 @@
 - Produces: `feature::compute_fbank(samples, window_type, high_freq) -> Result<Array2<f32>>`、`feature::apply_lfr(fbank, window, shift) -> Array2<f32>`、`feature::mel_filterbank(num_bins, fft_size, sample_rate, high_freq) -> Vec<Vec<f64>>`、`feature::hz_to_mel(hz) -> f64`、`feature::mel_to_hz(mel) -> f64`
 - `WindowType` enum：`Hamming` / `Povey`（系数 0.85）
 
-- [ ] **Step 1：创建 feature.rs，写 mel_filterbank 正确性测试（先写失败测试）**
+- [x] **Step 1：创建 feature.rs，写 mel_filterbank 正确性测试（先写失败测试）**
 
 创建 `crates/asr-local/src/feature.rs`，写一个测试验证 mel 空间 filterbank 与 Hz 空间的差异：
 
@@ -203,18 +203,18 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2：运行测试验证 filterbank/LFR 测试通过（compute_fbank 的 todo! 暂不测）**
+- [x] **Step 2：运行测试验证 filterbank/LFR 测试通过（compute_fbank 的 todo! 暂不测）**
 
 ```bash
 cargo test -p octopus-asr-local feature::tests -- --nocapture
 ```
 Expected: `test_mel_filterbank_*` 和 `test_apply_lfr_shapes` PASS。
 
-- [ ] **Step 3：填充 compute_fbank 实现（从 paraformer.rs 搬运，参数化）**
+- [x] **Step 3：填充 compute_fbank 实现（从 paraformer.rs 搬运，参数化）**
 
 将 `paraformer.rs` 现有 `compute_fbank`（line 457-538）的算法体搬运到 `feature.rs` 的 `compute_fbank`，参数化 frame_len/frame_shift/fft_size/num_bins/sample_rate/window/filterbank。保持算法逐行一致（DC removal + pre-emphasis 0.97 无状态回溯 + FFT power + mel filterbank + log）。
 
-- [ ] **Step 4：fbank.rs 改引用 feature.rs**
+- [x] **Step 4：fbank.rs 改引用 feature.rs**
 
 删除 `fbank.rs` 的私有 `mel_filterbank_fbank`、`compute_fbank`、`apply_lfr`、`hamming_window`、`hz_to_mel`、`mel_to_hz`。改为：
 - `compute_fbank_features` / 纯 fbank 函数内部调用 `feature::compute_fbank` + `feature::apply_lfr`
@@ -223,33 +223,33 @@ Expected: `test_mel_filterbank_*` 和 `test_apply_lfr_shapes` PASS。
 
 验证：fbank.rs 此前用 `fmax = sample_rate / 2 = 8000`（无 high_freq 参数），改后 `high_freq=8000.0` 行为等价，但权重改用 mel 空间——这正是 bug 修复。
 
-- [ ] **Step 5：paraformer.rs 改引用 feature.rs**
+- [x] **Step 5：paraformer.rs 改引用 feature.rs**
 
 删除 `paraformer.rs` 的私有 `compute_fbank`、`mel_filterbank_fbank`、`apply_lfr`、`hamming_window`、`hz_to_mel`、`mel_to_hz`。改为引用 `feature::*`。保留 `high_freq = -400.0` 的参数化（paraformer 专用）。注意 paraformer 流式用 Povey 窗、离线用 Hamming——确认现有调用点不搞混。
 
-- [ ] **Step 6：zipformer.rs 的 mel_filterbank 改引用 feature.rs**
+- [x] **Step 6：zipformer.rs 的 mel_filterbank 改引用 feature.rs**
 
 删除 `zipformer.rs:1268-1302` 的私有 `mel_filterbank` / `hz_to_mel` / `mel_to_hz`，改引用 `feature::mel_filterbank`。zipformer 非 whisper 路径用的 filterbank 参数（num_bins/fft_size/sample_rate）从 zipformer.rs 现有常量获取。
 
-- [ ] **Step 7：lib.rs 加模块声明**
+- [x] **Step 7：lib.rs 加模块声明**
 
 在 `crates/asr-local/src/lib.rs` 加 `pub(crate) mod feature;`（位置按现有模块声明字母序插入）。
 
-- [ ] **Step 8：编译验证**
+- [x] **Step 8：编译验证**
 
 ```bash
 cargo build -p octopus-asr-local
 ```
 Expected: 编译通过，无 warning。
 
-- [ ] **Step 9：跑现有测试验证无回归（A/B 对比）**
+- [x] **Step 9：跑现有测试验证无回归（A/B 对比）**
 
 ```bash
 cargo test -p octopus-asr-local
 ```
 Expected: 全部 PASS。特别关注 paraformer / sensevoice_orig / firered / zipformer 相关测试。如果 sensevoice_orig / firered 的识别结果测试因 filterbank 变化而变化——这是预期的（修复了 bug），需人工确认新结果更合理。
 
-- [ ] **Step 10：提交**
+- [x] **Step 10：提交**
 
 ```bash
 git add crates/asr-local/src/feature.rs crates/asr-local/src/fbank.rs crates/asr-local/src/paraformer.rs crates/asr-local/src/zipformer.rs crates/asr-local/src/lib.rs
@@ -272,7 +272,7 @@ fixes C1"
 **Files:**
 - Modify: `crates/asr-local/src/whisper.rs:268-275`
 
-- [ ] **Step 1：写失败测试（验证泄漏：连续创建引擎断言引用同一全局）**
+- [x] **Step 1：写失败测试（验证泄漏：连续创建引擎断言引用同一全局）**
 
 在 `whisper.rs` 的 `#[cfg(test)] mod tests`（如不存在则新增）中：
 
@@ -294,7 +294,7 @@ fn test_whisper_cache_names_global_lazy() {
 
 注：`WHISPER_CACHE_NAMES` 在 Step 2 创建。此测试先放占位，Step 2 后改可编译。
 
-- [ ] **Step 2：改为全局 Lazy<Vec<...>>（参考 qwen3_asr.rs:67-78）**
+- [x] **Step 2：改为全局 Lazy<Vec<...>>（参考 qwen3_asr.rs:67-78）**
 
 在 `whisper.rs` 文件顶部（struct 定义前）加：
 
@@ -329,7 +329,7 @@ static WHISPER_CACHE_NAMES: Lazy<Vec<(&'static str, &'static str, &'static str, 
     });
 ```
 
-- [ ] **Step 3：修改 WhisperEngine::new 使用全局量**
+- [x] **Step 3：修改 WhisperEngine::new 使用全局量**
 
 将 `whisper.rs:268-275` 的循环构造改为：
 
@@ -342,7 +342,7 @@ let past_key_names: Vec<(&'static str, &'static str, &'static str, &'static str)
 
 去掉字段类型变化（`past_key_names` 已是 `Vec<(...)>`，保持不变）。
 
-- [ ] **Step 4：修正 Step 1 测试使其可编译**
+- [x] **Step 4：修正 Step 1 测试使其可编译**
 
 ```rust
 #[test]
@@ -354,7 +354,7 @@ fn test_whisper_cache_names_global_lazy() {
 }
 ```
 
-- [ ] **Step 5：编译 + 测试**
+- [x] **Step 5：编译 + 测试**
 
 ```bash
 cargo test -p octopus-asr-local whisper::tests -- --nocapture
@@ -362,7 +362,7 @@ cargo build -p octopus-asr-local
 ```
 Expected: 编译通过，测试 PASS。
 
-- [ ] **Step 6：提交**
+- [x] **Step 6：提交**
 
 ```bash
 git add crates/asr-local/src/whisper.rs
@@ -384,7 +384,7 @@ fixes C2"
 - Modify: `crates/asr-local/src/audio.rs:19,44`（hound unwrap）
 - Modify: `crates/asr-local/src/moonshine.rs:137`（下溢）
 
-- [ ] **Step 1：修 whisper 归一化 `(v+1e-10).log10()` → `v.max(1e-10).log10()`**
+- [x] **Step 1：修 whisper 归一化 `(v+1e-10).log10()` → `v.max(1e-10).log10()`**
 
 `whisper.rs:89`：
 ```rust
@@ -396,7 +396,7 @@ fixes C2"
 
 对齐 sherpa-onnx `NormalizeWhisperFeatures`（`zipformer.rs:1162` 与 `qwen3_asr.rs:684` 均已正确）。
 
-- [ ] **Step 2：写归一化回归测试**
+- [x] **Step 2：写归一化回归测试**
 
 在 whisper.rs tests mod 加：
 
@@ -417,7 +417,7 @@ fn test_whisper_normalize_uses_clamp_not_add() {
 }
 ```
 
-- [ ] **Step 3：修 audio.rs 两处 hound unwrap**
+- [x] **Step 3：修 audio.rs 两处 hound unwrap**
 
 `audio.rs:17-20` 和 `:42-45`，将：
 ```rust
@@ -434,7 +434,7 @@ hound::SampleFormat::Int => reader
     .collect::<Result<Vec<_>, _>>()?,
 ```
 
-- [ ] **Step 4：修 moonshine.rs 下溢**
+- [x] **Step 4：修 moonshine.rs 下溢**
 
 `moonshine.rs:137`：
 ```rust
@@ -444,7 +444,7 @@ let num_caches = uncached_out.len() - 1;
 let num_caches = uncached_out.len().saturating_sub(1);
 ```
 
-- [ ] **Step 5：编译 + 测试**
+- [x] **Step 5：编译 + 测试**
 
 ```bash
 cargo test -p octopus-asr-local
@@ -452,7 +452,7 @@ cargo build -p octopus-asr-local
 ```
 Expected: 全部 PASS。
 
-- [ ] **Step 6：提交**
+- [x] **Step 6：提交**
 
 ```bash
 git add crates/asr-local/src/whisper.rs crates/asr-local/src/audio.rs crates/asr-local/src/moonshine.rs
@@ -474,7 +474,7 @@ fixes I-1/I-2/I-4"
 **Files:**
 - Modify: `crates/download/src/core/downloader.rs:555-581`（`download_segment_once_with_client` 的 200 路径）
 
-- [ ] **Step 1：写失败测试（mock server 返回 200 全文，断言仅写段区间）**
+- [x] **Step 1：写失败测试（mock server 返回 200 全文，断言仅写段区间）**
 
 在 `downloader.rs` 的 `#[cfg(test)] mod tests` 中加：
 
@@ -512,14 +512,14 @@ async fn test_download_segment_200_truncates_to_segment_range() {
 }
 ```
 
-- [ ] **Step 2：运行测试验证失败**
+- [x] **Step 2：运行测试验证失败**
 
 ```bash
 cargo test -p octopus-download test_download_segment_200_truncates -- --nocapture
 ```
 Expected: FAIL（当前 200 路径写入全部 30 字节，`out.downloaded != 10`）。
 
-- [ ] **Step 3：修复 200 路径截断逻辑**
+- [x] **Step 3：修复 200 路径截断逻辑**
 
 `downloader.rs:555-581`，在 `writer.write_all(&bytes)?;` 前加截断逻辑。当 status==200 时，计算段剩余容量 `seg_end - seg_begin + 1 - (written_in_this_call)`，超过则只写剩余部分并 break：
 
@@ -561,21 +561,21 @@ let new_downloaded = if status == 200 {
 Ok(Segment { begin: seg.begin, end: seg.end, downloaded: new_downloaded })
 ```
 
-- [ ] **Step 4：运行测试验证通过**
+- [x] **Step 4：运行测试验证通过**
 
 ```bash
 cargo test -p octopus-download test_download_segment_200 -- --nocapture
 ```
 Expected: PASS。
 
-- [ ] **Step 5：跑全部 download 测试确认无回归**
+- [x] **Step 5：跑全部 download 测试确认无回归**
 
 ```bash
 cargo test -p octopus-download
 ```
 Expected: 全部 PASS。
 
-- [ ] **Step 6：提交**
+- [x] **Step 6：提交**
 
 ```bash
 git add crates/download/src/core/downloader.rs
@@ -597,13 +597,13 @@ fixes C3"
 **Files:**
 - Modify: `crates/dlp/src/main.rs`（所有 `eprintln!` 在元数据 JSON 之前的改走 stdout 或加 `[log]` 前缀）
 
-- [ ] **Step 1：读 dlp main.rs 确认所有 eprintln 位置与输出顺序**
+- [x] **Step 1：读 dlp main.rs 确认所有 eprintln 位置与输出顺序**
 
 ```bash
 rg "eprintln!" crates/dlp/src/main.rs
 ```
 
-- [ ] **Step 2：将元数据 JSON 之前的 eprintln 改为 stdout println!**
+- [x] **Step 2：将元数据 JSON 之前的 eprintln 改为 stdout println!**
 
 把 `prepare_dependencies`、`"Retrieving video metadata..."`、`"Downloading audio track..."` 等信息日志从 `eprintln!` 改为 `println!`（stdout），确保 stderr 首行是元数据 JSON。
 
@@ -612,11 +612,11 @@ rg "eprintln!" crates/dlp/src/main.rs
 - 元数据 JSON → 保持 `eprintln!` 且确保是 stderr 首条输出
 - 错误信息 → `eprintln!`（在元数据 JSON 之后，不影响首行契约）
 
-- [ ] **Step 3：确保元数据 JSON 是 stderr 首条输出**
+- [x] **Step 3：确保元数据 JSON 是 stderr 首条输出**
 
 在 `Command::new(&yt_dlp)` 执行之前不向 stderr 写任何内容。`prepare_dependencies` 的依赖错误走 stdout。元数据 JSON 的 `eprintln!` 必须是进程生命周期内第一条 stderr 输出。
 
-- [ ] **Step 4：写协议测试（mock yt-dlp 输出，验证 stderr 首行可 parse）**
+- [x] **Step 4：写协议测试（mock yt-dlp 输出，验证 stderr 首行可 parse）**
 
 在 `dlp/src/main.rs` 的 `#[cfg(test)] mod tests` 中（如不存在则新增）：
 
@@ -640,7 +640,7 @@ fn test_stderr_first_line_is_json() {
 
 注：dlp 当前 0 测试。这个测试验证协议契约而非运行时行为（运行时需真 yt-dlp）。如果 dlp 的 `main.rs` 不易做单元测试，至少加此协议验证测试。
 
-- [ ] **Step 5：编译 + 测试**
+- [x] **Step 5：编译 + 测试**
 
 ```bash
 cargo test -p octopus-dlp
@@ -648,11 +648,11 @@ cargo build -p octopus-dlp
 ```
 Expected: 编译通过，测试 PASS。
 
-- [ ] **Step 6：删除 tempfile 死依赖（I-E3）**
+- [x] **Step 6：删除 tempfile 死依赖（I-E3）**
 
 `crates/dlp/Cargo.toml`：删除 `tempfile = "3"` 行。
 
-- [ ] **Step 7：提交**
+- [x] **Step 7：提交**
 
 ```bash
 git add crates/dlp/src/main.rs crates/dlp/Cargo.toml
@@ -674,7 +674,7 @@ fixes C13, I-E3"
 - Modify: `crates/dlp/src/main.rs:56-73,82-91`
 - Modify: `crates/dlp/Cargo.toml`（加 `octopus-infra` 依赖）
 
-- [ ] **Step 1：download_file 函数加超时 + 大小限制**
+- [x] **Step 1：download_file 函数加超时 + 大小限制**
 
 `main.rs:56-73` 的 `download_file` 改为：
 ```rust
@@ -710,21 +710,21 @@ async fn download_file(url: &str, dest: &Path) -> Result<()> {
 }
 ```
 
-- [ ] **Step 2：prepare_dependencies 的 yt-dlp 下载加超时**
+- [x] **Step 2：prepare_dependencies 的 yt-dlp 下载加超时**
 
 `main.rs:82-91` 的 yt-dlp 二进制下载改用 `download_file`（复用超时 + 大小限制）。下载完成后加大小合理性检查（yt-dlp ~30MB，如 <5MB 或 >100MB 则警告）。
 
-- [ ] **Step 3：Cargo.toml 加 infra 依赖**
+- [x] **Step 3：Cargo.toml 加 infra 依赖**
 
 `crates/dlp/Cargo.toml` 加 `octopus-infra = { path = "../infra" }`。
 
-- [ ] **Step 4：编译验证**
+- [x] **Step 4：编译验证**
 
 ```bash
 cargo build -p octopus-dlp
 ```
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add crates/dlp/
@@ -745,13 +745,13 @@ fixes C12"
 - Modify: `crates/desktop/src/settings_window.rs:79`
 - Modify: `crates/desktop/src/lib.rs` 或 `main.rs`（调用方，改用 `run_on_main_thread` 调度）
 
-- [ ] **Step 1：读 settings_window.rs 确认调用链**
+- [x] **Step 1：读 settings_window.rs 确认调用链**
 
 ```bash
 rg "set_dock_icon|open_settings" crates/desktop/src/ -n
 ```
 
-- [ ] **Step 2：将 set_dock_icon 改为接收 MainThreadMarker 参数（而非内部 new_unchecked）**
+- [x] **Step 2：将 set_dock_icon 改为接收 MainThreadMarker 参数（而非内部 new_unchecked）**
 
 `settings_window.rs:79`：
 ```rust
@@ -769,7 +769,7 @@ pub fn set_dock_icon(mtm: MainThreadMarker) {
 
 如果 `set_dock_icon` 当前不需要 `mtm`（只是副作用），改为返回一个闭包由 `run_on_main_thread` 执行。
 
-- [ ] **Step 3：修改调用方通过 run_on_main_thread 调度**
+- [x] **Step 3：修改调用方通过 run_on_main_thread 调度**
 
 找到调用 `set_dock_icon` 的 `open_settings`（`settings_window.rs:36` 或 `lib.rs`），改为：
 
@@ -790,7 +790,7 @@ pub fn set_dock_icon(mtm: MainThreadMarker) {
 
 `MainThreadMarker::new()` 返回 `Option`，安全检查（非主线程返回 None）。
 
-- [ ] **Step 4：编译验证（macOS）**
+- [x] **Step 4：编译验证（macOS）**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | head -20
@@ -799,7 +799,7 @@ Expected: 编译通过。
 
 注：完整编译需前端 dist，此 Task 仅验证 Rust 编译。前端构建见 Task G。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add crates/desktop/src/settings_window.rs
@@ -823,9 +823,9 @@ fixes C5"
 **Interfaces:**
 - Consumes: `infra::net::WS_READ_TIMEOUT_SECS`（子项目 C 创建，此处先用字面量 30，C 批次统一改引用）
 
-- [ ] **Step 1：读 coordinator.rs:860-885 确认上下文**
+- [x] **Step 1：读 coordinator.rs:860-885 确认上下文**
 
-- [ ] **Step 2：给 close_async 加超时 + panic 兜底**
+- [x] **Step 2：给 close_async 加超时 + panic 兜底**
 
 `coordinator.rs:869-875` 改为：
 
@@ -850,21 +850,21 @@ rt.spawn(async move {
 });
 ```
 
-- [ ] **Step 3：编译验证**
+- [x] **Step 3：编译验证**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | head -20
 ```
 Expected: 编译通过。
 
-- [ ] **Step 4：跑 desktop 测试确认无回归**
+- [x] **Step 4：跑 desktop 测试确认无回归**
 
 ```bash
 cargo test -p octopus-desktop
 ```
 Expected: 全部 PASS（84 个现有测试）。
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add crates/desktop/src/coordinator.rs
@@ -881,38 +881,38 @@ fixes C6"
 
 ## Task P0-Final: 全量回归验证
 
-- [ ] **Step 1：全量编译**
+- [x] **Step 1：全量编译**
 
 ```bash
 cargo build --workspace
 ```
 Expected: 全部编译通过。
 
-- [ ] **Step 2：全量测试**
+- [x] **Step 2：全量测试**
 
 ```bash
 cargo test --workspace
 ```
 Expected: 全部 PASS。与基线对比，新增的测试全 PASS，无现有测试因回归失败。
 
-- [ ] **Step 3：clippy 检查（不含 desktop 前端 dist）**
+- [x] **Step 3：clippy 检查（不含 desktop 前端 dist）**
 
 ```bash
 cargo clippy --workspace -- -D warnings 2>&1 | grep -v "frontendDist" | head -20
 ```
 Expected: 新增代码无新 clippy warning。
 
-- [ ] **Step 4：更新审查报告标注已修复项**
+- [x] **Step 4：更新审查报告标注已修复项**
 
 在 `docs/code-review-2026-07-05.md` 的每个已修复 Critical/Important 条目后加 `✅ 已修复（Task AX/EX/FX）`。
 
-- [ ] **Step 5：更新 architecture.md（如涉及新模块）**
+- [x] **Step 5：更新 architecture.md（如涉及新模块）**
 
 在 `docs/architecture.md` 中：
 - 加 `asr-local/src/feature.rs` 模块说明（子项目 A 抽取）
 - 标注 dlp stderr 协议修复
 
-- [ ] **Step 6：提交收尾**
+- [x] **Step 6：提交收尾**
 
 ```bash
 git add docs/code-review-2026-07-05.md docs/architecture.md
@@ -925,4 +925,21 @@ git commit -m "docs: P0 修复完成，更新审查报告标注 + architecture.m
 
 > 本节在实施过程中回写实际偏差、新增决策、合并/删除的子任务。
 
-（待实施时填写）
+## 实施记录
+
+### P0 实施完成（2026-07-05）
+
+**全部 7 Task 完成，8 个 commit（`2394e34..381d75c` + F1/F2），测试 257 passed。**
+
+#### 实施偏差
+
+1. **Task A1 范围收窄**：`compute_fbank` 未统一抽取（fbank.rs 无 DC removal/pre-emphasis，与 paraformer 是不同算法）。feature.rs 只统一了 mel_filterbank + apply_lfr + window + hz_to_mel/mel_to_hz。`apply_lfr` 公式保持原始 `(n_frames - window_size) / shift + 1`（plan 里的新公式会改变 streaming 行为）。
+2. **Task A1 第 4 步 fbank.rs high_freq**：paraformer 用 `-400`（7600Hz），fbank.rs 用 `8000.0`（Nyquist，与原行为等价）。两者用不同 high_freq 参数调用同一 `feature::mel_filterbank`。
+3. **Task E2 实施方式**：元数据 JSON 之前的 `eprintln!` 改为 `println!`（stdout），而非加 `[log]` 前缀。策略更简洁。
+4. **Agent 工具限制**：subagent 只有只读工具（glob/grep/view），无法写代码/commit。切换为 inline execution（controller 直接实施）。
+5. **server 预先存在失败**：`ws_stream_session_feed_partial_then_empty_finish_final` 在 base commit 也失败，与 P0 修改无关。
+
+#### 步骤跳过（移至 P2）
+
+- I-E1（download .part 清理）：保留当前"续传"策略
+- I-E2（download 416 死代码删除）：P2 清理

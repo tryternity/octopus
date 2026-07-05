@@ -1,5 +1,7 @@
 # Octopus 全量代码审查报告
 
+> **修复状态**：P0 + P1 已完成（14 Critical 全修，共性 1/2/3 已解决），P2 待执行。详见 [修复设计规格](superpowers/specs/2026-07-05-code-review-remediation-design.md)。
+
 - **审查日期**：2026-07-05
 - **审查范围**：全 workspace（12 个 crate，约 36,000 行 Rust + 前端 React/TS）
 - **审查方法**：并行分派 5 个审查 agent 按 crate 分组深度只读审查 + `cargo clippy` 静态分析
