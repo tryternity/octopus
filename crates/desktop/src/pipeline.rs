@@ -632,7 +632,7 @@ mod tests {
         t.apply_engine_full("一样");
         let events = p.tick(&[0.0; 1600], &mut t);
         assert!(!events.contains(&PipelineEvent::PersistRaw { engine_mode: "streaming" }));
-        assert_eq!(events, vec![PipelineEvent::Polish { silence: 0.0 }]);
+        assert_eq!(events, vec![PipelineEvent::Speaking(true), PipelineEvent::Polish { silence: 0.0 }]);
     }
 
     #[test]
@@ -670,6 +670,7 @@ mod tests {
         let mut t = Transcript::new(0, PolishMode::Disabled);
         let events = p.tick(&[0.0; 1600], &mut t);
         assert_eq!(events, vec![
+            PipelineEvent::Speaking(true),
             PipelineEvent::PersistRaw { engine_mode: "streaming" },
             PipelineEvent::Emit { display: "你好".to_string(), insertion: false, caret: 2 },
             PipelineEvent::Polish { silence: 0.0 },
@@ -692,7 +693,7 @@ mod tests {
         let mut t = Transcript::new(0, PolishMode::Disabled);
         t.apply_engine_full("一样");
         let events = p.tick(&[0.0; 1600], &mut t);
-        assert_eq!(events, vec![PipelineEvent::Polish { silence: 0.0 }]);
+        assert_eq!(events, vec![PipelineEvent::Speaking(true), PipelineEvent::Polish { silence: 0.0 }]);
     }
 
     #[test]

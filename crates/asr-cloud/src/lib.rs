@@ -1,3 +1,4 @@
+#![warn(clippy::all)]
 //! 云端 ASR（cli/server 批处理用）。
 //!
 //! 4 provider（Aliyun/ByteDance/Tencent/Baidu）WSS 协议层 + 批引擎（impl

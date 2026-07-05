@@ -257,7 +257,7 @@ impl<'a> ModelSpec<'a> {
 /// 只读 category='setting' 的行（用户配置项）。
 pub fn load_app_config() -> Result<crate::config::AppConfig> {
     ensure_db()?;
-    with_db(|conn| load_app_config_at(conn))
+    with_db(load_app_config_at)
 }
 
 fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
@@ -410,7 +410,7 @@ pub fn load_config_key(key: &str) -> Result<Option<String>> {
 
 /// 从 DB models 表构造 AsrConfig（domain='asr'）。
 pub fn load_models() -> Result<AsrConfig> {
-    with_db(|conn| load_models_at(conn))
+    with_db(load_models_at)
 }
 
 fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
@@ -418,6 +418,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
         "SELECT provider, category, model_name, source, language, description, secret_key, is_local, is_enabled, is_streaming
          FROM models WHERE domain='asr' AND is_enabled = 1",
     )?;
+    #[allow(clippy::type_complexity)] // DB 行映射，10 字段 tuple 最直接
     let rows: Vec<(String, String, String, String, String, String, String, i32, i32, i32)> = stmt
         .query_map([], |row| {
             Ok((
@@ -654,7 +655,7 @@ fn list_llm_models_at(conn: &Connection) -> Result<Vec<LlmModelInfo>> {
 
 /// 从 DB 列出启用的 LLM 模型（经 with_db，供 Tauri 命令调用）。
 pub fn list_llm_models() -> Result<Vec<LlmModelInfo>> {
-    with_db(|conn| list_llm_models_at(conn))
+    with_db(list_llm_models_at)
 }
 
 /// OCR 模型列表项（菜单用，仅含显示字段）。
@@ -685,7 +686,7 @@ fn list_ocr_models_at(conn: &Connection) -> Result<Vec<OcrModelInfo>> {
 
 /// 从 DB 列出启用的 OCR 模型（经 with_db，供 Tauri 命令调用）。
 pub fn list_ocr_models() -> Result<Vec<OcrModelInfo>> {
-    with_db(|conn| list_ocr_models_at(conn))
+    with_db(list_ocr_models_at)
 }
 
 // ── 润色提示词 CRUD（prompts 表）──
@@ -1102,7 +1103,7 @@ fn days_to_ymd(mut days: u64) -> (u64, u64, u64) {
 }
 
 fn is_leap(year: u64) -> bool {
-    (year % 4 == 0 && year % 100 != 0) || year % 400 == 0
+    (year.is_multiple_of(4) && !year.is_multiple_of(100)) || year.is_multiple_of(400)
 }
 
 #[cfg(test)]

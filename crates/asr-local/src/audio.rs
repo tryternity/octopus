@@ -129,7 +129,7 @@ impl AudioResampler {
             return Ok(Vec::new());
         }
         let needed = self.input_frames - self.buffer.len();
-        self.buffer.extend(std::iter::repeat(0.0).take(needed));
+        self.buffer.extend(std::iter::repeat_n(0.0, needed));
         let output = self.resampler.process(&[&self.buffer], None)?;
         self.buffer.clear();
         Ok(output[0].clone())
@@ -333,7 +333,7 @@ mod tests {
         // 容差放宽到一帧输出大小（4096）以吸收实现细节差异。
         let diff = acc.len() as i64 - one.len() as i64;
         assert!(
-            diff >= 0 && diff < 4096,
+            (0..4096).contains(&diff),
             "流式 {} 应 ≥ 一次性 {} 且差值 < 4096，实际 diff={}",
             acc.len(),
             one.len(),

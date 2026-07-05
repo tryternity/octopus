@@ -1071,6 +1071,7 @@ fn start_final_polish_or_paste(
 }
 
 /// 执行真正的粘贴落库操作（在主线程进行）
+#[allow(clippy::too_many_arguments)]
 fn do_paste(
     stage: &mut Stage,
     text_to_paste: &str,
@@ -1317,11 +1318,10 @@ fn handle_final_polish_done(
 fn start_vad_segmented_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         while tick_active.load(Ordering::Relaxed) {
-            if tick_active.load(Ordering::Relaxed) {
-                if tx.send(Command::VadSegmentedTick).is_err() {
+            if tick_active.load(Ordering::Relaxed)
+                && tx.send(Command::VadSegmentedTick).is_err() {
                     break;
                 }
-            }
             std::thread::sleep(std::time::Duration::from_millis(VAD_SEGMENTED_TICK_INTERVAL_MS));
         }
         debug!("VadSegmented tick thread exited");
@@ -1375,9 +1375,9 @@ fn spawn_polish_thread(
     // 段模型多段润色：Edited 段 preserve=true（LLM 原样保留），其余待润色。
     let regions = polish_input_to_regions(&input);
     let llm_config = if ignore_mode {
-        crate::config::llm_config_ignore_mode(&config)
+        crate::config::llm_config_ignore_mode(config)
     } else {
-        crate::config::llm_config(&config)
+        crate::config::llm_config(config)
     };
     let llm_config = match llm_config {
         Some(c) => c,
@@ -1672,11 +1672,10 @@ fn handle_discard(
 fn start_tick_thread(tx: Sender<Command>, streaming_active: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         while streaming_active.load(Ordering::Relaxed) {
-            if streaming_active.load(Ordering::Relaxed) {
-                if tx.send(Command::StreamingTick).is_err() {
+            if streaming_active.load(Ordering::Relaxed)
+                && tx.send(Command::StreamingTick).is_err() {
                     break;
                 }
-            }
             std::thread::sleep(std::time::Duration::from_millis(STREAMING_TICK_INTERVAL_MS));
         }
         debug!("Streaming tick thread exited");
@@ -1851,7 +1850,7 @@ fn handle_polish_now(
     // 检查 LLM 配置是否存在（忽略 polish_mode，立即润色不看 mode）
     if crate::config::llm_config_ignore_mode(config).is_none() {
         warn!("PolishNow: no LLM config available");
-        let _ = crate::result_window::show_result(app_handle, "未配置润色模型");
+        crate::result_window::show_result(app_handle, "未配置润色模型");
         let _ = app_handle.emit("polish-done", ());
         return;
     }

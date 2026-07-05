@@ -219,9 +219,9 @@ fn resolve_category(provider: &str, category: &str) -> Option<EngineCategory> {
 
 /// 按固定顺序遍历 AsrConfig 的 11 个 section（用于 NameOnly 裸名查找）。
 /// 顺序与本地引擎优先一致（aliyun / bytedance / tencent / baidu 云端放最后）。
-fn all_sections<'a>(
-    cfg: &'a AsrConfig,
-) -> [(Option<&'a HashMap<String, ModelEntry>>, EngineCategory); 11] {
+fn all_sections(
+    cfg: &AsrConfig,
+) -> [(Option<&HashMap<String, ModelEntry>>, EngineCategory); 11] {
     [
         (cfg.asr.whisper.as_ref(), EngineCategory::Whisper),
         (cfg.asr.sensevoice_orig.as_ref(), EngineCategory::SenseVoiceOrig),
@@ -534,13 +534,14 @@ pub fn apply_session_acceleration(builder: ort::session::builder::SessionBuilder
     // 会去 init Linux/Windows 专用的 CUDA/DirectML EP，其失败路径（dlopen libcuda 等）
     // 可能直接 segfault（SIGSEGV 绕过 Rust 错误处理，下面 match 抓不到）。
     // macOS=CoreML、Linux=CUDA、Windows=DirectML（Cargo feature 同步按平台条件化，见 Cargo.toml）。
-    let mut providers = Vec::new();
-    #[cfg(target_os = "macos")]
-    providers.push(ort::ep::CoreMLExecutionProvider::default().build());
-    #[cfg(target_os = "linux")]
-    providers.push(ort::ep::CUDAExecutionProvider::default().build());
-    #[cfg(target_os = "windows")]
-    providers.push(ort::ep::DirectMLExecutionProvider::default().build());
+    let providers = vec![
+        #[cfg(target_os = "macos")]
+        ort::ep::CoreMLExecutionProvider::default().build(),
+        #[cfg(target_os = "linux")]
+        ort::ep::CUDAExecutionProvider::default().build(),
+        #[cfg(target_os = "windows")]
+        ort::ep::DirectMLExecutionProvider::default().build(),
+    ];
 
     log::info!(
         "Attempting to build session with hardware acceleration EPs on {} ({} provider(s))",

@@ -30,8 +30,8 @@ mod macos {
                 if delta_y == 0.0 { return; }
                 let frame = self.frame();
                 let sc = 1.0 + delta_y * 0.01;
-                let new_w = (frame.size.width * sc).max(20.0).min(10000.0);
-                let new_h = (frame.size.height * sc).max(20.0).min(10000.0);
+                let new_w = (frame.size.width * sc).clamp(20.0, 10000.0);
+                let new_h = (frame.size.height * sc).clamp(20.0, 10000.0);
                 let mouse_in_win = event.locationInWindow();
                 let ratio_x = if frame.size.width > 0.0 { mouse_in_win.x / frame.size.width } else { 0.5 };
                 let ratio_y = if frame.size.height > 0.0 { mouse_in_win.y / frame.size.height } else { 0.5 };

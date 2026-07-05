@@ -138,9 +138,7 @@ async fn run_bytedance_session(
     .with_context(|| format!("bytedance WS 连接失败: {}", ENDPOINT))?;
 
     // 2. 发 FULL_CLIENT_REQUEST（初始 JSON config，gzip 压缩）
-    let lang = if language.is_empty() || language == "auto" {
-        "zh-CN".to_string()
-    } else if language == "zh" {
+    let lang = if language.is_empty() || language == "auto" || language == "zh" {
         "zh-CN".to_string()
     } else if language == "en" {
         "en-US".to_string()
@@ -242,42 +240,39 @@ async fn run_bytedance_session(
                     }
                     Ok(Some(Ok(m))) => m,
                 };
-                match msg {
-                    Message::Binary(data) => {
-                        let parsed = parse_server_frame(&data)
-                            .context("bytedance WS 响应解析失败")?;
-                        match parsed.msg_type {
-                            MSG_FULL_SERVER_RESPONSE => {
-                                let json_str = decompress_or_raw(
-                                    &parsed.payload,
-                                    parsed.compression == COMP_GZIP,
-                                )?;
-                                let json_val: Value = serde_json::from_str(&json_str)
-                                    .context("bytedance 响应 JSON 解析失败")?;
-                                if let Some(text) = json_val["result"]["text"].as_str() {
-                                    let _ = result_tx.send(StreamEvent::Text(text.to_string()));
-                                }
-                                if parsed.flags == 0x3 {
-                                    // 末帧响应（NEG_WITH_SEQUENCE）——全部结束
-                                    let _ = result_tx.send(StreamEvent::Finished);
-                                    return Ok(());
-                                }
+                if let Message::Binary(data) = msg {
+                    let parsed = parse_server_frame(&data)
+                        .context("bytedance WS 响应解析失败")?;
+                    match parsed.msg_type {
+                        MSG_FULL_SERVER_RESPONSE => {
+                            let json_str = decompress_or_raw(
+                                &parsed.payload,
+                                parsed.compression == COMP_GZIP,
+                            )?;
+                            let json_val: Value = serde_json::from_str(&json_str)
+                                .context("bytedance 响应 JSON 解析失败")?;
+                            if let Some(text) = json_val["result"]["text"].as_str() {
+                                let _ = result_tx.send(StreamEvent::Text(text.to_string()));
                             }
-                            MSG_ERROR_RESPONSE => {
-                                let error_code = parsed.sequence; // 错误帧的 sequence 位存 error code
-                                let error_msg = String::from_utf8_lossy(&parsed.payload);
-                                let _ = result_tx.send(StreamEvent::Failed(
-                                    format!("bytedance 错误 {}: {}", error_code, error_msg)
-                                ));
+                            if parsed.flags == 0x3 {
+                                // 末帧响应（NEG_WITH_SEQUENCE）——全部结束
+                                let _ = result_tx.send(StreamEvent::Finished);
                                 return Ok(());
                             }
-                            _ => {
-                                log::debug!("bytedance: 未知消息类型 0x{:X}", parsed.msg_type);
-                            }
+                        }
+                        MSG_ERROR_RESPONSE => {
+                            let error_code = parsed.sequence; // 错误帧的 sequence 位存 error code
+                            let error_msg = String::from_utf8_lossy(&parsed.payload);
+                            let _ = result_tx.send(StreamEvent::Failed(
+                                format!("bytedance 错误 {}: {}", error_code, error_msg)
+                            ));
+                            return Ok(());
+                        }
+                        _ => {
+                            log::debug!("bytedance: 未知消息类型 0x{:X}", parsed.msg_type);
                         }
                     }
-                    _ => {} // text/close/ping 等忽略
-                }
+                } // text/close/ping 等忽略
             }
         }
     }
@@ -450,11 +445,7 @@ mod tests {
         let payload = r#"{"result":{"text":"hello"}}"#;
         let payload_bytes = payload.as_bytes();
 
-        let mut frame = Vec::new();
-        frame.push(0x11); // ver=1, hdr=1
-        frame.push(0x91); // msg=FULL_SERVER_RESPONSE(9), flags=POS_SEQUENCE(1)
-        frame.push(0x11); // ser=JSON(1), comp=GZIP(1)
-        frame.push(0x00); // reserved
+        let mut frame = vec![0x11, 0x91, 0x11, 0x00];
         frame.extend_from_slice(&1u32.to_be_bytes()); // sequence = 1
         frame.extend_from_slice(&(payload_bytes.len() as u32).to_be_bytes()); // payload_size
         frame.extend_from_slice(payload_bytes); // raw payload (无压缩方便测试)
@@ -472,11 +463,7 @@ mod tests {
     #[test]
     fn test_parse_server_frame_error() {
         let error_msg = "Invalid request";
-        let mut frame = Vec::new();
-        frame.push(0x11);
-        frame.push(0xF1); // msg=ERROR_RESPONSE(F), flags=POS_SEQUENCE(1)
-        frame.push(0x00); // ser=NONE, comp=NONE
-        frame.push(0x00);
+        let mut frame = vec![0x11, 0xF1, 0x00, 0x00];
         frame.extend_from_slice(&45000001u32.to_be_bytes()); // error_code
         frame.extend_from_slice(&(error_msg.len() as u32).to_be_bytes());
         frame.extend_from_slice(error_msg.as_bytes());

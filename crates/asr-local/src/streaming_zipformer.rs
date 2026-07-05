@@ -444,8 +444,7 @@ impl StreamingZipformer {
                     && token.len() == 6
                     && token.starts_with("<0x")
                     && token.ends_with('>')
-                {
-                    if tid >= id_for_0x00 && tid <= id_for_0x00 + 255 {
+                    && tid >= id_for_0x00 && tid <= id_for_0x00 + 255 {
                         if let Ok(hex_val) = u8::from_str_radix(&token[3..5], 16) {
                             if hex_val == (tid - id_for_0x00) as u8 {
                                 bytes.push(hex_val);
@@ -453,7 +452,6 @@ impl StreamingZipformer {
                             }
                         }
                     }
-                }
 
                 // For BPE-based models, we replace ▁ (U+2581, utf8 \xe2\x96\x81) with a space " "
                 if token.len() >= 3 && token.starts_with('▁') {

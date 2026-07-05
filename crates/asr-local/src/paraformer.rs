@@ -253,10 +253,10 @@ impl crate::engine::OfflineAsrEngine for ParaformerEngine {
             .map(|_| ndarray::Array3::<f32>::zeros((1, CACHE_CHANNELS, CACHE_TIME)))
             .collect();
 
-        for i in 0..NUM_CACHE_LAYERS {
+        for (i, cache) in caches.iter().enumerate().take(NUM_CACHE_LAYERS) {
             cache_inputs.push((
                 format!("in_cache_{}", i).into(),
-                ort::value::TensorRef::from_array_view(caches[i].view())?.into(),
+                ort::value::TensorRef::from_array_view(cache.view())?.into(),
             ));
         }
 
@@ -505,9 +505,9 @@ pub(crate) fn compute_fbank(
         } else {
             0.0
         };
-        for i in 0..FBANK_FRAME_LEN {
-            let cur = frame_buf[i];
-            frame_buf[i] = cur - preemph_coeff * prev;
+        for val in frame_buf.iter_mut().take(FBANK_FRAME_LEN) {
+            let cur = *val;
+            *val = cur - preemph_coeff * prev;
             prev = cur;
         }
 

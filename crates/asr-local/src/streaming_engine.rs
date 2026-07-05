@@ -248,7 +248,7 @@ impl StreamingSession {
                     acc.push_str(trimmed);
                 }
                 append_final_punctuation(&mut acc);
-                Ok(crate::hans::normalize_variant(&*acc))
+                Ok(crate::hans::normalize_variant(&acc))
             }
             Self::ZipformerTransducer { engine, accumulated, separator } => {
                 let final_segment = engine.lock().finish()?;
@@ -261,7 +261,7 @@ impl StreamingSession {
                     acc.push_str(trimmed);
                 }
                 append_final_punctuation(&mut acc);
-                Ok(crate::hans::normalize_variant(&*acc))
+                Ok(crate::hans::normalize_variant(&acc))
             }
         }
     }

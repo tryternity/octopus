@@ -1,3 +1,4 @@
+#![warn(clippy::all)]
 // crates/llm/src/lib.rs
 
 pub mod client;

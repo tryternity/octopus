@@ -81,14 +81,14 @@ impl SileroVad {
         // Update hidden/cell states for next call
         let (_h_shape, h_data) = outputs["hn"].try_extract_tensor::<f32>()?;
         if let Some(h_slice) = self.h.as_slice_mut() {
-            h_slice.copy_from_slice(&h_data);
+            h_slice.copy_from_slice(h_data);
         } else {
             self.h = Array3::from_shape_vec((2, 1, 64), h_data.to_vec())?;
         }
 
         let (_c_shape, c_data) = outputs["cn"].try_extract_tensor::<f32>()?;
         if let Some(c_slice) = self.c.as_slice_mut() {
-            c_slice.copy_from_slice(&c_data);
+            c_slice.copy_from_slice(c_data);
         } else {
             self.c = Array3::from_shape_vec((2, 1, 64), c_data.to_vec())?;
         }

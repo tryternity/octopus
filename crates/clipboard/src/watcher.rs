@@ -92,11 +92,11 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
                 return Ok(());
             }
             let paths_json = serde_json::to_string(&files).unwrap_or_default();
-            let file_metas: Vec<crate::model::FileEntry> = files.iter().filter_map(|p| {
+            let file_metas: Vec<crate::model::FileEntry> = files.iter().map(|p| {
                 let path = std::path::Path::new(p);
                 let size = std::fs::metadata(path).ok().map(|m| format_file_size(m.len()));
                 let file_type = path.extension().and_then(|e| e.to_str()).map(|s| s.to_lowercase());
-                Some(crate::model::FileEntry { size, file_type })
+                crate::model::FileEntry { size, file_type }
             }).collect();
 
             // 去重

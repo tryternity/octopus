@@ -1,3 +1,4 @@
+#![warn(clippy::all)]
 //! octopus-asr-local: ASR inference library (Whisper, SenseVoice, Paraformer, Qwen3-ASR, FireRedASR2, Moonshine, Zipformer, Silero VAD)
 //!
 //! 模型配置存于 `~/.octopus/octopus.db`（models 表，唯一来源）；应用配置读 `~/.octopus/config.yaml`。

@@ -1,3 +1,4 @@
+#![warn(clippy::all)]
 //! octopus-infra: 基础设施 crate（无项目内依赖）。
 //!
 //! 承载跨 crate 共享的基础设施：固定常量、路径工具、时间工具等。

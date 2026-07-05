@@ -142,7 +142,7 @@ pub fn start_click_through_poller(app: tauri::AppHandle) {
             // 统一用物理坐标：cursor_position() 和 outer_position() 都是 PhysicalPosition，
             // 避免多屏不同缩放率下逻辑/物理混合换算错误
             let (mx, my) = match win.cursor_position() {
-                Ok(p) => (p.x as f64, p.y as f64),
+                Ok(p) => (p.x, p.y),
                 Err(_) => continue,
             };
             let (wx, wy) = match win.outer_position() {

@@ -222,11 +222,7 @@ impl StreamingParaformer {
         let needed_frames = if current_frames > processed {
             // How many chunks can we still process?
             let remaining = current_frames - processed;
-            if remaining >= CHUNK_SIZE {
-                0 // Already have enough for at least one more chunk
-            } else {
-                CHUNK_SIZE - remaining
-            }
+            CHUNK_SIZE.saturating_sub(remaining)
         } else {
             CHUNK_SIZE
         };
@@ -330,8 +326,8 @@ impl StreamingParaformer {
             let start = fi * FBANK_FRAME_SHIFT;
 
             // 1. Extract frame
-            for j in 0..FBANK_FRAME_LEN {
-                frame_buf[j] = if start + j < n_samples {
+            for (j, frame_val) in frame_buf.iter_mut().enumerate().take(FBANK_FRAME_LEN) {
+                *frame_val = if start + j < n_samples {
                     self.raw_samples[start + j]
                 } else {
                     0.0
@@ -353,9 +349,9 @@ impl StreamingParaformer {
             } else {
                 0.0
             };
-            for i in 0..FBANK_FRAME_LEN {
-                let cur = frame_buf[i];
-                frame_buf[i] = cur - preemph_coeff * prev;
+            for val in frame_buf.iter_mut().take(FBANK_FRAME_LEN) {
+                let cur = *val;
+                *val = cur - preemph_coeff * prev;
                 prev = cur;
             }
 
@@ -457,12 +453,12 @@ impl StreamingParaformer {
             if tid > TOKEN_EOS {
                 let idx = tid as usize;
                 if idx < self.vocab.len() && !self.vocab[idx].is_empty() {
-                    if !seen_first_valid && (tid as i64) == self.last_emitted_token {
+                    if !seen_first_valid && tid == self.last_emitted_token {
                         seen_first_valid = true;
                         continue;
                     }
                     self.all_token_ids.push(tid);
-                    self.last_emitted_token = tid as i64;
+                    self.last_emitted_token = tid;
                     seen_first_valid = true;
                 }
             }
@@ -597,6 +593,7 @@ impl StreamingParaformer {
 
     /// Stateful CIF (Continuous Integrate-and-Fire).
     /// Uses self.encoder_out_cache and self.alpha_cache as persistent state.
+    #[allow(clippy::needless_range_loop)] // CIF 内层 hot loop：索引访问 enc_row + cache 更直观
     fn run_cif(
         &mut self,
         enc_tensor: &ndarray::Array3<f32>,
@@ -652,6 +649,7 @@ impl StreamingParaformer {
 
     /// CIF with force-fire: same as run_cif, but fires any residual accumulator
     /// (alpha_cache > 0.5) at the end to prevent tail token loss.
+    #[allow(clippy::needless_range_loop)] // CIF 内层 hot loop：索引访问 enc_row + cache 更直观
     fn run_cif_final(
         &mut self,
         enc_tensor: &ndarray::Array3<f32>,
@@ -827,14 +825,14 @@ fn mask_alphas_selective(
 ) -> Vec<f32> {
     let n = alphas.len().min(enc_len);
     if mask_left {
-        for i in 0..LEFT_CHUNK_SIZE.min(n) {
-            alphas[i] = 0.0;
+        for val in alphas.iter_mut().take(LEFT_CHUNK_SIZE.min(n)) {
+            *val = 0.0;
         }
     }
     if mask_right {
         let right_start = n.saturating_sub(RIGHT_CHUNK_SIZE);
-        for i in right_start..n {
-            alphas[i] = 0.0;
+        for val in alphas.iter_mut().take(n).skip(right_start) {
+            *val = 0.0;
         }
     }
     alphas

@@ -95,7 +95,7 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     for (i, tauri_mon) in tauri_monitors.iter().enumerate() {
         let phys_w = tauri_mon.size().width as f64;
         let phys_h = tauri_mon.size().height as f64;
-        let scale = tauri_mon.scale_factor() as f64;
+        let scale = tauri_mon.scale_factor();
         let pos_x = tauri_mon.position().x as f64 / scale;  // 物理 → 逻辑
         let pos_y = tauri_mon.position().y as f64 / scale;
         let log_w = phys_w / scale;
@@ -588,7 +588,7 @@ pub async fn pin_screenshot(
 
     #[cfg(target_os = "macos")]
     {
-        let scale = sel_win.scale_factor().unwrap_or(1.0) as f64;
+        let scale = sel_win.scale_factor().unwrap_or(1.0);
 
         let fake_full = octopus_capx::capture::ScreenCapture {
             rgba_bytes: full.rgba_bytes.clone(),
@@ -680,7 +680,7 @@ fn save_frontmost_app() {
         let is_current = app.processIdentifier() == curr.processIdentifier();
         if !is_current {
             if let Some(name) = app.localizedName() {
-                log::info!("Scroll screenshot: saved frontmost app '{}'", name.to_string());
+                log::info!("Scroll screenshot: saved frontmost app '{}'", name);
             }
             let mut guard = PREV_ACTIVE_APP.lock();
             *guard = Some(SendApp(app));

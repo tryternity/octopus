@@ -127,6 +127,7 @@ struct KvCache {
 }
 
 impl KvCache {
+    #[allow(clippy::type_complexity)] // 4-tuple 返回值，ONNX KV cache 语义清晰
     fn extract_kv(
         dec_out: &ort::session::SessionOutputs,
         layer: usize,

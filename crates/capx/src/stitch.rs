@@ -547,6 +547,7 @@ impl Stitcher {
     /// 降级 3：1D 灰度投影匹配。
     /// 将每行像素按抽样列取均值降为一维信号，对一维信号做 SAD 搜索。
     /// 对纯色/低纹理场景（2D SAD 缺乏特征）更鲁棒。
+    #[allow(clippy::too_many_arguments)]
     fn try_match_1d_projection(
         &self,
         ref_buf: &GrayBuf,
@@ -635,6 +636,7 @@ impl Stitcher {
     }
 
     /// 降级匹配结果的处理（复用主匹配的 dy 检查 + 画布追加 + 状态更新）。
+    #[allow(clippy::too_many_arguments)]
     fn apply_fallback_match(
         &mut self,
         dy: f64,
@@ -815,7 +817,7 @@ mod tests {
                 // 基础渐变（y 方向唯一）
                 let mut v = ((y + scroll_offset) % 256) as u8;
                 // 每 45 行水平分隔线：强对比
-                if (y + scroll_offset) % 45 == 0 {
+                if (y + scroll_offset).is_multiple_of(45) {
                     v = 255 - v;
                 }
                 // 每 7 列亮列
@@ -823,7 +825,7 @@ mod tests {
                     v = v.saturating_add(80);
                 }
                 // 确定性格点噪点（(x*3+y*5) % 11 == 0 处加亮）
-                if (x as u32 * 3 + (y + scroll_offset) * 5) % 11 == 0 {
+                if (x * 3 + (y + scroll_offset) * 5).is_multiple_of(11) {
                     v = v.saturating_add(40);
                 }
                 let px = Rgba([v, v, v, 255]);
@@ -846,7 +848,7 @@ mod tests {
                         if y % 20 == 0 && x % 50 == 0 { v = v.saturating_add(100); }
                     }
                     2 => { // 密集条纹：每 5 行强对比
-                        if (y + scroll_offset) % 5 == 0 { v = 255 - v; }
+                        if (y + scroll_offset).is_multiple_of(5) { v = 255 - v; }
                         if x % 3 == 0 { v = v.saturating_add(60); }
                     }
                     _ => {},
@@ -874,12 +876,12 @@ mod tests {
         let sticky_bot = make_frame(width, bot_h, 888);
         for y in 0..top_h {
             for x in 0..width {
-                img.put_pixel(x, y, sticky_top.get_pixel(x, y).clone());
+                img.put_pixel(x, y, *sticky_top.get_pixel(x, y));
             }
         }
         for y in 0..bot_h {
             for x in 0..width {
-                img.put_pixel(x, height - bot_h + y, sticky_bot.get_pixel(x, y).clone());
+                img.put_pixel(x, height - bot_h + y, *sticky_bot.get_pixel(x, y));
             }
         }
         img

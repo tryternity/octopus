@@ -145,7 +145,7 @@ fn chat_text(
 /// 对 ASR 识别文本进行润色。
 /// - preserved=Some：增量润色，保留 preserved 原样、仅润色 to_polish（编辑后用）。
 /// - preserved=None：全量润色 to_polish。
-/// 返回润色后的完整文本。
+///   返回润色后的完整文本。
 ///
 /// max_tokens 基于 preserved + to_polish 的总字符数（×1.2 冗余系数），
 /// 因为增量模式下 LLM 输出 = preserved（原样）+ 润色后的 to_polish，

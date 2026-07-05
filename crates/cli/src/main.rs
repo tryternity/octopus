@@ -980,20 +980,15 @@ fn stream_test_paraformer(
     let mut engine = octopus_asr_local::streaming_paraformer::StreamingParaformer::new(model)?;
 
     let chunk_size = 10_000;
-    let mut chunk_idx = 0;
     let mut accumulated = String::new();
     let start = std::time::Instant::now();
 
-    for chunk in samples.chunks(chunk_size) {
-        match engine.accept_samples(chunk)? {
-            Some(text) => {
-                accumulated.push_str(&text);
-                let t = chunk_idx as f64 * 0.625;
-                println!("[chunk {} @{:.1}s] {}", chunk_idx, t, accumulated);
-            }
-            None => {}
+    for (chunk_idx, chunk) in samples.chunks(chunk_size).enumerate() {
+        if let Some(text) = engine.accept_samples(chunk)? {
+            accumulated.push_str(&text);
+            let t = chunk_idx as f64 * 0.625;
+            println!("[chunk {} @{:.1}s] {}", chunk_idx, t, accumulated);
         }
-        chunk_idx += 1;
     }
 
     let final_text = engine.finish()?;
@@ -1020,18 +1015,13 @@ fn stream_test_zipformer(
     // For shift=64: ~10240 samples; for shift=32: ~5120 samples.
     // Use 625ms chunks (~10000 samples) as a reasonable default.
     let chunk_size = 10_000;
-    let mut chunk_idx = 0;
     let start = std::time::Instant::now();
 
-    for chunk in samples.chunks(chunk_size) {
-        match engine.accept_samples(chunk)? {
-            Some(text) => {
-                let t = chunk_idx as f64 * 0.625;
-                println!("[chunk {} @{:.1}s] {}", chunk_idx, t, text);
-            }
-            None => {}
+    for (chunk_idx, chunk) in samples.chunks(chunk_size).enumerate() {
+        if let Some(text) = engine.accept_samples(chunk)? {
+            let t = chunk_idx as f64 * 0.625;
+            println!("[chunk {} @{:.1}s] {}", chunk_idx, t, text);
         }
-        chunk_idx += 1;
     }
 
     let final_text = engine.finish()?;

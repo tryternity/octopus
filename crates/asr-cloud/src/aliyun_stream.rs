@@ -191,15 +191,14 @@ async fn run_ws_session(
                                 let sentence_end = sentence["sentence_end"].as_bool().unwrap_or(false);
 
                                 // sentence_id 变化 = 新句开始，提交前一句
-                                if sentence_id != current_sentence_id && current_sentence_id > 0 {
-                                    if !current_sentence.is_empty() {
+                                if sentence_id != current_sentence_id && current_sentence_id > 0
+                                    && !current_sentence.is_empty() {
                                         if !committed.is_empty() && !committed.ends_with(sep) {
                                             committed.push_str(sep);
                                         }
                                         committed.push_str(&current_sentence);
                                         current_sentence.clear();
                                     }
-                                }
                                 current_sentence_id = sentence_id;
                                 current_sentence = text.to_string();
 

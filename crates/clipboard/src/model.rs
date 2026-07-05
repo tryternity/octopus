@@ -22,6 +22,7 @@ impl ItemType {
         }
     }
 
+    #[allow(clippy::should_implement_trait)] // 返回 Self 而非 Result，语义不同于 FromStr
     pub fn from_str(s: &str) -> Self {
         match s {
             "voice" => ItemType::Voice,
