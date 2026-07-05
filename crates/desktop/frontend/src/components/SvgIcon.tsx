@@ -14,6 +14,12 @@ const ICONS = {
   note: "/icons/note.svg",
   "expand-edit": "/icons/expand-edit.svg",
   "minimize": "/icons/minimize.svg",
+  // FilterTabs 类型图标（Font Awesome 单色剪影，mask 法跟随 currentColor）
+  voice: "/icons/voice.svg",
+  text: "/icons/text.svg",
+  images: "/icons/images.svg",
+  files: "/icons/files.svg",
+  favorite: "/icons/favorite.svg",
 } as const;
 
 export type IconName = keyof typeof ICONS;

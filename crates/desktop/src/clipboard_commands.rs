@@ -611,18 +611,26 @@ pub async fn save_image_dialog(
         return Err("expected raw binary body".into());
     };
 
-    use tauri_plugin_dialog::DialogExt;
-    let save_path = app_handle
-        .dialog()
-        .file()
-        .add_filter("PNG 图片", &["png"])
-        .set_file_name("image.png")
-        .blocking_save_file();
-
-    if let Some(path) = save_path {
-        let path = path.as_path().ok_or("无效路径")?;
-        std::fs::write(path, &png_bytes).map_err(|e| e.to_string())?;
-        log::info!("Image preview saved to {}", path.display());
-    }
-    Ok(())
+    // blocking_save_file（弹原生对话框，等用户选路径可达数秒）+ fs::write 均为同步阻塞，
+    // 全部移入 spawn_blocking 避免卡住 Tokio worker 线程（与上方 copy_image_to_clipboard 同模式）。
+    // 不用 plugin 的 save_file() 回调式 API：回调内 fs::write 同样阻塞且错误无法返回前端；
+    // spawn_blocking 既能隔离阻塞、又能把对话框取消/写入错误正常回传给调用方。
+    let png_bytes = png_bytes.clone();
+    tokio::task::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        let save_path = app_handle
+            .dialog()
+            .file()
+            .add_filter("PNG 图片", &["png"])
+            .set_file_name("image.png")
+            .blocking_save_file();
+        if let Some(path) = save_path {
+            let path = path.as_path().ok_or("无效路径")?;
+            std::fs::write(path, &png_bytes).map_err(|e| e.to_string())?;
+            log::info!("Image preview saved to {}", path.display());
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

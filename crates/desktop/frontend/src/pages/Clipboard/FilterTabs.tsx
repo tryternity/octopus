@@ -1,5 +1,6 @@
 import { cn } from "@/lib/utils";
 import { LayoutGrid, ScanText } from "lucide-react";
+import { SvgIcon, type IconName } from "@/components/SvgIcon";
 
 const TABS = [
   { value: "all", icon: LayoutGrid, label: "全部", svg: undefined as string | undefined },
@@ -33,7 +34,10 @@ export default function FilterTabs({
           onClick={() => onChange(tabValue)}
         >
           {svg ? (
-            <img src={`icons/${svg}.svg`} alt={label} className="w-4 h-4" style={{ filter: value === tabValue ? "brightness(0) invert(1)" : "none" }} />
+            // SvgIcon 用 mask + currentColor：未选中随 button 的 text-muted-foreground 置灰，
+            // 选中随 text-primary-foreground 变白，深色模式自动跟随主题（img 加载的 SVG 不响应
+            // currentColor，未选中恒为黑色剪影，深色背景下不可见）。
+            <SvgIcon name={svg as IconName} size={16} />
           ) : Icon ? (
             <Icon className="w-4 h-4" />
           ) : null}
