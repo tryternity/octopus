@@ -17,3 +17,6 @@ resolver = "2"
 #strip = true
 #lto = "fat"
 #codegen-units = 1
+
+[workspace.dependencies]
+parking_lot = "0.12"
