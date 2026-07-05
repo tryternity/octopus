@@ -14,6 +14,30 @@ const N_MELS: usize = 80;
 const SAMPLE_RATE: u32 = 16000;
 const N_SAMPLES: usize = 30 * SAMPLE_RATE as usize;
 
+/// decoder 各层 KV cache 输入名（进程级单例）。
+/// 原实现在 WhisperEngine::new 每次实例化都 leak 4×n_decoder_layers 个 &'static str，
+/// 在 AsrEngineManager LRU 淘汰时累积泄漏。改为全局 leak 一次（上限 32 层覆盖 whisper 系列）。
+static WHISPER_CACHE_NAMES: Lazy<Vec<(&'static str, &'static str, &'static str, &'static str)>> =
+    Lazy::new(|| {
+        (0..32)
+            .flat_map(|layer| {
+                let dk: &'static str = Box::leak(
+                    format!("past_key_values.{}.decoder.key", layer).into_boxed_str(),
+                );
+                let dv: &'static str = Box::leak(
+                    format!("past_key_values.{}.decoder.value", layer).into_boxed_str(),
+                );
+                let ek: &'static str = Box::leak(
+                    format!("past_key_values.{}.encoder.key", layer).into_boxed_str(),
+                );
+                let ev: &'static str = Box::leak(
+                    format!("past_key_values.{}.encoder.value", layer).into_boxed_str(),
+                );
+                [(dk, dv, ek, ev)]
+            })
+            .collect()
+    });
+
 
 static HANN_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hann_window(FFT_SIZE));
 static WHISPER_FFT: Lazy<Arc<dyn rustfft::Fft<f32>>> = Lazy::new(|| {
@@ -265,14 +289,10 @@ impl WhisperEngine {
         };
         let tokenizer = Tokenizer::from_file(tk_path).map_err(|e| anyhow::anyhow!("Tokenizer: {}", e))?;
 
-        let mut past_key_names = Vec::with_capacity(n_decoder_layers);
-        for layer in 0..n_decoder_layers {
-            let dk_name: &'static str = Box::leak(format!("past_key_values.{}.decoder.key", layer).into_boxed_str());
-            let dv_name: &'static str = Box::leak(format!("past_key_values.{}.decoder.value", layer).into_boxed_str());
-            let ek_name: &'static str = Box::leak(format!("past_key_values.{}.encoder.key", layer).into_boxed_str());
-            let ev_name: &'static str = Box::leak(format!("past_key_values.{}.encoder.value", layer).into_boxed_str());
-            past_key_names.push((dk_name, dv_name, ek_name, ev_name));
-        }
+        let past_key_names: Vec<(&'static str, &'static str, &'static str, &'static str)> =
+            (0..n_decoder_layers)
+                .map(|layer| WHISPER_CACHE_NAMES[layer])
+                .collect();
 
         Ok(Self {
             encoder: std::sync::Mutex::new(encoder),
@@ -493,4 +513,30 @@ pub fn transcribe(name: &str, audio: &[f32], language: &str) -> Result<String> {
 
     let engine = WhisperEngine::new(entry)?;
     crate::engine::transcribe_with_vad(&engine, audio, language)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_whisper_cache_names_global_lazy() {
+        // 全局 Lazy 的 &'static str 指针在多次访问间不变
+        let a = WHISPER_CACHE_NAMES[0].0;
+        let b = WHISPER_CACHE_NAMES[0].0;
+        assert_eq!(a.as_ptr(), b.as_ptr(), "全局 Lazy 的 &'static str 指针应相等");
+    }
+
+    #[test]
+    fn test_whisper_cache_names_cover_32_layers() {
+        assert_eq!(WHISPER_CACHE_NAMES.len(), 32);
+        // 每层 4 个名字
+        for layer in 0..32 {
+            let (dk, dv, ek, ev) = WHISPER_CACHE_NAMES[layer];
+            assert!(dk.contains(&format!("{}", layer)));
+            assert!(dv.contains(&format!("{}", layer)));
+            assert!(ek.contains(&format!("{}", layer)));
+            assert!(ev.contains(&format!("{}", layer)));
+        }
+    }
 }

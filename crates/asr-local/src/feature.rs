@@ -135,7 +135,7 @@ mod tests {
         assert!(sum79 > 0.0, "bin 79 权重和应 > 0");
         // 三角形 filter 顶点权重 <= 1.0
         for bin in &fb {
-            let &max_w = bin.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+            let max_w = bin.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
             assert!(max_w <= 1.0 + 1e-10, "三角形 filter 权重 <= 1.0");
         }
     }
