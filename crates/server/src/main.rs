@@ -34,6 +34,8 @@ struct Cli {
 struct AppState {
     engine_manager: Arc<AsrEngineManager>,
     active_model: String,
+    /// 请求级锁：保护 switch+transcribe 原子性，防止并发请求互相切模型
+    inference_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 // ── API types ──
@@ -92,7 +94,7 @@ async fn transcribe(
     Query(query): Query<TranscribeQuery>,
     body: bytes::Bytes,
 ) -> impl IntoResponse {
-    let engine = query.engine.as_deref().unwrap_or(&state.active_model);
+    let engine = query.engine.as_deref().unwrap_or(&state.active_model).to_string();
     let language = query.language.as_deref().unwrap_or("auto");
 
     // Try to parse as WAV, fallback to raw f32
@@ -123,8 +125,25 @@ async fn transcribe(
     let start = std::time::Instant::now();
 
     let cfg = octopus_asr_local::pipeline::PipelineConfig::from_app_config(language);
-    let text = state.engine_manager.switch_model(engine)
-        .and_then(|_| state.engine_manager.transcribe_batch(&samples, &cfg));
+    let engine_manager = state.engine_manager.clone();
+    let _guard = state.inference_lock.lock().await;
+    let text = match tokio::task::spawn_blocking(move || {
+        engine_manager.switch_model(&engine)
+            .and_then(|_| engine_manager.transcribe_batch(&samples, &cfg))
+    })
+    .await
+    {
+        Ok(result) => result,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("inference task failed: {}", e),
+                }),
+            )
+                .into_response();
+        }
+    };
 
     let elapsed = start.elapsed();
     let rtf = if elapsed.as_millis() > 0 {
@@ -284,6 +303,7 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         engine_manager,
         active_model,
+        inference_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     let app = Router::new()
