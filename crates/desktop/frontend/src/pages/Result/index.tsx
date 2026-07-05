@@ -76,6 +76,9 @@ function Result() {
   // 拖选标志：mousedown 置 true、mouseup 处理完置 false。renderResultNow 期间为 true →
   // 完全跳过（textContent + setText + flushSync 都不做），避免 React re-render 清除浏览器选区。
   const isSelectingRef = useRef(false);
+  // 拖选过程中最后一次有效选区的 offset 缓存——mouseup 时选区可能已被 WKWebView 清除，
+  // 用此缓存兜底（特别是从右往左选到开头的场景）。
+  const lastDragSelectionRef = useRef<{ start: number; end: number } | null>(null);
   const pendingDiverted = useRef<string | null>(null);
   const divertedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editBufTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -96,11 +99,27 @@ function Result() {
   useEffect(() => { editingRef.current = editing; }, [editing]);
 
   // C4：拖选选区随 DOM 选区消失/窗口失焦而失效——清缓存，防 stale 选区被下次 prepare-record 推回。
-  // selectionchange 仅在选区折叠（用户点击/键盘取消选择）时清；拖选中途（isCollapsed=false）不清。
+  // 拖选过程中持续缓存 offset——mouseup 瞬间选区可能已被 WKWebView re-render 清除
+  // （特别是从右往左选到开头时），用缓存值兜底。
   useEffect(() => {
     const onSelectionChange = () => {
       const sel = window.getSelection();
-      if (sel && sel.isCollapsed) currentSelectionRef.current = null;
+      if (sel && sel.isCollapsed) {
+        currentSelectionRef.current = null;
+      } else if (sel && !sel.isCollapsed && sel.rangeCount > 0 && isSelectingRef.current) {
+        // 拖选中途：缓存 offset（mouseup 时选区可能已消失）
+        const el = textRef.current;
+        if (el) {
+          const range = sel.getRangeAt(0);
+          try {
+            const start = codePointOffsetBefore(el, range);
+            const end = codePointOffsetTo(el, range.endContainer, range.endOffset);
+            if (end > start) {
+              lastDragSelectionRef.current = { start, end };
+            }
+          } catch { /* 跨容器 offset 量取失败，忽略 */ }
+        }
+      }
     };
     const onBlur = () => { currentSelectionRef.current = null; };
     document.addEventListener("selectionchange", onSelectionChange);
@@ -500,53 +519,45 @@ function Result() {
   //   invoke set_selection（后端记录待删，首个 delta 到达时删旧插新）。
   // 纯点击（折叠）→ caretRangeFromPoint 定位 + invoke set_caret（普通中插）。
   const handleTextMouseUp = (e: React.MouseEvent) => {
-    // 无论走哪个分支，mouseup 处理完都清除拖选标志（renderResultNow 恢复正常）
-    const cleanup = () => { isSelectingRef.current = false; };
+    const cleanup = () => { isSelectingRef.current = false; lastDragSelectionRef.current = null; };
     const el = textRef.current;
     if (!el || !text) { cleanup(); return; }
     const sel = window.getSelection();
-    // [seldbg] 诊断：选区状态快照（排查"从右往左选不触发 set_selection"）
-    const dbgSel = sel ? `collapsed=${sel.isCollapsed} rangeCount=${sel.rangeCount}` : 'null';
+
+    let dragStart = -1, dragEnd = -1;
     if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
       const range = sel.getRangeAt(0);
-      const contained = el.contains(range.commonAncestorContainer);
-      // 选区须落在文本容器内（排除工具栏按钮等）
-      if (contained) {
-        const start = codePointOffsetBefore(el, range);
-        const end = codePointOffsetTo(el, range.endContainer, range.endOffset);
-        console.debug('[seldbg] mouseup drag sel', {
-          start, end, 'end>start': end > start,
-          anchorOff: sel.anchorOffset, focusOff: sel.focusOffset,
-          rangeStart: range.startOffset, rangeEnd: range.endOffset,
-          displayed: displayedRef.current?.slice(0, 30),
-        });
-        if (end > start) {
-          setCaretPos(null); // 隐藏闪烁光标，交浏览器原生高亮
-          // 缓存选区供 prepare-record 回读：Toggle 时后端 emit prepare-record，前端 invoke
-          // start_recording 把此缓存推回，作跨会话选中替换种子（替代旧后端 idle_selection 长期缓存）。
-          currentSelectionRef.current = { start, end, text: displayedRef.current };
-          invoke("set_selection", { start, end, text: displayedRef.current });
-          cleanup();
-          return;
-        }
-        // [seldbg] end <= start（从右往左选的 Range normalize 后不应出现，除非 offset 计算 bug）
-        console.warn('[seldbg] end<=start, falling through to set_caret', { start, end });
-      } else {
-        console.debug('[seldbg] range not contained in textRef');
+      if (el.contains(range.commonAncestorContainer)) {
+        try {
+          dragStart = codePointOffsetBefore(el, range);
+          dragEnd = codePointOffsetTo(el, range.endContainer, range.endOffset);
+        } catch { /* cross-container offset failed */ }
       }
-    } else {
-      console.debug('[seldbg] no drag selection, sel=', dbgSel);
     }
-    // 折叠（纯点击）→ 定位光标
+
+    if (dragStart < 0 || dragEnd <= dragStart) {
+      const cached = lastDragSelectionRef.current;
+      if (cached && cached.end > cached.start) {
+        console.debug('[seldbg] using cached drag selection', cached,
+          '(live sel was', sel ? `collapsed=${sel.isCollapsed}` : 'null', ')');
+        dragStart = cached.start;
+        dragEnd = cached.end;
+      }
+    }
+
+    if (dragEnd > dragStart && dragStart >= 0) {
+      setCaretPos(null);
+      currentSelectionRef.current = { start: dragStart, end: dragEnd, text: displayedRef.current };
+      invoke("set_selection", { start: dragStart, end: dragEnd, text: displayedRef.current });
+      cleanup();
+      return;
+    }
+
     const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
     if (!range) { cleanup(); return; }
-    // 容器归属校验（与上方拖选路径的 el.contains 对称）：点击落在 padding / 浮层等非文本
-    // 区域时，caretRangeFromPoint 可能返回容器外的节点；codePointOffsetTo 内 setEnd 跨容器
-    // 会量出错误 offset（甚至抛 IndexSizeError）。此时放弃定位，不向后端发错误 caret。
     if (!el.contains(range.startContainer)) { cleanup(); return; }
     sel?.removeAllRanges();
     const offset = codePointOffsetBefore(el, range);
-    console.debug('[seldbg] set_caret offset=', offset);
     setCaretPos(offset);
     invoke("set_caret", { offset });
     cleanup();
