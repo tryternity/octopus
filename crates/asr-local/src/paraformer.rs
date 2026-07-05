@@ -321,7 +321,7 @@ pub(crate) fn extract_cmvn_from_metadata(session: &Session) -> Result<(Vec<f32>,
         *v *= scale;
     }
 
-    eprintln!(
+    log::debug!(
         "[paraformer] CMVN: {} means, {} stddevs, enc_out={}",
         neg_mean.len(),
         inv_stddev.len(),

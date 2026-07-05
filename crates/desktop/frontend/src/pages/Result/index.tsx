@@ -152,14 +152,12 @@ function Result() {
     const unlisten = listen<boolean>("update-speaking", (payload) => {
       // payload 可能是 boolean 或 { payload: boolean }（Tauri 版本差异），统一提取
       const speaking = typeof payload === "boolean" ? payload : (payload as any)?.payload ?? false;
-      console.log("[speaking] event received:", speaking);
       if (speaking) {
         if (speakingTimer.current) clearTimeout(speakingTimer.current);
         setIsSpeaking(true);
       } else {
         if (speakingTimer.current) clearTimeout(speakingTimer.current);
         speakingTimer.current = setTimeout(() => {
-          console.log("[speaking] timer fired → setIsSpeaking(false)");
           setIsSpeaking(false);
         }, 200);
       }

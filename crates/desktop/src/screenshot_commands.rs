@@ -770,7 +770,7 @@ fn activate_app_by_pid(ah: &tauri::AppHandle, pid: i32) {
             if let Some(app) = NSRunningApplication::runningApplicationWithProcessIdentifier(pid) {
                 let success = app.activateWithOptions(objc2_app_kit::NSApplicationActivationOptions(1 << 1));
                 if success {
-                    eprintln!("[scroll] activated app pid={} for scroll focus", pid);
+                    log::debug!("[scroll] activated app pid={} for scroll focus", pid);
                 }
             }
         });
@@ -906,7 +906,7 @@ pub async fn start_scroll_recording(
                 Err(_) => (0.0, 0.0),
             }
         };
-        eprintln!("[scroll] win_origin=({},{}) sel_local=({},{},{},{})", win_origin_x, win_origin_y, x, y, w, h);
+        log::debug!("[scroll] win_origin=({},{}) sel_local=({},{},{},{})", win_origin_x, win_origin_y, x, y, w, h);
         // 选区的全局逻辑坐标 = 窗口原点 + CSS 偏移
         let sel_global_x = win_origin_x + x;
         let sel_global_y = win_origin_y + y;
@@ -975,7 +975,7 @@ pub async fn start_scroll_recording(
                 }
             };
 
-            eprintln!("[scroll-diag] display_id={}, exclude_wid={} (windowNumber), target_wid={:?}, displays={:?}",
+            log::debug!("[scroll-diag] display_id={}, exclude_wid={} (windowNumber), target_wid={:?}, displays={:?}",
                 hit, wid, target_wid, displays);
             (hit, wid, target_wid)
         };
@@ -1010,7 +1010,7 @@ pub async fn start_scroll_recording(
         #[cfg(target_os = "macos")]
         {
             activate_prev_app(&sel_win);
-            eprintln!("[scroll] manual mode: activated previous app for scroll passthrough");
+            log::debug!("[scroll] manual mode: activated previous app for scroll passthrough");
             // Wait 120ms for window activation transition to complete and repaint in active state
             tokio::time::sleep(std::time::Duration::from_millis(120)).await;
         }

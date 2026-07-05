@@ -310,13 +310,13 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
     fn transcribe(&self, audio: &[f32], language: &str) -> Result<String> {
         // Mel spectrogram
         let mel = compute_mel(audio)?;
-        eprintln!("[whisper] mel shape: {:?}", mel.shape());
+        log::debug!("[whisper] mel shape: {:?}", mel.shape());
         {
             let mel_slice = mel.as_slice().unwrap();
             let mel_max = mel_slice.iter().cloned().fold(f32::NEG_INFINITY, f32::max);
             let mel_min = mel_slice.iter().cloned().fold(f32::INFINITY, f32::min);
             let mel_mean: f32 = mel_slice.iter().sum::<f32>() / mel_slice.len() as f32;
-            eprintln!(
+            log::debug!(
                 "[whisper] mel stats: min={:.4} max={:.4} mean={:.4}",
                 mel_min, mel_max, mel_mean
             );
@@ -367,7 +367,7 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         if lang_code == "auto" && !self.entry_language.is_empty() && self.entry_language != "auto" {
             lang_code = self.entry_language.clone();
         }
-        eprintln!("[whisper] language: {}", lang_code);
+        log::debug!("[whisper] language: {}", lang_code);
 
         let mut dec_init = self.dec_init.lock();
 
@@ -388,12 +388,12 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
             let (det_shape, det_logits) = detect_out["logits"].try_extract_tensor::<f32>()?;
             let det_vocab = det_shape[2] as usize;
             let detected_lang = argmax_last_token(det_logits, 1, det_vocab);
-            eprintln!("[whisper] auto-detected language token: {}", detected_lang);
+            log::debug!("[whisper] auto-detected language token: {}", detected_lang);
             tokens.push(detected_lang as i64);
         }
         tokens.extend_from_slice(&[transcribe_tok as i64, no_ts as i64]);
         let prompt_len = tokens.len();
-        eprintln!("[whisper] prompt tokens: {:?}", tokens);
+        log::debug!("[whisper] prompt tokens: {:?}", tokens);
 
         // Step 0: initial decoder (no past KV)
         let input_ids = Array2::from_shape_vec((1, tokens.len()), tokens.clone())?;
@@ -405,10 +405,10 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         let (logits_shape, logits_data) = init_out["logits"].try_extract_tensor::<f32>()?;
         let vocab = logits_shape[2] as usize;
         let next_token = argmax_last_token(logits_data, tokens.len(), vocab);
-        eprintln!("[whisper] first token: {} (eot={})", next_token, eot);
+        log::debug!("[whisper] first token: {} (eot={})", next_token, eot);
 
         if next_token == eot {
-            eprintln!("[whisper] EOT on first token, returning empty");
+            log::debug!("[whisper] EOT on first token, returning empty");
             return Ok(String::new());
         }
         tokens.push(next_token as i64);
@@ -429,7 +429,7 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         // （审查：原 +10 余量对极短音频不足，中文 BPE 切分细碎时末尾被截断，调至 +30）
         let audio_seconds = audio.len() as f32 / SAMPLE_RATE as f32;
         let max_tokens = ((audio_seconds * 6.0) as usize + 30).min(448);
-        eprintln!(
+        log::debug!(
             "[whisper] audio {:.2}s → max_tokens={} (was 448)",
             audio_seconds, max_tokens
         );
