@@ -5,6 +5,7 @@ import { invoke } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
+import { metaParts } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
 
 export default function ClipboardItemRow({
@@ -127,6 +128,7 @@ export default function ClipboardItemRow({
     : Type;
 
   const isVoice = item.item_type === "voice";
+  const meta = metaParts(item);
 
   return (
     <div
@@ -179,11 +181,12 @@ export default function ClipboardItemRow({
         ) : (
           <p className="text-[12.5px] leading-snug text-foreground/90 break-all line-clamp-2">{[...item.content].length > 200 ? [...item.content].slice(0, 200).join("") + "……" : item.content}</p>
         )}
-        {isVoice && (
-          <span className="inline-block mt-1 text-[10px] text-voice/60 font-medium tabular-nums">
-            {item.created_at}
-          </span>
-        )}
+        <span className={cn(
+          "inline-block mt-0.5 text-[10px] font-medium tabular-nums",
+          isVoice ? "text-voice/60" : "text-muted-foreground/60",
+        )}>
+          {item.created_at}{meta ? ` · ${meta}` : ""}
+        </span>
       </div>
 
       {/* 右侧操作：统一 hover 显示（收藏除外） */}

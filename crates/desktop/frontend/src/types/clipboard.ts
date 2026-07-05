@@ -10,7 +10,7 @@ export interface MetaInfo {
   model?: string;
   duration_ms?: number;
   char_count?: number;
-  engine_mode?: string;
+  asr_mode?: string;
   polish_model?: string;
   polished?: boolean;
   // file
@@ -28,4 +28,34 @@ export interface ClipboardItem {
   is_rich: boolean;
   has_thumbnail: boolean;
   segments?: string;
+}
+
+/**
+ * 按类型生成元数据片段（不含时间）：
+ * text/ocr: "N字"
+ * voice:    "N字 · 时长 Xs"
+ * image:    "WxH · size"
+ * file:     ""
+ */
+export function metaParts(item: ClipboardItem): string {
+  const m = item.meta_info;
+  switch (item.item_type) {
+    case "text":
+    case "ocr":
+      return m?.char_count ? `${m.char_count}字` : "";
+    case "voice": {
+      const parts: string[] = [];
+      if (m?.char_count) parts.push(`${m.char_count}字`);
+      if (m?.duration_ms) parts.push(`时长 ${(m.duration_ms / 1000).toFixed(1)}s`);
+      return parts.join(" · ");
+    }
+    case "image": {
+      const parts: string[] = [];
+      if (m?.w && m?.h) parts.push(`${m.w}×${m.h}`);
+      if (m?.size) parts.push(m.size);
+      return parts.join(" · ");
+    }
+    default:
+      return "";
+  }
 }
