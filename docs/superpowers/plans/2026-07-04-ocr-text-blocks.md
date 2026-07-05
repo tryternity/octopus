@@ -17,7 +17,7 @@
 **Files:**
 - Modify: `crates/ocr/src/engine.rs`
 
-- [ ] **Step 1：定义 OcrBlock 结构体 + recognize_with_blocks 方法**
+- [x] **Step 1：定义 OcrBlock 结构体 + recognize_with_blocks 方法**
 
 在 `engine.rs` 加公开结构体和方法：
 
@@ -47,7 +47,7 @@ pub fn recognize_with_blocks(&self, image_bytes: &[u8]) -> Result<(String, Vec<O
 }
 ```
 
-- [ ] **Step 2：recognize_image_with_blocks（不丢弃 bbox）**
+- [x] **Step 2：recognize_image_with_blocks（不丢弃 bbox）**
 
 ```rust
 fn recognize_image_with_blocks(&self, img: &::image::DynamicImage) -> Result<Vec<OcrBlock>> {
@@ -66,7 +66,7 @@ fn recognize_image_with_blocks(&self, img: &::image::DynamicImage) -> Result<Vec
 }
 ```
 
-- [ ] **Step 3：recognize_long_image_with_blocks（坐标 offset 合并）**
+- [x] **Step 3：recognize_long_image_with_blocks（坐标 offset 合并）**
 
 ```rust
 fn recognize_long_image_with_blocks(&self, img: &::image::DynamicImage) -> Result<Vec<OcrBlock>> {
@@ -92,11 +92,11 @@ fn recognize_long_image_with_blocks(&self, img: &::image::DynamicImage) -> Resul
 }
 ```
 
-- [ ] **Step 4：编译验证**
+- [x] **Step 4：编译验证**
 
 Run: `cargo build -p octopus-ocr`
 
-- [ ] **Step 5：提交**
+- [x] **Step 5：提交**
 
 ```bash
 git add crates/ocr/src/engine.rs
@@ -110,7 +110,7 @@ git commit -m "feat(ocr): recognize_with_blocks 返回带坐标的文本块"
 **Files:**
 - Modify: `crates/desktop/src/clipboard_commands.rs`
 
-- [ ] **Step 1：定义 OcrResult 结构体**
+- [x] **Step 1：定义 OcrResult 结构体**
 
 在 `clipboard_commands.rs` 加：
 
@@ -131,7 +131,7 @@ pub struct OcrResult {
 }
 ```
 
-- [ ] **Step 2：ocr_image 返回类型改为 OcrResult**
+- [x] **Step 2：ocr_image 返回类型改为 OcrResult**
 
 ```rust
 pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
@@ -148,11 +148,11 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
 }
 ```
 
-- [ ] **Step 3：编译验证**
+- [x] **Step 3：编译验证**
 
 Run: `cargo build -p octopus-desktop`
 
-- [ ] **Step 4：提交**
+- [x] **Step 4：提交**
 
 ```bash
 git add crates/desktop/src/clipboard_commands.rs
@@ -167,7 +167,7 @@ git commit -m "feat(desktop): ocr_image 返回结构化 {text, blocks}"
 - Modify: `crates/desktop/frontend/src/pages/ImagePreview/index.tsx`
 - Modify: `crates/desktop/frontend/src/pages/ImagePreview/Toolbar.tsx`
 
-- [ ] **Step 1：index.tsx 加 ocrBlocks / ocrOverlay state**
+- [x] **Step 1：index.tsx 加 ocrBlocks / ocrOverlay state**
 
 ```ts
 interface OcrBlock { text: string; x: number; y: number; w: number; h: number; score: number; }
@@ -176,14 +176,14 @@ const [ocrBlocks, setOcrBlocks] = useState<OcrBlock[]>([]);
 const [ocrOverlay, setOcrOverlay] = useState(false);
 ```
 
-- [ ] **Step 2：换图重置（imageId useEffect 中加）**
+- [x] **Step 2：换图重置（imageId useEffect 中加）**
 
 ```ts
 setOcrBlocks([]);
 setOcrOverlay(false);
 ```
 
-- [ ] **Step 3：handleOcr 改为双态**
+- [x] **Step 3：handleOcr 改为双态**
 
 ```ts
 const handleOcr = async () => {
@@ -216,7 +216,7 @@ const handleOcr = async () => {
 };
 ```
 
-- [ ] **Step 4：SVG 叠加层（在标注 SVG 前面，zIndex 更低）**
+- [x] **Step 4：SVG 叠加层（在标注 SVG 前面，zIndex 更低）**
 
 在 wrapper 内 canvas 后、标注 SVG 前加：
 
@@ -243,18 +243,18 @@ const handleOcr = async () => {
 )}
 ```
 
-- [ ] **Step 5：OCR 按钮 active 加 ocrOverlay**
+- [x] **Step 5：OCR 按钮 active 加 ocrOverlay**
 
 index.tsx 传 prop：
 ```tsx
 ocrCopied={ocrCopied || ocrOverlay}
 ```
 
-- [ ] **Step 6：构建验证**
+- [x] **Step 6：构建验证**
 
 Run: `npm run build`
 
-- [ ] **Step 7：提交**
+- [x] **Step 7：提交**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ImagePreview/
@@ -268,9 +268,9 @@ git commit -m "feat(ImagePreview): OCR 文本块可视化叠加层 + 按钮双�
 **Files:**
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1：更新 architecture.md 的 OCR 描述**
+- [x] **Step 1：更新 architecture.md 的 OCR 描述**
 
-- [ ] **Step 2：提交**
+- [x] **Step 2：提交**
 
 ```bash
 git add docs/

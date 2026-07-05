@@ -1,8 +1,8 @@
 # 剪贴板管理整合需求实施计划
 
 > 日期：2026-07-04
-> 状态：📋 设计中
-> 分支：`image-viewer-perf`
+> 状态：✅ 完成（全部 Task✅，`668300d` z-sync 回写，已合 main）
+> 分支：`image-viewer-perf`（已合 main）
 
 ## 需求总览
 

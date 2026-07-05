@@ -10,6 +10,13 @@
 
 **关联文档:** [spec](../specs/2026-06-12-capx-optimization-design.md)
 
+> **状态：✅ 重构目标基本达成（实现路线已演进，本 plan 仅作历史方案参考；以代码为准）**
+>
+> - **已落地**：Task 1（`cgimage_to_rgba` 去重）、Task 2（常量提取）、Task 3（`bgra_to_rgba` 纯函数 + 内联测试）、Task 4/5（stitch 测试网，现 33 处测试标记）、Task 6（`GrayBuf`）、Task 8（画布 `canvas_buf: Vec<u8>` + `canvas_cache` 惰性缓存）。
+> - **Task 7（`find_overlap_spatial_ext` 整数化重写）未按本 plan 落地**——该函数已整体删除（`a27ee39`），算法路线从 SAD 改为 NCC + `row_projection_means` 行投影；后续 20+ 个 `fix(capx)`/`feat(capx)` commit 围绕新路线迭代（NCC 假匹配 / 周期性假匹配 / 滚动断裂等，见 `git log -- crates/capx`）。
+> - **Task 9（文档同步）**：本 plan 与代码已大幅偏离，architecture.md 以实际代码为准，不再按本 plan 逐条回填。
+> - 下方各 Task 的 checkbox 不再逐个回填——Task 7 已被新方案取代，逐项勾选会失真。
+
 ---
 
 ## 关键约束（所有任务必须遵守）
