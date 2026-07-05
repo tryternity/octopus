@@ -463,3 +463,43 @@ show-result handler 的 diverted 容错（§5.A / §12 关联）：光标在末�
 修复：`enterEdit` 在 `setCaretPos(null)` **之前**用 `caretPosRef`（caretPos 的 ref 镜像，`useRef` + 同步赋值 effect，避免闭包 stale）捕获点击位 `restorePos`；`setTimeout` 内若 `restorePos != null` → `placeCaretAtCodePoint(el, restorePos)` 精准恢复，失败 / `null` 再走末尾兜底。新增 `placeCaretAtCodePoint`（复用 §14.1 `locateCpOffset` 设 collapsed Selection）。
 
 **边界**：`caretPos` 仅**纯点击**设值（`handleTextMouseUp` 折叠分支）；**拖选**置 `null`（交 `set_selection`）。故拖选后进编辑仍落末尾（设计如此——拖选态本就无单点光标位）。
+
+## 15. 前端拖选三重陷阱修复（2026-07-05，从右往左选到开头失效）
+
+§12–§14 之后，深度使用暴露了"从右往左拖选到文本开头时选中替换失效"的缺陷。根因是三个独立的 WKWebView/浏览器行为叠加——任一单独修都无法解决，三重防御缺一不可。
+
+### 15.1 陷阱 1：Range.startContainer 飘移到父容器
+
+从右往左选到文本开头时，用户鼠标通常会划出 textRef 左边界（进入 margin/外层容器/其他应用区域）。此时浏览器 Selection API 把 Range 的 `startContainer`（Range 永远把左侧作为 Start）设为 textRef 的**父容器节点**，`startOffset` 变为 textRef 在父容器中的子节点索引。
+
+`el.contains(range.commonAncestorContainer)` 校验（原代码 L502）变成 `textRef.contains(父容器)` → 返回 `false` → 选中替换逻辑被跳过 → 退化为 `set_caret` 光标定位。
+
+**修复**：`clampRangeToContainer(el, range)` 用 `compareBoundaryPoints` 把 Range 强制裁剪到容器内：
+```typescript
+const containerRange = document.createRange();
+containerRange.selectNodeContents(el);
+if (clamped.compareBoundaryPoints(Range.START_TO_START, containerRange) < 0)
+  clamped.setStart(containerRange.startContainer, containerRange.startOffset);
+if (clamped.compareBoundaryPoints(Range.END_TO_END, containerRange) > 0)
+  clamped.setEnd(containerRange.endContainer, containerRange.endOffset);
+```
+
+### 15.2 陷阱 2：React onMouseUp 不在 textRef 外触发
+
+鼠标从右往左拖选移出浮窗后，mouseup 事件不经过 textRef div → React `onMouseUp={handleTextMouseUp}` 不执行 → handler 根本不运行。
+
+**修复**：`onMouseDown` 时在 `document` 上注册一次性 `mouseup` listener（`addEventListener` + handler 内 `removeEventListener`），任何位置的 mouseup 都能捕获。移除 textRef 的 `onMouseUp` prop。
+
+### 15.3 陷阱 3：mouseup 时鼠标在容器外
+
+mouseup 鼠标坐标在容器外时，`caretRangeFromPoint` 返回的节点不在容器内 → offset 计算失败。
+
+**修复**：用 `el.getBoundingClientRect()` 判断鼠标 X 坐标——`< rect.left` → offset=0（开头），`> rect.right` → 末尾，在容器内 → `caretRangeFromPoint` 精确定位。
+
+### 15.4 mousedown offset 缓存（兜底方案）
+
+`onMouseDown` 时用 `caretRangeFromPoint` 记录起点 char offset 到 `mouseDownOffsetRef`。mouseup 时 live selection 失效 → 用 mousedown offset + 终点 offset（15.3 的坐标判断）min/max 重建选区。这让选区重建**完全不依赖 mouseup 瞬间的 DOM Selection 状态**。
+
+### 15.5 通用教训
+
+WKWebView 中拖选到容器边界是高频踩坑区——浏览器选区 API（`Selection`/`Range`）在边界处行为不稳定（容器飘移、选区折叠、节点不在容器内），不能直接信任 `window.getSelection()` 的原始值。三重防御（Range clamping + document mouseup + 坐标边界判断）+ mousedown 缓存兜底，才能覆盖所有拖选方向和释放位置的组合。
