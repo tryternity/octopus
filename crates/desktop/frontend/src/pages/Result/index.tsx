@@ -73,6 +73,9 @@ function Result() {
   // enterEdit/commitEdit/cancelEdit/show-result/clear-result/hide-result 时清。
   // prepare-record 事件回读它推给后端，作为跨会话选中替换种子。
   const currentSelectionRef = useRef<{ start: number; end: number; text: string } | null>(null);
+  // 拖选标志：mousedown 置 true、mouseup 处理完置 false。renderResultNow 期间为 true →
+  // 完全跳过（textContent + setText + flushSync 都不做），避免 React re-render 清除浏览器选区。
+  const isSelectingRef = useRef(false);
   const pendingDiverted = useRef<string | null>(null);
   const divertedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editBufTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -142,19 +145,16 @@ function Result() {
   }, [showToolbar, hideToolbar]);
 
   const renderResultNow = useCallback((newText: string) => {
+    // 用户正在拖选 → 完全跳过：textContent 重写 + setText 的 flushSync re-render 都会
+    // 清除浏览器选区，导致 mouseup 时 isCollapsed=true → 走 set_caret 而非 set_selection。
+    // 丢失的 tick 数据由下个 tick（拖选完成后）自动补上。
+    if (isSelectingRef.current) return;
     displayedRef.current = newText;
     // 同步写 DOM（绕过 React commit）：textRef 是 contentEditable div，React 对其 children 的
     // commit 不更新 DOM（保护用户编辑，flushSync 强制 commit 也无效）→ 文字滞后/空白。imperative
     // 写 textContent 强制 DOM = state，文字立即渲染。仅非编辑态写（编辑态 DOM 由用户控制）。
-    // **跳过用户正在拖选的情况**：textContent 重写会清除浏览器选区，导致 mouseup 时 isCollapsed=true
-    // → 走 set_caret 而非 set_selection（选中替换失效）。文本更新延迟到选区操作完成后无碍。
     if (textRef.current && !editingRef.current && textRef.current.textContent !== newText) {
-      const activeSel = window.getSelection();
-      const hasDragSelection = activeSel && !activeSel.isCollapsed
-        && textRef.current.contains(activeSel.anchorNode);
-      if (!hasDragSelection) {
-        textRef.current.textContent = newText;
-      }
+      textRef.current.textContent = newText;
     }
     // setText 驱动 state（CaretBlink text prop + effect 重测）；flushSync 强制同步 commit，避免
     // state 被 scheduler 延迟（否则 CaretBlink effect 滞后 → 光标滞后）。
@@ -500,8 +500,10 @@ function Result() {
   //   invoke set_selection（后端记录待删，首个 delta 到达时删旧插新）。
   // 纯点击（折叠）→ caretRangeFromPoint 定位 + invoke set_caret（普通中插）。
   const handleTextMouseUp = (e: React.MouseEvent) => {
+    // 无论走哪个分支，mouseup 处理完都清除拖选标志（renderResultNow 恢复正常）
+    const cleanup = () => { isSelectingRef.current = false; };
     const el = textRef.current;
-    if (!el || !text) return;
+    if (!el || !text) { cleanup(); return; }
     const sel = window.getSelection();
     // [seldbg] 诊断：选区状态快照（排查"从右往左选不触发 set_selection"）
     const dbgSel = sel ? `collapsed=${sel.isCollapsed} rangeCount=${sel.rangeCount}` : 'null';
@@ -524,6 +526,7 @@ function Result() {
           // start_recording 把此缓存推回，作跨会话选中替换种子（替代旧后端 idle_selection 长期缓存）。
           currentSelectionRef.current = { start, end, text: displayedRef.current };
           invoke("set_selection", { start, end, text: displayedRef.current });
+          cleanup();
           return;
         }
         // [seldbg] end <= start（从右往左选的 Range normalize 后不应出现，除非 offset 计算 bug）
@@ -536,16 +539,17 @@ function Result() {
     }
     // 折叠（纯点击）→ 定位光标
     const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
-    if (!range) return;
+    if (!range) { cleanup(); return; }
     // 容器归属校验（与上方拖选路径的 el.contains 对称）：点击落在 padding / 浮层等非文本
     // 区域时，caretRangeFromPoint 可能返回容器外的节点；codePointOffsetTo 内 setEnd 跨容器
     // 会量出错误 offset（甚至抛 IndexSizeError）。此时放弃定位，不向后端发错误 caret。
-    if (!el.contains(range.startContainer)) return;
+    if (!el.contains(range.startContainer)) { cleanup(); return; }
     sel?.removeAllRanges();
     const offset = codePointOffsetBefore(el, range);
     console.debug('[seldbg] set_caret offset=', offset);
     setCaretPos(offset);
     invoke("set_caret", { offset });
+    cleanup();
   };
 
   // ── Popup actions ──
@@ -691,6 +695,7 @@ function Result() {
             contentEditable={editing}
             suppressContentEditableWarning
             onInput={onTextInput}
+            onMouseDown={!editing ? () => { isSelectingRef.current = true; } : undefined}
             onMouseUp={!editing ? handleTextMouseUp : undefined}
             onScroll={(e) => {
               const el = e.currentTarget;
