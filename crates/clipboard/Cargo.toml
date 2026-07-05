@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 octopus-infra = { path = "../infra" }
+parking_lot = { workspace = true }
 clipboard-rs = { version = "0.3", features = ["image", "wayland"] }
 image = { version = "0.25", features = ["png", "jpeg", "webp"] }
 webp = "0.3"

@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, OnceLock};
 
 use crate::model;
 
@@ -21,7 +21,7 @@ pub struct OcrBlock {
 
 static INSTANCE: OnceLock<Arc<OcrEngine>> = OnceLock::new();
 /// 串行化首次加载（double-checked locking）：保证 MNN 模型只加载一次，省重复加载。
-static INIT_LOCK: Mutex<()> = Mutex::new(());
+static INIT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
 
 /// 超长图按高度切分阈值（px）。高于此值则切块分别识别。
 /// 取 det `max_side_len=960` 的 ~1.7 倍——正常截图不触发切分走原路径，
@@ -52,7 +52,7 @@ impl OcrEngine {
             return Ok(e.clone());
         }
         // 慢路径：取锁串行化。
-        let _guard = INIT_LOCK.lock().unwrap();
+        let _guard = INIT_LOCK.lock();
         // double-check：拿到锁前可能已被其他线程加载完。
         if let Some(e) = INSTANCE.get() {
             return Ok(e.clone());

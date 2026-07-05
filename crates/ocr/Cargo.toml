@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 octopus-infra = { path = "../infra" }
+parking_lot = { workspace = true }
 ocr-rs = "2.3"
 image = "0.25"
 anyhow = "1"
