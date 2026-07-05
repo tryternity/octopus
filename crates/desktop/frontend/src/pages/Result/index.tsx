@@ -496,44 +496,73 @@ function Result() {
   // 拖选（非折叠）→ 算 [start,end) code-point 范围 + 隐藏闪烁光标（交浏览器原生高亮）+
   //   invoke set_selection（后端记录待删，首个 delta 到达时删旧插新）。
   // 纯点击（折叠）→ caretRangeFromPoint 定位 + invoke set_caret（普通中插）。
+  // 把 Range 裁剪到容器 el 内：从右往左拖选到开头时 startContainer 可能飘到父容器，
+  // 导致 el.contains 校验失败。clamping 强制收敛边界后 offset 计算精确。
+  const clampRangeToContainer = (el: HTMLElement, range: Range): Range => {
+    const containerRange = document.createRange();
+    containerRange.selectNodeContents(el);
+    const clamped = range.cloneRange();
+    // 起点在容器起点之前 → 强制设为容器起点
+    if (clamped.compareBoundaryPoints(Range.START_TO_START, containerRange) < 0) {
+      clamped.setStart(containerRange.startContainer, containerRange.startOffset);
+    }
+    // 终点在容器终点之后 → 强制设为容器终点
+    if (clamped.compareBoundaryPoints(Range.END_TO_END, containerRange) > 0) {
+      clamped.setEnd(containerRange.endContainer, containerRange.endOffset);
+    }
+    return clamped;
+  };
+
   const handleTextMouseUp = (e: React.MouseEvent) => {
     const el = textRef.current;
     if (!el || !text) { mouseDownOffsetRef.current = null; return; }
-
-    // 方案 1：live Selection（从左往右选通常可用）
     const sel = window.getSelection();
+
+    // 方案 1：live Selection + Range clamping
     if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
       const range = sel.getRangeAt(0);
-      if (el.contains(range.commonAncestorContainer)) {
-        try {
-          const start = codePointOffsetBefore(el, range);
-          const end = codePointOffsetTo(el, range.endContainer, range.endOffset);
-          if (end > start) {
-            setCaretPos(null);
-            currentSelectionRef.current = { start, end, text: displayedRef.current };
-            invoke("set_selection", { start, end, text: displayedRef.current });
-            mouseDownOffsetRef.current = null;
-            return;
-          }
-        } catch { /* */ }
-      }
-    }
-
-    // 方案 2：live selection 丢失 → 用 mousedown offset + mouseup 的 caretRangeFromPoint 重建
-    const downOff = mouseDownOffsetRef.current;
-    if (downOff !== null) {
-      const upRange = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
-      if (upRange && el.contains(upRange.startContainer)) {
-        const upOff = codePointOffsetBefore(el, upRange);
-        if (upOff !== downOff) {
-          const start = Math.min(downOff, upOff);
-          const end = Math.max(downOff, upOff);
+      // 从右往左选到开头时 commonAncestorContainer 可能飘到父容器，
+      // clamp 后边界强制收敛到 el 内 → offset 计算精确
+      const clamped = clampRangeToContainer(el, range);
+      try {
+        const start = codePointOffsetBefore(el, clamped);
+        const end = codePointOffsetTo(el, clamped.endContainer, clamped.endOffset);
+        if (end > start) {
           setCaretPos(null);
           currentSelectionRef.current = { start, end, text: displayedRef.current };
           invoke("set_selection", { start, end, text: displayedRef.current });
           mouseDownOffsetRef.current = null;
           return;
         }
+      } catch { /* */ }
+    }
+
+    // 方案 2：live selection 折叠/丢失 → 用 mousedown offset + mouseup offset 重建
+    const downOff = mouseDownOffsetRef.current;
+    if (downOff !== null) {
+      let upOff = -1;
+      const upRange = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
+      if (upRange) {
+        const clamped = upRange.cloneRange();
+        // mouseup 鼠标可能在容器外 → clamp 到容器范围
+        const containerRange = document.createRange();
+        containerRange.selectNodeContents(el);
+        if (el.contains(upRange.startContainer)) {
+          upOff = codePointOffsetBefore(el, upRange);
+        } else if (upRange.compareBoundaryPoints(Range.START_TO_START, containerRange) <= 0) {
+          upOff = 0; // 鼠标在容器左边界外 → 开头
+        } else {
+          upOff = codePointLen(el.textContent ?? ""); // 鼠标在右边界外 → 末尾
+        }
+      }
+      if (upOff >= 0 && upOff !== downOff) {
+        const start = Math.min(downOff, upOff);
+        const end = Math.max(downOff, upOff);
+        setCaretPos(null);
+        currentSelectionRef.current = { start, end, text: displayedRef.current };
+        invoke("set_selection", { start, end, text: displayedRef.current });
+        mouseDownOffsetRef.current = null;
+        return;
       }
       mouseDownOffsetRef.current = null;
     }
