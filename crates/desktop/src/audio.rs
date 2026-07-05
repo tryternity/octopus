@@ -2,7 +2,8 @@ use anyhow::Result;
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use log::{debug, error, info};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
+use parking_lot::Mutex;
 
 /// 音频共享状态：采样缓冲 + 录制标志 + cpal 流（生命周期绑定到本结构）。
 ///
@@ -55,7 +56,7 @@ impl SharedAudioState {
         if from_rate == to_rate {
             return samples.to_vec();
         }
-        let mut g = field.lock().unwrap();
+        let mut g = field.lock();
         if g.is_none() {
             *g = octopus_asr_local::audio::AudioResampler::new_to(from_rate, to_rate).ok();
         }
@@ -100,7 +101,7 @@ impl SharedAudioState {
         // denoise 锁：本块持有；期间调用 stream_resample(down_sampler) 会短暂同时持有
         // down_sampler 锁——顺序固定（denoise→down_sampler），无反向获取，不死锁。
         let enhanced_48k: Option<Vec<f32>> = if denoise_on {
-            let mut g = self.denoise.lock().unwrap();
+            let mut g = self.denoise.lock();
             if let Some(denoise) = g.as_mut() {
                 // 原生 → 48k（流式 down_sampler）
                 let s48k = self.stream_resample(&self.down_sampler, raw, rate, 48000, flush);
@@ -169,7 +170,7 @@ impl SharedAudioState {
                             .chunks(channels)
                             .map(|c| c.iter().sum::<f32>() / channels as f32)
                             .collect();
-                        samples.lock().unwrap().extend_from_slice(&mono);
+                        samples.lock().extend_from_slice(&mono);
                     }
                 },
                 |err| error!("Audio error: {}", err),
@@ -186,7 +187,7 @@ impl SharedAudioState {
                                     / channels as f32
                             })
                             .collect();
-                        samples.lock().unwrap().extend_from_slice(&mono);
+                        samples.lock().extend_from_slice(&mono);
                     }
                 },
                 |err| error!("Audio error: {}", err),
@@ -205,7 +206,7 @@ impl SharedAudioState {
                                     / channels as f32
                             })
                             .collect();
-                        samples.lock().unwrap().extend_from_slice(&mono);
+                        samples.lock().extend_from_slice(&mono);
                     }
                 },
                 |err| error!("Audio error: {}", err),
@@ -220,7 +221,7 @@ impl SharedAudioState {
     /// Begin capturing: clear buffer, set recording flag, build and play CPAL stream.
     /// 同时初始化 RNNoise 降噪（会话起点）：enabled 则建/重置实例，否则置 None。
     pub fn start(&self, device_name: &str) -> Result<()> {
-        self.samples.lock().unwrap().clear();
+        self.samples.lock().clear();
         self.is_recording.store(true, Ordering::Relaxed);
 
         // 降噪初始化：enabled 则建/重置实例；失败降级为 None（直通），仅 warn，
@@ -228,7 +229,7 @@ impl SharedAudioState {
         let cfg = octopus_asr_local::config::load_app_config_cached();
         let mode = octopus_asr_local::denoise::DenoiseMode::from_u8(cfg.denoise_mode);
         {
-            let mut g = self.denoise.lock().unwrap();
+            let mut g = self.denoise.lock();
             if mode != octopus_asr_local::denoise::DenoiseMode::Off {
                 match octopus_asr_local::denoise::DenoiseProcessor::new(mode) {
                     Ok(p) => {
@@ -248,13 +249,13 @@ impl SharedAudioState {
             }
         }
         // 流式采样器：新会话起点清空，首次 process_pipeline 时 lazy 重建
-        *self.down_sampler.lock().unwrap() = None;
-        *self.resampler.lock().unwrap() = None;
+        *self.down_sampler.lock() = None;
+        *self.resampler.lock() = None;
 
         let stream = self.build_stream(device_name)?;
         stream.play()?;
 
-        *self.stream.lock().unwrap() = Some(stream);
+        *self.stream.lock() = Some(stream);
         debug!("Recording started");
         Ok(())
     }
@@ -265,14 +266,14 @@ impl SharedAudioState {
     pub fn stop(&self) -> Result<Vec<f32>> {
         self.is_recording.store(false, Ordering::Relaxed);
 
-        let mut stream_guard = self.stream.lock().unwrap();
+        let mut stream_guard = self.stream.lock();
         if let Some(s) = stream_guard.take() {
             let _ = s.pause();
             debug!("CPAL stream paused and dropped");
         }
         drop(stream_guard);
 
-        let raw = std::mem::take(&mut *self.samples.lock().unwrap());
+        let raw = std::mem::take(&mut *self.samples.lock());
         debug!("Recording stopped, {} raw samples", raw.len());
 
         let rate = self.sample_rate.load(Ordering::Relaxed);
@@ -282,8 +283,8 @@ impl SharedAudioState {
             self.process_pipeline(&raw, rate, true)
         };
         // 会话结束：清空流式状态（下次 start lazy 重建）
-        *self.resampler.lock().unwrap() = None;
-        *self.down_sampler.lock().unwrap() = None;
+        *self.resampler.lock() = None;
+        *self.down_sampler.lock() = None;
         Ok(resampled)
     }
 
@@ -303,7 +304,7 @@ impl SharedAudioState {
     /// 流式语义：process_pipeline flush=false——denoise 的 GRU 状态与两个采样器缓冲
     /// 跨调用连续保持，不 flush 尾部（降噪物理连续性，spec §6）。
     pub fn drain_samples(&self) -> Vec<f32> {
-        let raw = std::mem::take(&mut *self.samples.lock().unwrap());
+        let raw = std::mem::take(&mut *self.samples.lock());
         if raw.is_empty() {
             return Vec::new();
         }

@@ -594,7 +594,7 @@ impl Pipeline for VadSegmentedPipeline {
 mod tests {
     use super::*;
     use crate::config::PolishMode;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     /// 直接 impl 新 trait 的 fake（不经过 StreamingRunner），测 StreamingPipeline 承载层。
     struct FakePipelineEngine {
@@ -626,7 +626,7 @@ mod tests {
     }
     impl StreamingPipelineEngine for FakePipelineEngine {
         fn tick(&mut self, _samples: &[f32]) -> Vec<TranscriptEvent> {
-            std::mem::take(&mut *self.tick_out.lock().unwrap())
+            std::mem::take(&mut *self.tick_out.lock())
         }
         fn finish(&mut self) -> TranscriptEvent {
             self.finish_out.clone()

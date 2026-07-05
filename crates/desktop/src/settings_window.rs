@@ -4,7 +4,7 @@
 //! macOS：打开设置窗口时切换到 Regular 激活策略（Dock 显示图标），
 //! 关闭时切回 Accessory（仅托盘）。
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use tauri::{Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 const SETTINGS_WIDTH: f64 = 800.0;
@@ -24,7 +24,7 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
         let _ = window.set_focus();
         // 窗口已存在：暂存页面 + emit 让前端切页
         if let Some(ref page) = initial_page {
-            *PENDING_PAGE.lock().unwrap() = Some(page.clone());
+            *PENDING_PAGE.lock() = Some(page.clone());
             let _ = app_handle.emit("settings://navigate", page.clone());
         }
         return;
@@ -42,7 +42,7 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
 
     // 暂存初始页面，等前端 mount 后调 get_initial_page 拉取
     if let Some(page) = initial_page {
-        *PENDING_PAGE.lock().unwrap() = Some(page);
+        *PENDING_PAGE.lock() = Some(page);
     }
 
     let _ = WebviewWindowBuilder::new(
@@ -61,7 +61,7 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
 /// 前端 mount 后调用，拉取并清除暂存的初始页面。
 #[tauri::command]
 pub fn get_initial_page() -> Option<String> {
-    PENDING_PAGE.lock().unwrap().take()
+    PENDING_PAGE.lock().take()
 }
 
 /// 设置窗口关闭后回调：仅当无其他常规窗口存活时才切回 Accessory（仅托盘）。

@@ -424,7 +424,7 @@ pub fn run() {
 
             // 运行时共享配置——唯一真相源（Arc<RwLock<AppConfig>>）
             let runtime_config: runtime_config::SharedRuntimeConfig =
-                std::sync::Arc::new(std::sync::RwLock::new(config.clone()));
+                std::sync::Arc::new(parking_lot::RwLock::new(config.clone()));
             app.manage(runtime_config.clone());
 
             // 3. Create Coordinator

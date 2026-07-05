@@ -5,7 +5,7 @@ pub trait PinWindow {
 
 #[cfg(target_os = "macos")]
 mod macos {
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
     use objc2::rc::Retained;
     use objc2::{define_class, msg_send, sel, AnyThread, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
@@ -132,7 +132,7 @@ mod macos {
 
                 window.makeKeyAndOrderFront(None);
 
-                PIN_WINDOWS.lock().unwrap().push(SendWindow(window));
+                PIN_WINDOWS.lock().push(SendWindow(window));
                 log::info!("Pin window created at ({},{}) {}x{}", x, y, width, height);
             }
         }
@@ -141,7 +141,7 @@ mod macos {
     /// 关闭所有贴图窗口并清理引用（防 NSWindow 泄漏）。
     #[allow(dead_code)]
     pub fn close_all_pin_windows() {
-        let mut windows = PIN_WINDOWS.lock().unwrap();
+        let mut windows = PIN_WINDOWS.lock();
         if let Some(_mtm) = MainThreadMarker::new() {
             for w in windows.drain(..) {
                 unsafe {
@@ -155,7 +155,7 @@ mod macos {
 
     /// 清理已关闭的贴图窗口引用（右键关闭后调用）。
     pub fn cleanup_closed_pin_windows() {
-        let mut windows = PIN_WINDOWS.lock().unwrap();
+        let mut windows = PIN_WINDOWS.lock();
         windows.retain(|w| {
             let is_closed: bool = unsafe { msg_send![&w.0, isVisible] };
             is_closed

@@ -169,7 +169,7 @@ fn now_millis() -> i64 {
 /// `tx` is wrapped in `Mutex` to satisfy Tauri's `Send + Sync` requirement
 /// for managed state.
 pub struct Coordinator {
-    tx: std::sync::Mutex<Sender<Command>>,
+    tx: parking_lot::Mutex<Sender<Command>>,
 }
 
 /// 流式识别 tick 间隔（毫秒）
@@ -224,7 +224,7 @@ impl Coordinator {
                         }
                         // 仅在 Idle（开新会话）时同步运行时覆盖；STOP 时不动 asr_engine
                         if matches!(stage, Stage::Idle) {
-                            let rc = runtime_config.read().unwrap();
+                            let rc = runtime_config.read();
                             config.asr_engine = match octopus_asr_local::config::resolve_active_engine(&rc.asr_engine) {
                                 Ok(_) => rc.asr_engine.clone(),
                                 Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
@@ -262,7 +262,7 @@ impl Coordinator {
                     }
                     Command::StreamingTick => {
                         {
-                            let rc = runtime_config.read().unwrap();
+                            let rc = runtime_config.read();
                             config.polish_mode = rc.polish_mode;
                         }
                         if let Stage::Streaming { transcript, .. } = &mut stage {
@@ -277,7 +277,7 @@ impl Coordinator {
                     #[cfg(feature = "cloud")]
                     Command::CloudStreamingTick => {
                         {
-                            let rc = runtime_config.read().unwrap();
+                            let rc = runtime_config.read();
                             config.polish_mode = rc.polish_mode;
                         }
                         if let Stage::Streaming { transcript, .. } = &mut stage {
@@ -291,7 +291,7 @@ impl Coordinator {
                     }
                     Command::VadSegmentedTick => {
                         {
-                            let rc = runtime_config.read().unwrap();
+                            let rc = runtime_config.read();
                             config.polish_mode = rc.polish_mode;
                         }
                         if let Stage::VadSegmented { transcript, .. }
@@ -410,7 +410,7 @@ impl Coordinator {
                         // 设置窗口 / 工具栏改了 RuntimeConfig 字段——立即同步到 config 快照，
                         // 无需等下次 Toggle。用于 polish_llm 等运行时可变字段。
                         // asr_engine 不在此路径（需要重建引擎实例，必须走 Toggle）。
-                        let rc = runtime_config.read().unwrap();
+                        let rc = runtime_config.read();
                         sync_runtime_fields(&mut config, &rc);
                         debug!("UpdateRuntime: polish_llm='{}', polish_mode={:?}",
                                config.polish_llm, config.polish_mode);
@@ -439,110 +439,99 @@ impl Coordinator {
         });
 
         Self {
-            tx: std::sync::Mutex::new(tx_self),
+            tx: parking_lot::Mutex::new(tx_self),
         }
     }
 
     /// 发送 toggle 命令
     pub fn toggle(&self) {
-        if let Ok(tx) = self.tx.lock() {
+        let tx = self.tx.lock();
             if tx.send(Command::Toggle).is_err() {
                 error!("Coordinator channel closed");
             }
-        }
     }
 
     /// 发送 cancel 命令
     pub fn cancel(&self) {
-        if let Ok(tx) = self.tx.lock() {
+        let tx = self.tx.lock();
             if tx.send(Command::Cancel).is_err() {
                 error!("Coordinator channel closed");
             }
-        }
     }
 
     /// 发送 discard 命令（放弃当前识别：停止录音 + 保留 DB 记录，不粘贴不入剪贴板）
     pub fn discard(&self) {
-        if let Ok(tx) = self.tx.lock() {
+        let tx = self.tx.lock();
             if tx.send(Command::Discard).is_err() {
                 error!("Coordinator channel closed");
             }
-        }
     }
 
     /// 发送立即润色命令（工具栏按钮触发，忽略 polish_mode）
     pub fn polish_now(&self) {
-        if let Ok(tx) = self.tx.lock() {
+        let tx = self.tx.lock();
             if tx.send(Command::PolishNow).is_err() {
                 error!("Coordinator channel closed");
             }
-        }
     }
 
     /// 进入编辑态
     pub fn enter_edit_mode(&self) {
-        if let Ok(tx) = self.tx.lock() {
+        let tx = self.tx.lock();
             if tx.send(Command::EnterEditMode).is_err() {
                 error!("Coordinator channel closed");
             }
-        }
     }
 
     /// 更新编辑缓冲（前端 input 防抖推送）
     pub fn update_edit_buffer(&self, text: String) {
-        if let Ok(tx) = self.tx.lock() {
+        let tx = self.tx.lock();
             if tx.send(Command::UpdateEditBuffer { text }).is_err() {
                 error!("Coordinator channel closed");
             }
-        }
     }
 
     /// 提交编辑
     pub fn commit_edit(&self, text: String) {
-        if let Ok(tx) = self.tx.lock() {
+        let tx = self.tx.lock();
             if tx.send(Command::CommitEdit { text }).is_err() {
                 error!("Coordinator channel closed");
             }
-        }
     }
 
     /// 取消编辑（不写 DB）
     pub fn cancel_edit(&self) {
-        if let Ok(tx) = self.tx.lock() {
+        let tx = self.tx.lock();
             if tx.send(Command::CancelEdit).is_err() {
                 error!("Coordinator channel closed");
             }
-        }
     }
 
     /// 前端点击光标定位：char offset → 通过命令通道投递（stage 在 spawn 线程，
     /// 主线程不持有）。命令循环里 handle_set_caret 调 stage_transcript.set_caret。
     pub fn set_caret(&self, offset: usize) {
-        if let Ok(tx) = self.tx.lock() {
+        let tx = self.tx.lock();
             if tx.send(Command::SetCaret { offset }).is_err() {
                 error!("Coordinator channel closed");
             }
-        }
     }
 
     /// 前端拖选选中替换：char 范围 [start,end) → 通过命令通道投递。命令循环里调
     /// stage_transcript.set_selection（记录待删 + 劈 caret 到 start）。首个 delta 到达时真删。
     pub fn set_selection(&self, start: usize, end: usize) {
-        if let Ok(tx) = self.tx.lock() {
+        let tx = self.tx.lock();
             if tx.send(Command::SetSelection { start, end }).is_err() {
                 error!("Coordinator channel closed");
             }
-        }
     }
 
     /// 通知 coordinator 重读 RuntimeConfig 同步可变字段到 config 快照。
     /// 设置窗口 / 工具栏改完 RuntimeConfig 后调用，让 polish_llm 等字段立即生效。
     pub fn update_runtime(&self) {
-        if let Ok(tx) = self.tx.lock() {
+        let tx = self.tx.lock();
             if tx.send(Command::UpdateRuntime).is_err() {
                 error!("Coordinator channel closed");
             }
-        }
     }
 }
 
@@ -1996,7 +1985,7 @@ static DB_SHUTDOWN: AtomicBool = AtomicBool::new(false);
 
 /// 后台写线程句柄（shutdown_db 用于 join，等待排空完成）。
 /// 用 `Mutex<Option<>>` 包裹：`JoinHandle::join` 需要所有权，shutdown 时 take 出来 join。
-static DB_HANDLE: std::sync::OnceLock<std::sync::Mutex<Option<std::thread::JoinHandle<()>>>> =
+static DB_HANDLE: std::sync::OnceLock<parking_lot::Mutex<Option<std::thread::JoinHandle<()>>>> =
     std::sync::OnceLock::new();
 
 /// 处理单条 DB 命令（主循环与关机排空共用）。
@@ -2091,7 +2080,7 @@ pub fn shutdown_db() {
     if DB_SENDER.get().is_some() {
         DB_SHUTDOWN.store(true, Ordering::SeqCst);
         if let Some(cell) = DB_HANDLE.get() {
-            if let Some(handle) = cell.lock().unwrap().take() {
+            if let Some(handle) = cell.lock().take() {
                 let _ = handle.join();
             }
         }
@@ -2124,7 +2113,7 @@ fn get_db_sender() -> &'static std::sync::mpsc::Sender<DbCommand> {
             }
             info!("Background DB writer thread exiting");
         });
-        let _ = DB_HANDLE.set(std::sync::Mutex::new(Some(handle)));
+        let _ = DB_HANDLE.set(parking_lot::Mutex::new(Some(handle)));
         tx
     })
 }

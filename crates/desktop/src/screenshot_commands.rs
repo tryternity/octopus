@@ -1,4 +1,4 @@
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::ClipboardHandle;
@@ -77,8 +77,8 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         .map_err(|e| format!("获取显示器失败: {}", e))?;
 
     // 清理旧数据 + 旧窗口
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    ALL_CAPTURES.lock().clear();
+    PENDING_IMAGES.lock().clear();
     READY_COUNT.store(0, std::sync::atomic::Ordering::SeqCst);
     TOTAL_WINDOWS.store(0, std::sync::atomic::Ordering::SeqCst);
     let old_labels: Vec<String> = app_handle
@@ -135,8 +135,8 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         let b64 = general_purpose::STANDARD.encode(&jpg_bytes);
 
         // 暂存
-        PENDING_IMAGES.lock().unwrap().push((label.clone(), b64));
-        ALL_CAPTURES.lock().unwrap().push((label.clone(), ScreenCaptureClone {
+        PENDING_IMAGES.lock().push((label.clone(), b64));
+        ALL_CAPTURES.lock().push((label.clone(), ScreenCaptureClone {
             rgba_bytes: capture.rgba_bytes.clone(),
             width: capture.width,
             height: capture.height,
@@ -212,8 +212,8 @@ pub async fn ocr_screenshot(
     };
     let png_bytes = png_bytes.clone();
 
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    ALL_CAPTURES.lock().clear();
+    PENDING_IMAGES.lock().clear();
 
     // SHA-256 去重 → WebP → 图片入库
     let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
@@ -362,8 +362,8 @@ pub async fn save_screenshot_dialog(
     };
     let png_bytes = png_bytes.clone();
 
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    ALL_CAPTURES.lock().clear();
+    PENDING_IMAGES.lock().clear();
 
     // 先关闭截图窗口，恢复正常屏幕，再弹保存对话框
     close_all_screenshot_windows(&app_handle);
@@ -398,8 +398,8 @@ pub async fn confirm_screenshot_with_data(
     let png_bytes = png_bytes.clone();
 
     // 清空所有暂存
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    ALL_CAPTURES.lock().clear();
+    PENDING_IMAGES.lock().clear();
 
     // SHA-256 去重
     let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
@@ -454,7 +454,7 @@ pub async fn confirm_screenshot_with_data(
 pub fn get_screenshot_image(label: String) -> Result<tauri::ipc::Response, String> {
     // 取出对应的 base64（克隆而非 remove，兼容 StrictMode 双 mount）
     let b64 = {
-        let pending = PENDING_IMAGES.lock().unwrap();
+        let pending = PENDING_IMAGES.lock();
         pending
             .iter()
             .find(|(l, _)| *l == label)
@@ -482,7 +482,7 @@ pub async fn confirm_screenshot(
 ) -> Result<(), String> {
     // 1. 取对应窗口的全屏数据
     let full = {
-        let mut all = ALL_CAPTURES.lock().unwrap();
+        let mut all = ALL_CAPTURES.lock();
         all.iter()
             .position(|(l, _)| *l == label)
             .map(|i| all.remove(i).1)
@@ -490,8 +490,8 @@ pub async fn confirm_screenshot(
     .ok_or("无截图数据")?;
 
     // 清空所有暂存
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    ALL_CAPTURES.lock().clear();
+    PENDING_IMAGES.lock().clear();
 
     // 2. 裁剪选区
     let fake_full = octopus_capx::capture::ScreenCapture {
@@ -566,8 +566,8 @@ pub async fn confirm_screenshot(
 /// 取消截图：关所有窗口
 #[tauri::command]
 pub async fn cancel_screenshot(app_handle: tauri::AppHandle) -> Result<(), String> {
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    ALL_CAPTURES.lock().clear();
+    PENDING_IMAGES.lock().clear();
     close_all_screenshot_windows(&app_handle);
     Ok(())
 }
@@ -580,15 +580,15 @@ pub async fn pin_screenshot(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let full = {
-        let mut all = ALL_CAPTURES.lock().unwrap();
+        let mut all = ALL_CAPTURES.lock();
         all.iter()
             .position(|(l, _)| *l == label)
             .map(|i| all.remove(i).1)
     }
     .ok_or("无截图数据")?;
 
-    ALL_CAPTURES.lock().unwrap().clear();
-    PENDING_IMAGES.lock().unwrap().clear();
+    ALL_CAPTURES.lock().clear();
+    PENDING_IMAGES.lock().clear();
 
     let sel_win = app_handle
         .get_webview_window(&label)
@@ -690,7 +690,7 @@ fn save_frontmost_app() {
             if let Some(name) = app.localizedName() {
                 log::info!("Scroll screenshot: saved frontmost app '{}'", name.to_string());
             }
-            let mut guard = PREV_ACTIVE_APP.lock().unwrap();
+            let mut guard = PREV_ACTIVE_APP.lock();
             *guard = Some(SendApp(app));
         } else {
             log::info!("Scroll screenshot: ignored saving current app");
@@ -701,7 +701,7 @@ fn save_frontmost_app() {
 #[cfg(target_os = "macos")]
 fn activate_prev_app(win: &tauri::WebviewWindow) {
     let app_opt = {
-        let guard = PREV_ACTIVE_APP.lock().unwrap();
+        let guard = PREV_ACTIVE_APP.lock();
         guard.as_ref().map(|p| p.0.clone())
     };
     let _ = win.run_on_main_thread(move || {

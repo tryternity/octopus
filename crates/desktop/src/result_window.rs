@@ -2,7 +2,7 @@
 
 use log::debug;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use tauri::{Emitter, Manager};
 
 // 窗口物理固定 720×480：setSize/setFrame 在 transparent + decorations(false) 悬浮窗上被
@@ -91,7 +91,7 @@ pub fn create_result_window(app: &tauri::AppHandle) {
 #[tauri::command]
 pub fn result_window_ready(app_handle: tauri::AppHandle) {
     WINDOW_READY.store(true, Ordering::Relaxed);
-    let pending = PENDING_TEXT.lock().unwrap().take();
+    let pending = PENDING_TEXT.lock().take();
     if let Some(text) = pending {
         show_result(&app_handle, &text);
     }
@@ -196,7 +196,7 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
     // store(true)+take 互斥——消除「load(false) 后、写 pending 前 ready 已 take 走 None」
     // 导致该文本滞留（应用启动首帧文本丢失 / 不弹窗）的 TOCTOU 竞态。
     let need_emit = {
-        let mut guard = PENDING_TEXT.lock().unwrap();
+        let mut guard = PENDING_TEXT.lock();
         if WINDOW_READY.load(Ordering::Relaxed) {
             true
         } else {
@@ -224,7 +224,7 @@ pub fn show_result(app: &tauri::AppHandle, text: &str) {
 pub fn update_result(app: &tauri::AppHandle, text: &str, insertion: bool, caret: usize) {
     // 同 show_result：判 ready + 写 pending 进同一锁，消除与 result_window_ready 的竞态。
     let need_emit = {
-        let mut guard = PENDING_TEXT.lock().unwrap();
+        let mut guard = PENDING_TEXT.lock();
         if WINDOW_READY.load(Ordering::Relaxed) {
             true
         } else {
@@ -244,7 +244,7 @@ pub fn update_result(app: &tauri::AppHandle, text: &str, insertion: bool, caret:
 
 /// 清空结果窗口内容并隐藏（粘贴完成后调用）。
 pub fn clear_result(app: &tauri::AppHandle) {
-    *PENDING_TEXT.lock().unwrap() = None;
+    *PENDING_TEXT.lock() = None;
     if WINDOW_READY.load(Ordering::Relaxed) {
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
             let _ = window.emit("clear-result", ());

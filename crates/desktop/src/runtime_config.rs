@@ -3,7 +3,8 @@
 //! 写 config.yaml（重启生效）。取代旧 RuntimeConfig 部分镜像——详见下方 type 定义注释。
 
 use serde::Serialize;
-use std::sync::{Arc, RwLock};
+use std::sync::Arc;
+use parking_lot::RwLock;
 use tauri::State;
 
 use crate::config::PolishMode;
@@ -239,7 +240,7 @@ pub fn build_ocr_options_public(
 
 #[tauri::command]
 pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
-    let g = rc.read().unwrap();
+    let g = rc.read();
     // hide_toolbar / edit_shortcut 等所有字段均从共享 AppConfig 读——set_config 写镜像后立即生效。
     let edit_shortcut = g.edit_shortcut.clone();
     // polish_llm 有效 = 裸名非空且在 DB 启用 LLM 列表中（DB 查询失败保守为 false）。
@@ -263,7 +264,7 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
 
 #[tauri::command]
 pub fn list_asr_engines(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<EngineOption>, String> {
-    let current_raw = rc.read().unwrap().asr_engine.clone();
+    let current_raw = rc.read().asr_engine.clone();
     let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     Ok(build_asr_options(&current_raw, engines))
 }
@@ -314,7 +315,7 @@ pub fn switch_asr_engine(
         format!("{}:{}:{}", engine.provider, octopus_asr_local::config::category_label(engine.category), name)
     };
     {
-        let mut g = rc.write().unwrap();
+        let mut g = rc.write();
         g.asr_engine = spec.clone();
     }
     let engine_mode = match octopus_infra::config::load_config() {
@@ -339,7 +340,7 @@ pub fn switch_asr_engine(
 pub fn set_polish_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
     let pm = u8_to_polish_mode(mode).ok_or_else(|| format!("polish_mode={} 非法（应为 0/1/2）", mode))?;
     {
-        let mut g = rc.write().unwrap();
+        let mut g = rc.write();
         g.polish_mode = pm;
     }
     if let Err(e) = persist_polish_mode(mode) {
@@ -359,7 +360,7 @@ pub fn set_denoise_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<
         return Err(format!("denoise_mode={} 非法（应为 0/1/2）", mode));
     }
     {
-        let mut g = rc.write().unwrap();
+        let mut g = rc.write();
         g.denoise_mode = mode;
     }
     if let Err(e) = persist_denoise_mode(mode) {
@@ -378,7 +379,7 @@ pub fn set_denoise_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<
 /// 列出所有启用的 LLM 润色模型，并标记当前 polish_llm。
 #[tauri::command]
 pub fn list_llm_models(rc: State<'_, SharedRuntimeConfig>) -> Result<Vec<LlmOption>, String> {
-    let current = rc.read().unwrap().polish_llm.clone();
+    let current = rc.read().polish_llm.clone();
     let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
     Ok(build_llm_options(&current, llms))
 }
@@ -407,7 +408,7 @@ pub fn switch_polish_llm(
         format!("{}:{}:{}", model.provider, model.category, model.model_name)
     };
     {
-        let mut g = rc.write().unwrap();
+        let mut g = rc.write();
         g.polish_llm = spec.clone();
     }
     if let Err(e) = persist_polish_llm(&spec) {

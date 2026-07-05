@@ -2,7 +2,7 @@
 
 use crate::config::AppConfig;
 use log::info;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use tauri::image::Image;
 use tauri::menu::{Menu, MenuItem, PredefinedMenuItem};
 use tauri::tray::TrayIconBuilder;
@@ -84,7 +84,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
 
     // 存储 handle 供后续更新使用
     {
-        let mut items = TRAY_ITEMS.lock().unwrap();
+        let mut items = TRAY_ITEMS.lock();
         *items = Some(TrayItems {
             toggle: toggle.clone(),
             engine_info: engine_info.clone(),
@@ -142,7 +142,7 @@ pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
         TrayState::Processing => "处理中…".to_string(),
     };
 
-    let items = TRAY_ITEMS.lock().unwrap();
+    let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {
         let _ = tray_items.toggle.set_text(label);
     }
@@ -151,7 +151,7 @@ pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
 /// Update the engine info menu item label dynamically.
 pub fn update_tray_engine_label(_app: &tauri::AppHandle, engine_name: &str, engine_mode: &str) {
     let label = format!("引擎  {} · {}", engine_name, engine_mode);
-    let items = TRAY_ITEMS.lock().unwrap();
+    let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {
         let _ = tray_items.engine_info.set_text(label);
     }
@@ -159,7 +159,7 @@ pub fn update_tray_engine_label(_app: &tauri::AppHandle, engine_name: &str, engi
 
 /// Update the screenshot menu item: 正常 ↔ 灰掉
 pub fn update_tray_screenshot_label(active: bool) {
-    let items = TRAY_ITEMS.lock().unwrap();
+    let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {
         let _ = tray_items.screenshot.set_enabled(!active);
     }

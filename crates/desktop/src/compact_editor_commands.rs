@@ -8,7 +8,7 @@
 //! - get_clipboard_item_type(item_id)：读 item_type（前端据此渲染 textarea 或 ImagePreview）
 //! - close_compact_editor：关窗
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 use serde::Serialize;
 use tauri::{Emitter, Manager};
 
@@ -32,14 +32,14 @@ struct PendingTab {
 static PENDING_TAB: Mutex<Option<PendingTab>> = Mutex::new(None);
 
 fn store_pending_tab(item_id: i64, source: &str) {
-    *PENDING_TAB.lock().unwrap() = Some(PendingTab {
+    *PENDING_TAB.lock() = Some(PendingTab {
         item_id,
         source: source.to_string(),
     });
 }
 
 fn take_pending_tab() -> Option<PendingTab> {
-    PENDING_TAB.lock().unwrap().take()
+    PENDING_TAB.lock().take()
 }
 
 /// 打开统一查看器并定位到某 tab：

@@ -78,9 +78,9 @@ pub fn list_downloadable_models() -> Result<Vec<DownloadableModel>, String> {
 /// 设置下载镜像（写运行时 AppConfig + 持久化 DB）。
 #[tauri::command]
 pub fn set_download_mirror(value: String, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
-    let mut cfg = rc.read().unwrap().clone();
+    let mut cfg = rc.read().clone();
     cfg.download_mirror = value;
-    *rc.write().unwrap() = cfg.clone();
+    *rc.write() = cfg.clone();
     octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
     Ok(())
 }
@@ -105,7 +105,7 @@ pub async fn download_model(
 
     // 2. 未命中：下载（复用阶段1 download crate）。
     let mirror = {
-        let g = rc.read().unwrap();
+        let g = rc.read();
         let m = g.download_mirror.trim().to_string();
         if m.is_empty() { None } else { Some(m) }
     };

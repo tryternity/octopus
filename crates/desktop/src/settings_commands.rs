@@ -28,7 +28,7 @@ pub fn get_config(rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigResponse, 
     let cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
     let config_json = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
 
-    let g = rc.read().unwrap();
+    let g = rc.read();
     let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
     let asr_engines = crate::runtime_config::build_asr_options_public(&g.asr_engine, engines);
 
@@ -90,7 +90,7 @@ pub fn set_config(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, mut cfg) = {
-        let g = rc.read().unwrap();
+        let g = rc.read();
         (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.clone())
     };
     apply_config_value(&mut cfg, &key, &value)?;
@@ -158,7 +158,7 @@ pub fn set_config(
     }
 
     {
-        let mut g = rc.write().unwrap();
+        let mut g = rc.write();
         *g = cfg.clone();
     }
     octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
