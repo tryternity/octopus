@@ -30,6 +30,8 @@ pub struct AsrEngineManager {
     cached_engines: RwLock<HashMap<String, Arc<dyn OfflineAsrEngine>>>,
     active_engine: RwLock<Option<Arc<dyn OfflineAsrEngine>>>,
     active_engine_name: RwLock<String>,
+    /// 引擎缓存上限（每引擎数百 MB，桌面默认 2 控内存；server 多模型并发可放大）。
+    max_cache: usize,
 }
 
 impl Default for AsrEngineManager {
@@ -39,11 +41,18 @@ impl Default for AsrEngineManager {
 }
 
 impl AsrEngineManager {
+    /// 桌面/cli 默认：缓存上限 2。
     pub fn new() -> Self {
+        Self::new_with_capacity(2)
+    }
+
+    /// 指定引擎缓存上限。server 等多模型并发场景用更大值（如 8），避免频繁淘汰重载。
+    pub fn new_with_capacity(max_cache: usize) -> Self {
         Self {
             cached_engines: RwLock::new(HashMap::new()),
             active_engine: RwLock::new(None),
             active_engine_name: RwLock::new(String::new()),
+            max_cache: max_cache.max(1),
         }
     }
 
@@ -51,11 +60,13 @@ impl AsrEngineManager {
     ///
     /// `model_name` 支持 spec 格式（`provider:category:model_name` / `model_name`），
     /// 内部解析为裸 model_name 后作为缓存键。
+    ///
+    /// 单路场景（cli/desktop）：active 单例语义合理，用此方法。
+    /// 多并发场景（server）改用 [`get_engine`](Self::get_engine)，避免全局 active 竞态。
     pub fn switch_model(&self, model_name: &str) -> Result<()> {
-        let parsed = config::parse_model_spec(model_name);
-        let bare_name = parsed.model_name();
+        let bare_name = config::parse_model_spec(model_name).model_name();
 
-        // Quick check under read lock
+        // Quick check under read lock（避免重复切同引擎）
         {
             let active_name = self.active_engine_name.read().unwrap();
             if *active_name == bare_name {
@@ -63,74 +74,7 @@ impl AsrEngineManager {
             }
         }
 
-        // Check if already in cache
-        let cached = {
-            let cache = self.cached_engines.read().unwrap();
-            cache.get(bare_name).cloned()
-        };
-
-        let engine = if let Some(eng) = cached {
-            eng
-        } else {
-            // Not cached, load configuration and instantiate
-            let cfg = config::load_config()?;
-            let (category, _bare, entry) = config::resolve_engine_in_config(&cfg, model_name)
-                .with_context(|| format!("Unknown engine model: {}", model_name))?;
-
-            let new_eng: Arc<dyn OfflineAsrEngine> = match category {
-                config::EngineCategory::Whisper => Arc::new(WhisperEngine::new(entry)?),
-                config::EngineCategory::SenseVoiceOrig => Arc::new(SenseVoiceOrigEngine::new(entry)?),
-                config::EngineCategory::Paraformer => Arc::new(ParaformerEngine::new(entry)?),
-                config::EngineCategory::Qwen3Asr => Arc::new(Qwen3AsrEngine::new(entry)?),
-                config::EngineCategory::Zipformer => {
-                    // 检测有无 decoder.onnx：有则为 Transducer（RNN-T），无则为 CTC
-                    let hf_path = config::resolve_model_dir(&entry.source)?;
-                    let has_decoder = hf_path.join("decoder.onnx").exists();
-                    if has_decoder {
-                        Arc::new(ZipformerTransducerEngine::new(entry)?)
-                    } else {
-                        Arc::new(ZipformerCtcEngine::new(entry)?)
-                    }
-                }
-                // Aliyun 云端引擎由 Task 2 实现（AliyunEngine）；Task 1 阶段本地实例化无实现。
-                config::EngineCategory::Aliyun => anyhow::bail!(
-                    "阿里云云端 ASR 引擎尚未接入（spec='{}'，见 Task 2 AliyunEngine）",
-                    model_name
-                ),
-                config::EngineCategory::Moonshine => Arc::new(MoonshineEngine::new(entry)?),
-                config::EngineCategory::FireRed => Arc::new(FireRedEngine::new(entry)?),
-                config::EngineCategory::ByteDance => anyhow::bail!(
-                    "字节跳动云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
-                    model_name
-                ),
-                config::EngineCategory::Tencent => anyhow::bail!(
-                    "腾讯云云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
-                    model_name
-                ),
-                config::EngineCategory::Baidu => anyhow::bail!(
-                    "百度云云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
-                    model_name
-                ),
-            };
-
-            // Write to cache
-            let current_active = {
-                self.active_engine_name.read().unwrap().clone()
-            };
-            let mut cache = self.cached_engines.write().unwrap();
-            if cache.len() >= 2 {
-                let key_to_remove = cache.keys()
-                    .find(|k| *k != &current_active)
-                    .cloned()
-                    .or_else(|| cache.keys().next().cloned());
-                if let Some(k) = key_to_remove {
-                    log::info!("Evicting engine '{}' from cache to free up memory", k);
-                    cache.remove(&k);
-                }
-            }
-            cache.insert(bare_name.to_string(), new_eng.clone());
-            new_eng
-        };
+        let engine = self.load_engine_into_cache(model_name)?;
 
         // Switch active references
         let mut active = self.active_engine.write().unwrap();
@@ -139,6 +83,85 @@ impl AsrEngineManager {
         *active_name = bare_name.to_string();
 
         Ok(())
+    }
+
+    /// 只读获取引擎 `Arc`（不改全局 active），供 server 等多并发场景替代 `switch_model`。
+    ///
+    /// 同模型并发受引擎内部 `Mutex<Session>` 串行化（见 `ParaformerEngine`/`SenseVoiceOrigEngine`），
+    /// 跨模型天然并行——不再需要 server 级全局 `inference_lock`。
+    pub fn get_engine(&self, model_name: &str) -> Result<Arc<dyn OfflineAsrEngine>> {
+        self.load_engine_into_cache(model_name)
+    }
+
+    /// 解析 spec → 查缓存 → 未命中加载入缓存（按 `max_cache` 淘汰，保护 active），返回 `Arc`。
+    /// 不改 `active_engine`/`active_engine_name`。`switch_model` 与 `get_engine` 共用此逻辑。
+    fn load_engine_into_cache(&self, model_name: &str) -> Result<Arc<dyn OfflineAsrEngine>> {
+        let bare_name = config::parse_model_spec(model_name).model_name();
+
+        // 命中缓存直接返回（不触发淘汰/加载）
+        {
+            let cache = self.cached_engines.read().unwrap();
+            if let Some(eng) = cache.get(bare_name) {
+                return Ok(eng.clone());
+            }
+        }
+
+        // 未命中：加载配置 + 实例化
+        let cfg = config::load_config()?;
+        let (category, _bare, entry) = config::resolve_engine_in_config(&cfg, model_name)
+            .with_context(|| format!("Unknown engine model: {}", model_name))?;
+
+        let new_eng: Arc<dyn OfflineAsrEngine> = match category {
+            config::EngineCategory::Whisper => Arc::new(WhisperEngine::new(entry)?),
+            config::EngineCategory::SenseVoiceOrig => Arc::new(SenseVoiceOrigEngine::new(entry)?),
+            config::EngineCategory::Paraformer => Arc::new(ParaformerEngine::new(entry)?),
+            config::EngineCategory::Qwen3Asr => Arc::new(Qwen3AsrEngine::new(entry)?),
+            config::EngineCategory::Zipformer => {
+                // 检测有无 decoder.onnx：有则为 Transducer（RNN-T），无则为 CTC
+                let hf_path = config::resolve_model_dir(&entry.source)?;
+                let has_decoder = hf_path.join("decoder.onnx").exists();
+                if has_decoder {
+                    Arc::new(ZipformerTransducerEngine::new(entry)?)
+                } else {
+                    Arc::new(ZipformerCtcEngine::new(entry)?)
+                }
+            }
+            // Aliyun 云端引擎由 Task 2 实现（AliyunEngine）；Task 1 阶段本地实例化无实现。
+            config::EngineCategory::Aliyun => anyhow::bail!(
+                "阿里云云端 ASR 引擎尚未接入（spec='{}'，见 Task 2 AliyunEngine）",
+                model_name
+            ),
+            config::EngineCategory::Moonshine => Arc::new(MoonshineEngine::new(entry)?),
+            config::EngineCategory::FireRed => Arc::new(FireRedEngine::new(entry)?),
+            config::EngineCategory::ByteDance => anyhow::bail!(
+                "字节跳动云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
+                model_name
+            ),
+            config::EngineCategory::Tencent => anyhow::bail!(
+                "腾讯云云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
+                model_name
+            ),
+            config::EngineCategory::Baidu => anyhow::bail!(
+                "百度云云端 ASR 引擎仅支持流式模式（需 WS 连接），不支持本地实例化（spec='{}'）",
+                model_name
+            ),
+        };
+
+        // 入缓存 + 按 max_cache 淘汰（保护当前 active，避免淘汰正用的引擎）
+        let current_active = self.active_engine_name.read().unwrap().clone();
+        let mut cache = self.cached_engines.write().unwrap();
+        if cache.len() >= self.max_cache {
+            let key_to_remove = cache.keys()
+                .find(|k| *k != &current_active)
+                .cloned()
+                .or_else(|| cache.keys().next().cloned());
+            if let Some(k) = key_to_remove {
+                log::info!("Evicting engine '{}' from cache to free up memory", k);
+                cache.remove(&k);
+            }
+        }
+        cache.insert(bare_name.to_string(), new_eng.clone());
+        Ok(new_eng)
     }
 
     /// Transcribe using the active engine.

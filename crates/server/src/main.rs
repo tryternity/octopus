@@ -34,8 +34,6 @@ struct Cli {
 struct AppState {
     engine_manager: Arc<AsrEngineManager>,
     active_model: String,
-    /// 请求级锁：保护 switch+transcribe 原子性，防止并发请求互相切模型
-    inference_lock: Arc<tokio::sync::Mutex<()>>,
 }
 
 // ── API types ──
@@ -125,11 +123,22 @@ async fn transcribe(
     let start = std::time::Instant::now();
 
     let cfg = octopus_asr_local::pipeline::PipelineConfig::from_app_config(language);
-    let engine_manager = state.engine_manager.clone();
-    let _guard = state.inference_lock.lock().await;
+    // get_engine 取 Arc（不改全局 active）：同模型并发受引擎内 Mutex<Session> 串行化、
+    // 跨模型天然并行——不再需要全局 inference_lock 串行化所有 batch 请求。
+    let engine_arc = match state.engine_manager.get_engine(&engine) {
+        Ok(e) => e,
+        Err(e) => {
+            return (
+                axum::http::StatusCode::INTERNAL_SERVER_ERROR,
+                Json(ErrorResponse {
+                    error: format!("load engine '{}': {}", engine, e),
+                }),
+            )
+                .into_response();
+        }
+    };
     let text = match tokio::task::spawn_blocking(move || {
-        engine_manager.switch_model(&engine)
-            .and_then(|_| engine_manager.transcribe_batch(&samples, &cfg))
+        octopus_asr_local::pipeline::transcribe_batch(engine_arc.as_ref(), &samples, &cfg)
     })
     .await
     {
@@ -294,7 +303,8 @@ async fn main() -> anyhow::Result<()> {
     let app_cfg = octopus_infra::config::load_config()?;
     let active_model = octopus_asr_local::config::resolve_active_engine(&app_cfg.asr_engine)?.name;
 
-    let engine_manager = Arc::new(AsrEngineManager::new());
+    // server 多模型并发：缓存上限放大到 8，避免频繁淘汰重载（每引擎数百 MB）。
+    let engine_manager = Arc::new(AsrEngineManager::new_with_capacity(8));
     tracing::info!("Preheating active ASR model: {}", active_model);
     if let Err(e) = engine_manager.switch_model(&active_model) {
         tracing::error!("Failed to preheat active ASR model {}: {}", active_model, e);
@@ -303,7 +313,6 @@ async fn main() -> anyhow::Result<()> {
     let state = AppState {
         engine_manager,
         active_model,
-        inference_lock: Arc::new(tokio::sync::Mutex::new(())),
     };
 
     let app = Router::new()
