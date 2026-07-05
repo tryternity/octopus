@@ -95,18 +95,15 @@ pub async fn get_clipboard_item_type(item_id: i64) -> Result<String, String> {
 }
 
 /// 读取语音识别记录的全文（只读 tab）。
+/// 转译记录已合并入 clipboard_history（item_type='voice'），从 content 列读全文。
 #[tauri::command]
 pub async fn get_transcription_text(id: i64) -> Result<String, String> {
-    let text = octopus_infra::db::with_db(|conn| {
-        conn.query_row(
-            "SELECT text FROM transcriptions WHERE id = ?1",
-            [&id],
-            |r| r.get::<_, String>(0),
-        )
-        .map_err(|e| anyhow::anyhow!(e))
+    let item = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::get_item_by_id(conn, id)
     })
     .map_err(|e| e.to_string())?;
-    Ok(text)
+    item.map(|i| i.content)
+        .ok_or_else(|| "条目不存在".to_string())
 }
 
 /// 关闭统一查看器窗口（触发 Destroyed → macOS 切 Accessory）。

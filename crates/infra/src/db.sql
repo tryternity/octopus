@@ -4,22 +4,6 @@
 
 -- ── 表结构 ──────────────────────────────────────────────────────────────────
 
-CREATE TABLE IF NOT EXISTS transcriptions (
-    id            INTEGER PRIMARY KEY,   -- 应用写入的毫秒戳，非 AUTOINCREMENT
-    created_at    TEXT    NOT NULL,
-    engine        TEXT    NOT NULL,
-    engine_mode   TEXT,
-    polish_status TEXT    NOT NULL DEFAULT 'off',
-    polish_model  TEXT,
-    duration_ms   INTEGER,
-    char_count    INTEGER,
-    segments      TEXT,                       -- 段 JSON [{kind:raw|polished|edited, text}]（段模型真相源）
-    text          TEXT                        -- = finish_text 扁平（search/clipboard/history 直读）
-);
-
-CREATE INDEX IF NOT EXISTS idx_trans_created ON transcriptions(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_trans_engine  ON transcriptions(engine);
-
 CREATE TABLE IF NOT EXISTS models (
     id            INTEGER PRIMARY KEY AUTOINCREMENT,
     domain        TEXT    NOT NULL,                       -- 'asr' | 'llm'
@@ -205,43 +189,26 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('active_polish_prompt',     '1',                                    '激活的润色 prompt id（prompts 表 id 字段）');
 
 -- ── 剪贴板历史（clipboard_history 表）─────────────────────────────────────────
--- 管理 text/image/file 三类剪贴板内容 + ASR 识别文本来源标记。
+-- 统一存储 text/voice/ocr/image/file，吞并原 transcriptions 表。
+-- content + ref_data + meta_info 三层数据模型。
 
 CREATE TABLE IF NOT EXISTS clipboard_history (
-    id                INTEGER PRIMARY KEY,       -- 毫秒戳（同 transcriptions 约定）
-    item_type         TEXT    NOT NULL,          -- 'text' | 'image' | 'file'
-    source            TEXT    NOT NULL,          -- 'clipboard' | 'asr'
-    content           TEXT    NOT NULL,          -- text:文本; image:blob_hash; file:JSON路径数组
-    search_text       TEXT,                      -- FTS5 索引文本（text=内容; image=NULL; file=路径拼接）
-    is_favorite       INTEGER NOT NULL DEFAULT 0,
-    created_at        TEXT    NOT NULL,
-
-    -- image 元数据
-    blob_hash         TEXT,                      -- SHA-256(PNG bytes)，去重 + 文件引用
-    width             INTEGER,
-    height            INTEGER,
-    has_thumbnail     INTEGER NOT NULL DEFAULT 0,
-
-    -- file 元数据
-    file_count        INTEGER,
-
-    -- 富文本标记（text 类型，二期扩展用）
-    is_rich           INTEGER NOT NULL DEFAULT 0,
-
-    -- ASR 元数据（source='asr' 时填充）
-    transcription_id  INTEGER,                   -- 外键 → transcriptions.id
-    polish_status     TEXT,                      -- 'off' | 'applied' | 'edited'
-    engine            TEXT,
-    model             TEXT,
-
-    FOREIGN KEY (transcription_id) REFERENCES transcriptions(id) ON DELETE SET NULL
+    id              INTEGER PRIMARY KEY,       -- 毫秒戳
+    item_type       TEXT    NOT NULL,          -- 'text' | 'voice' | 'ocr' | 'image' | 'file'
+    content         TEXT    NOT NULL DEFAULT '',  -- voice/ocr/text: 文本全文; image/file: ""
+    ref_data        TEXT,                      -- image: blob_hash; file: JSON 路径数组; voice/ocr/text: NULL
+    meta_info       TEXT,                      -- JSON 元数据（按 item_type 不同 schema，见 spec §2.3）
+    is_favorite     INTEGER NOT NULL DEFAULT 0,
+    is_rich         INTEGER NOT NULL DEFAULT 0,
+    created_at      TEXT    NOT NULL,
+    has_thumbnail   INTEGER NOT NULL DEFAULT 0,
+    segments        TEXT                       -- 段 JSON（仅 voice，段模型真相源）
 );
 
 CREATE INDEX IF NOT EXISTS idx_clip_created   ON clipboard_history(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_clip_type      ON clipboard_history(item_type);
-CREATE INDEX IF NOT EXISTS idx_clip_source    ON clipboard_history(source);
-CREATE INDEX IF NOT EXISTS idx_clip_hash      ON clipboard_history(blob_hash);
 CREATE INDEX IF NOT EXISTS idx_clip_favorite  ON clipboard_history(is_favorite);
+CREATE INDEX IF NOT EXISTS idx_clip_ref       ON clipboard_history(ref_data);
 
 -- ── 图片 BLOB 存储（image_data 表）─────────────────────────────────────────
 -- 替代文件系统 clipboard_images/，WebP 无损 + 缩略图存 DB，引用计数回收。
@@ -256,24 +223,25 @@ CREATE TABLE IF NOT EXISTS image_data (
 );
 
 -- FTS5 全文索引（trigram tokenizer 支持 CJK 子串匹配）
+-- 索引 content 列：voice/ocr/text 有文本被索引，image/file content="" 自动跳过
 CREATE VIRTUAL TABLE IF NOT EXISTS clipboard_history_fts USING fts5(
-    search_text,
+    content,
     content='clipboard_history',
     content_rowid='id',
     tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS clip_fts_ai AFTER INSERT ON clipboard_history BEGIN
-    INSERT INTO clipboard_history_fts(rowid, search_text) VALUES (new.id, new.search_text);
+    INSERT INTO clipboard_history_fts(rowid, content) VALUES (new.id, new.content);
 END;
 CREATE TRIGGER IF NOT EXISTS clip_fts_ad AFTER DELETE ON clipboard_history BEGIN
-    INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, search_text)
-    VALUES('delete', old.id, old.search_text);
+    INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, content)
+    VALUES('delete', old.id, old.content);
 END;
-CREATE TRIGGER IF NOT EXISTS clip_fts_au AFTER UPDATE OF search_text ON clipboard_history BEGIN
-    INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, search_text)
-    VALUES('delete', old.id, old.search_text);
-    INSERT INTO clipboard_history_fts(rowid, search_text) VALUES (new.id, new.search_text);
+CREATE TRIGGER IF NOT EXISTS clip_fts_au AFTER UPDATE OF content ON clipboard_history BEGIN
+    INSERT INTO clipboard_history_fts(clipboard_history_fts, rowid, content)
+    VALUES('delete', old.id, old.content);
+    INSERT INTO clipboard_history_fts(rowid, content) VALUES (new.id, new.content);
 END;
 
 -- 剪贴板配置项 seed

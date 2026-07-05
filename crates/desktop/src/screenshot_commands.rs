@@ -3,6 +3,15 @@ use tauri::{Emitter, Manager, State, WebviewUrl, WebviewWindowBuilder};
 use base64::{Engine, engine::general_purpose};
 use octopus_clipboard::ClipboardHandle;
 
+/// 字节数 → 人类可读大小：<1M 显示 K（整数）、≥1M 显示 M（1 位小数）。
+fn format_file_size(bytes: u64) -> String {
+    if bytes < 1024 * 1024 {
+        format!("{}K", (bytes + 511) / 1024)
+    } else {
+        format!("{:.1}M", bytes as f64 / 1024.0 / 1024.0)
+    }
+}
+
 /// 截图数据副本（不含 monitor 坐标，仅像素数据用于裁剪）
 #[derive(Clone)]
 struct ScreenCaptureClone {
@@ -238,14 +247,14 @@ pub async fn ocr_screenshot(
             octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
                 id,
                 item_type: octopus_clipboard::ItemType::Image,
-                content: hash.clone(),
-                search_text: String::new(),
+                content: String::new(),
+                ref_data: Some(hash.clone()),
+                meta_info: Some(octopus_clipboard::MetaInfo {
+                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
+                    ..Default::default()
+                }),
                 created_at: octopus_clipboard::store::iso_now(),
-                blob_hash: Some(hash),
-                width: Some(crop_w as i64),
-                height: Some(crop_h as i64),
                 has_thumbnail: Some(1),
-                file_count: None,
                 is_rich: false,
             })
         }).map_err(|e| e.to_string())?;
@@ -267,10 +276,10 @@ pub async fn ocr_screenshot(
     let ocr_id_opt: Option<i64> = if !text.trim().is_empty() {
         // ⚠️ current_ocr_meta 在 with_db 外取：内部 load_config_key→with_db，闭包内调
         // = std::Mutex 同线程重入死锁（详见 insert_ocr_clipboard_item 注释）。
-        let meta = crate::clipboard_commands::current_ocr_meta();
+        let (ocr_engine, ocr_model) = crate::clipboard_commands::current_ocr_meta();
         log::info!("[ocr-screenshot] before insert_ocr_item");
         let ocr_id = octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::insert_ocr_item(conn, &text, meta)
+            octopus_clipboard::store::insert_ocr_item(conn, &text, &ocr_engine, &ocr_model)
         })
         .map_err(|e| e.to_string())?;
         log::info!("[ocr-screenshot] after insert_ocr_item id={}", ocr_id);
@@ -422,14 +431,14 @@ pub async fn confirm_screenshot_with_data(
             octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
                 id: octopus_clipboard::store::chrono_millis(),
                 item_type: octopus_clipboard::ItemType::Image,
-                content: hash.clone(),
-                search_text: String::new(),
+                content: String::new(),
+                ref_data: Some(hash.clone()),
+                meta_info: Some(octopus_clipboard::MetaInfo {
+                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
+                    ..Default::default()
+                }),
                 created_at: octopus_clipboard::store::iso_now(),
-                blob_hash: Some(hash),
-                width: Some(crop_w as i64),
-                height: Some(crop_h as i64),
                 has_thumbnail: Some(1),
-                file_count: None,
                 is_rich: false,
             })
         }).map_err(|e| e.to_string())?;
@@ -529,14 +538,14 @@ pub async fn confirm_screenshot(
             octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
                 id: octopus_clipboard::store::chrono_millis(),
                 item_type: octopus_clipboard::ItemType::Image,
-                content: hash.clone(),
-                search_text: String::new(),
+                content: String::new(),
+                ref_data: Some(hash.clone()),
+                meta_info: Some(octopus_clipboard::MetaInfo {
+                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
+                    ..Default::default()
+                }),
                 created_at: octopus_clipboard::store::iso_now(),
-                blob_hash: Some(hash),
-                width: Some(crop_w as i64),
-                height: Some(crop_h as i64),
                 has_thumbnail: Some(1),
-                file_count: None,
                 is_rich: false,
             })
         }).map_err(|e| e.to_string())?;
@@ -1329,11 +1338,14 @@ pub async fn start_scroll_recording(
             if let Err(e) = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
                     id: id_for_db, item_type: octopus_clipboard::ItemType::Image,
-                    content: hash_for_db.clone(), search_text: String::new(),
+                    content: String::new(),
+                    ref_data: Some(hash_for_db.clone()),
+                    meta_info: Some(octopus_clipboard::MetaInfo {
+                        w: Some(img.width()), h: Some(img.height()), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
+                        ..Default::default()
+                    }),
                     created_at: octopus_clipboard::store::iso_now(),
-                    blob_hash: Some(hash_for_db.clone()), width: Some(img.width() as i64),
-                    height: Some(img.height() as i64), has_thumbnail: Some(1),
-                    file_count: None, is_rich: false,
+                    has_thumbnail: Some(1), is_rich: false,
                 })
             }) {
                 log::error!("[scroll] Failed to insert clipboard_item: {}", e);
