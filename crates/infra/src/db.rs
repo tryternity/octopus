@@ -5,7 +5,7 @@
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::OnceLock;
 
 // ── Model config schema（DB models 表）──
 
@@ -91,7 +91,7 @@ impl CompatibleLlmConfig {
     }
 }
 
-static DB: OnceLock<Mutex<Connection>> = OnceLock::new();
+static DB: OnceLock<parking_lot::Mutex<Connection>> = OnceLock::new();
 
 /// 编译期嵌入的建表 + seed SQL（来自 crates/infra/src/db.sql）
 const INIT_SQL: &str = include_str!("db.sql");
@@ -113,7 +113,7 @@ pub fn ensure_db() -> Result<()> {
     let conn = Connection::open(&path)
         .with_context(|| format!("Failed to open DB at {}", path.display()))?;
     init_schema(&conn)?;
-    let _ = DB.set(Mutex::new(conn));
+    let _ = DB.set(parking_lot::Mutex::new(conn));
     Ok(())
 }
 
@@ -126,7 +126,7 @@ where
         ensure_db()?;
     }
     let mutex = DB.get().context("DB not initialized")?;
-    let conn = mutex.lock().unwrap();
+    let conn = mutex.lock();
     f(&conn)
 }
 
