@@ -57,15 +57,29 @@ async fn download_file(url: &str, dest: &Path) -> Result<()> {
     use futures_util::StreamExt;
     use tokio::io::AsyncWriteExt;
 
-    let response = reqwest::get(url).await?;
+    const MAX_DOWNLOAD_SIZE: u64 = 200 * 1024 * 1024; // 200MB
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(300))
+        .build()?;
+    let response = client.get(url).send().await?;
     if !response.status().is_success() {
         anyhow::bail!("HTTP download failed with status: {}", response.status());
+    }
+    if let Some(len) = response.content_length() {
+        if len > MAX_DOWNLOAD_SIZE {
+            anyhow::bail!("download too large ({}MB > 200MB limit)", len / 1024 / 1024);
+        }
     }
 
     let mut file = fs::File::create(dest).await?;
     let mut stream = response.bytes_stream();
+    let mut total: u64 = 0;
     while let Some(item) = stream.next().await {
         let chunk = item.context("Error while downloading chunk")?;
+        total += chunk.len() as u64;
+        if total > MAX_DOWNLOAD_SIZE {
+            anyhow::bail!("download exceeded size limit");
+        }
         file.write_all(&chunk).await?;
     }
     file.flush().await?;
@@ -78,7 +92,7 @@ async fn prepare_dependencies() -> Result<()> {
 
     // 1. 检查并自动下载 yt-dlp
     if get_binary_path("yt-dlp").await.is_err() {
-        eprintln!("yt-dlp not found. Downloading latest yt-dlp binary...");
+        println!("yt-dlp not found. Downloading latest yt-dlp binary...");
         let url = if cfg!(target_os = "windows") {
             "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
         } else {
@@ -97,7 +111,7 @@ async fn prepare_dependencies() -> Result<()> {
             perms.set_mode(0o755);
             fs::set_permissions(&dest_path, perms).await?;
         }
-        eprintln!("yt-dlp downloaded successfully and made executable.");
+        println!("yt-dlp downloaded successfully and made executable.");
     }
 
     // 2. 检查 ffmpeg
@@ -192,7 +206,7 @@ async fn main() -> Result<()> {
     }
 
     // 1. 获取元数据 JSON
-    eprintln!("Retrieving video metadata...");
+    println!("Retrieving video metadata...");
     let info_output = Command::new(&yt_dlp)
         .arg("--dump-json")
         .arg("-f")
@@ -205,7 +219,7 @@ async fn main() -> Result<()> {
 
     if !info_output.status.success() {
         let err = String::from_utf8_lossy(&info_output.stderr);
-        eprintln!("Failed to get video info from yt-dlp: {}", err);
+        println!("Failed to get video info from yt-dlp: {}", err);
         std::process::exit(1);
     }
 
@@ -228,10 +242,10 @@ async fn main() -> Result<()> {
     // 2. 执行音频下载（如果开启了 --unclear 且文件已存在，则跳过下载）
     let cache_exists = downloaded_filepath.exists();
     if cache_exists && args.unclear {
-        eprintln!("Cached video file found at: {:?}", downloaded_filepath);
-        eprintln!("Skipping download (--unclear is enabled).");
+        println!("Cached video file found at: {:?}", downloaded_filepath);
+        println!("Skipping download (--unclear is enabled).");
     } else {
-        eprintln!("Downloading audio track...");
+        println!("Downloading audio track...");
         let download_status = Command::new(&yt_dlp)
             .arg("-f")
             .arg("ba/b")
