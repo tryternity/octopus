@@ -208,16 +208,29 @@ impl Downloader {
         let mut writer = std::io::BufWriter::with_capacity(self.config.buf_kb * 1024, file);
         let mut stream = resp.bytes_stream();
         let mut written_this_call: u64 = 0;
+        // 200 路径截断：服务端忽略 Range 返回全文时，仅写入段区间 [seg.begin, seg.end]
+        let seg_capacity = if status == 200 { seg.end - seg.begin + 1 } else { u64::MAX };
         while let Some(chunk) = stream.next().await {
             if let Some(c) = cancel { if c.is_cancelled() { return Err(DownloadError::Cancelled); } }
-            let bytes = chunk.map_err(map_reqwest_transient)?;
+            let mut bytes = chunk.map_err(map_reqwest_transient)?;
+            // 200 截断：丢弃超出段区间的字节
+            if status == 200 && written_this_call + bytes.len() as u64 > seg_capacity {
+                let keep = (seg_capacity - written_this_call) as usize;
+                bytes.truncate(keep);
+            }
+            if bytes.is_empty() {
+                break;
+            }
             writer.write_all(&bytes)?;
             written_this_call += bytes.len() as u64;
             counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+            if status == 200 && written_this_call >= seg_capacity {
+                break;
+            }
         }
         writer.flush()?;
-        // 200 重写时，该段 downloaded 应等于整段长；206 续传则累加
-        let new_downloaded = if status == 200 { (write_offset - seg.begin) + written_this_call } else { seg.downloaded + written_this_call };
+        // 200 截断：downloaded = 段大小；206 续传则累加
+        let new_downloaded = if status == 200 { written_this_call } else { seg.downloaded + written_this_call };
         Ok(Segment { begin: seg.begin, end: seg.end, downloaded: new_downloaded })
     }
 
@@ -560,21 +573,34 @@ async fn download_segment_once_with_client(
     let mut writer = std::io::BufWriter::with_capacity(cfg.buf_kb * 1024, file);
     let mut stream = resp.bytes_stream();
     let mut written: u64 = 0;
+    // 200 路径截断：服务端忽略 Range 返回全文时，仅写入段区间 [seg.begin, seg.end]
+    let seg_capacity = if status == 200 { seg.end - seg.begin + 1 } else { u64::MAX };
     while let Some(chunk) = stream.next().await {
         if let Some(c) = cancel {
             if c.is_cancelled() {
                 return Err(DownloadError::Cancelled);
             }
         }
-        let bytes = chunk.map_err(map_reqwest_transient)?;
+        let mut bytes = chunk.map_err(map_reqwest_transient)?;
+        // 200 截断：丢弃超出段区间的字节
+        if status == 200 && written + bytes.len() as u64 > seg_capacity {
+            let keep = (seg_capacity - written) as usize;
+            bytes.truncate(keep);
+        }
+        if bytes.is_empty() {
+            break;
+        }
         writer.write_all(&bytes)?;
         written += bytes.len() as u64;
         counter.fetch_add(bytes.len() as u64, Ordering::Relaxed);
+        if status == 200 && written >= seg_capacity {
+            break;
+        }
     }
     writer.flush()?;
-    // 200 重写：该段 downloaded 应等于整段已写字节；206 续传则累加
+    // 200 截断：downloaded = 段大小；206 续传则累加
     let new_downloaded = if status == 200 {
-        (write_offset - seg.begin) + written
+        written
     } else {
         seg.downloaded + written
     };
@@ -639,6 +665,36 @@ mod tests {
         assert_eq!(counter.load(Ordering::Relaxed), body_len);
         let written = std::fs::read(&part).unwrap();
         assert_eq!(written, body);
+    }
+
+    #[tokio::test]
+    async fn download_segment_200_truncates_to_segment_range() {
+        // 服务端忽略 Range，返回 200 全文（30 字节），段 [10,19] 仅应写入 10 字节
+        let server = MockServer::start();
+        let full_body: Vec<u8> = (0..30u8).collect();
+        let total_len = full_body.len() as u64;
+        server.mock(|when, then| {
+            when.method(Method::GET).path("/f");
+            then.status(200).body(full_body.clone());
+        });
+        let dir = tempdir().unwrap();
+        let dest = dir.path().join("f");
+        let _file = Downloader::ensure_part_file(&dest, total_len).unwrap();
+        let part = part_path(&dest);
+        let seg = Segment { begin: 10, end: 19, downloaded: 0 };
+        let counter = AtomicU64::new(0);
+        let dl = Downloader::new(DownloadConfig::default()).unwrap();
+        let out = dl
+            .download_segment(&server.url("/f"), &part, seg, &counter, None)
+            .await
+            .unwrap();
+        // downloaded 应 = 段大小 10，不是全文 30
+        assert_eq!(out.downloaded, 10, "200 路径应截断为段大小");
+        // .part 大小应 = total（预分配不变）
+        let written = std::fs::read(&part).unwrap();
+        assert_eq!(written.len(), total_len as usize, ".part 大小应 = total");
+        // seg.begin=10 处应写入全文前 10 字节
+        assert_eq!(&written[10..20], &full_body[0..10], "段区间内容正确");
     }
 
     #[test]
