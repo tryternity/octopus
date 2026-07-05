@@ -47,12 +47,10 @@ pub fn event_to_json(ev: &TranscriptEvent) -> String {
         TranscriptEvent::Final(t) => ("final", t),
         TranscriptEvent::Error(t) => ("error", t),
     };
-    // 先转反斜杠，再转引号/换行，避免引号转义产生的反斜杠被二次转义。
-    let escaped = text
-        .replace('\\', r"\\")
-        .replace('"', r#"\""#)
-        .replace('\n', r"\n");
-    format!(r#"{{"type":"{}","text":"{}"}}"#, ty, escaped)
+    // 用 serde_json 安全转义所有控制字符（含 \t \r 等）
+    let escaped = serde_json::Value::String(text.to_string()).to_string();
+    // escaped 形如 "text"（含引号），直接插入 JSON
+    format!(r#"{{"type":"{}","text":{}}}"#, ty, escaped)
 }
 
 #[cfg(test)]
@@ -88,6 +86,16 @@ mod tests {
             event_to_json(&ev),
             r#"{"type":"final","text":"a\"b\\c\nd"}"#
         );
+    }
+
+    #[test]
+    fn event_to_json_escapes_control_chars() {
+        // ASR 输出含 \t \r 等控制字符，必须产生合法 JSON
+        let ev = TranscriptEvent::Partial("hello\tworld\r\n".into());
+        let json = event_to_json(&ev);
+        let parsed: serde_json::Value = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed["type"], "partial");
+        assert_eq!(parsed["text"], "hello\tworld\r\n");
     }
 
     /// 可编程 fake：第一次 accept 返 Some，之后 None；finish 返固定串。

@@ -24,7 +24,7 @@ struct Cli {
     #[arg(long, env = "OCTOPUS_PORT", default_value = "3000")]
     port: u16,
     /// Listen address
-    #[arg(long, env = "OCTOPUS_HOST", default_value = "0.0.0.0")]
+    #[arg(long, env = "OCTOPUS_HOST", default_value = "127.0.0.1")]
     host: String,
 }
 
@@ -311,13 +311,36 @@ async fn main() -> anyhow::Result<()> {
         .route("/models", get(models))
         .route("/transcribe", post(transcribe))
         .route("/ws/stream", get(ws_stream))
-        .layer(CorsLayer::permissive())
+        .layer(axum::extract::DefaultBodyLimit::max(100 * 1024 * 1024)) // 100MB
+        .layer(CorsLayer::new()) // 同源策略（本地工具默认不开放 CORS）
         .with_state(state);
 
     let addr = format!("{}:{}", cli.host, cli.port);
     let listener = TcpListener::bind(&addr).await?;
     tracing::info!("octopus-server listening on {}", addr);
-    axum::serve(listener, app).await?;
+    axum::serve(listener, app)
+        .with_graceful_shutdown(shutdown_signal())
+        .await?;
 
     Ok(())
+}
+
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        tokio::signal::ctrl_c().await.expect("install ctrl_c handler");
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("install signal handler")
+            .recv()
+            .await;
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        _ = ctrl_c => {},
+        _ = terminate => {},
+    }
+    tracing::info!("server shutting down...");
 }
