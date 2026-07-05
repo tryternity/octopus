@@ -385,6 +385,14 @@ pub fn set_selection(&mut self, start: usize, end: usize) {
 
 修复：`append_segment` 开头（delta 非空检查后）消费 `pending_delete`，与 `apply_engine_full` 对称。新增 `set_selection_then_first_append_segment_replaces` 回归测试（§11.5）。**通用教训**：`Transcript` 有两条 delta 入口（流式 `apply_engine_full` / 分段 `append_segment`），任何「首词触发」型运行时状态（如 `pending_delete`）都必须在两入口对称消费，否则只在对应引擎下失效——两入口相关改动务必成对核对。
 
+### 11.8 跨会话选中替换（Idle → Toggle 两阶段，方案 C）+ Bug C cloud 对称（2026-07-05）
+
+§11–§11.7 是**活跃态**（录音中）选中替换。跨会话选中替换是另一维度：录音结束（Idle）后选中已识别文本 → 全局热键 Toggle 开新会话 → 新语音替换选区（而非追加末尾）。机制（**方案 C，2026-07-05，a79ab97**）：移除后端 `idle_selection` 长期缓存（失焦残留 / 编辑后 stale text 指错位 / 拖选后编辑残留三类 bug），改前端 `currentSelectionRef` 缓存 `{start,end,text}`；Toggle 在 Idle **不直接开录音**——`emit("prepare-record", prepare_id)` + 200ms 看门狗 + 进 `pending_prepare` 等待态；前端 listen prepare-record → `invoke("start_recording", {prepare_id, selection: [text,start,end]|null})`（注意 `selection` 是 tuple `(String,usize,usize)`，serde 按 JSON **数组**反序列化，前端必须传数组非对象）；后端校验 prepare_id 匹配后调 `begin_recording(selection)`：`Some` → `commit_edit(text)`+`set_selection(s,e)` 种子 transcript（复用 §11 的 pending_delete 机制，首个 delta 删旧插新）；`None` → 普通开。看门狗超时 `FallbackStart` 兜底普通开。详见 architecture.md「跨会话选中」。
+
+**Bug C（2026-07-05，1f3e162）**：`begin_recording` 的三分支（cloud / streaming / vad）必须**对称植入** selection 种子。初版 cloud 分支（`use_cloud_streaming`）直接 `Transcript::new` 空实例、漏消费 `selection`，致云端用户跨会话选中替换退化为末尾追加（local streaming/vad 早已正确植入）。根因与 §11.7 **同构**——§11.7 是两条 delta 入口（`apply_engine_full`/`append_segment`）对称消费 `pending_delete`，Bug C 是 `begin_recording` 三分支对称植入 selection 种子。修复：cloud 分支按 streaming/vad 对称 `commit_edit`+`set_selection` 种子 + `is_continuation` 延续态展示旧文本。**通用教训（合并 §11.7）**：选中替换的状态植入/消费须在**所有引擎路径**对称——活跃态两 delta 入口 + 跨会话三分支，任一漏即在该路径下失效；新增引擎路径或改动 selection/pending_delete 生命周期时，务必成对核对全部入口与分支。
+
+> 附：`SetSelection` 命令仅携带 `{start, end}`（`text` 字段在方案 C 试行期曾被误加，已于 1f3e162 同批清理移除，回归本节 §11 描述）。
+
 ---
 
 ## 12. 前端渲染健壮性修复（2026-07-04，e2e 后 4 bug）
