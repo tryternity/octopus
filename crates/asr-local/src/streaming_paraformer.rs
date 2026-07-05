@@ -189,6 +189,16 @@ impl StreamingParaformer {
                 return Ok(Some(full_text));
             }
         }
+
+        // Drain 已消费样本（防 raw_samples 全会话累积无界增长）
+        // 安全边界：丢弃已处理帧对应的样本，保留 1 帧 overlap 余量
+        let drain_samples = (self.num_processed_frames as usize)
+            .saturating_sub(1)
+            * FBANK_FRAME_SHIFT;
+        if drain_samples > 0 && drain_samples < self.raw_samples.len() {
+            self.raw_samples.drain(..drain_samples);
+        }
+
         Ok(None)
     }
 
