@@ -4,6 +4,23 @@
 
 use anyhow::{Context, Result};
 use rusqlite::{params, Connection};
+
+/// 收集 query_map 结果，遇到失败行时 log::warn 并跳过（而非静默丢弃）。
+/// 替代 `.filter_map(|r| r.ok()).collect()`——后者吞掉所有错误，
+/// 模型加载/历史搜索中损坏行会被静默忽略，难以排查。
+fn collect_rows<T, E: std::fmt::Display>(
+    rows: impl Iterator<Item = Result<T, E>>,
+    context: &str,
+) -> Vec<T> {
+    let mut out = Vec::new();
+    for row in rows {
+        match row {
+            Ok(v) => out.push(v),
+            Err(e) => log::warn!("DB row skip ({}): {}", context, e),
+        }
+    }
+    out
+}
 use std::collections::HashMap;
 use std::sync::OnceLock;
 
@@ -441,8 +458,7 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
         "SELECT provider, category, model_name, source, language, description, secret_key, is_local, is_enabled, is_streaming
          FROM models WHERE domain='asr' AND is_enabled = 1",
     )?;
-    #[allow(clippy::type_complexity)] // DB 行映射，10 字段 tuple 最直接
-    let rows: Vec<(String, String, String, String, String, String, String, i32, i32, i32)> = stmt
+    let rows = stmt
         .query_map([], |row| {
             Ok((
                 row.get(0)?,
@@ -456,9 +472,11 @@ fn load_models_at(conn: &Connection) -> Result<AsrConfig> {
                 row.get(8)?,
                 row.get(9)?,
             ))
-        })?
-        .filter_map(|r| r.ok())
-        .collect();
+        })?;
+
+    #[allow(clippy::type_complexity)] // DB 行映射，10 字段 tuple 最直接
+    let rows: Vec<(String, String, String, String, String, String, String, i32, i32, i32)> =
+        collect_rows(rows, "load_models_at");
 
     let mut asr = AsrSection {
         whisper: None,
@@ -1020,7 +1038,7 @@ fn list_transcriptions_search_at(
                  ORDER BY id DESC LIMIT ?2 OFFSET ?3"
             ))?;
             let rows = stmt.query_map(params![escaped, limit, offset], row_mapper)?;
-            return Ok(rows.filter_map(|r| r.ok()).collect());
+            return Ok(collect_rows(rows, "fts5 search"));
         }
         // <3 字符回退 LIKE：trigram 无法生成 3-gram，MATCH 会无结果
         let pattern = format!("%{}%", q);
@@ -1030,7 +1048,7 @@ fn list_transcriptions_search_at(
              ORDER BY id DESC LIMIT ?2 OFFSET ?3"
         ))?;
         let rows = stmt.query_map(params![pattern, limit, offset], row_mapper)?;
-        return Ok(rows.filter_map(|r| r.ok()).collect());
+        return Ok(collect_rows(rows, "like search"));
     }
     list_transcriptions_at(conn, limit, offset)
 }

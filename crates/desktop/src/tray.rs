@@ -41,11 +41,11 @@ fn fmt_shortcut(s: &str) -> String {
 ///
 /// 菜单文案设计：操作项统一四字宽度 + 括号快捷键。
 /// 分组：语音识别 → 引擎信息（只读分隔线）→ 截图/剪贴板 → 设置/退出。
-pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
+pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), String> {
     let _ = ASR_SHORTCUT.set(config.asr_shortcut.clone());
     let toggle_text = format!("语音识别（{}）", fmt_shortcut(&config.asr_shortcut));
     let toggle = MenuItem::with_id(app, "toggle", &toggle_text, true, None::<&str>)
-        .expect("failed to create toggle menu item");
+        .map_err(|e| format!("toggle menu: {e}"))?;
     let engine_info = MenuItem::with_id(
         app,
         "engine_info",
@@ -53,34 +53,32 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
         false,
         None::<&str>,
     )
-    .expect("failed to create engine_info menu item");
+    .map_err(|e| format!("engine_info menu: {e}"))?;
 
-    // 分隔线：引擎信息 vs 功能区
     let sep1 = PredefinedMenuItem::separator(app)
-        .expect("failed to create separator");
+        .map_err(|e| format!("separator: {e}"))?;
 
     let screenshot_text = format!("开始截图（{}）", fmt_shortcut(&config.screenshot_shortcut));
     let screenshot = MenuItem::with_id(app, "screenshot", &screenshot_text, true, None::<&str>)
-        .expect("failed to create screenshot menu item");
+        .map_err(|e| format!("screenshot menu: {e}"))?;
     let clipboard_text = format!("剪  贴  板（{}）", fmt_shortcut(&config.clipboard_shortcut));
     let clipboard = MenuItem::with_id(app, "clipboard", &clipboard_text, true, None::<&str>)
-        .expect("failed to create clipboard menu item");
+        .map_err(|e| format!("clipboard menu: {e}"))?;
 
-    // 分隔线：功能区 vs 设置/退出
     let sep2 = PredefinedMenuItem::separator(app)
-        .expect("failed to create separator2");
+        .map_err(|e| format!("separator2: {e}"))?;
 
     let settings = MenuItem::with_id(app, "settings", "系统管理", true, None::<&str>)
-        .expect("failed to create settings menu item");
+        .map_err(|e| format!("settings menu: {e}"))?;
     let quit = MenuItem::with_id(app, "quit", "退出系统", true, None::<&str>)
-        .expect("failed to create quit menu item");
+        .map_err(|e| format!("quit menu: {e}"))?;
 
     let menu = Menu::with_items(app, &[
         &toggle, &engine_info, &sep1,
         &screenshot, &clipboard, &sep2,
         &settings, &quit,
     ])
-    .expect("failed to create tray menu");
+    .map_err(|e| format!("tray menu: {e}"))?;
 
     // 存储 handle 供后续更新使用
     {
@@ -130,7 +128,8 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) {
             _ => {}
         })
         .build(app)
-        .expect("failed to build tray icon");
+        .map_err(|e| format!("tray icon build: {e}"))?;
+    Ok(())
 }
 
 /// Update the toggle menu item label based on the current state.

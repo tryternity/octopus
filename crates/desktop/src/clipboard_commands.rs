@@ -240,7 +240,8 @@ pub async fn save_image_item(
 
     // 3. 目标目录 ~/Downloads/octopus/
     let downloads_dir = dirs::download_dir()
-        .unwrap_or_else(|| dirs::home_dir().expect("no home dir"))
+        .or_else(dirs::home_dir)
+        .ok_or("无法确定下载目录")?
         .join("octopus");
     std::fs::create_dir_all(&downloads_dir).map_err(|e| e.to_string())?;
 

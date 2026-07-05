@@ -262,7 +262,7 @@ pub fn run() {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
             let clipboard_handle = Arc::new(
                 octopus_clipboard::ClipboardHandle::new()
-                    .expect("Failed to init clipboard handle"),
+                    .map_err(|e| format!("Failed to init clipboard handle: {e}"))?,
             );
             app.manage(clipboard_handle.clone());
 
@@ -442,8 +442,10 @@ pub fn run() {
             );
             app.manage(coordinator);
 
-            // 4. Create Tray
-            tray::create_tray(app.handle(), &config);
+            // 4. Create Tray（失败降级：无托盘菜单仍可用快捷键操作）
+            if let Err(e) = tray::create_tray(app.handle(), &config) {
+                log::error!("Tray init failed ({}), running without tray menu", e);
+            }
 
             // 5. Create Result Window
             result_window::create_result_window(app.handle());

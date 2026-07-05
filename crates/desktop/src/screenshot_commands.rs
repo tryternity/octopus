@@ -27,6 +27,9 @@ static PENDING_IMAGES: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new());
 /// 窗口 ready 计数（前端报告 ready 后累加，达到总数后统一 show）。
 static READY_COUNT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 static TOTAL_WINDOWS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// 截图并发门控：防止狂按快捷键导致多个 start_screenshot 并发 clear/push 静态量。
+/// CAS true → 进入；已是 true → 直接返回（上一次截图仍在进行）。
+static SCREENSHOT_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// 注册截图全局快捷键。main 启动注册 + set_config 热重载共用，
 /// 与 shortcut::register_shortcut / result_window::register_edit_global_shortcut 范式一致。
@@ -54,6 +57,24 @@ pub fn register_screenshot_shortcut(
 
 #[tauri::command]
 pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String> {
+    // 并发门控：狂按快捷键/重复点击托盘时 CAS false→true 才进入；已在进行则忽略。
+    if SCREENSHOT_BUSY.compare_exchange(
+        false, true,
+        std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst,
+    ).is_err() {
+        log::debug!("screenshot already in progress, ignoring");
+        return Err("screenshot already in progress".to_string());
+    }
+    // RAII guard：函数退出时（无论 Ok/Err）释放门控
+    struct BusyGuard;
+    impl Drop for BusyGuard {
+        fn drop(&mut self) {
+            SCREENSHOT_BUSY.store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    }
+    let _guard = BusyGuard;
+
     #[cfg(target_os = "macos")]
     save_frontmost_app();
 

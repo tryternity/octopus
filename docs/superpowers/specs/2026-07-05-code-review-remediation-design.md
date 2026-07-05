@@ -129,8 +129,8 @@ pub const FILE_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
 | ID | 问题 | 位置 | 修复方案 |
 |----|------|------|---------|
 | I-F1 | unreachable!() stage 重构后 panic | `desktop/src/main.rs:102`（coordinator.rs 原三处已在 stage 重构中消失） | ✅ 改为穷举 match（显式 `PolishMode::Disabled` 分支），消除 panic 风险 |
-| I-F2 | 截图全局静态量无并发互斥 | `desktop/src/screenshot_commands.rs:24-29` | ⏳ P2：用 `AtomicBool` 门控（parking_lot 迁移已完成，并发门控待加） |
-| I-F3 | 启动期 expect 直接扼杀应用 | `desktop/src/main.rs:63,260`、`tray.rs`、`clipboard_commands.rs:243` | ✅ main.rs config 加载改 fallback default。⏳ tray/clipboard_commands 的 expect 待 P2 降级 |
+| I-F2 | 截图全局静态量无并发互斥 | `desktop/src/screenshot_commands.rs:24-29` | ✅ `start_screenshot` 入口加 `AtomicBool` CAS 门控 + RAII guard（BusyGuard Drop 释放），狂按快捷键/重复点击托盘时第二次调用直接返回 |
+| I-F3 | 启动期 expect 直接扼杀应用 | `desktop/src/main.rs:265`、`tray.rs`×11、`clipboard_commands.rs:243` | ✅ `create_tray` 返回 `Result`，11 处 expect→`map_err?`，调用方 log 降级（无托盘菜单仍可用快捷键）；clipboard handle expect→`?` 返 setup Err；`home_dir().expect`→`or_else(dirs::home_dir).ok_or?`。main.rs:470 tauri build expect 保留（真正 fatal 无降级路径） |
 
 ### 子项目 G：死代码 + clippy + 调试输出清理（P2）
 
@@ -157,6 +157,7 @@ pub const FILE_DOWNLOAD_TIMEOUT_SECS: u64 = 300;
 | M-1 | llm `max_tokens = chars × 1.2` 对中文偏低 | `llm/src/client.rs:160,182` | ✅ 改为 `× 2.0`（中文 1-2 token/char，×1.2 致润色截断；max_tokens 是上限非目标值，英文多分配无副作用） |
 | M-2 | Aliyun Fun-ASR `Authorization: bearer` 小写不统一 | `asr-cloud/src/aliyun_stream.rs:95` | ✅ 改为 `Bearer`（同文件 Qwen-ASR 路径已用大写且正常工作；RFC 7235 auth scheme case-insensitive） |
 | M-3 | 选中替换偶发失败缺诊断证据 | `desktop/src/transcript.rs` | ✅ 加 `log::debug!("[select] ...")` 覆盖 pending_delete 全生命周期（8 处），`coordinator.rs` 跨会话播种 2 处 correlation log |
+| M-4 | `filter_map(\|r\| r.ok())` 静默丢弃失败行 | `infra/src/db.rs` 4 处（load_models_at、fts5 search、like search、test） | ✅ 生产代码 3 处改 `collect_rows(rows, context)` helper——失败行 `log::warn` 并跳过（非静默）。测试代码保留 filter_map |
 
 ## 3. 技术决策汇总
 
