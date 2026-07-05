@@ -1,7 +1,11 @@
 use anyhow::{Context, Result};
 use parking_lot::Mutex;
+use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
 
+use crate::config;
 use crate::sentence_separator;
+use crate::streaming_runner::StreamingEngine;
 
 /// 统一的流式 ASR 引擎包装。
 ///
@@ -405,5 +409,164 @@ fn ends_with_punct(text: &str) -> bool {
             punctuation.contains(&last)
         }
         None => false,
+    }
+}
+
+// ── StreamingSessionManager：流式引擎复用（对齐离线 AsrEngineManager）──
+
+/// 流式引擎复用管理器：按模型缓存 `Arc<dyn StreamingEngine>`，desktop 录音时
+/// `active_session()` 取 Arc clone + `reset()` 复用，避免每次录音重载 ONNX Session。
+///
+/// 与离线 `AsrEngineManager` 的差异：流式 `StreamingSession` 有连接级状态
+/// （punct_prefix/decoder_caches…），靠 **reset 复用** 而非并发共享（ort
+/// `Session::run` 是 `&mut`，本就不能跨连接并发）。持 `Arc<dyn StreamingEngine>`
+/// 与 `StreamingRunner` 一致，便于测试注入 fake。
+pub struct StreamingSessionManager {
+    cached: RwLock<HashMap<String, Arc<dyn StreamingEngine>>>,
+    active_name: RwLock<String>,
+}
+
+impl Default for StreamingSessionManager {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl StreamingSessionManager {
+    pub fn new() -> Self {
+        Self {
+            cached: RwLock::new(HashMap::new()),
+            active_name: RwLock::new(String::new()),
+        }
+    }
+
+    /// 加载并切换 active 流式模型。spec 经 `parse_model_spec` 取裸名作缓存键；
+    /// `language` 决定段间分隔符（英文空格 / 其他中文逗号）。
+    /// 重复切同模型（active_name 已 == bare）短路返回 Ok。
+    pub fn switch_model(&self, spec: &str, language: &str) -> Result<()> {
+        let bare = config::parse_model_spec(spec).model_name().to_string();
+        {
+            let active = self.active_name.read().unwrap();
+            if *active == bare {
+                return Ok(());
+            }
+        }
+        let session = StreamingSession::new(spec, language)?;
+        self.set_active(&bare, Arc::new(session));
+        Ok(())
+    }
+
+    /// 缓存入值 + 设 active_name（内部 helper）。
+    fn set_active(&self, bare: &str, engine: Arc<dyn StreamingEngine>) {
+        self.cached.write().unwrap().insert(bare.to_string(), engine);
+        *self.active_name.write().unwrap() = bare.to_string();
+    }
+
+    /// 测试注入点：绕过真实模型加载，直接塞 fake + 设 active。
+    #[cfg(test)]
+    fn set_active_for_test(&self, bare: &str, engine: Arc<dyn StreamingEngine>) {
+        self.set_active(bare, engine);
+    }
+
+    /// 取 active session 的 Arc clone。`active_name == spec` 且缓存命中 → 直接返回（复用，不重载）；
+    /// 否则 `switch_model(spec, lang)` 懒加载后返回。模型变更（spec≠active）自动 switch 覆盖，
+    /// 故 `switch_asr_engine` 命令无需主动联动本 manager。
+    pub fn active_session(
+        &self,
+        spec: &str,
+        language: &str,
+    ) -> Result<Arc<dyn StreamingEngine>> {
+        let bare = config::parse_model_spec(spec).model_name().to_string();
+        {
+            let active = self.active_name.read().unwrap();
+            if *active == bare {
+                if let Some(e) = self.cached.read().unwrap().get(&bare) {
+                    return Ok(e.clone());
+                }
+            }
+        }
+        self.switch_model(spec, language)?;
+        self.cached
+            .read()
+            .unwrap()
+            .get(&bare)
+            .cloned()
+            .with_context(|| format!("active_session: just switched '{}' but cache miss", bare))
+    }
+
+    pub fn active_name(&self) -> String {
+        self.active_name.read().unwrap().clone()
+    }
+}
+
+#[cfg(test)]
+mod manager_tests {
+    use super::*;
+    use parking_lot::Mutex;
+
+    /// 计 reset 次数的 fake（impl StreamingEngine），绕过真实模型加载。
+    struct FakeEngine {
+        resets: Mutex<usize>,
+    }
+    impl FakeEngine {
+        fn new() -> Self {
+            Self { resets: Mutex::new(0) }
+        }
+        fn reset_count(&self) -> usize {
+            *self.resets.lock()
+        }
+    }
+    impl StreamingEngine for FakeEngine {
+        fn accept_samples(&self, _: &[f32], _: bool, _: bool) -> Result<Option<String>> {
+            Ok(None)
+        }
+        fn flush(&self, _: bool) -> Result<Option<String>> {
+            Ok(None)
+        }
+        fn finish(&self) -> Result<String> {
+            Ok(String::new())
+        }
+        fn reset(&self) {
+            *self.resets.lock() += 1;
+        }
+    }
+
+    #[test]
+    fn active_session_reuses_cached_same_arc() {
+        // set_active 注入 fake → 多次 active_session 同 spec 应返回同一 Arc（不重载）
+        let mgr = StreamingSessionManager::new();
+        let fake = Arc::new(FakeEngine::new()) as Arc<dyn StreamingEngine>;
+        mgr.set_active_for_test("modelA", fake);
+        let s1 = mgr.active_session("modelA", "zh").unwrap();
+        let s2 = mgr.active_session("modelA", "zh").unwrap();
+        assert!(Arc::ptr_eq(&s1, &s2), "复用应返回同一 Arc（不重载）");
+    }
+
+    // 注：active_session 的"加载失败 → Err"路径难单测——StreamingSession::new 走
+    // resolve_active_engine（带兜底），几乎不会失败。该错误路径由 coordinator 集成
+    // （真实模型缺失时 fallback 链）覆盖，见 coordinator.rs 录音块。
+
+    #[test]
+    fn active_name_tracks_set_active() {
+        let mgr = StreamingSessionManager::new();
+        assert_eq!(mgr.active_name(), "");
+        mgr.set_active_for_test(
+            "modelB",
+            Arc::new(FakeEngine::new()) as Arc<dyn StreamingEngine>,
+        );
+        assert_eq!(mgr.active_name(), "modelB");
+    }
+
+    #[test]
+    fn reset_propagates_to_cached_engine() {
+        // 复用前调 reset → 转发到缓存的引擎（验证 Arc<dyn StreamingEngine>::reset 可达）
+        let mgr = StreamingSessionManager::new();
+        let fake = Arc::new(FakeEngine::new());
+        let fake_for_count = fake.clone();
+        mgr.set_active_for_test("modelC", fake as Arc<dyn StreamingEngine>);
+        let s = mgr.active_session("modelC", "zh").unwrap();
+        s.reset();
+        s.reset();
+        assert_eq!(fake_for_count.reset_count(), 2, "reset 应转发到底层引擎");
     }
 }
