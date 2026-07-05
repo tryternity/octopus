@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "@/lib/utils";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import type { ClipboardItem } from "@/types/clipboard";
-import { metaParts, typeAccent } from "@/types/clipboard";
+import { metaParts, typeAccent, imageMeta } from "@/types/clipboard";
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Download, FolderOpen,
@@ -388,6 +388,9 @@ function ClipboardRow({
             {thumbSrc && (
               <img src={thumbSrc} className="w-10 h-10 rounded object-cover flex-shrink-0" alt="" />
             )}
+            <span className={cn("text-xs font-medium tabular-nums", accent)}>
+              {imageMeta(item)}
+            </span>
           </div>
         ) : item.item_type === "file" ? (
           <div className="text-xs text-stone-500 truncate">

@@ -5,7 +5,7 @@ import { invoke } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
-import { metaParts, typeAccent } from "@/types/clipboard";
+import { metaParts, typeAccent, imageMeta } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
 
 export default function ClipboardItemRow({
@@ -171,6 +171,9 @@ export default function ClipboardItemRow({
             {thumbSrc && (
               <img src={thumbSrc} className="w-9 h-9 rounded-md object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
             )}
+            <span className={cn("text-[11px] font-medium tabular-nums", accent)}>
+              {imageMeta(item)}
+            </span>
           </div>
         ) : item.item_type === "file" ? (
           <div className="text-[12px] text-muted-foreground truncate">

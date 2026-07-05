@@ -34,7 +34,7 @@ export interface ClipboardItem {
  * 按类型生成元数据片段（不含时间）：
  * text/ocr: "N字"
  * voice:    "N字 · Xs"
- * image:    "WxH · size"
+ * image:    ""（WxH·size 由组件放在缩略图旁）
  * file:     ""
  */
 export function metaParts(item: ClipboardItem): string {
@@ -49,15 +49,19 @@ export function metaParts(item: ClipboardItem): string {
       if (m?.duration_ms) parts.push(`${(m.duration_ms / 1000).toFixed(1)}s`);
       return parts.join(" · ");
     }
-    case "image": {
-      const parts: string[] = [];
-      if (m?.w && m?.h) parts.push(`${m.w}×${m.h}`);
-      if (m?.size) parts.push(m.size);
-      return parts.join(" · ");
-    }
     default:
       return "";
   }
+}
+
+/** 图片条目专用：WxH · size */
+export function imageMeta(item: ClipboardItem): string {
+  const m = item.meta_info;
+  if (!m) return "";
+  const parts: string[] = [];
+  if (m.w && m.h) parts.push(`${m.w}×${m.h}`);
+  if (m.size) parts.push(m.size);
+  return parts.join(" · ");
 }
 
 /** 类型强调色 */
