@@ -87,9 +87,13 @@ async fn run_baidu_session(
 
     // 3. 建连
     let ws_url = format!("{}?sn={}", ENDPOINT, sn);
-    let (mut ws, _resp) = connect_async(&ws_url)
-        .await
-        .with_context(|| format!("baidu WS 连接失败: {}", ws_url))?;
+    let (mut ws, _resp) = tokio::time::timeout(
+        std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
+        connect_async(&ws_url),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("baidu WS connect timeout"))?
+    .with_context(|| format!("baidu WS 连接失败: {}", ws_url))?;
 
     // 4. 发 START 帧
     let start_frame = json!({
@@ -139,10 +143,25 @@ async fn run_baidu_session(
                     None => break,
                 }
             }
-            // 收 WS 响应
-            msg = ws.next() => {
+            // 收 WS 响应（加读取超时）
+            msg = tokio::time::timeout(
+                std::time::Duration::from_secs(octopus_infra::net::WS_READ_TIMEOUT_SECS),
+                ws.next(),
+            ) => {
+                let msg = match msg {
+                    Err(_) => {
+                        let _ = result_tx.send(StreamEvent::Failed("baidu WS read timeout".into()));
+                        return Ok(());
+                    }
+                    Ok(None) => break,
+                    Ok(Some(Err(e))) => {
+                        let _ = result_tx.send(StreamEvent::Failed(format!("baidu WS 读错误: {}", e)));
+                        return Ok(());
+                    }
+                    Ok(Some(Ok(m))) => m,
+                };
                 match msg {
-                    Some(Ok(Message::Text(text))) => {
+                    Message::Text(text) => {
                         let json: Value = match serde_json::from_str(&text) {
                             Ok(v) => v,
                             Err(e) => {
@@ -192,7 +211,7 @@ async fn run_baidu_session(
                             }
                         }
                     }
-                    Some(Ok(Message::Close(_))) => {
+                    Message::Close(_) => {
                         log::debug!("baidu: WS 连接关闭");
                         let display = accumulate_display(&fin_texts, &current_partial);
                         if !display.is_empty() {
@@ -201,20 +220,10 @@ async fn run_baidu_session(
                         let _ = result_tx.send(StreamEvent::Finished);
                         return Ok(());
                     }
-                    Some(Ok(Message::Binary(_))) => {
+                    Message::Binary(_) => {
                         // 百度不发 binary 响应，忽略
                     }
-                    Some(Ok(_)) => {} // ping 等忽略
-                    Some(Err(e)) => {
-                        let _ = result_tx.send(StreamEvent::Failed(
-                            format!("baidu WS 读错误: {}", e)
-                        ));
-                        return Ok(());
-                    }
-                    None => {
-                        let _ = result_tx.send(StreamEvent::Failed("WS 连接意外关闭".to_string()));
-                        return Ok(());
-                    }
+                    _ => {} // ping 等忽略
                 }
             }
         }

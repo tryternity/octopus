@@ -104,9 +104,13 @@ async fn run_tencent_session(
 
     // 3. 建连
     let request = ws_url.into_client_request().context("tencent WS 请求构造失败")?;
-    let (mut ws, _resp) = connect_async(request)
-        .await
-        .with_context(|| format!("tencent WS 连接失败"))?;
+    let (mut ws, _resp) = tokio::time::timeout(
+        std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
+        connect_async(request),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("tencent WS connect timeout"))?
+    .with_context(|| "tencent WS 连接失败")?;;
 
     // 4. 推 pre-roll PCM
     if !pre_roll_samples.is_empty() {
@@ -140,10 +144,25 @@ async fn run_tencent_session(
                     None => break,
                 }
             }
-            // 收 WS 响应
-            msg = ws.next() => {
+            // 收 WS 响应（加读取超时）
+            msg = tokio::time::timeout(
+                std::time::Duration::from_secs(octopus_infra::net::WS_READ_TIMEOUT_SECS),
+                ws.next(),
+            ) => {
+                let msg = match msg {
+                    Err(_) => {
+                        let _ = result_tx.send(StreamEvent::Failed("tencent WS read timeout".into()));
+                        return Ok(());
+                    }
+                    Ok(None) => break,
+                    Ok(Some(Err(e))) => {
+                        let _ = result_tx.send(StreamEvent::Failed(format!("tencent WS 读错误: {}", e)));
+                        return Ok(());
+                    }
+                    Ok(Some(Ok(m))) => m,
+                };
                 match msg {
-                    Some(Ok(Message::Text(text))) => {
+                    Message::Text(text) => {
                         let json: Value = serde_json::from_str(&text)
                             .context("tencent 响应 JSON 解析失败")?;
                         let code = json["code"].as_i64().unwrap_or(-1);
@@ -196,20 +215,10 @@ async fn run_tencent_session(
                             }
                         }
                     }
-                    Some(Ok(Message::Binary(_))) => {
+                    Message::Binary(_) => {
                         // 腾讯 ASR 不发 binary 响应，忽略
                     }
-                    Some(Ok(_)) => {} // ping/close 等忽略
-                    Some(Err(e)) => {
-                        let _ = result_tx.send(StreamEvent::Failed(
-                            format!("tencent WS 读错误: {}", e)
-                        ));
-                        return Ok(());
-                    }
-                    None => {
-                        let _ = result_tx.send(StreamEvent::Failed("WS 连接意外关闭".to_string()));
-                        return Ok(());
-                    }
+                    _ => {} // ping/close 等忽略
                 }
             }
         }

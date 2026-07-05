@@ -96,9 +96,13 @@ async fn run_ws_session(
             .parse()
             .context("aliyun Authorization header 构造失败")?,
     );
-    let (mut ws, _resp) = connect_async(request)
-        .await
-        .with_context(|| format!("aliyun WS 连接失败: {}", endpoint))?;
+    let (mut ws, _resp) = tokio::time::timeout(
+        std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
+        connect_async(request),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("aliyun WS connect timeout"))?
+    .with_context(|| format!("aliyun WS 连接失败: {}", endpoint))?;
 
     // 2. 发 run-task（含 max_sentence_silence=600，比客户端 700ms 短，让服务端先出完整句）
     let task_id = uuid::Uuid::new_v4().to_string();
@@ -151,10 +155,25 @@ async fn run_ws_session(
                     None => break, // coordinator drop → 关闭
                 }
             }
-            // 收 WS 消息
-            msg = ws.next() => {
+            // 收 WS 消息（加读取超时，防止静默断连永久卡死）
+            msg = tokio::time::timeout(
+                std::time::Duration::from_secs(octopus_infra::net::WS_READ_TIMEOUT_SECS),
+                ws.next(),
+            ) => {
+                let msg = match msg {
+                    Err(_) => {
+                        let _ = result_tx.send(StreamEvent::Failed("aliyun WS read timeout".into()));
+                        return Ok(());
+                    }
+                    Ok(None) => break,
+                    Ok(Some(Err(e))) => {
+                        let _ = result_tx.send(StreamEvent::Failed(format!("aliyun WS 错误: {}", e)));
+                        return Ok(());
+                    }
+                    Ok(Some(Ok(m))) => m,
+                };
                 match msg {
-                    Some(Ok(Message::Text(t))) => {
+                    Message::Text(t) => {
                         let v: Value = match serde_json::from_str(&t) {
                             Ok(v) => v,
                             Err(_) => continue,
@@ -229,19 +248,8 @@ async fn run_ws_session(
                             _ => {} // task-started 等忽略
                         }
                     }
-                    Some(Ok(_)) => {} // binary 等忽略
-                    Some(Err(e)) => {
-                        let _ = result_tx.send(StreamEvent::Failed(format!("WS 读错误: {}", e)));
-                        break;
-                    }
-                    None => {
-                        // WS 意外关闭（服务端断开，非 finish-task 正常收尾）→ 上报 Failed
-                        // （审查 一2）：否则 coordinator try_recv 恒 None、僵尸会话卡到 Esc。
-                        // 这是 ws.next() 的 None（服务端关），与 pcm_rx.recv() 的 None
-                        // （coordinator drop、优雅关闭）不同——后者保持静默 break 不报错。
-                        let _ = result_tx.send(StreamEvent::Failed("WS 连接意外关闭".to_string()));
-                        break;
-                    }
+                    Message::Binary(_) => {} // binary 等忽略
+                    _ => {}
                 }
             }
         }
@@ -367,9 +375,13 @@ async fn run_qwen_realtime_session(
             .parse()
             .context("qwen-asr Authorization header 构造失败")?,
     );
-    let (mut ws, _resp) = connect_async(request)
-        .await
-        .with_context(|| format!("qwen-asr WS 连接失败: {}", url))?;
+    let (mut ws, _resp) = tokio::time::timeout(
+        std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
+        connect_async(request),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("qwen-asr WS connect timeout"))?
+    .with_context(|| format!("qwen-asr WS 连接失败: {}", url))?;
 
     // 3. 发 session.update（配置音频格式 + VAD）
     let session_update = build_qwen_session_update(&language, &qwen_event_id());
@@ -422,10 +434,25 @@ async fn run_qwen_realtime_session(
                     None => break,
                 }
             }
-            // 收 WS 消息
-            msg = ws.next() => {
+            // 收 WS 消息（加读取超时）
+            msg = tokio::time::timeout(
+                std::time::Duration::from_secs(octopus_infra::net::WS_READ_TIMEOUT_SECS),
+                ws.next(),
+            ) => {
+                let msg = match msg {
+                    Err(_) => {
+                        let _ = result_tx.send(StreamEvent::Failed("qwen-asr WS read timeout".into()));
+                        return Ok(());
+                    }
+                    Ok(None) => break,
+                    Ok(Some(Err(e))) => {
+                        let _ = result_tx.send(StreamEvent::Failed(format!("qwen-asr WS 错误: {}", e)));
+                        return Ok(());
+                    }
+                    Ok(Some(Ok(m))) => m,
+                };
                 match msg {
-                    Some(Ok(Message::Text(t))) => {
+                    Message::Text(t) => {
                         let v: Value = match serde_json::from_str(&t) {
                             Ok(v) => v,
                             Err(_) => continue,
@@ -490,19 +517,8 @@ async fn run_qwen_realtime_session(
                             _ => {} // session.created/updated, speech_started/stopped 等忽略
                         }
                     }
-                    Some(Ok(_)) => {} // binary 等忽略
-                    Some(Err(e)) => {
-                        let _ = result_tx.send(StreamEvent::Failed(format!("WS 读错误: {}", e)));
-                        break;
-                    }
-                    None => {
-                        // WS 意外关闭（服务端断开，非 finish-task 正常收尾）→ 上报 Failed
-                        // （审查 一2）：否则 coordinator try_recv 恒 None、僵尸会话卡到 Esc。
-                        // 这是 ws.next() 的 None（服务端关），与 pcm_rx.recv() 的 None
-                        // （coordinator drop、优雅关闭）不同——后者保持静默 break 不报错。
-                        let _ = result_tx.send(StreamEvent::Failed("WS 连接意外关闭".to_string()));
-                        break;
-                    }
+                    Message::Binary(_) => {} // binary 等忽略
+                    _ => {}
                 }
             }
         }

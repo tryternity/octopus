@@ -131,9 +131,13 @@ async fn run_bytedance_session(
         HeaderValue::from_static("-1"),
     );
 
-    let (mut ws, _resp) = connect_async(request)
-        .await
-        .with_context(|| format!("bytedance WS 连接失败: {}", ENDPOINT))?;
+    let (mut ws, _resp) = tokio::time::timeout(
+        std::time::Duration::from_secs(octopus_infra::net::WS_CONNECT_TIMEOUT_SECS),
+        connect_async(request),
+    )
+    .await
+    .map_err(|_| anyhow::anyhow!("bytedance WS connect timeout"))?
+    .with_context(|| format!("bytedance WS 连接失败: {}", ENDPOINT))?;
 
     // 2. 发 FULL_CLIENT_REQUEST（初始 JSON config，gzip 压缩）
     let lang = if language.is_empty() || language == "auto" {
@@ -223,10 +227,25 @@ async fn run_bytedance_session(
                     None => break,
                 }
             }
-            // 收 WS 响应
-            msg = ws.next() => {
+            // 收 WS 响应（加读取超时）
+            msg = tokio::time::timeout(
+                std::time::Duration::from_secs(octopus_infra::net::WS_READ_TIMEOUT_SECS),
+                ws.next(),
+            ) => {
+                let msg = match msg {
+                    Err(_) => {
+                        let _ = result_tx.send(StreamEvent::Failed("bytedance WS read timeout".into()));
+                        return Ok(());
+                    }
+                    Ok(None) => break,
+                    Ok(Some(Err(e))) => {
+                        let _ = result_tx.send(StreamEvent::Failed(format!("bytedance WS 读错误: {}", e)));
+                        return Ok(());
+                    }
+                    Ok(Some(Ok(m))) => m,
+                };
                 match msg {
-                    Some(Ok(Message::Binary(data))) => {
+                    Message::Binary(data) => {
                         let parsed = parse_server_frame(&data)
                             .context("bytedance WS 响应解析失败")?;
                         match parsed.msg_type {
@@ -259,17 +278,7 @@ async fn run_bytedance_session(
                             }
                         }
                     }
-                    Some(Ok(_)) => {} // text/close/ping 等忽略
-                    Some(Err(e)) => {
-                        let _ = result_tx.send(StreamEvent::Failed(
-                            format!("bytedance WS 读错误: {}", e)
-                        ));
-                        return Ok(());
-                    }
-                    None => {
-                        let _ = result_tx.send(StreamEvent::Failed("WS 连接意外关闭".to_string()));
-                        return Ok(());
-                    }
+                    _ => {} // text/close/ping 等忽略
                 }
             }
         }
