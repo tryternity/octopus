@@ -1925,7 +1925,8 @@ fn handle_polish_now(
     spawn_polish_thread(input, config, tx, true, transcript.id);
 }
 
-/// 进入编辑态：仅活跃会话（Streaming/VadSegmented）有效；初始化 edit_buffer = 当前 display。
+/// 进入编辑态：活跃会话（Streaming/VadSegmented/WaitingCompletion/CloudClosing）或 Idle。
+/// 活跃态初始化 edit_buffer = 当前 display；Idle 态无 transcript，仅置 editing=true（见下注）。
 fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &mut Option<String>) {
     let transcript = match stage {
         Stage::Streaming { transcript, .. }
@@ -1933,6 +1934,15 @@ fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &m
         | Stage::WaitingCompletion { transcript, .. } => transcript,
         #[cfg(feature = "cloud")]
         Stage::CloudClosing { transcript, .. } => transcript,
+        Stage::Idle => {
+            // Idle 编辑：会话已 finalize，stage 无 transcript，但 Result 窗口仍展示最近会话文本，
+            // 用户可对其修订。允许进入（editing=true）；edit_buffer 不在此初始化——后端无 display
+            // 副本，由前端 update_edit_buffer 防抖推送（与活跃态用户输入后推送一致）。提交走
+            // commit_edit_apply 的 Idle 分支，用 CURRENT_TRANSCRIPTION_ID 直接 UPDATE 落库。
+            *editing = true;
+            info!("Entered edit mode in Idle (no active transcript)");
+            return;
+        }
         _ => {
             debug!("enter_edit_mode ignored in non-active stage");
             return;
@@ -1944,6 +1954,7 @@ fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &m
 }
 
 /// 提交编辑：写回 transcript（commit_edit）+ UPDATE edited_text（行已存在）+ 刷新展示。
+/// 活跃态走 transcript；Idle 态无 transcript，用 CURRENT_TRANSCRIPTION_ID 直接 UPDATE。
 fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandle) {
     let transcript = match stage {
         Stage::Streaming { transcript, .. }
@@ -1951,6 +1962,30 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
         | Stage::WaitingCompletion { transcript, .. } => transcript,
         #[cfg(feature = "cloud")]
         Stage::CloudClosing { transcript, .. } => transcript,
+        Stage::Idle => {
+            // Idle 编辑落库：会话已 finalize，stage 无 transcript，用最近会话 id 直接 UPDATE。
+            // 复用 Transcript::commit_edit 构造单 Edited 段，与活跃态落库语义一致（整篇压成 Edited）。
+            // 注：id 来自静态 CURRENT_TRANSCRIPTION_ID——会话 finalize 后仍保留最近有效 id
+            // （mem::replace 的 id=0 sentinel 不清此静态），供 Idle 编辑溯源。
+            let id = CURRENT_TRANSCRIPTION_ID.load(Ordering::Relaxed);
+            if id <= 0 {
+                debug!("commit_edit in Idle but no current_transcription_id — 跳过落库");
+                return;
+            }
+            let mut t = Transcript::new(id, PolishMode::Disabled);
+            t.commit_edit(text);
+            let segments = t.segments_json();
+            if let Err(e) = get_db_sender().send(DbCommand::UpdateEditedSegments {
+                id,
+                text: text.to_string(),
+                segments,
+            }) {
+                warn!("Queue DB UpdateEditedSegments (idle) failed: {}", e);
+            }
+            crate::result_window::update_result(app_handle, text, false, 0);
+            info!("Edit committed in Idle (id={}, {} chars)", id, text.chars().count());
+            return;
+        }
         _ => {
             debug!("commit_edit ignored in non-active stage");
             return;
