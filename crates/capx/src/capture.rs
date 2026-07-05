@@ -297,7 +297,7 @@ pub fn capture_window_region(
     Ok(RgbaBytes { rgba_bytes: rgba, width, height })
 }
 
-#[cfg(test)]
+#[cfg(all(test, target_os = "macos"))]
 mod tests {
     use super::*;
 
