@@ -50,8 +50,8 @@ const TOKEN_EOS: i64 = 2;
 
 /// Thread-safe, reusable engine for Paraformer model
 pub struct ParaformerEngine {
-    encoder_session: std::sync::Mutex<Session>,
-    decoder_session: std::sync::Mutex<Session>,
+    encoder_session: parking_lot::Mutex<Session>,
+    decoder_session: parking_lot::Mutex<Session>,
     neg_mean: Vec<f32>,
     inv_stddev: Vec<f32>,
     vocab: Vec<String>,
@@ -129,8 +129,8 @@ impl ParaformerEngine {
         }
 
         Ok(Self {
-            encoder_session: std::sync::Mutex::new(encoder_session),
-            decoder_session: std::sync::Mutex::new(decoder_session),
+            encoder_session: parking_lot::Mutex::new(encoder_session),
+            decoder_session: parking_lot::Mutex::new(decoder_session),
             neg_mean,
             inv_stddev,
             vocab,
@@ -140,8 +140,8 @@ impl ParaformerEngine {
 
 impl crate::engine::OfflineAsrEngine for ParaformerEngine {
     fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
-        let mut encoder_session = self.encoder_session.lock().unwrap();
-        let mut decoder_session = self.decoder_session.lock().unwrap();
+        let mut encoder_session = self.encoder_session.lock();
+        let mut decoder_session = self.decoder_session.lock();
 
         // ── Feature extraction (fbank + LFR, same as SenseVoice) ──
         let mut features = compute_fbank_features(samples)?;

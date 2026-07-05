@@ -81,9 +81,9 @@ static CACHE_NAMES: Lazy<Vec<(&'static str, &'static str)>> = Lazy::new(|| {
 
 /// Thread-safe, reusable engine for Qwen3-ASR model
 pub struct Qwen3AsrEngine {
-    conv_session: std::sync::Mutex<Session>,
-    encoder_session: std::sync::Mutex<Session>,
-    decoder_session: std::sync::Mutex<Session>,
+    conv_session: parking_lot::Mutex<Session>,
+    encoder_session: parking_lot::Mutex<Session>,
+    decoder_session: parking_lot::Mutex<Session>,
     tokenizer: tokenizers::Tokenizer,
     entry: config::ModelEntry,
     /// KV cache 的最大序列长度（审查 #4 跟进）。
@@ -124,9 +124,9 @@ impl Qwen3AsrEngine {
         }
 
         Ok(Self {
-            conv_session: std::sync::Mutex::new(conv_session),
-            encoder_session: std::sync::Mutex::new(encoder_session),
-            decoder_session: std::sync::Mutex::new(decoder_session),
+            conv_session: parking_lot::Mutex::new(conv_session),
+            encoder_session: parking_lot::Mutex::new(encoder_session),
+            decoder_session: parking_lot::Mutex::new(decoder_session),
             tokenizer,
             entry: entry.clone(),
             kv_max_len,
@@ -153,9 +153,9 @@ impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
         };
 
         // Lock sessions for mutability (Session::run requires mutable borrow)
-        let mut conv_session = self.conv_session.lock().unwrap();
-        let mut encoder_session = self.encoder_session.lock().unwrap();
-        let mut decoder_session = self.decoder_session.lock().unwrap();
+        let mut conv_session = self.conv_session.lock();
+        let mut encoder_session = self.encoder_session.lock();
+        let mut decoder_session = self.decoder_session.lock();
 
         // ── Step 1: Mel features (128 bins) ──
         let mut mel = compute_mel_features(samples)?;

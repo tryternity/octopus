@@ -3,7 +3,8 @@ use ndarray::{Array1, Array3, ArrayView2};
 use ort::session::Session;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use parking_lot::Mutex;
+use std::sync::{Arc, OnceLock};
 
 // 约束：Session 必须 Send + Sync，才能用 Arc<Mutex<Session>> 进全局缓存
 // （OnceLock<Mutex<HashMap<PathBuf, Arc<Mutex<Session>>>>>）。
@@ -35,7 +36,7 @@ impl SileroVad {
         // 持 cache lock 期间完成 get-or-insert：消除 TOCTOU（并发 miss 时只有一个线程加载，
         // 其余等锁后命中同一 Arc）。commit_from_file 慢但仅在冷启动一次性发生，串行化可接受。
         let session = {
-            let mut cache = vad_sessions().lock().unwrap();
+            let mut cache = vad_sessions().lock();
             if let Some(s) = cache.get(model_path) {
                 s.clone()
             } else {
@@ -65,7 +66,7 @@ impl SileroVad {
         let sr_tensor = ort::value::TensorRef::from_array_view(self.sr.view())?;
         let input_tensor = ort::value::TensorRef::from_array_view(input)?;
 
-        let mut session = self.session.lock().unwrap();
+        let mut session = self.session.lock();
         let outputs = session.run(ort::inputs! {
             "input" => input_tensor,
             "sr" => sr_tensor,

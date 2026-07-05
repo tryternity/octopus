@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use anyhow::{Context, Result};
 use ort::session::Session;
@@ -68,7 +68,7 @@ impl MoonshineEngine {
     /// 返回 owned `Value`（不拷贝到 CPU）+ features_len(T)，后续 run_encode 以 &Value 传回。
     fn run_preprocess(&self, samples: &[f32]) -> Result<(ort::value::Value, usize)> {
         let audio = ndarray::ArrayView2::from_shape((1, samples.len()), samples)?;
-        let mut session = self.preprocess_session.lock().unwrap();
+        let mut session = self.preprocess_session.lock();
         let outputs = session.run(ort::inputs! {
             "args_0" => TensorRef::from_array_view(audio)?
         })?;
@@ -94,7 +94,7 @@ impl MoonshineEngine {
     ) -> Result<ort::value::Value> {
         let len_arr = [features_len as i32];
         let len_view = ndarray::ArrayView1::from(&len_arr);
-        let mut session = self.encode_session.lock().unwrap();
+        let mut session = self.encode_session.lock();
         let outputs = session.run(ort::inputs! {
             "args_0" => features,
             "args_1" => TensorRef::from_array_view(len_view)?
@@ -126,7 +126,7 @@ impl MoonshineEngine {
         let seq_len = [1i32];
         let seq_len_view = ndarray::ArrayView1::from(&seq_len);
 
-        let mut uncached_session = self.uncached_decode_session.lock().unwrap();
+        let mut uncached_session = self.uncached_decode_session.lock();
         let uncached_out = uncached_session.run(ort::inputs! {
             "args_0" => TensorRef::from_array_view(token_view)?,
             "args_1" => encoder_out,
@@ -152,7 +152,7 @@ impl MoonshineEngine {
         // ── 后续 tokens: cached_decode 循环 ──
         let mut result_tokens: Vec<i64> = Vec::new();
         let mut seq_len_val: i32 = 1;
-        let mut cached_session = self.cached_decode_session.lock().unwrap();
+        let mut cached_session = self.cached_decode_session.lock();
 
         // 预算 cache 输入键名（"args_3".."args_{N+2}"），循环内以 Cow::Borrowed 复用，
         // 避免每步 format! + 堆分配 N 个 String（base=32，长音频循环数百次）。

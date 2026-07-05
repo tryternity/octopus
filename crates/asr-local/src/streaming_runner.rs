@@ -319,7 +319,7 @@ impl StreamingRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     /// 可编程 fake：accept/flush 按预设序列出队返回，finish 返回固定串。
     /// accept 队列耗尽时返回 `Err`（覆盖 error 路径）。
@@ -346,21 +346,21 @@ mod tests {
             _was_silent: bool,
             _has_speech: bool,
         ) -> Result<Option<String>> {
-            let mut q = self.accept_out.lock().unwrap();
+            let mut q = self.accept_out.lock();
             if q.is_empty() {
                 anyhow::bail!("fake accept error");
             }
             Ok(q.remove(0))
         }
         fn flush(&self, _insert_comma: bool) -> Result<Option<String>> {
-            let mut q = self.flush_out.lock().unwrap();
+            let mut q = self.flush_out.lock();
             if q.is_empty() {
                 return Ok(None);
             }
             Ok(q.remove(0))
         }
         fn finish(&self) -> Result<String> {
-            Ok(self.finish_out.lock().unwrap().clone())
+            Ok(self.finish_out.lock().clone())
         }
         fn reset(&self) {}
     }

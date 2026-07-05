@@ -1,5 +1,5 @@
 use anyhow::{Context, Result};
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use crate::sentence_separator;
 
@@ -96,12 +96,12 @@ impl StreamingSession {
 
         match self {
             Self::Paraformer { engine, punct_prefix, committed_chars, separator } => {
-                let mut eng = engine.lock().unwrap();
+                let mut eng = engine.lock();
                 match eng.accept_samples(samples)? {
                     Some(full_asr) => {
                         // full_asr 是本次话语的完整 ASR 文本（跨 chunk 累积解码）
-                        let mut prefix = punct_prefix.lock().unwrap();
-                        let mut clen = committed_chars.lock().unwrap();
+                        let mut prefix = punct_prefix.lock();
+                        let mut clen = committed_chars.lock();
 
                         if was_silent && !prefix.is_empty() && !ends_with_punct(&prefix) {
                             // 静音恢复 → 提交当前 delta + 分隔符
@@ -129,12 +129,12 @@ impl StreamingSession {
                 }
             }
             Self::ZipformerCtc { engine, accumulated, separator } => {
-                let mut eng = engine.lock().unwrap();
+                let mut eng = engine.lock();
                 if was_silent && !has_speech {
                     let segment_text = eng.finish()?;
                     let trimmed = segment_text.trim();
                     if !trimmed.is_empty() {
-                        let mut acc = accumulated.lock().unwrap();
+                        let mut acc = accumulated.lock();
                         if !acc.is_empty() {
                             acc.push_str(separator);
                         }
@@ -145,12 +145,12 @@ impl StreamingSession {
                 zipformer_accept(&mut *eng, accumulated, separator, samples)
             }
             Self::ZipformerTransducer { engine, accumulated, separator } => {
-                let mut eng = engine.lock().unwrap();
+                let mut eng = engine.lock();
                 if was_silent && !has_speech {
                     let segment_text = eng.finish()?;
                     let trimmed = segment_text.trim();
                     if !trimmed.is_empty() {
-                        let mut acc = accumulated.lock().unwrap();
+                        let mut acc = accumulated.lock();
                         if !acc.is_empty() {
                             acc.push_str(separator);
                         }
@@ -168,11 +168,11 @@ impl StreamingSession {
     pub fn flush(&self, insert_comma: bool) -> Result<Option<String>> {
         match self {
             Self::Paraformer { engine, punct_prefix, committed_chars, separator } => {
-                let mut eng = engine.lock().unwrap();
+                let mut eng = engine.lock();
                 match eng.flush()? {
                     Some(full_asr) => {
-                        let mut prefix = punct_prefix.lock().unwrap();
-                        let mut clen = committed_chars.lock().unwrap();
+                        let mut prefix = punct_prefix.lock();
+                        let mut clen = committed_chars.lock();
 
                         let delta: String = full_asr.chars().skip(*clen).collect();
                         let delta_trimmed = delta.trim_start();
@@ -197,7 +197,7 @@ impl StreamingSession {
                     }
                     None => {
                         if insert_comma {
-                            let mut prefix = punct_prefix.lock().unwrap();
+                            let mut prefix = punct_prefix.lock();
                             if !prefix.is_empty() && !ends_with_punct(&prefix) {
                                 prefix.push_str(separator);
                                 return Ok(Some(prefix.clone()));
@@ -208,11 +208,11 @@ impl StreamingSession {
                 }
             }
             Self::ZipformerCtc { engine, accumulated, separator } => {
-                let mut eng = engine.lock().unwrap();
+                let mut eng = engine.lock();
                 zipformer_flush(&mut *eng, accumulated, separator)
             }
             Self::ZipformerTransducer { engine, accumulated, separator } => {
-                let mut eng = engine.lock().unwrap();
+                let mut eng = engine.lock();
                 zipformer_flush(&mut *eng, accumulated, separator)
             }
         }
@@ -223,10 +223,10 @@ impl StreamingSession {
     pub fn finish(&self) -> Result<String> {
         match self {
             Self::Paraformer { engine, punct_prefix, committed_chars, .. } => {
-                let mut eng = engine.lock().unwrap();
+                let mut eng = engine.lock();
                 let full_asr = eng.finish()?;
-                let prefix = punct_prefix.lock().unwrap();
-                let clen = committed_chars.lock().unwrap();
+                let prefix = punct_prefix.lock();
+                let clen = committed_chars.lock();
 
                 let delta: String = full_asr.chars().skip(*clen).collect();
                 let delta_trimmed = delta.trim_start();
@@ -238,9 +238,9 @@ impl StreamingSession {
                 Ok(crate::hans::normalize_variant(&display))
             }
             Self::ZipformerCtc { engine, accumulated, separator } => {
-                let final_segment = engine.lock().unwrap().finish()?;
+                let final_segment = engine.lock().finish()?;
                 let trimmed = final_segment.trim();
-                let mut acc = accumulated.lock().unwrap();
+                let mut acc = accumulated.lock();
                 if !trimmed.is_empty() {
                     if !acc.is_empty() {
                         acc.push_str(separator);
@@ -251,9 +251,9 @@ impl StreamingSession {
                 Ok(crate::hans::normalize_variant(&*acc))
             }
             Self::ZipformerTransducer { engine, accumulated, separator } => {
-                let final_segment = engine.lock().unwrap().finish()?;
+                let final_segment = engine.lock().finish()?;
                 let trimmed = final_segment.trim();
-                let mut acc = accumulated.lock().unwrap();
+                let mut acc = accumulated.lock();
                 if !trimmed.is_empty() {
                     if !acc.is_empty() {
                         acc.push_str(separator);
@@ -270,17 +270,17 @@ impl StreamingSession {
     pub fn reset(&self) {
         match self {
             Self::Paraformer { engine, punct_prefix, committed_chars, .. } => {
-                engine.lock().unwrap().reset();
-                punct_prefix.lock().unwrap().clear();
-                *committed_chars.lock().unwrap() = 0;
+                engine.lock().reset();
+                punct_prefix.lock().clear();
+                *committed_chars.lock() = 0;
             }
             Self::ZipformerCtc { engine, accumulated, .. } => {
-                engine.lock().unwrap().reset();
-                accumulated.lock().unwrap().clear();
+                engine.lock().reset();
+                accumulated.lock().clear();
             }
             Self::ZipformerTransducer { engine, accumulated, .. } => {
-                engine.lock().unwrap().reset();
-                accumulated.lock().unwrap().clear();
+                engine.lock().reset();
+                accumulated.lock().clear();
             }
         }
     }
@@ -298,7 +298,7 @@ fn zipformer_accept<E: ZipformerStreamOps>(
     match eng.accept_samples(samples)? {
         Some(current_segment) => {
             let trimmed_segment = current_segment.trim();
-            let acc = accumulated.lock().unwrap();
+            let acc = accumulated.lock();
             if acc.is_empty() {
                 Ok(Some(trimmed_segment.to_string()))
             } else if trimmed_segment.is_empty() {
@@ -308,7 +308,7 @@ fn zipformer_accept<E: ZipformerStreamOps>(
             }
         }
         None => {
-            let acc = accumulated.lock().unwrap();
+            let acc = accumulated.lock();
             if acc.is_empty() {
                 Ok(None)
             } else {
@@ -327,7 +327,7 @@ fn zipformer_flush<E: ZipformerStreamOps>(
     match eng.flush()? {
         Some(current_segment) => {
             let trimmed_segment = current_segment.trim();
-            let acc = accumulated.lock().unwrap();
+            let acc = accumulated.lock();
             if acc.is_empty() {
                 Ok(Some(trimmed_segment.to_string()))
             } else if trimmed_segment.is_empty() {
@@ -337,7 +337,7 @@ fn zipformer_flush<E: ZipformerStreamOps>(
             }
         }
         None => {
-            let acc = accumulated.lock().unwrap();
+            let acc = accumulated.lock();
             if acc.is_empty() {
                 Ok(None)
             } else {

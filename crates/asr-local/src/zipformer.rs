@@ -359,7 +359,7 @@ pub(crate) fn initial_encoder_states(session: &Session) -> Vec<(String, StateVal
 }
 
 pub struct ZipformerCtcEngine {
-    session: std::sync::Mutex<Session>,
+    session: parking_lot::Mutex<Session>,
     chunk_len: usize,
     chunk_shift: usize,
     vocab: Vec<String>,
@@ -486,7 +486,7 @@ impl ZipformerCtcEngine {
 
 
         Ok(Self {
-            session: std::sync::Mutex::new(session),
+            session: parking_lot::Mutex::new(session),
             chunk_len,
             chunk_shift,
             vocab,
@@ -499,7 +499,7 @@ impl ZipformerCtcEngine {
 
 impl crate::engine::OfflineAsrEngine for ZipformerCtcEngine {
     fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
-        let mut session = self.session.lock().unwrap();
+        let mut session = self.session.lock();
         let mut my_feats = if self.is_whisper {
             compute_whisper_features_linear(samples)?
         } else {
@@ -713,9 +713,9 @@ pub(crate) fn decode_token_ids(vocab: &[String], is_bbpe: bool, token_ids: &[usi
 /// 而非 log_probs；decoder 无状态（输入最近 context_size 个 token），
 /// joiner 融合 encoder frame + decoder_out → logit，greedy argmax 解码。
 pub struct ZipformerTransducerEngine {
-    encoder_session: std::sync::Mutex<Session>,
-    decoder_session: std::sync::Mutex<Session>,
-    joiner_session: std::sync::Mutex<Session>,
+    encoder_session: parking_lot::Mutex<Session>,
+    decoder_session: parking_lot::Mutex<Session>,
+    joiner_session: parking_lot::Mutex<Session>,
     chunk_len: usize,
     chunk_shift: usize,
     context_size: usize,
@@ -829,9 +829,9 @@ impl ZipformerTransducerEngine {
         let is_bbpe = is_vocab_bbpe(&vocab);
 
         Ok(Self {
-            encoder_session: std::sync::Mutex::new(encoder_session),
-            decoder_session: std::sync::Mutex::new(decoder_session),
-            joiner_session: std::sync::Mutex::new(joiner_session),
+            encoder_session: parking_lot::Mutex::new(encoder_session),
+            decoder_session: parking_lot::Mutex::new(decoder_session),
+            joiner_session: parking_lot::Mutex::new(joiner_session),
             chunk_len,
             chunk_shift,
             context_size,
@@ -846,7 +846,7 @@ impl ZipformerTransducerEngine {
     fn run_decoder(&self, token_window: &[i64]) -> Result<Vec<f32>> {
         let y = ndarray::Array2::from_shape_vec((1, token_window.len()), token_window.to_vec())?;
         let y_tensor = ort::value::TensorRef::from_array_view(y.view())?;
-        let mut session = self.decoder_session.lock().unwrap();
+        let mut session = self.decoder_session.lock();
         let outputs = session.run(ort::inputs! { "y" => y_tensor })?;
         let (_shape, data) = outputs["decoder_out"].try_extract_tensor::<f32>()?;
         Ok(data.to_vec())
@@ -858,7 +858,7 @@ impl ZipformerTransducerEngine {
         let dec = ndarray::Array2::from_shape_vec((1, dec_out.len()), dec_out.to_vec())?;
         let enc_t = ort::value::TensorRef::from_array_view(enc.view())?;
         let dec_t = ort::value::TensorRef::from_array_view(dec.view())?;
-        let mut session = self.joiner_session.lock().unwrap();
+        let mut session = self.joiner_session.lock();
         let outputs = session.run(ort::inputs! {
             "encoder_out" => enc_t,
             "decoder_out" => dec_t,
@@ -870,7 +870,7 @@ impl ZipformerTransducerEngine {
 
 impl crate::engine::OfflineAsrEngine for ZipformerTransducerEngine {
     fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
-        let mut enc_session = self.encoder_session.lock().unwrap();
+        let mut enc_session = self.encoder_session.lock();
 
         // 特征提取
         let mut my_feats = if self.is_whisper {
@@ -1367,7 +1367,7 @@ mod tests {
 
         println!("\n--- Debugging Offline zipformer-ctc ---");
         println!("is_whisper: {}, chunk_len: {}, chunk_shift: {}", engine.is_whisper, engine.chunk_len, engine.chunk_shift);
-        let mut session = engine.session.lock().unwrap();
+        let mut session = engine.session.lock();
         let my_feats = if engine.is_whisper {
             let mut feats = compute_whisper_features_linear(&samples).unwrap();
             normalize_whisper_features(&mut feats);

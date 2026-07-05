@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
 use ort::session::Session;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use crate::config;
 use crate::fbank::compute_fbank;
@@ -115,7 +115,7 @@ impl crate::engine::OfflineAsrEngine for FireRedEngine {
         let x_lens_arr = [n_frames as i64];
         let x_lens = ndarray::ArrayView1::from(&x_lens_arr);
 
-        let mut session = self.session.lock().unwrap();
+        let mut session = self.session.lock();
         let outputs = session.run(ort::inputs! {
             "x" => ort::value::TensorRef::from_array_view(x.view())?,
             "x_lens" => ort::value::TensorRef::from_array_view(x_lens)?

@@ -214,9 +214,9 @@ fn argmax_last_token(logits_data: &[f32], n_tokens: usize, vocab: usize) -> u32 
 
 /// Thread-safe, reusable engine for Whisper model
 pub struct WhisperEngine {
-    encoder: std::sync::Mutex<Session>,
-    dec_init: std::sync::Mutex<Session>,
-    dec_past: std::sync::Mutex<Session>,
+    encoder: parking_lot::Mutex<Session>,
+    dec_init: parking_lot::Mutex<Session>,
+    dec_past: parking_lot::Mutex<Session>,
     tokenizer: Tokenizer,
     past_key_names: Vec<(&'static str, &'static str, &'static str, &'static str)>,
     n_decoder_layers: usize,
@@ -295,9 +295,9 @@ impl WhisperEngine {
                 .collect();
 
         Ok(Self {
-            encoder: std::sync::Mutex::new(encoder),
-            dec_init: std::sync::Mutex::new(dec_init),
-            dec_past: std::sync::Mutex::new(dec_past),
+            encoder: parking_lot::Mutex::new(encoder),
+            dec_init: parking_lot::Mutex::new(dec_init),
+            dec_past: parking_lot::Mutex::new(dec_past),
             tokenizer,
             past_key_names,
             n_decoder_layers,
@@ -325,7 +325,7 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
 
         // Encoder forward
         let encoder_hidden = {
-            let mut encoder = self.encoder.lock().unwrap();
+            let mut encoder = self.encoder.lock();
             let enc_out = encoder.run(ort::inputs![mel_tensor])?;
             let (enc_shape, enc_data) = enc_out[0].try_extract_tensor::<f32>()?;
             let enc_dim: Vec<usize> = enc_shape.iter().map(|&d| d as usize).collect();
@@ -369,7 +369,7 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
         }
         eprintln!("[whisper] language: {}", lang_code);
 
-        let mut dec_init = self.dec_init.lock().unwrap();
+        let mut dec_init = self.dec_init.lock();
 
         // 构建 prompt tokens
         let mut tokens: Vec<i64> = vec![sot as i64];
@@ -460,7 +460,7 @@ impl crate::engine::OfflineAsrEngine for WhisperEngine {
                 ));
             }
 
-            let mut dec_past = self.dec_past.lock().unwrap();
+            let mut dec_past = self.dec_past.lock();
             let dec_out = dec_past.run(inputs)?;
 
             let (logits_shape, logits_data) = dec_out["logits"].try_extract_tensor::<f32>()?;

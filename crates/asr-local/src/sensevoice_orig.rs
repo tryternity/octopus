@@ -2,7 +2,7 @@ use anyhow::{Context, Result};
 use ort::session::Session;
 use ort::value::TensorRef;
 use std::path::Path;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use crate::config;
 use crate::fbank::compute_fbank_features;
@@ -126,7 +126,7 @@ impl crate::engine::OfflineAsrEngine for SenseVoiceOrigEngine {
         let language = ndarray::Array1::from_vec(vec![LANG_AUTO]);
         let textnorm = ndarray::Array1::from_vec(vec![TEXTNORM_NO_ITN]);
 
-        let mut session = self.session.lock().unwrap();
+        let mut session = self.session.lock();
         let outputs = session.run(ort::inputs! {
             "speech" => TensorRef::from_array_view(speech.view())?,
             "speech_lengths" => TensorRef::from_array_view(speech_lengths.view())?,
