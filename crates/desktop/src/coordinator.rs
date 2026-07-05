@@ -7,7 +7,7 @@ use crate::engine::TranscriptionEngine;
 use crate::paste;
 use crate::pipeline::StreamingPipeline;
 use crate::transcript::Transcript;
-use octopus_asr_local::streaming_engine::StreamingSession;
+use octopus_asr_local::streaming_engine::StreamingSessionManager;
 use octopus_asr_local::streaming_runner::TranscriptEvent;
 use log::{debug, error, info, warn};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
@@ -805,20 +805,33 @@ fn begin_recording(
     }
 
     if use_streaming {
-        // 流式模式：创建 StreamingSession 并启动 tick 线程。
-        // 引擎不可用时降级到默认引擎（zipformer-small-ctc），而非直接放弃录音。
+        // 流式引擎复用（②）：从 StreamingSessionManager 取常驻引擎 Arc + reset 清状态，
+        // 不再每次录音 StreamingSession::new 重载 Session。模型变更由 active_session 懒加载覆盖，
+        // 故 switch_asr_engine 无需主动联动。streaming_manager 经 app_handle.state 取（main 注入）。
         const FALLBACK_STREAMING_SPEC: &str = "local:zipformer:zipformer-small-ctc";
-        let streaming_engine = match StreamingSession::new(&config.asr_engine, &config.language) {
-            Ok(session) => session,
+        let streaming_manager = app_handle
+            .state::<std::sync::Arc<StreamingSessionManager>>();
+        let streaming_engine = match streaming_manager
+            .active_session(&config.asr_engine, &config.language)
+        {
+            Ok(arc) => {
+                arc.reset();
+                arc
+            }
             Err(e) => {
                 warn!(
-                    "StreamingSession '{}' 创建失败 ({}), 降级到默认引擎 '{}'",
+                    "流式引擎 '{}' 取用失败 ({}), 降级到默认引擎 '{}'",
                     config.asr_engine, e, FALLBACK_STREAMING_SPEC
                 );
-                match StreamingSession::new(FALLBACK_STREAMING_SPEC, &config.language) {
-                    Ok(session) => session,
+                match streaming_manager
+                    .active_session(FALLBACK_STREAMING_SPEC, &config.language)
+                {
+                    Ok(arc) => {
+                        arc.reset();
+                        arc
+                    }
                     Err(e2) => {
-                        error!("默认引擎 StreamingSession 也失败: {}", e2);
+                        error!("默认流式引擎也失败: {}", e2);
                         let _ = audio.stop();
                         crate::result_window::hide_result(app_handle);
                         crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
