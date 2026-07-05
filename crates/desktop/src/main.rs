@@ -60,7 +60,10 @@ pub fn run() {
         log::warn!("Recovered panic at {}: {}", location, msg);
     }));
 
-    let config = octopus_infra::config::load_config().expect("Failed to load config");
+    let config = octopus_infra::config::load_config().unwrap_or_else(|e| {
+        log::warn!("config load failed ({}), using defaults", e);
+        octopus_infra::config::AppConfig::default()
+    });
     info!(
         "Config: engine={}, mode={}, asr_shortcut={}",
         config.asr_engine, config.engine_mode, config.asr_shortcut

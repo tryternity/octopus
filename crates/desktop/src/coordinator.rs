@@ -800,7 +800,10 @@ fn handle_toggle(
                     Stage::VadSegmented { pipeline, transcript, tick_active } => {
                         (pipeline, transcript, tick_active)
                     }
-                    _ => unreachable!(),
+                    _ => {
+                        log::error!("unexpected stage in handle_toggle VadSegmented, falling back to Idle");
+                        return;
+                    }
                 };
             info!("Toggle: stopping VadSegmented (active_count={})", pipeline.active_count());
 
@@ -1597,7 +1600,7 @@ fn handle_discard(
         }
         Stage::Idle => None,
         // Pasting 已在上面 early return
-        Stage::Pasting { .. } => unreachable!(),
+        Stage::Pasting { .. } => { log::error!("unexpected Pasting stage in discard result, ignoring"); None }
     };
 
     // 停止录音 + 引擎（与 handle_cancel 一致的停止逻辑）
@@ -1638,7 +1641,7 @@ fn handle_discard(
             info!("Discard: discarding while waiting for polish");
         }
         Stage::Idle => {}
-        Stage::Pasting { .. } => unreachable!(),
+        Stage::Pasting { .. } => { log::error!("unexpected Pasting stage in discard result, ignoring"); }
     }
 
     // finalize DB 记录（保留识别历史 + 已完成的润色结果，duration_ms 标记实际用时）
