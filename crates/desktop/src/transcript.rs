@@ -39,6 +39,10 @@ pub struct Transcript {
     /// 选中替换待删范围（扁平 char [start,end)）。set_selection 记录，apply_engine_full
     /// 首个非空 delta 或 take_polish_input 消费时真删。运行时态，不入库。
     pending_delete: Option<(usize, usize)>,
+    /// 选中替换的插入点（selection start）。set_selection 时记录，跨润色持久——
+    /// 润色后 caret 须精确恢复到此 char offset，而非跑到末尾。apply_engine_full/append_segment
+    /// 消费 pending_delete 后不清零（润色仍需用它恢复 caret）；set_caret/clear_pending_delete 清零。
+    selection_insert_offset: Option<usize>,
     last_polish_time: Instant,
     polish_pending: bool,
     /// 润色发起时的 segments 快照（PolishDone 回填比对用）。
@@ -61,6 +65,7 @@ impl Transcript {
             id, mode, segments: Vec::new(), caret_gap: 0,
             engine_cumulative: String::new(), engine_consumed_chars: 0, diverted_pending: String::new(),
             pending_delete: None,
+            selection_insert_offset: None,
             last_polish_time: Instant::now(), polish_pending: false,
             polish_snapshot: Vec::new(), polish_caret_offset: 0, polish_caret_at_tail: true,
             pending_delta: String::new(), db_inserted: false,
@@ -93,7 +98,15 @@ impl Transcript {
     /// 暂存 diverted_pending（不立即展示，避免抖动），重算基准；下次 apply 时连同补发。
     /// （不回退已展示——no rollback。）
     pub fn apply_engine_full(&mut self, full: &str) -> bool {
-        // 先 flush 上次 diverted 暂存（连同本次一起处理）
+        // 消费 pending_delete（选中替换）——在任何 early return 之前。
+        // 引擎静音期每 tick 产出 same-as-before 的 full（delta 空），旧代码在 delta 空
+        // 时 return false 跳过消费 → 选区永远不删。现在只要 apply 被调用就消费。
+        let mut selection_deleted = false;
+        if let Some((s, e)) = self.pending_delete.take() {
+            self.delete_range(s, e);
+            selection_deleted = true;
+        }
+
         let mut combined_delta;
         let is_prefix = full.starts_with(self.engine_cumulative.as_str());
         if is_prefix {
@@ -106,44 +119,42 @@ impl Transcript {
             self.diverted_pending.push_str(&diff);
             self.engine_cumulative = full.to_string();
             self.engine_consumed_chars = full.chars().count();
-            // 上限保护：diverted 累积过多（引擎持续异常纠正，迟迟不回前缀）→ 强制展示，
-            // 避免用户看空白。fall through 把 diverted_pending 当 delta 展示。
             if self.diverted_pending.chars().count() < DIVERTED_PENDING_LIMIT {
-                return false; // 当次不展示（diverted 延迟确认）
+                // diverted 延迟确认——但如果选区刚被删，文本确实变了，须返回 true 让前端刷新
+                return selection_deleted;
             }
             log::warn!("diverted_pending 累积超限({}), 强制 flush 展示", DIVERTED_PENDING_LIMIT);
             combined_delta = std::mem::take(&mut self.diverted_pending);
         }
         self.engine_cumulative = full.to_string();
         self.engine_consumed_chars = full.chars().count();
-        // flush diverted_pending（若有）到本次 delta 前
         if !self.diverted_pending.is_empty() {
             let dp = std::mem::take(&mut self.diverted_pending);
             let mut s = dp;
             s.push_str(&combined_delta);
             combined_delta = s;
         }
-        if combined_delta.is_empty() { return false; }
-        // 选中替换：首个非空 delta 插入前，删除 set_selection 记录的待删范围。
-        if let Some((s, e)) = self.pending_delete.take() {
-            self.delete_range(s, e);
+        if combined_delta.is_empty() && !selection_deleted { return false; }
+        if !combined_delta.is_empty() {
+            if self.polish_pending { self.pending_delta.push_str(&combined_delta); }
+            else { self.push_delta_at_caret(&combined_delta); }
         }
-        if self.polish_pending { self.pending_delta.push_str(&combined_delta); }
-        else { self.push_delta_at_caret(&combined_delta); }
         true
     }
 
     /// VadSegmented append_segment（delta 直接生长，不经 engine_cumulative）。
     pub fn append_segment(&mut self, delta: &str) {
-        if delta.is_empty() { return; }
-        // 选中替换：首个非空 delta 插入前，删除 set_selection 记录的待删范围
-        // （与 apply_engine_full 对称——VadSegmented / cloud partial 路径同样要消费 pending_delete，
-        // 否则离线/cloud 引擎下选中后首词只插不删，选中文本残留）。
+        // 消费 pending_delete（同 apply_engine_full，在任何 early return 之前）
+        let mut selection_deleted = false;
         if let Some((s, e)) = self.pending_delete.take() {
             self.delete_range(s, e);
+            selection_deleted = true;
         }
-        if self.polish_pending { self.pending_delta.push_str(delta); }
-        else { self.push_delta_at_caret(delta); }
+        if delta.is_empty() && !selection_deleted { return; }
+        if !delta.is_empty() {
+            if self.polish_pending { self.pending_delta.push_str(delta); }
+            else { self.push_delta_at_caret(delta); }
+        }
     }
 
     /// 在 caret_gap 处确保有 Raw 段并追加 delta：
@@ -189,6 +200,7 @@ impl Transcript {
     pub fn set_caret(&mut self, char_off: usize) {
         self.caret_gap = self.split_at(char_off);
         self.pending_delete = None;
+        self.selection_insert_offset = None;
     }
 
     /// 删除扁平 char 范围 [start,end)。先 split_at(start) 再 split_at(end)，drain 中间段，
@@ -202,10 +214,11 @@ impl Transcript {
         self.caret_gap = g1.min(self.segments.len());
     }
 
-    /// 选中替换：记录待删范围 + 劈 caret_gap 到 start（**不立即删字**，保留浏览器原生高亮
-    /// 反馈直到开口）。apply_engine_full 首个非空 delta / take_polish_input 时真删。
+    /// 选中替换：记录待删范围 + 劈 caret_gap 到 start。**不立即删字**（保留浏览器原生
+    /// 高亮反馈，用户可重新选择）。apply_engine_full / append_segment 下次调用时消费。
     pub fn set_selection(&mut self, start: usize, end: usize) {
         self.pending_delete = Some((start, end));
+        self.selection_insert_offset = Some(start);
         self.caret_gap = self.split_at(start);
     }
 
@@ -218,6 +231,7 @@ impl Transcript {
     /// 取消选中（取消编辑 / 失焦 / 新会话）时调用：清 pending_delete 防幽灵删除。
     pub fn clear_pending_delete(&mut self) {
         self.pending_delete = None;
+        self.selection_insert_offset = None;
     }
 
     /// 是否处于中间插入态（caret_gap < 段数）。pipeline Emit insertion 标志用。
@@ -226,6 +240,7 @@ impl Transcript {
     /// 编辑提交：整篇压成一条 Edited；raw/polished 清零。空串→清空。
     pub fn commit_edit(&mut self, flat: &str) {
         self.pending_delete = None;
+        self.selection_insert_offset = None;
         if flat.is_empty() { self.segments.clear(); self.caret_gap = 0; return; }
         self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() }];
         self.caret_gap = 1;
@@ -240,12 +255,15 @@ impl Transcript {
     /// 取润色输入：快照 segments + 记 caret offset/末尾态 + 标记 pending。
     pub fn take_polish_input(&mut self) -> PolishInput {
         // 选中替换：润色前删除待删范围，避免快照含选中旧字。
+        // 若消费了 pending_delete，强制 polish_caret_at_tail=false——用户显式选定了插入点
+        // （selection start），polish 后 caret 须精确恢复到该位置，而非跑到新末尾。
         if let Some((s, e)) = self.pending_delete.take() {
             self.delete_range(s, e);
         }
         self.polish_snapshot = self.segments.clone();
         self.polish_caret_offset = self.caret_char_offset();
-        self.polish_caret_at_tail = self.caret_gap >= self.segments.len();
+        self.polish_caret_at_tail = self.selection_insert_offset.is_none()
+            && self.caret_gap >= self.segments.len();
         self.polish_pending = true;
         PolishInput { segments: self.polish_snapshot.clone() }
     }
@@ -262,7 +280,10 @@ impl Transcript {
             self.caret_gap = self.segments.len();
         } else {
             let total = self.finish_text().chars().count();
-            self.set_caret(caret_off.min(total));
+            let target = caret_off.min(total);
+            // 不用 set_caret（会清 selection_insert_offset）；手动 split_at 保持选中插入点
+            self.caret_gap = self.split_at(target);
+            self.selection_insert_offset = Some(target);
         }
         let pending = std::mem::take(&mut self.pending_delta);
         if !pending.is_empty() { self.push_delta_at_caret(&pending); }
@@ -650,7 +671,7 @@ mod tests {
 
     #[test]
     fn set_caret_clears_pending_delete() {
-        // 选中后点别处（set_caret）→ 待删清除；后续 apply 不删，文字保留。
+        // 选中后 set_caret 取消 → clear_pending_delete；后续 apply 不删
         let mut t = Transcript::new(104, PolishMode::Intermediate);
         t.apply_engine_full("你好世界");
         t.set_selection(2, 4);
@@ -661,13 +682,18 @@ mod tests {
 
     #[test]
     fn pending_delete_consumed_once() {
-        // 首词消费待删后，第二词是普通中插（不再删）。
+        // 首次 apply 消费待删；第二次不再删。
         let mut t = Transcript::new(105, PolishMode::Intermediate);
         t.apply_engine_full("你好世界");
         t.set_selection(2, 4);
-        t.apply_engine_full("你好世界甲"); // 首词"甲"：删"世界"、插"甲"→"你好甲"
+        // 静音 tick（same full）：消费 pending_delete 删"世界"，delta 空 → 返回 true
+        let changed = t.apply_engine_full("你好世界");
+        assert!(changed, "选区删除应返回 true");
+        assert_eq!(t.finish_text(), "你好");
+        // 新词到达
+        t.apply_engine_full("你好世界甲"); // delta "甲" → "你好甲"
         assert_eq!(t.finish_text(), "你好甲");
-        t.apply_engine_full("你好世界甲乙"); // 第二词"乙"：普通中插→"你好甲乙"
+        t.apply_engine_full("你好世界甲乙"); // delta "乙" → "你好甲乙"
         assert_eq!(t.finish_text(), "你好甲乙");
     }
 
@@ -678,10 +704,87 @@ mod tests {
         t.apply_engine_full("你好世界");
         t.set_selection(2, 4);
         let input = t.take_polish_input();
-        // 删"世界"后 segments 只剩 [raw 你好]
         assert_eq!(input.segments.len(), 1);
         assert_eq!(input.segments[0].text, "你好");
         assert!(!t.polish_snapshot.iter().any(|s| s.text.contains("世界")));
+    }
+
+    #[test]
+    fn selection_then_polish_then_delta_inserts_at_selection_start() {
+        // 停顿触发润色后 caret 恢复到选中起点（selection_insert_offset）。
+        let mut t = Transcript::new(108, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_selection(2, 4);
+        // 模拟静音 tick → 消费 pending_delete
+        t.apply_engine_full("你好世界"); // same → 删"世界"
+        assert_eq!(t.finish_text(), "你好");
+        let _input = t.take_polish_input();
+        t.polish_apply("你好。"); // LLM 润色
+        assert_eq!(t.caret_char_offset(), 2, "caret 须恢复到选中起点");
+        t.apply_engine_full("你好世界新词"); // delta = skip 4 = "新词"
+        assert_eq!(t.finish_text(), "你好新词。", "新词须从选中起点生长");
+    }
+
+    #[test]
+    fn selection_at_start_then_polish_then_delta_inserts_at_start() {
+        // 选中开头 → 首次 apply 删选区 → 润色 → 新词从开头生长。
+        let mut t = Transcript::new(109, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_selection(0, 2);
+        t.apply_engine_full("你好世界"); // same → 删"你好"
+        assert_eq!(t.finish_text(), "世界");
+        t.apply_engine_full("你好世界新"); // delta "新" → "新世界"
+        assert_eq!(t.finish_text(), "新世界");
+        let _input = t.take_polish_input();
+        t.polish_apply("新。世界。");
+        assert_ne!(t.caret_gap, t.segments.len(), "caret 不能在末尾");
+        t.apply_engine_full("你好世界新词"); // delta "词"
+        let result = t.finish_text();
+        assert!(result.starts_with("新词"), "新词须在开头生长，实际: {}", result);
+    }
+
+    #[test]
+    fn selection_then_engine_new_phrase_not_diverted() {
+        // 活跃会话选中替换完整流程
+        let mut t = Transcript::new(110, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        assert_eq!(t.finish_text(), "你好世界");
+        t.set_selection(0, 2); // pending_delete
+        // 静音 tick → 消费 pending_delete
+        let changed = t.apply_engine_full("你好世界"); // same full → delta 空
+        assert!(changed, "选区删除应返回 true");
+        assert_eq!(t.finish_text(), "世界");
+        // 引擎前缀续作 + 新词
+        t.apply_engine_full("你好世界，欢迎来到");
+        assert_eq!(t.finish_text(), "，欢迎来到世界");
+    }
+
+    #[test]
+    fn selection_mid_text_then_engine_new_phrase_replaces() {
+        let mut t = Transcript::new(111, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界再见");
+        t.set_selection(2, 4);
+        // 静音 tick → 消费 pending_delete 删"世界"
+        t.apply_engine_full("你好世界再见"); // same → 删
+        assert_eq!(t.finish_text(), "你好再见");
+        // 新词
+        t.apply_engine_full("你好世界再见，欢迎"); // delta "，欢迎"
+        assert_eq!(t.finish_text(), "你好，欢迎再见", "新词从选中起点生长");
+    }
+
+    #[test]
+    fn selection_deleted_on_first_engine_tick() {
+        // pending_delete 在首次 apply 即时消费（不等非空 delta）。
+        let mut t = Transcript::new(112, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        t.set_selection(0, 2);
+        // 静音 tick（same full）
+        let changed = t.apply_engine_full("你好世界");
+        assert!(changed, "选区删除须返回 true 即使 delta 空");
+        assert_eq!(t.finish_text(), "世界", "选区在首次 apply 即时删除");
+        // 新语音
+        t.apply_engine_full("你好世界新"); // delta "新"
+        assert_eq!(t.finish_text(), "新世界", "新词从选中起点生长");
     }
 
     #[test]
@@ -712,5 +815,48 @@ mod tests {
             "diverted 超限应强制 flush，finish_text={}",
             t.finish_text()
         );
+    }
+}
+
+
+#[cfg(test)]
+mod user_scenario_tests {
+    use super::*;
+    use crate::config::PolishMode;
+
+    #[test]
+    fn user_scenario_select_hello_speak_welcome() {
+        // 用户场景：原文"你好新世界"，选中"你好"，说"欢迎来到"
+        let mut t = Transcript::new(200, PolishMode::Intermediate);
+        t.apply_engine_full("你好新世界");
+        assert_eq!(t.finish_text(), "你好新世界");
+        // 选中 "你好" [0,2) — 不立即删
+        t.set_selection(0, 2);
+        assert_eq!(t.finish_text(), "你好新世界", "选中不立即删");
+        // 静音 tick → 消费 pending_delete
+        let changed = t.apply_engine_full("你好新世界"); // same → 删"你好"
+        assert!(changed);
+        assert_eq!(t.finish_text(), "新世界");
+        // 新语音（Zipformer accumulated + separator + new segment）
+        t.apply_engine_full("你好新世界，欢"); // delta "，欢"
+        assert_eq!(t.finish_text(), "，欢新世界");
+        t.apply_engine_full("你好新世界，欢迎");
+        assert_eq!(t.finish_text(), "，欢迎新世界");
+        t.apply_engine_full("你好新世界，欢迎来到");
+        assert_eq!(t.finish_text(), "，欢迎来到新世界");
+    }
+
+    #[test]
+    fn user_scenario_select_mid_speak_welcome() {
+        // 选中中间文本替换
+        let mut t = Transcript::new(201, PolishMode::Intermediate);
+        t.apply_engine_full("你好新世界");
+        t.set_selection(2, 5); // 选中 "新世界"
+        // 静音 tick → 消费
+        t.apply_engine_full("你好新世界"); // same → 删
+        assert_eq!(t.finish_text(), "你好");
+        // 新语音
+        t.apply_engine_full("你好新世界，欢迎来到"); // delta "，欢迎来到"
+        assert_eq!(t.finish_text(), "你好，欢迎来到", "中间选区替换");
     }
 }

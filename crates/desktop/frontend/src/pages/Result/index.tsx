@@ -462,7 +462,7 @@ function Result() {
         const end = codePointOffsetTo(el, range.endContainer, range.endOffset);
         if (end > start) {
           setCaretPos(null); // 隐藏闪烁光标，交浏览器原生高亮
-          invoke("set_selection", { start, end });
+          invoke("set_selection", { start, end, text: displayedRef.current });
           return;
         }
       }
