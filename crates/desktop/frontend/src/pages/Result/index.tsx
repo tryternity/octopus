@@ -507,7 +507,7 @@ function Result() {
           // 缓存选区供 prepare-record 回读：Toggle 时后端 emit prepare-record，前端 invoke
           // start_recording 把此缓存推回，作跨会话选中替换种子（替代旧后端 idle_selection 长期缓存）。
           currentSelectionRef.current = { start, end, text: displayedRef.current };
-          invoke("set_selection", { start, end, text: displayedRef.current });
+          invoke("set_selection", { start, end });
           return;
         }
       }

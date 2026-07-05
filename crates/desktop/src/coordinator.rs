@@ -79,7 +79,7 @@ enum Command {
     /// 选中替换：前端非编辑态拖选 → char 范围 [start,end) → set_selection（记录待删范围 +
     /// 劈 caret 到 start，不立即删字，首个 delta 到达时真删）。非活跃 stage → 暂存 (text,start,end)，
     /// Toggle 开新会话时种子 transcript（跨会话选中替换）。
-    SetSelection { start: usize, end: usize, text: String },
+    SetSelection { start: usize, end: usize },
     /// 前端响应 prepare-record 事件：携带 prepare_id（跨会话/超时护栏）+ 前端缓存的选区。
     /// selection=None → 普通开录音；Some((text,start,end)) → 跨会话选中替换种子。
     /// C3：coordinator 校验 prepare_id 匹配 pending_prepare 后调 begin_recording。
@@ -239,13 +239,9 @@ impl Coordinator {
                             handle_toggle(
                                 &mut stage,
                                 &audio,
-                                &engine,
                                 &config,
                                 &app_handle,
                                 &tx,
-                                use_streaming,
-                                #[cfg(feature = "cloud")]
-                                use_cloud_streaming,
                             );
                         } else if pending_prepare.is_some() {
                             // 等待态（已 emit prepare-record）再按 Toggle → 取消等待。
@@ -599,9 +595,9 @@ impl Coordinator {
 
     /// 前端拖选选中替换：char 范围 [start,end) → 通过命令通道投递。命令循环里调
     /// stage_transcript.set_selection（记录待删 + 劈 caret 到 start）。首个 delta 到达时真删。
-    pub fn set_selection(&self, start: usize, end: usize, text: String) {
+    pub fn set_selection(&self, start: usize, end: usize) {
         let tx = self.tx.lock();
-            if tx.send(Command::SetSelection { start, end, text }).is_err() {
+            if tx.send(Command::SetSelection { start, end }).is_err() {
                 error!("Coordinator channel closed");
             }
     }
@@ -688,8 +684,8 @@ pub fn set_caret(coordinator: tauri::State<'_, Coordinator>, offset: usize) {
 /// start/end = 选区在整篇文本的 code-point（char）偏移（左闭右开）。
 /// text = 当前展示全文（Idle 态跨会话选中替换用：种子新会话 transcript）。
 #[tauri::command]
-pub fn set_selection(coordinator: tauri::State<'_, Coordinator>, start: usize, end: usize, text: String) {
-    coordinator.set_selection(start, end, text);
+pub fn set_selection(coordinator: tauri::State<'_, Coordinator>, start: usize, end: usize) {
+    coordinator.set_selection(start, end);
 }
 
 /// 前端命令：响应 prepare-record 事件，回推选区（selection=null=普通开录音）触发实际开录音。
@@ -911,17 +907,13 @@ fn begin_recording(
     }
 }
 
-/// 处理 Toggle 命令
-#[allow(clippy::too_many_arguments)]
+/// 处理 Toggle 命令（仅活跃态停录音；Idle 走主循环两阶段 → begin_recording）。
 fn handle_toggle(
     stage: &mut Stage,
     audio: &Arc<SharedAudioState>,
-    engine: &Arc<dyn TranscriptionEngine>,
     config: &AppConfig,
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
-    use_streaming: bool,
-    #[cfg(feature = "cloud")] use_cloud_streaming: bool,
 ) {
     match stage {
         Stage::Idle => {
@@ -1491,10 +1483,10 @@ fn is_cloud_engine(config: &AppConfig) -> bool {
 fn start_cloud_streaming_tick_thread(tx: Sender<Command>, tick_active: Arc<AtomicBool>) {
     std::thread::spawn(move || {
         while tick_active.load(Ordering::Relaxed) {
-            if tick_active.load(Ordering::Relaxed) {
-                if tx.send(Command::CloudStreamingTick).is_err() {
-                    break;
-                }
+            if tick_active.load(Ordering::Relaxed)
+                && tx.send(Command::CloudStreamingTick).is_err()
+            {
+                break;
             }
             std::thread::sleep(std::time::Duration::from_millis(CLOUD_STREAMING_TICK_INTERVAL_MS));
         }
