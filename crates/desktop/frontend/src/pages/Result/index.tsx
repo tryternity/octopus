@@ -496,12 +496,21 @@ function Result() {
     const el = textRef.current;
     if (!el || !text) return;
     const sel = window.getSelection();
+    // [seldbg] 诊断：选区状态快照（排查"从右往左选不触发 set_selection"）
+    const dbgSel = sel ? `collapsed=${sel.isCollapsed} rangeCount=${sel.rangeCount}` : 'null';
     if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
       const range = sel.getRangeAt(0);
+      const contained = el.contains(range.commonAncestorContainer);
       // 选区须落在文本容器内（排除工具栏按钮等）
-      if (el.contains(range.commonAncestorContainer)) {
+      if (contained) {
         const start = codePointOffsetBefore(el, range);
         const end = codePointOffsetTo(el, range.endContainer, range.endOffset);
+        console.debug('[seldbg] mouseup drag sel', {
+          start, end, 'end>start': end > start,
+          anchorOff: sel.anchorOffset, focusOff: sel.focusOffset,
+          rangeStart: range.startOffset, rangeEnd: range.endOffset,
+          displayed: displayedRef.current?.slice(0, 30),
+        });
         if (end > start) {
           setCaretPos(null); // 隐藏闪烁光标，交浏览器原生高亮
           // 缓存选区供 prepare-record 回读：Toggle 时后端 emit prepare-record，前端 invoke
@@ -510,7 +519,13 @@ function Result() {
           invoke("set_selection", { start, end, text: displayedRef.current });
           return;
         }
+        // [seldbg] end <= start（从右往左选的 Range normalize 后不应出现，除非 offset 计算 bug）
+        console.warn('[seldbg] end<=start, falling through to set_caret', { start, end });
+      } else {
+        console.debug('[seldbg] range not contained in textRef');
       }
+    } else {
+      console.debug('[seldbg] no drag selection, sel=', dbgSel);
     }
     // 折叠（纯点击）→ 定位光标
     const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
@@ -521,6 +536,7 @@ function Result() {
     if (!el.contains(range.startContainer)) return;
     sel?.removeAllRanges();
     const offset = codePointOffsetBefore(el, range);
+    console.debug('[seldbg] set_caret offset=', offset);
     setCaretPos(offset);
     invoke("set_caret", { offset });
   };
