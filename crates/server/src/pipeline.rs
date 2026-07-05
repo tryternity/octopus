@@ -4,6 +4,7 @@
 //! 不含 polish / denoise（总 spec §3.8/§3.6：留端，server 不依赖 llm/cpal）。
 
 use anyhow::Result;
+use std::sync::Arc;
 use octopus_asr_local::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
 
 /// WS 流式会话：薄包 asr `StreamingRunner`。
@@ -14,7 +15,7 @@ pub struct WsStreamSession {
 impl WsStreamSession {
     /// 由已构造的流式引擎装箱传入（解耦 `StreamingSession`，便于测试注入 fake）。
     /// `correct` 来自 `app_config.asr_correct`（与批处理 `PipelineConfig.correct` 同源）。
-    pub fn new(engine: Box<dyn StreamingEngine>, correct: bool) -> Result<Self> {
+    pub fn new(engine: Arc<dyn StreamingEngine>, correct: bool) -> Result<Self> {
         Ok(Self {
             runner: StreamingRunner::new(engine, correct)?,
         })
@@ -22,7 +23,7 @@ impl WsStreamSession {
 
     /// 测试辅助：不加载 VAD（跳过门控），验证纯 relay 管线。
     #[cfg(test)]
-    pub fn new_no_vad(engine: Box<dyn StreamingEngine>, correct: bool) -> Result<Self> {
+    pub fn new_no_vad(engine: Arc<dyn StreamingEngine>, correct: bool) -> Result<Self> {
         Ok(Self {
             runner: StreamingRunner::new_no_vad(engine, correct)?,
         })
@@ -130,7 +131,7 @@ mod tests {
             next_accept: Mutex::new(Some("hi".into())),
             finish_text: "final".into(),
         };
-        let mut s = WsStreamSession::new_no_vad(Box::new(engine), false).unwrap();
+        let mut s = WsStreamSession::new_no_vad(Arc::new(engine), false).unwrap();
         // 无 VAD（vad=None）→ detect_silence_gap 返回 (false,false,false)，不门控不冲刷，
         // 只走 accept_samples → Partial。VAD 门控行为由 asr-local 自身测试覆盖。
         assert_eq!(

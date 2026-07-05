@@ -245,7 +245,7 @@ async fn handle_ws(
 
     // correct 与批处理 PipelineConfig.correct 同源（app_config.asr_correct）。
     let correct = octopus_asr_local::config::load_app_config_cached().asr_correct;
-    let mut stream = match WsStreamSession::new(Box::new(session), correct) {
+    let mut stream = match WsStreamSession::new(Arc::new(session), correct) {
         Ok(s) => s,
         Err(e) => {
             let _ = socket
