@@ -319,4 +319,8 @@ git commit -m "docs: P2 清理完成，全量审查修复收官"
 - **选中替换诊断日志**（为偶发失败定位做证据采集）：
   - `transcript.rs` 8 处 `log::debug!("[select] ...")` 覆盖 pending_delete 全生命周期
   - `coordinator.rs` 2 处跨会话播种 correlation log
+- **Important 项收尾**（I-F2 / I-F3 / M-4）：
+  - I-F2 `screenshot_commands.rs` `AtomicBool` CAS 门控 + `BusyGuard` RAII（Drop 释放），`start_screenshot` 入口门控，覆盖快捷键 + 托盘两个调用路径
+  - I-F3 `create_tray` 返回 `Result`（11 处 `expect`→`map_err?`），调用方 log 降级（无托盘菜单仍可用快捷键）；clipboard handle `expect`→`?`；`home_dir().expect`→`or_else(dirs::home_dir).ok_or?`。`main.rs:470` tauri build `expect` 保留（真正 fatal 无降级路径）
+  - M-4 `infra/db.rs` 3 处生产代码 `filter_map(|r| r.ok())` → `collect_rows(rows, context)` helper（失败行 `log::warn` 跳过而非静默丢弃）。测试代码保留 filter_map
 

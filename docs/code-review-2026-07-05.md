@@ -250,7 +250,7 @@
 
 ### P2（质量改善）— ✅ 全部完成
 11. ✅ **C14** capx 测试跨平台编译（加 `cfg(all(test, target_os = "macos"))` 门控）
-12. ✅ Important 清单中的错误处理 / 事务 / WAL / FTS5（follow-up 已完成：unreachable! 降级、save_app_config 事务、WAL+busy_timeout、FTS5 搜索切换、JSON 转义、llm max_tokens、aliyun bearer 统一）
+12. ✅ Important 清单中的错误处理 / 事务 / WAL / FTS5（follow-up 全部完成：unreachable! 降级、save_app_config 事务、WAL+busy_timeout、FTS5 搜索切换、JSON 转义、llm max_tokens、aliyun bearer 统一、截图并发门控 I-F2、expect 降级 I-F3、filter_map 静默丢行 M-4）
 13. ✅ **共性 3** 重复代码抽取（mel filterbank 统一到 feature.rs ✅；whisper 归一化 bug 修正 ✅；compute_fbank 因算法差异未强制统一——fbank.rs 无 DC removal/pre-emphasis，与 paraformer 不同路径）
 14. ✅ **共性 4** 调试输出清理（whisper/paraformer/desktop screenshot/aliyun eprintln→log::debug!, 前端 console.log 删除）
 15. ✅ `cargo clippy --fix` 清理 lint（70+ 自动+手动修复，零警告 + `#![warn(clippy::all)]` gate）
