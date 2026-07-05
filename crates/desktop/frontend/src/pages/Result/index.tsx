@@ -146,8 +146,15 @@ function Result() {
     // 同步写 DOM（绕过 React commit）：textRef 是 contentEditable div，React 对其 children 的
     // commit 不更新 DOM（保护用户编辑，flushSync 强制 commit 也无效）→ 文字滞后/空白。imperative
     // 写 textContent 强制 DOM = state，文字立即渲染。仅非编辑态写（编辑态 DOM 由用户控制）。
+    // **跳过用户正在拖选的情况**：textContent 重写会清除浏览器选区，导致 mouseup 时 isCollapsed=true
+    // → 走 set_caret 而非 set_selection（选中替换失效）。文本更新延迟到选区操作完成后无碍。
     if (textRef.current && !editingRef.current && textRef.current.textContent !== newText) {
-      textRef.current.textContent = newText;
+      const activeSel = window.getSelection();
+      const hasDragSelection = activeSel && !activeSel.isCollapsed
+        && textRef.current.contains(activeSel.anchorNode);
+      if (!hasDragSelection) {
+        textRef.current.textContent = newText;
+      }
     }
     // setText 驱动 state（CaretBlink text prop + effect 重测）；flushSync 强制同步 commit，避免
     // state 被 scheduler 延迟（否则 CaretBlink effect 滞后 → 光标滞后）。
@@ -293,7 +300,7 @@ function Result() {
           // selection 转 tuple [text,start,end]：后端 Option<(String,usize,usize)> serde 按数组反序列化。
           const sel = currentSelectionRef.current;
           invoke("start_recording", {
-            prepare_id: p as number,
+            prepareId: p as number,
             selection: sel ? [sel.text, sel.start, sel.end] : null,
           });
         }],
