@@ -54,7 +54,7 @@ pub struct MetaInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub char_count: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub mode: Option<String>,
+    pub asr_mode: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub polish_model: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

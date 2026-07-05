@@ -1056,7 +1056,7 @@ pub fn insert_transcription_at_id(
         meta.insert("char_count".into(), serde_json::Value::Number(char_count.into()));
         meta.insert("polished".into(), serde_json::Value::Bool(false));
         if let Some(mode) = engine_mode.filter(|m| !m.is_empty()) {
-            meta.insert("mode".into(), serde_json::Value::String(mode.to_string()));
+            meta.insert("asr_mode".into(), serde_json::Value::String(mode.to_string()));
         }
         let meta_json = serde_json::to_string(&serde_json::Value::Object(meta))?;
         conn.execute(
