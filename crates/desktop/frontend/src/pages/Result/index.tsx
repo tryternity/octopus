@@ -543,7 +543,6 @@ function Result() {
       let upOff = -1;
       const upRange = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
       if (upRange) {
-        const clamped = upRange.cloneRange();
         // mouseup 鼠标可能在容器外 → clamp 到容器范围
         const containerRange = document.createRange();
         containerRange.selectNodeContents(el);
@@ -552,7 +551,7 @@ function Result() {
         } else if (upRange.compareBoundaryPoints(Range.START_TO_START, containerRange) <= 0) {
           upOff = 0; // 鼠标在容器左边界外 → 开头
         } else {
-          upOff = codePointLen(el.textContent ?? ""); // 鼠标在右边界外 → 末尾
+          upOff = Array.from(el.textContent ?? "").length; // 鼠标在右边界外 → 末尾
         }
       }
       if (upOff >= 0 && upOff !== downOff) {
