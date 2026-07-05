@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "@/lib/utils";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import type { ClipboardItem } from "@/types/clipboard";
-import { metaParts } from "@/types/clipboard";
+import { metaParts, typeAccent } from "@/types/clipboard";
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Download, FolderOpen,
@@ -343,6 +343,7 @@ function ClipboardRow({
     : Type;
   const isVoice = item.item_type === "voice";
   const meta = metaParts(item);
+  const accent = typeAccent[item.item_type];
 
   return (
     <div
@@ -372,7 +373,7 @@ function ClipboardRow({
       >
         <Icon className={cn(
           "w-3.5 h-3.5 transition-all duration-150",
-          isVoice ? "text-amber-600" : "text-stone-400 group-hover:text-stone-600",
+          accent,
           copied && "scale-125 text-emerald-500",
         )} />
         {copied && (
@@ -387,9 +388,6 @@ function ClipboardRow({
             {thumbSrc && (
               <img src={thumbSrc} className="w-10 h-10 rounded object-cover flex-shrink-0" alt="" />
             )}
-            <span className="text-xs text-stone-500">
-              {item.meta_info?.w}×{item.meta_info?.h}
-            </span>
           </div>
         ) : item.item_type === "file" ? (
           <div className="text-xs text-stone-500 truncate">
@@ -398,12 +396,15 @@ function ClipboardRow({
         ) : (
           <p className="text-xs leading-relaxed text-stone-800 break-words line-clamp-2">{[...item.content].length > 200 ? [...item.content].slice(0, 200).join("") + "……" : item.content}</p>
         )}
-        <span className={cn(
-          "inline-block mt-0.5 text-[10px] font-medium",
-          isVoice ? "text-amber-700/60" : "text-stone-400",
-        )}>
-          {item.created_at}{meta ? ` · ${meta}` : ""}
-        </span>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          <span className="text-[10px] text-stone-400 tabular-nums">{item.created_at}</span>
+          {meta && (
+            <>
+              <span className="text-[10px] text-stone-300">·</span>
+              <span className={cn("text-[10px] font-medium tabular-nums", accent)}>{meta}</span>
+            </>
+          )}
+        </div>
       </div>
 
       {/* 右侧操作栏：链接/保存图片/OCR/打开文件/删除 + 收藏置末 */}

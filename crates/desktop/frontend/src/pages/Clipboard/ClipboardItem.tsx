@@ -5,7 +5,7 @@ import { invoke } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
-import { metaParts } from "@/types/clipboard";
+import { metaParts, typeAccent } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
 
 export default function ClipboardItemRow({
@@ -129,6 +129,7 @@ export default function ClipboardItemRow({
 
   const isVoice = item.item_type === "voice";
   const meta = metaParts(item);
+  const accent = typeAccent[item.item_type];
 
   return (
     <div
@@ -154,7 +155,7 @@ export default function ClipboardItemRow({
       >
         <Icon className={cn(
           "w-4 h-4 transition-all duration-150",
-          isVoice ? "text-voice" : "text-muted-foreground group-hover:text-foreground",
+          accent,
           copied && "scale-125 text-emerald-500",
         )} />
         {copied && (
@@ -170,9 +171,6 @@ export default function ClipboardItemRow({
             {thumbSrc && (
               <img src={thumbSrc} className="w-9 h-9 rounded-md object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
             )}
-            <span className="text-[11px] text-muted-foreground tabular-nums">
-              {item.meta_info?.w}×{item.meta_info?.h}
-            </span>
           </div>
         ) : item.item_type === "file" ? (
           <div className="text-[12px] text-muted-foreground truncate">
@@ -181,12 +179,15 @@ export default function ClipboardItemRow({
         ) : (
           <p className="text-[12.5px] leading-snug text-foreground/90 break-all line-clamp-2">{[...item.content].length > 200 ? [...item.content].slice(0, 200).join("") + "……" : item.content}</p>
         )}
-        <span className={cn(
-          "inline-block mt-0.5 text-[10px] font-medium tabular-nums",
-          isVoice ? "text-voice/60" : "text-muted-foreground/60",
-        )}>
-          {item.created_at}{meta ? ` · ${meta}` : ""}
-        </span>
+        <div className="flex items-center gap-1.5 mt-0.5">
+          <span className="text-[10px] text-muted-foreground/50 tabular-nums">{item.created_at}</span>
+          {meta && (
+            <>
+              <span className="text-[10px] text-muted-foreground/30">·</span>
+              <span className={cn("text-[10px] font-medium tabular-nums", accent)}>{meta}</span>
+            </>
+          )}
+        </div>
       </div>
 
       {/* 右侧操作：统一 hover 显示（收藏除外） */}

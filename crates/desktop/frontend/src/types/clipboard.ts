@@ -33,7 +33,7 @@ export interface ClipboardItem {
 /**
  * 按类型生成元数据片段（不含时间）：
  * text/ocr: "N字"
- * voice:    "N字 · 时长 Xs"
+ * voice:    "N字 · Xs"
  * image:    "WxH · size"
  * file:     ""
  */
@@ -46,7 +46,7 @@ export function metaParts(item: ClipboardItem): string {
     case "voice": {
       const parts: string[] = [];
       if (m?.char_count) parts.push(`${m.char_count}字`);
-      if (m?.duration_ms) parts.push(`时长 ${(m.duration_ms / 1000).toFixed(1)}s`);
+      if (m?.duration_ms) parts.push(`${(m.duration_ms / 1000).toFixed(1)}s`);
       return parts.join(" · ");
     }
     case "image": {
@@ -59,3 +59,13 @@ export function metaParts(item: ClipboardItem): string {
       return "";
   }
 }
+
+/** 类型强调色 */
+export const typeAccent: Record<ItemType, string> = {
+  text: "text-stone-500",
+  voice: "text-amber-600",
+  ocr: "text-teal-600",
+  image: "text-indigo-500",
+  file: "text-emerald-600",
+};
+
