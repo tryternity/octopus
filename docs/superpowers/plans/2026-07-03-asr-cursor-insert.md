@@ -1501,6 +1501,27 @@ git -C ... commit -m "docs(asr): 同步光标中插改造到文档" --allow-empt
 
 ---
 
+## 追加：跨会话选中替换（方案 C）+ Bug C cloud 对称（2026-07-05）
+
+活跃态选中替换（§11）上线后，跨会话维度（Idle 选中 → Toggle 开新会话替换）暴露 bug。设计详见 spec §11.8。
+
+### 方案 C：移除 idle_selection 长期缓存，改前端推选区两阶段 Toggle（a79ab97，已合 main）
+
+- [x] **根因**：后端 `idle_selection: Option<(text,start,end)>` 长期缓存 → 失焦残留 / 编辑后 stale text 指错位 / 拖选后编辑残留三类 bug
+- [x] `coordinator.rs`：移除 `idle_selection`；Toggle 在 Idle 走两阶段（`emit("prepare-record", prepare_id)` + spawn 200ms 看门狗 + `pending_prepare` 等待态）；抽 `begin_recording(selection)`（cloud/streaming/vad 三分支对称：`Some`→`commit_edit`+`set_selection` 种子 / `None`→普通开）；`StartRecording`/`FallbackStart` 校验 prepare_id 后调 begin_recording；Cancel/Discard/再 Toggle 中断等待；SetCaret/SetSelection 等待态 no-op
+- [x] `main.rs`：invoke_handler 注册 `coordinator::start_recording`
+- [x] `Result/index.tsx`：`currentSelectionRef`（拖选缓存 {start,end,text}）；listen `prepare-record` → `invoke("start_recording", {prepare_id, selection: [text,start,end]|null})`（**数组非对象**，tuple serde）；blur/selectionchange(折叠)/enterEdit/commitEdit/cancelEdit/show-result/clear-result/hide-result 清 ref
+- [x] 验证：check/clippy cloud+default、tsc、vitest 14 全绿；e2e 用户验证通过
+
+### Bug C：cloud 分支对称植入 selection 种子（1f3e162，已合 main）
+
+- [x] **根因**：`begin_recording` cloud 分支（`use_cloud_streaming`）直接 `Transcript::new` 空实例、漏消费 `selection` → 云端跨会话选中替换退化为末尾追加（与 §11.7 `append_segment` 漏消费 `pending_delete` **同构**——状态植入/消费须全路径对称）；local streaming/vad 早已正确植入
+- [x] **修复**：cloud 分支按 streaming/vad 对称 `commit_edit(text)`+`set_selection(s,e)` 种子 transcript + `is_continuation` 延续态展示旧文本。详见 spec §11.8
+- [x] **同批清理**：`handle_toggle` 删 3 死参（engine/use_streaming/use_cloud_streaming，方案 C 后仅停录音不再用）/ `SetSelection` 删 `text` 死字段（跨会话选区改走 `start_recording.selection`，活跃态只需 start/end，回归 spec §11 描述）/ 2 处 `collapsible_if` 合并（cloud tick 线程 + aliyun 句子提交）。零行为变化，clippy cloud/default 全绿
+- [x] 验证：check/clippy cloud+default **0 warning/0 error**、tsc exit 0、vitest 14/14；cloud 录音基本路径回归 OK；cloud 选中替换场景靠代码对称保证（与 streaming/vad 字节级同构 + 共用 Transcript/paste 路径）
+
+---
+
 ## 追加修复：前端渲染 4 bug + 性能优化（2026-07-04）
 
 选中替换 e2e 后深度使用暴露 Result 窗前端渲染问题，全在 `crates/desktop/frontend/src/pages/Result/index.tsx`。详见 spec §12。**前端无单测框架**（无 vitest/jest），靠 `npm run build`（tsc+vite）+ 用户 e2e 验证。
