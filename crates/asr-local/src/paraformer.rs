@@ -6,6 +6,7 @@ use once_cell::sync::Lazy;
 use ort::session::Session;
 
 use crate::config;
+use crate::feature;
 
 // ── Fbank constants (identical to SenseVoice / Paraformer) ──
 pub(crate) const FBANK_FFT_SIZE: usize = 512;
@@ -19,9 +20,13 @@ pub(crate) const LFR_WINDOW_SIZE: usize = 7;
 pub(crate) const LFR_WINDOW_SHIFT: usize = 6;
 
 // 窗口函数：流式 Paraformer 使用 povey window (hanning^0.85)，离线使用 hamming
-pub(crate) static POVEY_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| povey_window(FBANK_FRAME_LEN));
-static HAMMING_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| hamming_window(FBANK_FRAME_LEN));
-pub(crate) static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| mel_filterbank_fbank());
+// 已抽取至 feature.rs，此处仅保留 static 引用
+pub(crate) static POVEY_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| feature::povey_window(FBANK_FRAME_LEN));
+static HAMMING_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| feature::hamming_window(FBANK_FRAME_LEN));
+pub(crate) static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| {
+    // sherpa-onnx 默认 high_freq = -400（即 Nyquist - 400 = 7600 Hz）
+    feature::mel_filterbank(FBANK_NUM_BINS, FBANK_FFT_SIZE, FBANK_SAMPLE_RATE, -400.0)
+});
 // 预规划的 512 点正向 FFT — 所有 fbank 提取共用，避免每次特征计算重复规划（堆分配 + twiddle 计算）。
 // 对流式热路径（StreamingParaformer）尤为关键：每个 chunk 都会调用。
 pub(crate) static FBANK_FFT: Lazy<Arc<dyn rustfft::Fft<f32>>> = Lazy::new(|| {
@@ -537,88 +542,14 @@ pub(crate) fn compute_fbank(
     Array2::from_shape_vec((n_frames, FBANK_NUM_BINS), fbank_data).map_err(Into::into)
 }
 
+// apply_lfr 已抽取至 feature.rs（保留 pub(crate) re-export 供 streaming_paraformer 使用）
 pub(crate) fn apply_lfr(fbank: &Array2<f32>, window_size: usize, window_shift: usize) -> Array2<f32> {
-    let (n_frames, feat_dim) = (fbank.nrows(), fbank.ncols());
-    let n_lfr = if n_frames >= window_size {
-        (n_frames - window_size) / window_shift + 1
-    } else {
-        1
-    };
-    let out_dim = feat_dim * window_size;
-
-    let mut out = Array2::zeros((n_lfr, out_dim));
-    for i in 0..n_lfr {
-        let base = i * window_shift;
-        for w in 0..window_size {
-            let frame_idx = base + w;
-            if frame_idx < n_frames {
-                for d in 0..feat_dim {
-                    out[[i, w * feat_dim + d]] = fbank[[frame_idx, d]];
-                }
-            }
-        }
-    }
-    out
+    feature::apply_lfr(fbank, window_size, window_shift)
 }
 
-/// Povey window: (0.5 - 0.5*cos(2*pi*i/(N-1)))^0.85
-/// knf feature-window.cc GetWindow() — 流式 Paraformer 默认使用此窗口
-fn povey_window(size: usize) -> Vec<f32> {
-    (0..size)
-        .map(|i| {
-            let a = 2.0 * std::f32::consts::PI * i as f32 / (size - 1) as f32;
-            (0.5 - 0.5 * a.cos()).powf(0.85)
-        })
-        .collect()
-}
-
-fn hamming_window(size: usize) -> Vec<f32> {
-    (0..size)
-        .map(|i| 0.54 - 0.46 * (2.0 * std::f32::consts::PI * i as f32 / (size - 1) as f32).cos())
-        .collect()
-}
-
-fn mel_filterbank_fbank() -> Vec<Vec<f64>> {
-    let n_freqs = FBANK_FFT_SIZE / 2 + 1;
-    // sherpa-onnx 默认 high_freq = -400（即 Nyquist - 400 = 7600 Hz）
-    let high_freq_param = -400.0f64;
-    let fmax = if high_freq_param > 0.0 {
-        high_freq_param
-    } else {
-        FBANK_SAMPLE_RATE as f64 / 2.0 + high_freq_param // 7600.0
-    };
-    let mel_low = hz_to_mel(20.0);
-    let mel_high = hz_to_mel(fmax);
-
-    // knf/kaldi 的 mel 滤波器在 **mel 空间** 均匀分布 (num_bins+2) 个点，
-    // 权重斜率也在 mel 空间计算。此前在 Hz 空间计算权重导致 fbank 输出完全不同。
-    let mel_delta = (mel_high - mel_low) / (FBANK_NUM_BINS as f64 + 1.0);
-    let fft_bin_width = FBANK_SAMPLE_RATE as f64 / FBANK_FFT_SIZE as f64;
-
-    let mut filters = vec![vec![0.0f64; n_freqs]; FBANK_NUM_BINS];
-    for bin in 0..FBANK_NUM_BINS {
-        let left_mel = mel_low + bin as f64 * mel_delta;
-        let center_mel = mel_low + (bin as f64 + 1.0) * mel_delta;
-        let right_mel = mel_low + (bin as f64 + 2.0) * mel_delta;
-
-        for j in 0..n_freqs {
-            let freq = fft_bin_width * j as f64;
-            let mel = hz_to_mel(freq);
-            if mel > left_mel && mel < right_mel {
-                if mel <= center_mel {
-                    filters[bin][j] = (mel - left_mel) / (center_mel - left_mel);
-                } else {
-                    filters[bin][j] = (right_mel - mel) / (right_mel - center_mel);
-                }
-            }
-        }
-    }
-    filters
-}
-
-fn hz_to_mel(hz: f64) -> f64 {
-    1127.0 * (1.0 + hz / 700.0).ln()
-}
+// povey_window / hamming_window 已抽取至 feature.rs
+// mel_filterbank_fbank 已抽取至 feature.rs（mel 空间权重，C1 修复统一）
+// hz_to_mel / mel_to_hz 已抽取至 feature.rs
 
 #[cfg(test)]
 mod tests {

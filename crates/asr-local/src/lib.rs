@@ -4,6 +4,7 @@
 
 pub mod audio;
 pub mod config;
+pub(crate) mod feature;
 pub mod manifest;
 pub use octopus_infra::db;
 pub mod engine;
