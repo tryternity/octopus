@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, type RefObject } from "react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@/lib/tauri";
 import { Loader2, Check } from "lucide-react";
@@ -13,9 +13,11 @@ const FORMATS: { value: ImageFormat; label: string }[] = [
 
 export default function SaveImagePopover({
   id,
+  triggerRef,
   onClose,
 }: {
   id: number;
+  triggerRef: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
 }) {
   const [format, setFormat] = useState<ImageFormat>("jpeg");
@@ -23,11 +25,17 @@ export default function SaveImagePopover({
   const [openFolder, setOpenFolder] = useState(false);
   const [saving, setSaving] = useState(false);
   const [done, setDone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const handler = (e: MouseEvent) => {
-      if (ref.current && !ref.current.contains(e.target as Node)) onClose();
+      const target = e.target as Node;
+      // 忽略自身触发按钮：mousedown 先于 click，若不排除，再次点 Download 会被这里
+      // 判为"外部"→onClose→随后 Download 的 click 又 toggle 打开，表现为"点按钮关不掉、
+      // 只闪烁"。triggerRef 限定只忽略本行触发按钮，点其他行/其他元素仍正常关闭。
+      if (triggerRef.current && triggerRef.current.contains(target)) return;
+      if (ref.current && !ref.current.contains(target)) onClose();
     };
     document.addEventListener("mousedown", handler);
     return () => document.removeEventListener("mousedown", handler);
@@ -37,6 +45,7 @@ export default function SaveImagePopover({
 
   const handleSave = async () => {
     setSaving(true);
+    setError(null);
     try {
       await invoke("save_image_item", {
         id,
@@ -49,8 +58,9 @@ export default function SaveImagePopover({
       setTimeout(onClose, 700);
     } catch (e) {
       setSaving(false);
-      console.error(e);
-      onClose();
+      // 不闪退：把失败原因留在 popover 内呈现，而非 console 静默 + 瞬关造成
+      // "点击保存→弹窗消失→不知成功失败"的信息孤岛。用户可改格式重试或点外部关闭。
+      setError(typeof e === "string" && e ? e : "保存失败，请重试");
     }
   };
 
@@ -150,6 +160,13 @@ export default function SaveImagePopover({
 
       {/* 分隔线 */}
       <div className="h-px bg-stone-100" />
+
+      {/* 失败提示：保留在 popover 内让用户知晓原因（成功时不渲染） */}
+      {error && (
+        <div className="text-[10px] leading-relaxed text-red-600 break-words">
+          {error}
+        </div>
+      )}
 
       {/* 保存按钮 */}
       <button

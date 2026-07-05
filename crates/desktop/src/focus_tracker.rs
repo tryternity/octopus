@@ -33,7 +33,8 @@ impl FocusTracker {
 
 // ── macOS ──────────────────────────────────────────────────────────
 // macOS 不需要焦点追踪：窗口 hide 后系统自动还焦点给上一个前台应用。
-// 只需 hide + 200ms 延迟 + osascript 模拟 Cmd+V。
+// 只需 hide + 300ms 延迟 + osascript 模拟 Cmd+V（与 clipboard_commands::paste_clipboard_item
+// 的 sleep(300ms) 对齐；曾为 200ms，调优后延至 300ms 求稳，注释原写 200ms 已漂移）。
 
 #[cfg(target_os = "macos")]
 fn start_platform_listener() {

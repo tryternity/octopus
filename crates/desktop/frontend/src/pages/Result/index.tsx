@@ -241,13 +241,23 @@ function Result() {
           }
         }],
         ["clear-result", () => {
+          // 清理 diverted 延迟计时器：300ms 内取消/丢弃录音时，pending 定时器若不清，到期仍会回调
+          // renderResultNow 把已废弃的纠正文本写回 text/displayedRef（state 污染 + 违背 clear 语义）。
+          if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
+          pendingDiverted.current = null;
           setText("");
           displayedRef.current = "";
           setCaretPos(null);
           setVisible(false);
           setIsRecording(false);
         }],
-        ["hide-result", () => { setVisible(false); setIsRecording(false); }],
+        ["hide-result", () => {
+          // 同 clear-result：隐藏窗时丢弃 pending diverted，避免后台定时器到期写脏 state。
+          if (divertedTimer.current) { clearTimeout(divertedTimer.current); divertedTimer.current = null; }
+          pendingDiverted.current = null;
+          setVisible(false);
+          setIsRecording(false);
+        }],
         ["config-changed", () => refreshActive()],
         ["polish-done", () => setPolishLoading(false)],
         ["edit-force-exit", () => {

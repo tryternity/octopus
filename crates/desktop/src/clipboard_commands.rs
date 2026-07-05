@@ -353,8 +353,12 @@ pub async fn open_file_item(id: i64) -> Result<(), String> {
         return Err("非文件条目".into());
     }
 
-    // 解析 JSON 路径数组
-    let paths: Vec<String> = serde_json::from_str(&item.content)
+    // 解析 JSON 路径数组。file 条目入库时 content 为空、路径存 ref_data
+    // （watcher.rs insert_clipboard_item + store.rs File 分支强制 content=空），
+    // 与 write_item_to_clipboard File 分支一致读 ref_data。旧代码误读 content
+    // 导致 serde_json::from_str("") 全平台失败、「打开文件」按钮失效。
+    let paths_json = item.ref_data.as_ref().ok_or("文件路径缺失")?;
+    let paths: Vec<String> = serde_json::from_str(paths_json)
         .map_err(|e| format!("解析路径失败: {}", e))?;
 
     let first = paths.first().ok_or("无文件路径")?;
@@ -607,18 +611,26 @@ pub async fn save_image_dialog(
         return Err("expected raw binary body".into());
     };
 
-    use tauri_plugin_dialog::DialogExt;
-    let save_path = app_handle
-        .dialog()
-        .file()
-        .add_filter("PNG 图片", &["png"])
-        .set_file_name("image.png")
-        .blocking_save_file();
-
-    if let Some(path) = save_path {
-        let path = path.as_path().ok_or("无效路径")?;
-        std::fs::write(path, &png_bytes).map_err(|e| e.to_string())?;
-        log::info!("Image preview saved to {}", path.display());
-    }
-    Ok(())
+    // blocking_save_file（弹原生对话框，等用户选路径可达数秒）+ fs::write 均为同步阻塞，
+    // 全部移入 spawn_blocking 避免卡住 Tokio worker 线程（与上方 copy_image_to_clipboard 同模式）。
+    // 不用 plugin 的 save_file() 回调式 API：回调内 fs::write 同样阻塞且错误无法返回前端；
+    // spawn_blocking 既能隔离阻塞、又能把对话框取消/写入错误正常回传给调用方。
+    let png_bytes = png_bytes.clone();
+    tokio::task::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        let save_path = app_handle
+            .dialog()
+            .file()
+            .add_filter("PNG 图片", &["png"])
+            .set_file_name("image.png")
+            .blocking_save_file();
+        if let Some(path) = save_path {
+            let path = path.as_path().ok_or("无效路径")?;
+            std::fs::write(path, &png_bytes).map_err(|e| e.to_string())?;
+            log::info!("Image preview saved to {}", path.display());
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
