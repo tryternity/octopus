@@ -33,7 +33,11 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
     #[cfg(target_os = "macos")]
     {
         let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
-        set_dock_icon();
+        // set_dock_icon 调 AppKit（NSApplication），必须在主线程执行。
+        // open_settings 是 Tauri command（worker 线程），用 run_on_main_thread 调度。
+        let _ = app_handle.run_on_main_thread(|| {
+            set_dock_icon();
+        });
     }
 
     // 暂存初始页面，等前端 mount 后调 get_initial_page 拉取
@@ -67,7 +71,8 @@ pub fn on_settings_closed(app_handle: &tauri::AppHandle) {
 }
 
 /// macOS: 手动设置 Dock 图标（release 裸二进制无 .app bundle，Tauri 仅在
-/// debug 模式自动设置）。
+/// debug 模式自动设置）。必须在主线程调用（由 open_settings 通过
+/// run_on_main_thread 调度）。
 #[cfg(target_os = "macos")]
 pub fn set_dock_icon() {
     use objc2::{AnyThread, MainThreadMarker};
@@ -76,7 +81,14 @@ pub fn set_dock_icon() {
 
     const ICON_PNG: &[u8] = include_bytes!("../icons/icon.png");
 
-    let mtm = unsafe { MainThreadMarker::new_unchecked() };
+    // 安全检查：仅主线程可调 AppKit
+    let mtm = match MainThreadMarker::new() {
+        Some(mtm) => mtm,
+        None => {
+            log::warn!("set_dock_icon called off main thread, skipping");
+            return;
+        }
+    };
     let app = NSApplication::sharedApplication(mtm);
     let data = NSData::with_bytes(ICON_PNG);
     if let Some(app_icon) = NSImage::initWithData(NSImage::alloc(), &data) {
