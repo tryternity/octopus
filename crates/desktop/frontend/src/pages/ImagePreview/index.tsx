@@ -270,7 +270,12 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
         drawBg();  // 显式重绘（覆盖 thumb/full 同尺寸时 zoom effect 不触发的边界）
       };
       fullImg.src = url;
-    }).catch((e) => console.error("full failed:", e));
+    }).catch((e) => {
+      console.error("full failed:", e);
+      // 全图加载失败也须释放防误触锁，否则 loadingFullRef 永久 true、标注被
+      // L444 永久拦截（用户在该图上再也画不了）。退回缩略图模式仍可做基础标注。
+      if (!cancelled) loadingFullRef.current = false;
+    });
 
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps

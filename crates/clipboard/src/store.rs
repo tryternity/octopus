@@ -1,25 +1,14 @@
 use anyhow::Result;
 use rusqlite::{params, Connection};
-use std::sync::atomic::{AtomicU32, Ordering};
 
 use crate::model::*;
 
-const FTS_REBUILD_THRESHOLD: u32 = 10;
-static DELETE_COUNT: AtomicU32 = AtomicU32::new(0);
-
+// FTS5 索引一致性由 db.sql 的触发器 clip_fts_ai/ad/au 增量同步（INSERT/DELETE/UPDATE
+// 各自维护对应 fts 行），删除路径无需周期性全表 rebuild。本函数仅用于启动时一次性
+// populate（main.rs 调用）——external content table 初始为空、不会自动回填。
 pub fn rebuild_fts_index(conn: &Connection) -> Result<()> {
     conn.execute("INSERT INTO clipboard_history_fts(clipboard_history_fts) VALUES('rebuild')", [])?;
     Ok(())
-}
-
-fn track_deletes(conn: &Connection, deleted: u32) {
-    let prev = DELETE_COUNT.fetch_add(deleted, Ordering::Relaxed);
-    if prev + deleted >= FTS_REBUILD_THRESHOLD {
-        DELETE_COUNT.store(0, Ordering::Relaxed);
-        if let Err(e) = rebuild_fts_index(conn) {
-            log::warn!("FTS5 rebuild failed: {}", e);
-        }
-    }
 }
 
 // ── INSERT ──
@@ -259,7 +248,6 @@ pub fn delete_item(conn: &Connection, id: i64) -> Result<()> {
     ).ok().flatten();
 
     conn.execute("DELETE FROM clipboard_history WHERE id = ?", params![id])?;
-    track_deletes(conn, 1);
 
     if let Some(hash) = ref_data.as_deref() {
         delete_image_if_unreferenced(conn, hash);
@@ -273,7 +261,6 @@ pub fn delete_items(conn: &Connection, ids: &[i64]) -> Result<usize> {
     let params_vec: Vec<&dyn rusqlite::ToSql> = ids.iter().map(|id| id as &dyn rusqlite::ToSql).collect();
     let rows = conn.execute(&format!("DELETE FROM clipboard_history WHERE id IN ({})", placeholders), params_vec.as_slice())?;
     if rows > 0 {
-        track_deletes(conn, rows as u32);
         cleanup_unreferenced_images(conn)?;
     }
     Ok(rows)
@@ -286,7 +273,6 @@ pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
         conn.execute("DELETE FROM clipboard_history", [])?
     };
     if rows > 0 {
-        track_deletes(conn, rows as u32);
         cleanup_unreferenced_images(conn)?;
     }
     Ok(rows)
