@@ -73,12 +73,13 @@ function Result() {
   // enterEdit/commitEdit/cancelEdit/show-result/clear-result/hide-result 时清。
   // prepare-record 事件回读它推给后端，作为跨会话选中替换种子。
   const currentSelectionRef = useRef<{ start: number; end: number; text: string } | null>(null);
-  // 拖选标志：mousedown 置 true、mouseup 处理完置 false。renderResultNow 期间为 true →
-  // 完全跳过（textContent + setText + flushSync 都不做），避免 React re-render 清除浏览器选区。
+  // 拖选标志：mousedown 置 true、mouseup 处理完置 false。
+  // renderResultNow 期间为 true → 跳过 flushSync（不清浏览器选区）。
+  // mouseup 时若 live Selection 已被 WKWebView 清除，从此缓存兜底。
   const isSelectingRef = useRef(false);
-  // 拖选过程中最后一次有效选区的 offset 缓存——mouseup 时选区可能已被 WKWebView 清除，
-  // 用此缓存兜底（特别是从右往左选到开头的场景）。
-  const lastDragSelectionRef = useRef<{ start: number; end: number } | null>(null);
+  // mousedown 时缓存的 selection anchor/focus offset（不做重量级计算，仅存 raw 值）。
+  // mouseup 时若 live selection 丢失，用 selectionchange 最后写入的此值兜底。
+  const lastSelOffsetsRef = useRef<{ anchorOff: number; focusOff: number; anchorNode: Node | null; focusNode: Node | null } | null>(null);
   const pendingDiverted = useRef<string | null>(null);
   const divertedTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const editBufTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -106,19 +107,14 @@ function Result() {
       const sel = window.getSelection();
       if (sel && sel.isCollapsed) {
         currentSelectionRef.current = null;
-      } else if (sel && !sel.isCollapsed && sel.rangeCount > 0 && isSelectingRef.current) {
-        // 拖选中途：缓存 offset（mouseup 时选区可能已消失）
-        const el = textRef.current;
-        if (el) {
-          const range = sel.getRangeAt(0);
-          try {
-            const start = codePointOffsetBefore(el, range);
-            const end = codePointOffsetTo(el, range.endContainer, range.endOffset);
-            if (end > start) {
-              lastDragSelectionRef.current = { start, end };
-            }
-          } catch { /* 跨容器 offset 量取失败，忽略 */ }
-        }
+      } else if (sel && !sel.isCollapsed && isSelectingRef.current) {
+        // 仅缓存 raw offset（极轻量），mouseup 时再用 codePointOffset 算实际 char 范围
+        lastSelOffsetsRef.current = {
+          anchorOff: sel.anchorOffset,
+          focusOff: sel.focusOffset,
+          anchorNode: sel.anchorNode,
+          focusNode: sel.focusNode,
+        };
       }
     };
     const onBlur = () => { currentSelectionRef.current = null; };
@@ -519,11 +515,12 @@ function Result() {
   //   invoke set_selection（后端记录待删，首个 delta 到达时删旧插新）。
   // 纯点击（折叠）→ caretRangeFromPoint 定位 + invoke set_caret（普通中插）。
   const handleTextMouseUp = (e: React.MouseEvent) => {
-    const cleanup = () => { isSelectingRef.current = false; lastDragSelectionRef.current = null; };
+    const cleanup = () => { isSelectingRef.current = false; lastSelOffsetsRef.current = null; };
     const el = textRef.current;
     if (!el || !text) { cleanup(); return; }
     const sel = window.getSelection();
 
+    // 尝试从 live Selection 取选区
     let dragStart = -1, dragEnd = -1;
     if (sel && !sel.isCollapsed && sel.rangeCount > 0) {
       const range = sel.getRangeAt(0);
@@ -531,17 +528,22 @@ function Result() {
         try {
           dragStart = codePointOffsetBefore(el, range);
           dragEnd = codePointOffsetTo(el, range.endContainer, range.endOffset);
-        } catch { /* cross-container offset failed */ }
+        } catch { /* */ }
       }
     }
 
+    // live selection 已丢失（WKWebView re-render 清除）→ 用缓存的 raw offset 算
     if (dragStart < 0 || dragEnd <= dragStart) {
-      const cached = lastDragSelectionRef.current;
-      if (cached && cached.end > cached.start) {
-        console.debug('[seldbg] using cached drag selection', cached,
-          '(live sel was', sel ? `collapsed=${sel.isCollapsed}` : 'null', ')');
-        dragStart = cached.start;
-        dragEnd = cached.end;
+      const cached = lastSelOffsetsRef.current;
+      if (cached && cached.anchorNode && cached.focusNode
+          && el.contains(cached.anchorNode) && el.contains(cached.focusNode)) {
+        try {
+          const off1 = codePointOffsetTo(el, cached.anchorNode, cached.anchorOff);
+          const off2 = codePointOffsetTo(el, cached.focusNode, cached.focusOff);
+          dragStart = Math.min(off1, off2);
+          dragEnd = Math.max(off1, off2);
+          console.debug('[seldbg] restored from cached offsets', { dragStart, dragEnd });
+        } catch { /* */ }
       }
     }
 
@@ -553,6 +555,7 @@ function Result() {
       return;
     }
 
+    // 折叠（纯点击）-> 定位光标
     const range = (document as any).caretRangeFromPoint?.(e.clientX, e.clientY) as Range | undefined;
     if (!range) { cleanup(); return; }
     if (!el.contains(range.startContainer)) { cleanup(); return; }
@@ -562,7 +565,6 @@ function Result() {
     invoke("set_caret", { offset });
     cleanup();
   };
-
   // ── Popup actions ──
   const openPolishPopup = async () => {
     setPopupItems(POLISH_OPTIONS.map(o => ({
