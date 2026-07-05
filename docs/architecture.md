@@ -143,7 +143,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 | 模块 | 职责 |
 |---|---|
-| `capture` | `capture_all_monitors()`：截取所有显示器（每个返回 RGBA + 物理像素尺寸 + 显示器坐标）。`crop_region()`：从全屏 RGBA 裁剪矩形 → PNG。黑屏检测日志（权限诊断）。macOS 三处 CGImage 捕获（`capture_display_excluding_window` / `capture_region_excluding_window` / `capture_window_region`）共用 `cgimage_to_rgba` helper（BGRA→RGBA 统一转换） |
+| `capture` | `capture_all_monitors()`：截取所有显示器（每个返回 RGBA + 物理像素尺寸 + 显示器坐标）。`crop_region()`：从全屏 RGBA 裁剪矩形 → PNG。黑屏检测日志（权限诊断）。macOS 两处 CGImage 捕获（`capture_region_excluding_window` / `capture_window_region`）共用 `cgimage_to_rgba` helper（BGRA→RGBA 统一转换） |
 | `stitch` | 滚动截屏拼接引擎：**Canvas-Anchored NCC + Sobel 梯度匹配**。每帧从画布底部提取 80px strip → Sobel 梯度特征图（`imageproc`，纯色退化回灰度）→ NCC 模板匹配（`imageproc::template_matching::match_template`，CrossCorrelationNormalized）→ 验证（score≥0.65 + response 无区分度拒绝 max-min<0.1）→ 抛物线亚像素插值。Canvas-Anchored 消除累积漂移。降级链：1D 灰度投影 + best-guess（历史 dy 中位数，连续 3 次熔断）。周期性假匹配锁定（连续相同 dy≥3 次锁定，dy 变化才解锁）。NCC stuck 检测（连续验证失败≥5 次判静止）。画布用 `Vec<u8>` 增量追加 + 惰性缓存。**停止时先关窗口再后台编码**：PNG 快速编码 → 并发两路（线程一写剪贴板~1s，线程二 WebP+DB 入库~2-3s）。 |
 
 **触发方式**：全局快捷键（`screenshot_shortcut`，默认 Cmd+Shift+D）+ 托盘菜单「截图」。
