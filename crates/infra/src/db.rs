@@ -108,7 +108,7 @@ impl CompatibleLlmConfig {
     }
 }
 
-static DB: OnceLock<parking_lot::Mutex<Connection>> = OnceLock::new();
+static DB: OnceLock<parking_lot::ReentrantMutex<Connection>> = OnceLock::new();
 
 /// 编译期嵌入的建表 + seed SQL（来自 crates/infra/src/db.sql）
 const INIT_SQL: &str = include_str!("db.sql");
@@ -134,11 +134,15 @@ pub fn ensure_db() -> Result<()> {
     conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")
         .context("set WAL + busy_timeout")?;
     init_schema(&conn)?;
-    let _ = DB.set(parking_lot::Mutex::new(conn));
+    let _ = DB.set(parking_lot::ReentrantMutex::new(conn));
     Ok(())
 }
 
 /// 取 DB 锁执行闭包（未初始化时自动 ensure_db）。
+///
+/// 锁为 `ReentrantMutex`，支持**同线程重入**：闭包内可安全地再调 `with_db`
+/// （或经多层间接调用触及，如 load_app_config / 模型 meta）。历史 `Mutex`（非递归）
+/// 在此场景会永久死锁，见 memory with-db-reentrant-deadlock。
 pub fn with_db<F, R>(f: F) -> Result<R>
 where
     F: FnOnce(&Connection) -> Result<R>,
@@ -1177,6 +1181,25 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
         conn
+    }
+
+    /// 回归：`with_db` 的锁必须可重入——闭包内再调 `with_db` 不应死锁。
+    /// 历史 `parking_lot::Mutex`（非递归）致同线程重入永久死锁（memory with-db-reentrant-deadlock）；
+    /// 改 `ReentrantMutex` 后根治。此测试若退回 `Mutex` 会**挂起**（重入第二次 lock 永久阻塞）。
+    /// 用只读 `PRAGMA` 避免污染数据；`ensure_db` 对已存在的 v18 库幂等（noop）。
+    #[test]
+    fn with_db_reentrant_no_deadlock() {
+        let outer = with_db(|conn| {
+            // 同线程重入：闭包内再调 with_db
+            let inner_v: u32 = with_db(|c2| {
+                Ok(c2.query_row("PRAGMA user_version", [], |r| r.get(0))?)
+            })?;
+            let outer_v: u32 =
+                conn.query_row("PRAGMA user_version", [], |r| r.get(0))?;
+            assert_eq!(inner_v, outer_v, "重入应观察到同一连接状态");
+            Ok(inner_v)
+        });
+        assert!(outer.is_ok(), "with_db 重入不应死锁: {:?}", outer);
     }
 
     #[test]
