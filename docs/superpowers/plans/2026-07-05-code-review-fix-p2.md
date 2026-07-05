@@ -327,4 +327,15 @@ git commit -m "docs: P2 清理完成，全量审查修复收官"
   - M-5 `baidu_stream.rs` `Message::Close` 不再无条件发 Finished——空结果时发 Failed 暴露异常关闭
   - M-6 `capx/stitch.rs` 2 处 `from_raw().expect()` → match `Some/None` 降级（log + 1×1 空图，不 panic）
   - M-7 asr-cloud 4 provider JoinHandle 丢弃——评估后**决定不修**（close_async 30s 超时兜底 + panic task 自动回收 + 已有 error log）
+- **Bug B 修复**（跨会话选中替换 idle_selection 残留/stale，2026-07-05 方案 C）：
+  - `coordinator.rs` 移除 `idle_selection` 后端缓存（11 处引用删除），改两阶段 Toggle：`emit("prepare-record")` → 前端 `invoke("start_recording", {prepareId, selection})` → `begin_recording(selection)` 种子
+  - 前端 `currentSelectionRef`（mouseup 缓存 `{start,end,text}`，blur/selectionchange 清空）
+  - `start_recording` Tauri command 参数名 `prepare_id` → 前端 `prepareId`（camelCase）
+  - 看门狗 200ms `FallbackStart` 超时兜底（冷启动前端未 mount）
+- **从右往左选到开头失效修复**（前端拖选三重陷阱，详见 spec `2026-07-03-asr-cursor-insert-design.md` §15）：
+  - 陷阱 1：`Range.startContainer` 飘移到父容器 → `clampRangeToContainer` 用 `compareBoundaryPoints` 裁剪
+  - 陷阱 2：React `onMouseUp` 不在 textRef 外触发 → `onMouseDown` 时在 `document` 上注册一次性 mouseup listener
+  - 陷阱 3：mouseup 时鼠标在容器外 → `getBoundingClientRect()` 判断 X 坐标方向（左边界外→offset=0，右边界外→末尾）
+  - 兜底：`mouseDownOffsetRef` 缓存起点 offset，mouseup 时 min/max 重建选区（不依赖 mouseup 瞬间的 DOM Selection 状态）
+  - 中间废弃方案：`isSelectingRef` 阻止 `renderResultNow`（导致卡死/state 不同步）、`selectionchange` 高频缓存（性能问题），均已移除
 
