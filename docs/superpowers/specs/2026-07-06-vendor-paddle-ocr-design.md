@@ -99,6 +99,8 @@ PP-OCRv5 ONNX 模型组：
 
 存放路径：`~/.octopus/models/ocr/PP-OCRv5/`
 
+PP-OCRv6-small 也支持（`~/.octopus/models/ocr/PP-OCRv6-small/`，det.onnx + rec.onnx + keys.txt 18708 行 `ppocrv6_dict.txt` + cls.onnx 复用 v5）。
+
 ## 6. Workspace 集成
 
 ```toml
@@ -113,3 +115,29 @@ ocr-rs = "2.3"
 # 新
 octopus-paddle-ocr = { path = "../paddle-ocr" }
 ```
+
+## 7. 实施中发现的关键 bug 与后处理（增补）
+
+1. **`read_character_file` trim() 误删全角空格（关键 bug）**
+   - Rust `str::trim()` 把 U+3000（全角空格，PP-OCR 字典首行）当 whitespace 去掉 → 字符表少一行 → CTC 索引全体偏移 1 位 → 输出文字每位偏移一位（`Hello`→`Ifmmp`）。
+   - 修复：改用 `strip_suffix('\r')` 只去掉 CRLF 残留。
+
+2. **同行文本框合并（`merge_same_line_blocks`）**
+   - det 检测器常把同一视觉行拆成多个独立框（尤其中英混排）→ 输出多余换行。
+   - 保持 det 原始输出顺序，相邻块 y 中心距离 < 平均行高一半时合并；水平间隙 > 行高 30% 时补空格。
+
+3. **英文单词分词（`segment_english_words`，仅 PP-OCRv5 需要）**
+   - PP-OCR 中文 rec 模型不输出英文单词间空格（CTC space token 未激活）。
+   - 内嵌 37 万英文词库（`crates/ocr/assets/words_alpha.txt`，~4MB），贪心最长匹配分词。
+   - PP-OCRv6 的 CTC space token 被正确激活，输出自带空格 → `use_word_segmentation` 按 model_name 前缀判断，v6 跳过分词。
+
+4. **ort rc.10→rc.12 API 适配**
+   - `Session.outputs/inputs` 字段→方法调用（`.outputs()`/`.inputs()`）。
+   - `Outlet.name` 字段→`.name()` 方法；`Outlet.input_type`→`.dtype()`。
+   - Builder 方法返回 `Result<SessionBuilder, Error<SessionBuilder>>`（非 `ort::Error`），需 `.map_err()`。
+   - `ort::inputs!` 宏返回数组（非 Result），不再需要 `?`。
+   - `ndarray` 版本 `0.16`→`0.17`（对齐 ort rc.12）。
+
+5. **ort 依赖配置**
+   - 不能用 `default-features = false`（会去掉 `tls-native`，导致 ort-sys build script 的 download 编译失败）。
+   - 与 asr-local 一致：`ort = { version = "2.0.0-rc.12", features = ["ndarray", "download-binaries"] }`。
