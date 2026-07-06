@@ -899,7 +899,7 @@ pub async fn start_scroll_recording(
             &monitors,
             sel_global_x + w / 2.0,
             sel_global_y + h / 2.0,
-        ).or_else(|| if monitors.is_empty() { None } else { Some(0) });
+        ).or_else(|| (!monitors.is_empty()).then_some(0));
         let (scale, mon_logical_x, mon_logical_y, _mon_phys_x, _mon_phys_y): (f64, f64, f64, i32, i32) = match mon_idx {
             Some(idx) => {
                 let m = &monitors[idx];
