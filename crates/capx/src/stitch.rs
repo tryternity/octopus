@@ -4,10 +4,6 @@ use std::collections::VecDeque;
 
 // ===== 拼接算法常量（原散落在 find_overlap_spatial_ext 与 process_frame 中的魔法数字）=====
 
-/// 模板条高度（像素）。从参考帧底部取此高度的条带做空间模板匹配。
-const STRIP_H: u32 = 80;
-/// 全量搜索范围（像素）。`process_frame` 中限制滚动位移搜索上界。
-const MAX_SCROLL: u32 = 220;
 /// 静止判定阈值。dy=0 处的平均像素差值小于此值视为内容未滚动。
 const STATIONARY_SAD: f64 = 2.0;
 /// 排除最左侧的比例（通常有图标/树状图）。
@@ -24,11 +20,6 @@ const STICKY_DETECT_MAX: u32 = 80;
 /// 时序平滑：静止判断的 dy 均值阈值（近 N 帧 |dy| 均值 < 此值 → 静止）
 /// dy 历史长度
 const DY_HISTORY_LEN: usize = 8;
-
-// ===== NCC 匹配参数 =====
-
-/// 最低 NCC 分数阈值
-const NCC_SCORE_THRESHOLD: f32 = 0.65;
 
 /// 连续 row-major 灰度 buffer，替代 image::GrayImage。
 /// 消除 get_pixel() 的坐标计算 + 边界检查开销，用整行切片直访。
@@ -136,6 +127,16 @@ struct NccResult {
     response: Image<image::Luma<f32>>,
 }
 
+/// 主 NCC 结果（大屏两阶段 / 小屏单阶段统一产出）。
+enum PrimaryOutcome {
+    /// 亚像素 refined_y（原分辨率坐标） + best_score
+    Matched(f64, f64),
+    /// NCC validate 失败（附 score 供日志/stuck 判断）
+    Mismatch(f64),
+    /// ncc_match 返回 None（template/search size 不匹配）
+    SizeError,
+}
+
 /// NCC 匹配：在搜索区域中找模板的最佳对齐位置。
 fn ncc_match(
     template: &image::GrayImage,
@@ -156,10 +157,48 @@ fn ncc_match(
     Some(NccResult { best_y, best_score, response })
 }
 
+/// 保边缘降采样（Triangle 双线性）。NCC+亚像素不能用 Nearest——锯齿破坏 response 峰值。
+fn downsample_grayimage(img: &image::GrayImage, scale: f64) -> image::GrayImage {
+    let nw = ((img.width() as f64 * scale).max(1.0)).round() as u32;
+    let nh = ((img.height() as f64 * scale).max(1.0)).round() as u32;
+    image::imageops::resize(img, nw, nh, image::imageops::FilterType::Triangle)
+}
+
+/// 限定 y 邻域 [y_min, y_max] 的 NCC + 亚像素 refine（两阶段 stage2 用）。
+/// stage1 给出粗 dy_coarse，本函数在原分辨率 ±Npx 内精化，恢复 0.1px 亚像素。
+/// 返回 (refined_y 原分辨率坐标, best_score)。范围太小 / size 不匹配 → None。
+fn ncc_match_range(
+    template: &image::GrayImage,
+    search_region: &image::GrayImage,
+    y_min: f64,
+    y_max: f64,
+) -> Option<(f64, f64)> {
+    let th = template.height();
+    let sh = search_region.height();
+    if th >= sh {
+        return None;
+    }
+    let lo = (y_min.max(0.0).floor() as u32).min(sh - th);
+    let hi = (y_max.ceil() as u32).saturating_add(th).min(sh);
+    if hi <= lo || hi - lo <= th {
+        return None;
+    }
+    let sub = image::imageops::crop_imm(search_region, 0, lo, search_region.width(), hi - lo)
+        .to_image();
+    let ncc = ncc_match(template, &sub)?;
+    let refined_sub = parabolic_refine_from_response(&ncc.response, ncc.best_y);
+    Some((refined_sub + lo as f64, ncc.best_score))
+}
+
 /// 多道验证 NCC 匹配结果。返回 true 表示匹配可信。
-fn validate_ncc_match(response: &Image<image::Luma<f32>>, _best_y: usize, best_score: f32) -> bool {
+fn validate_ncc_match(
+    response: &Image<image::Luma<f32>>,
+    _best_y: usize,
+    best_score: f32,
+    threshold: f32,
+) -> bool {
     // 1. 最低分数
-    if best_score < NCC_SCORE_THRESHOLD {
+    if best_score < threshold {
         return false;
     }
 
@@ -217,6 +256,14 @@ pub struct StitchConfig {
     pub min_scroll_px: f64,
     /// 置信度阈值 (空间匹配)
     pub min_confidence: f64,
+    /// 模板条高度（像素）。从画布底部取此高度做 NCC 模板。
+    pub strip_h: u32,
+    /// 最大滚动位移搜索上界（像素）。
+    pub max_scroll: u32,
+    /// 最低 NCC 分数阈值。
+    pub ncc_score_threshold: f32,
+    /// NCC 降采样触发宽度（像素）。帧宽 > 此值才降采样；≤ 则原分辨率（小屏零影响）。
+    pub ncc_downsample_width: u32,
 }
 
 impl Default for StitchConfig {
@@ -224,6 +271,10 @@ impl Default for StitchConfig {
         Self {
             min_scroll_px: 1.0,
             min_confidence: 0.15,
+            strip_h: 80,
+            max_scroll: 220,
+            ncc_score_threshold: 0.65,
+            ncc_downsample_width: 1920,
         }
     }
 }
@@ -313,7 +364,7 @@ impl Stitcher {
         let roi_top = eff_top as usize;
         let roi_bottom = eff_bottom as usize;
         let curr_gray = GrayBuf::from_rgba_roi(frame, roi_top, roi_bottom);
-        let canvas_gray = self.extract_canvas_bottom_gray(STRIP_H);
+        let canvas_gray = self.extract_canvas_bottom_gray(self.config.strip_h);
 
         let result = self.process_frame_inner(frame, &curr_gray, &canvas_gray, w, eff_top, eff_bottom);
 
@@ -344,48 +395,41 @@ impl Stitcher {
             (canvas_gray.to_gray_image(), curr_gray.to_gray_image())
         };
 
-        // NCC 匹配
-        let ncc = match ncc_match(&template, &search_region) {
-            Some(r) => r,
-            None => {
-                log::info!("[stitch] ncc_match returned None (size mismatch)");
+        // 主 NCC（大屏两阶段 refine / 小屏单阶段）
+        let (refined_y, best_score) = match self.primary_ncc(&template, &search_region, w) {
+            PrimaryOutcome::Matched(refined_y, score) => (refined_y, score),
+            PrimaryOutcome::Mismatch(score) => {
+                // NCC stuck 检测：连续失败且 score 几乎相同 → 画面静止但有渲染差异
+                if self.ncc_stuck_count >= 5 {
+                    log::info!("[stitch] NCC stuck (score={:.4}, count={}), treating as stationary", score, self.ncc_stuck_count);
+                    self.dy_history.clear();
+                    self.best_guess_streak = 0;
+                    self.last_dy = None;
+                    return Ok(false);
+                }
+                log::info!("[stitch] NCC match failed validation (score={:.4}, stuck={})", score, self.ncc_stuck_count);
+                self.ncc_stuck_count += 1;
+                return self.try_fallback(frame, curr_gray, canvas_gray, w, eff_top, eff_bottom);
+            }
+            PrimaryOutcome::SizeError => {
+                log::info!("[stitch] ncc returned None (size mismatch)");
                 return self.try_fallback(frame, curr_gray, canvas_gray, w, eff_top, eff_bottom);
             }
         };
 
-        // 多道验证
-        if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32) {
-            // NCC stuck 检测：连续失败且 score 几乎相同 → 画面静止但有渲染差异
-            if self.ncc_stuck_count >= 5 {
-                log::info!("[stitch] NCC stuck (score={:.4}, count={}), treating as stationary", ncc.best_score, self.ncc_stuck_count);
-                self.dy_history.clear();
-                self.best_guess_streak = 0;
-                self.last_dy = None;
-                return Ok(false);
-            }
-            log::info!("[stitch] NCC match failed validation (score={:.4}, stuck={})", ncc.best_score, self.ncc_stuck_count);
-            self.ncc_stuck_count += 1;
-            return self.try_fallback(frame, curr_gray, canvas_gray, w, eff_top, eff_bottom);
-        }
-
         // NCC 成功：重置 stuck 计数
         self.ncc_stuck_count = 0;
 
-        // 亚像素插值
-        let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
-
-        // 坐标推导：
-        // response y = 模板顶部在搜索区域（curr ROI）中的偏移量
-        // new_rows = ROI高度 - response_y - STRIP_H
-        // dy = -(new_rows)（负值=向下滚动）
+        // 坐标推导（refined_y 已是亚像素 best_y）：
+        // new_rows = ROI高度 - refined_y - strip_h；dy = -new_rows（负=向下滚动）
         let roi_height = (eff_bottom - eff_top) as f64;
-        let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
+        let new_rows_raw = roi_height - refined_y - self.config.strip_h as f64;
         let dy = -new_rows_raw;
 
         // dy > 0 = 向上滚动（忽略）。dy≤0 不跳过，交给 min_scroll_px 过滤，
         // 避免慢速滚动时亚像素位移被 dy>=0.0 检查丢弃导致内容缺失。
         if dy > 0.0 {
-            log::info!("[stitch] skipped frame: dy={:.1} > 0.0 (ncc={:.4})", dy, ncc.best_score);
+            log::info!("[stitch] skipped frame: dy={:.1} > 0.0 (ncc={:.4})", dy, best_score);
             return Ok(false);
         }
 
@@ -394,7 +438,7 @@ impl Stitcher {
 
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
             log::info!("[stitch] skipped frame: new_rows={} invalid (min={}, max={}) (ncc={:.4})",
-                new_rows, self.config.min_scroll_px, max_scroll_limit, ncc.best_score);
+                new_rows, self.config.min_scroll_px, max_scroll_limit, best_score);
             return Ok(false);
         }
 
@@ -437,7 +481,7 @@ impl Stitcher {
         self.last_appended_dy = Some(dy_rounded);
 
         log::info!("[stitch] ncc={:.4} dy={:.1} new_rows={} canvas_h={}",
-            ncc.best_score, dy, new_rows, self.canvas_h);
+            best_score, dy, new_rows, self.canvas_h);
 
         // 主匹配成功：重置 best-guess 计数
         self.best_guess_streak = 0;
@@ -461,6 +505,56 @@ impl Stitcher {
         Ok(true)
     }
 
+    /// 主 NCC：大屏走两阶段 refine（降采样粗定位 + 原分辨率 refine），小屏走单阶段。
+    /// 封装 validate；失配语义（Mismatch/SizeError）交调用方走 stuck/fallback。
+    fn primary_ncc(
+        &self,
+        template: &image::GrayImage,
+        search_region: &image::GrayImage,
+        w: u32,
+    ) -> PrimaryOutcome {
+        if w > self.config.ncc_downsample_width {
+            // stage1: 降采样域粗定位
+            let scale = self.config.ncc_downsample_width as f64 / w as f64;
+            let tmpl_ds = downsample_grayimage(template, scale);
+            let search_ds = downsample_grayimage(search_region, scale);
+            let ncc_ds = match ncc_match(&tmpl_ds, &search_ds) {
+                Some(r) => r,
+                None => return PrimaryOutcome::SizeError,
+            };
+            if !validate_ncc_match(
+                &ncc_ds.response,
+                ncc_ds.best_y as usize,
+                ncc_ds.best_score as f32,
+                self.config.ncc_score_threshold,
+            ) {
+                return PrimaryOutcome::Mismatch(ncc_ds.best_score);
+            }
+            let dy_coarse = ncc_ds.best_y / scale;
+            // stage2: 原分辨率 ±2px 邻域 refine（恢复亚像素）
+            match ncc_match_range(template, search_region, dy_coarse - 2.0, dy_coarse + 2.0) {
+                Some((refined_y, score)) => PrimaryOutcome::Matched(refined_y, score),
+                None => PrimaryOutcome::SizeError,
+            }
+        } else {
+            // 单阶段（小屏，原路径）
+            let ncc = match ncc_match(template, search_region) {
+                Some(r) => r,
+                None => return PrimaryOutcome::SizeError,
+            };
+            if !validate_ncc_match(
+                &ncc.response,
+                ncc.best_y as usize,
+                ncc.best_score as f32,
+                self.config.ncc_score_threshold,
+            ) {
+                return PrimaryOutcome::Mismatch(ncc.best_score);
+            }
+            let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
+            PrimaryOutcome::Matched(refined_y, ncc.best_score)
+        }
+    }
+
     /// 相邻帧参考 fallback：用前一帧有效区底部 strip 当模板，在当前帧有效区做 NCC。
     /// 突变时画布底部旧模板（如文字）与当前帧（如图片）失配；前一帧与当前帧只差
     /// 一个 dy、突变边界是两帧共同特征、重叠最大 → 能求出正确 dy，避免 best-guess 盲 append。
@@ -473,11 +567,11 @@ impl Stitcher {
         eff_bottom: u32,
     ) -> Option<f64> {
         let prev_h = prev_gray.data.len() / prev_gray.width;
-        if prev_h < STRIP_H as usize + 10 {
+        if prev_h < self.config.strip_h as usize + 10 {
             return None;
         }
         // prev 底部 STRIP_H 行裁为独立模板（y_offset 归零）
-        let strip_rows = STRIP_H as usize;
+        let strip_rows = self.config.strip_h as usize;
         let prev_strip = GrayBuf {
             data: prev_gray.data[(prev_h - strip_rows) * prev_gray.width..].to_vec(),
             width: prev_gray.width,
@@ -491,12 +585,12 @@ impl Stitcher {
             (prev_strip.to_gray_image(), curr_gray.to_gray_image())
         };
         let ncc = ncc_match(&template, &search_region)?;
-        if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32) {
+        if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32, self.config.ncc_score_threshold) {
             return None;
         }
         let roi_height = (eff_bottom - eff_top) as f64;
         let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
-        let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
+        let new_rows_raw = roi_height - refined_y - self.config.strip_h as f64;
         let dy = -new_rows_raw;
         if dy >= 0.0 {
             return None;
@@ -517,7 +611,7 @@ impl Stitcher {
     ) -> Result<bool> {
         let x_start = (w as f64 * X_START_RATIO) as u32;
         let x_end = (w as f64 * X_END_RATIO) as u32;
-        let max_scroll = MAX_SCROLL;
+        let max_scroll = self.config.max_scroll;
 
         // 相邻帧参考 fallback（方向 1）：画布底部旧模板失配时，改用前一帧匹配当前帧。
         // 前一帧与当前帧重叠最大、突变边界共同特征 → 求出正确 dy，不盲 append 污染画布。
@@ -597,10 +691,10 @@ impl Stitcher {
     fn quick_stationary_check(&self, curr: &GrayBuf, canvas_ref: &GrayBuf, sample_cols: &[usize]) -> f64 {
         let mut sad: u64 = 0;
         let mut count: u64 = 0;
-        for dy in 0..STRIP_H {
+        for dy in 0..self.config.strip_h {
             let ref_row = canvas_ref.row(dy as usize);
             // curr 底部 strip：y_offset + (curr 行数 - STRIP_H + dy)
-            let curr_bottom_start = (curr.data.len() / curr.width).saturating_sub(STRIP_H as usize);
+            let curr_bottom_start = (curr.data.len() / curr.width).saturating_sub(self.config.strip_h as usize);
             let curr_row = curr.row((curr_bottom_start + dy as usize) + curr.y_offset);
             for &x in sample_cols {
                 sad += (ref_row[x] as i32 - curr_row[x] as i32).unsigned_abs() as u64;
@@ -643,7 +737,7 @@ impl Stitcher {
         max_scroll: u32,
         sad_accept: f64,
     ) -> Option<(f64, f64, f64)> {
-        let strip_h = STRIP_H;
+        let strip_h = self.config.strip_h;
         if eff_bottom <= eff_top + strip_h + 10 {
             return None;
         }
@@ -805,7 +899,7 @@ impl Stitcher {
 
         // 1. NCC 匹配：将最后一帧与画布底部对齐，补全剩余未拼接区域
         let last_gray = GrayBuf::from_rgba_roi(last_frame, eff_top as usize, eff_bottom as usize);
-        let canvas_gray = self.extract_canvas_bottom_gray(STRIP_H);
+        let canvas_gray = self.extract_canvas_bottom_gray(self.config.strip_h);
 
         // Sobel 特征图 + NCC 匹配
         let (canvas_feat, canvas_has_feat) = to_feature_map(&canvas_gray);
@@ -817,10 +911,10 @@ impl Stitcher {
         };
 
         if let Some(ncc) = ncc_match(&template, &search_region) {
-            if validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32) {
+            if validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32, self.config.ncc_score_threshold) {
                 let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
                 let roi_height = (eff_bottom - eff_top) as f64;
-                let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
+                let new_rows_raw = roi_height - refined_y - self.config.strip_h as f64;
                 let dy = -new_rows_raw;
 
                 if dy < 0.0 {
@@ -1179,16 +1273,17 @@ mod tests {
         let f1 = make_frame(TW, TH, 0);
         s.process_frame(&f1).unwrap(); // init
 
-        let bottom_gray = s.extract_canvas_bottom_gray(STRIP_H);
+        let bottom_gray = s.extract_canvas_bottom_gray(s.config.strip_h);
         assert_eq!(bottom_gray.width, TW as usize);
 
-        // 手动从 canvas 计算底部 strip 灰度比对
+        // 手动从 canvas 计算底部 strip 灰度比对（canvas() 借用 s，须先取出 strip_h）
+        let strip_h = s.config.strip_h;
         let canvas = s.canvas();
         let canvas_h = canvas.height();
-        assert!(canvas_h >= STRIP_H);
-        for y in 0..STRIP_H {
+        assert!(canvas_h >= strip_h);
+        for y in 0..strip_h {
             for x in 0..TW {
-                let px = canvas.get_pixel(x, canvas_h - STRIP_H + y);
+                let px = canvas.get_pixel(x, canvas_h - strip_h + y);
                 let luma = (2126 * px[0] as u32 + 7152 * px[1] as u32 + 722 * px[2] as u32) / 10000;
                 assert_eq!(bottom_gray.row(y as usize)[x as usize], luma as u8,
                     "底部 strip 灰度不一致 @ ({},{})", x, y);
@@ -1217,13 +1312,77 @@ mod tests {
     fn test_ncc_matches_known_offset() {
         let f0 = make_frame(TW, TH, 0);
         let f1 = make_frame(TW, TH, 30);
-        let canvas_strip = GrayBuf::from_rgba_roi(&f0, (TH - STRIP_H) as usize, TH as usize);
+        let canvas_strip = GrayBuf::from_rgba_roi(&f0, (TH - StitchConfig::default().strip_h) as usize, TH as usize);
         let template = canvas_strip.to_gray_image();
         let search_region = GrayBuf::from_rgba_roi(&f1, 0, TH as usize).to_gray_image();
         let result = ncc_match(&template, &search_region);
         assert!(result.is_some(), "NCC 应返回匹配结果");
         let ncc = result.unwrap();
         assert!(ncc.best_score > 0.75, "NCC 分数应 > 0.75: {}", ncc.best_score);
+    }
+
+    #[test]
+    fn test_ncc_match_range_finds_known_offset() {
+        // f0 底部 strip（y∈[TH-strip_h,TH)）在 f1(scroll=30) 中出现在 y=TH-strip_h-30 处
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 30);
+        let template = GrayBuf::from_rgba_roi(&f0, (TH - strip_h) as usize, TH as usize).to_gray_image();
+        let search = GrayBuf::from_rgba_roi(&f1, 0, TH as usize).to_gray_image();
+        let expected_y = (TH - strip_h - 30) as f64; // 490
+        let (refined_y, score) = ncc_match_range(&template, &search, expected_y - 5.0, expected_y + 5.0)
+            .expect("range 内应匹配");
+        assert!(
+            (refined_y - expected_y).abs() < 2.0,
+            "refined_y 应≈{}, 实际 {}", expected_y, refined_y
+        );
+        assert!(score > 0.5, "range 内匹配 score 应 > 0.5: {}", score);
+    }
+
+    #[test]
+    fn test_ncc_match_range_rejects_out_of_range_offset() {
+        // 真偏移 y=490，range 只给 [0,10] → 返回 range 内峰（≠490），refined_y < 15
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 30);
+        let template = GrayBuf::from_rgba_roi(&f0, (TH - strip_h) as usize, TH as usize).to_gray_image();
+        let search = GrayBuf::from_rgba_roi(&f1, 0, TH as usize).to_gray_image();
+        let (refined_y, _) = ncc_match_range(&template, &search, 0.0, 10.0)
+            .expect("range 内应有某峰");
+        assert!(
+            refined_y < 15.0,
+            "range 外偏移不应被选, refined_y={}", refined_y
+        );
+    }
+
+    #[test]
+    fn test_two_stage_refine_preserves_subpixel() {
+        // 帧宽 TW=400。ncc_downsample_width=9999 → 单阶段；=200 → 两阶段(scale=0.5)。
+        // f0 底部 strip 在 f1(scroll=40) 中 y=TH-strip_h-40=480 处。
+        // 两阶段与单阶段 refined_y 误差应 < 0.5px（保亚像素）。
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 40);
+        let canvas_strip = GrayBuf::from_rgba_roi(&f0, (TH - strip_h) as usize, TH as usize);
+        let curr_full = GrayBuf::from_rgba_roi(&f1, 0, TH as usize);
+        let (tmpl, _) = to_feature_map(&canvas_strip);
+        let (search, _) = to_feature_map(&curr_full);
+
+        let s_single = Stitcher::new(f0.clone(), StitchConfig { ncc_downsample_width: 9999, ..Default::default() });
+        let s_two = Stitcher::new(f0.clone(), StitchConfig { ncc_downsample_width: 200, ..Default::default() });
+
+        let ry_single = match s_single.primary_ncc(&tmpl, &search, TW) {
+            PrimaryOutcome::Matched(y, _) => y,
+            _ => panic!("单阶段应匹配成功"),
+        };
+        let ry_two = match s_two.primary_ncc(&tmpl, &search, TW) {
+            PrimaryOutcome::Matched(y, _) => y,
+            _ => panic!("两阶段应匹配成功"),
+        };
+        assert!(
+            (ry_two - ry_single).abs() < 0.5,
+            "两阶段 refined_y 与单阶段误差应 <0.5px: single={}, two={}", ry_single, ry_two
+        );
     }
 
     #[test]
