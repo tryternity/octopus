@@ -30,15 +30,6 @@ const DY_HISTORY_LEN: usize = 8;
 /// 最低 NCC 分数阈值
 const NCC_SCORE_THRESHOLD: f32 = 0.65;
 
-/// 主峰邻域半宽（像素）。主次比检测时排除 [best_y-GAP, best_y+GAP]，
-/// 避免同一峰的肩部被误当独立次峰。NCC response 相邻 y 高度相关。
-const NCC_PEAK_GAP: usize = 8;
-
-/// 主次比 score 差阈值。邻域外次峰与主峰差 < 此值 → 视为歧义（两个偏移都极匹配）。
-/// 用 score 差而非比值：NCC 连续 response 在纹理内容上常自然多峰，
-/// 比值判据(max2>score/2)会误拒正常高分真匹配（e2e 实测 score≈1.0 被误拒致拼接停滞）。
-const NCC_DOMINANCE_MARGIN: f32 = 0.05;
-
 /// 连续 row-major 灰度 buffer，替代 image::GrayImage。
 /// 消除 get_pixel() 的坐标计算 + 边界检查开销，用整行切片直访。
 #[derive(Clone)]
@@ -166,38 +157,23 @@ fn ncc_match(
 }
 
 /// 多道验证 NCC 匹配结果。返回 true 表示匹配可信。
-fn validate_ncc_match(response: &Image<image::Luma<f32>>, best_y: usize, best_score: f32) -> bool {
+fn validate_ncc_match(response: &Image<image::Luma<f32>>, _best_y: usize, best_score: f32) -> bool {
     // 1. 最低分数
     if best_score < NCC_SCORE_THRESHOLD {
         return false;
     }
 
-    // 扫 response（1 列 × N 行）：全局最小值 + 排除主峰邻域后的次峰 max2。
-    // 主峰邻域 [best_y-GAP, best_y+GAP] 排除，避免同一峰的肩部被误当独立次峰。
+    // 无区分度检测：response 的 max - min 差值 < 0.1 说明所有位置得分几乎相同，
+    // NCC 无足够区分力来确定真实偏移（纯色/空白/极低纹理）。拒绝匹配。
     let h = response.height() as usize;
     let mut min_score = f32::MAX;
-    let mut max2 = 0.0f32;
+    let mut max_score = f32::MIN;
     for y in 0..h {
         let v = response.get_pixel(0, y as u32)[0];
         if v < min_score { min_score = v; }
-        if (y as isize - best_y as isize).abs() > NCC_PEAK_GAP as isize && v > max2 {
-            max2 = v;
-        }
+        if v > max_score { max_score = v; }
     }
-
-    // 2. 无区分度：max - min < 0.1 说明所有位置得分几乎相同（纯色/空白/极低纹理）。
-    let contrast = best_score - min_score;
-    if contrast < 0.1 {
-        log::info!("[stitch] validate reject: low contrast {:.4} (score={:.4} min={:.4})",
-            contrast, best_score, min_score);
-        return false;
-    }
-
-    // 3. 主次比（NCC 连续 response 专用）：邻域外次峰与主峰 score 差 < margin
-    // → 两个偏移位置都"极匹配" → 周期/重复纹理歧义，拒绝交 fallback。
-    if max2 > best_score - NCC_DOMINANCE_MARGIN {
-        log::info!("[stitch] validate reject: ambiguous max2={:.4} (score={:.4} diff={:.4} margin={})",
-            max2, best_score, best_score - max2, NCC_DOMINANCE_MARGIN);
+    if max_score - min_score < 0.1 {
         return false;
     }
 
@@ -1171,62 +1147,5 @@ mod tests {
         assert!(result.is_some(), "NCC 应返回匹配结果");
         let ncc = result.unwrap();
         assert!(ncc.best_score > 0.75, "NCC 分数应 > 0.75: {}", ncc.best_score);
-    }
-
-    // ===== B: validate_ncc_match 主次比判据测试 =====
-
-    /// 构造 1 列 × rows 行的 NCC response：peaks 位置设峰值，其余 base。
-    fn make_response(rows: u32, peaks: &[(u32, f32)], base: f32) -> Image<image::Luma<f32>> {
-        let mut r = Image::new(1, rows);
-        for y in 0..rows {
-            r.put_pixel(0, y, image::Luma([base]));
-        }
-        for &(y, v) in peaks {
-            r.put_pixel(0, y, image::Luma([v]));
-        }
-        r
-    }
-
-    #[test]
-    fn test_validate_rejects_ambiguous_response() {
-        // 双等高峰（间隔 15 > GAP=8）：主峰 y=5=0.9，次峰 y=20=0.9 → max2=0.9 > 0.9*0.5 → 拒绝
-        let r = make_response(30, &[(5, 0.9), (20, 0.9)], 0.1);
-        assert!(!validate_ncc_match(&r, 5, 0.9));
-    }
-
-    #[test]
-    fn test_validate_accepts_dominant_peak() {
-        // 单峰主导：主峰 0.9，远处次峰 0.3（< 0.9*0.5=0.45）→ 接受
-        let r = make_response(30, &[(5, 0.9), (20, 0.3)], 0.1);
-        assert!(validate_ncc_match(&r, 5, 0.9));
-    }
-
-    #[test]
-    fn test_validate_peak_gap_excludes_neighbors() {
-        // 次峰在 GAP 内（y=8，|8-5|=3 ≤ 8）算肩部，不计入 max2；远处 y=20=0.2 → max2=0.2 < 0.45 → 接受
-        let r = make_response(30, &[(5, 0.9), (8, 0.85), (20, 0.2)], 0.1);
-        assert!(validate_ncc_match(&r, 5, 0.9));
-    }
-
-    #[test]
-    fn test_validate_short_response_passes() {
-        // 高 12 ≤ 2*GAP=16：全部在邻域内，max2=0 → 不拒绝（区分度兜底）
-        let r = make_response(12, &[(5, 0.9)], 0.1);
-        assert!(validate_ncc_match(&r, 5, 0.9));
-    }
-
-    #[test]
-    fn test_validate_rejects_near_equal_second_peak() {
-        // 主峰 0.9，次峰 0.86（差 0.04 < margin 0.05）→ 两位置都极匹配 → 歧义拒绝
-        let r = make_response(30, &[(5, 0.9), (20, 0.86)], 0.1);
-        assert!(!validate_ncc_match(&r, 5, 0.9));
-    }
-
-    #[test]
-    fn test_validate_accepts_half_second_peak() {
-        // 主峰 0.9，次峰 0.5（差 0.4 > margin）→ 纹理自然多峰，主峰主导 → 接受。
-        // 这是 e2e 回归用例：比值判据会误拒此场景（0.5 > 0.9*0.5），差值判据正确接受。
-        let r = make_response(30, &[(5, 0.9), (20, 0.5)], 0.1);
-        assert!(validate_ncc_match(&r, 5, 0.9));
     }
 }
