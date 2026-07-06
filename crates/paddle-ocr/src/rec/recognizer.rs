@@ -4,7 +4,7 @@ use ndarray::ArrayView4;
 use rayon::prelude::*;
 
 use crate::{
-    config::{LangRec, RecImage, RecognizeOptions, RecognizerConfig, VisionBackend},
+    config::{LangRec, RecImage, RecognizeOptions, RecognizerConfig},
     error::{PaddleOcrError, Result},
     rec::{
         bidi::reorder_bidi_for_display,
@@ -14,14 +14,12 @@ use crate::{
     runtime::provider::ProviderResolution,
     runtime::session::OrtSession,
     types::{LineResult, RecognizeOutput},
-    vision::backend::resolve_backend_strict,
     vision::resize::LinearResizeScratch,
 };
 
 #[derive(Debug)]
 pub struct Recognizer {
     config: RecognizerConfig,
-    vision_backend: VisionBackend,
     session: OrtSession,
     decoder: CtcLabelDecoder,
     batch_scratch: Vec<f32>,
@@ -41,8 +39,6 @@ impl Recognizer {
             ));
         }
 
-        let vision_backend = resolve_backend_strict(config.runtime.vision_backend)?;
-
         let model_path = config
             .model
             .model_path
@@ -60,7 +56,6 @@ impl Recognizer {
 
         Ok(Self {
             config,
-            vision_backend,
             session,
             decoder,
             batch_scratch: Vec::new(),
@@ -138,7 +133,6 @@ impl Recognizer {
                                 image,
                                 max_wh_ratio,
                                 self.config.rec_img_shape,
-                                self.vision_backend,
                                 dst,
                                 tmp_bgr,
                                 resize_scratch,
@@ -159,7 +153,6 @@ impl Recognizer {
                     image,
                     max_wh_ratio,
                     self.config.rec_img_shape,
-                    self.vision_backend,
                     &mut self.batch_scratch[..sample_len],
                     &mut tmp_bgr,
                     &mut resize_scratch,

@@ -27,6 +27,7 @@ mod pin_window;
 mod pipeline;
 mod result_window;
 mod screenshot_commands;
+mod screenshot_geometry;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;

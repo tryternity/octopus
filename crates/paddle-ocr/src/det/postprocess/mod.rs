@@ -7,7 +7,8 @@ use rayon::prelude::*;
 #[cfg(target_arch = "x86_64")]
 use std::sync::OnceLock;
 
-use crate::{Quad, config::VisionBackend, vision::backend::resolve_backend_or_pure_rust};
+use crate::Quad;
+use crate::vision::numeric::l2;
 
 #[derive(Debug, Clone)]
 pub struct DbPostProcess {
@@ -18,7 +19,6 @@ pub struct DbPostProcess {
     pub min_size: usize,
     pub use_dilation: bool,
     pub score_mode: String,
-    pub vision_backend: VisionBackend,
 }
 
 impl Default for DbPostProcess {
@@ -31,7 +31,6 @@ impl Default for DbPostProcess {
             min_size: 3,
             use_dilation: true,
             score_mode: "fast".to_string(),
-            vision_backend: VisionBackend::PureRust,
         }
     }
 }
@@ -48,32 +47,12 @@ impl DbPostProcess {
         src_w: usize,
         src_h: usize,
     ) -> (Vec<Quad>, Vec<f32>) {
-        let backend = resolve_backend_or_pure_rust(self.vision_backend);
-        match backend {
-            VisionBackend::PureRust => self.run_pure(pred, src_w, src_h),
-            VisionBackend::OpenCv => {
-                unreachable!("backend resolver should reject unsupported OpenCV backend")
-            }
-        }
-    }
-
-    fn run_pure(
-        &self,
-        pred: ArrayView2<'_, f32>,
-        src_w: usize,
-        src_h: usize,
-    ) -> (Vec<Quad>, Vec<f32>) {
         let height = pred.nrows();
         let width = pred.ncols();
         if height == 0 || width == 0 {
             return (Vec::new(), Vec::new());
         }
 
-        // Keep parity with RapidOCR Python:
-        // 1) threshold => bitmap
-        // 2) optional 2x2 dilation
-        // 3) findContours
-        // 4) boxes_from_bitmap with mini-box score / slow contour score
         let mut bitmap = build_threshold_bitmap(pred, self.thresh);
         if self.use_dilation {
             bitmap = dilate_mask_2x2(&bitmap, width, height);
@@ -1943,7 +1922,7 @@ fn filter_det_res(
     let mut out_boxes = Vec::with_capacity(dt_boxes.len());
     let mut out_scores = Vec::with_capacity(scores.len());
 
-    for (box_, score) in dt_boxes.into_iter().zip(scores.into_iter()) {
+    for (box_, score) in dt_boxes.into_iter().zip(scores) {
         let mut box_ = order_points_clockwise(box_);
         box_ = clip_det_res(box_, img_height, img_width);
 
@@ -2033,12 +2012,6 @@ fn sort_boxes_like_python(boxes: &mut Vec<Quad>, scores: &mut Vec<f32>, y_thresh
     *scores = new_scores;
 }
 
-fn l2(a: [f32; 2], b: [f32; 2]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    (dx * dx + dy * dy).sqrt()
-}
-
 #[cfg(test)]
 mod tests {
     use super::{
@@ -2046,7 +2019,6 @@ mod tests {
         dilate_mask_2x2, fill_polygon_mask, masked_mean_in_roi, min_area_rect_from_points_pure,
         sort_boxes_like_python, unclip_polygon_like_opencv_db,
     };
-    use crate::config::VisionBackend;
     use ndarray::Array2;
 
     #[test]
@@ -2104,7 +2076,6 @@ mod tests {
         }
 
         let post = DbPostProcess {
-            vision_backend: VisionBackend::PureRust,
             thresh: 0.3,
             box_thresh: 0.5,
             ..DbPostProcess::default()

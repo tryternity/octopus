@@ -71,3 +71,22 @@
 - **保留**：算法名函数（`sklansky_like_opencv`、`convex_hull_like_opencv`、`unclip_polygon_like_opencv_db`）是纯 Rust 实现，非 opencv 调用
 - **验证**：`cargo build -p octopus-paddle-ocr`（零 warning）+ `cargo test -p octopus-paddle-ocr`（37 passed）+ `cargo build -p octopus-desktop --features embedded`（零 warning）+ `cargo test -p octopus-ocr`（2 passed）
 - **结果**：9 文件，-1055/+47 行（净删除 1008 行死代码）
+
+## Task 10：删除 VisionBackend enum（2026-07-06 增补）
+- [x] 评估影响范围：`crates/ocr` + `crates/desktop` 零引用 VisionBackend，确认完全内部类型
+- [x] `config.rs`：删除 `VisionBackend` enum + `RuntimeConfig.vision_backend` 字段
+- [x] `vision/backend.rs`：清空（删除 `resolve_backend_strict` / `resolve_backend_or_pure_rust` / `OPENCV_BACKEND_DISABLED_MESSAGE` / `default_backend`）
+- [x] `vision/image_backend.rs`：移除 `backend` 参数，直接调用 pure rust 实现
+- [x] `vision/rotate_crop.rs`：移除 `backend` 参数 + `rotate_crop_image_with_resolved_backend` 中间层
+- [x] `det/preprocess.rs`：移除 `vision_backend` 字段 + match 分支，直接内联 pure rust 路径
+- [x] `det/postprocess/mod.rs`：移除 `vision_backend` 字段 + `resolve_backend_or_pure_rust` 调用，直接内联 `run_pure`
+- [x] `det/detector.rs`：移除 `resolve_backend_strict` 调用 + `vision_backend` 字段传递
+- [x] `cls/classifier.rs`：移除 `vision_backend` 字段 + `resolve_backend_strict` 调用
+- [x] `cls/preprocess.rs`：移除所有 `_with_backend` 参数（`backend` 始终为 PureRust）
+- [x] `rec/preprocess.rs`：移除所有 `_with_backend` 参数 + `resolve_backend_strict` 调用
+- [x] `rec/word_boxes.rs`：移除 `compute_word_boxes_with_backend` → 合并为 `compute_word_boxes`，删除 `reverse_rotate_crop_image_with_backend`
+- [x] `rec/recognizer.rs`：移除 `vision_backend` 字段 + `resolve_backend_strict` 调用
+- [x] `pipeline/image_ops.rs`：移除所有 `backend` 参数，删除多余的 `resize_image` 包装函数
+- [x] `pipeline/rapid_ocr.rs`：移除 `preprocessing_backend` 选择逻辑，`prepare_image` 移除 `use_det` 参数
+- [x] `lib.rs`：移除 `VisionBackend` re-export
+- **验证**：`cargo build -p octopus-paddle-ocr`（零 warning）+ `cargo test -p octopus-paddle-ocr`（32 passed）+ `cargo build -p octopus-desktop --features embedded`（零 warning）

@@ -1,13 +1,11 @@
 use nalgebra::{SMatrix, SVector};
 
-#[cfg(test)]
-use crate::vision::backend::default_backend;
 use crate::{
     Quad,
-    config::{RecImage, VisionBackend},
+    config::RecImage,
     error::{PaddleOcrError, Result},
     types::{LineResult, WordBox, WordInfo, WordType},
-    vision::backend::resolve_backend_strict,
+    vision::numeric::l2,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -16,30 +14,12 @@ enum Direction {
     Vertical,
 }
 
-#[cfg(test)]
 pub fn compute_word_boxes(
     imgs: &[RecImage],
     dt_boxes: &[Quad],
     lines: &[LineResult],
     return_single_char_box: bool,
 ) -> Result<Vec<Vec<WordBox>>> {
-    compute_word_boxes_with_backend(
-        imgs,
-        dt_boxes,
-        lines,
-        return_single_char_box,
-        default_backend(),
-    )
-}
-
-pub fn compute_word_boxes_with_backend(
-    imgs: &[RecImage],
-    dt_boxes: &[Quad],
-    lines: &[LineResult],
-    return_single_char_box: bool,
-    backend: VisionBackend,
-) -> Result<Vec<Vec<WordBox>>> {
-    let backend = resolve_backend_strict(backend)?;
     if imgs.len() != dt_boxes.len() || imgs.len() != lines.len() {
         return Err(PaddleOcrError::InvalidInput(format!(
             "compute_word_boxes input length mismatch: imgs={}, dt_boxes={}, lines={}",
@@ -54,7 +34,6 @@ pub fn compute_word_boxes_with_backend(
         dt_boxes,
         lines,
         return_single_char_box,
-        backend,
     ))
 }
 
@@ -63,7 +42,6 @@ fn compute_word_boxes_unchecked(
     dt_boxes: &[Quad],
     lines: &[LineResult],
     return_single_char_box: bool,
-    backend: VisionBackend,
 ) -> Vec<Vec<WordBox>> {
     let mut out = Vec::new();
 
@@ -91,12 +69,12 @@ fn compute_word_boxes_unchecked(
         adjust_box_overlap(&mut word_boxes);
         let direction = get_box_direction(*det_box);
         let mapped =
-            reverse_rotate_crop_image_with_backend(*det_box, &word_boxes, direction, backend);
+            reverse_rotate_crop_image(*det_box, &word_boxes, direction);
 
         let item = word_content
             .into_iter()
             .zip(confs.into_iter().chain(std::iter::repeat(0.0)))
-            .zip(mapped.into_iter())
+            .zip(mapped)
             .map(|((text, score), bbox)| WordBox { text, score, bbox })
             .collect::<Vec<_>>();
 
@@ -320,22 +298,6 @@ fn reverse_rotate_crop_image(
     out
 }
 
-fn reverse_rotate_crop_image_with_backend(
-    bbox_points: Quad,
-    word_points_list: &[Quad],
-    direction: Direction,
-    backend: VisionBackend,
-) -> Vec<Quad> {
-    match backend {
-        VisionBackend::PureRust => {
-            reverse_rotate_crop_image(bbox_points, word_points_list, direction)
-        }
-        VisionBackend::OpenCv => {
-            unreachable!("backend resolver should reject unsupported OpenCV backend")
-        }
-    }
-}
-
 fn homography_from_4pt(src: Quad, dst: Quad) -> SMatrix<f32, 3, 3> {
     let mut a = SMatrix::<f32, 8, 8>::zeros();
     let mut b = SVector::<f32, 8>::zeros();
@@ -427,12 +389,6 @@ fn quad_vec_to_rect_bbox(quads: &[Quad]) -> (f32, f32, f32, f32) {
     (x_min, y_min, x_max, y_max)
 }
 
-fn l2(a: [f32; 2], b: [f32; 2]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    (dx * dx + dy * dy).sqrt()
-}
-
 #[cfg(test)]
 mod tests {
     use crate::{
@@ -478,25 +434,5 @@ mod tests {
         let err = compute_word_boxes(&[img], &det, &[line.clone(), line], false)
             .expect_err("should reject mismatched lengths");
         assert!(matches!(err, PaddleOcrError::InvalidInput(_)));
-    }
-
-    #[test]
-    fn checked_backend_rejects_opencv_without_feature() {
-        let img = RecImage::from_bgr_u8(20, 20, vec![0; 20 * 20 * 3]).expect("valid image");
-        let line = LineResult {
-            text: "A".to_string(),
-            score: 1.0,
-            word_info: None,
-        };
-        let det = [[[0.0, 0.0], [20.0, 0.0], [20.0, 20.0], [0.0, 20.0]]];
-        let err = super::compute_word_boxes_with_backend(
-            &[img],
-            &det,
-            &[line],
-            false,
-            crate::config::VisionBackend::OpenCv,
-        )
-        .expect_err("must reject opencv backend without feature");
-        assert!(matches!(err, PaddleOcrError::Config(_)));
     }
 }

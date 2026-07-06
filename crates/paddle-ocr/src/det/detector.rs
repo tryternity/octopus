@@ -9,7 +9,6 @@ use crate::{
     error::{PaddleOcrError, Result},
     runtime::provider::ProviderResolution,
     runtime::session::{OrtSession, SessionContract},
-    vision::backend::resolve_backend_strict,
 };
 
 use super::{
@@ -97,14 +96,11 @@ impl Detector {
             return Err(PaddleOcrError::FileNotFound(model_path.clone()));
         }
 
-        let det_vision_backend = resolve_backend_strict(config.runtime.vision_backend)?;
-
         let pre = DetPreProcess {
             limit_side_len: config.limit_side_len,
             limit_type: config.limit_type,
             mean: config.mean,
             std: config.std,
-            vision_backend: det_vision_backend,
         };
         let post = DbPostProcess {
             thresh: config.thresh,
@@ -113,11 +109,10 @@ impl Detector {
             unclip_ratio: config.unclip_ratio,
             use_dilation: config.use_dilation,
             score_mode: config.score_mode,
-            vision_backend: pre.vision_backend,
             ..DbPostProcess::default()
         };
         let session =
-            OrtSession::new_with_contract(&model_path, &config.runtime, SessionContract::Det)?;
+            OrtSession::new_with_contract(model_path, &config.runtime, SessionContract::Det)?;
         Ok(Self {
             pre,
             post,
