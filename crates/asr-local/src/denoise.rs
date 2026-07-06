@@ -191,11 +191,16 @@ impl DenoiseProcessor {
     /// 增量处理 48k [-1,1] 样本：累积到 FRAME_SIZE，逐帧降噪，返回已降噪样本。
     pub fn process_samples(&mut self, samples: &[f32]) -> Vec<f32> {
         if self.df_pending {
+            // DF3 懒加载：失败时降级到 RNNoise（而非完全直通）——用户仍能获得基础降噪。
+            // tract 后端为纯 Rust，内部做运行时 SIMD 检测，SIGILL 风险极低；catch_unwind
+            // 兜底模型加载 panic。若 RNNoise 也失败（仅 OOM）才最终直通。
             self.backend = match Df3Backend::new() {
                 Ok(b) => Some(Box::new(b)),
                 Err(e) => {
-                    log::warn!("DF3 模型加载失败，降级直通（不阻断录音）：{:?}", e);
-                    None
+                    log::warn!(
+                        "DF3 模型加载失败，降级到 RNNoise（不阻断录音）：{:?}", e
+                    );
+                    Some(Box::new(RnnoiseBackend::new()))
                 }
             };
             self.df_pending = false;
