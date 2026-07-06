@@ -281,8 +281,8 @@ fn merge_same_line_blocks(blocks: Vec<OcrBlock>) -> Vec<OcrBlock> {
 /// 此函数对文本中的连续 ASCII 字母段做贪心最长匹配分词，在单词间补空格。
 /// 非ASCII（中文等）、标点、已有空格保持不变。
 fn segment_english_words(text: &str) -> String {
-    /// 编译期内嵌 37 万英文词表（words_alpha.txt，~4MB → 二进制内）。
-    const WORDS_RAW: &str = include_str!("../assets/words_alpha.txt");
+    /// 编译期内嵌 37 万英文词表（words_common.txt，~4MB → 二进制内）。
+    const WORDS_RAW: &str = include_str!("../assets/words_common.txt");
 
     use std::collections::HashSet;
     static WORD_SET: std::sync::OnceLock<HashSet<&'static str>> = std::sync::OnceLock::new();

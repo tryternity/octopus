@@ -41,3 +41,11 @@
 ## Task 6：文档同步
 - [x] 更新 `docs/architecture.md`（ocr 模块描述：MNN→ONNX、PP-OCRv6→v5、.mnn→.onnx）
 - [x] 更新本 plan 状态
+
+## Task 7：实施中发现的关键 bug 与后处理（增补）
+- [x] `read_character_file` trim() 误删全角空格 U+3000 → CTC 偏移 1 位（改 `strip_suffix('\r')`）
+- [x] `merge_same_line_blocks`：det 同行多框合并 + 水平间隙补空格
+- [x] `segment_english_words`：37 万英文词库贪心分词（v5 需要，v6 跳过）
+- [x] ort rc.10→rc.12 API 适配（outputs/inputs 方法、Builder map_err、inputs! 宏、ndarray 0.17）
+- [x] ort 依赖 `download-binaries` feature（不能用 `default-features = false`）
+- [x] PP-OCRv5 + PP-OCRv6-small 模型部署 + e2e 验证通过
