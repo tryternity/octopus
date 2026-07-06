@@ -147,6 +147,39 @@ fn ncc_match(
     Some(NccResult { best_y, best_score, response })
 }
 
+/// 保边缘降采样（Triangle 双线性）。NCC+亚像素不能用 Nearest——锯齿破坏 response 峰值。
+fn downsample_grayimage(img: &image::GrayImage, scale: f64) -> image::GrayImage {
+    let nw = ((img.width() as f64 * scale).max(1.0)).round() as u32;
+    let nh = ((img.height() as f64 * scale).max(1.0)).round() as u32;
+    image::imageops::resize(img, nw, nh, image::imageops::FilterType::Triangle)
+}
+
+/// 限定 y 邻域 [y_min, y_max] 的 NCC + 亚像素 refine（两阶段 stage2 用）。
+/// stage1 给出粗 dy_coarse，本函数在原分辨率 ±Npx 内精化，恢复 0.1px 亚像素。
+/// 返回 (refined_y 原分辨率坐标, best_score)。范围太小 / size 不匹配 → None。
+fn ncc_match_range(
+    template: &image::GrayImage,
+    search_region: &image::GrayImage,
+    y_min: f64,
+    y_max: f64,
+) -> Option<(f64, f64)> {
+    let th = template.height();
+    let sh = search_region.height();
+    if th >= sh {
+        return None;
+    }
+    let lo = (y_min.max(0.0).floor() as u32).min(sh - th);
+    let hi = (y_max.ceil() as u32).saturating_add(th).min(sh);
+    if hi <= lo || hi - lo <= th {
+        return None;
+    }
+    let sub = image::imageops::crop_imm(search_region, 0, lo, search_region.width(), hi - lo)
+        .to_image();
+    let ncc = ncc_match(template, &sub)?;
+    let refined_sub = parabolic_refine_from_response(&ncc.response, ncc.best_y);
+    Some((refined_sub + lo as f64, ncc.best_score))
+}
+
 /// 多道验证 NCC 匹配结果。返回 true 表示匹配可信。
 fn validate_ncc_match(
     response: &Image<image::Luma<f32>>,
@@ -1233,6 +1266,40 @@ mod tests {
         assert!(result.is_some(), "NCC 应返回匹配结果");
         let ncc = result.unwrap();
         assert!(ncc.best_score > 0.75, "NCC 分数应 > 0.75: {}", ncc.best_score);
+    }
+
+    #[test]
+    fn test_ncc_match_range_finds_known_offset() {
+        // f0 底部 strip（y∈[TH-strip_h,TH)）在 f1(scroll=30) 中出现在 y=TH-strip_h-30 处
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 30);
+        let template = GrayBuf::from_rgba_roi(&f0, (TH - strip_h) as usize, TH as usize).to_gray_image();
+        let search = GrayBuf::from_rgba_roi(&f1, 0, TH as usize).to_gray_image();
+        let expected_y = (TH - strip_h - 30) as f64; // 490
+        let (refined_y, score) = ncc_match_range(&template, &search, expected_y - 5.0, expected_y + 5.0)
+            .expect("range 内应匹配");
+        assert!(
+            (refined_y - expected_y).abs() < 2.0,
+            "refined_y 应≈{}, 实际 {}", expected_y, refined_y
+        );
+        assert!(score > 0.5, "range 内匹配 score 应 > 0.5: {}", score);
+    }
+
+    #[test]
+    fn test_ncc_match_range_rejects_out_of_range_offset() {
+        // 真偏移 y=490，range 只给 [0,10] → 返回 range 内峰（≠490），refined_y < 15
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 30);
+        let template = GrayBuf::from_rgba_roi(&f0, (TH - strip_h) as usize, TH as usize).to_gray_image();
+        let search = GrayBuf::from_rgba_roi(&f1, 0, TH as usize).to_gray_image();
+        let (refined_y, _) = ncc_match_range(&template, &search, 0.0, 10.0)
+            .expect("range 内应有某峰");
+        assert!(
+            refined_y < 15.0,
+            "range 外偏移不应被选, refined_y={}", refined_y
+        );
     }
 
     #[test]
