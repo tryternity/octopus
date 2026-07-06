@@ -97,7 +97,7 @@ const COMMON_SUFFIX_LIST = COMMON_DOMAIN_SUFFIXES.split(";").filter(Boolean);
 
 ```
 1. 若 s 为空 → 否
-2. 若 s 匹配 ^[a-z][a-z0-9+.-]*:// （带协议）→ { isLink: true, url: s }   # 保留现有 http(s) 行为
+2. 若 s 匹配 ^https?:// （带协议 http(s)）→ { isLink: true, url: s }   # 与被替换的原 /^https?:\/\//i 等价；ftp/file 等其它 scheme 不识别
 3. 若 s 含任意空白字符 → 否                                              # 句中片段不算
 4. hostSeg = s.split(/[/?#]/)[0]                                         # 第一个 / ? # 之前
 5. 路径 B（本地服务地址，补 http://）：
@@ -165,6 +165,7 @@ isDomainLabels(d)= d 拆「.」≥ 2 段，每段 /^[A-Za-z0-9-]+$/ 且不以「
 | `127.0.0.1` | ✗ | 无端口（路径 A 后缀也不匹配） |
 | `localhost:abc` | ✗ | 端口非数字 |
 | `999.999.999.999:80` | ✗ | 非法 IPv4 |
+| `ftp://host` | ✗ | 非 http(s) scheme，收窄后不识别 |
 | `file.txt` / `main.rs` / `readme.md` | ✗ | 后缀不在表 |
 | `v1.2.3` / `192.168.1.1`（无端口） | ✗ | 末段数字，后缀不匹配 |
 | `hello.world` | ✗ | `.world` 不在表（保守） |
