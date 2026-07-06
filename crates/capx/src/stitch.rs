@@ -30,6 +30,10 @@ const DY_HISTORY_LEN: usize = 8;
 /// 最低 NCC 分数阈值
 const NCC_SCORE_THRESHOLD: f32 = 0.65;
 
+/// 主峰邻域半宽（像素）。主次比检测时排除 [best_y-GAP, best_y+GAP]，
+/// 避免同一峰的肩部被误当独立次峰。NCC response 相邻 y 高度相关。
+const NCC_PEAK_GAP: usize = 8;
+
 /// 连续 row-major 灰度 buffer，替代 image::GrayImage。
 /// 消除 get_pixel() 的坐标计算 + 边界检查开销，用整行切片直访。
 #[derive(Clone)]
@@ -157,23 +161,33 @@ fn ncc_match(
 }
 
 /// 多道验证 NCC 匹配结果。返回 true 表示匹配可信。
-fn validate_ncc_match(response: &Image<image::Luma<f32>>, _best_y: usize, best_score: f32) -> bool {
+fn validate_ncc_match(response: &Image<image::Luma<f32>>, best_y: usize, best_score: f32) -> bool {
     // 1. 最低分数
     if best_score < NCC_SCORE_THRESHOLD {
         return false;
     }
 
-    // 无区分度检测：response 的 max - min 差值 < 0.1 说明所有位置得分几乎相同，
-    // NCC 无足够区分力来确定真实偏移（纯色/空白/极低纹理）。拒绝匹配。
+    // 扫 response（1 列 × N 行）：全局最小值 + 排除主峰邻域后的次峰 max2。
+    // 主峰邻域 [best_y-GAP, best_y+GAP] 排除，避免同一峰的肩部被误当独立次峰。
     let h = response.height() as usize;
     let mut min_score = f32::MAX;
-    let mut max_score = f32::MIN;
+    let mut max2 = 0.0f32;
     for y in 0..h {
         let v = response.get_pixel(0, y as u32)[0];
         if v < min_score { min_score = v; }
-        if v > max_score { max_score = v; }
+        if (y as isize - best_y as isize).abs() > NCC_PEAK_GAP as isize && v > max2 {
+            max2 = v;
+        }
     }
-    if max_score - min_score < 0.1 {
+
+    // 2. 无区分度：max - min < 0.1 说明所有位置得分几乎相同（纯色/空白/极低纹理）。
+    if best_score - min_score < 0.1 {
+        return false;
+    }
+
+    // 3. 主次比：邻域外次峰 ≥ 主峰一半 → response 存在第二个强对齐点，
+    // 典型由周期性/重复纹理导致（NCC 在周期内容上假匹配）。拒绝，交 fallback。
+    if max2 > best_score * 0.5 {
         return false;
     }
 
@@ -1147,5 +1161,47 @@ mod tests {
         assert!(result.is_some(), "NCC 应返回匹配结果");
         let ncc = result.unwrap();
         assert!(ncc.best_score > 0.75, "NCC 分数应 > 0.75: {}", ncc.best_score);
+    }
+
+    // ===== B: validate_ncc_match 主次比判据测试 =====
+
+    /// 构造 1 列 × rows 行的 NCC response：peaks 位置设峰值，其余 base。
+    fn make_response(rows: u32, peaks: &[(u32, f32)], base: f32) -> Image<image::Luma<f32>> {
+        let mut r = Image::new(1, rows);
+        for y in 0..rows {
+            r.put_pixel(0, y, image::Luma([base]));
+        }
+        for &(y, v) in peaks {
+            r.put_pixel(0, y, image::Luma([v]));
+        }
+        r
+    }
+
+    #[test]
+    fn test_validate_rejects_ambiguous_response() {
+        // 双等高峰（间隔 15 > GAP=8）：主峰 y=5=0.9，次峰 y=20=0.9 → max2=0.9 > 0.9*0.5 → 拒绝
+        let r = make_response(30, &[(5, 0.9), (20, 0.9)], 0.1);
+        assert!(!validate_ncc_match(&r, 5, 0.9));
+    }
+
+    #[test]
+    fn test_validate_accepts_dominant_peak() {
+        // 单峰主导：主峰 0.9，远处次峰 0.3（< 0.9*0.5=0.45）→ 接受
+        let r = make_response(30, &[(5, 0.9), (20, 0.3)], 0.1);
+        assert!(validate_ncc_match(&r, 5, 0.9));
+    }
+
+    #[test]
+    fn test_validate_peak_gap_excludes_neighbors() {
+        // 次峰在 GAP 内（y=8，|8-5|=3 ≤ 8）算肩部，不计入 max2；远处 y=20=0.2 → max2=0.2 < 0.45 → 接受
+        let r = make_response(30, &[(5, 0.9), (8, 0.85), (20, 0.2)], 0.1);
+        assert!(validate_ncc_match(&r, 5, 0.9));
+    }
+
+    #[test]
+    fn test_validate_short_response_passes() {
+        // 高 12 ≤ 2*GAP=16：全部在邻域内，max2=0 → 不拒绝（区分度兜底）
+        let r = make_response(12, &[(5, 0.9)], 0.1);
+        assert!(validate_ncc_match(&r, 5, 0.9));
     }
 }
