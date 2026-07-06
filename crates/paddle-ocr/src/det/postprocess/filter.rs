@@ -1,0 +1,96 @@
+use crate::Quad;
+use crate::vision::numeric::l2;
+
+pub(super) fn filter_det_res(
+    dt_boxes: Vec<Quad>,
+    scores: Vec<f32>,
+    img_height: usize,
+    img_width: usize,
+) -> (Vec<Quad>, Vec<f32>) {
+    let mut out_boxes = Vec::with_capacity(dt_boxes.len());
+    let mut out_scores = Vec::with_capacity(scores.len());
+
+    for (box_, score) in dt_boxes.into_iter().zip(scores) {
+        let mut box_ = order_points_clockwise(box_);
+        box_ = clip_det_res(box_, img_height, img_width);
+
+        let rect_width = l2(box_[0], box_[1]) as i32;
+        let rect_height = l2(box_[0], box_[3]) as i32;
+        if rect_width <= 3 || rect_height <= 3 {
+            continue;
+        }
+
+        out_boxes.push(box_);
+        out_scores.push(score);
+    }
+
+    (out_boxes, out_scores)
+}
+
+fn clip_det_res(mut points: Quad, img_height: usize, img_width: usize) -> Quad {
+    let max_x = img_width.saturating_sub(1) as f32;
+    let max_y = img_height.saturating_sub(1) as f32;
+
+    for p in &mut points {
+        p[0] = p[0].clamp(0.0, max_x).floor();
+        p[1] = p[1].clamp(0.0, max_y).floor();
+    }
+
+    points
+}
+
+fn order_points_clockwise(pts: Quad) -> Quad {
+    let mut x_sorted = pts.to_vec();
+    x_sorted.sort_by(|a, b| a[0].total_cmp(&b[0]));
+
+    let mut left = [x_sorted[0], x_sorted[1]];
+    let mut right = [x_sorted[2], x_sorted[3]];
+    left.sort_by(|a, b| a[1].total_cmp(&b[1]));
+    right.sort_by(|a, b| a[1].total_cmp(&b[1]));
+
+    let tl = left[0];
+    let bl = left[1];
+    let tr = right[0];
+    let br = right[1];
+    [tl, tr, br, bl]
+}
+
+pub(super) fn sort_boxes_like_python(boxes: &mut Vec<Quad>, scores: &mut Vec<f32>, y_threshold: f32) {
+    if boxes.is_empty() {
+        return;
+    }
+
+    let n = boxes.len();
+    let mut y_order: Vec<usize> = (0..n).collect();
+    y_order.sort_by(|&a, &b| {
+        boxes[a][0][1]
+            .total_cmp(&boxes[b][0][1])
+            .then_with(|| a.cmp(&b))
+    });
+
+    let mut line_ids = vec![0_i32; n];
+    for i in 1..n {
+        let prev_y = boxes[y_order[i - 1]][0][1];
+        let cur_y = boxes[y_order[i]][0][1];
+        line_ids[i] = line_ids[i - 1] + if cur_y - prev_y >= y_threshold { 1 } else { 0 };
+    }
+
+    let mut final_order_in_y_sorted: Vec<usize> = (0..n).collect();
+    final_order_in_y_sorted.sort_by(|&a, &b| {
+        line_ids[a]
+            .cmp(&line_ids[b])
+            .then_with(|| boxes[y_order[a]][0][0].total_cmp(&boxes[y_order[b]][0][0]))
+            .then_with(|| a.cmp(&b))
+    });
+
+    let mut new_boxes = Vec::with_capacity(n);
+    let mut new_scores = Vec::with_capacity(n);
+    for idx_in_y_sorted in final_order_in_y_sorted {
+        let src_idx = y_order[idx_in_y_sorted];
+        new_boxes.push(boxes[src_idx]);
+        new_scores.push(scores[src_idx]);
+    }
+
+    *boxes = new_boxes;
+    *scores = new_scores;
+}
