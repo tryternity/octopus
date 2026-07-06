@@ -120,17 +120,20 @@ impl OcrEngine {
     fn recognize_long_image_with_blocks(&self, img: &::image::DynamicImage) -> Result<Vec<OcrBlock>> {
         let (w, h) = (img.width(), img.height());
         let mut all_blocks: Vec<OcrBlock> = Vec::new();
-        let mut prev_last_text: Option<String> = None;
+        // 相邻 chunk 有 CHUNK_OVERLAP 高度的重叠区，重叠区的行会被两块都识别到。
+        // 用「已收录到的最大绝对 y 底部」做坐标去重：下一块中 y 中心 ≤ 该值的行
+        // 落在重叠区、已被前一块收录，丢弃。此前按文本逐字相等去重，OCR 轻微波动
+        // （"hello" vs "hello!"）即致去重失败 → 重复行；也易误删天然重复行。
+        let mut covered_until_y: f64 = 0.0;
         for (top, chunk_h) in Self::plan_chunks(h) {
             let sub = ::image::imageops::crop_imm(img, 0, top, w, chunk_h);
             let chunk = ::image::DynamicImage::from(sub.to_image());
             let mut blocks = self.run_ocr(&chunk)?;
-            if let Some(ref last_text) = prev_last_text {
-                let skip = blocks.iter().position(|b| b.text != *last_text).unwrap_or(blocks.len());
-                blocks.drain(..skip);
-            }
             for b in &mut blocks { b.y += top as f64; }
-            prev_last_text = blocks.last().map(|b| b.text.clone());
+            drop_overlapped_blocks(covered_until_y, &mut blocks);
+            if let Some(last) = blocks.last() {
+                covered_until_y = last.y + last.h;
+            }
             all_blocks.extend(blocks);
         }
         Ok(all_blocks)
@@ -142,19 +145,9 @@ impl OcrEngine {
     }
 
     fn recognize_long_image(&self, img: &::image::DynamicImage) -> Result<Vec<String>> {
-        let (w, h) = (img.width(), img.height());
-        let mut all_lines: Vec<String> = Vec::new();
-        for (idx, &(top, chunk_h)) in Self::plan_chunks(h).iter().enumerate() {
-            let sub = ::image::imageops::crop_imm(img, 0, top, w, chunk_h);
-            let chunk = ::image::DynamicImage::from(sub.to_image());
-            let lines = self.recognize_image(&chunk)?;
-            let skip = if idx > 0 && !all_lines.is_empty() {
-                let last = all_lines.last().unwrap();
-                lines.iter().position(|l| l != last).unwrap_or(lines.len())
-            } else { 0 };
-            all_lines.extend(lines.into_iter().skip(skip));
-        }
-        Ok(all_lines)
+        // 复用 with_blocks 的坐标去重逻辑——纯文本版没有坐标，无法独立去重。
+        let blocks = self.recognize_long_image_with_blocks(img)?;
+        Ok(blocks.into_iter().map(|b| b.text).collect())
     }
 
     fn plan_chunks(h: u32) -> Vec<(u32, u32)> {
@@ -275,6 +268,13 @@ fn merge_same_line_blocks(blocks: Vec<OcrBlock>) -> Vec<OcrBlock> {
         merged.push(block);
     }
     merged
+}
+
+/// 丢弃 y 中心 ≤ covered_until_y 的行——这些行落在与前一块的 CHUNK_OVERLAP 重叠区、
+/// 已被前一块收录。按坐标（而非文本）去重：相邻 chunk 在重叠区会重复识别同一物理行，
+/// 而文本可能因 OCR 波动（"hello" vs "hello!"）不严格相等。纯函数，便于单测。
+fn drop_overlapped_blocks(covered_until_y: f64, blocks: &mut Vec<OcrBlock>) {
+    blocks.retain(|b| b.y + b.h / 2.0 > covered_until_y);
 }
 
 /// PP-OCR 中文 rec 模型不输出英文单词间的空格（CTC space token 未被激活）。
@@ -411,5 +411,29 @@ mod tests {
             let last = plan.last().unwrap();
             assert_eq!(last.0 + last.1, h);
         }
+    }
+
+    #[test]
+    fn drop_overlapped_blocks_removes_rows_at_or_below_covered_bottom() {
+        // covered_until_y=100：y 中心 ≤100 的行丢弃，>100 的保留
+        let mut blocks = vec![
+            OcrBlock { text: "A".into(), x: 0.0, y: 80.0,  w: 10.0, h: 20.0, score: 0.9 }, // 中心 90 ≤100 → 丢
+            OcrBlock { text: "B".into(), x: 0.0, y: 95.0,  w: 10.0, h: 10.0, score: 0.9 }, // 中心 100 ≤100 → 丢
+            OcrBlock { text: "C".into(), x: 0.0, y: 96.0,  w: 10.0, h: 10.0, score: 0.9 }, // 中心 101 >100 → 留
+            OcrBlock { text: "D".into(), x: 0.0, y: 200.0, w: 10.0, h: 20.0, score: 0.9 }, // 中心 210 → 留
+        ];
+        drop_overlapped_blocks(100.0, &mut blocks);
+        let texts: Vec<String> = blocks.into_iter().map(|b| b.text).collect();
+        assert_eq!(texts, vec!["C".to_string(), "D".to_string()]);
+    }
+
+    #[test]
+    fn drop_overlapped_blocks_zero_coverage_keeps_positive_center() {
+        // 首块 covered_until_y=0：只要 y 中心 >0（正常行）全保留
+        let mut blocks = vec![
+            OcrBlock { text: "A".into(), x: 0.0, y: 5.0, w: 10.0, h: 10.0, score: 0.9 },
+        ];
+        drop_overlapped_blocks(0.0, &mut blocks);
+        assert_eq!(blocks.len(), 1);
     }
 }

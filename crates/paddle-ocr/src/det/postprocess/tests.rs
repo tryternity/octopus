@@ -205,3 +205,22 @@ fn sort_boxes_like_python_orders_by_x_within_same_line() {
     assert_eq!(boxes[2][0][0], 100.0);
     assert_eq!(scores.len(), boxes.len());
 }
+
+#[test]
+fn sort_boxes_like_python_bubble_break_matches_python_non_transitive() {
+    // 反例：A(x10,y10) B(x15,y0) C(x22,y5)，阈值 10。
+    // 按 (y,x) 预排：B(y0), C(y5), A(y10)。
+    // Python 冒泡（非传递，break）：C 与 A 的 Y 差 5≤10 且 C.x22>A.x10 → 把 A 前移到 C 前；
+    // 再比 B 与（交换后的）C：Y 差 5≤10 但 B.x15≯C.x22 → break。结果 [B,A,C]。
+    // 旧的传递性 line_id 累加会把三者全判同一行再按 x 排 → [A,B,C]，与 Python 不符。
+    let mut boxes = vec![
+        [[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0]], // A
+        [[15.0, 0.0], [16.0, 0.0], [16.0, 1.0], [15.0, 1.0]], // B
+        [[22.0, 5.0], [23.0, 5.0], [23.0, 6.0], [22.0, 6.0]], // C
+    ];
+    let mut scores = vec![0.9, 0.8, 0.7];
+    sort_boxes_like_python(&mut boxes, &mut scores, 10.0);
+    let xs: Vec<f32> = boxes.iter().map(|b| b[0][0]).collect();
+    assert_eq!(xs, vec![15.0, 10.0, 22.0], "expected [B,A,C] got {:?}", boxes);
+    assert_eq!(scores.len(), boxes.len());
+}

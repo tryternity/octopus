@@ -226,6 +226,17 @@ fn get_word_info(text: &str, selection: &[bool]) -> WordInfo {
         return WordInfo::default();
     }
 
+    // 下方循环用字符索引 c_i 同时取 token 长度的 col_width / valid_col
+    // （col_width.get(c_i)、valid_col.get(c_i)），隐含假设 chars.len()==valid_col.len()，
+    // 即每个保留 token 恰对应一个字符（PaddleOCR 字符级 CTC 字典成立）。
+    // 换成多字符 / BPE 字典时此假设失效——debug 构建下提前 fail-fast，而非静默错位。
+    debug_assert_eq!(
+        chars.len(),
+        valid_col.len(),
+        "get_word_info assumes a char-level CTC dictionary (chars.len == valid_col.len); \
+         a multi-char/BPE token dictionary would break char-indexed col_width/valid_col access"
+    );
+
     let mut col_width = vec![0_usize; valid_col.len()];
     for i in 1..valid_col.len() {
         col_width[i] = valid_col[i] - valid_col[i - 1];

@@ -422,10 +422,17 @@ fn filter_by_text_score_for_full(
         }
         out_boxes.push(boxes[idx]);
         out_scores.push(det_scores[idx]);
-        if let Some(word_line) = word_boxes.as_ref().and_then(|v| v.get(idx))
-            && !word_line.is_empty()
-        {
-            out_word_boxes.push(word_line.clone());
+        // 启用 word box 时，保留行必须始终 push 对应的 word_line（哪怕为空），
+        // 维持 out_word_boxes 与 out_boxes/out_lines 1:1 对齐。此前用
+        // `&& !word_line.is_empty()` 跳过空条目会导致长度失配，下游按索引
+        // 取 word_boxes[i] 时错位/越界。
+        if word_boxes.is_some() {
+            let word_line = word_boxes
+                .as_ref()
+                .and_then(|v| v.get(idx))
+                .cloned()
+                .unwrap_or_default();
+            out_word_boxes.push(word_line);
         }
         out_lines.push(line);
     }
@@ -504,6 +511,39 @@ mod tests {
         assert_eq!(out_lines.len(), 1);
         assert_eq!(kept_indices, vec![0]);
         assert_eq!(out_lines[0].text, "ok");
+    }
+
+    #[test]
+    fn filter_by_text_score_keeps_word_boxes_aligned_with_empty_word_line() {
+        // 保留行的 word_line 一空一非空：此前空条目被跳过 → out_word_boxes
+        // 长度 < out_lines，下游索引错位。修复后必须 1:1 对齐。
+        let boxes = vec![
+            [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            [[2.0, 2.0], [3.0, 2.0], [3.0, 3.0], [2.0, 3.0]],
+        ];
+        let det_scores = vec![0.9, 0.9];
+        let lines = vec![
+            LineResult { text: "a".to_string(), score: 0.9, word_info: None },
+            LineResult { text: "b".to_string(), score: 0.9, word_info: None },
+        ];
+        let word_boxes: Option<Vec<Vec<WordBox>>> = Some(vec![
+            vec![WordBox {
+                text: "a".to_string(),
+                score: 0.9,
+                bbox: [[0.0, 0.0], [1.0, 0.0], [1.0, 1.0], [0.0, 1.0]],
+            }],
+            vec![],
+        ]);
+
+        let (out_boxes, _out_scores, out_lines, out_words) =
+            filter_by_text_score_for_full(boxes, det_scores, lines, word_boxes, 0.5);
+
+        assert_eq!(out_lines.len(), 2);
+        assert_eq!(out_boxes.len(), 2);
+        let out_words = out_words.expect("word_boxes 为 Some 时输出必须保持 Some");
+        assert_eq!(out_words.len(), out_lines.len(), "word_boxes 必须与 lines 1:1");
+        assert_eq!(out_words[0].len(), 1);
+        assert!(out_words[1].is_empty());
     }
 
     #[test]

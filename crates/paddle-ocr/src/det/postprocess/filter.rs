@@ -61,32 +61,38 @@ pub(super) fn sort_boxes_like_python(boxes: &mut Vec<Quad>, scores: &mut Vec<f32
     }
 
     let n = boxes.len();
-    let mut y_order: Vec<usize> = (0..n).collect();
-    y_order.sort_by(|&a, &b| {
+
+    // 第一步：按 (y, x) 稳定排序，对齐 Python `sorted(key=lambda x: (x[0][1], x[0][0]))`。
+    let mut order: Vec<usize> = (0..n).collect();
+    order.sort_by(|&a, &b| {
         boxes[a][0][1]
             .total_cmp(&boxes[b][0][1])
+            .then_with(|| boxes[a][0][0].total_cmp(&boxes[b][0][0]))
             .then_with(|| a.cmp(&b))
     });
 
-    let mut line_ids = vec![0_i32; n];
-    for i in 1..n {
-        let prev_y = boxes[y_order[i - 1]][0][1];
-        let cur_y = boxes[y_order[i]][0][1];
-        line_ids[i] = line_ids[i - 1] + if cur_y - prev_y >= y_threshold { 1 } else { 0 };
+    // 第二步：复刻 PaddleOCR 原版冒泡（sorted_boxes）。对每个 target=i+1，从 i 往前扫：
+    // 与 order[j] 的 Y 差 ≤ 阈值且 X 逆序就前移，否则立即 break。
+    // 关键是 break 使其「非传递」——这正是与「line_id 累加」的差异：累加版会把
+    // A~B、B~C（Y 差均 < 阈值）的 A、B、C 全判为同一行，而冒泡在边界处会断开。
+    // 反例 A(10,10) B(15,0) C(22,5) 阈值 10：累加→[A,B,C]，冒泡→[B,A,C]。
+    for i in 0..n.saturating_sub(1) {
+        let target = i + 1;
+        for j in (0..=i).rev() {
+            let y_diff = (boxes[order[j]][0][1] - boxes[order[target]][0][1]).abs();
+            let x_prev = boxes[order[j]][0][0];
+            let x_cur = boxes[order[target]][0][0];
+            if y_diff <= y_threshold && x_prev > x_cur {
+                order.swap(j, target);
+            } else {
+                break;
+            }
+        }
     }
-
-    let mut final_order_in_y_sorted: Vec<usize> = (0..n).collect();
-    final_order_in_y_sorted.sort_by(|&a, &b| {
-        line_ids[a]
-            .cmp(&line_ids[b])
-            .then_with(|| boxes[y_order[a]][0][0].total_cmp(&boxes[y_order[b]][0][0]))
-            .then_with(|| a.cmp(&b))
-    });
 
     let mut new_boxes = Vec::with_capacity(n);
     let mut new_scores = Vec::with_capacity(n);
-    for idx_in_y_sorted in final_order_in_y_sorted {
-        let src_idx = y_order[idx_in_y_sorted];
+    for &src_idx in &order {
         new_boxes.push(boxes[src_idx]);
         new_scores.push(scores[src_idx]);
     }
