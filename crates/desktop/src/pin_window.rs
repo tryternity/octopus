@@ -43,7 +43,13 @@ mod macos {
 
             #[unsafe(method(rightMouseDown:))]
             fn right_mouse_down(&self, event: &NSEvent) {
-                let mtm = MainThreadMarker::new().expect("must be on main thread");
+                let mtm = match MainThreadMarker::new() {
+                    Some(m) => m,
+                    None => {
+                        log::error!("Not on main thread in right_mouse_down");
+                        return;
+                    }
+                };
                 unsafe {
                     let menu: Retained<NSMenu> = msg_send![NSMenu::alloc(mtm), init];
                     let title = NSString::from_str("关闭");
@@ -60,12 +66,20 @@ mod macos {
                         NSMenu::popUpContextMenu_withEvent_forView(&menu, event, &content);
                     }
                     // 右键菜单关闭后清理已关闭的窗口引用（防泄漏）
-                    // 延迟 0.1s 执行，等 NSWindow.close() 完成
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_millis(100));
-                        super::macos::cleanup_closed_pin_windows();
-                    });
+                    // 必须在主线程延迟执行，不可在后台线程访问 NSWindow 属性
+                    let cleanup_sel = sel!(cleanup);
+                    let _: () = msg_send![
+                        self,
+                        performSelector: cleanup_sel,
+                        withObject: None as Option<&objc2::runtime::AnyObject>,
+                        afterDelay: 0.1f64
+                    ];
                 }
+            }
+
+            #[unsafe(method(cleanup))]
+            fn cleanup(&self) {
+                super::macos::cleanup_closed_pin_windows();
             }
         }
     );
@@ -103,7 +117,13 @@ mod macos {
                     }
                 };
 
-                let mtm = MainThreadMarker::new().expect("must be main thread");
+                let mtm = match MainThreadMarker::new() {
+                    Some(m) => m,
+                    None => {
+                        log::error!("Not on main thread in PinWindow::create");
+                        return;
+                    }
+                };
                 let iv_frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(width, height));
                 let image_view: Retained<PinNSImageView> = msg_send![
                     PinNSImageView::alloc(mtm),
@@ -126,9 +146,12 @@ mod macos {
                 let clear = NSColor::clearColor();
                 window.setBackgroundColor(Some(&clear));
 
-                let content = window.contentView().expect("window must have content view");
-                content.addSubview(&image_view);
-                image_view.setAutoresizingMask(NSAutoresizingMaskOptions(18));
+                if let Some(content) = window.contentView() {
+                    content.addSubview(&image_view);
+                    image_view.setAutoresizingMask(NSAutoresizingMaskOptions(18));
+                } else {
+                    log::error!("Window contentView is None");
+                }
 
                 window.makeKeyAndOrderFront(None);
 
@@ -148,5 +171,511 @@ mod macos {
     }
 }
 
+#[cfg(target_os = "windows")]
+mod windows {
+    use std::sync::Once;
+    use windows::{
+        core::*,
+        Win32::Foundation::*,
+        Win32::UI::WindowsAndMessaging::*,
+        Win32::Graphics::Gdi::*,
+        Win32::System::LibraryLoader::GetModuleHandleW,
+        Win32::UI::Input::KeyboardAndMouse::*,
+    };
+
+    static REGISTER_CLASS_ONCE: Once = Once::new();
+    const WINDOW_CLASS_NAME: PCWSTR = w!("OctopusPinWindow");
+
+    struct WindowState {
+        original_w: i32,
+        original_h: i32,
+        current_zoom: f64,
+        hbitmap: HBITMAP,
+    }
+
+    pub struct WinPinWindow;
+
+    impl super::PinWindow for WinPinWindow {
+        fn create(png_data: &[u8], x: f64, y: f64, width: f64, height: f64) {
+            let png_vec = png_data.to_vec();
+            std::thread::spawn(move || {
+                if let Err(e) = create_window_blocking(&png_vec, x, y, width, height) {
+                    log::error!("Failed to create Windows pin window: {}", e);
+                }
+            });
+        }
+    }
+
+    fn create_window_blocking(png_data: &[u8], x: f64, y: f64, width: f64, height: f64) -> Result<()> {
+        let img = image::load_from_memory(png_data)
+            .map_err(|e| Error::new(E_FAIL, hstring!(e.to_string())))?;
+        let rgba = img.to_rgba8();
+        let img_w = rgba.width() as i32;
+        let img_h = rgba.height() as i32;
+
+        let mut bgra = vec![0u8; (img_w * img_h * 4) as usize];
+        for (i, pixel) in rgba.pixels().enumerate() {
+            let r = pixel[0] as u32;
+            let g = pixel[1] as u32;
+            let b = pixel[2] as u32;
+            let a = pixel[3] as u32;
+            let r_p = ((r * a) / 255) as u8;
+            let g_p = ((g * a) / 255) as u8;
+            let b_p = ((b * a) / 255) as u8;
+            let a_p = a as u8;
+            bgra[i * 4] = b_p;
+            bgra[i * 4 + 1] = g_p;
+            bgra[i * 4 + 2] = r_p;
+            bgra[i * 4 + 3] = a_p;
+        }
+
+        unsafe {
+            let hinstance = GetModuleHandleW(None)?;
+
+            REGISTER_CLASS_ONCE.call_once(|| {
+                let wnd_class = WNDCLASSW {
+                    style: CS_HREDRAW | CS_VREDRAW,
+                    lpfnWndProc: Some(wnd_proc),
+                    hInstance: HINSTANCE(hinstance.0),
+                    lpszClassName: WINDOW_CLASS_NAME,
+                    hCursor: LoadCursorW(None, IDC_ARROW).unwrap_or(HCURSOR::default()),
+                    ..Default::default()
+                };
+                RegisterClassW(&wnd_class);
+            });
+
+            let screen_hdc = GetDC(HWND::default());
+            let dpi_x = GetDeviceCaps(screen_hdc, LOGPIXELSX);
+            ReleaseDC(HWND::default(), screen_hdc);
+            let scale = dpi_x as f64 / 96.0;
+
+            let px = (x * scale) as i32;
+            let py = (y * scale) as i32;
+            let pw = (width * scale) as i32;
+            let ph = (height * scale) as i32;
+
+            let hdc_mem = CreateCompatibleDC(None);
+            let bmi = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: std::mem::size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: img_w,
+                    biHeight: -img_h,
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB as u32,
+                    biSizeImage: 0,
+                    biXPelsPerMeter: 0,
+                    biYPelsPerMeter: 0,
+                    biClrUsed: 0,
+                    biClrImportant: 0,
+                },
+                bmiColors: Default::default(),
+            };
+            let mut bits: *mut std::ffi::c_void = std::ptr::null_mut();
+            let hbitmap = CreateDIBSection(
+                hdc_mem,
+                &bmi,
+                DIB_RGB_COLORS,
+                &mut bits,
+                HANDLE::default(),
+                0,
+            )?;
+            std::ptr::copy_nonoverlapping(bgra.as_ptr(), bits as *mut u8, bgra.len());
+            DeleteDC(hdc_mem);
+
+            let state = Box::new(WindowState {
+                original_w: pw,
+                original_h: ph,
+                current_zoom: 1.0,
+                hbitmap,
+            });
+            let state_ptr = Box::into_raw(state);
+
+            let hwnd_res = CreateWindowExW(
+                WS_EX_TOPMOST | WS_EX_LAYERED | WS_EX_TOOLWINDOW,
+                WINDOW_CLASS_NAME,
+                w!("Octopus Pin Window"),
+                WS_POPUP,
+                px,
+                py,
+                pw,
+                ph,
+                None,
+                None,
+                HINSTANCE(hinstance.0),
+                Some(state_ptr as *const std::ffi::c_void),
+            );
+
+            let hwnd = match hwnd_res {
+                Ok(hwnd) => hwnd,
+                Err(e) => {
+                    let _ = Box::from_raw(state_ptr);
+                    DeleteObject(HGDIOBJ(hbitmap.0));
+                    return Err(e);
+                }
+            };
+
+            if let Err(e) = update_layered_window_view(hwnd, state_ptr) {
+                DestroyWindow(hwnd);
+                return Err(e);
+            }
+
+            ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+
+            let mut msg = MSG::default();
+            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+                TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+        Ok(())
+    }
+
+    unsafe fn update_layered_window_view(hwnd: HWND, state_ptr: *mut WindowState) -> Result<()> {
+        let state = &*state_ptr;
+        let zoom_w = (state.original_w as f64 * state.current_zoom) as i32;
+        let zoom_h = (state.original_h as f64 * state.current_zoom) as i32;
+
+        let hdc_screen = GetDC(HWND::default());
+        let hdc_mem_dest = CreateCompatibleDC(hdc_screen);
+        
+        let hbm_dest = CreateCompatibleBitmap(hdc_screen, zoom_w, zoom_h);
+        let hold_dest = SelectObject(hdc_mem_dest, HGDIOBJ(hbm_dest.0));
+
+        let hdc_mem_src = CreateCompatibleDC(hdc_screen);
+        let hold_src = SelectObject(hdc_mem_src, HGDIOBJ(state.hbitmap.0));
+
+        let mut bitmap: BITMAP = std::mem::zeroed();
+        GetObjectW(
+            HGDIOBJ(state.hbitmap.0),
+            std::mem::size_of::<BITMAP>() as i32,
+            Some(&mut bitmap as *mut BITMAP as *mut std::ffi::c_void),
+        );
+
+        SetStretchBltMode(hdc_mem_dest, HALFTONE);
+        SetBrushOrgEx(hdc_mem_dest, 0, 0, None)?;
+        StretchBlt(
+            hdc_mem_dest,
+            0,
+            0,
+            zoom_w,
+            zoom_h,
+            hdc_mem_src,
+            0,
+            0,
+            bitmap.bmWidth,
+            bitmap.bmHeight,
+            SRCCOPY,
+        )?;
+
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: 255,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        let ppt_src = POINT { x: 0, y: 0 };
+        let psize = SIZE { cx: zoom_w, cy: zoom_h };
+
+        let mut rect = RECT::default();
+        GetWindowRect(hwnd, &mut rect).unwrap_or(());
+        let ppt_dst = POINT { x: rect.left, y: rect.top };
+
+        UpdateLayeredWindow(
+            hwnd,
+            hdc_screen,
+            Some(&ppt_dst),
+            Some(&psize),
+            hdc_mem_dest,
+            Some(&ppt_src),
+            COLORREF::default(),
+            Some(&blend),
+            ULW_ALPHA,
+        );
+
+        SelectObject(hdc_mem_src, hold_src);
+        DeleteDC(hdc_mem_src);
+
+        SelectObject(hdc_mem_dest, hold_dest);
+        DeleteDC(hdc_mem_dest);
+        DeleteObject(HGDIOBJ(hbm_dest.0));
+        
+        ReleaseDC(HWND::default(), hdc_screen);
+
+        Ok(())
+    }
+
+    unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+        match msg {
+            WM_CREATE => {
+                let create_struct = &*(lparam.0 as *const CREATESTRUCTW);
+                let state_ptr = create_struct.lpCreateParams as *mut WindowState;
+                SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+                LRESULT(0)
+            }
+            WM_LBUTTONDOWN => {
+                ReleaseCapture();
+                SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
+                LRESULT(0)
+            }
+            WM_MOUSEWHEEL => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    let delta = (wparam.0 >> 16) as i16;
+                    let zoom_factor = 1.0 + (delta as f64 / 120.0) * 0.05;
+                    let next_zoom = (state.current_zoom * zoom_factor).clamp(0.1, 50.0);
+
+                    if next_zoom != state.current_zoom {
+                        let mut mouse_pos = POINT::default();
+                        if GetCursorPos(&mut mouse_pos).as_bool() {
+                            let mut rect = RECT::default();
+                            if GetWindowRect(hwnd, &mut rect).as_bool() {
+                                let cur_w = rect.right - rect.left;
+                                let cur_h = rect.bottom - rect.top;
+
+                                let rx = if cur_w > 0 { (mouse_pos.x - rect.left) as f64 / cur_w as f64 } else { 0.5 };
+                                let ry = if cur_h > 0 { (mouse_pos.y - rect.top) as f64 / cur_h as f64 } else { 0.5 };
+
+                                state.current_zoom = next_zoom;
+                                let new_w = (state.original_w as f64 * state.current_zoom) as i32;
+                                let new_h = (state.original_h as f64 * state.current_zoom) as i32;
+
+                                let new_x = mouse_pos.x - (rx * new_w as f64) as i32;
+                                let new_y = mouse_pos.y - (ry * new_h as f64) as i32;
+
+                                SetWindowPos(
+                                    hwnd,
+                                    HWND::default(),
+                                    new_x,
+                                    new_y,
+                                    new_w,
+                                    new_h,
+                                    SWP_NOZORDER | SWP_NOACTIVATE,
+                                ).unwrap_or(());
+
+                                let _ = update_layered_window_view(hwnd, state_ptr);
+                            }
+                        }
+                    }
+                }
+                LRESULT(0)
+            }
+            WM_RBUTTONUP => {
+                let hmenu = match CreatePopupMenu() {
+                    Ok(m) => m,
+                    Err(e) => {
+                        log::error!("Failed to create popup menu: {}", e);
+                        return LRESULT(0);
+                    }
+                };
+                let _ = AppendMenuW(hmenu, MF_STRING, 1, w!("关闭"));
+                let mut pos = POINT::default();
+                if GetCursorPos(&mut pos).as_bool() {
+                    SetForegroundWindow(hwnd);
+                    let cmd = TrackPopupMenu(
+                        hmenu,
+                        TPM_RETURNCMD | TPM_LEFTALIGN,
+                        pos.x,
+                        pos.y,
+                        0,
+                        hwnd,
+                        None,
+                    );
+                    let _ = DestroyMenu(hmenu);
+                    if cmd.0 == 1 {
+                        DestroyWindow(hwnd);
+                    }
+                }
+                LRESULT(0)
+            }
+            WM_DESTROY => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+                if !state_ptr.is_null() {
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, 0); // Clear to prevent double-free
+                    let state = Box::from_raw(state_ptr);
+                    DeleteObject(HGDIOBJ(state.hbitmap.0));
+                }
+                PostQuitMessage(0);
+                LRESULT(0)
+            }
+            _ => DefWindowProcW(hwnd, msg, wparam, lparam),
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+mod linux {
+    use gtk::prelude::*;
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    struct LinuxWindowState {
+        original_w: f64,
+        original_h: f64,
+        current_zoom: f64,
+        surface: cairo::ImageSurface,
+    }
+
+    pub struct LinuxPinWindow;
+
+    impl super::PinWindow for LinuxPinWindow {
+        fn create(png_data: &[u8], x: f64, y: f64, width: f64, height: f64) {
+            let img = match image::load_from_memory(png_data) {
+                Ok(img) => img,
+                Err(e) => {
+                    log::error!("Failed to decode PNG in Linux pin window: {}", e);
+                    return;
+                }
+            };
+            let rgba = img.to_rgba8();
+            let img_w = rgba.width() as i32;
+            let img_h = rgba.height() as i32;
+
+            let mut bgra = vec![0u8; (img_w * img_h * 4) as usize];
+            for (i, pixel) in rgba.pixels().enumerate() {
+                let r = pixel[0] as u32;
+                let g = pixel[1] as u32;
+                let b = pixel[2] as u32;
+                let a = pixel[3] as u32;
+                let r_p = ((r * a) / 255) as u8;
+                let g_p = ((g * a) / 255) as u8;
+                let b_p = ((b * a) / 255) as u8;
+                let a_p = a as u8;
+                bgra[i * 4] = b_p;
+                bgra[i * 4 + 1] = g_p;
+                bgra[i * 4 + 2] = r_p;
+                bgra[i * 4 + 3] = a_p;
+            }
+
+            let mut surface = match cairo::ImageSurface::create(cairo::Format::ARgb32, img_w, img_h) {
+                Ok(s) => s,
+                Err(e) => {
+                    log::error!("Failed to create Cairo image surface: {}", e);
+                    return;
+                }
+            };
+            {
+                if let Ok(mut data) = surface.data() {
+                    data.copy_from_slice(&bgra);
+                }
+            }
+
+            let state = Rc::new(RefCell::new(LinuxWindowState {
+                original_w: width,
+                original_h: height,
+                current_zoom: 1.0,
+                surface,
+            }));
+
+            let window = gtk::Window::new(gtk::WindowType::Toplevel);
+            window.set_title("Octopus Pin Window");
+            window.set_decorated(false);
+            window.set_keep_above(true);
+            window.set_skip_taskbar_hint(true);
+            window.set_skip_pager_hint(true);
+
+            if let Some(screen) = gdk::Screen::default() {
+                if let Some(visual) = screen.rgba_visual() {
+                    window.set_visual(Some(&visual));
+                }
+            }
+            window.set_app_paintable(true);
+
+            window.set_default_size(width as i32, height as i32);
+            window.move_(x as i32, y as i32);
+
+            let state_draw = state.clone();
+            window.connect_draw(move |win, cr| {
+                let _ = cr.set_source_rgba(0.0, 0.0, 0.0, 0.0);
+                cr.set_operator(cairo::Operator::Source);
+                let _ = cr.paint();
+
+                cr.set_operator(cairo::Operator::Over);
+                let win_w = win.allocated_width() as f64;
+                let win_h = win.allocated_height() as f64;
+
+                let s = state_draw.borrow();
+                let img_w = s.surface.width() as f64;
+                let img_h = s.surface.height() as f64;
+
+                if img_w > 0.0 && img_h > 0.0 {
+                    let _ = cr.save();
+                    cr.scale(win_w / img_w, win_h / img_h);
+                    let _ = cr.set_source_surface(&s.surface, 0.0, 0.0);
+                    let _ = cr.paint();
+                    let _ = cr.restore();
+                }
+
+                glib::Propagation::Proceed
+            });
+
+            window.connect_button_press_event(move |win, event| {
+                if event.button() == 1 {
+                    let (x, y) = event.root_coords();
+                    win.begin_drag_move(
+                        1,
+                        x as i32,
+                        y as i32,
+                        event.time(),
+                    );
+                }
+                glib::Propagation::Proceed
+            });
+
+            let state_scroll = state.clone();
+            window.connect_scroll_event(move |win, event| {
+                let direction = event.direction();
+                let zoom_factor = match direction {
+                    gdk::ScrollDirection::Up => 1.05,
+                    gdk::ScrollDirection::Down => 0.95,
+                    _ => 1.0,
+                };
+
+                if zoom_factor != 1.0 {
+                    let mut s = state_scroll.borrow_mut();
+                    let next_zoom = (s.current_zoom * zoom_factor).clamp(0.1, 50.0);
+                    if next_zoom != s.current_zoom {
+                        s.current_zoom = next_zoom;
+
+                        let new_w = (s.original_w * s.current_zoom) as i32;
+                        let new_h = (s.original_h * s.current_zoom) as i32;
+
+                        win.resize(new_w, new_h);
+                        win.queue_draw();
+                    }
+                }
+                glib::Propagation::Proceed
+            });
+
+            let win_menu = window.clone();
+            window.connect_button_press_event(move |_, event| {
+                if event.button() == 3 {
+                    let menu = gtk::Menu::new();
+                    let close_item = gtk::MenuItem::with_label("关闭");
+                    
+                    let win_close = win_menu.clone();
+                    close_item.connect_activate(move |_| {
+                        win_close.close();
+                    });
+                    menu.append(&close_item);
+                    menu.show_all();
+                    
+                    menu.popup_at_pointer(Some(event));
+                }
+                glib::Propagation::Proceed
+            });
+
+            window.show_all();
+        }
+    }
+}
+
 #[cfg(target_os = "macos")]
-pub use macos::MacPinWindow;
+pub use macos::MacPinWindow as PinWindowImpl;
+
+#[cfg(target_os = "windows")]
+pub use windows::WinPinWindow as PinWindowImpl;
+
+#[cfg(target_os = "linux")]
+pub use linux::LinuxPinWindow as PinWindowImpl;

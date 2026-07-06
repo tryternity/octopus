@@ -5019,12 +5019,15 @@ dependencies = [
  "anyhow",
  "async-trait",
  "base64 0.22.1",
+ "cairo-rs",
  "core-foundation",
  "core-graphics 0.24.0",
  "cpal",
  "dirs 5.0.1",
  "enigo",
  "futures-util",
+ "gdk",
+ "glib",
  "gtk",
  "gtk-layer-shell",
  "image",
@@ -5063,6 +5066,7 @@ dependencies = [
  "tonic",
  "tonic-build",
  "uuid",
+ "windows 0.61.3",
 ]
 
 [[package]]
