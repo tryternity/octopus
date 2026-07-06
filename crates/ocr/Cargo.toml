@@ -2,11 +2,12 @@
 name = "octopus-ocr"
 version = "0.1.0"
 edition = "2021"
+include = ["src/**/*", "assets/words_common.txt"]
 
 [dependencies]
 octopus-infra = { path = "../infra" }
+octopus-paddle-ocr = { path = "../paddle-ocr" }
 parking_lot = { workspace = true }
-ocr-rs = "2.3"
 image = "0.25"
 anyhow = "1"
 log = "0.4"
