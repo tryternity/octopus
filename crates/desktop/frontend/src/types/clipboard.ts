@@ -111,7 +111,7 @@ function isDomainLabels(d: string): boolean {
 
 /**
  * 识别剪贴板文本是否为链接。
- * - 带协议（scheme://）→ 原样
+ * - 带协议（http(s)://）→ 原样
  * - localhost/IPv4 + 必带端口 → 补 http://
  * - 常用后缀域名 + 可选路径/端口 → 补 https://
  * - 句中片段（含空白）、纯 IP/localhost（无端口）、非常见后缀 → 非链接
@@ -119,7 +119,7 @@ function isDomainLabels(d: string): boolean {
 export function detectUrl(raw: string): DetectUrlResult {
   const s = raw.trim();
   if (!s) return { isLink: false, url: "" };
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return { isLink: true, url: s };
+  if (/^https?:\/\//i.test(s)) return { isLink: true, url: s };
   if (/\s/.test(s)) return { isLink: false, url: "" };
 
   const hostSeg = s.split(/[/?#]/)[0];
@@ -128,7 +128,7 @@ export function detectUrl(raw: string): DetectUrlResult {
   const portMatch = hostSeg.match(/:([^:/?#]+)$/);
   if (portMatch) {
     const port = portMatch[1];
-    const hostname = hostSeg.slice(0, hostSeg.length - portMatch[0].length); // 去掉 ":port"
+    const hostname = hostSeg.slice(0, -portMatch[0].length); // 去掉 ":port"
     if (isPort(port) && (hostname.toLowerCase() === "localhost" || isIPv4(hostname))) {
       return { isLink: true, url: "http://" + s };
     }

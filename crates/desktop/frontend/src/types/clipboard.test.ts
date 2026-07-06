@@ -13,6 +13,7 @@ describe("detectUrl", () => {
     { input: "foo.com.cn/bar", isLink: true, url: "https://foo.com.cn/bar" },
     { input: "foo.cn", isLink: true, url: "https://foo.cn" },
     { input: "github.com:8080/x", isLink: true, url: "https://github.com:8080/x" },
+    { input: "Foo.COM", isLink: true, url: "https://Foo.COM" },               // 大小写保留原样
     // 路径 B：localhost/IPv4 + 必带端口 → 补 http://
     { input: "localhost:3000", isLink: true, url: "http://localhost:3000" },
     { input: "localhost:3000/admin", isLink: true, url: "http://localhost:3000/admin" },
@@ -36,6 +37,10 @@ describe("detectUrl", () => {
     { input: "hello.world", isLink: false },
     { input: "看这个 github.com/foo", isLink: false, note: "含空格" },
     { input: "（github.com/foo）", isLink: false, note: "括号致 label 非法" },
+    { input: "ftp://host", isLink: false, note: "非 http(s) 协议不识别" },
+    { input: "a.com.", isLink: false, note: "trailing dot" },
+    { input: "localhost:8080a", isLink: false, note: "端口后挂字母" },
+    { input: "1.2.3.4:5:6", isLink: false, note: "双冒号" },
   ];
 
   for (const c of cases) {
