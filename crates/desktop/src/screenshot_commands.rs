@@ -1126,8 +1126,9 @@ pub async fn start_scroll_recording(
                     .find(|c| c.monitor_x == mon_phys_x && c.monitor_y == mon_phys_y)
                     .or_else(|| captures.first())
                     .ok_or_else(|| anyhow::anyhow!("no matching monitor"))?;
-                let png = octopus_capx::capture::crop_region(full, px, py, pw, ph)?;
-                let img = image::load_from_memory(&png)?.to_rgba8();
+                // 直接内存裁剪返回 RgbaImage，跳过 PNG 编解码往返
+                // （原 crop_region + load_from_memory 在 30ms 热循环里是性能瓶颈）
+                let img = octopus_capx::capture::crop_region_rgba(full, px, py, pw, ph)?;
                 anyhow::Ok(img)
             }
         }).await;
@@ -1173,8 +1174,8 @@ pub async fn start_scroll_recording(
                         .find(|c| c.monitor_x == mon_phys_x && c.monitor_y == mon_phys_y)
                         .or_else(|| captures.first())
                         .ok_or_else(|| anyhow::anyhow!("no matching monitor"))?;
-                    let png = octopus_capx::capture::crop_region(full, px, py, pw, ph)?;
-                    let img = image::load_from_memory(&png)?.to_rgba8();
+                    // 直接内存裁剪，跳过 PNG 编解码往返（高频热路径性能优化）
+                    let img = octopus_capx::capture::crop_region_rgba(full, px, py, pw, ph)?;
                     anyhow::Ok(img)
                 }
             }).await;

@@ -117,10 +117,18 @@ pub fn set_result_click_through(app: tauri::AppHandle, expanded: bool) {
 /// 启动点击穿透轮询线程（窗口生命周期内常驻）。
 ///
 /// 为什么必须 Rust 轮询、不能用前端 setIgnoreCursorEvents+mousemove：一旦
-/// setIgnoreCursorEvents(true)，NSWindow 完全不收鼠标事件（连 tracking area 都禁），
-/// 前端 mousemove 不再触发 → 无法检测光标重新进入小条 → 重入失效。故读全局鼠标
-/// CGEvent（不依赖窗口收事件），~30ms 轮询判光标是否在小条矩形内，据此切换穿透。
-#[cfg(target_os = "macos")]
+/// setIgnoreCursorEvents(true)，窗口完全不收鼠标事件（macOS NSWindow 连 tracking area
+/// 都禁），前端 mousemove 不再触发 → 无法检测光标重新进入小条 → 重入失效。故读全局鼠标
+/// 位置（不依赖窗口收事件），~33ms 轮询判光标是否在小条矩形内，据此切换穿透。
+///
+/// 跨平台实现：`WebviewWindow::cursor_position()` / `outer_position()` / `scale_factor()`
+/// 均为 Tauri 跨平台 API（tao 在 Windows 用 GetCursorPos、Linux X11 用 XQueryPointer、
+/// macOS 用 NSEvent mouseLocation）。平台差异封装在 [`set_result_ignores_mouse`]。
+///
+/// 已知限制：Linux **Wayland** 出于安全策略禁止后台查询全局光标位置，tao 在 Wayland 下
+/// 恒返回 (0,0) —— 轮询会判定光标恒在小条外（除非小条恰好在屏幕原点），整窗被设为穿透、
+/// 小条内按钮无法点击。这是 Wayland 协议层限制（非焦点窗口不可读全局输入），目前无解，
+/// 用户可改用 XWayland 运行以恢复 X11 行为。
 pub fn start_click_through_poller(app: tauri::AppHandle) {
     tauri::async_runtime::spawn(async move {
         let mut poll = tokio::time::interval(std::time::Duration::from_millis(33));
@@ -162,11 +170,6 @@ pub fn start_click_through_poller(app: tauri::AppHandle) {
             }
         }
     });
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn start_click_through_poller(_app: tauri::AppHandle) {
-    // 非 macOS：点击穿透暂未实现，精简态窗口会阻挡后方应用（octopus 桌面端以 macOS 为主）
 }
 
 #[cfg(target_os = "macos")]

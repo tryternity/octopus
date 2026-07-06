@@ -63,6 +63,10 @@ pub fn capture_all_monitors() -> Result<Vec<ScreenCapture>> {
 
 /// 从全屏 RGBA 中裁剪矩形区域，返回 PNG bytes。
 /// 坐标为物理像素。
+///
+/// 注意：此函数先裁剪再 PNG 编码，**不适合高频热路径**（30ms 截帧循环）——
+/// PNG 编码 + 调用方 `load_from_memory` 解码构成无意义的往返开销。
+/// 高频路径请用 [`crop_region_rgba`]，直接返回 `RgbaImage`，零编码。
 pub fn crop_region(
     full: &ScreenCapture,
     x: u32,
@@ -90,6 +94,28 @@ pub fn crop_region(
         .context("Failed to encode cropped PNG")?;
 
     Ok(png_bytes)
+}
+
+/// 从全屏 RGBA 中裁剪矩形区域，直接返回 `RgbaImage`（零 PNG 编解码）。
+/// 坐标为物理像素。用于滚动截帧等高频热路径——相比 [`crop_region`]，
+/// 省去「裁剪→PNG 编码→PNG 解码→to_rgba8」往返，4K 单屏下单均可省 ~10-30ms。
+pub fn crop_region_rgba(
+    full: &ScreenCapture,
+    x: u32,
+    y: u32,
+    w: u32,
+    h: u32,
+) -> Result<::image::RgbaImage> {
+    let img =
+        ::image::RgbaImage::from_raw(full.width, full.height, full.rgba_bytes.clone())
+            .context("Failed to create RgbaImage from full screen")?;
+
+    let x = x.min(full.width.saturating_sub(1));
+    let y = y.min(full.height.saturating_sub(1));
+    let w = w.min(full.width - x);
+    let h = h.min(full.height - y);
+
+    Ok(::image::imageops::crop_imm(&img, x, y, w, h).to_image())
 }
 
 /// BGRA→RGBA 字节重排（平台无关纯函数，便于测试）。
