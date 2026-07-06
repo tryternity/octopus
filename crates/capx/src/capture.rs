@@ -63,14 +63,21 @@ pub fn capture_all_monitors() -> Result<Vec<ScreenCapture>> {
 
 /// 仅截取指定坐标位置的单个显示器，避免多屏冗余捕获与内存分配。
 pub fn capture_single_monitor(mon_x: i32, mon_y: i32) -> Result<ScreenCapture> {
-    let monitors = Monitor::all().context("Failed to list monitors")?;
-    let monitor = monitors.into_iter()
-        .find(|m| m.x().unwrap_or(0) == mon_x && m.y().unwrap_or(0) == mon_y)
-        .or_else(|| {
+    let mut monitors = Monitor::all().context("Failed to list monitors")?;
+    
+    let index = monitors.iter().position(|m| m.x().unwrap_or(0) == mon_x && m.y().unwrap_or(0) == mon_y);
+    
+    let monitor = match index {
+        Some(i) => monitors.remove(i),
+        None => {
             log::warn!("Requested monitor at ({},{}) not found, falling back to primary monitor", mon_x, mon_y);
-            Monitor::all().ok().and_then(|m| m.into_iter().next())
-        })
-        .ok_or_else(|| anyhow::anyhow!("No monitors available"))?;
+            if !monitors.is_empty() {
+                monitors.remove(0)
+            } else {
+                anyhow::bail!("No monitors available");
+            }
+        }
+    };
 
     let name = monitor.name().unwrap_or_default();
     let img = monitor.capture_image().context("Failed to capture single monitor")?;
@@ -162,6 +169,14 @@ pub fn crop_region_rgba_direct(
     w: u32,
     h: u32,
 ) -> Result<::image::RgbaImage> {
+    if rgba_bytes.len() != (full_width * full_height * 4) as usize {
+        anyhow::bail!(
+            "Invalid buffer size: expected {}, got {}",
+            full_width * full_height * 4,
+            rgba_bytes.len()
+        );
+    }
+
     let x = x.min(full_width.saturating_sub(1)) as usize;
     let y = y.min(full_height.saturating_sub(1)) as usize;
     let w = w.min(full_width - x as u32) as usize;
@@ -178,6 +193,8 @@ pub fn crop_region_rgba_direct(
         
         if src_end <= rgba_bytes.len() {
             cropped_bytes[dst_start..dst_end].copy_from_slice(&rgba_bytes[src_start..src_end]);
+        } else {
+            anyhow::bail!("crop_region_rgba_direct: row index out of bounds");
         }
     }
 

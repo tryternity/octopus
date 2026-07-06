@@ -140,6 +140,7 @@ mod macos {
                     defer: false
                 ];
 
+                window.setReleasedWhenClosed(false);
                 window.setLevel(3);
                 window.setHasShadow(true);
                 window.setOpaque(false);
@@ -323,7 +324,11 @@ mod windows {
             ShowWindow(hwnd, SW_SHOWNOACTIVATE);
 
             let mut msg = MSG::default();
-            while GetMessageW(&mut msg, None, 0, 0).as_bool() {
+            loop {
+                let status = GetMessageW(&mut msg, None, 0, 0);
+                if status.0 == 0 || status.0 == -1 {
+                    break;
+                }
                 TranslateMessage(&msg);
                 DispatchMessageW(&msg);
             }
@@ -339,7 +344,14 @@ mod windows {
         let hdc_screen = GetDC(HWND::default());
         let hdc_mem_dest = CreateCompatibleDC(hdc_screen);
         
-        let hbm_dest = CreateCompatibleBitmap(hdc_screen, zoom_w, zoom_h);
+        let hbm_dest = match CreateCompatibleBitmap(hdc_screen, zoom_w, zoom_h) {
+            Ok(h) => h,
+            Err(e) => {
+                DeleteDC(hdc_mem_dest);
+                ReleaseDC(HWND::default(), hdc_screen);
+                return Err(e);
+            }
+        };
         let hold_dest = SelectObject(hdc_mem_dest, HGDIOBJ(hbm_dest.0));
 
         let hdc_mem_src = CreateCompatibleDC(hdc_screen);
@@ -353,45 +365,51 @@ mod windows {
         );
 
         SetStretchBltMode(hdc_mem_dest, HALFTONE);
-        SetBrushOrgEx(hdc_mem_dest, 0, 0, None)?;
-        StretchBlt(
-            hdc_mem_dest,
-            0,
-            0,
-            zoom_w,
-            zoom_h,
-            hdc_mem_src,
-            0,
-            0,
-            bitmap.bmWidth,
-            bitmap.bmHeight,
-            SRCCOPY,
-        )?;
 
-        let blend = BLENDFUNCTION {
-            BlendOp: AC_SRC_OVER as u8,
-            BlendFlags: 0,
-            SourceConstantAlpha: 255,
-            AlphaFormat: AC_SRC_ALPHA as u8,
+        let run_gdi_calls = || -> Result<()> {
+            SetBrushOrgEx(hdc_mem_dest, 0, 0, None)?;
+            StretchBlt(
+                hdc_mem_dest,
+                0,
+                0,
+                zoom_w,
+                zoom_h,
+                hdc_mem_src,
+                0,
+                0,
+                bitmap.bmWidth,
+                bitmap.bmHeight,
+                SRCCOPY,
+            )?;
+
+            let blend = BLENDFUNCTION {
+                BlendOp: AC_SRC_OVER as u8,
+                BlendFlags: 0,
+                SourceConstantAlpha: 255,
+                AlphaFormat: AC_SRC_ALPHA as u8,
+            };
+            let ppt_src = POINT { x: 0, y: 0 };
+            let psize = SIZE { cx: zoom_w, cy: zoom_h };
+
+            let mut rect = RECT::default();
+            GetWindowRect(hwnd, &mut rect).unwrap_or(());
+            let ppt_dst = POINT { x: rect.left, y: rect.top };
+
+            UpdateLayeredWindow(
+                hwnd,
+                hdc_screen,
+                Some(&ppt_dst),
+                Some(&psize),
+                hdc_mem_dest,
+                Some(&ppt_src),
+                COLORREF::default(),
+                Some(&blend),
+                ULW_ALPHA,
+            )?;
+            Ok(())
         };
-        let ppt_src = POINT { x: 0, y: 0 };
-        let psize = SIZE { cx: zoom_w, cy: zoom_h };
 
-        let mut rect = RECT::default();
-        GetWindowRect(hwnd, &mut rect).unwrap_or(());
-        let ppt_dst = POINT { x: rect.left, y: rect.top };
-
-        UpdateLayeredWindow(
-            hwnd,
-            hdc_screen,
-            Some(&ppt_dst),
-            Some(&psize),
-            hdc_mem_dest,
-            Some(&ppt_src),
-            COLORREF::default(),
-            Some(&blend),
-            ULW_ALPHA,
-        );
+        let result = run_gdi_calls();
 
         SelectObject(hdc_mem_src, hold_src);
         DeleteDC(hdc_mem_src);
@@ -402,15 +420,18 @@ mod windows {
         
         ReleaseDC(HWND::default(), hdc_screen);
 
-        Ok(())
+        result
     }
 
     unsafe extern "system" fn wnd_proc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
         match msg {
             WM_CREATE => {
-                let create_struct = &*(lparam.0 as *const CREATESTRUCTW);
-                let state_ptr = create_struct.lpCreateParams as *mut WindowState;
-                SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+                let create_struct_ptr = lparam.0 as *const CREATESTRUCTW;
+                if !create_struct_ptr.is_null() {
+                    let create_struct = &*create_struct_ptr;
+                    let state_ptr = create_struct.lpCreateParams as *mut WindowState;
+                    SetWindowLongPtrW(hwnd, GWLP_USERDATA, state_ptr as isize);
+                }
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
@@ -636,25 +657,34 @@ mod linux {
                     let mut s = state_scroll.borrow_mut();
                     let next_zoom = (s.current_zoom * zoom_factor).clamp(0.1, 50.0);
                     if next_zoom != s.current_zoom {
-                        s.current_zoom = next_zoom;
+                        let (mx, my) = event.coords();
+                        let (cur_w, cur_h) = win.size();
+                        let (wx, wy) = win.position();
 
+                        let rx = if cur_w > 0 { mx / cur_w as f64 } else { 0.5 };
+                        let ry = if cur_h > 0 { my / cur_h as f64 } else { 0.5 };
+
+                        s.current_zoom = next_zoom;
                         let new_w = (s.original_w * s.current_zoom) as i32;
                         let new_h = (s.original_h * s.current_zoom) as i32;
 
+                        let new_wx = wx as f64 + mx - rx * new_w as f64;
+                        let new_wy = wy as f64 + my - ry * new_h as f64;
+
                         win.resize(new_w, new_h);
+                        win.move_(new_wx as i32, new_wy as i32);
                         win.queue_draw();
                     }
                 }
                 glib::Propagation::Proceed
             });
 
-            let win_menu = window.clone();
-            window.connect_button_press_event(move |_, event| {
+            window.connect_button_press_event(move |win, event| {
                 if event.button() == 3 {
                     let menu = gtk::Menu::new();
                     let close_item = gtk::MenuItem::with_label("关闭");
                     
-                    let win_close = win_menu.clone();
+                    let win_close = win.clone();
                     close_item.connect_activate(move |_| {
                         win_close.close();
                     });

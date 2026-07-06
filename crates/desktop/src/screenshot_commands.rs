@@ -527,40 +527,46 @@ pub async fn cancel_screenshot(app_handle: tauri::AppHandle) -> Result<(), Strin
 pub async fn pin_screenshot(
     label: String,
     x: f64, y: f64, w: f64, h: f64,
+    img_base64: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let full = {
-        let mut all = ALL_CAPTURES.lock();
-        all.iter()
-            .position(|(l, _)| *l == label)
-            .map(|i| all.remove(i).1)
-    }
-    .ok_or("无截图数据")?;
-
-    ALL_CAPTURES.lock().clear();
-    PENDING_IMAGES.lock().clear();
-
     let sel_win = app_handle
         .get_webview_window(&label)
         .ok_or("截图窗口不存在")?;
 
-    let scale = sel_win.scale_factor().unwrap_or(1.0);
+    let png_bytes = if let Some(base64_str) = img_base64 {
+        use base64::prelude::*;
+        BASE64_STANDARD.decode(&base64_str)
+            .map_err(|e| format!("Base64 解码失败: {}", e))?
+    } else {
+        let full = {
+            let mut all = ALL_CAPTURES.lock();
+            all.iter()
+                .position(|(l, _)| *l == label)
+                .map(|i| all.remove(i).1)
+        }
+        .ok_or("无截图数据")?;
 
-    let fake_full = octopus_capx::capture::ScreenCapture {
-        rgba_bytes: full.rgba_bytes.clone(),
-        width: full.width,
-        height: full.height,
-        monitor_x: 0,
-        monitor_y: 0,
+        let scale = sel_win.scale_factor().unwrap_or(1.0);
+        let fake_full = octopus_capx::capture::ScreenCapture {
+            rgba_bytes: full.rgba_bytes.clone(),
+            width: full.width,
+            height: full.height,
+            monitor_x: 0,
+            monitor_y: 0,
+        };
+        octopus_capx::capture::crop_region(
+            &fake_full,
+            (x * scale) as u32,
+            (y * scale) as u32,
+            (w * scale) as u32,
+            (h * scale) as u32,
+        )
+        .map_err(|e| format!("裁剪失败: {}", e))?
     };
-    let png_bytes = octopus_capx::capture::crop_region(
-        &fake_full,
-        (x * scale) as u32,
-        (y * scale) as u32,
-        (w * scale) as u32,
-        (h * scale) as u32,
-    )
-    .map_err(|e| format!("裁剪失败: {}", e))?;
+
+    ALL_CAPTURES.lock().clear();
+    PENDING_IMAGES.lock().clear();
 
     #[cfg(target_os = "macos")]
     let (pin_x, pin_y) = if let Some((cx, cy, _cw, ch)) = get_window_cocoa_frame(&sel_win) {

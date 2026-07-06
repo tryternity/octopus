@@ -21,6 +21,7 @@ export default function Screenshot() {
   const selStartRef = useRef<Selection>({ x: 0, y: 0, w: 0, h: 0 });
   const drawingRef = useRef<Annotation | null>(null);
   const textInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const isPinningRef = useRef(false);
 
   const setModeSafe = (m: Mode) => { modeRef.current = m; setMode(m); };
   const [mode, setMode] = useState<Mode>("idle");
@@ -635,9 +636,50 @@ export default function Screenshot() {
     });
   }
 
+  async function arrayBufferToBase64(buffer: ArrayBuffer): Promise<string> {
+    return new Promise((resolve, reject) => {
+      const blob = new Blob([buffer], { type: "image/png" });
+      const reader = new FileReader();
+      reader.onloadend = () => {
+        const dataUrl = reader.result as string;
+        const base64 = dataUrl.substring(dataUrl.indexOf(",") + 1);
+        resolve(base64);
+      };
+      reader.onerror = () => {
+        reject(reader.error || new Error("FileReader failed"));
+      };
+      reader.readAsDataURL(blob);
+    });
+  }
+
   function doPin() {
-    if (!sel) return;
-    invoke("pin_screenshot", { label: winLabel, x: sel.x, y: sel.y, w: sel.w, h: sel.h }).catch(() => {});
+    if (!sel || isPinningRef.current) return;
+    isPinningRef.current = true;
+    composeAndCropBytes().then(async (bytes) => {
+      if (!bytes) {
+        isPinningRef.current = false;
+        return;
+      }
+      try {
+        const base64Str = await arrayBufferToBase64(bytes);
+        invoke("pin_screenshot", {
+          label: winLabel,
+          x: sel.x,
+          y: sel.y,
+          w: sel.w,
+          h: sel.h,
+          imgBase64: base64Str,
+        }).catch((e) => {
+          console.error("Pin screenshot failed:", e);
+          isPinningRef.current = false;
+        });
+      } catch (err) {
+        console.error("Failed to convert arraybuffer to base64:", err);
+        isPinningRef.current = false;
+      }
+    }).catch(() => {
+      isPinningRef.current = false;
+    });
   }
 
   function doConfirm() {
