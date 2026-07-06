@@ -2,7 +2,7 @@
 name = "octopus-ocr"
 version = "0.1.0"
 edition = "2021"
-include = ["src/**/*", "assets/words_alpha.txt"]
+include = ["src/**/*", "assets/words_common.txt"]
 
 [dependencies]
 octopus-infra = { path = "../infra" }
