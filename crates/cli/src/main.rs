@@ -588,7 +588,7 @@ fn record_from_config() -> Result<Vec<f32>> {
                     .chunks(channels)
                     .map(|c| c.iter().sum::<f32>() / channels as f32)
                     .collect();
-                samples_clone.lock().unwrap().extend_from_slice(&mono);
+                samples_clone.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
             },
             |err| eprintln!("Audio error: {}", err),
             None,
@@ -602,7 +602,7 @@ fn record_from_config() -> Result<Vec<f32>> {
                         c.iter().map(|&s| s as f32 / i16::MAX as f32).sum::<f32>() / channels as f32
                     })
                     .collect();
-                samples_clone.lock().unwrap().extend_from_slice(&mono);
+                samples_clone.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
             },
             |err| eprintln!("Audio error: {}", err),
             None,
@@ -677,7 +677,7 @@ fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
                     .chunks(channels)
                     .map(|c| c.iter().sum::<f32>() / channels as f32)
                     .collect();
-                buffer_clone.lock().unwrap().extend_from_slice(&mono);
+                buffer_clone.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
             },
             |err| eprintln!("Audio error: {}", err),
             None,
@@ -694,7 +694,7 @@ fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
                                 / channels as f32
                         })
                         .collect();
-                    buffer_clone.lock().unwrap().extend_from_slice(&mono);
+                    buffer_clone.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
                 },
                 |err| eprintln!("Audio error: {}", err),
                 None,
@@ -725,7 +725,7 @@ fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
 
         // Drain the buffer
         let raw_samples: Vec<f32> = {
-            let mut buf = buffer.lock().unwrap();
+            let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *buf)
         };
 
@@ -764,7 +764,7 @@ fn run_e2e_streaming_paraformer(model: &str) -> Result<()> {
     // Flush remaining
     // Drain one last time
     let raw_samples: Vec<f32> = {
-        let mut buf = buffer.lock().unwrap();
+        let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *buf)
     };
     let samples_16k = if let Some(ref mut r) = resampler {
@@ -846,7 +846,7 @@ fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
                         .chunks(channels)
                         .map(|c| c.iter().sum::<f32>() / channels as f32)
                         .collect();
-                    bc.lock().unwrap().extend_from_slice(&mono);
+                    bc.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
                 },
                 |err| eprintln!("Audio error: {}", err),
                 None,
@@ -864,7 +864,7 @@ fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
                                 / channels as f32
                         })
                         .collect();
-                    bc.lock().unwrap().extend_from_slice(&mono);
+                    bc.lock().unwrap_or_else(|e| e.into_inner()).extend_from_slice(&mono);
                 },
                 |err| eprintln!("Audio error: {}", err),
                 None,
@@ -887,7 +887,7 @@ fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
         std::thread::sleep(std::time::Duration::from_millis(625));
 
         let raw_samples: Vec<f32> = {
-            let mut buf = buffer.lock().unwrap();
+            let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
             std::mem::take(&mut *buf)
         };
 
@@ -920,7 +920,7 @@ fn run_e2e_streaming_zipformer(model: &str) -> Result<()> {
 
     // Flush remaining
     let raw_samples: Vec<f32> = {
-        let mut buf = buffer.lock().unwrap();
+        let mut buf = buffer.lock().unwrap_or_else(|e| e.into_inner());
         std::mem::take(&mut *buf)
     };
     let samples_16k = if let Some(ref mut r) = resampler {

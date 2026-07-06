@@ -282,7 +282,7 @@ impl Downloader {
             // 段完成：回写共享 state 并落盘 sidecar（崩溃续传用）
             if let (Some(st), Some(d)) = (&state, dest) {
                 let snapshot = {
-                    let mut g = st.lock().unwrap();
+                    let mut g = st.lock().unwrap_or_else(|e| e.into_inner());
                     if i < g.segments.len() {
                         g.segments[i].downloaded = seg.downloaded;
                     }

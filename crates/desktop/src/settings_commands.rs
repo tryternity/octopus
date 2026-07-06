@@ -446,7 +446,9 @@ pub async fn test_asr_connection(bare_name: String) -> Result<String, String> {
             .map_err(|e| format!("WS 端点无效: {}", e))?;
         req.headers_mut().insert(
             "Authorization",
-            format!("bearer {}", entry.secret_key).parse().unwrap(),
+            format!("bearer {}", entry.secret_key)
+                .parse()
+                .map_err(|e| format!("secret_key 含非法 HTTP header 字符: {}", e))?,
         );
         // 直接在 tauri::async_runtime 上 await，不再 thread::spawn + Runtime::new + block_on
         match tokio::time::timeout(

@@ -604,7 +604,9 @@ impl StreamingParaformer {
         // 防御性 enc_len 截断：ONNX 输出异常（padding/截断）时避免 slice panic
         let enc_dim1 = enc_tensor.shape()[1];
         let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len.min(enc_dim1), ..]);
-        let enc_data = enc_slice.as_slice().unwrap();
+        let enc_data = enc_slice.as_slice().ok_or_else(|| anyhow::anyhow!(
+            "encoder output non-contiguous (shape={:?})", enc_tensor.shape()
+        ))?;
 
         let mut acoustic: Vec<f32> = Vec::new();
         let mut integrate = self.alpha_cache;
@@ -660,7 +662,9 @@ impl StreamingParaformer {
         // 防御性 enc_len 截断：ONNX 输出异常（padding/截断）时避免 slice panic
         let enc_dim1 = enc_tensor.shape()[1];
         let enc_slice = enc_tensor.slice(ndarray::s![0, ..enc_len.min(enc_dim1), ..]);
-        let enc_data = enc_slice.as_slice().unwrap();
+        let enc_data = enc_slice.as_slice().ok_or_else(|| anyhow::anyhow!(
+            "encoder output non-contiguous (shape={:?})", enc_tensor.shape()
+        ))?;
 
         let mut acoustic: Vec<f32> = Vec::new();
         let mut integrate = self.alpha_cache;
@@ -754,7 +758,9 @@ impl StreamingParaformer {
                 // 快路径：维度匹配，直接 copy 到预分配内存
                 self.decoder_caches[i]
                     .as_slice_mut()
-                    .unwrap()
+                    .ok_or_else(|| anyhow::anyhow!(
+                        "decoder cache non-contiguous (idx={})", i
+                    ))?
                     .copy_from_slice(data);
             } else {
                 // 慢路径：维度变化（首次或模型异常），重新分配
