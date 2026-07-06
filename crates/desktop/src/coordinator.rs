@@ -197,13 +197,29 @@ impl Coordinator {
         let (tx, rx): (Sender<Command>, Receiver<Command>) = mpsc::channel();
         let tx_self = tx.clone();
 
-        let use_streaming = config.engine_mode == "embedded" && crate::config::is_streaming_engine(&config);
-        let mut config = config;
-        let mut use_streaming = use_streaming;
-        #[cfg(feature = "cloud")]
-        let mut use_cloud_streaming = false;
+        build_coordinator_loop(rx, tx, audio, engine, config, app_handle, runtime_config);
 
-        std::thread::spawn(move || {
+        Self {
+            tx: parking_lot::Mutex::new(tx_self),
+        }
+    }
+}
+
+fn build_coordinator_loop(
+    rx: Receiver<Command>,
+    tx: Sender<Command>,
+    audio: Arc<SharedAudioState>,
+    engine: Arc<dyn TranscriptionEngine>,
+    mut config: AppConfig,
+    app_handle: tauri::AppHandle,
+    runtime_config: crate::runtime_config::SharedRuntimeConfig,
+) {
+    let use_streaming = config.engine_mode == "embedded" && crate::config::is_streaming_engine(&config);
+    let mut use_streaming = use_streaming;
+    #[cfg(feature = "cloud")]
+    let mut use_cloud_streaming = false;
+
+    std::thread::spawn(move || {
             let mut stage = Stage::Idle;
             // 编辑态：置位时 tick 跳过喂引擎、只排空丢弃音频（硬暂停）。
             let mut editing = false;
@@ -514,12 +530,9 @@ impl Coordinator {
             }
             debug!("Coordinator thread exited");
         });
+}
 
-        Self {
-            tx: parking_lot::Mutex::new(tx_self),
-        }
-    }
-
+impl Coordinator {
     /// 发送 toggle 命令
     pub fn toggle(&self) {
         let tx = self.tx.lock();
