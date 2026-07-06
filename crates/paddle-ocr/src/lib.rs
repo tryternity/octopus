@@ -10,7 +10,7 @@ mod vision;
 
 pub use config::{
     ColorOrder, LangCls, LangDet, LangRec, ModelConfig, ModelType, OcrVersion, ProviderPreference,
-    RecImage, RecognizeOptions, RecognizerConfig, RuntimeBackend, RuntimeConfig, VisionBackend,
+    RecImage, RecognizeOptions, RecognizerConfig, RuntimeBackend, RuntimeConfig,
 };
 pub use error::{PaddleOcrError, Result};
 pub use pipeline::{

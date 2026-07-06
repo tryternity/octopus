@@ -3,10 +3,9 @@ use ndarray::{Array3, Array4, s};
 use std::sync::OnceLock;
 
 use crate::{
-    config::{RecImage, VisionBackend},
+    config::RecImage,
     error::{PaddleOcrError, Result},
     vision::{
-        backend::resolve_backend_strict,
         image_backend::resize_image,
         resize::{LinearResizeScratch, resize_bgr_inter_linear_into_with_scratch},
     },
@@ -18,18 +17,16 @@ pub fn resize_norm_img(
     max_wh_ratio: f64,
     rec_image_shape: [usize; 3],
 ) -> Result<Array3<f32>> {
-    resize_norm_img_with_backend(img, max_wh_ratio, rec_image_shape, VisionBackend::PureRust)
-}
-
-#[cfg(test)]
-pub fn resize_norm_img_with_backend(
-    img: &RecImage,
-    max_wh_ratio: f64,
-    rec_image_shape: [usize; 3],
-    backend: VisionBackend,
-) -> Result<Array3<f32>> {
-    let backend = resolve_backend_strict(backend)?;
-    resize_norm_img_impl(img, max_wh_ratio, rec_image_shape, backend)
+    let (img_channel, img_height, dst_width) = validate_common(max_wh_ratio, rec_image_shape)?;
+    let sample_len = img_channel
+        .checked_mul(img_height)
+        .and_then(|v| v.checked_mul(dst_width))
+        .ok_or_else(|| PaddleOcrError::InvalidInput("rec sample size overflow".to_string()))?;
+    let mut out = vec![0.0_f32; sample_len];
+    write_resize_norm_img_into_slice_impl(img, max_wh_ratio, rec_image_shape, &mut out)?;
+    Array3::from_shape_vec((img_channel, img_height, dst_width), out).map_err(|e| {
+        PaddleOcrError::InvalidInput(format!("failed to build rec normalized tensor: {e}"))
+    })
 }
 
 #[cfg(test)]
@@ -38,28 +35,12 @@ pub fn make_batch(
     max_wh_ratio: f64,
     rec_image_shape: [usize; 3],
 ) -> Result<Array4<f32>> {
-    make_batch_with_backend(
-        images,
-        max_wh_ratio,
-        rec_image_shape,
-        VisionBackend::PureRust,
-    )
-}
-
-#[cfg(test)]
-pub fn make_batch_with_backend(
-    images: &[RecImage],
-    max_wh_ratio: f64,
-    rec_image_shape: [usize; 3],
-    backend: VisionBackend,
-) -> Result<Array4<f32>> {
-    let backend = resolve_backend_strict(backend)?;
     let (img_channel, img_height, dst_width) = validate_common(max_wh_ratio, rec_image_shape)?;
 
     let batch_size = images.len();
     let mut batch = Array4::<f32>::zeros((batch_size, img_channel, img_height, dst_width));
     for (idx, image) in images.iter().enumerate() {
-        let one = resize_norm_img_impl(image, max_wh_ratio, rec_image_shape, backend)?;
+        let one = resize_norm_img_impl(image, max_wh_ratio, rec_image_shape)?;
         batch.slice_mut(s![idx, .., .., ..]).assign(&one);
     }
     Ok(batch)
@@ -71,9 +52,7 @@ pub fn make_batch_with_backend_by_indices(
     indices: &[usize],
     max_wh_ratio: f64,
     rec_image_shape: [usize; 3],
-    backend: VisionBackend,
 ) -> Result<Array4<f32>> {
-    let backend = resolve_backend_strict(backend)?;
     let (img_channel, img_height, dst_width) = validate_common(max_wh_ratio, rec_image_shape)?;
 
     let batch_size = indices.len();
@@ -100,7 +79,6 @@ pub fn make_batch_with_backend_by_indices(
             image,
             max_wh_ratio,
             rec_image_shape,
-            backend,
             &mut batch_slice[start..end],
         )?;
     }
@@ -119,32 +97,19 @@ pub(crate) fn write_resize_norm_img_into_slice(
     img: &RecImage,
     max_wh_ratio: f64,
     rec_image_shape: [usize; 3],
-    backend: VisionBackend,
     dst: &mut [f32],
 ) -> Result<()> {
-    write_resize_norm_img_into_slice_impl(img, max_wh_ratio, rec_image_shape, backend, dst)
+    write_resize_norm_img_into_slice_impl(img, max_wh_ratio, rec_image_shape, dst)
 }
 
 pub(crate) fn write_resize_norm_img_into_slice_with_scratch(
     img: &RecImage,
     max_wh_ratio: f64,
     rec_image_shape: [usize; 3],
-    backend: VisionBackend,
     dst: &mut [f32],
     tmp_bgr: &mut Vec<u8>,
     resize_scratch: &mut LinearResizeScratch,
 ) -> Result<()> {
-    let backend = resolve_backend_strict(backend)?;
-    if backend != VisionBackend::PureRust {
-        return write_resize_norm_img_into_slice_impl(
-            img,
-            max_wh_ratio,
-            rec_image_shape,
-            backend,
-            dst,
-        );
-    }
-
     let (img_channel, img_height, dst_width) = validate_common(max_wh_ratio, rec_image_shape)?;
     let sample_len = img_channel
         .checked_mul(img_height)
@@ -202,7 +167,6 @@ fn resize_norm_img_impl(
     img: &RecImage,
     max_wh_ratio: f64,
     rec_image_shape: [usize; 3],
-    backend: VisionBackend,
 ) -> Result<Array3<f32>> {
     let (img_channel, img_height, dst_width) = validate_common(max_wh_ratio, rec_image_shape)?;
     let sample_len = img_channel
@@ -210,7 +174,7 @@ fn resize_norm_img_impl(
         .and_then(|v| v.checked_mul(dst_width))
         .ok_or_else(|| PaddleOcrError::InvalidInput("rec sample size overflow".to_string()))?;
     let mut out = vec![0.0_f32; sample_len];
-    write_resize_norm_img_into_slice_impl(img, max_wh_ratio, rec_image_shape, backend, &mut out)?;
+    write_resize_norm_img_into_slice_impl(img, max_wh_ratio, rec_image_shape, &mut out)?;
     Array3::from_shape_vec((img_channel, img_height, dst_width), out).map_err(|e| {
         PaddleOcrError::InvalidInput(format!("failed to build rec normalized tensor: {e}"))
     })
@@ -220,7 +184,6 @@ fn write_resize_norm_img_into_slice_impl(
     img: &RecImage,
     max_wh_ratio: f64,
     rec_image_shape: [usize; 3],
-    backend: VisionBackend,
     dst: &mut [f32],
 ) -> Result<()> {
     let (img_channel, img_height, dst_width) = validate_common(max_wh_ratio, rec_image_shape)?;
@@ -238,7 +201,7 @@ fn write_resize_norm_img_into_slice_impl(
     dst.fill(0.0);
 
     let resized_w = calc_resized_width(img, img_height, dst_width);
-    let resized = resize_image(img, resized_w, img_height, backend)?;
+    let resized = resize_image(img, resized_w, img_height)?;
     let src = resized.as_bgr_cow();
     let src = src.as_ref();
     let plane_stride = img_height * dst_width;
@@ -337,7 +300,7 @@ fn calc_resized_width(img: &RecImage, img_height: usize, dst_width: usize) -> us
 #[cfg(test)]
 mod tests {
     use super::{
-        VisionBackend, make_batch, make_batch_with_backend_by_indices, resize_norm_img,
+        make_batch, make_batch_with_backend_by_indices, resize_norm_img,
         write_resize_norm_img_into_slice,
     };
     use crate::config::RecImage;
@@ -363,18 +326,6 @@ mod tests {
     }
 
     #[test]
-    fn open_cv_backend_rejected_without_feature() {
-        let image = RecImage::from_bgr_u8(10, 10, vec![0; 10 * 10 * 3]).expect("valid image");
-        let err =
-            super::make_batch_with_backend(&[image], 1.0, [3, 48, 320], VisionBackend::OpenCv)
-                .expect_err("must reject open cv backend when feature is disabled");
-        assert!(
-            err.to_string()
-                .contains("feature `opencv-backend` is not enabled")
-        );
-    }
-
-    #[test]
     fn make_batch_by_indices_rejects_out_of_bounds_index() {
         let image = RecImage::from_bgr_u8(10, 10, vec![0; 10 * 10 * 3]).expect("valid image");
         let err = make_batch_with_backend_by_indices(
@@ -382,7 +333,6 @@ mod tests {
             &[1],
             1.0,
             [3, 48, 320],
-            VisionBackend::PureRust,
         )
         .expect_err("must reject out-of-bounds index");
         assert!(err.to_string().contains("out of bounds"));
@@ -402,14 +352,8 @@ mod tests {
         let arr = resize_norm_img(&image, max_wh_ratio, shape).expect("array output should work");
 
         let mut buf = vec![0.0_f32; arr.len()];
-        write_resize_norm_img_into_slice(
-            &image,
-            max_wh_ratio,
-            shape,
-            VisionBackend::PureRust,
-            &mut buf,
-        )
-        .expect("slice writer should work");
+        write_resize_norm_img_into_slice(&image, max_wh_ratio, shape, &mut buf)
+            .expect("slice writer should work");
 
         let arr_slice = arr.as_slice().expect("array should be contiguous");
         assert_eq!(arr_slice.len(), buf.len());

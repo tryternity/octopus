@@ -1,34 +1,21 @@
 use crate::{
-    config::{RecImage, VisionBackend},
+    config::RecImage,
     error::{PaddleOcrError, Result},
-    vision::{backend::resolve_backend_strict, resize::resize_bgr_inter_linear},
+    vision::resize::resize_bgr_inter_linear,
 };
 
-pub fn resize_image(
-    img: &RecImage,
-    new_w: usize,
-    new_h: usize,
-    backend: VisionBackend,
-) -> Result<RecImage> {
+pub fn resize_image(img: &RecImage, new_w: usize, new_h: usize) -> Result<RecImage> {
     if new_w == 0 || new_h == 0 {
         return Err(PaddleOcrError::InvalidImage(
             "resize target width/height must be greater than zero".to_string(),
         ));
     }
 
-    let backend = resolve_backend_strict(backend)?;
-    match backend {
-        VisionBackend::PureRust => resize_image_pure_rust(img, new_w, new_h),
-        VisionBackend::OpenCv => unreachable!("backend resolver should reject unsupported OpenCV backend"),
-    }
+    resize_image_pure_rust(img, new_w, new_h)
 }
 
-pub fn rotate_180_image(img: &RecImage, backend: VisionBackend) -> Result<RecImage> {
-    let backend = resolve_backend_strict(backend)?;
-    match backend {
-        VisionBackend::PureRust => rotate_180_image_pure_rust(img),
-        VisionBackend::OpenCv => unreachable!("backend resolver should reject unsupported OpenCV backend"),
-    }
+pub fn rotate_180_image(img: &RecImage) -> Result<RecImage> {
+    rotate_180_image_pure_rust(img)
 }
 
 fn resize_image_pure_rust(img: &RecImage, new_w: usize, new_h: usize) -> Result<RecImage> {

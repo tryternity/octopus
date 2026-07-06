@@ -81,7 +81,7 @@ impl RapidOcr {
         let e2e_start = Instant::now();
         let mut output = OcrOutput::default();
         let switches = self.resolve_run_switches(&opts);
-        let mut prepared = self.prepare_image(image, switches.use_det)?;
+        let mut prepared = self.prepare_image(image)?;
         let mut buffers = RunBuffers::default();
 
         if !self.run_detection_stage(&opts, switches, &mut prepared, &mut buffers, &mut output)? {
@@ -117,19 +117,13 @@ impl RapidOcr {
         }
     }
 
-    fn prepare_image(&mut self, ori_img: RecImage, use_det: bool) -> Result<PreparedImage> {
+    fn prepare_image(&mut self, ori_img: RecImage) -> Result<PreparedImage> {
         let ori_h = ori_img.height();
         let ori_w = ori_img.width();
-        let preprocessing_backend = if use_det {
-            self.config.det.runtime.vision_backend
-        } else {
-            self.config.rec.runtime.vision_backend
-        };
         let (proc_img, ratio_h, ratio_w) = resize_image_within_bounds(
             ori_img,
             self.config.global.min_side_len,
             self.config.global.max_side_len,
-            preprocessing_backend,
         )?;
 
         Ok(PreparedImage {
@@ -179,7 +173,6 @@ impl RapidOcr {
                 buffers.stage_images = crop_text_regions(
                     &prepared.proc_img,
                     &buffers.det_boxes,
-                    self.config.det.runtime.vision_backend,
                 )?;
             }
         } else if switches.need_stage_images {
@@ -264,15 +257,13 @@ impl RapidOcr {
                 &buffers.stage_images,
                 prepared.ratio_h,
                 prepared.ratio_w,
-                self.config.det.runtime.vision_backend,
             )?;
             let filtered_crops = select_items_by_indices(mapped_crops, &kept_indices);
-            let word_boxes = crate::rec::word_boxes::compute_word_boxes_with_backend(
+            let word_boxes = crate::rec::word_boxes::compute_word_boxes(
                 &filtered_crops,
                 &filtered_boxes,
                 &buffers.lines,
                 switches.return_single_char_box,
-                self.config.rec.runtime.vision_backend,
             )?;
             computed_word_boxes = Some(word_boxes);
         }

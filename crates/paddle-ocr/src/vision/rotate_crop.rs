@@ -3,25 +3,12 @@ use std::sync::OnceLock;
 
 use crate::{
     Quad,
-    config::{RecImage, VisionBackend},
+    config::RecImage,
     error::Result,
-    vision::backend::resolve_backend_strict,
 };
 
-pub fn rotate_crop_image(img: &RecImage, points: Quad, backend: VisionBackend) -> Result<RecImage> {
-    let backend = resolve_backend_strict(backend)?;
-    rotate_crop_image_with_resolved_backend(img, points, backend)
-}
-
-pub(crate) fn rotate_crop_image_with_resolved_backend(
-    img: &RecImage,
-    points: Quad,
-    backend: VisionBackend,
-) -> Result<RecImage> {
-    match backend {
-        VisionBackend::PureRust => rotate_crop_image_pure(img, points),
-        VisionBackend::OpenCv => unreachable!("backend resolver should reject unsupported OpenCV backend"),
-    }
+pub fn rotate_crop_image(img: &RecImage, points: Quad) -> Result<RecImage> {
+    rotate_crop_image_pure(img, points)
 }
 
 fn rotate_crop_image_pure(img: &RecImage, points: Quad) -> Result<RecImage> {

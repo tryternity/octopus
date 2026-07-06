@@ -7,7 +7,7 @@ use rayon::prelude::*;
 #[cfg(target_arch = "x86_64")]
 use std::sync::OnceLock;
 
-use crate::{Quad, config::VisionBackend, vision::backend::resolve_backend_or_pure_rust};
+use crate::Quad;
 
 #[derive(Debug, Clone)]
 pub struct DbPostProcess {
@@ -18,7 +18,6 @@ pub struct DbPostProcess {
     pub min_size: usize,
     pub use_dilation: bool,
     pub score_mode: String,
-    pub vision_backend: VisionBackend,
 }
 
 impl Default for DbPostProcess {
@@ -31,7 +30,6 @@ impl Default for DbPostProcess {
             min_size: 3,
             use_dilation: true,
             score_mode: "fast".to_string(),
-            vision_backend: VisionBackend::PureRust,
         }
     }
 }
@@ -48,32 +46,12 @@ impl DbPostProcess {
         src_w: usize,
         src_h: usize,
     ) -> (Vec<Quad>, Vec<f32>) {
-        let backend = resolve_backend_or_pure_rust(self.vision_backend);
-        match backend {
-            VisionBackend::PureRust => self.run_pure(pred, src_w, src_h),
-            VisionBackend::OpenCv => {
-                unreachable!("backend resolver should reject unsupported OpenCV backend")
-            }
-        }
-    }
-
-    fn run_pure(
-        &self,
-        pred: ArrayView2<'_, f32>,
-        src_w: usize,
-        src_h: usize,
-    ) -> (Vec<Quad>, Vec<f32>) {
         let height = pred.nrows();
         let width = pred.ncols();
         if height == 0 || width == 0 {
             return (Vec::new(), Vec::new());
         }
 
-        // Keep parity with RapidOCR Python:
-        // 1) threshold => bitmap
-        // 2) optional 2x2 dilation
-        // 3) findContours
-        // 4) boxes_from_bitmap with mini-box score / slow contour score
         let mut bitmap = build_threshold_bitmap(pred, self.thresh);
         if self.use_dilation {
             bitmap = dilate_mask_2x2(&bitmap, width, height);
@@ -2046,7 +2024,6 @@ mod tests {
         dilate_mask_2x2, fill_polygon_mask, masked_mean_in_roi, min_area_rect_from_points_pure,
         sort_boxes_like_python, unclip_polygon_like_opencv_db,
     };
-    use crate::config::VisionBackend;
     use ndarray::Array2;
 
     #[test]
@@ -2104,7 +2081,6 @@ mod tests {
         }
 
         let post = DbPostProcess {
-            vision_backend: VisionBackend::PureRust,
             thresh: 0.3,
             box_thresh: 0.5,
             ..DbPostProcess::default()

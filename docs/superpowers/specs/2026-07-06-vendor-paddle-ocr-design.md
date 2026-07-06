@@ -144,7 +144,8 @@ octopus-paddle-ocr = { path = "../paddle-ocr" }
 
 6. **opencv 死代码深度清理（2026-07-06 增补）**
    - 原 paddle-ocr-rs 支持 PureRust 和 OpenCV 两种图像处理后端，通过 `#[cfg(feature = "opencv-backend")]` 门控切换。octopus 永远只用 PureRust 后端。
-   - 初始 vendor 时保留了 opencv 代码在 cfg 门控下（安全、零编译开销）。后续深度清理删除了全部 opencv 死代码（~1000 行），涉及 8 个文件：`det/postprocess/mod.rs`（最大，~495 行）、`vision/image_backend.rs`、`vision/rotate_crop.rs`、`vision/backend.rs`、`rec/word_boxes.rs`、`config.rs`、`vision/resize.rs`、`rec/preprocess.rs`。
-   - 清理策略：保留 `VisionBackend` enum（含 `OpenCv` 变体，用于运行时错误提示），但 `resolve_backend_strict` 对 `OpenCv` 直接返回 `Err`；所有 `VisionBackend::OpenCv =>` match 臂替换为 `unreachable!()`；算法名函数（`sklansky_like_opencv`、`convex_hull_like_opencv`、`unclip_polygon_like_opencv_db`）是纯 Rust 实现，正确保留。
+   - 第一阶段：删除全部 opencv 死代码（~1000 行），涉及 8 个文件：`det/postprocess/mod.rs`（最大，~495 行）、`vision/image_backend.rs`、`vision/rotate_crop.rs`、`vision/backend.rs`、`rec/word_boxes.rs`、`config.rs`、`vision/resize.rs`、`rec/preprocess.rs`。
+   - 第二阶段：彻底删除 `VisionBackend` enum。`crates/ocr` 和 `crates/desktop` 零引用 VisionBackend，确认完全内部类型。移除 `VisionBackend` enum、`RuntimeConfig.vision_backend` 字段、`resolve_backend_strict` / `resolve_backend_or_pure_rust` / `OPENCV_BACKEND_DISABLED_MESSAGE` / `default_backend`。所有 `_with_backend` 函数变体的 `backend` 参数全部移除，`match backend` 分支直接内联为 PureRust 实现。`vision/backend.rs` 清空为占位文件。涉及 12 个文件。
+   - 算法名函数（`sklansky_like_opencv`、`convex_hull_like_opencv`、`unclip_polygon_like_opencv_db`）是纯 Rust 实现，正确保留。
    - Cargo.toml 删除 `[features] opencv-backend = []`。
 

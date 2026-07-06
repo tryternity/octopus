@@ -16,23 +16,6 @@ pub enum ColorOrder {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
-pub enum VisionBackend {
-    #[default]
-    PureRust,
-    OpenCv,
-}
-
-impl VisionBackend {
-    pub fn is_supported(self) -> bool {
-        match self {
-            Self::PureRust => true,
-            Self::OpenCv => false,
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
 pub enum ModelType {
     #[default]
     Mobile,
@@ -194,7 +177,6 @@ pub struct RuntimeConfig {
     pub enable_cpu_mem_arena: bool,
     pub fail_if_provider_unavailable: bool,
     pub provider_preference: ProviderPreference,
-    pub vision_backend: VisionBackend,
 }
 
 impl Default for RuntimeConfig {
@@ -208,7 +190,6 @@ impl Default for RuntimeConfig {
             enable_cpu_mem_arena: true,
             fail_if_provider_unavailable: false,
             provider_preference: ProviderPreference::default(),
-            vision_backend: VisionBackend::default(),
         }
     }
 }
@@ -357,7 +338,7 @@ impl RecImage {
 mod tests {
     use std::borrow::Cow;
 
-    use super::{ColorOrder, RecImage, RuntimeBackend, RuntimeConfig, VisionBackend};
+    use super::{ColorOrder, RecImage, RuntimeBackend, RuntimeConfig};
 
     #[test]
     fn rec_image_rejects_zero_dimension() {
@@ -376,7 +357,6 @@ mod tests {
         assert_eq!(cfg.rayon_threads, None);
         assert!(cfg.enable_cpu_mem_arena);
         assert!(!cfg.fail_if_provider_unavailable);
-        assert_eq!(cfg.vision_backend, VisionBackend::PureRust);
     }
 
     #[test]

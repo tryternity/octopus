@@ -5,11 +5,10 @@ use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    config::{LangCls, ModelType, OcrVersion, RecImage, RuntimeConfig, VisionBackend},
+    config::{LangCls, ModelType, OcrVersion, RecImage, RuntimeConfig},
     error::{PaddleOcrError, Result},
     runtime::provider::ProviderResolution,
     runtime::session::{OrtSession, SessionContract},
-    vision::backend::resolve_backend_strict,
     vision::resize::LinearResizeScratch,
 };
 
@@ -58,7 +57,6 @@ pub struct ClsInPlaceOutput {
 #[derive(Debug)]
 pub struct Classifier {
     config: ClassifierConfig,
-    vision_backend: VisionBackend,
     session: OrtSession,
     batch_scratch: Vec<f32>,
 }
@@ -81,9 +79,7 @@ impl Classifier {
 
         let session =
             OrtSession::new_with_contract(model_path, &config.runtime, SessionContract::Cls)?;
-        let vision_backend = resolve_backend_strict(config.runtime.vision_backend)?;
         Ok(Self {
-            vision_backend,
             config,
             session,
             batch_scratch: Vec::new(),
@@ -134,7 +130,6 @@ impl Classifier {
                             preprocess::write_resize_norm_img_into_slice_with_scratch(
                                 &images[sorted_idx],
                                 self.config.cls_image_shape,
-                                self.vision_backend,
                                 dst,
                                 tmp_bgr,
                                 resize_scratch,
@@ -148,7 +143,6 @@ impl Classifier {
                 preprocess::write_resize_norm_img_into_slice_with_scratch(
                     &images[sorted_idx],
                     self.config.cls_image_shape,
-                    self.vision_backend,
                     &mut self.batch_scratch[..sample_len],
                     &mut tmp_bgr,
                     &mut resize_scratch,
@@ -169,7 +163,7 @@ impl Classifier {
                 let target = indices[beg + rno];
                 if label.contains("180") && score > self.config.cls_thresh {
                     images[target] =
-                        preprocess::rotate_180_with_backend(&images[target], self.vision_backend)?;
+                        preprocess::rotate_180_with_backend(&images[target])?;
                 }
                 cls_res[target] = (label, score);
             }
