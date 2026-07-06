@@ -7,6 +7,11 @@ use crate::{
     error::Result,
 };
 
+use super::numeric::{
+    clamp_i32_inclusive, interpolate_cubic_coeffs, l2,
+    saturate_cast_i16, saturate_cast_i16_from_f32, saturate_cast_i32_round,
+};
+
 pub fn rotate_crop_image(img: &RecImage, points: Quad) -> Result<RecImage> {
     rotate_crop_image_pure(img, points)
 }
@@ -82,9 +87,9 @@ fn rotate_crop_image_pure(img: &RecImage, points: Quad) -> Result<RecImage> {
             let mut sum_r = 0_i32;
 
             for ky in 0..4 {
-                let yy_src = clamp_i32(sy + ky as i32, 0, src_h - 1) as usize;
+                let yy_src = clamp_i32_inclusive(sy + ky as i32, 0, src_h - 1) as usize;
                 for kx in 0..4 {
-                    let xx_src = clamp_i32(sx + kx as i32, 0, src_w - 1) as usize;
+                    let xx_src = clamp_i32_inclusive(sx + kx as i32, 0, src_w - 1) as usize;
                     let src_idx = (yy_src * img.width() + xx_src) * 3;
                     let weight = wtab[ky * 4 + kx] as i32;
                     // Safety: clamped coordinates guarantee in-bounds source access.
@@ -168,44 +173,6 @@ const INTER_TAB_MASK: i32 = (INTER_TAB_SIZE as i32) - 1;
 const INTER_TAB_SIZE_F64: f64 = INTER_TAB_SIZE as f64;
 const INTER_REMAP_COEF_BITS: i32 = 15;
 const INTER_REMAP_COEF_SCALE: i32 = 1 << INTER_REMAP_COEF_BITS;
-
-fn clamp_i32(v: i32, min_v: i32, max_v: i32) -> i32 {
-    v.max(min_v).min(max_v)
-}
-
-fn saturate_cast_i32_round(v: f64) -> i32 {
-    if !v.is_finite() {
-        return 0;
-    }
-    let r = v.round_ties_even();
-    if r < i32::MIN as f64 {
-        i32::MIN
-    } else if r > i32::MAX as f64 {
-        i32::MAX
-    } else {
-        r as i32
-    }
-}
-
-fn saturate_cast_i16(v: i32) -> i16 {
-    v.clamp(i16::MIN as i32, i16::MAX as i32) as i16
-}
-
-fn interpolate_cubic_coeffs(x: f32) -> [f32; 4] {
-    const A: f32 = -0.75;
-    let c0 = ((A * (x + 1.0) - 5.0 * A) * (x + 1.0) + 8.0 * A) * (x + 1.0) - 4.0 * A;
-    let c1 = ((A + 2.0) * x - (A + 3.0)) * x * x + 1.0;
-    let one_minus_x = 1.0 - x;
-    let c2 = ((A + 2.0) * one_minus_x - (A + 3.0)) * one_minus_x * one_minus_x + 1.0;
-    let c3 = 1.0 - c0 - c1 - c2;
-    [c0, c1, c2, c3]
-}
-
-fn saturate_cast_i16_from_f32(v: f32) -> i16 {
-    let r = v.round_ties_even();
-    let i = r as i32;
-    i.clamp(i16::MIN as i32, i16::MAX as i32) as i16
-}
 
 fn build_bicubic_remap_tab() -> Vec<[i16; 16]> {
     let mut tab = vec![[0_i16; 16]; INTER_TAB_SIZE * INTER_TAB_SIZE];
@@ -296,12 +263,6 @@ fn homography_from_4pt(src: Quad, dst: Quad) -> SMatrix<f64, 3, 3> {
     } else {
         SMatrix::<f64, 3, 3>::identity()
     }
-}
-
-fn l2(a: [f32; 2], b: [f32; 2]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    (dx * dx + dy * dy).sqrt()
 }
 
 

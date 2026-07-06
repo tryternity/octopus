@@ -8,6 +8,7 @@ use rayon::prelude::*;
 use std::sync::OnceLock;
 
 use crate::Quad;
+use crate::vision::numeric::l2;
 
 #[derive(Debug, Clone)]
 pub struct DbPostProcess {
@@ -1921,7 +1922,7 @@ fn filter_det_res(
     let mut out_boxes = Vec::with_capacity(dt_boxes.len());
     let mut out_scores = Vec::with_capacity(scores.len());
 
-    for (box_, score) in dt_boxes.into_iter().zip(scores.into_iter()) {
+    for (box_, score) in dt_boxes.into_iter().zip(scores) {
         let mut box_ = order_points_clockwise(box_);
         box_ = clip_det_res(box_, img_height, img_width);
 
@@ -2009,12 +2010,6 @@ fn sort_boxes_like_python(boxes: &mut Vec<Quad>, scores: &mut Vec<f32>, y_thresh
 
     *boxes = new_boxes;
     *scores = new_scores;
-}
-
-fn l2(a: [f32; 2], b: [f32; 2]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    (dx * dx + dy * dy).sqrt()
 }
 
 #[cfg(test)]
