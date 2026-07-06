@@ -527,27 +527,27 @@ pub async fn cancel_screenshot(app_handle: tauri::AppHandle) -> Result<(), Strin
 pub async fn pin_screenshot(
     label: String,
     x: f64, y: f64, w: f64, h: f64,
+    img_base64: Option<String>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let full = {
-        let mut all = ALL_CAPTURES.lock();
-        all.iter()
-            .position(|(l, _)| *l == label)
-            .map(|i| all.remove(i).1)
-    }
-    .ok_or("无截图数据")?;
-
-    ALL_CAPTURES.lock().clear();
-    PENDING_IMAGES.lock().clear();
-
     let sel_win = app_handle
         .get_webview_window(&label)
         .ok_or("截图窗口不存在")?;
 
-    #[cfg(target_os = "macos")]
-    {
-        let scale = sel_win.scale_factor().unwrap_or(1.0);
+    let png_bytes = if let Some(base64_str) = img_base64 {
+        use base64::prelude::*;
+        BASE64_STANDARD.decode(&base64_str)
+            .map_err(|e| format!("Base64 解码失败: {}", e))?
+    } else {
+        let full = {
+            let mut all = ALL_CAPTURES.lock();
+            all.iter()
+                .position(|(l, _)| *l == label)
+                .map(|i| all.remove(i).1)
+        }
+        .ok_or("无截图数据")?;
 
+        let scale = sel_win.scale_factor().unwrap_or(1.0);
         let fake_full = octopus_capx::capture::ScreenCapture {
             rgba_bytes: full.rgba_bytes.clone(),
             width: full.width,
@@ -555,36 +555,44 @@ pub async fn pin_screenshot(
             monitor_x: 0,
             monitor_y: 0,
         };
-        let png_bytes = octopus_capx::capture::crop_region(
+        octopus_capx::capture::crop_region(
             &fake_full,
             (x * scale) as u32,
             (y * scale) as u32,
             (w * scale) as u32,
             (h * scale) as u32,
         )
-        .map_err(|e| format!("裁剪失败: {}", e))?;
+        .map_err(|e| format!("裁剪失败: {}", e))?
+    };
 
-        let (pin_x, pin_y) = if let Some((cx, cy, _cw, ch)) = get_window_cocoa_frame(&sel_win) {
-            (cx + x, cy + ch - y - h)
-        } else {
-            (x, y)
-        };
+    ALL_CAPTURES.lock().clear();
+    PENDING_IMAGES.lock().clear();
 
-        let (tx, rx) = std::sync::mpsc::channel();
-        let _ = sel_win.run_on_main_thread(move || {
-            <crate::pin_window::MacPinWindow as crate::pin_window::PinWindow>::create(
-                &png_bytes, pin_x, pin_y, w, h,
-            );
-            let _ = tx.send(());
-        });
-        let _ = rx.recv_timeout(std::time::Duration::from_secs(2));
-    }
+    #[cfg(target_os = "macos")]
+    let (pin_x, pin_y) = if let Some((cx, cy, _cw, ch)) = get_window_cocoa_frame(&sel_win) {
+        (cx + x, cy + ch - y - h)
+    } else {
+        (x, y)
+    };
 
     #[cfg(not(target_os = "macos"))]
-    {
-        log::warn!("贴图功能仅支持 macOS");
-        let _ = (x, y, w, h, full);
-    }
+    let (pin_x, pin_y) = {
+        let sf = sel_win.scale_factor().unwrap_or(1.0);
+        let (wx, wy) = match sel_win.outer_position() {
+            Ok(p) => (p.x as f64 / sf, p.y as f64 / sf),
+            Err(_) => (0.0, 0.0),
+        };
+        (wx + x, wy + y)
+    };
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let _ = sel_win.run_on_main_thread(move || {
+        <crate::pin_window::PinWindowImpl as crate::pin_window::PinWindow>::create(
+            &png_bytes, pin_x, pin_y, w, h,
+        );
+        let _ = tx.send(());
+    });
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(2));
 
     close_all_screenshot_windows(&app_handle);
     Ok(())
@@ -1058,14 +1066,9 @@ pub async fn start_scroll_recording(
             }
             #[cfg(not(target_os = "macos"))]
             {
-                let captures = octopus_capx::capture::capture_all_monitors()?;
-                let full = captures.iter()
-                    .find(|c| c.monitor_x == mon_phys_x && c.monitor_y == mon_phys_y)
-                    .or_else(|| captures.first())
-                    .ok_or_else(|| anyhow::anyhow!("no matching monitor"))?;
-                // 直接内存裁剪返回 RgbaImage，跳过 PNG 编解码往返
-                // （原 crop_region + load_from_memory 在 30ms 热循环里是性能瓶颈）
-                let img = octopus_capx::capture::crop_region_rgba(full, px, py, pw, ph)?;
+                let full = octopus_capx::capture::capture_single_monitor(mon_phys_x, mon_phys_y)?;
+                // 直接内存只读裁剪返回 RgbaImage，避免全量 Clone 与 PNG 往返
+                let img = octopus_capx::capture::crop_region_rgba_direct(full.width, full.height, &full.rgba_bytes, px, py, pw, ph)?;
                 anyhow::Ok(img)
             }
         }).await;
@@ -1106,13 +1109,9 @@ pub async fn start_scroll_recording(
                 }
                 #[cfg(not(target_os = "macos"))]
                 {
-                    let captures = octopus_capx::capture::capture_all_monitors()?;
-                    let full = captures.iter()
-                        .find(|c| c.monitor_x == mon_phys_x && c.monitor_y == mon_phys_y)
-                        .or_else(|| captures.first())
-                        .ok_or_else(|| anyhow::anyhow!("no matching monitor"))?;
-                    // 直接内存裁剪，跳过 PNG 编解码往返（高频热路径性能优化）
-                    let img = octopus_capx::capture::crop_region_rgba(full, px, py, pw, ph)?;
+                    let full = octopus_capx::capture::capture_single_monitor(mon_phys_x, mon_phys_y)?;
+                    // 直接只读内存裁剪，避免全量 Clone
+                    let img = octopus_capx::capture::crop_region_rgba_direct(full.width, full.height, &full.rgba_bytes, px, py, pw, ph)?;
                     anyhow::Ok(img)
                 }
             }).await;
