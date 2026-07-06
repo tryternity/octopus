@@ -128,7 +128,7 @@ octopus-paddle-ocr = { path = "../paddle-ocr" }
 
 3. **英文单词分词（`segment_english_words`，仅 PP-OCRv5 需要）**
    - PP-OCR 中文 rec 模型不输出英文单词间空格（CTC space token 未激活）。
-   - 内嵌 37 万英文词库（`crates/ocr/assets/words_alpha.txt`，~4MB），贪心最长匹配分词。
+   - 内嵌 17.7K 英文词库（`crates/ocr/assets/words_common.txt`，168KB，top 10K 高频词 + 技术后缀词），贪心最长匹配分词。
    - PP-OCRv6 的 CTC space token 被正确激活，输出自带空格 → `use_word_segmentation` 按 model_name 前缀判断，v6 跳过分词。
 
 4. **ort rc.10→rc.12 API 适配**

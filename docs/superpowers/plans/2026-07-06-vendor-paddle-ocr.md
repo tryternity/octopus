@@ -45,7 +45,15 @@
 ## Task 7：实施中发现的关键 bug 与后处理（增补）
 - [x] `read_character_file` trim() 误删全角空格 U+3000 → CTC 偏移 1 位（改 `strip_suffix('\r')`）
 - [x] `merge_same_line_blocks`：det 同行多框合并 + 水平间隙补空格
-- [x] `segment_english_words`：37 万英文词库贪心分词（v5 需要，v6 跳过）
+- [x] `segment_english_words`：英文词库贪心分词（v5 需要，v6 跳过）
 - [x] ort rc.10→rc.12 API 适配（outputs/inputs 方法、Builder map_err、inputs! 宏、ndarray 0.17）
 - [x] ort 依赖 `download-binaries` feature（不能用 `default-features = false`）
 - [x] PP-OCRv5 + PP-OCRv6-small 模型部署 + e2e 验证通过
+
+## Task 8：MNN 残留清理（增补）
+- [x] 删除 `crates/ocr/mnn-prebuilt/`（含 7.3MB tarball + README）
+- [x] 删除 `crates/ocr/tests/ocr_smoke.rs` + `ocr_concurrent_smoke.rs`（MNN 专属测试）
+- [x] `run-octopus.sh` 移除 `seed_mnn_prebuilt` 函数 + 重试逻辑
+- [x] 删除 `~/.octopus/models/ocr/PP-OCRv6-small/*.mnn`（旧 MNN 模型）
+- [x] 词库精简 `words_alpha.txt`（370K 词/4MB）→ `words_common.txt`（17.7K 词/168KB）
+- [x] opencv-backend 死代码保留在 `#[cfg]` 门控下（安全、零编译开销、零 warning；空 feature `opencv-backend = []` 在 Cargo.toml 消除 check-cfg warning）

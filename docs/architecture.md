@@ -128,7 +128,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 | 模块 | 职责 |
 |---|---|
-| `engine` | `OcrEngine`：全局单例（`OnceLock`），懒加载模型。`recognize(image_bytes)` 支持任意格式（image crate 自动检测）。模型名从 `app_config.ocr_model` 读取。`instance()` 用 double-checked locking（`INIT_LOCK: Mutex<()>`）串行化首次加载、保证模型只加载一次。内部 `Mutex<RapidOcr>` 提供可变性（`run` 需 `&mut self`），OCR 全局互斥保证无竞争。**超长图切分**：`recognize` 对 `height > 1600`px 的长截图按块切分（`CHUNK_HEIGHT=1280` / `CHUNK_OVERLAP=200`）逐块识别 + 跳过与上一块末行相同的起始连续行去重合并。**全局并发互斥**：`OcrLockGuard`（`static OCR_BUSY: AtomicBool` + `compare_exchange`）做 RAII 互斥。**后处理**：`merge_same_line_blocks`（det 同行多框合并 + 间隙补空格）+ `segment_english_words`（37 万英文词库贪心分词，仅 PP-OCRv5 需要——v5 CTC 不输出英文空格；v6 CTC space token 已激活，`use_word_segmentation` 按 model_name 前缀判断跳过） |
+| `engine` | `OcrEngine`：全局单例（`OnceLock`），懒加载模型。`recognize(image_bytes)` 支持任意格式（image crate 自动检测）。模型名从 `app_config.ocr_model` 读取。`instance()` 用 double-checked locking（`INIT_LOCK: Mutex<()>`）串行化首次加载、保证模型只加载一次。内部 `Mutex<RapidOcr>` 提供可变性（`run` 需 `&mut self`），OCR 全局互斥保证无竞争。**超长图切分**：`recognize` 对 `height > 1600`px 的长截图按块切分（`CHUNK_HEIGHT=1280` / `CHUNK_OVERLAP=200`）逐块识别 + 跳过与上一块末行相同的起始连续行去重合并。**全局并发互斥**：`OcrLockGuard`（`static OCR_BUSY: AtomicBool` + `compare_exchange`）做 RAII 互斥。**后处理**：`merge_same_line_blocks`（det 同行多框合并 + 间隙补空格）+ `segment_english_words`（17.7K 英文词库 `words_common.txt` 贪心分词，仅 PP-OCRv5 需要——v5 CTC 不输出英文空格；v6 CTC space token 已激活，`use_word_segmentation` 按 model_name 前缀判断跳过） |
 | `model` | 模型路径管理（`~/.octopus/models/ocr/<name>/`）+ `is_model_ready`（det.onnx + rec.onnx + keys.txt 三件套检测，cls.onnx 可选） |
 
 **模型**：PP-OCRv5（det 4.5M + rec 16M + cls 572K + keys 18383 行）或 PP-OCRv6-small（det 9.7M + rec 21.5M + keys 18708 行 `ppocrv6_dict.txt`）。ONNX 标准格式，软链到 HF 缓存。
