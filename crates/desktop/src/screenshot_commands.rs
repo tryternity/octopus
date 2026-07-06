@@ -1078,49 +1078,67 @@ pub async fn start_scroll_recording(
 
         let _ = ah.emit("scroll://started", ());
 
-        let frame_duration = std::time::Duration::from_millis(30);
-        let mut interval = tokio::time::interval(frame_duration);
-        interval.tick().await;
+        // ── 生产/消费解耦（借鉴 snow-shot，对比 spec §3-A）──
+        // 生产 task：高频截屏 → watch 通道（覆盖=丢旧保新，内存恒定）；
+        // 消费循环（本 task）：出最新帧 → 拼接 → 预览编码 → emit。
+        // 这样 capture 节拍不再被 process_frame / preview 编码拖漂。
+        let (frame_tx, mut frame_rx) =
+            tokio::sync::watch::channel::<Option<image::RgbaImage>>(None);
 
         let ah2 = ah.clone();
-        let mut last_frame: Option<image::RgbaImage> = None;
 
-        // manual 模式：由用户手动滚动触控板/滚轮，后台只进行高频截帧与拼接
-        while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
+        // 生产 task：30ms 截屏，send 进 watch（覆盖前值 = 丢旧保新）。
+        // RECORDING=false → 退出循环 → frame_tx 随 task drop → 消费 changed() 得 Err。
+        let prod_handle = tauri::async_runtime::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_millis(30));
             interval.tick().await;
+            while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
+                interval.tick().await;
 
-            // 截屏：只截选区区域，CGWindowList 排除 overlay 窗口（只截底层应用内容）
-            let target_wid_loop = target_wid;
-            let capture_result = tokio::task::spawn_blocking(move || {
-                #[cfg(target_os = "macos")]
-                {
-                    let cap = if let Some(wid) = target_wid_loop {
-                        octopus_capx::capture::capture_window_region(
-                            wid, sel_global_x, sel_global_y, w, h,
-                        )?
-                    } else {
-                        octopus_capx::capture::capture_region_excluding_window(
-                            exclude_wid, sel_global_x, sel_global_y, w, h,
-                        )?
-                    };
-                    let img = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba_bytes)
-                        .ok_or_else(|| anyhow::anyhow!("failed to create RgbaImage"))?;
-                    anyhow::Ok(img)
-                }
-                #[cfg(not(target_os = "macos"))]
-                {
-                    let full = octopus_capx::capture::capture_single_monitor(mon_phys_x, mon_phys_y)?;
-                    // 直接只读内存裁剪，避免全量 Clone
-                    let img = octopus_capx::capture::crop_region_rgba_direct(full.width, full.height, &full.rgba_bytes, px, py, pw, ph)?;
-                    anyhow::Ok(img)
-                }
-            }).await;
+                // 截屏：只截选区区域，CGWindowList 排除 overlay 窗口（只截底层应用内容）
+                let target_wid_loop = target_wid;
+                let capture_result = tokio::task::spawn_blocking(move || {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let cap = if let Some(wid) = target_wid_loop {
+                            octopus_capx::capture::capture_window_region(
+                                wid, sel_global_x, sel_global_y, w, h,
+                            )?
+                        } else {
+                            octopus_capx::capture::capture_region_excluding_window(
+                                exclude_wid, sel_global_x, sel_global_y, w, h,
+                            )?
+                        };
+                        let img = image::RgbaImage::from_raw(cap.width, cap.height, cap.rgba_bytes)
+                            .ok_or_else(|| anyhow::anyhow!("failed to create RgbaImage"))?;
+                        anyhow::Ok(img)
+                    }
+                    #[cfg(not(target_os = "macos"))]
+                    {
+                        let full = octopus_capx::capture::capture_single_monitor(mon_phys_x, mon_phys_y)?;
+                        // 直接只读内存裁剪，避免全量 Clone
+                        let img = octopus_capx::capture::crop_region_rgba_direct(full.width, full.height, &full.rgba_bytes, px, py, pw, ph)?;
+                        anyhow::Ok(img)
+                    }
+                }).await;
 
-            let frame_rgba = match capture_result { Ok(Ok(img)) => img, _ => continue };
+                let frame = match capture_result { Ok(Ok(img)) => img, _ => continue };
+                // watch send 覆盖前值：消费跟不上时自动丢旧保新，截帧节拍不被拖
+                let _ = frame_tx.send(Some(frame));
+            }
+            // frame_tx 随 task 结束 drop
+        });
+
+        // 消费循环：出最新帧 → 拼接 → 预览编码 → emit。stitcher &mut 全程在此侧，无共享。
+        let mut last_frame: Option<image::RgbaImage> = None;
+        while let Ok(()) = frame_rx.changed().await {
+            let frame = match frame_rx.borrow().clone() {
+                Some(f) => f,
+                None => continue, // 首帧前 sentinel
+            };
             // last_frame 用于 finalize，process_frame 只借用——避免双重 clone
-            // 先借用给 process_frame，再 move 给 last_frame
-            let _added = stitcher.process_frame(&frame_rgba).unwrap_or(false);
-            last_frame = Some(frame_rgba);
+            let _added = stitcher.process_frame(&frame).unwrap_or(false);
+            last_frame = Some(frame);
 
             // 截图帧 JPEG + 预览图编码移入 spawn_blocking（CPU 密集，避免阻塞 async 线程）
             let preview_w = 400u32;
@@ -1164,6 +1182,10 @@ pub async fn start_scroll_recording(
 
             let _ = ah2.emit("scroll://frame", emit_data);
         }
+
+        // 生产 task 必先退出（RECORDING false → frame_tx drop → 消费 changed Err），
+        // 等其收尾再进入停止流程（finalize / 入库 / 窗口管理）。
+        let _ = prod_handle.await;
 
         // 录制结束：先恢复鼠标事件 + 重新激活 app（避免假死）
         for label in &scroll_labels {
