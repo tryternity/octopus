@@ -19,6 +19,69 @@
 
 ---
 
+## 实施记录（2026-06-12 回填）
+
+> 以下记录实际实现与 plan 的偏差，供后续复盘。所有 task 已 merge 到 main。
+
+### 执行方式变更
+
+- **Plan 原定**：subagent-driven-development（每个 task 派 fresh subagent）
+- **实际**：inline execution（当前环境 agent 工具为只读——glob/grep/ls/view，无法写文件或执行 bash）。由 controller 按 plan 逐步执行，保留 TDD（Task 1/2 先写失败测试→验证 RED→实现→验证 GREEN）
+
+### Task 1 偏差
+
+1. **`saturate_cast_i16_from_f32` 测试期望值修正**：
+   - Plan 原写 `assert_eq!(saturate_cast_i16_from_f32(f32::INFINITY), i16::MAX)`
+   - 实际统一版本含 `is_finite` 检查（来自 resize.rs），Inf → 0 非 i16::MAX
+   - **修正**：测试改为 `assert_eq!(saturate_cast_i16_from_f32(f32::INFINITY), 0)`
+   - 行为无变化（实际调用点 `interpolate_cubic_coeffs` 输出不会是 Infinity）
+
+2. **resize.rs 初始 edit 误删 `fn check_dims` 函数体**，导致编译失败。修复方式：恢复完整 check_dims + hresize_row_bgr_u8 函数签名
+
+3. **resize.rs unused import**：plan 导入了 `cv_round_ties_even_f32`，但 resize.rs 不直接调用它（只在 numeric.rs 内部由 `saturate_cast_i16_from_f32` 调用）。**修正**：从 resize.rs 的 import 中移除 `cv_round_ties_even_f32`
+
+### Task 2 偏差
+
+1. **`find_monitor_for_point` 返回 `Option<usize>` 而非 `Option<&Monitor>`**：
+   - Plan 原写返回索引供 `or_else(|| monitors.first())` 兜底
+   - 实际：返回 `Option<usize>`，调用方 `.or_else(|| (!monitors.is_empty()).then_some(0))` 实现等价兜底
+   - 原因：clippy 警告 `unnecessary closure used to substitute value for Option::None`，`.then_some()` 写法更地道
+
+2. **`_mon_phys_x`/`_mon_phys_y` 获取方式**：plan 原写从 `monitors_raw[mon_idx]` 取，实际代码直接在 `match mon_idx` 分支内从 `monitors_raw[idx]` 取（等价）
+
+3. **preview crop 第一处替换后遗留 `let crop_y = canvas_h_now - crop_src_h;` 冗余行**（shadowing，值相同），已删除
+
+### Task 3 偏差
+
+1. **`runtime_config` 参数名**：plan 原写 `_runtime_config`（标记 unused），实际改为 `runtime_config`（无下划线）——因为 spawn 闭包内 4 处引用了 `runtime_config`（行 271/306/321/335/456），加下划线会导致编译错误
+
+2. **worktree/desktop 编译验证变通**：
+   - desktop crate 在 worktree 无法编译（前端 `dist/` 缺失）
+   - 变通：在主仓库 `git merge code-review-2026-06-12 --no-commit --no-ff` 临时合并验证，通过后 `git merge --abort` 回退
+   - 每个 task 结束都用此方式验证 desktop 编译 + 84/84 测试全绿
+
+### Task 4 偏差
+
+1. **`prepare_streaming_session` 的 `engine` 参数加 `_` 前缀**（`_engine: &Arc<dyn TranscriptionEngine>`）：streaming 分支不直接使用 `engine`（通过 StreamingSessionManager 取），但 `begin_recording` 的签名需要保持一致以传递
+
+2. **cloud 分支 `return` 语义**：plan 原写 `prepare_cloud_streaming_session` 内部有 early return，实际在提取后，cloud 函数内的 return 只退出函数本身（不再退出 `begin_recording`）。`begin_recording` 在调用后显式 `return` 保持原语义
+
+### 未实施（plan 中的可选步骤）
+
+- **最终验证的"更新 architecture.md"**：已实施（commit 9c8f115），记录了 numeric.rs / screenshot_geometry.rs / coordinator 内部结构变化
+
+### 验证结果
+
+| Task | Commit | 测试 | Warnings |
+|---|---|---|---|
+| Task 1 | `1dd12f9` | 42/42 (paddle-ocr) | 0 |
+| Task 2 | `4c6ce7c` | 84/84 (desktop) | 0 |
+| Task 3 | `75b09a0` | 84/84 | 0 |
+| Task 4 | `66027bd` | 84/84 | 0 |
+| 最终 merge | `903a66a` | 84+42 全绿 | 0 |
+
+---
+
 ## Task 1: paddle-ocr `vision/numeric.rs` 工具函数集中
 
 **Files:**
