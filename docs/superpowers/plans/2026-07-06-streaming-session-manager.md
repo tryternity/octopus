@@ -31,7 +31,7 @@
 **Files:**
 - Modify: `crates/asr-local/src/streaming_engine.rs`（顶部 import + 文件末尾追加 manager + tests）
 
-- [ ] **Step 1: 加 import**
+- [x] **Step 1: 加 import**
 
 `streaming_engine.rs` 顶部当前：
 ```rust
@@ -52,7 +52,7 @@ use crate::sentence_separator;
 use crate::streaming_runner::StreamingEngine;
 ```
 
-- [ ] **Step 2: 写失败测试（文件末尾追加 tests mod）**
+- [x]**Step 2: 写失败测试（文件末尾追加 tests mod）**
 
 ```rust
 #[cfg(test)]
@@ -132,12 +132,12 @@ mod manager_tests {
 }
 ```
 
-- [ ] **Step 3: 运行测试确认失败**
+- [x]**Step 3: 运行测试确认失败**
 
 Run: `cargo test --manifest-path crates/asr-local/Cargo.toml StreamingSessionManager 2>&1 | tail -20`（或 `manager_tests`）
 Expected: 编译失败 `cannot find type StreamingSessionManager` / `method set_active_for_test`。
 
-- [ ] **Step 4: 实现 StreamingSessionManager（文件末尾、tests mod 之前追加）**
+- [x]**Step 4: 实现 StreamingSessionManager（文件末尾、tests mod 之前追加）**
 
 ```rust
 // ── StreamingSessionManager：流式引擎复用（对齐离线 AsrEngineManager）──
@@ -228,17 +228,17 @@ impl StreamingSessionManager {
 }
 ```
 
-- [ ] **Step 5: 运行测试确认通过**
+- [x]**Step 5: 运行测试确认通过**
 
 Run: `cargo test --manifest-path crates/asr-local/Cargo.toml manager_tests 2>&1 | tail -20`
 Expected: 4 tests PASS。
 
-- [ ] **Step 6: clippy**
+- [x]**Step 6: clippy**
 
 Run: `cargo clippy --manifest-path crates/asr-local/Cargo.toml --lib 2>&1 | tail -10`
 Expected: 无 warning。
 
-- [ ] **Step 7: 提交**
+- [x]**Step 7: 提交**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/arch-fixes add crates/asr-local/src/streaming_engine.rs
@@ -259,7 +259,7 @@ active_session(spec,lang) 懒加载 + reset 复用，避免每次录音重载 Se
 - Modify: `crates/asr-local/src/streaming_runner.rs:174,191,209,379-385,437`
 - Modify: `crates/desktop/src/pipeline.rs:141-148`
 
-- [ ] **Step 1: 改 StreamingRunner.engine 字段 + 构造签名**
+- [x]**Step 1: 改 StreamingRunner.engine 字段 + 构造签名**
 
 `streaming_runner.rs:174` 字段：
 ```rust
@@ -290,7 +290,7 @@ active_session(spec,lang) 懒加载 + reset 复用，避免每次录音重载 Se
 
 文件顶部 import 已有 `use anyhow::Result;`，加 `use std::sync::Arc;`（若未有）。
 
-- [ ] **Step 2: 改 streaming_runner.rs 测试 helper 的构造**
+- [x]**Step 2: 改 streaming_runner.rs 测试 helper 的构造**
 
 `streaming_runner.rs:379-385` `runner()`：
 ```rust
@@ -314,7 +314,7 @@ active_session(spec,lang) 懒加载 + reset 复用，避免每次录音重载 Se
             Arc::new(FakeStreamingEngine::new(
 ```
 
-- [ ] **Step 3: 改 LocalPipelineEngine::from_session 接 Arc**
+- [x]**Step 3: 改 LocalPipelineEngine::from_session 接 Arc**
 
 `crates/desktop/src/pipeline.rs:141-148`：
 ```rust
@@ -349,7 +349,7 @@ use octopus_asr_local::streaming_runner::StreamingEngine;
 ```
 （确认 `StreamingRunner` 现有 import 路径，沿用。）
 
-- [ ] **Step 4: 编译 + 测试**
+- [x]**Step 4: 编译 + 测试**
 
 Run: `cargo test --manifest-path crates/asr-local/Cargo.toml 2>&1 | tail -15`
 Expected: 全绿（含 streaming_runner 既有 11 测试 + manager_tests 4 测试）。
@@ -357,7 +357,7 @@ Expected: 全绿（含 streaming_runner 既有 11 测试 + manager_tests 4 测�
 Run: `cargo build --manifest-path crates/desktop/Cargo.toml 2>&1 | tail -15`
 Expected: **编译失败在 coordinator.rs:854**（`from_session(streaming_engine, false)` 类型不匹配——`streaming_engine` 现是 owned `StreamingSession`，而 `from_session` 改接 `Arc<dyn StreamingEngine>`）。这是预期的，Task 3 修复。
 
-- [ ] **Step 5: 提交**
+- [x]**Step 5: 提交**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/arch-fixes add crates/asr-local/src/streaming_runner.rs crates/desktop/src/pipeline.rs
@@ -376,7 +376,7 @@ asr-local 测试 helper 同步 Box→Arc。desktop coordinator 接入留 Task 3�
 - Modify: `crates/desktop/src/main.rs`（`engine_manager` 注入处 ~355/415 旁）
 - Modify: `crates/desktop/src/coordinator.rs`（录音命令签名 + :811 创建块）
 
-- [ ] **Step 1: main.rs 注入 StreamingSessionManager**
+- [x]**Step 1: main.rs 注入 StreamingSessionManager**
 
 定位 `main.rs:415` 附近 `app.manage(engine_manager.clone());`，在其**下方**追加流式 manager 注入：
 
@@ -395,7 +395,7 @@ asr-local 测试 helper 同步 Box→Arc。desktop coordinator 接入留 Task 3�
 
 （确认 `use std::sync::Arc;` 已在 main.rs 顶部——`engine_manager` 用了 `Arc::new`，已有。）
 
-- [ ] **Step 2: coordinator 录音命令加 streaming_manager State 参数**
+- [x]**Step 2: coordinator 录音命令加 streaming_manager State 参数**
 
 定位 `coordinator.rs:811` 所在的录音命令函数（`start_recording` 或同名 tauri command）。在其参数列表加（对齐 `switch_asr_engine` 取 `engine_manager: State<'_, Arc<AsrEngineManager>>` 的写法，见 `runtime_config.rs:300-304`）：
 
@@ -405,7 +405,7 @@ asr-local 测试 helper 同步 Box→Arc。desktop coordinator 接入留 Task 3�
 
 并在 `crates/desktop/src/main.rs` 的 invoke_handler 注册处（~188 `runtime_config::switch_asr_engine` 附近）确认该录音命令已注册（它本就注册，参数由 Tauri 自动从 State 注入，无需改注册）。
 
-- [ ] **Step 3: 改 coordinator:811 创建块为 active_session + reset**
+- [x]**Step 3: 改 coordinator:811 创建块为 active_session + reset**
 
 当前（`coordinator.rs:807-829`）：
 ```rust
@@ -471,7 +471,7 @@ asr-local 测试 helper 同步 Box→Arc。desktop coordinator 接入留 Task 3�
 
 `streaming_engine` 类型现在是 `Arc<dyn StreamingEngine>`。下游 :854 `LocalPipelineEngine::from_session(streaming_engine, false)` 已接 `Arc<dyn StreamingEngine>`（Task 2），无需再改。
 
-- [ ] **Step 4: 清理 coordinator 未用 import**
+- [x]**Step 4: 清理 coordinator 未用 import**
 
 `coordinator.rs:10` `use octopus_asr_local::streaming_engine::StreamingSession;`——若 Task 3 后 `StreamingSession` 不再被 coordinator 直接引用（改走 manager），改为：
 ```rust
@@ -479,17 +479,17 @@ use octopus_asr_local::streaming_engine::StreamingSessionManager;
 ```
 （若 coordinator 他处仍用 `StreamingSession`，保留并追加 `StreamingSessionManager`。编译器会提示。）
 
-- [ ] **Step 5: 编译**
+- [x]**Step 5: 编译**
 
 Run: `cargo build --manifest-path crates/desktop/Cargo.toml 2>&1 | tail -20`
 Expected: 编译通过至 `tauri::generate_context!()`（`main.rs` 末尾，缺 `dist/` 是预存环境问题，非本次引入——与 ④①③ 验证时一致）。
 
-- [ ] **Step 6: clippy（desktop lib 部分）**
+- [x]**Step 6: clippy（desktop lib 部分）**
 
 Run: `cargo clippy --manifest-path crates/desktop/Cargo.toml 2>&1 | grep -E "warning|error" | head -20`
 Expected: 无本次引入的 warning（忽略 dist 相关）。
 
-- [ ] **Step 7: 提交**
+- [x]**Step 7: 提交**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/arch-fixes add crates/desktop/src/main.rs crates/desktop/src/coordinator.rs
@@ -509,12 +509,12 @@ switch_asr_engine 无需主动联动。"
 - Verify: 全量测试 + reset 完整性核对
 - Modify: `docs/asr_archiveture_opt.md`（§4 加 StreamingSessionManager）
 
-- [ ] **Step 1: asr-local 全量测试**
+- [x]**Step 1: asr-local 全量测试**
 
 Run: `cargo test --manifest-path crates/asr-local/Cargo.toml 2>&1 | tail -15`
 Expected: 全绿（manager_tests 4 + streaming_runner 11 + 既有约 95 测试）。
 
-- [ ] **Step 2: 核对 Zipformer reset 完整性（spec §10 待确认项）**
+- [x]**Step 2: 核对 Zipformer reset 完整性（spec §10 待确认项）**
 
 已 read-only 核实（无需改代码）：
 - `StreamingZipformer::reset`（`streaming_zipformer.rs:252-264`）：清 `sample_buffer`/`history_samples`/`token_ids`/`prev_id` + 所有 `states` 归零。✓
@@ -522,17 +522,17 @@ Expected: 全绿（manager_tests 4 + streaming_runner 11 + 既有约 95 测试�
 
 结论：三种流式引擎 reset 均干净，复用无状态泄漏。无需补全。
 
-- [ ] **Step 3: server 回归（确认未受影响）**
+- [x]**Step 3: server 回归（确认未受影响）**
 
 Run: `cargo test --manifest-path crates/server/Cargo.toml 2>&1 | tail -10`
 Expected: 4 测试绿（注意 `ws_stream_session` 预存债 `pipeline-ws-stream-preexisting-fail`，若它挂起是 main 041e678 预存，非本次引入——勿动）。
 
-- [ ] **Step 4: workspace 编译**
+- [x]**Step 4: workspace 编译**
 
 Run: `cargo build --workspace --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/arch-fixes/Cargo.toml 2>&1 | tail -10`
 Expected: 编译通过至 desktop `generate_context!()`（dist 缺失，预存）。
 
-- [ ] **Step 5: 文档同步**
+- [x]**Step 5: 文档同步**
 
 在 `docs/asr_archiveture_opt.md` §4.1（`AsrEngineManager` 小节）后追加 §4.1b 或并入 §4.3 客户端宿主段落：
 
@@ -550,14 +550,14 @@ Expected: 编译通过至 desktop `generate_context!()`（dist 缺失，预存�
 server（每连接独立状态）与 cloud（独立路径）不受影响。
 ```
 
-- [ ] **Step 6: 提交文档**
+- [x]**Step 6: 提交文档**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/arch-fixes add docs/asr_archiveture_opt.md
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/arch-fixes commit -m "docs(asr): §4.1b 记录 StreamingSessionManager 流式引擎复用"
 ```
 
-- [ ] **Step 7: desktop e2e 手测（用户执行）**
+- [x]**Step 7: desktop e2e 手测（用户执行）**
 
 构建 desktop（需先 `npm run build` 生成 dist，在 `crates/desktop/` 目录），录音两次：
 - 首次：manager 未命中 → `switch_model` 加载（秒级，一次性）。
@@ -570,12 +570,12 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/arch-fixes commi
 
 ## 验收清单
 
-- [ ] `cargo test -p octopus-asr-local` 全绿（+4 manager 测试）
-- [ ] `cargo test -p octopus-server` 绿（预存 ws_stream 债除外）
-- [ ] `cargo build --workspace` 过（desktop dist 预存缺失除外）
-- [ ] clippy 无本次引入 warning
-- [ ] desktop e2e：连录两次，第二次启动延迟大降，无状态泄漏
-- [ ] 文档 `asr_archiveture_opt.md` §4.1b 已同步
+- [x]`cargo test -p octopus-asr-local` 全绿（+4 manager 测试）
+- [x]`cargo test -p octopus-server` 绿（预存 ws_stream 债除外）
+- [x]`cargo build --workspace` 过（desktop dist 预存缺失除外）
+- [x]clippy 无本次引入 warning
+- [x]desktop e2e：连录两次，第二次启动延迟大降，无状态泄漏
+- [x]文档 `asr_archiveture_opt.md` §4.1b 已同步
 
 ## 不在本次（YAGNI）
 
@@ -585,3 +585,23 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/arch-fixes commi
 | server 多实例池化 | server 是桌面端辅助，非大并发 |
 | `switch_asr_engine` 主动联动 manager | `active_session` 懒加载已覆盖模型变更 |
 | manager 缓存上限（max_cache） | 流式模型种类少，暂不需要淘汰 |
+
+---
+
+## 实施记录
+
+### 已完成并合 main（2026-07-06）
+
+**4 Task 全绿，commit `d2964f0..237df45`（arch-fixes worktree，已 ff-merge main + push origin）。** e2e 通过（连录两次第二次启动延迟大降、无状态泄漏）。asr_archiveture_opt.md §4.1b 已同步（commit dd0c60d）。
+
+#### 实施偏差
+
+1. **Zipformer reset 完整性（spec §10 待确认项）**：已 read-only 核实三种流式引擎 reset 均干净——`StreamingZipformer::reset`（streaming_zipformer.rs:252-264）清 `sample_buffer`/`history_samples`/`token_ids`/`prev_id` + `states` 归零；`StreamingZipformerTransducer::reset`（:712-727）清 `sample_buffer`/`history_samples`/`emitted_ids` + `token_buf` 重置 + `states` 归零。无需补全。
+2. **`switch_asr_engine` 联动**：未主动联动——`active_session(spec, lang)` 懒加载（spec≠active 自动 switch 覆盖）已处理模型变更，确认 spec §10 该项的结论为「不需要」。
+3. **manager 缓存上限**：未设 max_cache（spec §10 该项结论为「不需要」），流式模型种类少。
+4. **server WsStreamSession**：虽 server 不接入 manager，但 `StreamingRunner` Box→Arc（Task 2）连带要求 `WsStreamSession` 同步改 Arc（commit 2f59ffd），否则编译断。
+5. **后续 drain 修复**：e2e 暴露 paraformer `raw_samples` drain 停滞 bug（与绝对帧索引 `fi*SHIFT` 不兼容），commit 237df45 移除 drain 已修，新增 fbank 持续增长回归测试。
+
+#### arch-fixes worktree 已清
+
+原 worktree `worktree-arch-fixes` 完成后已 `git worktree remove` + 删分支；本计划内 `git -C .../arch-fixes` 命令为历史记录（实际执行路径），不再有效。

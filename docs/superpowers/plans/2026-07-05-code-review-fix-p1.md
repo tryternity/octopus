@@ -297,6 +297,8 @@ fixes C4"
 
 ## Task D1: server — spawn_blocking + 引擎锁（修 C7/C8）
 
+> **⚠️ 已被 arch-fixes ①（2026-07-06）取代**：本 Task 的 `inference_lock` 方案后经 `AsrEngineManager::get_engine`（只读取 Arc 不改 active）+ `new_with_capacity(8)` 取代——同模型并发受引擎内 `Mutex<Session>` 串行化、跨模型天然并行，**不再需要全局 `inference_lock`**。下方 Step 1/2 的 `inference_lock` 代码为历史记录，当前代码（server/main.rs）已无此锁；仅 Step 1 的 `spawn_blocking` 仍生效。详见 architecture.md server 段。
+
 **Files:**
 - Modify: `crates/server/src/main.rs:93-154`（`/transcribe` handler）
 - Modify: `crates/server/src/main.rs:240-260`（`/ws/stream` feed 路径）

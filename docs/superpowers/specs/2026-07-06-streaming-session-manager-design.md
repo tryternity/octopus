@@ -172,8 +172,8 @@ impl StreamingSessionManager {
 
 ---
 
-## 10. 待实现时确认
+## 10. 已确认项（实施时核实，2026-07-06）
 
-- `StreamingZipformer`/`StreamingZipformerTransducer` 的 `reset()` 完整性（不干净则补全）。
-- `switch_asr_engine` 命令当前如何联动离线 `engine_manager`，照搬对流式 `streaming_manager`。
-- `StreamingSessionManager` 是否需要缓存上限（流式模型种类少，可不设或宽松；离线 desktop 默认 2）。
+- **`StreamingZipformer`/`StreamingZipformerTransducer` 的 `reset()` 完整性**：✓ 已核实均干净（`StreamingZipformer::reset` streaming_zipformer.rs:252-264 清 `sample_buffer`/`history_samples`/`token_ids`/`prev_id` + `states` 归零；Transducer `:712-727` 清 `sample_buffer`/`history_samples`/`emitted_ids` + `token_buf` 重置 + `states` 归零）。复用无状态泄漏，无需补全。
+- **`switch_asr_engine` 联动**：✓ 不需要主动联动——`active_session(spec, lang)` 懒加载在 spec≠active 时自动 switch 覆盖模型变更。
+- **`StreamingSessionManager` 缓存上限**：✓ 不设 max_cache——流式模型种类少，无需淘汰（离线 desktop 默认 2 是多模型场景，流式无此压力）。
