@@ -57,7 +57,7 @@ impl fmt::Display for TransientKind {
 
 /// 把 HTTP status 分类：Fatal（不重试）/ Transient（可重试）。
 /// 4xx 除 408/429 → Fatal；5xx/408/429 → Transient；3xx/2xx → None（成功）。
-pub fn classify_status(status: u16) -> Option<ErrorClass> {
+pub(crate) fn classify_status(status: u16) -> Option<ErrorClass> {
     match status {
         408 => Some(ErrorClass::Transient(TransientKind::Timeout)),
         429 => Some(ErrorClass::Transient(TransientKind::RateLimited)),

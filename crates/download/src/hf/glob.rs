@@ -5,7 +5,7 @@
 /// - include 为空 → 视为匹配所有（全含）
 /// - 否则 path 须匹配至少一个 include 模式
 /// - 再排除匹配任一 exclude 模式的
-pub fn should_download(path: &str, include: &[String], exclude: &[String]) -> bool {
+pub(crate) fn should_download(path: &str, include: &[String], exclude: &[String]) -> bool {
     let included = include.is_empty() || include.iter().any(|pat| fnmatch(pat, path));
     if !included { return false; }
     !exclude.iter().any(|pat| fnmatch(pat, path))
@@ -13,7 +13,7 @@ pub fn should_download(path: &str, include: &[String], exclude: &[String]) -> bo
 
 /// fnmatch 兼容匹配：`*` 跨任意字符（含 `/`）、`?` 单字符、`[...]` 字符类。
 /// 手写实现以保证与 Python fnmatch 一致（glob crate 的 * 不跨 /）。
-pub fn fnmatch(pattern: &str, name: &str) -> bool {
+pub(crate) fn fnmatch(pattern: &str, name: &str) -> bool {
     fn rec(p: &[u8], n: &[u8]) -> bool {
         let (mut pi, mut ni) = (0, 0);
         let (mut star_p, mut star_n): (Option<usize>, usize) = (None, 0);

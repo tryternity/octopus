@@ -19,7 +19,7 @@ pub struct ResumeState {
 }
 
 /// dest 路径的稳定 hash（镜像无关）。前 16 hex 字符。
-pub fn dest_hash(dest: &Path) -> String {
+pub(crate) fn dest_hash(dest: &Path) -> String {
     let mut hasher = Sha256::new();
     hasher.update(dest.to_string_lossy().as_bytes());
     let hex = hasher.finalize();
@@ -27,7 +27,7 @@ pub fn dest_hash(dest: &Path) -> String {
 }
 
 /// sidecar 文件路径：<dest>.part.resume.json
-pub fn sidecar_path(dest: &Path) -> PathBuf {
+pub(crate) fn sidecar_path(dest: &Path) -> PathBuf {
     let mut p = dest.as_os_str().to_os_string();
     p.push(".part.resume.json");
     PathBuf::from(p)
@@ -68,7 +68,7 @@ pub fn remove(dest: &Path) {
 }
 
 /// 从已有参数造一个 ResumeState（初始 downloaded 由调用方设置的 segments 决定）。
-pub fn new_state(dest: &Path, total_bytes: u64, etag: Option<String>, segments: Vec<Segment>) -> ResumeState {
+pub(crate) fn new_state(dest: &Path, total_bytes: u64, etag: Option<String>, segments: Vec<Segment>) -> ResumeState {
     ResumeState {
         r#type: SIDECAR_TYPE.to_string(),
         url_hash: dest_hash(dest),

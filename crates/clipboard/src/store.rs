@@ -31,7 +31,8 @@ pub fn insert_clipboard_item(conn: &Connection, item: &NewClipboardItem) -> Resu
     Ok(item.id)
 }
 
-pub fn insert_asr_item(conn: &Connection, text: &str, engine: &str, model: &str, segments: Option<&str>) -> Result<i64> {
+#[allow(dead_code)]
+pub(crate) fn insert_asr_item(conn: &Connection, text: &str, engine: &str, model: &str, segments: Option<&str>) -> Result<i64> {
     let meta = MetaInfo {
         engine: Some(engine.to_string()),
         model: Some(model.to_string()),
@@ -234,7 +235,8 @@ pub fn update_content(conn: &Connection, id: i64, text: &str) -> Result<()> {
 }
 
 /// 更新 voice 条目的 segments（润色/编辑后段模型更新）
-pub fn update_segments(conn: &Connection, id: i64, segments: &str) -> Result<()> {
+#[allow(dead_code)]
+pub(crate) fn update_segments(conn: &Connection, id: i64, segments: &str) -> Result<()> {
     conn.execute("UPDATE clipboard_history SET segments = ? WHERE id = ?", params![segments, id])?;
     Ok(())
 }
@@ -324,7 +326,8 @@ fn delete_image_if_unreferenced(conn: &Connection, hash: &str) {
     }
 }
 
-pub fn count_all(conn: &Connection) -> Result<i64> {
+#[allow(dead_code)]
+pub(crate) fn count_all(conn: &Connection) -> Result<i64> {
     Ok(conn.query_row("SELECT COUNT(*) FROM clipboard_history", [], |r| r.get(0))?)
 }
 

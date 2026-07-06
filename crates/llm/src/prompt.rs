@@ -17,7 +17,7 @@ static SYSTEM_PROMPT: RwLock<String> = RwLock::new(String::new());
 
 /// 拼接用户 prompt content + 强制增量规则。
 /// content 为 DB prompts 表的 content 字段（纯风格规则，不含增量逻辑）。
-pub fn build_system_prompt(content: &str) -> String {
+pub(crate) fn build_system_prompt(content: &str) -> String {
     format!("{}\n{}", content.trim_end(), INCREMENTAL_RULE)
 }
 
@@ -41,7 +41,7 @@ pub fn system_prompt() -> String {
 ///
 /// 分块文案中的「【{CONFIRMED_MARKER}...】」标记须与 INCREMENTAL_RULE
 /// 中的【已确认部分】保持字面一致——通过 const 拼装避免双端失配。
-pub fn user_prompt(preserved: Option<&str>, to_polish: &str) -> String {
+pub(crate) fn user_prompt(preserved: Option<&str>, to_polish: &str) -> String {
     let m = CONFIRMED_MARKER;
     match preserved {
         None => format!("请润色以下语音识别文本：\n{}", to_polish),
@@ -60,7 +60,7 @@ pub fn user_prompt(preserved: Option<&str>, to_polish: &str) -> String {
 ///
 /// 无 preserve 段时走全量润色分支（与旧 user_prompt(None) 等价语义）。
 /// CONFIRMED_MARKER 字面须与 INCREMENTAL_RULE 中的【已确认部分】一致（const 拼装）。
-pub fn regions_prompt(regions: &[crate::PolishRegion]) -> String {
+pub(crate) fn regions_prompt(regions: &[crate::PolishRegion]) -> String {
     if regions.iter().all(|r| !r.preserve) {
         // 无 edited 段 → 全量润色（与旧 user_prompt(None) 等价语义）
         let full: String = regions.iter().map(|r| r.text.as_str()).collect();

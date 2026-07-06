@@ -467,7 +467,7 @@ impl Downloader {
 }
 
 /// .part 路径：dest + ".part"
-pub fn part_path(dest: &Path) -> PathBuf {
+pub(crate) fn part_path(dest: &Path) -> PathBuf {
     let mut p = dest.as_os_str().to_os_string();
     p.push(".part");
     PathBuf::from(p)

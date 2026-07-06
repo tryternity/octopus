@@ -27,7 +27,7 @@ impl Segment {
 /// 规划分段。
 /// - `accept_ranges=false` 或 `total=None` 或 `total < threshold` → 1 段（单流）。
 /// - 否则按 `segment_size` 切，段数上限 `max_concurrent`。
-pub fn plan_segments(total: u64, accept_ranges: bool, segment_size: u64, threshold: u64, max_concurrent: usize) -> Vec<Segment> {
+pub(crate) fn plan_segments(total: u64, accept_ranges: bool, segment_size: u64, threshold: u64, max_concurrent: usize) -> Vec<Segment> {
     let one = || vec![Segment { begin: 0, end: total.saturating_sub(1), downloaded: 0 }];
     let Some(total) = (total != 0).then_some(total) else { return one() };
     if !accept_ranges || total < threshold || segment_size == 0 || max_concurrent == 0 {
