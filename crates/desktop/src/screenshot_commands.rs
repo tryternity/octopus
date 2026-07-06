@@ -1153,7 +1153,11 @@ pub async fn start_scroll_recording(
             let frame_for_jpg = last_frame.as_ref().unwrap().clone();
             let scale_for_phys = scale;
 
-            let emit_data = tokio::task::spawn_blocking(move || {
+            // 预览编码 fire-and-forget：不 await，避免阻塞下一帧拼接（关键路径）。
+            // 若 await：消费跟不上生产 → watch 丢帧 → canvas 滞后 → 单帧累积位移
+            // 超 NCC search 失配（e2e 实测 772px/帧致拼接中断）。
+            let emit_ah = ah2.clone();
+            tokio::task::spawn_blocking(move || {
                 // 选区实时画面 JPEG
                 let mut frame_jpg = Vec::new();
                 let frame_rgb = image::DynamicImage::ImageRgba8(frame_for_jpg).into_rgb8();
@@ -1172,15 +1176,13 @@ pub async fn start_scroll_recording(
 
                 let phys_height = (canvas_h_now as f64 / scale_for_phys) as u32;
 
-                serde_json::json!({
+                let _ = emit_ah.emit("scroll://frame", serde_json::json!({
                     "frame": frame_b64,
                     "preview": preview_b64,
                     "height": canvas_h_now,
                     "phys_height": phys_height,
-                })
-            }).await.unwrap_or_else(|_| serde_json::json!({}));
-
-            let _ = ah2.emit("scroll://frame", emit_data);
+                }));
+            });
         }
 
         // 生产 task 必先退出（RECORDING false → frame_tx drop → 消费 changed Err），
