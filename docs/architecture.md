@@ -124,14 +124,16 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 ### octopus-ocr（OCR 图片识别）
 
-独立的 OCR crate，仅依赖 `octopus-infra`。基于 `ocr-rs`（MNN 推理后端）封装 PaddleOCR PP-OCRv6 pipeline（det→crop→rec）。
+独立的 OCR crate，依赖 `octopus-infra` + `octopus-paddle-ocr`（vendor 自 paddle-ocr-rs，ONNX Runtime 推理后端）。封装 PaddleOCR PP-OCRv5 pipeline（det→cls→rec）。
 
 | 模块 | 职责 |
 |---|---|
-| `engine` | `OcrEngine`：全局单例（`OnceLock`），懒加载模型。`recognize(image_bytes)` 支持任意格式（image crate 自动检测）。模型名从 `app_config.ocr_model` 读取。`instance()` 用 double-checked locking（`INIT_LOCK: Mutex<()>`）串行化首次加载、保证模型只加载一次。**注**：曾怀疑「并发首次加载致 MNN C++ 死锁」是 OCR 僵死根因，已被 `tests/ocr_concurrent_smoke.rs` **证伪**——4 线程经 Barrier 同时首次调 `ocr_rs::OcrEngine::new`，全 `ok=true` ~180ms 返回，MNN 并发安全；main 用 check-then-set 同样不僵死。worktree 原始 OCR 僵死真因未最终坐实（MNN 包/并发均已排除，可疑残留见 db 模块的 with_db 重入说明）。DCL 保留为无害的串行化优化，非「修复并发死锁」。**超长图切分**：`recognize` 对 `height > 1600`px 的长截图（如 2032×15796）按块切分（`CHUNK_HEIGHT=1280` / `CHUNK_OVERLAP=200`）逐块识别 + 跳过与上一块末行相同的起始连续行去重合并（`recognize_long_image` / `plan_chunks` 纯函数 + 单测），避免整图等比缩放到 det `max_side_len=960` 致短边过小、det 检测不到文本（曾返回 text_len=0）。**全局并发互斥**：`OcrLockGuard`（`static OCR_BUSY: AtomicBool` + `compare_exchange`）做 RAII 互斥——同一时刻仅一个 OCR 任务，`ocr_image` / `ocr_screenshot` 入口 `try_acquire`，忙则立即返回 `Err("前一个 OCR 还未完成，请稍后")`，guard drop（含 async future 被 cancel）自动释放 |
-| `model` | 模型路径管理（`~/.octopus/models/ocr/<name>/`）+ `is_model_ready`（det.mnn + rec.mnn + keys.txt 三件套检测） |
+| `engine` | `OcrEngine`：全局单例（`OnceLock`），懒加载模型。`recognize(image_bytes)` 支持任意格式（image crate 自动检测）。模型名从 `app_config.ocr_model` 读取。`instance()` 用 double-checked locking（`INIT_LOCK: Mutex<()>`）串行化首次加载、保证模型只加载一次。内部 `Mutex<RapidOcr>` 提供可变性（`run` 需 `&mut self`），OCR 全局互斥保证无竞争。**超长图切分**：`recognize` 对 `height > 1600`px 的长截图按块切分（`CHUNK_HEIGHT=1280` / `CHUNK_OVERLAP=200`）逐块识别 + 跳过与上一块末行相同的起始连续行去重合并。**全局并发互斥**：`OcrLockGuard`（`static OCR_BUSY: AtomicBool` + `compare_exchange`）做 RAII 互斥 |
+| `model` | 模型路径管理（`~/.octopus/models/ocr/<name>/`）+ `is_model_ready`（det.onnx + rec.onnx + keys.txt 三件套检测，cls.onnx 可选） |
 
-**模型**：PP-OCRv6 small（det 4.7M + rec 10M + keys 73K），从 ocr-rs GitHub 仓库下载。DB `models` 表 `domain='ocr'` 记录，source=det URL、secret_key=rec URL。
+**模型**：PP-OCRv5（det.onnx + rec.onnx + keys.txt，cls.onnx 可选），ONNX 标准格式。存放 `~/.octopus/models/ocr/PP-OCRv5/`。
+
+**推理后端迁移（2026-07-06）**：从 ocr-rs（MNN C++ 推理）迁移到 vendored paddle-ocr-rs（ONNX Runtime），消除 MNN cmake + bindgen + libclang 依赖。ort 与 ASR 引擎共用同一推理后端，跨平台零原生编译。`crates/paddle-ocr/` 是从 `paddle-ocr-rs` 按需拷贝的精简版（删 bin/input/model_store/model_registry/output/compat_rapidocr/turbojpeg/clap/opencv/reqwest/serde_yaml，保留 det/rec/cls/pipeline/runtime/vision 核心）。详见 [spec](docs/superpowers/specs/2026-07-06-vendor-paddle-ocr-design.md)。
 
 **触发方式**：手动——剪贴板浮窗/管理页图片条目点 OCR 按钮（ScanText 图标）。不支持自动 OCR。
 
@@ -170,7 +172,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - `clipboard_commands.rs` 图片预览 3 命令：`get_image_full`（取 `image_data.blob` 全分辨率 → `ipc::Response` 原始 WebP 字节）/ `save_image_dialog`（`ipc::Request` Raw body → `blocking_save_file` + `fs::write` 全部 `spawn_blocking`，2026-07-05 第七轮补，避免阻塞 Tokio worker；与 `copy_image_to_clipboard` 同模式）/ `copy_image_to_clipboard`（`ipc::Request` Raw body → `write_image` + `handle_clipboard_change` 全部 `spawn_blocking`）。`copy_clipboard_item` 移入 `spawn_blocking` 避免 UI 冻结。
 - `clipboard_commands.rs::insert_ocr_clipboard_item`：OCR 统一入库——识别文本 → `store::insert_ocr_item(conn, text, engine, model)`（item_type='ocr'，meta_info={engine,model,char_count}）→ `emit("clipboard://changed")` → 返回新 id；`current_ocr_meta()` helper 读 `ocr_model` 配置（默认 PP-OCRv6-small，engine 固定 paddle），返回 `(engine, model)` 元组供此命令与 `ocr_screenshot` 复用。三处 OCR 入口（截图 / 图片预览 / 剪贴板图片条目）识别出文本后统一走此命令入库 + `openCompactEditorTab` 打开绑定 tab。
 - `clipboard_commands.rs::set_clipboard_item_text`：编辑器回写——同写 `content` + `search_text`（保 FTS 命中，`clip_fts_au AFTER UPDATE OF search_text` 触发器自动同步 FTS5 索引）+ 同步系统剪贴板，**成功后 `emit("clipboard://changed")`**（编辑器是独立窗口，剪贴板列表窗口靠此事件感知条目变化并 `fetchItems()` 重新拉取，否则编辑后列表仍显示旧文本）。供 CompactEditor Ctrl+S / 剪贴板文本条目「编辑」回写。
-- `screenshot_commands.rs::ocr_screenshot`：截图 OCR 后端闭环——图片入库（截图历史，`save_screenshot_to_history` helper 三处去重）+ `ocr_rs` 识别 → `insert_ocr_item`（入库 + 识别 + OCR 入库均在 `spawn_blocking` 内隔离 CPU 任务，2026-07-06） → 经主线程调 `open_compact_editor_tab(image_id, None)` 开图片 tab + `open_compact_editor_tab(ocr_id, None)` 开文本 tab + `emit("clipboard://changed")` + `emit("ocr-screenshot://result", { text, blocks })`（推送 OCR 文本块给图片 tab 的 ImagePreview 组件叠加显示）；不再 write_text / update_search_text（编辑保存时才写剪贴板）。
+- `screenshot_commands.rs::ocr_screenshot`：截图 OCR 后端闭环——图片入库（截图历史，`save_screenshot_to_history` helper 三处去重）+ `octopus_paddle_ocr` 识别 → `insert_ocr_item`（入库 + 识别 + OCR 入库均在 `spawn_blocking` 内隔离 CPU 任务，2026-07-06） → 经主线程调 `open_compact_editor_tab(image_id, None)` 开图片 tab + `open_compact_editor_tab(ocr_id, None)` 开文本 tab + `emit("clipboard://changed")` + `emit("ocr-screenshot://result", { text, blocks })`（推送 OCR 文本块给图片 tab 的 ImagePreview 组件叠加显示）；不再 write_text / update_search_text（编辑保存时才写剪贴板）。
 - `coordinator.rs`：`static CURRENT_TRANSCRIPTION_ID: AtomicI64`（3 个会话起点记录）+ `current_transcription_id` 命令，供 Result 窗口溯源当前识别记录（无需改文本事件 payload）。
 - 前端：`pages/CompactEditor/`（**统一查看器**：tab 栏文本/图片/语音图标区分 + 工具栏撤销/重做/字号/查找替换/清空/保存 + 内容区 hidden 挂载按 `tab.source`/`tab.itemType` 渲染 textarea（文本可编辑 / 语音只读）或 `<ImagePreview imageId={...}/>`；**键盘/按钮 undo/redo 统一走 `document.execCommand`**——受控 textarea 每次 value 同步清空 WebKit 原生 undo 栈致键盘 Cmd+Z 失灵，详见 [清理 spec §12](superpowers/specs/2026-07-03-clean-used-feature-design.md)）；`lib/compactEditor.ts::openCompactEditorTab(itemId, source?)`。`pages/Notepad/` 已删除；`pages/ImagePreview/` 保留为组件（非路由）。
 

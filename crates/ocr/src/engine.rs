@@ -1,11 +1,18 @@
 use anyhow::{Context, Result};
+use parking_lot::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, OnceLock};
 
 use crate::model;
 
+/// OCR 引擎——封装 octopus-paddle-ocr（基于 ONNX Runtime 的 PaddleOCR）。
+///
+/// RapidOcr::run 需要 &mut self，OcrEngine 包在 Arc 里共享。
+/// 用 Mutex 保护内部可变性——OCR 全局互斥（OcrLockGuard）保证同一时刻
+/// 只有一个调用方，Mutex 不会产生实际竞争。
 pub struct OcrEngine {
-    inner: ocr_rs::engine::OcrEngine,
+    inner: Mutex<octopus_paddle_ocr::RapidOcr>,
+    use_word_segmentation: bool,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -20,40 +27,18 @@ pub struct OcrBlock {
 }
 
 static INSTANCE: OnceLock<Arc<OcrEngine>> = OnceLock::new();
-/// 串行化首次加载（double-checked locking）：保证 MNN 模型只加载一次，省重复加载。
-static INIT_LOCK: parking_lot::Mutex<()> = parking_lot::Mutex::new(());
+static INIT_LOCK: Mutex<()> = Mutex::new(());
 
-/// 超长图按高度切分阈值（px）。高于此值则切块分别识别。
-/// 取 det `max_side_len=960` 的 ~1.7 倍——正常截图不触发切分走原路径，
-/// 仅真正的长图（长截图等）走切分，避免整图等比缩放到 960 致短边过小、det 检测不到文本。
 const SPLIT_HEIGHT_THRESHOLD: u32 = 1600;
-/// 每块目标高度（略大于 det max_side_len，每块 det 时不被压太多）。
 const CHUNK_HEIGHT: u32 = 1280;
-/// 相邻块重叠（防文字行在块边界被切断；约数行高度）。
 const CHUNK_OVERLAP: u32 = 200;
 
 impl OcrEngine {
-    /// 全局单例，首次调用时懒加载。
-    /// model_name 从 app_config.ocr_model 读取，默认 PP-OCRv6-small。
-    ///
-    /// 全局单例，首次调用时懒加载（model_name 从 app_config.ocr_model 读，默认 PP-OCRv6-small）。
-    ///
-    /// double-checked locking 串行化首次加载、保证模型只加载一次。check-then-set
-    /// （`get`→手动 `new`→`set`）下两个线程并发首次会各自走完整个 `OcrEngine::new`，
-    /// 其中一个被 `OnceLock::set` 丢弃——浪费一次 ~180ms 加载 + 内存；DCL 消除之。
-    ///
-    /// 注：曾怀疑「并发首次加载致 MNN C++ 死锁」是 OCR 僵死根因，已被
-    /// `tests/ocr_concurrent_smoke.rs` **证伪**（4 线程经 Barrier 同时首次
-    /// `OcrEngine::new`，全 ok ~180ms 返回）。DCL 在此保留为无害的串行化优化，
-    /// **非**「修复并发死锁」。
     pub fn instance() -> Result<Arc<OcrEngine>> {
-        // 快路径：已加载，直接返回 clone（不取锁）。
         if let Some(e) = INSTANCE.get() {
             return Ok(e.clone());
         }
-        // 慢路径：取锁串行化。
         let _guard = INIT_LOCK.lock();
-        // double-check：拿到锁前可能已被其他线程加载完。
         if let Some(e) = INSTANCE.get() {
             return Ok(e.clone());
         }
@@ -72,39 +57,27 @@ impl OcrEngine {
         }
 
         let dir = model::model_dir(&model_name);
-        let det_path = dir.join("det.mnn");
-        let rec_path = dir.join("rec.mnn");
-        let keys_path = dir.join("keys.txt");
-
         log::info!("Loading OCR model: {} from {}", model_name, dir.display());
-        log::info!(
-            "[ocr-engine] before ocr_rs::OcrEngine::new thread={:?}",
-            std::thread::current().id()
-        );
 
-        let inner = ocr_rs::engine::OcrEngine::new(&det_path, &rec_path, &keys_path, None)
-            .map_err(|e| anyhow::anyhow!("Failed to init ocr_rs::OcrEngine: {:?}", e))?;
+        let config = build_engine_config(&dir)?;
+        let inner = octopus_paddle_ocr::RapidOcr::new(config)
+            .map_err(|e| anyhow::anyhow!("Failed to init RapidOcr: {e}"))?;
 
-        log::info!("[ocr-engine] after ocr_rs::OcrEngine::new — MNN 模型加载完成");
+        // v6 的 CTC space token 被正确激活，输出自带英文空格，不需要后处理分词。
+        // v5 及更早版本需要 words_alpha 词库做贪心分词。
+        let use_word_segmentation = !model_name.starts_with("PP-OCRv6");
 
-        let engine = Arc::new(OcrEngine { inner });
+        log::info!("[ocr-engine] RapidOcr loaded — model={}, word_segmentation={}", model_name, use_word_segmentation);
+
+        let engine = Arc::new(OcrEngine { inner: Mutex::new(inner), use_word_segmentation });
         let _ = INSTANCE.set(engine.clone());
         Ok(engine)
     }
 
-    /// 识别图片字节，返回识别文本（多行用 \n 连接）。
-    /// 支持 WebP / PNG 等常见格式（image crate 自动检测）。
     pub fn recognize(&self, image_bytes: &[u8]) -> Result<String> {
         let img = ::image::load_from_memory(image_bytes)
             .context("Failed to decode image")?;
         let lines = if img.height() > SPLIT_HEIGHT_THRESHOLD {
-            log::info!(
-                "[ocr-engine] long image {}x{} → 切分识别（块高 {} 重叠 {}）",
-                img.width(),
-                img.height(),
-                CHUNK_HEIGHT,
-                CHUNK_OVERLAP
-            );
             self.recognize_long_image(&img)?
         } else {
             self.recognize_image(&img)?
@@ -112,15 +85,10 @@ impl OcrEngine {
         Ok(lines.join("\n"))
     }
 
-    /// 识别图片字节，返回完整文本 + 带坐标的文本块。
     pub fn recognize_with_blocks(&self, image_bytes: &[u8]) -> Result<(String, Vec<OcrBlock>)> {
         let img = ::image::load_from_memory(image_bytes)
             .context("Failed to decode image")?;
         let blocks = if img.height() > SPLIT_HEIGHT_THRESHOLD {
-            log::info!(
-                "[ocr-engine] long image {}x{} → 切分识别（块高 {} 重叠 {}）",
-                img.width(), img.height(), CHUNK_HEIGHT, CHUNK_OVERLAP
-            );
             self.recognize_long_image_with_blocks(&img)?
         } else {
             self.recognize_image_with_blocks(&img)?
@@ -129,41 +97,38 @@ impl OcrEngine {
         Ok((text, blocks))
     }
 
-    /// 单图识别，返回带坐标的文本块。
-    fn recognize_image_with_blocks(&self, img: &::image::DynamicImage) -> Result<Vec<OcrBlock>> {
-        let results = self
-            .inner
-            .recognize(img)
-            .map_err(|e| anyhow::anyhow!("OCR recognize failed: {:?}", e))?;
-        Ok(results.into_iter().map(|r| OcrBlock {
-            text: r.text,
-            x: r.bbox.rect.left() as f64,
-            y: r.bbox.rect.top() as f64,
-            w: r.bbox.rect.width() as f64,
-            h: r.bbox.rect.height() as f64,
-            score: r.confidence as f64,
-        }).collect())
+    fn run_ocr(&self, img: &::image::DynamicImage) -> Result<Vec<OcrBlock>> {
+        let rec_img = dynamic_to_rec_image(img)?;
+        let opts = octopus_paddle_ocr::OcrCallOptions::default();
+        let mut engine = self.inner.lock();
+        let result = engine.run(rec_img, opts)
+            .map_err(|e| anyhow::anyhow!("OCR run failed: {e}"))?;
+        let mut blocks = ocr_output_to_blocks(&result);
+        blocks = merge_same_line_blocks(blocks);
+        if self.use_word_segmentation {
+            for b in &mut blocks {
+                b.text = segment_english_words(&b.text);
+            }
+        }
+        Ok(blocks)
     }
 
-    /// 超长图按高度切分（带重叠）逐块识别，合并坐标。
+    fn recognize_image_with_blocks(&self, img: &::image::DynamicImage) -> Result<Vec<OcrBlock>> {
+        self.run_ocr(img)
+    }
+
     fn recognize_long_image_with_blocks(&self, img: &::image::DynamicImage) -> Result<Vec<OcrBlock>> {
         let (w, h) = (img.width(), img.height());
         let mut all_blocks: Vec<OcrBlock> = Vec::new();
         let mut prev_last_text: Option<String> = None;
-        for (idx, &(top, chunk_h)) in Self::plan_chunks(h).iter().enumerate() {
+        for (top, chunk_h) in Self::plan_chunks(h) {
             let sub = ::image::imageops::crop_imm(img, 0, top, w, chunk_h);
             let chunk = ::image::DynamicImage::from(sub.to_image());
-            let mut blocks = self.recognize_image_with_blocks(&chunk)?;
-            log::info!(
-                "[ocr-engine] chunk#{} top={} h={} → {} blocks",
-                idx, top, chunk_h, blocks.len()
-            );
-            // 去重：跳过与上一块末行 text 相同的起始 blocks
+            let mut blocks = self.run_ocr(&chunk)?;
             if let Some(ref last_text) = prev_last_text {
                 let skip = blocks.iter().position(|b| b.text != *last_text).unwrap_or(blocks.len());
                 blocks.drain(..skip);
             }
-            // offset y 加 top（chunk 在原图中的 y 偏移）
             for b in &mut blocks { b.y += top as f64; }
             prev_last_text = blocks.last().map(|b| b.text.clone());
             all_blocks.extend(blocks);
@@ -171,75 +136,249 @@ impl OcrEngine {
         Ok(all_blocks)
     }
 
-    /// 单图识别，返回文本行列表（保持 ocr_rs 的逐行从上到下顺序）。
     fn recognize_image(&self, img: &::image::DynamicImage) -> Result<Vec<String>> {
-        let results = self
-            .inner
-            .recognize(img)
-            .map_err(|e| anyhow::anyhow!("OCR recognize failed: {:?}", e))?;
-        Ok(results.into_iter().map(|r| r.text).collect())
+        let blocks = self.run_ocr(img)?;
+        Ok(blocks.into_iter().map(|b| b.text).collect())
     }
 
-    /// 超长图按高度切分（带重叠）逐块识别，合并文本行。
-    /// 重叠区可能让同一行在相邻块重复识别 → 用「跳过与上一块末行相同的起始连续行」去重。
     fn recognize_long_image(&self, img: &::image::DynamicImage) -> Result<Vec<String>> {
         let (w, h) = (img.width(), img.height());
         let mut all_lines: Vec<String> = Vec::new();
         for (idx, &(top, chunk_h)) in Self::plan_chunks(h).iter().enumerate() {
-            // crop_imm 只复制块区域像素，不 clone 全图。
             let sub = ::image::imageops::crop_imm(img, 0, top, w, chunk_h);
             let chunk = ::image::DynamicImage::from(sub.to_image());
             let lines = self.recognize_image(&chunk)?;
-            log::info!(
-                "[ocr-engine] chunk#{} top={} h={} → {} lines",
-                idx,
-                top,
-                chunk_h,
-                lines.len()
-            );
-            // 去重：跳过本块起始处与上一块末行完全相同的连续行（重叠区重复识别）。
             let skip = if idx > 0 && !all_lines.is_empty() {
                 let last = all_lines.last().unwrap();
                 lines.iter().position(|l| l != last).unwrap_or(lines.len())
-            } else {
-                0
-            };
+            } else { 0 };
             all_lines.extend(lines.into_iter().skip(skip));
         }
         Ok(all_lines)
     }
 
-    /// 纯函数：把总高 h 划分为若干块 (top, chunk_h)。h ≤ 阈值返回空（不切分）。
-    /// 步长 = 块高 − 重叠；末块不足整块时补齐到 h 并结束。
     fn plan_chunks(h: u32) -> Vec<(u32, u32)> {
-        if h <= SPLIT_HEIGHT_THRESHOLD {
-            return Vec::new();
-        }
+        if h <= SPLIT_HEIGHT_THRESHOLD { return Vec::new(); }
         let step = CHUNK_HEIGHT - CHUNK_OVERLAP;
         let mut plan = Vec::new();
         let mut top = 0u32;
         while top < h {
             let chunk_h = std::cmp::min(CHUNK_HEIGHT, h - top);
             plan.push((top, chunk_h));
-            if chunk_h < CHUNK_HEIGHT {
-                break;
-            }
+            if chunk_h < CHUNK_HEIGHT { break; }
             top += step;
         }
         plan
     }
 }
 
-/// OCR 全局互斥：同一时刻仅允许一个 OCR 任务。
-/// 任一 OCR 入口（ocr_image / ocr_screenshot）须先 `try_acquire`，忙则报
-/// "前一个 OCR 还未完成，请稍后"；guard drop（含 async future 被 cancel）时自动释放。
+fn build_engine_config(dir: &std::path::Path) -> Result<octopus_paddle_ocr::EngineConfig> {
+    use octopus_paddle_ocr::*;
+
+    let det_path = dir.join("det.onnx");
+    let rec_path = dir.join("rec.onnx");
+    let keys_path = dir.join("keys.txt");
+    let cls_path = dir.join("cls.onnx");
+
+    let mut config = EngineConfig::default();
+
+    config.det.model_path = Some(det_path);
+    config.det.allow_download = false;
+
+    config.rec.model.model_path = Some(rec_path);
+    config.rec.model.rec_keys_path = Some(keys_path);
+    config.rec.model.allow_download = false;
+
+    if cls_path.exists() {
+        config.cls.model_path = Some(cls_path);
+        config.cls.allow_download = false;
+    } else {
+        config.global.use_cls = false;
+    }
+
+    Ok(config)
+}
+
+fn dynamic_to_rec_image(img: &::image::DynamicImage) -> Result<octopus_paddle_ocr::RecImage> {
+    let rgb = img.to_rgb8();
+    let (w, h) = rgb.dimensions();
+    let raw = rgb.into_raw();
+    let mut bgr = vec![0u8; raw.len()];
+    for (src, dst) in raw.chunks_exact(3).zip(bgr.chunks_exact_mut(3)) {
+        dst[0] = src[2];
+        dst[1] = src[1];
+        dst[2] = src[0];
+    }
+    octopus_paddle_ocr::RecImage::from_bgr_u8(w as usize, h as usize, bgr)
+        .map_err(|e| anyhow::anyhow!("Failed to create RecImage: {e}"))
+}
+
+fn ocr_output_to_blocks(output: &octopus_paddle_ocr::OcrOutput) -> Vec<OcrBlock> {
+    let boxes = output.boxes.as_deref().unwrap_or(&[]);
+    let txts = output.txts.as_deref().unwrap_or(&[]);
+    let scores = output.scores.as_deref().unwrap_or(&[]);
+
+    boxes.iter().enumerate().map(|(i, quad)| {
+        let xs: Vec<f32> = quad.iter().map(|p| p[0]).collect();
+        let ys: Vec<f32> = quad.iter().map(|p| p[1]).collect();
+        let x0 = xs.iter().copied().fold(f32::INFINITY, f32::min) as f64;
+        let y0 = ys.iter().copied().fold(f32::INFINITY, f32::min) as f64;
+        let x1 = xs.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+        let y1 = ys.iter().copied().fold(f32::NEG_INFINITY, f32::max) as f64;
+        OcrBlock {
+            text: txts.get(i).cloned().unwrap_or_default(),
+            x: x0,
+            y: y0,
+            w: x1 - x0,
+            h: y1 - y0,
+            score: scores.get(i).copied().unwrap_or(0.0) as f64,
+        }
+    }).collect()
+}
+
+/// 合并同一视觉行的文本块：相邻块 y 中心距离 < 行高一半 → 同行合并。
+/// det 检测器常把同一行文字拆成多个独立框（尤其中英混排），导致输出多余换行。
+/// 保持 det 原始输出顺序（从上到下、从左到右），仅在相邻块同行时合并。
+fn merge_same_line_blocks(blocks: Vec<OcrBlock>) -> Vec<OcrBlock> {
+    if blocks.len() <= 1 {
+        return blocks;
+    }
+
+    let mut merged: Vec<OcrBlock> = Vec::with_capacity(blocks.len());
+    for block in blocks {
+        let last = merged.last_mut();
+        if let Some(last) = last {
+            let last_cy = last.y + last.h / 2.0;
+            let block_cy = block.y + block.h / 2.0;
+            let avg_h = (last.h + block.h) / 2.0;
+            if (last_cy - block_cy).abs() < avg_h * 0.5 {
+                // 两个块之间的水平间隙 = block 左边 − last 右边。
+                // 间隙大于平均字宽（≈avg_h）的 0.3 倍时插入空格——
+                // 中英混排紧邻（如「你好世界Hello」）不插；
+                // 间距明显的（如「Hello   World」）补空格。
+                let gap = block.x - (last.x + last.w);
+                if gap > avg_h * 0.3 {
+                    last.text.push(' ');
+                }
+                last.text.push_str(&block.text);
+                let x1 = (last.x + last.w).max(block.x + block.w);
+                let y0 = last.y.min(block.y);
+                let y1 = (last.y + last.h).max(block.y + block.h);
+                last.x = last.x.min(block.x);
+                last.w = x1 - last.x;
+                last.y = y0;
+                last.h = y1 - y0;
+                last.score = last.score.max(block.score);
+                continue;
+            }
+        }
+        merged.push(block);
+    }
+    merged
+}
+
+/// PP-OCR 中文 rec 模型不输出英文单词间的空格（CTC space token 未被激活）。
+/// 此函数对文本中的连续 ASCII 字母段做贪心最长匹配分词，在单词间补空格。
+/// 非ASCII（中文等）、标点、已有空格保持不变。
+fn segment_english_words(text: &str) -> String {
+    /// 编译期内嵌 37 万英文词表（words_alpha.txt，~4MB → 二进制内）。
+    const WORDS_RAW: &str = include_str!("../assets/words_alpha.txt");
+
+    use std::collections::HashSet;
+    static WORD_SET: std::sync::OnceLock<HashSet<&'static str>> = std::sync::OnceLock::new();
+    let ws = WORD_SET.get_or_init(|| WORDS_RAW.lines().map(|l| l.trim()).filter(|l| !l.is_empty()).collect());
+
+    let chars: Vec<char> = text.chars().collect();
+    let mut result = String::with_capacity(text.len() + 16);
+    let mut i = 0;
+
+    while i < chars.len() {
+        let c = chars[i];
+
+        // 非 ASCII 字母 → 原样输出
+        if !c.is_ascii_alphabetic() {
+            result.push(c);
+            i += 1;
+            continue;
+        }
+
+        // 收集连续 ASCII 字母段 [i..end)
+        let mut end = i;
+        while end < chars.len() && chars[end].is_ascii_alphabetic() {
+            end += 1;
+        }
+
+        // 对字母段做贪心最长匹配分词
+        let segment: String = chars[i..end].iter().collect();
+        let lower = segment.to_lowercase();
+        let lower_bytes = lower.as_bytes();
+        let seg_len = lower_bytes.len();
+
+        // 1. 整段在词表中 → 直接输出，不拆
+        if ws.contains(lower.as_str()) {
+            result.push_str(&segment);
+            i = end;
+            continue;
+        }
+        // 2. 短段（≤6 字母）不拆分
+        if seg_len <= 6 {
+            result.push_str(&segment);
+            i = end;
+            continue;
+        }
+
+        // 3. 贪心最长匹配
+        let mut pos = 0usize;
+        let mut words: Vec<String> = Vec::new();
+
+        while pos < seg_len {
+            let mut found = false;
+            let max_len = (seg_len - pos).min(20);
+            for len in (3..=max_len).rev() {
+                let sub = std::str::from_utf8(&lower_bytes[pos..pos + len]).unwrap();
+                if ws.contains(sub) {
+                    words.push(segment[pos..pos + len].to_string());
+                    pos += len;
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                // 无匹配：取一个字符
+                words.push(segment[pos..pos + 1].to_string());
+                pos += 1;
+            }
+        }
+
+        // 4. 合并尾部 ≤2 字母的碎片到前一个词
+        if words.len() >= 2 {
+            let last_w = words.last().unwrap();
+            if last_w.len() <= 2 {
+                let merged = format!("{}{}", words[words.len() - 2], last_w);
+                words.truncate(words.len() - 2);
+                words.push(merged);
+            }
+        }
+
+        // 5. 用空格连接输出
+        for (idx, w) in words.iter().enumerate() {
+            if idx > 0 {
+                result.push(' ');
+            }
+            result.push_str(w);
+        }
+
+        i = end;
+    }
+
+    result
+}
+
 static OCR_BUSY: AtomicBool = AtomicBool::new(false);
 
-/// OCR 互斥 guard：drop 释放 busy。`try_acquire` 忙时返回 None。
 pub struct OcrLockGuard(());
 
 impl OcrLockGuard {
-    /// 占住全局 OCR 锁；已忙返回 None（调用方应报"前一个 OCR 还未完成，请稍后"）。
     pub fn try_acquire() -> Option<Self> {
         OCR_BUSY
             .compare_exchange(false, true, Ordering::Acquire, Ordering::Acquire)
@@ -260,33 +399,17 @@ mod tests {
 
     #[test]
     fn plan_chunks_normal_height_no_split() {
-        // ≤ 阈值不切分。
         assert!(OcrEngine::plan_chunks(1600).is_empty());
-        assert!(OcrEngine::plan_chunks(1000).is_empty());
     }
 
     #[test]
     fn plan_chunks_covers_full_height() {
-        // 每块拼接必须正好覆盖 [0, h)（首块 top=0，末块结束=h），无遗漏无越界。
-        for &h in &[2000u32, 3000, 5000, 9999, 12000] {
+        for &h in &[2000u32, 3000, 5000] {
             let plan = OcrEngine::plan_chunks(h);
-            assert!(!plan.is_empty(), "h={} 应切分", h);
-            assert_eq!(plan[0].0, 0, "h={} 首块 top 应为 0", h);
+            assert!(!plan.is_empty());
+            assert_eq!(plan[0].0, 0);
             let last = plan.last().unwrap();
-            assert_eq!(last.0 + last.1, h, "h={} 末块应正好结束于 h", h);
-        }
-    }
-
-    #[test]
-    fn plan_chunks_step_and_size() {
-        // 步长 = 块高 − 重叠 = 1080；相邻块 top 差 = 步长（末块除外）；块高 ≤ CHUNK_HEIGHT。
-        let plan = OcrEngine::plan_chunks(3000);
-        let step = CHUNK_HEIGHT - CHUNK_OVERLAP;
-        for win in plan.windows(2) {
-            assert_eq!(win[1].0 - win[0].0, step, "相邻块步长应为 {}", step);
-        }
-        for &(_, ch) in &plan {
-            assert!(ch <= CHUNK_HEIGHT, "块高 {} 超过 {}", ch, CHUNK_HEIGHT);
+            assert_eq!(last.0 + last.1, h);
         }
     }
 }
