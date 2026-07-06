@@ -9,15 +9,20 @@ mod macos {
     use objc2::rc::Retained;
     use objc2::{define_class, msg_send, sel, AnyThread, MainThreadMarker, MainThreadOnly};
     use objc2_app_kit::{
-        NSAutoresizingMaskOptions, NSColor, NSEvent, NSImage, NSImageView, NSMenu, NSMenuItem, NSWindow,
+        NSAutoresizingMaskOptions, NSColor, NSEvent, NSImage, NSImageView,
+        NSWindow, NSTrackingArea, NSTrackingAreaOptions,
     };
-    use objc2_foundation::{NSData, NSPoint, NSRect, NSSize, NSString};
+    use objc2_foundation::{NSData, NSPoint, NSRect, NSSize};
 
     struct SendWindow(#[allow(dead_code)] Retained<PinNSWindow>);
     unsafe impl Send for SendWindow {}
     unsafe impl Sync for SendWindow {}
 
     static PIN_WINDOWS: Mutex<Vec<SendWindow>> = Mutex::new(Vec::new());
+
+    const CLOSE_BUTTON_TAG: i64 = 99991;
+    const CLOSE_BTN_SIZE: f64 = 20.0;
+    const CLOSE_BTN_MARGIN: f64 = 2.0;
 
     define_class!(
         #[unsafe(super(NSWindow))]
@@ -40,43 +45,6 @@ mod macos {
                 let new_frame = NSRect::new(NSPoint::new(new_x, new_y), NSSize::new(new_w, new_h));
                 self.setFrame_display(new_frame, true);
             }
-
-            #[unsafe(method(rightMouseDown:))]
-            fn right_mouse_down(&self, event: &NSEvent) {
-                let mtm = match MainThreadMarker::new() {
-                    Some(m) => m,
-                    None => {
-                        log::error!("Not on main thread in right_mouse_down");
-                        return;
-                    }
-                };
-                unsafe {
-                    let menu: Retained<NSMenu> = msg_send![NSMenu::alloc(mtm), init];
-                    let title = NSString::from_str("关闭");
-                    let empty = NSString::new();
-                    let item: Retained<NSMenuItem> = msg_send![
-                        NSMenuItem::alloc(mtm),
-                        initWithTitle: &*title,
-                        action: Some(sel!(close)),
-                        keyEquivalent: &*empty
-                    ];
-                    item.setTarget(Some(self));
-                    menu.addItem(&item);
-                    if let Some(content) = self.contentView() {
-                        NSMenu::popUpContextMenu_withEvent_forView(&menu, event, &content);
-                    }
-                    // 右键菜单关闭后清理已关闭的窗口引用（防泄漏）
-                    // 必须在主线程延迟执行，不可在后台线程访问 NSWindow 属性
-                    let cleanup_sel = sel!(cleanup);
-                    let _: () = msg_send![
-                        self,
-                        performSelector: cleanup_sel,
-                        withObject: None as Option<&objc2::runtime::AnyObject>,
-                        afterDelay: 0.1f64
-                    ];
-                }
-            }
-
             #[unsafe(method(cleanup))]
             fn cleanup(&self) {
                 super::macos::cleanup_closed_pin_windows();
@@ -95,8 +63,91 @@ mod macos {
                     window.performWindowDragWithEvent(event);
                 }
             }
+
+            #[unsafe(method(mouseEntered:))]
+            fn mouse_entered(&self, _event: &NSEvent) {
+                unsafe {
+                    let win = match self.window() { Some(w) => w, None => return };
+                    if let Some(content) = win.contentView() {
+                        let btn: Option<Retained<NSImageView>> = msg_send![&content, viewWithTag: CLOSE_BUTTON_TAG];
+                        if let Some(btn) = btn {
+                            btn.setHidden(false);
+                        }
+                    }
+                }
+            }
+
+            #[unsafe(method(mouseExited:))]
+            fn mouse_exited(&self, _event: &NSEvent) {
+                unsafe {
+                    let win = match self.window() { Some(w) => w, None => return };
+                    if let Some(content) = win.contentView() {
+                        let btn: Option<Retained<NSImageView>> = msg_send![&content, viewWithTag: CLOSE_BUTTON_TAG];
+                        if let Some(btn) = btn {
+                            btn.setHidden(true);
+                        }
+                    }
+                }
+            }
         }
     );
+
+    // 关闭按钮视图——与 PinNSImageView 完全相同的模式（NSImageView 子类 + mouseDown 重写）
+    define_class!(
+        #[unsafe(super(NSImageView))]
+        struct PinCloseBtnView;
+
+        impl PinCloseBtnView {
+            #[unsafe(method(mouseDown:))]
+            fn mouse_down(&self, _event: &NSEvent) {
+                if let Some(window) = self.window() {
+                    window.close();
+                    unsafe {
+                        let cleanup_sel = sel!(cleanup);
+                        let _: () = msg_send![
+                            &window,
+                            performSelector: cleanup_sel,
+                            withObject: None as Option<&objc2::runtime::AnyObject>,
+                            afterDelay: 0.1f64
+                        ];
+                    }
+                }
+            }
+        }
+    );
+
+    /// 生成关闭按钮 PNG（40×40，红圆 + 白×，retina 2×）
+    fn create_close_button_png() -> Vec<u8> {
+        let size = 40u32;
+        let mut img = image::RgbaImage::new(size, size);
+        let center = (size as f64 - 1.0) / 2.0;
+        let radius = center;
+        for y in 0..size {
+            for x in 0..size {
+                let dx = x as f64 - center;
+                let dy = y as f64 - center;
+                let dist = (dx * dx + dy * dy).sqrt();
+                let mut px = [0u8, 0, 0, 0];
+                if dist <= radius {
+                    px = [0xD8, 0x2E, 0x2E, 0xEB];
+                }
+                let nx = dx / radius.max(0.1);
+                let ny = dy / radius.max(0.1);
+                let x_thick = (nx.abs() - ny.abs()).abs() / 0.45;
+                let x_pos = (nx.abs() + ny.abs()) / 1.1;
+                if x_thick < 1.0 && x_pos < 0.95 {
+                    px = [255, 255, 255, 255];
+                }
+                img.put_pixel(x, y, image::Rgba(px));
+            }
+        }
+        let mut png = Vec::new();
+        let _ = img.write_to(
+            &mut std::io::Cursor::new(&mut png),
+            image::ImageFormat::Png,
+        );
+        png
+    }
 
     pub struct MacPinWindow;
 
@@ -146,10 +197,51 @@ mod macos {
                 window.setOpaque(false);
                 let clear = NSColor::clearColor();
                 window.setBackgroundColor(Some(&clear));
+                // NSTrackingArea（下方添加到 contentView）负责 hover 检测，无需 acceptsMouseMovedEvents
 
                 if let Some(content) = window.contentView() {
                     content.addSubview(&image_view);
                     image_view.setAutoresizingMask(NSAutoresizingMaskOptions(18));
+
+                    let tracking_options = NSTrackingAreaOptions::MouseEnteredAndExited
+                        | NSTrackingAreaOptions::ActiveAlways
+                        | NSTrackingAreaOptions::InVisibleRect;
+                    let tracking_area: Retained<NSTrackingArea> = msg_send![
+                        NSTrackingArea::alloc(),
+                        initWithRect: iv_frame,
+                        options: tracking_options,
+                        owner: &*image_view,
+                        userInfo: None::<&objc2::runtime::AnyObject>
+                    ];
+                    let _: () = msg_send![&*content, addTrackingArea: &*tracking_area];
+
+                    // 关闭按钮（右上角，初始隐藏，hover 显示）
+                    let btn_size = CLOSE_BTN_SIZE;
+                    let btn_x = width - btn_size - CLOSE_BTN_MARGIN;
+                    let btn_y = height - btn_size - CLOSE_BTN_MARGIN;
+                    let btn_frame = NSRect::new(
+                        NSPoint::new(btn_x, btn_y),
+                        NSSize::new(btn_size, btn_size),
+                    );
+                    let close_btn: Retained<PinCloseBtnView> = msg_send![
+                        PinCloseBtnView::alloc(mtm),
+                        initWithFrame: btn_frame
+                    ];
+                    // 预渲染的关闭按钮图标
+                    let close_png = create_close_button_png();
+                    let cb_data = NSData::with_bytes(&close_png);
+                    let cb_data_ptr = &*cb_data as *const NSData as *mut NSData;
+                    let cb_image: Option<Retained<NSImage>> = msg_send![
+                        NSImage::alloc(),
+                        initWithData: cb_data_ptr
+                    ];
+                    if let Some(cb_img) = cb_image {
+                        close_btn.setImage(Some(&cb_img));
+                    }
+                    let _: () = msg_send![&close_btn, setTag: CLOSE_BUTTON_TAG];
+                    close_btn.setAutoresizingMask(NSAutoresizingMaskOptions(9));
+                    close_btn.setHidden(true);
+                    content.addSubview(&close_btn);
                 } else {
                     log::error!("Window contentView is None");
                 }
@@ -162,7 +254,7 @@ mod macos {
         }
     }
 
-    /// 清理已关闭的贴图窗口引用（右键关闭后调用）。
+    /// 清理已关闭的贴图窗口引用（关闭按钮点击后由 cleanup selector 延迟调用）。
     pub fn cleanup_closed_pin_windows() {
         let mut windows = PIN_WINDOWS.lock();
         windows.retain(|w| {
@@ -192,6 +284,8 @@ mod windows {
         original_h: i32,
         current_zoom: f64,
         hbitmap: HBITMAP,
+        hovered: bool,
+        tracking_mouse: bool,
     }
 
     pub struct WinPinWindow;
@@ -289,6 +383,8 @@ mod windows {
                 original_h: ph,
                 current_zoom: 1.0,
                 hbitmap,
+                hovered: false,
+                tracking_mouse: false,
             });
             let state_ptr = Box::into_raw(state);
 
@@ -382,6 +478,33 @@ mod windows {
                 SRCCOPY,
             )?;
 
+            // Draw close button overlay (red circle + white ×) at top-right when hovered
+            if state.hovered {
+                let btn_sz = 24i32.min(zoom_w).min(zoom_h);
+                let btn_x = zoom_w - btn_sz - 2;
+                let btn_y = 2;
+                let red_brush = match CreateSolidBrush(COLORREF(0x003030D8)) {
+                    Ok(b) => b,
+                    Err(_) => { /* skip close button if GDI fails */ }
+                };
+                let old_brush = SelectObject(hdc_mem_dest, HGDIOBJ(red_brush.0));
+                let _ = Ellipse(hdc_mem_dest, btn_x, btn_y, btn_x + btn_sz, btn_y + btn_sz);
+                SelectObject(hdc_mem_dest, old_brush);
+                DeleteObject(HGDIOBJ(red_brush.0));
+                let white_pen = match CreatePen(0i32, 2, COLORREF(0x00FFFFFF)) {
+                    Ok(p) => p,
+                    Err(_) => { return Ok(()); }
+                };
+                let old_pen = SelectObject(hdc_mem_dest, HGDIOBJ(white_pen.0));
+                let inset = btn_sz / 3;
+                let _ = MoveToEx(hdc_mem_dest, btn_x + inset, btn_y + inset, None);
+                let _ = LineTo(hdc_mem_dest, btn_x + btn_sz - inset, btn_y + btn_sz - inset);
+                let _ = MoveToEx(hdc_mem_dest, btn_x + btn_sz - inset, btn_y + inset, None);
+                let _ = LineTo(hdc_mem_dest, btn_x + inset, btn_y + btn_sz - inset);
+                SelectObject(hdc_mem_dest, old_pen);
+                DeleteObject(HGDIOBJ(white_pen.0));
+            }
+
             let blend = BLENDFUNCTION {
                 BlendOp: AC_SRC_OVER as u8,
                 BlendFlags: 0,
@@ -435,8 +558,63 @@ mod windows {
                 LRESULT(0)
             }
             WM_LBUTTONDOWN => {
+                // Check if click is in close button area (top-right)
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+                if !state_ptr.is_null() {
+                    let state = &*state_ptr;
+                    if state.hovered {
+                        let mut p = POINT::default();
+                        if GetCursorPos(&mut p).as_bool() {
+                            let mut rect = RECT::default();
+                            if GetWindowRect(hwnd, &mut rect).as_bool() {
+                                let cur_w = rect.right - rect.left;
+                                let btn_sz = 24i32.min(cur_w);
+                                let btn_x = rect.right - btn_sz - 2;
+                                let btn_y = rect.top + 2;
+                                if p.x >= btn_x && p.x <= btn_x + btn_sz
+                                    && p.y >= btn_y && p.y <= btn_y + btn_sz {
+                                    DestroyWindow(hwnd);
+                                    return LRESULT(0);
+                                }
+                            }
+                        }
+                    }
+                }
                 ReleaseCapture();
                 SendMessageW(hwnd, WM_NCLBUTTONDOWN, WPARAM(HTCAPTION as usize), LPARAM(0));
+                LRESULT(0)
+            }
+            WM_MOUSEMOVE => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    if !state.tracking_mouse {
+                        state.tracking_mouse = true;
+                        let tme = TRACKMOUSEEVENT {
+                            cbSize: std::mem::size_of::<TRACKMOUSEEVENT>() as u32,
+                            dwFlags: TME_LEAVE,
+                            hwndTrack: hwnd,
+                            dwHoverTime: 0,
+                        };
+                        let _ = TrackMouseEvent(&tme);
+                    }
+                    if !state.hovered {
+                        state.hovered = true;
+                        let _ = update_layered_window_view(hwnd, state_ptr);
+                    }
+                }
+                LRESULT(0)
+            }
+            WM_MOUSELEAVE => {
+                let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
+                if !state_ptr.is_null() {
+                    let state = &mut *state_ptr;
+                    state.tracking_mouse = false;
+                    if state.hovered {
+                        state.hovered = false;
+                        let _ = update_layered_window_view(hwnd, state_ptr);
+                    }
+                }
                 LRESULT(0)
             }
             WM_MOUSEWHEEL => {
@@ -482,34 +660,7 @@ mod windows {
                 }
                 LRESULT(0)
             }
-            WM_RBUTTONUP => {
-                let hmenu = match CreatePopupMenu() {
-                    Ok(m) => m,
-                    Err(e) => {
-                        log::error!("Failed to create popup menu: {}", e);
-                        return LRESULT(0);
-                    }
-                };
-                let _ = AppendMenuW(hmenu, MF_STRING, 1, w!("关闭"));
-                let mut pos = POINT::default();
-                if GetCursorPos(&mut pos).as_bool() {
-                    SetForegroundWindow(hwnd);
-                    let cmd = TrackPopupMenu(
-                        hmenu,
-                        TPM_RETURNCMD | TPM_LEFTALIGN,
-                        pos.x,
-                        pos.y,
-                        0,
-                        hwnd,
-                        None,
-                    );
-                    let _ = DestroyMenu(hmenu);
-                    if cmd.0 == 1 {
-                        DestroyWindow(hwnd);
-                    }
-                }
-                LRESULT(0)
-            }
+
             WM_DESTROY => {
                 let state_ptr = GetWindowLongPtrW(hwnd, GWLP_USERDATA) as *mut WindowState;
                 if !state_ptr.is_null() {
@@ -528,7 +679,7 @@ mod windows {
 #[cfg(target_os = "linux")]
 mod linux {
     use gtk::prelude::*;
-    use std::cell::RefCell;
+    use std::cell::{Cell, RefCell};
     use std::rc::Rc;
 
     struct LinuxWindowState {
@@ -536,6 +687,7 @@ mod linux {
         original_h: f64,
         current_zoom: f64,
         surface: cairo::ImageSurface,
+        hovered: Cell<bool>,
     }
 
     pub struct LinuxPinWindow;
@@ -587,6 +739,7 @@ mod linux {
                 original_h: height,
                 current_zoom: 1.0,
                 surface,
+                hovered: Cell::new(false),
             }));
 
             let window = gtk::Window::new(gtk::WindowType::Toplevel);
@@ -602,6 +755,7 @@ mod linux {
                 }
             }
             window.set_app_paintable(true);
+            window.add_events(gdk::EventMask::POINTER_MOTION_MASK | gdk::EventMask::LEAVE_NOTIFY_MASK);
 
             window.set_default_size(width as i32, height as i32);
             window.move_(x as i32, y as i32);
@@ -628,18 +782,68 @@ mod linux {
                     let _ = cr.restore();
                 }
 
+                // Close button overlay when hovered
+                if s.hovered.get() {
+                    let btn_sz = 24.0_f64.min(win_w).min(win_h);
+                    let btn_x = win_w - btn_sz - 2.0;
+                    let btn_y = 2.0;
+                    let _ = cr.save();
+                    cr.arc(btn_x + btn_sz / 2.0, btn_y + btn_sz / 2.0, btn_sz / 2.0, 0.0, std::f64::consts::TAU);
+                    let _ = cr.set_source_rgba(0.85, 0.17, 0.17, 0.92);
+                    let _ = cr.fill();
+                    let inset = btn_sz * 0.3;
+                    let _ = cr.set_source_rgba(1.0, 1.0, 1.0, 1.0);
+                    cr.set_line_width(1.5);
+                    cr.move_to(btn_x + inset, btn_y + inset);
+                    cr.line_to(btn_x + btn_sz - inset, btn_y + btn_sz - inset);
+                    cr.move_to(btn_x + btn_sz - inset, btn_y + inset);
+                    cr.line_to(btn_x + inset, btn_y + btn_sz - inset);
+                    let _ = cr.stroke();
+                    let _ = cr.restore();
+                }
+
                 glib::Propagation::Proceed
             });
 
+            let state_btn = state.clone();
             window.connect_button_press_event(move |win, event| {
                 if event.button() == 1 {
+                    // Check if click is in close button area
+                    let s = state_btn.borrow();
+                    if s.hovered.get() {
+                        let (mx, my) = event.coords();
+                        let win_w = win.allocated_width() as f64;
+                        let win_h = win.allocated_height() as f64;
+                        let btn_sz = 24.0_f64.min(win_w).min(win_h);
+                        let btn_x = win_w - btn_sz - 2.0;
+                        let btn_y = 2.0;
+                        if mx >= btn_x && mx <= btn_x + btn_sz && my >= btn_y && my <= btn_y + btn_sz {
+                            win.close();
+                            return glib::Propagation::Stop;
+                        }
+                    }
                     let (x, y) = event.root_coords();
-                    win.begin_drag_move(
-                        1,
-                        x as i32,
-                        y as i32,
-                        event.time(),
-                    );
+                    win.begin_drag_move(1, x as i32, y as i32, event.time());
+                }
+                glib::Propagation::Proceed
+            });
+
+            let state_motion = state.clone();
+            window.connect_motion_notify_event(move |win, _event| {
+                let s = state_motion.borrow();
+                if !s.hovered.get() {
+                    s.hovered.set(true);
+                    win.queue_draw();
+                }
+                glib::Propagation::Proceed
+            });
+
+            let state_leave = state.clone();
+            window.connect_leave_notify_event(move |win, _event| {
+                let s = state_leave.borrow();
+                if s.hovered.get() {
+                    s.hovered.set(false);
+                    win.queue_draw();
                 }
                 glib::Propagation::Proceed
             });
@@ -679,22 +883,6 @@ mod linux {
                 glib::Propagation::Proceed
             });
 
-            window.connect_button_press_event(move |win, event| {
-                if event.button() == 3 {
-                    let menu = gtk::Menu::new();
-                    let close_item = gtk::MenuItem::with_label("关闭");
-                    
-                    let win_close = win.clone();
-                    close_item.connect_activate(move |_| {
-                        win_close.close();
-                    });
-                    menu.append(&close_item);
-                    menu.show_all();
-                    
-                    menu.popup_at_pointer(Some(event));
-                }
-                glib::Propagation::Proceed
-            });
 
             window.show_all();
         }
