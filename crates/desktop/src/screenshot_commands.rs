@@ -210,6 +210,52 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
     Ok(())
 }
 
+/// 截图入库共用核心：SHA-256 去重 → WebP 编码 → image_data + clipboard_history 入库，返回 image_id。
+/// 已存在同 hash 则 touch created_at 并返回既有 id。ocr_screenshot / confirm_screenshot_with_data /
+/// confirm_screenshot 三入口共用。decode+encode 为 CPU 密集，调用方应置于 spawn_blocking。
+fn save_screenshot_to_history(png_bytes: &[u8]) -> Result<i64, String> {
+    let hash = octopus_clipboard::image::sha256_hex(png_bytes);
+    let existing = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::find_by_content_hash(conn, &hash)
+    }).map_err(|e| e.to_string())?;
+    if let Some(id) = existing {
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::touch_created_at(conn, id)
+        }).map_err(|e| e.to_string())?;
+        Ok(id)
+    } else {
+        let img = ::image::load_from_memory(png_bytes)
+            .map_err(|e| format!("解码失败: {:?}", e))?;
+        let crop_w = img.width();
+        let crop_h = img.height();
+        let encoded = octopus_clipboard::image::encode_to_webp(&img)
+            .map_err(|e| format!("WebP 编码失败: {}", e))?;
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::insert_image_data(
+                conn, &hash, &encoded.webp_blob, &encoded.thumb_blob,
+                crop_w as i64, crop_h as i64,
+            )
+        }).map_err(|e| e.to_string())?;
+        let id = octopus_clipboard::store::chrono_millis();
+        octopus_infra::db::with_db(|conn| {
+            octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
+                id,
+                item_type: octopus_clipboard::ItemType::Image,
+                content: String::new(),
+                ref_data: Some(hash.clone()),
+                meta_info: Some(octopus_clipboard::MetaInfo {
+                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
+                    ..Default::default()
+                }),
+                created_at: octopus_clipboard::store::iso_now(),
+                has_thumbnail: Some(1),
+                is_rich: false,
+            })
+        }).map_err(|e| e.to_string())?;
+        Ok(id)
+    }
+}
+
 /// 截图 OCR：合成选区 → 图片入库 → OCR 识别 → 新建 ocr 条目 → 打开 CompactEditor tab。
 /// 图片仍入库为剪贴板图片条目（截图历史）；识别文本独立进 source=ocr 条目并在编辑 tab 打开。
 #[tauri::command]
@@ -228,78 +274,40 @@ pub async fn ocr_screenshot(
     ALL_CAPTURES.lock().clear();
     PENDING_IMAGES.lock().clear();
 
-    // SHA-256 去重 → WebP → 图片入库
-    let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
+    // current_ocr_meta 闭包外取（与 insert_ocr_clipboard_item 同习惯，详见其注释）：
+    // 闭包内调虽已不再死锁（db.rs 已换 ReentrantMutex），仍避免 DB 锁嵌套持有。
+    let (ocr_engine, ocr_model) = crate::clipboard_commands::current_ocr_meta();
 
-    let existing = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::find_by_content_hash(conn, &hash)
-    }).map_err(|e| e.to_string())?;
+    // 入库（decode+encode CPU）+ OCR 识别（秒级 CPU）+ ocr 条目入库：移入 spawn_blocking，
+    // 隔离 Tokio worker，避免 recognize 秒级阻塞拖累录音/VAD/剪贴板监听。
+    let (image_id, text, blocks, ocr_id_opt) = tokio::task::spawn_blocking(move || {
+        let image_id = save_screenshot_to_history(&png_bytes)?;
+        log::info!("[ocr-screenshot] before instance");
+        let engine = octopus_ocr::engine::OcrEngine::instance()
+            .map_err(|e| e.to_string())?;
+        log::info!(
+            "[ocr-screenshot] after instance; before recognize png_bytes={} bytes",
+            png_bytes.len()
+        );
+        let (text, blocks) = engine.recognize_with_blocks(&png_bytes).map_err(|e| e.to_string())?;
+        log::info!("[ocr-screenshot] after recognize text_len={} blocks={}", text.len(), blocks.len());
 
-    let image_id = if let Some(id) = existing {
-        octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::touch_created_at(conn, id)
-        }).map_err(|e| e.to_string())?;
-        id
-    } else {
-        let img = ::image::load_from_memory(&png_bytes)
-            .map_err(|e| format!("解码失败: {:?}", e))?;
-        let crop_w = img.width();
-        let crop_h = img.height();
-        let encoded = octopus_clipboard::image::encode_to_webp(&img)
-            .map_err(|e| format!("WebP 编码失败: {}", e))?;
-
-        octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::insert_image_data(
-                conn, &hash, &encoded.webp_blob, &encoded.thumb_blob,
-                crop_w as i64, crop_h as i64,
-            )
-        }).map_err(|e| e.to_string())?;
-
-        let id = octopus_clipboard::store::chrono_millis();
-        octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
-                id,
-                item_type: octopus_clipboard::ItemType::Image,
-                content: String::new(),
-                ref_data: Some(hash.clone()),
-                meta_info: Some(octopus_clipboard::MetaInfo {
-                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
-                    ..Default::default()
-                }),
-                created_at: octopus_clipboard::store::iso_now(),
-                has_thumbnail: Some(1),
-                is_rich: false,
+        let ocr_id_opt: Option<i64> = if !text.trim().is_empty() {
+            log::info!("[ocr-screenshot] before insert_ocr_item");
+            let ocr_id = octopus_infra::db::with_db(|conn| {
+                octopus_clipboard::store::insert_ocr_item(conn, &text, &ocr_engine, &ocr_model)
             })
-        }).map_err(|e| e.to_string())?;
-        id
-    };
+            .map_err(|e| e.to_string())?;
+            log::info!("[ocr-screenshot] after insert_ocr_item id={}", ocr_id);
+            Some(ocr_id)
+        } else {
+            None
+        };
+        Ok::<_, String>((image_id, text, blocks, ocr_id_opt))
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let image_id_opt: Option<i64> = Some(image_id);
-
-    // OCR 识别 → 新建 ocr 条目 → 打开绑定 tab 编辑
-    log::info!("[ocr-screenshot] before instance");
-    let engine = octopus_ocr::engine::OcrEngine::instance()
-        .map_err(|e| e.to_string())?;
-    log::info!(
-        "[ocr-screenshot] after instance; before recognize png_bytes={} bytes",
-        png_bytes.len()
-    );
-    let (text, blocks) = engine.recognize_with_blocks(&png_bytes).map_err(|e| e.to_string())?;
-    log::info!("[ocr-screenshot] after recognize text_len={} blocks={}", text.len(), blocks.len());
-
-    let ocr_id_opt: Option<i64> = if !text.trim().is_empty() {
-        // current_ocr_meta 在 with_db 外取（与 insert_ocr_clipboard_item 同习惯，详见其注释）：
-        // 闭包内调虽已不再死锁（db.rs 已换 ReentrantMutex），仍避免 DB 锁嵌套持有。
-        let (ocr_engine, ocr_model) = crate::clipboard_commands::current_ocr_meta();
-        log::info!("[ocr-screenshot] before insert_ocr_item");
-        let ocr_id = octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::insert_ocr_item(conn, &text, &ocr_engine, &ocr_model)
-        })
-        .map_err(|e| e.to_string())?;
-        log::info!("[ocr-screenshot] after insert_ocr_item id={}", ocr_id);
-        Some(ocr_id)
-    } else {
-        None
-    };
 
     let _ = app_handle.emit("clipboard://changed", ());
 
@@ -420,50 +428,15 @@ pub async fn confirm_screenshot_with_data(
     ALL_CAPTURES.lock().clear();
     PENDING_IMAGES.lock().clear();
 
-    // SHA-256 去重
-    let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
-
-    let existing = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::find_by_content_hash(conn, &hash)
-    }).map_err(|e| e.to_string())?;
-
-    if let Some(id) = existing {
-        octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::touch_created_at(conn, id)
-        }).map_err(|e| e.to_string())?;
-    } else {
-        let img = ::image::load_from_memory(&png_bytes)
-            .map_err(|e| format!("解码失败: {:?}", e))?;
-        let crop_w = img.width();
-        let crop_h = img.height();
-        let encoded = octopus_clipboard::image::encode_to_webp(&img)
-            .map_err(|e| format!("WebP 编码失败: {}", e))?;
-
-        octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::insert_image_data(
-                conn, &hash, &encoded.webp_blob, &encoded.thumb_blob,
-                crop_w as i64, crop_h as i64,
-            )
-        }).map_err(|e| e.to_string())?;
-
-        octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
-                id: octopus_clipboard::store::chrono_millis(),
-                item_type: octopus_clipboard::ItemType::Image,
-                content: String::new(),
-                ref_data: Some(hash.clone()),
-                meta_info: Some(octopus_clipboard::MetaInfo {
-                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
-                    ..Default::default()
-                }),
-                created_at: octopus_clipboard::store::iso_now(),
-                has_thumbnail: Some(1),
-                is_rich: false,
-            })
-        }).map_err(|e| e.to_string())?;
-    }
-
-    handle.write_image(&png_bytes).map_err(|e| e.to_string())?;
+    // 入库（decode+encode CPU）+ 写系统剪贴板：移入 spawn_blocking 隔离 Tokio worker。
+    let handle_clone = handle.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        save_screenshot_to_history(&png_bytes)?;
+        handle_clone.write_image(&png_bytes).map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
     let _ = app_handle.emit("clipboard://changed", ());
     close_all_screenshot_windows(&app_handle);
 
@@ -512,68 +485,26 @@ pub async fn confirm_screenshot(
     ALL_CAPTURES.lock().clear();
     PENDING_IMAGES.lock().clear();
 
-    // 2. 裁剪选区
-    let fake_full = octopus_capx::capture::ScreenCapture {
-        rgba_bytes: full.rgba_bytes.clone(),
-        width: full.width,
-        height: full.height,
-        monitor_x: 0,
-        monitor_y: 0,
-    };
-    let png_bytes = octopus_capx::capture::crop_region(&fake_full, x, y, w, h)
-        .map_err(|e| format!("裁剪失败: {}", e))?;
+    // 裁剪选区 + 入库（decode+encode CPU）+ 写系统剪贴板：移入 spawn_blocking 隔离 Tokio worker。
+    let handle_clone = handle.inner().clone();
+    tokio::task::spawn_blocking(move || {
+        let fake_full = octopus_capx::capture::ScreenCapture {
+            rgba_bytes: full.rgba_bytes.clone(),
+            width: full.width,
+            height: full.height,
+            monitor_x: 0,
+            monitor_y: 0,
+        };
+        let png_bytes = octopus_capx::capture::crop_region(&fake_full, x, y, w, h)
+            .map_err(|e| format!("裁剪失败: {}", e))?;
+        save_screenshot_to_history(&png_bytes)?;
+        handle_clone.write_image(&png_bytes).map_err(|e| e.to_string())?;
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())??;
 
-    // 3. SHA-256 去重
-    let hash = octopus_clipboard::image::sha256_hex(&png_bytes);
-
-    // 4. 检查 DB 中是否已有此 hash
-    let existing = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::find_by_content_hash(conn, &hash)
-    }).map_err(|e| e.to_string())?;
-
-    if let Some(id) = existing {
-        octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::touch_created_at(conn, id)
-        }).map_err(|e| e.to_string())?;
-    } else {
-        // 5. 编码 WebP 无损 + 缩略图
-        let img = ::image::load_from_memory(&png_bytes)
-            .map_err(|e| format!("解码裁剪图失败: {:?}", e))?;
-        let crop_w = img.width();
-        let crop_h = img.height();
-        let encoded = octopus_clipboard::image::encode_to_webp(&img)
-            .map_err(|e| format!("WebP 编码失败: {}", e))?;
-
-        // 6. 存 image_data BLOB
-        octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::insert_image_data(
-                conn, &hash, &encoded.webp_blob, &encoded.thumb_blob,
-                crop_w as i64, crop_h as i64,
-            )
-        }).map_err(|e| e.to_string())?;
-
-        // 7. 存 clipboard_history 条目
-        octopus_infra::db::with_db(|conn| {
-            octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
-                id: octopus_clipboard::store::chrono_millis(),
-                item_type: octopus_clipboard::ItemType::Image,
-                content: String::new(),
-                ref_data: Some(hash.clone()),
-                meta_info: Some(octopus_clipboard::MetaInfo {
-                    w: Some(crop_w), h: Some(crop_h), size: Some(format_file_size(encoded.webp_blob.len() as u64)),
-                    ..Default::default()
-                }),
-                created_at: octopus_clipboard::store::iso_now(),
-                has_thumbnail: Some(1),
-                is_rich: false,
-            })
-        }).map_err(|e| e.to_string())?;
-    }
-
-    // 8. 写系统剪贴板（suppress flag）
-    handle.write_image(&png_bytes).map_err(|e| e.to_string())?;
-
-    // 9. 通知前端刷新
+    // 通知前端刷新
     let _ = app_handle.emit("clipboard://changed", ());
 
     // 10. 关闭所有截图窗口
