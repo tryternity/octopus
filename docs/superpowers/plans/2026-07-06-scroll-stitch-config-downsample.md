@@ -10,7 +10,7 @@
 
 **约定：** cargo 带 `--manifest-path` 指 worktree（worktree-cwd-trap）；git 用 `git -C <WT>` 绝对路径。`<WT>` = `/Users/wudarui/workspace/agent/octopus/.claude/worktrees/scroll-stitch-borrow`。
 
-> **实现状态（2026-07-06）**：✅ Task 1-3 全部完成（F 字段化 `e53b5fe` + D 辅助 `8053665` + D 两阶段 `f1477be`），capx 24 测绿 + desktop check 通过。Task 4 文档同步中。
+> **实现状态（2026-07-06）**：✅ Task 1-3 全部完成（F 字段化 `e53b5fe` + D 辅助 `8053665` + D 两阶段 `f1477be`），capx 24 测绿 + desktop check 通过。✅ Task 4 完成 + 已合 main + push origin（`133ea22`，main / borrow 全同步，2026-07-06）。
 
 ---
 
@@ -26,7 +26,7 @@
 
 **Files:** Modify `crates/capx/src/stitch.rs`（`StitchConfig`:215 / `Default`:222 / `const`:8-31 / `validate_ncc_match`:160 / 引用处）
 
-- [ ] **Step 1: `StitchConfig` 加 4 字段 + `Default`**（替换 :215-229）
+- [x] **Step 1: `StitchConfig` 加 4 字段 + `Default`**（替换 :215-229）
 
 ```rust
 pub struct StitchConfig {
@@ -58,9 +58,9 @@ impl Default for StitchConfig {
 }
 ```
 
-- [ ] **Step 2: 删 3 const**（删 :8 `STRIP_H` / :10 `MAX_SCROLL` / :31 `NCC_SCORE_THRESHOLD`；保留 `STATIONARY_SAD`/`SAMPLE_STEP_X`/`X_*`/`DY_HISTORY_LEN`/`STICKY_DETECT_MAX`）
+- [x] **Step 2: 删 3 const**（删 :8 `STRIP_H` / :10 `MAX_SCROLL` / :31 `NCC_SCORE_THRESHOLD`；保留 `STATIONARY_SAD`/`SAMPLE_STEP_X`/`X_*`/`DY_HISTORY_LEN`/`STICKY_DETECT_MAX`）
 
-- [ ] **Step 3: `validate_ncc_match` 加 `threshold` 参数**（替换 :160-164）
+- [x] **Step 3: `validate_ncc_match` 加 `threshold` 参数**（替换 :160-164）
 
 ```rust
 fn validate_ncc_match(
@@ -76,7 +76,7 @@ fn validate_ncc_match(
     // …后续 min/max 区分度检测不变…
 ```
 
-- [ ] **Step 4: 引用替换**（全文件 `STRIP_H`/`MAX_SCROLL`/`NCC_SCORE_THRESHOLD` → `self.config.*`；自由函数调用处传 threshold）
+- [x] **Step 4: 引用替换**（全文件 `STRIP_H`/`MAX_SCROLL`/`NCC_SCORE_THRESHOLD` → `self.config.*`；自由函数调用处传 threshold）
 
   - `process_frame:316` `extract_canvas_bottom_gray(STRIP_H)` → `extract_canvas_bottom_gray(self.config.strip_h)`
   - `process_frame_inner:382` `STRIP_H as f64` → `self.config.strip_h as f64`
@@ -84,12 +84,12 @@ fn validate_ncc_match(
   - `MAX_SCROLL` 全部引用 → `self.config.max_scroll`（`grep -n MAX_SCROLL` 确认处数=5）
   - `validate_ncc_match` 调用处加 `self.config.ncc_score_threshold`（`process_frame_inner` + `try_match_prev_frame` 两处）
 
-- [ ] **Step 5: 编译 + 全量测试**（行为不变）
+- [x] **Step 5: 编译 + 全量测试**（行为不变）
 
 Run: `cargo test --manifest-path <WT>/crates/capx/Cargo.toml`
 Expected: 全绿（默认 `ncc_downsample_width=1920` > 测试帧宽 400 → 单阶段，零回归）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git -C <WT> add crates/capx/src/stitch.rs
@@ -102,7 +102,7 @@ git -C <WT> commit -m "feat(capx): STRIP_H/MAX_SCROLL/NCC_SCORE_THRESHOLD 纳入
 
 **Files:** Modify `crates/capx/src/stitch.rs`（`ncc_match`:140 之后追加辅助函数 + 测试）
 
-- [ ] **Step 1: 写 `ncc_match_range` 测试**（追加到 `#[cfg(test)] mod tests`）
+- [x] **Step 1: 写 `ncc_match_range` 测试**（追加到 `#[cfg(test)] mod tests`）
 
 ```rust
 #[test]
@@ -131,12 +131,12 @@ fn test_ncc_match_range_rejects_out_of_range_offset() {
 
 > 辅助 `make_textured_gray(w, h)`：用渐变/噪声填 GrayImage（参考现有 `make_frame_textured` 的纹理生成，转 GrayImage）。若现有 helper 已够用则复用。
 
-- [ ] **Step 2: 跑确认失败**（`ncc_match_range` 未定义）
+- [x] **Step 2: 跑确认失败**（`ncc_match_range` 未定义）
 
 Run: `cargo test --manifest-path <WT>/crates/capx/Cargo.toml test_ncc_match_range`
 Expected: FAIL（函数未定义）。
 
-- [ ] **Step 3: 实现 `downsample_grayimage` + `ncc_match_range`**（放 `ncc_match`:157 之后）
+- [x] **Step 3: 实现 `downsample_grayimage` + `ncc_match_range`**（放 `ncc_match`:157 之后）
 
 ```rust
 /// 保边缘降采样（Triangle 双线性）。NCC+亚像素不能用 Nearest——锯齿破坏 response 峰值。
@@ -173,12 +173,12 @@ fn ncc_match_range(
 }
 ```
 
-- [ ] **Step 4: 跑通过**
+- [x] **Step 4: 跑通过**
 
 Run: `cargo test --manifest-path <WT>/crates/capx/Cargo.toml test_ncc_match_range`
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git -C <WT> add crates/capx/src/stitch.rs
@@ -191,7 +191,7 @@ git -C <WT> commit -m "feat(capx): +downsample_grayimage(Triangle) +ncc_match_ra
 
 **Files:** Modify `crates/capx/src/stitch.rs`（+`PrimaryOutcome`/`primary_ncc`；改 `process_frame_inner`:348-383）
 
-- [ ] **Step 1: 写大屏精度回归测试**（追加到 `#[cfg(test)] mod tests`）
+- [x] **Step 1: 写大屏精度回归测试**（追加到 `#[cfg(test)] mod tests`）
 
 ```rust
 #[test]
@@ -225,12 +225,12 @@ fn test_two_stage_refine_preserves_subpixel() {
 
 > `make_frame_textured` 用现有纹理帧 helper（若滚动 40px 的纹理帧 NCC score 不足，调大位移或换 `make_frame`）。`primary_ncc` 是 `&self`，构造 `Stitcher` 后直接调（不改状态）。
 
-- [ ] **Step 2: 跑确认失败**（`primary_ncc`/`PrimaryOutcome` 未定义）
+- [x] **Step 2: 跑确认失败**（`primary_ncc`/`PrimaryOutcome` 未定义）
 
 Run: `cargo test --manifest-path <WT>/crates/capx/Cargo.toml test_two_stage_refine_preserves_subpixel`
 Expected: FAIL（编译错，`primary_ncc` 未定义）。
 
-- [ ] **Step 3: 实现 `PrimaryOutcome` + `primary_ncc`**（放 `process_frame_inner` 之前）
+- [x] **Step 3: 实现 `PrimaryOutcome` + `primary_ncc`**（放 `process_frame_inner` 之前）
 
 ```rust
 /// 主 NCC 结果。
@@ -294,7 +294,7 @@ fn primary_ncc(
 }
 ```
 
-- [ ] **Step 4: `process_frame_inner` 改走 `primary_ncc`**（替换 :347-383 的「NCC 匹配 → 验证 → 亚像素 → 坐标推导」段）
+- [x] **Step 4: `process_frame_inner` 改走 `primary_ncc`**（替换 :347-383 的「NCC 匹配 → 验证 → 亚像素 → 坐标推导」段）
 
   原 :347-383（`let ncc = match ncc_match...` 到 `let dy = -new_rows_raw;`）替换为：
 
@@ -333,12 +333,12 @@ fn primary_ncc(
 
   > 后续 `if dy > 0.0` / `new_rows` / 周期检测 / append 段（原 :387-461）**不变**，仅 :439 日志的 `ncc.best_score` → `best_score`。
 
-- [ ] **Step 5: 跑全量测试**
+- [x] **Step 5: 跑全量测试**
 
 Run: `cargo test --manifest-path <WT>/crates/capx/Cargo.toml`
 Expected: 全绿（含新精度回归 + ncc_match_range + 现有全部）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git -C <WT> add crates/capx/src/stitch.rs
@@ -349,9 +349,9 @@ git -C <WT> commit -m "feat(capx): D 大屏 NCC 两阶段 refine——降采样�
 
 ## Task 4: 文档同步 + 合并
 
-- [ ] **Step 1: architecture.md 更新**（stitch 降级链补「大屏两阶段 refine」；StitchConfig 字段表补 4 字段）
-- [ ] **Step 2: spec/plan 状态注释**（本 spec/plan 顶部加 ✅ 已实现合 main）
-- [ ] **Step 3: 全量测试 + desktop 编译确认**
+- [x] **Step 1: architecture.md 更新**（stitch 降级链补「大屏两阶段 refine」；StitchConfig 字段表补 4 字段）
+- [x] **Step 2: spec/plan 状态注释**（本 spec/plan 顶部加 ✅ 已实现合 main）
+- [x] **Step 3: 全量测试 + desktop 编译确认**
 
 Run:
 ```
@@ -360,11 +360,11 @@ CARGO_TARGET_DIR=/Users/wudarui/workspace/agent/octopus/target cargo build --man
 ```
 Expected: capx 全绿；desktop 编译通过（Stitcher 公共接口零变更）。
 
-- [ ] **Step 4: 文档 commit**
+- [x] **Step 4: 文档 commit**
 
 ```bash
 git -C <WT> add docs/
 git -C <WT> commit -m "docs: 同步 F 配置外置 + D 两阶段 refine 到 architecture/specs/plans"
 ```
 
-- [ ] **Step 5: 合 main（用户确认后）**——finishing-a-development-branch 双向同步（worktree merge main → main ff-only）。
+- [x] **Step 5: 合 main（用户确认后）**——finishing-a-development-branch 双向同步（worktree merge main → main ff-only）。

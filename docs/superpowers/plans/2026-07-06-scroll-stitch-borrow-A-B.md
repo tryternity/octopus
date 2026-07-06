@@ -23,7 +23,7 @@
 
 ---
 
-## Task 1: B 主次比判据（TDD，先做）
+## Task 1: B 主次比判据（TDD，先做） ⚠️ **已回退（`13b450d`）——主次比对 NCC 连续 response 不成立，代码已从 main 移除；下方步骤保留作历史记录，未实施**
 
 **Files:**
 - Modify: `crates/capx/src/stitch.rs`（`NCC_PEAK_GAP` 常量 + `validate_ncc_match` + 新增 4 测试）
@@ -129,7 +129,7 @@ git -C <WT> commit -m "feat(capx): NCC validate 加主次比判据，拒绝周�
 **Files:**
 - Modify: `crates/desktop/src/screenshot_commands.rs::start_scroll_recording`（1089-1166 主循环段）
 
-- [ ] **Step 1: 改造主循环为生产/消费两 task + watch 通道**
+- [x] **Step 1: 改造主循环为生产/消费两 task + watch 通道**
 
 要点：
 1. 首帧截屏 + `Stitcher::new`（现状 1049-1077）**不变**。
@@ -141,7 +141,7 @@ git -C <WT> commit -m "feat(capx): NCC validate 加主次比判据，拒绝周�
 6. 生产/消费 task 句柄 `.await`（或 tokio::join）等两者都结束，再进停止流程（finalize/入库/窗口/剪贴板，现状 1168-1306 原样保留）。
 7. 鼠标监听 task（992）不动。
 
-- [ ] **Step 2: 编译 + capx 全量测试**
+- [x] **Step 2: 编译 + capx 全量测试**
 
 Run:
 ```
@@ -150,7 +150,7 @@ cargo test --manifest-path <WT>/crates/capx/Cargo.toml
 ```
 Expected: build 通过；capx 全绿（A 不动 stitch.rs，但确认无回归）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git -C <WT> add crates/desktop/src/screenshot_commands.rs
@@ -159,11 +159,11 @@ git -C <WT> commit -m "feat(desktop): 滚动截图 capture/process 拆生产-消
 
 ---
 
-## Task 3: 手动 e2e（用户）
+## Task 3: 手动 e2e（用户） ✅ **已执行：A 队列解耦验证；过程中暴露突变死亡螺旋问题，由方向 1 解决（见 transition-robustness plan）**
 
 无 e2e 基建，A 靠手动验证。交付用户后：
-- [ ] 启动桌面端，区域截图 → 滚动截图模式
-- [ ] 平稳慢速滚动一页 → 长图拼接完整、无断带、无重复段
-- [ ] 快速连续滚动 → 预览不卡顿、不丢大段内容（丢旧保新预期：可能跳预览帧，但拼接结果连续）
-- [ ] 停止（复制/保存/取消三模式）→ finalize 正确补全底部、入库/剪贴板/对话框正常
-- [ ] 回滚验证：若主次比误拒均匀滚动（拼接质量下降），调大 `NCC_PEAK_GAP` 并补用例
+- [x] 启动桌面端，区域截图 → 滚动截图模式
+- [x] 平稳慢速滚动一页 → 长图拼接完整、无断带、无重复段
+- [x] 快速连续滚动 → 预览不卡顿、不丢大段内容（丢旧保新预期：可能跳预览帧，但拼接结果连续）
+- [x] 停止（复制/保存/取消三模式）→ finalize 正确补全底部、入库/剪贴板/对话框正常
+- [x] 回滚验证（B 已回退，此项不适用）

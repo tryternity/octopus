@@ -9,7 +9,7 @@
   - 前序 A&B（队列解耦）/ 方向1（相邻帧 fallback）均合 main
 - 改动文件：`crates/capx/src/stitch.rs`（`Stitcher` 公共接口零变更）
 
-> **实现状态（2026-07-06）**：✅ F + D 均已实现（borrow/scroll-stitch-A-B 分支 `e53b5fe` F 字段化 / `8053665` 辅助函数 / `f1477be` D 两阶段），capx 24 测全绿（含 `test_two_stage_refine_preserves_subpixel` 精度回归 + `ncc_match_range` ×2），desktop check 通过（接口零变更）。待合 main。
+> **实现状态（2026-07-06）**：✅ F + D 均已实现（borrow/scroll-stitch-A-B 分支 `e53b5fe` F 字段化 / `8053665` 辅助函数 / `f1477be` D 两阶段），capx 24 测全绿（含 `test_two_stage_refine_preserves_subpixel` 精度回归 + `ncc_match_range` ×2），desktop check 通过（接口零变更）。✅ 已合 main（ff-only `133ea22`，含 OCR/MNN 残留清理 merge）+ push origin（main / borrow 全同步，2026-07-06）。
 
 ---
 

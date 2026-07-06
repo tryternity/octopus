@@ -26,7 +26,7 @@
 
 **Files:** Modify `crates/capx/src/stitch.rs`（`Stitcher` 结构体 + `new` + `process_frame`）
 
-- [ ] **Step 1: `Stitcher` 加字段**（在 `same_dy_count` 后，:254）
+- [x] **Step 1: `Stitcher` 加字段**（在 `same_dy_count` 后，:254）
 
 ```rust
     /// 连续相同 dy 追加次数。
@@ -35,14 +35,14 @@
     prev_gray: Option<GrayBuf>,
 ```
 
-- [ ] **Step 2: `new` 初始化**（在 `same_dy_count: 0,` 后，:275）
+- [x] **Step 2: `new` 初始化**（在 `same_dy_count: 0,` 后，:275）
 
 ```rust
             same_dy_count: 0,
             prev_gray: None,
 ```
 
-- [ ] **Step 3: 提取 `process_frame_inner`**
+- [x] **Step 3: 提取 `process_frame_inner`**
 
 把 `process_frame` 中 `curr_gray`/`canvas_gray` 构建（原 :312-313）之后的全部逻辑（原 :315-438）搬入新方法 `process_frame_inner`，`process_frame` 改为构建灰度后调用 inner、统一更新 `prev_gray`。
 
@@ -112,7 +112,7 @@
 
 > **搬移要点：** 原 :315 起的 `let (canvas_feat, canvas_has_feat) = to_feature_map(&canvas_gray);` 到 :438 `Ok(true)` 整段，逐字搬入 `process_frame_inner`，只把缩进调到方法体内。逻辑、变量名、日志、return 值全部不变。`try_fallback` 调用处（原 :329/:345）签名不变（它本就是 `&mut self` 方法，能读 `self.prev_gray`）。
 
-- [ ] **Step 4: 编译确认搬移无误**
+- [x] **Step 4: 编译确认搬移无误**
 
 Run: `cargo build --manifest-path <WT>/crates/capx/Cargo.toml`
 Expected: 通过（纯搬移，无逻辑变更）。
@@ -123,7 +123,7 @@ Expected: 通过（纯搬移，无逻辑变更）。
 
 **Files:** Modify `crates/capx/src/stitch.rs`
 
-- [ ] **Step 1: 新增 `try_match_prev_frame`**（放在 `try_fallback` 之前，:441 前）
+- [x] **Step 1: 新增 `try_match_prev_frame`**（放在 `try_fallback` 之前，:441 前）
 
 ```rust
     /// 相邻帧参考 fallback：用前一帧有效区底部 strip 当模板，在当前帧有效区做 NCC。
@@ -171,7 +171,7 @@ Expected: 通过（纯搬移，无逻辑变更）。
     }
 ```
 
-- [ ] **Step 2: `try_fallback` 在 1D 投影前插入相邻帧层**（原 :455 `// 降级：1D 灰度投影匹配` 之前）
+- [x] **Step 2: `try_fallback` 在 1D 投影前插入相邻帧层**（原 :455 `// 降级：1D 灰度投影匹配` 之前）
 
 ```rust
         // 相邻帧参考 fallback（方向 1）：画布底部旧模板失配时，改用前一帧匹配当前帧。
@@ -188,7 +188,7 @@ Expected: 通过（纯搬移，无逻辑变更）。
         if let Some((dy, conf, sad)) = self.try_match_1d_projection( ... ) {  // 原逻辑不变
 ```
 
-- [ ] **Step 3: 编译**
+- [x] **Step 3: 编译**
 
 Run: `cargo build --manifest-path <WT>/crates/capx/Cargo.toml`
 Expected: 通过。
@@ -199,7 +199,7 @@ Expected: 通过。
 
 **Files:** Modify `crates/capx/src/stitch.rs`（`#[cfg(test)] mod tests`，追加到 :1150 前）
 
-- [ ] **Step 1: 写 2 个测试**
+- [x] **Step 1: 写 2 个测试**
 
 ```rust
     #[test]
@@ -237,7 +237,7 @@ Expected: 通过。
 
 > **端到端突变测试说明：** 合成帧难确定性复现"主失配 + 相邻帧救场"（make_frame_textured 共享渐变基础，主 NCC 多半不失配），故不构造脆弱的端到端断言；突变场景真实效果靠手动 e2e 验证（Task 5）。单测锁定相邻帧匹配的核心正确性（求出正确 dy）+ 边界（过短返回 None）。
 
-- [ ] **Step 2: 跑测试**
+- [x] **Step 2: 跑测试**
 
 Run: `cargo test --manifest-path <WT>/crates/capx/Cargo.toml`
 Expected: 全绿（现有 ~18 + 新 2）。
@@ -256,7 +256,7 @@ git -C <WT> commit -m "feat(capx): 相邻帧参考 fallback——突变帧用前
 ## Task 5: 手动 e2e（用户）
 
 无 e2e 基建。交付用户后重点验证：
-- [ ] 「白底黑字文字 → 图片」突变滚动：长图完整、不断在突变点
-- [ ] 正常滚动不回归（现有行为不变）
-- [ ] 停止/保存/取消三模式 finalize 正常
-- [ ] 若仍偶发失败：贴 `[stitch]` 日志，看相邻帧 NCC 是否触发、dy 是否合理
+- [x] 「白底黑字文字 → 图片」突变滚动：长图完整、不断在突变点
+- [x] 正常滚动不回归（现有行为不变）
+- [x] 停止/保存/取消三模式 finalize 正常
+- [x] 若仍偶发失败：贴 `[stitch]` 日志，看相邻帧 NCC 是否触发、dy 是否合理
