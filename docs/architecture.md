@@ -146,7 +146,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 | 模块 | 职责 |
 |---|---|
 | `capture` | `capture_all_monitors()`：截取所有显示器（每个返回 RGBA + 物理像素尺寸 + 显示器坐标）。`crop_region()`：从全屏 RGBA 裁剪矩形 → PNG（一次性截图用）。`crop_region_rgba()`：同但直接返回 `RgbaImage`（零 PNG 编解码，滚动截帧 30ms 热路径专用——原 `crop_region`+`load_from_memory` 往返在 4K/多屏下 CPU 爆表）。黑屏检测日志（权限诊断）。macOS 两处 CGImage 捕获（`capture_region_excluding_window` / `capture_window_region`）共用 `cgimage_to_rgba` helper（BGRA→RGBA 统一转换） |
-| `stitch` | 滚动截屏拼接引擎：**Canvas-Anchored NCC + Sobel 梯度匹配**。每帧从画布底部提取 80px strip → Sobel 梯度特征图（`imageproc`，纯色退化回灰度）→ NCC 模板匹配（`imageproc::template_matching::match_template`，CrossCorrelationNormalized）→ 验证（score≥0.65 + response 无区分度拒绝 max-min<0.1）→ 抛物线亚像素插值。Canvas-Anchored 消除累积漂移。降级链：1D 灰度投影 + best-guess（历史 dy 中位数，连续 3 次熔断）。周期性假匹配锁定（连续相同 dy≥3 次锁定，dy 变化才解锁）。NCC stuck 检测（连续验证失败≥5 次判静止）。画布用 `Vec<u8>` 增量追加 + 惰性缓存。**停止时先关窗口再后台编码**：PNG 快速编码 → 并发两路（线程一写剪贴板~1s，线程二 WebP+DB 入库~2-3s）。 |
+| `stitch` | 滚动截屏拼接引擎：**Canvas-Anchored NCC + Sobel 梯度匹配**。每帧从画布底部提取 80px strip → Sobel 梯度特征图（`imageproc`，纯色退化回灰度）→ NCC 模板匹配（`imageproc::template_matching::match_template`，CrossCorrelationNormalized）→ 验证（score≥0.65 + response 无区分度拒绝 max-min<0.1）→ 抛物线亚像素插值。Canvas-Anchored 消除累积漂移。降级链：**相邻帧参考 fallback**（内容突变失配时，用前一帧有效区匹配当前帧求正确 dy，避免 best-guess 盲 append 污染画布；`prev_gray` + `try_match_prev_frame`，插在 1D 投影前，2026-07-06 方向1）→ 1D 灰度投影 + best-guess（历史 dy 中位数，连续 3 次熔断）。周期性假匹配锁定（连续相同 dy≥3 次锁定，dy 变化才解锁）。NCC stuck 检测（连续验证失败≥5 次判静止）。画布用 `Vec<u8>` 增量追加 + 惰性缓存。**停止时先关窗口再后台编码**：PNG 快速编码 → 并发两路（线程一写剪贴板~1s，线程二 WebP+DB 入库~2-3s）。 |
 
 **触发方式**：全局快捷键（`screenshot_shortcut`，默认 Cmd+Shift+D）+ 托盘菜单「截图」。
 
@@ -154,7 +154,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **截图流程**：`start_screenshot` → `capture_all_monitors` 截所有显示器 → 每屏创建不可见窗口 → 前端 `get_screenshot_image`（`ipc::Response` 返回原始 JPEG 字节，前端 `URL.createObjectURL` 加载）按 label 拉取各自截图 → Canvas 渲染（原图 + 暗遮罩 + 选区框 + 8 手柄 + 尺寸标注）→ `show_screenshot_window` 显示 → 选区下方弹出标注工具栏（矩形/箭头/文字/序号/撤销）→ 标注在选区内 Canvas clip 绘制 → Enter 确认：Canvas `toBlob` → `Uint8Array` Raw body 传后端（`ipc::Request`，不经过 base64）→ PNG SHA-256 去重 → WebP BLOB → DB image_data + clipboard_history + 系统剪贴板 → 关所有窗口。
 
-**滚动截屏流程**：用户框选区域 → 按 Cmd+Shift+D 进入手动滚动模式 → 后台 30ms 间隔截帧 + NCC 实时拼接 → 截图窗口旁显示拼接预览 → 用户点绿色「复制」停止 → **先关截图窗口**（用户感知立即停止）→ 后台并发：线程一 PNG→剪贴板（~1s），线程二 canvas→WebP→DB 入库（~2-3s 后台）→ emit `scroll://done { id }`（不含 base64，前端不再中转数据）。
+**滚动截屏流程**：用户框选区域 → 按 Cmd+Shift+D 进入手动滚动模式 → 后台生产 task 30ms 截帧 → `tokio::sync::watch` 通道（丢旧保新）→ 消费 task NCC 实时拼接（preview 编码 fire-and-forget 不阻塞关键路径，2026-07-06 A 队列解耦） → 截图窗口旁显示拼接预览 → 用户点绿色「复制」停止 → **先关截图窗口**（用户感知立即停止）→ 后台并发：线程一 PNG→剪贴板（~1s），线程二 canvas→WebP→DB 入库（~2-3s 后台）→ emit `scroll://done { id }`（不含 base64，前端不再中转数据）。
 
 **IPC 二进制传输**：所有图片传输已从 base64 改为二进制——前端→Rust 用 `ipc::Request` Raw body（`canvas.toBlob → ArrayBuffer → invoke(cmd, arraybuffer)`），Rust→前端用 `ipc::Response`（原始字节 → 前端 `URL.createObjectURL`）。消除 base64 编解码 + JSON 序列化开销。剪贴板历史条目复制（`copy_clipboard_item`）从 DB 读 WebP→PNG→剪贴板，移入 `spawn_blocking` 不阻塞 UI。图片预览（ImagePreview 组件，嵌入 CompactEditor 图片 tab）无标注时「复制」跳过（剪贴板已有数据），有标注时走 Canvas 合成→Raw body。
 

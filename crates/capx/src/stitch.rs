@@ -252,6 +252,8 @@ pub struct Stitcher {
     last_appended_dy: Option<f64>,
     /// 连续相同 dy 追加次数。
     same_dy_count: u32,
+    /// 上一帧的有效区灰度（相邻帧参考 fallback 用）。每帧 process_frame 末尾更新。
+    prev_gray: Option<GrayBuf>,
 }
 
 impl Stitcher {
@@ -273,6 +275,7 @@ impl Stitcher {
             ncc_stuck_count: 0,
             last_appended_dy: None,
             same_dy_count: 0,
+            prev_gray: None,
         }
     }
 
@@ -312,9 +315,29 @@ impl Stitcher {
         let curr_gray = GrayBuf::from_rgba_roi(frame, roi_top, roi_bottom);
         let canvas_gray = self.extract_canvas_bottom_gray(STRIP_H);
 
+        let result = self.process_frame_inner(frame, &curr_gray, &canvas_gray, w, eff_top, eff_bottom);
+
+        // 相邻帧参考 fallback：记录本帧有效区灰度，供下一帧用（突变时画布底部旧模板
+        // 失配，改用紧邻前一帧——与当前帧重叠最大、突变边界共同特征——匹配）。
+        self.prev_gray = Some(curr_gray);
+
+        result
+    }
+
+    /// process_frame 的匹配主体（Sobel 特征 → NCC → 验证 → dy → 周期检测 → append）。
+    /// 提取出来是为了让 process_frame 在调用后统一更新 prev_gray（避免散落多个 return 点）。
+    fn process_frame_inner(
+        &mut self,
+        frame: &RgbaImage,
+        curr_gray: &GrayBuf,
+        canvas_gray: &GrayBuf,
+        w: u32,
+        eff_top: u32,
+        eff_bottom: u32,
+    ) -> Result<bool> {
         // Sobel 特征图 + 纯色退化
-        let (canvas_feat, canvas_has_feat) = to_feature_map(&canvas_gray);
-        let (curr_feat, curr_has_feat) = to_feature_map(&curr_gray);
+        let (canvas_feat, canvas_has_feat) = to_feature_map(canvas_gray);
+        let (curr_feat, curr_has_feat) = to_feature_map(curr_gray);
         let (template, search_region) = if canvas_has_feat && curr_has_feat {
             (canvas_feat, curr_feat)
         } else {
@@ -326,7 +349,7 @@ impl Stitcher {
             Some(r) => r,
             None => {
                 log::info!("[stitch] ncc_match returned None (size mismatch)");
-                return self.try_fallback(frame, &curr_gray, &canvas_gray, w, eff_top, eff_bottom);
+                return self.try_fallback(frame, curr_gray, canvas_gray, w, eff_top, eff_bottom);
             }
         };
 
@@ -342,7 +365,7 @@ impl Stitcher {
             }
             log::info!("[stitch] NCC match failed validation (score={:.4}, stuck={})", ncc.best_score, self.ncc_stuck_count);
             self.ncc_stuck_count += 1;
-            return self.try_fallback(frame, &curr_gray, &canvas_gray, w, eff_top, eff_bottom);
+            return self.try_fallback(frame, curr_gray, canvas_gray, w, eff_top, eff_bottom);
         }
 
         // NCC 成功：重置 stuck 计数
@@ -355,7 +378,7 @@ impl Stitcher {
         // response y = 模板顶部在搜索区域（curr ROI）中的偏移量
         // new_rows = ROI高度 - response_y - STRIP_H
         // dy = -(new_rows)（负值=向下滚动）
-        let roi_height = (roi_bottom - roi_top) as f64;
+        let roi_height = (eff_bottom - eff_top) as f64;
         let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
         let dy = -new_rows_raw;
 
@@ -397,7 +420,7 @@ impl Stitcher {
                     let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
                         .step_by(SAMPLE_STEP_X)
                         .collect();
-                    let stationary_sad = self.quick_stationary_check(&curr_gray, &canvas_gray, &sample_cols);
+                    let stationary_sad = self.quick_stationary_check(curr_gray, canvas_gray, &sample_cols);
                     if stationary_sad < STATIONARY_SAD * 5.0 {
                         // 画面没动 → 周期性假匹配
                         log::info!("[stitch] periodic false match locked (dy={:.0}, sad={:.1})", dy_rounded, stationary_sad);
@@ -438,6 +461,50 @@ impl Stitcher {
         Ok(true)
     }
 
+    /// 相邻帧参考 fallback：用前一帧有效区底部 strip 当模板，在当前帧有效区做 NCC。
+    /// 突变时画布底部旧模板（如文字）与当前帧（如图片）失配；前一帧与当前帧只差
+    /// 一个 dy、突变边界是两帧共同特征、重叠最大 → 能求出正确 dy，避免 best-guess 盲 append。
+    /// dy 推导与主匹配同公式（模板=上一时刻底部 strip，search=当前帧有效区）。
+    fn try_match_prev_frame(
+        &self,
+        prev_gray: &GrayBuf,
+        curr_gray: &GrayBuf,
+        eff_top: u32,
+        eff_bottom: u32,
+    ) -> Option<f64> {
+        let prev_h = prev_gray.data.len() / prev_gray.width;
+        if prev_h < STRIP_H as usize + 10 {
+            return None;
+        }
+        // prev 底部 STRIP_H 行裁为独立模板（y_offset 归零）
+        let strip_rows = STRIP_H as usize;
+        let prev_strip = GrayBuf {
+            data: prev_gray.data[(prev_h - strip_rows) * prev_gray.width..].to_vec(),
+            width: prev_gray.width,
+            y_offset: 0,
+        };
+        let (tmpl_feat, tmpl_has) = to_feature_map(&prev_strip);
+        let (curr_feat, curr_has) = to_feature_map(curr_gray);
+        let (template, search_region) = if tmpl_has && curr_has {
+            (tmpl_feat, curr_feat)
+        } else {
+            (prev_strip.to_gray_image(), curr_gray.to_gray_image())
+        };
+        let ncc = ncc_match(&template, &search_region)?;
+        if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32) {
+            return None;
+        }
+        let roi_height = (eff_bottom - eff_top) as f64;
+        let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
+        let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
+        let dy = -new_rows_raw;
+        if dy >= 0.0 {
+            return None;
+        }
+        log::info!("[stitch] prev-frame NCC dy={:.1} (score={:.4})", dy, ncc.best_score);
+        Some(dy)
+    }
+
     /// 降级链：NCC 匹配失败时的兜底处理。
     fn try_fallback(
         &mut self,
@@ -451,6 +518,16 @@ impl Stitcher {
         let x_start = (w as f64 * X_START_RATIO) as u32;
         let x_end = (w as f64 * X_END_RATIO) as u32;
         let max_scroll = MAX_SCROLL;
+
+        // 相邻帧参考 fallback（方向 1）：画布底部旧模板失配时，改用前一帧匹配当前帧。
+        // 前一帧与当前帧重叠最大、突变边界共同特征 → 求出正确 dy，不盲 append 污染画布。
+        if let Some(prev_gray) = &self.prev_gray {
+            if let Some(dy) = self.try_match_prev_frame(prev_gray, curr_gray, eff_top, eff_bottom) {
+                self.best_guess_streak = 0;
+                self.ncc_stuck_count = 0;
+                return self.apply_fallback_match(dy, 0.0, 0.0, frame, curr_gray, w, eff_top, eff_bottom);
+            }
+        }
 
         // 降级：1D 灰度投影匹配
         if let Some((dy, conf, sad)) = self.try_match_1d_projection(
@@ -1147,5 +1224,37 @@ mod tests {
         assert!(result.is_some(), "NCC 应返回匹配结果");
         let ncc = result.unwrap();
         assert!(ncc.best_score > 0.75, "NCC 分数应 > 0.75: {}", ncc.best_score);
+    }
+
+    #[test]
+    fn test_prev_frame_match_continuous_scroll() {
+        // 相邻帧连续滚动：prev scroll=100, curr scroll=130（向下滚 30px）
+        // try_match_prev_frame 应求出 dy≈-30
+        let prev = GrayBuf::from_rgba_roi(&make_frame(TW, TH, 100), 0, TH as usize);
+        let curr = GrayBuf::from_rgba_roi(&make_frame(TW, TH, 130), 0, TH as usize);
+        let s = Stitcher::new(make_frame(TW, TH, 0), StitchConfig::default());
+        let dy = s.try_match_prev_frame(&prev, &curr, 0, TH)
+            .expect("相邻帧连续滚动应匹配成功");
+        assert!(dy < 0.0, "向下滚 dy 应为负: {}", dy);
+        assert!(
+            (-dy - 30.0).abs() < 5.0,
+            "dy 应≈-30（向下滚 30px），实际: {}", dy
+        );
+    }
+
+    #[test]
+    fn test_prev_frame_match_short_prev_returns_none() {
+        // prev 有效区过短（< STRIP_H+10）→ 无法取底部 strip 模板 → None
+        let short = GrayBuf {
+            data: vec![128u8; TW as usize * 10],
+            width: TW as usize,
+            y_offset: 0,
+        };
+        let curr = GrayBuf::from_rgba_roi(&make_frame(TW, TH, 0), 0, TH as usize);
+        let s = Stitcher::new(make_frame(TW, TH, 0), StitchConfig::default());
+        assert!(
+            s.try_match_prev_frame(&short, &curr, 0, TH).is_none(),
+            "过短的 prev 不应给出匹配"
+        );
     }
 }

@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "@/lib/utils";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import type { ClipboardItem } from "@/types/clipboard";
-import { metaParts, typeAccent, imageMeta } from "@/types/clipboard";
+import { metaParts, typeAccent, imageMeta, detectUrl } from "@/types/clipboard";
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Download, FolderOpen,
@@ -354,7 +354,8 @@ function ClipboardRow({
   const isVoice = item.item_type === "voice";
   const meta = metaParts(item);
   const accent = typeAccent[item.item_type];
-  const isUrl = item.item_type === "text" && /^https?:\/\//i.test(item.content.trim());
+  const link = item.item_type === "text" ? detectUrl(item.content) : null;
+  const isUrl = !!link?.isLink;
 
   // 类型左缘色：voice 用 amber 渐变（声波暗示），其余用对应类型色低饱和
   const edgeClass = isVoice
@@ -458,7 +459,7 @@ function ClipboardRow({
         {isUrl && (
           <button
             className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-            onClick={(e) => { e.stopPropagation(); openUrl(item.content.trim()).catch(console.error); }}
+            onClick={(e) => { e.stopPropagation(); if (link) openUrl(link.url).catch(console.error); }}
             title="打开链接"
           >
             <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />

@@ -73,3 +73,76 @@ export const typeAccent: Record<ItemType, string> = {
   file: "text-emerald-600",
 };
 
+// ===== 无协议链接识别 =====
+
+/**
+ * 常用域名后缀（无协议链接识别用）。
+ * 域名（小写）以其中任一后缀结尾、且后缀前至少还有一个 label，即判为公网链接（补 https://）。
+ * 后缀自带前导「.」，dot 对齐，避免子串误命中（如 foocom ≠ .com）。
+ * 追加新后缀直接加分号项即可，例如 ".dev" / ".io" / ".gov.cn"。
+ */
+export const COMMON_DOMAIN_SUFFIXES = ".com;.cn;.com.cn;.net;.org";
+const COMMON_SUFFIX_LIST = COMMON_DOMAIN_SUFFIXES.split(";").filter(Boolean);
+
+export interface DetectUrlResult {
+  isLink: boolean;
+  /** 打开用的完整 URL；无协议时已按规则补全 http(s):// */
+  url: string;
+}
+
+/** 端口合法：1–65535 的数字。 */
+function isPort(p: string): boolean {
+  return /^\d{1,5}$/.test(p) && Number(p) >= 1 && Number(p) <= 65535;
+}
+
+/** 合法 IPv4：4 段点分，每段 0–255。 */
+function isIPv4(h: string): boolean {
+  const parts = h.split(".");
+  if (parts.length !== 4) return false;
+  return parts.every((s) => /^\d{1,3}$/.test(s) && Number(s) <= 255);
+}
+
+/** 域名 labels：≥2 段，每段 [A-Za-z0-9-]+ 且不以 - 开头/结尾。 */
+function isDomainLabels(d: string): boolean {
+  const parts = d.split(".");
+  if (parts.length < 2) return false;
+  return parts.every((s) => /^[A-Za-z0-9-]+$/.test(s) && !s.startsWith("-") && !s.endsWith("-"));
+}
+
+/**
+ * 识别剪贴板文本是否为链接。
+ * - 带协议（http(s)://）→ 原样
+ * - localhost/IPv4 + 必带端口 → 补 http://
+ * - 常用后缀域名 + 可选路径/端口 → 补 https://
+ * - 句中片段（含空白）、纯 IP/localhost（无端口）、非常见后缀 → 非链接
+ */
+export function detectUrl(raw: string): DetectUrlResult {
+  const s = raw.trim();
+  if (!s) return { isLink: false, url: "" };
+  if (/^https?:\/\//i.test(s)) return { isLink: true, url: s };
+  if (/\s/.test(s)) return { isLink: false, url: "" };
+
+  const hostSeg = s.split(/[/?#]/)[0];
+
+  // 路径 B：localhost / IPv4 + 必带 :port → http://
+  const portMatch = hostSeg.match(/:([^:/?#]+)$/);
+  if (portMatch) {
+    const port = portMatch[1];
+    const hostname = hostSeg.slice(0, -portMatch[0].length); // 去掉 ":port"
+    if (isPort(port) && (hostname.toLowerCase() === "localhost" || isIPv4(hostname))) {
+      return { isLink: true, url: "http://" + s };
+    }
+  }
+
+  // 路径 A：常用后缀域名 → https://
+  const domainPart = hostSeg.split(":")[0];
+  if (isDomainLabels(domainPart)) {
+    const lower = domainPart.toLowerCase();
+    if (COMMON_SUFFIX_LIST.some((suf) => lower.endsWith(suf) && lower.length > suf.length)) {
+      return { isLink: true, url: "https://" + s };
+    }
+  }
+
+  return { isLink: false, url: "" };
+}
+

@@ -15,7 +15,7 @@ snow-shot 是一个功能极其丰富的桌面截图/标注工具（Windows/macO
 |------|------|
 | 区域截图 | 基础选区截图，含跨屏选区 |
 | 全屏截图 | 整屏捕获 |
-| 滚动截图 | 自动/手动滚动拼接长截图（Rust 原生实现，NCC 模板匹配缝合） |
+| 滚动截图 | 自动/手动滚动拼接长截图（Rust 原生实现，FAST 角点 + 描述子 + HNSW 近邻索引缝合；**非 NCC**，2026-07-06 订正） |
 | 延时截图 | 定时截图 |
 | HDR 截图 | HDR 显示器宽色域捕获（Linear/None 色彩算法） |
 
@@ -133,6 +133,6 @@ octopus 当前 OCR 只返回纯文本字符串。如果后端 `ocr_image` 改为
 | UI 框架 | Ant Design（重量级） | 内联 style + Tailwind（轻量） |
 | Rust 后端 | 模块化（tauri-commands 拆 crate） | 单 crate（desktop） |
 | OCR | paddle_ocr_rs（Rust 原生） | ocr-rs（Rust 原生） |
-| 滚动截图 | NCC 模板匹配缝合（Rust） | CAPX（canvas-anchored，已有） |
+| 滚动截图 | FAST 角点 + 描述子 + HNSW 近邻索引缝合（Rust；**非 NCC**，2026-07-06 订正） | CAPX（canvas-anchored + Sobel/NCC 模板匹配，已有） |
 
 **octopus 的优势**：ASR 是核心能力（snow-shot 没有），图片预览的视口渲染 + SVG overlay 在超大图上比 Excalidraw 更轻量。
