@@ -287,8 +287,8 @@ pub async fn ocr_screenshot(
     log::info!("[ocr-screenshot] after recognize text_len={} blocks={}", text.len(), blocks.len());
 
     let ocr_id_opt: Option<i64> = if !text.trim().is_empty() {
-        // ⚠️ current_ocr_meta 在 with_db 外取：内部 load_config_key→with_db，闭包内调
-        // = std::Mutex 同线程重入死锁（详见 insert_ocr_clipboard_item 注释）。
+        // current_ocr_meta 在 with_db 外取（与 insert_ocr_clipboard_item 同习惯，详见其注释）：
+        // 闭包内调虽已不再死锁（db.rs 已换 ReentrantMutex），仍避免 DB 锁嵌套持有。
         let (ocr_engine, ocr_model) = crate::clipboard_commands::current_ocr_meta();
         log::info!("[ocr-screenshot] before insert_ocr_item");
         let ocr_id = octopus_infra::db::with_db(|conn| {
@@ -381,20 +381,26 @@ pub async fn save_screenshot_dialog(
     // 先关闭截图窗口，恢复正常屏幕，再弹保存对话框
     close_all_screenshot_windows(&app_handle);
 
-    use tauri_plugin_dialog::DialogExt;
-    let save_path = app_handle.dialog()
-        .file()
-        .add_filter("PNG 图片", &["png"])
-        .set_file_name("screenshot.png")
-        .blocking_save_file();
-
-    if let Some(path) = save_path {
-        let path = path.as_path().ok_or("无效路径")?;
-        std::fs::write(path, &png_bytes).map_err(|e| e.to_string())?;
-        log::info!("Screenshot saved to {}", path.display());
-    }
-
-    Ok(())
+    // blocking_save_file（弹原生对话框，等用户选路径可达数秒）+ fs::write 均为同步阻塞，
+    // 全部移入 spawn_blocking 避免卡住 Tokio worker 线程（与 clipboard_commands::save_image_dialog
+    // 同模式：不用 plugin 回调式 save_file()，因回调内写入错误无法回传前端）。
+    tokio::task::spawn_blocking(move || {
+        use tauri_plugin_dialog::DialogExt;
+        let save_path = app_handle
+            .dialog()
+            .file()
+            .add_filter("PNG 图片", &["png"])
+            .set_file_name("screenshot.png")
+            .blocking_save_file();
+        if let Some(path) = save_path {
+            let path = path.as_path().ok_or("无效路径")?;
+            std::fs::write(path, &png_bytes).map_err(|e| e.to_string())?;
+            log::info!("Screenshot saved to {}", path.display());
+        }
+        Ok::<(), String>(())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }
 
 /// 前端合成标注+裁剪后，直接发送最终 PNG（Raw body 二进制）

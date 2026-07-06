@@ -7,9 +7,11 @@ use rubato::Resampler;
 /// 参考 silero-vad speech_pad_ms（默认 30ms）。
 const SPEECH_PAD_MS: usize = 120;
 
-/// 从 WAV 文件读取并转为 16kHz mono f32 样本
-pub fn read_wav_16k(path: &str) -> Result<Vec<f32>> {
-    let mut reader = hound::WavReader::open(path)?;
+/// 解码 WAV reader → 16kHz mono f32 样本（read_wav_16k / read_wav_16k_from_bytes 共用核心）。
+/// spec 解析 → 采样格式归一 f32 → 下混 mono → 必要时重采样到 16kHz。
+fn decode_wav_to_mono_16k<R: std::io::Read + std::io::Seek>(
+    mut reader: hound::WavReader<R>,
+) -> Result<Vec<f32>> {
     let spec = reader.spec();
     let sample_rate = spec.sample_rate;
     let samples: Vec<f32> = match spec.sample_format {
@@ -31,29 +33,15 @@ pub fn read_wav_16k(path: &str) -> Result<Vec<f32>> {
     }
 }
 
+/// 从 WAV 文件读取并转为 16kHz mono f32 样本
+pub fn read_wav_16k(path: &str) -> Result<Vec<f32>> {
+    decode_wav_to_mono_16k(hound::WavReader::open(path)?)
+}
+
 /// 从 WAV 字节流读取并转为 16kHz mono f32 样本
 pub fn read_wav_16k_from_bytes(data: &[u8]) -> Result<Vec<f32>> {
     let cursor = std::io::Cursor::new(data);
-    let mut reader = hound::WavReader::new(cursor)?;
-    let spec = reader.spec();
-    let sample_rate = spec.sample_rate;
-    let samples: Vec<f32> = match spec.sample_format {
-        hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<Vec<_>, _>>()?,
-        hound::SampleFormat::Int => reader
-            .samples::<i16>()
-            .map(|s| s.map(|v| v as f32 / i16::MAX as f32))
-            .collect::<Result<Vec<_>, _>>()?,
-    };
-    let channels = spec.channels as usize;
-    let mono: Vec<f32> = samples
-        .chunks(channels)
-        .map(|c| c.iter().sum::<f32>() / channels as f32)
-        .collect();
-    if sample_rate == 16000 {
-        Ok(mono)
-    } else {
-        resample_to_16k(&mono, sample_rate)
-    }
+    decode_wav_to_mono_16k(hound::WavReader::new(cursor)?)
 }
 
 /// 一次性重采样到任意 to_rate（无状态；尾部不足一帧的样本会被丢弃，仅适合整段处理，不适合流式）。
