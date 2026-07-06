@@ -224,3 +224,28 @@ fn sort_boxes_like_python_bubble_break_matches_python_non_transitive() {
     assert_eq!(xs, vec![15.0, 10.0, 22.0], "expected [B,A,C] got {:?}", boxes);
     assert_eq!(scores.len(), boxes.len());
 }
+
+#[test]
+fn sort_boxes_like_python_same_line_triple_keeps_upstream_i_plus_1_order() {
+    // 同一物理行（Y 差 ≤ 阈值）3 框、X 逆序：A(x20) B(x15) C(x10)。
+    // PaddleOCR sorted_boxes 用「i+1 固定 + break」（非相邻冒泡），Python 实测输出
+    // [B,C,A]（X 序 15,10,20），而非完全有序的 [C,B,A]。这是上游算法的固有局限
+    // （目标元素无法跨越多个位置一路冒泡），并非移植时的索引错误——若改成相邻
+    // j+1 交换虽能排成 [C,B,A]，但会偏离 Python 保真。本测试钉死此预期，防止被
+    // 误当 bug 改回。已用 Python 复刻同算法独立验证（i+1→[15,10,20]，j+1→[10,15,20]）。
+    let mut boxes = vec![
+        [[20.0, 8.0], [21.0, 8.0], [21.0, 9.0], [20.0, 9.0]], // A x=20
+        [[15.0, 9.0], [16.0, 9.0], [16.0, 10.0], [15.0, 10.0]], // B x=15
+        [[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0]], // C x=10
+    ];
+    let mut scores = vec![0.9, 0.8, 0.7];
+    sort_boxes_like_python(&mut boxes, &mut scores, 10.0);
+    let xs: Vec<f32> = boxes.iter().map(|b| b[0][0]).collect();
+    assert_eq!(
+        xs,
+        vec![15.0, 10.0, 20.0],
+        "expected Python i+1 order [B,C,A], got {:?}",
+        boxes
+    );
+    assert_eq!(scores.len(), boxes.len());
+}
