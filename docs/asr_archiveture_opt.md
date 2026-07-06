@@ -118,6 +118,12 @@ pub struct AsrEngineManager {
   - `get_engine`（只读返回 `Arc`，不改 active）—— 多并发场景（server）。同模型并发受引擎内部 `Mutex<Session>` 串行化（见 `ParaformerEngine`/`SenseVoiceOrigEngine`），跨模型天然并行，无需 server 级全局锁。
 - **缓存上限可配**：`new()` 默认 2；`new_with_capacity(max)` 供 server 等多模型场景放大。
 
+### 4.1b 流式引擎复用 (`StreamingSessionManager`)
+
+流式 `StreamingSession` 每次录音曾 `StreamingSession::new` 重载 encoder+decoder 两个 ONNX Session（秒级）。现引入 `StreamingSessionManager`（对齐 `AsrEngineManager`），按模型缓存 `Arc<dyn StreamingEngine>`，desktop 录音时 `active_session(spec, lang)` 懒加载取用 + `reset()` 复用；录音结束 pipeline drop 仅释放 Arc clone、manager 保留引擎 → 不再重载。
+
+关键约束：ort `Session::run` 是 `&mut`，Session 不能跨连接并发共享；流式 `StreamingSession` 又有连接级状态（punct_prefix/decoder_caches…），故靠 **reset 复用**（非并发共享）。配套把 `StreamingRunner.engine` 由 `Box` 改 `Arc` 让「pipeline drop 不销毁引擎」成立。仅 desktop 接入；server（每连接独立状态）与 cloud（独立路径）不受影响。模型变更由 `active_session` 懒加载覆盖，`switch_asr_engine` 无需主动联动。
+
 ### 4.2 Web 宿主 (`octopus-server`)
 
 - 将 `Arc<AsrEngineManager>` 注入 `AppState`（`new_with_capacity(8)` 放大缓存，适配多模型并发）。

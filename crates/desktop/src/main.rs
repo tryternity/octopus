@@ -414,6 +414,13 @@ pub fn run() {
             // 后台 switch_model 预热需要它。DispatchEngine 持有的是 clone，此处再 clone 托管。
             app.manage(engine_manager.clone());
 
+            // 流式引擎复用 manager（②）：desktop 录音 reset() 复用常驻 StreamingSession，
+            // 避免每次录音重载 ONNX Session。对齐离线 engine_manager 的注入方式。
+            let streaming_manager = Arc::new(
+                octopus_asr_local::streaming_engine::StreamingSessionManager::new(),
+            );
+            app.manage(streaming_manager);
+
             // 2. Create AudioRecorder and open the device (graceful fallback if mic is missing)
             let audio_state = match audio::AudioRecorder::new(&config.microphone) {
                 Ok(mut recorder) => {

@@ -190,14 +190,11 @@ impl StreamingParaformer {
             }
         }
 
-        // Drain 已消费样本（防 raw_samples 全会话累积无界增长）
-        // 安全边界：丢弃已处理帧对应的样本，保留 1 帧 overlap 余量
-        let drain_samples = (self.num_processed_frames as usize)
-            .saturating_sub(1)
-            * FBANK_FRAME_SHIFT;
-        if drain_samples > 0 && drain_samples < self.raw_samples.len() {
-            self.raw_samples.drain(..drain_samples);
-        }
+        // 不 drain raw_samples：compute_new_fbank_frames 用绝对帧索引 fi*FBANK_FRAME_SHIFT
+        // 索引 raw_samples，fbank_cache/num_processed_frames 同为绝对、不随 drain 前移。若 drain
+        // 前段，三者索引错位 → max_frames 被 raw.len() 钉死、current_frames 单调增长追不上 →
+        // 连续 accept 几个 chunk 后不再算新帧 → 识别停滞（开头几词后停住，曾由 87a49a6「防无界
+        // 增长」引入）。raw_samples 全程累积，单次录音 ~64KB/s（reset 每次录音开始 clear），可控。
 
         Ok(None)
     }
@@ -1002,6 +999,52 @@ mod tests {
         let final_text = engine.finish().unwrap();
         eprintln!("[问题四回归] final_text: {:?}", final_text);
         assert!(!final_text.is_empty(), "flush→accept→finish 后文本不应为空");
+    }
+
+    /// 回归（drain 停滞）：87a49a6 的 raw_samples drain 与 compute_new_fbank_frames 的绝对帧索引
+    /// fi*FBANK_FRAME_SHIFT 不兼容——drain 前移 raw_samples 但 fbank_cache/num_processed_frames
+    /// 不前移 → max_frames 被 raw.len() 钉死、current_frames 单调追不上 → 连续 accept 几个 chunk
+    /// 后不再算新帧 → 识别停滞（用户症状：开头几词后停住）。`test_streaming_paraformer_real_model`
+    /// 只断言「文本非空」故漏检（开头几词即非空）。本测试直接断言连续 accept 后 fbank 帧持续增长。
+    #[test]
+    fn test_no_drain_stall_continuous_accept_grows_fbank() {
+        let repo = "csukuangfj/sherpa-onnx-streaming-paraformer-bilingual-zh-en";
+        let test_wavs = match hf_snapshot(repo) {
+            Some(p) => p,
+            None => {
+                eprintln!("[skip] HF cache 未找到 {}", repo);
+                return;
+            }
+        };
+        let wav_path = test_wavs.join("0.wav");
+        if !wav_path.exists() {
+            eprintln!("[skip] 测试 wav 不存在: {}", wav_path.display());
+            return;
+        }
+        let base =
+            crate::audio::read_wav_16k(wav_path.to_str().unwrap()).expect("读取 wav 失败");
+        // 重复到 >6s（跨 10+ chunk），放大「多 chunk 后停滞」信号
+        let mut samples = Vec::new();
+        while samples.len() < 16000 * 6 {
+            samples.extend_from_slice(&base);
+        }
+
+        let mut engine = StreamingParaformer::new("paraformer-bilingual").expect("创建引擎失败");
+        let chunk_size = 16000 * 600 / 1000; // 9600
+        let mut last_ready = 0usize;
+        for (i, chunk) in samples.chunks(chunk_size).enumerate() {
+            let _ = engine.accept_samples(chunk).expect("accept_samples 失败");
+            last_ready = engine.num_fbank_ready();
+            eprintln!("[drain-regress chunk {}] fbank_ready={}", i, last_ready);
+        }
+        // drain bug 下 raw_samples 被 drain 限制在 ~19000 样本 → max_frames ~117 → ready 钉死；
+        // 修复（移除 drain）后 6s 音频 raw 全程累积 → ready ≈ 590+。阈值 300 明确区分。
+        assert!(
+            last_ready > 300,
+            "fbank 帧停滞在 {}：连续 accept 后应持续增长（drain bug 回归——raw_samples 被 \
+             drain 但 fbank_cache 绝对索引未同步，max_frames 被钉死导致不再算新帧）",
+            last_ready
+        );
     }
 
     /// 离线对比测试 — 用同一个 wav 跑离线 paraformer，对比流式结果。

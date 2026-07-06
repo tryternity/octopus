@@ -14,8 +14,7 @@
 
 use crate::transcript::Transcript;
 use log::warn;
-use octopus_asr_local::streaming_runner::{StreamingRunner, TranscriptEvent};
-use octopus_asr_local::streaming_engine::StreamingSession;
+use octopus_asr_local::streaming_runner::{StreamingEngine, StreamingRunner, TranscriptEvent};
 use octopus_asr_local::vad::SileroVad;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -141,10 +140,11 @@ pub trait StreamingPipelineEngine: Send {
 pub struct LocalPipelineEngine(StreamingRunner);
 
 impl LocalPipelineEngine {
-    /// 构造 local 引擎，包已创建的 `StreamingSession`（保留 coordinator 的引擎降级逻辑，见 Step 1.4 ④）。
+    /// 构造 local 引擎，包已取用的流式引擎 Arc（来自 StreamingSessionManager，
+    /// 录音结束 pipeline drop 仅释放此 Arc clone，manager 原 Arc 仍持有 → 引擎不销毁、下次复用）。
     /// 内部构造 `StreamingRunner`（含 VAD 预热，2a/2b）。
-    pub fn from_session(session: StreamingSession, correct: bool) -> anyhow::Result<Self> {
-        Ok(Self(StreamingRunner::new(Box::new(session), correct)?))
+    pub fn from_session(engine: Arc<dyn StreamingEngine>, correct: bool) -> anyhow::Result<Self> {
+        Ok(Self(StreamingRunner::new(engine, correct)?))
     }
 }
 
