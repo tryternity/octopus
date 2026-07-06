@@ -4,6 +4,9 @@
 
 export type Tool = "none" | "rect" | "oval" | "diamond" | "line" | "arrow" | "pen" | "text" | "number" | "blur";
 
+/** 标注工具预设色板（Screenshot ToolPropsPopover 与 ImagePreview Toolbar 共用，含白色）。 */
+export const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#000000", "#ffffff"];
+
 export interface Annotation {
   type: "rect" | "oval" | "diamond" | "line" | "arrow" | "pen" | "text" | "number" | "blur";
   x1: number; y1: number; x2: number; y2: number;
@@ -269,6 +272,45 @@ export function drawAnnotationScaled(ctx: CanvasRenderingContext2D, ann: Annotat
     }
     ctx.globalAlpha = 1;
   }
+}
+
+/**
+ * 像素马赛克（blur 标注导出专用）：对 ctx 当前 canvas 上 ann 矩形区域做降采样模糊 + 色块网格叠加。
+ * 与 drawAnnotation(Scaled) 的 blur 分支（仅预览色块网格、不降采样）的区别：这里先把背景缩小再放大 = 真正像素化。
+ * scale 为坐标缩放系数（Screenshot 传 scale，ImagePreview 传 1）。
+ * 调用方须在遍历标注时单独先处理 blur，并在随后的 drawAnnotation(Scaled) 循环里跳过 blur，
+ * 否则色块网格叠加两次（见 Screenshot composePngBytes / ImagePreview composeAndCropBytes）。
+ */
+export function drawMosaic(ctx: CanvasRenderingContext2D, ann: Annotation, scale: number = 1) {
+  const bx = Math.round(Math.min(ann.x1, ann.x2) * scale);
+  const by = Math.round(Math.min(ann.y1, ann.y2) * scale);
+  const bw = Math.round(Math.abs(ann.x2 - ann.x1) * scale);
+  const bh = Math.round(Math.abs(ann.y2 - ann.y1) * scale);
+  if (bw < 2 || bh < 2) return;
+  const block = Math.max(4, Math.floor(Math.min(bw, bh) / 8));
+  const tmp = document.createElement("canvas");
+  tmp.width = Math.max(1, Math.floor(bw / block));
+  tmp.height = Math.max(1, Math.floor(bh / block));
+  const tctx = tmp.getContext("2d")!;
+  tctx.imageSmoothingEnabled = false;
+  tctx.drawImage(ctx.canvas, bx, by, bw, bh, 0, 0, tmp.width, tmp.height);
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(tmp, 0, 0, tmp.width, tmp.height, bx, by, bw, bh);
+  ctx.imageSmoothingEnabled = true;
+  const opacity = ((ann.lineWidth || 5) / 10) * 0.85 + 0.1;
+  const blurColor = ann.color || "#808080";
+  const cols = Math.ceil(bw / block);
+  const rows = Math.ceil(bh / block);
+  for (let r = 0; r < rows; r++) {
+    for (let col = 0; col < cols; col++) {
+      const hash = (col * 73856093 ^ r * 19349663) >>> 0;
+      const variance = ((hash % 100) - 50) / 200;
+      ctx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
+      ctx.fillStyle = blurColor;
+      ctx.fillRect(bx + col * block, by + r * block, block, block);
+    }
+  }
+  ctx.globalAlpha = 1;
 }
 
 export function annBounds(ann: Annotation): { x: number; y: number; w: number; h: number } {

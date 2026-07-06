@@ -6,6 +6,7 @@ import {
   type Annotation,
   type Tool,
   drawAnnotation,
+  drawMosaic,
   hitTestAnnotationPrecise,
 } from "@/lib/annotation";
 import Toolbar from "./Toolbar";
@@ -576,42 +577,14 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
     c.width = natW; c.height = natH;
     const ctx = c.getContext("2d")!;
     ctx.drawImage(img, 0, 0, natW, natH);
-    // 先处理 blur（像素马赛克），再画其他标注
+    // 先处理 blur（像素马赛克降采样），再画其他标注
     for (const ann of annotations) {
-      if (ann.type !== "blur") continue;
-      const bx = Math.round(Math.min(ann.x1, ann.x2));
-      const by = Math.round(Math.min(ann.y1, ann.y2));
-      const bw = Math.round(Math.abs(ann.x2 - ann.x1));
-      const bh = Math.round(Math.abs(ann.y2 - ann.y1));
-      if (bw < 2 || bh < 2) continue;
-      // 马赛克：先降采样模糊原图，再叠加色块（颜色 + 不透明度）
-      const block = Math.max(4, Math.floor(Math.min(bw, bh) / 8));
-      const tmp = document.createElement("canvas");
-      tmp.width = Math.max(1, Math.floor(bw / block));
-      tmp.height = Math.max(1, Math.floor(bh / block));
-      const tctx = tmp.getContext("2d")!;
-      tctx.imageSmoothingEnabled = false;
-      tctx.drawImage(c, bx, by, bw, bh, 0, 0, tmp.width, tmp.height);
-      ctx.imageSmoothingEnabled = false;
-      ctx.drawImage(tmp, 0, 0, tmp.width, tmp.height, bx, by, bw, bh);
-      ctx.imageSmoothingEnabled = true;
-      // 叠加色块：选定颜色 + 不透明度（粗细控制遮挡程度）
-      const opacity = ((ann.lineWidth || 5) / 10) * 0.85 + 0.1;
-      const blurColor = ann.color || "#808080";
-      const cols = Math.ceil(bw / block);
-      const rows = Math.ceil(bh / block);
-      for (let r = 0; r < rows; r++) {
-        for (let col = 0; col < cols; col++) {
-          const hash = (col * 73856093 ^ r * 19349663) >>> 0;
-          const variance = ((hash % 100) - 50) / 200;
-          ctx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
-          ctx.fillStyle = blurColor;
-          ctx.fillRect(bx + col * block, by + r * block, block, block);
-        }
-      }
-      ctx.globalAlpha = 1;
+      if (ann.type === "blur") drawMosaic(ctx, ann);
     }
-    for (const ann of annotations) drawAnnotation(ctx, ann);
+    for (const ann of annotations) {
+      if (ann.type === "blur") continue; // blur 已由 drawMosaic 处理，跳过避免色块叠加两次
+      drawAnnotation(ctx, ann);
+    }
     const blob: Blob = await new Promise((resolve, reject) => c.toBlob((b) => b ? resolve(b) : reject("toBlob failed"), "image/png"));
     return await blob.arrayBuffer();
   };

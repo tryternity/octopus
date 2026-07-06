@@ -410,9 +410,9 @@ pub async fn insert_ocr_clipboard_item(
     text: String,
     app_handle: tauri::AppHandle,
 ) -> Result<i64, String> {
-    // ⚠️ current_ocr_meta 必须在 with_db 外取：其内部 load_config_key → with_db，
-    // 在 with_db 闭包内调 = std::Mutex 同线程重入死锁（DB 锁永久持有 → 所有 with_db
-    // 操作阻塞 = 过滤失灵；本命令永不返回 = CompactEditor 不弹）。
+    // current_ocr_meta 在 with_db 外取：其内部 load_config_key → with_db，闭包内调虽已
+    // 不再死锁（db.rs 已换 ReentrantMutex，同线程重入安全），但仍会让 DB 锁跨 load_config_key
+    // 嵌套持有；外取既保持锁短持、又避免重入链路，故保留此习惯。
     let (ocr_engine, ocr_model) = current_ocr_meta();
     log::info!("[insert-ocr] before insert text_len={}", text.len());
     let id = octopus_infra::db::with_db(|conn| {

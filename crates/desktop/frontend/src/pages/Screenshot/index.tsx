@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
-import { type Annotation, type Tool, drawAnnotation, drawAnnotationScaled, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
+import { type Annotation, type Tool, PRESET_COLORS, drawAnnotation, drawAnnotationScaled, drawMosaic, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
 
 interface Selection {
   x: number; y: number; w: number; h: number;
@@ -590,40 +590,12 @@ export default function Screenshot() {
     tmpCanvas.height = bg.naturalHeight;
     const tmpCtx = tmpCanvas.getContext("2d")!;
     tmpCtx.drawImage(bg, 0, 0);
-    // 先处理 blur（像素马赛克），再画其他标注
+    // 先处理 blur（像素马赛克降采样），再画其他标注
     for (const ann of allAnns) {
-      if (ann.type !== "blur") continue;
-      const bx = Math.round(Math.min(ann.x1, ann.x2) * scale);
-      const by = Math.round(Math.min(ann.y1, ann.y2) * scale);
-      const bw = Math.round(Math.abs(ann.x2 - ann.x1) * scale);
-      const bh = Math.round(Math.abs(ann.y2 - ann.y1) * scale);
-      if (bw < 2 || bh < 2) continue;
-      const block = Math.max(4, Math.floor(Math.min(bw, bh) / 8));
-      const tmp = document.createElement("canvas");
-      tmp.width = Math.max(1, Math.floor(bw / block));
-      tmp.height = Math.max(1, Math.floor(bh / block));
-      const tctx = tmp.getContext("2d")!;
-      tctx.imageSmoothingEnabled = false;
-      tctx.drawImage(tmpCanvas, bx, by, bw, bh, 0, 0, tmp.width, tmp.height);
-      tmpCtx.imageSmoothingEnabled = false;
-      tmpCtx.drawImage(tmp, 0, 0, tmp.width, tmp.height, bx, by, bw, bh);
-      tmpCtx.imageSmoothingEnabled = true;
-      const opacity = ((ann.lineWidth || 5) / 10) * 0.85 + 0.1;
-      const blurColor = ann.color || "#808080";
-      const cols = Math.ceil(bw / block);
-      const rows = Math.ceil(bh / block);
-      for (let r = 0; r < rows; r++) {
-        for (let col = 0; col < cols; col++) {
-          const hash = (col * 73856093 ^ r * 19349663) >>> 0;
-          const variance = ((hash % 100) - 50) / 200;
-          tmpCtx.globalAlpha = Math.max(0, Math.min(1, opacity + variance));
-          tmpCtx.fillStyle = blurColor;
-          tmpCtx.fillRect(bx + col * block, by + r * block, block, block);
-        }
-      }
-      tmpCtx.globalAlpha = 1;
+      if (ann.type === "blur") drawMosaic(tmpCtx, ann, scale);
     }
     for (const ann of allAnns) {
+      if (ann.type === "blur") continue; // blur 已由 drawMosaic 处理，跳过避免色块叠加两次
       drawAnnotationScaled(tmpCtx, ann, scale);
     }
 
@@ -1032,8 +1004,6 @@ function ToolButton({ active, onClick, label, icon }: { active?: boolean; onClic
     </button>
   );
 }
-
-const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#000000", "#ffffff"];
 
 function ToolPropsPopover({
   x, y, color, width, fontSize, circleSize, isText, isNumber, isShape, filled, onColorChange, onWidthChange, onFontSizeChange, onCircleSizeChange, onFilledChange,
