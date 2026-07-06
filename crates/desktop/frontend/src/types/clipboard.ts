@@ -64,6 +64,19 @@ export function imageMeta(item: ClipboardItem): string {
   return parts.join(" · ");
 }
 
+/**
+ * 文件条目专用（不含时间）：
+ * 单个 → 类型（如 png/txt）；多个 → 「N个 · 首个类型」。
+ * type 缺失时退化为「N个」/ 空。
+ */
+export function fileMeta(item: ClipboardItem): string {
+  const files = item.meta_info?.files;
+  if (!files || files.length === 0) return "";
+  const firstType = files.map((f) => f.type).find(Boolean);
+  if (files.length === 1) return firstType || "";
+  return firstType ? `${files.length}个 · ${firstType}` : `${files.length}个`;
+}
+
 /** 类型强调色 */
 export const typeAccent: Record<ItemType, string> = {
   text: "text-stone-500",

@@ -4,7 +4,7 @@ import { openUrl } from "@tauri-apps/plugin-opener";
 import { cn } from "@/lib/utils";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import type { ClipboardItem } from "@/types/clipboard";
-import { metaParts, typeAccent, imageMeta, detectUrl } from "@/types/clipboard";
+import { metaParts, typeAccent, imageMeta, fileMeta, detectUrl } from "@/types/clipboard";
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Download, FolderOpen,
@@ -352,7 +352,11 @@ function ClipboardRow({
     : item.item_type === "file" ? FileText
     : Type;
   const isVoice = item.item_type === "voice";
-  const meta = metaParts(item);
+  // 第一行行尾元数据：text/ocr→N字；voice→N字·Xs；image→W×H·size；file→类型/N个
+  const row1Meta =
+    item.item_type === "image" ? imageMeta(item)
+    : item.item_type === "file" ? fileMeta(item)
+    : metaParts(item);
   const accent = typeAccent[item.item_type];
   const link = item.item_type === "text" ? detectUrl(item.content) : null;
   const isUrl = !!link?.isLink;
@@ -380,7 +384,7 @@ function ClipboardRow({
   return (
     <div
       className={cn(
-        "group relative flex items-start gap-2.5 pl-4 pr-3 py-2.5 border-b border-stone-100/50 transition-colors cursor-pointer",
+        "group relative flex items-center gap-2.5 pl-4 pr-3 py-2 border-b border-stone-100/50 transition-colors cursor-pointer",
         deletePending ? "bg-red-50"
           : isSelected ? "bg-stone-100"
           : "hover:bg-stone-50/70",
@@ -395,21 +399,21 @@ function ClipboardRow({
 
       <input
         type="checkbox"
-        className="w-3.5 h-3.5 mt-0.5 flex-shrink-0 accent-stone-900"
+        className="w-3.5 h-3.5 flex-shrink-0 accent-stone-900"
         checked={isSelected}
         onChange={(e) => { e.stopPropagation(); onToggleSelect(); }}
         onClick={(e) => e.stopPropagation()}
       />
-      {/* 类型图标 = 单击复制 */}
+      {/* 类型图标(单击复制)：跨两行垂直居中、放大一档(w-3.5→w-4)，作条目「头像」 */}
       <button
         type="button"
         onClick={handleCopy}
         onDoubleClick={(e) => e.stopPropagation()}
         title="单击复制"
-        className="relative flex-shrink-0 mt-0.5 -m-0.5 cursor-pointer rounded p-0.5 transition-transform duration-150 hover:scale-110 active:scale-90"
+        className="relative flex-shrink-0 cursor-pointer rounded p-0.5 transition-transform duration-150 hover:scale-110 active:scale-90"
       >
         <Icon className={cn(
-          "w-3.5 h-3.5 transition-all duration-150",
+          "w-4 h-4 transition-all duration-150",
           accent,
           copied && "scale-125 text-emerald-500",
         )} />
@@ -419,141 +423,136 @@ function ClipboardRow({
           </span>
         )}
       </button>
+
+      {/* 右侧两行内容栏：第一行 内容+元数据；第二行 时间戳+操作。
+          原右侧 hover 操作 rail 占位留白，下移到第二行后内容栏 flex-1 铺满宽度。 */}
       <div className="flex-1 min-w-0">
-        {item.item_type === "image" ? (
-          <div className="flex items-center gap-2">
-            {thumbSrc && (
-              <img src={thumbSrc} className="w-10 h-10 rounded object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
+        {/* 第一行：内容 / 缩略图 / 文件路径 + 行尾元数据 */}
+        <div className="flex items-center gap-2">
+          <div className="flex-1 min-w-0">
+            {item.item_type === "image" ? (
+              thumbSrc && (
+                <img src={thumbSrc} className="w-10 h-10 rounded object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
+              )
+            ) : item.item_type === "file" ? (
+              <span className="block truncate text-xs text-stone-500">{formatFilePaths(item.ref_data)}</span>
+            ) : (
+              <p className={cn(
+                "leading-snug text-stone-800 break-words line-clamp-1",
+                previewSize,
+                isVoice && "font-medium",
+              )}>{preview}</p>
             )}
-            <span className={cn("text-xs font-medium tabular-nums", accent)}>
-              {imageMeta(item)}
-            </span>
           </div>
-        ) : item.item_type === "file" ? (
-          <div className="text-xs text-stone-500 truncate">
-            {formatFilePaths(item.ref_data)}
-          </div>
-        ) : (
-          <p className={cn(
-            "leading-relaxed text-stone-800 break-words line-clamp-2",
-            previewSize,
-            isVoice && "font-medium",
-          )}>{preview}</p>
-        )}
-        <div className="flex items-center gap-1.5 mt-0.5">
-          <span className="text-[10px] text-stone-400 tabular-nums">{item.created_at}</span>
-          {meta && (
-            <>
-              <span className="text-[10px] text-stone-300">·</span>
-              <span className={cn("text-[10px] font-medium tabular-nums", accent)}>{meta}</span>
-            </>
-          )}
-          {isUrl && (
-            <span className="text-[10px] text-blue-400/70 truncate max-w-[120px]">{item.content.trim()}</span>
+          {row1Meta && (
+            <span className={cn("flex-shrink-0 text-[10px] font-medium tabular-nums", accent)}>{row1Meta}</span>
           )}
         </div>
-      </div>
 
-      {/* 右侧操作：hover 显示（收藏/OCR 状态除外） */}
-      <div className="flex-shrink-0 flex items-center gap-0.5" onDoubleClick={(e) => e.stopPropagation()}>
-        {isUrl && (
-          <button
-            className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-            onClick={(e) => { e.stopPropagation(); if (link) openUrl(link.url).catch(console.error); }}
-            title="打开链接"
-          >
-            <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />
-          </button>
-        )}
-        {item.item_type !== "image" && item.item_type !== "file" && (
-          <button
-            className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-            onClick={handleEditOrPreview}
-            title="编辑"
-          >
-            <SquarePen className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
-          </button>
-        )}
-        {item.item_type === "image" && (
-          <button
-            className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-            onClick={handleEditOrPreview}
-            title="预览"
-          >
-            <img src="icons/eye-edit.svg" alt="预览" className="w-3.5 h-3.5" />
-          </button>
-        )}
-        {item.item_type === "image" && (
-          <div className="relative">
+        {/* 第二行：时间戳 + 操作（复制居首，最常用） */}
+        <div className="mt-1 flex items-center justify-between" onDoubleClick={(e) => e.stopPropagation()}>
+          <span className="text-[10px] text-stone-400 tabular-nums">{item.created_at}</span>
+          <div className="flex flex-shrink-0 items-center gap-0.5">
             <button
-              ref={saveBtnRef}
               className={cn(
                 "p-1 rounded transition-opacity hover:scale-110",
-                showSavePopover ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+                copied ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
               )}
-              onClick={handleSaveImage}
-              title="保存为文件"
+              onClick={handleCopy}
+              title="复制"
             >
-              <Download className={cn(
-                "w-3.5 h-3.5 text-stone-500",
-                showSavePopover && "text-stone-800",
+              {copied ? (
+                <Check className="w-3.5 h-3.5 text-emerald-500" />
+              ) : (
+                <Copy className="w-3.5 h-3.5 text-stone-500" />
+              )}
+            </button>
+            {isUrl && (
+              <button
+                className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+                onClick={(e) => { e.stopPropagation(); if (link) openUrl(link.url).catch(console.error); }}
+                title="打开链接"
+              >
+                <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />
+              </button>
+            )}
+            {item.item_type !== "image" && item.item_type !== "file" && (
+              <button
+                className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+                onClick={handleEditOrPreview}
+                title="编辑"
+              >
+                <SquarePen className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
+              </button>
+            )}
+            {item.item_type === "image" && (
+              <button
+                className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+                onClick={handleEditOrPreview}
+                title="预览"
+              >
+                <img src="icons/eye-edit.svg" alt="预览" className="w-3.5 h-3.5" />
+              </button>
+            )}
+            {item.item_type === "image" && (
+              <div className="relative">
+                <button
+                  ref={saveBtnRef}
+                  className={cn(
+                    "p-1 rounded transition-opacity hover:scale-110",
+                    showSavePopover ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+                  )}
+                  onClick={handleSaveImage}
+                  title="保存为文件"
+                >
+                  <Download className={cn(
+                    "w-3.5 h-3.5 text-stone-500",
+                    showSavePopover && "text-stone-800",
+                  )} />
+                </button>
+                {showSavePopover && (
+                  <SaveImagePopover id={item.id} triggerRef={saveBtnRef} onClose={() => setShowSavePopover(false)} />
+                )}
+              </div>
+            )}
+            {item.item_type === "file" && (
+              <button
+                className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+                onClick={handleOpenFile}
+                title="打开文件"
+              >
+                <FolderOpen className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
+              </button>
+            )}
+            <button
+              className={cn(
+                "p-1 rounded transition-all",
+                deletePending
+                  ? "opacity-100 bg-red-100"
+                  : "opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity",
+              )}
+              onClick={handleDeleteClick}
+              title={deletePending ? "再次点击确认删除" : "删除"}
+            >
+              <Trash2 className={cn(
+                "w-3.5 h-3.5 transition-colors",
+                deletePending ? "text-red-600" : "text-stone-500 hover:text-red-500",
               )} />
             </button>
-            {showSavePopover && (
-              <SaveImagePopover id={item.id} triggerRef={saveBtnRef} onClose={() => setShowSavePopover(false)} />
-            )}
+            <button
+              className={cn(
+                "p-1 rounded transition-opacity hover:scale-110",
+                item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+              )}
+              onClick={handleFavorite}
+            >
+              <Star className={cn(
+                "w-3.5 h-3.5",
+                item.is_favorite ? "fill-amber-400 text-amber-400" : "text-stone-500",
+              )} />
+            </button>
           </div>
-        )}
-        {item.item_type === "file" && (
-          <button
-            className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-            onClick={handleOpenFile}
-            title="打开文件"
-          >
-            <FolderOpen className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
-          </button>
-        )}
-        <button
-          className={cn(
-            "p-1 rounded transition-all",
-            deletePending
-              ? "opacity-100 bg-red-100"
-              : "opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity",
-          )}
-          onClick={handleDeleteClick}
-          title={deletePending ? "再次点击确认删除" : "删除"}
-        >
-          <Trash2 className={cn(
-            "w-3.5 h-3.5 transition-colors",
-            deletePending ? "text-red-600" : "text-stone-500 hover:text-red-500",
-          )} />
-        </button>
-        <button
-          className={cn(
-            "p-1 rounded transition-opacity hover:scale-110",
-            copied ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
-          )}
-          onClick={handleCopy}
-          title="复制"
-        >
-          {copied ? (
-            <Check className="w-3.5 h-3.5 text-emerald-500" />
-          ) : (
-            <Copy className="w-3.5 h-3.5 text-stone-500" />
-          )}
-        </button>
-        <button
-          className={cn(
-            "p-1 rounded transition-opacity hover:scale-110",
-            item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
-          )}
-          onClick={handleFavorite}
-        >
-          <Star className={cn(
-            "w-3.5 h-3.5",
-            item.is_favorite ? "fill-amber-400 text-amber-400" : "text-stone-500",
-          )} />
-        </button>
+        </div>
       </div>
     </div>
   );

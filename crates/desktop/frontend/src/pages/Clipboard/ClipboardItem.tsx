@@ -5,7 +5,7 @@ import { invoke } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
-import { metaParts, typeAccent, imageMeta, detectUrl } from "@/types/clipboard";
+import { metaParts, typeAccent, imageMeta, fileMeta, detectUrl } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
 
 function ClipboardItemRow({
@@ -141,13 +141,17 @@ function ClipboardItemRow({
     : Type;
 
   const isVoice = item.item_type === "voice";
-  const meta = metaParts(item);
+  // 第一行行尾元数据：text/ocr→N字；voice→N字·Xs；image→w×h·size；file→类型/N个
+  const row1Meta =
+    item.item_type === "image" ? imageMeta(item)
+    : item.item_type === "file" ? fileMeta(item)
+    : metaParts(item);
   const accent = typeAccent[item.item_type];
 
   return (
     <div
       className={cn(
-        "group relative flex items-start gap-2.5 px-3 py-2.5 cursor-pointer transition-colors",
+        "group relative px-3 py-2 cursor-pointer transition-colors flex items-center gap-2.5",
         isSelected && !deletePending ? "bg-accent" : "hover:bg-accent",
         deletePending && "bg-red-50",
       )}
@@ -158,16 +162,17 @@ function ClipboardItemRow({
         <div className="absolute left-0 top-2 bottom-2 w-[2px] rounded-r bg-voice/50" />
       )}
 
-      {/* 类型图标 = 单击复制（合并为一个按钮，减少视觉碎片） */}
+      {/* 类型图标(单击复制)：左列跨两行垂直居中、放大一档(w-4→w-5)，作为条目「头像」。
+          外层 flex = 图标列 + 右侧两行内容栏。 */}
       <button
         type="button"
         onClick={handleCopy}
         onDoubleClick={(e) => e.stopPropagation()}
         title="单击复制"
-        className="relative flex-shrink-0 mt-px cursor-pointer rounded p-0.5 transition-transform duration-150 hover:scale-110 active:scale-90"
+        className="relative flex-shrink-0 cursor-pointer rounded p-0.5 transition-transform duration-150 hover:scale-110 active:scale-90"
       >
         <Icon className={cn(
-          "w-4 h-4 transition-all duration-150",
+          "w-5 h-5 transition-all duration-150",
           accent,
           copied && "scale-125 text-emerald-500",
         )} />
@@ -178,141 +183,138 @@ function ClipboardItemRow({
         )}
       </button>
 
+      {/* 右侧两行内容栏：第一行 内容+元数据；第二行 时间戳+操作。 */}
       <div className="flex-1 min-w-0">
-        {item.item_type === "image" ? (
-          <div className="flex items-center gap-2">
-            {thumbSrc && (
-              <img src={thumbSrc} className="w-9 h-9 rounded-md object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
-            )}
-            <span className={cn("text-[11px] font-medium tabular-nums", accent)}>
-              {imageMeta(item)}
-            </span>
-          </div>
-        ) : item.item_type === "file" ? (
-          <div className="text-[12px] text-muted-foreground truncate">
-            {formatFilePaths(item.ref_data)}
-          </div>
-        ) : (
-          <p className="text-[12.5px] leading-snug text-foreground/90 break-all line-clamp-2">{preview}</p>
-        )}
-        <div className="flex items-center gap-1.5 mt-0.5">
-          <span className="text-[10px] text-muted-foreground/50 tabular-nums">{item.created_at}</span>
-          {meta && (
-            <>
-              <span className="text-[10px] text-muted-foreground/30">·</span>
-              <span className={cn("text-[10px] font-medium tabular-nums", accent)}>{meta}</span>
-            </>
+      <div className="flex items-center gap-2">
+
+        <div className="flex-1 min-w-0">
+          {item.item_type === "image" ? (
+            thumbSrc && (
+              <img src={thumbSrc} className="w-10 h-10 rounded-md object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
+            )
+          ) : item.item_type === "file" ? (
+            <span className="block truncate text-[12px] text-muted-foreground">{formatFilePaths(item.ref_data)}</span>
+          ) : (
+            <p className="break-all line-clamp-1 text-[12.5px] leading-snug text-foreground/90">{preview}</p>
           )}
         </div>
+
+        {row1Meta && (
+          <span className={cn("flex-shrink-0 text-[10px] font-medium tabular-nums", accent)}>{row1Meta}</span>
+        )}
       </div>
 
-      {/* 右侧操作：统一 hover 显示（收藏除外） */}
-      <div className="flex-shrink-0 flex items-center gap-1" onDoubleClick={(e) => e.stopPropagation()}>
-        {isUrl && (
+      {/* 第二行：时间戳 + 操作（内容栏内，已对齐图标右侧，无需 pl 缩进）。 */}
+      <div className="mt-1 flex items-center justify-between" onDoubleClick={(e) => e.stopPropagation()}>
+        <span className="tabular-nums text-[10px] text-muted-foreground/60">{item.created_at}</span>
+        <div className="flex flex-shrink-0 items-center gap-0.5">
           <button
-            className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
-            onClick={(e) => {
-              e.stopPropagation();
-              if (link) openUrl(link.url).catch(console.error);
-            }}
-            title="打开链接"
-          >
-            <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />
-          </button>
-        )}
-        {item.item_type !== "image" && item.item_type !== "file" && (
-          <button
-            className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
-            onClick={handleEditText}
-            title="编辑"
-          >
-            <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
-          </button>
-        )}
-        {item.item_type === "image" && (
-          <button
-            className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
-            onClick={(e) => {
-              e.stopPropagation();
-              openCompactEditorTab(item.id);
-            }}
-            title="预览"
-          >
-            <img src="icons/eye-edit.svg" alt="预览" className="w-3.5 h-3.5" />
-          </button>
-        )}
-        {item.item_type === "image" && (
-          <div className="relative">
-            <button
-              ref={saveBtnRef}
-              className={cn(
-                "p-0.5 transition-opacity hover:scale-110",
-                showSavePopover
-                  ? "opacity-100"
-                  : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
-              )}
-              onClick={handleSaveImage}
-              title="保存为文件"
-            >
-              <Download className={cn(
-                "w-3.5 h-3.5 text-muted-foreground",
-                showSavePopover && "text-foreground",
-              )} />
-            </button>
-            {showSavePopover && (
-              <SaveImagePopover id={item.id} triggerRef={saveBtnRef} onClose={() => setShowSavePopover(false)} />
+            className={cn(
+              "p-0.5 transition-opacity hover:scale-110",
+              copied ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
             )}
-          </div>
-        )}
-        {item.item_type === "file" && (
-          <button
-            className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
-            onClick={handleOpenFile}
-            title="打开文件"
+            onClick={handleCopy}
+            title="复制"
           >
-            <FolderOpen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+            {copied ? (
+              <Check className="w-3.5 h-3.5 text-emerald-500" />
+            ) : (
+              <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+            )}
           </button>
-        )}
-        <button
-          className={cn(
-            "p-0.5 transition-all",
-            deletePending
-              ? "opacity-100 bg-red-100 rounded"
-              : "opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity",
+          {isUrl && (
+            <button
+              className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
+              onClick={(e) => {
+                e.stopPropagation();
+                if (link) openUrl(link.url).catch(console.error);
+              }}
+              title="打开链接"
+            >
+              <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />
+            </button>
           )}
-          onClick={handleDeleteClick}
-          title={deletePending ? "再次点击确认删除" : "删除"}
-        >
-          <Trash2 className={cn(
-            "w-3.5 h-3.5 transition-colors",
-            deletePending ? "text-red-600" : "text-muted-foreground hover:text-red-500",
-          )} />
-        </button>
-        <button
-          className={cn(
-            "p-0.5 transition-opacity hover:scale-110",
-            copied ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+          {item.item_type !== "image" && item.item_type !== "file" && (
+            <button
+              className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
+              onClick={handleEditText}
+              title="编辑"
+            >
+              <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+            </button>
           )}
-          onClick={handleCopy}
-          title="复制"
-        >
-          {copied ? (
-            <Check className="w-3.5 h-3.5 text-emerald-500" />
-          ) : (
-            <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+          {item.item_type === "image" && (
+            <button
+              className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
+              onClick={(e) => {
+                e.stopPropagation();
+                openCompactEditorTab(item.id);
+              }}
+              title="预览"
+            >
+              <img src="icons/eye-edit.svg" alt="预览" className="w-3.5 h-3.5" />
+            </button>
           )}
-        </button>
-        <button
-          className={cn(
-            "p-0.5 transition-opacity hover:scale-110",
-            item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+          {item.item_type === "image" && (
+            <div className="relative">
+              <button
+                ref={saveBtnRef}
+                className={cn(
+                  "p-0.5 transition-opacity hover:scale-110",
+                  showSavePopover
+                    ? "opacity-100"
+                    : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+                )}
+                onClick={handleSaveImage}
+                title="保存为文件"
+              >
+                <Download className={cn(
+                  "w-3.5 h-3.5 text-muted-foreground",
+                  showSavePopover && "text-foreground",
+                )} />
+              </button>
+              {showSavePopover && (
+                <SaveImagePopover id={item.id} triggerRef={saveBtnRef} onClose={() => setShowSavePopover(false)} />
+              )}
+            </div>
           )}
-          onClick={handleFavorite}
-        >
-          <Star
-            className={cn("w-3.5 h-3.5", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
-          />
-        </button>
+          {item.item_type === "file" && (
+            <button
+              className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
+              onClick={handleOpenFile}
+              title="打开文件"
+            >
+              <FolderOpen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
+            </button>
+          )}
+          <button
+            className={cn(
+              "p-0.5 transition-all",
+              deletePending
+                ? "opacity-100 bg-red-100 rounded"
+                : "opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity",
+            )}
+            onClick={handleDeleteClick}
+            title={deletePending ? "再次点击确认删除" : "删除"}
+          >
+            <Trash2 className={cn(
+              "w-3.5 h-3.5 transition-colors",
+              deletePending ? "text-red-600" : "text-muted-foreground hover:text-red-500",
+            )} />
+          </button>
+          <button
+            className={cn(
+              "p-0.5 transition-opacity hover:scale-110",
+              item.is_favorite ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+            )}
+            onClick={handleFavorite}
+          >
+            <Star
+              className={cn("w-3.5 h-3.5", item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground")}
+            />
+          </button>
+        </div>
+      </div>
       </div>
 
       {!isLast && <div className="absolute bottom-0 left-2.5 right-2.5 h-px bg-border/50" />}
