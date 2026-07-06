@@ -104,7 +104,7 @@
 
 ---
 
-- [ ] **Step 1: 创建 `numeric.rs` 并写失败测试**
+- [x] **Step 1: 创建 `numeric.rs` 并写失败测试**
 
 创建 `crates/paddle-ocr/src/vision/numeric.rs`，只写测试 + 函数签名（用 `todo!()` 占位）：
 
@@ -240,12 +240,12 @@ mod tests {
 pub(crate) mod numeric;
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 Run: `cargo test -p octopus-paddle-ocr vision::numeric 2>&1 | tail -20`
 Expected: 多个测试 FAIL（`not yet implemented` panic）
 
-- [ ] **Step 3: 实现 numeric.rs 全部函数**
+- [x] **Step 3: 实现 numeric.rs 全部函数**
 
 替换 `numeric.rs` 中所有 `todo!()` 为真实实现（从原文件逐字复制）：
 
@@ -328,12 +328,12 @@ pub(crate) fn clamp_i32_inclusive(v: i32, min_v: i32, max_v: i32) -> i32 {
 ```
 （测试模块保持不变）
 
-- [ ] **Step 4: 运行测试验证全绿**
+- [x] **Step 4: 运行测试验证全绿**
 
 Run: `cargo test -p octopus-paddle-ocr vision::numeric 2>&1 | tail -20`
 Expected: 10 passed, 0 failed
 
-- [ ] **Step 5: 迁移 resize.rs 调用点**
+- [x] **Step 5: 迁移 resize.rs 调用点**
 
 在 `crates/paddle-ocr/src/vision/resize.rs`：
 1. 顶部添加 `use super::numeric::{clip_i32_exclusive_upper, cv_round_ties_even_f32, saturate_cast_i16_from_f32};`
@@ -346,12 +346,12 @@ Expected: 10 passed, 0 failed
         let sy1 = clip_i32_exclusive_upper(kernel.yofs[dy] + 1, 0, dims.src_h as i32) as usize;
 ```
 
-- [ ] **Step 6: 编译验证 resize.rs**
+- [x] **Step 6: 编译验证 resize.rs**
 
 Run: `cargo check -p octopus-paddle-ocr 2>&1 | tail -10`
 Expected: 编译通过（可能有 unused import warning，后续清理）
 
-- [ ] **Step 7: 迁移 rotate_crop.rs 调用点**
+- [x] **Step 7: 迁移 rotate_crop.rs 调用点**
 
 在 `crates/paddle-ocr/src/vision/rotate_crop.rs`：
 1. 顶部添加 `use super::numeric::{clamp_i32_inclusive, interpolate_cubic_coeffs, saturate_cast_i16, saturate_cast_i16_from_f32, saturate_cast_i32_round, l2};`
@@ -363,7 +363,7 @@ Expected: 编译通过（可能有 unused import warning，后续清理）
    - 行 220：`saturate_cast_i16_from_f32(...)` 不变（同名）
    - （如有 `l2` 调用则不变）
 
-- [ ] **Step 8: 迁移 word_boxes.rs 和 postprocess/mod.rs 的 l2**
+- [x] **Step 8: 迁移 word_boxes.rs 和 postprocess/mod.rs 的 l2**
 
 在 `crates/paddle-ocr/src/rec/word_boxes.rs`：
 1. 顶部添加 `use crate::vision::numeric::l2;`
@@ -373,7 +373,7 @@ Expected: 编译通过（可能有 unused import warning，后续清理）
 1. 找到合适的 import 位置，添加 `use crate::vision::numeric::l2;`
 2. 删除本地 `l2`（行 2014-2018）
 
-- [ ] **Step 9: 全量编译 + 测试**
+- [x] **Step 9: 全量编译 + 测试**
 
 Run:
 ```bash
@@ -382,7 +382,7 @@ cargo test -p octopus-paddle-ocr 2>&1 | tail -15
 ```
 Expected: 0 warning（之前的 3 个 clippy nit 顺手修），32+10 passed, 0 failed
 
-- [ ] **Step 10: 顺手修 clippy 3 个 nit（detector.rs:115, postprocess/mod.rs:1924, word_boxes.rs:76）**
+- [x] **Step 10: 顺手修 clippy 3 个 nit（detector.rs:115, postprocess/mod.rs:1924, word_boxes.rs:76）**
 
 ```rust
 // crates/paddle-ocr/src/det/detector.rs:115
@@ -398,7 +398,7 @@ for (box_, score) in dt_boxes.into_iter().zip(scores) {
 .zip(mapped)
 ```
 
-- [ ] **Step 11: 最终验证 + commit**
+- [x] **Step 11: 最终验证 + commit**
 
 Run:
 ```bash
@@ -445,7 +445,7 @@ EOF
 
 ---
 
-- [ ] **Step 1: 在主仓库验证 desktop 基线可编译**
+- [x] **Step 1: 在主仓库验证 desktop 基线可编译**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus
@@ -453,7 +453,7 @@ cargo check -p octopus-desktop 2>&1 | tail -5
 ```
 Expected: 编译通过
 
-- [ ] **Step 2: 创建 `screenshot_geometry.rs` 并写失败测试**
+- [x] **Step 2: 创建 `screenshot_geometry.rs` 并写失败测试**
 
 创建 `crates/desktop/src/screenshot_geometry.rs`：
 
@@ -608,12 +608,12 @@ mod tests {
 
 在 `crates/desktop/src/main.rs` 添加 `mod screenshot_geometry;`（放在现有 mod 列表中，字母序）。
 
-- [ ] **Step 3: 运行测试验证失败**
+- [x] **Step 3: 运行测试验证失败**
 
 Run: `cd /Users/wudarui/workspace/agent/octopus && cargo test -p octopus-desktop screenshot_geometry 2>&1 | tail -20`
 Expected: 多个测试 FAIL（`not yet implemented`）
 
-- [ ] **Step 4: 实现 screenshot_geometry.rs 全部函数**
+- [x] **Step 4: 实现 screenshot_geometry.rs 全部函数**
 
 ```rust
 //! start_scroll_recording 提取出的纯逻辑：坐标换算、显示器命中、preview 裁剪参数。
@@ -699,12 +699,12 @@ pub(crate) fn compute_preview_crop(
 ```
 （测试模块保持不变）
 
-- [ ] **Step 5: 运行测试验证全绿**
+- [x] **Step 5: 运行测试验证全绿**
 
 Run: `cargo test -p octopus-desktop screenshot_geometry 2>&1 | tail -15`
 Expected: 6 passed, 0 failed
 
-- [ ] **Step 6: 重构 screenshot_commands.rs — 替换坐标换算逻辑**
+- [x] **Step 6: 重构 screenshot_commands.rs — 替换坐标换算逻辑**
 
 在 `start_scroll_recording` 的 `tokio::spawn` 块内（行 845-1333），将行 876-905 的坐标换算逻辑替换为调用 `screenshot_geometry` 函数。**不改变平台守卫分支**（行 858-874 的 `#[cfg]` 块保留原样）。
 
@@ -750,7 +750,7 @@ Expected: 6 passed, 0 failed
         let sel_global_y = sel.y;
 ```
 
-- [ ] **Step 7: 重构 — 提取 preview crop 重复逻辑**
+- [x] **Step 7: 重构 — 提取 preview crop 重复逻辑**
 
 将行 1144-1151 和行 1212-1215 的重复 preview crop 逻辑替换为 `compute_preview_crop`：
 
@@ -774,18 +774,18 @@ Expected: 6 passed, 0 failed
                 let canvas_cropped = image::imageops::crop_imm(&canvas, 0, crop_y, canvas.width(), crop_src_h).to_image();
 ```
 
-- [ ] **Step 8: 编译验证 + 行为保持 review**
+- [x] **Step 8: 编译验证 + 行为保持 review**
 
 Run: `cargo check -p octopus-desktop 2>&1 | tail -10`
 Expected: 编译通过
 
 `git diff` review checklist：
-- [ ] `#[cfg(target_os = "macos")]` 分支全部保留
-- [ ] `#[tauri::command]` 签名不变
-- [ ] 坐标换算数值等价（手动验证 sel_global_x/y, px/py/pw/ph 计算路径）
-- [ ] preview crop 参数等价
+- [x] `#[cfg(target_os = "macos")]` 分支全部保留
+- [x] `#[tauri::command]` 签名不变
+- [x] 坐标换算数值等价（手动验证 sel_global_x/y, px/py/pw/ph 计算路径）
+- [x] preview crop 参数等价
 
-- [ ] **Step 9: 全量测试 + commit**
+- [x] **Step 9: 全量测试 + commit**
 
 Run:
 ```bash
@@ -829,12 +829,12 @@ EOF
 
 ---
 
-- [ ] **Step 1: 验证基线**
+- [x] **Step 1: 验证基线**
 
 Run: `cd /Users/wudarui/workspace/agent/octopus && cargo test -p octopus-desktop 2>&1 | tail -5`
 Expected: all pass
 
-- [ ] **Step 2: 提取 `build_coordinator_loop` 函数**
+- [x] **Step 2: 提取 `build_coordinator_loop` 函数**
 
 在 `coordinator.rs` 中，将 `Coordinator::new` 内部行 206-516 的 `std::thread::spawn(move || { ... })` 内容提取为独立函数：
 
@@ -878,12 +878,12 @@ pub fn new(
 
 **注意**：`use_streaming` 在原代码中是 `let use_streaming = ...; let mut use_streaming = use_streaming;`（行 200-202），在提取时合并为 `let mut use_streaming = ...`。
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 Run: `cargo check -p octopus-desktop 2>&1 | tail -10`
 Expected: 编译通过
 
-- [ ] **Step 4: 行为保持 review + 全量测试**
+- [x] **Step 4: 行为保持 review + 全量测试**
 
 Run:
 ```bash
@@ -893,11 +893,11 @@ cargo test --workspace 2>&1 | tail -10
 Expected: all pass
 
 `git diff` review：
-- [ ] `move` 闭包内所有权转移不变
-- [ ] `tx_self` 用途不变
-- [ ] 所有 `Command::*` 分支保留
+- [x] `move` 闭包内所有权转移不变
+- [x] `tx_self` 用途不变
+- [x] 所有 `Command::*` 分支保留
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/coordinator.rs
@@ -928,11 +928,11 @@ EOF
 
 ---
 
-- [ ] **Step 1: 读取 begin_recording 完整内容，确认分支边界**
+- [x] **Step 1: 读取 begin_recording 完整内容，确认分支边界**
 
 Run: Read `coordinator.rs` 行 712-940，确认三个分支的精确起止行。
 
-- [ ] **Step 2: 提取 `prepare_streaming_session`**
+- [x] **Step 2: 提取 `prepare_streaming_session`**
 
 将 `use_streaming && !use_cloud_streaming` 分支提取为：
 
@@ -950,7 +950,7 @@ fn prepare_streaming_session(
 }
 ```
 
-- [ ] **Step 3: 提取 `prepare_cloud_streaming_session`（`#[cfg(feature = "cloud")]`）**
+- [x] **Step 3: 提取 `prepare_cloud_streaming_session`（`#[cfg(feature = "cloud")]`）**
 
 ```rust
 #[cfg(feature = "cloud")]
@@ -966,7 +966,7 @@ fn prepare_cloud_streaming_session(
 }
 ```
 
-- [ ] **Step 4: 提取 `prepare_vad_segmented_session`**
+- [x] **Step 4: 提取 `prepare_vad_segmented_session`**
 
 ```rust
 #[allow(clippy::too_many_arguments)]
@@ -981,7 +981,7 @@ fn prepare_vad_segmented_session(
 }
 ```
 
-- [ ] **Step 5: 简化 `begin_recording` 主体**
+- [x] **Step 5: 简化 `begin_recording` 主体**
 
 ```rust
 fn begin_recording(
@@ -1023,12 +1023,12 @@ fn begin_recording(
 }
 ```
 
-- [ ] **Step 6: 编译验证**
+- [x] **Step 6: 编译验证**
 
 Run: `cargo check -p octopus-desktop 2>&1 | tail -10`
 Expected: 编译通过（注意 `#[cfg(feature = "cloud")]` 守卫在参数和分支上对称）
 
-- [ ] **Step 7: 行为保持 review + 全量测试**
+- [x] **Step 7: 行为保持 review + 全量测试**
 
 Run:
 ```bash
@@ -1039,11 +1039,11 @@ cargo clippy -p octopus-desktop --all-targets 2>&1 | grep "^warning:" | head
 Expected: all pass, 0 warnings
 
 `git diff` review：
-- [ ] 三个分支逻辑等价（`audio.start` 在分支前调用）
-- [ ] `#[cfg(feature = "cloud")]` 守卫对称
-- [ ] `Stage` 赋值语义不变
+- [x] 三个分支逻辑等价（`audio.start` 在分支前调用）
+- [x] `#[cfg(feature = "cloud")]` 守卫对称
+- [x] `Stage` 赋值语义不变
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/src/coordinator.rs
@@ -1068,7 +1068,7 @@ EOF
 
 ## 最终验证
 
-- [ ] **全量编译 + 测试（主仓库）**
+- [x] **全量编译 + 测试（主仓库）**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus
@@ -1077,7 +1077,7 @@ cargo test --workspace 2>&1 | tail -20
 ```
 Expected: 0 warnings, all tests pass
 
-- [ ] **更新文档**
+- [x] **更新文档**
 
 更新 `docs/architecture.md`：
 - paddle-ocr 新增 `vision/numeric.rs` 说明
@@ -1101,11 +1101,11 @@ EOF
 
 ## Self-Review 清单
 
-- [ ] **Spec coverage**: 4 项优化全部有对应 task
-- [ ] **Type consistency**: `MonitorRect`/`SelectionGlobal`/`PhysicalCrop` 在 Task 2 定义后一致使用
-- [ ] **No placeholders**: 每步都有完整代码
-- [ ] **cfg 守卫对称**: Task 4 的 `#[cfg(feature = "cloud")]` 在参数和分支上对称
-- [ ] **测试先行**: Task 1 和 Task 2 的纯函数都是先写失败测试再实现
+- [x] **Spec coverage**: 4 项优化全部有对应 task
+- [x] **Type consistency**: `MonitorRect`/`SelectionGlobal`/`PhysicalCrop` 在 Task 2 定义后一致使用
+- [x] **No placeholders**: 每步都有完整代码
+- [x] **cfg 守卫对称**: Task 4 的 `#[cfg(feature = "cloud")]` 在参数和分支上对称
+- [x] **测试先行**: Task 1 和 Task 2 的纯函数都是先写失败测试再实现
 
 ## Execution Handoff
 

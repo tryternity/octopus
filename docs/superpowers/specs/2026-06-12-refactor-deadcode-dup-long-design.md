@@ -1,6 +1,7 @@
 # 重构优化设计 — 死代码/重复/超长代码清理
 
 > 日期：2026-06-12
+> 状态：**✅ 已完成**（merge `903a66a`，84+42 tests 全绿，0 warnings）
 > 来源：[代码审查报告](../reviews/2026-06-12-code-review.md)
 > 决策：Q1=A（分层提取 + 局部 TDD）、Q2=A（coordinator 仅拆内部长函数，先不拆子目录）
 > whisper_mel_matrix.rs 不纳入范围（保持现状，等价于 bin 文件）
