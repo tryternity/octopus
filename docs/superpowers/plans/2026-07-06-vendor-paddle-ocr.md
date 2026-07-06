@@ -56,4 +56,18 @@
 - [x] `run-octopus.sh` 移除 `seed_mnn_prebuilt` 函数 + 重试逻辑
 - [x] 删除 `~/.octopus/models/ocr/PP-OCRv6-small/*.mnn`（旧 MNN 模型）
 - [x] 词库精简 `words_alpha.txt`（370K 词/4MB）→ `words_common.txt`（17.7K 词/168KB）
-- [x] opencv-backend 死代码保留在 `#[cfg]` 门控下（安全、零编译开销、零 warning；空 feature `opencv-backend = []` 在 Cargo.toml 消除 check-cfg warning）
+- [x] ~~opencv-backend 死代码保留在 `#[cfg]` 门控下~~ → 已在 Task 9 中彻底清理
+
+## Task 9：opencv 死代码深度清理（2026-07-06 增补）
+- [x] `config.rs`：简化 `VisionBackend` enum，移除 `cfg_attr` 守卫，修复 `is_supported` 直接返回 `false`
+- [x] `vision/backend.rs`：简化 `resolve_backend_strict`，移除所有 `#[cfg]` 守卫，`OpenCv` 直接返回 `Err`
+- [x] `vision/image_backend.rs`：移除 opencv resize/rotate 函数 + dispatch 包装，`OpenCv` match 臂改为 `unreachable!()`
+- [x] `vision/resize.rs`：移除 opencv 比对测试模块（`#[cfg(all(test, feature = "opencv-backend"))]`）
+- [x] `vision/rotate_crop.rs`：移除 `rotate_crop_image_opencv` + dispatch 函数 + opencv 测试模块
+- [x] `rec/word_boxes.rs`：移除 `reverse_rotate_crop_image_opencv` 函数，简化测试 cfg 守卫
+- [x] `rec/preprocess.rs`：展开测试中的 `#[cfg(not(feature = "opencv-backend"))]` 守卫
+- [x] `det/postprocess/mod.rs`：移除 `run_with_opencv`、`boxes_from_bitmap_opencv`、`mini_box_from_rotated_rect_opencv`、`mini_box_from_contour_opencv`、`mini_box_from_points_opencv`、`pred_view_to_mat`、`box_score_fast_opencv`、`find_contours_from_mask_opencv`、`contour_score_opencv`、`min_area_rect_from_points_opencv`；清理 `process_contour_candidate_pure` 中 opencv/pure 交织分支（`pred_mat` 参数、opencv score 回退逻辑、mini_box 二次覆盖）
+- [x] `Cargo.toml`：删除 `[features] opencv-backend = []`
+- **保留**：算法名函数（`sklansky_like_opencv`、`convex_hull_like_opencv`、`unclip_polygon_like_opencv_db`）是纯 Rust 实现，非 opencv 调用
+- **验证**：`cargo build -p octopus-paddle-ocr`（零 warning）+ `cargo test -p octopus-paddle-ocr`（37 passed）+ `cargo build -p octopus-desktop --features embedded`（零 warning）+ `cargo test -p octopus-ocr`（2 passed）
+- **结果**：9 文件，-1055/+47 行（净删除 1008 行死代码）

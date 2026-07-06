@@ -51,7 +51,7 @@
 | `src/lib.rs` | 精简导出（移除 input/output/compat/model_store 相关 re-export） |
 | `src/config.rs` | 删 serde_yaml 解析；简化 `EngineConfig` 构造 |
 | `src/pipeline/config.rs` | 删 serde_yaml 解析；保留结构体定义 |
-| `src/vision/backend.rs` | 硬编码 `PureRust`（删 opencv 分支） |
+| `src/vision/backend.rs` | 硬编码 `PureRust`（opencv 分支已完全删除） |
 | `src/error.rs` | 删 `Reqwest`/`Yaml` error variant |
 | `src/pipeline/rapid_ocr.rs` | 入口接受 `RecImage` 而非 `OcrInput`（去掉 input loader 依赖） |
 
@@ -141,3 +141,10 @@ octopus-paddle-ocr = { path = "../paddle-ocr" }
 5. **ort 依赖配置**
    - 不能用 `default-features = false`（会去掉 `tls-native`，导致 ort-sys build script 的 download 编译失败）。
    - 与 asr-local 一致：`ort = { version = "2.0.0-rc.12", features = ["ndarray", "download-binaries"] }`。
+
+6. **opencv 死代码深度清理（2026-07-06 增补）**
+   - 原 paddle-ocr-rs 支持 PureRust 和 OpenCV 两种图像处理后端，通过 `#[cfg(feature = "opencv-backend")]` 门控切换。octopus 永远只用 PureRust 后端。
+   - 初始 vendor 时保留了 opencv 代码在 cfg 门控下（安全、零编译开销）。后续深度清理删除了全部 opencv 死代码（~1000 行），涉及 8 个文件：`det/postprocess/mod.rs`（最大，~495 行）、`vision/image_backend.rs`、`vision/rotate_crop.rs`、`vision/backend.rs`、`rec/word_boxes.rs`、`config.rs`、`vision/resize.rs`、`rec/preprocess.rs`。
+   - 清理策略：保留 `VisionBackend` enum（含 `OpenCv` 变体，用于运行时错误提示），但 `resolve_backend_strict` 对 `OpenCv` 直接返回 `Err`；所有 `VisionBackend::OpenCv =>` match 臂替换为 `unreachable!()`；算法名函数（`sklansky_like_opencv`、`convex_hull_like_opencv`、`unclip_polygon_like_opencv_db`）是纯 Rust 实现，正确保留。
+   - Cargo.toml 删除 `[features] opencv-backend = []`。
+

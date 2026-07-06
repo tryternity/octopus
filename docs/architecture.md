@@ -133,7 +133,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **模型**：PP-OCRv5（det 4.5M + rec 16M + cls 572K + keys 18383 行）或 PP-OCRv6-small（det 9.7M + rec 21.5M + keys 18708 行 `ppocrv6_dict.txt`）。ONNX 标准格式，软链到 HF 缓存。
 
-**推理后端迁移（2026-07-06）**：从 ocr-rs（MNN C++ 推理）迁移到 vendored paddle-ocr-rs（ONNX Runtime），消除 MNN cmake + bindgen + libclang 依赖。ort 与 ASR 引擎共用同一推理后端，跨平台零原生编译。`crates/paddle-ocr/` 是从 `paddle-ocr-rs` 按需拷贝的精简版（删 bin/input/model_store/model_registry/output/compat_rapidocr/turbojpeg/clap/opencv/reqwest/serde_yaml，保留 det/rec/cls/pipeline/runtime/vision 核心）。**关键 bug**：`read_character_file` 原 `trim()` 误删全角空格 U+3000（字典首行）致 CTC 索引偏移 1 位 → 改 `strip_suffix('\r')`。详见 [spec](docs/superpowers/specs/2026-07-06-vendor-paddle-ocr-design.md)。
+**推理后端迁移（2026-07-06）**：从 ocr-rs（MNN C++ 推理）迁移到 vendored paddle-ocr-rs（ONNX Runtime），消除 MNN cmake + bindgen + libclang 依赖。ort 与 ASR 引擎共用同一推理后端，跨平台零原生编译。`crates/paddle-ocr/` 是从 `paddle-ocr-rs` 按需拷贝的精简版（删 bin/input/model_store/model_registry/output/compat_rapidocr/turbojpeg/clap/opencv/reqwest/serde_yaml，保留 det/rec/cls/pipeline/runtime/vision 核心）。opencv 死代码（~1000 行）已彻底清理：`VisionBackend` enum 保留 `OpenCv` 变体用于运行时错误提示，但 `resolve_backend_strict` 对其返回 `Err`，所有 `OpenCv` match 臂为 `unreachable!()`；`[features] opencv-backend = []` 已从 Cargo.toml 删除。**关键 bug**：`read_character_file` 原 `trim()` 误删全角空格 U+3000（字典首行）致 CTC 索引偏移 1 位 → 改 `strip_suffix('\r')`。详见 [spec](docs/superpowers/specs/2026-07-06-vendor-paddle-ocr-design.md)。
 
 **触发方式**：手动——剪贴板浮窗/管理页图片条目点 OCR 按钮（ScanText 图标）。不支持自动 OCR。
 

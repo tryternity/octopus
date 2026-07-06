@@ -1,8 +1,5 @@
-#[cfg(not(feature = "opencv-backend"))]
-use crate::error::PaddleOcrError;
-use crate::{config::VisionBackend, error::Result};
+use crate::{config::VisionBackend, error::PaddleOcrError, error::Result};
 
-#[cfg_attr(feature = "opencv-backend", allow(dead_code))]
 pub const OPENCV_BACKEND_DISABLED_MESSAGE: &str =
     "OpenCV backend requested but crate feature `opencv-backend` is not enabled";
 
@@ -14,18 +11,9 @@ pub fn default_backend() -> VisionBackend {
 pub fn resolve_backend_strict(backend: VisionBackend) -> Result<VisionBackend> {
     match backend {
         VisionBackend::PureRust => Ok(VisionBackend::PureRust),
-        VisionBackend::OpenCv => {
-            #[cfg(feature = "opencv-backend")]
-            {
-                Ok(VisionBackend::OpenCv)
-            }
-            #[cfg(not(feature = "opencv-backend"))]
-            {
-                Err(PaddleOcrError::Config(
-                    OPENCV_BACKEND_DISABLED_MESSAGE.to_string(),
-                ))
-            }
-        }
+        VisionBackend::OpenCv => Err(PaddleOcrError::Config(
+            OPENCV_BACKEND_DISABLED_MESSAGE.to_string(),
+        )),
     }
 }
 
@@ -35,9 +23,7 @@ pub fn resolve_backend_or_pure_rust(backend: VisionBackend) -> VisionBackend {
 
 #[cfg(test)]
 mod tests {
-    use super::resolve_backend_strict;
-    #[cfg(not(feature = "opencv-backend"))]
-    use super::{OPENCV_BACKEND_DISABLED_MESSAGE, resolve_backend_or_pure_rust};
+    use super::{OPENCV_BACKEND_DISABLED_MESSAGE, resolve_backend_or_pure_rust, resolve_backend_strict};
     use crate::config::VisionBackend;
 
     #[test]
@@ -49,20 +35,14 @@ mod tests {
 
     #[test]
     fn fallback_policy_can_downgrade_to_pure_rust() {
-        #[cfg(not(feature = "opencv-backend"))]
-        {
-            let resolved = resolve_backend_or_pure_rust(VisionBackend::OpenCv);
-            assert_eq!(resolved, VisionBackend::PureRust);
-        }
+        let resolved = resolve_backend_or_pure_rust(VisionBackend::OpenCv);
+        assert_eq!(resolved, VisionBackend::PureRust);
     }
 
     #[test]
     fn strict_policy_rejects_unsupported_backends() {
-        #[cfg(not(feature = "opencv-backend"))]
-        {
-            let err = resolve_backend_strict(VisionBackend::OpenCv)
-                .expect_err("strict policy should reject unsupported backend");
-            assert!(err.to_string().contains(OPENCV_BACKEND_DISABLED_MESSAGE));
-        }
+        let err = resolve_backend_strict(VisionBackend::OpenCv)
+            .expect_err("strict policy should reject unsupported backend");
+        assert!(err.to_string().contains(OPENCV_BACKEND_DISABLED_MESSAGE));
     }
 }

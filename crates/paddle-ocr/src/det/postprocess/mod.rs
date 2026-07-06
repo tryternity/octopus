@@ -3,12 +3,6 @@ use geo_types::{Coord, LineString, Polygon};
 #[cfg(test)]
 use ndarray::Array2;
 use ndarray::ArrayView2;
-#[cfg(feature = "opencv-backend")]
-use opencv::{
-    core::{self, Mat, Point, Point2f, Scalar, Vector},
-    imgproc,
-    prelude::*,
-};
 use rayon::prelude::*;
 #[cfg(target_arch = "x86_64")]
 use std::sync::OnceLock;
@@ -58,14 +52,7 @@ impl DbPostProcess {
         match backend {
             VisionBackend::PureRust => self.run_pure(pred, src_w, src_h),
             VisionBackend::OpenCv => {
-                #[cfg(feature = "opencv-backend")]
-                {
-                    self.run_with_opencv(pred, src_w, src_h)
-                }
-                #[cfg(not(feature = "opencv-backend"))]
-                {
-                    unreachable!("backend resolver should reject unsupported OpenCV backend");
-                }
+                unreachable!("backend resolver should reject unsupported OpenCV backend")
             }
         }
     }
@@ -99,54 +86,6 @@ impl DbPostProcess {
         (boxes, scores)
     }
 
-    #[cfg(feature = "opencv-backend")]
-    fn run_with_opencv(
-        &self,
-        pred: ArrayView2<'_, f32>,
-        src_w: usize,
-        src_h: usize,
-    ) -> (Vec<Quad>, Vec<f32>) {
-        let height = pred.nrows();
-        let width = pred.ncols();
-        if height == 0 || width == 0 {
-            return (Vec::new(), Vec::new());
-        }
-
-        let mut bitmap = build_threshold_bitmap(pred, self.thresh);
-        if self.use_dilation {
-            bitmap = dilate_mask_2x2(&bitmap, width, height);
-        }
-        let contours = match find_contours_from_mask_opencv(&bitmap, height) {
-            Ok(v) => v,
-            Err(_) => return (Vec::new(), Vec::new()),
-        };
-
-        let pred_vec: Vec<f32> = if let Some(s) = pred.as_slice_memory_order() {
-            s.to_vec()
-        } else {
-            pred.iter().copied().collect()
-        };
-
-        let pred_1d = match Mat::from_slice(&pred_vec) {
-            Ok(v) => v,
-            Err(_) => return (Vec::new(), Vec::new()),
-        };
-        let pred_ref = match pred_1d.reshape(1, height as i32) {
-            Ok(v) => v,
-            Err(_) => return (Vec::new(), Vec::new()),
-        };
-        let mut pred_mat = Mat::default();
-        if pred_ref.copy_to(&mut pred_mat).is_err() {
-            return (Vec::new(), Vec::new());
-        }
-
-        let (boxes, scores) =
-            self.boxes_from_bitmap_opencv(&pred_mat, &contours, width, height, src_w, src_h);
-        let (mut boxes, mut scores) = filter_det_res(boxes, scores, src_h, src_w);
-        sort_boxes_like_python(&mut boxes, &mut scores, 10.0);
-        (boxes, scores)
-    }
-
     fn boxes_from_bitmap_pure(
         &self,
         pred: ArrayView2<'_, f32>,
@@ -173,26 +112,16 @@ impl DbPostProcess {
             dest_w,
             dest_h,
         };
-        #[cfg(feature = "opencv-backend")]
-        let pred_mat = pred_view_to_mat(pred);
 
         const PARALLEL_CANDIDATE_THRESHOLD: usize = 12;
         let run_parallel =
             num_candidates >= PARALLEL_CANDIDATE_THRESHOLD && rayon::current_num_threads() > 1;
-        #[cfg(feature = "opencv-backend")]
-        let run_parallel = run_parallel && pred_mat.is_none();
         if !run_parallel {
             let mut scratch = CandidateScratch::default();
             for (i, contour) in contours.iter().take(num_candidates).enumerate() {
-                if let Some((box1, score)) = self.process_contour_candidate_pure(
-                    pred,
-                    #[cfg(feature = "opencv-backend")]
-                    pred_mat.as_ref(),
-                    contour,
-                    i,
-                    &scale_target,
-                    &mut scratch,
-                ) {
+                if let Some((box1, score)) =
+                    self.process_contour_candidate_pure(pred, contour, i, &scale_target, &mut scratch)
+                {
                     boxes.push(box1);
                     scores.push(score);
                 }
@@ -204,15 +133,7 @@ impl DbPostProcess {
             .par_iter()
             .enumerate()
             .map_init(CandidateScratch::default, |scratch, (i, contour)| {
-                self.process_contour_candidate_pure(
-                    pred,
-                    #[cfg(feature = "opencv-backend")]
-                    None,
-                    contour,
-                    i,
-                    &scale_target,
-                    scratch,
-                )
+                self.process_contour_candidate_pure(pred, contour, i, &scale_target, scratch)
             })
             .collect();
 
@@ -227,7 +148,6 @@ impl DbPostProcess {
     fn process_contour_candidate_pure(
         &self,
         pred: ArrayView2<'_, f32>,
-        #[cfg(feature = "opencv-backend")] pred_mat: Option<&Mat>,
         contour: &[[i32; 2]],
         _contour_idx: usize,
         scale_target: &ScaleTarget,
@@ -242,54 +162,14 @@ impl DbPostProcess {
             .contour_f
             .extend(contour.iter().map(|p| [p[0] as f32, p[1] as f32]));
         let (points, sside) = mini_box_from_points_pure(&scratch.contour_f)?;
-        #[cfg(feature = "opencv-backend")]
-        let (points, sside) = if let Ok(Some((opencv_points, opencv_sside))) =
-            mini_box_from_points_opencv(&scratch.contour_f)
-        {
-            (opencv_points, opencv_sside)
-        } else {
-            (points, sside)
-        };
         if sside < self.min_size as f32 {
             return None;
         }
 
         let score = if self.score_mode.eq_ignore_ascii_case("slow") {
-            #[cfg(feature = "opencv-backend")]
-            {
-                if let Some(mat) = pred_mat {
-                    let mut contour_cv = Vector::<Point>::new();
-                    for p in contour {
-                        contour_cv.push(Point::new(p[0], p[1]));
-                    }
-                    match contour_score_opencv(mat, &contour_cv) {
-                        Ok(v) => v,
-                        Err(_) => contour_score_pure_with_scratch(pred, contour, scratch),
-                    }
-                } else {
-                    contour_score_pure_with_scratch(pred, contour, scratch)
-                }
-            }
-            #[cfg(not(feature = "opencv-backend"))]
-            {
-                contour_score_pure_with_scratch(pred, contour, scratch)
-            }
+            contour_score_pure_with_scratch(pred, contour, scratch)
         } else {
-            #[cfg(feature = "opencv-backend")]
-            {
-                if let Some(mat) = pred_mat {
-                    match box_score_fast_opencv(mat, &points) {
-                        Ok(v) => v,
-                        Err(_) => box_score_fast_pure_with_scratch(pred, &points, scratch),
-                    }
-                } else {
-                    box_score_fast_pure_with_scratch(pred, &points, scratch)
-                }
-            }
-            #[cfg(not(feature = "opencv-backend"))]
-            {
-                box_score_fast_pure_with_scratch(pred, &points, scratch)
-            }
+            box_score_fast_pure_with_scratch(pred, &points, scratch)
         };
         if self.box_thresh > score {
             return None;
@@ -301,15 +181,6 @@ impl DbPostProcess {
         }
 
         let (box1, sside2) = mini_box_from_points_pure(&scratch.expanded)?;
-        #[cfg(feature = "opencv-backend")]
-        let (mut box1, sside2) = if let Ok(Some((opencv_box, opencv_sside2))) =
-            mini_box_from_points_opencv(&scratch.expanded)
-        {
-            (opencv_box, opencv_sside2)
-        } else {
-            (box1, sside2)
-        };
-        #[cfg(not(feature = "opencv-backend"))]
         let mut box1 = box1;
         if sside2 < self.min_size as f32 + 2.0 {
             return None;
@@ -324,78 +195,6 @@ impl DbPostProcess {
         Some((box1, score))
     }
 
-    #[cfg(feature = "opencv-backend")]
-    fn boxes_from_bitmap_opencv(
-        &self,
-        pred: &Mat,
-        contours: &Vector<Vector<Point>>,
-        bitmap_w: usize,
-        bitmap_h: usize,
-        dest_w: usize,
-        dest_h: usize,
-    ) -> (Vec<Quad>, Vec<f32>) {
-        let num_candidates = if self.max_candidates == 0 {
-            contours.len()
-        } else {
-            contours.len().min(self.max_candidates)
-        };
-
-        let mut boxes = Vec::new();
-        let mut scores = Vec::new();
-
-        for i in 0..num_candidates {
-            let contour = match contours.get(i) {
-                Ok(v) => v,
-                Err(_) => continue,
-            };
-            if contour.len() < 3 {
-                continue;
-            }
-
-            let (points, sside) = match mini_box_from_contour_opencv(&contour) {
-                Ok(Some(v)) => v,
-                _ => continue,
-            };
-            if sside < self.min_size as f32 {
-                continue;
-            }
-
-            let score = if self.score_mode.eq_ignore_ascii_case("slow") {
-                match contour_score_opencv(pred, &contour) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                }
-            } else {
-                match box_score_fast_opencv(pred, &points) {
-                    Ok(v) => v,
-                    Err(_) => continue,
-                }
-            };
-            if self.box_thresh > score {
-                continue;
-            }
-
-            let mut expanded = Vec::new();
-            unclip_polygon_pyclipper_into(&points, self.unclip_ratio, &mut expanded);
-            if expanded.len() < 3 {
-                continue;
-            }
-
-            let (mut box1, sside2) = match mini_box_from_points_opencv(&expanded) {
-                Ok(Some(v)) => v,
-                _ => continue,
-            };
-            if sside2 < self.min_size as f32 + 2.0 {
-                continue;
-            }
-
-            scale_box_to_dest(&mut box1, bitmap_w, bitmap_h, dest_w, dest_h);
-            boxes.push(box1);
-            scores.push(score);
-        }
-
-        (boxes, scores)
-    }
 }
 
 #[derive(Default)]
@@ -1044,66 +843,10 @@ fn mini_box_from_points_pure(points: &[[f32; 2]]) -> Option<(Quad, f32)> {
     Some((ordered, sside))
 }
 
-#[cfg(feature = "opencv-backend")]
-fn mini_box_from_rotated_rect_opencv(
-    rect: core::RotatedRect,
-) -> opencv::Result<Option<(Quad, f32)>> {
-    if rect.size.width <= 0.0 || rect.size.height <= 0.0 {
-        return Ok(None);
-    }
-
-    let mut cv_pts = [Point2f::new(0.0, 0.0); 4];
-    rect.points(&mut cv_pts)?;
-    let raw = [
-        [cv_pts[0].x, cv_pts[0].y],
-        [cv_pts[1].x, cv_pts[1].y],
-        [cv_pts[2].x, cv_pts[2].y],
-        [cv_pts[3].x, cv_pts[3].y],
-    ];
-    let ordered = order_min_box_points_like_python(raw);
-    let sside = rect.size.width.min(rect.size.height);
-    Ok(Some((ordered, sside)))
-}
-
-#[cfg(feature = "opencv-backend")]
-fn mini_box_from_contour_opencv(contour: &Vector<Point>) -> opencv::Result<Option<(Quad, f32)>> {
-    if contour.len() < 3 {
-        return Ok(None);
-    }
-    let rect = imgproc::min_area_rect(contour)?;
-    mini_box_from_rotated_rect_opencv(rect)
-}
-
-#[cfg(feature = "opencv-backend")]
-fn mini_box_from_points_opencv(points: &[[f32; 2]]) -> opencv::Result<Option<(Quad, f32)>> {
-    if points.len() < 3 {
-        return Ok(None);
-    }
-    let Some(rect) = min_area_rect_from_points_opencv(points)? else {
-        return Ok(None);
-    };
-    mini_box_from_rotated_rect_opencv(rect)
-}
-
 #[cfg(test)]
 fn box_score_fast_pure(bitmap: ArrayView2<'_, f32>, box_points: &[[f32; 2]]) -> f32 {
     let mut scratch = CandidateScratch::default();
     box_score_fast_pure_with_scratch(bitmap, box_points, &mut scratch)
-}
-
-#[cfg(feature = "opencv-backend")]
-fn pred_view_to_mat(pred: ArrayView2<'_, f32>) -> Option<Mat> {
-    let height = pred.nrows();
-    let values: Vec<f32> = if let Some(src) = pred.as_slice_memory_order() {
-        src.to_vec()
-    } else {
-        pred.iter().copied().collect()
-    };
-    let pred_1d = Mat::from_slice(&values).ok()?;
-    let pred_ref = pred_1d.reshape(1, height as i32).ok()?;
-    let mut pred_mat = Mat::default();
-    pred_ref.copy_to(&mut pred_mat).ok()?;
-    Some(pred_mat)
 }
 
 fn box_score_fast_pure_with_scratch(
@@ -1156,64 +899,6 @@ fn box_score_fast_pure_with_scratch(
     let mask = &mut scratch.mask[..mask_len];
     fill_polygon_mask(mask, local_w, local_h, &scratch.shifted_poly);
     masked_mean_in_roi(bitmap, xmin as usize, ymin as usize, local_w, local_h, mask)
-}
-
-#[cfg(feature = "opencv-backend")]
-fn box_score_fast_opencv(bitmap: &Mat, box_points: &[[f32; 2]]) -> opencv::Result<f32> {
-    if box_points.is_empty() || bitmap.rows() <= 0 || bitmap.cols() <= 0 {
-        return Ok(0.0);
-    }
-
-    let h = bitmap.rows();
-    let w = bitmap.cols();
-
-    let mut xmin_f = f32::INFINITY;
-    let mut xmax_f = f32::NEG_INFINITY;
-    let mut ymin_f = f32::INFINITY;
-    let mut ymax_f = f32::NEG_INFINITY;
-    for p in box_points {
-        xmin_f = xmin_f.min(p[0]);
-        xmax_f = xmax_f.max(p[0]);
-        ymin_f = ymin_f.min(p[1]);
-        ymax_f = ymax_f.max(p[1]);
-    }
-
-    let xmin = xmin_f.floor().clamp(0.0, (w - 1) as f32) as i32;
-    let xmax = xmax_f.ceil().clamp(0.0, (w - 1) as f32) as i32;
-    let ymin = ymin_f.floor().clamp(0.0, (h - 1) as f32) as i32;
-    let ymax = ymax_f.ceil().clamp(0.0, (h - 1) as f32) as i32;
-
-    if xmin > xmax || ymin > ymax {
-        return Ok(0.0);
-    }
-
-    let roi = Mat::roi(
-        bitmap,
-        core::Rect::new(xmin, ymin, xmax - xmin + 1, ymax - ymin + 1),
-    )?;
-    let mut mask = Mat::zeros(ymax - ymin + 1, xmax - xmin + 1, core::CV_8UC1)?.to_mat()?;
-
-    let mut poly = Vector::<Point>::new();
-    for p in box_points {
-        poly.push(Point::new(
-            (p[0] - xmin as f32) as i32,
-            (p[1] - ymin as f32) as i32,
-        ));
-    }
-    let mut polys = Vector::<Vector<Point>>::new();
-    polys.push(poly);
-
-    imgproc::fill_poly(
-        &mut mask,
-        &polys,
-        Scalar::all(1.0),
-        imgproc::LINE_8,
-        0,
-        Point::new(0, 0),
-    )?;
-
-    let mean = core::mean(&roi, &mask)?;
-    Ok(mean[0] as f32)
 }
 
 fn unclip_polygon_pyclipper_into(in_poly: &[[f32; 2]], unclip_ratio: f32, out: &mut Vec<[f32; 2]>) {
@@ -1510,71 +1195,6 @@ unsafe fn sum_f32_slice_avx2(ptr: *const f32, len: usize) -> f64 {
     }
 
     sum
-}
-
-#[cfg(feature = "opencv-backend")]
-fn find_contours_from_mask_opencv(
-    mask: &[u8],
-    height: usize,
-) -> opencv::Result<Vector<Vector<Point>>> {
-    let src_1d = Mat::from_slice(mask)?;
-    let src = src_1d.reshape(1, height as i32)?;
-
-    let mut work = Mat::default();
-    src.copy_to(&mut work)?;
-
-    let mut contours = Vector::<Vector<Point>>::new();
-    imgproc::find_contours(
-        &work,
-        &mut contours,
-        imgproc::RETR_LIST,
-        imgproc::CHAIN_APPROX_SIMPLE,
-        Point::new(0, 0),
-    )?;
-
-    Ok(contours)
-}
-
-#[cfg(feature = "opencv-backend")]
-fn contour_score_opencv(binary_map: &Mat, contour: &Vector<Point>) -> opencv::Result<f32> {
-    if contour.len() < 3 {
-        return Ok(0.0);
-    }
-
-    let rect = imgproc::bounding_rect(contour)?;
-    let xmin = rect.x.max(0);
-    let xmax = (rect.x + rect.width).min(binary_map.cols() - 1);
-    let ymin = rect.y.max(0);
-    let ymax = (rect.y + rect.height).min(binary_map.rows() - 1);
-
-    if xmin > xmax || ymin > ymax {
-        return Ok(0.0);
-    }
-
-    let roi = Mat::roi(
-        binary_map,
-        core::Rect::new(xmin, ymin, xmax - xmin + 1, ymax - ymin + 1),
-    )?;
-
-    let mut mask = Mat::zeros(ymax - ymin + 1, xmax - xmin + 1, core::CV_8UC1)?.to_mat()?;
-    let mut shifted = Vector::<Point>::new();
-    for p in contour.iter() {
-        shifted.push(Point::new(p.x - xmin, p.y - ymin));
-    }
-    let mut polys = Vector::<Vector<Point>>::new();
-    polys.push(shifted);
-
-    imgproc::fill_poly(
-        &mut mask,
-        &polys,
-        Scalar::all(1.0),
-        imgproc::LINE_8,
-        0,
-        Point::new(0, 0),
-    )?;
-
-    let mean = core::mean(&roi, &mask)?;
-    Ok(mean[0] as f32)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -2413,26 +2033,6 @@ fn sort_boxes_like_python(boxes: &mut Vec<Quad>, scores: &mut Vec<f32>, y_thresh
     *scores = new_scores;
 }
 
-#[cfg(feature = "opencv-backend")]
-fn min_area_rect_from_points_opencv(
-    points: &[[f32; 2]],
-) -> opencv::Result<Option<core::RotatedRect>> {
-    if points.len() < 3 {
-        return Ok(None);
-    }
-
-    // Match Python/OpenCV behavior in RapidOCR:
-    // pyclipper returns integer vertices, and cv2.minAreaRect receives integer contour points.
-    // Using integer points here avoids subtle 1px drifts after scaling/clipping.
-    let mut contour = Vector::<Point>::new();
-    for p in points {
-        contour.push(Point::new(p[0] as i32, p[1] as i32));
-    }
-
-    let rect = imgproc::min_area_rect(&contour)?;
-    Ok(Some(rect))
-}
-
 fn l2(a: [f32; 2], b: [f32; 2]) -> f32 {
     let dx = a[0] - b[0];
     let dy = a[1] - b[1];
@@ -2448,87 +2048,6 @@ mod tests {
     };
     use crate::config::VisionBackend;
     use ndarray::Array2;
-
-    #[cfg(feature = "opencv-backend")]
-    fn lcg_next(state: &mut u64) -> u64 {
-        // Numerical Recipes LCG constants are deterministic and sufficient here.
-        *state = state.wrapping_mul(1664525).wrapping_add(1013904223);
-        *state
-    }
-
-    #[cfg(feature = "opencv-backend")]
-    #[test]
-    fn pure_find_contours_matches_opencv_on_seeded_masks() {
-        let mut seed = 0xC0FFEE_u64;
-        let mut checked = 0usize;
-
-        for case_id in 0..1800usize {
-            let width = 5usize + (lcg_next(&mut seed) % 92) as usize;
-            let height = 5usize + (lcg_next(&mut seed) % 76) as usize;
-            let mut mask = vec![0_u8; width * height];
-
-            // Blend random noise with a few deterministic runs to hit corner cases.
-            for y in 0..height {
-                for x in 0..width {
-                    let rnd = (lcg_next(&mut seed) >> 24) as u8;
-                    let mut v = if rnd & 0b11 == 0 { 255_u8 } else { 0_u8 };
-                    if case_id % 7 == 0 && x > width / 3 && x < width * 2 / 3 {
-                        v = 255_u8;
-                    }
-                    if case_id % 11 == 0 && y > height / 3 && y < height * 2 / 3 {
-                        v = 255_u8;
-                    }
-                    if case_id % 13 == 0 && (x + y) % 9 == 0 {
-                        v = 255_u8;
-                    }
-                    if case_id % 17 == 0
-                        && x > 1
-                        && x + 2 < width
-                        && y > 1
-                        && y + 2 < height
-                        && (x * 3 + y * 5) % 19 == 0
-                    {
-                        v = 255_u8;
-                    }
-                    mask[y * width + x] = v;
-                }
-            }
-
-            // Ensure we cover both background and foreground.
-            if !mask.contains(&255) || !mask.contains(&0) {
-                continue;
-            }
-
-            let pure = super::find_contours_from_mask_pure(mask.clone(), width, height);
-            let opencv = super::find_contours_from_mask_opencv(&mask, height)
-                .expect("opencv findContours should succeed");
-            let mut cv_contours = Vec::<Vec<[i32; 2]>>::with_capacity(opencv.len());
-            for contour in opencv.iter() {
-                let mut pts = Vec::with_capacity(contour.len());
-                for p in contour.iter() {
-                    pts.push([p.x, p.y]);
-                }
-                cv_contours.push(pts);
-            }
-
-            let mut pure_sorted = pure;
-            let mut cv_sorted = cv_contours;
-            pure_sorted.sort();
-            cv_sorted.sort();
-
-            assert_eq!(
-                pure_sorted, cv_sorted,
-                "contour mismatch on case_id={case_id}, size={}x{}",
-                width, height
-            );
-            checked += 1;
-        }
-
-        assert!(
-            checked >= 900,
-            "not enough non-trivial contour cases were exercised"
-        );
-    }
 
     #[test]
     fn unclip_polygon_like_opencv_db_expands_square() {

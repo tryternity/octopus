@@ -17,9 +17,8 @@ pub enum ColorOrder {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum VisionBackend {
-    #[cfg_attr(not(feature = "opencv-backend"), default)]
+    #[default]
     PureRust,
-    #[cfg_attr(feature = "opencv-backend", default)]
     OpenCv,
 }
 
@@ -27,7 +26,7 @@ impl VisionBackend {
     pub fn is_supported(self) -> bool {
         match self {
             Self::PureRust => true,
-            Self::OpenCv => cfg!(feature = "opencv-backend"),
+            Self::OpenCv => false,
         }
     }
 }
@@ -377,9 +376,6 @@ mod tests {
         assert_eq!(cfg.rayon_threads, None);
         assert!(cfg.enable_cpu_mem_arena);
         assert!(!cfg.fail_if_provider_unavailable);
-        #[cfg(feature = "opencv-backend")]
-        assert_eq!(cfg.vision_backend, VisionBackend::OpenCv);
-        #[cfg(not(feature = "opencv-backend"))]
         assert_eq!(cfg.vision_backend, VisionBackend::PureRust);
     }
 

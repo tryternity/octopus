@@ -364,17 +364,14 @@ mod tests {
 
     #[test]
     fn open_cv_backend_rejected_without_feature() {
-        #[cfg(not(feature = "opencv-backend"))]
-        {
-            let image = RecImage::from_bgr_u8(10, 10, vec![0; 10 * 10 * 3]).expect("valid image");
-            let err =
-                super::make_batch_with_backend(&[image], 1.0, [3, 48, 320], VisionBackend::OpenCv)
-                    .expect_err("must reject open cv backend when feature is disabled");
-            assert!(
-                err.to_string()
-                    .contains("feature `opencv-backend` is not enabled")
-            );
-        }
+        let image = RecImage::from_bgr_u8(10, 10, vec![0; 10 * 10 * 3]).expect("valid image");
+        let err =
+            super::make_batch_with_backend(&[image], 1.0, [3, 48, 320], VisionBackend::OpenCv)
+                .expect_err("must reject open cv backend when feature is disabled");
+        assert!(
+            err.to_string()
+                .contains("feature `opencv-backend` is not enabled")
+        );
     }
 
     #[test]
