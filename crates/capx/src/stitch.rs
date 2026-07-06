@@ -4,10 +4,6 @@ use std::collections::VecDeque;
 
 // ===== 拼接算法常量（原散落在 find_overlap_spatial_ext 与 process_frame 中的魔法数字）=====
 
-/// 模板条高度（像素）。从参考帧底部取此高度的条带做空间模板匹配。
-const STRIP_H: u32 = 80;
-/// 全量搜索范围（像素）。`process_frame` 中限制滚动位移搜索上界。
-const MAX_SCROLL: u32 = 220;
 /// 静止判定阈值。dy=0 处的平均像素差值小于此值视为内容未滚动。
 const STATIONARY_SAD: f64 = 2.0;
 /// 排除最左侧的比例（通常有图标/树状图）。
@@ -24,11 +20,6 @@ const STICKY_DETECT_MAX: u32 = 80;
 /// 时序平滑：静止判断的 dy 均值阈值（近 N 帧 |dy| 均值 < 此值 → 静止）
 /// dy 历史长度
 const DY_HISTORY_LEN: usize = 8;
-
-// ===== NCC 匹配参数 =====
-
-/// 最低 NCC 分数阈值
-const NCC_SCORE_THRESHOLD: f32 = 0.65;
 
 /// 连续 row-major 灰度 buffer，替代 image::GrayImage。
 /// 消除 get_pixel() 的坐标计算 + 边界检查开销，用整行切片直访。
@@ -157,9 +148,14 @@ fn ncc_match(
 }
 
 /// 多道验证 NCC 匹配结果。返回 true 表示匹配可信。
-fn validate_ncc_match(response: &Image<image::Luma<f32>>, _best_y: usize, best_score: f32) -> bool {
+fn validate_ncc_match(
+    response: &Image<image::Luma<f32>>,
+    _best_y: usize,
+    best_score: f32,
+    threshold: f32,
+) -> bool {
     // 1. 最低分数
-    if best_score < NCC_SCORE_THRESHOLD {
+    if best_score < threshold {
         return false;
     }
 
@@ -217,6 +213,14 @@ pub struct StitchConfig {
     pub min_scroll_px: f64,
     /// 置信度阈值 (空间匹配)
     pub min_confidence: f64,
+    /// 模板条高度（像素）。从画布底部取此高度做 NCC 模板。
+    pub strip_h: u32,
+    /// 最大滚动位移搜索上界（像素）。
+    pub max_scroll: u32,
+    /// 最低 NCC 分数阈值。
+    pub ncc_score_threshold: f32,
+    /// NCC 降采样触发宽度（像素）。帧宽 > 此值才降采样；≤ 则原分辨率（小屏零影响）。
+    pub ncc_downsample_width: u32,
 }
 
 impl Default for StitchConfig {
@@ -224,6 +228,10 @@ impl Default for StitchConfig {
         Self {
             min_scroll_px: 1.0,
             min_confidence: 0.15,
+            strip_h: 80,
+            max_scroll: 220,
+            ncc_score_threshold: 0.65,
+            ncc_downsample_width: 1920,
         }
     }
 }
@@ -313,7 +321,7 @@ impl Stitcher {
         let roi_top = eff_top as usize;
         let roi_bottom = eff_bottom as usize;
         let curr_gray = GrayBuf::from_rgba_roi(frame, roi_top, roi_bottom);
-        let canvas_gray = self.extract_canvas_bottom_gray(STRIP_H);
+        let canvas_gray = self.extract_canvas_bottom_gray(self.config.strip_h);
 
         let result = self.process_frame_inner(frame, &curr_gray, &canvas_gray, w, eff_top, eff_bottom);
 
@@ -354,7 +362,7 @@ impl Stitcher {
         };
 
         // 多道验证
-        if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32) {
+        if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32, self.config.ncc_score_threshold) {
             // NCC stuck 检测：连续失败且 score 几乎相同 → 画面静止但有渲染差异
             if self.ncc_stuck_count >= 5 {
                 log::info!("[stitch] NCC stuck (score={:.4}, count={}), treating as stationary", ncc.best_score, self.ncc_stuck_count);
@@ -379,7 +387,7 @@ impl Stitcher {
         // new_rows = ROI高度 - response_y - STRIP_H
         // dy = -(new_rows)（负值=向下滚动）
         let roi_height = (eff_bottom - eff_top) as f64;
-        let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
+        let new_rows_raw = roi_height - refined_y - self.config.strip_h as f64;
         let dy = -new_rows_raw;
 
         // dy > 0 = 向上滚动（忽略）。dy≤0 不跳过，交给 min_scroll_px 过滤，
@@ -473,11 +481,11 @@ impl Stitcher {
         eff_bottom: u32,
     ) -> Option<f64> {
         let prev_h = prev_gray.data.len() / prev_gray.width;
-        if prev_h < STRIP_H as usize + 10 {
+        if prev_h < self.config.strip_h as usize + 10 {
             return None;
         }
         // prev 底部 STRIP_H 行裁为独立模板（y_offset 归零）
-        let strip_rows = STRIP_H as usize;
+        let strip_rows = self.config.strip_h as usize;
         let prev_strip = GrayBuf {
             data: prev_gray.data[(prev_h - strip_rows) * prev_gray.width..].to_vec(),
             width: prev_gray.width,
@@ -491,12 +499,12 @@ impl Stitcher {
             (prev_strip.to_gray_image(), curr_gray.to_gray_image())
         };
         let ncc = ncc_match(&template, &search_region)?;
-        if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32) {
+        if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32, self.config.ncc_score_threshold) {
             return None;
         }
         let roi_height = (eff_bottom - eff_top) as f64;
         let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
-        let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
+        let new_rows_raw = roi_height - refined_y - self.config.strip_h as f64;
         let dy = -new_rows_raw;
         if dy >= 0.0 {
             return None;
@@ -517,7 +525,7 @@ impl Stitcher {
     ) -> Result<bool> {
         let x_start = (w as f64 * X_START_RATIO) as u32;
         let x_end = (w as f64 * X_END_RATIO) as u32;
-        let max_scroll = MAX_SCROLL;
+        let max_scroll = self.config.max_scroll;
 
         // 相邻帧参考 fallback（方向 1）：画布底部旧模板失配时，改用前一帧匹配当前帧。
         // 前一帧与当前帧重叠最大、突变边界共同特征 → 求出正确 dy，不盲 append 污染画布。
@@ -597,10 +605,10 @@ impl Stitcher {
     fn quick_stationary_check(&self, curr: &GrayBuf, canvas_ref: &GrayBuf, sample_cols: &[usize]) -> f64 {
         let mut sad: u64 = 0;
         let mut count: u64 = 0;
-        for dy in 0..STRIP_H {
+        for dy in 0..self.config.strip_h {
             let ref_row = canvas_ref.row(dy as usize);
             // curr 底部 strip：y_offset + (curr 行数 - STRIP_H + dy)
-            let curr_bottom_start = (curr.data.len() / curr.width).saturating_sub(STRIP_H as usize);
+            let curr_bottom_start = (curr.data.len() / curr.width).saturating_sub(self.config.strip_h as usize);
             let curr_row = curr.row((curr_bottom_start + dy as usize) + curr.y_offset);
             for &x in sample_cols {
                 sad += (ref_row[x] as i32 - curr_row[x] as i32).unsigned_abs() as u64;
@@ -643,7 +651,7 @@ impl Stitcher {
         max_scroll: u32,
         sad_accept: f64,
     ) -> Option<(f64, f64, f64)> {
-        let strip_h = STRIP_H;
+        let strip_h = self.config.strip_h;
         if eff_bottom <= eff_top + strip_h + 10 {
             return None;
         }
@@ -805,7 +813,7 @@ impl Stitcher {
 
         // 1. NCC 匹配：将最后一帧与画布底部对齐，补全剩余未拼接区域
         let last_gray = GrayBuf::from_rgba_roi(last_frame, eff_top as usize, eff_bottom as usize);
-        let canvas_gray = self.extract_canvas_bottom_gray(STRIP_H);
+        let canvas_gray = self.extract_canvas_bottom_gray(self.config.strip_h);
 
         // Sobel 特征图 + NCC 匹配
         let (canvas_feat, canvas_has_feat) = to_feature_map(&canvas_gray);
@@ -817,10 +825,10 @@ impl Stitcher {
         };
 
         if let Some(ncc) = ncc_match(&template, &search_region) {
-            if validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32) {
+            if validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32, self.config.ncc_score_threshold) {
                 let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
                 let roi_height = (eff_bottom - eff_top) as f64;
-                let new_rows_raw = roi_height - refined_y - STRIP_H as f64;
+                let new_rows_raw = roi_height - refined_y - self.config.strip_h as f64;
                 let dy = -new_rows_raw;
 
                 if dy < 0.0 {
@@ -1179,16 +1187,17 @@ mod tests {
         let f1 = make_frame(TW, TH, 0);
         s.process_frame(&f1).unwrap(); // init
 
-        let bottom_gray = s.extract_canvas_bottom_gray(STRIP_H);
+        let bottom_gray = s.extract_canvas_bottom_gray(s.config.strip_h);
         assert_eq!(bottom_gray.width, TW as usize);
 
-        // 手动从 canvas 计算底部 strip 灰度比对
+        // 手动从 canvas 计算底部 strip 灰度比对（canvas() 借用 s，须先取出 strip_h）
+        let strip_h = s.config.strip_h;
         let canvas = s.canvas();
         let canvas_h = canvas.height();
-        assert!(canvas_h >= STRIP_H);
-        for y in 0..STRIP_H {
+        assert!(canvas_h >= strip_h);
+        for y in 0..strip_h {
             for x in 0..TW {
-                let px = canvas.get_pixel(x, canvas_h - STRIP_H + y);
+                let px = canvas.get_pixel(x, canvas_h - strip_h + y);
                 let luma = (2126 * px[0] as u32 + 7152 * px[1] as u32 + 722 * px[2] as u32) / 10000;
                 assert_eq!(bottom_gray.row(y as usize)[x as usize], luma as u8,
                     "底部 strip 灰度不一致 @ ({},{})", x, y);
@@ -1217,7 +1226,7 @@ mod tests {
     fn test_ncc_matches_known_offset() {
         let f0 = make_frame(TW, TH, 0);
         let f1 = make_frame(TW, TH, 30);
-        let canvas_strip = GrayBuf::from_rgba_roi(&f0, (TH - STRIP_H) as usize, TH as usize);
+        let canvas_strip = GrayBuf::from_rgba_roi(&f0, (TH - StitchConfig::default().strip_h) as usize, TH as usize);
         let template = canvas_strip.to_gray_image();
         let search_region = GrayBuf::from_rgba_roi(&f1, 0, TH as usize).to_gray_image();
         let result = ncc_match(&template, &search_region);
