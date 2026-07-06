@@ -1,6 +1,8 @@
 use crate::error::{PaddleOcrError, Result};
 use rayon::prelude::*;
 
+use super::numeric::{clip_i32_exclusive_upper, saturate_cast_i16_from_f32};
+
 fn check_dims(
     src_w: usize,
     src_h: usize,
@@ -41,34 +43,6 @@ pub(crate) struct LinearResizeScratch {
     ibeta: Vec<i16>,
     hrow0: Vec<i32>,
     hrow1: Vec<i32>,
-}
-
-fn cv_round_ties_even_f32(v: f32) -> i32 {
-    if !v.is_finite() {
-        return 0;
-    }
-    let r = v.round_ties_even();
-    if r < i32::MIN as f32 {
-        i32::MIN
-    } else if r > i32::MAX as f32 {
-        i32::MAX
-    } else {
-        r as i32
-    }
-}
-
-fn saturate_cast_i16_from_f32(v: f32) -> i16 {
-    cv_round_ties_even_f32(v).clamp(i16::MIN as i32, i16::MAX as i32) as i16
-}
-
-fn clip_i32(x: i32, lo: i32, hi_exclusive: i32) -> i32 {
-    if x < lo {
-        lo
-    } else if x >= hi_exclusive {
-        hi_exclusive - 1
-    } else {
-        x
-    }
 }
 
 fn hresize_row_bgr_u8(
@@ -156,8 +130,8 @@ fn resize_rows_into(
 
     for row in 0..row_count {
         let dy = start_dy + row;
-        let sy0 = clip_i32(kernel.yofs[dy], 0, dims.src_h as i32) as usize;
-        let sy1 = clip_i32(kernel.yofs[dy] + 1, 0, dims.src_h as i32) as usize;
+        let sy0 = clip_i32_exclusive_upper(kernel.yofs[dy], 0, dims.src_h as i32) as usize;
+        let sy1 = clip_i32_exclusive_upper(kernel.yofs[dy] + 1, 0, dims.src_h as i32) as usize;
         let src_row0 = &src[sy0 * dims.src_w * 3..(sy0 + 1) * dims.src_w * 3];
         let src_row1 = &src[sy1 * dims.src_w * 3..(sy1 + 1) * dims.src_w * 3];
         hresize_row_bgr_u8(src_row0, dims.src_w, kernel.xofs, kernel.ialpha, hrow0);

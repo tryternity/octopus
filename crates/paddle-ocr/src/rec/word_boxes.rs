@@ -5,6 +5,7 @@ use crate::{
     config::RecImage,
     error::{PaddleOcrError, Result},
     types::{LineResult, WordBox, WordInfo, WordType},
+    vision::numeric::l2,
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -73,7 +74,7 @@ fn compute_word_boxes_unchecked(
         let item = word_content
             .into_iter()
             .zip(confs.into_iter().chain(std::iter::repeat(0.0)))
-            .zip(mapped.into_iter())
+            .zip(mapped)
             .map(|((text, score), bbox)| WordBox { text, score, bbox })
             .collect::<Vec<_>>();
 
@@ -386,12 +387,6 @@ fn quad_vec_to_rect_bbox(quads: &[Quad]) -> (f32, f32, f32, f32) {
     }
 
     (x_min, y_min, x_max, y_max)
-}
-
-fn l2(a: [f32; 2], b: [f32; 2]) -> f32 {
-    let dx = a[0] - b[0];
-    let dy = a[1] - b[1];
-    (dx * dx + dy * dy).sqrt()
 }
 
 #[cfg(test)]

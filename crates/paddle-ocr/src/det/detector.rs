@@ -112,7 +112,7 @@ impl Detector {
             ..DbPostProcess::default()
         };
         let session =
-            OrtSession::new_with_contract(&model_path, &config.runtime, SessionContract::Det)?;
+            OrtSession::new_with_contract(model_path, &config.runtime, SessionContract::Det)?;
         Ok(Self {
             pre,
             post,
