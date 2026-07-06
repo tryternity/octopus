@@ -2,15 +2,13 @@ import { useRef, useState, useEffect } from "react";
 import {
   ZoomIn, ZoomOut, Expand, MoveHorizontal,
 } from "lucide-react";
-import type { Tool } from "@/lib/annotation";
+import { type Tool, PRESET_COLORS } from "@/lib/annotation";
 
 // SVG 图标 img（与截图工具一致，激活时变白）
 const SvgIcon = ({ src, alt, active }: { src: string; alt: string; active?: boolean }) => (
   <img src={src} alt={alt} className="w-[18px] h-[18px]" style={{ filter: active ? "brightness(0) invert(1)" : "none" }} />
 );
 
-// 预设色与截图 ToolPropsPopover 一致（含白色）
-const PRESET_COLORS = ["#ef4444", "#f97316", "#eab308", "#22c55e", "#3b82f6", "#8b5cf6", "#000000", "#ffffff"];
 const POPOVER_W = 240;
 
 /**
