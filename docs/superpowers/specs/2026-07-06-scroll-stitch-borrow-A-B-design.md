@@ -8,6 +8,11 @@
   - 后续阶段 F（配置外置）、D（缩放匹配）另起 spec，不在本阶段
 - 改动文件：`crates/desktop/src/screenshot_commands.rs`（A）、`crates/capx/src/stitch.rs`（B）
 
+> **实现状态（2026-07-06 收尾）**：
+> - **A 已实现并合 main**（`574f53b` 拆两 task + `107278c` preview 改 fire-and-forget）。设计 §2 图中 `spawn_blocking(preview).await` 实际改为 **fire-and-forget**（不 await）：await 阻塞消费关键路径 → watch 丢帧 → canvas 滞后 → 单帧累积位移超 NCC search 失配（e2e 实测 772px/帧）。
+> - **B 已回退**（`13b450d`）：主次比判据对 NCC **连续 response** 不成立——周期性内容（代码/列表）天然多峰、次峰 0.96 是周期特征非歧义，硬套误拒 score=0.9996 真匹配。snow-shot 主次比是**离散角点投票**产物，不可移植到 NCC。`validate_ncc_match` 恢复为仅 score≥0.65 + 区分度。
+> - **突变鲁棒性**：B 回退后突变场景仍暴露死亡螺旋，另起方向1 相邻帧参考 fallback，详见 `2026-07-06-scroll-stitch-transition-robustness-design.md`（已实现合 main）。
+
 ## 1. 背景与目标
 
 对比 spec §3 指出：octopus 滚动截图主循环（`screenshot_commands.rs:1089`）把 `capture` / `process_frame` / `preview 编码` 串在一个 30ms tick 里——preview 编码每帧 `await`、`process_frame` 未 `spawn_blocking`，两者任一偏慢就拉长 tick，下一帧截晚。对比 spec §4-B 指出：NCC 验证缺主次比判据，周期假匹配靠跨帧 `same_dy_count` 状态机兜，可加单帧入口硬过滤简化。

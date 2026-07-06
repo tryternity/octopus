@@ -10,6 +10,8 @@
 
 **约定：** 所有 cargo 命令带 `--manifest-path` 指向 worktree（worktree-cwd-trap）；git 用 `git -C <worktree>` 绝对路径。
 
+> **实现状态（2026-07-06 收尾）**：A 已实现合 main（`574f53b`+`107278c`）；**B 已回退**（`13b450d`，主次比对 NCC 连续 response 不成立）；突变鲁棒性另见 `2026-07-06-scroll-stitch-transition-robustness.md`。Task 1（B）代码已从 main 移除，下方步骤保留作历史记录。Task 2（A）已完成，Task 3 e2e 暴露突变死亡螺旋问题，转入方向1 解决。
+
 ---
 
 ## File Structure

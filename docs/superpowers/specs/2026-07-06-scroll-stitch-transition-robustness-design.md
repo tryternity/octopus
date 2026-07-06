@@ -9,6 +9,8 @@
   - 借鉴依据：`docs/superpowers/specs/2026-07-06-scroll-stitch-snow-shot-engineering-comparison.md`
 - 改动文件：`crates/capx/src/stitch.rs`（`Stitcher` 公共接口零变更）
 
+> **实现状态（2026-07-06 收尾）**：✅ 方向1 已实现合 main（`7cb9bb6`），capx 21 测绿 + e2e 通过（「文字→图片」突变场景拼接完整）。方向3（多锚点双向索引）仍为备选、未实施。
+
 ---
 
 ## 1. 背景与根因

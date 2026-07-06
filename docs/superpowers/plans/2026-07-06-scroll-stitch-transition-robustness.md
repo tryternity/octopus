@@ -10,6 +10,8 @@
 
 **约定：** cargo 带 `--manifest-path` 指 worktree（worktree-cwd-trap）；git 用 `git -C <WT>` 绝对路径。
 
+> **实现状态（2026-07-06 收尾）**：✅ Task 1-4 全部完成（`7cb9bb6` 合 main），capx 21 测绿 + desktop 编译通过；Task 5 e2e 通过——「白底黑字文字→图片」突变场景拼接完整不断裂，相邻帧参考 fallback 触发确认。
+
 ---
 
 ## File Structure
