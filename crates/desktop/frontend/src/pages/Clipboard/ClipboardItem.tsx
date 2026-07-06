@@ -5,7 +5,7 @@ import { invoke } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
-import { metaParts, typeAccent, imageMeta } from "@/types/clipboard";
+import { metaParts, typeAccent, imageMeta, detectUrl } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
 
 function ClipboardItemRow({
@@ -122,7 +122,8 @@ function ClipboardItemRow({
     openCompactEditorTab(item.id);
   };
 
-  const isUrl = item.item_type === "text" && /^https?:\/\//i.test(item.content.trim());
+  const link = item.item_type === "text" ? detectUrl(item.content) : null;
+  const isUrl = !!link?.isLink;
 
   // 预览文本：码元数 ≤200 时字符数必 ≤200（emoji 占多码元），直接返回原串零开销；
   // 超过才展开字符数组精确按字符截断。原代码每次渲染两次 [...content] 全量展开，
@@ -212,7 +213,7 @@ function ClipboardItemRow({
             className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
             onClick={(e) => {
               e.stopPropagation();
-              openUrl(item.content.trim()).catch(console.error);
+              if (link) openUrl(link.url).catch(console.error);
             }}
             title="打开链接"
           >
