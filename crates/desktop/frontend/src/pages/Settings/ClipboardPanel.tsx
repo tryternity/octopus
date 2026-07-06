@@ -8,7 +8,7 @@ import { metaParts, typeAccent, imageMeta, detectUrl } from "@/types/clipboard";
 import {
   Star, Mic, Type, Image as ImageIcon, FileText,
   LayoutGrid, Search, Trash2, Download, FolderOpen,
-  ScanText, Loader2, Link as LinkIcon, SquarePen, ChevronDown,
+  ScanText, Loader2, Link as LinkIcon, SquarePen, ChevronDown, Copy, Check,
 } from "lucide-react";
 import SaveImagePopover from "../Clipboard/SaveImagePopover";
 import { openCompactEditorTab } from "@/lib/compactEditor";
@@ -527,6 +527,20 @@ function ClipboardRow({
             "w-3.5 h-3.5 transition-colors",
             deletePending ? "text-red-600" : "text-stone-500 hover:text-red-500",
           )} />
+        </button>
+        <button
+          className={cn(
+            "p-1 rounded transition-opacity hover:scale-110",
+            copied ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
+          )}
+          onClick={handleCopy}
+          title="复制"
+        >
+          {copied ? (
+            <Check className="w-3.5 h-3.5 text-emerald-500" />
+          ) : (
+            <Copy className="w-3.5 h-3.5 text-stone-500" />
+          )}
         </button>
         <button
           className={cn(

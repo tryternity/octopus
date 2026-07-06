@@ -21,7 +21,15 @@ pub trait PinWindow {
 - `x`, `y`：贴图窗口在屏幕上的初始**逻辑坐标**（Top-Left 起点）。
 - `width`, `height`：贴图窗口的初始**逻辑宽高**。
 
-所有系统中的拖拽、缩放、右键关闭都是通过操作系统底层的原生事件驱动，绕过任何 Webview 渲染，保持单窗口内存增量极低（< 5MB）。
+所有系统中的拖拽、缩放、hover 关闭按钮都是通过操作系统底层的原生事件驱动，绕过任何 Webview 渲染，保持单窗口内存增量极低（< 5MB）。
+
+### 1.1 关闭按钮交互（三平台统一）
+
+鼠标移入贴图窗口时，右上角显示一个红色圆形关闭按钮（红圆 + 白×），鼠标移出后隐藏。点击该按钮关闭窗口。
+
+- **macOS**：`NSTrackingArea`（`MouseEnteredAndExited | ActiveAlways | InVisibleRect`）添加到 `contentView`，`owner` 绑定 `PinNSImageView`。`mouseEntered:` → `btn.setHidden(false)`，`mouseExited:` → `btn.setHidden(true)`。关闭按钮是 `PinCloseBtnView`（NSImageView 子类），图标由 `image` crate 预渲染 40×40 PNG → `NSImage` → `setImage`，规避了自定义 `drawRect:` 在 objc2 `define_class!` 下触发 `NSInvalidArgumentException`（Rust 无法 catch foreign exception → abort）的问题。点击 `mouseDown:` → `window.close()` + 延迟 0.1s 触发 `cleanup` selector 清理 `PIN_WINDOWS` 引用。
+- **Windows**：`WM_MOUSEMOVE` + `TrackMouseEvent(TME_LEAVE)` 检测 hover，`update_layered_window_view` 内用 GDI（`Ellipse` + `MoveToEx/LineTo`）将红圆白×绘制到目标 DC。`WM_LBUTTONDOWN` 检查点击坐标是否在按钮区域 → `DestroyWindow`。
+- **Linux**：`motion-notify-event` / `leave-notify-event` 检测 hover（需 `POINTER_MOTION_MASK | LEAVE_NOTIFY_MASK`），Cairo `draw` 回调内 `cr.arc + cr.fill + cr.stroke` 绘制。`button-press-event` 检查坐标 → `win.close()`。
 
 ---
 
@@ -71,8 +79,7 @@ pub trait PinWindow {
    - 计算缩放后的物理尺寸，并调用 `SetWindowPos` 调整窗口物理尺寸。
    - **GDI 硬件加速缩放**：创建一个与新尺寸匹配的临时 HBITMAP，并使用 `StretchBlt`（设置 `SetStretchBltMode` 为 `HALFTONE`）将原始大图拉伸到新尺寸，然后通过 `UpdateLayeredWindow` 更新。这比在 Rust 里面写 CPU 重采样要快得多，且占用内存极小。
 3. **关闭**：
-   - 拦截 `WM_RBUTTONUP`，在当前鼠标位置弹出包含“关闭”的 Win32 Native Popup Menu。
-   - 点击“关闭”调用 `DestroyWindow`，销毁窗口资源并自动结束关联线程。
+   - ~~已移除~~：原设计的右键 `WM_RBUTTONUP` 弹出 Popup Menu 已废弃，改为 hover 显示右上角关闭按钮（见 §1.1）。`WM_LBUTTONDOWN` 点击按钮区域 → `DestroyWindow`，销毁窗口资源并自动结束关联线程。
 
 ---
 
@@ -115,15 +122,14 @@ Tauri 2 在 Linux 下使用 GTK3。我们直接利用现有 `gtk` 库依赖，�
    - 监听 `scroll-event` 信号，获取滚轮滚动方向。
    - 以鼠标指针为中心，动态计算窗口应该改变的 `width` 和 `height`，然后通过 `window.resize` 修改窗口大小，并触发 `queue_draw`。
 3. **关闭**：
-   - 监听右键按下事件，创建一个带有“关闭”菜单项的 `gtk::Menu`。
-   - 单击“关闭”项时调用 `window.close()`。
+   - ~~已移除~~：原设计的右键 `gtk::Menu` 已废弃，改为 hover 显示右上角关闭按钮（见 §1.1）。`button-press-event` 左键点击按钮区域 → `win.close()`。
 
 ---
 
 ## 4. 关键接口统一与配置变动
 
 ### 4.1 Cargo.toml 变动
-向 `crates/desktop/Cargo.toml` 中添加 `windows` 平台专属依赖。Linux 下需要的 `gtk`、`gdk`、`cairo-rs`、`glib` 直接在此处引入 direct bindings：
+向 `crates/desktop/Cargo.toml` 中添加平台专属依赖。macOS 的 `objc2-app-kit` 需额外启用 `NSTrackingArea` feature（用于 hover 检测）。Linux 下需要的 `gtk`、`gdk`、`cairo-rs`、`glib` 直接在此处引入 direct bindings：
 
 ```toml
 [target.'cfg(target_os = "windows")'.dependencies]

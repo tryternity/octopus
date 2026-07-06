@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect, memo, useMemo } from "react";
 import { cn } from "@/lib/utils";
-import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen, Link as LinkIcon } from "lucide-react";
+import { Star, Mic, Type, Image as ImageIcon, FileText, Trash2, Download, FolderOpen, ScanText, SquarePen, Link as LinkIcon, Copy, Check } from "lucide-react";
 import { invoke } from "@/lib/tauri";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { openCompactEditorTab } from "@/lib/compactEditor";
@@ -287,6 +287,20 @@ function ClipboardItemRow({
             "w-3.5 h-3.5 transition-colors",
             deletePending ? "text-red-600" : "text-muted-foreground hover:text-red-500",
           )} />
+        </button>
+        <button
+          className={cn(
+            "p-0.5 transition-opacity hover:scale-110",
+            copied ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
+          )}
+          onClick={handleCopy}
+          title="复制"
+        >
+          {copied ? (
+            <Check className="w-3.5 h-3.5 text-emerald-500" />
+          ) : (
+            <Copy className="w-3.5 h-3.5 text-muted-foreground" />
+          )}
         </button>
         <button
           className={cn(
