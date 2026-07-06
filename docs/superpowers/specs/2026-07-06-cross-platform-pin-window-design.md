@@ -162,5 +162,27 @@ pub use linux::LinuxPinWindow as PinWindowImpl;
 
 1. **PNG 解码失败**：如果 PNG 解码或转换失败，写错误日志直接返回，不创建任何窗口，防止内存溢出或 panic。
 2. **DPI 变动/多屏切换**：
-   - Windows 方案将在缩放和创建时使用 `GetDpiForSystem` 获取，保证大小比例符合预期。
+   - Windows 方案在缩放和创建时查询系统 DPI。**实现偏差**（2026-07-06）：spec 原写 `GetDpiForSystem`，实际用 `GetDeviceCaps(LOGPIXELSX)`——功能等价（后者更传统），`scale = dpi_x / 96.0`。
    - Linux 方案中 GTK 已经内置了系统高 DPI（Logical Coordinates），GTK 的 `window.resize` 会自动在 Wayland/X11 混合 DPI 环境下工作，无需人工介入。
+
+## 6. 前端合成双路径（2026-07-06 增补）
+
+`pin_screenshot` 命令签名新增 `img_base64: Option<String>` 参数，支持两条数据路径：
+
+- **`Some(base64)`**（主路径）：前端 `composeAndCropBytes()` 在 Canvas 上合成带标注/马赛克的完整图片 → `FileReader.readAsDataURL` 原生转 base64 → 后端直接解码生成贴图。这保证了贴图包含前端的涂鸦备注。
+- **`None`**（fallback）：后端从 `ALL_CAPTURES` 缓存的原始截图裁剪（不含标注）。
+
+前端 `doPin()` 使用 `isPinningRef` 防重复点击锁，在整个异步链（compose → base64 → invoke）期间阻止重复触发。FileReader 的 `onerror` 正确传递 `DOMException`。
+
+## 7. 健壮性加固（2026-07-06 代码审计后增补）
+
+代码审计后发现并修复的问题：
+
+1. **Windows GDI 资源泄漏**：`update_layered_window_view` 内用 `run_gdi_calls` 闭包 + defer 清理模式，确保 `StretchBlt`/`UpdateLayeredWindow` 任一 `?` 失败后仍执行 `SelectObject`/`DeleteDC`/`DeleteObject`/`ReleaseDC`。`CreateCompatibleBitmap` 失败路径单独清理已分配资源。
+2. **Windows `CreateWindowExW` 失败**：失败时手动 `Box::from_raw(state_ptr)` + `DeleteObject(hbitmap)` 回收，避免 `WM_DESTROY` 不触发的泄漏。
+3. **Windows `GetMessageW` 返回值**：显式判 `status.0 == 0 || -1`（WM_QUIT / 错误），不再用 `as_bool()` 把 `-1` 误判为 true。
+4. **macOS 生命周期**：`window.setReleasedWhenClosed(false)` 配合静态 `PIN_WINDOWS: Mutex<Vec<SendWindow>>` 管理——防止 Cocoa 默认自动释放使 `Retained` 指针悬空。
+5. **三平台回调 panic 清零**：macOS `MainThreadMarker`/`contentView`、Windows `CreatePopupMenu`、Linux Cairo 操作的 `expect()`/`unwrap()` 全部替换为 `Option`/`Result` 模式匹配。
+6. **Linux 缩放鼠标锚定**：`scroll-event` 回调中用 `event.coords()` + `win.position()` + `win.move_()` 实现以鼠标为中心缩放，与 macOS/Windows 行为对称。
+7. **Linux GTK 菜单闭包循环引用**：重构 `win_menu` clone 避免 GTK 窗口内存泄漏。
+
