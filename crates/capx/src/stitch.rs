@@ -34,6 +34,11 @@ const NCC_SCORE_THRESHOLD: f32 = 0.65;
 /// 避免同一峰的肩部被误当独立次峰。NCC response 相邻 y 高度相关。
 const NCC_PEAK_GAP: usize = 8;
 
+/// 主次比 score 差阈值。邻域外次峰与主峰差 < 此值 → 视为歧义（两个偏移都极匹配）。
+/// 用 score 差而非比值：NCC 连续 response 在纹理内容上常自然多峰，
+/// 比值判据(max2>score/2)会误拒正常高分真匹配（e2e 实测 score≈1.0 被误拒致拼接停滞）。
+const NCC_DOMINANCE_MARGIN: f32 = 0.05;
+
 /// 连续 row-major 灰度 buffer，替代 image::GrayImage。
 /// 消除 get_pixel() 的坐标计算 + 边界检查开销，用整行切片直访。
 #[derive(Clone)]
@@ -181,13 +186,18 @@ fn validate_ncc_match(response: &Image<image::Luma<f32>>, best_y: usize, best_sc
     }
 
     // 2. 无区分度：max - min < 0.1 说明所有位置得分几乎相同（纯色/空白/极低纹理）。
-    if best_score - min_score < 0.1 {
+    let contrast = best_score - min_score;
+    if contrast < 0.1 {
+        log::info!("[stitch] validate reject: low contrast {:.4} (score={:.4} min={:.4})",
+            contrast, best_score, min_score);
         return false;
     }
 
-    // 3. 主次比：邻域外次峰 ≥ 主峰一半 → response 存在第二个强对齐点，
-    // 典型由周期性/重复纹理导致（NCC 在周期内容上假匹配）。拒绝，交 fallback。
-    if max2 > best_score * 0.5 {
+    // 3. 主次比（NCC 连续 response 专用）：邻域外次峰与主峰 score 差 < margin
+    // → 两个偏移位置都"极匹配" → 周期/重复纹理歧义，拒绝交 fallback。
+    if max2 > best_score - NCC_DOMINANCE_MARGIN {
+        log::info!("[stitch] validate reject: ambiguous max2={:.4} (score={:.4} diff={:.4} margin={})",
+            max2, best_score, best_score - max2, NCC_DOMINANCE_MARGIN);
         return false;
     }
 
@@ -1202,6 +1212,21 @@ mod tests {
     fn test_validate_short_response_passes() {
         // 高 12 ≤ 2*GAP=16：全部在邻域内，max2=0 → 不拒绝（区分度兜底）
         let r = make_response(12, &[(5, 0.9)], 0.1);
+        assert!(validate_ncc_match(&r, 5, 0.9));
+    }
+
+    #[test]
+    fn test_validate_rejects_near_equal_second_peak() {
+        // 主峰 0.9，次峰 0.86（差 0.04 < margin 0.05）→ 两位置都极匹配 → 歧义拒绝
+        let r = make_response(30, &[(5, 0.9), (20, 0.86)], 0.1);
+        assert!(!validate_ncc_match(&r, 5, 0.9));
+    }
+
+    #[test]
+    fn test_validate_accepts_half_second_peak() {
+        // 主峰 0.9，次峰 0.5（差 0.4 > margin）→ 纹理自然多峰，主峰主导 → 接受。
+        // 这是 e2e 回归用例：比值判据会误拒此场景（0.5 > 0.9*0.5），差值判据正确接受。
+        let r = make_response(30, &[(5, 0.9), (20, 0.5)], 0.1);
         assert!(validate_ncc_match(&r, 5, 0.9));
     }
 }
