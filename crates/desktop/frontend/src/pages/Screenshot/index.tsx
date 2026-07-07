@@ -834,7 +834,8 @@ export default function Screenshot() {
             display: "flex",
             gap: 4,
             padding: "6px 8px",
-            background: "#fff",
+            background: "var(--color-surface)",
+            color: "var(--color-foreground)",
             borderRadius: 8,
             boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
             zIndex: 100,
@@ -871,7 +872,7 @@ export default function Screenshot() {
           <ToolButton active={tool === "blur"} onClick={(e) => onToolSelect(e, "blur")} label="马赛克" icon={
             <img src="icons/mosaic.svg" alt="马赛克" className="w-[18px] h-[18px]" style={{ filter: tool === "blur" ? "brightness(0) invert(1)" : "none" }} />
           } />
-          <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
+          <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />
           <ToolButton onClick={undoAnnotation} label="撤销" icon={
             <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" style={{ opacity: annotations.length > 0 ? 1 : 0.3 }} />
           } />
@@ -881,14 +882,14 @@ export default function Screenshot() {
           <ToolButton onClick={doOcr} label="OCR" icon={
             <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" />
           } />
-          <div style={{ width: 1, height: 20, background: "rgba(0,0,0,0.1)", margin: "0 4px" }} />
+          <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />
           <button onClick={startScroll} title="滚动截图" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
             <img src="icons/scroll.svg" alt="滚动截图" className="w-[18px] h-[18px]" />
           </button>
           <button onClick={doSaveFile} title="保存到文件" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
             <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" />
           </button>
-          <button onClick={doConfirm} title="确认" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "#3b82f6", cursor: "pointer" }}>
+          <button onClick={doConfirm} title="确认" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "var(--color-voice)", cursor: "pointer" }}>
             <img src="icons/copy.svg" alt="确认" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} />
           </button>
           <button onClick={() => invoke("cancel_screenshot").catch(() => {})} title="取消" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
@@ -906,7 +907,7 @@ export default function Screenshot() {
           width: 24, height: 24,
           display: "flex", alignItems: "center", justifyContent: "center",
           borderRadius: 5, border: "none",
-          background: "rgba(255,255,255,0.9)",
+          background: "var(--color-surface)",
           boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
           cursor: "pointer", zIndex: 101,
         }}>

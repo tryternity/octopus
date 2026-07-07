@@ -8,8 +8,7 @@ export function ToolButton({ active, onClick, label, icon }: { active?: boolean;
         display: "flex", alignItems: "center", justifyContent: "center",
         borderRadius: 6,
         border: "none",
-        background: active ? "#3b82f6" : "transparent",
-        color: active ? "#fff" : "#333",
+        background: active ? "var(--color-voice)" : "transparent",
         cursor: "pointer",
         transition: "background 0.15s",
       }}

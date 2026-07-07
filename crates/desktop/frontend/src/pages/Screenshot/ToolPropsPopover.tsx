@@ -25,7 +25,8 @@ export function ToolPropsPopover({
         top: y,
         transform: "translateX(-50%)",
         padding: "10px 12px",
-        background: "#fff",
+        background: "var(--color-surface)",
+        color: "var(--color-foreground)",
         borderRadius: 10,
         boxShadow: "0 8px 24px -4px rgba(0,0,0,0.2), 0 2px 8px -2px rgba(0,0,0,0.1)",
         zIndex: 101,
@@ -37,7 +38,7 @@ export function ToolPropsPopover({
     >
       {/* 第一行：粗细滑轨 + 当前色（最右） */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontSize: 10, color: "#999", width: 20, fontWeight: 500, flexShrink: 0 }}>{label}</span>
+        <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 20, fontWeight: 500, flexShrink: 0 }}>{label}</span>
         <input
           type="range"
           min={min}
@@ -46,7 +47,7 @@ export function ToolPropsPopover({
           onChange={(e) => setSize(Number(e.target.value))}
           style={{ flex: 1, height: 4, borderRadius: 2, cursor: "pointer", accentColor: color }}
         />
-        <span style={{ fontSize: 10, color: "#666", fontVariantNumeric: "tabular-nums", width: 18, textAlign: "center", fontWeight: 600 }}>{sizeValue}</span>
+        <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", fontVariantNumeric: "tabular-nums", width: 18, textAlign: "center", fontWeight: 600 }}>{sizeValue}</span>
         {/* 当前色 — 带粗白边 + 阴影，和下方预设色区分 */}
         <div style={{
           width: 20, height: 20, borderRadius: "50%",
@@ -58,7 +59,7 @@ export function ToolPropsPopover({
       </div>
 
       {/* 分隔线 */}
-      <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
+      <div style={{ height: 1, background: "var(--color-border)", margin: "0 -4px" }} />
 
       {/* 第二行：预设色 + 调色板 */}
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -97,15 +98,15 @@ export function ToolPropsPopover({
       {/* 行 3：实心开关（仅 rect/oval） */}
       {isShape && (
         <>
-          <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
+          <div style={{ height: 1, background: "var(--color-border)", margin: "0 -4px" }} />
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 10, color: "#999", fontWeight: 500 }}>实心填充</span>
+            <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", fontWeight: 500 }}>实心填充</span>
             <button
               type="button"
               onClick={() => onFilledChange(!filled)}
               style={{
                 width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
-                background: filled ? "#3b82f6" : "rgba(0,0,0,0.15)",
+                background: filled ? "var(--color-voice)" : "var(--color-muted-foreground)",
                 position: "relative", transition: "background 0.2s",
               }}
             >
