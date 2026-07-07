@@ -33,7 +33,7 @@ function tabTitle(tab: Tab): string {
 function tabIcon(tab: Tab) {
   if (tab.source === 'transcription') return <Mic className="w-3 h-3 text-violet-500 flex-shrink-0" />;
   if (tab.itemType === 'image') return <Eye className="w-3 h-3 text-blue-500 flex-shrink-0" />;
-  return <Type className="w-3 h-3 text-stone-400 flex-shrink-0" />;
+  return <Type className="w-3 h-3 text-muted-foreground flex-shrink-0" />;
 }
 
 function CompactEditor() {
@@ -346,7 +346,7 @@ function CompactEditor() {
       disabled={disabled}
       title={title}
       onClick={onClick}
-      className="p-1.5 rounded-md text-stone-600 hover:bg-stone-100 hover:text-stone-900 disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+      className="p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
     >{children}</button>
   );
 
@@ -354,14 +354,14 @@ function CompactEditor() {
     <div className="flex flex-col h-full bg-background">
       {/* tab 栏 */}
       {tabs.length > 0 && (
-        <div className="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-1 border-b border-border bg-stone-50 overflow-x-auto thin-scrollbar">
+        <div className="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-1 border-b border-border bg-muted overflow-x-auto thin-scrollbar">
           {tabs.map((t, i) => (
             <div
               key={t.key}
               className={`group/tab flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md text-xs whitespace-nowrap cursor-pointer transition-colors ${
                 i === activeIdx
-                  ? "bg-white text-stone-900 shadow-sm border border-stone-200"
-                  : "text-stone-500 hover:bg-stone-100"
+                  ? "bg-background text-foreground shadow-sm border border-border"
+                  : "text-muted-foreground hover:bg-accent"
               }`}
               onClick={() => setActiveIdx(i)}
             >
@@ -371,7 +371,7 @@ function CompactEditor() {
                 type="button"
                 title="关闭"
                 onClick={(e) => { e.stopPropagation(); closeTab(i); }}
-                className="p-0.5 rounded hover:bg-stone-200 text-stone-400 hover:text-stone-700"
+                className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
               >
                 <X className="w-3 h-3" />
               </button>
@@ -382,20 +382,20 @@ function CompactEditor() {
 
       {/* 工具栏（仅文本 tab 显示） */}
       {active && active.itemType !== 'image' && !isReadOnly && (
-        <div className="flex-shrink-0 flex items-center gap-0.5 px-2 py-1.5 border-b border-border bg-stone-50">
+        <div className="flex-shrink-0 flex items-center gap-0.5 px-2 py-1.5 border-b border-border bg-muted">
           <ToolBtn onClick={undo} title="撤销 (Cmd+Z)"><Undo2 className="w-4 h-4" /></ToolBtn>
           <ToolBtn onClick={redo} title="重做 (Cmd+Shift+Z)"><Redo2 className="w-4 h-4" /></ToolBtn>
-          <span className="w-px h-4 bg-stone-200 mx-1" />
+          <span className="w-px h-4 bg-border mx-1" />
           <ToolBtn onClick={decFont} title="缩小字号" disabled={fontSize <= FONT_MIN}><ZoomOut className="w-4 h-4" /></ToolBtn>
-          <span className="text-[11px] text-stone-500 w-7 text-center tabular-nums">{fontSize}</span>
+          <span className="text-[11px] text-muted-foreground w-7 text-center tabular-nums">{fontSize}</span>
           <ToolBtn onClick={incFont} title="放大字号" disabled={fontSize >= FONT_MAX}><ZoomIn className="w-4 h-4" /></ToolBtn>
-          <span className="w-px h-4 bg-stone-200 mx-1" />
+          <span className="w-px h-4 bg-border mx-1" />
           <ToolBtn onClick={() => setShowFind(v => !v)} title="查找/替换 (Cmd+F)"><Search className="w-4 h-4" /></ToolBtn>
           <ToolBtn onClick={clearAll} title="清空">
             {clearPending ? <Check className="w-4 h-4 text-red-500" /> : <Eraser className="w-4 h-4" />}
           </ToolBtn>
           <div className="flex-1" />
-          <span className="text-[11px] text-stone-400 mr-2 tabular-nums">{charCount} 字</span>
+          <span className="text-[11px] text-muted-foreground mr-2 tabular-nums">{charCount} 字</span>
           <button
             type="button"
             onClick={doSave}
@@ -412,16 +412,16 @@ function CompactEditor() {
 
       {/* 查找/替换条 */}
       {showFind && active && active.itemType !== 'image' && !isReadOnly && (
-        <div className="flex-shrink-0 flex flex-wrap items-center gap-1.5 px-2 py-1.5 border-b border-border bg-stone-100">
+        <div className="flex-shrink-0 flex flex-wrap items-center gap-1.5 px-2 py-1.5 border-b border-border bg-muted">
           <input
             autoFocus
             value={findQuery}
             onChange={e => setFindQuery(e.target.value)}
             onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); gotoMatch(e.shiftKey ? -1 : 1); } }}
             placeholder="查找"
-            className="w-32 px-2 py-0.5 text-xs border border-stone-300 rounded bg-white outline-none focus:border-[#007aff]"
+            className="w-32 px-2 py-0.5 text-xs border border-border rounded bg-background outline-none focus:border-voice"
           />
-          <span className="text-[10px] text-stone-500 w-12 tabular-nums">
+          <span className="text-[10px] text-muted-foreground w-12 tabular-nums">
             {matches.length > 0 ? `${matchIdx + 1}/${matches.length}` : "0/0"}
           </span>
           <ToolBtn onClick={() => gotoMatch(-1)} title="上一个" disabled={matches.length === 0}><ChevronUp className="w-3.5 h-3.5" /></ToolBtn>
@@ -430,10 +430,10 @@ function CompactEditor() {
             value={replaceQuery}
             onChange={e => setReplaceQuery(e.target.value)}
             placeholder="替换"
-            className="w-32 px-2 py-0.5 text-xs border border-stone-300 rounded bg-white outline-none focus:border-[#007aff]"
+            className="w-32 px-2 py-0.5 text-xs border border-border rounded bg-background outline-none focus:border-voice"
           />
-          <button type="button" onClick={replaceOne} className="px-2 py-0.5 text-[11px] rounded border border-stone-300 hover:bg-stone-200">替换</button>
-          <button type="button" onClick={replaceAll} className="flex items-center gap-0.5 px-2 py-0.5 text-[11px] rounded border border-stone-300 hover:bg-stone-200">
+          <button type="button" onClick={replaceOne} className="px-2 py-0.5 text-[11px] rounded border border-border hover:bg-accent">替换</button>
+          <button type="button" onClick={replaceAll} className="flex items-center gap-0.5 px-2 py-0.5 text-[11px] rounded border border-border hover:bg-accent">
             <Replace className="w-3 h-3" /> 全替
           </button>
         </div>
@@ -468,7 +468,7 @@ function CompactEditor() {
           </div>
         ))
       ) : (
-        <div className="flex-1 flex items-center justify-center text-sm text-stone-400">没有打开的条目</div>
+        <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">没有打开的条目</div>
       )}
     </div>
   );
