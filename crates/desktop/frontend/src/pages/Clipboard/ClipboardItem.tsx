@@ -155,13 +155,17 @@ function ClipboardItemRow({
       data-clip-index={index}
       className={cn(
         "group relative px-3 py-2 cursor-pointer transition-colors flex items-center gap-2.5",
-        isSelected && !deletePending ? "bg-accent" : "hover:bg-accent",
+        // hover 用更淡的色，selected 用 accent + 左侧指示条，避免同时两行同色高亮
+        isSelected && !deletePending ? "bg-accent" : "hover:bg-muted",
         deletePending && "bg-red-50",
       )}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
     >
-      {isVoice && (
+      {isSelected && !deletePending && (
+        <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-voice" />
+      )}
+      {isVoice && !isSelected && (
         <div className="absolute left-0 top-2 bottom-2 w-[2px] rounded-r bg-voice/50" />
       )}
 
