@@ -639,6 +639,10 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 44. 截图窗口去掉 body 遮罩 | ✅ | `d292e9e` | 截图遮罩由 React 组件画（选区外），body 背景盖住选区 |
 | 45. 背景色 URL hex 注入 | ✅ | `2f13ef0` | Rust 拼裸 hex 到 URL，index.html 首帧同步设色（零 CSS 依赖） |
 | 46. 脏检查 + 透明窗口兜底移除 | ✅ | `4656d22` | applyThemeById 脏检查避免重复 recalc；移除 localStorage bg 兜底 |
+| 47. 最大化 build 前设置 | ✅ | `f39e6c0` | builder.maximized(true) 替代 win.maximize()，消除 PPT slide |
+| 48. 最大化时跳过 inner_size | ✅ | `bc1470e` | 审查建议的清理，避免冗余布局计算 |
+| 49. 坐标偏差 outer/inner 统一 | ✅ | `452c934` | inner_position + inner_size 对称保存恢复 |
+| 50. 多显示器位置越界检测 | ✅ | `01d6087` | 副屏关闭后坐标失效，恢复前检测 fallback 居中 |
 
 ### 与原 plan 的偏差
 
