@@ -2,7 +2,10 @@ import { useState, useRef, useEffect, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
 import { listen } from "@tauri-apps/api/event";
-import { type Annotation, type Tool, PRESET_COLORS, drawAnnotation, drawAnnotationScaled, drawMosaic, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
+import { type Annotation, type Tool, drawAnnotation, drawAnnotationScaled, drawMosaic, annBounds, hitTestAnnotationPrecise } from "@/lib/annotation";
+import { ToolButton } from "./ToolButton";
+import { ToolPropsPopover } from "./ToolPropsPopover";
+import { ScrollPreview } from "./ScrollPreview";
 
 interface Selection {
   x: number; y: number; w: number; h: number;
@@ -935,79 +938,7 @@ export default function Screenshot() {
 
       {/* 滚动预览浮层 */}
       {mode === "scrolling" && scrollPreview && sel && (
-        <div style={{
-          position: "fixed",
-          left: sel.x + sel.w + 12 + 200 <= window.innerWidth
-            ? sel.x + sel.w + 12
-            : sel.x - 12 - 200,
-          bottom: window.innerHeight - sel.y - sel.h,
-          width: 200,
-          maxHeight: "80vh",
-          background: "rgba(15,15,17,0.92)",
-          backdropFilter: "blur(16px)",
-          WebkitBackdropFilter: "blur(16px)",
-          borderRadius: 10,
-          padding: 10,
-          display: "flex",
-          flexDirection: "column",
-          gap: 8,
-          zIndex: 102,
-          overflow: "hidden",
-          boxShadow: "0 8px 32px rgba(0,0,0,0.5), 0 0 0 1px rgba(255,255,255,0.06)",
-        }}>
-          {/* 状态条：脉冲录制点 + 等宽高度计数器 */}
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "0 2px" }}>
-            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-              <div style={{
-                width: 7, height: 7, borderRadius: "50%", background: "#f59e0b",
-                boxShadow: "0 0 6px #f59e0b",
-                animation: "pulse 1.5s ease-in-out infinite",
-              }} />
-              <span style={{ fontSize: 10, color: "#f59e0b", fontWeight: 600, letterSpacing: 0.3 }}>REC</span>
-            </div>
-            <span style={{ fontSize: 11, color: "rgba(255,255,255,0.55)", fontFamily: "SF Mono, Menlo, monospace", fontVariantNumeric: "tabular-nums" }}>
-              {scrollHeight}px
-            </span>
-          </div>
-          {/* 预览图 */}
-          <div style={{ flex: 1, overflow: "hidden", borderRadius: 6, display: "flex", flexDirection: "column", justifyContent: "flex-end", background: "rgba(0,0,0,0.3)" }}>
-            <img src={`data:image/png;base64,${scrollPreview}`} alt="preview" style={{ width: "100%", display: "block" }} />
-          </div>
-          {/* 按钮区：保存 复制 取消 */}
-          <div style={{ display: "flex", gap: 6, height: 32 }}>
-            <button onClick={() => invoke("stop_scroll_recording_with_mode", { mode: "save" }).catch(() => {})} style={{
-              flex: 1, borderRadius: 6, border: "none",
-              background: "#3b82f6", color: "#fff",
-              fontSize: 12, fontWeight: 600, cursor: "pointer",
-              transition: "background 0.15s",
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.background = "#2563eb"}
-            onMouseLeave={(e) => e.currentTarget.style.background = "#3b82f6"}>
-              保存
-            </button>
-            <button onClick={() => invoke("stop_scroll_recording_with_mode", { mode: "copy" }).catch(() => {})} style={{
-              flex: 1, borderRadius: 6, border: "none",
-              background: "#22c55e", color: "#fff",
-              fontSize: 12, fontWeight: 600, cursor: "pointer",
-              transition: "background 0.15s",
-            }}
-            onMouseEnter={(e) => e.currentTarget.style.background = "#16a34a"}
-            onMouseLeave={(e) => e.currentTarget.style.background = "#22c55e"}>
-              复制
-            </button>
-            <button onClick={() => invoke("stop_scroll_recording_with_mode", { mode: "cancel" }).catch(() => {})} style={{
-              flex: 1, borderRadius: 6,
-              border: "1px solid rgba(255,255,255,0.15)",
-              background: "transparent", color: "rgba(255,255,255,0.5)",
-              fontSize: 12, cursor: "pointer",
-              transition: "all 0.15s",
-            }}
-            onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.3)"; e.currentTarget.style.color = "rgba(255,255,255,0.8)"; }}
-            onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; e.currentTarget.style.color = "rgba(255,255,255,0.5)"; }}>
-              取消
-            </button>
-          </div>
-        </div>
+        <ScrollPreview sel={sel} scrollPreview={scrollPreview} scrollHeight={scrollHeight} />
       )}
 
       {/* OCR 全局互斥提示：他处正在 OCR → 屏幕中央短暂提示稍后重试 */}
@@ -1026,145 +957,4 @@ export default function Screenshot() {
   );
 }
 
-function ToolButton({ active, onClick, label, icon }: { active?: boolean; onClick: (e: React.MouseEvent<HTMLButtonElement>) => void; label: string; icon: React.ReactNode }) {
-  return (
-    <button
-      onClick={onClick}
-      title={label}
-      style={{
-        width: 32, height: 32,
-        display: "flex", alignItems: "center", justifyContent: "center",
-        borderRadius: 6,
-        border: "none",
-        background: active ? "#3b82f6" : "transparent",
-        color: active ? "#fff" : "#333",
-        cursor: "pointer",
-        transition: "background 0.15s",
-      }}
-    >
-      {icon}
-    </button>
-  );
-}
 
-function ToolPropsPopover({
-  x, y, color, width, fontSize, circleSize, isText, isNumber, isShape, filled, onColorChange, onWidthChange, onFontSizeChange, onCircleSizeChange, onFilledChange,
-}: {
-  x: number; y: number;
-  color: string; width: number; fontSize: number; circleSize: number; isText: boolean; isNumber: boolean; isShape: boolean; filled: boolean;
-  onColorChange: (c: string) => void;
-  onWidthChange: (w: number) => void;
-  onFontSizeChange: (s: number) => void;
-  onCircleSizeChange: (s: number) => void;
-  onFilledChange: (f: boolean) => void;
-}) {
-  const sizeValue = isText ? fontSize : isNumber ? circleSize : width;
-  const setSize = isText ? onFontSizeChange : isNumber ? onCircleSizeChange : onWidthChange;
-  const min = isText ? 10 : isNumber ? 16 : 1;
-  const max = isText ? 48 : isNumber ? 60 : 10;
-  const label = isText ? "字号" : isNumber ? "圆圈" : "粗细";
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        left: x,
-        top: y,
-        transform: "translateX(-50%)",
-        padding: "10px 12px",
-        background: "#fff",
-        borderRadius: 10,
-        boxShadow: "0 8px 24px -4px rgba(0,0,0,0.2), 0 2px 8px -2px rgba(0,0,0,0.1)",
-        zIndex: 101,
-        display: "flex",
-        flexDirection: "column",
-        gap: 10,
-        width: 240,
-      }}
-    >
-      {/* 第一行：粗细滑轨 + 当前色（最右） */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        <span style={{ fontSize: 10, color: "#999", width: 20, fontWeight: 500, flexShrink: 0 }}>{label}</span>
-        <input
-          type="range"
-          min={min}
-          max={max}
-          value={sizeValue}
-          onChange={(e) => setSize(Number(e.target.value))}
-          style={{ flex: 1, height: 4, borderRadius: 2, cursor: "pointer", accentColor: color }}
-        />
-        <span style={{ fontSize: 10, color: "#666", fontVariantNumeric: "tabular-nums", width: 18, textAlign: "center", fontWeight: 600 }}>{sizeValue}</span>
-        {/* 当前色 — 带粗白边 + 阴影，和下方预设色区分 */}
-        <div style={{
-          width: 20, height: 20, borderRadius: "50%",
-          background: color,
-          border: "3px solid #fff",
-          boxShadow: "0 0 0 1.5px rgba(0,0,0,0.2), 0 1px 3px rgba(0,0,0,0.15)",
-          flexShrink: 0,
-        }} />
-      </div>
-
-      {/* 分隔线 */}
-      <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
-
-      {/* 第二行：预设色 + 调色板 */}
-      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-        {PRESET_COLORS.map((c) => (
-          <button
-            key={c}
-            onClick={() => onColorChange(c)}
-            style={{
-              width: 18, height: 18, borderRadius: 5,
-              background: c,
-              border: c === "#ffffff" ? "1px solid #e0e0e0" : "none",
-              cursor: "pointer",
-              padding: 0,
-              opacity: color.toLowerCase() === c.toLowerCase() ? 1 : 0.45,
-              transform: color.toLowerCase() === c.toLowerCase() ? "scale(1.1)" : "scale(1)",
-              transition: "opacity 0.15s, transform 0.15s",
-            }}
-          />
-        ))}
-        {/* 调色板 */}
-        <label style={{ cursor: "pointer", display: "flex", alignItems: "center", flexShrink: 0, marginLeft: 2 }}>
-          <div style={{
-            width: 18, height: 18, borderRadius: 5,
-            background: "conic-gradient(from 0deg, #ff0000, #ffff00, #00ff00, #00ffff, #0000ff, #ff00ff, #ff0000)",
-            border: "1px solid rgba(0,0,0,0.1)",
-          }} />
-          <input
-            type="color"
-            value={color}
-            onChange={(e) => onColorChange(e.target.value)}
-            style={{ width: 0, height: 0, opacity: 0, position: "absolute" }}
-          />
-        </label>
-      </div>
-
-      {/* 行 3：实心开关（仅 rect/oval） */}
-      {isShape && (
-        <>
-          <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 10, color: "#999", fontWeight: 500 }}>实心填充</span>
-            <button
-              type="button"
-              onClick={() => onFilledChange(!filled)}
-              style={{
-                width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
-                background: filled ? "#3b82f6" : "rgba(0,0,0,0.15)",
-                position: "relative", transition: "background 0.2s",
-              }}
-            >
-              <span style={{
-                position: "absolute", top: 2, left: filled ? 16 : 2,
-                width: 14, height: 14, borderRadius: "50%", background: "#fff",
-                transition: "left 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
-              }} />
-            </button>
-          </div>
-        </>
-      )}
-    </div>
-  );
-}

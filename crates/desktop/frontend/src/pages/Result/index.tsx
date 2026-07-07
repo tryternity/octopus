@@ -5,7 +5,9 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { SvgIcon, type IconName } from "@/components/SvgIcon";
-import { codePointOffsetTo, codePointOffsetBefore, measureCaretPx, placeCaretAtCodePoint } from "./caret";
+import { codePointOffsetTo, codePointOffsetBefore, placeCaretAtCodePoint } from "./caret";
+import { parseShortcut, matchShortcut } from "./shortcut";
+import { CaretBlink } from "./CaretBlink";
 
 const DIVERTED_DELAY_MS = 300;
 
@@ -783,87 +785,3 @@ function Result() {
 }
 
 export default Result;
-
-// ── Shortcut parsing ──
-function parseShortcut(s: string) {
-  const parts = s.toLowerCase().split("+").map((p) => p.trim());
-  const key = parts.pop();
-  const cmdOrCtrl = parts.includes("cmdorctrl");
-  return {
-    key,
-    cmdOrCtrl,
-    meta: parts.includes("cmd") || parts.includes("super") || parts.includes("meta"),
-    ctrl: parts.includes("control") || parts.includes("ctrl"),
-    alt: parts.includes("alt") || parts.includes("option"),
-    shift: parts.includes("shift"),
-  };
-}
-
-function matchShortcut(e: KeyboardEvent, sc: ReturnType<typeof parseShortcut>) {
-  if (!sc || !sc.key || e.key.toLowerCase() !== sc.key) return false;
-  if (sc.cmdOrCtrl) {
-    if (!(e.metaKey || e.ctrlKey)) return false;
-  } else {
-    if (e.metaKey !== sc.meta) return false;
-    if (e.ctrlKey !== sc.ctrl) return false;
-  }
-  return e.altKey === sc.alt && e.shiftKey === sc.shift;
-}
-
-// ASR 光标 helpers（codePointOffsetTo/Before、measureCaretPx）已抽到 ./caret.ts。
-
-// 闪烁光标：绝对定位到 pos 处的像素位置（相对文本容器）。
-// 依赖 text/pos 变化重新量像素；container 经 textRef.current 透传。
-// containerRef 而非 container：editing 切换致 textRef 重挂载（key edit→view）时，render 阶段
-// 求值的 textRef.current 是**即将卸载的旧 div**（ref 在 commit 后才更新），传其 .current 会测到
-// detached 旧 div → getBoundingClientRect 返回 (0,0) → 光标错落首位且不再重测。改传 RefObject，
-// effect（commit 后执行）内读 .current 拿到已挂载的新 view div，量到真实末尾。
-function CaretBlink({
-  containerRef,
-  text,
-  pos,
-}: {
-  containerRef: React.RefObject<HTMLDivElement | null>;
-  text: string;
-  pos: number | null;
-}) {
-  const [px, setPx] = useState<{ left: number; top: number; height: number } | null>(null);
-  // text/pos 变（流式追加 / 中插）量像素；用户滚动也须重测——px.top = rect.top-cRect.top 是视口相对
-  // 值（随 scrollTop 变），不重测会停在旧位（流式末尾在容器底，用户上滚后末尾滚到视口下方，但光标仍
-  // 停在容器底闪烁误导）。rAF 节流滚动高频，合并每帧一次 getBoundingClientRect。
-  useEffect(() => {
-    const el = containerRef.current;
-    const measure = () => setPx(measureCaretPx(el, pos));
-    // 初始测量推到下一帧：renderResultNow 同帧已 flushSync 写 textContent + 同步 re-render（DOM 写），
-    // 若同帧立即 measure() 会同步 getBoundingClientRect → force reflow（layout thrashing；高频 ASR
-    // 10-20Hz 下每帧叠加）。rAF 让 DOM 写先落地、布局稳定后再读——代价仅 1 帧（~16ms）光标滞后，肉眼
-    // 无感，且天然合并到帧边界。滚动同样走 rAF 节流（见下）。
-    let raf = requestAnimationFrame(measure);
-    if (!el) {
-      cancelAnimationFrame(raf);
-      return;
-    }
-    let scrollRaf = 0;
-    const onScroll = () => {
-      if (scrollRaf) return;
-      scrollRaf = requestAnimationFrame(() => { scrollRaf = 0; measure(); });
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-    return () => {
-      cancelAnimationFrame(raf);
-      el.removeEventListener("scroll", onScroll);
-      if (scrollRaf) cancelAnimationFrame(scrollRaf);
-    };
-  }, [containerRef, text, pos]);
-  if (!px) return null;
-  // 末尾滚出容器可见区（用户上滚看历史）→ 隐藏光标。stickToBottom 时 px.top≈clientH-行高 < clientH
-  // （显示）；上滚后末尾滚到视口下方 px.top>clientH → 隐藏。
-  const el = containerRef.current;
-  if (el && (px.top < -2 || px.top > el.clientHeight + 2)) return null;
-  return (
-    <span
-      className="asr-caret"
-      style={{ left: px.left, top: px.top, height: px.height }}
-    />
-  );
-}

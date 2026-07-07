@@ -12,25 +12,7 @@ import {
 import Toolbar from "./Toolbar";
 import { AnnotationSvg } from "./AnnotationSvg";
 import { openCompactEditorTab } from "@/lib/compactEditor";
-
-const MIN_ZOOM = 0.1;
-const MAX_ZOOM = 8;
-const ZOOM_STEP = 1.25;
-
-// fit-to-window：图片完整显示在窗口内，最大不超过 1:1
-const FIT_PADDING = 16;
-const TOOLBAR_H = 56; // pt-14 顶部 padding（工具栏空间）
-// fit-to-window：完整显示在窗口内（宽高都不超出），不放大
-const computeFitZoom = (w: number, h: number): number => {
-  const containerW = window.innerWidth - FIT_PADDING;
-  const containerH = window.innerHeight - FIT_PADDING;
-  return Math.min(1, containerW / w, containerH / h);
-};
-// fit-to-width：图片宽度 = 窗口宽度（高度可超出 → 垂直滚动）
-const computeFitToWidthZoom = (w: number): number => {
-  const containerW = window.innerWidth - FIT_PADDING;
-  return Math.max(MIN_ZOOM, Math.min(MAX_ZOOM, containerW / w));
-};
+import { MIN_ZOOM, MAX_ZOOM, ZOOM_STEP, TOOLBAR_H, FIT_PADDING, computeFitZoom, computeFitToWidthZoom } from "./zoom";
 
 /**
  * 剪贴板图片项的预览窗口（轻工具栏形态）。
