@@ -5,14 +5,20 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>octopus</title>
     <script>
-      // 阻断式主题恢复——在 body 解析前执行，消除主题闪烁。
-      // 注意：__TAURI_INTERNALS__ 此时可能尚未注入，窗口 label 判断
-      // 和背景色设置放到 main.tsx（那时桥接层已就绪）。
+      // 阻断式主题恢复——在 body 解析前执行，消除白屏 + 主题闪烁。
+      // 无条件设 html 背景色：透明窗口（result/clipboard/screenshot）的
+      // Tauri transparent:true 会覆盖 html 背景色，不受影响；
+      // 非透明窗口（settings/compact_editor）立即有底色，消除白屏。
       try {
         var themeId = localStorage.getItem("octopus-theme-id");
         if (themeId) {
           document.documentElement.setAttribute("data-theme", themeId);
-          // 自定义主题：从 localStorage 恢复 CSS 规则（消除 IPC 延迟）
+        }
+        // data-theme 设好后 [data-theme="xxx"] CSS 规则立即生效，
+        // var(--color-background) 有值——无条件设背景色。
+        document.documentElement.style.backgroundColor = "var(--color-background)";
+        // 自定义主题：从 localStorage 恢复 CSS 规则（消除 IPC 延迟）
+        if (themeId) {
           var builtin = ["light", "glass-dark", "nord"];
           if (builtin.indexOf(themeId) === -1) {
             var css = localStorage.getItem("octopus-custom-theme-css");
