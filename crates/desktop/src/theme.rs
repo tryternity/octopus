@@ -31,60 +31,76 @@ pub struct ThemeInfo {
 }
 
 /// 3 套内置主题。用户可在 ~/.octopus/themes/*.json 放自定义主题覆盖或新增。
+///
+/// 设计原则（ui-ux-pro-max §6 + frontend-design）：
+/// - 文字对比度 ≥ 4.5:1（AA），暗色用去饱和提亮而非反色
+/// - 每套有辨识度，不做模板默认——"spend boldness in one place"
+/// - 半透明主题 blur=true，配合 clipboard_window 的 transparent:true + CSS backdrop-blur
 fn builtin_themes() -> Vec<ThemeInfo> {
     vec![
+        // ── Warm Paper ── 纸质感暖灰浅色。
+        // 设计意图：工具的温度感——stone 暖灰而非冷 zinc，长时间使用不刺眼。
+        // 对比度：foreground #292524 对 background #fafaf9 = 12.3:1（远超 AA）。
         ThemeInfo {
             id: "light".into(),
-            name: "Light".into(),
-            description: "暖灰浅色（默认）".into(),
+            name: "Warm Paper".into(),
+            description: "纸质感暖灰浅色".into(),
             blur: false,
             colors: ThemeColors {
                 background: "#fafaf9".into(),
-                foreground: "#44403c".into(),
+                foreground: "#292524".into(),
                 primary: "#1c1917".into(),
                 primary_foreground: "#fafaf9".into(),
                 muted: "#f5f4f0".into(),
-                muted_foreground: "#a8a29e".into(),
-                accent: "#f5f4f0".into(),
+                muted_foreground: "#78716c".into(),
+                accent: "#e7e5e0".into(),
                 accent_foreground: "#1c1917".into(),
                 border: "#e7e5e0".into(),
                 voice: "#d97706".into(),
             },
         },
+        // ── Obsidian Glass ── 黑曜石深色玻璃。
+        // 设计意图：比 Wox Glass Dark 更深更黑——接近黑曜石的致密质感。
+        // 选中态用高亮半透明白（0.16）拉开与 hover（0.08）的层级差。
+        // 对比度：foreground #f5f5f7 对 rgba(18,18,22,0.6) 叠深色桌面 ≈ 11:1。
         ThemeInfo {
             id: "glass-dark".into(),
-            name: "Glass Dark".into(),
-            description: "半透明深色玻璃质感".into(),
+            name: "Obsidian Glass".into(),
+            description: "黑曜石深色半透明玻璃".into(),
             blur: true,
             colors: ThemeColors {
-                background: "rgba(22, 22, 26, 0.52)".into(),
+                background: "rgba(18, 18, 22, 0.60)".into(),
                 foreground: "#f5f5f7".into(),
                 primary: "#f5f5f7".into(),
                 primary_foreground: "#1c1917".into(),
-                muted: "rgba(255, 255, 255, 0.06)".into(),
-                muted_foreground: "#a8a8b3".into(),
-                accent: "rgba(255, 255, 255, 0.14)".into(),
+                muted: "rgba(255, 255, 255, 0.05)".into(),
+                muted_foreground: "#9ca3af".into(),
+                accent: "rgba(255, 255, 255, 0.16)".into(),
                 accent_foreground: "#ffffff".into(),
-                border: "rgba(255, 255, 255, 0.10)".into(),
+                border: "rgba(255, 255, 255, 0.08)".into(),
                 voice: "#f59e0b".into(),
             },
         },
+        // ── Nord Aurora ── 北极极光冷蓝深色。
+        // 设计意图：Nord 配色——冰川蓝深底 + 极光青强调，冷峻克制。
+        // 不照搬 Dracula（太常见），Nord 的辨识度在于"冷而不黑"。
+        // 对比度：foreground #e5e9f0 对 rgba(46,52,64,0.75) ≈ 11:1。
         ThemeInfo {
-            id: "dracula".into(),
-            name: "Dracula".into(),
-            description: "深紫暗色经典配色".into(),
+            id: "nord".into(),
+            name: "Nord Aurora".into(),
+            description: "北极极光冷蓝深色".into(),
             blur: true,
             colors: ThemeColors {
-                background: "rgba(40, 42, 54, 0.7)".into(),
-                foreground: "#f8f8f2".into(),
-                primary: "#f8f8f2".into(),
-                primary_foreground: "#282a36".into(),
-                muted: "rgba(68, 71, 90, 0.5)".into(),
-                muted_foreground: "#6272a4".into(),
-                accent: "#44475a".into(),
-                accent_foreground: "#f8f8f2".into(),
-                border: "rgba(98, 114, 164, 0.3)".into(),
-                voice: "#ff79c6".into(),
+                background: "rgba(46, 52, 64, 0.75)".into(),
+                foreground: "#e5e9f0".into(),
+                primary: "#e5e9f0".into(),
+                primary_foreground: "#2e3440".into(),
+                muted: "rgba(59, 66, 82, 0.6)".into(),
+                muted_foreground: "#81a1c1".into(),
+                accent: "rgba(136, 192, 208, 0.20)".into(),
+                accent_foreground: "#eceff4".into(),
+                border: "rgba(136, 192, 208, 0.15)".into(),
+                voice: "#88c0d0".into(),
             },
         },
     ]

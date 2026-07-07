@@ -187,7 +187,7 @@ pub struct AppConfig {
     #[serde(default = "default_clipboard_tab_modifier")]
     pub clipboard_tab_modifier: String,
 
-    /// UI 主题 id（light / glass-dark / dracula / 用户自定义）。默认 light。
+    /// UI 主题 id（light / glass-dark / nord / 用户自定义）。默认 light。
     #[serde(default = "default_clipboard_theme")]
     pub clipboard_theme: String,
 
