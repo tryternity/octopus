@@ -85,7 +85,7 @@ fn builtin_themes() -> Vec<ThemeInfo> {
             description: "黑曜石深色".into(),
             blur: false,
             colors: ThemeColors {
-                background: "rgba(18, 18, 22, 0.96)".into(),
+                background: "#121216".into(),
                 foreground: "#f5f5f7".into(),
                 primary: "#f5f5f7".into(),
                 primary_foreground: "#1c1917".into(),
@@ -109,7 +109,7 @@ fn builtin_themes() -> Vec<ThemeInfo> {
             description: "北极极光冷蓝深色".into(),
             blur: false,
             colors: ThemeColors {
-                background: "rgba(46, 52, 64, 0.96)".into(),
+                background: "#2e3440".into(),
                 foreground: "#e5e9f0".into(),
                 primary: "#e5e9f0".into(),
                 primary_foreground: "#2e3440".into(),
