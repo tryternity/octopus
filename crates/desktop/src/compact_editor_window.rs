@@ -47,20 +47,24 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
         let maximized = win.is_maximized().unwrap_or(false);
         let scale = win.scale_factor().unwrap_or(1.0);
         let state = if maximized {
-            // 最大化时 inner_position() 返回的是最大化后位置（可能跨屏到主屏原点），
-            // 不可靠。读上次非最大化时保存的位置——它准确记录了用户最后把窗口
-            // 放在哪个屏幕。key: compact_editor_last_normal_pos。
-            let last_normal = octopus_infra::db::load_config_key("compact_editor_last_normal_pos")
-                .ok().flatten()
-                .and_then(|s| {
-                    let parts: Vec<&str> = s.split(',').collect();
-                    if parts.len() == 4 {
-                        Some((parts[0].parse().unwrap_or(0.0), parts[1].parse().unwrap_or(0.0),
-                              parts[2].parse().unwrap_or(WIDTH), parts[3].parse().unwrap_or(HEIGHT)))
-                    } else { None }
-                });
-            log::info!("[compact-editor] last_normal_pos from DB: {:?}", last_normal);
-            let (lx, ly, lw, lh) = last_normal.unwrap_or((0.0, 0.0, WIDTH, HEIGHT));
+            // 最大化时先 un-maximize 拿到真实位置（窗口在哪个屏幕），再 re-maximize。
+            // inner_position() 在最大化时返回全屏位置（不可靠），un-maximize 后返回真实位置。
+            let _ = win.unmaximize();
+            let real_pos = win.inner_position().ok();
+            let real_size = win.inner_size().ok();
+            // 立即 re-maximize（用户下次打开应还是最大化）
+            let _ = win.maximize();
+            let scale = win.scale_factor().unwrap_or(1.0);
+            let (lx, ly, lw, lh) = match (real_pos, real_size) {
+                (Some(p), Some(s)) => (p.x as f64 / scale, p.y as f64 / scale, s.width as f64 / scale, s.height as f64 / scale),
+                _ => (0.0, 0.0, WIDTH, HEIGHT),
+            };
+            // 保存真实非最大化位置——恢复时据此找到对应显示器
+            let _ = octopus_infra::db::save_config_key(
+                "compact_editor_last_normal_pos",
+                &format!("{:.0},{:.0},{:.0},{:.0}", lx, ly, lw, lh),
+            );
+            log::info!("[compact-editor] maximized save: un-maximize pos={:?} size={:?} → logical {},{} {}x{}", real_pos, real_size, lx, ly, lw, lh);
             WindowState { width: lw, height: lh, x: lx, y: ly, maximized: true }
         } else if let (Ok(pos), Ok(size)) = (win.inner_position(), win.inner_size()) {
             // inner_position + inner_size 对称保存恢复（都用内容区坐标，
@@ -150,10 +154,11 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
             // 检测保存的位置是否在可见显示器范围内——多显示器拔接后坐标可能失效。
             let monitors = app_handle.available_monitors().unwrap_or_default();
             let visible = monitors.iter().any(|m| {
-                let mx = m.position().x as f64;
-                let my = m.position().y as f64;
-                let mw = m.size().width as f64 / m.scale_factor();
-                let mh = m.size().height as f64 / m.scale_factor();
+                let ms = m.scale_factor();
+                let mx = m.position().x as f64 / ms;
+                let my = m.position().y as f64 / ms;
+                let mw = m.size().width as f64 / ms;
+                let mh = m.size().height as f64 / ms;
                 state.x >= mx - 50.0 && state.x <= mx + mw + 50.0
                     && state.y >= my - 50.0 && state.y <= my + mh + 50.0
             });
