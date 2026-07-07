@@ -28,27 +28,42 @@ export interface ThemeInfo {
 }
 
 const CACHE_KEY = "octopus-theme-css-vars";
+const STYLE_ID = "octopus-theme-vars";
 
 /**
- * 应用主题：将主题颜色写入 :root 的 CSS 变量（--color-xxx），
+ * 应用主题：将主题颜色写入 <style> 标签的 :root 规则（非 inline style）。
  * Tailwind v4 的 bg-background / text-foreground / border-border 等类自动跟随。
  * 同时把完整 CSS 变量集缓存到 localStorage，下次窗口启动时同步恢复（零 IPC 延迟）。
+ *
+ * 为何用 <style> 标签而非 document.documentElement.style（inline style）：
+ * 浏览器对 inline-style 自定义属性无法像 stylesheet 规则那样缓存优化，
+ * 每次 style recalculation 都要重新 resolve var()，频繁滚动/拖动时掉帧。
  */
 export function applyTheme(theme: ThemeInfo) {
-  const root = document.documentElement;
-  const vars: Record<string, string> = {};
+  const rules: string[] = [];
+  const cache: Record<string, string> = {};
   (Object.entries(theme.colors) as [string, string][]).forEach(([key, value]) => {
-    if (key === "icon-filter") return; // 不是颜色，单独处理
+    if (key === "icon-filter") return;
     const cssVar = `--color-${key}`;
-    root.style.setProperty(cssVar, value);
-    vars[cssVar] = value;
+    rules.push(`${cssVar}: ${value};`);
+    cache[cssVar] = value;
   });
-  // icon-filter 不是颜色（CSS filter 函数），设为顶层 --icon-filter 变量。
-  root.style.setProperty("--icon-filter", theme.colors["icon-filter"] ?? "none");
-  vars["--icon-filter"] = theme.colors["icon-filter"] ?? "none";
+  // icon-filter 不是颜色（CSS filter 函数），单独处理。
+  rules.push(`--icon-filter: ${theme.colors["icon-filter"] ?? "none"};`);
+  cache["--icon-filter"] = theme.colors["icon-filter"] ?? "none";
+
+  // 注入 <style> 标签（替换已存在的）
+  let styleEl = document.getElementById(STYLE_ID) as HTMLStyleElement | null;
+  if (!styleEl) {
+    styleEl = document.createElement("style");
+    styleEl.id = STYLE_ID;
+    document.head.appendChild(styleEl);
+  }
+  styleEl.textContent = `:root {\n  ${rules.join("\n  ")}\n}`;
+
   // 缓存快照，供下次窗口启动时同步恢复
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(vars));
+    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
   } catch {}
 }
 
@@ -61,10 +76,14 @@ export function restoreCachedTheme() {
     const cached = localStorage.getItem(CACHE_KEY);
     if (!cached) return;
     const vars = JSON.parse(cached) as Record<string, string>;
-    const root = document.documentElement;
+    const rules: string[] = [];
     for (const [key, value] of Object.entries(vars)) {
-      root.style.setProperty(key, value);
+      rules.push(`${key}: ${value};`);
     }
+    const styleEl = document.createElement("style");
+    styleEl.id = STYLE_ID;
+    styleEl.textContent = `:root {\n  ${rules.join("\n  ")}\n}`;
+    document.head.appendChild(styleEl);
   } catch {}
 }
 
