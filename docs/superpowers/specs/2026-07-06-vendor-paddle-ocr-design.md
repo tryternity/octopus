@@ -149,3 +149,22 @@ octopus-paddle-ocr = { path = "../paddle-ocr" }
    - 算法名函数（`sklansky_like_opencv`、`convex_hull_like_opencv`、`unclip_polygon_like_opencv_db`）是纯 Rust 实现，正确保留。
    - Cargo.toml 删除 `[features] opencv-backend = []`。
 
+---
+
+## 8. 后续功能审计修复（2026-07-07）
+
+vendor 合入 main 后对 `crates/paddle-ocr` 核心计算逻辑做的独立功能审计，固化为设计的 3 项决策（纯 bug 修复如 `word_boxes` 对齐、`get_word_info` debug_assert 见 commit，不入此节）：
+
+1. **`sort_boxes_like_python` 保真移植——j+1 相邻插入排序**
+   - 复刻 PaddleOCR `tools/infer/predict_system.py` 的 `sorted_boxes`：先按 (y,x) 预排，再对每个 i+1 从 i 往前扫**相邻对 (j, j+1)** 比较，Y 差 ≤ 阈值且 `order[j+1].x < order[j].x` 则 `order.swap(j, j+1)`，否则 `break`（前序已有序，早停）。
+   - **陷阱**：曾误移植为固定 `i+1` 目标（`order.swap(j, i+1)`）——目标框无法跨越多位冒泡，同行 N≥3 逆序框排不完全。验证保真移植**必须直接引用上游官方源码逐字比对**，不可用自身移植实现反推（否则 bug 自我证明正确）。
+
+2. **长图切分按绝对 y 坐标去重（非文本去重）**
+   - `recognize_long_image_with_blocks` 相邻 chunk 有 `CHUNK_OVERLAP=200` 重叠区，重叠行被两块都识别。
+   - 用「已收录行最大 y 底部 `covered_until_y`」做坐标去重：下块中 y 中心 ≤ 该值的行视为重叠区已收录，`drop_overlapped_blocks` 丢弃。
+   - **决策理由**：此前按文本逐字相等去重，OCR 轻微波动（`hello` vs `hello!`）即致文本不等、去重失败（残留重复行），也易误删天然重复行。坐标去重对 OCR 波动鲁棒。
+
+3. **行优先假设处用 `as_slice` 而非 `as_slice_memory_order`**
+   - `argmax_with_prob`（decode.rs）按 `r*cols` 行优先偏移取行、`masked_mean_in_roi_contiguous`（box_score.rs）按 `(ymin+y)*ncols` 行优先 stride 访问切片——两处都用 `as_slice()`（仅 C-contiguous 返回 Some），而非 `as_slice_memory_order()`（C/F-contiguous 都返回 Some）。
+   - **理由**：若切片 F-contiguous（列优先内存），`as_slice_memory_order` 返回 Some 但切片为列优先，行优先偏移会跨行读错。`as_slice` 在 F-contiguous 时返回 None，安全降级到布局无关的 fallback（`axis_iter` / 索引访问）。C-contiguous 常态下两者等价。`threshold.rs` 逐元素阈值化布局无关，仍用 `as_slice_memory_order`（正当的「连续则 SIMD」优化）。
+

@@ -90,3 +90,15 @@
 - [x] `pipeline/rapid_ocr.rs`：移除 `preprocessing_backend` 选择逻辑，`prepare_image` 移除 `use_det` 参数
 - [x] `lib.rs`：移除 `VisionBackend` re-export
 - **验证**：`cargo build -p octopus-paddle-ocr`（零 warning）+ `cargo test -p octopus-paddle-ocr`（32 passed）+ `cargo build -p octopus-desktop --features embedded`（零 warning）
+
+## Task 11：后续功能审计修复（2026-07-07）
+
+vendor 合入 main 后对核心计算逻辑的独立审计修复。
+
+- [x] `det/postprocess/filter.rs`：`sort_boxes_like_python` 由固定 `i+1` 改 **j+1 相邻交换**（复刻 PaddleOCR `predict_system.py` 的 `sorted_boxes`），同行 N≥3 逆序框排序完全（`d5c07a5`）
+- [x] `det/postprocess/tests.rs`：两个回归测试断言对齐官方 j+1 输出（cross_row `[A,B,C]` / same_line `[C,B,A]`），改回 i+1 会失败（`d5c07a5`）
+- [x] `ocr/src/engine.rs`：长图切分去重由「文本逐字相等」改为**坐标去重** `drop_overlapped_blocks(covered_until_y)`（`510d475`）
+- [x] `pipeline/rapid_ocr.rs`：`filter_by_text_score_for_full` 保留行恒 push `word_line`，维护 word_boxes 与行 1:1 对齐（`510d475`）
+- [x] `rec/decode.rs`：`get_word_info` 加 `debug_assert_eq!(chars.len(), valid_col.len())` 守护字符级 CTC 字典假设（`510d475`）
+- [x] `rec/decode.rs` + `det/postprocess/box_score.rs`：行优先假设处 `as_slice_memory_order` → `as_slice`，F-contiguous 安全降级（`5cd793e`）
+- **验证**：`cargo test -p octopus-paddle-ocr`（45 passed）
