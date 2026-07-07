@@ -75,17 +75,17 @@ Wox（`clipboard.go:127` trigger keyword `cb`）和 Raycast 都是**全键盘驱
 
 ### 2.5 过滤 tab 顺序与序号映射
 
-`FilterTabs.tsx:5` 的 `TABS` 数组顺序即 `Cmd+N` 序号映射：
+`FilterTabs.tsx:5` 的 `TABS` 数组顺序即 `Cmd+N` 序号映射（收藏提到第 2 位——除"全部"外最高频操作）：
 
 | 序号 | value | label |
 |------|-------|-------|
 | 1 | all | 全部 |
-| 2 | asr | 语音 |
-| 3 | text | 文本 |
-| 4 | ocr | OCR |
-| 5 | image | 图片 |
-| 6 | file | 文件 |
-| 7 | favorite | 收藏 |
+| 2 | favorite | 收藏 |
+| 3 | asr | 语音 |
+| 4 | text | 文本 |
+| 5 | ocr | OCR |
+| 6 | image | 图片 |
+| 7 | file | 文件 |
 
 `←/→` 和 `Tab/Shift+Tab` 按此顺序循环移动（末尾右移回首个，首个左移到末尾）。
 
@@ -99,7 +99,7 @@ Wox（`clipboard.go:127` trigger keyword `cb`）和 Raycast 都是**全键盘驱
 |------|------|
 | `pages/Clipboard/index.tsx` | 加全局 keydown 监听；维护 `selectedIndex`（在 items 数组中的索引，非 item.id）；处理 `↑↓Enter Esc Cmd+N`；过滤/搜索变化时重置选中 |
 | `pages/Clipboard/SearchBar.tsx` | 搜索框为空时拦截 `←→` 切 tab、`Tab` 透传；有内容时不拦截 `←→` |
-| `pages/Clipboard/FilterTabs.tsx` | tab 按钮加 `data-tab-index` 便于反射式定位；选中态视觉保持（无功能改动） |
+| `pages/Clipboard/FilterTabs.tsx` | **调整 TABS 数组顺序**：收藏提到第 2 位（全部之后、语音之前）；tab 按钮加 `data-tab-index` 便于反射式定位；选中态视觉保持 |
 | `pages/Clipboard/ClipboardItem.tsx` | 无改动（选中态已由 `isSelected` prop 驱动，`scrollIntoView` 由父组件通过 ref/ID 触发） |
 
 **不改**：
