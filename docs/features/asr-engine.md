@@ -63,13 +63,13 @@
 `VadSegmentedPipeline::run_tick`（`crates/desktop/src/pipeline.rs`）——静音边界切分（主）+ 连续超时强制切断（兜底）。
 
 **双 VAD 实例（检测流 vs 过滤）**：SileroVad 是有状态 LSTM（`compute()` 更新 `h`/`c`，`reset()` 归零）。持两个独立实例：
-- **检测 VAD**（`vad`）：逐 tick 喂入顺序音频、跨 tick 有状态累积，喂 `compute_speech_chunks`
+- **检测 VAD**（`vad`）：逐 tick 喂入顺序音频、跨 tick 有状态累积，**切段后 `reset()`+preroll 归零**（防 LSTM 跨段漂移致真实语音持续判静音 → "几段后不吐字"），喂 `compute_speech_chunks`
 - **过滤 VAD**（`filter_vad`）：仅 `filter_speech_from_buffer` 用，**每次过滤前 `reset()` 归零**（等价每段独立冷启动，但 ONNX Session 全局缓存复用）
 
 | 策略 | 触发条件 | overlap 处理 |
 |------|----------|-------------|
 | 静音切分（主） | 检测到语音后静音 ≥ `segment_silence`（默认 400ms） | **无 overlap**（静音是自然语句边界） |
-| 强制切断（兜底） | 连续语音缓冲达 `SEGMENT_DURATION_S`（20s 常量）仍未静音 | **保留末尾 `SEGMENT_OVERLAP_MS`（200ms）作下一段 overlap** |
+| 强制切断（兜底） | 缓冲达 `SEGMENT_DURATION_S`（20s 常量）；**不门控 `has_speech`**（detect_vad 漂移致 has_speech 卡 false 时强制清空防堆积，由 filter_vad 独立兜底判定） | **保留末尾 `SEGMENT_OVERLAP_MS`（200ms）作下一段 overlap** |
 
 **`filter_speech` 两端 trim**：只 trim 首尾静音、保留中间全部音频（含句内 ~50ms 停顿），不逐帧删除。扫描首个/末个高于阈值的帧，各外扩 `SPEECH_PAD_MS`（120ms，@480 样本/30ms 帧 = 4 帧）作为起止点。
 

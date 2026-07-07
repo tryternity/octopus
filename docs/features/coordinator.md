@@ -86,7 +86,7 @@ mic → SharedAudioState.samples
 
 - 引擎：离线 ONNX 引擎（SenseVoice / Whisper / Qwen3-ASR / FireRed 等），经 `VadSegmentedPipeline`（`pipeline.rs`）
 - Tick：100ms，`start_vad_segmented_tick_thread`
-- 数据流：`run_tick` 内 `audio_buffer.extend` + `compute_speech_chunks(vad)`（检测 VAD 跨 tick 有状态累积）→ 静音 ≥ `segment_silence`（默认 400ms）/ 持续 ≥ `SEGMENT_DURATION_S`（20s）→ `filter_speech_from_buffer`（过滤 VAD 每段 reset）→ `spawn_blocking(engine.transcribe)` → mpsc rx 按 `seq` 有序回填 `completed_results`
+- 数据流：`run_tick` 内 `audio_buffer.extend` + `compute_speech_chunks(vad)`（检测 VAD 跨 tick 有状态累积，**切段后 reset+preroll 归零防漂移**）→ 静音 ≥ `segment_silence`（默认 400ms）/ 缓冲 ≥ `SEGMENT_DURATION_S`（20s，**force_cut 不门控 has_speech**——detect_vad 漂移失灵时强制清空防堆积、由 filter_vad 独立兜底）→ `filter_speech_from_buffer`（过滤 VAD 每段 reset）→ `spawn_blocking(engine.transcribe)` → mpsc rx 按 `seq` 有序回填 `completed_results`
 
 ```
 mic → drain_samples → 16k 降噪样本
@@ -309,7 +309,7 @@ samples: Vec<f32>（16k 单声道，已降噪 或 直通）—— 三种 stage �
 
 2. **降噪 GRU 与 VAD LSTM 状态语义相反**：
    - 降噪 GRU **跨 tick / 跨段连续保持**（`flush=false`，噪声估计是连续物理过程，仅会话 `start()` 才 reset）
-   - 检测 VAD **跨 tick 有状态累积**（看完整流，稳语音/静音边界）
+   - 检测 VAD **跨 tick 有状态累积**（看完整流，稳语音/静音边界），**切段后 `reset()`+preroll 归零**（防 LSTM 跨段漂移致真实语音持续判静音 → "几段后不吐字"）
    - 过滤 VAD **每段 reset**（独立冷启动，等价每段新 VAD 但复用 ONNX Session）
 
 3. **降级不 panic**：`denoise_mode=0` / 后端模型缺失 / 单帧推理失败 → `process_pipeline` 走直通分支（原生→16k），仅 warn 日志，识别继续不阻断录音。
