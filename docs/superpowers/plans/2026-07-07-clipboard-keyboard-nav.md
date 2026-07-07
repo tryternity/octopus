@@ -650,6 +650,10 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 55. maximize()+主屏位置 | ❌→回退 | `6a238d2` | 副屏最大化被挪到主屏 |
 | 56. 大窗体+maximize | ✅ | `9326403` | 接近全屏尺寸创建，maximize 视觉差异小 |
 | 57. 保存坐标找显示器+余量 | ✅ | `bd8fe4d` | 副屏不挪主屏；四边 80px 余量 |
+| 58. 最大化保存最后非最大化位置 | ✅ | `92951d1` | DB key compact_editor_last_normal_pos |
+| 59. 副屏未连接回退默认大小 | ✅ | `138848d`→`b421a53` | should_maximize 标记；fallback 主屏最大化 |
+| 60. 显示器坐标物理/逻辑不匹配 | ✅ | `790ac15` | position 未除 scale，副屏永远匹配主屏 |
+| 61. un-maximize 取真实位置 | ✅ | `e6acce0` | 最大化关闭时先 unmaximize 取 inner_position；非最大化越界检测同修 |
 
 ### 与原 plan 的偏差
 
