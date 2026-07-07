@@ -127,8 +127,8 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
                   className={cn(
                     "flex items-center justify-center gap-1 px-2.5 py-1 rounded-md text-xs transition-all duration-150",
                     filter === v
-                      ? "bg-stone-900 text-white font-medium shadow-sm"
-                      : "text-stone-500 hover:text-stone-800 hover:bg-stone-100/70",
+                      ? "bg-primary text-primary-foreground font-medium shadow-sm"
+                      : "text-muted-foreground hover:text-foreground hover:bg-accent",
                   )}
                   onClick={() => setFilter(v)}
                 >
@@ -143,17 +143,17 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
             </div>
           ))}
           <div className="flex-1" />
-          <div className="flex items-center gap-2 px-2.5 py-1 bg-stone-50 rounded-md border border-stone-200/80 focus-within:border-stone-400 transition-colors">
-            <Search className="w-3.5 h-3.5 text-stone-400" />
+          <div className="flex items-center gap-2 px-2.5 py-1 bg-muted rounded-md border border-border focus-within:border-voice/40 transition-colors">
+            <Search className="w-3.5 h-3.5 text-muted-foreground" />
             <input
               type="text"
               placeholder="搜索内容…"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
-              className="w-44 bg-transparent text-xs outline-none placeholder:text-stone-400"
+              className="w-44 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
             />
             {search && (
-              <button onClick={() => setSearch("")} className="text-stone-400 hover:text-stone-600 text-xs">×</button>
+              <button onClick={() => setSearch("")} className="text-muted-foreground hover:text-foreground text-xs">×</button>
             )}
           </div>
         </div>
@@ -162,18 +162,18 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
       {/* ── 列表 ── */}
       <div className="flex-1 overflow-y-auto thin-scrollbar -mx-1 px-1">
         {loading && items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 gap-2 text-stone-400">
-            <Loader2 className="w-5 h-5 animate-spin text-stone-300" />
+          <div className="flex flex-col items-center justify-center py-20 gap-2 text-muted-foreground">
+            <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/50" />
             <span className="text-xs">加载中…</span>
           </div>
         ) : items.length === 0 ? (
-          <div className="flex flex-col items-center justify-center py-20 gap-3 text-stone-400">
-            <div className="w-12 h-12 rounded-full bg-stone-100 flex items-center justify-center">
+          <div className="flex flex-col items-center justify-center py-20 gap-3 text-muted-foreground">
+            <div className="w-12 h-12 rounded-full bg-muted flex items-center justify-center">
               <ClipboardEmptyIcon />
             </div>
             <div className="text-center">
-              <p className="text-sm text-stone-500 font-medium">暂无记录</p>
-              <p className="text-xs text-stone-400 mt-1">
+              <p className="text-sm text-muted-foreground font-medium">暂无记录</p>
+              <p className="text-xs text-muted-foreground/70 mt-1">
                 {search ? `未找到匹配「${search}」的内容` : "复制文本、识别语音或截图后会出现在这里"}
               </p>
             </div>
@@ -181,15 +181,15 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
         ) : (
           <div className="flex flex-col">
             {/* 列表 header：全选（sticky） */}
-            <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 border-b border-stone-100 bg-background/95 backdrop-blur-sm group/header">
+            <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 border-b border-border bg-background/95 backdrop-blur-sm group/header">
               <label className="flex items-center gap-1.5 cursor-pointer">
                 <input
                   type="checkbox"
-                  className="w-3.5 h-3.5 accent-stone-900"
+                  className="w-3.5 h-3.5 accent-primary"
                   checked={allChecked}
                   onChange={(e) => toggleSelectAll(e.target.checked)}
                 />
-                <span className="text-[10px] text-stone-400 group-hover/header:text-stone-600 transition-colors">
+                <span className="text-[10px] text-muted-foreground group-hover/header:text-foreground transition-colors">
                   {hasSelection ? `已选 ${selectedIds.size} 项` : "全选"}
                 </span>
               </label>
@@ -205,14 +205,14 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
               />
             ))}
             {loading && items.length > 0 && (
-              <div className="flex items-center justify-center py-4 gap-2 text-stone-400">
+              <div className="flex items-center justify-center py-4 gap-2 text-muted-foreground">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 <span className="text-xs">加载中…</span>
               </div>
             )}
             {!loading && !noMore && items.length > 0 && (
               <button
-                className="mx-auto my-3 flex items-center gap-1 px-4 py-1.5 rounded-md text-xs text-stone-500 hover:text-stone-800 hover:bg-stone-100 border border-stone-200/70 transition-all"
+                className="mx-auto my-3 flex items-center gap-1 px-4 py-1.5 rounded-md text-xs text-muted-foreground hover:text-foreground hover:bg-accent border border-border transition-all"
                 onClick={() => fetchData()}
               >
                 <ChevronDown className="w-3 h-3" />
@@ -220,7 +220,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
               </button>
             )}
             {!loading && noMore && items.length > 0 && (
-              <div className="text-center py-4 text-stone-300 text-[10px] tracking-wider">— 已全部加载 —</div>
+              <div className="text-center py-4 text-muted-foreground/50 text-[10px] tracking-wider">— 已全部加载 —</div>
             )}
           </div>
         )}
@@ -228,7 +228,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
 
       {/* ── 底部：状态 + 批量操作 ── */}
       <div className="flex items-center justify-between py-2 border-t border-border">
-        <span className="text-[10px] text-stone-400 tabular-nums">
+        <span className="text-[10px] text-muted-foreground tabular-nums">
           共 {total} 条{filter !== "all" && activeFilterLabel ? ` · ${activeFilterLabel}` : ""}
         </span>
         {hasSelection ? (
@@ -245,7 +245,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
             {confirmDelete ? `确认删除 ${selectedIds.size} 项` : `删除选中`}
           </button>
         ) : (
-          <span className="text-[10px] text-stone-300 tabular-nums">显示 {items.length} 条</span>
+          <span className="text-[10px] text-muted-foreground/50 tabular-nums">显示 {items.length} 条</span>
         )}
       </div>
     </div>
@@ -367,9 +367,9 @@ function ClipboardRow({
     : item.item_type === "ocr" ? "bg-teal-500/50"
     : item.item_type === "image" ? "bg-indigo-400/50"
     : item.item_type === "file" ? "bg-emerald-500/50"
-    : "bg-stone-300/60";
+    : "bg-muted-foreground/30";
 
-  // 选中态用 stone-900 左缘覆盖
+  // 选中态用 voice 左缘覆盖
   const showSelectEdge = isSelected && !deletePending;
 
   // 预览文本：voice 行略大字号（签名主角），其余统一
@@ -384,22 +384,22 @@ function ClipboardRow({
   return (
     <div
       className={cn(
-        "group relative flex items-center gap-2.5 pl-4 pr-3 py-2 border-b border-stone-100/50 transition-colors cursor-pointer",
-        deletePending ? "bg-red-50"
-          : isSelected ? "bg-stone-100"
-          : "hover:bg-stone-50/70",
+        "group relative flex items-center gap-2.5 pl-4 pr-3 py-2 border-b border-border/50 transition-colors cursor-pointer",
+        deletePending ? "bg-red-50/10"
+          : isSelected ? "bg-accent"
+          : "hover:bg-muted",
       )}
       onClick={onToggleSelect}
     >
       {/* 左缘类型色条：选中时变 stone-900，删除确认时变 red-500 */}
       <div className={cn(
         "absolute left-0 top-1.5 bottom-1.5 w-[3px] rounded-r-full transition-colors",
-        deletePending ? "bg-red-500" : showSelectEdge ? "bg-stone-900" : edgeClass,
+        deletePending ? "bg-red-500" : showSelectEdge ? "bg-voice" : edgeClass,
       )} />
 
       <input
         type="checkbox"
-        className="w-3.5 h-3.5 flex-shrink-0 accent-stone-900"
+        className="w-3.5 h-3.5 flex-shrink-0 accent-primary"
         checked={isSelected}
         onChange={(e) => { e.stopPropagation(); onToggleSelect(); }}
         onClick={(e) => e.stopPropagation()}
@@ -435,10 +435,10 @@ function ClipboardRow({
                 <img src={thumbSrc} className="w-10 h-10 rounded object-cover flex-shrink-0 ring-1 ring-black/5" alt="" />
               )
             ) : item.item_type === "file" ? (
-              <span className="block truncate text-xs text-stone-500">{formatFilePaths(item.ref_data)}</span>
+              <span className="block truncate text-xs text-muted-foreground">{formatFilePaths(item.ref_data)}</span>
             ) : (
               <p className={cn(
-                "leading-snug text-stone-800 break-words line-clamp-1",
+                "leading-snug text-foreground break-words line-clamp-1",
                 previewSize,
                 isVoice && "font-medium",
               )}>{preview}</p>
@@ -451,7 +451,7 @@ function ClipboardRow({
 
         {/* 第二行：时间戳 + 操作（复制居首，最常用） */}
         <div className="mt-1 flex items-center justify-between" onDoubleClick={(e) => e.stopPropagation()}>
-          <span className="text-[10px] text-stone-400 tabular-nums">{item.created_at}</span>
+          <span className="text-[10px] text-muted-foreground tabular-nums">{item.created_at}</span>
           <div className="flex flex-shrink-0 items-center gap-0.5">
             <button
               className={cn(
@@ -464,7 +464,7 @@ function ClipboardRow({
               {copied ? (
                 <Check className="w-3.5 h-3.5 text-emerald-500" />
               ) : (
-                <Copy className="w-3.5 h-3.5 text-stone-500" />
+                <Copy className="w-3.5 h-3.5 text-muted-foreground" />
               )}
             </button>
             {isUrl && (
@@ -482,7 +482,7 @@ function ClipboardRow({
                 onClick={handleEditOrPreview}
                 title="编辑"
               >
-                <SquarePen className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
+                <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
               </button>
             )}
             {item.item_type === "image" && (
@@ -506,8 +506,8 @@ function ClipboardRow({
                   title="保存为文件"
                 >
                   <Download className={cn(
-                    "w-3.5 h-3.5 text-stone-500",
-                    showSavePopover && "text-stone-800",
+                    "w-3.5 h-3.5 text-muted-foreground",
+                    showSavePopover && "text-foreground",
                   )} />
                 </button>
                 {showSavePopover && (
@@ -521,7 +521,7 @@ function ClipboardRow({
                 onClick={handleOpenFile}
                 title="打开文件"
               >
-                <FolderOpen className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
+                <FolderOpen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
               </button>
             )}
             <button
@@ -536,7 +536,7 @@ function ClipboardRow({
             >
               <Trash2 className={cn(
                 "w-3.5 h-3.5 transition-colors",
-                deletePending ? "text-red-600" : "text-stone-500 hover:text-red-500",
+                deletePending ? "text-red-600" : "text-muted-foreground hover:text-red-500",
               )} />
             </button>
             <button
@@ -548,7 +548,7 @@ function ClipboardRow({
             >
               <Star className={cn(
                 "w-3.5 h-3.5",
-                item.is_favorite ? "fill-amber-400 text-amber-400" : "text-stone-500",
+                item.is_favorite ? "fill-amber-400 text-amber-400" : "text-muted-foreground",
               )} />
             </button>
           </div>
@@ -586,7 +586,7 @@ function formatFilePaths(refData?: string): string {
 
 function ClipboardEmptyIcon() {
   return (
-    <svg viewBox="0 0 24 24" fill="none" className="w-6 h-6 text-stone-300">
+    <svg viewBox="0 0 24 24" fill="none" className="w-6 h-6 text-muted-foreground/50">
       <rect x="5" y="4" width="14" height="17" rx="2" stroke="currentColor" strokeWidth="1.5" />
       <path d="M9 4V2.5C9 2.2 9.2 2 9.5 2h5c.3 0 .5.2.5.5V4" stroke="currentColor" strokeWidth="1.5" />
       <path d="M8.5 11h7M8.5 14h4" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
