@@ -210,7 +210,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 **窗口创建注意事项（2026-07-07，主题系统开发中踩坑总结）：**
 1. **窗口背景色只对非透明窗口通过 URL `?bg=hex` 注入**——Rust 建窗时从主题配置读 background hex 拼入 URL，`index.html` `<head>` 脚本同步设裸 `#hex`（零 CSS 依赖）。透明窗口（`transparent:true`）不注入——`transparent:true` 只让窗口**支持**透明，html `backgroundColor` 仍渲染为不透明层，设了会"显形"。result/clipboard 靠 transparent + body transparent 实现穿透；screenshot 靠 React 组件画选区**外**遮罩（选区**内**全透明看桌面）。
 2. **窗口位置保存/恢复必须 inner 对称**——`inner_position()` + `inner_size()`（都基于内容区，不含标题栏）。混用 `outer_position` + `inner_size` 会在不同 DPI / 标题栏高度下产生坐标偏差。物理像素÷`scale_factor` 存逻辑像素。
-3. **多显示器位置越界检测**——保存的位置是绝对逻辑坐标，副屏关闭/拔掉后坐标失效。恢复前用 `available_monitors()` 检测坐标是否在任一显示器范围内（50px 容差），不可见则 fallback 到居中。**关键：`Monitor::position()` 和 `Monitor::size()` 返回物理像素，必须除以 `scale_factor` 统一到逻辑像素再比较**——否则 Retina（scale=2）下物理 0-3840 把逻辑 460 也包含进去，副屏坐标永远匹配到主屏。CompactEditor 有自己的 `WindowState`，需自行检测；result/clipboard 用 `window_position::restore_window_position` 已内置（但该模块的 `is_position_visible` 也有同样的 position 未除 scale 问题，待修）。
+3. **多显示器位置越界检测**——保存的位置是绝对逻辑坐标，副屏关闭/拔掉后坐标失效。恢复前用 `available_monitors()` 检测坐标是否在任一显示器范围内（50px 容差），不可见则 fallback 到居中。**关键：`Monitor::position()` 和 `Monitor::size()` 返回物理像素，必须除以 `scale_factor` 统一到逻辑像素再比较**——否则 Retina（scale=2）下物理 0-3840 把逻辑 460 也包含进去，副屏坐标永远匹配到主屏。CompactEditor（`compact_editor_window.rs`）和 result/clipboard（`window_position.rs`）均已修复。
 4. **最大化窗口创建（十二次反复后定型）**：
    - `builder.maximized(true)` 在 WRY 底层**不生效**（build 后 `is_maximized=false`）
    - build 后 `win.maximize()` 在 `show()` 前调用——macOS 隐藏窗口 maximize 无 zoom 动画，但 `show()` 后可能有细微过渡
