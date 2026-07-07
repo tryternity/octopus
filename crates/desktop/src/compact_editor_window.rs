@@ -48,8 +48,9 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
         let scale = win.scale_factor().unwrap_or(1.0);
         let state = if maximized {
             WindowState { width: WIDTH, height: HEIGHT, x: 0.0, y: 0.0, maximized: true }
-        } else if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
-            // 物理像素 → 逻辑像素（除以 scale factor，Retina=2.0）
+        } else if let (Ok(pos), Ok(size)) = (win.inner_position(), win.inner_size()) {
+            // inner_position + inner_size 对称保存恢复（都用内容区坐标，
+            // 不含标题栏），消除 outer/inner 混用导致的坐标偏差。
             WindowState {
                 width: size.width as f64 / scale,
                 height: size.height as f64 / scale,
@@ -87,22 +88,27 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     let state = load_window_state();
     log::info!("[compact-editor] window state {:?}", state);
 
-    // URL 参数注入：首个 tab 的数据拼入 URL query string，
-    // 前端首次渲染时同步读取（零 IPC 打开）。
-    let url = if let Some(p) = pending {
+    // URL 参数注入：首个 tab 的数据 + 背景色 hex 拼入 URL query string，
+    // 前端首次渲染时同步读取（零 IPC 打开）+ 首帧即有正确背景色（零 CSS 依赖）。
+    let mut url = if let Some(p) = pending {
         let encoded_text = urlencode(&p.text);
-        let mut url = format!(
+        let mut u = format!(
             "index.html?itemId={}&source={}&itemType={}&text={}",
             p.item_id, p.source, p.item_type, encoded_text
         );
         // 图片类型注入原始尺寸——前端 ImagePreview 首帧即有正确宽高，消除布局突变
         if p.item_type == "image" && p.img_width > 0 && p.img_height > 0 {
-            url.push_str(&format!("&imgWidth={}&imgHeight={}", p.img_width, p.img_height));
+            u.push_str(&format!("&imgWidth={}&imgHeight={}", p.img_width, p.img_height));
         }
-        url
+        u
     } else {
         "index.html".to_string()
     };
+    // 背景色 hex 注入——index.html <head> 脚本同步设为 #hex，零 CSS 依赖消除白屏
+    if let Some(bg) = crate::theme::window_bg_hex(WINDOW_LABEL) {
+        let sep = if url.contains('?') { "&" } else { "?" };
+        url.push_str(&format!("{}bg={}", sep, bg));
+    }
 
     let mut builder = WebviewWindowBuilder::new(
         app_handle,
@@ -115,21 +121,37 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     .resizable(true)
     .visible(true);
 
-    if state.width > 0.0 && state.height > 0.0 {
-        builder = builder.inner_size(state.width, state.height).position(state.x, state.y);
-    } else {
-        builder = builder.inner_size(WIDTH, HEIGHT).center();
-    }
-
-    let win = builder.build();
-    log::info!("[compact-editor] after build");
-
-    // 记忆了最大化 → 建窗后 maximize
-    if state.maximized {
-        if let Ok(ref win) = win {
-            let _ = win.maximize();
+    // 非最大化时才设具体尺寸+位置——最大化状态由 builder.maximized(true) 直接生效，
+    // 避免设了尺寸再被 maximize 覆盖的冗余布局计算。
+    if !state.maximized {
+        if state.width > 0.0 && state.height > 0.0 {
+            // 检测保存的位置是否在可见显示器范围内——多显示器拔接后坐标可能失效。
+            let monitors = app_handle.available_monitors().unwrap_or_default();
+            let visible = monitors.iter().any(|m| {
+                let mx = m.position().x as f64;
+                let my = m.position().y as f64;
+                let mw = m.size().width as f64 / m.scale_factor();
+                let mh = m.size().height as f64 / m.scale_factor();
+                state.x >= mx - 50.0 && state.x <= mx + mw + 50.0
+                    && state.y >= my - 50.0 && state.y <= my + mh + 50.0
+            });
+            if visible {
+                builder = builder.inner_size(state.width, state.height).position(state.x, state.y);
+            } else {
+                // 坐标不在任何显示器内（如副屏拔了）—— fallback 到居中
+                log::info!("[compact-editor] saved position {},{} not visible, center", state.x, state.y);
+                builder = builder.inner_size(state.width, state.height).center();
+            }
+        } else {
+            builder = builder.inner_size(WIDTH, HEIGHT).center();
         }
+        builder = builder.maximized(false);
+    } else {
+        builder = builder.maximized(true);
     }
+
+    let _ = builder.build();
+    log::info!("[compact-editor] after build");
 }
 
 /// macOS: 统一查看器窗口关闭后，仅当无其他常规窗口存活时才切回 Accessory（仅托盘）。

@@ -38,6 +38,10 @@ let themeCache: ThemeInfo[] | null = null;
  * 自定义主题（~/.octopus/themes/*.json）需 JS 注入 CSS 变量作为 fallback。
  */
 export async function applyThemeById(themeId: string) {
+  // 脏检查：值相同直接拦截，避免触发浏览器全局 style recalc
+  const current = document.documentElement.getAttribute("data-theme");
+  if (current === themeId) return;
+
   if (BUILTIN_IDS.has(themeId)) {
     // 切回内置主题时清除自定义主题 style 标签
     const existing = document.getElementById("octopus-custom-theme");
@@ -73,7 +77,10 @@ function buildCustomThemeCss(theme: ThemeInfo): string {
 /** 注入自定义主题 CSS 到 <style> 标签 + 缓存到 localStorage（供 index.html 同步恢复）。 */
 function injectCustomThemeCss(css: string) {
   let styleEl = document.getElementById("octopus-custom-theme") as HTMLStyleElement | null;
-  if (!styleEl) {
+  if (styleEl) {
+    // 脏检查：CSS 内容相同则跳过，避免重复解析
+    if (styleEl.textContent === css) return;
+  } else {
     styleEl = document.createElement("style");
     styleEl.id = "octopus-custom-theme";
     document.head.appendChild(styleEl);

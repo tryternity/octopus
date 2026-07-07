@@ -190,3 +190,33 @@ pub fn get_theme_id() -> Result<String, String> {
         .unwrap_or_else(|| "light".into());
     Ok(id)
 }
+
+/// 返回指定窗口应使用的背景色 hex（不含 #），用于 URL 注入。
+/// 非透明窗口（settings/compact_editor）返回主题背景色；透明窗口返回 None。
+/// 前端 index.html 脚本读 URL bg 参数直接设 #hex——零 CSS 依赖，首帧即有色。
+pub fn window_bg_hex(window_label: &str) -> Option<String> {
+    // 白名单：只有常规非透明窗口需要背景色。透明窗口（result/clipboard/screenshot）
+    // 不注入——它们靠 transparent:true + body transparent 实现穿透/遮罩。
+    let is_opaque = match window_label {
+        "settings_window" | "compact_editor_window" => true,
+        _ => false,
+    };
+    if !is_opaque {
+        return None;
+    }
+    // 读当前主题的 background 色
+    let themes = load_themes();
+    let theme_id = octopus_infra::db::load_config_key("clipboard_theme")
+        .ok()
+        .flatten()
+        .unwrap_or_else(|| "light".into());
+    let theme = themes.iter().find(|t| t.id == theme_id)
+        .or_else(|| themes.iter().find(|t| t.id == "light"))?;
+    // 从 background 色提取 hex（去掉 # 前缀或 rgba 前缀）
+    let bg = &theme.colors.background;
+    if let Some(hex) = bg.strip_prefix('#') {
+        return Some(hex.to_string());
+    }
+    // rgba/rgb 格式——原样返回（前端 index.html 判断有无 # 决定是否加 #）
+    Some(bg.clone())
+}
