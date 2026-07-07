@@ -17,6 +17,8 @@ SenseVoice 引擎录音几段后偶发「再说话不吐字」，重启录音恢
 
 > coordinator drop 重建已确认：stop / discard / cancel / finalize 四路径全 drop、无 reset 复用。修复纯在 pipeline.rs 内，不动 coordinator。
 
+> **Spec 覆盖**：本修复所涉子系统的完整双 VAD 架构与 3 条不变量（① 切段后 reset+preroll / ② force_cut 解绑 has_speech / ③ filter_vad 每段 reset）见 [spec](2026-07-08-vad-segmented-pipeline-design.md) §5。
+
 ## 方案（A 治本 + B 兜底）
 
 ### A. 切段后 reset+preroll detect_vad（治本）
