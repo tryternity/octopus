@@ -104,8 +104,10 @@ export default function Clipboard() {
         setFilter(TABS_VALUES[next]);
         return;
       }
-      // Cmd+1..7：直接跳 tab（metaKey=macOS，ctrlKey=Windows/Linux）
-      if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "7") {
+      // Ctrl+1..7：直接跳 tab。不用 Cmd（metaKey）——octopus 激活策略为 Accessory，
+      // 剪贴板浮窗显示时不切 Regular，前一 app 的菜单栏 key equivalent 会拦截 Cmd+digit。
+      // Ctrl 不产生特殊字符、非标准 menu equivalent、跨平台一致。
+      if (e.ctrlKey && e.key >= "1" && e.key <= "7") {
         e.preventDefault();
         const n = parseInt(e.key, 10) - 1;
         if (n < TABS_VALUES.length) setFilter(TABS_VALUES[n]);
