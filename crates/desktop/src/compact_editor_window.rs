@@ -47,21 +47,34 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
         let maximized = win.is_maximized().unwrap_or(false);
         let scale = win.scale_factor().unwrap_or(1.0);
         let state = if maximized {
-            // 最大化时也保存实际 position——反映窗口在哪个屏幕，
-            // 恢复时据此找到对应显示器创建窗口 + maximize。
-            if let Ok(pos) = win.inner_position() {
-                WindowState { width: WIDTH, height: HEIGHT, x: pos.x as f64 / scale, y: pos.y as f64 / scale, maximized: true }
-            } else {
-                WindowState { width: WIDTH, height: HEIGHT, x: 0.0, y: 0.0, maximized: true }
-            }
+            // 最大化时 inner_position() 返回的是最大化后位置（可能跨屏到主屏原点），
+            // 不可靠。读上次非最大化时保存的位置——它准确记录了用户最后把窗口
+            // 放在哪个屏幕。key: compact_editor_last_normal_pos。
+            let last_normal = octopus_infra::db::load_config_key("compact_editor_last_normal_pos")
+                .ok().flatten()
+                .and_then(|s| {
+                    let parts: Vec<&str> = s.split(',').collect();
+                    if parts.len() == 4 {
+                        Some((parts[0].parse().unwrap_or(0.0), parts[1].parse().unwrap_or(0.0),
+                              parts[2].parse().unwrap_or(WIDTH), parts[3].parse().unwrap_or(HEIGHT)))
+                    } else { None }
+                })
+                .unwrap_or((0.0, 0.0, WIDTH, HEIGHT));
+            WindowState { width: last_normal.2, height: last_normal.3, x: last_normal.0, y: last_normal.1, maximized: true }
         } else if let (Ok(pos), Ok(size)) = (win.inner_position(), win.inner_size()) {
             // inner_position + inner_size 对称保存恢复（都用内容区坐标，
             // 不含标题栏），消除 outer/inner 混用导致的坐标偏差。
+            let lw = size.width as f64 / scale;
+            let lh = size.height as f64 / scale;
+            let lx = pos.x as f64 / scale;
+            let ly = pos.y as f64 / scale;
+            // 记录最后非最大化位置——最大化恢复时用此坐标找对应显示器
+            let _ = octopus_infra::db::save_config_key(
+                "compact_editor_last_normal_pos",
+                &format!("{:.0},{:.0},{:.0},{:.0}", lx, ly, lw, lh),
+            );
             WindowState {
-                width: size.width as f64 / scale,
-                height: size.height as f64 / scale,
-                x: pos.x as f64 / scale,
-                y: pos.y as f64 / scale,
+                width: lw, height: lh, x: lx, y: ly,
                 maximized: false,
             }
         } else {
