@@ -38,6 +38,7 @@ function tabIcon(tab: Tab) {
 
 function CompactEditor() {
   const [tabs, setTabs] = useState<Tab[]>([]);
+  const [initialLoading, setInitialLoading] = useState(true);
   const [activeIdx, setActiveIdx] = useState(0);
   const [fontSize, setFontSize] = useState(() => {
     const saved = Number(localStorage.getItem(FONT_KEY));
@@ -111,21 +112,25 @@ function CompactEditor() {
     }
   }, []);
 
-  // mount：取首个 pending tab；监听并发再开的 open-tab 事件
+  // mount：取首个 pending tab（含完整数据，1 次 IPC）；监听并发再开的 open-tab 事件
   useEffect(() => {
-    // cancelled 守护：listen 是异步的，若组件在 listen 解析前卸载，cleanup 时 unlisten 仍 undefined，
-    // 监听器会永久泄露并在后台触发已卸载组件的回调。cancelled 让卸载后解析到的监听器立即销毁、
-    // 且 await 后的 setState 被跳过（避免 setState on unmounted）。
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     (async () => {
-      const pending = await invoke<{ itemId: number; source: string } | null>("get_pending_compact_tab");
+      const pending = await invoke<{ itemId: number; source: string; itemType: string; text: string } | null>("get_pending_compact_tab");
       if (cancelled) return;
       if (pending) {
-        await loadAndAddTab(pending.itemId, pending.source);
-        if (cancelled) return;
+        // 合并数据已含 itemType + text，直接添加 tab（无需额外 IPC）
+        const key = `${pending.source}:${pending.itemId}`;
+        if (pending.itemType === 'image') {
+          setTabs([{ key, source: pending.source as any, itemId: pending.itemId, itemType: 'image' as const }]);
+        } else {
+          setTabs([{ key, source: pending.source as any, itemId: pending.itemId, itemType: 'text' as const, text: pending.text }]);
+        }
+        setActiveIdx(0);
         setTimeout(() => taRef.current?.focus(), 0);
       }
+      setInitialLoading(false);
       const fn = await listen("compact-editor://open-tab", (payload) => {
         const p = payload as OpenTabPayload;
         loadAndAddTab(p.itemId, p.source);
@@ -476,6 +481,8 @@ function CompactEditor() {
             )}
           </div>
         ))
+      ) : initialLoading ? (
+        <div className="flex-1" />
       ) : (
         <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">没有打开的条目</div>
       )}
