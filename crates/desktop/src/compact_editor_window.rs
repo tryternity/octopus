@@ -154,8 +154,10 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     log::info!("[compact-editor] after build");
 
     // 所有配置（最大化/尺寸/位置）就绪后才 show——消除"先中间再放大"的过渡感
+    // set_focus 在 Rust 侧同步触发 native 级应用激活，防前端 JS show 导致的"点两次"
     if let Ok(ref win) = win {
         let _ = win.show();
+        let _ = win.set_focus();
     }
 }
 
