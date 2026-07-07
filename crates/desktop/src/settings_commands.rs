@@ -194,9 +194,9 @@ pub fn set_config(
             .set_recording_enabled(cfg.clipboard_enabled);
     }
 
-    // hide_toolbar / edit_shortcut / clipboard_enabled 改变时通知前端刷新：
-    // result window 刷 hide_toolbar；设置页 + 剪贴板浮窗刷 clipboard_enabled toggle（双向同步）。
-    if key == "hide_toolbar" || key == "edit_shortcut" || key == "clipboard_enabled" {
+    // 所有配置变更都通知前端刷新——emit 开销极低，前端收到后幂等地重读 get_config。
+    // 不再逐字段维护 emit 白名单（与 load/save 手动枚举同反模式，已踩坑多次）。
+    {
         use tauri::Emitter;
         let _ = app_handle.emit("config-changed", ());
     }
