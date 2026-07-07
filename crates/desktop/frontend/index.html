@@ -4,6 +4,34 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>octopus</title>
+    <script>
+      // 阻断式主题恢复——在 body 解析前执行，消除白屏闪烁。
+      // 不依赖任何 IPC 或 JS bundle，纯 localStorage 同步读取。
+      try {
+        var themeId = localStorage.getItem("octopus-theme-id");
+        if (themeId) {
+          var html = document.documentElement;
+          html.setAttribute("data-theme", themeId);
+          // 非透明窗口（settings/compact_editor）设 html 背景底色，
+          // 防 React 渲染前的白屏。result_window/clipboard/screenshot 透明不变。
+          var label = window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.metadata && window.__TAURI_INTERNALS__.metadata.currentWindow && window.__TAURI_INTERNALS__.metadata.currentWindow.label || "";
+          if (label && label !== "result_window" && label !== "clipboard_window" && !label.startsWith("screenshot_")) {
+            html.style.backgroundColor = "var(--color-background)";
+          }
+          // 自定义主题：从 localStorage 恢复 CSS 规则（消除 IPC 延迟）
+          var builtin = ["light", "glass-dark", "nord"];
+          if (builtin.indexOf(themeId) === -1) {
+            var css = localStorage.getItem("octopus-custom-theme-css");
+            if (css) {
+              var s = document.createElement("style");
+              s.id = "octopus-custom-theme";
+              s.textContent = css;
+              document.head.appendChild(s);
+            }
+          }
+        }
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
