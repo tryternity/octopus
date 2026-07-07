@@ -121,8 +121,9 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     .resizable(true)
     .visible(false);  // 先隐藏——所有配置（最大化/尺寸/位置）就绪后再 show
 
-    // 非最大化时才设具体尺寸+位置——最大化状态由 builder.maximized(true) 直接生效，
-    // 避免设了尺寸再被 maximize 覆盖的冗余布局计算。
+    // 非最大化时设具体尺寸+位置；最大化时不设 position——
+    // 让窗口在默认屏幕创建后 maximize（macOS 在窗口所在屏幕最大化）。
+    // 之前最大化保存 x=0,y=0 → 恢复时 position(0,0) 可能在副屏 → maximize 停在副屏。
     if !state.maximized {
         if state.width > 0.0 && state.height > 0.0 {
             // 检测保存的位置是否在可见显示器范围内——多显示器拔接后坐标可能失效。
@@ -138,7 +139,6 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
             if visible {
                 builder = builder.inner_size(state.width, state.height).position(state.x, state.y);
             } else {
-                // 坐标不在任何显示器内（如副屏拔了）—— fallback 到居中
                 log::info!("[compact-editor] saved position {},{} not visible, center", state.x, state.y);
                 builder = builder.inner_size(state.width, state.height).center();
             }
