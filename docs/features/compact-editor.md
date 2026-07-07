@@ -91,7 +91,7 @@ type Tab = {
 - 保留 `listen("ocr-screenshot://result")` 接收截图 OCR blocks
 
 **性能优化**（2026-07-03）：
-1. **canvas 视口固定 + 可见区切片重绘**——canvas `position:sticky` 钉 scrollContainer 视口，物理尺寸 = 视口×dpr（永不超 Chromium 32767 单边硬限，长图不再崩）；drawBg 滚动/缩放时只 drawImage 图片露出视口的 src 切片到视口坐标（不全量重绘）。几何换算抽 `viewportMath.ts` 纯函数（17 单测）。⚠️ DOM/sticky 视觉对齐须 GUI 验证（见 code-review 2026-07-07 问题4 清单）；bitmap 预缩放超 GPU 纹理上限时静默 fallback 原图（渐进降级）
+1. **canvas 视口固定 + 可见区切片重绘**——canvas `position:sticky` 钉 scrollContainer 视口，物理尺寸 = 视口×dpr（永不超 Chromium 32767 单边硬限，长图不再崩）；drawBg 滚动/缩放时只 drawImage 图片露出视口的 src 切片到视口坐标（不全量重绘）。几何换算抽 `viewportMath.ts` 纯函数（17 单测）。GUI 核心已验证（超大图不崩 + 缩放正常 2026-07-07）；其余 DOM/sticky 对齐项见 code-review 2026-07-07 问题4 清单可选补充。bitmap 预缩放超 GPU 纹理上限时静默 fallback 原图（渐进降级）
 2. **底图 canvas + SVG overlay**——标注用 SVG 元素（标注变化零 canvas 操作）
 3. **zoom 走 `createImageBitmap` 异步预缩放**（`zoomVersionRef` 防过时帧）
 4. **先 thumb 再 full 渐进加载**（`cancelled` 防竞态 + ResizeObserver 自动重算）
