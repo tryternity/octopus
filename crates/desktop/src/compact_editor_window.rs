@@ -58,9 +58,10 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
                         Some((parts[0].parse().unwrap_or(0.0), parts[1].parse().unwrap_or(0.0),
                               parts[2].parse().unwrap_or(WIDTH), parts[3].parse().unwrap_or(HEIGHT)))
                     } else { None }
-                })
-                .unwrap_or((0.0, 0.0, WIDTH, HEIGHT));
-            WindowState { width: last_normal.2, height: last_normal.3, x: last_normal.0, y: last_normal.1, maximized: true }
+                });
+            log::info!("[compact-editor] last_normal_pos from DB: {:?}", last_normal);
+            let (lx, ly, lw, lh) = last_normal.unwrap_or((0.0, 0.0, WIDTH, HEIGHT));
+            WindowState { width: lw, height: lh, x: lx, y: ly, maximized: true }
         } else if let (Ok(pos), Ok(size)) = (win.inner_position(), win.inner_size()) {
             // inner_position + inner_size 对称保存恢复（都用内容区坐标，
             // 不含标题栏），消除 outer/inner 混用导致的坐标偏差。
@@ -169,11 +170,18 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     } else {
         // 最大化：用保存坐标所在的显示器创建接近全屏的大窗体，再 maximize。
         let monitors = app_handle.available_monitors().unwrap_or_default();
+        for m in &monitors {
+            let ms = m.scale_factor();
+            log::info!("[compact-editor] monitor: pos={},{} size={}x{} scale={}",
+                m.position().x, m.position().y, m.size().width, m.size().height, ms);
+        }
         let monitor = monitors.iter().find(|m| {
-            let mx = m.position().x as f64;
-            let my = m.position().y as f64;
-            let mw = m.size().width as f64 / m.scale_factor();
-            let mh = m.size().height as f64 / m.scale_factor();
+            // state.x/y 是逻辑像素，显示器 position/size 是物理像素——统一到逻辑
+            let ms = m.scale_factor();
+            let mx = m.position().x as f64 / ms;
+            let my = m.position().y as f64 / ms;
+            let mw = m.size().width as f64 / ms;
+            let mh = m.size().height as f64 / ms;
             state.x >= mx && state.x < mx + mw && state.y >= my && state.y < my + mh
         });
 
