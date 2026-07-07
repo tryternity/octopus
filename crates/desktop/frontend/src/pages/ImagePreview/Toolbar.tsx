@@ -28,11 +28,10 @@ function ToolButton({ active, onClick, title, children }: {
         width: 32, height: 32,
         display: "flex", alignItems: "center", justifyContent: "center",
         borderRadius: 6, border: "none", cursor: "pointer",
-        background: active ? "#3b82f6" : "transparent",
-        color: active ? "#fff" : "#44403c",
+        background: active ? "var(--color-voice)" : "transparent",
         transition: "background 0.15s",
       }}
-      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "rgba(0,0,0,0.06)"; }}
+      onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--color-muted)"; }}
       onMouseLeave={(e) => { if (!active) e.currentTarget.style.background = "transparent"; }}
     >
       {children}
@@ -139,14 +138,14 @@ export default function Toolbar(props: {
       }}>
         {/* 输出操作：保存 / 复制 / OCR（截图 SVG 图标） */}
         <ToolButton title="保存为文件" active={false} onClick={() => props.onSave()}>
-          <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" />
+          <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
         </ToolButton>
         <ToolButton title="复制到剪贴板" active={false} onClick={() => props.onCopy()}>
-          <img src="icons/copy.svg" alt="复制" className="w-[18px] h-[18px]" />
+          <img src="icons/copy.svg" alt="复制" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
         </ToolButton>
         <div style={{ position: "relative" }}>
           <ToolButton title={props.ocrWarn ? "前一个 OCR 还未完成，请稍后" : "OCR 识别"} active={props.ocrCopied || props.ocrWarn || props.ocrMode !== 'off'} onClick={() => props.onOcr()}>
-            {props.ocrCopied ? <img src="icons/check.svg" alt="完成" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : props.ocrMode === 'overlay' ? <img src="icons/ocr-all.svg" alt="OCR 叠加" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : props.ocrMode === 'mask' ? <img src="icons/ocr-text.svg" alt="OCR 遮罩" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" />}
+            {props.ocrCopied ? <img src="icons/check.svg" alt="完成" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : props.ocrMode === 'overlay' ? <img src="icons/ocr-all.svg" alt="OCR 叠加" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : props.ocrMode === 'mask' ? <img src="icons/ocr-text.svg" alt="OCR 遮罩" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />}
           </ToolButton>
           {props.ocrWarn && (
             <span style={{
@@ -170,10 +169,10 @@ export default function Toolbar(props: {
           </ToolButton>
         ))}
         <ToolButton title="撤销 (Cmd/Ctrl+Z)" active={false} onClick={() => props.onUndo()}>
-          <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" style={{ opacity: props.canUndo ? 1 : 0.3 }} />
+          <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canUndo ? 1 : 0.3 }} />
         </ToolButton>
         <ToolButton title="重做 (Cmd/Ctrl+Shift+Z)" active={false} onClick={() => props.onRedo()}>
-          <img src="icons/redo.svg" alt="重做" className="w-[18px] h-[18px]" style={{ opacity: props.canRedo ? 1 : 0.3 }} />
+          <img src="icons/redo.svg" alt="重做" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canRedo ? 1 : 0.3 }} />
         </ToolButton>
 
         {/* 缩放：缩小 + 当前百分比(点击重置 100%) + 放大 */}

@@ -133,7 +133,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
                   onClick={() => setFilter(v)}
                 >
                   {svg ? (
-                    <img src={`icons/${svg}.svg`} alt={label} className="w-3.5 h-3.5" style={{ filter: filter === v ? "brightness(0) invert(1)" : "none" }} />
+                    <img src={`icons/${svg}.svg`} alt={label} className="w-3.5 h-3.5" style={{ filter: filter === v ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
                   ) : (
                     <Icon className="w-3.5 h-3.5" />
                   )}
@@ -491,7 +491,7 @@ function ClipboardRow({
                 onClick={handleEditOrPreview}
                 title="预览"
               >
-                <img src="icons/eye-edit.svg" alt="预览" className="w-3.5 h-3.5" />
+                <img src="icons/eye-edit.svg" alt="预览" className="w-3.5 h-3.5" style={{ filter: "var(--icon-filter)" }} />
               </button>
             )}
             {item.item_type === "image" && (

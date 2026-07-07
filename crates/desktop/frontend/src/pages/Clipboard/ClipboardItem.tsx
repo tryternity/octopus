@@ -259,7 +259,7 @@ function ClipboardItemRow({
               }}
               title="预览"
             >
-              <img src="icons/eye-edit.svg" alt="预览" className="w-3.5 h-3.5" />
+              <img src="icons/eye-edit.svg" alt="预览" className="w-3.5 h-3.5" style={{ filter: "var(--icon-filter)" }} />
             </button>
           )}
           {item.item_type === "image" && (
