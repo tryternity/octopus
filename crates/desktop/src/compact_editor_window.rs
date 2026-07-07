@@ -125,7 +125,23 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     // 避免设了尺寸再被 maximize 覆盖的冗余布局计算。
     if !state.maximized {
         if state.width > 0.0 && state.height > 0.0 {
-            builder = builder.inner_size(state.width, state.height).position(state.x, state.y);
+            // 检测保存的位置是否在可见显示器范围内——多显示器拔接后坐标可能失效。
+            let monitors = app_handle.available_monitors().unwrap_or_default();
+            let visible = monitors.iter().any(|m| {
+                let mx = m.position().x as f64;
+                let my = m.position().y as f64;
+                let mw = m.size().width as f64 / m.scale_factor();
+                let mh = m.size().height as f64 / m.scale_factor();
+                state.x >= mx - 50.0 && state.x <= mx + mw + 50.0
+                    && state.y >= my - 50.0 && state.y <= my + mh + 50.0
+            });
+            if visible {
+                builder = builder.inner_size(state.width, state.height).position(state.x, state.y);
+            } else {
+                // 坐标不在任何显示器内（如副屏拔了）—— fallback 到居中
+                log::info!("[compact-editor] saved position {},{} not visible, center", state.x, state.y);
+                builder = builder.inner_size(state.width, state.height).center();
+            }
         } else {
             builder = builder.inner_size(WIDTH, HEIGHT).center();
         }
