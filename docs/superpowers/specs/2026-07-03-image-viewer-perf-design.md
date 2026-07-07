@@ -2,7 +2,7 @@
 
 > 日期：2026-07-03
 > 状态：📋 设计中
-> 前置：`docs/superpowers/specs/2026-07-01-image-preview-design.md`（图片预览初版，已完成，已归档至 `2026-07-02-archived-specs.md`）
+> 前置：`docs/superpowers/specs/2026-07-01-image-preview-design.md`（图片预览初版，已完成，已删除，git history 可追溯）
 > 分支：`image-viewer-perf`
 
 ## 1. 背景与目标

@@ -1400,18 +1400,18 @@ git commit -m "perf(capx): 画布改 Vec<u8> 增量追加 + 惰性 RgbaImage 缓
 ## Task 9: 文档同步
 
 **Files:**
-- Modify: `docs/superpowers/specs/2026-06-30-scroll-stitch-research.md`（已归档至 `2026-07-02-archived-specs.md`，标注 FFT 未采纳）
+- Modify: `docs/superpowers/specs/2026-06-30-scroll-stitch-research.md`（已删除，git history 可追溯，标注 FFT 未采纳）
 - Modify: `docs/architecture.md`（CAPX 模块数据结构更新）
 
-- [ ] **Step 1: 修正 research spec 的 FFT 方案标注**
+- [x] **Step 1: 修正 research spec 的 FFT 方案标注**（已跳过——文件已删除，git history 可追溯）
 
-在 `2026-06-30-scroll-stitch-research.md`（已归档至 `2026-07-02-archived-specs.md`）的"### 方案 A：FFT 相位相关（推荐）"标题后追加注记：
+在 `2026-06-30-scroll-stitch-research.md`（已删除，git history 可追溯）的"### 方案 A：FFT 相位相关（推荐）"标题后追加注记：
 
 ```markdown
 > **更新（2026-06-12）**：本方案为调研结论，**实际未采纳**。最终实现采用 2D SAD 空间模板匹配 + 软速度罚分（见 commit `4b94215`），在实测中已能精准工作。后续性能优化（整数化 + 模板预取 + 画布增量追加）见 [`2026-06-12-capx-optimization-design.md`](./2026-06-12-capx-optimization-design.md)。
 ```
 
-- [ ] **Step 2: 更新 architecture.md 的 CAPX 章节**
+- [x] **Step 2: 更新 architecture.md 的 CAPX 章节**（已在本次同步中更新）
 
 先查看 architecture.md 中 CAPX 相关内容：
 ```bash
