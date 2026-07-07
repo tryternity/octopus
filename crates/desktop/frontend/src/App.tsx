@@ -46,8 +46,9 @@ function App() {
   // 每个窗口 mount 时应用主题 + 监听 config-changed 同步主题切换。
   // Tauri app_handle.emit 广播到所有窗口，但需每窗口自行 listen。
   useEffect(() => {
-    // 主题初始恢复由 index.html 阻断脚本 + main.tsx restoreCachedTheme 完成。
-    // 此处只监听 config-changed（用户在其他窗口改了主题时同步），不重复 IPC。
+    // 异步校正 localStorage 与 DB 的差异（首次运行/清缓存/多窗口不同步时生效）。
+    // 不阻塞首屏渲染——restoreCachedTheme 已在 main.tsx 同步完成。
+    applyThemeFromConfig();
     const unlisten = listen("config-changed", () => applyThemeFromConfig());
     return () => { unlisten.then((fn) => fn()); };
   }, []);
