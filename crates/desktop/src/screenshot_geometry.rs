@@ -63,8 +63,8 @@ pub(crate) fn compute_physical_crop(
     mon: &MonitorRect,
 ) -> PhysicalCrop {
     PhysicalCrop {
-        px: ((sel.x - mon.x) * mon.scale) as u32,
-        py: ((sel.y - mon.y) * mon.scale) as u32,
+        px: ((sel.x - mon.x).max(0.0) * mon.scale) as u32,
+        py: ((sel.y - mon.y).max(0.0) * mon.scale) as u32,
         pw: (sel.w * mon.scale) as u32,
         ph: (sel.h * mon.scale) as u32,
     }
@@ -138,6 +138,16 @@ mod tests {
         assert_eq!(crop.py, 200);
         assert_eq!(crop.pw, 200);
         assert_eq!(crop.ph, 200);
+    }
+
+    #[test]
+    fn physical_crop_selection_before_monitor_clamps_to_zero() {
+        // 跨显示器边界：选区左边缘在目标显示器左侧之外 → px/py 应 clamp 到 0 而非 wrap
+        let sel = SelectionGlobal { x: 1900.0, y: -50.0, w: 100.0, h: 100.0 };
+        let mon = MonitorRect { x: 1920.0, y: 0.0, w: 2560.0, h: 1440.0, scale: 2.0 };
+        let crop = compute_physical_crop(&sel, &mon);
+        assert_eq!(crop.px, 0);  // (1900-1920).max(0.0) * 2 = 0
+        assert_eq!(crop.py, 0);  // (-50-0).max(0.0) * 2 = 0
     }
 
     #[test]

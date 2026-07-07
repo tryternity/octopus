@@ -137,6 +137,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **vision/numeric.rs（2026-06-12）**：paddle-ocr 内重复的工具函数集中——`l2`（3 处完全相同）、`saturate_cast_i16_from_f32`（2 处）、`cv_round_ties_even_f32`/`saturate_cast_i32_round`/`saturate_cast_i16`/`interpolate_cubic_coeffs`/`clip_i32_exclusive_upper`/`clamp_i32_inclusive` 统一到 `vision/numeric.rs`。同步修 clamp/clip 命名混淆（原 `clip_i32` hi_exclusive vs `clamp_i32` hi_inclusive 语义不可见），改名让 inclusive/exclusive 在函数名上可见。
 
+**det/postprocess/ 拆分（2026-06-12）**：原 2226 行 `mod.rs` 拆为 7 子模块：`threshold.rs`（二值化 + AVX2/SSE4.1）、`contour.rs`（轮廓提取 + 2x2 膨胀 + AVX2）、`box_score.rs`（box/contour 得分计算 + SIMD）、`geometry.rs`（最小外接矩形 + 凸包 + Sklansky）、`unclip.rs`（多边形扩展 + 填充 + 周长/面积）、`filter.rs`（检测框过滤/排序）、`tests.rs`。`mod.rs` 仅保留 `DbPostProcess` struct/impl + `CandidateScratch`/`ScaleTarget` + 模块声明。
+
 **触发方式**：手动——剪贴板浮窗/管理页图片条目点 OCR 按钮（ScanText 图标）。不支持自动 OCR。
 
 **结果处理**：三处入口（截图工具栏 / 图片预览 / 剪贴板图片条目）识别文本后统一走 `insert_ocr_clipboard_item`（desktop 命令：新建 source=ocr 剪贴板条目，engine/model 复用 clipboard_history 列）→ `open_compact_editor_tab(itemId)` 在精简编辑器打开绑定 tab 编辑（Ctrl+S 经 `set_clipboard_item_text` 回写）。截图 OCR 后端闭环（`ocr_screenshot` 内 insert_ocr + 同进程 open tab），其余两入口前端 `ocr_image` 纯识别 → insert → open tab。不再写 search_text / 系统剪贴板 / osascript TextEdit。**并发互斥可见提示**：某入口 OCR 进行中、他入口再点被 `OcrLockGuard` 拒绝时，前端 4 处给出「前一个 OCR 还未完成」反馈——剪贴板列表 / 图片预览 OCR 按钮显琥珀三角（`ocrWarn` 1.8s）、截图屏幕中央黑底 toast、设置页 `showToast`（该错误去掉原 `OCR 失败：` 前缀直接显示）。

@@ -10,6 +10,7 @@ mod compact_editor_window;
 mod image_migration;
 mod clipboard_window;
 mod coordinator;
+mod db_queue;
 mod engine;
 #[cfg(feature = "cloud")]
 mod engine_aliyun;
@@ -514,7 +515,7 @@ pub fn run() {
             // 应用退出前：排空后台 DB 写入队列，避免 Finalize 等命令入队未落库而丢失
             // （录音结束→Finalize 入队→立即退出，是 DB actor 最典型的丢数据路径）。
             if let tauri::RunEvent::ExitRequested { .. } = event {
-                coordinator::shutdown_db();
+                db_queue::shutdown_db();
             }
         });
 }

@@ -1,8 +1,8 @@
 # 重构优化设计 — 死代码/重复/超长代码清理
 
 > 日期：2026-06-12
-> 状态：**✅ 已完成**（merge `903a66a`，84+42 tests 全绿，0 warnings）
-> 来源：[代码审查报告](../reviews/2026-06-12-code-review.md)
+> 状态：**✅ 已完成**（merge `903a66a` + 后续扩展 `9bc0b53`/`0c0ae93`，84+42 tests + tsc 0 errors 全绿，0 warnings）
+> 来源：[代码审查报告](../../code-review/2026-06-12-code-review.md)
 > 决策：Q1=A（分层提取 + 局部 TDD）、Q2=A（coordinator 仅拆内部长函数，先不拆子目录）
 > whisper_mel_matrix.rs 不纳入范围（保持现状，等价于 bin 文件）
 
@@ -175,4 +175,19 @@ cargo test --workspace  # desktop 也能编译（dist 存在）
 - 不引入 trait 抽象 mock 平台 API（YAGNI）
 - 不动 `whisper_mel_matrix.rs`
 - 不合并 `compute_fbank_features`（高风险，AGENTS.md 警告需数值回归）
-- 不拆前端组件（本次仅 Rust）
+
+## 后续扩展（原计划范围外，已实施）
+
+以下两项在初始 4 task 完成后追加，仍遵守行为零变化约束：
+
+### 5. `postprocess/mod.rs` (2226行) 拆分
+
+拆为 7 个子模块：`threshold.rs`（二值化+SIMD）、`contour.rs`（轮廓+膨胀）、`box_score.rs`（得分计算）、`geometry.rs`（最小外接矩形+凸包）、`unclip.rs`（多边形扩展）、`filter.rs`（过滤/排序）、`tests.rs`。`mod.rs` 仅保留 `DbPostProcess` struct/impl + `CandidateScratch`/`ScaleTarget` + 模块声明。纯文件搬移，无逻辑变更。
+
+### 6. 前端超长组件拆分
+
+| 组件 | 之前 | 之后 | 提取 |
+|---|---|---|---|
+| `Screenshot/index.tsx` | 1170 | 960 | `ToolButton.tsx`、`ToolPropsPopover.tsx`、`ScrollPreview.tsx` |
+| `Result/index.tsx` | 869 | 787 | `shortcut.ts`（parseShortcut/matchShortcut）、`CaretBlink.tsx` |
+| `ImagePreview/index.tsx` | 850 | 832 | `zoom.ts`（常量+工具函数） |
