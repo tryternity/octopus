@@ -50,7 +50,7 @@ Wox（`clipboard.go:127` trigger keyword `cb`）和 Raycast 都是**全键盘驱
 | `←` / `→` | 切换过滤 tab（左/右） | 归输入框光标移动（**不拦截**） |
 | `Tab` / `Shift+Tab` | 切换过滤 tab（右/左） | 同左（始终可用） |
 | `Enter` | 对选中条目执行默认动作 | 同左 |
-| `Cmd+1` .. `Cmd+7` | 跳到第 N 个过滤 tab | 同左 |
+| `Ctrl+1` .. `Ctrl+7` | 跳到第 N 个过滤 tab | 同左 |
 | `Esc` | 清空搜索内容；已空则隐藏浮窗 | 清空搜索内容 |
 
 **不变量**：
@@ -75,7 +75,9 @@ Wox（`clipboard.go:127` trigger keyword `cb`）和 Raycast 都是**全键盘驱
 
 ### 2.5 过滤 tab 顺序与序号映射
 
-`FilterTabs.tsx:5` 的 `TABS` 数组顺序即 `Cmd+N` 序号映射（收藏提到第 2 位——除"全部"外最高频操作）：
+`FilterTabs.tsx:5` 的 `TABS` 数组顺序即 `Ctrl+N` 序号映射（收藏提到第 2 位——除"全部"外最高频操作）：
+
+> 不用 `Cmd+N`：octopus 激活策略为 `Accessory`，剪贴板浮窗显示时不切 `Regular`，前一 app 的菜单栏 key equivalent 会拦截 `Cmd+digit`。`Ctrl` 不产生特殊字符、非标准 menu equivalent、跨平台一致。
 
 | 序号 | value | label |
 |------|-------|-------|
