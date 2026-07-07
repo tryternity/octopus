@@ -120,15 +120,16 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     .resizable(true)
     .visible(true);
 
-    if state.width > 0.0 && state.height > 0.0 {
-        builder = builder.inner_size(state.width, state.height).position(state.x, state.y);
+    // 非最大化时才设具体尺寸+位置——最大化状态由 builder.maximized(true) 直接生效，
+    // 避免设了尺寸再被 maximize 覆盖的冗余布局计算。
+    if !state.maximized {
+        if state.width > 0.0 && state.height > 0.0 {
+            builder = builder.inner_size(state.width, state.height).position(state.x, state.y);
+        } else {
+            builder = builder.inner_size(WIDTH, HEIGHT).center();
+        }
+        builder = builder.maximized(false);
     } else {
-        builder = builder.inner_size(WIDTH, HEIGHT).center();
-    }
-
-    // 最大化在 build 前设置（builder.maximized），而非 build 后 win.maximize()——
-    // 后者导致窗口先以记忆尺寸出现再动画放大到全屏（PPT slide 效果）。
-    if state.maximized {
         builder = builder.maximized(true);
     }
 
