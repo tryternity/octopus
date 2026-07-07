@@ -151,13 +151,18 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     }
 
     let win = builder.build();
-    log::info!("[compact-editor] after build");
+    log::info!("[compact-editor] after build, maximized={}", state.maximized);
 
-    // 所有配置（最大化/尺寸/位置）就绪后才 show——消除"先中间再放大"的过渡感
-    // set_focus 在 Rust 侧同步触发 native 级应用激活，防前端 JS show 导致的"点两次"
+    // builder.maximized(true) 在 WRY 底层未生效（build 后 is_maximized=false）。
+    // 在 show 前手动 maximize——窗口仍是 hidden 状态时 maximize，
+    // 最大化完成后才 show，用户看到的首帧已是全屏。
     if let Ok(ref win) = win {
+        if state.maximized {
+            let _ = win.maximize();
+        }
         let _ = win.show();
         let _ = win.set_focus();
+        log::info!("[compact-editor] after show");
     }
 }
 
