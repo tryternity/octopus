@@ -96,23 +96,27 @@ export default function Screenshot() {
   }, []);
 
   // 滚动截图事件监听
+  // listen 是异步的：若组件在 Promise resolve 前卸载（用户快速 ESC/右键取消截图），
+  // cleanup 时 unlisten* 仍为 undefined → 注销失效、监听器永久遗留在 Tauri 事件总线。
+  // cancelled 哨兵：resolve 时若已卸载则立即调 fn() 自注销（对齐 ImagePreview ocr 监听范式）。
   useEffect(() => {
     let unlistenFrame: (() => void) | undefined;
     let unlistenDone: (() => void) | undefined;
+    let cancelled = false;
     listen<{ frame: string; preview: string; height: number; phys_height: number }>("scroll://frame", (e) => {
       const img = new Image();
       img.onload = () => { scrollFrameRef.current = img; draw(); };
       img.src = `data:image/jpeg;base64,${e.payload.frame}`;
       setScrollPreview(e.payload.preview);
       setScrollHeight(e.payload.phys_height);
-    }).then((fn) => { unlistenFrame = fn; });
+    }).then((fn) => { if (cancelled) fn(); else unlistenFrame = fn; });
     listen("scroll://done", () => {
       setScrollPreview(null);
       setModeSafe("selected");
       // 保存模式由 Rust 端直接弹对话框，前端不再中转 base64
       scrollSaveAfterStopRef.current = false;
-    }).then((fn) => { unlistenDone = fn; });
-    return () => { unlistenFrame?.(); unlistenDone?.(); };
+    }).then((fn) => { if (cancelled) fn(); else unlistenDone = fn; });
+    return () => { cancelled = true; unlistenFrame?.(); unlistenDone?.(); };
   }, []);
 
   // 初始化 Canvas 尺寸（仅一次，避免高频重分配 GPU 缓冲区）

@@ -6,6 +6,10 @@ use std::collections::VecDeque;
 
 /// 静止判定阈值。dy=0 处的平均像素差值小于此值视为内容未滚动。
 const STATIONARY_SAD: f64 = 2.0;
+/// fallback（1D 投影 / best-guess）追加画布前的 2D 反向验证：重叠区每像素 SAD 均值上限。
+/// 高于 STATIONARY_SAD 以吸收亚像素 .round() 误差 / 压缩噪声 / 渲染反锯齿差异。起步 15.0，
+/// reject 日志（apply_fallback_match 内）便于线上标定后再收。详见 verify_alignment_2d。
+const FALLBACK_VERIFY_SAD: f64 = 15.0;
 /// 排除最左侧的比例（通常有图标/树状图）。
 const X_START_RATIO: f64 = 0.10;
 /// 排除最右侧的比例截止点（通常有滚动条/时间戳），即保留 10%~80% 横向区间。
@@ -611,6 +615,10 @@ impl Stitcher {
     ) -> Result<bool> {
         let x_start = (w as f64 * X_START_RATIO) as u32;
         let x_end = (w as f64 * X_END_RATIO) as u32;
+        // 抽样列：2D 反向验证与静止检测共用，提前算一次复用（消除下方重复计算）
+        let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
+            .step_by(SAMPLE_STEP_X)
+            .collect();
         let max_scroll = self.config.max_scroll;
 
         // 相邻帧参考 fallback（方向 1）：画布底部旧模板失配时，改用前一帧匹配当前帧。
@@ -619,7 +627,7 @@ impl Stitcher {
             if let Some(dy) = self.try_match_prev_frame(prev_gray, curr_gray, eff_top, eff_bottom) {
                 self.best_guess_streak = 0;
                 self.ncc_stuck_count = 0;
-                return self.apply_fallback_match(dy, 0.0, 0.0, frame, curr_gray, w, eff_top, eff_bottom);
+                return self.apply_fallback_match(dy, 0.0, 0.0, frame, curr_gray, canvas_gray, &sample_cols, false, w, eff_top, eff_bottom);
             }
         }
 
@@ -629,13 +637,10 @@ impl Stitcher {
         ) {
             log::info!("[stitch] fallback: 1D projection match, dy={:.1} conf={:.4}", dy, conf);
             self.best_guess_streak = 0;
-            return self.apply_fallback_match(dy, conf, sad, frame, curr_gray, w, eff_top, eff_bottom);
+            return self.apply_fallback_match(dy, conf, sad, frame, curr_gray, canvas_gray, &sample_cols, true, w, eff_top, eff_bottom);
         }
 
         // 静止检测：匹配全失败时检查画面是否实际没动
-        let sample_cols: Vec<usize> = (x_start as usize..x_end as usize)
-            .step_by(SAMPLE_STEP_X)
-            .collect();
         let stationary_sad = self.quick_stationary_check(curr_gray, canvas_gray, &sample_cols);
         if stationary_sad < STATIONARY_SAD {
             log::info!("[stitch] stationary detected before best-guess (sad={:.2})", stationary_sad);
@@ -651,7 +656,7 @@ impl Stitcher {
             if let Some(dy) = self.estimate_dy_hint() {
                 log::info!("[stitch] best-guess dy={:.1} (streak={})", dy, self.best_guess_streak + 1);
                 self.best_guess_streak += 1;
-                return self.apply_fallback_match(dy, 0.0, 0.0, frame, curr_gray, w, eff_top, eff_bottom);
+                return self.apply_fallback_match(dy, 0.0, 0.0, frame, curr_gray, canvas_gray, &sample_cols, true, w, eff_top, eff_bottom);
             }
         }
 
@@ -704,6 +709,59 @@ impl Stitcher {
         if count > 0 { sad as f64 / count as f64 } else { f64::MAX }
     }
 
+
+    /// fallback 2D 反向验证：候选 dy 下，画布底部 strip 与当前帧重叠区的 2D 抽样 SAD。
+    /// 用于 fallback（1D/best-guess）追加画布前的正确性校验——1D 行投影对图文混排易假匹配，
+    /// 追加前用 2D 像素复验：按 dy 算出重叠区（curr 中紧贴 crop 区上方的已见内容），与画布
+    /// 底部 strip 比 SAD；SAD 大说明 dy 错位 → 拒绝追加（skip，靠 Canvas-Anchored 下一帧恢复）。
+    ///
+    /// 几何：crop_y = eff_bottom - new_rows（当前帧新内容起点，与主匹配 process_frame_inner 一致）；
+    /// 重叠区在 curr 中是 [crop_y - verify_rows, crop_y)（紧挨 crop 区上方），对应画布底部 strip。
+    /// 返回每像素 SAD 均值（越大越不对齐）；样本不足/越界返回 f64::MAX（调用方按拒绝处理）。
+    fn verify_alignment_2d(
+        &self,
+        canvas_gray: &GrayBuf,
+        curr_gray: &GrayBuf,
+        dy: f64,
+        eff_top: u32,
+        eff_bottom: u32,
+        sample_cols: &[usize],
+    ) -> f64 {
+        if dy >= 0.0 || sample_cols.is_empty() {
+            return f64::MAX;
+        }
+        if canvas_gray.width != curr_gray.width {
+            return f64::MAX;
+        }
+        let new_rows = (-dy).round() as u32;
+        if new_rows == 0 {
+            return f64::MAX;
+        }
+        let crop_y = eff_bottom.saturating_sub(new_rows);
+        if crop_y <= eff_top {
+            return f64::MAX;
+        }
+        let canvas_h_actual = canvas_gray.data.len() / canvas_gray.width;
+        // 重叠区行数：strip_h / canvas 实际行数 / curr 重叠可用行数（crop_y - eff_top）三者取 min
+        let verify_rows = self.config.strip_h
+            .min(canvas_h_actual as u32)
+            .min(crop_y - eff_top);
+        if verify_rows == 0 {
+            return f64::MAX;
+        }
+        let mut sad: u64 = 0;
+        let mut count: u64 = 0;
+        for i in 0..verify_rows as usize {
+            // canvas 最底 verify_rows 行 vs curr 重叠区 [crop_y-verify_rows, crop_y)
+            let canvas_row = canvas_gray.row(canvas_h_actual - verify_rows as usize + i);
+            let curr_row = curr_gray.row(crop_y as usize - verify_rows as usize + i);
+            for &x in sample_cols {
+                sad += (canvas_row[x] as i32 - curr_row[x] as i32).unsigned_abs() as u64;
+                count += 1;
+            }
+        }
+        if count > 0 { sad as f64 / count as f64 } else { f64::MAX }
+    }
 
     /// 用历史 dy 中位数估算当前预期位移（Best-Guess 提示）。
     /// 当所有匹配策略失败时，用此值追加内容，打破死亡螺旋。
@@ -818,10 +876,13 @@ impl Stitcher {
     fn apply_fallback_match(
         &mut self,
         dy: f64,
-        _confidence: f64,
-        _best_sad: f64,
+        confidence: f64,
+        best_sad: f64,
         frame: &RgbaImage,
-        _curr_buf: &GrayBuf,
+        curr_gray: &GrayBuf,
+        canvas_gray: &GrayBuf,
+        sample_cols: &[usize],
+        verify: bool,
         w: u32,
         eff_top: u32,
         eff_bottom: u32,
@@ -835,6 +896,22 @@ impl Stitcher {
         if new_rows < self.config.min_scroll_px as u32 || new_rows >= max_scroll_limit {
             self.last_dy = None;
             return Ok(false);
+        }
+
+        // 2D 反向验证（1D/best-guess 路径）：按候选 dy 算重叠区 SAD，超阈值说明 dy 错位，
+        // 拒绝追加——skip 该帧，靠 Canvas-Anchored 下一帧从画布底部恢复匹配。
+        // prev_frame 路径 verify=false：其 dy 已过内部 validate_ncc_match，且上一帧 skip 时
+        // prev≠画布底部，本验证会误杀这根救命稻草。
+        if verify {
+            let sad = self.verify_alignment_2d(canvas_gray, curr_gray, dy, eff_top, eff_bottom, sample_cols);
+            if sad > FALLBACK_VERIFY_SAD {
+                log::info!(
+                    "[stitch] fallback rejected by 2D verify: dy={:.1} sad={:.1} thresh={:.1} (conf={:.3}, 1d_sad={:.1})",
+                    dy, sad, FALLBACK_VERIFY_SAD, confidence, best_sad
+                );
+                self.last_dy = None;
+                return Ok(false);
+            }
         }
 
         let crop_y = eff_bottom - new_rows;
@@ -1044,6 +1121,50 @@ mod tests {
         img
     }
 
+    /// 图文混排测试帧：左半纯色（仅 y 渐变，1D 行投影主导、易假匹配）+
+    /// 右半密集条纹（水平每 5 行翻转 + 垂直每 3 列加亮，2D 才能区分）。
+    /// 复刻滚动截图真实场景（图文混排页面），验证 2D 反向验证能识破 1D 假匹配。
+    fn make_frame_text_mixed(width: u32, height: u32, scroll_offset: u32) -> RgbaImage {
+        let mut img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::new(width, height);
+        let half = width / 2;
+        for y in 0..height {
+            for x in 0..width {
+                let mut v = ((y + scroll_offset) % 256) as u8;
+                if x >= half {
+                    // 右半密集条纹：2D 特征丰富
+                    if (y + scroll_offset).is_multiple_of(5) { v = 255 - v; }
+                    if x % 3 == 0 { v = v.saturating_add(60); }
+                }
+                // 左半保持纯色渐变（1D 行投影在此无横向区分度）
+                let px = Rgba([v, v, v, 255]);
+                img.put_pixel(x, y, px);
+            }
+        }
+        img
+    }
+
+    /// 测试 helper：从帧底部取 strip_h 行构造 y_offset=0 的 GrayBuf
+    /// （复刻 extract_canvas_bottom_gray 语义，供 verify_alignment_2d 测试直接控制 canvas 侧）。
+    fn canvas_bottom_strip(frame: &RgbaImage, strip_h: u32) -> GrayBuf {
+        let w = frame.width() as usize;
+        let h = frame.height();
+        let mut data = Vec::with_capacity(strip_h as usize * w);
+        for y in (h - strip_h)..h {
+            for x in 0..w {
+                let p = frame.get_pixel(x as u32, y);
+                data.push(((2126 * p[0] as u32 + 7152 * p[1] as u32 + 722 * p[2] as u32) / 10000) as u8);
+            }
+        }
+        GrayBuf { data, width: w, y_offset: 0 }
+    }
+
+    /// 测试 helper：抽样列（复刻 try_fallback 的 sample_cols 构造）。
+    fn verify_sample_cols(width: u32) -> Vec<usize> {
+        let xs = (width as f64 * X_START_RATIO) as usize;
+        let xe = (width as f64 * X_END_RATIO) as usize;
+        (xs..xe).step_by(SAMPLE_STEP_X).collect()
+    }
+
     /// 构造一个带 sticky 顶/底区域的帧：顶部 `top_h` 行和底部 `bot_h` 行固定不变，
     /// 中间内容随 `scroll_offset` 变化。
     fn make_frame_with_sticky(
@@ -1236,7 +1357,8 @@ mod tests {
         let f1 = make_frame_textured(TW, TH, 0, 0);
         s.process_frame(&f1).unwrap(); // init
         let f2 = make_frame_textured(TW, TH, 30, 0);
-        let _ = s.process_frame(&f2).unwrap(); // 验证不 panic
+        let added = s.process_frame(&f2).unwrap();
+        assert!(added, "低纹理 1D 正确匹配应被 2D 验证放行，不应 skip");
     }
 
     #[test]
@@ -1415,5 +1537,148 @@ mod tests {
             s.try_match_prev_frame(&short, &curr, 0, TH).is_none(),
             "过短的 prev 不应给出匹配"
         );
+    }
+
+    // ===== verify_alignment_2d 单元测试（fallback 2D 反向验证）=====
+
+    #[test]
+    fn test_verify_alignment_2d_correct_offset_low_sad() {
+        // f0 → f2 scroll=30，正确 dy=-30：重叠区应完美对齐，SAD 极低
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f2 = make_frame(TW, TH, 30);
+        let canvas_gray = canvas_bottom_strip(&f0, strip_h);
+        let curr_gray = GrayBuf::from_rgba_roi(&f2, 0, TH as usize);
+        let cols = verify_sample_cols(TW);
+        let s = Stitcher::new(f0, StitchConfig::default());
+        let sad = s.verify_alignment_2d(&canvas_gray, &curr_gray, -30.0, 0, TH, &cols);
+        assert!(sad < 5.0, "正确对齐 SAD 应 <5，实际 {}", sad);
+    }
+
+    #[test]
+    fn test_verify_alignment_2d_wrong_offset_high_sad() {
+        // 同场景但 dy=-60（多估 30px）：错位，SAD 应高于阈值
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f2 = make_frame(TW, TH, 30);
+        let canvas_gray = canvas_bottom_strip(&f0, strip_h);
+        let curr_gray = GrayBuf::from_rgba_roi(&f2, 0, TH as usize);
+        let cols = verify_sample_cols(TW);
+        let s = Stitcher::new(f0, StitchConfig::default());
+        let sad = s.verify_alignment_2d(&canvas_gray, &curr_gray, -60.0, 0, TH, &cols);
+        assert!(sad > FALLBACK_VERIFY_SAD, "错位 30px SAD 应 >{}，实际 {}", FALLBACK_VERIFY_SAD, sad);
+    }
+
+    #[test]
+    fn test_verify_alignment_2d_text_mixed_rejects_false_match() {
+        // 图文混排：正确 dy 低 SAD，错位 dy 高 SAD（2D 能区分右半条纹，1D 不能）
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame_text_mixed(TW, TH, 0);
+        let f2 = make_frame_text_mixed(TW, TH, 30);
+        let canvas_gray = canvas_bottom_strip(&f0, strip_h);
+        let curr_gray = GrayBuf::from_rgba_roi(&f2, 0, TH as usize);
+        let cols = verify_sample_cols(TW);
+        let s = Stitcher::new(f0, StitchConfig::default());
+        let sad_ok = s.verify_alignment_2d(&canvas_gray, &curr_gray, -30.0, 0, TH, &cols);
+        let sad_bad = s.verify_alignment_2d(&canvas_gray, &curr_gray, -60.0, 0, TH, &cols);
+        assert!(sad_ok < 5.0, "图文混排正确对齐 SAD 应 <5：{}", sad_ok);
+        assert!(sad_bad > FALLBACK_VERIFY_SAD, "图文混排错位 SAD 应 >{}：{}", FALLBACK_VERIFY_SAD, sad_bad);
+    }
+
+    #[test]
+    fn test_verify_alignment_2d_new_rows_one_no_panic() {
+        // 极小位移 dy=-1：不越界、不除零
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 1);
+        let canvas_gray = canvas_bottom_strip(&f0, strip_h);
+        let curr_gray = GrayBuf::from_rgba_roi(&f1, 0, TH as usize);
+        let cols = verify_sample_cols(TW);
+        let s = Stitcher::new(f0, StitchConfig::default());
+        let sad = s.verify_alignment_2d(&canvas_gray, &curr_gray, -1.0, 0, TH, &cols);
+        assert!(sad.is_finite(), "dy=-1 不应 panic/NaN：{}", sad);
+    }
+
+    #[test]
+    fn test_verify_alignment_2d_large_offset_no_oob() {
+        // 大位移 scroll=200（>strip_h=80）：不越界 + 正确对齐 SAD 低
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f_big = make_frame(TW, TH, 200);
+        let canvas_gray = canvas_bottom_strip(&f0, strip_h);
+        let curr_gray = GrayBuf::from_rgba_roi(&f_big, 0, TH as usize);
+        let cols = verify_sample_cols(TW);
+        let s = Stitcher::new(f0, StitchConfig::default());
+        let sad = s.verify_alignment_2d(&canvas_gray, &curr_gray, -200.0, 0, TH, &cols);
+        assert!(sad.is_finite(), "大位移不应越界：{}", sad);
+        assert!(sad < 5.0, "正确大位移 SAD 应 <5：{}", sad);
+    }
+
+    #[test]
+    fn test_verify_alignment_2d_defenses_return_max() {
+        // 防御分支：空列 / dy>=0 返回 f64::MAX（按拒绝处理）
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let canvas_gray = canvas_bottom_strip(&f0, strip_h);
+        let curr_gray = GrayBuf::from_rgba_roi(&f0, 0, TH as usize);
+        let s = Stitcher::new(f0, StitchConfig::default());
+        assert_eq!(s.verify_alignment_2d(&canvas_gray, &curr_gray, -30.0, 0, TH, &[]), f64::MAX);
+        assert_eq!(s.verify_alignment_2d(&canvas_gray, &curr_gray, 0.0, 0, TH, &verify_sample_cols(TW)), f64::MAX);
+        assert_eq!(s.verify_alignment_2d(&canvas_gray, &curr_gray, 5.0, 0, TH, &verify_sample_cols(TW)), f64::MAX);
+    }
+
+    // ===== fallback 链集成测试 =====
+
+    #[test]
+    fn test_fallback_1d_false_match_rejected_by_2d_verify() {
+        // 核心回归：fallback 给出错位 dy 时，2D 验证拒绝追加，画布不被污染（C3 bug 场景）。
+        // 直接测 apply_fallback_match(verify=true)：图文混排帧，真实 dy=-30，故意传 -60。
+        let f0 = make_frame_text_mixed(TW, TH, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default()); // 画布 = f0（不 init，避开合成帧 sticky 误检）
+        let h_before = s.height();
+
+        let f2 = make_frame_text_mixed(TW, TH, 30);
+        let strip_h = StitchConfig::default().strip_h;
+        let curr_gray = GrayBuf::from_rgba_roi(&f2, 0, TH as usize);
+        let cols = verify_sample_cols(TW);
+
+        // 错位 dy=-60（conf=0.3574 复刻 C3）：2D 验证应拒绝，画布不增长
+        let canvas_gray = s.extract_canvas_bottom_gray(strip_h);
+        let rejected = s.apply_fallback_match(
+            -60.0, 0.3574, 8.0, &f2, &curr_gray, &canvas_gray, &cols, true, TW, 0, TH,
+        ).unwrap();
+        assert!(!rejected, "错位 dy 应被 2D 验证拒绝");
+        assert_eq!(s.height(), h_before, "拒绝时画布不应增长（不污染）");
+
+        // 正确 dy=-30 应被放行，画布增长 30
+        let canvas_gray = s.extract_canvas_bottom_gray(strip_h);
+        let accepted = s.apply_fallback_match(
+            -30.0, 0.9, 2.0, &f2, &curr_gray, &canvas_gray, &cols, true, TW, 0, TH,
+        ).unwrap();
+        assert!(accepted, "正确 dy 应被 2D 验证放行");
+        assert_eq!(s.height(), h_before + 30, "正确 dy 追加 30 行");
+    }
+
+    #[test]
+    fn test_fallback_prev_frame_not_blocked_by_2d_verify() {
+        // prev_frame 路径 verify=false：即使 canvas 与 curr 在该 dy 下不对齐（模拟上一帧 skip 后
+        // prev≠画布底部），也不被 2D 验证拦截——信任 prev_frame 内部 validate_ncc_match。
+        let f0 = make_frame_text_mixed(TW, TH, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default());
+        let f1 = make_frame_text_mixed(TW, TH, 0);
+        s.process_frame(&f1).unwrap();
+        let h_before = s.height();
+
+        let f2 = make_frame_text_mixed(TW, TH, 30);
+        let strip_h = StitchConfig::default().strip_h;
+        let canvas_gray = s.extract_canvas_bottom_gray(strip_h);
+        let curr_gray = GrayBuf::from_rgba_roi(&f2, 0, TH as usize);
+        let cols = verify_sample_cols(TW);
+        // 故意传与 canvas 不对齐的 dy=-60，但 verify=false → 不验证，直接追加
+        let accepted = s.apply_fallback_match(
+            -60.0, 0.0, 0.0, &f2, &curr_gray, &canvas_gray, &cols, false, TW, 0, TH,
+        ).unwrap();
+        assert!(accepted, "prev_frame 路径 verify=false 不应被 2D 验证拦截");
+        assert!(s.height() > h_before, "prev_frame 应正常追加");
     }
 }

@@ -444,7 +444,16 @@ function CompactEditor() {
         tabs.map((tab, i) => (
           <div key={tab.key} className="flex-1 flex flex-col" style={{ display: i === activeIdx ? 'flex' : 'none' }}>
             {tab.itemType === 'image' ? (
-              <ImagePreviewComponent imageId={tab.itemId} />
+              // 图片 Tab 懒加载：仅活跃 Tab 挂载 ImagePreview，避免隐藏 Tab 仍并发拉全图
+              // （get_image_full）+ 建 createImageBitmap——5 张全分辨率图常驻致内存×Tab 数暴涨。
+              // 切回重新加载（标注/缩放状态重置可接受：图片非高频切换、用户通常逐张处理）。
+              i === activeIdx ? (
+                <ImagePreviewComponent imageId={tab.itemId} />
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground bg-background">
+                  切换到此标签加载图片
+                </div>
+              )
             ) : (
               <textarea
                 ref={i === activeIdx ? taRef : undefined}

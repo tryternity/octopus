@@ -114,10 +114,18 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
 
   const startShortcutCapture = useCallback((configKey: string) => {
     setCapturingKey(configKey);
+  }, []);
+
+  // 监听器生命周期绑定到 capturingKey：切 Tab/关窗卸载时 useEffect cleanup 自动
+  // removeEventListener，避免 stale handler 持续 preventDefault/stopPropagation 劫持
+  // 全局键盘（其他输入框打不出字）+ setVal 写已卸载组件。
+  useEffect(() => {
+    if (!capturingKey) return;
+    const configKey = capturingKey;
     const handler = async (e: KeyboardEvent) => {
       e.preventDefault();
       e.stopPropagation();
-      if (e.key === "Escape") { setCapturingKey(null); cleanup(); return; }
+      if (e.key === "Escape") { setCapturingKey(null); return; }
       // 纯修饰键不触发，等待用户按实际键
       if (e.key === "Alt" || e.key === "Shift" || e.key === "Control" || e.key === "Meta") return;
       const parts: string[] = [];
@@ -132,11 +140,10 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         await setVal(configKey, shortcut);
       } catch (err) { showToast("" + err); }
       setCapturingKey(null);
-      cleanup();
     };
-    const cleanup = () => document.removeEventListener("keydown", handler, true);
     document.addEventListener("keydown", handler, true);
-  }, [setVal, showToast]);
+    return () => document.removeEventListener("keydown", handler, true);
+  }, [capturingKey, setVal, showToast]);
 
   return (
     <div className="max-w-[640px]">

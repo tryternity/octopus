@@ -157,7 +157,7 @@ function ClipboardItemRow({
         "group relative px-3 py-2 cursor-pointer transition-colors flex items-center gap-2.5",
         // hover 用更淡的色，selected 用 accent + 左侧指示条，避免同时两行同色高亮
         isSelected && !deletePending ? "bg-accent" : "hover:bg-muted",
-        deletePending && "bg-red-50",
+        deletePending && "bg-red-500/15",
       )}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}

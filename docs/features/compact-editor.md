@@ -28,7 +28,7 @@ type Tab = {
 ```
 
 - 文本 tab 标题 = 文本前 5 字 + `-` + id hex 后 5 位
-- 图片 tab 嵌入 `ImagePreview` 组件（hidden 保持挂载 ≤5，超 5 替换最旧）
+- 图片 tab 嵌入 `ImagePreview` 组件（≤5，超 5 替换最旧）。**图片懒加载**（2026-07-07）：仅活跃 Tab 挂载 ImagePreview，非活跃显示占位——避免隐藏 Tab 仍并发拉全图+建 `createImageBitmap` 致内存×Tab 数暴涨；切回重新加载（标注/缩放重置可接受）。textarea 保持全挂载保编辑状态
 - 语音 tab 只读 textarea
 
 工具栏：撤销 / 重做 / 字号 / 查找替换 / 清空 / 保存
@@ -91,7 +91,7 @@ type Tab = {
 - 保留 `listen("ocr-screenshot://result")` 接收截图 OCR blocks
 
 **性能优化**（2026-07-03）：
-1. **视口渲染**——canvas 固定窗口大小，滚动时只从预缩放位图裁剪可见区域（不管图多大，GPU 合成恒定 ~8MB）
+1. **可见区切片重绘**——drawBg 滚动/缩放时只 drawImage 可见 src 切片（不全量重绘）。⚠️ canvas 物理尺寸当前仍是整图 `dispW*dpr×dispH*dpr`（大画布随滚），**长图 `natH×zoom×dpr > 32767` 超 Chromium 单边硬限会空白崩**——视口固定重构待办（见 code-review 2026-07-07 问题4 / memory `imagepreview-canvas-32767-limit`）
 2. **底图 canvas + SVG overlay**——标注用 SVG 元素（标注变化零 canvas 操作）
 3. **zoom 走 `createImageBitmap` 异步预缩放**（`zoomVersionRef` 防过时帧）
 4. **先 thumb 再 full 渐进加载**（`cancelled` 防竞态 + ResizeObserver 自动重算）
