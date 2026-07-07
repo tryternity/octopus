@@ -444,7 +444,9 @@ impl VadSegmentedPipeline {
             let buffer_duration_s = self.audio_buffer.len() as f64 / 16000.0;
             let silence_ms = self.silence_duration * 1000.0;
             let silence_cut = self.has_speech && silence_ms >= self.segment_silence_ms;
-            let force_cut = self.has_speech && buffer_duration_s >= SEGMENT_DURATION_S;
+            // force_cut 解绑 has_speech：detect_vad 漂移失灵时 has_speech 卡 false 致 buffer 无限堆积。
+            // 达上限必切，由 filter_vad（每段 reset，不受漂移污染）独立兜底判定有无语音。
+            let force_cut = buffer_duration_s >= SEGMENT_DURATION_S;
             if silence_cut || force_cut {
                 let mut send_buffer = self.overlap_tail.clone();
                 send_buffer.extend_from_slice(&self.audio_buffer);
@@ -458,6 +460,12 @@ impl VadSegmentedPipeline {
                 self.audio_buffer.clear();
                 self.has_speech = false;
                 self.silence_duration = 0.0;
+                // 切段 = 一段语音结束、新段开始，是 LSTM 状态的安全重置点。
+                // reset+preroll 让 detect_vad 从干净状态检测（与构造 L371 对称），消除跨段累积漂移。
+                // 根因：detect_vad 会话内从不 reset，几段后 LSTM 漂移致真实语音持续 prob<0.5 →
+                // has_speech 卡 false → silence_cut/force_cut 均不触发 → buffer 无限堆积不吐字。
+                self.detect_vad.reset();
+                vad_preroll(&mut self.detect_vad);
 
                 let speech_samples = filter_speech_from_buffer(&mut self.filter_vad, &send_buffer);
                 if !speech_samples.is_empty() {
@@ -832,5 +840,43 @@ mod tests {
         let events = p.tick(&[0.0; 1600], &mut t);
         assert!(!events.iter().any(|e| matches!(e, PipelineEvent::Speaking(_))),
             "silence unchanged → no Speaking event");
+    }
+
+    // ── VadSegmented force_cut 兜底（SenseVoice "几段后不吐字" 根因 B 修复回归）──
+
+    /// Dummy TranscriptionEngine：全静音不触发 spawn，transcribe 不被调（安全返回即可）。
+    struct DummyTranscriptionEngine;
+    #[async_trait::async_trait]
+    impl crate::engine::TranscriptionEngine for DummyTranscriptionEngine {
+        async fn transcribe(&self, _: &[f32], _: &str, _: &str) -> anyhow::Result<String> {
+            Ok("dummy".to_string())
+        }
+        async fn health_check(&self) -> bool { true }
+    }
+
+    /// 探 silero_vad 模型存在则构造 VadSegmentedPipeline，缺失返回 None（测试 skip 不 FAIL，CI 友好）。
+    fn try_new_vad_pipeline() -> Option<VadSegmentedPipeline> {
+        octopus_asr_local::config::find_silero_vad().ok()?;
+        let engine: std::sync::Arc<dyn crate::engine::TranscriptionEngine> =
+            std::sync::Arc::new(DummyTranscriptionEngine);
+        VadSegmentedPipeline::new(engine, "zh".into(), "sensevoice".into(), 800.0).ok()
+    }
+
+    #[test]
+    fn force_cut_clears_buffer_when_no_speech_detected() {
+        // 回归（根因 B 兜底）：detect_vad LSTM 漂移致 has_speech 卡 false 时，force_cut（解绑 has_speech）
+        // 应在 buffer 达 SEGMENT_DURATION_S 时触发切段清空 buffer，防无限堆积。
+        // 此前 force_cut 被 && has_speech 门控，has_speech=false 时永不触发 → 不吐字。
+        let mut p = match try_new_vad_pipeline() {
+            Some(p) => p,
+            None => { println!("skip: 测试环境无 silero_vad 模型"); return; }
+        };
+        let mut t = Transcript::new(0, PolishMode::Disabled);
+        // 灌 SEGMENT_DURATION_S(20s) 纯静音：detect_vad 已 preroll 静音稳态 → 判无语音 → has_speech 保持 false。
+        // force_cut = buffer_duration_s >= SEGMENT_DURATION_S 触发切段（与 has_speech 无关）→ audio_buffer 清空。
+        let silence = vec![0.0_f32; (SEGMENT_DURATION_S * 16000.0) as usize];
+        p.run_tick(&silence, &mut t);
+        assert!(p.audio_buffer.is_empty(),
+            "force_cut 应清空 buffer（has_speech=false 兜底），实际 len={}", p.audio_buffer.len());
     }
 }
