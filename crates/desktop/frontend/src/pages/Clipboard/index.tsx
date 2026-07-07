@@ -24,6 +24,8 @@ export default function Clipboard() {
   // 键盘导航以数组索引为第一性 citizen；执行动作时从 items[selectedIndex].id 取。
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [recording, setRecording] = useState(true);
+  // 浮窗内切 Tab 的修饰键（cmd/ctrl/alt），由设置页配置，默认 ctrl。
+  const tabModifierRef = useRef<"cmd" | "ctrl" | "alt">("ctrl");
 
   const { items, total, refresh } = useClipboardHistory(filter, search);
 
@@ -104,10 +106,11 @@ export default function Clipboard() {
         setFilter(TABS_VALUES[next]);
         return;
       }
-      // Ctrl+1..7：直接跳 tab。不用 Cmd（metaKey）——octopus 激活策略为 Accessory，
-      // 剪贴板浮窗显示时不切 Regular，前一 app 的菜单栏 key equivalent 会拦截 Cmd+digit。
-      // Ctrl 不产生特殊字符、非标准 menu equivalent、跨平台一致。
-      if (e.ctrlKey && e.key >= "1" && e.key <= "7") {
+      // +1..7：直接跳 tab。修饰键由设置页配置（cmd/ctrl/alt），默认 ctrl。
+      // 注意：cmd 在 Accessory 激活策略下可能被前一 app 菜单栏 key equivalent 拦截。
+      const mod = tabModifierRef.current;
+      const modPressed = mod === "cmd" ? e.metaKey : mod === "ctrl" ? e.ctrlKey : e.altKey;
+      if (modPressed && e.key >= "1" && e.key <= "7") {
         e.preventDefault();
         const n = parseInt(e.key, 10) - 1;
         if (n < TABS_VALUES.length) setFilter(TABS_VALUES[n]);
@@ -118,11 +121,15 @@ export default function Clipboard() {
     return () => window.removeEventListener("keydown", handler);
   }, []);
 
-  // 监听开关：mount 读 get_config + 监听 config-changed 同步（与设置页 toggle 双向同步）。
+  // 监听开关 + Tab 修饰键：mount 读 get_config + 监听 config-changed 同步。
   const loadRecording = useCallback(async () => {
     try {
       const resp = await invoke<ConfigResponse>("get_config");
       setRecording(resp.config.clipboard_enabled !== false);
+      const mod = resp.config.clipboard_tab_modifier as string;
+      if (mod === "cmd" || mod === "ctrl" || mod === "alt") {
+        tabModifierRef.current = mod;
+      }
     } catch (e) {
       console.error(e);
     }
