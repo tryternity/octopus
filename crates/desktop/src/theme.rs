@@ -77,15 +77,15 @@ fn builtin_themes() -> Vec<ThemeInfo> {
         },
         // ── Obsidian Glass ── 黑曜石深色玻璃。
         // 设计意图：比 Wox Glass Dark 更深更黑——接近黑曜石的致密质感。
+        // α 0.82 确保文字可读（WCAG ≥4.5:1），保留微玻璃感。
         // 选中态用高亮半透明白（0.16）拉开与 hover（0.08）的层级差。
-        // 对比度：foreground #f5f5f7 对 rgba(18,18,22,0.6) 叠深色桌面 ≈ 11:1。
         ThemeInfo {
             id: "glass-dark".into(),
             name: "Obsidian Glass".into(),
             description: "黑曜石深色半透明玻璃".into(),
             blur: true,
             colors: ThemeColors {
-                background: "rgba(18, 18, 22, 0.60)".into(),
+                background: "rgba(18, 18, 22, 0.82)".into(),
                 foreground: "#f5f5f7".into(),
                 primary: "#f5f5f7".into(),
                 primary_foreground: "#1c1917".into(),
@@ -102,14 +102,14 @@ fn builtin_themes() -> Vec<ThemeInfo> {
         // ── Nord Aurora ── 北极极光冷蓝深色。
         // 设计意图：Nord 配色——冰川蓝深底 + 极光青强调，冷峻克制。
         // 不照搬 Dracula（太常见），Nord 的辨识度在于"冷而不黑"。
-        // 对比度：foreground #e5e9f0 对 rgba(46,52,64,0.75) ≈ 11:1。
+        // α 0.85 确保文字可读，保留微玻璃感。
         ThemeInfo {
             id: "nord".into(),
             name: "Nord Aurora".into(),
             description: "北极极光冷蓝深色".into(),
             blur: true,
             colors: ThemeColors {
-                background: "rgba(46, 52, 64, 0.75)".into(),
+                background: "rgba(46, 52, 64, 0.85)".into(),
                 foreground: "#e5e9f0".into(),
                 primary: "#e5e9f0".into(),
                 primary_foreground: "#2e3440".into(),
