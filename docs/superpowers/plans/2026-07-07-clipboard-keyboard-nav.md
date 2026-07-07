@@ -618,6 +618,10 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 24. 剪贴管理页跟随主题 | ✅ | `d19e979` | ClipboardPanel 22 处 stone 硬编码改语义 token |
 | 25. icon_filter 去掉 opacity | ✅ | `08e7d16` | opacity(0.65) 在深色背景上太暗 |
 | 26. icon-filter 变量传递修复 | ✅ | `a6053a9` | 从 theme.colors 取（非顶层），跳过颜色遍历 |
+| 27. HistoryPanel + blur 清理 | ✅ | `71dd3da` | 15 处 stone 改语义 token；移除 backdrop-blur 死代码 |
+| 28. 全局 SVG 图标 icon-filter | ✅ | `70ef247` | ClipboardPanel/ClipboardItem SVG img 加 var(--icon-filter) |
+| 29. ImagePreview 工具栏适配 | ✅ | `ffeef52` | ToolButton 加 color 让 Lucide 图标可见；卡片/弹窗改 CSS 变量 |
+| 30. ScrollPreview 保存按钮 | ✅ | `24f5d02`+`831f41e` | #3b82f6→var(--color-voice)；修 JSX 语法 |
 
 ### 与原 plan 的偏差
 
@@ -632,7 +636,8 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 5. **主题系统（plan 未涉及）**：借鉴 Wox 主题设计，新增 3 套内置主题 + JSON 扩展。关键决策：
    - 半透明改纯不透明（CSS backdrop-filter 在 Tauri WebView 下无法实现均匀模糊）
    - 新增 surface（不透明背景）、tool-icon（工具栏图标色）、icon-filter（截图图标 CSS filter）三个 token
-   - 所有窗口的 stone 硬编码逐步替换为语义 token（Result/CompactEditor/ClipboardPanel/Screenshot）
+   - 所有窗口的 stone 硬编码逐步替换为语义 token（Result/CompactEditor/ClipboardPanel/HistoryPanel/Screenshot/ImagePreview）
+   - 两类图标适配：SVG `<img>` 用 `var(--icon-filter)` 反色；Lucide React 图标靠 ToolButton 设 `color` 让 `currentColor` 继承
 
 ### 新增文件
 

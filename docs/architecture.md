@@ -453,6 +453,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - **配置**：`clipboard_theme` 字段（AppConfig），存主题 id（`light` / `glass-dark` / `nord` / 用户自定义）。serde 自动 load/save，`config-changed` 无条件 emit 触发全窗口热切换。
 - **3 套内置主题**（`crates/desktop/src/theme.rs`）：Warm Paper（纸质感暖灰浅色）、Obsidian Glass（黑曜石深色 `#121216`）、Nord Aurora（北极极光冷蓝 `#2e3440`）。暗色主题用**纯不透明实色**——CSS `backdrop-filter` 在 Tauri WebView 下无法实现 Wox 的原生 NSVisualEffectView 均匀模糊。
 - **token 体系**：标准 Tailwind 语义色（`background`/`foreground`/`muted`/`accent`/`border`/`voice`）+ 3 个扩展 token：`surface`（不透明背景，result_window/截图工具栏用）、`tool-icon`（result_window 工具栏图标色）、`icon-filter`（截图工具栏图标 CSS filter，暗色=`brightness(0) invert(1)` 反色黑色 SVG）。
+- **图标适配两类**：SVG `<img>`（截图/剪贴板/图片查看器工具栏）用 `var(--icon-filter)` 在暗色主题反色；Lucide React 图标（编辑器/图片查看器的缩放/自适应按钮）靠父容器设 `color: var(--color-foreground)` 让 `currentColor` 继承。
 - **应用机制**：`theme.ts` `applyTheme` 写 CSS 变量到 `:root`，Tailwind 类自动跟随。`App.tsx` 每窗口 mount 时 `applyThemeFromConfig()` + 监听 `config-changed` 同步。
 - **用户扩展**：`~/.octopus/themes/*.json` 可新增自定义主题（同 id 覆盖内置），`list_themes` 命令合并返回。
 - **剪贴板浮窗键盘导航**（2026-07-07）：搜索框持焦模型，`↑↓` 移动选中（边界夹紧不循环）、`Enter` 粘贴（复用 `paste_clipboard_item` 双保险）、空内容 `←→` 切 tab / 有内容让位光标、`Tab` 恒定切 tab、`<修饰键>+1..7` 跳 tab（修饰键可配置 `clipboard_tab_modifier`，macOS Option 用 `e.code` 而非 `e.key`）。详见 [spec](superpowers/specs/2026-07-07-clipboard-keyboard-nav-design.md)。

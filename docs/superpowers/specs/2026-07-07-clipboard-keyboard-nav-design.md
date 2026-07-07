@@ -132,8 +132,12 @@ Wox（`clipboard.go:127` trigger keyword `cb`）和 Raycast 都是**全键盘驱
 | `crates/desktop/src/settings_commands.rs` | `clipboard_theme` 校验 |
 | `crates/desktop/frontend/src/pages/Result/index.tsx` | `surface`/`tool-icon` 替代硬编码黑色 |
 | `crates/desktop/frontend/src/pages/CompactEditor/index.tsx` | stone 硬编码改为语义 token |
-| `crates/desktop/frontend/src/pages/Settings/ClipboardPanel.tsx` | stone 硬编码改为语义 token |
+| `crates/desktop/frontend/src/pages/Settings/ClipboardPanel.tsx` | stone 硬编码改为语义 token；SVG 图标加 icon-filter |
+| `crates/desktop/frontend/src/pages/Settings/HistoryPanel.tsx` | stone 硬编码改为语义 token |
+| `crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx` | SVG 预览图标加 icon-filter |
 | `crates/desktop/frontend/src/pages/Screenshot/*` | 工具栏/弹窗背景+图标 filter 跟随主题 |
+| `crates/desktop/frontend/src/pages/Screenshot/ScrollPreview.tsx` | 保存按钮 #3b82f6→var(--color-voice) |
+| `crates/desktop/frontend/src/pages/ImagePreview/Toolbar.tsx` | 工具栏卡片/ToolButton/弹窗全面适配主题（Lucide+SVG） |
 
 **不改**：后端命令、数据模型、`useClipboardHistory` 请求逻辑、浮窗创建/隐藏/焦点恢复链路、截图遮罩层（`rgba(0,0,0,0.5)` 功能需要）。
 
