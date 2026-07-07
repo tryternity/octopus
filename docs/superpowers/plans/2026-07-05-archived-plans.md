@@ -119,7 +119,7 @@
 
 **3 个 Task**：双 canvas 分层 + draw 拆分（drawBg/drawActive）→ createImageBitmap 异步预缩放 → 先 thumb 再 full 渐进加载 + fit-to-window。
 
-**⚠️ 架构演进（plan 独有的迭代记录）**：原设计双 canvas（bgCanvas + drawCanvas）。实施后用户测 2032×15796 超长图仍卡顿，经历三轮迭代：① RAF 节流 + 跳过无变化 canvas 尺寸重设（`203be9d`，稍好仍慢）→ ② pen 增量线段 + shape 脏区域重绘（`6379614`，drawCanvas GPU 合成 45M 像素本身有固定成本）→ ③ **canvas + SVG overlay**（`237713a`，最终方案，标注完全不参与 canvas 操作）。后续又叠加视口渲染 v2（`9bca0de`+`a9faa39`，canvas 恒定窗口大小，GPU 合成 174MB→~8MB 降 20×）。
+**⚠️ 架构演进（plan 独有的迭代记录）**：原设计双 canvas（bgCanvas + drawCanvas）。实施后用户测 2032×15796 超长图仍卡顿，经历三轮迭代：① RAF 节流 + 跳过无变化 canvas 尺寸重设（`203be9d`，稍好仍慢）→ ② pen 增量线段 + shape 脏区域重绘（`6379614`，drawCanvas GPU 合成 45M 像素本身有固定成本）→ ③ **canvas + SVG overlay**（`237713a`，最终方案，标注完全不参与 canvas 操作）。后续又叠加视口渲染 v2（`9bca0de`+`a9faa39`，canvas 恒定窗口大小，GPU 合成 174MB→~8MB 降 20×）。（⚠️ 此方案后续曾偏离走偏——canvas 被移入 wrapper、物理变 `dispW*dpr×dispH*dpr` 致长图超 32767 崩；2026-07-07 修复恢复视口固定、改 content 内 sticky 实现 + `viewportMath.ts` 纯函数单测，详见 [archived-design §5.2 演进订正](../specs/2026-07-05-archived-design.md)（「视口渲染 v2（最终方案）」节末））
 
 **Task 3 race condition 修复**：plan 原用 `if (imgRef.current?.src === thumbDataUrl) return` 防重复，快速切图时旧 promise onload 仍覆盖新图 → effect 内 `let cancelled = false` + cleanup，thumb/full 的 `.then`/`onload` 均检查。thumb→full 同尺寸未缩放时 `setNatW/H`+`setZoomSync` 无状态变化 → drawBg useCallback 不重建 → canvas 保留已 close 旧 bitmap → full onload 末尾补 `drawBg()` 显式重绘。
 
