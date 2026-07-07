@@ -756,7 +756,7 @@ function Result() {
 
       {/* Popup */}
       {popupType && (
-        <div className="popup-content absolute top-[28px] left-1.5 w-[360px] bg-white rounded-lg border border-black/[0.10] shadow-lg shadow-black/[0.12] z-30 text-[12px]">
+        <div className="popup-content absolute top-[28px] left-1.5 w-[360px] bg-background rounded-lg border border-black/[0.10] shadow-lg shadow-black/[0.12] z-30 text-[12px]">
           {popupItems.map((item, i) => (
             <div
               key={i}

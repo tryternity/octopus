@@ -376,6 +376,8 @@ ctx.drawImage(bitmap || img, (visL/dispW)*srcW, (visT/dispH)*srcH,
 
 **不变量**：① 所有定位 absolute + JS 手算；② canvas 和 scrollContainer 同为 `absolute inset-0`（同坐标系）；③ drawBg 只用 scrollLeft/Top + clientWidth/Height + 已知 imgLeft/imgTop；④ wrapper left/top 在 render 与 drawBg 用同一公式。
 
+> ⚠️ **演进订正（2026-07-07，bug 修复）**：上述「canvas 在 scrollContainer 外（兄弟节点）」曾落地（`9bca0de`/`a9faa39`），但后续重构（疑为 §5.6 统一查看器把 ImagePreview 嵌入 CompactEditor tab 时的 DOM 重组）中 canvas 被移入 wrapper 内、物理尺寸随之变成 `dispW*dpr × dispH*dpr`（大画布随滚），**偏离了「恒定窗口大小」核心原则**——长图 `natH×zoom×dpr > 32767`（Chromium canvas 单边硬限）时空白崩。修复恢复视口固定，实现演进为 **canvas 在 content 内 `position:sticky; top:0; left:0`**（替代原「scrollContainer 外兄弟」，更简洁：wrapper/SVG overlay 仍随 content 滚，canvas sticky 钉视口；canvas 须在 wrapper **之前**的 DOM 顺序以处下层、`pointer-events:none` 让鼠标穿透到 wrapper）。不变量②相应演进为「canvas sticky 钉视口、物理尺寸 = viewport×dpr」。drawBg 改 content 空间交集（`visL=max(imgLeft,sl)`）→ 视口坐标 dst → src 切片，几何换算抽 `ImagePreview/viewportMath.ts` 纯函数（`computeVisibleRect`/`visibleToViewport`/`computeSrcSlice`）+ 17 单测。**教训：spec 写视口固定，代码悄悄走偏成大画布是长期未发现的回归——canvas 物理尺寸必须恒为视口、不得随 dispW 增长；DOM/sticky 视觉对齐须 GUI 验证（jsdom 测不出）。** 详见 code-review 2026-07-07 问题 4 / memory `imagepreview-canvas-32767-limit`。
+
 ### 5.3 createImageBitmap 异步预缩放（缩放优化）
 
 zoom 变化不在主线程对原图 `drawImage` 到超大画布，而先异步生成预缩放 `ImageBitmap`：

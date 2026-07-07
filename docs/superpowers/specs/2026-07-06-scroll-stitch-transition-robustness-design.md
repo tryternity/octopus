@@ -137,3 +137,14 @@ process_frame:
 - **失配帧 NCC 计算翻倍**：仅 fallback 路径，正常帧无开销；失配本就是少数帧
 - **`prev_gray` 内存**：~1.3MB/录制（1440×900 有效区灰度），可接受
 - **模板取全有效区 vs 底部 strip**：实现时取 `prev_gray` 底部 strip（与 canvas strip 同源同尺寸）匹配 curr，复用 `ncc_match` 路径，避免新写匹配逻辑
+
+---
+
+## 8. 后续增强（2026-07-07）：fallback 2D 反向验证
+
+本 spec 的 prev_frame fallback（方向1）缓解「内容突变」失配——但 **1D 投影 / best-guess 在 prev_frame 也失配时仍可能盲 append**（见 §2 致死双因 ①，本 spec 未根治此路径）。2026-07-07 补一层根治：
+
+- **`verify_alignment_2d`**：1D/best-guess 追加画布前，按候选 dy 算重叠区 `[crop_y-verify_rows, crop_y)`（紧贴 crop 区上方的已见内容）的 2D 抽样 SAD vs 画布底部 strip，超 `FALLBACK_VERIFY_SAD`（默认 15.0）→ 拒绝追加、skip 该帧，靠 Canvas-Anchored 下一帧从画布底部恢复匹配。
+- **直接堵住** 1D 行投影对图文混排的假匹配污染（实测 log：图文长页 y≈2520 处错位，1D 给 `conf=0.3574` 弱匹配被 `apply_fallback_match` 无条件采纳所致）。
+- **prev_frame 路径 `verify=false`**——其 dy 已过内部 `validate_ncc_match`，且上一帧 skip 时 `prev≠画布底部` 会让本验证误杀这根救命稻草。
+- 接入点 `apply_fallback_match`（`stitch.rs`），prev_frame/1D/best-guess 三处统一过验证；`finalize` 已有 NCC validate 不动。阈值 15.0 起步，留 reject 日志便于线上标定。详见 architecture.md `stitch` 行。

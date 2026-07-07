@@ -104,8 +104,9 @@ start_screenshot
 
 ## 7. 标注工具栏
 
-- 工具：矩形 / 箭头 / 文字 / 序号 / 撤销
+- 工具：选择 / 矩形 / 椭圆 / 菱形 / 直线 / 箭头 / 画笔 / 文字 / 序号 / 马赛克 / OCR / 撤销重做
 - 标注在选区内 Canvas clip 绘制
+- 命中测试（`hitTestAnnotationPrecise`，`lib/annotation.ts`，Screenshot 与 ImagePreview 共用）：选择工具下点选/拖动标注——空心 rect/oval/diamond/line/arrow/pen 查到线条距离 ≤ `HIT_DIST`(8)；实心 rect/oval/diamond 查鼠标在图形内部（rect 矩形包含 / oval 与 diamond 归一半径 ≤1）；文字/序号用 bounding box。2026-07-07 修正：filled 内部命中 + diamond 独立分支，消除空心菱形误中
 
 ---
 

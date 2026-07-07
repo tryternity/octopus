@@ -338,8 +338,9 @@ export function annBounds(ann: Annotation): { x: number; y: number; w: number; h
   };
 }
 
-// 精确命中：空心标注（rect/oval/line/arrow）检查到线条的距离，填充标注用 bounding box。
-// anns 由调用方传入（抽取自 Screenshot 组件，原闭包 annotations 改为参数）。
+// 精确命中：空心标注（rect/oval/diamond/line/arrow）检查到线条的距离；实心 rect/oval/diamond
+// 判定鼠标是否在图形内部；文字/序号用 bounding box。anns 由调用方传入
+// （抽取自 Screenshot 组件，原闭包 annotations 改为参数）。
 export function hitTestAnnotationPrecise(
   mx: number,
   my: number,
@@ -348,16 +349,20 @@ export function hitTestAnnotationPrecise(
   for (let i = anns.length - 1; i >= 0; i--) {
     const ann = anns[i];
     if (ann.type === "rect") {
-      // 矩形：检查到四条边的距离
+      // 矩形：实心查内部命中；空心查到四条边的距离
       const x = Math.min(ann.x1, ann.x2);
       const y = Math.min(ann.y1, ann.y2);
       const w = Math.abs(ann.x2 - ann.x1);
       const h = Math.abs(ann.y2 - ann.y1);
-      const onEdge = (Math.abs(mx - x) <= HIT_DIST || Math.abs(mx - (x + w)) <= HIT_DIST) && my >= y - HIT_DIST && my <= y + h + HIT_DIST
-        || (Math.abs(my - y) <= HIT_DIST || Math.abs(my - (y + h)) <= HIT_DIST) && mx >= x - HIT_DIST && mx <= x + w + HIT_DIST;
-      if (onEdge) return i;
+      if (ann.filled) {
+        if (mx >= x && mx <= x + w && my >= y && my <= y + h) return i;
+      } else {
+        const onEdge = (Math.abs(mx - x) <= HIT_DIST || Math.abs(mx - (x + w)) <= HIT_DIST) && my >= y - HIT_DIST && my <= y + h + HIT_DIST
+          || (Math.abs(my - y) <= HIT_DIST || Math.abs(my - (y + h)) <= HIT_DIST) && mx >= x - HIT_DIST && mx <= x + w + HIT_DIST;
+        if (onEdge) return i;
+      }
     } else if (ann.type === "oval") {
-      // 椭圆：检查到椭圆轮廓的距离
+      // 椭圆：实心查内部命中；空心查到椭圆轮廓的距离
       const cx = (ann.x1 + ann.x2) / 2;
       const cy = (ann.y1 + ann.y2) / 2;
       const rx = Math.abs(ann.x2 - ann.x1) / 2;
@@ -365,8 +370,28 @@ export function hitTestAnnotationPrecise(
       if (rx < 1 || ry < 1) continue;
       const dx = (mx - cx) / rx;
       const dy = (my - cy) / ry;
-      const dist = Math.abs(Math.sqrt(dx * dx + dy * dy) - 1) * Math.min(rx, ry);
-      if (dist <= HIT_DIST) return i;
+      const r = Math.sqrt(dx * dx + dy * dy);
+      if (ann.filled) {
+        if (r <= 1 + HIT_DIST / Math.min(rx, ry)) return i;
+      } else {
+        if (Math.abs(r - 1) * Math.min(rx, ry) <= HIT_DIST) return i;
+      }
+    } else if (ann.type === "diamond") {
+      // 菱形：实心查内部命中；空心查到四条斜边的距离（与 rect/oval 行为一致）
+      const x = Math.min(ann.x1, ann.x2);
+      const y = Math.min(ann.y1, ann.y2);
+      const w = Math.abs(ann.x2 - ann.x1);
+      const h = Math.abs(ann.y2 - ann.y1);
+      const cx = x + w / 2, cy = y + h / 2;
+      const halfW = w / 2, halfH = h / 2;
+      if (halfW < 1 || halfH < 1) continue;
+      // L1 范数归一：菱形边界 nd=1，内部 nd<1（|dx|/halfW + |dy|/halfH）
+      const nd = Math.abs(mx - cx) / halfW + Math.abs(my - cy) / halfH;
+      if (ann.filled) {
+        if (nd <= 1 + HIT_DIST / Math.min(halfW, halfH)) return i;
+      } else {
+        if (Math.abs(nd - 1) * Math.min(halfW, halfH) <= HIT_DIST) return i;
+      }
     } else if (ann.type === "line" || ann.type === "arrow") {
       // 线段：点到线段的距离
       if (pointToSegmentDist(mx, my, ann.x1, ann.y1, ann.x2, ann.y2) <= HIT_DIST) return i;

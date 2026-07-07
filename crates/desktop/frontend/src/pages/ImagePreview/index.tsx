@@ -11,6 +11,7 @@ import {
 } from "@/lib/annotation";
 import Toolbar from "./Toolbar";
 import { AnnotationSvg } from "./AnnotationSvg";
+import { computeVisibleRect, visibleToViewport, computeSrcSlice } from "./viewportMath";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import { MIN_ZOOM, MAX_ZOOM, ZOOM_STEP, TOOLBAR_H, FIT_PADDING, computeFitZoom, computeFitToWidthZoom } from "./zoom";
 
@@ -265,7 +266,8 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
   }, [imageId]);
 
   // wrapper div ref（鼠标坐标用）
-  // 视口渲染：canvas 固定窗口大小，只画可见区域。全部坐标手算，不依赖 flex 居中。
+  // 视口渲染：canvas sticky 钉 scrollContainer 视口，物理尺寸 = 视口×dpr（永不超 32767），
+  // 只画图片露出视口的切片。wrapper（SVG overlay/鼠标）随 content 滚，canvas 不随滚。全部坐标手算。
 
   // 图片在 content 空间中的 left/top（直接读 DOM，与 drawBg 同源同步）
   const dispW = natW * zoom;
@@ -275,35 +277,42 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
   const imgLeft = Math.max(FIT_PADDING / 2, (currentVW - dispW) / 2);
   const imgTop = TOOLBAR_H;
 
-  // —— drawBg：canvas 在 wrapper 内部（和 SVG 同一 scroll context），buffer = dispW×dispH，只画可见区域 ——
+  // —— drawBg：canvas 视口固定（sticky 钉 scrollContainer 视口），物理尺寸 = 视口×dpr（永不超
+  // Chromium 32767 单边硬限，长图不再崩）。只画图片露出视口的切片到视口坐标 (dstL,dstT)。
+  // 几何换算见 viewportMath.ts（纯函数，已单测）；DOM/sticky 对齐靠 GUI 验证。
   const drawBg = useCallback(() => {
     const canvas = bgCanvasRef.current;
     const img = imgRef.current;
     const sc = scrollContainerRef.current;
-    if (!canvas || !img || !natW || !natH || !sc) return;
+    if (!canvas || !img || !sc) return;
+    if (!natW || !natH) return;
+    if (dispW <= 0 || dispH <= 0) return; // 防零除（MIN_ZOOM=0.1 兜底，双保险）
     const dpr = window.devicePixelRatio || 1;
-    const cw = Math.round(dispW * dpr);
-    const ch = Math.round(dispH * dpr);
+    // 视口 CSS 像素（不含 scrollbar）= canvas 物理尺寸基准
+    const vw = sc.clientWidth;
+    const vh = sc.clientHeight;
+    if (vw <= 0 || vh <= 0) return;
+    const cw = Math.min(Math.round(vw * dpr), 32767);
+    const ch = Math.min(Math.round(vh * dpr), 32767);
     if (canvas.width !== cw) canvas.width = cw;
     if (canvas.height !== ch) canvas.height = ch;
     const ctx = canvas.getContext("2d")!;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-    // 只画可见区域（scrollLeft/Top 相对 scrollContainer，图片在 content 中的偏移 = imgLeft/imgTop）
-    const visL = Math.max(0, sc.scrollLeft - imgLeft);
-    const visT = Math.max(0, sc.scrollTop - imgTop);
-    const visR = Math.min(dispW, sc.scrollLeft + sc.clientWidth - imgLeft);
-    const visB = Math.min(dispH, sc.scrollTop + sc.clientHeight - imgTop);
-    if (visR <= visL || visB <= visT) return;
-    // 清可见区 + 画
-    ctx.clearRect(visL, visT, visR - visL, visB - visT);
+    // 清整个视口画布（canvas sticky 不随滚，但内容随滚变化，须全清防残留旧帧）
+    ctx.clearRect(0, 0, vw, vh);
+    // 图片露出视口的区域（content 空间交集）
+    const vis = computeVisibleRect(
+      imgLeft, imgTop, dispW, dispH,
+      sc.scrollLeft, sc.scrollTop, vw, vh,
+    );
+    if (!vis) return; // 图片不在视口 → 已清空，返回
+    // dst（视口坐标）+ src 切片（bitmap 物理空间 或 img 自然空间，公式一致）
+    const { dstL, dstT, dstW, dstH } = visibleToViewport(vis, sc.scrollLeft, sc.scrollTop);
     const bitmap = scaledBitmapRef.current;
     const srcW = bitmap ? bitmap.width : img.naturalWidth;
     const srcH = bitmap ? bitmap.height : img.naturalHeight;
-    const sx = (visL / dispW) * srcW;
-    const sy = (visT / dispH) * srcH;
-    const sw = ((visR - visL) / dispW) * srcW;
-    const sh = ((visB - visT) / dispH) * srcH;
-    ctx.drawImage(bitmap || img, sx, sy, sw, sh, visL, visT, visR - visL, visB - visT);
+    const { sx, sy, sw, sh } = computeSrcSlice(vis, imgLeft, imgTop, dispW, dispH, srcW, srcH);
+    ctx.drawImage(bitmap || img, sx, sy, sw, sh, dstL, dstT, dstW, dstH);
   }, [natW, natH, zoom, viewport, imgLeft, imgTop, dispW, dispH]);
 
   useEffect(() => { drawBg(); }, [drawBg]);
@@ -682,6 +691,21 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
         onMouseDown={() => {
           // 暗区点击不再关窗（CompactEditor tab 模式）
         }}>
+          {/* canvas：底图，视口固定——sticky 钉 scrollContainer 视口左上，物理尺寸 = 视口×dpr
+              （永不超 Chromium 32767 单边硬限，长图不再崩）。DOM 先于 wrapper → 默认 stack 在下层；
+              pointer-events:none 让鼠标穿透到 wrapper。drawBg 只画图片露出视口的切片。 */}
+          <canvas
+            ref={bgCanvasRef}
+            style={{
+              position: "sticky",
+              top: 0,
+              left: 0,
+              width: viewport.w || undefined,
+              height: viewport.h || undefined,
+              display: "block",
+              pointerEvents: "none",
+            }}
+          />
           {/* wrapper：absolute 定位（手算居中），透明背景（canvas 在下层画底图）+ SVG + 鼠标 */}
           <div ref={wrapperRef}
             style={{
@@ -694,12 +718,7 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
             onMouseMove={onMouseMove}
             onMouseUp={onMouseUp}
           >
-            {/* canvas：底图，CSS 尺寸 = dispW×dispH（随滚动移动，与 SVG 同步） */}
-            <canvas
-              ref={bgCanvasRef}
-              className="absolute inset-0 block pointer-events-none"
-              style={{ width: dispW, height: dispH }}
-            />
+            {/* canvas 已移出 wrapper（视口固定 sticky）；此处为 SVG overlay / OCR / img / textarea */}
             {/* OCR 文本块叠加层（三态：off / overlay / mask） */}
             {ocrOverlay !== 'off' && ocrBlocks.length > 0 && (
               <svg className="absolute inset-0 block"
