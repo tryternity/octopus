@@ -31,25 +31,37 @@ pub struct PendingTabFull {
     pub source: String,
     pub item_type: String,
     pub text: String,
+    /// 图片原始宽（仅 image 类型），用于 URL 注入消除布局突变
+    pub img_width: u32,
+    /// 图片原始高
+    pub img_height: u32,
 }
 
 static PENDING_TAB: Mutex<Option<PendingTabFull>> = Mutex::new(None);
 
 fn store_pending_tab(item_id: i64, source: &str) {
-    // 读取 DB 获取 itemType + text，一次合并到 pending（前端只需 1 次 IPC）
-    let (item_type, text) = octopus_infra::db::with_db(|conn| {
+    // 读取 DB 获取 itemType + text + 图片尺寸，一次合并到 pending（前端只需 1 次 IPC）
+    let (item_type, text, img_w, img_h) = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::get_item_by_id(conn, item_id)
     })
     .ok()
     .flatten()
-    .map(|item| (item.item_type.as_str().to_string(), item.content))
-    .unwrap_or_else(|| ("text".into(), String::new()));
+    .map(|item| {
+        let (w, h) = item.meta_info
+            .as_ref()
+            .and_then(|m| m.w.zip(m.h))
+            .unwrap_or((0, 0));
+        (item.item_type.as_str().to_string(), item.content, w, h)
+    })
+    .unwrap_or_else(|| ("text".into(), String::new(), 0, 0));
 
     *PENDING_TAB.lock() = Some(PendingTabFull {
         item_id,
         source: source.to_string(),
         item_type,
         text,
+        img_width: img_w,
+        img_height: img_h,
     });
 }
 

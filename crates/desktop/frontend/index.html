@@ -5,23 +5,15 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>octopus</title>
     <script>
-      // 阻断式主题恢复——在 body 解析前执行，消除白屏 + 主题闪烁。
-      // 无条件设 html 背景色：透明窗口（result/clipboard/screenshot）的
-      // Tauri transparent:true 会覆盖 html 背景色，不受影响；
-      // 非透明窗口（settings/compact_editor）立即有底色，消除白屏。
+      // 阻断式主题恢复——在 body 解析前执行，消除主题闪烁。
+      // 不设背景色——CSS 变量此时可能尚未加载（Vite dev 模式），
+      // 且无条件设会破坏透明窗口（result/clipboard）的穿透性。
+      // 背景色由 main.tsx 按窗口 label 安全设置（CSS 已加载 + 桥接层就绪）。
       try {
         var themeId = localStorage.getItem("octopus-theme-id");
         if (themeId) {
           document.documentElement.setAttribute("data-theme", themeId);
-        }
-        // 截图窗口跳过背景色——它用 transparent + rgba(0,0,0,0.5) 遮罩，
-        // 设不透明背景色会把选区也盖住。其余窗口无条件设防白屏。
-        var params = new URLSearchParams(window.location.search);
-        if (params.get("screenshot") !== "1") {
-          document.documentElement.style.backgroundColor = "var(--color-background)";
-        }
-        // 自定义主题：从 localStorage 恢复 CSS 规则（消除 IPC 延迟）
-        if (themeId) {
+          // 自定义主题：从 localStorage 恢复 CSS 规则（消除 IPC 延迟）
           var builtin = ["light", "glass-dark", "nord"];
           if (builtin.indexOf(themeId) === -1) {
             var css = localStorage.getItem("octopus-custom-theme-css");

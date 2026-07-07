@@ -12,6 +12,8 @@ interface Tab {
   itemId: number;
   itemType?: 'text' | 'image';
   text?: string;
+  imgWidth?: number;
+  imgHeight?: number;
 }
 interface OpenTabPayload {
   itemId: number;
@@ -47,7 +49,9 @@ function readInitialTabFromUrl(): { tabs: Tab[]; hasInitial: boolean } {
   const text = params.get("text") || "";
   const key = `${source}:${id}`;
   if (itemType === "image") {
-    return { tabs: [{ key, source: source as any, itemId: id, itemType: "image" as const }], hasInitial: true };
+    const imgWidth = Number(params.get("imgWidth") || 0);
+    const imgHeight = Number(params.get("imgHeight") || 0);
+    return { tabs: [{ key, source: source as any, itemId: id, itemType: "image" as const, imgWidth, imgHeight }], hasInitial: true };
   }
   return { tabs: [{ key, source: source as any, itemId: id, itemType: "text" as const, text }], hasInitial: true };
 }
@@ -476,7 +480,7 @@ function CompactEditor() {
               // （get_image_full）+ 建 createImageBitmap——5 张全分辨率图常驻致内存×Tab 数暴涨。
               // 切回重新加载（标注/缩放状态重置可接受：图片非高频切换、用户通常逐张处理）。
               i === activeIdx ? (
-                <ImagePreviewComponent imageId={tab.itemId} />
+                <ImagePreviewComponent imageId={tab.itemId} initialWidth={tab.imgWidth} initialHeight={tab.imgHeight} />
               ) : (
                 <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground bg-background">
                   切换到此标签加载图片

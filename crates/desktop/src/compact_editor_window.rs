@@ -91,10 +91,15 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     // 前端首次渲染时同步读取（零 IPC 打开）。
     let url = if let Some(p) = pending {
         let encoded_text = urlencode(&p.text);
-        format!(
+        let mut url = format!(
             "index.html?itemId={}&source={}&itemType={}&text={}",
             p.item_id, p.source, p.item_type, encoded_text
-        )
+        );
+        // 图片类型注入原始尺寸——前端 ImagePreview 首帧即有正确宽高，消除布局突变
+        if p.item_type == "image" && p.img_width > 0 && p.img_height > 0 {
+            url.push_str(&format!("&imgWidth={}&imgHeight={}", p.img_width, p.img_height));
+        }
+        url
     } else {
         "index.html".to_string()
     };

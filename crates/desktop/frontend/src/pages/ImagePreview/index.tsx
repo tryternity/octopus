@@ -23,7 +23,7 @@ import { MIN_ZOOM, MAX_ZOOM, ZOOM_STEP, TOOLBAR_H, FIT_PADDING, computeFitZoom, 
  * ctx.scale(zoom)，鼠标 /zoom 反算；合成保存/复制在自然尺寸画布 1:1 重绘（与 zoom 无关）。
  */
 
-export default function ImagePreview({ imageId: propImageId }: { imageId: number }) {
+export default function ImagePreview({ imageId: propImageId, initialWidth, initialHeight }: { imageId: number; initialWidth?: number; initialHeight?: number }) {
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -33,8 +33,10 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
 
   const [imageId, setImageId] = useState<number | null>(propImageId);
   const [dataUrl, setDataUrl] = useState<string | null>(null);
-  const [natW, setNatW] = useState(0);
-  const [natH, setNatH] = useState(0);
+  // URL 注入的初始尺寸——图片 tab 打开时首帧即有正确宽高，消除布局突变。
+  // 缩略图 onload 后会被真实值覆盖（但值相同，无视觉跳变）。
+  const [natW, setNatW] = useState(initialWidth || 0);
+  const [natH, setNatH] = useState(initialHeight || 0);
   // zoom 倍率，1.0 = 1:1 自然分辨率（默认）
   const [zoom, setZoom] = useState(1);
   // 抓手平移中（tool==="none" 未命中标注时按住拖拽平移视口，免拖滚动条）
