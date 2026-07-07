@@ -45,10 +45,17 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
         *PENDING_PAGE.lock() = Some(page);
     }
 
+    // 背景色 hex URL 注入——index.html 首帧即有色，零 CSS 依赖
+    let url = if let Some(bg) = crate::theme::window_bg_hex(WINDOW_LABEL) {
+        format!("index.html?bg={}", bg)
+    } else {
+        "index.html".to_string()
+    };
+
     let _ = WebviewWindowBuilder::new(
         &app_handle,
         WINDOW_LABEL,
-        WebviewUrl::default(),
+        WebviewUrl::App(url.into()),
     )
     .title("Octopus")
     .inner_size(SETTINGS_WIDTH, SETTINGS_HEIGHT)

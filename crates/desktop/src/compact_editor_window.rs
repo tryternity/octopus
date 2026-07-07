@@ -87,22 +87,27 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     let state = load_window_state();
     log::info!("[compact-editor] window state {:?}", state);
 
-    // URL 参数注入：首个 tab 的数据拼入 URL query string，
-    // 前端首次渲染时同步读取（零 IPC 打开）。
-    let url = if let Some(p) = pending {
+    // URL 参数注入：首个 tab 的数据 + 背景色 hex 拼入 URL query string，
+    // 前端首次渲染时同步读取（零 IPC 打开）+ 首帧即有正确背景色（零 CSS 依赖）。
+    let mut url = if let Some(p) = pending {
         let encoded_text = urlencode(&p.text);
-        let mut url = format!(
+        let mut u = format!(
             "index.html?itemId={}&source={}&itemType={}&text={}",
             p.item_id, p.source, p.item_type, encoded_text
         );
         // 图片类型注入原始尺寸——前端 ImagePreview 首帧即有正确宽高，消除布局突变
         if p.item_type == "image" && p.img_width > 0 && p.img_height > 0 {
-            url.push_str(&format!("&imgWidth={}&imgHeight={}", p.img_width, p.img_height));
+            u.push_str(&format!("&imgWidth={}&imgHeight={}", p.img_width, p.img_height));
         }
-        url
+        u
     } else {
         "index.html".to_string()
     };
+    // 背景色 hex 注入——index.html <head> 脚本同步设为 #hex，零 CSS 依赖消除白屏
+    if let Some(bg) = crate::theme::window_bg_hex(WINDOW_LABEL) {
+        let sep = if url.contains('?') { "&" } else { "?" };
+        url.push_str(&format!("{}bg={}", sep, bg));
+    }
 
     let mut builder = WebviewWindowBuilder::new(
         app_handle,
