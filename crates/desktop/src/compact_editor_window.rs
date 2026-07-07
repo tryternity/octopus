@@ -47,7 +47,13 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
         let maximized = win.is_maximized().unwrap_or(false);
         let scale = win.scale_factor().unwrap_or(1.0);
         let state = if maximized {
-            WindowState { width: WIDTH, height: HEIGHT, x: 0.0, y: 0.0, maximized: true }
+            // 最大化时也保存实际 position——反映窗口在哪个屏幕，
+            // 恢复时据此找到对应显示器创建窗口 + maximize。
+            if let Ok(pos) = win.inner_position() {
+                WindowState { width: WIDTH, height: HEIGHT, x: pos.x as f64 / scale, y: pos.y as f64 / scale, maximized: true }
+            } else {
+                WindowState { width: WIDTH, height: HEIGHT, x: 0.0, y: 0.0, maximized: true }
+            }
         } else if let (Ok(pos), Ok(size)) = (win.inner_position(), win.inner_size()) {
             // inner_position + inner_size 对称保存恢复（都用内容区坐标，
             // 不含标题栏），消除 outer/inner 混用导致的坐标偏差。
@@ -147,16 +153,35 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
         }
         builder = builder.maximized(false);
     } else {
-        // 最大化：先用接近全屏的大尺寸创建（减少 maximize 时的视觉差异），
-        // show 后再 maximize（确保 is_maximized=true）。
-        if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
+        // 最大化：用保存坐标所在的显示器创建接近全屏的大窗体，再 maximize。
+        // 之前写死 primary_monitor 导致副屏最大化的窗口被挪到主屏。
+        let monitors = app_handle.available_monitors().unwrap_or_default();
+        // 找保存坐标所在的显示器（副屏最大化的窗口不挪到主屏）
+        let monitor = monitors.iter().find(|m| {
+            let mx = m.position().x as f64;
+            let my = m.position().y as f64;
+            let mw = m.size().width as f64 / m.scale_factor();
+            let mh = m.size().height as f64 / m.scale_factor();
+            state.x >= mx && state.x < mx + mw && state.y >= my && state.y < my + mh
+        }).or_else(|| {
+            // 坐标不在任何显示器—— fallback 主屏
+            log::info!("[compact-editor] saved pos {},{} not in any monitor, using primary", state.x, state.y);
+            None
+        });
+
+        if let Some(monitor) = monitor {
             let scale = monitor.scale_factor();
             let mw = monitor.size().width as f64 / scale;
             let mh = monitor.size().height as f64 / scale;
             let mx = monitor.position().x as f64 / scale;
             let my = monitor.position().y as f64 / scale;
-            // 用主屏尺寸创建（minus Dock/菜单栏高度约 80px 的余量）
-            builder = builder.inner_size(mw, mh - 80.0).position(mx, my);
+            // 四边各留余量（Dock 可能左右下），最大化时视觉差异最小
+            let margin = 80.0;
+            builder = builder
+                .inner_size(mw - margin * 2.0, mh - margin * 1.5)
+                .position(mx + margin, my + margin * 0.5);
+            log::info!("[compact-editor] maximized: monitor {}x{} at {},{} → window {:.0}x{:.0} at {:.0},{:.0}",
+                mw, mh, mx, my, mw - margin * 2.0, mh - margin * 1.5, mx + margin, my + margin * 0.5);
         } else {
             builder = builder.center();
         }
