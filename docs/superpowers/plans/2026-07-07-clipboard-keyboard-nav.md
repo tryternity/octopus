@@ -637,6 +637,8 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 42. V3 审查 4 项 | ✅ | `0175cc9` | 背景色移 main.tsx；图片尺寸 URL 注入；移除无条件背景色 |
 | 43. 背景色白名单模式 | ✅ | `8fbfa38` | 只对 settings/compact_editor 设，result/clipboard/screenshot 不设 |
 | 44. 截图窗口去掉 body 遮罩 | ✅ | `d292e9e` | 截图遮罩由 React 组件画（选区外），body 背景盖住选区 |
+| 45. 背景色 URL hex 注入 | ✅ | `2f13ef0` | Rust 拼裸 hex 到 URL，index.html 首帧同步设色（零 CSS 依赖） |
+| 46. 脏检查 + 透明窗口兜底移除 | ✅ | `4656d22` | applyThemeById 脏检查避免重复 recalc；移除 localStorage bg 兜底 |
 
 ### 与原 plan 的偏差
 
@@ -660,7 +662,7 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
    - **审查反馈**（白屏+IPC 修复）：index.html 阻断脚本同步恢复主题（消除白屏）；App.tsx 去掉 mount 时无条件 IPC；自定义主题 CSS 缓存到 localStorage；恢复 themeCache（dd4b096 误删）
    - **V2 审查反馈**（时序竞态+白屏+配置同步）：index.html `__TAURI_INTERNALS__` 在 `<head>` 解析时尚未注入，label 读到空串→背景色被跳过。修复：index.html 只恢复 data-theme + 自定义 CSS（不读 label），背景色判断移到 main.tsx（桥接层已就绪）；恢复 App.tsx mount 时异步校正（首次运行/清缓存时必需）
    - visible(false)+show 方案试过但回退（窗口需点两次才出现）
-   - 最终架构：index.html 阻断脚本（零 IPC 恢复 data-theme）+ main.tsx 设背景色 + data-theme CSS 预编译 + App.tsx config-changed 驱动 + mount 异步校正
+   - 最终架构：index.html 阻断脚本恢复 data-theme + URL hex 背景色注入（零 CSS 依赖）+ data-theme CSS 预编译 + App.tsx config-changed 驱动 + mount 异步校正（脏检查避免重复 recalc）
 7. **CompactEditor 打开加速（V3 审查反馈）**：
    - 诊断：tabs 初始 `[]` → "没有打开的条目"占位符闪烁 + 3 次串行 IPC（get_pending_compact_tab → get_clipboard_item_type → get_clipboard_item_text）
    - 修复：后端 `store_pending_tab` 时一次性读 DB，返回 `PendingTabFull`（含 itemType + text）；前端 mount 1 次 IPC 直接建 tab；`initialLoading` 状态隐藏占位符
@@ -680,4 +682,4 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 - Rust：51/51 infra 测试通过（含新增 round-trip），desktop 编译通过
 - E2E：用户确认 cmd/ctrl/alt 三种修饰键均可生效；3 套主题全窗口同步正确
 - 性能：主题加载经五次优化（IPC 缓存→data-theme 预编译→index.html 阻断脚本→时序竞态修复→白名单背景色），白屏消除；CompactEditor 3 IPC→1→**0**（URL 参数注入）+ 占位符消除
-- **背景色方案最终定型**（task 39→41→42→43→44 四次反复后）：main.tsx 白名单模式——只有 `settings_window` 和 `compact_editor_window` 设 `html.style.backgroundColor`，其余所有窗口（result/clipboard/screenshot/label 为空）一律不设。教训：`transparent:true` 不覆盖 html 背景色（html backgroundColor 仍渲染为不透明层）；截图遮罩由 React 组件画在选区外（选区内全透明看桌面），body 背景会盖住选区。
+- **背景色方案最终定型**（task 39→46 六次反复后）：Rust 建窗时从主题配置读 background hex，拼入 URL `?bg=2e3440`。index.html `<head>` 脚本读 bg 参数直接设裸 `#hex`——零 CSS 依赖、零 JS bundle 依赖、首帧即有色。透明窗口（result/clipboard/screenshot）无 bg 参数，不设背景色。applyThemeById 加脏检查（`data-theme` 值相同直接 return）避免重复 style recalc。教训：`transparent:true` 不覆盖 html 背景色；`var(--color-background)` 依赖 CSS 加载（dev 模式有延迟）；截图遮罩由 React 组件画在选区外（选区内全透明看桌面），body 背景会盖住选区。
