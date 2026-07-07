@@ -48,6 +48,14 @@ function App() {
   useEffect(() => {
     applyThemeFromConfig();
     const unlisten = listen("config-changed", () => applyThemeFromConfig());
+    // compact_editor + settings 创建时 visible(false)，前端渲染完毕后 show。
+    // 消除 WebView 加载期间的空白窗口/PPT slide 效果。
+    if (label === "compact_editor_window" || label === "settings_window") {
+      // requestAnimationFrame 等 DOM 首帧绘制完再 show
+      requestAnimationFrame(() => {
+        getCurrentWindow().show().catch(() => {});
+      });
+    }
     return () => { unlisten.then((fn) => fn()); };
   }, []);
 
