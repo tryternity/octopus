@@ -105,6 +105,7 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     }
 
     let state = load_window_state();
+    let mut should_maximize = false;
     log::info!("[compact-editor] window state {:?}", state);
 
     // URL 参数注入：首个 tab 的数据 + 背景色 hex 拼入 URL query string，
@@ -167,36 +168,33 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
         builder = builder.maximized(false);
     } else {
         // 最大化：用保存坐标所在的显示器创建接近全屏的大窗体，再 maximize。
-        // 之前写死 primary_monitor 导致副屏最大化的窗口被挪到主屏。
         let monitors = app_handle.available_monitors().unwrap_or_default();
-        // 找保存坐标所在的显示器（副屏最大化的窗口不挪到主屏）
         let monitor = monitors.iter().find(|m| {
             let mx = m.position().x as f64;
             let my = m.position().y as f64;
             let mw = m.size().width as f64 / m.scale_factor();
             let mh = m.size().height as f64 / m.scale_factor();
             state.x >= mx && state.x < mx + mw && state.y >= my && state.y < my + mh
-        }).or_else(|| {
-            // 坐标不在任何显示器—— fallback 主屏
-            log::info!("[compact-editor] saved pos {},{} not in any monitor, using primary", state.x, state.y);
-            None
         });
 
         if let Some(monitor) = monitor {
+            // 坐标匹配到显示器——在该显示器创建大窗体 + maximize
             let scale = monitor.scale_factor();
             let mw = monitor.size().width as f64 / scale;
             let mh = monitor.size().height as f64 / scale;
             let mx = monitor.position().x as f64 / scale;
             let my = monitor.position().y as f64 / scale;
-            // 四边各留余量（Dock 可能左右下），最大化时视觉差异最小
             let margin = 80.0;
             builder = builder
                 .inner_size(mw - margin * 2.0, mh - margin * 1.5)
                 .position(mx + margin, my + margin * 0.5);
             log::info!("[compact-editor] maximized: monitor {}x{} at {},{} → window {:.0}x{:.0} at {:.0},{:.0}",
                 mw, mh, mx, my, mw - margin * 2.0, mh - margin * 1.5, mx + margin, my + margin * 0.5);
+            should_maximize = true;
         } else {
-            builder = builder.center();
+            // 保存的屏幕未连接——回退主屏默认大小（非最大化）
+            log::info!("[compact-editor] saved monitor not connected, fallback to default");
+            builder = builder.inner_size(WIDTH, HEIGHT).center().maximized(false);
         }
     }
 
@@ -208,7 +206,7 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
         let _ = win.set_focus();
         // show 后再 maximize——窗口已经是接近全屏的大尺寸，
         // maximize 的视觉变化极小，用户几乎感知不到
-        if state.maximized {
+        if should_maximize {
             let _ = win.maximize();
         }
         log::info!("[compact-editor] after show");
