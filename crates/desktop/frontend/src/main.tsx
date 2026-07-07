@@ -13,12 +13,12 @@ restoreCachedTheme()
 try {
   const w = window as any
   const label = w.__TAURI_INTERNALS__?.metadata?.currentWindow?.label || ''
-  if (typeof label === 'string') {
-    if (label.startsWith('screenshot_')) {
-      document.body.style.background = 'rgba(0,0,0,0.5)'
-    } else if (label !== 'result_window' && label !== 'clipboard_window') {
-      document.documentElement.style.backgroundColor = 'var(--color-background)'
-    }
+  // 白名单：只有常规非透明窗口设背景色。透明窗口（result/clipboard/screenshot）
+  // 和 label 为空（桥接层未就绪）都不设——宁可白屏也不破坏透明穿透。
+  if (label === 'settings_window' || label === 'compact_editor_window') {
+    document.documentElement.style.backgroundColor = 'var(--color-background)'
+  } else if (label.startsWith('screenshot_')) {
+    document.body.style.background = 'rgba(0,0,0,0.5)'
   }
 } catch {}
 
