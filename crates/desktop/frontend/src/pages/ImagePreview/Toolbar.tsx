@@ -6,7 +6,7 @@ import { type Tool, PRESET_COLORS } from "@/lib/annotation";
 
 // SVG 图标 img（与截图工具一致，激活时变白）
 const SvgIcon = ({ src, alt, active }: { src: string; alt: string; active?: boolean }) => (
-  <img src={src} alt={alt} className="w-[18px] h-[18px]" style={{ filter: active ? "brightness(0) invert(1)" : "none" }} />
+  <img src={src} alt={alt} className="w-[18px] h-[18px]" style={{ filter: active ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
 );
 
 const POPOVER_W = 240;
@@ -29,6 +29,7 @@ function ToolButton({ active, onClick, title, children }: {
         display: "flex", alignItems: "center", justifyContent: "center",
         borderRadius: 6, border: "none", cursor: "pointer",
         background: active ? "var(--color-voice)" : "transparent",
+        color: active ? "#fff" : "var(--color-foreground)",
         transition: "background 0.15s",
       }}
       onMouseEnter={(e) => { if (!active) e.currentTarget.style.background = "var(--color-muted)"; }}
@@ -133,7 +134,7 @@ export default function Toolbar(props: {
       {/* 工具卡：白底 r8 + 截图同款 shadow */}
       <div style={{
         display: "flex", alignItems: "center", gap: 4,
-        padding: "6px 8px", background: "#fff", borderRadius: 8,
+        padding: "6px 8px", background: "var(--color-surface)", color: "var(--color-foreground)", borderRadius: 8,
         boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
       }}>
         {/* 输出操作：保存 / 复制 / OCR（截图 SVG 图标） */}
@@ -187,12 +188,12 @@ export default function Toolbar(props: {
           style={{
             height: 32, minWidth: 52, padding: "0 6px", border: "none", cursor: "pointer",
             display: "flex", alignItems: "center", justifyContent: "center",
-            borderRadius: 6, background: "transparent", color: "#44403c",
+            borderRadius: 6, background: "transparent", color: "var(--color-foreground)",
             fontSize: 12, fontWeight: 600,
             fontFamily: "SF Mono, Menlo, monospace", fontVariantNumeric: "tabular-nums",
             transition: "background 0.15s",
           }}
-          onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(0,0,0,0.06)"; }}
+          onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-muted)"; }}
           onMouseLeave={(e) => { e.currentTarget.style.background = "transparent"; }}
         >
           {Math.round(props.zoom * 100)}%
@@ -211,7 +212,7 @@ export default function Toolbar(props: {
         <Divider />
         <ToolButton title={props.alwaysOnTop ? "取消置顶" : "窗口置顶"}
           active={props.alwaysOnTop} onClick={() => props.onToggleTop()}>
-          <img src="icons/pin.svg" alt="置顶" className="w-[18px] h-[18px]" style={{ filter: props.alwaysOnTop ? "brightness(0) invert(1)" : "none" }} />
+          <img src="icons/pin.svg" alt="置顶" className="w-[18px] h-[18px]" style={{ filter: props.alwaysOnTop ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
         </ToolButton>
       </div>
 
@@ -221,27 +222,27 @@ export default function Toolbar(props: {
           onMouseDown={(e) => e.stopPropagation()}
           style={{
             position: "absolute", left: popoverLeft, top: "calc(100% + 6px)",
-            padding: "10px 12px", background: "#fff", borderRadius: 10,
+            padding: "10px 12px", background: "var(--color-surface)", color: "var(--color-foreground)", borderRadius: 10,
             boxShadow: "0 8px 24px -4px rgba(0,0,0,0.2), 0 2px 8px -2px rgba(0,0,0,0.1)",
             display: "flex", flexDirection: "column", gap: 10, width: POPOVER_W,
           }}
         >
           {/* 行 1：粗细/字号滑轨 + 当前色（最右） */}
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <span style={{ fontSize: 10, color: "#a8a29e", width: 20, fontWeight: 500, flexShrink: 0 }}>{label}</span>
+            <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", width: 20, fontWeight: 500, flexShrink: 0 }}>{label}</span>
             <input
               type="range" min={min} max={max} value={sizeValue}
               onChange={(e) => setSize(Number(e.target.value))}
               style={{ flex: 1, height: 4, borderRadius: 2, cursor: "pointer", accentColor: props.toolColor }}
             />
-            <span style={{ fontSize: 10, color: "#57534e", width: 18, textAlign: "center", fontWeight: 600,
+            <span style={{ fontSize: 10, color: "var(--color-foreground)", width: 18, textAlign: "center", fontWeight: 600,
               fontFamily: "SF Mono, Menlo, monospace", fontVariantNumeric: "tabular-nums" }}>
               {sizeValue}
             </span>
             {/* 当前色：粗白边 + 阴影，与下方预设色区分 */}
             <div style={{
               width: 20, height: 20, borderRadius: "50%", background: props.toolColor, flexShrink: 0,
-              border: "3px solid #fff",
+              border: "3px solid var(--color-surface)",
               boxShadow: "0 0 0 1.5px rgba(0,0,0,0.2), 0 1px 3px rgba(0,0,0,0.15)",
             }} />
           </div>
@@ -270,15 +271,15 @@ export default function Toolbar(props: {
           {/* 行 3：实心开关（仅 rect/oval） */}
           {(props.tool === "rect" || props.tool === "oval" || props.tool === "diamond") && (
             <>
-              <div style={{ height: 1, background: "rgba(0,0,0,0.06)", margin: "0 -4px" }} />
+              <div style={{ height: 1, background: "var(--color-border)", margin: "0 -4px" }} />
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 10, color: "#a8a29e", fontWeight: 500 }}>实心填充</span>
+                <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", fontWeight: 500 }}>实心填充</span>
                 <button
                   type="button"
                   onClick={() => props.setFilled(!props.filled)}
                   style={{
                     width: 32, height: 18, borderRadius: 9, border: "none", cursor: "pointer",
-                    background: props.filled ? "#3b82f6" : "rgba(0,0,0,0.15)",
+                    background: props.filled ? "var(--color-voice)" : "var(--color-muted-foreground)",
                     position: "relative", transition: "background 0.2s",
                   }}
                 >
