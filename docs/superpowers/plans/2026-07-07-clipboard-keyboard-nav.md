@@ -633,6 +633,10 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 38. CompactEditor 打开加速（V3 审查） | ✅ | `907acef` | 3 IPC→1（PendingTabFull 合并）；initialLoading 消除占位符闪烁 |
 | 39. index.html 无条件设背景色 | ✅ | `8386eab` | 不区分 label，transparent 窗口不受影响；消除 main.tsx 加载前白屏 |
 | 40. URL 参数注入零 IPC 打开 | ✅ | `0dca130` | Rust 建窗拼 URL query；前端 useState 初始化同步读取，零 IPC |
+| 41. 截图窗口选区被背景色盖住 | ✅ | `3db7512` | 截图窗口 URL 加 ?screenshot=1，index.html 检测跳过背景色 |
+| 42. V3 审查 4 项 | ✅ | `0175cc9` | 背景色移 main.tsx；图片尺寸 URL 注入；移除无条件背景色 |
+| 43. 背景色白名单模式 | ✅ | `8fbfa38` | 只对 settings/compact_editor 设，result/clipboard/screenshot 不设 |
+| 44. 截图窗口去掉 body 遮罩 | ✅ | `d292e9e` | 截图遮罩由 React 组件画（选区外），body 背景盖住选区 |
 
 ### 与原 plan 的偏差
 
@@ -675,4 +679,5 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 - 前端：79/79 测试通过，tsc clean，lint 无新增问题
 - Rust：51/51 infra 测试通过（含新增 round-trip），desktop 编译通过
 - E2E：用户确认 cmd/ctrl/alt 三种修饰键均可生效；3 套主题全窗口同步正确
-- 性能：主题加载经五次优化（IPC 缓存→data-theme 预编译→index.html 阻断脚本→时序竞态修复→无条件背景色），白屏消除；CompactEditor 3 IPC→1→**0**（URL 参数注入）+ 占位符消除
+- 性能：主题加载经五次优化（IPC 缓存→data-theme 预编译→index.html 阻断脚本→时序竞态修复→白名单背景色），白屏消除；CompactEditor 3 IPC→1→**0**（URL 参数注入）+ 占位符消除
+- **背景色方案最终定型**（task 39→41→42→43→44 四次反复后）：main.tsx 白名单模式——只有 `settings_window` 和 `compact_editor_window` 设 `html.style.backgroundColor`，其余所有窗口（result/clipboard/screenshot/label 为空）一律不设。教训：`transparent:true` 不覆盖 html 背景色（html backgroundColor 仍渲染为不透明层）；截图遮罩由 React 组件画在选区外（选区内全透明看桌面），body 背景会盖住选区。
