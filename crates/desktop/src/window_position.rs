@@ -34,10 +34,11 @@ pub fn is_position_visible(
 ) -> bool {
     const TOLERANCE: f64 = 50.0;
     monitors.iter().any(|m| {
-        let mx = m.position().x as f64;
-        let my = m.position().y as f64;
-        let mw = m.size().width as f64 / m.scale_factor();
-        let mh = m.size().height as f64 / m.scale_factor();
+        let ms = m.scale_factor();
+        let mx = m.position().x as f64 / ms;
+        let my = m.position().y as f64 / ms;
+        let mw = m.size().width as f64 / ms;
+        let mh = m.size().height as f64 / ms;
         x >= mx - TOLERANCE
             && x <= mx + mw + TOLERANCE
             && y >= my - TOLERANCE

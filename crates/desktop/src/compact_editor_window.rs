@@ -47,15 +47,39 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
         let maximized = win.is_maximized().unwrap_or(false);
         let scale = win.scale_factor().unwrap_or(1.0);
         let state = if maximized {
-            WindowState { width: WIDTH, height: HEIGHT, x: 0.0, y: 0.0, maximized: true }
+            // 最大化时先 un-maximize 拿到真实位置（窗口在哪个屏幕），再 re-maximize。
+            // inner_position() 在最大化时返回全屏位置（不可靠），un-maximize 后返回真实位置。
+            let _ = win.unmaximize();
+            let real_pos = win.inner_position().ok();
+            let real_size = win.inner_size().ok();
+            // 立即 re-maximize（用户下次打开应还是最大化）
+            let _ = win.maximize();
+            let scale = win.scale_factor().unwrap_or(1.0);
+            let (lx, ly, lw, lh) = match (real_pos, real_size) {
+                (Some(p), Some(s)) => (p.x as f64 / scale, p.y as f64 / scale, s.width as f64 / scale, s.height as f64 / scale),
+                _ => (0.0, 0.0, WIDTH, HEIGHT),
+            };
+            // 保存真实非最大化位置——恢复时据此找到对应显示器
+            let _ = octopus_infra::db::save_config_key(
+                "compact_editor_last_normal_pos",
+                &format!("{:.0},{:.0},{:.0},{:.0}", lx, ly, lw, lh),
+            );
+            log::info!("[compact-editor] maximized save: un-maximize pos={:?} size={:?} → logical {},{} {}x{}", real_pos, real_size, lx, ly, lw, lh);
+            WindowState { width: lw, height: lh, x: lx, y: ly, maximized: true }
         } else if let (Ok(pos), Ok(size)) = (win.inner_position(), win.inner_size()) {
             // inner_position + inner_size 对称保存恢复（都用内容区坐标，
             // 不含标题栏），消除 outer/inner 混用导致的坐标偏差。
+            let lw = size.width as f64 / scale;
+            let lh = size.height as f64 / scale;
+            let lx = pos.x as f64 / scale;
+            let ly = pos.y as f64 / scale;
+            // 记录最后非最大化位置——最大化恢复时用此坐标找对应显示器
+            let _ = octopus_infra::db::save_config_key(
+                "compact_editor_last_normal_pos",
+                &format!("{:.0},{:.0},{:.0},{:.0}", lx, ly, lw, lh),
+            );
             WindowState {
-                width: size.width as f64 / scale,
-                height: size.height as f64 / scale,
-                x: pos.x as f64 / scale,
-                y: pos.y as f64 / scale,
+                width: lw, height: lh, x: lx, y: ly,
                 maximized: false,
             }
         } else {
@@ -86,6 +110,7 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     }
 
     let state = load_window_state();
+    let mut should_maximize = false;
     log::info!("[compact-editor] window state {:?}", state);
 
     // URL 参数注入：首个 tab 的数据 + 背景色 hex 拼入 URL query string，
@@ -119,26 +144,27 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
     .decorations(true)
     .resizable(true)
-    .visible(true);
+    .visible(false);  // 先隐藏——所有配置（最大化/尺寸/位置）就绪后再 show
 
-    // 非最大化时才设具体尺寸+位置——最大化状态由 builder.maximized(true) 直接生效，
-    // 避免设了尺寸再被 maximize 覆盖的冗余布局计算。
+    // 非最大化时设具体尺寸+位置；最大化时不设 position——
+    // 让窗口在默认屏幕创建后 maximize（macOS 在窗口所在屏幕最大化）。
+    // 之前最大化保存 x=0,y=0 → 恢复时 position(0,0) 可能在副屏 → maximize 停在副屏。
     if !state.maximized {
         if state.width > 0.0 && state.height > 0.0 {
             // 检测保存的位置是否在可见显示器范围内——多显示器拔接后坐标可能失效。
             let monitors = app_handle.available_monitors().unwrap_or_default();
             let visible = monitors.iter().any(|m| {
-                let mx = m.position().x as f64;
-                let my = m.position().y as f64;
-                let mw = m.size().width as f64 / m.scale_factor();
-                let mh = m.size().height as f64 / m.scale_factor();
+                let ms = m.scale_factor();
+                let mx = m.position().x as f64 / ms;
+                let my = m.position().y as f64 / ms;
+                let mw = m.size().width as f64 / ms;
+                let mh = m.size().height as f64 / ms;
                 state.x >= mx - 50.0 && state.x <= mx + mw + 50.0
                     && state.y >= my - 50.0 && state.y <= my + mh + 50.0
             });
             if visible {
                 builder = builder.inner_size(state.width, state.height).position(state.x, state.y);
             } else {
-                // 坐标不在任何显示器内（如副屏拔了）—— fallback 到居中
                 log::info!("[compact-editor] saved position {},{} not visible, center", state.x, state.y);
                 builder = builder.inner_size(state.width, state.height).center();
             }
@@ -147,11 +173,69 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
         }
         builder = builder.maximized(false);
     } else {
-        builder = builder.maximized(true);
+        // 最大化：用保存坐标所在的显示器创建接近全屏的大窗体，再 maximize。
+        let monitors = app_handle.available_monitors().unwrap_or_default();
+        for m in &monitors {
+            let ms = m.scale_factor();
+            log::info!("[compact-editor] monitor: pos={},{} size={}x{} scale={}",
+                m.position().x, m.position().y, m.size().width, m.size().height, ms);
+        }
+        let monitor = monitors.iter().find(|m| {
+            // state.x/y 是逻辑像素，显示器 position/size 是物理像素——统一到逻辑
+            let ms = m.scale_factor();
+            let mx = m.position().x as f64 / ms;
+            let my = m.position().y as f64 / ms;
+            let mw = m.size().width as f64 / ms;
+            let mh = m.size().height as f64 / ms;
+            state.x >= mx && state.x < mx + mw && state.y >= my && state.y < my + mh
+        });
+
+        if let Some(monitor) = monitor {
+            // 坐标匹配到显示器——在该显示器创建大窗体 + maximize
+            let scale = monitor.scale_factor();
+            let mw = monitor.size().width as f64 / scale;
+            let mh = monitor.size().height as f64 / scale;
+            let mx = monitor.position().x as f64 / scale;
+            let my = monitor.position().y as f64 / scale;
+            let margin = 80.0;
+            builder = builder
+                .inner_size(mw - margin * 2.0, mh - margin * 1.5)
+                .position(mx + margin, my + margin * 0.5);
+            log::info!("[compact-editor] maximized: monitor {}x{} at {},{} → window {:.0}x{:.0} at {:.0},{:.0}",
+                mw, mh, mx, my, mw - margin * 2.0, mh - margin * 1.5, mx + margin, my + margin * 0.5);
+            should_maximize = true;
+        } else if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
+            // 保存的屏幕未连接——回退当前主屏最大化
+            log::info!("[compact-editor] saved monitor not connected, fallback to primary");
+            let scale = monitor.scale_factor();
+            let mw = monitor.size().width as f64 / scale;
+            let mh = monitor.size().height as f64 / scale;
+            let mx = monitor.position().x as f64 / scale;
+            let my = monitor.position().y as f64 / scale;
+            let margin = 80.0;
+            builder = builder
+                .inner_size(mw - margin * 2.0, mh - margin * 1.5)
+                .position(mx + margin, my + margin * 0.5);
+            should_maximize = true;
+        } else {
+            // 极端情况（连主屏都拿不到）——默认大小居中
+            builder = builder.inner_size(WIDTH, HEIGHT).center();
+        }
     }
 
-    let _ = builder.build();
-    log::info!("[compact-editor] after build");
+    let win = builder.build();
+    log::info!("[compact-editor] after build, maximized={}", state.maximized);
+
+    if let Ok(ref win) = win {
+        let _ = win.show();
+        let _ = win.set_focus();
+        // show 后再 maximize——窗口已经是接近全屏的大尺寸，
+        // maximize 的视觉变化极小，用户几乎感知不到
+        if should_maximize {
+            let _ = win.maximize();
+        }
+        log::info!("[compact-editor] after show");
+    }
 }
 
 /// macOS: 统一查看器窗口关闭后，仅当无其他常规窗口存活时才切回 Accessory（仅托盘）。
