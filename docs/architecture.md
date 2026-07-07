@@ -437,6 +437,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - **应用行为配置** `app_config` 表 → `infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`）。schema 统一定义在 infra，asr/desktop/cli 共享。值统一 TEXT 存储。
 - **load/save 机制（serde 自动，2026-07-07 重构）**：`load_app_config_at` / `save_app_config_at` 不再手动逐字段枚举，而是以 `AppConfig::default()` 的 JSON 形态作为类型模板，把 DB TEXT 按模板类型还原（Bool→"true"/"false"、Number→i64 先 f64 后、String→原样），再 `serde_json::from_value` 反序列化；save 用 `serde_json::to_value` 遍历所有字段 upsert。**字段增删自动反映，无需手动维护字段列表**。parse 失败保留 default（同旧行为）。历史手动枚举曾 4 次踩坑（新增字段漏注册 load/save → 内存改了不写库 / 重启回退默认值），见 archived specs 2026-06-28。
 - **回归守卫**：`app_config_roundtrip_all_fields` 测试——为每个字段设哨兵值，save→load 后 Debug 格式全比较，任何字段未往返都会失败。
+- **config-changed 事件（无条件 emit，2026-07-07 修复）**：`set_config` 写 DB 后**无条件** `emit("config-changed")`，前端收到后幂等重读 `get_config` 刷新。旧代码只对 `hide_toolbar`/`edit_shortcut`/`clipboard_enabled` 三个 key emit（手动白名单，与 load/save 手动枚举同反模式，踩坑 5 次——`clipboard_tab_modifier` 漏白名单导致改了不立即生效）。**注意**：无条件 emit 只影响前端值同步，不改变"需重启"字段的语义——`ocr_model` 等用 `OnceLock` 单例的字段仍需重启，它们不监听 config-changed 事件。
 - **新增配置字段清单**（serde 重构后只需 3 处，非旧的 7 处）：
   1. `crates/infra/src/config.rs`：`AppConfig` struct 加字段 + `#[serde(default = "default_xxx")]` + `default_xxx()` fn + `Default` impl 初始化
   2. `crates/desktop/src/settings_commands.rs`：`apply_config_value` match 加校验+赋值分支（如需类型/范围校验）
