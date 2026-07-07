@@ -6,6 +6,8 @@
 
 use tauri::{WebviewUrl, WebviewWindowBuilder, Manager};
 
+use crate::compact_editor_commands::PendingTabFull;
+
 const WIDTH: f64 = 880.0;
 const HEIGHT: f64 = 620.0;
 const MIN_WIDTH: f64 = 480.0;
@@ -69,7 +71,7 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
 /// set_dock_icon，后者用 `MainThreadMarker::new_unchecked` 强制假定主线程）。
 /// 从 async worker 线程同步调用会导致整个应用僵死。若需从 worker 触发建窗，
 /// 用 `app_handle.run_on_main_thread(...)` 投递（见 screenshot_commands::ocr_screenshot）。
-pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
+pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Option<&PendingTabFull>) {
     log::info!("[compact-editor] create start");
     // macOS：编辑窗口切 Regular 让 Dock 显示图标（与 settings 一致）。
     #[cfg(target_os = "macos")]
@@ -85,10 +87,22 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
     let state = load_window_state();
     log::info!("[compact-editor] window state {:?}", state);
 
+    // URL 参数注入：首个 tab 的数据拼入 URL query string，
+    // 前端首次渲染时同步读取（零 IPC 打开）。
+    let url = if let Some(p) = pending {
+        let encoded_text = urlencode(&p.text);
+        format!(
+            "index.html?itemId={}&source={}&itemType={}&text={}",
+            p.item_id, p.source, p.item_type, encoded_text
+        )
+    } else {
+        "index.html".to_string()
+    };
+
     let mut builder = WebviewWindowBuilder::new(
         app_handle,
         WINDOW_LABEL,
-        WebviewUrl::default(),
+        WebviewUrl::App(url.into()),
     )
     .title("查看")
     .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
@@ -118,4 +132,20 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
 #[cfg(target_os = "macos")]
 pub fn on_compact_editor_closed(app_handle: &tauri::AppHandle) {
     crate::activation::restore_accessory_if_no_regular_window(app_handle);
+}
+
+/// URL 百分号编码（用于把 text 内容安全拼入 URL query string）。
+fn urlencode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            _ => {
+                result.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    result
 }

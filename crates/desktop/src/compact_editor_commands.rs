@@ -78,7 +78,8 @@ pub fn open_compact_editor_tab(
         let _ = window.set_focus();
     } else {
         log::info!("[compact-editor] window absent → create");
-        create_compact_editor_window(&app_handle);
+        let pending_data = PENDING_TAB.lock().as_ref().cloned();
+        create_compact_editor_window(&app_handle, pending_data.as_ref());
     }
 }
 

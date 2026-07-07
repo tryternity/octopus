@@ -36,9 +36,26 @@ function tabIcon(tab: Tab) {
   return <Type className="w-3 h-3 text-muted-foreground flex-shrink-0" />;
 }
 
+// URL 参数初始化：Rust 建窗时拼入首个 tab 数据，前端首次渲染即有内容（零 IPC）。
+function readInitialTabFromUrl(): { tabs: Tab[]; hasInitial: boolean } {
+  const params = new URLSearchParams(window.location.search);
+  const itemId = params.get("itemId");
+  const source = params.get("source");
+  if (!itemId || !source) return { tabs: [], hasInitial: false };
+  const id = Number(itemId);
+  const itemType = params.get("itemType") || "text";
+  const text = params.get("text") || "";
+  const key = `${source}:${id}`;
+  if (itemType === "image") {
+    return { tabs: [{ key, source: source as any, itemId: id, itemType: "image" as const }], hasInitial: true };
+  }
+  return { tabs: [{ key, source: source as any, itemId: id, itemType: "text" as const, text }], hasInitial: true };
+}
+
 function CompactEditor() {
-  const [tabs, setTabs] = useState<Tab[]>([]);
-  const [initialLoading, setInitialLoading] = useState(true);
+  const initial = readInitialTabFromUrl();
+  const [tabs, setTabs] = useState<Tab[]>(initial.tabs);
+  const [initialLoading, setInitialLoading] = useState(!initial.hasInitial);
   const [activeIdx, setActiveIdx] = useState(0);
   const [fontSize, setFontSize] = useState(() => {
     const saved = Number(localStorage.getItem(FONT_KEY));
@@ -112,25 +129,31 @@ function CompactEditor() {
     }
   }, []);
 
-  // mount：取首个 pending tab（含完整数据，1 次 IPC）；监听并发再开的 open-tab 事件
+  // mount：URL 已注入首个 tab（零 IPC）；只注册 open-tab 事件用于后续新开 tab。
+  // 保留 get_pending_compact_tab 作为 fallback（URL 参数缺失时走 1 次 IPC）。
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     (async () => {
-      const pending = await invoke<{ itemId: number; source: string; itemType: string; text: string } | null>("get_pending_compact_tab");
-      if (cancelled) return;
-      if (pending) {
-        // 合并数据已含 itemType + text，直接添加 tab（无需额外 IPC）
-        const key = `${pending.source}:${pending.itemId}`;
-        if (pending.itemType === 'image') {
-          setTabs([{ key, source: pending.source as any, itemId: pending.itemId, itemType: 'image' as const }]);
-        } else {
-          setTabs([{ key, source: pending.source as any, itemId: pending.itemId, itemType: 'text' as const, text: pending.text }]);
+      // URL 无初始数据时，fallback 到 IPC
+      if (!initial.hasInitial) {
+        const pending = await invoke<{ itemId: number; source: string; itemType: string; text: string } | null>("get_pending_compact_tab");
+        if (cancelled) return;
+        if (pending) {
+          const key = `${pending.source}:${pending.itemId}`;
+          if (pending.itemType === "image") {
+            setTabs([{ key, source: pending.source as any, itemId: pending.itemId, itemType: "image" as const }]);
+          } else {
+            setTabs([{ key, source: pending.source as any, itemId: pending.itemId, itemType: "text" as const, text: pending.text }]);
+          }
+          setActiveIdx(0);
+          setTimeout(() => taRef.current?.focus(), 0);
         }
-        setActiveIdx(0);
+        setInitialLoading(false);
+      } else {
+        // URL 已有数据，直接焦点
         setTimeout(() => taRef.current?.focus(), 0);
       }
-      setInitialLoading(false);
       const fn = await listen("compact-editor://open-tab", (payload) => {
         const p = payload as OpenTabPayload;
         loadAndAddTab(p.itemId, p.source);
