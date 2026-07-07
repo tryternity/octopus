@@ -337,7 +337,7 @@ pub(crate) struct VadSegmentedPipeline {
     asr_engine: String,
     /// 切段静音阈值（毫秒，来自 config.segment_silence）。
     segment_silence_ms: f64,
-    /// 检测 VAD（流式有状态，跨 tick 续接，录音期间从不 reset）。
+    /// 检测 VAD（流式有状态，跨 tick 续接，切段后 reset+preroll 归零——见 spec 2026-07-08-vad-segmented-pipeline §5①）。
     detect_vad: SileroVad,
     /// 过滤 VAD（每段 reset，与检测分离防 LSTM 污染）。
     filter_vad: SileroVad,
