@@ -39,6 +39,32 @@ export default function Clipboard() {
   // useCallback([]) 产出恒定引用，行内再以 onSelect(index) 回带 index。
   const handleSelect = useCallback((index: number) => setSelectedIndex(index), []);
 
+  // 选中变化时滚动到可见行。
+  useEffect(() => {
+    if (selectedIndex === null) return;
+    const el = document.querySelector(`[data-clip-index="${selectedIndex}"]`);
+    el?.scrollIntoView({ block: "nearest" });
+  }, [selectedIndex]);
+
+  // 全局按键处理需要读最新 items，用 ref 避免闭包过期。
+  const itemsRef = useRef(items);
+  itemsRef.current = items;
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      // ↑↓ 移动选中（无条件拦截，即使焦点在搜索框）
+      if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+        e.preventDefault();
+        const cur = itemsRef.current;
+        if (cur.length === 0) return;
+        setSelectedIndex((prev) => moveIndex(prev, cur.length, e.key === "ArrowDown" ? 1 : -1));
+        return;
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, []);
+
   // 监听开关：mount 读 get_config + 监听 config-changed 同步（与设置页 toggle 双向同步）。
   const loadRecording = useCallback(async () => {
     try {
