@@ -22,6 +22,9 @@ pub struct ThemeColors {
     /// 工具栏图标色——result_window 工具栏按钮（暗色主题需浅色）。
     #[serde(default = "default_tool_icon")]
     pub tool_icon: String,
+    /// 截图工具栏图标 CSS filter——暗色主题需反色让黑色 SVG 图标可见。
+    #[serde(default = "default_icon_filter")]
+    pub icon_filter: String,
 }
 
 fn default_surface() -> String {
@@ -30,6 +33,10 @@ fn default_surface() -> String {
 
 fn default_tool_icon() -> String {
     "rgba(0, 0, 0, 0.55)".into()
+}
+
+fn default_icon_filter() -> String {
+    "none".into()
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -73,6 +80,7 @@ fn builtin_themes() -> Vec<ThemeInfo> {
                 voice: "#d97706".into(),
                 surface: "#fafaf9".into(),
                 tool_icon: "rgba(0, 0, 0, 0.55)".into(),
+                icon_filter: "none".into(),
             },
         },
         // ── Obsidian Glass ── 黑曜石深色。
@@ -97,6 +105,7 @@ fn builtin_themes() -> Vec<ThemeInfo> {
                 voice: "#f59e0b".into(),
                 surface: "#1a1a1e".into(),
                 tool_icon: "rgba(255, 255, 255, 0.55)".into(),
+                icon_filter: "brightness(0) invert(1) opacity(0.65)".into(),
             },
         },
         // ── Nord Aurora ── 北极极光冷蓝深色。
@@ -121,6 +130,7 @@ fn builtin_themes() -> Vec<ThemeInfo> {
                 voice: "#88c0d0".into(),
                 surface: "#2e3440".into(),
                 tool_icon: "rgba(229, 233, 240, 0.55)".into(),
+                icon_filter: "brightness(0) invert(1) opacity(0.65)".into(),
             },
         },
     ]

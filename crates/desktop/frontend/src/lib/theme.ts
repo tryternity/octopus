@@ -15,6 +15,8 @@ export interface ThemeColors {
   surface: string;
   /** 工具栏图标色——result_window 工具栏按钮（暗色主题需浅色）。 */
   "tool-icon": string;
+  /** 截图工具栏图标 CSS filter——暗色主题反色让黑色 SVG 可见。 */
+  "icon-filter": string;
 }
 
 export interface ThemeInfo {
@@ -35,6 +37,8 @@ export function applyTheme(theme: ThemeInfo) {
   (Object.entries(theme.colors) as [string, string][]).forEach(([key, value]) => {
     root.style.setProperty(`--color-${key}`, value);
   });
+  // icon-filter 不是颜色，单独设为顶层 CSS 变量。
+  root.style.setProperty("--icon-filter", (theme as any).icon_filter ?? "none");
   // backdrop-blur 只在剪贴板浮窗应用——result_window 本身透明穿透，
   // body 加 backdrop-filter 会让整个窗口"显形"（毛玻璃面板覆盖屏幕）。
   // settings/compact_editor 是常规窗口，也不需要毛玻璃。
