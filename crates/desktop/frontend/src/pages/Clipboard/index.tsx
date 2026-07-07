@@ -108,11 +108,14 @@ export default function Clipboard() {
       }
       // +1..7：直接跳 tab。修饰键由设置页配置（cmd/ctrl/alt），默认 ctrl。
       // 注意：cmd 在 Accessory 激活策略下可能被前一 app 菜单栏 key equivalent 拦截。
+      // 用 e.code（物理键位）而非 e.key（产生的字符）——macOS Option+数字会产生
+      // 特殊字符（Option+1="¡"），e.key 不匹配 "1".."7"。
       const mod = tabModifierRef.current;
       const modPressed = mod === "cmd" ? e.metaKey : mod === "ctrl" ? e.ctrlKey : e.altKey;
-      if (modPressed && e.key >= "1" && e.key <= "7") {
+      const digitMatch = modPressed ? e.code.match(/^Digit([1-7])$/) : null;
+      if (digitMatch) {
         e.preventDefault();
-        const n = parseInt(e.key, 10) - 1;
+        const n = parseInt(digitMatch[1], 10) - 1;
         if (n < TABS_VALUES.length) setFilter(TABS_VALUES[n]);
         return;
       }
