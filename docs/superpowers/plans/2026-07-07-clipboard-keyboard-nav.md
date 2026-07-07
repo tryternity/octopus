@@ -643,6 +643,13 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 48. 最大化时跳过 inner_size | ✅ | `bc1470e` | 审查建议的清理，避免冗余布局计算 |
 | 49. 坐标偏差 outer/inner 统一 | ✅ | `452c934` | inner_position + inner_size 对称保存恢复 |
 | 50. 多显示器位置越界检测 | ✅ | `01d6087` | 副屏关闭后坐标失效，恢复前检测 fallback 居中 |
+| 51. visible(false)+show+maximize | ✅ | `9cf19a2`→`4aba9e6` | 消除放大过渡 + set_focus 确保激活 |
+| 52. builder.maximized 未生效 | ✅ | `d62714d` | build 后 show 前 win.maximize() |
+| 53. 最大化不设 position | ✅ | `1bc402c` | 防副屏 |
+| 54. 主屏尺寸直接创建 | ❌→回退 | `1444b3f` | is_maximized=false 导致保存错误状态 |
+| 55. maximize()+主屏位置 | ❌→回退 | `6a238d2` | 副屏最大化被挪到主屏 |
+| 56. 大窗体+maximize | ✅ | `9326403` | 接近全屏尺寸创建，maximize 视觉差异小 |
+| 57. 保存坐标找显示器+余量 | ✅ | `bd8fe4d` | 副屏不挪主屏；四边 80px 余量 |
 
 ### 与原 plan 的偏差
 

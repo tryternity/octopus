@@ -208,10 +208,15 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 **窗口背景色策略（2026-07-07 最终定型）：** Rust 建窗时从主题配置读 background hex，拼入 URL `?bg=2e3440`（`theme::window_bg_hex(label)` 白名单判断——只 settings/compact_editor 返回 hex）。`index.html` `<head>` 脚本读 URL bg 参数直接设裸 `#hex`——**零 CSS 依赖、零 JS bundle 依赖、HTML 解析首帧即有色**。透明窗口（result/clipboard/screenshot）无 bg 参数，不设背景色。`applyThemeById` 加脏检查（`data-theme` 值相同直接 return）避免重复 style recalc。`main.tsx` 不再设背景色（已被 index.html URL hex 替代）。教训：`transparent:true` 不覆盖 html 背景色（html backgroundColor 仍渲染为不透明层）；`var(--color-background)` 依赖 CSS 加载有延迟；截图遮罩由 React 组件画在选区外（选区内全透明看桌面），body/html 背景会盖住选区。
 
 **窗口创建注意事项（2026-07-07，主题系统开发中踩坑总结）：**
-1. **最大化必须在 `builder.maximized(true)` 设置，不能 build 后 `win.maximize()`**——后者窗口先以记忆尺寸可见出现，再触发 macOS 原生 zoom 动画（~300-500ms）放大到全屏，用户看到"PPT slide"效果。`WebviewWindowBuilder::maximized(bool)` 在 build 前设置，窗口创建首帧即最大化。
+1. **窗口背景色只对非透明窗口通过 URL `?bg=hex` 注入**——Rust 建窗时从主题配置读 background hex 拼入 URL，`index.html` `<head>` 脚本同步设裸 `#hex`（零 CSS 依赖）。透明窗口（`transparent:true`）不注入——`transparent:true` 只让窗口**支持**透明，html `backgroundColor` 仍渲染为不透明层，设了会"显形"。result/clipboard 靠 transparent + body transparent 实现穿透；screenshot 靠 React 组件画选区**外**遮罩（选区**内**全透明看桌面）。
 2. **窗口位置保存/恢复必须 inner 对称**——`inner_position()` + `inner_size()`（都基于内容区，不含标题栏）。混用 `outer_position` + `inner_size` 会在不同 DPI / 标题栏高度下产生坐标偏差。物理像素÷`scale_factor` 存逻辑像素。
-3. **多显示器越界检测**——保存的位置是绝对逻辑坐标，副屏关闭/拔掉后坐标失效。恢复前用 `available_monitors()` 检测坐标是否在任一显示器范围内（50px 容差），不可见则 fallback 到居中。CompactEditor 有自己的 `WindowState`，需自行检测；result/clipboard 用 `window_position::restore_window_position` 已内置。
-4. **透明窗口（`transparent:true`）不能设 html/body 背景色**——`transparent:true` 只是让窗口**支持**透明，html 的 `backgroundColor` 仍会渲染为不透明层。result/clipboard 靠 transparent + body transparent 实现穿透；screenshot 靠 React 组件画选区**外**遮罩（选区**内**全透明看桌面）。背景色只对非透明窗口（settings/compact_editor）通过 URL `?bg=hex` 注入。
+3. **多显示器位置越界检测**——保存的位置是绝对逻辑坐标，副屏关闭/拔掉后坐标失效。恢复前用 `available_monitors()` 检测坐标是否在任一显示器范围内（50px 容差），不可见则 fallback 到居中。CompactEditor 有自己的 `WindowState`，需自行检测；result/clipboard 用 `window_position::restore_window_position` 已内置。
+4. **最大化窗口创建（七次反复后定型）**：
+   - `builder.maximized(true)` 在 WRY 底层**不生效**（build 后 `is_maximized=false`）
+   - build 后 `win.maximize()` 在 `show()` 前调用——macOS 隐藏窗口 maximize 无 zoom 动画，但 `show()` 后可能有细微过渡
+   - **最终方案**：最大化时用保存坐标匹配 `available_monitors()` 找到对应显示器（副屏最大化不挪到主屏）→ 用该显示器尺寸减四边 80px 余量创建大窗体 → `show()` → `maximize()`（视觉差异极小）→ 确保 `is_maximized=true`（用户 un-maximize 恢复正常尺寸）
+   - 保存时记录 `inner_position()`（反映窗口在哪个屏幕），不写死 `x:0,y:0`
+   - **不能**用主屏尺寸直接创建不走 `maximize()` API——`is_maximized=false` 会导致保存错误的非最大化状态
 
 **macOS 动态激活策略（Dock 图标显隐）：** 应用启动即 `Accessory` 模式（无 Dock 图标，纯托盘应用）。两个**常规窗口**（`settings_window` / `compact_editor_window`）任一打开时切 `Regular`（设置窗口另经 `set_dock_icon()` 用 `objc2` 手动 `setApplicationIconImage`——release 裸二进制无 .app bundle，Tauri 仅 debug 自动设图标）。关窗 `Destroyed` 经 `activation.rs::restore_accessory_if_no_regular_window` 协调——**仅当常规窗口全无存活才切回 `Accessory`**，否则保持 `Regular`（避免 app 降级时 macOS 连带收掉其余常规窗口——`image_preview_window` 已随统一查看器移除，现 `REGULAR_WINDOWS` 仅两窗；协调逻辑对 settings↔compact_editor 仍生效，曾致「关 CompactEditor 连带关 image_preview」即此 bug 的修复保留）。`#[cfg(target_os = "macos")]` 条件编译，Windows / Linux 无此逻辑。
 
