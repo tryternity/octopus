@@ -335,6 +335,7 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
             "clipboard_max_age_days" => { if let Ok(v) = value.parse() { cfg.clipboard_max_age_days = v; } }
             "clipboard_enabled" => { if let Ok(v) = value.parse() { cfg.clipboard_enabled = v; } }
             "screenshot_shortcut" => cfg.screenshot_shortcut = value,
+            "clipboard_tab_modifier" => cfg.clipboard_tab_modifier = value,
             // bool 字段：parse 失败保留 default
             "write_to_clipboard" => { if let Ok(v) = value.parse() { cfg.write_to_clipboard = v; } }
             "asr_hardware_accelerated" => { if let Ok(v) = value.parse() { cfg.asr_hardware_accelerated = v; } }
@@ -376,7 +377,7 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         PolishMode::FinalOnly => 1,
         PolishMode::Intermediate => 2,
     };
-    let fields: [(&str, String); 30] = [
+    let fields: [(&str, String); 31] = [
         ("engine_mode", cfg.engine_mode.clone()),
         ("remote_url", cfg.remote_url.clone()),
         ("grpc_endpoint", cfg.grpc_endpoint.clone()),
@@ -407,8 +408,9 @@ fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Resu
         ("clipboard_max_age_days", cfg.clipboard_max_age_days.to_string()),
         ("clipboard_enabled", cfg.clipboard_enabled.to_string()),
         ("screenshot_shortcut", cfg.screenshot_shortcut.clone()),
+        ("clipboard_tab_modifier", cfg.clipboard_tab_modifier.clone()),
     ];
-    // 包事务：30 条写入要么全部成功要么全部回滚，避免中途崩溃导致配置半更新。
+    // 包事务：31 条写入要么全部成功要么全部回滚，避免中途崩溃导致配置半更新。
     // unchecked_transaction 可在已有事务上下文中调用（不会 panic），commit 原子提交。
     let tx = conn.unchecked_transaction()?;
     for (key, value) in &fields {
