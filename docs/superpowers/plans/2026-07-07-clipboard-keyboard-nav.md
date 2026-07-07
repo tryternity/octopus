@@ -631,6 +631,8 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 36. 白屏+IPC 修复（审查反馈） | ✅ | `c3bfb56` | index.html 阻断脚本恢复主题；去 mount IPC；恢复 themeCache |
 | 37. 时序竞态+白屏+配置同步（V2 审查） | ✅ | `3d52169` | index.html 不读 label（移到 main.tsx）；恢复 mount 时 applyThemeFromConfig |
 | 38. CompactEditor 打开加速（V3 审查） | ✅ | `907acef` | 3 IPC→1（PendingTabFull 合并）；initialLoading 消除占位符闪烁 |
+| 39. index.html 无条件设背景色 | ✅ | `8386eab` | 不区分 label，transparent 窗口不受影响；消除 main.tsx 加载前白屏 |
+| 40. URL 参数注入零 IPC 打开 | ✅ | `0dca130` | Rust 建窗拼 URL query；前端 useState 初始化同步读取，零 IPC |
 
 ### 与原 plan 的偏差
 
@@ -670,7 +672,7 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 
 ### 最终验证
 
-- 前端：62/62 测试通过，tsc clean，lint 无新增问题
+- 前端：79/79 测试通过，tsc clean，lint 无新增问题
 - Rust：51/51 infra 测试通过（含新增 round-trip），desktop 编译通过
 - E2E：用户确认 cmd/ctrl/alt 三种修饰键均可生效；3 套主题全窗口同步正确
-- 性能：主题加载经四次优化（IPC 缓存→data-theme 预编译→index.html 阻断脚本→时序竞态修复），白屏消除；CompactEditor 3 IPC→1 + 占位符消除
+- 性能：主题加载经五次优化（IPC 缓存→data-theme 预编译→index.html 阻断脚本→时序竞态修复→无条件背景色），白屏消除；CompactEditor 3 IPC→1→**0**（URL 参数注入）+ 占位符消除
