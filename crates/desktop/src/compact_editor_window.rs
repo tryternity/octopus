@@ -48,8 +48,9 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
         let scale = win.scale_factor().unwrap_or(1.0);
         let state = if maximized {
             WindowState { width: WIDTH, height: HEIGHT, x: 0.0, y: 0.0, maximized: true }
-        } else if let (Ok(pos), Ok(size)) = (win.outer_position(), win.inner_size()) {
-            // 物理像素 → 逻辑像素（除以 scale factor，Retina=2.0）
+        } else if let (Ok(pos), Ok(size)) = (win.inner_position(), win.inner_size()) {
+            // inner_position + inner_size 对称保存恢复（都用内容区坐标，
+            // 不含标题栏），消除 outer/inner 混用导致的坐标偏差。
             WindowState {
                 width: size.width as f64 / scale,
                 height: size.height as f64 / scale,
