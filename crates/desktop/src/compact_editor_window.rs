@@ -147,19 +147,26 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
         }
         builder = builder.maximized(false);
     } else {
-        builder = builder.maximized(true);
+        // 最大化：不设 position（防副屏），不调 maximize()（show 后有动画）。
+        // 直接用主屏尺寸创建窗口——首帧即全屏，无 zoom 动画。
+        if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
+            let scale = monitor.scale_factor();
+            let mw = monitor.size().width as f64 / scale;
+            let mh = monitor.size().height as f64 / scale;
+            let mx = monitor.position().x as f64 / scale;
+            let my = monitor.position().y as f64 / scale;
+            builder = builder.inner_size(mw, mh).position(mx, my);
+            log::info!("[compact-editor] maximized: primary monitor {}x{} at {},{}", mw, mh, mx, my);
+        } else {
+            builder = builder.maximized(true);
+        }
     }
 
     let win = builder.build();
     log::info!("[compact-editor] after build, maximized={}", state.maximized);
 
-    // builder.maximized(true) 在 WRY 底层未生效（build 后 is_maximized=false）。
-    // 在 show 前手动 maximize——窗口仍是 hidden 状态时 maximize，
-    // 最大化完成后才 show，用户看到的首帧已是全屏。
+    // 窗口以最终尺寸创建后直接 show——无 maximize() 调用，无 zoom 动画
     if let Ok(ref win) = win {
-        if state.maximized {
-            let _ = win.maximize();
-        }
         let _ = win.show();
         let _ = win.set_focus();
         log::info!("[compact-editor] after show");
