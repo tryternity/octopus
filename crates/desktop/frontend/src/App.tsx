@@ -1,10 +1,12 @@
-import { Component, type ReactNode } from "react";
+import { Component, type ReactNode, useEffect } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import Result from "@/pages/Result";
 import Settings from "@/pages/Settings";
 import Clipboard from "@/pages/Clipboard";
 import Screenshot from "@/pages/Screenshot";
 import CompactEditor from "@/pages/CompactEditor";
+import { applyThemeFromConfig } from "@/lib/theme";
 
 class ErrorBoundary extends Component<
   { children: ReactNode },
@@ -40,6 +42,15 @@ function getWindowLabel(): string {
 
 function App() {
   const label = getWindowLabel();
+
+  // 每个窗口 mount 时应用主题 + 监听 config-changed 同步主题切换。
+  // Tauri app_handle.emit 广播到所有窗口，但需每窗口自行 listen。
+  useEffect(() => {
+    applyThemeFromConfig();
+    const unlisten = listen("config-changed", () => applyThemeFromConfig());
+    return () => { unlisten.then((fn) => fn()); };
+  }, []);
+
   return (
     <ErrorBoundary>
       {(() => {
