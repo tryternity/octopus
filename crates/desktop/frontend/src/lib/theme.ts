@@ -30,7 +30,7 @@ export interface ThemeInfo {
 /**
  * 应用主题：将主题颜色写入 :root 的 CSS 变量（--color-xxx），
  * Tailwind v4 的 bg-background / text-foreground / border-border 等类自动跟随。
- * blur=true 时给 body 加 theme-blur 类（配合透明窗口实现毛玻璃）。
+ * blur 字段保留供未来原生窗口模糊集成使用，当前 3 套内置主题均为 false。
  */
 export function applyTheme(theme: ThemeInfo) {
   const root = document.documentElement;
@@ -40,15 +40,6 @@ export function applyTheme(theme: ThemeInfo) {
   });
   // icon-filter 不是颜色（CSS filter 函数），设为顶层 --icon-filter 变量。
   root.style.setProperty("--icon-filter", theme.colors["icon-filter"] ?? "none");
-  // backdrop-blur 只在剪贴板浮窗应用——result_window 本身透明穿透，
-  // body 加 backdrop-filter 会让整个窗口"显形"（毛玻璃面板覆盖屏幕）。
-  // settings/compact_editor 是常规窗口，也不需要毛玻璃。
-  try {
-    const label = (window as any).__TAURI_INTERNALS__?.metadata?.currentWindow?.label || "";
-    if (label === "clipboard_window") {
-      document.body.classList.toggle("theme-blur", theme.blur);
-    }
-  } catch {}
 }
 
 /** 读配置中的 clipboard_theme id，找到匹配的主题并应用。 */
