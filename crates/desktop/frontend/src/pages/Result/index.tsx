@@ -632,17 +632,18 @@ function Result() {
     <div
       id="result-container"
       className={cn(
-        "absolute top-0 left-1/2 -translate-x-1/2 bg-background rounded-lg border border-black/[0.08] shadow-lg shadow-black/[0.06] flex flex-col overflow-hidden transition-all duration-200 ease-out",
+        "absolute top-0 left-1/2 -translate-x-1/2 rounded-lg border border-black/[0.08] shadow-lg shadow-black/[0.06] flex flex-col overflow-hidden transition-all duration-200 ease-out",
         expanded ? "w-[720px] h-[480px]" : "w-[520px] h-[116px]",
         visible ? "opacity-100" : "opacity-0",
       )}
+      style={{ backgroundColor: "var(--color-surface)" }}
     >
       {/* Top bar: toolbar + drag handle + voice line */}
       <div className="flex-shrink-0 flex flex-col relative">
         {/* 录音提示——独立于工具栏 opacity，常显居中 */}
         {!text.trim() && isRecording && (
           <div className="absolute top-0 left-0 right-0 flex items-center justify-center h-[22px] pointer-events-none z-20">
-            <span className="text-[11px] text-black/[0.28] select-none">正在聆听…</span>
+            <span className="text-[11px] select-none" style={{ color: "var(--color-tool-icon)", opacity: 0.35 }}>正在聆听…</span>
           </div>
         )}
         {/* Toolbar — 纯图标，hover 变蓝，整行可拖拽 */}
@@ -660,10 +661,11 @@ function Result() {
               key={id}
               className={cn(
                 "tool-btn w-[20px] h-[20px] flex items-center justify-center rounded-[4px] transition-colors cursor-default",
-                "text-black/[0.55] hover:text-[#007aff] hover:bg-black/[0.05]",
-                active && "text-[#007aff]",
-                disabled && "text-black/[0.18] cursor-default hover:bg-transparent hover:text-black/[0.18]",
+                "hover:text-[#007aff] hover:bg-black/[0.05]",
+                active && "text-[#007aff]!",
+                disabled && "cursor-default hover:bg-transparent",
               )}
+              style={{ color: active ? "#007aff" : "var(--color-tool-icon)", opacity: disabled ? 0.35 : 1 }}
               title={label}
               aria-label={label}
               disabled={disabled}
@@ -676,7 +678,8 @@ function Result() {
         {/* Drag handle */}
         <div className="flex items-center justify-center h-2">
           <div
-            className="w-6 h-[3px] rounded-[1.5px] bg-black/[0.12] cursor-grab active:cursor-grabbing"
+            className="w-6 h-[3px] rounded-[1.5px] cursor-grab active:cursor-grabbing"
+            style={{ backgroundColor: "var(--color-tool-icon)", opacity: 0.25 }}
             onMouseDown={onDragStart}
           />
         </div>
@@ -764,7 +767,7 @@ function Result() {
               )}
               onClick={() => handlePopupSelect(item)}
             >
-              <span className={cn("text-[10px]", item.current ? "text-[#007aff]" : "text-black/40")}>
+              <span className={cn("text-[10px]", item.current ? "text-[#007aff]" : "")} style={item.current ? undefined : { color: "var(--color-tool-icon)", opacity: 0.6 }}>
                 {item.current ? "●" : "○"}
               </span>
               <span className="flex-1 min-w-0 truncate text-foreground">{item.label}</span>

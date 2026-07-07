@@ -11,6 +11,10 @@ export interface ThemeColors {
   "accent-foreground": string;
   border: string;
   voice: string;
+  /** 不透明表面色——result_window 等需要实色背景的组件用（暗色主题的 background 可能半透明）。 */
+  surface: string;
+  /** 工具栏图标色——result_window 工具栏按钮（暗色主题需浅色）。 */
+  "tool-icon": string;
 }
 
 export interface ThemeInfo {
@@ -31,7 +35,15 @@ export function applyTheme(theme: ThemeInfo) {
   (Object.entries(theme.colors) as [string, string][]).forEach(([key, value]) => {
     root.style.setProperty(`--color-${key}`, value);
   });
-  document.body.classList.toggle("theme-blur", theme.blur);
+  // backdrop-blur 只在剪贴板浮窗应用——result_window 本身透明穿透，
+  // body 加 backdrop-filter 会让整个窗口"显形"（毛玻璃面板覆盖屏幕）。
+  // settings/compact_editor 是常规窗口，也不需要毛玻璃。
+  try {
+    const label = (window as any).__TAURI_INTERNALS__?.metadata?.currentWindow?.label || "";
+    if (label === "clipboard_window") {
+      document.body.classList.toggle("theme-blur", theme.blur);
+    }
+  } catch {}
 }
 
 /** 读配置中的 clipboard_theme id，找到匹配的主题并应用。 */

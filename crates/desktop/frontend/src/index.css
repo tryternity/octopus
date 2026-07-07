@@ -45,7 +45,8 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
-/* 毛玻璃主题：透明窗口 + backdrop-blur 实现桌面内容模糊透出 */
+/* 毛玻璃：仅 clipboard_window 的 body 有此类（theme.ts 按窗口 label 控制）。
+   result_window 透明穿透不能加，否则毛玻璃把整个窗口显形。 */
 body.theme-blur {
   -webkit-backdrop-filter: blur(20px) saturate(180%);
   backdrop-filter: blur(20px) saturate(180%);

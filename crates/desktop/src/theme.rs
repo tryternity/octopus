@@ -16,6 +16,20 @@ pub struct ThemeColors {
     pub accent_foreground: String,
     pub border: String,
     pub voice: String,
+    /// 不透明表面色——result_window 等需实色背景的组件（暗色主题的 background 可能半透明）。
+    #[serde(default = "default_surface")]
+    pub surface: String,
+    /// 工具栏图标色——result_window 工具栏按钮（暗色主题需浅色）。
+    #[serde(default = "default_tool_icon")]
+    pub tool_icon: String,
+}
+
+fn default_surface() -> String {
+    "#fafaf9".into()
+}
+
+fn default_tool_icon() -> String {
+    "rgba(0, 0, 0, 0.55)".into()
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -57,6 +71,8 @@ fn builtin_themes() -> Vec<ThemeInfo> {
                 accent_foreground: "#1c1917".into(),
                 border: "#e7e5e0".into(),
                 voice: "#d97706".into(),
+                surface: "#fafaf9".into(),
+                tool_icon: "rgba(0, 0, 0, 0.55)".into(),
             },
         },
         // ── Obsidian Glass ── 黑曜石深色玻璃。
@@ -79,6 +95,8 @@ fn builtin_themes() -> Vec<ThemeInfo> {
                 accent_foreground: "#ffffff".into(),
                 border: "rgba(255, 255, 255, 0.08)".into(),
                 voice: "#f59e0b".into(),
+                surface: "#1a1a1e".into(),
+                tool_icon: "rgba(255, 255, 255, 0.55)".into(),
             },
         },
         // ── Nord Aurora ── 北极极光冷蓝深色。
@@ -101,6 +119,8 @@ fn builtin_themes() -> Vec<ThemeInfo> {
                 accent_foreground: "#eceff4".into(),
                 border: "rgba(136, 192, 208, 0.15)".into(),
                 voice: "#88c0d0".into(),
+                surface: "#2e3440".into(),
+                tool_icon: "rgba(229, 233, 240, 0.55)".into(),
             },
         },
     ]
