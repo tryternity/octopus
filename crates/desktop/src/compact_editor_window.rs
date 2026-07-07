@@ -126,15 +126,14 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
         builder = builder.inner_size(WIDTH, HEIGHT).center();
     }
 
-    let win = builder.build();
-    log::info!("[compact-editor] after build");
-
-    // 记忆了最大化 → 建窗后 maximize
+    // 最大化在 build 前设置（builder.maximized），而非 build 后 win.maximize()——
+    // 后者导致窗口先以记忆尺寸出现再动画放大到全屏（PPT slide 效果）。
     if state.maximized {
-        if let Ok(ref win) = win {
-            let _ = win.maximize();
-        }
+        builder = builder.maximized(true);
     }
+
+    let _ = builder.build();
+    log::info!("[compact-editor] after build");
 }
 
 /// macOS: 统一查看器窗口关闭后，仅当无其他常规窗口存活时才切回 Accessory（仅托盘）。
