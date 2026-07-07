@@ -241,12 +241,13 @@ SearchBar 内 `<input>` 的 `onKeyDown`：
 | `tool-icon` | result_window 工具栏图标色 | `rgba(0,0,0,0.55)` | `rgba(255,255,255,0.55)` |
 | `icon-filter` | 截图工具栏图标 CSS filter | `none` | `brightness(0) invert(1)` |
 
-### 应用机制
+### 应用机制（经三次性能优化，最终架构）
 
-- `applyTheme(theme)`：遍历 `theme.colors` 写 `--color-xxx` 到 `:root`；`icon-filter` 单独写 `--icon-filter`（非颜色）
-- Tailwind v4 的 `bg-background` / `text-foreground` 等类自动读 CSS 变量
-- `App.tsx` 每窗口 mount 时 `applyThemeFromConfig()` + 监听 `config-changed` 重新应用
-- `backdrop-blur` 只在 `clipboard_window` 的 body 应用（按窗口 label 判断）
+- `index.css`：3 套 `[data-theme="xxx"]` 预编译 CSS 规则块。Tailwind v4 的 `bg-background` 等类读 `var(--color-xxx)`，变量值由属性选择器命中——**消除运行时 JS var() 覆盖开销**
+- `index.html` 阻断脚本：body 解析前同步从 localStorage 恢复 `data-theme` + 非透明窗口设 html 背景色（消除白屏）+ 自定义主题 CSS 同步注入（消除 IPC 延迟）。**零 IPC，零 JS bundle 依赖**
+- `theme.ts`：`applyThemeById` 设 `<html data-theme="xxx">`（内置主题零 JS 开销）；自定义主题 fallback 注入 `<style>` + CSS 缓存到 localStorage
+- `App.tsx`：只监听 `config-changed` 事件驱动主题同步（不在 mount 时无条件 IPC）
+- 后端：`list_themes` OnceLock 缓存 + `get_theme_id` 轻量单键读
 
 ### 用户扩展
 

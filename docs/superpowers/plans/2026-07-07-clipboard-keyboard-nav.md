@@ -622,6 +622,13 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 28. 全局 SVG 图标 icon-filter | ✅ | `70ef247` | ClipboardPanel/ClipboardItem SVG img 加 var(--icon-filter) |
 | 29. ImagePreview 工具栏适配 | ✅ | `ffeef52` | ToolButton 加 color 让 Lucide 图标可见；卡片/弹窗改 CSS 变量 |
 | 30. ScrollPreview 保存按钮 | ✅ | `24f5d02`+`831f41e` | #3b82f6→var(--color-voice)；修 JSX 语法 |
+| **主题性能优化** | | | |
+| 31. localStorage 快照恢复 | ✅ | `53678a4` | restoreCachedTheme 零 IPC 同步恢复 |
+| 32. CSS 变量改 style 标签 | ✅ | `ad1e1b6` | inline style→`<style>` 注入，浏览器缓存 var() |
+| 33. visible(false)+show 方案 | ❌→回退 | `3a3c218`→`f31b2e6` | 尝试消除 PPT slide，导致需点两次，回退 |
+| 34. IPC 优化（方案 A） | ✅ | `ac2aea7` | list_themes OnceLock 缓存 + get_theme_id 轻量命令 |
+| 35. data-theme 预编译（方案 B） | ✅ | `dd4b096` | [data-theme] CSS 规则块，属性选择器替代 JS var() 覆盖 |
+| 36. 白屏+IPC 修复（审查反馈） | ✅ | `c3bfb56` | index.html 阻断脚本恢复主题；去 mount IPC；恢复 themeCache |
 
 ### 与原 plan 的偏差
 
@@ -638,6 +645,13 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
    - 新增 surface（不透明背景）、tool-icon（工具栏图标色）、icon-filter（截图图标 CSS filter）三个 token
    - 所有窗口的 stone 硬编码逐步替换为语义 token（Result/CompactEditor/ClipboardPanel/HistoryPanel/Screenshot/ImagePreview）
    - 两类图标适配：SVG `<img>` 用 `var(--icon-filter)` 反色；Lucide React 图标靠 ToolButton 设 `color` 让 `currentColor` 继承
+6. **主题性能优化（A→B→审查反馈，三次迭代）**：
+   - 用户报告主题导致窗口打开/拖动变慢。排查发现三个层面开销：IPC 往返、CSS var() 解析、白屏闪烁
+   - **方案 A**（IPC 优化）：list_themes OnceLock 缓存 + get_theme_id 轻量命令 + 前端 themeCache
+   - **方案 B**（CSS 预编译）：`data-theme` 属性 + `[data-theme="xxx"]` CSS 规则块，属性选择器替代 JS var() 覆盖
+   - **审查反馈**（白屏+IPC 修复）：index.html 阻断脚本同步恢复主题（消除白屏）；App.tsx 去掉 mount 时无条件 IPC；自定义主题 CSS 缓存到 localStorage；恢复 themeCache（dd4b096 误删）
+   - visible(false)+show 方案试过但回退（窗口需点两次才出现）
+   - 最终架构：index.html 阻断脚本（零 IPC 恢复）+ data-theme CSS 预编译 + config-changed 事件驱动
 
 ### 新增文件
 
@@ -645,11 +659,12 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 |------|------|
 | `src/lib/clipboardNav.ts` | `moveIndex`/`moveTab` 纯函数 |
 | `src/lib/clipboardNav.test.ts` | 纯函数单元测试（14 case） |
-| `src/lib/theme.ts` | `applyTheme`/`applyThemeFromConfig`（CSS 变量写入） |
-| `crates/desktop/src/theme.rs` | 3 套内置主题 + `list_themes` 命令 + JSON 扩展 |
+| `src/lib/theme.ts` | `applyThemeById`/`restoreCachedTheme`/`applyThemeFromConfig`（data-theme 属性切换） |
+| `crates/desktop/src/theme.rs` | 3 套内置主题 + `list_themes`（OnceLock 缓存）+ `get_theme_id` |
 
 ### 最终验证
 
 - 前端：62/62 测试通过，tsc clean，lint 无新增问题
 - Rust：51/51 infra 测试通过（含新增 round-trip），desktop 编译通过
 - E2E：用户确认 cmd/ctrl/alt 三种修饰键均可生效；3 套主题全窗口同步正确
+- 性能：主题加载经三次优化（IPC 缓存→data-theme 预编译→index.html 阻断脚本），白屏消除
