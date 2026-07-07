@@ -46,9 +46,13 @@ export default function Clipboard() {
     el?.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
 
-  // 全局按键处理需要读最新 items，用 ref 避免闭包过期。
+  // 全局按键处理需要读最新 items/selectedIndex/search，用 ref 避免闭包过期。
   const itemsRef = useRef(items);
   itemsRef.current = items;
+  const selectedIndexRef = useRef(selectedIndex);
+  selectedIndexRef.current = selectedIndex;
+  const searchRef = useRef(search);
+  searchRef.current = search;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -58,6 +62,25 @@ export default function Clipboard() {
         const cur = itemsRef.current;
         if (cur.length === 0) return;
         setSelectedIndex((prev) => moveIndex(prev, cur.length, e.key === "ArrowDown" ? 1 : -1));
+        return;
+      }
+      // Enter：对选中条目执行粘贴（复用 paste_clipboard_item，后端已双保险：写剪贴板+模拟粘贴）
+      if (e.key === "Enter") {
+        e.preventDefault();
+        const cur = itemsRef.current;
+        const idx = selectedIndexRef.current;
+        if (idx === null || idx >= cur.length) return;
+        invoke("paste_clipboard_item", { id: cur[idx].id }).catch(console.error);
+        return;
+      }
+      // Esc：有搜索内容则清空，已空则隐藏浮窗
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (searchRef.current !== "") {
+          setSearch("");
+        } else {
+          getCurrentWindow().hide();
+        }
         return;
       }
     };
