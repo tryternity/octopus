@@ -54,8 +54,8 @@ export function ScrollPreview({ sel, scrollPreview, scrollHeight }: ScrollPrevie
           fontSize: 12, fontWeight: 600, cursor: "pointer",
           transition: "background 0.15s",
         }}
-        onMouseEnter={(e) => e.currentTarget.style.background = "var(--color-voice)"
-        onMouseLeave={(e) => e.currentTarget.style.background = "var(--color-voice)"}>
+        onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-voice)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-voice)"; }}>
           保存
         </button>
         <button onClick={() => invoke("stop_scroll_recording_with_mode", { mode: "copy" }).catch(() => {})} style={{
