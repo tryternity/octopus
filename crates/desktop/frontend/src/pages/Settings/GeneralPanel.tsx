@@ -184,12 +184,15 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         <Row label="剪贴板浮窗" effect="立即">
           <ShortcutButton shortcut={cfg.clipboard_shortcut as string} capturing={capturingKey === "clipboard_shortcut"} onClick={() => startShortcutCapture("clipboard_shortcut")} />
         </Row>
-        <Row label="剪贴TAB切换" effect="立即" hint="浮窗内按此键+数字切过滤类型">
-          <select className={selectClass} value={(cfg.clipboard_tab_modifier as string) || "ctrl"} onChange={(e) => setVal("clipboard_tab_modifier", e.target.value)}>
-            <option value="cmd">⌘ Command</option>
-            <option value="ctrl">⌃ Control</option>
-            <option value="alt">⌥ Option</option>
-          </select>
+        <Row label="剪贴TAB切换" effect="立即" hint="浮窗内切过滤类型">
+          <div className="flex items-center gap-1.5">
+            <select className={selectClass + " min-w-[120px]"} value={(cfg.clipboard_tab_modifier as string) || "ctrl"} onChange={(e) => setVal("clipboard_tab_modifier", e.target.value)}>
+              <option value="cmd">⌘ Command</option>
+              <option value="ctrl">⌃ Control</option>
+              <option value="alt">⌥ Option</option>
+            </select>
+            <span className="text-xs text-muted-foreground">+ 1..7</span>
+          </div>
         </Row>
       </Card>
 
