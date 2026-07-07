@@ -454,11 +454,12 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - **3 套内置主题**（`crates/desktop/src/theme.rs`）：Warm Paper（纸质感暖灰浅色）、Obsidian Glass（黑曜石深色 `#121216`）、Nord Aurora（北极极光冷蓝 `#2e3440`）。暗色主题用**纯不透明实色**——CSS `backdrop-filter` 在 Tauri WebView 下无法实现 Wox 的原生 NSVisualEffectView 均匀模糊。
 - **token 体系**：标准 Tailwind 语义色（`background`/`foreground`/`muted`/`accent`/`border`/`voice`）+ 3 个扩展 token：`surface`（不透明背景，result_window/截图工具栏用）、`tool-icon`（result_window 工具栏图标色）、`icon-filter`（截图工具栏图标 CSS filter，暗色=`brightness(0) invert(1)` 反色黑色 SVG）。
 - **图标适配两类**：SVG `<img>`（截图/剪贴板/图片查看器工具栏）用 `var(--icon-filter)` 在暗色主题反色；Lucide React 图标（编辑器/图片查看器的缩放/自适应按钮）靠父容器设 `color: var(--color-foreground)` 让 `currentColor` 继承。
-- **应用机制**（经三次性能优化，最终架构）：
-  1. `index.html` 阻断脚本：body 解析前同步从 localStorage 恢复 `data-theme` + 非透明窗口设 html 背景色 + 自定义主题 CSS 同步注入（消除白屏，零 IPC）
-  2. `index.css`：3 套 `[data-theme="xxx"]` 预编译规则块，属性选择器命中（消除运行时 var() 覆盖开销）
-  3. `App.tsx`：只监听 `config-changed` 事件驱动主题同步（不在 mount 时无条件 IPC）
-  4. 后端 `list_themes` OnceLock 缓存 + `get_theme_id` 轻量单键读
+- **应用机制**（经四次性能优化，最终架构）：
+  1. `index.html` 阻断脚本：body 解析前同步从 localStorage 恢复 `data-theme` + 自定义主题 CSS 注入（零 IPC，不依赖 `__TAURI_INTERNALS__`——该对象在 `<head>` 解析时尚未注入）
+  2. `main.tsx`：JS bundle 加载后执行，此时 `__TAURI_INTERNALS__` 已就绪——对非透明窗口设 `html.style.backgroundColor` 防白屏（截图窗口设半透明黑底）
+  3. `index.css`：3 套 `[data-theme="xxx"]` 预编译规则块，属性选择器命中（消除运行时 var() 覆盖开销）
+  4. `App.tsx`：mount 时异步 `applyThemeFromConfig` 校正（首次运行/清缓存/多窗口不同步时必需）+ 监听 `config-changed` 事件驱动
+  5. 后端 `list_themes` OnceLock 缓存 + `get_theme_id` 轻量单键读
 - **用户扩展**：`~/.octopus/themes/*.json` 可新增自定义主题（同 id 覆盖内置），`list_themes` 命令合并返回。
 - **剪贴板浮窗键盘导航**（2026-07-07）：搜索框持焦模型，`↑↓` 移动选中（边界夹紧不循环）、`Enter` 粘贴（复用 `paste_clipboard_item` 双保险）、空内容 `←→` 切 tab / 有内容让位光标、`Tab` 恒定切 tab、`<修饰键>+1..7` 跳 tab（修饰键可配置 `clipboard_tab_modifier`，macOS Option 用 `e.code` 而非 `e.key`）。详见 [spec](superpowers/specs/2026-07-07-clipboard-keyboard-nav-design.md)。
 

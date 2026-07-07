@@ -241,12 +241,13 @@ SearchBar 内 `<input>` 的 `onKeyDown`：
 | `tool-icon` | result_window 工具栏图标色 | `rgba(0,0,0,0.55)` | `rgba(255,255,255,0.55)` |
 | `icon-filter` | 截图工具栏图标 CSS filter | `none` | `brightness(0) invert(1)` |
 
-### 应用机制（经三次性能优化，最终架构）
+### 应用机制（经四次性能优化，最终架构）
 
 - `index.css`：3 套 `[data-theme="xxx"]` 预编译 CSS 规则块。Tailwind v4 的 `bg-background` 等类读 `var(--color-xxx)`，变量值由属性选择器命中——**消除运行时 JS var() 覆盖开销**
-- `index.html` 阻断脚本：body 解析前同步从 localStorage 恢复 `data-theme` + 非透明窗口设 html 背景色（消除白屏）+ 自定义主题 CSS 同步注入（消除 IPC 延迟）。**零 IPC，零 JS bundle 依赖**
+- `index.html` 阻断脚本：body 解析前同步从 localStorage 恢复 `data-theme` + 自定义主题 CSS 注入。**不读 `__TAURI_INTERNALS__`**（该对象在 `<head>` 解析时尚未注入，时序竞态会导致 label 为空）
+- `main.tsx`：JS bundle 加载后执行，`__TAURI_INTERNALS__` 已就绪——对非透明窗口设 `html.style.backgroundColor`（防 React 渲染前白屏），截图窗口设半透明黑底
 - `theme.ts`：`applyThemeById` 设 `<html data-theme="xxx">`（内置主题零 JS 开销）；自定义主题 fallback 注入 `<style>` + CSS 缓存到 localStorage
-- `App.tsx`：只监听 `config-changed` 事件驱动主题同步（不在 mount 时无条件 IPC）
+- `App.tsx`：mount 时异步 `applyThemeFromConfig` 校正（首次运行/清缓存必需）+ 监听 `config-changed` 事件驱动
 - 后端：`list_themes` OnceLock 缓存 + `get_theme_id` 轻量单键读
 
 ### 用户扩展
