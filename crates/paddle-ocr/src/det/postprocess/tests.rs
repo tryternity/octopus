@@ -207,12 +207,11 @@ fn sort_boxes_like_python_orders_by_x_within_same_line() {
 }
 
 #[test]
-fn sort_boxes_like_python_bubble_break_matches_python_non_transitive() {
-    // 反例：A(x10,y10) B(x15,y0) C(x22,y5)，阈值 10。
-    // 按 (y,x) 预排：B(y0), C(y5), A(y10)。
-    // Python 冒泡（非传递，break）：C 与 A 的 Y 差 5≤10 且 C.x22>A.x10 → 把 A 前移到 C 前；
-    // 再比 B 与（交换后的）C：Y 差 5≤10 但 B.x15≯C.x22 → break。结果 [B,A,C]。
-    // 旧的传递性 line_id 累加会把三者全判同一行再按 x 排 → [A,B,C]，与 Python 不符。
+fn sort_boxes_like_python_orders_cross_row_triple_correctly() {
+    // A(x10,y10) B(x15,y0) C(x22,y5)，阈值 10。按 (y,x) 预排：B(y0), C(y5), A(y10)。
+    // PaddleOCR sorted_boxes 相邻插入排序：A 与 C 同行(Y 差5)且 A.x10<C.x22→交换；
+    // 再 A 与 B 同行(Y 差10≤阈值)且 A.x10<B.x15→交换。结果 [A,B,C]（X 序 10,15,22，
+    // 完全有序）。对齐 PaddleOCR main tools/infer/predict_system.py（j+1 相邻交换）。
     let mut boxes = vec![
         [[10.0, 10.0], [11.0, 10.0], [11.0, 11.0], [10.0, 11.0]], // A
         [[15.0, 0.0], [16.0, 0.0], [16.0, 1.0], [15.0, 1.0]], // B
@@ -221,18 +220,17 @@ fn sort_boxes_like_python_bubble_break_matches_python_non_transitive() {
     let mut scores = vec![0.9, 0.8, 0.7];
     sort_boxes_like_python(&mut boxes, &mut scores, 10.0);
     let xs: Vec<f32> = boxes.iter().map(|b| b[0][0]).collect();
-    assert_eq!(xs, vec![15.0, 10.0, 22.0], "expected [B,A,C] got {:?}", boxes);
+    assert_eq!(xs, vec![10.0, 15.0, 22.0], "expected [A,B,C] got {:?}", boxes);
     assert_eq!(scores.len(), boxes.len());
 }
 
 #[test]
-fn sort_boxes_like_python_same_line_triple_keeps_upstream_i_plus_1_order() {
+fn sort_boxes_like_python_orders_same_line_triple_left_to_right() {
     // 同一物理行（Y 差 ≤ 阈值）3 框、X 逆序：A(x20) B(x15) C(x10)。
-    // PaddleOCR sorted_boxes 用「i+1 固定 + break」（非相邻冒泡），Python 实测输出
-    // [B,C,A]（X 序 15,10,20），而非完全有序的 [C,B,A]。这是上游算法的固有局限
-    // （目标元素无法跨越多个位置一路冒泡），并非移植时的索引错误——若改成相邻
-    // j+1 交换虽能排成 [C,B,A]，但会偏离 Python 保真。本测试钉死此预期，防止被
-    // 误当 bug 改回。已用 Python 复刻同算法独立验证（i+1→[15,10,20]，j+1→[10,15,20]）。
+    // PaddleOCR sorted_boxes 相邻插入排序能完全排成左→右 [C,B,A]（X 序 10,15,20）。
+    // 对齐 PaddleOCR main tools/infer/predict_system.py（j+1 相邻交换）。
+    // 修正：第二轮曾误用固定 i+1，输出 [B,C,A] 并当「上游固有行为」钉测试守护——
+    // 实为移植 bug。第三轮审计据 PaddleOCR 官方源码纠偏（Python 逐字验证 j+1→[10,15,20]）。
     let mut boxes = vec![
         [[20.0, 8.0], [21.0, 8.0], [21.0, 9.0], [20.0, 9.0]], // A x=20
         [[15.0, 9.0], [16.0, 9.0], [16.0, 10.0], [15.0, 10.0]], // B x=15
@@ -243,8 +241,8 @@ fn sort_boxes_like_python_same_line_triple_keeps_upstream_i_plus_1_order() {
     let xs: Vec<f32> = boxes.iter().map(|b| b[0][0]).collect();
     assert_eq!(
         xs,
-        vec![15.0, 10.0, 20.0],
-        "expected Python i+1 order [B,C,A], got {:?}",
+        vec![10.0, 15.0, 20.0],
+        "expected left-to-right [C,B,A], got {:?}",
         boxes
     );
     assert_eq!(scores.len(), boxes.len());
