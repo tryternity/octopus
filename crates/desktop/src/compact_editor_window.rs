@@ -191,10 +191,22 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
             log::info!("[compact-editor] maximized: monitor {}x{} at {},{} → window {:.0}x{:.0} at {:.0},{:.0}",
                 mw, mh, mx, my, mw - margin * 2.0, mh - margin * 1.5, mx + margin, my + margin * 0.5);
             should_maximize = true;
+        } else if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
+            // 保存的屏幕未连接——回退当前主屏最大化
+            log::info!("[compact-editor] saved monitor not connected, fallback to primary");
+            let scale = monitor.scale_factor();
+            let mw = monitor.size().width as f64 / scale;
+            let mh = monitor.size().height as f64 / scale;
+            let mx = monitor.position().x as f64 / scale;
+            let my = monitor.position().y as f64 / scale;
+            let margin = 80.0;
+            builder = builder
+                .inner_size(mw - margin * 2.0, mh - margin * 1.5)
+                .position(mx + margin, my + margin * 0.5);
+            should_maximize = true;
         } else {
-            // 保存的屏幕未连接——回退主屏默认大小（非最大化）
-            log::info!("[compact-editor] saved monitor not connected, fallback to default");
-            builder = builder.inner_size(WIDTH, HEIGHT).center().maximized(false);
+            // 极端情况（连主屏都拿不到）——默认大小居中
+            builder = builder.inner_size(WIDTH, HEIGHT).center();
         }
     }
 
