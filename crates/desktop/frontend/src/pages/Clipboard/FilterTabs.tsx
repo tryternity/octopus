@@ -4,12 +4,12 @@ import { SvgIcon, type IconName } from "@/components/SvgIcon";
 
 const TABS = [
   { value: "all", icon: LayoutGrid, label: "全部", svg: undefined as string | undefined },
+  { value: "favorite", icon: null, label: "收藏", svg: "favorite" },
   { value: "asr", icon: null, label: "语音", svg: "voice" },
   { value: "text", icon: null, label: "文本", svg: "text" },
   { value: "ocr", icon: ScanText, label: "OCR", svg: undefined },
   { value: "image", icon: null, label: "图片", svg: "images" },
   { value: "file", icon: null, label: "文件", svg: "files" },
-  { value: "favorite", icon: null, label: "收藏", svg: "favorite" },
 ] as const;
 
 export default function FilterTabs({
