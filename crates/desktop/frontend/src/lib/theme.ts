@@ -11,11 +11,8 @@ export interface ThemeColors {
   "accent-foreground": string;
   border: string;
   voice: string;
-  /** 不透明表面色——result_window 等需要实色背景的组件用（暗色主题的 background 可能半透明）。 */
   surface: string;
-  /** 工具栏图标色——result_window 工具栏按钮（暗色主题需浅色）。 */
   "tool-icon": string;
-  /** 截图工具栏图标 CSS filter——暗色主题反色让黑色 SVG 可见。 */
   "icon-filter": string;
 }
 
@@ -27,81 +24,69 @@ export interface ThemeInfo {
   colors: ThemeColors;
 }
 
-const CACHE_KEY = "octopus-theme-css-vars";
-const STYLE_ID = "octopus-theme-vars";
+const CACHE_KEY = "octopus-theme-id";
+
+/** 内置主题 id——颜色值已在 index.css [data-theme="xxx"] 预编译。 */
+const BUILTIN_IDS = new Set(["light", "glass-dark", "nord"]);
 
 /**
- * 应用主题：将主题颜色写入 <style> 标签的 :root 规则（非 inline style）。
- * Tailwind v4 的 bg-background / text-foreground / border-border 等类自动跟随。
- * 同时把完整 CSS 变量集缓存到 localStorage，下次窗口启动时同步恢复（零 IPC 延迟）。
- *
- * 为何用 <style> 标签而非 document.documentElement.style（inline style）：
- * 浏览器对 inline-style 自定义属性无法像 stylesheet 规则那样缓存优化，
- * 每次 style recalculation 都要重新 resolve var()，频繁滚动/拖动时掉帧。
+ * 应用主题：内置主题只需设 <html data-theme="xxx">（CSS 预编译，零 var() 开销）。
+ * 自定义主题（~/.octopus/themes/*.json）需 JS 注入 CSS 变量作为 fallback。
  */
-export function applyTheme(theme: ThemeInfo) {
-  const rules: string[] = [];
-  const cache: Record<string, string> = {};
-  (Object.entries(theme.colors) as [string, string][]).forEach(([key, value]) => {
-    if (key === "icon-filter") return;
-    const cssVar = `--color-${key}`;
-    rules.push(`${cssVar}: ${value};`);
-    cache[cssVar] = value;
-  });
-  // icon-filter 不是颜色（CSS filter 函数），单独处理。
-  rules.push(`--icon-filter: ${theme.colors["icon-filter"] ?? "none"};`);
-  cache["--icon-filter"] = theme.colors["icon-filter"] ?? "none";
-
-  // 注入 <style> 标签（替换已存在的）
-  let styleEl = document.getElementById(STYLE_ID) as HTMLStyleElement | null;
-  if (!styleEl) {
-    styleEl = document.createElement("style");
-    styleEl.id = STYLE_ID;
-    document.head.appendChild(styleEl);
+export async function applyThemeById(themeId: string) {
+  if (BUILTIN_IDS.has(themeId)) {
+    document.documentElement.setAttribute("data-theme", themeId);
+  } else {
+    // 自定义主题：从 list_themes 查颜色，注入 <style> 标签
+    const themes = await invoke<ThemeInfo[]>("list_themes");
+    const theme = themes.find((t) => t.id === themeId);
+    if (theme) {
+      injectCustomTheme(theme);
+      document.documentElement.setAttribute("data-theme", themeId);
+    }
   }
-  styleEl.textContent = `:root {\n  ${rules.join("\n  ")}\n}`;
-
-  // 缓存快照，供下次窗口启动时同步恢复
   try {
-    localStorage.setItem(CACHE_KEY, JSON.stringify(cache));
+    localStorage.setItem(CACHE_KEY, themeId);
   } catch {}
 }
 
+/** 自定义主题 fallback：注入 <style> 标签覆盖 CSS 变量。 */
+function injectCustomTheme(theme: ThemeInfo) {
+  const rules: string[] = [];
+  (Object.entries(theme.colors) as [string, string][]).forEach(([key, value]) => {
+    const cssVar = key === "icon-filter" ? "--icon-filter" : `--color-${key}`;
+    rules.push(`${cssVar}: ${value};`);
+  });
+  let styleEl = document.getElementById("octopus-custom-theme") as HTMLStyleElement | null;
+  if (!styleEl) {
+    styleEl = document.createElement("style");
+    styleEl.id = "octopus-custom-theme";
+    document.head.appendChild(styleEl);
+  }
+  styleEl.textContent = `[data-theme="${theme.id}"] {\n  ${rules.join("\n  ")}\n}`;
+}
+
 /**
- * 从 localStorage 快照同步恢复 CSS 变量——零 IPC 调用，窗口启动时立即执行，
- * 消除"先默认 light 再闪到暗色"的延迟。在 main.tsx render 前调用。
+ * 从 localStorage 同步恢复主题 id——零 IPC 调用。
+ * 只需读一个字符串 + 设一个属性，微秒级。
  */
 export function restoreCachedTheme() {
   try {
-    const cached = localStorage.getItem(CACHE_KEY);
-    if (!cached) return;
-    const vars = JSON.parse(cached) as Record<string, string>;
-    const rules: string[] = [];
-    for (const [key, value] of Object.entries(vars)) {
-      rules.push(`${key}: ${value};`);
+    const themeId = localStorage.getItem(CACHE_KEY);
+    if (themeId) {
+      document.documentElement.setAttribute("data-theme", themeId);
     }
-    const styleEl = document.createElement("style");
-    styleEl.id = STYLE_ID;
-    styleEl.textContent = `:root {\n  ${rules.join("\n  ")}\n}`;
-    document.head.appendChild(styleEl);
   } catch {}
 }
 
 /**
- * 异步从后端读取当前主题 id 并应用。list_themes 进程内缓存（OnceLock），
- * get_theme_id 只读 DB 单键——共 2 个轻量 IPC，不调全量 get_config。
- * 与 restoreCachedTheme 配合：启动时先同步恢复，再异步校正。
+ * 异步从后端读取当前主题 id 并应用。
+ * list_themes 进程内缓存（OnceLock），get_theme_id 只读 DB 单键。
  */
-let themeCache: ThemeInfo[] | null = null;
-
 export async function applyThemeFromConfig() {
   try {
-    if (!themeCache) {
-      themeCache = await invoke<ThemeInfo[]>("list_themes");
-    }
     const themeId = await invoke<string>("get_theme_id");
-    const theme = themeCache.find((t) => t.id === themeId) ?? themeCache.find((t) => t.id === "light");
-    if (theme) applyTheme(theme);
+    await applyThemeById(themeId);
   } catch (e) {
     console.error("applyThemeFromConfig failed:", e);
   }
