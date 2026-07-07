@@ -301,8 +301,16 @@ pub fn load_app_config() -> Result<crate::config::AppConfig> {
 }
 
 fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
-    use crate::config::{AppConfig, PolishMode};
-    let mut cfg = AppConfig::default();
+    // 以 AppConfig::default() 的 JSON 形态作为类型模板——每个 DB 字段按模板类型还原，
+    // 不靠字符串内容猜类型（避免把值恰为数字的 String 字段误判为 Number）。
+    // 字段增删自动反映，无需手动维护 match arms。parse 失败保留 default（同旧行为）。
+    let mut result = serde_json::to_value(crate::config::AppConfig::default())
+        .expect("AppConfig default 序列化不会失败");
+    let type_hints = result
+        .as_object()
+        .expect("AppConfig 序列化为 JSON object")
+        .clone();
+
     let mut stmt = conn.prepare(
         "SELECT config_key, config_value FROM app_config WHERE category = 'setting'",
     )?;
@@ -312,112 +320,65 @@ fn load_app_config_at(conn: &Connection) -> Result<crate::config::AppConfig> {
 
     for row in rows {
         let (key, value) = row?;
-        match key.as_str() {
-            // 字符串字段：直接赋值
-            "engine_mode" => cfg.engine_mode = value,
-            "remote_url" => cfg.remote_url = value,
-            "grpc_endpoint" => cfg.grpc_endpoint = value,
-            "asr_engine" => cfg.asr_engine = value,
-            "language" => cfg.language = value,
-            "asr_shortcut" => cfg.asr_shortcut = value,
-            "edit_shortcut" => cfg.edit_shortcut = value,
-            "paste_method" => cfg.paste_method = value,
-            "microphone" => cfg.microphone = value,
-            "overlay_position" => cfg.overlay_position = value,
-            "polish_llm" => cfg.polish_llm = value,
-            "ocr_model" => cfg.ocr_model = value,
-            "download_mirror" => cfg.download_mirror = value,
-            "clipboard_shortcut" => cfg.clipboard_shortcut = value,
-            "edit_global_shortcut" => cfg.edit_global_shortcut = value,
-            "polish_global_shortcut" => cfg.polish_global_shortcut = value,
-            // i64 字段
-            "clipboard_max_items" => { if let Ok(v) = value.parse() { cfg.clipboard_max_items = v; } }
-            "clipboard_max_age_days" => { if let Ok(v) = value.parse() { cfg.clipboard_max_age_days = v; } }
-            "clipboard_enabled" => { if let Ok(v) = value.parse() { cfg.clipboard_enabled = v; } }
-            "screenshot_shortcut" => cfg.screenshot_shortcut = value,
-            "clipboard_tab_modifier" => cfg.clipboard_tab_modifier = value,
-            // bool 字段：parse 失败保留 default
-            "write_to_clipboard" => { if let Ok(v) = value.parse() { cfg.write_to_clipboard = v; } }
-            "asr_hardware_accelerated" => { if let Ok(v) = value.parse() { cfg.asr_hardware_accelerated = v; } }
-            "asr_correct" => { if let Ok(v) = value.parse() { cfg.asr_correct = v; } }
-            "output_simplified" => { if let Ok(v) = value.parse() { cfg.output_simplified = v; } }
-            "hide_toolbar" => { if let Ok(v) = value.parse() { cfg.hide_toolbar = v; } }
-            // f64 字段
-            "segment_silence" => { if let Ok(v) = value.parse() { cfg.segment_silence = v; } }
-            "polish_min_interval" => { if let Ok(v) = value.parse() { cfg.polish_min_interval = v; } }
-            "pause_polish_threshold_ms" => { if let Ok(v) = value.parse() { cfg.pause_polish_threshold_ms = v; } }
-            // u8 枚举字段
-            "polish_mode" => {
-                if let Ok(n) = value.parse::<u8>() {
-                    cfg.polish_mode = match n {
-                        1 => PolishMode::FinalOnly,
-                        2 => PolishMode::Intermediate,
-                        _ => PolishMode::Disabled,
-                    };
-                }
+        // 未知 key 跳过（前向兼容，同旧 _ => {}）
+        if let Some(hint) = type_hints.get(&key) {
+            if let Some(slot) = result.get_mut(&key) {
+                *slot = coerce_db_string(&value, hint);
             }
-            "denoise_mode" => { if let Ok(v) = value.parse() { cfg.denoise_mode = v; } }
-            _ => {} // 忽略未知 key（前向兼容）
         }
     }
-    Ok(cfg)
+    Ok(serde_json::from_value(result).unwrap_or_default())
 }
 
-/// 全量写入应用配置（29 字段 ON CONFLICT DO UPDATE）。set_config / yaml 迁移用。
+/// 按 JSON 类型模板把 DB TEXT 还原为 serde_json::Value。
+/// - Bool: "true"/"false"
+/// - Number: 先 i64 后 f64，parse 失败返回 hint（保留 default）
+/// - String / 其他: 原样返回字符串
+fn coerce_db_string(s: &str, hint: &serde_json::Value) -> serde_json::Value {
+    use serde_json::Value;
+    match hint {
+        Value::Bool(_) => Value::Bool(s == "true"),
+        Value::Number(_) => {
+            if let Ok(n) = s.parse::<i64>() {
+                Value::Number(n.into())
+            } else if let Ok(f) = s.parse::<f64>() {
+                serde_json::Number::from_f64(f)
+                    .map(Value::Number)
+                    .unwrap_or_else(|| hint.clone())
+            } else {
+                hint.clone()
+            }
+        }
+        _ => Value::String(s.to_string()),
+    }
+}
+
+/// 全量写入应用配置（serde 自动遍历所有字段，ON CONFLICT DO UPDATE）。set_config / yaml 迁移用。
 /// 仅更新 config_value，保留 description + category（不同于 INSERT OR REPLACE 会清空非指定列）。
+/// 字段增删自动反映，无需手动维护字段数组。
 pub fn save_app_config(cfg: &crate::config::AppConfig) -> Result<()> {
     ensure_db()?;
     with_db(|conn| save_app_config_at(conn, cfg))
 }
 
 fn save_app_config_at(conn: &Connection, cfg: &crate::config::AppConfig) -> Result<()> {
-    use crate::config::PolishMode;
-    let polish_mode_u8 = match cfg.polish_mode {
-        PolishMode::Disabled => 0u8,
-        PolishMode::FinalOnly => 1,
-        PolishMode::Intermediate => 2,
-    };
-    let fields: [(&str, String); 31] = [
-        ("engine_mode", cfg.engine_mode.clone()),
-        ("remote_url", cfg.remote_url.clone()),
-        ("grpc_endpoint", cfg.grpc_endpoint.clone()),
-        ("asr_engine", cfg.asr_engine.clone()),
-        ("language", cfg.language.clone()),
-        ("asr_shortcut", cfg.asr_shortcut.clone()),
-        ("edit_shortcut", cfg.edit_shortcut.clone()),
-        ("paste_method", cfg.paste_method.clone()),
-        ("write_to_clipboard", cfg.write_to_clipboard.to_string()),
-        ("microphone", cfg.microphone.clone()),
-        ("overlay_position", cfg.overlay_position.clone()),
-        ("segment_silence", cfg.segment_silence.to_string()),
-        ("polish_mode", polish_mode_u8.to_string()),
-        ("polish_min_interval", cfg.polish_min_interval.to_string()),
-        ("pause_polish_threshold_ms", cfg.pause_polish_threshold_ms.to_string()),
-        ("polish_llm", cfg.polish_llm.clone()),
-        ("ocr_model", cfg.ocr_model.clone()),
-        ("asr_hardware_accelerated", cfg.asr_hardware_accelerated.to_string()),
-        ("asr_correct", cfg.asr_correct.to_string()),
-        ("output_simplified", cfg.output_simplified.to_string()),
-        ("hide_toolbar", cfg.hide_toolbar.to_string()),
-        ("denoise_mode", cfg.denoise_mode.to_string()),
-        ("download_mirror", cfg.download_mirror.clone()),
-        ("clipboard_shortcut", cfg.clipboard_shortcut.clone()),
-        ("edit_global_shortcut", cfg.edit_global_shortcut.clone()),
-        ("polish_global_shortcut", cfg.polish_global_shortcut.clone()),
-        ("clipboard_max_items", cfg.clipboard_max_items.to_string()),
-        ("clipboard_max_age_days", cfg.clipboard_max_age_days.to_string()),
-        ("clipboard_enabled", cfg.clipboard_enabled.to_string()),
-        ("screenshot_shortcut", cfg.screenshot_shortcut.clone()),
-        ("clipboard_tab_modifier", cfg.clipboard_tab_modifier.clone()),
-    ];
-    // 包事务：31 条写入要么全部成功要么全部回滚，避免中途崩溃导致配置半更新。
+    // serde 序列化为 JSON Map 后逐字段 upsert——字段增删自动反映，无需手动维护字段数组。
+    let value = serde_json::to_value(cfg).context("序列化 AppConfig")?;
+    let obj = value.as_object().context("AppConfig 序列化非 object")?;
+
+    // 包事务：所有字段写入要么全部成功要么全部回滚，避免中途崩溃导致配置半更新。
     // unchecked_transaction 可在已有事务上下文中调用（不会 panic），commit 原子提交。
     let tx = conn.unchecked_transaction()?;
-    for (key, value) in &fields {
+    for (key, val) in obj {
+        // 还原为 DB 存储的 TEXT：字符串直接取值，数字/bool to_string。
+        let s = match val {
+            serde_json::Value::String(s) => s.clone(),
+            _ => val.to_string(),
+        };
         tx.execute(
             "INSERT INTO app_config (config_key, config_value) VALUES (?1, ?2)
              ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value",
-            params![key, value],
+            params![key, s],
         )?;
     }
     tx.commit()?;
@@ -1202,6 +1163,55 @@ mod tests {
             Ok(inner_v)
         });
         assert!(outer.is_ok(), "with_db 重入不应死锁: {:?}", outer);
+    }
+
+    /// AppConfig 全字段 DB 往返：save → load 必须完整还原每个字段。
+    /// 这是 serde 自动 load/save 的回归守卫——新增字段后若遗漏注册（旧手动枚举的坑），
+    /// 此测试会因该字段回到 default 而失败。历史踩坑 4 次，见 archived specs 2026-06-28。
+    #[test]
+    fn app_config_roundtrip_all_fields() {
+        use crate::config::{AppConfig, PolishMode};
+        let conn = open_init();
+
+        let mut cfg = AppConfig::default();
+        // 每个字段设一个与 default 不同的哨兵值
+        cfg.engine_mode = "websocket".into();
+        cfg.remote_url = "http://rt:9999".into();
+        cfg.grpc_endpoint = "http://grpc:50051".into();
+        cfg.asr_engine = "local:zipformer:sentinel".into();
+        cfg.language = "en".into();
+        cfg.asr_shortcut = "Alt+1".into();
+        cfg.paste_method = "direct".into();
+        cfg.write_to_clipboard = false;
+        cfg.microphone = "Sentinel Mic".into();
+        cfg.segment_silence = 1234.5;
+        cfg.overlay_position = "bottom".into();
+        cfg.polish_mode = PolishMode::Intermediate;
+        cfg.polish_min_interval = 7.5;
+        cfg.pause_polish_threshold_ms = 999.0;
+        cfg.polish_llm = "local:sentinel-llm".into();
+        cfg.asr_hardware_accelerated = false;
+        cfg.asr_correct = false;
+        cfg.output_simplified = false;
+        cfg.hide_toolbar = false;
+        cfg.denoise_mode = 2;
+        cfg.edit_shortcut = "Alt+2".into();
+        cfg.edit_global_shortcut = "Alt+3".into();
+        cfg.polish_global_shortcut = "Alt+4".into();
+        cfg.download_mirror = "https://mirror.test".into();
+        cfg.clipboard_shortcut = "Alt+5".into();
+        cfg.clipboard_max_items = 42;
+        cfg.clipboard_max_age_days = 7;
+        cfg.clipboard_enabled = false;
+        cfg.clipboard_tab_modifier = "alt".into();
+        cfg.screenshot_shortcut = "Alt+6".into();
+        cfg.ocr_model = "sentinel-ocr".into();
+
+        save_app_config_at(&conn, &cfg).unwrap();
+        let loaded = load_app_config_at(&conn).unwrap();
+
+        // Debug 格式全比较——任何字段未往返都会暴露差异。
+        assert_eq!(format!("{:?}", loaded), format!("{:?}", cfg));
     }
 
     #[test]

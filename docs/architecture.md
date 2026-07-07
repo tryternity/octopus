@@ -432,11 +432,18 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 |----|------|------------|
 | `models` | 引擎/LLM 模型配置 | db.sql seed |
 | `clipboard_history` | 剪贴板 + 识别历史（统一存储 text/voice/ocr/image/file） | 运行时写入 |
-| `app_config` | 应用行为配置（22 字段） | db.sql seed + yaml 迁移 |
+| `app_config` | 应用行为配置（key-value TEXT，字段随 AppConfig struct 增长） | db.sql seed + yaml 迁移 |
 
-- **应用行为配置** `app_config` 表 → `infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`，22 字段：麦克风/引擎选择/分段/润色/LLM/粘贴/硬件加速/ASR 纠错/降噪/简繁输出/工具栏显隐/降噪模式/下载镜像等；另有 `active_polish_prompt` 由 `db::load_active_prompt_id()` 独立读取，不入 AppConfig struct）。schema 统一定义在 infra，asr/desktop/cli 共享。值统一 TEXT 存储，由 `load_app_config` 按字段类型解析。
+- **应用行为配置** `app_config` 表 → `infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`）。schema 统一定义在 infra，asr/desktop/cli 共享。值统一 TEXT 存储。
+- **load/save 机制（serde 自动，2026-07-07 重构）**：`load_app_config_at` / `save_app_config_at` 不再手动逐字段枚举，而是以 `AppConfig::default()` 的 JSON 形态作为类型模板，把 DB TEXT 按模板类型还原（Bool→"true"/"false"、Number→i64 先 f64 后、String→原样），再 `serde_json::from_value` 反序列化；save 用 `serde_json::to_value` 遍历所有字段 upsert。**字段增删自动反映，无需手动维护字段列表**。parse 失败保留 default（同旧行为）。历史手动枚举曾 4 次踩坑（新增字段漏注册 load/save → 内存改了不写库 / 重启回退默认值），见 archived specs 2026-06-28。
+- **回归守卫**：`app_config_roundtrip_all_fields` 测试——为每个字段设哨兵值，save→load 后 Debug 格式全比较，任何字段未往返都会失败。
+- **新增配置字段清单**（serde 重构后只需 3 处，非旧的 7 处）：
+  1. `crates/infra/src/config.rs`：`AppConfig` struct 加字段 + `#[serde(default = "default_xxx")]` + `default_xxx()` fn + `Default` impl 初始化
+  2. `crates/desktop/src/settings_commands.rs`：`apply_config_value` match 加校验+赋值分支（如需类型/范围校验）
+  3. `crates/infra/src/db.sql`：`app_config` seed INSERT 加新行（新安装用户；老库 serde default 兜底）
+  - **load/save 已自动跟随**，无需改 `db.rs`。round-trip 测试自动覆盖新字段。
 - **DB 模型目录** `models` 表 → `asr::config::AsrConfig`（`octopus_asr_local::config::load_config()`，首次 `db::ensure_db()` 自动建表 + seed，读后缓存到 `RwLock<Option<Arc<AsrConfig>>>`——v2 可刷新：模型管理页 `set_model_enabled`/`set_model_secret_key` 后调 `reload_models_config()` 从 DB 重读替换，引擎下拉即时更新；对齐 `APP_CONFIG` 模式）。
-- **配置持久化**：`persist_*`（单键 `save_config_key`，ON CONFLICT 仅改 config_value）、`set_config`（全量 `save_app_config`，28 字段 ON CONFLICT），均写 DB。旧 `write_config_yaml` 已移除。
+- **配置持久化**：`persist_*`（单键 `save_config_key`，ON CONFLICT 仅改 config_value）、`set_config`（全量 `save_app_config`，serde 遍历所有字段 ON CONFLICT），均写 DB。旧 `write_config_yaml` 已移除。
 - **yaml 迁移**：`user_version < 17` 首次建库时检测旧 `~/.octopus/config.yaml` → 解析导入 DB 覆盖 seed → 重命名为 `config.yaml.bak`。迁移逻辑在 `init_schema` 中一次性执行（导入后库即 v17，后续启动跳过）。
 - **`write_to_clipboard`**（默认 `true`）：粘贴后是否把识别结果留在剪贴板，方便他处再粘贴；与 `paste_method`（`clipboard` / `direct` / `none`）构成三模式矩阵——`clipboard` 模式 true 时不恢复原剪贴板内容、false 时恢复（`paste_via_clipboard` 按 `files > image > text` 优先级用 `ClipboardBackup` 备份原内容——图片 `read_image`/`set_image`、文件 `read_files`/`write_files`、文本 `read_text`/`write_text`——ASR 文本粘贴后还原，旧实现只 `read_text` 导致图片/文件被空串吞掉丢失）；`direct` 模式 true 时 enigo 输入后末尾写剪贴板、false 时不碰剪贴板；`none` 模式忽略此配置（其唯一目的就是写剪贴板）。`false` 时三种粘贴行为等同重构前现状（不破坏现有用户习惯）。详见 [spec §6](superpowers/specs/2026-06-14-archived-design.md)。
 
