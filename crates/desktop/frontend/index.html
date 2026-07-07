@@ -24,22 +24,14 @@
             }
           }
         }
-        // 背景色：URL 参数注入裸 hex（零 CSS 依赖），或 localStorage 兜底
+        // 背景色：仅从 URL bg 参数读取裸 hex（非透明窗口由 Rust 注入）。
+        // 透明窗口（result/clipboard/screenshot）无 bg 参数——不设背景色，保持透明。
+        // 不用 localStorage 兜底——透明窗口会误取到上次非透明窗口的缓存，破坏穿透。
         var params = new URLSearchParams(window.location.search);
         var bg = params.get("bg");
-        if (!bg) {
-          // 无 URL 参数（如 result/clipboard/screenshot 透明窗口）——用 localStorage 兜底
-          // 仅用于首次打开前的缓存恢复（settings/compact_editor 从 Rust 得到 bg 参数后覆盖）
-          bg = localStorage.getItem("octopus-bg-hex");
-        }
         if (bg) {
-          // 裸 hex 加 #，已有 # 或 rgba 不重复加
           var color = bg.startsWith("#") || bg.startsWith("rgb") ? bg : "#" + bg;
           document.documentElement.style.backgroundColor = color;
-          // 缓存供下次无 URL 参数时兜底
-          if (!bg.startsWith("rgb")) {
-            localStorage.setItem("octopus-bg-hex", bg);
-          }
         }
       } catch (e) {}
     </script>
