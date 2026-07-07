@@ -250,6 +250,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('clipboard_enabled',      'true',  '是否启用剪贴板历史监听'),
     ('clipboard_shortcut',     'CmdOrCtrl+Shift+D', '剪贴板历史窗口快捷键'),
     ('clipboard_tab_modifier', 'ctrl',  '剪贴板浮窗内切 Tab 的修饰键（cmd/ctrl/alt）'),
+    ('clipboard_theme',        'light', 'UI 主题 id'),
     ('clipboard_max_items',    '1000',  '最大保留条数（不含收藏）'),
     ('clipboard_max_age_days', '30',    '自动清理天数（不含收藏）'),
     ('ocr_model',              'PP-OCRv6-small', 'OCR 模型（当前激活）'),

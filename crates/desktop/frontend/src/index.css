@@ -45,6 +45,12 @@ body {
   -moz-osx-font-smoothing: grayscale;
 }
 
+/* 毛玻璃主题：透明窗口 + backdrop-blur 实现桌面内容模糊透出 */
+body.theme-blur {
+  -webkit-backdrop-filter: blur(20px) saturate(180%);
+  backdrop-filter: blur(20px) saturate(180%);
+}
+
 html, body {
   width: 100%;
   height: 100%;

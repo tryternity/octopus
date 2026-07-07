@@ -34,6 +34,7 @@ mod settings_commands;
 mod settings_window;
 mod focus_tracker;
 mod shortcut;
+mod theme;
 mod tray;
 mod transcript;
 mod window_position;
@@ -260,6 +261,7 @@ pub fn run() {
             compact_editor_commands::close_compact_editor,
 
             coordinator::current_transcription_id,
+            theme::list_themes,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)

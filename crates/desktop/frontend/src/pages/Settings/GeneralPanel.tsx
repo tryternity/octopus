@@ -1,7 +1,9 @@
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Layers } from "lucide-react";
+import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Layers, Palette } from "lucide-react";
+import type { ThemeInfo } from "@/lib/theme";
+import { applyTheme } from "@/lib/theme";
 import type { ConfigResponse } from "./index";
 
 interface GeneralPanelProps {
@@ -86,6 +88,17 @@ const selectClass = "px-2.5 py-1.5 border border-border rounded-md text-sm bg-ba
 export default function GeneralPanel({ configResp, setVal, showToast, refreshConfig }: GeneralPanelProps) {
   const { config: cfg, asr_engines, llm_models, ocr_models, prompts, active_prompt_id, microphones } = configResp;
   const [capturingKey, setCapturingKey] = useState<string | null>(null);
+  const [themes, setThemes] = useState<ThemeInfo[]>([]);
+
+  useEffect(() => {
+    invoke<ThemeInfo[]>("list_themes").then(setThemes).catch(console.error);
+  }, []);
+
+  const setTheme = useCallback(async (themeId: string) => {
+    const t = themes.find((t) => t.id === themeId);
+    if (t) applyTheme(t);
+    await setVal("clipboard_theme", themeId);
+  }, [themes, setVal]);
 
   const toggleVal = useCallback(async (key: string) => {
     const current = cfg[key] as boolean;
@@ -127,6 +140,14 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
 
   return (
     <div className="max-w-[640px]">
+      <Card icon={Palette} title="外观">
+        <Row label="主题" effect="立即" hint="浮窗与窗口配色">
+          <select className={selectClass} value={(cfg.clipboard_theme as string) || "light"} onChange={(e) => setTheme(e.target.value)}>
+            {themes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </Row>
+      </Card>
+
       <Card icon={Mic} title="交互">
         <Row label="麦克风设备" effect="下次录音">
           <select className={selectClass} value={cfg.microphone as string} onChange={(e) => setVal("microphone", e.target.value)}>

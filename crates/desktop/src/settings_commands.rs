@@ -310,6 +310,9 @@ fn apply_config_value(
             }
             cfg.clipboard_tab_modifier = v.to_string();
         }
+        "clipboard_theme" => {
+            cfg.clipboard_theme = value.as_str().ok_or("clipboard_theme 需要字符串")?.to_string();
+        }
         "screenshot_shortcut" => {
             cfg.screenshot_shortcut = value.as_str().ok_or("screenshot_shortcut 需要字符串")?.to_string();
         }

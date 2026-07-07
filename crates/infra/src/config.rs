@@ -187,6 +187,10 @@ pub struct AppConfig {
     #[serde(default = "default_clipboard_tab_modifier")]
     pub clipboard_tab_modifier: String,
 
+    /// UI 主题 id（light / glass-dark / dracula / 用户自定义）。默认 light。
+    #[serde(default = "default_clipboard_theme")]
+    pub clipboard_theme: String,
+
     /// 截图全局快捷键（Tauri Accelerator 格式）。默认 "Alt+S"。
     #[serde(default = "default_screenshot_shortcut")]
     pub screenshot_shortcut: String,
@@ -274,6 +278,9 @@ fn default_clipboard_enabled() -> bool {
 fn default_clipboard_tab_modifier() -> String {
     "ctrl".into()
 }
+fn default_clipboard_theme() -> String {
+    "light".into()
+}
 fn default_screenshot_shortcut() -> String {
     "Alt+S".into()
 }
@@ -318,6 +325,7 @@ impl Default for AppConfig {
             clipboard_max_age_days: default_clipboard_max_age_days(),
             clipboard_enabled: default_clipboard_enabled(),
             clipboard_tab_modifier: default_clipboard_tab_modifier(),
+            clipboard_theme: default_clipboard_theme(),
             screenshot_shortcut: default_screenshot_shortcut(),
             ocr_model: default_ocr_model(),
         }
