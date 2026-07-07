@@ -21,9 +21,10 @@ export default function FilterTabs({
 }) {
   return (
     <div className="flex items-center gap-0.5">
-      {TABS.map(({ value: tabValue, icon: Icon, label, svg }) => (
+      {TABS.map(({ value: tabValue, icon: Icon, label, svg }, i) => (
         <button
           key={tabValue}
+          data-tab-index={i}
           title={label}
           className={cn(
             "flex items-center justify-center px-2 py-1 rounded transition-all",

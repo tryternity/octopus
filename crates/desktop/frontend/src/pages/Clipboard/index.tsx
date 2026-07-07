@@ -3,7 +3,7 @@ import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
 import { useClipboardHistory } from "@/hooks/useClipboardHistory";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
-import { moveIndex } from "@/lib/clipboardNav";
+import { moveIndex, moveTab } from "@/lib/clipboardNav";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
@@ -13,6 +13,9 @@ import { cn } from "@/lib/utils";
 interface ConfigResponse {
   config: Record<string, string | number | boolean>;
 }
+
+// 与 FilterTabs.tsx TABS 数组顺序一致——Cmd+N 序号映射。
+const TABS_VALUES = ["all", "favorite", "asr", "text", "ocr", "image", "file"] as const;
 
 export default function Clipboard() {
   const [filter, setFilter] = useState("all");
@@ -53,6 +56,8 @@ export default function Clipboard() {
   selectedIndexRef.current = selectedIndex;
   const searchRef = useRef(search);
   searchRef.current = search;
+  const filterRef = useRef(filter);
+  filterRef.current = filter;
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -81,6 +86,29 @@ export default function Clipboard() {
         } else {
           getCurrentWindow().hide();
         }
+        return;
+      }
+      // Tab / Shift+Tab：恒定切过滤 tab（preventDefault 拦截，不让浏览器遍历全浮窗焦点）
+      if (e.key === "Tab") {
+        e.preventDefault();
+        const cur = TABS_VALUES.indexOf(filterRef.current as (typeof TABS_VALUES)[number]);
+        const next = moveTab(cur < 0 ? 0 : cur, TABS_VALUES.length, e.shiftKey ? -1 : 1);
+        setFilter(TABS_VALUES[next]);
+        return;
+      }
+      // ←→：仅搜索框为空时切 tab（有内容时让出给光标移动，不拦截）
+      if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && searchRef.current === "") {
+        e.preventDefault();
+        const cur = TABS_VALUES.indexOf(filterRef.current as (typeof TABS_VALUES)[number]);
+        const next = moveTab(cur < 0 ? 0 : cur, TABS_VALUES.length, e.key === "ArrowLeft" ? -1 : 1);
+        setFilter(TABS_VALUES[next]);
+        return;
+      }
+      // Cmd+1..7：直接跳 tab（metaKey=macOS，ctrlKey=Windows/Linux）
+      if ((e.metaKey || e.ctrlKey) && e.key >= "1" && e.key <= "7") {
+        e.preventDefault();
+        const n = parseInt(e.key, 10) - 1;
+        if (n < TABS_VALUES.length) setFilter(TABS_VALUES[n]);
         return;
       }
     };
