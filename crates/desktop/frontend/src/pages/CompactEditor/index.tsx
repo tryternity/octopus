@@ -56,8 +56,21 @@ function readInitialTabFromUrl(): { tabs: Tab[]; hasInitial: boolean } {
   return { tabs: [{ key, source: source as any, itemId: id, itemType: "text" as const, text }], hasInitial: true };
 }
 
+// 定义在组件外部——避免每次渲染创建新函数引用导致子树 unmount/remount
+const ToolBtn = ({ onClick, title, disabled, children }: {
+  onClick: () => void; title: string; disabled?: boolean; children: ReactNode;
+}) => (
+  <button
+    type="button"
+    disabled={disabled}
+    title={title}
+    onClick={onClick}
+    className="p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
+  >{children}</button>
+);
+
 function CompactEditor() {
-  const initial = readInitialTabFromUrl();
+  const [initial] = useState(() => readInitialTabFromUrl());
   const [tabs, setTabs] = useState<Tab[]>(initial.tabs);
   const [initialLoading, setInitialLoading] = useState(!initial.hasInitial);
   const [activeIdx, setActiveIdx] = useState(0);
@@ -66,6 +79,7 @@ function CompactEditor() {
     return saved >= FONT_MIN && saved <= FONT_MAX ? saved : 15;
   });
   const [savedFlash, setSavedFlash] = useState(false);
+  const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const [showFind, setShowFind] = useState(false);
   const [findQuery, setFindQuery] = useState("");
   const [replaceQuery, setReplaceQuery] = useState("");
@@ -122,6 +136,17 @@ function CompactEditor() {
             next = prev.filter(t => t.key !== oldestKey);
           }
           return [...next, { key, source: 'clipboard' as const, itemId, itemType: 'image' as const }];
+        });
+        // setActiveIdx 在 setTabs 回调外无法拿到新长度——用 next.length 计算。
+        // 淘汰时数组长度不变（去掉一个加一个），新增时 +1。
+        // tabsRef 可能 stale，所以用 setTabs 的 callback 形式同步更新 ref。
+        setTabs(prev => {
+          const newIdx = prev.findIndex(t => t.key === key);
+          if (newIdx >= 0) {
+            tabsRef.current = prev;
+            setActiveIdx(newIdx);
+          }
+          return prev;
         });
       } else {
         const text = await invoke<string>("get_clipboard_item_text", { itemId }).catch(() => "");
@@ -189,7 +214,8 @@ function CompactEditor() {
       }
       await invoke("set_clipboard_item_text", { itemId: active.itemId, text: active.text || "" });
       setSavedFlash(true);
-      setTimeout(() => setSavedFlash(false), 1200);
+      if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current);
+      savedFlashTimer.current = setTimeout(() => setSavedFlash(false), 1200);
     } catch (e) {
       console.error("保存失败:", e);
     }
@@ -359,8 +385,8 @@ function CompactEditor() {
       }
       // doSave 经 ref 调用：监听器只挂载一次（deps 仅 showFind），避免 active.text 每键变 → doSave
       // 新引用 → 监听器每键 remove+add 的 GC 压力。
-      if (mod && e.key === "Enter") { e.preventDefault(); doSaveRef.current(); return; }
-      if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); doSaveRef.current(); return; }
+      if (mod && e.key === "Enter") { e.preventDefault(); if (!active?.itemType || active.itemType === 'text') doSaveRef.current(); return; }
+      if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); if (!active?.itemType || active.itemType === 'text') doSaveRef.current(); return; }
       if (e.key === "Escape") {
         if (showFind) { setShowFind(false); return; }
       }
@@ -369,18 +395,6 @@ function CompactEditor() {
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
   }, [showFind]);
-
-  const ToolBtn = ({ onClick, title, disabled, children }: {
-    onClick: () => void; title: string; disabled?: boolean; children: ReactNode;
-  }) => (
-    <button
-      type="button"
-      disabled={disabled}
-      title={title}
-      onClick={onClick}
-      className="p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-    >{children}</button>
-  );
 
   return (
     <div className="flex flex-col h-full bg-background">

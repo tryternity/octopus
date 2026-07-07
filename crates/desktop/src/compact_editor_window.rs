@@ -59,11 +59,6 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
                 (Some(p), Some(s)) => (p.x as f64 / scale, p.y as f64 / scale, s.width as f64 / scale, s.height as f64 / scale),
                 _ => (0.0, 0.0, WIDTH, HEIGHT),
             };
-            // 保存真实非最大化位置——恢复时据此找到对应显示器
-            let _ = octopus_infra::db::save_config_key(
-                "compact_editor_last_normal_pos",
-                &format!("{:.0},{:.0},{:.0},{:.0}", lx, ly, lw, lh),
-            );
             log::info!("[compact-editor] maximized save: un-maximize pos={:?} size={:?} → logical {},{} {}x{}", real_pos, real_size, lx, ly, lw, lh);
             WindowState { width: lw, height: lh, x: lx, y: ly, maximized: true }
         } else if let (Ok(pos), Ok(size)) = (win.inner_position(), win.inner_size()) {
@@ -73,11 +68,6 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
             let lh = size.height as f64 / scale;
             let lx = pos.x as f64 / scale;
             let ly = pos.y as f64 / scale;
-            // 记录最后非最大化位置——最大化恢复时用此坐标找对应显示器
-            let _ = octopus_infra::db::save_config_key(
-                "compact_editor_last_normal_pos",
-                &format!("{:.0},{:.0},{:.0},{:.0}", lx, ly, lw, lh),
-            );
             WindowState {
                 width: lw, height: lh, x: lx, y: ly,
                 maximized: false,
