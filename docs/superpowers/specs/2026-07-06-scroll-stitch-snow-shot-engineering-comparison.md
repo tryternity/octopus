@@ -7,7 +7,7 @@
   - octopus：`crates/capx/src/stitch.rs`（1151 行）+ `crates/desktop/src/screenshot_commands.rs`（调度层）
   - snow-shot：`/Users/wudarui/workspace/agent/snow-shot/src-tauri/src-crates/app-scroll-screenshot-service/`（3 文件，共 1081 行）
 - 关联文档：
-  - 订正了 `docs/superpowers/specs/2026-07-03-snow-shot-analysis.md` 两处把 snow-shot 误标为 NCC 的描述
+  - 订正了 snow-shot 分析（已归档至 `docs/superpowers/specs/2026-07-05-archived-design.md` §六 6.2）两处把 snow-shot 误标为 NCC 的描述
   - 性能向另见 `docs/superpowers/specs/2026-07-06-scrolling-screenshot-performance-optimization.md`
 
 ---
@@ -116,7 +116,7 @@ C（双向）是较大改动，按需；E/G 是锦上添花。
 
 ## 7. 附：旧文档订正记录
 
-`docs/superpowers/specs/2026-07-03-snow-shot-analysis.md` 两处把 snow-shot 滚动截图误标为「NCC 模板匹配」，已订正为「FAST 角点 + 描述子 + HNSW 近邻索引」：
+snow-shot 分析（已归档至 `docs/superpowers/specs/2026-07-05-archived-design.md` §六 6.2）两处把 snow-shot 滚动截图误标为「NCC 模板匹配」，已订正为「FAST 角点 + 描述子 + HNSW 近邻索引」（归档版已含此订正）：
 
 - §1.1 截图功能表「滚动截图」行
 - §3.3 架构对比表「滚动截图」行（同时补准 octopus 列为「CAPX + Sobel/NCC」）
