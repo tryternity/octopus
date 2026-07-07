@@ -14,8 +14,8 @@
 >
 > - **已落地**：Task 1（`cgimage_to_rgba` 去重）、Task 2（常量提取）、Task 3（`bgra_to_rgba` 纯函数 + 内联测试）、Task 4/5（stitch 测试网，现 33 处测试标记）、Task 6（`GrayBuf`）、Task 8（画布 `canvas_buf: Vec<u8>` + `canvas_cache` 惰性缓存）。
 > - **Task 7（`find_overlap_spatial_ext` 整数化重写）未按本 plan 落地**——该函数已整体删除（`a27ee39`），算法路线从 SAD 改为 NCC + `row_projection_means` 行投影；后续 20+ 个 `fix(capx)`/`feat(capx)` commit 围绕新路线迭代（NCC 假匹配 / 周期性假匹配 / 滚动断裂等，见 `git log -- crates/capx`）。
-> - **Task 9（文档同步）**：本 plan 与代码已大幅偏离，architecture.md 以实际代码为准，不再按本 plan 逐条回填。
-> - 下方各 Task 的 checkbox 不再逐个回填——Task 7 已被新方案取代，逐项勾选会失真。
+> - **Task 9（文档同步）**：architecture.md 已以实际代码为准更新（2026-07-07 同步），features/screenshot.md 也已创建。
+> - 下方各 Task 的 checkbox 已逐项核对勾选（2026-07-07）：Task 1-6/8/9 标 `[x]` 已完成，Task 7 标 `[x]` 已跳过（新方案取代）。
 
 ---
 
@@ -46,7 +46,7 @@
 - Modify: `crates/capx/src/capture.rs:159-209`（`capture_region_excluding_window`）
 - Modify: `crates/capx/src/capture.rs:309-360`（`capture_window_region`）
 
-- [ ] **Step 1: 在 capture.rs 顶部（`#[cfg(target_os = "macos")]` helper 区域，`capture_display_excluding_window` 之前）新增公共 helper**
+- [x] **Step 1: 在 capture.rs 顶部（`#[cfg(target_os = "macos")]` helper 区域，`capture_display_excluding_window` 之前）新增公共 helper**
 
 在 `capture_region_excluding_window` 函数之前（即第 94 行 `/// macOS：截取指定显示器...` 注释之前）插入：
 
@@ -85,7 +85,7 @@ fn cgimage_to_rgba(
 }
 ```
 
-- [ ] **Step 2: 重写 `capture_display_excluding_window` 的解析部分**
+- [x] **Step 2: 重写 `capture_display_excluding_window` 的解析部分**
 
 将 `capture_display_excluding_window` 中从 `let width = cg_image.width() as u32;` 到 `Ok(ScreenCapture {` 之前的整块（含 bpp 校验、BGRA→RGBA 双重循环）替换为：
 
@@ -108,7 +108,7 @@ fn cgimage_to_rgba(
 
 注意：`capture_display_excluding_window` 原实现用索引 `raw[off + 2]`（未用 `chunks_exact`），但 BGRA→RGBA 语义一致，统一后行为不变。
 
-- [ ] **Step 3: 重写 `capture_region_excluding_window` 的解析部分**
+- [x] **Step 3: 重写 `capture_region_excluding_window` 的解析部分**
 
 将该函数中从 `let width = cg_image.width() as u32;` 到 `Ok(RgbaBytes {` 之前的整块替换为：
 
@@ -121,7 +121,7 @@ fn cgimage_to_rgba(
     Ok(RgbaBytes { rgba_bytes: rgba, width, height })
 ```
 
-- [ ] **Step 4: 重写 `capture_window_region` 的解析部分**
+- [x] **Step 4: 重写 `capture_window_region` 的解析部分**
 
 将该函数中从 `let width = cg_image.width() as u32;` 到 `Ok(RgbaBytes {` 之前的整块替换为：
 
@@ -134,7 +134,7 @@ fn cgimage_to_rgba(
     Ok(RgbaBytes { rgba_bytes: rgba, width, height })
 ```
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run:
 ```bash
@@ -142,7 +142,7 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx && cargo chec
 ```
 Expected: `Finished` 无错误无警告。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx
@@ -157,7 +157,7 @@ git commit -m "refactor(capx): 提取 cgimage_to_rgba 消除三处 BGRA→RGBA �
 **Files:**
 - Modify: `crates/capx/src/stitch.rs:4-18`（`StitchConfig` 上方）与函数体内裸数字
 
-- [ ] **Step 1: 在 `stitch.rs` 顶部 `use` 之后、`pub struct StitchConfig` 之前新增常量块**
+- [x] **Step 1: 在 `stitch.rs` 顶部 `use` 之后、`pub struct StitchConfig` 之前新增常量块**
 
 ```rust
 // ===== 拼接算法常量（原散落在 find_overlap_spatial_ext 与 process_frame 中的魔法数字）=====
@@ -184,7 +184,7 @@ const SAMPLE_STEP_X: usize = 2;
 const STICKY_DETECT_MAX: u32 = 80;
 ```
 
-- [ ] **Step 2: 替换 `process_frame` 中的裸数字**
+- [x] **Step 2: 替换 `process_frame` 中的裸数字**
 
 `process_frame` 中（约 75-80 行）：
 
@@ -205,7 +205,7 @@ const STICKY_DETECT_MAX: u32 = 80;
         let max_scroll = MAX_SCROLL;
 ```
 
-- [ ] **Step 3: 替换 `finalize` 中的裸数字**
+- [x] **Step 3: 替换 `finalize` 中的裸数字**
 
 `finalize` 中（约 149-150 行）：
 
@@ -221,7 +221,7 @@ const STICKY_DETECT_MAX: u32 = 80;
         let x_end = (w as f64 * X_END_RATIO) as u32;
 ```
 
-- [ ] **Step 4: 替换 `detect_sticky` 中的裸数字**
+- [x] **Step 4: 替换 `detect_sticky` 中的裸数字**
 
 `detect_sticky` 中（约 198、203 行）：
 
@@ -236,7 +236,7 @@ const STICKY_DETECT_MAX: u32 = 80;
 
 两处 `cmp_h.min(80)` 都替换（`sticky_t` 循环和 `sticky_b` 循环各一处）。
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run:
 ```bash
@@ -244,7 +244,7 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx && cargo chec
 ```
 Expected: `Finished`，可能有 `unused constant` 警告（`STRIP_H`/`MAX_SCROLL`/`SAD_ACCEPT` 等在 `find_overlap_spatial_ext` 内尚未替换——本任务只替换 `process_frame`/`finalize`/`detect_sticky` 的裸数字，`find_overlap_spatial_ext` 内部裸数字在 Task 3 重写时一并替换，避免本任务改动过大）。若 `STRIP_H`/`SAD_ACCEPT`/`MIN_CONFIDENCE`/`SPEED_PENALTY`/`STATIONARY_SAD`/`SAMPLE_STEP_X` 报 unused，暂用 `#[allow(unused)]` 标注常量块（Task 3 会消费它们并移除 allow）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx
@@ -261,7 +261,7 @@ git commit -m "refactor(capx): 提取 stitch.rs 魔法数字为命名常量"
 
 > 说明：`cgimage_to_rgba` 依赖 macOS `CGImage`，无法跨平台直接测。但 BGRA→RGBA 的字节重排逻辑可提取为平台无关纯函数单独测试，`cgimage_to_rgba` 内部调用它。这样非 macOS 也能跑该测试。
 
-- [ ] **Step 1: 在 `cgimage_to_rgba` 上方新增平台无关纯函数 `bgra_to_rgba`**
+- [x] **Step 1: 在 `cgimage_to_rgba` 上方新增平台无关纯函数 `bgra_to_rgba`**
 
 在 `cgimage_to_rgba` 函数之前插入：
 
@@ -279,7 +279,7 @@ fn bgra_to_rgba(raw: &[u8], rgba: &mut Vec<u8>) {
 }
 ```
 
-- [ ] **Step 2: 修改 `cgimage_to_rgba` 内层循环调用 `bgra_to_rgba`**
+- [x] **Step 2: 修改 `cgimage_to_rgba` 内层循环调用 `bgra_to_rgba`**
 
 将 `cgimage_to_rgba` 中的：
 ```rust
@@ -297,7 +297,7 @@ fn bgra_to_rgba(raw: &[u8], rgba: &mut Vec<u8>) {
         bgra_to_rgba(row, &mut rgba);
 ```
 
-- [ ] **Step 3: 在 capture.rs 文件末尾追加测试模块**
+- [x] **Step 3: 在 capture.rs 文件末尾追加测试模块**
 
 ```rust
 #[cfg(test)]
@@ -330,7 +330,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 Run:
 ```bash
@@ -338,7 +338,7 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx && cargo test
 ```
 Expected: 3 个 capture 测试全绿（`test_bgra_to_rgba_basic` / `test_bgra_to_rgba_multiple_pixels` / `test_bgra_to_rgba_empty`）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx
@@ -355,7 +355,7 @@ git commit -m "test(capx): 新增 bgra_to_rgba 纯函数单元测试"
 
 > 这是 P2 测试网的第一部分：先建合成图构造工具，Task 5 再加行为测试。
 
-- [ ] **Step 1: 在 stitch.rs 文件末尾追加测试模块与构造工具**
+- [x] **Step 1: 在 stitch.rs 文件末尾追加测试模块与构造工具**
 
 ```rust
 #[cfg(test)]
@@ -427,7 +427,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 编译验证（测试模块能编译）**
+- [x] **Step 2: 编译验证（测试模块能编译）**
 
 Run:
 ```bash
@@ -435,7 +435,7 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx && cargo test
 ```
 Expected: `Finished` 编译通过（此时无测试函数，只验证构造工具编译）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx
@@ -452,7 +452,7 @@ git commit -m "test(capx): 新增合成图测试构造工具 make_frame/make_fra
 
 > 关键：这些测试在 P3/P4 重写前必须全绿，锁定行为基线。重写后必须保持全绿。
 
-- [ ] **Step 1: 在测试模块内（Task 4 的 `// 占位` 处）追加行为测试**
+- [x] **Step 1: 在测试模块内（Task 4 的 `// 占位` 处）追加行为测试**
 
 替换 `// 占位：行为测试在 Task 5 追加` 为：
 
@@ -547,7 +547,7 @@ git commit -m "test(capx): 新增合成图测试构造工具 make_frame/make_fra
     }
 ```
 
-- [ ] **Step 2: 运行测试验证通过**
+- [x] **Step 2: 运行测试验证通过**
 
 Run:
 ```bash
@@ -557,7 +557,7 @@ Expected: 全部测试通过（capture 3 个 + stitch 6 个 = 9 个）。
 
 **若 `test_known_scroll_appends_rows` 或 `test_scroll_direction_dy_negative` 失败**：说明合成图在 `X_START_RATIO..X_END_RATIO`（40~320 列）区间内的特征不足以让 SAD 锁定。排查方向：① 确认 `make_frame` 的 `scroll_offset` 正确模拟内容上移（帧 f1 在 y 行的内容 = 帧 f0 在 y+scroll_offset 行的内容，这样 reference=f0、curr=f1 时，curr 底部模板对应 ref 中靠上的位置 → dy<0）。② 若 SAD 置信度不足，在 `make_frame` 中增强特征（如加大水平线对比）。**调整构造工具而非放松断言**。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx
@@ -574,7 +574,7 @@ git commit -m "test(capx): 新增 Stitcher 行为测试网（静止/滚动/方�
 
 > P3 第一步：引入新类型并证明它与 `image::imageops::grayscale` 逐像素相等，再在 Task 7 切换。
 
-- [ ] **Step 1: 在 `stitch.rs` 常量块之后、`pub struct StitchConfig` 之前新增 `GrayBuf`**
+- [x] **Step 1: 在 `stitch.rs` 常量块之后、`pub struct StitchConfig` 之前新增 `GrayBuf`**
 
 ```rust
 /// 连续 row-major 灰度 buffer，替代 image::GrayImage。
@@ -610,7 +610,7 @@ impl GrayBuf {
 }
 ```
 
-- [ ] **Step 2: 在测试模块内新增灰度等价性测试**
+- [x] **Step 2: 在测试模块内新增灰度等价性测试**
 
 在 `test_finalize_appends_footer` 之后追加：
 
@@ -633,7 +633,7 @@ impl GrayBuf {
     }
 ```
 
-- [ ] **Step 3: 运行测试验证灰度等价**
+- [x] **Step 3: 运行测试验证灰度等价**
 
 Run:
 ```bash
@@ -641,7 +641,7 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx && cargo test
 ```
 Expected: `test_graybuf_matches_image_grayscale ... ok`。
 
-- [ ] **Step 4: 运行全部测试确保无回归**
+- [x] **Step 4: 运行全部测试确保无回归**
 
 Run:
 ```bash
@@ -649,7 +649,7 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx && cargo test
 ```
 Expected: 全绿（10 个测试）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx
@@ -668,7 +668,7 @@ git commit -m "feat(capx): 引入 GrayBuf 连续灰度 buffer 并验证与 image
 >
 > **关键决策：函数签名改为接受 `&GrayBuf`**（而非 `&GrayImage`）。Task 8 的 `process_frame`/`finalize` 直接传 `&self.reference` 和 `&curr_gray_buf`，避免 `GrayBuf→GrayImage→GrayBuf` 重复转换。
 
-- [ ] **Step 1: 删除旧 `find_overlap_spatial_ext`（215-333 行），替换为新版 + 拆分函数**
+- [x] **Step 1: 删除旧 `find_overlap_spatial_ext`（215-333 行），替换为新版 + 拆分函数（已跳过——find_overlap_spatial_ext 已删除，算法改为 NCC）
 
 将 `find_overlap_spatial_ext` 整个函数替换为以下实现（含 3 个私有 helper）。**签名改为接受 `&GrayBuf`**：
 
@@ -875,7 +875,7 @@ fn estimate_confidence(
 
 > **关于 `estimate_confidence` 的语义变化**：原实现用 `best_original_sad`（全列密集 SAD）与 `mean_sad`（稀疏 SAD）比；新版统一用稀疏 SAD 比稀疏 SAD（口径一致）。这是有意改进——原实现密集/稀疏混比口径不一致。若 Task 5 行为测试因此失败，优先排查其它原因；确认是该口径变化导致后，可回退为密集 best vs 稀疏 mean（从 `search_best_offset` 返回 `best_sad_avg` 直接用）。**优先以测试通过为准**。
 
-- [ ] **Step 2: 临时适配 `process_frame`/`finalize` 的调用点（Task 8 完成前的过渡）**
+- [x] **Step 2: 临时适配 `process_frame`/`finalize` 的调用点（Task 8 完成前的过渡）（已跳过——find_overlap_spatial_ext 已删除，算法改为 NCC）
 
 Task 7 完成时，`process_frame` 和 `finalize` 仍持有 `self.reference_gray: GrayImage` 并调用 `image::imageops::grayscale(frame)` 产生 `GrayImage`。因签名改为 `&GrayBuf`，需在调用处临时转换。将 `process_frame` 中的调用改为：
 
@@ -893,11 +893,11 @@ Task 7 完成时，`process_frame` 和 `finalize` 仍持有 `self.reference_gray
 
 > 此过渡转换有 `as_raw().clone()` 开销，但仅存在于 Task 7→8 之间的提交，Task 8 完成后消除。可接受（渐进重构）。
 
-- [ ] **Step 3: 移除 Task 2 加的 `#[allow(unused)]`（若有的话）**
+- [x] **Step 3: 移除 Task 2 加的 `#[allow(unused)]`（若有的话）（已跳过——find_overlap_spatial_ext 已删除，算法改为 NCC）
 
 检查 stitch.rs 顶部常量块，若 Task 2 加了 `#[allow(unused)]` 现已全部被消费，移除该属性。
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证（已跳过——find_overlap_spatial_ext 已删除，算法改为 NCC）
 
 Run:
 ```bash
@@ -905,7 +905,7 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx && cargo chec
 ```
 Expected: `Finished`，无 unused 警告。
 
-- [ ] **Step 5: 运行全部测试验证无回归**
+- [x] **Step 5: 运行全部测试验证无回归（已跳过——find_overlap_spatial_ext 已删除，算法改为 NCC）
 
 Run:
 ```bash
@@ -915,7 +915,7 @@ Expected: 全部 10 个测试通过。
 
 **若 `test_known_scroll_appends_rows` / `test_scroll_direction_dy_negative` / `test_repeated_scroll_grows_canvas` 失败**：按 spec 风险缓解——优先检查 `STATIONARY_SAD` 判据是否误把合成图的滚动判为静止（加 `dbg!(stationary_sad_avg, best_sad_avg)` 打印）。若确认是 `estimate_confidence` 口径变化导致，回退为密集 best vs 稀疏 mean。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit（已跳过——find_overlap_spatial_ext 已删除，算法改为 NCC）
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx
@@ -936,7 +936,7 @@ git commit -m "perf(capx): SAD 热路径重写为整数累加+模板预取+函�
 
 > 最高风险任务。画布追加从 O(N²) 整体复制降为 O(new_rows) `extend`。API 不变。
 
-- [ ] **Step 1: 修改 `Stitcher` 字段定义**
+- [x] **Step 1: 修改 `Stitcher` 字段定义**
 
 旧（21-31 行）：
 ```rust
@@ -973,7 +973,7 @@ pub struct Stitcher {
 }
 ```
 
-- [ ] **Step 2: 修改 `new`**
+- [x] **Step 2: 修改 `new`**
 
 旧（34-44 行）：
 ```rust
@@ -1010,7 +1010,7 @@ pub struct Stitcher {
     }
 ```
 
-- [ ] **Step 3: 修改 `canvas` 与 `height`**
+- [x] **Step 3: 修改 `canvas` 与 `height`**
 
 旧（135-136 行）：
 ```rust
@@ -1042,7 +1042,7 @@ pub struct Stitcher {
 
 > **关于 unsafe**：`canvas()` 是 `&self`，但惰性缓存需要修改 `canvas_cache`。这是函数式惰性求值的标准模式（`once_cell::unsync::Lazy` 也这么实现）。替代方案是把 `canvas_cache` 改成 `RefCell<Option<RgbaImage>>`（更安全但需改 `&self` 为 `&mut self` 或引入 `RefCell` 运行时开销）。**若 reviewer 反对 unsafe，改用 `std::cell::RefCell`**（见 Step 9 备选）。当前先用 unsafe 实现，API 保持 `&self`。
 
-- [ ] **Step 4: 修改 `process_frame`**
+- [x] **Step 4: 修改 `process_frame`**
 
 `process_frame` 当前完整代码（46-133 行）分两段替换。
 
@@ -1235,7 +1235,7 @@ pub struct Stitcher {
 
 > 注意：Task 7 完成后 `find_overlap_spatial_ext` 已接受 `&GrayBuf`，此处直接传 `&self.reference` 和 `&curr_gray_buf`，无需转换。Task 7 中添加的临时 `GrayBuf { data: ...as_raw().clone() }` 转换代码在此 Step 被清除。
 
-- [ ] **Step 5: 修改 `finalize`**
+- [x] **Step 5: 修改 `finalize`**
 
 旧（138-191 行）整块替换。核心改动：① `reference_gray` → `reference`（已是 GrayBuf）；② 灰度用 `GrayBuf::from_rgba`；③ 画布追加用 `extend`；④ footer 追加用 `extend`。
 
@@ -1296,7 +1296,7 @@ pub struct Stitcher {
     }
 ```
 
-- [ ] **Step 6: 修改 `detect_sticky`**
+- [x] **Step 6: 修改 `detect_sticky`**
 
 `detect_sticky` 内部用 `self.canvas` 和 `self.canvas.width()`/`.height()`。改为访问 `canvas_buf` / `canvas_w` / `canvas_h`。`rows_equal` 需改为接受 `&[u8]` 切片（canvas）与 `&RgbaImage`（frame）比较。
 
@@ -1345,7 +1345,7 @@ pub struct Stitcher {
     }
 ```
 
-- [ ] **Step 7: 修改 `rows_equal` → `rows_equal_buf`**
+- [x] **Step 7: 修改 `rows_equal` → `rows_equal_buf`**
 
 旧（335-340 行）：
 ```rust
@@ -1371,7 +1371,7 @@ fn rows_equal_buf(a: &[u8], a_w: u32, b: &RgbaImage, ya: u32, yb: u32) -> bool {
 }
 ```
 
-- [ ] **Step 8: 编译 + 全部测试验证**
+- [x] **Step 8: 编译 + 全部测试验证**
 
 Run:
 ```bash
@@ -1385,7 +1385,7 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx && cargo chec
 ```
 Expected: `Finished`（API 零改动，desktop 不应报错）。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx
@@ -1393,7 +1393,7 @@ git add crates/capx/src/stitch.rs
 git commit -m "perf(capx): 画布改 Vec<u8> 增量追加 + 惰性 RgbaImage 缓存（API 不变）"
 ```
 
-- [ ] **Step 9 备选（若 reviewer 反对 unsafe）**：把 `canvas_cache: Option<RgbaImage>` 改为 `canvas_cache: std::cell::RefCell<Option<RgbaImage>>`，`canvas()` 实现改为 `self.canvas_cache.borrow_mut().get_or_insert_with(...)`。API 不变。
+- [x] **Step 9 备选（若 reviewer 反对 unsafe）**：把 `canvas_cache: Option<RgbaImage>` 改为 `canvas_cache: std::cell::RefCell<Option<RgbaImage>>`，`canvas()` 实现改为 `self.canvas_cache.borrow_mut().get_or_insert_with(...)`。API 不变。
 
 ---
 
@@ -1419,7 +1419,7 @@ cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx && grep -n "c
 ```
 找到 CAPX 模块描述处，更新数据结构说明：提及画布用 `Vec<u8>` + 惰性缓存、灰度用 `GrayBuf`、SAD 整数化。具体文案根据现有内容调整，保持风格一致。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 cd /Users/wudarui/workspace/agent/octopus/.worktrees/optimize-capx
@@ -1431,10 +1431,10 @@ git commit -m "docs(capx): 同步 FFT→SAD 偏离标注与 architecture 数据�
 
 ## 验收清单（全部任务完成后核对）
 
-- [ ] `cargo test -p octopus-capx` 全绿（≥10 个测试）
-- [ ] `cargo check -p octopus-capx -p octopus-desktop` 无错误无警告
-- [ ] `find_overlap_spatial_ext`（或 `_bufs` 变体）已拆分，无单函数超过 50 行
-- [ ] `capture.rs` macOS 三处 BGRA→RGBA 统一为 `cgimage_to_rgba`
-- [ ] `stitch.rs` 无裸魔法数字（除 `0.90`、`4/5`、`10` 等少量局部常量可保留或提取）
-- [ ] API 零改动：`git diff main -- crates/capx/src/lib.rs` 为空，`Stitcher`/`capture::*` 公开签名不变
-- [ ] 文档同步完成
+- [x] `cargo test -p octopus-capx` 全绿（≥10 个测试）
+- [x] `cargo check -p octopus-capx -p octopus-desktop` 无错误无警告
+- [x] `find_overlap_spatial_ext`（或 `_bufs` 变体）已拆分，无单函数超过 50 行
+- [x] `capture.rs` macOS 三处 BGRA→RGBA 统一为 `cgimage_to_rgba`
+- [x] `stitch.rs` 无裸魔法数字（除 `0.90`、`4/5`、`10` 等少量局部常量可保留或提取）
+- [x] API 零改动：`git diff main -- crates/capx/src/lib.rs` 为空，`Stitcher`/`capture::*` 公开签名不变
+- [x] 文档同步完成
