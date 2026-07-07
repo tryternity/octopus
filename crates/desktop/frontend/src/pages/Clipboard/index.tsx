@@ -1,8 +1,9 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { invoke } from "@/lib/tauri";
 import { useClipboardHistory } from "@/hooks/useClipboardHistory";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
+import { moveIndex } from "@/lib/clipboardNav";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
@@ -17,15 +18,26 @@ export default function Clipboard() {
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [pinned, setPinned] = useState(false);
-  const [selectedId, setSelectedId] = useState<number | null>(null);
+  // 键盘导航以数组索引为第一性 citizen；执行动作时从 items[selectedIndex].id 取。
+  const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [recording, setRecording] = useState(true);
 
   const { items, total, refresh } = useClipboardHistory(filter, search);
 
+  // items 变化（过滤/搜索/刷新）后夹紧 selectedIndex：越界则重置到首条或 null。
+  useEffect(() => {
+    setSelectedIndex((prev) => {
+      if (items.length === 0) return null;
+      if (prev === null) return 0;
+      if (prev >= items.length) return 0;
+      return prev;
+    });
+  }, [items]);
+
   // 稳定选中句柄：ClipboardItemRow 已 memo，inline 箭头 onSelect={() => ...} 会让
-  // 每行 prop 引用每帧变化 → memo 失效、50 行全重绘。setSelectedId 来自 useState 稳定，
-  // useCallback([]) 产出恒定引用，行内再以 onSelect(item.id) 回带 id。
-  const handleSelect = useCallback((id: number) => setSelectedId(id), []);
+  // 每行 prop 引用每帧变化 → memo 失效、50 行全重绘。setSelectedIndex 来自 useState 稳定，
+  // useCallback([]) 产出恒定引用，行内再以 onSelect(index) 回带 index。
+  const handleSelect = useCallback((index: number) => setSelectedIndex(index), []);
 
   // 监听开关：mount 读 get_config + 监听 config-changed 同步（与设置页 toggle 双向同步）。
   const loadRecording = useCallback(async () => {
@@ -120,8 +132,9 @@ export default function Clipboard() {
             <ClipboardItemRow
               key={item.id}
               item={item}
+              index={index}
               isLast={index === items.length - 1}
-              isSelected={selectedId === item.id}
+              isSelected={selectedIndex === index}
               onSelect={handleSelect}
               onChanged={refresh}
             />

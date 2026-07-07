@@ -10,15 +10,17 @@ import SaveImagePopover from "./SaveImagePopover";
 
 function ClipboardItemRow({
   item,
+  index,
   isLast,
   isSelected,
   onSelect,
   onChanged,
 }: {
   item: ClipboardItem;
+  index: number;
   isLast: boolean;
   isSelected: boolean;
-  onSelect: (id: number) => void;
+  onSelect: (index: number) => void;
   onChanged: () => void;
 }) {
   const [deletePending, setDeletePending] = useState(false);
@@ -74,7 +76,7 @@ function ClipboardItemRow({
   // 单击：选中条目（不复制）
   const handleClick = () => {
     if (deletePending) return;
-    onSelect(item.id);
+    onSelect(index);
   };
 
   // 双击：写剪贴板 → 隐藏浮窗 → 恢复焦点 → 模拟 Cmd+V 粘贴（paste_clipboard_item，
@@ -150,6 +152,7 @@ function ClipboardItemRow({
 
   return (
     <div
+      data-clip-index={index}
       className={cn(
         "group relative px-3 py-2 cursor-pointer transition-colors flex items-center gap-2.5",
         isSelected && !deletePending ? "bg-accent" : "hover:bg-accent",
