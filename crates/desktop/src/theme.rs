@@ -105,7 +105,7 @@ fn builtin_themes() -> Vec<ThemeInfo> {
                 voice: "#f59e0b".into(),
                 surface: "#1a1a1e".into(),
                 tool_icon: "rgba(255, 255, 255, 0.55)".into(),
-                icon_filter: "brightness(0) invert(1) opacity(0.65)".into(),
+                icon_filter: "brightness(0) invert(1)".into(),
             },
         },
         // ── Nord Aurora ── 北极极光冷蓝深色。
@@ -130,7 +130,7 @@ fn builtin_themes() -> Vec<ThemeInfo> {
                 voice: "#88c0d0".into(),
                 surface: "#2e3440".into(),
                 tool_icon: "rgba(229, 233, 240, 0.55)".into(),
-                icon_filter: "brightness(0) invert(1) opacity(0.65)".into(),
+                icon_filter: "brightness(0) invert(1)".into(),
             },
         },
     ]
