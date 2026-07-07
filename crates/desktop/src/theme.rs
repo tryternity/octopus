@@ -1,5 +1,8 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::sync::OnceLock;
+
+/// 主题颜色 token——对应前端 Tailwind v4 的 CSS 变量（--color-xxx）。
 
 /// 主题颜色 token——对应前端 Tailwind v4 的 CSS 变量（--color-xxx）。
 /// 用户自定义主题 JSON 里 colors 对象的 key 与这些字段名一致（kebab-case）。
@@ -137,8 +140,14 @@ fn builtin_themes() -> Vec<ThemeInfo> {
 }
 
 /// 列出所有可用主题：内置 + ~/.octopus/themes/*.json。同 id 用户主题覆盖内置。
+/// 结果进程内缓存（OnceLock）——主题列表在运行期不变，避免每次调用读文件系统。
 #[tauri::command]
 pub fn list_themes() -> Result<Vec<ThemeInfo>, String> {
+    static CACHE: OnceLock<Vec<ThemeInfo>> = OnceLock::new();
+    Ok(CACHE.get_or_init(load_themes).clone())
+}
+
+fn load_themes() -> Vec<ThemeInfo> {
     let mut themes: HashMap<String, ThemeInfo> = HashMap::new();
     for t in builtin_themes() {
         themes.insert(t.id.clone(), t);
@@ -170,5 +179,14 @@ pub fn list_themes() -> Result<Vec<ThemeInfo>, String> {
 
     let mut result: Vec<ThemeInfo> = themes.into_values().collect();
     result.sort_by(|a, b| a.name.cmp(&b.name));
-    Ok(result)
+    result
+}
+
+/// 只返回当前主题 id（轻量，避免前端 applyThemeFromConfig 调全量 get_config）。
+#[tauri::command]
+pub fn get_theme_id() -> Result<String, String> {
+    let id = octopus_infra::db::load_config_key("clipboard_theme")
+        .map_err(|e| e.to_string())?
+        .unwrap_or_else(|| "light".into());
+    Ok(id)
 }

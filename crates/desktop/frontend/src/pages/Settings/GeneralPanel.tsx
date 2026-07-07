@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
 import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Layers, Palette } from "lucide-react";
 import type { ThemeInfo } from "@/lib/theme";
-import { applyTheme } from "@/lib/theme";
+import { applyThemeById as applyTheme } from "@/lib/theme";
 import type { ConfigResponse } from "./index";
 
 interface GeneralPanelProps {
@@ -95,10 +95,9 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
   }, []);
 
   const setTheme = useCallback(async (themeId: string) => {
-    const t = themes.find((t) => t.id === themeId);
-    if (t) applyTheme(t);
+    await applyTheme(themeId);
     await setVal("clipboard_theme", themeId);
-  }, [themes, setVal]);
+  }, [setVal]);
 
   const toggleVal = useCallback(async (key: string) => {
     const current = cfg[key] as boolean;

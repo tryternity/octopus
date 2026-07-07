@@ -605,6 +605,23 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 12. serde 重构 load/save | ✅ | `cfcebf0` | 根治手动枚举 + round-trip 回归测试 |
 | 13. config-changed 无条件 emit | ✅ | `84fc67c` | emit 白名单（踩坑第 5 次） |
 | 14. Option 用 e.code | ✅ | `8687982` | macOS Option+数字产生特殊字符，e.key 不匹配 |
+| **主题系统** | | | |
+| 15. 内置 3 套主题 + JSON 扩展 | ✅ | `0628d13` | theme.rs + theme.ts + GeneralPanel 外观卡片 |
+| 16. 主题切换同步到所有窗口 | ✅ | `f05f776` | App.tsx 每窗口 mount + listen config-changed |
+| 17. 重新设计 3 套配色 | ✅ | `270cf57` | Warm Paper / Obsidian Glass / Nord Aurora（ui-ux-pro-max） |
+| 18. result_window 透出 + 工具栏不可见 | ✅ | `2566dc8` | backdrop-blur 只在 clipboard_window；新增 surface/tool-icon token |
+| 19. 暗色背景纯不透明 | ✅ | `2b87c86` | CSS backdrop-filter 无法实现均匀模糊，改为纯 hex |
+| 20. 选中/hover 视觉冲突 | ✅ | `d7268f6` | hover 用 bg-muted，selected 加 voice 指示条 |
+| 21. 编辑器跟随主题 | ✅ | `66f3e3b` | CompactEditor stone 硬编码改为语义 token |
+| 22. 截图工具栏跟随主题 | ✅ | `f1451f1` | 工具栏/弹窗背景+图标改为 CSS 变量 |
+| 23. 截图图标 icon_filter | ✅ | `e734876` | 暗色主题 brightness(0) invert(1) 反色 |
+| 24. 剪贴管理页跟随主题 | ✅ | `d19e979` | ClipboardPanel 22 处 stone 硬编码改语义 token |
+| 25. icon_filter 去掉 opacity | ✅ | `08e7d16` | opacity(0.65) 在深色背景上太暗 |
+| 26. icon-filter 变量传递修复 | ✅ | `a6053a9` | 从 theme.colors 取（非顶层），跳过颜色遍历 |
+| 27. HistoryPanel + blur 清理 | ✅ | `71dd3da` | 15 处 stone 改语义 token；移除 backdrop-blur 死代码 |
+| 28. 全局 SVG 图标 icon-filter | ✅ | `70ef247` | ClipboardPanel/ClipboardItem SVG img 加 var(--icon-filter) |
+| 29. ImagePreview 工具栏适配 | ✅ | `ffeef52` | ToolButton 加 color 让 Lucide 图标可见；卡片/弹窗改 CSS 变量 |
+| 30. ScrollPreview 保存按钮 | ✅ | `24f5d02`+`831f41e` | #3b82f6→var(--color-voice)；修 JSX 语法 |
 
 ### 与原 plan 的偏差
 
@@ -616,15 +633,23 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 
 4. **配置系统 serde 重构**：plan 未涉及。实施中发现 `clipboard_tab_modifier` 新增字段需在 7 处注册（struct/default/apply_config_value/load/save/db.sql/前端），手动枚举已踩坑 4 次 → 根治为 serde 自动 + 无条件 emit + round-trip 测试。详见 architecture.md 配置系统章节。
 
+5. **主题系统（plan 未涉及）**：借鉴 Wox 主题设计，新增 3 套内置主题 + JSON 扩展。关键决策：
+   - 半透明改纯不透明（CSS backdrop-filter 在 Tauri WebView 下无法实现均匀模糊）
+   - 新增 surface（不透明背景）、tool-icon（工具栏图标色）、icon-filter（截图图标 CSS filter）三个 token
+   - 所有窗口的 stone 硬编码逐步替换为语义 token（Result/CompactEditor/ClipboardPanel/HistoryPanel/Screenshot/ImagePreview）
+   - 两类图标适配：SVG `<img>` 用 `var(--icon-filter)` 反色；Lucide React 图标靠 ToolButton 设 `color` 让 `currentColor` 继承
+
 ### 新增文件
 
 | 文件 | 用途 |
 |------|------|
 | `src/lib/clipboardNav.ts` | `moveIndex`/`moveTab` 纯函数 |
 | `src/lib/clipboardNav.test.ts` | 纯函数单元测试（14 case） |
+| `src/lib/theme.ts` | `applyTheme`/`applyThemeFromConfig`（CSS 变量写入） |
+| `crates/desktop/src/theme.rs` | 3 套内置主题 + `list_themes` 命令 + JSON 扩展 |
 
 ### 最终验证
 
 - 前端：62/62 测试通过，tsc clean，lint 无新增问题
 - Rust：51/51 infra 测试通过（含新增 round-trip），desktop 编译通过
-- E2E：用户确认 cmd/ctrl/alt 三种修饰键均可生效
+- E2E：用户确认 cmd/ctrl/alt 三种修饰键均可生效；3 套主题全窗口同步正确

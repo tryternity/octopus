@@ -80,14 +80,14 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
     <div className="flex flex-col h-full">
       {/* ── 搜索（置顶）── */}
       <div className="pb-3 border-b border-border">
-        <div className="flex items-center gap-2 px-2.5 py-1.5 bg-stone-50 rounded-md border border-stone-200">
-          <Search className="w-3.5 h-3.5 text-stone-400" />
+        <div className="flex items-center gap-2 px-2.5 py-1.5 bg-muted rounded-md border border-border">
+          <Search className="w-3.5 h-3.5 text-muted-foreground" />
           <input
             type="text"
             placeholder="搜索识别文本..."
             value={search}
             onChange={(e) => setSearch(e.target.value)}
-            className="flex-1 bg-transparent text-xs outline-none placeholder:text-stone-400"
+            className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
           />
         </div>
       </div>
@@ -96,15 +96,15 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
       <div className="flex-1 overflow-y-auto thin-scrollbar -mx-1 px-1">
         {/* 列表 header：全选（sticky 固定不随滚动） */}
         {records.length > 0 && (
-          <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 border-b border-stone-100 bg-stone-50 group/header">
+          <div className="sticky top-0 z-10 flex items-center gap-2 px-3 py-1.5 border-b border-border bg-muted group/header">
             <label className="flex items-center gap-1.5 cursor-pointer">
               <input
                 type="checkbox"
-                className="w-3.5 h-3.5"
+                className="w-3.5 h-3.5 accent-primary"
                 checked={allChecked}
                 onChange={(e) => setSelectedIds(e.target.checked ? new Set(records.map((r) => r.id)) : new Set())}
               />
-              <span className="text-[10px] text-stone-400 group-hover/header:text-stone-600 transition-colors">
+              <span className="text-[10px] text-muted-foreground group-hover/header:text-foreground transition-colors">
                 {hasSelection ? `已选 ${selectedIds.size} 项` : "全选"}
               </span>
             </label>
@@ -112,7 +112,7 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
         )}
 
         {records.length === 0 && !loading && (
-          <div className="flex flex-col items-center justify-center py-16 gap-1 text-stone-400">
+          <div className="flex flex-col items-center justify-center py-16 gap-1 text-muted-foreground">
             <span className="text-sm">暂无识别记录</span>
           </div>
         )}
@@ -129,24 +129,24 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
         ))}
 
         {loading && (
-          <div className="text-center py-4 text-stone-400 text-xs">加载中...</div>
+          <div className="text-center py-4 text-muted-foreground text-xs">加载中...</div>
         )}
         {!loading && !done && records.length > 0 && (
           <button
-            className="w-full py-3 text-xs text-stone-500 hover:text-stone-800 transition-colors"
+            className="w-full py-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => loadHistory()}
           >
             加载更多
           </button>
         )}
         {!loading && done && records.length > 0 && (
-          <div className="text-center py-3 text-stone-300 text-[10px]">— 没有更多了 —</div>
+          <div className="text-center py-3 text-muted-foreground/50 text-[10px]">— 没有更多了 —</div>
         )}
       </div>
 
       {/* ── 底部：状态 + 批量操作 ── */}
       <div className="flex items-center justify-between py-2 border-t border-border">
-        <span className="text-[10px] text-stone-400">
+        <span className="text-[10px] text-muted-foreground">
           共 {records.length} 条记录
         </span>
         {hasSelection ? (
@@ -163,7 +163,7 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
             {confirmDelete ? `确认删除 ${selectedIds.size} 项` : "删除选中"}
           </button>
         ) : (
-          <span className="text-[10px] text-stone-300">{done ? "已全部加载" : `已加载 ${records.length} 条`}</span>
+          <span className="text-[10px] text-muted-foreground/50">{done ? "已全部加载" : `已加载 ${records.length} 条`}</span>
         )}
       </div>
     </div>
@@ -225,9 +225,9 @@ function HistoryRow({
   return (
     <div
       className={cn(
-        "group relative flex items-start gap-2.5 px-3 py-2.5 border-b border-stone-100/60 transition-colors cursor-pointer",
-        isSelected ? "bg-stone-100" : "hover:bg-stone-50",
-        deletePending && "bg-red-50",
+        "group relative flex items-start gap-2.5 px-3 py-2.5 border-b border-border/60 transition-colors cursor-pointer",
+        isSelected ? "bg-accent" : "hover:bg-muted",
+        deletePending && "bg-red-50/10",
       )}
       onClick={onToggleSelect}
     >
@@ -244,20 +244,20 @@ function HistoryRow({
       <div className="flex-1 min-w-0">
         {/* Meta row */}
         <div className="flex items-center gap-1.5 mb-0.5 flex-wrap">
-          <span className="text-[10px] text-stone-400">{rec.created_at}</span>
+          <span className="text-[10px] text-muted-foreground">{rec.created_at}</span>
           {duration && (
-            <span className="text-[10px] text-stone-400 px-1 rounded bg-stone-100">{duration}</span>
+            <span className="text-[10px] text-muted-foreground px-1 rounded bg-muted">{duration}</span>
           )}
           <span className={cn(
             "text-[10px] px-1.5 py-0.5 rounded font-medium",
-            isPolished ? "bg-amber-600/10 text-amber-700" : "text-stone-400",
+            isPolished ? "bg-amber-600/10 text-amber-700" : "text-muted-foreground",
           )}>
             {POLISH_LABELS[rec.polish_status] || rec.polish_status}
           </span>
-          <span className="text-[10px] text-stone-300">{rec.engine}</span>
+          <span className="text-[10px] text-muted-foreground/50">{rec.engine}</span>
         </div>
         {/* Primary text（段模型下仅展示最终扁平文本；润色状态见 polish_status 标签） */}
-        <p className="text-xs leading-relaxed text-stone-800 break-words">{primaryText}</p>
+        <p className="text-xs leading-relaxed text-foreground break-words">{primaryText}</p>
       </div>
 
       {/* 右侧操作：查看 + 复制 + 删除 */}
@@ -267,14 +267,14 @@ function HistoryRow({
           onClick={(e) => { e.stopPropagation(); openCompactEditorTab(rec.id, "transcription"); }}
           title="查看"
         >
-          <Eye className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
+          <Eye className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
         </button>
         <button
           className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
           onClick={copyRecord}
           title="复制"
         >
-          <Copy className="w-3.5 h-3.5 text-stone-500 hover:text-stone-800" />
+          <Copy className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
         </button>
         <button
           className={cn(
@@ -288,7 +288,7 @@ function HistoryRow({
         >
           <Trash2 className={cn(
             "w-3.5 h-3.5 transition-colors",
-            deletePending ? "text-red-600" : "text-stone-500 hover:text-red-500",
+            deletePending ? "text-red-600" : "text-muted-foreground hover:text-red-500",
           )} />
         </button>
       </div>

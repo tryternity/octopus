@@ -449,6 +449,15 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - **yaml 迁移**：`user_version < 18` 首次建库时检测旧 `~/.octopus/config.yaml` → 解析导入 DB 覆盖 seed → 重命名为 `config.yaml.bak`。迁移逻辑在 `init_schema` 中一次性执行（导入后库即 v18，后续启动跳过）。
 - **`write_to_clipboard`**（默认 `true`）：粘贴后是否把识别结果留在剪贴板，方便他处再粘贴；与 `paste_method`（`clipboard` / `direct` / `none`）构成三模式矩阵——`clipboard` 模式 true 时不恢复原剪贴板内容、false 时恢复（`paste_via_clipboard` 按 `files > image > text` 优先级用 `ClipboardBackup` 备份原内容——图片 `read_image`/`set_image`、文件 `read_files`/`write_files`、文本 `read_text`/`write_text`——ASR 文本粘贴后还原，旧实现只 `read_text` 导致图片/文件被空串吞掉丢失）；`direct` 模式 true 时 enigo 输入后末尾写剪贴板、false 时不碰剪贴板；`none` 模式忽略此配置（其唯一目的就是写剪贴板）。`false` 时三种粘贴行为等同重构前现状（不破坏现有用户习惯）。详见 [spec §6](superpowers/specs/2026-06-14-archived-design.md)。
 
+**UI 主题系统（2026-07-07，借鉴 Wox）：**
+- **配置**：`clipboard_theme` 字段（AppConfig），存主题 id（`light` / `glass-dark` / `nord` / 用户自定义）。serde 自动 load/save，`config-changed` 无条件 emit 触发全窗口热切换。
+- **3 套内置主题**（`crates/desktop/src/theme.rs`）：Warm Paper（纸质感暖灰浅色）、Obsidian Glass（黑曜石深色 `#121216`）、Nord Aurora（北极极光冷蓝 `#2e3440`）。暗色主题用**纯不透明实色**——CSS `backdrop-filter` 在 Tauri WebView 下无法实现 Wox 的原生 NSVisualEffectView 均匀模糊。
+- **token 体系**：标准 Tailwind 语义色（`background`/`foreground`/`muted`/`accent`/`border`/`voice`）+ 3 个扩展 token：`surface`（不透明背景，result_window/截图工具栏用）、`tool-icon`（result_window 工具栏图标色）、`icon-filter`（截图工具栏图标 CSS filter，暗色=`brightness(0) invert(1)` 反色黑色 SVG）。
+- **图标适配两类**：SVG `<img>`（截图/剪贴板/图片查看器工具栏）用 `var(--icon-filter)` 在暗色主题反色；Lucide React 图标（编辑器/图片查看器的缩放/自适应按钮）靠父容器设 `color: var(--color-foreground)` 让 `currentColor` 继承。
+- **应用机制**：`theme.ts` `applyTheme` 写 CSS 变量到 `:root`，Tailwind 类自动跟随。`App.tsx` 每窗口 mount 时 `applyThemeFromConfig()` + 监听 `config-changed` 同步。
+- **用户扩展**：`~/.octopus/themes/*.json` 可新增自定义主题（同 id 覆盖内置），`list_themes` 命令合并返回。
+- **剪贴板浮窗键盘导航**（2026-07-07）：搜索框持焦模型，`↑↓` 移动选中（边界夹紧不循环）、`Enter` 粘贴（复用 `paste_clipboard_item` 双保险）、空内容 `←→` 切 tab / 有内容让位光标、`Tab` 恒定切 tab、`<修饰键>+1..7` 跳 tab（修饰键可配置 `clipboard_tab_modifier`，macOS Option 用 `e.code` 而非 `e.key`）。详见 [spec](superpowers/specs/2026-07-07-clipboard-keyboard-nav-design.md)。
+
 **引擎选择（单一真相 = `app_config.asr_engine`）：**
 - `models` 表无 `is_active` 列（开发期 schema 变更采用删库重初始化——见 `crates/infra/src/db.sql` 注释；`init_schema` 仅 `user_version < 18` 时执行 db.sql 建表+seed+yaml 导入（v18 跳过），v17→v18 跑 FTS5 backfill，无历史迁移链）。
 - **provider × category taxonomy**（`provider`=vendor/运行位置，与 `category`=引擎族/模型系列 正交）：

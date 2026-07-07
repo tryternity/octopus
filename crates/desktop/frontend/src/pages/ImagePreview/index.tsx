@@ -781,7 +781,7 @@ export default function ImagePreview({ imageId: propImageId }: { imageId: number
                   if (e.key === "Escape") { e.stopPropagation(); textDraftRef.current = null; setTextDraft(null); }
                 }}
                 placeholder="输入文字…"
-                className="absolute rounded bg-white/95 px-1 py-0.5 shadow outline-none resize-none"
+                className="absolute rounded bg-background px-1 py-0.5 shadow outline-none resize-none border border-border"
                 style={{
                   left: draftBox.left, top: draftBox.top, fontSize: draftBox.fs, minWidth: 120, lineHeight: 1.3,
                   // 按选定色显示（写时即所见）；白色字加细深描边防在白底上丢失
