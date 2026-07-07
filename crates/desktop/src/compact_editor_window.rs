@@ -94,7 +94,7 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle) {
     .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
     .decorations(true)
     .resizable(true)
-    .visible(false);  // 先隐藏，前端渲染完毕后 show（消除 PPT slide 效果）
+    .visible(true);
 
     if state.width > 0.0 && state.height > 0.0 {
         builder = builder.inner_size(state.width, state.height).position(state.x, state.y);

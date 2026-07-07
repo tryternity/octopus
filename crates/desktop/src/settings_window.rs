@@ -54,7 +54,7 @@ pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>)
     .inner_size(SETTINGS_WIDTH, SETTINGS_HEIGHT)
     .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
     .decorations(true)
-    .visible(false)  // 先隐藏，前端渲染完毕后 show（消除 PPT slide 效果）
+    .visible(true)
     .build();
 }
 
