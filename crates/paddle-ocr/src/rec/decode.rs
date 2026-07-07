@@ -154,7 +154,10 @@ fn argmax_with_prob(probs: ArrayView2<'_, f32>) -> (Vec<usize>, Vec<f32>) {
     let mut idxs = Vec::with_capacity(rows);
     let mut vals = Vec::with_capacity(rows);
 
-    if let Some(slice) = probs.as_slice_memory_order() {
+    // 用 as_slice（仅 C-contiguous/行优先返回 Some）而非 as_slice_memory_order——
+    // 下方按 r*cols 行优先偏移取整行，列优先(F-contiguous)切片会跨行读错。C-contiguous
+    // 时两者返回相同切片；F-contiguous 时 as_slice 返回 None，安全降级到 axis_iter 慢路径。
+    if let Some(slice) = probs.as_slice() {
         for r in 0..rows {
             let row_start = r * cols;
             let row = &slice[row_start..row_start + cols];

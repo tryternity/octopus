@@ -135,7 +135,10 @@ pub(super) fn masked_mean_in_roi(
         return 0.0;
     }
 
-    if let Some(src) = bitmap.as_slice_memory_order() {
+    // 用 as_slice（仅 C-contiguous 返回 Some）：masked_mean_in_roi_contiguous 把
+    // ncols 当行 stride（行优先假设），F-contiguous 切片会按错位 offset 读。C-contiguous
+    // 常态下与 as_slice_memory_order 等价；F-contiguous 时返回 None 降级到下方索引访问。
+    if let Some(src) = bitmap.as_slice() {
         return masked_mean_in_roi_contiguous(
             src,
             bitmap.ncols(),
