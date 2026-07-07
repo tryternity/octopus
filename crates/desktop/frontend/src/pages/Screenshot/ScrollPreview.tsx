@@ -50,12 +50,12 @@ export function ScrollPreview({ sel, scrollPreview, scrollHeight }: ScrollPrevie
       <div style={{ display: "flex", gap: 6, height: 32 }}>
         <button onClick={() => invoke("stop_scroll_recording_with_mode", { mode: "save" }).catch(() => {})} style={{
           flex: 1, borderRadius: 6, border: "none",
-          background: "#3b82f6", color: "#fff",
+          background: "var(--color-voice)", color: "#fff",
           fontSize: 12, fontWeight: 600, cursor: "pointer",
           transition: "background 0.15s",
         }}
-        onMouseEnter={(e) => e.currentTarget.style.background = "#2563eb"}
-        onMouseLeave={(e) => e.currentTarget.style.background = "#3b82f6"}>
+        onMouseEnter={(e) => e.currentTarget.style.background = "var(--color-voice)"
+        onMouseLeave={(e) => e.currentTarget.style.background = "var(--color-voice)"}>
           保存
         </button>
         <button onClick={() => invoke("stop_scroll_recording_with_mode", { mode: "copy" }).catch(() => {})} style={{
