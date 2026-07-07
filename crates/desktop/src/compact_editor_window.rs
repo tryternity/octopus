@@ -147,14 +147,16 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
         }
         builder = builder.maximized(false);
     } else {
-        // 最大化：用主屏位置创建窗口 + maximize() API（确保 is_maximized=true，
-        // 用户 un-maximize 能恢复正常尺寸）。窗口必须在目标屏幕创建，
-        // 否则 maximize 会在错误屏幕执行。
+        // 最大化：先用接近全屏的大尺寸创建（减少 maximize 时的视觉差异），
+        // show 后再 maximize（确保 is_maximized=true）。
         if let Some(monitor) = app_handle.primary_monitor().ok().flatten() {
             let scale = monitor.scale_factor();
+            let mw = monitor.size().width as f64 / scale;
+            let mh = monitor.size().height as f64 / scale;
             let mx = monitor.position().x as f64 / scale;
             let my = monitor.position().y as f64 / scale;
-            builder = builder.inner_size(WIDTH, HEIGHT).position(mx, my);
+            // 用主屏尺寸创建（minus Dock/菜单栏高度约 80px 的余量）
+            builder = builder.inner_size(mw, mh - 80.0).position(mx, my);
         } else {
             builder = builder.center();
         }
@@ -164,12 +166,13 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     log::info!("[compact-editor] after build, maximized={}", state.maximized);
 
     if let Ok(ref win) = win {
-        // 最大化在 show 前执行——窗口 hidden 时 maximize 无 zoom 动画
+        let _ = win.show();
+        let _ = win.set_focus();
+        // show 后再 maximize——窗口已经是接近全屏的大尺寸，
+        // maximize 的视觉变化极小，用户几乎感知不到
         if state.maximized {
             let _ = win.maximize();
         }
-        let _ = win.show();
-        let _ = win.set_focus();
         log::info!("[compact-editor] after show");
     }
 }
