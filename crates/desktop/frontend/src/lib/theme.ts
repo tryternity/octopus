@@ -88,17 +88,19 @@ export function restoreCachedTheme() {
 }
 
 /**
- * 异步从后端读取配置并应用主题。用于校正 localStorage 缓存（用户可能改了主题或加了新主题文件）。
+ * 异步从后端读取当前主题 id 并应用。list_themes 进程内缓存（OnceLock），
+ * get_theme_id 只读 DB 单键——共 2 个轻量 IPC，不调全量 get_config。
  * 与 restoreCachedTheme 配合：启动时先同步恢复，再异步校正。
  */
+let themeCache: ThemeInfo[] | null = null;
+
 export async function applyThemeFromConfig() {
   try {
-    const [themes, configResp] = await Promise.all([
-      invoke<ThemeInfo[]>("list_themes"),
-      invoke<{ config: Record<string, string | number | boolean> }>("get_config"),
-    ]);
-    const themeId = (configResp.config.clipboard_theme as string) || "light";
-    const theme = themes.find((t) => t.id === themeId) ?? themes.find((t) => t.id === "light");
+    if (!themeCache) {
+      themeCache = await invoke<ThemeInfo[]>("list_themes");
+    }
+    const themeId = await invoke<string>("get_theme_id");
+    const theme = themeCache.find((t) => t.id === themeId) ?? themeCache.find((t) => t.id === "light");
     if (theme) applyTheme(theme);
   } catch (e) {
     console.error("applyThemeFromConfig failed:", e);

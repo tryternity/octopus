@@ -262,6 +262,7 @@ pub fn run() {
 
             coordinator::current_transcription_id,
             theme::list_themes,
+            theme::get_theme_id,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
