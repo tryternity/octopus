@@ -165,7 +165,7 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
         let window_result = WebviewWindowBuilder::new(
             &app_handle,
             &label,
-            WebviewUrl::default(),
+            WebviewUrl::App("index.html?screenshot=1".into()),
         )
         .title("")
         .decorations(false)
