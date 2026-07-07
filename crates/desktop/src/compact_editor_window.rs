@@ -119,7 +119,7 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     .min_inner_size(MIN_WIDTH, MIN_HEIGHT)
     .decorations(true)
     .resizable(true)
-    .visible(true);
+    .visible(false);  // 先隐藏——所有配置（最大化/尺寸/位置）就绪后再 show
 
     // 非最大化时才设具体尺寸+位置——最大化状态由 builder.maximized(true) 直接生效，
     // 避免设了尺寸再被 maximize 覆盖的冗余布局计算。
@@ -150,8 +150,13 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
         builder = builder.maximized(true);
     }
 
-    let _ = builder.build();
+    let win = builder.build();
     log::info!("[compact-editor] after build");
+
+    // 所有配置（最大化/尺寸/位置）就绪后才 show——消除"先中间再放大"的过渡感
+    if let Ok(ref win) = win {
+        let _ = win.show();
+    }
 }
 
 /// macOS: 统一查看器窗口关闭后，仅当无其他常规窗口存活时才切回 Accessory（仅托盘）。
