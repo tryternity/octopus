@@ -3,7 +3,7 @@
 **日期**: 2026-06-12
 **状态**: ✅ 实施完成（P1-P5 全部落地，10 测试全绿，API 零改动）
 **分支**: `optimize-capx`
-**关联文档**: [`2026-06-30-scroll-stitch-research.md`](./2026-07-02-archived-specs.md)（算法调研，已归档）、[`2026-06-29-scroll-screenshot-design.md`](./2026-07-02-archived-specs.md)（滚动截屏整体设计，已归档）
+**关联文档**: `2026-06-30-scroll-stitch-research.md`（算法调研，已删除，git history 可追溯）、`2026-06-29-scroll-screenshot-design.md`（滚动截屏整体设计，已删除，git history 可追溯）
 
 > **实施记录**：无偏差。`estimate_confidence` 的口径改进（稀疏 best vs 稀疏 mean，替代原密集 best vs 稀疏 mean）如 spec 预期正常工作，未触发回退。`canvas()` 惰性缓存用 `UnsafeCell` 实现（非 `unsafe` 裸指针）。函数拆分追加 `decide_match` 和 `sparse_sad_at_offset` 两个 helper（原 spec 列出 3 个，实际拆为 5 个以满足 ≤50 行约束）。
 
@@ -25,7 +25,7 @@ CAPX 模块（`crates/capx/`）提供屏幕捕获（`capture.rs`，360 行）与
 
 ### 与调研文档的偏离（需同步修正）
 
-[`2026-06-30-scroll-stitch-research.md`](./2026-07-02-archived-specs.md) 原推荐 **FFT 相位相关**方案，但实际实现（见 commit `4b94215`）采用 **2D SAD 空间模板匹配 + 软速度罚分**。本次优化**不替换算法**（SAD 方案在实测中已能精准工作），仅做性能与代码质量优化。spec 中"方案 A：FFT 相位相关（推荐）"标注为"调研结论，实际未采纳"，并补充实际实现的说明。
+`2026-06-30-scroll-stitch-research.md`（已删除，git history 可追溯）原推荐 **FFT 相位相关**方案，但实际实现（见 commit `4b94215`）采用 **2D SAD 空间模板匹配 + 软速度罚分**。本次优化**不替换算法**（SAD 方案在实测中已能精准工作），仅做性能与代码质量优化。spec 中"方案 A：FFT 相位相关（推荐）"标注为"调研结论，实际未采纳"，并补充实际实现的说明。
 
 ---
 
@@ -331,7 +331,7 @@ fn make_synthetic_frame(width: u32, height: u32, scroll_offset: u32) -> RgbaImag
 实施完成后同步：
 - **本 spec**：P5 标注实际实施偏差（若 P3/P4 调整了方案）
 - **`docs/architecture.md`**：CAPX 模块章节更新数据结构描述
-- **`2026-06-30-scroll-stitch-research.md`**（已归档至 `2026-07-02-archived-specs.md`）：在"方案 A：FFT 相位相关（推荐）"处补充"实际未采纳，采用 2D SAD"说明
+- **`2026-06-30-scroll-stitch-research.md`**（已删除，git history 可追溯）：在"方案 A：FFT 相位相关（推荐）"处补充"实际未采纳，采用 2D SAD"说明
 
 ---
 

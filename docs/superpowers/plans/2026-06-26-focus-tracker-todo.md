@@ -238,7 +238,7 @@ cd crates/desktop/frontend && npm run build
 - [ ] **Step 3: 手动测试（macOS）**
 
 1. 在编辑器中点击
-2. Alt+V 唤起剪贴板
+2. CmdOrCtrl+Shift+D 唤起剪贴板
 3. 双击一条文本
 4. 验证文本出现在编辑器中（不是剪贴板窗口）
 

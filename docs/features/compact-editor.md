@@ -1,0 +1,108 @@
+# 统一编辑器
+
+> `compact_editor_window`——统一内容查看器窗口（多 tab），取代独立的 ImagePreview 窗口和已移除的 Notepad。tab 切换文本（可编辑）/ 图片（嵌入 ImagePreview）/ 语音（只读），与剪贴板历史联动。
+
+源文件：`crates/desktop/src/compact_editor_commands.rs`、`crates/desktop/src/compact_editor_window.rs`、`frontend/src/pages/CompactEditor/`。
+
+---
+
+## 1. 窗口属性
+
+- 原生标题栏、**880×620 可调 + 记忆**、居中、min 400×320
+- **窗口记忆**：`WindowState` 存 `app_config`，`CloseRequested` 存位置/大小到 `app_config`（物理像素÷`scale_factor` 存逻辑像素），开窗读记忆无记忆用默认居中
+- 关窗即销毁
+- macOS 开窗切 Regular、关窗 `Destroyed` 经 `on_compact_editor_closed` 切回 Accessory（与 settings 对称）
+
+---
+
+## 2. Tab 模型
+
+```typescript
+type Tab = {
+  key: string;       // `${source}:${itemId}` 全局唯一
+  source: 'clipboard' | 'transcription';
+  itemId: number;
+  itemType?: 'text' | 'image';
+  text?: string;
+}
+```
+
+- 文本 tab 标题 = 文本前 5 字 + `-` + id hex 后 5 位
+- 图片 tab 嵌入 `ImagePreview` 组件（hidden 保持挂载 ≤5，超 5 替换最旧）
+- 语音 tab 只读 textarea
+
+工具栏：撤销 / 重做 / 字号 / 查找替换 / 清空 / 保存
+
+---
+
+## 3. 命令（6 个）
+
+| 命令 | 说明 |
+|------|------|
+| `open_compact_editor_tab(item_id, source?)` | 写 `PENDING_TAB{item_id,source}` + 已开则 emit `compact-editor://open-tab` 推送并聚焦、未开建窗 |
+| `get_pending_compact_tab() -> Option<{item_id,source}>` | 前端 mount take |
+| `get_clipboard_item_text(item_id)` | 读 content 供文本 tab 载入 |
+| `get_clipboard_item_type(item_id) -> 'text'\|'image'` | 前端据此渲染 textarea 或 ImagePreview |
+| `get_transcription_text(id) -> String` | 读 clipboard_history voice 条目的 content，供语音只读 tab |
+| `close_compact_editor` | 关窗 |
+
+单例：open 时已存在则 show+focus，否则创建。
+
+---
+
+## 4. 编辑保存
+
+文本 tab Ctrl+S / Cmd+↵ 经 `set_clipboard_item_text` 回写 DB + 系统剪贴板：
+- 同写 `content` + `search_text`（保 FTS 命中，`clip_fts_au AFTER UPDATE OF search_text` 触发器自动同步 FTS5 索引）
+- 同步系统剪贴板
+- **成功后 `emit("clipboard://changed")`**（编辑器是独立窗口，剪贴板列表窗口靠此事件感知条目变化并 `fetchItems()` 重新拉取，否则编辑后列表仍显示旧文本）
+
+**清空后保存 = 删除条目**（调 `delete_clipboard_item`：仅剩该 tab 则关窗，否则关该 tab）。
+
+关 tab 不删条目（仅关视图）。
+
+---
+
+## 5. undo/redo
+
+**键盘/按钮 undo/redo 统一走 `document.execCommand`**——受控 textarea 每次 value 同步清空 WebKit 原生 undo 栈致键盘 Cmd+Z 失灵。
+
+---
+
+## 6. 入口
+
+| 入口 | source | 行为 |
+|------|--------|------|
+| 剪贴板文本「编辑」 | `clipboard` | 可编辑文本 tab |
+| 剪贴板图片「预览」 | `clipboard` | 图片 tab（Maximize2 图标） |
+| OCR 识别后 | `clipboard` | 统一 `insert_ocr_clipboard_item` → `openCompactEditorTab` |
+| 截图 OCR | `clipboard` | 图片 tab + 文本双 tab |
+| 语音识别记录「查看」 | `transcription` | 只读 tab |
+
+语音结果窗**不用**独立编辑器——改为原地尺寸双模式（见 [result-window.md](./result-window.md)）。
+
+---
+
+## 7. ImagePreview 组件
+
+`frontend/src/pages/ImagePreview/index.tsx`（**组件，非路由**）
+
+- props `imageId: number`（去掉 `get_pending_image` / `listen("image-preview://load")`，由父 tab 控制 imageId）
+- 保留 `listen("ocr-screenshot://result")` 接收截图 OCR blocks
+
+**性能优化**（2026-07-03）：
+1. **视口渲染**——canvas 固定窗口大小，滚动时只从预缩放位图裁剪可见区域（不管图多大，GPU 合成恒定 ~8MB）
+2. **底图 canvas + SVG overlay**——标注用 SVG 元素（标注变化零 canvas 操作）
+3. **zoom 走 `createImageBitmap` 异步预缩放**（`zoomVersionRef` 防过时帧）
+4. **先 thumb 再 full 渐进加载**（`cancelled` 防竞态 + ResizeObserver 自动重算）
+5. **thumb→full 期间 `loadingFullRef` 门控禁止标注**
+
+标注核心 `frontend/src/lib/annotation.ts` + `AnnotationSvg.tsx`（SVG overlay）。
+
+---
+
+## 8. 已移除
+
+- ~~`image_preview_commands.rs` + `image_preview_window.rs`~~（统一查看器 Task 5）——独立图片预览窗口废弃，功能合并入 CompactEditor 图片 tab
+- ~~`pages/Notepad/`~~（随 `octopus-notepad` crate 一并删除）
+- ~~`image_preview_window`~~ 窗口、capabilities ACL + activation `REGULAR_WINDOWS` + main.rs 命令注册、前端 App.tsx 路由

@@ -1,7 +1,7 @@
 # 重构优化设计 — 死代码/重复/超长代码清理
 
 > 日期：2026-06-12
-> 状态：**✅ 已完成**（merge `903a66a` + 后续扩展 `9bc0b53`/`0c0ae93`，84+42 tests + tsc 0 errors 全绿，0 warnings）
+> 状态：**✅ 已完成**（merge `903a66a` + 后续扩展 `9bc0b53`/`0c0ae93`/`680e31d`/`1c473a4`，84+42 tests + tsc 0 errors 全绿，0 warnings）
 > 来源：[代码审查报告](../../code-review/2026-06-12-code-review.md)
 > 决策：Q1=A（分层提取 + 局部 TDD）、Q2=A（coordinator 仅拆内部长函数，先不拆子目录）
 > whisper_mel_matrix.rs 不纳入范围（保持现状，等价于 bin 文件）
@@ -191,3 +191,8 @@ cargo test --workspace  # desktop 也能编译（dist 存在）
 | `Screenshot/index.tsx` | 1170 | 960 | `ToolButton.tsx`、`ToolPropsPopover.tsx`、`ScrollPreview.tsx` |
 | `Result/index.tsx` | 869 | 787 | `shortcut.ts`（parseShortcut/matchShortcut）、`CaretBlink.tsx` |
 | `ImagePreview/index.tsx` | 850 | 832 | `zoom.ts`（常量+工具函数） |
+
+### 7. DB 写入队列提取 + 防御修复
+
+- **`db_queue.rs` 提取**（`680e31d`）：将 `coordinator.rs` 中 `DbCommand` enum + `DB_SENDER`/`DB_SHUTDOWN`/`DB_HANDLE` static + `process_db_command`/`drain_db_queue`/`shutdown_db`/`get_db_sender`（~180 行）提取为独立 `db_queue.rs` 模块。`coordinator.rs` 从 2489→2309 行。`main.rs` 的 `shutdown_db` 调用改为 `db_queue::shutdown_db()`。
+- **`compute_physical_crop` 防御**（`1c473a4`）：`px`/`py` 计算加 `.max(0.0)` 防御跨显示器边界负值 wrap。补回归测试 `physical_crop_selection_before_monitor_clamps_to_zero`。
