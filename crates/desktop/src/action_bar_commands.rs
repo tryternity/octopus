@@ -18,44 +18,51 @@ static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
 /// 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → 显示浮窗。
 #[tauri::command]
 pub fn trigger_action_bar(app: AppHandle) {
-    // 0. 隐藏常规窗口避免 app 被激活时带到前台抢焦点
-    crate::activation::hide_regular_windows(&app);
+    // 后台线程执行——sleep(200ms) 不阻塞 Tauri 主线程事件循环
+    let app_clone = app.clone();
+    std::thread::spawn(move || {
+        // 0. 隐藏常规窗口避免 app 被激活时带到前台抢焦点
+        crate::activation::hide_regular_windows(&app_clone);
 
-    // 1. 记录触发前的剪贴板内容
-    let clipboard_before = read_clipboard_text(&app);
+        // 1. 记录触发前的剪贴板内容
+        let clipboard_before = read_clipboard_text(&app_clone);
 
-    // 2. 模拟 Cmd+C
-    let focus = FocusTracker::new();
-    focus.simulate_copy();
+        // 2. 模拟 Cmd+C
+        let focus = FocusTracker::new();
+        focus.simulate_copy();
 
-    // 3. 等待 200ms 让系统完成复制
-    std::thread::sleep(std::time::Duration::from_millis(200));
+        // 3. 等待 200ms 让系统完成复制
+        std::thread::sleep(std::time::Duration::from_millis(200));
 
-    // 4. 读剪贴板
-    let clipboard_after = read_clipboard_text(&app);
-    let text = match (&clipboard_before, &clipboard_after) {
-        (Some(before), Some(after)) if before != after => after.clone(),
-        (None, Some(after)) => after.clone(),
-        _ => {
-            log::warn!("[action-bar] Cmd+C didn't change clipboard — no selection?");
+        // 4. 读剪贴板
+        let clipboard_after = read_clipboard_text(&app_clone);
+        let text = match (&clipboard_before, &clipboard_after) {
+            (Some(before), Some(after)) if before != after => after.clone(),
+            (None, Some(after)) => after.clone(),
+            _ => {
+                log::warn!("[action-bar] Cmd+C didn't change clipboard — no selection?");
+                return;
+            }
+        };
+
+        if text.trim().is_empty() {
+            log::warn!("[action-bar] Selected text is empty");
             return;
         }
-    };
 
-    if text.trim().is_empty() {
-        log::warn!("[action-bar] Selected text is empty");
-        return;
-    }
+        // 5. 暂存上下文
+        *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext { text });
 
-    // 5. 暂存上下文
-    *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext { text });
+        // 6. 获取鼠标位置
+        let (mx, my) = get_mouse_position();
+        let win_y = (my - 60.0).max(0.0);
 
-    // 6. 获取鼠标位置
-    let (mx, my) = get_mouse_position();
-    let win_y = (my - 60.0).max(0.0);
-
-    // 7. 显示浮窗
-    show_action_bar_window(&app, mx, win_y);
+        // 7. 显示浮窗（主线程）
+        let app_for_show = app_clone.clone();
+        let _ = tauri::async_runtime::spawn(async move {
+            show_action_bar_window(&app_for_show, mx, win_y);
+        });
+    });
 }
 
 /// 前端 mount 时拉取上下文。
