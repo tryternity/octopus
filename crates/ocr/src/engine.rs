@@ -95,9 +95,9 @@ impl OcrEngine {
         Ok(engine)
     }
 
-    /// 构建 RapidOcr 实例（不含 probe，纯加载）。
-    /// instance() 首次加载与 run_ocr idle 后重载共用——重载【不】调 probe
-    /// （避免刷新 registry 首次估算值；模型内存估算只记首次，record_once 不覆盖）。
+    /// 构建 RapidOcr 实例（不含 probe，纯加载）。instance() 首次加载与 run_ocr idle
+    /// 后重载共用——probe Before/After 由各自调用方包夹（首次在 instance()，重载在
+    /// run_ocr）；重载 After 命中 estimated 首次缓存值，不会因 arena 复用偏低。
     fn load_rapid_ocr(model_name: &str) -> Result<octopus_paddle_ocr::RapidOcr> {
         let dir = crate::model::model_dir(model_name);
         log::info!("Loading OCR model: {} from {}", model_name, dir.display());
@@ -183,13 +183,24 @@ impl OcrEngine {
         // 无法在「重载后、run 前」窗口抢锁释放刚重载的模型（否则 run 时 inner=None → expect panic）。
         // OcrLockGuard 已保证同时只有一个 run_ocr，持锁重载数秒不阻塞其他 OCR 调用；
         // 守护线程仅在 sleep loop 里偶尔多等几秒，无害。
-        // 重载【不】调 probe Before/After（避免刷新 registry 首次估算值，record_once 不覆盖）。
+        // 重载补 probe Before/After（与首次 instance() 对称）：idle 释放时 probe(Unload)
+        // 已移除 active 条目（estimated 首次值保留），重载 After 命中 estimated 复用首次
+        // 估算恢复 active——避免状态页在 OCR 重载后永久缺条目（旧实现重载不调 probe）。
         let result = {
             let mut guard = self.inner.lock();
             if guard.is_none() {
                 log::info!("[ocr-engine] OCR model {} reloaded after idle release", self.model_name);
+                let id = format!("ocr:{}", self.model_name);
+                octopus_infra::model_probe::probe(
+                    octopus_infra::model_probe::LoadPhase::Before,
+                    &id,
+                );
                 let new_engine = Self::load_rapid_ocr(&self.model_name)?;
                 *guard = Some(new_engine);
+                octopus_infra::model_probe::probe(
+                    octopus_infra::model_probe::LoadPhase::After,
+                    &id,
+                );
             }
             let engine_ref = guard.as_mut().expect("inner just reloaded or was Some");
             engine_ref.run(rec_img, opts)

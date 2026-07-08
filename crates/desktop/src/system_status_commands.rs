@@ -52,29 +52,44 @@ pub struct SystemStatusSnapshot {
     pub models: Vec<ModelMemory>,
 }
 
-/// 模型内存估算表：id → 估算字节。`record_once` 仅首次写入（不覆盖）。
+/// 模型内存估算表。
+/// - `inner`：active 列表——状态页展示「当前加载中」的模型。
+/// - `estimated`：首次估算值持久缓存，跨 unload/reload 保留。reload 时 ort arena
+///   复用会让 RSS 差值~0（偏低），用首次值避免状态页显示错误的近零估算。
 #[derive(Default)]
 pub struct ModelMemoryRegistry {
     inner: Mutex<HashMap<String, u64>>,
+    estimated: Mutex<HashMap<String, u64>>,
 }
 
 impl ModelMemoryRegistry {
     pub fn new() -> Self {
-        Self { inner: Mutex::new(HashMap::new()) }
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            estimated: Mutex::new(HashMap::new()),
+        }
     }
 
-    /// 仅当 id 不存在时记录；已存在则保留首次值（避免 arena 复用导致低估）。
-    pub fn record_once(&self, id: &str, bytes: u64) {
-        let mut m = self.inner.lock();
-        m.entry(id.to_string()).or_insert(bytes);
+    /// 记录 active 估算值（覆盖式），并把首次值持久化到 `estimated`（or_insert 仅首次）。
+    /// 调用方：首次加载传算出的 RSS 差；reload 传 `estimated()` 取回的首次缓存值
+    /// （避免重新算偏低的差值）。
+    pub fn upsert_active(&self, id: &str, bytes: u64) {
+        self.estimated.lock().entry(id.to_string()).or_insert(bytes);
+        self.inner.lock().insert(id.to_string(), bytes);
     }
 
-    /// 移除一个 id（模型卸载时调用）。不存在则 no-op。
+    /// 取首次持久估算值（reload 时复用，避免重新算偏低的 RSS 差）。
+    pub fn estimated(&self, id: &str) -> Option<u64> {
+        self.estimated.lock().get(id).copied()
+    }
+
+    /// 移除 active 条目（模型卸载），保留 `estimated` 供下次 reload 复用首次值。
+    /// 不存在则 no-op。
     pub fn remove(&self, id: &str) {
         self.inner.lock().remove(id);
     }
 
-    /// 返回所有已记录模型（按 id 排序，输出稳定）。
+    /// 返回所有 active 模型（按 id 排序，输出稳定）。
     pub fn entries(&self) -> Vec<ModelMemory> {
         let m = self.inner.lock();
         let mut ids: Vec<&String> = m.keys().collect();
@@ -305,14 +320,22 @@ impl SystemStatusSampler {
                 LoadPhase::After => {
                     let key = (std::thread::current().id(), id.to_string());
                     let before = bm.lock().remove(&key);
-                    if let (Some(b), Some(now)) = (before, read_self_probe_memory()) {
+                    // reload 场景：estimated 已有首次值（unload 保留了它）→ 直接复用，
+                    // 不算 RSS 差（ort arena 复用会让差值~0 偏低）。首次加载才算差。
+                    // 这同时修复 OCR idle 释放后重载：旧实现 run_ocr 重载不调 probe，
+                    // 而 Unload 已 remove → 重载后状态页永久缺 OCR；现重载补 probe，
+                    // After 走 estimated 复用首次值恢复 active。
+                    if let Some(cached) = registry.estimated(id) {
+                        registry.upsert_active(id, cached);
+                    } else if let (Some(b), Some(now)) = (before, read_self_probe_memory()) {
                         if now > b {
-                            registry.record_once(id, now - b);
+                            registry.upsert_active(id, now - b);
                         }
                     }
                 }
                 LoadPhase::Unload => {
-                    // 模型从内存卸载（如 OCR idle 释放）：移除估算条目，避免残留旧值。
+                    // 模型从内存卸载（OCR idle 释放 / ASR 缓存淘汰）：仅移除 active 列表
+                    // 条目（状态页不再显示），保留 estimated 首次值供下次 reload 复用。
                     registry.remove(id);
                 }
             }
@@ -348,9 +371,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn record_once_writes_first_time() {
+    fn upsert_active_records_and_entries() {
         let r = ModelMemoryRegistry::new();
-        r.record_once("asr:paraformer", 380_000_000);
+        r.upsert_active("asr:paraformer", 380_000_000);
         let e = r.entries();
         assert_eq!(e.len(), 1);
         assert_eq!(e[0].id, "asr:paraformer");
@@ -360,20 +383,44 @@ mod tests {
     }
 
     #[test]
-    fn record_once_does_not_overwrite() {
+    fn estimated_keeps_first_value_against_low_overwrite() {
+        // arena 复用让 reload 时算出的差偏低（50M < 首次 210M）。estimated 仅首次
+        // 写入（or_insert），后续偏低值不覆盖——probe 闭包据此在 reload 时复用
+        // 首次值，避免状态页显示错误的近零估算。
         let r = ModelMemoryRegistry::new();
-        r.record_once("ocr:PP-OCRv4", 210_000_000);
-        r.record_once("ocr:PP-OCRv4", 50_000_000); // arena 复用后的低值，应忽略
-        let e = r.entries();
-        assert_eq!(e.len(), 1, "同 id 二次记录不应新增条目");
-        assert_eq!(e[0].estimated_bytes, Some(210_000_000));
+        r.upsert_active("ocr:PP-OCRv4", 210_000_000);
+        r.upsert_active("ocr:PP-OCRv4", 50_000_000); // 偏低值不应污染 estimated
+        assert_eq!(
+            r.estimated("ocr:PP-OCRv4"),
+            Some(210_000_000),
+            "estimated 首次值不被偏低值覆盖"
+        );
+    }
+
+    #[test]
+    fn estimated_persists_across_unload_and_reload_restores_active() {
+        // 首次加载 → idle 释放（unload）→ reload：estimated 保留首次值，
+        // reload 后 active 用首次值恢复，状态页仍显首次估算（修复 OCR 重载不 probe
+        // 致永久缺条目 + ASR 重载 arena 复用致偏低）。
+        let r = ModelMemoryRegistry::new();
+        r.upsert_active("ocr:PP-OCRv4", 210_000_000);
+        r.remove("ocr:PP-OCRv4"); // unload：active 清、estimated 保留
+        assert!(r.entries().is_empty(), "unload 后 active 应空");
+        assert_eq!(r.estimated("ocr:PP-OCRv4"), Some(210_000_000));
+        // reload：probe 闭包取 estimated 缓存值恢复 active
+        r.upsert_active("ocr:PP-OCRv4", r.estimated("ocr:PP-OCRv4").unwrap());
+        assert_eq!(
+            r.entries()[0].estimated_bytes,
+            Some(210_000_000),
+            "reload 后 active 恢复首次估算"
+        );
     }
 
     #[test]
     fn entries_sorted_by_id() {
         let r = ModelMemoryRegistry::new();
-        r.record_once("vad:silero", 30_000_000);
-        r.record_once("asr:paraformer", 380_000_000);
+        r.upsert_active("vad:silero", 30_000_000);
+        r.upsert_active("asr:paraformer", 380_000_000);
         let ids: Vec<_> = r.entries().into_iter().map(|m| m.id).collect();
         assert_eq!(ids, vec!["asr:paraformer", "vad:silero"]);
     }
@@ -418,12 +465,13 @@ mod tests {
     }
 
     #[test]
-    fn registry_remove_clears_entry() {
+    fn registry_remove_clears_active_keeps_estimated() {
         let r = ModelMemoryRegistry::new();
-        r.record_once("asr:x", 100);
-        assert_eq!(r.entries().len(), 1, "record 后应有 1 条");
+        r.upsert_active("asr:x", 100);
+        assert_eq!(r.entries().len(), 1, "upsert 后 active 应有 1 条");
         r.remove("asr:x");
-        assert!(r.entries().is_empty(), "remove 后应清空");
+        assert!(r.entries().is_empty(), "remove 后 active 应清空");
+        assert_eq!(r.estimated("asr:x"), Some(100), "estimated 保留供 reload 复用");
     }
 
     #[test]

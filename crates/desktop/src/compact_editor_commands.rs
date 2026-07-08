@@ -84,22 +84,37 @@ pub fn open_compact_editor_tabs(items: &[(i64, Option<&str>)], app_handle: &taur
         return;
     }
     if let Some(window) = app_handle.get_webview_window(WINDOW_LABEL) {
-        // 窗口已存在（React 已 mount）：直接 emit open-tab，不 push——避免 PENDING_TABS
-        // 残留（已 mount 的前端不会再 take pending，残留会污染下次建窗）。
-        log::info!("[compact-editor] window exists → emit {} open-tab(s)", items.len());
-        for (id, src) in items {
-            let s = src.unwrap_or("clipboard").to_string();
-            let _ = window.emit(
-                "compact-editor://open-tab",
-                OpenTabPayload { item_id: *id, source: s },
-            );
+        // PENDING_TABS 是否为空 = React 是否已 mount 并 take 清空过的信号。
+        // 非空 = 窗口刚 create、React 还没 mount（首次 push 的还在队列）→ 这次也 push，
+        //        让 mount 时一并 take；不 emit（未 mount 时 listener 未注册，emit 会丢）。
+        // 空 = React 已 mount → emit 即时推送（并聚焦）。
+        // 修复：连续两次 open（如用户快速点两个条目）首次走 else 建窗 + push，第二次
+        // 命中 window exists 但 React 未 mount，旧实现 emit 会丢第二个 tab。
+        let react_mounted = PENDING_TABS.lock().is_empty();
+        if react_mounted {
+            log::info!("[compact-editor] window exists & mounted → emit {} open-tab(s)", items.len());
+            for (id, src) in items {
+                let s = src.unwrap_or("clipboard").to_string();
+                let _ = window.emit(
+                    "compact-editor://open-tab",
+                    OpenTabPayload { item_id: *id, source: s },
+                );
+            }
+        } else {
+            log::info!("[compact-editor] window exists but not mounted → push {} tab(s) to pending", items.len());
+            for (id, src) in items {
+                let s = src.unwrap_or("clipboard");
+                push_pending_tab(*id, s);
+            }
         }
         let _ = window.show();
         let _ = window.set_focus();
     } else {
-        // 窗口不存在：push 全部 + create（URL 注入首个，前端 mount 时 take 全部清空）。
+        // 窗口不存在：先清空残留（上次建窗后 React 未 mount 就关窗 / 建窗失败会留 stale，
+        // 否则下次 first() 返回 stale 污染首屏），再 push 全部 + create。
         // 批量只 build 一次，无「build 后第二次 get_webview_window=Some」中间态。
         log::info!("[compact-editor] window absent → create ({} tabs pending)", items.len());
+        let _ = take_pending_tabs();
         for (id, src) in items {
             let s = src.unwrap_or("clipboard");
             log::info!("[compact-editor] open_tab item_id={} source={}", id, s);

@@ -1026,6 +1026,17 @@ git -C <worktree> commit -m "docs(arch): 新增 system_status 模块说明"
 
 ---
 
+### Task 14: 后端审查三轮修复——PENDING_TABS 竞态 + 模型内存 estimated_cache + probe 持锁（2026-07-08）
+
+**状态：已实现。** 后端审查三轮复查 4 问题，全部修复（tsc 无错 / vitest 105 passed / cargo test 439 passed）：
+
+- [x] **① PENDING_TABS 窗口存在/未 mount 竞态**（`compact_editor_commands.rs`）：`open_compact_editor_tabs` 窗口存在分支假设「React 已 mount」直接 emit，但 `create_compact_editor_window` 同步注册 label 后 `get_webview_window` 立即返回 Some、React mount 滞后 50-200ms——连续第二次 open（用户快速点两个条目）的 emit 落在未 mount 窗口被丢。修复：窗口存在分支用 `PENDING_TABS.is_empty()` 判 React 是否已 mount take 清空（空=emit、非空=push 进队列让 mount 一并 take）。修正 Task 13 ② 的 emit-only 中间方案。
+- [x] **② PENDING_TABS 关窗残留 stale**（`compact_editor_commands.rs`）：建窗失败 / React mount 前关窗 → PENDING_TABS 残留，下次建窗 `first()` 返回 stale 污染首屏。修复：else 分支 push 前 `take_pending_tabs()` 清空残留。
+- [x] **③ 模型内存估算 reload 丢失/偏低**（`system_status_commands.rs` + `ocr/src/engine.rs`）：(a) OCR idle 释放 `probe(Unload)` remove 后，`run_ocr` 重载不调 probe → 状态页永久缺 OCR；(b) ASR 淘汰后重载 ort arena 复用致 RSS 差~0 → 估算偏低。修复：`ModelMemoryRegistry` 加 `estimated` 首次值持久缓存（`upsert_active` or_insert 首次、`remove` 仅清 active 保留 estimated）；probe After 优先 `estimated(id)` 命中复用首次值；OCR `run_ocr` 重载补 probe Before/After。
+- [x] **④ probe 持锁调用户闭包**（`infra/src/model_probe.rs`）：`probe` 持 PROBE 锁调 f，fallback 路径 sysinfo 扫全部进程慢、阻塞其他线程。修复：clone `Option<ProbeFn>`（Arc +1）释放锁后再调 f。
+
+---
+
 ## Self-Review（写完后自查）
 
 **1. Spec 覆盖：**
