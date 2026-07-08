@@ -360,7 +360,7 @@ function CompactEditor() {
     if (!findQuery || !active) return;
     // 大小写不敏感全局替换（与 runFind 的 toLowerCase 口径一致；split 是大小写敏感的，会漏替大小写不同的匹配）。
     const escaped = findQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const next = (active.text || "").replace(new RegExp(escaped, "gi"), replaceQuery);
+    const next = (active.text || "").replace(new RegExp(escaped, "gi"), () => replaceQuery);
     updateActiveText(next);
     const idxs = collectMatches(next, findQuery);
     setMatches(idxs);
