@@ -73,13 +73,15 @@ export default function Screenshot() {
     invoke<ArrayBuffer>("get_screenshot_image", { label: winLabel })
       .then((buf) => {
         const img = new Image();
+        const blob = new Blob([buf], { type: "image/jpeg" });
+        const url = URL.createObjectURL(blob);
         img.onload = () => {
           bgImgRef.current = img;
           setReady(true);
+          URL.revokeObjectURL(url); // onload 后图片已解码到内存，释放 Object URL
           setTimeout(() => { invoke("show_screenshot_window").catch(() => {}); }, 50);
         };
-        const blob = new Blob([buf], { type: "image/jpeg" });
-        img.src = URL.createObjectURL(blob);
+        img.src = url;
       })
       .catch((e) => console.error("Failed to get screenshot image:", e));
   }, []);
