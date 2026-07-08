@@ -250,6 +250,7 @@ export default function ActionBar() {
       // Enter / Space
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
+        console.log("[action-bar] Enter pressed, view:", viewRef.current, "selectedIdx:", selectedIdxRef.current, "subIdx:", subSelectedIdxRef.current);
         if (viewRef.current === "main") {
           executeMain(mainItemsRef.current[selectedIdxRef.current].id);
         } else if (viewRef.current === "submenu") {
