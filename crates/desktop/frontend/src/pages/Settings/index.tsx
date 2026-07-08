@@ -56,7 +56,7 @@ function Settings() {
     let unlisten: UnlistenFn;
     let unlistenNav: UnlistenFn;
     let cancelled = false;
-    listen("config-changed", () => refreshConfig()).then((fn) => {
+    rawListen("config-changed", () => refreshConfig()).then((fn) => {
       if (cancelled) fn();
       else unlisten = fn;
     });
