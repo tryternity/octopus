@@ -424,6 +424,14 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 下载到 `target_dir/{repo}/{path}`（由调用方决定）。**已接入模型管理（阶段1）**：cli `download` 子命令薄封装此 crate（构 `HfRequest` → `resolve_tasks` 解析 siblings + glob 过滤 → 逐文件 `Downloader::download`，进度经 mpsc 推送打印），`target_dir = ~/.octopus/models`，落 `~/.octopus/models/<repo>/<path>/`；`resolve_model_dir` 已加该路径为查找级（见下节）。镜像优先级 `--mirror` > config `download_mirror` > 官方源。详见 spec `superpowers/specs/2026-06-21-archived-spec.md#download-model-integration-design`。
 
+### octopus-dlp（视频/音频下载转码 sidecar）
+
+独立子进程二进制（`octopus-dlp`），由 cli `transcribe-url` 子命令经 `tokio::process` spawn 调用（先找 `~/.octopus/bin/octopus-dlp`，缺则 `cargo run -p octopus-dlp` 兜底），把在线音视频 URL 转成 ASR 可消费的 16kHz mono PCM。流程：`prepare_dependencies`（确保 `yt-dlp` + `ffmpeg` 在 `~/.octopus/bin` 或 PATH）→ `yt-dlp --dump-json` 取元数据 → `yt-dlp -f ba/b` 下载最佳音频流 → `ffmpeg` 转码分离。
+
+- **输出协议**：stdout 纯 f32le PCM 采样流（默认，主进程逐 chunk 读取送 ASR）；stderr **首行**输出元数据 JSON（`{title, duration, author}`，`VideoMetadataOutput`）——分离 stdout/stderr 避免元数据混入 PCM 字节流。`-o/--output <FILE>` 改输出 WAV 文件（16kHz mono，44B 头）而非流式 PCM。
+- **缓存复用**：下载文件名 = URL 的 MD5（`~/.octopus/tmp/{md5}.{ext}`）；`--unclear` 且文件已存在则跳过下载，跨次复用同一缓存。
+- **临时文件清理（RAII）**：`DownloadedFileGuard` 在 drop 时删除下载的临时文件（`--unclear` 保留），覆盖所有退出路径——ffmpeg `spawn()?`/`wait()?` 的 `?` 提前返回、正常完成、`exit(1)` 均触发清理，避免转码失败时下载文件泄漏磁盘（2026-07-09 审查修复）。
+
 ## 模型管理
 
 模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需下载——`octopus-cli download <repo>`（命令行）或设置窗口「模型管理」页（GUI）下到 `~/.octopus/models/<repo>/`（阶段1 接 `octopus-download`），兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型。

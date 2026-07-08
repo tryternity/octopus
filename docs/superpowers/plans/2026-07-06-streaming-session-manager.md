@@ -599,6 +599,10 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/arch-fixes commi
 
 > 实施偏差 3「未设 max_cache」据此修订：当时（2026-07-06）确实未设，2026-07-09 审查后补。
 
+### 后续审查复查（2026-07-09，commit dbf0d15）—— server per-connection 维持现状
+
+后端审查再提 server 每 WebSocket 连接 `StreamingSession::new` 各加载一份 ONNX 为「并发内存瓶颈」。经复查确认为**有意决策，不改**：见 spec §1（每连接 `new`、连接结束 drop）/ §7（server 不接入 manager，per-connection `new` 不变）/ §9 YAGNI（server 池化否决）。理由：server 是桌面端辅助 sidecar、非大并发（连接数个位数、结束即 drop，非永久泄漏）；共享 ort Session 需拆动静字段（连接级 `accumulated`/`committed_chars` 等状态 vs engine），而 ort 推理持 `&mut` 串行、无并发收益——正是 spec §9「动静字段拆 struct / server 池化」YAGNI 项。记此复查防后续重复审查。
+
 ### 已完成并合 main（2026-07-06）
 
 **4 Task 全绿，commit `d2964f0..237df45`（arch-fixes worktree，已 ff-merge main + push origin）。** e2e 通过（连录两次第二次启动延迟大降、无状态泄漏）。asr_archiveture_opt.md §4.1b 已同步（commit dd0c60d）。
