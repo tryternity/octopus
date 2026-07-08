@@ -659,6 +659,7 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 64. 前端审查 V1（4 项） | ✅ | `eb9f572` | replaceAll $ 特殊字符 + HistoryPanel 双展开 + Result 串行 listen 并行化 + popup toggle |
 | 65. 剪贴板列表 50→200 | ✅ | `26d5602` | useClipboardHistory size 50→200 |
 | 66. 前端审查 V2（5 项） | ✅ | `154a945` | Settings navigate e.payload + ClipboardPanel split \\ + text/transcription setActiveIdx + caret 零 rect + themeCache 清除 |
+| 67. Settings listen→rawListen 遗漏 | ✅ | `c0ed7b8` | 154a945 改 import 漏改 config-changed 调用点，运行时 ReferenceError |
 
 ### 与原 plan 的偏差
 
