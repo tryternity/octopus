@@ -339,7 +339,8 @@ AI 结果返回 → invoke("action_bar_paste_result", { result })
 
 - 外部 App 集成（发送到豆包/Claude/ChatGPT——二期）
 - Snippet 纯文本自定义动作（二期）
-- 截图+OCR fallback（已有能力但不在面板触发链路里）
+- 截图+OCR fallback（二期）——选中不到文本时（禁制复制页面/PDF）自动弹截图框 → OCR → 拿文本作为输入。已有截图+OCR 全链路能力（`screenshot_commands` + `paddle_ocr`），只需串联
+- 上下文增强（二期）——传入当前 App 名 + 窗口标题作为 LLM system context（`focus_tracker` 已有获取活动窗口能力）；可加剪贴板最近 N 条历史
 - 上下文感知（检测选中文本类型自动推荐动作——二期）
 - Accessibility API 直读（替代 Cmd+C——macOS 专属增强，二期）
 - 自动弹出（选中文本自动触发——不做，OnText 验证误触多）
