@@ -1329,19 +1329,25 @@ pub async fn start_scroll_recording(
         let _ = ah3.emit("scroll://done", serde_json::json!({ "id": item_id }));
         let _ = ah3.emit("clipboard://changed", ());
 
-        // 保存模式：Rust 端直接弹对话框（无需前端中转）
+        // 保存模式：Rust 端直接弹对话框——移入 spawn_blocking 防阻塞 async 线程
         if stop_mode == ScrollStopMode::Save {
-            use tauri_plugin_dialog::DialogExt;
-            let save_path = ah.dialog()
-                .file()
-                .add_filter("PNG 图片", &["png"])
-                .set_file_name("scroll-screenshot.png")
-                .blocking_save_file();
-            if let Some(path) = save_path {
-                if let Some(p) = path.as_path() {
-                    let _ = std::fs::write(p, &png_bytes);
+            let ah_clone = ah.clone();
+            let png_for_save = png_bytes.clone();
+            tokio::task::spawn_blocking(move || {
+                use tauri_plugin_dialog::DialogExt;
+                let save_path = ah_clone.dialog()
+                    .file()
+                    .add_filter("PNG 图片", &["png"])
+                    .set_file_name("scroll-screenshot.png")
+                    .blocking_save_file();
+                if let Some(path) = save_path {
+                    if let Some(p) = path.as_path() {
+                        let _ = std::fs::write(p, &png_for_save);
+                    }
                 }
-            }
+            })
+            .await
+            .ok();
         }
 
         // 窗口已在上方提前关闭

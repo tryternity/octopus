@@ -665,6 +665,8 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 70. 后端审查——OCR+get_config async | ✅ | `0bfc615` | ocr_image spawn_blocking；get_config async+spawn_blocking（DB+cpal） |
 | 71. 后端审查 V2——verify_model+URL泄漏+hash | ✅ | `1bdd9be` | verify_model async+spawn_blocking（SHA-256 大文件）；ImagePreview cleanup revokeObjectURL；watcher 直接 hash RGBA 省去 PNG 编码 |
 | 72. save_image_item spawn_blocking | ✅ | `8a58f38` | WebP 解码 + PNG/JPEG 编码 + 文件写入移入 spawn_blocking |
+| 73. download_model bootstrap_manifest | ✅ | `7ab9b7b` | 两处 bootstrap_manifest（探查 + 下载后）移入 spawn_blocking |
+| 74. 后端审查 V3——DF3+theme+滚动截图 | ✅ | `22ad69c` | DF3 process 失败加 out.copy_from_slice(pcm) 防爆音；window_bg_hex 改用 list_themes 缓存；滚动截图 blocking_save_file 移入 spawn_blocking |
 
 ### 与原 plan 的偏差
 
