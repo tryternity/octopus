@@ -289,9 +289,14 @@ export default function ActionBar() {
   }
 
   return (
-    <div data-action-bar className="flex flex-col bg-background text-foreground rounded-lg border border-border shadow-lg overflow-hidden">
-      {/* 子菜单区域——始终占位，没有内容时透明（主菜单位置不动） */}
-      <div className="flex items-center gap-0.5 px-1 pt-1 pb-1 min-h-[34px]">
+    <div data-action-bar className="flex flex-col rounded-lg border border-border shadow-lg overflow-hidden">
+      {/* 子菜单区域——固定高度 38px（与主菜单行一致），无内容时透明 */}
+      <div
+        className={cn(
+          "flex items-center gap-0.5 px-1 h-[38px] shrink-0",
+          view === "submenu" ? "bg-background border-b border-border/40" : "bg-transparent"
+        )}
+      >
         {view === "submenu" && (
           <>
             {(submenuType === "search" ? searchItems : aiItems).map((item, i) => (
@@ -306,8 +311,8 @@ export default function ActionBar() {
           </>
         )}
       </div>
-      {/* 主菜单在下——位置固定不跳 */}
-      <div className="flex items-center gap-0.5 px-1 py-1">
+      {/* 主菜单——固定高度 38px，位置不动 */}
+      <div className="flex items-center gap-0.5 px-1 h-[38px] shrink-0 bg-background">
         {mainItems.map((item, i) => (
           <IconBtn
             key={item.id}
