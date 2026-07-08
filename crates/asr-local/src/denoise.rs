@@ -130,6 +130,7 @@ impl FrameDenoise for Df3Backend {
         // `enh.view_mut().axis_chunks_iter_mut(...)` 的元素（已是 ArrayViewMut2）。
         if let Err(e) = self.0.process(noisy, enh) {
             log::warn!("DF3 process 失败，本帧直通：{:?}", e);
+            out.copy_from_slice(pcm);
         }
     }
     fn reset(&mut self) {

@@ -204,8 +204,8 @@ pub fn window_bg_hex(window_label: &str) -> Option<String> {
     if !is_opaque {
         return None;
     }
-    // 读当前主题的 background 色
-    let themes = load_themes();
+    // 读当前主题的 background 色——用缓存的 list_themes()（OnceLock），不走 load_themes() 重复扫盘
+    let themes = list_themes().unwrap_or_default();
     let theme_id = octopus_infra::db::load_config_key("clipboard_theme")
         .ok()
         .flatten()
