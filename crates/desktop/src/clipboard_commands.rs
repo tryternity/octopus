@@ -270,29 +270,35 @@ pub async fn save_image_item(
     let base_name = &blob_hash[..8.min(blob_hash.len())];
     let save_path = unique_path(&downloads_dir, base_name, ext);
 
-    // 5. 编码写入（从 WebP BLOB 转码到目标格式）
-    match ext {
-        "png" => {
-            let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
-                .map_err(|e| e.to_string())?;
-            img.save_with_format(&save_path, ::image::ImageFormat::Png)
-                .map_err(|e| e.to_string())?;
+    // 5. 编码写入——CPU/IO 密集（WebP 解码 + PNG/JPEG 编码 + 文件写入）移入 spawn_blocking
+    let save_path_clone = save_path.clone();
+    tokio::task::spawn_blocking(move || -> Result<(), String> {
+        match ext {
+            "png" => {
+                let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
+                    .map_err(|e| e.to_string())?;
+                img.save_with_format(&save_path_clone, ::image::ImageFormat::Png)
+                    .map_err(|e| e.to_string())?;
+            }
+            "webp" => {
+                std::fs::write(&save_path_clone, &webp_blob).map_err(|e| e.to_string())?;
+            }
+            _ => {
+                let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
+                    .map_err(|e| e.to_string())?;
+                let rgb = img.to_rgb8();
+                let mut buf = std::io::BufWriter::new(
+                    std::fs::File::create(&save_path_clone).map_err(|e| e.to_string())?
+                );
+                let mut encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, q);
+                encoder.encode(&rgb, rgb.width(), rgb.height(), ::image::ExtendedColorType::Rgb8)
+                    .map_err(|e| e.to_string())?;
+            }
         }
-        "webp" => {
-            std::fs::write(&save_path, &webp_blob).map_err(|e| e.to_string())?;
-        }
-        _ => {
-            let img = ::image::load_from_memory_with_format(&webp_blob, ::image::ImageFormat::WebP)
-                .map_err(|e| e.to_string())?;
-            let rgb = img.to_rgb8();
-            let mut buf = std::io::BufWriter::new(
-                std::fs::File::create(&save_path).map_err(|e| e.to_string())?
-            );
-            let mut encoder = ::image::codecs::jpeg::JpegEncoder::new_with_quality(&mut buf, q);
-            encoder.encode(&rgb, rgb.width(), rgb.height(), ::image::ExtendedColorType::Rgb8)
-                .map_err(|e| e.to_string())?;
-        }
-    }
+        Ok(())
+    })
+    .await
+    .map_err(|e| format!("save_image_item 任务异常: {}", e))??;
 
     // 6. 写文件路径到剪贴板
     let abs_path = save_path.to_string_lossy().to_string();
