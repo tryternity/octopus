@@ -32,6 +32,7 @@ mod screenshot_geometry;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
+mod system_status_commands;
 mod focus_tracker;
 mod shortcut;
 mod theme;
