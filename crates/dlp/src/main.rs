@@ -20,6 +20,25 @@ struct VideoMetadataOutput {
     author: String,
 }
 
+/// 下载文件清理守卫（RAII）：确保 ffmpeg spawn/wait 失败（`?` 提前返回）也清理临时下载文件，
+/// 避免转码失败时磁盘泄漏（2026-07-09 审查 6e73257 修复）。
+/// Drop 用同步 `std::fs::remove_file`——单文件 unlink 亚毫秒，可接受；
+/// async Drop 不可行，故不沿用 `tokio::fs`。`keep=true`（`--unclear`）时 drop 不删。
+struct DownloadedFileGuard {
+    path: PathBuf,
+    keep: bool,
+}
+
+impl Drop for DownloadedFileGuard {
+    fn drop(&mut self) {
+        if self.keep {
+            eprintln!("Keeping downloaded video file: {:?}", self.path);
+        } else {
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+}
+
 async fn has_binary_on_path(name: &str) -> bool {
     let cmd = if cfg!(target_os = "windows") { "where" } else { "which" };
     Command::new(cmd)
@@ -273,6 +292,13 @@ async fn main() -> Result<()> {
         std::process::exit(1);
     }
 
+    // 清理守卫：覆盖其后所有退出路径（ffmpeg spawn/wait `?` 提前返回 + 正常完成 + exit(1)），
+    // drop 时按 --unclear 决定删除或保留。替代原手动清理块，消除早返回泄漏。
+    let _cleanup_guard = DownloadedFileGuard {
+        path: downloaded_filepath.clone(),
+        keep: args.unclear,
+    };
+
     // 3. 转码分离音频并输出
     let mut ffmpeg_cmd = Command::new(&ffmpeg);
     ffmpeg_cmd.arg("-y").arg("-i").arg(&downloaded_filepath);
@@ -300,13 +326,7 @@ async fn main() -> Result<()> {
 
     let mut ffmpeg_child = ffmpeg_cmd.spawn()?;
     let ffmpeg_status = ffmpeg_child.wait().await?;
-
-    // 清理下载好的临时文件（如果指定了 --unclear，则不删除）
-    if args.unclear {
-        eprintln!("Keeping downloaded video file: {:?}", downloaded_filepath);
-    } else {
-        let _ = fs::remove_file(&downloaded_filepath).await;
-    }
+    // 临时文件清理由 _cleanup_guard 在函数退出（含上方 ? 提前返回）时统一处理
 
     if !ffmpeg_status.success() {
         eprintln!("ffmpeg execution failed during transcoding.");
