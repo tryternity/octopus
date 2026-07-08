@@ -86,7 +86,7 @@ pub fn trigger_action_bar(app: AppHandle) {
 
         // 6. 获取鼠标位置 + 显示浮窗（主线程）
         // 浮窗在鼠标正上方，X 轴居中对齐鼠标，Y 轴在鼠标上方
-        let (mx, my) = get_mouse_position();
+        let (mx, my) = get_mouse_position(&app_clone);
         // 窗口宽度约 260，X 居中 = 鼠标 X - 窗口宽度/2
         let win_x = (mx - 130.0).max(0.0);
         // 窗口高度约 76（38+38），在鼠标上方留 8px 间距
@@ -239,7 +239,7 @@ fn write_clipboard_text(app: &AppHandle, text: &str) {
 }
 
 #[cfg(target_os = "macos")]
-fn get_mouse_position() -> (f64, f64) {
+fn get_mouse_position(app: &AppHandle) -> (f64, f64) {
     use core_graphics::event::CGEvent;
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
@@ -250,16 +250,22 @@ fn get_mouse_position() -> (f64, f64) {
         Some(s) => CGEvent::new(s.clone()).ok(),
         None => None,
     };
+    // 获取 scale factor（Retina=2.0）
+    let scale = app.get_webview_window("action_bar_window")
+        .and_then(|w| w.scale_factor().ok())
+        .or_else(|| app.primary_monitor().ok().flatten().map(|m| m.scale_factor()))
+        .unwrap_or(2.0);
     if let Some(event) = event {
         let point = event.location();
-        // CGEvent::location() 返回 Quartz 全局坐标（points/逻辑像素，原点左上角 y 向下），
-        // 与 Tauri LogicalPosition 坐标系一致——不除 scale。
-        return (point.x, point.y);
+        // CGEvent::location() 返回 Quartz 全局坐标——物理像素。
+        // Tauri LogicalPosition 是逻辑像素。除以 scale 转换。
+        log::info!("[action-bar] mouse raw={},{} scale={}", point.x, point.y, scale);
+        return (point.x / scale, point.y / scale);
     }
     (100.0, 100.0)
 }
 
 #[cfg(not(target_os = "macos"))]
-fn get_mouse_position() -> (f64, f64) {
+fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
     (100.0, 100.0)
 }
