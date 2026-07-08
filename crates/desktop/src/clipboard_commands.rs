@@ -497,7 +497,17 @@ pub async fn ocr_image(id: i64) -> Result<OcrResult, String> {
     log::info!("[ocr-image] after OcrEngine::instance()");
 
     log::info!("[ocr-image] before recognize()");
-    let (text, blocks) = engine.recognize_with_blocks(&webp_blob).map_err(|e| e.to_string())?;
+    // CPU 密集推理移入 spawn_blocking——避免阻塞 Tokio worker 线程
+    // （与 ocr_screenshot 同模式）
+    let (text, blocks) = {
+        let engine = engine.clone();
+        tokio::task::spawn_blocking(move || {
+            engine.recognize_with_blocks(&webp_blob)
+        })
+        .await
+        .map_err(|e| format!("OCR 任务异常: {}", e))?
+        .map_err(|e| e.to_string())?
+    };
     log::info!("[ocr-image] after recognize() text_len={} blocks={}", text.len(), blocks.len());
 
     if text.trim().is_empty() {
