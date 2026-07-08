@@ -94,8 +94,13 @@ pub async fn download_model(
 ) -> Result<(), String> {
     // 1. 探查：文件已就绪（如用户 hf-cli 下过、在 cache）→ 自举清单 + 置 true，不重下。
     if let Ok(dir) = octopus_asr_local::config::resolve_model_dir(&repo) {
-        let manifest = bootstrap_manifest(&dir).map_err(|e| format!("生成校验清单失败: {e:?}"))?;
-        apply_model_state(&repo, Some(&manifest), true)?;
+        // bootstrap_manifest 计算 SHA-256（230-740MB），移入 spawn_blocking
+        let repo_clone = repo.clone();
+        let manifest = tokio::task::spawn_blocking(move || bootstrap_manifest(&dir))
+            .await
+            .map_err(|e| format!("bootstrap 任务异常: {}", e))?
+            .map_err(|e| format!("生成校验清单失败: {e:?}"))?;
+        apply_model_state(&repo_clone, Some(&manifest), true)?;
         let _ = app_handle.emit(
             "download-done",
             serde_json::json!({ "repo": &repo, "already_ready": true }),
@@ -167,8 +172,12 @@ pub async fn download_model(
     // 3. 下载完成：自举清单 + 置 true + reload。
     let dir = octopus_asr_local::config::resolve_model_dir(&repo)
         .map_err(|e| format!("下载后定位目录失败: {e:?}"))?;
-    let manifest = bootstrap_manifest(&dir).map_err(|e| format!("生成校验清单失败: {e:?}"))?;
-    apply_model_state(&repo, Some(&manifest), true)?;
+    let repo_clone = repo.clone();
+    let manifest = tokio::task::spawn_blocking(move || bootstrap_manifest(&dir))
+        .await
+        .map_err(|e| format!("bootstrap 任务异常: {}", e))?
+        .map_err(|e| format!("生成校验清单失败: {e:?}"))?;
+    apply_model_state(&repo_clone, Some(&manifest), true)?;
     let _ = app_handle.emit(
         "download-done",
         serde_json::json!({ "repo": &repo, "already_ready": false }),
@@ -178,8 +187,15 @@ pub async fn download_model(
 
 /// 完整性复核：按 secret_key 清单 sha256 校验；清单空则自举；损坏置 false。
 #[tauri::command]
-pub fn verify_model(model_name: String, repo: String) -> Result<VerifyResult, String> {
-    let dir = octopus_asr_local::config::resolve_model_dir(&repo)
+pub async fn verify_model(model_name: String, repo: String) -> Result<VerifyResult, String> {
+    // SHA-256 校验 230-740MB 模型文件是 CPU+IO 密集——移入 spawn_blocking 防阻塞 UI 线程
+    tokio::task::spawn_blocking(move || verify_model_inner(model_name, &repo))
+        .await
+        .map_err(|e| format!("verify_model 任务异常: {}", e))?
+}
+
+fn verify_model_inner(model_name: String, repo: &str) -> Result<VerifyResult, String> {
+    let dir = octopus_asr_local::config::resolve_model_dir(repo)
         .map_err(|e| format!("模型目录不存在（未就绪）: {e:?}"))?;
 
     let secret_key = current_secret_key(&model_name)?;

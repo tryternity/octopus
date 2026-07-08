@@ -4,10 +4,18 @@
 use anyhow::{Context, Result};
 use sha2::Sha256;
 
-/// RGBA 像素 → PNG bytes + SHA-256 hash。
+/// RGBA 像素 → SHA-256 hash（直接 hash 原始像素，不做 PNG 编码）。
 /// hash 用于去重（同一张图只存一份 BLOB）。
-pub fn encode_and_hash(rgba: &[u8], width: u32, height: u32) -> Result<(Vec<u8>, String)> {
-    let img = ::image::RgbaImage::from_raw(width, height, rgba.to_vec())
+/// 不再生成 PNG bytes——watcher 只需 hash，PNG 编码纯粹浪费 CPU。
+/// 调用方如需 PNG bytes 请用其他函数。
+pub fn hash_rgba(rgba: &[u8]) -> String {
+    sha256_hex(rgba)
+}
+
+/// RGBA 像素（owned） → PNG bytes + SHA-256 hash。
+/// 保留供测试/其他调用方使用。
+pub fn encode_and_hash(rgba: Vec<u8>, width: u32, height: u32) -> Result<(Vec<u8>, String)> {
+    let img = ::image::RgbaImage::from_raw(width, height, rgba)
         .context("Failed to create RgbaImage from raw pixels")?;
     let mut png_bytes = Vec::new();
     img.write_to(&mut std::io::Cursor::new(&mut png_bytes), ::image::ImageFormat::Png)
@@ -156,7 +164,7 @@ mod tests {
     #[test]
     fn test_encode_and_hash() {
         let rgba = vec![255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 0, 255];
-        let (png, hash) = encode_and_hash(&rgba, 2, 2).unwrap();
+        let (png, hash) = encode_and_hash(rgba.clone(), 2, 2).unwrap();
         assert!(!png.is_empty());
         assert_eq!(hash.len(), 64);
     }
@@ -164,8 +172,8 @@ mod tests {
     #[test]
     fn test_dedup_same_image() {
         let rgba = vec![255, 0, 0, 255, 0, 255, 0, 255];
-        let (_, hash1) = encode_and_hash(&rgba, 2, 1).unwrap();
-        let (_, hash2) = encode_and_hash(&rgba, 2, 1).unwrap();
+        let (_, hash1) = encode_and_hash(rgba.clone(), 2, 1).unwrap();
+        let (_, hash2) = encode_and_hash(rgba.clone(), 2, 1).unwrap();
         assert_eq!(hash1, hash2);
     }
 

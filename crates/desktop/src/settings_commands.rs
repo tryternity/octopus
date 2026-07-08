@@ -24,44 +24,52 @@ pub struct ConfigResponse {
 }
 
 #[tauri::command]
-pub fn get_config(rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigResponse, String> {
-    let cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-    let config_json = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
+pub async fn get_config(rc: State<'_, SharedRuntimeConfig>) -> Result<ConfigResponse, String> {
+    // DB 查询 + cpal 麦克风枚举移入 spawn_blocking——避免阻塞 UI 线程
+    let g = rc.read().clone(); // AppConfig clone，释放 read lock
 
-    let g = rc.read();
-    let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
-    let asr_engines = crate::runtime_config::build_asr_options_public(&g.asr_engine, engines);
+    let result = tokio::task::spawn_blocking(move || -> Result<ConfigResponse, String> {
+        let cfg = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
+        let config_json = serde_json::to_value(&cfg).map_err(|e| e.to_string())?;
 
-    let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
-    let llm_models = crate::runtime_config::build_llm_options_public(&g.polish_llm, llms);
+        let engines = octopus_asr_local::config::list_engines().map_err(|e| e.to_string())?;
+        let asr_engines = crate::runtime_config::build_asr_options_public(&g.asr_engine, engines);
 
-    let ocrs = octopus_infra::db::list_ocr_models().map_err(|e| e.to_string())?;
-    let ocr_models = crate::runtime_config::build_ocr_options_public(&g.ocr_model, ocrs);
+        let llms = octopus_infra::db::list_llm_models().map_err(|e| e.to_string())?;
+        let llm_models = crate::runtime_config::build_llm_options_public(&g.polish_llm, llms);
 
-    let microphones = list_microphones();
+        let ocrs = octopus_infra::db::list_ocr_models().map_err(|e| e.to_string())?;
+        let ocr_models = crate::runtime_config::build_ocr_options_public(&g.ocr_model, ocrs);
 
-    let prompt_records = octopus_infra::db::list_prompts().map_err(|e| e.to_string())?;
-    let prompts = prompt_records
-        .into_iter()
-        .map(|r| PromptInfo {
-            id: r.id,
-            title: r.title,
-            content: r.content,
-            description: r.description,
-            is_system: r.is_system,
+        let microphones = list_microphones();
+
+        let prompt_records = octopus_infra::db::list_prompts().map_err(|e| e.to_string())?;
+        let prompts = prompt_records
+            .into_iter()
+            .map(|r| PromptInfo {
+                id: r.id,
+                title: r.title,
+                content: r.content,
+                description: r.description,
+                is_system: r.is_system,
+            })
+            .collect();
+        let active_prompt_id = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
+
+        Ok(ConfigResponse {
+            config: config_json,
+            asr_engines,
+            llm_models,
+            ocr_models,
+            microphones,
+            prompts,
+            active_prompt_id,
         })
-        .collect();
-    let active_prompt_id = octopus_infra::db::load_active_prompt_id().unwrap_or(1);
-
-    Ok(ConfigResponse {
-        config: config_json,
-        asr_engines,
-        llm_models,
-        ocr_models,
-        microphones,
-        prompts,
-        active_prompt_id,
     })
+    .await
+    .map_err(|e| format!("get_config 任务异常: {}", e))?;
+
+    result
 }
 
 /// 枚举系统麦克风设备（cpal 跨平台）。
