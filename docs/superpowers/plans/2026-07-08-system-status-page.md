@@ -1072,6 +1072,15 @@ git -C <worktree> commit -m "docs(arch): 新增 system_status 模块说明"
 
 ---
 
+### Task 15: 后端审查四轮——滚动截图鼠标轮询 cfg gate（2026-07-08）
+
+**状态：Q2 已实现，Q1 反馈 false positive。** 后端审查四轮复查 2 问题（macOS cargo check 无错 / cargo test 439 passed）：
+
+- [x] **② 滚动截图鼠标轮询 spawn 非 mac 编译失败**（`screenshot_commands.rs`）：`start_scroll_recording`（跨平台 `tauri::command`）内鼠标穿透轮询 spawn 块用 `core_graphics::event::CGEvent`（macOS-only dep）但无 cfg gate——`use core_graphics` + `CGEventSource`/`CGEvent` 调用在非 mac 编译失败（unresolved import）。修复：整个 spawn 块（变量定义 + spawn）用 `#[cfg(target_os = "macos")]` 块包裹，移除冗余内层 cfg（`get_window_pid_at_point`/`activate_app_by_pid` 本就 cfg-mac），非 mac 加 `let _ = interactive_rects` 抑制 unused。验证：macOS cargo check 过；linux 交叉编译因缺 webkit2gtk/gtk 系统库卡 build.rs（环境限制，非代码），但 core_graphics 已 gate 是 Cargo target-specific dep 的确定行为。
+- [x] **① get_window_cocoa_frame 非 mac 编译失败**（反馈：**false positive**）：报告称该函数「无平台 gate」，但实测 `screenshot_commands.rs:799` 已有 `#[cfg(target_os = "macos")]`（调用点 601/888 也 gate）。报告漏看 799 行 cfg 属性，非真问题。
+
+---
+
 ## Self-Review（写完后自查）
 
 **1. Spec 覆盖：**

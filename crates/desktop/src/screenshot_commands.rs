@@ -1029,55 +1029,58 @@ pub async fn start_scroll_recording(
         // 独立鼠标监听线程：30ms 高频轮询，与截图循环解耦。
         // 鼠标在任意交互区域（工具栏/预览窗）→ set_ignore_cursor_events(false)（可点击）；
         // 离开 → set_ignore_cursor_events(true)（滚动穿透）。不调 activate/deactivate。
-        let mon_labels = scroll_labels.clone();
-        let mon_ah = ah.clone();
-        let mon_winx = win_origin_x;
-        let mon_winy = win_origin_y;
-        let mon_rects = interactive_rects;
-        tauri::async_runtime::spawn(async move {
-            use core_graphics::event::CGEvent;
-            use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-            let mut poll = tokio::time::interval(std::time::Duration::from_millis(16));
-            let mut cur_passthrough = true;
-            let mut last_active_pid: i32 = 0;
-            let mut activate_check_count = 0u32;
-            let mut last_check_x: f64 = 0.0;
-            let mut last_check_y: f64 = 0.0;
-            while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
-                poll.tick().await;
-                let (mouse_x, mouse_y) = if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-                    if let Ok(evt) = CGEvent::new(src) {
-                        let loc = evt.location();
-                        (loc.x, loc.y)
-                    } else { (0.0, 0.0) }
-                } else { (0.0, 0.0) };
+        // 鼠标穿透轮询：macOS 专属（CGEvent 全局鼠标追踪 + set_ignore_cursor_events 穿透
+        // + 激活下方应用）。core_graphics 仅 macOS 可用，整个轮询线程 cfg gate；
+        // 非 macOS 不启动（滚动截图穿透为 macOS 专属优化），interactive_rects 标记已用。
+        #[cfg(target_os = "macos")]
+        {
+            let mon_labels = scroll_labels.clone();
+            let mon_ah = ah.clone();
+            let mon_winx = win_origin_x;
+            let mon_winy = win_origin_y;
+            let mon_rects = interactive_rects;
+            tauri::async_runtime::spawn(async move {
+                use core_graphics::event::CGEvent;
+                use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+                let mut poll = tokio::time::interval(std::time::Duration::from_millis(16));
+                let mut cur_passthrough = true;
+                let mut last_active_pid: i32 = 0;
+                let mut activate_check_count = 0u32;
+                let mut last_check_x: f64 = 0.0;
+                let mut last_check_y: f64 = 0.0;
+                while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
+                    poll.tick().await;
+                    let (mouse_x, mouse_y) = if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+                        if let Ok(evt) = CGEvent::new(src) {
+                            let loc = evt.location();
+                            (loc.x, loc.y)
+                        } else { (0.0, 0.0) }
+                    } else { (0.0, 0.0) };
 
-                let lx = mouse_x - mon_winx;
-                let ly = mouse_y - mon_winy;
-                let in_interactive = mon_rects.iter().any(|r| {
-                    lx >= r.x && lx <= r.x + r.width && ly >= r.y && ly <= r.y + r.height
-                });
-                let want = !in_interactive;
-                if want != cur_passthrough {
-                    for label in &mon_labels {
-                        if let Some(win) = mon_ah.get_webview_window(label) {
-                            set_window_ignores_mouse_events(&win, want);
+                    let lx = mouse_x - mon_winx;
+                    let ly = mouse_y - mon_winy;
+                    let in_interactive = mon_rects.iter().any(|r| {
+                        lx >= r.x && lx <= r.x + r.width && ly >= r.y && ly <= r.y + r.height
+                    });
+                    let want = !in_interactive;
+                    if want != cur_passthrough {
+                        for label in &mon_labels {
+                            if let Some(win) = mon_ah.get_webview_window(label) {
+                                set_window_ignores_mouse_events(&win, want);
+                            }
                         }
+                        cur_passthrough = want;
                     }
-                    cur_passthrough = want;
-                }
 
-                // 每 ~800ms（每 50 个 tick）且鼠标移动超过 10px 时检测鼠标下方的应用。
-                // CGWindowListCopyWindowInfo 是昂贵的系统 API，避免高频空转。
-                activate_check_count += 1;
-                if want && activate_check_count >= 50 {
-                    activate_check_count = 0;
-                    let moved = (mouse_x - last_check_x).abs() + (mouse_y - last_check_y).abs();
-                    if moved > 10.0 {
-                        last_check_x = mouse_x;
-                        last_check_y = mouse_y;
-                        #[cfg(target_os = "macos")]
-                        {
+                    // 每 ~800ms（每 50 个 tick）且鼠标移动超过 10px 时检测鼠标下方的应用。
+                    // CGWindowListCopyWindowInfo 是昂贵的系统 API，避免高频空转。
+                    activate_check_count += 1;
+                    if want && activate_check_count >= 50 {
+                        activate_check_count = 0;
+                        let moved = (mouse_x - last_check_x).abs() + (mouse_y - last_check_y).abs();
+                        if moved > 10.0 {
+                            last_check_x = mouse_x;
+                            last_check_y = mouse_y;
                             if let Some(pid) = get_window_pid_at_point(mouse_x, mouse_y) {
                                 if pid != last_active_pid {
                                     activate_app_by_pid(&mon_ah, pid);
@@ -1087,8 +1090,12 @@ pub async fn start_scroll_recording(
                         }
                     }
                 }
-            }
-        });
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = interactive_rects;
+        }
 
 
         // ── 首帧（只截选区区域，排除 overlay 窗口）──
