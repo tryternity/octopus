@@ -662,6 +662,7 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 67. Settings listen→rawListen 遗漏 | ✅ | `c0ed7b8` | 154a945 改 import 漏改 config-changed 调用点，运行时 ReferenceError |
 | 68. 搜索时禁用清理按钮 | ✅ | `c42c6f9` | 防误删全类别数据（clear_by_filter 不带 search 参数） |
 | 69. 截图 Object URL 内存泄漏 | ✅ | `4bb9cca` | createObjectURL 后 onload 未 revokeObjectURL，每次截图泄漏 2-8MB |
+| 70. 后端审查——OCR+get_config async | ✅ | `0bfc615` | ocr_image spawn_blocking；get_config async+spawn_blocking（DB+cpal） |
 
 ### 与原 plan 的偏差
 
