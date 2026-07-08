@@ -89,6 +89,14 @@ impl ModelMemoryRegistry {
         self.inner.lock().remove(id);
     }
 
+    /// 标记模型已加载但无法测得 RSS 增量（After 时 `now <= before`：ort arena 复用 /
+    /// 并发线程释放内存所致）。仅写 active 占位（0，状态页显示该模型「已加载、占用未测」），
+    /// **不写 `estimated`**——避免把不可信的近零值持久化成首次估算，下次 reload 仍会重算差值。
+    /// 若不登记，该模型会从状态页永久缺失，且 estimated 永不写入 → reload 仍走 now<=b 分支。
+    pub fn mark_active_unmeasured(&self, id: &str) {
+        self.inner.lock().insert(id.to_string(), 0);
+    }
+
     /// 返回所有 active 模型（按 id 排序，输出稳定）。
     pub fn entries(&self) -> Vec<ModelMemory> {
         let m = self.inner.lock();
@@ -330,6 +338,11 @@ impl SystemStatusSampler {
                     } else if let (Some(b), Some(now)) = (before, read_self_probe_memory()) {
                         if now > b {
                             registry.upsert_active(id, now - b);
+                        } else {
+                            // 模型已加载成功，但 RSS 增量测不到（now<=b：ort arena 复用 / 并发释放）。
+                            // 仍登记 active（状态页显示该模型在加载），但不写 estimated（下次 reload 重算），
+                            // 否则条目永久缺失 + estimated 永不写入 → reload 仍走此分支永不显示。
+                            registry.mark_active_unmeasured(id);
                         }
                     }
                 }
@@ -413,6 +426,21 @@ mod tests {
             r.entries()[0].estimated_bytes,
             Some(210_000_000),
             "reload 后 active 恢复首次估算"
+        );
+    }
+
+    #[test]
+    fn mark_active_unmeasured_inserts_active_without_estimated() {
+        // After 时 now<=b（ort arena 复用 / 并发释放）测不到增量：仍登记 active 占位
+        // （状态页显示该模型在加载），但不写 estimated——避免不可信近零值持久化为首次估算，
+        // 下次 reload 仍走 estimated miss 重算。若不登记则条目永久缺失 + estimated 永不写。
+        let r = ModelMemoryRegistry::new();
+        r.mark_active_unmeasured("asr:zipformer");
+        let e = r.entries().into_iter().find(|m| m.id == "asr:zipformer").unwrap();
+        assert_eq!(e.estimated_bytes, Some(0), "active 占位 0（已加载、增量未测）");
+        assert!(
+            r.estimated("asr:zipformer").is_none(),
+            "不可信近零值不应持久化为首次估算，下次 reload 重算"
         );
     }
 

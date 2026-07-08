@@ -319,14 +319,29 @@ async fn transcribe_url(url: &str, model: &str, language: &str, output: Option<&
     if let Some(mut stdout) = stdout {
         println!("Streaming audio data from pipeline and decoding raw float PCM...");
         let mut chunk = [0u8; 4096];
+        // 跨 read 拼接余数：进程 stdout 是字节流，read 返回的 n 不保证 4 字节对齐
+        // （取决于管道/网络缓冲与刷新），直接 chunks_exact(4) 会丢弃尾部 1-3 字节，
+        // 下次 read 从管道下一字节开始 → 丢弃字节永久丢失 → 整流字节错位 → 解码出
+        // 杂音、识别全毁。用 leftover 累积，每次只处理到 4 字节边界，余数留到下次拼接。
+        let mut leftover: Vec<u8> = Vec::new();
         while let Ok(n) = stdout.read(&mut chunk).await {
             if n == 0 {
                 break;
             }
-            for raw_sample in chunk[..n].chunks_exact(4) {
+            leftover.extend_from_slice(&chunk[..n]);
+            let aligned = leftover.len() - (leftover.len() % 4);
+            // drain(..aligned) 取出对齐部分处理，余数 [aligned..] 留在 vec 供下次拼接
+            let ready: Vec<u8> = leftover.drain(..aligned).collect();
+            for raw_sample in ready.chunks_exact(4) {
                 let sample = f32::from_le_bytes(raw_sample.try_into().unwrap());
                 samples.push(sample);
             }
+        }
+        if !leftover.is_empty() {
+            eprintln!(
+                "[dlp] 警告：丢弃尾部未对齐 {} 字节（f32le PCM 流应 4 字节对齐）",
+                leftover.len()
+            );
         }
         let extract_elapsed = start_extract.elapsed();
         println!(
