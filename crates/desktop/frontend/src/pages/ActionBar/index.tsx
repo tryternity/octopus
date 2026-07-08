@@ -228,13 +228,15 @@ export default function ActionBar() {
         return;
       }
 
-      // ↑↓：主菜单 ↔ 子菜单切换
+      // ↑↓：主菜单 ↔ 子菜单循环切换
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
-        if (e.key === "ArrowUp" && viewRef.current === "submenu") {
+        if (viewRef.current === "submenu") {
+          // 在子菜单：↑ 或 ↓ 都回到主菜单
           setView("main");
           setSubmenuType(null);
-        } else if (e.key === "ArrowDown" && viewRef.current === "main") {
+        } else {
+          // 在主菜单：↑ 或 ↓ 进入子菜单（仅 AI/搜索有子菜单）
           const cur = mainItemsRef.current[selectedIdxRef.current];
           if (cur && (cur.id === "ai" || cur.id === "search")) {
             setSubmenuType(cur.id as SubmenuType);
@@ -287,21 +289,23 @@ export default function ActionBar() {
 
   return (
     <div data-action-bar className="flex flex-col bg-background text-foreground rounded-lg border border-border shadow-lg overflow-hidden">
-      {/* 子菜单在上 */}
-      {view === "submenu" && (
-        <div className="flex items-center gap-0.5 px-1 pt-1 pb-1 border-b border-border/40">
-          {(submenuType === "search" ? searchItems : aiItems).map((item, i) => (
-            <IconBtn
-              key={item.id}
-              icon={item.icon}
-              label={item.label}
-              active={subSelectedIdx === i}
-              onClick={() => executeSubItem(item.id)}
-            />
-          ))}
-        </div>
-      )}
-      {/* 主菜单在下 */}
+      {/* 子菜单区域——始终占位，没有内容时透明（主菜单位置不动） */}
+      <div className="flex items-center gap-0.5 px-1 pt-1 pb-1 min-h-[34px]">
+        {view === "submenu" && (
+          <>
+            {(submenuType === "search" ? searchItems : aiItems).map((item, i) => (
+              <IconBtn
+                key={item.id}
+                icon={item.icon}
+                label={item.label}
+                active={subSelectedIdx === i}
+                onClick={() => executeSubItem(item.id)}
+              />
+            ))}
+          </>
+        )}
+      </div>
+      {/* 主菜单在下——位置固定不跳 */}
       <div className="flex items-center gap-0.5 px-1 py-1">
         {mainItems.map((item, i) => (
           <IconBtn
