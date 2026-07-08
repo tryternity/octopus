@@ -66,19 +66,17 @@ export default function ActionBar() {
     return () => { listenPromise.then((fn: () => void) => fn()); };
   }, []);
 
-  // 点击外部消失 + 窗口失焦消失
+  // 点击外部消失 + 窗口失焦消失（loading 状态时不禁用——浮窗必须保持可见）
   useEffect(() => {
-    // 1. WebView 内部点击外部（同一窗口的其他区域）
     const onClick = (e: MouseEvent) => {
+      if (viewRef.current === "loading") return; // loading 中不可关闭
       const el = e.target as HTMLElement;
       if (el && el.closest("[data-action-bar]")) return;
       invoke("action_bar_dismiss");
     };
-    // 2. 窗口失焦（用户点了其他 app 或其他窗口）
     const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (!focused) invoke("action_bar_dismiss");
+      if (!focused && viewRef.current !== "loading") invoke("action_bar_dismiss");
     });
-    // 延迟注册避免 show 后首个事件误触发
     const timer = setTimeout(() => {
       document.addEventListener("click", onClick, false);
     }, 300);
