@@ -66,17 +66,17 @@ export default function ActionBar() {
     return () => { listenPromise.then((fn: () => void) => fn()); };
   }, []);
 
-  // 点击外部消失
+  // 点击外部消失——用 click（冒泡阶段）而非 mousedown（capture 太早拦截按钮）
   useEffect(() => {
-    const onDown = (e: MouseEvent) => {
+    const onClick = (e: MouseEvent) => {
       const el = e.target as HTMLElement;
       if (el && el.closest("[data-action-bar]")) return;
       invoke("action_bar_dismiss");
     };
     const timer = setTimeout(() => {
-      document.addEventListener("mousedown", onDown, true);
-    }, 200);
-    return () => { clearTimeout(timer); document.removeEventListener("mousedown", onDown, true); };
+      document.addEventListener("click", onClick, false);
+    }, 300);
+    return () => { clearTimeout(timer); document.removeEventListener("click", onClick, false); };
   }, []);
 
   const urlResult = context ? detectActionUrl(context.text) : { isUrl: false, url: "" };
