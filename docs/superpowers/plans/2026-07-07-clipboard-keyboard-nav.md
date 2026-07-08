@@ -693,7 +693,7 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
    - 最终架构：index.html 阻断脚本恢复 data-theme + URL hex 背景色注入（零 CSS 依赖）+ data-theme CSS 预编译 + App.tsx config-changed 驱动 + mount 异步校正（脏检查避免重复 recalc）
 7. **CompactEditor 打开加速（V3 审查反馈）**：
    - 诊断：tabs 初始 `[]` → "没有打开的条目"占位符闪烁 + 3 次串行 IPC（get_pending_compact_tab → get_clipboard_item_type → get_clipboard_item_text）
-   - 修复：后端 `store_pending_tab` 时一次性读 DB，返回 `PendingTabFull`（含 itemType + text）；前端 mount 1 次 IPC 直接建 tab；`initialLoading` 状态隐藏占位符
+   - 修复：后端 `push_pending_tab` 时一次性读 DB，返回 `PendingTabFull`（含 itemType + text）；前端 mount 1 次 IPC 直接建 tab；`initialLoading` 状态隐藏占位符
 
 ### 新增文件
 
