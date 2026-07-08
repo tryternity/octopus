@@ -655,6 +655,10 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 60. 显示器坐标物理/逻辑不匹配 | ✅ | `790ac15` | position 未除 scale，副屏永远匹配主屏 |
 | 61. un-maximize 取真实位置 | ✅ | `e6acce0` | 最大化关闭时先 unmaximize 取 inner_position；非最大化越界检测同修 |
 | 62. window_position 同修 | ✅ | `c3efb0c` | result/clipboard 的 is_position_visible 同样的物理像素未除 scale bug |
+| 63. CompactEditor 2 P0 + 4 优化 | ✅ | `765b560` | 图片 tab 满额越界白屏 + 图片/只读快捷键删除 + readInitialTabFromUrl/ToolBtn/savedFlash/死代码 |
+| 64. 前端审查 V1（4 项） | ✅ | `eb9f572` | replaceAll $ 特殊字符 + HistoryPanel 双展开 + Result 串行 listen 并行化 + popup toggle |
+| 65. 剪贴板列表 50→200 | ✅ | `26d5602` | useClipboardHistory size 50→200 |
+| 66. 前端审查 V2（5 项） | ✅ | `154a945` | Settings navigate e.payload + ClipboardPanel split \\ + text/transcription setActiveIdx + caret 零 rect + themeCache 清除 |
 
 ### 与原 plan 的偏差
 
