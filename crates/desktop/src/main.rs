@@ -377,6 +377,16 @@ pub fn run() {
             #[cfg(feature = "cloud")]
             let do_preheat = do_preheat && !is_cloud_aliyun;
 
+            // 系统状态页：创建 registry + sampler，manage 为 State，启动采样循环 + 注入模型 probe。
+            // 必须在 preheat spawn 之前——set_probe 同步完成后，预加载模型的加载才会被探针捕获，
+            // 否则启动预热的 ASR/VAD 可能抢在注入前加载而漏进 registry。
+            {
+                let registry = Arc::new(system_status_commands::ModelMemoryRegistry::new());
+                let sampler = Arc::new(system_status_commands::SystemStatusSampler::new(registry));
+                app.manage(sampler.clone());
+                sampler.start(app.handle().clone());
+            }
+
             if do_preheat {
                 let resolved_model = match &resolved_engine {
                     Ok(r) => r.name.clone(),
@@ -479,15 +489,6 @@ pub fn run() {
             // 6.2 Register global polish shortcut（跨应用 show 结果窗 + 立即润色）
             if let Err(e) = result_window::register_polish_global_shortcut(app.handle(), &config.polish_global_shortcut) {
                 log::error!("Failed to register global polish shortcut: {}", e);
-            }
-
-            // 系统状态页：创建 registry + sampler，sampler manage 为 State（registry 由 sampler 持有，
-            // 经 sampler.snapshot() 暴露，无需单独 manage），启动采样循环 + 注入模型 probe
-            {
-                let registry = Arc::new(system_status_commands::ModelMemoryRegistry::new());
-                let sampler = Arc::new(system_status_commands::SystemStatusSampler::new(registry));
-                app.manage(sampler.clone());
-                sampler.start(app.handle().clone());
             }
 
             info!("octopus-desktop initialized");
