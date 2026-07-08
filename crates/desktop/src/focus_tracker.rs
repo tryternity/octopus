@@ -29,6 +29,11 @@ impl FocusTracker {
     pub fn simulate_paste(&self) {
         simulate_paste_platform();
     }
+
+    /// 模拟复制按键（Cmd+C / Ctrl+C）。
+    pub fn simulate_copy(&self) {
+        simulate_copy_platform();
+    }
 }
 
 // ── macOS ──────────────────────────────────────────────────────────
@@ -95,6 +100,26 @@ fn simulate_paste_platform() {
     }
 }
 
+#[cfg(target_os = "macos")]
+fn simulate_copy_platform() {
+    use std::process::Command;
+    let script = r#"tell application "System Events"
+        set p to first process whose frontmost is true
+        set frontmost of p to true
+        delay 0.15
+        keystroke "c" using command down
+    end tell"#;
+    log::info!("simulate_copy: osascript frontmost + keystroke");
+    match Command::new("osascript").args(["-e", script]).output() {
+        Ok(out) => {
+            if !out.status.success() {
+                log::warn!("simulate_copy failed: {}", String::from_utf8_lossy(&out.stderr));
+            }
+        }
+        Err(e) => log::warn!("simulate_copy: {}", e),
+    }
+}
+
 // ── Windows ──────────────────────────────────────────────────────────
 
 #[cfg(target_os = "windows")]
@@ -107,6 +132,9 @@ fn restore_focus_platform() {}
 
 #[cfg(target_os = "windows")]
 fn simulate_paste_platform() {}
+
+#[cfg(target_os = "windows")]
+fn simulate_copy_platform() {}
 
 // ── Linux ─────────────────────────────────────────────────────────────
 
@@ -121,6 +149,9 @@ fn restore_focus_platform() {}
 #[cfg(target_os = "linux")]
 fn simulate_paste_platform() {}
 
+#[cfg(target_os = "linux")]
+fn simulate_copy_platform() {}
+
 // ── fallback ──
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
@@ -131,3 +162,6 @@ fn restore_focus_platform() {}
 
 #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
 fn simulate_paste_platform() {}
+
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
+fn simulate_copy_platform() {}
