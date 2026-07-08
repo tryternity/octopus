@@ -75,6 +75,22 @@ pub async fn clear_clipboard_history(
     Ok(n)
 }
 
+/// 按当前 tab 类别（filter）批量清理非收藏条目。镜像 clear_clipboard_history，
+/// 多一个 filter 参数走 clear_history_by_filter；emit clipboard://changed 触前端自动 refresh。
+#[tauri::command]
+pub async fn clear_clipboard_history_by_filter(
+    filter: String,
+    keep_favorite: bool,
+    app_handle: tauri::AppHandle,
+) -> Result<usize, String> {
+    let n = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::clear_history_by_filter(conn, &filter, keep_favorite)
+    })
+    .map_err(|e| e.to_string())?;
+    let _ = app_handle.emit("clipboard://changed", ());
+    Ok(n)
+}
+
 /// 按条目类型把内容写到系统剪贴板（copy / paste 共用）：
 /// - Text/Voice/Ocr: write_text(content)
 /// - Image: ref_data 存 blob_hash → 从 image_data 读 WebP 原图 → 转 PNG → write_image

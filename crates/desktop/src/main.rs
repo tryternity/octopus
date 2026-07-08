@@ -229,6 +229,7 @@ pub fn run() {
             clipboard_commands::delete_clipboard_item,
             clipboard_commands::delete_clipboard_items,
             clipboard_commands::clear_clipboard_history,
+            clipboard_commands::clear_clipboard_history_by_filter,
             clipboard_commands::copy_clipboard_item,
             clipboard_commands::clipboard_stats,
             clipboard_commands::paste_clipboard_item,
