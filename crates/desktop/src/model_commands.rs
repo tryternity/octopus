@@ -94,8 +94,13 @@ pub async fn download_model(
 ) -> Result<(), String> {
     // 1. 探查：文件已就绪（如用户 hf-cli 下过、在 cache）→ 自举清单 + 置 true，不重下。
     if let Ok(dir) = octopus_asr_local::config::resolve_model_dir(&repo) {
-        let manifest = bootstrap_manifest(&dir).map_err(|e| format!("生成校验清单失败: {e:?}"))?;
-        apply_model_state(&repo, Some(&manifest), true)?;
+        // bootstrap_manifest 计算 SHA-256（230-740MB），移入 spawn_blocking
+        let repo_clone = repo.clone();
+        let manifest = tokio::task::spawn_blocking(move || bootstrap_manifest(&dir))
+            .await
+            .map_err(|e| format!("bootstrap 任务异常: {}", e))?
+            .map_err(|e| format!("生成校验清单失败: {e:?}"))?;
+        apply_model_state(&repo_clone, Some(&manifest), true)?;
         let _ = app_handle.emit(
             "download-done",
             serde_json::json!({ "repo": &repo, "already_ready": true }),
@@ -167,8 +172,12 @@ pub async fn download_model(
     // 3. 下载完成：自举清单 + 置 true + reload。
     let dir = octopus_asr_local::config::resolve_model_dir(&repo)
         .map_err(|e| format!("下载后定位目录失败: {e:?}"))?;
-    let manifest = bootstrap_manifest(&dir).map_err(|e| format!("生成校验清单失败: {e:?}"))?;
-    apply_model_state(&repo, Some(&manifest), true)?;
+    let repo_clone = repo.clone();
+    let manifest = tokio::task::spawn_blocking(move || bootstrap_manifest(&dir))
+        .await
+        .map_err(|e| format!("bootstrap 任务异常: {}", e))?
+        .map_err(|e| format!("生成校验清单失败: {e:?}"))?;
+    apply_model_state(&repo_clone, Some(&manifest), true)?;
     let _ = app_handle.emit(
         "download-done",
         serde_json::json!({ "repo": &repo, "already_ready": false }),
