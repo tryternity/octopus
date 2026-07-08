@@ -660,6 +660,7 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 65. 剪贴板列表 50→200 | ✅ | `26d5602` | useClipboardHistory size 50→200 |
 | 66. 前端审查 V2（5 项） | ✅ | `154a945` | Settings navigate e.payload + ClipboardPanel split \\ + text/transcription setActiveIdx + caret 零 rect + themeCache 清除 |
 | 67. Settings listen→rawListen 遗漏 | ✅ | `c0ed7b8` | 154a945 改 import 漏改 config-changed 调用点，运行时 ReferenceError |
+| 68. 搜索时禁用清理按钮 | ✅ | `c42c6f9` | 防误删全类别数据（clear_by_filter 不带 search 参数） |
 
 ### 与原 plan 的偏差
 
