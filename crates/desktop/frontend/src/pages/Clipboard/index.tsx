@@ -7,7 +7,7 @@ import { moveIndex, moveTab } from "@/lib/clipboardNav";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
-import { Pin, X, Settings2, CircleCheck, CircleX } from "lucide-react";
+import { Pin, X, Settings2, CircleCheck, CircleX, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 interface ConfigResponse {
@@ -24,6 +24,9 @@ export default function Clipboard() {
   // 键盘导航以数组索引为第一性 citizen；执行动作时从 items[selectedIndex].id 取。
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [recording, setRecording] = useState(true);
+  // 一键清理两步确认：点 1 次 → confirming=true（变红 + 3s 超时），再点才执行。
+  const [confirming, setConfirming] = useState(false);
+  const confirmTimer = useRef<number | null>(null);
   // 浮窗内切 Tab 的修饰键（cmd/ctrl/alt），由设置页配置，默认 ctrl。
   const tabModifierRef = useRef<"cmd" | "ctrl" | "alt">("ctrl");
 
@@ -38,6 +41,22 @@ export default function Clipboard() {
       return prev;
     });
   }, [items]);
+
+  // filter 切换 → 清确认态 + 清 timer（避免在 A tab 点了第一步、切到 B tab 后第二次点击误清 B）
+  useEffect(() => {
+    setConfirming(false);
+    if (confirmTimer.current) {
+      clearTimeout(confirmTimer.current);
+      confirmTimer.current = null;
+    }
+  }, [filter]);
+
+  // 卸载清 timer，防泄漏
+  useEffect(() => {
+    return () => {
+      if (confirmTimer.current) clearTimeout(confirmTimer.current);
+    };
+  }, []);
 
   // 稳定选中句柄：ClipboardItemRow 已 memo，inline 箭头 onSelect={() => ...} 会让
   // 每行 prop 引用每帧变化 → memo 失效、50 行全重绘。setSelectedIndex 来自 useState 稳定，
@@ -234,14 +253,57 @@ export default function Clipboard() {
       {/* Footer */}
       <div className="flex items-center justify-between px-3 py-1 border-t border-border text-[10px] text-muted-foreground/80">
         <span>{total} 条</span>
-        <button
-          className="flex items-center gap-0.5 hover:text-foreground transition-colors"
-          onClick={() => invoke("open_settings", { initialPage: "clipboard" })}
-          title="管理剪贴板"
-        >
-          <Settings2 className="w-2.5 h-2.5" />
-          管理
-        </button>
+        <div className="flex items-center gap-2">
+          {/* 一键清理：删当前 tab 类别下所有非收藏条目（与搜索框正交）。
+              两步确认：点 1 次 → 变红「再点确认」+ 3s 超时，再点才执行。
+              收藏 tab 因 is_favorite=1 AND is_favorite=0 恒假删 0 条，禁用按钮。 */}
+          <button
+            className={cn(
+              "flex items-center gap-0.5 transition-colors",
+              filter === "favorite"
+                ? "opacity-50 cursor-not-allowed"
+                : confirming
+                  ? "text-red-500"
+                  : "hover:text-foreground",
+            )}
+            disabled={filter === "favorite"}
+            title={
+              filter === "favorite"
+                ? "收藏标签下无可清理项"
+                : confirming
+                  ? "再点一次确认清理"
+                  : "清理非收藏"
+            }
+            onClick={() => {
+              if (filter === "favorite") return;
+              if (!confirming) {
+                setConfirming(true);
+                confirmTimer.current = window.setTimeout(() => {
+                  setConfirming(false);
+                  confirmTimer.current = null;
+                }, 3000);
+              } else {
+                if (confirmTimer.current) {
+                  clearTimeout(confirmTimer.current);
+                  confirmTimer.current = null;
+                }
+                setConfirming(false);
+                invoke("clear_clipboard_history_by_filter", { filter, keepFavorite: true }).catch(console.error);
+              }
+            }}
+          >
+            <Trash2 className="w-2.5 h-2.5" />
+            {confirming ? "再点确认" : "清理"}
+          </button>
+          <button
+            className="flex items-center gap-0.5 hover:text-foreground transition-colors"
+            onClick={() => invoke("open_settings", { initialPage: "clipboard" })}
+            title="管理剪贴板"
+          >
+            <Settings2 className="w-2.5 h-2.5" />
+            管理
+          </button>
+        </div>
       </div>
     </div>
   );
