@@ -66,17 +66,27 @@ export default function ActionBar() {
     return () => { listenPromise.then((fn: () => void) => fn()); };
   }, []);
 
-  // 点击外部消失——用 click（冒泡阶段）而非 mousedown（capture 太早拦截按钮）
+  // 点击外部消失 + 窗口失焦消失
   useEffect(() => {
+    // 1. WebView 内部点击外部（同一窗口的其他区域）
     const onClick = (e: MouseEvent) => {
       const el = e.target as HTMLElement;
       if (el && el.closest("[data-action-bar]")) return;
       invoke("action_bar_dismiss");
     };
+    // 2. 窗口失焦（用户点了其他 app 或其他窗口）
+    const unlistenFocus = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+      if (!focused) invoke("action_bar_dismiss");
+    });
+    // 延迟注册避免 show 后首个事件误触发
     const timer = setTimeout(() => {
       document.addEventListener("click", onClick, false);
     }, 300);
-    return () => { clearTimeout(timer); document.removeEventListener("click", onClick, false); };
+    return () => {
+      clearTimeout(timer);
+      document.removeEventListener("click", onClick, false);
+      unlistenFocus.then((fn) => fn());
+    };
   }, []);
 
   const urlResult = context ? detectActionUrl(context.text) : { isUrl: false, url: "" };
