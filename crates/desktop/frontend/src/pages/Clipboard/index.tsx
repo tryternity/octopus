@@ -260,22 +260,24 @@ export default function Clipboard() {
           <button
             className={cn(
               "flex items-center gap-0.5 transition-colors",
-              filter === "favorite"
+              filter === "favorite" || !!search
                 ? "opacity-50 cursor-not-allowed"
                 : confirming
                   ? "text-red-500"
                   : "hover:text-foreground",
             )}
-            disabled={filter === "favorite"}
+            disabled={filter === "favorite" || !!search}
             title={
               filter === "favorite"
                 ? "收藏标签下无可清理项"
+                : !!search
+                  ? "有搜索内容时无法清理"
                 : confirming
                   ? "再点一次确认清理"
                   : "清理非收藏"
             }
             onClick={() => {
-              if (filter === "favorite") return;
+              if (filter === "favorite" || !!search) return;
               if (!confirming) {
                 setConfirming(true);
                 confirmTimer.current = window.setTimeout(() => {
