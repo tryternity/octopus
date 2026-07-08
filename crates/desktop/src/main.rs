@@ -373,8 +373,14 @@ pub fn run() {
                 .map(|r| r.category == octopus_asr_local::config::EngineCategory::Aliyun)
                 .unwrap_or(false);
 
-            // Preheat 仅本地 embedded 引擎（云引擎 AliyunEngine 无需预热；跳过避免 switch_model 对 aliyun bail）
-            let do_preheat = config.engine_mode == "embedded";
+            // Preheat 仅本地 embedded 离线引擎：
+            // - 云引擎 AliyunEngine 无需本地预热（跳过避免 switch_model 对 aliyun bail）；
+            // - 流式引擎（is_streaming）走 StreamingSessionManager，录制时不经过离线 AsrEngineManager，
+            //   若预热离线版会把同一模型的离线 ONNX Session 常驻在 AsrEngineManager 里却从不使用，
+            //   与流式 Session 并存 → 双重加载浪费内存（~100-300MB）。流式引擎在首次录音时由
+            //   prepare_streaming_session 懒加载进 StreamingSessionManager，无需启动预热。
+            let do_preheat = config.engine_mode == "embedded"
+                && !config::is_streaming_engine(&config);
             #[cfg(feature = "cloud")]
             let do_preheat = do_preheat && !is_cloud_aliyun;
 

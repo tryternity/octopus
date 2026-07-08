@@ -424,6 +424,10 @@ fn ends_with_punct(text: &str) -> bool {
 pub struct StreamingSessionManager {
     cached: RwLock<HashMap<String, Arc<dyn StreamingEngine>>>,
     active_name: RwLock<String>,
+    /// 缓存上限（对齐离线 `AsrEngineManager::max_cache`，默认 2）：超出且待插入为新键时，
+    /// 淘汰一个非 active 的引擎并 probe(Unload)，避免用户在多个流式模型间反复切换导致
+    /// 旧 ONNX Session 永久驻留、内存无界增长（流式 Session 单实例可达数百 MB）。
+    max_cache: usize,
 }
 
 impl Default for StreamingSessionManager {
@@ -437,6 +441,7 @@ impl StreamingSessionManager {
         Self {
             cached: RwLock::new(HashMap::new()),
             active_name: RwLock::new(String::new()),
+            max_cache: 2,
         }
     }
 
@@ -451,14 +456,50 @@ impl StreamingSessionManager {
                 return Ok(());
             }
         }
+        // 系统状态页：流式引擎加载前后采 RSS 差值估算（与离线 load_engine_into_cache 对称）。
+        // probe 未注入时为 no-op（单元测试 / 非桌面端）。After 命中首次估算缓存则复用，否则算差；
+        // 首次值持久化在 registry.estimated，防 ort arena 复用让重载差值偏低甚至为负。
+        octopus_infra::model_probe::probe(
+            octopus_infra::model_probe::LoadPhase::Before,
+            &format!("asr:{bare}"),
+        );
         let session = StreamingSession::new(spec, language)?;
+        octopus_infra::model_probe::probe(
+            octopus_infra::model_probe::LoadPhase::After,
+            &format!("asr:{bare}"),
+        );
         self.set_active(&bare, Arc::new(session));
         Ok(())
     }
 
     /// 缓存入值 + 设 active_name（内部 helper）。
+    /// 缓存入值 + 设 active_name（内部 helper）。
+    /// 入缓存前按 `max_cache` 淘汰：保护当前 active（避免淘汰正用的引擎），
+    /// 对齐离线 `AsrEngineManager` 的驱逐策略，防止多模型反复切换导致内存无界增长。
     fn set_active(&self, bare: &str, engine: Arc<dyn StreamingEngine>) {
-        self.cached.write().unwrap().insert(bare.to_string(), engine);
+        let current_active = self.active_name.read().unwrap().clone();
+        let mut cached = self.cached.write().unwrap();
+        // 仅当到达上限且待插入的是新键时才淘汰（bare 已在缓存则 insert 覆盖，无需淘汰）
+        if cached.len() >= self.max_cache && !cached.contains_key(bare) {
+            let key_to_remove = cached
+                .keys()
+                .find(|k| **k != current_active && **k != bare)
+                .cloned()
+                .or_else(|| cached.keys().next().cloned());
+            if let Some(k) = key_to_remove {
+                log::info!("Evicting streaming engine '{}' from cache to free up memory", k);
+                cached.remove(&k);
+                // 通知系统状态页清除该模型估算条目（与离线驱逐、OCR idle 释放 probe(Unload) 对称），
+                // 否则状态页残留已淘汰模型的估算内存。probe 闭包只锁自身的 before_map/registry，
+                // 与本 cached 写锁无嵌套，持写锁调用安全。
+                octopus_infra::model_probe::probe(
+                    octopus_infra::model_probe::LoadPhase::Unload,
+                    &format!("asr:{k}"),
+                );
+            }
+        }
+        cached.insert(bare.to_string(), engine);
+        drop(cached);
         *self.active_name.write().unwrap() = bare.to_string();
     }
 
@@ -466,6 +507,12 @@ impl StreamingSessionManager {
     #[cfg(test)]
     fn set_active_for_test(&self, bare: &str, engine: Arc<dyn StreamingEngine>) {
         self.set_active(bare, engine);
+    }
+
+    /// 测试用：暴露缓存条目数，验证 max_cache 驱逐。
+    #[cfg(test)]
+    fn cached_len_for_test(&self) -> usize {
+        self.cached.read().unwrap().len()
     }
 
     /// 取 active session 的 Arc clone。`active_name == spec` 且缓存命中 → 直接返回（复用，不重载）；
@@ -568,5 +615,32 @@ mod manager_tests {
         s.reset();
         s.reset();
         assert_eq!(fake_for_count.reset_count(), 2, "reset 应转发到底层引擎");
+    }
+
+    #[test]
+    fn set_active_evicts_when_over_capacity_keeps_active() {
+        // max_cache=2：注入 A→B→C，第 3 个到达上限且为新键 → 淘汰一个非 active（A），
+        // B（上一个 active）与 C（新 active）保留。验证流式 manager 与离线 AsrEngineManager
+        // 一样有容量上限，防止多模型反复切换导致旧 Session 永久驻留、内存无界增长。
+        let mgr = StreamingSessionManager::new();
+        let fake = || Arc::new(FakeEngine::new()) as Arc<dyn StreamingEngine>;
+        mgr.set_active_for_test("A", fake());
+        mgr.set_active_for_test("B", fake());
+        assert_eq!(mgr.cached_len_for_test(), 2, "前两个填满 max_cache");
+        mgr.set_active_for_test("C", fake());
+        assert_eq!(mgr.cached_len_for_test(), 2, "超限应淘汰至 max_cache，而非无限增长");
+        assert_eq!(mgr.active_name(), "C", "新插入的应成为 active");
+    }
+
+    #[test]
+    fn set_active_no_evict_when_reinserting_existing_key() {
+        // bare 已在缓存时 insert 覆盖，不应淘汰（cached.contains_key(bare) 守卫）
+        let mgr = StreamingSessionManager::new();
+        let fake = || Arc::new(FakeEngine::new()) as Arc<dyn StreamingEngine>;
+        mgr.set_active_for_test("A", fake());
+        mgr.set_active_for_test("B", fake());
+        mgr.set_active_for_test("A", fake()); // A 已在，覆盖，不淘汰 B
+        assert_eq!(mgr.cached_len_for_test(), 2);
+        assert_eq!(mgr.active_name(), "A");
     }
 }

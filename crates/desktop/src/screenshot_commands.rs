@@ -659,6 +659,21 @@ static SCROLL_STOP_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::Atomic
 
 static SCROLL_RECORDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// RAII 守卫：drop 时把 `SCROLL_RECORDING` 重置为 false。
+///
+/// `start_scroll_recording` 在 `swap(true)` 成功后 spawn 异步任务，任务体里的早返回
+/// （截图窗口已关闭 / CG 获取活动显示器失败 / 首帧截取失败）以及 panic 都不会重置标志，
+/// 会导致 `SCROLL_RECORDING` 永久停留在 true —— 此后任何滚动截图尝试都立即返回
+/// "already in progress"，必须重启应用才能恢复。在 spawn 开头持有一份守卫，任何退出
+/// 路径（早返回 / 正常结束 / panic / runtime 取消）都会 drop 它 → 重置标志，幂等无副作用
+/// （正常停止路径由前端 `stop_scroll_recording` 先设 false 让循环退出，再 drop 守卫重复置 false）。
+struct ScrollRecordingGuard;
+impl Drop for ScrollRecordingGuard {
+    fn drop(&mut self) {
+        SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[cfg(target_os = "macos")]
 struct SendApp(objc2::rc::Retained<objc2_app_kit::NSRunningApplication>);
 unsafe impl Send for SendApp {}
@@ -873,6 +888,9 @@ pub async fn start_scroll_recording(
 
     let ah = app_handle.clone();
     tauri::async_runtime::spawn(async move {
+        // RAII 守卫：本任务体任何退出（早返回 / 正常结束 / panic / runtime 取消）都重置
+        // SCROLL_RECORDING=false，避免初始化失败的早返回让滚动截图功能永久锁死。
+        let _scroll_guard = ScrollRecordingGuard;
         // ── 通过 win_label 定位选区所在的截图窗口（spec §6.4）──
         let sel_win = match ah.get_webview_window(&win_label) {
             Some(w) => w,
