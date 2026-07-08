@@ -160,14 +160,20 @@ pub fn action_bar_paste_result(result: String, app: AppHandle) {
 
     let app_clone = app.clone();
     std::thread::spawn(move || {
-        // 1. 恢复焦点到原 app + 模拟粘贴
-        let focus = FocusTracker::new();
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        focus.restore_focus();
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        focus.simulate_paste();
+        // 1. 恢复焦点到原 app（同 paste_clipboard_item 的模式）
+        // macOS: hide 后系统自动还焦点给上一个 app
+        // 但需要等久一点让 macOS 完全处理窗口隐藏
+        std::thread::sleep(std::time::Duration::from_millis(300));
 
-        // 2. 粘贴完成后恢复剪贴板原始内容（删掉 AI 结果，还原用户之前的剪贴板）
+        let focus = FocusTracker::new();
+        focus.restore_focus();
+
+        // 再等一下让目标 app 获得焦点
+        std::thread::sleep(std::time::Duration::from_millis(200));
+        focus.simulate_paste();
+        log::info!("[action-bar] paste done");
+
+        // 2. 粘贴完成后恢复剪贴板原始内容
         std::thread::sleep(std::time::Duration::from_millis(300));
         let backup = CLIPBOARD_BACKUP.lock().unwrap().take();
         if let Some(original) = backup {
@@ -176,7 +182,6 @@ pub fn action_bar_paste_result(result: String, app: AppHandle) {
 
         // 3. 恢复 clipboard watcher 入库
         if let Some(handle) = app_clone.try_state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>() {
-            // 读 config 判断原 recording 状态
             let recording = octopus_infra::db::load_config_key("clipboard_enabled")
                 .ok().flatten()
                 .map(|v| v != "false")
