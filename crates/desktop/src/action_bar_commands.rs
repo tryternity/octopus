@@ -16,6 +16,8 @@ pub struct ActionBarContext {
 static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
 /// 记录被隐藏的常规窗口 label（paste/hide 后恢复）
 static HIDDEN_REGULAR_WINDOWS: Mutex<Vec<String>> = Mutex::new(Vec::new());
+/// 记录触发前的剪贴板内容（操作完成后恢复——模拟 Cmd+C 的文本不进历史）
+static CLIPBOARD_BACKUP: Mutex<Option<String>> = Mutex::new(None);
 
 /// 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → 显示浮窗。
 #[tauri::command]
@@ -38,14 +40,20 @@ pub fn trigger_action_bar(app: AppHandle) {
         *HIDDEN_REGULAR_WINDOWS.lock().unwrap() = hidden.clone();
         log::info!("[action-bar] hidden regular windows: {:?}", hidden);
 
-        // 1. 记录触发前的剪贴板内容
+        // 1. 记录触发前的剪贴板内容（用于完成后恢复——避免模拟 Cmd+C 的文本进入剪贴板历史）
         let clipboard_before = read_clipboard_text(&app_clone);
+        *CLIPBOARD_BACKUP.lock().unwrap() = clipboard_before.clone();
 
-        // 2. 模拟 Cmd+C
+        // 2. 临时暂停 clipboard watcher 入库（防止模拟 Cmd+C 的文本进历史）
+        if let Some(handle) = app_clone.try_state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>() {
+            handle.set_recording_enabled(false);
+        }
+
+        // 3. 模拟 Cmd+C
         let focus = FocusTracker::new();
         focus.simulate_copy();
 
-        // 3. 等待 200ms 让系统完成复制
+        // 4. 等待 200ms 让系统完成复制
         std::thread::sleep(std::time::Duration::from_millis(200));
 
         // 4. 读剪贴板
@@ -144,19 +152,40 @@ pub fn action_bar_dismiss(app: AppHandle) {
     restore_hidden_windows(&app);
 }
 
-/// 写结果到剪贴板 + 恢复焦点 + 模拟 Cmd+V + 隐藏浮窗 + 恢复常规窗口。
+/// 写结果到剪贴板 + 恢复焦点 + 模拟 Cmd+V + 隐藏浮窗 + 恢复剪贴板/常规窗口。
 #[tauri::command]
 pub fn action_bar_paste_result(result: String, app: AppHandle) {
     hide_action_bar_window(&app);
-    restore_hidden_windows(&app);
     write_clipboard_text(&app, &result);
 
-    let focus = FocusTracker::new();
+    let app_clone = app.clone();
     std::thread::spawn(move || {
+        // 1. 恢复焦点到原 app + 模拟粘贴
+        let focus = FocusTracker::new();
         std::thread::sleep(std::time::Duration::from_millis(200));
         focus.restore_focus();
         std::thread::sleep(std::time::Duration::from_millis(100));
         focus.simulate_paste();
+
+        // 2. 粘贴完成后恢复剪贴板原始内容（删掉 AI 结果，还原用户之前的剪贴板）
+        std::thread::sleep(std::time::Duration::from_millis(300));
+        let backup = CLIPBOARD_BACKUP.lock().unwrap().take();
+        if let Some(original) = backup {
+            write_clipboard_text(&app_clone, &original);
+        }
+
+        // 3. 恢复 clipboard watcher 入库
+        if let Some(handle) = app_clone.try_state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>() {
+            // 读 config 判断原 recording 状态
+            let recording = octopus_infra::db::load_config_key("clipboard_enabled")
+                .ok().flatten()
+                .map(|v| v != "false")
+                .unwrap_or(true);
+            handle.set_recording_enabled(recording);
+        }
+
+        // 4. 恢复常规窗口
+        restore_hidden_windows(&app_clone);
     });
 }
 
