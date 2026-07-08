@@ -239,7 +239,7 @@ fn write_clipboard_text(app: &AppHandle, text: &str) {
 }
 
 #[cfg(target_os = "macos")]
-fn get_mouse_position(app: &AppHandle) -> (f64, f64) {
+fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
     use core_graphics::event::CGEvent;
     use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
     let source = match CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
