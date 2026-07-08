@@ -78,11 +78,13 @@
 | 模型 | 插桩点 | id |
 |---|---|---|
 | ASR | `asr-local::AsrEngineManager::load_engine_into_cache` 前后 | `asr:<engine>` |
+| ASR（流式） | `asr-local::StreamingSessionManager::switch_model` 前后 + 驱逐 `Unload` | `asr:<bare>`（与离线同前缀，同一模型算一条） |
 | OCR | `ocr::engine` 首次初始化前后 | `ocr:<model_name>` |
 | VAD | `asr-local::vad` 首次加载前后 | `vad:silero` |
 
 - 加载前读进程 RSS → 加载后再读 → 差值 `upsert_active` 进 registry
 - After 优先 `estimated(id)` 命中复用首次值（reload 场景，不算偏低差），未命中才算 RSS 差——首次值持久化在 `estimated`（`or_insert` 不覆盖），防 ort arena 复用让后续差值偏低甚至为负
+- After 时 `now<=before`（差值测不到：ort arena 复用 / 并发释放内存）→ `mark_active_unmeasured(id)`：仅登记 active 占位（状态页显示「已加载」），**不写 estimated**——避免不可信近零值持久化成首次估算，下次 reload 走 estimated miss 重算可自愈；若不登记则条目永久缺失 + estimated 永不写 → reload 仍走 `now<=b` 永不显示（2026-07-09 审查 6e73257 Q2 修复）
 - `before_map` key 用 `(ThreadId, model_id)`：多线程并发加载同一未缓存模型（如 server 多连接同时 cache miss 同一 ASR 引擎）时按线程×模型配对，避免 before/after 错拿致估算值失真（仅影响状态页估算显示，不影响加载正确性）
 - OCR idle 释放后 `run_ocr` 重载补 probe Before/After（与首次 `instance()` 对称）：Unload 已 remove active（estimated 保留），重载 After 命中 estimated 恢复——避免状态页在 OCR 重载后永久缺条目；`probe` clone 闭包后释放锁再调用，避免持锁执行用户闭包（fallback sysinfo 扫进程慢）
 - 属「估算」，前端固定标注「约」

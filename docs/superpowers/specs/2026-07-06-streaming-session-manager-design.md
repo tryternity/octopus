@@ -68,6 +68,9 @@ pub fn run<'s, 'i, 'v: 'i, const N: usize>(&'s mut self, input_values: impl Into
 pub struct StreamingSessionManager {
     cached: RwLock<HashMap<String, Arc<StreamingSession>>>,
     active_name: RwLock<String>,
+    /// 缓存上限（默认 2，对齐离线 AsrEngineManager）。set_active 入缓存前
+    /// 淘汰非 active，防多模型反复切换致内存无界增长（见 §10 修订）。
+    max_cache: usize,
 }
 
 impl StreamingSessionManager {
@@ -88,6 +91,8 @@ impl StreamingSessionManager {
 照搬离线 `AsrEngineManager` 两段式（cached + active）。差异：
 - 离线缓存 `Arc<dyn OfflineAsrEngine>`（无状态可共享并发，引擎内 `Mutex<Session>` 串行 run）。
 - 流式缓存 `Arc<StreamingSession>`（有连接级状态，靠 **reset 复用** 而非并发共享）。
+- **max_cache 驱逐**（2026-07-09 审查 Q3 加）：`set_active` 入缓存前按 `max_cache=2` 淘汰非 active + `probe(Unload)`，与离线 `load_engine_into_cache` 驱逐对称，防多模型反复切换致内存无界增长。
+- **model_probe 接入**（2026-07-09 审查 Q4 加）：`switch_model` 加 `probe(Before/After)`（id=`asr:<bare>`，与离线同前缀），状态页统计流式引擎内存；驱逐时 `probe(Unload)` 清条目。
 
 ### 5.2 复用机制（核心）
 
@@ -154,7 +159,7 @@ impl StreamingSessionManager {
 
 ## 8. 测试
 
-- **manager 单测**：`active_session` 命中/未命中、重复调用返回同一 Arc（加载计数器断言「只 new 一次」）、模型切换 active 跟随。
+- **manager 单测**：`active_session` 命中/未命中、重复调用返回同一 Arc（加载计数器断言「只 new 一次」）、模型切换 active 跟随、`set_active` 超 `max_cache` 淘汰非 active 且保留 active（`set_active_evicts_when_over_capacity_keeps_active` / `set_active_no_evict_when_reinserting_existing_key`）。
 - **回归**：`StreamingRunner` 现有测试（`streaming_runner.rs:331+`）改 Box→Arc 后调整 `FakeStreamingEngine` 构造仍绿；`from_session` 接 Arc。
 - **desktop e2e**：连录两次，第二次启动延迟大降（日志/手测）。
 
@@ -176,4 +181,4 @@ impl StreamingSessionManager {
 
 - **`StreamingZipformer`/`StreamingZipformerTransducer` 的 `reset()` 完整性**：✓ 已核实均干净（`StreamingZipformer::reset` streaming_zipformer.rs:252-264 清 `sample_buffer`/`history_samples`/`token_ids`/`prev_id` + `states` 归零；Transducer `:712-727` 清 `sample_buffer`/`history_samples`/`emitted_ids` + `token_buf` 重置 + `states` 归零）。复用无状态泄漏，无需补全。
 - **`switch_asr_engine` 联动**：✓ 不需要主动联动——`active_session(spec, lang)` 懒加载在 spec≠active 时自动 switch 覆盖模型变更。
-- **`StreamingSessionManager` 缓存上限**：✓ 不设 max_cache——流式模型种类少，无需淘汰（离线 desktop 默认 2 是多模型场景，流式无此压力）。
+- **`StreamingSessionManager` 缓存上限**：~~不设 max_cache~~ → **修订（2026-07-09，后端审查 d6c2d71 Q3）**：设 `max_cache=2`，对齐离线 `AsrEngineManager`。原「不设上限（流式种类少）」假设未覆盖「用户在模型管理页配置多个流式引擎并反复切换」——每个流式 Session 数百 MB，无上限会致内存无界增长 / OOM。`set_active` 入缓存前淘汰非 active（保护正用）+ `probe(Unload)` 通知状态页清除条目（与离线驱逐、OCR idle 释放对称）。同步加 `probe(Before/After)`（审查 Q4）让状态页统计流式引擎内存。

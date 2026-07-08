@@ -1081,6 +1081,18 @@ git -C <worktree> commit -m "docs(arch): 新增 system_status 模块说明"
 
 ---
 
+### Task 16: 后端审查五轮修复——流式 ASR 接 probe + StreamingSessionManager max_cache + 状态页 now<=b 占位（2026-07-09）
+
+**状态：已实现。** 后端审查五轮（`d6c2d71` + `6e73257`）状态页相关 3 项修复（全量 cargo test 442 passed）：
+
+- [x] **① 流式 ASR 引擎接入 model_probe**（`asr-local/src/streaming_engine.rs`，审查 Q4）：`StreamingSessionManager::switch_model` 加 `probe(Before/After)`（id=`asr:<bare>`，与离线 `load_engine_into_cache` 同前缀，同一模型算一条），驱逐时 `probe(Unload)`。修复前状态页完全不统计流式引擎内存（流式走独立 `StreamingSessionManager`，离线 probe 只埋 `AsrEngineManager`）。
+- [x] **② StreamingSessionManager 加 max_cache=2 驱逐**（`asr-local/src/streaming_engine.rs`，审查 Q3）：原 spec §10 决策「不设上限（流式种类少）」未覆盖用户配置多流式引擎反复切换场景 → 内存无界增长 / OOM。`set_active` 入缓存前淘汰非 active（保护正用）+ `probe(Unload)`，对齐离线 `AsrEngineManager`。spec §10 / streaming plan YAGNI 表已同步修订。+2 单测。
+- [x] **③ 状态页 After now<=b 占位**（`system_status_commands.rs`，审查 Q2）：After 分支 `now>before` 才 upsert，`now<=b`（ort arena 复用 / 并发释放）跳过 → 条目永久缺失 + estimated 永不写 → reload 仍走此分支。加 `mark_active_unmeasured(id)`：`now<=b` 时登记 active 占位（状态页显示「已加载」），不写 estimated（避免不可信近零值持久化，下次 reload 重算可自愈）。
+
+> 同期 `d6c2d71` 另含滚动截图 `SCROLL_RECORDING` RAII guard、embedded 流式不预热离线 `AsrEngineManager`、final polish `catch_unwind` 兜底；`6e73257` 另含 CLI `transcribe-url` PCM 流跨 read 对齐——均非状态页范畴，见 `architecture.md`。
+
+---
+
 ## Self-Review（写完后自查）
 
 **1. Spec 覆盖：**
