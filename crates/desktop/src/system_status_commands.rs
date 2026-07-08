@@ -9,7 +9,7 @@
 
 use parking_lot::Mutex;
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ModelMemory {
@@ -84,6 +84,46 @@ impl ModelMemoryRegistry {
     }
 }
 
+/// 单个采样点（ring buffer 元素）。
+#[derive(Clone, Copy, Debug)]
+pub struct SamplePoint {
+    pub timestamp: f64,
+    pub rss: u64,
+    pub cpu: f32,
+}
+
+/// 固定容量时间序列：满后丢弃最旧。容量 60（2s × 60 = 2 分钟）。
+pub struct RingBuffer {
+    cap: usize,
+    buf: VecDeque<SamplePoint>,
+}
+
+impl RingBuffer {
+    pub fn new(cap: usize) -> Self {
+        Self { cap: cap.max(1), buf: VecDeque::with_capacity(cap.max(1)) }
+    }
+
+    pub fn push(&mut self, p: SamplePoint) {
+        if self.buf.len() == self.cap {
+            self.buf.pop_front();
+        }
+        self.buf.push_back(p);
+    }
+
+    /// 导出为前端 TimeSeries（rss / cpu / timestamps 三个并行数组）。
+    pub fn to_time_series(&self) -> TimeSeries {
+        let mut rss = Vec::with_capacity(self.buf.len());
+        let mut cpu = Vec::with_capacity(self.buf.len());
+        let mut ts = Vec::with_capacity(self.buf.len());
+        for p in &self.buf {
+            rss.push(p.rss);
+            cpu.push(p.cpu);
+            ts.push(p.timestamp);
+        }
+        TimeSeries { rss, cpu, timestamps: ts }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,5 +157,33 @@ mod tests {
         r.record_once("asr:paraformer", 380_000_000);
         let ids: Vec<_> = r.entries().into_iter().map(|m| m.id).collect();
         assert_eq!(ids, vec!["asr:paraformer", "vad:silero"]);
+    }
+
+    #[test]
+    fn ring_buffer_evicts_oldest_when_full() {
+        let mut rb = RingBuffer::new(3);
+        for i in 0..5 {
+            rb.push(SamplePoint { timestamp: i as f64, rss: i, cpu: i as f32 });
+        }
+        let ts = rb.to_time_series();
+        // 容量 3：只保留最后 3 个（i=2,3,4）
+        assert_eq!(ts.rss, vec![2, 3, 4]);
+        assert_eq!(ts.timestamps.len(), 3);
+    }
+
+    #[test]
+    fn ring_buffer_under_capacity_keeps_all() {
+        let mut rb = RingBuffer::new(60);
+        rb.push(SamplePoint { timestamp: 1.0, rss: 100, cpu: 5.0 });
+        assert_eq!(rb.to_time_series().rss, vec![100]);
+    }
+
+    #[test]
+    fn ring_buffer_zero_cap_clamps_to_one() {
+        // cap=0 经 new 内 cap.max(1) 钳到 1，只留最新一个点。
+        let mut rb = RingBuffer::new(0);
+        rb.push(SamplePoint { timestamp: 1.0, rss: 1, cpu: 1.0 });
+        rb.push(SamplePoint { timestamp: 2.0, rss: 2, cpu: 2.0 });
+        assert_eq!(rb.to_time_series().rss, vec![2], "cap=0 钳到 1，只留最新");
     }
 }
