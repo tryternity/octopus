@@ -29,7 +29,9 @@ const IconBtn = ({ icon: Icon, label, active, onClick }: {
   <button
     className={cn(
       "flex flex-col items-center justify-center gap-0.5 px-3 py-1.5 rounded-md transition-all",
-      active ? "bg-accent text-accent-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+      active
+        ? "bg-voice/15 text-voice ring-1 ring-voice/30"
+        : "text-muted-foreground hover:bg-muted hover:text-foreground",
     )}
     onMouseDown={(e) => e.stopPropagation()}
     onClick={onClick}
