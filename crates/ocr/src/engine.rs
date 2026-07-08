@@ -173,26 +173,29 @@ impl OcrEngine {
     }
 
     fn run_ocr(&self, img: &::image::DynamicImage) -> Result<Vec<OcrBlock>> {
-        // 入口先刷新 last_used：防止守护线程在重载中途（耗时数秒）误判 idle 再次释放。
+        // 入口先刷新 last_used：防止守护线程在重载期间误判 idle。
         *self.last_used.lock() = Some(std::time::Instant::now());
-
-        // inner 为 None（idle 释放过）→ 重载。重载【不】调 probe Before/After
-        // （避免刷新 registry 首次估算值；模型内存估算只记首次，record_once 不覆盖）。
-        {
-            let need_reload = self.inner.lock().is_none();
-            if need_reload {
-                log::info!("[ocr-engine] OCR model {} reloaded after idle release", self.model_name);
-                let new_engine = Self::load_rapid_ocr(&self.model_name)?;
-                *self.inner.lock() = Some(new_engine);
-            }
-        }
 
         let rec_img = dynamic_to_rec_image(img)?;
         let opts = octopus_paddle_ocr::OcrCallOptions::default();
-        let mut guard = self.inner.lock();
-        let engine_ref = guard.as_mut().expect("inner just reloaded or was Some");
-        let result = engine_ref.run(rec_img, opts)
-            .map_err(|e| anyhow::anyhow!("OCR run failed: {e}"))?;
+
+        // 重载 + run 在同一 inner lock 作用域：重载期间持有 inner 锁，守护线程
+        // 无法在「重载后、run 前」窗口抢锁释放刚重载的模型（否则 run 时 inner=None → expect panic）。
+        // OcrLockGuard 已保证同时只有一个 run_ocr，持锁重载数秒不阻塞其他 OCR 调用；
+        // 守护线程仅在 sleep loop 里偶尔多等几秒，无害。
+        // 重载【不】调 probe Before/After（避免刷新 registry 首次估算值，record_once 不覆盖）。
+        let result = {
+            let mut guard = self.inner.lock();
+            if guard.is_none() {
+                log::info!("[ocr-engine] OCR model {} reloaded after idle release", self.model_name);
+                let new_engine = Self::load_rapid_ocr(&self.model_name)?;
+                *guard = Some(new_engine);
+            }
+            let engine_ref = guard.as_mut().expect("inner just reloaded or was Some");
+            engine_ref.run(rec_img, opts)
+                .map_err(|e| anyhow::anyhow!("OCR run failed: {e}"))?
+        }; // guard 在此 drop，释放 inner 锁
+
         let mut blocks = ocr_output_to_blocks(&result);
         blocks = merge_same_line_blocks(blocks);
         if self.use_word_segmentation {
