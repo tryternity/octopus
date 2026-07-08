@@ -182,24 +182,40 @@ pub struct SystemStatusSnapshot {
     pub models: Vec<ModelMemory>,
 }
 
-/// 模型内存估算表：id → 估算字节。`record_once` 仅首次写入（不覆盖）。
+/// 模型内存估算表。
+/// - `inner`：active 列表（状态页展示当前加载中模型）。
+/// - `estimated`：首次估算值持久缓存，跨 unload/reload 保留（Task 14）。
 #[derive(Default)]
 pub struct ModelMemoryRegistry {
     inner: Mutex<HashMap<String, u64>>,
+    estimated: Mutex<HashMap<String, u64>>,
 }
 
 impl ModelMemoryRegistry {
     pub fn new() -> Self {
-        Self { inner: Mutex::new(HashMap::new()) }
+        Self {
+            inner: Mutex::new(HashMap::new()),
+            estimated: Mutex::new(HashMap::new()),
+        }
     }
 
-    /// 仅当 id 不存在时记录；已存在则保留首次值（避免 arena 复用导致低估）。
-    pub fn record_once(&self, id: &str, bytes: u64) {
-        let mut m = self.inner.lock();
-        m.entry(id.to_string()).or_insert(bytes);
+    /// 记录 active 估算值（覆盖式），并把首次值持久化到 `estimated`（or_insert 仅首次）。
+    pub fn upsert_active(&self, id: &str, bytes: u64) {
+        self.estimated.lock().entry(id.to_string()).or_insert(bytes);
+        self.inner.lock().insert(id.to_string(), bytes);
     }
 
-    /// 返回所有已记录模型（按 id 排序，输出稳定）。
+    /// 取首次持久估算值（reload 时复用，避免重新算偏低的 RSS 差）。
+    pub fn estimated(&self, id: &str) -> Option<u64> {
+        self.estimated.lock().get(id).copied()
+    }
+
+    /// 移除 active 条目（模型卸载），保留 `estimated` 供下次 reload 复用首次值。
+    pub fn remove(&self, id: &str) {
+        self.inner.lock().remove(id);
+    }
+
+    /// 返回所有 active 模型（按 id 排序，输出稳定）。
     pub fn entries(&self) -> Vec<ModelMemory> {
         let m = self.inner.lock();
         let mut ids: Vec<&String> = m.keys().collect();
@@ -223,31 +239,38 @@ mod tests {
     use super::*;
 
     #[test]
-    fn record_once_writes_first_time() {
+    fn upsert_active_records_and_entries() {
         let r = ModelMemoryRegistry::new();
-        r.record_once("asr:paraformer", 380_000_000);
+        r.upsert_active("asr:paraformer", 380_000_000);
         let e = r.entries();
-        assert_eq!(e.len(), 1);
         assert_eq!(e[0].id, "asr:paraformer");
-        assert_eq!(e[0].kind, "asr");
-        assert_eq!(e[0].display_name, "paraformer");
         assert_eq!(e[0].estimated_bytes, Some(380_000_000));
     }
 
     #[test]
-    fn record_once_does_not_overwrite() {
+    fn estimated_keeps_first_value_against_low_overwrite() {
+        // arena 复用偏低值不污染 estimated（Task 14）
         let r = ModelMemoryRegistry::new();
-        r.record_once("ocr:PP-OCRv4", 210_000_000);
-        r.record_once("ocr:PP-OCRv4", 50_000_000); // arena 复用后的低值，应忽略
-        let e = r.entries();
-        assert_eq!(e[0].estimated_bytes, Some(210_000_000));
+        r.upsert_active("ocr:PP-OCRv4", 210_000_000);
+        r.upsert_active("ocr:PP-OCRv4", 50_000_000);
+        assert_eq!(r.estimated("ocr:PP-OCRv4"), Some(210_000_000));
+    }
+
+    #[test]
+    fn estimated_persists_across_unload_and_reload_restores_active() {
+        let r = ModelMemoryRegistry::new();
+        r.upsert_active("ocr:PP-OCRv4", 210_000_000);
+        r.remove("ocr:PP-OCRv4");
+        assert!(r.entries().is_empty());
+        r.upsert_active("ocr:PP-OCRv4", r.estimated("ocr:PP-OCRv4").unwrap());
+        assert_eq!(r.entries()[0].estimated_bytes, Some(210_000_000));
     }
 
     #[test]
     fn entries_sorted_by_id() {
         let r = ModelMemoryRegistry::new();
-        r.record_once("vad:silero", 30_000_000);
-        r.record_once("asr:paraformer", 380_000_000);
+        r.upsert_active("vad:silero", 30_000_000);
+        r.upsert_active("asr:paraformer", 380_000_000);
         let ids: Vec<_> = r.entries().into_iter().map(|m| m.id).collect();
         assert_eq!(ids, vec!["asr:paraformer", "vad:silero"]);
     }
@@ -457,24 +480,36 @@ impl SystemStatusSampler {
 
     /// 启动后台采样循环 + 注入模型加载 probe（Before/After RSS 差值 → registry）。
     pub fn start(self: Arc<Self>, app: AppHandle) {
-        // probe 闭包：Before 存 RSS，After 算差 record_once
-        let before_map: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        // probe 闭包：Before 存 RSS，After 优先 estimated 复用首次值、否则算差 upsert_active。
+        // key 含 ThreadId（Task 12）：多线程并发加载同一未缓存模型时按线程×模型配对防错拿。
+        // probe 实现 clone 闭包后释放锁再调（Task 14④，避免持锁执行用户闭包）。
+        let before_map: Arc<Mutex<HashMap<(std::thread::ThreadId, String), u64>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let registry = self.registry.clone();
         let bm = before_map.clone();
         octopus_infra::model_probe::set_probe(Arc::new(move |phase, id| {
+            use octopus_infra::model_probe::LoadPhase;
             match phase {
-                octopus_infra::model_probe::LoadPhase::Before => {
-                    if let Some(rss) = read_self_rss() {
-                        bm.lock().insert(id.to_string(), rss);
+                LoadPhase::Before => {
+                    if let Some(m) = read_self_probe_memory() {
+                        bm.lock().insert((std::thread::current().id(), id.to_string()), m);
                     }
                 }
-                octopus_infra::model_probe::LoadPhase::After => {
-                    let before = bm.lock().remove(id);
-                    if let (Some(b), Some(now)) = (before, read_self_rss()) {
+                LoadPhase::After => {
+                    let key = (std::thread::current().id(), id.to_string());
+                    let before = bm.lock().remove(&key);
+                    // reload 场景 estimated 已有首次值（Task 14③）→ 复用，不算偏低差
+                    if let Some(cached) = registry.estimated(id) {
+                        registry.upsert_active(id, cached);
+                    } else if let (Some(b), Some(now)) = (before, read_self_probe_memory()) {
                         if now > b {
-                            registry.record_once(id, now - b);
+                            registry.upsert_active(id, now - b);
                         }
                     }
+                }
+                LoadPhase::Unload => {
+                    // 模型卸载（OCR idle / ASR 淘汰，Task 13④）：仅清 active，estimated 保留供 reload
+                    registry.remove(id);
                 }
             }
         }));
@@ -1019,7 +1054,7 @@ git -C <worktree> commit -m "docs(arch): 新增 system_status 模块说明"
 **状态：已实现。** 后端审查二轮复查 5 问题，4 修 1 反馈（tsc 无错 / vitest 105 passed / cargo test 203 passed）：
 
 - [x] **① OCR 长图坐标去重 fold max**（`ocr/src/engine.rs`）：`recognize_long_image_with_blocks` 用 `blocks.last().y+h` 更新 `covered_until_y`，det 框按 y 中心排序时末尾矮行底边非最大，极端混排（贯穿大框+底部矮行）少记 → 下一 chunk 重叠区行逃过去重 → 重复行。修复：改 `fold(covered_until_y, max)` 取 chunk 内真正最大底边。边缘场景（正常行高一致时与原逻辑等价）。
-- [x] **② 截图 OCR 双开 tab 中间态丢失**（`compact_editor_commands.rs`）：`ocr_screenshot` 连续两次 `open_compact_editor_tab`，首次 `build()` 注册窗口 label 后第二次命中 `get_webview_window=Some` 走 emit（React 未 mount 丢）+ `push_pending_tab` 覆盖首个 tab → ocr 文本 tab 丢失（图片 tab 经 URL 注入幸存）。修复：`PENDING_TAB: Option` → `PENDING_TABS: Vec<PendingTabFull>`，新增 `open_compact_editor_tabs(items)` 批量一次 push + 一次 create/emit（无中间态）；窗口存在只 emit 不 push（防残留污染下次建窗）；前端 mount `get_pending_compact_tabs` take 全部与 URL 首个按 key 去重。`open_compact_editor_tab` 单开命令保留（转调批量版）。
+- [x] **② 截图 OCR 双开 tab 中间态丢失**（`compact_editor_commands.rs`）：`ocr_screenshot` 连续两次 `open_compact_editor_tab`，首次 `build()` 注册窗口 label 后第二次命中 `get_webview_window=Some` 走 emit（React 未 mount 丢）+ `push_pending_tab` 覆盖首个 tab → ocr 文本 tab 丢失（图片 tab 经 URL 注入幸存）。修复：`PENDING_TAB: Option` → `PENDING_TABS: Vec<PendingTabFull>`，新增 `open_compact_editor_tabs(items)` 批量一次 push + 一次 create/emit（无中间态）；窗口存在只 emit 不 push（防残留污染下次建窗；⚠️ Task 14① 改 `PENDING_TABS.is_empty()` 判 React mount）；前端 mount `get_pending_compact_tabs` take 全部与 URL 首个按 key 去重。`open_compact_editor_tab` 单开命令保留（转调批量版）。
 - [x] **③ 截图 OCR blocks emit 早于 mount**（`screenshot_commands.rs` + `ImagePreview`）：`emit("ocr-screenshot://result")` 早于新窗 React mount 被丢，图片 tab 高亮遮罩不自动显示（须手点 ScanText 重跑）。修复：后端 `LAST_SCREENSHOT_OCR: Mutex<Option<(image_id, OcrResult)>>` 缓存 + `get_last_screenshot_ocr(image_id)` 命令（按 image_id 校验 take）；ImagePreview mount 时 invoke 拉取兜底，listen 供已 mount 即时收。`OcrResult`/`OcrTextBlock` 加 `Clone`。
 - [x] **④ ASR 缓存淘汰漏 probe Unload**（`asr-local/src/engine.rs`）：`load_engine_into_cache` 的 `cache.remove(&k)` 淘汰旧引擎时未通知状态页（与 OCR idle 释放不对称）→ 状态页残留已淘汰模型估算。修复：淘汰后补 `probe(Unload, "asr:{k}")`。
 - [x] **⑤ probe before_map 加载失败残留**（反馈不修）：Before 写入后 `?` 提前返回则 After 不执行，条目残留。但有界（线程×模型组合数、同线程重试覆盖），`system_status_commands.rs:299-300` 注释已说明，无需 RAII guard 增复杂度。
@@ -1046,9 +1081,9 @@ git -C <worktree> commit -m "docs(arch): 新增 system_status 模块说明"
 - 后端定时推送 + 首屏 invoke → Task 4（emit + get_system_status）✓
 - 三处插桩（ASR/OCR/VAD）→ Task 5/6/7 ✓
 - 边界（sysinfo 失败降级、panic 隔离、去重）→ Task 4（sample_and_emit return + catch_unwind）+ Task 8（sampled_at 去重）✓
-- 测试（ring buffer、record_once、降级、组件、e2e）→ Task 1/2/3 + Task 10 ✓
+- 测试（ring buffer、upsert_active/estimated、降级、组件、e2e）→ Task 1/2/3 + Task 10/14 ✓
 - 文档同步 → Task 10 ✓
 
 **2. 占位符扫描：** 全部步骤均含完整代码，无 TBD/TODO/占位结构。
 
-**3. 类型一致性：** `ModelMemory`/`ProcessStats`/`SystemStats`/`TimeSeries`/`SystemStatusSnapshot` 在 Task 2 定义，Task 4 sampler 复用，Task 8/9 前端 TS interface 字段一一对应（snake_case 经 serde 默认保留，前端按 snake_case 接收）。`record_once`/`entries`/`snapshot`/`probe`/`set_probe` 命名跨 task 一致。`LoadPhase::Before/After` 跨 infra/asr-local/ocr/desktop 一致。
+**3. 类型一致性：** `ModelMemory`/`ProcessStats`/`SystemStats`/`TimeSeries`/`SystemStatusSnapshot` 在 Task 2 定义，Task 4 sampler 复用，Task 8/9 前端 TS interface 字段一一对应（snake_case 经 serde 默认保留，前端按 snake_case 接收）。`upsert_active`/`estimated`/`entries`/`snapshot`/`probe`/`set_probe` 命名跨 task 一致。`LoadPhase::Before/After/Unload` 跨 infra/asr-local/ocr/desktop 一致。
