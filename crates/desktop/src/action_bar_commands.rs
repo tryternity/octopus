@@ -250,17 +250,13 @@ fn get_mouse_position(app: &AppHandle) -> (f64, f64) {
         Some(s) => CGEvent::new(s.clone()).ok(),
         None => None,
     };
-    // 获取 scale factor（Retina=2.0）
-    let scale = app.get_webview_window("action_bar_window")
-        .and_then(|w| w.scale_factor().ok())
-        .or_else(|| app.primary_monitor().ok().flatten().map(|m| m.scale_factor()))
-        .unwrap_or(2.0);
     if let Some(event) = event {
         let point = event.location();
-        // CGEvent::location() 返回 Quartz 全局坐标——物理像素。
-        // Tauri LogicalPosition 是逻辑像素。除以 scale 转换。
-        log::info!("[action-bar] mouse raw={},{} scale={}", point.x, point.y, scale);
-        return (point.x / scale, point.y / scale);
+        // CGEvent::location() 返回 Quartz 全局坐标——逻辑像素（points），
+        // 原点主屏左上角，y 轴向下。与 Tauri LogicalPosition 坐标系一致。
+        // 不除 scale——Quartz 已是逻辑坐标。
+        log::info!("[action-bar] mouse location={},{}", point.x, point.y);
+        return (point.x, point.y);
     }
     (100.0, 100.0)
 }
