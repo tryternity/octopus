@@ -283,8 +283,12 @@ impl SystemStatusSampler {
 
     /// 启动后台采样循环 + 注入模型加载 probe（Before/After RSS 差值 → registry）。
     pub fn start(self: Arc<Self>, app: AppHandle) {
-        // probe 闭包：Before 存 RSS，After 算差 record_once
-        let before_map: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        // probe 闭包：Before 存 RSS，After 算差 record_once。
+        // key 含 ThreadId：多线程并发加载同一未缓存模型（如 server 多连接同时 cache miss
+        // 同一 ASR 引擎）时，Before/After 按 (线程, 模型) 配对，避免互相覆盖/错拿导致
+        // 估算值失真。仅影响状态页「估算内存」显示，不影响模型加载正确性。
+        let before_map: Arc<Mutex<HashMap<(std::thread::ThreadId, String), u64>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let registry = self.registry.clone();
         let bm = before_map.clone();
         octopus_infra::model_probe::set_probe(Arc::new(move |phase, id| {
@@ -292,13 +296,15 @@ impl SystemStatusSampler {
             match phase {
                 LoadPhase::Before => {
                     if let Some(m) = read_self_probe_memory() {
-                        // 覆盖式 insert：重试加载刷新 before；若 After 未触发（如 panic），
-                        // 条目残留但不增长（model id 集合有界）。
-                        bm.lock().insert(id.to_string(), m);
+                        // 覆盖式 insert：同线程重试加载刷新 before；若 After 未触发（如 panic），
+                        // 条目残留但不增长（线程×模型 组合有界）。
+                        bm.lock()
+                            .insert((std::thread::current().id(), id.to_string()), m);
                     }
                 }
                 LoadPhase::After => {
-                    let before = bm.lock().remove(id);
+                    let key = (std::thread::current().id(), id.to_string());
+                    let before = bm.lock().remove(&key);
                     if let (Some(b), Some(now)) = (before, read_self_probe_memory()) {
                         if now > b {
                             registry.record_once(id, now - b);
