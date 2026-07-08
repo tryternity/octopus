@@ -19,6 +19,7 @@ const SEARCH_URLS: Record<string, string> = {
 };
 
 const AI_TRANSLATE_TIMEOUT_MS = 5000;
+const AI_TIMEOUT_MS = 10000;
 
 // 定义在组件外部——避免每次渲染创建新组件类型导致 unmount/remount
 const IconBtn = ({ icon: Icon, label, active, onClick }: {
@@ -112,13 +113,12 @@ export default function ActionBar() {
     if (!ctx) return;
     setView("loading");
 
-    // 翻译 5 秒超时；其他 AI 动作（润色/摘要/解释）不超时
-    const timeoutId = action === "translate"
-      ? setTimeout(() => {
-          setErrorMsg("翻译超时（5 秒），请检查网络或 LLM 配置");
-          setView("error");
-        }, AI_TRANSLATE_TIMEOUT_MS)
-      : undefined;
+    // 翻译 5 秒超时；其他 AI 动作（润色/摘要/解释）10 秒超时
+    const timeoutMs = action === "translate" ? AI_TRANSLATE_TIMEOUT_MS : AI_TIMEOUT_MS;
+    const timeoutId = setTimeout(() => {
+      setErrorMsg(`请求超时（${timeoutMs / 1000} 秒），请检查网络或 LLM 配置`);
+      setView("error");
+    }, timeoutMs);
 
     try {
       console.log("[action-bar] invoking run_ai_action:", action);
