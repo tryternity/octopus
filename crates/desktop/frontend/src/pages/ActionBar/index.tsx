@@ -291,26 +291,9 @@ export default function ActionBar() {
   }
 
   return (
-    <div data-action-bar className="flex flex-col">
-      {/* 子菜单区域——无内容时完全不渲染（纯透明） */}
-      {view === "submenu" && (
-        <div className="flex items-center gap-0.5 px-1 h-[38px] shrink-0 bg-background rounded-t-lg border border-border border-b-0 shadow-lg">
-          {(submenuType === "search" ? searchItems : aiItems).map((item, i) => (
-            <IconBtn
-              key={item.id}
-              icon={item.icon}
-              label={item.label}
-              active={subSelectedIdx === i}
-              onClick={() => executeSubItem(item.id)}
-            />
-          ))}
-        </div>
-      )}
-      {/* 主菜单——固定位置 */}
-      <div className={cn(
-        "flex items-center gap-0.5 px-1 h-[38px] shrink-0 bg-background shadow-lg border border-border",
-        view === "submenu" ? "rounded-b-lg border-t-0" : "rounded-lg",
-      )}>
+    <div data-action-bar className="flex flex-col rounded-lg border border-border shadow-lg overflow-hidden bg-background">
+      {/* 主菜单在上——位置固定 */}
+      <div className="flex items-center gap-0.5 px-1 h-[38px] shrink-0">
         {mainItems.map((item, i) => (
           <IconBtn
             key={item.id}
@@ -318,6 +301,21 @@ export default function ActionBar() {
             label={item.label}
             active={view === "main" ? selectedIdx === i : false}
             onClick={() => executeMain(item.id)}
+          />
+        ))}
+      </div>
+      {/* 子菜单在下——固定占位，无内容时高度 0（用 overflow hidden + h-0 隐藏） */}
+      <div className={cn(
+        "flex items-center gap-0.5 px-1 h-[38px] shrink-0 overflow-hidden border-t border-border/40",
+        view === "submenu" ? "" : "h-0 border-t-0 pt-0 pb-0",
+      )}>
+        {(submenuType === "search" ? searchItems : aiItems).map((item, i) => (
+          <IconBtn
+            key={item.id}
+            icon={item.icon}
+            label={item.label}
+            active={subSelectedIdx === i}
+            onClick={() => executeSubItem(item.id)}
           />
         ))}
       </div>
