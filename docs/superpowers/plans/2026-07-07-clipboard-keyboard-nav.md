@@ -663,6 +663,7 @@ cd crates/desktop/frontend && npm test && npx tsc --noEmit && npm run lint
 | 68. 搜索时禁用清理按钮 | ✅ | `c42c6f9` | 防误删全类别数据（clear_by_filter 不带 search 参数） |
 | 69. 截图 Object URL 内存泄漏 | ✅ | `4bb9cca` | createObjectURL 后 onload 未 revokeObjectURL，每次截图泄漏 2-8MB |
 | 70. 后端审查——OCR+get_config async | ✅ | `0bfc615` | ocr_image spawn_blocking；get_config async+spawn_blocking（DB+cpal） |
+| 71. 后端审查 V2——verify_model+URL泄漏+hash | ✅ | `1bdd9be` | verify_model async+spawn_blocking（SHA-256 大文件）；ImagePreview cleanup revokeObjectURL；watcher 直接 hash RGBA 省去 PNG 编码 |
 
 ### 与原 plan 的偏差
 
