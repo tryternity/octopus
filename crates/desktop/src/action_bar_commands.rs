@@ -56,10 +56,18 @@ pub fn trigger_action_bar(app: AppHandle) {
         // 4. 读剪贴板
         let clipboard_after = read_clipboard_text(&app_clone);
         let text = match (&clipboard_before, &clipboard_after) {
+            // 剪贴板变化了 → 用新内容
             (Some(before), Some(after)) if before != after => after.clone(),
+            // 剪贴板没变但之前是空的 → 用当前内容
             (None, Some(after)) => after.clone(),
+            // 剪贴板没变（可能 Cmd+C 复制了和之前一样的内容，或者 Cmd+C 没生效）
+            // 尝试用当前剪贴板内容——用户可能 Cmd+A 全选后内容恰好和上次复制的一样
+            (Some(_), Some(after)) if !after.trim().is_empty() => {
+                log::info!("[action-bar] clipboard unchanged but has content, using it");
+                after.clone()
+            }
             _ => {
-                log::warn!("[action-bar] Cmd+C didn't change clipboard — no selection?");
+                log::warn!("[action-bar] No text available — no selection?");
                 restore_hidden_windows(&app_clone);
                 return;
             }
