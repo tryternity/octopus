@@ -35,3 +35,26 @@ export function newerSnapshot<T extends { sampled_at: number }>(prev: T | null, 
   if (!prev) return next;
   return next.sampled_at > prev.sampled_at ? next : prev;
 }
+
+/**
+ * null/undefined → "—"（区别于 fmtBytes 的 "?"：fmtBytes 的 "?" 表示「估算缺失」，
+ * 此处的 "—" 表示「该平台无此指标」，语义不同，故单列）。
+ */
+export function fmtBytesOrDash(n: number | null | undefined): string {
+  if (n == null) return "—";
+  return fmtBytes(n);
+}
+
+/**
+ * sparkline 数据源选择：若 real 数组全非 null（macOS）→ 用 real；
+ * 否则（real 为空或含 null，如其他平台尚未采样到 real）→ 退 fallback（rss）。
+ */
+export function sparklineDataFromNullable(
+  data: (number | null | undefined)[],
+  fallback: number[],
+): number[] {
+  if (data.length > 0 && data.every((v) => v != null)) {
+    return data as number[];
+  }
+  return fallback;
+}

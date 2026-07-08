@@ -38,7 +38,7 @@
 - Create: `crates/infra/src/model_probe.rs`
 - Modify: `crates/infra/src/lib.rs`
 
-- [ ] **Step 1: 写失败测试**（Create `crates/infra/src/model_probe.rs` 含测试）
+- [x] **Step 1: 写失败测试**（Create `crates/infra/src/model_probe.rs` 含测试）
 
 ```rust
 //! 全局「模型加载探针」——依赖反转：asr-local / ocr 在加载点调用 `probe`，
@@ -105,19 +105,19 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 注册模块**（Modify `crates/infra/src/lib.rs`，在 `pub mod db;` 后加一行）
+- [x] **Step 2: 注册模块**（Modify `crates/infra/src/lib.rs`，在 `pub mod db;` 后加一行）
 
 ```rust
 pub mod db;
 pub mod model_probe;
 ```
 
-- [ ] **Step 3: 跑测试验证失败→通过**
+- [x] **Step 3: 跑测试验证失败→通过**
 
 Run: `cargo test --manifest-path crates/infra/Cargo.toml model_probe`
 Expected: 2 tests passed（先确认编译通过；若 mod 未注册会编译错→注册后通过）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git -C <worktree> add crates/infra/src/model_probe.rs crates/infra/src/lib.rs
@@ -132,7 +132,7 @@ git -C <worktree> commit -m "feat(infra): model_probe 全局加载探针（依�
 - Create: `crates/desktop/src/system_status_commands.rs`（本 task 只建 registry + 数据结构骨架）
 - Modify: `crates/desktop/src/main.rs`（`mod system_status_commands;`）
 
-- [ ] **Step 1: 写文件含数据结构 + registry + 测试**
+- [x] **Step 1: 写文件含数据结构 + registry + 测试**
 
 ```rust
 //! 系统状态页后端：模型内存估算表 + 系统资源采样器 + get_system_status 命令。
@@ -254,18 +254,18 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 注册模块**（Modify `crates/desktop/src/main.rs`，在 `mod settings_commands;` 附近加）
+- [x] **Step 2: 注册模块**（Modify `crates/desktop/src/main.rs`，在 `mod settings_commands;` 附近加）
 
 ```rust
 mod system_status_commands;
 ```
 
-- [ ] **Step 3: 跑测试**
+- [x] **Step 3: 跑测试**
 
 Run: `cargo test --manifest-path crates/desktop/Cargo.toml system_status_commands`
 Expected: 3 tests passed。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git -C <worktree> add crates/desktop/src/system_status_commands.rs crates/desktop/src/main.rs
@@ -279,7 +279,7 @@ git -C <worktree> commit -m "feat(desktop): ModelMemoryRegistry 模型内存估�
 **Files:**
 - Modify: `crates/desktop/src/system_status_commands.rs`（追加 ring buffer）
 
-- [ ] **Step 1: 追加 ring buffer 结构 + 测试**（在 `system_status_commands.rs` 末尾、`#[cfg(test)]` 之前插入）
+- [x] **Step 1: 追加 ring buffer 结构 + 测试**（在 `system_status_commands.rs` 末尾、`#[cfg(test)]` 之前插入）
 
 ```rust
 /// 单个采样点（ring buffer 元素）。
@@ -346,12 +346,12 @@ impl RingBuffer {
     }
 ```
 
-- [ ] **Step 2: 跑测试**
+- [x] **Step 2: 跑测试**
 
 Run: `cargo test --manifest-path crates/desktop/Cargo.toml system_status_commands`
 Expected: 5 tests passed（含 Task 2 的 3 个）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git -C <worktree> add crates/desktop/src/system_status_commands.rs
@@ -367,13 +367,13 @@ git -C <worktree> commit -m "feat(desktop): RingBuffer 固定容量时间序列"
 - Modify: `crates/desktop/src/system_status_commands.rs`（追加 sampler + 命令）
 - Modify: `crates/desktop/src/main.rs`（generate_handler + setup manage/spawn/set_probe）
 
-- [ ] **Step 1: 加依赖**（Modify `crates/desktop/Cargo.toml` `[dependencies]`，在 `parking_lot` 附近加）
+- [x] **Step 1: 加依赖**（Modify `crates/desktop/Cargo.toml` `[dependencies]`，在 `parking_lot` 附近加）
 
 ```toml
 sysinfo = "0.32"
 ```
 
-- [ ] **Step 2: 追加 sampler + RSS 读取 + 命令**（`system_status_commands.rs` 顶部 `use` 补充，并在 ring buffer 之后追加）
+- [x] **Step 2: 追加 sampler + RSS 读取 + 命令**（`system_status_commands.rs` 顶部 `use` 补充，并在 ring buffer 之后追加）
 
 顶部 use 区追加：
 ```rust
@@ -502,14 +502,14 @@ pub fn get_system_status(
 }
 ```
 
-- [ ] **Step 3: 注册命令**（Modify `crates/desktop/src/main.rs` 的 `generate_handler!`，在 `theme::get_theme_id,` 后加一行）
+- [x] **Step 3: 注册命令**（Modify `crates/desktop/src/main.rs` 的 `generate_handler!`，在 `theme::get_theme_id,` 后加一行）
 
 ```rust
             theme::get_theme_id,
             system_status_commands::get_system_status,
 ```
 
-- [ ] **Step 4: setup 里创建/manage/启动**（Modify `crates/desktop/src/main.rs` 的 `.setup` 闭包内，在 `info!("octopus-desktop initialized");` 之前插入）
+- [x] **Step 4: setup 里创建/manage/启动**（Modify `crates/desktop/src/main.rs` 的 `.setup` 闭包内，在 `info!("octopus-desktop initialized");` 之前插入）
 
 ```rust
             // 系统状态页：创建 registry + sampler，manage 为 State，启动采样循环 + 注入模型 probe
@@ -522,14 +522,14 @@ pub fn get_system_status(
             }
 ```
 
-- [ ] **Step 5: 编译 + 启动验证**
+- [x] **Step 5: 编译 + 启动验证**
 
 Run: `cargo build --manifest-path crates/desktop/Cargo.toml`
 Expected: 编译通过（sysinfo API 以 0.32 文档为准；若 `refresh_process`/`global_cpu_usage`/`p.memory()` 在所选小版本签名不同，按编译器提示调整——这些是 sysinfo 各小版本稳定 API）。
 
 手动验证：`cargo run --manifest-path crates/desktop/Cargo.toml`，打开设置窗（此时 tab 尚未加，但后端日志应每 2s 无错；可用 Tauri 控制台或后续 task 验证）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git -C <worktree> add crates/desktop/Cargo.toml crates/desktop/src/system_status_commands.rs crates/desktop/src/main.rs
@@ -543,7 +543,7 @@ git -C <worktree> commit -m "feat(desktop): sysinfo 采样器 + get_system_statu
 **Files:**
 - Modify: `crates/asr-local/src/engine.rs:98-148`（`load_engine_into_cache`）
 
-- [ ] **Step 1: 在加载前后插入 probe**
+- [x] **Step 1: 在加载前后插入 probe**
 
 定位 `load_engine_into_cache` 中「未命中：加载配置 + 实例化」段（`let cfg = config::load_config()?;` 之前）与实例化完成（`let new_eng: Arc<dyn OfflineAsrEngine> = match category {...}` 之后、入缓存之前）。
 
@@ -569,12 +569,12 @@ git -C <worktree> commit -m "feat(desktop): sysinfo 采样器 + get_system_statu
 
 > 注意：cache hit 分支（行 102-107）提前 return，不触发 probe——正确，因为只测量真实加载。
 
-- [ ] **Step 2: 编译**
+- [x] **Step 2: 编译**
 
 Run: `cargo build --manifest-path crates/asr-local/Cargo.toml`
 Expected: 编译通过。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git -C <worktree> add crates/asr-local/src/engine.rs
@@ -588,7 +588,7 @@ git -C <worktree> commit -m "feat(asr): load_engine_into_cache 埋点 model_prob
 **Files:**
 - Modify: `crates/asr-local/src/vad.rs:35-59`（`SileroVad::new`）
 
-- [ ] **Step 1: 在 cache miss 的 `commit_from_file` 前后插入 probe**
+- [x] **Step 1: 在 cache miss 的 `commit_from_file` 前后插入 probe**
 
 定位 `SileroVad::new` 的 cache miss 分支（`} else { let s = Arc::new(Mutex::new( Session::builder()...commit_from_file... ));`）。
 
@@ -615,12 +615,12 @@ git -C <worktree> commit -m "feat(asr): load_engine_into_cache 埋点 model_prob
             };
 ```
 
-- [ ] **Step 2: 编译**
+- [x] **Step 2: 编译**
 
 Run: `cargo build --manifest-path crates/asr-local/Cargo.toml`
 Expected: 编译通过。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git -C <worktree> add crates/asr-local/src/vad.rs
@@ -634,7 +634,7 @@ git -C <worktree> commit -m "feat(asr): SileroVad::new 埋点 model_probe（系�
 **Files:**
 - Modify: `crates/ocr/src/engine.rs:60-74`（`OcrEngine::instance` 加载段）
 
-- [ ] **Step 1: 在 `RapidOcr::new` 前后插入 probe**
+- [x] **Step 1: 在 `RapidOcr::new` 前后插入 probe**
 
 定位 `let inner = octopus_paddle_ocr::RapidOcr::new(config)...`（行 63-64）。在它之前插 Before，`OcrEngine` 装入 `INSTANCE` 之后插 After：
 
@@ -662,12 +662,12 @@ git -C <worktree> commit -m "feat(asr): SileroVad::new 埋点 model_probe（系�
         Ok(engine)
 ```
 
-- [ ] **Step 2: 编译**
+- [x] **Step 2: 编译**
 
 Run: `cargo build --manifest-path crates/ocr/Cargo.toml`
 Expected: 编译通过。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git -C <worktree> add crates/ocr/src/engine.rs
@@ -682,7 +682,7 @@ git -C <worktree> commit -m "feat(ocr): OcrEngine::instance 埋点 model_probe�
 - Modify: `crates/desktop/frontend/src/pages/Settings/index.tsx`
 - Create: `crates/desktop/frontend/src/pages/Settings/SystemPanel.tsx`（骨架）
 
-- [ ] **Step 1: 改 `index.tsx`**——`PageName` 加 `"system"`、`NAV_ITEMS` 加项、import、switch 分支
+- [x] **Step 1: 改 `index.tsx`**——`PageName` 加 `"system"`、`NAV_ITEMS` 加项、import、switch 分支
 
 `PageName`（行 22）：
 ```ts
@@ -715,7 +715,7 @@ switch（行 113-117 的 models/prompts 分支后）加：
         ) : null}
 ```
 
-- [ ] **Step 2: 创建 SystemPanel 骨架**（先验证 tab 能出现，数据展示在 Task 9）
+- [x] **Step 2: 创建 SystemPanel 骨架**（先验证 tab 能出现，数据展示在 Task 9）
 
 ```tsx
 import { useEffect, useState } from "react";
@@ -763,15 +763,15 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
 }
 ```
 
-- [ ] **Step 3: 构建验证**
+- [x] **Step 3: 构建验证**
 
 Run（在 `crates/desktop/frontend`）：`npm run build`
 Expected: tsc + vite 构建通过，无类型错。
 
-- [ ] **Step 4: 手动验证**（`cargo run --manifest-path crates/desktop/Cargo.toml` → 托盘打开设置 → 切「系统状态」tab）
+- [x] **Step 4: 手动验证**（`cargo run --manifest-path crates/desktop/Cargo.toml` → 托盘打开设置 → 切「系统状态」tab）
 Expected: tab 出现，显示 JSON 快照，每 2s 更新。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git -C <worktree> add crates/desktop/frontend/src/pages/Settings/index.tsx crates/desktop/frontend/src/pages/Settings/SystemPanel.tsx
@@ -785,7 +785,7 @@ git -C <worktree> commit -m "feat(ui): 设置窗新增「系统状态」tab + Sy
 **Files:**
 - Modify: `crates/desktop/frontend/src/pages/Settings/SystemPanel.tsx`
 
-- [ ] **Step 1: 替换骨架为完整 UI**
+- [x] **Step 1: 替换骨架为完整 UI**
 
 ```tsx
 import { useEffect, useState } from "react";
@@ -907,20 +907,20 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
 }
 ```
 
-- [ ] **Step 2: 构建验证**
+- [x] **Step 2: 构建验证**
 
 Run（在 `crates/desktop/frontend`）：`npm run build`
 Expected: 构建通过。
 
-- [ ] **Step 3: 前端单测**（sparkline 边界 + 去重逻辑——可选纯函数抽取测；此处用手动验证为主）
+- [x] **Step 3: 前端单测**（sparkline 边界 + 去重逻辑——可选纯函数抽取测；此处用手动验证为主）
 
 Run（在 `crates/desktop/frontend`）：`npm run test`
 Expected: 现有测试不回归（本 task 未新增测试文件则跳过）。
 
-- [ ] **Step 4: 手动验证**（运行应用 → 系统状态 tab）
+- [x] **Step 4: 手动验证**（运行应用 → 系统状态 tab）
 Expected: 顶部汇总条 + 内存/CPU 并排 Card（各带 sparkline）+ 模型列表（约 XX MB），每 2s 刷新。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git -C <worktree> add crates/desktop/frontend/src/pages/Settings/SystemPanel.tsx
@@ -934,7 +934,7 @@ git -C <worktree> commit -m "feat(ui): SystemPanel 完整布局（内存/CPU 并
 **Files:**
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: 全量编译 + 测试**
+- [x] **Step 1: 全量编译 + 测试**
 
 Run:
 ```bash
@@ -945,7 +945,7 @@ cd crates/desktop/frontend && npm run build && npm run test
 ```
 Expected: 全绿。
 
-- [ ] **Step 2: 手动 e2e**
+- [x] **Step 2: 手动 e2e**
 
 运行应用 → 设置窗「系统状态」tab：
 1. 启动后看到进程 RSS/CPU 数值 + 空模型列表
@@ -955,7 +955,7 @@ Expected: 全绿。
 
 Expected: 三类模型均出现，估算值合理（百 MB 级），趋势线随加载台阶式上升。
 
-- [ ] **Step 3: 更新 `docs/architecture.md`**
+- [x] **Step 3: 更新 `docs/architecture.md`**
 
 在模块说明里新增一节（位置参照现有模块描述风格）：
 
@@ -975,12 +975,34 @@ desktop 启动时注入「读 RSS 差值写入 registry」的闭包。infra 不�
 前端：设置窗 `NAV_ITEMS` 的「系统状态」tab → `SystemPanel.tsx`（mount invoke + listen system-status + sparkline）。
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git -C <worktree> add docs/architecture.md
 git -C <worktree> commit -m "docs(arch): 新增 system_status 模块说明"
 ```
+
+---
+
+### Task 11: 精炼迭代——双指标 + OCR idle 释放 + 中文化（v1 上线后据反馈）
+
+**状态：已实现（2026-07-08），详见 spec「精炼迭代」。** v1 上线后用户反馈三点，迭代如下：
+
+- [x] **① 进程内存双指标（RSS + 实际占用）**
+  - 问题：状态页 RSS（sysinfo `resident_size`）稳定 1.45G，活动监视器「内存」1.0G，长期差 ~450M（非采样峰值）。
+  - 根因：RSS 含 mmap 的 file-backed 模型权重；活动监视器用 `phys_footprint`（不计可回收 file-backed 页）。
+  - 方案：macOS `proc_pid_rusage` FFI 读 `RusageInfoV0.ri_phys_footprint`（flavor `RUSAGE_INFO_V0=0`——**非 16**，16 是另一套 `proc_info` API；字节偏移 72）→ `ProcessStats.real_bytes: Option<u64>`；非 macOS 返回 `None` 前端退 RSS。模型内存差值法 macOS 同步改用 phys_footprint（`read_self_probe_memory`）。
+  - 前端：`hasReal` 切换——顶部汇总 macOS 主显实际占用辅「常驻」、非 macOS 显 RSS；内存 Card 标题/主数/sparkline 随切；新增 `fmtBytesOrDash`（null→"—"）+ `sparklineDataFromNullable`。
+
+- [x] **② OCR idle 60s 自动释放（ASR/VAD 常驻不动）**
+  - `OcrEngine.inner: Mutex<Option<RapidOcr>>`（None=已释放）+ `last_used: Mutex<Option<Instant>>` + `model_name: String`。
+  - 首次 `instance()` spawn **std::thread 守护线程**（ocr crate 共享 cli/server、无 tokio runtime 假设；踩坑：`tokio::spawn` 在 Tauri sync setup 里 panic「no reactor running」，改 `tauri::async_runtime::spawn`/`std::thread`）每 30s 检查 idle>60s → `*inner=None`（drop RapidOcr）+ `probe(Unload)`。
+  - `run_ocr` 入口刷 `last_used`；重载（不调 probe，避免刷新 registry 首次估算）与 `run` 合并到同一 inner lock 作用域（消除守护线程在「重载后、run 前」无锁窗口竞态释放致 `expect` panic）。
+  - `LoadPhase::Unload` 变体（infra/model_probe）→ desktop probe 闭包 `registry.remove(id)` 清条目；全局 PROBE 静态致测试并发污染，加 `TEST_SERIALIZER: Mutex<()>` 串行化修复。
+
+- [x] **③ 术语中文化**：RSS 表述统一改「常驻」（顶部摘要副标题 / 内存 Card 副标题 / 非 macOS 标题 / 模型 Card 描述 4 处）。
+
+- [x] **④ 释放后进程内存数值不降——接受现状**（macOS allocator 行为，非 bug）：释放链已验证正确（状态页 OCR 条目消失 + log `OCR idle 60s, released model`），但 RapidOcr drop 后 ort session 内存走 `malloc/free`，libmalloc free 不主动 `munmap` 归还物理页。真实收益是「下次 OCR 重载复用 free list 不重新涨」+「内存压力时 OS 可压缩回收」——非立即降数值。决定：接受现状 + 文档/状态页说明（未做 ort 禁 arena / `malloc_zone_pressure_relief`——效果未验证且后者需实测），状态页模型 Card 加 OCR 释放行为说明文案。
 
 ---
 

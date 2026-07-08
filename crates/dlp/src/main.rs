@@ -71,7 +71,12 @@ async fn download_file(url: &str, dest: &Path) -> Result<()> {
         }
     }
 
-    let mut file = fs::File::create(dest).await?;
+    // 写 .part 临时文件，下载完整后原子 rename 到 dest。避免下载中断（断网/超时/中止）
+    // 残留半成品：若直接写 dest，残留文件会被 get_binary_path 的 exists() 误判为已就绪、
+    // 跳过重新下载，导致后续永远执行损坏 binary。.part 残留无害——dest 仍不存在，下次
+    // get_binary_path 仍判定缺失并重新下载，create(.part) 会自动 truncate 覆盖残留。
+    let part: PathBuf = format!("{}.part", dest.to_string_lossy()).into();
+    let mut file = fs::File::create(&part).await?;
     let mut stream = response.bytes_stream();
     let mut total: u64 = 0;
     while let Some(item) = stream.next().await {
@@ -83,6 +88,8 @@ async fn download_file(url: &str, dest: &Path) -> Result<()> {
         file.write_all(&chunk).await?;
     }
     file.flush().await?;
+    drop(file); // 关闭句柄再 rename（Windows 要求文件未被占用）
+    fs::rename(&part, dest).await?;
     Ok(())
 }
 

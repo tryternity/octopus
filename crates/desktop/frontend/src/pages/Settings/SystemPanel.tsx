@@ -2,10 +2,16 @@ import { useEffect, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { MemoryStick, Cpu, Boxes, type LucideIcon } from "lucide-react";
-import { fmtBytes, sparklinePoints, newerSnapshot } from "./systemStatusMath";
+import {
+  fmtBytes,
+  sparklinePoints,
+  newerSnapshot,
+  sparklineDataFromNullable,
+} from "./systemStatusMath";
 
 export interface ProcessStats {
   rss_bytes: number;
+  real_bytes: number | null; // macOS=phys_footprint，其他平台=null
   cpu_percent: number;
 }
 export interface SystemStats {
@@ -15,6 +21,7 @@ export interface SystemStats {
 }
 export interface TimeSeries {
   rss: number[];
+  real: (number | null)[]; // 新增：macOS 全非 null，其他平台含 null
   cpu: number[];
   timestamps: number[];
 }
@@ -95,13 +102,33 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
     );
   }
 
-  const rssMax = Math.max(...snap.history.rss, snap.process.rss_bytes, 1);
+  // 双指标：macOS 主用 real（phys_footprint，更接近真实占用），其他平台退 RSS。
+  const hasReal = snap.process.real_bytes != null;
+  const memMain = hasReal ? snap.process.real_bytes! : snap.process.rss_bytes;
+  const realSeries = sparklineDataFromNullable(snap.history.real, snap.history.rss);
+  const realMax = Math.max(
+    ...realSeries,
+    snap.process.real_bytes ?? snap.process.rss_bytes,
+    1,
+  );
 
   return (
     <div className="max-w-[640px] space-y-3">
       {/* 顶部汇总 */}
       <div className="flex items-center justify-between px-4 py-2.5 rounded-lg bg-muted/40 border border-border">
-        <span className="text-sm font-medium">进程总内存 {fmtBytes(snap.process.rss_bytes)}</span>
+        {/* 双指标：macOS 主显 real（phys_footprint，真实占用），RSS 作辅；其他平台只显 RSS。 */}
+        <span className="text-sm font-medium flex items-center gap-3">
+          {snap.process.real_bytes != null ? (
+            <>
+              <span>进程内存 {fmtBytes(snap.process.real_bytes)}</span>
+              <span className="text-muted-foreground">
+                常驻 {fmtBytes(snap.process.rss_bytes)}
+              </span>
+            </>
+          ) : (
+            <span>进程总内存 {fmtBytes(snap.process.rss_bytes)}</span>
+          )}
+        </span>
         <span className="text-xs text-muted-foreground/70">
           系统 CPU {snap.system.cpu_percent.toFixed(1)}%
         </span>
@@ -109,9 +136,16 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
 
       {/* 内存 / CPU 并排（布局 B） */}
       <div className="grid grid-cols-2 gap-3">
-        <Card icon={MemoryStick} title="内存（进程 RSS）">
-          <div className="text-lg font-semibold mb-1">{fmtBytes(snap.process.rss_bytes)}</div>
-          <Sparkline data={snap.history.rss} color="#6ab0f3" max={rssMax} />
+        <Card icon={MemoryStick} title={hasReal ? "内存（实际占用）" : "内存（常驻）"}>
+          <div className="text-lg font-semibold mb-1">
+            {fmtBytes(memMain)}
+            {hasReal && (
+              <span className="ml-2 text-xs text-muted-foreground font-normal">
+                常驻 {fmtBytes(snap.process.rss_bytes)}
+              </span>
+            )}
+          </div>
+          <Sparkline data={realSeries} color="#6ab0f3" max={realMax} />
         </Card>
         <Card icon={Cpu} title="CPU（进程）">
           <div className="text-lg font-semibold mb-1">
@@ -143,7 +177,10 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
           </div>
         )}
         <div className="mt-2 text-[10px] text-muted-foreground/50">
-          模型内存为「加载前后进程 RSS 差值」估算（同进程 ort 无法精确拆分），仅供参考。
+          模型内存为「加载前后进程内存差值」估算（macOS 用 phys_footprint、其他平台用常驻内存；同进程 ort 无法精确拆分），仅供参考。
+        </div>
+        <div className="text-[10px] text-muted-foreground/50">
+          OCR idle 60s 自动释放（列表条目消失即已释放）；macOS 下进程内存数值通常不立即回落，下次 OCR 复用已释放空间。
         </div>
       </Card>
     </div>

@@ -2,7 +2,7 @@
 
 - 日期：2026-07-08
 - 分支：worktree-system-status-page
-- 状态：设计中
+- 状态：已实现（2026-07-08），见末尾「精炼迭代」
 
 ## 背景
 
@@ -155,3 +155,34 @@ struct ModelMemory  { id: String, kind: String, display_name: String, estimated_
 ## 文档同步
 
 实现完成后按 CLAUDE.md 要求更新 `docs/architecture.md`（新增 system_status 模块说明）。
+
+## 精炼迭代（2026-07-08，实现后据用户反馈迭代）
+
+首版上线后，用户反馈两点并迭代：
+
+### 1. 进程内存双指标（RSS + 实际占用）
+
+**问题**：状态页进程内存（sysinfo 读 `pti_resident_size`）稳定显示 1.45G，macOS 活动监视器「内存」列仅 1.0G，长期差 ~450M（非采样峰值）。
+
+**根因**：sysinfo 读的是 `resident_size`（传统 RSS，含 mmap 的 file-backed 页——模型权重 mmap），活动监视器用 `phys_footprint`（不计 file-backed 可回收页）。差值 ≈ mmap 的模型权重。
+
+**方案**（双指标，跨平台）：
+- macOS：`proc_pid_rusage` FFI（`crates/desktop/src/system_status_commands.rs`）读 `RusageInfoV0.ri_phys_footprint`（flavor `RUSAGE_INFO_V0=0`——注意非 16，16 是另一套 `proc_info` API 的 `PROC_PIDRUSAGE`；字节偏移 72）→ `ProcessStats.real_bytes: Option<u64>`。非 macOS `real_bytes = None`，前端退 RSS。
+- 模型内存差值法口径同步：macOS 用 phys_footprint（`read_self_probe_memory`，模型权重虽 mmap 进 RSS 但 OS 可回收，phys_footprint 差值更贴近真实占用），其他平台退 RSS。
+- 数据结构：`ProcessStats` 加 `real_bytes`，`TimeSeries` 加 `real: Vec<Option<u64>>`，`SamplePoint` 加 `real`。
+- 前端 `SystemPanel`：顶部汇总 macOS 主显实际占用辅 RSS、非 macOS 显 RSS；内存 Card 标题/主数/sparkline 随 `hasReal` 切换；新增 `fmtBytesOrDash`（null→"—"）+ `sparklineDataFromNullable`（real 全非 null 用 real 否则退 rss）。
+
+### 2. OCR idle 60s 释放（ASR/VAD 常驻不动）
+
+OCR 偶尔使用、却永久常驻占内存。改为 idle 60s（`OCR_IDLE_TIMEOUT`）后自动释放，下次使用自动重载：
+
+- `OcrEngine.inner: Mutex<Option<RapidOcr>>`（None=已释放）+ `last_used: Mutex<Option<Instant>>` + `model_name: String`
+- 首次 `instance()` 用 `INSTANCE.set` 成功后 spawn **std::thread 守护线程**（ocr crate 被 cli/server 共享、不能假设 tokio runtime），每 30s（`OCR_DAEMON_TICK`）检查 `now - last_used > 60s` → `*inner = None`（drop RapidOcr）+ `probe(Unload, "ocr:{name}")`
+- `run_ocr` 入口刷新 `last_used`；inner None 时重载（重载不调 probe，避免刷新 registry 首次估算）；**重载与 run 合并到同一 inner lock 作用域**，消除守护线程竞态释放导致 expect panic
+- `LoadPhase` 加 `Unload` 变体（infra/model_probe），desktop probe 闭包 Unload 分支 → `registry.remove(id)` 清条目
+- ASR/VAD 不动（常驻工作）
+- **释放后进程内存数值不立即下降**（macOS allocator 行为，非 bug）：RapidOcr drop 后 ort session 的权重 buffer + 推理 arena 走系统 `malloc/free`，libmalloc 把页放回 heap free list 不主动 `munmap` 归还物理页，phys_footprint/RSS 不立即回落。真实收益是「下次 OCR 重载复用 free list 不重新涨」+「内存压力时 OS 可压缩回收」——非立即降数值。决定：接受现状 + 文档/状态页说明（未做 ort 禁 arena / `malloc_zone_pressure_relief`——效果未验证且后者需实测），状态页 OCR 条目消失即为释放成功的标志
+
+### 测试
+
+infra model_probe +3（含 Unload 变体 + 串行化修复）、desktop system_status +4（registry.remove ×2、macOS phys_footprint Some(>0)、ring 传递 real）、ocr +4（is_idle 纯函数）、前端 +8（fmtBytesOrDash 4 + sparklineDataFromNullable 4）。

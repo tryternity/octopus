@@ -30,8 +30,23 @@ ONNX 标准格式，软链到 HF 缓存。DB config 按 model_name 选择 DB con
 
 - **全局单例**（`OnceLock`），懒加载模型
 - `instance()` 用 double-checked locking（`INIT_LOCK: Mutex<()>`）串行化首次加载、保证模型只加载一次
-- 内部 `Mutex<RapidOcr>` 提供可变性（`run` 需 `&mut self`）
-- 模型名从 `app_config.ocr_model` 读取（默认 PP-OCRv5）
+- 内部 `Mutex<Option<RapidOcr>>` 提供可变性（`run` 需 `&mut self`）；`None` 表示模型已 idle 释放、下次 `run_ocr` 自动重载
+- 模型名从 `app_config.ocr_model` 读取（默认 PP-OCRv5），存 `model_name: String` 供释放时拼 probe id
+
+### 3.1 内存管理：idle 60s 自动释放（2026-07-08）
+
+OCR 偶尔使用，常驻占内存浪费。ASR/VAD 是常驻工作不动；OCR 改为 idle 60s（`OCR_IDLE_TIMEOUT`）后自动释放，下次使用自动重载：
+
+- `OcrEngine` 字段：`inner: Mutex<Option<RapidOcr>>` + `last_used: Mutex<Option<Instant>>` + `model_name: String`
+- 首次 `instance()` 用 `INSTANCE.set` 成功后 spawn **std::thread 守护线程**（ocr crate 被 cli/server 共享，不能假设 tokio runtime；`std::thread::spawn` + `sleep` 零 runtime 依赖），每 30s（`OCR_DAEMON_TICK`）检查 `now - last_used > 60s` → `*inner = None`（drop RapidOcr，释放 ort session + mmap 权重）+ `probe(Unload, "ocr:{name}")` 通知系统状态页清条目
+- `run_ocr` 入口先刷新 `last_used`（防重载数秒期间误判 idle）；inner 为 None 时重载（`load_rapid_ocr`，重载不调 probe，避免刷新 registry 首次估算）；**重载与 `run` 合并到同一 inner lock 作用域**——消除守护线程在「重载后、run 前」无锁窗口竞态释放导致 `expect` panic
+- 与系统状态页联动：`LoadPhase::Unload`（infra/model_probe）经 desktop probe 闭包 → `registry.remove(id)` 移除 OCR 内存条目（释放后状态页不再显示 OCR，下次重载重新估算）
+
+ASR/VAD 用各自 cache 常驻，无 idle 释放。
+
+### 3.2 释放后进程内存数值不立即下降（macOS allocator 行为）
+
+释放链已验证正确（状态页 OCR 条目消失 + log `OCR idle 60s, released model`）。但 RapidOcr drop 后 ort session 的权重 buffer + 推理 arena 走系统 `malloc/free`，macOS libmalloc 把页放回 heap free list、**不主动 `munmap` 归还物理页**，phys_footprint/RSS 不立即回落。真实收益是「下次 OCR 重载复用 free list 不重新涨」+「内存压力时 OS 可压缩回收」——非立即降数值。状态页 OCR 条目消失（`probe(Unload)` → `registry.remove`）即为释放成功的标志。决定：接受现状 + 文档说明（未做 ort 禁 arena / `malloc_zone_pressure_relief`，效果未验证）。
 
 ---
 

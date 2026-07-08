@@ -11,7 +11,12 @@ use crate::model;
 /// 用 Mutex 保护内部可变性——OCR 全局互斥（OcrLockGuard）保证同一时刻
 /// 只有一个调用方，Mutex 不会产生实际竞争。
 pub struct OcrEngine {
-    inner: Mutex<octopus_paddle_ocr::RapidOcr>,
+    /// None=已 idle 释放，下次 run_ocr 自动重载。
+    inner: Mutex<Option<octopus_paddle_ocr::RapidOcr>>,
+    /// 最近一次 run_ocr 入口时间戳，守护线程据此判 idle。
+    last_used: Mutex<Option<std::time::Instant>>,
+    /// 当前加载的模型名，守护线程释放时拼 probe id 用。
+    model_name: String,
     use_word_segmentation: bool,
 }
 
@@ -32,6 +37,11 @@ static INIT_LOCK: Mutex<()> = Mutex::new(());
 const SPLIT_HEIGHT_THRESHOLD: u32 = 1600;
 const CHUNK_HEIGHT: u32 = 1280;
 const CHUNK_OVERLAP: u32 = 200;
+
+/// OCR idle 多久后释放模型内存（drop ort session + mmap 权重）。ASR/VAD 不在此机制范围。
+const OCR_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// 守护线程采样间隔（≤ OCR_IDLE_TIMEOUT 的一半，保证及时释放又不频繁检查）。
+const OCR_DAEMON_TICK: std::time::Duration = std::time::Duration::from_secs(30);
 
 impl OcrEngine {
     pub fn instance() -> Result<Arc<OcrEngine>> {
@@ -56,16 +66,11 @@ impl OcrEngine {
             );
         }
 
-        let dir = model::model_dir(&model_name);
-        log::info!("Loading OCR model: {} from {}", model_name, dir.display());
-
-        let config = build_engine_config(&dir)?;
         octopus_infra::model_probe::probe(
             octopus_infra::model_probe::LoadPhase::Before,
             &format!("ocr:{model_name}"),
         );
-        let inner = octopus_paddle_ocr::RapidOcr::new(config)
-            .map_err(|e| anyhow::anyhow!("Failed to init RapidOcr: {e}"))?;
+        let inner = Self::load_rapid_ocr(&model_name)?;
 
         // v6 的 CTC space token 被正确激活，输出自带英文空格，不需要后处理分词。
         // v5 及更早版本需要 words_alpha 词库做贪心分词。
@@ -73,13 +78,75 @@ impl OcrEngine {
 
         log::info!("[ocr-engine] RapidOcr loaded — model={}, word_segmentation={}", model_name, use_word_segmentation);
 
-        let engine = Arc::new(OcrEngine { inner: Mutex::new(inner), use_word_segmentation });
+        let engine = Arc::new(OcrEngine {
+            inner: Mutex::new(Some(inner)),
+            last_used: Mutex::new(Some(std::time::Instant::now())),
+            model_name: model_name.clone(),
+            use_word_segmentation,
+        });
         octopus_infra::model_probe::probe(
             octopus_infra::model_probe::LoadPhase::After,
             &format!("ocr:{model_name}"),
         );
-        let _ = INSTANCE.set(engine.clone());
+        // set 成功（首次）才 spawn 守护线程，保证全局唯一。
+        if INSTANCE.set(engine.clone()).is_ok() {
+            Self::spawn_idle_daemon(engine.clone());
+        }
         Ok(engine)
+    }
+
+    /// 构建 RapidOcr 实例（不含 probe，纯加载）。
+    /// instance() 首次加载与 run_ocr idle 后重载共用——重载【不】调 probe
+    /// （避免刷新 registry 首次估算值；模型内存估算只记首次，record_once 不覆盖）。
+    fn load_rapid_ocr(model_name: &str) -> Result<octopus_paddle_ocr::RapidOcr> {
+        let dir = crate::model::model_dir(model_name);
+        log::info!("Loading OCR model: {} from {}", model_name, dir.display());
+        let config = build_engine_config(&dir)?;
+        octopus_paddle_ocr::RapidOcr::new(config)
+            .map_err(|e| anyhow::anyhow!("Failed to init RapidOcr: {e}"))
+    }
+
+    /// 起 idle 监控守护线程（全局唯一，只在 instance 首次 set 成功后 spawn 一次）。
+    /// 用 std::thread 而非 tokio——ocr crate 被 cli/server/desktop 共享，不能假设有 runtime。
+    fn spawn_idle_daemon(engine: Arc<OcrEngine>) {
+        std::thread::spawn(move || loop {
+            std::thread::sleep(OCR_DAEMON_TICK);
+            // 守护线程采样失败不影响主进程——catch_unwind 兜住任何 panic。
+            let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                engine.check_and_release_if_idle();
+            }));
+        });
+    }
+
+    /// 守护线程调用：若距上次使用超过 OCR_IDLE_TIMEOUT，drop 内部 RapidOcr（释放模型内存）
+    /// 并 probe(Unload) 通知状态页清条目。下次 run_ocr 自动重载。
+    fn check_and_release_if_idle(&self) {
+        if !Self::is_idle(&self.last_used.lock()) {
+            return;
+        }
+        let mut inner = self.inner.lock();
+        if inner.is_some() {
+            *inner = None; // drop RapidOcr → 释放 ort session + mmap 权重
+            drop(inner);   // 先释放 inner 锁，再调 probe 闭包（不持锁调外部代码）
+            let id = format!("ocr:{}", self.model_name);
+            octopus_infra::model_probe::probe(
+                octopus_infra::model_probe::LoadPhase::Unload,
+                &id,
+            );
+            log::info!(
+                "[ocr-engine] OCR idle {}s, released model {}",
+                OCR_IDLE_TIMEOUT.as_secs(),
+                self.model_name
+            );
+        }
+    }
+
+    /// 纯函数：last_used 距今是否超过 OCR_IDLE_TIMEOUT。抽出来便于单测（无需真实模型）。
+    fn is_idle(last_used: &Option<std::time::Instant>) -> bool {
+        match last_used {
+            Some(t) => std::time::Instant::now().duration_since(*t) > OCR_IDLE_TIMEOUT,
+            None => false, // 从未使用（理论不会，instance 即标 now）；不释放
+        }
     }
 
     pub fn recognize(&self, image_bytes: &[u8]) -> Result<String> {
@@ -106,11 +173,29 @@ impl OcrEngine {
     }
 
     fn run_ocr(&self, img: &::image::DynamicImage) -> Result<Vec<OcrBlock>> {
+        // 入口先刷新 last_used：防止守护线程在重载期间误判 idle。
+        *self.last_used.lock() = Some(std::time::Instant::now());
+
         let rec_img = dynamic_to_rec_image(img)?;
         let opts = octopus_paddle_ocr::OcrCallOptions::default();
-        let mut engine = self.inner.lock();
-        let result = engine.run(rec_img, opts)
-            .map_err(|e| anyhow::anyhow!("OCR run failed: {e}"))?;
+
+        // 重载 + run 在同一 inner lock 作用域：重载期间持有 inner 锁，守护线程
+        // 无法在「重载后、run 前」窗口抢锁释放刚重载的模型（否则 run 时 inner=None → expect panic）。
+        // OcrLockGuard 已保证同时只有一个 run_ocr，持锁重载数秒不阻塞其他 OCR 调用；
+        // 守护线程仅在 sleep loop 里偶尔多等几秒，无害。
+        // 重载【不】调 probe Before/After（避免刷新 registry 首次估算值，record_once 不覆盖）。
+        let result = {
+            let mut guard = self.inner.lock();
+            if guard.is_none() {
+                log::info!("[ocr-engine] OCR model {} reloaded after idle release", self.model_name);
+                let new_engine = Self::load_rapid_ocr(&self.model_name)?;
+                *guard = Some(new_engine);
+            }
+            let engine_ref = guard.as_mut().expect("inner just reloaded or was Some");
+            engine_ref.run(rec_img, opts)
+                .map_err(|e| anyhow::anyhow!("OCR run failed: {e}"))?
+        }; // guard 在此 drop，释放 inner 锁
+
         let mut blocks = ocr_output_to_blocks(&result);
         blocks = merge_same_line_blocks(blocks);
         if self.use_word_segmentation {
@@ -443,5 +528,27 @@ mod tests {
         ];
         drop_overlapped_blocks(0.0, &mut blocks);
         assert_eq!(blocks.len(), 1);
+    }
+
+    #[test]
+    fn is_idle_false_when_recently_used() {
+        assert!(!OcrEngine::is_idle(&Some(std::time::Instant::now())));
+    }
+
+    #[test]
+    fn is_idle_true_when_beyond_timeout() {
+        let old = std::time::Instant::now() - std::time::Duration::from_secs(61);
+        assert!(OcrEngine::is_idle(&Some(old)));
+    }
+
+    #[test]
+    fn is_idle_false_just_under_timeout() {
+        let recent = std::time::Instant::now() - std::time::Duration::from_secs(59);
+        assert!(!OcrEngine::is_idle(&Some(recent)));
+    }
+
+    #[test]
+    fn is_idle_false_when_none() {
+        assert!(!OcrEngine::is_idle(&None));
     }
 }

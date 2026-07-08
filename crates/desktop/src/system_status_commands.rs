@@ -22,6 +22,8 @@ pub struct ModelMemory {
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct ProcessStats {
     pub rss_bytes: u64,
+    /// macOS=phys_footprint（活动监视器「内存」列口径），其他平台=None（serde→null）。
+    pub real_bytes: Option<u64>,
     pub cpu_percent: f32,
 }
 
@@ -35,6 +37,8 @@ pub struct SystemStats {
 #[derive(Serialize, Clone, Debug, Default)]
 pub struct TimeSeries {
     pub rss: Vec<u64>,
+    /// phys_footprint 时序（macOS），其他平台空数组。
+    pub real: Vec<Option<u64>>,
     pub cpu: Vec<f32>,
     pub timestamps: Vec<f64>,
 }
@@ -65,6 +69,11 @@ impl ModelMemoryRegistry {
         m.entry(id.to_string()).or_insert(bytes);
     }
 
+    /// 移除一个 id（模型卸载时调用）。不存在则 no-op。
+    pub fn remove(&self, id: &str) {
+        self.inner.lock().remove(id);
+    }
+
     /// 返回所有已记录模型（按 id 排序，输出稳定）。
     pub fn entries(&self) -> Vec<ModelMemory> {
         let m = self.inner.lock();
@@ -89,6 +98,8 @@ impl ModelMemoryRegistry {
 pub struct SamplePoint {
     pub timestamp: f64,
     pub rss: u64,
+    /// phys_footprint（macOS），其他平台 None。
+    pub real: Option<u64>,
     pub cpu: f32,
 }
 
@@ -110,17 +121,19 @@ impl RingBuffer {
         self.buf.push_back(p);
     }
 
-    /// 导出为前端 TimeSeries（rss / cpu / timestamps 三个并行数组）。
+    /// 导出为前端 TimeSeries（rss / real / cpu / timestamps 四个并行数组）。
     pub fn to_time_series(&self) -> TimeSeries {
         let mut rss = Vec::with_capacity(self.buf.len());
+        let mut real = Vec::with_capacity(self.buf.len());
         let mut cpu = Vec::with_capacity(self.buf.len());
         let mut ts = Vec::with_capacity(self.buf.len());
         for p in &self.buf {
             rss.push(p.rss);
+            real.push(p.real);
             cpu.push(p.cpu);
             ts.push(p.timestamp);
         }
-        TimeSeries { rss, cpu, timestamps: ts }
+        TimeSeries { rss, real, cpu, timestamps: ts }
     }
 }
 
@@ -136,6 +149,55 @@ fn read_self_rss() -> Option<u64> {
     let mut sys = System::new();
     sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
     sys.process(pid).map(|p| p.memory())
+}
+
+/// macOS：通过 proc_pid_rusage 读自身进程 phys_footprint（活动监视器「内存」列口径）。
+/// phys_footprint 不计 mmap 的 file-backed 页（模型权重），更接近「真实占用物理 RAM」。
+/// 其他平台无此概念，返回 None（前端退 RSS）。
+#[cfg(target_os = "macos")]
+fn read_self_phys_footprint() -> Option<u64> {
+    #[repr(C)]
+    struct RusageInfoV0 {
+        ri_uuid: [u8; 16],
+        ri_user_time: u64,
+        ri_system_time: u64,
+        ri_pkg_idle_wkups: u64,
+        ri_interrupt_wkups: u64,
+        ri_pageins: u64,
+        ri_wired_size: u64,
+        ri_resident_size: u64,
+        ri_phys_footprint: u64, // 字节偏移 72（ri_uuid 16B + 7×u64）
+        ri_proc_start_abstime: u64,
+        ri_proc_exit_abstime: u64,
+    }
+    extern "C" {
+        // libproc（libSystem 已包含，无需 #[link]）。返回 0 成功，-1 失败。
+        fn proc_pid_rusage(pid: i32, flavor: i32, buffer: *mut RusageInfoV0) -> i32;
+    }
+    // flavor：RUSAGE_INFO_V0 = 0（sys/resource.h）。注意这是 rusage flavor，
+    // 不是 proc_info 的 PROC_PIDRUSAGE(=16)——后者是另一套 API 的 taste。
+    const RUSAGE_INFO_V0: i32 = 0;
+
+    let mut info: RusageInfoV0 = unsafe { std::mem::zeroed() };
+    let r = unsafe { proc_pid_rusage(std::process::id() as i32, RUSAGE_INFO_V0, &mut info) };
+    if r == 0 {
+        Some(info.ri_phys_footprint)
+    } else {
+        None
+    }
+}
+
+/// 非 macOS：无 phys_footprint 概念，返回 None。
+#[cfg(not(target_os = "macos"))]
+fn read_self_phys_footprint() -> Option<u64> {
+    None
+}
+
+/// 模型内存差值法用的口径：macOS 优先 phys_footprint（模型权重虽 mmap 进 RSS，
+/// 但 OS 可回收、不算真实占用，故差值用 phys_footprint 更贴近模型实际占用）；
+/// 其他平台无 phys_footprint，退 RSS。
+fn read_self_probe_memory() -> Option<u64> {
+    read_self_phys_footprint().or_else(read_self_rss)
 }
 
 /// 采样器：常驻后台循环采样 → 更新 ring buffer + current → emit。
@@ -179,6 +241,7 @@ impl SystemStatusSampler {
         let process = match sys.process(pid) {
             Some(p) => ProcessStats {
                 rss_bytes: p.memory(),
+                real_bytes: read_self_phys_footprint(),
                 cpu_percent: p.cpu_usage(),
             },
             None => {
@@ -201,7 +264,7 @@ impl SystemStatusSampler {
 
         let snap = {
             let mut ring = self.ring.lock();
-            ring.push(SamplePoint { timestamp: now, rss: process.rss_bytes, cpu: process.cpu_percent });
+            ring.push(SamplePoint { timestamp: now, rss: process.rss_bytes, real: process.real_bytes, cpu: process.cpu_percent });
             let history = ring.to_time_series();
             let models = self.registry.entries();
             let snap = SystemStatusSnapshot { sampled_at: now, process, system, history, models };
@@ -220,26 +283,37 @@ impl SystemStatusSampler {
 
     /// 启动后台采样循环 + 注入模型加载 probe（Before/After RSS 差值 → registry）。
     pub fn start(self: Arc<Self>, app: AppHandle) {
-        // probe 闭包：Before 存 RSS，After 算差 record_once
-        let before_map: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        // probe 闭包：Before 存 RSS，After 算差 record_once。
+        // key 含 ThreadId：多线程并发加载同一未缓存模型（如 server 多连接同时 cache miss
+        // 同一 ASR 引擎）时，Before/After 按 (线程, 模型) 配对，避免互相覆盖/错拿导致
+        // 估算值失真。仅影响状态页「估算内存」显示，不影响模型加载正确性。
+        let before_map: Arc<Mutex<HashMap<(std::thread::ThreadId, String), u64>>> =
+            Arc::new(Mutex::new(HashMap::new()));
         let registry = self.registry.clone();
         let bm = before_map.clone();
         octopus_infra::model_probe::set_probe(Arc::new(move |phase, id| {
+            use octopus_infra::model_probe::LoadPhase;
             match phase {
-                octopus_infra::model_probe::LoadPhase::Before => {
-                    if let Some(rss) = read_self_rss() {
-                        // 覆盖式 insert：重试加载刷新 before；若 After 未触发（如 panic），
-                        // 条目残留但不增长（model id 集合有界）。
-                        bm.lock().insert(id.to_string(), rss);
+                LoadPhase::Before => {
+                    if let Some(m) = read_self_probe_memory() {
+                        // 覆盖式 insert：同线程重试加载刷新 before；若 After 未触发（如 panic），
+                        // 条目残留但不增长（线程×模型 组合有界）。
+                        bm.lock()
+                            .insert((std::thread::current().id(), id.to_string()), m);
                     }
                 }
-                octopus_infra::model_probe::LoadPhase::After => {
-                    let before = bm.lock().remove(id);
-                    if let (Some(b), Some(now)) = (before, read_self_rss()) {
+                LoadPhase::After => {
+                    let key = (std::thread::current().id(), id.to_string());
+                    let before = bm.lock().remove(&key);
+                    if let (Some(b), Some(now)) = (before, read_self_probe_memory()) {
                         if now > b {
                             registry.record_once(id, now - b);
                         }
                     }
+                }
+                LoadPhase::Unload => {
+                    // 模型从内存卸载（如 OCR idle 释放）：移除估算条目，避免残留旧值。
+                    registry.remove(id);
                 }
             }
         }));
@@ -308,18 +382,19 @@ mod tests {
     fn ring_buffer_evicts_oldest_when_full() {
         let mut rb = RingBuffer::new(3);
         for i in 0..5 {
-            rb.push(SamplePoint { timestamp: i as f64, rss: i, cpu: i as f32 });
+            rb.push(SamplePoint { timestamp: i as f64, rss: i, real: None, cpu: i as f32 });
         }
         let ts = rb.to_time_series();
         // 容量 3：只保留最后 3 个（i=2,3,4）
         assert_eq!(ts.rss, vec![2, 3, 4]);
         assert_eq!(ts.timestamps.len(), 3);
+        assert_eq!(ts.real.len(), 3);
     }
 
     #[test]
     fn ring_buffer_under_capacity_keeps_all() {
         let mut rb = RingBuffer::new(60);
-        rb.push(SamplePoint { timestamp: 1.0, rss: 100, cpu: 5.0 });
+        rb.push(SamplePoint { timestamp: 1.0, rss: 100, real: None, cpu: 5.0 });
         assert_eq!(rb.to_time_series().rss, vec![100]);
     }
 
@@ -327,8 +402,44 @@ mod tests {
     fn ring_buffer_zero_cap_clamps_to_one() {
         // cap=0 经 new 内 cap.max(1) 钳到 1，只留最新一个点。
         let mut rb = RingBuffer::new(0);
-        rb.push(SamplePoint { timestamp: 1.0, rss: 1, cpu: 1.0 });
-        rb.push(SamplePoint { timestamp: 2.0, rss: 2, cpu: 2.0 });
+        rb.push(SamplePoint { timestamp: 1.0, rss: 1, real: None, cpu: 1.0 });
+        rb.push(SamplePoint { timestamp: 2.0, rss: 2, real: None, cpu: 2.0 });
         assert_eq!(rb.to_time_series().rss, vec![2], "cap=0 钳到 1，只留最新");
+    }
+
+    #[test]
+    fn ring_buffer_propagates_real_to_time_series() {
+        // real 字段（phys_footprint）应随 SamplePoint 推入 TimeSeries.real。
+        let mut rb = RingBuffer::new(3);
+        rb.push(SamplePoint { timestamp: 1.0, rss: 100, real: Some(80), cpu: 1.0 });
+        rb.push(SamplePoint { timestamp: 2.0, rss: 200, real: None, cpu: 2.0 });
+        let ts = rb.to_time_series();
+        assert_eq!(ts.real, vec![Some(80), None]);
+    }
+
+    #[test]
+    fn registry_remove_clears_entry() {
+        let r = ModelMemoryRegistry::new();
+        r.record_once("asr:x", 100);
+        assert_eq!(r.entries().len(), 1, "record 后应有 1 条");
+        r.remove("asr:x");
+        assert!(r.entries().is_empty(), "remove 后应清空");
+    }
+
+    #[test]
+    fn registry_remove_nonexistent_no_panic() {
+        let r = ModelMemoryRegistry::new();
+        r.remove("nope"); // 不存在，应 no-op 不 panic
+        assert!(r.entries().is_empty());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn read_self_phys_footprint_returns_some_positive() {
+        // 自身进程必有 phys_footprint（即使空跑也占若干 MB）。
+        assert!(
+            read_self_phys_footprint().map(|v| v > 0).unwrap_or(false),
+            "macOS 自身进程 phys_footprint 应为 Some(>0)"
+        );
     }
 }
