@@ -94,25 +94,28 @@ export default function ActionBar() {
     { id: "explain", icon: Lightbulb, label: "解释" },
   ];
 
-  // ── 动作执行 ──
+  // ── 动作执行（不用 useCallback——闭包捕获 ref 已是最新的）──
 
-  const executeAiAction = useCallback(async (action: string) => {
+  const executeAiAction = async (action: string) => {
     const ctx = contextRef.current;
     console.log("[action-bar] executeAiAction:", action, "context:", !!ctx);
     if (!ctx) return;
     setView("loading");
     try {
+      console.log("[action-bar] invoking run_ai_action:", action);
       const result = await invoke<string>("run_ai_action", { action, text: ctx.text });
+      console.log("[action-bar] AI result len:", result.length);
       await invoke("action_bar_paste_result", { result });
       getCurrentWindow().hide();
     } catch (e) {
+      console.error("[action-bar] AI error:", e);
       setErrorMsg(String(e));
       setView("error");
     }
-  }, []);
+  };
 
-  const executeMain = useCallback((id: string) => {
-    console.log("[action-bar] executeMain:", id, "context:", !!contextRef.current);
+  const executeMain = (id: string) => {
+    console.log("[action-bar] executeMain:", id);
     const ctx = contextRef.current;
     if (id === "ai") {
       console.log("[action-bar] opening submenu");
@@ -201,7 +204,7 @@ export default function ActionBar() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [executeMain, executeAiAction]);
+  }, []);
 
   // ── 渲染 ──
 
