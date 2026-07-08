@@ -85,9 +85,13 @@ pub fn trigger_action_bar(app: AppHandle) {
         *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext { text });
 
         // 6. 获取鼠标位置 + 显示浮窗（主线程）
+        // 浮窗在鼠标正上方，X 轴居中对齐鼠标，Y 轴在鼠标上方
         let (mx, my) = get_mouse_position();
-        let win_y = (my - 60.0).max(0.0);
-        log::info!("[action-bar] show at {},{}", mx, win_y);
+        // 窗口宽度约 260，X 居中 = 鼠标 X - 窗口宽度/2
+        let win_x = (mx - 130.0).max(0.0);
+        // 窗口高度约 76（38+38），在鼠标上方留 8px 间距
+        let win_y = (my - 84.0).max(0.0);
+        log::info!("[action-bar] show at {},{} (mouse at {},{})", win_x, win_y, mx, my);
 
         let app_for_show = app_clone.clone();
         let _ = tauri::async_runtime::spawn(async move {
