@@ -191,6 +191,14 @@ pub struct AppConfig {
     #[serde(default = "default_clipboard_theme")]
     pub clipboard_theme: String,
 
+    /// AI 命令面板全局热键。默认 CmdOrCtrl+Shift+Space。
+    #[serde(default = "default_action_bar_shortcut")]
+    pub action_bar_shortcut: String,
+
+    /// AI 命令面板搜索引擎。默认 google。
+    #[serde(default = "default_action_bar_search_engine")]
+    pub action_bar_search_engine: String,
+
     /// 截图全局快捷键（Tauri Accelerator 格式）。默认 "Alt+S"。
     #[serde(default = "default_screenshot_shortcut")]
     pub screenshot_shortcut: String,
@@ -281,6 +289,12 @@ fn default_clipboard_tab_modifier() -> String {
 fn default_clipboard_theme() -> String {
     "light".into()
 }
+fn default_action_bar_shortcut() -> String {
+    "CmdOrCtrl+Shift+Space".into()
+}
+fn default_action_bar_search_engine() -> String {
+    "google".into()
+}
 fn default_screenshot_shortcut() -> String {
     "Alt+S".into()
 }
@@ -326,6 +340,8 @@ impl Default for AppConfig {
             clipboard_enabled: default_clipboard_enabled(),
             clipboard_tab_modifier: default_clipboard_tab_modifier(),
             clipboard_theme: default_clipboard_theme(),
+            action_bar_shortcut: default_action_bar_shortcut(),
+            action_bar_search_engine: default_action_bar_search_engine(),
             screenshot_shortcut: default_screenshot_shortcut(),
             ocr_model: default_ocr_model(),
         }

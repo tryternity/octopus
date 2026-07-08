@@ -254,7 +254,9 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('clipboard_max_items',    '1000',  '最大保留条数（不含收藏）'),
     ('clipboard_max_age_days', '30',    '自动清理天数（不含收藏）'),
     ('ocr_model',              'PP-OCRv6-small', 'OCR 模型（当前激活）'),
-    ('screenshot_shortcut',     'Alt+S',                                '截图快捷键');
+    ('screenshot_shortcut',     'Alt+S',                                '截图快捷键'),
+    ('action_bar_shortcut',   'CmdOrCtrl+Shift+Space', 'AI 命令面板快捷键'),
+    ('action_bar_search_engine', 'google', 'AI 命令面板搜索引擎');
 
 -- ── 记事本（notes/notes_fts 表）已移除──────────────────────────
 -- OCR/ASR/剪贴板文本统一走 clipboard_history（OCR 类别 item_type='ocr'）。

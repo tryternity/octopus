@@ -321,6 +321,12 @@ fn apply_config_value(
         "clipboard_theme" => {
             cfg.clipboard_theme = value.as_str().ok_or("clipboard_theme 需要字符串")?.to_string();
         }
+        "action_bar_shortcut" => {
+            cfg.action_bar_shortcut = value.as_str().ok_or("action_bar_shortcut 需要字符串")?.to_string();
+        }
+        "action_bar_search_engine" => {
+            cfg.action_bar_search_engine = value.as_str().ok_or("action_bar_search_engine 需要字符串")?.to_string();
+        }
         "screenshot_shortcut" => {
             cfg.screenshot_shortcut = value.as_str().ok_or("screenshot_shortcut 需要字符串")?.to_string();
         }
