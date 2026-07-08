@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen as rawListen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -131,7 +131,7 @@ export default function ActionBar() {
       const url = detectActionUrl(ctx?.text || "").url;
       invoke("action_bar_open_url", { url });
     }
-  }, [executeAiAction]);
+  };
 
   // ── 键盘导航（用 ref 读最新状态，handler 只注册一次）──
 
