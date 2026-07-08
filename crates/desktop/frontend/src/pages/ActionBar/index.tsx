@@ -291,30 +291,26 @@ export default function ActionBar() {
   }
 
   return (
-    <div data-action-bar className="flex flex-col rounded-lg border border-border shadow-lg overflow-hidden">
-      {/* 子菜单区域——固定高度 38px（与主菜单行一致），无内容时透明 */}
-      <div
-        className={cn(
-          "flex items-center gap-0.5 px-1 h-[38px] shrink-0",
-          view === "submenu" ? "bg-background border-b border-border/40" : "bg-transparent"
-        )}
-      >
-        {view === "submenu" && (
-          <>
-            {(submenuType === "search" ? searchItems : aiItems).map((item, i) => (
-              <IconBtn
-                key={item.id}
-                icon={item.icon}
-                label={item.label}
-                active={subSelectedIdx === i}
-                onClick={() => executeSubItem(item.id)}
-              />
-            ))}
-          </>
-        )}
-      </div>
-      {/* 主菜单——固定高度 38px，位置不动 */}
-      <div className="flex items-center gap-0.5 px-1 h-[38px] shrink-0 bg-background">
+    <div data-action-bar className="flex flex-col">
+      {/* 子菜单区域——无内容时完全不渲染（纯透明） */}
+      {view === "submenu" && (
+        <div className="flex items-center gap-0.5 px-1 h-[38px] shrink-0 bg-background rounded-t-lg border border-border border-b-0 shadow-lg">
+          {(submenuType === "search" ? searchItems : aiItems).map((item, i) => (
+            <IconBtn
+              key={item.id}
+              icon={item.icon}
+              label={item.label}
+              active={subSelectedIdx === i}
+              onClick={() => executeSubItem(item.id)}
+            />
+          ))}
+        </div>
+      )}
+      {/* 主菜单——固定位置 */}
+      <div className={cn(
+        "flex items-center gap-0.5 px-1 h-[38px] shrink-0 bg-background shadow-lg border border-border",
+        view === "submenu" ? "rounded-b-lg border-t-0" : "rounded-lg",
+      )}>
         {mainItems.map((item, i) => (
           <IconBtn
             key={item.id}
