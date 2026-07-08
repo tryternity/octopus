@@ -221,6 +221,16 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             <span className="text-xs text-muted-foreground">+ 1..7</span>
           </div>
         </Row>
+        <Row label="AI面板" effect="立即" hint="选中文本后按此键唤起">
+          <ShortcutButton shortcut={cfg.action_bar_shortcut as string} capturing={capturingKey === "action_bar_shortcut"} onClick={() => startShortcutCapture("action_bar_shortcut")} />
+        </Row>
+        <Row label="面板搜索" effect="立即" hint="AI面板搜索用的引擎">
+          <select className={selectClass} value={(cfg.action_bar_search_engine as string) || "google"} onChange={(e) => setVal("action_bar_search_engine", e.target.value)}>
+            <option value="google">Google</option>
+            <option value="baidu">百度</option>
+            <option value="bing">Bing</option>
+          </select>
+        </Row>
       </Card>
 
       <Card icon={Volume2} title="语音识别">
