@@ -244,10 +244,13 @@ impl SystemStatusSampler {
             }
         }));
 
-        // 采样循环（catch panic，不影响主进程）
+        // 采样循环（catch panic，不影响主进程）。
+        // 用 tauri::async_runtime::spawn 而非 tokio::spawn：start() 在 sync setup 闭包里调用，
+        // 此时没有「当前 entered」的 tokio runtime 上下文（tokio::spawn 会 panic「no reactor running」）；
+        // tauri::async_runtime::spawn 走全局 handle，不需当前线程 runtime 上下文。
         let this = self.clone();
         let app2 = app.clone();
-        tokio::spawn(async move {
+        tauri::async_runtime::spawn(async move {
             loop {
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     this.sample_and_emit(&app2);
