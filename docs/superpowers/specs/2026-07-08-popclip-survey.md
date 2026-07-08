@@ -266,7 +266,166 @@ Windows 上受 PopClip 启发的免费工具。
 
 ---
 
-## 9. 信息来源
+## 9. PopClip 扩展生态全景（15 大类，218 个扩展）
+
+PopClip 的 218 个扩展覆盖了 15 个大类。扩展的本质模式是：**选中文本 → 通过 URL scheme / AppleScript / Shell Script / macOS Shortcut 发送到第三方应用或服务**。大部分扩展本质上就是"把选中文本塞进一个 URL 或命令"。
+
+### 9.1 AI 工具（最新热门）
+
+| 扩展 | 作用 |
+|------|------|
+| **OpenAI Chat** | 选中文本发送到 ChatGPT API，返回结果替换原文 |
+| **Claude** | 选中文本发给 Anthropic Claude |
+| **Grok** | 发给 xAI Grok |
+| **Perplexity** | 发给 Perplexity AI 搜索 |
+| **Ollama** | 发给本地 Ollama 模型 |
+
+### 9.2 翻译与语言
+
+| 扩展 | 作用 |
+|------|------|
+| **Instant Translate** | 选中文本后即时翻译（不打开浏览器，面板内直接显示，Microsoft Translator API） |
+| **DeepL** | 发给 DeepL 翻译 |
+| **Google Translate** | 发给 Google 翻译 |
+| **Pinyin** | 中文字符转拼音 |
+| **Eudic** | 欧路词典查询 |
+
+### 9.3 笔记与知识管理
+
+| 扩展 | 作用 |
+|------|------|
+| **Notion** | 选中文本创建 Notion 页面或追加内容 |
+| **Obsidian** | 发送到 Obsidian vault |
+| **Apple Notes** | 新建笔记或追加到已有笔记 |
+| **Evernote** | 创建 Evernote 笔记 |
+| **Drafts** | 发送到 Drafts app |
+| **Bear / Craft / Logseq** | 发送到对应笔记应用 |
+| **Stickies** | 创建桌面便利贴 |
+| **Tot** | 追加到 Tot 的某个页面 |
+| **Freeform** | 发送到 Freeform 白板 |
+
+### 9.4 文本编辑
+
+| 扩展 | 作用 |
+|------|------|
+| **Delete** | 删除选中的文本 |
+| **Select All** | 全选后重新触发 PopClip |
+| **Highlight** | 高亮选中文本（仅限 Pages/Preview/Notes/Obsidian 等支持的应用） |
+
+### 9.5 文本格式转换
+
+| 扩展 | 作用 |
+|------|------|
+| **Uppercase / Lowercase** | 全大写/全小写 |
+| **Title Case** | 英文标题大写规范 |
+| **Coding Cases** | camelCase / PascalCase / snake_case / kebab-case / CONSTANT_CASE |
+| **Slugify** | URL 友好格式（空格→连字符，去特殊字符，小写） |
+| **Quotes** | 给选中文本加引号（多种引号风格可选） |
+| **Brackets** | 加括号 `()` `[]` `{}` `<>` `//` |
+| **Hyphenate / Underscore** | 空格→连字符/下划线互转 |
+| **Full/Half Width** | 全角/半角转换（中日韩字符） |
+| **ROT13** | ROT13 加密 |
+| **Alphagram** | 字母排序或打乱 |
+
+### 9.6 开发者工具
+
+| 扩展 | 作用 |
+|------|------|
+| **Base64** | Base64 编码/解码 |
+| **URL Encode** | URL 百分号编码/解码 |
+| **Terminal** | 选中文本作为终端命令执行（支持 Terminal/iTerm2/Warp/Ghostty/kitty） |
+| **Dash** | 在 Dash 中搜索开发者文档 |
+| **MDN** | 在 MDN Web Docs 搜索 |
+| **GitHub** | 在 GitHub 搜索选中文本 |
+| **Stack Overflow** | 搜索 Stack Overflow |
+| **Unicode Lens** | 查看选中文本的 Unicode 码点 |
+| **Unix Time** | Unix 时间戳 ↔ UTC 互转 |
+| **HTML Encode** | HTML 实体编码/解码 |
+| **Name Color** | 给十六进制颜色值一个描述性名称 |
+
+### 9.7 搜索引擎与网站
+
+| 扩展 | 作用 |
+|------|------|
+| **Google** | Google 搜索（可选国家站） |
+| **Amazon** | 搜索 Amazon 商品 |
+| **YouTube** | 搜索 YouTube 视频 |
+| **IMDb** | 搜索电影信息 |
+| **Wikipedia** | 维基百科搜索 |
+| **Douban** | 豆瓣搜索（书/影/音） |
+| **eBay / Etsy** | 电商平台搜索 |
+| **Goodreads** | 图书搜索 |
+| **DOI** | 解析学术 DOI 编号 |
+
+### 9.8 待办与任务管理
+
+| 扩展 | 作用 |
+|------|------|
+| **Things 3** | 创建 Things 任务 |
+| **Todoist** | 创建 Todoist 任务 |
+| **OmniFocus** | 发送到 OmniFocus 收件箱 |
+| **Reminders** | 创建 macOS 提醒事项 |
+| **ClickUp** | 发送到 ClickUp |
+| **Due** | 创建 Due 提醒 |
+
+### 9.9 链接处理
+
+| 扩展 | 作用 |
+|------|------|
+| **Shorten** | URL 短链（支持多个短链服务） |
+| **Save Link** | 保存链接到 Pocket/Instapaper/Readability 等 |
+| **Open in Browser** | 在指定浏览器打开 URL（支持 Safari/Chrome/Firefox/Arc/Brave/Edge/Vivaldi 等 20+ 浏览器） |
+| **IINA** | 在 IINA 播放器中打开视频 URL |
+| **Downie** | 下载链接页面的视频 |
+| **Leech** | 用 Leech 下载 URL 指向的文件 |
+
+### 9.10 Markdown
+
+| 扩展 | 作用 |
+|------|------|
+| **Markdown** | 给选中文本加 Markdown 格式（粗体/斜体/代码块等） |
+| **HTML to Markdown** | HTML 转 Markdown |
+
+### 9.11 实用工具
+
+| 扩展 | 作用 |
+|------|------|
+| **Calculate** | 选中文本作为数学表达式求值 |
+| **Convert** | 单位换算（公制↔英制：lb↔kg, °F↔°C, miles↔km 等） |
+| **Large Type** | 大字显示选中文本 |
+| **Word Count / Line Count** | 统计字数/行数 |
+| **Say** | 语音朗读选中文本（macOS TTS） |
+| **Print** | 打印选中文本 |
+
+### 9.12 其他
+
+- **日历**（Fantastical / Apple Calendar）
+- **联系人**（搜索通讯录）
+- **地图**（Apple Maps / Google Maps / OpenStreetMap）
+- **社交**（LinkedIn 搜索）
+- **音乐**（Spotify 搜索）
+- **电话**（Call——用 iPhone 拨号）
+- **剪贴板工具**（Paste / PastePal 等剪贴板管理器集成）
+- **拖拽工具**（Drag & Drop 到 Dropzone / Yoink 等）
+
+### 9.13 对 octopus 的启示
+
+扩展的本质是**"选中文本塞进 URL/命令"**——这正是 PopClip Snippet 格式的威力（4 行 YAML 定义一个扩展）。
+
+octopus 的 AI 命令模板可以采用同样的模式：
+```
+#octopus
+name: 翻译成中文
+prompt: 请将以下文本翻译成中文
+input: selection
+output: replace
+```
+
+用户用纯文本就能创建自定义 AI 动作，无需开发 SDK/编译/打包。这与 PopClip 的 Snippet 和 OnText 的 Custom Actions 理念一致——**极低门槛的扩展系统**。
+
+---
+
+## 10. 信息来源
 
 - [popclip.app/](https://www.popclip.app/)（首页）
 - [popclip.app/guide/](https://www.popclip.app/guide/)（欢迎页 + FAQ）
