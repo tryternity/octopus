@@ -280,6 +280,33 @@ pub fn clear_history(conn: &Connection, keep_favorite: bool) -> Result<usize> {
     Ok(rows)
 }
 
+/// 按 filter（类型筛选）批量删除。复用 build_where 把 filter 转 SQL where，
+/// keep_favorite=true 追加 AND is_favorite = 0（空 where 时 where 即 is_favorite = 0）。
+/// 与 clear_history 对称：删后 cleanup_unreferenced_images 清孤立 image_data blob。
+/// filter="favorite" + keep_favorite=true → "is_favorite = 1 AND is_favorite = 0" 恒假，删 0 条
+/// （收藏 tab 自然结果，前端禁用按钮，后端无需特判）。
+pub fn clear_history_by_filter(conn: &Connection, filter: &str, keep_favorite: bool) -> Result<usize> {
+    let qf = QueryFilter { filter: filter.to_string(), search: None, page: 1, size: 1 };
+    let mut where_clause = build_where(&qf);
+    if keep_favorite {
+        if where_clause.is_empty() {
+            where_clause = "is_favorite = 0".to_string();
+        } else {
+            where_clause.push_str(" AND is_favorite = 0");
+        }
+    }
+    let sql = if where_clause.is_empty() {
+        "DELETE FROM clipboard_history".to_string()
+    } else {
+        format!("DELETE FROM clipboard_history WHERE {}", where_clause)
+    };
+    let rows = conn.execute(&sql, [])?;
+    if rows > 0 {
+        cleanup_unreferenced_images(conn)?;
+    }
+    Ok(rows)
+}
+
 // ── image_data CRUD ──
 
 pub fn insert_image_data(conn: &Connection, hash: &str, webp_blob: &[u8], thumb_blob: &[u8], width: i64, height: i64) -> Result<()> {
@@ -463,5 +490,104 @@ mod tests {
         let voice_only = query_history(&conn, &QueryFilter { filter: "voice".into(), search: None, page: 1, size: 10 }).unwrap();
         assert_eq!(text_only.len(), 1);
         assert_eq!(voice_only.len(), 1);
+    }
+
+    #[test]
+    fn clear_history_by_filter_all_keep_favorite() {
+        let conn = open_test_db();
+        // 插 3 条文本（NewClipboardItem 无 is_favorite 字段，默认非收藏）
+        for id in [1i64, 2, 3] {
+            insert_clipboard_item(&conn, &NewClipboardItem {
+                id, item_type: ItemType::Text, content: format!("c{}", id),
+                ref_data: None, meta_info: None, created_at: iso_now(),
+                has_thumbnail: None, is_rich: false,
+            }).unwrap();
+        }
+        toggle_favorite(&conn, 3).unwrap(); // id=3 设为收藏
+        let deleted = clear_history_by_filter(&conn, "all", true).unwrap();
+        assert_eq!(deleted, 2);
+        let remaining = query_history(&conn, &QueryFilter {
+            filter: "all".into(), search: None, page: 1, size: 10,
+        }).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].id, 3);
+        assert!(remaining[0].is_favorite);
+    }
+
+    #[test]
+    fn clear_history_by_filter_text_only() {
+        let conn = open_test_db();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 1, item_type: ItemType::Text, content: "text".into(),
+            ref_data: None, meta_info: None, created_at: iso_now(),
+            has_thumbnail: None, is_rich: false,
+        }).unwrap();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 2, item_type: ItemType::Image, content: String::new(),
+            ref_data: Some("hash2".into()), meta_info: None, created_at: iso_now(),
+            has_thumbnail: Some(1), is_rich: false,
+        }).unwrap();
+        insert_image_data(&conn, "hash2", &[1, 2, 3], &[4, 5, 6], 10, 10).unwrap();
+        let deleted = clear_history_by_filter(&conn, "text", true).unwrap();
+        assert_eq!(deleted, 1);
+        let remaining = query_history(&conn, &QueryFilter {
+            filter: "all".into(), search: None, page: 1, size: 10,
+        }).unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].item_type, ItemType::Image);
+    }
+
+    #[test]
+    fn clear_history_by_filter_favorite_deletes_zero() {
+        let conn = open_test_db();
+        for id in [1i64, 2] {
+            insert_clipboard_item(&conn, &NewClipboardItem {
+                id, item_type: ItemType::Text, content: format!("c{}", id),
+                ref_data: None, meta_info: None, created_at: iso_now(),
+                has_thumbnail: None, is_rich: false,
+            }).unwrap();
+            toggle_favorite(&conn, id).unwrap(); // 两条都设收藏
+        }
+        let deleted = clear_history_by_filter(&conn, "favorite", true).unwrap();
+        assert_eq!(deleted, 0);
+        let remaining = query_history(&conn, &QueryFilter {
+            filter: "all".into(), search: None, page: 1, size: 10,
+        }).unwrap();
+        assert_eq!(remaining.len(), 2);
+    }
+
+    #[test]
+    fn clear_history_by_filter_keep_false_all() {
+        let conn = open_test_db();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 1, item_type: ItemType::Text, content: "c1".into(),
+            ref_data: None, meta_info: None, created_at: iso_now(),
+            has_thumbnail: None, is_rich: false,
+        }).unwrap();
+        toggle_favorite(&conn, 1).unwrap(); // 收藏条目 keep=false 时也应删
+        let deleted = clear_history_by_filter(&conn, "all", false).unwrap();
+        assert_eq!(deleted, 1);
+        let remaining = query_history(&conn, &QueryFilter {
+            filter: "all".into(), search: None, page: 1, size: 10,
+        }).unwrap();
+        assert!(remaining.is_empty());
+    }
+
+    #[test]
+    fn clear_history_by_filter_image_cleans_blob() {
+        let conn = open_test_db();
+        insert_clipboard_item(&conn, &NewClipboardItem {
+            id: 1, item_type: ItemType::Image, content: String::new(),
+            ref_data: Some("hash1".into()), meta_info: None, created_at: iso_now(),
+            has_thumbnail: Some(1), is_rich: false,
+        }).unwrap();
+        insert_image_data(&conn, "hash1", &[1, 2, 3], &[4, 5, 6], 10, 10).unwrap();
+        let before: i64 = conn.query_row("SELECT COUNT(*) FROM image_data", [], |r| r.get(0)).unwrap();
+        assert_eq!(before, 1);
+        let deleted = clear_history_by_filter(&conn, "image", true).unwrap();
+        assert_eq!(deleted, 1);
+        // cleanup_unreferenced_images 应清掉孤立 blob
+        let after: i64 = conn.query_row("SELECT COUNT(*) FROM image_data", [], |r| r.get(0)).unwrap();
+        assert_eq!(after, 0);
     }
 }
