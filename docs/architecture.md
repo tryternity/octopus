@@ -219,6 +219,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
    - **三层 fallback**：坐标匹配到已连接显示器 → 该屏大窗体 + maximize；匹配失败 → `primary_monitor` 大窗体 + maximize；连主屏都拿不到 → 默认 880×620 居中
    - **不能**用主屏尺寸直接创建不走 `maximize()` API——`is_maximized=false` 会导致保存错误的非最大化状态
    - **物理/逻辑像素混用**是反复出现的 bug 源——所有 `Monitor::position()` / `Monitor::size()` 必须除以 `scale_factor` 再与逻辑坐标比较
+5. **前端 `listen` import 来源**——项目有 `lib/tauri.ts` 封装（自动 `e.payload` 解包），但部分文件（如 `Settings/index.tsx`）直接从 `@tauri-apps/api/event` 导入原生 `listen`（回调收到 `Event<T>` 对象而非 payload）。两种 import 混用导致 `typeof page === "string"` 在原生 import 的回调里永远 false。新代码应统一用 `lib/tauri.ts` 封装版 `listen`。
+6. **剪贴板浮窗列表上限 200 条**（2026-07-07 从 50 放宽）——`useClipboardHistory` 一次查询 `size: 200`，无无限滚动/分页。
 
 **macOS 动态激活策略（Dock 图标显隐）：** 应用启动即 `Accessory` 模式（无 Dock 图标，纯托盘应用）。两个**常规窗口**（`settings_window` / `compact_editor_window`）任一打开时切 `Regular`（设置窗口另经 `set_dock_icon()` 用 `objc2` 手动 `setApplicationIconImage`——release 裸二进制无 .app bundle，Tauri 仅 debug 自动设图标）。关窗 `Destroyed` 经 `activation.rs::restore_accessory_if_no_regular_window` 协调——**仅当常规窗口全无存活才切回 `Accessory`**，否则保持 `Regular`（避免 app 降级时 macOS 连带收掉其余常规窗口——`image_preview_window` 已随统一查看器移除，现 `REGULAR_WINDOWS` 仅两窗；协调逻辑对 settings↔compact_editor 仍生效，曾致「关 CompactEditor 连带关 image_preview」即此 bug 的修复保留）。`#[cfg(target_os = "macos")]` 条件编译，Windows / Linux 无此逻辑。
 
