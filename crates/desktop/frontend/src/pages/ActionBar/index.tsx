@@ -18,6 +18,8 @@ const SEARCH_URLS: Record<string, string> = {
   bing: "https://www.bing.com/search?q=",
 };
 
+const AI_TIMEOUT_MS = 5000;
+
 // 定义在组件外部——避免每次渲染创建新组件类型导致 unmount/remount
 const IconBtn = ({ icon: Icon, label, active, onClick }: {
   icon: React.ElementType; label: string; active: boolean; onClick: () => void;
@@ -110,11 +112,11 @@ export default function ActionBar() {
     if (!ctx) return;
     setView("loading");
 
-    // 30 秒超时——LLM 响应太慢时自动关闭浮窗并提示错误
+    // 5 秒超时——LLM 响应太慢时自动关闭浮窗并提示错误
     const timeoutId = setTimeout(() => {
-      setErrorMsg("请求超时（30 秒），请检查网络或 LLM 配置");
+      setErrorMsg("请求超时（5 秒），请检查网络或 LLM 配置");
       setView("error");
-    }, 30000);
+    }, AI_TIMEOUT_MS);
 
     try {
       console.log("[action-bar] invoking run_ai_action:", action);
