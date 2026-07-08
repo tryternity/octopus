@@ -205,3 +205,26 @@ Transducer 系列（`zh-int8-2025-06-30` / `zh-xlarge-int8-2025-06-30`）和 `zi
 **热路径性能**：decoder_caches 用 `copy_from_slice` 复用预分配内存（省 ~320KB/chunk），encoder 输入 `into_shape` 零拷贝（省 ~45KB），CIF 用 `as_slice()` 引用（省 ~20-40KB），decoder 键名预分配 `cache_keys`（省 16× format!）。
 
 **诊断方法**：`cargo test -p octopus-asr-local --lib streaming_paraformer::tests::test_streaming_paraformer_real_model -- --nocapture`，对比输出与 sherpa-onnx 参考值 `"昨天是 monday today day is 礼拜二 the day after tomorrow 是星期"`。详见 [spec](docs/superpowers/specs/2026-06-21-paraformer-fbank-feature-extraction-fix.md)。
+
+### 物理/逻辑坐标转换（⚠️ 已踩坑 5+ 次，勿再搞错）
+
+macOS 下所有获取屏幕坐标的 API（`CGEvent::location()`、`Monitor::position()`、`Monitor::size()`、`NSWindow.frame`）返回的都是**物理像素**（Retina 下如 2880×1800），而 Tauri `LogicalPosition` / `LogicalSize` 是**逻辑像素**（1440×900）。两者比例 = `scale_factor()`（Retina=2.0）。
+
+**任何坐标/尺寸比较或窗口定位都必须统一到逻辑像素**——物理值 ÷ `scale_factor()`。
+
+已修复的文件：
+- `action_bar_commands.rs::get_mouse_position`——CGEvent 物理坐标 ÷ scale
+- `compact_editor_window.rs::on_compact_editor_save_state`——inner_position/inner_size 已是逻辑值（Tauri API 自动转换），但 `Monitor::position()` 必须除 scale
+- `window_position.rs::is_position_visible`——Monitor position/size 除 scale
+- `compact_editor_window.rs` 最大化恢复——Monitor position/size 除 scale
+
+**诊断方法**：日志打印 raw 坐标 + scale factor，对比预期逻辑值。
+
+### Tauri 2 窗口创建注意事项（已踩坑多次）
+
+- **每个新窗口必须加入 `capabilities/default.json` 的 `windows` 数组**——否则 `listen`/`invoke` 被拒（报 `event.listen not allowed on window`）
+- **全局热键触发的命令不能在主线程 sleep**——阻塞事件循环 → 窗口 show/set_focus 时序错乱 → Esc/按钮无响应。必须 `std::thread::spawn`
+- **全局热键触发浮窗前隐藏常规窗口**——Regular 激活策略下激活 app 会把所有可见窗口带到前台。用 `activation::hide_regular_windows`
+- **mousedown capture 拦截 onClick**——`addEventListener("mousedown", fn, true)` 在 onClick 之前触发。外部点击检测用 `click` 冒泡阶段（`false`）
+- **transparent 窗口的 html 背景色**——`transparent:true` 只让窗口支持透明，html `backgroundColor` 仍渲染不透明层。透明窗口不设 html/body 背景
+- **`builder.maximized(true)` 在 WRY 不生效**——用 show 前 `win.maximize()` 或主屏尺寸直接创建
