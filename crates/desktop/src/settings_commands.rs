@@ -97,9 +97,9 @@ pub fn set_config(
     engine_manager: State<'_, std::sync::Arc<octopus_asr_local::engine::AsrEngineManager>>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
-    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, mut cfg) = {
+    let (old_asr_sc, old_clipboard_sc, old_edit_global, old_polish_global, old_screenshot_sc, old_action_bar_sc, mut cfg) = {
         let g = rc.read();
-        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.clone())
+        (g.asr_shortcut.clone(), g.clipboard_shortcut.clone(), g.edit_global_shortcut.clone(), g.polish_global_shortcut.clone(), g.screenshot_shortcut.clone(), g.action_bar_shortcut.clone(), g.clone())
     };
     apply_config_value(&mut cfg, &key, &value)?;
 
@@ -161,6 +161,17 @@ pub fn set_config(
         }
         if let Err(e) = crate::screenshot_commands::register_screenshot_shortcut(&app_handle, &cfg.screenshot_shortcut) {
             let _ = crate::screenshot_commands::register_screenshot_shortcut(&app_handle, &old_screenshot_sc);
+            return Err(format!("快捷键注册失败，配置未更改: {}", e));
+        }
+    }
+
+    if key == "action_bar_shortcut" && cfg.action_bar_shortcut != old_action_bar_sc {
+        use tauri_plugin_global_shortcut::GlobalShortcutExt;
+        if let Ok(old) = old_action_bar_sc.parse::<tauri_plugin_global_shortcut::Shortcut>() {
+            let _ = app_handle.global_shortcut().unregister(old);
+        }
+        if let Err(e) = crate::action_bar_window::register_action_bar_shortcut(&app_handle, &cfg.action_bar_shortcut) {
+            let _ = crate::action_bar_window::register_action_bar_shortcut(&app_handle, &old_action_bar_sc);
             return Err(format!("快捷键注册失败，配置未更改: {}", e));
         }
     }

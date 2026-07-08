@@ -31,22 +31,39 @@ export default function ActionBar() {
   const [errorMsg, setErrorMsg] = useState("");
   const searchEngineRef = useRef("google");
 
-  // mount：拉取上下文 + 搜索引擎
+  // mount + 每次 show 时拉取上下文 + 搜索引擎
   useEffect(() => {
-    invoke<Context | null>("action_bar_get_context").then((ctx) => {
-      if (ctx) setContext(ctx);
-    });
+    const refresh = () => {
+      invoke<Context | null>("action_bar_get_context").then((ctx) => {
+        if (ctx) { setContext(ctx); setView("main"); setSelectedIdx(0); }
+      });
+    };
+    refresh(); // 首次 mount
+    // 窗口 show/hide 复用——监听 show 事件重新拉取
+    let unlisten: (() => void) | undefined;
+    const listenPromise = listen("action-bar://show", () => refresh());
+    listenPromise.then((fn) => { /* unlisten 在 cleanup 用 */ });
+
     invoke<{ config: Record<string, string | number | boolean> }>("get_config").then((resp) => {
       searchEngineRef.current = (resp.config.action_bar_search_engine as string) || "google";
     });
+
+    return () => { listenPromise.then((fn) => fn()); };
   }, []);
 
-  // 点击外部 / blur 消失
+  // 点击外部消失（不用 onFocusChanged——会在点击按钮时误触发）
   useEffect(() => {
-    const unlisten = getCurrentWindow().onFocusChanged(({ payload: focused }) => {
-      if (!focused) getCurrentWindow().hide();
-    });
-    return () => { unlisten.then((fn) => fn()); };
+    const onDown = (e: MouseEvent) => {
+      const el = e.target as HTMLElement;
+      // 点击浮窗内部不消失
+      if (el && el.closest("[data-action-bar]")) return;
+      getCurrentWindow().hide();
+    };
+    // 延迟注册——避免 show 后首个鼠标事件就关掉
+    const timer = setTimeout(() => {
+      document.addEventListener("mousedown", onDown, true);
+    }, 100);
+    return () => { clearTimeout(timer); document.removeEventListener("mousedown", onDown, true); };
   }, []);
 
   // URL 检测

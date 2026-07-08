@@ -1,7 +1,7 @@
 //! AI 命令面板迷你浮窗——选中文本后热键触发，鼠标上方弹出。
 //! 透明无边框 always_on_top，单例 show/hide toggle。
 
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 pub const WINDOW_LABEL: &str = "action_bar_window";
 
@@ -27,7 +27,7 @@ pub fn create_action_bar_window(app: &AppHandle) {
     .build();
 }
 
-/// 在指定坐标显示浮窗（鼠标上方）。
+/// 在指定坐标显示浮窗（鼠标上方）。emit 事件让前端刷新 context。
 pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
     if let Some(win) = app.get_webview_window(WINDOW_LABEL) {
         let _ = win.set_position(tauri::Position::Logical(
@@ -35,6 +35,8 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
         ));
         let _ = win.show();
         let _ = win.set_focus();
+        // 通知前端重新拉取 context（窗口是 show/hide 复用，mount useEffect 只跑一次）
+        let _ = app.emit("action-bar://show", ());
     }
 }
 

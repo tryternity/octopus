@@ -157,7 +157,9 @@ fn get_mouse_position() -> (f64, f64) {
     };
     if let Some(event) = event {
         let point = event.location();
-        return (point.x / 2.0, point.y / 2.0);
+        // CGEvent::location() 返回 Quartz 全局坐标（points/逻辑像素，原点左上角 y 向下），
+        // 与 Tauri LogicalPosition 坐标系一致——不除 scale。
+        return (point.x, point.y);
     }
     (100.0, 100.0)
 }
