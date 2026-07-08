@@ -265,6 +265,7 @@ pub fn run() {
             coordinator::current_transcription_id,
             theme::list_themes,
             theme::get_theme_id,
+            system_status_commands::get_system_status,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -478,6 +479,15 @@ pub fn run() {
             // 6.2 Register global polish shortcut（跨应用 show 结果窗 + 立即润色）
             if let Err(e) = result_window::register_polish_global_shortcut(app.handle(), &config.polish_global_shortcut) {
                 log::error!("Failed to register global polish shortcut: {}", e);
+            }
+
+            // 系统状态页：创建 registry + sampler，sampler manage 为 State（registry 由 sampler 持有，
+            // 经 sampler.snapshot() 暴露，无需单独 manage），启动采样循环 + 注入模型 probe
+            {
+                let registry = Arc::new(system_status_commands::ModelMemoryRegistry::new());
+                let sampler = Arc::new(system_status_commands::SystemStatusSampler::new(registry));
+                app.manage(sampler.clone());
+                sampler.start(app.handle().clone());
             }
 
             info!("octopus-desktop initialized");

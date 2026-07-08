@@ -3,13 +3,13 @@
 //! 「模型占用内存」：同进程 ort 无法 OS 级 per-model 拆分，故用「加载前后进程 RSS 差值」
 //! 近似（仅首次记录不覆盖，避免 ort arena 复用导致后续差值偏低/为负）。属估算，前端标注「约」。
 
-// 以下类型/方法在本 task 仅作为公共数据契约存在，尚未注册到 Tauri handler；
-// 待 Task 4 接入 get_system_status 命令后即可移除这些 allow。
-#![allow(dead_code)]
-
 use parking_lot::Mutex;
 use serde::Serialize;
 use std::collections::{HashMap, VecDeque};
+use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
+use sysinfo::{Pid, ProcessesToUpdate, System};
+use tauri::{AppHandle, Emitter, State};
 
 #[derive(Serialize, Clone, Debug)]
 pub struct ModelMemory {
@@ -122,6 +122,148 @@ impl RingBuffer {
         }
         TimeSeries { rss, cpu, timestamps: ts }
     }
+}
+
+const SAMPLE_INTERVAL_SECS: u64 = 2;
+const RING_CAPACITY: usize = 60;
+
+/// 读「当前 octopus 进程」RSS（字节）。每次新建 System 并只刷新自身进程。
+///
+/// 刻意独立于采样器的持久化 `System`：probe 路径只取 RSS 瞬时值（`memory()` 不需差分基线），
+/// 且避免在模型加载期间持有采样器的 sys 锁。
+fn read_self_rss() -> Option<u64> {
+    let pid = Pid::from_u32(std::process::id());
+    let mut sys = System::new();
+    sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+    sys.process(pid).map(|p| p.memory())
+}
+
+/// 采样器：常驻后台循环采样 → 更新 ring buffer + current → emit。
+/// 由 main.rs setup 创建并 manage；Tauri State 共享给命令与 probe 闭包。
+///
+/// `sys` 持久化：sysinfo 的 `cpu_usage()` / `global_cpu_usage()` 基于「两次刷新的时间差分」
+/// 计算（单次刷新无基准、恒返回 0）。每 tick 新建 System = 永远首次 → 进程 CPU% 与系统
+/// CPU% 恒为 0（正确性 bug）。故 System 跨 tick 保留，仅构造时预热一次基线
+/// （首次读取仍 0、第二 tick 起准确，符合 spec 注明）。
+pub struct SystemStatusSampler {
+    sys: Mutex<System>,
+    ring: Mutex<RingBuffer>,
+    current: Mutex<SystemStatusSnapshot>,
+    registry: Arc<ModelMemoryRegistry>,
+}
+
+impl SystemStatusSampler {
+    pub fn new(registry: Arc<ModelMemoryRegistry>) -> Self {
+        let mut sys = System::new();
+        // 预热 CPU 基线：建立首次刷新时间戳，后续 tick 的差分才有意义。
+        sys.refresh_cpu_usage();
+        Self {
+            sys: Mutex::new(sys),
+            ring: Mutex::new(RingBuffer::new(RING_CAPACITY)),
+            current: Mutex::new(SystemStatusSnapshot::default()),
+            registry,
+        }
+    }
+
+    /// 采一次样并 emit。sysinfo 失败则跳过、保留上次快照（不崩）。
+    fn sample_and_emit(&self, app: &AppHandle) {
+        let pid = Pid::from_u32(std::process::id());
+
+        // 持久化 sys：refresh_processes 默认带 .with_cpu()（0.32.1 源码 system.rs:297-301
+        // 证实），故进程级 cpu 无需 refresh_processes_specifics。
+        let mut sys = self.sys.lock();
+        sys.refresh_processes(ProcessesToUpdate::Some(&[pid]), true);
+        sys.refresh_memory(); // 系统级 used/total
+        sys.refresh_cpu_usage(); // 系统级 CPU（refresh_memory 不刷 CPU）
+
+        let process = match sys.process(pid) {
+            Some(p) => ProcessStats {
+                rss_bytes: p.memory(),
+                cpu_percent: p.cpu_usage(),
+            },
+            None => {
+                log::warn!("[system-status] 读取自身进程失败，跳过本次采样");
+                return;
+            }
+        };
+        let system = SystemStats {
+            total_memory_bytes: sys.total_memory(),
+            used_memory_bytes: sys.used_memory(),
+            cpu_percent: sys.global_cpu_usage(),
+        };
+        // 先释放 sys 锁，再取 ring/current 锁——固定锁序（sys 先释放），避免持多锁。
+        drop(sys);
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|d| d.as_secs_f64())
+            .unwrap_or(0.0);
+
+        let snap = {
+            let mut ring = self.ring.lock();
+            ring.push(SamplePoint { timestamp: now, rss: process.rss_bytes, cpu: process.cpu_percent });
+            let history = ring.to_time_series();
+            let models = self.registry.entries();
+            let snap = SystemStatusSnapshot { sampled_at: now, process, system, history, models };
+            drop(ring); // 先释放 ring 锁，再取 current 锁——两锁不嵌套，固定锁序
+            *self.current.lock() = snap.clone();
+            snap
+        };
+        // emit 在所有 sampler 锁之外：序列化 60 点历史 + 模型列表不持锁
+        let _ = app.emit("system-status", snap);
+    }
+
+    /// 当前完整快照（首屏 invoke 用）。
+    pub fn snapshot(&self) -> SystemStatusSnapshot {
+        self.current.lock().clone()
+    }
+
+    /// 启动后台采样循环 + 注入模型加载 probe（Before/After RSS 差值 → registry）。
+    pub fn start(self: Arc<Self>, app: AppHandle) {
+        // probe 闭包：Before 存 RSS，After 算差 record_once
+        let before_map: Arc<Mutex<HashMap<String, u64>>> = Arc::new(Mutex::new(HashMap::new()));
+        let registry = self.registry.clone();
+        let bm = before_map.clone();
+        octopus_infra::model_probe::set_probe(Arc::new(move |phase, id| {
+            match phase {
+                octopus_infra::model_probe::LoadPhase::Before => {
+                    if let Some(rss) = read_self_rss() {
+                        // 覆盖式 insert：重试加载刷新 before；若 After 未触发（如 panic），
+                        // 条目残留但不增长（model id 集合有界）。
+                        bm.lock().insert(id.to_string(), rss);
+                    }
+                }
+                octopus_infra::model_probe::LoadPhase::After => {
+                    let before = bm.lock().remove(id);
+                    if let (Some(b), Some(now)) = (before, read_self_rss()) {
+                        if now > b {
+                            registry.record_once(id, now - b);
+                        }
+                    }
+                }
+            }
+        }));
+
+        // 采样循环（catch panic，不影响主进程）
+        let this = self.clone();
+        let app2 = app.clone();
+        tokio::spawn(async move {
+            loop {
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    this.sample_and_emit(&app2);
+                }));
+                tokio::time::sleep(std::time::Duration::from_secs(SAMPLE_INTERVAL_SECS)).await;
+            }
+        });
+    }
+}
+
+/// 首屏拉取当前完整快照。
+#[tauri::command]
+pub fn get_system_status(
+    sampler: State<'_, Arc<SystemStatusSampler>>,
+) -> SystemStatusSnapshot {
+    sampler.snapshot()
 }
 
 #[cfg(test)]
