@@ -304,11 +304,11 @@ function Result() {
           });
         }],
       ];
-      for (const [event, handler] of handlers) {
+      await Promise.all(handlers.map(async ([event, handler]) => {
         const fn = await listen(event, (e) => handler(e.payload));
         if (cancelled) { fn(); return; }
         unlistens.push(fn);
-      }
+      }));
       if (!cancelled) {
         invoke("result_window_ready");
         // 冷启动主动拉取一次工具栏配置（edit_shortcut / polish_mode / denoise_mode 等），
@@ -578,6 +578,7 @@ function Result() {
   };
 
   const openPolishPopup = async () => {
+    if (popupType === "polish") { setPopupType(null); return; }  // toggle 关闭
     setPopupItems(POLISH_OPTIONS.map(o => ({
       label: o.label, current: o.mode === toolbarState.polish_mode, mode: o.mode,
     })));
@@ -585,6 +586,7 @@ function Result() {
   };
 
   const openDenoisePopup = async () => {
+    if (popupType === "denoise") { setPopupType(null); return; }  // toggle 关闭
     setPopupItems(DENOISE_OPTIONS.map(o => ({
       label: o.label, current: o.mode === toolbarState.denoise_mode, mode: o.mode,
     })));

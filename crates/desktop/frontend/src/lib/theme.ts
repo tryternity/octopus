@@ -111,6 +111,8 @@ export function restoreCachedTheme() {
  */
 export async function applyThemeFromConfig() {
   try {
+    // config-changed 可能是用户增删了自定义主题文件——清除前端缓存让 list_themes 重新拉取
+    themeCache = null;
     const themeId = await invoke<string>("get_theme_id");
     await applyThemeById(themeId);
   } catch (e) {

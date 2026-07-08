@@ -371,7 +371,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
       }).catch(() => {});
     }, 150);
     return () => { clearTimeout(timer); zoomVersionRef.current++; };
-  }, [zoom, natW, natH]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [zoom, natW, natH, imageId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // CSS 坐标（相对图片左上角，含滚动偏移）→ 自然坐标（/zoom）
   const toNatural = (cssX: number, cssY: number) => {

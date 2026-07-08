@@ -574,7 +574,7 @@ function formatFilePaths(refData?: string): string {
     const display = paths.slice(0, 3).map((raw) => {
       const stripped = raw.replace(/^file:\/\//, "");
       const path = raw.startsWith("file://") ? decodeURIComponent(stripped) : stripped;
-      const parts = path.split("/").filter(Boolean);
+      const parts = path.split(/[\\/]/).filter(Boolean);
       return "…/" + parts.slice(-2).join("/");
     });
     if (paths.length > 3) return display.join("  ") + `  +${paths.length - 3}`;

@@ -99,6 +99,11 @@ export function measureCaretPx(
   r.setStart(loc.node, loc.utf16Offset);
   r.collapse(true);
   const rect = r.getBoundingClientRect();
+  // WebKit/Blink 对空文本节点或尾部 \n 的 collapsed range 可能返回全零 rect。
+  // 此时 left/top = -cRect.left/-cRect.top 会指向视口左上角——视为无效测量。
+  if (rect.width === 0 && rect.height === 0 && rect.left === 0 && rect.top === 0) {
+    return { left: 0, top: 0, height: 18 };
+  }
   return { left: rect.left - cRect.left, top: rect.top - cRect.top, height: rect.height || 18 };
 }
 
