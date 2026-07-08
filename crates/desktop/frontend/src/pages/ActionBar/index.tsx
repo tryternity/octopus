@@ -98,6 +98,7 @@ export default function ActionBar() {
 
   const executeAiAction = useCallback(async (action: string) => {
     const ctx = contextRef.current;
+    console.log("[action-bar] executeAiAction:", action, "context:", !!ctx);
     if (!ctx) return;
     setView("loading");
     try {
@@ -111,8 +112,10 @@ export default function ActionBar() {
   }, []);
 
   const executeMain = useCallback((id: string) => {
+    console.log("[action-bar] executeMain:", id, "context:", !!contextRef.current);
     const ctx = contextRef.current;
     if (id === "ai") {
+      console.log("[action-bar] opening submenu");
       setView("submenu");
       setSubSelectedIdx(0);
     } else if (id === "translate") {
