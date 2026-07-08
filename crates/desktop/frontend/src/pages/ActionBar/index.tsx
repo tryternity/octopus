@@ -187,6 +187,11 @@ export default function ActionBar() {
   useEffect(() => { mainItemsRef.current = mainItems; }, [mainItems]);
   useEffect(() => { aiItemsRef.current = submenuType === "search" ? searchItems : aiItems; }, [aiItems, searchItems, submenuType]);
 
+  const submenuTypeRef = useRef<SubmenuType>(null);
+  const searchItemsRef = useRef(searchItems);
+  useEffect(() => { submenuTypeRef.current = submenuType; }, [submenuType]);
+  useEffect(() => { searchItemsRef.current = searchItems; }, [searchItems]);
+
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       console.log("[action-bar] keydown:", e.key, "view:", viewRef.current);
@@ -256,7 +261,8 @@ export default function ActionBar() {
         if (viewRef.current === "main") {
           executeMain(mainItemsRef.current[selectedIdxRef.current].id);
         } else if (viewRef.current === "submenu") {
-          executeSubItem(aiItemsRef.current[subSelectedIdxRef.current].id);
+          const items = submenuTypeRef.current === "search" ? searchItemsRef.current : aiItemsRef.current;
+          executeSubItem(items[subSelectedIdxRef.current].id);
         }
         return;
       }
