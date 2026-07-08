@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
+import { listen as rawListen } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
 import { Sparkles, Globe, Search, Link as LinkIcon, FileText, Lightbulb, Pencil, Loader2 } from "lucide-react";
@@ -40,15 +41,13 @@ export default function ActionBar() {
     };
     refresh(); // 首次 mount
     // 窗口 show/hide 复用——监听 show 事件重新拉取
-    let unlisten: (() => void) | undefined;
-    const listenPromise = listen("action-bar://show", () => refresh());
-    listenPromise.then((fn) => { /* unlisten 在 cleanup 用 */ });
+    const listenPromise = rawListen("action-bar://show", () => refresh());
 
     invoke<{ config: Record<string, string | number | boolean> }>("get_config").then((resp) => {
       searchEngineRef.current = (resp.config.action_bar_search_engine as string) || "google";
     });
 
-    return () => { listenPromise.then((fn) => fn()); };
+    return () => { listenPromise.then((fn: () => void) => fn()); };
   }, []);
 
   // 点击外部消失（不用 onFocusChanged——会在点击按钮时误触发）
