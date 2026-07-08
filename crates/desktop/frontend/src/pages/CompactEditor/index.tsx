@@ -19,6 +19,8 @@ interface Tab {
 interface OpenTabPayload {
   itemId: number;
   source: string;
+  text?: string;
+  isTemp?: boolean;
 }
 
 const FONT_KEY = "compact-editor-font-size";
@@ -186,7 +188,13 @@ function CompactEditor() {
       }
       const fn = await listen("compact-editor://open-tab", (payload) => {
         const p = payload as OpenTabPayload;
-        loadAndAddTab(p.itemId, p.source);
+        if (p.source === 'temp') {
+          const tempKey = `temp:${Date.now()}`;
+          setTabs(prev => [...prev, { key: tempKey, source: 'temp', itemId: 0, itemType: 'text', text: p.text, isTemp: true }]);
+          setTabs(prev => { const idx = prev.findIndex(t => t.key === tempKey); if (idx >= 0) { tabsRef.current = prev; setActiveIdx(idx); } return prev; });
+        } else {
+          loadAndAddTab(p.itemId, p.source);
+        }
       });
       if (cancelled) fn();
       else unlisten = fn;
