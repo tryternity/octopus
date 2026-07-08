@@ -30,6 +30,10 @@ static TOTAL_WINDOWS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
 /// 截图并发门控：防止狂按快捷键导致多个 start_screenshot 并发 clear/push 静态量。
 /// CAS true → 进入；已是 true → 直接返回（上一次截图仍在进行）。
 static SCREENSHOT_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// 最近一次截图 OCR 结果（关联 image_id）。emit("ocr-screenshot://result") 早于
+/// 新窗 React mount 会被丢，ImagePreview mount 后用 get_last_screenshot_ocr 主动拉取兜底。
+/// 截图 OCR 全局互斥（OcrLockGuard），单槽即可，无需并发保护。
+static LAST_SCREENSHOT_OCR: Mutex<Option<(i64, crate::clipboard_commands::OcrResult)>> = Mutex::new(None);
 
 /// 注册截图全局快捷键。main 启动注册 + set_config 热重载共用，
 /// 与 shortcut::register_shortcut / result_window::register_edit_global_shortcut 范式一致。
@@ -324,21 +328,47 @@ pub async fn ocr_screenshot(
     let _ = app_handle.run_on_main_thread(move || {
         log::info!("[ocr-screenshot] main: closing screenshot windows");
         close_all_screenshot_windows(&ah);
+        // 合并双开为一次 open_compact_editor_tabs：避免连续单开在「窗口刚 build、
+        // React 未 mount」中间态丢失第二个 tab（首个经 URL 注入幸存，第二个被
+        // push 覆盖 + emit 丢 → ocr 文本 tab 丢失）。批量调用只走一次 create/emit。
+        let mut tabs: Vec<(i64, Option<&str>)> = Vec::new();
         if let Some(img_id) = image_id_opt {
-            log::info!("[ocr-screenshot] main: open image tab in compact editor {}", img_id);
-            crate::compact_editor_commands::open_compact_editor_tab(img_id, None, ah.clone());
+            log::info!("[ocr-screenshot] main: open image tab {}", img_id);
+            tabs.push((img_id, None));
         }
         if let Some(ocr_id) = ocr_id_opt {
-            log::info!("[ocr-screenshot] main: open compact editor tab {}", ocr_id);
-            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, None, ah);
+            log::info!("[ocr-screenshot] main: open ocr text tab {}", ocr_id);
+            tabs.push((ocr_id, None));
         }
+        crate::compact_editor_commands::open_compact_editor_tabs(&tabs, &ah);
     });
 
-    // 先 emit OCR blocks（图片预览 mount 后会 listen 到，或已 mount 则直接收到）
+    // emit OCR blocks（图片预览 mount 后 listen 到，或已 mount 则直接收到）。
+    // 同时缓存（关联 image_id）——emit 早于新窗 React mount 会被丢，ImagePreview
+    // mount 时用 get_last_screenshot_ocr 主动拉取兜底。
     use tauri::Emitter;
     let _ = app_handle.emit("ocr-screenshot://result", &ocr_result);
+    *LAST_SCREENSHOT_OCR.lock() = Some((image_id, ocr_result));
 
     Ok(())
+}
+
+/// ImagePreview mount 时拉取缓存（按 image_id 校验：匹配返回并清空，不匹配放回）。
+/// 治 emit("ocr-screenshot://result") 早于新窗 React mount 的竞态——截图 OCR 后
+/// 新窗 ImagePreview mount 时主动拉高亮遮罩（emit 已被丢）。截图 OCR 全局互斥，单槽即可。
+#[tauri::command]
+pub fn get_last_screenshot_ocr(image_id: i64) -> Option<crate::clipboard_commands::OcrResult> {
+    let mut g = LAST_SCREENSHOT_OCR.lock();
+    if let Some((id, res)) = g.take() {
+        if id == image_id {
+            Some(res)
+        } else {
+            *g = Some((id, res)); // 不匹配：放回（非本次截图，保留待对应图片）
+            None
+        }
+    } else {
+        None
+    }
 }
 
 /// 前端渲染完成后调用。所有窗口都 ready 后统一 show（同步显示，避免逐个弹出）。

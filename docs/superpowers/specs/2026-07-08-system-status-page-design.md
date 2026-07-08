@@ -76,11 +76,12 @@
 | 模型 | 插桩点 | id |
 |---|---|---|
 | ASR | `asr-local::AsrEngineManager::load_engine_into_cache` 前后 | `asr:<engine>` |
-| OCR | `ocr::engine` 首次初始化前后 | `ocr:paddle` |
+| OCR | `ocr::engine` 首次初始化前后 | `ocr:<model_name>` |
 | VAD | `asr-local::vad` 首次加载前后 | `vad:silero` |
 
 - 加载前读进程 RSS → 加载后再读 → 差值 `record_once` 进 registry
 - 仅首次记录、不覆盖（ort arena 复用会让后续差值偏低甚至为负，覆盖会失真）
+- `before_map` key 用 `(ThreadId, model_id)`：多线程并发加载同一未缓存模型（如 server 多连接同时 cache miss 同一 ASR 引擎）时按线程×模型配对，避免 before/after 错拿致估算值失真（仅影响状态页估算显示，不影响加载正确性）
 - 属「估算」，前端固定标注「约」
 
 ### 数据结构

@@ -1006,6 +1006,26 @@ git -C <worktree> commit -m "docs(arch): 新增 system_status 模块说明"
 
 ---
 
+### Task 12: 后端审查修复——probe race ThreadId 隔离 + yt-dlp 原子下载（2026-07-08）
+
+**状态：已实现（`ff4a37f`）。** 后端代码审查复查 3 问题，2 修 1 反馈：
+
+- [x] **① probe race ThreadId 隔离**（`system_status_commands.rs`）：`load_engine_into_cache` 读缓存 miss 后释放读锁、到入缓存写锁前无保护，多线程并发加载同一未缓存模型（server 多连接 cache miss 同一 ASR 引擎）时 probe `before_map` 的 key 覆盖/错拿。修复：`before_map` key 从 `String` 改 `(ThreadId, String)`，Before/After 同线程配对。仅影响状态页估算显示，不影响加载正确性。
+- [x] **② yt-dlp 原子下载**（`dlp/src/main.rs`）：`download_file` 直接写 dest，中断残留半成品被 `get_binary_path` 的 `exists()` 误判跳过下载 → 永久执行损坏 binary。修复：改写 `.part` 临时文件 + `drop` 句柄后 `fs::rename` 原子到 dest；`.part` 残留无害（dest 仍不存在 → 下次重新下载，`create` 自动 truncate 覆盖）。
+- [x] **③ async 同步阻塞**（反馈不修）：`sample_and_emit` 在 async task 里同步调 sysinfo refresh，是反模式但影响极小（每 2s ms 级 syscall、独占 task 不饿死其他 worker），建议保持现状。
+
+### Task 13: 后端审查二轮修复——OCR 坐标去重 + 双开 tab 竞态 + ASR 淘汰通知（2026-07-08）
+
+**状态：已实现。** 后端审查二轮复查 5 问题，4 修 1 反馈（tsc 无错 / vitest 105 passed / cargo test 203 passed）：
+
+- [x] **① OCR 长图坐标去重 fold max**（`ocr/src/engine.rs`）：`recognize_long_image_with_blocks` 用 `blocks.last().y+h` 更新 `covered_until_y`，det 框按 y 中心排序时末尾矮行底边非最大，极端混排（贯穿大框+底部矮行）少记 → 下一 chunk 重叠区行逃过去重 → 重复行。修复：改 `fold(covered_until_y, max)` 取 chunk 内真正最大底边。边缘场景（正常行高一致时与原逻辑等价）。
+- [x] **② 截图 OCR 双开 tab 中间态丢失**（`compact_editor_commands.rs`）：`ocr_screenshot` 连续两次 `open_compact_editor_tab`，首次 `build()` 注册窗口 label 后第二次命中 `get_webview_window=Some` 走 emit（React 未 mount 丢）+ `push_pending_tab` 覆盖首个 tab → ocr 文本 tab 丢失（图片 tab 经 URL 注入幸存）。修复：`PENDING_TAB: Option` → `PENDING_TABS: Vec<PendingTabFull>`，新增 `open_compact_editor_tabs(items)` 批量一次 push + 一次 create/emit（无中间态）；窗口存在只 emit 不 push（防残留污染下次建窗）；前端 mount `get_pending_compact_tabs` take 全部与 URL 首个按 key 去重。`open_compact_editor_tab` 单开命令保留（转调批量版）。
+- [x] **③ 截图 OCR blocks emit 早于 mount**（`screenshot_commands.rs` + `ImagePreview`）：`emit("ocr-screenshot://result")` 早于新窗 React mount 被丢，图片 tab 高亮遮罩不自动显示（须手点 ScanText 重跑）。修复：后端 `LAST_SCREENSHOT_OCR: Mutex<Option<(image_id, OcrResult)>>` 缓存 + `get_last_screenshot_ocr(image_id)` 命令（按 image_id 校验 take）；ImagePreview mount 时 invoke 拉取兜底，listen 供已 mount 即时收。`OcrResult`/`OcrTextBlock` 加 `Clone`。
+- [x] **④ ASR 缓存淘汰漏 probe Unload**（`asr-local/src/engine.rs`）：`load_engine_into_cache` 的 `cache.remove(&k)` 淘汰旧引擎时未通知状态页（与 OCR idle 释放不对称）→ 状态页残留已淘汰模型估算。修复：淘汰后补 `probe(Unload, "asr:{k}")`。
+- [x] **⑤ probe before_map 加载失败残留**（反馈不修）：Before 写入后 `?` 提前返回则 After 不执行，条目残留。但有界（线程×模型组合数、同线程重试覆盖），`system_status_commands.rs:299-300` 注释已说明，无需 RAII guard 增复杂度。
+
+---
+
 ## Self-Review（写完后自查）
 
 **1. Spec 覆盖：**

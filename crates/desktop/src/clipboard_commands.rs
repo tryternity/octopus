@@ -451,7 +451,7 @@ pub async fn insert_ocr_clipboard_item(
 
 /// 图片条目 OCR：识别文本并返回（纯识别，不入库不写剪贴板）。
 /// 入库由前端统一调 insert_ocr_clipboard_item 完成（三入口一致），再 openCompactEditorTab 编辑。
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OcrTextBlock {
     pub text: String,
@@ -459,7 +459,7 @@ pub struct OcrTextBlock {
     pub score: f64,
 }
 
-#[derive(serde::Serialize)]
+#[derive(Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct OcrResult {
     pub text: String,

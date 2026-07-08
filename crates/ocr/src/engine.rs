@@ -224,9 +224,14 @@ impl OcrEngine {
             let mut blocks = self.run_ocr(&chunk)?;
             for b in &mut blocks { b.y += top as f64; }
             drop_overlapped_blocks(covered_until_y, &mut blocks);
-            if let Some(last) = blocks.last() {
-                covered_until_y = last.y + last.h;
-            }
+            // 取当前 chunk 剩余 block 的最大底边（fold max），而非 blocks.last().y+h：
+            // det 框按 y 中心升序排序，末尾 block 中心最大但底边不一定最大——
+            // 极端混排（贯穿性大图框 + 底部矮行）下 last() 会少记 covered_until_y，
+            // 致下一 chunk 重叠区行逃过去重 → 重复行。fold 从 covered_until_y 起步
+            // 保证单调不减。正常单/双栏纯文本行高一致时与 last() 等价。
+            covered_until_y = blocks.iter()
+                .map(|b| b.y + b.h)
+                .fold(covered_until_y, f64::max);
             all_blocks.extend(blocks);
         }
         Ok(all_blocks)

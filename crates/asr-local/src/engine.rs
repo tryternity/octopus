@@ -169,6 +169,13 @@ impl AsrEngineManager {
             if let Some(k) = key_to_remove {
                 log::info!("Evicting engine '{}' from cache to free up memory", k);
                 cache.remove(&k);
+                // 通知系统状态页清除该模型估算条目（与 OCR idle 释放 probe(Unload) 对称），
+                // 否则状态页残留已淘汰模型的估算内存，与真实不符。probe 闭包只锁
+                // before_map/registry，与 cached_engines 锁无嵌套，持写锁调用安全。
+                octopus_infra::model_probe::probe(
+                    octopus_infra::model_probe::LoadPhase::Unload,
+                    &format!("asr:{k}"),
+                );
             }
         }
         cache.insert(bare_name.to_string(), new_eng.clone());
