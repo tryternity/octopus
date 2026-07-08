@@ -166,9 +166,11 @@ export default function ActionBar() {
 
   // 子菜单项执行
   const executeSubItem = (id: string) => {
-    if (submenuType === "ai") {
+    const st = submenuTypeRef.current;
+    console.log("[action-bar] executeSubItem:", id, "submenuType:", st);
+    if (st === "ai") {
       executeAiAction(id);
-    } else if (submenuType === "search") {
+    } else if (st === "search") {
       const ctx = contextRef.current;
       if (!ctx) return;
       const baseUrl = SEARCH_URLS[id] || SEARCH_URLS.google;
