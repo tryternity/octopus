@@ -107,6 +107,12 @@ impl AsrEngineManager {
         }
 
         // 未命中：加载配置 + 实例化
+        // 系统状态页：记录加载前 RSS（仅 cache miss 才走到这）
+        octopus_infra::model_probe::probe(
+            octopus_infra::model_probe::LoadPhase::Before,
+            &format!("asr:{bare_name}"),
+        );
+
         let cfg = config::load_config()?;
         let (category, _bare, entry) = config::resolve_engine_in_config(&cfg, model_name)
             .with_context(|| format!("Unknown engine model: {}", model_name))?;
@@ -146,6 +152,11 @@ impl AsrEngineManager {
                 model_name
             ),
         };
+
+        octopus_infra::model_probe::probe(
+            octopus_infra::model_probe::LoadPhase::After,
+            &format!("asr:{bare_name}"),
+        );
 
         // 入缓存 + 按 max_cache 淘汰（保护当前 active，避免淘汰正用的引擎）
         let current_active = self.active_engine_name.read().unwrap().clone();
