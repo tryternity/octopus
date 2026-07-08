@@ -252,11 +252,13 @@ export default function Clipboard() {
 
       {/* Footer */}
       <div className="flex items-center justify-between px-3 py-1 border-t border-border text-[10px] text-muted-foreground/80">
-        <span>{total} 条</span>
-        <div className="flex items-center gap-2">
+        {/* 左：条数 + 一键清理 */}
+        <div className="flex items-center gap-3">
+          <span>{total} 条</span>
           {/* 一键清理：删当前 tab 类别下所有非收藏条目（与搜索框正交）。
               两步确认：点 1 次 → 变红「再点确认」+ 3s 超时，再点才执行。
-              收藏 tab 因 is_favorite=1 AND is_favorite=0 恒假删 0 条，禁用按钮。 */}
+              收藏 tab 因 is_favorite=1 AND is_favorite=0 恒假删 0 条，禁用按钮。
+              默认高亮一档（text-foreground），hover 预告危险偏红。 */}
           <button
             className={cn(
               "flex items-center gap-0.5 transition-colors",
@@ -264,7 +266,7 @@ export default function Clipboard() {
                 ? "opacity-50 cursor-not-allowed"
                 : confirming
                   ? "text-red-500"
-                  : "hover:text-foreground",
+                  : "text-foreground hover:text-red-500",
             )}
             disabled={filter === "favorite"}
             title={
@@ -272,7 +274,7 @@ export default function Clipboard() {
                 ? "收藏标签下无可清理项"
                 : confirming
                   ? "再点一次确认清理"
-                  : "清理非收藏"
+                  : "一键清理非收藏"
             }
             onClick={() => {
               if (filter === "favorite") return;
@@ -293,17 +295,18 @@ export default function Clipboard() {
             }}
           >
             <Trash2 className="w-2.5 h-2.5" />
-            {confirming ? "再点确认" : "清理"}
-          </button>
-          <button
-            className="flex items-center gap-0.5 hover:text-foreground transition-colors"
-            onClick={() => invoke("open_settings", { initialPage: "clipboard" })}
-            title="管理剪贴板"
-          >
-            <Settings2 className="w-2.5 h-2.5" />
-            管理
+            {confirming ? "再点确认" : "一键清理"}
           </button>
         </div>
+        {/* 右：管理 */}
+        <button
+          className="flex items-center gap-0.5 hover:text-foreground transition-colors"
+          onClick={() => invoke("open_settings", { initialPage: "clipboard" })}
+          title="管理剪贴板"
+        >
+          <Settings2 className="w-2.5 h-2.5" />
+          管理
+        </button>
       </div>
     </div>
   );
