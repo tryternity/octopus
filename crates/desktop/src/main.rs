@@ -32,6 +32,7 @@ mod screenshot_geometry;
 mod runtime_config;
 mod settings_commands;
 mod settings_window;
+mod system_status_commands;
 mod focus_tracker;
 mod shortcut;
 mod theme;
@@ -264,6 +265,7 @@ pub fn run() {
             coordinator::current_transcription_id,
             theme::list_themes,
             theme::get_theme_id,
+            system_status_commands::get_system_status,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -374,6 +376,16 @@ pub fn run() {
             let do_preheat = config.engine_mode == "embedded";
             #[cfg(feature = "cloud")]
             let do_preheat = do_preheat && !is_cloud_aliyun;
+
+            // 系统状态页：创建 registry + sampler，manage 为 State，启动采样循环 + 注入模型 probe。
+            // 必须在 preheat spawn 之前——set_probe 同步完成后，预加载模型的加载才会被探针捕获，
+            // 否则启动预热的 ASR/VAD 可能抢在注入前加载而漏进 registry。
+            {
+                let registry = Arc::new(system_status_commands::ModelMemoryRegistry::new());
+                let sampler = Arc::new(system_status_commands::SystemStatusSampler::new(registry));
+                app.manage(sampler.clone());
+                sampler.start(app.handle().clone());
+            }
 
             if do_preheat {
                 let resolved_model = match &resolved_engine {

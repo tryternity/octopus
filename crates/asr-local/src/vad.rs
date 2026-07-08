@@ -40,6 +40,10 @@ impl SileroVad {
             if let Some(s) = cache.get(model_path) {
                 s.clone()
             } else {
+                octopus_infra::model_probe::probe(
+                    octopus_infra::model_probe::LoadPhase::Before,
+                    "vad:silero",
+                );
                 let s = Arc::new(Mutex::new(
                     Session::builder()
                         .context("Failed to create ORT session builder")?
@@ -47,6 +51,10 @@ impl SileroVad {
                         .with_context(|| format!("Failed to load Silero VAD from {:?}", model_path))?,
                 ));
                 cache.insert(model_path.to_path_buf(), s.clone());
+                octopus_infra::model_probe::probe(
+                    octopus_infra::model_probe::LoadPhase::After,
+                    "vad:silero",
+                );
                 s
             }
         };

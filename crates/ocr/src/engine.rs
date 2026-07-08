@@ -60,6 +60,10 @@ impl OcrEngine {
         log::info!("Loading OCR model: {} from {}", model_name, dir.display());
 
         let config = build_engine_config(&dir)?;
+        octopus_infra::model_probe::probe(
+            octopus_infra::model_probe::LoadPhase::Before,
+            &format!("ocr:{model_name}"),
+        );
         let inner = octopus_paddle_ocr::RapidOcr::new(config)
             .map_err(|e| anyhow::anyhow!("Failed to init RapidOcr: {e}"))?;
 
@@ -70,6 +74,10 @@ impl OcrEngine {
         log::info!("[ocr-engine] RapidOcr loaded — model={}, word_segmentation={}", model_name, use_word_segmentation);
 
         let engine = Arc::new(OcrEngine { inner: Mutex::new(inner), use_word_segmentation });
+        octopus_infra::model_probe::probe(
+            octopus_infra::model_probe::LoadPhase::After,
+            &format!("ocr:{model_name}"),
+        );
         let _ = INSTANCE.set(engine.clone());
         Ok(engine)
     }

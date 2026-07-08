@@ -52,6 +52,9 @@ parking_lot = { workspace = true }
 # Async trait
 async-trait = "0.1"
 
+# 系统状态页：自身进程 RSS+CPU / 系统级 used+total+global cpu 采样
+sysinfo = "0.32"
+
 # WebSocket remote engine
 tokio-tungstenite = { version = "0.24", optional = true }
 futures-util = { version = "0.3", optional = true }

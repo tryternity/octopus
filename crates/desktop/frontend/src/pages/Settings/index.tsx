@@ -2,12 +2,20 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen as rawListen, type UnlistenFn } from "@tauri-apps/api/event";
 import type { Event } from "@tauri-apps/api/event";
-import { Settings as SettingsIcon, Box, Wand2, Clipboard, type LucideIcon } from "lucide-react";
+import {
+  Settings as SettingsIcon,
+  Box,
+  Wand2,
+  Clipboard,
+  Activity,
+  type LucideIcon,
+} from "lucide-react";
 import { cn } from "@/lib/utils";
 import ClipboardPanel from "./ClipboardPanel";
 import GeneralPanel from "./GeneralPanel";
 import ModelsPanel from "./ModelsPanel";
 import PromptsPanel from "./PromptsPanel";
+import SystemPanel from "./SystemPanel";
 
 export interface ConfigResponse {
   config: Record<string, string | number | boolean>;
@@ -19,13 +27,14 @@ export interface ConfigResponse {
   microphones: string[];
 }
 
-type PageName = "clipboard" | "settings" | "models" | "prompts";
+type PageName = "clipboard" | "settings" | "models" | "prompts" | "system";
 
 const NAV_ITEMS: { page: PageName; icon: LucideIcon; label: string }[] = [
   { page: "settings", icon: SettingsIcon, label: "系统设置" },
   { page: "clipboard", icon: Clipboard, label: "剪贴管理" },
   { page: "models", icon: Box, label: "模型管理" },
   { page: "prompts", icon: Wand2, label: "提示词" },
+  { page: "system", icon: Activity, label: "系统状态" },
 ];
 
 function Settings() {
@@ -106,6 +115,8 @@ function Settings() {
       <div className="flex-1 overflow-y-auto bg-background p-6">
         {page === "clipboard" ? (
           <ClipboardPanel showToast={showToast} />
+        ) : page === "system" ? (
+          <SystemPanel showToast={showToast} />
         ) : !configResp ? (
           <div className="flex items-center justify-center h-full text-muted-foreground">加载中...</div>
         ) : page === "settings" ? (
