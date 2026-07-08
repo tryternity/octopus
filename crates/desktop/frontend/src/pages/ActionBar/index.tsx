@@ -11,6 +11,7 @@ interface Context {
 }
 
 type View = "main" | "submenu" | "loading" | "error";
+type SubmenuType = "ai" | "search" | null;
 
 const SEARCH_URLS: Record<string, string> = {
   google: "https://www.google.com/search?q=",
@@ -44,6 +45,7 @@ export default function ActionBar() {
   const [view, setView] = useState<View>("main");
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [subSelectedIdx, setSubSelectedIdx] = useState(0);
+  const [submenuType, setSubmenuType] = useState<SubmenuType>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const searchEngineRef = useRef("google");
   const contextRef = useRef<Context | null>(null);
@@ -105,6 +107,12 @@ export default function ActionBar() {
     { id: "explain", icon: Lightbulb, label: "解释" },
   ];
 
+  const searchItems = [
+    { id: "google", icon: Search, label: "Google" },
+    { id: "baidu", icon: Search, label: "百度" },
+    { id: "bing", icon: Search, label: "Bing" },
+  ];
+
   // ── 动作执行（不用 useCallback——闭包捕获 ref 已是最新的）──
 
   const executeAiAction = async (action: string) => {
@@ -139,18 +147,30 @@ export default function ActionBar() {
     console.log("[action-bar] executeMain:", id);
     const ctx = contextRef.current;
     if (id === "ai") {
-      console.log("[action-bar] opening submenu");
+      setSubmenuType("ai");
+      setView("submenu");
+      setSubSelectedIdx(0);
+    } else if (id === "search") {
+      setSubmenuType("search");
       setView("submenu");
       setSubSelectedIdx(0);
     } else if (id === "translate") {
       executeAiAction("translate");
-    } else if (id === "search") {
-      if (!ctx) return;
-      const baseUrl = SEARCH_URLS[searchEngineRef.current] || SEARCH_URLS.google;
-      invoke("action_bar_open_url", { url: baseUrl + encodeURIComponent(ctx.text) });
     } else if (id === "url") {
       const url = detectActionUrl(ctx?.text || "").url;
       invoke("action_bar_open_url", { url });
+    }
+  };
+
+  // 子菜单项执行
+  const executeSubItem = (id: string) => {
+    if (submenuType === "ai") {
+      executeAiAction(id);
+    } else if (submenuType === "search") {
+      const ctx = contextRef.current;
+      if (!ctx) return;
+      const baseUrl = SEARCH_URLS[id] || SEARCH_URLS.google;
+      invoke("action_bar_open_url", { url: baseUrl + encodeURIComponent(ctx.text) });
     }
   };
 
@@ -163,7 +183,7 @@ export default function ActionBar() {
   useEffect(() => { selectedIdxRef.current = selectedIdx; }, [selectedIdx]);
   useEffect(() => { subSelectedIdxRef.current = subSelectedIdx; }, [subSelectedIdx]);
   useEffect(() => { mainItemsRef.current = mainItems; }, [mainItems]);
-  useEffect(() => { aiItemsRef.current = aiItems; }, [aiItems]);
+  useEffect(() => { aiItemsRef.current = submenuType === "search" ? searchItems : aiItems; }, [aiItems, searchItems, submenuType]);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -185,7 +205,7 @@ export default function ActionBar() {
           if (viewRef.current === "main" && n <= mainItemsRef.current.length) {
             executeMain(mainItemsRef.current[n - 1].id);
           } else if (viewRef.current === "submenu" && n <= aiItemsRef.current.length) {
-            executeAiAction(aiItemsRef.current[n - 1].id);
+            executeSubItem(aiItemsRef.current[n - 1].id);
           }
           return;
         }
@@ -212,11 +232,12 @@ export default function ActionBar() {
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
         if (e.key === "ArrowUp" && viewRef.current === "submenu") {
-          // ↑：子菜单 → 主菜单
           setView("main");
+          setSubmenuType(null);
         } else if (e.key === "ArrowDown" && viewRef.current === "main") {
-          // ↓：主菜单 → 子菜单（仅 AI 图标高亮时有效）
-          if (mainItemsRef.current[selectedIdxRef.current]?.id === "ai") {
+          const cur = mainItemsRef.current[selectedIdxRef.current];
+          if (cur && (cur.id === "ai" || cur.id === "search")) {
+            setSubmenuType(cur.id as SubmenuType);
             setView("submenu");
             setSubSelectedIdx(0);
           }
@@ -230,7 +251,7 @@ export default function ActionBar() {
         if (viewRef.current === "main") {
           executeMain(mainItemsRef.current[selectedIdxRef.current].id);
         } else if (viewRef.current === "submenu") {
-          executeAiAction(aiItemsRef.current[subSelectedIdxRef.current].id);
+          executeSubItem(aiItemsRef.current[subSelectedIdxRef.current].id);
         }
         return;
       }
@@ -269,13 +290,13 @@ export default function ActionBar() {
       {/* 子菜单在上 */}
       {view === "submenu" && (
         <div className="flex items-center gap-0.5 px-1 pt-1 pb-1 border-b border-border/40">
-          {aiItems.map((item, i) => (
+          {(submenuType === "search" ? searchItems : aiItems).map((item, i) => (
             <IconBtn
               key={item.id}
               icon={item.icon}
               label={item.label}
               active={subSelectedIdx === i}
-              onClick={() => executeAiAction(item.id)}
+              onClick={() => executeSubItem(item.id)}
             />
           ))}
         </div>
