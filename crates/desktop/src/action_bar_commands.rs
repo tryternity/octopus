@@ -40,20 +40,17 @@ pub fn trigger_action_bar(app: AppHandle) {
         *HIDDEN_REGULAR_WINDOWS.lock().unwrap() = hidden.clone();
         log::info!("[action-bar] hidden regular windows: {:?}", hidden);
 
-        // 1. 记录触发前的剪贴板内容（用于完成后恢复——避免模拟 Cmd+C 的文本进入剪贴板历史）
+        // 1. 记录触发前的剪贴板内容（用于完成后恢复）
         let clipboard_before = read_clipboard_text(&app_clone);
         *CLIPBOARD_BACKUP.lock().unwrap() = clipboard_before.clone();
 
-        // 2. 临时暂停 clipboard watcher 入库（防止模拟 Cmd+C 的文本进历史）
-        if let Some(handle) = app_clone.try_state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>() {
-            handle.set_recording_enabled(false);
-        }
-
-        // 3. 模拟 Cmd+C
+        // 2. 模拟 Cmd+C（不暂停 watcher——暂停会影响 clipboard-rs 的读取。
+        //   watcher 的 on_clipboard_change 会记录，但我们在 paste_result 完成后
+        //   恢复原始剪贴板内容，多余的条目可以通过删除最近一条来清理）
         let focus = FocusTracker::new();
         focus.simulate_copy();
 
-        // 4. 等待 200ms 让系统完成复制
+        // 3. 等待 200ms 让系统完成复制
         std::thread::sleep(std::time::Duration::from_millis(200));
 
         // 4. 读剪贴板
@@ -152,46 +149,35 @@ pub fn action_bar_dismiss(app: AppHandle) {
     restore_hidden_windows(&app);
 }
 
-/// 写结果到剪贴板 + 恢复焦点 + 模拟 Cmd+V + 隐藏浮窗 + 恢复剪贴板/常规窗口。
+/// AI 结果打开 CompactEditor 展示 + 隐藏浮窗 + 恢复常规窗口。
 #[tauri::command]
-pub fn action_bar_paste_result(result: String, app: AppHandle) {
+pub fn action_bar_show_result(result: String, original_text: String, app: AppHandle) {
     hide_action_bar_window(&app);
+
+    // 把结果写入剪贴板（方便用户手动粘贴）
     write_clipboard_text(&app, &result);
 
+    // 恢复剪贴板原始内容（删掉模拟 Cmd+C 的选中文本痕迹）
     let app_clone = app.clone();
     std::thread::spawn(move || {
-        // 1. 恢复焦点到原 app（同 paste_clipboard_item 的模式）
-        // macOS: hide 后系统自动还焦点给上一个 app
-        // 但需要等久一点让 macOS 完全处理窗口隐藏
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        std::thread::sleep(std::time::Duration::from_millis(500));
 
-        let focus = FocusTracker::new();
-        focus.restore_focus();
-
-        // 再等一下让目标 app 获得焦点
-        std::thread::sleep(std::time::Duration::from_millis(200));
-        focus.simulate_paste();
-        log::info!("[action-bar] paste done");
-
-        // 2. 粘贴完成后恢复剪贴板原始内容
-        std::thread::sleep(std::time::Duration::from_millis(300));
+        // 恢复原始剪贴板
         let backup = CLIPBOARD_BACKUP.lock().unwrap().take();
         if let Some(original) = backup {
             write_clipboard_text(&app_clone, &original);
         }
 
-        // 3. 恢复 clipboard watcher 入库
-        if let Some(handle) = app_clone.try_state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>() {
-            let recording = octopus_infra::db::load_config_key("clipboard_enabled")
-                .ok().flatten()
-                .map(|v| v != "false")
-                .unwrap_or(true);
-            handle.set_recording_enabled(recording);
-        }
-
-        // 4. 恢复常规窗口
+        // 恢复常规窗口
         restore_hidden_windows(&app_clone);
     });
+
+    // 用 CompactEditor 打开结果展示（source=clipboard 只读 tab）
+    crate::compact_editor_commands::open_compact_editor_tab(
+        0, // itemId=0 表示临时文本，不写 DB
+        Some("clipboard".into()),
+        app,
+    );
 }
 
 /// 用系统浏览器打开 URL + 隐藏浮窗 + 恢复常规窗口。
