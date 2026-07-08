@@ -69,15 +69,13 @@ pub fn register_clipboard_shortcut(
 
 pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        // toggle 方向按"焦点"而非"可见性"判断：剪贴板窗口是 always-on-top，
-        // 失焦后仍 visible，若用 is_visible() 决定方向，失焦时按一次会被当成
-        // "已显示→收起"先藏掉，第二次按键才弹出。改为仅当"可见且有焦点"才收起；
-        // 失焦（或不可见）一律 show + set_focus 激活——即"失焦状态按快捷键直接弹出"。
         let visible = window.is_visible().unwrap_or(false);
         let focused = window.is_focused().unwrap_or(false);
         if visible && focused {
             window.hide()?;
         } else {
+            // 隐藏常规窗口避免 app 被激活时带到前台
+            crate::activation::hide_regular_windows(app);
             window.show()?;
             window.set_focus()?;
         }

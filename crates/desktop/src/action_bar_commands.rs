@@ -18,6 +18,9 @@ static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
 /// 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → 显示浮窗。
 #[tauri::command]
 pub fn trigger_action_bar(app: AppHandle) {
+    // 0. 隐藏常规窗口避免 app 被激活时带到前台抢焦点
+    crate::activation::hide_regular_windows(&app);
+
     // 1. 记录触发前的剪贴板内容
     let clipboard_before = read_clipboard_text(&app);
 
