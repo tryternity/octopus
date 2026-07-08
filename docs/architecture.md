@@ -432,6 +432,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - **缓存复用**：下载文件名 = URL 的 MD5（`~/.octopus/tmp/{md5}.{ext}`）；`--unclear` 且文件已存在则跳过下载，跨次复用同一缓存。
 - **临时文件清理（RAII）**：`DownloadedFileGuard` 在 drop 时删除下载的临时文件（`--unclear` 保留），覆盖所有退出路径——ffmpeg `spawn()?`/`wait()?` 的 `?` 提前返回、正常完成、`exit(1)` 均触发清理，避免转码失败时下载文件泄漏磁盘（2026-07-09 审查修复）。
 
+详见 spec `superpowers/specs/2026-07-09-dlp-sidecar-design.md`。
+
 ## 模型管理
 
 模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需下载——`octopus-cli download <repo>`（命令行）或设置窗口「模型管理」页（GUI）下到 `~/.octopus/models/<repo>/`（阶段1 接 `octopus-download`），兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型。
