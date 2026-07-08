@@ -115,7 +115,7 @@ export default function ActionBar() {
       console.log("[action-bar] invoking run_ai_action:", action);
       const result = await invoke<string>("run_ai_action", { action, text: ctx.text });
       console.log("[action-bar] AI result len:", result.length);
-      await invoke("action_bar_show_result", { result, originalText: ctx.text });
+      await invoke("action_bar_show_result", { result, originalText: ctx.text, action });
       getCurrentWindow().hide();
     } catch (e) {
       console.error("[action-bar] AI error:", e);
