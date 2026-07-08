@@ -191,24 +191,36 @@ export default function ActionBar() {
         }
       }
 
-      // ←→
+      // ←→：当前行内移动（主菜单或子菜单）
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
-        const items = viewRef.current === "submenu" ? aiItemsRef.current : mainItemsRef.current;
-        setSelectedIdx((prev) => {
-          const next = e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
-          return next;
-        });
+        if (viewRef.current === "submenu") {
+          setSubSelectedIdx((prev) => {
+            const items = aiItemsRef.current;
+            return e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
+          });
+        } else {
+          setSelectedIdx((prev) => {
+            const items = mainItemsRef.current;
+            return e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
+          });
+        }
         return;
       }
 
-      // ↑↓
-      if (viewRef.current === "submenu" && (e.key === "ArrowUp" || e.key === "ArrowDown")) {
+      // ↑↓：主菜单 ↔ 子菜单切换
+      if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
-        setSubSelectedIdx((prev) => {
-          const next = e.key === "ArrowDown" ? (prev + 1) % aiItemsRef.current.length : (prev - 1 + aiItemsRef.current.length) % aiItemsRef.current.length;
-          return next;
-        });
+        if (e.key === "ArrowUp" && viewRef.current === "submenu") {
+          // ↑：子菜单 → 主菜单
+          setView("main");
+        } else if (e.key === "ArrowDown" && viewRef.current === "main") {
+          // ↓：主菜单 → 子菜单（仅 AI 图标高亮时有效）
+          if (mainItemsRef.current[selectedIdxRef.current]?.id === "ai") {
+            setView("submenu");
+            setSubSelectedIdx(0);
+          }
+        }
         return;
       }
 
@@ -254,20 +266,9 @@ export default function ActionBar() {
 
   return (
     <div data-action-bar className="flex flex-col bg-background text-foreground rounded-lg border border-border shadow-lg overflow-hidden">
-      <div className="flex items-center gap-0.5 px-1 py-1">
-        {mainItems.map((item, i) => (
-          <IconBtn
-            key={item.id}
-            icon={item.icon}
-            label={item.label}
-            active={view === "main" ? selectedIdx === i : false}
-            onClick={() => executeMain(item.id)}
-          />
-        ))}
-      </div>
-
+      {/* 子菜单在上 */}
       {view === "submenu" && (
-        <div className="flex items-center gap-0.5 px-1 pb-1 border-t border-border/40 pt-1">
+        <div className="flex items-center gap-0.5 px-1 pt-1 pb-1 border-b border-border/40">
           {aiItems.map((item, i) => (
             <IconBtn
               key={item.id}
@@ -279,6 +280,18 @@ export default function ActionBar() {
           ))}
         </div>
       )}
+      {/* 主菜单在下 */}
+      <div className="flex items-center gap-0.5 px-1 py-1">
+        {mainItems.map((item, i) => (
+          <IconBtn
+            key={item.id}
+            icon={item.icon}
+            label={item.label}
+            active={view === "main" ? selectedIdx === i : false}
+            onClick={() => executeMain(item.id)}
+          />
+        ))}
+      </div>
     </div>
   );
 }
