@@ -1,6 +1,8 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod activation;
+mod action_bar_window;
+mod action_bar_commands;
 mod audio;
 mod config;
 mod clipboard_commands;
@@ -266,6 +268,11 @@ pub fn run() {
             theme::list_themes,
             theme::get_theme_id,
             system_status_commands::get_system_status,
+            action_bar_commands::trigger_action_bar,
+            action_bar_commands::run_ai_action,
+            action_bar_commands::action_bar_paste_result,
+            action_bar_commands::action_bar_open_url,
+            action_bar_commands::action_bar_get_context,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -356,6 +363,14 @@ pub fn run() {
             if !config.screenshot_shortcut.is_empty() {
                 if let Err(e) = screenshot_commands::register_screenshot_shortcut(app.handle(), &config.screenshot_shortcut) {
                     log::error!("Failed to register screenshot shortcut: {}", e);
+                }
+            }
+
+            // Create + register action bar window (AI command palette)
+            action_bar_window::create_action_bar_window(app.handle());
+            if !config.action_bar_shortcut.is_empty() {
+                if let Err(e) = action_bar_window::register_action_bar_shortcut(app.handle(), &config.action_bar_shortcut) {
+                    log::error!("Failed to register action bar shortcut: {}", e);
                 }
             }
 
