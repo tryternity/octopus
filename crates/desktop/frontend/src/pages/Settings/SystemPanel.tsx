@@ -122,7 +122,7 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
             <>
               <span>进程内存 {fmtBytes(snap.process.real_bytes)}</span>
               <span className="text-muted-foreground">
-                RSS {fmtBytes(snap.process.rss_bytes)}
+                常驻 {fmtBytes(snap.process.rss_bytes)}
               </span>
             </>
           ) : (
@@ -136,12 +136,12 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
 
       {/* 内存 / CPU 并排（布局 B） */}
       <div className="grid grid-cols-2 gap-3">
-        <Card icon={MemoryStick} title={hasReal ? "内存（实际占用）" : "内存（进程 RSS）"}>
+        <Card icon={MemoryStick} title={hasReal ? "内存（实际占用）" : "内存（常驻）"}>
           <div className="text-lg font-semibold mb-1">
             {fmtBytes(memMain)}
             {hasReal && (
               <span className="ml-2 text-xs text-muted-foreground font-normal">
-                RSS {fmtBytes(snap.process.rss_bytes)}
+                常驻 {fmtBytes(snap.process.rss_bytes)}
               </span>
             )}
           </div>
@@ -177,7 +177,7 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
           </div>
         )}
         <div className="mt-2 text-[10px] text-muted-foreground/50">
-          模型内存为「加载前后进程内存差值」估算（macOS 用 phys_footprint、其他平台用 RSS；同进程 ort 无法精确拆分），仅供参考。
+          模型内存为「加载前后进程内存差值」估算（macOS 用 phys_footprint、其他平台用常驻内存；同进程 ort 无法精确拆分），仅供参考。
         </div>
       </Card>
     </div>
