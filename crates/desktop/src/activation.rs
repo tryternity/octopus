@@ -39,7 +39,8 @@ pub fn hide_regular_windows(app_handle: &tauri::AppHandle) {
     }
 }
 
-/// 浮窗操作完成后调用：恢复之前被隐藏的常规窗口。
+/// 浮窗操作完成后调用：恢复之前被隐藏的常规窗口。（保留供未来使用）
+#[allow(dead_code)]
 pub fn show_regular_windows(app_handle: &tauri::AppHandle) {
     for label in REGULAR_WINDOWS {
         if let Some(win) = app_handle.get_webview_window(label) {

@@ -159,7 +159,7 @@ pub fn action_bar_dismiss(app: AppHandle) {
 
 /// AI 结果通过临时 tab 打开 CompactEditor 展示（不写 DB）。
 #[tauri::command]
-pub fn action_bar_show_result(result: String, original_text: String, action: String, app: AppHandle) {
+pub fn action_bar_show_result(result: String, _original_text: String, action: String, app: AppHandle) {
     hide_action_bar_window(&app);
 
     let label = match action.as_str() {
