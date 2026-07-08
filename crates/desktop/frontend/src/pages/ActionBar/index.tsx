@@ -71,7 +71,7 @@ export default function ActionBar() {
     const onDown = (e: MouseEvent) => {
       const el = e.target as HTMLElement;
       if (el && el.closest("[data-action-bar]")) return;
-      getCurrentWindow().hide();
+      invoke("action_bar_dismiss");
     };
     const timer = setTimeout(() => {
       document.addEventListener("mousedown", onDown, true);
@@ -140,10 +140,11 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
+      console.log("[action-bar] keydown:", e.key, "view:", viewRef.current);
       if (e.key === "Escape") {
         e.preventDefault();
         if (viewRef.current === "submenu") { setView("main"); return; }
-        getCurrentWindow().hide();
+        invoke("action_bar_dismiss");
         return;
       }
 

@@ -273,6 +273,7 @@ pub fn run() {
             action_bar_commands::action_bar_paste_result,
             action_bar_commands::action_bar_open_url,
             action_bar_commands::action_bar_get_context,
+            action_bar_commands::action_bar_dismiss,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)

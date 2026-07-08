@@ -14,15 +14,29 @@ pub struct ActionBarContext {
 }
 
 static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
+/// 记录被隐藏的常规窗口 label（paste/hide 后恢复）
+static HIDDEN_REGULAR_WINDOWS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 
 /// 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → 显示浮窗。
 #[tauri::command]
 pub fn trigger_action_bar(app: AppHandle) {
-    // 后台线程执行——sleep(200ms) 不阻塞 Tauri 主线程事件循环
     let app_clone = app.clone();
     std::thread::spawn(move || {
-        // 0. 隐藏常规窗口避免 app 被激活时带到前台抢焦点
-        crate::activation::hide_regular_windows(&app_clone);
+        // 0. 记录并隐藏常规窗口
+        let hidden: Vec<String> = ["settings_window", "compact_editor_window"]
+            .iter()
+            .filter_map(|label| {
+                if let Some(win) = app_clone.get_webview_window(label) {
+                    if win.is_visible().unwrap_or(false) {
+                        let _ = win.hide();
+                        return Some(label.to_string());
+                    }
+                }
+                None
+            })
+            .collect();
+        *HIDDEN_REGULAR_WINDOWS.lock().unwrap() = hidden.clone();
+        log::info!("[action-bar] hidden regular windows: {:?}", hidden);
 
         // 1. 记录触发前的剪贴板内容
         let clipboard_before = read_clipboard_text(&app_clone);
@@ -41,28 +55,43 @@ pub fn trigger_action_bar(app: AppHandle) {
             (None, Some(after)) => after.clone(),
             _ => {
                 log::warn!("[action-bar] Cmd+C didn't change clipboard — no selection?");
+                restore_hidden_windows(&app_clone);
                 return;
             }
         };
 
         if text.trim().is_empty() {
             log::warn!("[action-bar] Selected text is empty");
+            restore_hidden_windows(&app_clone);
             return;
         }
+
+        log::info!("[action-bar] got text len={}", text.len());
 
         // 5. 暂存上下文
         *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext { text });
 
-        // 6. 获取鼠标位置
+        // 6. 获取鼠标位置 + 显示浮窗（主线程）
         let (mx, my) = get_mouse_position();
         let win_y = (my - 60.0).max(0.0);
+        log::info!("[action-bar] show at {},{}", mx, win_y);
 
-        // 7. 显示浮窗（主线程）
         let app_for_show = app_clone.clone();
         let _ = tauri::async_runtime::spawn(async move {
             show_action_bar_window(&app_for_show, mx, win_y);
         });
     });
+}
+
+/// 恢复被隐藏的常规窗口（从全局 HIDDEN_REGULAR_WINDOWS 读取并清空）
+fn restore_hidden_windows(app: &AppHandle) {
+    let labels = HIDDEN_REGULAR_WINDOWS.lock().unwrap().drain(..).collect::<Vec<_>>();
+    for label in &labels {
+        if let Some(win) = app.get_webview_window(label) {
+            let _ = win.show();
+            log::info!("[action-bar] restored window: {}", label);
+        }
+    }
 }
 
 /// 前端 mount 时拉取上下文。
@@ -108,10 +137,18 @@ pub async fn run_ai_action(action: String, text: String) -> Result<String, Strin
     Ok(result)
 }
 
-/// 写结果到剪贴板 + 恢复焦点 + 模拟 Cmd+V + 隐藏浮窗。
+/// 前端隐藏浮窗时调用——恢复被隐藏的常规窗口。
+#[tauri::command]
+pub fn action_bar_dismiss(app: AppHandle) {
+    hide_action_bar_window(&app);
+    restore_hidden_windows(&app);
+}
+
+/// 写结果到剪贴板 + 恢复焦点 + 模拟 Cmd+V + 隐藏浮窗 + 恢复常规窗口。
 #[tauri::command]
 pub fn action_bar_paste_result(result: String, app: AppHandle) {
     hide_action_bar_window(&app);
+    restore_hidden_windows(&app);
     write_clipboard_text(&app, &result);
 
     let focus = FocusTracker::new();
@@ -123,10 +160,11 @@ pub fn action_bar_paste_result(result: String, app: AppHandle) {
     });
 }
 
-/// 用系统浏览器打开 URL + 隐藏浮窗。
+/// 用系统浏览器打开 URL + 隐藏浮窗 + 恢复常规窗口。
 #[tauri::command]
 pub fn action_bar_open_url(url: String, app: AppHandle) {
     hide_action_bar_window(&app);
+    restore_hidden_windows(&app);
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open").arg(&url).spawn();
