@@ -140,7 +140,8 @@ pub fn handle_clipboard_change(handle: &crate::ClipboardHandle) {
             let rgba = rgba_img.to_vec();
             // PNG bytes 仅用于算 SHA-256 去重 hash；WebP 编码改走 DynamicImage（复用 RGBA，
             // 不再让 encode_to_webp 内部把刚编出的 PNG 又解码一遍）。
-            let (_png_bytes, hash) = image::encode_and_hash(&rgba, w, h)?;
+            // 直接 hash RGBA 像素（不编码 PNG）——省去大图 PNG 编码的 CPU 开销
+            let hash = image::hash_rgba(&rgba);
 
             // 去重
             let existing = octopus_infra::db::with_db(|conn| {

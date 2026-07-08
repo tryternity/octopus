@@ -263,7 +263,14 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
       if (!cancelled) loadingFullRef.current = false;
     });
 
-    return () => { cancelled = true; };
+    return () => {
+      cancelled = true;
+      // 组件卸载时释放 Object URL——防止关图片 tab 后图片内存泄漏
+      if (objectUrlRef.current) {
+        URL.revokeObjectURL(objectUrlRef.current);
+        objectUrlRef.current = null;
+      }
+    };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [imageId]);
 

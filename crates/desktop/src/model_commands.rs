@@ -178,8 +178,15 @@ pub async fn download_model(
 
 /// 完整性复核：按 secret_key 清单 sha256 校验；清单空则自举；损坏置 false。
 #[tauri::command]
-pub fn verify_model(model_name: String, repo: String) -> Result<VerifyResult, String> {
-    let dir = octopus_asr_local::config::resolve_model_dir(&repo)
+pub async fn verify_model(model_name: String, repo: String) -> Result<VerifyResult, String> {
+    // SHA-256 校验 230-740MB 模型文件是 CPU+IO 密集——移入 spawn_blocking 防阻塞 UI 线程
+    tokio::task::spawn_blocking(move || verify_model_inner(model_name, &repo))
+        .await
+        .map_err(|e| format!("verify_model 任务异常: {}", e))?
+}
+
+fn verify_model_inner(model_name: String, repo: &str) -> Result<VerifyResult, String> {
+    let dir = octopus_asr_local::config::resolve_model_dir(repo)
         .map_err(|e| format!("模型目录不存在（未就绪）: {e:?}"))?;
 
     let secret_key = current_secret_key(&model_name)?;
