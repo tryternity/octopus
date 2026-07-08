@@ -25,7 +25,7 @@ export function useClipboardHistory(filter: string, search: string) {
         filter,
         search: debouncedSearch || null,
         page: 1,
-        size: 50,
+        size: 200,
       });
       if (myId !== reqIdRef.current) return;
       setItems(result);
