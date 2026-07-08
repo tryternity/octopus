@@ -119,7 +119,7 @@ function CompactEditor() {
       if (source === 'transcription') {
         const text = await invoke<string>("get_transcription_text", { id: itemId }).catch(() => "");
         setTabs(prev => prev.some(t => t.key === key) ? prev : [...prev, { key, source: 'transcription', itemId, text }]);
-        setActiveIdx(tabsRef.current.length);
+        setTabs(prev => { const idx = prev.findIndex(t => t.key === key); if (idx >= 0) { tabsRef.current = prev; setActiveIdx(idx); } return prev; });
         return;
       }
 
@@ -151,8 +151,7 @@ function CompactEditor() {
       } else {
         const text = await invoke<string>("get_clipboard_item_text", { itemId }).catch(() => "");
         setTabs(prev => prev.some(t => t.key === key) ? prev : [...prev, { key, source: 'clipboard' as const, itemId, itemType: 'text' as const, text }]);
-      }
-      setActiveIdx(tabsRef.current.length);
+        setTabs(prev => { const idx = prev.findIndex(t => t.key === key); if (idx >= 0) { tabsRef.current = prev; setActiveIdx(idx); } return prev; });
     } finally {
       pendingKeysRef.current.delete(key);
     }

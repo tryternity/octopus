@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { listen as rawListen, type UnlistenFn } from "@tauri-apps/api/event";
+import type { Event } from "@tauri-apps/api/event";
 import { Settings as SettingsIcon, Box, Wand2, Clipboard, type LucideIcon } from "lucide-react";
 import { cn } from "@/lib/utils";
 import ClipboardPanel from "./ClipboardPanel";
@@ -59,7 +60,8 @@ function Settings() {
       if (cancelled) fn();
       else unlisten = fn;
     });
-    listen<string>("settings://navigate", (page) => {
+    rawListen<string>("settings://navigate", (e: Event<string>) => {
+      const page = e.payload;
       if (typeof page === "string") setPage(page as PageName);
     }).then((fn) => {
       if (cancelled) fn();
