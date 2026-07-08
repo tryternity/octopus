@@ -109,13 +109,22 @@ export default function ActionBar() {
     console.log("[action-bar] executeAiAction:", action, "context:", !!ctx);
     if (!ctx) return;
     setView("loading");
+
+    // 30 秒超时——LLM 响应太慢时自动关闭浮窗并提示错误
+    const timeoutId = setTimeout(() => {
+      setErrorMsg("请求超时（30 秒），请检查网络或 LLM 配置");
+      setView("error");
+    }, 30000);
+
     try {
       console.log("[action-bar] invoking run_ai_action:", action);
       const result = await invoke<string>("run_ai_action", { action, text: ctx.text });
+      clearTimeout(timeoutId);
       console.log("[action-bar] AI result len:", result.length);
       await invoke("action_bar_show_result", { result, originalText: ctx.text, action });
       getCurrentWindow().hide();
     } catch (e) {
+      clearTimeout(timeoutId);
       console.error("[action-bar] AI error:", e);
       setErrorMsg(String(e));
       setView("error");
