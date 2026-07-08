@@ -149,12 +149,11 @@ pub fn action_bar_dismiss(app: AppHandle) {
     restore_hidden_windows(&app);
 }
 
-/// AI 结果写入剪贴板历史 + 打开 CompactEditor 展示。
+/// AI 结果通过临时 tab 打开 CompactEditor 展示（不写 DB）。
 #[tauri::command]
 pub fn action_bar_show_result(result: String, original_text: String, action: String, app: AppHandle) {
     hide_action_bar_window(&app);
 
-    // 1. 把结果作为文本条目写入剪贴板历史（item_type='ocr' 因为它也是"识别"出的文本）
     let label = match action.as_str() {
         "translate" => "翻译",
         "polish" => "润色",
@@ -162,21 +161,12 @@ pub fn action_bar_show_result(result: String, original_text: String, action: Str
         "explain" => "解释",
         _ => "AI",
     };
-    let content = format!("【{}】\n{}", label, result);
-    let item_id = octopus_infra::db::with_db(|conn| {
-        octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
-            id: 0,
-            item_type: octopus_clipboard::ItemType::Text,
-            content: content.clone(),
-            ref_data: None,
-            meta_info: None,
-            created_at: octopus_clipboard::store::chrono_millis().to_string(),
-            has_thumbnail: None,
-            is_rich: false,
-        })
-    }).ok();
+    let display_text = format!("【{}】\n{}", label, result);
 
-    // 2. 恢复剪贴板原始内容 + 恢复常规窗口
+    // 结果写入系统剪贴板（方便用户手动粘贴）
+    write_clipboard_text(&app, &result);
+
+    // 恢复剪贴板原始内容 + 恢复常规窗口
     let app_clone = app.clone();
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(500));
@@ -187,20 +177,9 @@ pub fn action_bar_show_result(result: String, original_text: String, action: Str
         restore_hidden_windows(&app_clone);
     });
 
-    // 3. 也把结果写入系统剪贴板（方便用户手动粘贴）
-    write_clipboard_text(&app, &result);
-
-    // 4. 打开 CompactEditor 展示结果
-    if let Some(id) = item_id {
-        let _ = app.emit("clipboard://changed", ());
-        crate::compact_editor_commands::open_compact_editor_tab(
-            id,
-            Some("clipboard".into()),
-            app,
-        );
-    } else {
-        log::warn!("[action-bar] Failed to insert AI result into clipboard history");
-    }
+    // 用临时 tab 打开 CompactEditor（不写 DB，保存按钮灰掉）
+    crate::compact_editor_commands::store_pending_temp_tab(display_text, "temp");
+    crate::compact_editor_window::create_compact_editor_window(&app, None);
 }
 
 /// 用系统浏览器打开 URL + 隐藏浮窗 + 恢复常规窗口。

@@ -8,12 +8,13 @@ import ImagePreviewComponent from "@/pages/ImagePreview";
 
 interface Tab {
   key: string;
-  source: 'clipboard' | 'transcription';
+  source: 'clipboard' | 'transcription' | 'temp';
   itemId: number;
   itemType?: 'text' | 'image';
   text?: string;
   imgWidth?: number;
   imgHeight?: number;
+  isTemp?: boolean;
 }
 interface OpenTabPayload {
   itemId: number;
@@ -166,14 +167,14 @@ function CompactEditor() {
     (async () => {
       // URL 无初始数据时，fallback 到 IPC
       if (!initial.hasInitial) {
-        const pending = await invoke<{ itemId: number; source: string; itemType: string; text: string } | null>("get_pending_compact_tab");
+        const pending = await invoke<{ itemId: number; source: string; itemType: string; text: string; isTemp?: boolean } | null>("get_pending_compact_tab");
         if (cancelled) return;
         if (pending) {
-          const key = `${pending.source}:${pending.itemId}`;
+          const key = pending.isTemp ? `temp:${Date.now()}` : `${pending.source}:${pending.itemId}`;
           if (pending.itemType === "image") {
             setTabs([{ key, source: pending.source as any, itemId: pending.itemId, itemType: "image" as const }]);
           } else {
-            setTabs([{ key, source: pending.source as any, itemId: pending.itemId, itemType: "text" as const, text: pending.text }]);
+            setTabs([{ key, source: pending.source as any, itemId: pending.itemId, itemType: "text" as const, text: pending.text, isTemp: pending.isTemp }]);
           }
           setActiveIdx(0);
           setTimeout(() => taRef.current?.focus(), 0);
@@ -198,6 +199,7 @@ function CompactEditor() {
 
   const doSave = useCallback(async () => {
     if (!active) return;
+    if (active.isTemp) return; // 临时 tab 不可保存
     try {
       if ((active.text || "").trim() === "") {
         // 清空后保存 = 删除条目（空内容无意义）；后端 delete_clipboard_item 已 emit clipboard://changed 通知列表刷新
@@ -444,9 +446,12 @@ function CompactEditor() {
           <span className="text-[11px] text-muted-foreground mr-2 tabular-nums">{charCount} 字</span>
           <button
             type="button"
+            disabled={active?.isTemp}
             onClick={doSave}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs text-white transition-colors ${
-              savedFlash ? "bg-emerald-600" : "bg-[#007aff] hover:bg-[#0066d6]"
+            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs transition-colors ${
+              active?.isTemp
+                ? "bg-muted text-muted-foreground cursor-not-allowed"
+                : savedFlash ? "bg-emerald-600 text-white" : "bg-[#007aff] hover:bg-[#0066d6] text-white"
             }`}
           >
             {savedFlash ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}

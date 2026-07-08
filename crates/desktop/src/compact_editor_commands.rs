@@ -35,6 +35,9 @@ pub struct PendingTabFull {
     pub img_width: u32,
     /// 图片原始高
     pub img_height: u32,
+    /// 临时文本（不写 DB，保存按钮灰掉）
+    #[serde(default)]
+    pub is_temp: bool,
 }
 
 static PENDING_TAB: Mutex<Option<PendingTabFull>> = Mutex::new(None);
@@ -62,6 +65,20 @@ fn store_pending_tab(item_id: i64, source: &str) {
         text,
         img_width: img_w,
         img_height: img_h,
+        is_temp: false,
+    });
+}
+
+/// 存储临时文本 tab（不查 DB，text 直接传入）。保存按钮前端灰掉。
+pub fn store_pending_temp_tab(text: String, source: &str) {
+    *PENDING_TAB.lock() = Some(PendingTabFull {
+        item_id: 0,
+        source: source.to_string(),
+        item_type: "text".into(),
+        text,
+        img_width: 0,
+        img_height: 0,
+        is_temp: true,
     });
 }
 
