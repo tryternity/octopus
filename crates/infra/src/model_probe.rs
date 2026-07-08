@@ -5,11 +5,12 @@
 use parking_lot::Mutex;
 use std::sync::Arc;
 
-/// 加载阶段：模型实例化前 / 后。
+/// 加载/卸载阶段：模型实例化前（Before）/ 后（After）/ 从内存卸载（Unload）。
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum LoadPhase {
     Before,
     After,
+    Unload,
 }
 
 /// 探针闭包：`(阶段, 模型 id)`。id 形如 `"asr:paraformer"` / `"ocr:PP-OCRv4"` / `"vad:silero"`。
@@ -34,14 +35,22 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
+    /// 探针注入相关测试共享全局 `PROBE`，必须串行执行，否则并发线程间互相
+    /// 调用对方注入的闭包，导致计数 / phase 断言错乱。取该锁即「持有探针」。
+    static TEST_SERIALIZER: Mutex<()> = parking_lot::const_mutex(());
+
     #[test]
     fn probe_is_noop_when_not_set() {
+        // 不注入探针，仅验证 no-op；但仍串行以避免与其他测试的全局 PROBE 残留叠加。
+        let _guard = TEST_SERIALIZER.lock();
+        *PROBE.lock() = None;
         probe(LoadPhase::Before, "asr:x");
         probe(LoadPhase::After, "asr:x");
     }
 
     #[test]
     fn probe_invokes_injected_closure_with_phase_and_id() {
+        let _guard = TEST_SERIALIZER.lock();
         let count = Arc::new(AtomicUsize::new(0));
         let last = Arc::new(Mutex::new((LoadPhase::Before, String::new())));
         let c = count.clone();
@@ -55,6 +64,24 @@ mod tests {
         assert_eq!(count.load(Ordering::SeqCst), 2);
         assert_eq!(last.lock().0, LoadPhase::After);
         assert_eq!(last.lock().1, "vad:silero");
+        *PROBE.lock() = None;
+    }
+
+    #[test]
+    fn probe_unload_variant_reaches_closure() {
+        let _guard = TEST_SERIALIZER.lock();
+        let count = Arc::new(AtomicUsize::new(0));
+        let last = Arc::new(Mutex::new((LoadPhase::Before, String::new())));
+        let c = count.clone();
+        let l = last.clone();
+        set_probe(Arc::new(move |phase, id| {
+            c.fetch_add(1, Ordering::SeqCst);
+            *l.lock() = (phase, id.to_string());
+        }));
+        probe(LoadPhase::Unload, "ocr:PP-OCRv4");
+        assert_eq!(count.load(Ordering::SeqCst), 1);
+        assert_eq!(last.lock().0, LoadPhase::Unload);
+        assert_eq!(last.lock().1, "ocr:PP-OCRv4");
         *PROBE.lock() = None;
     }
 }
