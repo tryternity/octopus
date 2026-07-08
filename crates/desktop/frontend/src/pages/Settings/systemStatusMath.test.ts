@@ -1,5 +1,11 @@
 import { describe, it, expect } from "vitest";
-import { fmtBytes, sparklinePoints, newerSnapshot } from "./systemStatusMath";
+import {
+  fmtBytes,
+  sparklinePoints,
+  newerSnapshot,
+  fmtBytesOrDash,
+  sparklineDataFromNullable,
+} from "./systemStatusMath";
 
 describe("fmtBytes", () => {
   const cases: Array<{ input: number | null | undefined; expected: string; note?: string }> = [
@@ -77,5 +83,35 @@ describe("newerSnapshot", () => {
     const prev = make(200, 1);
     const next = make(100, 2);
     expect(newerSnapshot(prev, next)).toBe(prev);
+  });
+});
+
+describe("fmtBytesOrDash", () => {
+  it("null → '—'", () => {
+    expect(fmtBytesOrDash(null)).toBe("—");
+  });
+  it("undefined → '—'", () => {
+    expect(fmtBytesOrDash(undefined)).toBe("—");
+  });
+  it("0 → '0 B'", () => {
+    expect(fmtBytesOrDash(0)).toBe("0 B");
+  });
+  it("正数走 fmtBytes", () => {
+    expect(fmtBytesOrDash(1048576)).toBe("1.0 MB");
+  });
+});
+
+describe("sparklineDataFromNullable", () => {
+  it("全非 null 数组 → 原样返回", () => {
+    expect(sparklineDataFromNullable([1, 2, 3], [9, 9])).toEqual([1, 2, 3]);
+  });
+  it("含 null → 退 fallback", () => {
+    expect(sparklineDataFromNullable([1, null, 3], [9, 9])).toEqual([9, 9]);
+  });
+  it("混合 null（首尾非 null 中间 null）→ 退 fallback（保守）", () => {
+    expect(sparklineDataFromNullable([10, null, 30], [1, 2, 3])).toEqual([1, 2, 3]);
+  });
+  it("空数组 → 退 fallback", () => {
+    expect(sparklineDataFromNullable([], [9, 9])).toEqual([9, 9]);
   });
 });
