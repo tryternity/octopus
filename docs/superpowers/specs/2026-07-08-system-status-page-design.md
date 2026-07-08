@@ -181,6 +181,7 @@ OCR 偶尔使用、却永久常驻占内存。改为 idle 60s（`OCR_IDLE_TIMEOU
 - `run_ocr` 入口刷新 `last_used`；inner None 时重载（重载不调 probe，避免刷新 registry 首次估算）；**重载与 run 合并到同一 inner lock 作用域**，消除守护线程竞态释放导致 expect panic
 - `LoadPhase` 加 `Unload` 变体（infra/model_probe），desktop probe 闭包 Unload 分支 → `registry.remove(id)` 清条目
 - ASR/VAD 不动（常驻工作）
+- **释放后进程内存数值不立即下降**（macOS allocator 行为，非 bug）：RapidOcr drop 后 ort session 的权重 buffer + 推理 arena 走系统 `malloc/free`，libmalloc 把页放回 heap free list 不主动 `munmap` 归还物理页，phys_footprint/RSS 不立即回落。真实收益是「下次 OCR 重载复用 free list 不重新涨」+「内存压力时 OS 可压缩回收」——非立即降数值。决定：接受现状 + 文档/状态页说明（未做 ort 禁 arena / `malloc_zone_pressure_relief`——效果未验证且后者需实测），状态页 OCR 条目消失即为释放成功的标志
 
 ### 测试
 

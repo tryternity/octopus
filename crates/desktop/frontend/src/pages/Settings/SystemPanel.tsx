@@ -179,6 +179,9 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
         <div className="mt-2 text-[10px] text-muted-foreground/50">
           模型内存为「加载前后进程内存差值」估算（macOS 用 phys_footprint、其他平台用常驻内存；同进程 ort 无法精确拆分），仅供参考。
         </div>
+        <div className="text-[10px] text-muted-foreground/50">
+          OCR idle 60s 自动释放（列表条目消失即已释放）；macOS 下进程内存数值通常不立即回落，下次 OCR 复用已释放空间。
+        </div>
       </Card>
     </div>
   );

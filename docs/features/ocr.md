@@ -44,6 +44,10 @@ OCR 偶尔使用，常驻占内存浪费。ASR/VAD 是常驻工作不动；OCR �
 
 ASR/VAD 用各自 cache 常驻，无 idle 释放。
 
+### 3.2 释放后进程内存数值不立即下降（macOS allocator 行为）
+
+释放链已验证正确（状态页 OCR 条目消失 + log `OCR idle 60s, released model`）。但 RapidOcr drop 后 ort session 的权重 buffer + 推理 arena 走系统 `malloc/free`，macOS libmalloc 把页放回 heap free list、**不主动 `munmap` 归还物理页**，phys_footprint/RSS 不立即回落。真实收益是「下次 OCR 重载复用 free list 不重新涨」+「内存压力时 OS 可压缩回收」——非立即降数值。状态页 OCR 条目消失（`probe(Unload)` → `registry.remove`）即为释放成功的标志。决定：接受现状 + 文档说明（未做 ort 禁 arena / `malloc_zone_pressure_relief`，效果未验证）。
+
 ---
 
 ## 4. 超长图切分
