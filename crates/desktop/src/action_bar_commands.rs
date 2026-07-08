@@ -104,7 +104,7 @@ pub fn action_bar_get_context() -> Option<ActionBarContext> {
 #[tauri::command]
 pub async fn run_ai_action(action: String, text: String) -> Result<String, String> {
     let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-    let llm_config = crate::config::llm_config(&config)
+    let llm_config = crate::config::llm_config_ignore_mode(&config)
         .ok_or("润色模型未配置，请在设置中配置 LLM")?;
 
     let prompt = match action.as_str() {
