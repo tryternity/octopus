@@ -182,7 +182,91 @@ url: https://emojipedia.org/search/?q=***
 
 ---
 
-## 8. 信息来源
+## 8. 同类产品对比
+
+### 8.1 Click to Do（Windows 11 Copilot+ PC）
+
+微软官方 2025 年推出的系统级功能，**AI 驱动**的屏幕内容操作工具。
+
+| 维度 | 说明 |
+|------|------|
+| **平台** | 仅 Windows 11 Copilot+ PC（需 40 TOPS NPU + 16GB RAM） |
+| **触发** | `Win + 鼠标点击` / `Win + Q` / 触摸右滑 / 截图工具入口 |
+| **工作原理** | **截图 + 本地 OCR** 识别屏幕上的文本和图片（不依赖应用 API）→ 用户选择 → 弹出操作菜单 |
+| **隐私** | 分析完全本地执行（Phi Silica 本地小模型 + NPU）；只有用户选择联网动作（搜索/打开网站）才发送数据 |
+| **文本动作** | Copy / Open with / Search the web / Send email / Open website |
+| **智能文本动作**（需英文 + ≥10 词 + MS 账号）| **Summarize** / **Create bulleted list** / **Rewrite (Casual/Formal/Refine)** / Draft with Copilot in Word / Practice in Reading Coach / Read with Immersive Reader |
+| **图片动作** | Copy / Save as / Share / Open with / Visual search with Bing / Blur background / Erase objects / Remove background |
+| **AI 集成** | **Ask Copilot**——选中文本/图片后直接发给 Copilot，可加自定义 prompt |
+| **地区差异** | EEA/中国区部分功能受限（Summarize/Rewrite/Copilot 等在中国不可用） |
+
+**关键差异化**：Click to Do 用**截图 + OCR** 而非 Accessibility API——所以它在**任何 app 都能工作**（包括禁用复制、不兼容 Accessibility 的 app）。但需要 Copilot+ PC 硬件（NPU）。
+
+### 8.2 SnipDo（Windows，原 Pantherbar）
+
+Windows 上受 PopClip 启发的免费工具。
+
+| 维度 | 说明 |
+|------|------|
+| **平台** | 仅 Windows |
+| **触发** | 选中文本自动弹出（与 PopClip 相同范式） |
+| **内置动作** | Copy / Paste / Search / Spelling / Dictionary |
+| **扩展系统** | 支持自建扩展 + 免费扩展商店 |
+| **排除规则** | 可排除特定 app |
+| **兼容性** | 部分应用因 Windows 限制不工作 |
+| **定价** | 免费 |
+
+### 8.3 OnText（macOS，PopClip 键盘优先替代品）
+
+2024 年新出的 macOS 原生 Swift 应用，主打**键盘优先 + 内置 AI**。
+
+| 维度 | 说明 |
+|------|------|
+| **平台** | macOS 13+（仅 Apple Silicon），原生 Swift |
+| **触发** | **全局快捷键**（默认 F2），选中→按键→弹出面板。**不支持自动弹出**（开发者认为误触多） |
+| **文本获取** | **Accessibility API 直读**（`{text}`，快速无痕迹）或 **模拟 Cmd+C**（`{textWithCopy}`，格式保留更好） |
+| **内置动作** | Search / Copy / Translate / Character Count / Large Type + 7 种命名风格转换（camelCase/PascalCase/snake_case/kebab_case/CONSTANT_CASE/dot.case） |
+| **自定义动作** | 6 种类型：URL / Shell Script / AppleScript / macOS Shortcut / Builtin / Folder（分组） |
+| **占位符** | `{text}` `{textWithCopy}` `{clipboard}` `{paste}` `{prompt}` `{date}` `{time}` `{datetime}` `{weekday}` |
+| **正则上下文** | ✅ 动作可设正则规则——仅当选中文本匹配时显示 |
+| **动作快捷键** | ✅ 每个动作可分配快捷键，面板内键盘导航（字母/数字直接触发） |
+| **Inline AI** | **内置**：ChatGPT / Gemini / Claude / Ollama。选中文本→F2→输入指令→AI 处理。`⌘R` 替换选中文本 / `⌘C` 智能复制。支持 Prompt Presets / Temperature / Max Tokens / System Prompts |
+| **Action Library** | 内置预配置动作集：AI Services / Translation / Developer Tools / Productivity / Search |
+| **定价** | 免费版 + Pro 版（1 许可证 3 台 Mac） |
+
+**与 PopClip 核心差异**：
+- **键盘优先** vs 鼠标优先（OnText 不自动弹出）
+- **内置 AI 面板**（OnText 可在面板内直接 AI 对话+替换文本）vs PopClip 靠扩展发到外部网页
+- **动作快捷键**（OnText 每个动作可设快捷键）vs PopClip 纯鼠标点击
+- **扩展生态**：PopClip 218+ 扩展远超 OnText
+
+### 8.4 四产品横向对比
+
+| 维度 | PopClip | SnipDo | Click to Do | OnText |
+|------|---------|--------|-------------|--------|
+| **平台** | macOS | Windows | Win 11 Copilot+ | macOS |
+| **触发** | 选中文本自动弹出 | 选中文本自动弹出 | Win+点击 / Win+Q | 全局快捷键 |
+| **文本获取** | Accessibility API | Windows API | 截图+OCR（本地 NPU） | Accessibility API 或 Cmd+C |
+| **AI** | 无内置（靠扩展） | 无 | **内置 Phi Silica**（本地 NPU） | **内置**（ChatGPT/Gemini/Claude/Ollama） |
+| **扩展系统** | Snippet + .popclipextz（218+） | 扩展商店 | 无（系统内置） | 6 种自定义动作类型 |
+| **定价** | 付费 £30 | 免费 | 系统内置（需 Copilot+ PC 硬件） | 免费 + Pro |
+| **兼容性** | 30+ app 不兼容 | 部分 Windows app 限制 | **全 app 兼容**（截图+OCR 不依赖 app API） | 与 PopClip 类似 |
+
+### 8.5 对 octopus 的额外启示
+
+1. **Accessibility API 直读 vs 模拟 Cmd+C**——OnText 提供了两种占位符：`{text}`（Accessibility 直读，快速无痕迹但可能丢格式）和 `{textWithCopy}`（模拟 Cmd+C，格式保留但留剪贴板痕迹）。octopus 可以先做 `Cmd+C` 方案，后续 macOS 专属版加 Accessibility 直读。
+
+2. **Click to Do 的截图+OCR 方案**——完全绕过 app 兼容性问题（任何 app 都能工作）。octopus 已有截图+OCR 能力，可以作为"选中文本失败时的 fallback"。
+
+3. **OnText 的正则上下文**——动作可设正则规则，仅当选中文本匹配时显示。如选中 URL→显示"打开链接"；选中邮箱→显示"发邮件"。比 PopClip 的固定规则更灵活。
+
+4. **OnText 不做自动弹出的理由**——误触（Cmd+A 全选时意外弹出）、输入冲突、需频繁 Esc 关闭。这验证了 octopus "热键触发"决策的正确性。
+
+5. **Inline AI 替换文本**——OnText 的 `⌘R` 直接用 AI 结果替换应用中的选中文本（模拟 Cmd+V）。这就是之前讨论的 Run And Paste 方案——已有 `simulate_paste` 基础设施。
+
+---
+
+## 9. 信息来源
 
 - [popclip.app/](https://www.popclip.app/)（首页）
 - [popclip.app/guide/](https://www.popclip.app/guide/)（欢迎页 + FAQ）
@@ -191,3 +275,7 @@ url: https://emojipedia.org/search/?q=***
 - [popclip.app/guide/settings](https://www.popclip.app/guide/settings)（设置系统）
 - [popclip.app/guide/extensions](https://www.popclip.app/guide/extensions)（扩展系统）
 - [popclip.app/kb/troubleshooting](https://www.popclip.app/kb/troubleshooting)（故障排除 + 兼容性）
+- [support.microsoft.com - Click to Do](https://support.microsoft.com/en-us/windows/ai/ai-features/click-to-do-do-more-with-what-s-on-your-screen)（微软 Click to Do 官方文档）
+- [snipdo-app.com](https://snipdo-app.com/)（SnipDo 官网）
+- [gityeop.gumroad.com/l/ontext](https://gityeop.gumroad.com/l/ontext)（OnText Gumroad 页面）
+- [gityeop.github.io/OnText](https://gityeop.github.io/OnText/docs/intro)（OnText 完整文档）
