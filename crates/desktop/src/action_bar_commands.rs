@@ -1,5 +1,6 @@
 //! AI 命令面板后端命令——模拟 Cmd+C / LLM 调用 / 模拟 Cmd+V / 打开 URL。
 
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -18,12 +19,28 @@ static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
 static HIDDEN_REGULAR_WINDOWS: Mutex<Vec<String>> = Mutex::new(Vec::new());
 /// 记录触发前的剪贴板内容（操作完成后恢复——模拟 Cmd+C 的文本不进历史）
 static CLIPBOARD_BACKUP: Mutex<Option<String>> = Mutex::new(None);
+/// 重入 guard——防止热键连按导致 trigger 重叠执行（丢失 HIDDEN_REGULAR_WINDOWS）
+static TRIGGER_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → 显示浮窗。
 #[tauri::command]
 pub fn trigger_action_bar(app: AppHandle) {
+    // action bar 依赖 macOS 模拟 Cmd+C + CGEvent 鼠标坐标，其他平台尚未实现
+    #[cfg(not(target_os = "macos"))]
+    {
+        log::warn!("[action-bar] 仅 macOS 支持此功能");
+        let _ = app;
+        return;
+    }
+
     let app_clone = app.clone();
     std::thread::spawn(move || {
+        // 重入 guard——防止热键连按导致第二次 trigger 覆盖 HIDDEN_REGULAR_WINDOWS
+        if TRIGGER_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
+            log::info!("[action-bar] trigger already in progress, skipping");
+            return;
+        }
+
         // 0. 记录并隐藏常规窗口
         let hidden: Vec<String> = ["settings_window", "compact_editor_window"]
             .iter()
@@ -68,14 +85,14 @@ pub fn trigger_action_bar(app: AppHandle) {
             }
             _ => {
                 log::warn!("[action-bar] No text available — no selection?");
-                restore_hidden_windows(&app_clone);
+                finalize_action_bar(&app_clone, true);
                 return;
             }
         };
 
         if text.trim().is_empty() {
             log::warn!("[action-bar] Selected text is empty");
-            restore_hidden_windows(&app_clone);
+            finalize_action_bar(&app_clone, true);
             return;
         }
 
@@ -93,7 +110,9 @@ pub fn trigger_action_bar(app: AppHandle) {
         log::info!("[action-bar] mouse=({},{}) → win_pos=({},{})", mx, my, win_x, win_y);
 
         let app_for_show = app_clone.clone();
-        let _ = tauri::async_runtime::spawn(async move {
+        // NSWindow 操作（set_position/show/set_focus）必须在主线程执行，
+        // async_runtime::spawn 跑在 tokio worker 线程，可能触发 AppKit 违规。
+        let _ = app_clone.run_on_main_thread(move || {
             show_action_bar_window(&app_for_show, win_x, win_y);
         });
     });
@@ -110,6 +129,24 @@ fn restore_hidden_windows(app: &AppHandle) {
     }
 }
 
+/// action bar 所有出口的统一收口：
+/// - 恢复被隐藏的常规窗口（始终）
+/// - 恢复剪贴板原始内容（restore_clipboard=true 时；AI 结果路径=false，结果留给用户）
+/// - 重置重入 guard
+fn finalize_action_bar(app: &AppHandle, restore_clipboard: bool) {
+    if restore_clipboard {
+        let backup = CLIPBOARD_BACKUP.lock().unwrap().take();
+        if let Some(original) = backup {
+            write_clipboard_text(app, &original);
+        }
+    } else {
+        // AI 结果路径——结果已在剪贴板，清除备份不恢复
+        *CLIPBOARD_BACKUP.lock().unwrap() = None;
+    }
+    restore_hidden_windows(app);
+    TRIGGER_IN_PROGRESS.store(false, Ordering::SeqCst);
+}
+
 /// 前端 mount 时拉取上下文。
 #[tauri::command]
 pub fn action_bar_get_context() -> Option<ActionBarContext> {
@@ -123,44 +160,53 @@ pub async fn run_ai_action(action: String, text: String) -> Result<String, Strin
     let llm_config = crate::config::llm_config_ignore_mode(&config)
         .ok_or("润色模型未配置，请在设置中配置 LLM")?;
 
-    let prompt = match action.as_str() {
-        "polish" => "请对以下文本进行润色，使其更加流畅、专业。保持原意不变。只输出润色结果。",
-        "summarize" => "请用简洁的中文总结以下内容的要点，不超过 3 句话。只输出总结。",
-        "explain" => "请用简洁的中文解释以下内容的含义。只输出解释。",
+    let (system_prompt, user_prompt) = match action.as_str() {
+        "polish" => (
+            "请对以下文本进行润色，使其更加流畅、专业。保持原意不变。只输出润色结果。",
+            text.clone(),
+        ),
+        "summarize" => (
+            "请用简洁的中文总结以下内容的要点，不超过 3 句话。只输出总结。",
+            text.clone(),
+        ),
+        "explain" => (
+            "请用简洁的中文解释以下内容的含义。只输出解释。",
+            text.clone(),
+        ),
         "translate" => {
             let has_cjk = text.chars().any(|c| {
                 matches!(c as u32, 0x4e00..=0x9fff | 0x3040..=0x30ff | 0xac00..=0xd7af)
             });
             if has_cjk {
-                "Please translate the following text into English. Only output the translation."
+                (
+                    "Please translate the following text into English. Only output the translation.",
+                    text.clone(),
+                )
             } else {
-                "请将以下文本翻译成中文。只输出翻译结果。"
+                (
+                    "请将以下文本翻译成中文。只输出翻译结果。",
+                    text.clone(),
+                )
             }
         }
         _ => return Err(format!("未知动作: {}", action)),
     };
 
-    // 临时切换 system prompt
-    let old_prompt = octopus_llm::system_prompt();
-    octopus_llm::set_system_prompt(prompt);
-
-    let result = octopus_llm::polish(None, &text, &llm_config)
+    let result = octopus_llm::chat_text_with_prompt(system_prompt, &user_prompt, &llm_config)
         .map_err(|e| e.to_string())?;
-
-    // 恢复原 system prompt
-    octopus_llm::set_system_prompt(&old_prompt);
 
     Ok(result)
 }
 
-/// 前端隐藏浮窗时调用——恢复被隐藏的常规窗口。
+/// 前端隐藏浮窗时调用——恢复剪贴板 + 恢复被隐藏的常规窗口。
 #[tauri::command]
 pub fn action_bar_dismiss(app: AppHandle) {
     hide_action_bar_window(&app);
-    restore_hidden_windows(&app);
+    finalize_action_bar(&app, true);
 }
 
 /// AI 结果通过临时 tab 打开 CompactEditor 展示（不写 DB）。
+/// 结果写入剪贴板留给用户——不恢复原始剪贴板（与 dismiss/open_url 不同）。
 #[tauri::command]
 pub fn action_bar_show_result(result: String, _original_text: String, action: String, app: AppHandle) {
     hide_action_bar_window(&app);
@@ -174,19 +220,11 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
     };
     let display_text = format!("【{}】\n{}", label, result);
 
-    // 结果写入系统剪贴板（方便用户手动粘贴）
+    // 结果写入系统剪贴板（方便用户手动粘贴）——不恢复原始内容
     write_clipboard_text(&app, &result);
 
-    // 恢复剪贴板原始内容 + 恢复常规窗口
-    let app_clone = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(std::time::Duration::from_millis(500));
-        let backup = CLIPBOARD_BACKUP.lock().unwrap().take();
-        if let Some(original) = backup {
-            write_clipboard_text(&app_clone, &original);
-        }
-        restore_hidden_windows(&app_clone);
-    });
+    // 恢复常规窗口 + 重置 guard（不恢复剪贴板——结果留给用户）
+    finalize_action_bar(&app, false);
 
     // 用临时 tab 打开 CompactEditor（不写 DB，保存按钮灰掉）
     // 窗口已存在 → emit 推送新 tab；窗口不存在 → store_pending_temp_tab + 建窗
@@ -206,11 +244,11 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
     }
 }
 
-/// 用系统浏览器打开 URL + 隐藏浮窗 + 恢复常规窗口。
+/// 用系统浏览器打开 URL + 隐藏浮窗 + 恢复剪贴板 + 恢复常规窗口。
 #[tauri::command]
 pub fn action_bar_open_url(url: String, app: AppHandle) {
     hide_action_bar_window(&app);
-    restore_hidden_windows(&app);
+    finalize_action_bar(&app, true);
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open").arg(&url).spawn();

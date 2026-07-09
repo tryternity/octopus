@@ -4,6 +4,6 @@
 pub mod client;
 pub mod prompt;
 
-pub use client::{polish, polish_regions, test_connection, PolishRegion};
+pub use client::{chat_text_with_prompt, polish, polish_regions, test_connection, PolishRegion};
 pub use octopus_infra::db::CompatibleLlmConfig;
 pub use prompt::{set_system_prompt, system_prompt};

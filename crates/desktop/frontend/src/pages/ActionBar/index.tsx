@@ -50,6 +50,7 @@ export default function ActionBar() {
   const [submenuType, setSubmenuType] = useState<SubmenuType>(null);
   const [errorMsg, setErrorMsg] = useState("");
   const searchEngineRef = useRef("google");
+  const timedOutRef = useRef(false);
   const contextRef = useRef<Context | null>(null);
   const viewRef = useRef<View>("main");
 
@@ -122,10 +123,12 @@ export default function ActionBar() {
     console.log("[action-bar] executeAiAction:", action, "context:", !!ctx);
     if (!ctx) return;
     setView("loading");
+    timedOutRef.current = false;
 
     // 翻译 5 秒超时；其他 AI 动作（润色/摘要/解释）10 秒超时
     const timeoutMs = action === "translate" ? AI_TRANSLATE_TIMEOUT_MS : AI_TIMEOUT_MS;
     const timeoutId = setTimeout(() => {
+      timedOutRef.current = true;
       setErrorMsg(`请求超时（${timeoutMs / 1000} 秒），请检查网络或 LLM 配置`);
       setView("error");
     }, timeoutMs);
@@ -134,11 +137,17 @@ export default function ActionBar() {
       console.log("[action-bar] invoking run_ai_action:", action);
       const result = await invoke<string>("run_ai_action", { action, text: ctx.text });
       clearTimeout(timeoutId);
+      // 超时后 LLM 迟迟到达——丢弃结果，不弹 CompactEditor / 不写剪贴板
+      if (timedOutRef.current) {
+        console.warn("[action-bar] AI result arrived after timeout, discarding");
+        return;
+      }
       console.log("[action-bar] AI result len:", result.length);
       await invoke("action_bar_show_result", { result, originalText: ctx.text, action });
       getCurrentWindow().hide();
     } catch (e) {
       clearTimeout(timeoutId);
+      if (timedOutRef.current) return; // 超时已处理，忽略后续错误
       console.error("[action-bar] AI error:", e);
       setErrorMsg(String(e));
       setView("error");
@@ -155,7 +164,9 @@ export default function ActionBar() {
     } else if (id === "search") {
       setSubmenuType("search");
       setView("submenu");
-      setSubSelectedIdx(0);
+      // 默认搜索引擎高亮（用户配置的 action_bar_search_engine）
+      const engineIdx = searchItems.findIndex(item => item.id === searchEngineRef.current);
+      setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
     } else if (id === "translate") {
       executeAiAction("translate");
     } else if (id === "url") {
@@ -288,7 +299,6 @@ export default function ActionBar() {
     return (
       <div data-action-bar className="flex flex-col gap-1 px-4 py-2 bg-background text-foreground rounded-lg border border-border shadow-lg max-w-[240px]">
         <span className="text-[11px] text-red-500">{errorMsg}</span>
-        <span className="text-[10px] text-muted-foreground">结果已复制到剪贴板</span>
         <button
           className="text-[10px] text-muted-foreground hover:text-foreground mt-0.5"
           onMouseDown={(e) => e.stopPropagation()}

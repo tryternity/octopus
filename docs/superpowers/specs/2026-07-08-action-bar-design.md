@@ -1,7 +1,7 @@
 # AI 命令面板设计 — 选中文本→热键→AI 处理→替换
 
-> **状态**：已与用户确认设计，待写实施计划
-> **日期**：2026-07-08
+> **状态**：已实现，审查修复 9 项（P0/P1/P2）已完成
+> **日期**：2026-07-08（审查修复：2026-07-09）
 > **scope**：新建 `action_bar_window` 迷你浮窗，选中→热键→AI/搜索/翻译/打开网页
 > **调研依据**：[`2026-07-08-popclip-survey.md`](./2026-07-08-popclip-survey.md)（PopClip/SnipDo/OnText/Click to Do 调研）
 
@@ -33,7 +33,7 @@ octopus 的差异化：**热键触发（无兼容性问题）+ 内置 AI（不�
 | 模拟键盘 `Cmd+V` | `focus_tracker.rs` `simulate_paste` | 直接复用 |
 | 焦点恢复 | `focus_tracker.rs` `restore_focus` | 直接复用 |
 | 剪贴板读取 | `ClipboardHandle::read_text` | 直接复用 |
-| LLM 调用 | `octopus_llm::polish` / `octopus_llm::polish_regions` | 复用底层 |
+| LLM 调用 | `octopus_llm::chat_text_with_prompt`（action bar）/ `polish_regions`（ASR 润色） | action bar 不碰全局 prompt |
 | 透明无边框浮窗 | `clipboard_window.rs` / `result_window.rs` | 参考模式 |
 | 主题感知 | URL bg hex 注入 + `[data-theme]` CSS | 直接复用 |
 | 键盘导航 | 剪贴板浮窗 keydown handler | 参考模式 |
@@ -49,17 +49,16 @@ octopus 的差异化：**热键触发（无兼容性问题）+ 内置 AI（不�
   ↓
 按全局热键（默认 Cmd+Shift+Space，可配置）
   ↓
-Rust 后端：
-  1. 记录当前焦点窗口（restore_focus 用）
-  2. 模拟 Cmd+C（选中文本 → 剪贴板）
-  3. 等待 200ms（让系统完成复制）
-  4. 读剪贴板拿到选中文本
-  5. 获取鼠标坐标
-  6. 在鼠标上方创建/显示 action_bar_window（传入选中文本 + 坐标）
+Rust 后端（std::thread::spawn 后台线程）：
+  1. TRIGGER_IN_PROGRESS 重入 guard（防热键连按）
+  2. 隐藏常规窗口（settings/compact_editor）
+  3. 备份剪贴板 → 模拟 Cmd+C → 等待 200ms → 读剪贴板
+  4. 获取鼠标坐标（CGEvent::location()）
+  5. run_on_main_thread → show_action_bar_window（鼠标上方）
   ↓
 前端浮窗：
-  7. 显示第一级菜单（图标行）
-  8. 用户选择动作（鼠标/键盘）
+  6. 显示第一级菜单（图标行）
+  7. 用户选择动作（鼠标/键盘）
   ↓
 根据动作类型分流（见 2.2）
 ```
@@ -72,25 +71,24 @@ Rust 后端：
 用户选 AI 动作
   ↓
 浮窗切换为 loading 状态（转圈）
+前端设 5s（翻译）/ 10s（其他）超时 + timedOutRef
   ↓
 前端调 invoke("run_ai_action", { action, text })
   ↓
 Rust 后端：
-  1. 构造 prompt（按动作类型）
-  2. 调 octopus_llm::polish 或 polish_regions
+  1. 按 action 类型构造 system + user prompt
+  2. 调 octopus_llm::chat_text_with_prompt（不碰全局 SYSTEM_PROMPT）
   3. 返回结果
   ↓
-前端收到结果：
-  1. invoke("action_bar_paste_result", { result })
-  2. Rust 后端：
-     a. 写结果到剪贴板（write_text）
-     b. 恢复焦点到原 app（restore_focus）
-     c. 等待 100ms
-     d. 模拟 Cmd+V（simulate_paste）
-     e. 隐藏 action_bar_window
+前端收到结果（先判 timedOutRef，已超时则丢弃）：
+  invoke("action_bar_show_result", { result, originalText, action })
   ↓
-成功：选中文本被替换为 AI 结果
-失败（模拟粘贴未生效）：用户手动 Cmd+V（剪贴板已有结果）
+Rust 后端：
+     a. 写结果到剪贴板（结果留给用户，不恢复原始剪贴板）
+     b. finalize_action_bar（恢复常规窗口 + 重置 guard）
+     c. 用临时 tab 打开 CompactEditor 展示结果（不写 DB）
+  ↓
+超时场景：前端 setView("error")，后台 LLM 返回后丢弃
 ```
 
 #### 翻译动作
@@ -109,7 +107,7 @@ Rust 后端：用系统默认浏览器打开搜索 URL
 隐藏浮窗
 ```
 
-搜索引擎可配置（默认 Google，中国区 Baidu，可在设置页选 Google/Baidu/Bing/自定义 URL）。
+搜索引擎通过搜索子菜单选择（Google/百度/Bing），`action_bar_search_engine` 配置项控制子菜单默认高亮项。
 
 #### 打开网页动作
 
@@ -218,7 +216,7 @@ URL 格式宽松检测：包含 `.` 且无空格 → 视为 URL。比剪贴板�
 | skip_taskbar | true | 不出现在任务栏 |
 | resizable | false | 固定尺寸 |
 | visible | false | 创建时隐藏，show 时显示 |
-| 尺寸 | ~220×44（单行）/ ~220×120（子菜单展开） | CSS 自适应 |
+| 尺寸 | 260×82（主菜单 38px + 子菜单 38px + 边框） | CSS 自适应 |
 | 位置 | 鼠标光标上方 | Rust 侧 `set_position` |
 
 ### 4.2 窗口生命周期
@@ -252,46 +250,33 @@ action_bar_window 是透明悬浮窗——**不切 Regular**（和 clipboard_win
 
 | 命令 | 签名 | 说明 |
 |------|------|------|
-| `trigger_action_bar` | `()` | 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → show 窗口 → emit 选中文本 |
-| `run_ai_action` | `async fn(action: String, text: String) -> Result<String, String>` | 调 LLM 处理（润色/摘要/解释/翻译） |
-| `action_bar_paste_result` | `(result: String)` | 写剪贴板 + 恢复焦点 + 模拟 Cmd+V + 隐藏浮窗 |
-| `action_bar_open_url` | `(url: String)` | 用系统浏览器打开 URL + 隐藏浮窗 |
-| `action_bar_get_context` | `() -> ActionResult` | 前端 mount 时拉取选中文本 + 上下文 |
+| `trigger_action_bar` | `(app: AppHandle)` | 热键触发：重入 guard → 隐藏常规窗口 → 备份剪贴板 → Cmd+C → 读剪贴板 → show 窗口。仅 macOS。 |
+| `run_ai_action` | `async fn(action, text) -> Result<String, String>` | 调 `chat_text_with_prompt`（润色/摘要/解释/翻译），不碰全局 SYSTEM_PROMPT |
+| `action_bar_show_result` | `(result, original_text, action, app)` | 写结果到剪贴板（留给用户）+ finalize + CompactEditor 临时 tab 展示 |
+| `action_bar_dismiss` | `(app)` | 隐藏浮窗 + finalize（恢复剪贴板 + 恢复窗口 + 重置 guard） |
+| `action_bar_open_url` | `(url, app)` | 打开 URL + finalize（恢复剪贴板 + 恢复窗口 + 重置 guard） |
+| `action_bar_get_context` | `() -> Option<ActionBarContext>` | 前端 mount 时 take 选中文本 |
 
 ### 5.2 `simulate_copy` 实现
 
-```rust
-pub fn simulate_copy(&self) {
-    #[cfg(target_os = "macos")]
-    {
-        // 发送 Cmd+C（同 simulate_paste 的 Cmd+V 模式）
-        self.send_keycode(0x08, true);  // Cmd
-        self.send_keycode(0x06, true);  // C
-        self.send_keycode(0x06, false);
-        self.send_keycode(0x08, false);
-    }
-    // Windows/Linux: Ctrl+C
-}
-```
+macOS 用 osascript 发送 Cmd+C 按键事件（与 simulate_paste 的 Cmd+V 模式一致）。Windows/Linux 为空实现（action bar 仅 macOS 可用）。
 
 ### 5.3 鼠标位置获取
 
-```rust
-// Tauri 2 的 WebviewWindow 不直接提供全局鼠标位置，
-// 用 CGEvent (macOS) / Win32 GetCursorPos (Windows) 获取。
-// 或用 tauri-plugin-positioner 的 cursor position。
-```
+macOS 用 `CGEvent::location()` 获取 Quartz 全局逻辑坐标（points）。⚠️ 此值为**逻辑坐标**，不除 scale_factor——与 Tauri `LogicalPosition` 一致。`Monitor::position()/size()` 才是物理像素需除 scale。详见 AGENTS.md 坐标踩坑章节。
 
 ### 5.4 AI 动作 prompt 映射
 
 | 动作 | 构造方式 |
 |------|---------|
-| 润色 | 复用 `octopus_llm::polish_regions`（现有润色逻辑） |
-| 摘要 | `polish(None, text, config)` + system prompt 改为"请用简洁的中文总结以下内容的要点" |
-| 解释 | `polish(None, text, config)` + system prompt 改为"请解释以下内容的含义" |
-| 翻译 | `polish(None, text, config)` + system prompt 改为"翻译成中文/英文"（自动检测源语言方向） |
+| 润色 | `chat_text_with_prompt(system="润色...", user=text)` |
+| 摘要 | `chat_text_with_prompt(system="总结...", user=text)` |
+| 解释 | `chat_text_with_prompt(system="解释...", user=text)` |
+| 翻译 | `chat_text_with_prompt(system="翻译成中文/英文...", user=text)`（自动检测源语言方向） |
 
-一期通过临时切换 system prompt 实现——不需要新的 LLM 调用接口，复用 `octopus_llm` 的 `set_system_prompt` + `polish`。
+~~一期通过临时切换 system prompt 实现——复用 `set_system_prompt` + `polish`。~~（已废弃）
+
+**改为 `chat_text_with_prompt`**（审查修复 P0-1）：原方案临时切换全局 `SYSTEM_PROMPT` 会污染并发的 ASR 实时润色（`polish_regions` 读同一全局）。新增 `octopus_llm::chat_text_with_prompt(system, user, config)` 接受自定义 system + user prompt，不碰全局状态。同时修正了原方案 `polish()` 生成 "请润色以下语音识别文本" user prompt 对翻译/摘要/解释场景不匹配的问题。
 
 ---
 
@@ -301,25 +286,26 @@ pub fn simulate_copy(&self) {
 
 ```
 ActionBarPage
-  ├── 第一级图标行（4 个图标 + 高亮）
-  ├── AI 子菜单（展开时显示，3 个动作）
+  ├── 第一级图标行（AI/翻译/搜索 + URL 检测到时显示网页图标）
+  ├── 子菜单（展开时显示；AI: 润色/摘要/解释；搜索: Google/百度/Bing）
   ├── Loading 状态（AI 处理中）
-  └── 错误状态（失败 + "已复制到剪贴板"提示）
+  └── 错误状态（失败/超时信息 + 关闭按钮）
 ```
 
 ### 6.2 数据流
 
 ```
-mount → invoke("action_bar_get_context") → 拿到 { text, hasUrl }
+mount → invoke("action_bar_get_context") → 拿到 { text }
+  → invoke("get_config") → 读取 searchEngine 配置
   ↓
-渲染第一级菜单（根据 hasUrl 决定是否显示网页图标）
+渲染第一级菜单（detectActionUrl 判 URL 决定是否显示网页图标）
   ↓
-用户选 AI → 展开子菜单
-用户选搜索 → invoke("action_bar_open_url", { search_url + text })
-用户选翻译 → invoke("run_ai_action", { action: "translate", text })
+用户选 AI → 展开子菜单（润色/摘要/解释）
+用户选搜索 → 展开子菜单（Google/百度/Bing，默认高亮配置引擎）
+用户选翻译 → executeAiAction("translate")
 用户选网页 → invoke("action_bar_open_url", { url })
   ↓
-AI 结果返回 → invoke("action_bar_paste_result", { result })
+AI 结果返回（未超时）→ invoke("action_bar_show_result", { result, originalText, action })
 ```
 
 ---
@@ -329,9 +315,9 @@ AI 结果返回 → invoke("action_bar_paste_result", { result })
 | 配置字段 | 默认值 | 说明 |
 |---------|--------|------|
 | `action_bar_shortcut` | `Cmd+Shift+Space` | 唤起 AI 命令面板的全局热键 |
-| `action_bar_search_engine` | `google` | 搜索引擎：google/baidu/bing/自定义 URL |
+| `action_bar_search_engine` | `google` | 搜索引擎：google/baidu/bing（控制搜索子菜单默认高亮项） |
 
-配置存 AppConfig（serde 自动 load/save），设置页 GeneralPanel 快捷键卡片新增一行。
+`action_bar_shortcut` 存 AppConfig，设置页 GeneralPanel 快捷键卡片配置。`action_bar_search_engine` 影响搜索子菜单默认高亮项（而非独立设置 UI）。
 
 ---
 

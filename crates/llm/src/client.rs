@@ -167,6 +167,19 @@ pub fn polish(preserved: Option<&str>, to_polish: &str, config: &CompatibleLlmCo
     )
 }
 
+/// 通用 LLM 文本补全（action bar 翻译/摘要/解释等非润色场景）。
+/// 自定义 system + user prompt，不读全局 SYSTEM_PROMPT，不污染 ASR 润色。
+/// max_tokens 按输入文本字符数 × 2.0 计算（与 polish 一致）。
+pub fn chat_text_with_prompt(
+    system: &str,
+    user: &str,
+    config: &CompatibleLlmConfig,
+) -> Result<String> {
+    let total_chars = user.chars().count();
+    let max_tokens = ((total_chars as f64) * 2.0).ceil() as u64;
+    chat_text(system, user, max_tokens, config)
+}
+
 /// 多段润色：按 regions 顺序，edited 区（preserve=true）verbatim 保留、其余润色，返回整篇。
 ///
 /// max_tokens 按所有 regions 文本总字符数 × 2.0 算（中文 1-2 token/char，

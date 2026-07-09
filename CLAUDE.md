@@ -1,9 +1,6 @@
 # Language
 尽量以中文形式交互，包括对话回复、注释、文档等。
 
-# currentDate
-Today's date is 2026/06/12.
-
 # Documentation Sync
 需求变更后，必须同步更新 superpowers 的 specs 和 plans 文档：
 - 规格文档：`docs/superpowers/specs/` — 描述功能设计、架构、接口
