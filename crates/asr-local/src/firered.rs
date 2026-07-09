@@ -93,7 +93,9 @@ impl crate::engine::OfflineAsrEngine for FireRedEngine {
     fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
         // 80-bin fbank（复用 sensevoice；含 *32768 预处理，无 LFR）。
         let scaled: Vec<f32> = samples.iter().map(|&s| s * 32768.0).collect();
-        let mut features = compute_fbank(&scaled)?;
+        // preemph=0.0：FireRed 训练 preemph 配置未确认，保持旧行为待独立验证
+        // （DC offset removal 仍生效——knf 默认 remove_dc_offset=true）。
+        let mut features = compute_fbank(&scaled, 0.0)?;
         let (n_frames, feat_dim) = (features.nrows(), features.ncols());
 
         // CMVN：(fbank - mean) * inv_std（逐维；feat_dim=80 与 metadata 维度对齐）。

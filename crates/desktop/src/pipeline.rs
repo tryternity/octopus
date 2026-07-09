@@ -520,9 +520,27 @@ impl VadSegmentedPipeline {
         events
     }
 
-    /// 收尾：drain rx 至空 + 消费在途段（unbounded channel 不丢；active_count 归零由 drain 递减）。
-    /// 无 tail（tail 已由 coordinator stop 路径的 tick 喂入，可能触发最后一轮切段）。
+    /// 收尾：强制转码末段 audio_buffer + drain rx 至空 + 消费在途段。
+    ///
+    /// 末段处理：stop 路径 tick(tail) 可能未触发 silence_cut/force_cut（末尾静音不足 /
+    /// buffer 未满），剩余 audio_buffer（+ overlap_tail）若不主动转码会丢失——末段甚至
+    /// 整句（active_count==0 时 coordinator 直接 finalize）。此处复用 tick 的切段口径
+    /// （overlap_tail + audio_buffer 合并 → filter_vad 判语音 → spawn_offline + active_count+1），
+    /// spawn 后 active_count>0 让 coordinator 进 WaitingCompletion 轮询收尾（2026-07-09 审查修复）。
     pub fn finish(&mut self, transcript: &mut Transcript) -> TranscriptEvent {
+        if !self.audio_buffer.is_empty() {
+            let mut send_buffer = self.overlap_tail.clone();
+            send_buffer.extend_from_slice(&self.audio_buffer);
+            self.audio_buffer.clear();
+            self.overlap_tail.clear();
+            let speech_samples = filter_speech_from_buffer(&mut self.filter_vad, &send_buffer);
+            if !speech_samples.is_empty() {
+                let seq = self.next_seq;
+                self.next_seq += 1;
+                self.active_count += 1;
+                self.spawn_offline(speech_samples, seq);
+            }
+        }
         self.drain_rx_and_consume(transcript);
         // VadSegmented 不产 Final 事件（文本经 append_segment 累积），返回空 Committed 作占位
         //（coordinator stop 路径不读 vad-seg 的 finish 返回值）。
