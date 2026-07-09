@@ -49,3 +49,7 @@ SenseVoice 引擎录音几段后偶发「再说话不吐字」，重启录音恢
 
 - B 改变纯静音会话行为：达上限触发一次 force_cut，filter_vad 判无语音则不 spawn、buffer 清空（无害，只防堆积）。
 - B 理论乱码风险：detect_vad 失灵 + filter_vad 误判有语音 → spawn 噪声段。但 A 修复后 detect_vad 不漂移，B 仅兜底；乱码优于「完全不吐字 + 内存爆涨」。
+
+## 关联：finish 末段丢失（2026-07-09 另一独立 bug，非本根因）
+
+2026-07-09 审查同一 pipeline（`VadSegmentedPipeline::finish`）发现**另一独立 bug**：finish 此前仅 `drain_rx_and_consume` 不转码剩余 `audio_buffer`，stop 时末段未达切段条件（`silence_cut`/`force_cut` 都不触发）则丢失，`active_count==0` 时 coordinator 直接 finalize 连整句丢（用户报告「停录音后半句识别不到/卡住」）。**与本文 LSTM 漂移根因无关**——漂移是 detect_vad 状态污染致 `has_speech` 卡 false 不切段；finish 丢失是收尾不兜底转码。修复（提交 `2373d58`）在 spec 单独记录见 [§4.1](../specs/2026-07-08-vad-segmented-pipeline-design.md)。

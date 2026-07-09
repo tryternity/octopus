@@ -14,7 +14,7 @@
 | Qwen3-ASR | `qwen3_asr` | 离线 | 大模型能力；auto/空时不注入 language 让模型自检（支持中英混合） | `skip_corrector=true`；**显式跳过 CoreML**（动态算子致图分区比纯 CPU 还慢）；decode_tokens 剥离模型自检的 `language <词> <|asr_text|>` 前缀 |
 | Zipformer | `zipformer` | 离线/流式 | CTC + Transducer（RNN-T）；路由层检测 `decoder.onnx` 分流 | CTC 单 session argmax；Transducer 三 session RNN-T greedy；encoder_dim 动态读（zh=512, xlarge=768） |
 | Moonshine | `moonshine` | 离线 | 英文优化，轻量（24M/58M）；纯 ONNX 4-session 流水线（preprocess→encode→uncached_decode→cached_decode 循环 + KV cache） | `optimize_for_inference` 引发 layout 计算错误，`MoonshineEngine` 跳过 optimize 直接用原始 session |
-| FireRed | `firered` | 离线 | FireRedASR2-AED CTC（小红书）；单 ONNX `model.int8.onnx`(740M)；中文+20方言+英 | 80-bin fbank 复用 `fbank::compute_fbank`（无 LFR）+ CMVN 从 ONNX metadata 读 `cmvn_mean`/`cmvn_inv_stddev`；greedy CTC blank=0；vocab=8667 |
+| FireRed | `firered` | 离线 | FireRedASR2-AED CTC（小红书）；单 ONNX `model.int8.onnx`(740M)；中文+20方言+英 | 80-bin fbank 复用 `fbank::compute_fbank`（无 LFR，含 DC offset + pre-emphasis 0.97 + povey 窗，对齐 FireRedASR 训练 knf 默认）+ CMVN 从 ONNX metadata 读 `cmvn_mean`/`cmvn_inv_stddev`；greedy CTC blank=0；vocab=8667 |
 
 ## 云端引擎
 
@@ -183,6 +183,15 @@ mel = (max(log10(clamp(x, 1e-10)), max_v - 8.0) + 4.0) / 4.0
 3. **窗口函数**——povey 窗 `(0.5-0.5cos)^0.85`
 4. **mel high_freq**——7600 Hz（`high_freq=-400`）
 5. **增量式 fbank**——`raw_samples` 线性追加 + `fbank_cache` 增量计算（对齐 sherpa-onnx `OnlineFbank`），消除重叠 chunk 重复提取
+
+### SenseVoice-orig / FireRed 共用 fbank（`fbank.rs::compute_fbank`）
+
+`paraformer.rs::compute_fbank` 是 Paraformer 私有实现（上述 5 步），而 SenseVoice-orig（`compute_fbank_features` 经 LFR→560 维）与 FireRed（纯 80-bin）共用 `fbank.rs::compute_fbank`——纯 80-bin log-fbank（**窗函数参数化**：SenseVoice hamming / FireRed povey，无 LFR）。2026-07-09 审查修复补齐对齐 kaldi_native_fbank 默认的两步预处理（此前缺它们致 SenseVoice 真实音频乱码，合成音频落在模型鲁棒区侥幸通过）：
+
+1. **DC offset removal**——每帧 FFT 前减帧均值（**始终执行**，knf 默认 `remove_dc_offset=true`）
+2. **Pre-emphasis**——`y[i]=x[i]-preemph_coeff*x[i-1]`（**参数化**：SenseVoice / FireRed 均传 0.97 对齐 knf 默认。SenseVoice 的 am.mvn 基于含此步的特征统计；FireRed 配置 2026-07-09 经 `FireRedTeam/FireRedASR` `data/asr_feat.py` 确认——用 kaldi_native_fbank、仅覆盖 dither/num_bins/snip_edges → knf 默认 preemph=0.97 + povey 窗）
+
+帧重叠（shift=160 < len=400）下取准确前序样本：从连续缓冲回溯 `samples[start-1]`（减本帧 mean 近似，对齐 paraformer.rs:503），无需跨帧状态。mel filterbank 用 mel 空间权重（`fd47f86` 修复方向，勿改回 Hz 空间）。
 
 ## 模型目录解析
 
