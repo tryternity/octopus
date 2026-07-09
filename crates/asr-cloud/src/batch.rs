@@ -84,7 +84,7 @@ impl OfflineAsrEngine for CloudBatchEngine {
     }
 
     fn skip_corrector(&self) -> bool {
-        true
+        false // 有界热词纠错安全（空热词 no-op），重新启用
     }
 }
 

@@ -110,9 +110,9 @@ impl crate::engine::OfflineAsrEngine for SenseVoiceOrigEngine {
     /// 跳过通用中文 corrector：原版 SenseVoice 是高质量模型，自带语言建模，输出已最优，
     /// corrector 基于 n-gram 频率的过纠反而有害。实测模型正确输出"开始语音识别"，
     /// corrector 却把"始语→始于"(gain 1.98)、"音识→饮食"(gain 1.91) 误纠成"开始于饮食别"，
-    /// 故跳过（与 qwen3 同机制；[`crate::pipeline::transcribe_batch`] 消费此标志）。
+    /// 有界热词纠错安全（空热词 no-op），重新启用（[`crate::pipeline::transcribe_batch`] 消费此标志）。
     fn skip_corrector(&self) -> bool {
-        true
+        false
     }
 
     fn transcribe(&self, samples: &[f32], language: &str) -> Result<String> {

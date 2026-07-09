@@ -136,7 +136,7 @@ impl Qwen3AsrEngine {
 
 impl crate::engine::OfflineAsrEngine for Qwen3AsrEngine {
     fn skip_corrector(&self) -> bool {
-        true
+        false // 有界热词纠错安全（空热词 no-op），重新启用
     }
 
     fn transcribe(&self, samples: &[f32], language: &str) -> Result<String> {
