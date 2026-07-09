@@ -244,7 +244,14 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 - 窗口高度动态调整：主菜单 40px / 子菜单 76px / loading 48px / error 60px（前端 `setSize` 按 view 切换），避免透明区域遮挡下层点击
 - 窗口宽度固定 380px
 
-#### ⚠️ 键盘导航（强需求，勿改错）
+#### ⚠️ 窗口焦点策略（强需求，勿改错）
+
+**全局快捷键不得激活 app，不得将 settings/compact_editor 带到前台。** 这是重要设计原则：
+
+- 后端 `show()` 后**不调 `set_focus()`**——`set_focus` 会触发 macOS app 激活，导致 Regular 窗口（settings/compact_editor）被带到前台
+- 语音识别快捷键（`coordinator.toggle()`）天然满足：只发 channel 命令，不碰任何窗口
+- action bar / 剪贴板窗口 `show` 后由**前端 `window.focus()`** 获取 WebView 键盘焦点——这不会触发 macOS app 激活
+- **action bar 必须获得键盘焦点**：用户唤出后直接用方向键选择命令，无需鼠标点击。如果需要鼠标点击才能操作，交互流程完全中断
 
 **上下键切换主子菜单层级，左右键在当前行移动选择。** 这是核心交互，不可混淆：
 

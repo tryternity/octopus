@@ -20,6 +20,7 @@
 - **已有基础设施复用**：`chat_text_with_prompt`（LLM 调用）、`finalize_action_bar`（出口收口）、`timedOutRef`（前端超时）。
 - **Tauri 命令注册**：新命令必须加入 `main.rs` 的 `invoke_handler` 列表，否则前端 invoke 被拒。
 - **按钮布局**：水平「图标+文字」一行排列（`flex-row`），窗口宽度 380px，高度按 view 动态调整（主菜单 40px / 子菜单 76px）。浮窗在用户内容上方，必须矮。
+- **窗口焦点策略（⚠️ 强需求，勿改错）**：全局快捷键不得激活 app、不得将 settings/compact_editor 带到前台。后端 `show()` 后**不调 `set_focus()`**（会触发 macOS app 激活）。action bar 由**前端 `window.focus()`** 获取 WebView 键盘焦点（不激活 app），用户唤出后方向键直接可用，无需鼠标点击。
 - **键盘导航（⚠️ 强需求，勿改错）**：**上下键切换主子菜单层级（focusLayer main↔sub），左右键在当前行移动选择。** 子菜单展开/收起由左右键控制（移到 submenu 项展开、移到非 submenu 项收起），上下键只切焦点不碰视图。焦点层（`focusLayer`）独立于视图层（`view`）——左右键展开子菜单时不抢焦点，必须上下键才进入。**Esc 直接关闭浮窗**（一次 Esc，不退焦点层，不做两次 Esc）。
 
 ---
