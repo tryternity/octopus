@@ -11,10 +11,8 @@ const LUCIDE_PATHS: Record<string, string> = {
   lightbulb: '<path d="M15 14c.2-1 .7-1.7 1.5-2.5 1-.9 1.5-2.2 1.5-3.5A6 6 0 0 0 6 8c0 1 .2 2.2 1.5 3.5.7.7 1.3 1.5 1.5 2.5"/><path d="M9 18h6"/><path d="M10 22h4"/>',
 };
 
-// 缓存已加载的 SVG 文件内容（避免重复 fetch）
 const svgCache: Record<string, string> = {};
 
-/** 从 /icons/ 目录加载 SVG 文件内容 */
 function loadSvgFile(filename: string): Promise<string | null> {
   const name = filename.replace(/\.svg$/, "");
   const path = `/icons/${name}.svg`;
@@ -29,47 +27,62 @@ function loadSvgFile(filename: string): Promise<string | null> {
 }
 
 export function ActionBarIcon({ icon, className }: ActionBarIconProps) {
-  const [svgContent, setSvgContent] = useState<string | null>(null);
+  const [svgHtml, setSvgHtml] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!icon) return;
+    if (!icon) { setSvgHtml(null); return; }
+
     if (icon.startsWith("<svg")) {
-      setSvgContent(icon);
+      setSvgHtml(icon);
       return;
     }
-    // 文件名 → 从 /icons/ 加载
+
     if (icon.endsWith(".svg") || !LUCIDE_PATHS[icon]) {
-      loadSvgFile(icon).then(setSvgContent);
+      loadSvgFile(icon).then((content) => {
+        if (!content) { setSvgHtml(null); return; }
+        // 提取 SVG inner HTML（去掉外层 <svg> 标签）
+        const match = content.match(/<svg[^>]*>([\s\S]*?)<\/svg>/i);
+        const inner = match ? match[1] : "";
+        const hasStroke = content.includes("stroke");
+        setSvgHtml(
+          `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" ` +
+          (hasStroke
+            ? 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
+            : 'fill="currentColor"') +
+          ` width="100%" height="100%">${inner}</svg>`
+        );
+      });
       return;
     }
-    // Lucide 预置路径
-    setSvgContent(null);
+
+    setSvgHtml(null);
   }, [icon]);
 
-  // 1. 内联 SVG 或文件 SVG → 直接渲染
-  if (svgContent) {
+  // Lucide fallback
+  if (!icon.endsWith(".svg") && !icon.startsWith("<svg") && LUCIDE_PATHS[icon] && !svgHtml) {
     return (
-      <span
+      <svg
         className={className}
-        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: "1em", height: "1em" }}
-        dangerouslySetInnerHTML={{ __html: svgContent }}
-      />
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        strokeWidth={2}
+        strokeLinecap="round"
+        strokeLinejoin="round"
+        style={{ width: "1em", height: "1em" }}
+      >
+        <g dangerouslySetInnerHTML={{ __html: LUCIDE_PATHS[icon] }} />
+      </svg>
     );
   }
 
-  // 2. Lucide 预置路径 → 组装完整 SVG
-  const lucidePath = LUCIDE_PATHS[icon];
-  if (lucidePath) {
-    return (
-      <span
-        className={className}
-        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: "1em", height: "1em" }}
-        dangerouslySetInnerHTML={{
-          __html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">${lucidePath}</svg>`,
-        }}
-      />
-    );
-  }
+  if (!svgHtml) return <span className={className} style={{ width: "1em", height: "1em", display: "inline-block" }} />;
 
-  return null;
+  return (
+    <i
+      className={className}
+      style={{ display: "inline-flex", width: "1em", height: "1em", lineHeight: 0 }}
+      dangerouslySetInnerHTML={{ __html: svgHtml }}
+    />
+  );
 }
