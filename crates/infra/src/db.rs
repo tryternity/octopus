@@ -164,34 +164,39 @@ where
 /// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等。
 /// schema 变更流程：改 db.sql + 升下方 user_version 数值，勿新增 ALTER 迁移分支。
 /// 开发期无历史库需兼容（用户确认），故不保留 v1-v16 迁移/DROP 兜底。
-/// v18：新增 FTS5 backfill（历史行补入索引），搜索走 MATCH。
+/// v18：FTS5 backfill（历史行补入索引），搜索走 MATCH。
+/// v19：新增 action_bar_items 表（db.sql IF NOT EXISTS 自动创建）。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 18 {
+    if v >= 19 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
         // v17→v18：backfill FTS5 索引——触发器（clip_fts_ai）仅维护建表后的新行，
         // 历史 voice 行（建表前已有或从旧 schema 迁移来的）不在索引中，需一次性回填。
         // 幂等：NOT IN 排除已索引行；空文本不索引（与触发器行为一致）。
-        conn.execute_batch(
-            "INSERT INTO clipboard_history_fts(rowid, content)
-             SELECT id, content FROM clipboard_history
-             WHERE content != ''
-               AND id NOT IN (SELECT rowid FROM clipboard_history_fts)"
-        ).context("FTS5 backfill")?;
-        conn.execute("PRAGMA user_version = 18", [])?;
-        log::info!("FTS5 backfill 完成 (v17→v18)");
+        if v < 18 {
+            conn.execute_batch(
+                "INSERT INTO clipboard_history_fts(rowid, content)
+                 SELECT id, content FROM clipboard_history
+                 WHERE content != ''
+                   AND id NOT IN (SELECT rowid FROM clipboard_history_fts)"
+            ).context("FTS5 backfill")?;
+        }
+        // v18→v19：action_bar_items 表由 db.sql 的 IF NOT EXISTS 自动创建，重跑 INIT_SQL 幂等
+        conn.execute_batch(INIT_SQL).ok();
+        conn.execute("PRAGMA user_version = 19", [])?;
+        log::info!("schema upgraded to v19 (action_bar_items)");
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 18", [])?;
-    log::info!("DB initialized (v18): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 19", [])?;
+    log::info!("DB initialized (v19): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1215,36 +1220,36 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v18() {
+    fn init_schema_fresh_db_builds_v19() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 18, "全新库 init_schema 后应到 v18");
-        // 五张核心表都已建好
+        assert_eq!(v, 19, "全新库 init_schema 后应到 v19");
+        // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
-                 AND name IN ('models','prompts','app_config','clipboard_history','image_data')",
+                 AND name IN ('models','prompts','app_config','clipboard_history','image_data','action_bar_items')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(n, 5, "五张核心表都应建好");
+        assert_eq!(n, 6, "六张核心表都应建好");
     }
 
     #[test]
-    fn init_schema_v18_is_noop() {
-        // 已是 v18 的库再调 init_schema 应早退（不重跑、不报错）
+    fn init_schema_v19_is_noop() {
+        // 已是 v19 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 18", []).unwrap();
+        conn.execute("PRAGMA user_version = 19", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 18);
+        assert_eq!(v, 19);
     }
 
     #[test]
