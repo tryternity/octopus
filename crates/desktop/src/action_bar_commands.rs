@@ -88,7 +88,8 @@ pub fn trigger_action_bar(app: AppHandle) {
         // 浮窗在鼠标正上方，X 轴居中对齐鼠标，Y 轴在鼠标上方
         let (mx, my) = get_mouse_position(&app_clone);
         let win_x = (mx - 130.0).max(0.0);
-        let win_y = (my - 84.0).max(0.0);
+        // 窗口在鼠标正上方——窗口底部贴近鼠标。主菜单行高 38px + padding + 边框 ≈ 44px
+        let win_y = (my - 48.0).max(0.0);
         log::info!("[action-bar] mouse=({},{}) → win_pos=({},{})", mx, my, win_x, win_y);
 
         let app_for_show = app_clone.clone();
