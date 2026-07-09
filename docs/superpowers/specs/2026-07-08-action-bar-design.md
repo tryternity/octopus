@@ -241,8 +241,8 @@ URL 格式宽松检测：包含 `.` 且无空格 → 视为 URL。比剪贴板�
 
 ### 4.3 主题感知
 
-- Rust 建窗时注入 URL `?bg=hex`（同 CompactEditor/Settings）
-- 前端 index.html `<head>` 脚本同步设背景色
+- ~~Rust 建窗时注入 URL `?bg=hex`（同 CompactEditor/Settings）~~ 实际用 `WebviewUrl::default()` + 透明窗口 + CSS `[data-theme]` 变量，不注入 URL 参数
+- 前端 CSS `[data-theme]` 规则覆盖主题变量（与 Settings/CompactEditor 一致）
 - `data-theme` 属性 + `[data-theme="xxx"]` CSS 规则
 - icon-filter（暗色主题 SVG 图标反色）
 

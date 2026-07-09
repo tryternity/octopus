@@ -112,7 +112,8 @@ fn finalize_action_bar(_app: &AppHandle) {
 /// 前端 mount 时拉取上下文。
 #[tauri::command]
 pub fn action_bar_get_context() -> Option<ActionBarContext> {
-    PENDING_CONTEXT.lock().unwrap().take()
+    // 非消耗读取（clone）——防止 mount + show 竞态导致第二次拿到 None
+    PENDING_CONTEXT.lock().unwrap().clone()
 }
 
 /// 前端隐藏浮窗时调用。
@@ -315,7 +316,11 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
         )),
     };
 
-    result.map_err(|e| format!("脚本执行失败: {}", e))?;
+    let mut child = result.map_err(|e| format!("脚本执行失败: {}", e))?;
+    // 后台收割子进程退出状态，防止僵尸进程堆积
+    std::thread::spawn(move || {
+        let _ = child.wait();
+    });
     Ok(())
 }
 

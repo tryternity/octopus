@@ -81,7 +81,9 @@ export default function ActionBar() {
       // 让方向键直接可用——用户无需鼠标点击
       window.focus();
       invoke<Context | null>("action_bar_get_context").then((ctx) => {
-        if (ctx) { setContext(ctx); setView("main"); setSelectedIdx(0); setFocusLayer("main"); setErrorMsg(""); }
+        // 每次 show 都重置基础状态——防止遗留旧状态
+        setView("main"); setSelectedIdx(0); setFocusLayer("main"); setErrorMsg("");
+        if (ctx) { setContext(ctx); }
       });
       // 每次唤起都重新加载菜单项 + 配置（设置页可能已改）
       invoke<ActionBarItem[]>("list_action_bar_items").then((items) => {
