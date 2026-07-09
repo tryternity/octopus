@@ -182,9 +182,11 @@ export default function ActionBar() {
   const subSelectedIdxRef = useRef(0);
   const mainItemsRef = useRef<ActionBarItem[]>([]);
   const subItemsRef = useRef<ActionBarItem[]>([]);
+  const menuItemsRef = useRef<ActionBarItem[]>([]);
   useEffect(() => { selectedIdxRef.current = selectedIdx; }, [selectedIdx]);
   useEffect(() => { subSelectedIdxRef.current = subSelectedIdx; }, [subSelectedIdx]);
   useEffect(() => { mainItemsRef.current = mainItems; }, [mainItems]);
+  useEffect(() => { menuItemsRef.current = menuItems; }, [menuItems]);
   useEffect(() => {
     subItemsRef.current = submenuParentIdRef.current !== null
       ? getSubItems(submenuParentIdRef.current)
@@ -217,31 +219,49 @@ export default function ActionBar() {
 
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
-        if (viewRef.current === "submenu") {
-          setSubSelectedIdx((prev) => {
-            const items = subItemsRef.current;
-            return e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
-          });
-        } else {
-          setSelectedIdx((prev) => {
-            const items = mainItemsRef.current;
-            return e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
-          });
-        }
+        // 左右键始终在主菜单移动；移到 submenu 项时展开子菜单预览
+        setSelectedIdx((prev) => {
+          const items = mainItemsRef.current;
+          const next = e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
+          const item = items[next];
+          if (item && item.actionType === "submenu") {
+            submenuParentIdRef.current = item.id;
+            const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === item.id);
+            if (subs.length > 0 && subs[0].actionType === "url") {
+              const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
+              setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
+            } else {
+              setSubSelectedIdx(0);
+            }
+            setView("submenu");
+          } else {
+            // 非 submenu 项——收起子菜单
+            submenuParentIdRef.current = null;
+            setView("main");
+          }
+          return next;
+        });
         return;
       }
 
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
         if (viewRef.current === "submenu") {
+          // 子菜单中上下键切回主菜单（焦点回到主菜单高亮项）
           setView("main");
-          submenuParentIdRef.current = null;
         } else {
+          // 主菜单中上下键进入子菜单选择（焦点切到子菜单）
           const cur = mainItemsRef.current[selectedIdxRef.current];
           if (cur && cur.actionType === "submenu") {
             submenuParentIdRef.current = cur.id;
             setView("submenu");
-            setSubSelectedIdx(0);
+            const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === cur.id);
+            if (subs.length > 0 && subs[0].actionType === "url") {
+              const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
+              setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
+            } else {
+              setSubSelectedIdx(0);
+            }
           }
         }
         return;
@@ -309,7 +329,7 @@ export default function ActionBar() {
             key={item.id}
             icon={item.icon}
             label={item.title}
-            active={view === "main" ? selectedIdx === i : false}
+            active={selectedIdx === i}
             onClick={() => executeItem(item)}
           />
         ))}
