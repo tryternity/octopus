@@ -50,7 +50,7 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
 | `submenu` | （空） | 展开子菜单 | 全平台 |
 | `ai` | system prompt 文本 | `octopus_llm::chat_text_with_prompt` | 全平台 |
 | `url` | URL 模板，`{text}` 为选中文本占位符（可选） | 模板替换 → `open`（支持 `https://`、`doubao://` 等所有 scheme）；无模板时选中文本即 URL | 全平台 |
-| `script` | 脚本源码，第一行 magic comment 指定语言 + `{text}` 占位符 | 按注释分发运行时 | 按语言 |
+| `script` | 脚本源码，第一行 magic comment 指定语言。选中文本通过环境变量 `$OCTOPUS_TEXT` 传递 | 按注释分发运行时 | 按语言 |
 | `copy` | （空） | `write_clipboard_text` | 全平台 |
 
 ### 3.2 script 语言分发
@@ -66,11 +66,15 @@ script 类型的 `action_data` 第一行必须是 magic comment：
 
 平台不支持时 → 前端 toast 报 `不支持的平台`，菜单项仍显示。
 
-### 3.3 `{text}` 占位符
+### 3.3 选中文本传递
 
-`url` 和 `script` 类型的 `action_data` 中 `{text}` 会被运行时替换为选中文本（URL 编码后）。例：
+**url 类型**：action_data 中 `{text}` 占位符会被运行时替换为选中文本（URL 编码后）。例：
 - `url`：`https://www.google.com/search?q={text}` → `https://www.google.com/search?q=hello`
-- `script`：`echo "{text}" | pbcopy` → `echo "hello" | pbcopy`
+- URL scheme：`doubao://?text={text}`
+
+**script 类型**：选中文本通过环境变量 **`$OCTOPUS_TEXT`** 传递（不使用字符串替换，避免 shell 注入）。脚本中通过 `$OCTOPUS_TEXT`（shell）、`do shell script "$OCTOPUS_TEXT"`（osascript）、`$env:OCTOPUS_TEXT`（powershell）、`os.environ["OCTOPUS_TEXT"]`（python）读取。
+
+⚠️ **安全**：不做 `{text}` 字符串拼接（曾有注入风险），仅用环境变量。
 
 ### 3.4 翻译特殊处理
 
@@ -81,7 +85,7 @@ script 类型的 `action_data` 第一行必须是 magic comment：
 **问豆包（三种方式）**：
 - URL scheme：`url` → `doubao://?text={text}`
 - AppleScript：`script` → `#osascript\ntell application "豆包" to activate`
-- Shell：`script` → `#shell\nopen -a "豆包" && sleep 1 && osascript -e 'tell application "System Events" to keystroke "v" using command down'`
+- Shell：`script` → `#shell\nopen -a "豆包" && sleep 1 && osascript -e 'tell application "System Events" to keystroke "v" using command down'`（选中文本在 `$OCTOPUS_TEXT` 中，需先 `echo "$OCTOPUS_TEXT" | pbcopy` 再粘贴）
 
 ---
 
@@ -199,7 +203,8 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
 fn run_script(source: &str, text: &str) -> Result<(), String> {
     let first_line = source.lines().next().unwrap_or("").trim();
     let body: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
-    let script = body.replace("{text}", text);
+    let script: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
+// 选中文本通过 $OCTOPUS_TEXT 环境变量传递（不做字符串替换）
 
     match first_line {
         "#shell" => std::process::Command::new("sh").arg("-c").arg(&script).spawn(),

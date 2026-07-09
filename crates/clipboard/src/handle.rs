@@ -35,6 +35,11 @@ impl ClipboardHandle {
         self.suppress_flag.store(true, Ordering::SeqCst);
     }
 
+    /// 清除 suppress flag——用于 trigger 提前返回（未产生剪贴板事件）时撤销 suppress。
+    pub fn clear_suppress(&self) {
+        self.suppress_flag.store(false, Ordering::SeqCst);
+    }
+
     /// 是否启用剪贴板历史记录（clipboard_enabled 的运行时镜像）。
     pub fn is_recording_enabled(&self) -> bool {
         self.recording_enabled.load(Ordering::SeqCst)

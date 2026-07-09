@@ -80,6 +80,7 @@ pub fn trigger_action_bar(app: AppHandle) {
             }
             _ => {
                 log::warn!("[action-bar] No text available — no selection?");
+                clip_handle.clear_suppress();
                 finalize_action_bar(&app_clone);
                 return;
             }
@@ -87,6 +88,7 @@ pub fn trigger_action_bar(app: AppHandle) {
 
         if text.trim().is_empty() {
             log::warn!("[action-bar] Selected text is empty");
+            clip_handle.clear_suppress();
             finalize_action_bar(&app_clone);
             return;
         }
@@ -106,8 +108,8 @@ pub fn trigger_action_bar(app: AppHandle) {
         // 6. 获取鼠标位置 + 显示浮窗（主线程）
         // 浮窗在鼠标正上方，X 轴居中对齐鼠标，Y 轴在鼠标上方
         let (mx, my) = get_mouse_position(&app_clone);
-        let win_x = (mx - 190.0).max(0.0);
-        // 窗口在鼠标正上方——每行 ~34px，主菜单一行
+        // 不截断 X——副屏在主屏左/上方时坐标可为负值
+        let win_x = mx - 190.0;
         let win_y = (my - 42.0).max(0.0);
         log::info!("[action-bar] mouse=({},{}) → win_pos=({},{})", mx, my, win_x, win_y);
 
@@ -302,26 +304,42 @@ fn simple_url_encode(s: &str) -> String {
 }
 
 /// 执行脚本：按第一行 magic comment 分发运行时。
+/// 选中文本通过环境变量 `OCTOPUS_TEXT` 传递（避免 shell 注入）。
 fn run_script(source: &str, text: &str) -> Result<(), String> {
     let first_line = source.lines().next().unwrap_or("").trim();
-    let body: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
-    let script = body.replace("{text}", text);
+    let script: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
 
     let result: std::io::Result<std::process::Child> = match first_line {
-        "#shell" => std::process::Command::new("sh").arg("-c").arg(&script).spawn(),
+        "#shell" => {
+            std::process::Command::new("sh")
+                .arg("-c").arg(&script)
+                .env("OCTOPUS_TEXT", text)
+                .spawn()
+        }
         "#osascript" => {
             #[cfg(target_os = "macos")]
-            { std::process::Command::new("osascript").arg("-e").arg(&script).spawn() }
+            { std::process::Command::new("osascript")
+                .arg("-e").arg(&script)
+                .env("OCTOPUS_TEXT", text)
+                .spawn() }
             #[cfg(not(target_os = "macos"))]
             { return Err("osascript 仅 macOS 支持".into()); }
         }
         "#powershell" => {
             #[cfg(target_os = "windows")]
-            { std::process::Command::new("powershell").arg("-Command").arg(&script).spawn() }
+            { std::process::Command::new("powershell")
+                .arg("-Command").arg(&script)
+                .env("OCTOPUS_TEXT", text)
+                .spawn() }
             #[cfg(not(target_os = "windows"))]
             { return Err("powershell 仅 Windows 支持".into()); }
         }
-        "#python" => std::process::Command::new("python3").arg("-c").arg(&script).spawn(),
+        "#python" => {
+            std::process::Command::new("python3")
+                .arg("-c").arg(&script)
+                .env("OCTOPUS_TEXT", text)
+                .spawn()
+        }
         _ => return Err(format!(
             "未知脚本类型: {}（第一行须为 #shell/#osascript/#powershell/#python）",
             first_line
