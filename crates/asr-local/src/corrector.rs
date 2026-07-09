@@ -1,3 +1,7 @@
+// TODO(e2e 后清理)：有界热词纠错改为「热词命中即替换」（见 correct_greedy），
+// unigram/bigram gain 评分机制（score_sentence/get_word_score/is_jieba_valid_word/
+// bigram_scores/CTX_HALF）已不再驱动纠错，暂留待激进模式或移除。
+#![allow(dead_code)]
 use std::collections::HashMap;
 use std::io::Read;
 use flate2::read::GzDecoder;
@@ -242,58 +246,17 @@ impl LightCorrector {
                 }
                 let window_word: String = chars[i..i + sz].iter().collect();
                 let candidates = self.find_candidates(&window_word);
-                if candidates.len() <= 1 {
-                    continue;
-                }
-
-                let change_penalty = if self.is_jieba_valid_word(&window_word) {
-                    -1.5
-                } else {
-                    -0.2
-                };
-
-                // 局部上下文评分：取窗口前后各 CTX_HALF 字做 jieba 分词，
-                // 大幅减少重复全句分词开销（O(N²) → O(CTX²)）。
-                let ctx_start = i.saturating_sub(Self::CTX_HALF);
-                let ctx_end = (i + sz + Self::CTX_HALF).min(n);
-                let offset = i - ctx_start;
-
-                // baseline：原句上下文（含 window_word）
-                let baseline_ctx: String = chars[ctx_start..ctx_end].iter().collect();
-                let baseline_score = self.score_sentence(&baseline_ctx);
-
-                let mut best_cand = window_word.clone();
-                let mut best_gain = 0.0f64;
-
-                for cand in candidates {
-                    // 在 baseline_ctx 副本中做局部替换再评分
-                    let mut ctx_chars: Vec<char> = baseline_ctx.chars().collect();
-                    let cand_chars: Vec<char> = cand.chars().collect();
-                    ctx_chars[offset..(sz + offset)].copy_from_slice(&cand_chars[..sz]);
-                    let cand_ctx: String = ctx_chars.iter().collect();
-                    let cand_score = self.score_sentence(&cand_ctx);
-
-                    // 增量 gain：正值表示候选优于原词。非原词扣 change_penalty。
-                    let gain = if cand != window_word {
-                        cand_score - baseline_score + change_penalty
-                    } else {
-                        cand_score - baseline_score
-                    };
-                    if gain > best_gain {
-                        best_gain = gain;
-                        best_cand = cand;
-                    }
-                }
-
-                if best_cand != window_word {
+                // 热词命中（候选含 ≠ 原词的热词）→ 直接替换。
+                // spec 意图：热词是用户显式指定，低频专名语料分数本就低，
+                // 不靠 unigram/bigram gain 否决（旧 gain 机制反向坑了热词）。
+                // 多热词同音取首个（lookup 顺序 = from_words 插入序）。
+                if let Some(hw) = candidates.iter().find(|c| *c != &window_word) {
                     log::info!(
-                        "[ASR Correct] Replacing '{}' with '{}' (gain: {:.2})",
-                        window_word,
-                        best_cand,
-                        best_gain
+                        "[ASR Correct] Hotword replace '{}' → '{}'",
+                        window_word, hw
                     );
-                    let best_chars: Vec<char> = best_cand.chars().collect();
-                    chars[i..(sz + i)].copy_from_slice(&best_chars[..sz]);
+                    let hw_chars: Vec<char> = hw.chars().collect();
+                    chars[i..(sz + i)].copy_from_slice(&hw_chars[..sz]);
                     replaced_sz = sz;
                     break; // 跳出 sz 循环，i 前进续扫
                 }
@@ -406,5 +369,15 @@ mod tests {
         let c = with_hotwords(&["八爪鱼"]);
         // 同音误识「扒爪鱼」(ba-zhua-yu) → 命中
         assert_eq!(c.correct("我在养扒爪鱼"), "我在养八爪鱼");
+    }
+
+    #[test]
+    fn test_lowfreq_proper_noun_replace() {
+        let _g = serial();
+        // 低频专名（语料无分）：热词「浮窗」命中同音「福川」即替换——
+        // 复刻用户 e2e（sensevoice 把「浮窗」识成「福川」）。
+        // 旧 gain 机制会因专名语料分数低 + change_penalty 否决；命中即替换修复之。
+        let c = with_hotwords(&["浮窗"]);
+        assert_eq!(c.correct("开福川"), "开浮窗");
     }
 }
