@@ -73,9 +73,27 @@ samples 非空：
 
 **事件流**（`tick` L497，包 `run_tick`）：文本变化 → `[PersistRaw{vad_segmented}, Emit]`；段切（有语音）→ 追加 `[Polish{INFINITY}]`（段边界 silence 必过，触发停顿润色）；`speaking` 变化 → `[Speaking]`（`has_speech && silence_duration<0.3`）。
 
+### 4.1 finish 末段收尾（stop 路径，2026-07-09 修复）
+
+`finish(transcript)`（pipeline.rs L530）在 stop 时调用（coordinator stop → `tick(tail)` → `finish`）。`run_tick` 的切段需 `silence_cut || force_cut`（§4 步骤 4），而 stop 时末尾静音常不足 `segment_silence_ms`、buffer 也未满 `SEGMENT_DURATION_S`，两者都不触发 → 剩余 `audio_buffer`（+ 前次 force_cut 留的 `overlap_tail`）滞留。若 finish 仅 `drain_rx_and_consume` 不转码它，**末段丢失**；若此时 `active_count==0`，coordinator 直接 finalize，**整句丢**（用户报告「停录音后半句识别不到/卡住」即此）。
+
+finish 主动复用 tick 切段口径兜底：
+
+```
+if !audio_buffer.is_empty():
+    send_buffer = overlap_tail ++ audio_buffer
+    audio_buffer.clear(); overlap_tail.clear()
+    speech_samples = filter_speech_from_buffer(filter_vad, send_buffer)   ← §3 helper（每段 reset）
+    非空 → next_seq++/active_count++; spawn_offline(speech_samples, seq)
+drain_rx_and_consume(transcript)
+返回 Committed("")   ← VadSegmented 不产 Final，文本经 append_segment 累积；coordinator stop 不读此返回值
+```
+
+**为何 finish 内 drain 拿不到刚 spawn 的末段**：`spawn_offline` 是异步（runtime spawn → `engine.transcribe` → mpsc tx），紧随其后的 `drain_rx_and_consume` 立即排空时末段尚未识别完。收尾的时序保证在 **coordinator 侧**：spawn 使 `active_count > 0` → stop 路径进 `Stage::WaitingCompletion` → tick 线程继续 `drain_rx_and_consume` 轮询 → 末段完成、active_count 归零、连续 seq 消费追加 transcript。故 finish **不假设末段已识别完**，只保证「末段已入 spawn 队列 + 在途段已排空」。
+
 ---
 
-## 5. 关键不变量（本次修复确立，违反即回归「几段后不吐字」）
+## 5. 关键不变量（违反即回归「几段后不吐字」/「末段丢」）
 
 **① detect_vad 切段后必须 reset+preroll**
 切段 = 一段语音结束、新段开始，是 LSTM 状态的安全重置点。reset+preroll 让 detect_vad 从干净状态检测下一段（与构造 L371 对称），**消除跨段累积漂移**。
