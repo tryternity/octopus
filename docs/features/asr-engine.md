@@ -9,7 +9,7 @@
 | 引擎 | 模块 | 类型 | 特点 | 关键约束 |
 |------|------|------|------|----------|
 | Whisper | `whisper` | 离线 | 多语言；int8 三件套（encoder + dec_init + dec_past）；auto-language 两步式检测 | 仅 80 mel bins，**不支持 Large v3 / Turbo**（128 mel 遇到即 fail）；仅 whisper-small.en 质量可用；短音频按实际时长 `max_tokens=(seconds×6+10).min(448)` 防静音段幻听；Mel 频谱 center=True reflect 填充 |
-| SenseVoice-orig | `sensevoice_orig` | 离线 | FunASR 4 输入 ONNX（speech[560 维 LFR]+speech_lengths+language+textnorm）；中/英/粤/日/韩 | CMVN 必须外部应用（读 `am.mvn` 做 `(feat+addshift)*rescale`）；vocab=25055、blank=0；`skip_corrector=true` |
+| SenseVoice-orig | `sensevoice_orig` | 离线 | FunASR 4 输入 ONNX（speech[560 维 LFR]+speech_lengths+language+textnorm）；中/英/粤/日/韩 | CMVN 必须外部应用（读 `am.mvn` 做 `(feat+addshift)*rescale`）；vocab=25055、blank=0；`skip_corrector=true`；**language 映射**（2026-07-09）：`transcribe` 按 config.language 映射 FunASR id（auto=0/zh=3/en=4/yue=7/ja=11/ko=12，默认 config.language 强制 zh 抑制跨语误判）+ 输出兜底过滤日文假名/韩文（语言 token 是 soft prompt 非硬约束）——原硬编码 LANG_AUTO（0=多语自动检测）忽略 config.language，中文音频偶发误判日韩→片假名 |
 | Paraformer | `paraformer` | 离线/流式 | 中文优化；fbank: hamming 窗 + DC offset + pre-emphasis | 离线与流式共享 `compute_fbank` 但窗口参数不同；流式版用增量式 fbank + CIF 机制 |
 | Qwen3-ASR | `qwen3_asr` | 离线 | 大模型能力；auto/空时不注入 language 让模型自检（支持中英混合） | `skip_corrector=true`；**显式跳过 CoreML**（动态算子致图分区比纯 CPU 还慢）；decode_tokens 剥离模型自检的 `language <词> <|asr_text|>` 前缀 |
 | Zipformer | `zipformer` | 离线/流式 | CTC + Transducer（RNN-T）；路由层检测 `decoder.onnx` 分流 | CTC 单 session argmax；Transducer 三 session RNN-T greedy；encoder_dim 动态读（zh=512, xlarge=768） |

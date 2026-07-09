@@ -40,6 +40,24 @@ pub struct SenseVoiceOrigEngine {
 const BLANK_ID: i64 = 0;
 /// SenseVoice `language` 输入：0=auto（多语自动检测）。
 const LANG_AUTO: i32 = 0;
+
+/// 把 octopus `language` 配置映射为 SenseVoice `language` 输入 id（FunASR `language_id_dict`）。
+///
+/// `transcribe` 此前**硬编码 LANG_AUTO**（多语自动检测）、忽略传入的 language，中文音频偶发
+/// 被误判为日韩 → 输出片假名/韩文（2026-07-09 修）。显式指定语言抑制跨语误识别。
+/// id 经 tokens.json 交叉验证：`<|zh|>`=vocab[24884]、`<|en|>`=vocab[24885]，与 FunASR 标准
+/// zh=3/en=4 一致（vocab index − 24881）；ja/ko 用户不需要，仍按 FunASR 标准填。
+fn sensevoice_lang_id(language: &str) -> i32 {
+    match language.to_ascii_lowercase().as_str() {
+        "zh" | "chinese" => 3,
+        "en" | "english" => 4,
+        "yue" | "cantonese" => 7,
+        "ja" | "jp" | "japanese" => 11,
+        "ko" | "kr" | "korean" => 12,
+        _ => LANG_AUTO, // auto / 未知语言 → 自动检测（保留多语能力）
+    }
+}
+
 /// SenseVoice `textnorm` 输入：1=不插标点（标点交 octopus pipeline corrector 后处理补，
 /// 与其他本地引擎一致；python 实测 textnorm 0/1 对纯中文输出无差异）。
 const TEXTNORM_NO_ITN: i32 = 1;
@@ -97,7 +115,7 @@ impl crate::engine::OfflineAsrEngine for SenseVoiceOrigEngine {
         true
     }
 
-    fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
+    fn transcribe(&self, samples: &[f32], language: &str) -> Result<String> {
         // 80-bin fbank + LFR(m=7/n=6) → [T,560]（复用 sensevoice）。
         let mut features = compute_fbank_features(samples)?;
         let (n_frames, feat_dim) = (features.nrows(), features.ncols());
@@ -123,7 +141,7 @@ impl crate::engine::OfflineAsrEngine for SenseVoiceOrigEngine {
         };
         let speech = ndarray::Array3::from_shape_vec((1, n_frames, feat_dim), x_vec)?;
         let speech_lengths = ndarray::Array1::from_vec(vec![n_frames as i32]);
-        let language = ndarray::Array1::from_vec(vec![LANG_AUTO]);
+        let language = ndarray::Array1::from_vec(vec![sensevoice_lang_id(language)]);
         let textnorm = ndarray::Array1::from_vec(vec![TEXTNORM_NO_ITN]);
 
         let mut session = self.session.lock();
@@ -173,6 +191,9 @@ impl crate::engine::OfflineAsrEngine for SenseVoiceOrigEngine {
             }
         }
         let text = text.replace('▁', " ");
+        // 兜底过滤日韩字符：language token 是 soft prompt（非硬约束），极端情况偶发日韩
+        // token；纯中英文场景这些字符必为跨语误识别（见 sensevoice_lang_id 注释）。
+        let text = strip_japanese_korean(&text);
         Ok(text.trim().to_string())
     }
 }
@@ -209,6 +230,23 @@ fn parse_mvn_block(txt: &str, tag: &str) -> Result<Vec<f32>> {
         .collect()
 }
 
+/// 过滤日语假名与韩文字符（纯中英文场景跨语误识别兜底）。
+///
+/// 即便指定 language，SenseVoice 语言 token 仍是 soft prompt（非硬约束），极端情况偶发
+/// 日韩 token。中英文输出不应含这些字符（中文=CJK 统一表意 U+4E00-9FFF、英文=ASCII），
+/// 故过滤日文假名（平假名 U+3040-309F / 片假名 U+30A0-30FF / 片假名扩展 U+31F0-31FF /
+/// 假名补充 U+1B000-1B0FF）与韩文（兼容字母 U+3130-318F / 音节 U+AC00-D7AF）不会误伤
+/// 中英文；中英文字符、标点、数字、空格原样保留。
+fn strip_japanese_korean(text: &str) -> String {
+    text.chars()
+        .filter(|&c| {
+            let cp = c as u32;
+            !(matches!(cp, 0x3040..=0x309F | 0x30A0..=0x30FF | 0x31F0..=0x31FF | 0x1B000..=0x1B0FF)
+                || matches!(cp, 0x3130..=0x318F | 0xAC00..=0xD7AF))
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -235,6 +273,24 @@ mod tests {
     fn parse_mvn_block_missing_tag_errors() {
         let txt = "<OtherTag> 1 1\n[ 0 ]\n";
         assert!(parse_mvn_block(txt, "AddShift").is_err());
+    }
+
+    #[test]
+    fn sensevoice_lang_id_maps_languages() {
+        assert_eq!(sensevoice_lang_id("zh"), 3);
+        assert_eq!(sensevoice_lang_id("en"), 4);
+        assert_eq!(sensevoice_lang_id("ZH"), 3); // 大小写不敏感
+        assert_eq!(sensevoice_lang_id("auto"), LANG_AUTO);
+        assert_eq!(sensevoice_lang_id("fra"), LANG_AUTO); // 未知语言 → auto
+    }
+
+    #[test]
+    fn strip_japanese_korean_removes_kana_hangul_keeps_cjk() {
+        assert_eq!(strip_japanese_korean("你好カタカナ世界"), "你好世界");
+        assert_eq!(strip_japanese_korean("hello ひらがな world"), "hello  world");
+        assert_eq!(strip_japanese_korean("안녕 中文"), " 中文");
+        // 中英文 / 标点 / 数字原样保留
+        assert_eq!(strip_japanese_korean("Hello 世界 123！"), "Hello 世界 123！");
     }
 
     /// 真实模型 e2e：加载 DB 的 sensevoice-orig-small，识别 $OCTOPUS_TEST_WAV（若设）。
