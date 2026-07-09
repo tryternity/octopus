@@ -13,11 +13,13 @@
 - **DB schema**：`CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE` 幂等种子。`user_version` 从 18 bump 到 19。现有 v18 DB 重新执行 db.sql 自动建新表 + seed。
 - **is_system 保护**：内置项（`is_system=1`）不可删除；可编辑内容但不可改 action_type。
 - **script magic comment**：第一行 `#shell` / `#osascript` / `#powershell` / `#python` 决定运行时；平台不支持返回错误而非隐藏菜单项。
-- **图标两种格式**：以 `<svg` 开头 → 内联渲染；否则 → 文件名从 `/icons/` 加载（SvgIcon mask 方案）。
-- **`{text}` 占位符**：url 和 script 类型的 action_data 中 `{text}` 运行时替换为选中文本（url 类型需 URL 编码）。
+- **图标三种格式**：(1) `.svg` 文件名 → `fetch("/icons/{name}.svg")` → 提取 inner HTML → 重组 SVG 强制 `currentColor`；(2) `<svg>` 开头 → 内联渲染；(3) Lucide 预置名 → 组装。⚠️ 必须用 `<i dangerouslySetInnerHTML>` 注入完整 SVG 字符串（React `<svg>` + innerHTML 注入 `<path>` 的 `currentColor` 继承不稳定）。
+- **`#[serde(rename_all = "camelCase")]`**：`ActionBarItem` struct 必须加此 attribute，否则 JSON 字段 `parent_id` → 前端 `parentId` 读不到 → 菜单完全不渲染（已踩坑）。
+- **`{text}` 占位符**：url 和 script 类型的 action_data 中 `{text}` 运行时替换为选中文本（url 类型需 URL 编码，后端用 `simple_url_encode`）。
 - **翻译特殊处理**：ai 类型 action_data 为 `auto_translate` 时按 CJK 检测方向。
 - **已有基础设施复用**：`chat_text_with_prompt`（LLM 调用）、`finalize_action_bar`（出口收口）、`timedOutRef`（前端超时）。
 - **Tauri 命令注册**：新命令必须加入 `main.rs` 的 `invoke_handler` 列表，否则前端 invoke 被拒。
+- **按钮布局**：水平「图标+文字」一行排列（`flex-row`），窗口 380×76px。浮窗在用户内容上方，必须矮。
 
 ---
 

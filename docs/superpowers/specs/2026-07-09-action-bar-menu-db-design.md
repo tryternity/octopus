@@ -2,7 +2,7 @@
 
 > **状态**：已实现（Task 1-6 全部完成）
 > **日期**：2026-07-09
-> **scope**：将 action bar 硬编码菜单迁移为 DB 表管理，支持两级菜单（主菜单 + 子菜单）+ 6 种动作类型 + 用户自定义扩展
+> **scope**：将 action bar 硬编码菜单迁移为 DB 表管理，支持两级菜单（主菜单 + 子菜单）+ 5 种动作类型 + 用户自定义扩展
 > **调研依据**：[`2026-07-08-popclip-survey.md`](./2026-07-08-popclip-survey.md)（PopClip/SnipDo/OnText/Click to Do 调研）
 
 ---
@@ -230,25 +230,23 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 
 - 删除硬编码的 mainItems / aiItems / searchItems / SEARCH_URLS
 - mount 时 `invoke("list_action_bar_items")` 加载全部菜单项
-- 按 parent_id 构建两级结构
+- 按 parentId 构建两级结构（`#[serde(rename_all = "camelCase")]` 确保 JSON 字段名匹配）
 - `executeMain` / `executeSubItem` 合并为统一的 `executeItem(item: ActionBarItem)`
 - `ai` 类型仍走前端 loading + 超时 + timedOutRef 流程
 - `url` / `script` / `copy` 直接 `invoke("execute_action_bar")`
+- 按钮布局：**水平「图标+文字」一行排列**（`flex-row`），非上下两行——浮窗更矮，子菜单展开后总高 ~72px
+- 视觉：`rounded-2xl` + `backdrop-blur-xl` 毛玻璃 + `shadow-2xl`
+- 窗口尺寸 380×72px（水平排列需更宽）
 
 ### 6.2 图标渲染
 
-新增 `ActionBarIcon` 组件，自动判断 icon 字段：
+新增 `ActionBarIcon` 组件（`components/ActionBarIcon.tsx`），三层渲染逻辑：
 
-```tsx
-function ActionBarIcon({ icon, className }) {
-  if (icon.startsWith("<svg")) {
-    // 内联 SVG → dangerouslySetInnerHTML
-    return <span className={className} dangerouslySetInnerHTML={{ __html: icon }} />;
-  }
-  // 文件名 → SvgIcon mask 方案
-  return <SvgIcon name={icon.replace(".svg", "")} className={className} />;
-}
-```
+1. **文件名（`action-ai.svg`）**→ `fetch("/icons/{name}.svg")` 加载完整 SVG → 提取 inner HTML → 重组 `<svg>` 强制 `stroke/fill="currentColor"` → `<i dangerouslySetInnerHTML>`
+2. **内联 SVG（`<svg>...`）**→ 直接渲染
+3. **Lucide 预置名（`pencil` 等）**→ `<svg>` + 预置 path 组装
+
+⚠️ **踩坑**：(1) React `<svg>` + `dangerouslySetInnerHTML` 注入 `<path>` 时 `currentColor` 继承不稳定 → 改为 `<i>` + 完整 SVG 字符串；(2) `ActionBarItem` struct 缺 `#[serde(rename_all = "camelCase")]` → JSON 字段 snake_case → 前端 camelCase 读不到 → 菜单完全不渲染。
 
 ### 6.3 设置页
 
