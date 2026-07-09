@@ -93,7 +93,7 @@ pub fn trigger_action_bar(app: AppHandle) {
 
         let app_for_show = app_clone.clone();
         let _ = tauri::async_runtime::spawn(async move {
-            show_action_bar_window(&app_for_show, mx, win_y);
+            show_action_bar_window(&app_for_show, win_x, win_y);
         });
     });
 }

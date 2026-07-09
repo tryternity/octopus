@@ -33,12 +33,6 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
         let _ = win.set_position(tauri::Position::Logical(
             tauri::LogicalPosition::new(x, y),
         ));
-        // 读回实际位置——确认 set_position 是否生效
-        if let Ok(pos) = win.outer_position() {
-            let scale = win.scale_factor().unwrap_or(1.0);
-            log::info!("[action-bar] set_pos logical=({},{}) → outer physical=({},{}) → logical=({},{})",
-                x, y, pos.x, pos.y, pos.x as f64 / scale, pos.y as f64 / scale);
-        }
         let _ = win.show();
         let _ = win.set_focus();
         let _ = app.emit("action-bar://show", ());
