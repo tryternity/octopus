@@ -16,7 +16,7 @@ pub fn create_action_bar_window(app: &AppHandle) {
         WebviewUrl::default(),
     )
     .title("")
-    .inner_size(260.0, 82.0) // 主菜单 38px + 子菜单 38px + 边框 ≈ 80px，缩小透明点击区
+    .inner_size(300.0, 96.0) // 主菜单 ~48px + 子菜单 ~48px + padding，圆角留边
     .decorations(false)
     .always_on_top(true)
     .transparent(true)

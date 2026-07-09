@@ -33,17 +33,17 @@ const IconBtn = ({ icon, label, active, onClick }: {
 }) => (
   <button
     className={cn(
-      "flex flex-col items-center justify-center gap-0.5 px-3 py-1.5 rounded-md transition-all",
+      "flex flex-col items-center justify-center gap-1 px-3.5 py-2 rounded-xl transition-all duration-150 min-w-[48px]",
       active
-        ? "bg-voice/15 text-voice ring-1 ring-voice/30"
-        : "text-muted-foreground hover:bg-muted hover:text-foreground",
+        ? "bg-voice/12 text-voice shadow-sm"
+        : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
     )}
     onMouseDown={(e) => e.stopPropagation()}
     onClick={onClick}
     title={label}
   >
-    <ActionBarIcon icon={icon} className="w-4 h-4" />
-    <span className="text-[9px]">{label}</span>
+    <ActionBarIcon icon={icon} className="text-[18px]" />
+    <span className="text-[10px] font-medium leading-none">{label}</span>
   </button>
 );
 
@@ -268,19 +268,24 @@ export default function ActionBar() {
 
   if (view === "loading") {
     return (
-      <div data-action-bar className="flex items-center justify-center gap-2 px-4 py-2 bg-background text-foreground rounded-lg border border-border shadow-lg">
-        <Loader2 className="w-3.5 h-3.5 animate-spin text-voice" />
-        <span className="text-[11px]">处理中…</span>
+      <div data-action-bar className="flex items-center justify-center gap-2.5 px-6 py-3 bg-background/95 backdrop-blur-xl text-foreground rounded-2xl border border-border/50 shadow-2xl shadow-black/10">
+        <Loader2 className="w-4 h-4 animate-spin text-voice" />
+        <span className="text-[12px] font-medium">处理中</span>
+        <span className="flex gap-0.5">
+          <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "0ms" }} />
+          <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "150ms" }} />
+          <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "300ms" }} />
+        </span>
       </div>
     );
   }
 
   if (view === "error") {
     return (
-      <div data-action-bar className="flex flex-col gap-1 px-4 py-2 bg-background text-foreground rounded-lg border border-border shadow-lg max-w-[240px]">
-        <span className="text-[11px] text-red-500">{errorMsg}</span>
+      <div data-action-bar className="flex flex-col gap-1.5 px-4 py-3 bg-background/95 backdrop-blur-xl text-foreground rounded-2xl border border-red-500/30 shadow-2xl shadow-black/10 max-w-[260px]">
+        <span className="text-[12px] text-red-500 font-medium leading-snug">{errorMsg}</span>
         <button
-          className="text-[10px] text-muted-foreground hover:text-foreground mt-0.5"
+          className="text-[11px] text-muted-foreground hover:text-foreground transition-colors w-fit"
           onMouseDown={(e) => e.stopPropagation()}
           onClick={() => getCurrentWindow().hide()}
         >关闭</button>
@@ -293,9 +298,12 @@ export default function ActionBar() {
     : [];
 
   return (
-    <div data-action-bar className="flex flex-col rounded-lg border border-border shadow-lg overflow-hidden bg-background">
-      {/* 主菜单在上 */}
-      <div className="flex items-center gap-0.5 px-1 h-[38px] shrink-0">
+    <div
+      data-action-bar
+      className="flex flex-col rounded-2xl border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
+    >
+      {/* 主菜单 */}
+      <div className="flex items-center gap-1 px-1.5 py-1.5 shrink-0">
         {mainItems.map((item, i) => (
           <IconBtn
             key={item.id}
@@ -306,10 +314,12 @@ export default function ActionBar() {
           />
         ))}
       </div>
-      {/* 子菜单在下——固定占位，无内容时高度 0 */}
+      {/* 子菜单——展开时用渐变分隔线 + 轻微底色区分 */}
       <div className={cn(
-        "flex items-center gap-0.5 px-1 h-[38px] shrink-0 overflow-hidden border-t border-border/40",
-        view === "submenu" ? "" : "h-0 border-t-0 pt-0 pb-0",
+        "flex items-center gap-1 px-1.5 py-1.5 shrink-0 overflow-hidden transition-all duration-200",
+        view === "submenu"
+          ? "border-t border-border/30 bg-foreground/[0.02]"
+          : "h-0 py-0 overflow-hidden border-t-0",
       )}>
         {subItems.map((item, i) => (
           <IconBtn
