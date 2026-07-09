@@ -182,6 +182,11 @@ pub fn set_config(
     }
     octopus_infra::db::save_app_config(&cfg).map_err(|e| e.to_string())?;
 
+    // fuzzy_dialect 热重载：改方言规则后重建 corrector 热词索引（规则变 key 必变）。
+    if key == "fuzzy_dialect" {
+        octopus_asr_local::corrector::reload_fuzzy_dialect(&cfg.fuzzy_dialect);
+    }
+
     // 刷新 ASR 侧 AppConfig 缓存（审查 二1）：denoise_mode / asr_hardware_accelerated
     // 等被 asr 的 load_app_config_cached 缓存（audio 每帧读 denoise、apply_session_acceleration
     // 读 hwaccel），不 reload 则改了也不生效（需重启）。从 DB 重读，set_config 罕见、可忽略成本。
@@ -265,6 +270,22 @@ fn apply_config_value(
         }
         "asr_correct" => {
             cfg.asr_correct = value.as_bool().ok_or("asr_correct 需要 bool")?;
+        }
+        "fuzzy_dialect" => {
+            // 逗号分隔 token 子集，与 hotword::parse_dialect 对齐；非法 token 拒绝（前端误传保护）。
+            let v = value.as_str().ok_or("fuzzy_dialect 需要字符串")?;
+            for tok in v.split(',').map(|t| t.trim()) {
+                if tok.is_empty() {
+                    continue;
+                }
+                if !matches!(tok, "f/h" | "hu/wu" | "n/l") {
+                    return Err(format!(
+                        "fuzzy_dialect 非法 token '{}'（应为 f/h、hu/wu、n/l 子集）",
+                        tok
+                    ));
+                }
+            }
+            cfg.fuzzy_dialect = v.to_string();
         }
         "output_simplified" => {
             cfg.output_simplified = value.as_bool().ok_or("output_simplified 需要 bool")?;
@@ -673,5 +694,25 @@ mod tests {
         assert_eq!(cfg.asr_shortcut, "Ctrl+Alt+Z");
         apply_config_value(&mut cfg, "microphone", &json!("External Mic")).unwrap();
         assert_eq!(cfg.microphone, "External Mic");
+    }
+
+    #[test]
+    fn apply_config_valid_fuzzy_dialect() {
+        let mut cfg = octopus_infra::config::AppConfig::default();
+        apply_config_value(&mut cfg, "fuzzy_dialect", &json!("")).unwrap();
+        assert_eq!(cfg.fuzzy_dialect, "");
+        apply_config_value(&mut cfg, "fuzzy_dialect", &json!("f/h,hu/wu,n/l")).unwrap();
+        assert_eq!(cfg.fuzzy_dialect, "f/h,hu/wu,n/l");
+    }
+
+    #[test]
+    fn apply_config_invalid_fuzzy_dialect() {
+        let mut cfg = octopus_infra::config::AppConfig::default();
+        // 非 token（fh 而非 f/h）
+        assert!(apply_config_value(&mut cfg, "fuzzy_dialect", &json!("fh")).is_err());
+        // 含非法 token
+        assert!(apply_config_value(&mut cfg, "fuzzy_dialect", &json!("f/h,bad")).is_err());
+        // 非字符串
+        assert!(apply_config_value(&mut cfg, "fuzzy_dialect", &json!(123)).is_err());
     }
 }

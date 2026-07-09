@@ -333,6 +333,8 @@ impl Default for AppConfig {
             polish_llm: default_polish_llm(),
             asr_hardware_accelerated: default_asr_hardware_accelerated(),
             asr_correct: default_asr_correct(),
+            // fuzzy_dialect 默认空 = 仅基础规则（平翘舌+前后鼻音）
+            fuzzy_dialect: String::new(),
             output_simplified: default_output_simplified(),
             hide_toolbar: default_hide_toolbar(),
             denoise_mode: default_denoise_mode(),
