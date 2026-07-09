@@ -29,6 +29,7 @@ pub fn restore_accessory_if_no_regular_window(app_handle: &tauri::AppHandle) {
 /// 全局热键触发浮窗（clipboard/result/action_bar）前调用：
 /// 临时隐藏常规窗口（settings/compact_editor），避免 app 被激活时
 /// 把这些窗口带到前台抢焦点。用户手动点 Dock 图标或托盘仍可恢复。
+#[allow(dead_code)]
 pub fn hide_regular_windows(app_handle: &tauri::AppHandle) {
     for label in REGULAR_WINDOWS {
         if let Some(win) = app_handle.get_webview_window(label) {

@@ -74,8 +74,6 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         if visible && focused {
             window.hide()?;
         } else {
-            // 隐藏常规窗口避免 app 被激活时带到前台
-            crate::activation::hide_regular_windows(app);
             window.show()?;
             window.set_focus()?;
         }

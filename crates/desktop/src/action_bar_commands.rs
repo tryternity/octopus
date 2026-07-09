@@ -15,9 +15,7 @@ pub struct ActionBarContext {
 }
 
 static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
-/// 记录被隐藏的常规窗口 label（paste/hide 后恢复）
-static HIDDEN_REGULAR_WINDOWS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-/// 重入 guard——防止热键连按导致 trigger 重叠执行（丢失 HIDDEN_REGULAR_WINDOWS）
+/// 重入 guard——防止热键连按导致 trigger 重叠执行
 static TRIGGER_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
 /// 热键触发：模拟 Cmd+C → 读剪贴板 → 获取鼠标位置 → 显示浮窗。
@@ -33,27 +31,11 @@ pub fn trigger_action_bar(app: AppHandle) {
 
     let app_clone = app.clone();
     std::thread::spawn(move || {
-        // 重入 guard——防止热键连按导致第二次 trigger 覆盖 HIDDEN_REGULAR_WINDOWS
+        // 重入 guard——防止热键连按导致 trigger 重叠执行
         if TRIGGER_IN_PROGRESS.compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst).is_err() {
             log::info!("[action-bar] trigger already in progress, skipping");
             return;
         }
-
-        // 0. 记录并隐藏常规窗口
-        let hidden: Vec<String> = ["settings_window", "compact_editor_window"]
-            .iter()
-            .filter_map(|label| {
-                if let Some(win) = app_clone.get_webview_window(label) {
-                    if win.is_visible().unwrap_or(false) {
-                        let _ = win.hide();
-                        return Some(label.to_string());
-                    }
-                }
-                None
-            })
-            .collect();
-        *HIDDEN_REGULAR_WINDOWS.lock().unwrap() = hidden.clone();
-        log::info!("[action-bar] hidden regular windows: {:?}", hidden);
 
         // 1. 记录触发前的剪贴板内容
         let clipboard_before = read_clipboard_text(&app_clone);
@@ -122,21 +104,8 @@ pub fn trigger_action_bar(app: AppHandle) {
     });
 }
 
-/// 恢复被隐藏的常规窗口（从全局 HIDDEN_REGULAR_WINDOWS 读取并清空）
-fn restore_hidden_windows(app: &AppHandle) {
-    let labels = HIDDEN_REGULAR_WINDOWS.lock().unwrap().drain(..).collect::<Vec<_>>();
-    for label in &labels {
-        if let Some(win) = app.get_webview_window(label) {
-            let _ = win.show();
-            log::info!("[action-bar] restored window: {}", label);
-        }
-    }
-}
-
-/// action bar 所有出口的统一收口：恢复常规窗口 + 重置重入 guard。
-/// 剪贴板已在 trigger 阶段即时恢复，此处不再碰剪贴板。
-fn finalize_action_bar(app: &AppHandle) {
-    restore_hidden_windows(app);
+/// action bar 所有出口的统一收口：重置重入 guard。
+fn finalize_action_bar(_app: &AppHandle) {
     TRIGGER_IN_PROGRESS.store(false, Ordering::SeqCst);
 }
 
@@ -146,7 +115,7 @@ pub fn action_bar_get_context() -> Option<ActionBarContext> {
     PENDING_CONTEXT.lock().unwrap().take()
 }
 
-/// 前端隐藏浮窗时调用——恢复被隐藏的常规窗口。
+/// 前端隐藏浮窗时调用。
 #[tauri::command]
 pub fn action_bar_dismiss(app: AppHandle) {
     hide_action_bar_window(&app);
