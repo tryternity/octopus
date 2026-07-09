@@ -17,8 +17,6 @@ pub struct ActionBarContext {
 static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
 /// 记录被隐藏的常规窗口 label（paste/hide 后恢复）
 static HIDDEN_REGULAR_WINDOWS: Mutex<Vec<String>> = Mutex::new(Vec::new());
-/// 记录触发前的剪贴板内容（操作完成后恢复——模拟 Cmd+C 的文本不进历史）
-static CLIPBOARD_BACKUP: Mutex<Option<String>> = Mutex::new(None);
 /// 重入 guard——防止热键连按导致 trigger 重叠执行（丢失 HIDDEN_REGULAR_WINDOWS）
 static TRIGGER_IN_PROGRESS: AtomicBool = AtomicBool::new(false);
 
@@ -57,43 +55,47 @@ pub fn trigger_action_bar(app: AppHandle) {
         *HIDDEN_REGULAR_WINDOWS.lock().unwrap() = hidden.clone();
         log::info!("[action-bar] hidden regular windows: {:?}", hidden);
 
-        // 1. 记录触发前的剪贴板内容（用于完成后恢复）
+        // 1. 记录触发前的剪贴板内容
         let clipboard_before = read_clipboard_text(&app_clone);
-        *CLIPBOARD_BACKUP.lock().unwrap() = clipboard_before.clone();
 
-        // 2. 模拟 Cmd+C（不暂停 watcher——暂停会影响 clipboard-rs 的读取。
-        //   watcher 的 on_clipboard_change 会记录，但我们在 paste_result 完成后
-        //   恢复原始剪贴板内容，多余的条目可以通过删除最近一条来清理）
+        // 2. suppress watcher——osascript 模拟 Cmd+C 直接写系统剪贴板，
+        //    绕过 write_text 的自动 suppress，需手动抑制防选中文本入库
+        let clip_handle = app_clone.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>();
+        clip_handle.suppress_next();
+
         let focus = FocusTracker::new();
         focus.simulate_copy();
 
         // 3. 等待 200ms 让系统完成复制
         std::thread::sleep(std::time::Duration::from_millis(200));
 
-        // 4. 读剪贴板
+        // 4. 读剪贴板拿到选中文本
         let clipboard_after = read_clipboard_text(&app_clone);
         let text = match (&clipboard_before, &clipboard_after) {
-            // 剪贴板变化了 → 用新内容
             (Some(before), Some(after)) if before != after => after.clone(),
-            // 剪贴板没变但之前是空的 → 用当前内容
             (None, Some(after)) => after.clone(),
-            // 剪贴板没变（可能 Cmd+C 复制了和之前一样的内容，或者 Cmd+C 没生效）
-            // 尝试用当前剪贴板内容——用户可能 Cmd+A 全选后内容恰好和上次复制的一样
             (Some(_), Some(after)) if !after.trim().is_empty() => {
                 log::info!("[action-bar] clipboard unchanged but has content, using it");
                 after.clone()
             }
             _ => {
                 log::warn!("[action-bar] No text available — no selection?");
-                finalize_action_bar(&app_clone, true);
+                finalize_action_bar(&app_clone);
                 return;
             }
         };
 
         if text.trim().is_empty() {
             log::warn!("[action-bar] Selected text is empty");
-            finalize_action_bar(&app_clone, true);
+            finalize_action_bar(&app_clone);
             return;
+        }
+
+        // 5. 立即恢复原始剪贴板内容（write_text 自带 suppress，不会入库）
+        if let Some(ref original) = clipboard_before {
+            if Some(original.as_str()) != clipboard_after.as_deref() {
+                write_clipboard_text(&app_clone, original);
+            }
         }
 
         log::info!("[action-bar] got text len={}", text.len());
@@ -129,20 +131,9 @@ fn restore_hidden_windows(app: &AppHandle) {
     }
 }
 
-/// action bar 所有出口的统一收口：
-/// - 恢复被隐藏的常规窗口（始终）
-/// - 恢复剪贴板原始内容（restore_clipboard=true 时；AI 结果路径=false，结果留给用户）
-/// - 重置重入 guard
-fn finalize_action_bar(app: &AppHandle, restore_clipboard: bool) {
-    if restore_clipboard {
-        let backup = CLIPBOARD_BACKUP.lock().unwrap().take();
-        if let Some(original) = backup {
-            write_clipboard_text(app, &original);
-        }
-    } else {
-        // AI 结果路径——结果已在剪贴板，清除备份不恢复
-        *CLIPBOARD_BACKUP.lock().unwrap() = None;
-    }
+/// action bar 所有出口的统一收口：恢复常规窗口 + 重置重入 guard。
+/// 剪贴板已在 trigger 阶段即时恢复，此处不再碰剪贴板。
+fn finalize_action_bar(app: &AppHandle) {
     restore_hidden_windows(app);
     TRIGGER_IN_PROGRESS.store(false, Ordering::SeqCst);
 }
@@ -198,11 +189,11 @@ pub async fn run_ai_action(action: String, text: String) -> Result<String, Strin
     Ok(result)
 }
 
-/// 前端隐藏浮窗时调用——恢复剪贴板 + 恢复被隐藏的常规窗口。
+/// 前端隐藏浮窗时调用——恢复被隐藏的常规窗口。
 #[tauri::command]
 pub fn action_bar_dismiss(app: AppHandle) {
     hide_action_bar_window(&app);
-    finalize_action_bar(&app, true);
+    finalize_action_bar(&app);
 }
 
 /// AI 结果通过临时 tab 打开 CompactEditor 展示（不写 DB）。
@@ -220,11 +211,10 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
     };
     let display_text = format!("【{}】\n{}", label, result);
 
-    // 结果写入系统剪贴板（方便用户手动粘贴）——不恢复原始内容
+    // 结果写入系统剪贴板（方便用户手动粘贴）——write_text 自带 suppress 不会入库
     write_clipboard_text(&app, &result);
 
-    // 恢复常规窗口 + 重置 guard（不恢复剪贴板——结果留给用户）
-    finalize_action_bar(&app, false);
+    finalize_action_bar(&app);
 
     // 用临时 tab 打开 CompactEditor（不写 DB，保存按钮灰掉）
     // 窗口已存在 → emit 推送新 tab；窗口不存在 → store_pending_temp_tab + 建窗
@@ -244,11 +234,11 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
     }
 }
 
-/// 用系统浏览器打开 URL + 隐藏浮窗 + 恢复剪贴板 + 恢复常规窗口。
+/// 用系统浏览器打开 URL + 隐藏浮窗 + 恢复常规窗口。
 #[tauri::command]
 pub fn action_bar_open_url(url: String, app: AppHandle) {
     hide_action_bar_window(&app);
-    finalize_action_bar(&app, true);
+    finalize_action_bar(&app);
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open").arg(&url).spawn();

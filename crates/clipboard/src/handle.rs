@@ -28,6 +28,13 @@ impl ClipboardHandle {
         self.suppress_flag.swap(false, Ordering::SeqCst)
     }
 
+    /// 手动设置 suppress flag——下一次 on_clipboard_change 跳过记录。
+    /// 用于 action bar 模拟 Cmd+C 前：osascript 直接写系统剪贴板，
+    /// 绕过 write_text 的自动 suppress，需手动抑制 watcher。
+    pub fn suppress_next(&self) {
+        self.suppress_flag.store(true, Ordering::SeqCst);
+    }
+
     /// 是否启用剪贴板历史记录（clipboard_enabled 的运行时镜像）。
     pub fn is_recording_enabled(&self) -> bool {
         self.recording_enabled.load(Ordering::SeqCst)
