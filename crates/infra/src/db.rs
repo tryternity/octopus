@@ -833,6 +833,7 @@ pub fn save_active_prompt_id(id: i64) -> Result<()> {
 // ── Action Bar 菜单项 ──
 
 #[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ActionBarItem {
     pub id: i64,
     pub parent_id: Option<i64>,
