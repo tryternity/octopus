@@ -151,3 +151,23 @@ DB 表 `hotwords`：
 - 阿里云热词与上下文增强：https://www.alibabacloud.com/help/zh/model-studio/improve-asr-accuracy
 - Qwen3-ASR-Flash Flexible Contextual Biasing：https://qwen.ai/blog?id=41e4c0f6175f9b004a03a07e42343eaaf48329e7
 - whisper.cpp prompting：https://developers.openai.com/cookbook/examples/whisper_prompting_guide
+
+---
+
+## 方言模糊规则可配（2026-07-10 增补）
+
+不同地区有不同方言混淆习惯（福建 f/h、湖南 n/l、江浙 hu/wu）。v1 模糊规则硬编码（n→l 默认开 + 平翘舌 + 前后鼻音）无法覆盖 f↔h、hu↔wu，且 n→l 默认开对标准普通话用户增加误命中。
+
+### 设计
+- 三组方言做成**用户可勾选 checkbox**（设置页「热词」面板），存 `app_config.fuzzy_dialect`（逗号分隔 token：`f/h`、`hu/wu`、`n/l`），默认空 = 仅基础规则。
+- 基础规则（平翘舌 zh/ch/sh→z/c/s + 前后鼻音 ing/eng/ang→in/en/an）**始终开**，不做 checkbox。
+- 归一化单向（查询与索引共用 `normalize_fuzzy_pinyin` → 双向对称命中）：
+  - `f/h`：声母 f→h
+  - `n/l`：声母 n→l（**行为变更**：从 v1 默认开改为可选）
+  - `hu/wu`：单字 hu→wu，其余 huX→wX（huang→wang、hua→wa）
+
+### 已知局限
+`hu/wu` 覆盖 hu↔wu 单字及 huang↔wang / hua↔wa（h 声母+u 介音 vs 零声母 w），**不覆盖** hui↔wei（韵母 ui/ei 不同，拼音级无法统一）。
+
+### 规则生效
+`FuzzyRules`（`hotword.rs` 全局 `OnceLock<RwLock>`）→ `normalize_fuzzy_pinyin` 读全局。规则变更经 `corrector::reload_fuzzy_dialect` set 全局 + 用缓存 `active_words` 重建 `HotwordIndex`（索引 key 由 normalize 生成，规则变 key 必变）。

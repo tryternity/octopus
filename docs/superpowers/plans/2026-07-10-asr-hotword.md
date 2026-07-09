@@ -1202,3 +1202,18 @@ git commit -m "refactor(asr): 重新启用 sensevoice/qwen3/cloud 热词纠错�
 **2. 占位符扫描：** 无 TBD/TODO；Task 8 Step 2 的 tab 注册按 index.tsx 现有模式对齐（已说明打开文件按模式追加，非占位——是真实可执行步骤）。
 
 **3. 类型一致性：** `HotwordIndex::from_words/lookup/is_empty/max_len`、`reload_hotwords(Vec<String>)`、`insert_hotword(word, source, status)`、`list_active_hotword_words()` 在各 Task 间签名一致 ✓。`is_candidate(jieba, word)` 定义与测试调用一致 ✓。
+
+---
+
+## Task 10（增补，2026-07-10）：方言模糊规则可配
+
+热词 spec 增补：f/h、hu/wu、n/l 三组方言混淆做成 checkbox，存 `app_config.fuzzy_dialect`。
+
+- [x] **10.1** hotword.rs：`FuzzyRules{fh,nl,hw}` + 全局 + `parse_dialect`（token f/h、hu/wu、n/l）+ `normalize_with_rules`（基础始终 + 方言可选 else if 互斥）。commit c9f411c
+- [x] **10.2** corrector.rs：`active_words` 缓存 + `reload_fuzzy_dialect(s)`。commit a5e0ce0
+- [x] **10.3** config.rs：`AppConfig.fuzzy_dialect`（serde default + Default impl 两处构造点）。commit e8dd04d / fccc0e9
+- [x] **10.4** settings_commands.rs：`apply_config_value` fuzzy_dialect case（校验子集）+ set_config 热重载。commit fccc0e9
+- [x] **10.5** main.rs：setup `reload_fuzzy_dialect`（先于 reload_hotwords）。commit 8c682a4
+- [x] **10.6** 前端 HotwordPanel：3 checkbox + props；index.tsx 传参。commit 03cfbf7
+
+**验证**：cargo test -p octopus-asr-local（hotword 11 + corrector 11）+ -p octopus-desktop settings_commands（11）全绿；cargo check desktop + npm build 通过。e2e 待用户（勾 f/h + 热词「浮窗」+ sensevoice 录音）。

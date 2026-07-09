@@ -49,7 +49,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `firered` | FireRedASR2-AED CTC 离线识别（小红书 FireRedTeam；单 ONNX `model.int8.onnx`(740M) + `tokens.txt`(vocab=8667)；encoder+CTC branch 导出、弃 attention decoder；80-bin fbank 复用 `fbank::compute_fbank`（无 LFR，含 DC offset + pre-emphasis 0.97 + povey 窗，对齐 FireRedASR 训练 knf 默认——2026-07-09 经 `data/asr_feat.py` 确认）+ CMVN 从 ONNX metadata `cmvn_mean`/`cmvn_inv_stddev` 读、公式 `(fbank-mean)*inv_std`；greedy CTC blank=0；中文+20方言+英） |
 | `streaming_paraformer` | Paraformer 流式识别（增量式 fbank: povey 窗 + DC offset + pre-emphasis + 跨帧状态） |
 | `streaming_zipformer` | Zipformer 流式识别 |
-| `corrector` | 基于拼音映射和 Bigram 转移概率的轻量级中文拼音纠错与热词校正 |
+| `corrector` | 有界热词纠错（候选仅来自 HotwordIndex，命中即替换，消灭全词典过纠）+ 可配方言模糊规则 `FuzzyRules`（f/h、hu/wu、n/l，存 `app_config.fuzzy_dialect`） |
 | `hans` | 简繁体字形转换（单字级，开放词典网 CC-BY 3.0 对照表编译期嵌入）；按 `output_simplified` 归一化 ASR 输出 |
 | `pipeline` | 批处理 pipeline 编排（阶段1 新增）：`PipelineConfig`（language/correct/simplify/ngram）+ `transcribe_batch`（VAD 分段 → 逐段转写 → 纠错 → 简繁归一化，收编自 `transcribe_with_vad`，纠错/简繁参数化为 cfg 字段）；`transcribe_with_vad` 退化为从 app_config 构造 cfg 的薄包装（desktop 向后兼容）；cli 经 `AsrEngineManager::transcribe_batch` 复用同一编排 |
 | `streaming_engine` | 流式 ASR 引擎抽象：`StreamingSession`（Paraformer / ZipformerCtc / ZipformerTransducer 增量流式，`&self` + 内部 Mutex）；阶段2a impl `StreamingEngine` trait |
@@ -666,6 +666,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - **纯静态与轻量化**：纠错所需的 unigram 词表与 bigram 共现表（各精简至高频的前 40,000 条，压缩后约 450KB）直接通过 `include_bytes!` 静态嵌入二进制中，无需额外网络下载，运行时解压，额外内存占用约 30MB。数据源自 jieba `dict.txt.big`（unigram）与 gotokenizer `bigram.txt`（bigram），由 `crates/asr-local/scripts/generate_corrector_data.py` 离线生成到 `src/corrector_data/*.txt.gz`（已提交；更新语料时手动重跑该脚本）。
 - **配置开关控制**：由 `app_config` 表中的 `asr_correct` 字段控制（默认 `false`）。
 - **智能排除**（两类跳过）：①「非语言原因」——Qwen3-ASR (0.6B/1.7B) 输出带标点且自带语义纠错能力，引擎经 `OfflineAsrEngine::skip_corrector()` 返回 true 跳过；②「language=en」——corrector 是中文拼音纠错器，对英文无意义且可能扰动，`transcribe_with_vad` 在注入点基于 `language=en`（desktop=`config.language`、server=请求、CLI=`--language`）自动跳过，覆盖 moonshine 等 en-only 模型。故 corrector 实际作用于 Whisper、Paraformer、Zipformer、FireRed 等中文引擎（SenseVoice-orig 与 Qwen3-ASR 经 `skip_corrector()` 排除——高质量模型自带纠错或免纠错，corrector 的 n-gram 同音纠错反而过纠有害）。
+
+- **方言模糊规则可配**（2026-07-10）：三组方言混淆做成用户可勾选 checkbox（设置页「热词」面板），存 `app_config.fuzzy_dialect`（逗号分隔 token）：`f/h`（福建，声母 f→h）、`hu/wu`（江浙，单字 hu→wu + 其余 huX→wX 如 huang→wang）、`n/l`（湖南，声母 n→l）。基础规则（平翘舌 + 前后鼻音）始终开。归一化单向、索引与查询共用 `normalize_fuzzy_pinyin` → 双向对称命中；规则变更经 `corrector::reload_fuzzy_dialect` 重建索引（key 由 normalize 生成，规则变 key 必变）。**注**：当前为「有界热词纠错」——候选仅来自用户热词（`HotwordIndex`），命中即替换；下方「全词典 n-gram gain 打分」描述为旧机制（已废，见 `corrector.rs` 顶部 TODO，待清理）。
 
 ### 纠错算法逻辑
 1. **滑窗候选召回 (Sliding Window)**：使用 2 字和 3 字的字符滑窗扫描识别出的文本，通过拼音库计算滑窗文本的拼音，并在此拼音的 $O(1)$ 模糊拼音倒排索引（支持南方口音混淆，如 `zh/ch/sh` <-> `z/c/s`、`in/en` <-> `ing/eng`、`n` <-> `l` 等）中召回**相同字符长度**的同音/近音候选词。
