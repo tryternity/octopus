@@ -40,15 +40,20 @@ export function ActionBarIcon({ icon, className }: ActionBarIconProps) {
     if (icon.endsWith(".svg") || !LUCIDE_PATHS[icon]) {
       loadSvgFile(icon).then((content) => {
         if (!content) { setSvgHtml(null); return; }
-        // 提取 SVG inner HTML（去掉外层 <svg> 标签）
+        // 提取 SVG inner HTML + 原始 viewBox（保留原始比例，不强制 24×24）
         const match = content.match(/<svg[^>]*>([\s\S]*?)<\/svg>/i);
         const inner = match ? match[1] : "";
+        const viewBoxMatch = content.match(/viewBox="([^"]+)"/i);
+        const viewBox = viewBoxMatch ? viewBoxMatch[1] : "0 0 24 24";
         const hasStroke = content.includes("stroke");
+        const hasMulticolor = /fill="#[^0]/.test(content);
         setSvgHtml(
-          `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" ` +
-          (hasStroke
-            ? 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
-            : 'fill="currentColor"') +
+          `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${viewBox}" ` +
+          (hasMulticolor
+            ? '' // 品牌 SVG（Google/百度/Bing 多色）保持原始 fill 不覆盖
+            : hasStroke
+              ? 'fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"'
+              : 'fill="currentColor"') +
           ` width="100%" height="100%">${inner}</svg>`
         );
       });

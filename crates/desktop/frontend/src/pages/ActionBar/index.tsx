@@ -59,15 +59,18 @@ export default function ActionBar() {
   const contextRef = useRef<Context | null>(null);
   const viewRef = useRef<View>("main");
   const submenuParentIdRef = useRef<number | null>(null);
+  const [focusLayer, setFocusLayer] = useState<"main" | "sub">("main");
+  const focusLayerRef = useRef<"main" | "sub">("main");
 
   useEffect(() => { viewRef.current = view; }, [view]);
+  useEffect(() => { focusLayerRef.current = focusLayer; }, [focusLayer]);
   useEffect(() => { contextRef.current = context; }, [context]);
 
   // mount + 每次 show 时拉取上下文 + 菜单
   useEffect(() => {
     const refresh = () => {
       invoke<Context | null>("action_bar_get_context").then((ctx) => {
-        if (ctx) { setContext(ctx); setView("main"); setSelectedIdx(0); setErrorMsg(""); }
+        if (ctx) { setContext(ctx); setView("main"); setSelectedIdx(0); setFocusLayer("main"); setErrorMsg(""); }
       });
     };
     refresh();
@@ -182,9 +185,11 @@ export default function ActionBar() {
   const subSelectedIdxRef = useRef(0);
   const mainItemsRef = useRef<ActionBarItem[]>([]);
   const subItemsRef = useRef<ActionBarItem[]>([]);
+  const menuItemsRef = useRef<ActionBarItem[]>([]);
   useEffect(() => { selectedIdxRef.current = selectedIdx; }, [selectedIdx]);
   useEffect(() => { subSelectedIdxRef.current = subSelectedIdx; }, [subSelectedIdx]);
   useEffect(() => { mainItemsRef.current = mainItems; }, [mainItems]);
+  useEffect(() => { menuItemsRef.current = menuItems; }, [menuItems]);
   useEffect(() => {
     subItemsRef.current = submenuParentIdRef.current !== null
       ? getSubItems(submenuParentIdRef.current)
@@ -195,7 +200,6 @@ export default function ActionBar() {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        if (viewRef.current === "submenu") { setView("main"); return; }
         invoke("action_bar_dismiss");
         return;
       }
@@ -217,15 +221,33 @@ export default function ActionBar() {
 
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
-        if (viewRef.current === "submenu") {
+        if (focusLayerRef.current === "sub") {
+          // 焦点在子菜单——左右键在子菜单移动
           setSubSelectedIdx((prev) => {
             const items = subItemsRef.current;
             return e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
           });
         } else {
+          // 焦点在主菜单——左右键在主菜单移动，submenu 项自动展开子菜单预览
           setSelectedIdx((prev) => {
             const items = mainItemsRef.current;
-            return e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
+            const next = e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
+            const item = items[next];
+            if (item && item.actionType === "submenu") {
+              submenuParentIdRef.current = item.id;
+              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === item.id);
+              if (subs.length > 0 && subs[0].actionType === "url") {
+                const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
+                setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
+              } else {
+                setSubSelectedIdx(0);
+              }
+              setView("submenu");
+            } else {
+              submenuParentIdRef.current = null;
+              setView("main");
+            }
+            return next;
           });
         }
         return;
@@ -233,15 +255,27 @@ export default function ActionBar() {
 
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
-        if (viewRef.current === "submenu") {
-          setView("main");
-          submenuParentIdRef.current = null;
+        // 上下键只切换焦点层，不展开/收起子菜单
+        // 子菜单展开/收起由左右键移动主菜单项时控制
+        if (focusLayerRef.current === "sub") {
+          setFocusLayer("main");
         } else {
+          // 焦点在主菜单——只有当前主菜单项有子菜单时才能进入
           const cur = mainItemsRef.current[selectedIdxRef.current];
           if (cur && cur.actionType === "submenu") {
-            submenuParentIdRef.current = cur.id;
-            setView("submenu");
-            setSubSelectedIdx(0);
+            setFocusLayer("sub");
+            // 如果子菜单还没展开（理论上左右键已经展开了），确保展开
+            if (viewRef.current !== "submenu") {
+              submenuParentIdRef.current = cur.id;
+              setView("submenu");
+              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === cur.id);
+              if (subs.length > 0 && subs[0].actionType === "url") {
+                const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
+                setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
+              } else {
+                setSubSelectedIdx(0);
+              }
+            }
           }
         }
         return;
@@ -249,12 +283,12 @@ export default function ActionBar() {
 
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        if (viewRef.current === "main") {
-          const item = mainItemsRef.current[selectedIdxRef.current];
-          if (item) executeItem(item);
-        } else if (viewRef.current === "submenu") {
+        if (focusLayerRef.current === "sub") {
           const items = subItemsRef.current;
           const item = items[subSelectedIdxRef.current];
+          if (item) executeItem(item);
+        } else {
+          const item = mainItemsRef.current[selectedIdxRef.current];
           if (item) executeItem(item);
         }
         return;
@@ -309,7 +343,7 @@ export default function ActionBar() {
             key={item.id}
             icon={item.icon}
             label={item.title}
-            active={view === "main" ? selectedIdx === i : false}
+            active={selectedIdx === i}
             onClick={() => executeItem(item)}
           />
         ))}
@@ -326,7 +360,7 @@ export default function ActionBar() {
             key={item.id}
             icon={item.icon}
             label={item.title}
-            active={subSelectedIdx === i}
+            active={focusLayer === "sub" && subSelectedIdx === i}
             onClick={() => executeItem(item)}
           />
         ))}
