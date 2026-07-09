@@ -304,12 +304,10 @@ fn simple_url_encode(s: &str) -> String {
 }
 
 /// 执行脚本：按第一行 magic comment 分发运行时。
-/// 选中文本通过环境变量 `OCTOPUS_TEXT` 传递（避免 shell 注入），
-/// 同时保留 `{text}` 占位符替换（向后兼容，但文档应引导用户用 $OCTOPUS_TEXT）。
+/// 选中文本通过环境变量 `OCTOPUS_TEXT` 传递（避免 shell 注入）。
 fn run_script(source: &str, text: &str) -> Result<(), String> {
     let first_line = source.lines().next().unwrap_or("").trim();
-    let body: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
-    let script = body.replace("{text}", text);
+    let script: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
 
     let result: std::io::Result<std::process::Child> = match first_line {
         "#shell" => {
