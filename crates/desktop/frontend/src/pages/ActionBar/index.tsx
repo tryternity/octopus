@@ -66,6 +66,14 @@ export default function ActionBar() {
   useEffect(() => { focusLayerRef.current = focusLayer; }, [focusLayer]);
   useEffect(() => { contextRef.current = context; }, [context]);
 
+  // 动态调整窗口高度——主菜单 1 行（~40px），子菜单 2 行（~76px），
+  // 避免透明区域遮挡下层点击
+  useEffect(() => {
+    const height = view === "submenu" ? 76 : view === "loading" ? 48 : view === "error" ? 60 : 40;
+    const win = getCurrentWindow();
+    win.setSize({ type: "Logical", data: { width: 380, height } }).catch(() => {});
+  }, [view]);
+
   // mount + 每次 show 时拉取上下文 + 菜单 + 配置
   useEffect(() => {
     const refresh = () => {
