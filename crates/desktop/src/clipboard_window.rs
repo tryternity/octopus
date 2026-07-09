@@ -73,13 +73,19 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         let focused = window.is_focused().unwrap_or(false);
         if visible && focused {
             window.hide()?;
+            #[cfg(target_os = "macos")]
+            { crate::activation::after_floating_window_hide(app); }
         } else {
+            #[cfg(target_os = "macos")]
+            { crate::activation::before_floating_window_show(app); }
             window.show()?;
             window.set_focus()?;
         }
     } else {
         create_clipboard_window(app)?;
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+            #[cfg(target_os = "macos")]
+            { crate::activation::before_floating_window_show(app); }
             window.show()?;
             window.set_focus()?;
         }

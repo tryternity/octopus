@@ -50,3 +50,97 @@ pub fn show_regular_windows(app_handle: &tauri::AppHandle) {
         }
     }
 }
+
+// ── 浮窗焦点协调（show 前隐藏 Regular，hide 后恢复 + 交还前台焦点）──
+
+use parking_lot::Mutex;
+use once_cell::sync::Lazy;
+
+static TEMP_HIDDEN: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
+static WAS_INACTIVE: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
+
+#[cfg(target_os = "macos")]
+struct SendApp(objc2::rc::Retained<objc2_app_kit::NSRunningApplication>);
+#[cfg(target_os = "macos")]
+unsafe impl Send for SendApp {}
+#[cfg(target_os = "macos")]
+unsafe impl Sync for SendApp {}
+
+#[cfg(target_os = "macos")]
+static PREV_APP: Lazy<Mutex<Option<SendApp>>> = Lazy::new(|| Mutex::new(None));
+
+/// 浮窗 show 前调用：app 非活跃时隐藏 Regular 窗口 + 记录前台 app。
+/// 配合 `after_floating_window_hide` 形成闭环。
+#[cfg(target_os = "macos")]
+pub fn before_floating_window_show(app: &tauri::AppHandle) {
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::{NSApplication, NSWorkspace, NSRunningApplication};
+
+    if let Some(mtm) = MainThreadMarker::new() {
+        let app_ns = NSApplication::sharedApplication(mtm);
+        let is_inactive = !app_ns.isActive();
+        *WAS_INACTIVE.lock() = is_inactive;
+
+        // 记录前台应用（焦点交还目标）
+        let workspace = NSWorkspace::sharedWorkspace();
+        if let Some(front_app) = workspace.frontmostApplication() {
+            let curr = NSRunningApplication::currentApplication();
+            if front_app.processIdentifier() != curr.processIdentifier() {
+                *PREV_APP.lock() = Some(SendApp(front_app));
+            }
+        }
+
+        // app 后台时临时隐藏 Regular 窗口
+        if is_inactive {
+            let mut hidden = Vec::new();
+            for label in REGULAR_WINDOWS {
+                if let Some(w) = app.get_webview_window(label) {
+                    if w.is_visible().unwrap_or(false) {
+                        let _ = w.hide();
+                        hidden.push(label.to_string());
+                    }
+                }
+            }
+            *TEMP_HIDDEN.lock() = hidden;
+        }
+    }
+}
+
+/// 浮窗 hide 后调用：交还前台焦点给原 app + 恢复被隐藏的 Regular 窗口。
+#[cfg(target_os = "macos")]
+pub fn after_floating_window_hide(app: &tauri::AppHandle) {
+    let was_inactive = {
+        let mut guard = WAS_INACTIVE.lock();
+        std::mem::replace(&mut *guard, false)
+    };
+
+    if was_inactive {
+        // 交还前台焦点给原 app
+        let app_opt = {
+            let mut guard = PREV_APP.lock();
+            guard.take().map(|p| p.0)
+        };
+        if let Some(prev_app) = app_opt {
+            let _ = prev_app.activateWithOptions(
+                objc2_app_kit::NSApplicationActivationOptions(1 << 1),
+            );
+        } else {
+            use objc2::MainThreadMarker;
+            use objc2_app_kit::NSApplication;
+            if let Some(mtm) = MainThreadMarker::new() {
+                NSApplication::sharedApplication(mtm).deactivate();
+            }
+        }
+    }
+
+    // 恢复临时隐藏的 Regular 窗口（此时 app 已在后台，窗口温和恢复）
+    let hidden = {
+        let mut guard = TEMP_HIDDEN.lock();
+        std::mem::take(&mut *guard)
+    };
+    for label in hidden {
+        if let Some(w) = app.get_webview_window(&label) {
+            let _ = w.show();
+        }
+    }
+}

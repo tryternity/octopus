@@ -246,12 +246,18 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 
 #### ⚠️ 窗口焦点策略（强需求，勿改错）
 
-**全局快捷键不得激活 app，不得将 settings/compact_editor 带到前台。** 这是重要设计原则：
+**全局快捷键不得将 settings/compact_editor 带到前台。** macOS 上 WKWebView 要求 app 进程 active 才能获得键盘焦点，而 `set_focus` 触发的 `NSApp.activate` 会把所有可见 Regular 窗口带到前台。采用**视觉焦点协调方案**（`activation::before_floating_window_show` / `after_floating_window_hide` 公共函数）：
 
-- 后端 `show()` 后**不调 `set_focus()`**——`set_focus` 会触发 macOS app 激活，导致 Regular 窗口（settings/compact_editor）被带到前台
-- 语音识别快捷键（`coordinator.toggle()`）天然满足：只发 channel 命令，不碰任何窗口
-- action bar / 剪贴板窗口 `show` 后由**前端 `window.focus()`** 获取 WebView 键盘焦点——这不会触发 macOS app 激活
-- **action bar 必须获得键盘焦点**：用户唤出后直接用方向键选择命令，无需鼠标点击。如果需要鼠标点击才能操作，交互流程完全中断
+**show 时**：
+1. 记录当前前台 app（`NSWorkspace.frontmostApplication`）
+2. 若 octopus app 非活跃（用户在其他 app），临时隐藏所有可见 Regular 窗口（settings/compact_editor）
+3. `set_focus()` 激活浮窗——此时 Regular 窗口已隐藏，只有浮窗弹出到前台并获得键盘焦点
+
+**hide 时**：
+1. `activate` 原前台 app（交还焦点给用户正在使用的应用）
+2. `show` 恢复被隐藏的 Regular 窗口——此时 octopus app 已在后台，窗口温和恢复不跳前台
+
+**应用范围**：action bar + 剪贴板浮窗（需键盘操作）。语音识别窗无强键盘需求，保持现状不处理。
 
 **上下键切换主子菜单层级，左右键在当前行移动选择。** 这是核心交互，不可混淆：
 
