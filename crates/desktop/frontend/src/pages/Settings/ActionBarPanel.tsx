@@ -1,6 +1,17 @@
 import { useState, useEffect, useCallback, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronUp, ChevronDown, Pencil, Trash2, Plus } from "lucide-react";
+import {
+  ChevronRight,
+  ChevronDown,
+  ChevronsUpDown,
+  ChevronsDownUp,
+  ArrowUp,
+  ArrowDown,
+  Trash2,
+  Plus,
+  X,
+} from "lucide-react";
+import { cn } from "@/lib/utils";
 import { ActionBarIcon } from "@/components/ActionBarIcon";
 
 interface ActionBarItem {
@@ -15,16 +26,94 @@ interface ActionBarItem {
   isEnabled: boolean;
 }
 
+// 动作类型元信息：颜色点 + 标签 + 说明 + 占位符。
+// 颜色用 Tailwind 默认调色板的中饱和值，在三套主题（暖纸 / 黑曜 / 北欧）下都可读。
+const TYPE_META: Record<
+  string,
+  { dot: string; label: string; desc: string; placeholder: string }
+> = {
+  submenu: {
+    dot: "bg-voice",
+    label: "SUBMENU",
+    desc: "本身不执行动作，展开后显示其子菜单项",
+    placeholder: "",
+  },
+  ai: {
+    dot: "bg-violet-500",
+    label: "AI",
+    desc: "选中文本发送给 LLM，结果展示在浮窗。填 auto_translate 自动判断中英互译",
+    placeholder: "system prompt，或 auto_translate",
+  },
+  url: {
+    dot: "bg-sky-500",
+    label: "URL",
+    desc: "默认浏览器打开，{text} 会被替换为 URL 编码后的选中文本",
+    placeholder: "https://... 或 app://?text={text}（留空=选中文本即 URL）",
+  },
+  script: {
+    dot: "bg-emerald-500",
+    label: "SCRIPT",
+    desc: "首行 #shell / #osascript / #powershell / #python 决定运行时；选中文本经 $OCTOPUS_TEXT 传入",
+    placeholder:
+      "#shell / #osascript / #powershell / #python\n选中文本在 $OCTOPUS_TEXT 环境变量中",
+  },
+  copy: {
+    dot: "bg-stone-400",
+    label: "COPY",
+    desc: "将选中文本复制到剪贴板",
+    placeholder: "",
+  },
+};
+
 const ACTION_TYPES = [
-  { value: "submenu", label: "子菜单", placeholder: "" },
-  { value: "ai", label: "AI（LLM 处理）", placeholder: "system prompt，或 auto_translate" },
-  { value: "url", label: "URL（打开网页/应用）", placeholder: "https://... 或 app://?text={text}（留空=选中文本即URL）" },
-  { value: "script", label: "脚本", placeholder: "#shell / #osascript / #powershell / #python\n选中文本在 $OCTOPUS_TEXT 环境变量中（shell: $OCTOPUS_TEXT，python: os.environ）" },
-  { value: "copy", label: "复制", placeholder: "" },
+  { value: "submenu", label: "子菜单" },
+  { value: "ai", label: "AI（LLM 处理）" },
+  { value: "url", label: "URL（打开网页/应用）" },
+  { value: "script", label: "脚本" },
+  { value: "copy", label: "复制" },
 ];
 
-// ── 编辑表单（独立组件，避免每帧重建）──
+const pad2 = (n: number) => String(n).padStart(2, "0");
 
+// ── 类型标签：小色点 + 等宽大写名 ──
+const TypeTag = ({ type }: { type: string }) => {
+  const meta = TYPE_META[type] ?? TYPE_META.copy;
+  return (
+    <span className="inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+      <span className={cn("h-1.5 w-1.5 rounded-full", meta.dot)} />
+      {meta.label}
+    </span>
+  );
+};
+
+// ── 启用开关（细条样式，比原生 checkbox 更克制）──
+const Toggle = ({
+  checked,
+  onChange,
+}: {
+  checked: boolean;
+  onChange: (v: boolean) => void;
+}) => (
+  <button
+    type="button"
+    role="switch"
+    aria-checked={checked}
+    onClick={() => onChange(!checked)}
+    className={cn(
+      "relative inline-flex h-4 w-7 items-center rounded-full transition-colors",
+      checked ? "bg-voice" : "bg-muted-foreground/30",
+    )}
+  >
+    <span
+      className={cn(
+        "inline-block h-3 w-3 transform rounded-full bg-white transition-transform",
+        checked ? "translate-x-3.5" : "translate-x-0.5",
+      )}
+    />
+  </button>
+);
+
+// ── 编辑表单：作为树节点的内联展开卡片 ──
 interface EditFormProps {
   form: Partial<ActionBarItem>;
   isSystem: boolean;
@@ -33,141 +122,334 @@ interface EditFormProps {
   onCancel: () => void;
 }
 
-const EditForm = ({ form, isSystem, onChange, onSave, onCancel }: EditFormProps) => (
-  <div className="ml-6 mb-2 p-3 bg-muted/30 rounded border border-border space-y-2">
-    <div className="flex items-center gap-2">
-      <label className="text-xs text-muted-foreground w-10 shrink-0">标题</label>
-      <input
-        className="flex-1 bg-background border border-border rounded px-2 py-1 text-sm"
-        value={form.title || ""}
-        onChange={(e) => onChange({ ...form, title: e.target.value })}
-      />
-    </div>
-    <div className="flex items-start gap-2">
-      <label className="text-xs text-muted-foreground w-10 shrink-0 mt-1.5">图标</label>
-      <div className="flex-1 flex items-center gap-2">
-        <input
-          className="flex-1 bg-background border border-border rounded px-2 py-1 text-sm font-mono"
-          placeholder="图标名（如 search）或 <svg>...</svg>"
-          value={form.icon || ""}
-          onChange={(e) => onChange({ ...form, icon: e.target.value })}
-        />
-        {form.icon && (
-          <div className="w-6 h-6 flex items-center justify-center text-muted-foreground">
-            <ActionBarIcon icon={form.icon} className="w-4 h-4" />
+const EditForm = ({
+  form,
+  isSystem,
+  onChange,
+  onSave,
+  onCancel,
+}: EditFormProps) => {
+  const type = form.actionType || "copy";
+  const meta = TYPE_META[type];
+  const showContent = type !== "submenu" && type !== "copy";
+
+  return (
+    <div className="mb-1 ml-[26px] rounded-lg border border-border bg-muted/20 p-3.5 shadow-sm">
+      <div className="mb-3 flex items-center justify-between">
+        <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
+          编辑菜单项
+        </span>
+        <button
+          onClick={onCancel}
+          className="text-muted-foreground hover:text-foreground"
+          aria-label="取消"
+        >
+          <X className="h-3.5 w-3.5" />
+        </button>
+      </div>
+
+      <div className="space-y-3">
+        <Field label="标题">
+          <input
+            className="w-full bg-background border border-border rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice/50"
+            value={form.title || ""}
+            maxLength={6}
+            onChange={(e) => {
+              // 汉字算 2 字符、ASCII 算 1，总权重上限 6
+              const MAX = 6;
+              const raw = e.target.value;
+              let weight = 0;
+              let ok = "";
+              for (const ch of raw) {
+                const w = /[\u4e00-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(ch) ? 2 : 1;
+                if (weight + w > MAX) break;
+                weight += w;
+                ok += ch;
+              }
+              onChange({ ...form, title: ok });
+            }}
+          />
+        </Field>
+
+        <Field label="图标">
+          <div className="flex items-center gap-2">
+            <input
+              className="flex-1 bg-background border border-border rounded px-2.5 py-1.5 font-mono text-sm outline-none focus:border-voice/50"
+              placeholder="图标名 / 文件名.svg / <svg>…"
+              value={form.icon || ""}
+              onChange={(e) => onChange({ ...form, icon: e.target.value })}
+            />
+            <div className="flex h-7 w-7 items-center justify-center rounded border border-border bg-background text-muted-foreground">
+              <ActionBarIcon icon={form.icon || "search"} className="text-base" />
+            </div>
           </div>
+        </Field>
+
+        <Field label="类型">
+          <div>
+            <select
+              className="w-full bg-background border border-border rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice/50 disabled:opacity-60"
+              value={type}
+              disabled={isSystem}
+              onChange={(e) =>
+                onChange({ ...form, actionType: e.target.value })
+              }
+            >
+              {ACTION_TYPES.map((t) => (
+                <option key={t.value} value={t.value}>
+                  {t.label}
+                </option>
+              ))}
+            </select>
+            <p className="mt-1 text-[11px] text-muted-foreground/80">
+              {meta.desc}
+              {isSystem && " · 内置项类型不可更改"}
+            </p>
+          </div>
+        </Field>
+
+        {showContent && (
+          <Field label="内容">
+            <textarea
+              className="w-full min-h-[120px] resize-y bg-background border border-border rounded px-2.5 py-1.5 font-mono text-xs leading-relaxed outline-none focus:border-voice/50"
+              placeholder={meta.placeholder}
+              value={form.actionData || ""}
+              onChange={(e) =>
+                onChange({ ...form, actionData: e.target.value })
+              }
+            />
+          </Field>
         )}
+
+        <Field label="启用">
+          <div className="flex items-center gap-2">
+            <Toggle
+              checked={form.isEnabled ?? true}
+              onChange={(v) => onChange({ ...form, isEnabled: v })}
+            />
+            <span className="text-xs text-muted-foreground">
+              {form.isEnabled ? "显示在菜单中" : "已隐藏"}
+            </span>
+          </div>
+        </Field>
+      </div>
+
+      <div className="mt-3.5 flex justify-end gap-2 border-t border-border/60 pt-3">
+        <button
+          onClick={onCancel}
+          className="rounded-md border border-border px-3.5 py-1.5 text-xs transition-colors hover:bg-muted/60"
+        >
+          取消
+        </button>
+        <button
+          onClick={onSave}
+          className="rounded-md bg-voice px-4 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
+        >
+          保存
+        </button>
       </div>
     </div>
-    <div className="flex items-center gap-2">
-      <label className="text-xs text-muted-foreground w-10 shrink-0">类型</label>
-      <select
-        className="flex-1 bg-background border border-border rounded px-2 py-1 text-sm"
-        value={form.actionType || "copy"}
-        disabled={isSystem}
-        onChange={(e) => onChange({ ...form, actionType: e.target.value })}
-      >
-        {ACTION_TYPES.map((t) => (
-          <option key={t.value} value={t.value}>{t.label}</option>
-        ))}
-      </select>
-    </div>
-    {form.actionType !== "submenu" && form.actionType !== "copy" && (
-      <div className="flex items-start gap-2">
-        <label className="text-xs text-muted-foreground w-10 shrink-0 mt-1.5">内容</label>
-        <textarea
-          className="flex-1 bg-background border border-border rounded px-2 py-1 text-sm font-mono min-h-[60px]"
-          placeholder={ACTION_TYPES.find((t) => t.value === form.actionType)?.placeholder}
-          value={form.actionData || ""}
-          onChange={(e) => onChange({ ...form, actionData: e.target.value })}
-        />
-      </div>
-    )}
-    <div className="flex items-center gap-2">
-      <label className="text-xs text-muted-foreground w-10 shrink-0">启用</label>
-      <input
-        type="checkbox"
-        checked={form.isEnabled ?? true}
-        onChange={(e) => onChange({ ...form, isEnabled: e.target.checked })}
-      />
-    </div>
-    <div className="flex items-center gap-2 pt-1">
-      <button onClick={onSave} className="px-3 py-1 text-xs bg-voice text-white rounded hover:opacity-90">保存</button>
-      <button onClick={onCancel} className="px-3 py-1 text-xs bg-muted text-foreground rounded hover:bg-muted/70">取消</button>
-    </div>
+  );
+};
+
+// 字段行：固定宽标签 + 内容，保证多个字段左边对齐
+const Field = ({
+  label,
+  children,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) => (
+  <div className="grid grid-cols-[44px_1fr] items-start gap-2">
+    <label className="mt-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+      {label}
+    </label>
+    <div className="min-w-0">{children}</div>
   </div>
 );
 
-// ── 菜单行（memo 化，props 不变时不重渲染）──
-
-interface ItemRowProps {
+// ── 树节点（递归）──
+interface NodeProps {
   item: ActionBarItem;
   siblings: ActionBarItem[];
   allItems: ActionBarItem[];
+  index: number; // 同级 1-based 序号
+  depth: number;
+  parentLabel?: string; // 父级序号字符串，子项显示为 "父.子"
+  expanded: Set<number>;
   editingId: number | null;
   editingForm: Partial<ActionBarItem>;
-  onMove: (id: number, direction: number) => void;
+  onToggle: (id: number) => void;
   onStartEdit: (item: ActionBarItem) => void;
+  onMove: (id: number, dir: number) => void;
   onDelete: (id: number) => void;
   onAdd: (parentId: number | null) => void;
-  onFormChange: (form: Partial<ActionBarItem>) => void;
+  onFormChange: (f: Partial<ActionBarItem>) => void;
   onSaveEdit: () => void;
   onCancelEdit: () => void;
 }
 
-const ItemRowBase = ({ item, siblings, allItems, editingId, editingForm, onMove, onStartEdit, onDelete, onAdd, onFormChange, onSaveEdit, onCancelEdit }: ItemRowProps) => {
+const TreeNodeBase = (props: NodeProps) => {
+  const {
+    item,
+    siblings,
+    allItems,
+    index,
+    depth,
+    parentLabel,
+    expanded,
+    editingId,
+  } = props;
   const isFirst = siblings[0]?.id === item.id;
   const isLast = siblings[siblings.length - 1]?.id === item.id;
   const subs = allItems.filter((i) => i.parentId === item.id);
+  const isSubmenu = item.actionType === "submenu";
+  const isOpen = expanded.has(item.id);
   const isEditing = editingId === item.id;
+  const indexLabel = depth === 0 ? pad2(index) : `${parentLabel}.${index}`;
 
   return (
     <div>
-      <div className="flex items-center gap-2 py-1.5 px-2 hover:bg-muted/40 rounded">
-        <ActionBarIcon icon={item.icon || "search"} className="w-4 h-4 text-muted-foreground" />
-        <span className="text-sm flex-1 truncate">{item.title}</span>
-        <span className="text-[10px] text-muted-foreground bg-muted px-1.5 py-0.5 rounded">{item.actionType}</span>
-        {!item.isEnabled && <span className="text-[10px] text-red-400">禁用</span>}
-        <div className="flex items-center gap-0.5">
-          <button onClick={() => onMove(item.id, -1)} disabled={isFirst} className="p-0.5 hover:text-foreground disabled:opacity-30">
-            <ChevronUp className="w-3.5 h-3.5" />
+      <div
+        className={cn(
+          "group relative flex items-center gap-2 rounded-md py-1.5 pl-1 pr-1.5 transition-colors",
+          isEditing ? "bg-voice/[0.06]" : "cursor-pointer hover:bg-muted/40",
+        )}
+        onClick={() => props.onStartEdit(item)}
+      >
+        {/* 展开箭头（仅 submenu 有，其余占位保持对齐） */}
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            props.onToggle(item.id);
+          }}
+          tabIndex={isSubmenu ? 0 : -1}
+          className={cn(
+            "flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground",
+            !isSubmenu && "invisible pointer-events-none",
+          )}
+          aria-label={isOpen ? "收起" : "展开"}
+        >
+          {isOpen ? (
+            <ChevronDown className="h-3.5 w-3.5" />
+          ) : (
+            <ChevronRight className="h-3.5 w-3.5" />
+          )}
+        </button>
+
+        {/* 序号：等宽定位，像注册表条目 */}
+        <span className="w-6 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground/60">
+          {indexLabel}
+        </span>
+
+        {/* 图标 */}
+        <span
+          className={cn(
+            "flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground",
+            !item.isEnabled && "opacity-40",
+          )}
+        >
+          <ActionBarIcon icon={item.icon || "search"} className="text-sm" />
+        </span>
+
+        {/* 标题 */}
+        <span
+          className={cn(
+            "flex-1 truncate text-sm",
+            item.isEnabled ? "text-foreground" : "text-muted-foreground/60",
+          )}
+        >
+          {item.title}
+        </span>
+
+        {/* 子项计数 */}
+        {isSubmenu && subs.length > 0 && (
+          <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-[10px] text-muted-foreground">
+            {subs.length}
+          </span>
+        )}
+
+        {/* 类型标签 */}
+        <TypeTag type={item.actionType} />
+
+        {/* 内置标记 */}
+        {item.isSystem && (
+          <span className="shrink-0 text-[10px] text-muted-foreground/50">
+            内置
+          </span>
+        )}
+
+        {/* 悬浮工具栏 */}
+        <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onMove(item.id, -1);
+            }}
+            disabled={isFirst}
+            className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-25 disabled:hover:text-muted-foreground"
+            aria-label="上移"
+          >
+            <ArrowUp className="h-3.5 w-3.5" />
           </button>
-          <button onClick={() => onMove(item.id, 1)} disabled={isLast} className="p-0.5 hover:text-foreground disabled:opacity-30">
-            <ChevronDown className="w-3.5 h-3.5" />
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onMove(item.id, 1);
+            }}
+            disabled={isLast}
+            className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-25 disabled:hover:text-muted-foreground"
+            aria-label="下移"
+          >
+            <ArrowDown className="h-3.5 w-3.5" />
           </button>
-          <button onClick={() => onStartEdit(item)} className="p-0.5 hover:text-foreground">
-            <Pencil className="w-3.5 h-3.5" />
-          </button>
-          <button onClick={() => onDelete(item.id)} disabled={item.isSystem} className="p-0.5 hover:text-red-500 disabled:opacity-30">
-            <Trash2 className="w-3.5 h-3.5" />
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onDelete(item.id);
+            }}
+            disabled={item.isSystem}
+            className="rounded p-0.5 text-muted-foreground hover:text-red-500 disabled:opacity-25 disabled:hover:text-muted-foreground"
+            aria-label="删除"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
       </div>
 
+      {/* 内联编辑器 */}
       {isEditing && (
         <EditForm
-          form={editingForm}
+          form={props.editingForm}
           isSystem={item.isSystem}
-          onChange={onFormChange}
-          onSave={onSaveEdit}
-          onCancel={onCancelEdit}
+          onChange={props.onFormChange}
+          onSave={props.onSaveEdit}
+          onCancel={props.onCancelEdit}
         />
       )}
 
-      {subs.length > 0 && (
-        <div className="ml-4 border-l border-border/40 pl-2">
-          {subs.map((sub) => (
-            <ItemRow key={sub.id} item={sub} siblings={subs} {...{ allItems, editingId, editingForm, onMove, onStartEdit, onDelete, onAdd, onFormChange, onSaveEdit, onCancelEdit }} />
+      {/* 子树：细导引线 + 递归 */}
+      {isSubmenu && isOpen && (
+        <div className="relative ml-3 border-l border-border/50 pl-3">
+          {subs.map((sub, i) => (
+            <TreeNode
+              key={sub.id}
+              {...props}
+              item={sub}
+              siblings={subs}
+              index={i + 1}
+              depth={depth + 1}
+              parentLabel={String(index)}
+            />
           ))}
-          <button onClick={() => onAdd(item.id)} className="flex items-center gap-1 py-1 px-2 text-xs text-muted-foreground hover:text-foreground">
-            <Plus className="w-3 h-3" /> 新增子项
-          </button>
-        </div>
-      )}
-      {item.actionType === "submenu" && subs.length === 0 && (
-        <div className="ml-4 border-l border-border/40 pl-2">
-          <button onClick={() => onAdd(item.id)} className="flex items-center gap-1 py-1 px-2 text-xs text-muted-foreground hover:text-foreground">
-            <Plus className="w-3 h-3" /> 新增子项
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              props.onAdd(item.id);
+            }}
+            className="my-1 flex w-full items-center gap-1.5 rounded-md border border-dashed border-border py-1.5 pl-2 text-xs text-muted-foreground transition-colors hover:border-voice/40 hover:text-voice"
+          >
+            <Plus className="h-3 w-3" /> 新增子项
           </button>
         </div>
       )}
@@ -175,25 +457,68 @@ const ItemRowBase = ({ item, siblings, allItems, editingId, editingForm, onMove,
   );
 };
 
-const ItemRow = memo(ItemRowBase);
+const TreeNode = memo(TreeNodeBase);
 
 // ── 主面板 ──
-
-export default function ActionBarPanel({ showToast }: { showToast: (msg: string) => void }) {
+export default function ActionBarPanel({
+  showToast,
+}: {
+  showToast: (msg: string) => void;
+}) {
   const [items, setItems] = useState<ActionBarItem[]>([]);
+  const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingForm, setEditingForm] = useState<Partial<ActionBarItem>>({});
-  const [showAddParent, setShowAddParent] = useState(false);
+  const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
-    const items = await invoke<ActionBarItem[]>("list_action_bar_items");
-    setItems(items);
-    return items;
+    const list = await invoke<ActionBarItem[]>("list_action_bar_items");
+    setItems(list);
+    // 注意：不在此处改动 expanded，否则会覆盖用户的折叠选择。
+    // 首次全部展开见下方 useEffect；新增子项时由 handleAdd 显式展开父节点。
+    setLoaded(true);
+    return list;
   }, []);
 
-  useEffect(() => { refresh(); }, [refresh]);
+  useEffect(() => {
+    (async () => {
+      const list = await refresh();
+      // 仅首次加载默认展开全部 submenu 节点，让结构一眼可见
+      setExpanded(() => {
+        const next = new Set<number>();
+        list.forEach((i) => {
+          if (i.actionType === "submenu") next.add(i.id);
+        });
+        return next;
+      });
+    })();
+  }, [refresh]);
 
   const mainItems = items.filter((i) => i.parentId === null);
+  const enabledCount = items.filter((i) => i.isEnabled).length;
+
+  const toggle = useCallback((id: number) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
+
+  const submenuIds = items
+    .filter((i) => i.actionType === "submenu")
+    .map((i) => i.id);
+  const allExpanded =
+    submenuIds.length > 0 && submenuIds.every((id) => expanded.has(id));
+
+  const expandAll = useCallback(() => {
+    setExpanded(new Set(submenuIds));
+  }, [submenuIds]);
+
+  const collapseAll = useCallback(() => {
+    setExpanded(new Set());
+  }, []);
 
   const startEdit = useCallback((item: ActionBarItem) => {
     setEditingId(item.id);
@@ -224,87 +549,149 @@ export default function ActionBarPanel({ showToast }: { showToast: (msg: string)
     }
   }, [editingId, editingForm, showToast, cancelEdit, refresh]);
 
-  const handleDelete = useCallback(async (id: number) => {
-    try {
-      await invoke("delete_action_bar_item", { id });
-      showToast("已删除");
-      refresh();
-    } catch (e) {
-      showToast("删除失败：" + e);
-    }
-  }, [showToast, refresh]);
+  const handleDelete = useCallback(
+    async (id: number) => {
+      try {
+        await invoke("delete_action_bar_item", { id });
+        showToast("已删除");
+        refresh();
+      } catch (e) {
+        showToast("删除失败：" + e);
+      }
+    },
+    [showToast, refresh],
+  );
 
-  const handleMove = useCallback(async (id: number, direction: number) => {
-    try {
-      await invoke("move_action_bar_item", { id, direction });
-      refresh();
-    } catch (e) {
-      showToast("移动失败：" + e);
-    }
-  }, [refresh, showToast]);
+  const handleMove = useCallback(
+    async (id: number, direction: number) => {
+      try {
+        await invoke("move_action_bar_item", { id, direction });
+        refresh();
+      } catch (e) {
+        showToast("移动失败：" + e);
+      }
+    },
+    [refresh, showToast],
+  );
 
-  const handleAdd = useCallback(async (parentId: number | null) => {
-    try {
-      const id = await invoke<number>("create_action_bar_item", {
-        parentId,
-        title: "新菜单项",
-        icon: "",
-        actionType: "copy",
-        actionData: "",
-      });
-      setShowAddParent(false);
-      const latestItems = await refresh();
-      const newItem = latestItems.find((i) => i.id === id);
-      if (newItem) startEdit(newItem);
-    } catch (e) {
-      showToast("新增失败：" + e);
-    }
-  }, [refresh, startEdit, showToast]);
+  const handleAdd = useCallback(
+    async (parentId: number | null) => {
+      try {
+        const id = await invoke<number>("create_action_bar_item", {
+          parentId,
+          title: "新菜单项",
+          icon: "",
+          actionType: "copy",
+          actionData: "",
+        });
+        const latest = await refresh();
+        const newItem = latest.find((i) => i.id === id);
+        if (newItem) {
+          if (parentId !== null) {
+            setExpanded((prev) => new Set(prev).add(parentId));
+          }
+          startEdit(newItem);
+        }
+      } catch (e) {
+        showToast("新增失败：" + e);
+      }
+    },
+    [refresh, startEdit, showToast],
+  );
+
+  const nodeCommon = {
+    allItems: items,
+    expanded,
+    editingId,
+    editingForm,
+    onToggle: toggle,
+    onStartEdit: startEdit,
+    onMove: handleMove,
+    onDelete: handleDelete,
+    onAdd: handleAdd,
+    onFormChange: setEditingForm,
+    onSaveEdit: saveEdit,
+    onCancelEdit: cancelEdit,
+  };
 
   return (
     <div className="max-w-2xl">
-      <div className="flex items-center justify-between mb-4">
-        <h2 className="text-lg font-semibold">AI 命令面板菜单</h2>
-        <button
-          onClick={() => setShowAddParent(!showAddParent)}
-          className="flex items-center gap-1 px-3 py-1.5 text-sm bg-voice text-white rounded-md hover:opacity-90"
-        >
-          <Plus className="w-4 h-4" /> 新增主菜单项
-        </button>
-      </div>
-
-      {showAddParent && (
-        <div className="mb-3 p-3 bg-muted/30 rounded border border-border">
-          <p className="text-xs text-muted-foreground mb-2">确认新增一个主菜单项？</p>
-          <div className="flex gap-2">
-            <button onClick={() => handleAdd(null)} className="px-3 py-1 text-xs bg-voice text-white rounded">确认</button>
-            <button onClick={() => setShowAddParent(false)} className="px-3 py-1 text-xs bg-muted rounded">取消</button>
+      {/* Header */}
+      <div className="mb-5 flex items-start justify-between gap-4">
+        <div className="min-w-0">
+          <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
+            命令面板 · 菜单管理
           </div>
+          <h2 className="mt-0.5 text-lg font-semibold tracking-tight">
+            AI 命令面板菜单
+          </h2>
+          <p className="mt-1 text-xs text-muted-foreground">
+            选中文本 → 全局热键唤出的两级菜单。共 {items.length} 项，{
+              enabledCount
+            }{" "}
+            项启用。
+          </p>
         </div>
-      )}
-
-      <div className="space-y-0.5">
-        {mainItems.map((item) => (
-          <ItemRow
-            key={item.id}
-            item={item}
-            siblings={mainItems}
-            allItems={items}
-            editingId={editingId}
-            editingForm={editingForm}
-            onMove={handleMove}
-            onStartEdit={startEdit}
-            onDelete={handleDelete}
-            onAdd={handleAdd}
-            onFormChange={setEditingForm}
-            onSaveEdit={saveEdit}
-            onCancelEdit={cancelEdit}
-          />
-        ))}
+        <div className="flex shrink-0 items-center gap-1.5">
+          <button
+            onClick={allExpanded ? collapseAll : expandAll}
+            className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            title={allExpanded ? "全部收缩" : "全部展开"}
+          >
+            {allExpanded ? (
+              <ChevronsDownUp className="h-3.5 w-3.5" />
+            ) : (
+              <ChevronsUpDown className="h-3.5 w-3.5" />
+            )}
+            <span className="hidden sm:inline">
+              {allExpanded ? "全部收缩" : "全部展开"}
+            </span>
+          </button>
+          <button
+            onClick={() => handleAdd(null)}
+            className="flex items-center gap-1.5 rounded-md bg-voice px-3.5 py-1.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
+          >
+            <Plus className="h-4 w-4" /> 新增主菜单项
+          </button>
+        </div>
       </div>
 
-      {items.length === 0 && (
-        <p className="text-sm text-muted-foreground text-center py-8">加载中…</p>
+      {/* Body */}
+      {!loaded ? (
+        <p className="py-12 text-center text-sm text-muted-foreground">
+          加载中…
+        </p>
+      ) : mainItems.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
+          <div className="flex h-12 w-12 items-center justify-center rounded-full bg-muted text-muted-foreground">
+            <Plus className="h-5 w-5" />
+          </div>
+          <div>
+            <p className="text-sm font-medium">还没有菜单项</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              新增第一个主菜单项，开始配置你的命令面板。
+            </p>
+          </div>
+          <button
+            onClick={() => handleAdd(null)}
+            className="flex items-center gap-1.5 rounded-md bg-voice px-3.5 py-1.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
+          >
+            <Plus className="h-4 w-4" /> 新增主菜单项
+          </button>
+        </div>
+      ) : (
+        <div className="space-y-px">
+          {mainItems.map((item, i) => (
+            <TreeNode
+              key={item.id}
+              {...nodeCommon}
+              item={item}
+              siblings={mainItems}
+              index={i + 1}
+              depth={0}
+            />
+          ))}
+        </div>
       )}
     </div>
   );
