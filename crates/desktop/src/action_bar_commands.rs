@@ -292,3 +292,154 @@ fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
 fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
     (100.0, 100.0)
 }
+
+// ── 菜单管理命令（设置页 CRUD）──
+
+#[tauri::command]
+pub fn list_action_bar_items() -> Result<Vec<octopus_infra::db::ActionBarItem>, String> {
+    octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn create_action_bar_item(
+    parent_id: Option<i64>,
+    title: String,
+    icon: String,
+    action_type: String,
+    action_data: String,
+) -> Result<i64, String> {
+    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_action_bar_item(
+    id: i64,
+    title: String,
+    icon: String,
+    action_type: String,
+    action_data: String,
+    is_enabled: bool,
+) -> Result<(), String> {
+    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_action_bar_item(id: i64) -> Result<(), String> {
+    octopus_infra::db::delete_action_bar_item(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn move_action_bar_item(id: i64, direction: i32) -> Result<(), String> {
+    octopus_infra::db::move_action_bar_item(id, direction).map_err(|e| e.to_string())
+}
+
+// ── 统一执行入口 ──
+
+/// 按 CJK 检测方向，返回翻译 system prompt。
+fn auto_translate_prompt(text: &str) -> &'static str {
+    let has_cjk = text.chars().any(|c| {
+        matches!(c as u32, 0x4e00..=0x9fff | 0x3040..=0x30ff | 0xac00..=0xd7af)
+    });
+    if has_cjk {
+        "Please translate the following text into English. Only output the translation."
+    } else {
+        "请将以下文本翻译成中文。只输出翻译结果。"
+    }
+}
+
+/// 简易 URL 编码（避免引入新 crate）
+fn simple_url_encode(s: &str) -> String {
+    let mut result = String::with_capacity(s.len() * 3);
+    for &byte in s.as_bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                result.push(byte as char);
+            }
+            _ => {
+                result.push_str(&format!("%{:02X}", byte));
+            }
+        }
+    }
+    result
+}
+
+/// 执行脚本：按第一行 magic comment 分发运行时。
+fn run_script(source: &str, text: &str) -> Result<(), String> {
+    let first_line = source.lines().next().unwrap_or("").trim();
+    let body: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
+    let script = body.replace("{text}", text);
+
+    let result: std::io::Result<std::process::Child> = match first_line {
+        "#shell" => std::process::Command::new("sh").arg("-c").arg(&script).spawn(),
+        "#osascript" => {
+            #[cfg(target_os = "macos")]
+            { std::process::Command::new("osascript").arg("-e").arg(&script).spawn() }
+            #[cfg(not(target_os = "macos"))]
+            { return Err("osascript 仅 macOS 支持".into()); }
+        }
+        "#powershell" => {
+            #[cfg(target_os = "windows")]
+            { std::process::Command::new("powershell").arg("-Command").arg(&script).spawn() }
+            #[cfg(not(target_os = "windows"))]
+            { return Err("powershell 仅 Windows 支持".into()); }
+        }
+        "#python" => std::process::Command::new("python3").arg("-c").arg(&script).spawn(),
+        _ => return Err(format!(
+            "未知脚本类型: {}（第一行须为 #shell/#osascript/#powershell/#python）",
+            first_line
+        )),
+    };
+
+    result.map_err(|e| format!("脚本执行失败: {}", e))?;
+    Ok(())
+}
+
+/// 统一执行菜单项动作。
+#[tauri::command]
+pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
+    let item = octopus_infra::db::load_action_bar_item(item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("菜单项不存在")?;
+
+    match item.action_type.as_str() {
+        "ai" => {
+            let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
+            let llm_config = crate::config::llm_config_ignore_mode(&config)
+                .ok_or("润色模型未配置，请在设置中配置 LLM")?;
+            let prompt: &str = if item.action_data == "auto_translate" {
+                auto_translate_prompt(&text)
+            } else {
+                &item.action_data
+            };
+            let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
+                .map_err(|e| e.to_string())?;
+            action_bar_show_result(result, text, item.title, app);
+        }
+        "url" => {
+            let url = if item.action_data.is_empty() {
+                text.clone()
+            } else {
+                item.action_data.replace("{text}", &simple_url_encode(&text))
+            };
+            #[cfg(target_os = "macos")]
+            { let _ = std::process::Command::new("open").arg(&url).spawn(); }
+            #[cfg(target_os = "windows")]
+            { let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn(); }
+            #[cfg(target_os = "linux")]
+            { let _ = std::process::Command::new("xdg-open").arg(&url).spawn(); }
+        }
+        "script" => {
+            run_script(&item.action_data, &text)?;
+        }
+        "copy" => {
+            write_clipboard_text(&app, &text);
+        }
+        _ => {
+            return Err(format!("未知动作类型: {}", item.action_type));
+        }
+    }
+
+    Ok(())
+}
