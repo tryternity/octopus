@@ -48,6 +48,8 @@
 
 **生命周期**：两个 task 都看 `SCROLL_RECORDING` atomic（与现有鼠标监听 task `992` 一致）。生产 task 退出时 `drop(tx)` → 消费 `changed()` 得 `Err` → drain（watch 无积压）→ `finalize(last_frame)`。
 
+**SCROLL_RECORDING 复位守卫**（2026-07-09 审查 d6c2d71 Q1 加）：`start_scroll_recording` 在 `swap(true)` 后 spawn 异步任务，任务体内早返回（截图窗口丢失 / CG 获取显示器失败 / 首帧失败）+ panic 都不重置标志 → 永久锁死（后续滚动截图全报 "already in progress"，需重启）。修复：spawn 开头持 `ScrollRecordingGuard`（impl Drop → `store(false)`），任何退出路径（早返回 / 正常结束 / panic / runtime 取消）都 drop 复位，幂等无副作用（正常停止由前端 `stop_scroll_recording` 先设 false 让循环退出，guard 重复置 false）。
+
 ## 3. 改动面
 
 | 文件 | 改动 | 接口影响 |

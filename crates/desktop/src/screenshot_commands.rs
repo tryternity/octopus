@@ -30,6 +30,10 @@ static TOTAL_WINDOWS: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU3
 /// 截图并发门控：防止狂按快捷键导致多个 start_screenshot 并发 clear/push 静态量。
 /// CAS true → 进入；已是 true → 直接返回（上一次截图仍在进行）。
 static SCREENSHOT_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// 最近一次截图 OCR 结果（关联 image_id）。emit("ocr-screenshot://result") 早于
+/// 新窗 React mount 会被丢，ImagePreview mount 后用 get_last_screenshot_ocr 主动拉取兜底。
+/// 截图 OCR 全局互斥（OcrLockGuard），单槽即可，无需并发保护。
+static LAST_SCREENSHOT_OCR: Mutex<Option<(i64, crate::clipboard_commands::OcrResult)>> = Mutex::new(None);
 
 /// 注册截图全局快捷键。main 启动注册 + set_config 热重载共用，
 /// 与 shortcut::register_shortcut / result_window::register_edit_global_shortcut 范式一致。
@@ -324,21 +328,47 @@ pub async fn ocr_screenshot(
     let _ = app_handle.run_on_main_thread(move || {
         log::info!("[ocr-screenshot] main: closing screenshot windows");
         close_all_screenshot_windows(&ah);
+        // 合并双开为一次 open_compact_editor_tabs：避免连续单开在「窗口刚 build、
+        // React 未 mount」中间态丢失第二个 tab（首个经 URL 注入幸存，第二个被
+        // push 覆盖 + emit 丢 → ocr 文本 tab 丢失）。批量调用只走一次 create/emit。
+        let mut tabs: Vec<(i64, Option<&str>)> = Vec::new();
         if let Some(img_id) = image_id_opt {
-            log::info!("[ocr-screenshot] main: open image tab in compact editor {}", img_id);
-            crate::compact_editor_commands::open_compact_editor_tab(img_id, None, ah.clone());
+            log::info!("[ocr-screenshot] main: open image tab {}", img_id);
+            tabs.push((img_id, None));
         }
         if let Some(ocr_id) = ocr_id_opt {
-            log::info!("[ocr-screenshot] main: open compact editor tab {}", ocr_id);
-            crate::compact_editor_commands::open_compact_editor_tab(ocr_id, None, ah);
+            log::info!("[ocr-screenshot] main: open ocr text tab {}", ocr_id);
+            tabs.push((ocr_id, None));
         }
+        crate::compact_editor_commands::open_compact_editor_tabs(&tabs, &ah);
     });
 
-    // 先 emit OCR blocks（图片预览 mount 后会 listen 到，或已 mount 则直接收到）
+    // emit OCR blocks（图片预览 mount 后 listen 到，或已 mount 则直接收到）。
+    // 同时缓存（关联 image_id）——emit 早于新窗 React mount 会被丢，ImagePreview
+    // mount 时用 get_last_screenshot_ocr 主动拉取兜底。
     use tauri::Emitter;
     let _ = app_handle.emit("ocr-screenshot://result", &ocr_result);
+    *LAST_SCREENSHOT_OCR.lock() = Some((image_id, ocr_result));
 
     Ok(())
+}
+
+/// ImagePreview mount 时拉取缓存（按 image_id 校验：匹配返回并清空，不匹配放回）。
+/// 治 emit("ocr-screenshot://result") 早于新窗 React mount 的竞态——截图 OCR 后
+/// 新窗 ImagePreview mount 时主动拉高亮遮罩（emit 已被丢）。截图 OCR 全局互斥，单槽即可。
+#[tauri::command]
+pub fn get_last_screenshot_ocr(image_id: i64) -> Option<crate::clipboard_commands::OcrResult> {
+    let mut g = LAST_SCREENSHOT_OCR.lock();
+    if let Some((id, res)) = g.take() {
+        if id == image_id {
+            Some(res)
+        } else {
+            *g = Some((id, res)); // 不匹配：放回（非本次截图，保留待对应图片）
+            None
+        }
+    } else {
+        None
+    }
 }
 
 /// 前端渲染完成后调用。所有窗口都 ready 后统一 show（同步显示，避免逐个弹出）。
@@ -629,6 +659,21 @@ static SCROLL_STOP_MODE: std::sync::atomic::AtomicU8 = std::sync::atomic::Atomic
 
 static SCROLL_RECORDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// RAII 守卫：drop 时把 `SCROLL_RECORDING` 重置为 false。
+///
+/// `start_scroll_recording` 在 `swap(true)` 成功后 spawn 异步任务，任务体里的早返回
+/// （截图窗口已关闭 / CG 获取活动显示器失败 / 首帧截取失败）以及 panic 都不会重置标志，
+/// 会导致 `SCROLL_RECORDING` 永久停留在 true —— 此后任何滚动截图尝试都立即返回
+/// "already in progress"，必须重启应用才能恢复。在 spawn 开头持有一份守卫，任何退出
+/// 路径（早返回 / 正常结束 / panic / runtime 取消）都会 drop 它 → 重置标志，幂等无副作用
+/// （正常停止路径由前端 `stop_scroll_recording` 先设 false 让循环退出，再 drop 守卫重复置 false）。
+struct ScrollRecordingGuard;
+impl Drop for ScrollRecordingGuard {
+    fn drop(&mut self) {
+        SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
+    }
+}
+
 #[cfg(target_os = "macos")]
 struct SendApp(objc2::rc::Retained<objc2_app_kit::NSRunningApplication>);
 unsafe impl Send for SendApp {}
@@ -843,6 +888,9 @@ pub async fn start_scroll_recording(
 
     let ah = app_handle.clone();
     tauri::async_runtime::spawn(async move {
+        // RAII 守卫：本任务体任何退出（早返回 / 正常结束 / panic / runtime 取消）都重置
+        // SCROLL_RECORDING=false，避免初始化失败的早返回让滚动截图功能永久锁死。
+        let _scroll_guard = ScrollRecordingGuard;
         // ── 通过 win_label 定位选区所在的截图窗口（spec §6.4）──
         let sel_win = match ah.get_webview_window(&win_label) {
             Some(w) => w,
@@ -999,55 +1047,58 @@ pub async fn start_scroll_recording(
         // 独立鼠标监听线程：30ms 高频轮询，与截图循环解耦。
         // 鼠标在任意交互区域（工具栏/预览窗）→ set_ignore_cursor_events(false)（可点击）；
         // 离开 → set_ignore_cursor_events(true)（滚动穿透）。不调 activate/deactivate。
-        let mon_labels = scroll_labels.clone();
-        let mon_ah = ah.clone();
-        let mon_winx = win_origin_x;
-        let mon_winy = win_origin_y;
-        let mon_rects = interactive_rects;
-        tauri::async_runtime::spawn(async move {
-            use core_graphics::event::CGEvent;
-            use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
-            let mut poll = tokio::time::interval(std::time::Duration::from_millis(16));
-            let mut cur_passthrough = true;
-            let mut last_active_pid: i32 = 0;
-            let mut activate_check_count = 0u32;
-            let mut last_check_x: f64 = 0.0;
-            let mut last_check_y: f64 = 0.0;
-            while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
-                poll.tick().await;
-                let (mouse_x, mouse_y) = if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
-                    if let Ok(evt) = CGEvent::new(src) {
-                        let loc = evt.location();
-                        (loc.x, loc.y)
-                    } else { (0.0, 0.0) }
-                } else { (0.0, 0.0) };
+        // 鼠标穿透轮询：macOS 专属（CGEvent 全局鼠标追踪 + set_ignore_cursor_events 穿透
+        // + 激活下方应用）。core_graphics 仅 macOS 可用，整个轮询线程 cfg gate；
+        // 非 macOS 不启动（滚动截图穿透为 macOS 专属优化），interactive_rects 标记已用。
+        #[cfg(target_os = "macos")]
+        {
+            let mon_labels = scroll_labels.clone();
+            let mon_ah = ah.clone();
+            let mon_winx = win_origin_x;
+            let mon_winy = win_origin_y;
+            let mon_rects = interactive_rects;
+            tauri::async_runtime::spawn(async move {
+                use core_graphics::event::CGEvent;
+                use core_graphics::event_source::{CGEventSource, CGEventSourceStateID};
+                let mut poll = tokio::time::interval(std::time::Duration::from_millis(16));
+                let mut cur_passthrough = true;
+                let mut last_active_pid: i32 = 0;
+                let mut activate_check_count = 0u32;
+                let mut last_check_x: f64 = 0.0;
+                let mut last_check_y: f64 = 0.0;
+                while SCROLL_RECORDING.load(std::sync::atomic::Ordering::SeqCst) {
+                    poll.tick().await;
+                    let (mouse_x, mouse_y) = if let Ok(src) = CGEventSource::new(CGEventSourceStateID::HIDSystemState) {
+                        if let Ok(evt) = CGEvent::new(src) {
+                            let loc = evt.location();
+                            (loc.x, loc.y)
+                        } else { (0.0, 0.0) }
+                    } else { (0.0, 0.0) };
 
-                let lx = mouse_x - mon_winx;
-                let ly = mouse_y - mon_winy;
-                let in_interactive = mon_rects.iter().any(|r| {
-                    lx >= r.x && lx <= r.x + r.width && ly >= r.y && ly <= r.y + r.height
-                });
-                let want = !in_interactive;
-                if want != cur_passthrough {
-                    for label in &mon_labels {
-                        if let Some(win) = mon_ah.get_webview_window(label) {
-                            set_window_ignores_mouse_events(&win, want);
+                    let lx = mouse_x - mon_winx;
+                    let ly = mouse_y - mon_winy;
+                    let in_interactive = mon_rects.iter().any(|r| {
+                        lx >= r.x && lx <= r.x + r.width && ly >= r.y && ly <= r.y + r.height
+                    });
+                    let want = !in_interactive;
+                    if want != cur_passthrough {
+                        for label in &mon_labels {
+                            if let Some(win) = mon_ah.get_webview_window(label) {
+                                set_window_ignores_mouse_events(&win, want);
+                            }
                         }
+                        cur_passthrough = want;
                     }
-                    cur_passthrough = want;
-                }
 
-                // 每 ~800ms（每 50 个 tick）且鼠标移动超过 10px 时检测鼠标下方的应用。
-                // CGWindowListCopyWindowInfo 是昂贵的系统 API，避免高频空转。
-                activate_check_count += 1;
-                if want && activate_check_count >= 50 {
-                    activate_check_count = 0;
-                    let moved = (mouse_x - last_check_x).abs() + (mouse_y - last_check_y).abs();
-                    if moved > 10.0 {
-                        last_check_x = mouse_x;
-                        last_check_y = mouse_y;
-                        #[cfg(target_os = "macos")]
-                        {
+                    // 每 ~800ms（每 50 个 tick）且鼠标移动超过 10px 时检测鼠标下方的应用。
+                    // CGWindowListCopyWindowInfo 是昂贵的系统 API，避免高频空转。
+                    activate_check_count += 1;
+                    if want && activate_check_count >= 50 {
+                        activate_check_count = 0;
+                        let moved = (mouse_x - last_check_x).abs() + (mouse_y - last_check_y).abs();
+                        if moved > 10.0 {
+                            last_check_x = mouse_x;
+                            last_check_y = mouse_y;
                             if let Some(pid) = get_window_pid_at_point(mouse_x, mouse_y) {
                                 if pid != last_active_pid {
                                     activate_app_by_pid(&mon_ah, pid);
@@ -1057,8 +1108,12 @@ pub async fn start_scroll_recording(
                         }
                     }
                 }
-            }
-        });
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = interactive_rects;
+        }
 
 
         // ── 首帧（只截选区区域，排除 overlay 窗口）──

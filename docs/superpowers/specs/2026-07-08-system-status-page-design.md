@@ -33,7 +33,7 @@
 ```
 后端 SystemStatusSampler (Tauri State, 单例)
   ├ ring buffer: RSS / CPU 时间序列 (2s × 60 = 2 分钟)
-  ├ ModelMemoryRegistry: { model_id → 估算字节 }
+  ├ ModelMemoryRegistry: { active: model_id → 估算字节, estimated: 首次值缓存(跨 reload) }
   └ 后台采样循环 (tokio, 每 2s):
       sysinfo 取 RSS+CPU → 更新 buffer → app.emit("system-status", snapshot)
 
@@ -66,21 +66,27 @@
 - `#[tauri::command] get_system_status(sampler) -> SystemStatusSnapshot`：返回 `current`（首屏全量）
 - 注册到 `main.rs` 的 `generate_handler!`
 
-**`ModelMemoryRegistry`**：`Arc<Mutex<HashMap<String, u64>>>`（Tauri State）
+**`ModelMemoryRegistry`**（`Arc`，Tauri State）：`inner`（active 列表）+ `estimated`（首次估算值持久缓存，跨 unload/reload 保留）
 
-- `record_once(id, bytes)`：已存在则不覆盖
-- `entries() -> Vec<ModelMemory>`：registry 内条目均代表「已加载」模型
+- `upsert_active(id, bytes)`：写 active（覆盖）+ 把首次值 `or_insert` 进 estimated
+- `estimated(id) -> Option<u64>`：取首次缓存值（reload 复用）
+- `remove(id)`：仅清 active，保留 estimated 供下次 reload
+- `entries() -> Vec<ModelMemory>`：active 列表，均代表「当前加载中」模型
 
 ### 模型内存插桩（加载点前后采 RSS 差值）
 
 | 模型 | 插桩点 | id |
 |---|---|---|
 | ASR | `asr-local::AsrEngineManager::load_engine_into_cache` 前后 | `asr:<engine>` |
-| OCR | `ocr::engine` 首次初始化前后 | `ocr:paddle` |
+| ASR（流式） | `asr-local::StreamingSessionManager::switch_model` 前后 + 驱逐 `Unload` | `asr:<bare>`（与离线同前缀，同一模型算一条） |
+| OCR | `ocr::engine` 首次初始化前后 | `ocr:<model_name>` |
 | VAD | `asr-local::vad` 首次加载前后 | `vad:silero` |
 
-- 加载前读进程 RSS → 加载后再读 → 差值 `record_once` 进 registry
-- 仅首次记录、不覆盖（ort arena 复用会让后续差值偏低甚至为负，覆盖会失真）
+- 加载前读进程 RSS → 加载后再读 → 差值 `upsert_active` 进 registry
+- After 优先 `estimated(id)` 命中复用首次值（reload 场景，不算偏低差），未命中才算 RSS 差——首次值持久化在 `estimated`（`or_insert` 不覆盖），防 ort arena 复用让后续差值偏低甚至为负
+- After 时 `now<=before`（差值测不到：ort arena 复用 / 并发释放内存）→ `mark_active_unmeasured(id)`：仅登记 active 占位（状态页显示「已加载」），**不写 estimated**——避免不可信近零值持久化成首次估算，下次 reload 走 estimated miss 重算可自愈；若不登记则条目永久缺失 + estimated 永不写 → reload 仍走 `now<=b` 永不显示（2026-07-09 审查 6e73257 Q2 修复）
+- `before_map` key 用 `(ThreadId, model_id)`：多线程并发加载同一未缓存模型（如 server 多连接同时 cache miss 同一 ASR 引擎）时按线程×模型配对，避免 before/after 错拿致估算值失真（仅影响状态页估算显示，不影响加载正确性）
+- OCR idle 释放后 `run_ocr` 重载补 probe Before/After（与首次 `instance()` 对称）：Unload 已 remove active（estimated 保留），重载 After 命中 estimated 恢复——避免状态页在 OCR 重载后永久缺条目；`probe` clone 闭包后释放锁再调用，避免持锁执行用户闭包（fallback sysinfo 扫进程慢）
 - 属「估算」，前端固定标注「约」
 
 ### 数据结构
@@ -142,7 +148,7 @@ struct ModelMemory  { id: String, kind: String, display_name: String, estimated_
 ## 测试
 
 - ring buffer 容量上限与循环覆盖（单测）
-- `ModelMemoryRegistry::record_once` 首次写入、已存在不覆盖（单测）
+- `ModelMemoryRegistry::upsert_active` 写 active + estimated 首次值 `or_insert` 不覆盖；`estimated` 跨 unload/reload 保留首次值（单测）
 - sysinfo 失败降级（mock，单测）
 - 前端 `SystemPanel`：mount→invoke、listen→更新、unmount→unlisten（组件测）
 - 手动 e2e：加载 ASR 模型 → 状态页出现该条目、RSS 折线上涨

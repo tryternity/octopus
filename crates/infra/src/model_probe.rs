@@ -24,8 +24,13 @@ pub fn set_probe(f: ProbeFn) {
 }
 
 /// 加载点调用：未注入时为 no-op。
+///
+/// 先 clone 闭包（Arc 引用计数 +1，廉价）并释放锁，再调用——避免持锁执行用户闭包。
+/// 闭包 fallback 路径（非 macOS / phys_footprint 读取失败）会 sysinfo 扫描全部进程，
+/// 耗数 ms；持锁调用会阻塞其他线程的 probe。clone 后释放锁是更安全的并发模式。
 pub fn probe(phase: LoadPhase, id: &str) {
-    if let Some(f) = PROBE.lock().as_ref() {
+    let f_opt = PROBE.lock().clone();
+    if let Some(f) = f_opt {
         f(phase, id);
     }
 }

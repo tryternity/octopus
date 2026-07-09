@@ -152,8 +152,20 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   // imageId 由 props 驱动
   useEffect(() => { setImageId(propImageId); }, [propImageId]);
 
-  // 截图 OCR → 推送 OCR blocks
+  // 截图 OCR → 推送 OCR blocks。mount 时同时拉后端缓存（emit 早于新窗 React mount
+  // 会被丢，get_last_screenshot_ocr 兜底）；listen 供窗口已 mount 时即时收。
+  // StrictMode 双 mount：后端 take 第一次返回+清空，第二次 None，不会重复应用。
   useEffect(() => {
+    if (imageId != null) {
+      invoke<{ text: string; blocks: OcrBlock[] } | null>("get_last_screenshot_ocr", { imageId })
+        .then((res) => {
+          if (!res || res.blocks.length === 0) return;
+          ocrDoneRef.current = true;
+          setOcrBlocks(res.blocks);
+          setOcrOverlay('overlay');
+        })
+        .catch(() => {});
+    }
     const unlistenOcr = listen<{ text: string; blocks: OcrBlock[] }>("ocr-screenshot://result", (e) => {
       if (e.payload.blocks.length > 0) {
         ocrDoneRef.current = true;

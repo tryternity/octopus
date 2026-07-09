@@ -1268,7 +1268,11 @@ fn start_final_polish_or_paste(
             // polishing id 是否匹配，否则丢弃。
             let session_id = id;
             std::thread::spawn(move || {
-                let result = match octopus_llm::polish_regions(&regions, &llm_config) {
+                // catch_unwind 兜底：polish_regions 内部 panic（JSON 反序列化 / 网络库内部）
+                // 会让线程静默死亡，FinalPolishDone 永不发送 → 永久卡在 Stage::Polishing
+                // （该 stage 忽略所有快捷键与录音触发，需重启恢复）。捕获 panic 后发 Err，
+                // coordinator 走与润色失败相同的降级路径（用 fallback_text 粘贴）。
+                let inner = || match octopus_llm::polish_regions(&regions, &llm_config) {
                     Ok(polished) => {
                         if polished.is_empty() {
                             Err("Final polish returned empty".to_string())
@@ -1278,6 +1282,19 @@ fn start_final_polish_or_paste(
                     }
                     Err(e) => Err(e.to_string()),
                 };
+                let result =
+                    std::panic::catch_unwind(std::panic::AssertUnwindSafe(inner)).unwrap_or_else(
+                        |p| {
+                            let msg = if let Some(s) = p.downcast_ref::<&str>() {
+                                (*s).to_string()
+                            } else if let Some(s) = p.downcast_ref::<String>() {
+                                s.clone()
+                            } else {
+                                "final polish panicked".to_string()
+                            };
+                            Err(format!("Final polish panicked: {}", msg))
+                        },
+                    );
                 let _ = tx.send(Command::FinalPolishDone { result, session_id });
             });
         }

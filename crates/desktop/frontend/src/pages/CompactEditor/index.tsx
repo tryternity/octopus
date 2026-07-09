@@ -22,6 +22,24 @@ interface OpenTabPayload {
   text?: string;
   isTemp?: boolean;
 }
+// 后端 get_pending_compact_tabs 返回（含完整数据，前端免再查 DB）。
+interface PendingTabFull {
+  itemId: number;
+  source: string;
+  itemType: string;
+  text: string;
+  imgWidth?: number;
+  imgHeight?: number;
+  isTemp?: boolean;
+}
+function pendingToTab(p: PendingTabFull): Tab {
+  const key = `${p.source}:${p.itemId}`;
+  const source = p.source as Tab['source'];
+  if (p.itemType === 'image') {
+    return { key, source, itemId: p.itemId, itemType: 'image', imgWidth: p.imgWidth || 0, imgHeight: p.imgHeight || 0 };
+  }
+  return { key, source, itemId: p.itemId, itemType: 'text', text: p.text, isTemp: p.isTemp };
+}
 
 const FONT_KEY = "compact-editor-font-size";
 const FONT_MIN = 12;
@@ -161,31 +179,31 @@ function CompactEditor() {
     }
   }, []);
 
-  // mount：URL 已注入首个 tab（零 IPC）；只注册 open-tab 事件用于后续新开 tab。
-  // 保留 get_pending_compact_tab 作为 fallback（URL 参数缺失时走 1 次 IPC）。
+  // mount：URL 已注入首个 tab（零 IPC）；invoke get_pending_compact_tabs take 剩余
+  // pending（批量双开场景：URL 只注入首个，其余 pending tab 于此补齐，与 URL 首个
+  // 按 key 去重）；注册 open-tab 事件用于后续已 mount 窗口的新开 tab。
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     (async () => {
-      // URL 无初始数据时，fallback 到 IPC
-      if (!initial.hasInitial) {
-        const pending = await invoke<{ itemId: number; source: string; itemType: string; text: string; isTemp?: boolean } | null>("get_pending_compact_tab");
-        if (cancelled) return;
-        if (pending) {
-          const key = pending.isTemp ? `temp:${Date.now()}` : `${pending.source}:${pending.itemId}`;
-          if (pending.itemType === "image") {
-            setTabs([{ key, source: pending.source as any, itemId: pending.itemId, itemType: "image" as const }]);
-          } else {
-            setTabs([{ key, source: pending.source as any, itemId: pending.itemId, itemType: "text" as const, text: pending.text, isTemp: pending.isTemp }]);
+      // main: 批量 get_pending_compact_tabs；feature: isTemp 支持
+      const pendingTabs = await invoke<PendingTabFull[]>("get_pending_compact_tabs");
+      if (cancelled) return;
+      if (pendingTabs.length > 0) {
+        setTabs(prev => {
+          const seen = new Set(prev.map(t => t.key));
+          const added: Tab[] = [];
+          for (const p of pendingTabs) {
+            const key = p.isTemp ? `temp:${Date.now()}_${p.itemId}` : `${p.source}:${p.itemId}`;
+            if (seen.has(key)) continue;
+            seen.add(key);
+            added.push(pendingToTab(p));
           }
-          setActiveIdx(0);
-          setTimeout(() => taRef.current?.focus(), 0);
-        }
-        setInitialLoading(false);
-      } else {
-        // URL 已有数据，直接焦点
-        setTimeout(() => taRef.current?.focus(), 0);
+          return added.length > 0 ? [...prev, ...added] : prev;
+        });
       }
+      setInitialLoading(false);
+      setTimeout(() => taRef.current?.focus(), 0);
       const fn = await listen("compact-editor://open-tab", (payload) => {
         const p = payload as OpenTabPayload;
         if (p.source === 'temp') {

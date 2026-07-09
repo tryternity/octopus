@@ -584,11 +584,24 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/arch-fixes commi
 | 动静字段拆 Static/Dynamic struct | ort `&mut` 下无并发收益，纯整洁度 |
 | server 多实例池化 | server 是桌面端辅助，非大并发 |
 | `switch_asr_engine` 主动联动 manager | `active_session` 懒加载已覆盖模型变更 |
-| manager 缓存上限（max_cache） | 流式模型种类少，暂不需要淘汰 |
+| ~~manager 缓存上限（max_cache）~~ | **2026-07-09 审查 Q3 已加 max_cache=2**（见「实施记录 → 后续审查修复」），原「不需要」假设被多引擎切换场景推翻 |
 
 ---
 
 ## 实施记录
+
+### 后续审查修复（2026-07-09，commit d6c2d71）
+
+后端审查对 `StreamingSessionManager` 提 2 真 bug，在原 4 Task 之上增量修复（spec §10 / YAGNI 表已同步修订）：
+
+- **max_cache=2 驱逐**（审查 Q3）：原「不设上限」假设未覆盖用户配置多流式引擎反复切换场景（每个 Session 数百 MB，无上限致 OOM）。`set_active` 入缓存前淘汰非 active + `probe(Unload)`，对齐离线 `AsrEngineManager`。+2 单测：`set_active_evicts_when_over_capacity_keeps_active` / `set_active_no_evict_when_reinserting_existing_key`。
+- **model_probe 接入**（审查 Q4）：`switch_model` 加 `probe(Before/After)`（id=`asr:<bare>`），状态页统计流式引擎内存（与离线 `load_engine_into_cache` 对称）。
+
+> 实施偏差 3「未设 max_cache」据此修订：当时（2026-07-06）确实未设，2026-07-09 审查后补。
+
+### 后续审查复查（2026-07-09，commit dbf0d15）—— server per-connection 维持现状
+
+后端审查再提 server 每 WebSocket 连接 `StreamingSession::new` 各加载一份 ONNX 为「并发内存瓶颈」。经复查确认为**有意决策，不改**：见 spec §1（每连接 `new`、连接结束 drop）/ §7（server 不接入 manager，per-connection `new` 不变）/ §9 YAGNI（server 池化否决）。理由：server 是桌面端辅助 sidecar、非大并发（连接数个位数、结束即 drop，非永久泄漏）；共享 ort Session 需拆动静字段（连接级 `accumulated`/`committed_chars` 等状态 vs engine），而 ort 推理持 `&mut` 串行、无并发收益——正是 spec §9「动静字段拆 struct / server 池化」YAGNI 项。记此复查防后续重复审查。
 
 ### 已完成并合 main（2026-07-06）
 
