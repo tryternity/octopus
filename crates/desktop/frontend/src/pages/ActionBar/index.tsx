@@ -201,7 +201,6 @@ export default function ActionBar() {
       if (e.key === "Escape") {
         e.preventDefault();
         if (focusLayerRef.current === "sub") { setFocusLayer("main"); return; }
-        if (viewRef.current === "submenu") { setView("main"); submenuParentIdRef.current = null; return; }
         invoke("action_bar_dismiss");
         return;
       }
@@ -257,22 +256,26 @@ export default function ActionBar() {
 
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
+        // 上下键只切换焦点层，不展开/收起子菜单
+        // 子菜单展开/收起由左右键移动主菜单项时控制
         if (focusLayerRef.current === "sub") {
-          // 焦点从子菜单切回主菜单
           setFocusLayer("main");
         } else {
-          // 焦点从主菜单进入子菜单
+          // 焦点在主菜单——只有当前主菜单项有子菜单时才能进入
           const cur = mainItemsRef.current[selectedIdxRef.current];
           if (cur && cur.actionType === "submenu") {
-            submenuParentIdRef.current = cur.id;
-            setView("submenu");
             setFocusLayer("sub");
-            const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === cur.id);
-            if (subs.length > 0 && subs[0].actionType === "url") {
-              const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
-              setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
-            } else {
-              setSubSelectedIdx(0);
+            // 如果子菜单还没展开（理论上左右键已经展开了），确保展开
+            if (viewRef.current !== "submenu") {
+              submenuParentIdRef.current = cur.id;
+              setView("submenu");
+              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === cur.id);
+              if (subs.length > 0 && subs[0].actionType === "url") {
+                const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
+                setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
+              } else {
+                setSubSelectedIdx(0);
+              }
             }
           }
         }
