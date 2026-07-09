@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen as rawListen } from "@tauri-apps/api/event";
-import { getCurrentWindow } from "@tauri-apps/api/window";
+import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
 import { Loader2 } from "lucide-react";
 import { detectActionUrl } from "./urlDetect";
@@ -71,7 +71,7 @@ export default function ActionBar() {
   useEffect(() => {
     const height = view === "submenu" ? 76 : view === "loading" ? 48 : view === "error" ? 60 : 40;
     const win = getCurrentWindow();
-    win.setSize({ type: "Logical", data: { width: 380, height } }).catch(() => {});
+    win.setSize(new LogicalSize(380, height)).catch(() => {});
   }, [view]);
 
   // mount + 每次 show 时拉取上下文 + 菜单 + 配置
