@@ -134,7 +134,10 @@ function Settings() {
         ) : page === "actionbar" ? (
           <ActionBarPanel showToast={showToast} />
         ) : page === "hotword" ? (
-          <HotwordPanel />
+          <HotwordPanel
+            dialect={(configResp.config.fuzzy_dialect as string) || ""}
+            setVal={setVal}
+          />
         ) : null}
       </div>
 

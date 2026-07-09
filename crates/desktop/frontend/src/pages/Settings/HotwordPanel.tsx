@@ -10,7 +10,20 @@ interface Hotword {
   createdAt: string;
 }
 
-export function HotwordPanel() {
+interface Props {
+  /** app_config.fuzzy_dialect（逗号分隔 token：f/h、hu/wu、n/l） */
+  dialect: string;
+  setVal: (key: string, value: string | number | boolean) => Promise<void>;
+}
+
+// 方言模糊选项——token 与后端 hotword::parse_dialect 对齐。
+const DIALECT_OPTIONS: { tok: string; label: string }[] = [
+  { tok: 'f/h', label: 'f/h 不分（福建：浮 / 护）' },
+  { tok: 'hu/wu', label: 'hu/wu 不分（江浙：黄 / 王）' },
+  { tok: 'n/l', label: 'n/l 不分（湖南：刘 / 牛）' },
+];
+
+export function HotwordPanel({ dialect, setVal }: Props) {
   const [active, setActive] = useState<Hotword[]>([]);
   const [pending, setPending] = useState<Hotword[]>([]);
   const [input, setInput] = useState('');
@@ -55,8 +68,40 @@ export function HotwordPanel() {
     }
   }
 
+  // 勾选/取消某方言组 → 重算逗号分隔串写回 app_config.fuzzy_dialect。
+  function toggleDialect(tok: string) {
+    const set = new Set(dialect.split(',').map((s) => s.trim()).filter(Boolean));
+    if (set.has(tok)) {
+      set.delete(tok);
+    } else {
+      set.add(tok);
+    }
+    void setVal('fuzzy_dialect', [...set].join(','));
+  }
+
+  const enabledTokens = new Set(dialect.split(',').map((s) => s.trim()));
+
   return (
     <div style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 16 }}>
+      <section>
+        <h3>方言模糊（按口音扩大热词召回）</h3>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+          {DIALECT_OPTIONS.map(({ tok, label }) => (
+            <label key={tok} style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+              <input
+                type="checkbox"
+                checked={enabledTokens.has(tok)}
+                onChange={() => toggleDialect(tok)}
+              />
+              <span>{label}</span>
+            </label>
+          ))}
+        </div>
+        <small style={{ color: '#888' }}>
+          勾选后热词纠错按对应方言模糊匹配（声母混淆互通）；不勾仅基础规则（平翘舌 + 前后鼻音）。
+        </small>
+      </section>
+
       <section>
         <h3>添加热词</h3>
         <div style={{ display: 'flex', gap: 8 }}>
