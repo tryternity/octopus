@@ -992,6 +992,113 @@ fn delete_action_bar_item_at(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
+// ── Hotword（ASR 热词）──────────────────────────────────────────
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct Hotword {
+    pub id: i64,
+    pub word: String,
+    pub status: String,
+    pub source: String,
+    pub hit_count: i64,
+    pub created_at: String,
+}
+
+const HOTWORD_SELECT_COLS: &str = "id, word, status, source, hit_count, created_at";
+
+fn row_to_hotword(row: &rusqlite::Row) -> rusqlite::Result<Hotword> {
+    Ok(Hotword {
+        id: row.get(0)?,
+        word: row.get(1)?,
+        status: row.get(2)?,
+        source: row.get(3)?,
+        hit_count: row.get(4)?,
+        created_at: row.get(5)?,
+    })
+}
+
+/// status: "active" | "pending"。设置页按状态分组渲染。
+pub fn list_hotwords(status: &str) -> Result<Vec<Hotword>> {
+    with_db(|conn| list_hotwords_at(conn, status))
+}
+
+fn list_hotwords_at(conn: &Connection, status: &str) -> Result<Vec<Hotword>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {} FROM hotwords WHERE status = ?1 ORDER BY created_at DESC",
+        HOTWORD_SELECT_COLS
+    ))?;
+    let rows = stmt.query_map(params![status], row_to_hotword)?;
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
+/// 纠错热路径用——只取 active 词文本（构造 HotwordIndex 用）。
+pub fn list_active_hotword_words() -> Result<Vec<String>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare("SELECT word FROM hotwords WHERE status = 'active'")?;
+        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    })
+}
+
+pub fn insert_hotword(word: &str, source: &str, status: &str) -> Result<i64> {
+    with_db(|conn| insert_hotword_at(conn, word, source, status))
+}
+
+fn insert_hotword_at(conn: &Connection, word: &str, source: &str, status: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO hotwords (word, source, status) VALUES (?1, ?2, ?3)",
+        params![word, source, status],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// pending → active（人工确认）。
+pub fn confirm_pending_hotword(id: i64) -> Result<()> {
+    with_db(|conn| confirm_pending_hotword_at(conn, id))
+}
+
+fn confirm_pending_hotword_at(conn: &Connection, id: i64) -> Result<()> {
+    let updated = conn.execute(
+        "UPDATE hotwords SET status = 'active' WHERE id = ?1 AND status = 'pending'",
+        params![id],
+    )?;
+    if updated == 0 {
+        anyhow::bail!("待确认热词不存在或非 pending 状态");
+    }
+    Ok(())
+}
+
+pub fn delete_hotword(id: i64) -> Result<()> {
+    with_db(|conn| delete_hotword_at(conn, id))
+}
+
+fn delete_hotword_at(conn: &Connection, id: i64) -> Result<()> {
+    let deleted = conn.execute("DELETE FROM hotwords WHERE id = ?1", params![id])?;
+    if deleted == 0 {
+        anyhow::bail!("热词不存在");
+    }
+    Ok(())
+}
+
+/// 命中计数 +1（纠错命中时调，用于多热词同音消歧排序）。
+pub fn bump_hotword_hit(id: i64) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE hotwords SET hit_count = hit_count + 1 WHERE id = ?1",
+            params![id],
+        )?;
+        Ok(())
+    })
+}
+
 /// direction < 0 = 上移，> 0 = 下移。交换同 parent 下相邻项的 sort_order。
 pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()> {
     with_db(|conn| move_action_bar_item_at(conn, id, direction))
@@ -2261,5 +2368,39 @@ mod tests {
         assert_eq!(a_after.sort_order, b_before.sort_order);
         delete_action_bar_item_at(&conn, id_a).unwrap();
         delete_action_bar_item_at(&conn, id_b).unwrap();
+    }
+
+    #[test]
+    fn hotword_crud_roundtrip() {
+        let conn = open_init();
+
+        // insert（manual, active）
+        let id = insert_hotword_at(&conn, "八爪鱼", "manual", "active").unwrap();
+        assert!(id > 0);
+
+        // list_active 只含 active
+        let active = list_hotwords_at(&conn, "active").unwrap();
+        assert_eq!(active.len(), 1);
+        assert_eq!(active[0].word, "八爪鱼");
+        assert_eq!(active[0].source, "manual");
+
+        // pending 隔离
+        insert_hotword_at(&conn, "吴大锐", "mined", "pending").unwrap();
+        let pending = list_hotwords_at(&conn, "pending").unwrap();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].word, "吴大锐");
+        assert_eq!(active.len(), 1, "active 不受 pending 影响");
+
+        // confirm：pending → active
+        confirm_pending_hotword_at(&conn, pending[0].id).unwrap();
+        assert_eq!(list_hotwords_at(&conn, "active").unwrap().len(), 2);
+        assert_eq!(list_hotwords_at(&conn, "pending").unwrap().len(), 0);
+
+        // delete
+        delete_hotword_at(&conn, id).unwrap();
+        assert_eq!(list_hotwords_at(&conn, "active").unwrap().len(), 1);
+
+        // word 唯一约束
+        assert!(insert_hotword_at(&conn, "吴大锐", "manual", "active").is_err());
     }
 }
