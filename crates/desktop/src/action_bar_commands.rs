@@ -355,7 +355,13 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
         }
         "url" => {
             let url = if item.action_data.is_empty() {
-                text.clone()
+                // 选中文本即 URL——补 scheme（缺 https:// 时 macOS open 当文件路径）
+                let raw = text.trim();
+                if raw.starts_with("http://") || raw.starts_with("https://") || raw.contains("://") {
+                    raw.to_string()
+                } else {
+                    format!("https://{}", raw)
+                }
             } else {
                 item.action_data.replace("{text}", &simple_url_encode(&text))
             };
