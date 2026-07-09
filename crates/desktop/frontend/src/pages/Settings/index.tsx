@@ -8,6 +8,7 @@ import {
   Wand2,
   Clipboard,
   Activity,
+  Command,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,7 @@ import GeneralPanel from "./GeneralPanel";
 import ModelsPanel from "./ModelsPanel";
 import PromptsPanel from "./PromptsPanel";
 import SystemPanel from "./SystemPanel";
+import ActionBarPanel from "./ActionBarPanel";
 
 export interface ConfigResponse {
   config: Record<string, string | number | boolean>;
@@ -27,11 +29,12 @@ export interface ConfigResponse {
   microphones: string[];
 }
 
-type PageName = "clipboard" | "settings" | "models" | "prompts" | "system";
+type PageName = "clipboard" | "settings" | "models" | "prompts" | "system" | "actionbar";
 
 const NAV_ITEMS: { page: PageName; icon: LucideIcon; label: string }[] = [
   { page: "settings", icon: SettingsIcon, label: "系统设置" },
   { page: "clipboard", icon: Clipboard, label: "剪贴管理" },
+  { page: "actionbar", icon: Command, label: "命令面板" },
   { page: "models", icon: Box, label: "模型管理" },
   { page: "prompts", icon: Wand2, label: "提示词" },
   { page: "system", icon: Activity, label: "系统状态" },
@@ -125,6 +128,8 @@ function Settings() {
           <ModelsPanel showToast={showToast} />
         ) : page === "prompts" ? (
           <PromptsPanel showToast={showToast} />
+        ) : page === "actionbar" ? (
+          <ActionBarPanel showToast={showToast} />
         ) : null}
       </div>
 

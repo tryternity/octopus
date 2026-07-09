@@ -270,11 +270,15 @@ pub fn run() {
             theme::get_theme_id,
             system_status_commands::get_system_status,
             action_bar_commands::trigger_action_bar,
-            action_bar_commands::run_ai_action,
             action_bar_commands::action_bar_show_result,
-            action_bar_commands::action_bar_open_url,
             action_bar_commands::action_bar_get_context,
             action_bar_commands::action_bar_dismiss,
+            action_bar_commands::list_action_bar_items,
+            action_bar_commands::create_action_bar_item,
+            action_bar_commands::update_action_bar_item,
+            action_bar_commands::delete_action_bar_item,
+            action_bar_commands::move_action_bar_item,
+            action_bar_commands::execute_action_bar,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)

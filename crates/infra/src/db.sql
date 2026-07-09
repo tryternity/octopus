@@ -260,3 +260,38 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
 
 -- ── 记事本（notes/notes_fts 表）已移除──────────────────────────
 -- OCR/ASR/剪贴板文本统一走 clipboard_history（OCR 类别 item_type='ocr'）。
+
+-- ── Action Bar 菜单项（两级菜单，自引用 parent_id）──────────────
+CREATE TABLE IF NOT EXISTS action_bar_items (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    parent_id   INTEGER DEFAULT NULL,
+    title       TEXT NOT NULL,
+    icon        TEXT NOT NULL DEFAULT '',
+    action_type TEXT NOT NULL,
+    action_data TEXT NOT NULL DEFAULT '',
+    sort_order  INTEGER NOT NULL DEFAULT 0,
+    is_system   INTEGER NOT NULL DEFAULT 1,
+    is_enabled  INTEGER NOT NULL DEFAULT 1,
+    created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
+    FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
+);
+
+-- 种子：主菜单项
+INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
+    (1, NULL, 'AI',    'sparkles', 'submenu', '', 0, 1),
+    (2, NULL, '翻译',  'globe',    'ai', 'auto_translate', 1, 1),
+    (3, NULL, '搜索',  'search',   'submenu', '', 2, 1),
+    (4, NULL, '网页',  'link',     'url', '', 3, 1);
+
+-- 种子：AI 子菜单（parent_id=1）
+INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
+    (5, 1, '润色', 'pencil',    'ai', '请对以下文本进行润色，使其更加流畅、专业。保持原意不变。只输出润色结果。', 0, 1),
+    (6, 1, '摘要', 'file-text', 'ai', '请用简洁的中文总结以下内容的要点，不超过 3 句话。只输出总结。', 1, 1),
+    (7, 1, '解释', 'lightbulb', 'ai', '请用简洁的中文解释以下内容的含义。只输出解释。', 2, 1);
+
+-- 种子：搜索子菜单（parent_id=3）
+INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
+    (8, 3, 'Google', 'search', 'url', 'https://www.google.com/search?q={text}', 0, 1),
+    (9, 3, '百度',   'search', 'url', 'https://www.baidu.com/s?wd={text}', 1, 1),
+    (10, 3, 'Bing',  'search', 'url', 'https://www.bing.com/search?q={text}', 2, 1);

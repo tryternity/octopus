@@ -164,34 +164,39 @@ where
 /// INIT_SQL 全部为 CREATE TABLE IF NOT EXISTS + INSERT OR IGNORE，幂等。
 /// schema 变更流程：改 db.sql + 升下方 user_version 数值，勿新增 ALTER 迁移分支。
 /// 开发期无历史库需兼容（用户确认），故不保留 v1-v16 迁移/DROP 兜底。
-/// v18：新增 FTS5 backfill（历史行补入索引），搜索走 MATCH。
+/// v18：FTS5 backfill（历史行补入索引），搜索走 MATCH。
+/// v19：新增 action_bar_items 表（db.sql IF NOT EXISTS 自动创建）。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 18 {
+    if v >= 19 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
         // v17→v18：backfill FTS5 索引——触发器（clip_fts_ai）仅维护建表后的新行，
         // 历史 voice 行（建表前已有或从旧 schema 迁移来的）不在索引中，需一次性回填。
         // 幂等：NOT IN 排除已索引行；空文本不索引（与触发器行为一致）。
-        conn.execute_batch(
-            "INSERT INTO clipboard_history_fts(rowid, content)
-             SELECT id, content FROM clipboard_history
-             WHERE content != ''
-               AND id NOT IN (SELECT rowid FROM clipboard_history_fts)"
-        ).context("FTS5 backfill")?;
-        conn.execute("PRAGMA user_version = 18", [])?;
-        log::info!("FTS5 backfill 完成 (v17→v18)");
+        if v < 18 {
+            conn.execute_batch(
+                "INSERT INTO clipboard_history_fts(rowid, content)
+                 SELECT id, content FROM clipboard_history
+                 WHERE content != ''
+                   AND id NOT IN (SELECT rowid FROM clipboard_history_fts)"
+            ).context("FTS5 backfill")?;
+        }
+        // v18→v19：action_bar_items 表由 db.sql 的 IF NOT EXISTS 自动创建，重跑 INIT_SQL 幂等
+        conn.execute_batch(INIT_SQL).ok();
+        conn.execute("PRAGMA user_version = 19", [])?;
+        log::info!("schema upgraded to v19 (action_bar_items)");
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 18", [])?;
-    log::info!("DB initialized (v18): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 19", [])?;
+    log::info!("DB initialized (v19): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -825,6 +830,196 @@ pub fn save_active_prompt_id(id: i64) -> Result<()> {
     save_config_key("active_polish_prompt", &id.to_string())
 }
 
+// ── Action Bar 菜单项 ──
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ActionBarItem {
+    pub id: i64,
+    pub parent_id: Option<i64>,
+    pub title: String,
+    pub icon: String,
+    pub action_type: String,
+    pub action_data: String,
+    pub sort_order: i64,
+    pub is_system: bool,
+    pub is_enabled: bool,
+}
+
+const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled";
+
+fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem> {
+    Ok(ActionBarItem {
+        id: row.get(0)?,
+        parent_id: row.get(1)?,
+        title: row.get(2)?,
+        icon: row.get(3)?,
+        action_type: row.get(4)?,
+        action_data: row.get(5)?,
+        sort_order: row.get(6)?,
+        is_system: row.get::<_, i32>(7)? != 0,
+        is_enabled: row.get::<_, i32>(8)? != 0,
+    })
+}
+
+/// 浮窗用——只返回 is_enabled=1 的项。
+pub fn list_action_bar_items() -> Result<Vec<ActionBarItem>> {
+    with_db(list_action_bar_items_at)
+}
+
+fn list_action_bar_items_at(conn: &Connection) -> Result<Vec<ActionBarItem>> {
+    let mut stmt = conn.prepare(
+        &format!(
+            "SELECT {} FROM action_bar_items WHERE is_enabled=1 ORDER BY parent_id IS NOT NULL, parent_id ASC, sort_order ASC",
+            ACTION_BAR_SELECT_COLS
+        )
+    )?;
+    let rows = stmt.query_map([], row_to_action_bar_item)?;
+    let mut list = Vec::new();
+    for r in rows { list.push(r?); }
+    Ok(list)
+}
+
+/// 设置页用——返回全部项（含禁用的）。
+pub fn list_all_action_bar_items() -> Result<Vec<ActionBarItem>> {
+    with_db(list_all_action_bar_items_at)
+}
+
+fn list_all_action_bar_items_at(conn: &Connection) -> Result<Vec<ActionBarItem>> {
+    let mut stmt = conn.prepare(
+        &format!(
+            "SELECT {} FROM action_bar_items ORDER BY parent_id IS NOT NULL, parent_id ASC, sort_order ASC",
+            ACTION_BAR_SELECT_COLS
+        )
+    )?;
+    let rows = stmt.query_map([], row_to_action_bar_item)?;
+    let mut list = Vec::new();
+    for r in rows { list.push(r?); }
+    Ok(list)
+}
+
+pub fn load_action_bar_item(id: i64) -> Result<Option<ActionBarItem>> {
+    with_db(|conn| load_action_bar_item_at(conn, id))
+}
+
+fn load_action_bar_item_at(conn: &Connection, id: i64) -> Result<Option<ActionBarItem>> {
+    let mut stmt = conn.prepare(
+        &format!("SELECT {} FROM action_bar_items WHERE id=?1", ACTION_BAR_SELECT_COLS)
+    )?;
+    let mut rows = stmt.query_map(params![id], row_to_action_bar_item)?;
+    match rows.next() {
+        Some(r) => Ok(Some(r?)),
+        None => Ok(None),
+    }
+}
+
+pub fn insert_action_bar_item(
+    parent_id: Option<i64>,
+    title: &str,
+    icon: &str,
+    action_type: &str,
+    action_data: &str,
+) -> Result<i64> {
+    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data))
+}
+
+fn insert_action_bar_item_at(
+    conn: &Connection,
+    parent_id: Option<i64>,
+    title: &str,
+    icon: &str,
+    action_type: &str,
+    action_data: &str,
+) -> Result<i64> {
+    let max_order: i64 = conn.query_row(
+        "SELECT COALESCE(MAX(sort_order), -1) FROM action_bar_items WHERE parent_id IS ?1",
+        params![parent_id],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1)",
+        params![parent_id, title, icon, action_type, action_data, max_order + 1],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+pub fn update_action_bar_item(
+    id: i64,
+    title: &str,
+    icon: &str,
+    action_type: &str,
+    action_data: &str,
+    is_enabled: bool,
+) -> Result<()> {
+    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled))
+}
+
+fn update_action_bar_item_at(
+    conn: &Connection,
+    id: i64,
+    title: &str,
+    icon: &str,
+    action_type: &str,
+    action_data: &str,
+    is_enabled: bool,
+) -> Result<()> {
+    let row = load_action_bar_item_at(conn, id)?.context("菜单项不存在")?;
+    if row.is_system && row.action_type != action_type {
+        anyhow::bail!("系统内置菜单项不可更改动作类型");
+    }
+    conn.execute(
+        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, updated_at=datetime('now') WHERE id=?6",
+        params![title, icon, action_type, action_data, is_enabled as i32, id],
+    )?;
+    Ok(())
+}
+
+pub fn delete_action_bar_item(id: i64) -> Result<()> {
+    with_db(|conn| delete_action_bar_item_at(conn, id))
+}
+
+fn delete_action_bar_item_at(conn: &Connection, id: i64) -> Result<()> {
+    let is_system: i32 = conn.query_row(
+        "SELECT is_system FROM action_bar_items WHERE id=?1", params![id], |r| r.get(0)
+    ).context("菜单项不存在")?;
+    if is_system != 0 {
+        anyhow::bail!("系统内置菜单项不可删除");
+    }
+    conn.execute("DELETE FROM action_bar_items WHERE id=?1 OR parent_id=?1", params![id])?;
+    Ok(())
+}
+
+/// direction < 0 = 上移，> 0 = 下移。交换同 parent 下相邻项的 sort_order。
+pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()> {
+    with_db(|conn| move_action_bar_item_at(conn, id, direction))
+}
+
+fn move_action_bar_item_at(conn: &Connection, id: i64, direction: i32) -> Result<()> {
+    let row = load_action_bar_item_at(conn, id)?.context("菜单项不存在")?;
+
+    let neighbor_id: Option<i64> = if direction < 0 {
+        conn.query_row(
+            "SELECT id FROM action_bar_items WHERE parent_id IS ?1 AND sort_order < ?2 ORDER BY sort_order DESC LIMIT 1",
+            params![row.parent_id, row.sort_order],
+            |r| r.get(0),
+        ).ok()
+    } else {
+        conn.query_row(
+            "SELECT id FROM action_bar_items WHERE parent_id IS ?1 AND sort_order > ?2 ORDER BY sort_order ASC LIMIT 1",
+            params![row.parent_id, row.sort_order],
+            |r| r.get(0),
+        ).ok()
+    };
+
+    if let Some(nid) = neighbor_id {
+        let neighbor = load_action_bar_item_at(conn, nid)?.context("相邻项不存在")?;
+        conn.execute("UPDATE action_bar_items SET sort_order=?1 WHERE id=?2", params![neighbor.sort_order, id])?;
+        conn.execute("UPDATE action_bar_items SET sort_order=?1 WHERE id=?2", params![row.sort_order, nid])?;
+    }
+    Ok(())
+}
+
 // ── 识别历史写入（desktop coordinator 用）──
 
 /// 首次有 ASR 文本时插入（应用写入毫秒戳 id）。
@@ -1215,36 +1410,36 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v18() {
+    fn init_schema_fresh_db_builds_v19() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 18, "全新库 init_schema 后应到 v18");
-        // 五张核心表都已建好
+        assert_eq!(v, 19, "全新库 init_schema 后应到 v19");
+        // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM sqlite_master WHERE type='table'
-                 AND name IN ('models','prompts','app_config','clipboard_history','image_data')",
+                 AND name IN ('models','prompts','app_config','clipboard_history','image_data','action_bar_items')",
                 [],
                 |r| r.get(0),
             )
             .unwrap();
-        assert_eq!(n, 5, "五张核心表都应建好");
+        assert_eq!(n, 6, "六张核心表都应建好");
     }
 
     #[test]
-    fn init_schema_v18_is_noop() {
-        // 已是 v18 的库再调 init_schema 应早退（不重跑、不报错）
+    fn init_schema_v19_is_noop() {
+        // 已是 v19 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 18", []).unwrap();
+        conn.execute("PRAGMA user_version = 19", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 18);
+        assert_eq!(v, 19);
     }
 
     #[test]
@@ -2013,5 +2208,46 @@ mod tests {
         assert_eq!(escape_fts5_match("会议纪要"), "\"会议纪要\"");
         assert_eq!(escape_fts5_match("a\"b"), "\"a\"\"b\"");
         assert_eq!(escape_fts5_match("AND"), "\"AND\"");
+    }
+
+    #[test]
+    fn action_bar_items_seed_has_10_items() {
+        let conn = open_init();
+        let items = list_all_action_bar_items_at(&conn).unwrap();
+        assert!(items.len() >= 10, "expected >=10 seed items, got {}", items.len());
+    }
+
+    #[test]
+    fn action_bar_items_list_enabled_filters_disabled() {
+        let conn = open_init();
+        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "copy", "").unwrap();
+        update_action_bar_item_at(&conn, id, "测试禁用", "test", "copy", "", false).unwrap();
+        let enabled = list_action_bar_items_at(&conn).unwrap();
+        assert!(!enabled.iter().any(|i| i.id == id));
+        let all = list_all_action_bar_items_at(&conn).unwrap();
+        assert!(all.iter().any(|i| i.id == id));
+        delete_action_bar_item_at(&conn, id).unwrap();
+    }
+
+    #[test]
+    fn action_bar_items_system_item_cannot_delete() {
+        let conn = open_init();
+        let result = delete_action_bar_item_at(&conn, 1);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn action_bar_items_move_swaps_order() {
+        let conn = open_init();
+        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "copy", "").unwrap();
+        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "copy", "").unwrap();
+        let a_before = load_action_bar_item_at(&conn, id_a).unwrap().unwrap();
+        let b_before = load_action_bar_item_at(&conn, id_b).unwrap().unwrap();
+        assert!(a_before.sort_order < b_before.sort_order);
+        move_action_bar_item_at(&conn, id_a, 1).unwrap();
+        let a_after = load_action_bar_item_at(&conn, id_a).unwrap().unwrap();
+        assert_eq!(a_after.sort_order, b_before.sort_order);
+        delete_action_bar_item_at(&conn, id_a).unwrap();
+        delete_action_bar_item_at(&conn, id_b).unwrap();
     }
 }
