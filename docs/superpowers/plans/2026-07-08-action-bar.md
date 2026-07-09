@@ -13,7 +13,7 @@
 - **trigger 后台线程**：模拟 Cmd+C 后有 200ms sleep——不能在主线程（阻塞事件循环 → 窗口无焦点 → Esc/按钮无响应）。必须 `std::thread::spawn`。
 - **trigger 重入 guard**：`TRIGGER_IN_PROGRESS: AtomicBool` 防热键连按 → 第二次 trigger 覆盖 `HIDDEN_REGULAR_WINDOWS` → 常规窗口永久丢失。所有出口通过 `finalize_action_bar` 重置。
 - **NSWindow 操作必须在主线程**：`show_action_bar_window` 涉及 `set_position/show/set_focus`，必须用 `app.run_on_main_thread()` 执行，不能用 `tauri::async_runtime::spawn`（tokio worker 线程）。
-- **剪贴板生命周期**：`finalize_action_bar(app, restore_clipboard)` 统一收口——dismiss/open_url/早返回恢复原始剪贴板（Cmd+C 污染还原），AI 结果路径不恢复（结果留给用户）。
+- **剪贴板生命周期**：trigger 阶段 suppress_next → Cmd+C → 读选中 → 立即 write_text 恢复原始剪贴板（两次写入都 suppress watcher，选中文本不入库）。选中文本存在 `PENDING_CONTEXT` 变量供后续操作，不再依赖 `CLIPBOARD_BACKUP` 延迟恢复。
 - **mousedown capture 陷阱**：`addEventListener("mousedown", fn, true)` 的 capture 模式在 `onClick` 之前触发 → 按钮点击被拦截。外部点击检测用 `click` 事件冒泡阶段（`false`）。
 - **常规窗口隐藏**：全局热键触发浮窗前必须隐藏 settings/compact_editor（Regular 激活策略下 app 被激活会把所有可见窗口带到前台）。
 - **平台限制**：action bar 仅 macOS 可用（依赖 CGEvent 鼠标坐标 + osascript 模拟 Cmd+C）。非 macOS `trigger_action_bar` 直接 return + warn。
@@ -76,11 +76,11 @@
 | # | 优先级 | 说明 |
 |------|--------|------|
 | 31 | P0-1 | **system_prompt 全局污染**——`run_ai_action` 不再用 `set_system_prompt`/`polish`（会污染并发 ASR 润色）。新增 `octopus_llm::chat_text_with_prompt(system, user, config)`，action bar 走参数注入，不碰全局。 |
-| 32 | P0-2 | **dismiss/open_url/早返回不恢复剪贴板**——新增 `finalize_action_bar(app, restore_clipboard)` 统一收口所有出口：恢复常规窗口 + 按需恢复剪贴板 + 重置重入 guard。 |
+| 32 | P0-2 | **dismiss/open_url/早返回不恢复剪贴板**——新增 `finalize_action_bar` 统一收口。后改为 trigger 阶段即时恢复 + suppress watcher，彻底移除 `CLIPBOARD_BACKUP`。 |
 | 33 | P0-3 | **trigger 重入丢失 HIDDEN_REGULAR_WINDOWS**——`TRIGGER_IN_PROGRESS: AtomicBool` guard，热键连按时第二次直接跳过。 |
 | 34 | P1-4 | **AI 超时后结果仍弹出**——前端 `timedOutRef`，`await invoke` resolve 后先判 ref，已超时则丢弃（不调 show_result）。 |
 | 35 | P1-5 | **搜索引擎配置死代码**——`searchEngineRef` 现在实际生效：进入搜索子菜单时预选用户配置的引擎（`subSelectedIdx` 初始值）。 |
-| 36 | P1-6 | **AI 结果剪贴板 500ms 被覆盖**——`show_result` 路径 `finalize_action_bar(app, false)` 不恢复剪贴板（结果留给用户）。删除 500ms sleep 线程。 |
+| 36 | P1-6 | **AI 结果剪贴板 500ms 被覆盖**——trigger 阶段即时恢复剪贴板，删除延迟恢复线程。AI 结果通过 `write_text` 写入（自带 suppress 不入库）。 |
 | 37 | P2-7 | **透明窗口点击穿透**——窗口高度 200→82px（主菜单 38 + 子菜单 38 + 边框），缩小透明点击区。 |
 | 38 | P2-8 | **show 在 tokio worker 线程操作 NSWindow**——改用 `app.run_on_main_thread()` 执行 `show_action_bar_window`。 |
 | 39 | P2-9 | **非 macOS 硬编码/空实现**——`trigger_action_bar` 非 macOS 直接 `return` + warn log，不再静默走到错误坐标。 |
