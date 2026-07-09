@@ -23,6 +23,7 @@ const LFR_WINDOW_SIZE: usize = 7;
 const LFR_WINDOW_SHIFT: usize = 6;
 
 static HAMMING_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| feature::hamming_window(FBANK_FRAME_LEN));
+pub(crate) static POVEY_WINDOW: Lazy<Vec<f32>> = Lazy::new(|| feature::povey_window(FBANK_FRAME_LEN));
 static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| {
     // C1 修复：改用 mel 空间 filterbank 权重（对齐 paraformer / kaldi_native_fbank）
     feature::mel_filterbank(FBANK_NUM_BINS, FBANK_FFT_SIZE, FBANK_SAMPLE_RATE, FBANK_SAMPLE_RATE as f64 / 2.0)
@@ -31,23 +32,25 @@ static MEL_FILTERBANK: Lazy<Vec<Vec<f64>>> = Lazy::new(|| {
 /// 80-bin log-fbank + LFR(m=7/n=6) → [T,560]（原版 SenseVoice 用）。
 pub(crate) fn compute_fbank_features(samples: &[f32]) -> Result<Array2<f32>> {
     let scaled: Vec<f32> = samples.iter().map(|&s| s * 32768.0).collect();
-    let fbank = compute_fbank(&scaled, 0.97)?;
+    let fbank = compute_fbank(&scaled, &HAMMING_WINDOW, 0.97)?;
     let lfr = feature::apply_lfr(&fbank, LFR_WINDOW_SIZE, LFR_WINDOW_SHIFT);
     Ok(lfr)
 }
 
-/// 纯 80-bin log-fbank（frame_len=400 / shift=160 / hamming 窗，无 LFR）。FireRed 等用。
+/// 纯 80-bin log-fbank（frame_len=400 / shift=160，无 LFR）。SenseVoice / FireRed 共用。
 ///
-/// `preemph_coeff` — 预加重系数。SenseVoice 传 0.97（对齐 kaldi_native_fbank 默认）；
-/// FireRed 训练 preemph 配置未确认，传 0.0 保持旧行为（仅跳过 pre-emphasis）。
+/// `window` — 窗函数：SenseVoice 用 hamming，FireRed 用 povey（对齐各自训练配置）。
+/// `preemph_coeff` — 预加重系数：两者均 0.97（对齐 kaldi_native_fbank 默认）。
 ///
-/// DC offset removal 始终执行（knf 默认 `remove_dc_offset=true`；fbank 常量注释自称
-/// "matching kaldi_native_fbank defaults"，此前缺此步是遗漏）。
+/// DC offset removal 始终执行（knf 默认 `remove_dc_offset=true`）。
 ///
 /// 2026-07-09 审查修复：此前缺 DC offset removal + pre-emphasis，与 paraformer.rs /
-/// kaldi_native_fbank 默认不一致——SenseVoice 的 am.mvn 基于含这两步的特征统计，
-/// 推理缺它们 → 特征分布偏移 → 真实音频乱码（合成音频落在模型鲁棒区侥幸通过）。
-pub(crate) fn compute_fbank(samples: &[f32], preemph_coeff: f32) -> Result<Array2<f32>> {
+/// kaldi_native_fbank 默认不一致——模型特征统计基于含这些步骤的输入，推理缺它们
+/// → 特征分布偏移 → 真实音频乱码（合成音频落在模型鲁棒区侥幸通过）。
+/// FireRed 配置 2026-07-09 经 FireRedTeam/FireRedASR `data/asr_feat.py` 确认（knf 默认
+/// preemph=0.97 / povey 窗，asr_feat.py 仅覆盖 dither/num_bins/snip_edges），由旧行为
+/// preemph=0.0+hamming 改为 0.97+povey 对齐训练。
+pub(crate) fn compute_fbank(samples: &[f32], window: &[f32], preemph_coeff: f32) -> Result<Array2<f32>> {
     let n_frames = if samples.len() >= FBANK_FRAME_LEN {
         (samples.len() - FBANK_FRAME_LEN) / FBANK_FRAME_SHIFT + 1
     } else {
@@ -100,7 +103,7 @@ pub(crate) fn compute_fbank(samples: &[f32], preemph_coeff: f32) -> Result<Array
         // 4. 加窗 + FFT
         for j in 0..FBANK_FFT_SIZE {
             let s = if j < FBANK_FRAME_LEN {
-                frame_buf[j] * HAMMING_WINDOW[j]
+                frame_buf[j] * window[j]
             } else {
                 0.0
             };

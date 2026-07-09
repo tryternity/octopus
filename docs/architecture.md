@@ -46,7 +46,7 @@ ASR 推理的核心库，所有上层组件都依赖它。
 | `qwen3_asr` | Qwen3-ASR 离线识别 |
 | `zipformer` | Zipformer 离线识别 |
 | `moonshine` | Moonshine 离线识别（纯 ONNX 4-session 流水线：preprocess → encode → uncached_decode → cached_decode 循环 + KV cache；英语） |
-| `firered` | FireRedASR2-AED CTC 离线识别（小红书 FireRedTeam；单 ONNX `model.int8.onnx`(740M) + `tokens.txt`(vocab=8667)；encoder+CTC branch 导出、弃 attention decoder；80-bin fbank 复用 `fbank::compute_fbank`（无 LFR，含 DC offset；pre-emphasis=0.0 保持旧行为待训练配置确认）+ CMVN 从 ONNX metadata `cmvn_mean`/`cmvn_inv_stddev` 读、公式 `(fbank-mean)*inv_std`；greedy CTC blank=0；中文+20方言+英） |
+| `firered` | FireRedASR2-AED CTC 离线识别（小红书 FireRedTeam；单 ONNX `model.int8.onnx`(740M) + `tokens.txt`(vocab=8667)；encoder+CTC branch 导出、弃 attention decoder；80-bin fbank 复用 `fbank::compute_fbank`（无 LFR，含 DC offset + pre-emphasis 0.97 + povey 窗，对齐 FireRedASR 训练 knf 默认——2026-07-09 经 `data/asr_feat.py` 确认）+ CMVN 从 ONNX metadata `cmvn_mean`/`cmvn_inv_stddev` 读、公式 `(fbank-mean)*inv_std`；greedy CTC blank=0；中文+20方言+英） |
 | `streaming_paraformer` | Paraformer 流式识别（增量式 fbank: povey 窗 + DC offset + pre-emphasis + 跨帧状态） |
 | `streaming_zipformer` | Zipformer 流式识别 |
 | `corrector` | 基于拼音映射和 Bigram 转移概率的轻量级中文拼音纠错与热词校正 |

@@ -3,7 +3,7 @@ use ort::session::Session;
 use parking_lot::Mutex;
 
 use crate::config;
-use crate::fbank::compute_fbank;
+use crate::fbank::{compute_fbank, POVEY_WINDOW};
 
 /// FireRedASR2 CTC 引擎 —— FireRedASR2-AED 的 encoder + CTC branch 导出（attention decoder 弃用）。
 ///
@@ -91,11 +91,12 @@ impl FireRedEngine {
 
 impl crate::engine::OfflineAsrEngine for FireRedEngine {
     fn transcribe(&self, samples: &[f32], _language: &str) -> Result<String> {
-        // 80-bin fbank（复用 sensevoice；含 *32768 预处理，无 LFR）。
+        // 80-bin fbank（含 *32768 预处理，无 LFR）。
+        // FireRedASR 训练用 kaldi_native_fbank 默认（FireRedTeam/FireRedASR data/asr_feat.py
+        // 仅覆盖 dither/num_bins/snip_edges）：preemph=0.97 + povey 窗 + DC offset。
+        // 2026-07-09 确认对齐（此前 preemph=0.0+hamming 是未确认时的保守旧行为）。
         let scaled: Vec<f32> = samples.iter().map(|&s| s * 32768.0).collect();
-        // preemph=0.0：FireRed 训练 preemph 配置未确认，保持旧行为待独立验证
-        // （DC offset removal 仍生效——knf 默认 remove_dc_offset=true）。
-        let mut features = compute_fbank(&scaled, 0.0)?;
+        let mut features = compute_fbank(&scaled, &POVEY_WINDOW, 0.97)?;
         let (n_frames, feat_dim) = (features.nrows(), features.ncols());
 
         // CMVN：(fbank - mean) * inv_std（逐维；feat_dim=80 与 metadata 维度对齐）。

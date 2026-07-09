@@ -42,7 +42,7 @@ VadSegmentedPipeline 把「整段输入」的离线引擎包装成「边录边�
 | `VAD_PREROLL_FRAMES` | `10`（预滚静音帧数，LSTM 预热） |
 | `compute_speech_chunks(vad, samples)` | 512 样本/帧切片，`vad.compute` 得 prob≥0.5 计一帧；计算失败保守计一帧（L301） |
 | `vad_preroll(vad)` | 喂 10 帧静音预热 LSTM，避免首几帧误判静音丢字 |
-| `filter_speech_from_buffer(filter_vad, samples)` | **先 `reset()`** → `audio::filter_speech(samples, filter_vad, 480, 0.5)` 抠语音 |
+| `filter_speech_from_buffer(filter_vad, samples)` | **先 `reset()`+`preroll()`**（与 detect_vad 对称，2026-07-09 补 preroll）→ `audio::filter_speech(samples, filter_vad, 480, 0.5)` 抠语音 |
 
 ---
 
@@ -69,7 +69,7 @@ samples 非空：
 （恒）drain_rx_and_consume(transcript) → 回填连续 seq，返回是否文本变化
 ```
 
-**spawn + 乱序回填**：`spawn_offline`（L390）异步 `engine.transcribe` → 发 `SegmentResult{seq,text}` 到 mpsc tx。`drain_rx_and_consume`（L415）`try_recv` 至空 → `apply_segment_result` 按 seq 缓存到 `completed_results: HashMap<seq,String>` → `consume_completed_results_vad` 消费连续 seq 追加 transcript。乱序不丢、不阻塞。
+**spawn + 乱序回填**：`spawn_offline`（L390）异步 `engine.transcribe` → 发 `SegmentResult{seq,text}` 到 mpsc tx。闭包持 `SendOnDrop` guard：正常 send 后置 `done=true`；若 task panic（unwind）则 guard Drop 发 Err sentinel，保 `active_count` 归零（防 coordinator `WaitingCompletion` 永挂，2026-07-09 审查防御）。`drain_rx_and_consume`（L415）`try_recv` 至空 → `apply_segment_result` 按 seq 缓存到 `completed_results: HashMap<seq,String>` → `consume_completed_results_vad` 消费连续 seq 追加 transcript。乱序不丢、不阻塞。
 
 **事件流**（`tick` L497，包 `run_tick`）：文本变化 → `[PersistRaw{vad_segmented}, Emit]`；段切（有语音）→ 追加 `[Polish{INFINITY}]`（段边界 silence 必过，触发停顿润色）；`speaking` 变化 → `[Speaking]`（`has_speech && silence_duration<0.3`）。
 
@@ -102,8 +102,8 @@ drain_rx_and_consume(transcript)
 **② force_cut 解绑 has_speech**
 `force_cut = buffer_duration_s >= SEGMENT_DURATION_S`，不带 `&& has_speech`。达 20s 上限必切，由 `filter_vad`（每段 reset、不漂移）独立兜底判定有无语音：检出则 spawn（双 VAD 保险），未检出则不 spawn 但 buffer 已清（防内存堆积）。`silence_cut` 保留 `&& has_speech`（原意：检测到停顿才切）。
 
-**③ filter_vad 每段 reset**
-`filter_speech_from_buffer` L322 每段先 `reset()`，LSTM 不跨段累积，是②的可信兜底来源。
+**③ filter_vad 每段 reset+preroll**
+`filter_speech_from_buffer` 每段先 `reset()`+`vad_preroll()`（与 detect_vad §5① 对称，2026-07-09 补 preroll），LSTM 不跨段累积，是②的可信兜底来源。
 
 **④ 会话级复用 `reset()` 当前未启用**
 `reset()`（L535，`#[allow(dead_code)]`）清全部状态 + 双 VAD reset，供未来会话间复用 pipeline。当前 coordinator stage 切换时直接 drop pipeline 重建（不调 reset）。

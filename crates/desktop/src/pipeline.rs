@@ -54,6 +54,28 @@ pub(crate) struct SegmentResult {
     pub text: Result<String, String>,
 }
 
+/// `spawn_offline` 的 panic/abort 兜底（2026-07-09 审查防御）：
+/// spawned 识别 task 若 panic（unwind），闭包内 `tx.send` 不会执行 → active_count 永不归零
+/// → coordinator `WaitingCompletion` 永挂。此 guard 持 tx clone，Drop 时若未 `done` 则发 Err sentinel，
+/// Rust 保证 panic unwind 时局部变量 drop，故 sentinel 必发、active_count 必归零。
+/// profile 为 panic=unwind（托盘 app 需存活）；若改 panic=abort 则进程直接崩，无需此守卫。
+struct SendOnDrop {
+    tx: std::sync::mpsc::Sender<SegmentResult>,
+    seq: u64,
+    done: bool,
+}
+
+impl Drop for SendOnDrop {
+    fn drop(&mut self) {
+        if !self.done {
+            let _ = self.tx.send(SegmentResult {
+                seq: self.seq,
+                text: Err("spawned transcription task aborted/panicked".into()),
+            });
+        }
+    }
+}
+
 /// 把一条段结果回填进缓存 + 递减 active_count（纯逻辑，2c-3）。
 ///
 /// 空串/失败占位空串（保 `completed_seq` 连续推进，避免后续有效段积压丢失）。
@@ -316,10 +338,13 @@ pub(crate) fn vad_preroll(vad: &mut SileroVad) {
     }
 }
 
-/// 对缓冲区音频做 VAD 过滤（搬迁自 coordinator.rs:1495，零改动）。
-/// 用独立 `filter_vad`（与检测流分离），过滤前 reset() 归零 LSTM 状态（等价旧代码每 buffer 新建 VAD）。
+/// 对缓冲区音频做 VAD 过滤（搬迁自 coordinator.rs:1495）。
+/// 用独立 `filter_vad`（与检测流分离），过滤前 reset()+preroll 归零并预热 LSTM
+///（与 detect_vad 对称——2026-07-09 审查补 preroll：冷启动段首几帧 prob 偏低，filter_speech
+/// 的 first_active 可能偏后丢音头；preroll 喂静音让 LSTM 进入静音稳态，改善首帧响应）。
 fn filter_speech_from_buffer(filter_vad: &mut SileroVad, samples: &[f32]) -> Vec<f32> {
     filter_vad.reset();
+    vad_preroll(filter_vad);
     let speech = octopus_asr_local::audio::filter_speech(samples, filter_vad, 480, 0.5);
     if speech.is_empty() {
         log::debug!("VadSegmented: no speech detected in buffer");
@@ -396,6 +421,8 @@ impl VadSegmentedPipeline {
         let _duration = samples_len as f64 / 16000.0;
         tauri::async_runtime::spawn(async move {
             let start = std::time::Instant::now();
+            // guard：panic unwind 时 Drop 发 Err sentinel，保 active_count 归零（防 WaitingCompletion 永挂）。
+            let mut guard = SendOnDrop { tx, seq, done: false };
             let result = engine.transcribe(&speech_samples, &language, &asr_engine).await;
             let _elapsed = start.elapsed();
             // log::info!(
@@ -403,10 +430,11 @@ impl VadSegmentedPipeline {
             //     seq, elapsed.as_secs_f64(), duration,
             //     elapsed.as_secs_f64() / duration.max(0.001)
             // );
-            let _ = tx.send(SegmentResult {
-                seq,
+            let _ = guard.tx.send(SegmentResult {
+                seq: guard.seq,
                 text: result.map_err(|e| e.to_string()),
             });
+            guard.done = true;
         });
     }
 
@@ -757,7 +785,7 @@ mod tests {
 
     // ── VadSegmentedPipeline 纯逻辑（2c-3）──
 
-    use super::{apply_segment_result, consume_completed_results_vad, SegmentResult};
+    use super::{apply_segment_result, consume_completed_results_vad, SegmentResult, SendOnDrop};
     use std::collections::HashMap;
 
     #[test]
@@ -791,6 +819,28 @@ mod tests {
         });
         assert_eq!(results.get(&0).map(String::as_str), Some(""));
         assert_eq!(active, 1);
+    }
+
+    #[test]
+    fn send_on_drop_sends_sentinel_when_not_done() {
+        // 模拟 panic：guard 在 done=false 时 drop → 发 Err sentinel（保 active_count 归零）
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let _g = SendOnDrop { tx, seq: 42, done: false };
+        }
+        let seg = rx.try_recv().expect("Drop 应发 sentinel");
+        assert_eq!(seg.seq, 42);
+        assert!(seg.text.is_err(), "sentinel 应为 Err");
+    }
+
+    #[test]
+    fn send_on_drop_silent_when_done() {
+        let (tx, rx) = std::sync::mpsc::channel();
+        {
+            let mut g = SendOnDrop { tx, seq: 7, done: false };
+            g.done = true;
+        }
+        assert!(rx.try_recv().is_err(), "done=true 时不应发 sentinel");
     }
 
     #[test]
