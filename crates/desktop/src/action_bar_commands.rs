@@ -144,51 +144,6 @@ pub fn action_bar_get_context() -> Option<ActionBarContext> {
     PENDING_CONTEXT.lock().unwrap().take()
 }
 
-/// 执行 AI 动作（润色/摘要/解释/翻译）。
-#[tauri::command]
-pub async fn run_ai_action(action: String, text: String) -> Result<String, String> {
-    let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-    let llm_config = crate::config::llm_config_ignore_mode(&config)
-        .ok_or("润色模型未配置，请在设置中配置 LLM")?;
-
-    let (system_prompt, user_prompt) = match action.as_str() {
-        "polish" => (
-            "请对以下文本进行润色，使其更加流畅、专业。保持原意不变。只输出润色结果。",
-            text.clone(),
-        ),
-        "summarize" => (
-            "请用简洁的中文总结以下内容的要点，不超过 3 句话。只输出总结。",
-            text.clone(),
-        ),
-        "explain" => (
-            "请用简洁的中文解释以下内容的含义。只输出解释。",
-            text.clone(),
-        ),
-        "translate" => {
-            let has_cjk = text.chars().any(|c| {
-                matches!(c as u32, 0x4e00..=0x9fff | 0x3040..=0x30ff | 0xac00..=0xd7af)
-            });
-            if has_cjk {
-                (
-                    "Please translate the following text into English. Only output the translation.",
-                    text.clone(),
-                )
-            } else {
-                (
-                    "请将以下文本翻译成中文。只输出翻译结果。",
-                    text.clone(),
-                )
-            }
-        }
-        _ => return Err(format!("未知动作: {}", action)),
-    };
-
-    let result = octopus_llm::chat_text_with_prompt(system_prompt, &user_prompt, &llm_config)
-        .map_err(|e| e.to_string())?;
-
-    Ok(result)
-}
-
 /// 前端隐藏浮窗时调用——恢复被隐藏的常规窗口。
 #[tauri::command]
 pub fn action_bar_dismiss(app: AppHandle) {
@@ -231,25 +186,6 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
     } else {
         crate::compact_editor_commands::store_pending_temp_tab(display_text, "temp");
         crate::compact_editor_window::create_compact_editor_window(&app, None);
-    }
-}
-
-/// 用系统浏览器打开 URL + 隐藏浮窗 + 恢复常规窗口。
-#[tauri::command]
-pub fn action_bar_open_url(url: String, app: AppHandle) {
-    hide_action_bar_window(&app);
-    finalize_action_bar(&app);
-    #[cfg(target_os = "macos")]
-    {
-        let _ = std::process::Command::new("open").arg(&url).spawn();
-    }
-    #[cfg(target_os = "windows")]
-    {
-        let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn();
-    }
-    #[cfg(target_os = "linux")]
-    {
-        let _ = std::process::Command::new("xdg-open").arg(&url).spawn();
     }
 }
 

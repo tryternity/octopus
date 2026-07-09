@@ -1,6 +1,6 @@
 # Action Bar 菜单数据库化设计
 
-> **状态**：已确认设计，待写实施计划
+> **状态**：已实现（Task 1-6 全部完成）
 > **日期**：2026-07-09
 > **scope**：将 action bar 硬编码菜单迁移为 DB 表管理，支持两级菜单（主菜单 + 子菜单）+ 6 种动作类型 + 用户自定义扩展
 > **调研依据**：[`2026-07-08-popclip-survey.md`](./2026-07-08-popclip-survey.md)（PopClip/SnipDo/OnText/Click to Do 调研）

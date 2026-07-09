@@ -1,6 +1,6 @@
-# Action Bar 菜单数据库化 — 实施计划
+# Action Bar 菜单数据库化 — 实施记录
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> plan 是实施记录，非一次性待办。以下为实际执行过程中的全部提交和偏差回写。
 
 **Goal:** 将 action bar 硬编码菜单迁移为 DB 表管理，支持两级菜单 + 5 种动作类型（submenu/ai/url/script/copy）+ 设置页 CRUD。
 
