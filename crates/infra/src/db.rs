@@ -1048,6 +1048,23 @@ pub fn list_active_hotword_words() -> Result<Vec<String>> {
     })
 }
 
+/// 取最近 limit 条 ASR/文本记录的 content（挖掘候选用）。
+pub fn list_recent_text(limit: i64) -> Result<Vec<String>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT content FROM clipboard_history
+             WHERE item_type IN ('voice','text','ocr') AND content IS NOT NULL AND content != ''
+             ORDER BY id DESC LIMIT ?1",
+        )?;
+        let rows = stmt.query_map(params![limit], |r| r.get::<_, String>(0))?;
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    })
+}
+
 pub fn insert_hotword(word: &str, source: &str, status: &str) -> Result<i64> {
     with_db(|conn| insert_hotword_at(conn, word, source, status))
 }

@@ -312,6 +312,13 @@ pub fn get_corrector() -> &'static LightCorrector {
     CORRECTOR.get_or_init(LightCorrector::new)
 }
 
+/// 词是否在语言模型常用词表内（miner 过滤常用词候选用）。
+/// unigram_scores 含通用语料高频词；专名/低频词不在表内 → 返回 false（保留为候选）。
+/// 首调触发 corrector 初始化（加载 unigram/bigram 数据，一次性）。
+pub fn is_common_word(word: &str) -> bool {
+    get_corrector().unigram_scores.contains_key(word)
+}
+
 /// 用 active 热词文本列表重建 corrector 的热词索引。
 /// 启动时（DB 初始化后）与每次热词增删/确认后调用。
 /// corrector 未初始化时先 force init（空索引），再写入——确保首调也能落地。
