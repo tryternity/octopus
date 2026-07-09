@@ -22,6 +22,9 @@ pub struct LightCorrector {
     // 热词索引——纠错候选的唯一来源。热路径读锁，reload 整体替换。
     // 空索引 → find_candidates 短路返回单候选 → 零纠错（消灭全词典自由联想的过纠根因）。
     hotwords: parking_lot::RwLock<HotwordIndex>,
+    // active 热词原文缓存——方言规则（FuzzyRules）变更时用它重建 hotwords 索引
+    //（索引 key 由 normalize_fuzzy_pinyin 生成，规则变 key 必变，见 reload_fuzzy_dialect）。
+    active_words: parking_lot::RwLock<Vec<String>>,
 }
 
 /// 词级归一化模糊拼音（每个字归一化后用 `-` 连接）。
@@ -121,6 +124,7 @@ impl LightCorrector {
             unigram_scores,
             bigram_scores,
             hotwords: parking_lot::RwLock::new(HotwordIndex::empty()),
+            active_words: parking_lot::RwLock::new(Vec::new()),
         }
     }
 
@@ -284,17 +288,36 @@ pub fn is_common_word(word: &str) -> bool {
 
 /// 用 active 热词文本列表重建 corrector 的热词索引。
 /// 启动时（DB 初始化后）与每次热词增删/确认后调用。
+/// 同时缓存原文到 `active_words`，供 [`reload_fuzzy_dialect`] 重建索引用。
 /// corrector 未初始化时先 force init（空索引），再写入——确保首调也能落地。
 pub fn reload_hotwords(words: Vec<String>) {
     let build = || HotwordIndex::from_words(&words);
-    if let Some(c) = CORRECTOR.get() {
+    let apply = |c: &LightCorrector| {
+        *c.active_words.write() = words.clone();
         *c.hotwords.write() = build();
+    };
+    if let Some(c) = CORRECTOR.get() {
+        apply(c);
     } else {
         // corrector 尚未初始化——先 force init（空索引），再写入
         let _ = get_corrector();
         if let Some(c) = CORRECTOR.get() {
-            *c.hotwords.write() = build();
+            apply(c);
         }
+    }
+}
+
+/// 更新方言模糊规则（`fuzzy_dialect` 配置串）并用当前 active 热词重建索引。
+/// set_config（规则变更后）与启动装载调用。
+/// **必须重建索引**：`HotwordIndex::from_words` 用 [`crate::hotword::normalize_fuzzy_pinyin`]
+/// 生成索引 key，规则变则 key 变，旧索引与新查询规则不一致会漏命中。用缓存的 `active_words` 原文重建。
+pub fn reload_fuzzy_dialect(dialect: &str) {
+    crate::hotword::set_fuzzy_rules(crate::hotword::parse_dialect(dialect));
+    // 确保单例已初始化（active_words 存在）；未初始化时 force init 空 words。
+    let _ = get_corrector();
+    if let Some(c) = CORRECTOR.get() {
+        let words = c.active_words.read().clone();
+        *c.hotwords.write() = HotwordIndex::from_words(&words);
     }
 }
 
@@ -379,5 +402,46 @@ mod tests {
         // 旧 gain 机制会因专名语料分数低 + change_penalty 否决；命中即替换修复之。
         let c = with_hotwords(&["浮窗"]);
         assert_eq!(c.correct("开福川"), "开浮窗");
+    }
+
+    // ── 方言模糊规则（fuzzy_dialect）── 每个测试首行 reload_fuzzy_dialect 设自身状态，
+    //    避免被前序测试的全局 FUZZY_RULES 残留影响（TEST_LOCK 串行，但全局跨段持久）。
+    //    热词均用双字（单字 len<2 被 from_words 跳过）。
+
+    #[test]
+    fn test_dialect_fh_corrects() {
+        let _g = serial();
+        reload_fuzzy_dialect("f/h");
+        // 复刻用户 e2e：热词「浮窗」，识别成「护窗」(hu) → fh 规则 fu/hu 归一 → 命中替换。
+        let c = with_hotwords(&["浮窗"]);
+        assert_eq!(c.correct("开护窗"), "开浮窗");
+    }
+
+    #[test]
+    fn test_dialect_nl_corrects() {
+        let _g = serial();
+        reload_fuzzy_dialect("n/l");
+        // 牛总 niu-zong → nl n→l → liu-zong；热词「刘总」liu-zong。命中。
+        let c = with_hotwords(&["刘总"]);
+        assert_eq!(c.correct("牛总"), "刘总");
+    }
+
+    #[test]
+    fn test_dialect_hw_corrects() {
+        let _g = serial();
+        reload_fuzzy_dialect("hu/wu");
+        // 小王 xiao-wang → 基础 wang→wan → xiao-wan；
+        // 小黄 xiao-huang → 基础 huang→huan → hw hu→w → xiao-wan。归一相同，命中。
+        let c = with_hotwords(&["小黄"]);
+        assert_eq!(c.correct("小王"), "小黄");
+    }
+
+    #[test]
+    fn test_dialect_default_off_no_correct() {
+        let _g = serial();
+        reload_fuzzy_dialect("");
+        // 默认方言全关：护窗 hu 不归一到 fu，不纠正（防回归）。
+        let c = with_hotwords(&["浮窗"]);
+        assert_eq!(c.correct("开护窗"), "开护窗");
     }
 }
