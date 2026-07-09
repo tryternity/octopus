@@ -13,13 +13,13 @@
 - **DB schema**：`CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE` 幂等种子。`user_version` 从 18 bump 到 19。现有 v18 DB 重新执行 db.sql 自动建新表 + seed。
 - **is_system 保护**：内置项（`is_system=1`）不可删除；可编辑内容但不可改 action_type。
 - **script magic comment**：第一行 `#shell` / `#osascript` / `#powershell` / `#python` 决定运行时；平台不支持返回错误而非隐藏菜单项。
-- **图标三种格式**：(1) `.svg` 文件名 → `fetch("/icons/{name}.svg")` → 提取 inner HTML → 重组 SVG 强制 `currentColor`；(2) `<svg>` 开头 → 内联渲染；(3) Lucide 预置名 → 组装。⚠️ 必须用 `<i dangerouslySetInnerHTML>` 注入完整 SVG 字符串（React `<svg>` + innerHTML 注入 `<path>` 的 `currentColor` 继承不稳定）。
+- **图标三种格式（⚠️ 已弃用，保留历史参考）**：浮窗和设置页均改为数字徽章，`ActionBarIcon` 组件无引用但保留。历史实现：(1) `.svg` 文件名 → `fetch("/icons/{name}.svg")` → 提取 inner HTML → 重组 SVG 强制 `currentColor`；(2) `<svg>` 开头 → 内联渲染；(3) Lucide 预置名 → 组装。DB schema `icon` 字段保留（存量 + 兼容）。
 - **`#[serde(rename_all = "camelCase")]`**：`ActionBarItem` struct 必须加此 attribute，否则 JSON 字段 `parent_id` → 前端 `parentId` 读不到 → 菜单完全不渲染（已踩坑）。
 - **选中文本传递**：url 类型用 `{text}` 占位符替换（URL 编码）；script 类型通过环境变量 `$OCTOPUS_TEXT` 传递（不做字符串替换，防 shell 注入）。
 - **翻译特殊处理**：ai 类型 action_data 为 `auto_translate` 时按 CJK 检测方向。
 - **已有基础设施复用**：`chat_text_with_prompt`（LLM 调用）、`finalize_action_bar`（出口收口）、`timedOutRef`（前端超时）。
 - **Tauri 命令注册**：新命令必须加入 `main.rs` 的 `invoke_handler` 列表，否则前端 invoke 被拒。
-- **按钮布局**：水平「图标+文字」一行排列（`flex-row`），窗口宽度 380px，高度按 view 动态调整（主菜单 40px / 子菜单 76px）。浮窗在用户内容上方，必须矮。
+- **按钮布局**：水平「数字徽章+文字」一行排列（`flex-row`），窗口宽度 380px，高度按 view 动态调整（主菜单 40px / 子菜单 78px）。浮窗在用户内容上方，必须矮。
 - **窗口焦点策略（⚠️ 强需求，勿改错）**：全局快捷键不得将 settings/compact_editor 带到前台。macOS WKWebView 需 app active 才有键盘焦点，但 `set_focus` 的 `activate` 会带出 Regular 窗口。方案：show 前记录前台 app + 隐藏 Regular → set_focus → hide 时先交还前台焦点再恢复 Regular（`activation::before_floating_window_show` / `after_floating_window_hide`）。`FLOAT_DEPTH` 引用计数支持多浮窗嵌套。`action_bar_show_result` 不调 deactivate（避免 CompactEditor 被压后台）。action bar + 剪贴板共用，语音识别窗无强键盘需求不处理。
 - **script 超时**：`run_script` 后台 `try_wait` 轮询 60 秒后 `kill`，防止僵尸进程 + 线程泄漏。
 - **键盘导航（⚠️ 强需求，勿改错）**：**上下键切换主子菜单层级（focusLayer main↔sub），左右键在当前行移动选择。** 子菜单展开/收起由左右键控制（移到 submenu 项展开、移到非 submenu 项收起），上下键只切焦点不碰视图。焦点层（`focusLayer`）独立于视图层（`view`）——左右键展开子菜单时不抢焦点，必须上下键才进入。**数字键 1-9 定位**（只移动高亮不执行）：按焦点层决定定位哪一层——焦点在主菜单定位第 N 个主菜单项、焦点在子菜单定位第 N 个子菜单项，超出范围无效；定位到 submenu 项时同步展开子菜单预览（与左右键一致），执行用 Enter。**Esc 直接关闭浮窗**（一次 Esc，不退焦点层，不做两次 Esc）。
@@ -944,4 +944,38 @@ ActionBar/index.tsx 键盘导航变更：移除 `Cmd/Ctrl+数字`（直接执行
 - [x] **Step 3: 文档同步**
 
 spec §6.1 键盘表格 + §6.3 设置页 + plan Global Constraints + architecture.md。
+
+---
+
+### Task 8: 图标改数字徽章 + 设置页移除图标 + 内存草稿模式（2026-07-09）
+
+> 简化交互：浮窗和设置页不再依赖 SVG 图标，统一用数字徽章（与数字键定位对应）。新建菜单改为内存草稿模式消除脏数据。
+
+**Files:**
+- Modify: `crates/desktop/frontend/src/pages/ActionBar/index.tsx`（IconBtn 图标→数字徽章）
+- Modify: `crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx`（移除图标字段 + 内存草稿）
+
+**Interfaces:** 无后端变更。
+
+- [x] **Step 1: 浮窗图标→数字徽章**
+
+`IconBtn` 的 `icon` prop 换成 `index`，渲染 18×18 圆角方块 + 等宽粗体数字（选中 `bg-voice` 白字，未选中 `bg-muted` 灰字）。数字与键盘直接对应——用户看到 `①` 就知道按 `1` 定位。移除 `ActionBarIcon` import。子菜单窗口高度 76→78px（底部圆角完整显示）。
+
+- [x] **Step 2: 设置页移除图标**
+
+编辑表单删除「图标」字段（输入框 + 预览），树节点行删除图标展示，移除 `ActionBarIcon` import。DB schema `icon` 字段保留（存量 + 兼容），新增项 `icon=""`。
+
+- [x] **Step 3: 内存草稿模式**
+
+旧方案「先建 DB 行再编辑」在取消 / 切 tab / 连续新增时残留脏数据。改为：
+
+- `draftParentId` state（undefined=非草稿 / null=顶层 / number=子菜单草稿）
+- `handleAdd` 只设内存 state，不碰 DB
+- `saveEdit` 按 `draftParentId !== undefined` 分流：草稿→create，已有项→update
+- `cancelEdit` 只清内存 state，零 DB 操作
+- 子菜单草稿创建时自动展开父节点（`handleAdd` 内 `setExpanded`）
+
+- [x] **Step 4: 文档同步**
+
+spec §6.2（图标渲染标注弃用）+ §6.3（移除图标字段 + 内存草稿模式描述）+ plan Global Constraints + architecture.md。
 

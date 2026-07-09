@@ -12,7 +12,6 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
-import { ActionBarIcon } from "@/components/ActionBarIcon";
 
 interface ActionBarItem {
   id: number;
@@ -171,20 +170,6 @@ const EditForm = ({
           />
         </Field>
 
-        <Field label="图标">
-          <div className="flex items-center gap-2">
-            <input
-              className="flex-1 bg-background border border-border rounded px-2.5 py-1.5 font-mono text-sm outline-none focus:border-voice/50"
-              placeholder="图标名 / 文件名.svg / <svg>…"
-              value={form.icon || ""}
-              onChange={(e) => onChange({ ...form, icon: e.target.value })}
-            />
-            <div className="flex h-7 w-7 items-center justify-center rounded border border-border bg-background text-muted-foreground">
-              <ActionBarIcon icon={form.icon || "search"} className="text-base" />
-            </div>
-          </div>
-        </Field>
-
         <Field label="类型">
           <div>
             <select
@@ -287,6 +272,7 @@ interface NodeProps {
   onFormChange: (f: Partial<ActionBarItem>) => void;
   onSaveEdit: () => void;
   onCancelEdit: () => void;
+  draftParentId: number | null | undefined; // undefined=非草稿, null=顶层草稿, number=子菜单草稿
 }
 
 const TreeNodeBase = (props: NodeProps) => {
@@ -340,16 +326,6 @@ const TreeNodeBase = (props: NodeProps) => {
         {/* 序号：等宽定位，像注册表条目 */}
         <span className="w-6 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground/60">
           {indexLabel}
-        </span>
-
-        {/* 图标 */}
-        <span
-          className={cn(
-            "flex h-5 w-5 shrink-0 items-center justify-center text-muted-foreground",
-            !item.isEnabled && "opacity-40",
-          )}
-        >
-          <ActionBarIcon icon={item.icon || "search"} className="text-sm" />
         </span>
 
         {/* 标题 */}
@@ -431,6 +407,16 @@ const TreeNodeBase = (props: NodeProps) => {
       {/* 子树：细导引线 + 递归 */}
       {isSubmenu && isOpen && (
         <div className="relative ml-3 border-l border-border/50 pl-3">
+          {/* 子菜单草稿表单 */}
+          {props.draftParentId === item.id && (
+            <EditForm
+              form={props.editingForm}
+              isSystem={false}
+              onChange={props.onFormChange}
+              onSave={props.onSaveEdit}
+              onCancel={props.onCancelEdit}
+            />
+          )}
           {subs.map((sub, i) => (
             <TreeNode
               key={sub.id}
@@ -469,6 +455,8 @@ export default function ActionBarPanel({
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editingForm, setEditingForm] = useState<Partial<ActionBarItem>>({});
+  // draft 状态：新增时不写 DB，只在内存编辑，保存时才 create。取消只清 state，零脏数据。
+  const [draftParentId, setDraftParentId] = useState<number | null | undefined>(undefined); // undefined=非草稿, null=顶层草稿, number=子菜单草稿
   const [loaded, setLoaded] = useState(false);
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
@@ -521,6 +509,7 @@ export default function ActionBarPanel({
   }, []);
 
   const startEdit = useCallback((item: ActionBarItem) => {
+    setDraftParentId(undefined);
     setEditingId(item.id);
     setEditingForm({ ...item });
   }, []);
@@ -528,26 +517,39 @@ export default function ActionBarPanel({
   const cancelEdit = useCallback(() => {
     setEditingId(null);
     setEditingForm({});
+    setDraftParentId(undefined);
   }, []);
 
   const saveEdit = useCallback(async () => {
-    if (!editingId) return;
     try {
-      await invoke("update_action_bar_item", {
-        id: editingId,
-        title: editingForm.title || "",
-        icon: editingForm.icon || "",
-        actionType: editingForm.actionType || "copy",
-        actionData: editingForm.actionData || "",
-        isEnabled: editingForm.isEnabled ?? true,
-      });
-      showToast("已保存");
+      if (draftParentId !== undefined) {
+        // 新建草稿——此时才写 DB
+        await invoke("create_action_bar_item", {
+          parentId: draftParentId,
+          title: editingForm.title || "新菜单项",
+          icon: "",
+          actionType: editingForm.actionType || "copy",
+          actionData: editingForm.actionData || "",
+        });
+        showToast("已创建");
+      } else if (editingId) {
+        // 编辑已有项
+        await invoke("update_action_bar_item", {
+          id: editingId,
+          title: editingForm.title || "",
+          icon: editingForm.icon || "",
+          actionType: editingForm.actionType || "copy",
+          actionData: editingForm.actionData || "",
+          isEnabled: editingForm.isEnabled ?? true,
+        });
+        showToast("已保存");
+      }
       cancelEdit();
       refresh();
     } catch (e) {
       showToast("保存失败：" + e);
     }
-  }, [editingId, editingForm, showToast, cancelEdit, refresh]);
+  }, [draftParentId, editingId, editingForm, showToast, cancelEdit, refresh]);
 
   const handleDelete = useCallback(
     async (id: number) => {
@@ -574,30 +576,21 @@ export default function ActionBarPanel({
     [refresh, showToast],
   );
 
-  const handleAdd = useCallback(
-    async (parentId: number | null) => {
-      try {
-        const id = await invoke<number>("create_action_bar_item", {
-          parentId,
-          title: "新菜单项",
-          icon: "",
-          actionType: "copy",
-          actionData: "",
-        });
-        const latest = await refresh();
-        const newItem = latest.find((i) => i.id === id);
-        if (newItem) {
-          if (parentId !== null) {
-            setExpanded((prev) => new Set(prev).add(parentId));
-          }
-          startEdit(newItem);
-        }
-      } catch (e) {
-        showToast("新增失败：" + e);
-      }
-    },
-    [refresh, startEdit, showToast],
-  );
+  const handleAdd = useCallback((parentId: number | null) => {
+    // 纯内存草稿——不碰 DB，保存时才 create
+    setEditingId(null);
+    setDraftParentId(parentId);
+    setEditingForm({
+      title: "新菜单项",
+      actionType: "copy",
+      actionData: "",
+      isEnabled: true,
+    });
+    // 子菜单草稿需展开父节点才能看到表单
+    if (parentId !== null) {
+      setExpanded((prev) => new Set(prev).add(parentId));
+    }
+  }, []);
 
   const nodeCommon = {
     allItems: items,
@@ -612,6 +605,7 @@ export default function ActionBarPanel({
     onFormChange: setEditingForm,
     onSaveEdit: saveEdit,
     onCancelEdit: cancelEdit,
+    draftParentId,
   };
 
   return (
@@ -681,6 +675,16 @@ export default function ActionBarPanel({
         </div>
       ) : (
         <div className="space-y-px">
+          {/* 新建草稿表单（内存态，不在树中） */}
+          {draftParentId !== undefined && draftParentId === null && (
+            <EditForm
+              form={editingForm}
+              isSystem={false}
+              onChange={setEditingForm}
+              onSave={saveEdit}
+              onCancel={cancelEdit}
+            />
+          )}
           {mainItems.map((item, i) => (
             <TreeNode
               key={item.id}
