@@ -77,6 +77,9 @@ export default function ActionBar() {
   // mount + 每次 show 时拉取上下文 + 菜单 + 配置
   useEffect(() => {
     const refresh = () => {
+      // 前端获取键盘焦点（后端 show 不调 set_focus 避免激活 app），
+      // 让方向键直接可用——用户无需鼠标点击
+      window.focus();
       invoke<Context | null>("action_bar_get_context").then((ctx) => {
         if (ctx) { setContext(ctx); setView("main"); setSelectedIdx(0); setFocusLayer("main"); setErrorMsg(""); }
       });
