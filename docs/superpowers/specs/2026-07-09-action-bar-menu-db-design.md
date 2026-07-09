@@ -257,6 +257,9 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 1. `activate` 原前台 app（交还焦点给用户正在使用的应用）
 2. `show` 恢复被隐藏的 Regular 窗口——此时 octopus app 已在后台，窗口温和恢复不跳前台
 
+**剪贴板浮窗失焦恢复**（`restore_hidden_windows_only`）：
+剪贴板是 toggle 模式（always-on-top 可见，点击外部不 hide）。用户切到其他 app 后剪贴板失焦（`Focused(false)` 事件）但 Regular 窗口仍隐藏 → Dock 图标点击无效。解法：失焦时 `deactivate` app + `show` 恢复被隐藏的窗口 + 清除状态。不交还前台焦点（剪贴板仍可见）。
+
 **应用范围**：action bar + 剪贴板浮窗（需键盘操作）。语音识别窗无强键盘需求，保持现状不处理。
 
 **上下键切换主子菜单层级，左右键在当前行移动选择。** 这是核心交互，不可混淆：
