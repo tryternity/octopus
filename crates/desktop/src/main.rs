@@ -25,6 +25,7 @@ mod engine_grpc;
 #[cfg(feature = "remote-ws")]
 mod engine_ws;
 mod model_commands;
+mod hotword_commands;
 mod paste;
 mod pin_window;
 mod pipeline;
@@ -227,6 +228,11 @@ pub fn run() {
             model_commands::download_model,
             model_commands::verify_model,
             model_commands::set_download_mirror,
+            hotword_commands::list_hotwords,
+            hotword_commands::add_hotword,
+            hotword_commands::confirm_pending_hotword,
+            hotword_commands::delete_hotword,
+            hotword_commands::mine_hotword_candidates,
             clipboard_commands::query_clipboard_history,
             clipboard_commands::toggle_clipboard_favorite,
             clipboard_commands::delete_clipboard_item,
