@@ -33,7 +33,7 @@ const IconBtn = ({ icon, label, active, onClick }: {
 }) => (
   <button
     className={cn(
-      "flex flex-col items-center justify-center gap-0.5 px-3 py-1 rounded-lg transition-all duration-150 min-w-[44px]",
+      "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all duration-150",
       active
         ? "bg-voice/12 text-voice"
         : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
@@ -42,8 +42,8 @@ const IconBtn = ({ icon, label, active, onClick }: {
     onClick={onClick}
     title={label}
   >
-    <ActionBarIcon icon={icon} className="text-[15px]" />
-    <span className="text-[9px] font-medium leading-none">{label}</span>
+    <ActionBarIcon icon={icon} className="text-[14px]" />
+    <span className="text-[10px] font-medium leading-none whitespace-nowrap">{label}</span>
   </button>
 );
 

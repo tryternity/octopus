@@ -106,9 +106,9 @@ pub fn trigger_action_bar(app: AppHandle) {
         // 6. 获取鼠标位置 + 显示浮窗（主线程）
         // 浮窗在鼠标正上方，X 轴居中对齐鼠标，Y 轴在鼠标上方
         let (mx, my) = get_mouse_position(&app_clone);
-        let win_x = (mx - 150.0).max(0.0);
-        // 窗口在鼠标正上方——窗口底部贴近鼠标。主菜单行 ~52px（含 padding）
-        let win_y = (my - 52.0).max(0.0);
+        let win_x = (mx - 190.0).max(0.0);
+        // 窗口在鼠标正上方——每行 ~34px，主菜单一行
+        let win_y = (my - 42.0).max(0.0);
         log::info!("[action-bar] mouse=({},{}) → win_pos=({},{})", mx, my, win_x, win_y);
 
         let app_for_show = app_clone.clone();
