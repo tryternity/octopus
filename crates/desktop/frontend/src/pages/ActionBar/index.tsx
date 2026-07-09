@@ -200,7 +200,6 @@ export default function ActionBar() {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        if (focusLayerRef.current === "sub") { setFocusLayer("main"); return; }
         invoke("action_bar_dismiss");
         return;
       }
