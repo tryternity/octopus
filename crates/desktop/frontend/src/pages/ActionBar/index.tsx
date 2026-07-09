@@ -66,6 +66,14 @@ export default function ActionBar() {
   useEffect(() => { focusLayerRef.current = focusLayer; }, [focusLayer]);
   useEffect(() => { contextRef.current = context; }, [context]);
 
+  // 动态调整窗口高度——主菜单 1 行（~40px），子菜单 2 行（~76px），
+  // 避免透明区域遮挡下层点击
+  useEffect(() => {
+    const height = view === "submenu" ? 76 : view === "loading" ? 48 : view === "error" ? 60 : 40;
+    const win = getCurrentWindow();
+    win.setSize({ type: "Logical", data: { width: 380, height } }).catch(() => {});
+  }, [view]);
+
   // mount + 每次 show 时拉取上下文 + 菜单 + 配置
   useEffect(() => {
     const refresh = () => {
@@ -300,7 +308,7 @@ export default function ActionBar() {
 
   if (view === "loading") {
     return (
-      <div data-action-bar className="flex items-center justify-center gap-2.5 px-6 py-3 bg-background/95 backdrop-blur-xl text-foreground rounded-2xl border border-border/50 shadow-2xl shadow-black/10">
+      <div data-action-bar className="flex items-center justify-center gap-2.5 px-6 py-3 bg-background/95 backdrop-blur-xl text-foreground rounded-lg border border-border/50 shadow-2xl shadow-black/10">
         <Loader2 className="w-4 h-4 animate-spin text-voice" />
         <span className="text-[12px] font-medium">处理中</span>
         <span className="flex gap-0.5">
@@ -332,7 +340,7 @@ export default function ActionBar() {
   return (
     <div
       data-action-bar
-      className="flex flex-col rounded-2xl border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
+      className="flex flex-col rounded-lg border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
     >
       {/* 主菜单 */}
       <div className="flex items-center gap-1 px-1.5 py-1.5 shrink-0">

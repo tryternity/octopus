@@ -19,7 +19,7 @@ const ACTION_TYPES = [
   { value: "submenu", label: "子菜单", placeholder: "" },
   { value: "ai", label: "AI（LLM 处理）", placeholder: "system prompt，或 auto_translate" },
   { value: "url", label: "URL（打开网页/应用）", placeholder: "https://... 或 app://?text={text}（留空=选中文本即URL）" },
-  { value: "script", label: "脚本", placeholder: "#shell / #osascript / #powershell / #python\n第一行后写脚本，{text}=选中文本" },
+  { value: "script", label: "脚本", placeholder: "#shell / #osascript / #powershell / #python\n选中文本在 $OCTOPUS_TEXT 环境变量中（shell: $OCTOPUS_TEXT，python: os.environ）" },
   { value: "copy", label: "复制", placeholder: "" },
 ];
 

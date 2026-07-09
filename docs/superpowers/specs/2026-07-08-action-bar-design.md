@@ -51,10 +51,9 @@ octopus 的差异化：**热键触发（无兼容性问题）+ 内置 AI（不�
   ↓
 Rust 后端（std::thread::spawn 后台线程）：
   1. TRIGGER_IN_PROGRESS 重入 guard（防热键连按）
-  2. 隐藏常规窗口（settings/compact_editor）
-  3. 备份剪贴板 → 模拟 Cmd+C → 等待 200ms → 读剪贴板
-  4. 获取鼠标坐标（CGEvent::location()）
-  5. run_on_main_thread → show_action_bar_window（鼠标上方）
+  2. 备份剪贴板 → 模拟 Cmd+C → 等待 200ms → 读剪贴板
+  3. 获取鼠标坐标（CGEvent::location()）
+  4. run_on_main_thread → show_action_bar_window（鼠标上方）
   ↓
 前端浮窗：
   6. 显示第一级菜单（图标行）
@@ -85,7 +84,7 @@ Rust 后端：
   ↓
 Rust 后端：
      a. 写结果到剪贴板（结果留给用户，不恢复原始剪贴板）
-     b. finalize_action_bar（恢复常规窗口 + 重置 guard）
+     b. finalize_action_bar（重置 guard）
      c. 用临时 tab 打开 CompactEditor 展示结果（不写 DB）
   ↓
 超时场景：前端 setView("error")，后台 LLM 返回后丢弃
@@ -259,7 +258,7 @@ action_bar_window 是透明悬浮窗——**不切 Regular**（和 clipboard_win
 
 | 命令 | 签名 | 说明 |
 |------|------|------|
-| `trigger_action_bar` | `(app: AppHandle)` | 热键触发：重入 guard → 隐藏常规窗口 → 备份剪贴板 → Cmd+C → 读剪贴板 → show 窗口。仅 macOS。 |
+| `trigger_action_bar` | `(app: AppHandle)` | 热键触发：重入 guard → 备份剪贴板 → Cmd+C → 读剪贴板 → show 窗口。仅 macOS。不隐藏常规窗口（与语音识别快捷键一致）。 |
 | `run_ai_action` | `async fn(action, text) -> Result<String, String>` | 调 `chat_text_with_prompt`（润色/摘要/解释/翻译），不碰全局 SYSTEM_PROMPT |
 | `action_bar_show_result` | `(result, original_text, action, app)` | 写结果到剪贴板（留给用户）+ finalize + CompactEditor 临时 tab 展示 |
 | `action_bar_dismiss` | `(app)` | 隐藏浮窗 + finalize（恢复剪贴板 + 恢复窗口 + 重置 guard） |

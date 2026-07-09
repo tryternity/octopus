@@ -11,7 +11,7 @@
 - **物理/逻辑坐标**（⚠️ 关键反复踩坑）：`CGEvent::location()` 返回**逻辑坐标（points）**，Tauri `LogicalPosition` 是**逻辑像素**。两者一致，不除 `scale_factor()`。`Monitor::position()/size()` 返回物理像素需除 scale。详见 architecture.md 和 AGENTS.md。
 - **capabilities 白名单**：每个新窗口必须加入 `capabilities/default.json` 的 `windows` 数组，否则 Tauri 2 拒绝 `listen`/`invoke`。
 - **trigger 后台线程**：模拟 Cmd+C 后有 200ms sleep——不能在主线程（阻塞事件循环 → 窗口无焦点 → Esc/按钮无响应）。必须 `std::thread::spawn`。
-- **trigger 重入 guard**：`TRIGGER_IN_PROGRESS: AtomicBool` 防热键连按 → 第二次 trigger 覆盖 `HIDDEN_REGULAR_WINDOWS` → 常规窗口永久丢失。所有出口通过 `finalize_action_bar` 重置。
+- **trigger 重入 guard**：`TRIGGER_IN_PROGRESS: AtomicBool` 防热键连按。所有出口通过 `finalize_action_bar` 重置。（已移除隐藏/恢复常规窗口逻辑——与语音识别快捷键统一，不碰 settings/compact_editor）
 - **NSWindow 操作必须在主线程**：`show_action_bar_window` 涉及 `set_position/show/set_focus`，必须用 `app.run_on_main_thread()` 执行，不能用 `tauri::async_runtime::spawn`（tokio worker 线程）。
 - **剪贴板生命周期**：trigger 阶段 suppress_next → Cmd+C → 读选中 → 立即 write_text 恢复原始剪贴板（两次写入都 suppress watcher，选中文本不入库）。选中文本存在 `PENDING_CONTEXT` 变量供后续操作，不再依赖 `CLIPBOARD_BACKUP` 延迟恢复。
 - **mousedown capture 陷阱**：`addEventListener("mousedown", fn, true)` 的 capture 模式在 `onClick` 之前触发 → 按钮点击被拦截。外部点击检测用 `click` 事件冒泡阶段（`false`）。
@@ -65,7 +65,7 @@
 3. **trigger 后台线程**——200ms sleep 不能在主线程。
 4. **capabilities 白名单**——新窗口必须加入。
 5. **CompactEditor isTemp**——AI 结果不写 DB，保存按钮灰掉。
-6. **热键前隐藏常规窗口**——防 app 激活时窗口抢焦点。
+6. ~~**热键前隐藏常规窗口**——防 app 激活时窗口抢焦点。~~ 已废弃——三快捷键（语音/剪贴板/action bar）统一不隐藏常规窗口。
 7. **坐标 API 区分**（⚠️ 关键）——`CGEvent::location()` 返回**逻辑坐标（points）**，不除 scale；`Monitor::position()/size()` 返回**物理像素**，必须除 scale。曾误把 CGEvent 当物理坐标除 scale → 浮窗位置偏到完全无关的地方。
 8. **show 调用传 win_x 不是 mx**——计算 `win_x = mx - 130` 后 show 传了原始 mx → X 没居中。
 9. **Y 偏移**——初始只显示主菜单一行（~44px），不是两行（~84px）。`my - 48` 不是 `my - 84`。
@@ -77,7 +77,7 @@
 |------|--------|------|
 | 31 | P0-1 | **system_prompt 全局污染**——`run_ai_action` 不再用 `set_system_prompt`/`polish`（会污染并发 ASR 润色）。新增 `octopus_llm::chat_text_with_prompt(system, user, config)`，action bar 走参数注入，不碰全局。 |
 | 32 | P0-2 | **dismiss/open_url/早返回不恢复剪贴板**——新增 `finalize_action_bar` 统一收口。后改为 trigger 阶段即时恢复 + suppress watcher，彻底移除 `CLIPBOARD_BACKUP`。 |
-| 33 | P0-3 | **trigger 重入丢失 HIDDEN_REGULAR_WINDOWS**——`TRIGGER_IN_PROGRESS: AtomicBool` guard，热键连按时第二次直接跳过。 |
+| 33 | P0-3 | **trigger 重入 guard**——`TRIGGER_IN_PROGRESS: AtomicBool` guard。后移除 HIDDEN_REGULAR_WINDOWS，不再隐藏常规窗口。 |
 | 34 | P1-4 | **AI 超时后结果仍弹出**——前端 `timedOutRef`，`await invoke` resolve 后先判 ref，已超时则丢弃（不调 show_result）。 |
 | 35 | P1-5 | **搜索引擎配置死代码**——`searchEngineRef` 现在实际生效：进入搜索子菜单时预选用户配置的引擎（`subSelectedIdx` 初始值）。 |
 | 36 | P1-6 | **AI 结果剪贴板 500ms 被覆盖**——trigger 阶段即时恢复剪贴板，删除延迟恢复线程。AI 结果通过 `write_text` 写入（自带 suppress 不入库）。 |

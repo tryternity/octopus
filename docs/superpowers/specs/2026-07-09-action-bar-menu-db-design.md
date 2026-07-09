@@ -240,8 +240,9 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 - `ai` 类型仍走前端 loading + 超时 + timedOutRef 流程
 - `url` / `script` / `copy` 直接 `invoke("execute_action_bar")`
 - 按钮布局：**水平「图标+文字」一行排列**（`flex-row`），非上下两行——浮窗更矮，子菜单展开后总高 ~76px
-- 视觉：`rounded-2xl` + `backdrop-blur-xl` 毛玻璃 + `shadow-2xl`
-- 窗口尺寸 380×76px（水平排列需更宽）
+- 视觉：`rounded-lg`（8px，与语音识别窗口一致）+ `backdrop-blur-xl` 毛玻璃 + `shadow-2xl`
+- 窗口高度动态调整：主菜单 40px / 子菜单 76px / loading 48px / error 60px（前端 `setSize` 按 view 切换），避免透明区域遮挡下层点击
+- 窗口宽度固定 380px
 
 #### ⚠️ 键盘导航（强需求，勿改错）
 
