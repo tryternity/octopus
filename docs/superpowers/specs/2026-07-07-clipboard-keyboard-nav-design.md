@@ -50,10 +50,8 @@ Wox（`clipboard.go:127` trigger keyword `cb`）和 Raycast 都是**全键盘驱
 | `←` / `→` | 切换过滤 tab（左/右） | 归输入框光标移动（**不拦截**） |
 | `Tab` / `Shift+Tab` | 切换过滤 tab（右/左） | 同左（始终可用） |
 | `Enter` | 对选中条目执行默认动作 | 同左 |
-| `<修饰键>+1` .. `<修饰键>+7` | 跳到第 N 个过滤 tab | 同左 |
+| `Ctrl+1` .. `Ctrl+7` | 跳到第 N 个过滤 tab | 同左 |
 | `Esc` | 清空搜索内容；已空则隐藏浮窗 | 清空搜索内容 |
-
-> **修饰键可配置**：用户可在设置页「快捷键」卡片选择 `⌘ Command` / `⌃ Control` / `⌥ Option`（配置字段 `clipboard_tab_modifier`，默认 `ctrl`）。macOS Accessory 激活策略下 Cmd 可能被前一 app 菜单栏拦截；Option+数字用 `e.code`（物理键位）匹配而非 `e.key`（Option 会产生特殊字符如 `¡`）。
 
 **不变量**：
 - `Tab/Shift+Tab` **始终**切过滤 tab，与搜索框内容无关（用户提到的"兜底恒定可用"）。**含义是"仅在 7 个过滤 tab 间循环"**，不是浏览器默认的全浮窗焦点遍历——需 `preventDefault` 拦截后手动切 tab，否则焦点会跑到关闭/置顶/列表行/footer 按钮上。
@@ -97,49 +95,20 @@ Wox（`clipboard.go:127` trigger keyword `cb`）和 Raycast 都是**全键盘驱
 
 ## 3. 改动范围
 
-**前端为主（4 文件）+ 配置系统（Rust + DB）**：
+**仅前端，4 个文件**，无后端改动：
 
 | 文件 | 改动 |
 |------|------|
-| `pages/Clipboard/index.tsx` | 全局 keydown 监听；`selectedIndex` 状态；处理全部按键；`tabModifierRef` 读配置动态选修饰键；`config-changed` 监听热更新 |
-| `pages/Clipboard/SearchBar.tsx` | 无改动（搜索框持焦靠 index.tsx 统一调度）|
-| `pages/Clipboard/FilterTabs.tsx` | **调整 TABS 顺序**：收藏提到第 2 位；tab 按钮加 `data-tab-index` |
-| `pages/Clipboard/ClipboardItem.tsx` | 行根 div 加 `data-clip-index`；`onSelect` 改为传 index |
-| `pages/Settings/GeneralPanel.tsx` | 快捷键卡片新增"剪贴TAB切换"行（修饰键下拉 + `+ 1..7` 提示）|
-| `crates/infra/src/config.rs` | `AppConfig` 新增 `clipboard_tab_modifier` 字段 + default |
-| `crates/infra/src/db.sql` | `app_config` seed 新增 `clipboard_tab_modifier` |
-| `crates/desktop/src/settings_commands.rs` | `apply_config_value` 加 `clipboard_tab_modifier` 校验；`config-changed` emit 改为无条件 |
+| `pages/Clipboard/index.tsx` | 加全局 keydown 监听；维护 `selectedIndex`（在 items 数组中的索引，非 item.id）；处理 `↑↓Enter Esc Cmd+N`；过滤/搜索变化时重置选中 |
+| `pages/Clipboard/SearchBar.tsx` | 搜索框为空时拦截 `←→` 切 tab、`Tab` 透传；有内容时不拦截 `←→` |
+| `pages/Clipboard/FilterTabs.tsx` | **调整 TABS 数组顺序**：收藏提到第 2 位（全部之后、语音之前）；tab 按钮加 `data-tab-index` 便于反射式定位；选中态视觉保持 |
+| `pages/Clipboard/ClipboardItem.tsx` | 无改动（选中态已由 `isSelected` prop 驱动，`scrollIntoView` 由父组件通过 ref/ID 触发） |
 
-**配置系统 serde 重构**（实施过程中发现并根治的系统性问题，见 architecture.md）：
-
-| 文件 | 改动 |
-|------|------|
-| `crates/infra/src/db.rs` | `load/save_app_config_at` 从手动逐字段枚举改为 serde 自动遍历 |
-| `crates/infra/src/db.rs` | 新增 `app_config_roundtrip_all_fields` 回归测试 |
-
-**主题系统**（借鉴 Wox，ui-ux-pro-max + frontend-design skill 设计）：
-
-| 文件 | 改动 |
-|------|------|
-| `crates/desktop/src/theme.rs` | **新建**：3 套内置主题 + `list_themes` 命令 + `~/.octopus/themes/*.json` 扩展 |
-| `crates/desktop/frontend/src/lib/theme.ts` | **新建**：`applyTheme` 写 CSS 变量到 `:root`，`applyThemeFromConfig` 读配置应用 |
-| `crates/desktop/frontend/src/index.css` | `.theme-blur` 类（仅 clipboard_window 的 body）|
-| `crates/desktop/frontend/src/main.tsx` | render 前异步加载主题防闪烁 |
-| `crates/desktop/frontend/src/App.tsx` | 每窗口 mount 应用主题 + 监听 config-changed 同步 |
-| `crates/desktop/frontend/src/pages/Settings/GeneralPanel.tsx` | 外观卡片 + 主题下拉（即时预览）|
-| `crates/infra/src/config.rs` | `clipboard_theme` 字段 |
-| `crates/infra/src/db.sql` | `clipboard_theme` seed |
-| `crates/desktop/src/settings_commands.rs` | `clipboard_theme` 校验 |
-| `crates/desktop/frontend/src/pages/Result/index.tsx` | `surface`/`tool-icon` 替代硬编码黑色 |
-| `crates/desktop/frontend/src/pages/CompactEditor/index.tsx` | stone 硬编码改为语义 token |
-| `crates/desktop/frontend/src/pages/Settings/ClipboardPanel.tsx` | stone 硬编码改为语义 token；SVG 图标加 icon-filter |
-| `crates/desktop/frontend/src/pages/Settings/HistoryPanel.tsx` | stone 硬编码改为语义 token |
-| `crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx` | SVG 预览图标加 icon-filter |
-| `crates/desktop/frontend/src/pages/Screenshot/*` | 工具栏/弹窗背景+图标 filter 跟随主题 |
-| `crates/desktop/frontend/src/pages/Screenshot/ScrollPreview.tsx` | 保存按钮 #3b82f6→var(--color-voice) |
-| `crates/desktop/frontend/src/pages/ImagePreview/Toolbar.tsx` | 工具栏卡片/ToolButton/弹窗全面适配主题（Lucide+SVG） |
-
-**不改**：后端命令、数据模型、`useClipboardHistory` 请求逻辑、浮窗创建/隐藏/焦点恢复链路、截图遮罩层（`rgba(0,0,0,0.5)` 功能需要）。
+**不改**：
+- 后端命令（`paste_clipboard_item` 等完全复用）
+- 数据模型、`useClipboardHistory` hook 的请求逻辑
+- 浮窗创建/隐藏/焦点恢复链路（`clipboard_window.rs`、`focus_tracker.rs`）
+- 次级动作（复制/编辑/删除/收藏/打开）的触发方式——一期仍靠鼠标 hover 后点击，不为它们造键盘快捷键（避免 scope 膨胀）
 
 ---
 
@@ -158,7 +127,7 @@ Wox（`clipboard.go:127` trigger keyword `cb`）和 Raycast 都是**全键盘驱
 
 在 `index.tsx` 用 `useEffect` 注册 `window.addEventListener("keydown", handler)`。handler 内根据 `search` 是否为空、`selectedIndex`、`items.length` 决定动作。
 
-**为何不放在 SearchBar**：`←→`（空时切 tab）、`<修饰键>+N`、`Esc` 都需要作用在搜索框持焦之外的上下文；放 `index.tsx` 统一调度最清晰，且避免 SearchBar 与 index 之间的状态透传复杂度。
+**为何不放在 SearchBar**：`←→`（空时切 tab）、`Cmd+N`、`Esc` 都需要作用在搜索框持焦之外的上下文；放 `index.tsx` 统一调度最清晰，且避免 SearchBar 与 index 之间的状态透传复杂度。
 
 ### 4.3 SearchBar 的方向键处理
 
@@ -183,7 +152,7 @@ SearchBar 内 `<input>` 的 `onKeyDown`：
 
 | 场景 | 行为 |
 |------|------|
-| 列表为空（无搜索结果或无历史） | `↑↓Enter` 无动作；`←→Tab <修饰键>+N Esc` 正常 |
+| 列表为空（无搜索结果或无历史） | `↑↓Enter` 无动作；`←→Tab Cmd+N Esc` 正常 |
 | 选中条目后该条目被异步删除（如他处删除触发 `clipboard://changed`） | `items` 刷新后 selectedIndex 越界 → 夹紧到 0 或 null |
 | 粘贴失败（`paste_clipboard_item` 返回 Err 或模拟粘贴未生效） | 后端已写剪贴板，用户可手动 `Cmd+V`；前端 catch 错误后不崩溃（与双击现有行为一致） |
 | 搜索框聚焦丢失（如用户点了列表里某行） | 次级动作仍需鼠标；一期接受"次级动作只能鼠标"的现状。可选轻量优化：列表点击后自动把焦点拉回搜索框（`searchRef.current?.focus()`），但不强制 |
@@ -192,90 +161,13 @@ SearchBar 内 `<input>` 的 `onKeyDown`：
 
 ## 6. 验收标准
 
-### 键盘导航
 1. 浮窗唤出后，**不触碰鼠标**即可完成：搜索 → `↑↓` 选条目 → `Enter` 粘贴到原应用
-2. 搜索框为空时 `←→` 可循环切换 7 个过滤 tab；`<修饰键>+1..7` 可直接跳转
+2. 搜索框为空时 `←→` 可循环切换 7 个过滤 tab；`Cmd+1..7` 可直接跳转
 3. 搜索框有内容时 `←→` 只移动光标不切 tab；`Tab/Shift+Tab` 仍可切 tab
 4. `Esc` 在有搜索内容时清空搜索，已空时隐藏浮窗
 5. `↑↓` 选中会自动滚动跟随，选中条目始终可见
 6. 过滤/搜索切换后选中态重置为第一条
 7. 鼠标交互（点击/双击/hover 按钮）全部保持原有行为不回归
-
-### 主题系统
-8. 设置页"外观"卡片可切换 3 套内置主题（Warm Paper / Obsidian Glass / Nord Aurora）
-9. 切换后**所有窗口**（剪贴板浮窗 / 识别结果窗 / 设置页 / 编辑器 / 截图工具栏）即时跟随
-10. 暗色主题下文字、图标、工具栏清晰可读（对比度 ≥4.5:1）
-11. `~/.octopus/themes/*.json` 可新增自定义主题，重启后出现在下拉列表
-
----
-
-## 6.5 主题系统设计
-
-### 设计依据
-- **Wox 调研**：Glass Dark 主题用半透明背景 + 原生窗口模糊（NSVisualEffectView）
-- **ui-ux-pro-max §6**：文字对比度 ≥4.5:1（AA）、暗色用去饱和提亮、语义 token
-- **frontend-design**："spend boldness in one place"——每套有一个辨识点
-
-### 3 套内置主题
-
-| 主题 | id | 设计意图 | blur | 关键色 |
-|------|-----|---------|:----:|--------|
-| Warm Paper | `light` | 纸质感暖灰——工具的温度感 | ❌ | bg `#fafaf9` / fg `#292524`（12.3:1）|
-| Obsidian Glass | `glass-dark` | 黑曜石——致密深色 | ❌ | bg `#121216` / fg `#f5f5f7` |
-| Nord Aurora | `nord` | 北极极光——冷蓝 + 极光青 | ❌ | bg `#2e3440` / fg `#e5e9f0` |
-
-> **半透明取舍**：Wox 的半透明依赖原生窗口模糊（均匀无亮斑）。CSS `backdrop-filter` 在 Tauri WebView 下做不到均匀模糊——任何 α<1 都会透出背后白色。因此暗色主题用**纯不透明实色**，视觉差异通过颜色（暖/深/冷）而非透明度实现。
-
-### 主题 token 体系
-
-| token | 用途 | 亮色 | 暗色 |
-|-------|------|------|------|
-| `background` | 窗口主背景 | `#fafaf9` | `#121216` / `#2e3440` |
-| `foreground` | 主文字 | `#292524` | `#f5f5f7` / `#e5e9f0` |
-| `muted` | 次要背景（搜索框/hover）| `#f5f4f0` | `rgba(255,255,255,0.05)` |
-| `muted-foreground` | 次要文字 | `#78716c` | `#9ca3af` / `#81a1c1` |
-| `accent` | 选中态背景 | `#e7e5e0` | `rgba(255,255,255,0.16)` |
-| `border` | 边框 | `#e7e5e0` | `rgba(255,255,255,0.08)` |
-| `voice` | 强调色（语音/选中条/确认按钮）| `#d97706` | `#f59e0b` / `#88c0d0` |
-| `surface` | 不透明表面（result_window/截图工具栏）| `#fafaf9` | `#1a1a1e` / `#2e3440` |
-| `tool-icon` | result_window 工具栏图标色 | `rgba(0,0,0,0.55)` | `rgba(255,255,255,0.55)` |
-| `icon-filter` | 截图工具栏图标 CSS filter | `none` | `brightness(0) invert(1)` |
-
-### 应用机制（经四次性能优化，最终架构）
-
-- `index.css`：3 套 `[data-theme="xxx"]` 预编译 CSS 规则块。Tailwind v4 的 `bg-background` 等类读 `var(--color-xxx)`，变量值由属性选择器命中——**消除运行时 JS var() 覆盖开销**
-- `index.html` 阻断脚本：body 解析前同步从 localStorage 恢复 `data-theme` + 自定义主题 CSS 注入。**不读 `__TAURI_INTERNALS__`**（该对象在 `<head>` 解析时尚未注入，时序竞态会导致 label 为空）
-- `main.tsx`：JS bundle 加载后执行，`__TAURI_INTERNALS__` 已就绪——对非透明窗口设 `html.style.backgroundColor`（防 React 渲染前白屏），截图窗口设半透明黑底
-- `theme.ts`：`applyThemeById` 设 `<html data-theme="xxx">`（内置主题零 JS 开销）；自定义主题 fallback 注入 `<style>` + CSS 缓存到 localStorage
-- `App.tsx`：mount 时异步 `applyThemeFromConfig` 校正（首次运行/清缓存必需）+ 监听 `config-changed` 事件驱动
-- 后端：`list_themes` OnceLock 缓存 + `get_theme_id` 轻量单键读
-
-### 用户扩展
-
-`~/.octopus/themes/*.json` 格式：
-```json
-{
-  "id": "my-theme",
-  "name": "My Theme",
-  "blur": false,
-  "colors": {
-    "background": "#...",
-    "foreground": "#...",
-    "muted": "...",
-    "muted-foreground": "...",
-    "accent": "...",
-    "accent-foreground": "...",
-    "border": "...",
-    "voice": "...",
-    "primary": "...",
-    "primary-foreground": "...",
-    "surface": "...",
-    "tool-icon": "...",
-    "icon-filter": "none"
-  }
-}
-```
-同 id 用户主题覆盖内置。
 
 ---
 
@@ -286,9 +178,8 @@ SearchBar 内 `<input>` 的 `onKeyDown`：
 - Glance 实时信息条
 - Clipboard 与转写/OCR/LLM 的联动（需改造 `compact_editor_window` 查看器，二期）
 - 剪贴板条目的次级动作键盘快捷键（复制/编辑/删除/收藏仍鼠标驱动）
-- 分组展示（今天/昨天/收藏分组）、来源应用图标、别名编辑
+- 浮窗 UI 视觉改版、分组展示（今天/昨天/收藏分组）、来源应用图标、别名编辑
 - 富文本/HTML/RTF 支持、剪贴板合并、密码应用忽略
-- 主题编辑器（实时预览 + 颜色拾取器）、主题商店
 
 ---
 
