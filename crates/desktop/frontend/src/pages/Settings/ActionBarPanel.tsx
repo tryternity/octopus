@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { ChevronUp, ChevronDown, Pencil, Trash2, Plus, X } from "lucide-react";
-import { cn } from "@/lib/utils";
+import { ChevronUp, ChevronDown, Pencil, Trash2, Plus } from "lucide-react";
 import { ActionBarIcon } from "@/components/ActionBarIcon";
 
 interface ActionBarItem {

@@ -8,6 +8,7 @@ import {
   Wand2,
   Clipboard,
   Activity,
+  Command,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -16,6 +17,7 @@ import GeneralPanel from "./GeneralPanel";
 import ModelsPanel from "./ModelsPanel";
 import PromptsPanel from "./PromptsPanel";
 import SystemPanel from "./SystemPanel";
+import ActionBarPanel from "./ActionBarPanel";
 
 export interface ConfigResponse {
   config: Record<string, string | number | boolean>;
