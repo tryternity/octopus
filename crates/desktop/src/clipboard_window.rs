@@ -74,14 +74,14 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         if visible && focused {
             window.hide()?;
         } else {
-            // show 但不 set_focus——避免激活 app 导致 Regular 窗口（settings/compact_editor）
-            // 被带到前台。Accessory 窗口 show 后前端自动获焦点。
             window.show()?;
+            window.set_focus()?;
         }
     } else {
         create_clipboard_window(app)?;
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
             window.show()?;
+            window.set_focus()?;
         }
     }
     Ok(())

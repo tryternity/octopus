@@ -33,9 +33,8 @@ pub fn show_action_bar_window(app: &AppHandle, x: f64, y: f64) {
         let _ = win.set_position(tauri::Position::Logical(
             tauri::LogicalPosition::new(x, y),
         ));
-        // show 但不 set_focus——避免激活 app 导致 Regular 窗口
-        // （settings/compact_editor）被带到前台。与语音识别快捷键一致。
         let _ = win.show();
+        let _ = win.set_focus();
         let _ = app.emit("action-bar://show", ());
     }
 }
