@@ -59,15 +59,18 @@ export default function ActionBar() {
   const contextRef = useRef<Context | null>(null);
   const viewRef = useRef<View>("main");
   const submenuParentIdRef = useRef<number | null>(null);
+  const [focusLayer, setFocusLayer] = useState<"main" | "sub">("main");
+  const focusLayerRef = useRef<"main" | "sub">("main");
 
   useEffect(() => { viewRef.current = view; }, [view]);
+  useEffect(() => { focusLayerRef.current = focusLayer; }, [focusLayer]);
   useEffect(() => { contextRef.current = context; }, [context]);
 
   // mount + 每次 show 时拉取上下文 + 菜单
   useEffect(() => {
     const refresh = () => {
       invoke<Context | null>("action_bar_get_context").then((ctx) => {
-        if (ctx) { setContext(ctx); setView("main"); setSelectedIdx(0); setErrorMsg(""); }
+        if (ctx) { setContext(ctx); setView("main"); setSelectedIdx(0); setFocusLayer("main"); setErrorMsg(""); }
       });
     };
     refresh();
@@ -197,7 +200,8 @@ export default function ActionBar() {
     const handler = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         e.preventDefault();
-        if (viewRef.current === "submenu") { setView("main"); return; }
+        if (focusLayerRef.current === "sub") { setFocusLayer("main"); return; }
+        if (viewRef.current === "submenu") { setView("main"); submenuParentIdRef.current = null; return; }
         invoke("action_bar_dismiss");
         return;
       }
@@ -219,42 +223,50 @@ export default function ActionBar() {
 
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
         e.preventDefault();
-        // 左右键始终在主菜单移动；移到 submenu 项时展开子菜单预览
-        setSelectedIdx((prev) => {
-          const items = mainItemsRef.current;
-          const next = e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
-          const item = items[next];
-          if (item && item.actionType === "submenu") {
-            submenuParentIdRef.current = item.id;
-            const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === item.id);
-            if (subs.length > 0 && subs[0].actionType === "url") {
-              const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
-              setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
+        if (focusLayerRef.current === "sub") {
+          // 焦点在子菜单——左右键在子菜单移动
+          setSubSelectedIdx((prev) => {
+            const items = subItemsRef.current;
+            return e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
+          });
+        } else {
+          // 焦点在主菜单——左右键在主菜单移动，submenu 项自动展开子菜单预览
+          setSelectedIdx((prev) => {
+            const items = mainItemsRef.current;
+            const next = e.key === "ArrowRight" ? (prev + 1) % items.length : (prev - 1 + items.length) % items.length;
+            const item = items[next];
+            if (item && item.actionType === "submenu") {
+              submenuParentIdRef.current = item.id;
+              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === item.id);
+              if (subs.length > 0 && subs[0].actionType === "url") {
+                const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
+                setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
+              } else {
+                setSubSelectedIdx(0);
+              }
+              setView("submenu");
             } else {
-              setSubSelectedIdx(0);
+              submenuParentIdRef.current = null;
+              setView("main");
             }
-            setView("submenu");
-          } else {
-            // 非 submenu 项——收起子菜单
-            submenuParentIdRef.current = null;
-            setView("main");
-          }
-          return next;
-        });
+            return next;
+          });
+        }
         return;
       }
 
       if (e.key === "ArrowUp" || e.key === "ArrowDown") {
         e.preventDefault();
-        if (viewRef.current === "submenu") {
-          // 子菜单中上下键切回主菜单（焦点回到主菜单高亮项）
-          setView("main");
+        if (focusLayerRef.current === "sub") {
+          // 焦点从子菜单切回主菜单
+          setFocusLayer("main");
         } else {
-          // 主菜单中上下键进入子菜单选择（焦点切到子菜单）
+          // 焦点从主菜单进入子菜单
           const cur = mainItemsRef.current[selectedIdxRef.current];
           if (cur && cur.actionType === "submenu") {
             submenuParentIdRef.current = cur.id;
             setView("submenu");
+            setFocusLayer("sub");
             const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === cur.id);
             if (subs.length > 0 && subs[0].actionType === "url") {
               const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
@@ -269,12 +281,12 @@ export default function ActionBar() {
 
       if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
-        if (viewRef.current === "main") {
-          const item = mainItemsRef.current[selectedIdxRef.current];
-          if (item) executeItem(item);
-        } else if (viewRef.current === "submenu") {
+        if (focusLayerRef.current === "sub") {
           const items = subItemsRef.current;
           const item = items[subSelectedIdxRef.current];
+          if (item) executeItem(item);
+        } else {
+          const item = mainItemsRef.current[selectedIdxRef.current];
           if (item) executeItem(item);
         }
         return;
@@ -346,7 +358,7 @@ export default function ActionBar() {
             key={item.id}
             icon={item.icon}
             label={item.title}
-            active={subSelectedIdx === i}
+            active={focusLayer === "sub" && subSelectedIdx === i}
             onClick={() => executeItem(item)}
           />
         ))}
