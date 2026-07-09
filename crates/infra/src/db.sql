@@ -295,3 +295,14 @@ INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type,
     (8, 3, 'Google', 'search', 'url', 'https://www.google.com/search?q={text}', 0, 1),
     (9, 3, '百度',   'search', 'url', 'https://www.baidu.com/s?wd={text}', 1, 1),
     (10, 3, 'Bing',  'search', 'url', 'https://www.bing.com/search?q={text}', 2, 1);
+
+-- ── ASR 热词（active=生效/pending=挖掘待确认）──────────────────
+CREATE TABLE IF NOT EXISTS hotwords (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    word        TEXT    NOT NULL UNIQUE,
+    status      TEXT    NOT NULL DEFAULT 'active',   -- 'active' | 'pending'
+    source      TEXT    NOT NULL DEFAULT 'manual',   -- 'manual' | 'mined'
+    hit_count   INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_hotwords_status ON hotwords(status);

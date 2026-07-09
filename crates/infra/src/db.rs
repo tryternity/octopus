@@ -166,12 +166,13 @@ where
 /// 开发期无历史库需兼容（用户确认），故不保留 v1-v16 迁移/DROP 兜底。
 /// v18：FTS5 backfill（历史行补入索引），搜索走 MATCH。
 /// v19：新增 action_bar_items 表（db.sql IF NOT EXISTS 自动创建）。
+/// v20：新增 hotwords 表（db.sql IF NOT EXISTS 自动创建）。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 19 {
+    if v >= 20 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -187,16 +188,17 @@ fn init_schema(conn: &Connection) -> Result<()> {
             ).context("FTS5 backfill")?;
         }
         // v18→v19：action_bar_items 表由 db.sql 的 IF NOT EXISTS 自动创建，重跑 INIT_SQL 幂等
+        // v19→v20：hotwords 表由 db.sql 的 IF NOT EXISTS 自动创建，重跑 INIT_SQL 幂等
         conn.execute_batch(INIT_SQL).ok();
-        conn.execute("PRAGMA user_version = 19", [])?;
-        log::info!("schema upgraded to v19 (action_bar_items)");
+        conn.execute("PRAGMA user_version = 20", [])?;
+        log::info!("schema upgraded to v20 (hotwords)");
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 19", [])?;
-    log::info!("DB initialized (v19): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 20", [])?;
+    log::info!("DB initialized (v20): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1410,13 +1412,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v19() {
+    fn init_schema_fresh_db_builds_v20() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 19, "全新库 init_schema 后应到 v19");
+        assert_eq!(v, 20, "全新库 init_schema 后应到 v20");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -1430,16 +1432,26 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_v19_is_noop() {
-        // 已是 v19 的库再调 init_schema 应早退（不重跑、不报错）
+    fn init_schema_v20_is_noop() {
+        // 已是 v20 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 19", []).unwrap();
+        conn.execute("PRAGMA user_version = 20", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 19);
+        assert_eq!(v, 20);
+    }
+
+    #[test]
+    fn hotwords_table_exists_after_init() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM hotwords", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0, "hotwords 表应存在且初始为空");
     }
 
     #[test]
