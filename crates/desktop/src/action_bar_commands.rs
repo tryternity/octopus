@@ -127,7 +127,11 @@ pub fn action_bar_dismiss(app: AppHandle) {
 /// 结果写入剪贴板留给用户——不恢复原始剪贴板（与 dismiss/open_url 不同）。
 #[tauri::command]
 pub fn action_bar_show_result(result: String, _original_text: String, action: String, app: AppHandle) {
-    hide_action_bar_window(&app);
+    // 只隐藏浮窗本身——不调 hide_action_bar_window（含 after_floating_window_hide → deactivate），
+    // 因为接下来要展示 CompactEditor，deactivate 会导致新窗口被压在后台。
+    if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+        let _ = win.hide();
+    }
 
     let label = match action.as_str() {
         "translate" => "翻译",
@@ -317,8 +321,17 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
     };
 
     let mut child = result.map_err(|e| format!("脚本执行失败: {}", e))?;
-    // 后台收割子进程退出状态，防止僵尸进程堆积
+    // 后台收割子进程退出状态，60 秒超时强杀，防止僵尸进程 + 线程泄漏
     std::thread::spawn(move || {
+        for _ in 0..120 {
+            match child.try_wait() {
+                Ok(Some(_)) => return,
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
+                Err(_) => return,
+            }
+        }
+        // 超时强杀
+        let _ = child.kill();
         let _ = child.wait();
     });
     Ok(())

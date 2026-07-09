@@ -65,6 +65,9 @@ use parking_lot::Mutex;
 use once_cell::sync::Lazy;
 
 static TEMP_HIDDEN: Lazy<Mutex<Vec<String>>> = Lazy::new(|| Mutex::new(Vec::new()));
+/// 浮窗嵌套深度——多个浮窗重叠唤起时，只有最外层（depth 回到 0）才交还焦点。
+/// 解决 WAS_INACTIVE 被第二个浮窗覆盖的问题。
+static FLOAT_DEPTH: Lazy<Mutex<u32>> = Lazy::new(|| Mutex::new(0));
 static WAS_INACTIVE: Lazy<Mutex<bool>> = Lazy::new(|| Mutex::new(false));
 
 #[cfg(target_os = "macos")]
@@ -86,37 +89,56 @@ pub fn before_floating_window_show(app: &tauri::AppHandle) {
 
     if let Some(mtm) = MainThreadMarker::new() {
         let app_ns = NSApplication::sharedApplication(mtm);
-        let is_inactive = !app_ns.isActive();
-        *WAS_INACTIVE.lock() = is_inactive;
+        let depth = {
+            let mut d = FLOAT_DEPTH.lock();
+            *d += 1;
+            *d
+        };
 
-        // 记录前台应用（焦点交还目标）
-        let workspace = NSWorkspace::sharedWorkspace();
-        if let Some(front_app) = workspace.frontmostApplication() {
-            let curr = NSRunningApplication::currentApplication();
-            if front_app.processIdentifier() != curr.processIdentifier() {
-                *PREV_APP.lock() = Some(SendApp(front_app));
-            }
-        }
+        // 只有最外层（depth == 1）才记录前台 app + 判断 inactive
+        if depth == 1 {
+            let is_inactive = !app_ns.isActive();
+            *WAS_INACTIVE.lock() = is_inactive;
 
-        // app 后台时临时隐藏其他窗口（Regular + 其他浮窗）
-        if is_inactive {
-            let mut hidden = Vec::new();
-            for label in WINDOWS_TO_HIDE_ON_FLOAT {
-                if let Some(w) = app.get_webview_window(label) {
-                    if w.is_visible().unwrap_or(false) {
-                        let _ = w.hide();
-                        hidden.push(label.to_string());
-                    }
+            // 记录前台应用（焦点交还目标）
+            let workspace = NSWorkspace::sharedWorkspace();
+            if let Some(front_app) = workspace.frontmostApplication() {
+                let curr = NSRunningApplication::currentApplication();
+                if front_app.processIdentifier() != curr.processIdentifier() {
+                    *PREV_APP.lock() = Some(SendApp(front_app));
                 }
             }
-            *TEMP_HIDDEN.lock() = hidden;
+
+            // app 后台时临时隐藏其他窗口
+            if is_inactive {
+                let mut hidden = Vec::new();
+                for label in WINDOWS_TO_HIDE_ON_FLOAT {
+                    if let Some(w) = app.get_webview_window(label) {
+                        if w.is_visible().unwrap_or(false) {
+                            let _ = w.hide();
+                            hidden.push(label.to_string());
+                        }
+                    }
+                }
+                *TEMP_HIDDEN.lock() = hidden;
+            }
         }
     }
 }
 
 /// 浮窗 hide 后调用：交还前台焦点给原 app + 恢复被隐藏的 Regular 窗口。
+/// 只有最外层（depth 回到 0）才执行交还焦点。
 #[cfg(target_os = "macos")]
 pub fn after_floating_window_hide(app: &tauri::AppHandle) {
+    let depth = {
+        let mut d = FLOAT_DEPTH.lock();
+        if *d > 0 { *d -= 1; }
+        *d
+    };
+
+    // 只有最外层才交还焦点 + 恢复窗口
+    if depth > 0 { return; }
+
     let was_inactive = {
         let mut guard = WAS_INACTIVE.lock();
         std::mem::replace(&mut *guard, false)
