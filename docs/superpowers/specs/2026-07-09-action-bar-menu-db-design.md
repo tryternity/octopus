@@ -250,7 +250,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 
 **show 时**：
 1. 记录当前前台 app（`NSWorkspace.frontmostApplication`）
-2. 若 octopus app 非活跃（用户在其他 app），临时隐藏所有可见 Regular 窗口（settings/compact_editor）
+2. 若 octopus app 非活跃（用户在其他 app），临时隐藏所有可见的其他窗口（settings/compact_editor/clipboard_window，`WINDOWS_TO_HIDE_ON_FLOAT`）
 3. `set_focus()` 激活浮窗——此时 Regular 窗口已隐藏，只有浮窗弹出到前台并获得键盘焦点
 
 **hide 时**：
