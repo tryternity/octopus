@@ -33,17 +33,17 @@ const IconBtn = ({ icon, label, active, onClick }: {
 }) => (
   <button
     className={cn(
-      "flex flex-col items-center justify-center gap-1 px-3.5 py-2 rounded-xl transition-all duration-150 min-w-[48px]",
+      "flex flex-col items-center justify-center gap-0.5 px-3 py-1 rounded-lg transition-all duration-150 min-w-[44px]",
       active
-        ? "bg-voice/12 text-voice shadow-sm"
+        ? "bg-voice/12 text-voice"
         : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
     )}
     onMouseDown={(e) => e.stopPropagation()}
     onClick={onClick}
     title={label}
   >
-    <ActionBarIcon icon={icon} className="text-[18px]" />
-    <span className="text-[10px] font-medium leading-none">{label}</span>
+    <ActionBarIcon icon={icon} className="text-[15px]" />
+    <span className="text-[9px] font-medium leading-none">{label}</span>
   </button>
 );
 
