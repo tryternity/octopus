@@ -246,7 +246,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 
 #### ⚠️ 窗口焦点策略（强需求，勿改错）
 
-**全局快捷键不得将 settings/compact_editor 带到前台。** macOS 上 WKWebView 要求 app 进程 active 才能获得键盘焦点，而 `set_focus` 触发的 `NSApp.activate` 会把所有可见 Regular 窗口带到前台。采用**视觉焦点协调方案**（`activation::before_floating_window_show` / `after_floating_window_hide` 公共函数）：
+**全局快捷键不得将 settings/compact_editor 带到前台。** macOS 上 WKWebView 要求 app 进程 active 才能获得键盘焦点，而 `set_focus` 触发的 `NSApp.activate` 会把所有可见 Regular 窗口带到前台。采用**视觉焦点协调方案**（`activation::before_floating_window_show` / `after_floating_window_hide` 公共函数，`FLOAT_DEPTH` 引用计数支持多浮窗嵌套——只有最外层 depth==1 记录状态/交还焦点）：
 
 **show 时**：
 1. 记录当前前台 app（`NSWorkspace.frontmostApplication`）
@@ -259,6 +259,10 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 
 **剪贴板浮窗失焦恢复**（`restore_hidden_windows_only`）：
 剪贴板是 toggle 模式（always-on-top 可见，点击外部不 hide）。用户切到其他 app 后剪贴板失焦（`Focused(false)` 事件）但 Regular 窗口仍隐藏 → Dock 图标点击无效。解法：失焦时 `deactivate` app + `show` 恢复被隐藏的窗口 + 清除状态。不交还前台焦点（剪贴板仍可见）。
+
+**多浮窗嵌套**（`FLOAT_DEPTH` 引用计数）：多个浮窗重叠唤起时（如剪贴板可见时唤出 action bar），`before_floating_window_show` 增加 depth，只有最外层（depth==1）才记录前台 app + 隐藏 Regular 窗口。`after_floating_window_hide` 减少 depth，只有回到 0 才交还焦点 + 恢复窗口。防止第二个浮窗覆盖第一个的 `WAS_INACTIVE` 状态。
+
+**AI 结果展示时序**（`action_bar_show_result`）：不调 `hide_action_bar_window`（含 `after_floating_window_hide` → `deactivate`），直接 `win.hide()` 浮窗。因为接下来要创建/展示 CompactEditor，`deactivate` 会导致新窗口被压在后台不可见。
 
 **应用范围**：action bar + 剪贴板浮窗（需键盘操作）。语音识别窗无强键盘需求，保持现状不处理。
 
