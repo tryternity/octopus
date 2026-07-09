@@ -66,24 +66,22 @@ export default function ActionBar() {
   useEffect(() => { focusLayerRef.current = focusLayer; }, [focusLayer]);
   useEffect(() => { contextRef.current = context; }, [context]);
 
-  // mount + 每次 show 时拉取上下文 + 菜单
+  // mount + 每次 show 时拉取上下文 + 菜单 + 配置
   useEffect(() => {
     const refresh = () => {
       invoke<Context | null>("action_bar_get_context").then((ctx) => {
         if (ctx) { setContext(ctx); setView("main"); setSelectedIdx(0); setFocusLayer("main"); setErrorMsg(""); }
       });
+      // 每次唤起都重新加载菜单项 + 配置（设置页可能已改）
+      invoke<ActionBarItem[]>("list_action_bar_items").then((items) => {
+        setMenuItems(items);
+      });
+      invoke<{ config: Record<string, string | number | boolean> }>("get_config").then((resp) => {
+        searchEngineRef.current = (resp.config.action_bar_search_engine as string) || "google";
+      });
     };
     refresh();
     const listenPromise = rawListen("action-bar://show", () => refresh());
-
-    // 加载菜单项
-    invoke<ActionBarItem[]>("list_action_bar_items").then((items) => {
-      setMenuItems(items);
-    });
-
-    invoke<{ config: Record<string, string | number | boolean> }>("get_config").then((resp) => {
-      searchEngineRef.current = (resp.config.action_bar_search_engine as string) || "google";
-    });
 
     return () => { listenPromise.then((fn: () => void) => fn()); };
   }, []);
@@ -321,7 +319,7 @@ export default function ActionBar() {
         <button
           className="text-[11px] text-muted-foreground hover:text-foreground transition-colors w-fit"
           onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => getCurrentWindow().hide()}
+          onClick={() => invoke("action_bar_dismiss")}
         >关闭</button>
       </div>
     );
