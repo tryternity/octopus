@@ -20,6 +20,7 @@
 - **已有基础设施复用**：`chat_text_with_prompt`（LLM 调用）、`finalize_action_bar`（出口收口）、`timedOutRef`（前端超时）。
 - **Tauri 命令注册**：新命令必须加入 `main.rs` 的 `invoke_handler` 列表，否则前端 invoke 被拒。
 - **按钮布局**：水平「图标+文字」一行排列（`flex-row`），窗口 380×76px。浮窗在用户内容上方，必须矮。
+- **键盘导航（⚠️ 强需求，勿改错）**：**上下键切换主子菜单层级，左右键在当前行移动选择。** 焦点层（`focusLayer: main/sub`）独立于视图层（`view: main/submenu`）——左右键在主菜单移到 submenu 项时自动展开子菜单预览，但焦点不跳，必须上下键才进入子菜单。
 
 ---
 
