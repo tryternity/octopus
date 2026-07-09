@@ -13,6 +13,14 @@ const REGULAR_WINDOWS: &[&str] = &[
     "compact_editor_window",
 ];
 
+/// 浮窗 show 时需临时隐藏的其他窗口（Regular + 其他浮窗），
+/// 防止 set_focus 激活 app 后这些窗口抢焦点。
+const WINDOWS_TO_HIDE_ON_FLOAT: &[&str] = &[
+    "settings_window",
+    "compact_editor_window",
+    "clipboard_window",
+];
+
 /// 某常规窗口关闭后调用：仅当无其他常规窗口存活时才切回 Accessory。
 ///
 /// 必须在 `WindowEvent::Destroyed`（窗口已从 app 移除）里调用——此时被关窗口的
@@ -90,10 +98,10 @@ pub fn before_floating_window_show(app: &tauri::AppHandle) {
             }
         }
 
-        // app 后台时临时隐藏 Regular 窗口
+        // app 后台时临时隐藏其他窗口（Regular + 其他浮窗）
         if is_inactive {
             let mut hidden = Vec::new();
-            for label in REGULAR_WINDOWS {
+            for label in WINDOWS_TO_HIDE_ON_FLOAT {
                 if let Some(w) = app.get_webview_window(label) {
                     if w.is_visible().unwrap_or(false) {
                         let _ = w.hide();
