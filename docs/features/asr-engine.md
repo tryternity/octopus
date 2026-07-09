@@ -158,6 +158,8 @@
 
 ## 特征提取
 
+> 设计决策、引擎配置矩阵、勿改清单详见 [fbank 特征提取 spec](../superpowers/specs/2026-07-09-asr-fbank-feature-extraction-design.md)（SenseVoice 真实音频乱码根因 + 对齐 kaldi_native_fbank）。本节为实现细节。
+
 `crates/asr-local/src/feature.rs`——共享特征提取设施（mel filterbank 参数化 high_freq、apply_lfr、hz_to_mel/mel_to_hz、hamming/povey 窗口），抽取自 paraformer/fbank/zipformer 三处重复实现。
 
 ### Whisper 特征归一化（per-chunk）
