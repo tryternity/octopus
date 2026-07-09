@@ -62,4 +62,7 @@
 4. **capabilities 白名单**——新窗口必须加入。
 5. **CompactEditor isTemp**——AI 结果不写 DB，保存按钮灰掉。
 6. **热键前隐藏常规窗口**——防 app 激活时窗口抢焦点。
-7. **物理/逻辑坐标**——CGEvent 返回物理像素，必须除 scale。
+7. **坐标 API 区分**（⚠️ 关键）——`CGEvent::location()` 返回**逻辑坐标（points）**，不除 scale；`Monitor::position()/size()` 返回**物理像素**，必须除 scale。曾误把 CGEvent 当物理坐标除 scale → 浮窗位置偏到完全无关的地方。
+8. **show 调用传 win_x 不是 mx**——计算 `win_x = mx - 130` 后 show 传了原始 mx → X 没居中。
+9. **Y 偏移**——初始只显示主菜单一行（~44px），不是两行（~84px）。`my - 48` 不是 `my - 84`。
+10. **executeSubItem 用 submenuTypeRef**——用 `submenuType` state 闭包捕获的是旧值 null，改为 ref。

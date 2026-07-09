@@ -206,19 +206,26 @@ Transducer 系列（`zh-int8-2025-06-30` / `zh-xlarge-int8-2025-06-30`）和 `zi
 
 **诊断方法**：`cargo test -p octopus-asr-local --lib streaming_paraformer::tests::test_streaming_paraformer_real_model -- --nocapture`，对比输出与 sherpa-onnx 参考值 `"昨天是 monday today day is 礼拜二 the day after tomorrow 是星期"`。详见 [spec](docs/superpowers/specs/2026-06-21-paraformer-fbank-feature-extraction-fix.md)。
 
-### 物理/逻辑坐标转换（⚠️ 已踩坑 5+ 次，勿再搞错）
+### 物理/逻辑坐标转换（⚠️ 已踩坑 6+ 次，勿再搞错）
 
-macOS 下所有获取屏幕坐标的 API（`CGEvent::location()`、`Monitor::position()`、`Monitor::size()`、`NSWindow.frame`）返回的都是**物理像素**（Retina 下如 2880×1800），而 Tauri `LogicalPosition` / `LogicalSize` 是**逻辑像素**（1440×900）。两者比例 = `scale_factor()`（Retina=2.0）。
+macOS 有**两套**坐标 API，**必须区分**：
 
-**任何坐标/尺寸比较或窗口定位都必须统一到逻辑像素**——物理值 ÷ `scale_factor()`。
+| API | 返回单位 | 除 scale？ | 用途 |
+|-----|---------|:---------:|------|
+| `CGEvent::location()` | **逻辑坐标（points）** | ❌ 不除 | 鼠标位置 |
+| `Monitor::position()` / `Monitor::size()` | **物理像素** | ✅ 除 | 显示器范围/位置 |
+| `window.inner_position()` / `inner_size()` | **逻辑坐标** | ❌ 不除 | 窗口位置/尺寸（Tauri 自动转换） |
+
+**曾犯错误**：把 `CGEvent::location()` 当物理坐标除 scale → 浮窗位置偏到完全无关的地方、副屏选中浮窗出现在主屏。`CGEvent` 返回的就是 Quartz 逻辑坐标（points），与 Tauri `LogicalPosition` 一致。
+
+**任何坐标比较**（如判断鼠标是否在某显示器范围内）必须统一到逻辑坐标。Monitor 的物理值 ÷ `scale_factor()` 转逻辑。
 
 已修复的文件：
-- `action_bar_commands.rs::get_mouse_position`——CGEvent 物理坐标 ÷ scale
-- `compact_editor_window.rs::on_compact_editor_save_state`——inner_position/inner_size 已是逻辑值（Tauri API 自动转换），但 `Monitor::position()` 必须除 scale
+- `action_bar_commands.rs::get_mouse_position`——CGEvent 不除 scale（曾错误除过）
+- `compact_editor_window.rs`——Monitor position/size 除 scale
 - `window_position.rs::is_position_visible`——Monitor position/size 除 scale
-- `compact_editor_window.rs` 最大化恢复——Monitor position/size 除 scale
 
-**诊断方法**：日志打印 raw 坐标 + scale factor，对比预期逻辑值。
+**诊断方法**：日志打印 raw 坐标 + scale factor，对比预期逻辑值（主屏左上角应该是 ~0,0；1440×900 逻辑屏的右下角应该是 ~1440,900）。
 
 ### Tauri 2 窗口创建注意事项（已踩坑多次）
 
