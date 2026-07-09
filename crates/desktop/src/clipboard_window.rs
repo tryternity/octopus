@@ -34,12 +34,19 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         }
     });
 
-    // 移动结束后保存位置
+    // 移动结束后保存位置 + 失焦时恢复被隐藏的 Regular 窗口
     let win_clone = window.clone();
-    window.on_window_event(move |event| {
-        if let tauri::WindowEvent::Moved(_) = event {
+    let app_clone = app.clone();
+    window.on_window_event(move |event| match event {
+        tauri::WindowEvent::Moved(_) => {
             crate::window_position::save_current_position(&win_clone, WINDOW_LABEL);
         }
+        tauri::WindowEvent::Focused(false) => {
+            // 剪贴板失焦（用户切到其他 app）——恢复被隐藏的 Regular 窗口
+            #[cfg(target_os = "macos")]
+            { crate::activation::restore_hidden_windows_only(&app_clone); }
+        }
+        _ => {}
     });
 
     Ok(())

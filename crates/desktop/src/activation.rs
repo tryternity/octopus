@@ -152,3 +152,34 @@ pub fn after_floating_window_hide(app: &tauri::AppHandle) {
         }
     }
 }
+
+/// 恢复被隐藏的窗口但不交还前台焦点——用于剪贴板浮窗失焦场景。
+/// 剪贴板是 toggle 模式（always-on-top 可见，点击外部不 hide），
+/// 用户切到其他 app 时需恢复 Regular 窗口，但不主动交还焦点
+/// （剪贴板仍可见，用户可能只是瞄一眼其他 app）。
+#[cfg(target_os = "macos")]
+pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
+    // 恢复临时隐藏的窗口
+    let hidden = {
+        let mut guard = TEMP_HIDDEN.lock();
+        std::mem::take(&mut *guard)
+    };
+    if hidden.is_empty() { return; }
+
+    // deactivate 让我们的 app 退到后台，窗口温和恢复
+    use objc2::MainThreadMarker;
+    use objc2_app_kit::NSApplication;
+    if let Some(mtm) = MainThreadMarker::new() {
+        NSApplication::sharedApplication(mtm).deactivate();
+    }
+
+    for label in hidden {
+        if let Some(w) = app.get_webview_window(&label) {
+            let _ = w.show();
+        }
+    }
+
+    // 清除状态——后续 toggle 剪贴板会重新走 before_floating_window_show
+    *WAS_INACTIVE.lock() = false;
+    let _ = PREV_APP.lock().take();
+}
