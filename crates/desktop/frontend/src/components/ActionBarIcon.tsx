@@ -1,3 +1,5 @@
+import { useMemo } from "react";
+
 interface ActionBarIconProps {
   icon: string;
   className?: string;
@@ -14,31 +16,24 @@ const LUCIDE_PATHS: Record<string, string> = {
 };
 
 export function ActionBarIcon({ icon, className }: ActionBarIconProps) {
-  if (icon.startsWith("<svg")) {
-    return (
-      <span
-        className={className}
-        style={{ display: "inline-flex", alignItems: "center", justifyContent: "center" }}
-        dangerouslySetInnerHTML={{ __html: icon }}
-      />
-    );
-  }
+  const svgInner = useMemo(() => {
+    if (icon.startsWith("<svg")) {
+      // 从内联 SVG 中提取 inner HTML（path/circle 等）
+      const match = icon.match(/<svg[^>]*>([\s\S]*)<\/svg>/i);
+      return match ? match[1] : "";
+    }
+    return LUCIDE_PATHS[icon] || "";
+  }, [icon]);
 
-  const path = LUCIDE_PATHS[icon];
-  if (path) {
-    return (
-      <svg
-        className={className}
-        viewBox="0 0 24 24"
-        fill="none"
-        stroke="currentColor"
-        strokeWidth="2"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        dangerouslySetInnerHTML={{ __html: path }}
-      />
-    );
-  }
+  if (!svgInner) return null;
 
-  return null;
+  return (
+    <span
+      className={className}
+      style={{ display: "inline-flex", alignItems: "center", justifyContent: "center" }}
+      dangerouslySetInnerHTML={{
+        __html: `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" width="100%" height="100%">${svgInner}</svg>`,
+      }}
+    />
+  );
 }
