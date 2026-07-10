@@ -456,11 +456,11 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需下载——`octopus-cli download <repo>`（命令行）或设置窗口「模型管理」页（GUI）下到 `~/.octopus/models/<repo>/`（阶段1 接 `octopus-download`），兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型。
 
-**GUI 模型管理（设置窗口页面 3）**：`crates/desktop/src/model_commands.rs`（独立模块，与 `settings_commands.rs` 分离以降低与 setting-ui2 分支的合并冲突）4 个 Tauri 命令——
-- `list_downloadable_models`：**v2 直读 DB** `list_all_local_asr_models`（`domain='asr' AND is_local=1`，**不过滤 is_enabled**——区别于 `load_models_at` 的引擎选择用），按 `is_enabled` 显示就绪/下载。
-- `download_model(repo)`：**v2 先探查** `resolve_model_dir`——命中（文件已就绪，如 hf-cache 旧模型）则自举 sha256 清单写 `secret_key` + 置 `is_enabled=true`（**不重下**）；未命中才下载（复用 download crate：`HfRequest` + `resolve_tasks` + 逐文件 `Downloader::download`，mpsc 进度转事件 `download-progress`/`download-file`），完成后自举 + 置 true。完成 emit `download-done{already_ready}`。
-- `verify_model(model_name, repo)`：**v2 新增**完整性复核——按 `secret_key` 清单逐文件 sha256 比对；空清单则自举；损坏/缺失置 `is_enabled=false` 并返回损坏清单。
-- `set_download_mirror(value)`：专用命令（`set_config.apply_config_value` 无 `download_mirror` 分发，独立命令免改 `settings_commands.rs`）。
+**GUI 模型管理（设置窗口页面 3，5 tab 化 2026-07-10）**：`ModelsPanel` 重构为 5 tab——常量（环境变量编辑器）/语音识别/文本模型/扫描识别/翻译模型。每个模型 tab 分**本地**和**云端**两个 section（`is_local` 字段区分），顶部显示「当前使用」模型标记。`crates/desktop/src/model_commands.rs` 命令——
+- `list_downloadable_models`：**v2 直读 DB** `list_all_local_asr_models`（`domain='asr' AND is_local=1`，**不过滤 is_enabled**），按 `is_enabled` 显示就绪/下载。
+- `download_model(repo)`：**v2 先探查** → 未命中下载。**变量模板替换**：repo 中 `{huggingface}` 等占位符替换为 DB `category='env'` 环境变量实际值（替代旧 `download_mirror` 前缀拼接）。
+- `verify_model`：完整性 sha256 复核。
+- `get_env_vars` / `set_env_var` / `delete_env_var_cmd`：环境变量 CRUD（category='env'，内置 huggingface/modelscope/github 不可删）。DB v22 迁移补 seed。
 
 **is_enabled 语义 = 文件就绪（v2）**：`true`=文件完备可被引擎加载，`false`=未就绪/未下载。写 DB 后调 `asr::config::reload_models_config()` 刷新 AsrConfig 缓存（`RUNTIME_CONFIG` v2 改 `RwLock<Option<Arc<AsrConfig>>>`，对齐 `APP_CONFIG` 模式），让「系统设置」引擎下拉即时更新——未就绪的模型不进下拉。local 模型 `secret_key` 重载为「文件清单 + sha256」JSON（api 模型仍是 key，按 `is_local` 分支，不冲突）。前端 `dist/settings/models.js`（IIFE 隔离；卡片按 is_enabled 显示「✓ 已就绪（+重新校验）/ 下载」；`index.html` 仅两处局部改动——`#page-models` 容器 + `<script src="models.js">`）。manifest（文件清单 + sha256，map 格式存 secret_key）下沉 `asr::manifest`，desktop/cli 共用；**cli `octopus-cli sync-models`** 批量扫描就绪本地模型、自举写 secret_key + 同步 is_enabled（首次填充/批量复核）。spec `superpowers/specs/2026-06-21-archived-spec.md#model-management-gui-design` §9。
 
