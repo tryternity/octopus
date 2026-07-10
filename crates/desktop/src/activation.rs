@@ -67,14 +67,17 @@
 //!
 //! | | |
 //!|---|---|
-//! | **depth 变化** | `N → N-1`（`if >0` 防下溢）—— **无条件**，不论 depth 值 |
-//! | **状态清理** | **无条件**清 `WAS_INACTIVE`/`PREV_APP`（在 `TEMP_HIDDEN.is_empty()` 检查之前） |
-//! | **有 TEMP_HIDDEN 时** | `deactivate()` + 恢复窗口 |
-//! | **无 TEMP_HIDDEN 时** | 仅 depth-1 + 清状态，直接 return |
+//! | **depth 变化** | `N → N-1`（`if >0` 防下溢） |
+//! | **depth>0 时** | **直接 return**——不清状态、不 deactivate（有嵌套浮窗存活，如 action_bar） |
+//! | **depth==0 时** | 清 `WAS_INACTIVE`/`PREV_APP` + 恢复 `TEMP_HIDDEN` 窗口 + `deactivate()` |
 //! | **调用方** | `clipboard_window` `Focused(false)` 事件回调（窗口事件=主线程） |
 //! | **线程要求** | `deactivate()` 需 `MainThreadMarker` |
 //!
-//! **为什么无条件**：剪贴板 toggle 模式下失焦=虚拟关闭，但 toggle 的 else 分支
+//! **为什么 depth>0 不清状态**：剪贴板失焦时 action_bar 可能仍在前台。
+//! 若无条件清 WAS_INACTIVE/PREV_APP，外层浮窗的焦点协调状态丢失 → 后续快捷键失效。
+//! 纯逻辑经 `float_depth_decrement_and_is_zero` 提取，单测覆盖 5 场景。
+//!
+//! **为什么必须扣减 depth**：剪贴板 toggle 模式下失焦=虚拟关闭，但 toggle 的 else 分支
 //!（`visible && !focused`）会重新 `before_show` → depth+1。若虚拟关闭不扣减，
 //!每次「唤出→失焦→拉回→关闭」depth 单调递增，焦点协调彻底瘫痪。
 //!

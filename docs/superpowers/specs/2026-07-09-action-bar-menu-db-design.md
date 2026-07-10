@@ -211,7 +211,7 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移
 2. `show` 恢复被隐藏的 Regular 窗口——此时 octopus app 已在后台，窗口温和恢复不跳前台
 
 **剪贴板浮窗失焦恢复**（`restore_hidden_windows_only`）：
-剪贴板是 toggle 模式（always-on-top 可见，点击外部不 hide）。用户切到其他 app 后剪贴板失焦（`Focused(false)` 事件）但 Regular 窗口仍隐藏 → Dock 图标点击无效。失焦 = **虚拟关闭**：扣减 `FLOAT_DEPTH` + 清 `WAS_INACTIVE`/`PREV_APP` 状态 + 恢复被隐藏窗口 + `deactivate`。不交还前台焦点（剪贴板仍可见）。**必须扣减 depth**——否则 toggle 的 else 分支（`visible=true, focused=false`）重新 `before_show` 会使 depth 累加泄漏，焦点交还机制最终瘫痪。
+剪贴板是 toggle 模式（always-on-top 可见，点击外部不 hide）。用户切到其他 app 后剪贴板失焦（`Focused(false)` 事件）但 Regular 窗口仍隐藏 → Dock 图标点击无效。失焦 = **虚拟关闭**：扣减 `FLOAT_DEPTH`（`float_depth_decrement_and_is_zero`）。**depth>0（仍有浮窗存活，如 action_bar）时直接 return**——不清状态、不 deactivate、不恢复隐藏窗口（否则会清掉外层浮窗的焦点协调状态 → 后续快捷键失效）。只有 depth==0（所有浮窗关闭）才清 `WAS_INACTIVE`/`PREV_APP` 状态 + 恢复隐藏窗口 + `deactivate`。**必须扣减 depth**——否则 toggle 的 else 分支重新 `before_show` 会使 depth 累加泄漏。
 
 **多浮窗嵌套**（`FLOAT_DEPTH` 引用计数）：多个浮窗重叠唤起时（如剪贴板可见时唤出 action bar），`before_floating_window_show` 增加 depth，只有最外层（depth==1）才记录前台 app + 隐藏 Regular 窗口。`after_floating_window_hide` 减少 depth，只有回到 0 才交还焦点 + 恢复窗口。防止第二个浮窗覆盖第一个的 `WAS_INACTIVE` 状态。
 
