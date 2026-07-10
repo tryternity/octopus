@@ -90,6 +90,15 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             // 剪贴板失焦（用户切到其他 app）——恢复被隐藏的 Regular 窗口
             #[cfg(target_os = "macos")]
             { crate::activation::restore_hidden_windows_only(&app_clone); }
+
+            // docked 态下失焦 → 收缩
+            let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
+            if let Some(ref edge) = docked {
+                if edge == "right" || edge == "left" {
+                    crate::clipboard_dock::apply_dock_collapsed(&win_clone);
+                    let _ = app_clone.emit("clipboard://collapse", ());
+                }
+            }
         }
         _ => {}
     });
