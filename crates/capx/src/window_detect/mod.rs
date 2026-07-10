@@ -120,6 +120,12 @@ pub fn pick_top_window(
     best.map(|(_, r)| r)
 }
 
+#[cfg(target_os = "macos")]
+mod macos;
+
+#[cfg(target_os = "macos")]
+pub use macos::{hit_test_window_global, MacOsDetector};
+
 #[cfg(test)]
 mod tests {
     use super::*;
