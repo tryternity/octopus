@@ -5,7 +5,6 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
 import { Loader2 } from "lucide-react";
 import { detectActionUrl } from "./urlDetect";
-import { ActionBarIcon } from "@/components/ActionBarIcon";
 
 interface Context {
   text: string;
@@ -28,12 +27,12 @@ interface ActionBarItem {
 const AI_TRANSLATE_TIMEOUT_MS = 5000;
 const AI_TIMEOUT_MS = 10000;
 
-const IconBtn = ({ icon, label, active, onClick }: {
-  icon: string; label: string; active: boolean; onClick: () => void;
+const IconBtn = ({ index, label, active, onClick }: {
+  index: number; label: string; active: boolean; onClick: () => void;
 }) => (
   <button
     className={cn(
-      "flex items-center gap-1.5 px-2.5 py-1.5 rounded-lg transition-all duration-150",
+      "flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all duration-150",
       active
         ? "bg-voice/12 text-voice"
         : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
@@ -42,7 +41,16 @@ const IconBtn = ({ icon, label, active, onClick }: {
     onClick={onClick}
     title={label}
   >
-    <ActionBarIcon icon={icon} className="text-[14px]" />
+    <span
+      className={cn(
+        "inline-flex h-[18px] w-[18px] items-center justify-center rounded-md font-mono text-[11px] font-semibold tabular-nums leading-none",
+        active
+          ? "bg-voice text-white"
+          : "bg-muted text-muted-foreground",
+      )}
+    >
+      {index}
+    </span>
     <span className="text-[10px] font-medium leading-none whitespace-nowrap">{label}</span>
   </button>
 );
@@ -69,7 +77,7 @@ export default function ActionBar() {
   // 动态调整窗口高度——主菜单 1 行（~40px），子菜单 2 行（~76px），
   // 避免透明区域遮挡下层点击
   useEffect(() => {
-    const height = view === "submenu" ? 76 : view === "loading" ? 48 : view === "error" ? 60 : 40;
+    const height = view === "submenu" ? 78 : view === "loading" ? 48 : view === "error" ? 60 : 40;
     const win = getCurrentWindow();
     win.setSize(new LogicalSize(380, height)).catch(() => {});
   }, [view]);
@@ -217,17 +225,34 @@ export default function ActionBar() {
 
       if (viewRef.current === "loading" || viewRef.current === "error") return;
 
-      if (e.metaKey || e.ctrlKey) {
+      // 数字键（无修饰）定位当前焦点层第 N 项——只移动高亮，不执行；超出范围无效
+      if (/^[1-9]$/.test(e.key)) {
+        e.preventDefault();
         const n = parseInt(e.key, 10);
-        if (!isNaN(n) && n >= 1) {
-          e.preventDefault();
-          if (viewRef.current === "main" && n <= mainItemsRef.current.length) {
-            executeItem(mainItemsRef.current[n - 1]);
-          } else if (viewRef.current === "submenu" && n <= subItemsRef.current.length) {
-            executeItem(subItemsRef.current[n - 1]);
+        if (focusLayerRef.current === "sub") {
+          if (n <= subItemsRef.current.length) setSubSelectedIdx(n - 1);
+        } else {
+          if (n <= mainItemsRef.current.length) {
+            const item = mainItemsRef.current[n - 1];
+            setSelectedIdx(n - 1);
+            // submenu 项同步展开子菜单预览（与左右键行为一致）
+            if (item.actionType === "submenu") {
+              submenuParentIdRef.current = item.id;
+              const subs = menuItemsRef.current.filter((i: ActionBarItem) => i.parentId === item.id);
+              if (subs.length > 0 && subs[0].actionType === "url") {
+                const engineIdx = subs.findIndex((s: ActionBarItem) => s.title.toLowerCase() === searchEngineRef.current);
+                setSubSelectedIdx(engineIdx >= 0 ? engineIdx : 0);
+              } else {
+                setSubSelectedIdx(0);
+              }
+              setView("submenu");
+            } else {
+              submenuParentIdRef.current = null;
+              setView("main");
+            }
           }
-          return;
         }
+        return;
       }
 
       if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
@@ -352,7 +377,7 @@ export default function ActionBar() {
         {mainItems.map((item, i) => (
           <IconBtn
             key={item.id}
-            icon={item.icon}
+            index={i + 1}
             label={item.title}
             active={selectedIdx === i}
             onClick={() => executeItem(item)}
@@ -369,7 +394,7 @@ export default function ActionBar() {
         {subItems.map((item, i) => (
           <IconBtn
             key={item.id}
-            icon={item.icon}
+            index={i + 1}
             label={item.title}
             active={focusLayer === "sub" && subSelectedIdx === i}
             onClick={() => executeItem(item)}

@@ -239,14 +239,14 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 - `executeMain` / `executeSubItem` 合并为统一的 `executeItem(item: ActionBarItem)`
 - `ai` 类型仍走前端 loading + 超时 + timedOutRef 流程
 - `url` / `script` / `copy` 直接 `invoke("execute_action_bar")`
-- 按钮布局：**水平「图标+文字」一行排列**（`flex-row`），非上下两行——浮窗更矮，子菜单展开后总高 ~76px
+- 按钮布局：**水平「数字徽章+文字」一行排列**（`flex-row`），非上下两行——浮窗更矮，子菜单展开后总高 ~78px
 - 视觉：`rounded-lg`（8px，与语音识别窗口一致）+ `backdrop-blur-xl` 毛玻璃 + `shadow-2xl`
-- 窗口高度动态调整：主菜单 40px / 子菜单 76px / loading 48px / error 60px（前端 `setSize` 按 view 切换），避免透明区域遮挡下层点击
+- 窗口高度动态调整：主菜单 40px / 子菜单 78px / loading 48px / error 60px（前端 `setSize` 按 view 切换），避免透明区域遮挡下层点击
 - 窗口宽度固定 380px
 
 #### ⚠️ 窗口焦点策略（强需求，勿改错）
 
-**全局快捷键不得将 settings/compact_editor 带到前台。** macOS 上 WKWebView 要求 app 进程 active 才能获得键盘焦点，而 `set_focus` 触发的 `NSApp.activate` 会把所有可见 Regular 窗口带到前台。采用**视觉焦点协调方案**（`activation::before_floating_window_show` / `after_floating_window_hide` 公共函数）：
+**全局快捷键不得将 settings/compact_editor 带到前台。** macOS 上 WKWebView 要求 app 进程 active 才能获得键盘焦点，而 `set_focus` 触发的 `NSApp.activate` 会把所有可见 Regular 窗口带到前台。采用**视觉焦点协调方案**（`activation::before_floating_window_show` / `after_floating_window_hide` 公共函数，`FLOAT_DEPTH` 引用计数支持多浮窗嵌套——只有最外层 depth==1 记录状态/交还焦点）：
 
 **show 时**：
 1. 记录当前前台 app（`NSWorkspace.frontmostApplication`）
@@ -260,6 +260,10 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 **剪贴板浮窗失焦恢复**（`restore_hidden_windows_only`）：
 剪贴板是 toggle 模式（always-on-top 可见，点击外部不 hide）。用户切到其他 app 后剪贴板失焦（`Focused(false)` 事件）但 Regular 窗口仍隐藏 → Dock 图标点击无效。解法：失焦时 `deactivate` app + `show` 恢复被隐藏的窗口 + 清除状态。不交还前台焦点（剪贴板仍可见）。
 
+**多浮窗嵌套**（`FLOAT_DEPTH` 引用计数）：多个浮窗重叠唤起时（如剪贴板可见时唤出 action bar），`before_floating_window_show` 增加 depth，只有最外层（depth==1）才记录前台 app + 隐藏 Regular 窗口。`after_floating_window_hide` 减少 depth，只有回到 0 才交还焦点 + 恢复窗口。防止第二个浮窗覆盖第一个的 `WAS_INACTIVE` 状态。
+
+**AI 结果展示时序**（`action_bar_show_result`）：不调 `hide_action_bar_window`（含 `after_floating_window_hide` → `deactivate`），直接 `win.hide()` 浮窗。因为接下来要创建/展示 CompactEditor，`deactivate` 会导致新窗口被压在后台不可见。
+
 **应用范围**：action bar + 剪贴板浮窗（需键盘操作）。语音识别窗无强键盘需求，保持现状不处理。
 
 **上下键切换主子菜单层级，左右键在当前行移动选择。** 这是核心交互，不可混淆：
@@ -269,33 +273,42 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 | **↑↓** | **切换焦点层**：焦点在主菜单→进入子菜单（focusLayer: main→sub）；焦点在子菜单→回到主菜单（sub→main）。不展开/收起子菜单。 |
 | **←→** | **当前行移动**：焦点在主菜单→主菜单项之间移动（移到 submenu 项自动展开其子菜单、移到非 submenu 项自动收起子菜单）；焦点在子菜单→子菜单项之间移动。 |
 | **Enter** | 执行当前焦点高亮项 |
+| **数字键 1-9** | **定位**（只移动高亮，不执行）：按焦点层决定定位哪一层——焦点在主菜单→定位第 N 个主菜单项；焦点在子菜单→定位第 N 个子菜单项。N 超出范围则无效。 |
 | **Esc** | **直接关闭浮窗**（一次 Esc，不退焦点层） |
 
 **子菜单展开/收起由左右键控制**：左右键在主菜单移动时，移到 submenu 类型的项→展开子菜单预览，移到非 submenu 项→收起子菜单。上下键只切焦点层，不碰视图展开状态。
 
 **子菜单预览不抢焦点**：左右键展开子菜单时焦点仍在主菜单——用户必须按上下键才把焦点移入子菜单。`focusLayer` 状态（main/sub）独立于 `view` 状态（main/submenu）控制此行为。
 
-**Cmd+数字**：主菜单中直接触发第 N 项；子菜单焦点中直接触发第 N 个子项。
+**数字键定位语义**：与 Cmd+数字（已移除）的「直接执行」不同，纯数字键只移动高亮到目标项，用户再按 Enter 执行。定位到 submenu 类型的主菜单项时会同步展开其子菜单预览（与左右键行为一致）。范围校验在当前焦点层进行，超出该层项数则按键无效。
 
-### 6.2 图标渲染
+### 6.2 图标渲染（浮窗已弃用，组件保留）
 
-新增 `ActionBarIcon` 组件（`components/ActionBarIcon.tsx`），三层渲染逻辑：
+`ActionBarIcon` 组件（`components/ActionBarIcon.tsx`）三层渲染逻辑：
 
 1. **文件名（`action-ai.svg`）**→ `fetch("/icons/{name}.svg")` 加载完整 SVG → 提取 inner HTML → 重组 `<svg>` 强制 `stroke/fill="currentColor"` → `<i dangerouslySetInnerHTML>`
 2. **内联 SVG（`<svg>...`）**→ 直接渲染
 3. **Lucide 预置名（`pencil` 等）**→ `<svg>` + 预置 path 组装
 
-⚠️ **踩坑**：(1) React `<svg>` + `dangerouslySetInnerHTML` 注入 `<path>` 时 `currentColor` 继承不稳定 → 改为 `<i>` + 完整 SVG 字符串；(2) `ActionBarItem` struct 缺 `#[serde(rename_all = "camelCase")]` → JSON 字段 snake_case → 前端 camelCase 读不到 → 菜单完全不渲染。
+> ⚠️ **2026-07-09 变更**：浮窗和设置页均已改为**数字徽章**（`①②③`）替代图标，`ActionBarIcon` 组件当前无引用但保留。DB schema 中 `icon` 字段保留（存量数据 + 向后兼容），新增项 `icon=""`。
+
+⚠️ **历史踩坑**：(1) React `<svg>` + `dangerouslySetInnerHTML` 注入 `<path>` 时 `currentColor` 继承不稳定 → 改为 `<i>` + 完整 SVG 字符串；(2) `ActionBarItem` struct 缺 `#[serde(rename_all = "camelCase")]` → JSON 字段 snake_case → 前端 camelCase 读不到 → 菜单完全不渲染。
 
 ### 6.3 设置页
 
-新增 ActionBarPanel（或 GeneralPanel 内区块），CRUD 界面：
+新增 ActionBarPanel（设置窗「命令面板」tab），CRUD 界面：
 
-- 树形展示两级菜单（主菜单项 + 可展开的子菜单）
-- 每项：标题 / 图标 / 类型 / 排序按钮（↑↓）/ 编辑 / 删除
-- `is_system=1`：删除按钮灰掉，可编辑内容但不能改类型
-- 编辑表单：标题、图标（文件名或 SVG 源码）、类型（下拉）、内容（textarea，按类型提示不同占位符）、启用开关
-- 新增按钮：选 parent（主菜单 or 某子菜单组）
+- **树形控件**：两级菜单按递归树渲染。submenu 节点带 chevron 展开/收起箭头，叶节点箭头位置占位保持左侧对齐。子树用细左导引线（`border-border/50`）连接父子，支持任意深度（DB parent_id 无层级限制）。
+- **注册表式序号**：每行左侧等宽序号 `01` / `1.1` / `1.2`（同级 1-based，子项 = `父序号.子序号`），编码 sort_order 信息。
+- **每项行内容**：标题 / 子项计数徽标（submenu 且有子项时）/ 类型标签（色点 + 等宽大写名）/ 内置标记 / 悬浮工具栏（上移/下移/删除）。（图标已移除——浮窗用数字徽章定位，管理页无需图标区分）
+- **展开状态语义**：首次加载默认展开全部 submenu 节点；后续 refresh（保存/移动/删除）**不覆盖**用户的折叠选择（`refresh` 不碰 `expanded`，仅初次 useEffect 全展开）。新增子项时显式展开其直接父节点。Header 提供「全部展开 / 全部收缩」切换按钮（ChevronsUpDown / ChevronsDownUp 图标，根据 `allExpanded` 状态自动切换）。
+- **点击行 = 进入编辑**：点击节点行任意位置进入内联编辑表单（chevron / 工具栏按钮 stopPropagation 不触发改动）。
+- `is_system=1`：删除按钮灰掉，类型 select 禁用（可改标题/内容/启用，不可改 action_type）。
+- **编辑表单**（内联 elevated card）：标题 / 类型（select + 类型说明文案）/ 内容（textarea，submenu/copy 隐藏，其余按类型显示不同占位符）/ 启用开关。
+  - **标题字符限制**：CJK 字符（中日韩）算 2、ASCII 算 1，总权重上限 6——即最多 6 个英文字母或 3 个汉字（混排如「润色A」= 2+2+1 = 5 合法）。用 for-of 逐字符累加截断，防止粘贴超长内容绕过限制。
+  - **内容 textarea**：`w-full` 填满列宽 + `min-h-[120px]`（AI 提示词通常较长）。
+  - **启用开关**：自定义 Toggle（细条样式）替代原生 checkbox。
+- **新增（内存草稿模式）**：Header「新增主菜单项」按钮（顶层）；submenu 节点展开后底部「新增子项」按钮。**点击新增不写 DB**——只在内存创建草稿 state（`draftParentId`：undefined=非草稿 / null=顶层草稿 / number=子菜单草稿），渲染内联编辑表单。**保存时才 `create_action_bar_item` 写 DB**，取消只清内存 state。彻底消除脏数据风险（旧方案「先建 DB 行再编辑」在切 tab / 关窗口 / 连续新增时残留未保存行）。子菜单草稿创建时自动展开父节点。
 - 编辑后浮窗下次打开自动加载新数据
 
 ---

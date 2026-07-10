@@ -13,15 +13,16 @@
 - **DB schema**：`CREATE TABLE IF NOT EXISTS` + `INSERT OR IGNORE` 幂等种子。`user_version` 从 18 bump 到 19。现有 v18 DB 重新执行 db.sql 自动建新表 + seed。
 - **is_system 保护**：内置项（`is_system=1`）不可删除；可编辑内容但不可改 action_type。
 - **script magic comment**：第一行 `#shell` / `#osascript` / `#powershell` / `#python` 决定运行时；平台不支持返回错误而非隐藏菜单项。
-- **图标三种格式**：(1) `.svg` 文件名 → `fetch("/icons/{name}.svg")` → 提取 inner HTML → 重组 SVG 强制 `currentColor`；(2) `<svg>` 开头 → 内联渲染；(3) Lucide 预置名 → 组装。⚠️ 必须用 `<i dangerouslySetInnerHTML>` 注入完整 SVG 字符串（React `<svg>` + innerHTML 注入 `<path>` 的 `currentColor` 继承不稳定）。
+- **图标三种格式（⚠️ 已弃用，保留历史参考）**：浮窗和设置页均改为数字徽章，`ActionBarIcon` 组件无引用但保留。历史实现：(1) `.svg` 文件名 → `fetch("/icons/{name}.svg")` → 提取 inner HTML → 重组 SVG 强制 `currentColor`；(2) `<svg>` 开头 → 内联渲染；(3) Lucide 预置名 → 组装。DB schema `icon` 字段保留（存量 + 兼容）。
 - **`#[serde(rename_all = "camelCase")]`**：`ActionBarItem` struct 必须加此 attribute，否则 JSON 字段 `parent_id` → 前端 `parentId` 读不到 → 菜单完全不渲染（已踩坑）。
 - **选中文本传递**：url 类型用 `{text}` 占位符替换（URL 编码）；script 类型通过环境变量 `$OCTOPUS_TEXT` 传递（不做字符串替换，防 shell 注入）。
 - **翻译特殊处理**：ai 类型 action_data 为 `auto_translate` 时按 CJK 检测方向。
 - **已有基础设施复用**：`chat_text_with_prompt`（LLM 调用）、`finalize_action_bar`（出口收口）、`timedOutRef`（前端超时）。
 - **Tauri 命令注册**：新命令必须加入 `main.rs` 的 `invoke_handler` 列表，否则前端 invoke 被拒。
-- **按钮布局**：水平「图标+文字」一行排列（`flex-row`），窗口宽度 380px，高度按 view 动态调整（主菜单 40px / 子菜单 76px）。浮窗在用户内容上方，必须矮。
-- **窗口焦点策略（⚠️ 强需求，勿改错）**：全局快捷键不得将 settings/compact_editor 带到前台。macOS WKWebView 需 app active 才有键盘焦点，但 `set_focus` 的 `activate` 会带出 Regular 窗口。方案：show 前记录前台 app + 隐藏 Regular → set_focus → hide 时先交还前台焦点再恢复 Regular（`activation::before_floating_window_show` / `after_floating_window_hide`）。action bar + 剪贴板共用，语音识别窗无强键盘需求不处理。
-- **键盘导航（⚠️ 强需求，勿改错）**：**上下键切换主子菜单层级（focusLayer main↔sub），左右键在当前行移动选择。** 子菜单展开/收起由左右键控制（移到 submenu 项展开、移到非 submenu 项收起），上下键只切焦点不碰视图。焦点层（`focusLayer`）独立于视图层（`view`）——左右键展开子菜单时不抢焦点，必须上下键才进入。**Esc 直接关闭浮窗**（一次 Esc，不退焦点层，不做两次 Esc）。
+- **按钮布局**：水平「数字徽章+文字」一行排列（`flex-row`），窗口宽度 380px，高度按 view 动态调整（主菜单 40px / 子菜单 78px）。浮窗在用户内容上方，必须矮。
+- **窗口焦点策略（⚠️ 强需求，勿改错）**：全局快捷键不得将 settings/compact_editor 带到前台。macOS WKWebView 需 app active 才有键盘焦点，但 `set_focus` 的 `activate` 会带出 Regular 窗口。方案：show 前记录前台 app + 隐藏 Regular → set_focus → hide 时先交还前台焦点再恢复 Regular（`activation::before_floating_window_show` / `after_floating_window_hide`）。`FLOAT_DEPTH` 引用计数支持多浮窗嵌套。`action_bar_show_result` 不调 deactivate（避免 CompactEditor 被压后台）。action bar + 剪贴板共用，语音识别窗无强键盘需求不处理。
+- **script 超时**：`run_script` 后台 `try_wait` 轮询 60 秒后 `kill`，防止僵尸进程 + 线程泄漏。
+- **键盘导航（⚠️ 强需求，勿改错）**：**上下键切换主子菜单层级（focusLayer main↔sub），左右键在当前行移动选择。** 子菜单展开/收起由左右键控制（移到 submenu 项展开、移到非 submenu 项收起），上下键只切焦点不碰视图。焦点层（`focusLayer`）独立于视图层（`view`）——左右键展开子菜单时不抢焦点，必须上下键才进入。**数字键 1-9 定位**（只移动高亮不执行）：按焦点层决定定位哪一层——焦点在主菜单定位第 N 个主菜单项、焦点在子菜单定位第 N 个子菜单项，超出范围无效；定位到 submenu 项时同步展开子菜单预览（与左右键一致），执行用 Enter。**Esc 直接关闭浮窗**（一次 Esc，不退焦点层，不做两次 Esc）。
 
 ---
 
@@ -34,7 +35,7 @@
 **Interfaces:**
 - Produces: `action_bar_items` 表（DB 层，供 Task 2 查询）
 
-- [ ] **Step 1: 在 db.sql 末尾追加 action_bar_items 表定义 + 种子**
+- [x] **Step 1: 在 db.sql 末尾追加 action_bar_items 表定义 + 种子**
 
 在 `crates/infra/src/db.sql` 末尾（line 259 `action_bar_search_engine` 那行之后）追加：
 
@@ -78,7 +79,7 @@ INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type,
 
 注意：种子用显式 id（1-10），与 prompts 表 seed 方式一致。parent_id 直接写死数字，不依赖 AUTOINCREMENT。
 
-- [ ] **Step 2: bump user_version 18→19**
+- [x] **Step 2: bump user_version 18→19**
 
 在 `crates/infra/src/db.rs` 的 `init_schema` 函数中，将三处 `18` 改为 `19`：
 
@@ -110,12 +111,12 @@ fn init_schema(conn: &Connection) -> Result<()> {
 }
 ```
 
-- [ ] **Step 3: 验证编译 + 运行测试**
+- [x] **Step 3: 验证编译 + 运行测试**
 
 Run: `cargo build -p octopus-infra && cargo test -p octopus-infra`
 Expected: 编译通过，测试全过
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -134,7 +135,7 @@ git commit -m "feat: action_bar_items DB 表 + 种子数据（user_version 19）
 - Consumes: `action_bar_items` 表（Task 1）
 - Produces: `ActionBarItem` struct + `list_action_bar_items()` / `load_action_bar_item(id)` / `insert_action_bar_item(...)` / `update_action_bar_item(...)` / `delete_action_bar_item(id)` / `move_action_bar_item(id, direction)`
 
-- [ ] **Step 1: 写 ActionBarItem struct + row mapper**
+- [x] **Step 1: 写 ActionBarItem struct + row mapper**
 
 在 `crates/infra/src/db.rs` 的 prompts CRUD 之后（约 line 830）追加：
 
@@ -171,7 +172,7 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
 }
 ```
 
-- [ ] **Step 2: 写 list + load 函数**
+- [x] **Step 2: 写 list + load 函数**
 
 ```rust
 fn list_action_bar_items_at(conn: &Connection) -> Result<Vec<ActionBarItem>> {
@@ -228,7 +229,7 @@ pub fn list_all_action_bar_items() -> Result<Vec<ActionBarItem>> {
 }
 ```
 
-- [ ] **Step 3: 写 insert + update + delete 函数**
+- [x] **Step 3: 写 insert + update + delete 函数**
 
 ```rust
 fn insert_action_bar_item_at(
@@ -310,7 +311,7 @@ pub fn delete_action_bar_item(id: i64) -> Result<()> {
 }
 ```
 
-- [ ] **Step 4: 写 move 函数（上移/下移交换 sort_order）**
+- [x] **Step 4: 写 move 函数（上移/下移交换 sort_order）**
 
 ```rust
 fn move_action_bar_item_at(conn: &Connection, id: i64, direction: i32) -> Result<()> {
@@ -345,7 +346,7 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()> {
 }
 ```
 
-- [ ] **Step 5: 写测试**
+- [x] **Step 5: 写测试**
 
 在 `crates/infra/src/db.rs` 的 `#[cfg(test)] mod tests` 中追加（如果不存在则新建）：
 
@@ -400,12 +401,12 @@ fn action_bar_items_move_swaps_order() {
 }
 ```
 
-- [ ] **Step 6: 运行测试**
+- [x] **Step 6: 运行测试**
 
 Run: `cargo test -p octopus-infra -- action_bar_items`
 Expected: 4 tests pass
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/infra/src/db.rs
@@ -424,7 +425,7 @@ git commit -m "feat: action_bar_items DB CRUD（list/insert/update/delete/move�
 - Consumes: `ActionBarItem` CRUD（Task 2）
 - Produces: Tauri 命令供前端调用
 
-- [ ] **Step 1: 新增 CRUD Tauri 命令**
+- [x] **Step 1: 新增 CRUD Tauri 命令**
 
 在 `crates/desktop/src/action_bar_commands.rs` 末尾追加：
 
@@ -474,7 +475,7 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 2: 写 auto_translate_prompt + run_script 辅助函数**
+- [x] **Step 2: 写 auto_translate_prompt + run_script 辅助函数**
 
 ```rust
 /// 按 CJK 检测方向，返回翻译 system prompt。
@@ -518,7 +519,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 3: 写统一执行入口 execute_action_bar**
+- [x] **Step 3: 写统一执行入口 execute_action_bar**
 
 ```rust
 /// 统一执行菜单项动作。
@@ -573,7 +574,7 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
 
 注意：`urlencoding` crate 需确认是否已在 Cargo.toml。如果没有，用 `text.replace(...)` + 简单编码替代，或 `percent-encoding` crate（检查现有依赖）。
 
-- [ ] **Step 4: 在 main.rs 注册新命令**
+- [x] **Step 4: 在 main.rs 注册新命令**
 
 在 `crates/desktop/src/main.rs` 的 `invoke_handler` 中（line 272-278 附近），追加：
 
@@ -586,7 +587,7 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
             action_bar_commands::execute_action_bar,
 ```
 
-- [ ] **Step 5: 检查 urlencoding 依赖**
+- [x] **Step 5: 检查 urlencoding 依赖**
 
 Run: `grep -r "urlencoding\|percent-encoding" crates/desktop/Cargo.toml crates/infra/Cargo.toml`
 
@@ -604,12 +605,12 @@ fn simple_url_encode(s: &str) -> String {
 }
 ```
 
-- [ ] **Step 6: 编译 + 测试**
+- [x] **Step 6: 编译 + 测试**
 
 Run: `cargo build -p octopus-desktop --features embedded && cargo test -p octopus-desktop`
 Expected: 编译通过，98 测试全过
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/src/action_bar_commands.rs crates/desktop/src/main.rs
@@ -628,7 +629,7 @@ git commit -m "feat: execute_action_bar 统一执行入口 + CRUD 命令"
 - Consumes: `list_action_bar_items` + `execute_action_bar`（Task 3）
 - Produces: 动态菜单渲染 + 统一执行
 
-- [ ] **Step 1: 创建 ActionBarIcon 组件**
+- [x] **Step 1: 创建 ActionBarIcon 组件**
 
 ```tsx
 // crates/desktop/frontend/src/components/ActionBarIcon.tsx
@@ -649,7 +650,7 @@ export function ActionBarIcon({ icon, className }: { icon: string; className?: s
 }
 ```
 
-- [ ] **Step 2: 重构 ActionBar index.tsx — 删除硬编码 + DB 加载**
+- [x] **Step 2: 重构 ActionBar index.tsx — 删除硬编码 + DB 加载**
 
 删除 `SEARCH_URLS` 常量、`mainItems` / `aiItems` / `searchItems` 硬编码数组。
 
@@ -683,7 +684,7 @@ const mainItems = menuItems.filter((i) => i.parentId === null);
 const getSubItems = (parentId: number) => menuItems.filter((i) => i.parentId === parentId);
 ```
 
-- [ ] **Step 3: 统一 executeItem 替换 executeMain/executeSubItem**
+- [x] **Step 3: 统一 executeItem 替换 executeMain/executeSubItem**
 
 ```tsx
 const executeItem = async (item: ActionBarItem) => {
@@ -742,7 +743,7 @@ const executeAiItem = async (item: ActionBarItem) => {
 
 注意：`execute_action_bar` 对 ai 类型内部已调 `action_bar_show_result`（写剪贴板 + CompactEditor），前端不再单独调 show_result。
 
-- [ ] **Step 4: 更新键盘导航用 menuItems**
+- [x] **Step 4: 更新键盘导航用 menuItems**
 
 键盘导航的 `mainItemsRef` / `aiItemsRef` / `searchItemsRef` 改为基于 `menuItems` + `submenuParentId`：
 
@@ -759,7 +760,7 @@ useEffect(() => {
 
 Enter 执行从 `executeMain(id)` / `executeSubItem(id)` 改为 `executeItem(item)`，item 从 ref 数组按 index 取。
 
-- [ ] **Step 5: 更新渲染——IconBtn 改用 ActionBarIcon**
+- [x] **Step 5: 更新渲染——IconBtn 改用 ActionBarIcon**
 
 ```tsx
 const IconBtn = ({ item, active, onClick }: {
@@ -782,12 +783,12 @@ const IconBtn = ({ item, active, onClick }: {
 );
 ```
 
-- [ ] **Step 6: TypeScript 检查**
+- [x] **Step 6: TypeScript 检查**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 无错误
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ActionBar/index.tsx crates/desktop/frontend/src/components/ActionBarIcon.tsx
@@ -805,7 +806,7 @@ git commit -m "feat: 前端浮窗动态加载菜单 + 统一 executeItem"
 **Interfaces:**
 - Consumes: CRUD 命令（Task 3）
 
-- [ ] **Step 1: 创建 ActionBarPanel 组件**
+- [x] **Step 1: 创建 ActionBarPanel 组件**
 
 树形展示两级菜单 + 编辑表单 + 增删改 + 排序。核心结构：
 
@@ -838,16 +839,26 @@ export function ActionBarPanel() {
 - 启用：checkbox
 - is_system=1：类型 select 禁用（不可改类型）、删除按钮灰掉
 
-- [ ] **Step 2: 在 Settings/index.tsx 挂载 ActionBarPanel**
+> **偏差（2026-07-09 重写）**：实际实现按 frontend-design / web-design-guidelines / ui-ux-pro-max skill 重做，与上方骨架差异较大，详见 spec §6.3（权威描述）。关键变化：
+> - **树形控件**：从扁平列表 + 缩进改为递归 TreeNode（chevron 展开/收起 + 细左导引线）。submenu 节点带箭头，叶节点占位对齐。注册表式等宽序号 `01` / `1.1`。
+> - **展开状态语义修正**：初版 `refresh()` 每次都把全部 submenu id 塞回 `expanded` → 折叠后被操作的节点会被重新展开。改为 `refresh()` 不碰 `expanded`，仅首次 useEffect 全展开；新增子项显式展开直接父节点。
+> - **全部展开/全部收缩**：Header 切换按钮（ChevronsUpDown/ChevronsDownUp），按 `allExpanded` 自动切换图标与文案。
+> - **点击行进入编辑**（chevron / 工具栏 stopPropagation）。
+> - **标题字符限制**：CJK=2 / ASCII=1，总权重上限 6（for-of 截断）。
+> - **内容 textarea**：`w-full` + `min-h-[120px]`。
+> - **启用**：自定义 Toggle 替代原生 checkbox。
+> - 动作类型元信息（`TYPE_META`）：色点 + 等宽大写标签 + 说明文案 + 占位符，集中常量。
+
+- [x] **Step 2: 在 Settings/index.tsx 挂载 ActionBarPanel**
 
 在设置页 tab 列表中新增 "命令面板" tab，渲染 ActionBarPanel。
 
-- [ ] **Step 3: TypeScript 检查**
+- [x] **Step 3: TypeScript 检查**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 无错误
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx crates/desktop/frontend/src/pages/Settings/index.tsx
@@ -864,24 +875,24 @@ git commit -m "feat: 设置页 action bar 菜单管理 UI"
 - Modify: `crates/desktop/frontend/src/pages/ActionBar/index.tsx`（清理残留 import）
 - Modify: `docs/architecture.md`、`docs/superpowers/specs/2026-07-08-action-bar-design.md`、`docs/superpowers/plans/2026-07-08-action-bar.md`、`docs/superpowers/specs/2026-07-09-action-bar-menu-db-design.md`
 
-- [ ] **Step 1: 删除 run_ai_action**
+- [x] **Step 1: 删除 run_ai_action**
 
 `run_ai_action` 的功能已完全被 `execute_action_bar` 的 ai 分支替代。删除 `action_bar_commands.rs` 中的 `run_ai_action` 函数，从 `main.rs` invoke_handler 删除 `action_bar_commands::run_ai_action`。
 
-- [ ] **Step 2: 删除 action_bar_open_url**
+- [x] **Step 2: 删除 action_bar_open_url**
 
 `action_bar_open_url` 已被 `execute_action_bar` 的 url 分支替代。检查前端是否还有直接调 `action_bar_open_url` 的地方——如果都走 `executeItem`，删除后端函数 + main.rs 注册。
 
-- [ ] **Step 3: 清理前端残留**
+- [x] **Step 3: 清理前端残留**
 
 删除不再使用的 import（`Sparkles, Globe, Search, Link as LinkIcon, FileText, Lightbulb, Pencil`）。`Loader2` 仍用于 loading 状态。
 
-- [ ] **Step 4: 编译 + 测试**
+- [x] **Step 4: 编译 + 测试**
 
 Run: `cargo build -p octopus-desktop --features embedded && cargo test && cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 全过
 
-- [ ] **Step 5: 更新文档**
+- [x] **Step 5: 更新文档**
 
 更新以下文档反映菜单数据库化：
 - `docs/architecture.md`：action bar 描述更新（菜单 DB 驱动）
@@ -889,9 +900,82 @@ Expected: 全过
 - `docs/superpowers/plans/2026-07-08-action-bar.md`：追加偏差
 - `docs/superpowers/specs/2026-07-09-action-bar-menu-db-design.md`：标记已实现
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
 git commit -m "refactor: 清理旧 action bar 硬编码命令 + 文档同步"
 ```
+
+---
+
+### Task 7: 设置页树形控件重设计 + 数字键定位（2026-07-09）
+
+> Task 1-6 完成后的 UI 改进。两项独立变更，合并记录。
+
+**Files:**
+- Modify: `crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx`（重写）
+- Modify: `crates/desktop/frontend/src/pages/ActionBar/index.tsx`（数字键导航）
+
+**Interfaces:** 无后端变更，纯前端。
+
+- [x] **Step 1: ActionBarPanel 树形控件重设计**
+
+按 frontend-design / web-design-guidelines / ui-ux-pro-max skill 重写。从扁平列表 + 缩进升级为递归 TreeNode（chevron 展开/收起 + 细左导引线）。详见 spec §6.3（权威描述）。关键变化：
+
+- 注册表式等宽序号 `01` / `1.1`（编码 sort_order）
+- 点击行进入编辑（chevron / 工具栏 stopPropagation）
+- 展开/收缩状态：`refresh()` 不碰 `expanded`（修正初版每次 refresh 覆盖折叠选择），仅首次 useEffect 全展开；新增子项显式展开直接父节点
+- Header「全部展开 / 全部收缩」切换按钮（ChevronsUpDown / ChevronsDownUp，按 `allExpanded` 切换）
+- 标题字符限制：CJK=2 / ASCII=1，总权重上限 6（for-of 截断）
+- 内容 textarea：`w-full` + `min-h-[120px]`
+- 自定义 Toggle 替代原生 checkbox
+- 动作类型元信息（`TYPE_META`）：色点 + 等宽大写标签 + 说明文案 + 占位符，集中常量
+
+- [x] **Step 2: 数字键定位（移除 Cmd+数字）**
+
+ActionBar/index.tsx 键盘导航变更：移除 `Cmd/Ctrl+数字`（直接执行），改为纯数字键 `1-9`（只移动高亮不执行）。详见 spec §6.1。
+
+- 按焦点层定位：主菜单焦点 → 定位第 N 个主菜单项；子菜单焦点 → 定位第 N 个子菜单项
+- N 超出范围则无效
+- 定位到 submenu 项同步展开子菜单预览（与左右键一致）
+- 执行用 Enter
+
+- [x] **Step 3: 文档同步**
+
+spec §6.1 键盘表格 + §6.3 设置页 + plan Global Constraints + architecture.md。
+
+---
+
+### Task 8: 图标改数字徽章 + 设置页移除图标 + 内存草稿模式（2026-07-09）
+
+> 简化交互：浮窗和设置页不再依赖 SVG 图标，统一用数字徽章（与数字键定位对应）。新建菜单改为内存草稿模式消除脏数据。
+
+**Files:**
+- Modify: `crates/desktop/frontend/src/pages/ActionBar/index.tsx`（IconBtn 图标→数字徽章）
+- Modify: `crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx`（移除图标字段 + 内存草稿）
+
+**Interfaces:** 无后端变更。
+
+- [x] **Step 1: 浮窗图标→数字徽章**
+
+`IconBtn` 的 `icon` prop 换成 `index`，渲染 18×18 圆角方块 + 等宽粗体数字（选中 `bg-voice` 白字，未选中 `bg-muted` 灰字）。数字与键盘直接对应——用户看到 `①` 就知道按 `1` 定位。移除 `ActionBarIcon` import。子菜单窗口高度 76→78px（底部圆角完整显示）。
+
+- [x] **Step 2: 设置页移除图标**
+
+编辑表单删除「图标」字段（输入框 + 预览），树节点行删除图标展示，移除 `ActionBarIcon` import。DB schema `icon` 字段保留（存量 + 兼容），新增项 `icon=""`。
+
+- [x] **Step 3: 内存草稿模式**
+
+旧方案「先建 DB 行再编辑」在取消 / 切 tab / 连续新增时残留脏数据。改为：
+
+- `draftParentId` state（undefined=非草稿 / null=顶层 / number=子菜单草稿）
+- `handleAdd` 只设内存 state，不碰 DB
+- `saveEdit` 按 `draftParentId !== undefined` 分流：草稿→create，已有项→update
+- `cancelEdit` 只清内存 state，零 DB 操作
+- 子菜单草稿创建时自动展开父节点（`handleAdd` 内 `setExpanded`）
+
+- [x] **Step 4: 文档同步**
+
+spec §6.2（图标渲染标注弃用）+ §6.3（移除图标字段 + 内存草稿模式描述）+ plan Global Constraints + architecture.md。
+
