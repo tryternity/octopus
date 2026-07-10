@@ -61,11 +61,19 @@ start_screenshot
 
 `crates/capx/src/stitch.rs`——**Canvas-Anchored** 消除累积漂移：每帧从画布底部提取 strip → 匹配当前帧 → 追加到画布。
 
+**底部暗常数尾裁剪（`content_tail`，每帧动态）**：每帧检测当前帧底部"无内容暗常数尾"——逐行判 max-min ≤ `CONTENT_ROW_MAXMIN`(30) **且** 最亮像素 luma < `CONTENT_TAIL_MAX_LUMA`(40)（双条件：暗 + 常数）。覆盖选区下半截恒定纯黑、滚动后期内容上移后选区底部露出的暗背景。`sticky_bottom` 仅首帧一次且依赖逐像素相等，无法应对动态暗尾；`content_tail` **每帧基于当前帧**检测（非首帧缓存），eff_bottom 每帧止于真实内容底 → append 永不带入暗尾 → 画布底部 strip 始终有特征，避免 canvas-anchored 锚点动态退化（常数模板假匹配 score≈1.0 或失配 stuck 死锁——release 实测「拼接一部分后停止」：前期内容填满无暗尾、后期暗尾动态出现时首帧 content_tail 已失效）。双判定的亮度条件防误判：高 luma 低对比渐变行（每行常数但亮）不会被当成暗尾。finalize 按 `sticky_bottom + content_tail`（最后一帧值）补回尾部。
+
+**画布种子（首帧）用自身暗尾裁剪（init）**：`content_tail` 每帧检测的是**当前帧**（用于 curr ROI），但画布种子 = 首帧，首帧在 app 聚焦/滚动开始前由 setup 单独捕获、暗尾常大于已滚动后的第二帧（内容上移、暗尾缩小）。若 init 用第二帧的小暗尾裁首帧画布 → 残余暗尾留画布底部 → canvas strip 常数 → `canvas_has=false` 首帧即死锁（release 实测 296×160 矮选区「滚动不拼接」：画布全程不增长，finalize 只拼 170 行）。故 init 裁剪读**画布种子缓冲自身**的暗尾（`scan_content_tail_in(canvas_buf)`），保证画布底部停在首帧真实内容底、锚点不退化。检测核心抽出为 `scan_content_tail_in(buf, h)`（帧/画布缓冲共用），每帧 curr ROI 仍读当前帧。
+
+**画布常数尾每帧自愈（trim + reseed）**：canvas-anchored 要求画布底部=真实内容，但底部可能变常数——首帧在 app **聚焦/前置之前**捕获为**整帧空白**（content_tail 无暗尾可裁）、滚动到内容末尾露出纯色背景、或 1D 假匹配 append 常数块。底部常数 → Sobel 退化 → 锚点失效。根治：**每帧**（非一次性闸门——滚动中底部可能【再次】变常数）先用 `canvas_bottom_constant()`（采样画布底 strip 的 max-min）轻量判定；常数则 `scan_canvas_constant_tail()`（逐行往上累加抽样像素运行 min/max，diff≥阈值即停——运行 min/max 而非单行 max-min，防垂直渐变被误判常数）测常数尾高度 `tail`：裁后仍 ≥ `keep_min`（eff_strip_h）→ **非破坏性裁掉常数尾**（只丢空白/纯色背景，不丢内容），锚点回到真实内容底、本帧继续匹配；画布几乎全常数（无内容可留）→ `reseed_canvas_from` 用当前内容帧**重建**锚点（破坏性，仅此极端情况）。日志：`[stitch] canvas constant tail trimmed: N rows`（自愈）或 `[stitch] canvas reseeded ...`（重建）。第 7 次回归根因：旧 `canvas_content_confirmed` 一次性闸门确认后终身跳过检查，滚动中底部再次变常数时永久死锁（NCC stuck=5 stationary 到 finalize，finalize 灰度兜底对常数画布 score≈1.0 假匹配拼错）；改为每帧自愈——"治"而非一次"防"。
+
 ### 流程
 
-1. **strip 提取**：从画布底部提取 `strip_h`（默认 80，`StitchConfig` 字段）px
+1. **strip 提取**：从画布底部提取 `eff_strip_h` px（**自适应**：`min(strip_h, content_h/3)`，矮选区缩小留搜索范围，见下）
 2. **Sobel 梯度特征图**（`imageproc`，纯色退化回灰度）
-3. **NCC 模板匹配**（`imageproc::template_matching::match_template`，CrossCorrelationNormalized）
+3. **NCC 模板匹配**（`best_ncc_match` → `imageproc::template_matching::match_template`，CrossCorrelationNormalized）
+   - **双候选**：双侧均有 Sobel 特征时优先 Sobel NCC；Sobel validate 失配再追加**灰度 NCC 兜底**（灰度对比度有时比梯度更稳）
+   - **退化不兜底**：任一侧 Sobel 退化（底部 strip 落暗色纯黑空白，`max_gradient==0` = 常数）时**跳过灰度**直接进降级链——常数模板灰度 NCC 必然 score≈1.0 假匹配（release 实测 `dy=-644.4` 重复假帧 append 污染画布 + `periodic false match sad=0.0`）
    - **大屏（帧宽 > `ncc_downsample_width` 默认 1920）走两阶段 refine**：
      - Triangle 降采样域粗定位 dy
      - 原分辨率 ±2px 邻域 `ncc_match_range` refine 恢复亚像素（避免降采样锯齿破坏 response 峰值）
@@ -75,13 +83,17 @@ start_screenshot
 
 `strip_h` / `max_scroll` / `ncc_score_threshold` / `ncc_downsample_width` 纳入 `StitchConfig` 字段化（默认值不变行为零变化）。
 
+**strip 高度自适应（`eff_strip_h`，矮选区）**：固定 `strip_h`(80) 对矮选区（如物理 162px 高含 80px 暗尾 → 内容 82px）会吃光 ROI 使 NCC 搜索范围≈0 → 首帧即失配死锁（release 实测「滚动没拼接」：画布几乎不增长）。每帧基于 content_h 算 `eff_strip_h = min(strip_h, content_h/3).max(MIN_STRIP=8)`（字段 `eff_strip_h`，模板提取 + 匹配几何 + 降级链全部读它而非 `config.strip_h`），留 2/3 content_h 作搜索范围。正常选区（content_h ≥ 240）eff_strip_h=80 不变；矮选区自动缩小（82 内容 → 27）。`detect_content_tail` 不再 clamp（自适应后 content_h≥3*strip 天然满足，整帧纯黑退化由 `eff_bottom<=eff_top` / ROI<strip 跳帧兜底）。ROI 不足一个 strip（sticky_top + content_tail 几乎吃光整帧）时跳帧，防 `quick_stationary_check` 越界。
+
 ---
 
 ## 5. 降级链
 
+> 主匹配（`best_ncc_match`）已是 Sobel 特征 + 灰度双候选 NCC；以下降级链在双候选均 validate 失配后触发。
+
 | 级 | 机制 | 触发 |
 |----|------|------|
-| 1 | **相邻帧参考 fallback**（`prev_gray` + `try_match_prev_frame`） | 内容突变失配时，用前一帧有效区匹配当前帧求正确 dy |
+| 1 | **相邻帧参考 fallback**（`prev_gray` + `try_match_prev_frame`） | 内容突变失配时，用前一帧有效区匹配当前帧求正确 dy；prev 底部 strip 退化（常数，如选区下半截纯黑）时返回 None 不采纳——常数模板同样 score≈1.0 假匹配（release 实测 `dy=-247.5` 画布疯涨） |
 | 2 | **1D 灰度投影 + best-guess** | 历史.dy 中位数，连续 3 次熔断 |
 | 3 | **周期性假匹配锁定** | 连续相同 dy≥3 次锁定，dy 变化才解锁 |
 | 4 | **NCC stuck 检测** | 连续验证失败≥5 次判静止 |
