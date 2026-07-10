@@ -628,3 +628,10 @@ git commit -m "docs: 明确 action_bar 固定定位 + clipboard dock 架构记�
 4. **DOCK_EXPANDED 原子状态**——原 plan 依赖 `is_focused()`，实际用 `AtomicBool DOCK_EXPANDED` 作为 Rust 侧真相源（macOS 收缩态焦点不可靠）。
 5. **收缩触发改为失焦**——原 plan 写 NSEvent global monitor 监听外部点击，实际简化为 `Focused(false)` 事件触发收缩。
 6. **展开触发加 onMouseDown fallback**——macOS 非 key window 不交付 hover，需点击作为 fallback。
+7. **POLL_ID 防竞态**（审查修复）——`AtomicU64` 自增保证同时只有一个轮询线程，旧线程自动退出。
+8. **吸附态防重入**（审查修复）——已吸附同 edge 收缩态时 Moved 跳过 save_dock/start_poll，防高频 DB 写 + 线程重建。
+9. **解吸附重置 DOCK_EXPANDED**（审查修复）——undocked 分支补 `DOCK_EXPANDED.store(false)`。
+10. **窗口隐藏不空转**（审查修复）——`is_visible()` 只保护 `start_edge_poll`，不阻断状态重置。
+11. **非 macOS cfg gate**（审查修复）——Moved/Focused/create 的 dock 逻辑全部 `#[cfg(target_os = "macos")]`。
+12. **位置保存秒级节流**（审查优化）——`LAST_SAVE_SEC: AtomicI64`，同一秒最多写 1 次；失焦时无视节流强制兜底写。
+13. **多屏横跳防护**（审查修复）——已吸附某 edge 收缩态时不切换到另一个 edge。

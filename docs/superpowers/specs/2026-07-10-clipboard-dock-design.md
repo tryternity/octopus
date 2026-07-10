@@ -101,6 +101,13 @@ Docked-Collapsed（收回）
 
 > ⚠️ toggle 不用 `is_focused()`——macOS 收缩态焦点不可靠，用 `DOCK_EXPANDED` 原子状态判断。
 
+**防护机制（审查修复）**：
+- **防重入**：Moved 事件中 `is_already_collapsed`（同 edge 且 collapsed）跳过 save_dock/start_poll，防高频 DB 写 + 线程重建
+- **多屏横跳防护**：已吸附某 edge 收缩态时不切换到另一个 edge（`is_docked_on_other_edge`），需先解吸附
+- **解吸附状态一致性**：undocked 分支重置 `DOCK_EXPANDED.store(false)`
+- **窗口隐藏不空转**：`Focused(false)` 中 `is_visible()` 只保护 `start_edge_poll`，`DOCK_EXPANDED.store(false)` + emit 始终执行
+- **位置保存节流**：Moved 中 `LAST_SAVE_SEC: AtomicI64` 秒级节流（同一秒最多写 1 次），失焦时无视节流强制兜底写
+
 ### 3.3 窗口关闭后恢复
 
 快捷键 toggle / X 按钮关闭后，下次打开：
@@ -190,6 +197,7 @@ dockMode: "none" | "collapsed" | "expanded"
 - 鼠标在透明区域 → `setIgnoresMouseEvents(true)`（穿透）
 - macOS：NSWindow `setIgnoresMouseEvents` via `run_on_main_thread`
 - 其他平台：Tauri `set_ignore_cursor_events`
+- **线程安全（`POLL_ID: AtomicU64`）**：每次 `start_edge_poll` 递增 ID，轮询线程检测 ID 不匹配自动退出——防快捷键+失焦双触发导致多线程竞态
 
 ### 6.2 为什么不用前端 setIgnoreCursorEvents
 
@@ -251,7 +259,10 @@ CGEvent 是 macOS 专属，且返回逻辑坐标需 scale 换算。`cursor_posit
 | 拖拽中突然吸附 | 不做——吸附只在 Moved 最终位置（放手时）检测，拖拽过程中不中途吸附 |
 | 快捷键唤出时已有 dock | 直接 Collapsed 态打开（贴边细条），用户 hover 展开 |
 | 多个显示器拖拽 | Moved 事件中根据窗口中心找当前显示器，吸附到当前显示器的边缘 |
-| Docked 态下窗口失焦 | 不自动收缩（Expanded 态靠点击外部收缩，不靠失焦——失焦可能因为切到其他 app，不代表用户想收缩） |
+| Docked 态下窗口失焦 | `DOCK_EXPANDED=true` 时收缩为 Collapsed + 启动穿透轮询（`is_visible()` 只保护轮询启动，不阻断状态重置） |
+| 窗口 hide（X 按钮）后失焦 | `DOCK_EXPANDED.store(false)` + emit 始终执行；`is_visible()=false` 时跳过 `start_edge_poll`（防空转） |
+| 拖拽时高频 DB 写 | `LAST_SAVE_SEC` 秒级节流；失焦时无视节流强制兜底写 |
+| 非 macOS 平台 | Moved/Focused/create 的 dock 逻辑全部 `#[cfg(target_os = "macos")]` gate |
 
 ---
 
