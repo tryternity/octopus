@@ -343,8 +343,13 @@ AI 结果返回（未超时）→ invoke("action_bar_show_result", { result, ori
 
 ## 9. 后续演进
 
+> 📚 **二期可借鉴点完整汇总**：见 [`2026-07-09-action-bar-related-tools-survey.md`](./2026-07-09-action-bar-related-tools-survey.md) §12（扫描了 VoxFlow/eSearch/Moly/KoBar/Snow Shot/MarkerOn/Paster/tauri-nspanel/DropPoint/启动器/PopClip 补充，按 P0/P1/P2/P3 排序）。下列项目与该调研交叉对照。
+
 - **二期**：外部 App 集成（通用"发送到 App + 粘贴"动作，用户配置 bundle ID）
 - **Snippet 自定义动作**：`#octopus\nname: 翻译\nprompt: ...\ninput: selection` 纯文本格式
 - **正则上下文**：动作可设正则规则，仅当选中文本匹配时显示
-- **Accessibility 直读**：macOS `AXSelectedText` 替代 Cmd+C（禁用复制页面也能工作）
+- **Accessibility 直读**：macOS `AXSelectedText` 替代 Cmd+C（禁用复制页面也能工作）——参考 Moly Appshots 的 AX 树遍历实现；需处理 Electron/Chrome `--force-renderer-accessibility` 桥接问题
+- **上下文增强**：窗口标题 + URL + App 名作为 LLM system context（参考 Moly 的地址栏 AX 提取 / VoxFlow 的 agentCompose 模式）；注意密码框检测 + 500ms 采集超时 + 截图不落盘（参考 VoxFlow `PRIVACY.md` 安全边界）
+- **一键直达热键**：每个动作可绑快捷键（参考 VoxFlow ⌘⇧J/K/L，PopClip/OnText/启动器均有），`action_bar_items` 表加 `shortcut` 字段
+- **截图+OCR fallback**：禁制复制页面/PDF 自动弹截图框 → OCR → 作为输入（参考 eSearch/Snow Shot）；可扩展"截图→AI"分支，OCR 文本 + 原图喂多模态 LLM
 - **语音输入到面板**：语音说"翻译" → 面板自动选中翻译动作

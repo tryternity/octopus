@@ -5,6 +5,8 @@
 > 调研目的：了解 PopClip 的功能点、使用方式、交互范式、扩展机制，为 octopus 可能的产品方向提供参考
 > 文档深度：功能清单级
 
+> 📚 **延伸调研（2026-07-09）**：本文档聚焦 PopClip/SnipDo/OnText/Click to Do 四款"选中文本即操作"工具。后续从 `~/.tolaria/` 知识库补充扫描了 11 款相关工具（VoxFlow / eSearch / KoBar / Snow Shot / MarkerOn / Paster / Moly / tauri-nspanel / DropPoint / Wox-Raycast-Alfred / PopClip 补充），完整可借鉴点汇总见 [`2026-07-09-action-bar-related-tools-survey.md`](./2026-07-09-action-bar-related-tools-survey.md)。
+
 ---
 
 ## 1. 产品定位

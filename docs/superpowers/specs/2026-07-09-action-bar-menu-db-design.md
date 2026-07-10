@@ -3,7 +3,7 @@
 > **状态**：已实现（Task 1-6 全部完成）
 > **日期**：2026-07-09
 > **scope**：将 action bar 硬编码菜单迁移为 DB 表管理，支持两级菜单（主菜单 + 子菜单）+ 5 种动作类型 + 用户自定义扩展
-> **调研依据**：[`2026-07-08-popclip-survey.md`](./2026-07-08-popclip-survey.md)（PopClip/SnipDo/OnText/Click to Do 调研）
+> **调研依据**：[`2026-07-08-popclip-survey.md`](./2026-07-08-popclip-survey.md)（PopClip/SnipDo/OnText/Click to Do 调研）+ [`2026-07-09-action-bar-related-tools-survey.md`](./2026-07-09-action-bar-related-tools-survey.md)（11 款相关工具综合调研，含扩展机制对比 §5/§10/§11）
 
 ---
 
