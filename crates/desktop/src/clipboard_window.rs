@@ -1,12 +1,16 @@
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 const WINDOW_LABEL: &str = "clipboard_window";
 
 /// docked 模式下浮窗是否处于展开态（Rust 侧真相源，前端同步镜像）。
 /// 解决 macOS `is_focused()` 在收缩态不可靠的问题——用显式状态替代焦点推断。
 static DOCK_EXPANDED: AtomicBool = AtomicBool::new(false);
+
+/// Moved 事件 save_current_position 节流：上次写盘的秒数（-1=从未写）。
+/// 防拖拽时每像素都同步写 SQLite。同一秒内只写一次。
+static LAST_SAVE_SEC: AtomicI64 = AtomicI64::new(-1);
 
 /// 将动态 String edge 转为 &'static str（仅 "left"/"right"，无需堆分配）。
 fn edge_static(s: &str) -> &'static str {
@@ -82,7 +86,15 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     let app_clone = app.clone();
     window.on_window_event(move |event| match event {
         tauri::WindowEvent::Moved(_) => {
-            crate::window_position::save_current_position(&win_clone, WINDOW_LABEL);
+            // 节流：同一秒内只写一次 DB（防拖拽时每像素同步写 SQLite）
+            let now_sec = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            if now_sec != LAST_SAVE_SEC.load(Ordering::Relaxed) {
+                LAST_SAVE_SEC.store(now_sec, Ordering::Relaxed);
+                crate::window_position::save_current_position(&win_clone, WINDOW_LABEL);
+            }
 
             // 吸附检测仅 macOS（依赖 NSWindow setIgnoresMouseEvents）
             #[cfg(target_os = "macos")]
