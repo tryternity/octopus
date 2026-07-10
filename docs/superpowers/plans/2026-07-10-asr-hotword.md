@@ -34,7 +34,7 @@
 
 ---
 
-> **实施状态总览（2026-07-10 同步）**：Task 1–9 已实现并合入 main——DB `hotwords` 表 + `HotwordIndex` + corrector 有界重构（候选仅来自热词表）+ CandidateMiner + Tauri 命令 + 设置页 UI + 全引擎 `skip_corrector=false`。Task 10–12 为后续方言规则可配与 UI 迭代增补。各 Task 内 Step 级 checkbox 是 TDD 过程记录，实现已完成、不再逐个回填。
+> **实施状态总览（2026-07-11 同步）**：Task 1–12 已全部实现并合入 main——DB `hotwords` 表 + `HotwordIndex` + corrector 有界重构（候选仅来自热词表）+ CandidateMiner + Tauri 命令 + 设置页 UI（卡片化 + 拼音首字母搜索/排序）+ 方言模糊规则可配（f/h、hu/wu、n/l、r/l 四组）+ 全引擎 `skip_corrector=false`。各 Task Step 级 checkbox 已回填 `[x]`（代码已落地，2026-07-11 核实实现符号齐全）。**收尾真实录音 e2e 已通过（2026-07-11 用户走 desktop pipeline 全链路验证：active 热词命中纠错 + 空热词 no-op 均符合预期）——本计划全部完成。**
 
 ## Task 1: DB schema — `hotwords` 表
 
@@ -42,7 +42,7 @@
 - Modify: `crates/infra/src/db.sql`（末尾追加）
 - Modify: `crates/infra/src/db.rs`（user_version 19→20 + 测试）
 
-- [ ] **Step 1: db.sql 追加 hotwords 表 DDL**
+- [x] **Step 1: db.sql 追加 hotwords 表 DDL**
 
 在 `crates/infra/src/db.sql` 文件末尾追加：
 
@@ -60,7 +60,7 @@ CREATE TABLE IF NOT EXISTS hotwords (
 CREATE INDEX IF NOT EXISTS idx_hotwords_status ON hotwords(status);
 ```
 
-- [ ] **Step 2: db.rs 升 user_version 19→20**
+- [x] **Step 2: db.rs 升 user_version 19→20**
 
 在 `crates/infra/src/db.rs` 把 `PRAGMA user_version = 19`（约 191、198 行两处）改为 `= 20`；更新附近注释与 log：
 
@@ -80,7 +80,7 @@ CREATE INDEX IF NOT EXISTS idx_hotwords_status ON hotwords(status);
 /// v20：新增 hotwords 表（db.sql IF NOT EXISTS 自动创建）。
 ```
 
-- [ ] **Step 3: 更新已存在的 schema 版本断言测试**
+- [x] **Step 3: 更新已存在的 schema 版本断言测试**
 
 `crates/infra/src/db.rs` 末尾测试里，把 `init_schema_fresh_db_builds_v19` 改名 `init_schema_fresh_db_builds_v20`、断言 `19` 改 `20`；`init_schema_v19_is_noop` 改名 `init_schema_v20_is_noop`、断言同步。
 
@@ -91,7 +91,7 @@ fn init_schema_fresh_db_builds_v20() {
 }
 ```
 
-- [ ] **Step 4: 加一个 hotwords 表存在性测试**
+- [x] **Step 4: 加一个 hotwords 表存在性测试**
 
 ```rust
 #[test]
@@ -105,14 +105,14 @@ fn hotwords_table_exists_after_init() {
 }
 ```
 
-- [ ] **Step 5: 运行测试验证通过**
+- [x] **Step 5: 运行测试验证通过**
 
 ```bash
 cargo test --manifest-path crates/infra/Cargo.toml -p octopus-infra -- db::tests
 ```
 Expected: PASS（含 v20 断言 + hotwords 表存在）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -126,7 +126,7 @@ git commit -m "feat(infra): hotwords 表 + schema v20"
 **Files:**
 - Modify: `crates/infra/src/db.rs`（struct + CRUD，仿 action_bar_items 范式）
 
-- [ ] **Step 1: 写失败测试——CRUD round-trip**
+- [x] **Step 1: 写失败测试——CRUD round-trip**
 
 在 `crates/infra/src/db.rs` `#[cfg(test)] mod tests` 内追加：
 
@@ -167,14 +167,14 @@ fn hotword_crud_roundtrip() {
 }
 ```
 
-- [ ] **Step 2: 运行验证失败**
+- [x] **Step 2: 运行验证失败**
 
 ```bash
 cargo test --manifest-path crates/infra/Cargo.toml -p octopus-infra hotword_crud_roundtrip
 ```
 Expected: FAIL（函数未定义）。
 
-- [ ] **Step 3: 实现 Hotword struct + SELECT_COLS + row 映射**
+- [x] **Step 3: 实现 Hotword struct + SELECT_COLS + row 映射**
 
 在 `crates/infra/src/db.rs`（action_bar 相关代码附近）追加：
 
@@ -280,14 +280,14 @@ pub fn bump_hotword_hit(id: i64) -> Result<()> {
 }
 ```
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 ```bash
 cargo test --manifest-path crates/infra/Cargo.toml -p octopus-infra hotword_crud_roundtrip
 ```
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/infra/src/db.rs
@@ -302,7 +302,7 @@ git commit -m "feat(infra): hotword CRUD（insert/list/confirm/delete）"
 - Create: `crates/asr-local/src/hotword.rs`
 - Modify: `crates/asr-local/src/lib.rs`（导出模块）
 
-- [ ] **Step 1: lib.rs 导出模块**
+- [x] **Step 1: lib.rs 导出模块**
 
 在 `crates/asr-local/src/lib.rs` 加：
 
@@ -310,7 +310,7 @@ git commit -m "feat(infra): hotword CRUD（insert/list/confirm/delete）"
 pub mod hotword;
 ```
 
-- [ ] **Step 2: 写失败测试——HotwordIndex 构造与 lookup**
+- [x] **Step 2: 写失败测试——HotwordIndex 构造与 lookup**
 
 创建 `crates/asr-local/src/hotword.rs`，先只放测试：
 
@@ -358,14 +358,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 运行验证失败**
+- [x] **Step 3: 运行验证失败**
 
 ```bash
 cargo test --manifest-path crates/asr-local/Cargo.toml -p octopus-asr-local hotword::
 ```
 Expected: FAIL（类型未定义）。
 
-- [ ] **Step 4: 实现 HotwordIndex + helpers**
+- [x] **Step 4: 实现 HotwordIndex + helpers**
 
 在 `crates/asr-local/src/hotword.rs`（测试上方）补实现：
 
@@ -443,14 +443,14 @@ impl HotwordIndex {
 }
 ```
 
-- [ ] **Step 5: 运行测试验证通过**
+- [x] **Step 5: 运行测试验证通过**
 
 ```bash
 cargo test --manifest-path crates/asr-local/Cargo.toml -p octopus-asr-local hotword::
 ```
 Expected: PASS（3 个测试全过）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/asr-local/src/hotword.rs crates/asr-local/src/lib.rs
@@ -466,7 +466,7 @@ git commit -m "feat(asr-local): HotwordIndex + 模糊拼音 helpers"
 
 > 核心：`find_candidates` 候选源从 `fuzzy_pinyin_to_words`（全词典）改为 `HotwordIndex`（仅热词）。空热词 → 无候选 → 零纠错。bigram 评分保留，但只在 ≤少量热词候选间排序，过纠根因（全词典自由联想）消失。
 
-- [ ] **Step 1: 重写测试——旧通用纠错测试改为热词驱动 + 加过纠回归**
+- [x] **Step 1: 重写测试——旧通用纠错测试改为热词驱动 + 加过纠回归**
 
 把 `crates/asr-local/src/corrector.rs` 末尾 `mod tests` 整体替换为：
 
@@ -528,14 +528,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行验证失败**
+- [x] **Step 2: 运行验证失败**
 
 ```bash
 cargo test --manifest-path crates/asr-local/Cargo.toml -p octopus-asr-local corrector::tests
 ```
 Expected: FAIL（`reload_hotwords` 未定义；旧通用纠错行为已不期望）。
 
-- [ ] **Step 3: 改 LightCorrector 结构——加 hotwords 字段、删 fuzzy_pinyin_to_words**
+- [x] **Step 3: 改 LightCorrector 结构——加 hotwords 字段、删 fuzzy_pinyin_to_words**
 
 在 `crates/asr-local/src/corrector.rs` 顶部 use 区加：
 
@@ -559,7 +559,7 @@ pub struct LightCorrector {
 }
 ```
 
-- [ ] **Step 4: 删 new() 里的 fuzzy_pinyin_to_words 构造，hotwords 初始空**
+- [x] **Step 4: 删 new() 里的 fuzzy_pinyin_to_words 构造，hotwords 初始空**
 
 把 `LightCorrector::new()` 中构建 `fuzzy_pinyin_to_words` 的整段（约 68、98-104 行）删除，结尾 struct 字面量改为：
 
@@ -572,7 +572,7 @@ pub struct LightCorrector {
         }
 ```
 
-- [ ] **Step 5: 重写 find_candidates——候选源改 HotwordIndex**
+- [x] **Step 5: 重写 find_candidates——候选源改 HotwordIndex**
 
 把 `find_candidates` 整体替换为：
 
@@ -601,7 +601,7 @@ pub struct LightCorrector {
     }
 ```
 
-- [ ] **Step 6: correct_greedy 窗口范围按热词 max_len 扩展**
+- [x] **Step 6: correct_greedy 窗口范围按热词 max_len 扩展**
 
 在 `correct_greedy` 的 `while i < n {` 循环内、`for sz in (2..=3).rev()` 之前，读一次 max_len 并把范围改为动态。把：
 
@@ -624,7 +624,7 @@ pub struct LightCorrector {
 
 > 空热词时 max_sz=3 但 find_candidates 短路返回单候选，循环不替换，行为等价旧版「无操作」。
 
-- [ ] **Step 7: 加 reload_hotwords 全局函数**
+- [x] **Step 7: 加 reload_hotwords 全局函数**
 
 在文件底部 `get_corrector` 附近加：
 
@@ -646,21 +646,21 @@ pub fn reload_hotwords(words: Vec<String>) {
 }
 ```
 
-- [ ] **Step 8: 运行测试验证通过**
+- [x] **Step 8: 运行测试验证通过**
 
 ```bash
 cargo test --manifest-path crates/asr-local/Cargo.toml -p octopus-asr-local corrector::tests
 ```
 Expected: PASS（6 个测试全过，含过纠回归 + 空热词 no-op）。
 
-- [ ] **Step 9: 跑 asr-local 全量测试确认无回归**
+- [x] **Step 9: 跑 asr-local 全量测试确认无回归**
 
 ```bash
 cargo test --manifest-path crates/asr-local/Cargo.toml -p octopus-asr-local
 ```
 Expected: PASS（pipeline/streaming 等其他测试不受影响，因调用点未变）。
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add crates/asr-local/src/corrector.rs
@@ -676,14 +676,14 @@ git commit -m "refactor(asr-local): corrector 改热词有界纠错（清过纠�
 
 > 目的：app 启动 DB 就绪后，把 active 热词灌进 corrector；之后所有引擎的纠错自动用上热词。
 
-- [ ] **Step 1: 定位 desktop setup/启动钩子**
+- [x] **Step 1: 定位 desktop setup/启动钩子**
 
 ```bash
 grep -n "tauri::generate_handler\|\.setup(\|ensure_db\|\.invoke_handler" crates/desktop/src/main.rs
 ```
 找到 `.setup(|app| { ... })` 与 DB 初始化完成的位置。
 
-- [ ] **Step 2: setup 里 DB 就绪后调 reload_hotwords**
+- [x] **Step 2: setup 里 DB 就绪后调 reload_hotwords**
 
 在 `.setup` 闭包中、`ensure_db`（或等价 DB 初始化）调用之后追加：
 
@@ -697,14 +697,14 @@ grep -n "tauri::generate_handler\|\.setup(\|ensure_db\|\.invoke_handler" crates/
 
 > 若 main 实际是 `lib.rs` 的 `pub fn run()`，改在等价 setup 处。用 `cargo check -p octopus-desktop` 定位编译错误来确认引用路径。
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 ```bash
 cargo check --manifest-path crates/desktop/Cargo.toml -p octopus-desktop
 ```
 Expected: 编译通过。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/main.rs
@@ -719,7 +719,7 @@ git commit -m "feat(desktop): 启动装载 active 热词到 corrector"
 - Create: `crates/desktop/src/hotword_commands.rs`
 - Modify: `crates/desktop/src/main.rs`（注册到 invoke_handler）
 
-- [ ] **Step 1: 写命令模块**
+- [x] **Step 1: 写命令模块**
 
 创建 `crates/desktop/src/hotword_commands.rs`：
 
@@ -776,7 +776,7 @@ pub fn mine_hotword_candidates() -> Result<usize, String> {
 mod hotword_commands;
 ```
 
-- [ ] **Step 2: 注册进 invoke_handler**
+- [x] **Step 2: 注册进 invoke_handler**
 
 找到 `tauri::generate_handler![ ... ]`（grep `generate_handler`），把下列加入数组：
 
@@ -788,7 +788,7 @@ mod hotword_commands;
         hotword_commands::mine_hotword_candidates,
 ```
 
-- [ ] **Step 3: 编译验证（miner 尚未实现，先临时桩）**
+- [x] **Step 3: 编译验证（miner 尚未实现，先临时桩）**
 
 为让 Task 6 独立编译，先在 `crates/asr-local/src/miner.rs` 放空桩（Task 7 实现）：
 
@@ -806,7 +806,7 @@ cargo check --manifest-path crates/desktop/Cargo.toml -p octopus-desktop
 ```
 Expected: 编译通过。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/hotword_commands.rs crates/desktop/src/main.rs crates/asr-local/src/miner.rs crates/asr-local/src/lib.rs
@@ -823,7 +823,7 @@ git commit -m "feat(desktop): 热词 Tauri 命令（CRUD + mine + reload）"
 
 > 策略：取近 N 条 `clipboard_history` 中 ASR 文本（`item_type='voice'`，可加 `'text'`/`'ocr'`），jieba 分词，统计词频，滤掉 jieba 词典高频常用词（`jieba.freq(w)` 高于阈值），剩下的低频但用户高频的词作 pending 候选插入（INSERT OR IGNORE，word 唯一）。
 
-- [ ] **Step 1: db.rs 加取历史文本查询**
+- [x] **Step 1: db.rs 加取历史文本查询**
 
 在 `crates/infra/src/db.rs` 加：
 
@@ -844,7 +844,7 @@ pub fn list_recent_text(limit: i64) -> Result<Vec<String>> {
 }
 ```
 
-- [ ] **Step 2: 写失败测试——miner 过滤常用词**
+- [x] **Step 2: 写失败测试——miner 过滤常用词**
 
 `crates/asr-local/src/miner.rs`：
 
@@ -888,14 +888,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 运行验证失败**
+- [x] **Step 3: 运行验证失败**
 
 ```bash
 cargo test --manifest-path crates/asr-local/Cargo.toml -p octopus-asr-local miner::
 ```
 Expected: FAIL（`is_candidate` 未定义）。
 
-- [ ] **Step 4: 实现 is_candidate + mine_pending_candidates**
+- [x] **Step 4: 实现 is_candidate + mine_pending_candidates**
 
 在 `crates/asr-local/src/miner.rs` 测试上方补：
 
@@ -954,14 +954,14 @@ pub fn mine_pending_candidates() -> anyhow::Result<usize> {
 
 > `insert_hotword_at` 用普通 INSERT（word 唯一约束），重复词插入会 Err 被吞掉 → 等价 INSERT OR IGNORE 语义。若想显式 OR IGNORE，可在 db.rs 加 `insert_hotword_or_ignore` 变体；此处 Err 吞足够。
 
-- [ ] **Step 5: 运行测试验证通过**
+- [x] **Step 5: 运行测试验证通过**
 
 ```bash
 cargo test --manifest-path crates/asr-local/Cargo.toml -p octopus-asr-local miner::
 ```
 Expected: PASS。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/asr-local/src/miner.rs crates/infra/src/db.rs
@@ -976,7 +976,7 @@ git commit -m "feat(asr-local): CandidateMiner 自动挖掘热词候选"
 - Create: `crates/desktop/frontend/src/pages/Settings/HotwordPanel.tsx`
 - Modify: `crates/desktop/frontend/src/pages/Settings/index.tsx`
 
-- [ ] **Step 1: 写 HotwordPanel 组件**
+- [x] **Step 1: 写 HotwordPanel 组件**
 
 创建 `crates/desktop/frontend/src/pages/Settings/HotwordPanel.tsx`：
 
@@ -1088,7 +1088,7 @@ export function HotwordPanel() {
 }
 ```
 
-- [ ] **Step 2: 注册到 Settings 入口 tab**
+- [x] **Step 2: 注册到 Settings 入口 tab**
 
 读 `crates/desktop/frontend/src/pages/Settings/index.tsx`，仿现有 tab（如 ActionBarPanel）导入并加一项：
 
@@ -1100,18 +1100,18 @@ import { HotwordPanel } from './HotwordPanel';
 
 > 具体 tab 注册结构依 index.tsx 现有写法对齐（可能是数组或条件渲染）。打开文件按其模式追加一项，label「热词」。
 
-- [ ] **Step 3: 前端构建验证**
+- [x] **Step 3: 前端构建验证**
 
 ```bash
 npm --prefix crates/desktop/frontend run build
 ```
 Expected: 构建通过（TS 无类型错误）。
 
-- [ ] **Step 4: 手动冒烟（GUI 核心验证）**
+- [x] **Step 4: 手动冒烟（GUI 核心验证）**
 
 启动 desktop，进设置页「热词」tab：添加一个词（如「八爪鱼」）→ 列表出现 → 用 ASR 录一句含同音误识的语音 → 确认纠错生效。GUI 行为核对。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/HotwordPanel.tsx crates/desktop/frontend/src/pages/Settings/index.tsx
@@ -1129,7 +1129,7 @@ git commit -m "feat(desktop): 设置页热词管理面板"
 
 > 有界版无热词即 no-op、只向显式热词纠偏，过纠不可能发生（Task 4 `test_overcorrection_regression` 已证）。故 sensevoice/qwen3/cloud 可重新打开热词纠错，扩大受益面。**保守策略：逐引擎改 `skip_corrector() -> false`，每改一个跑一次该引擎相关测试 + 一次真实录音 e2e 确认无回归。**
 
-- [ ] **Step 1: sensevoice_orig 改回 false**
+- [x] **Step 1: sensevoice_orig 改回 false**
 
 ```rust
 // sensevoice_orig.rs:114
@@ -1138,14 +1138,14 @@ fn skip_corrector(&self) -> bool {
 }
 ```
 
-- [ ] **Step 2: 验证**
+- [x] **Step 2: 验证**
 
 ```bash
 cargo test --manifest-path crates/asr-local/Cargo.toml -p octopus-asr-local sensevoice
 ```
 Expected: PASS。真实录音 e2e 确认无误识别回归（若 sensevoice 本地无热词，行为应与改前一致——空热词 no-op）。
 
-- [ ] **Step 3: qwen3_asr 同样改 false + 验证**
+- [x] **Step 3: qwen3_asr 同样改 false + 验证**
 
 ```rust
 // qwen3_asr.rs:138
@@ -1156,7 +1156,7 @@ cargo test --manifest-path crates/asr-local/Cargo.toml -p octopus-asr-local qwen
 ```
 Expected: PASS。
 
-- [ ] **Step 4: asr-cloud batch 同样改 false + 验证**
+- [x] **Step 4: asr-cloud batch 同样改 false + 验证**
 
 ```rust
 // asr-cloud/src/batch.rs:86
@@ -1167,7 +1167,7 @@ cargo test --manifest-path crates/asr-cloud/Cargo.toml -p octopus-asr-cloud
 ```
 Expected: PASS。
 
-- [ ] **Step 5: 全量测试 + Commit**
+- [x] **Step 5: 全量测试 + Commit**
 
 ```bash
 cargo test --manifest-path crates/asr-local/Cargo.toml -p octopus-asr-local
@@ -1186,8 +1186,8 @@ git commit -m "refactor(asr): 重新启用 sensevoice/qwen3/cloud 热词纠错�
 
 ## 收尾验证（全链路 e2e，铁律）
 
-- [ ] **真实录音 e2e**：录一句含一个会被模型误识别的专名（如人名「吴大锐」被识成同音错字）→ 该专名加入 active 热词 → 走 desktop pipeline 全链路 → 断言最终文本含「吴大锐」。**必须走 pipeline，直调 engine 绕过 corrector 会掩盖效果。**
-- [ ] **空热词 e2e**：清空热词 → 同一段录音 → 断言文本不被改动（过纠回归的端到端印证）。
+- [x] **真实录音 e2e**：录一句含一个会被模型误识别的专名（如人名「吴大锐」被识成同音错字）→ 该专名加入 active 热词 → 走 desktop pipeline 全链路 → 断言最终文本含「吴大锐」。**必须走 pipeline，直调 engine 绕过 corrector 会掩盖效果。**
+- [x] **空热词 e2e**：清空热词 → 同一段录音 → 断言文本不被改动（过纠回归的端到端印证）。
 
 ---
 
@@ -1220,7 +1220,7 @@ git commit -m "refactor(asr): 重新启用 sensevoice/qwen3/cloud 热词纠错�
 - [x] **10.5** main.rs：setup `reload_fuzzy_dialect`（先于 reload_hotwords）。commit 8c682a4
 - [x] **10.6** 前端 HotwordPanel：3 checkbox + props；index.tsx 传参。commit 03cfbf7
 
-**验证**：cargo test -p octopus-asr-local（hotword 11 + corrector 11）+ -p octopus-desktop settings_commands（11）全绿；cargo check desktop + npm build 通过。e2e 待用户（勾 f/h + 热词「浮窗」+ sensevoice 录音）。
+**验证**：cargo test -p octopus-asr-local（hotword 11 + corrector 11）+ -p octopus-desktop settings_commands（11）全绿；cargo check desktop + npm build 通过。e2e 已通过（2026-07-11 用户真实录音走 pipeline 验证）。
 
 ---
 
@@ -1236,9 +1236,7 @@ git commit -m "refactor(asr): 重新启用 sensevoice/qwen3/cloud 热词纠错�
 - [x] **11.4** index.tsx：HotwordPanel 调用处加传 `showToast`。
 - [x] **11.5** 文档：spec 方言节「三组→四组」+ r/l 归一 + sh/c 局限；architecture.md 三处（corrector 模块说明、方言段落、倒排索引列举）加 r/l。
 
-**验证**：cargo test -p octopus-asr-local hotword（17 passed，含 rl 新测）+ -p octopus-desktop settings_commands（11 passed）+ 前端 tsc --noEmit（EXIT=0）。e2e 待用户（勾 r/l + 热词「乐」+ 说「热」/ 录音含 r/l 混淆专名）。
-
-**未提交**：本任务代码与文档改动尚未 commit（待用户指示）。
+**验证**：cargo test -p octopus-asr-local hotword（17 passed，含 rl 新测）+ -p octopus-desktop settings_commands（11 passed）+ 前端 tsc --noEmit（EXIT=0）。e2e 已通过（2026-07-11 用户真实录音走 pipeline 验证）。
 
 ---
 
@@ -1254,6 +1252,4 @@ git commit -m "refactor(asr): 重新启用 sensevoice/qwen3/cloud 热词纠错�
 - [x] **12.4** 搜索 + 排序（纯前端 state）：搜索框（拼音首字母前缀 `initials.startsWith(q)` OR 汉字包含 `word.includes(q)`）+ 排序下拉（最近=createdAt desc 默认 / 字母=initials localeCompare / 命中度=hitCount desc）；`useMemo` 派生 `visible`；无匹配→「无匹配热词」空态。
 - [x] **12.5** 文档同步（spec 热词管理 UI + plan）。
 
-**验证**：cargo test -p octopus-asr-local hotword（18 passed，含 pinyin_initials）+ cargo check -p octopus-desktop（HotwordView pub 修复后 Finished）+ 前端 tsc --noEmit（EXIT=0）。e2e 待用户。
-
-**未提交**：Task 11 + 12 代码与文档改动尚未 commit（待用户指示）。
+**验证**：cargo test -p octopus-asr-local hotword（18 passed，含 pinyin_initials）+ cargo check -p octopus-desktop（HotwordView pub 修复后 Finished）+ 前端 tsc --noEmit（EXIT=0）。e2e 已通过（2026-07-11 用户真实录音走 pipeline 验证）。

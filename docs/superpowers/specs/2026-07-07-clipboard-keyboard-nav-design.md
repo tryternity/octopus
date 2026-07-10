@@ -1,6 +1,6 @@
 # 剪贴板浮窗键盘导航设计 — 2026-07-07
 
-> **状态**：已与用户确认设计，待写实施计划
+> **状态**：✅ 已实现（2026-07-07，详见 architecture `clipboard_window` 键盘导航段；plan `plans/2026-07-07-clipboard-keyboard-nav.md` checkbox 尚未同步勾选）
 > **日期**：2026-07-07
 > **scope**：一期仅改造剪贴板浮窗的操作体验，不含 AI 命令面板 / Glance / 转写联动
 > **背景调研**：[`2026-07-07-launcher-survey.md`](./2026-07-07-launcher-survey.md)（Wox 剪贴板交互范式对照）

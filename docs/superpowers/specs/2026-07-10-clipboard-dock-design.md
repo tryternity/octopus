@@ -1,6 +1,6 @@
 # 剪贴板浮窗边缘吸附 + 迷你模式设计
 
-> **状态**：设计完成，待实现
+> **状态**：✅ 已实现（2026-07-10，plan 28/28 Task 完成，architecture `clipboard_window` 边缘吸附段）
 > **日期**：2026-07-10
 > **scope**：剪贴板浮窗（`clipboard_window`）边缘吸附 + 收缩/展开 + 位置记忆
 > **平台**：仅 macOS（Windows/Linux 后续）
