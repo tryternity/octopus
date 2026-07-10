@@ -572,7 +572,9 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
 }
 ```
 
-注意：`urlencoding` crate 需确认是否已在 Cargo.toml。如果没有，用 `text.replace(...)` + 简单编码替代，或 `percent-encoding` crate（检查现有依赖）。
+> ⚠️ **以上为初始实现，已在 Task 10 重构**：提取 `execute_action_bar_inner` 返回 `Result<bool>`，命令函数三层 match 收口——所有路径（含 `?`/Err）都经 finalize，防止重入锁和 depth 泄漏。详见 Task 10 Part C。
+
+注意：`urlencoding` crate 需确认是否已在 Cargo.toml。如果没有，用 `text.replace(...)` + 简单编码替代，或 `percent-encoding` crate（检查现有依赖）。**实际已复用 `percent-encoding` 库，见 Task 10 Part A Step 2。**
 
 - [x] **Step 4: 在 main.rs 注册新命令**
 
@@ -591,9 +593,10 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
 
 Run: `grep -r "urlencoding\|percent-encoding" crates/desktop/Cargo.toml crates/infra/Cargo.toml`
 
-如果都没有，检查是否可用已有方式替代。前端目前用 `encodeURIComponent`，后端也可以用简单方式：
+如果都没有，检查是否可用已有方式替代。前端目前用 `encodeURIComponent`，后端也可以用简单方式（⚠️ 已弃用，实际复用了已有的 `percent-encoding` 库，见 Task 10 Part A Step 2）：
 
 ```rust
+// ⚠️ 已删除——改用 url_encode_param（utf8_percent_encode + AsciiSet）
 fn simple_url_encode(s: &str) -> String {
     s.chars().map(|c| {
         if c.is_alphanumeric() || matches!(c, '-' | '_' | '.' | '~') {
@@ -706,9 +709,13 @@ const executeItem = async (item: ActionBarItem) => {
     return;
   }
 
-  // url / script / copy → 直接 invoke
-  await invoke("execute_action_bar", { itemId: item.id, text: ctx.text });
-  getCurrentWindow().hide();
+  // url / script / copy → 后端统一隐藏 + 收口，异常切 error 视图（Task 10 重构）
+  try {
+    await invoke("execute_action_bar", { itemId: item.id, text: ctx.text });
+  } catch (e) {
+    setErrorMsg(String(e));
+    setView("error");
+  }
 };
 
 const executeAiItem = async (item: ActionBarItem) => {
@@ -731,7 +738,7 @@ const executeAiItem = async (item: ActionBarItem) => {
       console.warn("[action-bar] AI result arrived after timeout, discarding");
       return;
     }
-    getCurrentWindow().hide();
+    // action_bar_show_result 后端已隐藏本窗口并展示 CompactEditor
   } catch (e) {
     clearTimeout(timeoutId);
     if (timedOutRef.current) return;
@@ -1007,4 +1014,62 @@ spec §6.2（图标渲染标注弃用）+ §6.3（移除图标字段 + 内存草
 
 spec §6.1 AI 结果展示时序（补 `after_floating_window_hide_keep_active`）+ architecture.md（碰撞检测）。
 
+### Task 10: 代码审查修复——收口泄漏三连（2026-07-10）
 
+连续四轮代码审查诊断出的引用计数/重入锁泄漏，逐项复查并修复。
+
+- Modify: `crates/desktop/src/action_bar_commands.rs`（execute_action_bar 收口重构 + suppress 清理 + url 编码）
+- Modify: `crates/desktop/src/activation.rs`（restore_hidden_windows_only 扣减 depth）
+- Modify: `crates/desktop/frontend/src/pages/ActionBar/index.tsx`（前端去掉直接 hide + 补 try-catch）
+- Modify: `docs/architecture.md`（收口机制描述）
+
+#### Part A: 非 AI 动作后状态锁死（7fbd78c）
+
+- [x] **Step 1: 后端 url/script/copy 分支补收口**
+
+**Bug**：url/script/copy 走前端 `executeItem`，`invoke` 后直接 `getCurrentWindow().hide()` 绕过 `hide_action_bar_window`。后端这三个分支只 `return Ok(())`，不调 `finalize_action_bar`（→ `TRIGGER_IN_PROGRESS` 锁死 true，快捷键永久失效）也不调 `after_floating_window_hide`（→ `FLOAT_DEPTH` 泄漏 +1）。
+
+**修复**：收口职责统一归后端。url/script/copy 在 match 末尾统一调 `hide_action_bar_window` + `finalize_action_bar`。前端删除两处 `getCurrentWindow().hide()`。
+
+- [x] **Step 2: 复用 percent-encoding 替代手写 simple_url_encode**
+
+`Cargo.toml` 已有 `percent-encoding = "2"`。删除手写 `simple_url_encode`（逐字节 `format!` 拼接），改为 `url_encode_param`（`utf8_percent_encode` + 自定义 AsciiSet，保留 RFC 3986 unreserved）。
+
+#### Part B: suppress_next 残留吞掉用户下次手动复制（3284ee9）
+
+- [x] **Step 3: trigger 成功路径补 clear_suppress**
+
+**Bug**：`trigger_action_bar` 调 `suppress_next()` 设置 AtomicBool flag。当剪贴板未变化（"unchanged but has content" 路径），watcher 不触发 → flag 残留。错误路径调了 `clear_suppress()`，唯独成功路径遗漏。用户关闭浮窗后下次手动复制被 watcher 静默吞掉。
+
+**修复**：成功路径（text 验证通过后、恢复剪贴板前）补 `clip_handle.clear_suppress()`。`write_text` 内部 `store(true)` 独立管理自身 flag，不受此清除影响。
+
+#### Part C: execute_action_bar 异常路径状态泄漏（563b150）
+
+- [x] **Step 4: 异常路径收口重构**
+
+**Bug**：`execute_action_bar` 中 6 处 `?` + 1 处 `return Err` 全部跳过末尾的 hide + finalize。script 失败（magic comment 错误 / spawn 失败）或 ai 失败时：重入锁永久 true（快捷键瘫痪）+ 窗口卡死。前端 url/script/copy 无 try-catch，用户看不到错误。
+
+**修复**：提取 `execute_action_bar_inner` 返回 `Result<bool>`，命令函数三层 match 确保所有路径都收口：
+- `Ok(true)`（ai 成功）→ 自行收口，直通
+- `Ok(false)`（url/script/copy 成功）→ hide + finalize
+- `Err`（任何异常）→ 仅 finalize（不 hide，让前端 error 视图可见，关闭时 dismiss 走 `after_floating_window_hide` 递减 depth）
+
+前端 `executeItem` 的 url/script/copy 补 try-catch，失败切 error 视图，与 ai 分支行为一致。
+
+#### Part D: 剪贴板失焦 depth 泄漏（606b3e5）
+
+- [x] **Step 5: restore_hidden_windows_only 扣减 FLOAT_DEPTH**
+
+**Bug**：剪贴板 toggle 模式下，失焦（`Focused(false)`）视为虚拟关闭，但 `restore_hidden_windows_only` 未扣减 `FLOAT_DEPTH` 且状态清理在 `hidden.is_empty()` 提前返回之后。时序链：唤出(depth=1) → 失焦(不扣，仍 1) → 拉回(else 分支 before_show，depth=2) → 关闭(after_hide，2→1，depth>0 不交还焦点)。每轮残留 +1，焦点协调最终瘫痪。
+
+**修复**：`restore_hidden_windows_only` 把 depth 扣减 + `WAS_INACTIVE`/`PREV_APP` 清理移到 `hidden.is_empty()` 检查**之前**无条件执行。deactivate + show 仅在有隐藏窗口时执行。
+
+#### 误报记录
+
+- [x] **Step 6: 误报 — Cmd/Ctrl+数字 执行逻辑**
+
+审查声称 `metaKey||ctrlKey` + 数字执行存在层级判定错乱。实际代码早已移除此功能（纯数字键只移动高亮不执行，Enter 才执行），全局搜索无残留，文档正确记录。
+
+- [x] **Step 7: 文档同步**
+
+spec §5.2（execute_action_bar 收口签名）+ spec §6.1（url/script/copy 前端 try-catch + 剪贴板失焦扣 depth）+ architecture.md。
