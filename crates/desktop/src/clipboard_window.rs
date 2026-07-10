@@ -64,7 +64,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             let _ = app.emit("clipboard://dock-changed", edge.as_str());
             DOCK_EXPANDED.store(false, Ordering::SeqCst);
             let edge_static: &'static str = Box::leak(edge.clone().into_boxed_str());
-            crate::clipboard_dock::start_edge_poll(window.clone(), edge_static);
+            crate::clipboard_dock::start_edge_poll(app.clone(), window.clone(), edge_static);
         }
     }
 
@@ -79,7 +79,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             if let Some(edge) = detect_dock_edge(&win_clone) {
                 crate::window_position::save_dock_state(WINDOW_LABEL, edge);
                 DOCK_EXPANDED.store(false, Ordering::SeqCst);
-                crate::clipboard_dock::start_edge_poll(win_clone.clone(), edge);
+                crate::clipboard_dock::start_edge_poll(app_clone.clone(), win_clone.clone(), edge);
                 let _ = app_clone.emit("clipboard://dock-changed", edge);
                 log::info!("clipboard docked to {}", edge);
                 return;
@@ -106,7 +106,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 if edge == "right" || edge == "left" {
                     DOCK_EXPANDED.store(false, Ordering::SeqCst);
                     let edge_static: &'static str = Box::leak(edge.clone().into_boxed_str());
-                    crate::clipboard_dock::start_edge_poll(win_clone.clone(), edge_static);
+                    crate::clipboard_dock::start_edge_poll(app_clone.clone(), win_clone.clone(), edge_static);
                     let _ = app_clone.emit("clipboard://collapse", ());
                 }
             }
@@ -174,7 +174,7 @@ pub fn clipboard_dock_collapse(app: AppHandle) {
     let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         if let Some(edge) = docked.filter(|e| e == "right" || e == "left") {
-            crate::clipboard_dock::start_edge_poll(window, Box::leak(edge.into_boxed_str()));
+            crate::clipboard_dock::start_edge_poll(app.clone(), window, Box::leak(edge.into_boxed_str()));
         }
     }
     let _ = app.emit("clipboard://collapse", ());
@@ -219,7 +219,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 DOCK_EXPANDED.store(false, Ordering::SeqCst);
                 let docked_edge = crate::window_position::load_dock_state(WINDOW_LABEL);
                 if let Some(e) = docked_edge.filter(|e| e == "right" || e == "left") {
-                    crate::clipboard_dock::start_edge_poll(window.clone(), Box::leak(e.into_boxed_str()));
+                    crate::clipboard_dock::start_edge_poll(app.clone(), window.clone(), Box::leak(e.into_boxed_str()));
                 }
                 let _ = app.emit("clipboard://collapse", ());
             } else {
