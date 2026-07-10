@@ -265,6 +265,7 @@ pub fn run() {
             screenshot_commands::stop_scroll_recording,
             screenshot_commands::stop_scroll_recording_with_mode,
             screenshot_commands::pin_screenshot,
+            screenshot_commands::hit_test_window,
             compact_editor_commands::open_compact_editor_tab,
             compact_editor_commands::get_pending_compact_tabs,
             compact_editor_commands::get_clipboard_item_text,

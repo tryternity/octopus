@@ -1427,3 +1427,18 @@ pub fn stop_scroll_recording_with_mode(mode: String) {
     SCROLL_STOP_MODE.store(m as u8, std::sync::atomic::Ordering::SeqCst);
     SCROLL_RECORDING.store(false, std::sync::atomic::Ordering::SeqCst);
 }
+
+/// 截图覆盖窗前端 mousemove 调：给全局逻辑坐标，返回最上层合格窗口的吸附矩形（全局逻辑）。
+/// 非 macOS 平台返回 None（v1 仅 macOS）。granularity 固定 Window（v2 再加 Element）。
+#[tauri::command]
+pub fn hit_test_window(gx: f64, gy: f64) -> Option<octopus_capx::window_detect::SnapRect> {
+    #[cfg(target_os = "macos")]
+    {
+        octopus_capx::window_detect::hit_test_window_global(gx, gy)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (gx, gy);
+        None
+    }
+}
