@@ -62,6 +62,10 @@ export default function Screenshot() {
   // OCR 全局互斥：他处正在识别时本入口被拒 → 屏幕中央短暂提示 1.8s
   const [ocrWarn, setOcrWarn] = useState(false);
   const annMoveStartRef = useRef<{ idx: number; mx: number; my: number; anns: Annotation[] } | null>(null);
+  // 窗口识别吸附（v1）：winOrigin=本窗全局逻辑原点；snapRef=当前悬停吸附候选（本窗 CSS）；lastHitRef=节流时间戳。
+  const winOriginRef = useRef<{ x: number; y: number } | null>(null);
+  const snapRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
+  const lastHitRef = useRef(0);
 
   const dpr = window.devicePixelRatio || 1;
 
@@ -95,6 +99,23 @@ export default function Screenshot() {
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
+  }, []);
+
+  // onMount：缓存本窗全局逻辑原点（outerPosition 物理 / scaleFactor → 逻辑 points）。
+  // 截图覆盖窗定位后 show，onMount 时位置已稳定。
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const win = getCurrentWindow();
+        const factor = await win.scaleFactor();
+        const pos = await win.outerPosition(); // PhysicalPosition
+        if (!cancelled && factor > 0) {
+          winOriginRef.current = { x: pos.x / factor, y: pos.y / factor };
+        }
+      } catch { /* winOrigin 取不到 → 吸附自动失效（snapRef 永远 null），回退纯手动 */ }
+    })();
+    return () => { cancelled = true; };
   }, []);
 
   // 滚动截图事件监听
@@ -261,6 +282,21 @@ export default function Screenshot() {
     } else {
       ctx.fillRect(0, 0, cssW, cssH);
     }
+
+    // 窗口识别吸附高亮：idle 悬停时画候选窗口描边 + 5% 填充
+    if (mode === "idle" && !sel && snapRef.current) {
+      const s = snapRef.current;
+      if (s.w > 0 && s.h > 0) {
+        ctx.save();
+        ctx.fillStyle = "rgba(59, 130, 246, 0.08)";   // 蓝 5% 填充
+        ctx.fillRect(s.x, s.y, s.w, s.h);
+        ctx.strokeStyle = "rgba(59, 130, 246, 0.9)";   // 蓝描边
+        ctx.lineWidth = 2;
+        ctx.setLineDash([6, 4]);
+        ctx.strokeRect(s.x + 1, s.y + 1, s.w - 2, s.h - 2);
+        ctx.restore();
+      }
+    }
   }, [sel, mode, ready, dpr, annotations, textDraft, tool, selectedAnn]);
 
   useEffect(() => { draw(); }, [draw]);
@@ -382,6 +418,33 @@ export default function Screenshot() {
     const mx = e.clientX;
     const my = e.clientY;
 
+    // 窗口识别吸附：仅 idle（无选区、无标注工具）时悬停查询；Cmd 临时禁用。
+    // 注：selecting/selected 不在此清 snapRef——必须保留供 onMouseUp 单击判定；
+    //     draw() 的 mode==="idle" 守卫保证这些模式下不画吸附高亮。
+    if (mode === "idle" && !sel && tool === "none") {
+      if (e.metaKey) {
+        if (snapRef.current) { snapRef.current = null; draw(); }
+      } else if (winOriginRef.current) {
+        const now = performance.now();
+        if (now - lastHitRef.current >= 20) { // 50Hz 节流
+          lastHitRef.current = now;
+          const o = winOriginRef.current;
+          const gx = o.x + mx;
+          const gy = o.y + my;
+          invoke<{ x: number; y: number; w: number; h: number } | null>("hit_test_window", { gx, gy })
+            .then((snap) => {
+              if (!snap) {
+                if (snapRef.current) { snapRef.current = null; draw(); }
+                return;
+              }
+              snapRef.current = { x: snap.x - o.x, y: snap.y - o.y, w: snap.w, h: snap.h };
+              draw();
+            })
+            .catch(() => { /* 查询失败 → 不高亮，回退手动 */ });
+        }
+      }
+    }
+
     // 滚动模式：后端每帧检查鼠标位置自动切换 cursor 穿透，前端无需处理
     if (mode === "scrolling") return;
 
@@ -490,8 +553,20 @@ export default function Screenshot() {
     }
 
     if (mode === "selecting" && sel) {
-      if (sel.w < MIN_SIZE || sel.h < MIN_SIZE) { setSel(null); setModeSafe("idle"); }
-      else { setModeSafe("selected"); }
+      if (sel.w < MIN_SIZE || sel.h < MIN_SIZE) {
+        // 单击：若有吸附候选 → 选中整窗；否则清空回 idle（现状）
+        if (snapRef.current && snapRef.current.w >= MIN_SIZE && snapRef.current.h >= MIN_SIZE) {
+          const snapped = { ...snapRef.current };
+          snapRef.current = null; // 选中后清，防残留高亮
+          setSel(snapped);
+          setModeSafe("selected");
+        } else {
+          setSel(null);
+          setModeSafe("idle");
+        }
+      } else {
+        setModeSafe("selected");
+      }
     } else if (mode === "move" || mode === "resize") {
       setModeSafe("selected");
       setResizeHandle(null);
