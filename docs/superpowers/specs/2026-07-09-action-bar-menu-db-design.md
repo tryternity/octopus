@@ -164,24 +164,8 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移
 **执行命令**（替换现有 run_ai_action / action_bar_open_url 的分发逻辑）：
 
 > ⚠️ **收口职责归后端**：前端不再直接 `getCurrentWindow().hide()`，所有窗口生命周期管理由后端统一负责。命令内层 `execute_action_bar_inner` 返回 `Result<bool>`——`Ok(true)`（ai 已自收口直通）、`Ok(false)`（url/script/copy 成功→hide+finalize）、`Err`（异常→仅 finalize，不 hide，让前端切 error 视图，关闭时 dismiss 收口 depth）。所有路径都经收口，`?`/`return Err` 不会泄漏重入锁和 depth。
-
-```rust
-#[tauri::command]
-pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
-    match execute_action_bar_inner(item_id, text, &app) {
-        Ok(true) => Ok(()),           // ai 已自收口（show_result keep_active + finalize）
-        Ok(false) => {                // url/script/copy 成功
-            hide_action_bar_window(&app);  // 含 after_floating_window_hide（depth-1 + 焦点交还）
-            finalize_action_bar(&app);     // 重置 TRIGGER_IN_PROGRESS
-            Ok(())
-        }
-        Err(e) => {                   // 异常（script 失败 / LLM 失败 / DB 错误）
-            finalize_action_bar(&app);     // 仅重置重入锁（不 hide——前端切 error 视图需窗口可见）
-            Err(e)
-        }
-    }
-}
-```
+>
+> ⚠️ **线程约束**：本 command 是 `async` → 跑在 tokio worker 线程，而 `after_floating_window_hide` 内的 `NSApplication::deactivate` 需 `MainThreadMarker`（仅主线程可获取）。故 Ok(false) 分支的 `hide_action_bar_window` 通过 `app.run_on_main_thread` 投递到主线程执行（与 `trigger_action_bar` 的 show 同模式）。`finalize_action_bar` 仅操作 `AtomicBool`，线程安全，保持即时执行。`action_bar_dismiss`（sync command）天然在主线程，无需投递。
 
 内层 match 的分支与之前相同（ai/url/script/copy），但**不直接 `?` 返回**——异常经外层 match 兜底 finalize。
 

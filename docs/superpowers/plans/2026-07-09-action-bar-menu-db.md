@@ -1064,6 +1064,14 @@ spec §6.1 AI 结果展示时序（补 `after_floating_window_hide_keep_active`�
 
 **修复**：`restore_hidden_windows_only` 把 depth 扣减 + `WAS_INACTIVE`/`PREV_APP` 清理移到 `hidden.is_empty()` 检查**之前**无条件执行。deactivate + show 仅在有隐藏窗口时执行。
 
+#### Part E: async command hide 投递主线程（6fe861a）
+
+- [x] **Step 5b: execute_action_bar Ok(false) hide 投递主线程**
+
+**Bug**：`execute_action_bar` 是 async command → 跑在 tokio worker 线程。`after_floating_window_hide` 内的 `NSApplication::deactivate` 需 `MainThreadMarker`（仅主线程），worker 线程返回 None → deactivate 静默跳过。影响范围：仅 `deactivate()` 兜底分支（prev_app 为 None 时），`activateWithOptions`（NSRunningApplication）线程安全不受影响。`action_bar_dismiss`（sync command）天然在主线程，不受影响。
+
+**修复**：Ok(false) 分支用 `app.run_on_main_thread` 投递 `hide_action_bar_window`（与 `trigger_action_bar` 的 show 同模式）。`finalize_action_bar` 仅操作 AtomicBool，线程安全，保持即时执行。
+
 #### 误报记录
 
 - [x] **Step 6: 误报 — Cmd/Ctrl+数字 执行逻辑**
@@ -1072,4 +1080,4 @@ spec §6.1 AI 结果展示时序（补 `after_floating_window_hide_keep_active`�
 
 - [x] **Step 7: 文档同步**
 
-spec §5.2（execute_action_bar 收口签名）+ spec §6.1（url/script/copy 前端 try-catch + 剪贴板失焦扣 depth）+ architecture.md。
+spec §5.2（execute_action_bar 收口签名 + 线程约束）+ spec §6.1（url/script/copy 前端 try-catch + 剪贴板失焦扣 depth）+ architecture.md。
