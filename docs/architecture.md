@@ -232,6 +232,18 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 **跨平台贴图窗口（pin_window）：** 截图后「钉住」功能——创建原生浮动窗口置顶显示截图，支持拖拽（左键）、缩放（滚轮，以鼠标位置为锚点）、关闭（hover 右上角红色关闭按钮）。绕过 WebView 直接用原生窗口，单窗内存 < 5MB。三平台各自实现 `PinWindow` trait（`create(png_data, x, y, w, h)`）：**macOS** 自定义 `PinNSWindow`（`define_class!`）+ `PinNSImageView`（拖拽经 `performWindowDragWithEvent`、缩放改 frame）+ `PinCloseBtnView`（NSImageView 子类，预渲染 PNG 图标规避 `drawRect:` 崩溃）；`NSTrackingArea`（`MouseEnteredAndExited | ActiveAlways | InVisibleRect`）检测 hover 显示/隐藏关闭按钮；静态 `PIN_WINDOWS: Mutex<Vec<SendWindow>>` 跟踪窗口 + `setReleasedWhenClosed(false)` 防悬空 + 关闭时延迟 `cleanup`。**Windows** Win32 `WS_EX_TOPMOST|LAYERED|TOOLWINDOW` + `UpdateLayeredWindow`（预乘 BGRA + GDI `StretchBlt` HALFTONE 缩放）；`WM_MOUSEMOVE`+`TrackMouseEvent` 检测 hover，GDI 绘制关闭按钮到 layered DC；每窗独立线程跑 `GetMessageW` 循环（显式判 0/-1）；GDI 资源经 `run_gdi_calls` 闭包 + defer 清理防泄漏。**Linux** GTK3 Toplevel + Cairo 自绘（`scroll-event` 缩放锚定 `event.coords()` + `win.move_()`；`motion-notify`/`leave-notify` 检测 hover，Cairo 绘制关闭按钮）。右键关闭菜单已三平台移除（hover 按钮体验更优）。`screenshot_commands::pin_screenshot` 双路径：前端 `composeAndCropBytes` 合成带标注/马赛克的 Canvas PNG → `FileReader.readAsDataURL` 转 base64 → 后端解码（`img_base64: Option<String>`）；None 时 fallback 到后端 `ALL_CAPTURES` 裁剪（不含标注）。前端 `isPinningRef` 防重复点击锁。详见 [spec](docs/superpowers/specs/2026-07-06-cross-platform-pin-window-design.md)。
 
+**透明窗口点击穿透（统一方案，3 处使用点）：** octopus 有三处透明窗口需要「部分区域可交互、其余区域鼠标穿透到下层 app」——它们的核心矛盾相同（`setIgnoresMouseEvents(true)` 是全窗口开关，设了之后可交互区域也收不到事件），解法统一为 **Rust 后台轮询读全局鼠标位置，按区域切换穿透**：
+
+| 使用点 | 可交互区域 | 穿透区域 | 实现 | 坐标方案 |
+|--------|-----------|---------|------|---------|
+| **result_window**（精简态） | 顶部 520×116 小条 | 小条下方透明区 | `start_click_through_poller`（`result_window.rs`） | `cursor_position()` 物理坐标 |
+| **clipboard_window**（dock 收缩态） | 边缘 8px 细条 | 其余透明区 | `start_edge_poll`（`clipboard_dock.rs`） | `cursor_position()` 物理坐标 |
+| **screenshot**（滚动录制） | 工具栏 + 预览窗（`interactive_rects`） | 其余遮罩区 | `start_scroll_recording` 内嵌轮询（`screenshot_commands.rs`） | `CGEvent` Quartz 逻辑坐标 ⚠️ |
+
+**统一模式**（result_window + clipboard_dock）：`tokio::interval(33ms)` 轮询 Tauri 跨平台 `cursor_position()`（物理坐标）+ `outer_position()`（物理坐标）直接比较——无需 scale 换算，多显示器不同 DPI 安全。macOS 在 NSWindow 直调 `setIgnoresMouseEvents`（via `run_on_main_thread`），Windows/Linux 用 Tauri `set_ignore_cursor_events`。**Wayland 限制**：`cursor_position()` 恒返回 (0,0)，穿透失效（协议层限制，改用 XWayland 可恢复）。**为什么不用前端 `setIgnoreCursorEvents` + mousemove**：一旦 `setIgnoreCursorEvents(true)`，窗口完全不收鼠标事件（NSWindow 连 tracking area 都禁），前端 mousemove 不再触发 → 无法检测光标重入 → 重入失效。必须 Rust 后端读全局位置。
+
+**截图不可统一**：截图穿透的核心价值不只是穿透鼠标——它还**激活光标下方的 app**（`CGWindowListCopyWindowInfo` 查鼠标下的 PID → `activateWithOptions`），让用户能直接滚动下层窗口。这依赖 Quartz 坐标系 + macOS 窗口列表 API，且整段 `#[cfg(target_os = "macos")]` gate（macOS 专属功能）。强行统一会增加坐标转换复杂度且无跨平台收益。
+
 **窗口加载就绪（ready）机制：** 结果窗 webview 首次加载有延迟，若后端在页面就绪前 `emit('show-result')`，事件丢失导致「文本不显示 / 不弹窗」。`result_window.rs` 以 `WINDOW_READY`（AtomicBool）+ `PENDING_TEXT`（Mutex<Option<String>>）兜底——未 ready 时暂存文本，前端 `index.html` 加载完成后发起 `result_window_ready` Tauri command → 后端置 ready 并冲刷积压文本。`show_result` / `update_result` 把「判 ready + 写 pending」收进同一把 `PENDING_TEXT` 锁，与 `result_window_ready` 的 store(true)+take 互斥，消除启动首帧 TOCTOU 文本滞留。**`show_result` 的物理 `window.show()` 无条件执行**（不受 ready 门控，仅 `emit('show-result')` 受门控）——冷启动首启 webview 未 ready（走 pending 分支）时按快捷键也能立即弹窗，可见窗口的 webview 优先首绘亦加速 ready；`#container` 默认 `opacity:0`，提前 show 不产生空窗闪烁。**前端 `result_window_ready` 时还主动调一次 `refreshActive()`** 拉取首帧工具栏配置（`edit_shortcut` / `polish_mode` / `denoise_mode` 等），避免冷启动到首次 `show-result`（录音）/ `config-changed`（设置改动）之间，窗口内 keydown 监听器读到 `edit_shortcut` 初始默认值（2026-07-05 第八轮补；防御性——当前窗口可见即聚焦的路径多已间接触发 refreshActive，主动拉取消除对该隐式依赖）。
 
 **核心状态机（Coordinator）：**
