@@ -88,11 +88,20 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             {
             // 检测新吸附
             if let Some(edge) = detect_dock_edge(&win_clone) {
-                crate::window_position::save_dock_state(WINDOW_LABEL, edge);
-                DOCK_EXPANDED.store(false, Ordering::SeqCst);
-                crate::clipboard_dock::start_edge_poll(app_clone.clone(), win_clone.clone(), edge);
-                let _ = app_clone.emit("clipboard://dock-changed", edge);
-                log::info!("clipboard docked to {}", edge);
+                let prev_dock = crate::window_position::load_dock_state(WINDOW_LABEL);
+                let is_already_collapsed = prev_dock.as_deref() == Some(edge)
+                    && !DOCK_EXPANDED.load(Ordering::SeqCst);
+                // 已处于某 edge 的收缩态时，不切换到另一个 edge
+                //（防多显示器边界上下拖拽时 right↔left 横跳）
+                let is_docked_on_other_edge = prev_dock.as_deref().is_some_and(|p| p != edge && p != "none")
+                    && !DOCK_EXPANDED.load(Ordering::SeqCst);
+                if !is_already_collapsed && !is_docked_on_other_edge {
+                    crate::window_position::save_dock_state(WINDOW_LABEL, edge);
+                    DOCK_EXPANDED.store(false, Ordering::SeqCst);
+                    crate::clipboard_dock::start_edge_poll(app_clone.clone(), win_clone.clone(), edge);
+                    let _ = app_clone.emit("clipboard://dock-changed", edge);
+                    log::info!("clipboard docked to {}", edge);
+                }
                 return;
             }
 
@@ -101,6 +110,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             if let Some(ref prev) = prev_dock {
                 if prev == "right" || prev == "left" {
                     crate::window_position::save_dock_state(WINDOW_LABEL, "none");
+                    DOCK_EXPANDED.store(false, Ordering::SeqCst);
                     crate::clipboard_dock::stop_edge_poll(&win_clone);
                     let _ = app_clone.emit("clipboard://dock-changed", "none");
                     log::info!("clipboard undocked");
