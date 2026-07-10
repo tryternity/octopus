@@ -12,6 +12,7 @@ import {
   Trash2,
   Plus,
   X,
+  Pencil,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -441,6 +442,7 @@ interface NodeProps {
   onFormChange: (f: Partial<ActionBarItem>) => void;
   onSaveEdit: () => void;
   onCancelEdit: () => void;
+  deleteConfirmId: number | null;
   draftParentId: number | null | undefined; // undefined=非草稿, null=顶层草稿, number=子菜单草稿
 }
 
@@ -468,9 +470,11 @@ const TreeNodeBase = (props: NodeProps) => {
       <div
         className={cn(
           "group relative flex items-center gap-2 rounded-md py-1.5 pl-1 pr-1.5 transition-colors",
-          isEditing ? "bg-voice/[0.06]" : "cursor-pointer hover:bg-muted/40",
+          isEditing ? "bg-voice/[0.06]" : isSubmenu ? "cursor-pointer hover:bg-muted/40" : "hover:bg-muted/40",
         )}
-        onClick={() => props.onStartEdit(item)}
+        onClick={() => {
+          if (isSubmenu) props.onToggle(item.id);
+        }}
       >
         {/* 展开箭头（仅 submenu 有，其余占位保持对齐） */}
         <button
@@ -551,13 +555,33 @@ const TreeNodeBase = (props: NodeProps) => {
           <button
             onClick={(e) => {
               e.stopPropagation();
+              props.onStartEdit(item);
+            }}
+            className="rounded p-0.5 text-muted-foreground hover:text-foreground"
+            aria-label="编辑"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
               props.onDelete(item.id);
             }}
             disabled={item.isSystem}
-            className="rounded p-0.5 text-muted-foreground hover:text-red-500 disabled:opacity-25 disabled:hover:text-muted-foreground"
+            className={cn(
+              "rounded p-0.5 transition-colors disabled:opacity-25",
+              props.deleteConfirmId === item.id
+                ? "bg-red-500 text-white hover:bg-red-600"
+                : "text-muted-foreground hover:text-red-500 disabled:hover:text-muted-foreground",
+            )}
             aria-label="删除"
+            title={props.deleteConfirmId === item.id ? "再次点击确认删除" : "删除"}
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            {props.deleteConfirmId === item.id ? (
+              <span className="px-1 text-[10px] font-medium">确认</span>
+            ) : (
+              <Trash2 className="h-3.5 w-3.5" />
+            )}
           </button>
         </div>
       </div>
@@ -852,17 +876,24 @@ export default function ActionBarPanel({
     }
   }, [draftParentId, editingId, editingForm, showToast, cancelEdit, refresh]);
 
+  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+
   const handleDelete = useCallback(
     async (id: number) => {
+      if (deleteConfirmId !== id) {
+        setDeleteConfirmId(id);
+        return;
+      }
       try {
         await invoke("delete_action_bar_item", { id });
         showToast("已删除");
+        setDeleteConfirmId(null);
         refresh();
       } catch (e) {
         showToast("删除失败：" + e);
       }
     },
-    [showToast, refresh],
+    [deleteConfirmId, showToast, refresh],
   );
 
   const handleMove = useCallback(
@@ -906,6 +937,7 @@ export default function ActionBarPanel({
     onFormChange: setEditingForm,
     onSaveEdit: saveEdit,
     onCancelEdit: cancelEdit,
+    deleteConfirmId,
     draftParentId,
   };
 
