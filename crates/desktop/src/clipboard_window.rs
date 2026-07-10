@@ -8,6 +8,15 @@ const WINDOW_LABEL: &str = "clipboard_window";
 /// 解决 macOS `is_focused()` 在收缩态不可靠的问题——用显式状态替代焦点推断。
 static DOCK_EXPANDED: AtomicBool = AtomicBool::new(false);
 
+/// 将动态 String edge 转为 &'static str（仅 "left"/"right"，无需堆分配）。
+fn edge_static(s: &str) -> &'static str {
+    match s {
+        "left" => "left",
+        "right" => "right",
+        _ => "right", // fallback
+    }
+}
+
 pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     if app.get_webview_window(WINDOW_LABEL).is_some() {
         return Ok(());
@@ -44,27 +53,26 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     let dock_edge = crate::window_position::load_dock_state(WINDOW_LABEL);
     if let Some(ref edge) = dock_edge {
         if edge == "right" || edge == "left" {
-            // 修正位置到吸附边缘
+            // 用 DB 中存储的位置（逻辑坐标），不从 outer_position() 读
+            //（restore_window_position 的 set_position 是异步的，outer_position 此时返回默认值）
+            let (_db_x, db_y) = crate::window_position::load_window_position(WINDOW_LABEL)
+                .unwrap_or((0.0, 0.0));
             if let Ok(Some(monitor)) = window.current_monitor().or(window.primary_monitor()) {
                 let scale = monitor.scale_factor();
-                if let Ok(pos) = window.outer_position() {
-                    let y = pos.y as f64 / scale;
-                    let x = if edge == "right" {
-                        monitor.position().x as f64 / scale
-                            + monitor.size().width as f64 / scale
-                            - 300.0
-                    } else {
-                        monitor.position().x as f64 / scale
-                    };
-                    let _ = window.set_position(tauri::Position::Logical(
-                        tauri::LogicalPosition::new(x, y),
-                    ));
-                }
+                let x = if edge == "right" {
+                    monitor.position().x as f64 / scale
+                        + monitor.size().width as f64 / scale
+                        - 300.0
+                } else {
+                    monitor.position().x as f64 / scale
+                };
+                let _ = window.set_position(tauri::Position::Logical(
+                    tauri::LogicalPosition::new(x, db_y),
+                ));
             }
             let _ = app.emit("clipboard://dock-changed", edge.as_str());
             DOCK_EXPANDED.store(false, Ordering::SeqCst);
-            let edge_static: &'static str = Box::leak(edge.clone().into_boxed_str());
-            crate::clipboard_dock::start_edge_poll(app.clone(), window.clone(), edge_static);
+            crate::clipboard_dock::start_edge_poll(app.clone(), window.clone(), edge_static(edge));
         }
     }
 
@@ -75,6 +83,9 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         tauri::WindowEvent::Moved(_) => {
             crate::window_position::save_current_position(&win_clone, WINDOW_LABEL);
 
+            // 吸附检测仅 macOS（依赖 NSWindow setIgnoresMouseEvents）
+            #[cfg(target_os = "macos")]
+            {
             // 检测新吸附
             if let Some(edge) = detect_dock_edge(&win_clone) {
                 crate::window_position::save_dock_state(WINDOW_LABEL, edge);
@@ -90,24 +101,28 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             if let Some(ref prev) = prev_dock {
                 if prev == "right" || prev == "left" {
                     crate::window_position::save_dock_state(WINDOW_LABEL, "none");
+                    crate::clipboard_dock::stop_edge_poll(&win_clone);
                     let _ = app_clone.emit("clipboard://dock-changed", "none");
                     log::info!("clipboard undocked");
                 }
             }
+            } // cfg macos
         }
         tauri::WindowEvent::Focused(false) => {
             // 剪贴板失焦（用户切到其他 app）——恢复被隐藏的 Regular 窗口
             #[cfg(target_os = "macos")]
             { crate::activation::restore_hidden_windows_only(&app_clone); }
 
-            // docked 态下失焦 → 收缩
-            let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
-            if let Some(ref edge) = docked {
-                if edge == "right" || edge == "left" {
-                    DOCK_EXPANDED.store(false, Ordering::SeqCst);
-                    let edge_static: &'static str = Box::leak(edge.clone().into_boxed_str());
-                    crate::clipboard_dock::start_edge_poll(app_clone.clone(), win_clone.clone(), edge_static);
-                    let _ = app_clone.emit("clipboard://collapse", ());
+            // docked 态下失焦 → 收缩（防重复：DOCK_EXPANDED 已 false 则跳过）
+            #[cfg(target_os = "macos")]
+            if DOCK_EXPANDED.load(Ordering::SeqCst) {
+                let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
+                if let Some(ref edge) = docked {
+                    if edge == "right" || edge == "left" {
+                        DOCK_EXPANDED.store(false, Ordering::SeqCst);
+                        crate::clipboard_dock::start_edge_poll(app_clone.clone(), win_clone.clone(), edge_static(edge));
+                        let _ = app_clone.emit("clipboard://collapse", ());
+                    }
                 }
             }
         }
@@ -174,7 +189,7 @@ pub fn clipboard_dock_collapse(app: AppHandle) {
     let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         if let Some(edge) = docked.filter(|e| e == "right" || e == "left") {
-            crate::clipboard_dock::start_edge_poll(app.clone(), window, Box::leak(edge.into_boxed_str()));
+            crate::clipboard_dock::start_edge_poll(app.clone(), window, edge_static(&edge));
         }
     }
     let _ = app.emit("clipboard://collapse", ());
@@ -219,7 +234,7 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 DOCK_EXPANDED.store(false, Ordering::SeqCst);
                 let docked_edge = crate::window_position::load_dock_state(WINDOW_LABEL);
                 if let Some(e) = docked_edge.filter(|e| e == "right" || e == "left") {
-                    crate::clipboard_dock::start_edge_poll(app.clone(), window.clone(), Box::leak(e.into_boxed_str()));
+                    crate::clipboard_dock::start_edge_poll(app.clone(), window.clone(), edge_static(&e));
                 }
                 let _ = app.emit("clipboard://collapse", ());
             } else {

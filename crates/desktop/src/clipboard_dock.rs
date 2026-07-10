@@ -3,20 +3,22 @@
 //! 与 result_window::start_click_through_poller 统一模式：
 //! - 用 Tauri 跨平台 `cursor_position()`（非 CGEvent）读全局鼠标位置
 //! - 物理坐标直接比较（不做 scale 换算，多显示器不同 DPI 安全）
-//! - `setIgnoreCursorEvents` via `run_on_main_thread`（macOS）/ `set_ignore_cursor_events`（其他平台）
-//! - tokio interval 33ms（非 std::thread::sleep 16ms）
+//! - `setIgnoresMouseEvents` via `run_on_main_thread`（macOS）/ `set_ignore_cursor_events`（其他平台）
+//! - tokio interval 33ms
 //!
-//! Wayland 限制：cursor_position() 返回 (0,0)，穿透失效（协议层限制，无解）。
-//! 非 macOS 平台用 Tauri set_ignore_cursor_events 替代 NSWindow setIgnoresMouseEvents。
+//! 线程安全：用自增 POLL_ID 防多线程竞态——每次 start 递增 ID，
+//! 旧线程检测到 ID 不匹配自动退出。
 
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 
 static POLL_ACTIVE: AtomicBool = AtomicBool::new(false);
+static POLL_ID: AtomicU64 = AtomicU64::new(0);
 
 /// 启动鼠标位置轮询：鼠标在细条区域 → 可交互，否则穿透。
-/// 需传入 AppHandle（tokio spawn 需要），edge 从 DB 读取。
+/// 用自增 ID 保证同时只有一个轮询线程存活——旧线程自动退出。
 pub fn start_edge_poll(_app: tauri::AppHandle, window: tauri::WebviewWindow, edge: &'static str) {
     POLL_ACTIVE.store(true, Ordering::SeqCst);
+    let my_id = POLL_ID.fetch_add(1, Ordering::SeqCst);
 
     tauri::async_runtime::spawn(async move {
         let mut poll = tokio::time::interval(std::time::Duration::from_millis(33));
@@ -25,10 +27,22 @@ pub fn start_edge_poll(_app: tauri::AppHandle, window: tauri::WebviewWindow, edg
         // 初始设为穿透
         set_ignores(&window, true);
 
-        while POLL_ACTIVE.load(Ordering::SeqCst) {
+        loop {
+            // ID 不匹配 → 旧线程退出（被更新的 start 替代）
+            if POLL_ID.load(Ordering::SeqCst) != my_id.wrapping_add(1) {
+                break;
+            }
+            if !POLL_ACTIVE.load(Ordering::SeqCst) {
+                break;
+            }
+
             poll.tick().await;
 
-            // 用 Tauri cursor_position() + outer_position()——都是物理坐标，直接比较
+            // ID 可能在 await 期间变化
+            if POLL_ID.load(Ordering::SeqCst) != my_id.wrapping_add(1) {
+                break;
+            }
+
             let (mx, my) = match window.cursor_position() {
                 Ok(p) => (p.x, p.y),
                 Err(_) => continue,
@@ -43,7 +57,6 @@ pub fn start_edge_poll(_app: tauri::AppHandle, window: tauri::WebviewWindow, edg
             let win_right = wx + win_w;
             let win_bottom = wy + win_h;
 
-            // 细条区域（物理坐标）：边缘 10px 容差
             let in_bar = match edge {
                 "right" => {
                     mx >= win_right - 10.0 * sf && mx <= win_right + 2.0 * sf
