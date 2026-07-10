@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef, memo } from "react";
+import { useState, useEffect, useCallback, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
@@ -150,7 +150,6 @@ const ExtensionDropZone = ({
   const [dragging, setDragging] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState("");
-  const inDropZone = useRef(false);
 
   const doImport = useCallback(
     async (sourcePath: string) => {
@@ -191,23 +190,13 @@ const ExtensionDropZone = ({
     const win = getCurrentWebview();
     const unlisten = win.onDragDropEvent((event) => {
       const { type } = event.payload;
-      if (type === "over" || type === "enter") {
-        if (inDropZone.current) setDragging(true);
+      if (type === "enter" || type === "over") {
+        setDragging(true);
       } else if (type === "drop") {
         setDragging(false);
-        if (!inDropZone.current) return;
         const paths = (event.payload as { paths: string[] }).paths;
-        const target = paths.find(
-          (p: string) => p.endsWith(".zip") || p.endsWith("config.yaml"),
-        );
-        if (!target) {
-          setError("请拖入 .zip 或含 config.yaml 的文件夹");
-          return;
-        }
-        const sourcePath = target.endsWith("config.yaml")
-          ? target.replace(/\/config\.yaml$/, "")
-          : target;
-        doImport(sourcePath);
+        if (paths.length === 0) return;
+        doImport(paths[0]);
       } else if (type === "leave") {
         setDragging(false);
       }
@@ -222,8 +211,6 @@ const ExtensionDropZone = ({
   return (
     <Field label="扩展包">
       <div
-        onMouseEnter={() => { inDropZone.current = true; }}
-        onMouseLeave={() => { inDropZone.current = false; setDragging(false); }}
         className={cn(
           "rounded-lg border border-dashed transition-colors min-h-[80px] flex flex-col items-center justify-center gap-1.5 p-3",
           dragging ? "border-voice bg-voice/5" : "border-border",
