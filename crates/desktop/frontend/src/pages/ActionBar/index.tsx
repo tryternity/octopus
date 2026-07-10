@@ -375,7 +375,7 @@ export default function ActionBar() {
         </div>
       )}
       {/* 主菜单 */}
-      <div className="flex items-center gap-1 px-1.5 py-1.5 shrink-0">
+      <div className="flex items-center gap-1 px-1.5 py-[3px] shrink-0">
         {mainItems.map((item, i) => (
           <IconBtn
             key={item.id}
@@ -388,7 +388,7 @@ export default function ActionBar() {
       </div>
       {/* 子菜单——展开时用渐变分隔线 + 轻微底色区分 */}
       <div className={cn(
-        "flex items-center gap-1 px-1.5 py-1.5 shrink-0 overflow-hidden transition-all duration-200",
+        "flex items-center gap-1 px-1.5 py-[3px] shrink-0 overflow-hidden transition-all duration-200",
         view === "submenu"
           ? "border-t border-border/30 bg-foreground/[0.02]"
           : "h-0 py-0 overflow-hidden border-t-0",
