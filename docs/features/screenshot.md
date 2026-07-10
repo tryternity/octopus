@@ -194,10 +194,10 @@ start_screenshot
 区域截图模式下，鼠标悬停自动高亮候选窗口，单击即选中整窗（Snow Shot 式），减少手动框选。拖拽手画仍可用（mousedown 后 move > 阈值进拖拽，吸附灭）；按住 Cmd 临时禁用吸附做像素级精框。
 
 - **粒度**：v1 仅窗口级（`CGWindowListCopyWindowInfo`，零额外权限，复用屏幕录制权限）；v2 预留元素级 AX（仅浏览器 bundle id，需辅助功能权限）。
-- **命中算法**：`crates/capx/src/window_detect/mod.rs::pick_top_window` 纯函数——过滤自身 PID / layer<0 / 退化 bounds / 跨屏 / **非前台 app**，按 layer 降序取最上层（同 layer 保留 CGWindowList 数组靠前者 = z-order 上层）。frontmost app = 数组首个 layer0 非 self 窗口 owner pid；后台 app 窗口（owner≠frontmost）不吸附，避免截到被遮挡内容（截图是 t0 全屏快照）——用户先 CMD+Tab 聚焦目标 app 再截图。
+- **命中算法**：`crates/capx/src/window_detect/mod.rs::pick_top_window` 纯函数——过滤自身 PID / layer<0 / 退化 bounds / 跨屏，按 layer 降序取最上层（同 layer 保留 CGWindowList 数组靠前者 = z-order 上层）= **鼠标点处可见的最顶窗口**（z-order 遮挡 first-hit）。被遮挡的窗口（盖它的窗口 layer 更高、或同 layer 数组更靠前）永不命中——「只检测可见窗体」的几何本质（与窗口 owner 无关）。v1.1 的 owner/frontmost 过滤已移除：frontmost 判定（数组首个 layer0 非 self 窗口 owner）会错判——后台 always-on-top / 悬浮 layer0 窗口浮在最上时被当成 frontmost，真正可见的前台窗口被误滤，反而露出下方被遮挡窗口。部分露出的窗口，鼠标在可见部分命中后吸附整窗 bounds。
 - **FFI**：`macos.rs::MacOsDetector` 复用 capture.rs 的 `CGWindowListCopyWindowInfo` 解析模式；`monitor_containing` 用 `CGDisplay` 找含点显示器做跨屏判定；找不到兜底超大 rect（不滤跨屏）。
 - **命令**：`hit_test_window(gx, gy) -> Option<SnapRect>`（全局逻辑坐标进/出，同步微秒级）。
 - **前端**：`Screenshot/index.tsx` onMount 缓存 winOrigin（outerPosition 物理/scaleFactor → 逻辑），onMouseMove idle 悬停节流 50Hz 查询 + in-flight 序号去重（旧响应到达即丢弃）→ Canvas 蓝色虚线描边 + 淡蓝填充高亮；onMouseUp 单击（sel < MIN_SIZE）吃吸附候选选中整窗，落空回 idle（现状）。
 - **坐标**：选区/鼠标=本窗 CSS；winOrigin+clientX=全局逻辑（与 CGWindowList/CGDisplay 同 Quartz 空间，Y 向下）；吸附 rect 返回全局，前端减 winOrigin 得本窗 CSS 绘制。
 - **下游零改动**：吸附只改选区来源，标注/OCR/贴图/复制链路不变。
-- **手动验收**：GUI 交互为主（悬停高亮/单击即选/Cmd 禁用/拖拽覆盖/多屏/跨屏跳过/落空不动/OCR fallback/自身 PID 不命中/**后台 app 露出部分不吸附** 10 项 + 多屏坐标对齐抽查）。
+- **手动验收**：GUI 交互为主（悬停高亮/单击即选/Cmd 禁用/拖拽覆盖/多屏/跨屏跳过/落空不动/OCR fallback/自身 PID 不命中/**完全被遮挡窗口不吸附**/**部分露出窗口可见部分可吸附** 11 项 + 多屏坐标对齐抽查）。
