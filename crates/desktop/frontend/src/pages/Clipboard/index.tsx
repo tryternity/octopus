@@ -205,8 +205,10 @@ export default function Clipboard() {
   return (
     <div
       className={cn(
-        "flex flex-col h-screen select-none overflow-hidden rounded-xl border border-border shadow-2xl shadow-black/8 data-tauri-drag-region",
-        dockMode === "collapsed" ? "w-[300px] transition-[width] duration-300 ease-out" : "w-[300px]",
+        "flex flex-col h-screen select-none overflow-hidden rounded-xl data-tauri-drag-region",
+        dockMode === "collapsed"
+          ? "w-[300px] transition-[width] duration-300 ease-out"
+          : "w-[300px] border border-border shadow-2xl shadow-black/8",
       )}
       style={{
         background: dockMode === "collapsed" ? "transparent" : "var(--color-background)",
