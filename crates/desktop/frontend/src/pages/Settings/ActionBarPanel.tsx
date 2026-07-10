@@ -60,6 +60,12 @@ const TYPE_META: Record<
     placeholder:
       "#shell / #osascript / #powershell / #python\n#node / #deno / #bun\n#javascript / #typescript\n选中文本在 $OCTOPUS_TEXT 环境变量中",
   },
+  extension: {
+    dot: "bg-amber-500",
+    label: "EXT",
+    desc: "从 .octopusext.zip 或文件夹导入扩展包（含 config.yaml + 脚本）",
+    placeholder: "",
+  },
   copy: {
     dot: "bg-stone-400",
     label: "COPY",
@@ -73,6 +79,7 @@ const ACTION_TYPES = [
   { value: "ai", label: "AI（LLM 处理）" },
   { value: "url", label: "URL（打开网页/应用）" },
   { value: "script", label: "脚本" },
+  { value: "extension", label: "扩展包" },
   { value: "copy", label: "复制" },
 ];
 
@@ -125,6 +132,138 @@ interface EditFormProps {
   onCancel: () => void;
 }
 
+// ── 扩展包拖拽/选择区 ──
+interface ImportResult {
+  name: string;
+  scriptPath: string;
+  isAsync: boolean;
+  writeOutputToClipboard: boolean;
+}
+
+const ExtensionDropZone = ({
+  form,
+  onChange,
+}: {
+  form: Partial<ActionBarItem>;
+  onChange: (form: Partial<ActionBarItem>) => void;
+}) => {
+  const [dragging, setDragging] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState("");
+  const inDropZone = useRef(false);
+
+  const doImport = useCallback(
+    async (sourcePath: string) => {
+      setImporting(true);
+      setError("");
+      try {
+        const result = await invoke<ImportResult>("import_extension", { sourcePath });
+        onChange({
+          ...form,
+          title: result.name || form.title,
+          actionData: result.scriptPath,
+          isAsync: result.isAsync,
+          writeOutputToClipboard: result.writeOutputToClipboard,
+        });
+      } catch (e) {
+        setError(String(e));
+      }
+      setImporting(false);
+    },
+    [form, onChange],
+  );
+
+  const handleOpenFile = useCallback(async () => {
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        filters: [{ name: "扩展包", extensions: ["zip"] }],
+      });
+      if (typeof selected === "string") {
+        doImport(selected);
+      }
+    } catch {
+      // 用户取消
+    }
+  }, [doImport]);
+
+  useEffect(() => {
+    const win = getCurrentWebview();
+    const unlisten = win.onDragDropEvent((event) => {
+      const { type } = event.payload;
+      if (type === "over" || type === "enter") {
+        if (inDropZone.current) setDragging(true);
+      } else if (type === "drop") {
+        setDragging(false);
+        if (!inDropZone.current) return;
+        const paths = (event.payload as { paths: string[] }).paths;
+        const target = paths.find(
+          (p: string) => p.endsWith(".zip") || p.endsWith("config.yaml"),
+        );
+        if (!target) {
+          setError("请拖入 .zip 或含 config.yaml 的文件夹");
+          return;
+        }
+        const sourcePath = target.endsWith("config.yaml")
+          ? target.replace(/\/config\.yaml$/, "")
+          : target;
+        doImport(sourcePath);
+      } else if (type === "leave") {
+        setDragging(false);
+      }
+    });
+    return () => {
+      unlisten.then((fn: () => void) => fn());
+    };
+  }, [doImport]);
+
+  const hasPackage = form.actionData && form.actionData.startsWith("/");
+
+  return (
+    <Field label="扩展包">
+      <div
+        onMouseEnter={() => { inDropZone.current = true; }}
+        onMouseLeave={() => { inDropZone.current = false; setDragging(false); }}
+        className={cn(
+          "rounded-lg border border-dashed transition-colors min-h-[80px] flex flex-col items-center justify-center gap-1.5 p-3",
+          dragging ? "border-voice bg-voice/5" : "border-border",
+          hasPackage && "border-solid",
+        )}
+      >
+        {importing ? (
+          <p className="text-xs text-muted-foreground">导入中…</p>
+        ) : hasPackage ? (
+          <>
+            <p className="text-xs font-medium text-foreground">{form.title}</p>
+            <p className="font-mono text-[10px] text-muted-foreground/70 truncate max-w-full">
+              {form.actionData}
+            </p>
+            <button
+              onClick={handleOpenFile}
+              className="mt-1 text-[11px] text-voice hover:underline"
+            >
+              重新选择
+            </button>
+          </>
+        ) : (
+          <>
+            <p className="text-[11px] text-muted-foreground/70">
+              拖拽 .zip 或文件夹到此，或
+            </p>
+            <button
+              onClick={handleOpenFile}
+              className="text-[11px] text-voice hover:underline"
+            >
+              选择文件
+            </button>
+          </>
+        )}
+        {error && <p className="text-[11px] text-red-500">{error}</p>}
+      </div>
+    </Field>
+  );
+};
+
 const EditForm = ({
   form,
   isSystem,
@@ -134,7 +273,7 @@ const EditForm = ({
 }: EditFormProps) => {
   const type = form.actionType || "copy";
   const meta = TYPE_META[type];
-  const showContent = type !== "submenu" && type !== "copy";
+  const showContent = type !== "submenu" && type !== "copy" && type !== "extension";
 
   return (
     <div className="mb-1 ml-[26px] rounded-lg border border-border bg-muted/20 p-3.5 shadow-sm">
@@ -208,6 +347,10 @@ const EditForm = ({
               }
             />
           </Field>
+        )}
+
+        {type === "extension" && (
+          <ExtensionDropZone form={form} onChange={onChange} />
         )}
 
         {type === "script" && (
@@ -610,300 +753,6 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
   );
 };
 
-// ── 扩展子页 ──
-
-interface ExtensionInfo {
-  dirName: string;
-  name: string;
-  description: string;
-  version: string;
-  author: string;
-  hasSkill: boolean;
-  skillRef: string | null;
-  scriptFile: string;
-  scriptTypeLabel: string | null;
-  isAsync: boolean;
-  dbItemId: number | null;
-  parentId: number | null;
-}
-
-interface ImportResult {
-  name: string;
-  scriptPath: string;
-  isAsync: boolean;
-  writeOutputToClipboard: boolean;
-}
-
-const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) => {
-  const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
-  const [loaded, setLoaded] = useState(false);
-  const [dragging, setDragging] = useState(false);
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [pendingImport, setPendingImport] = useState<ImportResult | null>(null);
-  const [parentGroups, setParentGroups] = useState<ActionBarItem[]>([]);
-  const inDropZone = useRef(false);
-
-  const refresh = useCallback(async () => {
-    try {
-      const list = await invoke<ExtensionInfo[]>("list_extensions");
-      setExtensions(list);
-      const all = await invoke<ActionBarItem[]>("list_action_bar_items");
-      setParentGroups(all.filter((i) => i.actionType === "submenu" && i.parentId === null));
-    } catch (e) {
-      showToast("加载失败：" + e);
-    }
-    setLoaded(true);
-  }, [showToast]);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
-
-  // 统一的导入入口——导入后弹父菜单选择器
-  const doImport = useCallback(
-    async (sourcePath: string) => {
-      try {
-        const result = await invoke<ImportResult>("import_extension", { sourcePath });
-        setPendingImport(result);
-      } catch (e) {
-        showToast("导入失败：" + e);
-      }
-    },
-    [showToast],
-  );
-
-  // 确认安装到 DB
-  const confirmInstall = useCallback(
-    async (parentId: number | null) => {
-      if (!pendingImport) return;
-      try {
-        await invoke("install_extension_to_db", {
-          name: pendingImport.name,
-          scriptPath: pendingImport.scriptPath,
-          isAsync: pendingImport.isAsync,
-          writeOutputToClipboard: pendingImport.writeOutputToClipboard,
-          parentId,
-        });
-        showToast(`已安装：${pendingImport.name}`);
-        setPendingImport(null);
-        refresh();
-      } catch (e) {
-        showToast("安装失败：" + e);
-      }
-    },
-    [pendingImport, showToast, refresh],
-  );
-
-  // 文件选择导入
-  const handleOpenFile = useCallback(async () => {
-    try {
-      const selected = await openDialog({
-        multiple: false,
-        filters: [{ name: "扩展包", extensions: ["zip"] }],
-      });
-      if (typeof selected === "string") {
-        doImport(selected);
-      }
-    } catch {
-      // 用户取消
-    }
-  }, [doImport]);
-
-  // Tauri 2 文件拖拽
-  useEffect(() => {
-    const win = getCurrentWebview();
-    const unlisten = win.onDragDropEvent((event) => {
-      const { type } = event.payload;
-      if (type === "over" || type === "enter") {
-        if (inDropZone.current) setDragging(true);
-      } else if (type === "drop") {
-        setDragging(false);
-        if (!inDropZone.current) return;
-        const paths = (event.payload as { paths: string[] }).paths;
-        const target = paths.find((p: string) => p.endsWith(".zip") || p.endsWith("config.yaml"));
-        if (!target) {
-          showToast("请拖入 .octopusext.zip 或含 config.yaml 的文件夹");
-          return;
-        }
-        // 如果是 config.yaml，取父目录
-        const sourcePath = target.endsWith("config.yaml")
-          ? target.replace(/\/config\.yaml$/, "")
-          : target;
-        doImport(sourcePath);
-      } else if (type === "leave") {
-        setDragging(false);
-      }
-    });
-    return () => {
-      unlisten.then((fn: () => void) => fn());
-    };
-  }, [showToast, doImport]);
-
-  const handleDelete = useCallback(
-    async (dirName: string) => {
-      try {
-        await invoke("delete_extension", { dirName });
-        showToast("已删除");
-        setConfirmDelete(null);
-        refresh();
-      } catch (e) {
-        showToast("删除失败：" + e);
-      }
-    },
-    [showToast, refresh],
-  );
-
-  if (!loaded) {
-    return <p className="py-12 text-center text-sm text-muted-foreground">加载中…</p>;
-  }
-
-  // 父菜单选择器
-  if (pendingImport) {
-    return (
-      <div className="rounded-lg border border-border bg-muted/20 p-4">
-        <p className="mb-1 text-sm font-medium">安装扩展：{pendingImport.name}</p>
-        <p className="mb-3 text-xs text-muted-foreground">
-          选择挂载到的父菜单（扩展将作为子菜单项出现）
-        </p>
-        <div className="space-y-1.5">
-          <button
-            onClick={() => confirmInstall(null)}
-            className="w-full rounded-md border border-border px-3 py-2 text-left text-xs hover:bg-foreground/5"
-          >
-            顶层（作为主菜单项）
-          </button>
-          {parentGroups.map((g) => (
-            <button
-              key={g.id}
-              onClick={() => confirmInstall(g.id)}
-              className="w-full rounded-md border border-border px-3 py-2 text-left text-xs hover:bg-foreground/5"
-            >
-              {g.title}
-            </button>
-          ))}
-        </div>
-        <button
-          onClick={() => setPendingImport(null)}
-          className="mt-3 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted/60"
-        >
-          取消
-        </button>
-      </div>
-    );
-  }
-
-  return (
-    <div
-      onMouseEnter={() => { inDropZone.current = true; }}
-      onMouseLeave={() => { inDropZone.current = false; setDragging(false); }}
-      className={cn(
-        "rounded-lg border border-dashed transition-colors min-h-[200px]",
-        dragging ? "border-voice bg-voice/5" : "border-border",
-      )}
-    >
-      <div className="flex items-center justify-between px-4 py-3 border-b border-border/40">
-        <div>
-          <p className="text-xs font-medium">扩展包</p>
-          <p className="text-[11px] text-muted-foreground/70 font-mono">
-            ~/.octopus/extensions/
-          </p>
-        </div>
-        <div className="flex items-center gap-1.5">
-          <button
-            onClick={handleOpenFile}
-            className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-          >
-            打开
-          </button>
-          <button
-            onClick={() => refresh()}
-            className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-          >
-            刷新
-          </button>
-        </div>
-      </div>
-
-      <div className="px-3 py-2 text-center">
-        <p className="text-[11px] text-muted-foreground/60">
-          拖拽 .octopusext.zip 或文件夹到此处导入
-        </p>
-      </div>
-
-      {extensions.length === 0 ? (
-        <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
-          <p className="text-sm font-medium">还没有扩展包</p>
-          <p className="text-xs text-muted-foreground">
-            拖入 zip 或手动放入 ~/.octopus/extensions/
-          </p>
-        </div>
-      ) : (
-        <div className="space-y-px px-2 pb-2">
-          {extensions.map((ext) => (
-            <div
-              key={ext.dirName}
-              className="rounded-lg border border-border bg-muted/20 px-3.5 py-2.5"
-            >
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-center gap-2">
-                    <span className="text-xs font-medium">{ext.name}</span>
-                    <span className="font-mono text-[10px] text-muted-foreground/70">
-                      v{ext.version}
-                    </span>
-                    {ext.hasSkill && (
-                      <span className="rounded bg-voice/12 px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-voice">
-                        Skill
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-0.5 text-[11px] text-muted-foreground/80">
-                    {ext.description}
-                  </p>
-                  <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground/60">
-                    <span className="font-mono">
-                      {ext.scriptFile}
-                      {ext.scriptTypeLabel ? ` · ${ext.scriptTypeLabel}` : ""}
-                    </span>
-                    <span>{ext.isAsync ? "异步" : "同步"}</span>
-                    {ext.parentId !== null && (
-                      <span>挂载于：{ext.parentId === 0 ? "顶层" : `#${ext.parentId}`}</span>
-                    )}
-                  </div>
-                </div>
-                {confirmDelete === ext.dirName ? (
-                  <div className="flex shrink-0 items-center gap-1">
-                    <button
-                      onClick={() => handleDelete(ext.dirName)}
-                      className="rounded-md bg-red-500 px-2 py-1 text-[10px] font-medium text-white"
-                    >
-                      确认删除
-                    </button>
-                    <button
-                      onClick={() => setConfirmDelete(null)}
-                      className="rounded-md border border-border px-2 py-1 text-[10px] text-muted-foreground"
-                    >
-                      取消
-                    </button>
-                  </div>
-                ) : (
-                  <button
-                    onClick={() => setConfirmDelete(ext.dirName)}
-                    className="shrink-0 text-muted-foreground/50 transition-colors hover:text-red-500"
-                    title="删除"
-                  >
-                    <Trash2 className="h-3.5 w-3.5" />
-                  </button>
-                )}
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-};
-
 export default function ActionBarPanel({
   showToast,
 }: {
@@ -916,7 +765,7 @@ export default function ActionBarPanel({
   // draft 状态：新增时不写 DB，只在内存编辑，保存时才 create。取消只清 state，零脏数据。
   const [draftParentId, setDraftParentId] = useState<number | null | undefined>(undefined); // undefined=非草稿, null=顶层草稿, number=子菜单草稿
   const [loaded, setLoaded] = useState(false);
-  const [view, setView] = useState<"menu" | "runs" | "extensions">("menu");
+  const [view, setView] = useState<"menu" | "runs">("menu");
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
     const list = await invoke<ActionBarItem[]>("list_action_bar_items");
@@ -970,7 +819,9 @@ export default function ActionBarPanel({
   const startEdit = useCallback((item: ActionBarItem) => {
     setDraftParentId(undefined);
     setEditingId(item.id);
-    setEditingForm({ ...item });
+    // DB action_type "script" + action_data 以 / 开头 → 前端展示为 "extension"
+    const isExt = item.actionType === "script" && item.actionData.startsWith("/");
+    setEditingForm({ ...item, actionType: isExt ? "extension" : item.actionType });
   }, []);
 
   const cancelEdit = useCallback(() => {
@@ -987,10 +838,10 @@ export default function ActionBarPanel({
           parentId: draftParentId,
           title: editingForm.title || "新菜单项",
           icon: "",
-          actionType: editingForm.actionType || "copy",
+          actionType: editingForm.actionType === "extension" ? "script" : (editingForm.actionType || "copy"),
           actionData: editingForm.actionData || "",
-          isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
-          writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
+          isAsync: (editingForm.actionType === "script" || editingForm.actionType === "extension") ? (editingForm.isAsync ?? true) : true,
+          writeOutputToClipboard: (editingForm.actionType === "script" || editingForm.actionType === "extension") ? (editingForm.writeOutputToClipboard ?? false) : false,
         });
         showToast("已创建");
       } else if (editingId) {
@@ -999,11 +850,11 @@ export default function ActionBarPanel({
           id: editingId,
           title: editingForm.title || "",
           icon: editingForm.icon || "",
-          actionType: editingForm.actionType || "copy",
+          actionType: editingForm.actionType === "extension" ? "script" : (editingForm.actionType || "copy"),
           actionData: editingForm.actionData || "",
           isEnabled: editingForm.isEnabled ?? true,
-          isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
-          writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
+          isAsync: (editingForm.actionType === "script" || editingForm.actionType === "extension") ? (editingForm.isAsync ?? true) : true,
+          writeOutputToClipboard: (editingForm.actionType === "script" || editingForm.actionType === "extension") ? (editingForm.writeOutputToClipboard ?? false) : false,
         });
         showToast("已保存");
       }
@@ -1093,12 +944,6 @@ export default function ActionBarPanel({
           {view === "menu" && (
             <>
               <button
-                onClick={() => setView("extensions")}
-                className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-              >
-                扩展
-              </button>
-              <button
                 onClick={() => setView("runs")}
                 className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
               >
@@ -1138,9 +983,7 @@ export default function ActionBarPanel({
       </div>
 
       {/* Body */}
-      {view === "extensions" ? (
-        <ExtensionsPanel showToast={showToast} />
-      ) : view === "runs" ? (
+      {view === "runs" ? (
         <ScriptRunsList showToast={showToast} />
       ) : !loaded ? (
         <p className="py-12 text-center text-sm text-muted-foreground">

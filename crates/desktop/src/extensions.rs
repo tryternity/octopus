@@ -146,7 +146,7 @@ pub fn read_script_magic_comment(pkg_dir: &Path, script_rel: &str) -> Option<Str
 
 // ── Tauri commands ──
 
-/// 导入结果——前端拿这个选父菜单后再调 install_extension_to_db
+/// 导入结果——前端拿这个更新菜单项表单
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportResult {
@@ -157,7 +157,7 @@ pub struct ImportResult {
 }
 
 /// 导入扩展包——支持 zip 文件或文件夹路径。
-/// 校验 + 安装到 extensions，返回 ImportResult（前端再选父菜单后调 install_extension_to_db）。
+/// 校验 + 安装到 extensions，返回 ImportResult（前端用此更新菜单项 action_data）。
 #[tauri::command]
 pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
     use std::fs;
@@ -165,7 +165,6 @@ pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
     let path = std::path::Path::new(&source_path);
     let is_zip = path.extension().map(|e| e == "zip").unwrap_or(false);
 
-    // 1. 解压/定位 Package 目录
     let pkg_dir: std::path::PathBuf = if is_zip {
         let tmp_dir = std::env::temp_dir().join(format!("octopus-ext-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp_dir);
@@ -190,7 +189,6 @@ pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
         }
         let pkg = find_package_root(&tmp_dir)
             .ok_or_else(|| "zip 内未找到含 config.yaml 的顶层文件夹".to_string())?;
-        // 复制到 extensions
         let dir_name = pkg.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("无法获取文件夹名")?;
         let dest = extensions_dir().join(&dir_name);
         let _ = fs::remove_dir_all(&dest);
@@ -199,7 +197,6 @@ pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
         let _ = fs::remove_dir_all(&tmp_dir);
         dest
     } else if path.is_dir() {
-        // 文件夹——如果在 extensions 内直接用，否则复制
         let pkg = find_package_root(path).ok_or_else(|| "文件夹内未找到 config.yaml".to_string())?;
         let dir_name = pkg.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("无法获取文件夹名")?;
         let dest = extensions_dir().join(&dir_name);
@@ -222,27 +219,6 @@ pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
         is_async: config.action.is_async,
         write_output_to_clipboard: config.action.write_output_to_clipboard,
     })
-}
-
-/// 安装扩展到 DB——用户选好父菜单后调用
-#[tauri::command]
-pub fn install_extension_to_db(
-    name: String,
-    script_path: String,
-    is_async: bool,
-    write_output_to_clipboard: bool,
-    parent_id: Option<i64>,
-) -> Result<i64, String> {
-    octopus_infra::db::insert_action_bar_item(
-        parent_id,
-        &name,
-        "",
-        "script",
-        &script_path,
-        is_async,
-        write_output_to_clipboard,
-    )
-    .map_err(|e| e.to_string())
 }
 
 /// 返回扩展列表 + DB 关联
