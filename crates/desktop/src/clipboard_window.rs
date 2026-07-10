@@ -56,7 +56,6 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 }
             }
             let _ = app.emit("clipboard://dock-changed", edge.as_str());
-            crate::clipboard_dock::apply_dock_collapsed(&window);
         }
     }
 
@@ -80,7 +79,6 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             if let Some(ref prev) = prev_dock {
                 if prev == "right" || prev == "left" {
                     crate::window_position::save_dock_state(WINDOW_LABEL, "none");
-                    crate::clipboard_dock::apply_dock_expanded(&win_clone);
                     let _ = app_clone.emit("clipboard://dock-changed", "none");
                     log::info!("clipboard undocked");
                 }
@@ -95,7 +93,6 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
             if let Some(ref edge) = docked {
                 if edge == "right" || edge == "left" {
-                    crate::clipboard_dock::apply_dock_collapsed(&win_clone);
                     let _ = app_clone.emit("clipboard://collapse", ());
                 }
             }
@@ -149,19 +146,13 @@ fn detect_dock_edge(window: &tauri::WebviewWindow) -> Option<&'static str> {
 /// Tauri 命令：展开 dock 浮窗（前端 DockBar onMouseEnter 调用）。
 #[tauri::command]
 pub fn clipboard_dock_expand(app: AppHandle) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        crate::clipboard_dock::apply_dock_expanded(&window);
-        let _ = app.emit("clipboard://expand", ());
-    }
+    let _ = app.emit("clipboard://expand", ());
 }
 
 /// Tauri 命令：收缩 dock 浮窗。
 #[tauri::command]
 pub fn clipboard_dock_collapse(app: AppHandle) {
-    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        crate::clipboard_dock::apply_dock_collapsed(&window);
-        let _ = app.emit("clipboard://collapse", ());
-    }
+    let _ = app.emit("clipboard://collapse", ());
 }
 
 /// 注册剪贴板浮窗全局快捷键。main 启动注册 + set_config 热重载共用，

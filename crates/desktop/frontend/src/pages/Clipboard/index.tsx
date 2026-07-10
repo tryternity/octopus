@@ -206,9 +206,12 @@ export default function Clipboard() {
     <div
       className={cn(
         "flex flex-col h-screen select-none overflow-hidden rounded-xl border border-border shadow-2xl shadow-black/8 data-tauri-drag-region",
-        dockMode === "collapsed" ? "w-2 transition-[width] duration-300 ease-out" : "w-[300px]",
+        dockMode === "collapsed" ? "w-[300px] transition-[width] duration-300 ease-out" : "w-[300px]",
       )}
-      style={{ background: dockMode === "collapsed" ? "transparent" : "var(--color-background)" }}
+      style={{
+        background: dockMode === "collapsed" ? "transparent" : "var(--color-background)",
+        pointerEvents: dockMode === "collapsed" ? "none" : "auto",
+      }}
     >
       {/* dock 收缩态：只显示 8px 细条 */}
       {dockMode === "collapsed" && dockEdge && (
@@ -217,6 +220,7 @@ export default function Clipboard() {
             "absolute top-0 bottom-0 w-2 bg-voice/80 shadow-[0_0_8px_rgba(0,0,0,0.3)] hover:bg-voice transition-colors duration-150 cursor-pointer",
             dockEdge === "right" ? "right-0" : "left-0",
           )}
+          style={{ pointerEvents: "auto" }}
           onMouseEnter={() => {
             invoke("clipboard_dock_expand");
             setDockMode("expanded");

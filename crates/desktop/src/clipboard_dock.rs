@@ -1,37 +1,9 @@
-//! 剪贴板浮窗 dock（吸附收缩）的 NSWindow 操作。
+//! 剪贴板浮窗 dock（吸附收缩）NSWindow 操作。
 //!
-//! 收缩态：setIgnoresMouseEvents(true) 全窗口穿透。
-//! 展开态：setIgnoresMouseEvents(false) 恢复正常。
+//! 收缩/展开不使用 setIgnoresMouseEvents——它会阻挡整个窗口的鼠标事件，
+//! 导致 8px 细条无法接收 hover。改为纯 CSS pointer-events 控制：
+//! 收缩态容器 pointer-events: none + 细条 pointer-events: auto。
+//! macOS WKWebView 在 transparent 窗口上，pointer-events: none 的区域
+//! 会将鼠标事件透传给下层窗口。
 
-#[cfg(target_os = "macos")]
-pub fn apply_dock_collapsed(window: &tauri::WebviewWindow) {
-    let win = window.clone();
-    let _ = window.run_on_main_thread(move || {
-        if let Ok(ptr) = win.ns_window() {
-            if !ptr.is_null() {
-                let ns_win = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
-                ns_win.setIgnoresMouseEvents(true);
-                log::debug!("clipboard_dock: setIgnoresMouseEvents(true)");
-            }
-        }
-    });
-}
-
-#[cfg(target_os = "macos")]
-pub fn apply_dock_expanded(window: &tauri::WebviewWindow) {
-    let win = window.clone();
-    let _ = window.run_on_main_thread(move || {
-        if let Ok(ptr) = win.ns_window() {
-            if !ptr.is_null() {
-                let ns_win = unsafe { &*(ptr as *const objc2_app_kit::NSWindow) };
-                ns_win.setIgnoresMouseEvents(false);
-                log::debug!("clipboard_dock: setIgnoresMouseEvents(false)");
-            }
-        }
-    });
-}
-
-#[cfg(not(target_os = "macos"))]
-pub fn apply_dock_collapsed(_window: &tauri::WebviewWindow) {}
-#[cfg(not(target_os = "macos"))]
-pub fn apply_dock_expanded(_window: &tauri::WebviewWindow) {}
+// 预留：未来如需 NSWindow 级操作（如 NSTrackingArea），在此扩展。
