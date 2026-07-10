@@ -1,6 +1,6 @@
 # 剪贴板浮窗边缘吸附 + 迷你模式 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 剪贴板浮窗拖到屏幕边缘自动吸附收缩为 8px 细条，hover 展开，点击外部收回。
 
@@ -30,7 +30,7 @@
 **Interfaces:**
 - Produces: `save_dock_state(label: &str, edge: &str)` / `load_dock_state(label: &str) -> Option<String>`
 
-- [ ] **Step 1: 写 save_dock_state / load_dock_state**
+- [x] **Step 1: 写 save_dock_state / load_dock_state**
 
 在 `window_position.rs` 末尾（`parse_position` 后）加：
 
@@ -60,7 +60,7 @@ pub fn load_dock_state(label: &str) -> Option<String> {
 }
 ```
 
-- [ ] **Step 2: 写单元测试**
+- [x] **Step 2: 写单元测试**
 
 在 `window_position.rs` 的 `#[cfg(test)]` mod 中加：
 
@@ -86,12 +86,12 @@ fn dock_state_round_trip() {
 }
 ```
 
-- [ ] **Step 3: 编译 + 测试**
+- [x] **Step 3: 编译 + 测试**
 
 Run: `cargo test -p octopus-desktop --bin octopus-desktop window_position 2>&1 | tail -5`
 Expected: PASS
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/window_position.rs
@@ -109,7 +109,7 @@ git commit -m "feat(clipboard-dock): dock 状态持久化 save/load_dock_state"
 - Consumes: Task 1 的 `save_dock_state` / `load_dock_state`
 - Produces: `detect_and_apply_dock(window: &WebviewWindow) -> Option<String>`（返回 "right"/"left"/None）
 
-- [ ] **Step 1: 写吸附检测函数**
+- [x] **Step 1: 写吸附检测函数**
 
 在 `clipboard_window.rs` 中 `create_clipboard_window` 函数之后加：
 
@@ -161,7 +161,7 @@ fn detect_dock_edge(window: &tauri::WebviewWindow) -> Option<&'static str> {
 }
 ```
 
-- [ ] **Step 2: 改造 Moved 事件 handler**
+- [x] **Step 2: 改造 Moved 事件 handler**
 
 将 `clipboard_window.rs` 中的 `Moved` 事件分支改为：
 
@@ -183,12 +183,12 @@ tauri::WindowEvent::Moved(_) => {
 
 > **注意**：此 Task 只做检测 + 保存 + emit。前端收到事件后的 CSS 变化、NSWindow 操作在后续 Task。
 
-- [ ] **Step 3: 编译**
+- [x] **Step 3: 编译**
 
 Run: `cargo build -p octopus-desktop 2>&1 | tail -5`
 Expected: 编译通过
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/clipboard_window.rs
@@ -206,7 +206,7 @@ git commit -m "feat(clipboard-dock): 吸附检测逻辑 + Moved 事件集成"
 **Interfaces:**
 - Produces: `set_ignores_mouse_events(window: &WebviewWindow, ignore: bool)` / `apply_dock_collapsed(window: &WebviewWindow, edge: &str)` / `apply_dock_expanded(window: &WebviewWindow)`
 
-- [ ] **Step 1: 创建 clipboard_dock.rs 基础结构**
+- [x] **Step 1: 创建 clipboard_dock.rs 基础结构**
 
 ```rust
 //! 剪贴板浮窗 dock（吸附收缩）的 NSWindow 操作。
@@ -256,7 +256,7 @@ pub fn apply_dock_collapsed(_window: &tauri::WebviewWindow) {}
 pub fn apply_dock_expanded(_window: &tauri::WebviewWindow) {}
 ```
 
-- [ ] **Step 2: main.rs 加 mod 声明**
+- [x] **Step 2: main.rs 加 mod 声明**
 
 在 `crates/desktop/src/main.rs` 中 `mod clipboard_window;` 后加：
 
@@ -264,14 +264,14 @@ pub fn apply_dock_expanded(_window: &tauri::WebviewWindow) {}
 mod clipboard_dock;
 ```
 
-- [ ] **Step 3: 编译**
+- [x] **Step 3: 编译**
 
 Run: `cargo build -p octopus-desktop 2>&1 | tail -5`
 Expected: 编译通过（可能需要调整 objc2 import——参考 `activation.rs` 的现有模式）
 
 > ⚠️ objc2 msg_send 语法可能与 `activation.rs` 现有模式不同——编译时报错则参考 `activation.rs` 的 FFI 方式调整。Tauri 的 `ns_window()` 返回 `Result<Retained<objc2::runtime::AnyObject>>`（objc2 0.6），需要正确处理。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/clipboard_dock.rs crates/desktop/src/main.rs
@@ -290,7 +290,7 @@ git commit -m "feat(clipboard-dock): NSWindow ignoresMouseEvents 封装"
 - Consumes: Task 2 的 `clipboard://dock-changed` 事件
 - Produces: 前端 dockMode/dockEdge 状态 + CSS 展开/收缩动画
 
-- [ ] **Step 1: 新建 DockBar.tsx 组件**
+- [x] **Step 1: 新建 DockBar.tsx 组件**
 
 ```tsx
 // crates/desktop/frontend/src/pages/Clipboard/DockBar.tsx
@@ -314,7 +314,7 @@ export function DockBar({ edge, onMouseEnter }: DockBarProps) {
 }
 ```
 
-- [ ] **Step 2: 在 index.tsx 加 dock 状态**
+- [x] **Step 2: 在 index.tsx 加 dock 状态**
 
 在 `Clipboard/index.tsx` 的组件顶部加：
 
@@ -341,7 +341,7 @@ useEffect(() => {
 
 > **注意**：`listen` 来自 `lib/tauri.ts`（自动解包 payload）。如果 payload 是字符串而非对象，`listen` 回调参数就是字符串本身。需确认事件 emit 的 payload 格式——Task 2 中 `emit("clipboard://dock-changed", edge)` 传的是 `&str`，Tauri 序列化为 JSON 字符串。
 
-- [ ] **Step 3: CSS class 切换**
+- [x] **Step 3: CSS class 切换**
 
 修改 `index.tsx` 的最外层容器 div，根据 dockMode 切换 class：
 
@@ -372,12 +372,12 @@ useEffect(() => {
 )}
 ```
 
-- [ ] **Step 4: tsc 检查**
+- [x] **Step 4: tsc 检查**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 0 errors
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Clipboard/DockBar.tsx crates/desktop/frontend/src/pages/Clipboard/index.tsx
@@ -396,7 +396,7 @@ git commit -m "feat(clipboard-dock): 前端 dock 状态 + DockBar 组件 + CSS �
 - Consumes: Task 3 的 `apply_dock_collapsed` / `apply_dock_expanded`，Task 4 的 `clipboard://expand` / `clipboard://collapse` 事件
 - Produces: `clipboard_dock_expand` / `clipboard_dock_collapse` Tauri 命令
 
-- [ ] **Step 1: 新增 Tauri 命令**
+- [x] **Step 1: 新增 Tauri 命令**
 
 在 `clipboard_window.rs` 中加两个命令：
 
@@ -422,7 +422,7 @@ pub fn clipboard_dock_collapse(app: AppHandle) {
 
 在 `main.rs` 的 `invoke_handler!` 中注册这两个命令。
 
-- [ ] **Step 2: 全局鼠标点击监听（Expanded 态收缩触发）**
+- [x] **Step 2: 全局鼠标点击监听（Expanded 态收缩触发）**
 
 在 `clipboard_dock.rs` 中加全局监听器。用 `NSEvent.addGlobalMonitorForEvents`：
 
@@ -455,12 +455,12 @@ pub fn start_global_click_monitor(app: tauri::AppHandle) {
 
 > ⚠️ objc2 block 语法复杂。如果 objc2 block 回调太难写，退回方案：用 NSEvent tap 或 `CGEventTap`（已有 FFI 基础），或者简化为前端检测（`onBlur` + 延迟——但 onBlur 不可靠）。实施时先试 objc2 block，不行用 CGEventTap。
 
-- [ ] **Step 3: 编译**
+- [x] **Step 3: 编译**
 
 Run: `cargo build -p octopus-desktop 2>&1 | tail -5`
 Expected: 编译通过
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/clipboard_window.rs crates/desktop/src/clipboard_dock.rs crates/desktop/src/main.rs
@@ -474,7 +474,7 @@ git commit -m "feat(clipboard-dock): 展开/收缩命令 + 全局点击监听"
 **Files:**
 - Modify: `crates/desktop/src/clipboard_window.rs`（`create_clipboard_window` 和 `toggle_clipboard_window`）
 
-- [ ] **Step 1: create_clipboard_window 读 dock 状态**
+- [x] **Step 1: create_clipboard_window 读 dock 状态**
 
 在 `create_clipboard_window` 的 `restore_window_position` 之后加：
 
@@ -517,7 +517,7 @@ if let Some(ref edge) = dock_edge {
 }
 ```
 
-- [ ] **Step 2: 解吸附检测（Docked 态拖拽恢复 Normal）**
+- [x] **Step 2: 解吸附检测（Docked 态拖拽恢复 Normal）**
 
 在 Moved 事件 handler 中，如果当前 docked 但窗口已远离边缘 → 清除 dock：
 
@@ -549,7 +549,7 @@ tauri::WindowEvent::Moved(_) => {
 }
 ```
 
-- [ ] **Step 3: 编译 + 手动测试**
+- [x] **Step 3: 编译 + 手动测试**
 
 Run: `cargo build -p octopus-desktop 2>&1 | tail -5`
 
@@ -558,7 +558,7 @@ Run: `cargo build -p octopus-desktop 2>&1 | tail -5`
 2. 关闭窗口 → 快捷键重新唤出 → 应以收缩态打开
 3. 拖离边缘 → 应恢复 Normal
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/clipboard_window.rs
@@ -573,7 +573,7 @@ git commit -m "feat(clipboard-dock): 打开时恢复 dock 状态 + 解吸附检�
 - Modify: `docs/superpowers/specs/2026-07-08-action-bar-design.md` §4.1
 - Modify: `docs/architecture.md` 窗口管理表
 
-- [ ] **Step 1: action_bar-design.md §4.1 加定位策略说明**
+- [x] **Step 1: action_bar-design.md §4.1 加定位策略说明**
 
 在 §4.1 `action_bar_window` 表格后加一段：
 
@@ -581,7 +581,7 @@ git commit -m "feat(clipboard-dock): 打开时恢复 dock 状态 + 解吸附检�
 > **定位策略（不变）**：action_bar_window 每次唤出定位在鼠标光标上方，不做位置记忆 / 边缘吸附 / 拖拽 / 尺寸变更。这是 action_bar 的设计选择——它是一个瞬态操作面板（选中→操作→消失），不需要常驻。位置记忆和吸附功能仅适用于剪贴板浮窗（`clipboard_window`）等常驻窗口，详见 [clipboard-dock spec](./2026-07-10-clipboard-dock-design.md)。
 ```
 
-- [ ] **Step 2: architecture.md 窗口管理表更新**
+- [x] **Step 2: architecture.md 窗口管理表更新**
 
 在 `clipboard_window` 行末尾追加（现有描述很长，在末尾加）：
 
@@ -595,7 +595,7 @@ git commit -m "feat(clipboard-dock): 打开时恢复 dock 状态 + 解吸附检�
 。**定位策略固定**：鼠标上方定位，不做位置记忆 / 吸附 / 拖拽 / 尺寸变更（瞬态操作面板，非常驻窗口）。
 ```
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add docs/superpowers/specs/2026-07-08-action-bar-design.md docs/architecture.md
@@ -617,3 +617,14 @@ git commit -m "docs: 明确 action_bar 固定定位 + clipboard dock 架构记�
 | §7 文件变更 | Task 1-7 全覆盖 |
 | §8 不变式 | Global Constraints 覆盖 |
 | §9 边界场景 | Task 6 覆盖（恢复 + 解吸附 + 多显示器） |
+
+---
+
+## 与原 plan 的偏差
+
+1. **穿透方案三次迭代**——plan 原写 NSWindow `setIgnoresMouseEvents` + NSTrackingArea，实际实现经 v1（CSS pointer-events 不穿透）→ v2（CGEvent 轮询，run_on_main_thread 调度延迟）→ **v3 终版**（Tauri `cursor_position()` + tokio interval 33ms，与 result_window 统一）。
+2. **DockBar.tsx 未独立**——细条内联在 `index.tsx`（`absolute` 定位），未创建独立组件文件。
+3. **状态机简化**——原 5 态（none/collapsed/expanding/expanded/collapsing）简化为 3 态（none/collapsed/expanded），动画用 CSS transition 而非显式 expanding/collapsing 状态。
+4. **DOCK_EXPANDED 原子状态**——原 plan 依赖 `is_focused()`，实际用 `AtomicBool DOCK_EXPANDED` 作为 Rust 侧真相源（macOS 收缩态焦点不可靠）。
+5. **收缩触发改为失焦**——原 plan 写 NSEvent global monitor 监听外部点击，实际简化为 `Focused(false)` 事件触发收缩。
+6. **展开触发加 onMouseDown fallback**——macOS 非 key window 不交付 hover，需点击作为 fallback。

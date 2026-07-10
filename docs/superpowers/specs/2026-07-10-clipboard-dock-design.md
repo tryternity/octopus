@@ -41,9 +41,10 @@
 窗口物理尺寸始终 300×600 不变。收缩态下：
 
 1. 窗口位置完全在当前屏幕内（不越界）
-2. CSS 把大部分区域 `transparent` + 全窗口 `setIgnoresMouseEvents(true)`
-3. 8px 细条贴着吸附边缘高亮显示，用 NSWindow tracking area 标记可接收鼠标事件
-4. 其余 292px 透明 + 穿透（看到下层 app / 桌面）
+2. CSS 把大部分区域 `transparent`（无 border/shadow/圆角）
+3. 8px 细条贴着吸附边缘高亮显示（voice 色 + 微阴影）
+4. Rust 后台轮询线程（`start_edge_poll`）读全局鼠标位置：鼠标在细条区域 → `setIgnoresMouseEvents(false)`（可交互），其余区域 → `setIgnoresMouseEvents(true)`（穿透到下层 app）
+5. 其余 292px 透明 + 穿透（看到下层 app / 桌面）
 
 ### 2.2 视觉示意（右吸附收缩态）
 
@@ -86,16 +87,19 @@ Docked-Collapsed（收回）
 
 ### 3.2 状态转换规则
 
+实际实现简化为三种状态（Rust 侧 `DOCK_EXPANDED: AtomicBool` 真相源，前端镜像同步）：
+
 | 当前状态 | 触发 | 目标状态 | 说明 |
 |---------|------|---------|------|
-| Normal | 拖拽放手 + 边缘 ≤10px | Docked-Collapsed | 吸附 + 收缩 |
+| Normal | 拖拽放手 + 边缘 ≤10px | Docked-Collapsed | 吸附 + 收缩 + 启动穿透轮询 |
 | Normal | 拖拽放手 + 边缘 >10px | Normal | 保存位置（现有逻辑） |
-| Docked-Collapsed | 鼠标悬停细条 | Docked-Expanding | CSS 动画展开 |
-| Docked-Expanding | 动画完成（300ms） | Docked-Expanded | |
-| Docked-Expanded | 鼠标点击浮窗外 | Docked-Collapsing | CSS 动画收回 |
-| Docked-Collapsing | 动画完成（300ms） | Docked-Collapsed | |
+| Docked-Collapsed | 鼠标悬停/点击细条 | Docked-Expanded | 停穿透轮询 + 展开获焦 |
+| Docked-Expanded | 失焦（用户切到其他 app） | Docked-Collapsed | 启动穿透轮询 + 收缩 |
+| Docked-Expanded | 快捷键（`DOCK_EXPANDED=true`） | Docked-Collapsed | 启动穿透轮询 + 收缩 |
+| Docked-Collapsed | 快捷键（`DOCK_EXPANDED=false`） | Docked-Expanded | 停穿透轮询 + 展开获焦 |
 | Docked-* | 用户拖拽窗口（拖离边缘） | Normal | 解吸附 |
-| 任意 | 快捷键 toggle / X 按钮 | 隐藏 | 再打开时恢复上次模式 |
+
+> ⚠️ toggle 不用 `is_focused()`——macOS 收缩态焦点不可靠，用 `DOCK_EXPANDED` 原子状态判断。
 
 ### 3.3 窗口关闭后恢复
 
@@ -145,60 +149,55 @@ y 坐标保留用户拖到的位置。窗口高度 600 固定，y 超出屏幕�
 
 | 事件 | 方向 | payload | 说明 |
 |------|------|---------|------|
-| `clipboard://dock-changed` | Rust → 前端 | `{ edge: "right" \| "left" \| "none" }` | 前端据此切换模式 |
-| `clipboard://expand` | Rust → 前端 | — | 鼠标悬停细条 → 展开 |
-| `clipboard://collapse` | Rust → 前端 | — | 鼠标点击外部 → 收缩 |
+| `clipboard://dock-changed` | Rust → 前端 | `"right" \| "left" \| "none"`（字符串） | 前端据此切换模式 |
+| `clipboard://expand` | Rust → 前端 | — | 展开细条 |
+| `clipboard://collapse` | Rust → 前端 | — | 收缩 |
 
 ### 5.2 前端状态（`Clipboard/index.tsx`）
 
 ```
 dockEdge: "right" | "left" | null     // 吸附边缘
-dockMode: "none" | "collapsed" | "expanding" | "expanded" | "collapsing"
+dockMode: "none" | "collapsed" | "expanded"
 ```
 
 ### 5.3 CSS 行为
 
-| dockMode | 容器样式 | ignoresMouseEvents |
-|----------|---------|-------------------|
-| none | 正常 300×600 | false |
-| collapsed | 只渲染 8px 细条（贴 dockEdge 侧），其余 `display: none` | true |
-| expanding | `width` transition 8px → 300px（300ms ease-out） | false |
-| expanded | 完整 300×600 | false |
-| collapsing | `width` transition 300px → 8px（300ms ease-out） | true |
+| dockMode | 容器样式 |
+|----------|----------|
+| none | 正常 300×600 + border + shadow + 圆角 |
+| collapsed | 无 border/shadow/圆角，背景透明，只渲染 8px 细条（`absolute` 定位贴 dockEdge 侧） |
+| expanded | 同 none |
 
-### 5.4 展开方向
+### 5.4 展开触发
 
-- 右吸附：内容从右侧展开（细条在最右，内容向左推）——`flex-direction: row-reverse` 或 `right: 0` 定位
-- 左吸附：内容从左侧展开（细条在最左，内容向右推）——正常方向
+- **hover**（`onMouseEnter`）：窗口有焦点时 hover 细条即展开
+- **点击**（`onMouseDown`）：macOS 非 key window 不交付 hover 事件，需点击作为 fallback
 
-### 5.5 外部点击收缩
+### 5.5 收缩触发
 
-- **仅移动离开不触发收缩**（防打字误触）
-- Expanded 态下 Rust 侧用 `NSEvent.addGlobalMonitorForEvents(matching: .leftMouseDown | .rightMouseDown)` 监听全局鼠标点击
-- 点击位置在窗口外 → emit `clipboard://collapse`
+- **失焦**（`Focused(false)` 事件）：docked 态下窗口失焦 → Rust emit `collapse`。不用全局鼠标点击监听（简化为失焦触发）
 
 ---
 
-## 6. NSWindow 交互细节
+## 6. 鼠标穿透（与 result_window 统一方案）
 
-### 6.1 setIgnoresMouseEvents
+收缩态透明区域需要穿透到下层 app。核心矛盾：`setIgnoresMouseEvents(true)` 是全窗口开关，细条也收不到事件。解法与 `result_window::start_click_through_poller` 完全统一：
 
-- Collapsed 态：`NSWindow.ignoresMouseEvents = true`（全窗口穿透）
-- Expanding / Expanded / Collapsing 态：`false`（正常接收事件）
+### 6.1 轮询线程（`clipboard_dock::start_edge_poll`）
 
-### 6.2 TrackingArea（细条可点击）
+- `tokio::interval(33ms)` 轮询 Tauri `cursor_position()`（物理坐标，跨平台）
+- 鼠标在细条区域（边缘 10px 容差）→ `setIgnoresMouseEvents(false)`（可交互）
+- 鼠标在透明区域 → `setIgnoresMouseEvents(true)`（穿透）
+- macOS：NSWindow `setIgnoresMouseEvents` via `run_on_main_thread`
+- 其他平台：Tauri `set_ignore_cursor_events`
 
-Collapsed 态下全窗口 `ignoresMouseEvents = true`，但 8px 细条需要可点击——用 NSTrackingArea：
+### 6.2 为什么不用前端 setIgnoreCursorEvents
 
-- 在窗口的 8px 区域（右吸附 = 窗口右侧 8px；左吸附 = 窗口左侧 8px）创建 NSTrackingArea
-- `options: .mouseEnteredAndExited | .activeAlways`
-- `owner` 为自定义 NSView 子类，收到 `mouseEntered` → Rust 回调 → emit `expand`
+一旦 `setIgnoreCursorEvents(true)`，窗口完全不收鼠标事件（NSWindow 连 tracking area 都禁），前端 mousemove 不再触发 → 无法检测光标重入 → 重入失效。必须 Rust 后端读全局位置。
 
-### 6.3 全局鼠标监听（Expanded 态收缩触发）
+### 6.3 为什么不用 CGEvent
 
-- `NSEvent.addGlobalMonitorForEvents(matching: [.leftMouseDown, .rightMouseDown])`
-- 回调中拿到鼠标位置 → 判断是否在窗口 frame 外 → emit `collapse`
-- 只在 Expanded 态启用 monitor，Collapsed 态关闭（避免无谓监听）
+CGEvent 是 macOS 专属，且返回逻辑坐标需 scale 换算。`cursor_position()` 跨平台（Windows GetCursorPos / Linux X11 XQueryPointer / macOS NSEvent），返回物理坐标直接比较，多显示器不同 DPI 安全。Wayland 已知限制：返回 (0,0)，穿透失效（协议层无解）。
 
 ---
 
@@ -208,16 +207,17 @@ Collapsed 态下全窗口 `ignoresMouseEvents = true`，但 8px 细条需要可�
 
 | 文件 | 变更 |
 |------|------|
-| `clipboard_window.rs` | 吸附检测（Moved 事件）；dock 状态读写；初始打开模式判断；展开/收缩时的 `ignoresMouseEvents` 切换 |
-| `window_position.rs` | 加 `save_dock_state(label, edge)` / `load_dock_state(label) -> Option<String>`（DB key `window_dock.{label}`） |
-| `clipboard_commands.rs`（或新建 `clipboard_dock.rs`） | NSWindow 操作：`set_ignores_mouse_events` / `setup_dock_tracking_area` / `setup_global_click_monitor` / `teardown_global_click_monitor` |
+| `clipboard_window.rs` | 吸附检测（`detect_dock_edge`）；dock 状态读写；初始打开模式判断；`DOCK_EXPANDED` 原子状态；toggle 逻辑（docked 模式不同于普通 show/hide）；`clipboard_dock_expand`/`clipboard_dock_collapse` Tauri 命令 |
+| `window_position.rs` | `save_dock_state(label, edge)` / `load_dock_state(label) -> Option<String>`（DB key `window_dock.{label}`） |
+| `clipboard_dock.rs`（新建） | `start_edge_poll` / `stop_edge_poll`——tokio interval 33ms 轮询 `cursor_position()`，动态切换 `setIgnoresMouseEvents` |
+| `main.rs` | 加 `mod clipboard_dock;`；invoke_handler 注册两个命令 |
 
 ### 7.2 前端
 
 | 文件 | 变更 |
 |------|------|
-| `Clipboard/index.tsx` | dockEdge/dockMode 状态；listen 三个事件；CSS class 切换；展开方向 |
-| `Clipboard/DockBar.tsx`（新建） | 8px 细条组件（高亮 voice 色 + 微阴影 + onMouseEnter） |
+| `Clipboard/index.tsx` | dockEdge/dockMode 状态；listen 三个事件；CSS class 切换（collapsed 移除 border/shadow）；细条 `onMouseEnter`+`onMouseDown` 展开触发 |
+| `Clipboard/DockBar.tsx` | 未独立文件——细条内联在 `index.tsx`（`absolute` 定位 + voice 色 + `pointer-events: auto`） |
 
 ### 7.3 配置
 
@@ -234,11 +234,12 @@ Collapsed 态下全窗口 `ignoresMouseEvents = true`，但 8px 细条需要可�
 
 ## 8. 不变式
 
-- **窗口物理尺寸始终 300×600**——收缩/展开只改 CSS 可见区域 + 窗口位置 + `ignoresMouseEvents`，不改物理尺寸
+- **窗口物理尺寸始终 300×600**——收缩/展开只改 CSS 可见区域 + 鼠标穿透，不改物理尺寸
 - **窗口始终完全在当前屏幕内**——不越界到其他屏幕
-- **`resizable(true)` 保留**——dock 功能与 resize 不冲突（resize 改的是物理尺寸，dock 只在用户主动吸附时触发）
+- **`resizable(true)` 保留**——dock 功能与 resize 不冲突
 - **位置记忆继续工作**——`window_position.rs` 存 x,y，dock 状态是额外维度（`window_dock.clipboard_window`）
-- **仅 macOS**——`ignoresMouseEvents` / NSTrackingArea / NSEvent global monitor 是 macOS API
+- **`DOCK_EXPANDED: AtomicBool`** Rust 侧真相源——不依赖 `is_focused()`（macOS 收缩态焦点不可靠）
+- **跨平台**——穿透用 Tauri `cursor_position()`（macOS NSEvent / Windows GetCursorPos / Linux X11 XQueryPointer），非 macOS 用 `set_ignore_cursor_events` 替代 NSWindow。**Wayland 限制**：cursor_position 恒返回 (0,0)，穿透失效（无解）
 
 ---
 
