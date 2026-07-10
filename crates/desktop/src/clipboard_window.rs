@@ -1,6 +1,12 @@
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
+use std::sync::atomic::{AtomicBool, Ordering};
+
 const WINDOW_LABEL: &str = "clipboard_window";
+
+/// docked 模式下浮窗是否处于展开态（Rust 侧真相源，前端同步镜像）。
+/// 解决 macOS `is_focused()` 在收缩态不可靠的问题——用显式状态替代焦点推断。
+static DOCK_EXPANDED: AtomicBool = AtomicBool::new(false);
 
 pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     if app.get_webview_window(WINDOW_LABEL).is_some() {
@@ -56,6 +62,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 }
             }
             let _ = app.emit("clipboard://dock-changed", edge.as_str());
+            DOCK_EXPANDED.store(false, Ordering::SeqCst);
         }
     }
 
@@ -69,6 +76,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             // 检测新吸附
             if let Some(edge) = detect_dock_edge(&win_clone) {
                 crate::window_position::save_dock_state(WINDOW_LABEL, edge);
+                DOCK_EXPANDED.store(false, Ordering::SeqCst);
                 let _ = app_clone.emit("clipboard://dock-changed", edge);
                 log::info!("clipboard docked to {}", edge);
                 return;
@@ -93,6 +101,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
             if let Some(ref edge) = docked {
                 if edge == "right" || edge == "left" {
+                    DOCK_EXPANDED.store(false, Ordering::SeqCst);
                     let _ = app_clone.emit("clipboard://collapse", ());
                 }
             }
@@ -187,22 +196,19 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             .filter(|e| e == "right" || e == "left");
 
         if let Some(_edge) = &docked {
-            // docked 模式：
-            // - 失焦或收缩态 → 展开 + 获焦
-            // - 有焦点且展开 → 收缩（不隐藏窗口，保持细条可见）
-            if focused {
-                // 有焦点 → 收缩
+            // docked 模式：用 DOCK_EXPANDED 原子状态判断（不依赖 is_focused）
+            let expanded = DOCK_EXPANDED.load(Ordering::SeqCst);
+            if expanded {
+                // 展开 → 收缩
+                DOCK_EXPANDED.store(false, Ordering::SeqCst);
                 let _ = app.emit("clipboard://collapse", ());
             } else {
-                // 失焦/收缩 → 展开 + 获焦
-                // 先 emit expand 让前端恢复 pointer-events: auto，
-                // 再 show + set_focus——否则 pointer-events: none 阻止窗口获焦。
-                let _ = app.emit("clipboard://expand", ());
+                // 收缩 → 展开 + 获焦
+                DOCK_EXPANDED.store(true, Ordering::SeqCst);
                 #[cfg(target_os = "macos")]
                 { crate::activation::before_floating_window_show(app); }
                 window.show()?;
-                // 给前端一点时间处理 expand 事件恢复 pointer-events
-                std::thread::sleep(std::time::Duration::from_millis(50));
+                let _ = app.emit("clipboard://expand", ());
                 window.set_focus()?;
             }
         } else if visible && focused {
