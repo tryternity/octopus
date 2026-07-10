@@ -43,7 +43,7 @@
 **Interfaces:**
 - Produces: `PackageConfig` struct（反序列化 config.yaml）、`ExtensionInfo` struct、`scan_extensions()` / `load_package_config()` / `validate_package()` 函数
 
-- [ ] **Step 1: 创建 extensions.rs + PackageConfig struct**
+- [x] **Step 1: 创建 extensions.rs + PackageConfig struct**
 
 ```rust
 // crates/desktop/src/extensions.rs
@@ -109,7 +109,7 @@ pub struct ExtensionInfo {
 }
 ```
 
-- [ ] **Step 2: extensions 目录路径 + scan_extensions()**
+- [x] **Step 2: extensions 目录路径 + scan_extensions()**
 
 ```rust
 /// ~/.octopus/extensions/
@@ -143,7 +143,7 @@ pub fn scan_extensions() -> Vec<(String, PackageConfig)> {
 }
 ```
 
-- [ ] **Step 3: validate_package()——校验解压后的临时目录**
+- [x] **Step 3: validate_package()——校验解压后的临时目录**
 
 ```rust
 /// 校验 Package 目录结构 + config.yaml 必填字段 + 脚本文件存在
@@ -173,7 +173,7 @@ pub fn validate_package(pkg_dir: &Path) -> Result<PackageConfig, String> {
 }
 ```
 
-- [ ] **Step 4: read_script_magic_comment()——读脚本第一行用于展示**
+- [x] **Step 4: read_script_magic_comment()——读脚本第一行用于展示**
 
 ```rust
 /// 读脚本文件第一行 magic comment（如 #python / #shell）
@@ -184,19 +184,19 @@ pub fn read_script_magic_comment(pkg_dir: &Path, script_rel: &str) -> Option<Str
 }
 ```
 
-- [ ] **Step 5: 编译**
+- [x] **Step 5: 编译**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: 编译通过（extensions.rs 被引入需在 main.rs 或 lib.rs 加 `mod extensions;`）
 
-- [ ] **Step 6: 在 main.rs 注册模块**
+- [x] **Step 6: 在 main.rs 注册模块**
 
 在 `crates/desktop/src/main.rs` 的 `mod` 声明区追加：
 ```rust
 mod extensions;
 ```
 
-- [ ] **Step 7: 编译 + Commit**
+- [x] **Step 7: 编译 + Commit**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: 编译通过
@@ -218,7 +218,7 @@ git commit -m "feat: extensions.rs——Package 加载/校验（config.yaml 反�
 - Consumes: Task 1 的 `validate_package` / `extensions_dir` / `scan_extensions`
 - Produces: `import_extension()` / `list_extensions()` / `delete_extension()` / `refresh_extensions()` Tauri command
 
-- [ ] **Step 1: Cargo.toml 加 zip crate**
+- [x] **Step 1: Cargo.toml 加 zip crate**
 
 在 `crates/desktop/Cargo.toml` `[dependencies]` 中追加：
 ```toml
@@ -227,7 +227,7 @@ zip = "2"
 
 Run: `cargo build -p octopus-desktop` 确认 zip crate 编译。
 
-- [ ] **Step 2: import_extension()——解压 + 校验 + 安装 + DB 记录**
+- [x] **Step 2: import_extension()——解压 + 校验 + 安装 + DB 记录**
 
 ```rust
 use std::fs;
@@ -325,7 +325,7 @@ fn copy_dir_recursive(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 ```
 
-- [ ] **Step 3: list_extensions()——返回扩展列表 + DB 关联**
+- [x] **Step 3: list_extensions()——返回扩展列表 + DB 关联**
 
 ```rust
 #[tauri::command]
@@ -369,7 +369,7 @@ pub fn list_extensions() -> Result<Vec<ExtensionInfo>, String> {
 }
 ```
 
-- [ ] **Step 4: delete_extension() + refresh_extensions()**
+- [x] **Step 4: delete_extension() + refresh_extensions()**
 
 ```rust
 #[tauri::command]
@@ -399,7 +399,7 @@ pub fn refresh_extensions() -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 5: main.rs 注册 4 个 command**
+- [x] **Step 5: main.rs 注册 4 个 command**
 
 在 `crates/desktop/src/main.rs` invoke_handler 追加：
 ```rust
@@ -409,7 +409,7 @@ pub fn refresh_extensions() -> Result<(), String> {
             extensions::refresh_extensions,
 ```
 
-- [ ] **Step 6: 编译 + Commit**
+- [x] **Step 6: 编译 + Commit**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: 编译通过
@@ -430,7 +430,7 @@ git commit -m "feat: ZIP 导入 + list/delete/refresh extension command"
 - Consumes: 无新接口
 - Produces: `load_script_source()` 辅助函数 + script 分支适配
 
-- [ ] **Step 1: load_script_source()——区分内联 vs 文件路径**
+- [x] **Step 1: load_script_source()——区分内联 vs 文件路径**
 
 在 `action_bar_commands.rs` 的 `spawn_script` 之前加：
 
@@ -445,7 +445,7 @@ fn load_script_source(action_data: &str) -> String {
 }
 ```
 
-- [ ] **Step 2: script 分支适配**
+- [x] **Step 2: script 分支适配**
 
 将 `execute_action_bar_inner` 的 `"script"` 分支中的 `source` 变量改为 `load_script_source`：
 
@@ -476,7 +476,7 @@ fn load_script_source(action_data: &str) -> String {
         }
 ```
 
-- [ ] **Step 3: run_script_async / run_script_sync_blocking 加 pkg_dir 参数**
+- [x] **Step 3: run_script_async / run_script_sync_blocking 加 pkg_dir 参数**
 
 两个函数签名加 `pkg_dir: Option<String>` 参数，传给 `spawn_script`：
 
@@ -492,7 +492,7 @@ fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Opt
 }
 ```
 
-- [ ] **Step 4: spawn_script 加 pkg_dir 参数 + OCTOPUS_PACKAGE_DIR**
+- [x] **Step 4: spawn_script 加 pkg_dir 参数 + OCTOPUS_PACKAGE_DIR**
 
 签名改为：
 ```rust
@@ -506,7 +506,7 @@ fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option
     }
 ```
 
-- [ ] **Step 5: 编译 + 测试 + Commit**
+- [x] **Step 5: 编译 + 测试 + Commit**
 
 Run: `cargo build -p octopus-desktop --features embedded && cargo test -p octopus-desktop`
 Expected: 编译通过，104 测试全过
@@ -528,11 +528,11 @@ git commit -m "feat: spawn_script 适配 Package 脚本（文件路径 + OCTOPUS
 
 > **强制**：涉及前端 UI 修改，动手前先 `view` frontend-design skill SKILL.md 做设计规划。
 
-- [ ] **Step 1: 加载 frontend-design skill**
+- [x] **Step 1: 加载 frontend-design skill**
 
 View: `/Users/wudarui/.claude/skills/frontend-design/SKILL.md`
 
-- [ ] **Step 2: ExtensionInfo 前端接口 + 扩展子页组件**
+- [x] **Step 2: ExtensionInfo 前端接口 + 扩展子页组件**
 
 在 ActionBarPanel.tsx 中新增：
 
@@ -607,7 +607,7 @@ const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) =>
 };
 ```
 
-- [ ] **Step 3: header 切换 + 子页路由**
+- [x] **Step 3: header 切换 + 子页路由**
 
 在 header 按钮区加「扩展」按钮（与「执行记录」同模式），view state 加 `"extensions"` 值：
 
@@ -620,11 +620,11 @@ Body 区域：
 {view === "extensions" ? <ExtensionsPanel showToast={showToast} /> : view === "runs" ? <ScriptRunsList ... /> : !loaded ? ... : ...}
 ```
 
-- [ ] **Step 4: 扩展卡片 UI**
+- [x] **Step 4: 扩展卡片 UI**
 
 每个卡片展示：名称 + 版本 + SKILL 徽章 + 描述 + 脚本信息 + 挂载位置 + 删除按钮。遵循 frontend-design skill 指导。
 
-- [ ] **Step 5: tsc + 构建 + Commit**
+- [x] **Step 5: tsc + 构建 + Commit**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit && npm run build`
 Expected: 无错误
@@ -643,7 +643,7 @@ git commit -m "feat(ui): 扩展子页——拖拽导入 + 卡片列表 + 删除"
 - Modify: `docs/architecture.md`
 - Modify: `docs/superpowers/specs/2026-07-09-action-bar-menu-db-design.md`
 
-- [ ] **Step 1: 启动时确保 extensions 目录存在**
+- [x] **Step 1: 启动时确保 extensions 目录存在**
 
 在 `main.rs` 的 `setup` 闭包中追加：
 ```rust
@@ -654,15 +654,15 @@ git commit -m "feat(ui): 扩展子页——拖拽导入 + 卡片列表 + 删除"
     }
 ```
 
-- [ ] **Step 2: architecture.md 更新**
+- [x] **Step 2: architecture.md 更新**
 
 action bar 第 9 点中追加 Extension Package 描述：config.yaml 声明元数据 + 执行体 + skill 预留；ZIP 导入到 ~/.octopus/extensions/；导入 = 创建 DB action_bar_items 记录；spawn_script 通过 action_data 前缀区分内联 vs 文件路径；Package 脚本额外设 OCTOPUS_PACKAGE_DIR。
 
-- [ ] **Step 3: spec 交叉引用更新**
+- [x] **Step 3: spec 交叉引用更新**
 
 `2026-07-09-action-bar-menu-db-design.md` 中 script 相关段落补 Extension Package 交叉引用。
 
-- [ ] **Step 4: 编译 + 测试 + Commit**
+- [x] **Step 4: 编译 + 测试 + Commit**
 
 Run: `cargo build -p octopus-desktop --features embedded && cargo test -p octopus-desktop`
 Expected: 全部通过

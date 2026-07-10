@@ -314,6 +314,12 @@ pub fn run() {
             // watcher 又恢复录制（flag 回 true），但 DB 仍是 false，设置形同虚设。
             clipboard_handle.set_recording_enabled(config.clipboard_enabled);
 
+            // 确保 extensions 目录存在
+            let ext_dir = extensions::extensions_dir();
+            if !ext_dir.exists() {
+                let _ = std::fs::create_dir_all(&ext_dir);
+            }
+
             // 启动时重建 FTS5 索引，清理上次运行遗留的空洞
             if let Err(e) = octopus_infra::db::with_db(|conn| {
                 octopus_clipboard::store::rebuild_fts_index(conn)
