@@ -63,7 +63,8 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             }
             let _ = app.emit("clipboard://dock-changed", edge.as_str());
             DOCK_EXPANDED.store(false, Ordering::SeqCst);
-            crate::clipboard_dock::apply_dock_collapsed(&window);
+            let edge_static: &'static str = Box::leak(edge.clone().into_boxed_str());
+            crate::clipboard_dock::start_edge_poll(window.clone(), edge_static);
         }
     }
 
@@ -78,7 +79,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             if let Some(edge) = detect_dock_edge(&win_clone) {
                 crate::window_position::save_dock_state(WINDOW_LABEL, edge);
                 DOCK_EXPANDED.store(false, Ordering::SeqCst);
-                crate::clipboard_dock::apply_dock_collapsed(&win_clone);
+                crate::clipboard_dock::start_edge_poll(win_clone.clone(), edge);
                 let _ = app_clone.emit("clipboard://dock-changed", edge);
                 log::info!("clipboard docked to {}", edge);
                 return;
@@ -104,7 +105,6 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             if let Some(ref edge) = docked {
                 if edge == "right" || edge == "left" {
                     DOCK_EXPANDED.store(false, Ordering::SeqCst);
-                    crate::clipboard_dock::apply_dock_collapsed(&win_clone);
                     let _ = app_clone.emit("clipboard://collapse", ());
                 }
             }
@@ -160,7 +160,7 @@ fn detect_dock_edge(window: &tauri::WebviewWindow) -> Option<&'static str> {
 pub fn clipboard_dock_expand(app: AppHandle) {
     DOCK_EXPANDED.store(true, Ordering::SeqCst);
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        crate::clipboard_dock::apply_dock_expanded(&window);
+        crate::clipboard_dock::stop_edge_poll(&window);
     }
     let _ = app.emit("clipboard://expand", ());
 }
@@ -169,8 +169,11 @@ pub fn clipboard_dock_expand(app: AppHandle) {
 #[tauri::command]
 pub fn clipboard_dock_collapse(app: AppHandle) {
     DOCK_EXPANDED.store(false, Ordering::SeqCst);
+    let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-        crate::clipboard_dock::apply_dock_collapsed(&window);
+        if let Some(edge) = docked.filter(|e| e == "right" || e == "left") {
+            crate::clipboard_dock::start_edge_poll(window, Box::leak(edge.into_boxed_str()));
+        }
     }
     let _ = app.emit("clipboard://collapse", ());
 }
@@ -212,12 +215,11 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             if expanded {
                 // 展开 → 收缩
                 DOCK_EXPANDED.store(false, Ordering::SeqCst);
-                crate::clipboard_dock::apply_dock_collapsed(&window);
                 let _ = app.emit("clipboard://collapse", ());
             } else {
                 // 收缩 → 展开 + 获焦
                 DOCK_EXPANDED.store(true, Ordering::SeqCst);
-                crate::clipboard_dock::apply_dock_expanded(&window);
+                crate::clipboard_dock::stop_edge_poll(&window);
                 #[cfg(target_os = "macos")]
                 { crate::activation::before_floating_window_show(app); }
                 window.show()?;
