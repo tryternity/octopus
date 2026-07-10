@@ -149,16 +149,11 @@ fn simulate_paste_platform() {
 
 ---
 
-## 3. 线程安全分析
+## 3. 线程安全分析与实现演进
 
 ### 3.1 TIS API 必须在主线程调用
 
-> ⚠️ **本文档初版分析有误**（曾认为 TIS API 线程安全），实机崩溃已证明错误。
-
-2026-07-10 实机崩溃：ASR 识别 → 粘贴 → `Trace/BPT trap: 5`（SIGTRAP）。
-日志：`Pasting via Clipboard, write_to_clipboard=true, switch_ime=true`。
-
-**根因**：Carbon TIS API 全家族（`TISCopyCurrentKeyboardInputSource` / `TISSelectInputSource` / `TISGetInputSourceProperty` / `TISCreateInputSourceList`）**必须在主线程调用**。在非主线程调用会触发 SIGTRAP——与 enigo `UCKeyTranslate` 的崩溃**同源**（都是 Carbon HIToolbox 内部依赖主线程 RunLoop 的状态）。
+Carbon TIS API 全家族（`TISCopyCurrentKeyboardInputSource` / `TISSelectInputSource` / `TISGetInputSourceProperty` / `TISCreateInputSourceList`）**必须在主线程调用**。
 
 粘贴路径的执行线程：
 | 路径 | 执行上下文 | 线程 |
@@ -166,25 +161,36 @@ fn simulate_paste_platform() {
 | `paste_via_clipboard`（ASR） | `tokio::task::spawn_blocking` | ❌ 非 main |
 | `simulate_paste_platform`（剪贴板浮窗） | `std::thread::spawn` | ❌ 非 main |
 
-### 3.2 GCD dispatch_sync_f 解法
+### 3.2 方案演进（三个版本）
 
-所有 TIS 调用经 GCD `dispatch_sync_f` 调度到主线程：
+**v1 — 直接 FFI（已废弃）**：在 paste 调用线程直接调 TIS API → `Trace/BPT trap: 5`（SIGTRAP）。初版 spec 误认为 TIS API 线程安全，实机崩溃证明错误。
 
-```rust
-extern "C" {
-    fn dispatch_sync_f(queue: *const c_void, context: *mut c_void, work: extern "C" fn(*mut c_void));
-    static _dispatch_main_q: c_void;  // 主队列全局符号
-}
+**v2 — GCD dispatch_sync_f（已废弃）**：用 `dispatch_sync_f(_dispatch_main_q, ...)` 调度到主线程 → **仍然 SIGTRAP**。原因：Tokio `spawn_blocking` 线程上下文与 libdispatch 主队列检测冲突，`dispatch_sync_f` 内部 trap。
+
+**v3 — osascript 独立进程（当前方案）**：用 `osascript -l JavaScript` 在独立进程内调 Carbon TIS API（JXA 的 ObjC bridge → `$.TISCopyCurrentKeyboardInputSource()`）。独立进程的 main thread 天然满足 TIS 的线程要求，完全绕开 paste 调用线程的限制。
+
+### 3.3 v3 方案细节
+
+```
+paste 线程                        osascript 子进程
+  │                                    │
+  ├─ read_current_source_id() ────────→│ JXA: TISCopyCurrentKeyboardInputSource
+  │                                    │       + TISGetInputSourceProperty
+  │←───────────────── source ID ───────│
+  │                                    │
+  ├─ select_source("ABC") ────────────→│ JXA: TISCreateInputSourceList
+  │                                    │       + TISSelectInputSource
+  │←───────────────── "true" ──────────│
+  │                                    × (进程退出)
+  ├─ sleep(50ms)                       
+  ├─ enigo Cmd+V                       
+  ├─ guard.drop()                      
+  └─ select_source(previous_id) ──────→│ 同上，恢复原输入源
 ```
 
-- **`dispatch_sync_f`**：阻塞调用线程 → 在主线程执行 `work(context)` → 返回。不会死锁，因为粘贴路径绝非主线程。
-- **上下文传递**：用固定大小 `SwitchCtx` 结构体（含 `[u8; 64]` buffer 传字符串，避免在 dispatch 上下文分配 String）。
-- **Drop 恢复也经 dispatch**：guard 的 `previous` ref 经 `dispatch_sync_f` 在主线程恢复+释放。
-
-### 3.3 不变式
-
-- **只有 macOS** 有此问题；Windows / Linux 直接 `None`（无 TIS API）。
-- **不会从主线程调 `switch_to_ascii`**——粘贴永远在后台线程。若未来从主线程调 `dispatch_sync_f(main_queue, ...)` 会死锁，需加 `dispatch_get_current_queue` 断言（当前不加，因调用点确定）。
+- **同步**：`Command::output()` 阻塞 paste 线程直到 osascript 退出。osascript 进程退出 = Carbon API 已执行完。
+- **恢复**：guard 记录的是 source ID（String），不是 CFTypeRef——跨进程安全，无内存管理问题。
+- **开销**：两次 osascript fork（切+恢复），每次 ~100-200ms。可接受（粘贴本身已有 200-300ms 焦点等待）。
 
 ---
 
@@ -223,7 +229,7 @@ load/save 自动跟随，round-trip 测试自动覆盖。
 
 | 文件 | 变更 |
 |------|------|
-| `crates/desktop/src/input_source.rs` | **新建**——Carbon TIS API FFI + RAII guard |
+| `crates/desktop/src/input_source.rs` | **新建**——osascript/JXA 调 Carbon TIS + RAII guard（v3 终版，经 v1 FFI/v2 GCD 两次 SIGTRAP 后改用独立进程） |
 | `crates/desktop/src/main.rs` | 加 `mod input_source;` |
 | `crates/desktop/src/paste.rs` | `paste_via_clipboard` 加 `switch_ime` 参数 + guard |
 | `crates/desktop/src/focus_tracker.rs` | `simulate_paste_platform` 加 guard |
