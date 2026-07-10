@@ -132,6 +132,9 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             } // cfg macos
         }
         tauri::WindowEvent::Focused(false) => {
+            // 失焦时强制兜底写一次位置（无视节流——保证拖拽落点不丢）
+            crate::window_position::save_current_position(&win_clone, WINDOW_LABEL);
+
             // 剪贴板失焦（用户切到其他 app）——恢复被隐藏的 Regular 窗口
             #[cfg(target_os = "macos")]
             { crate::activation::restore_hidden_windows_only(&app_clone); }
