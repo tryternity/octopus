@@ -187,6 +187,17 @@ const ExtensionDropZone = ({
     }
   }, [doImport]);
 
+  const handleOpenDir = useCallback(async () => {
+    try {
+      const selected = await openDialog({ directory: true, multiple: false });
+      if (typeof selected === "string") {
+        doImport(selected);
+      }
+    } catch {
+      // 用户取消
+    }
+  }, [doImport]);
+
   useEffect(() => {
     const win = getCurrentWebview();
     const unlisten = win.onDragDropEvent((event) => {
@@ -226,24 +237,41 @@ const ExtensionDropZone = ({
             <p className="font-mono text-[10px] text-muted-foreground/70 truncate max-w-full">
               {form.actionData}
             </p>
-            <button
-              onClick={handleOpenFile}
-              className="mt-1 text-[11px] text-voice hover:underline"
-            >
-              重新选择
-            </button>
+            <div className="mt-1 flex items-center gap-3">
+              <button
+                onClick={handleOpenFile}
+                className="text-[11px] text-voice hover:underline"
+              >
+                重新选 zip
+              </button>
+              <button
+                onClick={handleOpenDir}
+                className="text-[11px] text-voice hover:underline"
+              >
+                选文件夹
+              </button>
+            </div>
           </>
         ) : (
           <>
             <p className="text-[11px] text-muted-foreground/70">
-              拖拽 .zip 或文件夹到此，或
+              拖拽 .zip 或文件夹到此
             </p>
-            <button
-              onClick={handleOpenFile}
-              className="text-[11px] text-voice hover:underline"
-            >
-              选择文件
-            </button>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleOpenFile}
+                className="text-[11px] text-voice hover:underline"
+              >
+                选择 zip 文件
+              </button>
+              <span className="text-[11px] text-muted-foreground/40">|</span>
+              <button
+                onClick={handleOpenDir}
+                className="text-[11px] text-voice hover:underline"
+              >
+                选择文件夹
+              </button>
+            </div>
           </>
         )}
         {error && <p className="text-[11px] text-red-500">{error}</p>}
