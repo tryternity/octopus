@@ -79,6 +79,9 @@ fn restore_focus_platform() {
 #[cfg(target_os = "macos")]
 fn simulate_paste_platform() {
     use std::process::Command;
+    // 三段式文本注入：切到 ASCII 输入源 → Cmd+V → guard drop 时恢复。
+    // 避免 CJK IME composing 状态下粘贴出乱码（参考 VoxFlow VoxFlowTextInsertion）。
+    let _ime_guard = crate::input_source::switch_to_ascii_for_paste();
     // 强制前台进程重新获取 key window 焦点，再 keystroke
     // 用 System Events 的 process 属性而非 application name（避免 -1728）
     let script = r#"tell application "System Events"

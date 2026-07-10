@@ -979,3 +979,32 @@ spec §6.1 键盘表格 + §6.3 设置页 + plan Global Constraints + architectu
 
 spec §6.2（图标渲染标注弃用）+ §6.3（移除图标字段 + 内存草稿模式描述）+ plan Global Constraints + architecture.md。
 
+---
+
+### Task 9: 代码审查修复——FLOAT_DEPTH 泄漏 + 右边缘碰撞检测（2026-07-09）
+
+> 第六轮代码审查。3 项反馈，2 项确认修复，1 项误报。
+
+**Files:**
+- Modify: `crates/desktop/src/activation.rs`（新增 `after_floating_window_hide_keep_active`）
+- Modify: `crates/desktop/src/action_bar_commands.rs`（调用 keep_active + 碰撞检测）
+
+- [x] **Step 1: P0 — `action_bar_show_result` FLOAT_DEPTH 泄漏**
+
+**Bug**：`action_bar_show_result` 直接 `win.hide()` 跳过 `after_floating_window_hide`（避免 deactivate 压后台 CompactEditor），但 FLOAT_DEPTH 未递减 → 永久泄漏 → 后续 `before_floating_window_show` depth >= 2 不记录状态 / `after_floating_window_hide` depth > 0 不恢复窗口 → 焦点协调彻底瘫痪。
+
+**修复**：新增 `activation::after_floating_window_hide_keep_active`——递减 FLOAT_DEPTH + 清 WAS_INACTIVE/PREV_APP + 恢复 TEMP_HIDDEN 窗口，但**跳过 deactivate / activate**（CompactEditor 需要前台）。`action_bar_show_result` 在 `win.hide()` 后调用此函数。
+
+- [x] **Step 2: UX — 浮窗右边缘碰撞检测**
+
+浮窗 380px 宽、鼠标居中定位，鼠标在屏幕右边缘时浮窗溢出被截断。新增碰撞检测：`available_monitors()` 找鼠标所在显示器 → Monitor position/size ÷ scale_factor 转逻辑坐标 → 右溢出贴右边缘（`mon_right - 380`）、左溢出贴左边缘（`mon_x`）。
+
+- [x] **Step 3: 误报 — `run_script` 超时机制**
+
+审查声称「`child.wait()` 无超时未实现」。实际代码 `action_bar_commands.rs:324-336` 已有 `try_wait` × 120 + `child.kill()` 超时强杀（60 秒）。**误报，无需修改。**
+
+- [x] **Step 4: 文档同步**
+
+spec §6.1 AI 结果展示时序（补 `after_floating_window_hide_keep_active`）+ architecture.md（碰撞检测）。
+
+

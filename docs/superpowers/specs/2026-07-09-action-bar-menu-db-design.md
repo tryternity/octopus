@@ -3,7 +3,7 @@
 > **状态**：已实现（Task 1-6 全部完成）
 > **日期**：2026-07-09
 > **scope**：将 action bar 硬编码菜单迁移为 DB 表管理，支持两级菜单（主菜单 + 子菜单）+ 5 种动作类型 + 用户自定义扩展
-> **调研依据**：[`2026-07-08-popclip-survey.md`](./2026-07-08-popclip-survey.md)（PopClip/SnipDo/OnText/Click to Do 调研）
+> **调研依据**：[`2026-07-08-popclip-survey.md`](./2026-07-08-popclip-survey.md)（PopClip/SnipDo/OnText/Click to Do 调研）+ [`2026-07-09-action-bar-related-tools-survey.md`](./2026-07-09-action-bar-related-tools-survey.md)（11 款相关工具综合调研，含扩展机制对比 §5/§10/§11）
 
 ---
 
@@ -262,7 +262,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 
 **多浮窗嵌套**（`FLOAT_DEPTH` 引用计数）：多个浮窗重叠唤起时（如剪贴板可见时唤出 action bar），`before_floating_window_show` 增加 depth，只有最外层（depth==1）才记录前台 app + 隐藏 Regular 窗口。`after_floating_window_hide` 减少 depth，只有回到 0 才交还焦点 + 恢复窗口。防止第二个浮窗覆盖第一个的 `WAS_INACTIVE` 状态。
 
-**AI 结果展示时序**（`action_bar_show_result`）：不调 `hide_action_bar_window`（含 `after_floating_window_hide` → `deactivate`），直接 `win.hide()` 浮窗。因为接下来要创建/展示 CompactEditor，`deactivate` 会导致新窗口被压在后台不可见。
+**AI 结果展示时序**（`action_bar_show_result`）：不调 `hide_action_bar_window`（含 `after_floating_window_hide` → `deactivate`），直接 `win.hide()` 浮窗。因为接下来要创建/展示 CompactEditor，`deactivate` 会导致新窗口被压在后台不可见。但**必须调 `after_floating_window_hide_keep_active`**（递减 `FLOAT_DEPTH` + 恢复隐藏窗口 + 清状态，跳过 deactivate）——否则 depth 永久泄漏导致后续焦点协调彻底瘫痪（P0 已修复）。
 
 **应用范围**：action bar + 剪贴板浮窗（需键盘操作）。语音识别窗无强键盘需求，保持现状不处理。
 

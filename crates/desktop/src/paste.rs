@@ -32,10 +32,12 @@ impl From<&str> for PasteMethod {
 pub fn paste(text: &str, handle: &ClipboardHandle, config: &AppConfig) -> Result<()> {
     let method = PasteMethod::from(config.paste_method.as_str());
     let wtc = config.write_to_clipboard;
+    let switch_ime = config.switch_input_source_on_paste;
     info!(
-        "Pasting via {:?}, write_to_clipboard={}, text len: {}",
+        "Pasting via {:?}, write_to_clipboard={}, switch_ime={}, text len: {}",
         method,
         wtc,
+        switch_ime,
         text.len()
     );
 
@@ -44,7 +46,7 @@ pub fn paste(text: &str, handle: &ClipboardHandle, config: &AppConfig) -> Result
             write_to_clipboard(text, handle)?;
         }
         PasteMethod::Clipboard => {
-            paste_via_clipboard(text, handle, wtc)?;
+            paste_via_clipboard(text, handle, wtc, switch_ime)?;
         }
         PasteMethod::Direct => {
             paste_direct(text, handle, wtc)?;
@@ -115,6 +117,7 @@ fn paste_via_clipboard(
     text: &str,
     handle: &ClipboardHandle,
     write_to_clipboard: bool,
+    switch_ime: bool,
 ) -> Result<()> {
     let saved = if !write_to_clipboard {
         backup_clipboard(handle)
@@ -125,6 +128,14 @@ fn paste_via_clipboard(
     handle.write_text(text)?;
 
     std::thread::sleep(Duration::from_millis(50));
+
+    // 三段式文本注入：切到 ASCII 输入源 → Cmd+V → guard drop 时恢复。
+    // 避免 CJK IME composing 状态下粘贴出乱码（参考 VoxFlow VoxFlowTextInsertion）。
+    let _ime_guard = if switch_ime {
+        crate::input_source::switch_to_ascii_for_paste()
+    } else {
+        None
+    };
 
     let mut enigo = Enigo::new(&Settings::default())
         .map_err(|e| anyhow::anyhow!("Enigo init failed: {}", e))?;

@@ -1518,6 +1518,7 @@ mod tests {
         cfg.asr_shortcut = "Alt+1".into();
         cfg.paste_method = "direct".into();
         cfg.write_to_clipboard = false;
+        cfg.switch_input_source_on_paste = false;
         cfg.microphone = "Sentinel Mic".into();
         cfg.segment_silence = 1234.5;
         cfg.overlay_position = "bottom".into();
