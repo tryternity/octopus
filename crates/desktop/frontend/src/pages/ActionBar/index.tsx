@@ -1,16 +1,16 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen as rawListen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
-import { Loader2 } from "lucide-react";
+import { Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import { detectActionUrl } from "./urlDetect";
 
 interface Context {
   text: string;
 }
 
-type View = "main" | "submenu" | "loading" | "error";
+type View = "main" | "submenu" | "loading";
 
 interface ActionBarItem {
   id: number;
@@ -27,12 +27,27 @@ interface ActionBarItem {
 const AI_TRANSLATE_TIMEOUT_MS = 5000;
 const AI_TIMEOUT_MS = 10000;
 
-const IconBtn = ({ index, label, active, onClick }: {
+/** 序号 → 显示标签：1-9 显示数字，10-35 显示 a-z */
+function indexLabel(index: number): string {
+  if (index <= 9) return String(index);
+  return String.fromCharCode(86 + index); // 10→'a', 11→'b', ... 35→'z'
+}
+
+/** 显示标签 → 序号（0-based）。无效返回 -1 */
+function labelToIndex(key: string): number {
+  if (/^[1-9]$/.test(key)) return parseInt(key, 10) - 1;
+  if (/^[a-z]$/.test(key)) return key.charCodeAt(0) - 86; // 'a'→9, 'b'→10, ... 'z'→34
+  return -1;
+}
+
+const IconBtn = ({ index, label, active, onClick, btnRef }: {
   index: number; label: string; active: boolean; onClick: () => void;
+  btnRef?: (el: HTMLButtonElement | null) => void;
 }) => (
   <button
+    ref={btnRef}
     className={cn(
-      "flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all duration-150",
+      "flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all duration-150 shrink-0",
       active
         ? "bg-voice/12 text-voice"
         : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
@@ -49,11 +64,56 @@ const IconBtn = ({ index, label, active, onClick }: {
           : "bg-muted text-muted-foreground",
       )}
     >
-      {index}
+      {indexLabel(index)}
     </span>
     <span className="text-[10px] font-medium leading-none whitespace-nowrap">{label}</span>
   </button>
 );
+
+/** 带左右溢出指示器的横向滚动容器 */
+const ScrollRow = ({ children, className }: {
+  children: React.ReactNode; className?: string;
+}) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [overflow, setOverflow] = useState({ left: false, right: false });
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const check = () => {
+      setOverflow({
+        left: el.scrollLeft > 4,
+        right: el.scrollLeft + el.clientWidth < el.scrollWidth - 4,
+      });
+    };
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => { el.removeEventListener("scroll", check); ro.disconnect(); };
+  }, []);
+
+  return (
+    <div className={cn("relative", className)}>
+      <div
+        ref={ref}
+        className="flex items-center gap-1 px-1.5 py-[3px] shrink-0 overflow-x-auto scrollbar-none"
+      >
+        {children}
+      </div>
+      {overflow.left && (
+        <div className="absolute left-0 top-0 bottom-0 flex items-center pl-0.5 pointer-events-none bg-gradient-to-r from-background/95 to-transparent">
+          <ChevronLeft className="w-3 h-3 text-voice" />
+        </div>
+      )}
+      {overflow.right && (
+        <div className="absolute right-0 top-0 bottom-0 flex items-center pr-0.5 pointer-events-none bg-gradient-to-l from-background/95 to-transparent">
+          <ChevronRight className="w-3 h-3 text-voice" />
+        </div>
+      )}
+    </div>
+  );
+};
 
 export default function ActionBar() {
   const [context, setContext] = useState<Context | null>(null);
@@ -61,7 +121,10 @@ export default function ActionBar() {
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [subSelectedIdx, setSubSelectedIdx] = useState(0);
   const [menuItems, setMenuItems] = useState<ActionBarItem[]>([]);
-  const [errorMsg, setErrorMsg] = useState("");
+  const [toast, setToast] = useState("");
+  const mainBtnRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const subBtnRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchEngineRef = useRef("google");
   const timedOutRef = useRef(false);
   const contextRef = useRef<Context | null>(null);
@@ -71,13 +134,27 @@ export default function ActionBar() {
   const focusLayerRef = useRef<"main" | "sub">("main");
 
   useEffect(() => { viewRef.current = view; }, [view]);
+
+  // 高亮项变化时自动滚动到可见区域
+  useEffect(() => {
+    mainBtnRefs.current[selectedIdx]?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  }, [selectedIdx]);
+  useEffect(() => {
+    subBtnRefs.current[subSelectedIdx]?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  }, [subSelectedIdx]);
+
+  const showQuickError = (msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(msg);
+    toastTimerRef.current = setTimeout(() => setToast(""), 2000);
+  };
   useEffect(() => { focusLayerRef.current = focusLayer; }, [focusLayer]);
   useEffect(() => { contextRef.current = context; }, [context]);
 
   // 动态调整窗口高度——主菜单 1 行（~40px），子菜单 2 行（~76px），
   // 避免透明区域遮挡下层点击
   useEffect(() => {
-    const height = view === "submenu" ? 78 : view === "loading" ? 48 : view === "error" ? 60 : 40;
+    const height = view === "submenu" ? 78 : view === "loading" ? 48 : 40;
     const win = getCurrentWindow();
     win.setSize(new LogicalSize(380, height)).catch(() => {});
   }, [view]);
@@ -90,7 +167,7 @@ export default function ActionBar() {
       window.focus();
       invoke<Context | null>("action_bar_get_context").then((ctx) => {
         // 每次 show 都重置基础状态——防止遗留旧状态
-        setView("main"); setSelectedIdx(0); setFocusLayer("main"); setErrorMsg("");
+        setView("main"); setSelectedIdx(0); setFocusLayer("main");
         if (ctx) { setContext(ctx); }
       });
       // 每次唤起都重新加载菜单项 + 配置（设置页可能已改）
@@ -150,8 +227,8 @@ export default function ActionBar() {
     const timeoutMs = item.actionData === "auto_translate" ? AI_TRANSLATE_TIMEOUT_MS : AI_TIMEOUT_MS;
     const timeoutId = setTimeout(() => {
       timedOutRef.current = true;
-      setErrorMsg(`请求超时（${timeoutMs / 1000} 秒），请检查网络或 LLM 配置`);
-      setView("error");
+      showQuickError(`请求超时（${timeoutMs / 1000}s）`);
+      setView("main");
     }, timeoutMs);
 
     try {
@@ -165,8 +242,8 @@ export default function ActionBar() {
     } catch (e) {
       clearTimeout(timeoutId);
       if (timedOutRef.current) return;
-      setErrorMsg(String(e));
-      setView("error");
+      showQuickError(String(e).slice(0, 40));
+      setView("main");
     }
   };
 
@@ -193,12 +270,11 @@ export default function ActionBar() {
       return;
     }
 
-    // url / script / copy → 后端异常时切 error 视图（与 ai 分支一致）
+    // url / script / copy → 脚本类错误显示红色气泡提示（1 秒消失），其他类切 error 视图
     try {
       await invoke("execute_action_bar", { itemId: item.id, text: ctx.text });
     } catch (e) {
-      setErrorMsg(String(e));
-      setView("error");
+      showQuickError(String(e).replace(/^脚本执行失败:\s*/, "").slice(0, 40));
     }
   };
 
@@ -227,18 +303,18 @@ export default function ActionBar() {
         return;
       }
 
-      if (viewRef.current === "loading" || viewRef.current === "error") return;
+      if (viewRef.current === "loading") return;
 
-      // 数字键（无修饰）定位当前焦点层第 N 项——只移动高亮，不执行；超出范围无效
-      if (/^[1-9]$/.test(e.key)) {
+      // 快捷定位：1-9 数字键 + a-z 字母键（支持最多 35 项）
+      const idx = labelToIndex(e.key.toLowerCase());
+      if (idx >= 0) {
         e.preventDefault();
-        const n = parseInt(e.key, 10);
         if (focusLayerRef.current === "sub") {
-          if (n <= subItemsRef.current.length) setSubSelectedIdx(n - 1);
+          if (idx < subItemsRef.current.length) setSubSelectedIdx(idx);
         } else {
-          if (n <= mainItemsRef.current.length) {
-            const item = mainItemsRef.current[n - 1];
-            setSelectedIdx(n - 1);
+          if (idx < mainItemsRef.current.length) {
+            const item = mainItemsRef.current[idx];
+            setSelectedIdx(idx);
             // submenu 项同步展开子菜单预览（与左右键行为一致）
             if (item.actionType === "submenu") {
               submenuParentIdRef.current = item.id;
@@ -354,19 +430,6 @@ export default function ActionBar() {
     );
   }
 
-  if (view === "error") {
-    return (
-      <div data-action-bar className="flex flex-col gap-1.5 px-4 py-3 bg-background/95 backdrop-blur-xl text-foreground rounded-2xl border border-red-500/30 shadow-2xl shadow-black/10 max-w-[260px]">
-        <span className="text-[12px] text-red-500 font-medium leading-snug">{errorMsg}</span>
-        <button
-          className="text-[11px] text-muted-foreground hover:text-foreground transition-colors w-fit"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => invoke("action_bar_dismiss")}
-        >关闭</button>
-      </div>
-    );
-  }
-
   const subItems = submenuParentIdRef.current !== null
     ? getSubItems(submenuParentIdRef.current)
     : [];
@@ -374,10 +437,15 @@ export default function ActionBar() {
   return (
     <div
       data-action-bar
-      className="flex flex-col rounded-lg border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
+      className="relative flex flex-col rounded-lg border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
     >
+      {toast && (
+        <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center bg-red-500/90 backdrop-blur-sm px-3 py-2 animate-in fade-in duration-150">
+          <span className="text-[11px] font-medium text-white text-center leading-tight line-clamp-2">{toast}</span>
+        </div>
+      )}
       {/* 主菜单 */}
-      <div className="flex items-center gap-1 px-1.5 py-1.5 shrink-0">
+      <ScrollRow>
         {mainItems.map((item, i) => (
           <IconBtn
             key={item.id}
@@ -385,15 +453,16 @@ export default function ActionBar() {
             label={item.title}
             active={selectedIdx === i}
             onClick={() => executeItem(item)}
+            btnRef={(el: HTMLButtonElement | null) => { mainBtnRefs.current[i] = el; }}
           />
         ))}
-      </div>
+      </ScrollRow>
       {/* 子菜单——展开时用渐变分隔线 + 轻微底色区分 */}
-      <div className={cn(
-        "flex items-center gap-1 px-1.5 py-1.5 shrink-0 overflow-hidden transition-all duration-200",
+      <ScrollRow className={cn(
+        "transition-all duration-200",
         view === "submenu"
           ? "border-t border-border/30 bg-foreground/[0.02]"
-          : "h-0 py-0 overflow-hidden border-t-0",
+          : "h-0 overflow-hidden",
       )}>
         {subItems.map((item, i) => (
           <IconBtn
@@ -402,9 +471,10 @@ export default function ActionBar() {
             label={item.title}
             active={focusLayer === "sub" && subSelectedIdx === i}
             onClick={() => executeItem(item)}
+            btnRef={(el: HTMLButtonElement | null) => { subBtnRefs.current[i] = el; }}
           />
         ))}
-      </div>
+      </ScrollRow>
     </div>
   );
 }

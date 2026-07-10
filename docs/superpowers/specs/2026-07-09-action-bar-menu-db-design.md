@@ -57,12 +57,19 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
 
 script 类型的 `action_data` 第一行必须是 magic comment：
 
-| magic comment | 运行时 | 平台 |
-|---------------|--------|------|
-| `#shell` | `sh -c "<script>"` | 全平台 |
-| `#osascript` | `osascript -e "<script>"` | 仅 macOS |
-| `#powershell` | `powershell -Command "<script>"` | 仅 Windows |
-| `#python` | `python3 -c "<script>"`（需 PATH 可用） | 全平台（预留，一期可选） |
+| magic comment | 探测 | 运行时 | 平台 |
+|---------------|------|--------|------|
+| `#shell` | 不探测 | `sh -c "<script>"` | 全平台 |
+| `#osascript` | 不探测 | `osascript -e "<script>"` | 仅 macOS |
+| `#powershell` | 不探测 | `powershell -Command "<script>"` | 仅 Windows |
+| `#python` | 不探测 | `python3 -c "<script>"` | 全平台 |
+| `#node` | 不探测 | `node -e "<script>"` | 全平台 |
+| `#deno` | 不探测 | `deno eval "<script>"` | 全平台 |
+| `#bun` | 不探测 | `bun eval "<script>"` | 全平台 |
+| `#javascript` | 预探测 node→bun→deno | 探测到的运行时 | 全平台 |
+| `#typescript` | 预探测 npx tsx→bun→deno | 探测到的运行时 | 全平台 |
+
+> JS/TS 运行时 + 异步模式 + 结果捕获详见[脚本增强 spec](2026-07-10-action-bar-script-enhancement-design.md)。
 
 平台不支持时 → 前端 toast 报 `不支持的平台`，菜单项仍显示。
 
@@ -72,7 +79,7 @@ script 类型的 `action_data` 第一行必须是 magic comment：
 - `url`：`https://www.google.com/search?q={text}` → `https://www.google.com/search?q=hello`
 - URL scheme：`doubao://?text={text}`
 
-**script 类型**：选中文本通过环境变量 **`$OCTOPUS_TEXT`** 传递（不使用字符串替换，避免 shell 注入）。脚本中通过 `$OCTOPUS_TEXT`（shell）、`do shell script "$OCTOPUS_TEXT"`（osascript）、`$env:OCTOPUS_TEXT`（powershell）、`os.environ["OCTOPUS_TEXT"]`（python）读取。
+**script 类型**：选中文本通过环境变量 **`$OCTOPUS_TEXT`** 传递（不使用字符串替换，避免 shell 注入）。脚本中通过 `$OCTOPUS_TEXT`（shell）、`do shell script "$OCTOPUS_TEXT"`（osascript）、`$env:OCTOPUS_TEXT`（powershell）、`os.environ["OCTOPUS_TEXT"]`（python）、`process.env.OCTOPUS_TEXT`（node/bun/tsx）、`Deno.env.get("OCTOPUS_TEXT")`（deno）读取。
 
 ⚠️ **安全**：不做 `{text}` 字符串拼接（曾有注入风险），仅用环境变量。
 
@@ -163,7 +170,7 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移
 
 **执行命令**（替换现有 run_ai_action / action_bar_open_url 的分发逻辑）：
 
-> ⚠️ **收口职责归后端**：前端不再直接 `getCurrentWindow().hide()`，所有窗口生命周期管理由后端统一负责。命令内层 `execute_action_bar_inner` 返回 `Result<bool>`——`Ok(true)`（ai 已自收口直通）、`Ok(false)`（url/script/copy 成功→hide+finalize）、`Err`（异常→仅 finalize，不 hide，让前端切 error 视图，关闭时 dismiss 收口 depth）。所有路径都经收口，`?`/`return Err` 不会泄漏重入锁和 depth。
+> ⚠️ **收口职责归后端**：前端不再直接 `getCurrentWindow().hide()`，所有窗口生命周期管理由后端统一负责。命令内层 `execute_action_bar_inner` 返回 `Result<bool>`——`Ok(true)`（ai 已自收口直通）、`Ok(false)`（url/script/copy 成功→hide+finalize）、`Err`（异常→仅 finalize，不 hide，让前端显示红色气泡提示）。所有路径都经收口，`?`/`return Err` 不会泄漏重入锁和 depth。
 >
 > ⚠️ **线程约束**：本 command 是 `async` → 跑在 tokio worker 线程，而 `after_floating_window_hide` 内的 `NSApplication::deactivate` 需 `MainThreadMarker`（仅主线程可获取）。故 Ok(false) 分支的 `hide_action_bar_window` 通过 `app.run_on_main_thread` 投递到主线程执行（与 `trigger_action_bar` 的 show 同模式）。`finalize_action_bar` 仅操作 `AtomicBool`，线程安全，保持即时执行。`action_bar_dismiss`（sync command）天然在主线程，无需投递。
 
@@ -171,33 +178,7 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移
 
 ### 5.3 script 执行
 
-```rust
-fn run_script(source: &str, text: &str) -> Result<(), String> {
-    let first_line = source.lines().next().unwrap_or("").trim();
-    let body: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
-    let script: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
-// 选中文本通过 $OCTOPUS_TEXT 环境变量传递（不做字符串替换）
-
-    match first_line {
-        "#shell" => std::process::Command::new("sh").arg("-c").arg(&script).spawn(),
-        "#osascript" => {
-            #[cfg(target_os = "macos")]
-            { std::process::Command::new("osascript").arg("-e").arg(&script).spawn() }
-            #[cfg(not(target_os = "macos"))]
-            { return Err("osascript 仅 macOS 支持".into()); }
-        }
-        "#powershell" => {
-            #[cfg(target_os = "windows")]
-            { std::process::Command::new("powershell").arg("-Command").arg(&script).spawn() }
-            #[cfg(not(target_os = "windows"))]
-            { return Err("powershell 仅 Windows 支持".into()); }
-        }
-        "#python" => std::process::Command::new("python3").arg("-c").arg(&script).spawn(),
-        _ => return Err(format!("未知脚本类型: {}", first_line)),
-    }.map_err(|e| e.to_string())?;
-    Ok(())
-}
-```
+> ⚠️ **已重构**：原 `run_script` 已拆为 `spawn_script`（9 种 magic comment + 预探测）+ `wait_with_timeout`（轮询 + 捕获 pipe）+ `run_script_async` / `run_script_sync_blocking`（异步/同步分流 + 落库 `script_runs`）。详见[脚本增强 spec](2026-07-10-action-bar-script-enhancement-design.md)。
 
 ---
 
@@ -210,7 +191,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 - 按 parentId 构建两级结构（`#[serde(rename_all = "camelCase")]` 确保 JSON 字段名匹配）
 - `executeMain` / `executeSubItem` 合并为统一的 `executeItem(item: ActionBarItem)`
 - `ai` 类型仍走前端 loading + 超时 + timedOutRef 流程
-- `url` / `script` / `copy` 也走 `try-catch`（与 ai 一致）：成功后端统一 hide+收口，失败切 error 视图（**前端不再直接 `getCurrentWindow().hide()`**）
+- `url` / `script` / `copy` 也走 `try-catch`（与 ai 一致）：成功后端统一 hide+收口，失败显示红色气泡（**前端不再直接 `getCurrentWindow().hide()`**，error 视图已移除）
 - 按钮布局：**水平「数字徽章+文字」一行排列**（`flex-row`），非上下两行——浮窗更矮，子菜单展开后总高 ~78px
 - 视觉：`rounded-lg`（8px，与语音识别窗口一致）+ `backdrop-blur-xl` 毛玻璃 + `shadow-2xl`
 - 窗口高度动态调整：主菜单 40px / 子菜单 78px / loading 48px / error 60px（前端 `setSize` 按 view 切换），避免透明区域遮挡下层点击
@@ -230,7 +211,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 2. `show` 恢复被隐藏的 Regular 窗口——此时 octopus app 已在后台，窗口温和恢复不跳前台
 
 **剪贴板浮窗失焦恢复**（`restore_hidden_windows_only`）：
-剪贴板是 toggle 模式（always-on-top 可见，点击外部不 hide）。用户切到其他 app 后剪贴板失焦（`Focused(false)` 事件）但 Regular 窗口仍隐藏 → Dock 图标点击无效。失焦 = **虚拟关闭**：扣减 `FLOAT_DEPTH` + 清 `WAS_INACTIVE`/`PREV_APP` 状态 + 恢复被隐藏窗口 + `deactivate`。不交还前台焦点（剪贴板仍可见）。**必须扣减 depth**——否则 toggle 的 else 分支（`visible=true, focused=false`）重新 `before_show` 会使 depth 累加泄漏，焦点交还机制最终瘫痪。
+剪贴板是 toggle 模式（always-on-top 可见，点击外部不 hide）。用户切到其他 app 后剪贴板失焦（`Focused(false)` 事件）但 Regular 窗口仍隐藏 → Dock 图标点击无效。失焦 = **虚拟关闭**：扣减 `FLOAT_DEPTH`（`float_depth_decrement_and_is_zero`）。**depth>0（仍有浮窗存活，如 action_bar）时直接 return**——不清状态、不 deactivate、不恢复隐藏窗口（否则会清掉外层浮窗的焦点协调状态 → 后续快捷键失效）。只有 depth==0（所有浮窗关闭）才清 `WAS_INACTIVE`/`PREV_APP` 状态 + 恢复隐藏窗口 + `deactivate`。**必须扣减 depth**——否则 toggle 的 else 分支重新 `before_show` 会使 depth 累加泄漏。
 
 **多浮窗嵌套**（`FLOAT_DEPTH` 引用计数）：多个浮窗重叠唤起时（如剪贴板可见时唤出 action bar），`before_floating_window_show` 增加 depth，只有最外层（depth==1）才记录前台 app + 隐藏 Regular 窗口。`after_floating_window_hide` 减少 depth，只有回到 0 才交还焦点 + 恢复窗口。防止第二个浮窗覆盖第一个的 `WAS_INACTIVE` 状态。
 
@@ -245,14 +226,16 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 | **↑↓** | **切换焦点层**：焦点在主菜单→进入子菜单（focusLayer: main→sub）；焦点在子菜单→回到主菜单（sub→main）。不展开/收起子菜单。 |
 | **←→** | **当前行移动**：焦点在主菜单→主菜单项之间移动（移到 submenu 项自动展开其子菜单、移到非 submenu 项自动收起子菜单）；焦点在子菜单→子菜单项之间移动。 |
 | **Enter** | 执行当前焦点高亮项 |
-| **数字键 1-9** | **定位**（只移动高亮，不执行）：按焦点层决定定位哪一层——焦点在主菜单→定位第 N 个主菜单项；焦点在子菜单→定位第 N 个子菜单项。N 超出范围则无效。 |
+| **1-9 + a-z** | **快捷定位**（只移动高亮，不执行）：1-9 对应第 1-9 项，a-z 对应第 10-35 项。按焦点层决定定位哪一层。超出范围无效。 |
 | **Esc** | **直接关闭浮窗**（一次 Esc，不退焦点层） |
 
 **子菜单展开/收起由左右键控制**：左右键在主菜单移动时，移到 submenu 类型的项→展开子菜单预览，移到非 submenu 项→收起子菜单。上下键只切焦点层，不碰视图展开状态。
 
 **子菜单预览不抢焦点**：左右键展开子菜单时焦点仍在主菜单——用户必须按上下键才把焦点移入子菜单。`focusLayer` 状态（main/sub）独立于 `view` 状态（main/submenu）控制此行为。
 
-**数字键定位语义**：与 Cmd+数字（已移除）的「直接执行」不同，纯数字键只移动高亮到目标项，用户再按 Enter 执行。定位到 submenu 类型的主菜单项时会同步展开其子菜单预览（与左右键行为一致）。范围校验在当前焦点层进行，超出该层项数则按键无效。
+**快捷定位语义**：1-9 数字键 + a-z 字母键定位第 1-35 项（只移动高亮，Enter 执行）。定位到 submenu 类型的主菜单项时同步展开子菜单预览。同级菜单项上限 35 个（后端 `create_action_bar_item` 校验）。
+
+**菜单溢出滚动**：项数超过窗口宽度时容器 `overflow-x-auto scrollbar-none`（无滚动条），高亮项变化时 `scrollIntoView` 自动滚动到可见区域。左右溢出时显示 voice 色 `<`/`>` 箭头指示器（`ScrollRow` 组件，`ResizeObserver` + `scroll` 实时检测）。
 
 ### 6.2 图标渲染（浮窗已弃用，组件保留）
 
@@ -295,7 +278,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 
 ### 7.2 代码迁移
 
-- 保留现有 `trigger_action_bar` / `action_bar_dismiss` / `action_bar_show_result` 不变
+- 保留现有 `trigger_action_bar` / `action_bar_dismiss` 不变；`action_bar_show_result` 加 `write_clipboard: bool` 参数（AI 路径 true，Script 同步路径按 `write_output_to_clipboard` 配置 opt-in）——详见[脚本增强 spec §5](2026-07-10-action-bar-script-enhancement-design.md)
 - 删除 `run_ai_action`（合并进 `execute_action_bar`）
 - 删除 `action_bar_open_url`（合并进 `execute_action_bar` 的 url 分支）
 - 前端删除 SEARCH_URLS 常量
@@ -312,7 +295,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 - **JSON 导入/导出**（菜单配置分享）——二期
 - **正则上下文规则**（OnText 式，选中特定格式才显示对应动作）——二期
 - **截图+OCR fallback**——已有能力，二期串联
-- **python 脚本类型**——DB schema 已支持，一期可不 seed 示例
+- ~~**python 脚本类型**——DB schema 已支持，一期可不 seed 示例~~ **已实现**（含 node/deno/bun/javascript/typescript，详见[脚本增强 spec](2026-07-10-action-bar-script-enhancement-design.md)）
 - **子菜单嵌套超过两级**——当前 parent_id 只支持两级，三级以上二期
 
 ---

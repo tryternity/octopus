@@ -164,7 +164,7 @@ pub fn action_bar_dismiss(app: AppHandle) {
 /// AI 结果通过临时 tab 打开 CompactEditor 展示（不写 DB）。
 /// 结果写入剪贴板留给用户——不恢复原始剪贴板（与 dismiss/open_url 不同）。
 #[tauri::command]
-pub fn action_bar_show_result(result: String, _original_text: String, action: String, app: AppHandle) {
+pub fn action_bar_show_result(result: String, _original_text: String, action: String, app: AppHandle, write_clipboard: bool) {
     // 只隐藏浮窗本身——不调 hide_action_bar_window（含 after_floating_window_hide → deactivate），
     // 因为接下来要展示 CompactEditor，deactivate 会导致新窗口被压在后台。
     // 但必须递减 FLOAT_DEPTH + 恢复隐藏窗口（after_floating_window_hide_keep_active），
@@ -185,8 +185,10 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
     };
     let display_text = format!("【{}】\n{}", label, result);
 
-    // 结果写入系统剪贴板（方便用户手动粘贴）——write_text 自带 suppress 不会入库
-    write_clipboard_text(&app, &result);
+    // 结果写入系统剪贴板（仅 write_clipboard=true 时）——write_text 自带 suppress 不会入库
+    if write_clipboard {
+        write_clipboard_text(&app, &result);
+    }
 
     finalize_action_bar(&app);
 
@@ -262,8 +264,16 @@ pub fn create_action_bar_item(
     icon: String,
     action_type: String,
     action_data: String,
+    is_async: bool,
+    write_output_to_clipboard: bool,
 ) -> Result<i64, String> {
-    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data)
+    // 同级菜单项最多 35 个（9 数字 + 26 字母快捷键上限）
+    let all = octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())?;
+    let sibling_count = all.iter().filter(|i| i.parent_id == parent_id).count();
+    if sibling_count >= 35 {
+        return Err("同级菜单项已达上限 35 个（快捷键 1-9 + a-z）".into());
+    }
+    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, is_async, write_output_to_clipboard)
         .map_err(|e| e.to_string())
 }
 
@@ -275,8 +285,10 @@ pub fn update_action_bar_item(
     action_type: String,
     action_data: String,
     is_enabled: bool,
+    is_async: bool,
+    write_output_to_clipboard: bool,
 ) -> Result<(), String> {
-    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled)
+    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled, is_async, write_output_to_clipboard)
         .map_err(|e| e.to_string())
 }
 
@@ -288,6 +300,18 @@ pub fn delete_action_bar_item(id: i64) -> Result<(), String> {
 #[tauri::command]
 pub fn move_action_bar_item(id: i64, direction: i32) -> Result<(), String> {
     octopus_infra::db::move_action_bar_item(id, direction).map_err(|e| e.to_string())
+}
+
+// ── 脚本执行记录 ──
+
+#[tauri::command]
+pub fn list_script_runs(limit: Option<i64>, item_id: Option<i64>) -> Result<Vec<octopus_infra::db::ScriptRun>, String> {
+    octopus_infra::db::list_script_runs(limit, item_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<(), String> {
+    octopus_infra::db::clear_script_runs(keep_recent).map_err(|e| e.to_string())
 }
 
 // ── 统一执行入口 ──
@@ -318,69 +342,217 @@ fn url_encode_param(s: &str) -> String {
     utf8_percent_encode(s, ENCODE_SET).to_string()
 }
 
-/// 执行脚本：按第一行 magic comment 分发运行时。
-/// 选中文本通过环境变量 `OCTOPUS_TEXT` 传递（避免 shell 注入）。
-fn run_script(source: &str, text: &str) -> Result<(), String> {
+// ── 脚本执行（spawn_script + wait_with_timeout + 运行时探测）──
+
+struct ScriptResult {
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    timed_out: bool,
+}
+
+/// 探测 JS 运行时——优先级 node → bun → deno
+fn detect_js_runtime() -> Option<(&'static str, &'static str)> {
+    for (bin, flag) in [("node", "-e"), ("bun", "eval"), ("deno", "eval")] {
+        if std::process::Command::new(bin).arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().is_ok()
+        {
+            return Some((bin, flag));
+        }
+    }
+    None
+}
+
+/// 探测 TS 运行时——优先级 npx tsx → bun → deno
+fn detect_ts_runtime() -> Option<(&'static str, Vec<&'static str>)> {
+    if std::process::Command::new("npx").args(["--yes", "tsx", "--version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status().is_ok()
+    {
+        return Some(("npx", vec!["--yes", "tsx", "-e"]));
+    }
+    if std::process::Command::new("bun").arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status().is_ok()
+    {
+        return Some(("bun", vec!["eval"]));
+    }
+    if std::process::Command::new("deno").arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status().is_ok()
+    {
+        return Some(("deno", vec!["eval"]));
+    }
+    None
+}
+
+/// 按 magic comment 分发运行时，spawn 子进程。
+/// capture_output=true 时 stdout/stderr 用 pipe（同步模式），false 时用 null（异步模式）。
+fn spawn_script(source: &str, text: &str, capture_output: bool) -> Result<(std::process::Child, String), String> {
+    use std::process::Stdio;
     let first_line = source.lines().next().unwrap_or("").trim();
     let script: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
 
-    let result: std::io::Result<std::process::Child> = match first_line {
+    let stdout_cfg = if capture_output { Stdio::piped() } else { Stdio::null() };
+    let stderr_cfg = if capture_output { Stdio::piped() } else { Stdio::null() };
+
+    let cmd_result: Result<std::process::Command, String> = match first_line {
         "#shell" => {
-            std::process::Command::new("sh")
-                .arg("-c").arg(&script)
-                .env("OCTOPUS_TEXT", text)
-                .spawn()
+            let mut c = std::process::Command::new("sh");
+            c.arg("-c").arg(&script);
+            Ok(c)
         }
         "#osascript" => {
             #[cfg(target_os = "macos")]
-            { std::process::Command::new("osascript")
-                .arg("-e").arg(&script)
-                .env("OCTOPUS_TEXT", text)
-                .spawn() }
+            { let mut c = std::process::Command::new("osascript"); c.arg("-e").arg(&script); Ok(c) }
             #[cfg(not(target_os = "macos"))]
-            { return Err("osascript 仅 macOS 支持".into()); }
+            { Err("osascript 仅 macOS 支持".into()) }
         }
         "#powershell" => {
             #[cfg(target_os = "windows")]
-            { std::process::Command::new("powershell")
-                .arg("-Command").arg(&script)
-                .env("OCTOPUS_TEXT", text)
-                .spawn() }
+            { let mut c = std::process::Command::new("powershell"); c.arg("-Command").arg(&script); Ok(c) }
             #[cfg(not(target_os = "windows"))]
-            { return Err("powershell 仅 Windows 支持".into()); }
+            { Err("powershell 仅 Windows 支持".into()) }
         }
         "#python" => {
-            std::process::Command::new("python3")
-                .arg("-c").arg(&script)
-                .env("OCTOPUS_TEXT", text)
-                .spawn()
+            let mut c = std::process::Command::new("python3");
+            c.arg("-c").arg(&script);
+            Ok(c)
+        }
+        "#node" => {
+            let mut c = std::process::Command::new("node");
+            c.arg("-e").arg(&script);
+            Ok(c)
+        }
+        "#deno" => {
+            let mut c = std::process::Command::new("deno");
+            c.arg("eval").arg(&script);
+            Ok(c)
+        }
+        "#bun" => {
+            let mut c = std::process::Command::new("bun");
+            c.arg("eval").arg(&script);
+            Ok(c)
+        }
+        "#javascript" => {
+            let (bin, flag) = detect_js_runtime()
+                .ok_or_else(|| "未检测到 JS 运行时，请安装 Node.js / Bun / Deno 之一".to_string())?;
+            let mut c = std::process::Command::new(bin);
+            c.arg(flag).arg(&script);
+            Ok(c)
+        }
+        "#typescript" => {
+            let (bin, args) = detect_ts_runtime()
+                .ok_or_else(|| "未检测到 TS 运行时，请安装 tsx（npm i -g tsx）/ Bun / Deno 之一".to_string())?;
+            let mut c = std::process::Command::new(bin);
+            for a in &args { c.arg(a); }
+            c.arg(&script);
+            Ok(c)
         }
         _ => return Err(format!(
-            "未知脚本类型: {}（第一行须为 #shell/#osascript/#powershell/#python）",
+            "未知脚本类型: {}（第一行须为 #shell/#osascript/#powershell/#python/#node/#deno/#bun/#javascript/#typescript）",
             first_line
         )),
     };
 
-    let mut child = result.map_err(|e| format!("脚本执行失败: {}", e))?;
-    // 后台收割子进程退出状态，60 秒超时强杀，防止僵尸进程 + 线程泄漏
-    std::thread::spawn(move || {
-        for _ in 0..120 {
-            match child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
-                Err(_) => return,
+    let mut cmd = cmd_result?;
+    cmd.env("OCTOPUS_TEXT", text);
+    cmd.stdout(stdout_cfg);
+    cmd.stderr(stderr_cfg);
+    let child = cmd.spawn().map_err(|e| format!("脚本执行失败: {}", e))?;
+    Ok((child, first_line.to_string()))
+}
+
+/// 轮询等待子进程退出，60 秒超时强杀。捕获 stdout/stderr。
+fn wait_with_timeout(mut child: std::process::Child) -> ScriptResult {
+    use std::io::Read;
+    for _ in 0..120 {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let mut stdout_buf = String::new();
+                if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
+                let mut stderr_buf = String::new();
+                if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
+                let code = child.wait().ok().and_then(|s| s.code());
+                return ScriptResult { exit_code: code, stdout: stdout_buf, stderr: stderr_buf, timed_out: false };
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
+            Err(_) => {
+                let mut stdout_buf = String::new();
+                if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
+                let mut stderr_buf = String::new();
+                if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
+                return ScriptResult { exit_code: None, stdout: stdout_buf, stderr: stderr_buf, timed_out: false };
             }
         }
-        // 超时强杀
-        let _ = child.kill();
-        let _ = child.wait();
+    }
+    // 超时强杀
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut stdout_buf = String::new();
+    if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
+    let mut stderr_buf = String::new();
+    if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
+    ScriptResult { exit_code: None, stdout: stdout_buf, stderr: stderr_buf, timed_out: true }
+}
+
+/// 生成 ISO 8601 时间戳（UTC），不依赖 chrono
+fn now_iso8601() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    format!("{}", secs)
+}
+
+/// 异步执行脚本——spawn 后立即返回，后台线程收割并落库
+fn run_script_async(source: &str, text: &str, item_id: i64) -> Result<(), String> {
+    let (child, script_type) = spawn_script(source, text, false)?;
+    let started = std::time::Instant::now();
+    let started_at = now_iso8601();
+    std::thread::spawn(move || {
+        let result = wait_with_timeout(child);
+        let duration_ms = started.elapsed().as_millis() as i64;
+        let finished_at = now_iso8601();
+        let error_msg = if result.timed_out { "执行超时（60秒）".to_string() }
+            else if result.exit_code.is_none() { "进程异常退出".to_string() }
+            else { String::new() };
+        let _ = octopus_infra::db::insert_script_run(
+            item_id, &script_type, result.exit_code,
+            &result.stdout, &result.stderr, &error_msg,
+            &started_at, Some(&finished_at), Some(duration_ms),
+        );
     });
     Ok(())
 }
 
+/// 同步执行脚本（阻塞）——等待完成，返回结果并落库
+fn run_script_sync_blocking(source: &str, text: &str, item_id: i64) -> Result<ScriptResult, String> {
+    let (child, script_type) = spawn_script(source, text, true)?;
+    let started = std::time::Instant::now();
+    let started_at = now_iso8601();
+    let mut result = wait_with_timeout(child);
+    let duration_ms = started.elapsed().as_millis() as i64;
+    let finished_at = now_iso8601();
+    let error_msg = if result.timed_out { "执行超时（60秒）".to_string() }
+        else if result.exit_code.is_none() { "进程异常退出".to_string() }
+        else { String::new() };
+    let _ = octopus_infra::db::insert_script_run(
+        item_id, &script_type, result.exit_code,
+        &result.stdout, &result.stderr, &error_msg,
+        &started_at, Some(&finished_at), Some(duration_ms),
+    );
+    // 标记已落库（ScriptResult 原样返回给上层）
+    let _ = &mut result; // 消费 mut borrow
+    Ok(result)
+}
+
 /// 执行菜单项动作核心逻辑（不含收口）。
 /// Ok(true) = ai 已自行收口；Ok(false) = 成功需外层统一收口；Err = 异常需外层 finalize。
-fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
+async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
     let item = octopus_infra::db::load_action_bar_item(item_id)
         .map_err(|e| e.to_string())?
         .ok_or("菜单项不存在")?;
@@ -397,7 +569,7 @@ fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Resu
             };
             let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
                 .map_err(|e| e.to_string())?;
-            action_bar_show_result(result, text, item.title, app.clone());
+            action_bar_show_result(result, text, item.title, app.clone(), true);
             Ok(true)
         }
         "url" => {
@@ -421,8 +593,43 @@ fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Resu
             Ok(false)
         }
         "script" => {
-            run_script(&item.action_data, &text)?;
-            Ok(false)
+            let is_async = item.is_async;
+            let write_output = item.write_output_to_clipboard;
+            let item_title = item.title.clone();
+            let item_id = item.id;
+
+            if is_async {
+                // 异步——fire-and-forget，后台落库，立即关闭浮窗
+                run_script_async(&item.action_data, &text, item_id)?;
+                Ok(false)
+            } else {
+                // 同步——spawn_blocking 等待结果
+                let source = item.action_data.clone();
+                let text_clone = text.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    run_script_sync_blocking(&source, &text_clone, item_id)
+                }).await.map_err(|e| format!("脚本执行线程异常: {}", e))??;
+
+                if result.timed_out {
+                    return Err("脚本执行超时（60秒），已强制终止".into());
+                }
+                if let Some(code) = result.exit_code {
+                    if code != 0 {
+                        let detail = if result.stderr.is_empty() { String::new() } else { format!("\n{}", result.stderr) };
+                        return Err(format!("脚本退出码 {}{}", code, detail));
+                    }
+                }
+                // 成功
+                if !result.stdout.is_empty() {
+                    if write_output {
+                        write_clipboard_text(app, &result.stdout);
+                    }
+                    action_bar_show_result(result.stdout, text, item_title, app.clone(), false);
+                    return Ok(true);
+                }
+                // 成功无输出 → 正常关闭
+                Ok(false)
+            }
         }
         "copy" => {
             write_clipboard_text(app, &text);
@@ -435,7 +642,7 @@ fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Resu
 /// 统一执行菜单项动作。
 #[tauri::command]
 pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
-    match execute_action_bar_inner(item_id, text, &app) {
+    match execute_action_bar_inner(item_id, text, &app).await {
         Ok(true) => Ok(()),
         Ok(false) => {
             // url/script/copy 成功 → 统一收口：标准隐藏 + 焦点交还 + 重入锁复位

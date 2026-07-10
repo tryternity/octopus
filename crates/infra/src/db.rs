@@ -166,6 +166,8 @@ where
 /// 开发期无历史库需兼容（用户确认），故不保留 v1-v16 迁移/DROP 兜底。
 /// v18：FTS5 backfill（历史行补入索引），搜索走 MATCH。
 /// v19：新增 action_bar_items 表（db.sql IF NOT EXISTS 自动创建）。
+/// v20：paste_input_source_switch。
+/// v21：action_bar_items 加 is_async + write_output_to_clipboard 列；新建 script_runs 表。
 /// v20：新增 hotwords 表（db.sql IF NOT EXISTS 自动创建）。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
@@ -190,15 +192,27 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // v18→v19：action_bar_items 表由 db.sql 的 IF NOT EXISTS 自动创建，重跑 INIT_SQL 幂等
         // v19→v20：hotwords 表由 db.sql 的 IF NOT EXISTS 自动创建，重跑 INIT_SQL 幂等
         conn.execute_batch(INIT_SQL).ok();
-        conn.execute("PRAGMA user_version = 20", [])?;
-        log::info!("schema upgraded to v20 (hotwords)");
+        // v20→v21：action_bar_items 加 is_async + write_output_to_clipboard 列。
+        // CREATE TABLE IF NOT EXISTS 对已有表无效，必须 ALTER TABLE 补列。
+        let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+        if !cols.contains(&"is_async".to_string()) {
+            conn.execute("ALTER TABLE action_bar_items ADD COLUMN is_async INTEGER NOT NULL DEFAULT 1", [])?;
+        }
+        if !cols.contains(&"write_output_to_clipboard".to_string()) {
+            conn.execute("ALTER TABLE action_bar_items ADD COLUMN write_output_to_clipboard INTEGER NOT NULL DEFAULT 0", [])?;
+        }
+        conn.execute("PRAGMA user_version = 21", [])?;
+        log::info!("schema upgraded to v21 (action_bar_items + script_runs)");
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 20", [])?;
-    log::info!("DB initialized (v20): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 21", [])?;
+    log::info!("DB initialized (v21): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -846,9 +860,11 @@ pub struct ActionBarItem {
     pub sort_order: i64,
     pub is_system: bool,
     pub is_enabled: bool,
+    pub is_async: bool,
+    pub write_output_to_clipboard: bool,
 }
 
-const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled";
+const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard";
 
 fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem> {
     Ok(ActionBarItem {
@@ -861,6 +877,8 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
         sort_order: row.get(6)?,
         is_system: row.get::<_, i32>(7)? != 0,
         is_enabled: row.get::<_, i32>(8)? != 0,
+        is_async: row.get::<_, i32>(9)? != 0,
+        write_output_to_clipboard: row.get::<_, i32>(10)? != 0,
     })
 }
 
@@ -921,8 +939,10 @@ pub fn insert_action_bar_item(
     icon: &str,
     action_type: &str,
     action_data: &str,
+    is_async: bool,
+    write_output_to_clipboard: bool,
 ) -> Result<i64> {
-    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data))
+    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard))
 }
 
 fn insert_action_bar_item_at(
@@ -932,6 +952,8 @@ fn insert_action_bar_item_at(
     icon: &str,
     action_type: &str,
     action_data: &str,
+    is_async: bool,
+    write_output_to_clipboard: bool,
 ) -> Result<i64> {
     let max_order: i64 = conn.query_row(
         "SELECT COALESCE(MAX(sort_order), -1) FROM action_bar_items WHERE parent_id IS ?1",
@@ -939,9 +961,9 @@ fn insert_action_bar_item_at(
         |r| r.get(0),
     )?;
     conn.execute(
-        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1)",
-        params![parent_id, title, icon, action_type, action_data, max_order + 1],
+        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1, ?7, ?8)",
+        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -953,8 +975,10 @@ pub fn update_action_bar_item(
     action_type: &str,
     action_data: &str,
     is_enabled: bool,
+    is_async: bool,
+    write_output_to_clipboard: bool,
 ) -> Result<()> {
-    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled))
+    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard))
 }
 
 fn update_action_bar_item_at(
@@ -965,14 +989,16 @@ fn update_action_bar_item_at(
     action_type: &str,
     action_data: &str,
     is_enabled: bool,
+    is_async: bool,
+    write_output_to_clipboard: bool,
 ) -> Result<()> {
     let row = load_action_bar_item_at(conn, id)?.context("菜单项不存在")?;
     if row.is_system && row.action_type != action_type {
         anyhow::bail!("系统内置菜单项不可更改动作类型");
     }
     conn.execute(
-        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, updated_at=datetime('now') WHERE id=?6",
-        params![title, icon, action_type, action_data, is_enabled as i32, id],
+        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, updated_at=datetime('now') WHERE id=?8",
+        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, id],
     )?;
     Ok(())
 }
@@ -990,6 +1016,102 @@ fn delete_action_bar_item_at(conn: &Connection, id: i64) -> Result<()> {
     }
     conn.execute("DELETE FROM action_bar_items WHERE id=?1 OR parent_id=?1", params![id])?;
     Ok(())
+}
+
+// ── Script Run（脚本执行记录）─────────────────────────────────────
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScriptRun {
+    pub id: i64,
+    pub item_id: i64,
+    pub item_title: Option<String>,
+    pub script_type: String,
+    pub exit_code: Option<i32>,
+    pub stdout: String,
+    pub stderr: String,
+    pub error_msg: String,
+    pub started_at: String,
+    pub finished_at: Option<String>,
+    pub duration_ms: Option<i64>,
+}
+
+/// stdout/stderr 截断上限（64KB）
+const SCRIPT_OUTPUT_LIMIT: usize = 65536;
+
+pub fn insert_script_run(
+    item_id: i64,
+    script_type: &str,
+    exit_code: Option<i32>,
+    stdout: &str,
+    stderr: &str,
+    error_msg: &str,
+    started_at: &str,
+    finished_at: Option<&str>,
+    duration_ms: Option<i64>,
+) -> Result<i64> {
+    let stdout_trunc: String = stdout.chars().take(SCRIPT_OUTPUT_LIMIT).collect();
+    let stderr_trunc: String = stderr.chars().take(SCRIPT_OUTPUT_LIMIT).collect();
+    with_db(|conn| {
+        conn.execute(
+            "INSERT INTO script_runs (item_id, script_type, exit_code, stdout, stderr, error_msg, started_at, finished_at, duration_ms)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            params![item_id, script_type, exit_code, stdout_trunc, stderr_trunc, error_msg, started_at, finished_at, duration_ms],
+        )?;
+        Ok(conn.last_insert_rowid())
+    })
+}
+
+pub fn list_script_runs(limit: Option<i64>, item_id: Option<i64>) -> Result<Vec<ScriptRun>> {
+    with_db(|conn| {
+        let limit = limit.unwrap_or(100);
+        let sql = if item_id.is_some() {
+            "SELECT s.id, s.item_id, COALESCE(a.title, '已删除'), s.script_type, s.exit_code, s.stdout, s.stderr, s.error_msg, s.started_at, s.finished_at, s.duration_ms
+             FROM script_runs s LEFT JOIN action_bar_items a ON s.item_id = a.id
+             WHERE s.item_id = ?2 ORDER BY s.started_at DESC LIMIT ?1"
+        } else {
+            "SELECT s.id, s.item_id, a.title, s.script_type, s.exit_code, s.stdout, s.stderr, s.error_msg, s.started_at, s.finished_at, s.duration_ms
+             FROM script_runs s LEFT JOIN action_bar_items a ON s.item_id = a.id
+             ORDER BY s.started_at DESC LIMIT ?1"
+        };
+        let mut stmt = conn.prepare(sql)?;
+        let rows = if let Some(iid) = item_id {
+            stmt.query_map(params![limit, iid], row_to_script_run)?
+        } else {
+            stmt.query_map(params![limit], row_to_script_run)?
+        };
+        let mut list = Vec::new();
+        for r in rows {
+            list.push(r?);
+        }
+        Ok(list)
+    })
+}
+
+fn row_to_script_run(row: &rusqlite::Row) -> rusqlite::Result<ScriptRun> {
+    Ok(ScriptRun {
+        id: row.get(0)?,
+        item_id: row.get(1)?,
+        item_title: row.get(2).ok(),
+        script_type: row.get(3)?,
+        exit_code: row.get(4)?,
+        stdout: row.get(5)?,
+        stderr: row.get(6)?,
+        error_msg: row.get(7)?,
+        started_at: row.get(8)?,
+        finished_at: row.get(9)?,
+        duration_ms: row.get(10)?,
+    })
+}
+
+pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<()> {
+    let keep = keep_recent.unwrap_or(100);
+    with_db(|conn| {
+        conn.execute(
+            "DELETE FROM script_runs WHERE id NOT IN (SELECT id FROM script_runs ORDER BY started_at DESC LIMIT ?1)",
+            params![keep],
+        )?;
+        Ok(())
+    })
 }
 
 // ── Hotword（ASR 热词）──────────────────────────────────────────
@@ -1551,13 +1673,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v20() {
+    fn init_schema_fresh_db_builds_v21() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 20, "全新库 init_schema 后应到 v20");
+        assert_eq!(v, 21, "全新库 init_schema 后应到 v21");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -1571,16 +1693,16 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_v20_is_noop() {
-        // 已是 v20 的库再调 init_schema 应早退（不重跑、不报错）
+    fn init_schema_v21_is_noop() {
+        // 已是 v21 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 20", []).unwrap();
+        conn.execute("PRAGMA user_version = 21", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 20);
+        assert_eq!(v, 21);
     }
 
     #[test]
@@ -2371,8 +2493,8 @@ mod tests {
     #[test]
     fn action_bar_items_list_enabled_filters_disabled() {
         let conn = open_init();
-        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "copy", "").unwrap();
-        update_action_bar_item_at(&conn, id, "测试禁用", "test", "copy", "", false).unwrap();
+        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "copy", "", true, false).unwrap();
+        update_action_bar_item_at(&conn, id, "测试禁用", "test", "copy", "", false, true, false).unwrap();
         let enabled = list_action_bar_items_at(&conn).unwrap();
         assert!(!enabled.iter().any(|i| i.id == id));
         let all = list_all_action_bar_items_at(&conn).unwrap();
@@ -2390,8 +2512,8 @@ mod tests {
     #[test]
     fn action_bar_items_move_swaps_order() {
         let conn = open_init();
-        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "copy", "").unwrap();
-        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "copy", "").unwrap();
+        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "copy", "", true, false).unwrap();
+        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "copy", "", true, false).unwrap();
         let a_before = load_action_bar_item_at(&conn, id_a).unwrap().unwrap();
         let b_before = load_action_bar_item_at(&conn, id_b).unwrap().unwrap();
         assert!(a_before.sort_order < b_before.sort_order);

@@ -87,3 +87,46 @@ fn parse_position(value: &str) -> Option<(f64, f64)> {
     let y = parts[1].trim().parse::<f64>().ok()?;
     Some((x, y))
 }
+
+/// 保存窗口 dock 状态到 app_config。
+/// key 格式：`window_dock.{label}`，value: "right" | "left" | "none"。
+pub fn save_dock_state(label: &str, edge: &str) {
+    let key = format!("window_dock.{}", label);
+    if let Err(e) = octopus_infra::db::save_config_key(&key, edge) {
+        log::warn!("Failed to save dock state for {}: {}", label, e);
+    } else {
+        debug!("Saved dock state {}: {}", label, edge);
+    }
+}
+
+/// 从 app_config 读取窗口 dock 状态。
+pub fn load_dock_state(label: &str) -> Option<String> {
+    let key = format!("window_dock.{}", label);
+    let value = octopus_infra::db::load_config_key(&key).ok().flatten()?;
+    let edge = value.trim().to_string();
+    if edge.is_empty() {
+        None
+    } else {
+        debug!("Loaded dock state {}: {}", label, edge);
+        Some(edge)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn dock_state_round_trip() {
+        let label = "test_window_dock_roundtrip";
+        crate::window_position::save_dock_state(label, "right");
+        let loaded = crate::window_position::load_dock_state(label);
+        assert_eq!(loaded.as_deref(), Some("right"));
+
+        crate::window_position::save_dock_state(label, "left");
+        let loaded = crate::window_position::load_dock_state(label);
+        assert_eq!(loaded.as_deref(), Some("left"));
+
+        crate::window_position::save_dock_state(label, "none");
+        let loaded = crate::window_position::load_dock_state(label);
+        assert_eq!(loaded.as_deref(), Some("none"));
+    }
+}

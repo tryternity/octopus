@@ -67,14 +67,17 @@
 //!
 //! | | |
 //!|---|---|
-//! | **depth 变化** | `N → N-1`（`if >0` 防下溢）—— **无条件**，不论 depth 值 |
-//! | **状态清理** | **无条件**清 `WAS_INACTIVE`/`PREV_APP`（在 `TEMP_HIDDEN.is_empty()` 检查之前） |
-//! | **有 TEMP_HIDDEN 时** | `deactivate()` + 恢复窗口 |
-//! | **无 TEMP_HIDDEN 时** | 仅 depth-1 + 清状态，直接 return |
+//! | **depth 变化** | `N → N-1`（`if >0` 防下溢） |
+//! | **depth>0 时** | **直接 return**——不清状态、不 deactivate（有嵌套浮窗存活，如 action_bar） |
+//! | **depth==0 时** | 清 `WAS_INACTIVE`/`PREV_APP` + 恢复 `TEMP_HIDDEN` 窗口 + `deactivate()` |
 //! | **调用方** | `clipboard_window` `Focused(false)` 事件回调（窗口事件=主线程） |
 //! | **线程要求** | `deactivate()` 需 `MainThreadMarker` |
 //!
-//! **为什么无条件**：剪贴板 toggle 模式下失焦=虚拟关闭，但 toggle 的 else 分支
+//! **为什么 depth>0 不清状态**：剪贴板失焦时 action_bar 可能仍在前台。
+//! 若无条件清 WAS_INACTIVE/PREV_APP，外层浮窗的焦点协调状态丢失 → 后续快捷键失效。
+//! 纯逻辑经 `float_depth_decrement_and_is_zero` 提取，单测覆盖 5 场景。
+//!
+//! **为什么必须扣减 depth**：剪贴板 toggle 模式下失焦=虚拟关闭，但 toggle 的 else 分支
 //!（`visible && !focused`）会重新 `before_show` → depth+1。若虚拟关闭不扣减，
 //!每次「唤出→失焦→拉回→关闭」depth 单调递增，焦点协调彻底瘫痪。
 //!
@@ -178,11 +181,7 @@ pub fn before_floating_window_show(app: &tauri::AppHandle) {
 
     if let Some(mtm) = MainThreadMarker::new() {
         let app_ns = NSApplication::sharedApplication(mtm);
-        let depth = {
-            let mut d = FLOAT_DEPTH.lock();
-            *d += 1;
-            *d
-        };
+        let depth = float_depth_increment();
 
         // 只有最外层（depth == 1）才记录前台 app + 判断 inactive
         if depth == 1 {
@@ -219,14 +218,7 @@ pub fn before_floating_window_show(app: &tauri::AppHandle) {
 /// 只有最外层（depth 回到 0）才执行交还焦点。
 #[cfg(target_os = "macos")]
 pub fn after_floating_window_hide(app: &tauri::AppHandle) {
-    let depth = {
-        let mut d = FLOAT_DEPTH.lock();
-        if *d > 0 { *d -= 1; }
-        *d
-    };
-
-    // 只有最外层才交还焦点 + 恢复窗口
-    if depth > 0 { return; }
+    if !float_depth_decrement_and_is_zero() { return; }
 
     let was_inactive = {
         let mut guard = WAS_INACTIVE.lock();
@@ -270,17 +262,9 @@ pub fn after_floating_window_hide(app: &tauri::AppHandle) {
 /// （剪贴板仍可见，用户可能只是瞄一眼其他 app）。
 #[cfg(target_os = "macos")]
 pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
-    // 剪贴板失焦 = 虚拟关闭：无论是否有隐藏窗口，都需扣减 depth
-    // 和清状态。否则 toggle 的 else 分支重新 before_show 会 depth 累加泄漏。
-    let depth = {
-        let mut d = FLOAT_DEPTH.lock();
-        if *d > 0 { *d -= 1; }
-        *d
-    };
-
-    // 无条件清状态（后续 toggle 重新 before_show 会重设）
-    *WAS_INACTIVE.lock() = false;
-    let _ = PREV_APP.lock().take();
+    // depth>0（仍有浮窗存活）时直接返回——不清状态、不恢复窗口
+    if !float_depth_decrement_and_is_zero() { return; }
+    float_clear_state();
 
     // 取出隐藏窗口
     let hidden = {
@@ -301,8 +285,6 @@ pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
             let _ = w.show();
         }
     }
-
-    let _ = depth; // depth 已扣减，仅用于将来调试日志
 }
 
 /// 递减 FLOAT_DEPTH + 恢复隐藏窗口 + 清状态，但**不 deactivate / 不交还前台焦点**。
@@ -311,18 +293,8 @@ pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
 /// 否则 depth 永久递增 → 后续焦点协调彻底瘫痪。
 #[cfg(target_os = "macos")]
 pub fn after_floating_window_hide_keep_active(app: &tauri::AppHandle) {
-    let depth = {
-        let mut d = FLOAT_DEPTH.lock();
-        if *d > 0 { *d -= 1; }
-        *d
-    };
-
-    // 只有最外层才恢复窗口
-    if depth > 0 { return; }
-
-    // 清状态（不交还前台焦点——CompactEditor 需要前台）
-    *WAS_INACTIVE.lock() = false;
-    let _ = PREV_APP.lock().take();
+    if !float_depth_decrement_and_is_zero() { return; }
+    float_clear_state();
 
     // 恢复临时隐藏的 Regular 窗口（app 仍在前台，窗口温和恢复）
     let hidden = {
@@ -333,5 +305,88 @@ pub fn after_floating_window_hide_keep_active(app: &tauri::AppHandle) {
         if let Some(w) = app.get_webview_window(&label) {
             let _ = w.show();
         }
+    }
+}
+
+// ── 纯逻辑（可单测，不依赖 AppHandle / MainThreadMarker）──
+
+/// FLOAT_DEPTH +1，返回新值。
+fn float_depth_increment() -> u32 {
+    let mut d = FLOAT_DEPTH.lock();
+    *d += 1;
+    *d
+}
+
+/// FLOAT_DEPTH -1（防下溢），返回递减后是否为 0。
+fn float_depth_decrement_and_is_zero() -> bool {
+    let mut d = FLOAT_DEPTH.lock();
+    if *d > 0 { *d -= 1; }
+    *d == 0
+}
+
+/// 清理焦点协调状态（depth==0 时调用）。
+fn float_clear_state() {
+    *WAS_INACTIVE.lock() = false;
+    let _ = PREV_APP.lock().take();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reset() {
+        *FLOAT_DEPTH.lock() = 0;
+        *WAS_INACTIVE.lock() = false;
+        let _ = PREV_APP.lock().take();
+        TEMP_HIDDEN.lock().clear();
+    }
+
+    /// 单个测试函数覆盖所有场景（static 全局状态，不能并行）。
+    #[test]
+    fn float_depth_lifecycle() {
+        // ── 基础 increment/decrement ──
+        reset();
+        assert_eq!(float_depth_increment(), 1);
+        assert_eq!(float_depth_increment(), 2);
+        assert!(!float_depth_decrement_and_is_zero()); // depth=1
+        assert!(float_depth_decrement_and_is_zero());  // depth=0
+
+        // ── 下溢保护 ──
+        reset();
+        assert!(float_depth_decrement_and_is_zero()); // 0→0 不 panic
+        assert!(float_depth_decrement_and_is_zero());
+
+        // ── 单浮窗完整周期 ──
+        reset();
+        float_depth_increment();
+        *WAS_INACTIVE.lock() = true;
+        assert!(float_depth_decrement_and_is_zero());
+        float_clear_state();
+        assert!(!*WAS_INACTIVE.lock());
+
+        // ── 嵌套浮窗：内层关闭不清状态 ──
+        reset();
+        float_depth_increment(); // action_bar show (depth=1)
+        *WAS_INACTIVE.lock() = true;
+        float_depth_increment(); // clipboard show (depth=2)
+        assert!(!float_depth_decrement_and_is_zero()); // clipboard blur → depth=1
+        assert!(*WAS_INACTIVE.lock(), "内层关闭不应清外层状态");
+        assert!(float_depth_decrement_and_is_zero());  // action_bar close → depth=0
+        float_clear_state();
+        assert!(!*WAS_INACTIVE.lock());
+
+        // ── 三层嵌套逐层关闭 ──
+        reset();
+        float_depth_increment(); // 1
+        *WAS_INACTIVE.lock() = true;
+        float_depth_increment(); // 2
+        float_depth_increment(); // 3
+        assert!(!float_depth_decrement_and_is_zero()); // 2
+        assert!(*WAS_INACTIVE.lock());
+        assert!(!float_depth_decrement_and_is_zero()); // 1
+        assert!(*WAS_INACTIVE.lock());
+        assert!(float_depth_decrement_and_is_zero());  // 0
+        float_clear_state();
+        assert!(!*WAS_INACTIVE.lock());
     }
 }

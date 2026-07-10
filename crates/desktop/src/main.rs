@@ -11,6 +11,7 @@ mod compact_editor_window;
 
 mod image_migration;
 mod clipboard_window;
+mod clipboard_dock;
 mod coordinator;
 mod db_queue;
 mod engine;
@@ -248,6 +249,8 @@ pub fn run() {
             clipboard_commands::ocr_image,
             clipboard_commands::insert_ocr_clipboard_item,
             clipboard_commands::set_clipboard_item_text,
+            clipboard_window::clipboard_dock_expand,
+            clipboard_window::clipboard_dock_collapse,
             clipboard_commands::get_image_thumb,
             clipboard_commands::get_image_full,
             clipboard_commands::save_image_dialog,
@@ -287,6 +290,8 @@ pub fn run() {
             action_bar_commands::delete_action_bar_item,
             action_bar_commands::move_action_bar_item,
             action_bar_commands::execute_action_bar,
+            action_bar_commands::list_script_runs,
+            action_bar_commands::clear_script_runs,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
