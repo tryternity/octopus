@@ -2,7 +2,7 @@
 
 - 日期：2026-07-09
 - 分支：asr-wordbook（worktree）
-- 状态：实施中（实施计划见 `plans/2026-07-10-asr-hotword.md`；v1 HotwordStore/Index/corrector 重构 + CandidateMiner + HotwordPanel UI 已落地，方言/排序等增补 Task 推进中）
+- 状态：✅ 已实现（含 e2e，2026-07-11 用户真实录音走 desktop pipeline 全链路验证通过——active 热词命中纠错 + 空热词 no-op；详见 plans/2026-07-10-asr-hotword.md）
 
 ## 背景
 

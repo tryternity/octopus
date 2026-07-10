@@ -34,7 +34,7 @@
 
 ---
 
-> **实施状态总览（2026-07-11 同步）**：Task 1–12 已全部实现并合入 main——DB `hotwords` 表 + `HotwordIndex` + corrector 有界重构（候选仅来自热词表）+ CandidateMiner + Tauri 命令 + 设置页 UI（卡片化 + 拼音首字母搜索/排序）+ 方言模糊规则可配（f/h、hu/wu、n/l、r/l 四组）+ 全引擎 `skip_corrector=false`。各 Task Step 级 checkbox 已回填 `[x]`（代码已落地，2026-07-11 核实实现符号齐全）。**唯一待办：收尾真实录音 e2e（下方 `[ ]` 2 项 + Task 10/11/12 各注「e2e 待用户」，均需真实录音走 pipeline 全链路断言）。**
+> **实施状态总览（2026-07-11 同步）**：Task 1–12 已全部实现并合入 main——DB `hotwords` 表 + `HotwordIndex` + corrector 有界重构（候选仅来自热词表）+ CandidateMiner + Tauri 命令 + 设置页 UI（卡片化 + 拼音首字母搜索/排序）+ 方言模糊规则可配（f/h、hu/wu、n/l、r/l 四组）+ 全引擎 `skip_corrector=false`。各 Task Step 级 checkbox 已回填 `[x]`（代码已落地，2026-07-11 核实实现符号齐全）。**收尾真实录音 e2e 已通过（2026-07-11 用户走 desktop pipeline 全链路验证：active 热词命中纠错 + 空热词 no-op 均符合预期）——本计划全部完成。**
 
 ## Task 1: DB schema — `hotwords` 表
 
@@ -1186,8 +1186,8 @@ git commit -m "refactor(asr): 重新启用 sensevoice/qwen3/cloud 热词纠错�
 
 ## 收尾验证（全链路 e2e，铁律）
 
-- [ ] **真实录音 e2e**：录一句含一个会被模型误识别的专名（如人名「吴大锐」被识成同音错字）→ 该专名加入 active 热词 → 走 desktop pipeline 全链路 → 断言最终文本含「吴大锐」。**必须走 pipeline，直调 engine 绕过 corrector 会掩盖效果。**
-- [ ] **空热词 e2e**：清空热词 → 同一段录音 → 断言文本不被改动（过纠回归的端到端印证）。
+- [x] **真实录音 e2e**：录一句含一个会被模型误识别的专名（如人名「吴大锐」被识成同音错字）→ 该专名加入 active 热词 → 走 desktop pipeline 全链路 → 断言最终文本含「吴大锐」。**必须走 pipeline，直调 engine 绕过 corrector 会掩盖效果。**
+- [x] **空热词 e2e**：清空热词 → 同一段录音 → 断言文本不被改动（过纠回归的端到端印证）。
 
 ---
 
@@ -1220,7 +1220,7 @@ git commit -m "refactor(asr): 重新启用 sensevoice/qwen3/cloud 热词纠错�
 - [x] **10.5** main.rs：setup `reload_fuzzy_dialect`（先于 reload_hotwords）。commit 8c682a4
 - [x] **10.6** 前端 HotwordPanel：3 checkbox + props；index.tsx 传参。commit 03cfbf7
 
-**验证**：cargo test -p octopus-asr-local（hotword 11 + corrector 11）+ -p octopus-desktop settings_commands（11）全绿；cargo check desktop + npm build 通过。e2e 待用户（勾 f/h + 热词「浮窗」+ sensevoice 录音）。
+**验证**：cargo test -p octopus-asr-local（hotword 11 + corrector 11）+ -p octopus-desktop settings_commands（11）全绿；cargo check desktop + npm build 通过。e2e 已通过（2026-07-11 用户真实录音走 pipeline 验证）。
 
 ---
 
@@ -1236,9 +1236,7 @@ git commit -m "refactor(asr): 重新启用 sensevoice/qwen3/cloud 热词纠错�
 - [x] **11.4** index.tsx：HotwordPanel 调用处加传 `showToast`。
 - [x] **11.5** 文档：spec 方言节「三组→四组」+ r/l 归一 + sh/c 局限；architecture.md 三处（corrector 模块说明、方言段落、倒排索引列举）加 r/l。
 
-**验证**：cargo test -p octopus-asr-local hotword（17 passed，含 rl 新测）+ -p octopus-desktop settings_commands（11 passed）+ 前端 tsc --noEmit（EXIT=0）。e2e 待用户（勾 r/l + 热词「乐」+ 说「热」/ 录音含 r/l 混淆专名）。
-
-**未提交**：本任务代码与文档改动尚未 commit（待用户指示）。
+**验证**：cargo test -p octopus-asr-local hotword（17 passed，含 rl 新测）+ -p octopus-desktop settings_commands（11 passed）+ 前端 tsc --noEmit（EXIT=0）。e2e 已通过（2026-07-11 用户真实录音走 pipeline 验证）。
 
 ---
 
@@ -1254,6 +1252,4 @@ git commit -m "refactor(asr): 重新启用 sensevoice/qwen3/cloud 热词纠错�
 - [x] **12.4** 搜索 + 排序（纯前端 state）：搜索框（拼音首字母前缀 `initials.startsWith(q)` OR 汉字包含 `word.includes(q)`）+ 排序下拉（最近=createdAt desc 默认 / 字母=initials localeCompare / 命中度=hitCount desc）；`useMemo` 派生 `visible`；无匹配→「无匹配热词」空态。
 - [x] **12.5** 文档同步（spec 热词管理 UI + plan）。
 
-**验证**：cargo test -p octopus-asr-local hotword（18 passed，含 pinyin_initials）+ cargo check -p octopus-desktop（HotwordView pub 修复后 Finished）+ 前端 tsc --noEmit（EXIT=0）。e2e 待用户。
-
-**未提交**：Task 11 + 12 代码与文档改动尚未 commit（待用户指示）。
+**验证**：cargo test -p octopus-asr-local hotword（18 passed，含 pinyin_initials）+ cargo check -p octopus-desktop（HotwordView pub 修复后 Finished）+ 前端 tsc --noEmit（EXIT=0）。e2e 已通过（2026-07-11 用户真实录音走 pipeline 验证）。
