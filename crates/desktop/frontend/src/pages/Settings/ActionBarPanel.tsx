@@ -13,6 +13,7 @@ import {
   Plus,
   Pencil,
   ArrowLeft,
+  X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -233,22 +234,27 @@ const ExtensionDropZone = ({
           <p className="text-xs text-muted-foreground">导入中…</p>
         ) : hasPackage ? (
           <>
-            <p className="text-xs font-medium text-foreground">{form.title}</p>
-            <p className="font-mono text-[10px] text-muted-foreground/70 truncate max-w-full">
-              {form.actionData}
-            </p>
-            <div className="mt-1 flex items-center gap-3">
+            <div className="flex items-center gap-2 w-full">
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-foreground truncate">{form.title}</p>
+                <p className="font-mono text-[10px] text-muted-foreground/70 truncate">
+                  {form.actionData}
+                </p>
+              </div>
               <button
-                onClick={handleOpenFile}
-                className="text-[11px] text-voice hover:underline"
+                onClick={async () => {
+                  if (form.actionData) {
+                    try {
+                      await invoke("clear_extension_import", { scriptPath: form.actionData });
+                    } catch { /* 忽略——文件夹可能已不存在 */ }
+                  }
+                  onChange({ ...form, actionData: "", title: "" });
+                }}
+                className="shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-red-500/10 hover:text-red-500"
+                aria-label="清除选择"
+                title="清除选择"
               >
-                重新选 zip
-              </button>
-              <button
-                onClick={handleOpenDir}
-                className="text-[11px] text-voice hover:underline"
-              >
-                选文件夹
+                <X className="h-3.5 w-3.5" />
               </button>
             </div>
           </>

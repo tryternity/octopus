@@ -292,6 +292,20 @@ pub fn refresh_extensions() -> Result<(), String> {
     Ok(())
 }
 
+/// 清除扩展导入——删 extensions 文件夹（仅删文件，不碰 DB，前端自行清 actionData）
+#[tauri::command]
+pub fn clear_extension_import(script_path: String) -> Result<(), String> {
+    use std::fs;
+    let path = std::path::Path::new(&script_path);
+    // script_path 是 extensions/xxx/main.py，取父目录的父目录 = extensions/xxx/
+    if let Some(pkg_dir) = path.parent() {
+        if pkg_dir.starts_with(extensions_dir()) && pkg_dir.exists() {
+            fs::remove_dir_all(pkg_dir).map_err(|e| format!("删除文件夹失败: {}", e))?;
+        }
+    }
+    Ok(())
+}
+
 // ── 辅助函数 ──
 
 fn find_package_root(base: &Path) -> Option<PathBuf> {
