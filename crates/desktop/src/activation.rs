@@ -181,7 +181,19 @@ pub fn after_floating_window_hide(app: &tauri::AppHandle) {
 /// （剪贴板仍可见，用户可能只是瞄一眼其他 app）。
 #[cfg(target_os = "macos")]
 pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
-    // 恢复临时隐藏的窗口
+    // 剪贴板失焦 = 虚拟关闭：无论是否有隐藏窗口，都需扣减 depth
+    // 和清状态。否则 toggle 的 else 分支重新 before_show 会 depth 累加泄漏。
+    let depth = {
+        let mut d = FLOAT_DEPTH.lock();
+        if *d > 0 { *d -= 1; }
+        *d
+    };
+
+    // 无条件清状态（后续 toggle 重新 before_show 会重设）
+    *WAS_INACTIVE.lock() = false;
+    let _ = PREV_APP.lock().take();
+
+    // 取出隐藏窗口
     let hidden = {
         let mut guard = TEMP_HIDDEN.lock();
         std::mem::take(&mut *guard)
@@ -201,9 +213,7 @@ pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
         }
     }
 
-    // 清除状态——后续 toggle 剪贴板会重新走 before_floating_window_show
-    *WAS_INACTIVE.lock() = false;
-    let _ = PREV_APP.lock().take();
+    let _ = depth; // depth 已扣减，仅用于将来调试日志
 }
 
 /// 递减 FLOAT_DEPTH + 恢复隐藏窗口 + 清状态，但**不 deactivate / 不交还前台焦点**。
