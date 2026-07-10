@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { CheckCircle2, Cloud, HardDrive } from "lucide-react";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 interface OcrOption {
   id: number;
@@ -10,15 +11,6 @@ interface OcrOption {
   current: boolean;
   is_enabled: boolean;
   is_local: boolean;
-}
-
-function SectionHeader({ icon: Icon, label }: { icon: React.ElementType; label: string }) {
-  return (
-    <div className="flex items-center gap-1.5 pt-3 pb-1 first:pt-0">
-      <Icon className="w-3 h-3 text-muted-foreground/60" />
-      <span className="text-[11px] font-medium text-muted-foreground">{label}</span>
-    </div>
-  );
 }
 
 function CurrentBanner({ label }: { label: string }) {
@@ -84,10 +76,16 @@ export default function OcrTab({ showToast }: { showToast: (msg: string) => void
   return (
     <div className="space-y-0.5 max-w-[560px]">
       {current && <CurrentBanner label={current.label} />}
-      {localModels.length > 0 && <SectionHeader icon={HardDrive} label="本地模型" />}
-      {localModels.map(renderModel)}
-      {cloudModels.length > 0 && <SectionHeader icon={Cloud} label="云端模型" />}
-      {cloudModels.map(renderModel)}
+      {localModels.length > 0 && (
+        <CollapsibleSection icon={HardDrive} label="本地模型">
+          {localModels.map(renderModel)}
+        </CollapsibleSection>
+      )}
+      {cloudModels.length > 0 && (
+        <CollapsibleSection icon={Cloud} label="云端模型">
+          {cloudModels.map(renderModel)}
+        </CollapsibleSection>
+      )}
     </div>
   );
 }

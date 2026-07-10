@@ -3,6 +3,7 @@ import { invoke } from "@/lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { CheckCircle2, Download, RefreshCw, Cloud, HardDrive } from "lucide-react";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 interface DownloadableModel {
   name: string;
@@ -31,16 +32,6 @@ function fmtBytes(n: number | null | undefined): string {
   if (n < 1048576) return (n / 1024).toFixed(1) + " KB";
   if (n < 1073741824) return (n / 1048576).toFixed(1) + " MB";
   return (n / 1073741824).toFixed(2) + " GB";
-}
-
-function SectionHeader({ icon: Icon, label, count }: { icon: React.ElementType; label: string; count?: string }) {
-  return (
-    <div className="flex items-center gap-1.5 pt-3 pb-1 first:pt-0">
-      <Icon className="w-3 h-3 text-muted-foreground/60" />
-      <span className="text-[11px] font-medium text-muted-foreground">{label}</span>
-      {count && <span className="text-[10px] text-muted-foreground/40">{count}</span>}
-    </div>
-  );
 }
 
 function CurrentBanner({ label }: { label: string }) {
@@ -126,7 +117,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     <div className="space-y-0.5 max-w-[560px]">
       {currentLabel && <CurrentBanner label={currentLabel} />}
 
-      <SectionHeader icon={HardDrive} label="本地模型" count={`${readyCount}/${models.length}`} />
+      <CollapsibleSection icon={HardDrive} label="本地模型" count={`${readyCount}/${models.length}`}>
       {models.map((model) => {
         const prog = progress[model.repo];
         const pct = prog && prog.total > 0 ? (prog.downloaded / prog.total) * 100 : 0;
@@ -182,10 +173,10 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
           </div>
         );
       })}
+      </CollapsibleSection>
 
       {cloudEngines.length > 0 && (
-        <>
-          <SectionHeader icon={Cloud} label="云端引擎" />
+        <CollapsibleSection icon={Cloud} label="云端引擎">
           {cloudEngines.map((engine) => (
             <div
               key={engine.name}
@@ -202,7 +193,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
               <span className="text-[9px] text-muted-foreground/40 px-1 py-px rounded bg-muted font-mono">{engine.name}</span>
             </div>
           ))}
-        </>
+        </CollapsibleSection>
       )}
     </div>
   );
