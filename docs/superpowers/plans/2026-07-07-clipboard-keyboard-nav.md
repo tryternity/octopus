@@ -1,6 +1,6 @@
 # 剪贴板浮窗键盘导航 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> ✅ **已实现**（2026-07-07，全部 5 Task + 7 项验收已落地。实现证据：`src/lib/clipboardNav.ts`（moveIndex/moveTab + 单测）、`Clipboard/index.tsx`（selectedIndex + 4 ref + window keydown 7 分支 + scrollIntoView）、`ClipboardItem.tsx`（data-clip-index）、`FilterTabs.tsx`（data-tab-index）。详见 architecture `clipboard_window` 键盘导航段）。
 
 **Goal:** 让剪贴板浮窗完全脱离鼠标可用，对齐 Wox/Raycast 的搜索框持焦 + 方向键导航范式。
 
@@ -47,7 +47,7 @@
   - `moveIndex(current: number | null, len: number, delta: number): number | null` — 列表选中移动，delta=-1 上、+1 下；到首/末边界停止（不循环）；len=0 返回 null
   - `moveTab(current: number, len: number, delta: number): number` — tab 循环切换，delta=-1 左、+1 右；末尾右移绕回 0，首位左移绕到末尾（循环）
 
-- [ ] **Step 1: 写失败测试**
+- [x] **Step 1: 写失败测试**
 
 创建 `crates/desktop/frontend/src/lib/clipboardNav.test.ts`：
 
@@ -96,14 +96,14 @@ describe("moveTab", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 ```bash
 cd crates/desktop/frontend && npm test -- src/lib/clipboardNav.test.ts
 ```
 Expected: FAIL — `Failed to resolve import "./clipboardNav"`（模块不存在）
 
-- [ ] **Step 3: 实现纯函数**
+- [x] **Step 3: 实现纯函数**
 
 创建 `crates/desktop/frontend/src/lib/clipboardNav.ts`：
 
@@ -137,14 +137,14 @@ export function moveTab(current: number, len: number, delta: number): number {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 ```bash
 cd crates/desktop/frontend && npm test -- src/lib/clipboardNav.test.ts
 ```
 Expected: PASS — 所有 case 通过
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/desktop/frontend/src/lib/clipboardNav.ts crates/desktop/frontend/src/lib/clipboardNav.test.ts
@@ -165,7 +165,7 @@ git commit -m "feat(clipboard): 抽取选中索引/tab切换纯函数及单元�
 - Consumes: `moveIndex` from `@/lib/clipboardNav`（Task 1）
 - Produces: `index.tsx` 暴露 `selectedIndex` 状态 + items 变化时自动重置；`ClipboardItem` 行带 `data-clip-index`
 
-- [ ] **Step 1: index.tsx 引入 selectedIndex 状态**
+- [x] **Step 1: index.tsx 引入 selectedIndex 状态**
 
 在 `index.tsx` 顶部 import 区加：
 
@@ -202,7 +202,7 @@ import { moveIndex } from "@/lib/clipboardNav";
 
 （注意：原来是 `(id: number)`，现在改传 index。需同步改 `ClipboardItem` 调用处——见 Step 3。）
 
-- [ ] **Step 2: items 变化时重置/夹紧 selectedIndex**
+- [x] **Step 2: items 变化时重置/夹紧 selectedIndex**
 
 在 `useClipboardHistory` 调用之后（`:23`）加 useEffect：
 
@@ -220,7 +220,7 @@ import { moveIndex } from "@/lib/clipboardNav";
   }, [items]);
 ```
 
-- [ ] **Step 3: 渲染时传 selectedIndex + 行加 data-clip-index**
+- [x] **Step 3: 渲染时传 selectedIndex + 行加 data-clip-index**
 
 把列表渲染（`:119-128`）从：
 
@@ -253,7 +253,7 @@ import { moveIndex } from "@/lib/clipboardNav";
           ))
 ```
 
-- [ ] **Step 4: ClipboardItem 接收 index prop + 加 data-clip-index**
+- [x] **Step 4: ClipboardItem 接收 index prop + 加 data-clip-index**
 
 在 `ClipboardItem.tsx` 的 props 类型（`:11-23`）加 `index`：
 
@@ -292,20 +292,20 @@ function ClipboardItemRow({
 
 （`handleDoubleClick` 里调 `paste_clipboard_item` 用的是 `item.id`，不受影响——`index.tsx` 的 Enter 逻辑会从 `items[selectedIndex].id` 取 id。）
 
-- [ ] **Step 5: 类型检查 + lint**
+- [x] **Step 5: 类型检查 + lint**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit && npm run lint
 ```
 Expected: 无错误
 
-- [ ] **Step 6: 手动验证**
+- [x] **Step 6: 手动验证**
 
 `cargo run --release -p octopus-desktop --features embedded`，按 `Cmd+Shift+D` 唤出浮窗：
 - 鼠标点击行仍能选中（背景高亮）——不回归
 - 切过滤 tab 后选中态重置到第一行（背景高亮首条）
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Clipboard/index.tsx crates/desktop/frontend/src/pages/Clipboard/ClipboardItem.tsx
@@ -324,7 +324,7 @@ git commit -m "refactor(clipboard): selectedId 改为 selectedIndex 索引驱动
 **Interfaces:**
 - Consumes: `moveIndex` from Task 1；`items` from `useClipboardHistory`
 
-- [ ] **Step 1: 加滚动跟随的 ref 和 useEffect**
+- [x] **Step 1: 加滚动跟随的 ref 和 useEffect**
 
 在 `index.tsx` import 区加 `useRef`（若未导入）：
 
@@ -343,7 +343,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
   }, [selectedIndex]);
 ```
 
-- [ ] **Step 2: 注册 window keydown 处理 ↑↓**
+- [x] **Step 2: 注册 window keydown 处理 ↑↓**
 
 在组件内（滚动 useEffect 之后）加 keydown handler。注意要用 ref 存最新值避免闭包陷阱：
 
@@ -368,14 +368,14 @@ import { useState, useCallback, useEffect, useRef } from "react";
   }, []);
 ```
 
-- [ ] **Step 3: 类型检查 + lint**
+- [x] **Step 3: 类型检查 + lint**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit && npm run lint
 ```
 Expected: 无错误
 
-- [ ] **Step 4: 手动验证**
+- [x] **Step 4: 手动验证**
 
 唤出浮窗，搜索框持焦状态下：
 - `↓` 选中下移、`↑` 选中上移，背景高亮跟随
@@ -383,7 +383,7 @@ Expected: 无错误
 - 选中条目滚出视区时自动滚入
 - 搜索框内打字时 `↑↓` 仍移动选中（不移动光标）
 
-- [ ] **Step 5: 提交**
+- [x] **Step 5: 提交**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Clipboard/index.tsx
@@ -400,11 +400,11 @@ git commit -m "feat(clipboard): 上下键移动选中并滚动跟随"
 **Interfaces:**
 - Consumes: Tauri `invoke("paste_clipboard_item", { id })`；`getCurrentWindow().hide()`
 
-- [ ] **Step 1: SearchBar 暴露 ref 给 index.tsx 用于 focus（Esc 隐藏后不需要，但后续 focus 管理需要）**
+- [x] **Step 1: SearchBar 暴露 ref 给 index.tsx 用于 focus（Esc 隐藏后不需要，但后续 focus 管理需要）**
 
 先不改 SearchBar——Esc 用 `getCurrentWindow().hide()` 即可。Enter 用现有 itemsRef 取 id。
 
-- [ ] **Step 2: 在 keydown handler 加 Enter 和 Esc 分支**
+- [x] **Step 2: 在 keydown handler 加 Enter 和 Esc 分支**
 
 在 Task 3 的 handler 函数内，`ArrowDown/ArrowUp` 分支之后追加：
 
@@ -430,7 +430,7 @@ git commit -m "feat(clipboard): 上下键移动选中并滚动跟随"
       }
 ```
 
-- [ ] **Step 3: 补充 selectedIndexRef 和 searchRef**
+- [x] **Step 3: 补充 selectedIndexRef 和 searchRef**
 
 handler 闭包内读 `selectedIndex` 和 `search` 会过期。在 Task 2 的 itemsRef 旁边加：
 
@@ -449,20 +449,20 @@ handler 闭包内读 `selectedIndex` 和 `search` 会过期。在 Task 2 的 ite
 import { invoke } from "@/lib/tauri";
 ```
 
-- [ ] **Step 4: 类型检查 + lint**
+- [x] **Step 4: 类型检查 + lint**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit && npm run lint
 ```
 Expected: 无错误
 
-- [ ] **Step 5: 手动验证**
+- [x] **Step 5: 手动验证**
 
 - `↑↓` 选中条目后 `Enter` → 浮窗隐藏 + 内容粘贴到原应用（与双击行为一致）
 - 搜索框输入文字后 `Esc` → 清空搜索内容（不隐藏）；再按 `Esc` → 隐藏浮窗
 - 空搜索时 `Esc` → 直接隐藏浮窗
 
-- [ ] **Step 6: 提交**
+- [x] **Step 6: 提交**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Clipboard/index.tsx
@@ -480,7 +480,7 @@ git commit -m "feat(clipboard): Enter粘贴 + Esc清空/隐藏"
 **Interfaces:**
 - Consumes: `moveTab` from Task 1；`TABS` 顺序常量（7 个）
 
-- [ ] **Step 1: FilterTabs 加 data-tab-index**
+- [x] **Step 1: FilterTabs 加 data-tab-index**
 
 `FilterTabs.tsx` 的 button（`:25` 附近）加属性：
 
@@ -491,7 +491,7 @@ git commit -m "feat(clipboard): Enter粘贴 + Esc清空/隐藏"
           title={label}
 ```
 
-- [ ] **Step 2: index.tsx 定义 TABS_VALUES 常量**
+- [x] **Step 2: index.tsx 定义 TABS_VALUES 常量**
 
 在 `index.tsx` 顶部（组件外）加 tab 值顺序常量，与 `FilterTabs.tsx` 的 TABS 保持一致：
 
@@ -500,7 +500,7 @@ git commit -m "feat(clipboard): Enter粘贴 + Esc清空/隐藏"
 const TABS_VALUES = ["all", "favorite", "asr", "text", "ocr", "image", "file"] as const;
 ```
 
-- [ ] **Step 3: 在 keydown handler 加 Tab/←→/Cmd+数字 分支**
+- [x] **Step 3: 在 keydown handler 加 Tab/←→/Cmd+数字 分支**
 
 在 Task 4 的 handler 内，Escape 分支之后追加：
 
@@ -530,7 +530,7 @@ const TABS_VALUES = ["all", "favorite", "asr", "text", "ocr", "image", "file"] a
       }
 ```
 
-- [ ] **Step 4: 补充 filterRef**
+- [x] **Step 4: 补充 filterRef**
 
 在 Task 4 的 ref 们旁边加：
 
@@ -539,14 +539,14 @@ const TABS_VALUES = ["all", "favorite", "asr", "text", "ocr", "image", "file"] a
   filterRef.current = filter;
 ```
 
-- [ ] **Step 5: 类型检查 + lint**
+- [x] **Step 5: 类型检查 + lint**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit && npm run lint
 ```
 Expected: 无错误
 
-- [ ] **Step 6: 手动验证（完整验收清单）**
+- [x] **Step 6: 手动验证（完整验收清单）**
 
 唤出浮窗，逐项验证：
 1. 搜索框**空**时 `←→` 循环切换 7 个 tab（← 右到左，→ 左到右）
@@ -556,7 +556,7 @@ Expected: 无错误
 5. 切 tab 后选中态重置到第一行
 6. 鼠标点击 tab 仍正常（不回归）
 
-- [ ] **Step 7: 提交**
+- [x] **Step 7: 提交**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Clipboard/FilterTabs.tsx crates/desktop/frontend/src/pages/Clipboard/index.tsx
@@ -568,13 +568,13 @@ git commit -m "feat(clipboard): Tab/方向键/Cmd+N 切换过滤 tab"
 ## 验收总清单（全部完成后逐项确认）
 
 对照 spec 第 6 节：
-- [ ] 1. 不碰鼠标即可完成：搜索 → `↑↓` 选条目 → `Enter` 粘贴到原应用
-- [ ] 2. 搜索框空时 `←→` 循环切换 7 个 tab；`Cmd+1..7` 可直接跳转
-- [ ] 3. 搜索框有内容时 `←→` 只移动光标不切 tab；`Tab/Shift+Tab` 仍可切 tab
-- [ ] 4. `Esc` 在有搜索内容时清空，已空时隐藏浮窗
-- [ ] 5. `↑↓` 选中会自动滚动跟随，选中条目始终可见
-- [ ] 6. 过滤/搜索切换后选中态重置为第一条
-- [ ] 7. 鼠标交互（点击/双击/hover 按钮）全部保持原有行为不回归
+- [x] 1. 不碰鼠标即可完成：搜索 → `↑↓` 选条目 → `Enter` 粘贴到原应用
+- [x] 2. 搜索框空时 `←→` 循环切换 7 个 tab；`Cmd+1..7` 可直接跳转
+- [x] 3. 搜索框有内容时 `←→` 只移动光标不切 tab；`Tab/Shift+Tab` 仍可切 tab
+- [x] 4. `Esc` 在有搜索内容时清空，已空时隐藏浮窗
+- [x] 5. `↑↓` 选中会自动滚动跟随，选中条目始终可见
+- [x] 6. 过滤/搜索切换后选中态重置为第一条
+- [x] 7. 鼠标交互（点击/双击/hover 按钮）全部保持原有行为不回归
 
 最终全量检查：
 ```bash
