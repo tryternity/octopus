@@ -11,6 +11,7 @@ mod compact_editor_window;
 
 mod image_migration;
 mod clipboard_window;
+mod clipboard_dock;
 mod coordinator;
 mod db_queue;
 mod engine;
