@@ -225,6 +225,10 @@ export default function Clipboard() {
             invoke("clipboard_dock_expand");
             setDockMode("expanded");
           }}
+          onMouseDown={() => {
+            invoke("clipboard_dock_expand");
+            setDockMode("expanded");
+          }}
         />
       )}
       {/* dock 展开态 / 正常态：显示完整内容 */}
