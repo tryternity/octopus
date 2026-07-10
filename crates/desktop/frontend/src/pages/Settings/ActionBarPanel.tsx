@@ -23,6 +23,8 @@ interface ActionBarItem {
   sortOrder: number;
   isSystem: boolean;
   isEnabled: boolean;
+  isAsync?: boolean;
+  writeOutputToClipboard?: boolean;
 }
 
 // 动作类型元信息：颜色点 + 标签 + 说明 + 占位符。
@@ -52,9 +54,9 @@ const TYPE_META: Record<
   script: {
     dot: "bg-emerald-500",
     label: "SCRIPT",
-    desc: "首行 #shell / #osascript / #powershell / #python 决定运行时；选中文本经 $OCTOPUS_TEXT 传入",
+    desc: "首行 #shell / #osascript / #powershell / #python / #node / #deno / #bun / #javascript / #typescript；选中文本经 $OCTOPUS_TEXT 传入",
     placeholder:
-      "#shell / #osascript / #powershell / #python\n选中文本在 $OCTOPUS_TEXT 环境变量中",
+      "#shell / #osascript / #powershell / #python\n#node / #deno / #bun\n#javascript / #typescript\n选中文本在 $OCTOPUS_TEXT 环境变量中",
   },
   copy: {
     dot: "bg-stone-400",
@@ -203,6 +205,41 @@ const EditForm = ({
                 onChange({ ...form, actionData: e.target.value })
               }
             />
+          </Field>
+        )}
+
+        {type === "script" && (
+          <Field label="执行选项">
+            <div className="space-y-2">
+              <div className="flex items-center gap-2">
+                <Toggle
+                  checked={form.isAsync ?? true}
+                  onChange={(v) =>
+                    onChange({
+                      ...form,
+                      isAsync: v,
+                      writeOutputToClipboard: v ? false : form.writeOutputToClipboard,
+                    })
+                  }
+                />
+                <span className="text-xs text-muted-foreground">
+                  异步执行（不等待结果，后台运行）
+                </span>
+              </div>
+              {!(form.isAsync ?? true) && (
+                <div className="flex items-center gap-2">
+                  <Toggle
+                    checked={form.writeOutputToClipboard ?? false}
+                    onChange={(v) =>
+                      onChange({ ...form, writeOutputToClipboard: v })
+                    }
+                  />
+                  <span className="text-xs text-muted-foreground">
+                    结果写入剪贴板
+                  </span>
+                </div>
+              )}
+            </div>
           </Field>
         )}
 
@@ -446,6 +483,131 @@ const TreeNodeBase = (props: NodeProps) => {
 const TreeNode = memo(TreeNodeBase);
 
 // ── 主面板 ──
+
+interface ScriptRun {
+  id: number;
+  itemId: number;
+  itemTitle: string | null;
+  scriptType: string;
+  exitCode: number | null;
+  stdout: string;
+  stderr: string;
+  errorMsg: string;
+  startedAt: string;
+  finishedAt: string | null;
+  durationMs: number | null;
+}
+
+const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => {
+  const [runs, setRuns] = useState<ScriptRun[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [expandedId, setExpandedId] = useState<number | null>(null);
+
+  const refresh = useCallback(async () => {
+    const list = await invoke<ScriptRun[]>("list_script_runs", { limit: 100 });
+    setRuns(list);
+    setLoaded(true);
+  }, []);
+
+  useEffect(() => { refresh(); }, [refresh]);
+
+  const handleClear = useCallback(async () => {
+    try {
+      await invoke("clear_script_runs", { keepRecent: 100 });
+      showToast("已清理旧记录");
+      refresh();
+    } catch (e) {
+      showToast("清理失败：" + e);
+    }
+  }, [showToast, refresh]);
+
+  if (!loaded) {
+    return <p className="py-12 text-center text-sm text-muted-foreground">加载中…</p>;
+  }
+
+  if (runs.length === 0) {
+    return (
+      <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+        <p className="text-sm font-medium">暂无执行记录</p>
+        <p className="text-xs text-muted-foreground">运行脚本后，执行结果会记录在这里。</p>
+      </div>
+    );
+  }
+
+  const statusColor = (r: ScriptRun) => {
+    if (r.exitCode === null) return "bg-orange-500";
+    return r.exitCode === 0 ? "bg-emerald-500" : "bg-red-500";
+  };
+  const statusLabel = (r: ScriptRun) => {
+    if (r.exitCode === null) return r.errorMsg || "异常";
+    return r.exitCode === 0 ? "成功" : `失败(${r.exitCode})`;
+  };
+
+  return (
+    <div>
+      <div className="mb-3 flex justify-end">
+        <button
+          onClick={handleClear}
+          className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+        >
+          清理旧记录
+        </button>
+      </div>
+      <div className="space-y-px">
+        {runs.map((r) => (
+          <div key={r.id} className="rounded-lg border border-border bg-muted/20">
+            <button
+              onClick={() => setExpandedId(expandedId === r.id ? null : r.id)}
+              className="flex w-full items-center gap-3 px-3.5 py-2 text-left"
+            >
+              <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", statusColor(r))} />
+              <span className="shrink-0 text-xs font-medium">
+                {r.itemTitle || "已删除"}
+              </span>
+              <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
+                {r.scriptType}
+              </span>
+              <span className="shrink-0 text-[11px] text-muted-foreground">
+                {statusLabel(r)}
+              </span>
+              <span className="ml-auto shrink-0 text-[11px] text-muted-foreground">
+                {r.durationMs != null ? `${r.durationMs}ms` : "—"}
+              </span>
+            </button>
+            {expandedId === r.id && (
+              <div className="space-y-2 border-t border-border/60 px-3.5 py-2.5">
+                {r.stdout && (
+                  <div>
+                    <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">stdout</p>
+                    <textarea
+                      readOnly
+                      className="w-full min-h-[60px] resize-y bg-background border border-border rounded px-2 py-1.5 font-mono text-xs leading-relaxed"
+                      value={r.stdout.slice(0, 8000)}
+                    />
+                  </div>
+                )}
+                {r.stderr && (
+                  <div>
+                    <p className="mb-1 font-mono text-[10px] uppercase tracking-wider text-red-500/70">stderr</p>
+                    <textarea
+                      readOnly
+                      className="w-full min-h-[40px] resize-y bg-background border border-border rounded px-2 py-1.5 font-mono text-xs leading-relaxed text-red-600/80"
+                      value={r.stderr.slice(0, 8000)}
+                    />
+                  </div>
+                )}
+                {r.errorMsg && (
+                  <p className="text-xs text-orange-600">{r.errorMsg}</p>
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+};
+
 export default function ActionBarPanel({
   showToast,
 }: {
@@ -458,6 +620,7 @@ export default function ActionBarPanel({
   // draft 状态：新增时不写 DB，只在内存编辑，保存时才 create。取消只清 state，零脏数据。
   const [draftParentId, setDraftParentId] = useState<number | null | undefined>(undefined); // undefined=非草稿, null=顶层草稿, number=子菜单草稿
   const [loaded, setLoaded] = useState(false);
+  const [view, setView] = useState<"menu" | "runs">("menu");
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
     const list = await invoke<ActionBarItem[]>("list_action_bar_items");
@@ -530,6 +693,8 @@ export default function ActionBarPanel({
           icon: "",
           actionType: editingForm.actionType || "copy",
           actionData: editingForm.actionData || "",
+          isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
+          writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
         });
         showToast("已创建");
       } else if (editingId) {
@@ -541,6 +706,8 @@ export default function ActionBarPanel({
           actionType: editingForm.actionType || "copy",
           actionData: editingForm.actionData || "",
           isEnabled: editingForm.isEnabled ?? true,
+          isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
+          writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
         });
         showToast("已保存");
       }
@@ -628,30 +795,42 @@ export default function ActionBarPanel({
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <button
-            onClick={allExpanded ? collapseAll : expandAll}
+            onClick={() => setView(view === "menu" ? "runs" : "menu")}
             className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-            title={allExpanded ? "全部收缩" : "全部展开"}
           >
-            {allExpanded ? (
-              <ChevronsDownUp className="h-3.5 w-3.5" />
-            ) : (
-              <ChevronsUpDown className="h-3.5 w-3.5" />
-            )}
-            <span className="hidden sm:inline">
-              {allExpanded ? "全部收缩" : "全部展开"}
-            </span>
+            {view === "menu" ? "执行记录" : "返回菜单"}
           </button>
-          <button
-            onClick={() => handleAdd(null)}
-            className="flex items-center gap-1.5 rounded-md bg-voice px-3.5 py-1.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
-          >
-            <Plus className="h-4 w-4" /> 新增主菜单项
-          </button>
+          {view === "menu" && (
+            <>
+              <button
+                onClick={allExpanded ? collapseAll : expandAll}
+                className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                title={allExpanded ? "全部收缩" : "全部展开"}
+              >
+                {allExpanded ? (
+                  <ChevronsDownUp className="h-3.5 w-3.5" />
+                ) : (
+                  <ChevronsUpDown className="h-3.5 w-3.5" />
+                )}
+                <span className="hidden sm:inline">
+                  {allExpanded ? "全部收缩" : "全部展开"}
+                </span>
+              </button>
+              <button
+                onClick={() => handleAdd(null)}
+                className="flex items-center gap-1.5 rounded-md bg-voice px-3.5 py-1.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
+              >
+                <Plus className="h-4 w-4" /> 新增主菜单项
+              </button>
+            </>
+          )}
         </div>
       </div>
 
       {/* Body */}
-      {!loaded ? (
+      {view === "runs" ? (
+        <ScriptRunsList showToast={showToast} />
+      ) : !loaded ? (
         <p className="py-12 text-center text-sm text-muted-foreground">
           加载中…
         </p>
