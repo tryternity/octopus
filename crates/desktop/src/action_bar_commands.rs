@@ -164,7 +164,7 @@ pub fn action_bar_dismiss(app: AppHandle) {
 /// AI 结果通过临时 tab 打开 CompactEditor 展示（不写 DB）。
 /// 结果写入剪贴板留给用户——不恢复原始剪贴板（与 dismiss/open_url 不同）。
 #[tauri::command]
-pub fn action_bar_show_result(result: String, _original_text: String, action: String, app: AppHandle) {
+pub fn action_bar_show_result(result: String, _original_text: String, action: String, app: AppHandle, write_clipboard: bool) {
     // 只隐藏浮窗本身——不调 hide_action_bar_window（含 after_floating_window_hide → deactivate），
     // 因为接下来要展示 CompactEditor，deactivate 会导致新窗口被压在后台。
     // 但必须递减 FLOAT_DEPTH + 恢复隐藏窗口（after_floating_window_hide_keep_active），
@@ -185,8 +185,10 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
     };
     let display_text = format!("【{}】\n{}", label, result);
 
-    // 结果写入系统剪贴板（方便用户手动粘贴）——write_text 自带 suppress 不会入库
-    write_clipboard_text(&app, &result);
+    // 结果写入系统剪贴板（仅 write_clipboard=true 时）——write_text 自带 suppress 不会入库
+    if write_clipboard {
+        write_clipboard_text(&app, &result);
+    }
 
     finalize_action_bar(&app);
 
@@ -483,9 +485,58 @@ fn wait_with_timeout(mut child: std::process::Child) -> ScriptResult {
     ScriptResult { exit_code: None, stdout: stdout_buf, stderr: stderr_buf, timed_out: true }
 }
 
+/// 生成 ISO 8601 时间戳（UTC），不依赖 chrono
+fn now_iso8601() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+    format!("{}", secs)
+}
+
+/// 异步执行脚本——spawn 后立即返回，后台线程收割并落库
+fn run_script_async(source: &str, text: &str, item_id: i64) -> Result<(), String> {
+    let (child, script_type) = spawn_script(source, text, false)?;
+    let started = std::time::Instant::now();
+    let started_at = now_iso8601();
+    std::thread::spawn(move || {
+        let result = wait_with_timeout(child);
+        let duration_ms = started.elapsed().as_millis() as i64;
+        let finished_at = now_iso8601();
+        let error_msg = if result.timed_out { "执行超时（60秒）".to_string() }
+            else if result.exit_code.is_none() { "进程异常退出".to_string() }
+            else { String::new() };
+        let _ = octopus_infra::db::insert_script_run(
+            item_id, &script_type, result.exit_code,
+            &result.stdout, &result.stderr, &error_msg,
+            &started_at, Some(&finished_at), Some(duration_ms),
+        );
+    });
+    Ok(())
+}
+
+/// 同步执行脚本（阻塞）——等待完成，返回结果并落库
+fn run_script_sync_blocking(source: &str, text: &str, item_id: i64) -> Result<ScriptResult, String> {
+    let (child, script_type) = spawn_script(source, text, true)?;
+    let started = std::time::Instant::now();
+    let started_at = now_iso8601();
+    let mut result = wait_with_timeout(child);
+    let duration_ms = started.elapsed().as_millis() as i64;
+    let finished_at = now_iso8601();
+    let error_msg = if result.timed_out { "执行超时（60秒）".to_string() }
+        else if result.exit_code.is_none() { "进程异常退出".to_string() }
+        else { String::new() };
+    let _ = octopus_infra::db::insert_script_run(
+        item_id, &script_type, result.exit_code,
+        &result.stdout, &result.stderr, &error_msg,
+        &started_at, Some(&finished_at), Some(duration_ms),
+    );
+    // 标记已落库（ScriptResult 原样返回给上层）
+    let _ = &mut result; // 消费 mut borrow
+    Ok(result)
+}
+
 /// 执行菜单项动作核心逻辑（不含收口）。
 /// Ok(true) = ai 已自行收口；Ok(false) = 成功需外层统一收口；Err = 异常需外层 finalize。
-fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
+async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
     let item = octopus_infra::db::load_action_bar_item(item_id)
         .map_err(|e| e.to_string())?
         .ok_or("菜单项不存在")?;
@@ -502,7 +553,7 @@ fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Resu
             };
             let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
                 .map_err(|e| e.to_string())?;
-            action_bar_show_result(result, text, item.title, app.clone());
+            action_bar_show_result(result, text, item.title, app.clone(), true);
             Ok(true)
         }
         "url" => {
@@ -526,12 +577,43 @@ fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Resu
             Ok(false)
         }
         "script" => {
-            // 临时 fire-and-forget（Task 3 会重构为 async/sync 模式 + 结果捕获）
-            let (mut child, _script_type) = spawn_script(&item.action_data, &text, false)?;
-            std::thread::spawn(move || {
-                let _ = wait_with_timeout(child);
-            });
-            Ok(false)
+            let is_async = item.is_async;
+            let write_output = item.write_output_to_clipboard;
+            let item_title = item.title.clone();
+            let item_id = item.id;
+
+            if is_async {
+                // 异步——fire-and-forget，后台落库，立即关闭浮窗
+                run_script_async(&item.action_data, &text, item_id)?;
+                Ok(false)
+            } else {
+                // 同步——spawn_blocking 等待结果
+                let source = item.action_data.clone();
+                let text_clone = text.clone();
+                let result = tokio::task::spawn_blocking(move || {
+                    run_script_sync_blocking(&source, &text_clone, item_id)
+                }).await.map_err(|e| format!("脚本执行线程异常: {}", e))??;
+
+                if result.timed_out {
+                    return Err("脚本执行超时（60秒），已强制终止".into());
+                }
+                if let Some(code) = result.exit_code {
+                    if code != 0 {
+                        let detail = if result.stderr.is_empty() { String::new() } else { format!("\n{}", result.stderr) };
+                        return Err(format!("脚本退出码 {}{}", code, detail));
+                    }
+                }
+                // 成功
+                if !result.stdout.is_empty() {
+                    if write_output {
+                        write_clipboard_text(app, &result.stdout);
+                    }
+                    action_bar_show_result(result.stdout, text, item_title, app.clone(), false);
+                    return Ok(true);
+                }
+                // 成功无输出 → 正常关闭
+                Ok(false)
+            }
         }
         "copy" => {
             write_clipboard_text(app, &text);
@@ -544,7 +626,7 @@ fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Resu
 /// 统一执行菜单项动作。
 #[tauri::command]
 pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
-    match execute_action_bar_inner(item_id, text, &app) {
+    match execute_action_bar_inner(item_id, text, &app).await {
         Ok(true) => Ok(()),
         Ok(false) => {
             // url/script/copy 成功 → 统一收口：标准隐藏 + 焦点交还 + 重入锁复位
