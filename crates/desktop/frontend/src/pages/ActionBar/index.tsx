@@ -27,6 +27,19 @@ interface ActionBarItem {
 const AI_TRANSLATE_TIMEOUT_MS = 5000;
 const AI_TIMEOUT_MS = 10000;
 
+/** 序号 → 显示标签：1-9 显示数字，10-35 显示 a-z */
+function indexLabel(index: number): string {
+  if (index <= 9) return String(index);
+  return String.fromCharCode(86 + index); // 10→'a', 11→'b', ... 35→'z'
+}
+
+/** 显示标签 → 序号（0-based）。无效返回 -1 */
+function labelToIndex(key: string): number {
+  if (/^[1-9]$/.test(key)) return parseInt(key, 10) - 1;
+  if (/^[a-z]$/.test(key)) return key.charCodeAt(0) - 86; // 'a'→9, 'b'→10, ... 'z'→34
+  return -1;
+}
+
 const IconBtn = ({ index, label, active, onClick, btnRef }: {
   index: number; label: string; active: boolean; onClick: () => void;
   btnRef?: (el: HTMLButtonElement | null) => void;
@@ -51,7 +64,7 @@ const IconBtn = ({ index, label, active, onClick, btnRef }: {
           : "bg-muted text-muted-foreground",
       )}
     >
-      {index}
+      {indexLabel(index)}
     </span>
     <span className="text-[10px] font-medium leading-none whitespace-nowrap">{label}</span>
   </button>
@@ -292,16 +305,16 @@ export default function ActionBar() {
 
       if (viewRef.current === "loading") return;
 
-      // 数字键（无修饰）定位当前焦点层第 N 项——只移动高亮，不执行；超出范围无效
-      if (/^[1-9]$/.test(e.key)) {
+      // 快捷定位：1-9 数字键 + a-z 字母键（支持最多 35 项）
+      const idx = labelToIndex(e.key.toLowerCase());
+      if (idx >= 0) {
         e.preventDefault();
-        const n = parseInt(e.key, 10);
         if (focusLayerRef.current === "sub") {
-          if (n <= subItemsRef.current.length) setSubSelectedIdx(n - 1);
+          if (idx < subItemsRef.current.length) setSubSelectedIdx(idx);
         } else {
-          if (n <= mainItemsRef.current.length) {
-            const item = mainItemsRef.current[n - 1];
-            setSelectedIdx(n - 1);
+          if (idx < mainItemsRef.current.length) {
+            const item = mainItemsRef.current[idx];
+            setSelectedIdx(idx);
             // submenu 项同步展开子菜单预览（与左右键行为一致）
             if (item.actionType === "submenu") {
               submenuParentIdRef.current = item.id;
