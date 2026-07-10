@@ -151,23 +151,40 @@ fn simulate_paste_platform() {
 
 ## 3. 线程安全分析
 
-### 3.1 与 enigo UCKeyTranslate 的区别
+### 3.1 TIS API 必须在主线程调用
 
-architecture.md 已记录：`paste_via_clipboard` 的 V 键用固定虚拟键码 `Key::Other(9)` 而非 `Key::Unicode('v')`，因为 enigo 0.6.1 的 `Key::Unicode` 在 macOS 走 `get_layoutdependent_keycode`（循环调用非线程安全的 Carbon `TIS*`/`UCKeyTranslate` API），在 `spawn_blocking` 非主线程会 SIGTRAP。
+> ⚠️ **本文档初版分析有误**（曾认为 TIS API 线程安全），实机崩溃已证明错误。
 
-**本次的 TIS API 与上述不同**：
+2026-07-10 实机崩溃：ASR 识别 → 粘贴 → `Trace/BPT trap: 5`（SIGTRAP）。
+日志：`Pasting via Clipboard, write_to_clipboard=true, switch_ime=true`。
 
-| API | 线程安全性 | 原因 |
-|-----|----------|------|
-| `UCKeyTranslate` | ❌ 非线程安全 | 底层 UCKeyboardLayout 结构有共享状态，多线程并发读写竞态 |
-| `TISCopyCurrentKeyboardInputSource` | ✅ 线程安全 | 纯 getter，只读当前 TIS 状态，不修改共享结构 |
-| `TISSelectInputSource` | ✅ 线程安全（实践中） | 高层 API，内部通过分布式通知投递切换请求给主 RunLoop，不在调用线程修改 Carbon 全局状态 |
+**根因**：Carbon TIS API 全家族（`TISCopyCurrentKeyboardInputSource` / `TISSelectInputSource` / `TISGetInputSourceProperty` / `TISCreateInputSourceList`）**必须在主线程调用**。在非主线程调用会触发 SIGTRAP——与 enigo `UCKeyTranslate` 的崩溃**同源**（都是 Carbon HIToolbox 内部依赖主线程 RunLoop 的状态）。
 
-**关键区别**：`UCKeyTranslate` 在调用线程**同步**修改布局查找的内部缓冲区，而 `TISSelectInputSource` 只投递一个**异步通知**，实际切换由主 RunLoop 处理。50ms 延迟（`SWITCH_SETTLE_DELAY`）足够主 RunLoop 处理完通知。
+粘贴路径的执行线程：
+| 路径 | 执行上下文 | 线程 |
+|------|----------|------|
+| `paste_via_clipboard`（ASR） | `tokio::task::spawn_blocking` | ❌ 非 main |
+| `simulate_paste_platform`（剪贴板浮窗） | `std::thread::spawn` | ❌ 非 main |
 
-### 3.2 spawn_blocking 上下文
+### 3.2 GCD dispatch_sync_f 解法
 
-`paste_via_clipboard` 在 `tauri::async_runtime::spawn` + `tokio::task::spawn_blocking` 中执行（粘贴异步化，见 architecture.md）。`InputSourceGuard::switch_to_ascii` 在此非主线程调用 TIS API 是安全的——如上分析。
+所有 TIS 调用经 GCD `dispatch_sync_f` 调度到主线程：
+
+```rust
+extern "C" {
+    fn dispatch_sync_f(queue: *const c_void, context: *mut c_void, work: extern "C" fn(*mut c_void));
+    static _dispatch_main_q: c_void;  // 主队列全局符号
+}
+```
+
+- **`dispatch_sync_f`**：阻塞调用线程 → 在主线程执行 `work(context)` → 返回。不会死锁，因为粘贴路径绝非主线程。
+- **上下文传递**：用固定大小 `SwitchCtx` 结构体（含 `[u8; 64]` buffer 传字符串，避免在 dispatch 上下文分配 String）。
+- **Drop 恢复也经 dispatch**：guard 的 `previous` ref 经 `dispatch_sync_f` 在主线程恢复+释放。
+
+### 3.3 不变式
+
+- **只有 macOS** 有此问题；Windows / Linux 直接 `None`（无 TIS API）。
+- **不会从主线程调 `switch_to_ascii`**——粘贴永远在后台线程。若未来从主线程调 `dispatch_sync_f(main_queue, ...)` 会死锁，需加 `dispatch_get_current_queue` 断言（当前不加，因调用点确定）。
 
 ---
 

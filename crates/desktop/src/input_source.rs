@@ -8,6 +8,12 @@
 //! 实现：macOS Carbon TIS（Text Input Source）API via FFI。Carbon framework 的
 //! HIToolbox 提供 `TISCopyCurrentKeyboardInputSource` / `TISSelectInputSource` 等
 //! C API。TISInputSourceRef 遵循 Core Foundation 保留计数（retain/release）。
+//!
+//! ⚠️ **线程安全**：TIS API **必须在主线程调用**——在非主线程调用会触发 SIGTRAP
+//! （`Trace/BPT trap: 5`），与 enigo `UCKeyTranslate` 的崩溃同源。粘贴路径
+//! （`paste_via_clipboard` / `simulate_paste_platform`）都在非主线程执行
+//! （`spawn_blocking` / `std::thread::spawn`），因此所有 TIS 调用必须经 GCD
+//! `dispatch_sync_f` 调度到主线程。
 
 // ── macOS ──────────────────────────────────────────────────────────
 
@@ -15,17 +21,16 @@
 mod macos_impl {
     use std::ffi::c_void;
     use std::ptr;
-    use std::thread;
     use std::time::Duration;
 
     use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
     use core_foundation::string::CFString;
 
     /// 切换输入源后等待 IME 稳定的延迟。经验值：50ms 足够 Carbon 注册切换。
+    /// 在调用线程 sleep（不占主线程），dispatch_sync_f 返回后再等。
     const SWITCH_SETTLE_DELAY: Duration = Duration::from_millis(50);
 
     // TIS API 符号位于 Carbon.framework（HIToolbox）。
-    // CFArray* / CFRelease 符号由 core-foundation crate 传递链接的 CoreFoundation 提供。
     extern "C" {
         fn TISCopyCurrentKeyboardInputSource() -> CFTypeRef;
         fn TISGetInputSourceProperty(source: CFTypeRef, propertyKey: *const c_void) -> CFTypeRef;
@@ -34,7 +39,72 @@ mod macos_impl {
 
         fn CFArrayGetCount(array: CFTypeRef) -> i64;
         fn CFArrayGetValueAtIndex(array: CFTypeRef, idx: i64) -> *const c_void;
+
+        // GCD（Grand Central Dispatch）——把 TIS 调用调度到主线程。
+        // `_dispatch_main_q` 是主队列的全局符号（dispatch_get_main_queue() 宏展开的目标）。
+        fn dispatch_sync_f(queue: *const c_void, context: *mut c_void, work: extern "C" fn(*mut c_void));
+        static _dispatch_main_q: c_void;
     }
+
+    /// 返回 GCD 主队列指针。
+    fn main_queue() -> *const c_void {
+        unsafe { &_dispatch_main_q as *const _ as *const c_void }
+    }
+
+    // ── TIS 调用的上下文（经 dispatch_sync_f 传递到主线程）──
+
+    /// switch_to_ascii 的工作上下文。
+    struct SwitchCtx {
+        /// 传出：原输入源的 retained ref（+1，需 CFRelease）。
+        previous: CFTypeRef,
+        /// 传出：是否成功切换。
+        switched: bool,
+        /// 传出：当前输入源 ID（日志用）。
+        cur_id: [u8; 64],
+        cur_id_len: usize,
+    }
+
+    extern "C" fn do_switch(ctx: *mut c_void) {
+        unsafe {
+            let cx = &mut *(ctx as *mut SwitchCtx);
+            let current = TISCopyCurrentKeyboardInputSource();
+            if current.is_null() {
+                cx.switched = false;
+                return;
+            }
+
+            let id = input_source_id(current).unwrap_or_default();
+            write_id(&mut cx.cur_id, &mut cx.cur_id_len, &id);
+
+            if is_ascii_id(&id) {
+                CFRelease(current);
+                cx.switched = false; // 已是 ASCII，无需切换
+                return;
+            }
+
+            if !select_ascii_source() {
+                CFRelease(current);
+                cx.switched = false;
+                return;
+            }
+
+            cx.previous = current;
+            cx.switched = true;
+        }
+    }
+
+    /// restore 的上下文（就是 previous ref 本身）。
+    extern "C" fn do_restore(ctx: *mut c_void) {
+        unsafe {
+            let prev = ctx as CFTypeRef;
+            if TISSelectInputSource(prev) != 0 {
+                log::warn!("input_source: restore failed (TISSelectInputSource != 0)");
+            }
+            CFRelease(prev);
+        }
+    }
+
+    // ── RAII Guard ──
 
     /// RAII guard：构造时切到 ASCII 输入源，drop 时恢复原输入源。
     pub struct InputSourceGuard {
@@ -51,34 +121,43 @@ mod macos_impl {
         /// - 找不到可用的 ASCII 输入源
         /// - TISSelectInputSource 失败
         pub fn switch_to_ascii() -> Option<Self> {
+            let mut cx = SwitchCtx {
+                previous: ptr::null(),
+                switched: false,
+                cur_id: [0u8; 64],
+                cur_id_len: 0,
+            };
+
+            // dispatch_sync_f：阻塞调用线程，在主线程执行 do_switch，完成后返回。
+            // 不会死锁：粘贴路径在 spawn_blocking / std::thread::spawn，绝非主线程。
             unsafe {
-                let current = TISCopyCurrentKeyboardInputSource();
-                if current.is_null() {
-                    log::debug!("input_source: current source is null, skip");
-                    return None;
-                }
-
-                // 已是 ASCII 输入源 → 无需切换（省 50ms 延迟）
-                let cur_id = input_source_id(current).unwrap_or_default();
-                if is_ascii_id(&cur_id) {
-                    CFRelease(current);
-                    log::debug!("input_source: already ASCII ({}), skip", cur_id);
-                    return None;
-                }
-
-                // 找到并选中 ASCII 输入源
-                if !select_ascii_source() {
-                    log::warn!("input_source: no ASCII source available, paste with current IME");
-                    CFRelease(current);
-                    return None;
-                }
-
-                log::debug!(
-                    "input_source: switched {} -> ASCII for paste",
-                    cur_id
+                dispatch_sync_f(
+                    main_queue(),
+                    &mut cx as *mut SwitchCtx as *mut c_void,
+                    do_switch,
                 );
-                thread::sleep(SWITCH_SETTLE_DELAY);
-                Some(InputSourceGuard { previous: current })
+            }
+
+            if cx.switched {
+                let id = read_id(&cx.cur_id, cx.cur_id_len);
+                log::debug!("input_source: switched {} -> ASCII for paste", id);
+                std::thread::sleep(SWITCH_SETTLE_DELAY);
+                Some(InputSourceGuard {
+                    previous: cx.previous,
+                })
+            } else {
+                let id = read_id(&cx.cur_id, cx.cur_id_len);
+                if !id.is_empty() && is_ascii_id(&id) {
+                    log::debug!("input_source: already ASCII ({}), skip", id);
+                } else if !id.is_empty() {
+                    log::warn!(
+                        "input_source: no ASCII source available (current={}), paste with current IME",
+                        id
+                    );
+                } else {
+                    log::debug!("input_source: current source is null, skip");
+                }
+                None
             }
         }
     }
@@ -86,25 +165,23 @@ mod macos_impl {
     impl Drop for InputSourceGuard {
         fn drop(&mut self) {
             unsafe {
-                if TISSelectInputSource(self.previous) != 0 {
-                    log::warn!("input_source: restore failed (TISSelectInputSource != 0)");
-                } else {
-                    log::debug!("input_source: restored previous source");
-                }
-                CFRelease(self.previous);
+                dispatch_sync_f(
+                    main_queue(),
+                    self.previous as *mut c_void,
+                    do_restore,
+                );
             }
         }
     }
 
+    // ── 辅助函数（在主线程上下文内调用）──
+
     /// 判断输入源 ID 是否为 ASCII 布局（ABC / US）。
-    /// 现代 macOS 默认 ASCII 布局是 `com.apple.keylayout.ABC`，
-    /// 旧版或自定义键盘可能用 `com.apple.keylayout.US`。
     fn is_ascii_id(id: &str) -> bool {
         id == "com.apple.keylayout.ABC" || id == "com.apple.keylayout.US"
     }
 
-    /// 读取输入源的 InputSourceID 属性（如 "com.apple.keylayout.ABC"、
-    /// "com.apple.inputmethod.SCIM.ITABC"）。Get rule——不释放。
+    /// 读取输入源的 InputSourceID 属性。
     unsafe fn input_source_id(source: CFTypeRef) -> Option<String> {
         let key = CFString::new("TISPropertyInputSourceID");
         let val = TISGetInputSourceProperty(source, key.as_concrete_TypeRef() as *const c_void);
@@ -116,9 +193,7 @@ mod macos_impl {
     }
 
     /// 在已启用的输入源列表中找 ABC / US 并选中。
-    /// 返回是否成功选中。
     unsafe fn select_ascii_source() -> bool {
-        // includeAllInstalled=0 → 仅返回当前启用的输入源（用户实际可用的）
         let arr = TISCreateInputSourceList(ptr::null(), 0);
         if arr.is_null() {
             return false;
@@ -140,6 +215,23 @@ mod macos_impl {
         found
     }
 
+    // ── 小工具：固定大小 buffer 传字符串（避免在 dispatch 上下文分配 String）──
+
+    fn write_id(buf: &mut [u8; 64], len: &mut usize, s: &str) {
+        let bytes = s.as_bytes();
+        let n = bytes.len().min(63);
+        buf[..n].copy_from_slice(&bytes[..n]);
+        buf[n] = 0;
+        *len = n;
+    }
+
+    fn read_id(buf: &[u8; 64], len: usize) -> String {
+        if len == 0 {
+            return String::new();
+        }
+        String::from_utf8_lossy(&buf[..len]).into_owned()
+    }
+
     #[cfg(test)]
     mod tests {
         use super::*;
@@ -150,6 +242,14 @@ mod macos_impl {
             assert!(is_ascii_id("com.apple.keylayout.US"));
             assert!(!is_ascii_id("com.apple.inputmethod.SCIM.ITABC"));
             assert!(!is_ascii_id("com.apple.keylayout.Pinyin"));
+        }
+
+        #[test]
+        fn write_read_id_roundtrip() {
+            let mut buf = [0u8; 64];
+            let mut len = 0;
+            write_id(&mut buf, &mut len, "com.apple.keylayout.ABC");
+            assert_eq!(read_id(&buf, len), "com.apple.keylayout.ABC");
         }
     }
 }
