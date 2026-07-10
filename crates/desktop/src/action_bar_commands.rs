@@ -75,6 +75,12 @@ pub fn trigger_action_bar(app: AppHandle) {
             return;
         }
 
+        // suppress_next 已完成使命——watcher 有 200ms 窗口消费 flag。
+        // 若剪贴板未变化（unchanged 路径），watcher 不触发，flag 残留会
+        // 导致用户下次手动复制被静默吞掉，在此显式清除。
+        // write_text 自带独立 suppress，不受此清除影响。
+        clip_handle.clear_suppress();
+
         // 5. 立即恢复原始剪贴板内容（write_text 自带 suppress，不会入库）
         if let Some(ref original) = clipboard_before {
             if Some(original.as_str()) != clipboard_after.as_deref() {
