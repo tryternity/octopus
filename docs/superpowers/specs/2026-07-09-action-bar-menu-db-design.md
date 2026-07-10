@@ -57,12 +57,19 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
 
 script 类型的 `action_data` 第一行必须是 magic comment：
 
-| magic comment | 运行时 | 平台 |
-|---------------|--------|------|
-| `#shell` | `sh -c "<script>"` | 全平台 |
-| `#osascript` | `osascript -e "<script>"` | 仅 macOS |
-| `#powershell` | `powershell -Command "<script>"` | 仅 Windows |
-| `#python` | `python3 -c "<script>"`（需 PATH 可用） | 全平台（预留，一期可选） |
+| magic comment | 探测 | 运行时 | 平台 |
+|---------------|------|--------|------|
+| `#shell` | 不探测 | `sh -c "<script>"` | 全平台 |
+| `#osascript` | 不探测 | `osascript -e "<script>"` | 仅 macOS |
+| `#powershell` | 不探测 | `powershell -Command "<script>"` | 仅 Windows |
+| `#python` | 不探测 | `python3 -c "<script>"` | 全平台 |
+| `#node` | 不探测 | `node -e "<script>"` | 全平台 |
+| `#deno` | 不探测 | `deno eval "<script>"` | 全平台 |
+| `#bun` | 不探测 | `bun eval "<script>"` | 全平台 |
+| `#javascript` | 预探测 node→bun→deno | 探测到的运行时 | 全平台 |
+| `#typescript` | 预探测 npx tsx→bun→deno | 探测到的运行时 | 全平台 |
+
+> JS/TS 运行时 + 异步模式 + 结果捕获详见[脚本增强 spec](2026-07-10-action-bar-script-enhancement-design.md)。
 
 平台不支持时 → 前端 toast 报 `不支持的平台`，菜单项仍显示。
 
@@ -72,7 +79,7 @@ script 类型的 `action_data` 第一行必须是 magic comment：
 - `url`：`https://www.google.com/search?q={text}` → `https://www.google.com/search?q=hello`
 - URL scheme：`doubao://?text={text}`
 
-**script 类型**：选中文本通过环境变量 **`$OCTOPUS_TEXT`** 传递（不使用字符串替换，避免 shell 注入）。脚本中通过 `$OCTOPUS_TEXT`（shell）、`do shell script "$OCTOPUS_TEXT"`（osascript）、`$env:OCTOPUS_TEXT`（powershell）、`os.environ["OCTOPUS_TEXT"]`（python）读取。
+**script 类型**：选中文本通过环境变量 **`$OCTOPUS_TEXT`** 传递（不使用字符串替换，避免 shell 注入）。脚本中通过 `$OCTOPUS_TEXT`（shell）、`do shell script "$OCTOPUS_TEXT"`（osascript）、`$env:OCTOPUS_TEXT`（powershell）、`os.environ["OCTOPUS_TEXT"]`（python）、`process.env.OCTOPUS_TEXT`（node/bun/tsx）、`Deno.env.get("OCTOPUS_TEXT")`（deno）读取。
 
 ⚠️ **安全**：不做 `{text}` 字符串拼接（曾有注入风险），仅用环境变量。
 
@@ -312,7 +319,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 - **JSON 导入/导出**（菜单配置分享）——二期
 - **正则上下文规则**（OnText 式，选中特定格式才显示对应动作）——二期
 - **截图+OCR fallback**——已有能力，二期串联
-- **python 脚本类型**——DB schema 已支持，一期可不 seed 示例
+- ~~**python 脚本类型**——DB schema 已支持，一期可不 seed 示例~~ **已实现**（含 node/deno/bun/javascript/typescript，详见[脚本增强 spec](2026-07-10-action-bar-script-enhancement-design.md)）
 - **子菜单嵌套超过两级**——当前 parent_id 只支持两级，三级以上二期
 
 ---
