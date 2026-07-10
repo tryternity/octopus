@@ -34,6 +34,32 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         }
     });
 
+    // 恢复 dock 状态：如果上次 docked，以 collapsed 态打开
+    let dock_edge = crate::window_position::load_dock_state(WINDOW_LABEL);
+    if let Some(ref edge) = dock_edge {
+        if edge == "right" || edge == "left" {
+            // 修正位置到吸附边缘
+            if let Ok(Some(monitor)) = window.current_monitor().or(window.primary_monitor()) {
+                let scale = monitor.scale_factor();
+                if let Ok(pos) = window.outer_position() {
+                    let y = pos.y as f64 / scale;
+                    let x = if edge == "right" {
+                        monitor.position().x as f64 / scale
+                            + monitor.size().width as f64 / scale
+                            - 300.0
+                    } else {
+                        monitor.position().x as f64 / scale
+                    };
+                    let _ = window.set_position(tauri::Position::Logical(
+                        tauri::LogicalPosition::new(x, y),
+                    ));
+                }
+            }
+            let _ = app.emit("clipboard://dock-changed", edge.as_str());
+            crate::clipboard_dock::apply_dock_collapsed(&window);
+        }
+    }
+
     // 移动结束后保存位置 + 失焦时恢复被隐藏的 Regular 窗口
     let win_clone = window.clone();
     let app_clone = app.clone();
@@ -41,10 +67,23 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         tauri::WindowEvent::Moved(_) => {
             crate::window_position::save_current_position(&win_clone, WINDOW_LABEL);
 
+            // 检测新吸附
             if let Some(edge) = detect_dock_edge(&win_clone) {
                 crate::window_position::save_dock_state(WINDOW_LABEL, edge);
                 let _ = app_clone.emit("clipboard://dock-changed", edge);
                 log::info!("clipboard docked to {}", edge);
+                return;
+            }
+
+            // 检测解吸附：之前 docked 但现在不在边缘
+            let prev_dock = crate::window_position::load_dock_state(WINDOW_LABEL);
+            if let Some(ref prev) = prev_dock {
+                if prev == "right" || prev == "left" {
+                    crate::window_position::save_dock_state(WINDOW_LABEL, "none");
+                    crate::clipboard_dock::apply_dock_expanded(&win_clone);
+                    let _ = app_clone.emit("clipboard://dock-changed", "none");
+                    log::info!("clipboard undocked");
+                }
             }
         }
         tauri::WindowEvent::Focused(false) => {
@@ -95,6 +134,24 @@ fn detect_dock_edge(window: &tauri::WebviewWindow) -> Option<&'static str> {
         Some("left")
     } else {
         None
+    }
+}
+
+/// Tauri 命令：展开 dock 浮窗（前端 DockBar onMouseEnter 调用）。
+#[tauri::command]
+pub fn clipboard_dock_expand(app: AppHandle) {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        crate::clipboard_dock::apply_dock_expanded(&window);
+        let _ = app.emit("clipboard://expand", ());
+    }
+}
+
+/// Tauri 命令：收缩 dock 浮窗。
+#[tauri::command]
+pub fn clipboard_dock_collapse(app: AppHandle) {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        crate::clipboard_dock::apply_dock_collapsed(&window);
+        let _ = app.emit("clipboard://collapse", ());
     }
 }
 
