@@ -1,9 +1,19 @@
 //! 剪贴板浮窗 dock（吸附收缩）NSWindow 操作。
 //!
-//! 收缩/展开不使用 setIgnoresMouseEvents——它会阻挡整个窗口的鼠标事件，
-//! 导致 8px 细条无法接收 hover。改为纯 CSS pointer-events 控制：
-//! 收缩态容器 pointer-events: none + 细条 pointer-events: auto。
-//! macOS WKWebView 在 transparent 窗口上，pointer-events: none 的区域
-//! 会将鼠标事件透传给下层窗口。
+//! 收缩态：set_ignore_cursor_events(true) 让透明区域鼠标穿透到下层 app。
+//! 展开态：set_ignore_cursor_events(false) 恢复正常。
+//! 细条通过 CSS pointer-events: auto 可接收 hover/click——macOS 的
+//! setIgnoreCursorEvents 优先级低于 WKWebView 内部 DOM 的事件投递，
+//! 因此 pointer-events: auto 的元素仍可交互。
 
-// 预留：未来如需 NSWindow 级操作（如 NSTrackingArea），在此扩展。
+/// 收缩态：透明区域鼠标穿透。
+pub fn apply_dock_collapsed(window: &tauri::WebviewWindow) {
+    let _ = window.set_ignore_cursor_events(true);
+    log::debug!("clipboard_dock: set_ignore_cursor_events(true)");
+}
+
+/// 展开态：恢复正常接收鼠标事件。
+pub fn apply_dock_expanded(window: &tauri::WebviewWindow) {
+    let _ = window.set_ignore_cursor_events(false);
+    log::debug!("clipboard_dock: set_ignore_cursor_events(false)");
+}
