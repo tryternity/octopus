@@ -178,33 +178,7 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移
 
 ### 5.3 script 执行
 
-```rust
-fn run_script(source: &str, text: &str) -> Result<(), String> {
-    let first_line = source.lines().next().unwrap_or("").trim();
-    let body: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
-    let script: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
-// 选中文本通过 $OCTOPUS_TEXT 环境变量传递（不做字符串替换）
-
-    match first_line {
-        "#shell" => std::process::Command::new("sh").arg("-c").arg(&script).spawn(),
-        "#osascript" => {
-            #[cfg(target_os = "macos")]
-            { std::process::Command::new("osascript").arg("-e").arg(&script).spawn() }
-            #[cfg(not(target_os = "macos"))]
-            { return Err("osascript 仅 macOS 支持".into()); }
-        }
-        "#powershell" => {
-            #[cfg(target_os = "windows")]
-            { std::process::Command::new("powershell").arg("-Command").arg(&script).spawn() }
-            #[cfg(not(target_os = "windows"))]
-            { return Err("powershell 仅 Windows 支持".into()); }
-        }
-        "#python" => std::process::Command::new("python3").arg("-c").arg(&script).spawn(),
-        _ => return Err(format!("未知脚本类型: {}", first_line)),
-    }.map_err(|e| e.to_string())?;
-    Ok(())
-}
-```
+> ⚠️ **已重构**：原 `run_script` 已拆为 `spawn_script`（9 种 magic comment + 预探测）+ `wait_with_timeout`（轮询 + 捕获 pipe）+ `run_script_async` / `run_script_sync_blocking`（异步/同步分流 + 落库 `script_runs`）。详见[脚本增强 spec](2026-07-10-action-bar-script-enhancement-design.md)。
 
 ---
 
@@ -302,7 +276,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 
 ### 7.2 代码迁移
 
-- 保留现有 `trigger_action_bar` / `action_bar_dismiss` / `action_bar_show_result` 不变
+- 保留现有 `trigger_action_bar` / `action_bar_dismiss` 不变；`action_bar_show_result` 加 `write_clipboard: bool` 参数（AI 路径 true，Script 同步路径按 `write_output_to_clipboard` 配置 opt-in）——详见[脚本增强 spec §5](2026-07-10-action-bar-script-enhancement-design.md)
 - 删除 `run_ai_action`（合并进 `execute_action_bar`）
 - 删除 `action_bar_open_url`（合并进 `execute_action_bar` 的 url 分支）
 - 前端删除 SEARCH_URLS 常量

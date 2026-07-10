@@ -21,7 +21,7 @@
 - **Tauri 命令注册**：新命令必须加入 `main.rs` 的 `invoke_handler` 列表，否则前端 invoke 被拒。
 - **按钮布局**：水平「数字徽章+文字」一行排列（`flex-row`），窗口宽度 380px，高度按 view 动态调整（主菜单 40px / 子菜单 78px）。浮窗在用户内容上方，必须矮。
 - **窗口焦点策略（⚠️ 强需求，勿改错）**：全局快捷键不得将 settings/compact_editor 带到前台。macOS WKWebView 需 app active 才有键盘焦点，但 `set_focus` 的 `activate` 会带出 Regular 窗口。方案：show 前记录前台 app + 隐藏 Regular → set_focus → hide 时先交还前台焦点再恢复 Regular（`activation::before_floating_window_show` / `after_floating_window_hide`）。`FLOAT_DEPTH` 引用计数支持多浮窗嵌套。`action_bar_show_result` 不调 deactivate（避免 CompactEditor 被压后台）。action bar + 剪贴板共用，语音识别窗无强键盘需求不处理。
-- **script 超时**：`run_script` 后台 `try_wait` 轮询 60 秒后 `kill`，防止僵尸进程 + 线程泄漏。
+- **script 超时**：`run_script`（⚠️ 已重构为 `spawn_script` + `wait_with_timeout`，详见 [脚本增强 plan](2026-07-10-action-bar-script-enhancement.md)）后台 `try_wait` 轮询 60 秒后 `kill`，防止僵尸进程 + 线程泄漏。
 - **键盘导航（⚠️ 强需求，勿改错）**：**上下键切换主子菜单层级（focusLayer main↔sub），左右键在当前行移动选择。** 子菜单展开/收起由左右键控制（移到 submenu 项展开、移到非 submenu 项收起），上下键只切焦点不碰视图。焦点层（`focusLayer`）独立于视图层（`view`）——左右键展开子菜单时不抢焦点，必须上下键才进入。**数字键 1-9 定位**（只移动高亮不执行）：按焦点层决定定位哪一层——焦点在主菜单定位第 N 个主菜单项、焦点在子菜单定位第 N 个子菜单项，超出范围无效；定位到 submenu 项时同步展开子菜单预览（与左右键一致），执行用 Enter。**Esc 直接关闭浮窗**（一次 Esc，不退焦点层，不做两次 Esc）。
 
 ---

@@ -47,7 +47,7 @@
 **Interfaces:**
 - Produces: `ActionBarItem { is_async: bool, write_output_to_clipboard: bool }`、`ScriptRun` struct、`insert_script_run` / `list_script_runs` / `clear_script_runs` 函数
 
-- [ ] **Step 1: db.sql——action_bar_items 加两列**
+- [x] **Step 1: db.sql——action_bar_items 加两列**
 
 在 `crates/infra/src/db.sql` 的 `action_bar_items` CREATE TABLE 中，`is_enabled` 行之后加：
 
@@ -56,7 +56,7 @@
     write_output_to_clipboard INTEGER NOT NULL DEFAULT 0,
 ```
 
-- [ ] **Step 2: db.sql——script_runs 建表**
+- [x] **Step 2: db.sql——script_runs 建表**
 
 在 action_bar_items 种子数据之后（L298 之后），加：
 
@@ -79,11 +79,11 @@ CREATE INDEX IF NOT EXISTS idx_script_runs_started_at ON script_runs(started_at 
 CREATE INDEX IF NOT EXISTS idx_script_runs_item_id ON script_runs(item_id);
 ```
 
-- [ ] **Step 3: db.rs——升 user_version**
+- [x] **Step 3: db.rs——升 user_version**
 
 在 `crates/infra/src/db.rs` 中，将 `user_version = 20` 改为 `user_version = 21`（两处，约 L193 和 L200）。在注释中加 `// v21：action_bar_items 加 is_async + write_output_to_clipboard 列；新建 script_runs 表。`
 
-- [ ] **Step 4: db.rs——ActionBarItem struct 扩展**
+- [x] **Step 4: db.rs——ActionBarItem struct 扩展**
 
 ```rust
 pub struct ActionBarItem {
@@ -112,7 +112,7 @@ const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, a
     write_output_to_clipboard: row.get::<_, i32>(10)? != 0,
 ```
 
-- [ ] **Step 5: db.rs——insert/update 签名变更**
+- [x] **Step 5: db.rs——insert/update 签名变更**
 
 `insert_action_bar_item` 和 `insert_action_bar_item_at` 追加两参数：
 ```rust
@@ -137,7 +137,7 @@ params 追加 `is_async as i32, write_output_to_clipboard as i32`。
 UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, updated_at=datetime('now') WHERE id=?8
 ```
 
-- [ ] **Step 6: db.rs——ScriptRun struct + CRUD**
+- [x] **Step 6: db.rs——ScriptRun struct + CRUD**
 
 ```rust
 #[derive(Debug, Clone, serde::Serialize)]
@@ -228,12 +228,12 @@ pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<()> {
 }
 ```
 
-- [ ] **Step 7: 编译 + 测试**
+- [x] **Step 7: 编译 + 测试**
 
 Run: `cargo build -p octopus-infra && cargo test -p octopus-infra`
 Expected: 编译通过，60 测试全过
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -251,7 +251,7 @@ git commit -m "feat(db): action_bar_items 加 is_async/write_output_to_clipboard
 - Consumes: 无（独立逻辑）
 - Produces: `spawn_script(source, text) -> Result<(Child, String)>`、`wait_with_timeout(child) -> ScriptResult`、`ScriptResult` struct
 
-- [ ] **Step 1: ScriptResult struct**
+- [x] **Step 1: ScriptResult struct**
 
 在 `action_bar_commands.rs` 的 `run_script` 函数之前加：
 
@@ -264,7 +264,7 @@ struct ScriptResult {
 }
 ```
 
-- [ ] **Step 2: 运行时探测函数**
+- [x] **Step 2: 运行时探测函数**
 
 ```rust
 /// 探测 JS 运行时——优先级 node → bun → deno
@@ -309,7 +309,7 @@ fn detect_ts_runtime() -> Option<(&'static str, Vec<&'static str>)> {
 }
 ```
 
-- [ ] **Step 3: spawn_script——替代原 run_script 的 spawn 部分**
+- [x] **Step 3: spawn_script——替代原 run_script 的 spawn 部分**
 
 ```rust
 /// 按 magic comment 分发运行时，spawn 子进程。
@@ -390,7 +390,7 @@ fn spawn_script(source: &str, text: &str, capture_output: bool) -> Result<(std::
 }
 ```
 
-- [ ] **Step 4: wait_with_timeout——替代原后台收割逻辑**
+- [x] **Step 4: wait_with_timeout——替代原后台收割逻辑**
 
 ```rust
 /// 轮询等待子进程退出，60 秒超时强杀。捕获 stdout/stderr。
@@ -444,16 +444,16 @@ fn read_child_stderr(child: &mut std::process::Child) -> String {
 }
 ```
 
-- [ ] **Step 5: 删除旧 run_script**
+- [x] **Step 5: 删除旧 run_script**
 
 删除原来的 `fn run_script` 整个函数（被 `spawn_script` + `wait_with_timeout` + `run_script_async` + `run_script_sync` 替代）。
 
-- [ ] **Step 6: 编译**
+- [x] **Step 6: 编译**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: 编译通过（`execute_action_bar_inner` 的 script 分支会在 Task 3 更新）
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/src/action_bar_commands.rs
@@ -471,7 +471,7 @@ git commit -m "refactor: run_script 拆为 spawn_script + wait_with_timeout + �
 - Consumes: Task 1 的 `insert_script_run`、Task 2 的 `spawn_script` / `wait_with_timeout` / `ScriptResult`
 - Produces: `run_script_async` / `run_script_sync` + 重构的 `execute_action_bar_inner` script 分支
 
-- [ ] **Step 1: run_script_async——fire-and-forget + 后台落库**
+- [x] **Step 1: run_script_async——fire-and-forget + 后台落库**
 
 ```rust
 /// 异步执行脚本——spawn 后立即返回，后台线程收割并落库。
@@ -505,7 +505,7 @@ fn run_script_async(source: &str, text: &str, item_id: i64, item_title: &str) ->
 > ```
 > 保持与 DB 已有的 `datetime('now')` 格式一致即可。优先检查 chrono 是否可用。
 
-- [ ] **Step 2: run_script_sync——spawn_blocking 等待 + 返回结果**
+- [x] **Step 2: run_script_sync——spawn_blocking 等待 + 返回结果**
 
 ```rust
 /// 同步执行脚本——在 spawn_blocking 中等待完成，返回结果。
@@ -531,7 +531,7 @@ fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, script_type:
 
 > **同 Step 1 注意**：时间戳格式与 chrono 可用性。
 
-- [ ] **Step 3: execute_action_bar_inner script 分支重构**
+- [x] **Step 3: execute_action_bar_inner script 分支重构**
 
 将 `execute_action_bar_inner` 的 `"script"` 分支改为：
 
@@ -580,7 +580,7 @@ fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, script_type:
         }
 ```
 
-- [ ] **Step 4: action_bar_show_result 适配**
+- [x] **Step 4: action_bar_show_result 适配**
 
 `action_bar_show_result` 当前硬编码 `write_clipboard_text(&app, &result)`（L183 附近）。Script 同步路径已自行控制 `write_output`，需让 show_result 不再无条件写剪贴板。
 
@@ -604,12 +604,12 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
 - `execute_action_bar_inner` ai 分支：`action_bar_show_result(result, text, item.title, app.clone(), true)` —— AI 结果始终写剪贴板
 - `execute_action_bar_inner` script 同步分支：`action_bar_show_result(result.stdout, text, item_title, app.clone(), write_output)` —— 仅勾选时写
 
-- [ ] **Step 5: 编译 + 测试**
+- [x] **Step 5: 编译 + 测试**
 
 Run: `cargo build -p octopus-desktop --features embedded && cargo test -p octopus-desktop`
 Expected: 编译通过，103 测试全过
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/src/action_bar_commands.rs
@@ -628,7 +628,7 @@ git commit -m "feat: script 异步/同步执行 + 结果捕获落库 + JS/TS 运
 - Consumes: Task 1 的 `insert_action_bar_item`（新签名）、`list_script_runs` / `clear_script_runs`
 - Produces: 前端可调用的 `create_action_bar_item` / `update_action_bar_item`（新参数）、`list_script_runs` / `clear_script_runs` Tauri command
 
-- [ ] **Step 1: create/update command 签名变更**
+- [x] **Step 1: create/update command 签名变更**
 
 ```rust
 #[tauri::command]
@@ -661,7 +661,7 @@ pub fn update_action_bar_item(
 }
 ```
 
-- [ ] **Step 2: list/clear script_runs command**
+- [x] **Step 2: list/clear script_runs command**
 
 ```rust
 #[tauri::command]
@@ -675,7 +675,7 @@ pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<(), String> {
 }
 ```
 
-- [ ] **Step 3: main.rs invoke_handler 注册**
+- [x] **Step 3: main.rs invoke_handler 注册**
 
 在 `crates/desktop/src/main.rs` 的 `invoke_handler` 中追加：
 
@@ -684,18 +684,18 @@ pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<(), String> {
             action_bar_commands::clear_script_runs,
 ```
 
-- [ ] **Step 4: capabilities/default.json 检查**
+- [x] **Step 4: capabilities/default.json 检查**
 
 Run: `grep "invoke" crates/desktop/capabilities/default.json`
 
 如果 capabilities 使用 `allow-except` 或白名单模式（而非 `allow-all`），需追加 `list_script_runs` 和 `clear_script_runs`。如果已有 `allow-all` 或通过 `core:default` 覆盖，则无需改动。
 
-- [ ] **Step 5: 编译**
+- [x] **Step 5: 编译**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: 编译通过
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/src/action_bar_commands.rs crates/desktop/src/main.rs
@@ -714,11 +714,11 @@ git commit -m "feat: create/update command 加 is_async/write_output + list/clea
 
 > **强制**：涉及前端 UI 修改，动手前先 `view` frontend-design skill SKILL.md 做设计规划。
 
-- [ ] **Step 1: 加载 frontend-design skill**
+- [x] **Step 1: 加载 frontend-design skill**
 
 View: `/Users/wudarui/.claude/skills/frontend-design/SKILL.md`，按色彩/字体/布局/签名元素原则规划脚本选项 checkbox 和执行记录子页的视觉设计。
 
-- [ ] **Step 2: TYPE_META + ACTION_TYPES 更新**
+- [x] **Step 2: TYPE_META + ACTION_TYPES 更新**
 
 更新 `script` 的 `desc` 和 `placeholder`：
 
@@ -732,7 +732,7 @@ script: {
 },
 ```
 
-- [ ] **Step 3: 编辑表单——is_async + write_output_to_clipboard checkbox**
+- [x] **Step 3: 编辑表单——is_async + write_output_to_clipboard checkbox**
 
 在编辑表单的 textarea 之后、isEnabled checkbox 附近，仅 `actionType === "script"` 时显示：
 
@@ -759,7 +759,7 @@ script: {
 
 **联动规则**：is_async=true 时 write_output_to_clipboard 隐藏 + 强制 false。is_async=false 时 write_output_to_clipboard 可选。
 
-- [ ] **Step 4: 编辑表单 save 传参更新**
+- [x] **Step 4: 编辑表单 save 传参更新**
 
 更新 `handleSave`（约 L530），create/update invoke 调用加新参数：
 
@@ -780,7 +780,7 @@ const result = form.id
     });
 ```
 
-- [ ] **Step 5: 脚本执行记录子页**
+- [x] **Step 5: 脚本执行记录子页**
 
 在 ActionBarPanel 内部新增 view state `"runs"`，header 新增「执行记录」按钮切换到该 view。`runs` view 显示：
 
@@ -789,17 +789,17 @@ const result = form.id
 - 点击单行展开 stdout/stderr 全文（只读 `<textarea>`）
 - 底部「清理（保留最近 100 条）」按钮 → `clear_script_runs({ keepRecent: 100 })`
 
-- [ ] **Step 6: 前端类型检查**
+- [x] **Step 6: 前端类型检查**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 无错误
 
-- [ ] **Step 7: 编译 + 全量测试**
+- [x] **Step 7: 编译 + 全量测试**
 
 Run: `cargo build -p octopus-desktop --features embedded && cargo test -p octopus-desktop && cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 全部通过
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx
@@ -815,7 +815,7 @@ git commit -m "feat(ui): script 编辑表单异步/写剪贴板选项 + 脚本�
 - Modify: `docs/superpowers/specs/2026-07-09-action-bar-menu-db-design.md`（§3.2 分发表 + §5.3 script 执行）
 - Modify: `docs/superpowers/plans/2026-07-09-action-bar-menu-db.md`（§8 不在本次范围——python 移除已完成标记）
 
-- [ ] **Step 1: architecture.md 更新**
+- [x] **Step 1: architecture.md 更新**
 
 action bar 第 9 点中，script 描述更新：
 - magic comment 列表加 `#node/#deno/#bun/#javascript/#typescript`
@@ -823,17 +823,17 @@ action bar 第 9 点中，script 描述更新：
 - 新增 `script_runs` 表说明
 - 新增执行记录管理界面说明
 
-- [ ] **Step 2: spec §3.2 + §5.3 更新**
+- [x] **Step 2: spec §3.2 + §5.3 更新**
 
 `2026-07-09-action-bar-menu-db-design.md`：
 - §3.2 分发表追加 5 行新 magic comment
 - §5.3 run_script 说明更新为 spawn_script + wait_with_timeout + async/sync 模式
 
-- [ ] **Step 3: plan §8 更新**
+- [x] **Step 3: plan §8 更新**
 
 `2026-07-09-action-bar-menu-db.md` §8「不在本次范围」中 python 脚本已实现，更新标注。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/
