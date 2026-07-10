@@ -273,6 +273,8 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
     sort_order  INTEGER NOT NULL DEFAULT 0,
     is_system   INTEGER NOT NULL DEFAULT 1,
     is_enabled  INTEGER NOT NULL DEFAULT 1,
+    is_async   INTEGER NOT NULL DEFAULT 1,
+    write_output_to_clipboard INTEGER NOT NULL DEFAULT 0,
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
@@ -296,6 +298,23 @@ INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type,
     (8, 3, 'Google', 'search', 'url', 'https://www.google.com/search?q={text}', 0, 1),
     (9, 3, '百度',   'search', 'url', 'https://www.baidu.com/s?wd={text}', 1, 1),
     (10, 3, 'Bing',  'search', 'url', 'https://www.bing.com/search?q={text}', 2, 1);
+
+-- ── 脚本执行记录 ──────────────────────────────────────────────
+CREATE TABLE IF NOT EXISTS script_runs (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id     INTEGER NOT NULL,
+    script_type TEXT NOT NULL,
+    exit_code   INTEGER,
+    stdout      TEXT NOT NULL DEFAULT '',
+    stderr      TEXT NOT NULL DEFAULT '',
+    error_msg   TEXT NOT NULL DEFAULT '',
+    started_at  TEXT NOT NULL,
+    finished_at TEXT,
+    duration_ms INTEGER,
+    FOREIGN KEY (item_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_script_runs_started_at ON script_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_script_runs_item_id ON script_runs(item_id);
 
 -- ── ASR 热词（active=生效/pending=挖掘待确认）──────────────────
 CREATE TABLE IF NOT EXISTS hotwords (

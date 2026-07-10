@@ -262,8 +262,11 @@ pub fn create_action_bar_item(
     icon: String,
     action_type: String,
     action_data: String,
+    _is_async: bool,
+    _write_output_to_clipboard: bool,
 ) -> Result<i64, String> {
-    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data)
+    // TODO Task 4 会接入新参数，先用默认值
+    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, true, false)
         .map_err(|e| e.to_string())
 }
 
@@ -275,8 +278,11 @@ pub fn update_action_bar_item(
     action_type: String,
     action_data: String,
     is_enabled: bool,
+    _is_async: bool,
+    _write_output_to_clipboard: bool,
 ) -> Result<(), String> {
-    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled)
+    // TODO Task 4 会接入新参数，先用默认值
+    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled, true, false)
         .map_err(|e| e.to_string())
 }
 
