@@ -170,7 +170,7 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移
 
 **执行命令**（替换现有 run_ai_action / action_bar_open_url 的分发逻辑）：
 
-> ⚠️ **收口职责归后端**：前端不再直接 `getCurrentWindow().hide()`，所有窗口生命周期管理由后端统一负责。命令内层 `execute_action_bar_inner` 返回 `Result<bool>`——`Ok(true)`（ai 已自收口直通）、`Ok(false)`（url/script/copy 成功→hide+finalize）、`Err`（异常→仅 finalize，不 hide，让前端切 error 视图，关闭时 dismiss 收口 depth）。所有路径都经收口，`?`/`return Err` 不会泄漏重入锁和 depth。
+> ⚠️ **收口职责归后端**：前端不再直接 `getCurrentWindow().hide()`，所有窗口生命周期管理由后端统一负责。命令内层 `execute_action_bar_inner` 返回 `Result<bool>`——`Ok(true)`（ai 已自收口直通）、`Ok(false)`（url/script/copy 成功→hide+finalize）、`Err`（异常→仅 finalize，不 hide，让前端显示红色气泡提示）。所有路径都经收口，`?`/`return Err` 不会泄漏重入锁和 depth。
 >
 > ⚠️ **线程约束**：本 command 是 `async` → 跑在 tokio worker 线程，而 `after_floating_window_hide` 内的 `NSApplication::deactivate` 需 `MainThreadMarker`（仅主线程可获取）。故 Ok(false) 分支的 `hide_action_bar_window` 通过 `app.run_on_main_thread` 投递到主线程执行（与 `trigger_action_bar` 的 show 同模式）。`finalize_action_bar` 仅操作 `AtomicBool`，线程安全，保持即时执行。`action_bar_dismiss`（sync command）天然在主线程，无需投递。
 
@@ -191,7 +191,7 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移
 - 按 parentId 构建两级结构（`#[serde(rename_all = "camelCase")]` 确保 JSON 字段名匹配）
 - `executeMain` / `executeSubItem` 合并为统一的 `executeItem(item: ActionBarItem)`
 - `ai` 类型仍走前端 loading + 超时 + timedOutRef 流程
-- `url` / `script` / `copy` 也走 `try-catch`（与 ai 一致）：成功后端统一 hide+收口，失败切 error 视图（**前端不再直接 `getCurrentWindow().hide()`**）
+- `url` / `script` / `copy` 也走 `try-catch`（与 ai 一致）：成功后端统一 hide+收口，失败显示红色气泡（**前端不再直接 `getCurrentWindow().hide()`**，error 视图已移除）
 - 按钮布局：**水平「数字徽章+文字」一行排列**（`flex-row`），非上下两行——浮窗更矮，子菜单展开后总高 ~78px
 - 视觉：`rounded-lg`（8px，与语音识别窗口一致）+ `backdrop-blur-xl` 毛玻璃 + `shadow-2xl`
 - 窗口高度动态调整：主菜单 40px / 子菜单 78px / loading 48px / error 60px（前端 `setSize` 按 view 切换），避免透明区域遮挡下层点击

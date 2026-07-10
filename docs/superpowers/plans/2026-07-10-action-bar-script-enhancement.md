@@ -842,6 +842,30 @@ git commit -m "docs: 同步 action bar 脚本增强文档（JS/TS + 异步模式
 
 ---
 
+### Task 7: e2e 修复——DB ALTER 迁移 + error 气泡 + 标题字数（2026-07-10）
+
+e2e 测试发现的三个问题修复。
+
+- [x] **Step 1: v20→v21 ALTER TABLE 迁移补列（2c60b71）**
+
+**Bug**：用户 DB 是 v20，`action_bar_items` 缺 `is_async`/`write_output_to_clipboard` 列。`CREATE TABLE IF NOT EXISTS` 对已有表无效 → SELECT 新列 SQL 报错 → list_action_bar_items 失败 → 菜单不显示。
+
+**修复**：升级路径加 `PRAGMA table_info` 检测列是否存在 + `ALTER TABLE ADD COLUMN` 补列。
+
+- [x] **Step 2: error 统一红色气泡（2bdb0d9）**
+
+**改动**：移除 error 视图（View type 去掉 `"error"`），所有错误（AI 超时 / url / script / copy）统一红色半透明气泡覆盖浮窗顶部，限制 40 字符，2 秒后自动消失回到菜单。
+
+- [x] **Step 3: 标题字数 6→12（2bdb0d9）**
+
+ActionBarPanel 编辑表单标题权重上限从 6 改为 12（CJK 6 字 / ASCII 12 字）。
+
+- [x] **Step 4: 文档同步**
+
+spec/architecture error 视图引用更新为红色气泡。
+
+---
+
 ## Self-Review
 
 **1. Spec coverage:**

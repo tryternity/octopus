@@ -90,7 +90,7 @@ ALTER TABLE action_bar_items ADD COLUMN write_output_to_clipboard INTEGER NOT NU
 - `is_async`：0=同步等待结果，1=异步 fire-and-forget（默认异步）
 - `write_output_to_clipboard`：仅 `is_async=0` 时有意义；1=成功+stdout 非空时写剪贴板
 
-**DB schema 变更流程**（遵循项目约定）：改 `db.sql`（加列到 CREATE TABLE）+ 升 `user_version`，不新增 ALTER 迁移分支（开发期无历史库需兼容）。
+**DB schema 变更流程**：改 `db.sql`（加列到 CREATE TABLE）+ 升 `user_version`。**已有 DB 需 ALTER TABLE 迁移**——`CREATE TABLE IF NOT EXISTS` 对已有表无效，升级路径用 `PRAGMA table_info` 检测列是否存在 + `ALTER TABLE ADD COLUMN` 补列（v20→v21 迁移已实现，e2e 验证通过）。
 
 ### 3.2 新表 `script_runs`
 
@@ -160,14 +160,15 @@ execute_action_bar_inner（已是 async command）
   → 根据 ScriptResult:
     → 成功 + stdout 非空 → action_bar_show_result(stdout...) → Ok(true)
     → 成功 + stdout 空 → Ok(false) → hide
-    → 失败/超时 → Err(stderr/error_msg) → 前端 error 视图
+    → 失败/超时 → Err(stderr/error_msg) → 前端红色气泡提示（2 秒消失）
 ```
 
 **特点**：
 - 复用现有 AI loading 视图（前端 timeout 机制不变）
 - 成功结果经 `action_bar_show_result` → CompactEditor 展示
 - `write_output_to_clipboard=true` 时在 `show_result` 内部额外 `write_text`
-- 失败经 Err → 前端 error 视图
+- 失败经 Err → 前端**红色气泡**（半透明覆盖浮窗顶部，限制 40 字符，2 秒后自动消失回到菜单，不切 error 视图）
+- **error 视图已移除**（AI 超时 / url / script / copy 错误统一走气泡）
 
 ### 4.3 `run_script` 重构
 
