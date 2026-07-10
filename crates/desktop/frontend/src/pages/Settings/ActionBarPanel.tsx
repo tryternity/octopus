@@ -586,30 +586,9 @@ const TreeNodeBase = (props: NodeProps) => {
         </div>
       </div>
 
-      {/* 内联编辑器 */}
-      {isEditing && (
-        <EditForm
-          form={props.editingForm}
-          isSystem={item.isSystem}
-          onChange={props.onFormChange}
-          onSave={props.onSaveEdit}
-          onCancel={props.onCancelEdit}
-        />
-      )}
-
       {/* 子树：细导引线 + 递归 */}
       {isSubmenu && isOpen && (
         <div className="relative ml-3 border-l border-border/50 pl-3">
-          {/* 子菜单草稿表单 */}
-          {props.draftParentId === item.id && (
-            <EditForm
-              form={props.editingForm}
-              isSystem={false}
-              onChange={props.onFormChange}
-              onSave={props.onSaveEdit}
-              onCancel={props.onCancelEdit}
-            />
-          )}
           {subs.map((sub, i) => (
             <TreeNode
               key={sub.id}
@@ -776,7 +755,7 @@ export default function ActionBarPanel({
   // draft 状态：新增时不写 DB，只在内存编辑，保存时才 create。取消只清 state，零脏数据。
   const [draftParentId, setDraftParentId] = useState<number | null | undefined>(undefined); // undefined=非草稿, null=顶层草稿, number=子菜单草稿
   const [loaded, setLoaded] = useState(false);
-  const [view, setView] = useState<"menu" | "runs">("menu");
+  const [view, setView] = useState<"menu" | "runs" | "edit">("menu");
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
     const list = await invoke<ActionBarItem[]>("list_action_bar_items");
@@ -833,12 +812,14 @@ export default function ActionBarPanel({
     // DB action_type "script" + action_data 以 / 开头 → 前端展示为 "extension"
     const isExt = item.actionType === "script" && item.actionData.startsWith("/");
     setEditingForm({ ...item, actionType: isExt ? "extension" : item.actionType });
+    setView("edit");
   }, []);
 
   const cancelEdit = useCallback(() => {
     setEditingId(null);
     setEditingForm({});
     setDraftParentId(undefined);
+    setView("menu");
   }, []);
 
   const saveEdit = useCallback(async () => {
@@ -918,10 +899,7 @@ export default function ActionBarPanel({
       actionData: "",
       isEnabled: true,
     });
-    // 子菜单草稿需展开父节点才能看到表单
-    if (parentId !== null) {
-      setExpanded((prev) => new Set(prev).add(parentId));
-    }
+    setView("edit");
   }, []);
 
   const nodeCommon = {
@@ -947,7 +925,7 @@ export default function ActionBarPanel({
       <div className="mb-5 flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
-            命令面板 · 菜单管理
+            命令面板 · {view === "edit" ? "编辑菜单项" : view === "runs" ? "脚本执行记录" : "菜单管理"}
           </div>
           <h2 className="mt-0.5 text-lg font-semibold tracking-tight">
             AI 命令面板菜单
@@ -1002,7 +980,15 @@ export default function ActionBarPanel({
       </div>
 
       {/* Body */}
-      {view === "runs" ? (
+      {view === "edit" ? (
+        <EditForm
+          form={editingForm}
+          isSystem={(editingId !== null && items.find((i) => i.id === editingId)?.isSystem) ?? false}
+          onChange={setEditingForm}
+          onSave={saveEdit}
+          onCancel={cancelEdit}
+        />
+      ) : view === "runs" ? (
         <ScriptRunsList showToast={showToast} />
       ) : !loaded ? (
         <p className="py-12 text-center text-sm text-muted-foreground">
@@ -1028,16 +1014,6 @@ export default function ActionBarPanel({
         </div>
       ) : (
         <div className="space-y-px">
-          {/* 新建草稿表单（内存态，不在树中） */}
-          {draftParentId !== undefined && draftParentId === null && (
-            <EditForm
-              form={editingForm}
-              isSystem={false}
-              onChange={setEditingForm}
-              onSave={saveEdit}
-              onCancel={cancelEdit}
-            />
-          )}
           {mainItems.map((item, i) => (
             <TreeNode
               key={item.id}
