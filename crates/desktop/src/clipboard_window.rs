@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder};
 
 const WINDOW_LABEL: &str = "clipboard_window";
 
@@ -40,6 +40,12 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     window.on_window_event(move |event| match event {
         tauri::WindowEvent::Moved(_) => {
             crate::window_position::save_current_position(&win_clone, WINDOW_LABEL);
+
+            if let Some(edge) = detect_dock_edge(&win_clone) {
+                crate::window_position::save_dock_state(WINDOW_LABEL, edge);
+                let _ = app_clone.emit("clipboard://dock-changed", edge);
+                log::info!("clipboard docked to {}", edge);
+            }
         }
         tauri::WindowEvent::Focused(false) => {
             // 剪贴板失焦（用户切到其他 app）——恢复被隐藏的 Regular 窗口
@@ -50,6 +56,46 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     });
 
     Ok(())
+}
+
+/// 检测窗口是否应吸附到屏幕边缘。
+/// 返回 Some("right") / Some("left") / None。
+fn detect_dock_edge(window: &tauri::WebviewWindow) -> Option<&'static str> {
+    const DOCK_THRESHOLD: f64 = 10.0;
+    const WIN_W: f64 = 300.0;
+    const WIN_H: f64 = 600.0;
+
+    let pos = window.outer_position().ok()?;
+    let scale = window.scale_factor().unwrap_or(1.0);
+    let win_x = pos.x as f64 / scale;
+    let win_y = pos.y as f64 / scale;
+    let center_x = win_x + WIN_W / 2.0;
+    let center_y = win_y + WIN_H / 2.0;
+
+    let monitors = window.available_monitors().unwrap_or_default();
+    let current = monitors.iter().find(|m| {
+        let ms = m.scale_factor();
+        let mx = m.position().x as f64 / ms;
+        let my = m.position().y as f64 / ms;
+        let mw = m.size().width as f64 / ms;
+        let mh = m.size().height as f64 / ms;
+        center_x >= mx && center_x <= mx + mw && center_y >= my && center_y <= my + mh
+    })?;
+
+    let ms = current.scale_factor();
+    let mon_right = current.position().x as f64 / ms + current.size().width as f64 / ms;
+    let mon_left = current.position().x as f64 / ms;
+
+    let dist_right = (mon_right - (win_x + WIN_W)).abs();
+    let dist_left = (win_x - mon_left).abs();
+
+    if dist_right <= DOCK_THRESHOLD && dist_right <= dist_left {
+        Some("right")
+    } else if dist_left <= DOCK_THRESHOLD {
+        Some("left")
+    } else {
+        None
+    }
 }
 
 /// 注册剪贴板浮窗全局快捷键。main 启动注册 + set_config 热重载共用，
