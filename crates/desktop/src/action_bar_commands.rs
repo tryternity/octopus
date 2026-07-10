@@ -439,7 +439,13 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
         Ok(true) => Ok(()),
         Ok(false) => {
             // url/script/copy 成功 → 统一收口：标准隐藏 + 焦点交还 + 重入锁复位
-            hide_action_bar_window(&app);
+            // hide_action_bar_window 含 after_floating_window_hide（NSApplication::deactivate），
+            // 本 command 是 async → 跑在 tokio worker 线程，MainThreadMarker::new() 返回 None
+            // 导致 deactivate 静默跳过。投递到主线程执行（与 trigger_action_bar 的 show 同模式）。
+            let app_for_hide = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                hide_action_bar_window(&app_for_hide);
+            });
             finalize_action_bar(&app);
             Ok(())
         }
