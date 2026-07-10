@@ -6,31 +6,38 @@ import LlmTab from "./Models/LlmTab";
 import OcrTab from "./Models/OcrTab";
 import TranslateTab from "./Models/TranslateTab";
 
-const TABS = ["常量", "语音识别", "文本模型", "扫描识别", "翻译模型"] as const;
-type TabName = typeof TABS[number];
+const TABS = [
+  { name: "常量", icon: "var" },
+  { name: "语音识别", icon: "asr" },
+  { name: "文本模型", icon: "llm" },
+  { name: "扫描识别", icon: "ocr" },
+  { name: "翻译模型", icon: "tr" },
+] as const;
 
 export default function ModelsPanel({ showToast }: { showToast: (msg: string) => void }) {
-  const [activeTab, setActiveTab] = useState<TabName>("常量");
+  const [activeTab, setActiveTab] = useState<string>("常量");
 
   return (
     <div className="flex flex-col h-full">
-      <div className="flex gap-1 border-b border-border px-2">
+      {/* Pill tab 条 */}
+      <div className="flex gap-1 px-2 pt-1 pb-2 border-b border-border">
         {TABS.map((tab) => (
           <button
-            key={tab}
+            key={tab.name}
             className={cn(
-              "px-3 py-1.5 text-xs font-medium transition-colors border-b-2 -mb-px",
-              activeTab === tab
-                ? "text-voice border-voice"
-                : "text-muted-foreground hover:text-foreground border-transparent",
+              "px-2.5 py-1 text-[11px] font-medium rounded-md transition-all duration-150",
+              activeTab === tab.name
+                ? "bg-foreground text-background"
+                : "text-muted-foreground hover:text-foreground hover:bg-accent",
             )}
-            onClick={() => setActiveTab(tab)}
+            onClick={() => setActiveTab(tab.name)}
           >
-            {tab}
+            {tab.name}
           </button>
         ))}
       </div>
-      <div className="flex-1 overflow-y-auto p-3">
+      {/* Tab 内容 */}
+      <div className="flex-1 overflow-y-auto px-3 py-2">
         {activeTab === "常量" && <EnvironmentTab showToast={showToast} />}
         {activeTab === "语音识别" && <AsrTab showToast={showToast} />}
         {activeTab === "文本模型" && <LlmTab showToast={showToast} />}

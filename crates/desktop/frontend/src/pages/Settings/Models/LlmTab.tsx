@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
+import { cn } from "@/lib/utils";
 import { CheckCircle2, Cloud, HardDrive } from "lucide-react";
 
 interface LlmOption {
@@ -9,6 +10,25 @@ interface LlmOption {
   current: boolean;
   is_enabled: boolean;
   is_local: boolean;
+}
+
+function SectionHeader({ icon: Icon, label }: { icon: React.ElementType; label: string }) {
+  return (
+    <div className="flex items-center gap-1.5 pt-3 pb-1 first:pt-0">
+      <Icon className="w-3 h-3 text-muted-foreground/60" />
+      <span className="text-[11px] font-medium text-muted-foreground">{label}</span>
+    </div>
+  );
+}
+
+function CurrentBanner({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-voice bg-voice/5 text-[11px] mb-1">
+      <CheckCircle2 className="w-3 h-3 text-voice shrink-0" />
+      <span className="text-muted-foreground">当前使用</span>
+      <span className="font-medium text-foreground">{label}</span>
+    </div>
+  );
 }
 
 export default function LlmTab({ showToast }: { showToast: (msg: string) => void }) {
@@ -35,50 +55,39 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
   const cloudModels = models.filter((m) => !m.is_local);
 
   const renderModel = (model: LlmOption) => (
-    <div key={model.id} className="flex items-center justify-between py-2 border-b border-border/40 last:border-0">
+    <div
+      key={model.id}
+      className={cn(
+        "group flex items-center justify-between py-2 px-3 rounded-md transition-colors",
+        "border-l-2 hover:bg-accent/30",
+        model.is_enabled ? "border-l-voice/40" : "border-l-border/40",
+      )}
+    >
       <div className="flex items-center gap-1.5">
-        <span className="text-sm font-medium">{model.name}</span>
-        {model.current && <CheckCircle2 className="w-3.5 h-3.5 text-voice" />}
+        <span className={cn("text-xs font-medium", !model.is_enabled && "text-muted-foreground")}>{model.name}</span>
+        {model.current && <CheckCircle2 className="w-3 h-3 text-voice" />}
       </div>
       <button
-        className={`px-2.5 py-1 text-xs rounded transition-colors ${
+        className={cn(
+          "px-2 py-0.5 text-[11px] rounded transition-colors",
           model.is_enabled
             ? "bg-voice/10 text-voice hover:bg-voice/20"
-            : "bg-muted text-muted-foreground hover:bg-muted/80"
-        }`}
+            : "bg-muted text-muted-foreground hover:bg-accent",
+        )}
         onClick={() => handleToggle(model)}
       >
-        {model.is_enabled ? "已启用" : "已禁用"}
+        {model.is_enabled ? "启用" : "禁用"}
       </button>
     </div>
   );
 
   return (
-    <div className="space-y-2">
-      {current && (
-        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-voice/8 text-xs">
-          <CheckCircle2 className="w-3 h-3 text-voice" />
-          当前使用：<span className="font-medium">{current.label}</span>
-        </div>
-      )}
-      {localModels.length > 0 && (
-        <>
-          <div className="flex items-center gap-1.5 pt-1 pb-1">
-            <HardDrive className="w-3.5 h-3.5 text-muted-foreground" />
-            <span className="text-xs font-medium text-muted-foreground">本地模型</span>
-          </div>
-          {localModels.map(renderModel)}
-        </>
-      )}
-      {cloudModels.length > 0 && (
-        <>
-          <div className="flex items-center gap-1.5 pt-3 pb-1">
-            <Cloud className="w-3.5 h-3.5 text-muted-foreground" />
-            <span className="text-xs font-medium text-muted-foreground">云端模型</span>
-          </div>
-          {cloudModels.map(renderModel)}
-        </>
-      )}
+    <div className="space-y-0.5 max-w-[560px]">
+      {current && <CurrentBanner label={current.label} />}
+      {localModels.length > 0 && <SectionHeader icon={HardDrive} label="本地模型" />}
+      {localModels.map(renderModel)}
+      {cloudModels.length > 0 && <SectionHeader icon={Cloud} label="云端模型" />}
+      {cloudModels.map(renderModel)}
     </div>
   );
 }

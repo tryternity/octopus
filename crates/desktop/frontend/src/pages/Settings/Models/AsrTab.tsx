@@ -33,6 +33,26 @@ function fmtBytes(n: number | null | undefined): string {
   return (n / 1073741824).toFixed(2) + " GB";
 }
 
+function SectionHeader({ icon: Icon, label, count }: { icon: React.ElementType; label: string; count?: string }) {
+  return (
+    <div className="flex items-center gap-1.5 pt-3 pb-1 first:pt-0">
+      <Icon className="w-3 h-3 text-muted-foreground/60" />
+      <span className="text-[11px] font-medium text-muted-foreground">{label}</span>
+      {count && <span className="text-[10px] text-muted-foreground/40">{count}</span>}
+    </div>
+  );
+}
+
+function CurrentBanner({ label }: { label: string }) {
+  return (
+    <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-voice bg-voice/5 text-[11px] mb-1">
+      <CheckCircle2 className="w-3 h-3 text-voice shrink-0" />
+      <span className="text-muted-foreground">当前使用</span>
+      <span className="font-medium text-foreground">{label}</span>
+    </div>
+  );
+}
+
 export default function AsrTab({ showToast }: { showToast: (msg: string) => void }) {
   const [models, setModels] = useState<DownloadableModel[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
@@ -103,60 +123,58 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
   const readyCount = models.filter((m) => m.is_enabled).length;
 
   return (
-    <div className="space-y-2">
-      {currentLabel && (
-        <div className="flex items-center gap-1.5 px-3 py-1.5 rounded bg-voice/8 text-xs">
-          <CheckCircle2 className="w-3 h-3 text-voice" />
-          当前使用：<span className="font-medium">{currentLabel}</span>
-        </div>
-      )}
-      <div className="flex items-center gap-1.5 pt-1 pb-1">
-        <HardDrive className="w-3.5 h-3.5 text-muted-foreground" />
-        <span className="text-xs font-medium text-muted-foreground">本地模型</span>
-        <span className="ml-auto text-[10px] text-muted-foreground/60">{readyCount}/{models.length} 就绪</span>
-      </div>
-      <span className="hidden">{/* 下载地址支持 {huggingface} 等变量替换 */}</span>
+    <div className="space-y-0.5 max-w-[560px]">
+      {currentLabel && <CurrentBanner label={currentLabel} />}
+
+      <SectionHeader icon={HardDrive} label="本地模型" count={`${readyCount}/${models.length}`} />
       {models.map((model) => {
         const prog = progress[model.repo];
         const pct = prog && prog.total > 0 ? (prog.downloaded / prog.total) * 100 : 0;
         return (
-          <div key={model.repo} className="flex items-start justify-between py-2.5 border-b border-border/40 last:border-0 gap-3">
+          <div
+            key={model.repo}
+            className={cn(
+              "group flex items-start justify-between py-2 px-3 rounded-md gap-3 transition-colors",
+              "border-l-2 border-border/40 hover:border-border hover:bg-accent/30",
+              model.is_enabled && "border-l-voice/40",
+            )}
+          >
             <div className="flex flex-col gap-0.5 flex-1 min-w-0">
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-medium">{model.name}</span>
-                <span className="text-[10px] text-muted-foreground/60 px-1.5 py-0.5 rounded bg-muted">{model.category}</span>
-                {model.is_enabled && <CheckCircle2 className="w-3.5 h-3.5 text-voice" />}
+                <span className="text-xs font-medium">{model.name}</span>
+                <span className="text-[9px] text-muted-foreground/50 px-1 py-px rounded bg-muted">{model.category}</span>
+                {model.is_enabled && <CheckCircle2 className="w-3 h-3 text-voice" />}
               </div>
-              <span className="text-xs text-muted-foreground/70">{model.description}</span>
+              <span className="text-[11px] text-muted-foreground/60">{model.description}</span>
               {prog && (
                 <div className="mt-1">
                   <div className="h-1 bg-muted rounded-full overflow-hidden">
                     <div className="h-full bg-voice transition-all" style={{ width: `${pct}%` }} />
                   </div>
-                  <span className="text-[10px] text-muted-foreground/60">{fmtBytes(prog.downloaded)} / {fmtBytes(prog.total)}</span>
+                  <span className="text-[10px] text-muted-foreground/50">{fmtBytes(prog.downloaded)} / {fmtBytes(prog.total)}</span>
                 </div>
               )}
             </div>
             <div className="flex flex-col items-end gap-1 flex-shrink-0">
               {model.is_enabled ? (
                 <button
-                  className="flex items-center gap-1 px-2.5 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors"
+                  className="flex items-center gap-1 px-2 py-0.5 text-[11px] text-muted-foreground hover:text-foreground transition-colors rounded hover:bg-accent"
                   disabled={!!busyRepo}
                   onClick={() => handleVerify(model)}
                 >
-                  <RefreshCw className="w-3 h-3" /> 校验
+                  <RefreshCw className="w-2.5 h-2.5" /> 校验
                 </button>
               ) : (
                 <button
                   className={cn(
-                    "flex items-center gap-1 px-3 py-1.5 rounded-md text-xs transition-colors",
+                    "flex items-center gap-1 px-2.5 py-1 rounded-md text-[11px] transition-all",
                     "bg-foreground text-background hover:opacity-85",
                     busyRepo && "opacity-40 cursor-not-allowed",
                   )}
                   disabled={!!busyRepo}
                   onClick={() => handleDownload(model)}
                 >
-                  <Download className="w-3 h-3" />
+                  <Download className="w-2.5 h-2.5" />
                   {busyRepo === model.repo ? "下载中…" : "下载"}
                 </button>
               )}
@@ -164,20 +182,24 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
           </div>
         );
       })}
-      {/* 云端模型 */}
+
       {cloudEngines.length > 0 && (
         <>
-          <div className="flex items-center gap-1.5 pt-3 pb-1">
-            <Cloud className="w-3.5 h-3.5 text-muted-foreground" />
-            <span className="text-xs font-medium text-muted-foreground">云端引擎</span>
-          </div>
+          <SectionHeader icon={Cloud} label="云端引擎" />
           {cloudEngines.map((engine) => (
-            <div key={engine.name} className="flex items-center justify-between py-2 border-b border-border/40 last:border-0">
+            <div
+              key={engine.name}
+              className={cn(
+                "flex items-center justify-between py-2 px-3 rounded-md transition-colors",
+                "border-l-2 border-border/40",
+                engine.current && "border-l-voice/40 bg-voice/5",
+              )}
+            >
               <div className="flex items-center gap-1.5">
-                <span className="text-sm font-medium">{engine.label}</span>
-                {engine.current && <CheckCircle2 className="w-3.5 h-3.5 text-voice" />}
+                <span className="text-xs font-medium">{engine.label}</span>
+                {engine.current && <CheckCircle2 className="w-3 h-3 text-voice" />}
               </div>
-              <span className="text-[10px] text-muted-foreground/50 px-1.5 py-0.5 rounded bg-muted">{engine.name}</span>
+              <span className="text-[9px] text-muted-foreground/40 px-1 py-px rounded bg-muted font-mono">{engine.name}</span>
             </div>
           ))}
         </>
