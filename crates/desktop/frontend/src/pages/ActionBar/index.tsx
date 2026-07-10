@@ -27,12 +27,14 @@ interface ActionBarItem {
 const AI_TRANSLATE_TIMEOUT_MS = 5000;
 const AI_TIMEOUT_MS = 10000;
 
-const IconBtn = ({ index, label, active, onClick }: {
+const IconBtn = ({ index, label, active, onClick, btnRef }: {
   index: number; label: string; active: boolean; onClick: () => void;
+  btnRef?: (el: HTMLButtonElement | null) => void;
 }) => (
   <button
+    ref={btnRef}
     className={cn(
-      "flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all duration-150",
+      "flex items-center gap-1.5 px-2 py-1.5 rounded-lg transition-all duration-150 shrink-0",
       active
         ? "bg-voice/12 text-voice"
         : "text-muted-foreground hover:bg-foreground/5 hover:text-foreground",
@@ -62,6 +64,8 @@ export default function ActionBar() {
   const [subSelectedIdx, setSubSelectedIdx] = useState(0);
   const [menuItems, setMenuItems] = useState<ActionBarItem[]>([]);
   const [toast, setToast] = useState("");
+  const mainBtnRefs = useRef<(HTMLButtonElement | null)[]>([]);
+  const subBtnRefs = useRef<(HTMLButtonElement | null)[]>([]);
   const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchEngineRef = useRef("google");
   const timedOutRef = useRef(false);
@@ -72,6 +76,14 @@ export default function ActionBar() {
   const focusLayerRef = useRef<"main" | "sub">("main");
 
   useEffect(() => { viewRef.current = view; }, [view]);
+
+  // 高亮项变化时自动滚动到可见区域
+  useEffect(() => {
+    mainBtnRefs.current[selectedIdx]?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  }, [selectedIdx]);
+  useEffect(() => {
+    subBtnRefs.current[subSelectedIdx]?.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "nearest" });
+  }, [subSelectedIdx]);
 
   const showQuickError = (msg: string) => {
     if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
@@ -375,7 +387,7 @@ export default function ActionBar() {
         </div>
       )}
       {/* 主菜单 */}
-      <div className="flex items-center gap-1 px-1.5 py-[3px] shrink-0">
+      <div className="flex items-center gap-1 px-1.5 py-[3px] shrink-0 overflow-x-auto scrollbar-none">
         {mainItems.map((item, i) => (
           <IconBtn
             key={item.id}
@@ -383,12 +395,13 @@ export default function ActionBar() {
             label={item.title}
             active={selectedIdx === i}
             onClick={() => executeItem(item)}
+            btnRef={(el: HTMLButtonElement | null) => { mainBtnRefs.current[i] = el; }}
           />
         ))}
       </div>
       {/* 子菜单——展开时用渐变分隔线 + 轻微底色区分 */}
       <div className={cn(
-        "flex items-center gap-1 px-1.5 py-[3px] shrink-0 overflow-hidden transition-all duration-200",
+        "flex items-center gap-1 px-1.5 py-[3px] shrink-0 overflow-x-auto scrollbar-none transition-all duration-200",
         view === "submenu"
           ? "border-t border-border/30 bg-foreground/[0.02]"
           : "h-0 py-0 overflow-hidden border-t-0",
@@ -400,6 +413,7 @@ export default function ActionBar() {
             label={item.title}
             active={focusLayer === "sub" && subSelectedIdx === i}
             onClick={() => executeItem(item)}
+            btnRef={(el: HTMLButtonElement | null) => { subBtnRefs.current[i] = el; }}
           />
         ))}
       </div>
