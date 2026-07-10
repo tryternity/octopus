@@ -68,6 +68,17 @@
 
 - 占位页面：「即将支持翻译 API / 本地翻译模型」
 - 未来接入翻译引擎配置（DeepL / Google / 百度 / 本地 Argos）
+- 虚线边框空状态 + 未来引擎列表预览（降低透明度）
+
+### 2.6 视觉设计（frontend-design skill）
+
+- **Tab 条**：胶囊式 pill tabs（选中=深色背景白字），替代文字+下划线
+- **「当前使用」横幅**：左 voice 色条（`border-l-2 border-voice`）+ 浅 voice 背景
+- **模型行**：左色条编码状态（voice=就绪/启用、border=禁用）+ hover 微卡片背景
+- **本地/云端 section**：`CollapsibleSection` 组件——点击标题展开/收起（ChevronDown 旋转），默认展开，减少视觉干扰
+- **EnvironmentTab**：变量行卡片化 + hover 显示删除按钮 + input 无边框 focus 出边框
+- **宽度限制**：`max-w-[560px]`，字号 `text-[11px]` 提升信息密度
+- **签名元素**：左侧色条与剪贴板面板 voice 色条一脉相承
 
 ---
 

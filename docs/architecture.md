@@ -456,7 +456,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 模型配置**唯一来源**是 `~/.octopus/octopus.db` 的 `models` 表。小模型（VAD + 默认 ASR）随应用打包到固定路径，开箱即用；大模型按需下载——`octopus-cli download <repo>`（命令行）或设置窗口「模型管理」页（GUI）下到 `~/.octopus/models/<repo>/`（阶段1 接 `octopus-download`），兼容旧 hf-cli 下到 `~/.cache/huggingface/hub/` 的模型。
 
-**GUI 模型管理（设置窗口页面 3，5 tab 化 2026-07-10）**：`ModelsPanel` 重构为 5 tab——常量（环境变量编辑器）/语音识别/文本模型/扫描识别/翻译模型。每个模型 tab 分**本地**和**云端**两个 section（`is_local` 字段区分），顶部显示「当前使用」模型标记。`crates/desktop/src/model_commands.rs` 命令——
+**GUI 模型管理（设置窗口页面 3，5 tab 化 2026-07-10）**：`ModelsPanel` 重构为 5 tab——常量（环境变量编辑器）/语音识别/文本模型/扫描识别/翻译模型。每个模型 tab 分**本地**和**云端**两个 section（`is_local` 字段区分），顶部显示「当前使用」模型标记（左 voice 色条横幅）。section 用 `CollapsibleSection` 组件可折叠（ChevronDown 旋转，默认展开）。视觉：胶囊式 pill tabs + 左色条编码模型状态（voice=就绪、border=禁用）+ `max-w-[560px]`。`crates/desktop/src/model_commands.rs` 命令——
 - `list_downloadable_models`：**v2 直读 DB** `list_all_local_asr_models`（`domain='asr' AND is_local=1`，**不过滤 is_enabled**），按 `is_enabled` 显示就绪/下载。
 - `download_model(repo)`：**v2 先探查** → 未命中下载。**变量模板替换**：repo 中 `{huggingface}` 等占位符替换为 DB `category='env'` 环境变量实际值（替代旧 `download_mirror` 前缀拼接）。
 - `verify_model`：完整性 sha256 复核。
