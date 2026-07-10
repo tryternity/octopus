@@ -66,6 +66,7 @@ export default function Screenshot() {
   const winOriginRef = useRef<{ x: number; y: number } | null>(null);
   const snapRef = useRef<{ x: number; y: number; w: number; h: number } | null>(null);
   const lastHitRef = useRef(0);
+  const reqSeqRef = useRef(0);
 
   const dpr = window.devicePixelRatio || 1;
 
@@ -426,13 +427,16 @@ export default function Screenshot() {
         if (snapRef.current) { snapRef.current = null; draw(); }
       } else if (winOriginRef.current) {
         const now = performance.now();
-        if (now - lastHitRef.current >= 20) { // 50Hz 节流
+        // 20ms ≈ 50Hz：高于此节流窗的 IPC 徒增开销，低于则高亮明显滞后
+        if (now - lastHitRef.current >= 20) {
           lastHitRef.current = now;
           const o = winOriginRef.current;
           const gx = o.x + mx;
           const gy = o.y + my;
+          const seq = ++reqSeqRef.current; // in-flight 去重：新请求覆盖旧的，旧响应到达即丢弃
           invoke<{ x: number; y: number; w: number; h: number } | null>("hit_test_window", { gx, gy })
             .then((snap) => {
+              if (seq !== reqSeqRef.current) return; // 过期响应丢弃（鼠标已移到别处）
               if (!snap) {
                 if (snapRef.current) { snapRef.current = null; draw(); }
                 return;
