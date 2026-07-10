@@ -178,11 +178,7 @@ pub fn before_floating_window_show(app: &tauri::AppHandle) {
 
     if let Some(mtm) = MainThreadMarker::new() {
         let app_ns = NSApplication::sharedApplication(mtm);
-        let depth = {
-            let mut d = FLOAT_DEPTH.lock();
-            *d += 1;
-            *d
-        };
+        let depth = float_depth_increment();
 
         // 只有最外层（depth == 1）才记录前台 app + 判断 inactive
         if depth == 1 {
@@ -219,14 +215,7 @@ pub fn before_floating_window_show(app: &tauri::AppHandle) {
 /// 只有最外层（depth 回到 0）才执行交还焦点。
 #[cfg(target_os = "macos")]
 pub fn after_floating_window_hide(app: &tauri::AppHandle) {
-    let depth = {
-        let mut d = FLOAT_DEPTH.lock();
-        if *d > 0 { *d -= 1; }
-        *d
-    };
-
-    // 只有最外层才交还焦点 + 恢复窗口
-    if depth > 0 { return; }
+    if !float_depth_decrement_and_is_zero() { return; }
 
     let was_inactive = {
         let mut guard = WAS_INACTIVE.lock();
@@ -270,24 +259,9 @@ pub fn after_floating_window_hide(app: &tauri::AppHandle) {
 /// （剪贴板仍可见，用户可能只是瞄一眼其他 app）。
 #[cfg(target_os = "macos")]
 pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
-    // 剪贴板失焦 = 虚拟关闭：扣减 depth
-    let depth = {
-        let mut d = FLOAT_DEPTH.lock();
-        if *d > 0 { *d -= 1; }
-        *d
-    };
-
-    // 只有 depth 回到 0（所有浮窗都关闭了）才清状态。
-    // depth>0 说明还有其他浮窗存活（如 action_bar），不能清它们的焦点协调状态。
-    if depth > 0 {
-        // 仍有浮窗存活——不 deactivate、不清状态、不恢复隐藏窗口
-        //（隐藏窗口属于最外层浮窗管理的状态，内层虚拟关闭不应动）
-        return;
-    }
-
-    // depth==0：所有浮窗已关闭，清理状态
-    *WAS_INACTIVE.lock() = false;
-    let _ = PREV_APP.lock().take();
+    // depth>0（仍有浮窗存活）时直接返回——不清状态、不恢复窗口
+    if !float_depth_decrement_and_is_zero() { return; }
+    float_clear_state();
 
     // 取出隐藏窗口
     let hidden = {
@@ -308,8 +282,6 @@ pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
             let _ = w.show();
         }
     }
-
-    let _ = depth; // depth 已扣减，仅用于将来调试日志
 }
 
 /// 递减 FLOAT_DEPTH + 恢复隐藏窗口 + 清状态，但**不 deactivate / 不交还前台焦点**。
@@ -318,18 +290,8 @@ pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
 /// 否则 depth 永久递增 → 后续焦点协调彻底瘫痪。
 #[cfg(target_os = "macos")]
 pub fn after_floating_window_hide_keep_active(app: &tauri::AppHandle) {
-    let depth = {
-        let mut d = FLOAT_DEPTH.lock();
-        if *d > 0 { *d -= 1; }
-        *d
-    };
-
-    // 只有最外层才恢复窗口
-    if depth > 0 { return; }
-
-    // 清状态（不交还前台焦点——CompactEditor 需要前台）
-    *WAS_INACTIVE.lock() = false;
-    let _ = PREV_APP.lock().take();
+    if !float_depth_decrement_and_is_zero() { return; }
+    float_clear_state();
 
     // 恢复临时隐藏的 Regular 窗口（app 仍在前台，窗口温和恢复）
     let hidden = {
@@ -340,5 +302,88 @@ pub fn after_floating_window_hide_keep_active(app: &tauri::AppHandle) {
         if let Some(w) = app.get_webview_window(&label) {
             let _ = w.show();
         }
+    }
+}
+
+// ── 纯逻辑（可单测，不依赖 AppHandle / MainThreadMarker）──
+
+/// FLOAT_DEPTH +1，返回新值。
+fn float_depth_increment() -> u32 {
+    let mut d = FLOAT_DEPTH.lock();
+    *d += 1;
+    *d
+}
+
+/// FLOAT_DEPTH -1（防下溢），返回递减后是否为 0。
+fn float_depth_decrement_and_is_zero() -> bool {
+    let mut d = FLOAT_DEPTH.lock();
+    if *d > 0 { *d -= 1; }
+    *d == 0
+}
+
+/// 清理焦点协调状态（depth==0 时调用）。
+fn float_clear_state() {
+    *WAS_INACTIVE.lock() = false;
+    let _ = PREV_APP.lock().take();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn reset() {
+        *FLOAT_DEPTH.lock() = 0;
+        *WAS_INACTIVE.lock() = false;
+        let _ = PREV_APP.lock().take();
+        TEMP_HIDDEN.lock().clear();
+    }
+
+    /// 单个测试函数覆盖所有场景（static 全局状态，不能并行）。
+    #[test]
+    fn float_depth_lifecycle() {
+        // ── 基础 increment/decrement ──
+        reset();
+        assert_eq!(float_depth_increment(), 1);
+        assert_eq!(float_depth_increment(), 2);
+        assert!(!float_depth_decrement_and_is_zero()); // depth=1
+        assert!(float_depth_decrement_and_is_zero());  // depth=0
+
+        // ── 下溢保护 ──
+        reset();
+        assert!(float_depth_decrement_and_is_zero()); // 0→0 不 panic
+        assert!(float_depth_decrement_and_is_zero());
+
+        // ── 单浮窗完整周期 ──
+        reset();
+        float_depth_increment();
+        *WAS_INACTIVE.lock() = true;
+        assert!(float_depth_decrement_and_is_zero());
+        float_clear_state();
+        assert!(!*WAS_INACTIVE.lock());
+
+        // ── 嵌套浮窗：内层关闭不清状态 ──
+        reset();
+        float_depth_increment(); // action_bar show (depth=1)
+        *WAS_INACTIVE.lock() = true;
+        float_depth_increment(); // clipboard show (depth=2)
+        assert!(!float_depth_decrement_and_is_zero()); // clipboard blur → depth=1
+        assert!(*WAS_INACTIVE.lock(), "内层关闭不应清外层状态");
+        assert!(float_depth_decrement_and_is_zero());  // action_bar close → depth=0
+        float_clear_state();
+        assert!(!*WAS_INACTIVE.lock());
+
+        // ── 三层嵌套逐层关闭 ──
+        reset();
+        float_depth_increment(); // 1
+        *WAS_INACTIVE.lock() = true;
+        float_depth_increment(); // 2
+        float_depth_increment(); // 3
+        assert!(!float_depth_decrement_and_is_zero()); // 2
+        assert!(*WAS_INACTIVE.lock());
+        assert!(!float_depth_decrement_and_is_zero()); // 1
+        assert!(*WAS_INACTIVE.lock());
+        assert!(float_depth_decrement_and_is_zero());  // 0
+        float_clear_state();
+        assert!(!*WAS_INACTIVE.lock());
     }
 }
