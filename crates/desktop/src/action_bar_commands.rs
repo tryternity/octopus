@@ -264,11 +264,10 @@ pub fn create_action_bar_item(
     icon: String,
     action_type: String,
     action_data: String,
-    _is_async: bool,
-    _write_output_to_clipboard: bool,
+    is_async: bool,
+    write_output_to_clipboard: bool,
 ) -> Result<i64, String> {
-    // TODO Task 4 会接入新参数，先用默认值
-    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, true, false)
+    octopus_infra::db::insert_action_bar_item(parent_id, &title, &icon, &action_type, &action_data, is_async, write_output_to_clipboard)
         .map_err(|e| e.to_string())
 }
 
@@ -280,11 +279,10 @@ pub fn update_action_bar_item(
     action_type: String,
     action_data: String,
     is_enabled: bool,
-    _is_async: bool,
-    _write_output_to_clipboard: bool,
+    is_async: bool,
+    write_output_to_clipboard: bool,
 ) -> Result<(), String> {
-    // TODO Task 4 会接入新参数，先用默认值
-    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled, true, false)
+    octopus_infra::db::update_action_bar_item(id, &title, &icon, &action_type, &action_data, is_enabled, is_async, write_output_to_clipboard)
         .map_err(|e| e.to_string())
 }
 
@@ -296,6 +294,18 @@ pub fn delete_action_bar_item(id: i64) -> Result<(), String> {
 #[tauri::command]
 pub fn move_action_bar_item(id: i64, direction: i32) -> Result<(), String> {
     octopus_infra::db::move_action_bar_item(id, direction).map_err(|e| e.to_string())
+}
+
+// ── 脚本执行记录 ──
+
+#[tauri::command]
+pub fn list_script_runs(limit: Option<i64>, item_id: Option<i64>) -> Result<Vec<octopus_infra::db::ScriptRun>, String> {
+    octopus_infra::db::list_script_runs(limit, item_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<(), String> {
+    octopus_infra::db::clear_script_runs(keep_recent).map_err(|e| e.to_string())
 }
 
 // ── 统一执行入口 ──

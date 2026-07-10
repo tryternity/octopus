@@ -289,6 +289,8 @@ pub fn run() {
             action_bar_commands::delete_action_bar_item,
             action_bar_commands::move_action_bar_item,
             action_bar_commands::execute_action_bar,
+            action_bar_commands::list_script_runs,
+            action_bar_commands::clear_script_runs,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
