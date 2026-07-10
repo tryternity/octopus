@@ -259,6 +259,12 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('action_bar_shortcut',   'CmdOrCtrl+Shift+Space', 'AI 命令面板快捷键'),
     ('action_bar_search_engine', 'google', 'AI 命令面板搜索引擎');
 
+-- ── 环境变量（category='env'）——模型下载地址模板替换 ──────────────
+INSERT OR IGNORE INTO app_config (config_key, config_value, description, category) VALUES
+    ('env.huggingface', 'https://hf-mirror.com', 'HuggingFace 下载镜像地址', 'env'),
+    ('env.modelscope',  'https://modelscope.cn',  '魔搭社区下载镜像地址',   'env'),
+    ('env.github',      'https://github.com',     'GitHub 下载地址',         'env');
+
 -- ── 记事本（notes/notes_fts 表）已移除──────────────────────────
 -- OCR/ASR/剪贴板文本统一走 clipboard_history（OCR 类别 item_type='ocr'）。
 

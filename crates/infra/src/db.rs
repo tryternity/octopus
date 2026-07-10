@@ -434,6 +434,57 @@ pub fn load_config_key(key: &str) -> Result<Option<String>> {
     })
 }
 
+// ── 环境变量（category='env'）──
+
+/// 列出所有 env 变量，返回 (key, value) 列表。
+/// key 去掉 `env.` 前缀（返回裸名如 "huggingface"）。
+pub fn list_env_vars() -> Result<Vec<(String, String)>> {
+    ensure_db()?;
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT config_key, config_value FROM app_config WHERE category = 'env' ORDER BY config_key"
+        )?;
+        let rows = stmt.query_map([], |r| {
+            let key: String = r.get(0)?;
+            let value: String = r.get(1)?;
+            let bare_key = key.strip_prefix("env.").unwrap_or(&key).to_string();
+            Ok((bare_key, value))
+        })?;
+        rows.collect::<std::result::Result<Vec<_>, _>>().map_err(Into::into)
+    })
+}
+
+/// 保存 env 变量（自动加 `env.` 前缀 + category='env'）。
+pub fn save_env_var(key: &str, value: &str) -> Result<()> {
+    ensure_db()?;
+    let full_key = format!("env.{}", key);
+    with_db(|conn| {
+        conn.execute(
+            "INSERT INTO app_config (config_key, config_value, category) VALUES (?1, ?2, 'env')
+             ON CONFLICT(config_key) DO UPDATE SET config_value = excluded.config_value",
+            params![full_key, value],
+        )?;
+        Ok(())
+    })
+}
+
+/// 删除 env 变量。内置 3 个（huggingface/modelscope/github）不可删，返回 Ok(false)。
+pub fn delete_env_var(key: &str) -> Result<bool> {
+    const BUILTIN: &[&str] = &["huggingface", "modelscope", "github"];
+    if BUILTIN.contains(&key) {
+        return Ok(false);
+    }
+    ensure_db()?;
+    let full_key = format!("env.{}", key);
+    with_db(|conn| {
+        conn.execute(
+            "DELETE FROM app_config WHERE config_key = ?1 AND category = 'env'",
+            params![full_key],
+        )?;
+        Ok(true)
+    })
+}
+
 // ── DB → AsrConfig（load_config 用）──
 
 /// 从 DB models 表构造 AsrConfig（domain='asr'）。
