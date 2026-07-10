@@ -298,20 +298,18 @@ fn auto_translate_prompt(text: &str) -> &'static str {
     }
 }
 
-/// 简易 URL 编码（避免引入新 crate）
-fn simple_url_encode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() * 3);
-    for &byte in s.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                result.push(byte as char);
-            }
-            _ => {
-                result.push_str(&format!("%{:02X}", byte));
-            }
-        }
-    }
-    result
+/// URL 查询参数编码：保留 RFC 3986 unreserved（A-Za-z0-9-_.~），其余百分号编码。
+/// 复用 percent-encoding 库（项目已为 file 协议引入）。
+fn url_encode_param(s: &str) -> String {
+    use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+    /// unreserved 之外需编码的 ASCII 字符
+    const ENCODE_SET: &AsciiSet = &CONTROLS
+        .add(b' ').add(b'!').add(b'"').add(b'#').add(b'$').add(b'%').add(b'&')
+        .add(b'\'').add(b'(').add(b')').add(b'*').add(b'+').add(b',').add(b'/')
+        .add(b':').add(b';').add(b'<').add(b'=').add(b'>').add(b'?').add(b'@')
+        .add(b'[').add(b'\\').add(b']').add(b'^').add(b'`').add(b'{').add(b'|')
+        .add(b'}');
+    utf8_percent_encode(s, ENCODE_SET).to_string()
 }
 
 /// 执行脚本：按第一行 magic comment 分发运行时。
@@ -394,6 +392,8 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
             let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
                 .map_err(|e| e.to_string())?;
             action_bar_show_result(result, text, item.title, app);
+            // show_result 内部已 hide(keep_active) + finalize，提前返回不走统一收口
+            return Ok(());
         }
         "url" => {
             let url = if item.action_data.is_empty() {
@@ -405,7 +405,7 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
                     format!("https://{}", raw)
                 }
             } else {
-                item.action_data.replace("{text}", &simple_url_encode(&text))
+                item.action_data.replace("{text}", &url_encode_param(&text))
             };
             #[cfg(target_os = "macos")]
             { let _ = std::process::Command::new("open").arg(&url).spawn(); }
@@ -425,5 +425,9 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
         }
     }
 
+    // url/script/copy 统一收口：标准隐藏 + 焦点交还 + 重入锁复位
+    // （ai 分支已通过 action_bar_show_result 自行收口并提前 return）
+    hide_action_bar_window(&app);
+    finalize_action_bar(&app);
     Ok(())
 }

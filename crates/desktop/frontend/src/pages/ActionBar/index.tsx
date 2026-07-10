@@ -161,7 +161,7 @@ export default function ActionBar() {
         console.warn("[action-bar] AI result arrived after timeout, discarding");
         return;
       }
-      getCurrentWindow().hide();
+      // action_bar_show_result 后端已隐藏本窗口并展示 CompactEditor
     } catch (e) {
       clearTimeout(timeoutId);
       if (timedOutRef.current) return;
@@ -193,9 +193,8 @@ export default function ActionBar() {
       return;
     }
 
-    // url / script / copy → 直接 invoke
+    // url / script / copy → 后端 execute_action_bar 统一隐藏 + 收口
     await invoke("execute_action_bar", { itemId: item.id, text: ctx.text });
-    getCurrentWindow().hide();
   };
 
   // ── 键盘导航 ──
