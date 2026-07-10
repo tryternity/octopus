@@ -195,11 +195,15 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
                 let _ = app.emit("clipboard://collapse", ());
             } else {
                 // 失焦/收缩 → 展开 + 获焦
+                // 先 emit expand 让前端恢复 pointer-events: auto，
+                // 再 show + set_focus——否则 pointer-events: none 阻止窗口获焦。
+                let _ = app.emit("clipboard://expand", ());
                 #[cfg(target_os = "macos")]
                 { crate::activation::before_floating_window_show(app); }
                 window.show()?;
+                // 给前端一点时间处理 expand 事件恢复 pointer-events
+                std::thread::sleep(std::time::Duration::from_millis(50));
                 window.set_focus()?;
-                let _ = app.emit("clipboard://expand", ());
             }
         } else if visible && focused {
             // 非 docked：可见且有焦点 → 隐藏
