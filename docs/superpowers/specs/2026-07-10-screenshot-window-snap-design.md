@@ -1,8 +1,26 @@
 # 截图智能窗口识别（区域截图自动吸附窗口边界）— 设计
 
+> ⏸ **实验性开发 · 已暂停（2026-07-11）**：用户判定「作用不大、耗费资源不少」，暂停。
+> 代码完整保留于本分支（`experiment/screenshot-window-snap`，原 `asr-wordbook`）作**冷存档，未合 main**，
+> 将来想重启随时可回。开发度见下。
+
 - 日期：2026-07-10
-- 分支：asr-wordbook（worktree）
-- 状态：设计中（已过脑暴澄清，待写实施计划）
+- 分支：experiment/screenshot-window-snap（worktree，原名 asr-wordbook）
+- 状态：**已暂停**（v1 / v1.2 已实现并自测，评估后暂停，未合 main）
+
+## 开发度（截至 2026-07-11 暂停）
+
+| 阶段 | 状态 | 说明 |
+|------|------|------|
+| v1 窗口级吸附（`CGWindowList`，零额外权限） | ✅ 已实现 | `WindowDetector` trait + `MacOsDetector` + `hit_test_window` 命令 + 前端吸附层（悬停高亮 / 单击即选 / Cmd 禁用 / 拖拽覆盖）+ `pick_top_window` 纯函数单测 |
+| v1.1 owner/frontmost 过滤 | ⚠️ 已实现后移除 | frontmost 判定会错判，反而露出被遮挡窗口；v1.2 取代 |
+| v1.2 z-order 遮挡 first-hit | ✅ 已实现（替代 v1.1） | 只检测可见窗体，被遮挡窗口永不命中；顺带修复 v1.1 过严 bug |
+| v2 元素级 AX（仅浏览器 bundle id） | ❌ 未实现 | trait 已预留 `Granularity::Element` 变体，macOS impl 返回 `None` |
+| e2e / 验收 | ⚠️ 手动验收为主 | GUI 交互功能，单测覆盖纯逻辑；多屏 / 跨屏 / 遮挡边界未充分验收 |
+
+**暂停根因**：v1 → v1.2 三轮算法迭代，每轮都暴露新 bug（iterm2 全屏窗口检测不到、主屏误判大屏幕、frontmost 错判露出被遮挡窗口）。macOS `CGWindowList` 在真实多窗口 / 多屏 / 各种 app 组合下，z-order + layer + owner + 跨屏坐标的判定有**无穷边界情况**，非修一两个 bug 能收敛。三轮"修一个漏一个" + 用户价值判断低 = 典型该砍（暂停）的功能。v2 元素级 AX 是更大的坑（辅助功能权限 + Electron `force-renderer-accessibility` + TCC 重编译失效）。
+
+---
 
 ## 背景
 
