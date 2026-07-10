@@ -174,3 +174,18 @@ start_screenshot
 | `find_monitor_for_point` | 显示器命中 |
 | `compute_physical_crop` | 物理像素裁剪（含 `.max(0.0)` 跨显示器边界防御——负中间值防 u32 wrap） |
 | `compute_preview_crop` | preview 裁剪参数（消除两处重复） |
+
+---
+
+## 13. 智能窗口识别（区域截图自动吸附）
+
+区域截图模式下，鼠标悬停自动高亮候选窗口，单击即选中整窗（Snow Shot 式），减少手动框选。拖拽手画仍可用（mousedown 后 move > 阈值进拖拽，吸附灭）；按住 Cmd 临时禁用吸附做像素级精框。
+
+- **粒度**：v1 仅窗口级（`CGWindowListCopyWindowInfo`，零额外权限，复用屏幕录制权限）；v2 预留元素级 AX（仅浏览器 bundle id，需辅助功能权限）。
+- **命中算法**：`crates/capx/src/window_detect/mod.rs::pick_top_window` 纯函数——过滤自身 PID / layer<0 / 退化 bounds / 跨屏，按 layer 降序取最上层（同 layer 保留 CGWindowList 数组靠前者 = z-order 上层）。
+- **FFI**：`macos.rs::MacOsDetector` 复用 capture.rs 的 `CGWindowListCopyWindowInfo` 解析模式；`monitor_containing` 用 `CGDisplay` 找含点显示器做跨屏判定；找不到兜底超大 rect（不滤跨屏）。
+- **命令**：`hit_test_window(gx, gy) -> Option<SnapRect>`（全局逻辑坐标进/出，同步微秒级）。
+- **前端**：`Screenshot/index.tsx` onMount 缓存 winOrigin（outerPosition 物理/scaleFactor → 逻辑），onMouseMove idle 悬停节流 50Hz 查询 + in-flight 序号去重（旧响应到达即丢弃）→ Canvas 蓝色虚线描边 + 淡蓝填充高亮；onMouseUp 单击（sel < MIN_SIZE）吃吸附候选选中整窗，落空回 idle（现状）。
+- **坐标**：选区/鼠标=本窗 CSS；winOrigin+clientX=全局逻辑（与 CGWindowList/CGDisplay 同 Quartz 空间，Y 向下）；吸附 rect 返回全局，前端减 winOrigin 得本窗 CSS 绘制。
+- **下游零改动**：吸附只改选区来源，标注/OCR/贴图/复制链路不变。
+- **手动验收**：GUI 交互为主（悬停高亮/单击即选/Cmd 禁用/拖拽覆盖/多屏/跨屏跳过/落空不动/OCR fallback/自身 PID 不命中 9 项 + 多屏坐标对齐抽查）。
