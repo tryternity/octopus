@@ -181,11 +181,33 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let visible = window.is_visible().unwrap_or(false);
         let focused = window.is_focused().unwrap_or(false);
-        if visible && focused {
+
+        // dock 状态：处于 docked 模式时，快捷键逻辑不同于普通 toggle
+        let docked = crate::window_position::load_dock_state(WINDOW_LABEL)
+            .filter(|e| e == "right" || e == "left");
+
+        if let Some(_edge) = &docked {
+            // docked 模式：
+            // - 失焦或收缩态 → 展开 + 获焦
+            // - 有焦点且展开 → 收缩（不隐藏窗口，保持细条可见）
+            if focused {
+                // 有焦点 → 收缩
+                let _ = app.emit("clipboard://collapse", ());
+            } else {
+                // 失焦/收缩 → 展开 + 获焦
+                #[cfg(target_os = "macos")]
+                { crate::activation::before_floating_window_show(app); }
+                window.show()?;
+                window.set_focus()?;
+                let _ = app.emit("clipboard://expand", ());
+            }
+        } else if visible && focused {
+            // 非 docked：可见且有焦点 → 隐藏
             window.hide()?;
             #[cfg(target_os = "macos")]
             { crate::activation::after_floating_window_hide(app); }
         } else {
+            // 非 docked：不可见或无焦点 → show + focus
             #[cfg(target_os = "macos")]
             { crate::activation::before_floating_window_show(app); }
             window.show()?;
