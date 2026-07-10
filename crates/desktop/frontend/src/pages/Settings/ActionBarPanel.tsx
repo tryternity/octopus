@@ -11,8 +11,8 @@ import {
   ArrowDown,
   Trash2,
   Plus,
-  X,
   Pencil,
+  ArrowLeft,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -264,28 +264,23 @@ const EditForm = ({
   const showContent = type !== "submenu" && type !== "copy" && type !== "extension";
 
   return (
-    <div className="mb-1 ml-[26px] rounded-lg border border-border bg-muted/20 p-3.5 shadow-sm">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-          编辑菜单项
-        </span>
-        <button
-          onClick={onCancel}
-          className="text-muted-foreground hover:text-foreground"
-          aria-label="取消"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </div>
+    <div className="space-y-5">
+      {/* 返回按钮 */}
+      <button
+        onClick={onCancel}
+        className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        返回菜单
+      </button>
 
-      <div className="space-y-3">
+      <div className="space-y-4">
         <Field label="标题">
           <input
-            className="w-full bg-background border border-border rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice/50"
+            className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
             value={form.title || ""}
             maxLength={12}
             onChange={(e) => {
-              // 汉字算 2 字符、ASCII 算 1，总权重上限 12
               const MAX = 12;
               const raw = e.target.value;
               let weight = 0;
@@ -304,7 +299,7 @@ const EditForm = ({
         <Field label="类型">
           <div>
             <select
-              className="w-full bg-background border border-border rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice/50 disabled:opacity-60"
+              className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all disabled:opacity-60"
               value={type}
               disabled={isSystem}
               onChange={(e) =>
@@ -317,7 +312,7 @@ const EditForm = ({
                 </option>
               ))}
             </select>
-            <p className="mt-1 text-[11px] text-muted-foreground/80">
+            <p className="mt-1.5 text-[11px] text-muted-foreground/80">
               {meta.desc}
               {isSystem && " · 内置项类型不可更改"}
             </p>
@@ -327,7 +322,7 @@ const EditForm = ({
         {showContent && (
           <Field label="内容">
             <textarea
-              className="w-full min-h-[120px] resize-y bg-background border border-border rounded px-2.5 py-1.5 font-mono text-xs leading-relaxed outline-none focus:border-voice/50"
+              className="w-full min-h-[120px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
               placeholder={meta.placeholder}
               value={form.actionData || ""}
               onChange={(e) =>
@@ -343,8 +338,8 @@ const EditForm = ({
 
         {type === "script" && (
           <Field label="执行选项">
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
+            <div className="space-y-2.5">
+              <div className="flex items-center gap-2.5">
                 <Toggle
                   checked={form.isAsync ?? true}
                   onChange={(v) =>
@@ -360,7 +355,7 @@ const EditForm = ({
                 </span>
               </div>
               {!(form.isAsync ?? true) && (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2.5">
                   <Toggle
                     checked={form.writeOutputToClipboard ?? false}
                     onChange={(v) =>
@@ -377,7 +372,7 @@ const EditForm = ({
         )}
 
         <Field label="启用">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             <Toggle
               checked={form.isEnabled ?? true}
               onChange={(v) => onChange({ ...form, isEnabled: v })}
@@ -389,16 +384,16 @@ const EditForm = ({
         </Field>
       </div>
 
-      <div className="mt-3.5 flex justify-end gap-2 border-t border-border/60 pt-3">
+      <div className="flex justify-end gap-2.5 border-t border-border/40 pt-4">
         <button
           onClick={onCancel}
-          className="rounded-md border border-border px-3.5 py-1.5 text-xs transition-colors hover:bg-muted/60"
+          className="rounded-md border border-border px-4 py-2 text-xs transition-colors hover:bg-muted/60"
         >
           取消
         </button>
         <button
           onClick={onSave}
-          className="rounded-md bg-voice px-4 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
+          className="rounded-md bg-voice px-5 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90"
         >
           保存
         </button>
@@ -415,8 +410,8 @@ const Field = ({
   label: string;
   children: React.ReactNode;
 }) => (
-  <div className="grid grid-cols-[44px_1fr] items-start gap-2">
-    <label className="mt-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+  <div className="grid grid-cols-[56px_1fr] items-start gap-3">
+    <label className="mt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
       {label}
     </label>
     <div className="min-w-0">{children}</div>
