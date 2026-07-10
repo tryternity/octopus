@@ -324,64 +324,163 @@ fn url_encode_param(s: &str) -> String {
     utf8_percent_encode(s, ENCODE_SET).to_string()
 }
 
-/// 执行脚本：按第一行 magic comment 分发运行时。
-/// 选中文本通过环境变量 `OCTOPUS_TEXT` 传递（避免 shell 注入）。
-fn run_script(source: &str, text: &str) -> Result<(), String> {
+// ── 脚本执行（spawn_script + wait_with_timeout + 运行时探测）──
+
+struct ScriptResult {
+    exit_code: Option<i32>,
+    stdout: String,
+    stderr: String,
+    timed_out: bool,
+}
+
+/// 探测 JS 运行时——优先级 node → bun → deno
+fn detect_js_runtime() -> Option<(&'static str, &'static str)> {
+    for (bin, flag) in [("node", "-e"), ("bun", "eval"), ("deno", "eval")] {
+        if std::process::Command::new(bin).arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().is_ok()
+        {
+            return Some((bin, flag));
+        }
+    }
+    None
+}
+
+/// 探测 TS 运行时——优先级 npx tsx → bun → deno
+fn detect_ts_runtime() -> Option<(&'static str, Vec<&'static str>)> {
+    if std::process::Command::new("npx").args(["--yes", "tsx", "--version"])
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status().is_ok()
+    {
+        return Some(("npx", vec!["--yes", "tsx", "-e"]));
+    }
+    if std::process::Command::new("bun").arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status().is_ok()
+    {
+        return Some(("bun", vec!["eval"]));
+    }
+    if std::process::Command::new("deno").arg("--version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .status().is_ok()
+    {
+        return Some(("deno", vec!["eval"]));
+    }
+    None
+}
+
+/// 按 magic comment 分发运行时，spawn 子进程。
+/// capture_output=true 时 stdout/stderr 用 pipe（同步模式），false 时用 null（异步模式）。
+fn spawn_script(source: &str, text: &str, capture_output: bool) -> Result<(std::process::Child, String), String> {
+    use std::process::Stdio;
     let first_line = source.lines().next().unwrap_or("").trim();
     let script: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
 
-    let result: std::io::Result<std::process::Child> = match first_line {
+    let stdout_cfg = if capture_output { Stdio::piped() } else { Stdio::null() };
+    let stderr_cfg = if capture_output { Stdio::piped() } else { Stdio::null() };
+
+    let cmd_result: Result<std::process::Command, String> = match first_line {
         "#shell" => {
-            std::process::Command::new("sh")
-                .arg("-c").arg(&script)
-                .env("OCTOPUS_TEXT", text)
-                .spawn()
+            let mut c = std::process::Command::new("sh");
+            c.arg("-c").arg(&script);
+            Ok(c)
         }
         "#osascript" => {
             #[cfg(target_os = "macos")]
-            { std::process::Command::new("osascript")
-                .arg("-e").arg(&script)
-                .env("OCTOPUS_TEXT", text)
-                .spawn() }
+            { let mut c = std::process::Command::new("osascript"); c.arg("-e").arg(&script); Ok(c) }
             #[cfg(not(target_os = "macos"))]
-            { return Err("osascript 仅 macOS 支持".into()); }
+            { Err("osascript 仅 macOS 支持".into()) }
         }
         "#powershell" => {
             #[cfg(target_os = "windows")]
-            { std::process::Command::new("powershell")
-                .arg("-Command").arg(&script)
-                .env("OCTOPUS_TEXT", text)
-                .spawn() }
+            { let mut c = std::process::Command::new("powershell"); c.arg("-Command").arg(&script); Ok(c) }
             #[cfg(not(target_os = "windows"))]
-            { return Err("powershell 仅 Windows 支持".into()); }
+            { Err("powershell 仅 Windows 支持".into()) }
         }
         "#python" => {
-            std::process::Command::new("python3")
-                .arg("-c").arg(&script)
-                .env("OCTOPUS_TEXT", text)
-                .spawn()
+            let mut c = std::process::Command::new("python3");
+            c.arg("-c").arg(&script);
+            Ok(c)
+        }
+        "#node" => {
+            let mut c = std::process::Command::new("node");
+            c.arg("-e").arg(&script);
+            Ok(c)
+        }
+        "#deno" => {
+            let mut c = std::process::Command::new("deno");
+            c.arg("eval").arg(&script);
+            Ok(c)
+        }
+        "#bun" => {
+            let mut c = std::process::Command::new("bun");
+            c.arg("eval").arg(&script);
+            Ok(c)
+        }
+        "#javascript" => {
+            let (bin, flag) = detect_js_runtime()
+                .ok_or_else(|| "未检测到 JS 运行时，请安装 Node.js / Bun / Deno 之一".to_string())?;
+            let mut c = std::process::Command::new(bin);
+            c.arg(flag).arg(&script);
+            Ok(c)
+        }
+        "#typescript" => {
+            let (bin, args) = detect_ts_runtime()
+                .ok_or_else(|| "未检测到 TS 运行时，请安装 tsx（npm i -g tsx）/ Bun / Deno 之一".to_string())?;
+            let mut c = std::process::Command::new(bin);
+            for a in &args { c.arg(a); }
+            c.arg(&script);
+            Ok(c)
         }
         _ => return Err(format!(
-            "未知脚本类型: {}（第一行须为 #shell/#osascript/#powershell/#python）",
+            "未知脚本类型: {}（第一行须为 #shell/#osascript/#powershell/#python/#node/#deno/#bun/#javascript/#typescript）",
             first_line
         )),
     };
 
-    let mut child = result.map_err(|e| format!("脚本执行失败: {}", e))?;
-    // 后台收割子进程退出状态，60 秒超时强杀，防止僵尸进程 + 线程泄漏
-    std::thread::spawn(move || {
-        for _ in 0..120 {
-            match child.try_wait() {
-                Ok(Some(_)) => return,
-                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
-                Err(_) => return,
+    let mut cmd = cmd_result?;
+    cmd.env("OCTOPUS_TEXT", text);
+    cmd.stdout(stdout_cfg);
+    cmd.stderr(stderr_cfg);
+    let child = cmd.spawn().map_err(|e| format!("脚本执行失败: {}", e))?;
+    Ok((child, first_line.to_string()))
+}
+
+/// 轮询等待子进程退出，60 秒超时强杀。捕获 stdout/stderr。
+fn wait_with_timeout(mut child: std::process::Child) -> ScriptResult {
+    use std::io::Read;
+    for _ in 0..120 {
+        match child.try_wait() {
+            Ok(Some(_)) => {
+                let mut stdout_buf = String::new();
+                if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
+                let mut stderr_buf = String::new();
+                if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
+                let code = child.wait().ok().and_then(|s| s.code());
+                return ScriptResult { exit_code: code, stdout: stdout_buf, stderr: stderr_buf, timed_out: false };
+            }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
+            Err(_) => {
+                let mut stdout_buf = String::new();
+                if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
+                let mut stderr_buf = String::new();
+                if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
+                return ScriptResult { exit_code: None, stdout: stdout_buf, stderr: stderr_buf, timed_out: false };
             }
         }
-        // 超时强杀
-        let _ = child.kill();
-        let _ = child.wait();
-    });
-    Ok(())
+    }
+    // 超时强杀
+    let _ = child.kill();
+    let _ = child.wait();
+    let mut stdout_buf = String::new();
+    if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
+    let mut stderr_buf = String::new();
+    if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
+    ScriptResult { exit_code: None, stdout: stdout_buf, stderr: stderr_buf, timed_out: true }
 }
 
 /// 执行菜单项动作核心逻辑（不含收口）。
@@ -427,7 +526,11 @@ fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Resu
             Ok(false)
         }
         "script" => {
-            run_script(&item.action_data, &text)?;
+            // 临时 fire-and-forget（Task 3 会重构为 async/sync 模式 + 结果捕获）
+            let (mut child, _script_type) = spawn_script(&item.action_data, &text, false)?;
+            std::thread::spawn(move || {
+                let _ = wait_with_timeout(child);
+            });
             Ok(false)
         }
         "copy" => {
