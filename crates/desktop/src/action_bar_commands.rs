@@ -181,7 +181,8 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
         "polish" => "润色",
         "summarize" => "摘要",
         "explain" => "解释",
-        _ => "AI",
+        // script 同步路径传入的 action 是菜单项 title，直接用作 label
+        _ => &action,
     };
     let display_text = format!("【{}】\n{}", label, result);
 

@@ -8,6 +8,7 @@ use std::path::{Path, PathBuf};
 
 /// config.yaml 反序列化结构
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct PackageConfig {
     pub name: String,
     pub description: String,
@@ -32,6 +33,7 @@ pub struct PackageAction {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[allow(dead_code)]
 pub struct PackageSkill {
     #[serde(rename = "ref")]
     pub skill_ref: Option<String>,
@@ -144,65 +146,103 @@ pub fn read_script_magic_comment(pkg_dir: &Path, script_rel: &str) -> Option<Str
 
 // ── Tauri commands ──
 
-/// 解压 zip → 校验 → 安装到 extensions → 创建 DB 记录
+/// 导入结果——前端拿这个选父菜单后再调 install_extension_to_db
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportResult {
+    pub name: String,
+    pub script_path: String,
+    pub is_async: bool,
+    pub write_output_to_clipboard: bool,
+}
+
+/// 导入扩展包——支持 zip 文件或文件夹路径。
+/// 校验 + 安装到 extensions，返回 ImportResult（前端再选父菜单后调 install_extension_to_db）。
 #[tauri::command]
-pub fn import_extension(zip_path: String, parent_id: Option<i64>) -> Result<String, String> {
+pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
     use std::fs;
 
-    let tmp_dir = std::env::temp_dir().join(format!("octopus-ext-{}", std::process::id()));
-    let _ = fs::remove_dir_all(&tmp_dir);
-    fs::create_dir_all(&tmp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
+    let path = std::path::Path::new(&source_path);
+    let is_zip = path.extension().map(|e| e == "zip").unwrap_or(false);
 
-    let zip_file = fs::File::open(&zip_path).map_err(|e| format!("打开 zip 失败: {}", e))?;
-    let mut archive = zip::ZipArchive::new(zip_file).map_err(|e| format!("读取 zip 失败: {}", e))?;
-
-    for i in 0..archive.len() {
-        let mut file = archive.by_index(i).map_err(|e| format!("读取 zip 条目失败: {}", e))?;
-        let outpath = match file.enclosed_name() {
-            Some(path) => tmp_dir.join(path),
-            None => continue,
-        };
-        if file.is_dir() {
-            fs::create_dir_all(&outpath).map_err(|e| format!("创建目录失败: {}", e))?;
-        } else {
-            if let Some(parent) = outpath.parent() {
-                fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+    // 1. 解压/定位 Package 目录
+    let pkg_dir: std::path::PathBuf = if is_zip {
+        let tmp_dir = std::env::temp_dir().join(format!("octopus-ext-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&tmp_dir);
+        fs::create_dir_all(&tmp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
+        let zip_file = fs::File::open(path).map_err(|e| format!("打开 zip 失败: {}", e))?;
+        let mut archive = zip::ZipArchive::new(zip_file).map_err(|e| format!("读取 zip 失败: {}", e))?;
+        for i in 0..archive.len() {
+            let mut file = archive.by_index(i).map_err(|e| format!("读取 zip 条目失败: {}", e))?;
+            let outpath = match file.enclosed_name() {
+                Some(p) => tmp_dir.join(p),
+                None => continue,
+            };
+            if file.is_dir() {
+                fs::create_dir_all(&outpath).map_err(|e| format!("创建目录失败: {}", e))?;
+            } else {
+                if let Some(parent) = outpath.parent() {
+                    fs::create_dir_all(parent).map_err(|e| format!("创建目录失败: {}", e))?;
+                }
+                let mut outfile = fs::File::create(&outpath).map_err(|e| format!("创建文件失败: {}", e))?;
+                std::io::copy(&mut file, &mut outfile).map_err(|e| format!("写入文件失败: {}", e))?;
             }
-            let mut outfile = fs::File::create(&outpath)
-                .map_err(|e| format!("创建文件失败: {}", e))?;
-            std::io::copy(&mut file, &mut outfile)
-                .map_err(|e| format!("写入文件失败: {}", e))?;
         }
-    }
+        let pkg = find_package_root(&tmp_dir)
+            .ok_or_else(|| "zip 内未找到含 config.yaml 的顶层文件夹".to_string())?;
+        // 复制到 extensions
+        let dir_name = pkg.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("无法获取文件夹名")?;
+        let dest = extensions_dir().join(&dir_name);
+        let _ = fs::remove_dir_all(&dest);
+        fs::create_dir_all(extensions_dir()).map_err(|e| format!("创建 extensions 目录失败: {}", e))?;
+        copy_dir_recursive(&pkg, &dest).map_err(|e| format!("复制文件失败: {}", e))?;
+        let _ = fs::remove_dir_all(&tmp_dir);
+        dest
+    } else if path.is_dir() {
+        // 文件夹——如果在 extensions 内直接用，否则复制
+        let pkg = find_package_root(path).ok_or_else(|| "文件夹内未找到 config.yaml".to_string())?;
+        let dir_name = pkg.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("无法获取文件夹名")?;
+        let dest = extensions_dir().join(&dir_name);
+        if &pkg != &dest {
+            let _ = fs::remove_dir_all(&dest);
+            fs::create_dir_all(extensions_dir()).map_err(|e| format!("创建 extensions 目录失败: {}", e))?;
+            copy_dir_recursive(&pkg, &dest).map_err(|e| format!("复制文件失败: {}", e))?;
+        }
+        dest
+    } else {
+        return Err("路径既不是文件夹也不是 zip".into());
+    };
 
-    let pkg_dir = find_package_root(&tmp_dir)
-        .ok_or_else(|| "zip 内未找到含 config.yaml 的顶层文件夹".to_string())?;
     let config = validate_package(&pkg_dir)?;
+    let script_abs = pkg_dir.join(&config.action.script);
 
-    let dir_name = pkg_dir
-        .file_name()
-        .map(|n| n.to_string_lossy().to_string())
-        .ok_or("无法获取文件夹名")?;
-    let dest = extensions_dir().join(&dir_name);
-    let _ = fs::remove_dir_all(&dest);
-    fs::create_dir_all(extensions_dir()).map_err(|e| format!("创建 extensions 目录失败: {}", e))?;
-    copy_dir_recursive(&pkg_dir, &dest).map_err(|e| format!("复制文件失败: {}", e))?;
-    let _ = fs::remove_dir_all(&tmp_dir);
+    Ok(ImportResult {
+        name: config.name,
+        script_path: script_abs.to_string_lossy().to_string(),
+        is_async: config.action.is_async,
+        write_output_to_clipboard: config.action.write_output_to_clipboard,
+    })
+}
 
-    let script_abs = dest.join(&config.action.script);
-    let name = config.name.clone();
+/// 安装扩展到 DB——用户选好父菜单后调用
+#[tauri::command]
+pub fn install_extension_to_db(
+    name: String,
+    script_path: String,
+    is_async: bool,
+    write_output_to_clipboard: bool,
+    parent_id: Option<i64>,
+) -> Result<i64, String> {
     octopus_infra::db::insert_action_bar_item(
         parent_id,
         &name,
         "",
         "script",
-        &script_abs.to_string_lossy(),
-        config.action.is_async,
-        config.action.write_output_to_clipboard,
+        &script_path,
+        is_async,
+        write_output_to_clipboard,
     )
-    .map_err(|e| e.to_string())?;
-
-    Ok(name)
+    .map_err(|e| e.to_string())
 }
 
 /// 返回扩展列表 + DB 关联

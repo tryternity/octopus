@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback, useRef, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   ChevronRight,
   ChevronDown,
@@ -626,17 +627,28 @@ interface ExtensionInfo {
   parentId: number | null;
 }
 
+interface ImportResult {
+  name: string;
+  scriptPath: string;
+  isAsync: boolean;
+  writeOutputToClipboard: boolean;
+}
+
 const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) => {
   const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [pendingImport, setPendingImport] = useState<ImportResult | null>(null);
+  const [parentGroups, setParentGroups] = useState<ActionBarItem[]>([]);
   const inDropZone = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
       const list = await invoke<ExtensionInfo[]>("list_extensions");
       setExtensions(list);
+      const all = await invoke<ActionBarItem[]>("list_action_bar_items");
+      setParentGroups(all.filter((i) => i.actionType === "submenu" && i.parentId === null));
     } catch (e) {
       showToast("加载失败：" + e);
     }
@@ -647,8 +659,57 @@ const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) =>
     refresh();
   }, [refresh]);
 
-  // Tauri 2 文件拖拽——onDragDropEvent 在 webview 级别监听，
-  // 通过 inDropZone ref + mouse position 判断是否落在扩展面板区域内
+  // 统一的导入入口——导入后弹父菜单选择器
+  const doImport = useCallback(
+    async (sourcePath: string) => {
+      try {
+        const result = await invoke<ImportResult>("import_extension", { sourcePath });
+        setPendingImport(result);
+      } catch (e) {
+        showToast("导入失败：" + e);
+      }
+    },
+    [showToast],
+  );
+
+  // 确认安装到 DB
+  const confirmInstall = useCallback(
+    async (parentId: number | null) => {
+      if (!pendingImport) return;
+      try {
+        await invoke("install_extension_to_db", {
+          name: pendingImport.name,
+          scriptPath: pendingImport.scriptPath,
+          isAsync: pendingImport.isAsync,
+          writeOutputToClipboard: pendingImport.writeOutputToClipboard,
+          parentId,
+        });
+        showToast(`已安装：${pendingImport.name}`);
+        setPendingImport(null);
+        refresh();
+      } catch (e) {
+        showToast("安装失败：" + e);
+      }
+    },
+    [pendingImport, showToast, refresh],
+  );
+
+  // 文件选择导入
+  const handleOpenFile = useCallback(async () => {
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        filters: [{ name: "扩展包", extensions: ["zip"] }],
+      });
+      if (typeof selected === "string") {
+        doImport(selected);
+      }
+    } catch {
+      // 用户取消
+    }
+  }, [doImport]);
+
+  // Tauri 2 文件拖拽
   useEffect(() => {
     const win = getCurrentWebview();
     const unlisten = win.onDragDropEvent((event) => {
@@ -659,17 +720,16 @@ const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) =>
         setDragging(false);
         if (!inDropZone.current) return;
         const paths = (event.payload as { paths: string[] }).paths;
-        const zipPath = paths.find((p: string) => p.endsWith(".octopusext.zip"));
-        if (!zipPath) {
-          showToast("请拖入 .octopusext.zip 文件");
+        const target = paths.find((p: string) => p.endsWith(".zip") || p.endsWith("config.yaml"));
+        if (!target) {
+          showToast("请拖入 .octopusext.zip 或含 config.yaml 的文件夹");
           return;
         }
-        invoke<string>("import_extension", { zipPath, parentId: null })
-          .then((name) => {
-            showToast(`已导入：${name}`);
-            refresh();
-          })
-          .catch((e) => showToast("导入失败：" + e));
+        // 如果是 config.yaml，取父目录
+        const sourcePath = target.endsWith("config.yaml")
+          ? target.replace(/\/config\.yaml$/, "")
+          : target;
+        doImport(sourcePath);
       } else if (type === "leave") {
         setDragging(false);
       }
@@ -677,7 +737,7 @@ const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) =>
     return () => {
       unlisten.then((fn: () => void) => fn());
     };
-  }, [showToast, refresh]);
+  }, [showToast, doImport]);
 
   const handleDelete = useCallback(
     async (dirName: string) => {
@@ -694,8 +754,41 @@ const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) =>
   );
 
   if (!loaded) {
+    return <p className="py-12 text-center text-sm text-muted-foreground">加载中…</p>;
+  }
+
+  // 父菜单选择器
+  if (pendingImport) {
     return (
-      <p className="py-12 text-center text-sm text-muted-foreground">加载中…</p>
+      <div className="rounded-lg border border-border bg-muted/20 p-4">
+        <p className="mb-1 text-sm font-medium">安装扩展：{pendingImport.name}</p>
+        <p className="mb-3 text-xs text-muted-foreground">
+          选择挂载到的父菜单（扩展将作为子菜单项出现）
+        </p>
+        <div className="space-y-1.5">
+          <button
+            onClick={() => confirmInstall(null)}
+            className="w-full rounded-md border border-border px-3 py-2 text-left text-xs hover:bg-foreground/5"
+          >
+            顶层（作为主菜单项）
+          </button>
+          {parentGroups.map((g) => (
+            <button
+              key={g.id}
+              onClick={() => confirmInstall(g.id)}
+              className="w-full rounded-md border border-border px-3 py-2 text-left text-xs hover:bg-foreground/5"
+            >
+              {g.title}
+            </button>
+          ))}
+        </div>
+        <button
+          onClick={() => setPendingImport(null)}
+          className="mt-3 rounded-md border border-border px-3 py-1.5 text-xs text-muted-foreground hover:bg-muted/60"
+        >
+          取消
+        </button>
+      </div>
     );
   }
 
@@ -715,17 +808,25 @@ const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) =>
             ~/.octopus/extensions/
           </p>
         </div>
-        <button
-          onClick={() => refresh()}
-          className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-        >
-          刷新
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            onClick={handleOpenFile}
+            className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          >
+            打开
+          </button>
+          <button
+            onClick={() => refresh()}
+            className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+          >
+            刷新
+          </button>
+        </div>
       </div>
 
       <div className="px-3 py-2 text-center">
         <p className="text-[11px] text-muted-foreground/60">
-          拖拽 .octopusext.zip 到此处导入
+          拖拽 .octopusext.zip 或文件夹到此处导入
         </p>
       </div>
 
