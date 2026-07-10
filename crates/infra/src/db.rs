@@ -1732,13 +1732,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v21() {
+    fn init_schema_fresh_db_builds_v22() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 21, "全新库 init_schema 后应到 v21");
+        assert_eq!(v, 22, "全新库 init_schema 后应到 v22");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -1752,16 +1752,16 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_v21_is_noop() {
-        // 已是 v21 的库再调 init_schema 应早退（不重跑、不报错）
+    fn init_schema_v22_is_noop() {
+        // 已是 v22 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 21", []).unwrap();
+        conn.execute("PRAGMA user_version = 22", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 21);
+        assert_eq!(v, 22);
     }
 
     #[test]
@@ -2367,7 +2367,10 @@ mod tests {
             .unwrap()
             .filter_map(|r| r.ok())
             .collect();
-        assert_eq!(categories, vec!["setting"], "所有行 category 应为 'setting'");
+        assert!(
+            categories.contains(&"setting".to_string()) && categories.contains(&"env".to_string()),
+            "category 应包含 'setting' 和 'env'，实际: {:?}", categories
+        );
     }
 
     #[test]
