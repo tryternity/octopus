@@ -34,7 +34,12 @@ pub struct WinInfo {
     pub h: f64,
 }
 
-/// 显示器矩形（跨屏判定用；全局显示逻辑坐标）。
+/// 显示器矩形（跨屏判定用；全局显示逻辑坐标，points）。
+///
+/// 注意：本类型**不含 `scale`**——capx 只做几何命中判定，scale 是前端渲染关注点。
+/// desktop crate 的 `screenshot_geometry::MonitorRect` 带 `scale: f64`（物理↔逻辑换算），
+/// 二者分属不同 crate 层（desktop 依赖 capx，反向不可），故各自独立、无需互转——
+/// desktop 的 `hit_test_window` 命令只传 `(gx, gy)`，capx 内部用 CGDisplay 构造本类型。
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MonitorRect {
     pub x: f64,
@@ -44,6 +49,8 @@ pub struct MonitorRect {
 }
 
 /// 窗口识别器 trait（跨平台抽象，仿 PinWindow trait）。
+///
+/// v1 仅实现 `Granularity::Window` 分支；`Element`（AX 元素级）v2 才补，v1 返回 None。
 pub trait WindowDetector {
     /// 找鼠标 (gx,gy) 下最上层合格窗口的吸附矩形；无候选返回 None。
     fn hit_test(
@@ -57,7 +64,7 @@ pub trait WindowDetector {
 
 /// 命中算法纯函数：从窗口列表找 (gx,gy) 下最上层合格窗口。
 ///
-/// 过滤：① pid == self_pid（自身截图覆盖窗）② layer < 0（桌面/壁纸）
+/// 过滤：① pid == self_pid（排除 octopus 自身拥有的所有窗口：截图覆盖窗 + 主窗 + 任何子窗——截图时绝不吸附自己的窗口）② layer < 0（桌面/壁纸）
 ///      ③ 退化 bounds（w 或 h ≤ 0）④ 跨屏（bounds 不完全包含在 monitor 内）。
 /// 候选 = bounds 含点；按 layer 降序取最上层，layer 相同则保留数组靠前者
 /// （CGWindowList 数组顺序即 z-order，index 越小越上层）。
@@ -176,5 +183,21 @@ mod tests {
     fn no_candidate_when_point_off_all_windows() {
         let ws = [win(100, 0, 0.0, 0.0, 500.0, 400.0)];
         assert!(pick_top_window(&ws, 1000.0, 1000.0, MON, 999).is_none());
+    }
+
+    #[test]
+    fn right_bottom_edge_is_half_open_miss() {
+        // 命中区间左闭右开 [x, x+w)：右边界 x+w 恰好等于应 miss
+        let ws = [win(100, 0, 0.0, 0.0, 100.0, 100.0)];
+        assert!(pick_top_window(&ws, 100.0, 50.0, MON, 999).is_none()); // 右边界
+        assert!(pick_top_window(&ws, 50.0, 100.0, MON, 999).is_none()); // 下边界
+    }
+
+    #[test]
+    fn left_top_edge_is_inclusive_hit() {
+        // 左/上边界 x / y 恰好等于应命中（闭）
+        let ws = [win(100, 0, 10.0, 10.0, 100.0, 100.0)];
+        let r = pick_top_window(&ws, 10.0, 10.0, MON, 999).unwrap();
+        assert_eq!((r.x, r.y), (10.0, 10.0));
     }
 }
