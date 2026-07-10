@@ -10,7 +10,7 @@ interface Context {
   text: string;
 }
 
-type View = "main" | "submenu" | "loading" | "error";
+type View = "main" | "submenu" | "loading";
 
 interface ActionBarItem {
   id: number;
@@ -61,7 +61,8 @@ export default function ActionBar() {
   const [selectedIdx, setSelectedIdx] = useState(0);
   const [subSelectedIdx, setSubSelectedIdx] = useState(0);
   const [menuItems, setMenuItems] = useState<ActionBarItem[]>([]);
-  const [errorMsg, setErrorMsg] = useState("");
+  const [toast, setToast] = useState("");
+  const toastTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const searchEngineRef = useRef("google");
   const timedOutRef = useRef(false);
   const contextRef = useRef<Context | null>(null);
@@ -71,13 +72,19 @@ export default function ActionBar() {
   const focusLayerRef = useRef<"main" | "sub">("main");
 
   useEffect(() => { viewRef.current = view; }, [view]);
+
+  const showQuickError = (msg: string) => {
+    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
+    setToast(msg);
+    toastTimerRef.current = setTimeout(() => setToast(""), 2000);
+  };
   useEffect(() => { focusLayerRef.current = focusLayer; }, [focusLayer]);
   useEffect(() => { contextRef.current = context; }, [context]);
 
   // 动态调整窗口高度——主菜单 1 行（~40px），子菜单 2 行（~76px），
   // 避免透明区域遮挡下层点击
   useEffect(() => {
-    const height = view === "submenu" ? 78 : view === "loading" ? 48 : view === "error" ? 60 : 40;
+    const height = view === "submenu" ? 78 : view === "loading" ? 48 : 40;
     const win = getCurrentWindow();
     win.setSize(new LogicalSize(380, height)).catch(() => {});
   }, [view]);
@@ -90,7 +97,7 @@ export default function ActionBar() {
       window.focus();
       invoke<Context | null>("action_bar_get_context").then((ctx) => {
         // 每次 show 都重置基础状态——防止遗留旧状态
-        setView("main"); setSelectedIdx(0); setFocusLayer("main"); setErrorMsg("");
+        setView("main"); setSelectedIdx(0); setFocusLayer("main");
         if (ctx) { setContext(ctx); }
       });
       // 每次唤起都重新加载菜单项 + 配置（设置页可能已改）
@@ -150,8 +157,8 @@ export default function ActionBar() {
     const timeoutMs = item.actionData === "auto_translate" ? AI_TRANSLATE_TIMEOUT_MS : AI_TIMEOUT_MS;
     const timeoutId = setTimeout(() => {
       timedOutRef.current = true;
-      setErrorMsg(`请求超时（${timeoutMs / 1000} 秒），请检查网络或 LLM 配置`);
-      setView("error");
+      showQuickError(`请求超时（${timeoutMs / 1000}s）`);
+      setView("main");
     }, timeoutMs);
 
     try {
@@ -165,8 +172,8 @@ export default function ActionBar() {
     } catch (e) {
       clearTimeout(timeoutId);
       if (timedOutRef.current) return;
-      setErrorMsg(String(e));
-      setView("error");
+      showQuickError(String(e).slice(0, 40));
+      setView("main");
     }
   };
 
@@ -193,12 +200,11 @@ export default function ActionBar() {
       return;
     }
 
-    // url / script / copy → 后端异常时切 error 视图（与 ai 分支一致）
+    // url / script / copy → 脚本类错误显示红色气泡提示（1 秒消失），其他类切 error 视图
     try {
       await invoke("execute_action_bar", { itemId: item.id, text: ctx.text });
     } catch (e) {
-      setErrorMsg(String(e));
-      setView("error");
+      showQuickError(String(e).replace(/^脚本执行失败:\s*/, "").slice(0, 40));
     }
   };
 
@@ -227,7 +233,7 @@ export default function ActionBar() {
         return;
       }
 
-      if (viewRef.current === "loading" || viewRef.current === "error") return;
+      if (viewRef.current === "loading") return;
 
       // 数字键（无修饰）定位当前焦点层第 N 项——只移动高亮，不执行；超出范围无效
       if (/^[1-9]$/.test(e.key)) {
@@ -354,19 +360,6 @@ export default function ActionBar() {
     );
   }
 
-  if (view === "error") {
-    return (
-      <div data-action-bar className="flex flex-col gap-1.5 px-4 py-3 bg-background/95 backdrop-blur-xl text-foreground rounded-2xl border border-red-500/30 shadow-2xl shadow-black/10 max-w-[260px]">
-        <span className="text-[12px] text-red-500 font-medium leading-snug">{errorMsg}</span>
-        <button
-          className="text-[11px] text-muted-foreground hover:text-foreground transition-colors w-fit"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={() => invoke("action_bar_dismiss")}
-        >关闭</button>
-      </div>
-    );
-  }
-
   const subItems = submenuParentIdRef.current !== null
     ? getSubItems(submenuParentIdRef.current)
     : [];
@@ -374,8 +367,13 @@ export default function ActionBar() {
   return (
     <div
       data-action-bar
-      className="flex flex-col rounded-lg border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
+      className="relative flex flex-col rounded-lg border border-border/50 shadow-2xl shadow-black/10 overflow-hidden bg-background/95 backdrop-blur-xl"
     >
+      {toast && (
+        <div className="absolute inset-x-0 top-0 z-10 flex items-center justify-center bg-red-500/90 backdrop-blur-sm px-3 py-2 animate-in fade-in duration-150">
+          <span className="text-[11px] font-medium text-white text-center leading-tight line-clamp-2">{toast}</span>
+        </div>
+      )}
       {/* 主菜单 */}
       <div className="flex items-center gap-1 px-1.5 py-1.5 shrink-0">
         {mainItems.map((item, i) => (

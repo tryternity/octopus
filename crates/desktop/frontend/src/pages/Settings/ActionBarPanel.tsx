@@ -154,10 +154,10 @@ const EditForm = ({
           <input
             className="w-full bg-background border border-border rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice/50"
             value={form.title || ""}
-            maxLength={6}
+            maxLength={12}
             onChange={(e) => {
-              // 汉字算 2 字符、ASCII 算 1，总权重上限 6
-              const MAX = 6;
+              // 汉字算 2 字符、ASCII 算 1，总权重上限 12
+              const MAX = 12;
               const raw = e.target.value;
               let weight = 0;
               let ok = "";
