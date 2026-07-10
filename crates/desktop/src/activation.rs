@@ -205,3 +205,34 @@ pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
     *WAS_INACTIVE.lock() = false;
     let _ = PREV_APP.lock().take();
 }
+
+/// 递减 FLOAT_DEPTH + 恢复隐藏窗口 + 清状态，但**不 deactivate / 不交还前台焦点**。
+/// 用于 `action_bar_show_result`：浮窗 hide 后紧接着要 show CompactEditor，
+/// deactivate 会导致新窗口被压后台。但必须闭合 depth 引用计数生命周期，
+/// 否则 depth 永久递增 → 后续焦点协调彻底瘫痪。
+#[cfg(target_os = "macos")]
+pub fn after_floating_window_hide_keep_active(app: &tauri::AppHandle) {
+    let depth = {
+        let mut d = FLOAT_DEPTH.lock();
+        if *d > 0 { *d -= 1; }
+        *d
+    };
+
+    // 只有最外层才恢复窗口
+    if depth > 0 { return; }
+
+    // 清状态（不交还前台焦点——CompactEditor 需要前台）
+    *WAS_INACTIVE.lock() = false;
+    let _ = PREV_APP.lock().take();
+
+    // 恢复临时隐藏的 Regular 窗口（app 仍在前台，窗口温和恢复）
+    let hidden = {
+        let mut guard = TEMP_HIDDEN.lock();
+        std::mem::take(&mut *guard)
+    };
+    for label in hidden {
+        if let Some(w) = app.get_webview_window(&label) {
+            let _ = w.show();
+        }
+    }
+}

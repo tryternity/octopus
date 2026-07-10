@@ -91,8 +91,40 @@ pub fn trigger_action_bar(app: AppHandle) {
         // 浮窗在鼠标正上方，X 轴居中对齐鼠标，Y 轴在鼠标上方
         let (mx, my) = get_mouse_position(&app_clone);
         // 不截断——副屏在主屏左/上方时坐标可为负值
-        let win_x = mx - 190.0;
+        let mut win_x = mx - 190.0;
         let win_y = my - 42.0;
+
+        // 碰撞检测：防止浮窗溢出显示器边缘
+        // Monitor position/size 返回物理像素，需 ÷ scale_factor() 转逻辑坐标
+        const WIN_W: f64 = 380.0;
+        if let Some(monitor) = app_clone.available_monitors().ok().and_then(|monitors| {
+            monitors.into_iter().find(|m| {
+                let scale = m.scale_factor();
+                let mx_phys = m.position().x as f64;
+                let my_phys = m.position().y as f64;
+                let mw_phys = m.size().width as f64;
+                let mh_phys = m.size().height as f64;
+                let mon_left = mx_phys / scale;
+                let mon_top = my_phys / scale;
+                let mon_right = (mx_phys + mw_phys) / scale;
+                let mon_bottom = (my_phys + mh_phys) / scale;
+                mx >= mon_left && mx < mon_right && my >= mon_top && my < mon_bottom
+            })
+        }) {
+            let scale = monitor.scale_factor();
+            let mon_x = monitor.position().x as f64 / scale;
+            let mon_w = monitor.size().width as f64 / scale;
+            let mon_right = mon_x + mon_w;
+            // 右溢出：贴右边缘
+            if win_x + WIN_W > mon_right {
+                win_x = mon_right - WIN_W;
+            }
+            // 左溢出：贴左边缘
+            if win_x < mon_x {
+                win_x = mon_x;
+            }
+        }
+
         log::info!("[action-bar] mouse=({},{}) → win_pos=({},{})", mx, my, win_x, win_y);
 
         let app_for_show = app_clone.clone();
@@ -129,9 +161,14 @@ pub fn action_bar_dismiss(app: AppHandle) {
 pub fn action_bar_show_result(result: String, _original_text: String, action: String, app: AppHandle) {
     // 只隐藏浮窗本身——不调 hide_action_bar_window（含 after_floating_window_hide → deactivate），
     // 因为接下来要展示 CompactEditor，deactivate 会导致新窗口被压在后台。
+    // 但必须递减 FLOAT_DEPTH + 恢复隐藏窗口（after_floating_window_hide_keep_active），
+    // 否则 depth 永久泄漏导致后续焦点协调瘫痪。
     if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
         let _ = win.hide();
     }
+
+    #[cfg(target_os = "macos")]
+    { crate::activation::after_floating_window_hide_keep_active(&app); }
 
     let label = match action.as_str() {
         "translate" => "翻译",
