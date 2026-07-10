@@ -1,7 +1,6 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import { invoke } from "@/lib/tauri";
-import { listen } from "@/lib/tauri";
+import { invoke, listen } from "@/lib/tauri";
 import { useClipboardHistory } from "@/hooks/useClipboardHistory";
 import { useTauriEvent } from "@/hooks/useTauriEvent";
 import { moveIndex, moveTab } from "@/lib/clipboardNav";
@@ -181,6 +180,27 @@ export default function Clipboard() {
       console.error(e);
     }
   }, [pinned]);
+
+  // dock 状态：吸附边缘 + 当前模式
+  const [dockEdge, setDockEdge] = useState<"right" | "left" | null>(null);
+  const [dockMode, setDockMode] = useState<"none" | "collapsed" | "expanded">("none");
+
+  // 监听 dock 事件
+  useEffect(() => {
+    const unlisteners: Array<() => void> = [];
+    listen("clipboard://dock-changed", (edge) => {
+      if (edge === "right" || edge === "left") {
+        setDockEdge(edge);
+        setDockMode("collapsed");
+      } else {
+        setDockEdge(null);
+        setDockMode("none");
+      }
+    }).then(f => unlisteners.push(f));
+    listen("clipboard://expand", () => setDockMode("expanded")).then(f => unlisteners.push(f));
+    listen("clipboard://collapse", () => setDockMode("collapsed")).then(f => unlisteners.push(f));
+    return () => unlisteners.forEach(f => f());
+  }, []);
 
   return (
     <div

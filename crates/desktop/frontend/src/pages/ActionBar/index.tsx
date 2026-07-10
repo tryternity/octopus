@@ -193,8 +193,13 @@ export default function ActionBar() {
       return;
     }
 
-    // url / script / copy → 后端 execute_action_bar 统一隐藏 + 收口
-    await invoke("execute_action_bar", { itemId: item.id, text: ctx.text });
+    // url / script / copy → 后端异常时切 error 视图（与 ai 分支一致）
+    try {
+      await invoke("execute_action_bar", { itemId: item.id, text: ctx.text });
+    } catch (e) {
+      setErrorMsg(String(e));
+      setView("error");
+    }
   };
 
   // ── 键盘导航 ──

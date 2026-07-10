@@ -75,6 +75,12 @@ pub fn trigger_action_bar(app: AppHandle) {
             return;
         }
 
+        // suppress_next 已完成使命——watcher 有 200ms 窗口消费 flag。
+        // 若剪贴板未变化（unchanged 路径），watcher 不触发，flag 残留会
+        // 导致用户下次手动复制被静默吞掉，在此显式清除。
+        // write_text 自带独立 suppress，不受此清除影响。
+        clip_handle.clear_suppress();
+
         // 5. 立即恢复原始剪贴板内容（write_text 自带 suppress，不会入库）
         if let Some(ref original) = clipboard_before {
             if Some(original.as_str()) != clipboard_after.as_deref() {
@@ -372,9 +378,9 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 统一执行菜单项动作。
-#[tauri::command]
-pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
+/// 执行菜单项动作核心逻辑（不含收口）。
+/// Ok(true) = ai 已自行收口；Ok(false) = 成功需外层统一收口；Err = 异常需外层 finalize。
+fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
     let item = octopus_infra::db::load_action_bar_item(item_id)
         .map_err(|e| e.to_string())?
         .ok_or("菜单项不存在")?;
@@ -391,9 +397,8 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
             };
             let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
                 .map_err(|e| e.to_string())?;
-            action_bar_show_result(result, text, item.title, app);
-            // show_result 内部已 hide(keep_active) + finalize，提前返回不走统一收口
-            return Ok(());
+            action_bar_show_result(result, text, item.title, app.clone());
+            Ok(true)
         }
         "url" => {
             let url = if item.action_data.is_empty() {
@@ -413,21 +418,36 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
             { let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn(); }
             #[cfg(target_os = "linux")]
             { let _ = std::process::Command::new("xdg-open").arg(&url).spawn(); }
+            Ok(false)
         }
         "script" => {
             run_script(&item.action_data, &text)?;
+            Ok(false)
         }
         "copy" => {
-            write_clipboard_text(&app, &text);
+            write_clipboard_text(app, &text);
+            Ok(false)
         }
-        _ => {
-            return Err(format!("未知动作类型: {}", item.action_type));
+        _ => Err(format!("未知动作类型: {}", item.action_type)),
+    }
+}
+
+/// 统一执行菜单项动作。
+#[tauri::command]
+pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
+    match execute_action_bar_inner(item_id, text, &app) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            // url/script/copy 成功 → 统一收口：标准隐藏 + 焦点交还 + 重入锁复位
+            hide_action_bar_window(&app);
+            finalize_action_bar(&app);
+            Ok(())
+        }
+        Err(e) => {
+            // 异常路径：仅重置重入锁（不 hide——前端切 error 视图需窗口可见，
+            // error 视图关闭时 action_bar_dismiss 走 hide + after_hide 递减 depth）
+            finalize_action_bar(&app);
+            Err(e)
         }
     }
-
-    // url/script/copy 统一收口：标准隐藏 + 焦点交还 + 重入锁复位
-    // （ai 分支已通过 action_bar_show_result 自行收口并提前 return）
-    hide_action_bar_window(&app);
-    finalize_action_bar(&app);
-    Ok(())
 }
