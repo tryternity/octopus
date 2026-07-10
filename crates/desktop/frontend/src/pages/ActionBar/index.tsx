@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from "react";
+import { useState, useEffect, useRef, useLayoutEffect } from "react";
 import { invoke } from "@/lib/tauri";
 import { listen as rawListen } from "@tauri-apps/api/event";
 import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
-import { Loader2 } from "lucide-react";
+import { Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import { detectActionUrl } from "./urlDetect";
 
 interface Context {
@@ -56,6 +56,51 @@ const IconBtn = ({ index, label, active, onClick, btnRef }: {
     <span className="text-[10px] font-medium leading-none whitespace-nowrap">{label}</span>
   </button>
 );
+
+/** 带左右溢出指示器的横向滚动容器 */
+const ScrollRow = ({ children, className }: {
+  children: React.ReactNode; className?: string;
+}) => {
+  const ref = useRef<HTMLDivElement>(null);
+  const [overflow, setOverflow] = useState({ left: false, right: false });
+
+  useLayoutEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const check = () => {
+      setOverflow({
+        left: el.scrollLeft > 4,
+        right: el.scrollLeft + el.clientWidth < el.scrollWidth - 4,
+      });
+    };
+    check();
+    el.addEventListener("scroll", check, { passive: true });
+    const ro = new ResizeObserver(check);
+    ro.observe(el);
+    return () => { el.removeEventListener("scroll", check); ro.disconnect(); };
+  }, []);
+
+  return (
+    <div className={cn("relative", className)}>
+      <div
+        ref={ref}
+        className="flex items-center gap-1 px-1.5 py-[3px] shrink-0 overflow-x-auto scrollbar-none"
+      >
+        {children}
+      </div>
+      {overflow.left && (
+        <div className="absolute left-0 top-0 bottom-0 flex items-center pl-0.5 pointer-events-none bg-gradient-to-r from-background/95 to-transparent">
+          <ChevronLeft className="w-3 h-3 text-voice" />
+        </div>
+      )}
+      {overflow.right && (
+        <div className="absolute right-0 top-0 bottom-0 flex items-center pr-0.5 pointer-events-none bg-gradient-to-l from-background/95 to-transparent">
+          <ChevronRight className="w-3 h-3 text-voice" />
+        </div>
+      )}
+    </div>
+  );
+};
 
 export default function ActionBar() {
   const [context, setContext] = useState<Context | null>(null);
@@ -387,7 +432,7 @@ export default function ActionBar() {
         </div>
       )}
       {/* 主菜单 */}
-      <div className="flex items-center gap-1 px-1.5 py-[3px] shrink-0 overflow-x-auto scrollbar-none">
+      <ScrollRow>
         {mainItems.map((item, i) => (
           <IconBtn
             key={item.id}
@@ -398,13 +443,13 @@ export default function ActionBar() {
             btnRef={(el: HTMLButtonElement | null) => { mainBtnRefs.current[i] = el; }}
           />
         ))}
-      </div>
+      </ScrollRow>
       {/* 子菜单——展开时用渐变分隔线 + 轻微底色区分 */}
-      <div className={cn(
-        "flex items-center gap-1 px-1.5 py-[3px] shrink-0 overflow-x-auto scrollbar-none transition-all duration-200",
+      <ScrollRow className={cn(
+        "transition-all duration-200",
         view === "submenu"
           ? "border-t border-border/30 bg-foreground/[0.02]"
-          : "h-0 py-0 overflow-hidden border-t-0",
+          : "h-0 overflow-hidden",
       )}>
         {subItems.map((item, i) => (
           <IconBtn
@@ -416,7 +461,7 @@ export default function ActionBar() {
             btnRef={(el: HTMLButtonElement | null) => { subBtnRefs.current[i] = el; }}
           />
         ))}
-      </div>
+      </ScrollRow>
     </div>
   );
 }
