@@ -290,6 +290,8 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         }
     } else {
         create_clipboard_window(app)?;
+        // 首次创建：webview 需要时间初始化，延迟 show+focus 确保 WKWebView ready
+        std::thread::sleep(std::time::Duration::from_millis(100));
         if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
             #[cfg(target_os = "macos")]
             { crate::activation::before_floating_window_show(app); }
