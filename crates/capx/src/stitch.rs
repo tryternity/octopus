@@ -18,6 +18,17 @@ const X_END_RATIO: f64 = 0.80;
 const SAMPLE_STEP_X: usize = 2;
 /// sticky 区域检测的最大高度（像素），顶部/底部各扫此高度。
 const STICKY_DETECT_MAX: u32 = 80;
+/// 首帧底部"无内容常数尾"检测：单行灰度（R 通道近似）max-min 上限。低于此值视为无内容
+/// 行（纯黑/纯色空白，如暗色编辑器内容不到底下方的纯黑区）。连续无内容行 = 常数尾，
+/// 裁掉以避免 canvas-anchored 底部 strip 锚点永久退化（常数模板 NCC 假匹配 score≈1.0 或
+/// 失配死锁——2026-07-10 release 实测选区下半截纯黑时滚轮未动画布不增长）。
+const CONTENT_ROW_MAXMIN: u8 = 30;
+/// content_tail 判定的"暗"阈值：行内最亮像素 luma < 此值才算无内容暗尾（纯黑/暗背景）。
+/// 与 max-min 双重判定，避免把高 luma 的低对比渐变行（如 make_frame 底部 luma>80、
+/// 每行常数但亮）误判为纯黑尾——真实纯黑尾 luma≈0，渐变/文字行 luma 高。
+const CONTENT_TAIL_MAX_LUMA: u8 = 40;
+/// 自适应 strip 高度下限（像素）。内容极矮时也至少留此行数作 NCC 模板，防退化为单行匹配。
+const MIN_STRIP: u32 = 8;
 
 // ===== 健壮性优化常量 =====
 
@@ -309,6 +320,14 @@ pub struct Stitcher {
     same_dy_count: u32,
     /// 上一帧的有效区灰度（相邻帧参考 fallback 用）。每帧 process_frame 末尾更新。
     prev_gray: Option<GrayBuf>,
+    /// 首帧底部"无内容常数尾"高度（如选区下半截恒定纯黑空白）。与 sticky_bottom 同为
+    /// 应排除的底部固定区，但 sticky_bottom 依赖首/次帧逐像素相等（光标闪烁/抗锯齿/scrollbar
+    /// 差异会漏检），content_tail 直接看单行 max-min 补缺口。裁掉后画布底部停在真实内容底。
+    content_tail: u32,
+    /// 自适应 strip 高度。矮选区（内容高 < strip_h*3，如 162px 物理高含 80px 暗尾 → 内容 82px）
+    /// 时固定 80 strip 会吃光 ROI 使 NCC 搜索范围≈0 → 首帧即失配死锁；故按 content_h/3 缩小，
+    /// 留 2/3 作搜索范围。每帧基于 content_h 更新；模板提取与匹配几何统一读此值（非 config.strip_h）。
+    eff_strip_h: u32,
 }
 
 impl Stitcher {
@@ -323,6 +342,7 @@ impl Stitcher {
             sticky_top: 0,
             sticky_bottom: 0,
             detected: false,
+            eff_strip_h: config.strip_h,
             config,
             last_dy: None,
             dy_history: VecDeque::with_capacity(DY_HISTORY_LEN),
@@ -331,6 +351,7 @@ impl Stitcher {
             last_appended_dy: None,
             same_dy_count: 0,
             prev_gray: None,
+            content_tail: 0,
         }
     }
 
@@ -343,32 +364,94 @@ impl Stitcher {
             return Ok(false);
         }
 
+        // 每帧基于当前帧检测底部"无内容常数尾"高度（动态纯黑尾：前期内容填满选区时为 0，
+        // 滚动后期内容上移、选区底部露出背景时增长）。sticky_bottom 仅首帧一次且依赖逐像素相等，
+        // 无法应对动态纯黑尾；content_tail 每帧看单行 max-min，eff_bottom 每帧止于真实内容底 →
+        // append 永不带入纯黑尾 → 画布底部 strip 始终有特征，避免 canvas-anchored 锚点退化死锁
+        // （常数模板 NCC 假匹配 score≈1.0 / 失配 stuck）。
+        self.content_tail = self.detect_content_tail(frame);
+
         if !self.detected {
             self.detect_sticky(frame);
             self.detected = true;
-            // 裁掉画布（首帧）的 sticky_bottom 区域，保留 sticky_top。
-            let eff_bottom0 = self.canvas_h.saturating_sub(self.sticky_bottom);
+            // 用画布种子（首帧）【自身】暗尾裁剪画布，而非上方 self.content_tail（=当前第二帧暗尾）。
+            // 首帧在 app 聚焦/滚动开始前由 setup 单独捕获，暗尾常大于已滚动后的第二帧；用第二帧
+            // 小暗尾裁首帧大暗尾会留残余暗尾 → 画布底部常数 → canvas_has=false 首帧即死锁
+            // （release 实测 296×160 矮选区"滚动不拼接"）。读 canvas_buf 测首帧自身暗尾根治。
+            let seed_tail = self.scan_content_tail_in(&self.canvas_buf, self.canvas_h as usize);
+            let eff_bottom0 = self
+                .canvas_h
+                .saturating_sub(self.sticky_bottom + seed_tail);
             if eff_bottom0 > self.sticky_top {
                 self.canvas_buf.truncate(eff_bottom0 as usize * self.canvas_w as usize * 4);
                 self.canvas_h = eff_bottom0;
                 self.invalidate_cache();
             }
+            // 自适应 strip：基于首帧内容高度（画布已截断到内容底）。矮选区缩小 strip 留搜索范围。
+            self.eff_strip_h = self.effective_strip_for(self.canvas_h.saturating_sub(self.sticky_top));
+            // 诊断：种子是否常数（首帧在 app 聚焦前捕获为空白时为 true → 触发下游 reseed 恢复）。
+            log::info!(
+                "[stitch] init: canvas_h={} sticky_top={} sticky_bottom={} seed_tail={} eff_strip_h={} seed_constant={}",
+                self.canvas_h, self.sticky_top, self.sticky_bottom, seed_tail, self.eff_strip_h,
+                self.canvas_bottom_constant()
+            );
             // Canvas-Anchored：下一帧直接从 canvas 底部提取模板，无需存 reference
 
             return Ok(false); // 第二帧用于初始化，不拼接
         }
 
         let eff_top = self.sticky_top;
-        let eff_bottom = h.saturating_sub(self.sticky_bottom);
+        let eff_bottom = h.saturating_sub(self.sticky_bottom + self.content_tail);
         if eff_bottom <= eff_top {
             return Ok(false);
+        }
+        // 每帧更新自适应 strip：content_tail 动态 → content_h 动态 → strip 随之自适应。
+        self.eff_strip_h = self.effective_strip_for(eff_bottom - eff_top);
+        // ROI 不足一个 strip（sticky_top + content_tail 几乎吃光整帧，如矮选区+大暗尾）→ 无法匹配，
+        // 跳帧。否则下游 quick_stationary_check/NCC 会越界（curr ROI 行数 < strip）。
+        if eff_bottom - eff_top < self.eff_strip_h {
+            return Ok(false);
+        }
+
+        // 画布锚点维护（canvas-anchored 核心）：画布底部常数时 Sobel 退化、锚点失效。每帧检查
+        // （非一次性闸门——滚动中画布底部可能【再次】变常数：滚到内容末尾露纯色背景、1D 假匹配
+        // append 常数块、动态背景）。先轻量判画布底 strip 是否常数：
+        //   常数 → 测常数尾高度 tail。tail 可裁（裁后仍 ≥ keep_min 行内容）→ 非破坏性裁掉常数尾
+        //          （只丢空白/纯色背景，不丢内容），锚点回到真实内容底，本帧继续匹配；
+        //   tail 不可裁（画布几乎全常数——种子空白 / 整帧污染）→ reseed 用当前内容帧重建锚点。
+        // 第 7 次回归根因：旧 canvas_content_confirmed 一次性闸门确认后终身跳过检查，滚动中画布底部
+        // 再次变常数时永久死锁（NCC stuck=5 stationary 到 finalize，finalize 灰度兜底对常数画布
+        // score≈1.0 假匹配拼错）。改为每帧自愈——"治"而非一次"防"。
+        if self.canvas_bottom_constant() {
+            let tail = self.scan_canvas_constant_tail();
+            let keep_min = self.eff_strip_h.max(MIN_STRIP);
+            let new_h = self.canvas_h.saturating_sub(tail);
+            if new_h >= keep_min {
+                let row_bytes = self.canvas_w as usize * 4;
+                self.canvas_buf.truncate(new_h as usize * row_bytes);
+                self.canvas_h = new_h;
+                self.invalidate_cache();
+                // 锚点位移：旧 stuck/best-guess 基于死锚，作废给匹配重来的机会。
+                self.ncc_stuck_count = 0;
+                self.best_guess_streak = 0;
+                log::info!(
+                    "[stitch] canvas constant tail trimmed: {} rows, new canvas_h={}",
+                    tail, self.canvas_h
+                );
+            } else {
+                // 画布几乎全常数（无内容可留：种子空白 / 异常整帧污染）→ 从当前帧内容区重建锚点。
+                self.reseed_canvas_from(frame, eff_top, eff_bottom);
+                // 重建后本帧成为新基准，prev_gray 设为本帧内容灰度，供下一帧相邻帧 fallback。
+                self.prev_gray = Some(GrayBuf::from_rgba_roi(frame, eff_top as usize, eff_bottom as usize));
+                return Ok(false);
+            }
         }
 
         // 全有效区域灰度转换（不限制 ROI——快速滚动时内容可能出现在有效区任意位置）
         let roi_top = eff_top as usize;
         let roi_bottom = eff_bottom as usize;
         let curr_gray = GrayBuf::from_rgba_roi(frame, roi_top, roi_bottom);
-        let canvas_gray = self.extract_canvas_bottom_gray(self.config.strip_h);
+        let canvas_gray = self.extract_canvas_bottom_gray(self.eff_strip_h);
 
         let result = self.process_frame_inner(frame, &curr_gray, &canvas_gray, w, eff_top, eff_bottom);
 
@@ -390,17 +473,8 @@ impl Stitcher {
         eff_top: u32,
         eff_bottom: u32,
     ) -> Result<bool> {
-        // Sobel 特征图 + 纯色退化
-        let (canvas_feat, canvas_has_feat) = to_feature_map(canvas_gray);
-        let (curr_feat, curr_has_feat) = to_feature_map(curr_gray);
-        let (template, search_region) = if canvas_has_feat && curr_has_feat {
-            (canvas_feat, curr_feat)
-        } else {
-            (canvas_gray.to_gray_image(), curr_gray.to_gray_image())
-        };
-
-        // 主 NCC（大屏两阶段 refine / 小屏单阶段）
-        let (refined_y, best_score) = match self.primary_ncc(&template, &search_region, w) {
+        // 多候选 NCC：Sobel 特征优先，暗色/低纹理失配时灰度兜底
+        let (refined_y, best_score) = match self.best_ncc_match(canvas_gray, curr_gray, w) {
             PrimaryOutcome::Matched(refined_y, score) => (refined_y, score),
             PrimaryOutcome::Mismatch(score) => {
                 // NCC stuck 检测：连续失败且 score 几乎相同 → 画面静止但有渲染差异
@@ -427,7 +501,7 @@ impl Stitcher {
         // 坐标推导（refined_y 已是亚像素 best_y）：
         // new_rows = ROI高度 - refined_y - strip_h；dy = -new_rows（负=向下滚动）
         let roi_height = (eff_bottom - eff_top) as f64;
-        let new_rows_raw = roi_height - refined_y - self.config.strip_h as f64;
+        let new_rows_raw = roi_height - refined_y - self.eff_strip_h as f64;
         let dy = -new_rows_raw;
 
         // dy > 0 = 向上滚动（忽略）。dy≤0 不跳过，交给 min_scroll_px 过滤，
@@ -559,6 +633,61 @@ impl Stitcher {
         }
     }
 
+    /// 多候选 NCC：双侧均有 Sobel 特征时，Sobel 优先，validate 失配再灰度 NCC 兜底；
+    /// 任一侧 Sobel 退化（strip 常数）时**不兜底**，直接进降级链。
+    ///
+    /// 为何退化时不走灰度：Sobel 退化（canvas/curr 底部 strip `max_gradient==0`）= 该 strip
+    /// 灰度是常数（暗色编辑器纯黑空白行）。灰度 NCC 对常数模板返回 score≈1.0 假匹配
+    /// （imageproc 退化值；release 实测 dy=-644.4 重复假帧污染画布 + periodic false match
+    /// sad=0.0）。常数 strip 无真实匹配可言，交降级链（相邻帧 prev_gray 有内容可救）。
+    ///
+    /// 灰度兜底仅在「双侧均有特征但 Sobel 分数失配」时触发：此时两侧都有纹理，灰度
+    /// 对比度空间有时比 Sobel 梯度更稳。正常帧 Sobel matched 直接返回，不触达此分支。
+    fn best_ncc_match(
+        &self,
+        canvas_gray: &GrayBuf,
+        curr_gray: &GrayBuf,
+        w: u32,
+    ) -> PrimaryOutcome {
+        let (canvas_feat, canvas_has) = to_feature_map(canvas_gray);
+        let (curr_feat, curr_has) = to_feature_map(curr_gray);
+
+        // 任一侧 Sobel 退化 = 常数 strip：灰度也必然常数，NCC 必假匹配（≈1.0）。不兜底。
+        if !canvas_has || !curr_has {
+            log::debug!(
+                "[stitch] sobel degenerated (canvas_has={}, curr_has={}), skip gray fallback \
+                 (constant strip would false-match ~1.0)",
+                canvas_has, curr_has
+            );
+            return PrimaryOutcome::Mismatch(0.0);
+        }
+
+        // 双侧有特征：Sobel 优先
+        match self.primary_ncc(&canvas_feat, &curr_feat, w) {
+            PrimaryOutcome::Matched(y, s) => {
+                log::debug!("[stitch] sobel-ncc matched (score={:.4})", s);
+                PrimaryOutcome::Matched(y, s)
+            }
+            PrimaryOutcome::Mismatch(s) => {
+                log::debug!("[stitch] sobel-ncc mismatch (score={:.4}), trying gray fallback", s);
+                let canvas_gray_img = canvas_gray.to_gray_image();
+                let curr_gray_img = curr_gray.to_gray_image();
+                match self.primary_ncc(&canvas_gray_img, &curr_gray_img, w) {
+                    PrimaryOutcome::Matched(y, s) => {
+                        log::debug!("[stitch] gray-ncc fallback matched (score={:.4})", s);
+                        PrimaryOutcome::Matched(y, s)
+                    }
+                    PrimaryOutcome::Mismatch(gs) => {
+                        log::debug!("[stitch] gray-ncc fallback mismatch (score={:.4})", gs);
+                        PrimaryOutcome::Mismatch(s.max(gs))
+                    }
+                    PrimaryOutcome::SizeError => PrimaryOutcome::SizeError,
+                }
+            }
+            PrimaryOutcome::SizeError => PrimaryOutcome::SizeError,
+        }
+    }
+
     /// 相邻帧参考 fallback：用前一帧有效区底部 strip 当模板，在当前帧有效区做 NCC。
     /// 突变时画布底部旧模板（如文字）与当前帧（如图片）失配；前一帧与当前帧只差
     /// 一个 dy、突变边界是两帧共同特征、重叠最大 → 能求出正确 dy，避免 best-guess 盲 append。
@@ -571,11 +700,11 @@ impl Stitcher {
         eff_bottom: u32,
     ) -> Option<f64> {
         let prev_h = prev_gray.data.len() / prev_gray.width;
-        if prev_h < self.config.strip_h as usize + 10 {
+        if prev_h < self.eff_strip_h as usize + 10 {
             return None;
         }
-        // prev 底部 STRIP_H 行裁为独立模板（y_offset 归零）
-        let strip_rows = self.config.strip_h as usize;
+        // prev 底部 eff_strip_h 行裁为独立模板（y_offset 归零）
+        let strip_rows = self.eff_strip_h as usize;
         let prev_strip = GrayBuf {
             data: prev_gray.data[(prev_h - strip_rows) * prev_gray.width..].to_vec(),
             width: prev_gray.width,
@@ -583,18 +712,23 @@ impl Stitcher {
         };
         let (tmpl_feat, tmpl_has) = to_feature_map(&prev_strip);
         let (curr_feat, curr_has) = to_feature_map(curr_gray);
-        let (template, search_region) = if tmpl_has && curr_has {
-            (tmpl_feat, curr_feat)
-        } else {
-            (prev_strip.to_gray_image(), curr_gray.to_gray_image())
-        };
-        let ncc = ncc_match(&template, &search_region)?;
+        // 任一侧 Sobel 退化（strip 常数，如选区下半截纯黑）：灰度也必然常数，
+        // NCC 对常数模板返回 score≈1.0 假匹配（release 实测 dy=-247.5 画布疯涨）。
+        // 与 best_ncc_match 同一坑——退化时放弃 prev-frame，交下游 1D/stationary。
+        if !tmpl_has || !curr_has {
+            log::debug!(
+                "[stitch] prev-frame skip: strip degenerated (tmpl_has={}, curr_has={})",
+                tmpl_has, curr_has
+            );
+            return None;
+        }
+        let ncc = ncc_match(&tmpl_feat, &curr_feat)?;
         if !validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32, self.config.ncc_score_threshold) {
             return None;
         }
         let roi_height = (eff_bottom - eff_top) as f64;
         let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
-        let new_rows_raw = roi_height - refined_y - self.config.strip_h as f64;
+        let new_rows_raw = roi_height - refined_y - self.eff_strip_h as f64;
         let dy = -new_rows_raw;
         if dy >= 0.0 {
             return None;
@@ -691,15 +825,107 @@ impl Stitcher {
         GrayBuf { data, width: self.canvas_w as usize, y_offset: 0 }
     }
 
+    /// 画布底部 eff_strip_h 行是否常数（无内容、Sobel 必退化）。采样 ~8 列/行算全局 max-min，
+    /// 低于 CONTENT_ROW_MAXMIN 即常数。用于死锚检测：首帧在 app 聚焦前捕获为空白时画布底部
+    /// 常数，canvas-anchored 锚点失效。轻量（仅采样，非全量 Sobel）。
+    fn canvas_bottom_constant(&self) -> bool {
+        let strip_h = self.eff_strip_h as usize;
+        let w = self.canvas_w as usize;
+        let row_bytes = w * 4;
+        let start_row = self.canvas_h.saturating_sub(strip_h as u32) as usize;
+        let mut minv = u8::MAX;
+        let mut maxv = 0u8;
+        let step = (w / 8).max(1);
+        for y in start_row..self.canvas_h as usize {
+            let row_start = y * row_bytes;
+            for x in (0..w).step_by(step) {
+                let v = self.canvas_buf[row_start + x * 4];
+                if v < minv {
+                    minv = v;
+                }
+                if v > maxv {
+                    maxv = v;
+                }
+            }
+        }
+        (maxv - minv) < CONTENT_ROW_MAXMIN
+    }
+
+    /// 画布底部连续"常数行"数（亮度无关——区别于 scan_content_tail_in 的「暗+常数」双判定）。
+    /// 逐行从画布底往上累加抽样像素的运行 min/max，(max-min) ≥ CONTENT_ROW_MAXMIN 即命中内容行停止。
+    /// 用于锚点自愈：画布底部常数（纯黑/纯白/纯灰背景，或 1D 假匹配 append 的常数块）时 Sobel 退化、
+    /// 锚点失效；裁掉常数尾让锚点回到真实内容底。
+    ///
+    /// 运行 min/max 而非单行 max-min 的原因：垂直渐变（每行横向常数、但行间亮度递增）单行 max-min=0
+    /// 会被误判常数，然其有 Sobel 垂直梯度、是可匹配内容。运行 min/max 累积多行后 diff≥阈值即停 →
+    /// 渐变区不被误裁。纯色尾（所有行同值）diff 恒 0 → 全部计入尾。真实文字行（横向 max-min 大）
+    /// 首行即触发停止。
+    fn scan_canvas_constant_tail(&self) -> u32 {
+        let w = self.canvas_w as usize;
+        let row_bytes = w * 4;
+        let step = (w / 8).max(1);
+        let mut minv = u8::MAX;
+        let mut maxv = 0u8;
+        let mut tail = 0u32;
+        for y in (0..self.canvas_h as usize).rev() {
+            let row_start = y * row_bytes;
+            for x in (0..w).step_by(step) {
+                let v = self.canvas_buf[row_start + x * 4];
+                if v < minv {
+                    minv = v;
+                }
+                if v > maxv {
+                    maxv = v;
+                }
+            }
+            if maxv - minv >= CONTENT_ROW_MAXMIN {
+                break; // 该行引入变化 → 内容起点，停止（不计入 tail）
+            }
+            tail += 1;
+        }
+        tail
+    }
+
+    /// 用当前帧内容区 [eff_top, eff_bottom) 重建画布锚点（死锚恢复，破坏性——丢弃整个画布）。
+    /// canvas-anchored 架构下画布底部必须是真实内容；种子空白（首帧聚焦前捕获）或画布几乎全常数
+    /// （异常整帧污染，非破坏性裁尾已无内容可留）时锚点失效、永久死锁，此处用首个到达的当前帧替换
+    /// 画布，后续帧即可正常匹配。重置匹配历史/stuck（锚点变更，旧状态作废）。
+    fn reseed_canvas_from(&mut self, frame: &RgbaImage, eff_top: u32, eff_bottom: u32) {
+        let w = self.canvas_w as usize;
+        let row_bytes = w * 4;
+        let src = frame.as_raw();
+        let top = eff_top as usize;
+        let bottom = eff_bottom as usize;
+        let new_h = bottom - top;
+        let mut buf = Vec::with_capacity(new_h * row_bytes);
+        for y in top..bottom {
+            let s = y * row_bytes;
+            buf.extend_from_slice(&src[s..s + row_bytes]);
+        }
+        self.canvas_buf = buf;
+        self.canvas_h = new_h as u32;
+        self.invalidate_cache();
+        self.eff_strip_h = self.effective_strip_for(self.canvas_h.saturating_sub(self.sticky_top));
+        // 锚点变更：旧 dy_history/stuck 基于死锚，全部作废。
+        self.dy_history.clear();
+        self.ncc_stuck_count = 0;
+        self.best_guess_streak = 0;
+        self.last_dy = None;
+        log::info!(
+            "[stitch] canvas reseeded from current frame (anchor was constant: blank seed or fully-corrupt canvas), new canvas_h={}",
+            self.canvas_h
+        );
+    }
+
 
     /// 轻量静止检测：比较当前帧底部 strip 与画布底部 strip 的全局 SAD。
     fn quick_stationary_check(&self, curr: &GrayBuf, canvas_ref: &GrayBuf, sample_cols: &[usize]) -> f64 {
         let mut sad: u64 = 0;
         let mut count: u64 = 0;
-        for dy in 0..self.config.strip_h {
+        for dy in 0..self.eff_strip_h {
             let ref_row = canvas_ref.row(dy as usize);
-            // curr 底部 strip：y_offset + (curr 行数 - STRIP_H + dy)
-            let curr_bottom_start = (curr.data.len() / curr.width).saturating_sub(self.config.strip_h as usize);
+            // curr 底部 strip：y_offset + (curr 行数 - eff_strip_h + dy)
+            let curr_bottom_start = (curr.data.len() / curr.width).saturating_sub(self.eff_strip_h as usize);
             let curr_row = curr.row((curr_bottom_start + dy as usize) + curr.y_offset);
             for &x in sample_cols {
                 sad += (ref_row[x] as i32 - curr_row[x] as i32).unsigned_abs() as u64;
@@ -743,7 +969,7 @@ impl Stitcher {
         }
         let canvas_h_actual = canvas_gray.data.len() / canvas_gray.width;
         // 重叠区行数：strip_h / canvas 实际行数 / curr 重叠可用行数（crop_y - eff_top）三者取 min
-        let verify_rows = self.config.strip_h
+        let verify_rows = self.eff_strip_h
             .min(canvas_h_actual as u32)
             .min(crop_y - eff_top);
         if verify_rows == 0 {
@@ -795,7 +1021,7 @@ impl Stitcher {
         max_scroll: u32,
         sad_accept: f64,
     ) -> Option<(f64, f64, f64)> {
-        let strip_h = self.config.strip_h;
+        let strip_h = self.eff_strip_h;
         if eff_bottom <= eff_top + strip_h + 10 {
             return None;
         }
@@ -969,14 +1195,14 @@ impl Stitcher {
             return Ok(());
         }
         let eff_top = self.sticky_top;
-        let eff_bottom = h.saturating_sub(self.sticky_bottom);
+        let eff_bottom = h.saturating_sub(self.sticky_bottom + self.content_tail);
         if eff_bottom <= eff_top {
             return Ok(());
         }
 
         // 1. NCC 匹配：将最后一帧与画布底部对齐，补全剩余未拼接区域
         let last_gray = GrayBuf::from_rgba_roi(last_frame, eff_top as usize, eff_bottom as usize);
-        let canvas_gray = self.extract_canvas_bottom_gray(self.config.strip_h);
+        let canvas_gray = self.extract_canvas_bottom_gray(self.eff_strip_h);
 
         // Sobel 特征图 + NCC 匹配
         let (canvas_feat, canvas_has_feat) = to_feature_map(&canvas_gray);
@@ -991,7 +1217,7 @@ impl Stitcher {
             if validate_ncc_match(&ncc.response, ncc.best_y as usize, ncc.best_score as f32, self.config.ncc_score_threshold) {
                 let refined_y = parabolic_refine_from_response(&ncc.response, ncc.best_y);
                 let roi_height = (eff_bottom - eff_top) as f64;
-                let new_rows_raw = roi_height - refined_y - self.config.strip_h as f64;
+                let new_rows_raw = roi_height - refined_y - self.eff_strip_h as f64;
                 let dy = -new_rows_raw;
 
                 if dy < 0.0 {
@@ -1044,6 +1270,80 @@ impl Stitcher {
         }
         self.sticky_top = sticky_t;
         self.sticky_bottom = sticky_b;
+    }
+
+    /// 检测当前帧底部"无内容常数尾"高度：从帧底部（跳过 sticky_bottom 区）往上逐行算
+    /// R 通道 max-min，连续 max-min ≤ CONTENT_ROW_MAXMIN 的行数。纯黑/纯色空白行（暗色编辑器
+    /// 内容不到底下方的纯黑区、滚动后期选区底部露出的背景）max-min≈0、无滚动信息；若 append
+    /// 或画布底部停在此处，canvas-anchored 底部 strip 锚点退化（常数模板 NCC 假匹配 score≈1.0
+    /// 或失配死锁）。
+    ///
+    /// 每帧基于当前帧检测（非首帧一次）：纯黑尾会动态变化——前期内容填满选区时无纯黑尾，
+    /// 滚动后期内容上移、选区底部露出背景时纯黑尾才出现/增长。每帧 eff_bottom 止于真实内容底，
+    /// append 永不带入纯黑尾 → 画布底部 strip 始终有特征。
+    ///
+    /// 与 sticky_bottom 互补：sticky_bottom 仅首帧一次、依赖逐像素相等，无法应对动态纯黑尾；
+    /// 本方法每帧看单行内容是否有信息，更鲁棒。从 sticky_bottom 之上起扫，遇首个有内容行即停
+    /// （不误裁行间空白）。返回原始暗尾高度（不 clamp）——strip 自适应（`effective_strip_for`）
+    /// 已保证 content_h≥3*strip 留足搜索范围，整帧纯黑的退化输入由 process_frame 的
+    /// `eff_bottom<=eff_top` 检查兜底（返回 Ok(false) 跳过）。
+    fn detect_content_tail(&self, frame: &RgbaImage) -> u32 {
+        self.scan_content_tail_in(frame.as_raw(), frame.height() as usize)
+    }
+
+    /// 在任意 RGBA 缓冲（当前帧 或 画布种子首帧）底部扫描"无内容暗常数尾"高度：跳过
+    /// sticky_bottom 区，从底部往上逐行算 R 通道 max-min，连续 max-min≤CONTENT_ROW_MAXMIN
+    /// 且最亮 luma<CONTENT_TAIL_MAX_LUMA 的行数。
+    ///
+    /// 抽出缓冲参数化的原因：init 裁剪画布种子（首帧）必须读**首帧自身**的暗尾，而非当前
+    /// 第二帧的暗尾。首帧在 app 聚焦/滚动开始前由 setup 单独捕获，暗尾常大于已滚动后的第二帧；
+    /// 用第二帧暗尾裁首帧会留残余暗尾 → 画布底部常数 → canvas_has=false 首帧即死锁（release
+    /// 实测 296×160 矮选区"滚动不拼接"）。故 init 读 canvas_buf（=首帧）、每帧检测读 frame。
+    fn scan_content_tail_in(&self, buf: &[u8], h: usize) -> u32 {
+        let w = self.canvas_w as usize;
+        let scan_bottom = h.saturating_sub(self.sticky_bottom as usize);
+        if scan_bottom == 0 {
+            return 0;
+        }
+        let row_bytes = w * 4;
+        let mut tail = 0u32;
+        for y in (0..scan_bottom).rev() {
+            let row_start = y * row_bytes;
+            let mut minv = u8::MAX;
+            let mut maxv = 0u8;
+            for x in 0..w {
+                // R 通道近似 luma。暗常数尾判定：行内最暗最亮差值小（常数）且最亮仍暗
+                // （纯黑/暗背景，luma < CONTENT_TAIL_MAX_LUMA）。纯渐变行每行虽可能常数
+                // （max-min=0）但 luma 高 → 不误判；真实纯黑尾 luma≈0 → 判定。
+                let v = buf[row_start + x * 4];
+                if v < minv {
+                    minv = v;
+                }
+                if v > maxv {
+                    maxv = v;
+                }
+                // 一旦超出"暗常数"任一条件 → 该行有内容，无需扫完整行
+                if maxv - minv > CONTENT_ROW_MAXMIN || maxv >= CONTENT_TAIL_MAX_LUMA {
+                    break;
+                }
+            }
+            if maxv - minv > CONTENT_ROW_MAXMIN || maxv >= CONTENT_TAIL_MAX_LUMA {
+                break;
+            }
+            tail += 1;
+        }
+        tail
+    }
+
+    /// 自适应 strip 高度：内容高 < strip_h*3 时按 content_h/3 缩小 strip，留 2/3 作 NCC 搜索范围；
+    /// 否则用配置 strip_h。MIN_STRIP 下限防退化。矮选区（如 162px 物理高含 80px 暗尾 → 内容 82px）
+    /// 固定 80 strip 会吃光 ROI 使搜索范围≈0 → 首帧即失配死锁（2026-07-10 release 实测"滚动没拼接"）；
+    /// 自适应后 strip≈27、搜索范围≈55，首帧即可锁定 dy。
+    fn effective_strip_for(&self, content_h: u32) -> u32 {
+        self.config
+            .strip_h
+            .min((content_h / 3).max(MIN_STRIP))
+            .max(MIN_STRIP)
     }
 }
 
@@ -1428,6 +1728,420 @@ mod tests {
         let gray = GrayBuf::from_rgba_roi(&f, 0, TH as usize);
         let (_feat, has_feat) = to_feature_map(&gray);
         assert!(has_feat, "密集条纹帧应有 Sobel 特征");
+    }
+
+    /// 合成「暗色代码编辑器」帧：近黑背景 + 稀疏亮文字行（等宽字体感）。
+    /// - 背景 luma≈12（近黑）
+    /// - 行周期 24px：16px 文字行 + 8px 纯黑行间
+    /// - 文字行内字符周期 11px（6px 亮 luma=220 + 5px 黑），模拟代码字符
+    /// `scroll_offset` 模拟向下滚动。
+    /// 复刻真实暗色编辑器：高灰度对比但 Sobel 特征稀疏（大片纯黑行间）。
+    fn make_frame_dark_editor(width: u32, height: u32, scroll_offset: u32) -> RgbaImage {
+        let mut img: ImageBuffer<Rgba<u8>, Vec<u8>> = ImageBuffer::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let mut v: u8 = 12; // 近黑背景
+                let line_y = (y + scroll_offset) % 24;
+                if line_y < 16 {
+                    // 文字行：等宽字符周期 11px（6 亮 + 5 暗）
+                    let col_group = x % 11;
+                    if col_group < 6 { v = 220; }
+                }
+                img.put_pixel(x, y, Rgba([v, v, v, 255]));
+            }
+        }
+        img
+    }
+
+    /// 暗色编辑器本身不是问题：中等密度暗色文字行，Sobel 特征充足，NCC 能高分配中。
+    /// 排除「暗色一律 NCC 失效」的简单假设——实测 score≈0.978。
+    #[test]
+    fn test_dark_editor_moderate_density_ncc_works() {
+        let strip_h = StitchConfig::default().strip_h;
+        let dark0 = make_frame_dark_editor(TW, TH, 0);
+        let dark1 = make_frame_dark_editor(TW, TH, 30);
+        let dark_strip = GrayBuf::from_rgba_roi(&dark0, (TH - strip_h) as usize, TH as usize);
+        let dark_curr = GrayBuf::from_rgba_roi(&dark1, 0, TH as usize);
+        let (dt, _) = to_feature_map(&dark_strip);
+        let (ds, _) = to_feature_map(&dark_curr);
+        let score = ncc_match(&dt, &ds).unwrap().best_score;
+        eprintln!("DARK moderate-density score={:.4}", score);
+        assert!(score > 0.65, "中等密度暗色帧 NCC 应命中（>0.65），实际 {:.4}", score);
+    }
+
+    /// 真实根因入口：选区底部 strip 落在大片纯黑区（编辑器空行/代码块间空白）时，
+    /// Sobel 梯度全 0 → to_feature_map 返回 has_feat=false → 退化回灰度 NCC。
+    /// 灰度模板（近全黑）零方差 → NCC 归一化分母≈0 → response 无区分度 →
+    /// validate_ncc_match 拒绝（max-min<0.1 或 score<0.65）→ 连续失配 stuck。
+    /// 复刻：底部 100px 涂纯黑，canvas 底部 80px strip 必然全黑 → 触发退化。
+    #[test]
+    fn test_dark_editor_bottom_strip_degrades_sobel() {
+        let strip_h = StitchConfig::default().strip_h as usize;
+        let black_zone = 100usize;
+        let mut f0 = make_frame_dark_editor(TW, TH, 0);
+        // 底部 black_zone 行涂纯黑（模拟代码块末尾空白/空行区）
+        for y in (TH as usize - black_zone)..TH as usize {
+            for x in 0..TW as usize {
+                f0.put_pixel(x as u32, y as u32, Rgba([12, 12, 12, 255]));
+            }
+        }
+        // canvas 底部 strip（80px）完全落在纯黑区
+        let canvas_strip = GrayBuf::from_rgba_roi(&f0, TH as usize - strip_h, TH as usize);
+        let (_feat, has_feat) = to_feature_map(&canvas_strip);
+        assert!(!has_feat, "底部纯黑 strip 应触发 Sobel 退化（has_feat=false），这是暗色编辑器 NCC 失效的入口");
+    }
+
+    /// best_ncc_match 不回归：正常纹理帧 Sobel 路径命中，score > 阈值。
+    /// （注：「Sobel 失配 + 灰度命中」无法用确定性合成帧复现——平移图的梯度也平移，
+    ///   两者在合成帧上同步命中/失配；灰度兜底的真实收益依赖暗色低纹理场景的渲染
+    ///   差异，靠 e2e + RUST_LOG=debug 的 sobel-ncc/gray-ncc 日志验证。）
+    #[test]
+    fn test_best_ncc_match_normal_frame_matched() {
+        let strip_h = StitchConfig::default().strip_h;
+        let f0 = make_frame(TW, TH, 0);
+        let f1 = make_frame(TW, TH, 30);
+        let s = Stitcher::new(f0.clone(), StitchConfig::default());
+        let canvas_gray = GrayBuf::from_rgba_roi(&f0, (TH - strip_h) as usize, TH as usize);
+        let curr_gray = GrayBuf::from_rgba_roi(&f1, 0, TH as usize);
+        let outcome = s.best_ncc_match(&canvas_gray, &curr_gray, TW);
+        match outcome {
+            PrimaryOutcome::Matched(_y, score) => assert!(score > 0.65, "正常帧应高分匹配，实际 {:.4}", score),
+            _ => panic!("正常纹理帧 best_ncc_match 应 Matched（Sobel 路径），实际失配=回归"),
+        }
+    }
+
+    /// 纯色帧（双侧 Sobel 退化 has_feat=false）：best_ncc_match 直接判 Mismatch，
+    /// 不走灰度兜底（常数模板必然 score≈1.0 假匹配），不误追加、不 panic。
+    #[test]
+    fn test_best_ncc_match_solid_frame_no_panic() {
+        let solid: image::ImageBuffer<Rgba<u8>, Vec<u8>> =
+            image::ImageBuffer::from_pixel(TW, TH, Rgba([30, 30, 30, 255]));
+        let s = Stitcher::new(solid.clone(), StitchConfig::default());
+        let canvas_gray = GrayBuf::from_rgba_roi(&solid, (TH - 80) as usize, TH as usize);
+        let curr_gray = GrayBuf::from_rgba_roi(&solid, 0, TH as usize);
+        match s.best_ncc_match(&canvas_gray, &curr_gray, TW) {
+            PrimaryOutcome::Mismatch(_) => { /* 预期：双侧退化直接 Mismatch */ }
+            _ => panic!("纯色双侧退化应 Mismatch，不该走灰度兜底假匹配"),
+        }
+    }
+
+    /// 回归（release 实测 bug）：canvas 底部 strip 落暗色编辑器纯黑空白区
+    /// （Sobel 退化 max_gradient=0）时，旧 gray fallback 对常数模板返回 score≈1.0
+    /// 假匹配（release 日志 dy=-644.4 重复假帧 append 污染画布 + periodic false match
+    /// sad=0.0）。修正后退化直接 Mismatch，不假匹配。curr 有正常纹理内容。
+    #[test]
+    fn test_best_ncc_match_constant_canvas_strip_no_false_match() {
+        let curr = make_frame(TW, TH, 50); // curr 有纹理内容
+        let s = Stitcher::new(curr.clone(), StitchConfig::default());
+        // canvas strip 纯黑常数（暗色编辑器空白行 luma≈12）
+        let black_strip: image::ImageBuffer<Rgba<u8>, Vec<u8>> =
+            image::ImageBuffer::from_pixel(TW, 80, Rgba([12, 12, 12, 255]));
+        let canvas_gray = GrayBuf::from_rgba_roi(&black_strip, 0, 80);
+        let curr_gray = GrayBuf::from_rgba_roi(&curr, 0, TH as usize);
+        match s.best_ncc_match(&canvas_gray, &curr_gray, TW) {
+            PrimaryOutcome::Mismatch(_) => { /* 预期：canvas 常数退化，不假匹配 */ }
+            PrimaryOutcome::Matched(_, _) => {
+                panic!("常数 canvas strip 不应假匹配 score≈1.0，应交降级链");
+            }
+            PrimaryOutcome::SizeError => { /* 尺寸边界，可接受 */ }
+        }
+    }
+
+    /// 回归（release 实测 bug，画布疯涨）：选区下半截恒纯黑 → prev_gray 底部 strip 也
+    /// 纯黑常数。旧 try_match_prev_frame 在 tmpl 退化时回退灰度 → 常数模板 NCC 假匹配
+    /// score=1.0 dy=-247.5 每帧采纳 → append 纯黑 → 画布疯涨（滚轮未动）。修正后
+    /// prev-frame 任一侧退化返回 None，交下游 1D(dy=0)/stationary。
+    #[test]
+    fn test_try_match_prev_frame_constant_strip_no_false_match() {
+        let curr = make_frame(TW, TH, 50); // curr 有纹理内容
+        let s = Stitcher::new(curr.clone(), StitchConfig::default());
+        // prev 整帧纯黑（选区下半截纯黑 → prev 底部 strip 必纯黑常数）
+        let prev_black: image::ImageBuffer<Rgba<u8>, Vec<u8>> =
+            image::ImageBuffer::from_pixel(TW, TH, Rgba([12, 12, 12, 255]));
+        let prev_gray = GrayBuf::from_rgba_roi(&prev_black, 0, TH as usize);
+        let curr_gray = GrayBuf::from_rgba_roi(&curr, 0, TH as usize);
+        assert!(
+            s.try_match_prev_frame(&prev_gray, &curr_gray, 0, TH).is_none(),
+            "prev 底部纯黑退化时 prev-frame 应返回 None，不该 score≈1.0 假匹配 dy=-247.5"
+        );
+    }
+
+    #[test]
+    fn test_content_tail_black_bottom_still_stitches() {
+        // 回归：选区上半截有滚动内容、下半截恒定纯黑（暗色编辑器内容不到底下方的空白）。
+        // 真实场景纯黑尾常有光标/渲染差异，detect_sticky 的逐像素相等会漏检（sticky_bottom≈0），
+        // 画布底部停在纯黑 → canvas-anchored 底部 strip 锚点永久退化（常数模板假匹配/失配死锁，
+        // 2026-07-10 release 实测滚轮未动画布不增长）。content_tail 直接看单行 max-min 补救，
+        // 裁掉纯黑尾后画布底部停在内容底（有特征），主匹配恢复。
+        let content_h = 300u32;
+        let black_tail = 200u32;
+        let h = content_h + black_tail;
+
+        // 上 content_h 行用 make_frame 内容，下 black_tail 行暗噪声（0~5）：逐像素不等让
+        // detect_sticky 的逐像素相等漏检（sticky_bottom≈0），但单行 max-min<30 让
+        // detect_content_tail 仍识别为无内容尾。f0/f1 用不同 noise_seed 确保逐像素不等。
+        let make_with_tail = |scroll: u32, noise_seed: u32| -> RgbaImage {
+            let mut img = make_frame(TW, h, scroll);
+            for y in content_h..h {
+                for x in 0..TW {
+                    let n = ((x as u32 * y as u32 + noise_seed) % 6) as u8;
+                    img.put_pixel(x, y, Rgba([n, n, n, 255]));
+                }
+            }
+            img
+        };
+
+        let f0 = make_with_tail(0, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default());
+
+        // 第二帧（init）：不同 noise_seed → 纯黑尾逐像素不等 → sticky_bottom 漏检
+        let f1 = make_with_tail(0, 3);
+        s.process_frame(&f1).unwrap();
+
+        assert!(
+            s.content_tail >= black_tail / 2,
+            "content_tail {} 应接近纯黑尾 {}（sticky_bottom 逐像素相等漏检后补救）",
+            s.content_tail,
+            black_tail
+        );
+
+        // 第三帧：内容滚动 40，纯黑尾仍暗噪声 → 应成功拼接（不再退化死锁）
+        let f2 = make_with_tail(40, 3);
+        let added = s.process_frame(&f2).unwrap();
+        assert!(
+            added,
+            "纯黑尾裁掉后滚动内容应拼接成功（不再 canvas 底部纯黑退化死锁）"
+        );
+    }
+
+    #[test]
+    fn test_detect_content_tail_frame_based() {
+        // 每帧基于当前帧检测（非首帧画布缓存）：同一 Stitcher 对不同帧返回不同 content_tail。
+        let h = 500u32;
+        let s = Stitcher::new(make_frame(TW, h, 0), StitchConfig::default());
+        // 无纯黑尾帧 → 0
+        assert_eq!(s.detect_content_tail(&make_frame(TW, h, 40)), 0);
+        // 底部 120 行纯黑 → ≈120（clamp 内）
+        let mut black_tail = make_frame(TW, h, 40);
+        for y in (h - 120)..h {
+            for x in 0..TW {
+                black_tail.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+            }
+        }
+        let t = s.detect_content_tail(&black_tail);
+        assert!(t >= 100, "纯黑尾 120 帧应返回≈120，实际 {}（基于帧，非首帧画布）", t);
+    }
+
+    #[test]
+    fn test_content_tail_updates_each_frame() {
+        // 回归（2026-07-10 "拼接一部分后停止"）：content_tail 每帧基于当前帧更新（非首帧缓存）。
+        // 首帧无纯黑尾（=0）、后期帧出现纯黑尾时应动态增长。若退回首帧缓存，后期 eff_bottom
+        // 不变 → append 带纯黑污染画布底部 → canvas strip 退化 → stuck 死锁。
+        let h = 500u32;
+        let mut s = Stitcher::new(make_frame(TW, h, 0), StitchConfig::default());
+        s.process_frame(&make_frame(TW, h, 0)).unwrap(); // init
+        assert_eq!(s.content_tail, 0, "首帧无纯黑尾");
+
+        // 后期帧：底部 200 行纯黑（动态出现，内容仍连续滚动有新内容）
+        let mut f2 = make_frame(TW, h, 40);
+        for y in 300..h {
+            for x in 0..TW {
+                f2.put_pixel(x, y, Rgba([0, 0, 0, 255]));
+            }
+        }
+        s.process_frame(&f2).unwrap();
+        assert!(
+            s.content_tail >= 80,
+            "后期帧出现纯黑尾后 content_tail 应动态增长，实际 {}（每帧检测，非首帧缓存）",
+            s.content_tail
+        );
+    }
+
+    #[test]
+    fn test_short_selection_with_dark_tail_stitches() {
+        // 回归（2026-07-10 "滚动没拼接"）：矮选区（物理 162px 高，其中 80px 恒定暗尾）。
+        // 旧逻辑 strip_h=80 固定 + content_tail clamp strip_h*3=240 > 162 → content_tail 强制 0、
+        // 画布底部 strip 落暗尾 → canvas_has=false 首帧即死锁（release 实测 finalize 只拼 210 行）。
+        // 修法：strip 按 content_h 自适应（min(80, content_h/3)）+ 移除 *3 clamp。
+        // 此处 content_h=82 → eff_strip≈27，搜索范围≈55，首帧即可锁定 dy。
+        let content_h = 82u32;
+        let dark_tail = 80u32;
+        let h = content_h + dark_tail; // 162
+
+        // 上 content_h 行 make_frame 内容，下 dark_tail 行暗噪声（0~5）：逐像素不等让 detect_sticky
+        // 漏检（sticky_bottom≈0），单行 max-min<30 + luma<40 让 content_tail 识别为暗尾。
+        let make = |scroll: u32, noise_seed: u32| -> RgbaImage {
+            let mut img = make_frame(TW, h, scroll);
+            for y in content_h..h {
+                for x in 0..TW {
+                    let n = ((x as u32 * y as u32 + noise_seed) % 6) as u8;
+                    img.put_pixel(x, y, Rgba([n, n, n, 255]));
+                }
+            }
+            img
+        };
+
+        let f0 = make(0, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default());
+        // init：内容滚动 10（帧间内容在动 → sticky_top 小，不至吃光内容区）+ 不同 noise_seed
+        // （暗尾逐像素不等 → sticky_bottom 漏检）。
+        s.process_frame(&make(10, 3)).unwrap();
+
+        // 暗尾应被识别（不再因 clamp 强制为 0）
+        assert!(
+            s.content_tail >= dark_tail / 2,
+            "矮选区暗尾 {} 应被识别，content_tail={}（旧 *3 clamp 会强制为 0）",
+            dark_tail,
+            s.content_tail
+        );
+        // strip 应自适应缩小（固定 80 会吃光 82 内容区）
+        assert!(
+            s.eff_strip_h < s.config.strip_h,
+            "矮选区 eff_strip_h 应 < 配置 {}，实际 {}",
+            s.config.strip_h,
+            s.eff_strip_h
+        );
+
+        // 第三帧滚动 20：应成功拼接（不再首帧死锁）
+        let added = s.process_frame(&make(20, 3)).unwrap();
+        assert!(
+            added,
+            "矮选区滚动内容应拼接成功（strip 自适应后搜索范围充足，不再 canvas 暗尾退化死锁）"
+        );
+    }
+
+    /// 回归（2026-07-10 第 5 次"滚动不拼接"）：init 用第二帧 content_tail 裁首帧 canvas。
+    /// 首帧（种子）在 app 聚焦/滚动开始前由 setup 单独捕获，暗尾常大于已滚动后的第二帧；
+    /// 旧代码用第二帧小暗尾裁首帧大暗尾 → 残余暗尾留画布底部 → canvas_has=false 首帧死锁。
+    /// 修法：init 读 canvas 种子缓冲测其【自身】暗尾裁剪。此测试构造首帧暗尾(100) > 第二帧
+    /// 暗尾(40) 的场景，直接断言画布按种子自身暗尾裁到内容高 60（而非第二帧暗尾的 120）。
+    #[test]
+    fn test_seed_dark_tail_trimmed_by_own_measurement() {
+        let seed_content = 60u32; // 首帧：内容 60 行 + 100 行暗尾（暗尾大）
+        let later_content = 120u32; // 第二/三帧：内容 120 行 + 40 行暗尾（内容上移、暗尾缩小）
+        let h = seed_content + 100; // 160
+
+        // 上 content_rows 行 make_frame 内容，其余行暗噪声(0~5)：单行 max-min<30 + luma<40
+        // → 识别为暗尾；不同 noise_seed 让暗尾逐像素不等 → detect_sticky 漏检 sticky_bottom。
+        let make2 = |content_rows: u32, scroll: u32, noise_seed: u32| -> RgbaImage {
+            let mut img = make_frame(TW, h, scroll);
+            for y in content_rows..h {
+                for x in 0..TW {
+                    let n = ((x as u32 * y as u32 + noise_seed) % 6) as u8;
+                    img.put_pixel(x, y, Rgba([n, n, n, 255]));
+                }
+            }
+            img
+        };
+
+        let seed = make2(seed_content, 0, 0);
+        let mut s = Stitcher::new(seed, StitchConfig::default());
+        // init 帧：内容更多（暗尾更小=40）+ 不同 noise_seed（sticky_bottom 漏检）。
+        s.process_frame(&make2(later_content, 5, 3)).unwrap();
+
+        // 关键断言：画布应按【种子自身】暗尾(100)裁到内容高 60。
+        // 旧代码用第二帧暗尾(40)裁 → canvas_h=120（残留 60 行暗尾 → canvas_has=false 死锁）。
+        assert_eq!(
+            s.height(),
+            seed_content,
+            "画布应按种子自身暗尾裁剪到 {}，实际 {}（旧代码用第二帧暗尾会留残余致首帧死锁）",
+            seed_content,
+            s.height(),
+        );
+
+        // 行为断言：第三帧滚动应拼接成功（画布底部=内容、canvas_has=true，不再死锁）。
+        let added = s.process_frame(&make2(later_content, 10, 3)).unwrap();
+        assert!(
+            added,
+            "种子暗尾正确裁剪后滚动内容应拼接成功（不再 canvas_has=false 首帧死锁）"
+        );
+    }
+
+    /// 回归（2026-07-10 第 6 次"滚动不拼接"）：首帧在 app 聚焦前捕获为**整帧空白**（canvas 锚点
+    /// 常数），canvas-anchored 架构永久死锁——content_tail 无内容可裁（整帧常数）、画布底部永远
+    /// 常数 → canvas_has=false 每帧。日志时序铁证：activated app for scroll focus 出现在首条
+    /// stitch 日志"之后"。修法：画布锚点常数时用当前内容帧重建（reseed_canvas_from）。
+    #[test]
+    fn test_blank_seed_reseeded_from_content_frame() {
+        // 种子：app 聚焦前捕获的全黑空白帧
+        let blank = image::ImageBuffer::from_pixel(TW, TH, Rgba([12, 12, 12, 255]));
+        let mut s = Stitcher::new(blank, StitchConfig::default());
+        // init 帧（app 仍未聚焦）：也空白
+        s.process_frame(&image::ImageBuffer::from_pixel(TW, TH, Rgba([12, 12, 12, 255])))
+            .unwrap();
+        // 画布仍常数（init 无法裁空白种子的"暗尾"——整帧无内容，无暗尾可言）
+        assert!(
+            s.canvas_bottom_constant(),
+            "空白种子后画布底部应常数（死锚），实际非常数"
+        );
+
+        // 第三帧：app 已聚焦，真实内容出现 → 应触发 reseed 重建锚点
+        s.process_frame(&make_frame(TW, TH, 0)).unwrap();
+        assert!(
+            !s.canvas_bottom_constant(),
+            "内容帧到达后画布应重建为有内容锚点（不再常数），实际仍常数"
+        );
+
+        // 第四帧滚动 30：画布锚点已恢复，应正常拼接
+        let added = s.process_frame(&make_frame(TW, TH, 30)).unwrap();
+        assert!(
+            added,
+            "画布 reseed 后滚动内容应拼接成功（不再空白锚点永久死锁）"
+        );
+    }
+
+    /// 测试专用：向画布底部注入 `rows` 行纯色常数尾（RGBA=[value,value,value,255]），
+    /// 模拟「滚动中画布底部变常数」——1D 假匹配 append 常数块、或滚到内容末尾露纯色背景。
+    /// 直接污染 canvas_buf（绕过匹配链），精准复刻第 7 次回归的死锚场景。
+    #[cfg(test)]
+    impl Stitcher {
+        fn inject_constant_canvas_tail(&mut self, rows: u32, value: u8) {
+            let mut row: Vec<u8> = Vec::with_capacity(self.canvas_w as usize * 4);
+            for _ in 0..self.canvas_w {
+                row.extend_from_slice(&[value, value, value, 255]);
+            }
+            for _ in 0..rows {
+                self.canvas_buf.extend_from_slice(&row);
+            }
+            self.canvas_h += rows;
+            self.invalidate_cache();
+        }
+    }
+
+    /// 回归（2026-07-10 第 7 次「拼接一部分后停止」）：旧 canvas_content_confirmed 一次性闸门
+    /// 确认有内容后终身跳过死锚检查 → 滚动中画布底部再次变常数（滚到内容末尾露纯色背景 / 1D 假匹配
+    /// append 常数块）时永久死锁（NCC stuck=5 stationary 到 finalize，finalize 灰度兜底对常数画布
+    /// score≈1.0 假匹配拼错）。修法：每帧检查画布底 strip，常数则非破坏性裁掉常数尾（只丢空白，不丢
+    /// 内容）恢复锚点；仅画布几乎全常数才 reseed。此测试注入常数尾模拟污染后验证自愈。
+    #[test]
+    fn test_canvas_constant_tail_trimmed_mid_stream() {
+        let f0 = make_frame(TW, TH, 0);
+        let mut s = Stitcher::new(f0, StitchConfig::default());
+        s.process_frame(&make_frame(TW, TH, 0)).unwrap(); // init
+        let h_init = s.height();
+        // 累积滚动内容（画布增长、锚点已确认有内容——旧闸门此处置位后终身跳过检查）
+        s.process_frame(&make_frame(TW, TH, 50)).unwrap();
+        let h_content = s.height();
+        assert!(h_content > h_init, "应已拼接增长：{} > {}", h_content, h_init);
+
+        // 注入 150 行常数尾（模拟 1D 假匹配 append 常数块 / 滚到内容末尾露纯色背景）
+        s.inject_constant_canvas_tail(150, 10);
+        assert_eq!(s.height(), h_content + 150);
+        assert!(s.canvas_bottom_constant(), "注入常数尾后画布底应常数（死锚）");
+
+        // 下一帧滚动 100：画布底部常数 → 裁掉常数尾 → 锚点回到内容 → 继续拼接（非死锁）
+        let added = s.process_frame(&make_frame(TW, TH, 100)).unwrap();
+        assert!(
+            added,
+            "常数尾裁掉后应恢复拼接（不再死锁 stationary 到 finalize）"
+        );
+        // 注入的 150 常数行被裁，画布回到内容区并继续增长（不低于拼接内容高）
+        assert!(
+            s.height() >= h_content,
+            "裁掉常数尾后画布不应低于内容区 {}，实际 {}",
+            h_content,
+            s.height()
+        );
     }
 
     #[test]
