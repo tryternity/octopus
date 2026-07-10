@@ -163,39 +163,11 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移
 
 **执行命令**（替换现有 run_ai_action / action_bar_open_url 的分发逻辑）：
 
-```rust
-#[tauri::command]
-pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
-    let item = load_action_bar_item(item_id)?;
-    match item.action_type.as_str() {
-        "ai" => {
-            let prompt = if item.action_data == "auto_translate" {
-                auto_translate_prompt(&text)
-            } else {
-                item.action_data.clone()
-            };
-            let result = octopus_llm::chat_text_with_prompt(&prompt, &text, &llm_config)?;
-            action_bar_show_result(result, text, item.title, app);
-        }
-        "url" => {
-            let url = if item.action_data.is_empty() {
-                text  // 选中文本即 URL
-            } else {
-                item.action_data.replace("{text}", &urlencode(&text))
-            };
-            open_url(&url);
-        }
-        "script" => {
-            run_script(&item.action_data, &text)?;
-        }
-        "copy" => {
-            write_clipboard_text(&app, &text);
-        }
-        _ => {}
-    }
-    Ok(())
-}
-```
+> ⚠️ **收口职责归后端**：前端不再直接 `getCurrentWindow().hide()`，所有窗口生命周期管理由后端统一负责。命令内层 `execute_action_bar_inner` 返回 `Result<bool>`——`Ok(true)`（ai 已自收口直通）、`Ok(false)`（url/script/copy 成功→hide+finalize）、`Err`（异常→仅 finalize，不 hide，让前端切 error 视图，关闭时 dismiss 收口 depth）。所有路径都经收口，`?`/`return Err` 不会泄漏重入锁和 depth。
+>
+> ⚠️ **线程约束**：本 command 是 `async` → 跑在 tokio worker 线程，而 `after_floating_window_hide` 内的 `NSApplication::deactivate` 需 `MainThreadMarker`（仅主线程可获取）。故 Ok(false) 分支的 `hide_action_bar_window` 通过 `app.run_on_main_thread` 投递到主线程执行（与 `trigger_action_bar` 的 show 同模式）。`finalize_action_bar` 仅操作 `AtomicBool`，线程安全，保持即时执行。`action_bar_dismiss`（sync command）天然在主线程，无需投递。
+
+内层 match 的分支与之前相同（ai/url/script/copy），但**不直接 `?` 返回**——异常经外层 match 兜底 finalize。
 
 ### 5.3 script 执行
 
@@ -238,7 +210,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 - 按 parentId 构建两级结构（`#[serde(rename_all = "camelCase")]` 确保 JSON 字段名匹配）
 - `executeMain` / `executeSubItem` 合并为统一的 `executeItem(item: ActionBarItem)`
 - `ai` 类型仍走前端 loading + 超时 + timedOutRef 流程
-- `url` / `script` / `copy` 直接 `invoke("execute_action_bar")`
+- `url` / `script` / `copy` 也走 `try-catch`（与 ai 一致）：成功后端统一 hide+收口，失败切 error 视图（**前端不再直接 `getCurrentWindow().hide()`**）
 - 按钮布局：**水平「数字徽章+文字」一行排列**（`flex-row`），非上下两行——浮窗更矮，子菜单展开后总高 ~78px
 - 视觉：`rounded-lg`（8px，与语音识别窗口一致）+ `backdrop-blur-xl` 毛玻璃 + `shadow-2xl`
 - 窗口高度动态调整：主菜单 40px / 子菜单 78px / loading 48px / error 60px（前端 `setSize` 按 view 切换），避免透明区域遮挡下层点击
@@ -258,7 +230,7 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
 2. `show` 恢复被隐藏的 Regular 窗口——此时 octopus app 已在后台，窗口温和恢复不跳前台
 
 **剪贴板浮窗失焦恢复**（`restore_hidden_windows_only`）：
-剪贴板是 toggle 模式（always-on-top 可见，点击外部不 hide）。用户切到其他 app 后剪贴板失焦（`Focused(false)` 事件）但 Regular 窗口仍隐藏 → Dock 图标点击无效。解法：失焦时 `deactivate` app + `show` 恢复被隐藏的窗口 + 清除状态。不交还前台焦点（剪贴板仍可见）。
+剪贴板是 toggle 模式（always-on-top 可见，点击外部不 hide）。用户切到其他 app 后剪贴板失焦（`Focused(false)` 事件）但 Regular 窗口仍隐藏 → Dock 图标点击无效。失焦 = **虚拟关闭**：扣减 `FLOAT_DEPTH` + 清 `WAS_INACTIVE`/`PREV_APP` 状态 + 恢复被隐藏窗口 + `deactivate`。不交还前台焦点（剪贴板仍可见）。**必须扣减 depth**——否则 toggle 的 else 分支（`visible=true, focused=false`）重新 `before_show` 会使 depth 累加泄漏，焦点交还机制最终瘫痪。
 
 **多浮窗嵌套**（`FLOAT_DEPTH` 引用计数）：多个浮窗重叠唤起时（如剪贴板可见时唤出 action bar），`before_floating_window_show` 增加 depth，只有最外层（depth==1）才记录前台 app + 隐藏 Regular 窗口。`after_floating_window_hide` 减少 depth，只有回到 0 才交还焦点 + 恢复窗口。防止第二个浮窗覆盖第一个的 `WAS_INACTIVE` 状态。
 

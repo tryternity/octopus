@@ -75,6 +75,12 @@ pub fn trigger_action_bar(app: AppHandle) {
             return;
         }
 
+        // suppress_next 已完成使命——watcher 有 200ms 窗口消费 flag。
+        // 若剪贴板未变化（unchanged 路径），watcher 不触发，flag 残留会
+        // 导致用户下次手动复制被静默吞掉，在此显式清除。
+        // write_text 自带独立 suppress，不受此清除影响。
+        clip_handle.clear_suppress();
+
         // 5. 立即恢复原始剪贴板内容（write_text 自带 suppress，不会入库）
         if let Some(ref original) = clipboard_before {
             if Some(original.as_str()) != clipboard_after.as_deref() {
@@ -298,20 +304,18 @@ fn auto_translate_prompt(text: &str) -> &'static str {
     }
 }
 
-/// 简易 URL 编码（避免引入新 crate）
-fn simple_url_encode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() * 3);
-    for &byte in s.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                result.push(byte as char);
-            }
-            _ => {
-                result.push_str(&format!("%{:02X}", byte));
-            }
-        }
-    }
-    result
+/// URL 查询参数编码：保留 RFC 3986 unreserved（A-Za-z0-9-_.~），其余百分号编码。
+/// 复用 percent-encoding 库（项目已为 file 协议引入）。
+fn url_encode_param(s: &str) -> String {
+    use percent_encoding::{utf8_percent_encode, AsciiSet, CONTROLS};
+    /// unreserved 之外需编码的 ASCII 字符
+    const ENCODE_SET: &AsciiSet = &CONTROLS
+        .add(b' ').add(b'!').add(b'"').add(b'#').add(b'$').add(b'%').add(b'&')
+        .add(b'\'').add(b'(').add(b')').add(b'*').add(b'+').add(b',').add(b'/')
+        .add(b':').add(b';').add(b'<').add(b'=').add(b'>').add(b'?').add(b'@')
+        .add(b'[').add(b'\\').add(b']').add(b'^').add(b'`').add(b'{').add(b'|')
+        .add(b'}');
+    utf8_percent_encode(s, ENCODE_SET).to_string()
 }
 
 /// 执行脚本：按第一行 magic comment 分发运行时。
@@ -374,9 +378,9 @@ fn run_script(source: &str, text: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 统一执行菜单项动作。
-#[tauri::command]
-pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
+/// 执行菜单项动作核心逻辑（不含收口）。
+/// Ok(true) = ai 已自行收口；Ok(false) = 成功需外层统一收口；Err = 异常需外层 finalize。
+fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -> Result<bool, String> {
     let item = octopus_infra::db::load_action_bar_item(item_id)
         .map_err(|e| e.to_string())?
         .ok_or("菜单项不存在")?;
@@ -393,7 +397,8 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
             };
             let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
                 .map_err(|e| e.to_string())?;
-            action_bar_show_result(result, text, item.title, app);
+            action_bar_show_result(result, text, item.title, app.clone());
+            Ok(true)
         }
         "url" => {
             let url = if item.action_data.is_empty() {
@@ -405,7 +410,7 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
                     format!("https://{}", raw)
                 }
             } else {
-                item.action_data.replace("{text}", &simple_url_encode(&text))
+                item.action_data.replace("{text}", &url_encode_param(&text))
             };
             #[cfg(target_os = "macos")]
             { let _ = std::process::Command::new("open").arg(&url).spawn(); }
@@ -413,17 +418,42 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
             { let _ = std::process::Command::new("cmd").args(["/c", "start", "", &url]).spawn(); }
             #[cfg(target_os = "linux")]
             { let _ = std::process::Command::new("xdg-open").arg(&url).spawn(); }
+            Ok(false)
         }
         "script" => {
             run_script(&item.action_data, &text)?;
+            Ok(false)
         }
         "copy" => {
-            write_clipboard_text(&app, &text);
+            write_clipboard_text(app, &text);
+            Ok(false)
         }
-        _ => {
-            return Err(format!("未知动作类型: {}", item.action_type));
+        _ => Err(format!("未知动作类型: {}", item.action_type)),
+    }
+}
+
+/// 统一执行菜单项动作。
+#[tauri::command]
+pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> Result<(), String> {
+    match execute_action_bar_inner(item_id, text, &app) {
+        Ok(true) => Ok(()),
+        Ok(false) => {
+            // url/script/copy 成功 → 统一收口：标准隐藏 + 焦点交还 + 重入锁复位
+            // hide_action_bar_window 含 after_floating_window_hide（NSApplication::deactivate），
+            // 本 command 是 async → 跑在 tokio worker 线程，MainThreadMarker::new() 返回 None
+            // 导致 deactivate 静默跳过。投递到主线程执行（与 trigger_action_bar 的 show 同模式）。
+            let app_for_hide = app.clone();
+            let _ = app.run_on_main_thread(move || {
+                hide_action_bar_window(&app_for_hide);
+            });
+            finalize_action_bar(&app);
+            Ok(())
+        }
+        Err(e) => {
+            // 异常路径：仅重置重入锁（不 hide——前端切 error 视图需窗口可见，
+            // error 视图关闭时 action_bar_dismiss 走 hide + after_hide 递减 depth）
+            finalize_action_bar(&app);
+            Err(e)
         }
     }
-
-    Ok(())
 }

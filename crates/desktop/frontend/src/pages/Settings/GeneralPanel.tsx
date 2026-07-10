@@ -172,6 +172,9 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         <Row label="剪贴板监听" effect="立即" hint="关闭后不再记录剪贴板历史">
           <Toggle on={cfg.clipboard_enabled as boolean} onClick={() => toggleVal("clipboard_enabled")} />
         </Row>
+        <Row label="粘贴切换英文键盘" effect="立即" hint="粘贴前临时切到 ABC，避免中文输入法干扰（仅 macOS）">
+          <Toggle on={cfg.switch_input_source_on_paste as boolean} onClick={() => toggleVal("switch_input_source_on_paste")} />
+        </Row>
       </Card>
 
       <Card icon={Layers} title="模型选择">

@@ -1,9 +1,98 @@
-//! macOS 常规窗口激活策略协调。
+//! # macOS 浮窗焦点协调——FLOAT_DEPTH 状态机
 //!
-//! settings / compact_editor 两个常规窗口开窗时把 app 升为 Regular
-//!（Dock 显图标），关窗时降回 Accessory（纯托盘）。但关某一个时若其余常规窗口仍开着，
-//! 不能直接降级——app 降为 Accessory 会令 macOS 收掉剩余的常规窗口。故关窗后仅当
-//! 常规窗口**全无存活**才降级。
+//! ## 目标
+//!
+//! 全局热键弹出浮窗（action bar / clipboard）时，不能把 settings / compact_editor
+//! 等常规窗口带到前台。方案：show 前记录前台 app + 临时隐藏其他窗口，hide 后
+//! 交还前台焦点 + 恢复被隐藏的窗口。多个浮窗可嵌套唤起，用 `FLOAT_DEPTH` 引用
+//! 计数协调——只有最外层（depth 0↔1）才真正记录/恢复状态。
+//!
+//! ## 状态变量
+//!
+//! | 变量 | 类型 | 含义 |
+//! |------|------|------|
+//! | `FLOAT_DEPTH` | `u32` | 浮窗嵌套深度，0 = 无浮窗活跃 |
+//! | `WAS_INACTIVE` | `bool` | 最外层 show 时 app 是否在后台 |
+//! | `PREV_APP` | `Option<NSRunningApplication>` | 焦点交还目标（前台 app） |
+//! | `TEMP_HIDDEN` | `Vec<String>` | show 时被临时隐藏的窗口 label 列表 |
+//!
+//! ## 状态转移图
+//!
+//! ```text
+//!                          before_show (+1)
+//!              ┌──────────────────────────────────────┐
+//!              │                                      ▼
+//!         ┌────────┐  restore_only (-1)          ┌────────┐
+//!      ─▶ │ depth=0│ ◀────────────────────────── │ depth=N│
+//!         └────────┘                              └────────┘
+//!              ▲                                      │
+//!              │  after_hide (-1, depth→0)           │
+//!              │  keep_active (-1, depth→0)          │
+//!              └──────────────────────────────────────┘
+//! ```
+//!
+//! ## 四条转移边（操作函数）
+//!
+//! ### 1. `before_floating_window_show` — depth +1（SHOW 边）
+//!
+//! | | |
+//!|---|---|
+//! | **depth 变化** | `N → N+1` |
+//! | **depth==1 时**（最外层） | 记录 `WAS_INACTIVE`、`PREV_APP`；若 inactive 隐藏 `WINDOWS_TO_HIDE_ON_FLOAT` → `TEMP_HIDDEN` |
+//! | **depth>1 时**（嵌套） | 仅 +1，不碰状态（内层浮窗不覆盖外层记录） |
+//! | **调用方** | `show_action_bar_window`（trigger→主线程）、`toggle_clipboard_window` else 分支（快捷键回调=主线程） |
+//! | **线程要求** | 需 `MainThreadMarker`（`NSApplication::isActive`、`NSWorkspace::frontmostApplication`） |
+//!
+//! ### 2. `after_floating_window_hide` — depth -1（STANDARD HIDE 边）
+//!
+//! | | |
+//!|---|---|
+//! | **depth 变化** | `N → N-1`（`if >0` 防下溢） |
+//! | **depth→0 时**（最外层关闭） | 若 `WAS_INACTIVE`：`activateWithOptions(PREV_APP)` 交还焦点（PREV_APP 为 None 则 `deactivate()` 兜底）；恢复 `TEMP_HIDDEN` 窗口 |
+//! | **depth>0 时**（嵌套关闭） | early return，不恢复（等最外层） |
+//! | **调用方** | `hide_action_bar_window` ← `action_bar_dismiss`（sync=主线程）、`execute_action_bar` Ok(false)（async→`run_on_main_thread`）；`toggle_clipboard_window` if 分支（快捷键=主线程） |
+//! | **线程要求** | `deactivate()` 需 `MainThreadMarker`；`activateWithOptions` 线程安全 |
+//!
+//! ### 3. `after_floating_window_hide_keep_active` — depth -1（KEEP ACTIVE 边）
+//!
+//! | | |
+//!|---|---|
+//! | **depth 变化** | `N → N-1`（`if >0` 防下溢） |
+//! | **depth→0 时** | 清 `WAS_INACTIVE`/`PREV_APP` + 恢复 `TEMP_HIDDEN`（**不 deactivate / 不 activate**） |
+//! | **depth>0 时** | early return |
+//! | **调用方** | `action_bar_show_result`（sync=主线程）—— 浮窗 hide 后紧接着 show CompactEditor，deactivate 会压后台 |
+//! | **线程要求** | 无 AppKit 调用（仅 Mutex + Tauri `show`），任意线程安全 |
+//!
+//! ### 4. `restore_hidden_windows_only` — depth -1（VIRTUAL CLOSE 边）
+//!
+//! | | |
+//!|---|---|
+//! | **depth 变化** | `N → N-1`（`if >0` 防下溢）—— **无条件**，不论 depth 值 |
+//! | **状态清理** | **无条件**清 `WAS_INACTIVE`/`PREV_APP`（在 `TEMP_HIDDEN.is_empty()` 检查之前） |
+//! | **有 TEMP_HIDDEN 时** | `deactivate()` + 恢复窗口 |
+//! | **无 TEMP_HIDDEN 时** | 仅 depth-1 + 清状态，直接 return |
+//! | **调用方** | `clipboard_window` `Focused(false)` 事件回调（窗口事件=主线程） |
+//! | **线程要求** | `deactivate()` 需 `MainThreadMarker` |
+//!
+//! **为什么无条件**：剪贴板 toggle 模式下失焦=虚拟关闭，但 toggle 的 else 分支
+//!（`visible && !focused`）会重新 `before_show` → depth+1。若虚拟关闭不扣减，
+//!每次「唤出→失焦→拉回→关闭」depth 单调递增，焦点协调彻底瘫痪。
+//!
+//! ## 不变量（修改前必读）
+//!
+//! 1. **只有 depth==1（最外层 show）才记录状态**——内层不覆盖外层的 WAS_INACTIVE/PREV_APP
+//! 2. **只有 depth→0（最外层关闭）才恢复状态**——`after_hide`/`keep_active` 的 `depth>0 early return`
+//! 3. **`restore_hidden_windows_only` 是唯一无条件扣减**——因其虚拟关闭语义，不能 early return
+//! 4. **所有 -1 操作有 `if *d > 0` 下溢保护**——异常路径不会导致 u32 underflow
+//! 5. **depth 修改必须配对**——每个 `before_show(+1)` 最终必须有且仅有一个 `after_hide/keep_active/restore_only(-1)` 闭合
+//!
+//! ## 历史踩坑（均已在 Task 9-10 修复）
+//!
+//! - **P0**：`action_bar_show_result` 直接 `win.hide()` 跳过 `keep_active` → depth 永久泄漏（Task 9）
+//! - **P1**：`execute_action_bar` url/script/copy 前端直接 hide 绕过后端收口 → TRIGGER_IN_PROGRESS 锁死 + depth 泄漏（Task 10 Part A）
+//! - **P1**：`execute_action_bar` 异常 `?` 跳过 finalize → 重入锁死 + depth 泄漏（Task 10 Part C）
+//! - **P1**：`restore_hidden_windows_only` 不扣 depth → 剪贴板失焦-拉回循环 depth 累加（Task 10 Part D）
+//! - **P2**：async command 的 hide 在 worker 线程 → `MainThreadMarker::new()` 返回 None → deactivate 静默跳过（Task 10 Part E）
 
 use tauri::{ActivationPolicy, Manager};
 
@@ -181,7 +270,19 @@ pub fn after_floating_window_hide(app: &tauri::AppHandle) {
 /// （剪贴板仍可见，用户可能只是瞄一眼其他 app）。
 #[cfg(target_os = "macos")]
 pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
-    // 恢复临时隐藏的窗口
+    // 剪贴板失焦 = 虚拟关闭：无论是否有隐藏窗口，都需扣减 depth
+    // 和清状态。否则 toggle 的 else 分支重新 before_show 会 depth 累加泄漏。
+    let depth = {
+        let mut d = FLOAT_DEPTH.lock();
+        if *d > 0 { *d -= 1; }
+        *d
+    };
+
+    // 无条件清状态（后续 toggle 重新 before_show 会重设）
+    *WAS_INACTIVE.lock() = false;
+    let _ = PREV_APP.lock().take();
+
+    // 取出隐藏窗口
     let hidden = {
         let mut guard = TEMP_HIDDEN.lock();
         std::mem::take(&mut *guard)
@@ -201,9 +302,7 @@ pub fn restore_hidden_windows_only(app: &tauri::AppHandle) {
         }
     }
 
-    // 清除状态——后续 toggle 剪贴板会重新走 before_floating_window_show
-    *WAS_INACTIVE.lock() = false;
-    let _ = PREV_APP.lock().take();
+    let _ = depth; // depth 已扣减，仅用于将来调试日志
 }
 
 /// 递减 FLOAT_DEPTH + 恢复隐藏窗口 + 清状态，但**不 deactivate / 不交还前台焦点**。
