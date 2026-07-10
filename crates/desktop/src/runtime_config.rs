@@ -165,6 +165,7 @@ pub struct OcrOption {
     pub name: String,
     pub label: String,
     pub current: bool,
+    pub is_local: bool,
 }
 
 /// 构造 LLM 选项列表（纯逻辑）：首项固定「不选择模型」（name 空 = polish_llm 置空），
@@ -224,6 +225,7 @@ fn build_ocr_options(current: &str, ocrs: Vec<octopus_infra::db::OcrModelInfo>) 
                 m.description
             },
             name: m.model_name,
+            is_local: m.is_local,
         })
         .collect()
 }

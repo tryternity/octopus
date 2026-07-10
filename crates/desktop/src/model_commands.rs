@@ -77,6 +77,21 @@ pub fn list_downloadable_models() -> Result<Vec<DownloadableModel>, String> {
 
 /// 设置下载镜像（写运行时 AppConfig + 持久化 DB）。
 #[tauri::command]
+/// 对 URL 字符串做 `{key}` → value 模板替换（读 DB env 变量）。
+fn resolve_env_template(url: &str) -> String {
+    let vars = match octopus_infra::db::list_env_vars() {
+        Ok(v) => v,
+        Err(_) => return url.to_string(),
+    };
+    let mut result = url.to_string();
+    for (key, value) in vars {
+        let placeholder = format!("{{{}}}", key);
+        result = result.replace(&placeholder, &value);
+    }
+    result
+}
+
+#[tauri::command]
 pub fn set_download_mirror(value: String, rc: State<'_, SharedRuntimeConfig>) -> Result<(), String> {
     let mut cfg = rc.read().clone();
     cfg.download_mirror = value;
@@ -89,7 +104,7 @@ pub fn set_download_mirror(value: String, rc: State<'_, SharedRuntimeConfig>) ->
 #[tauri::command]
 pub async fn download_model(
     repo: String,
-    rc: State<'_, SharedRuntimeConfig>,
+    _rc: State<'_, SharedRuntimeConfig>,
     app_handle: AppHandle,
 ) -> Result<(), String> {
     // 1. 探查：文件已就绪（如用户 hf-cli 下过、在 cache）→ 自举清单 + 置 true，不重下。
@@ -109,20 +124,17 @@ pub async fn download_model(
     }
 
     // 2. 未命中：下载（复用阶段1 download crate）。
-    let mirror = {
-        let g = rc.read();
-        let m = g.download_mirror.trim().to_string();
-        if m.is_empty() { None } else { Some(m) }
-    };
+    // 变量模板替换：repo 中的 {huggingface} 等替换为 env 变量实际值
+    let resolved_repo = resolve_env_template(&repo);
     let target_dir = octopus_infra::paths::octopus_config_home().join("models");
     let dl = octopus_download::Downloader::new(octopus_download::DownloadConfig::default())
         .map_err(|e| format!("初始化下载器失败: {e:?}"))?;
     let client = dl.client().clone();
     let hf_req = octopus_download::HfRequest {
-        repo: repo.clone(),
+        repo: resolved_repo,
         include: Vec::new(),
         exclude: Vec::new(),
-        source_url: mirror,
+        source_url: None,
         target_dir,
     };
     let tasks = octopus_download::resolve_tasks(&client, hf_req)

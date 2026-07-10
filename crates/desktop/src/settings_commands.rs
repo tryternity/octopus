@@ -383,6 +383,21 @@ fn apply_config_value(
     Ok(())
 }
 
+#[tauri::command]
+pub fn get_env_vars() -> Result<Vec<(String, String)>, String> {
+    octopus_infra::db::list_env_vars().map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn set_env_var(key: String, value: String) -> Result<(), String> {
+    octopus_infra::db::save_env_var(&key, &value).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_env_var_cmd(key: String) -> Result<bool, String> {
+    octopus_infra::db::delete_env_var(&key).map_err(|e| e.to_string())
+}
+
 /// 将前端传来的裸 model_name 构造为 3-part ASR spec "{provider}:{category}:{model_name}"。
 /// 兜底引擎固定 "local:zipformer:NAME"；其余查 DB 取 provider/category。
 fn build_asr_engine_spec(bare_name: &str) -> Result<String, String> {

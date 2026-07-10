@@ -174,7 +174,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 20 {
+    if v >= 22 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -206,13 +206,19 @@ fn init_schema(conn: &Connection) -> Result<()> {
         }
         conn.execute("PRAGMA user_version = 21", [])?;
         log::info!("schema upgraded to v21 (action_bar_items + script_runs)");
+        // v21→v22：env 变量 seed（huggingface/modelscope/github）
+        conn.execute_batch(
+            "INSERT OR IGNORE INTO app_config (config_key, config_value, description, category) VALUES\n             ('env.huggingface', 'https://hf-mirror.com', 'HuggingFace 下载镜像地址', 'env'),\n             ('env.modelscope',  'https://modelscope.cn',  '魔搭社区下载镜像地址',   'env'),\n             ('env.github',      'https://github.com',     'GitHub 下载地址',         'env')"
+        )?;
+        conn.execute("PRAGMA user_version = 22", [])?;
+        log::info!("schema upgraded to v22 (env vars seed)");
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 21", [])?;
-    log::info!("DB initialized (v21): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 22", [])?;
+    log::info!("DB initialized (v22): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -743,18 +749,20 @@ pub fn list_llm_models() -> Result<Vec<LlmModelInfo>> {
 pub struct OcrModelInfo {
     pub model_name: String,
     pub description: String,
+    pub is_local: bool,
 }
 
 /// 列出所有启用的 OCR 模型（domain='ocr' AND is_enabled=1）。
 fn list_ocr_models_at(conn: &Connection) -> Result<Vec<OcrModelInfo>> {
     let mut stmt = conn.prepare(
-        "SELECT model_name, description FROM models
+        "SELECT model_name, description, is_local FROM models
          WHERE domain='ocr' AND is_enabled = 1",
     )?;
     let rows = stmt.query_map([], |row| {
         Ok(OcrModelInfo {
             model_name: row.get::<_, String>(0)?,
             description: row.get::<_, String>(1)?,
+            is_local: row.get::<_, i32>(2)? != 0,
         })
     })?;
     let mut list = Vec::new();
