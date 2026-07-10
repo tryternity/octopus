@@ -205,14 +205,13 @@ export default function Clipboard() {
   return (
     <div
       className={cn(
-        "flex flex-col h-screen select-none overflow-hidden rounded-xl data-tauri-drag-region",
+        "flex flex-col h-screen select-none data-tauri-drag-region",
         dockMode === "collapsed"
-          ? "w-[300px] transition-[width] duration-300 ease-out"
-          : "w-[300px] border border-border shadow-2xl shadow-black/8",
+          ? "w-[300px]"
+          : "w-[300px] overflow-hidden rounded-xl border border-border shadow-2xl shadow-black/8",
       )}
       style={{
         background: dockMode === "collapsed" ? "transparent" : "var(--color-background)",
-        pointerEvents: dockMode === "collapsed" ? "none" : "auto",
       }}
     >
       {/* dock 收缩态：只显示 8px 细条 */}
