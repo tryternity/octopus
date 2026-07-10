@@ -148,7 +148,6 @@ pub fn read_script_magic_comment(pkg_dir: &Path, script_rel: &str) -> Option<Str
 #[tauri::command]
 pub fn import_extension(zip_path: String, parent_id: Option<i64>) -> Result<String, String> {
     use std::fs;
-    use std::io::Read;
 
     let tmp_dir = std::env::temp_dir().join(format!("octopus-ext-{}", std::process::id()));
     let _ = fs::remove_dir_all(&tmp_dir);

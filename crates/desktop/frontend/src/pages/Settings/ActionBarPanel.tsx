@@ -1,5 +1,6 @@
-import { useState, useEffect, useCallback, memo } from "react";
+import { useState, useEffect, useCallback, useRef, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
 import {
   ChevronRight,
   ChevronDown,
@@ -630,6 +631,7 @@ const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) =>
   const [loaded, setLoaded] = useState(false);
   const [dragging, setDragging] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const inDropZone = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -645,35 +647,37 @@ const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) =>
     refresh();
   }, [refresh]);
 
-  const handleDrop = useCallback(
-    async (e: React.DragEvent) => {
-      e.preventDefault();
-      setDragging(false);
-      const files = Array.from(e.dataTransfer.files);
-      const zipFile = files.find((f) => f.name.endsWith(".octopusext.zip"));
-      if (!zipFile) {
-        showToast("请拖入 .octopusext.zip 文件");
-        return;
+  // Tauri 2 文件拖拽——onDragDropEvent 在 webview 级别监听，
+  // 通过 inDropZone ref + mouse position 判断是否落在扩展面板区域内
+  useEffect(() => {
+    const win = getCurrentWebview();
+    const unlisten = win.onDragDropEvent((event) => {
+      const { type } = event.payload;
+      if (type === "over" || type === "enter") {
+        if (inDropZone.current) setDragging(true);
+      } else if (type === "drop") {
+        setDragging(false);
+        if (!inDropZone.current) return;
+        const paths = (event.payload as { paths: string[] }).paths;
+        const zipPath = paths.find((p: string) => p.endsWith(".octopusext.zip"));
+        if (!zipPath) {
+          showToast("请拖入 .octopusext.zip 文件");
+          return;
+        }
+        invoke<string>("import_extension", { zipPath, parentId: null })
+          .then((name) => {
+            showToast(`已导入：${name}`);
+            refresh();
+          })
+          .catch((e) => showToast("导入失败：" + e));
+      } else if (type === "leave") {
+        setDragging(false);
       }
-      // Tauri 的 file path 在 dataTransfer.items 中
-      const path = (zipFile as unknown as { path?: string }).path;
-      if (!path) {
-        showToast("无法获取文件路径");
-        return;
-      }
-      try {
-        const name = await invoke<string>("import_extension", {
-          zipPath: path,
-          parentId: null,
-        });
-        showToast(`已导入：${name}`);
-        refresh();
-      } catch (e) {
-        showToast("导入失败：" + e);
-      }
-    },
-    [showToast, refresh],
-  );
+    });
+    return () => {
+      unlisten.then((fn: () => void) => fn());
+    };
+  }, [showToast, refresh]);
 
   const handleDelete = useCallback(
     async (dirName: string) => {
@@ -697,12 +701,8 @@ const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) =>
 
   return (
     <div
-      onDragOver={(e) => {
-        e.preventDefault();
-        setDragging(true);
-      }}
-      onDragLeave={() => setDragging(false)}
-      onDrop={handleDrop}
+      onMouseEnter={() => { inDropZone.current = true; }}
+      onMouseLeave={() => { inDropZone.current = false; setDragging(false); }}
       className={cn(
         "rounded-lg border border-dashed transition-colors min-h-[200px]",
         dragging ? "border-voice bg-voice/5" : "border-border",

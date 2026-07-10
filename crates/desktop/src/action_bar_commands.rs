@@ -513,7 +513,7 @@ fn now_iso8601() -> String {
 
 /// 异步执行脚本——spawn 后立即返回，后台线程收割并落库
 fn run_script_async(source: &str, text: &str, item_id: i64, pkg_dir: Option<String>) -> Result<(), String> {
-    let (child, script_type) = spawn_script(source, text, false, &pkg_dir)?;;
+    let (child, script_type) = spawn_script(source, text, false, &pkg_dir)?;
     let started = std::time::Instant::now();
     let started_at = now_iso8601();
     std::thread::spawn(move || {
@@ -534,7 +534,7 @@ fn run_script_async(source: &str, text: &str, item_id: i64, pkg_dir: Option<Stri
 
 /// 同步执行脚本（阻塞）——等待完成，返回结果并落库
 fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Option<String>) -> Result<ScriptResult, String> {
-    let (child, script_type) = spawn_script(source, text, true, &pkg_dir)?;;
+    let (child, script_type) = spawn_script(source, text, true, &pkg_dir)?;
     let started = std::time::Instant::now();
     let started_at = now_iso8601();
     let mut result = wait_with_timeout(child);
