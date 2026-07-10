@@ -1,7 +1,7 @@
 # Action Bar 脚本增强——JS/TS 运行时 + 执行结果捕获 + 异步模式
 
 > **日期**：2026-07-10
-> **状态**：设计完成，待实施
+> **状态**：✅ 已实现（plan `plans/2026-07-10-action-bar-script-enhancement.md` 43/43 Task 完成）
 > **关联**：[action-bar-menu-db spec](2026-07-09-action-bar-menu-db-design.md) §5.3 script 执行、[调研报告](2026-07-09-action-bar-related-tools-survey.md) §11 PopClip
 
 ---

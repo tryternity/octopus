@@ -1,6 +1,6 @@
 # 模型管理页面 Tab 化 + 环境变量配置 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> ✅ **已实现**（2026-07-11，commit `923892a`→`008a8e6`→`eba9509`→`5d776c4` + `d0c6fa0` schema v22 迁移）。所有 Task 已完成、checkbox 已勾选。下方为原始实施计划，保留作执行记录。
 
 **Goal:** 设置页「模型管理」改为 5 tab（常量/ASR/Text-Chat/OCR/翻译），模型下载地址支持 `{huggingface}` 等变量模板替换。
 
@@ -28,7 +28,7 @@
 **Interfaces:**
 - Produces: `list_env_vars() -> Vec<(String, String)>` / `save_env_var(key, value)` / `delete_env_var(key) -> Result<bool>`（返回是否是内置变量，内置返回 false）
 
-- [ ] **Step 1: db.sql seed 加 3 行 env 变量**
+- [x] **Step 1: db.sql seed 加 3 行 env 变量**
 
 在 db.sql 的 app_config seed INSERT 末尾（`ocr_model` 行之后）加：
 
@@ -45,7 +45,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description, categor
 grep -A10 "CREATE TABLE.*app_config" crates/infra/src/db.sql
 ```
 
-- [ ] **Step 2: db.rs 加 env 变量 CRUD 函数**
+- [x] **Step 2: db.rs 加 env 变量 CRUD 函数**
 
 在 db.rs 中加（放在 `save_config_key` / `load_config_key` 之后）：
 
@@ -97,12 +97,12 @@ pub fn delete_env_var(key: &str) -> Result<bool> {
 }
 ```
 
-- [ ] **Step 3: 编译 + 测试**
+- [x] **Step 3: 编译 + 测试**
 
 Run: `cargo build -p octopus-infra 2>&1 | tail -5`
 Expected: 编译通过
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -119,7 +119,7 @@ git commit -m "feat(models-tab): DB seed + env 变量 CRUD（list/save/delete）
 **Interfaces:**
 - Consumes: Task 1 的 `list_env_vars()`
 
-- [ ] **Step 1: 加变量替换函数**
+- [x] **Step 1: 加变量替换函数**
 
 在 model_commands.rs 中加：
 
@@ -139,7 +139,7 @@ fn resolve_env_template(url: &str) -> String {
 }
 ```
 
-- [ ] **Step 2: 改造 download_model**
+- [x] **Step 2: 改造 download_model**
 
 在 `download_model` 函数中，找到 `source_url: mirror` 那段（约 line 114-125），改为：
 
@@ -151,12 +151,12 @@ fn resolve_env_template(url: &str) -> String {
 
 然后在 `HfRequest` 构造中用 `resolved_repo` 替代 `repo`，`source_url: None`（不再用前缀拼接）。
 
-- [ ] **Step 3: 编译**
+- [x] **Step 3: 编译**
 
 Run: `cargo build -p octopus-desktop 2>&1 | tail -5`
 Expected: 编译通过
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/model_commands.rs
@@ -171,7 +171,7 @@ git commit -m "feat(models-tab): 下载链路改为 {huggingface} 等变量模�
 - Modify: `crates/desktop/src/settings_commands.rs`
 - Modify: `crates/desktop/src/main.rs`
 
-- [ ] **Step 1: 加 3 个 Tauri 命令**
+- [x] **Step 1: 加 3 个 Tauri 命令**
 
 在 settings_commands.rs 中加：
 
@@ -192,7 +192,7 @@ pub fn delete_env_var_cmd(key: String) -> Result<bool, String> {
 }
 ```
 
-- [ ] **Step 2: main.rs invoke_handler 注册**
+- [x] **Step 2: main.rs invoke_handler 注册**
 
 在 invoke_handler 中加：
 
@@ -202,12 +202,12 @@ pub fn delete_env_var_cmd(key: String) -> Result<bool, String> {
             settings_commands::delete_env_var_cmd,
 ```
 
-- [ ] **Step 3: 编译**
+- [x] **Step 3: 编译**
 
 Run: `cargo build -p octopus-desktop 2>&1 | tail -5`
 Expected: 编译通过
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/settings_commands.rs crates/desktop/src/main.rs
@@ -222,7 +222,7 @@ git commit -m "feat(models-tab): get/set/delete_env_var Tauri 命令注册"
 - Modify: `crates/desktop/frontend/src/pages/Settings/ModelsPanel.tsx`
 - Create: `crates/desktop/frontend/src/pages/Settings/Models/EnvironmentTab.tsx`
 
-- [ ] **Step 1: EnvironmentTab.tsx 组件**
+- [x] **Step 1: EnvironmentTab.tsx 组件**
 
 ```tsx
 // crates/desktop/frontend/src/pages/Settings/Models/EnvironmentTab.tsx
@@ -323,7 +323,7 @@ export default function EnvironmentTab({ showToast }: { showToast: (msg: string)
 }
 ```
 
-- [ ] **Step 2: ModelsPanel 改为 Tab 容器**
+- [x] **Step 2: ModelsPanel 改为 Tab 容器**
 
 将 ModelsPanel.tsx 重构为：
 
@@ -372,7 +372,9 @@ export default function ModelsPanel({ showToast }: { showToast: (msg: string) =>
 }
 ```
 
-- [ ] **Step 3: tsc 检查（先创建 stub 子组件让编译通过）**
+> **实现注（落地差异）**：最终 `ModelsPanel.tsx` 的 Tab 名采用中文文案——常量 / 语音识别 / 文本模型 / 扫描识别 / 翻译模型（非上方示例的英文代号字符串），且 `TABS` 为带 `icon` 字段的对象数组。pill tab 样式（`bg-foreground text-background` 选中态）与 spec §2.6 一致。另新增 `CollapsibleSection.tsx`（本地/云端 section 可折叠，ChevronDown 旋转）——视觉重设计 commit `eba9509`/`5d776c4` 补入，spec §2.6 已覆盖，此处不另立 Task。
+
+- [x] **Step 3: tsc 检查（先创建 stub 子组件让编译通过）**
 
 为 AsrTab / LlmTab / OcrTab / TranslateTab 创建最简 stub（Task 5-7 填充）。每个文件：
 
@@ -385,7 +387,7 @@ export default function XxxTab({ showToast }: { showToast: (msg: string) => void
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 0 errors
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/ModelsPanel.tsx \
@@ -400,18 +402,18 @@ git commit -m "feat(models-tab): Tab 容器 + EnvironmentTab 环境变量编辑�
 **Files:**
 - Fill: `crates/desktop/frontend/src/pages/Settings/Models/AsrTab.tsx`
 
-- [ ] **Step 1: 从 ModelsPanel 提取 ASR 模型列表逻辑**
+- [x] **Step 1: 从 ModelsPanel 提取 ASR 模型列表逻辑**
 
 将现有 ModelsPanel.tsx 的 `models` / `progress` / `busyRepo` / `handleDownload` / `handleDelete` / 模型列表渲染全部搬到 AsrTab.tsx。
 
 顶部加「当前使用」模型（只读 select，从 `get_config` 读 `asr_engine`）。
 
-- [ ] **Step 2: tsc 检查**
+- [x] **Step 2: tsc 检查**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 0 errors
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/Models/AsrTab.tsx
@@ -426,7 +428,7 @@ git commit -m "feat(models-tab): AsrTab 从 ModelsPanel 提取 ASR 模型列表"
 - Fill: `crates/desktop/frontend/src/pages/Settings/Models/LlmTab.tsx`
 - Fill: `crates/desktop/frontend/src/pages/Settings/Models/OcrTab.tsx`
 
-- [ ] **Step 1: LlmTab.tsx**
+- [x] **Step 1: LlmTab.tsx**
 
 ```tsx
 // 读取 get_config → llm_models（ConfigResponse.llm_models）
@@ -436,16 +438,16 @@ git commit -m "feat(models-tab): AsrTab 从 ModelsPanel 提取 ASR 模型列表"
 
 用现有 `invoke("set_model_enabled", { id, enabled })` 切换启用状态。
 
-- [ ] **Step 2: OcrTab.tsx**
+- [x] **Step 2: OcrTab.tsx**
 
 同 LlmTab 但数据源为 `ocr_models`，配置字段为 `ocr_model`。
 
-- [ ] **Step 3: tsc 检查**
+- [x] **Step 3: tsc 检查**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 0 errors
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/Models/LlmTab.tsx \
@@ -460,7 +462,7 @@ git commit -m "feat(models-tab): LlmTab + OcrTab 模型列表 + 启用 toggle"
 **Files:**
 - Fill: `crates/desktop/frontend/src/pages/Settings/Models/TranslateTab.tsx`
 
-- [ ] **Step 1: TranslateTab.tsx**
+- [x] **Step 1: TranslateTab.tsx**
 
 ```tsx
 import { Languages } from "lucide-react";
@@ -476,7 +478,7 @@ export default function TranslateTab() {
 }
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/Models/TranslateTab.tsx
