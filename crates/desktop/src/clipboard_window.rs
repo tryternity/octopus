@@ -49,12 +49,12 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         }
     });
 
-    // 恢复 dock 状态：如果上次 docked，以 collapsed 态打开
+    // 恢复 dock 状态：如果上次 docked，以 collapsed 态打开（仅 macOS）
+    #[cfg(target_os = "macos")]
+    {
     let dock_edge = crate::window_position::load_dock_state(WINDOW_LABEL);
     if let Some(ref edge) = dock_edge {
         if edge == "right" || edge == "left" {
-            // 用 DB 中存储的位置（逻辑坐标），不从 outer_position() 读
-            //（restore_window_position 的 set_position 是异步的，outer_position 此时返回默认值）
             let (_db_x, db_y) = crate::window_position::load_window_position(WINDOW_LABEL)
                 .unwrap_or((0.0, 0.0));
             if let Ok(Some(monitor)) = window.current_monitor().or(window.primary_monitor()) {
@@ -74,6 +74,7 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             DOCK_EXPANDED.store(false, Ordering::SeqCst);
             crate::clipboard_dock::start_edge_poll(app.clone(), window.clone(), edge_static(edge));
         }
+    }
     }
 
     // 移动结束后保存位置 + 失焦时恢复被隐藏的 Regular 窗口
@@ -124,8 +125,9 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             { crate::activation::restore_hidden_windows_only(&app_clone); }
 
             // docked 态下失焦 → 收缩（防重复：DOCK_EXPANDED 已 false 则跳过）
+            // 窗口隐藏时不启动轮询（防 CPU 空转）
             #[cfg(target_os = "macos")]
-            if DOCK_EXPANDED.load(Ordering::SeqCst) {
+            if DOCK_EXPANDED.load(Ordering::SeqCst) && win_clone.is_visible().unwrap_or(false) {
                 let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
                 if let Some(ref edge) = docked {
                     if edge == "right" || edge == "left" {
