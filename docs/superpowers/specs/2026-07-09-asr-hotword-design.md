@@ -34,7 +34,7 @@
 - 全部 11 个引擎（7 本地 + 4 云端）统一获得热词纠错能力
 - 顺手清掉 corrector 过纠债：有界候选集让 sensevoice/qwen3 等高质量引擎重新安全启用纠错
 - 热词来源：自动挖掘历史高频专名候选 + 人工确认（混合模式）
-- 匹配：同音 + 复用 corrector 已验证的模糊拼音规则（zh/z·sh/s·ch/c·n/l·ing/in·eng/en·ang/an）
+- 匹配：同音 + 复用 corrector 已验证的模糊拼音规则（zh/z·sh/s·ch/c·n/l·r/l·ing/in·eng/en·ang/an）
 
 ## 非目标（v1）
 
@@ -125,7 +125,7 @@ DB 表 `hotwords`：
 
 ## 分阶段交付
 
-- **v1（本 spec 范围）**：HotwordStore + HotwordIndex + BoundedHotwordCorrector 重构 + CandidateMiner + 设置页热词管理 UI（增删 / 确认 Pending）。覆盖全部 11 引擎的 L2。
+- **v1（本 spec 范围）**：HotwordStore + HotwordIndex + BoundedHotwordCorrector 重构 + CandidateMiner + 设置页热词管理 UI（增删 / 确认 Pending；生效热词卡片网格 + 拼音首字母搜索 + 时间/字母/命中度排序）。覆盖全部 11 引擎的 L2。
 - **v2**：CloudHotwordAdapter——active 词表透传 4 家云端（JSON 字段级，每家一处小改：aliyun session.update / baidu START 帧 / bytedance / tencent 各自热词字段）。
 - **未来**：本地 paraformer-contextual 变体；英文热词编辑距离；whisper initial_prompt；通用同音消歧（独立「激进模式」开关，默认关）。
 
@@ -156,18 +156,20 @@ DB 表 `hotwords`：
 
 ## 方言模糊规则可配（2026-07-10 增补）
 
-不同口音有不同声母/韵母混淆习惯（f/h、n/l、hu/wu 三组）。v1 模糊规则硬编码（n→l 默认开 + 平翘舌 + 前后鼻音）无法覆盖 f↔h、hu↔wu，且 n→l 默认开对标准普通话用户增加误命中。
+不同口音有不同声母/韵母混淆习惯（f/h、n/l、r/l、hu/wu 四组）。v1 模糊规则硬编码（n→l 默认开 + 平翘舌 + 前后鼻音）无法覆盖 f↔h、r↔l、hu↔wu，且 n→l 默认开对标准普通话用户增加误命中。
 
 ### 设计
-- 三组方言做成**用户可勾选 checkbox**（设置页「热词」面板），存 `app_config.fuzzy_dialect`（逗号分隔 token：`f/h`、`hu/wu`、`n/l`），默认空 = 仅基础规则。
-- 基础规则（平翘舌 zh/ch/sh→z/c/s + 前后鼻音 ing/eng/ang→in/en/an）**始终开**，不做 checkbox。
+- 四组方言做成**用户可勾选开关**（设置页「热词」面板，复用 Settings 的 Card/Row/Toggle 设计语言），存 `app_config.fuzzy_dialect`（逗号分隔 token：`f/h`、`hu/wu`、`n/l`、`r/l`），默认空 = 仅基础规则。
+- 基础规则（平翘舌 zh/ch/sh→z/c/s + 前后鼻音 ing/eng/ang→in/en/an）**始终开**，不做开关。
 - 归一化单向（查询与索引共用 `normalize_fuzzy_pinyin` → 双向对称命中）：
   - `f/h`：声母 f→h
   - `n/l`：声母 n→l（**行为变更**：从 v1 默认开改为可选）
+  - `r/l`：声母 r→l（n、r、l 在 n/l + r/l 同开时都归一到 l，首字母不同互不冲突）
   - `hu/wu`：单字 hu→wu，其余 huX→wX（huang→wang、hua→wa）
 
 ### 已知局限
-`hu/wu` 覆盖 hu↔wu 单字及 huang↔wang / hua↔wa（h 声母+u 介音 vs 零声母 w），**不覆盖** hui↔wei（韵母 ui/ei 不同，拼音级无法统一）。
+- `hu/wu` 覆盖 hu↔wu 单字及 huang↔wang / hua↔wa（h 声母+u 介音 vs 零声母 w），**不覆盖** hui↔wei（韵母 ui/ei 不同，拼音级无法统一）。
+- `r/l` **仅救首字**：如「热词→乐视」，r/l 把「热 re→le」与「乐 le」归一一致（第一字命中），但第二字「词 ci」与「视 shi」（基础 sh→s 得 si）ci≠si 不匹配——sh/c 刻意不归一（避免级联误命中）。r/l 对纯 r/l 混淆（热↔乐、肉↔漏、人↔林）完整有效。
 
 ### 规则生效
 `FuzzyRules`（`hotword.rs` 全局 `OnceLock<RwLock>`）→ `normalize_fuzzy_pinyin` 读全局。规则变更经 `corrector::reload_fuzzy_dialect` set 全局 + 用缓存 `active_words` 重建 `HotwordIndex`（索引 key 由 normalize 生成，规则变 key 必变）。

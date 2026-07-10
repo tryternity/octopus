@@ -278,9 +278,9 @@ fn apply_config_value(
                 if tok.is_empty() {
                     continue;
                 }
-                if !matches!(tok, "f/h" | "hu/wu" | "n/l") {
+                if !matches!(tok, "f/h" | "hu/wu" | "n/l" | "r/l") {
                     return Err(format!(
-                        "fuzzy_dialect 非法 token '{}'（应为 f/h、hu/wu、n/l 子集）",
+                        "fuzzy_dialect 非法 token '{}'（应为 f/h、hu/wu、n/l、r/l 子集）",
                         tok
                     ));
                 }
@@ -703,6 +703,12 @@ mod tests {
         assert_eq!(cfg.fuzzy_dialect, "");
         apply_config_value(&mut cfg, "fuzzy_dialect", &json!("f/h,hu/wu,n/l")).unwrap();
         assert_eq!(cfg.fuzzy_dialect, "f/h,hu/wu,n/l");
+        // r/l 单独合法
+        apply_config_value(&mut cfg, "fuzzy_dialect", &json!("r/l")).unwrap();
+        assert_eq!(cfg.fuzzy_dialect, "r/l");
+        // 四组组合合法
+        apply_config_value(&mut cfg, "fuzzy_dialect", &json!("f/h,hu/wu,n/l,r/l")).unwrap();
+        assert_eq!(cfg.fuzzy_dialect, "f/h,hu/wu,n/l,r/l");
     }
 
     #[test]

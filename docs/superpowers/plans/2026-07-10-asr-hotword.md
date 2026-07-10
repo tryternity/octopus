@@ -34,6 +34,8 @@
 
 ---
 
+> **实施状态总览（2026-07-10 同步）**：Task 1–9 已实现并合入 main——DB `hotwords` 表 + `HotwordIndex` + corrector 有界重构（候选仅来自热词表）+ CandidateMiner + Tauri 命令 + 设置页 UI + 全引擎 `skip_corrector=false`。Task 10–12 为后续方言规则可配与 UI 迭代增补。各 Task 内 Step 级 checkbox 是 TDD 过程记录，实现已完成、不再逐个回填。
+
 ## Task 1: DB schema — `hotwords` 表
 
 **Files:**
@@ -1118,7 +1120,9 @@ git commit -m "feat(desktop): 设置页热词管理面板"
 
 ---
 
-## Task 9: skip_corrector 重评估（保守、测试把关）
+## Task 9: skip_corrector 重评估（保守、测试把关）✅ 已实施
+
+> **结果（2026-07-10 核实）**：sensevoice_orig.rs:114 / qwen3_asr.rs:138 / asr-cloud/src/batch.rs:86 全部 `skip_corrector() = false`（注释「有界热词纠错安全，空热词 no-op，重新启用」）。即所有引擎现在都经有界热词纠错。下列 Step 为原始计划，已执行。
 
 **Files:**
 - Modify: `crates/asr-local/src/sensevoice_orig.rs:114`、`qwen3_asr.rs:138`、`asr-cloud/src/batch.rs:86`
@@ -1217,3 +1221,39 @@ git commit -m "refactor(asr): 重新启用 sensevoice/qwen3/cloud 热词纠错�
 - [x] **10.6** 前端 HotwordPanel：3 checkbox + props；index.tsx 传参。commit 03cfbf7
 
 **验证**：cargo test -p octopus-asr-local（hotword 11 + corrector 11）+ -p octopus-desktop settings_commands（11）全绿；cargo check desktop + npm build 通过。e2e 待用户（勾 f/h + 热词「浮窗」+ sensevoice 录音）。
+
+---
+
+## Task 11（增补，2026-07-10）：r/l 方言组 + 热词面板 UI 重设计
+
+两件事一并交付：① 用户要求的 r/l 不分方言组（**只 r→l，刻意不动 sh/c**——sh/c 是死结，加 r/l 已减轻很多）；② 顺手把 HotwordPanel 从粗糙 inline-style 升级到 Settings 统一设计语言。
+
+**r/l 设计决策**：声母 r→l，与 n/l 都归一到 l（首字母 n/r 不同，同开互不冲突）。**已知局限**：r/l 仅救首字——「热词→乐视」第一字「热 re→le」与「乐 le」归一命中，但第二字「词 ci」≠「视 shi→si」（sh/c 不归一，避免级联误命中）；对纯 r/l 混淆（热↔乐、肉↔漏、人↔林）完整有效。
+
+- [x] **11.1** hotword.rs：`FuzzyRules` 加 `rl` 字段 + `parse_dialect` 加 token `r/l` + `normalize_with_rules` else if 链加 `r→l` 分支（nl→fh→rl→hw 互斥）+ 测试（`normalize_rl_dialect`、`normalize_nl_rl_both`、`parse_dialect` rl、四组组合）。
+- [x] **11.2** settings_commands.rs：`apply_config_value` fuzzy_dialect case 合法 token 加 `r/l`（matches 加分支）+ 单测 valid 加 r/l 单独与四组组合。
+- [x] **11.3** HotwordPanel.tsx **完全重写**（复用 GeneralPanel 的 Card/Row/Toggle + ActionBarPanel 的 TypeTag/按钮/输入/删除/空状态类）：4 方言 Toggle（含 r/l）+ 添加热词（voice 主按钮 + 挖掘次按钮）+ 待确认（确认/丢弃）+ 生效热词（pad2 序号 + SourceTag 来源色点[手动=voice/挖掘=emerald] + 命中数色阶[>0=voice/=0=muted] + 删除图标）+ `showToast` 替 `alert` + loaded 空状态。
+- [x] **11.4** index.tsx：HotwordPanel 调用处加传 `showToast`。
+- [x] **11.5** 文档：spec 方言节「三组→四组」+ r/l 归一 + sh/c 局限；architecture.md 三处（corrector 模块说明、方言段落、倒排索引列举）加 r/l。
+
+**验证**：cargo test -p octopus-asr-local hotword（17 passed，含 rl 新测）+ -p octopus-desktop settings_commands（11 passed）+ 前端 tsc --noEmit（EXIT=0）。e2e 待用户（勾 r/l + 热词「乐」+ 说「热」/ 录音含 r/l 混淆专名）。
+
+**未提交**：本任务代码与文档改动尚未 commit（待用户指示）。
+
+---
+
+## Task 12（增补，2026-07-10）：生效热词卡片化 + 拼音首字母搜索/排序
+
+在 Task 11 重设计基础上的 UI 迭代 + 新功能：生效热词改卡片网格、加拼音首字母搜索与排序。
+
+**拼音首字母**：复用 asr-local 的 `pinyin` crate（不引前端依赖、与纠错一致），新增 `pinyin_initials(word)`（汉字→大写首字母，非汉字跳过：八爪鱼→BZY、浮窗→FC、热词→RC）。
+
+- [x] **12.1** asr-local/hotword.rs：`pub fn pinyin_initials(word) -> String` + `pinyin_initials_basic` 测试。
+- [x] **12.2** desktop/hotword_commands.rs：`pub struct HotwordView`（Serialize camelCase，Hotword + initials）+ `impl From<Hotword>`（填充 pinyin_initials）；`list_hotwords` 返回 `Vec<HotwordView>`（infra Hotword 不动）。踩坑：tauri 命令返回类型须 `pub`（generate_handler 宏在 main.rs 引用，私有类型报 `private type`）。
+- [x] **12.3** HotwordPanel 布局迭代：① 方言模糊改 `grid grid-cols-2`（一行两列）；② 生效热词改卡片网格（每词一卡：词名 + 右上角 X 删除 + 下方 meta），`flex flex-wrap gap-2`；③ 命中数去「命中」前缀纯数字，meta 顺序「方式色点 + 命中数字」（11.3 的列表 + pad2 序号样式废弃）。
+- [x] **12.4** 搜索 + 排序（纯前端 state）：搜索框（拼音首字母前缀 `initials.startsWith(q)` OR 汉字包含 `word.includes(q)`）+ 排序下拉（最近=createdAt desc 默认 / 字母=initials localeCompare / 命中度=hitCount desc）；`useMemo` 派生 `visible`；无匹配→「无匹配热词」空态。
+- [x] **12.5** 文档同步（spec 热词管理 UI + plan）。
+
+**验证**：cargo test -p octopus-asr-local hotword（18 passed，含 pinyin_initials）+ cargo check -p octopus-desktop（HotwordView pub 修复后 Finished）+ 前端 tsc --noEmit（EXIT=0）。e2e 待用户。
+
+**未提交**：Task 11 + 12 代码与文档改动尚未 commit（待用户指示）。

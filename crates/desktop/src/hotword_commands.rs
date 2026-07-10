@@ -11,9 +11,39 @@ fn reload_after_write() {
     }
 }
 
+/// 前端展示用——在 Hotword 基础上附加拼音首字母串（供搜索/排序）。
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotwordView {
+    id: i64,
+    word: String,
+    status: String,
+    source: String,
+    hit_count: i64,
+    created_at: String,
+    /// 拼音首字母串（大写），前端拼音首字母搜索/排序用
+    initials: String,
+}
+
+impl From<Hotword> for HotwordView {
+    fn from(h: Hotword) -> Self {
+        HotwordView {
+            initials: octopus_asr_local::hotword::pinyin_initials(&h.word),
+            id: h.id,
+            word: h.word,
+            status: h.status,
+            source: h.source,
+            hit_count: h.hit_count,
+            created_at: h.created_at,
+        }
+    }
+}
+
 #[tauri::command]
-pub fn list_hotwords(status: String) -> Result<Vec<Hotword>, String> {
-    db::list_hotwords(&status).map_err(|e| e.to_string())
+pub fn list_hotwords(status: String) -> Result<Vec<HotwordView>, String> {
+    db::list_hotwords(&status)
+        .map_err(|e| e.to_string())
+        .map(|list| list.into_iter().map(HotwordView::from).collect())
 }
 
 #[tauri::command]

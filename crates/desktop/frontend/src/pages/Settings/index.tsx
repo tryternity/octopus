@@ -137,6 +137,7 @@ function Settings() {
           <HotwordPanel
             dialect={(configResp.config.fuzzy_dialect as string) || ""}
             setVal={setVal}
+            showToast={showToast}
           />
         ) : null}
       </div>
