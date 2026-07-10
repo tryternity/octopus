@@ -192,8 +192,20 @@ fn init_schema(conn: &Connection) -> Result<()> {
         // v18→v19：action_bar_items 表由 db.sql 的 IF NOT EXISTS 自动创建，重跑 INIT_SQL 幂等
         // v19→v20：hotwords 表由 db.sql 的 IF NOT EXISTS 自动创建，重跑 INIT_SQL 幂等
         conn.execute_batch(INIT_SQL).ok();
+        // v20→v21：action_bar_items 加 is_async + write_output_to_clipboard 列。
+        // CREATE TABLE IF NOT EXISTS 对已有表无效，必须 ALTER TABLE 补列。
+        let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
+            .query_map([], |r| r.get::<_, String>(1))?
+            .filter_map(|r| r.ok())
+            .collect();
+        if !cols.contains(&"is_async".to_string()) {
+            conn.execute("ALTER TABLE action_bar_items ADD COLUMN is_async INTEGER NOT NULL DEFAULT 1", [])?;
+        }
+        if !cols.contains(&"write_output_to_clipboard".to_string()) {
+            conn.execute("ALTER TABLE action_bar_items ADD COLUMN write_output_to_clipboard INTEGER NOT NULL DEFAULT 0", [])?;
+        }
         conn.execute("PRAGMA user_version = 21", [])?;
-        log::info!("schema upgraded to v20 (hotwords)");
+        log::info!("schema upgraded to v21 (action_bar_items + script_runs)");
         return Ok(());
     }
 
