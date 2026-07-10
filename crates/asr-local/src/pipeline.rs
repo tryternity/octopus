@@ -56,7 +56,15 @@ pub fn transcribe_batch(
 
     let is_english = cfg.language.eq_ignore_ascii_case("en");
     let text = if cfg.correct && !engine.skip_corrector() && !is_english {
-        crate::corrector::get_corrector().correct(&raw_text)
+        let corrected = crate::corrector::get_corrector().correct(&raw_text);
+        // 热词命中计数（best-effort：失败仅 warn，不阻断纠错）。
+        // corrector 收集命中、pipeline 持久化——分层避免 corrector 单测污染真实 DB。
+        for word in crate::corrector::drain_hits() {
+            if let Err(e) = crate::db::bump_hotword_hit_by_word(&word) {
+                log::warn!("[hotword] bump 命中计数失败 '{}': {}", word, e);
+            }
+        }
+        corrected
     } else {
         raw_text
     };

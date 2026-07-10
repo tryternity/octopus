@@ -1105,12 +1105,26 @@ fn delete_hotword_at(conn: &Connection, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// 命中计数 +1（纠错命中时调，用于多热词同音消歧排序）。
+/// 命中计数 +1（按 id，预留多热词同音消歧排序用；当前 corrector 走 by_word 版）。
 pub fn bump_hotword_hit(id: i64) -> Result<()> {
     with_db(|conn| {
         conn.execute(
             "UPDATE hotwords SET hit_count = hit_count + 1 WHERE id = ?1",
             params![id],
+        )?;
+        Ok(())
+    })
+}
+
+/// 命中计数 +1（按热词文本——corrector 命中时只有文本无 id）。
+/// 仅 bump `status='active'` 行；无匹配（如测试环境无该热词）→ 0 影响，静默返回 Ok。
+/// pipeline 在 correct 后批量调用（best-effort，失败由调用方忽略，不阻断纠错）。
+pub fn bump_hotword_hit_by_word(word: &str) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE hotwords SET hit_count = hit_count + 1 \
+             WHERE word = ?1 AND status = 'active'",
+            params![word],
         )?;
         Ok(())
     })

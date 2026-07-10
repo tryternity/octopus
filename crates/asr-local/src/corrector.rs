@@ -25,6 +25,9 @@ pub struct LightCorrector {
     // active 热词原文缓存——方言规则（FuzzyRules）变更时用它重建 hotwords 索引
     //（索引 key 由 normalize_fuzzy_pinyin 生成，规则变 key 必变，见 reload_fuzzy_dialect）。
     active_words: parking_lot::RwLock<Vec<String>>,
+    // 本次 correct 命中的热词收集（correct_greedy push，pipeline 经 drain_hits 取走后 bump DB）。
+    // corrector 保持纯内存不碰 DB；命中计数持久化交调用层，避免单测污染真实 DB。
+    pending_hits: parking_lot::Mutex<Vec<String>>,
 }
 
 /// 词级归一化模糊拼音（每个字归一化后用 `-` 连接）。
@@ -125,6 +128,7 @@ impl LightCorrector {
             bigram_scores,
             hotwords: parking_lot::RwLock::new(HotwordIndex::empty()),
             active_words: parking_lot::RwLock::new(Vec::new()),
+            pending_hits: parking_lot::Mutex::new(Vec::new()),
         }
     }
 
@@ -259,6 +263,7 @@ impl LightCorrector {
                         "[ASR Correct] Hotword replace '{}' → '{}'",
                         window_word, hw
                     );
+                    self.pending_hits.lock().push(hw.clone());
                     let hw_chars: Vec<char> = hw.chars().collect();
                     chars[i..(sz + i)].copy_from_slice(&hw_chars[..sz]);
                     replaced_sz = sz;
@@ -319,6 +324,16 @@ pub fn reload_fuzzy_dialect(dialect: &str) {
         let words = c.active_words.read().clone();
         *c.hotwords.write() = HotwordIndex::from_words(&words);
     }
+}
+
+/// 取出并清空本次 corrector 命中的热词列表（`correct_greedy` push，pipeline 纠错后调）。
+/// pipeline 批量 bump DB 命中计数；corrector 自身不碰 DB（分层，避免单测污染真实 DB）。
+/// 单例未初始化返回空。注意：跨 correct 调用累积，未 drain 则残留。
+pub fn drain_hits() -> Vec<String> {
+    CORRECTOR
+        .get()
+        .map(|c| std::mem::take(&mut *c.pending_hits.lock()))
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -443,5 +458,18 @@ mod tests {
         // 默认方言全关：护窗 hu 不归一到 fu，不纠正（防回归）。
         let c = with_hotwords(&["浮窗"]);
         assert_eq!(c.correct("开护窗"), "开护窗");
+    }
+
+    #[test]
+    fn test_drain_hits_collects_matches() {
+        let _g = serial();
+        reload_fuzzy_dialect("");
+        let _ = drain_hits(); // 清空前序测试残留（pending_hits 跨 correct 累积）
+        let c = with_hotwords(&["浮窗"]);
+        assert_eq!(c.correct("开福川"), "开浮窗");
+        // 命中「浮窗」被收集到 pending_hits（内存，未碰 DB）
+        assert_eq!(drain_hits(), vec!["浮窗".to_string()]);
+        // drain 后清空
+        assert!(drain_hits().is_empty());
     }
 }
