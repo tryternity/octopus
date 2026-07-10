@@ -608,6 +608,201 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
   );
 };
 
+// ── 扩展子页 ──
+
+interface ExtensionInfo {
+  dirName: string;
+  name: string;
+  description: string;
+  version: string;
+  author: string;
+  hasSkill: boolean;
+  skillRef: string | null;
+  scriptFile: string;
+  scriptTypeLabel: string | null;
+  isAsync: boolean;
+  dbItemId: number | null;
+  parentId: number | null;
+}
+
+const ExtensionsPanel = ({ showToast }: { showToast: (msg: string) => void }) => {
+  const [extensions, setExtensions] = useState<ExtensionInfo[]>([]);
+  const [loaded, setLoaded] = useState(false);
+  const [dragging, setDragging] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      const list = await invoke<ExtensionInfo[]>("list_extensions");
+      setExtensions(list);
+    } catch (e) {
+      showToast("加载失败：" + e);
+    }
+    setLoaded(true);
+  }, [showToast]);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const handleDrop = useCallback(
+    async (e: React.DragEvent) => {
+      e.preventDefault();
+      setDragging(false);
+      const files = Array.from(e.dataTransfer.files);
+      const zipFile = files.find((f) => f.name.endsWith(".octopusext.zip"));
+      if (!zipFile) {
+        showToast("请拖入 .octopusext.zip 文件");
+        return;
+      }
+      // Tauri 的 file path 在 dataTransfer.items 中
+      const path = (zipFile as unknown as { path?: string }).path;
+      if (!path) {
+        showToast("无法获取文件路径");
+        return;
+      }
+      try {
+        const name = await invoke<string>("import_extension", {
+          zipPath: path,
+          parentId: null,
+        });
+        showToast(`已导入：${name}`);
+        refresh();
+      } catch (e) {
+        showToast("导入失败：" + e);
+      }
+    },
+    [showToast, refresh],
+  );
+
+  const handleDelete = useCallback(
+    async (dirName: string) => {
+      try {
+        await invoke("delete_extension", { dirName });
+        showToast("已删除");
+        setConfirmDelete(null);
+        refresh();
+      } catch (e) {
+        showToast("删除失败：" + e);
+      }
+    },
+    [showToast, refresh],
+  );
+
+  if (!loaded) {
+    return (
+      <p className="py-12 text-center text-sm text-muted-foreground">加载中…</p>
+    );
+  }
+
+  return (
+    <div
+      onDragOver={(e) => {
+        e.preventDefault();
+        setDragging(true);
+      }}
+      onDragLeave={() => setDragging(false)}
+      onDrop={handleDrop}
+      className={cn(
+        "rounded-lg border border-dashed transition-colors min-h-[200px]",
+        dragging ? "border-voice bg-voice/5" : "border-border",
+      )}
+    >
+      <div className="flex items-center justify-between px-4 py-3 border-b border-border/40">
+        <div>
+          <p className="text-xs font-medium">扩展包</p>
+          <p className="text-[11px] text-muted-foreground/70 font-mono">
+            ~/.octopus/extensions/
+          </p>
+        </div>
+        <button
+          onClick={() => refresh()}
+          className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+        >
+          刷新
+        </button>
+      </div>
+
+      <div className="px-3 py-2 text-center">
+        <p className="text-[11px] text-muted-foreground/60">
+          拖拽 .octopusext.zip 到此处导入
+        </p>
+      </div>
+
+      {extensions.length === 0 ? (
+        <div className="flex flex-col items-center justify-center gap-2 py-12 text-center">
+          <p className="text-sm font-medium">还没有扩展包</p>
+          <p className="text-xs text-muted-foreground">
+            拖入 zip 或手动放入 ~/.octopus/extensions/
+          </p>
+        </div>
+      ) : (
+        <div className="space-y-px px-2 pb-2">
+          {extensions.map((ext) => (
+            <div
+              key={ext.dirName}
+              className="rounded-lg border border-border bg-muted/20 px-3.5 py-2.5"
+            >
+              <div className="flex items-start justify-between gap-2">
+                <div className="min-w-0 flex-1">
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs font-medium">{ext.name}</span>
+                    <span className="font-mono text-[10px] text-muted-foreground/70">
+                      v{ext.version}
+                    </span>
+                    {ext.hasSkill && (
+                      <span className="rounded bg-voice/12 px-1.5 py-0.5 font-mono text-[9px] font-semibold uppercase tracking-wider text-voice">
+                        Skill
+                      </span>
+                    )}
+                  </div>
+                  <p className="mt-0.5 text-[11px] text-muted-foreground/80">
+                    {ext.description}
+                  </p>
+                  <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground/60">
+                    <span className="font-mono">
+                      {ext.scriptFile}
+                      {ext.scriptTypeLabel ? ` · ${ext.scriptTypeLabel}` : ""}
+                    </span>
+                    <span>{ext.isAsync ? "异步" : "同步"}</span>
+                    {ext.parentId !== null && (
+                      <span>挂载于：{ext.parentId === 0 ? "顶层" : `#${ext.parentId}`}</span>
+                    )}
+                  </div>
+                </div>
+                {confirmDelete === ext.dirName ? (
+                  <div className="flex shrink-0 items-center gap-1">
+                    <button
+                      onClick={() => handleDelete(ext.dirName)}
+                      className="rounded-md bg-red-500 px-2 py-1 text-[10px] font-medium text-white"
+                    >
+                      确认删除
+                    </button>
+                    <button
+                      onClick={() => setConfirmDelete(null)}
+                      className="rounded-md border border-border px-2 py-1 text-[10px] text-muted-foreground"
+                    >
+                      取消
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    onClick={() => setConfirmDelete(ext.dirName)}
+                    className="shrink-0 text-muted-foreground/50 transition-colors hover:text-red-500"
+                    title="删除"
+                  >
+                    <Trash2 className="h-3.5 w-3.5" />
+                  </button>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 export default function ActionBarPanel({
   showToast,
 }: {
@@ -620,7 +815,7 @@ export default function ActionBarPanel({
   // draft 状态：新增时不写 DB，只在内存编辑，保存时才 create。取消只清 state，零脏数据。
   const [draftParentId, setDraftParentId] = useState<number | null | undefined>(undefined); // undefined=非草稿, null=顶层草稿, number=子菜单草稿
   const [loaded, setLoaded] = useState(false);
-  const [view, setView] = useState<"menu" | "runs">("menu");
+  const [view, setView] = useState<"menu" | "runs" | "extensions">("menu");
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
     const list = await invoke<ActionBarItem[]>("list_action_bar_items");
@@ -794,14 +989,20 @@ export default function ActionBarPanel({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <button
-            onClick={() => setView(view === "menu" ? "runs" : "menu")}
-            className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-          >
-            {view === "menu" ? "执行记录" : "返回菜单"}
-          </button>
           {view === "menu" && (
             <>
+              <button
+                onClick={() => setView("extensions")}
+                className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+              >
+                扩展
+              </button>
+              <button
+                onClick={() => setView("runs")}
+                className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+              >
+                执行记录
+              </button>
               <button
                 onClick={allExpanded ? collapseAll : expandAll}
                 className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
@@ -824,11 +1025,21 @@ export default function ActionBarPanel({
               </button>
             </>
           )}
+          {view !== "menu" && (
+            <button
+              onClick={() => setView("menu")}
+              className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            >
+              返回菜单
+            </button>
+          )}
         </div>
       </div>
 
       {/* Body */}
-      {view === "runs" ? (
+      {view === "extensions" ? (
+        <ExtensionsPanel showToast={showToast} />
+      ) : view === "runs" ? (
         <ScriptRunsList showToast={showToast} />
       ) : !loaded ? (
         <p className="py-12 text-center text-sm text-muted-foreground">
