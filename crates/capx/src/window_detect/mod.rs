@@ -75,6 +75,14 @@ pub fn pick_top_window(
     monitor: MonitorRect,
     self_pid: i32,
 ) -> Option<SnapRect> {
+    // 定 frontmost app（决策 7）：z-order 最顶的 layer0 非 self 窗口 owner pid。
+    // CGWindowList 数组顺序 = z-order（index 0 最顶）；layer0 = 普通窗口层（排除菜单/弹窗/桌面）。
+    // 全无 layer0 非 self 窗口（极端）→ None，退化为不过滤（= v1.0 行为）。
+    let frontmost_pid: Option<i32> = windows
+        .iter()
+        .find(|w| w.layer == 0 && w.pid != self_pid)
+        .map(|w| w.pid);
+
     let mut best: Option<(i32, SnapRect)> = None;
     for win in windows {
         // 过滤
@@ -83,6 +91,12 @@ pub fn pick_top_window(
         }
         if win.layer < 0 {
             continue;
+        }
+        // 非前台 app 过滤（决策 7）：仅吸附 frontmost app 的窗口，避免吸附被遮挡的后台窗口
+        if let Some(fp) = frontmost_pid {
+            if win.pid != fp {
+                continue;
+            }
         }
         if win.w <= 0.0 || win.h <= 0.0 {
             continue;
@@ -137,13 +151,56 @@ mod tests {
 
     #[test]
     fn picks_higher_layer_at_same_point() {
-        // 两窗都含 (300,300)；layer 3（菜单级）应盖过 layer 0
+        // 同一前台 app（owner 100）主窗 layer0 + 菜单 layer3 都含 (300,300)；
+        // layer 3（菜单级）应盖过 layer 0。两窗同 owner=frontmost，均合格。
         let ws = [
             win(100, 0, 0.0, 0.0, 1000.0, 800.0),
-            win(101, 3, 100.0, 100.0, 500.0, 400.0),
+            win(100, 3, 100.0, 100.0, 500.0, 400.0),
         ];
         let r = pick_top_window(&ws, 300.0, 300.0, MON, 999).unwrap();
         assert_eq!((r.x, r.y, r.w, r.h), (100.0, 100.0, 500.0, 400.0));
+    }
+
+    #[test]
+    fn frontmost_filter_excludes_background_app() {
+        // 前台 A（owner 100，全屏）+ 后台 B（owner 101，被 A 部分盖），命中重叠区 (300,300)。
+        // frontmost=100；B owner101≠100 跳过 → 吸附前台 A（避免截到 B 的遮挡内容）。
+        let ws = [
+            win(100, 0, 0.0, 0.0, 1000.0, 800.0),
+            win(101, 0, 100.0, 100.0, 500.0, 400.0),
+        ];
+        let r = pick_top_window(&ws, 300.0, 300.0, MON, 999).unwrap();
+        assert_eq!((r.x, r.y), (0.0, 0.0)); // 命中 A，非 B
+    }
+
+    #[test]
+    fn background_app_visible_part_not_snapped() {
+        // 前台 A（owner 100，左半）+ 后台 B（owner 101，右半露出）。命中 (700,100) 仅在 B 内。
+        // frontmost=100；B owner101≠100 跳过，A 不含点 → 无候选 → None（回退手画）。
+        let ws = [
+            win(100, 0, 0.0, 0.0, 500.0, 400.0),
+            win(101, 0, 600.0, 0.0, 500.0, 400.0),
+        ];
+        assert!(pick_top_window(&ws, 700.0, 100.0, MON, 999).is_none());
+    }
+
+    #[test]
+    fn foreground_app_multiple_windows_all_adhereable() {
+        // 前台 app（owner 100）有两个窗口 A1/A2，均可吸附。命中 A2 区域 → 返回 A2。
+        let ws = [
+            win(100, 0, 0.0, 0.0, 500.0, 400.0),
+            win(100, 0, 600.0, 0.0, 500.0, 400.0),
+        ];
+        let r = pick_top_window(&ws, 700.0, 100.0, MON, 999).unwrap();
+        assert_eq!((r.x, r.y, r.w, r.h), (600.0, 0.0, 500.0, 400.0));
+    }
+
+    #[test]
+    fn no_layer0_window_disables_frontmost_filter() {
+        // 仅 layer>0 窗口（无 layer0 非 self）→ frontmost=None → 不过滤（退化为 v1.0）。
+        let ws = [win(100, 3, 0.0, 0.0, 500.0, 400.0)]; // 菜单层，无普通窗口
+        let r = pick_top_window(&ws, 100.0, 100.0, MON, 999).unwrap();
+        assert_eq!((r.x, r.y, r.w, r.h), (0.0, 0.0, 500.0, 400.0));
     }
 
     #[test]

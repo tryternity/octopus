@@ -685,6 +685,22 @@ git commit -m "docs(screenshot): 窗口识别吸附模块说明（v1 Task6）"
 
 ---
 
+### Task 8: v1.1 增强——前台 app 过滤（避免吸附被遮挡后台窗口）
+
+> e2e 验收中发现：吸附被遮挡的后台 app 窗口会截到遮挡内容（截图是 t0 全屏快照）。决策（spec 关键决策 7）：吸附候选限定为**前台 app 窗口**，后台被遮挡的不吸附（用户先 CMD+Tab 聚焦再截）。放弃「激活+重截」（覆盖窗污染新快照+激活 API 权限 trade-off）与「单窗口截图 patch」（绘制管线/竞态复杂）两条路径——前台过滤最简最可靠。
+
+**Files:**
+- Modify: `crates/capx/src/window_detect/mod.rs`（`pick_top_window` 加 frontmost 过滤 + 测试）
+- Modify: spec 关键决策 7 / 命中算法 / 错误处理 / 测试策略（已完成）
+
+- [x] **Step 1: 写红测试** `background_app_visible_part_not_snapped`（旧逻辑吸附后台 B → fail）+ `frontmost_filter_excludes_background_app` / `foreground_app_multiple_windows_all_adhereable` / `no_layer0_window_disables_frontmost_filter`；改 `picks_higher_layer` 两窗同 owner（保留 layer 降序语义）
+- [x] **Step 2: 跑确认红** `cargo test --manifest-path .../crates/capx/Cargo.toml window_detect` → 1 failed（background 红测试）+ 12 passed
+- [x] **Step 3: 实现** `frontmost_pid` 计算（数组首个 layer0 非 self owner pid）+ 循环内 `owner≠frontmost` 过滤
+- [x] **Step 4: 跑全 capx 测试绿** 45 passed
+- [x] **Step 5: 同步文档** spec 决策 7 + screenshot.md §13 + 本 task
+
+**实现要点**：frontmost 计算与过滤均在 `pick_top_window` 内部（无需调用方传参）；全无 layer0 非 self 窗口 → `frontmost=None` → 不过滤（退化为 v1.0，安全 fallback）。`macos.rs` / `hit_test_window` 命令 / 前端零改动。
+
 ### Task 7: 手动验收（macOS GUI）
 
 截图吸附靠 GUI 交互，无法 headless 自动化，需手动验收。打包/`cargo run` 后逐项验证。

@@ -37,6 +37,7 @@ Snow Shot 的做法（[mg-chao/snow-shot](https://github.com/mg-chao/snow-shot) 
 4. **`hit_test` 后端实时查**（方案 A）：前端 `mousemove` 节流 **50Hz** 调后端 `hit_test_window`，后端每次实时 `CGWindowListCopyWindowInfo`。该 API 只取窗口元数据（不抓像素），微秒级；窗口新增/移动/菜单展开**始终最新**；前端零状态。本地 IPC 往返 ~1ms，50Hz 可接受。备选（前端缓存窗口列表本地命中）被否：截图期间窗口变化会 stale，z-order/多显示器坐标系搬到前端易错。
 5. **跨屏窗口跳过**：窗口 bounds 不完全在鼠标所在显示器（monitor rect）内 → 不作为吸附候选，回退纯手画。跨屏截图极少，跳过最简，避免"截到半个窗口"的困惑。
 6. **trait 一次到位**：v1 即带 `Granularity` 参数与 `Element` 变体，macOS 的 `Element` 分支在 v1 返回 `None`/fallback `Window`。v2 只补 impl，不改 trait 与调用方。
+7. **仅吸附前台 app 窗口（v1.1 增强）**：吸附候选额外限定为「当前最前 app 拥有的窗口」——避免吸附被遮挡的后台 app 窗口、截到遮挡内容（截图是 t0 全屏快照，被遮挡窗口的选区像素是遮挡内容）。frontmost app = CGWindowList z-order 最顶的 `layer==0` 非 octopus 窗口的 owner pid；命中窗口 owner pid 必须与之相等，否则不吸附（回退手画）。用户想截后台 app，先 CMD+Tab 聚焦它再截图。纯函数 `pick_top_window` 内部算 frontmost（无需调用方传参）。**放弃 v1.0 设想的"激活+重截 / 单窗口截图 patch"**——前者覆盖窗污染新快照+激活 API 权限 trade-off，后者绘制管线/竞态复杂，均不如前台过滤简单可靠。
 
 ## 架构
 
@@ -80,13 +81,17 @@ Snow Shot 的做法（[mg-chao/snow-shot](https://github.com/mg-chao/snow-shot) 
 ## macOS 窗口命中算法（v1 Window 级）
 
 1. `CGWindowListCopyWindowInfo(kCGWindowListOptionOnScreenOnly, kCGNullWindowID)` 取全部 on-screen 窗口元数据
-2. **滤除**：
+2. **定 frontmost app**：数组按 z-order（index 0 最顶），取第一个 `layer==0` 且 `pid != octopus 自身` 的窗口 owner pid = `frontmost_pid`（普通窗口层最顶 = 当前前台 app；菜单/弹窗 layer>0 不参与判定）。全无 layer0 非 self 窗口（极端）→ `frontmost_pid = None`，退化为不过滤（= v1.0 行为）。
+3. **滤除**：
    - `kCGWindowOwnerPID == octopus 自身 PID`（排除 octopus 截图覆盖窗，否则鼠标总命中自己的全屏窗）
    - `layer < 0`（桌面/壁纸层）
    - 无 bounds / bounds 退化（w 或 h ≤ 0）
    - **跨屏**：bounds 不完全包含在鼠标所在显示器（monitor rect）内 → 跳过
-3. **命中**：候选 = bounds 含 `(gx, gy)` 的窗口；按 `layer` **降序**（数字大 = 更上层，菜单/弹窗 > 普通窗）取最上层
-4. 返回其 bounds（已是全局显示逻辑 points）+ `kCGWindowName`
+   - **非前台 app**：`frontmost_pid` 非 None 且 `pid != frontmost_pid`（决策 7）→ 跳过，避免吸附被遮挡的后台窗口
+4. **命中**：候选 = bounds 含 `(gx, gy)` 的窗口；按 `layer` **降序**（数字大 = 更上层，菜单/弹窗 > 普通窗）取最上层
+5. 返回其 bounds（已是全局显示逻辑 points）+ `kCGWindowName`
+
+frontmost 计算与过滤均在纯函数 `pick_top_window` 内部完成（从传入的 windows 数组算 frontmost，无需调用方传参）。
 
 命中算法抽出纯函数 `pick_top_window(windows: &[WinInfo], point, monitor_rect, self_pid) -> Option<Rect>`，便于单测（FFI 部分隔离）。
 
@@ -130,6 +135,7 @@ ARMED --mouseup(≤4px)--> CLICK_SELECT: 选区=吸附SnapRect(若有候选) -->
 | 命中 octopus 自身窗口 | 已按 `OwnerPID == 自身` 滤除；仍命中则返回 `None` |
 | 全屏应用 / Stage Manager | `CGWindowList` 照常返回，正常工作 |
 | 跨屏窗口 | 跳过（不作候选）；若所有最上层都跨屏 → 无候选 → 回退手画 |
+| 后台/被遮挡 app 窗口 | owner pid ≠ frontmost（决策 7）→ 不吸附 → 回退手画；用户先 CMD+Tab 聚焦该 app 再截图 |
 | 单击落空（纯桌面） | 选区不动（=现状） |
 | v2 AX 调用慢/卡（主线程同步） | 加 ~50ms 超时，超时/失败 fallback `Window`；调用走 `spawn_blocking` 不阻塞 UI |
 | 性能（窗口数极多） | `CGWindowList` 只取元数据不抓像素，微秒级；50Hz 节流兜底 |
@@ -137,7 +143,7 @@ ARMED --mouseup(≤4px)--> CLICK_SELECT: 选区=吸附SnapRect(若有候选) -->
 ## 测试策略
 
 - **单测（纯逻辑，核心）**：
-  - `pick_top_window`：喂构造窗口列表，断言过滤（自身 PID / layer<0 / 退化 bounds / 跨屏）+ layer 降序取最上层
+  - `pick_top_window`：喂构造窗口列表，断言过滤（自身 PID / layer<0 / 退化 bounds / 跨屏 / **非前台 app**）+ layer 降序取最上层；frontmost = 数组首个 layer0 非 self 窗口 owner pid；后台 app 窗口（owner≠frontmost）即使含点也不吸附，前台 app 多窗口均可吸附
   - `global_to_local`：多显示器原点偏移换算
   - `Granularity::Element` 未授权 / 非浏览器 → fallback `Window`
   - FFI 部分（`CGWindowList` / AX）隔离，不进单测
