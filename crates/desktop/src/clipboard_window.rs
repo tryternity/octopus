@@ -125,15 +125,17 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             { crate::activation::restore_hidden_windows_only(&app_clone); }
 
             // docked 态下失焦 → 收缩（防重复：DOCK_EXPANDED 已 false 则跳过）
-            // 窗口隐藏时不启动轮询（防 CPU 空转）
             #[cfg(target_os = "macos")]
-            if DOCK_EXPANDED.load(Ordering::SeqCst) && win_clone.is_visible().unwrap_or(false) {
+            if DOCK_EXPANDED.load(Ordering::SeqCst) {
                 let docked = crate::window_position::load_dock_state(WINDOW_LABEL);
                 if let Some(ref edge) = docked {
                     if edge == "right" || edge == "left" {
                         DOCK_EXPANDED.store(false, Ordering::SeqCst);
-                        crate::clipboard_dock::start_edge_poll(app_clone.clone(), win_clone.clone(), edge_static(edge));
                         let _ = app_clone.emit("clipboard://collapse", ());
+                        // 窗口隐藏时不启动轮询（防 CPU 空转）
+                        if win_clone.is_visible().unwrap_or(false) {
+                            crate::clipboard_dock::start_edge_poll(app_clone.clone(), win_clone.clone(), edge_static(edge));
+                        }
                     }
                 }
             }
