@@ -667,7 +667,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - **配置开关控制**：由 `app_config` 表中的 `asr_correct` 字段控制（默认 `false`）。
 - **智能排除**（两类跳过）：①「非语言原因」——Qwen3-ASR (0.6B/1.7B) 输出带标点且自带语义纠错能力，引擎经 `OfflineAsrEngine::skip_corrector()` 返回 true 跳过；②「language=en」——corrector 是中文拼音纠错器，对英文无意义且可能扰动，`transcribe_with_vad` 在注入点基于 `language=en`（desktop=`config.language`、server=请求、CLI=`--language`）自动跳过，覆盖 moonshine 等 en-only 模型。故 corrector 实际作用于 Whisper、Paraformer、Zipformer、FireRed 等中文引擎（SenseVoice-orig 与 Qwen3-ASR 经 `skip_corrector()` 排除——高质量模型自带纠错或免纠错，corrector 的 n-gram 同音纠错反而过纠有害）。
 
-- **方言模糊规则可配**（2026-07-10）：三组方言混淆做成用户可勾选 checkbox（设置页「热词」面板），存 `app_config.fuzzy_dialect`（逗号分隔 token）：`f/h`（福建，声母 f→h）、`hu/wu`（江浙，单字 hu→wu + 其余 huX→wX 如 huang→wang）、`n/l`（湖南，声母 n→l）。基础规则（平翘舌 + 前后鼻音）始终开。归一化单向、索引与查询共用 `normalize_fuzzy_pinyin` → 双向对称命中；规则变更经 `corrector::reload_fuzzy_dialect` 重建索引（key 由 normalize 生成，规则变 key 必变）。**注**：当前为「有界热词纠错」——候选仅来自用户热词（`HotwordIndex`），命中即替换；下方「全词典 n-gram gain 打分」描述为旧机制（已废，见 `corrector.rs` 顶部 TODO，待清理）。
+- **方言模糊规则可配**（2026-07-10）：三组方言混淆做成用户可勾选 checkbox（设置页「热词」面板），存 `app_config.fuzzy_dialect`（逗号分隔 token）：`f/h`（声母 f→h）、`hu/wu`（单字 hu→wu + 其余 huX→wX 如 huang→wang）、`n/l`（声母 n→l）。基础规则（平翘舌 + 前后鼻音）始终开。归一化单向、索引与查询共用 `normalize_fuzzy_pinyin` → 双向对称命中；规则变更经 `corrector::reload_fuzzy_dialect` 重建索引（key 由 normalize 生成，规则变 key 必变）。**注**：当前为「有界热词纠错」——候选仅来自用户热词（`HotwordIndex`），命中即替换；下方「全词典 n-gram gain 打分」描述为旧机制（已废，见 `corrector.rs` 顶部 TODO，待清理）。
 
 ### 纠错算法逻辑
 1. **滑窗候选召回 (Sliding Window)**：使用 2 字和 3 字的字符滑窗扫描识别出的文本，通过拼音库计算滑窗文本的拼音，并在此拼音的 $O(1)$ 模糊拼音倒排索引（支持南方口音混淆，如 `zh/ch/sh` <-> `z/c/s`、`in/en` <-> `ing/eng`、`n` <-> `l` 等）中召回**相同字符长度**的同音/近音候选词。

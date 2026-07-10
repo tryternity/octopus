@@ -18,9 +18,9 @@ interface Props {
 
 // 方言模糊选项——token 与后端 hotword::parse_dialect 对齐。
 const DIALECT_OPTIONS: { tok: string; label: string }[] = [
-  { tok: 'f/h', label: 'f/h 不分（福建：浮 / 护）' },
-  { tok: 'hu/wu', label: 'hu/wu 不分（江浙：黄 / 王）' },
-  { tok: 'n/l', label: 'n/l 不分（湖南：刘 / 牛）' },
+  { tok: 'f/h', label: 'f/h 不分（浮 / 护）' },
+  { tok: 'hu/wu', label: 'hu/wu 不分（黄 / 王）' },
+  { tok: 'n/l', label: 'n/l 不分（刘 / 牛）' },
 ];
 
 export function HotwordPanel({ dialect, setVal }: Props) {
