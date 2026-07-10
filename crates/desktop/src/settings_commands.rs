@@ -362,6 +362,9 @@ fn apply_config_value(
         "screenshot_shortcut" => {
             cfg.screenshot_shortcut = value.as_str().ok_or("screenshot_shortcut 需要字符串")?.to_string();
         }
+        "switch_input_source_on_paste" => {
+            cfg.switch_input_source_on_paste = value.as_bool().ok_or("switch_input_source_on_paste 需要 bool")?;
+        }
         "microphone" => {
             cfg.microphone = value.as_str().ok_or("microphone 需要字符串")?.to_string();
         }

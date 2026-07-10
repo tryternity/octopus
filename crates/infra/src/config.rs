@@ -88,6 +88,13 @@ pub struct AppConfig {
     #[serde(default = "default_write_to_clipboard")]
     pub write_to_clipboard: bool,
 
+    /// 粘贴前是否临时切换到 ASCII 输入源（默认 true）。
+    /// CJK 输入法（中文/日文/韩文）在 composing 状态下，模拟 Cmd+V 粘贴可能导致
+    /// 乱码或字符丢失。开启后粘贴前自动切到 ABC → Cmd+V → 恢复原输入源。
+    /// 仅 macOS 生效（Windows/Linux 无此问题）。
+    #[serde(default = "default_switch_input_source_on_paste")]
+    pub switch_input_source_on_paste: bool,
+
     /// 麦克风名称（空 = 系统默认）
     #[serde(default)]
     pub microphone: String,
@@ -236,6 +243,9 @@ fn default_paste_method() -> String {
 fn default_write_to_clipboard() -> bool {
     true
 }
+fn default_switch_input_source_on_paste() -> bool {
+    true
+}
 fn default_overlay_position() -> String {
     "top".into()
 }
@@ -324,6 +334,7 @@ impl Default for AppConfig {
             asr_shortcut: default_asr_shortcut(),
             paste_method: default_paste_method(),
             write_to_clipboard: default_write_to_clipboard(),
+            switch_input_source_on_paste: default_switch_input_source_on_paste(),
             microphone: String::new(),
             segment_silence: default_segment_silence(),
             overlay_position: default_overlay_position(),

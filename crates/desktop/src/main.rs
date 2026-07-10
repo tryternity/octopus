@@ -26,6 +26,7 @@ mod engine_grpc;
 mod engine_ws;
 mod model_commands;
 mod hotword_commands;
+mod input_source;
 mod paste;
 mod pin_window;
 mod pipeline;

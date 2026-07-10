@@ -174,6 +174,7 @@ INSERT OR IGNORE INTO app_config (config_key, config_value, description) VALUES
     ('polish_global_shortcut',   'CmdOrCtrl+Shift+S',                      '全局立即润色快捷键（跨应用 show 结果窗不聚焦 + 触发 polish_now）'),
     ('paste_method',             'clipboard',                            '粘贴方式: clipboard | direct | none'),
     ('write_to_clipboard',       'true',                                 '粘贴后是否把结果写入剪贴板'),
+    ('switch_input_source_on_paste', 'true',                             '粘贴前切换到英文输入源（避免中文输入法干扰，仅 macOS）'),
     ('microphone',               '',                                     '麦克风名称（空=系统默认）'),
     ('overlay_position',         'top',                                  'overlay 位置: top | bottom | none'),
     ('segment_silence',          '400',                                  'VAD 静音触发识别阈值（毫秒）'),
