@@ -194,7 +194,7 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移
 - `url` / `script` / `copy` 也走 `try-catch`（与 ai 一致）：成功后端统一 hide+收口，失败显示红色气泡（**前端不再直接 `getCurrentWindow().hide()`**，error 视图已移除）
 - 按钮布局：**水平「数字徽章+文字」一行排列**（`flex-row`），非上下两行——浮窗更矮，子菜单展开后总高 ~78px
 - 视觉：`rounded-lg`（8px，与语音识别窗口一致）+ `backdrop-blur-xl` 毛玻璃 + `shadow-2xl`
-- 窗口高度动态调整：主菜单 40px / 子菜单 78px / loading 48px / error 60px（前端 `setSize` 按 view 切换），避免透明区域遮挡下层点击
+- 窗口高度动态调整：主菜单 40px / 子菜单 78px / loading 48px（前端 `setSize` 按 view 切换），避免透明区域遮挡下层点击。error 视图已移除，错误统一红色气泡覆盖浮窗顶部（不改变窗口高度）
 - 窗口宽度固定 380px
 
 #### ⚠️ 窗口焦点策略（强需求，勿改错）

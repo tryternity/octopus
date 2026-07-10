@@ -1052,9 +1052,9 @@ spec §6.1 AI 结果展示时序（补 `after_floating_window_hide_keep_active`�
 **修复**：提取 `execute_action_bar_inner` 返回 `Result<bool>`，命令函数三层 match 确保所有路径都收口：
 - `Ok(true)`（ai 成功）→ 自行收口，直通
 - `Ok(false)`（url/script/copy 成功）→ hide + finalize
-- `Err`（任何异常）→ 仅 finalize（不 hide，让前端 error 视图可见，关闭时 dismiss 走 `after_floating_window_hide` 递减 depth）
+- `Err`（任何异常）→ 仅 finalize（不 hide，前端显示红色气泡提示，2 秒后自动消失）
 
-前端 `executeItem` 的 url/script/copy 补 try-catch，失败切 error 视图，与 ai 分支行为一致。
+前端 `executeItem` 的 url/script/copy 补 try-catch，失败显示红色气泡（⚠️ error 视图已移除，详见 [脚本增强 plan](2026-07-10-action-bar-script-enhancement.md) Task 7）。
 
 #### Part D: 剪贴板失焦 depth 泄漏（606b3e5）
 
