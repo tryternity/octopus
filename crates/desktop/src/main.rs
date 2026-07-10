@@ -21,6 +21,7 @@ mod engine_aliyun;
 mod cloud_pipeline;
 mod engine_dispatch;
 mod engine_embedded;
+mod extensions;
 #[cfg(feature = "remote-grpc")]
 mod engine_grpc;
 #[cfg(feature = "remote-ws")]
