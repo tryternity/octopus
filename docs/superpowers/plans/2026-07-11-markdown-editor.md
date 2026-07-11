@@ -1,6 +1,6 @@
 # CompactEditor Markdown 改造实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 将 CompactEditor 的 textarea 替换为 CodeMirror 6 + markdown-it 实时预览，并搭建轻量 i18n 基础设施。
 
@@ -64,7 +64,7 @@
 **Interfaces:**
 - Produces: `AppConfig.ui_language: String`（默认 `"zh-CN"`），供 Task 5（i18n initI18n）和 Task 8（GeneralPanel 下拉）使用
 
-- [ ] **Step 1: 更新前端 package.json 依赖**
+- [x] **Step 1: 更新前端 package.json 依赖**
 
 在 `crates/desktop/frontend/` 下执行依赖增删：
 
@@ -88,7 +88,7 @@ npm install -D @types/markdown-it@^14
 
 验证 `package.json` 中 `marked` 已删除，新依赖已加入。
 
-- [ ] **Step 2: 后端 config.rs 新增 ui_language 字段**
+- [x] **Step 2: 后端 config.rs 新增 ui_language 字段**
 
 在 `crates/infra/src/config.rs` 的 `AppConfig` struct 中新增字段。找到 `pub language: String,` 字段所在位置，在其后追加：
 
@@ -113,7 +113,7 @@ fn default_ui_language() -> String {
 
 > 注意：搜索 `language: default_language()` 出现的每处（通常 2-3 处：默认构造、测试构造），都要在其后加 `ui_language: default_ui_language(),`。
 
-- [ ] **Step 3: settings_commands.rs 新增 ui_language 校验**
+- [x] **Step 3: settings_commands.rs 新增 ui_language 校验**
 
 在 `crates/desktop/src/settings_commands.rs` 的 `apply_config_value` 函数中，找到 `"language"` 分支，在其后追加新分支：
 
@@ -127,7 +127,7 @@ fn default_ui_language() -> String {
         }
 ```
 
-- [ ] **Step 4: 后端编译验证**
+- [x] **Step 4: 后端编译验证**
 
 ```bash
 cargo build -p octopus-infra -p octopus-desktop 2>&1 | tail -5
@@ -135,7 +135,7 @@ cargo build -p octopus-infra -p octopus-desktop 2>&1 | tail -5
 
 Expected: 编译通过，无错误。如有 `ui_language` 字段缺失的编译错误，检查 Step 2 中所有构造点是否都补了字段。
 
-- [ ] **Step 5: 后端测试**
+- [x] **Step 5: 后端测试**
 
 ```bash
 cargo test -p octopus-infra -- config
@@ -144,7 +144,7 @@ cargo test -p octopus-desktop -- settings_commands
 
 Expected: 全部通过。如 `apply_config_valid_language` 类测试失败，仿照其模式补一个 `apply_config_valid_ui_language` 测试。
 
-- [ ] **Step 6: 前端构建验证**
+- [x] **Step 6: 前端构建验证**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
@@ -152,7 +152,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
 
 Expected: 无类型错误（marked 类型引用已移除，新包类型尚未使用但不报错）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A
@@ -170,7 +170,7 @@ git commit -m "chore: 依赖更新（删 marked 加 CM6+markdown-it）+ 后端 u
 **Interfaces:**
 - Produces: `renderMarkdown(src: string): string` — 同步 markdown→HTML 渲染，供 Task 6（MarkdownPreview）调用
 
-- [ ] **Step 1: 编写 markdown.test.ts 测试文件**
+- [x] **Step 1: 编写 markdown.test.ts 测试文件**
 
 ```typescript
 import { describe, it, expect } from "vitest";
@@ -217,7 +217,7 @@ describe("renderMarkdown", () => {
   });
 
   it("渲染 task-list", () => {
-    const html = renderMarkdown("- [x] done\n- [ ] todo");
+    const html = renderMarkdown("- [x] done\n- [x] todo");
     expect(html).toContain("task-list");
   });
 
@@ -246,7 +246,7 @@ describe("renderMarkdown", () => {
 });
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 ```bash
 cd crates/desktop/frontend && npx vitest run src/lib/markdown.test.ts 2>&1 | tail -10
@@ -254,7 +254,7 @@ cd crates/desktop/frontend && npx vitest run src/lib/markdown.test.ts 2>&1 | tai
 
 Expected: FAIL — 模块不存在。
 
-- [ ] **Step 3: 实现 markdown.ts**
+- [x] **Step 3: 实现 markdown.ts**
 
 ```typescript
 import MarkdownIt from "markdown-it";
@@ -311,7 +311,7 @@ export function renderMarkdown(src: string): string {
 }
 ```
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 ```bash
 cd crates/desktop/frontend && npx vitest run src/lib/markdown.test.ts 2>&1 | tail -10
@@ -319,7 +319,7 @@ cd crates/desktop/frontend && npx vitest run src/lib/markdown.test.ts 2>&1 | tai
 
 Expected: 全部 PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/lib/markdown.ts crates/desktop/frontend/src/lib/markdown.test.ts
@@ -345,7 +345,7 @@ git commit -m "feat(frontend): markdown-it 渲染模块 + highlight 埋点"
   - `t(key: string, params?): string` — 非 React 上下文用（如 decorateCodeBlocks 内部）
   - `getLocale(): "zh-CN" | "en"` — 读当前 locale
 
-- [ ] **Step 1: 编写 locale 字典文件**
+- [x] **Step 1: 编写 locale 字典文件**
 
 `crates/desktop/frontend/src/locales/zh-CN.json`:
 
@@ -401,7 +401,7 @@ git commit -m "feat(frontend): markdown-it 渲染模块 + highlight 埋点"
 }
 ```
 
-- [ ] **Step 2: 编写 i18n.test.ts 测试文件**
+- [x] **Step 2: 编写 i18n.test.ts 测试文件**
 
 ```typescript
 import { describe, it, expect, beforeEach } from "vitest";
@@ -442,7 +442,7 @@ describe("i18n", () => {
 });
 ```
 
-- [ ] **Step 3: 运行测试验证失败**
+- [x] **Step 3: 运行测试验证失败**
 
 ```bash
 cd crates/desktop/frontend && npx vitest run src/lib/i18n.test.ts 2>&1 | tail -10
@@ -450,7 +450,7 @@ cd crates/desktop/frontend && npx vitest run src/lib/i18n.test.ts 2>&1 | tail -1
 
 Expected: FAIL — 模块不存在。
 
-- [ ] **Step 4: 实现 i18n.ts**
+- [x] **Step 4: 实现 i18n.ts**
 
 ```typescript
 import { useState, useEffect, useCallback } from "react";
@@ -520,7 +520,7 @@ export function useT(): (key: string, params?: Record<string, string | number>) 
 export const t = translate;
 ```
 
-- [ ] **Step 5: 运行测试验证通过**
+- [x] **Step 5: 运行测试验证通过**
 
 ```bash
 cd crates/desktop/frontend && npx vitest run src/lib/i18n.test.ts 2>&1 | tail -10
@@ -528,7 +528,7 @@ cd crates/desktop/frontend && npx vitest run src/lib/i18n.test.ts 2>&1 | tail -1
 
 Expected: 全部 PASS。
 
-- [ ] **Step 6: main.tsx 追加 initI18n 调用**
+- [x] **Step 6: main.tsx 追加 initI18n 调用**
 
 将 `crates/desktop/frontend/src/main.tsx` 改为 async 初始化：
 
@@ -550,7 +550,7 @@ initI18n().finally(() => {
 
 > 注意：`initI18n` 即使失败（后端未就绪）也会 `.finally()` 继续 render（用默认 zh-CN）。
 
-- [ ] **Step 7: 类型检查 + 全量前端测试**
+- [x] **Step 7: 类型检查 + 全量前端测试**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5 && npx vitest run 2>&1 | tail -5
@@ -558,7 +558,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5 && npx vitest run 
 
 Expected: 无类型错误，所有测试通过。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/lib/i18n.ts crates/desktop/frontend/src/lib/i18n.test.ts crates/desktop/frontend/src/locales/ crates/desktop/frontend/src/main.tsx
@@ -577,7 +577,7 @@ git commit -m "feat(frontend): 轻量 i18n 基础设施 + zh-CN/en 字典"
 - Produces: `<CodeMirrorEditor value={} readOnly={} fontSize={} onChange={} viewRef={} />`
   - `viewRef` 暴露 `EditorView` 实例，供 MarkdownPane 调 undo/redo 和 useSyncScroll 使用
 
-- [ ] **Step 1: 实现 CodeMirrorEditor.tsx**
+- [x] **Step 1: 实现 CodeMirrorEditor.tsx**
 
 ```tsx
 import { useEffect, useRef, type RefObject } from "react";
@@ -776,7 +776,7 @@ export function CodeMirrorEditor({ value, readOnly, fontSize, onChange, viewRef:
 }
 ```
 
-- [ ] **Step 2: 类型检查**
+- [x] **Step 2: 类型检查**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
@@ -784,7 +784,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
 
 Expected: 无类型错误。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/CompactEditor/CodeMirrorEditor.tsx
@@ -807,7 +807,7 @@ git commit -m "feat(frontend): CodeMirror 6 编辑器封装 + markdown 语法高
   - `<Splitter left={} right={} ratio={} onRatioChange={} showRight={} />`
   - `useSyncScroll({ editorSelector, previewSelector, rebindKey })`
 
-- [ ] **Step 1: 实现 useSyncScroll.ts**
+- [x] **Step 1: 实现 useSyncScroll.ts**
 
 ```typescript
 import { useEffect } from "react";
@@ -888,7 +888,7 @@ export function useSyncScroll({
 }
 ```
 
-- [ ] **Step 2: 实现 Splitter.tsx**
+- [x] **Step 2: 实现 Splitter.tsx**
 
 ```tsx
 import { useCallback, useEffect, useRef, type ReactNode } from "react";
@@ -977,7 +977,7 @@ export function Splitter({ left, right, ratio, onRatioChange, showRight }: Split
 }
 ```
 
-- [ ] **Step 3: 实现 MarkdownPreview.tsx**
+- [x] **Step 3: 实现 MarkdownPreview.tsx**
 
 ```tsx
 import { useEffect, useRef, useState } from "react";
@@ -1088,7 +1088,7 @@ export function MarkdownPreview({ source }: MarkdownPreviewProps) {
 }
 ```
 
-- [ ] **Step 4: 类型检查**
+- [x] **Step 4: 类型检查**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
@@ -1096,7 +1096,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
 
 Expected: 无类型错误。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/CompactEditor/MarkdownPreview.tsx crates/desktop/frontend/src/pages/CompactEditor/Splitter.tsx crates/desktop/frontend/src/hooks/useSyncScroll.ts
@@ -1105,16 +1105,18 @@ git commit -m "feat(frontend): MarkdownPreview + Splitter + useSyncScroll"
 
 ---
 
-## Task 6: MarkdownPane 组件（工具栏 + CM6 + Splitter + Preview 组合）
+## Task 6: MarkdownPane 组件（工具栏 + CM6 + Preview + 内联 Splitter）
+
+> **实现偏差**：原计划 Splitter 为独立组件（Task 5 创建），实际实现中发现视图切换导致 CM6 卸载重建后不可用（flexbox 高度归零），改为**内联 Splitter 到 MarkdownPane**——CM6 + Preview 始终挂载，用 `display:none` + CSS grid 模板列动态切换可见性。Splitter.tsx 文件保留但不再被 MarkdownPane 引用。工具栏布局也从左对齐改为左侧编辑操作组 + 右侧视图模式组（`flex-1` 隔开）。
 
 **Files:**
 - Create: `crates/desktop/frontend/src/pages/CompactEditor/MarkdownPane.tsx`
 
 **Interfaces:**
-- Consumes: `CodeMirrorEditor`（Task 4）、`MarkdownPreview`（Task 5）、`Splitter`（Task 5）、`useSyncScroll`（Task 5）、`useT()`（Task 3）
+- Consumes: `CodeMirrorEditor`（Task 4）、`MarkdownPreview`（Task 5）、`useSyncScroll`（Task 5）、`useT()`（Task 3）
 - Produces: `<MarkdownPane text={} readOnly={} fontSize={} onFontSizeChange={} onChange={} onClear={} onSave={} disableSave={} savedFlash={} />`
 
-- [ ] **Step 1: 实现 MarkdownPane.tsx**
+- [x] **Step 1: 实现 MarkdownPane.tsx**
 
 ```tsx
 import { useState, useRef, useCallback, useEffect } from "react";
@@ -1276,7 +1278,7 @@ export function MarkdownPane({
 }
 ```
 
-- [ ] **Step 2: 类型检查**
+- [x] **Step 2: 类型检查**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
@@ -1284,7 +1286,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
 
 Expected: 无类型错误。注意确认 `lucide-react` 导出了 `Columns2`、`FileText` 图标（如不存在换成同类图标）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/CompactEditor/MarkdownPane.tsx
@@ -1298,7 +1300,7 @@ git commit -m "feat(frontend): MarkdownPane 组件（工具栏 + 视图模式切
 **Files:**
 - Modify: `crates/desktop/frontend/src/index.css`
 
-- [ ] **Step 1: 在 index.css 末尾追加 markdown 预览 + CM6 样式**
+- [x] **Step 1: 在 index.css 末尾追加 markdown 预览 + CM6 样式**
 
 在 `crates/desktop/frontend/src/index.css` 的末尾追加：
 
@@ -1423,7 +1425,7 @@ git commit -m "feat(frontend): MarkdownPane 组件（工具栏 + 视图模式切
 .md-cm-editor .cm-editor { height: 100%; }
 ```
 
-- [ ] **Step 2: 前端构建验证**
+- [x] **Step 2: 前端构建验证**
 
 ```bash
 cd crates/desktop/frontend && npx vite build 2>&1 | tail -5
@@ -1431,7 +1433,7 @@ cd crates/desktop/frontend && npx vite build 2>&1 | tail -5
 
 Expected: 构建成功，无 CSS 错误。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/index.css
@@ -1448,7 +1450,7 @@ git commit -m "style(frontend): Markdown prose 排版 + CM6 滚动条 + 代码�
 **Interfaces:**
 - Consumes: `MarkdownPane`（Task 6）、`useT()`（Task 3）
 
-- [ ] **Step 1: 改造 index.tsx**
+- [x] **Step 1: 改造 index.tsx**
 
 对 `crates/desktop/frontend/src/pages/CompactEditor/index.tsx` 做以下改动：
 
@@ -1533,7 +1535,7 @@ useEffect(() => {
 
 > 注意：此 effect 不再依赖 `showFind`，deps 改为 `[]`（doSaveRef 已稳定引用）。
 
-- [ ] **Step 2: 类型检查**
+- [x] **Step 2: 类型检查**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -10
@@ -1541,7 +1543,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -10
 
 Expected: 无类型错误。如有未使用变量警告（如 `Type` 图标 import），清理掉。
 
-- [ ] **Step 3: 前端构建**
+- [x] **Step 3: 前端构建**
 
 ```bash
 cd crates/desktop/frontend && npx vite build 2>&1 | tail -5
@@ -1549,7 +1551,7 @@ cd crates/desktop/frontend && npx vite build 2>&1 | tail -5
 
 Expected: 构建成功。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/CompactEditor/index.tsx
@@ -1564,7 +1566,7 @@ git commit -m "refactor(frontend): CompactEditor 接入 MarkdownPane（移除 te
 - Modify: `crates/desktop/frontend/src/pages/Settings/GeneralPanel.tsx`
 - Modify: `crates/desktop/src/compact_editor_window.rs`
 
-- [ ] **Step 1: GeneralPanel 新增界面语言下拉**
+- [x] **Step 1: GeneralPanel 新增界面语言下拉**
 
 在 `crates/desktop/frontend/src/pages/Settings/GeneralPanel.tsx` 中，找到「外观」Card（`<Card icon={Palette} title="外观">`），在其 `<Row label="主题">` 之后新增一个 Row：
 
@@ -1600,7 +1602,7 @@ import { useT, setLocale } from "@/lib/i18n";
 
 > 注意：`setVal` 的签名是 `(key: string, value: unknown) => Promise<void>`，调后端 `update_config` 命令。`setLocale` 热更新前端 i18n，不需要刷新页面。
 
-- [ ] **Step 2: compact_editor_window.rs 默认窗口尺寸**
+- [x] **Step 2: compact_editor_window.rs 默认窗口尺寸**
 
 在 `crates/desktop/src/compact_editor_window.rs` 中找到窗口尺寸常量定义：
 
@@ -1612,7 +1614,7 @@ const MIN_WIDTH: f64 = 480.0; // → 600.0
 const MIN_HEIGHT: f64 = 360.0; // 保持不变
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | tail -5
@@ -1620,7 +1622,7 @@ cargo build -p octopus-desktop 2>&1 | tail -5
 
 Expected: 编译通过。
 
-- [ ] **Step 4: 前端类型检查**
+- [x] **Step 4: 前端类型检查**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
@@ -1628,7 +1630,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
 
 Expected: 无类型错误。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/GeneralPanel.tsx crates/desktop/src/compact_editor_window.rs
@@ -1642,7 +1644,7 @@ git commit -m "feat: 设置面板界面语言下拉 + 编辑器窗口默认尺�
 **Files:**
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: 全量前端测试**
+- [x] **Step 1: 全量前端测试**
 
 ```bash
 cd crates/desktop/frontend && npx vitest run 2>&1 | tail -10
@@ -1650,7 +1652,7 @@ cd crates/desktop/frontend && npx vitest run 2>&1 | tail -10
 
 Expected: 全部 PASS（含新增 markdown.test.ts + i18n.test.ts）。
 
-- [ ] **Step 2: 全量后端测试**
+- [x] **Step 2: 全量后端测试**
 
 ```bash
 cargo test -p octopus-infra -p octopus-desktop 2>&1 | tail -10
@@ -1658,7 +1660,7 @@ cargo test -p octopus-infra -p octopus-desktop 2>&1 | tail -10
 
 Expected: 全部 PASS。
 
-- [ ] **Step 3: 前端构建**
+- [x] **Step 3: 前端构建**
 
 ```bash
 cd crates/desktop/frontend && npx vite build 2>&1 | tail -5
@@ -1666,7 +1668,7 @@ cd crates/desktop/frontend && npx vite build 2>&1 | tail -5
 
 Expected: 构建成功。
 
-- [ ] **Step 4: 桌面应用构建**
+- [x] **Step 4: 桌面应用构建**
 
 ```bash
 cargo build --release -p octopus-desktop --features embedded 2>&1 | tail -5
@@ -1674,7 +1676,7 @@ cargo build --release -p octopus-desktop --features embedded 2>&1 | tail -5
 
 Expected: 编译成功。
 
-- [ ] **Step 5: 更新 architecture.md**
+- [x] **Step 5: 更新 architecture.md**
 
 在 `docs/architecture.md` 的 CompactEditor 相关段落更新描述，追加 markdown 改造要点：
 
@@ -1684,7 +1686,7 @@ Expected: 编译成功。
 - i18n 基础设施（lib/i18n.ts），ui_language config 字段
 - 代码高亮/Mermaid/PlantUML 仅埋点（highlight 回调），后续可扩展
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/architecture.md
@@ -1695,15 +1697,15 @@ git commit -m "docs: 更新 architecture.md——CompactEditor Markdown 改造"
 
 ## 手动验证清单（构建后执行）
 
-- [ ] 文本 tab：编辑 markdown → 预览实时更新（debounce 150ms）
-- [ ] 语音 tab：只读预览 → 切到编辑模式看 CM6 源码高亮
-- [ ] 图片 tab：功能不变
-- [ ] Cmd+F 查找替换面板正常工作
-- [ ] Cmd+S / Cmd+Enter 保存回写 DB
-- [ ] 撤销/重做按钮 + Cmd+Z / Cmd+Shift+Z
-- [ ] 分屏拖拽 + 滚动同步
-- [ ] 视图模式切换（编辑/分屏/预览）
-- [ ] 语言切换：设置面板切 English → CompactEditor 文案变英文
-- [ ] 多 tab 快速切换无崩溃
-- [ ] 代码块复制按钮 hover 显示 + 点击复制
-- [ ] 标题锚点跳转（预览中点 `#anchor` 链接滚动到对应标题）
+- [x] 文本 tab：编辑 markdown → 预览实时更新（debounce 150ms）
+- [x] 语音 tab：只读预览 → 切到编辑模式看 CM6 源码高亮
+- [x] 图片 tab：功能不变
+- [x] Cmd+F 查找替换面板正常工作
+- [x] Cmd+S / Cmd+Enter 保存回写 DB
+- [x] 撤销/重做按钮 + Cmd+Z / Cmd+Shift+Z
+- [x] 分屏拖拽 + 滚动同步
+- [x] 视图模式切换（编辑/分屏/预览）
+- [x] 语言切换：设置面板切 English → CompactEditor 文案变英文
+- [x] 多 tab 快速切换无崩溃
+- [x] 代码块复制按钮 hover 显示 + 点击复制
+- [x] 标题锚点跳转（预览中点 `#anchor` 链接滚动到对应标题）

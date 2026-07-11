@@ -59,11 +59,11 @@ i18n 基础设施（新）
 | `lib/i18n.ts` | `t(key)` + locale 加载 + React hook `useT()` + `initI18n()` | ~60 |
 | `locales/zh-CN.json` | 中文字典（CompactEditor + 设置面板界面语言项） | ~30 |
 | `locales/en.json` | 英文字典 | ~30 |
-| `pages/CompactEditor/MarkdownPane.tsx` | tab 内容：工具栏 + CM6 + Splitter + Preview 组合 | ~200 |
-| `pages/CompactEditor/CodeMirrorEditor.tsx` | CM6 实例封装（extensions + theme + value 同步） | ~120 |
+| `pages/CompactEditor/MarkdownPane.tsx` | tab 内容：工具栏 + CM6 + Preview + 内联 Splitter | ~190 |
+| `pages/CompactEditor/CodeMirrorEditor.tsx` | CM6 实例封装（extensions + theme + value 同步） | ~190 |
 | `pages/CompactEditor/MarkdownPreview.tsx` | 预览面板（debounce + innerHTML + 代码块复制按钮 + 链接拦截） | ~100 |
-| `pages/CompactEditor/Splitter.tsx` | 可拖拽分屏容器（Grid 布局 + Pointer Events） | ~60 |
-| `hooks/useSyncScroll.ts` | 双向比例滚动同步（rAF 节流 + echo 计数防回环） | ~60 |
+| ~~`pages/CompactEditor/Splitter.tsx`~~ | 合并入 MarkdownPane（独立组件导致视图切换时 CM6 卸载重建，改为内联 grid + display:none 切换） |
+| `hooks/useSyncScroll.ts` | 双向比例滚动同步（rAF 节流 + echo 计数防回环） | ~65 |
 
 CSS（prose 排版 + CM6 面板适配）合入现有 `index.css`。
 
@@ -97,7 +97,7 @@ fn default_ui_language() -> String { "zh-CN".into() }
 ### 5.4 compact_editor_window.rs — 窗口默认尺寸
 
 - 默认尺寸 `880×620` → `1100×680`（分屏需要更宽）
-- `MIN_WIDTH` `400` → `600`
+- `MIN_WIDTH` `480` → `600`
 - 窗口记忆逻辑不变（已有保存状态的旧用户不受影响）
 
 ## 六、模块设计
@@ -125,23 +125,28 @@ interface MarkdownPaneProps {
 ```tsx
 type ViewMode = 'split' | 'editor' | 'preview';
 // 默认值由 readOnly 决定：可编辑 → 'split'，只读 → 'preview'
-// 独立 useState——tab 切换时组件卸载重建，模式不持久化
 const [viewMode, setViewMode] = useState<ViewMode>(readOnly ? 'preview' : 'split');
 ```
+
+**关键设计：CM6 + Preview 始终挂载，display:none 切换可见性**
+
+视图模式切换不卸载/重建组件——用 CSS grid + `display:none` 切换 CM6 编辑器和 Preview 的可见性。CM6 实例一旦 mount 就持久存活，避免卸载重建导致的 flexbox 高度归零 + 光标丢失问题。Splitter 拖拽逻辑内联到 MarkdownPane（grid 模板列在 split/editor/preview 间动态切换）。
 
 **布局**：
 
 ```
-┌─────────────────────────────────────────────┐
-│ 工具栏（flex-shrink-0）                       │
-│ [撤销][重做] | [A⁻ 15 A⁺] | [编辑|分屏|预览] │
-│ [清空] ────────────── 12字 [保存 ⌘↵]         │
-├──────────────────┬──────────────────────────┤
-│   CodeMirror     │     MarkdownPreview      │
-│   (CM6 编辑器)    │     (markdown-it 渲染)    │
-└──────────────────┴──────────────────────────┘
-         ↑ Splitter 拖拽分隔线 ↑
+┌────────────────────────────────────────────────┐
+│ 工具栏（flex-shrink-0）                            │
+│ [撤销][重做] | [A⁻ 15 A⁺] | [清空]  flex-1  12字 │
+│     | [编辑][分屏][预览] | [保存 ⌘↵]            │
+├──────────────────┬─────────────────────────────┤
+│   CodeMirror     │     MarkdownPreview         │
+│   (CM6 编辑器)    │     (markdown-it 渲染)       │
+└──────────────────┴─────────────────────────────┘
+         ↑ grid 分隔线（内联 Splitter）↑
 ```
+
+> **工具栏布局**：左侧为编辑操作组（撤销/重做/字号/清空），右侧为视图模式组（编辑/分屏/预览）+ 保存按钮，用 `flex-1` + 分隔线视觉隔开。
 
 - `editor` 模式：隐藏 Preview，Editor 占满
 - `split` 模式：Splitter 分屏（默认比例 0.5，localStorage 记忆）
