@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from "react";
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { EditorView } from "@codemirror/view";
 import { undo, redo } from "@codemirror/commands";
 import { Undo2, Redo2, ZoomIn, ZoomOut, Eraser, Check, Save, Eye, Columns2, FileText } from "lucide-react";
@@ -53,9 +53,12 @@ export function MarkdownPane({
   const gridRef = useRef<HTMLDivElement>(null);
   const draggingRef = useRef(false);
 
-  useEffect(() => {
-    localStorage.setItem(SPLIT_KEY, String(splitRatio));
-  }, [splitRatio]);
+  // splitRatio 拖拽中只更新 state，释放时落盘（避免逐帧 localStorage IO）
+  const splitRatioRef = useRef(splitRatio);
+  useEffect(() => { splitRatioRef.current = splitRatio; }, [splitRatio]);
+  const persistSplitRatio = useCallback(() => {
+    localStorage.setItem(SPLIT_KEY, String(splitRatioRef.current));
+  }, []);
 
   // 仅 split 模式启用滚动同步
   useSyncScroll({ rebindKey: viewMode });
@@ -67,15 +70,25 @@ export function MarkdownPane({
     if (viewRef.current) redo(viewRef.current);
   }, []);
 
+  const clearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const handleClear = () => {
     if (!clearPending) {
       setClearPending(true);
-      window.setTimeout(() => setClearPending(false), 2000);
+      clearTimerRef.current = setTimeout(() => { setClearPending(false); clearTimerRef.current = null; }, 2000);
       return;
     }
+    if (clearTimerRef.current) { clearTimeout(clearTimerRef.current); clearTimerRef.current = null; }
     onClear();
     setClearPending(false);
   };
+
+  // 组件卸载时清理 timer
+  useEffect(() => {
+    return () => { if (clearTimerRef.current) clearTimeout(clearTimerRef.current); };
+  }, []);
+
+  // charCount 仅在 text 变化时重算（避免大文档逐键 O(n) spread）
+  const charCount = useMemo(() => [...text].length, [text]);
 
   // ── Splitter 拖拽逻辑（内联，CM6 不卸载）──
   const onDividerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
@@ -96,18 +109,17 @@ export function MarkdownPane({
     draggingRef.current = false;
     try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* released */ }
     document.documentElement.classList.remove("md-splitter-dragging");
-  }, []);
+    persistSplitRatio();
+  }, [persistSplitRatio]);
 
   useEffect(() => {
     return () => { document.documentElement.classList.remove("md-splitter-dragging"); };
   }, []);
 
-  const charCount = [...text].length;
-
-  // grid 模板列：split 模式按比例分三列，editor/preview 全占
+  // grid 模板列：split 模式按比例分三列；非 split 单轨道占满（display:none 子项不占 grid cell）
   const gridCols = viewMode === "split"
     ? `${splitRatio * 100}% 1px ${(1 - splitRatio) * 100}%`
-    : "1fr 0 1fr";
+    : "1fr";
 
   return (
     <div className="flex flex-col flex-1 min-h-0">

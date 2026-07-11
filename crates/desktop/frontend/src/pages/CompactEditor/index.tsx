@@ -34,7 +34,7 @@ interface PendingTabFull {
   isTemp?: boolean;
 }
 function pendingToTab(p: PendingTabFull): Tab {
-  const key = `${p.source}:${p.itemId}`;
+  const key = p.isTemp ? `temp:${Date.now()}_${p.itemId}_${Math.random().toString(36).slice(2, 6)}` : `${p.source}:${p.itemId}`;
   const source = p.source as Tab['source'];
   if (p.itemType === 'image') {
     return { key, source, itemId: p.itemId, itemType: 'image', imgWidth: p.imgWidth || 0, imgHeight: p.imgHeight || 0 };
@@ -164,10 +164,10 @@ function CompactEditor() {
           const seen = new Set(prev.map(t => t.key));
           const added: Tab[] = [];
           for (const p of pendingTabs) {
-            const key = p.isTemp ? `temp:${Date.now()}_${p.itemId}` : `${p.source}:${p.itemId}`;
-            if (seen.has(key)) continue;
-            seen.add(key);
-            added.push(pendingToTab(p));
+            const tab = pendingToTab(p);
+            if (seen.has(tab.key)) continue;
+            seen.add(tab.key);
+            added.push(tab);
           }
           return added.length > 0 ? [...prev, ...added] : prev;
         });

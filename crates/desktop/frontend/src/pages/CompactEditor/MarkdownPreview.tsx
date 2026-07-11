@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import { renderMarkdown } from "@/lib/markdown";
 import { t } from "@/lib/i18n";
 
@@ -78,6 +79,7 @@ export function MarkdownPreview({ source }: MarkdownPreviewProps) {
         target?.scrollIntoView({ behavior: "smooth", block: "start" });
       } else if (/^https?:\/\//.test(href)) {
         e.preventDefault();
+        openUrl(href).catch(() => {});
       }
     };
     article.addEventListener("click", onClick);

@@ -130,6 +130,7 @@ export function CodeMirrorEditor({ value, readOnly, fontSize, onChange, viewRef:
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   const themeCompartment = useRef(new Compartment());
+  const readOnlyCompartment = useRef(new Compartment());
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -147,7 +148,7 @@ export function CodeMirrorEditor({ value, readOnly, fontSize, onChange, viewRef:
         EditorView.lineWrapping,
         search({ top: true }),
         keymap.of([...defaultKeymap, ...historyKeymap, ...searchKeymap, indentWithTab]),
-        EditorState.readOnly.of(readOnly),
+        readOnlyCompartment.current.of(EditorState.readOnly.of(readOnly)),
         themeCompartment.current.of(buildTheme(fontSize)),
         EditorView.updateListener.of((update) => {
           if (update.docChanged) {
@@ -183,6 +184,12 @@ export function CodeMirrorEditor({ value, readOnly, fontSize, onChange, viewRef:
     if (!view) return;
     view.dispatch({ effects: themeCompartment.current.reconfigure(buildTheme(fontSize)) });
   }, [fontSize]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({ effects: readOnlyCompartment.current.reconfigure(EditorState.readOnly.of(readOnly)) });
+  }, [readOnly]);
 
   return <div ref={hostRef} className="md-cm-editor flex-1 min-h-0 min-w-0" style={{ overflow: "hidden" }} />;
 }
