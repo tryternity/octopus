@@ -39,7 +39,7 @@ const NAV_ITEMS: { page: PageName; icon: LucideIcon; label: string }[] = [
   { page: "actionbar", icon: Command, label: "命令面板" },
   { page: "hotword", icon: Type, label: "热词管理" },
   { page: "models", icon: Box, label: "模型管理" },
-  { page: "prompts", icon: Wand2, label: "提示词" },
+  { page: "prompts", icon: Wand2, label: "提 示 词" },
   { page: "system", icon: Activity, label: "系统状态" },
 ];
 
