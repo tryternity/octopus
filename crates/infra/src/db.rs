@@ -1930,6 +1930,8 @@ mod tests {
     fn hotword_set_crud_roundtrip() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
+        // db.sql 现含默认「通用」版本 seed；本测试聚焦 CRUD 逻辑，清掉种子避免干扰 [0]/len 断言。
+        conn.execute("DELETE FROM hotword_sets WHERE name='通用'", []).unwrap();
 
         // create
         let id = insert_hotword_set_at(&conn, "项目A").unwrap();
@@ -2825,8 +2827,8 @@ mod tests {
         conn.execute("PRAGMA user_version = 22", []).unwrap();
         conn.execute("INSERT INTO hotwords(word, status, source, hit_count) VALUES('八爪鱼','active','manual',3)", []).unwrap();
         conn.execute("INSERT INTO hotwords(word, status, source, hit_count) VALUES('吴大锐','active','manual',1)", []).unwrap();
-        // 用户预建「通用」，已含「浮窗」
-        conn.execute("INSERT INTO hotword_sets(name, enabled, words_text) VALUES('通用', 1, '浮窗')", []).unwrap();
+        // db.sql 已 seed 空「通用」；模拟用户已往里填「浮窗」
+        conn.execute("UPDATE hotword_sets SET words_text='浮窗' WHERE name='通用'", []).unwrap();
 
         init_schema(&conn).unwrap();
 
@@ -2845,7 +2847,8 @@ mod tests {
     fn list_active_words_is_enabled_union() {
         let conn = &mut rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("INSERT INTO hotword_sets(name, enabled, words_text) VALUES('通用', 1, '八爪鱼 吴大锐')", []).unwrap();
+        // db.sql 已 seed 空「通用」（enabled=1）；此处改为含词以测 enabled 并集
+        conn.execute("UPDATE hotword_sets SET words_text='八爪鱼 吴大锐' WHERE name='通用'", []).unwrap();
         conn.execute("INSERT INTO hotword_sets(name, enabled, words_text) VALUES('项目A', 1, '吴大锐 周会')", []).unwrap();
         conn.execute("INSERT INTO hotword_sets(name, enabled, words_text) VALUES('关闭的', 0, '浮窗')", []).unwrap();
 

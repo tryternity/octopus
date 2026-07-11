@@ -169,7 +169,7 @@ v1 热词系统是一张**扁平单表** `hotwords`（`word UNIQUE / status(acti
 - 删除版本 → 仅删 `hotword_sets` 行；**不删 `hotword_hits`**（命中是全局历史统计，保留）。
 - 删除/重命名「通用」「挖掘」无特殊保护——它们是普通版本，迁移产物无特殊地位。
 - 导入覆盖 → UI 二次确认（防误操作丢失整版词）。
-- 「通用」版本名唯一约束：迁移建一次；用户若已手建同名则迁移跳过建、改把词并入既有同名版本。
+- 「通用」版本名唯一约束：全新库由 db.sql seed 空「通用」（`INSERT OR IGNORE`，开箱即用）；升级库由 v22→v23 迁移建（含现有 active 词）；用户若已手建同名则迁移 upsert 并入既有同名版本（不丢词）。
 - 并发：`with_db` 已是 `parking_lot::ReentrantMutex`（v1 已修），写 `words_text` 走 `with_db`，安全。
 - 命中写库失败：仅 `log::warn!`，不阻断纠错（纠错正确性不依赖 hit_count 落库）。
 
