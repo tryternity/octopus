@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use crate::action_bar_window::{hide_action_bar_window, show_action_bar_window};
 use crate::focus_tracker::FocusTracker;
@@ -202,22 +202,9 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
 
     finalize_action_bar(&app);
 
-    // 用临时 tab 打开 CompactEditor（不写 DB，保存按钮灰掉）
-    // 窗口已存在 → emit 推送新 tab；窗口不存在 → store_pending_temp_tab + 建窗
-    if let Some(window) = app.get_webview_window(crate::compact_editor_window::WINDOW_LABEL) {
-        // 窗口已存在——通过事件推送新 tab
-        let _ = window.emit("compact-editor://open-tab", serde_json::json!({
-            "itemId": 0,
-            "source": "temp",
-            "text": display_text,
-            "isTemp": true,
-        }));
-        let _ = window.show();
-        let _ = window.set_focus();
-    } else {
-        crate::compact_editor_commands::store_pending_temp_tab(display_text, "temp");
-        crate::compact_editor_window::create_compact_editor_window(&app, None);
-    }
+    // 用临时 tab 打开 CompactEditor（不写 DB，保存按钮灰掉）。决策逻辑见
+    // compact_editor_commands::open_temp_compact_editor（托盘「图文编辑」复用同一路径）。
+    crate::compact_editor_commands::open_temp_compact_editor(&app, &display_text);
 }
 
 // ── 辅助函数 ──

@@ -64,6 +64,9 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let clipboard_text = format!("剪  贴  板（{}）", fmt_shortcut(&config.clipboard_shortcut));
     let clipboard = MenuItem::with_id(app, "clipboard", &clipboard_text, true, None::<&str>)
         .map_err(|e| format!("clipboard menu: {e}"))?;
+    // 图文编辑：打开空白 CompactEditor（临时文本 tab，不写 DB）。
+    let compact_editor = MenuItem::with_id(app, "compact_editor", "图文编辑", true, None::<&str>)
+        .map_err(|e| format!("compact_editor menu: {e}"))?;
 
     let sep2 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator2: {e}"))?;
@@ -75,7 +78,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
 
     let menu = Menu::with_items(app, &[
         &toggle, &engine_info, &sep1,
-        &screenshot, &clipboard, &sep2,
+        &screenshot, &clipboard, &compact_editor, &sep2,
         &settings, &quit,
     ])
     .map_err(|e| format!("tray menu: {e}"))?;
@@ -109,6 +112,10 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             "clipboard" => {
                 info!("Tray: toggle clipboard");
                 let _ = crate::clipboard_window::toggle_clipboard_window(app);
+            }
+            "compact_editor" => {
+                info!("Tray: open compact editor (empty)");
+                crate::compact_editor_commands::open_temp_compact_editor(app, "");
             }
             "settings" => {
                 info!("Tray: open settings");
