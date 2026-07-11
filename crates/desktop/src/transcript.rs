@@ -486,19 +486,6 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
     a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
 }
 
-/// 查 char offset 在 segments 中对应的 kind。超出范围 → Raw 兜底。
-fn segment_kind_at_offset(segments: &[Segment], offset: usize) -> SegmentKind {
-    let mut acc = 0usize;
-    for seg in segments {
-        let len = seg.text.chars().count();
-        if offset < acc + len {
-            return seg.kind;
-        }
-        acc += len;
-    }
-    SegmentKind::Raw
-}
-
 /// 同 kind 相邻段合并（减少碎片）。
 fn push_or_merge(result: &mut Vec<Segment>, kind: SegmentKind, text: &str) {
     if text.is_empty() { return; }
