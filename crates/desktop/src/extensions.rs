@@ -168,7 +168,10 @@ pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
 
     // 定位 Package 目录（zip 解压到临时目录，文件夹直接用）
     let pkg_dir: std::path::PathBuf = if is_zip {
-        let tmp_dir = std::env::temp_dir().join(format!("octopus-ext-{}", std::process::id()));
+        let tmp_dir = std::env::temp_dir().join(format!(
+            "octopus-ext-{}-{}", std::process::id(),
+            std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos()
+        ));
         let _ = fs::remove_dir_all(&tmp_dir);
         fs::create_dir_all(&tmp_dir).map_err(|e| format!("创建临时目录失败: {}", e))?;
         let zip_file = fs::File::open(path).map_err(|e| format!("打开 zip 失败: {}", e))?;
@@ -187,6 +190,14 @@ pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
                 }
                 let mut outfile = fs::File::create(&outpath).map_err(|e| format!("创建文件失败: {}", e))?;
                 std::io::copy(&mut file, &mut outfile).map_err(|e| format!("写入文件失败: {}", e))?;
+                // 恢复 Unix 权限（可执行位等）
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    if let Some(mode) = file.unix_mode() {
+                        let _ = fs::set_permissions(&outpath, fs::Permissions::from_mode(mode));
+                    }
+                }
             }
         }
         let pkg = find_package_root(&tmp_dir)
@@ -313,10 +324,9 @@ pub fn delete_extension(dir_name: String) -> Result<(), String> {
     if !dir.exists() {
         return Err("扩展包不存在".into());
     }
-    let dir_prefix = dir.to_string_lossy().to_string();
     let db_items = octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())?;
     for item in db_items {
-        if item.action_data.starts_with(&dir_prefix) {
+        if std::path::Path::new(&item.action_data).starts_with(&dir) {
             let _ = octopus_infra::db::delete_action_bar_item(item.id);
         }
     }
