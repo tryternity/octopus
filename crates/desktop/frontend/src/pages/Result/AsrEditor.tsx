@@ -1,5 +1,5 @@
 import { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
-import { Compartment, EditorState, type Transaction, type ChangeSpec } from "@codemirror/state";
+import { Compartment, EditorState, type Transaction, type ChangeSpec, Prec } from "@codemirror/state";
 import { EditorView, keymap, drawSelection } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
 import { invoke } from "@tauri-apps/api/core";
@@ -174,6 +174,12 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
         history(),
         drawSelection(),
         EditorView.lineWrapping,
+        // Cmd/Ctrl+Enter → commit（高优先级拦截，防止 defaultKeymap 插入换行）
+        Prec.highest(keymap.of([{
+          key: "Mod-Enter",
+          preventDefault: true,
+          run: () => { doCommit(); return true; },
+        }])),
         keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
         themeCompartment.current.of(buildTheme(expanded)),
         EditorView.updateListener.of((update) => {
