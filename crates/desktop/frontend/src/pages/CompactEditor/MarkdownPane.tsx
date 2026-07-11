@@ -61,7 +61,7 @@ export function MarkdownPane({
   }, []);
 
   // 仅 split 模式启用滚动同步
-  useSyncScroll({ rebindKey: viewMode });
+  useSyncScroll({ rebindKey: viewMode, enabled: viewMode === "split" });
 
   const handleUndo = useCallback(() => {
     if (viewRef.current) undo(viewRef.current);
@@ -207,7 +207,7 @@ export function MarkdownPane({
           className="min-h-0 min-w-0 flex flex-col overflow-hidden"
           style={{ display: viewMode === "editor" ? "none" : "flex" }}
         >
-          <MarkdownPreview source={text} />
+          <MarkdownPreview source={text} fontSize={fontSize} />
         </div>
       </div>
     </div>

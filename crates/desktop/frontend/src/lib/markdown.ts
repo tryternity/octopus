@@ -1,6 +1,7 @@
 import MarkdownIt from "markdown-it";
 import mark from "markdown-it-mark";
 import taskLists from "markdown-it-task-lists";
+import { t } from "@/lib/i18n";
 
 function escapeHtml(value: string): string {
   return value
@@ -44,6 +45,27 @@ md.renderer.rules.heading_open = (tokens, idx, options, _env, self) => {
     if (id) tokens[idx].attrSet("id", id);
   }
   return self.renderToken(tokens, idx, options);
+};
+
+// 代码块渲染：包裹 .md-codeblock 容器 + 声明式复制按钮（消除命令式 DOM 注入）
+// 按钮文案由 MarkdownPreview 事件委托在点击时动态更新（初始文本用 i18n 当前翻译）
+function wrapCodeBlock(pre: string): string {
+  return `<div class="md-codeblock">${pre}<button type="button" class="md-copy-btn" data-copy>${escapeHtml(t("editor.copyCode"))}</button></div>`;
+}
+
+const defaultCodeBlockRender = md.renderer.rules.code_block || ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+md.renderer.rules.code_block = (tokens, idx, options, env, self) => {
+  return wrapCodeBlock(defaultCodeBlockRender(tokens, idx, options, env, self));
+};
+
+// fence 规则：反引号围栏代码块（```lang）——mermaid 的 highlight 返回占位 HTML
+// 经 defaultFenceRender 原样返回，需跳过 wrapCodeBlock（不加复制按钮）
+const defaultFenceRender = md.renderer.rules.fence || ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  const lang = tokens[idx].info.trim();
+  const pre = defaultFenceRender(tokens, idx, options, env, self);
+  if (lang === "mermaid") return pre;
+  return wrapCodeBlock(pre);
 };
 
 /** 同步渲染 markdown → HTML（无 Shiki 异步加载） */

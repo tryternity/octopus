@@ -46,24 +46,21 @@ pub fn on_compact_editor_save_state(app_handle: &tauri::AppHandle) {
     if let Some(win) = app_handle.get_webview_window(WINDOW_LABEL) {
         let maximized = win.is_maximized().unwrap_or(false);
         let scale = win.scale_factor().unwrap_or(1.0);
+        // inner_position() / inner_size() 返回物理像素，÷ scale 统一到逻辑像素。
+        // 最大化时不再 unmaximize→read→remaximize（OS 窗口状态变更异步，
+        // 同步读拿到的仍是最大化尺寸）——改存 maximize 标记，
+        // 恢复时用上次非最大化记忆的 size/pos（如有），否则用默认值。
         let state = if maximized {
-            // 最大化时先 un-maximize 拿到真实位置（窗口在哪个屏幕），再 re-maximize。
-            // inner_position() 在最大化时返回全屏位置（不可靠），un-maximize 后返回真实位置。
-            let _ = win.unmaximize();
-            let real_pos = win.inner_position().ok();
-            let real_size = win.inner_size().ok();
-            // 立即 re-maximize（用户下次打开应还是最大化）
-            let _ = win.maximize();
-            let scale = win.scale_factor().unwrap_or(1.0);
-            let (lx, ly, lw, lh) = match (real_pos, real_size) {
-                (Some(p), Some(s)) => (p.x as f64 / scale, p.y as f64 / scale, s.width as f64 / scale, s.height as f64 / scale),
-                _ => (0.0, 0.0, WIDTH, HEIGHT),
-            };
-            log::info!("[compact-editor] maximized save: un-maximize pos={:?} size={:?} → logical {},{} {}x{}", real_pos, real_size, lx, ly, lw, lh);
-            WindowState { width: lw, height: lh, x: lx, y: ly, maximized: true }
+            // 读已保存的非最大化状态作为 fallback（不依赖 unmaximize 读尺寸）
+            let prev = load_window_state();
+            WindowState {
+                width: if prev.width > 0.0 { prev.width } else { WIDTH },
+                height: if prev.height > 0.0 { prev.height } else { HEIGHT },
+                x: if prev.x != 0.0 || prev.y != 0.0 { prev.x } else { 100.0 },
+                y: if prev.x != 0.0 || prev.y != 0.0 { prev.y } else { 100.0 },
+                maximized: true,
+            }
         } else if let (Ok(pos), Ok(size)) = (win.inner_position(), win.inner_size()) {
-            // inner_position + inner_size 对称保存恢复（都用内容区坐标，
-            // 不含标题栏），消除 outer/inner 混用导致的坐标偏差。
             let lw = size.width as f64 / scale;
             let lh = size.height as f64 / scale;
             let lx = pos.x as f64 / scale;
@@ -103,13 +100,13 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
     let mut should_maximize = false;
     log::info!("[compact-editor] window state {:?}", state);
 
-    // URL 参数注入：首个 tab 的数据 + 背景色 hex 拼入 URL query string，
-    // 前端首次渲染时同步读取（零 IPC 打开）+ 首帧即有正确背景色（零 CSS 依赖）。
+    // URL 参数注入：首个 tab 的元数据 + 背景色 hex 拼入 URL query string。
+    // 不注入 text——长文本（ASR 录音/大段粘贴）会导致 URL 超长使 WebView 白屏。
+    // 前端 mount 后经 get_pending_compact_tabs 批量拉取含 text 的完整数据。
     let mut url = if let Some(p) = pending {
-        let encoded_text = urlencode(&p.text);
         let mut u = format!(
-            "index.html?itemId={}&source={}&itemType={}&text={}",
-            p.item_id, p.source, p.item_type, encoded_text
+            "index.html?itemId={}&source={}&itemType={}",
+            p.item_id, p.source, p.item_type
         );
         // 图片类型注入原始尺寸——前端 ImagePreview 首帧即有正确宽高，消除布局突变
         if p.item_type == "image" && p.img_width > 0 && p.img_height > 0 {
@@ -233,20 +230,4 @@ pub fn create_compact_editor_window(app_handle: &tauri::AppHandle, pending: Opti
 #[cfg(target_os = "macos")]
 pub fn on_compact_editor_closed(app_handle: &tauri::AppHandle) {
     crate::activation::restore_accessory_if_no_regular_window(app_handle);
-}
-
-/// URL 百分号编码（用于把 text 内容安全拼入 URL query string）。
-fn urlencode(s: &str) -> String {
-    let mut result = String::with_capacity(s.len() * 3);
-    for byte in s.bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                result.push(byte as char);
-            }
-            _ => {
-                result.push_str(&format!("%{:02X}", byte));
-            }
-        }
-    }
-    result
 }

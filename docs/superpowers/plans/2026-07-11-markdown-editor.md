@@ -1709,3 +1709,42 @@ git commit -m "docs: 更新 architecture.md——CompactEditor Markdown 改造"
 - [x] 多 tab 快速切换无崩溃
 - [x] 代码块复制按钮 hover 显示 + 点击复制
 - [x] 标题锚点跳转（预览中点 `#anchor` 链接滚动到对应标题）
+
+---
+
+## 实现偏差记录（代码审查修复）
+
+> 以下为 6 轮代码审查 + 2 轮代码质量提升引入的实现偏差，与原始 Task 设计有出入。
+
+### 后端改动（超出原始 Task 范围）
+
+- **URL 不注入 text**（`compact_editor_window.rs`）：原 Task 1 设计首个 tab 的 text 经 URL 编码注入 query string（零 IPC 打开）。实际移除——长文本（ASR 录音/大段粘贴）致 URL 超长使 WebView 白屏。改为 URL 仅传元数据（itemId/source/itemType/imgWidth/imgHeight），text 由 mount 后 `get_pending_compact_tabs` 批量拉取。删除 `urlencode` 函数。
+- **窗口状态保存移除 unmaximize hack**（`compact_editor_window.rs`）：原代码最大化时 unmaximize→read→remaximize 取真实位置——OS 窗口状态异步，同步读不可靠。改为存 maximize 标记 + fallback 上次非最大化记忆。
+- **ocr/layout.rs 未用变量** `h` → `_h`（合并 main 后清理）。
+
+### 前端 tab 管理（重大重构）
+
+- **同步计算模式**：`loadAndAddTab`/`listen`/`pending`/`closeTab`/`doSave` 全部从 `setTabs(prev => ...)` updater 改为同步计算——await 后基于 `tabsRef.current` 算 next → 同步写 ref + `setTabs(next)` + `setActiveIdx(literal)`。消除 React 异步队列致 ref 陈旧 + setActiveIdx 失败。
+- **listen 前置**：mount 时先注册 `listen("compact-editor://open-tab")` 再 `get_pending_compact_tabs`，消除竞态窗口。
+- **doSave 四守卫**：`!active`/`isTemp`/`source === 'transcription'`/`itemType !== 'text'`。keydown `deps []` 无条件调 `doSaveRef.current()`，单一事实源。
+- **tempKey 加随机后缀**：`temp:${Date.now()}_${Math.random().toString(36).slice(2,6)}`，防同毫秒重复。
+
+### 前端 MarkdownPreview（性能优化 + 声明式重构）
+
+- **useMemo** 替代 `useEffect + setState` 派生 HTML（消除额外重绘周期）。
+- **click 事件委托** `deps []`（原 `[html]` 每次渲染重绑 → 仅挂载一次）。统一处理链接拦截 + 复制按钮点击。
+- **声明式代码块复制按钮**：markdown-it `code_block` + `fence` 渲染规则直接输出 `.md-codeblock` + `[data-copy]` 按钮（消除命令式 `decorateCodeBlocks` DOM 注入）。`fence` 规则 mermaid 跳过 `wrapCodeBlock`。
+- **useSyncScroll 加 `enabled` 参数**：非 split 模式不绑定 scroll 事件。
+
+### 其他清理
+
+- **Splitter.tsx 删除**（内联到 MarkdownPane）。
+- **tab 栏 map 参数 `t` → `tab`**（消除 i18n `t()` 遮蔽根因）。
+- **vite.config.ts**：`chunkSizeWarningLimit: 2000`，删除废弃 tiptap `manualChunks`。
+- **vitest.config.ts**：加 `@` alias + `.tsx` include。
+- **savedFlashTimer / clearTimerRef 卸载清理**。
+- **splitRatio pointerup 落盘**（拖拽中不逐帧写 localStorage）。
+- **charCount useMemo 缓存**（大文档不逐键 spread）。
+- **readOnly Compartment**（CodeMirrorEditor 支持运行时切换 readOnly）。
+- **fontSize 传入 MarkdownPreview**（预览区跟随字号调节）。
+- **i18n 死键清理**（`editor.placeholder.edit`/`readonly`）+ 新增 5 key（`tab.image`/`tab.empty`/`tab.close`/`editor.imageTabHint`/`editor.noTabs`）。

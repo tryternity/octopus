@@ -1,10 +1,11 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import { renderMarkdown } from "@/lib/markdown";
 import { t } from "@/lib/i18n";
 
 interface MarkdownPreviewProps {
   source: string;
+  fontSize?: number;
 }
 
 function useDebounced<T>(value: T, delayMs: number): T {
@@ -16,58 +17,36 @@ function useDebounced<T>(value: T, delayMs: number): T {
   return debounced;
 }
 
-function decorateCodeBlocks(root: HTMLElement): () => void {
-  const cleanups: Array<() => void> = [];
-  const codeEls = root.querySelectorAll("pre > code");
-  codeEls.forEach((code) => {
-    const pre = code.parentElement;
-    if (!pre || pre.parentElement?.classList.contains("md-codeblock")) return;
-
-    const wrapper = document.createElement("div");
-    wrapper.className = "md-codeblock";
-    pre.parentNode?.insertBefore(wrapper, pre);
-    wrapper.appendChild(pre);
-
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "md-copy-btn";
-    btn.textContent = t("editor.copyCode");
-    const onClick = async () => {
-      try {
-        await navigator.clipboard.writeText(code.textContent ?? "");
-      } catch {
-        // WKWebView clipboard 可能受限，忽略
-      }
-      btn.textContent = t("editor.copied");
-      window.setTimeout(() => { btn.textContent = t("editor.copyCode"); }, 1400);
-    };
-    btn.addEventListener("click", onClick);
-    wrapper.appendChild(btn);
-    cleanups.push(() => btn.removeEventListener("click", onClick));
-  });
-  return () => cleanups.forEach((fn) => fn());
-}
-
-export function MarkdownPreview({ source }: MarkdownPreviewProps) {
+export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
   const debouncedSource = useDebounced(source, 150);
-  const [html, setHtml] = useState("");
   const articleRef = useRef<HTMLElement>(null);
 
-  useEffect(() => {
-    setHtml(renderMarkdown(debouncedSource));
-  }, [debouncedSource]);
+  // useMemo 同步派生 HTML（避免 setState 额外重绘周期）
+  const html = useMemo(() => renderMarkdown(debouncedSource), [debouncedSource]);
 
+  // innerHTML 命令式写入（非 dangerouslySetInnerHTML——保留 mermaid/代码块 DOM 装饰）
   useEffect(() => {
     if (!articleRef.current) return;
     articleRef.current.innerHTML = html;
-    const cleanup = decorateCodeBlocks(articleRef.current);
-    return cleanup;
   }, [html]);
 
+  // 全局事件委托：链接拦截 + 代码块复制（仅挂载一次，html 变化不重绑）
   useEffect(() => {
     const article = articleRef.current;
     if (!article) return;
-    const onClick = (e: MouseEvent) => {
+    const onClick = async (e: MouseEvent) => {
+      // 代码块复制按钮
+      const copyBtn = (e.target as HTMLElement).closest<HTMLElement>("[data-copy]");
+      if (copyBtn) {
+        const code = copyBtn.parentElement?.querySelector("code");
+        if (code) {
+          try { await navigator.clipboard.writeText(code.textContent ?? ""); } catch { /* WKWebView */ }
+          copyBtn.textContent = t("editor.copied");
+          window.setTimeout(() => { copyBtn.textContent = t("editor.copyCode"); }, 1400);
+        }
+        return;
+      }
+      // 链接拦截
       const a = (e.target as HTMLElement).closest("a");
       if (!a) return;
       const href = a.getAttribute("href");
@@ -81,13 +60,12 @@ export function MarkdownPreview({ source }: MarkdownPreviewProps) {
         e.preventDefault();
         openUrl(href).catch(() => {});
       } else {
-        // 其余协议/相对路径——阻止 webview 导航离开应用
         e.preventDefault();
       }
     };
     article.addEventListener("click", onClick);
     return () => article.removeEventListener("click", onClick);
-  }, [html]);
+  }, []);
 
   if (source.trim().length === 0) {
     return (
@@ -98,7 +76,7 @@ export function MarkdownPreview({ source }: MarkdownPreviewProps) {
   }
 
   return (
-    <div className="md-preview flex-1 overflow-auto p-5" style={{ userSelect: "text" }}>
+    <div className="md-preview flex-1 overflow-auto p-5" style={{ userSelect: "text", fontSize: fontSize ? `${fontSize}px` : undefined }}>
       <article ref={articleRef} className="md-prose" />
     </div>
   );

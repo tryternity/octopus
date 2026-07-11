@@ -60,7 +60,8 @@ function tabIcon(tab: Tab) {
   return <Type className="w-3 h-3 text-muted-foreground flex-shrink-0" />;
 }
 
-// URL 参数初始化：Rust 建窗时拼入首个 tab 数据，前端首次渲染即有内容（零 IPC）。
+// URL 参数初始化：Rust 建窗时拼入首个 tab 元数据（不含 text——避免超长 URL 白屏），
+// 前端首次渲染即有 tab 占位（零 IPC），text 由 mount 后 get_pending_compact_tabs 补全。
 function readInitialTabFromUrl(): { tabs: Tab[]; hasInitial: boolean } {
   const params = new URLSearchParams(window.location.search);
   const itemId = params.get("itemId");
@@ -68,14 +69,13 @@ function readInitialTabFromUrl(): { tabs: Tab[]; hasInitial: boolean } {
   if (!itemId || !source) return { tabs: [], hasInitial: false };
   const id = Number(itemId);
   const itemType = params.get("itemType") || "text";
-  const text = params.get("text") || "";
   const key = `${source}:${id}`;
   if (itemType === "image") {
     const imgWidth = Number(params.get("imgWidth") || 0);
     const imgHeight = Number(params.get("imgHeight") || 0);
     return { tabs: [{ key, source: source as any, itemId: id, itemType: "image" as const, imgWidth, imgHeight }], hasInitial: true };
   }
-  return { tabs: [{ key, source: source as any, itemId: id, itemType: "text" as const, text }], hasInitial: true };
+  return { tabs: [{ key, source: source as any, itemId: id, itemType: "text" as const, text: "" }], hasInitial: true };
 }
 
 function CompactEditor() {
@@ -105,6 +105,7 @@ function CompactEditor() {
   }, []);
 
   // 加载某 item 并新增 tab；已存在则切过去。source 决定从哪个表读 + 是否只读。
+  // 基于 tabsRef.current 同步计算 next tabs（不依赖 setTabs updater 异步回调）。
   const loadAndAddTab = useCallback(async (itemId: number, source: string) => {
     const key = `${source}:${itemId}`;
     const existIdx = tabsRef.current.findIndex(t => t.key === key);
@@ -114,78 +115,84 @@ function CompactEditor() {
     try {
       if (source === 'transcription') {
         const text = await invoke<string>("get_transcription_text", { id: itemId }).catch(() => "");
-        setTabs(prev => prev.some(t => t.key === key) ? prev : [...prev, { key, source: 'transcription', itemId, text }]);
-        setTabs(prev => { const idx = prev.findIndex(t => t.key === key); if (idx >= 0) { tabsRef.current = prev; setActiveIdx(idx); } return prev; });
+        if (tabsRef.current.some(t => t.key === key)) { setActiveIdx(tabsRef.current.findIndex(t => t.key === key)); return; }
+        const next = [...tabsRef.current, { key, source: 'transcription' as const, itemId, text }];
+        tabsRef.current = next;
+        setTabs(next);
+        setActiveIdx(next.length - 1);
         return;
       }
 
       // clipboard：先查类型，再加载
       const itemType = await invoke<string>("get_clipboard_item_type", { itemId }).catch(() => "text");
       if (itemType === 'image') {
+        if (tabsRef.current.some(t => t.key === key)) { setActiveIdx(tabsRef.current.findIndex(t => t.key === key)); return; }
         // 图片 tab ≤5 限制
-        setTabs(prev => {
-          if (prev.some(t => t.key === key)) return prev;
-          const imageTabs = prev.filter(t => t.itemType === 'image');
-          let next = prev;
-          if (imageTabs.length >= MAX_IMAGE_TABS) {
-            const oldestKey = imageTabs[0].key;
-            next = prev.filter(t => t.key !== oldestKey);
-          }
-          return [...next, { key, source: 'clipboard' as const, itemId, itemType: 'image' as const }];
-        });
-        setTabs(prev => {
-          const newIdx = prev.findIndex(t => t.key === key);
-          if (newIdx >= 0) {
-            tabsRef.current = prev;
-            setActiveIdx(newIdx);
-          }
-          return prev;
-        });
+        const imageTabs = tabsRef.current.filter(t => t.itemType === 'image');
+        let base = tabsRef.current;
+        if (imageTabs.length >= MAX_IMAGE_TABS) {
+          const oldestKey = imageTabs[0].key;
+          base = tabsRef.current.filter(t => t.key !== oldestKey);
+        }
+        const next = [...base, { key, source: 'clipboard' as const, itemId, itemType: 'image' as const }];
+        tabsRef.current = next;
+        setTabs(next);
+        setActiveIdx(next.length - 1);
       } else {
         const text = await invoke<string>("get_clipboard_item_text", { itemId }).catch(() => "");
-        setTabs(prev => prev.some(t => t.key === key) ? prev : [...prev, { key, source: 'clipboard' as const, itemId, itemType: 'text' as const, text }]);
-        setTabs(prev => { const idx = prev.findIndex(t => t.key === key); if (idx >= 0) { tabsRef.current = prev; setActiveIdx(idx); } return prev; });
+        if (tabsRef.current.some(t => t.key === key)) { setActiveIdx(tabsRef.current.findIndex(t => t.key === key)); return; }
+        const next = [...tabsRef.current, { key, source: 'clipboard' as const, itemId, itemType: 'text' as const, text }];
+        tabsRef.current = next;
+        setTabs(next);
+        setActiveIdx(next.length - 1);
       }
     } finally {
       pendingKeysRef.current.delete(key);
     }
   }, []);
 
-  // mount：URL 已注入首个 tab（零 IPC）；invoke get_pending_compact_tabs take 剩余
-  // pending（批量双开场景：URL 只注入首个，其余 pending tab 于此补齐，与 URL 首个
-  // 按 key 去重）；注册 open-tab 事件用于后续已 mount 窗口的新开 tab。
+  // mount：先注册 listen（防止 take pending 后、listen 前的 emit 丢失），
+  // 再 invoke get_pending_compact_tabs take 剩余 pending（与 URL 首个按 key 去重）。
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     (async () => {
-      const pendingTabs = await invoke<PendingTabFull[]>("get_pending_compact_tabs");
-      if (cancelled) return;
-      if (pendingTabs.length > 0) {
-        setTabs(prev => {
-          const seen = new Set(prev.map(t => t.key));
-          const added: Tab[] = [];
-          for (const p of pendingTabs) {
-            const tab = pendingToTab(p);
-            if (seen.has(tab.key)) continue;
-            seen.add(tab.key);
-            added.push(tab);
-          }
-          return added.length > 0 ? [...prev, ...added] : prev;
-        });
-      }
-      setInitialLoading(false);
+      // 1. 先注册事件监听——确保 take pending 期间发出的 emit 不会丢失
       const fn = await listen("compact-editor://open-tab", (payload) => {
         const p = payload as OpenTabPayload;
         if (p.source === 'temp') {
-          const tempKey = `temp:${Date.now()}`;
-          setTabs(prev => [...prev, { key: tempKey, source: 'temp', itemId: 0, itemType: 'text', text: p.text, isTemp: true }]);
-          setTabs(prev => { const idx = prev.findIndex(t => t.key === tempKey); if (idx >= 0) { tabsRef.current = prev; setActiveIdx(idx); } return prev; });
+          const tempKey = `temp:${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+          const next = [...tabsRef.current, { key: tempKey, source: 'temp' as const, itemId: 0, itemType: 'text' as const, text: p.text, isTemp: true }];
+          tabsRef.current = next;
+          setTabs(next);
+          setActiveIdx(next.length - 1);
         } else {
           loadAndAddTab(p.itemId, p.source);
         }
       });
-      if (cancelled) fn();
-      else unlisten = fn;
+      if (cancelled) { fn(); return; }
+      unlisten = fn;
+
+      // 2. 再 take pending tabs（此时 listen 已就绪）
+      const pendingTabs = await invoke<PendingTabFull[]>("get_pending_compact_tabs");
+      if (cancelled) return;
+      if (pendingTabs.length > 0) {
+        const seen = new Set(tabsRef.current.map(t => t.key));
+        const added: Tab[] = [];
+        for (const p of pendingTabs) {
+          const tab = pendingToTab(p);
+          if (seen.has(tab.key)) continue;
+          seen.add(tab.key);
+          added.push(tab);
+        }
+        if (added.length > 0) {
+          const next = [...tabsRef.current, ...added];
+          tabsRef.current = next;
+          setTabs(next);
+          setActiveIdx(tabsRef.current.length - 1);
+        }
+      }
+      setInitialLoading(false);
     })();
     return () => {
       cancelled = true;
@@ -206,8 +213,10 @@ function CompactEditor() {
           return;
         }
         const idx = activeIdx;
-        setTabs(prev => prev.filter((_, i) => i !== idx));
-        setActiveIdx(i => (idx < i ? i - 1 : idx === i ? Math.min(i, tabs.length - 2) : i));
+        const next = tabsRef.current.filter((_, i) => i !== idx);
+        tabsRef.current = next;
+        setTabs(next);
+        setActiveIdx(idx === activeIdx ? Math.min(activeIdx, next.length - 1) : activeIdx > idx ? activeIdx - 1 : activeIdx);
         return;
       }
       await invoke("set_clipboard_item_text", { itemId: active.itemId, text: active.text || "" });
@@ -230,12 +239,10 @@ function CompactEditor() {
       invoke("close_compact_editor");
       return;
     }
-    setTabs(prev => prev.filter((_, i) => i !== idx));
-    setActiveIdx(i => {
-      if (idx < i) return i - 1;
-      if (idx === i) return Math.min(i, tabs.length - 2);
-      return i;
-    });
+    const next = tabsRef.current.filter((_, i) => i !== idx);
+    tabsRef.current = next;
+    setTabs(next);
+    setActiveIdx(idx < activeIdx ? activeIdx - 1 : idx === activeIdx ? Math.min(activeIdx, next.length - 1) : activeIdx);
   };
 
   // 字号记忆
