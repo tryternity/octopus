@@ -80,6 +80,9 @@ export function MarkdownPreview({ source }: MarkdownPreviewProps) {
       } else if (/^https?:\/\//.test(href)) {
         e.preventDefault();
         openUrl(href).catch(() => {});
+      } else {
+        // 其余协议/相对路径——阻止 webview 导航离开应用
+        e.preventDefault();
       }
     };
     article.addEventListener("click", onClick);

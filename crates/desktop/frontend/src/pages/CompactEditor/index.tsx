@@ -5,7 +5,7 @@ import {
 } from "lucide-react";
 import ImagePreviewComponent from "@/pages/ImagePreview";
 import { MarkdownPane } from "./MarkdownPane";
-import { useT } from "@/lib/i18n";
+import { useT, t as ti18n } from "@/lib/i18n";
 
 interface Tab {
   key: string;
@@ -49,7 +49,7 @@ const MAX_IMAGE_TABS = 5;
 
 function tabTitle(tab: Tab): string {
   const text = tab.text || "";
-  const head = text.slice(0, 5).replace(/\s+/g, " ").trim() || (tab.itemType === 'image' ? "图片" : "空");
+  const head = text.slice(0, 5).replace(/\s+/g, " ").trim() || (tab.itemType === 'image' ? ti18n("tab.image") : ti18n("tab.empty"));
   const tail = tab.itemId.toString(16).slice(-5);
   return `${head}-${tail}`;
 }
@@ -243,8 +243,9 @@ function CompactEditor() {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing || e.keyCode === 229) return;
       const mod = e.metaKey || e.ctrlKey;
-      if (mod && e.key === "Enter") { e.preventDefault(); if (!active?.itemType || active.itemType === 'text') doSaveRef.current(); return; }
-      if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); if (!active?.itemType || active.itemType === 'text') doSaveRef.current(); return; }
+      const isWritableText = (!active?.itemType || active.itemType === 'text') && active?.source !== 'transcription' && !active?.isTemp;
+      if (mod && e.key === "Enter") { e.preventDefault(); if (isWritableText) doSaveRef.current(); return; }
+      if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); if (isWritableText) doSaveRef.current(); return; }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
@@ -269,7 +270,7 @@ function CompactEditor() {
               <span className="max-w-[140px] truncate">{tabTitle(t)}</span>
               <button
                 type="button"
-                title="关闭"
+                title={t("tab.close")}
                 onClick={(e) => { e.stopPropagation(); closeTab(i); }}
                 className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
               >
@@ -290,7 +291,7 @@ function CompactEditor() {
                 <ImagePreviewComponent imageId={tab.itemId} initialWidth={tab.imgWidth} initialHeight={tab.imgHeight} />
               ) : (
                 <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground bg-background">
-                  切换到此标签加载图片
+                  {t("editor.imageTabHint")}
                 </div>
               )
             ) : (
@@ -304,7 +305,7 @@ function CompactEditor() {
                   onChange={(next) => updateActiveTextAt(next, i)}
                   onClear={() => updateActiveTextAt('', i)}
                   onSave={doSave}
-                  disableSave={active?.isTemp}
+                  disableSave={active?.isTemp || tab.source === 'transcription'}
                   savedFlash={savedFlash}
                 />
               ) : (
@@ -318,7 +319,7 @@ function CompactEditor() {
       ) : initialLoading ? (
         <div className="flex-1" />
       ) : (
-        <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">没有打开的条目</div>
+        <div className="flex-1 flex items-center justify-center text-sm text-muted-foreground">{t("editor.noTabs")}</div>
       )}
     </div>
   );
