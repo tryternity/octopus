@@ -163,10 +163,18 @@ impl OcrEngine {
     pub fn recognize_with_blocks(&self, image_bytes: &[u8]) -> Result<(String, Vec<OcrBlock>)> {
         let img = ::image::load_from_memory(image_bytes)
             .context("Failed to decode image")?;
+        self.recognize_with_blocks_from_image(&img)
+    }
+
+    /// 已解码的 DynamicImage 直接 OCR——避免调用方重复解码。
+    pub fn recognize_with_blocks_from_image(
+        &self,
+        img: &::image::DynamicImage,
+    ) -> Result<(String, Vec<OcrBlock>)> {
         let blocks = if img.height() > SPLIT_HEIGHT_THRESHOLD {
-            self.recognize_long_image_with_blocks(&img)?
+            self.recognize_long_image_with_blocks(img)?
         } else {
-            self.recognize_image_with_blocks(&img)?
+            self.recognize_image_with_blocks(img)?
         };
         let text = crate::layout::to_markdown(&blocks);
         Ok((text, blocks))
