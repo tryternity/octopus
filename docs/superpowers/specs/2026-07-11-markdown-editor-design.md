@@ -152,6 +152,7 @@ const [viewMode, setViewMode] = useState<ViewMode>(readOnly ? 'preview' : 'split
 - `split` 模式：Splitter 分屏（默认比例 0.5，localStorage 记忆）
 - `preview` 模式：隐藏 Editor，Preview 占满
 - 只读 tab 默认 `preview`，可手动切换查看 CM6 源码高亮
+- 只读 tab 不显示 Clear 按钮、Save 按钮灰掉（`disableSave = isTemp || readOnly`），Cmd+S/Cmd+Enter 早返回——防止只读转写记录被误删或覆盖系统剪贴板
 
 ### 6.2 CodeMirrorEditor 组件
 
@@ -233,7 +234,7 @@ source → useDebouncedValue(source, 150ms) → renderMarkdown() → articleRef.
 - `renderMarkdown` 是同步函数（无 Shiki 异步加载）
 - 命令式 `innerHTML`（非 `dangerouslySetInnerHTML`）——避免 React 重渲染擦除代码块复制按钮 DOM
 - `decorateCodeBlocks`：给 `<pre><code>` 包裹 `.md-codeblock` div + 添加复制按钮（hover 显示）
-- 链接拦截：`#anchor` 平滑滚动 / `http(s)` 走 `openUrl`（`@tauri-apps/plugin-opener`）
+- 链接拦截：`#anchor` 平滑滚动 / `http(s)` 走 `openUrl`（`@tauri-apps/plugin-opener`）/ 其余协议 `preventDefault` 阻止 webview 导航离开应用
 
 ### 6.4 lib/markdown.ts — markdown-it 配置
 
@@ -324,12 +325,15 @@ main.tsx → initI18n()（读 config 设 locale）→ ReactDOM.render()（首次
 | `editor.save` | 保存 | Save |
 | `editor.saved` | 已保存 | Saved |
 | `editor.charCount` | `${n} 字` | `${n} chars` |
-| `editor.placeholder.edit` | 在此编辑… | Start typing… |
-| `editor.placeholder.readonly` | 语音识别记录（只读） | Transcription (read-only) |
 | `editor.copyCode` | 复制 | Copy |
 | `editor.copied` | 已复制 | Copied |
 | `editor.previewEmpty` | 开始输入即可看到预览 | Start typing to see preview |
 | `editor.switchHint` | 切换到此标签编辑 | Switch to this tab to edit |
+| `editor.imageTabHint` | 切换到此标签加载图片 | Switch to this tab to load image |
+| `editor.noTabs` | 没有打开的条目 | No open items |
+| `tab.image` | 图片 | Image |
+| `tab.empty` | 空 | Empty |
+| `tab.close` | 关闭 | Close |
 | `settings.uiLanguage` | 界面语言 | Interface Language |
 | `settings.uiLanguage.zhCN` | 中文 | 中文 |
 | `settings.uiLanguage.en` | English | English |
@@ -351,7 +355,7 @@ main.tsx → initI18n()（读 config 设 locale）→ ReactDOM.render()（首次
 ### 7.2 保留（外壳核心）
 
 - tab 管理（`loadAndAddTab` / `closeTab` / `pendingToTab` / `readInitialTabFromUrl`）
-- `doSave` + `doSaveRef` + Cmd+S/Cmd+Enter 快捷键
+- `doSave` + `doSaveRef` + Cmd+S/Cmd+Enter 快捷键（**readOnly/isTemp tab 早返回**，不触发保存）
 - 字号状态 `fontSize`（传入 MarkdownPane + `onFontSizeChange` 回调）
 - `savedFlash` 保存反馈（传入 MarkdownPane 驱动按钮样式）
 - mount effect（`get_pending_compact_tabs` + `listen("compact-editor://open-tab")`）
@@ -369,7 +373,7 @@ main.tsx → initI18n()（读 config 设 locale）→ ReactDOM.render()（首次
     onChange={(next) => updateActiveTextAt(next, i)}
     onClear={() => updateActiveTextAt('', i)}
     onSave={doSave}
-    disableSave={active?.isTemp}
+    disableSave={active?.isTemp || tab.source === 'transcription'}
     savedFlash={savedFlash}
   />
 ) : (
