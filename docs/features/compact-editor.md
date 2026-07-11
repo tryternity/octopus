@@ -19,32 +19,39 @@
 
 ```typescript
 type Tab = {
-  key: string;       // `${source}:${itemId}` 全局唯一
-  source: 'clipboard' | 'transcription';
-  itemId: number;
+  key: string;       // `${source}:${itemId}`；temp tab 用 `temp:${ts}_${rand}` 避免冲突
+  source: 'clipboard' | 'transcription' | 'temp';
+  itemId: number;    // temp tab 为 0，保存入库后升级为真 id
   itemType?: 'text' | 'image';
   text?: string;
+  imgWidth?: number;
+  imgHeight?: number;
+  isTemp?: boolean;  // 临时 tab（不写 DB，图文编辑空白入口）；保存后升级为 clipboard tab
 }
 ```
 
 - 文本 tab 标题 = 文本前 5 字 + `-` + id hex 后 5 位
-- 图片 tab 嵌入 `ImagePreview` 组件（≤5，超 5 替换最旧）。**图片懒加载**（2026-07-07）：仅活跃 Tab 挂载 ImagePreview，非活跃显示占位——避免隐藏 Tab 仍并发拉全图+建 `createImageBitmap` 致内存×Tab 数暴涨；切回重新加载（标注/缩放重置可接受）。textarea 保持全挂载保编辑状态
-- 语音 tab 只读 textarea
+- 图片 tab 嵌入 `ImagePreview` 组件（≤5，超 5 替换最旧）。**图片懒加载**（2026-07-07）：仅活跃 Tab 挂载 ImagePreview，非活跃显示占位——避免隐藏 Tab 仍并发拉全图+建 `createImageBitmap` 致内存×Tab 数暴涨；切回重新加载（标注/缩放重置可接受）。文本/语音 tab 仅活跃 tab 挂载 `MarkdownPane`（CodeMirror 6），与图片懒加载一致
+- 语音 tab 只读（MarkdownPane 预览模式）
 
 工具栏：撤销 / 重做 / 字号 / 查找替换 / 清空 / 保存
 
 ---
 
-## 3. 命令（6 个）
+## 3. 命令
 
 | 命令 | 说明 |
 |------|------|
-| `open_compact_editor_tab(item_id, source?)` | 写 `PENDING_TAB{item_id,source}` + 已开则 emit `compact-editor://open-tab` 推送并聚焦、未开建窗 |
-| `get_pending_compact_tab() -> Option<{item_id,source}>` | 前端 mount take |
+| `open_compact_editor_tab(item_id, source?)` | 单开（转调批量版）；已开则 emit `compact-editor://open-tab` 推送并聚焦、未开建窗 |
+| `open_compact_editor_tabs(items)` | 批量开（避免连续单开在「窗口刚 build、React 未 mount」中间态丢 tab）；每项 push PENDING_TABS + 一次 create/emit |
+| `get_pending_compact_tabs() -> Vec<PendingTabFull>` | 前端 mount take 全部（含 itemType/text/图片尺寸，合并到一次 IPC） |
 | `get_clipboard_item_text(item_id)` | 读 content 供文本 tab 载入 |
-| `get_clipboard_item_type(item_id) -> 'text'\|'image'` | 前端据此渲染 textarea 或 ImagePreview |
+| `get_clipboard_item_type(item_id) -> 'text'\|'image'\|'file'` | 前端据此渲染 CodeMirror 或 ImagePreview |
 | `get_transcription_text(id) -> String` | 读 clipboard_history voice 条目的 content，供语音只读 tab |
+| `insert_clipboard_text_item(text) -> i64` | 插入新文本条目（temp tab 保存用）：入库 + 同步系统剪贴板 + emit `clipboard://changed`，返回新 id |
 | `close_compact_editor` | 关窗 |
+
+辅助函数（非命令）：`store_pending_temp_tab(text, source)` 写 temp pending；`open_temp_compact_editor(app, text)` 打开 temp tab（窗口存在 emit / 不存在 store+建窗），供托盘「图文编辑」与 action_bar 结果展示共用。
 
 单例：open 时已存在则 show+focus，否则创建。
 
@@ -52,12 +59,16 @@ type Tab = {
 
 ## 4. 编辑保存
 
-文本 tab Ctrl+S / Cmd+↵ 经 `set_clipboard_item_text` 回写 DB + 系统剪贴板：
+**既有文本 tab**（source=clipboard）Ctrl+S / Cmd+↵ 经 `set_clipboard_item_text` 回写 DB + 系统剪贴板：
 - 同写 `content` + `search_text`（保 FTS 命中，`clip_fts_au AFTER UPDATE OF search_text` 触发器自动同步 FTS5 索引）
 - 同步系统剪贴板
 - **成功后 `emit("clipboard://changed")`**（编辑器是独立窗口，剪贴板列表窗口靠此事件感知条目变化并 `fetchItems()` 重新拉取，否则编辑后列表仍显示旧文本）
 
-**清空后保存 = 删除条目**（调 `delete_clipboard_item`：仅剩该 tab 则关窗，否则关该 tab）。
+**临时 tab**（source=temp，isTemp=true——托盘「图文编辑」/ action_bar 结果入口）保存走 insert：
+- 非空 → `insert_clipboard_text_item(text)` 入库新剪贴板条目（返回新 id）→ `promoteTempTab` 把 tab 升级为正式 clipboard tab（`key=clipboard:${id}`、source/itemId/isTemp 同步），后续编辑走上文 update 路径
+- 空 → 关闭该 tab（不入库）
+
+**清空后保存 = 删除条目**（既有 tab 调 `delete_clipboard_item`：仅剩该 tab 则关窗，否则关该 tab）。
 
 关 tab 不删条目（仅关视图）。
 
@@ -65,7 +76,7 @@ type Tab = {
 
 ## 5. undo/redo
 
-**键盘/按钮 undo/redo 统一走 `document.execCommand`**——受控 textarea 每次 value 同步清空 WebKit 原生 undo 栈致键盘 Cmd+Z 失灵。
+Markdown 改造（2026-07-11）后文本 tab 用 CodeMirror 6，undo/redo 走 CM6 `history()` 扩展（替代旧 textarea 时代的 `document.execCommand` 方案——彼时受控 textarea 每次 value 同步清空 WebKit 原生 undo 栈致 Cmd+Z 失灵）。
 
 ---
 
@@ -78,6 +89,8 @@ type Tab = {
 | OCR 识别后 | `clipboard` | 统一 `insert_ocr_clipboard_item` → `openCompactEditorTab` |
 | 截图 OCR | `clipboard` | 图片 tab + 文本双 tab |
 | 语音识别记录「查看」 | `transcription` | 只读 tab |
+| 托盘菜单「图文编辑」 | `temp` | 空白 temp tab（可编辑，保存入库为新剪贴板条目） |
+| action_bar 翻译/润色等结果 | `temp` | temp tab 展示结果（`open_temp_compact_editor`） |
 
 语音结果窗**不用**独立编辑器——改为原地尺寸双模式（见 [result-window.md](./result-window.md)）。
 
