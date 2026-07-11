@@ -138,6 +138,7 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     if (!view) return;
     const docText = view.state.doc.toString();
     const dirtyRanges = [...dirtyRangesRef.current];
+    const hasEdited = hasEditedRef.current;
     const sel = view.state.selection.main;
     const caretPos = sel.from === sel.to ? sel.head : undefined;
     const selectionRange = sel.from !== sel.to ? [sel.from, sel.to] as [number, number] : undefined;
@@ -146,7 +147,7 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     hasEditedRef.current = false;
     dirtyRangesRef.current = [];
 
-    onCommitRef.current({ text: docText, dirtyRanges, hasEdited: hasEditedRef.current, caret: caretPos, selection: selectionRange });
+    onCommitRef.current({ text: docText, dirtyRanges, hasEdited, caret: caretPos, selection: selectionRange });
   }
 
   useImperativeHandle(ref, () => ({ commit: doCommit }));

@@ -512,8 +512,8 @@ fn push_or_merge(result: &mut Vec<Segment>, kind: SegmentKind, text: &str) {
 }
 
 /// 按 dirty ranges 重建段列表。
-/// dirty 区间内标 Edited；区间外从 old_segments 按 char offset 对齐保留原 kind。
-/// dirty ranges 被 clamp 到 [0, total] 防越界（前端 mapPos 可能产生微小偏差）。
+/// dirty 区间内标 Edited；区间外从 old_segments 按文本内容匹配保留原 kind（每个 old segment 独立保留）。
+/// dirty ranges 被 clamp 到 [0, total] 防越界。
 fn rebuild_segments(
     old_segments: &[Segment],
     new_flat: &str,
@@ -525,14 +525,13 @@ fn rebuild_segments(
     let mut pos = 0usize;
 
     for &(raw_start, raw_end) in dirty {
-        // clamp 防越界
         let d_start = raw_start.min(total);
         let d_end = raw_end.min(total);
-        if d_start < pos { continue; } // 跳过无效/重叠区间
+        if d_start < pos { continue; }
+        // clean 区域：从 old_segments 按文本匹配重建（保留每个段独立 kind）
         if d_start > pos {
             let clean: String = new_chars[pos..d_start].iter().collect();
-            let kind = segment_kind_at_offset(old_segments, pos);
-            push_or_merge(&mut result, kind, &clean);
+            append_clean_range(&mut result, old_segments, &clean, pos);
         }
         if d_end > d_start {
             let dirty_text: String = new_chars[d_start..d_end].iter().collect();
@@ -542,10 +541,90 @@ fn rebuild_segments(
     }
     if pos < total {
         let rest: String = new_chars[pos..].iter().collect();
-        let kind = segment_kind_at_offset(old_segments, pos);
-        push_or_merge(&mut result, kind, &rest);
+        append_clean_range(&mut result, old_segments, &rest, pos);
     }
     result
+}
+
+/// 将 clean 区域（用户未编辑的文本）从 old_segments 重建到 result。
+/// 通过文本内容匹配定位每个 old segment 在新文本中的对应位置，
+/// 保留每个段的 kind（不被合并为单一 kind）。
+/// new_offset 是此 clean 片段在新文本中的起始 char offset。
+fn append_clean_range(
+    result: &mut Vec<Segment>,
+    old_segments: &[Segment],
+    clean_text: &str,
+    new_offset: usize,
+) {
+    if clean_text.is_empty() { return; }
+    // 在 old_segments 的扁平文本中定位 clean_text 的位置
+    let old_flat: String = old_segments.iter().map(|s| s.text.as_str()).collect();
+    let clean_chars: Vec<char> = clean_text.chars().collect();
+    let old_chars: Vec<char> = old_flat.chars().collect();
+
+    // clean_text 应该是 old_flat 的一个子串（用户未编辑此区域）
+    // 用 new_offset 作为 old_flat 中的起始位置估计——不完全准确（删除导致偏移），
+    // 但结合文本匹配可找到正确位置
+    let search_start = new_offset.min(old_chars.len());
+    let mut old_pos = search_start;
+
+    // 尝试从 new_offset 附近匹配；失败则全局搜索
+    if search_start + clean_chars.len() > old_chars.len()
+        || &old_chars[search_start..search_start + clean_chars.len().min(old_chars.len() - search_start)] != clean_chars.as_slice()
+    {
+        // 全局搜索 clean_text 在 old_flat 中的位置
+        old_pos = find_substring_chars(&old_chars, &clean_chars).unwrap_or(0);
+    }
+
+    // 遍历 old_segments，按 old_pos 偏移切出对应部分
+    let mut consumed = 0usize;
+    let clean_len = clean_chars.len();
+    for seg in old_segments {
+        let seg_len = seg.text.chars().count();
+        let seg_start_in_old = consumed;
+        let seg_end_in_old = consumed + seg_len;
+
+        // 计算 old_segments 中此段与 [old_pos, old_pos+clean_len) 的交集
+        let overlap_start = old_pos.max(seg_start_in_old);
+        let overlap_end = (old_pos + clean_len).min(seg_end_in_old);
+
+        if overlap_end > overlap_start {
+            let rel_start = overlap_start - seg_start_in_old;
+            let rel_end = overlap_end - seg_start_in_old;
+            let seg_chars: Vec<char> = seg.text.chars().collect();
+            let text: String = seg_chars[rel_start..rel_end].iter().collect();
+            if !text.is_empty() {
+                push_or_merge(result, seg.kind, &text);
+            }
+        }
+
+        consumed = seg_end_in_old;
+        if consumed >= old_pos + clean_len { break; }
+    }
+
+    // 兜底：如果 old_segments 匹配失败（文本不一致），整体标 Raw
+    if result.is_empty() || result.last().map(|s| s.text.chars().count()).unwrap_or(0) < clean_len {
+        // 检查 result 中已添加的文本总长是否匹配 clean_text
+        let added: String = result.iter().map(|s| s.text.as_str()).collect();
+        let added_chars: Vec<char> = added.chars().collect();
+        if added_chars.len() < clean_len {
+            // 匹配不完整——清空已添加部分，整体标 Raw 兜底
+            // （只在极端情况下触发：old_segments 与 new_flat 完全不匹配）
+            let to_add = clean_len - added_chars.len();
+            push_or_merge(result, SegmentKind::Raw, &clean_chars[added_chars.len()..added_chars.len() + to_add].iter().collect::<String>());
+        }
+    }
+}
+
+/// 在 chars 中搜索 sub 的首次出现位置。
+fn find_substring_chars(haystack: &[char], needle: &[char]) -> Option<usize> {
+    if needle.is_empty() { return Some(0); }
+    let mut i = 0;
+    while i + needle.len() <= haystack.len() {
+        if haystack[i..i + needle.len()] == *needle { return Some(i); }
+        i += 1;
+    }
+    None
 }
 
 #[cfg(test)]
@@ -1161,5 +1240,39 @@ mod user_scenario_tests {
         assert_eq!(result[0].text, "ABCD");
         push_or_merge(&mut result, SegmentKind::Edited, "EF");
         assert_eq!(result.len(), 2);
+    }
+
+    #[test]
+    fn rebuild_clean_range_spans_multiple_kinds() {
+        // old: [Raw("AB"), Polished("CD")] → dirty [4,6)（在末尾加"EF"）
+        // clean 区域 "ABCD" 跨越 Raw + Polished → 应各自保留 kind
+        let old = vec![
+            Segment { kind: SegmentKind::Raw, text: "AB".into() },
+            Segment { kind: SegmentKind::Polished, text: "CD".into() },
+        ];
+        let result = rebuild_segments(&old, "ABCDEF", &[(4, 6)]);
+        // Raw("AB") + Polished("CD") + Edited("EF")
+        assert_eq!(result.len(), 3);
+        assert_eq!(result[0].kind, SegmentKind::Raw);
+        assert_eq!(result[0].text, "AB");
+        assert_eq!(result[1].kind, SegmentKind::Polished);
+        assert_eq!(result[1].text, "CD");
+        assert_eq!(result[2].kind, SegmentKind::Edited);
+        assert_eq!(result[2].text, "EF");
+    }
+
+    #[test]
+    fn rebuild_pure_delete_preserves_segment_kinds() {
+        // old: [Raw("A"), Polished("B")] → 用户删除 "A" → new = "B"
+        // 无 dirty ranges，has_edited=false → rebuild_segments 保留原 kind
+        let old = vec![
+            Segment { kind: SegmentKind::Raw, text: "A".into() },
+            Segment { kind: SegmentKind::Polished, text: "B".into() },
+        ];
+        let result = rebuild_segments(&old, "B", &[]);
+        // "B" 应保持 Polished（不退化为 Raw）
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].kind, SegmentKind::Polished);
+        assert_eq!(result[0].text, "B");
     }
 }
