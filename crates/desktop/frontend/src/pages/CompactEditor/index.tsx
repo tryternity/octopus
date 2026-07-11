@@ -98,7 +98,6 @@ function CompactEditor() {
   const pendingKeysRef = useRef<Set<string>>(new Set());
 
   const active = tabs[activeIdx];
-  const isReadOnly = active?.source === 'transcription';
 
   const updateActiveTextAt = useCallback((next: string, idx: number) => {
     setTabs(prev => prev.map((t, i) => (i === idx ? { ...t, text: next } : t)));
@@ -270,7 +269,7 @@ function CompactEditor() {
               <span className="max-w-[140px] truncate">{tabTitle(t)}</span>
               <button
                 type="button"
-                title={t("editor.clear") === "清空" ? "关闭" : "Close"}
+                title="关闭"
                 onClick={(e) => { e.stopPropagation(); closeTab(i); }}
                 className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
               >
