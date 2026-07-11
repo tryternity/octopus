@@ -76,7 +76,8 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             }
             let _ = app.emit("clipboard://dock-changed", edge.as_str());
             DOCK_EXPANDED.store(false, Ordering::SeqCst);
-            crate::clipboard_dock::start_edge_poll(app.clone(), window.clone(), edge_static(edge));
+            // 不在此启动 start_edge_poll——窗口以 visible(false) 创建，
+            // 用户未唤出前轮询线程无意义空转。轮询在 toggle 收缩时按需启动。
         }
     }
     }
@@ -290,12 +291,24 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         }
     } else {
         create_clipboard_window(app)?;
-        if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-            #[cfg(target_os = "macos")]
-            { crate::activation::before_floating_window_show(app); }
-            window.show()?;
-            window.set_focus()?;
-        }
+        // 首次创建：webview 需要时间初始化。在后台线程 sleep（不阻塞主线程），
+        // 完成后回主线程 show+focus（AGENTS.md：全局热键回调不能在主线程 sleep）。
+        let app_clone = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let app2 = app_clone.clone();
+            let _ = app_clone.run_on_main_thread(move || {
+                if let Some(window) = app2.get_webview_window(WINDOW_LABEL) {
+                    // 100ms 内若窗口已被二次按键提前 show，不重复 before_show + show（防 depth 泄漏）
+                    if !window.is_visible().unwrap_or(false) {
+                        #[cfg(target_os = "macos")]
+                        { crate::activation::before_floating_window_show(&app2); }
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
+                }
+            });
+        });
     }
     Ok(())
 }

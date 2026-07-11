@@ -37,12 +37,17 @@ pub fn trigger_action_bar(app: AppHandle) {
             return;
         }
 
-        // 1. 记录触发前的剪贴板内容
-        let clipboard_before = read_clipboard_text(&app_clone);
+        // 1. 记录触发前的剪贴板内容（文本 + 图片 + 文件，防非文本数据丢失）
+        let clip_handle = app_clone.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>().clone();
+        let clipboard_before_text = read_clipboard_text(&app_clone);
+        let clipboard_before_image = if clip_handle.has_image() {
+            clip_handle.read_image().ok()
+        } else { None };
+        let clipboard_before_files = if clip_handle.has_files() {
+            clip_handle.read_files().ok().filter(|f| !f.is_empty())
+        } else { None };
 
-        // 2. suppress watcher——osascript 模拟 Cmd+C 直接写系统剪贴板，
-        //    绕过 write_text 的自动 suppress，需手动抑制防选中文本入库
-        let clip_handle = app_clone.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>();
+        // 2. suppress watcher
         clip_handle.suppress_next();
 
         let focus = FocusTracker::new();
@@ -53,7 +58,7 @@ pub fn trigger_action_bar(app: AppHandle) {
 
         // 4. 读剪贴板拿到选中文本
         let clipboard_after = read_clipboard_text(&app_clone);
-        let text = match (&clipboard_before, &clipboard_after) {
+        let text = match (&clipboard_before_text, &clipboard_after) {
             (Some(before), Some(after)) if before != after => after.clone(),
             (None, Some(after)) => after.clone(),
             (Some(_), Some(after)) if !after.trim().is_empty() => {
@@ -81,8 +86,12 @@ pub fn trigger_action_bar(app: AppHandle) {
         // write_text 自带独立 suppress，不受此清除影响。
         clip_handle.clear_suppress();
 
-        // 5. 立即恢复原始剪贴板内容（write_text 自带 suppress，不会入库）
-        if let Some(ref original) = clipboard_before {
+        // 5. 恢复原始剪贴板内容（优先级：文件 > 图片 > 文本）
+        if let Some(ref files) = clipboard_before_files {
+            let _ = clip_handle.write_files(files.clone());
+        } else if let Some(img) = clipboard_before_image {
+            let _ = clip_handle.set_image(img);
+        } else if let Some(ref original) = clipboard_before_text {
             if Some(original.as_str()) != clipboard_after.as_deref() {
                 write_clipboard_text(&app_clone, original);
             }
@@ -181,7 +190,8 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
         "polish" => "润色",
         "summarize" => "摘要",
         "explain" => "解释",
-        _ => "AI",
+        // script 同步路径传入的 action 是菜单项 title，直接用作 label
+        _ => &action,
     };
     let display_text = format!("【{}】\n{}", label, result);
 
@@ -351,49 +361,72 @@ struct ScriptResult {
     timed_out: bool,
 }
 
-/// 探测 JS 运行时——优先级 node → bun → deno
+/// 从 ScriptResult 生成 error_msg——超时/异常退出/非零退出码都有描述
+fn script_error_msg(result: &ScriptResult) -> String {
+    if result.timed_out {
+        "执行超时（60秒）".to_string()
+    } else if result.exit_code.is_none() {
+        "进程异常退出".to_string()
+    } else if result.exit_code != Some(0) {
+        format!("进程以错误码 {} 退出", result.exit_code.unwrap())
+    } else {
+        String::new()
+    }
+}
+
+use std::sync::OnceLock;
+
+/// 探测 JS 运行时——优先级 node → bun → deno（结果缓存，仅首次探测）
 fn detect_js_runtime() -> Option<(&'static str, &'static str)> {
-    for (bin, flag) in [("node", "-e"), ("bun", "eval"), ("deno", "eval")] {
-        if std::process::Command::new(bin).arg("--version")
+    static CACHE: OnceLock<Option<(&'static str, &'static str)>> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        for (bin, flag) in [("node", "-e"), ("bun", "eval"), ("deno", "eval")] {
+            if std::process::Command::new(bin).arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status().is_ok()
+            {
+                return Some((bin, flag));
+            }
+        }
+        None
+    })
+}
+
+/// 探测 TS 运行时——优先级 bun → deno → npx tsx（结果缓存，仅首次探测）
+fn detect_ts_runtime() -> Option<(&'static str, Vec<&'static str>)> {
+    static CACHE: OnceLock<Option<(&'static str, Vec<&'static str>)>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        // bun/deno 原生支持 TS，探测仅本地进程，毫秒级
+        if std::process::Command::new("bun").arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status().is_ok()
         {
-            return Some((bin, flag));
+            return Some(("bun", vec!["eval"]));
         }
-    }
-    None
-}
-
-/// 探测 TS 运行时——优先级 npx tsx → bun → deno
-fn detect_ts_runtime() -> Option<(&'static str, Vec<&'static str>)> {
-    if std::process::Command::new("npx").args(["--yes", "tsx", "--version"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status().is_ok()
-    {
-        return Some(("npx", vec!["--yes", "tsx", "-e"]));
-    }
-    if std::process::Command::new("bun").arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status().is_ok()
-    {
-        return Some(("bun", vec!["eval"]));
-    }
-    if std::process::Command::new("deno").arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status().is_ok()
-    {
-        return Some(("deno", vec!["eval"]));
-    }
-    None
+        if std::process::Command::new("deno").arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().is_ok()
+        {
+            return Some(("deno", vec!["eval"]));
+        }
+        // npx tsx 作为 fallback（可能触发联网下载，最慢）
+        if std::process::Command::new("npx").args(["--yes", "tsx", "--version"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().is_ok()
+        {
+            return Some(("npx", vec!["--yes", "tsx", "-e"]));
+        }
+        None
+    }).clone()
 }
 
 /// 按 magic comment 分发运行时，spawn 子进程。
 /// capture_output=true 时 stdout/stderr 用 pipe（同步模式），false 时用 null（异步模式）。
-fn spawn_script(source: &str, text: &str, capture_output: bool) -> Result<(std::process::Child, String), String> {
+fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option<String>) -> Result<(std::process::Child, String, Option<std::path::PathBuf>), String> {
     use std::process::Stdio;
     let first_line = source.lines().next().unwrap_or("").trim();
     let script: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
@@ -420,7 +453,11 @@ fn spawn_script(source: &str, text: &str, capture_output: bool) -> Result<(std::
             { Err("powershell 仅 Windows 支持".into()) }
         }
         "#python" => {
-            let mut c = std::process::Command::new("python3");
+            #[cfg(target_os = "windows")]
+            let py = "python";
+            #[cfg(not(target_os = "windows"))]
+            let py = "python3";
+            let mut c = std::process::Command::new(py);
             c.arg("-c").arg(&script);
             Ok(c)
         }
@@ -461,44 +498,116 @@ fn spawn_script(source: &str, text: &str, capture_output: bool) -> Result<(std::
     };
 
     let mut cmd = cmd_result?;
-    cmd.env("OCTOPUS_TEXT", text);
+    // 选中文本传递：≤200KB 用环境变量 OCTOPUS_TEXT；超出写临时文件，
+    // OCTOPUS_TEXT 设为 "_____ULTRA_LONG_TEXT_____:/tmp/octopus-text-xxx" 供消费方读取
+    let mut text_tmp: Option<std::path::PathBuf> = None;
+    const TEXT_LIMIT: usize = 200_000;
+    if text.len() > TEXT_LIMIT {
+        let tmp_path = std::env::temp_dir().join(format!(
+            "octopus-text-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        ));
+        if let Err(e) = std::fs::write(&tmp_path, text) {
+            log::warn!("[script] 临时文件写入失败，回退截断: {}", e);
+            // 按字节截断（非字符），确保 UTF-8 边界安全 + 严格 < TEXT_LIMIT 字节
+            let mut end = TEXT_LIMIT;
+            while !text.is_char_boundary(end) { end -= 1; }
+            cmd.env("OCTOPUS_TEXT", &text[..end]);
+        } else {
+            let marker = format!(
+                "_____ULTRA_LONG_TEXT_____:{}",
+                tmp_path.to_string_lossy()
+            );
+            cmd.env("OCTOPUS_TEXT", &marker);
+            text_tmp = Some(tmp_path);
+        }
+    } else {
+        cmd.env("OCTOPUS_TEXT", text);
+    }
+    if let Some(dir) = pkg_dir {
+        cmd.env("OCTOPUS_PACKAGE_DIR", dir);
+    }
     cmd.stdout(stdout_cfg);
     cmd.stderr(stderr_cfg);
-    let child = cmd.spawn().map_err(|e| format!("脚本执行失败: {}", e))?;
-    Ok((child, first_line.to_string()))
+    let child = cmd.spawn().map_err(|e| {
+        // spawn 失败——清理临时文件防泄露
+        if let Some(ref p) = text_tmp { let _ = std::fs::remove_file(p); }
+        format!("脚本执行失败: {}", e)
+    })?;
+    Ok((child, first_line.to_string(), text_tmp))
 }
 
-/// 轮询等待子进程退出，60 秒超时强杀。捕获 stdout/stderr。
-fn wait_with_timeout(mut child: std::process::Child) -> ScriptResult {
+/// 轮询等待子进程退出，60 秒超时强杀。并发读取 stdout/stderr 防管道死锁。
+fn wait_with_timeout(child: std::process::Child) -> ScriptResult {
+    wait_with_timeout_secs(child, 60)
+}
+
+/// 异步脚本等待——不超时，阻塞等待自然退出（0 CPU 占用）。
+fn wait_forever(mut child: std::process::Child) -> ScriptResult {
     use std::io::Read;
-    for _ in 0..120 {
+
+    let mut stdout_handle = child.stdout.take();
+    let mut stderr_handle = child.stderr.take();
+
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut stdout) = stdout_handle { let _ = stdout.read_to_string(&mut buf); }
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut stderr) = stderr_handle { let _ = stderr.read_to_string(&mut buf); }
+        buf
+    });
+
+    // 阻塞等待子进程退出——无轮询，CPU 0%
+    let code = child.wait().ok().and_then(|s| s.code());
+
+    let stdout_buf = stdout_thread.join().unwrap_or_default();
+    let stderr_buf = stderr_thread.join().unwrap_or_default();
+    ScriptResult { exit_code: code, stdout: stdout_buf, stderr: stderr_buf, timed_out: false }
+}
+
+fn wait_with_timeout_secs(mut child: std::process::Child, timeout_secs: u32) -> ScriptResult {
+    use std::io::Read;
+
+    let mut stdout_handle = child.stdout.take();
+    let mut stderr_handle = child.stderr.take();
+
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut stdout) = stdout_handle { let _ = stdout.read_to_string(&mut buf); }
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut stderr) = stderr_handle { let _ = stderr.read_to_string(&mut buf); }
+        buf
+    });
+
+    let mut timed_out = false;
+    let polls = timeout_secs.saturating_mul(2); // 500ms × 2 = 1s
+    for _ in 0..polls {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                let mut stdout_buf = String::new();
-                if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
-                let mut stderr_buf = String::new();
-                if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
-                let code = child.wait().ok().and_then(|s| s.code());
-                return ScriptResult { exit_code: code, stdout: stdout_buf, stderr: stderr_buf, timed_out: false };
-            }
+            Ok(Some(_)) => break,
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
-            Err(_) => {
-                let mut stdout_buf = String::new();
-                if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
-                let mut stderr_buf = String::new();
-                if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
-                return ScriptResult { exit_code: None, stdout: stdout_buf, stderr: stderr_buf, timed_out: false };
-            }
+            Err(_) => break,
         }
     }
-    // 超时强杀
-    let _ = child.kill();
-    let _ = child.wait();
-    let mut stdout_buf = String::new();
-    if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
-    let mut stderr_buf = String::new();
-    if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
-    ScriptResult { exit_code: None, stdout: stdout_buf, stderr: stderr_buf, timed_out: true }
+    if child.try_wait().map(|s| s.is_none()).unwrap_or(true) {
+        let _ = child.kill();
+        let _ = child.wait();
+        timed_out = true;
+    }
+
+    let stdout_buf = stdout_thread.join().unwrap_or_default();
+    let stderr_buf = stderr_thread.join().unwrap_or_default();
+    let code = child.wait().ok().and_then(|s| s.code());
+    ScriptResult { exit_code: code, stdout: stdout_buf, stderr: stderr_buf, timed_out }
 }
 
 /// 生成 ISO 8601 时间戳（UTC），不依赖 chrono
@@ -509,17 +618,17 @@ fn now_iso8601() -> String {
 }
 
 /// 异步执行脚本——spawn 后立即返回，后台线程收割并落库
-fn run_script_async(source: &str, text: &str, item_id: i64) -> Result<(), String> {
-    let (child, script_type) = spawn_script(source, text, false)?;
+fn run_script_async(source: &str, text: &str, item_id: i64, pkg_dir: Option<String>) -> Result<(), String> {
+    let (child, script_type, text_tmp) = spawn_script(source, text, false, &pkg_dir)?;
     let started = std::time::Instant::now();
     let started_at = now_iso8601();
     std::thread::spawn(move || {
-        let result = wait_with_timeout(child);
+        let result = wait_forever(child);
+        // 清理超长文本临时文件
+        if let Some(ref p) = text_tmp { let _ = std::fs::remove_file(p); }
         let duration_ms = started.elapsed().as_millis() as i64;
         let finished_at = now_iso8601();
-        let error_msg = if result.timed_out { "执行超时（60秒）".to_string() }
-            else if result.exit_code.is_none() { "进程异常退出".to_string() }
-            else { String::new() };
+        let error_msg = script_error_msg(&result);
         let _ = octopus_infra::db::insert_script_run(
             item_id, &script_type, result.exit_code,
             &result.stdout, &result.stderr, &error_msg,
@@ -530,16 +639,16 @@ fn run_script_async(source: &str, text: &str, item_id: i64) -> Result<(), String
 }
 
 /// 同步执行脚本（阻塞）——等待完成，返回结果并落库
-fn run_script_sync_blocking(source: &str, text: &str, item_id: i64) -> Result<ScriptResult, String> {
-    let (child, script_type) = spawn_script(source, text, true)?;
+fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Option<String>) -> Result<ScriptResult, String> {
+    let (child, script_type, text_tmp) = spawn_script(source, text, true, &pkg_dir)?;
     let started = std::time::Instant::now();
     let started_at = now_iso8601();
     let mut result = wait_with_timeout(child);
+    // 清理超长文本临时文件
+    if let Some(ref p) = text_tmp { let _ = std::fs::remove_file(p); }
     let duration_ms = started.elapsed().as_millis() as i64;
     let finished_at = now_iso8601();
-    let error_msg = if result.timed_out { "执行超时（60秒）".to_string() }
-        else if result.exit_code.is_none() { "进程异常退出".to_string() }
-        else { String::new() };
+    let error_msg = script_error_msg(&result);
     let _ = octopus_infra::db::insert_script_run(
         item_id, &script_type, result.exit_code,
         &result.stdout, &result.stderr, &error_msg,
@@ -598,16 +707,26 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             let item_title = item.title.clone();
             let item_id = item.id;
 
+            // Package 脚本（action_data 是绝对路径）vs 内联脚本
+            let is_pkg = std::path::Path::new(&item.action_data).is_absolute();
+            let source = if is_pkg {
+                std::fs::read_to_string(&item.action_data)
+                    .map_err(|e| format!("脚本文件不存在或无法读取: {}", e))?
+            } else {
+                item.action_data.clone()
+            };
+            let pkg_dir = if is_pkg {
+                std::path::Path::new(&item.action_data).parent()
+                    .map(|p| p.to_string_lossy().to_string())
+            } else { None };
+
             if is_async {
-                // 异步——fire-and-forget，后台落库，立即关闭浮窗
-                run_script_async(&item.action_data, &text, item_id)?;
+                run_script_async(&source, &text, item_id, pkg_dir)?;
                 Ok(false)
             } else {
-                // 同步——spawn_blocking 等待结果
-                let source = item.action_data.clone();
                 let text_clone = text.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    run_script_sync_blocking(&source, &text_clone, item_id)
+                    run_script_sync_blocking(&source, &text_clone, item_id, pkg_dir)
                 }).await.map_err(|e| format!("脚本执行线程异常: {}", e))??;
 
                 if result.timed_out {

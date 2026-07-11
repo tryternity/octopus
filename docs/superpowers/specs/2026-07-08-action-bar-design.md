@@ -87,7 +87,7 @@ Rust 后端：
      b. finalize_action_bar（重置 guard）
      c. 用临时 tab 打开 CompactEditor 展示结果（不写 DB）
   ↓
-超时场景：前端 setView("error")，后台 LLM 返回后丢弃
+超时场景：前端红色气泡提示（2 秒消失），后台 LLM 返回后丢弃
 ```
 
 #### 翻译动作

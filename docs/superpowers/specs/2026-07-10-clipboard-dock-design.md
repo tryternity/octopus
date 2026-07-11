@@ -115,6 +115,10 @@ Docked-Collapsed（收回）
 - dock ≠ none → 直接以 Docked-Collapsed 态打开（贴边 + 细条）
 - dock = none → Normal 态打开（位置记忆，现有逻辑）
 
+### 3.4 首次创建窗口延迟
+
+首次启动按快捷键时窗口不存在 → `create_clipboard_window` 创建 → `show + set_focus`。WKWebView 首次创建需要初始化时间，立即 `set_focus` 不生效 → 窗口出现但无法交互（需关闭重开才正常）。解法：创建后 `sleep(100ms)` 等 webview ready 再 `show + set_focus`。
+
 ---
 
 ## 4. 吸附检测与位置计算
