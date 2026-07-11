@@ -110,14 +110,9 @@ pub fn char_fuzzy_pinyin(c: char) -> Option<String> {
     c.to_pinyin().map(|p| normalize_fuzzy_pinyin(p.plain()))
 }
 
-/// 词 → 拼音首字母串（大写，非汉字跳过）。如「八爪鱼」→`BZY`、「浮窗」→`FC`、「热词」→`RC`。
-/// 供前端拼音首字母搜索/排序（与纠错共用同一 `pinyin` crate，保证一致）。
-pub fn pinyin_initials(word: &str) -> String {
-    word.chars()
-        .filter_map(|c| c.to_pinyin().and_then(|p| p.plain().chars().next()))
-        .map(|c| c.to_ascii_uppercase())
-        .collect()
-}
+/// 词 → 拼音首字母串（大写，非汉字跳过）。实现搬至 `octopus_infra::hotword_text`
+/// （infra 为底层，db.rs 迁移/写 words_text 需复用，避免循环依赖）。
+pub use octopus_infra::hotword_text::pinyin_initials;
 
 /// 热词的内存索引：按「字数 → 归一化拼音 → 候选词列表」分组。
 /// 纠错热路径按窗口字数与拼音 O(1) 查表。
@@ -198,16 +193,6 @@ mod tests {
         assert_eq!(char_fuzzy_pinyin('卫'), Some("wei".to_string()));
         assert_eq!(char_fuzzy_pinyin('生'), Some("sen".to_string()));
         assert_eq!(char_fuzzy_pinyin('A'), None); // 非汉字
-    }
-
-    #[test]
-    fn pinyin_initials_basic() {
-        assert_eq!(pinyin_initials("八爪鱼"), "BZY"); // ba-zhao-yu
-        assert_eq!(pinyin_initials("浮窗"), "FC"); // fu-chuang
-        assert_eq!(pinyin_initials("热词"), "RC"); // re-ci
-        // 非汉字（ASCII/标点）跳过
-        assert_eq!(pinyin_initials("AI助手"), "ZS"); // A、I 跳过，助 Z 手 S
-        assert_eq!(pinyin_initials(""), "");
     }
 
     // ── 方言规则 parse_dialect ──
