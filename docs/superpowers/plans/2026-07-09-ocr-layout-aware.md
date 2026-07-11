@@ -898,3 +898,23 @@ Expected: `recognize` 返回值直接进 DB content / CompactEditor / AI 输入�
 4. **常量值未调整**：`TITLE_H1_RATIO=1.6`、`TITLE_H2_RATIO=1.3`、`PARAGRAPH_GAP_RATIO=0.8`、`MIN_BLOCKS_FOR_LAYOUT=3` 均维持起始值，合成测试覆盖通过。真实截图调参留后续实测。
 
 5. **SDD subagent dispatch 受限**：agent tool 仅有 read-only 工具（glob/grep/ls/view），无法执行 implementer subagent。实际由 controller 直接实现全部 6 个 task（TDD 流程不变：每个 task 先写代码+测试，跑通后提交）。
+
+### 代码审查修复（2026-07-09）
+
+6. **多行正文改用 code fence（用户反馈）**：原 plan 的 reflow 方案将多行正文合并为一行连续文本。用户反馈后改为用 ` ``` ` 包裹保留原始分行，避免破坏对齐排版/地址等场景。移除 `reflow_paragraph` + `needs_space_between`（无调用方）。单行正文直接输出，列表项不包裹。
+
+7. **`strip_ordered_marker` 中文顿号 `、` 匹配失败（一轮审查）**：`bytes[i] as char` 只能匹配单字节 ASCII，`、`（U+3001, 3 字节）永远 false。改用 `starts_with` 检查分隔符 + 按字符类型计算字节长度。移除 `Vec<char>` 全量收集改用 `chars().next()`。
+
+8. **`segment_english_words` 最小匹配长度 3→1（一轮审查）**：原 min_len=3 导致 "he"/"is"/"it"/"a" 等短词被拆成单字符。改 min_len=1 后可匹配短词。
+
+9. **code fence 内容含 ``` 时嵌套冲突（一轮审查）**：内容含 ``` 时围栏加长为 ``````。
+
+10. **`ocr_screenshot` 双重解码消除（一轮审查）**：PNG 解码一次后 save + OCR 共用 `DynamicImage`（`recognize_with_blocks_from_image` 新方法），避免 4K/5K 截图重复解码（省 ~100-300ms）。
+
+11. **尾部 merge 回退（二轮审查）**：min_len 改 1 后 Step 4 merge 把合法短词也合并了（`comein` → `comein` 无空格）。删除 Step 4 merge。
+
+12. **列表间距切分（二轮审查）**：`ListItemOrdered/Unordered` 携带 y/h 坐标，连续列表项间距 > median_h×0.8 时 `\n\n` + 重编号。
+
+13. **全角分隔符 `．` `）`（二轮审查）**：补 `．`(U+FF0E) `）`(U+FF09) 支持，sep_len 按半角/全角计算。
+
+14. **word box 分支标注（一轮审查）**：`rapid_ocr.rs` word box 分支标注未启用 + resize 冗余注释（octopus `return_word_box=false`，分支不执行）。
