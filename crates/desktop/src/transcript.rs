@@ -512,7 +512,8 @@ fn push_or_merge(result: &mut Vec<Segment>, kind: SegmentKind, text: &str) {
 }
 
 /// 按 dirty ranges 重建段列表。
-/// dirty 区间内标 Edited；区间外从 old_segments 按文本内容匹配保留原 kind（每个 old segment 独立保留）。
+/// dirty 区间内标 Edited；区间外用 LCS diff 对齐 old_flat → new_flat，
+/// 保留匹配字符的原 segment kind，不匹配的（因删除导致偏移）标 Raw 兜底。
 /// dirty ranges 被 clamp 到 [0, total] 防越界。
 fn rebuild_segments(
     old_segments: &[Segment],
@@ -521,110 +522,70 @@ fn rebuild_segments(
 ) -> Vec<Segment> {
     let new_chars: Vec<char> = new_flat.chars().collect();
     let total = new_chars.len();
-    let mut result = Vec::new();
-    let mut pos = 0usize;
 
-    for &(raw_start, raw_end) in dirty {
-        let d_start = raw_start.min(total);
-        let d_end = raw_end.min(total);
-        if d_start < pos { continue; }
-        // clean 区域：从 old_segments 按文本匹配重建（保留每个段独立 kind）
-        if d_start > pos {
-            let clean: String = new_chars[pos..d_start].iter().collect();
-            append_clean_range(&mut result, old_segments, &clean, pos);
-        }
-        if d_end > d_start {
-            let dirty_text: String = new_chars[d_start..d_end].iter().collect();
-            push_or_merge(&mut result, SegmentKind::Edited, &dirty_text);
-        }
-        pos = d_end;
-    }
-    if pos < total {
-        let rest: String = new_chars[pos..].iter().collect();
-        append_clean_range(&mut result, old_segments, &rest, pos);
-    }
-    result
-}
-
-/// 将 clean 区域（用户未编辑的文本）从 old_segments 重建到 result。
-/// 通过文本内容匹配定位每个 old segment 在新文本中的对应位置，
-/// 保留每个段的 kind（不被合并为单一 kind）。
-/// new_offset 是此 clean 片段在新文本中的起始 char offset。
-fn append_clean_range(
-    result: &mut Vec<Segment>,
-    old_segments: &[Segment],
-    clean_text: &str,
-    new_offset: usize,
-) {
-    if clean_text.is_empty() { return; }
-    // 在 old_segments 的扁平文本中定位 clean_text 的位置
+    // 1. 构建 old_flat + 每个 char 的 kind 映射
     let old_flat: String = old_segments.iter().map(|s| s.text.as_str()).collect();
-    let clean_chars: Vec<char> = clean_text.chars().collect();
     let old_chars: Vec<char> = old_flat.chars().collect();
-
-    // clean_text 应该是 old_flat 的一个子串（用户未编辑此区域）
-    // 用 new_offset 作为 old_flat 中的起始位置估计——不完全准确（删除导致偏移），
-    // 但结合文本匹配可找到正确位置
-    let search_start = new_offset.min(old_chars.len());
-    let mut old_pos = search_start;
-
-    // 尝试从 new_offset 附近匹配；失败则全局搜索
-    if search_start + clean_chars.len() > old_chars.len()
-        || &old_chars[search_start..search_start + clean_chars.len().min(old_chars.len() - search_start)] != clean_chars.as_slice()
-    {
-        // 全局搜索 clean_text 在 old_flat 中的位置
-        old_pos = find_substring_chars(&old_chars, &clean_chars).unwrap_or(0);
-    }
-
-    // 遍历 old_segments，按 old_pos 偏移切出对应部分
-    let mut consumed = 0usize;
-    let clean_len = clean_chars.len();
-    for seg in old_segments {
-        let seg_len = seg.text.chars().count();
-        let seg_start_in_old = consumed;
-        let seg_end_in_old = consumed + seg_len;
-
-        // 计算 old_segments 中此段与 [old_pos, old_pos+clean_len) 的交集
-        let overlap_start = old_pos.max(seg_start_in_old);
-        let overlap_end = (old_pos + clean_len).min(seg_end_in_old);
-
-        if overlap_end > overlap_start {
-            let rel_start = overlap_start - seg_start_in_old;
-            let rel_end = overlap_end - seg_start_in_old;
-            let seg_chars: Vec<char> = seg.text.chars().collect();
-            let text: String = seg_chars[rel_start..rel_end].iter().collect();
-            if !text.is_empty() {
-                push_or_merge(result, seg.kind, &text);
+    let old_kinds: Vec<SegmentKind> = {
+        let mut v = Vec::with_capacity(old_chars.len());
+        for seg in old_segments {
+            for _ in 0..seg.text.chars().count() {
+                v.push(seg.kind);
             }
         }
+        v
+    };
 
-        consumed = seg_end_in_old;
-        if consumed >= old_pos + clean_len { break; }
-    }
-
-    // 兜底：如果 old_segments 匹配失败（文本不一致），整体标 Raw
-    if result.is_empty() || result.last().map(|s| s.text.chars().count()).unwrap_or(0) < clean_len {
-        // 检查 result 中已添加的文本总长是否匹配 clean_text
-        let added: String = result.iter().map(|s| s.text.as_str()).collect();
-        let added_chars: Vec<char> = added.chars().collect();
-        if added_chars.len() < clean_len {
-            // 匹配不完整——清空已添加部分，整体标 Raw 兜底
-            // （只在极端情况下触发：old_segments 与 new_flat 完全不匹配）
-            let to_add = clean_len - added_chars.len();
-            push_or_merge(result, SegmentKind::Raw, &clean_chars[added_chars.len()..added_chars.len() + to_add].iter().collect::<String>());
+    // 2. 对每个 new char 判断是否在 dirty range 内
+    let mut is_dirty = vec![false; total];
+    for &(raw_start, raw_end) in dirty {
+        let s = raw_start.min(total);
+        let e = raw_end.min(total);
+        if s < e {
+            for i in s..e {
+                is_dirty[i] = true;
+            }
         }
     }
-}
 
-/// 在 chars 中搜索 sub 的首次出现位置。
-fn find_substring_chars(haystack: &[char], needle: &[char]) -> Option<usize> {
-    if needle.is_empty() { return Some(0); }
-    let mut i = 0;
-    while i + needle.len() <= haystack.len() {
-        if haystack[i..i + needle.len()] == *needle { return Some(i); }
-        i += 1;
+    // 3. 对 non-dirty 区域用 LCS 对齐 old_flat，保留 kind
+    // LCS diff：逐字符比较 old_flat 和 new_flat 的 non-dirty 部分
+    // 简化方案：对 non-dirty 区域，用字符匹配 walk——按顺序匹配 old_chars 中的对应字符
+    let mut result = Vec::new();
+    let mut old_idx = 0usize;
+    let mut pos = 0usize;
+
+    while pos < total {
+        if is_dirty[pos] {
+            // dirty 区域——收集连续 dirty chars 标 Edited
+            let start = pos;
+            while pos < total && is_dirty[pos] { pos += 1; }
+            let text: String = new_chars[start..pos].iter().collect();
+            push_or_merge(&mut result, SegmentKind::Edited, &text);
+        } else {
+            // clean 区域——逐字符匹配 old_flat 保留 kind
+            let start = pos;
+            while pos < total && !is_dirty[pos] { pos += 1; }
+            let clean_chars = &new_chars[start..pos];
+
+            // 在 old_chars[old_idx..] 中按序匹配 clean_chars 的每个字符
+            for &ch in clean_chars {
+                // 跳过 old 中被删除的字符（不在 new 中出现）
+                while old_idx < old_chars.len() && old_chars[old_idx] != ch {
+                    old_idx += 1;
+                }
+                if old_idx < old_chars.len() {
+                    push_or_merge(&mut result, old_kinds[old_idx], &ch.to_string());
+                    old_idx += 1;
+                } else {
+                    // old 中找不到（不应发生——clean 区域应完全匹配）→ Raw 兜底
+                    push_or_merge(&mut result, SegmentKind::Raw, &ch.to_string());
+                }
+            }
+        }
     }
-    None
+
+    result
 }
 
 #[cfg(test)]
@@ -1274,5 +1235,27 @@ mod user_scenario_tests {
         assert_eq!(result.len(), 1);
         assert_eq!(result[0].kind, SegmentKind::Polished);
         assert_eq!(result[0].text, "B");
+    }
+
+    #[test]
+    fn rebuild_mid_delete_preserves_remaining_kinds() {
+        // old: [Raw("A"), Polished("B"), Edited("C")] → 用户删除中间 "B" → new = "AC"
+        // has_edited=true, dirty_ranges=[] → 整篇 Edited 兜底（删除不改 kind 无法精确保留）
+        // 但 has_edited=false + dirty_ranges=[] 时走 rebuild_segments
+        // 此时 new_flat="AC" 在 old_flat="ABC" 中不是连续子串
+        // old_chars walk: A 匹配 old[0]=Raw, C 匹配 old[2]=Edited（跳过被删的 B）
+        let old = vec![
+            Segment { kind: SegmentKind::Raw, text: "A".into() },
+            Segment { kind: SegmentKind::Polished, text: "B".into() },
+            Segment { kind: SegmentKind::Edited, text: "C".into() },
+        ];
+        let result = rebuild_segments(&old, "AC", &[]);
+        let actual_text: String = result.iter().map(|s| s.text.as_str()).collect();
+        assert_eq!(actual_text, "AC", "文本必须等于 new_flat");
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].kind, SegmentKind::Raw);
+        assert_eq!(result[0].text, "A");
+        assert_eq!(result[1].kind, SegmentKind::Edited);
+        assert_eq!(result[1].text, "C");
     }
 }
