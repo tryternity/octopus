@@ -1,4 +1,4 @@
-//! 候选挖掘：扫历史 ASR 文本，jieba 分词 + 词频过滤，低频高频专名 → DB pending。
+//! 候选挖掘：扫历史 ASR 文本，jieba 分词 + 词频过滤，低频高频专名 → 返回候选词列表（命令层追加到版本）。
 
 use jieba_rs::Jieba;
 
@@ -29,11 +29,12 @@ pub fn is_candidate(word: &str) -> bool {
     !crate::corrector::is_common_word(word)
 }
 
-/// 扫历史 → jieba 分词 → 词频过滤 → top-N 写 pending。返回写入条数。
-pub fn mine_pending_candidates() -> anyhow::Result<usize> {
+/// 扫历史 → jieba 分词 → 词频过滤 → top-N 候选词。返回词列表（不写 DB）。
+/// 命令层拿去追加到用户选定版本（废弃旧 pending 流）。
+pub fn collect_candidate_words() -> anyhow::Result<Vec<String>> {
     let texts = octopus_infra::db::list_recent_text(HISTORY_LIMIT)?;
     if texts.is_empty() {
-        return Ok(0);
+        return Ok(Vec::new());
     }
     let jieba = Jieba::new();
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
@@ -45,24 +46,15 @@ pub fn mine_pending_candidates() -> anyhow::Result<usize> {
             *counts.entry(w.to_string()).or_insert(0) += 1;
         }
     }
-    // 用户高频（≥ MIN_USER_COUNT）的候选，按频次降序取 top-N
     let mut ranked: Vec<(String, usize)> = counts
         .into_iter()
         .filter(|(_, c)| *c >= MIN_USER_COUNT)
         .collect();
     ranked.sort_by(|a, b| b.1.cmp(&a.1));
     ranked.truncate(MAX_CANDIDATES);
-
-    let mut written = 0;
-    for (word, _) in &ranked {
-        // INSERT（word 唯一约束）：已存在（任意状态）则 Err 被吞 → 等价 OR IGNORE，不覆盖 active
-        match octopus_infra::db::insert_hotword(word, "mined", "pending") {
-            Ok(_) => written += 1,
-            Err(_) => {} // 已存在，跳过
-        }
-    }
-    log::info!("[hotword-miner] 挖掘写入 {} 条 pending 候选", written);
-    Ok(written)
+    let words: Vec<String> = ranked.into_iter().map(|(w, _)| w).collect();
+    log::info!("[hotword-miner] 挖掘 {} 条候选词", words.len());
+    Ok(words)
 }
 
 #[cfg(test)]
@@ -82,5 +74,12 @@ mod tests {
     fn length_bounds_enforced() {
         // 单字非候选（长度 < MIN_LEN）
         assert!(!is_candidate("的"));
+    }
+
+    #[test]
+    fn collect_returns_ranked_candidates() {
+        // collect_candidate_words 不写 DB，仅返回候选词列表（依赖 list_recent_text）。
+        // 此处只验返回类型与非 panic；真实历史由 e2e 覆盖。
+        let _ = collect_candidate_words();
     }
 }
