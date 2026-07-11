@@ -58,11 +58,14 @@ md.renderer.rules.code_block = (tokens, idx, options, env, self) => {
   return wrapCodeBlock(defaultCodeBlockRender(tokens, idx, options, env, self));
 };
 
-// fence 规则：反引号围栏代码块（```lang）——mermaid 已在 highlight 回调返回占位 HTML，
-// 此处 lang 不会是 mermaid；其余围栏代码块也包裹复制按钮
+// fence 规则：反引号围栏代码块（```lang）——mermaid 的 highlight 返回占位 HTML
+// 经 defaultFenceRender 原样返回，需跳过 wrapCodeBlock（不加复制按钮）
 const defaultFenceRender = md.renderer.rules.fence || ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
 md.renderer.rules.fence = (tokens, idx, options, env, self) => {
-  return wrapCodeBlock(defaultFenceRender(tokens, idx, options, env, self));
+  const lang = tokens[idx].info.trim();
+  const pre = defaultFenceRender(tokens, idx, options, env, self);
+  if (lang === "mermaid") return pre;
+  return wrapCodeBlock(pre);
 };
 
 /** 同步渲染 markdown → HTML（无 Shiki 异步加载） */

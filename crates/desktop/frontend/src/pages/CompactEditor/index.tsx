@@ -105,8 +105,7 @@ function CompactEditor() {
   }, []);
 
   // 加载某 item 并新增 tab；已存在则切过去。source 决定从哪个表读 + 是否只读。
-  // setTabs 内同步更新 tabsRef.current（不依赖被动 useEffect），消除竞态。
-  // setActiveIdx 用 tabsRef.current 在 setTabs 外部计算（不在 updater 内做副作用）。
+  // 基于 tabsRef.current 同步计算 next tabs（不依赖 setTabs updater 异步回调）。
   const loadAndAddTab = useCallback(async (itemId: number, source: string) => {
     const key = `${source}:${itemId}`;
     const existIdx = tabsRef.current.findIndex(t => t.key === key);
@@ -116,45 +115,36 @@ function CompactEditor() {
     try {
       if (source === 'transcription') {
         const text = await invoke<string>("get_transcription_text", { id: itemId }).catch(() => "");
-        setTabs(prev => {
-          if (prev.some(t => t.key === key)) return prev;
-          const next = [...prev, { key, source: 'transcription' as const, itemId, text }];
-          tabsRef.current = next;
-          return next;
-        });
-        const idx = tabsRef.current.findIndex(t => t.key === key);
-        if (idx >= 0) setActiveIdx(idx);
+        if (tabsRef.current.some(t => t.key === key)) { setActiveIdx(tabsRef.current.findIndex(t => t.key === key)); return; }
+        const next = [...tabsRef.current, { key, source: 'transcription' as const, itemId, text }];
+        tabsRef.current = next;
+        setTabs(next);
+        setActiveIdx(next.length - 1);
         return;
       }
 
       // clipboard：先查类型，再加载
       const itemType = await invoke<string>("get_clipboard_item_type", { itemId }).catch(() => "text");
       if (itemType === 'image') {
+        if (tabsRef.current.some(t => t.key === key)) { setActiveIdx(tabsRef.current.findIndex(t => t.key === key)); return; }
         // 图片 tab ≤5 限制
-        setTabs(prev => {
-          if (prev.some(t => t.key === key)) return prev;
-          const imageTabs = prev.filter(t => t.itemType === 'image');
-          let base = prev;
-          if (imageTabs.length >= MAX_IMAGE_TABS) {
-            const oldestKey = imageTabs[0].key;
-            base = prev.filter(t => t.key !== oldestKey);
-          }
-          const next = [...base, { key, source: 'clipboard' as const, itemId, itemType: 'image' as const }];
-          tabsRef.current = next;
-          return next;
-        });
-        const newIdx = tabsRef.current.findIndex(t => t.key === key);
-        if (newIdx >= 0) setActiveIdx(newIdx);
+        const imageTabs = tabsRef.current.filter(t => t.itemType === 'image');
+        let base = tabsRef.current;
+        if (imageTabs.length >= MAX_IMAGE_TABS) {
+          const oldestKey = imageTabs[0].key;
+          base = tabsRef.current.filter(t => t.key !== oldestKey);
+        }
+        const next = [...base, { key, source: 'clipboard' as const, itemId, itemType: 'image' as const }];
+        tabsRef.current = next;
+        setTabs(next);
+        setActiveIdx(next.length - 1);
       } else {
         const text = await invoke<string>("get_clipboard_item_text", { itemId }).catch(() => "");
-        setTabs(prev => {
-          if (prev.some(t => t.key === key)) return prev;
-          const next = [...prev, { key, source: 'clipboard' as const, itemId, itemType: 'text' as const, text }];
-          tabsRef.current = next;
-          return next;
-        });
-        const idx = tabsRef.current.findIndex(t => t.key === key);
-        if (idx >= 0) setActiveIdx(idx);
+        if (tabsRef.current.some(t => t.key === key)) { setActiveIdx(tabsRef.current.findIndex(t => t.key === key)); return; }
+        const next = [...tabsRef.current, { key, source: 'clipboard' as const, itemId, itemType: 'text' as const, text }];
+        tabsRef.current = next;
+        setTabs(next);
+        setActiveIdx(next.length - 1);
       }
     } finally {
       pendingKeysRef.current.delete(key);
@@ -172,13 +162,10 @@ function CompactEditor() {
         const p = payload as OpenTabPayload;
         if (p.source === 'temp') {
           const tempKey = `temp:${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          setTabs(prev => {
-            const next = [...prev, { key: tempKey, source: 'temp' as const, itemId: 0, itemType: 'text' as const, text: p.text, isTemp: true }];
-            tabsRef.current = next;
-            return next;
-          });
-          const idx = tabsRef.current.findIndex(t => t.key === tempKey);
-          setActiveIdx(idx >= 0 ? idx : 0);
+          const next = [...tabsRef.current, { key: tempKey, source: 'temp' as const, itemId: 0, itemType: 'text' as const, text: p.text, isTemp: true }];
+          tabsRef.current = next;
+          setTabs(next);
+          setActiveIdx(next.length - 1);
         } else {
           loadAndAddTab(p.itemId, p.source);
         }
@@ -190,19 +177,20 @@ function CompactEditor() {
       const pendingTabs = await invoke<PendingTabFull[]>("get_pending_compact_tabs");
       if (cancelled) return;
       if (pendingTabs.length > 0) {
-        setTabs(prev => {
-          const seen = new Set(prev.map(t => t.key));
-          const added: Tab[] = [];
-          for (const p of pendingTabs) {
-            const tab = pendingToTab(p);
-            if (seen.has(tab.key)) continue;
-            seen.add(tab.key);
-            added.push(tab);
-          }
-          const next = added.length > 0 ? [...prev, ...added] : prev;
+        const seen = new Set(tabsRef.current.map(t => t.key));
+        const added: Tab[] = [];
+        for (const p of pendingTabs) {
+          const tab = pendingToTab(p);
+          if (seen.has(tab.key)) continue;
+          seen.add(tab.key);
+          added.push(tab);
+        }
+        if (added.length > 0) {
+          const next = [...tabsRef.current, ...added];
           tabsRef.current = next;
-          return next;
-        });
+          setTabs(next);
+          setActiveIdx(tabsRef.current.length - 1);
+        }
       }
       setInitialLoading(false);
     })();
@@ -225,12 +213,10 @@ function CompactEditor() {
           return;
         }
         const idx = activeIdx;
-        setTabs(prev => {
-          const next = prev.filter((_, i) => i !== idx);
-          tabsRef.current = next;
-          return next;
-        });
-        setActiveIdx(i => (idx < i ? i - 1 : idx === i ? Math.min(i, tabsRef.current.length - 1) : i));
+        const next = tabsRef.current.filter((_, i) => i !== idx);
+        tabsRef.current = next;
+        setTabs(next);
+        setActiveIdx(idx === activeIdx ? Math.min(activeIdx, next.length - 1) : activeIdx > idx ? activeIdx - 1 : activeIdx);
         return;
       }
       await invoke("set_clipboard_item_text", { itemId: active.itemId, text: active.text || "" });
@@ -253,16 +239,10 @@ function CompactEditor() {
       invoke("close_compact_editor");
       return;
     }
-    setTabs(prev => {
-      const next = prev.filter((_, i) => i !== idx);
-      tabsRef.current = next;
-      return next;
-    });
-    setActiveIdx(i => {
-      if (idx < i) return i - 1;
-      if (idx === i) return Math.min(i, tabsRef.current.length - 1);
-      return i;
-    });
+    const next = tabsRef.current.filter((_, i) => i !== idx);
+    tabsRef.current = next;
+    setTabs(next);
+    setActiveIdx(idx < activeIdx ? activeIdx - 1 : idx === activeIdx ? Math.min(activeIdx, next.length - 1) : activeIdx);
   };
 
   // 字号记忆
