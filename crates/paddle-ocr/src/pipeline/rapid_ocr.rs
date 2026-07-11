@@ -252,6 +252,10 @@ impl RapidOcr {
         buffers.lines = filtered_lines;
 
         let mut computed_word_boxes = None;
+        // word box 分支：octopus 未启用（config.global.return_word_box 默认 false），
+        // 此分支不执行。注意 map_img_to_original 做了 CPU 密集 resize 但
+        // compute_word_boxes 只读 img.width()/height()，如将来启用需改为
+        // 纯代数计算尺寸、跳过 resize。
         if switches.return_word_box && !filtered_boxes.is_empty() && !buffers.lines.is_empty() {
             let mapped_crops = map_img_to_original(
                 &buffers.stage_images,

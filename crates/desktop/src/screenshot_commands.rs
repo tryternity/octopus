@@ -217,7 +217,10 @@ pub async fn start_screenshot(app_handle: tauri::AppHandle) -> Result<(), String
 /// 截图入库共用核心：SHA-256 去重 → WebP 编码 → image_data + clipboard_history 入库，返回 image_id。
 /// 已存在同 hash 则 touch created_at 并返回既有 id。ocr_screenshot / confirm_screenshot_with_data /
 /// confirm_screenshot 三入口共用。decode+encode 为 CPU 密集，调用方应置于 spawn_blocking。
-fn save_screenshot_to_history(png_bytes: &[u8]) -> Result<i64, String> {
+fn save_screenshot_to_history(
+    png_bytes: &[u8],
+    predecoded: Option<&::image::DynamicImage>,
+) -> Result<i64, String> {
     let hash = octopus_clipboard::image::sha256_hex(png_bytes);
     let existing = octopus_infra::db::with_db(|conn| {
         octopus_clipboard::store::find_by_content_hash(conn, &hash)
@@ -228,8 +231,13 @@ fn save_screenshot_to_history(png_bytes: &[u8]) -> Result<i64, String> {
         }).map_err(|e| e.to_string())?;
         Ok(id)
     } else {
-        let img = ::image::load_from_memory(png_bytes)
-            .map_err(|e| format!("解码失败: {:?}", e))?;
+        // 优先使用调用方已解码的图像，避免重复解码
+        let img = if let Some(img) = predecoded {
+            img.clone()
+        } else {
+            ::image::load_from_memory(png_bytes)
+                .map_err(|e| format!("解码失败: {:?}", e))?
+        };
         let crop_w = img.width();
         let crop_h = img.height();
         let encoded = octopus_clipboard::image::encode_to_webp(&img)
@@ -285,7 +293,10 @@ pub async fn ocr_screenshot(
     // 入库（decode+encode CPU）+ OCR 识别（秒级 CPU）+ ocr 条目入库：移入 spawn_blocking，
     // 隔离 Tokio worker，避免 recognize 秒级阻塞拖累录音/VAD/剪贴板监听。
     let (image_id, text, blocks, ocr_id_opt) = tokio::task::spawn_blocking(move || {
-        let image_id = save_screenshot_to_history(&png_bytes)?;
+        // 解码一次，save + OCR 共用——避免双重解码（4K 截图省 ~100-300ms）
+        let img = ::image::load_from_memory(&png_bytes)
+            .map_err(|e| format!("解码失败: {:?}", e))?;
+        let image_id = save_screenshot_to_history(&png_bytes, Some(&img))?;
         log::info!("[ocr-screenshot] before instance");
         let engine = octopus_ocr::engine::OcrEngine::instance()
             .map_err(|e| e.to_string())?;
@@ -293,7 +304,7 @@ pub async fn ocr_screenshot(
             "[ocr-screenshot] after instance; before recognize png_bytes={} bytes",
             png_bytes.len()
         );
-        let (text, blocks) = engine.recognize_with_blocks(&png_bytes).map_err(|e| e.to_string())?;
+        let (text, blocks) = engine.recognize_with_blocks_from_image(&img).map_err(|e| e.to_string())?;
         log::info!("[ocr-screenshot] after recognize text_len={} blocks={}", text.len(), blocks.len());
 
         let ocr_id_opt: Option<i64> = if !text.trim().is_empty() {
@@ -461,7 +472,7 @@ pub async fn confirm_screenshot_with_data(
     // 入库（decode+encode CPU）+ 写系统剪贴板：移入 spawn_blocking 隔离 Tokio worker。
     let handle_clone = handle.inner().clone();
     tokio::task::spawn_blocking(move || {
-        save_screenshot_to_history(&png_bytes)?;
+        save_screenshot_to_history(&png_bytes, None)?;
         handle_clone.write_image(&png_bytes).map_err(|e| e.to_string())?;
         Ok::<(), String>(())
     })
@@ -527,7 +538,7 @@ pub async fn confirm_screenshot(
         };
         let png_bytes = octopus_capx::capture::crop_region(&fake_full, x, y, w, h)
             .map_err(|e| format!("裁剪失败: {}", e))?;
-        save_screenshot_to_history(&png_bytes)?;
+        save_screenshot_to_history(&png_bytes, None)?;
         handle_clone.write_image(&png_bytes).map_err(|e| e.to_string())?;
         Ok::<(), String>(())
     })
