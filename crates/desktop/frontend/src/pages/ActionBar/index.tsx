@@ -70,7 +70,7 @@ const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
     </span>
     <span className="text-[10px] font-medium leading-none whitespace-nowrap">{label}</span>
     {shortcut && (
-      <span className="text-[9px] text-muted-foreground/50 font-mono leading-none">⌥{shortcut}</span>
+      <span className="text-[9px] text-voice/70 font-mono leading-none">⌥{shortcut}</span>
     )}
   </button>
 );
@@ -185,8 +185,17 @@ export default function ActionBar() {
     };
     refresh();
     const listenPromise = rawListen("action-bar://show", () => refresh());
+    // 设置页保存后 emit 此事件 → 浮窗立即刷新菜单（无需关闭再打开）
+    const itemsListenPromise = rawListen("action-bar://items-changed", () => {
+      invoke<ActionBarItem[]>("list_action_bar_items").then((items) => {
+        setMenuItems(items);
+      });
+    });
 
-    return () => { listenPromise.then((fn: () => void) => fn()); };
+    return () => {
+      listenPromise.then((fn: () => void) => fn());
+      itemsListenPromise.then((fn: () => void) => fn());
+    };
   }, []);
 
   // 点击外部消失 + 窗口失焦消失
