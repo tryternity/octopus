@@ -297,11 +297,14 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             std::thread::sleep(std::time::Duration::from_millis(100));
             let app2 = app_clone.clone();
             let _ = app_clone.run_on_main_thread(move || {
-                #[cfg(target_os = "macos")]
-                { crate::activation::before_floating_window_show(&app2); }
                 if let Some(window) = app2.get_webview_window(WINDOW_LABEL) {
-                    let _ = window.show();
-                    let _ = window.set_focus();
+                    // 100ms 内若窗口已被二次按键提前 show，不重复 before_show + show（防 depth 泄漏）
+                    if !window.is_visible().unwrap_or(false) {
+                        #[cfg(target_os = "macos")]
+                        { crate::activation::before_floating_window_show(&app2); }
+                        let _ = window.show();
+                        let _ = window.set_focus();
+                    }
                 }
             });
         });
