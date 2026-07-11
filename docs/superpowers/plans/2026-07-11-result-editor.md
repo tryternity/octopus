@@ -1000,10 +1000,11 @@ git commit -m "docs: 更新 architecture.md——ASR 结果框 CM6 改造"
 
 ## 实现偏差记录
 
-### 后端残留（未清理，后续迭代）
+### 后端技术债（已清理）
 
-- **`edit-force-exit` emit**（coordinator.rs × 3）：Toggle 停止 / Cancel / Discard 时仍 emit `edit-force-exit`，前端已不再监听。无害（dead emit），但属死代码。涉及 coordinator Toggle handler 内部逻辑，改动范围超出本次 scope。
-- **`global-edit-toggle` emit**（result_window.rs:275）：`trigger_global_edit` 仍 emit 此事件 + show + focus 窗口，前端已不监听 toggle 部分。show+focus 行为保留（全局编辑快捷键仍可唤起窗口），但 emit 部分死代码。`register_edit_global_shortcut` + `edit_global_shortcut` config 保留（后续可改为 commit 而非 toggle）。
+- ~~**`edit-force-exit` emit**（coordinator.rs × 3）~~：已移除（前端已不监听）。
+- ~~**`global-edit-toggle` emit**~~：已移除 emit，`trigger_global_edit` 仅保留 show+focus。
+- ~~**`update_edit_buffer` 过时注释**~~：已更新。
 
 ### 前端
 

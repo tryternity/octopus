@@ -438,11 +438,14 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, dirty_ranges: &[(usize, usiz
 |------|------|
 | `exit_edit_without_commit` 命令 | 不再需要——没有显式「取消编辑」操作 |
 | `update_edit_buffer` 命令 | 不再需要——编辑期间不实时推送，commit 时一次性传 dirtyRanges |
+| `CancelEdit` 命令 + `edit-force-exit` emit | 始终可编辑，无显式取消；前端已不监听 |
 | 前端 `enterEdit` / `commitEdit` / `cancelEdit` / `toggleEdit` | 始终可编辑 |
 | 前端 `handleTextMouseUp` / `clampRangeToContainer` | CM6 原生选区 |
 | 前端 `CaretBlink` 组件 | CM6 原生光标 |
 | 前端 `renderResultNow` 的 flushSync + textContent | CM6 管理自己的 DOM |
 | 前端 `global-edit-toggle` listen | 无显式编辑态切换 |
+| 后端 `global-edit-toggle` emit | 已移除——`trigger_global_edit` 仅保留 show+focus |
+| `segment_kind_at_offset` 函数 | 字符级 walk 替代后已删除 |
 
 > **保留**：`enter_edit_mode` 命令——后端需要此信号切 `editing=true` → `drain_samples`。调用时机从「用户显式按快捷键」变为「CM6 检测到首次用户输入」。
 >
@@ -489,9 +492,8 @@ diverted 定时器 pending 中用户开始输入 → `editingRef=true`。定时�
 
 ### 13.2 后端单元测试
 
-- `transcript.rs::commit_edit(flat, dirty_ranges)`：验证按 dirty ranges 劈段 + kind 标记
-- `segment_kind_at_offset`：验证 char offset → kind 映射
-- `rebuild_segments`：端到端验证（全 Edited / 全 clean / 混合 dirty + clean）
+- `transcript.rs::commit_edit(flat, dirty_ranges, has_edited)`：验证按 dirty ranges 劈段 + kind 标记
+- `rebuild_segments`：字符级 walk 验证（全 Edited / 全 clean / 混合 dirty + clean / 中间删除偏移）
 - `push_or_merge`：同 kind 合并
 
 ### 13.3 手动验证
