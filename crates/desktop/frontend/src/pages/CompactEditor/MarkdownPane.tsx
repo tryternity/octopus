@@ -124,6 +124,15 @@ export function MarkdownPane({
           <ZoomIn className="w-4 h-4" />
         </ToolBtn>
         <span className="w-px h-4 bg-border mx-1" />
+        <ToolBtn onClick={handleClear} title={clearPending ? t("editor.clearConfirm") : t("editor.clear")}>
+          {clearPending ? <Check className="w-4 h-4 text-red-500" /> : <Eraser className="w-4 h-4" />}
+        </ToolBtn>
+        <div className="flex-1" />
+        {/* 视图模式组（右侧，与编辑操作用 flex-1 隔开） */}
+        <span className="text-[11px] text-muted-foreground mr-2 tabular-nums">
+          {t("editor.charCount", { n: charCount })}
+        </span>
+        <span className="w-px h-4 bg-border mx-1" />
         <ToolBtn onClick={() => setViewMode("editor")} title={t("editor.view.editor")} disabled={viewMode === "editor"}>
           <FileText className="w-4 h-4" />
         </ToolBtn>
@@ -134,13 +143,6 @@ export function MarkdownPane({
           <Eye className="w-4 h-4" />
         </ToolBtn>
         <span className="w-px h-4 bg-border mx-1" />
-        <ToolBtn onClick={handleClear} title={clearPending ? t("editor.clearConfirm") : t("editor.clear")}>
-          {clearPending ? <Check className="w-4 h-4 text-red-500" /> : <Eraser className="w-4 h-4" />}
-        </ToolBtn>
-        <div className="flex-1" />
-        <span className="text-[11px] text-muted-foreground mr-2 tabular-nums">
-          {t("editor.charCount", { n: charCount })}
-        </span>
         <button
           type="button"
           disabled={disableSave}
