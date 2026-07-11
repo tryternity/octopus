@@ -196,6 +196,7 @@ function CompactEditor() {
     if (!active) return;
     if (active.isTemp) return;
     if (active.source === 'transcription') return;
+    if (active.itemType && active.itemType !== 'text') return;
     try {
       if ((active.text || "").trim() === "") {
         await invoke("delete_clipboard_item", { id: active.itemId });
