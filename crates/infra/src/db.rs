@@ -170,12 +170,13 @@ where
 /// v21：action_bar_items 加 is_async + write_output_to_clipboard 列；新建 script_runs 表。
 /// v20：新增 hotwords 表（db.sql IF NOT EXISTS 自动创建）。
 /// v23：新增 hotword_sets + hotword_hits 表；现有 active 热词迁「通用」版本。
+/// v24：action_bar_items 加 shortcut 列。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 23 {
+    if v >= 24 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -249,13 +250,25 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 23", [])?;
             log::info!("schema upgraded to v23 (hotword_sets + hotword_hits)");
         }
+        // v23→v24：action_bar_items 加 shortcut 列
+        {
+            let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if !cols.contains(&"shortcut".to_string()) {
+                conn.execute("ALTER TABLE action_bar_items ADD COLUMN shortcut TEXT NOT NULL DEFAULT ''", [])?;
+            }
+            conn.execute("PRAGMA user_version = 24", [])?;
+            log::info!("schema upgraded to v24 (action_bar_items.shortcut)");
+        }
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 23", [])?;
-    log::info!("DB initialized (v23): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 24", [])?;
+    log::info!("DB initialized (v24): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -958,9 +971,10 @@ pub struct ActionBarItem {
     pub is_enabled: bool,
     pub is_async: bool,
     pub write_output_to_clipboard: bool,
+    pub shortcut: String,
 }
 
-const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard";
+const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut";
 
 fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem> {
     Ok(ActionBarItem {
@@ -975,6 +989,7 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
         is_enabled: row.get::<_, i32>(8)? != 0,
         is_async: row.get::<_, i32>(9)? != 0,
         write_output_to_clipboard: row.get::<_, i32>(10)? != 0,
+        shortcut: row.get(11)?,
     })
 }
 
@@ -1892,13 +1907,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v23() {
+    fn init_schema_fresh_db_builds_v24() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 23, "全新库 init_schema 后应到 v23");
+        assert_eq!(v, 24, "全新库 init_schema 后应到 v24");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -1912,16 +1927,16 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_v23_is_noop() {
-        // 已是 v23 的库再调 init_schema 应早退（不重跑、不报错）
+    fn init_schema_v24_is_noop() {
+        // 已是 v24 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 23", []).unwrap();
+        conn.execute("PRAGMA user_version = 24", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 23);
+        assert_eq!(v, 24);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -2796,9 +2811,9 @@ mod tests {
 
         init_schema(&conn).unwrap();
 
-        // v23
+        // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 23);
+        assert_eq!(v, 24);
 
         // 「通用」版本存在，含两个 active 词（normalize 排序），不含 pending
         let (name, words_text): (String, String) = conn

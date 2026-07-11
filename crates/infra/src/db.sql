@@ -281,6 +281,7 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
     is_enabled  INTEGER NOT NULL DEFAULT 1,
     is_async   INTEGER NOT NULL DEFAULT 1,
     write_output_to_clipboard INTEGER NOT NULL DEFAULT 0,
+    shortcut    TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
