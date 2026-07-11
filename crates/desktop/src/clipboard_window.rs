@@ -64,6 +64,12 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             let saved_pos = crate::window_position::load_window_position(WINDOW_LABEL);
             let (db_x, db_y) = saved_pos.unwrap_or((0.0, 0.0));
             let monitors = window.available_monitors().unwrap_or_default();
+            log::info!("[clipboard-dock] restore: db_pos=({},{}), edge={}, monitors={}", db_x, db_y, edge, monitors.len());
+            for m in &monitors {
+                let ms = m.scale_factor();
+                log::info!("[clipboard-dock] monitor: pos={},{} size={}x{} scale={}",
+                    m.position().x, m.position().y, m.size().width, m.size().height, ms);
+            }
             let target: Option<(f64, f64, f64, f64)> = monitors.iter().find_map(|m| {
                 let ms = m.scale_factor();
                 let mx = m.position().x as f64 / ms;
