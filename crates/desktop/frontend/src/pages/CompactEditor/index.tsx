@@ -195,6 +195,7 @@ function CompactEditor() {
   const doSave = useCallback(async () => {
     if (!active) return;
     if (active.isTemp) return;
+    if (active.source === 'transcription') return;
     try {
       if ((active.text || "").trim() === "") {
         await invoke("delete_clipboard_item", { id: active.itemId });
@@ -239,17 +240,18 @@ function CompactEditor() {
   useEffect(() => { localStorage.setItem(FONT_KEY, String(fontSize)); }, [fontSize]);
 
   // ── 快捷键（仅保留 Cmd+S / Cmd+Enter 保存）──
+  // 判断全收敛进 doSave（单一事实源），keydown 无条件调 doSaveRef.current()。
+  // 避免 keydown effect deps [active?.itemType] 在同类型 tab 间切换时陈旧闭包。
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing || e.keyCode === 229) return;
       const mod = e.metaKey || e.ctrlKey;
-      const isWritableText = (!active?.itemType || active.itemType === 'text') && active?.source !== 'transcription' && !active?.isTemp;
-      if (mod && e.key === "Enter") { e.preventDefault(); if (isWritableText) doSaveRef.current(); return; }
-      if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); if (isWritableText) doSaveRef.current(); return; }
+      if (mod && e.key === "Enter") { e.preventDefault(); doSaveRef.current(); return; }
+      if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); doSaveRef.current(); return; }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [active?.itemType]);
+  }, []);
 
   return (
     <div className="flex flex-col h-full bg-background">
