@@ -128,10 +128,11 @@ fn check_shortcut_conflict(shortcut: &str, exclude_id: Option<i64>) -> Result<Op
 const handler = (e: KeyboardEvent) => {
   // Escape ...（不变）
 
-  // 组合快捷键：Alt/⌥ + 字符 → 直接执行（最高优先级）
+  // 组合快捷键：Alt/⌥ + 字符 → 直接执行（最高优先级，跨层级）
+  // macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键
   if (e.altKey) {
-    const ch = e.key.toLowerCase();
-    if (/^[0-9a-z]$/.test(ch)) {
+    const ch = codeToChar(e.code);
+    if (ch) {
       const item = menuItemsRef.current.find((i) => i.shortcut === ch);
       if (item) {
         e.preventDefault();
@@ -147,6 +148,8 @@ const handler = (e: KeyboardEvent) => {
 };
 ```
 
+`codeToChar` 辅助函数将 `KeyboardEvent.code`（如 `"KeyH"`、`"Digit5"`）转为单字符（`"h"`、`"5"`），不受修饰键影响。
+
 **关键点**：
 - `e.altKey` 分支在位置定位之前，确保 `Alt+t` 不会被当成位置定位的 `t`
 - 查找范围是 `menuItemsRef.current`（全部菜单项），不限于当前焦点层
@@ -159,8 +162,8 @@ const handler = (e: KeyboardEvent) => {
 有快捷键的项，在 `IconBtn` 中附加显示 `⌥x` 标记：
 
 - 数字徽章（位置序号）保持不变
-- 快捷键标记紧贴标题右侧：`<span className="text-[9px] text-muted-foreground/60 font-mono">⌥{shortcut}</span>`
-- 避免视觉嘈杂：标记使用低调样式（小号 + 低透明度）
+- 快捷键标记紧贴标题右侧：`<span className="text-[9px] text-voice/70 font-mono">⌥{shortcut}</span>`
+- 使用 voice 主色 70% 透明度，在浮窗中清晰可辨
 
 ### 4.4 设置页编辑表单（`ActionBarPanel.tsx`）
 
@@ -178,8 +181,12 @@ const handler = (e: KeyboardEvent) => {
 
 已设置快捷键的项，在类型标签旁显示 `⌥x` 徽章：
 
-- 样式：mono 字体、`text-[10px]`、`bg-muted` 背景、`text-muted-foreground`
+- 样式：mono 字体、`text-[10px]`、`bg-voice/10` 背景、`text-voice/80`（与浮窗标记统一风格）
 - 与 TypeTag 平级，在行内容区域
+
+### 4.6 设置页保存后浮窗即时刷新
+
+设置页 `refresh()` 时 `emit("action-bar://items-changed", null)`，浮窗监听此事件后立即重新加载菜单数据——用户在设置页修改快捷键后无需关闭再打开浮窗即可生效。
 
 ---
 
@@ -216,6 +223,8 @@ const handler = (e: KeyboardEvent) => {
 | 快捷键项是子菜单叶项 | 无需进入子菜单，直接执行——"不区分层级"的核心价值 |
 | 保存时字符格式不合法 | 后端拒绝，前端显示错误 |
 | 保存时全局冲突 | 后端拒绝，返回冲突项 title，前端显示 `Alt+x 已被「xx」占用` |
+| macOS Alt 改变 `e.key` 输出 | 使用 `e.code`（物理键代码如 `KeyH`）+ `codeToChar` 提取字符，不受 Option 键字符映射影响 |
+| 设置页修改后浮窗未刷新 | 设置页 `refresh()` 时 `emit("action-bar://items-changed")`，浮窗监听后立即重载菜单 |
 
 ---
 
