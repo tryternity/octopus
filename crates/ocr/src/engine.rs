@@ -152,12 +152,12 @@ impl OcrEngine {
     pub fn recognize(&self, image_bytes: &[u8]) -> Result<String> {
         let img = ::image::load_from_memory(image_bytes)
             .context("Failed to decode image")?;
-        let lines = if img.height() > SPLIT_HEIGHT_THRESHOLD {
-            self.recognize_long_image(&img)?
+        let blocks = if img.height() > SPLIT_HEIGHT_THRESHOLD {
+            self.recognize_long_image_with_blocks(&img)?
         } else {
-            self.recognize_image(&img)?
+            self.recognize_image_with_blocks(&img)?
         };
-        Ok(lines.join("\n"))
+        Ok(crate::layout::to_markdown(&blocks))
     }
 
     pub fn recognize_with_blocks(&self, image_bytes: &[u8]) -> Result<(String, Vec<OcrBlock>)> {
@@ -168,7 +168,7 @@ impl OcrEngine {
         } else {
             self.recognize_image_with_blocks(&img)?
         };
-        let text = blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join("\n");
+        let text = crate::layout::to_markdown(&blocks);
         Ok((text, blocks))
     }
 
@@ -248,16 +248,7 @@ impl OcrEngine {
         Ok(all_blocks)
     }
 
-    fn recognize_image(&self, img: &::image::DynamicImage) -> Result<Vec<String>> {
-        let blocks = self.run_ocr(img)?;
-        Ok(blocks.into_iter().map(|b| b.text).collect())
-    }
 
-    fn recognize_long_image(&self, img: &::image::DynamicImage) -> Result<Vec<String>> {
-        // 复用 with_blocks 的坐标去重逻辑——纯文本版没有坐标，无法独立去重。
-        let blocks = self.recognize_long_image_with_blocks(img)?;
-        Ok(blocks.into_iter().map(|b| b.text).collect())
-    }
 
     fn plan_chunks(h: u32) -> Vec<(u32, u32)> {
         if h <= SPLIT_HEIGHT_THRESHOLD { return Vec::new(); }
