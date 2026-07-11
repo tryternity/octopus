@@ -1,6 +1,6 @@
 # Action Bar 脚本增强——实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> ✅ **已实现**（2026-07-10/11，commit `5a0bef54`…`3e29b986` 多轮审查修复）。所有 Task 已完成、checkbox 已勾选。下方为原始实施计划，保留作执行记录。
 
 **Goal:** 为 action bar 脚本执行新增 JS/TS 运行时支持、执行结果捕获落库、异步/同步模式选择、脚本执行记录管理界面。
 
@@ -15,8 +15,8 @@
 - magic comment 第一行解析：`source.lines().next().unwrap_or("").trim()`
 - 选中文本统一经环境变量 `OCTOPUS_TEXT` 传递（防注入，不拼字符串）
 - stdout/stderr 截断 64KB（`chars().take(65536)`）防 DB 膨胀
-- 60 秒超时强杀（try_wait × 120 × 500ms，复用现有逻辑）
-- `#javascript` 探测优先级 node → bun → deno；`#typescript` 优先级 npx tsx → bun → deno
+- 同步 60 秒超时强杀（try_wait × 120 × 500ms），异步不超时用 child.wait() 阻塞等待
+
 - `write_output_to_clipboard` 仅同步模式可生效，异步模式 UI 禁用 + 强制 false
 - 所有执行（成功/失败/超时）都落库 `script_runs`
 - DB schema 变更：改 `db.sql` + 升 `user_version`，不新增 ALTER 迁移分支

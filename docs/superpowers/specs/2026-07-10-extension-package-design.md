@@ -143,7 +143,7 @@ Package 脚本执行时额外设置环境变量：
 
 ### 4.3 扩展元信息查询
 
-扩展子页展示的 `version`/`description`/`skill` 信息**不存 DB**，从 `~/.octopus/extensions/*/config.yaml` 实时读取：
+扩展包信息（`version`/`description`/`skill`）从 `~/.octopus/extensions/*/config.yaml` 读取（导入时校验，不存 DB）：
 
 ```rust
 #[tauri::command]
@@ -168,7 +168,7 @@ struct ExtensionInfo {
 ## 5. 加载时机
 
 - **App 启动时**扫描 `~/.octopus/extensions/`（仅验证文件夹存在，不加载到菜单——菜单走 DB）
-- **设置页扩展子页**「刷新扩展」按钮手动触发重新扫描
+- **设置页菜单编辑**保存时触发安装（`install_extension` 复制到 extensions）
 - **浮窗唤出**时只读 DB，不触发文件 IO
 
 ---

@@ -194,8 +194,7 @@ fn run_script_sync(source: &str, text: &str, item_id: i64, script_type: &str) ->
 /// 按 magic comment 分发，返回子进程 Child（预探测 + spawn）
 fn spawn_script(source: &str, text: &str) -> Result<(std::process::Child, &'static str), String>;
 
-/// 轮询等待 + 超时强杀（复用现有 try_wait × 120 逻辑）
-fn wait_with_timeout(child: &mut Child) -> ScriptResult;
+
 ```
 
 ---

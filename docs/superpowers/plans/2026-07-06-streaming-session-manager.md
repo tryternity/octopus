@@ -1,6 +1,6 @@
 # 流式 ASR 引擎复用（StreamingSessionManager）实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> ✅ **已实现**（2026-07-06，streaming-session-manager 分支合入 main）。所有 Task 已完成、checkbox 已勾选。下方为原始实施计划，保留作执行记录。
 
 **Goal:** 给流式 ASR 引擎补一个对齐离线 `AsrEngineManager` 的 `StreamingSessionManager`，desktop 录音复用常驻引擎（reset 而非 new），消除每次录音秒级重载。
 
