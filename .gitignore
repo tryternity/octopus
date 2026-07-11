@@ -25,3 +25,5 @@ ortu
 wl-clipboard-rs
 xcap
 package.json
+/.crush/
+/debug_frames/
