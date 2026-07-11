@@ -76,7 +76,8 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             }
             let _ = app.emit("clipboard://dock-changed", edge.as_str());
             DOCK_EXPANDED.store(false, Ordering::SeqCst);
-            crate::clipboard_dock::start_edge_poll(app.clone(), window.clone(), edge_static(edge));
+            // 不在此启动 start_edge_poll——窗口以 visible(false) 创建，
+            // 用户未唤出前轮询线程无意义空转。轮询在 toggle 收缩时按需启动。
         }
     }
     }
