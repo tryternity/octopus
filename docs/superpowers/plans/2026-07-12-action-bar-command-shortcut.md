@@ -1,6 +1,12 @@
 # Action Bar 命令局部快捷键 Implementation Plan
 
+> **状态**：已实现（Task 1-6 全部完成）
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**实际实现偏差记录**：
+- Task 1：agent 发现并修复了 3 个现有测试（`init_schema_fresh_db_builds_v23` → v24、`init_schema_v23_is_noop` → v24、`migrate_v22_hotwords_to_general_set` 断言 v==23 → v==24），原计划未列出这些
+- Task 3：`extensions.rs` 的 `install_extension` 内部也调用 `insert_action_bar_item`，补传 `""` 空快捷键参数
+- Task 2：修复了 2 个现有测试（`action_bar_items_list_enabled_filters_disabled`、`action_bar_items_move_swaps_order`）中的旧签名调用，补传 `""` 空快捷键
 
 **Goal:** 为 action bar 菜单项新增 `Alt/⌥ + 字符` 组合快捷键，按下直接执行对应命令，跨主菜单和子菜单层级。
 

@@ -1,6 +1,6 @@
 # Action Bar 命令局部快捷键设计
 
-> **状态**：设计完成，待实现
+> **状态**：已实现
 > **日期**：2026-07-12
 > **scope**：为 action bar 菜单项新增 `Alt/⌥ + 字符` 组合快捷键，按下直接执行对应命令，跨主菜单和子菜单层级
 > **前置文档**：[`2026-07-09-action-bar-menu-db-design.md`](./2026-07-09-action-bar-menu-db-design.md)（action bar DB 化设计，本特性基于其 DB 表和前端架构）
