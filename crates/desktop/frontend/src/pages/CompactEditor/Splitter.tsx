@@ -71,7 +71,7 @@ export function Splitter({ left, right, ratio, onRatioChange, showRight }: Split
         onPointerMove={onPointerMove}
         onPointerUp={stopDrag}
         onPointerCancel={stopDrag}
-        className="bg-border cursor-col-resize select-none hover:bg-voice transition-colors"
+        className="relative bg-border cursor-col-resize select-none hover:bg-voice transition-colors"
       >
         <div className="absolute inset-y-0 -inset-x-[5px]" />
       </div>
