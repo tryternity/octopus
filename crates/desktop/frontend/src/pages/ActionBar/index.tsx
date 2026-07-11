@@ -22,6 +22,7 @@ interface ActionBarItem {
   sortOrder: number;
   isSystem: boolean;
   isEnabled: boolean;
+  shortcut?: string;
 }
 
 const AI_TRANSLATE_TIMEOUT_MS = 5000;
@@ -40,9 +41,10 @@ function labelToIndex(key: string): number {
   return -1;
 }
 
-const IconBtn = ({ index, label, active, onClick, btnRef }: {
+const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
   index: number; label: string; active: boolean; onClick: () => void;
   btnRef?: (el: HTMLButtonElement | null) => void;
+  shortcut?: string;
 }) => (
   <button
     ref={btnRef}
@@ -67,6 +69,9 @@ const IconBtn = ({ index, label, active, onClick, btnRef }: {
       {indexLabel(index)}
     </span>
     <span className="text-[10px] font-medium leading-none whitespace-nowrap">{label}</span>
+    {shortcut && (
+      <span className="text-[9px] text-muted-foreground/50 font-mono leading-none">⌥{shortcut}</span>
+    )}
   </button>
 );
 
@@ -305,6 +310,19 @@ export default function ActionBar() {
 
       if (viewRef.current === "loading") return;
 
+      // 组合快捷键：Alt/⌥ + 字符 → 直接执行（最高优先级，跨层级）
+      if (e.altKey) {
+        const ch = e.key.toLowerCase();
+        if (/^[0-9a-z]$/.test(ch)) {
+          const item = menuItemsRef.current.find((i: ActionBarItem) => i.shortcut === ch);
+          if (item) {
+            e.preventDefault();
+            executeItem(item);
+          }
+        }
+        return;
+      }
+
       // 快捷定位：1-9 数字键 + a-z 字母键（支持最多 35 项）
       const idx = labelToIndex(e.key.toLowerCase());
       if (idx >= 0) {
@@ -454,6 +472,7 @@ export default function ActionBar() {
             active={selectedIdx === i}
             onClick={() => executeItem(item)}
             btnRef={(el: HTMLButtonElement | null) => { mainBtnRefs.current[i] = el; }}
+            shortcut={item.shortcut}
           />
         ))}
       </ScrollRow>
@@ -472,6 +491,7 @@ export default function ActionBar() {
             active={focusLayer === "sub" && subSelectedIdx === i}
             onClick={() => executeItem(item)}
             btnRef={(el: HTMLButtonElement | null) => { subBtnRefs.current[i] = el; }}
+            shortcut={item.shortcut}
           />
         ))}
       </ScrollRow>
