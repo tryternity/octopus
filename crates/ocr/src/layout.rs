@@ -129,12 +129,19 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
                 }
                 if lines.len() >= 2 {
                     // 多行正文用 code fence 包裹，保留原始分行（不 reflow）
-                    output.push_str("```\n");
+                    // 内容含 ``` 时加长围栏避免嵌套冲突
+                    let fence = if lines.iter().any(|(t, _, _)| t.contains("```")) {
+                        "````"
+                    } else {
+                        "```"
+                    };
+                    output.push_str(fence);
+                    output.push('\n');
                     for (t, _, _) in lines {
                         output.push_str(t);
                         output.push('\n');
                     }
-                    output.push_str("```");
+                    output.push_str(fence);
                 } else {
                     output.push_str(&lines[0].0);
                 }
@@ -194,17 +201,16 @@ fn strip_unordered_marker(text: &str) -> Option<&str> {
 /// 支持：①-⑳ ⑴-⑵⓪ ⒈-⒛ \d+[.、)] [（(]\d+[)）]
 fn strip_ordered_marker(text: &str) -> Option<(usize, &str)> {
     let trimmed = text.trim_start();
-    let chars: Vec<char> = trimmed.chars().collect();
 
-    if !chars.is_empty() {
-        let c = chars[0] as u32;
+    if let Some(first_char) = trimmed.chars().next() {
+        let c = first_char as u32;
         // ①-⑳：U+2460..U+2473 / ⑴-⑲⒇：U+2474..U+2487 / ⒈-⒛：U+2488..U+249B
         if (0x2460..=0x2473).contains(&c) || (0x2474..=0x2487).contains(&c) || (0x2488..=0x249B).contains(&c) {
             let base = if (0x2460..=0x2473).contains(&c) { 0x2460u32 }
                 else if (0x2474..=0x2487).contains(&c) { 0x2474u32 }
                 else { 0x2488u32 };
             let n = (c - base + 1) as usize;
-            let first_len = chars[0].len_utf8();
+            let first_len = first_char.len_utf8();
             let rest = trimmed[first_len..].trim_start();
             if !rest.is_empty() {
                 return Some((n, rest));
@@ -218,12 +224,13 @@ fn strip_ordered_marker(text: &str) -> Option<(usize, &str)> {
     while i < bytes.len() && bytes[i].is_ascii_digit() {
         i += 1;
     }
-    if i > 0 && i < bytes.len() {
-        let sep = bytes[i] as char;
-        if sep == '.' || sep == '、' || sep == ')' {
+    if i > 0 && i < trimmed.len() {
+        let after_digits = &trimmed[i..];
+        if after_digits.starts_with('.') || after_digits.starts_with('、') || after_digits.starts_with(')') {
+            let sep_len = if after_digits.starts_with('、') { 3 } else { 1 };
             let num_str = &trimmed[..i];
             if let Ok(n) = num_str.parse::<usize>() {
-                let rest = trimmed[i + 1..].trim_start();
+                let rest = trimmed[i + sep_len..].trim_start();
                 if !rest.is_empty() {
                     return Some((n, rest));
                 }
@@ -340,6 +347,13 @@ mod tests {
     #[test]
     fn classify_ordered_digit_dot() {
         let (kind, text) = classify_line("1. 第一项", 20.0, 20.0);
+        assert_eq!(kind, LineKind::ListItem(Some(1)));
+        assert_eq!(text, "第一项");
+    }
+
+    #[test]
+    fn classify_ordered_cn_comma() {
+        let (kind, text) = classify_line("1、第一项", 20.0, 20.0);
         assert_eq!(kind, LineKind::ListItem(Some(1)));
         assert_eq!(text, "第一项");
     }

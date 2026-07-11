@@ -434,7 +434,7 @@ fn segment_english_words(text: &str) -> String {
         while pos < seg_len {
             let mut found = false;
             let max_len = (seg_len - pos).min(20);
-            for len in (3..=max_len).rev() {
+            for len in (1..=max_len).rev() {
                 let sub = std::str::from_utf8(&lower_bytes[pos..pos + len]).unwrap();
                 if ws.contains(sub) {
                     words.push(segment[pos..pos + len].to_string());
