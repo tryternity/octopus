@@ -1,9 +1,9 @@
 # Action Bar 相关工具综合调研（补充）
 
 > **调研日期**：2026-07-09
-> **调研目的**：在 [`2026-07-08-popclip-survey.md`](./2026-07-08-popclip-survey.md)（PopClip/SnipDo/OnText/Click to Do）的基础上，扫描 `~/.tolaria/` 知识库，补充与 octopus action-bar 设计直接相关的工具，提炼**未覆盖的可借鉴点**。
+> **调研目的**：在 [`2026-07-08-popclip-survey.md`](./research/2026-07-08-popclip-survey.md)（PopClip/SnipDo/OnText/Click to Do）的基础上，扫描 `~/.tolaria/` 知识库，补充与 octopus action-bar 设计直接相关的工具，提炼**未覆盖的可借鉴点**。
 > **范围**：与"选中即操作 / 浮窗 / 截图+OCR fallback / 扩展机制 / 窗口焦点策略"主题相关的 11 份工具笔记。
-> **关联文档**：[`2026-07-08-action-bar-design.md`](./2026-07-08-action-bar-design.md) §9 后续演进、[`2026-07-09-action-bar-menu-db-design.md`](./2026-07-09-action-bar-menu-db-design.md)
+> **关联文档**：[features/desktop-app.md §12](../../features/desktop-app.md)（action bar 现状）、[`2026-07-09-action-bar-menu-db-design.md`](./2026-07-09-action-bar-menu-db-design.md)
 
 ---
 
@@ -260,7 +260,7 @@ octopus 当前 action_bar_window 用透明悬浮窗 + Accessory 策略 + `before
 
 ## 11. PopClip 补充（与原调研对照）
 
-原 [`2026-07-08-popclip-survey.md`](./2026-07-08-popclip-survey.md) 已覆盖 PopClip 主体。`~/.tolaria/桌面工具/popclip-*.md` 笔记补充以下未覆盖点：
+原 [`2026-07-08-popclip-survey.md`](./research/2026-07-08-popclip-survey.md) 已覆盖 PopClip 主体。`~/.tolaria/桌面工具/popclip-*.md` 笔记补充以下未覆盖点：
 
 1. **7 种 Action 类型抽象**（在原调研"Snippet YAML"基础上更完整）：URL / Key Press / Service / Shortcut / Shell Script / AppleScript / **JS-TS**（！）。octopus script 动作目前覆盖 shell/osascript/powershell/python，**JS-TS 是缺失项**——可考虑加 `#node` / `#deno` magic comment（用户量大，运行时易得）。
 

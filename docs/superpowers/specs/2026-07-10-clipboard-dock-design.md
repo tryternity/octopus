@@ -239,7 +239,7 @@ CGEvent 是 macOS 专属，且返回逻辑坐标需 scale 换算。`cursor_posit
 
 | 文件 | 变更 |
 |------|------|
-| `2026-07-08-action-bar-design.md` §4.1 | 加说明：action_bar 定位策略固定为鼠标上方，不做位置记忆 / 吸附 / 拖拽 / 尺寸变更 |
+| `features/desktop-app.md` §12 | 加说明：action_bar 定位策略固定为鼠标上方，不做位置记忆 / 吸附 / 拖拽 / 尺寸变更 |
 | `architecture.md` 窗口管理表 | clipboard_window 行补注 dock 功能；action_bar 行补注固定定位 |
 
 ---
