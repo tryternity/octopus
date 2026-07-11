@@ -1449,17 +1449,21 @@ fn list_hotwords_at(conn: &Connection, status: &str) -> Result<Vec<Hotword>> {
     Ok(list)
 }
 
-/// 纠错热路径用——只取 active 词文本（构造 HotwordIndex 用）。
+/// 纠错热路径用——取所有 enabled 版本的 words_text 切词去重并集（构造 HotwordIndex 用）。
 pub fn list_active_hotword_words() -> Result<Vec<String>> {
-    with_db(|conn| {
-        let mut stmt = conn.prepare("SELECT word FROM hotwords WHERE status = 'active'")?;
-        let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
-        let mut list = Vec::new();
-        for r in rows {
-            list.push(r?);
+    with_db(|conn| list_active_hotword_words_at(conn))
+}
+
+fn list_active_hotword_words_at(conn: &Connection) -> Result<Vec<String>> {
+    let mut stmt = conn.prepare("SELECT words_text FROM hotword_sets WHERE enabled=1")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut set: std::collections::HashSet<String> = std::collections::HashSet::new();
+    for r in rows {
+        for w in r?.split_whitespace() {
+            set.insert(w.to_string());
         }
-        Ok(list)
-    })
+    }
+    Ok(set.into_iter().collect())
 }
 
 /// 取最近 limit 条 ASR/文本记录的 content（挖掘候选用）。
@@ -1530,18 +1534,35 @@ pub fn bump_hotword_hit(id: i64) -> Result<()> {
     })
 }
 
-/// 命中计数 +1（按热词文本——corrector 命中时只有文本无 id）。
-/// 仅 bump `status='active'` 行；无匹配（如测试环境无该热词）→ 0 影响，静默返回 Ok。
+/// 命中计数 +1（按词文本——corrector 命中时只有文本）。写全局 `hotword_hits`（upsert）。
 /// pipeline 在 correct 后批量调用（best-effort，失败由调用方忽略，不阻断纠错）。
 pub fn bump_hotword_hit_by_word(word: &str) -> Result<()> {
-    with_db(|conn| {
-        conn.execute(
-            "UPDATE hotwords SET hit_count = hit_count + 1 \
-             WHERE word = ?1 AND status = 'active'",
-            params![word],
-        )?;
-        Ok(())
-    })
+    with_db(|conn| bump_hotword_hit_by_word_at(conn, word))
+}
+
+fn bump_hotword_hit_by_word_at(conn: &Connection, word: &str) -> Result<()> {
+    conn.execute(
+        "INSERT INTO hotword_hits(word, hit_count) VALUES(?1, 1) \
+         ON CONFLICT(word) DO UPDATE SET hit_count = hit_count + 1",
+        params![word],
+    )?;
+    Ok(())
+}
+
+/// 全局命中计数（前端卡片命中展示用）。返回 word → hit_count。
+pub fn list_hotword_hits() -> Result<std::collections::HashMap<String, i64>> {
+    with_db(|conn| list_hotword_hits_at(conn))
+}
+
+fn list_hotword_hits_at(conn: &Connection) -> Result<std::collections::HashMap<String, i64>> {
+    let mut stmt = conn.prepare("SELECT word, hit_count FROM hotword_hits")?;
+    let rows = stmt.query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?;
+    let mut map = std::collections::HashMap::new();
+    for r in rows {
+        let (w, c) = r?;
+        map.insert(w, c);
+    }
+    Ok(map)
 }
 
 /// direction < 0 = 上移，> 0 = 下移。交换同 parent 下相邻项的 sort_order。
@@ -2956,5 +2977,41 @@ mod tests {
         // 「通用」仍只有一行（未重复建）
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM hotword_sets WHERE name='通用'", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 1);
+    }
+
+    #[test]
+    fn list_active_words_is_enabled_union() {
+        let conn = &mut rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("INSERT INTO hotword_sets(name, enabled, words_text) VALUES('通用', 1, '八爪鱼 吴大锐')", []).unwrap();
+        conn.execute("INSERT INTO hotword_sets(name, enabled, words_text) VALUES('项目A', 1, '吴大锐 周会')", []).unwrap();
+        conn.execute("INSERT INTO hotword_sets(name, enabled, words_text) VALUES('关闭的', 0, '浮窗')", []).unwrap();
+
+        let words = list_active_hotword_words_at(conn).unwrap();
+        // 并集去重：八爪鱼 吴大锐 周会（enabled=0 的「浮窗」不在）
+        let set: std::collections::HashSet<&str> = words.iter().map(|s| s.as_str()).collect();
+        assert_eq!(set, ["八爪鱼", "吴大锐", "周会"].into_iter().collect());
+
+        // 全关 → 空
+        conn.execute("UPDATE hotword_sets SET enabled=0", []).unwrap();
+        assert!(list_active_hotword_words_at(conn).unwrap().is_empty());
+    }
+
+    #[test]
+    fn bump_hit_upserts_global_hits() {
+        let conn = &mut rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+
+        bump_hotword_hit_by_word_at(conn, "吴大锐").unwrap();
+        bump_hotword_hit_by_word_at(conn, "吴大锐").unwrap();
+        bump_hotword_hit_by_word_at(conn, "八爪鱼").unwrap();
+
+        let wu: i64 = conn.query_row("SELECT hit_count FROM hotword_hits WHERE word='吴大锐'", [], |r| r.get(0)).unwrap();
+        assert_eq!(wu, 2);
+        let ba: i64 = conn.query_row("SELECT hit_count FROM hotword_hits WHERE word='八爪鱼'", [], |r| r.get(0)).unwrap();
+        assert_eq!(ba, 1);
+
+        let hits = list_hotword_hits_at(conn).unwrap();
+        assert_eq!(hits.get("吴大锐"), Some(&2i64));
     }
 }
