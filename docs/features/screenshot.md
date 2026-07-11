@@ -10,7 +10,7 @@
 
 | 模块 | 职责 |
 |------|------|
-| `capture` | `capture_all_monitors()` 截取所有显示器（RGBA + 物理像素尺寸 + 显示器坐标）；`crop_region()` 裁剪选区→PNG；`crop_region_rgba()` 直接返回 `RgbaImage`（零 PNG 编解码，滚动截帧热路径专用） |
+| `capture` | `capture_all_monitors()` 截取所有显示器（RGBA + 物理像素尺寸 + 显示器坐标）；`capture_single_monitor(mon_x, mon_y)` 仅截指定物理坐标的单显示器（非 macOS 滚动热路径用，避免多屏冗余捕获）；`crop_region()` 裁剪选区→PNG；`crop_region_rgba()` 直接返回 `RgbaImage`（零 PNG 编解码）；`crop_region_rgba_direct(full_w, full_h, &rgba_bytes, x, y, w, h)` 从只读 `&[u8]` slice 逐行 `copy_from_slice` 裁剪（零全屏克隆，内存省 98%+，滚动热路径专用） |
 | `stitch` | 滚动截屏拼接引擎：Canvas-Anchored NCC + Sobel 梯度匹配 |
 
 ---
@@ -42,7 +42,7 @@ start_screenshot
 ```
 用户框选区域
   → 按 Cmd+Shift+D 进入手动滚动模式
-  → 后台生产 task 30ms 截帧
+  → 后台生产 task 30ms 截帧（非 macOS：`capture_single_monitor` 仅截目标屏 + `crop_region_rgba_direct` 零全屏克隆裁剪 + 热路径日志降级 info→debug/trace；macOS 走 `capture_all_monitors` + `crop_region_rgba`）
   → tokio::sync::watch 通道（丢旧保新）
   → 消费 task NCC 实时拼接
       → preview 编码 fire-and-forget 不阻塞关键路径

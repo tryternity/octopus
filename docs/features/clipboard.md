@@ -209,3 +209,57 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 3. 调 `paste::paste`（写系统剪贴板，suppress flag 阻止 watcher 重复记录）
 
 **删除已统一**：transcriptions 表已废弃（v17 DROP），所有 ASR 数据在 clipboard_history（item_type='voice'）；`delete_history` 直接调 `delete_transcriptions`（已写 clipboard_history），删除行数 >0 时主动 `emit("clipboard://changed")` 广播浮窗/设置页双端刷新。
+
+---
+
+## 12. 剪贴板浮窗交互（前端）
+
+> 浮窗容器（`clipboard_window`）见 [desktop-app.md](./desktop-app.md) §5。本节是浮窗内列表项渲染、链接识别、键盘导航、一键清理的纯前端特性。源文件：`crates/desktop/frontend/src/pages/Clipboard/`、`types/clipboard.ts`、`lib/clipboardNav.ts`。
+
+### 12.1 无协议链接识别（`detectUrl`）
+
+`types/clipboard.ts::detectUrl(raw): { isLink, url }`——剪贴板文本条目无协议时也识别为可点击链接，浮窗/设置页两处消费点共用（消除重复内联正则）。
+
+| 路径 | 识别条件 | 补全 |
+|------|----------|------|
+| 带协议 | `^https?://` | 原样（含 trim） |
+| 常用后缀域名 | labels 合法 + 后缀在 `.com/.cn/.com.cn/.net/.org` | `https://` |
+| localhost/IPv4 + 端口 | 主机名是 localhost 或合法 IPv4，端口 1–65535 | `http://` |
+
+**不识别**：句中片段（含空白）、纯 IP/localhost（无端口）、括号包裹（label 非法）。后缀自带前导 `.` 做 dot 对齐（`foocom ≠ .com`）。34 单测锁定。
+
+### 12.2 两行布局 + `fileMeta`
+
+历史行从「单行 + 右侧 hover 占位空白」改为两行：第一行铺满内容 + 行尾元数据，第二行时间戳 + 操作按钮。**时间戳固定在内容下方**（在上会视觉归属上一条，实测否决，见 [[clipboard-timestamp-below-content]]）。
+
+- 类型图标提为跨两行垂直居中的「头像」列，兼单击复制入口（copied 时 `scale-125` + 闪绿 + 「已复制」气泡）。
+- 操作组：复制 → 打开链接 → 编辑/预览/保存/打开文件 → 删除 → 收藏（复制居首）。
+- 行尾元数据三选一 helper：image→`imageMeta`（`W×H·size`）/ file→`fileMeta`（类型或「N个·类型」）/ 其余→`metaParts`（`N字` / `N字·Xs`）。
+
+### 12.3 键盘导航
+
+`lib/clipboardNav.ts` 纯函数 + `index.tsx` window 级 keydown handler，脱离鼠标可用（对齐 Wox/Raycast）。
+
+| 键 | 行为 |
+|----|------|
+| `↑↓` | 移动选中（边界夹紧不循环）+ 自动滚动到可见 |
+| `Enter` | 对选中条目执行粘贴（复用 `paste_clipboard_item`，与双击一致） |
+| `Esc` | 有搜索内容清空、已空隐藏浮窗 |
+| `←→` | **仅搜索框为空时**循环切 tab（有内容让出给光标移动） |
+| `Tab/Shift+Tab` | 无论搜索框是否有内容都循环切 tab |
+| `<mod>+1..7` | 直接跳 tab——`mod` 由设置项 `clipboard_tab_modifier` 配置（`cmd`/`ctrl`/`alt`，**默认 `ctrl`**），用 `e.code`（物理键位 `Digit[1-7]`）匹配非 `e.key`（macOS Option+数字产生特殊字符如 `¡`） |
+
+- `selectedIndex` 索引驱动（非 `selectedId`）；items 变化（过滤/搜索/刷新）时 useEffect 夹紧越界索引。
+- TABS 顺序：all/favorite/asr/text/ocr/image/file（favorite 第 2）。
+- **修饰键默认 `Ctrl` 非 `Cmd`**：octopus 激活策略为 Accessory，浮窗显示时不切 Regular，前一 app 的菜单栏 key equivalent 会拦截 `Cmd+digit`；`Ctrl` 不产生特殊字符、非标准 menu equivalent、跨平台一致。用户可在设置页改回 `cmd`/`alt`。
+- **闭包陷阱**：window keydown handler 用 `itemsRef`/`selectedIndexRef`/`searchRef`/`filterRef`/`tabModifierRef` 存最新值，避免注册时闭包过期。
+- `moveIndex`（边界夹紧，null 初态按方向落到首/末）/ `moveTab`（循环 `(cur+delta+len)%len`）抽纯函数单测。
+
+### 12.4 一键清理（`clear_history_by_filter`）
+
+`store::clear_history_by_filter(conn, filter, keep_favorite)` + Tauri 命令 `clear_clipboard_history_by_filter`——浮窗底栏「清理」按钮一键删当前 tab 类别下所有非收藏条目。
+
+- **「查询看到的 = 清理删除的」语义一致**：复用 `build_where`（filter→SQL 单一权威）拼 WHERE + `AND is_favorite = 0`，与 `clear_history` 对称（含 `cleanup_unreferenced_images`）。
+- **收藏 tab 自然删 0 条**：`filter="favorite"` + `keep_favorite=true` → `is_favorite = 1 AND is_favorite = 0` 恒假，后端无需特判，前端 `disabled` 按钮。
+- **两步 inline 确认**：点 1 次 → `confirming=true`（变红「再点确认」+ 3s 超时回退），再点才执行。filter 切换/卸载清 timer（防 A tab 点了第一步、切 B tab 误清 B）。
+- **与搜索框正交**：删整个 tab 类别非收藏，与搜索词无关。

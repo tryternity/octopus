@@ -107,6 +107,17 @@
 
 **流式 partial 渲染单调性**：`StreamingZipformer::process_chunks` 三个返回点统一经 `decoded_current()` 返回当前段文本，避免长短态逐帧交替闪烁。承载层幂等门（`text != transcript.full()` 才 apply）。前端跳变延迟合并（`DIVERTED_DELAY_MS=300`）。
 
+## 流式引擎复用（StreamingSessionManager）
+
+`crates/asr-local/src/streaming_engine.rs::StreamingSessionManager`——对齐离线 `AsrEngineManager`：按模型缓存 `Arc<dyn StreamingEngine>`，desktop 录音 `active_session(spec, lang)` 懒加载取用 + `reset()` 复用，消除每次录音秒级重载 encoder+decoder 两个 ONNX Session。
+
+- **靠 reset 复用、非并发共享**：ort `Session::run` 是 `&mut`，Session 本就不能跨连接并发；流式 `StreamingSession` 又有连接级状态（punct_prefix/decoder_caches…），故 reset 复用。
+- **`StreamingRunner.engine` 由 `Box` 改 `Arc`**：让 pipeline drop 时仅释放 Arc clone、manager 原 Arc 仍持有 → 引擎不销毁、下次复用。连带 server `WsStreamSession` 同步改 Arc。
+- **仅 desktop 接入**；server（每连接独立状态、连接结束即 drop，非大并发）与 cloud（独立路径）不接入——共享 ort Session 需拆动静字段而 ort 推理持 `&mut` 串行无并发收益（YAGNI）。
+- **max_cache=2 驱逐**：`set_active` 入缓存前淘汰非 active（保护正用）+ `probe(Unload)`，防用户配置多流式引擎反复切换致 OOM。
+- **模型变更懒加载覆盖**：`active_session` 检测 spec≠active 自动 switch，`switch_asr_engine` 无需主动联动本 manager。
+- **状态页联动**：`switch_model` 加 `probe(Before/After)`（id=`asr:<bare>`，与离线 `load_engine_into_cache` 同前缀），驱逐时 `probe(Unload)`——见 [desktop-app.md](./desktop-app.md) §13。
+
 ## 流式尾音冲刷（Active Flush）
 
 流式模式累积静音 ≥0.5s 时把憋住的尾音即时吐出，每个静音段仅触发一次（`flushed` 标志，恢复说话时重置）。**同时追加逗号**（`flush(insert_comma=true)`）。
