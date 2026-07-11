@@ -14,14 +14,14 @@ pub fn pinyin_initials(word: &str) -> String {
 /// 写入规范化：任意空白切词 → 去重 → 按 `(pinyin_initials, 词文本)` 升序 → 空格拼接。
 /// `hotword_sets.words_text` 始终经此函数，保持有序、去重的规范形态。
 pub fn normalize_words_text(words: &str) -> String {
-    let mut v: Vec<String> = words.split_whitespace().map(|s| s.to_string()).collect();
-    v.sort_by(|a, b| {
-        pinyin_initials(a)
-            .cmp(&pinyin_initials(b))
-            .then_with(|| a.cmp(b))
-    });
-    v.dedup(); // 排序后去相邻重复
-    v.join(" ")
+    // 预算拼音首字母（decorate），避免 sort_by 比较闭包里反复 pinyin_initials（每词被转多次）。
+    let mut keyed: Vec<(String, String)> = words
+        .split_whitespace()
+        .map(|s| (pinyin_initials(s), s.to_string()))
+        .collect();
+    keyed.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    keyed.dedup_by(|a, b| a.1 == b.1); // 排序后按词文本去相邻重复
+    keyed.into_iter().map(|(_, w)| w).collect::<Vec<_>>().join(" ")
 }
 
 #[cfg(test)]

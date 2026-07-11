@@ -1,6 +1,5 @@
 //! 候选挖掘：扫历史 ASR 文本，jieba 分词 + 词频过滤，低频高频专名 → 返回候选词列表（命令层追加到版本）。
-
-use jieba_rs::Jieba;
+//! jieba 复用 corrector 单例（见 collect_candidate_words），避免每次新建的词典加载开销。
 
 /// 用户历史中至少出现此次数才作候选。
 const MIN_USER_COUNT: usize = 2;
@@ -36,7 +35,8 @@ pub fn collect_candidate_words() -> anyhow::Result<Vec<String>> {
     if texts.is_empty() {
         return Ok(Vec::new());
     }
-    let jieba = Jieba::new();
+    // 复用 corrector 单例的 jieba（cut 是 &self 只读，线程安全）；避免每次挖掘重建词典。
+    let jieba = crate::corrector::get_corrector().jieba();
     let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
     for t in &texts {
         for w in jieba.cut(t, true) {

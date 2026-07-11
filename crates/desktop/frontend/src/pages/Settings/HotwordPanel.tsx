@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, useMemo } from 'react';
+import { useEffect, useState, useCallback, useMemo, useRef } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { cn } from '@/lib/utils';
@@ -77,6 +77,10 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
    *  关掉即丢弃；切菜单重进组件卸载也自然清空。 */
   const [minePending, setMinePending] = useState<{ words: string[]; selected: Set<string> } | null>(null);
   const [mineInput, setMineInput] = useState('');
+  // Escape 取消守卫：Escape 置 true → commitCreate/commitRename 吞掉 input 卸载触发的 blur 提交；
+  // 每次打开输入（按钮 / startRename）重置 false，防残留误吞下次正常 Enter/失焦提交。
+  const createCancelledRef = useRef(false);
+  const renameCancelledRef = useRef(false);
 
   /** 高亮"最近一次新增"的词：直接替换（非累加）。
    *  下次新增 → 替换为新词；切菜单重进 → 组件重挂 state 自然清空。无需定时器。 */
@@ -115,14 +119,20 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
     });
   }, [words, query, sort, hits]);
 
-  const totalActiveWords = useMemo(
-    () => sets.filter((s) => s.enabled).reduce((n, s) => n + new Set(s.wordsText.split(/\s+/).filter(Boolean)).size, 0),
-    [sets],
-  );
+  // 生效词数 = 所有 enabled 版本词的**全局并集去重**（与后端 list_active_hotword_words 一致）；
+  // 旧实现按版本 Set.size 求和会跨版本同词重复计。
+  const totalActiveWords = useMemo(() => {
+    const active = new Set<string>();
+    for (const s of sets) {
+      if (s.enabled) s.wordsText.split(/\s+/).filter(Boolean).forEach((w) => active.add(w));
+    }
+    return active.size;
+  }, [sets]);
 
   // ── 版本操作 ──
   // 新建 / 导入新版本：inline input 输入名（WKWebView 不支持 window.prompt）。
   const commitCreate = useCallback(async () => {
+    if (createCancelledRef.current) { createCancelledRef.current = false; return; } // Escape 取消：吞掉卸载触发的 blur
     const name = createVal.trim();
     const mode = creating;
     setCreating(null);
@@ -143,8 +153,9 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
     catch (e) { showToast('切换失败：' + e); }
   }, [refresh, showToast]);
 
-  const startRename = (id: number, cur: string) => { setRenaming(id); setRenameVal(cur); };
+  const startRename = (id: number, cur: string) => { renameCancelledRef.current = false; setRenaming(id); setRenameVal(cur); };
   const commitRename = useCallback(async (id: number) => {
+    if (renameCancelledRef.current) { renameCancelledRef.current = false; return; } // Escape 取消：吞掉卸载触发的 blur
     const name = renameVal.trim();
     if (!name) { setRenaming(null); return; }
     try { await invoke('rename_hotword_set', { id, name }); await refresh(); }
@@ -284,16 +295,16 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                   value={createVal}
                   onChange={(e) => setCreateVal(e.target.value)}
                   onBlur={commitCreate}
-                  onKeyDown={(e) => { if (e.key === 'Enter') commitCreate(); if (e.key === 'Escape') { setCreating(null); setCreateVal(''); } }}
+                  onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { createCancelledRef.current = true; setCreating(null); setCreateVal(''); } }}
                   placeholder={creating === 'create' ? '版本名称（Enter 确认 / Esc 取消）' : '导入版本名称（Enter 后再选 txt）'}
                   className="flex-1 min-w-0 bg-background border border-voice/50 rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice"
                 />
               ) : (
                 <>
-                  <button onClick={() => { setCreating('create'); setCreateVal(''); }} className="flex items-center gap-1.5 rounded-md bg-voice px-3 py-1.5 text-sm font-medium text-white hover:opacity-90">
+                  <button onClick={() => { createCancelledRef.current = false; setCreating('create'); setCreateVal(''); }} className="flex items-center gap-1.5 rounded-md bg-voice px-3 py-1.5 text-sm font-medium text-white hover:opacity-90">
                     <Plus className="w-4 h-4" /> 新建版本
                   </button>
-                  <button onClick={() => { setCreating('import'); setCreateVal(''); }} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">
+                  <button onClick={() => { createCancelledRef.current = false; setCreating('import'); setCreateVal(''); }} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">
                     <Upload className="w-3.5 h-3.5" /> 导入新版本
                   </button>
                 </>
@@ -309,7 +320,7 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                       value={renameVal}
                       onChange={(e) => setRenameVal(e.target.value)}
                       onBlur={() => commitRename(s.id)}
-                      onKeyDown={(e) => { if (e.key === 'Enter') commitRename(s.id); if (e.key === 'Escape') setRenaming(null); }}
+                      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { renameCancelledRef.current = true; setRenaming(null); } }}
                       className="flex-1 min-w-0 bg-background border border-voice/50 rounded px-1.5 py-0.5 text-sm outline-none"
                     />
                   ) : (
