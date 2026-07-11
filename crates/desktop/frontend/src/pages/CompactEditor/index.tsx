@@ -259,9 +259,9 @@ function CompactEditor() {
       {/* tab 栏 */}
       {tabs.length > 0 && (
         <div className="flex-shrink-0 flex items-center gap-0.5 px-1.5 py-1 border-b border-border bg-muted overflow-x-auto thin-scrollbar">
-          {tabs.map((t, i) => (
+          {tabs.map((tab, i) => (
             <div
-              key={t.key}
+              key={tab.key}
               className={`group/tab flex items-center gap-1 pl-2.5 pr-1 py-1 rounded-md text-xs whitespace-nowrap cursor-pointer transition-colors ${
                 i === activeIdx
                   ? "bg-background text-foreground shadow-sm border border-border"
@@ -269,11 +269,11 @@ function CompactEditor() {
               }`}
               onClick={() => setActiveIdx(i)}
             >
-              {tabIcon(t)}
-              <span className="max-w-[140px] truncate">{tabTitle(t)}</span>
+              {tabIcon(tab)}
+              <span className="max-w-[140px] truncate">{tabTitle(tab)}</span>
               <button
                 type="button"
-                title={ti18n("tab.close")}
+                title={t("tab.close")}
                 onClick={(e) => { e.stopPropagation(); closeTab(i); }}
                 className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
               >
