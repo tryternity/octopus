@@ -4,7 +4,7 @@
 //! 保证）→ 单个 WSS session → 完整文本。VAD 分段 + CJK 连接由
 //! `asr::pipeline::transcribe_segments` 自动完成，本引擎不分段、不拼接。
 //!
-//! `skip_corrector() = true`：云端结果质量高，跳过本地拼音纠错（对齐桌面端云端行为）；
+//! `skip_corrector() = false`：corrector 已重构为「有界热词纠错」（候选仅 HotwordIndex，空热词 no-op），云端也安全（命中用户热词才纠）；
 //! 简繁转换仍由 `transcribe_batch` 处理。
 
 use crate::open_cloud_session;

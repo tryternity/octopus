@@ -27,7 +27,7 @@ octopus/
 
 ### octopus-infra（基础设施）
 
-无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `prompts` 表 / `clipboard_history` 表（统一存储 text/voice/ocr/image/file，吞并原 `transcriptions` 表）+ FTS5 虚表 / `image_data` 表）+ `net`（网络超时常量：WS/HTTP/gRPC/下载，各 crate 统一引用避免散落不一致）。DB schema 当前 v22（v17→v18：FTS5 backfill；v18→v19：action_bar_items 表；v19→v20：hotwords 表 + paste_input_source_switch；v20→v21：action_bar_items 加 is_async/write_output_to_clipboard 列 + script_runs 表；v21→v22：env 变量 seed。**开发期简化**：`init_schema` 以 db.sql 为唯一 schema 真相——`user_version >= 22` 跳过，v17+ 库跑增量迁移升到 v22（FTS5 backfill + ALTER TABLE 补列 + env seed），其他（含全新库）跑 db.sql 建表+seed+yaml 导入一次性到 v22，无 DROP 兜底（开发期无旧库需兼容）。`ensure_db` 打开后设 `PRAGMA journal_mode=WAL` + `busy_timeout=5000`（多任务并发友好，server 多连接不再 SQLITE_BUSY）；`save_app_config` 30 字段写入包 `unchecked_transaction`（原子，中途崩溃全回滚，不再配置半更新）。voice 历史搜索走 FTS5 MATCH（trigram 倒排索引，>=3 字符），<3 字符回退 LIKE（trigram 无法生成 3-gram）。`with_db` 为公开 API 供其他 crate 调用。**并发约束**：`with_db` 内部用 `parking_lot::ReentrantMutex`（**同线程可重入**，无毒化）——闭包内可安全地再调 `with_db`（如间接读 config / 查模型 meta），不再有历史 `Mutex`（非递归）期的同线程重入死锁（arch-fixes ③，2026-07-06）；回归测试 `with_db_reentrant_no_deadlock` 守护，退回 `Mutex` 会挂起。仍为单连接排他（性能上限，非死锁），server 上量再上 r2d2 池。
+无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `prompts` 表 / `clipboard_history` 表（统一存储 text/voice/ocr/image/file，吞并原 `transcriptions` 表）+ FTS5 虚表 / `image_data` 表）+ `net`（网络超时常量：WS/HTTP/gRPC/下载，各 crate 统一引用避免散落不一致）。DB schema 当前 v23（v17→v18：FTS5 backfill；v18→v19：action_bar_items 表；v19→v20：hotwords 表 + paste_input_source_switch；v20→v21：action_bar_items 加 is_async/write_output_to_clipboard 列 + script_runs 表；v21→v22：env 变量 seed；v22→v23：hotword_sets + hotword_hits + db.sql seed 默认「通用」版本。**开发期简化**：`init_schema` 以 db.sql 为唯一 schema 真相——`user_version >= 23` 跳过，v17+ 库跑增量迁移升到 v23（FTS5 backfill + ALTER TABLE 补列 + env seed + v22→v23 热词多版本迁移），其他（含全新库）跑 db.sql 建表+seed+yaml 导入一次性到 v23，无 DROP 兜底（开发期无旧库需兼容）。`ensure_db` 打开后设 `PRAGMA journal_mode=WAL` + `busy_timeout=5000`（多任务并发友好，server 多连接不再 SQLITE_BUSY）；`save_app_config` 30 字段写入包 `unchecked_transaction`（原子，中途崩溃全回滚，不再配置半更新）。voice 历史搜索走 FTS5 MATCH（trigram 倒排索引，>=3 字符），<3 字符回退 LIKE（trigram 无法生成 3-gram）。`with_db` 为公开 API 供其他 crate 调用。**并发约束**：`with_db` 内部用 `parking_lot::ReentrantMutex`（**同线程可重入**，无毒化）——闭包内可安全地再调 `with_db`（如间接读 config / 查模型 meta），不再有历史 `Mutex`（非递归）期的同线程重入死锁（arch-fixes ③，2026-07-06）；回归测试 `with_db_reentrant_no_deadlock` 守护，退回 `Mutex` 会挂起。仍为单连接排他（性能上限，非死锁），server 上量再上 r2d2 池。
 
 ### octopus-asr-local（核心推理库）
 
@@ -699,7 +699,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 - **作用范围**：corrector 现为「有界热词纠错」，所有中文引擎都经此层（sensevoice-orig / qwen3 / 云端四家 `skip_corrector()` 2026-07-10 全改 `false`——有界版无热词即 no-op，过纠不可能发生，高质量引擎也受益）。跳过仅两类：①「language=en」——corrector 是中文拼音纠错器，对英文无意义且可能扰动，`transcribe_with_vad` 在注入点基于 `language=en`（desktop=`config.language`、server=请求、CLI=`--language`）自动跳过，覆盖 moonshine 等 en-only 模型；② `app_config.asr_correct=false`（主开关，默认关）。诊断教训：直调 `engine.transcribe()` 的 e2e 绕过 pipeline 的 corrector 会掩盖纠错效果，须走完整 pipeline。
 
 - **方言模糊规则可配**（2026-07-10）：四组方言混淆做成用户可勾选开关（设置页「热词管理」面板，复用 Settings 的 Card/Row/Toggle 设计语言），存 `app_config.fuzzy_dialect`（逗号分隔 token）：`f/h`（声母 f→h）、`hu/wu`（单字 hu→wu + 其余 huX→wX 如 huang→wang）、`n/l`（声母 n→l）、`r/l`（声母 r→l，n/r/l 在 n/l+r/l 同开时都归一到 l，首字母不同互不冲突）。基础规则（平翘舌 + 前后鼻音）始终开。归一化单向、索引与查询共用 `normalize_fuzzy_pinyin` → 双向对称命中；规则变更经 `corrector::reload_fuzzy_dialect` 重建索引（key 由 normalize 生成，规则变 key 必变）。**r/l 已知局限**：仅救首字（如「热词→乐视」，r/l 把首字「热 re→le」与「乐」归一一致，但第二字「词 ci」≠「视 shi→si」，sh/c 刻意不归一避免级联误命中）；对纯 r/l 混淆（热↔乐、肉↔漏、人↔林）完整有效。**注**：当前为「有界热词纠错」——候选源从「全词典倒排索引」改为「用户热词 `HotwordIndex`」（命中即替换，过纠根因消失）；下方滑窗 / Bigram 打分 / jieba 惩罚 / 贪心扫描算法**保留**，仅在热词候选间排序。
-- **拼音首字母搜索**（2026-07-10）：`hotword::pinyin_initials(word)`（汉字→大写首字母串，非汉字跳过：八爪鱼→BZY、浮窗→FC、热词→RC）供设置页生效热词的拼音首字母前缀搜索与字母排序；与纠错共用同一 `pinyin` crate 保证一致。
+- **拼音首字母 + 写入规范化**（2026-07-10，2026-07-11 搬至 `infra::hotword_text` 供 db.rs 迁移复用、消除 asr-local 循环依赖）：`pinyin_initials(word)`（汉字→大写首字母串，非汉字跳过：八爪鱼→BZY、浮窗→FC、热词→RC）+ `normalize_words_text(words)`（任意空白切词→去重→按 `(pinyin_initials, 词文本)` 升序→空格拼接）。后者用于热词版本 `words_text` 写入规范化（始终保持有序去重形态）；前端搜索改为汉字包含 + 字母/命中度排序。与纠错共用同一 `pinyin` crate 保证一致。
 
 ### 纠错算法逻辑
 1. **滑窗候选召回 (Sliding Window)**：使用 2 字和 3 字的字符滑窗扫描识别出的文本，通过拼音库计算滑窗文本的拼音，并在此拼音的 $O(1)$ 模糊拼音倒排索引（支持南方口音混淆，如 `zh/ch/sh` <-> `z/c/s`、`in/en` <-> `ing/eng`、`n` <-> `l`、`r` <-> `l` 等）中召回**相同字符长度**的同音/近音候选词。
@@ -708,6 +708,21 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
    - 如果原滑窗词是 Jieba 字典中的已登录词（即 `jieba.cut().len() == 1`，说明它是合法的词，如 `"坐上"`），系统施加极高的修改惩罚（`-1.5`）以保护正确表述不被误改；
    - 如果原滑窗词是未登录词（typo，如 `"以经"` 被 Jieba 拆分为 `"以"` 和 `"经"`），则修改惩罚降低（`-0.2`）以积极纠错。
 4. **单次贪心扫描**：`correct_greedy` 从左到右单次 `while` 扫描，每处取最优候选词**原地替换**后步进整个窗口宽度（`i += sz`，跳过已纠正字防重叠二次纠错），未替换才 `i += 1`，替代旧 `correct_depth` 的递归回头（最多 5 轮全句扫描）。性能从 $O(N^3 \cdot K)$（全句 clone + 全句分词 × 候选数 × 递归轮数）降到 $O(N \cdot K \cdot 30^2)$（局部窗口分词 × 候选数 × 单轮）。
+
+## 热词多版本管理（hotword-sets）
+
+v1 扁平单表 `hotwords`（word/status/hit_count）于 2026-07-11 升级为「多版本词表 + 多选叠加 + 全局命中」（spec：[2026-07-11-hotword-sets-design.md](superpowers/specs/2026-07-11-hotword-sets-design.md)）。不同工作/场景用不同热词集合，像「主题」一样可切换，多个版本同时勾选叠加生效。
+
+- **数据层**（`infra/db.rs` + `db.sql`，schema v22→v23）：
+  - `hotword_sets`（版本）：`id / name(UNIQUE) / enabled / words_text / created_at / updated_at`。`words_text` 是空格分隔的规范词文本——版本 = 一坨纯文本，**非逐词 DB 行**。
+  - `hotword_hits`（全局命中）：`word(PK) / hit_count`。命中按词全局记一份，**不绑版本**（同词跨版本命中累加到同一行）。
+  - 全新库由 db.sql seed 默认空「通用」版本（`INSERT OR IGNORE`，开箱即用）；升级库（v22）v23 一次性迁移：现有 active 热词 → 「通用」版本 `words_text`（normalize 排序去重；db.sql 已 seed 的空「通用」经 `ON CONFLICT` upsert 并入 active 词、不丢词），hit_count → `hotword_hits`，pending 词丢弃。旧 `hotwords` 表保留停用（不 DROP，留待后续清理）；Rust 侧旧 hotword 函数（`list_hotwords`/`insert_hotword`/`confirm_pending_hotword` 等）已删。
+- **生效词 = enabled 版本并集**（`list_active_hotword_words`）：`SELECT words_text FROM hotword_sets WHERE enabled=1` → 切词去重并集 → `HotwordIndex`。多选叠加；全关 = 空集 = corrector no-op（零过纠铁证保留）。签名 `() -> Vec<String>` 不变，main.rs setup / reload 调用点零改。
+- **命中全局**（`bump_hotword_hit_by_word`）：corrector 命中替换某词 → pipeline 经 `drain_hits()` 取走命中词 → `hotword_hits` 该词 `INSERT ... ON CONFLICT(word) DO UPDATE SET hit_count=hit_count+1` upsert +1。命中分层保留（corrector 只收集、pipeline 写库），与版本无关。
+- **UI**（设置页「热词」面板 `HotwordPanel.tsx`）：方言模糊 Card（f/h、hu/wu、n/l、r/l，存 `app_config.fuzzy_dialect`）保留 + 版本管理 Card（enabled toggle / 行内重命名 / 导出 / 删除 / 新建 / 导入新版本，inline input 输入名）+ 选中版本卡片网格（单词添加 / 卡片✕删 / 命中数 inline 且 >0 高亮 / 汉字搜索 / 默认·字母·命中度排序 / 导入追加·覆盖 / 挖掘）。**挖掘确认面板**（点「挖掘」展开）：候选词 chip 默认全选可逐个取消/手动补词，确认才 `add_words_to_set` 落库。新增词一次性高亮定位（`recentlyAdded` 替换语义，组件重挂自然清空）。用户体感 = 逐词管理，底层系统透明维护 `words_text`。
+- **导入/导出**（`import_hotwords` / `export_hotwords`，`spawn_blocking` + `tauri-plugin-dialog`）：txt 纯文本（词任意空白分隔）；导入三模式——`new`（新建版本）/ `append`（追加并集）/ `overwrite`（覆盖），均经 normalize。导出某版本 `words_text` → 用户选路径存 txt。
+- **挖掘**（`miner::collect_candidate_words`）：扫历史 transcript + jieba 分词 + 词频过滤（≥MIN_USER_COUNT），返回候选词 `Vec<String>`（**不写 DB**，废弃 v1 的 pending→逐词确认流）。两步确认：命令层 `list_hotword_candidates` 仅返回候选 → 前端确认面板（默认全选、可取消勾选、可手动补词）→ 用户确认才调 `add_words_to_set(id, words)` 批量追加到当前选中版本（不再直接落库、无弹窗选版本）。
+- **desktop 命令**（`hotword_commands.rs`，12 个 Tauri 命令）：`list_hotword_sets` / `create_hotword_set` / `rename_hotword_set` / `delete_hotword_set` / `toggle_hotword_set` / `add_word_to_set` / `remove_word_from_set` / `add_words_to_set`（批量，挖掘确认用） / `list_hotword_hits` / `list_hotword_candidates`（候选不写库） / `import_hotwords` / `export_hotwords`。写操作后统一 `reload_after_write` 刷新 corrector 热词索引。
 
 ## ASR 输出简繁归一化 (Hans Variant Normalization)
 
