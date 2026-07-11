@@ -1,10 +1,11 @@
-import { useState, useRef, useEffect, useCallback, type ReactNode } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { invoke, listen } from "@/lib/tauri";
 import {
-  Undo2, Redo2, ZoomIn, ZoomOut, Search, Eraser, Save, X,
-  ChevronUp, ChevronDown, Replace, Check, Type, Eye, Mic,
+  X, Type, Eye, Mic,
 } from "lucide-react";
 import ImagePreviewComponent from "@/pages/ImagePreview";
+import { MarkdownPane } from "./MarkdownPane";
+import { useT } from "@/lib/i18n";
 
 interface Tab {
   key: string;
@@ -77,20 +78,8 @@ function readInitialTabFromUrl(): { tabs: Tab[]; hasInitial: boolean } {
   return { tabs: [{ key, source: source as any, itemId: id, itemType: "text" as const, text }], hasInitial: true };
 }
 
-// 定义在组件外部——避免每次渲染创建新函数引用导致子树 unmount/remount
-const ToolBtn = ({ onClick, title, disabled, children }: {
-  onClick: () => void; title: string; disabled?: boolean; children: ReactNode;
-}) => (
-  <button
-    type="button"
-    disabled={disabled}
-    title={title}
-    onClick={onClick}
-    className="p-1.5 rounded-md text-muted-foreground hover:bg-accent hover:text-foreground disabled:opacity-30 disabled:hover:bg-transparent transition-colors"
-  >{children}</button>
-);
-
 function CompactEditor() {
+  const t = useT();
   const [initial] = useState(() => readInitialTabFromUrl());
   const [tabs, setTabs] = useState<Tab[]>(initial.tabs);
   const [initialLoading, setInitialLoading] = useState(!initial.hasInitial);
@@ -101,13 +90,7 @@ function CompactEditor() {
   });
   const [savedFlash, setSavedFlash] = useState(false);
   const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  const [showFind, setShowFind] = useState(false);
-  const [findQuery, setFindQuery] = useState("");
-  const [replaceQuery, setReplaceQuery] = useState("");
-  const [matchIdx, setMatchIdx] = useState(-1);
-  const [matches, setMatches] = useState<number[]>([]);
 
-  const taRef = useRef<HTMLTextAreaElement>(null);
   const tabsRef = useRef<Tab[]>([]);
   useEffect(() => { tabsRef.current = tabs; }, [tabs]);
   // 并发加载占位：loadAndAddTab 的 await 期间 tabsRef 尚未更新，快速连点同一 item 会
@@ -117,11 +100,6 @@ function CompactEditor() {
   const active = tabs[activeIdx];
   const isReadOnly = active?.source === 'transcription';
 
-  const updateActiveText = useCallback((next: string) => {
-    setTabs(prev => prev.map((t, i) => (i === activeIdx ? { ...t, text: next } : t)));
-  }, [activeIdx]);
-
-  // 按 index 更新任意 tab 文本（hidden 挂载的 textarea 需要）
   const updateActiveTextAt = useCallback((next: string, idx: number) => {
     setTabs(prev => prev.map((t, i) => (i === idx ? { ...t, text: next } : t)));
   }, []);
@@ -131,9 +109,6 @@ function CompactEditor() {
     const key = `${source}:${itemId}`;
     const existIdx = tabsRef.current.findIndex(t => t.key === key);
     if (existIdx >= 0) { setActiveIdx(existIdx); return; }
-    // 并发拦截：await invoke 期间 tabsRef 尚未更新，同一 key 的二次调用会重复添加。
-    // pendingKeysRef 在 await 前同步占位（JS 单线程，await 前同步段不被中断）；setTabs
-    // 内再 prev.some 双保险（防 tabsRef 本身 stale）。finally 释放，失败可重试。
     if (pendingKeysRef.current.has(key)) return;
     pendingKeysRef.current.add(key);
     try {
@@ -158,9 +133,6 @@ function CompactEditor() {
           }
           return [...next, { key, source: 'clipboard' as const, itemId, itemType: 'image' as const }];
         });
-        // setActiveIdx 在 setTabs 回调外无法拿到新长度——用 next.length 计算。
-        // 淘汰时数组长度不变（去掉一个加一个），新增时 +1。
-        // tabsRef 可能 stale，所以用 setTabs 的 callback 形式同步更新 ref。
         setTabs(prev => {
           const newIdx = prev.findIndex(t => t.key === key);
           if (newIdx >= 0) {
@@ -186,7 +158,6 @@ function CompactEditor() {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
     (async () => {
-      // main: 批量 get_pending_compact_tabs；feature: isTemp 支持
       const pendingTabs = await invoke<PendingTabFull[]>("get_pending_compact_tabs");
       if (cancelled) return;
       if (pendingTabs.length > 0) {
@@ -203,7 +174,6 @@ function CompactEditor() {
         });
       }
       setInitialLoading(false);
-      setTimeout(() => taRef.current?.focus(), 0);
       const fn = await listen("compact-editor://open-tab", (payload) => {
         const p = payload as OpenTabPayload;
         if (p.source === 'temp') {
@@ -225,12 +195,10 @@ function CompactEditor() {
 
   const doSave = useCallback(async () => {
     if (!active) return;
-    if (active.isTemp) return; // 临时 tab 不可保存
+    if (active.isTemp) return;
     try {
       if ((active.text || "").trim() === "") {
-        // 清空后保存 = 删除条目（空内容无意义）；后端 delete_clipboard_item 已 emit clipboard://changed 通知列表刷新
         await invoke("delete_clipboard_item", { id: active.itemId });
-        // 关闭该 tab：仅剩一个则关窗，否则移除并修正 activeIdx
         if (tabs.length <= 1) {
           invoke("close_compact_editor");
           return;
@@ -251,7 +219,6 @@ function CompactEditor() {
 
   // keydown 监听器稳定化：doSave 依赖 [active, activeIdx, tabs.length]，active.text 每键变 → doSave
   // 每键拿新引用；若 keydown useEffect deps 含 doSave，监听器每键 remove+add（GC 压力）。改用 ref：
-  // 监听器只挂载一次，调 doSaveRef.current() 取最新；doSave 本身仍供按钮 onClick 直接用。
   const doSaveRef = useRef(doSave);
   useEffect(() => { doSaveRef.current = doSave; }, [doSave]);
 
@@ -261,168 +228,28 @@ function CompactEditor() {
       invoke("close_compact_editor");
       return;
     }
-    // 函数式更新：快速连点关两个 tab 时，非函数式 setTabs(next) 基于闭包 tabs（stale），
-    // 第二次覆盖第一次 → 被关的 tab 复活。setTabs 走 prev 链式（setActiveIdx 本就函数式）。
     setTabs(prev => prev.filter((_, i) => i !== idx));
     setActiveIdx(i => {
       if (idx < i) return i - 1;
-      if (idx === i) return Math.min(i, tabs.length - 2); // 过滤后 length=tabs.length-1，max idx=tabs.length-2
+      if (idx === i) return Math.min(i, tabs.length - 2);
       return i;
     });
   };
 
-  const charCount = active ? [...(active.text || "")].length : 0;
-
-  // ── 字号 ──
-  const decFont = () => setFontSize(f => Math.max(FONT_MIN, f - 1));
-  const incFont = () => setFontSize(f => Math.min(FONT_MAX, f + 1));
+  // 字号记忆
   useEffect(() => { localStorage.setItem(FONT_KEY, String(fontSize)); }, [fontSize]);
 
-  // ── 撤销/重做：execCommand 触发 textarea 原生栈（按钮路径；实测在 WKWebView 工作）──
-  const undo = () => { taRef.current?.focus(); document.execCommand("undo"); };
-  const redo = () => { taRef.current?.focus(); document.execCommand("redo"); };
-
-  // ── 清空当前 tab 文本（二次确认）──
-  const [clearPending, setClearPending] = useState(false);
-  const clearAll = () => {
-    if (!clearPending) { setClearPending(true); setTimeout(() => setClearPending(false), 2000); return; }
-    updateActiveText(""); setClearPending(false); setMatches([]); setMatchIdx(-1);
-  };
-
-  // ── 查找/替换（基于 active.text；图片 tab text=undefined → ""）──
-  // 收集 text 中 q 的所有匹配起点（大小写不敏感，runFind/replaceOne/replaceAll 共用同一口径）。
-  const collectMatches = (text: string, q: string): number[] => {
-    if (!q) return [];
-    const lower = text.toLowerCase();
-    const needle = q.toLowerCase();
-    const idxs: number[] = [];
-    let from = 0;
-    while (true) {
-      const i = lower.indexOf(needle, from);
-      if (i === -1) break;
-      idxs.push(i);
-      from = i + needle.length;
-    }
-    return idxs;
-  };
-
-  const selectRange = (start: number, len: number) => {
-    const ta = taRef.current;
-    if (!ta || !active) return;
-    ta.focus();
-    ta.setSelectionRange(start, start + len);
-    // 不手算 scrollTop：split("\n").length 在 soft wrap 下低估实际渲染行 → 算出的
-    // scrollTop 偏上 → 目标匹配挡在视口下方看不见。setSelectionRange 原生会滚动使选区
-    // 可见，WebKit 按实际渲染行（soft-wrap / 硬换行都准确）定位，无需手算行高。
-    // 焦点留在正文（不还回查找框）：WKWebView 下 textarea 失焦后选区高亮不渲染，必须保持
-    // focus 才能看到匹配被选中。查找模式下的连续 Enter 跳转 / 防误删换行改由正文 onKeyDown
-    // 拦截 Enter 实现（见下方 textarea），而非靠查找框持焦。
-  };
-
-  // runFind 只负责「重算匹配 + 更新计数」，绝不 selectRange：selectRange 内部 ta.focus()
-  // 会把焦点从查找框抢到正文，导致用户在查找框每打一个字符就被拽走、输不全查找词。
-  // matchIdx 统一重置为 -1（未定位哨兵）：计数显示 0/N；跳转交给 Enter / ↑↓ 按钮（gotoMatch），
-  // 首次 gotoMatch(1) 落第一项、gotoMatch(-1) 落末项。
-  const runFind = useCallback((): number[] => {
-    if (!findQuery || !active) { setMatches([]); setMatchIdx(-1); return []; }
-    const idxs = collectMatches(active.text || "", findQuery);
-    setMatches(idxs);
-    setMatchIdx(-1);
-    return idxs;
-  }, [findQuery, active]);
-
-  // 仅在 findQuery 变化（用户输入查找词）时跳转到第一个匹配，不在 text 变化时跳
-  const prevFindQuery = useRef("");
-  const findDebounce = useRef<ReturnType<typeof setTimeout> | null>(null);
-  useEffect(() => {
-    if (!showFind) return;
-    // findQuery 变化 → 立即重新匹配 + 跳转。用 runFind 同步返回的 idxs 跳转，不读 matches：
-    // setMatches 异步，同帧闭包 matches 是旧值（首次为 []）→ 跳转失效或落到旧匹配错位。
-    if (findQuery !== prevFindQuery.current) {
-      // 用户在查找框输入 → 立即重算匹配计数，但【不跳转/不 selectRange】：selectRange 的
-      // ta.focus() 会抢走查找框焦点，导致每输一个字符就被拽到正文、输不全查找词。
-      // 计数由 runFind 更新（matchIdx=-1 → 显示 0/N）；跳转交给 Enter / ↑↓ 按钮（gotoMatch）。
-      prevFindQuery.current = findQuery;
-      if (findDebounce.current) clearTimeout(findDebounce.current);
-      runFind();
-      return;
-    }
-    // text 变化（打字/编辑）→ debounce 150ms 后更新匹配计数（避免每键扫描全文）
-    if (findDebounce.current) clearTimeout(findDebounce.current);
-    findDebounce.current = setTimeout(() => runFind(), 150);
-    // 清理：关查找栏（showFind→false 重跑本 effect）或卸载时取消 pending timer，避免到期后
-    // runFind 在已隐藏/已卸载组件上跑全文扫描。deps 不含 matches——否则 runFind 设 matches
-    // （每次新数组引用）→ effect 重跑 → 再设 timer → 每 150ms 空转循环扫描全文。
-    return () => { if (findDebounce.current) clearTimeout(findDebounce.current); };
-  }, [findQuery, showFind, runFind]);
-
-  const gotoMatch = (delta: number) => {
-    if (matches.length === 0) return;
-    // matchIdx=-1（未定位，刚改完查找词）时，Enter/↓ 落第一项、Shift+Enter/↑ 落末项；
-    // 否则按 delta 环形跳转。-1 是哨兵不是真实索引，不能直接进模运算。
-    let next: number;
-    if (matchIdx < 0) {
-      next = delta > 0 ? 0 : matches.length - 1;
-    } else {
-      next = (matchIdx + delta + matches.length) % matches.length;
-    }
-    setMatchIdx(next);
-    selectRange(matches[next], findQuery.length);
-  };
-
-  const replaceOne = () => {
-    if (matchIdx < 0 || !findQuery || !active) return;
-    const start = matches[matchIdx];
-    const next = (active.text || "").slice(0, start) + replaceQuery + (active.text || "").slice(start + findQuery.length);
-    updateActiveText(next);
-    // 基于 next 重算（setTimeout(runFind) 闭包会拿到旧 active，在替换前文本上匹配/选中错位）。
-    // 替换当前项后该位置匹配消失、后续前移 → 原 matchIdx 即指向下一项；clamp 防越界（末项被替后回退到新末项）。
-    const idxs = collectMatches(next, findQuery);
-    setMatches(idxs);
-    const nextIdx = idxs.length > 0 ? Math.min(matchIdx, idxs.length - 1) : -1;
-    setMatchIdx(nextIdx);
-    if (nextIdx >= 0) selectRange(idxs[nextIdx], findQuery.length);
-  };
-
-  const replaceAll = () => {
-    if (!findQuery || !active) return;
-    // 大小写不敏感全局替换（与 runFind 的 toLowerCase 口径一致；split 是大小写敏感的，会漏替大小写不同的匹配）。
-    const escaped = findQuery.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const next = (active.text || "").replace(new RegExp(escaped, "gi"), () => replaceQuery);
-    updateActiveText(next);
-    const idxs = collectMatches(next, findQuery);
-    setMatches(idxs);
-    setMatchIdx(idxs.length > 0 ? 0 : -1);
-    if (idxs.length > 0) selectRange(idxs[0], findQuery.length);
-  };
-
-  // ── 快捷键 ──
+  // ── 快捷键（仅保留 Cmd+S / Cmd+Enter 保存）──
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      // IME 组字期放行所有快捷键：让 Esc 等键交给 IME 取消候选词。
       if (e.isComposing || e.keyCode === 229) return;
       const mod = e.metaKey || e.ctrlKey;
-      // Cmd/Ctrl+Z undo、+Shift 或 +Y redo：受控 textarea 的原生 undo 栈被每次输入后 React value
-      // 同步清空（WebKit 行为）→ 键盘失灵；改走 execCommand（同按钮路径，文档级 transaction 栈，可用）。
-      if (mod && (e.key.toLowerCase() === "z" || e.key.toLowerCase() === "y")) {
-        e.preventDefault();
-        taRef.current?.focus();
-        const isRedo = e.key.toLowerCase() === "y" || e.shiftKey;
-        document.execCommand(isRedo ? "redo" : "undo");
-        return;
-      }
-      // doSave 经 ref 调用：监听器只挂载一次（deps 仅 showFind），避免 active.text 每键变 → doSave
-      // 新引用 → 监听器每键 remove+add 的 GC 压力。
       if (mod && e.key === "Enter") { e.preventDefault(); if (!active?.itemType || active.itemType === 'text') doSaveRef.current(); return; }
       if (mod && e.key.toLowerCase() === "s") { e.preventDefault(); if (!active?.itemType || active.itemType === 'text') doSaveRef.current(); return; }
-      if (e.key === "Escape") {
-        if (showFind) { setShowFind(false); return; }
-      }
-      if (mod && e.key.toLowerCase() === "f") { e.preventDefault(); setShowFind(true); return; }
     };
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [showFind]);
+  }, [active?.itemType]);
 
   return (
     <div className="flex flex-col h-full bg-background">
@@ -443,7 +270,7 @@ function CompactEditor() {
               <span className="max-w-[140px] truncate">{tabTitle(t)}</span>
               <button
                 type="button"
-                title="关闭"
+                title={t("editor.clear") === "清空" ? "关闭" : "Close"}
                 onClick={(e) => { e.stopPropagation(); closeTab(i); }}
                 className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
               >
@@ -454,76 +281,12 @@ function CompactEditor() {
         </div>
       )}
 
-      {/* 工具栏（仅文本 tab 显示） */}
-      {active && active.itemType !== 'image' && !isReadOnly && (
-        <div className="flex-shrink-0 flex items-center gap-0.5 px-2 py-1.5 border-b border-border bg-muted">
-          <ToolBtn onClick={undo} title="撤销 (Cmd+Z)"><Undo2 className="w-4 h-4" /></ToolBtn>
-          <ToolBtn onClick={redo} title="重做 (Cmd+Shift+Z)"><Redo2 className="w-4 h-4" /></ToolBtn>
-          <span className="w-px h-4 bg-border mx-1" />
-          <ToolBtn onClick={decFont} title="缩小字号" disabled={fontSize <= FONT_MIN}><ZoomOut className="w-4 h-4" /></ToolBtn>
-          <span className="text-[11px] text-muted-foreground w-7 text-center tabular-nums">{fontSize}</span>
-          <ToolBtn onClick={incFont} title="放大字号" disabled={fontSize >= FONT_MAX}><ZoomIn className="w-4 h-4" /></ToolBtn>
-          <span className="w-px h-4 bg-border mx-1" />
-          <ToolBtn onClick={() => setShowFind(v => !v)} title="查找/替换 (Cmd+F)"><Search className="w-4 h-4" /></ToolBtn>
-          <ToolBtn onClick={clearAll} title="清空">
-            {clearPending ? <Check className="w-4 h-4 text-red-500" /> : <Eraser className="w-4 h-4" />}
-          </ToolBtn>
-          <div className="flex-1" />
-          <span className="text-[11px] text-muted-foreground mr-2 tabular-nums">{charCount} 字</span>
-          <button
-            type="button"
-            disabled={active?.isTemp}
-            onClick={doSave}
-            className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs transition-colors ${
-              active?.isTemp
-                ? "bg-muted text-muted-foreground cursor-not-allowed"
-                : savedFlash ? "bg-emerald-600 text-white" : "bg-[#007aff] hover:bg-[#0066d6] text-white"
-            }`}
-          >
-            {savedFlash ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
-            {savedFlash ? "已保存" : "保存"}
-            <span className="text-[10px] opacity-70">⌘↵</span>
-          </button>
-        </div>
-      )}
-
-      {/* 查找/替换条 */}
-      {showFind && active && active.itemType !== 'image' && !isReadOnly && (
-        <div className="flex-shrink-0 flex flex-wrap items-center gap-1.5 px-2 py-1.5 border-b border-border bg-muted">
-          <input
-            autoFocus
-            value={findQuery}
-            onChange={e => setFindQuery(e.target.value)}
-            onKeyDown={e => { if (e.key === "Enter") { e.preventDefault(); gotoMatch(e.shiftKey ? -1 : 1); } }}
-            placeholder="查找"
-            className="w-32 px-2 py-0.5 text-xs border border-border rounded bg-background outline-none focus:border-voice"
-          />
-          <span className="text-[10px] text-muted-foreground w-12 tabular-nums">
-            {matches.length > 0 ? `${matchIdx + 1}/${matches.length}` : "0/0"}
-          </span>
-          <ToolBtn onClick={() => gotoMatch(-1)} title="上一个" disabled={matches.length === 0}><ChevronUp className="w-3.5 h-3.5" /></ToolBtn>
-          <ToolBtn onClick={() => gotoMatch(1)} title="下一个" disabled={matches.length === 0}><ChevronDown className="w-3.5 h-3.5" /></ToolBtn>
-          <input
-            value={replaceQuery}
-            onChange={e => setReplaceQuery(e.target.value)}
-            placeholder="替换"
-            className="w-32 px-2 py-0.5 text-xs border border-border rounded bg-background outline-none focus:border-voice"
-          />
-          <button type="button" onClick={replaceOne} className="px-2 py-0.5 text-[11px] rounded border border-border hover:bg-accent">替换</button>
-          <button type="button" onClick={replaceAll} className="flex items-center gap-0.5 px-2 py-0.5 text-[11px] rounded border border-border hover:bg-accent">
-            <Replace className="w-3 h-3" /> 全替
-          </button>
-        </div>
-      )}
-
       {/* 内容区：所有 tab hidden 挂载（图片保持状态），仅活跃 tab 可见 */}
       {tabs.length > 0 ? (
         tabs.map((tab, i) => (
           <div key={tab.key} className="flex-1 flex flex-col" style={{ display: i === activeIdx ? 'flex' : 'none' }}>
             {tab.itemType === 'image' ? (
-              // 图片 Tab 懒加载：仅活跃 Tab 挂载 ImagePreview，避免隐藏 Tab 仍并发拉全图
-              // （get_image_full）+ 建 createImageBitmap——5 张全分辨率图常驻致内存×Tab 数暴涨。
-              // 切回重新加载（标注/缩放状态重置可接受：图片非高频切换、用户通常逐张处理）。
+              // 图片 Tab 懒加载：仅活跃 Tab 挂载 ImagePreview
               i === activeIdx ? (
                 <ImagePreviewComponent imageId={tab.itemId} initialWidth={tab.imgWidth} initialHeight={tab.imgHeight} />
               ) : (
@@ -532,24 +295,24 @@ function CompactEditor() {
                 </div>
               )
             ) : (
-              <textarea
-                ref={i === activeIdx ? taRef : undefined}
-                value={tab.text || ''}
-                onChange={e => {
-                  const idx = tabs.findIndex(t => t.key === tab.key);
-                  if (idx >= 0) updateActiveTextAt(e.target.value, idx);
-                }}
-                onKeyDown={e => {
-                  // 查找栏打开时，正文里的 Enter/Shift+Enter 走跳转（不插换行、不替换选区），
-                  // 与查找框 Enter 行为一致，支持跳转后连续跳；Esc 关查找栏恢复正常编辑。
-                  if (showFind && e.key === "Enter") { e.preventDefault(); gotoMatch(e.shiftKey ? -1 : 1); }
-                }}
-                readOnly={tab.source === 'transcription'}
-                style={{ fontSize: `${fontSize}px`, lineHeight: 1.6 }}
-                spellCheck={false}
-                className="flex-1 w-full resize-none outline-none p-4 bg-background text-foreground thin-scrollbar"
-                placeholder={tab.source === 'transcription' ? "语音识别记录（只读）" : "在此编辑…"}
-              />
+              // 文本/语音 tab：仅活跃 tab 挂载 MarkdownPane
+              i === activeIdx ? (
+                <MarkdownPane
+                  text={tab.text || ''}
+                  readOnly={tab.source === 'transcription'}
+                  fontSize={fontSize}
+                  onFontSizeChange={setFontSize}
+                  onChange={(next) => updateActiveTextAt(next, i)}
+                  onClear={() => updateActiveTextAt('', i)}
+                  onSave={doSave}
+                  disableSave={active?.isTemp}
+                  savedFlash={savedFlash}
+                />
+              ) : (
+                <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground">
+                  {t("editor.switchHint")}
+                </div>
+              )
             )}
           </div>
         ))
