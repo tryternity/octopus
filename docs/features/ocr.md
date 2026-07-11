@@ -81,6 +81,21 @@ ASR/VAD 用各自 cache 常驻，无 idle 释放。
 | `merge_same_line_blocks` | det 同行多框合并 + 间隙补空格 |
 | `segment_english_words` | 17.7K 英文词库 `words_common.txt` 贪心分词（仅 PP-OCRv5 需要——v5 CTC 不输出英文空格；v6 CTC space token 已激活，`use_word_segmentation` 按 model_name 前缀判断跳过） |
 
+### 6.1 布局感知：Markdown 输出（2026-07-09）
+
+`crates/ocr/src/layout.rs`——`to_markdown(blocks) -> String`，在 `run_ocr`（merge + segment）之后、`join("\n")` 之前执行。消费 det 框几何信息输出结构化 Markdown：
+
+| 元素 | 检测依据 | 输出 |
+|------|----------|------|
+| **标题** | 框高 / median_h 比例：≥1.6 → H1（`#`），≥1.3 → H2（`##`） | det 框高 ≈ 字号，大字号独立行判为标题 |
+| **列表** | 文本前缀匹配 `•`/`-`/`①`/`1.` 等标记 | 无序 `- text`，有序统一重编号 `1. 2. 3.` |
+| **段落** | 连续 Body 行垂直间隙 > median_h × 0.8 → 新段落 | 段间 `\n\n` |
+| **段内 reflow** | 同段多行合并为一行，CJK 感知空格（ASCII↔非 ASCII 边界补空格） | 一个段落 = 一段连续文本 |
+
+常量（起始值，可调）：`MIN_BLOCKS_FOR_LAYOUT=3`、`TITLE_H1_RATIO=1.6`、`TITLE_H2_RATIO=1.3`、`PARAGRAPH_GAP_RATIO=0.8`。
+
+块数 < 3 时不分析布局，直接 `\n\n` join。`recognize` / `recognize_with_blocks` 返回的 String 语义从扁平文本变为 Markdown，消费端（DB content / CompactEditor / AI 输入）零改动受益。前端 ImagePreview 叠加不受影响（blocks 仍是原始 det 框）。
+
 ---
 
 ## 7. 推理后端迁移（2026-07-06）
