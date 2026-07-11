@@ -10,6 +10,7 @@ const DIVERTED_DELAY_MS = 300;
 export interface AsrEditorCommit {
   text: string;
   dirtyRanges: [number, number][];
+  hasEdited: boolean;         // 用户是否编辑过（纯删除也 true，防后端退化全 Edited）
   caret?: number;
   selection?: [number, number];
 }
@@ -69,11 +70,40 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
   const themeCompartment = useRef(new Compartment());
   const editingRef = useRef(false);
   const dirtyRangesRef = useRef<Array<[number, number]>>([]);
+  const hasEditedRef = useRef(false); // 纯删除也标记为已编辑（避免空 dirtyRanges 退化全 Edited）
   const idleTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const pendingDivertedRef = useRef<string | null>(null);
   const divertedTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const caretRef = useRef(caret);
   caretRef.current = caret;
+
+  // onCommit ref——避免 mount effect 闭包陈旧
+  const onCommitRef = useRef(onCommit);
+  onCommitRef.current = onCommit;
+
+  // selection IPC 防抖
+  const selectionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // ── dirty ranges 维护 ──
+  // 每次用户编辑后，用 CM6 changes.mapPos 映射已有 dirty ranges 到新坐标
+  function mapDirtyRanges(changes: { mapPos: (pos: number, mode?: number) => number }) {
+    const ranges = dirtyRangesRef.current;
+    const mapped: Array<[number, number]> = [];
+    for (const [s, e] of ranges) {
+      const ns = changes.mapPos(s, -1); // MapMode.TrackDel — 保留被删除位置的映射
+      const ne = changes.mapPos(e, 1);
+      if (ns < ne) mapped.push([ns, ne]);
+    }
+    mapped.sort((a, b) => a[0] - b[0]);
+    // 合并相邻
+    const merged: Array<[number, number]> = [];
+    for (const [s, e] of mapped) {
+      const last = merged[merged.length - 1];
+      if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+      else merged.push([s, e]);
+    }
+    dirtyRangesRef.current = merged;
+  }
 
   function addDirtyRange(from: number, to: number) {
     if (from >= to) return;
@@ -113,12 +143,26 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     const selectionRange = sel.from !== sel.to ? [sel.from, sel.to] as [number, number] : undefined;
 
     editingRef.current = false;
+    hasEditedRef.current = false;
     dirtyRangesRef.current = [];
 
-    onCommit({ text: docText, dirtyRanges, caret: caretPos, selection: selectionRange });
+    onCommitRef.current({ text: docText, dirtyRanges, hasEdited: hasEditedRef.current, caret: caretPos, selection: selectionRange });
   }
 
   useImperativeHandle(ref, () => ({ commit: doCommit }));
+
+  // ── selection IPC 防抖（拖选时不逐帧 invoke）──
+  function debouncedSelectionNotify(start: number, end: number) {
+    if (selectionTimerRef.current) clearTimeout(selectionTimerRef.current);
+    selectionTimerRef.current = setTimeout(() => {
+      selectionTimerRef.current = null;
+      if (start !== end) {
+        invoke("set_selection", { start, end });
+      } else {
+        invoke("set_caret", { offset: start });
+      }
+    }, 100);
+  }
 
   useEffect(() => {
     if (!hostRef.current) return;
@@ -132,20 +176,23 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
         keymap.of([...defaultKeymap, ...historyKeymap, indentWithTab]),
         themeCompartment.current.of(buildTheme(expanded)),
         EditorView.updateListener.of((update) => {
+          // 非编辑态光标/选区变化 → 防抖通知后端
           if (update.selectionSet && !editingRef.current && !update.docChanged) {
             const sel = update.state.selection.main;
-            if (sel.from !== sel.to) {
-              invoke("set_selection", { start: sel.from, end: sel.to });
-            } else {
-              invoke("set_caret", { offset: sel.head });
-            }
+            debouncedSelectionNotify(sel.from, sel.to);
           }
+          // 用户编辑 → dirty ranges + 编辑态
           if (update.docChanged && isUserEdit(update.transactions)) {
             if (!editingRef.current) {
               editingRef.current = true;
+              clearDivertedTimer(); // 进入编辑态时清 diverted 定时器（防覆盖用户输入）
               invoke("enter_edit_mode");
             }
+            hasEditedRef.current = true;
             resetIdleTimer();
+            // 先映射已有 dirty ranges（把旧区间移到新坐标）
+            mapDirtyRanges(update.changes);
+            // 再加本次插入的新区间
             update.changes.iterChangedRanges((_fA: number, _tA: number, fB: number, tB: number) => {
               addDirtyRange(fB, tB);
             });
@@ -161,6 +208,7 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
       view.destroy();
       viewRef.current = null;
       if (idleTimerRef.current) clearTimeout(idleTimerRef.current);
+      if (selectionTimerRef.current) clearTimeout(selectionTimerRef.current);
       clearDivertedTimer();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -64,7 +64,7 @@ enum Command {
     /// 进入编辑态（前端 edit_shortcut/编辑按钮触发；ASR 硬暂停）
     EnterEditMode,
     /// 提交编辑（含 dirty ranges——用户明确编辑过的区间 + 光标/选区恢复信息）
-    CommitEdit { text: String, dirty_ranges: Vec<(usize, usize)>, caret: Option<usize>, selection: Option<(usize, usize)> },
+    CommitEdit { text: String, dirty_ranges: Vec<(usize, usize)>, has_edited: bool, caret: Option<usize>, selection: Option<(usize, usize)> },
     /// 运行时配置更新——外部（设置窗口 / 工具栏）修改 RuntimeConfig 后，
     /// 通过此命令通知 coordinator 立即把变更同步到 config 快照（无需等 Toggle）。
     /// 用于 polish_llm / polish_mode / asr_correct / output_simplified / hide_toolbar 等
@@ -242,7 +242,7 @@ fn build_coordinator_loop(
                         // 编辑态下停止：先用 edit_buffer 提交编辑，再走停止流程（spec §7）
                         if editing {
                             if let Some(text) = edit_buffer.take() {
-                                commit_edit_apply(&mut stage, &text, &[], None, None, &app_handle);
+                                commit_edit_apply(&mut stage, &text, &[], false, None, None, &app_handle);
                             }
                             editing = false;
                             let _ = app_handle.emit("edit-force-exit", ());
@@ -421,8 +421,8 @@ fn build_coordinator_loop(
                     Command::EnterEditMode => {
                         handle_enter_edit_mode(&mut stage, &mut editing, &mut edit_buffer);
                     }
-                    Command::CommitEdit { text, dirty_ranges, caret, selection } => {
-                        commit_edit_apply(&mut stage, &text, &dirty_ranges, caret, selection, &app_handle);
+                    Command::CommitEdit { text, dirty_ranges, has_edited, caret, selection } => {
+                        commit_edit_apply(&mut stage, &text, &dirty_ranges, has_edited, caret, selection, &app_handle);
                         editing = false;
                     }
                     Command::UpdateRuntime => {
@@ -550,9 +550,9 @@ impl Coordinator {
     }
 
     /// 提交编辑（含 dirty ranges + 光标/选区恢复）
-    pub fn commit_edit(&self, text: String, dirty_ranges: Vec<(usize, usize)>, caret: Option<usize>, selection: Option<(usize, usize)>) {
+    pub fn commit_edit(&self, text: String, dirty_ranges: Vec<(usize, usize)>, has_edited: bool, caret: Option<usize>, selection: Option<(usize, usize)>) {
         let tx = self.tx.lock();
-        if tx.send(Command::CommitEdit { text, dirty_ranges, caret, selection }).is_err() {
+        if tx.send(Command::CommitEdit { text, dirty_ranges, has_edited, caret, selection }).is_err() {
             error!("Coordinator channel closed");
         }
     }
@@ -641,10 +641,11 @@ pub fn commit_edit(
     coordinator: tauri::State<'_, Coordinator>,
     text: String,
     dirty_ranges: Vec<(usize, usize)>,
+    has_edited: bool,
     caret: Option<usize>,
     selection: Option<(usize, usize)>,
 ) {
-    coordinator.commit_edit(text, dirty_ranges, caret, selection);
+    coordinator.commit_edit(text, dirty_ranges, has_edited, caret, selection);
 }
 
 /// 前端命令：非编辑态点击文本 → 定位光标（后续流式从该处插入）。
@@ -735,7 +736,7 @@ fn prepare_cloud_streaming_session(
                 set_current_transcription_id(tid);
                 let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
                     let mut t = Transcript::new(tid, config.polish_mode);
-                    t.commit_edit(&text, &[]);
+                    t.commit_edit(&text, &[], true);
                     t.set_selection(s, e);
                     debug!("[select] cross-session seeded (cloud) t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
                     (t, text, true)
@@ -841,7 +842,7 @@ fn prepare_streaming_session(
     set_current_transcription_id(tid);
     let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
         let mut t = Transcript::new(tid, config.polish_mode);
-        t.commit_edit(&text, &[]);
+        t.commit_edit(&text, &[], true);
         t.set_selection(s, e);
         debug!("[select] cross-session seeded t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
         (t, text, true)
@@ -913,7 +914,7 @@ fn prepare_vad_segmented_session(
             set_current_transcription_id(tid);
             let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
                 let mut t = Transcript::new(tid, config.polish_mode);
-                t.commit_edit(&text, &[]);
+                t.commit_edit(&text, &[], true);
                 t.set_selection(s, e);
                 debug!("[select] cross-session seeded (vad) t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
                 (t, text, true)
@@ -2092,6 +2093,7 @@ fn commit_edit_apply(
     stage: &mut Stage,
     text: &str,
     dirty_ranges: &[(usize, usize)],
+    has_edited: bool,
     caret: Option<usize>,
     selection: Option<(usize, usize)>,
     app_handle: &tauri::AppHandle,
@@ -2113,7 +2115,21 @@ fn commit_edit_apply(
                 return;
             }
             let mut t = Transcript::new(id, PolishMode::Disabled);
-            t.commit_edit(text, dirty_ranges);
+            // 从 DB 恢复已有 segments（保留 Raw/Polished/Edited 标记，
+            // 否则 rebuild_segments 的 old_segments 为空 → clean 区域全退化为 Raw）
+            let db_json: Option<String> = octopus_infra::db::with_db(|conn| {
+                Ok(conn.query_row(
+                    "SELECT segments FROM clipboard_history WHERE id = ?1",
+                    [&id],
+                    |row| row.get::<_, Option<String>>(0),
+                ).unwrap_or(None))
+            }).unwrap_or(None);
+            if let Some(ref json) = db_json {
+                if !json.is_empty() && json != "[]" {
+                    t.restore_segments(json);
+                }
+            }
+            t.commit_edit(text, dirty_ranges, has_edited);
             if let Some((s, e)) = selection { t.set_selection(s, e); }
             else if let Some(c) = caret { t.set_caret(c); }
             let segments = t.segments_json();
@@ -2133,7 +2149,7 @@ fn commit_edit_apply(
             return;
         }
     };
-    transcript.commit_edit(text, dirty_ranges);
+    transcript.commit_edit(text, dirty_ranges, has_edited);
     if let Some((s, e)) = selection { transcript.set_selection(s, e); }
     else if let Some(c) = caret { transcript.set_caret(c); }
     if transcript.db_inserted() {

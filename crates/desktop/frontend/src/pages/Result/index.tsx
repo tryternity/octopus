@@ -191,6 +191,8 @@ function Result() {
   const polishNow = useCallback(async () => {
     if (polishLoadingRef.current) return;
     if (!text.trim()) return;
+    // 编辑态先提交——否则后端润色的是旧 transcript，用户编辑被覆盖
+    asrEditorRef.current?.commit();
     setPolishLoading(true);
     try { await invoke("polish_now"); showToast("润色中…"); }
     catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
@@ -363,6 +365,7 @@ function Result() {
               invoke("commit_edit", {
                 text: payload.text,
                 dirtyRanges: payload.dirtyRanges,
+                hasEdited: payload.hasEdited,
                 caret: payload.caret ?? null,
                 selection: payload.selection ?? null,
               });
