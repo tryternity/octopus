@@ -361,6 +361,19 @@ struct ScriptResult {
     timed_out: bool,
 }
 
+/// 从 ScriptResult 生成 error_msg——超时/异常退出/非零退出码都有描述
+fn script_error_msg(result: &ScriptResult) -> String {
+    if result.timed_out {
+        "执行超时（60秒）".to_string()
+    } else if result.exit_code.is_none() {
+        "进程异常退出".to_string()
+    } else if result.exit_code != Some(0) {
+        format!("进程以错误码 {} 退出", result.exit_code.unwrap())
+    } else {
+        String::new()
+    }
+}
+
 use std::sync::OnceLock;
 
 /// 探测 JS 运行时——优先级 node → bun → deno（结果缓存，仅首次探测）
@@ -440,7 +453,11 @@ fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option
             { Err("powershell 仅 Windows 支持".into()) }
         }
         "#python" => {
-            let mut c = std::process::Command::new("python3");
+            #[cfg(target_os = "windows")]
+            let py = "python";
+            #[cfg(not(target_os = "windows"))]
+            let py = "python3";
+            let mut c = std::process::Command::new(py);
             c.arg("-c").arg(&script);
             Ok(c)
         }
@@ -481,7 +498,15 @@ fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option
     };
 
     let mut cmd = cmd_result?;
-    cmd.env("OCTOPUS_TEXT", text);
+    // 超长选中文本保护——OS ARG_MAX 约 256KB，环境变量超限 spawn 会报 E2BIG
+    const TEXT_LIMIT: usize = 200_000;
+    let text_env: std::borrow::Cow<str> = if text.len() > TEXT_LIMIT {
+        log::warn!("[script] OCTOPUS_TEXT truncated: {} > {}", text.len(), TEXT_LIMIT);
+        std::borrow::Cow::Owned(format!("{}...(已截断，原文 {} 字节)", &text[..TEXT_LIMIT], text.len()))
+    } else {
+        std::borrow::Cow::Borrowed(text)
+    };
+    cmd.env("OCTOPUS_TEXT", text_env.as_ref());
     if let Some(dir) = pkg_dir {
         cmd.env("OCTOPUS_PACKAGE_DIR", dir);
     }
@@ -576,9 +601,7 @@ fn run_script_async(source: &str, text: &str, item_id: i64, pkg_dir: Option<Stri
         let result = wait_forever(child);
         let duration_ms = started.elapsed().as_millis() as i64;
         let finished_at = now_iso8601();
-        let error_msg = if result.timed_out { "执行超时（60秒）".to_string() }
-            else if result.exit_code.is_none() { "进程异常退出".to_string() }
-            else { String::new() };
+        let error_msg = script_error_msg(&result);
         let _ = octopus_infra::db::insert_script_run(
             item_id, &script_type, result.exit_code,
             &result.stdout, &result.stderr, &error_msg,
