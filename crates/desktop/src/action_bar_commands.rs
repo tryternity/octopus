@@ -181,7 +181,8 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
         "polish" => "润色",
         "summarize" => "摘要",
         "explain" => "解释",
-        _ => "AI",
+        // script 同步路径传入的 action 是菜单项 title，直接用作 label
+        _ => &action,
     };
     let display_text = format!("【{}】\n{}", label, result);
 
@@ -393,7 +394,7 @@ fn detect_ts_runtime() -> Option<(&'static str, Vec<&'static str>)> {
 
 /// 按 magic comment 分发运行时，spawn 子进程。
 /// capture_output=true 时 stdout/stderr 用 pipe（同步模式），false 时用 null（异步模式）。
-fn spawn_script(source: &str, text: &str, capture_output: bool) -> Result<(std::process::Child, String), String> {
+fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option<String>) -> Result<(std::process::Child, String), String> {
     use std::process::Stdio;
     let first_line = source.lines().next().unwrap_or("").trim();
     let script: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
@@ -462,6 +463,9 @@ fn spawn_script(source: &str, text: &str, capture_output: bool) -> Result<(std::
 
     let mut cmd = cmd_result?;
     cmd.env("OCTOPUS_TEXT", text);
+    if let Some(dir) = pkg_dir {
+        cmd.env("OCTOPUS_PACKAGE_DIR", dir);
+    }
     cmd.stdout(stdout_cfg);
     cmd.stderr(stderr_cfg);
     let child = cmd.spawn().map_err(|e| format!("脚本执行失败: {}", e))?;
@@ -509,8 +513,8 @@ fn now_iso8601() -> String {
 }
 
 /// 异步执行脚本——spawn 后立即返回，后台线程收割并落库
-fn run_script_async(source: &str, text: &str, item_id: i64) -> Result<(), String> {
-    let (child, script_type) = spawn_script(source, text, false)?;
+fn run_script_async(source: &str, text: &str, item_id: i64, pkg_dir: Option<String>) -> Result<(), String> {
+    let (child, script_type) = spawn_script(source, text, false, &pkg_dir)?;
     let started = std::time::Instant::now();
     let started_at = now_iso8601();
     std::thread::spawn(move || {
@@ -530,8 +534,8 @@ fn run_script_async(source: &str, text: &str, item_id: i64) -> Result<(), String
 }
 
 /// 同步执行脚本（阻塞）——等待完成，返回结果并落库
-fn run_script_sync_blocking(source: &str, text: &str, item_id: i64) -> Result<ScriptResult, String> {
-    let (child, script_type) = spawn_script(source, text, true)?;
+fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Option<String>) -> Result<ScriptResult, String> {
+    let (child, script_type) = spawn_script(source, text, true, &pkg_dir)?;
     let started = std::time::Instant::now();
     let started_at = now_iso8601();
     let mut result = wait_with_timeout(child);
@@ -598,16 +602,24 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             let item_title = item.title.clone();
             let item_id = item.id;
 
+            // Package 脚本（action_data 是文件路径）vs 内联脚本
+            let source = if item.action_data.starts_with('/') {
+                std::fs::read_to_string(&item.action_data).unwrap_or_default()
+            } else {
+                item.action_data.clone()
+            };
+            let pkg_dir = if item.action_data.starts_with('/') {
+                std::path::Path::new(&item.action_data).parent()
+                    .map(|p| p.to_string_lossy().to_string())
+            } else { None };
+
             if is_async {
-                // 异步——fire-and-forget，后台落库，立即关闭浮窗
-                run_script_async(&item.action_data, &text, item_id)?;
+                run_script_async(&source, &text, item_id, pkg_dir)?;
                 Ok(false)
             } else {
-                // 同步——spawn_blocking 等待结果
-                let source = item.action_data.clone();
                 let text_clone = text.clone();
                 let result = tokio::task::spawn_blocking(move || {
-                    run_script_sync_blocking(&source, &text_clone, item_id)
+                    run_script_sync_blocking(&source, &text_clone, item_id, pkg_dir)
                 }).await.map_err(|e| format!("脚本执行线程异常: {}", e))??;
 
                 if result.timed_out {

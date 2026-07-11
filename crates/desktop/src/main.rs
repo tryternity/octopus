@@ -21,6 +21,7 @@ mod engine_aliyun;
 mod cloud_pipeline;
 mod engine_dispatch;
 mod engine_embedded;
+mod extensions;
 #[cfg(feature = "remote-grpc")]
 mod engine_grpc;
 #[cfg(feature = "remote-ws")]
@@ -294,6 +295,11 @@ pub fn run() {
             action_bar_commands::execute_action_bar,
             action_bar_commands::list_script_runs,
             action_bar_commands::clear_script_runs,
+            extensions::import_extension,
+            extensions::install_extension,
+            extensions::list_extensions,
+            extensions::delete_extension,
+            extensions::refresh_extensions,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
@@ -308,6 +314,12 @@ pub fn run() {
             // set_config 热重载——若不在此补一次性同步，用户关掉「剪贴板监听」并重启后，
             // watcher 又恢复录制（flag 回 true），但 DB 仍是 false，设置形同虚设。
             clipboard_handle.set_recording_enabled(config.clipboard_enabled);
+
+            // 确保 extensions 目录存在
+            let ext_dir = extensions::extensions_dir();
+            if !ext_dir.exists() {
+                let _ = std::fs::create_dir_all(&ext_dir);
+            }
 
             // 启动时重建 FTS5 索引，清理上次运行遗留的空洞
             if let Err(e) = octopus_infra::db::with_db(|conn| {

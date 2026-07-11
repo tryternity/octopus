@@ -88,6 +88,9 @@ octopus-clipboard = { path = "../clipboard" }
 # file:// URI 百分号解码（Linux X11/Wayland 的 text/uri-list 文件路径）
 percent-encoding = "2"
 
+# Extension Package zip 解压
+zip = "2"
+
 [features]
 default = ["embedded"]
 embedded = ["octopus-asr-local"]

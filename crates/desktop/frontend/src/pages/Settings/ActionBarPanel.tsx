@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
   ChevronRight,
   ChevronDown,
@@ -9,6 +11,8 @@ import {
   ArrowDown,
   Trash2,
   Plus,
+  Pencil,
+  ArrowLeft,
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -58,6 +62,12 @@ const TYPE_META: Record<
     placeholder:
       "#shell / #osascript / #powershell / #python\n#node / #deno / #bun\n#javascript / #typescript\n选中文本在 $OCTOPUS_TEXT 环境变量中",
   },
+  extension: {
+    dot: "bg-amber-500",
+    label: "EXT",
+    desc: "从 .octopusext.zip 或文件夹导入扩展包（含 config.yaml + 脚本）",
+    placeholder: "",
+  },
   copy: {
     dot: "bg-stone-400",
     label: "COPY",
@@ -71,6 +81,7 @@ const ACTION_TYPES = [
   { value: "ai", label: "AI（LLM 处理）" },
   { value: "url", label: "URL（打开网页/应用）" },
   { value: "script", label: "脚本" },
+  { value: "extension", label: "扩展包" },
   { value: "copy", label: "复制" },
 ];
 
@@ -123,6 +134,155 @@ interface EditFormProps {
   onCancel: () => void;
 }
 
+// ── 扩展包拖拽/选择区 ──
+interface ImportResult {
+  name: string;
+  sourcePath: string;
+  dirName: string;
+  isAsync: boolean;
+  writeOutputToClipboard: boolean;
+}
+
+const ExtensionDropZone = ({
+  form,
+  onChange,
+}: {
+  form: Partial<ActionBarItem>;
+  onChange: (form: Partial<ActionBarItem>) => void;
+}) => {
+  const [dragging, setDragging] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState("");
+
+  const doImport = useCallback(
+    async (sourcePath: string) => {
+      setImporting(true);
+      setError("");
+      try {
+        const result = await invoke<ImportResult>("import_extension", { sourcePath });
+        // actionData 格式 "sourcePath|dirName"（保存时拆分调 install_extension）
+        onChange({
+          ...form,
+          title: result.name || form.title,
+          actionData: `${result.sourcePath}|${result.dirName}`,
+          isAsync: result.isAsync,
+          writeOutputToClipboard: result.writeOutputToClipboard,
+        });
+      } catch (e) {
+        setError(String(e));
+      }
+      setImporting(false);
+    },
+    [form, onChange],
+  );
+
+  const handleOpenFile = useCallback(async () => {
+    try {
+      const selected = await openDialog({
+        multiple: false,
+        filters: [{ name: "扩展包", extensions: ["zip"] }],
+      });
+      if (typeof selected === "string") {
+        doImport(selected);
+      }
+    } catch {
+      // 用户取消
+    }
+  }, [doImport]);
+
+  const handleOpenDir = useCallback(async () => {
+    try {
+      const selected = await openDialog({ directory: true, multiple: false });
+      if (typeof selected === "string") {
+        doImport(selected);
+      }
+    } catch {
+      // 用户取消
+    }
+  }, [doImport]);
+
+  useEffect(() => {
+    const win = getCurrentWebview();
+    const unlisten = win.onDragDropEvent((event) => {
+      const { type } = event.payload;
+      if (type === "enter" || type === "over") {
+        setDragging(true);
+      } else if (type === "drop") {
+        setDragging(false);
+        const paths = (event.payload as { paths: string[] }).paths;
+        if (paths.length === 0) return;
+        doImport(paths[0]);
+      } else if (type === "leave") {
+        setDragging(false);
+      }
+    });
+    return () => {
+      unlisten.then((fn: () => void) => fn());
+    };
+  }, [doImport]);
+
+  const hasPackage = form.actionData && form.actionData.startsWith("/");
+
+  return (
+    <Field label="扩展包">
+      <div
+        className={cn(
+          "rounded-lg border border-dashed transition-colors min-h-[80px] flex flex-col items-center justify-center gap-1.5 p-3",
+          dragging ? "border-voice bg-voice/5" : "border-border",
+          hasPackage && "border-solid",
+        )}
+      >
+        {importing ? (
+          <p className="text-xs text-muted-foreground">导入中…</p>
+        ) : hasPackage ? (
+          <>
+            <div className="flex items-center gap-2 w-full">
+              <div className="flex-1 min-w-0">
+                <p className="text-xs font-medium text-foreground truncate">{form.title}</p>
+                <p className="font-mono text-[10px] text-muted-foreground/70 truncate">
+                  {form.actionData?.split("|")[0]}
+                </p>
+              </div>
+              <button
+                onClick={() => {
+                  onChange({ ...form, actionData: "", title: "" });
+                }}
+                className="shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-red-500/10 hover:text-red-500"
+                aria-label="清除选择"
+                title="清除选择"
+              >
+                <X className="h-3.5 w-3.5" />
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p className="text-[11px] text-muted-foreground/70">
+              拖拽 .zip 或文件夹到此
+            </p>
+            <div className="flex items-center gap-3">
+              <button
+                onClick={handleOpenFile}
+                className="text-[11px] text-voice hover:underline"
+              >
+                选择 zip 文件
+              </button>
+              <span className="text-[11px] text-muted-foreground/40">|</span>
+              <button
+                onClick={handleOpenDir}
+                className="text-[11px] text-voice hover:underline"
+              >
+                选择文件夹
+              </button>
+            </div>
+          </>
+        )}
+        {error && <p className="text-[11px] text-red-500">{error}</p>}
+      </div>
+    </Field>
+  );
+};
+
 const EditForm = ({
   form,
   isSystem,
@@ -132,31 +292,26 @@ const EditForm = ({
 }: EditFormProps) => {
   const type = form.actionType || "copy";
   const meta = TYPE_META[type];
-  const showContent = type !== "submenu" && type !== "copy";
+  const showContent = type !== "submenu" && type !== "copy" && type !== "extension";
 
   return (
-    <div className="mb-1 ml-[26px] rounded-lg border border-border bg-muted/20 p-3.5 shadow-sm">
-      <div className="mb-3 flex items-center justify-between">
-        <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground">
-          编辑菜单项
-        </span>
-        <button
-          onClick={onCancel}
-          className="text-muted-foreground hover:text-foreground"
-          aria-label="取消"
-        >
-          <X className="h-3.5 w-3.5" />
-        </button>
-      </div>
+    <div className="space-y-5">
+      {/* 返回按钮 */}
+      <button
+        onClick={onCancel}
+        className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
+      >
+        <ArrowLeft className="h-3.5 w-3.5" />
+        返回菜单
+      </button>
 
-      <div className="space-y-3">
+      <div className="space-y-4">
         <Field label="标题">
           <input
-            className="w-full bg-background border border-border rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice/50"
+            className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
             value={form.title || ""}
             maxLength={12}
             onChange={(e) => {
-              // 汉字算 2 字符、ASCII 算 1，总权重上限 12
               const MAX = 12;
               const raw = e.target.value;
               let weight = 0;
@@ -175,7 +330,7 @@ const EditForm = ({
         <Field label="类型">
           <div>
             <select
-              className="w-full bg-background border border-border rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice/50 disabled:opacity-60"
+              className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all disabled:opacity-60"
               value={type}
               disabled={isSystem}
               onChange={(e) =>
@@ -188,7 +343,7 @@ const EditForm = ({
                 </option>
               ))}
             </select>
-            <p className="mt-1 text-[11px] text-muted-foreground/80">
+            <p className="mt-1.5 text-[11px] text-muted-foreground/80">
               {meta.desc}
               {isSystem && " · 内置项类型不可更改"}
             </p>
@@ -198,7 +353,7 @@ const EditForm = ({
         {showContent && (
           <Field label="内容">
             <textarea
-              className="w-full min-h-[120px] resize-y bg-background border border-border rounded px-2.5 py-1.5 font-mono text-xs leading-relaxed outline-none focus:border-voice/50"
+              className="w-full min-h-[120px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
               placeholder={meta.placeholder}
               value={form.actionData || ""}
               onChange={(e) =>
@@ -208,10 +363,14 @@ const EditForm = ({
           </Field>
         )}
 
+        {type === "extension" && (
+          <ExtensionDropZone form={form} onChange={onChange} />
+        )}
+
         {type === "script" && (
           <Field label="执行选项">
-            <div className="space-y-2">
-              <div className="flex items-center gap-2">
+            <div className="space-y-2.5">
+              <div className="flex items-center gap-2.5">
                 <Toggle
                   checked={form.isAsync ?? true}
                   onChange={(v) =>
@@ -227,7 +386,7 @@ const EditForm = ({
                 </span>
               </div>
               {!(form.isAsync ?? true) && (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2.5">
                   <Toggle
                     checked={form.writeOutputToClipboard ?? false}
                     onChange={(v) =>
@@ -244,7 +403,7 @@ const EditForm = ({
         )}
 
         <Field label="启用">
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-2.5">
             <Toggle
               checked={form.isEnabled ?? true}
               onChange={(v) => onChange({ ...form, isEnabled: v })}
@@ -256,16 +415,16 @@ const EditForm = ({
         </Field>
       </div>
 
-      <div className="mt-3.5 flex justify-end gap-2 border-t border-border/60 pt-3">
+      <div className="flex justify-end gap-2.5 border-t border-border/40 pt-4">
         <button
           onClick={onCancel}
-          className="rounded-md border border-border px-3.5 py-1.5 text-xs transition-colors hover:bg-muted/60"
+          className="rounded-md border border-border px-4 py-2 text-xs transition-colors hover:bg-muted/60"
         >
           取消
         </button>
         <button
           onClick={onSave}
-          className="rounded-md bg-voice px-4 py-1.5 text-xs font-medium text-white transition-opacity hover:opacity-90"
+          className="rounded-md bg-voice px-5 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90"
         >
           保存
         </button>
@@ -282,8 +441,8 @@ const Field = ({
   label: string;
   children: React.ReactNode;
 }) => (
-  <div className="grid grid-cols-[44px_1fr] items-start gap-2">
-    <label className="mt-1.5 text-[11px] uppercase tracking-wide text-muted-foreground">
+  <div className="grid grid-cols-[56px_1fr] items-start gap-3">
+    <label className="mt-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
       {label}
     </label>
     <div className="min-w-0">{children}</div>
@@ -309,6 +468,7 @@ interface NodeProps {
   onFormChange: (f: Partial<ActionBarItem>) => void;
   onSaveEdit: () => void;
   onCancelEdit: () => void;
+  deleteConfirmId: number | null;
   draftParentId: number | null | undefined; // undefined=非草稿, null=顶层草稿, number=子菜单草稿
 }
 
@@ -336,9 +496,11 @@ const TreeNodeBase = (props: NodeProps) => {
       <div
         className={cn(
           "group relative flex items-center gap-2 rounded-md py-1.5 pl-1 pr-1.5 transition-colors",
-          isEditing ? "bg-voice/[0.06]" : "cursor-pointer hover:bg-muted/40",
+          isEditing ? "bg-voice/[0.06]" : isSubmenu ? "cursor-pointer hover:bg-muted/40" : "hover:bg-muted/40",
         )}
-        onClick={() => props.onStartEdit(item)}
+        onClick={() => {
+          if (isSubmenu) props.onToggle(item.id);
+        }}
       >
         {/* 展开箭头（仅 submenu 有，其余占位保持对齐） */}
         <button
@@ -419,41 +581,40 @@ const TreeNodeBase = (props: NodeProps) => {
           <button
             onClick={(e) => {
               e.stopPropagation();
+              props.onStartEdit(item);
+            }}
+            className="rounded p-0.5 text-muted-foreground hover:text-foreground"
+            aria-label="编辑"
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
               props.onDelete(item.id);
             }}
             disabled={item.isSystem}
-            className="rounded p-0.5 text-muted-foreground hover:text-red-500 disabled:opacity-25 disabled:hover:text-muted-foreground"
+            className={cn(
+              "rounded p-0.5 transition-colors disabled:opacity-25",
+              props.deleteConfirmId === item.id
+                ? "bg-red-500 text-white hover:bg-red-600"
+                : "text-muted-foreground hover:text-red-500 disabled:hover:text-muted-foreground",
+            )}
             aria-label="删除"
+            title={props.deleteConfirmId === item.id ? "再次点击确认删除" : "删除"}
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            {props.deleteConfirmId === item.id ? (
+              <span className="px-1 text-[10px] font-medium">确认</span>
+            ) : (
+              <Trash2 className="h-3.5 w-3.5" />
+            )}
           </button>
         </div>
       </div>
 
-      {/* 内联编辑器 */}
-      {isEditing && (
-        <EditForm
-          form={props.editingForm}
-          isSystem={item.isSystem}
-          onChange={props.onFormChange}
-          onSave={props.onSaveEdit}
-          onCancel={props.onCancelEdit}
-        />
-      )}
-
       {/* 子树：细导引线 + 递归 */}
       {isSubmenu && isOpen && (
         <div className="relative ml-3 border-l border-border/50 pl-3">
-          {/* 子菜单草稿表单 */}
-          {props.draftParentId === item.id && (
-            <EditForm
-              form={props.editingForm}
-              isSystem={false}
-              onChange={props.onFormChange}
-              onSave={props.onSaveEdit}
-              onCancel={props.onCancelEdit}
-            />
-          )}
           {subs.map((sub, i) => (
             <TreeNode
               key={sub.id}
@@ -620,7 +781,7 @@ export default function ActionBarPanel({
   // draft 状态：新增时不写 DB，只在内存编辑，保存时才 create。取消只清 state，零脏数据。
   const [draftParentId, setDraftParentId] = useState<number | null | undefined>(undefined); // undefined=非草稿, null=顶层草稿, number=子菜单草稿
   const [loaded, setLoaded] = useState(false);
-  const [view, setView] = useState<"menu" | "runs">("menu");
+  const [view, setView] = useState<"menu" | "runs" | "edit">("menu");
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
     const list = await invoke<ActionBarItem[]>("list_action_bar_items");
@@ -674,18 +835,54 @@ export default function ActionBarPanel({
   const startEdit = useCallback((item: ActionBarItem) => {
     setDraftParentId(undefined);
     setEditingId(item.id);
-    setEditingForm({ ...item });
+    // DB action_type "script" + action_data 以 / 开头 → 前端展示为 "extension"
+    const isExt = item.actionType === "script" && item.actionData.startsWith("/");
+    setEditingForm({ ...item, actionType: isExt ? "extension" : item.actionType });
+    setView("edit");
   }, []);
 
   const cancelEdit = useCallback(() => {
     setEditingId(null);
     setEditingForm({});
     setDraftParentId(undefined);
+    setView("menu");
   }, []);
 
   const saveEdit = useCallback(async () => {
     try {
-      if (draftParentId !== undefined) {
+      if (editingForm.actionType === "extension") {
+        // 扩展类型——先 install_extension（复制到 extensions + DB），不走普通 create/update
+        const actionData = editingForm.actionData || "";
+        const [sourcePath, dirName] = actionData.split("|");
+        if (!sourcePath || !dirName) {
+          showToast("请先选择扩展包");
+          return;
+        }
+        if (draftParentId !== undefined) {
+          await invoke("install_extension", {
+            sourcePath,
+            dirName,
+            name: editingForm.title || "扩展",
+            isAsync: editingForm.isAsync ?? true,
+            writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
+            parentId: draftParentId,
+          });
+          showToast("已创建");
+        } else if (editingId) {
+          // 编辑已有扩展——只更新标题等元信息（action_data 已是 extensions 绝对路径）
+          await invoke("update_action_bar_item", {
+            id: editingId,
+            title: editingForm.title || "",
+            icon: editingForm.icon || "",
+            actionType: "script",
+            actionData: editingForm.actionData || "",
+            isEnabled: editingForm.isEnabled ?? true,
+            isAsync: editingForm.isAsync ?? true,
+            writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
+          });
+          showToast("已保存");
+        }
+      } else if (draftParentId !== undefined) {
         // 新建草稿——此时才写 DB
         await invoke("create_action_bar_item", {
           parentId: draftParentId,
@@ -718,17 +915,24 @@ export default function ActionBarPanel({
     }
   }, [draftParentId, editingId, editingForm, showToast, cancelEdit, refresh]);
 
+  const [deleteConfirmId, setDeleteConfirmId] = useState<number | null>(null);
+
   const handleDelete = useCallback(
     async (id: number) => {
+      if (deleteConfirmId !== id) {
+        setDeleteConfirmId(id);
+        return;
+      }
       try {
         await invoke("delete_action_bar_item", { id });
         showToast("已删除");
+        setDeleteConfirmId(null);
         refresh();
       } catch (e) {
         showToast("删除失败：" + e);
       }
     },
-    [showToast, refresh],
+    [deleteConfirmId, showToast, refresh],
   );
 
   const handleMove = useCallback(
@@ -753,10 +957,7 @@ export default function ActionBarPanel({
       actionData: "",
       isEnabled: true,
     });
-    // 子菜单草稿需展开父节点才能看到表单
-    if (parentId !== null) {
-      setExpanded((prev) => new Set(prev).add(parentId));
-    }
+    setView("edit");
   }, []);
 
   const nodeCommon = {
@@ -772,6 +973,7 @@ export default function ActionBarPanel({
     onFormChange: setEditingForm,
     onSaveEdit: saveEdit,
     onCancelEdit: cancelEdit,
+    deleteConfirmId,
     draftParentId,
   };
 
@@ -781,7 +983,7 @@ export default function ActionBarPanel({
       <div className="mb-5 flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
-            命令面板 · 菜单管理
+            命令面板 · {view === "edit" ? "编辑菜单项" : view === "runs" ? "脚本执行记录" : "菜单管理"}
           </div>
           <h2 className="mt-0.5 text-lg font-semibold tracking-tight">
             AI 命令面板菜单
@@ -794,14 +996,14 @@ export default function ActionBarPanel({
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
-          <button
-            onClick={() => setView(view === "menu" ? "runs" : "menu")}
-            className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-          >
-            {view === "menu" ? "执行记录" : "返回菜单"}
-          </button>
           {view === "menu" && (
             <>
+              <button
+                onClick={() => setView("runs")}
+                className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+              >
+                执行记录
+              </button>
               <button
                 onClick={allExpanded ? collapseAll : expandAll}
                 className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
@@ -824,11 +1026,27 @@ export default function ActionBarPanel({
               </button>
             </>
           )}
+          {view !== "menu" && (
+            <button
+              onClick={() => setView("menu")}
+              className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+            >
+              返回菜单
+            </button>
+          )}
         </div>
       </div>
 
       {/* Body */}
-      {view === "runs" ? (
+      {view === "edit" ? (
+        <EditForm
+          form={editingForm}
+          isSystem={(editingId !== null && items.find((i) => i.id === editingId)?.isSystem) ?? false}
+          onChange={setEditingForm}
+          onSave={saveEdit}
+          onCancel={cancelEdit}
+        />
+      ) : view === "runs" ? (
         <ScriptRunsList showToast={showToast} />
       ) : !loaded ? (
         <p className="py-12 text-center text-sm text-muted-foreground">
@@ -854,16 +1072,6 @@ export default function ActionBarPanel({
         </div>
       ) : (
         <div className="space-y-px">
-          {/* 新建草稿表单（内存态，不在树中） */}
-          {draftParentId !== undefined && draftParentId === null && (
-            <EditForm
-              form={editingForm}
-              isSystem={false}
-              onChange={setEditingForm}
-              onSave={saveEdit}
-              onCancel={cancelEdit}
-            />
-          )}
           {mainItems.map((item, i) => (
             <TreeNode
               key={item.id}
