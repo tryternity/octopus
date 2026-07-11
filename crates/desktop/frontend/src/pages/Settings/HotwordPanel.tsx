@@ -69,6 +69,13 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   const [renaming, setRenaming] = useState<number | null>(null);
   const [renameVal, setRenameVal] = useState('');
   const [loaded, setLoaded] = useState(false);
+  const [recentlyAdded, setRecentlyAdded] = useState<Set<string>>(new Set());
+
+  /** 高亮"最近一次新增"的词：直接替换（非累加）。
+   *  下次新增 → 替换为新词；切菜单重进 → 组件重挂 state 自然清空。无需定时器。 */
+  const flashAdded = useCallback((ws: string[]) => {
+    setRecentlyAdded(new Set(ws));
+  }, []);
 
   const refresh = useCallback(async () => {
     const [s, h] = await Promise.all([
@@ -81,6 +88,7 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
       setSelectedId(s[0].id);
     }
     setLoaded(true);
+    return s;
   }, [selectedId]);
 
   useEffect(() => {
@@ -146,8 +154,9 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
       setInput('');
       showToast(added ? '已添加' : '已存在');
       await refresh();
+      if (added) flashAdded([w]);
     } catch (e) { showToast('添加失败：' + e); }
-  }, [input, selectedId, refresh, showToast]);
+  }, [input, selectedId, refresh, flashAdded, showToast]);
 
   const removeWord = useCallback(async (word: string) => {
     if (selectedId === null) return;
@@ -181,12 +190,16 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
 
   const mine = useCallback(async () => {
     if (selectedId === null) { showToast('请先选择目标版本'); return; }
+    const oldWords = new Set(selected?.wordsText.split(/\s+/).filter(Boolean) ?? []);
     try {
       const n = await invoke<number>('mine_hotword_candidates_to_set', { targetSetId: selectedId });
       showToast(n > 0 ? `挖掘完成，新增 ${n} 词` : '未发现新候选');
-      await refresh();
+      const newSets = await refresh();
+      // diff 出挖掘新增的词，一次性高亮定位
+      const newWords = newSets.find((s) => s.id === selectedId)?.wordsText.split(/\s+/).filter(Boolean) ?? [];
+      flashAdded(newWords.filter((x) => !oldWords.has(x)));
     } catch (e) { showToast('挖掘失败：' + e); }
-  }, [selectedId, refresh, showToast]);
+  }, [selectedId, selected, refresh, flashAdded, showToast]);
 
   const toggleDialect = useCallback((tok: string) => {
     const sset = new Set(dialect.split(',').map((s) => s.trim()).filter(Boolean));
@@ -323,7 +336,10 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
               {visible.map((w) => {
                 const h = hits[w] ?? 0;
                 return (
-                  <div key={w} className="relative rounded-md border border-border bg-background px-3 py-2 pr-7 min-w-[112px] max-w-[200px] hover:border-foreground/25">
+                  <div key={w} className={cn(
+                    'relative rounded-md border bg-background px-3 py-2 pr-7 min-w-[112px] max-w-[200px] transition-colors duration-700',
+                    recentlyAdded.has(w) ? 'border-voice bg-voice/15 ring-1 ring-voice/30' : 'border-border hover:border-foreground/25'
+                  )}>
                     <button onClick={() => removeWord(w)} className="absolute top-1 right-1 rounded p-0.5 text-muted-foreground/60 hover:text-red-500" aria-label={`删除 ${w}`}>
                       <X className="w-3 h-3" />
                     </button>
