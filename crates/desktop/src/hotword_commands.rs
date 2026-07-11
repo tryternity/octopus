@@ -67,16 +67,18 @@ pub fn list_hotword_hits() -> Result<std::collections::HashMap<String, i64>, Str
     db::list_hotword_hits().map_err(|e| e.to_string())
 }
 
-// ── 挖掘到版本 ──
+// ── 挖掘候选（不落库，前端确认后再批量 add_words_to_set）──
 
-/// 挖掘候选词并追加到指定版本。返回实际新增条数。
+/// 挖掘候选词列表（扫历史 + jieba + 词频过滤），不写库。前端展示候选供用户勾选确认。
 #[tauri::command]
-pub fn mine_hotword_candidates_to_set(target_set_id: i64) -> Result<usize, String> {
-    let words = octopus_asr_local::miner::collect_candidate_words().map_err(|e| e.to_string())?;
-    if words.is_empty() {
-        return Ok(0);
-    }
-    let added = db::add_words_to_set(target_set_id, &words).map_err(|e| e.to_string())?;
+pub fn list_hotword_candidates() -> Result<Vec<String>, String> {
+    octopus_asr_local::miner::collect_candidate_words().map_err(|e| e.to_string())
+}
+
+/// 批量追加多词到指定版本（挖掘确认 / 手动批量）。返回实际新增条数。
+#[tauri::command]
+pub fn add_words_to_set(id: i64, words: Vec<String>) -> Result<usize, String> {
+    let added = db::add_words_to_set(id, &words).map_err(|e| e.to_string())?;
     reload_after_write();
     Ok(added)
 }

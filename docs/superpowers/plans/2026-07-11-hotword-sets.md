@@ -15,6 +15,11 @@
 > | T7 | pinyin_initials re-export + 清理旧 hotword | 9e0d3d6 | ✅✅ |
 > | T8 | 前端 HotwordPanel 重写 | dd7a436 | ✅✅ |
 > | T9 | e2e + 文档同步 | 本提交 | 📝 e2e 待用户 |
+>
+> **🔧 T9 后增强（用户反馈驱动）**：
+> - 新增/挖掘词一次性高亮定位（`recentlyAdded` Set，替换语义非累加，组件重挂自然清空，无定时器）
+> - 新建/导入版本按钮修复：WKWebView 不支持 `window.prompt/confirm` → inline input 输入名 + `@tauri-apps/plugin-dialog` 原生确认框（ff72d66）
+> - 挖掘改两步确认流（用户反馈「直接落库要一个个删」）：`mine_hotword_candidates_to_set`（直接落库）拆为 `list_hotword_candidates`（候选不写库）+ `add_words_to_set`（确认后批量）；前端「挖掘」拉候选 → 确认面板（默认全选/可取消/可补词）→ 确认才落库
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 

@@ -73,6 +73,10 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   const [recentlyAdded, setRecentlyAdded] = useState<Set<string>>(new Set());
   const [creating, setCreating] = useState<'create' | 'import' | null>(null);
   const [createVal, setCreateVal] = useState('');
+  /** 挖掘确认态：候选词 + 当前勾选集合（不落库，确认后才 add_words_to_set）。
+   *  关掉即丢弃；切菜单重进组件卸载也自然清空。 */
+  const [minePending, setMinePending] = useState<{ words: string[]; selected: Set<string> } | null>(null);
+  const [mineInput, setMineInput] = useState('');
 
   /** 高亮"最近一次新增"的词：直接替换（非累加）。
    *  下次新增 → 替换为新词；切菜单重进 → 组件重挂 state 自然清空。无需定时器。 */
@@ -190,18 +194,55 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
     catch (e) { showToast('导出失败：' + e); }
   }, [selectedId, showToast]);
 
+  // ── 挖掘（先候选后确认，不直接落库）──
+  // 点「挖掘」→ 后端扫历史拿候选 → 排除当前版本已有词 → 弹确认面板。
+  // 用户在面板里取消勾选 / 手动补词 → 点确认才批量 add_words_to_set。
   const mine = useCallback(async () => {
     if (selectedId === null) { showToast('请先选择目标版本'); return; }
-    const oldWords = new Set(selected?.wordsText.split(/\s+/).filter(Boolean) ?? []);
     try {
-      const n = await invoke<number>('mine_hotword_candidates_to_set', { targetSetId: selectedId });
-      showToast(n > 0 ? `挖掘完成，新增 ${n} 词` : '未发现新候选');
-      const newSets = await refresh();
-      // diff 出挖掘新增的词，一次性高亮定位
-      const newWords = newSets.find((s) => s.id === selectedId)?.wordsText.split(/\s+/).filter(Boolean) ?? [];
-      flashAdded(newWords.filter((x) => !oldWords.has(x)));
+      const candidates = await invoke<string[]>('list_hotword_candidates');
+      const existing = new Set(selected?.wordsText.split(/\s+/).filter(Boolean) ?? []);
+      const fresh = candidates.filter((w) => !existing.has(w));
+      if (fresh.length === 0) { showToast('未发现新候选'); return; }
+      setMinePending({ words: fresh, selected: new Set(fresh) });
     } catch (e) { showToast('挖掘失败：' + e); }
-  }, [selectedId, selected, refresh, flashAdded, showToast]);
+  }, [selectedId, selected, showToast]);
+
+  const toggleMineSel = (w: string) => {
+    if (!minePending) return;
+    const next = new Set(minePending.selected);
+    if (next.has(w)) next.delete(w); else next.add(w);
+    setMinePending({ ...minePending, selected: next });
+  };
+
+  const addMineWord = () => {
+    const w = mineInput.trim();
+    if (!w || !minePending) return;
+    setMineInput('');
+    // 已在候选清单里就只补勾选，不重复
+    if (minePending.words.includes(w)) {
+      const selected = new Set(minePending.selected); selected.add(w);
+      setMinePending({ ...minePending, selected });
+      return;
+    }
+    setMinePending({
+      words: [...minePending.words, w],
+      selected: new Set([...minePending.selected, w]),
+    });
+  };
+
+  const commitMine = useCallback(async () => {
+    if (!minePending || selectedId === null) return;
+    const ws = [...minePending.selected];
+    setMinePending(null);
+    if (ws.length === 0) return;
+    try {
+      const n = await invoke<number>('add_words_to_set', { id: selectedId, words: ws });
+      showToast(n > 0 ? `已添加 ${n} 词` : '选中词均已存在');
+      await refresh();
+      flashAdded(ws);
+    } catch (e) { showToast('添加失败：' + e); }
+  }, [minePending, selectedId, refresh, flashAdded, showToast]);
 
   const toggleDialect = useCallback((tok: string) => {
     const sset = new Set(dialect.split(',').map((s) => s.trim()).filter(Boolean));
@@ -326,6 +367,63 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
               <Wand2 className="w-3.5 h-3.5" /> 挖掘
             </button>
           </div>
+
+          {/* 挖掘确认面板：候选默认全选，可取消勾选 / 手动补词，确认才落库 */}
+          {minePending && (
+            <div className="border-t border-voice/30 bg-voice/5 px-3 py-2.5 space-y-2">
+              <div className="flex items-center justify-between gap-2">
+                <span className="text-xs text-muted-foreground">
+                  已选 {minePending.selected.size}/{minePending.words.length} 个候选，确认后添加
+                </span>
+                <div className="flex items-center gap-2 flex-shrink-0">
+                  <button
+                    onClick={() => {
+                      const allSel = minePending.selected.size === minePending.words.length;
+                      setMinePending({ ...minePending, selected: allSel ? new Set() : new Set(minePending.words) });
+                    }}
+                    className="text-xs text-muted-foreground hover:text-voice"
+                  >
+                    {minePending.selected.size === minePending.words.length ? '全不选' : '全选'}
+                  </button>
+                  <button onClick={() => setMinePending(null)} className="text-xs text-muted-foreground hover:text-foreground">取消</button>
+                </div>
+              </div>
+              <div className="flex flex-wrap gap-1.5 max-h-44 overflow-y-auto">
+                {minePending.words.map((w) => {
+                  const on = minePending.selected.has(w);
+                  return (
+                    <button
+                      key={w}
+                      onClick={() => toggleMineSel(w)}
+                      className={cn(
+                        'rounded-md border px-2 py-1 text-xs transition-colors',
+                        on ? 'border-voice bg-voice/15 text-voice' : 'border-border text-muted-foreground/50 line-through hover:text-muted-foreground'
+                      )}
+                    >
+                      {w}
+                    </button>
+                  );
+                })}
+              </div>
+              <div className="flex items-center gap-1.5">
+                <input
+                  value={mineInput}
+                  onChange={(e) => setMineInput(e.target.value)}
+                  onKeyDown={(e) => { if (e.key === 'Enter') addMineWord(); }}
+                  placeholder="手动补一个词（Enter 加入候选）"
+                  className="flex-1 min-w-0 bg-background border border-border rounded px-2 py-1 text-xs outline-none focus:border-voice/50"
+                />
+                <button onClick={addMineWord} className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">补词</button>
+                <button
+                  onClick={commitMine}
+                  disabled={minePending.selected.size === 0}
+                  className="rounded-md bg-voice px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
+                >
+                  添加选中的 {minePending.selected.size} 个
+                </button>
+              </div>
+            </div>
+          )}
 
           {/* 搜索 + 排序 */}
           {words.length > 0 && (

@@ -18,7 +18,7 @@ v1 热词系统是一张**扁平单表** `hotwords`（`word UNIQUE / status(acti
 3. **命中统计全局化**：`hit_count` 按「词」全局记一份，**不绑版本 / 场景**——同词跨版本命中累加到同一计数。
 4. **UI 仍给「逐词管理」体感**：词以卡片展示、可单词添加、可点卡片 `✕` 删除；系统在背后透明地维护那坨 `words_text`。
 5. **导入 / 导出** 对接真实 txt；导入弹窗支持「新建版本 / 追加到已有 / 覆盖已有」三选项。
-6. **挖掘保留但改造**：废弃 pending→逐词确认流；挖掘候选弹窗选目标版本后追加。
+6. **挖掘保留但改造**：废弃 pending→逐词确认流；挖掘拉候选词 → 前端确认面板（默认全选、可取消/补词）→ 确认才追加到当前选中版本（不直接落库、无弹窗选版本）。
 7. 不要「编辑全文」入口——批量编辑走「导出 → 外部编辑 → 重新导入覆盖」。
 
 ## 目标
@@ -132,7 +132,7 @@ v1 热词系统是一张**扁平单表** `hotwords`（`word UNIQUE / status(acti
 
 **导出**：某版本 `words_text` → 写 txt 文件（词空格拼接，与导入对称）。
 
-**挖掘**：`collect_candidate_words()`（扫历史 + jieba + 词频过滤，逻辑同 v1）→ 返回候选词列表 → 命令层弹窗（前端）选目标版本（下拉 = 所有版本 + 「挖掘」项）→ 追加并 normalize → toast「新增 N 词」。「挖掘」是普通版本（name="挖掘"，首次挖掘自动建，默认 `enabled=0` 待整理）。
+**挖掘（两步：候选 → 确认）**：`list_hotword_candidates()` 调 `collect_candidate_words()`（扫历史 + jieba + 词频过滤，逻辑同 v1）→ 返回候选词列表（**不写库**）→ 前端展示确认面板：默认全选、可逐个取消勾选、可手动补词 → 用户点「确认」才调 `add_words_to_set(id, words)` 批量追加（读当前 `words_text` → union 新词 → normalize → UPDATE → reload）→ toast「新增 N 词」并高亮本次新增。目标版本 = 当前选中版本（无弹窗选择）。挖掘不创建名为「挖掘」的版本（v1 pending 流已废弃）。
 
 ## UI（HotwordPanel 重写）
 
@@ -140,11 +140,12 @@ v1 热词系统是一张**扁平单表** `hotwords`（`word UNIQUE / status(acti
 
 **① 版本管理 Card**
 - 版本列表，每行：`[☑ enabled toggle] 版本名（可重命名）· N词 [📤导出][🗑删除]`
-- 顶部按钮：`+ 新建版本` / `📥 导入` / `⛏ 从历史挖掘`
+- 顶部按钮：`+ 新建版本` / `📥 导入新版本`（均为 inline 输入名，WKWebView 不支持 window.prompt）
 
 **② 选中某版本 → 卡片网格**（逐词管理体感）
 - 每张卡：词名 + 右上角 `✕`（删该词）+ 命中数 inline（查 `hotword_hits[word]`，>0 高亮色、=0 淡色）
-- 上方：单个添加输入框 + 「添加」（系统追加一词 → normalize）
+- 上方：单个添加输入框 + 「添加」（系统追加一词 → normalize）+ `追加`/`覆盖`（导入到当前版本）+ `⛏ 挖掘`（调 `list_hotword_candidates` 拉候选）
+- **挖掘确认面板**（点「挖掘」后展开，已选版本为目标）：候选词 chip 默认全选（`border-voice` 实色），点 chip 切换勾选（取消 → 划线淡色）；「全选/全不选」切换 + 「取消」丢弃；底部「手动补词」输入框（Enter 加入候选并默认勾选）+ 「添加选中的 N 个」确认按钮（调 `add_words_to_set`，落库后高亮本次新增）
 - 搜索 + 排序（复用 v1 的拼音首字母搜索 + 时间/字母/命中度排序）
 
 > 用户操作 = 卡片 / 单词添加；底层每次都是系统规范化 `words_text`。批量需求走导出→改→导入覆盖。
@@ -155,7 +156,7 @@ v1 热词系统是一张**扁平单表** `hotwords`（`word UNIQUE / status(acti
 - **`asr-local/src/hotword.rs`**：新增 `normalize_words_text(words: &str) -> String`（切词→去重→`pinyin_initials` 排序→拼接）+ `pinyin_initials`（v1 已有）；`HotwordIndex` 零改。
 - **`asr-local/src/corrector.rs`**：`correct()` 命中分支加「`hotword_hits +1`」；`reload_hotwords(Vec<String>)` 签名不变。`reload_fuzzy_dialect` 不变。
 - **`asr-local/src/miner.rs`**：`mine_pending_candidates` → `collect_candidate_words`，返回 `Vec<String>`，不再写 DB。
-- **`desktop/src/hotword_commands.rs`**：重写命令（`list_hotword_sets` / `upsert_hotword_set` / `delete_hotword_set` / `toggle_hotword_set` / `add_word_to_set` / `remove_word_from_set` / `import_hotwords` / `export_hotwords` / `mine_to_set`）+ `HotwordView` 调整（带 `hitCount`）。
+- **`desktop/src/hotword_commands.rs`**：重写命令（`list_hotword_sets` / `create_hotword_set` / `rename_hotword_set` / `delete_hotword_set` / `toggle_hotword_set` / `add_word_to_set` / `remove_word_from_set` / `add_words_to_set`（批量） / `import_hotwords` / `export_hotwords` / `list_hotword_candidates`（挖掘候选不写库） / `list_hotword_hits`）。挖掘 = `list_hotword_candidates`（候选）+ `add_words_to_set`（确认后批量落库）两命令组合，无直接落库的 mine 命令。
 - **`frontend/.../HotwordPanel.tsx`**：重写（见 UI 节）。
 - **`config.rs`**：`fuzzy_dialect` 保留；无需 `active_hotword_sets`（enabled 在表里）。`asr_correct` 主开关语义不变。
 
@@ -180,7 +181,7 @@ v1 热词系统是一张**扁平单表** `hotwords`（`word UNIQUE / status(acti
 - **迁移**：构造 v22 库（active+pending 词 + hit_count）→ 升 v23 → 断言「通用」版本 `words_text` = active 词规范化、`hotword_hits` 迁入 active 词计数、pending 不在内、`hotwords` 表仍在但停用。
 - **导入导出 round-trip**：导出 → （外部不变）→ 导入覆盖 → `words_text` 等价。
 - **corrector 集成**：enabled 全关 no-op；勾选含目标热词的版本后命中纠错；命中后 `hotword_hits` 增长。
-- **挖掘候选**：`collect_candidate_words` 返回滤常用词后的候选（v1 逻辑保留）。
+- **挖掘候选**：`collect_candidate_words` 返回滤常用词后的候选（v1 逻辑保留）；`list_hotword_candidates` 命令不写库，前端确认后 `add_words_to_set` 批量落库（新增条数 = 已存在外的词数）。
 - **e2e（铁律，沿用 v1）**：真实录音含一误识专名 → 建版本加入该词 + enabled → 走 desktop pipeline 全链路 → 断言纠错命中 + `hotword_hits` 该词 +1。直调 engine 绕过 corrector 会掩盖效果，禁用。
 
 ## 分阶段交付
