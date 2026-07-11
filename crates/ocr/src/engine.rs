@@ -458,16 +458,6 @@ fn segment_english_words(text: &str) -> String {
             }
         }
 
-        // 4. 合并尾部 ≤2 字母的碎片到前一个词
-        if words.len() >= 2 {
-            let last_w = words.last().unwrap();
-            if last_w.len() <= 2 {
-                let merged = format!("{}{}", words[words.len() - 2], last_w);
-                words.truncate(words.len() - 2);
-                words.push(merged);
-            }
-        }
-
         // 5. 用空格连接输出
         for (idx, w) in words.iter().enumerate() {
             if idx > 0 {

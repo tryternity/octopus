@@ -54,8 +54,8 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
     // 段落聚类——输出单元
     enum Unit {
         Heading(u8, String),
-        ListItemOrdered(String),
-        ListItemUnordered(String),
+        ListItemOrdered(String, f64, f64),
+        ListItemUnordered(String, f64, f64),
         BodyParagraph(Vec<(String, f64, f64)>),
     }
 
@@ -64,8 +64,8 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
         match kind {
             LineKind::H1 => units.push(Unit::Heading(1, text.clone())),
             LineKind::H2 => units.push(Unit::Heading(2, text.clone())),
-            LineKind::ListItem(Some(_)) => units.push(Unit::ListItemOrdered(text.clone())),
-            LineKind::ListItem(None) => units.push(Unit::ListItemUnordered(text.clone())),
+            LineKind::ListItem(Some(_)) => units.push(Unit::ListItemOrdered(text.clone(), *y, *h)),
+            LineKind::ListItem(None) => units.push(Unit::ListItemUnordered(text.clone(), *y, *h)),
             LineKind::Body => {
                 let should_new_para = match units.last() {
                     Some(Unit::BodyParagraph(lines)) => {
@@ -89,7 +89,7 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
     let mut ordered_counter = 1usize;
     let mut prev_was_list = false;
 
-    for unit in &units {
+    for (unit_idx, unit) in units.iter().enumerate() {
         match unit {
             Unit::Heading(level, text) => {
                 ordered_counter = 1;
@@ -101,9 +101,22 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
                 output.push_str(text);
                 prev_was_list = false;
             }
-            Unit::ListItemOrdered(text) => {
+            Unit::ListItemOrdered(text, y, h) => {
+                // 检查与前一个列表项的间距——大间距说明是不同列表
                 if prev_was_list {
-                    output.push('\n');
+                    let need_split = match units.get(unit_idx - 1) {
+                        Some(Unit::ListItemOrdered(_, py, ph))
+                        | Some(Unit::ListItemUnordered(_, py, ph)) => {
+                            y - (py + ph) > median_h * PARAGRAPH_GAP_RATIO
+                        }
+                        _ => false,
+                    };
+                    if need_split {
+                        ordered_counter = 1;
+                        output.push_str("\n\n");
+                    } else {
+                        output.push('\n');
+                    }
                 } else if !output.is_empty() {
                     output.push_str("\n\n");
                 }
@@ -112,9 +125,21 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
                 output.push_str(text);
                 prev_was_list = true;
             }
-            Unit::ListItemUnordered(text) => {
+            Unit::ListItemUnordered(text, y, h) => {
                 if prev_was_list {
-                    output.push('\n');
+                    let need_split = match units.get(unit_idx - 1) {
+                        Some(Unit::ListItemOrdered(_, py, ph))
+                        | Some(Unit::ListItemUnordered(_, py, ph)) => {
+                            y - (py + ph) > median_h * PARAGRAPH_GAP_RATIO
+                        }
+                        _ => false,
+                    };
+                    if need_split {
+                        ordered_counter = 1;
+                        output.push_str("\n\n");
+                    } else {
+                        output.push('\n');
+                    }
                 } else if !output.is_empty() {
                     output.push_str("\n\n");
                 }
@@ -226,8 +251,12 @@ fn strip_ordered_marker(text: &str) -> Option<(usize, &str)> {
     }
     if i > 0 && i < trimmed.len() {
         let after_digits = &trimmed[i..];
-        if after_digits.starts_with('.') || after_digits.starts_with('、') || after_digits.starts_with(')') {
-            let sep_len = if after_digits.starts_with('、') { 3 } else { 1 };
+        if after_digits.starts_with('.') || after_digits.starts_with('、')
+            || after_digits.starts_with(')') || after_digits.starts_with('．')
+            || after_digits.starts_with('）')
+        {
+            // 全角字符（、 ． ）占 3 字节，半角（. )）占 1 字节
+            let sep_len = if after_digits.starts_with('.') || after_digits.starts_with(')') { 1 } else { 3 };
             let num_str = &trimmed[..i];
             if let Ok(n) = num_str.parse::<usize>() {
                 let rest = trimmed[i + sep_len..].trim_start();
@@ -359,6 +388,20 @@ mod tests {
     }
 
     #[test]
+    fn classify_ordered_fullwidth_dot() {
+        let (kind, text) = classify_line("1．第一项", 20.0, 20.0);
+        assert_eq!(kind, LineKind::ListItem(Some(1)));
+        assert_eq!(text, "第一项");
+    }
+
+    #[test]
+    fn classify_ordered_fullwidth_paren() {
+        let (kind, text) = classify_line("2）第二项", 20.0, 20.0);
+        assert_eq!(kind, LineKind::ListItem(Some(2)));
+        assert_eq!(text, "第二项");
+    }
+
+    #[test]
     fn classify_ordered_paren_cn() {
         let (kind, text) = classify_line("（2）第二项", 20.0, 20.0);
         assert_eq!(kind, LineKind::ListItem(Some(2)));
@@ -472,5 +515,32 @@ mod tests {
             mk_block("不分析", 10.0, 24.0, 100.0, 20.0),
         ];
         assert_eq!(to_markdown(&blocks), "只有两行\n\n不分析");
+    }
+
+    #[test]
+    fn end_to_end_list_gap_split() {
+        // 两个有序列表，间距很大 → 应回车重编号
+        // list A: y=0,24; gap: 70-(24+20)=26 > 20*0.8=16; list B: y=70,94
+        let blocks = vec![
+            mk_block("① 第一项", 10.0, 0.0, 100.0, 20.0),
+            mk_block("② 第二项", 10.0, 24.0, 100.0, 20.0),
+            mk_block("① 第三项", 10.0, 70.0, 100.0, 20.0),
+            mk_block("② 第四项", 10.0, 94.0, 100.0, 20.0),
+        ];
+        assert_eq!(
+            to_markdown(&blocks),
+            "1. 第一项\n2. 第二项\n\n1. 第三项\n2. 第四项"
+        );
+    }
+
+    #[test]
+    fn end_to_end_unordered_list_gap_split() {
+        let blocks = vec![
+            mk_block("• A1", 10.0, 0.0, 100.0, 20.0),
+            mk_block("• A2", 10.0, 24.0, 100.0, 20.0),
+            // gap: 70 - (24+20) = 26 > 16
+            mk_block("• B1", 10.0, 70.0, 100.0, 20.0),
+        ];
+        assert_eq!(to_markdown(&blocks), "- A1\n- A2\n\n- B1");
     }
 }
