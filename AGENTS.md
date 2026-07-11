@@ -96,6 +96,18 @@ desktop → feature-gated: embedded (=asr) | remote-ws | remote-grpc | cloud (�
 
 **infra 是唯一无项目内依赖的 crate**，任何跨 crate 共享的内容应放在 infra。
 
+## 技能（Skills）路径
+
+自定义 skill 实际存放在 `~/.agents/skills/`（项目内置的 `<available_skills>` 列表中的 `~/.claude/skills/` 路径是旧的，部分 skill 如 `z-sync-superpowers`、`z-mermaid`、`z-module` 等只在 `~/.agents/skills/` 下）。
+
+**找不到 skill 时，先到 `~/.agents/skills/` 下查找**，而非默认搜索或放弃。
+
+常用路径：
+- `~/.agents/skills/z_sync_superpowers/SKILL.md` — 代码变更后同步 superpowers specs/plans 文档
+- `~/.agents/skills/z_mermaid/SKILL.md` — Mermaid 图表
+- `~/.agents/skills/z_module/SKILL.md` — 模块化
+- `~/.agents/skills/superpowers/` — superpowers 技能集（brainstorming、writing-plans 等）
+
 ## 开发流程（文档驱动）
 
 **一切以文档为基础继续开发，保持文档与代码同步。** 架构、功能、技术细节以 [`docs/`](docs/) 下文档为唯一真相源——遇到「代码怎么实现」「架构怎么组织」「流程怎么走」的问题，**先查文档，不猜代码**；文档没覆盖或描述过时，先修文档再改代码。

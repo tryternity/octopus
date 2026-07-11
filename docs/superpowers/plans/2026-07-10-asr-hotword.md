@@ -1,6 +1,6 @@
 # ASR 热词系统 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> ✅ **已实现**（2026-07-10，commit `da9e159e`…`46453a7a`）。所有 Task 已完成、checkbox 已勾选。下方为原始实施计划，保留作执行记录。
 
 **Goal:** 给全部 11 个 ASR 引擎（7 本地 + 4 云端）统一的「热词纠错」能力：把 `corrector.rs` 重构为候选集有界版本（候选只来自热词表），顺手清掉过纠债；配 DB 热词表、自动挖掘+人工确认、设置页管理 UI。
 
