@@ -30,12 +30,12 @@
 | `#shell` | 不探测 | `sh -c "<code>"` | 全平台 |
 | `#osascript` | 不探测 | `osascript -e "<code>"` | 仅 macOS |
 | `#powershell` | 不探测 | `powershell -Command "<code>"` | 仅 Windows |
-| `#python` | 不探测 | `python3 -c "<code>"` | 全平台 |
+
 | `#node` | 不探测 | `node -e "<code>"` | 全平台 |
 | `#deno` | 不探测 | `deno eval "<code>"` | 全平台 |
 | `#bun` | 不探测 | `bun eval "<code>"` | 全平台 |
 | `#javascript` | 预探测 | 探测到的运行时对应命令 | 全平台 |
-| `#typescript` | 预探测 | 探测到的运行时对应命令 | 全平台 |
+
 
 ### 2.2 运行时探测（`#javascript` / `#typescript`）
 
@@ -311,8 +311,12 @@ pub struct ScriptRun {
 
 1. **magic comment 第一行**——`source.lines().next()` 解析，空行/空源报 `未知脚本类型`
 2. **stdout/stderr 截断 64KB**——防 DB 膨胀
-3. **60 秒超时强杀**——异步同步共用 `wait_with_timeout`，超时后 `child.kill() + child.wait()`
+3. **超时策略**——同步 60 秒强杀（`wait_with_timeout` 轮询），异步不超时（`wait_forever` 阻塞 `child.wait()`，CPU 0%）
 4. **`write_output_to_clipboard` 仅同步模式可生效**——异步模式 UI 禁用 + 强制 false
 5. **所有执行都落库**——不论异步/同步/成功/失败/超时，`script_runs` 都有记录
-6. **`OCTOPUS_TEXT` 环境变量**——所有运行时统一传递，不拼字符串防注入
-7. **CASCADE 删除**——菜单项删除时级联删 `script_runs` 记录
+6. **`OCTOPUS_TEXT` 传递**——≤200KB 环境变量直传；超出写临时文件 + marker `_____ULTRA_LONG_TEXT_____:/path`，脚本结束后清理；写入失败回退按字节截断（`is_char_boundary`）
+7. **CASCADE 删除**——`PRAGMA foreign_keys = ON`，菜单项删除时级联删 `script_runs`
+8. **error_msg 统一**——`script_error_msg()` 覆盖超时/异常退出/非零退出码
+9. **运行时探测缓存**——`detect_js/ts_runtime` 用 `OnceLock` 仅首次探测（TS 优先级 bun→deno→npx tsx）
+10. **跨平台**——`#python` Windows 用 `python`；`action_data` 绝对路径判断用 `Path::is_absolute()`；`delete_extension` 路径匹配用 `Path::starts_with()`
+11. **pipe 并发读取**——stdout/stderr 各独立线程，防 >64KB 管道死锁
