@@ -266,13 +266,12 @@ pub fn clear_result(app: &tauri::AppHandle) {
 /// 全局编辑快捷键被按下：唤起结果窗（show + set_focus）并通知前端 toggle 编辑态。
 ///
 /// 复用前端 toggleEdit：未编辑则进入编辑（enterEdit 内部已对空文本 return，
-/// 无识别结果时只唤起窗口不进编辑），已编辑则保存——与窗口内 edit_shortcut
-/// （Cmd+Enter）语义一致。全局键相比窗口内键，只多了「跨应用唤起 + set_focus」。
+/// 全局编辑快捷键被按下：show 结果窗 + set_focus（唤起窗口到前台）。
+/// CM6 改造后不再 emit toggle 事件——始终可编辑，窗口聚焦后用户直接输入即可。
 pub fn trigger_global_edit(app: &tauri::AppHandle) {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let _ = window.show();
         let _ = window.set_focus();
-        let _ = window.emit("global-edit-toggle", ());
     }
 }
 

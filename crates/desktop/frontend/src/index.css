@@ -278,3 +278,14 @@ html, body {
   cursor: col-resize !important;
   user-select: none !important;
 }
+
+/* ── ASR 编辑器 CM6 ── */
+.asr-cm-editor .cm-editor { height: 100%; }
+.asr-cm-editor .cm-scroller {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
+}
+.asr-cm-editor .cm-scroller::-webkit-scrollbar { width: 4px; }
+.asr-cm-editor .cm-scroller::-webkit-scrollbar-track { background: transparent; }
+.asr-cm-editor .cm-scroller::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.35); border-radius: 2px; }
+.asr-cm-editor .cm-scroller::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.6); }
