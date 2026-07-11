@@ -4,7 +4,6 @@ import { undo, redo } from "@codemirror/commands";
 import { Undo2, Redo2, ZoomIn, ZoomOut, Eraser, Check, Save, Eye, Columns2, FileText } from "lucide-react";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import { MarkdownPreview } from "./MarkdownPreview";
-import { Splitter } from "./Splitter";
 import { useSyncScroll } from "@/hooks/useSyncScroll";
 import { useT } from "@/lib/i18n";
 
@@ -13,6 +12,8 @@ type ViewMode = "split" | "editor" | "preview";
 const FONT_MIN = 12;
 const FONT_MAX = 24;
 const SPLIT_KEY = "compact-editor-split-ratio";
+const MIN_RATIO = 0.2;
+const MAX_RATIO = 0.8;
 
 interface MarkdownPaneProps {
   text: string;
@@ -46,14 +47,17 @@ export function MarkdownPane({
   const [clearPending, setClearPending] = useState(false);
   const [splitRatio, setSplitRatio] = useState(() => {
     const saved = Number(localStorage.getItem(SPLIT_KEY));
-    return saved >= 0.2 && saved <= 0.8 ? saved : 0.5;
+    return saved >= MIN_RATIO && saved <= MAX_RATIO ? saved : 0.5;
   });
   const viewRef = useRef<EditorView | null>(null);
+  const gridRef = useRef<HTMLDivElement>(null);
+  const draggingRef = useRef(false);
 
   useEffect(() => {
     localStorage.setItem(SPLIT_KEY, String(splitRatio));
   }, [splitRatio]);
 
+  // 仅 split 模式启用滚动同步
   useSyncScroll({ rebindKey: viewMode });
 
   const handleUndo = useCallback(() => {
@@ -73,9 +77,37 @@ export function MarkdownPane({
     setClearPending(false);
   };
 
+  // ── Splitter 拖拽逻辑（内联，CM6 不卸载）──
+  const onDividerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    draggingRef.current = true;
+    (e.target as HTMLElement).setPointerCapture(e.pointerId);
+    document.documentElement.classList.add("md-splitter-dragging");
+  }, []);
+
+  const onDividerMove = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current || !gridRef.current) return;
+    const rect = gridRef.current.getBoundingClientRect();
+    const next = (e.clientX - rect.left) / rect.width;
+    setSplitRatio(Math.min(MAX_RATIO, Math.max(MIN_RATIO, next)));
+  }, []);
+
+  const onDividerUp = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
+    if (!draggingRef.current) return;
+    draggingRef.current = false;
+    try { (e.target as HTMLElement).releasePointerCapture(e.pointerId); } catch { /* released */ }
+    document.documentElement.classList.remove("md-splitter-dragging");
+  }, []);
+
+  useEffect(() => {
+    return () => { document.documentElement.classList.remove("md-splitter-dragging"); };
+  }, []);
+
   const charCount = [...text].length;
-  const showRight = viewMode !== "editor";
-  const showLeft = viewMode !== "preview";
+
+  // grid 模板列：split 模式按比例分三列，editor/preview 全占
+  const gridCols = viewMode === "split"
+    ? `${splitRatio * 100}% 1px ${(1 - splitRatio) * 100}%`
+    : "1fr 0 1fr";
 
   return (
     <div className="flex flex-col flex-1 min-h-0">
@@ -125,27 +157,40 @@ export function MarkdownPane({
         </button>
       </div>
 
-      {/* 内容区 */}
-      <div className="flex-1 flex min-h-0">
-        {showLeft && showRight ? (
-          <Splitter
-            left={<CodeMirrorEditor value={text} readOnly={readOnly} fontSize={fontSize} onChange={onChange} viewRef={viewRef} />}
-            right={<MarkdownPreview source={text} />}
-            ratio={splitRatio}
-            onRatioChange={setSplitRatio}
-            showRight={true}
-          />
-        ) : showLeft ? (
-          <Splitter
-            left={<CodeMirrorEditor value={text} readOnly={readOnly} fontSize={fontSize} onChange={onChange} viewRef={viewRef} />}
-            right={null}
-            ratio={1}
-            onRatioChange={() => {}}
-            showRight={false}
-          />
-        ) : (
+      {/* 内容区：CM6 + Preview 始终挂载，display:none 切换可见性（无 mount/unmount） */}
+      <div
+        ref={gridRef}
+        className="flex-1 grid min-h-0"
+        style={{ gridTemplateColumns: gridCols }}
+      >
+        {/* CM6 编辑器 */}
+        <div
+          className="min-h-0 min-w-0 flex flex-col overflow-hidden"
+          style={{ display: viewMode === "preview" ? "none" : "flex" }}
+        >
+          <CodeMirrorEditor value={text} readOnly={readOnly} fontSize={fontSize} onChange={onChange} viewRef={viewRef} />
+        </div>
+        {/* 分割线（仅 split 模式可见） */}
+        <div
+          role="separator"
+          aria-orientation="vertical"
+          aria-valuenow={Math.round(splitRatio * 100)}
+          onPointerDown={onDividerDown}
+          onPointerMove={onDividerMove}
+          onPointerUp={onDividerUp}
+          onPointerCancel={onDividerUp}
+          className="relative bg-border cursor-col-resize select-none hover:bg-voice transition-colors"
+          style={{ display: viewMode === "split" ? "block" : "none" }}
+        >
+          <div className="absolute inset-y-0 -inset-x-[5px]" />
+        </div>
+        {/* Markdown 预览 */}
+        <div
+          className="min-h-0 min-w-0 flex flex-col overflow-hidden"
+          style={{ display: viewMode === "editor" ? "none" : "flex" }}
+        >
           <MarkdownPreview source={text} />
-        )}
+        </div>
       </div>
     </div>
   );

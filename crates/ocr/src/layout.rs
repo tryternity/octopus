@@ -101,7 +101,7 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
                 output.push_str(text);
                 prev_was_list = false;
             }
-            Unit::ListItemOrdered(text, y, h) => {
+            Unit::ListItemOrdered(text, y, _h) => {
                 // 检查与前一个列表项的间距——大间距说明是不同列表
                 if prev_was_list {
                     let need_split = match units.get(unit_idx - 1) {
@@ -125,7 +125,7 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
                 output.push_str(text);
                 prev_was_list = true;
             }
-            Unit::ListItemUnordered(text, y, h) => {
+            Unit::ListItemUnordered(text, y, _h) => {
                 if prev_was_list {
                     let need_split = match units.get(unit_idx - 1) {
                         Some(Unit::ListItemOrdered(_, py, ph))
