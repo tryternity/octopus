@@ -169,12 +169,13 @@ where
 /// v20：paste_input_source_switch。
 /// v21：action_bar_items 加 is_async + write_output_to_clipboard 列；新建 script_runs 表。
 /// v20：新增 hotwords 表（db.sql IF NOT EXISTS 自动创建）。
+/// v23：新增 hotword_sets + hotword_hits 表；现有 active 热词迁「通用」版本。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 22 {
+    if v >= 23 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -212,13 +213,40 @@ fn init_schema(conn: &Connection) -> Result<()> {
         )?;
         conn.execute("PRAGMA user_version = 22", [])?;
         log::info!("schema upgraded to v22 (env vars seed)");
+        // v22→v23：热词多版本——hotword_sets/hotword_hits 表由 db.sql IF NOT EXISTS 自动创建。
+        // 一次性迁移：现有 active 热词 → 「通用」版本 words_text（normalize 排序去重）；
+        // 命中计数 → hotword_hits。pending 词丢弃（废弃 pending 确认流）。
+        // hotwords 表保留但停用（不 DROP，留待后续清理）。
+        if v < 23 {
+            conn.execute_batch(INIT_SQL).ok(); // 确保 hotword_sets/hotword_hits 已建
+            let words_text: String = {
+                let mut stmt = conn.prepare(
+                    "SELECT word FROM hotwords WHERE status='active' ORDER BY created_at",
+                )?;
+                let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+                let mut words: Vec<String> = Vec::new();
+                for r in rows { words.push(r?); }
+                crate::hotword_text::normalize_words_text(&words.join(" "))
+            };
+            conn.execute(
+                "INSERT OR IGNORE INTO hotword_sets(name, enabled, words_text) VALUES('通用', 1, ?1)",
+                params![words_text],
+            )?;
+            conn.execute(
+                "INSERT OR IGNORE INTO hotword_hits(word, hit_count) \
+                 SELECT word, hit_count FROM hotwords WHERE status='active'",
+                [],
+            )?;
+            conn.execute("PRAGMA user_version = 23", [])?;
+            log::info!("schema upgraded to v23 (hotword_sets + hotword_hits)");
+        }
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 22", [])?;
-    log::info!("DB initialized (v22): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 23", [])?;
+    log::info!("DB initialized (v23): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1732,13 +1760,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v22() {
+    fn init_schema_fresh_db_builds_v23() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 22, "全新库 init_schema 后应到 v22");
+        assert_eq!(v, 23, "全新库 init_schema 后应到 v23");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -1752,16 +1780,16 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_v22_is_noop() {
-        // 已是 v22 的库再调 init_schema 应早退（不重跑、不报错）
+    fn init_schema_v23_is_noop() {
+        // 已是 v23 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 22", []).unwrap();
+        conn.execute("PRAGMA user_version = 23", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 22);
+        assert_eq!(v, 23);
     }
 
     #[test]
@@ -2618,5 +2646,40 @@ mod tests {
 
         // word 唯一约束
         assert!(insert_hotword_at(&conn, "吴大锐", "manual", "active").is_err());
+    }
+
+    #[test]
+    fn migrate_v22_hotwords_to_general_set() {
+        // 构造 v22 库：hotwords 表 2 个 active（带 hit_count）+ 1 个 pending
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("PRAGMA user_version = 22", []).unwrap();
+        conn.execute("INSERT INTO hotwords(word, status, source, hit_count) VALUES('八爪鱼','active','manual',3)", []).unwrap();
+        conn.execute("INSERT INTO hotwords(word, status, source, hit_count) VALUES('吴大锐','active','manual',1)", []).unwrap();
+        conn.execute("INSERT INTO hotwords(word, status, source, hit_count) VALUES('候选词','pending','mined',0)", []).unwrap();
+
+        init_schema(&conn).unwrap();
+
+        // v23
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 23);
+
+        // 「通用」版本存在，含两个 active 词（normalize 排序），不含 pending
+        let (name, words_text): (String, String) = conn
+            .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
+                Ok((r.get(0)?, r.get(1)?))
+            })
+            .unwrap();
+        assert_eq!(name, "通用");
+        assert_eq!(words_text, "八爪鱼 吴大锐"); // BZY, WDR 升序（B<W）
+
+        // hit_count 迁入 hotword_hits
+        let wu: i64 = conn
+            .query_row("SELECT hit_count FROM hotword_hits WHERE word='吴大锐'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(wu, 1);
+        // pending 词不进 hits
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM hotword_hits", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 2);
     }
 }
