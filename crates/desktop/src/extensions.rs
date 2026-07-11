@@ -324,10 +324,9 @@ pub fn delete_extension(dir_name: String) -> Result<(), String> {
     if !dir.exists() {
         return Err("扩展包不存在".into());
     }
-    let dir_prefix = format!("{}/", dir.to_string_lossy());
     let db_items = octopus_infra::db::list_all_action_bar_items().map_err(|e| e.to_string())?;
     for item in db_items {
-        if item.action_data.starts_with(&dir_prefix) {
+        if std::path::Path::new(&item.action_data).starts_with(&dir) {
             let _ = octopus_infra::db::delete_action_bar_item(item.id);
         }
     }

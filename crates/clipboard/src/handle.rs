@@ -111,6 +111,16 @@ impl ClipboardHandle {
         ctx.has(format)
     }
 
+    /// 快捷检测：剪贴板当前是否有图片
+    pub fn has_image(&self) -> bool {
+        self.has(ContentFormat::Image)
+    }
+
+    /// 快捷检测：剪贴板当前是否有文件
+    pub fn has_files(&self) -> bool {
+        self.has(ContentFormat::Files)
+    }
+
     pub fn available_formats(&self) -> Result<Vec<String>> {
         let ctx = self.ctx.lock();
         ctx.available_formats()

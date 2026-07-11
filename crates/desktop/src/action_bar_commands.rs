@@ -40,8 +40,12 @@ pub fn trigger_action_bar(app: AppHandle) {
         // 1. 记录触发前的剪贴板内容（文本 + 图片 + 文件，防非文本数据丢失）
         let clip_handle = app_clone.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>().clone();
         let clipboard_before_text = read_clipboard_text(&app_clone);
-        let clipboard_before_image = clip_handle.read_image().ok();
-        let clipboard_before_files = clip_handle.read_files().ok().filter(|f| !f.is_empty());
+        let clipboard_before_image = if clip_handle.has_image() {
+            clip_handle.read_image().ok()
+        } else { None };
+        let clipboard_before_files = if clip_handle.has_files() {
+            clip_handle.read_files().ok().filter(|f| !f.is_empty())
+        } else { None };
 
         // 2. suppress watcher
         clip_handle.suppress_next();
@@ -376,17 +380,11 @@ fn detect_js_runtime() -> Option<(&'static str, &'static str)> {
     })
 }
 
-/// 探测 TS 运行时——优先级 npx tsx → bun → deno（结果缓存，仅首次探测）
+/// 探测 TS 运行时——优先级 bun → deno → npx tsx（结果缓存，仅首次探测）
 fn detect_ts_runtime() -> Option<(&'static str, Vec<&'static str>)> {
     static CACHE: OnceLock<Option<(&'static str, Vec<&'static str>)>> = OnceLock::new();
     CACHE.get_or_init(|| {
-        if std::process::Command::new("npx").args(["--yes", "tsx", "--version"])
-            .stdout(std::process::Stdio::null())
-            .stderr(std::process::Stdio::null())
-            .status().is_ok()
-        {
-            return Some(("npx", vec!["--yes", "tsx", "-e"]));
-        }
+        // bun/deno 原生支持 TS，探测仅本地进程，毫秒级
         if std::process::Command::new("bun").arg("--version")
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
@@ -400,6 +398,14 @@ fn detect_ts_runtime() -> Option<(&'static str, Vec<&'static str>)> {
             .status().is_ok()
         {
             return Some(("deno", vec!["eval"]));
+        }
+        // npx tsx 作为 fallback（可能触发联网下载，最慢）
+        if std::process::Command::new("npx").args(["--yes", "tsx", "--version"])
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().is_ok()
+        {
+            return Some(("npx", vec!["--yes", "tsx", "-e"]));
         }
         None
     }).clone()
@@ -487,9 +493,17 @@ fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option
 
 /// 轮询等待子进程退出，60 秒超时强杀。并发读取 stdout/stderr 防管道死锁。
 fn wait_with_timeout(mut child: std::process::Child) -> ScriptResult {
+    wait_with_timeout_secs(child, 60)
+}
+
+/// 异步脚本等待——不超时，等到自然退出。
+fn wait_forever(mut child: std::process::Child) -> ScriptResult {
+    wait_with_timeout_secs(child, u32::MAX / 500)
+}
+
+fn wait_with_timeout_secs(mut child: std::process::Child, timeout_secs: u32) -> ScriptResult {
     use std::io::Read;
 
-    // 先取走 pipe handle，用线程并发读取——防止子进程输出 >64KB 时管道阻塞死锁
     let mut stdout_handle = child.stdout.take();
     let mut stderr_handle = child.stderr.take();
 
@@ -505,14 +519,14 @@ fn wait_with_timeout(mut child: std::process::Child) -> ScriptResult {
     });
 
     let mut timed_out = false;
-    for _ in 0..120 {
+    let polls = timeout_secs.saturating_mul(2); // 500ms × 2 = 1s
+    for _ in 0..polls {
         match child.try_wait() {
             Ok(Some(_)) => break,
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
             Err(_) => break,
         }
     }
-    // 超时强杀
     if child.try_wait().map(|s| s.is_none()).unwrap_or(true) {
         let _ = child.kill();
         let _ = child.wait();
@@ -538,7 +552,7 @@ fn run_script_async(source: &str, text: &str, item_id: i64, pkg_dir: Option<Stri
     let started = std::time::Instant::now();
     let started_at = now_iso8601();
     std::thread::spawn(move || {
-        let result = wait_with_timeout(child);
+        let result = wait_forever(child);
         let duration_ms = started.elapsed().as_millis() as i64;
         let finished_at = now_iso8601();
         let error_msg = if result.timed_out { "执行超时（60秒）".to_string() }
@@ -625,7 +639,8 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             // Package 脚本（action_data 是绝对路径）vs 内联脚本
             let is_pkg = std::path::Path::new(&item.action_data).is_absolute();
             let source = if is_pkg {
-                std::fs::read_to_string(&item.action_data).unwrap_or_default()
+                std::fs::read_to_string(&item.action_data)
+                    .map_err(|e| format!("脚本文件不存在或无法读取: {}", e))?
             } else {
                 item.action_data.clone()
             };
