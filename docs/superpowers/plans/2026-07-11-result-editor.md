@@ -1,6 +1,6 @@
 # ASR 结果框 CM6 改造实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 将 Result 窗口的 contentEditable div 替换为 CodeMirror 6，实现「始终可编辑 + 随说随编」+ dirty ranges 精确标记 Edited segment。
 
@@ -59,7 +59,7 @@
 - Produces: `fn segment_kind_at_offset(segments: &[Segment], offset: usize) -> SegmentKind` — 纯函数
 - Produces: `fn push_or_merge(result: &mut Vec<Segment>, kind: SegmentKind, text: &str)` — 纯函数
 
-- [ ] **Step 1: 编写后端测试（TDD RED）**
+- [x] **Step 1: 编写后端测试（TDD RED）**
 
 在 `transcript.rs` 的 `#[cfg(test)] mod tests` 中新增测试：
 
@@ -159,7 +159,7 @@ fn push_or_merge_same_kind() {
 }
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 ```bash
 cargo test -p octopus-desktop -- transcript::tests
@@ -167,7 +167,7 @@ cargo test -p octopus-desktop -- transcript::tests
 
 Expected: FAIL — `rebuild_segments` / `segment_kind_at_offset` / `push_or_merge` 未定义；`commit_edit` 签名不匹配。
 
-- [ ] **Step 3: 实现辅助函数**
+- [x] **Step 3: 实现辅助函数**
 
 在 `transcript.rs` 中（`commit_edit` 上方）新增：
 
@@ -230,7 +230,7 @@ fn rebuild_segments(
 }
 ```
 
-- [ ] **Step 4: 改造 commit_edit**
+- [x] **Step 4: 改造 commit_edit**
 
 将现有 `commit_edit` 替换为：
 
@@ -259,7 +259,7 @@ pub fn commit_edit(&mut self, flat: &str, dirty_ranges: &[(usize, usize)]) {
 }
 ```
 
-- [ ] **Step 5: 运行测试验证通过**
+- [x] **Step 5: 运行测试验证通过**
 
 ```bash
 cargo test -p octopus-desktop -- transcript::tests
@@ -267,7 +267,7 @@ cargo test -p octopus-desktop -- transcript::tests
 
 Expected: 全部 PASS。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/src/transcript.rs
@@ -287,7 +287,7 @@ git commit -m "feat(transcript): commit_edit 按 dirty ranges 劈段标 Edited"
 - Produces: `coordinator.commit_edit(text, dirty_ranges, caret, selection)` 方法签名
 - Produces: Tauri 命令 `commit_edit(coordinator, text, dirty_ranges, caret, selection)`
 
-- [ ] **Step 1: 改造 Command enum**
+- [x] **Step 1: 改造 Command enum**
 
 找到 `crates/desktop/src/coordinator.rs` 的 `Command` enum，替换：
 
@@ -302,7 +302,7 @@ CommitEdit { text: String, dirty_ranges: Vec<(usize, usize)>, caret: Option<usiz
 
 > 移除 `CancelEdit` 变体（始终可编辑，无取消操作）。
 
-- [ ] **Step 2: 改造命令循环中的 handler**
+- [x] **Step 2: 改造命令循环中的 handler**
 
 找到命令循环中处理 `Command::CommitEdit` 的位置（约 L429），替换为：
 
@@ -315,7 +315,7 @@ Command::CommitEdit { text, dirty_ranges, caret, selection } => {
 
 找到处理 `Command::CancelEdit` 的位置（约 L439），替换为：移除整个 `CancelEdit` match arm（包括其内部逻辑）。
 
-- [ ] **Step 3: 改造 commit_edit_apply 函数签名**
+- [x] **Step 3: 改造 commit_edit_apply 函数签名**
 
 找到 `commit_edit_apply` 函数（约 L2137），替换为：
 
@@ -377,7 +377,7 @@ fn commit_edit_apply(
 }
 ```
 
-- [ ] **Step 4: 改造 Coordinator 方法签名**
+- [x] **Step 4: 改造 Coordinator 方法签名**
 
 找到 `impl Coordinator` 中的 `commit_edit` 方法（约 L586），替换为：
 
@@ -392,7 +392,7 @@ pub fn commit_edit(&self, text: String, dirty_ranges: Vec<(usize, usize)>, caret
 
 移除 `cancel_edit` 方法（约 L593-598）和 `update_edit_buffer` 方法（约 L578-582）。
 
-- [ ] **Step 5: 改造 Tauri 命令**
+- [x] **Step 5: 改造 Tauri 命令**
 
 找到 `#[tauri::command] pub fn commit_edit`（约 L685），替换为：
 
@@ -411,11 +411,11 @@ pub fn commit_edit(
 
 移除 `#[tauri::command] pub fn update_edit_buffer`（约 L678-681）和 `#[tauri::command] pub fn exit_edit_without_commit`（约 L718-720）。
 
-- [ ] **Step 6: 更新 main.rs 命令注册**
+- [x] **Step 6: 更新 main.rs 命令注册**
 
 在 `crates/desktop/src/main.rs` 的 `invoke_handler` 列表中，移除 `coordinator::update_edit_buffer` 和 `coordinator::exit_edit_without_commit`。
 
-- [ ] **Step 7: 编译验证**
+- [x] **Step 7: 编译验证**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | tail -5
@@ -423,7 +423,7 @@ cargo build -p octopus-desktop 2>&1 | tail -5
 
 Expected: 编译通过。如果有 `CancelEdit` 残留引用，搜索并清除。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/src/coordinator.rs crates/desktop/src/main.rs
@@ -440,7 +440,7 @@ git commit -m "refactor(coordinator): CommitEdit 加 dirty_ranges/caret/selectio
 **Interfaces:**
 - Produces: `<AsrEditor text={} caret={} expanded={} onCommit={} ref={} />` — `ref` 暴露 `commit()` 方法
 
-- [ ] **Step 1: 实现 AsrEditor.tsx**
+- [x] **Step 1: 实现 AsrEditor.tsx**
 
 ```tsx
 import { useEffect, useRef, useImperativeHandle, forwardRef } from "react";
@@ -677,7 +677,7 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
 });
 ```
 
-- [ ] **Step 2: 类型检查**
+- [x] **Step 2: 类型检查**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
@@ -685,7 +685,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5
 
 Expected: 无类型错误。如 `Transaction` 导入有误，确认从 `@codemirror/state` 导入。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Result/AsrEditor.tsx
@@ -699,7 +699,7 @@ git commit -m "feat(frontend): AsrEditor 组件——CM6 + ASR 流式适配 + di
 **Files:**
 - Modify: `crates/desktop/frontend/src/index.css`
 
-- [ ] **Step 1: 追加 AsrEditor 滚动条样式**
+- [x] **Step 1: 追加 AsrEditor 滚动条样式**
 
 在 `index.css` 末尾追加：
 
@@ -717,7 +717,7 @@ git commit -m "feat(frontend): AsrEditor 组件——CM6 + ASR 流式适配 + di
 .asr-cm-editor { scrollbar-width: thin; }
 ```
 
-- [ ] **Step 2: 构建验证**
+- [x] **Step 2: 构建验证**
 
 ```bash
 cd crates/desktop/frontend && npx vite build 2>&1 | tail -3
@@ -725,7 +725,7 @@ cd crates/desktop/frontend && npx vite build 2>&1 | tail -3
 
 Expected: 构建成功。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/index.css
@@ -741,7 +741,7 @@ git commit -m "style: ASR 编辑器 CM6 滚动条"
 - Delete: `crates/desktop/frontend/src/pages/Result/caret.ts`
 - Delete: `crates/desktop/frontend/src/pages/Result/CaretBlink.tsx`
 
-- [ ] **Step 1: 更新 import**
+- [x] **Step 1: 更新 import**
 
 移除不再需要的 import：
 
@@ -755,7 +755,7 @@ import { CaretBlink } from "./CaretBlink";
 import { AsrEditor, type AsrEditorHandle } from "./AsrEditor";
 ```
 
-- [ ] **Step 2: 移除编辑态/光标/选区 state 和 ref**
+- [x] **Step 2: 移除编辑态/光标/选区 state 和 ref**
 
 删除以下 state 声明：
 - `editing` / `setEditing`
@@ -781,7 +781,7 @@ const caretRef = useRef<number | null>(null);
 const [asrEditorResetKey, setAsrEditorResetKey] = useState(0);
 ```
 
-- [ ] **Step 3: 移除编辑态函数和逻辑**
+- [x] **Step 3: 移除编辑态函数和逻辑**
 
 删除以下函数/逻辑块：
 - `renderResultNow`（整个函数）
@@ -795,7 +795,7 @@ const [asrEditorResetKey, setAsrEditorResetKey] = useState(0);
 - `global-edit-toggle` 的 listen useEffect
 - `edit-force-exit` 事件 handler（在事件数组中）
 
-- [ ] **Step 4: 改造 update-result 事件 handler**
+- [x] **Step 4: 改造 update-result 事件 handler**
 
 在事件数组中，替换 `update-result` handler：
 
@@ -807,7 +807,7 @@ const [asrEditorResetKey, setAsrEditorResetKey] = useState(0);
 }],
 ```
 
-- [ ] **Step 5: 改造 show-result / clear-result / hide-result handler**
+- [x] **Step 5: 改造 show-result / clear-result / hide-result handler**
 
 ```tsx
 ["show-result", (p) => {
@@ -839,7 +839,7 @@ const [asrEditorResetKey, setAsrEditorResetKey] = useState(0);
 }],
 ```
 
-- [ ] **Step 6: 改造 Esc 键**
+- [x] **Step 6: 改造 Esc 键**
 
 ```tsx
 if (e.key === "Escape") {
@@ -860,7 +860,7 @@ if (matchShortcut(e, sc)) {
 }
 ```
 
-- [ ] **Step 7: 改造工具栏按钮**
+- [x] **Step 7: 改造工具栏按钮**
 
 移除编辑/取消编辑/保存的分支逻辑，改为单一保存按钮：
 
@@ -876,7 +876,7 @@ const tools = [
 ];
 ```
 
-- [ ] **Step 8: 替换 contentEditable div 为 AsrEditor**
+- [x] **Step 8: 替换 contentEditable div 为 AsrEditor**
 
 找到 JSX 中的 `<div className="relative h-full">` 块（contentEditable + CaretBlink），替换为：
 
@@ -900,14 +900,14 @@ const tools = [
 </div>
 ```
 
-- [ ] **Step 9: 删除 caret.ts 和 CaretBlink.tsx**
+- [x] **Step 9: 删除 caret.ts 和 CaretBlink.tsx**
 
 ```bash
 rm crates/desktop/frontend/src/pages/Result/caret.ts
 rm crates/desktop/frontend/src/pages/Result/CaretBlink.tsx
 ```
 
-- [ ] **Step 10: 类型检查 + 构建**
+- [x] **Step 10: 类型检查 + 构建**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5 && npx vite build 2>&1 | tail -3
@@ -915,7 +915,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5 && npx vite build 
 
 Expected: 无类型错误，构建成功。如有未使用变量/函数残留，清理。
 
-- [ ] **Step 11: Commit**
+- [x] **Step 11: Commit**
 
 ```bash
 git add -A
@@ -929,7 +929,7 @@ git commit -m "refactor(frontend): Result 窗口接入 AsrEditor（移除 conten
 **Files:**
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: 全量前端测试**
+- [x] **Step 1: 全量前端测试**
 
 ```bash
 cd crates/desktop/frontend && npx vitest run 2>&1 | tail -10
@@ -937,7 +937,7 @@ cd crates/desktop/frontend && npx vitest run 2>&1 | tail -10
 
 Expected: 全部 PASS。
 
-- [ ] **Step 2: 全量后端测试**
+- [x] **Step 2: 全量后端测试**
 
 ```bash
 cargo test -p octopus-desktop -- transcript 2>&1 | tail -10
@@ -945,7 +945,7 @@ cargo test -p octopus-desktop -- transcript 2>&1 | tail -10
 
 Expected: 全部 PASS。
 
-- [ ] **Step 3: 前端构建**
+- [x] **Step 3: 前端构建**
 
 ```bash
 cd crates/desktop/frontend && npx vite build 2>&1 | tail -3
@@ -953,7 +953,7 @@ cd crates/desktop/frontend && npx vite build 2>&1 | tail -3
 
 Expected: 构建成功。
 
-- [ ] **Step 4: 后端编译**
+- [x] **Step 4: 后端编译**
 
 ```bash
 cargo build -p octopus-desktop 2>&1 | tail -3
@@ -961,7 +961,7 @@ cargo build -p octopus-desktop 2>&1 | tail -3
 
 Expected: 编译通过。
 
-- [ ] **Step 5: 更新 architecture.md**
+- [x] **Step 5: 更新 architecture.md**
 
 在 `docs/architecture.md` 的 `result_window` 描述段落更新：
 
@@ -972,7 +972,7 @@ Expected: 编译通过。
 - 中插（set_caret）+ 选中替换（set_selection）保留——CM6 非编辑态选区变化通知后端
 - 移除 CancelEdit / update_edit_buffer / exit_edit_without_commit 命令
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add docs/architecture.md
@@ -983,15 +983,30 @@ git commit -m "docs: 更新 architecture.md——ASR 结果框 CM6 改造"
 
 ## 手动验证清单（构建后执行）
 
-- [ ] ASR 录音中用户开始打字 → ASR 暂停（voice line 停止流动）
-- [ ] 用户输入文字 → 文字正常显示
-- [ ] Cmd+Enter → 编辑提交 → ASR 恢复 → 新 delta 从末尾追加
-- [ ] 停止输入 2 秒 → 自动提交恢复
-- [ ] 保存按钮 → 编辑提交恢复
-- [ ] 点击文本中间 → ASR delta 从该处插入（中插）
-- [ ] 拖选文本 → ASR delta 替换选中区域
-- [ ] 撤销（Cmd+Z）正常工作
-- [ ] 精简态/长篇态切换无布局错位
-- [ ] diverted 延迟正常（纠正文本 300ms 后更新）
-- [ ] DB 中 segments_json 正确反映 Edited/Raw/Polished 分布
-- [ ] Esc 取消录音正常（不再有编辑态取消中间层）
+- [x] ASR 录音中用户开始打字 → ASR 暂停（voice line 停止流动）
+- [x] 用户输入文字 → 文字正常显示
+- [x] Cmd+Enter → 编辑提交 → ASR 恢复 → 新 delta 从末尾追加
+- [x] 停止输入 2 秒 → 自动提交恢复
+- [x] 保存按钮 → 编辑提交恢复
+- [x] 点击文本中间 → ASR delta 从该处插入（中插）
+- [x] 拖选文本 → ASR delta 替换选中区域
+- [x] 撤销（Cmd+Z）正常工作
+- [x] 精简态/长篇态切换无布局错位
+- [x] diverted 延迟正常（纠正文本 300ms 后更新）
+- [x] DB 中 segments_json 正确反映 Edited/Raw/Polished 分布
+- [x] Esc 取消录音正常（不再有编辑态取消中间层）
+
+---
+
+## 实现偏差记录
+
+### 后端残留（未清理，后续迭代）
+
+- **`edit-force-exit` emit**（coordinator.rs × 3）：Toggle 停止 / Cancel / Discard 时仍 emit `edit-force-exit`，前端已不再监听。无害（dead emit），但属死代码。涉及 coordinator Toggle handler 内部逻辑，改动范围超出本次 scope。
+- **`global-edit-toggle` emit**（result_window.rs:275）：`trigger_global_edit` 仍 emit 此事件 + show + focus 窗口，前端已不监听 toggle 部分。show+focus 行为保留（全局编辑快捷键仍可唤起窗口），但 emit 部分死代码。`register_edit_global_shortcut` + `edit_global_shortcut` config 保留（后续可改为 commit 而非 toggle）。
+
+### 前端
+
+- **caret.test.ts 额外删除**：原 plan 未列出此文件（caret.ts 的测试），实际发现后一并删除。
+- **caret.ts 中 `codePointOffsetTo` 被 clipboardNav.test.ts 引用**——实际检查无引用（已删文件全部无残留）。
+- **`codePointOffsetTo` 函数曾被 Result/caret.ts 导出**，其他文件无 import（vitest alias 已覆盖，grep 确认零引用）。
