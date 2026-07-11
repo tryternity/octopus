@@ -332,3 +332,22 @@ CREATE TABLE IF NOT EXISTS hotwords (
     created_at  TEXT    NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_hotwords_status ON hotwords(status);
+
+-- ── ASR 热词版本（多场景词表，多选叠加）──────────────────────
+CREATE TABLE IF NOT EXISTS hotword_sets (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT    NOT NULL UNIQUE,
+    enabled     INTEGER NOT NULL DEFAULT 1,   -- 0/1 是否勾选生效
+    words_text  TEXT    NOT NULL DEFAULT '',
+    created_at  TEXT    NOT NULL DEFAULT (datetime('now')),
+    updated_at  TEXT    NOT NULL DEFAULT (datetime('now'))
+);
+
+-- 默认「通用」版本：全新库开箱即用（升级库由 v22→v23 迁移补建/合并，ON CONFLICT 幂等不覆盖既有词）。
+INSERT OR IGNORE INTO hotword_sets(name, enabled, words_text) VALUES('通用', 1, '');
+
+-- ── ASR 热词全局命中计数（词级，不绑版本）────────────────────
+CREATE TABLE IF NOT EXISTS hotword_hits (
+    word        TEXT    PRIMARY KEY,
+    hit_count   INTEGER NOT NULL DEFAULT 0
+);

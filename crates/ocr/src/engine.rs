@@ -152,23 +152,31 @@ impl OcrEngine {
     pub fn recognize(&self, image_bytes: &[u8]) -> Result<String> {
         let img = ::image::load_from_memory(image_bytes)
             .context("Failed to decode image")?;
-        let lines = if img.height() > SPLIT_HEIGHT_THRESHOLD {
-            self.recognize_long_image(&img)?
-        } else {
-            self.recognize_image(&img)?
-        };
-        Ok(lines.join("\n"))
-    }
-
-    pub fn recognize_with_blocks(&self, image_bytes: &[u8]) -> Result<(String, Vec<OcrBlock>)> {
-        let img = ::image::load_from_memory(image_bytes)
-            .context("Failed to decode image")?;
         let blocks = if img.height() > SPLIT_HEIGHT_THRESHOLD {
             self.recognize_long_image_with_blocks(&img)?
         } else {
             self.recognize_image_with_blocks(&img)?
         };
-        let text = blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join("\n");
+        Ok(crate::layout::to_markdown(&blocks))
+    }
+
+    pub fn recognize_with_blocks(&self, image_bytes: &[u8]) -> Result<(String, Vec<OcrBlock>)> {
+        let img = ::image::load_from_memory(image_bytes)
+            .context("Failed to decode image")?;
+        self.recognize_with_blocks_from_image(&img)
+    }
+
+    /// 已解码的 DynamicImage 直接 OCR——避免调用方重复解码。
+    pub fn recognize_with_blocks_from_image(
+        &self,
+        img: &::image::DynamicImage,
+    ) -> Result<(String, Vec<OcrBlock>)> {
+        let blocks = if img.height() > SPLIT_HEIGHT_THRESHOLD {
+            self.recognize_long_image_with_blocks(img)?
+        } else {
+            self.recognize_image_with_blocks(img)?
+        };
+        let text = crate::layout::to_markdown(&blocks);
         Ok((text, blocks))
     }
 
@@ -248,16 +256,7 @@ impl OcrEngine {
         Ok(all_blocks)
     }
 
-    fn recognize_image(&self, img: &::image::DynamicImage) -> Result<Vec<String>> {
-        let blocks = self.run_ocr(img)?;
-        Ok(blocks.into_iter().map(|b| b.text).collect())
-    }
 
-    fn recognize_long_image(&self, img: &::image::DynamicImage) -> Result<Vec<String>> {
-        // 复用 with_blocks 的坐标去重逻辑——纯文本版没有坐标，无法独立去重。
-        let blocks = self.recognize_long_image_with_blocks(img)?;
-        Ok(blocks.into_iter().map(|b| b.text).collect())
-    }
 
     fn plan_chunks(h: u32) -> Vec<(u32, u32)> {
         if h <= SPLIT_HEIGHT_THRESHOLD { return Vec::new(); }
@@ -443,7 +442,7 @@ fn segment_english_words(text: &str) -> String {
         while pos < seg_len {
             let mut found = false;
             let max_len = (seg_len - pos).min(20);
-            for len in (3..=max_len).rev() {
+            for len in (1..=max_len).rev() {
                 let sub = std::str::from_utf8(&lower_bytes[pos..pos + len]).unwrap();
                 if ws.contains(sub) {
                     words.push(segment[pos..pos + len].to_string());
@@ -456,16 +455,6 @@ fn segment_english_words(text: &str) -> String {
                 // 无匹配：取一个字符
                 words.push(segment[pos..pos + 1].to_string());
                 pos += 1;
-            }
-        }
-
-        // 4. 合并尾部 ≤2 字母的碎片到前一个词
-        if words.len() >= 2 {
-            let last_w = words.last().unwrap();
-            if last_w.len() <= 2 {
-                let merged = format!("{}{}", words[words.len() - 2], last_w);
-                words.truncate(words.len() - 2);
-                words.push(merged);
             }
         }
 

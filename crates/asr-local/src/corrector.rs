@@ -137,6 +137,12 @@ impl LightCorrector {
         cuts.len() == 1 && cuts[0] == word
     }
 
+    /// 暴露内部 jieba 分词器供 miner 复用（避免每次新建 Jieba 的词典加载开销）。
+    /// `jieba_rs::Jieba::cut` 是 `&self` 只读，线程安全可跨线程共享。
+    pub fn jieba(&self) -> &Jieba {
+        &self.jieba
+    }
+
     fn get_word_score(&self, word: &str) -> f64 {
         if let Some(&score) = self.unigram_scores.get(word) {
             score
@@ -296,10 +302,11 @@ pub fn is_common_word(word: &str) -> bool {
 /// 同时缓存原文到 `active_words`，供 [`reload_fuzzy_dialect`] 重建索引用。
 /// corrector 未初始化时先 force init（空索引），再写入——确保首调也能落地。
 pub fn reload_hotwords(words: Vec<String>) {
-    let build = || HotwordIndex::from_words(&words);
+    // 锁外预建索引（拼音转换 CPU 密集），避免持有 hotwords 写锁期间阻塞 ASR 读热路径。
+    let new_index = HotwordIndex::from_words(&words);
     let apply = |c: &LightCorrector| {
-        *c.active_words.write() = words.clone();
-        *c.hotwords.write() = build();
+        *c.active_words.write() = words;
+        *c.hotwords.write() = new_index;
     };
     if let Some(c) = CORRECTOR.get() {
         apply(c);
