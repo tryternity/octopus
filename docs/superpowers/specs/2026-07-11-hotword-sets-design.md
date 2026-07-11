@@ -2,7 +2,7 @@
 
 - 日期：2026-07-11
 - 分支：worktree-hotword-management
-- 状态：📝 设计中（待用户复审 → writing-plans）
+- 状态：✅ 已实现（代码完成 2026-07-11，T1-T8 全通过 subagent-driven 两阶段 review；e2e 真实录音待用户验证，见 plans/2026-07-11-hotword-sets.md Task 9 Step 2-5）
 - 前置：`docs/superpowers/specs/2026-07-09-asr-hotword-design.md`（v1 扁平热词，已实现并合入 main）
 
 ## 背景

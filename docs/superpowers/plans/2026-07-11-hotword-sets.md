@@ -1,5 +1,21 @@
 # 热词多版本管理（hotword-sets）Implementation Plan
 
+> ## 📊 实施状态总览（2026-07-11）
+> ✅ T1-T8 代码完成，每 Task 经 subagent-driven 两阶段 review（spec compliance + code quality）。
+> 📝 T9 e2e 真实录音验证待用户执行（Step 2-5）。
+>
+> | Task | 内容 | Commit | Review |
+> |---|---|---|---|
+> | T1 | infra hotword_text（normalize + pinyin_initials） | e8c0e46 | ✅✅ |
+> | T2 | hotword_sets/hits 表 + schema v23 迁移 | da9e159, bbe5517(upsert fix) | ✅✅ |
+> | T3 | HotwordSet CRUD | e1cbb5c | ✅✅ |
+> | T4 | list_active 并集 + bump hotword_hits + list_hits | e91c3a6 | ✅✅ |
+> | T5 | miner collect_candidate_words | 439c53a | ✅✅ |
+> | T6 | desktop 命令重写 + main.rs 注册 | aba057b | ✅✅ |
+> | T7 | pinyin_initials re-export + 清理旧 hotword | 9e0d3d6 | ✅✅ |
+> | T8 | 前端 HotwordPanel 重写 | dd7a436 | ✅✅ |
+> | T9 | e2e + 文档同步 | 本提交 | 📝 e2e 待用户 |
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 把 v1 扁平热词（单表 `hotwords`、全局 active）升级为「多版本词表 + 多选叠加 + 全局命中」：版本 = `hotword_sets.words_text` 纯文本（导入/导出 txt），生效词 = enabled 版本并集，命中统计走全局 `hotword_hits`（不绑版本），UI 卡片化给「逐词管理」体感。
