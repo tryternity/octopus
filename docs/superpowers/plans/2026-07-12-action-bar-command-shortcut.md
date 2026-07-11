@@ -1,7 +1,7 @@
 # Action Bar 命令局部快捷键 Implementation Plan
 
 > **状态**：已实现（Task 1-6 全部完成）
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **实际实现偏差记录**：
 - Task 1：agent 发现并修复了 3 个现有测试（`init_schema_fresh_db_builds_v23` → v24、`init_schema_v23_is_noop` → v24、`migrate_v22_hotwords_to_general_set` 断言 v==23 → v==24），原计划未列出这些
@@ -48,7 +48,7 @@
 **Interfaces:**
 - Produces: `ActionBarItem.shortcut: String` 字段，供后续任务使用
 
-- [ ] **Step 1: db.sql CREATE TABLE 加 shortcut 列**
+- [x] **Step 1: db.sql CREATE TABLE 加 shortcut 列**
 
 在 `crates/infra/src/db.sql` 的 `action_bar_items` CREATE TABLE 中，在 `write_output_to_clipboard` 行之后、`created_at` 之前加入：
 
@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
 );
 ```
 
-- [ ] **Step 2: Rust struct 加 shortcut 字段**
+- [x] **Step 2: Rust struct 加 shortcut 字段**
 
 在 `crates/infra/src/db.rs` 的 `ActionBarItem` struct（L947-961）末尾加字段：
 
@@ -101,7 +101,7 @@ pub struct ActionBarItem {
 }
 ```
 
-- [ ] **Step 3: ACTION_BAR_SELECT_COLS 加 shortcut**
+- [x] **Step 3: ACTION_BAR_SELECT_COLS 加 shortcut**
 
 在 `crates/infra/src/db.rs:963` 的常量末尾加 `shortcut`：
 
@@ -109,7 +109,7 @@ pub struct ActionBarItem {
 const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut";
 ```
 
-- [ ] **Step 4: row_to_action_bar_item 加 shortcut 读取**
+- [x] **Step 4: row_to_action_bar_item 加 shortcut 读取**
 
 在 `crates/infra/src/db.rs:965-979` 的 `row_to_action_bar_item` 末尾加：
 
@@ -132,7 +132,7 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
 }
 ```
 
-- [ ] **Step 5: init_schema 加迁移分支**
+- [x] **Step 5: init_schema 加迁移分支**
 
 在 `crates/infra/src/db.rs` 的 `init_schema` 函数中：
 
@@ -158,12 +158,12 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
 
 4. 新建 DB 路径（L255-258）的 `PRAGMA user_version = 23` 改为 `= 24`
 
-- [ ] **Step 6: 编译验证**
+- [x] **Step 6: 编译验证**
 
 Run: `cargo build -p octopus-infra`
 Expected: 编译通过，无错误
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -181,7 +181,7 @@ git commit -m "feat(infra): add shortcut column to action_bar_items + schema v24
 - Consumes: Task 1 的 `shortcut` 列
 - Produces: `insert_action_bar_item(... shortcut: &str)` 和 `update_action_bar_item(... shortcut: &str)` 新签名
 
-- [ ] **Step 1: 写校验+CRUD 的失败测试**
+- [x] **Step 1: 写校验+CRUD 的失败测试**
 
 在 `crates/infra/src/db.rs` 的 `mod tests`（L1815+）中，在 `open_init` helper 之后加入测试：
 
@@ -243,12 +243,12 @@ git commit -m "feat(infra): add shortcut column to action_bar_items + schema v24
     }
 ```
 
-- [ ] **Step 2: 运行测试验证失败**
+- [x] **Step 2: 运行测试验证失败**
 
 Run: `cargo test -p octopus-infra action_bar_shortcut`
 Expected: FAIL — `validate_shortcut` / `check_shortcut_conflict_at` 未定义
 
-- [ ] **Step 3: 实现校验函数**
+- [x] **Step 3: 实现校验函数**
 
 在 `crates/infra/src/db.rs` 中，在 `row_to_action_bar_item` 之后（L979 之后）加入校验函数：
 
@@ -285,7 +285,7 @@ fn check_shortcut_conflict_at(conn: &Connection, shortcut: &str, exclude_id: Opt
 }
 ```
 
-- [ ] **Step 4: insert/update 函数加 shortcut 参数 + 校验**
+- [x] **Step 4: insert/update 函数加 shortcut 参数 + 校验**
 
 修改 `crates/infra/src/db.rs` 的 insert/update 公开函数和内部 `_at` 函数签名。
 
@@ -389,12 +389,12 @@ fn update_action_bar_item_at(
 }
 ```
 
-- [ ] **Step 5: 运行测试验证通过**
+- [x] **Step 5: 运行测试验证通过**
 
 Run: `cargo test -p octopus-infra action_bar_shortcut && cargo test -p octopus-infra action_bar_insert_with_shortcut && cargo test -p octopus-infra action_bar_update_shortcut`
 Expected: 全部 PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/infra/src/db.rs
@@ -412,7 +412,7 @@ git commit -m "feat(infra): shortcut validation + conflict check + CRUD with sho
 - Consumes: Task 2 的 `insert/update_action_bar_item(... shortcut)` 新签名
 - Produces: Tauri 命令 `create_action_bar_item` / `update_action_bar_item` 接受 `shortcut` 参数
 
-- [ ] **Step 1: 修改 create_action_bar_item 命令**
+- [x] **Step 1: 修改 create_action_bar_item 命令**
 
 在 `crates/desktop/src/action_bar_commands.rs:257-275`，加入 `shortcut` 参数并透传：
 
@@ -439,7 +439,7 @@ pub fn create_action_bar_item(
 }
 ```
 
-- [ ] **Step 2: 修改 update_action_bar_item 命令**
+- [x] **Step 2: 修改 update_action_bar_item 命令**
 
 在 `crates/desktop/src/action_bar_commands.rs:277-290`，加入 `shortcut` 参数并透传：
 
@@ -461,18 +461,18 @@ pub fn update_action_bar_item(
 }
 ```
 
-- [ ] **Step 3: 检查 install_extension 命令**
+- [x] **Step 3: 检查 install_extension 命令**
 
 搜索 `install_extension` 命令，如果它内部调用 `insert_action_bar_item`，也需要加 `shortcut` 参数。用 `rg "insert_action_bar_item" crates/desktop/src/` 检查所有调用点。
 
 对于 `install_extension`：传入 `""` 空快捷键（扩展包不支持快捷键设置，用户安装后在编辑界面设置）。
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cargo build -p octopus-desktop --features embedded`
 Expected: 编译通过
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/action_bar_commands.rs
@@ -490,7 +490,7 @@ git commit -m "feat(desktop): pass shortcut param through create/update action b
 - Consumes: Task 3 的 Tauri 命令返回含 `shortcut` 字段的 `ActionBarItem`
 - Produces: 浮窗响应 `Alt+字符` 直接执行命令
 
-- [ ] **Step 1: ActionBarItem interface 加 shortcut 字段**
+- [x] **Step 1: ActionBarItem interface 加 shortcut 字段**
 
 在 `crates/desktop/frontend/src/pages/ActionBar/index.tsx:15-25` 的 `ActionBarItem` interface 加字段：
 
@@ -509,7 +509,7 @@ interface ActionBarItem {
 }
 ```
 
-- [ ] **Step 2: keydown handler 加 Alt 组合键分支**
+- [x] **Step 2: keydown handler 加 Alt 组合键分支**
 
 在 `crates/desktop/frontend/src/pages/ActionBar/index.tsx` 的 keydown handler（L298-412）中，在 `viewRef.current === "loading"` 检查之后、位置定位 `labelToIndex` 分支之前，加入 Alt 分支：
 
@@ -533,7 +533,7 @@ interface ActionBarItem {
       const idx = labelToIndex(e.key.toLowerCase());
 ```
 
-- [ ] **Step 3: IconBtn 渲染快捷键标记**
+- [x] **Step 3: IconBtn 渲染快捷键标记**
 
 修改 `IconBtn` 组件（L43-71），加 `shortcut` 可选 prop。在标题右侧显示 `⌥x`：
 
@@ -573,7 +573,7 @@ const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
 );
 ```
 
-- [ ] **Step 4: 主菜单和子菜单渲染传 shortcut**
+- [x] **Step 4: 主菜单和子菜单渲染传 shortcut**
 
 在主菜单渲染处（L448-459），`IconBtn` 加 `shortcut={item.shortcut}`：
 
@@ -607,12 +607,12 @@ const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
         ))}
 ```
 
-- [ ] **Step 5: 前端编译验证**
+- [x] **Step 5: 前端编译验证**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 无类型错误
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ActionBar/index.tsx
@@ -629,7 +629,7 @@ git commit -m "feat(frontend): action bar Alt+shortcut direct execution + shortc
 **Interfaces:**
 - Consumes: Task 3 的 `create/update_action_bar_item` 命令（含 `shortcut` 参数）
 
-- [ ] **Step 1: ActionBarItem interface 加 shortcut 字段**
+- [x] **Step 1: ActionBarItem interface 加 shortcut 字段**
 
 在 `crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx:20-32` 的 `ActionBarItem` interface 加字段：
 
@@ -650,7 +650,7 @@ interface ActionBarItem {
 }
 ```
 
-- [ ] **Step 2: EditForm 加快捷键输入行**
+- [x] **Step 2: EditForm 加快捷键输入行**
 
 在 `crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx` 的 `EditForm` 组件中，在 `showContent` 定义（L295）之后加一个变量控制快捷键输入行显示：
 
@@ -695,7 +695,7 @@ interface ActionBarItem {
         )}
 ```
 
-- [ ] **Step 3: saveEdit 传递 shortcut 参数**
+- [x] **Step 3: saveEdit 传递 shortcut 参数**
 
 在 `saveEdit` 函数中（L851-930），所有 `invoke("create_action_bar_item", ...)` 和 `invoke("update_action_bar_item", ...)` 调用加 `shortcut` 参数。
 
@@ -732,7 +732,7 @@ interface ActionBarItem {
 
 同时，编辑已有扩展项分支（L886-895）的 `update_action_bar_item` 也需要加 `shortcut: editingForm.shortcut || ""`。
 
-- [ ] **Step 4: 树行显示快捷键徽章**
+- [x] **Step 4: 树行显示快捷键徽章**
 
 在 `TreeNodeBase` 组件中（L547-548 的 `TypeTag` 之后），加快捷键徽章：
 
@@ -748,12 +748,12 @@ interface ActionBarItem {
         )}
 ```
 
-- [ ] **Step 5: 前端编译验证**
+- [x] **Step 5: 前端编译验证**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 无类型错误
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx
@@ -767,35 +767,35 @@ git commit -m "feat(frontend): shortcut input in edit form + shortcut badge in t
 **Files:**
 - Modify: `docs/architecture.md`（action_bar_items 表结构描述）
 
-- [ ] **Step 1: 全量编译**
+- [x] **Step 1: 全量编译**
 
 Run: `cargo build --release -p octopus-server -p octopus-cli`
 Expected: 编译通过
 
-- [ ] **Step 2: 全量测试**
+- [x] **Step 2: 全量测试**
 
 Run: `cargo test -p octopus-infra`
 Expected: 全部 PASS（含新增的 shortcut 测试）
 
-- [ ] **Step 3: 前端全量编译**
+- [x] **Step 3: 前端全量编译**
 
 Run: `cd crates/desktop/frontend && npx tsc --noEmit`
 Expected: 无错误
 
-- [ ] **Step 4: 桌面应用编译**
+- [x] **Step 4: 桌面应用编译**
 
 Run: `cargo build --release -p octopus-desktop --features embedded`
 Expected: 编译通过
 
-- [ ] **Step 5: 更新 architecture.md**
+- [x] **Step 5: 更新 architecture.md**
 
 在 `docs/architecture.md` 中找到 action_bar_items 表描述，加入 `shortcut` 列说明。搜索 `action_bar_items` 定位相关段落。
 
-- [ ] **Step 6: 更新 spec 状态**
+- [x] **Step 6: 更新 spec 状态**
 
 在 `docs/superpowers/specs/2026-07-12-action-bar-command-shortcut-design.md` 的状态行改为"已实现"。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add docs/
