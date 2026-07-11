@@ -271,7 +271,7 @@ html, body {
 .md-preview::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.35); border-radius: 4px; }
 .md-preview::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.6); }
 
-.md-cm-editor .cm-editor { height: 100%; }
+.md-cm-editor .cm-editor { height: 100%; flex: 1; min-height: 0; }
 
 /* Splitter 拖拽中：强制全局 col-resize 光标，覆盖 CM6 等子元素自带 cursor */
 .md-splitter-dragging * {

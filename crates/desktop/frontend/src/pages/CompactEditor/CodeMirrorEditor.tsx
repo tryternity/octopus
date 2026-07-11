@@ -184,5 +184,5 @@ export function CodeMirrorEditor({ value, readOnly, fontSize, onChange, viewRef:
     view.dispatch({ effects: themeCompartment.current.reconfigure(buildTheme(fontSize)) });
   }, [fontSize]);
 
-  return <div ref={hostRef} className="md-cm-editor" style={{ height: "100%", width: "100%", overflow: "hidden" }} />;
+  return <div ref={hostRef} className="md-cm-editor flex-1 min-h-0 min-w-0" style={{ overflow: "hidden" }} />;
 }
