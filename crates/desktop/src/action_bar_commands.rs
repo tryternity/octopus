@@ -37,12 +37,13 @@ pub fn trigger_action_bar(app: AppHandle) {
             return;
         }
 
-        // 1. 记录触发前的剪贴板内容
-        let clipboard_before = read_clipboard_text(&app_clone);
+        // 1. 记录触发前的剪贴板内容（文本 + 图片 + 文件，防非文本数据丢失）
+        let clip_handle = app_clone.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>().clone();
+        let clipboard_before_text = read_clipboard_text(&app_clone);
+        let clipboard_before_image = clip_handle.read_image().ok();
+        let clipboard_before_files = clip_handle.read_files().ok().filter(|f| !f.is_empty());
 
-        // 2. suppress watcher——osascript 模拟 Cmd+C 直接写系统剪贴板，
-        //    绕过 write_text 的自动 suppress，需手动抑制防选中文本入库
-        let clip_handle = app_clone.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>();
+        // 2. suppress watcher
         clip_handle.suppress_next();
 
         let focus = FocusTracker::new();
@@ -53,7 +54,7 @@ pub fn trigger_action_bar(app: AppHandle) {
 
         // 4. 读剪贴板拿到选中文本
         let clipboard_after = read_clipboard_text(&app_clone);
-        let text = match (&clipboard_before, &clipboard_after) {
+        let text = match (&clipboard_before_text, &clipboard_after) {
             (Some(before), Some(after)) if before != after => after.clone(),
             (None, Some(after)) => after.clone(),
             (Some(_), Some(after)) if !after.trim().is_empty() => {
@@ -81,8 +82,12 @@ pub fn trigger_action_bar(app: AppHandle) {
         // write_text 自带独立 suppress，不受此清除影响。
         clip_handle.clear_suppress();
 
-        // 5. 立即恢复原始剪贴板内容（write_text 自带 suppress，不会入库）
-        if let Some(ref original) = clipboard_before {
+        // 5. 恢复原始剪贴板内容（优先级：文件 > 图片 > 文本）
+        if let Some(ref files) = clipboard_before_files {
+            let _ = clip_handle.write_files(files.clone());
+        } else if let Some(img) = clipboard_before_image {
+            let _ = clip_handle.set_image(img);
+        } else if let Some(ref original) = clipboard_before_text {
             if Some(original.as_str()) != clipboard_after.as_deref() {
                 write_clipboard_text(&app_clone, original);
             }
@@ -352,44 +357,52 @@ struct ScriptResult {
     timed_out: bool,
 }
 
-/// 探测 JS 运行时——优先级 node → bun → deno
+use std::sync::OnceLock;
+
+/// 探测 JS 运行时——优先级 node → bun → deno（结果缓存，仅首次探测）
 fn detect_js_runtime() -> Option<(&'static str, &'static str)> {
-    for (bin, flag) in [("node", "-e"), ("bun", "eval"), ("deno", "eval")] {
-        if std::process::Command::new(bin).arg("--version")
+    static CACHE: OnceLock<Option<(&'static str, &'static str)>> = OnceLock::new();
+    *CACHE.get_or_init(|| {
+        for (bin, flag) in [("node", "-e"), ("bun", "eval"), ("deno", "eval")] {
+            if std::process::Command::new(bin).arg("--version")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status().is_ok()
+            {
+                return Some((bin, flag));
+            }
+        }
+        None
+    })
+}
+
+/// 探测 TS 运行时——优先级 npx tsx → bun → deno（结果缓存，仅首次探测）
+fn detect_ts_runtime() -> Option<(&'static str, Vec<&'static str>)> {
+    static CACHE: OnceLock<Option<(&'static str, Vec<&'static str>)>> = OnceLock::new();
+    CACHE.get_or_init(|| {
+        if std::process::Command::new("npx").args(["--yes", "tsx", "--version"])
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
             .status().is_ok()
         {
-            return Some((bin, flag));
+            return Some(("npx", vec!["--yes", "tsx", "-e"]));
         }
-    }
-    None
-}
-
-/// 探测 TS 运行时——优先级 npx tsx → bun → deno
-fn detect_ts_runtime() -> Option<(&'static str, Vec<&'static str>)> {
-    if std::process::Command::new("npx").args(["--yes", "tsx", "--version"])
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status().is_ok()
-    {
-        return Some(("npx", vec!["--yes", "tsx", "-e"]));
-    }
-    if std::process::Command::new("bun").arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status().is_ok()
-    {
-        return Some(("bun", vec!["eval"]));
-    }
-    if std::process::Command::new("deno").arg("--version")
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status().is_ok()
-    {
-        return Some(("deno", vec!["eval"]));
-    }
-    None
+        if std::process::Command::new("bun").arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().is_ok()
+        {
+            return Some(("bun", vec!["eval"]));
+        }
+        if std::process::Command::new("deno").arg("--version")
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .status().is_ok()
+        {
+            return Some(("deno", vec!["eval"]));
+        }
+        None
+    }).clone()
 }
 
 /// 按 magic comment 分发运行时，spawn 子进程。
@@ -472,37 +485,44 @@ fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option
     Ok((child, first_line.to_string()))
 }
 
-/// 轮询等待子进程退出，60 秒超时强杀。捕获 stdout/stderr。
+/// 轮询等待子进程退出，60 秒超时强杀。并发读取 stdout/stderr 防管道死锁。
 fn wait_with_timeout(mut child: std::process::Child) -> ScriptResult {
     use std::io::Read;
+
+    // 先取走 pipe handle，用线程并发读取——防止子进程输出 >64KB 时管道阻塞死锁
+    let mut stdout_handle = child.stdout.take();
+    let mut stderr_handle = child.stderr.take();
+
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut stdout) = stdout_handle { let _ = stdout.read_to_string(&mut buf); }
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut stderr) = stderr_handle { let _ = stderr.read_to_string(&mut buf); }
+        buf
+    });
+
+    let mut timed_out = false;
     for _ in 0..120 {
         match child.try_wait() {
-            Ok(Some(_)) => {
-                let mut stdout_buf = String::new();
-                if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
-                let mut stderr_buf = String::new();
-                if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
-                let code = child.wait().ok().and_then(|s| s.code());
-                return ScriptResult { exit_code: code, stdout: stdout_buf, stderr: stderr_buf, timed_out: false };
-            }
+            Ok(Some(_)) => break,
             Ok(None) => std::thread::sleep(std::time::Duration::from_millis(500)),
-            Err(_) => {
-                let mut stdout_buf = String::new();
-                if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
-                let mut stderr_buf = String::new();
-                if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
-                return ScriptResult { exit_code: None, stdout: stdout_buf, stderr: stderr_buf, timed_out: false };
-            }
+            Err(_) => break,
         }
     }
     // 超时强杀
-    let _ = child.kill();
-    let _ = child.wait();
-    let mut stdout_buf = String::new();
-    if let Some(ref mut stdout) = child.stdout { let _ = stdout.read_to_string(&mut stdout_buf); }
-    let mut stderr_buf = String::new();
-    if let Some(ref mut stderr) = child.stderr { let _ = stderr.read_to_string(&mut stderr_buf); }
-    ScriptResult { exit_code: None, stdout: stdout_buf, stderr: stderr_buf, timed_out: true }
+    if child.try_wait().map(|s| s.is_none()).unwrap_or(true) {
+        let _ = child.kill();
+        let _ = child.wait();
+        timed_out = true;
+    }
+
+    let stdout_buf = stdout_thread.join().unwrap_or_default();
+    let stderr_buf = stderr_thread.join().unwrap_or_default();
+    let code = child.wait().ok().and_then(|s| s.code());
+    ScriptResult { exit_code: code, stdout: stdout_buf, stderr: stderr_buf, timed_out }
 }
 
 /// 生成 ISO 8601 时间戳（UTC），不依赖 chrono
@@ -602,13 +622,14 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             let item_title = item.title.clone();
             let item_id = item.id;
 
-            // Package 脚本（action_data 是文件路径）vs 内联脚本
-            let source = if item.action_data.starts_with('/') {
+            // Package 脚本（action_data 是绝对路径）vs 内联脚本
+            let is_pkg = std::path::Path::new(&item.action_data).is_absolute();
+            let source = if is_pkg {
                 std::fs::read_to_string(&item.action_data).unwrap_or_default()
             } else {
                 item.action_data.clone()
             };
-            let pkg_dir = if item.action_data.starts_with('/') {
+            let pkg_dir = if is_pkg {
                 std::path::Path::new(&item.action_data).parent()
                     .map(|p| p.to_string_lossy().to_string())
             } else { None };

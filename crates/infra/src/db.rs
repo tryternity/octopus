@@ -131,7 +131,7 @@ pub fn ensure_db() -> Result<()> {
         .with_context(|| format!("Failed to open DB at {}", path.display()))?;
     // WAL 模式（读写并发友好，server 多任务访问不 SQLITE_BUSY）+ busy_timeout（锁竞争时
     // 等待 5s 而非立即报错）。journal_mode 持久化在 db 头（设一次即生效），重复设置幂等。
-    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;")
         .context("set WAL + busy_timeout")?;
     init_schema(&conn)?;
     let _ = DB.set(parking_lot::ReentrantMutex::new(conn));
