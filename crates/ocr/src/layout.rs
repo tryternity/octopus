@@ -22,8 +22,119 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
     if blocks.is_empty() {
         return String::new();
     }
-    // Task 2-3 逐步填充
-    blocks.iter().map(|b| b.text.as_str()).collect::<Vec<_>>().join("\n")
+
+    // 过滤空文本 block
+    let blocks: Vec<&OcrBlock> = blocks.iter()
+        .filter(|b| !b.text.trim().is_empty())
+        .collect();
+    if blocks.is_empty() {
+        return String::new();
+    }
+
+    // 块数不足：直接 \n\n join，不做布局分析
+    if blocks.len() < MIN_BLOCKS_FOR_LAYOUT {
+        return blocks.iter()
+            .map(|b| b.text.trim().to_string())
+            .collect::<Vec<_>>()
+            .join("\n\n");
+    }
+
+    // 全局基线
+    let heights: Vec<f64> = blocks.iter().map(|b| b.h).collect();
+    let median_h = median(&heights);
+
+    // 逐行分类
+    let classified: Vec<(LineKind, String, f64, f64)> = blocks.iter()
+        .map(|b| {
+            let (kind, text) = classify_line(&b.text, b.h, median_h);
+            (kind, text, b.y, b.h)
+        })
+        .collect();
+
+    // 段落聚类——输出单元
+    enum Unit {
+        Heading(u8, String),
+        ListItemOrdered(String),
+        ListItemUnordered(String),
+        BodyParagraph(Vec<(String, f64, f64)>),
+    }
+
+    let mut units: Vec<Unit> = Vec::new();
+    for (kind, text, y, h) in &classified {
+        match kind {
+            LineKind::H1 => units.push(Unit::Heading(1, text.clone())),
+            LineKind::H2 => units.push(Unit::Heading(2, text.clone())),
+            LineKind::ListItem(Some(_)) => units.push(Unit::ListItemOrdered(text.clone())),
+            LineKind::ListItem(None) => units.push(Unit::ListItemUnordered(text.clone())),
+            LineKind::Body => {
+                let should_new_para = match units.last() {
+                    Some(Unit::BodyParagraph(lines)) => {
+                        let (_, prev_y, prev_h) = *lines.last().unwrap();
+                        let gap = y - (prev_y + prev_h);
+                        gap > median_h * PARAGRAPH_GAP_RATIO
+                    }
+                    _ => true,
+                };
+                if should_new_para {
+                    units.push(Unit::BodyParagraph(vec![(text.clone(), *y, *h)]));
+                } else if let Some(Unit::BodyParagraph(lines)) = units.last_mut() {
+                    lines.push((text.clone(), *y, *h));
+                }
+            }
+        }
+    }
+
+    // Markdown 拼装
+    let mut output = String::new();
+    let mut ordered_counter = 1usize;
+    let mut prev_was_list = false;
+
+    for unit in &units {
+        match unit {
+            Unit::Heading(level, text) => {
+                ordered_counter = 1;
+                if !output.is_empty() {
+                    output.push_str("\n\n");
+                }
+                output.push_str(&"#".repeat(*level as usize));
+                output.push(' ');
+                output.push_str(text);
+                prev_was_list = false;
+            }
+            Unit::ListItemOrdered(text) => {
+                if prev_was_list {
+                    output.push('\n');
+                } else if !output.is_empty() {
+                    output.push_str("\n\n");
+                }
+                output.push_str(&format!("{}. ", ordered_counter));
+                ordered_counter += 1;
+                output.push_str(text);
+                prev_was_list = true;
+            }
+            Unit::ListItemUnordered(text) => {
+                if prev_was_list {
+                    output.push('\n');
+                } else if !output.is_empty() {
+                    output.push_str("\n\n");
+                }
+                output.push_str("- ");
+                output.push_str(text);
+                prev_was_list = true;
+            }
+            Unit::BodyParagraph(lines) => {
+                ordered_counter = 1;
+                if !output.is_empty() {
+                    output.push_str("\n\n");
+                }
+                let texts: Vec<&str> = lines.iter().map(|(t, _, _)| t.as_str()).collect();
+                output.push_str(&reflow_paragraph(&texts));
+                prev_was_list = false;
+            }
+        }
+    }
+
+    output.trim_end().to_string()
 }
 
 /// 计算中位数。空切片返回 0.0。
@@ -161,6 +272,29 @@ fn needs_space_between(prev_last: char, curr_first: char) -> bool {
     prev_last.is_ascii() || curr_first.is_ascii()
 }
 
+/// 将段落的多个文本行 reflow 为一行连续文本，行间按 CJK 感知规则补空格。
+fn reflow_paragraph(lines: &[&str]) -> String {
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut result = String::from(lines[0].trim());
+    for line in &lines[1..] {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let prev_last = result.chars().last();
+        let curr_first = line.chars().next();
+        if let (Some(pl), Some(cf)) = (prev_last, curr_first) {
+            if needs_space_between(pl, cf) {
+                result.push(' ');
+            }
+        }
+        result.push_str(line);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -267,5 +401,141 @@ mod tests {
         // 大字号 + 列表标记 → 标题优先
         let (kind, _) = classify_line("• 大标题", 32.0, 20.0);
         assert_eq!(kind, LineKind::H1);
+    }
+
+    #[test]
+    fn reflow_single_line() {
+        assert_eq!(reflow_paragraph(&["你好"]), "你好");
+    }
+
+    #[test]
+    fn reflow_cjk_lines() {
+        assert_eq!(
+            reflow_paragraph(&["今天天气", "很好我们", "去公园"]),
+            "今天天气很好我们去公园"
+        );
+    }
+
+    #[test]
+    fn reflow_mixed_cjk_ascii() {
+        assert_eq!(
+            reflow_paragraph(&["你好World", "Hello世界"]),
+            "你好World Hello世界"
+        );
+    }
+
+    #[test]
+    fn reflow_english_lines() {
+        assert_eq!(
+            reflow_paragraph(&["The quick", "brown fox"]),
+            "The quick brown fox"
+        );
+    }
+
+    #[test]
+    fn reflow_empty() {
+        assert_eq!(reflow_paragraph(&[]), "");
+    }
+
+    #[test]
+    fn end_to_end_single_paragraph() {
+        let blocks = vec![
+            mk_block("今天天气", 10.0, 0.0, 100.0, 20.0),
+            mk_block("很好我们", 10.0, 24.0, 100.0, 20.0),
+            mk_block("去公园", 10.0, 48.0, 100.0, 20.0),
+        ];
+        assert_eq!(to_markdown(&blocks), "今天天气很好我们去公园");
+    }
+
+    #[test]
+    fn end_to_end_two_paragraphs() {
+        let blocks = vec![
+            mk_block("第一段内容", 10.0, 0.0, 100.0, 20.0),
+            mk_block("继续", 10.0, 24.0, 100.0, 20.0),
+            // gap_y = 62 - (24+20) = 18 > 20*0.8=16 → 新段落
+            mk_block("第二段内容", 10.0, 62.0, 100.0, 20.0),
+            mk_block("继续", 10.0, 86.0, 100.0, 20.0),
+        ];
+        assert_eq!(to_markdown(&blocks), "第一段内容继续\n\n第二段内容继续");
+    }
+
+    #[test]
+    fn end_to_end_h1_title_plus_body() {
+        let blocks = vec![
+            mk_block("会议纪要", 10.0, 0.0, 200.0, 36.0),  // h=36, median=20 → 1.8 → H1
+            mk_block("今天讨论了", 10.0, 50.0, 200.0, 20.0),
+            mk_block("三个议题", 10.0, 74.0, 200.0, 20.0),
+        ];
+        assert_eq!(to_markdown(&blocks), "# 会议纪要\n\n今天讨论了三个议题");
+    }
+
+    #[test]
+    fn end_to_end_h2_title_plus_body() {
+        let blocks = vec![
+            mk_block("议题一", 10.0, 0.0, 200.0, 28.0),  // h=28, median=20 → 1.4 → H2
+            mk_block("后端迁移", 10.0, 42.0, 200.0, 20.0),
+            mk_block("预计完成", 10.0, 66.0, 200.0, 20.0),
+        ];
+        assert_eq!(to_markdown(&blocks), "## 议题一\n\n后端迁移预计完成");
+    }
+
+    #[test]
+    fn end_to_end_no_title_equal_height() {
+        let blocks = vec![
+            mk_block("全部等高", 10.0, 0.0, 100.0, 20.0),
+            mk_block("没有标题", 10.0, 24.0, 100.0, 20.0),
+            mk_block("纯正文", 10.0, 48.0, 100.0, 20.0),
+        ];
+        assert_eq!(to_markdown(&blocks), "全部等高没有标题纯正文");
+    }
+
+    #[test]
+    fn end_to_end_unordered_list() {
+        let blocks = vec![
+            mk_block("• 第一项", 10.0, 0.0, 100.0, 20.0),
+            mk_block("• 第二项", 10.0, 24.0, 100.0, 20.0),
+            mk_block("• 第三项", 10.0, 48.0, 100.0, 20.0),
+        ];
+        assert_eq!(to_markdown(&blocks), "- 第一项\n- 第二项\n- 第三项");
+    }
+
+    #[test]
+    fn end_to_end_ordered_list() {
+        let blocks = vec![
+            mk_block("① 第一项", 10.0, 0.0, 100.0, 20.0),
+            mk_block("② 第二项", 10.0, 24.0, 100.0, 20.0),
+            mk_block("③ 第三项", 10.0, 48.0, 100.0, 20.0),
+        ];
+        assert_eq!(to_markdown(&blocks), "1. 第一项\n2. 第二项\n3. 第三项");
+    }
+
+    #[test]
+    fn end_to_end_list_plus_paragraph() {
+        let blocks = vec![
+            mk_block("正文段落一", 10.0, 0.0, 100.0, 20.0),
+            mk_block("正文段落二", 10.0, 24.0, 100.0, 20.0),
+            mk_block("• 列表项", 10.0, 70.0, 100.0, 20.0),
+        ];
+        assert_eq!(to_markdown(&blocks), "正文段落一正文段落二\n\n- 列表项");
+    }
+
+    #[test]
+    fn end_to_end_empty_block_filtered() {
+        let blocks = vec![
+            mk_block("正文", 10.0, 0.0, 100.0, 20.0),
+            mk_block("", 10.0, 24.0, 100.0, 20.0),     // 空文本，过滤后块数 < 3 → \n\n join
+            mk_block("继续", 10.0, 48.0, 100.0, 20.0),
+        ];
+        assert_eq!(to_markdown(&blocks), "正文\n\n继续");
+    }
+
+    #[test]
+    fn end_to_end_few_blocks_no_layout() {
+        // < MIN_BLOCKS_FOR_LAYOUT(3)：不做布局，\n\n join
+        let blocks = vec![
+            mk_block("只有两行", 10.0, 0.0, 100.0, 20.0),
+            mk_block("不分析", 10.0, 24.0, 100.0, 20.0),
+        ];
+        assert_eq!(to_markdown(&blocks), "只有两行\n\n不分析");
     }
 }
