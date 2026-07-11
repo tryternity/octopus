@@ -85,6 +85,25 @@ pub fn store_pending_temp_tab(text: String, source: &str) {
     });
 }
 
+/// 打开 CompactEditor 并定位到一个临时文本 tab（不写 DB，保存按钮灰掉）。
+/// 窗口已存在 → emit 推送新 temp tab；窗口不存在 → store_pending_temp_tab + 建窗。
+/// text="" 即「打开空白编辑器」（托盘菜单「图文编辑」入口）。
+pub fn open_temp_compact_editor(app: &tauri::AppHandle, text: &str) {
+    if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
+        let _ = window.emit("compact-editor://open-tab", serde_json::json!({
+            "itemId": 0,
+            "source": "temp",
+            "text": text,
+            "isTemp": true,
+        }));
+        let _ = window.show();
+        let _ = window.set_focus();
+    } else {
+        store_pending_temp_tab(text.to_string(), "temp");
+        create_compact_editor_window(app, None);
+    }
+}
+
 fn take_pending_tabs() -> Vec<PendingTabFull> {
     std::mem::take(&mut *PENDING_TABS.lock())
 }

@@ -258,6 +258,7 @@ pub fn run() {
             clipboard_commands::ocr_image,
             clipboard_commands::insert_ocr_clipboard_item,
             clipboard_commands::set_clipboard_item_text,
+            clipboard_commands::insert_clipboard_text_item,
             clipboard_window::clipboard_dock_expand,
             clipboard_window::clipboard_dock_collapse,
             clipboard_commands::get_image_thumb,

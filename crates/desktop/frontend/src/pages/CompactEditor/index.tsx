@@ -5,9 +5,11 @@ import {
 } from "lucide-react";
 import ImagePreviewComponent from "@/pages/ImagePreview";
 import { MarkdownPane } from "./MarkdownPane";
+import { mergePendingTabs } from "./mergePendingTabs";
+import { promoteTempTab } from "./promoteTempTab";
 import { useT, t as ti18n } from "@/lib/i18n";
 
-interface Tab {
+export interface Tab {
   key: string;
   source: 'clipboard' | 'transcription' | 'temp';
   itemId: number;
@@ -177,20 +179,13 @@ function CompactEditor() {
       const pendingTabs = await invoke<PendingTabFull[]>("get_pending_compact_tabs");
       if (cancelled) return;
       if (pendingTabs.length > 0) {
-        const seen = new Set(tabsRef.current.map(t => t.key));
-        const added: Tab[] = [];
-        for (const p of pendingTabs) {
-          const tab = pendingToTab(p);
-          if (seen.has(tab.key)) continue;
-          seen.add(tab.key);
-          added.push(tab);
-        }
-        if (added.length > 0) {
-          const next = [...tabsRef.current, ...added];
-          tabsRef.current = next;
-          setTabs(next);
-          setActiveIdx(tabsRef.current.length - 1);
-        }
+        // pending 含完整数据（text/img 尺寸）；URL 占位 tab 同 key 但缺 text，
+        // 须用 pending 覆盖占位——旧 `continue` 跳过 pending → 首个文本 tab 永远 text=""。
+        // 图片 tab 按 itemId 加载不受影响，文本必须靠此补全。详见 mergePendingTabs 单测。
+        const next = mergePendingTabs(tabsRef.current, pendingTabs.map(pendingToTab));
+        tabsRef.current = next;
+        setTabs(next);
+        setActiveIdx(next.length - 1);
       }
       setInitialLoading(false);
     })();
@@ -202,10 +197,31 @@ function CompactEditor() {
 
   const doSave = useCallback(async () => {
     if (!active) return;
-    if (active.isTemp) return;
     if (active.source === 'transcription') return;
     if (active.itemType && active.itemType !== 'text') return;
     try {
+      // temp tab（图文编辑空白入口）：空→关闭 tab；非空→insert 新条目并升级为正式 clipboard tab。
+      // 升级后 key/itemId/isTemp 同步（promoteTempTab），后续编辑走下方「既有条目 update」路径。
+      if (active.isTemp) {
+        if ((active.text || "").trim() === "") {
+          if (tabs.length <= 1) { invoke("close_compact_editor"); return; }
+          const idx = activeIdx;
+          const next = tabsRef.current.filter((_, i) => i !== idx);
+          tabsRef.current = next;
+          setTabs(next);
+          setActiveIdx(Math.min(activeIdx, next.length - 1));
+          return;
+        }
+        const newId = await invoke<number>("insert_clipboard_text_item", { text: active.text || "" });
+        const next = promoteTempTab(tabsRef.current, activeIdx, newId);
+        tabsRef.current = next;
+        setTabs(next);
+        setSavedFlash(true);
+        if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current);
+        savedFlashTimer.current = setTimeout(() => setSavedFlash(false), 1200);
+        return;
+      }
+      // 既有条目：空→删条目并关 tab；非空→update content。
       if ((active.text || "").trim() === "") {
         await invoke("delete_clipboard_item", { id: active.itemId });
         if (tabs.length <= 1) {
@@ -316,7 +332,7 @@ function CompactEditor() {
                   onChange={(next) => updateActiveTextAt(next, i)}
                   onClear={() => updateActiveTextAt('', i)}
                   onSave={doSave}
-                  disableSave={active?.isTemp || tab.source === 'transcription'}
+                  disableSave={tab.source === 'transcription'}
                   savedFlash={savedFlash}
                 />
               ) : (

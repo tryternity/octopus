@@ -1504,7 +1504,7 @@ import { useT } from "@/lib/i18n";
     onChange={(next) => updateActiveTextAt(next, i)}
     onClear={() => updateActiveTextAt('', i)}
     onSave={doSave}
-    disableSave={active?.isTemp}
+    disableSave={tab.source === 'transcription'}
     savedFlash={savedFlash}
   />
 ) : (
@@ -1726,7 +1726,7 @@ git commit -m "docs: 更新 architecture.md——CompactEditor Markdown 改造"
 
 - **同步计算模式**：`loadAndAddTab`/`listen`/`pending`/`closeTab`/`doSave` 全部从 `setTabs(prev => ...)` updater 改为同步计算——await 后基于 `tabsRef.current` 算 next → 同步写 ref + `setTabs(next)` + `setActiveIdx(literal)`。消除 React 异步队列致 ref 陈旧 + setActiveIdx 失败。
 - **listen 前置**：mount 时先注册 `listen("compact-editor://open-tab")` 再 `get_pending_compact_tabs`，消除竞态窗口。
-- **doSave 四守卫**：`!active`/`isTemp`/`source === 'transcription'`/`itemType !== 'text'`。keydown `deps []` 无条件调 `doSaveRef.current()`，单一事实源。
+- **doSave 守卫**：`!active`/`source === 'transcription'`/`itemType !== 'text'` 早返回；temp tab 不早返回、走 insert（`insert_clipboard_text_item` + `promoteTempTab`）。2026-07-12 前含 `isTemp` 早返回（temp 不可保存），托盘「图文编辑」入口改为可保存。keydown `deps []` 无条件调 `doSaveRef.current()`，单一事实源。
 - **tempKey 加随机后缀**：`temp:${Date.now()}_${Math.random().toString(36).slice(2,6)}`，防同毫秒重复。
 
 ### 前端 MarkdownPreview（性能优化 + 声明式重构）

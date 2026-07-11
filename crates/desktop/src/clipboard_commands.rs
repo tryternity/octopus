@@ -546,6 +546,39 @@ pub async fn set_clipboard_item_text(
     Ok(())
 }
 
+/// 精简编辑器「图文编辑」入口保存：插入一条新文本剪贴板条目（content=text），
+/// 同步系统剪贴板（write_text 自带 suppress 不重复入库）并广播变更。返回新 id
+/// ——前端据此把 temp tab 升级为正式 clipboard tab（key/itemId/isTemp 同步）。
+/// 与 set_clipboard_item_text 对称（后者是 update 既有条目，此为 insert 新条目）。
+#[tauri::command]
+pub async fn insert_clipboard_text_item(
+    text: String,
+    handle: State<'_, Arc<ClipboardHandle>>,
+    app_handle: tauri::AppHandle,
+) -> Result<i64, String> {
+    let new_id = octopus_infra::db::with_db(|conn| {
+        octopus_clipboard::store::insert_clipboard_item(conn, &octopus_clipboard::store::NewClipboardItem {
+            id: octopus_clipboard::store::chrono_millis(),
+            item_type: octopus_clipboard::ItemType::Text,
+            content: text.clone(),
+            ref_data: None,
+            meta_info: Some(octopus_clipboard::MetaInfo {
+                char_count: Some(text.chars().count()),
+                ..Default::default()
+            }),
+            created_at: octopus_clipboard::store::iso_now(),
+            has_thumbnail: None,
+            is_rich: false,
+        })
+    })
+    .map_err(|e| e.to_string())?;
+
+    handle.write_text(&text).map_err(|e| e.to_string())?;
+    // 编辑器是独立窗口，剪贴板列表窗口需靠此事件感知条目变化并重新拉取。
+    let _ = app_handle.emit("clipboard://changed", ());
+    Ok(new_id)
+}
+
 /// 获取图片缩略图 data URL（base64 编码：`data:image/webp;base64,...`）。
 ///
 /// 返回完整 data URL 而非裸 `Vec<u8>`：Tauri IPC 把 `Vec<u8>` 序列化成 JSON 数字数组

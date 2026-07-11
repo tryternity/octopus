@@ -113,7 +113,7 @@ interface MarkdownPaneProps {
   onChange: (next: string) => void;       // 文本变更回调（外壳更新 tab.text）
   onClear: () => void;            // 清空回调（外壳更新 tab.text）
   onSave: () => void;             // 保存回调（外壳 doSave）
-  disableSave?: boolean;          // 临时 tab 灰掉保存按钮
+  disableSave?: boolean;          // transcription tab 灰掉保存按钮（temp tab 2026-07-12 起可保存，见 §7.2）
   savedFlash: boolean;            // 保存成功闪烁态（外壳控制，传入驱动按钮样式）
 }
 ```
@@ -152,7 +152,7 @@ const [viewMode, setViewMode] = useState<ViewMode>(readOnly ? 'preview' : 'split
 - `split` 模式：Splitter 分屏（默认比例 0.5，localStorage 记忆）
 - `preview` 模式：隐藏 Editor，Preview 占满
 - 只读 tab 默认 `preview`，可手动切换查看 CM6 源码高亮
-- 只读 tab 不显示 Clear 按钮、Save 按钮灰掉（`disableSave = isTemp || readOnly`），Cmd+S/Cmd+Enter 早返回——防止只读转写记录被误删或覆盖系统剪贴板
+- 只读 tab 不显示 Clear 按钮、Save 按钮灰掉（`disableSave = readOnly`，仅 transcription），Cmd+S/Cmd+Enter 早返回——防止只读转写记录被误删或覆盖系统剪贴板。temp tab（图文编辑空白入口）2026-07-12 起可保存，详见 §7.2
 
 ### 6.2 CodeMirrorEditor 组件
 
@@ -364,7 +364,7 @@ main.tsx → initI18n()（读 config 设 locale）→ ReactDOM.render()（首次
 ### 7.2 保留（外壳核心）
 
 - tab 管理（`loadAndAddTab` / `closeTab` / `pendingToTab` / `readInitialTabFromUrl`）——**同步计算模式**：await 后基于 `tabsRef.current` 算 next → 同步写 ref + `setTabs(next)` + `setActiveIdx(literal)`，不使用 `setTabs(prev => ...)` updater（避免 React 异步队列致 ref 陈旧）
-- `doSave` + `doSaveRef` + Cmd+S/Cmd+Enter 快捷键——**doSave 四守卫自拦截**（`!active` / `isTemp` / `source === 'transcription'` / `itemType !== 'text'`），keydown 无条件调 `doSaveRef.current()`（deps `[]`），单一事实源
+- `doSave` + `doSaveRef` + Cmd+S/Cmd+Enter 快捷键——**doSave 守卫**（`!active` / `source === 'transcription'` / `itemType !== 'text'` 早返回；**temp tab 不早返回、走 insert 分支**：非空 `insert_clipboard_text_item` 入库 + `promoteTempTab` 升级为 clipboard tab，空则关 tab），keydown 无条件调 `doSaveRef.current()`（deps `[]`），单一事实源。2026-07-12 前 temp tab 早返回不可保存，因托盘「图文编辑」入口需求改为可保存
 - 字号状态 `fontSize`（传入 MarkdownPane + `onFontSizeChange` 回调 + MarkdownPreview `fontSize` prop）
 - `savedFlash` 保存反馈（传入 MarkdownPane 驱动按钮样式）+ `savedFlashTimer` 卸载清理
 - mount effect——**listen 前置**：先注册 `listen("compact-editor://open-tab")` 再 `get_pending_compact_tabs`，消除竞态窗口
@@ -382,7 +382,7 @@ main.tsx → initI18n()（读 config 设 locale）→ ReactDOM.render()（首次
     onChange={(next) => updateActiveTextAt(next, i)}
     onClear={() => updateActiveTextAt('', i)}
     onSave={doSave}
-    disableSave={active?.isTemp || tab.source === 'transcription'}
+    disableSave={tab.source === 'transcription'}
     savedFlash={savedFlash}
   />
 ) : (
