@@ -2,7 +2,7 @@
 
 > ## 📊 实施状态总览（2026-07-11）
 > ✅ T1-T8 代码完成，每 Task 经 subagent-driven 两阶段 review（spec compliance + code quality）。
-> 📝 T9 e2e 真实录音验证待用户执行（Step 2-5）。
+> ✅ T9 e2e 真实录音验证通过（2026-07-11 用户真实录音走 desktop pipeline 全链路）。
 >
 > | Task | 内容 | Commit | Review |
 > |---|---|---|---|
@@ -14,7 +14,7 @@
 > | T6 | desktop 命令重写 + main.rs 注册 | aba057b | ✅✅ |
 > | T7 | pinyin_initials re-export + 清理旧 hotword | 9e0d3d6 | ✅✅ |
 > | T8 | 前端 HotwordPanel 重写 | dd7a436 | ✅✅ |
-> | T9 | e2e + 文档同步 | 本提交 | 📝 e2e 待用户 |
+> | T9 | e2e + 文档同步 | 本提交 | ✅ e2e 通过 |
 >
 > **🔧 T9 后增强（用户反馈驱动）**：
 > - 新增/挖掘词一次性高亮定位（`recentlyAdded` Set，替换语义非累加，组件重挂自然清空，无定时器）
@@ -1477,14 +1477,14 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
 
 > e2e 铁律（沿用 v1）：真实录音 + 走 desktop pipeline 全链路断言文本；直调 engine 绕过 corrector 会掩盖效果。
 
-- [ ] **Step 1: 构建桌面 app**
+- [x] **Step 1: 构建桌面 app**
 
 ```bash
 cargo build --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/Cargo.toml -p octopus-desktop
 ```
 Expected: 编译通过。
 
-- [ ] **Step 2: e2e——多版本生效**
+- [x] **Step 2: e2e——多版本生效**
 
 启动 desktop，进设置页「热词」：
 1. 确认迁移产物：有一个「通用」版本，含迁移前的 active 词（若之前有）。
@@ -1494,29 +1494,29 @@ Expected: 编译通过。
 5. 重新勾选 → 再次命中。
 6. 查看该词卡片命中数 > 0（`hotword_hits` 累加）。
 
-- [ ] **Step 3: e2e——导入导出 round-trip**
+- [x] **Step 3: e2e——导入导出 round-trip**
 
 1. 「通用」版本点「导出」→ 选路径存 `通用.txt`。
 2. 外部确认文件内容 = 版本词（空格分隔，已 normalize 排序）。
 3. 新建空版本「导入测试」→ 「导入覆盖」选刚才的 `通用.txt` → 断言「导入测试」词集合 = 「通用」。
 4. 「追加」模式：往某版本导入另一 txt → 断言为并集。
 
-- [ ] **Step 4: e2e——挖掘到版本**
+- [x] **Step 4: e2e——挖掘到版本**
 
 1. 选某版本 → 「挖掘」→ 断言 toast「新增 N 词」（或「未发现新候选」）。
 2. 该版本词卡片网格出现挖掘词（可逐个 ✕ 删）。
 
-- [ ] **Step 5: e2e——enabled 全关 no-op（过纠回归）**
+- [x] **Step 5: e2e——enabled 全关 no-op（过纠回归）**
 
 所有版本 enabled 关闭 → 录一段正常语音（无误识专名）→ 断言文本原样（过纠为零，corrector no-op）。
 
-- [ ] **Step 6: 文档同步**
+- [x] **Step 6: 文档同步**
 
 1. spec 顶部「状态」改为：`✅ 已实现（含 e2e，YYYY-MM-DD 用户真实录音走 desktop pipeline 全链路验证通过）`。
 2. 本 plan 顶部加「实施状态总览」段（同 asr-hotword plan 范式），各 Task Step checkbox 回填 `[x]`。
 3. `docs/architecture.md` 热词章节：扁平 `hotwords` 表 → `hotword_sets`(多版本) + `hotword_hits`(全局命中)，描述生效词并集、命中全局、导入导出。
 
-- [ ] **Step 7: Commit 文档**
+- [x] **Step 7: Commit 文档**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management add docs/superpowers/specs/2026-07-11-hotword-sets-design.md docs/superpowers/plans/2026-07-11-hotword-sets.md docs/architecture.md
