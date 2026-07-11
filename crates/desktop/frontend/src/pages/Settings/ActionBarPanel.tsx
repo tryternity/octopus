@@ -29,6 +29,7 @@ interface ActionBarItem {
   isEnabled: boolean;
   isAsync?: boolean;
   writeOutputToClipboard?: boolean;
+  shortcut?: string;
 }
 
 // 动作类型元信息：颜色点 + 标签 + 说明 + 占位符。
@@ -293,6 +294,7 @@ const EditForm = ({
   const type = form.actionType || "copy";
   const meta = TYPE_META[type];
   const showContent = type !== "submenu" && type !== "copy" && type !== "extension";
+  const showShortcut = type !== "submenu";
 
   return (
     <div className="space-y-5">
@@ -398,6 +400,39 @@ const EditForm = ({
                   </span>
                 </div>
               )}
+            </div>
+          </Field>
+        )}
+
+        {showShortcut && (
+          <Field label="快捷键">
+            <div className="flex items-center gap-2">
+              <div className="flex items-center gap-1">
+                <span className="text-xs text-muted-foreground/60 font-mono">⌥ +</span>
+                <input
+                  className="w-10 text-center bg-background border border-border rounded-md px-2 py-1.5 text-sm font-mono outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
+                  placeholder="—"
+                  maxLength={1}
+                  value={form.shortcut || ""}
+                  onChange={(e) => {
+                    const raw = e.target.value.toLowerCase();
+                    const filtered = raw.replace(/[^0-9a-z]/g, "").slice(-1);
+                    onChange({ ...form, shortcut: filtered });
+                  }}
+                />
+              </div>
+              {form.shortcut && (
+                <button
+                  onClick={() => onChange({ ...form, shortcut: "" })}
+                  className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-red-500/10 hover:text-red-500"
+                  aria-label="清除快捷键"
+                >
+                  <X className="h-3.5 w-3.5" />
+                </button>
+              )}
+              <span className="text-[11px] text-muted-foreground/60">
+                action bar 打开时按 Alt+此键直接执行
+              </span>
             </div>
           </Field>
         )}
@@ -546,6 +581,13 @@ const TreeNodeBase = (props: NodeProps) => {
 
         {/* 类型标签 */}
         <TypeTag type={item.actionType} />
+
+        {/* 快捷键徽章 */}
+        {item.shortcut && (
+          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
+            ⌥{item.shortcut}
+          </span>
+        )}
 
         {/* 内置标记 */}
         {item.isSystem && (
@@ -892,6 +934,7 @@ export default function ActionBarPanel({
               isEnabled: editingForm.isEnabled ?? true,
               isAsync: editingForm.isAsync ?? true,
               writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
+              shortcut: editingForm.shortcut || "",
             });
           }
           showToast("已保存");
@@ -906,6 +949,7 @@ export default function ActionBarPanel({
           actionData: editingForm.actionData || "",
           isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
           writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
+          shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
         });
         showToast("已创建");
       } else if (editingId) {
@@ -919,6 +963,7 @@ export default function ActionBarPanel({
           isEnabled: editingForm.isEnabled ?? true,
           isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
           writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
+          shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
         });
         showToast("已保存");
       }
