@@ -20,8 +20,27 @@ static PENDING_PAGE: Mutex<Option<String>> = Mutex::new(None);
 /// `initial_page`: 可选，指定初始页面（"history" | "clipboard" | "settings" | "models" | "prompts"）。
 #[tauri::command]
 pub fn open_settings(app_handle: tauri::AppHandle, initial_page: Option<String>) {
-    if let Some(window) = app_handle.get_webview_window(WINDOW_LABEL) {
-        let _ = window.set_focus();
+    if let Some(_) = app_handle.get_webview_window(WINDOW_LABEL) {
+        // macOS: app 可能被其他应用遮挡——set_focus 仅设焦点不激活 app。
+        // 需要切 Regular + 主线程 activate 才能把 app 带到前台。
+        #[cfg(target_os = "macos")]
+        {
+            let _ = app_handle.set_activation_policy(tauri::ActivationPolicy::Regular);
+            let ah = app_handle.clone();
+            let _ = app_handle.run_on_main_thread(move || {
+                use objc2::MainThreadMarker;
+                use objc2_app_kit::NSApplication;
+                if let Some(mtm) = MainThreadMarker::new() {
+                    let app = NSApplication::sharedApplication(mtm);
+                    app.activate();
+                }
+                let _ = ah.get_webview_window(WINDOW_LABEL).map(|w| w.set_focus());
+            });
+        }
+        #[cfg(not(target_os = "macos"))]
+        {
+            let _ = window.set_focus();
+        }
         // 窗口已存在：暂存页面 + emit 让前端切页
         if let Some(ref page) = initial_page {
             *PENDING_PAGE.lock() = Some(page.clone());
