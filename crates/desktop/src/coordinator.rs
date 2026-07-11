@@ -63,12 +63,8 @@ enum Command {
     PolishNow,
     /// 进入编辑态（前端 edit_shortcut/编辑按钮触发；ASR 硬暂停）
     EnterEditMode,
-    /// 更新编辑缓冲（前端 input 防抖推送；供 Toggle-期间-编辑 恢复）
-    UpdateEditBuffer { text: String },
-    /// 提交编辑（edit_shortcut toggle 再按一次 / ✏️(💾) 按钮触发）
-    CommitEdit { text: String },
-    /// 取消编辑（恢复原始文本，不落库）
-    CancelEdit,
+    /// 提交编辑（含 dirty ranges——用户明确编辑过的区间 + 光标/选区恢复信息）
+    CommitEdit { text: String, dirty_ranges: Vec<(usize, usize)>, caret: Option<usize>, selection: Option<(usize, usize)> },
     /// 运行时配置更新——外部（设置窗口 / 工具栏）修改 RuntimeConfig 后，
     /// 通过此命令通知 coordinator 立即把变更同步到 config 快照（无需等 Toggle）。
     /// 用于 polish_llm / polish_mode / asr_correct / output_simplified / hide_toolbar 等
@@ -246,7 +242,7 @@ fn build_coordinator_loop(
                         // 编辑态下停止：先用 edit_buffer 提交编辑，再走停止流程（spec §7）
                         if editing {
                             if let Some(text) = edit_buffer.take() {
-                                commit_edit_apply(&mut stage, &text, &app_handle);
+                                commit_edit_apply(&mut stage, &text, &[], None, None, &app_handle);
                             }
                             editing = false;
                             let _ = app_handle.emit("edit-force-exit", ());
@@ -425,30 +421,9 @@ fn build_coordinator_loop(
                     Command::EnterEditMode => {
                         handle_enter_edit_mode(&mut stage, &mut editing, &mut edit_buffer);
                     }
-                    Command::UpdateEditBuffer { text } => {
-                        if editing {
-                            edit_buffer = Some(text);
-                        }
-                    }
-                    Command::CommitEdit { text } => {
-                        if editing {
-                            commit_edit_apply(&mut stage, &text, &app_handle);
-                            editing = false;
-                        }
-                    }
-                    Command::CancelEdit => {
-                        if editing {
-                            editing = false;
-                            // 取消编辑：清残留的 pending_delete（防选中后取消→下次说话误删）
-                            if let Some(t) = stage_transcript(&mut stage) {
-                                t.clear_pending_delete();
-                            }
-                            // 恢复展示当前 segments 扁平文本（编辑态修改在前端 editBuffer，未 commit → transcript 不变）
-                            let display = stage_transcript(&mut stage).map(|t| t.display_text()).unwrap_or_default();
-                            if !display.is_empty() {
-                                crate::result_window::update_result(&app_handle, &display, false, 0);
-                            }
-                        }
+                    Command::CommitEdit { text, dirty_ranges, caret, selection } => {
+                        commit_edit_apply(&mut stage, &text, &dirty_ranges, caret, selection, &app_handle);
+                        editing = false;
                     }
                     Command::UpdateRuntime => {
                         // 设置窗口 / 工具栏改了 RuntimeConfig 字段——立即同步到 config 快照，
@@ -574,28 +549,12 @@ impl Coordinator {
             }
     }
 
-    /// 更新编辑缓冲（前端 input 防抖推送）
-    pub fn update_edit_buffer(&self, text: String) {
+    /// 提交编辑（含 dirty ranges + 光标/选区恢复）
+    pub fn commit_edit(&self, text: String, dirty_ranges: Vec<(usize, usize)>, caret: Option<usize>, selection: Option<(usize, usize)>) {
         let tx = self.tx.lock();
-            if tx.send(Command::UpdateEditBuffer { text }).is_err() {
-                error!("Coordinator channel closed");
-            }
-    }
-
-    /// 提交编辑
-    pub fn commit_edit(&self, text: String) {
-        let tx = self.tx.lock();
-            if tx.send(Command::CommitEdit { text }).is_err() {
-                error!("Coordinator channel closed");
-            }
-    }
-
-    /// 取消编辑（不写 DB）
-    pub fn cancel_edit(&self) {
-        let tx = self.tx.lock();
-            if tx.send(Command::CancelEdit).is_err() {
-                error!("Coordinator channel closed");
-            }
+        if tx.send(Command::CommitEdit { text, dirty_ranges, caret, selection }).is_err() {
+            error!("Coordinator channel closed");
+        }
     }
 
     /// 前端点击光标定位：char offset → 通过命令通道投递（stage 在 spawn 线程，
@@ -676,15 +635,16 @@ pub fn enter_edit_mode(coordinator: tauri::State<'_, Coordinator>) {
 }
 
 /// 前端命令：更新编辑缓冲（input 防抖推送）。
+/// 前端命令：提交编辑（含 dirty ranges——用户编辑过的区间 + 光标/选区恢复）。
 #[tauri::command]
-pub fn update_edit_buffer(coordinator: tauri::State<'_, Coordinator>, text: String) {
-    coordinator.update_edit_buffer(text);
-}
-
-/// 前端命令：提交编辑（edit_shortcut toggle 再按 / ✏️(💾) 按钮触发）。
-#[tauri::command]
-pub fn commit_edit(coordinator: tauri::State<'_, Coordinator>, text: String) {
-    coordinator.commit_edit(text);
+pub fn commit_edit(
+    coordinator: tauri::State<'_, Coordinator>,
+    text: String,
+    dirty_ranges: Vec<(usize, usize)>,
+    caret: Option<usize>,
+    selection: Option<(usize, usize)>,
+) {
+    coordinator.commit_edit(text, dirty_ranges, caret, selection);
 }
 
 /// 前端命令：非编辑态点击文本 → 定位光标（后续流式从该处插入）。
@@ -711,12 +671,6 @@ pub fn start_recording(
     selection: Option<(String, usize, usize)>,
 ) {
     coordinator.start_recording(prepare_id, selection);
-}
-
-/// 前端命令：取消编辑（恢复原始文本，不落库）。
-#[tauri::command]
-pub fn exit_edit_without_commit(coordinator: tauri::State<'_, Coordinator>) {
-    coordinator.cancel_edit();
 }
 
 /// 实际开录音：从 Idle 进入活跃录音态（cloud / streaming / vad 三分支）。
@@ -2132,9 +2086,16 @@ fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &m
     info!("Entered edit mode (transcript id={})", transcript.id);
 }
 
-/// 提交编辑：写回 transcript（commit_edit）+ UPDATE edited_text（行已存在）+ 刷新展示。
+/// 提交编辑：写回 transcript（commit_edit + dirty ranges 劈段）+ 光标/选区恢复 + UPDATE edited_text + 刷新展示。
 /// 活跃态走 transcript；Idle 态无 transcript，用 CURRENT_TRANSCRIPTION_ID 直接 UPDATE。
-fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandle) {
+fn commit_edit_apply(
+    stage: &mut Stage,
+    text: &str,
+    dirty_ranges: &[(usize, usize)],
+    caret: Option<usize>,
+    selection: Option<(usize, usize)>,
+    app_handle: &tauri::AppHandle,
+) {
     let transcript = match stage {
         Stage::Streaming { transcript, .. }
         | Stage::VadSegmented { transcript, .. }
@@ -2152,7 +2113,9 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
                 return;
             }
             let mut t = Transcript::new(id, PolishMode::Disabled);
-            t.commit_edit(text, &[]);
+            t.commit_edit(text, dirty_ranges);
+            if let Some((s, e)) = selection { t.set_selection(s, e); }
+            else if let Some(c) = caret { t.set_caret(c); }
             let segments = t.segments_json();
             if let Err(e) = get_db_sender().send(DbCommand::UpdateEditedSegments {
                 id,
@@ -2170,7 +2133,9 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
             return;
         }
     };
-    transcript.commit_edit(text, &[]); // TODO Task 2: 传 dirty_ranges
+    transcript.commit_edit(text, dirty_ranges);
+    if let Some((s, e)) = selection { transcript.set_selection(s, e); }
+    else if let Some(c) = caret { transcript.set_caret(c); }
     if transcript.db_inserted() {
         let id = transcript.id;
         let segments = transcript.segments_json();

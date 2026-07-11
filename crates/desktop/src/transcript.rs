@@ -257,7 +257,8 @@ impl Transcript {
         self.segments[..gap].iter().map(|s| s.text.chars().count()).sum()
     }
 
-    /// 取消选中（取消编辑 / 失焦 / 新会话）时调用：清 pending_delete 防幽灵删除。
+    /// 取消选中（失焦 / 新会话）时调用：清 pending_delete 防幽灵删除。
+    #[allow(dead_code)]
     pub fn clear_pending_delete(&mut self) {
         if self.pending_delete.is_some() {
             log::debug!("[select] cleared clear_pending_delete t={} range={:?}",
