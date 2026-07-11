@@ -107,6 +107,15 @@
 
 **流式 partial 渲染单调性**：`StreamingZipformer::process_chunks` 三个返回点统一经 `decoded_current()` 返回当前段文本，避免长短态逐帧交替闪烁。承载层幂等门（`text != transcript.full()` 才 apply）。前端跳变延迟合并（`DIVERTED_DELAY_MS=300`）。
 
+## 离线引擎管理（AsrEngineManager）
+
+`crates/asr-local/src/engine.rs::AsrEngineManager`——集中管理离线引擎生命周期，与流式 `StreamingSessionManager` 对称：`cached_engines: RwLock<HashMap<String, Arc<dyn OfflineAsrEngine>>>` 按模型缓存，`active_engine` + `active_engine_name` 记当前，`max_cache` 缓存上限。
+
+- **`Mutex<Session>` 内部可变性**：ort `Session::run` 要求 `&mut self` 独占借用，而 `OfflineAsrEngine::transcribe(&self)` 需 `Send + Sync`，故各引擎 struct 持 `Mutex<Session>`（推理时短时 `lock()` 取锁）——多线程共享 `Arc<dyn OfflineAsrEngine>`，避免每次重载数百 MB 模型的内存/CPU 浪费
+- **两种获取路径**：`switch_model`（设全局 active，cli/desktop 单路场景，active 单例语义）/ `get_engine`（只读返回 `Arc`、不改 active，server 多并发；同模型并发受引擎内 `Mutex<Session>` 串行化，跨模型天然并行，无需 server 级全局锁）
+- **缓存上限可配**：`new()` 默认 2（桌面控内存）；`new_with_capacity(max)` 供 server 放大（注入 `new_with_capacity(8)` 适配多模型并发）。切回已缓存模型耗时 0ms
+- **宿主集成**：desktop 在 Tauri Setup 建管理器 + 独立线程后台加载（不卡 GUI）；server 注入 `AppState` + 启动 `switch_model` 预热，`/transcribe` 用 `get_engine` 取 Arc 直接转写（不再持全局 `inference_lock`，跨模型请求天然并行）
+
 ## 流式引擎复用（StreamingSessionManager）
 
 `crates/asr-local/src/streaming_engine.rs::StreamingSessionManager`——对齐离线 `AsrEngineManager`：按模型缓存 `Arc<dyn StreamingEngine>`，desktop 录音 `active_session(spec, lang)` 懒加载取用 + `reset()` 复用，消除每次录音秒级重载 encoder+decoder 两个 ONNX Session。
@@ -166,6 +175,14 @@
   1. EP 注册失败（驱动/库缺失）→ 捕获 `Err` 回退纯 CPU session，进程不崩
   2. **qwen3-asr 显式跳过 CoreML**——动态算子 CoreML 不报错而是把图分区跑（CPU↔CoreML 张量拷贝开销 dominate，比纯 CPU 还慢），检测 `category=qwen3-asr` 时主动走 CPU
 - **VAD 免加速**：Silero VAD（1.8MB）固定 CPU，不受开关影响
+
+## 音频重采样（AudioResampler）
+
+`crates/asr-local/src/audio.rs::AudioResampler`——状态化重采样器，解决流式录音中每 tick 重建重采样器（曾每 625ms 新建 `rubato::FftFixedIn`）的 CPU 抖动与边界爆音。
+
+- **缓存 FFT 规划**：生命周期内仅初始化时规划一次 Rubato FFT，后续复用
+- **边界零碎样点缓冲**：内部 `buffer: Vec<f32>` 暂存不满一帧的样本，下次输入拼接——消除边界点击爆音（clicks）与音频截断
+- **流尾冲刷**：录音结束 `flush()` 零填充输出最后一帧，确保 ASR 还原末尾音频
 
 ## 特征提取
 
