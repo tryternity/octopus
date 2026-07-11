@@ -585,7 +585,7 @@ const TreeNodeBase = (props: NodeProps) => {
 
         {/* 快捷键徽章 */}
         {item.shortcut && (
-          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
+          <span className="shrink-0 rounded bg-voice/10 px-1 py-0.5 font-mono text-[10px] text-voice/80">
             ⌥{item.shortcut}
           </span>
         )}
