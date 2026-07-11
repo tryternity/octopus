@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
+import { invoke } from "@/lib/tauri";
 import zhCN from "@/locales/zh-CN.json";
 import en from "@/locales/en.json";
 
@@ -30,7 +31,6 @@ function localeFromConfig(v?: string): Locale {
 /** 从后端 config 读 ui_language，初始化 locale（main.tsx 启动时调用） */
 export async function initI18n(): Promise<void> {
   try {
-    const { invoke } = await import("@/lib/tauri");
     const resp = await invoke<{ config: Record<string, unknown> }>("get_config");
     const uiLang = resp.config?.ui_language as string | undefined;
     setLocale(localeFromConfig(uiLang));
