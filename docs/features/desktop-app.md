@@ -11,13 +11,34 @@
 | 窗口 | 用途 | 属性 |
 |------|------|------|
 | `result_window` | 识别结果展示 | 透明、无边框、置顶、可拖拽、多行滚动。720×480 物理固定，前端 CSS 切可见容器尺寸（默认 520×116 精简态 / 工具栏放大 720×480） |
-| `settings_window` | 系统设置 | 原生标题栏、圆角、可调大小。五页面侧边栏：系统设置 / 识别记录 / 剪贴板 / 模型管理 / 提示词。窗口位置记忆 |
+| `settings_window` | 系统设置 | 原生标题栏、圆角、可调大小。五页面侧边栏：系统设置 / 剪贴管理 / 模型管理 / 提示词 / 系统状态。窗口位置记忆 |
 | `compact_editor_window` | 统一内容查看器 | 原生标题栏、880×620 可调 + 记忆、居中、min 400×320。多 tab（文本/图片/语音） |
 | `clipboard_window` | 剪贴板历史浮窗 | 300×600，无边框圆角透明置顶，`clipboard_shortcut`（默认 CmdOrCtrl+Shift+D）唤起 |
 | ~~`notepad_window`~~ | （已移除 2026-07-03） | 随 `octopus-notepad` crate 一并删除 |
 | ~~`image_preview_window`~~ | （已移除 2026-07-04） | 合并入 CompactEditor 图片 tab |
 
 **`open_settings` 支持初始页面参数**（`PENDING_PAGE` 暂存 + `get_initial_page` 拉取 + `settings://navigate` 事件），剪贴板浮窗「管理」按钮直接跳转剪贴板 tab。
+
+### 1.1 窗口位置 / 最大化 / 多显示器记忆
+
+两套并行实现（`window_position.rs` + `compact_editor_window.rs::WindowState`），都走 `save_config_key`/`load_config_key`（`category='system'`，与业务配置隔离）：
+
+| 实现 | 服务窗口 | 记忆内容 | DB key |
+|------|----------|----------|--------|
+| **轻量位置**（`window_position.rs`） | `clipboard_window` / `result_window` | 仅 x,y | `window_pos.{label}` = `"x,y"` |
+| **全状态**（`WindowState`） | `compact_editor_window` | w/h/x/y + **maximized** + 最后非最大化位置 | `compact_editor_window_state`（JSON）+ `compact_editor_last_normal_pos` |
+
+轻量位置接口：`save_window_position` / `load_window_position` / `is_position_visible`（50px 容差判点）/ `restore_window_position(window, label, fallback)` / `save_current_position`（`outer_position()/scale`，event handler 用）。
+
+**六大不变量**（十二次迭代确立，违反即窗口错位/丢失）：
+1. **scale 转换**：`Monitor::position()` 与 `size()` 均为**物理像素**，越界检测时 position 和 size 都必须 `÷ scale_factor` 统一逻辑（旧版只除 size 不除 position → Retina 副屏坐标误判进主屏，`c3efb0c`）。
+2. **50px 容差越界检测**（`is_position_visible`）：副屏拔接后保存的绝对坐标失效时走 fallback 居中/默认，避免窗口「消失」到不存在的屏。
+3. **`builder.maximized(true)` 在 WRY 不生效**——必须 `visible(false)` 建**接近全屏的大窗体**（屏尺寸减 margin 80）→ `show()` → `maximize()`；不能直接用主屏尺寸创建（`is_maximized=false` 会让关窗保存错误状态）。
+4. **最大化保存真实位置**：关窗时先 `unmaximize()` → 读 `inner_position()`+`inner_size()`（真实非最大化位置）→ `re-maximize()` → 存 `last_normal_pos`；不能直接读最大化时的 `inner_position()`（返回全屏位置可能跨屏到主屏原点）。
+5. **副屏未连接三层 fallback**：按 `last_normal_pos` 匹配已连接显示器 → 命中则该屏大窗体+maximize；未命中→ `primary_monitor` 大窗体+maximize；连主屏都拿不到→默认 880×620 居中。
+6. **`inner_position` + `inner_size` 对称**（均内容区坐标、不含标题栏），均 `÷ scale` 存逻辑像素；`scale_factor` 获取失败 `unwrap_or(1.0)` 兜底。
+
+> 全状态实现的窗口尺寸/最大化也记录于 [compact-editor.md](./compact-editor.md) §1。
 
 ---
 
@@ -116,6 +137,10 @@
 
 **提示词页**（page 5）：6 个命令（`list_prompts` / `get_active_prompt` / `set_active_prompt` / `create_prompt` / `update_prompt` / `delete_prompt`），切换即时生效。
 
+**剪贴管理页**（page 2）：剪贴板历史的完整管理视图（FilterTabs + 多选 + 全选 sticky header + `ClipboardRow` 两行布局），与浮窗共用 `types/clipboard.ts` 工具（`detectUrl` / `fileMeta` / `metaParts`）。详见 [clipboard.md](./clipboard.md)。
+
+**系统状态页**（page 6）：实时进程内存/CPU + 各本地模型估算内存 + sparkline 趋势。详见 §13。
+
 ---
 
 ## 9. 引擎接入模式
@@ -163,3 +188,42 @@ cargo run --release -p octopus-desktop --features remote-grpc
 `init_schema` 仅 `user_version < 18` 时执行 db.sql 建表+seed+yaml 导入（v18 跳过），v17→v18 跑 FTS5 backfill。
 
 手编 `models` 表 / `app_config` 表需重启进程生效（`OnceLock` 缓存，运行中不可热更新；运行时修改走 `RuntimeConfig` + `persist_*`）。
+
+---
+
+## 12. AI 命令面板（action_bar_window）
+
+> 选中文本 → 热键 → 模拟 Cmd+C → 弹出迷你浮窗 → AI/搜索/翻译/网页 → CompactEditor 展示结果。源文件：`crates/desktop/src/action_bar_commands.rs`、`crates/desktop/frontend/src/pages/ActionBar/`。**仅 macOS**（依赖 CGEvent 鼠标坐标 + osascript 模拟 Cmd+C），非 macOS `trigger_action_bar` 直接 return + warn。
+
+**窗口**：`action_bar_window` 透明浮窗，定位鼠标正上方 X 居中；两级菜单（主菜单 + 子菜单）+ 键盘导航（↑↓ 切行、←→/Enter 进子菜单）；高度 82px（主菜单 38 + 子菜单 38 + 边框），缩小透明点击区。
+
+**关键约束（反复踩坑）**：
+- **物理/逻辑坐标**：`CGEvent::location()` 返回**逻辑坐标（points）**，Tauri `LogicalPosition` 是逻辑像素，两者一致**不除 scale**；`Monitor::position()/size()` 返回物理像素**需除 scale**。曾误把 CGEvent 当物理坐标除 scale → 浮窗偏到无关位置。
+- **trigger 后台线程**：模拟 Cmd+C 后 200ms sleep 不能在主线程（阻塞事件循环 → 窗口无焦点 → Esc/按钮无响应），必须 `std::thread::spawn`。
+- **NSWindow 操作必须在主线程**：`show_action_bar_window` 用 `app.run_on_main_thread()`，不能用 `tauri::async_runtime::spawn`（tokio worker 线程）。
+- **capabilities 白名单**：`action_bar_window` 必须在 `capabilities/default.json` 的 `windows` 数组里，否则 listen/invoke 全被 ACL 静默拦。
+- **mousedown capture 陷阱**：外部点击检测用 `click` 事件冒泡阶段（`false`），capture 模式会在 onClick 前触发拦截按钮点击。
+- **system_prompt 全局污染**：`run_ai_action` 不用 `set_system_prompt`/`polish`（会污染并发 ASR 润色），改用 `octopus_llm::chat_text_with_prompt(system, user, config)` 参数注入。
+- **剪贴板生命周期**：trigger 阶段 suppress_next → Cmd+C → 读选中 → 立即 write_text 恢复（选中文本不入库），存 `PENDING_CONTEXT`。
+- **trigger 重入 guard**：`TRIGGER_IN_PROGRESS: AtomicBool` 防热键连按，`finalize_action_bar` 统一收口。
+- **AI 结果不做 Run And Paste**（浏览器安全策略阻止模拟粘贴），改 CompactEditor isTemp 临时 tab 展示（不写 DB）。AI 超时：翻译 5s + 润色/摘要/解释 10s，前端 `timedOutRef` 丢弃超时后到达的结果。
+
+---
+
+## 13. 系统状态页（model_probe 依赖反转）
+
+> 设置窗「系统状态」tab，实时展示 octopus 进程内存/CPU + 各本地模型估算内存 + 短时趋势（sparkline）。源文件：`crates/infra/src/model_probe.rs`、`crates/desktop/src/system_status_commands.rs`、`crates/desktop/frontend/src/pages/Settings/SystemPanel.tsx`。
+
+**依赖反转架构**：infra 不依赖 sysinfo/desktop，只持有闭包。
+- `infra/model_probe.rs`：全局 `set_probe(ProbeFn)` + `probe(LoadPhase, id)`（`LoadPhase::Before/After/Unload`），未注入时 no-op。
+- 加载点埋点：asr-local（`load_engine_into_cache` / `SileroVad::new`）、ocr（`OcrEngine::instance`）、流式（`StreamingSessionManager::switch_model`）在加载前后调 `probe`，id 形如 `asr:<name>` / `ocr:<name>` / `vad:silero`。
+- desktop 启动注入 probe 闭包：Before 存 RSS、After 优先复用 `estimated` 首次值、否则算 RSS 差写 `ModelMemoryRegistry`；Unload 清 active 条目。
+
+**`SystemStatusSampler`**：tokio 后台每 2s（`SAMPLE_INTERVAL_SECS`）用 sysinfo 采样 octopus 进程 RSS/CPU + 系统级内存/CPU，写入容量 60 的 ring buffer（2 分钟窗口），`emit("system-status", snapshot)`。`get_system_status` 命令返回当前完整快照（前端首屏 invoke）。
+
+**关键踩坑**：
+- **RSS vs phys_footprint 双指标**：RSS（sysinfo `resident_size`）含 mmap 的 file-backed 模型权重，比活动监视器「内存」（`phys_footprint`）长期高 ~450M。macOS 用 `proc_pid_rusage` FFI 读 `ri_phys_footprint`（flavor `RUSAGE_INFO_V0=0` 非 16；字节偏移 72）→ `ProcessStats.real_bytes`；非 macOS 返回 None 退 RSS。
+- **模型内存「估算」**：同进程 ort 无法 OS 级 per-model 拆分，用加载前后 RSS 差值近似；**仅首次记录不覆盖**（ort arena 复用致后续差值偏低/为负）。`estimated` 首次值持久缓存，跨 unload/reload 保留。
+- **probe race ThreadId 隔离**：多线程并发加载同一未缓存模型时 `before_map` key 用 `(ThreadId, String)`，Before/After 同线程配对。
+- **probe 持锁调用户闭包**：clone `Option<ProbeFn>`（Arc+1）释放锁后再调 f，避免 sysinfo 扫全部进程慢阻塞其他线程。
+- **OCR idle 60s 自动释放联动**：OCR `probe(Unload)` → `registry.remove(id)`，状态页 OCR 条目消失。释放后进程内存数值不立即下降（macOS libmalloc 不主动 munmap），真实收益是「下次重载复用 free list」——详见 [ocr.md](./ocr.md) §3.1-§3.2。
