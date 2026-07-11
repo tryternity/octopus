@@ -171,16 +171,14 @@ function CompactEditor() {
       const fn = await listen("compact-editor://open-tab", (payload) => {
         const p = payload as OpenTabPayload;
         if (p.source === 'temp') {
-          const tempKey = `temp:${Date.now()}`;
+          const tempKey = `temp:${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
           setTabs(prev => {
             const next = [...prev, { key: tempKey, source: 'temp' as const, itemId: 0, itemType: 'text' as const, text: p.text, isTemp: true }];
             tabsRef.current = next;
             return next;
           });
-          setActiveIdx(() => {
-            const idx = tabsRef.current.findIndex(t => t.key === tempKey);
-            return idx >= 0 ? idx : 0;
-          });
+          const idx = tabsRef.current.findIndex(t => t.key === tempKey);
+          setActiveIdx(idx >= 0 ? idx : 0);
         } else {
           loadAndAddTab(p.itemId, p.source);
         }
@@ -227,8 +225,12 @@ function CompactEditor() {
           return;
         }
         const idx = activeIdx;
-        setTabs(prev => prev.filter((_, i) => i !== idx));
-        setActiveIdx(i => (idx < i ? i - 1 : idx === i ? Math.min(i, tabs.length - 2) : i));
+        setTabs(prev => {
+          const next = prev.filter((_, i) => i !== idx);
+          tabsRef.current = next;
+          return next;
+        });
+        setActiveIdx(i => (idx < i ? i - 1 : idx === i ? Math.min(i, tabsRef.current.length - 1) : i));
         return;
       }
       await invoke("set_clipboard_item_text", { itemId: active.itemId, text: active.text || "" });
@@ -251,10 +253,14 @@ function CompactEditor() {
       invoke("close_compact_editor");
       return;
     }
-    setTabs(prev => prev.filter((_, i) => i !== idx));
+    setTabs(prev => {
+      const next = prev.filter((_, i) => i !== idx);
+      tabsRef.current = next;
+      return next;
+    });
     setActiveIdx(i => {
       if (idx < i) return i - 1;
-      if (idx === i) return Math.min(i, tabs.length - 2);
+      if (idx === i) return Math.min(i, tabsRef.current.length - 1);
       return i;
     });
   };
