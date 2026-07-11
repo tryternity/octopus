@@ -59,16 +59,34 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
     let dock_edge = crate::window_position::load_dock_state(WINDOW_LABEL);
     if let Some(ref edge) = dock_edge {
         if edge == "right" || edge == "left" {
-            let (_db_x, db_y) = crate::window_position::load_window_position(WINDOW_LABEL)
-                .unwrap_or((0.0, 0.0));
-            if let Ok(Some(monitor)) = window.current_monitor().or(window.primary_monitor()) {
-                let scale = monitor.scale_factor();
-                let x = if edge == "right" {
-                    monitor.position().x as f64 / scale
-                        + monitor.size().width as f64 / scale
-                        - 300.0
+            // 用保存的坐标定位目标显示器（不能用 current_monitor——窗口刚创建
+            // 还在默认位置，current_monitor 返回主屏，导致副屏 dock 跑到主屏）
+            let saved_pos = crate::window_position::load_window_position(WINDOW_LABEL);
+            let (db_x, db_y) = saved_pos.unwrap_or((0.0, 0.0));
+            let monitors = window.available_monitors().unwrap_or_default();
+            let target: Option<(f64, f64, f64, f64)> = monitors.iter().find_map(|m| {
+                let ms = m.scale_factor();
+                let mx = m.position().x as f64 / ms;
+                let my = m.position().y as f64 / ms;
+                let mw = m.size().width as f64 / ms;
+                let mh = m.size().height as f64 / ms;
+                if db_x >= mx && db_x < mx + mw && db_y >= my && db_y < my + mh {
+                    Some((mx, my, mw, mh))
                 } else {
-                    monitor.position().x as f64 / scale
+                    None
+                }
+            }).or_else(|| {
+                window.primary_monitor().ok().flatten().map(|m| {
+                    let ms = m.scale_factor();
+                    (m.position().x as f64 / ms, m.position().y as f64 / ms,
+                     m.size().width as f64 / ms, m.size().height as f64 / ms)
+                })
+            });
+            if let Some((mx, _my, mw, _mh)) = target {
+                let x = if edge == "right" {
+                    mx + mw - 300.0
+                } else {
+                    mx
                 };
                 let _ = window.set_position(tauri::Position::Logical(
                     tauri::LogicalPosition::new(x, db_y),
@@ -76,8 +94,6 @@ pub fn create_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
             }
             let _ = app.emit("clipboard://dock-changed", edge.as_str());
             DOCK_EXPANDED.store(false, Ordering::SeqCst);
-            // 不在此启动 start_edge_poll——窗口以 visible(false) 创建，
-            // 用户未唤出前轮询线程无意义空转。轮询在 toggle 收缩时按需启动。
         }
     }
     }
