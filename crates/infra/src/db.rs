@@ -1210,6 +1210,202 @@ pub fn clear_script_runs(keep_recent: Option<i64>) -> Result<()> {
     })
 }
 
+// ── HotwordSet（热词版本/场景）──────────────────────────────────
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct HotwordSet {
+    pub id: i64,
+    pub name: String,
+    pub enabled: bool,
+    pub words_text: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+const HOTWORD_SET_COLS: &str = "id, name, enabled, words_text, created_at, updated_at";
+
+fn row_to_hotword_set(row: &rusqlite::Row) -> rusqlite::Result<HotwordSet> {
+    Ok(HotwordSet {
+        id: row.get(0)?,
+        name: row.get(1)?,
+        enabled: row.get::<_, i64>(2)? != 0,
+        words_text: row.get(3)?,
+        created_at: row.get(4)?,
+        updated_at: row.get(5)?,
+    })
+}
+
+/// 列出全部版本（按 id 升序）。设置页渲染用。
+pub fn list_hotword_sets() -> Result<Vec<HotwordSet>> {
+    with_db(|conn| list_hotword_sets_at(conn))
+}
+
+fn list_hotword_sets_at(conn: &Connection) -> Result<Vec<HotwordSet>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {c} FROM hotword_sets ORDER BY id ASC",
+        c = HOTWORD_SET_COLS
+    ))?;
+    let rows = stmt.query_map([], row_to_hotword_set)?;
+    let mut list = Vec::new();
+    for r in rows {
+        list.push(r?);
+    }
+    Ok(list)
+}
+
+/// 单条查询（rename/toggle 后回读、命令层透传用）。
+pub fn get_hotword_set(id: i64) -> Result<HotwordSet> {
+    with_db(|conn| {
+        conn.query_row(
+            &format!("SELECT {c} FROM hotword_sets WHERE id=?1", c = HOTWORD_SET_COLS),
+            params![id],
+            row_to_hotword_set,
+        )
+        .map_err(|e| anyhow::anyhow!("热词版本不存在: {}", e))
+    })
+}
+
+/// 新建空版本。重名由 name UNIQUE 约束拒绝（→ Err）。
+pub fn insert_hotword_set(name: &str) -> Result<i64> {
+    with_db(|conn| insert_hotword_set_at(conn, name))
+}
+
+fn insert_hotword_set_at(conn: &Connection, name: &str) -> Result<i64> {
+    conn.execute(
+        "INSERT INTO hotword_sets (name) VALUES (?1)",
+        params![name],
+    )?;
+    Ok(conn.last_insert_rowid())
+}
+
+/// 改名。同时刷新 updated_at。
+pub fn rename_hotword_set(id: i64, name: &str) -> Result<()> {
+    with_db(|conn| rename_hotword_set_at(conn, id, name))
+}
+
+fn rename_hotword_set_at(conn: &Connection, id: i64, name: &str) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE hotword_sets SET name=?1, updated_at=datetime('now') WHERE id=?2",
+        params![name, id],
+    )?;
+    if n == 0 {
+        anyhow::bail!("热词版本不存在");
+    }
+    Ok(())
+}
+
+/// 勾选/取消勾选（enabled=true 时纳入并集）。刷新 updated_at。
+pub fn toggle_hotword_set(id: i64, enabled: bool) -> Result<()> {
+    with_db(|conn| toggle_hotword_set_at(conn, id, enabled))
+}
+
+fn toggle_hotword_set_at(conn: &Connection, id: i64, enabled: bool) -> Result<()> {
+    let n = conn.execute(
+        "UPDATE hotword_sets SET enabled=?1, updated_at=datetime('now') WHERE id=?2",
+        params![if enabled { 1 } else { 0 }, id],
+    )?;
+    if n == 0 {
+        anyhow::bail!("热词版本不存在");
+    }
+    Ok(())
+}
+
+/// 删除版本。
+pub fn delete_hotword_set(id: i64) -> Result<()> {
+    with_db(|conn| delete_hotword_set_at(conn, id))
+}
+
+fn delete_hotword_set_at(conn: &Connection, id: i64) -> Result<()> {
+    let n = conn.execute("DELETE FROM hotword_sets WHERE id=?1", params![id])?;
+    if n == 0 {
+        anyhow::bail!("热词版本不存在");
+    }
+    Ok(())
+}
+
+/// 覆盖写 words_text（已 normalize）。导入「覆盖」模式用。
+pub fn set_hotword_set_words(id: i64, words_text: &str) -> Result<()> {
+    with_db(|conn| {
+        let normalized = crate::hotword_text::normalize_words_text(words_text);
+        let n = conn.execute(
+            "UPDATE hotword_sets SET words_text=?1, updated_at=datetime('now') WHERE id=?2",
+            params![normalized, id],
+        )?;
+        if n == 0 {
+            anyhow::bail!("热词版本不存在");
+        }
+        Ok(())
+    })
+}
+
+/// 追加一词到指定版本（并集 + normalize）。重复词去重无副作用，返回是否实际新增。
+pub fn add_word_to_set(id: i64, word: &str) -> Result<bool> {
+    with_db(|conn| add_word_to_set_at(conn, id, word))
+}
+
+fn add_word_to_set_at(conn: &Connection, id: i64, word: &str) -> Result<bool> {
+    let cur: String = conn
+        .query_row(
+            "SELECT words_text FROM hotword_sets WHERE id=?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .map_err(|e| anyhow::anyhow!("热词版本不存在: {}", e))?;
+    let merged = format!("{} {}", cur, word);
+    let normalized = crate::hotword_text::normalize_words_text(&merged);
+    let added = normalized != cur;
+    conn.execute(
+        "UPDATE hotword_sets SET words_text=?1, updated_at=datetime('now') WHERE id=?2",
+        params![normalized, id],
+    )?;
+    Ok(added)
+}
+
+/// 批量追加多词（挖掘/导入追加用），返回实际新增条数。
+pub fn add_words_to_set(id: i64, words: &[String]) -> Result<usize> {
+    with_db(|conn| {
+        let cur: String = conn
+            .query_row(
+                "SELECT words_text FROM hotword_sets WHERE id=?1",
+                params![id],
+                |r| r.get(0),
+            )
+            .map_err(|e| anyhow::anyhow!("热词版本不存在: {}", e))?;
+        let before: std::collections::HashSet<&str> = cur.split_whitespace().collect();
+        let merged = format!("{} {}", cur, words.join(" "));
+        let normalized = crate::hotword_text::normalize_words_text(&merged);
+        let after: std::collections::HashSet<&str> = normalized.split_whitespace().collect();
+        let added = after.len().saturating_sub(before.len());
+        conn.execute(
+            "UPDATE hotword_sets SET words_text=?1, updated_at=datetime('now') WHERE id=?2",
+            params![normalized, id],
+        )?;
+        Ok(added)
+    })
+}
+
+/// 从指定版本移除一词（normalize 重排）。
+pub fn remove_word_from_set(id: i64, word: &str) -> Result<()> {
+    with_db(|conn| remove_word_from_set_at(conn, id, word))
+}
+
+fn remove_word_from_set_at(conn: &Connection, id: i64, word: &str) -> Result<()> {
+    let cur: String = conn
+        .query_row(
+            "SELECT words_text FROM hotword_sets WHERE id=?1",
+            params![id],
+            |r| r.get(0),
+        )
+        .map_err(|e| anyhow::anyhow!("热词版本不存在: {}", e))?;
+    let filtered: Vec<&str> = cur.split_whitespace().filter(|w| *w != word).collect();
+    let normalized = crate::hotword_text::normalize_words_text(&filtered.join(" "));
+    conn.execute(
+        "UPDATE hotword_sets SET words_text=?1, updated_at=datetime('now') WHERE id=?2",
+        params![normalized, id],
+    )?;
+    Ok(())
+}
+
 // ── Hotword（ASR 热词）──────────────────────────────────────────
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -1809,6 +2005,52 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM hotwords", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 0, "hotwords 表应存在且初始为空");
+    }
+
+    /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
+    /// 单词追加（去重 + normalize 拼音首字母排序）→ 单词移除 → 删版本。
+    #[test]
+    fn hotword_set_crud_roundtrip() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+
+        // create
+        let id = insert_hotword_set_at(&conn, "项目A").unwrap();
+        assert!(id > 0);
+
+        // list
+        let sets = list_hotword_sets_at(&conn).unwrap();
+        assert_eq!(sets.len(), 1);
+        assert_eq!(sets[0].name, "项目A");
+        assert!(sets[0].enabled);
+        assert_eq!(sets[0].words_text, "");
+
+        // 重名 → 唯一冲突
+        assert!(insert_hotword_set_at(&conn, "项目A").is_err());
+
+        // rename
+        rename_hotword_set_at(&conn, id, "项目A2").unwrap();
+        assert_eq!(list_hotword_sets_at(&conn).unwrap()[0].name, "项目A2");
+
+        // toggle enabled
+        toggle_hotword_set_at(&conn, id, false).unwrap();
+        assert!(!list_hotword_sets_at(&conn).unwrap()[0].enabled);
+        toggle_hotword_set_at(&conn, id, true).unwrap();
+
+        // add_word（normalize：序 + 去重）
+        add_word_to_set_at(&conn, id, "吴大锐").unwrap();
+        add_word_to_set_at(&conn, id, "八爪鱼").unwrap();
+        add_word_to_set_at(&conn, id, "八爪鱼").unwrap(); // 重复 → 去重
+        let s = list_hotword_sets_at(&conn).unwrap()[0].clone();
+        assert_eq!(s.words_text, "八爪鱼 吴大锐"); // BZY < WDR
+
+        // remove_word
+        remove_word_from_set_at(&conn, id, "八爪鱼").unwrap();
+        assert_eq!(list_hotword_sets_at(&conn).unwrap()[0].words_text, "吴大锐");
+
+        // delete set
+        delete_hotword_set_at(&conn, id).unwrap();
+        assert!(list_hotword_sets_at(&conn).unwrap().is_empty());
     }
 
     #[test]
