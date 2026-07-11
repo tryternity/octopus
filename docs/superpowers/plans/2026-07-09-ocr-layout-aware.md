@@ -885,6 +885,16 @@ Expected: 无输出（确认移除的方法无残留调用）
 Run: `rg "\.recognize" crates/ --type rust | grep -v test | grep -v "with_blocks"`
 Expected: `recognize` 返回值直接进 DB content / CompactEditor / AI 输入，Markdown 语义对消费端透明
 
-- [ ] **Step 5: 回写 plan 偏差**
+- [x] **Step 5: 回写 plan 偏差**
 
-实现完成后回看本 plan，把实际偏差、调整后的常量值、新增决策回写到本文件。
+### 实际实现偏差（2026-07-09 回写）
+
+1. **Task 2 — `strip_ordered_marker` 借用修复**：plan 原稿用 `chars[1..].iter().collect()` 创建局部 `String` 再返回引用，borrow checker 拒绝。实际改为直接对原始 `trimmed` 切片（circled-number 分支用 `chars[0].len_utf8()` 偏移，parenthesized 分支用 `open_len` 偏移 + `after_open.find(close)`）。功能不变，所有权正确。
+
+2. **Task 3 — 两个测试用例块数不足**：`end_to_end_h2_title_plus_body` 和 `end_to_end_list_plus_paragraph` 原稿各只有 2 个 block，低于 `MIN_BLOCKS_FOR_LAYOUT=3` 阈值，走了 fallback `\n\n` join 路径而非布局分析。实际各自补了第 3 个 block（body 行），使其进入布局分析路径。
+
+3. **Task 6 — desktop 构建需 dummy `dist/`**：worktree 无前端构建产物，Tauri build script 拒绝编译。用 `mkdir -p crates/desktop/dist` 创建空目录后 `cargo check` 通过。Rust 代码无问题，仅为前端 dist 缺失。
+
+4. **常量值未调整**：`TITLE_H1_RATIO=1.6`、`TITLE_H2_RATIO=1.3`、`PARAGRAPH_GAP_RATIO=0.8`、`MIN_BLOCKS_FOR_LAYOUT=3` 均维持起始值，合成测试覆盖通过。真实截图调参留后续实测。
+
+5. **SDD subagent dispatch 受限**：agent tool 仅有 read-only 工具（glob/grep/ls/view），无法执行 implementer subagent。实际由 controller 直接实现全部 6 个 task（TDD 流程不变：每个 task 先写代码+测试，跑通后提交）。
