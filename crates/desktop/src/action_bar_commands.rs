@@ -513,8 +513,10 @@ fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option
         ));
         if let Err(e) = std::fs::write(&tmp_path, text) {
             log::warn!("[script] 临时文件写入失败，回退截断: {}", e);
-            let truncated: String = text.chars().take(TEXT_LIMIT).collect();
-            cmd.env("OCTOPUS_TEXT", &truncated);
+            // 按字节截断（非字符），确保 UTF-8 边界安全 + 严格 < TEXT_LIMIT 字节
+            let mut end = TEXT_LIMIT;
+            while !text.is_char_boundary(end) { end -= 1; }
+            cmd.env("OCTOPUS_TEXT", &text[..end]);
         } else {
             let marker = format!(
                 "_____ULTRA_LONG_TEXT_____:{}",
@@ -531,7 +533,11 @@ fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option
     }
     cmd.stdout(stdout_cfg);
     cmd.stderr(stderr_cfg);
-    let child = cmd.spawn().map_err(|e| format!("脚本执行失败: {}", e))?;
+    let child = cmd.spawn().map_err(|e| {
+        // spawn 失败——清理临时文件防泄露
+        if let Some(ref p) = text_tmp { let _ = std::fs::remove_file(p); }
+        format!("脚本执行失败: {}", e)
+    })?;
     Ok((child, first_line.to_string(), text_tmp))
 }
 
