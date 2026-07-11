@@ -83,7 +83,7 @@ v1 热词系统是一张**扁平单表** `hotwords`（`word UNIQUE / status(acti
 | 组件 | 职责 | 位置 / 动作 |
 |---|---|---|
 | **HotwordSetStore** | `hotword_sets` CRUD（新建/重命名/删除/enabled toggle/改 words_text）+ `hotword_hits` 增改查 | `infra/src/db.rs` 新增两表 + CRUD，schema v22→v23 |
-| **normalize_words_text** | 写入规范化：切词（任意空白）→ 去重 → 按拼音首字母排序 → 空格拼接 | `asr-local/src/hotword.rs` 新增（复用 `pinyin_initials`） |
+| **normalize_words_text** | 写入规范化：切词（任意空白）→ 去重 → 按拼音首字母排序 → 空格拼接 | `infra/src/hotword_text.rs`（2026-07-11 从 asr-local/hotword.rs 搬入，供 db.rs 迁移复用、消除循环依赖） |
 | **HotwordIndex** | 不变（v1 已实现），`from_words` 接收 enabled 并集切词结果 | `asr-local/src/hotword.rs`，零改 |
 | **BoundedHotwordCorrector** | 命中替换时新增「写 `hotword_hits +1`」；其余沿用 v1 | `asr-local/src/corrector.rs`，`correct()` 命中分支加一行 |
 | **CandidateMiner** | 改造为「返回候选词列表」，不再直接写 pending | `asr-local/src/miner.rs`，`mine_pending_candidates` → `collect_candidate_words`（返 `Vec<String>`） |
@@ -153,7 +153,7 @@ v1 热词系统是一张**扁平单表** `hotwords`（`word UNIQUE / status(acti
 ## 与现有代码的关系
 
 - **`infra/src/db.rs`**：新增 `hotword_sets` / `hotword_hits` 表 + CRUD；v1 的 `list_hotwords` / `insert_hotword` / `confirm_pending_hotword` / `delete_hotword` / `bump_hotword_hit` / `list_active_hotword_words` / `list_recent_text` 中——`list_active_hotword_words` 改为取 enabled 并集、`list_recent_text` 保留（挖掘用）、其余随 pending 流一并移除。
-- **`asr-local/src/hotword.rs`**：新增 `normalize_words_text(words: &str) -> String`（切词→去重→`pinyin_initials` 排序→拼接）+ `pinyin_initials`（v1 已有）；`HotwordIndex` 零改。
+- **`infra/src/hotword_text.rs`**（2026-07-11 新增，从 asr-local/hotword.rs 搬入消除循环依赖）：`normalize_words_text(words: &str) -> String`（切词→去重→`pinyin_initials` 排序→拼接）+ `pinyin_initials`（v1 已有）。`asr-local/src/hotword.rs` 改 `pub use` re-export，`HotwordIndex` 零改。
 - **`asr-local/src/corrector.rs`**：`correct()` 命中分支加「`hotword_hits +1`」；`reload_hotwords(Vec<String>)` 签名不变。`reload_fuzzy_dialect` 不变。
 - **`asr-local/src/miner.rs`**：`mine_pending_candidates` → `collect_candidate_words`，返回 `Vec<String>`，不再写 DB。
 - **`desktop/src/hotword_commands.rs`**：重写命令（`list_hotword_sets` / `create_hotword_set` / `rename_hotword_set` / `delete_hotword_set` / `toggle_hotword_set` / `add_word_to_set` / `remove_word_from_set` / `add_words_to_set`（批量） / `import_hotwords` / `export_hotwords` / `list_hotword_candidates`（挖掘候选不写库） / `list_hotword_hits`）。挖掘 = `list_hotword_candidates`（候选）+ `add_words_to_set`（确认后批量落库）两命令组合，无直接落库的 mine 命令。

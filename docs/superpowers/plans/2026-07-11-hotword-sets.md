@@ -66,7 +66,7 @@
 
 > `pinyin_initials` 从 `asr-local/hotword.rs` 搬到 infra（依赖方向：asr-local→infra），`normalize_words_text` 新增。两者纯函数、无 DB、无全局，单测干净。
 
-- [ ] **Step 1: infra/Cargo.toml 加 pinyin 依赖**
+- [x] **Step 1: infra/Cargo.toml 加 pinyin 依赖**
 
 读 `crates/infra/Cargo.toml`，在 `[dependencies]` 段加（版本对齐 asr-local 用的 pinyin 版本，先查）：
 
@@ -76,7 +76,7 @@ grep -n '^pinyin' /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotwo
 
 把查到的行（如 `pinyin = "0.x"`）原样加进 `crates/infra/Cargo.toml` 的 `[dependencies]`。
 
-- [ ] **Step 2: 写失败测试——normalize_words_text + pinyin_initials**
+- [x] **Step 2: 写失败测试——normalize_words_text + pinyin_initials**
 
 创建 `crates/infra/src/hotword_text.rs`：
 
@@ -152,14 +152,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 运行验证失败**
+- [x] **Step 3: 运行验证失败**
 
 ```bash
 cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/infra/Cargo.toml -p octopus-infra hotword_text::
 ```
 Expected: FAIL（模块未导出）。
 
-- [ ] **Step 4: lib.rs 导出模块**
+- [x] **Step 4: lib.rs 导出模块**
 
 在 `crates/infra/src/lib.rs` 的 `pub mod` 区加：
 
@@ -167,14 +167,14 @@ Expected: FAIL（模块未导出）。
 pub mod hotword_text;
 ```
 
-- [ ] **Step 5: 运行测试验证通过**
+- [x] **Step 5: 运行测试验证通过**
 
 ```bash
 cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/infra/Cargo.toml -p octopus-infra hotword_text::
 ```
 Expected: PASS（6 个测试）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management add crates/infra/Cargo.toml crates/infra/src/hotword_text.rs crates/infra/src/lib.rs
@@ -189,7 +189,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
 - Modify: `crates/infra/src/db.sql`（末尾追加两表）
 - Modify: `crates/infra/src/db.rs`（init_schema v22→v23 + schema 测试更新）
 
-- [ ] **Step 1: db.sql 追加 hotword_sets + hotword_hits DDL**
+- [x] **Step 1: db.sql 追加 hotword_sets + hotword_hits DDL**
 
 在 `crates/infra/src/db.sql` 末尾（现有 `hotwords` 表 DDL 之后）追加：
 
@@ -212,7 +212,7 @@ CREATE TABLE IF NOT EXISTS hotword_hits (
 );
 ```
 
-- [ ] **Step 2: init_schema 升 v22→v23 + 数据迁移**
+- [x] **Step 2: init_schema 升 v22→v23 + 数据迁移**
 
 在 `crates/infra/src/db.rs` 的 `init_schema` 函数里，定位 v21→v22 env seed 块（约 209-214 行，`conn.execute("PRAGMA user_version = 22", [])?;` 与 `return Ok(());` 之间）。把顶部 `if v >= 22 { return Ok(()); }`（约 177 行）改为 `>= 23`，并在 v22 env seed 之后、`return Ok(());`（约 215 行）之前插入 v22→v23 块：
 
@@ -249,7 +249,7 @@ CREATE TABLE IF NOT EXISTS hotword_hits (
 
 > 同步把函数末尾「全新库」分支的 `conn.execute("PRAGMA user_version = 22", [])?;`（约 220 行）与 `log::info!("DB initialized (v22)...)`（约 221 行）改为 `= 23` / `v23`。schema 注释块（约 167-171 行）补一行：`/// v23：新增 hotword_sets + hotword_hits 表；现有 active 热词迁「通用」版本。`
 
-- [ ] **Step 3: 更新 schema 版本断言测试**
+- [x] **Step 3: 更新 schema 版本断言测试**
 
 在 `crates/infra/src/db.rs` 末尾 `#[cfg(test)]` 内，把现有断言 `user_version` 为 22 的测试改为 23（grep 定位）：
 
@@ -259,7 +259,7 @@ grep -n 'user_version.*22\|= 22\|v22\|builds_v22' /Users/wudarui/workspace/agent
 
 把找到的断言 `22` 全改为 `23`，函数名/日志里的 `v22` 改 `v23`。
 
-- [ ] **Step 4: 加迁移测试——现有 active 词进「通用」版本**
+- [x] **Step 4: 加迁移测试——现有 active 词进「通用」版本**
 
 在 db.rs `#[cfg(test)]` 内追加：
 
@@ -302,14 +302,14 @@ grep -n 'user_version.*22\|= 22\|v22\|builds_v22' /Users/wudarui/workspace/agent
 
 > 注意：`init_schema(&mut conn)` 签名以现有为准（若实际是 `&Connection`，按真实签名调；先 grep `fn init_schema` 对齐）。
 
-- [ ] **Step 5: 运行测试验证通过**
+- [x] **Step 5: 运行测试验证通过**
 
 ```bash
 cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/infra/Cargo.toml -p octopus-infra -- db::tests
 ```
 Expected: PASS（含 v23 断言 + 迁移测试）。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -325,7 +325,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
 
 > 旧 hotword 函数（`Hotword`/`list_hotwords`/`insert_hotword` 等）本 Task **暂不动**（miner/commands 仍引用，Task 5/6/7 处理后再清理）。
 
-- [ ] **Step 1: 写失败测试——HotwordSet CRUD round-trip**
+- [x] **Step 1: 写失败测试——HotwordSet CRUD round-trip**
 
 在 db.rs `#[cfg(test)]` 内追加：
 
@@ -375,14 +375,14 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
     }
 ```
 
-- [ ] **Step 2: 运行验证失败**
+- [x] **Step 2: 运行验证失败**
 
 ```bash
 cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/infra/Cargo.toml -p octopus-infra hotword_set_crud_roundtrip
 ```
 Expected: FAIL（函数未定义）。
 
-- [ ] **Step 3: 实现 HotwordSet struct + `_at` CRUD**
+- [x] **Step 3: 实现 HotwordSet struct + `_at` CRUD**
 
 在 `crates/infra/src/db.rs`（现有 `// ── Hotword（ASR 热词）` 段之前）插入：
 
@@ -561,14 +561,14 @@ fn remove_word_from_set_at(conn: &Connection, id: i64, word: &str) -> Result<()>
 }
 ```
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 ```bash
 cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/infra/Cargo.toml -p octopus-infra hotword_set_crud_roundtrip
 ```
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management add crates/infra/src/db.rs
@@ -584,7 +584,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
 
 > corrector/pipeline 零改：`list_active_hotword_words` 改读 enabled `hotword_sets` 并集（main.rs setup + reload_after_write 调用点签名不变，仍返回 `Vec<String>`）；`bump_hotword_hit_by_word` 改写 `hotword_hits` upsert（pipeline.rs:63 调用点不变）；新增 `list_hotword_hits` 供前端卡片命中展示。
 
-- [ ] **Step 1: 写失败测试——list_active 取 enabled 并集 + hits**
+- [x] **Step 1: 写失败测试——list_active 取 enabled 并集 + hits**
 
 在 db.rs `#[cfg(test)]` 内追加：
 
@@ -626,14 +626,14 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
     }
 ```
 
-- [ ] **Step 2: 运行验证失败**
+- [x] **Step 2: 运行验证失败**
 
 ```bash
 cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/infra/Cargo.toml -p octopus-infra list_active_words_is_enabled_union
 ```
 Expected: FAIL（`list_active_hotword_words_at`/`bump_hotword_hit_by_word_at`/`list_hotword_hits_at` 未定义或旧行为）。
 
-- [ ] **Step 3: 改造 list_active_hotword_words 为 enabled 并集**
+- [x] **Step 3: 改造 list_active_hotword_words 为 enabled 并集**
 
 把 `crates/infra/src/db.rs` 现有 `list_active_hotword_words`（约 1220 行）整体替换为：
 
@@ -656,7 +656,7 @@ fn list_active_hotword_words_at(conn: &Connection) -> Result<Vec<String>> {
 }
 ```
 
-- [ ] **Step 4: 改写 bump_hotword_hit_by_word 为 hotword_hits upsert + 加 list_hotword_hits**
+- [x] **Step 4: 改写 bump_hotword_hit_by_word 为 hotword_hits upsert + 加 list_hotword_hits**
 
 把现有 `bump_hotword_hit_by_word`（约 1303 行）替换为：
 
@@ -693,21 +693,21 @@ fn list_hotword_hits_at(conn: &Connection) -> Result<std::collections::HashMap<S
 }
 ```
 
-- [ ] **Step 5: 运行测试验证通过**
+- [x] **Step 5: 运行测试验证通过**
 
 ```bash
 cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/infra/Cargo.toml -p octopus-infra -- db::tests
 ```
 Expected: PASS（含并集 + upsert + hits）。
 
-- [ ] **Step 6: 跑 asr-local 全量确认 reload 路径无回归**
+- [x] **Step 6: 跑 asr-local 全量确认 reload 路径无回归**
 
 ```bash
 cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/asr-local/Cargo.toml -p octopus-asr-local
 ```
 Expected: PASS（corrector/pipeline 不受影响，list_active 返回类型不变）。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management add crates/infra/src/db.rs
@@ -723,7 +723,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
 
 > 旧 `mine_pending_candidates` 直接写 DB pending（调 `insert_hotword`）。新模型废弃 pending，改为返回候选词 `Vec<String>`，由命令层追加到用户选定版本。
 
-- [ ] **Step 1: 改测试——collect_candidate_words 返回列表**
+- [x] **Step 1: 改测试——collect_candidate_words 返回列表**
 
 把 `crates/asr-local/src/miner.rs` 末尾 `#[cfg(test)]` 内追加（保留现有 `is_candidate` 测试）：
 
@@ -736,14 +736,14 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
     }
 ```
 
-- [ ] **Step 2: 运行验证失败**
+- [x] **Step 2: 运行验证失败**
 
 ```bash
 cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/asr-local/Cargo.toml -p octopus-asr-local miner::tests::collect_returns_ranked_candidates
 ```
 Expected: FAIL（`collect_candidate_words` 未定义）。
 
-- [ ] **Step 3: 实现 collect_candidate_words（替换 mine_pending_candidates）**
+- [x] **Step 3: 实现 collect_candidate_words（替换 mine_pending_candidates）**
 
 把 `crates/asr-local/src/miner.rs` 的 `mine_pending_candidates` 函数整体替换为：
 
@@ -779,14 +779,14 @@ pub fn collect_candidate_words() -> anyhow::Result<Vec<String>> {
 
 > 顶部模块文档注释（第 1 行 `//! 候选挖掘...→ DB pending`）改为 `//! 候选挖掘：扫历史 ASR 文本，jieba 分词 + 词频过滤，低频高频专名 → 返回候选词列表（命令层追加到版本）。`
 
-- [ ] **Step 4: 运行测试验证通过**
+- [x] **Step 4: 运行测试验证通过**
 
 ```bash
 cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/asr-local/Cargo.toml -p octopus-asr-local miner::
 ```
 Expected: PASS。
 
-- [ ] **Step 5: 跑 asr-local 全量确认无残留引用 mine_pending_candidates**
+- [x] **Step 5: 跑 asr-local 全量确认无残留引用 mine_pending_candidates**
 
 ```bash
 grep -rn 'mine_pending_candidates' /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates --include='*.rs'
@@ -794,7 +794,7 @@ cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktr
 ```
 Expected: grep 无结果（已全替换）；全量 PASS。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management add crates/asr-local/src/miner.rs
@@ -809,7 +809,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
 - Modify: `crates/desktop/src/hotword_commands.rs`（整体重写）
 - Modify: `crates/desktop/src/main.rs`（generate_handler 更新）
 
-- [ ] **Step 1: 整体重写 hotword_commands.rs**
+- [x] **Step 1: 整体重写 hotword_commands.rs**
 
 把 `crates/desktop/src/hotword_commands.rs` 整体替换为：
 
@@ -975,7 +975,7 @@ pub async fn export_hotwords(app_handle: tauri::AppHandle, set_id: i64) -> Resul
 }
 ```
 
-- [ ] **Step 2: main.rs generate_handler 更新注册**
+- [x] **Step 2: main.rs generate_handler 更新注册**
 
 在 `crates/desktop/src/main.rs` 的 `tauri::generate_handler![...]`（约 194 行起）里，把现有 5 个旧命令注册（约 236-240 行）：
 
@@ -1003,7 +1003,7 @@ pub async fn export_hotwords(app_handle: tauri::AppHandle, set_id: i64) -> Resul
             hotword_commands::export_hotwords,
 ```
 
-- [ ] **Step 3: 编译验证**
+- [x] **Step 3: 编译验证**
 
 ```bash
 cargo check --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/desktop/Cargo.toml -p octopus-desktop
@@ -1012,7 +1012,7 @@ Expected: 编译通过（main.rs setup 的 `list_active_hotword_words` 调用点
 
 > 若报 `Hotword`/`pinyin_initials` 相关错误：`hotword_commands.rs` 已不再用 `Hotword` struct（改用 `HotwordSet`）；asr-local 的 `pinyin_initials` re-export 在 Task 7 处理（此处 asr-local/hotword.rs 本地实现仍在，不报错）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management add crates/desktop/src/hotword_commands.rs crates/desktop/src/main.rs
@@ -1029,7 +1029,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
 
 > 此时 miner（Task 5）、commands（Task 6）均不再引用旧 hotword 函数，可安全清理。`pinyin_initials` 改 re-export infra 的（去重，单一真相）。
 
-- [ ] **Step 1: asr-local/hotword.rs pinyin_initials 改 re-export**
+- [x] **Step 1: asr-local/hotword.rs pinyin_initials 改 re-export**
 
 把 `crates/asr-local/src/hotword.rs` 里的 `pinyin_initials` 实现（约 113-120 行）：
 
@@ -1054,7 +1054,7 @@ pub use octopus_infra::hotword_text::pinyin_initials;
 
 > 同步删除 asr-local/hotword.rs `#[cfg(test)]` 里的 `pinyin_initials_basic` 测试（已搬 infra，见 Task 1）。
 
-- [ ] **Step 2: infra/db.rs 删除旧 hotword 函数**
+- [x] **Step 2: infra/db.rs 删除旧 hotword 函数**
 
 把 `crates/infra/src/db.rs` 的 `// ── Hotword（ASR 热词）` 整段（`Hotword` struct、`HOTWORD_SELECT_COLS`、`row_to_hotword`、`list_hotwords`/`_at`、`insert_hotword`/`_at`、`confirm_pending_hotword`/`_at`、`delete_hotword`/`_at`、`bump_hotword_hit`（按 id））删除。**保留**：`list_recent_text`（挖掘用）、新 `list_active_hotword_words`/`bump_hotword_hit_by_word`/`list_hotword_hits`（Task 4 已改造）。
 
@@ -1064,14 +1064,14 @@ pub use octopus_infra::hotword_text::pinyin_initials;
 > ```
 > 删完同步删 `#[cfg(test)]` 里引用旧函数的测试（如 `hotword_crud_roundtrip`、`hotwords_table_exists_after_init`）。
 
-- [ ] **Step 3: 全仓 grep 确认无残留引用旧函数**
+- [x] **Step 3: 全仓 grep 确认无残留引用旧函数**
 
 ```bash
 grep -rn 'list_hotwords\b\|insert_hotword\b\|confirm_pending_hotword\|delete_hotword\b\|bump_hotword_hit\b\|Hotword\b' /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates --include='*.rs' | grep -v 'HotwordSet\|hotword_sets\|hotword_hits\|hotword_text\|hotword_commands\|HotwordHit'
 ```
 Expected: 无结果（旧符号全清）。
 
-- [ ] **Step 4: 编译 + 全量测试**
+- [x] **Step 4: 编译 + 全量测试**
 
 ```bash
 cargo build --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/Cargo.toml -p octopus-infra -p octopus-asr-local -p octopus-desktop
@@ -1080,7 +1080,7 @@ cargo test --manifest-path /Users/wudarui/workspace/agent/octopus/.claude/worktr
 ```
 Expected: 编译通过；测试 PASS（infra hotword_text/迁移/HotwordSet/并集/hits + asr-local hotword/corrector/miner）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management add crates/asr-local/src/hotword.rs crates/infra/src/db.rs
@@ -1095,7 +1095,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
 - Rewrite: `crates/desktop/frontend/src/pages/Settings/HotwordPanel.tsx`
 - Modify: `crates/desktop/frontend/src/pages/Settings/index.tsx`
 
-- [ ] **Step 1: 重写 HotwordPanel.tsx**
+- [x] **Step 1: 重写 HotwordPanel.tsx**
 
 把 `crates/desktop/frontend/src/pages/Settings/HotwordPanel.tsx` 整体替换为：
 
@@ -1443,7 +1443,7 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
 }
 ```
 
-- [ ] **Step 2: 检查 index.tsx 的 HotwordPanel props**
+- [x] **Step 2: 检查 index.tsx 的 HotwordPanel props**
 
 ```bash
 grep -n 'HotwordPanel\|<HotwordPanel' /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/desktop/frontend/src/pages/Settings/index.tsx
@@ -1451,14 +1451,14 @@ grep -n 'HotwordPanel\|<HotwordPanel' /Users/wudarui/workspace/agent/octopus/.cl
 
 确认传参仍为 `{ dialect, setVal, showToast }`（本次 props 未变），无需改 index.tsx。若 index.tsx 传了其他 v1 专属 prop（如 `initials`），移除。
 
-- [ ] **Step 3: 前端类型检查**
+- [x] **Step 3: 前端类型检查**
 
 ```bash
 npm --prefix /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management/crates/desktop/frontend run build
 ```
 Expected: 构建通过（TS 无类型错误）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-management add crates/desktop/frontend/src/pages/Settings/HotwordPanel.tsx crates/desktop/frontend/src/pages/Settings/index.tsx
