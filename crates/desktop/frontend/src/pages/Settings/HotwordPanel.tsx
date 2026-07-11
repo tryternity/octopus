@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react';
 import { invoke } from '@tauri-apps/api/core';
+import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { cn } from '@/lib/utils';
 import { Type, Plus, BookMarked, X, Search, Upload, Download, Trash2, Wand2, Check } from 'lucide-react';
 
@@ -70,6 +71,8 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   const [renameVal, setRenameVal] = useState('');
   const [loaded, setLoaded] = useState(false);
   const [recentlyAdded, setRecentlyAdded] = useState<Set<string>>(new Set());
+  const [creating, setCreating] = useState<'create' | 'import' | null>(null);
+  const [createVal, setCreateVal] = useState('');
 
   /** 高亮"最近一次新增"的词：直接替换（非累加）。
    *  下次新增 → 替换为新词；切菜单重进 → 组件重挂 state 自然清空。无需定时器。 */
@@ -114,16 +117,22 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   );
 
   // ── 版本操作 ──
-  const createSet = useCallback(async () => {
-    const name = prompt('版本名称', '新版本');
-    if (!name) return;
+  // 新建 / 导入新版本：inline input 输入名（WKWebView 不支持 window.prompt）。
+  const commitCreate = useCallback(async () => {
+    const name = createVal.trim();
+    const mode = creating;
+    setCreating(null);
+    setCreateVal('');
+    if (!name || !mode) return;
     try {
-      const id = await invoke<number>('create_hotword_set', { name });
+      const id = mode === 'create'
+        ? await invoke<number>('create_hotword_set', { name })
+        : await invoke<number>('import_hotwords', { mode: 'new', newName: name });
       await refresh();
       setSelectedId(id);
-      showToast('已新建版本');
-    } catch (e) { showToast('新建失败：' + e); }
-  }, [refresh, showToast]);
+      showToast(mode === 'create' ? '已新建版本' : '已导入为新版本');
+    } catch (e) { showToast(mode === 'create' ? '新建失败：' + e : '导入失败：' + e); }
+  }, [createVal, creating, refresh, showToast]);
 
   const toggleSet = useCallback(async (id: number, enabled: boolean) => {
     try { await invoke('toggle_hotword_set', { id, enabled }); await refresh(); }
@@ -140,7 +149,7 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   }, [renameVal, refresh, showToast]);
 
   const deleteSet = useCallback(async (id: number, name: string) => {
-    if (!confirm(`删除版本「${name}」？（命中统计保留）`)) return;
+    if (!(await confirmDialog(`删除版本「${name}」？（命中统计保留）`, { title: '确认删除', kind: 'warning' }))) return;
     try { await invoke('delete_hotword_set', { id }); await refresh(); }
     catch (e) { showToast('删除失败：' + e); }
   }, [refresh, showToast]);
@@ -165,20 +174,13 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   }, [selectedId, refresh, showToast]);
 
   // ── 导入 / 导出 / 挖掘 ──
-  const doImport = useCallback(async (mode: 'new' | 'append' | 'overwrite') => {
+  const doImport = useCallback(async (mode: 'append' | 'overwrite') => {
     if (selectedId === null) { showToast('请先选择版本'); return; }
     try {
-      if (mode === 'new') {
-        const name = prompt('新版本名称', '导入版本');
-        if (!name) return;
-        const id = await invoke<number>('import_hotwords', { mode, newName: name });
-        await refresh(); setSelectedId(id); showToast('已导入为新版本');
-      } else if (mode === 'overwrite' && !confirm('覆盖当前版本的全部词？')) {
-        return;
-      } else {
-        await invoke('import_hotwords', { mode, targetSetId: selectedId });
-        await refresh(); showToast(mode === 'append' ? '已追加' : '已覆盖');
-      }
+      if (mode === 'overwrite' && !(await confirmDialog('覆盖当前版本的全部词？', { title: '确认覆盖', kind: 'warning' }))) return;
+      await invoke('import_hotwords', { mode, targetSetId: selectedId });
+      await refresh();
+      showToast(mode === 'append' ? '已追加' : '已覆盖');
     } catch (e) { showToast('导入失败：' + e); }
   }, [selectedId, refresh, showToast]);
 
@@ -235,12 +237,26 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
         ) : (
           <>
             <div className="flex items-center gap-2 py-2.5">
-              <button onClick={createSet} className="flex items-center gap-1.5 rounded-md bg-voice px-3 py-1.5 text-sm font-medium text-white hover:opacity-90">
-                <Plus className="w-4 h-4" /> 新建版本
-              </button>
-              <button onClick={() => doImport('new')} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">
-                <Upload className="w-3.5 h-3.5" /> 导入新版本
-              </button>
+              {creating ? (
+                <input
+                  autoFocus
+                  value={createVal}
+                  onChange={(e) => setCreateVal(e.target.value)}
+                  onBlur={commitCreate}
+                  onKeyDown={(e) => { if (e.key === 'Enter') commitCreate(); if (e.key === 'Escape') { setCreating(null); setCreateVal(''); } }}
+                  placeholder={creating === 'create' ? '版本名称（Enter 确认 / Esc 取消）' : '导入版本名称（Enter 后再选 txt）'}
+                  className="flex-1 min-w-0 bg-background border border-voice/50 rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice"
+                />
+              ) : (
+                <>
+                  <button onClick={() => { setCreating('create'); setCreateVal(''); }} className="flex items-center gap-1.5 rounded-md bg-voice px-3 py-1.5 text-sm font-medium text-white hover:opacity-90">
+                    <Plus className="w-4 h-4" /> 新建版本
+                  </button>
+                  <button onClick={() => { setCreating('import'); setCreateVal(''); }} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">
+                    <Upload className="w-3.5 h-3.5" /> 导入新版本
+                  </button>
+                </>
+              )}
             </div>
             {sets.map((s) => (
               <Row key={s.id}>
