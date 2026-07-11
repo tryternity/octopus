@@ -301,8 +301,10 @@ impl Transcript {
     /// 是否处于中间插入态（caret_gap < 段数）。pipeline Emit insertion 标志用。
     pub fn is_inserting(&self) -> bool { self.caret_gap < self.segments.len() }
 
-    /// 编辑提交：整篇压成一条 Edited；raw/polished 清零。空串→清空。
-    pub fn commit_edit(&mut self, flat: &str) {
+    /// 编辑提交：按 dirty ranges 劈段，dirty 区域标 Edited，区间外保留原 kind。
+    /// dirty_ranges 为扁平 char offset 区间（左闭右开），已排序无重叠。
+    /// 空 dirty_ranges → 整篇 Edited 兜底。
+    pub fn commit_edit(&mut self, flat: &str, dirty_ranges: &[(usize, usize)]) {
         if self.pending_delete.is_some() {
             log::debug!("[select] cleared commit_edit t={} range={:?}",
                 self.id, self.pending_delete);
@@ -310,15 +312,20 @@ impl Transcript {
         self.pending_delete = None;
         self.selection_insert_offset = None;
         if flat.is_empty() { self.segments.clear(); self.caret_gap = 0; return; }
-        self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() }];
-        self.caret_gap = 1;
+        if dirty_ranges.is_empty() {
+            self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() }];
+            self.caret_gap = 1;
+            return;
+        }
+        let old_segments = self.segments.clone();
+        self.segments = rebuild_segments(&old_segments, flat, dirty_ranges);
+        self.caret_gap = self.segments.len();
     }
 
     /// 是否含 Raw 段（mode=2 中间润色触发判定，替代旧 has_increase）。
     pub fn has_raw(&self) -> bool { self.segments.iter().any(|s| s.kind == SegmentKind::Raw) }
 
-    /// 是否有待删选区（set_selection 记录、待首个 delta 消费）。
-    /// pause-polish 据此跳过：用户选中尚未说话，自动润色不应提前删（守「说话才删」）。
+    /// 是否有待删选区（set_selection 记录、待首个 delta 消费）。    /// pause-polish 据此跳过：用户选中尚未说话，自动润色不应提前删（守「说话才删」）。
     pub fn has_pending_delete(&self) -> bool { self.pending_delete.is_some() }
 
     /// 是否含 Edited 段（替代旧 has_edit，PolishDone 落库分支用）。
@@ -448,6 +455,63 @@ fn common_prefix_len(a: &str, b: &str) -> usize {
     a.chars().zip(b.chars()).take_while(|(x, y)| x == y).count()
 }
 
+/// 查 char offset 在 segments 中对应的 kind。超出范围 → Raw 兜底。
+fn segment_kind_at_offset(segments: &[Segment], offset: usize) -> SegmentKind {
+    let mut acc = 0usize;
+    for seg in segments {
+        let len = seg.text.chars().count();
+        if offset < acc + len {
+            return seg.kind;
+        }
+        acc += len;
+    }
+    SegmentKind::Raw
+}
+
+/// 同 kind 相邻段合并（减少碎片）。
+fn push_or_merge(result: &mut Vec<Segment>, kind: SegmentKind, text: &str) {
+    if text.is_empty() { return; }
+    if let Some(last) = result.last_mut() {
+        if last.kind == kind {
+            last.text.push_str(text);
+            return;
+        }
+    }
+    result.push(Segment { kind, text: text.to_string() });
+}
+
+/// 按 dirty ranges 重建段列表。
+/// dirty 区间内标 Edited；区间外从 old_segments 按 char offset 对齐保留原 kind。
+fn rebuild_segments(
+    old_segments: &[Segment],
+    new_flat: &str,
+    dirty: &[(usize, usize)],
+) -> Vec<Segment> {
+    let new_chars: Vec<char> = new_flat.chars().collect();
+    let total = new_chars.len();
+    let mut result = Vec::new();
+    let mut pos = 0usize;
+
+    for &(d_start, d_end) in dirty {
+        if d_start > pos {
+            let clean: String = new_chars[pos..d_start].iter().collect();
+            let kind = segment_kind_at_offset(old_segments, pos);
+            push_or_merge(&mut result, kind, &clean);
+        }
+        if d_end > d_start {
+            let dirty_text: String = new_chars[d_start..d_end].iter().collect();
+            push_or_merge(&mut result, SegmentKind::Edited, &dirty_text);
+        }
+        pos = d_end;
+    }
+    if pos < total {
+        let rest: String = new_chars[pos..].iter().collect();
+        let kind = segment_kind_at_offset(old_segments, pos);
+        push_or_merge(&mut result, kind, &rest);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -540,7 +604,7 @@ mod tests {
     #[test]
     fn set_caret_splits_edited_segment() {
         let mut t = Transcript::new(6, PolishMode::Intermediate);
-        t.commit_edit("abcdef"); // 单 Edited 段，caret_gap=1
+        t.commit_edit("abcdef", &[]); // 单 Edited 段，caret_gap=1
         t.set_caret(3); // 劈 Edited → [Edited(abc)][Edited(def)]，caret_gap=1
         assert_eq!(t.segments.len(), 2);
         assert_eq!(t.segments[0].kind, SegmentKind::Edited);
@@ -568,7 +632,7 @@ mod tests {
     #[test]
     fn push_delta_creates_new_raw_when_prev_not_raw() {
         let mut t = Transcript::new(9, PolishMode::Intermediate);
-        t.commit_edit("edited"); // [Edited], caret_gap=1
+        t.commit_edit("edited", &[]); // [Edited], caret_gap=1
         t.set_caret(0); // caret_gap=0（Edited 段之前）
         t.apply_engine_full("新语音");
         // caret_gap=0，前邻无 → 新建 Raw 段插入到 0，caret_gap=1
@@ -582,7 +646,7 @@ mod tests {
     fn commit_edit_flattens_to_single_edited_clears_others() {
         let mut t = Transcript::new(10, PolishMode::Intermediate);
         t.apply_engine_full("raw1");
-        t.commit_edit("手改");
+        t.commit_edit("手改", &[]);
         assert_eq!(t.segments, vec![edt("手改")]);
         assert_eq!(t.caret_gap, 1);
     }
@@ -591,7 +655,7 @@ mod tests {
     fn commit_edit_empty_clears_all() {
         let mut t = Transcript::new(11, PolishMode::Intermediate);
         t.apply_engine_full("raw");
-        t.commit_edit("");
+        t.commit_edit("", &[]);
         assert!(t.segments.is_empty());
         assert_eq!(t.caret_gap, 0);
     }
@@ -612,7 +676,7 @@ mod tests {
     #[test]
     fn polish_apply_preserves_edited_and_polishes_gap() {
         let mut t = Transcript::new(13, PolishMode::Intermediate);
-        t.commit_edit("用户编辑");
+        t.commit_edit("用户编辑", &[]);
         t.set_caret(4); // 中间
         t.apply_engine_full("raw尾"); // [Edited(用户编)][Raw 辑raw尾] → 实际 push 到 gap
         // 构造明确快照：手动设 segments
@@ -686,7 +750,7 @@ mod tests {
     fn invariant_only_edited_after_commit() {
         let mut t = Transcript::new(19, PolishMode::Intermediate);
         t.segments = vec![raw("a"), pol("b")];
-        t.commit_edit("flat");
+        t.commit_edit("flat", &[]);
         assert!(t.segments.iter().all(|s| s.kind == SegmentKind::Edited));
     }
 
@@ -970,5 +1034,96 @@ mod user_scenario_tests {
         // segments 不变（进了 pending_delta，待 polish_apply）；diverted 已清。
         assert_eq!(t.finish_text(), before, "polish_pending 时不应直接改 segments");
         assert!(t.diverted_pending.is_empty());
+    }
+
+    // ── commit_edit with dirty ranges ──
+
+    #[test]
+    fn commit_edit_with_dirty_ranges_marks_edited() {
+        let mut t = Transcript::new(1, PolishMode::Disabled);
+        t.append_segment("你好世界");
+        // 用户在 offset 2 插入"朋友"（dirty [2,4)），offset 5-7 改为"再见"（dirty [5,7)）
+        t.commit_edit("你好朋友世再见", &[(2, 4), (5, 7)]);
+        let segs = &t.segments;
+        // Raw("你好") + Edited("朋友") + Raw("世") + Edited("再见")
+        assert_eq!(segs[0].kind, SegmentKind::Raw);
+        assert_eq!(segs[0].text, "你好");
+        assert_eq!(segs[1].kind, SegmentKind::Edited);
+        assert_eq!(segs[1].text, "朋友");
+        assert_eq!(segs[2].kind, SegmentKind::Raw);
+        assert_eq!(segs[2].text, "世");
+        assert_eq!(segs[3].kind, SegmentKind::Edited);
+        assert_eq!(segs[3].text, "再见");
+    }
+
+    #[test]
+    fn commit_edit_empty_dirty_ranges_fallback_all_edited() {
+        let mut t = Transcript::new(1, PolishMode::Disabled);
+        t.append_segment("你好");
+        t.commit_edit("你好修改", &[]);
+        assert_eq!(t.segments.len(), 1);
+        assert_eq!(t.segments[0].kind, SegmentKind::Edited);
+    }
+
+    #[test]
+    fn commit_edit_empty_text_clears_segments() {
+        let mut t = Transcript::new(1, PolishMode::Disabled);
+        t.append_segment("你好");
+        t.commit_edit("", &[(0, 0)]);
+        assert!(t.segments.is_empty());
+    }
+
+    #[test]
+    fn rebuild_segments_preserves_clean_kind() {
+        let old = vec![
+            Segment { kind: SegmentKind::Raw, text: "AB".into() },
+            Segment { kind: SegmentKind::Polished, text: "CD".into() },
+        ];
+        let result = rebuild_segments(&old, "ABCD", &[(2, 4)]);
+        assert_eq!(result.len(), 2);
+        assert_eq!(result[0].kind, SegmentKind::Raw);
+        assert_eq!(result[0].text, "AB");
+        assert_eq!(result[1].kind, SegmentKind::Edited);
+        assert_eq!(result[1].text, "CD");
+    }
+
+    #[test]
+    fn rebuild_segments_multiple_dirty_ranges() {
+        let old = vec![
+            Segment { kind: SegmentKind::Raw, text: "ABCDEF".into() },
+        ];
+        let result = rebuild_segments(&old, "ABCDEF", &[(1, 2), (4, 5)]);
+        assert_eq!(result.len(), 5);
+        assert_eq!(result[0], Segment { kind: SegmentKind::Raw, text: "A".into() });
+        assert_eq!(result[1], Segment { kind: SegmentKind::Edited, text: "B".into() });
+        assert_eq!(result[2], Segment { kind: SegmentKind::Raw, text: "CD".into() });
+        assert_eq!(result[3], Segment { kind: SegmentKind::Edited, text: "E".into() });
+        assert_eq!(result[4], Segment { kind: SegmentKind::Raw, text: "F".into() });
+    }
+
+    #[test]
+    fn segment_kind_at_offset_correct() {
+        let segs = vec![
+            Segment { kind: SegmentKind::Raw, text: "AB".into() },
+            Segment { kind: SegmentKind::Polished, text: "CD".into() },
+            Segment { kind: SegmentKind::Edited, text: "EF".into() },
+        ];
+        assert_eq!(segment_kind_at_offset(&segs, 0), SegmentKind::Raw);
+        assert_eq!(segment_kind_at_offset(&segs, 1), SegmentKind::Raw);
+        assert_eq!(segment_kind_at_offset(&segs, 2), SegmentKind::Polished);
+        assert_eq!(segment_kind_at_offset(&segs, 3), SegmentKind::Polished);
+        assert_eq!(segment_kind_at_offset(&segs, 4), SegmentKind::Edited);
+        assert_eq!(segment_kind_at_offset(&segs, 5), SegmentKind::Edited);
+        assert_eq!(segment_kind_at_offset(&segs, 99), SegmentKind::Raw);
+    }
+
+    #[test]
+    fn push_or_merge_same_kind() {
+        let mut result = vec![Segment { kind: SegmentKind::Raw, text: "AB".into() }];
+        push_or_merge(&mut result, SegmentKind::Raw, "CD");
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].text, "ABCD");
+        push_or_merge(&mut result, SegmentKind::Edited, "EF");
+        assert_eq!(result.len(), 2);
     }
 }

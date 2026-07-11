@@ -781,7 +781,7 @@ fn prepare_cloud_streaming_session(
                 set_current_transcription_id(tid);
                 let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
                     let mut t = Transcript::new(tid, config.polish_mode);
-                    t.commit_edit(&text);
+                    t.commit_edit(&text, &[]);
                     t.set_selection(s, e);
                     debug!("[select] cross-session seeded (cloud) t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
                     (t, text, true)
@@ -887,7 +887,7 @@ fn prepare_streaming_session(
     set_current_transcription_id(tid);
     let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
         let mut t = Transcript::new(tid, config.polish_mode);
-        t.commit_edit(&text);
+        t.commit_edit(&text, &[]);
         t.set_selection(s, e);
         debug!("[select] cross-session seeded t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
         (t, text, true)
@@ -959,7 +959,7 @@ fn prepare_vad_segmented_session(
             set_current_transcription_id(tid);
             let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
                 let mut t = Transcript::new(tid, config.polish_mode);
-                t.commit_edit(&text);
+                t.commit_edit(&text, &[]);
                 t.set_selection(s, e);
                 debug!("[select] cross-session seeded (vad) t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
                 (t, text, true)
@@ -2152,7 +2152,7 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
                 return;
             }
             let mut t = Transcript::new(id, PolishMode::Disabled);
-            t.commit_edit(text);
+            t.commit_edit(text, &[]);
             let segments = t.segments_json();
             if let Err(e) = get_db_sender().send(DbCommand::UpdateEditedSegments {
                 id,
@@ -2170,7 +2170,7 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, app_handle: &tauri::AppHandl
             return;
         }
     };
-    transcript.commit_edit(text);
+    transcript.commit_edit(text, &[]); // TODO Task 2: 传 dirty_ranges
     if transcript.db_inserted() {
         let id = transcript.id;
         let segments = transcript.segments_json();
