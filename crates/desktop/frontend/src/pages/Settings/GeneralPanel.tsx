@@ -5,6 +5,7 @@ import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Layers, Palette } from
 import type { ThemeInfo } from "@/lib/theme";
 import { applyThemeById as applyTheme } from "@/lib/theme";
 import type { ConfigResponse } from "./index";
+import { useT, setLocale } from "@/lib/i18n";
 
 interface GeneralPanelProps {
   configResp: ConfigResponse;
@@ -94,9 +95,16 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
     invoke<ThemeInfo[]>("list_themes").then(setThemes).catch(console.error);
   }, []);
 
+  const t = useT();
+
   const setTheme = useCallback(async (themeId: string) => {
     await applyTheme(themeId);
     await setVal("clipboard_theme", themeId);
+  }, [setVal]);
+
+  const setUiLanguage = useCallback(async (lang: string) => {
+    await setVal("ui_language", lang);
+    setLocale(lang as "zh-CN" | "en");
   }, [setVal]);
 
   const toggleVal = useCallback(async (key: string) => {
@@ -150,6 +158,12 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         <Row label="主题" effect="立即" hint="浮窗与窗口配色">
           <select className={selectClass} value={(cfg.clipboard_theme as string) || "light"} onChange={(e) => setTheme(e.target.value)}>
             {themes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
+          </select>
+        </Row>
+        <Row label={t("settings.uiLanguage")} effect="立即">
+          <select className={selectClass} value={(cfg.ui_language as string) || "zh-CN"} onChange={(e) => setUiLanguage(e.target.value)}>
+            <option value="zh-CN">{t("settings.uiLanguage.zhCN")}</option>
+            <option value="en">{t("settings.uiLanguage.en")}</option>
           </select>
         </Row>
       </Card>
