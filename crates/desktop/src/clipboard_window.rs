@@ -290,14 +290,21 @@ pub fn toggle_clipboard_window(app: &AppHandle) -> tauri::Result<()> {
         }
     } else {
         create_clipboard_window(app)?;
-        // 首次创建：webview 需要时间初始化，延迟 show+focus 确保 WKWebView ready
-        std::thread::sleep(std::time::Duration::from_millis(100));
-        if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
-            #[cfg(target_os = "macos")]
-            { crate::activation::before_floating_window_show(app); }
-            window.show()?;
-            window.set_focus()?;
-        }
+        // 首次创建：webview 需要时间初始化。在后台线程 sleep（不阻塞主线程），
+        // 完成后回主线程 show+focus（AGENTS.md：全局热键回调不能在主线程 sleep）。
+        let app_clone = app.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            let app2 = app_clone.clone();
+            let _ = app_clone.run_on_main_thread(move || {
+                #[cfg(target_os = "macos")]
+                { crate::activation::before_floating_window_show(&app2); }
+                if let Some(window) = app2.get_webview_window(WINDOW_LABEL) {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            });
+        });
     }
     Ok(())
 }
