@@ -884,6 +884,8 @@ pub fn list_hotword_hits() -> Result<std::collections::HashMap<String, i64>, Str
 }
 
 // ── 挖掘到版本 ──
+// ⚠️ post-T9（commit 46453a7a）已拆分为 list_hotword_candidates（候选不写库）
+//    + add_words_to_set（确认后批量）。下方为 Task 6 历史实现，当前代码见状态总览「T9 后增强」。
 
 /// 挖掘候选词并追加到指定版本。返回实际新增条数。
 #[tauri::command]
@@ -1533,7 +1535,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
 - 命中全局（`bump_hotword_hit_by_word` 改写 hotword_hits upsert）→ Task 4 ✓
 - UI 卡片化（逐词体感）+ 版本管理 + 导入导出 + 挖掘 → Task 6/8 ✓
 - 导入三选项（新建/追加/覆盖）+ 导出 → Task 6 import_hotwords/export_hotwords ✓
-- 挖掘保留改造（废弃 pending，候选追加到选定版本）→ Task 5（miner）+ Task 6（mine_to_set）✓
+- 挖掘保留改造（废弃 pending，候选→确认面板→追加当前版本）→ Task 5（miner）+ Task 6 原始 mine_to_set（**post-T9 已拆分为 list_hotword_candidates + add_words_to_set**，见状态总览「T9 后增强」）✓
 - corrector/pipeline 零改（命中分层保留）→ Task 4 仅改 infra bump ✓
 - 方言模糊保留 → Task 8 UI 保留 ✓
 - 删版本不删命中（全局历史）→ Task 8 deleteSet confirm 文案 + 命中表独立 ✓
@@ -1549,7 +1551,7 @@ git -C /Users/wudarui/workspace/agent/octopus/.claude/worktrees/hotword-manageme
 - `list_active_hotword_words() -> Result<Vec<String>>`——签名不变（main.rs setup 调用点 + reload_after_write 不破）✓
 - `bump_hotword_hit_by_word(word: &str) -> Result<()>`——签名不变（pipeline.rs:63 不破）✓
 - `list_hotword_hits() -> Result<HashMap<String,i64>>`——infra（Task 4）↔ 命令（Task 6）↔ 前端 `Record<string,number>`（Task 8）✓
-- `collect_candidate_words() -> anyhow::Result<Vec<String>>`（Task 5）↔ `mine_hotword_candidates_to_set` 调用（Task 6）✓
+- `collect_candidate_words() -> anyhow::Result<Vec<String>>`（Task 5）↔ `list_hotword_candidates` 调用（Task 6，post-T9 拆分后由前端确认再 `add_words_to_set`）✓
 - `add_word_to_set(id, word) -> Result<bool>` / `add_words_to_set(id, &[String]) -> Result<usize>` / `set_hotword_set_words(id, &str)` / `remove_word_from_set(id, word)`——infra（Task 3）↔ 命令（Task 6）一致 ✓
 - `normalize_words_text(&str) -> String`——infra hotword_text（Task 1），db.rs 迁移 + HotwordSet 写入引用一致 ✓
 - `pinyin_initials` re-export 路径 `octopus_infra::hotword_text::pinyin_initials`（Task 1 定义 / Task 7 re-export）✓
