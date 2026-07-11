@@ -542,7 +542,7 @@ fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option
 }
 
 /// 轮询等待子进程退出，60 秒超时强杀。并发读取 stdout/stderr 防管道死锁。
-fn wait_with_timeout(mut child: std::process::Child) -> ScriptResult {
+fn wait_with_timeout(child: std::process::Child) -> ScriptResult {
     wait_with_timeout_secs(child, 60)
 }
 
