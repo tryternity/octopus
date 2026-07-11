@@ -41,6 +41,14 @@ function labelToIndex(key: string): number {
   return -1;
 }
 
+/** KeyboardEvent.code → 单字符（0-9 a-z）。非字母数字返回 null。
+ *  macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键。 */
+function codeToChar(code: string): string | null {
+  if (code.startsWith("Key") && code.length === 4) return code[3].toLowerCase();
+  if (code.startsWith("Digit") && code.length === 6) return code[5].toLowerCase();
+  return null;
+}
+
 const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
   index: number; label: string; active: boolean; onClick: () => void;
   btnRef?: (el: HTMLButtonElement | null) => void;
@@ -320,9 +328,10 @@ export default function ActionBar() {
       if (viewRef.current === "loading") return;
 
       // 组合快捷键：Alt/⌥ + 字符 → 直接执行（最高优先级，跨层级）
+      // macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键
       if (e.altKey) {
-        const ch = e.key.toLowerCase();
-        if (/^[0-9a-z]$/.test(ch)) {
+        const ch = codeToChar(e.code);
+        if (ch) {
           const item = menuItemsRef.current.find((i: ActionBarItem) => i.shortcut === ch);
           if (item) {
             e.preventDefault();
