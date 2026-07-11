@@ -137,7 +137,8 @@ interface EditFormProps {
 // ── 扩展包拖拽/选择区 ──
 interface ImportResult {
   name: string;
-  scriptPath: string;
+  sourcePath: string;
+  dirName: string;
   isAsync: boolean;
   writeOutputToClipboard: boolean;
 }
@@ -159,10 +160,11 @@ const ExtensionDropZone = ({
       setError("");
       try {
         const result = await invoke<ImportResult>("import_extension", { sourcePath });
+        // actionData 格式 "sourcePath|dirName"（保存时拆分调 install_extension）
         onChange({
           ...form,
           title: result.name || form.title,
-          actionData: result.scriptPath,
+          actionData: `${result.sourcePath}|${result.dirName}`,
           isAsync: result.isAsync,
           writeOutputToClipboard: result.writeOutputToClipboard,
         });
@@ -238,16 +240,11 @@ const ExtensionDropZone = ({
               <div className="flex-1 min-w-0">
                 <p className="text-xs font-medium text-foreground truncate">{form.title}</p>
                 <p className="font-mono text-[10px] text-muted-foreground/70 truncate">
-                  {form.actionData}
+                  {form.actionData?.split("|")[0]}
                 </p>
               </div>
               <button
-                onClick={async () => {
-                  if (form.actionData) {
-                    try {
-                      await invoke("clear_extension_import", { scriptPath: form.actionData });
-                    } catch { /* 忽略——文件夹可能已不存在 */ }
-                  }
+                onClick={() => {
                   onChange({ ...form, actionData: "", title: "" });
                 }}
                 className="shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-red-500/10 hover:text-red-500"
@@ -853,16 +850,48 @@ export default function ActionBarPanel({
 
   const saveEdit = useCallback(async () => {
     try {
-      if (draftParentId !== undefined) {
+      if (editingForm.actionType === "extension") {
+        // 扩展类型——先 install_extension（复制到 extensions + DB），不走普通 create/update
+        const actionData = editingForm.actionData || "";
+        const [sourcePath, dirName] = actionData.split("|");
+        if (!sourcePath || !dirName) {
+          showToast("请先选择扩展包");
+          return;
+        }
+        if (draftParentId !== undefined) {
+          await invoke("install_extension", {
+            sourcePath,
+            dirName,
+            name: editingForm.title || "扩展",
+            isAsync: editingForm.isAsync ?? true,
+            writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
+            parentId: draftParentId,
+          });
+          showToast("已创建");
+        } else if (editingId) {
+          // 编辑已有扩展——只更新标题等元信息（action_data 已是 extensions 绝对路径）
+          await invoke("update_action_bar_item", {
+            id: editingId,
+            title: editingForm.title || "",
+            icon: editingForm.icon || "",
+            actionType: "script",
+            actionData: editingForm.actionData || "",
+            isEnabled: editingForm.isEnabled ?? true,
+            isAsync: editingForm.isAsync ?? true,
+            writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
+          });
+          showToast("已保存");
+        }
+      } else if (draftParentId !== undefined) {
         // 新建草稿——此时才写 DB
         await invoke("create_action_bar_item", {
           parentId: draftParentId,
           title: editingForm.title || "新菜单项",
           icon: "",
-          actionType: editingForm.actionType === "extension" ? "script" : (editingForm.actionType || "copy"),
+          actionType: editingForm.actionType || "copy",
           actionData: editingForm.actionData || "",
-          isAsync: (editingForm.actionType === "script" || editingForm.actionType === "extension") ? (editingForm.isAsync ?? true) : true,
-          writeOutputToClipboard: (editingForm.actionType === "script" || editingForm.actionType === "extension") ? (editingForm.writeOutputToClipboard ?? false) : false,
+          isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
+          writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
         });
         showToast("已创建");
       } else if (editingId) {
@@ -871,11 +900,11 @@ export default function ActionBarPanel({
           id: editingId,
           title: editingForm.title || "",
           icon: editingForm.icon || "",
-          actionType: editingForm.actionType === "extension" ? "script" : (editingForm.actionType || "copy"),
+          actionType: editingForm.actionType || "copy",
           actionData: editingForm.actionData || "",
           isEnabled: editingForm.isEnabled ?? true,
-          isAsync: (editingForm.actionType === "script" || editingForm.actionType === "extension") ? (editingForm.isAsync ?? true) : true,
-          writeOutputToClipboard: (editingForm.actionType === "script" || editingForm.actionType === "extension") ? (editingForm.writeOutputToClipboard ?? false) : false,
+          isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
+          writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
         });
         showToast("已保存");
       }

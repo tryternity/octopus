@@ -146,18 +146,19 @@ pub fn read_script_magic_comment(pkg_dir: &Path, script_rel: &str) -> Option<Str
 
 // ── Tauri commands ──
 
-/// 导入结果——前端拿这个更新菜单项表单
+/// 导入结果——校验通过后返回，保存时才复制到 extensions
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ImportResult {
     pub name: String,
-    pub script_path: String,
+    pub source_path: String,
+    pub dir_name: String,
     pub is_async: bool,
     pub write_output_to_clipboard: bool,
 }
 
-/// 导入扩展包——支持 zip 文件或文件夹路径。
-/// 校验 + 安装到 extensions，返回 ImportResult（前端用此更新菜单项 action_data）。
+/// 校验扩展包——支持 zip 文件或文件夹路径。
+/// 仅校验 + 重复检测，不复制到 extensions。保存时调 install_extension。
 #[tauri::command]
 pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
     use std::fs;
@@ -165,6 +166,7 @@ pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
     let path = std::path::Path::new(&source_path);
     let is_zip = path.extension().map(|e| e == "zip").unwrap_or(false);
 
+    // 定位 Package 目录（zip 解压到临时目录，文件夹直接用）
     let pkg_dir: std::path::PathBuf = if is_zip {
         let tmp_dir = std::env::temp_dir().join(format!("octopus-ext-{}", std::process::id()));
         let _ = fs::remove_dir_all(&tmp_dir);
@@ -189,36 +191,73 @@ pub fn import_extension(source_path: String) -> Result<ImportResult, String> {
         }
         let pkg = find_package_root(&tmp_dir)
             .ok_or_else(|| "zip 内未找到含 config.yaml 的顶层文件夹".to_string())?;
-        let dir_name = pkg.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("无法获取文件夹名")?;
-        let dest = extensions_dir().join(&dir_name);
-        let _ = fs::remove_dir_all(&dest);
-        fs::create_dir_all(extensions_dir()).map_err(|e| format!("创建 extensions 目录失败: {}", e))?;
-        copy_dir_recursive(&pkg, &dest).map_err(|e| format!("复制文件失败: {}", e))?;
-        let _ = fs::remove_dir_all(&tmp_dir);
-        dest
+        // 不删 tmp_dir——保存时从这里复制；前端取消时由 clear_extension_temp 清理
+        pkg
     } else if path.is_dir() {
-        let pkg = find_package_root(path).ok_or_else(|| "文件夹内未找到 config.yaml".to_string())?;
-        let dir_name = pkg.file_name().map(|n| n.to_string_lossy().to_string()).ok_or("无法获取文件夹名")?;
-        let dest = extensions_dir().join(&dir_name);
-        if &pkg != &dest {
-            let _ = fs::remove_dir_all(&dest);
-            fs::create_dir_all(extensions_dir()).map_err(|e| format!("创建 extensions 目录失败: {}", e))?;
-            copy_dir_recursive(&pkg, &dest).map_err(|e| format!("复制文件失败: {}", e))?;
-        }
-        dest
+        find_package_root(path).ok_or_else(|| "文件夹内未找到 config.yaml".to_string())?
     } else {
         return Err("路径既不是文件夹也不是 zip".into());
     };
 
+    // 校验 config.yaml + 脚本
     let config = validate_package(&pkg_dir)?;
-    let script_abs = pkg_dir.join(&config.action.script);
+
+    // 重复检测——dir_name 是否已在 extensions 中存在
+    let dir_name = pkg_dir
+        .file_name()
+        .map(|n| n.to_string_lossy().to_string())
+        .ok_or("无法获取文件夹名")?;
+    let dest = extensions_dir().join(&dir_name);
+    if dest.exists() {
+        return Err(format!("扩展包「{}」已存在，请先删除旧版或重命名", dir_name));
+    }
 
     Ok(ImportResult {
         name: config.name,
-        script_path: script_abs.to_string_lossy().to_string(),
+        source_path: pkg_dir.to_string_lossy().to_string(),
+        dir_name,
         is_async: config.action.is_async,
         write_output_to_clipboard: config.action.write_output_to_clipboard,
     })
+}
+
+/// 安装扩展——保存时调用。复制到 extensions + 创建 DB 记录。
+#[tauri::command]
+pub fn install_extension(
+    source_path: String,
+    dir_name: String,
+    name: String,
+    is_async: bool,
+    write_output_to_clipboard: bool,
+    parent_id: Option<i64>,
+) -> Result<i64, String> {
+    use std::fs;
+    let src = std::path::Path::new(&source_path);
+    let dest = extensions_dir().join(&dir_name);
+
+    // 复制到 extensions
+    fs::create_dir_all(extensions_dir()).map_err(|e| format!("创建 extensions 目录失败: {}", e))?;
+    let _ = fs::remove_dir_all(&dest);
+    copy_dir_recursive(src, &dest).map_err(|e| format!("复制文件失败: {}", e))?;
+
+    // 清理临时目录（zip 解压的）
+    if src.starts_with(std::env::temp_dir()) {
+        let _ = fs::remove_dir_all(src);
+    }
+
+    // 创建 DB 记录——action_data 存脚本绝对路径
+    let config = validate_package(&dest)?;
+    let script_abs = dest.join(&config.action.script);
+    octopus_infra::db::insert_action_bar_item(
+        parent_id,
+        &name,
+        "",
+        "script",
+        &script_abs.to_string_lossy(),
+        is_async,
+        write_output_to_clipboard,
+    )
+    .map_err(|e| e.to_string())
 }
 
 /// 返回扩展列表 + DB 关联
@@ -289,20 +328,6 @@ pub fn delete_extension(dir_name: String) -> Result<(), String> {
 #[tauri::command]
 pub fn refresh_extensions() -> Result<(), String> {
     std::fs::create_dir_all(extensions_dir()).map_err(|e| format!("创建目录失败: {}", e))?;
-    Ok(())
-}
-
-/// 清除扩展导入——删 extensions 文件夹（仅删文件，不碰 DB，前端自行清 actionData）
-#[tauri::command]
-pub fn clear_extension_import(script_path: String) -> Result<(), String> {
-    use std::fs;
-    let path = std::path::Path::new(&script_path);
-    // script_path 是 extensions/xxx/main.py，取父目录的父目录 = extensions/xxx/
-    if let Some(pkg_dir) = path.parent() {
-        if pkg_dir.starts_with(extensions_dir()) && pkg_dir.exists() {
-            fs::remove_dir_all(pkg_dir).map_err(|e| format!("删除文件夹失败: {}", e))?;
-        }
-    }
     Ok(())
 }
 
