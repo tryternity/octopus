@@ -1009,4 +1009,17 @@ git commit -m "docs: 更新 architecture.md——ASR 结果框 CM6 改造"
 
 - **caret.test.ts 额外删除**：原 plan 未列出此文件（caret.ts 的测试），实际发现后一并删除。
 - **caret.ts 中 `codePointOffsetTo` 被 clipboardNav.test.ts 引用**——实际检查无引用（已删文件全部无残留）。
-- **`codePointOffsetTo` 函数曾被 Result/caret.ts 导出**，其他文件无 import（vitest alias 已覆盖，grep 确认零引用）。
+
+### 代码审查修复（3 轮）
+
+- **Bug 1: dirtyRanges 未 mapPos 映射** → 每次 `onUserEdit` 先 `mapDirtyRanges(update.changes)` 映射已有区间再 `addDirtyRange`
+- **Bug 2: Idle 编辑 segments 全退化 Raw** → Idle 分支从 DB `restore_segments` 恢复 old_segments
+- **Bug 3: 纯删除 → 空 dirtyRanges 退化全 Edited** → 加 `hasEdited` 标记（`has_edited=false` + 空 dirty → rebuild_segments 保留原 kind）
+- **Bug 4: onCommit 闭包陈旧** → `onCommitRef` 替代 mount effect 闭包捕获
+- **Bug 5: 编辑中润色覆盖** → `polishNow` 先调 `commit()`
+- **Bug 6: diverted 定时器编辑态未清** → 进入编辑态时 `clearDivertedTimer()`
+- **Bug 7: 拖选 IPC 泛滥** → `debouncedSelectionNotify` 100ms 防抖
+- **Bug 8: rebuild_segments 边界 clamp** → dirty ranges clamp 到 `[0, total]` 防越界 Panic
+- **Bug 9: hasEdited 重置顺序** → `doCommit` 先读 `hasEdited` 到局部变量再重置 ref
+- **Bug 10: rebuild_segments clean 区段 kind 退化** → 从 `segment_kind_at_offset` 单一 kind → `append_clean_range` 子串匹配 → 最终改为**字符级 walk**（构建 old_flat 逐字符 kind 映射，clean 区域逐字符匹配跳过被删字符保留原 kind）
+- **后端注释遗留**：coordinator.rs 中 `update_edit_buffer` 注释已过时（命令已移除），后续清理

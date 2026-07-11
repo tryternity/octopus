@@ -321,7 +321,7 @@ function buildTheme(expanded: boolean) {
 
 ```rust
 /// 提交编辑：按 dirty ranges 劈段，dirty 区域标 Edited，区间外保留原 kind。
-pub fn commit_edit(&mut self, flat: &str, dirty_ranges: &[(usize, usize)]) {
+pub fn commit_edit(&mut self, flat: &str, dirty_ranges: &[(usize, usize)], has_edited: bool) {
     self.pending_delete = None;
     self.selection_insert_offset = None;
 
@@ -332,8 +332,15 @@ pub fn commit_edit(&mut self, flat: &str, dirty_ranges: &[(usize, usize)]) {
     }
 
     if dirty_ranges.is_empty() {
-        self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() }];
-        self.caret_gap = 1;
+        if has_edited {
+            self.segments = vec![Segment { kind: SegmentKind::Edited, text: flat.to_string() }];
+            self.caret_gap = 1;
+        } else {
+            // has_edited=false → 纯删除，用 rebuild_segments 重建（保留原 kind）
+            let old_segments = self.segments.clone();
+            self.segments = rebuild_segments(&old_segments, flat, &[]);
+            self.caret_gap = self.segments.len();
+        }
         return;
     }
 
@@ -346,58 +353,39 @@ pub fn commit_edit(&mut self, flat: &str, dirty_ranges: &[(usize, usize)]) {
 }
 ```
 
-### 9.2 `rebuild_segments` 核心算法
+### 9.2 `rebuild_segments` 核心算法（字符级 walk）
+
+> **设计演进**：原方案用 `segment_kind_at_offset(old_segments, pos)` 查单个 kind 代表整个 clean 区域——当 clean 跨多 segment 或删除导致偏移时取到错误 kind。后改为 `append_clean_range` 子串匹配——但删除中间字符后 clean 不是连续子串 → 匹配失败 → 文本损坏。最终方案：**字符级 walk**。
 
 ```rust
 /// 按 dirty ranges 重建段列表。
-/// dirty 区间内标 Edited；区间外从 old_segments 按 char offset 对齐保留原 kind；
-/// 对齐失败的区间外文本标 Raw 兜底。
-fn rebuild_segments(
-    old_segments: &[Segment],
-    new_flat: &str,
-    dirty: &[(usize, usize)],
-) -> Vec<Segment> {
-    let new_chars: Vec<char> = new_flat.chars().collect();
-    let total = new_chars.len();
-    let mut result = Vec::new();
-    let mut pos = 0usize;
-
-    for &(d_start, d_end) in dirty {
-        // dirty 前的 clean 区域
-        if d_start > pos {
-            let clean: String = new_chars[pos..d_start].iter().collect();
-            let kind = segment_kind_at_offset(old_segments, pos);
-            push_or_merge(&mut result, kind, &clean);
-        }
-        // dirty 区域
-        if d_end > d_start {
-            let dirty_text: String = new_chars[d_start..d_end].iter().collect();
-            push_or_merge(&mut result, SegmentKind::Edited, &dirty_text);
-        }
-        pos = d_end;
-    }
-    // 末尾 clean 区域
-    if pos < total {
-        let rest: String = new_chars[pos..].iter().collect();
-        let kind = segment_kind_at_offset(old_segments, pos);
-        push_or_merge(&mut result, kind, &rest);
-    }
-    result
+/// 1. 构建 old_flat 逐字符 kind 映射（old_chars + old_kinds）
+/// 2. 标记 new 中每个 char 是否在 dirty range 内
+/// 3. walk：dirty 连续段标 Edited；clean 逐字符在 old_chars[old_idx..] 中
+///    按序匹配（跳过被删字符），保留 old_kinds[old_idx] 作为 kind
+/// dirty ranges 被 clamp 到 [0, total] 防越界。
+fn rebuild_segments(old_segments, new_flat, dirty) -> Vec<Segment> {
+    // old_flat + old_kinds 逐字符映射
+    // is_dirty 标记 new 中 dirty chars
+    // walk dirty→Edited，clean→逐字符匹配 old 保留 kind
 }
+```
 
-/// 查 char offset 在 old_segments 中对应的 kind。
-fn segment_kind_at_offset(segments: &[Segment], offset: usize) -> SegmentKind {
-    let mut acc = 0usize;
-    for seg in segments {
-        let len = seg.text.chars().count();
-        if offset < acc + len {
-            return seg.kind;
-        }
-        acc += len;
-    }
-    SegmentKind::Raw // 兜底
+**关键**：clean 区域的每个字符按序在 `old_chars[old_idx..]` 中匹配——遇到不匹配的字符（被删的）跳过 `old_idx`，直到找到匹配的字符，取 `old_kinds[old_idx]` 作为 kind。这样即使中间删除导致偏移也能正确保留剩余字符的 kind。
+
+### 9.3 `restore_segments`（Idle 态从 DB 恢复）
+
+```rust
+/// 从 DB JSON 恢复 segments（Idle 态编辑时用——保留已有 Raw/Polished/Edited 标记）。
+pub fn restore_segments(&mut self, json: &str) {
+    // 解析 [{"kind":"raw|polished|edited","text":"..."}] → segments
+    // 否则 Idle 态 commit_edit 的 old_segments 为空 → clean 区域全退化为 Raw
 }
+```
 
+### 9.4 `push_or_merge`
+
+```rust
 /// 同 kind 相邻段合并（减少碎片）。
 fn push_or_merge(result: &mut Vec<Segment>, kind: SegmentKind, text: &str) {
     if text.is_empty() { return; }
