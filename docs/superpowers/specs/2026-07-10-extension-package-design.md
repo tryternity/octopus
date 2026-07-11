@@ -99,9 +99,13 @@ Package = agent skill 的**可执行入口**（给 skill 绑定了触发规则 +
 
 ## 4. DB 集成
 
-### 4.1 导入 = 创建 DB 记录
+### 4.1 导入 = 校验 + 保存时安装
 
-Package 导入时在 `action_bar_items` 表创建一条记录：
+Package 导入分两步：
+1. **校验**（`import_extension`）：解压 zip 到临时目录（或直接用文件夹）→ 校验 config.yaml + 脚本文件 → 检测重复 dir_name → 返回 `ImportResult`（**不复制到 extensions**）
+2. **安装**（`install_extension`）：保存时调用 → 复制到 `~/.octopus/extensions/<dir_name>/` → 创建 DB `action_bar_items` 记录
+
+前端 `actionData` 格式：`"sourcePath|dirName"`（校验阶段），保存后 DB `action_data` 变为脚本绝对路径。
 
 ```sql
 INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data,
@@ -171,112 +175,53 @@ struct ExtensionInfo {
 
 ## 6. ZIP 导入
 
-### 6.1 导入方式
+### 6.1 导入方式（集成进菜单编辑）
 
-1. **系统打开 `.octopusext.zip`**——Tauri 文件关联，双击 zip 唤起 octopus 自动导入
-2. **设置页拖拽 zip**——扩展子页是 drop zone，拖入 `.octopusext.zip` 自动导入
+扩展包不再有独立子页，而是集成进菜单编辑流程：
 
-### 6.2 导入流程
+1. 设置页 → 命令面板 → 新增子项 → 类型选「扩展包」
+2. EditForm 出现拖拽区 + 「选择 zip 文件」/ 「选择文件夹」按钮
+3. 拖入 zip/文件夹 或点击选择 → `import_extension` 校验 + 重复检测
+4. 校验通过 → 自动填充 title/actionData/isAsync
+5. 点击保存 → `install_extension` 复制到 extensions + 创建 DB 记录
+6. 取消或 X 清除 → 仅清表单（无脏数据）
+
+### 6.2 校验流程
 
 ```text
-用户拖入/双击 my-translator.octopusext.zip
-  → 解压到临时目录
-  → 读取 config.yaml
-  → 校验：
-    ✗ config.yaml 缺失 / 必填字段为空 / 脚本文件不存在
-      → 红色气泡「导入失败：<原因>」
-    ✓ 通过 ↓
-  → 移动到 ~/.octopus/extensions/<dir_name>/
-  → 弹出父菜单选择器（现有父菜单项列表 + 「顶层」选项）
-  → 用户选择父菜单
-  → INSERT action_bar_items（parent_id = 用户选择, action_data = 脚本绝对路径）
-  → toast「已导入：翻译助手」
-  → 刷新扩展列表
+用户拖入 zip/文件夹/选择文件
+  → import_extension(source_path)
+  → zip 解压到临时目录（文件夹直接用）
+  → 校验 config.yaml + 必填字段 + 脚本文件存在
+  → 检测 extensions/<dir_name>/ 是否已存在（重复报错）
+  → 返回 ImportResult { name, sourcePath, dirName, ... }
+  → 前端填充表单 actionData="sourcePath|dirName"
 ```
 
-### 6.3 ZIP 命名约定
+### 6.3 安装流程（保存时）
 
-- 扩展名 `.octopusext.zip`（不注册自定义 UTI，避免 macOS 复杂度）
-- 解压后顶层必须是一个文件夹（含 `config.yaml`），不允许散文件
-
-### 6.4 同名包升级
-
-`~/.octopus/extensions/<dir_name>/` 已存在 → 覆盖（同名包升级）。DB 记录的 `action_data` 路径不变（文件夹名不变则路径不变）。
-
-### 6.5 命令
-
-```rust
-#[tauri::command]
-fn import_extension(zip_path: String, parent_id: Option<i64>) -> Result<String, String>;
-// 解压 + 校验 + 安装 + 创建 DB 记录，返回 Package name
-
-#[tauri::command]
-fn list_extensions() -> Result<Vec<ExtensionInfo>, String>;
-
-#[tauri::command]
-fn refresh_extensions() -> Result<(), String>;
-// 重新扫描（当前 list_extensions 已实时扫描，refresh 供 UI 按钮调用）
-
-#[tauri::command]
-fn delete_extension(dir_name: String) -> Result<(), String>;
-// 删 DB 记录（action_data 匹配）+ 删 extensions 文件夹
+```text
+用户点保存
+  → install_extension(sourcePath, dirName, name, ...)
+  → 复制到 ~/.octopus/extensions/<dir_name>/
+  → 清理临时目录（zip 解压的）
+  → INSERT action_bar_items（action_data = 脚本绝对路径）
 ```
 
 ---
 
-## 7. 设置页 UI
+## 7. 设置页 UI（集成进菜单编辑）
 
-### 7.1 布局
+扩展包不再有独立子页。菜单编辑表单 `actionType=extension` 时显示拖拽区（`ExtensionDropZone` 组件）：
 
-命令面板 tab header 按钮区新增「扩展」入口：
+- **拖拽**——zip 文件或含 config.yaml 的文件夹（Tauri `onDragDropEvent`）
+- **选择文件**——系统文件选择器（zip）
+- **选择文件夹**——系统目录选择器（`directory: true`）
+- **X 清除**——仅清表单（校验阶段不复制文件，无脏数据）
+- **保存**——调 `install_extension` 复制到 extensions + 创建 DB
 
-```
-[执行记录] [扩展] [全部展开] [新增主菜单项]
-```
-
-点击「扩展」切换到扩展管理子页。
-
-### 7.2 扩展子页
-
-```
-┌─────────────────────────────────────────┐
-│  扩展包                       [刷新扩展] │
-│  ~/.octopus/extensions/                 │
-│                                         │
-│  拖拽 .octopusext.zip 到此处导入        │
-│  ═════════════════════════════════════  │
-│                                         │
-│  ● 翻译助手          v1.0.0   SKILL     │
-│    选中文本翻译为中英互译                │
-│    ─ main.py · #python · 同步           │
-│    挂载于：工具                          │
-│                                         │
-│  ● JSON 格式化       v1.2.0             │
-│    格式化剪贴板 JSON 并粘贴              │
-│    ─ fmt.sh · #shell · 异步             │
-│    挂载于：顶层                          │
-│                                         │
-│  ● （空）                                │
-│    还没有扩展包，拖入 zip 或手动放入     │
-│    ~/.octopus/extensions/                │
-└─────────────────────────────────────────┘
-```
-
-### 7.3 每个包卡片
-
-- 名称 + 版本号 + SKILL 徽章（`skill` 块存在时显示）
-- 描述
-- 脚本文件名 · magic comment 类型 · 异步/同步标签
-- 挂载位置（父菜单名 或 「顶层」）
-- 点击卡片：展开详情（config.yaml 原文只读 + skill ref 路径 + 资源文件列表）
-- 删除按钮（删 DB 记录 + extensions 文件夹，二次确认）
-
-### 7.4 交互
-
-- **拖拽导入**——扩展子页是 drop zone
-- **刷新**——重新扫描文件夹
-- **删除**——二次确认（删 DB + 文件夹）
-- **只读**——不能在此编辑 Package 内容，只能改文件
+EditForm 改为单页导航（非弹窗）：左上角 ArrowLeft 返回、无边框、垂直排列。
+菜单项单击 = 展开/收起 submenu；编辑用独立 Pencil 按钮；删除二次确认。
 
 ---
 
@@ -311,9 +256,9 @@ if item.action_data.starts_with('/') {
 
 1. **Package 必须含 `config.yaml`**——无 config 的文件夹被忽略
 2. **`action.script` 是相对路径**——指向 Package 内文件，不允许绝对路径
-3. **DB `action_data` 存绝对路径**——Package 导入后路径固定
-4. **同名文件夹覆盖**——升级 Package 不创建新 DB 记录
-5. **`OCTOPUS_PACKAGE_DIR` 仅 Package 脚本设置**——内联脚本无此环境变量
-6. **Packages 导入 DB 后与普通菜单项无运行时差异**——浮窗不区分来源
-7. **扩展子页元信息从 config.yaml 实时读取**——DB 不存 version/description/skill
-8. **skill 块纯声明性**——一期不做 agent 调度，仅前端展示 + config 预留
+3. **DB `action_data` 存绝对路径**——Package 安装后路径固定
+4. **校验阶段不复制文件**——导入仅校验 + 重复检测，保存时才复制到 extensions
+5. **重复检测**——`extensions/<dir_name>/` 已存在时报错
+6. **`OCTOPUS_PACKAGE_DIR` 仅 Package 脚本设置**——内联脚本无此环境变量
+7. **Packages 安装后与普通菜单项无运行时差异**——浮窗不区分来源
+8. **skill 块纯声明性**——一期不做 agent 调度，仅 config 预留

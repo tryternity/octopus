@@ -674,6 +674,40 @@ git commit -m "feat: 启动扫描 extensions + 文档同步"
 
 ---
 
+### Task 6: e2e 修复——集成菜单编辑 + 校验分离 + UI 优化（2026-07-10/11）
+
+e2e 测试驱动的一系列交互重构。
+
+- [x] **Step 1: 扩展包集成进菜单编辑（d92b70f）**
+
+删除独立扩展子页 + ExtensionsPanel 组件（-339 行）。菜单新增子项选类型「扩展包」→ EditForm 出现拖拽区。`actionType=extension` 保存时映射为 DB `script`，加载时 `action_data` 以 `/` 开头逆向映射为 `extension`。
+
+- [x] **Step 2: 拖拽改用 Tauri onDragDropEvent（751db97/b152076）**
+
+Tauri 2 文件拖拽不走浏览器 `dataTransfer`，改用 `getCurrentWebview().onDragDropEvent()`。去掉 `inDropZone` ref 限制。文件夹路径直接传后端（不以 config.yaml 结尾）。
+
+- [x] **Step 3: 菜单项单击改展开/收起 + 编辑按钮分离 + 删除二次确认（a744b1f）**
+
+主菜单项单击 → 展开/收起 submenu（原为进入编辑）。编辑 → 悬浮工具栏独立 Pencil 按钮。删除 → 二次确认（首次变红色「确认」）。
+
+- [x] **Step 4: 编辑/新增改单页导航（83b8fd1/768f803）**
+
+EditForm 从内联弹窗改为全屏单页 `view=edit`。去掉对话框样式（border/shadow/X 按钮），改为左上角 ArrowLeft 返回。输入框加 `focus:ring`，Field 标签列加宽。
+
+- [x] **Step 5: 文件夹选择 + 拖拽支持（b0d4043）**
+
+Tauri dialog 不支持同时选文件和文件夹，拆为「选择 zip 文件」+「选择文件夹」(`directory: true`)。
+
+- [x] **Step 6: 导入仅校验 + 保存时安装 + 重复检测（77fb79f/917da8f）**
+
+`import_extension` 仅校验+检测重复 dir_name（不复制到 extensions）。`install_extension` 保存时调用：复制 + DB 记录。X 按钮仅清表单（无脏数据）。前端 `actionData` 格式 `"sourcePath|dirName"`。
+
+- [x] **Step 7: 文档同步**
+
+spec §4-9 全面更新（校验分离、集成菜单编辑、不变量）。architecture.md 更新。
+
+---
+
 ## Self-Review
 
 **1. Spec coverage:**
