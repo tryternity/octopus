@@ -267,6 +267,7 @@ pub fn install_extension(
         &script_abs.to_string_lossy(),
         is_async,
         write_output_to_clipboard,
+        "",
     )
     .map_err(|e| e.to_string())
 }
