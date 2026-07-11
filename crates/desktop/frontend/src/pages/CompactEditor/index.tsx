@@ -272,7 +272,7 @@ function CompactEditor() {
               <span className="max-w-[140px] truncate">{tabTitle(t)}</span>
               <button
                 type="button"
-                title={t("tab.close")}
+                title={ti18n("tab.close")}
                 onClick={(e) => { e.stopPropagation(); closeTab(i); }}
                 className="p-0.5 rounded hover:bg-accent text-muted-foreground hover:text-foreground"
               >
