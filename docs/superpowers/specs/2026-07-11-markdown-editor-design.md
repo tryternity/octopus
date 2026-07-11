@@ -228,13 +228,14 @@ interface MarkdownPreviewProps {
 **渲染管线**：
 
 ```
-source → useDebouncedValue(source, 150ms) → renderMarkdown() → articleRef.innerHTML = html → decorateCodeBlocks() → 链接拦截
+source → useDebouncedValue(source, 150ms) → useMemo(renderMarkdown) → articleRef.innerHTML = html
 ```
 
 - `renderMarkdown` 是同步函数（无 Shiki 异步加载）
-- 命令式 `innerHTML`（非 `dangerouslySetInnerHTML`）——避免 React 重渲染擦除代码块复制按钮 DOM
-- `decorateCodeBlocks`：给 `<pre><code>` 包裹 `.md-codeblock` div + 添加复制按钮（hover 显示）
-- 链接拦截：`#anchor` 平滑滚动 / `http(s)` 走 `openUrl`（`@tauri-apps/plugin-opener`）/ 其余协议 `preventDefault` 阻止 webview 导航离开应用
+- `useMemo` 同步派生 HTML（避免 setState 额外重绘周期）
+- 命令式 `innerHTML`（非 `dangerouslySetInnerHTML`）
+- **声明式代码块复制按钮**：markdown-it `code_block` + `fence` 渲染规则直接输出 `.md-codeblock` 容器 + `[data-copy]` 按钮（mermaid 跳过包裹），消除命令式 DOM 注入
+- **事件委托**（`useEffect deps []`，仅挂载一次）：链接拦截（`#anchor` 滚动 / `http(s)` 走 `openUrl` / 其余 `preventDefault`）+ 复制按钮点击（`navigator.clipboard.writeText` + 文案切换）
 
 ### 6.4 lib/markdown.ts — markdown-it 配置
 
@@ -265,6 +266,14 @@ md.renderer.rules.heading_open = (tokens, idx, options, _env, self) => {
     if (id) tokens[idx].attrSet("id", id);
   }
   return self.renderToken(tokens, idx, options);
+};
+
+// 声明式代码块复制按钮：code_block + fence 渲染规则包裹 .md-codeblock + [data-copy] 按钮
+// fence 规则 mermaid 跳过 wrapCodeBlock（不加复制按钮）
+md.renderer.rules.code_block = (tokens, idx, options, env, self) => wrapCodeBlock(defaultCodeBlock(...));
+md.renderer.rules.fence = (tokens, idx, options, env, self) => {
+  if (tokens[idx].info.trim() === "mermaid") return defaultFence(...);
+  return wrapCodeBlock(defaultFence(...));
 };
 
 export function renderMarkdown(src: string): string {
@@ -354,11 +363,11 @@ main.tsx → initI18n()（读 config 设 locale）→ ReactDOM.render()（首次
 
 ### 7.2 保留（外壳核心）
 
-- tab 管理（`loadAndAddTab` / `closeTab` / `pendingToTab` / `readInitialTabFromUrl`）
-- `doSave` + `doSaveRef` + Cmd+S/Cmd+Enter 快捷键（**readOnly/isTemp tab 早返回**，不触发保存）
-- 字号状态 `fontSize`（传入 MarkdownPane + `onFontSizeChange` 回调）
-- `savedFlash` 保存反馈（传入 MarkdownPane 驱动按钮样式）
-- mount effect（`get_pending_compact_tabs` + `listen("compact-editor://open-tab")`）
+- tab 管理（`loadAndAddTab` / `closeTab` / `pendingToTab` / `readInitialTabFromUrl`）——**同步计算模式**：await 后基于 `tabsRef.current` 算 next → 同步写 ref + `setTabs(next)` + `setActiveIdx(literal)`，不使用 `setTabs(prev => ...)` updater（避免 React 异步队列致 ref 陈旧）
+- `doSave` + `doSaveRef` + Cmd+S/Cmd+Enter 快捷键——**doSave 四守卫自拦截**（`!active` / `isTemp` / `source === 'transcription'` / `itemType !== 'text'`），keydown 无条件调 `doSaveRef.current()`（deps `[]`），单一事实源
+- 字号状态 `fontSize`（传入 MarkdownPane + `onFontSizeChange` 回调 + MarkdownPreview `fontSize` prop）
+- `savedFlash` 保存反馈（传入 MarkdownPane 驱动按钮样式）+ `savedFlashTimer` 卸载清理
+- mount effect——**listen 前置**：先注册 `listen("compact-editor://open-tab")` 再 `get_pending_compact_tabs`，消除竞态窗口
 
 ### 7.3 内容区渲染变更
 
@@ -437,13 +446,16 @@ main.tsx → initI18n()（读 config 设 locale）→ ReactDOM.render()（首次
 
 CM6 debounce 仅影响预览渲染，不影响数据源。保存走 `onChange` 更新的 `tab.text`（即时），`doSave` 读 `active.text`。CM6 `updateListener` 每次变更同步调 `onChange`（无 debounce）。
 
-### 10.2 只读 tab 视图切换
+### 10.2 只读 tab 安全门控
 
-readOnly 由 `tab.source === 'transcription'` 固定决定，传入 CM6 `EditorState.readOnly.of(readOnly)`。视图模式可自由切换（看源码 vs 看渲染），但 readOnly 状态固定。
+readOnly 由 `tab.source === 'transcription'` 固定决定。**三重保护**：
+1. CM6 `EditorState.readOnly.of(readOnly)` 阻止键盘编辑
+2. MarkdownPane 隐藏 Clear 按钮 + Save `disabled`（`disableSave = isTemp || readOnly`）
+3. `doSave` 四守卫（`!active` / `isTemp` / `source === 'transcription'` / `itemType !== 'text'`），keydown 无条件调 doSaveRef.current() → doSave 自拦截
 
 ### 10.3 临时 tab（isTemp）
 
-`disableSave` prop 传入 MarkdownPane，保存按钮 `disabled` + 灰样式。`doSave` 内部已有 `if (active.isTemp) return` 兜底。
+`disableSave` prop 传入 MarkdownPane（`isTemp || readOnly`），保存按钮 `disabled`。`doSave` 内部 `if (active.isTemp) return` 兜底。
 
 ### 10.4 空文本保存 = 删除
 
@@ -467,8 +479,7 @@ readOnly 由 `tab.source === 'transcription'` 固定决定，传入 CM6 `EditorS
 
 ### 11.2 前端组件测试
 
-- `MarkdownPreview`：给定 source → 渲染正确 HTML + 代码块复制按钮存在
-- `Splitter`：拖拽改变 ratio + clamping
+- `MarkdownPreview`：given source → 渲染正确 HTML（含 `code_block` + `fence` 声明式复制按钮；mermaid 不裹按钮）
 
 ### 11.3 后端测试
 
