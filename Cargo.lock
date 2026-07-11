@@ -5046,6 +5046,7 @@ dependencies = [
  "log",
  "once_cell",
  "parking_lot",
+ "pinyin",
  "rusqlite",
  "serde",
  "serde_json",
