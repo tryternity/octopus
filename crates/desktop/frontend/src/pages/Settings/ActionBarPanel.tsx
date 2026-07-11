@@ -870,17 +870,16 @@ export default function ActionBarPanel({
           showToast("已创建");
         } else if (editingId) {
           // 编辑已有扩展——检查是否重新导入了新包（actionData 含 |）
-          if (dirName && sourcePath.includes("|") === false && !sourcePath.startsWith("/")) {
-            // actionData 含 | = 新导入的包（临时路径），需先安装
+          if (actionData.includes("|")) {
+            // 新导入的包——安装新文件 + 删旧记录 + 创建新记录（保留原 parentId）
             await invoke("install_extension", {
               sourcePath,
               dirName,
               name: editingForm.title || "扩展",
               isAsync: editingForm.isAsync ?? true,
               writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
-              parentId: null,
+              parentId: editingForm.parentId ?? null,
             });
-            // 删除旧 DB 记录
             await invoke("delete_action_bar_item", { id: editingId });
           } else {
             // 仅更新元信息（action_data 已是 extensions 绝对路径）

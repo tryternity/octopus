@@ -496,9 +496,30 @@ fn wait_with_timeout(mut child: std::process::Child) -> ScriptResult {
     wait_with_timeout_secs(child, 60)
 }
 
-/// 异步脚本等待——不超时，等到自然退出。
+/// 异步脚本等待——不超时，阻塞等待自然退出（0 CPU 占用）。
 fn wait_forever(mut child: std::process::Child) -> ScriptResult {
-    wait_with_timeout_secs(child, u32::MAX / 500)
+    use std::io::Read;
+
+    let mut stdout_handle = child.stdout.take();
+    let mut stderr_handle = child.stderr.take();
+
+    let stdout_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut stdout) = stdout_handle { let _ = stdout.read_to_string(&mut buf); }
+        buf
+    });
+    let stderr_thread = std::thread::spawn(move || {
+        let mut buf = String::new();
+        if let Some(ref mut stderr) = stderr_handle { let _ = stderr.read_to_string(&mut buf); }
+        buf
+    });
+
+    // 阻塞等待子进程退出——无轮询，CPU 0%
+    let code = child.wait().ok().and_then(|s| s.code());
+
+    let stdout_buf = stdout_thread.join().unwrap_or_default();
+    let stderr_buf = stderr_thread.join().unwrap_or_default();
+    ScriptResult { exit_code: code, stdout: stdout_buf, stderr: stderr_buf, timed_out: false }
 }
 
 fn wait_with_timeout_secs(mut child: std::process::Child, timeout_secs: u32) -> ScriptResult {
