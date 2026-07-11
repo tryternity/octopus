@@ -245,7 +245,6 @@ fn build_coordinator_loop(
                                 commit_edit_apply(&mut stage, &text, &[], false, None, None, &app_handle);
                             }
                             editing = false;
-                            let _ = app_handle.emit("edit-force-exit", ());
                         }
                         if !matches!(stage, Stage::Idle) {
                             // 活跃录音态 → 停录音（handle_toggle 走非 Idle 分支）
@@ -348,18 +347,16 @@ fn build_coordinator_loop(
                         if editing {
                             editing = false;
                             edit_buffer = None;
-                            let _ = app_handle.emit("edit-force-exit", ());
                         }
-                        pending_prepare = None; // 取消等待中的 prepare-record（若有）
+                        pending_prepare = None;
                         handle_cancel(&mut stage, &audio, &app_handle);
                     }
                     Command::Discard => {
                         if editing {
                             editing = false;
                             edit_buffer = None;
-                            let _ = app_handle.emit("edit-force-exit", ());
                         }
-                        pending_prepare = None; // 取消等待中的 prepare-record（若有）
+                        pending_prepare = None;
                         handle_discard(&mut stage, &audio, &app_handle, &config);
                     }
                     Command::PasteDone => {
@@ -2070,9 +2067,8 @@ fn handle_enter_edit_mode(stage: &mut Stage, editing: &mut bool, edit_buffer: &m
         Stage::CloudClosing { transcript, .. } => transcript,
         Stage::Idle => {
             // Idle 编辑：会话已 finalize，stage 无 transcript，但 Result 窗口仍展示最近会话文本，
-            // 用户可对其修订。允许进入（editing=true）；edit_buffer 不在此初始化——后端无 display
-            // 副本，由前端 update_edit_buffer 防抖推送（与活跃态用户输入后推送一致）。提交走
-            // commit_edit_apply 的 Idle 分支，用 CURRENT_TRANSCRIPTION_ID 直接 UPDATE 落库。
+            // 用户可对其修订。允许进入（editing=true）；edit_buffer 不在此初始化。
+            // 提交走 commit_edit_apply 的 Idle 分支，用 CURRENT_TRANSCRIPTION_ID 直接 UPDATE 落库。
             *editing = true;
             info!("Entered edit mode in Idle (no active transcript)");
             return;

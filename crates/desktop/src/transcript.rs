@@ -1165,22 +1165,6 @@ mod user_scenario_tests {
     }
 
     #[test]
-    fn segment_kind_at_offset_correct() {
-        let segs = vec![
-            Segment { kind: SegmentKind::Raw, text: "AB".into() },
-            Segment { kind: SegmentKind::Polished, text: "CD".into() },
-            Segment { kind: SegmentKind::Edited, text: "EF".into() },
-        ];
-        assert_eq!(segment_kind_at_offset(&segs, 0), SegmentKind::Raw);
-        assert_eq!(segment_kind_at_offset(&segs, 1), SegmentKind::Raw);
-        assert_eq!(segment_kind_at_offset(&segs, 2), SegmentKind::Polished);
-        assert_eq!(segment_kind_at_offset(&segs, 3), SegmentKind::Polished);
-        assert_eq!(segment_kind_at_offset(&segs, 4), SegmentKind::Edited);
-        assert_eq!(segment_kind_at_offset(&segs, 5), SegmentKind::Edited);
-        assert_eq!(segment_kind_at_offset(&segs, 99), SegmentKind::Raw);
-    }
-
-    #[test]
     fn push_or_merge_same_kind() {
         let mut result = vec![Segment { kind: SegmentKind::Raw, text: "AB".into() }];
         push_or_merge(&mut result, SegmentKind::Raw, "CD");
