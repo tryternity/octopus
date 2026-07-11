@@ -228,9 +228,18 @@ fn init_schema(conn: &Connection) -> Result<()> {
                 for r in rows { words.push(r?); }
                 crate::hotword_text::normalize_words_text(&words.join(" "))
             };
+            // 「通用」版本：无则新建；用户若已手建同名，则把 active 词并入既有版本（spec 要求）。
+            let existing: Option<String> = conn
+                .query_row("SELECT words_text FROM hotword_sets WHERE name='通用'", [], |r| r.get(0))
+                .ok();
+            let merged = match existing {
+                Some(cur) => crate::hotword_text::normalize_words_text(&format!("{} {}", cur, words_text)),
+                None => words_text, // words_text 已 normalize
+            };
             conn.execute(
-                "INSERT OR IGNORE INTO hotword_sets(name, enabled, words_text) VALUES('通用', 1, ?1)",
-                params![words_text],
+                "INSERT INTO hotword_sets(name, enabled, words_text) VALUES('通用', 1, ?1) \
+                 ON CONFLICT(name) DO UPDATE SET words_text = excluded.words_text, updated_at = datetime('now')",
+                params![merged],
             )?;
             conn.execute(
                 "INSERT OR IGNORE INTO hotword_hits(word, hit_count) \
@@ -2681,5 +2690,29 @@ mod tests {
         // pending 词不进 hits
         let n: i64 = conn.query_row("SELECT COUNT(*) FROM hotword_hits", [], |r| r.get(0)).unwrap();
         assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn migrate_v22_merges_into_preexisting_general_set() {
+        // 用户已手建同名「通用」版本（含「浮窗」），迁移应把 active 词并入，而非丢词。
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("PRAGMA user_version = 22", []).unwrap();
+        conn.execute("INSERT INTO hotwords(word, status, source, hit_count) VALUES('八爪鱼','active','manual',3)", []).unwrap();
+        conn.execute("INSERT INTO hotwords(word, status, source, hit_count) VALUES('吴大锐','active','manual',1)", []).unwrap();
+        // 用户预建「通用」，已含「浮窗」
+        conn.execute("INSERT INTO hotword_sets(name, enabled, words_text) VALUES('通用', 1, '浮窗')", []).unwrap();
+
+        init_schema(&conn).unwrap();
+
+        // 合并并集：八爪鱼(BZY) 浮窗(FC) 吴大锐(WDR) → B<F<W
+        let words_text: String = conn
+            .query_row("SELECT words_text FROM hotword_sets WHERE name='通用'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(words_text, "八爪鱼 浮窗 吴大锐");
+
+        // 「通用」仍只有一行（未重复建）
+        let n: i64 = conn.query_row("SELECT COUNT(*) FROM hotword_sets WHERE name='通用'", [], |r| r.get(0)).unwrap();
+        assert_eq!(n, 1);
     }
 }
