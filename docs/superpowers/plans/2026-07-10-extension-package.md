@@ -4,9 +4,9 @@
 
 **Goal:** 引入 Extension Package（`.octopusext` 文件夹），支持 config.yaml 声明元数据 + 执行体 + skill 预留，ZIP 导入到 `~/.octopus/extensions/` 并创建 DB 菜单项。
 
-**Architecture:** Package 文件夹含 `config.yaml`（YAML 元数据）+ 脚本文件 + 资源。导入时校验 config → 解压到 extensions → 创建 `action_bar_items` DB 记录（`action_data` 存脚本绝对路径）。运行时 script 分支通过 `action_data` 前缀区分内联 vs 文件路径，Package 脚本额外设 `OCTOPUS_PACKAGE_DIR` 环境变量。设置页新增扩展子页（拖拽导入 + 卡片列表 + 删除）。
+**Architecture:** Package 文件夹含 `config.yaml`（YAML 元数据）+ 脚本文件 + 资源。导入时仅校验（不复制）→ 保存时 install_extension 复制到 extensions + 创建 `action_bar_items` DB 记录（`action_data` 存脚本绝对路径）。运行时 script 分支通过 `action_data` 前缀区分内联 vs 文件路径，Package 脚本额外设 `OCTOPUS_PACKAGE_DIR` 环境变量。设置页新增菜单编辑（拖拽导入 + 卡片列表 + 删除）。
 
-**Tech Stack:** Rust（serde_yaml + std::fs + zip 解压）、TypeScript / React（ActionBarPanel 扩展子页 + drop zone）
+**Tech Stack:** Rust（serde_yaml + std::fs + zip 解压）、TypeScript / React（ActionBarPanel 菜单编辑 + drop zone）
 
 **Spec:** [`docs/superpowers/specs/2026-07-10-extension-package-design.md`](../specs/2026-07-10-extension-package-design.md)
 
@@ -18,7 +18,7 @@
 - DB `action_data` 存脚本**绝对路径**（以 `/` 开头区分内联脚本）
 - Package 脚本执行时设 `OCTOPUS_PACKAGE_DIR` 环境变量（Package 文件夹绝对路径）
 - 同名文件夹覆盖（升级不创建新 DB 记录）
-- 扩展子页元信息（version/description/skill）从 config.yaml 实时读取，不存 DB
+- 菜单编辑元信息（version/description/skill）从 config.yaml 实时读取，不存 DB
 - skill 块纯声明性——一期仅前端展示 + config 预留，不做 agent 调度
 - 浮窗不区分 Package vs 内联——统一走 `list_action_bar_items`
 
@@ -31,7 +31,7 @@
 | `crates/desktop/src/extensions.rs` | **新建**——Package 加载/校验/导入/删除逻辑 |
 | `crates/desktop/src/action_bar_commands.rs` | spawn_script 适配（文件路径 + OCTOPUS_PACKAGE_DIR） |
 | `crates/desktop/src/main.rs` | invoke_handler 注册新 command |
-| `crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx` | 扩展子页 UI |
+| `crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx` | 菜单编辑 UI |
 
 ---
 
@@ -90,7 +90,7 @@ pub struct PackageSkill {
 fn default_script_type() -> String { "script".into() }
 fn default_true() -> bool { true }
 
-/// 扩展子页展示信息
+/// 菜单编辑展示信息
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ExtensionInfo {
@@ -518,7 +518,7 @@ git commit -m "feat: spawn_script 适配 Package 脚本（文件路径 + OCTOPUS
 
 ---
 
-## Task 4: 前端——扩展子页 UI
+## Task 4: 前端——菜单编辑 UI
 
 **Files:**
 - Modify: `crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx`
@@ -532,7 +532,7 @@ git commit -m "feat: spawn_script 适配 Package 脚本（文件路径 + OCTOPUS
 
 View: `/Users/wudarui/.claude/skills/frontend-design/SKILL.md`
 
-- [x] **Step 2: ExtensionInfo 前端接口 + 扩展子页组件**
+- [x] **Step 2: ExtensionInfo 前端接口 + 菜单编辑组件**
 
 在 ActionBarPanel.tsx 中新增：
 
@@ -631,7 +631,7 @@ Expected: 无错误
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx
-git commit -m "feat(ui): 扩展子页——拖拽导入 + 卡片列表 + 删除"
+git commit -m "feat(ui): 菜单编辑——拖拽导入 + 卡片列表 + 删除"
 ```
 
 ---
@@ -656,7 +656,7 @@ git commit -m "feat(ui): 扩展子页——拖拽导入 + 卡片列表 + 删除"
 
 - [x] **Step 2: architecture.md 更新**
 
-action bar 第 9 点中追加 Extension Package 描述：config.yaml 声明元数据 + 执行体 + skill 预留；ZIP 导入到 ~/.octopus/extensions/；导入 = 创建 DB action_bar_items 记录；spawn_script 通过 action_data 前缀区分内联 vs 文件路径；Package 脚本额外设 OCTOPUS_PACKAGE_DIR。
+action bar 第 9 点中追加 Extension Package 描述：config.yaml 声明元数据 + 执行体 + skill 预留；ZIP 导入到 ~/.octopus/extensions/；导入 = 创建 DB action_bar_items 记录；spawn_script 通过 action_data 是否绝对路径区分内联 vs 文件路径；Package 脚本额外设 OCTOPUS_PACKAGE_DIR。
 
 - [x] **Step 3: spec 交叉引用更新**
 
@@ -680,7 +680,7 @@ e2e 测试驱动的一系列交互重构。
 
 - [x] **Step 1: 扩展包集成进菜单编辑（d92b70f）**
 
-删除独立扩展子页 + ExtensionsPanel 组件（-339 行）。菜单新增子项选类型「扩展包」→ EditForm 出现拖拽区。`actionType=extension` 保存时映射为 DB `script`，加载时 `action_data` 以 `/` 开头逆向映射为 `extension`。
+删除独立菜单编辑 + ExtensionsPanel 组件（-339 行）。菜单新增子项选类型「扩展包」→ EditForm 出现拖拽区。`actionType=extension` 保存时映射为 DB `script`，加载时 `action_data` 以 `/` 开头逆向映射为 `extension`。
 
 - [x] **Step 2: 拖拽改用 Tauri onDragDropEvent（751db97/b152076）**
 
