@@ -127,8 +127,17 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
                 if !output.is_empty() {
                     output.push_str("\n\n");
                 }
-                let texts: Vec<&str> = lines.iter().map(|(t, _, _)| t.as_str()).collect();
-                output.push_str(&reflow_paragraph(&texts));
+                if lines.len() >= 2 {
+                    // 多行正文用 code fence 包裹，保留原始分行（不 reflow）
+                    output.push_str("```\n");
+                    for (t, _, _) in lines {
+                        output.push_str(t);
+                        output.push('\n');
+                    }
+                    output.push_str("```");
+                } else {
+                    output.push_str(&lines[0].0);
+                }
                 prev_was_list = false;
             }
         }
@@ -268,64 +277,10 @@ fn classify_line(text: &str, h: f64, median_h: f64) -> (LineKind, String) {
 
 /// 判断 reflow 时两行之间是否需要插入空格（CJK 感知）。
 /// ASCII↔非 ASCII 边界补空格；CJK↔CJK 不补。
-fn needs_space_between(prev_last: char, curr_first: char) -> bool {
-    prev_last.is_ascii() || curr_first.is_ascii()
-}
-
-/// 将段落的多个文本行 reflow 为一行连续文本，行间按 CJK 感知规则补空格。
-fn reflow_paragraph(lines: &[&str]) -> String {
-    if lines.is_empty() {
-        return String::new();
-    }
-    let mut result = String::from(lines[0].trim());
-    for line in &lines[1..] {
-        let line = line.trim();
-        if line.is_empty() {
-            continue;
-        }
-        let prev_last = result.chars().last();
-        let curr_first = line.chars().next();
-        if let (Some(pl), Some(cf)) = (prev_last, curr_first) {
-            if needs_space_between(pl, cf) {
-                result.push(' ');
-            }
-        }
-        result.push_str(line);
-    }
-    result
-}
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn needs_space_cjk_cjk() {
-        assert!(!needs_space_between('界', '你'));
-    }
-
-    #[test]
-    fn needs_space_cjk_ascii() {
-        assert!(needs_space_between('界', 'H'));
-    }
-
-    #[test]
-    fn needs_space_ascii_cjk() {
-        assert!(needs_space_between('d', '你'));
-    }
-
-    #[test]
-    fn needs_space_ascii_ascii() {
-        assert!(needs_space_between('d', 'W'));
-    }
-
-    #[test]
-    fn needs_space_punctuation() {
-        // 中文标点（。，！）非 ASCII → 不补空格
-        assert!(!needs_space_between('。', '你'));
-        // 英文标点（.,!）是 ASCII → 补空格
-        assert!(needs_space_between('.', 'W'));
-    }
 
     #[test]
     fn empty_blocks() {
@@ -404,47 +359,13 @@ mod tests {
     }
 
     #[test]
-    fn reflow_single_line() {
-        assert_eq!(reflow_paragraph(&["你好"]), "你好");
-    }
-
-    #[test]
-    fn reflow_cjk_lines() {
-        assert_eq!(
-            reflow_paragraph(&["今天天气", "很好我们", "去公园"]),
-            "今天天气很好我们去公园"
-        );
-    }
-
-    #[test]
-    fn reflow_mixed_cjk_ascii() {
-        assert_eq!(
-            reflow_paragraph(&["你好World", "Hello世界"]),
-            "你好World Hello世界"
-        );
-    }
-
-    #[test]
-    fn reflow_english_lines() {
-        assert_eq!(
-            reflow_paragraph(&["The quick", "brown fox"]),
-            "The quick brown fox"
-        );
-    }
-
-    #[test]
-    fn reflow_empty() {
-        assert_eq!(reflow_paragraph(&[]), "");
-    }
-
-    #[test]
-    fn end_to_end_single_paragraph() {
+    fn end_to_end_single_paragraph_fenced() {
         let blocks = vec![
             mk_block("今天天气", 10.0, 0.0, 100.0, 20.0),
             mk_block("很好我们", 10.0, 24.0, 100.0, 20.0),
             mk_block("去公园", 10.0, 48.0, 100.0, 20.0),
         ];
-        assert_eq!(to_markdown(&blocks), "今天天气很好我们去公园");
+        assert_eq!(to_markdown(&blocks), "```\n今天天气\n很好我们\n去公园\n```");
     }
 
     #[test]
@@ -456,7 +377,7 @@ mod tests {
             mk_block("第二段内容", 10.0, 62.0, 100.0, 20.0),
             mk_block("继续", 10.0, 86.0, 100.0, 20.0),
         ];
-        assert_eq!(to_markdown(&blocks), "第一段内容继续\n\n第二段内容继续");
+        assert_eq!(to_markdown(&blocks), "```\n第一段内容\n继续\n```\n\n```\n第二段内容\n继续\n```");
     }
 
     #[test]
@@ -466,7 +387,7 @@ mod tests {
             mk_block("今天讨论了", 10.0, 50.0, 200.0, 20.0),
             mk_block("三个议题", 10.0, 74.0, 200.0, 20.0),
         ];
-        assert_eq!(to_markdown(&blocks), "# 会议纪要\n\n今天讨论了三个议题");
+        assert_eq!(to_markdown(&blocks), "# 会议纪要\n\n```\n今天讨论了\n三个议题\n```");
     }
 
     #[test]
@@ -476,7 +397,7 @@ mod tests {
             mk_block("后端迁移", 10.0, 42.0, 200.0, 20.0),
             mk_block("预计完成", 10.0, 66.0, 200.0, 20.0),
         ];
-        assert_eq!(to_markdown(&blocks), "## 议题一\n\n后端迁移预计完成");
+        assert_eq!(to_markdown(&blocks), "## 议题一\n\n```\n后端迁移\n预计完成\n```");
     }
 
     #[test]
@@ -486,7 +407,7 @@ mod tests {
             mk_block("没有标题", 10.0, 24.0, 100.0, 20.0),
             mk_block("纯正文", 10.0, 48.0, 100.0, 20.0),
         ];
-        assert_eq!(to_markdown(&blocks), "全部等高没有标题纯正文");
+        assert_eq!(to_markdown(&blocks), "```\n全部等高\n没有标题\n纯正文\n```");
     }
 
     #[test]
@@ -516,7 +437,7 @@ mod tests {
             mk_block("正文段落二", 10.0, 24.0, 100.0, 20.0),
             mk_block("• 列表项", 10.0, 70.0, 100.0, 20.0),
         ];
-        assert_eq!(to_markdown(&blocks), "正文段落一正文段落二\n\n- 列表项");
+        assert_eq!(to_markdown(&blocks), "```\n正文段落一\n正文段落二\n```\n\n- 列表项");
     }
 
     #[test]
