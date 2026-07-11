@@ -426,7 +426,7 @@ fn detect_ts_runtime() -> Option<(&'static str, Vec<&'static str>)> {
 
 /// 按 magic comment 分发运行时，spawn 子进程。
 /// capture_output=true 时 stdout/stderr 用 pipe（同步模式），false 时用 null（异步模式）。
-fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option<String>) -> Result<(std::process::Child, String), String> {
+fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option<String>) -> Result<(std::process::Child, String, Option<std::path::PathBuf>), String> {
     use std::process::Stdio;
     let first_line = source.lines().next().unwrap_or("").trim();
     let script: String = source.lines().skip(1).collect::<Vec<_>>().join("\n");
@@ -498,22 +498,41 @@ fn spawn_script(source: &str, text: &str, capture_output: bool, pkg_dir: &Option
     };
 
     let mut cmd = cmd_result?;
-    // 超长选中文本保护——OS ARG_MAX 约 256KB，环境变量超限 spawn 会报 E2BIG
+    // 选中文本传递：≤200KB 用环境变量 OCTOPUS_TEXT；超出写临时文件，
+    // OCTOPUS_TEXT 设为 "_____ULTRA_LONG_TEXT_____:/tmp/octopus-text-xxx" 供消费方读取
+    let mut text_tmp: Option<std::path::PathBuf> = None;
     const TEXT_LIMIT: usize = 200_000;
-    let text_env: std::borrow::Cow<str> = if text.len() > TEXT_LIMIT {
-        log::warn!("[script] OCTOPUS_TEXT truncated: {} > {}", text.len(), TEXT_LIMIT);
-        std::borrow::Cow::Owned(format!("{}...(已截断，原文 {} 字节)", &text[..TEXT_LIMIT], text.len()))
+    if text.len() > TEXT_LIMIT {
+        let tmp_path = std::env::temp_dir().join(format!(
+            "octopus-text-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap_or_default()
+                .as_nanos(),
+        ));
+        if let Err(e) = std::fs::write(&tmp_path, text) {
+            log::warn!("[script] 临时文件写入失败，回退截断: {}", e);
+            let truncated: String = text.chars().take(TEXT_LIMIT).collect();
+            cmd.env("OCTOPUS_TEXT", &truncated);
+        } else {
+            let marker = format!(
+                "_____ULTRA_LONG_TEXT_____:{}",
+                tmp_path.to_string_lossy()
+            );
+            cmd.env("OCTOPUS_TEXT", &marker);
+            text_tmp = Some(tmp_path);
+        }
     } else {
-        std::borrow::Cow::Borrowed(text)
-    };
-    cmd.env("OCTOPUS_TEXT", text_env.as_ref());
+        cmd.env("OCTOPUS_TEXT", text);
+    }
     if let Some(dir) = pkg_dir {
         cmd.env("OCTOPUS_PACKAGE_DIR", dir);
     }
     cmd.stdout(stdout_cfg);
     cmd.stderr(stderr_cfg);
     let child = cmd.spawn().map_err(|e| format!("脚本执行失败: {}", e))?;
-    Ok((child, first_line.to_string()))
+    Ok((child, first_line.to_string(), text_tmp))
 }
 
 /// 轮询等待子进程退出，60 秒超时强杀。并发读取 stdout/stderr 防管道死锁。
@@ -594,11 +613,13 @@ fn now_iso8601() -> String {
 
 /// 异步执行脚本——spawn 后立即返回，后台线程收割并落库
 fn run_script_async(source: &str, text: &str, item_id: i64, pkg_dir: Option<String>) -> Result<(), String> {
-    let (child, script_type) = spawn_script(source, text, false, &pkg_dir)?;
+    let (child, script_type, text_tmp) = spawn_script(source, text, false, &pkg_dir)?;
     let started = std::time::Instant::now();
     let started_at = now_iso8601();
     std::thread::spawn(move || {
         let result = wait_forever(child);
+        // 清理超长文本临时文件
+        if let Some(ref p) = text_tmp { let _ = std::fs::remove_file(p); }
         let duration_ms = started.elapsed().as_millis() as i64;
         let finished_at = now_iso8601();
         let error_msg = script_error_msg(&result);
@@ -613,15 +634,15 @@ fn run_script_async(source: &str, text: &str, item_id: i64, pkg_dir: Option<Stri
 
 /// 同步执行脚本（阻塞）——等待完成，返回结果并落库
 fn run_script_sync_blocking(source: &str, text: &str, item_id: i64, pkg_dir: Option<String>) -> Result<ScriptResult, String> {
-    let (child, script_type) = spawn_script(source, text, true, &pkg_dir)?;
+    let (child, script_type, text_tmp) = spawn_script(source, text, true, &pkg_dir)?;
     let started = std::time::Instant::now();
     let started_at = now_iso8601();
     let mut result = wait_with_timeout(child);
+    // 清理超长文本临时文件
+    if let Some(ref p) = text_tmp { let _ = std::fs::remove_file(p); }
     let duration_ms = started.elapsed().as_millis() as i64;
     let finished_at = now_iso8601();
-    let error_msg = if result.timed_out { "执行超时（60秒）".to_string() }
-        else if result.exit_code.is_none() { "进程异常退出".to_string() }
-        else { String::new() };
+    let error_msg = script_error_msg(&result);
     let _ = octopus_infra::db::insert_script_run(
         item_id, &script_type, result.exit_code,
         &result.stdout, &result.stderr, &error_msg,
