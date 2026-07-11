@@ -19,7 +19,7 @@
 
 ### 目标
 
-OCR 输出 Markdown 纯文本，保留原文档的段落 / 列表 / 标题结构，段内 reflow 成连续文本。输出直接存入 `clipboard_history.content`，CompactEditor 和 AI 动作零改动受益。
+OCR 输出 Markdown 纯文本，保留原文档的段落 / 列表 / 标题结构，多行正文用 code fence 包裹保留原始分行。输出直接存入 `clipboard_history.content`，CompactEditor 和 AI 动作零改动受益。
 
 ### 非目标
 
@@ -266,15 +266,17 @@ CompactEditor 是 `contentEditable` div，直接吃 Markdown 纯文本。`\n\n` 
 | 用例 | 输入 | 预期输出 |
 |------|------|----------|
 | 块数不足（< 3） | 2 个等高 block | `\n\n` 连接，无标题检测 |
-| 单段落 reflow（CJK） | 3 行同高、同 x、小间距 | 一行连续 CJK 文本 |
-| 单段落 reflow（中英混排） | 行末 ASCII + 行首 CJK | 正确补空格 |
-| 两段落 | 3 行 + 大间距 + 2 行 | 两个 `\n\n` 分隔的段落 |
-| H1 标题检测 | 1 行高 1.8x + 3 行高 1.0x | `# title` + 正文 |
-| H2 标题检测 | 1 行高 1.4x + 3 行高 1.0x | `## title` + 正文 |
-| 无标题（等高） | 全部等高 | 纯段落，无 `#` |
+| 单段落 code fence（CJK） | 3 行同高、同 x、小间距 | ` ``` ` 包裹保留分行 |
+| 两段落 | 3 行 + 大间距 + 2 行 | 两个 code fence 块，`\n\n` 分隔 |
+| H1 标题检测 | 1 行高 1.8x + 3 行高 1.0x | `# title` + code fence 正文 |
+| H2 标题检测 | 1 行高 1.4x + 3 行高 1.0x | `## title` + code fence 正文 |
+| 无标题（等高） | 全部等高 | 纯 code fence 段落，无 `#` |
 | 无序列表（`•` 标记） | 3 行 `• xxx` | 3 行 `- xxx` |
 | 有序列表（`①②③`） | 3 行 `①xxx` | 3 行 `1. 2. 3.` |
-| 列表 + 段落混合 | 段落 + 列表 + 段落 | 三块 `\n\n` 分隔，列表内单 `\n` |
+| 中文顿号有序列表 | `1、第一项` | `1. 第一项` |
+| 全角分隔符 | `1．第一项` / `2）第二项` | `1. ` / `2. ` |
+| 列表间距切分 | 两组列表大间距 | `\n\n` 分隔 + 重编号 |
+| 列表 + 段落混合 | 段落 + 列表 | `\n\n` 分隔 |
 | 空文本 block | 中间混入空 text block | 跳过空 block |
 
 ### 7.2 集成验证
@@ -290,8 +292,8 @@ CompactEditor 是 `contentEditable` div，直接吃 Markdown 纯文本。`\n\n` 
 
 | 文件 | 变更 |
 |------|------|
-| `crates/ocr/src/layout.rs` | **新增**：`to_markdown` + 分类 + 聚类 + reflow + tests |
-| `crates/ocr/src/engine.rs` | `recognize` / `recognize_with_blocks` 统一走 blocks → `to_markdown`；移除 `recognize_image` / `recognize_long_image` |
+| `crates/ocr/src/layout.rs` | **新增**：`to_markdown` + 分类 + 聚类 + code fence + tests |
+| `crates/ocr/src/engine.rs` | `recognize` / `recognize_with_blocks` 统一走 blocks → `to_markdown`；新增 `recognize_with_blocks_from_image`；移除 `recognize_image` / `recognize_long_image`；`segment_english_words` min_len 3→1 + 删除尾部 merge |
 | `crates/ocr/src/lib.rs` | `pub mod layout`（如需） |
 | `docs/features/ocr.md` | 更新 §4 后处理：新增 Markdown 布局感知 |
 

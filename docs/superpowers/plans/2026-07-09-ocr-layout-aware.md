@@ -1,6 +1,6 @@
 # OCR 布局感知 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 截图/图片 OCR 输出从扁平文本升级为结构化 Markdown（段落 + 列表 + 标题），段内 reflow，提升「截图→AI」输入质量。
 
@@ -44,7 +44,7 @@
 - Produces: `fn needs_space_between(prev_last_char: char, curr_first_char: char) -> bool`
 - Consumes: `crate::engine::OcrBlock`（`text: String, x: f64, y: f64, w: f64, h: f64, score: f64`）
 
-- [ ] **Step 1: 在 lib.rs 声明模块**
+- [x] **Step 1: 在 lib.rs 声明模块**
 
 `crates/ocr/src/lib.rs` 当前内容（完整文件）：
 
@@ -61,7 +61,7 @@ pub mod layout;
 pub mod model;
 ```
 
-- [ ] **Step 2: 创建 layout.rs——常量 + 桩函数 + 空格判定 + 测试**
+- [x] **Step 2: 创建 layout.rs——常量 + 桩函数 + 空格判定 + 测试**
 
 写入 `crates/ocr/src/layout.rs`：
 
@@ -139,12 +139,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 Run: `cargo test -p octopus-ocr --lib layout::tests`
 Expected: 6 tests pass
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/ocr/src/layout.rs crates/ocr/src/lib.rs
@@ -165,7 +165,7 @@ git commit -m "feat(ocr): layout.rs 骨架 + CJK/ASCII 空格判定"
 - Produces: `fn strip_unordered_marker(text: &str) -> Option<&str>`
 - Produces: `fn strip_ordered_marker(text: &str) -> Option<(usize, &str)>`
 
-- [ ] **Step 1: 在 needs_space_before 之前添加 median + LineKind + 列表标记 + classify_line**
+- [x] **Step 1: 在 needs_space_before 之前添加 median + LineKind + 列表标记 + classify_line**
 
 在 `to_markdown` 函数之后、`needs_space_between` 之前插入：
 
@@ -299,7 +299,7 @@ fn classify_line(text: &str, h: f64, median_h: f64) -> (LineKind, String) {
 }
 ```
 
-- [ ] **Step 2: 在 tests mod 添加分类测试**
+- [x] **Step 2: 在 tests mod 添加分类测试**
 
 在 `tests` mod 内（`empty_blocks` test 之后）追加：
 
@@ -376,12 +376,12 @@ fn classify_line(text: &str, h: f64, median_h: f64) -> (LineKind, String) {
     }
 ```
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 Run: `cargo test -p octopus-ocr --lib layout::tests`
 Expected: 全部 pass（原 6 + 新 10 = 16 tests）
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/ocr/src/layout.rs
@@ -399,7 +399,7 @@ git commit -m "feat(ocr): 基线计算 + 逐行分类（标题/列表/正文）"
 - Produces: `fn reflow_paragraph(lines: &[&str]) -> String`
 - Produces: `to_markdown` 的完整实现（替换 Task 1 的桩）
 
-- [ ] **Step 1: 用完整实现替换 to_markdown 桩函数**
+- [x] **Step 1: 用完整实现替换 to_markdown 桩函数**
 
 将 Task 1 的 `to_markdown` 函数替换为：
 
@@ -524,7 +524,7 @@ pub fn to_markdown(blocks: &[OcrBlock]) -> String {
 }
 ```
 
-- [ ] **Step 2: 在 needs_space_between 后添加 reflow_paragraph**
+- [x] **Step 2: 在 needs_space_between 后添加 reflow_paragraph**
 
 ```rust
 /// 将段落的多个文本行 reflow 为一行连续文本，行间按 CJK 感知规则补空格。
@@ -551,7 +551,7 @@ fn reflow_paragraph(lines: &[&str]) -> String {
 }
 ```
 
-- [ ] **Step 3: 在 tests mod 添加 reflow + 端到端测试**
+- [x] **Step 3: 在 tests mod 添加 reflow + 端到端测试**
 
 在 `tests` mod 末尾（`classify_title_takes_priority_over_list` 之后）追加：
 
@@ -691,12 +691,12 @@ fn reflow_paragraph(lines: &[&str]) -> String {
     }
 ```
 
-- [ ] **Step 4: 运行测试**
+- [x] **Step 4: 运行测试**
 
 Run: `cargo test -p octopus-ocr --lib layout::tests`
 Expected: 全部 pass（原 16 + 新 14 = 30 tests）
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/ocr/src/layout.rs
@@ -712,7 +712,7 @@ git commit -m "feat(ocr): 段落聚类 + reflow + Markdown 拼装"
 - Modify: `crates/ocr/src/engine.rs:163-173`（recognize_with_blocks）
 - Modify: `crates/ocr/src/engine.rs:251-260`（移除 recognize_image / recognize_long_image）
 
-- [ ] **Step 1: 修改 recognize——走 with_blocks 路径 + to_markdown**
+- [x] **Step 1: 修改 recognize——走 with_blocks 路径 + to_markdown**
 
 将 `engine.rs:152-161`：
 
@@ -744,7 +744,7 @@ git commit -m "feat(ocr): 段落聚类 + reflow + Markdown 拼装"
     }
 ```
 
-- [ ] **Step 2: 修改 recognize_with_blocks——text 用 to_markdown**
+- [x] **Step 2: 修改 recognize_with_blocks——text 用 to_markdown**
 
 将 `engine.rs:163-173`：
 
@@ -778,7 +778,7 @@ git commit -m "feat(ocr): 段落聚类 + reflow + Markdown 拼装"
     }
 ```
 
-- [ ] **Step 3: 移除 recognize_image / recognize_long_image**
+- [x] **Step 3: 移除 recognize_image / recognize_long_image**
 
 删除 `engine.rs:251-260`（recognize 改走 with_blocks 后这两个方法无调用方）：
 
@@ -795,22 +795,22 @@ git commit -m "feat(ocr): 段落聚类 + reflow + Markdown 拼装"
     }
 ```
 
-- [ ] **Step 4: 编译检查**
+- [x] **Step 4: 编译检查**
 
 Run: `cargo build -p octopus-ocr 2>&1 | tail -5`
 Expected: 编译通过
 
-- [ ] **Step 5: 运行 OCR crate 全部测试**
+- [x] **Step 5: 运行 OCR crate 全部测试**
 
 Run: `cargo test -p octopus-ocr`
 Expected: 全部 pass
 
-- [ ] **Step 6: 全 workspace 编译检查**
+- [x] **Step 6: 全 workspace 编译检查**
 
 Run: `cargo build --release -p octopus-server -p octopus-cli 2>&1 | tail -5`
 Expected: 编译通过
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/ocr/src/engine.rs
@@ -824,7 +824,7 @@ git commit -m "feat(ocr): recognize 返回 Markdown，移除冗余纯文本方�
 **Files:**
 - Modify: `docs/features/ocr.md:82`（§6 后处理表格，`segment_english_words` 行之后）
 
-- [ ] **Step 1: 在 ocr.md §6 表格后追加布局感知说明**
+- [x] **Step 1: 在 ocr.md §6 表格后追加布局感知说明**
 
 找到 `docs/features/ocr.md` 中的 `segment_english_words` 行：
 
@@ -852,7 +852,7 @@ git commit -m "feat(ocr): recognize 返回 Markdown，移除冗余纯文本方�
 块数 < 3 时不分析布局，直接 `\n\n` join。`recognize` / `recognize_with_blocks` 返回的 String 语义从扁平文本变为 Markdown，消费端（DB content / CompactEditor / AI 输入）零改动受益。前端 ImagePreview 叠加不受影响（blocks 仍是原始 det 框）。
 ```
 
-- [ ] **Step 2: Commit**
+- [x] **Step 2: Commit**
 
 ```bash
 git add docs/features/ocr.md
@@ -865,22 +865,22 @@ git commit -m "docs(ocr): 布局感知 Markdown 输出说明"
 
 **Files:** 无代码改动——验证已有链路
 
-- [ ] **Step 1: 全 workspace 编译（含 desktop）**
+- [x] **Step 1: 全 workspace 编译（含 desktop）**
 
 Run: `cargo build --release -p octopus-desktop --features embedded 2>&1 | tail -5`
 Expected: 编译通过
 
-- [ ] **Step 2: 全 crate 测试**
+- [x] **Step 2: 全 crate 测试**
 
 Run: `cargo test -p octopus-ocr`
 Expected: 全部 pass
 
-- [ ] **Step 3: 搜索确认无残留调用**
+- [x] **Step 3: 搜索确认无残留调用**
 
 Run: `rg "recognize_image\b|recognize_long_image\b" crates/ --type rust | grep -v "with_blocks"`
 Expected: 无输出（确认移除的方法无残留调用）
 
-- [ ] **Step 4: 确认 recognize 调用点不受影响**
+- [x] **Step 4: 确认 recognize 调用点不受影响**
 
 Run: `rg "\.recognize" crates/ --type rust | grep -v test | grep -v "with_blocks"`
 Expected: `recognize` 返回值直接进 DB content / CompactEditor / AI 输入，Markdown 语义对消费端透明
