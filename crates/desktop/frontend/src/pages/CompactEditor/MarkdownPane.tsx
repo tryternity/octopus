@@ -207,7 +207,7 @@ export function MarkdownPane({
           className="min-h-0 min-w-0 flex flex-col overflow-hidden"
           style={{ display: viewMode === "editor" ? "none" : "flex" }}
         >
-          <MarkdownPreview source={text} />
+          <MarkdownPreview source={text} fontSize={fontSize} />
         </div>
       </div>
     </div>

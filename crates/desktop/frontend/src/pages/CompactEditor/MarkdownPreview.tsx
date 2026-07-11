@@ -5,6 +5,7 @@ import { t } from "@/lib/i18n";
 
 interface MarkdownPreviewProps {
   source: string;
+  fontSize?: number;
 }
 
 function useDebounced<T>(value: T, delayMs: number): T {
@@ -48,7 +49,7 @@ function decorateCodeBlocks(root: HTMLElement): () => void {
   return () => cleanups.forEach((fn) => fn());
 }
 
-export function MarkdownPreview({ source }: MarkdownPreviewProps) {
+export function MarkdownPreview({ source, fontSize }: MarkdownPreviewProps) {
   const debouncedSource = useDebounced(source, 150);
   const [html, setHtml] = useState("");
   const articleRef = useRef<HTMLElement>(null);
@@ -98,7 +99,7 @@ export function MarkdownPreview({ source }: MarkdownPreviewProps) {
   }
 
   return (
-    <div className="md-preview flex-1 overflow-auto p-5" style={{ userSelect: "text" }}>
+    <div className="md-preview flex-1 overflow-auto p-5" style={{ userSelect: "text", fontSize: fontSize ? `${fontSize}px` : undefined }}>
       <article ref={articleRef} className="md-prose" />
     </div>
   );
