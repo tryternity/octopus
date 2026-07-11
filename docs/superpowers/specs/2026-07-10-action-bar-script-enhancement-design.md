@@ -225,22 +225,24 @@ script: {
 ### 5.3 DB 命令签名变更
 
 ```rust
-// insert 新增两参数
+// insert 签名（is_async + write_output_to_clipboard 为本 spec 新增；shortcut 为局部快捷键 spec 新增）
 pub fn insert_action_bar_item(
     parent_id: Option<i64>, title: &str, icon: &str,
     action_type: &str, action_data: &str,
-    is_async: bool, write_output_to_clipboard: bool,  // 新增
+    is_async: bool, write_output_to_clipboard: bool,
+    shortcut: &str,  // 局部快捷键 spec 新增
 ) -> Result<i64>;
 
-// update 新增两参数
+// update 签名
 pub fn update_action_bar_item(
     id: i64, title: &str, icon: &str,
     action_type: &str, action_data: &str, is_enabled: bool,
-    is_async: bool, write_output_to_clipboard: bool,  // 新增
+    is_async: bool, write_output_to_clipboard: bool,
+    shortcut: &str,  // 局部快捷键 spec 新增
 ) -> Result<()>;
 ```
 
-Tauri command `create_action_bar_item` / `update_action_bar_item` 对应新增两参数。
+Tauri command `create_action_bar_item` / `update_action_bar_item` 对应新增参数。
 
 ---
 
