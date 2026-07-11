@@ -4,18 +4,21 @@ type Options = {
   editorSelector?: string;
   previewSelector?: string;
   rebindKey?: unknown;
+  enabled?: boolean;
 };
 
 /**
  * 比例双向滚动同步。rAF 节流 + echo 计数防回环。
- * 借鉴 marka.md use-sync-scroll.ts。
+ * enabled=false 时不绑定任何事件（单视窗模式省 CPU）。
  */
 export function useSyncScroll({
   editorSelector = ".md-cm-editor .cm-scroller",
   previewSelector = ".md-preview",
   rebindKey,
+  enabled = true,
 }: Options = {}): void {
   useEffect(() => {
+    if (!enabled) return;
     let editor: HTMLElement | null = null;
     let preview: HTMLElement | null = null;
     let rafId: number | undefined;
@@ -72,5 +75,5 @@ export function useSyncScroll({
       if (editor && onEditor) editor.removeEventListener("scroll", onEditor);
       if (preview && onPreview) preview.removeEventListener("scroll", onPreview);
     };
-  }, [editorSelector, previewSelector, rebindKey]);
+  }, [editorSelector, previewSelector, rebindKey, enabled]);
 }

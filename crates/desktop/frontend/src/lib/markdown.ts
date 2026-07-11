@@ -46,6 +46,14 @@ md.renderer.rules.heading_open = (tokens, idx, options, _env, self) => {
   return self.renderToken(tokens, idx, options);
 };
 
+// 代码块渲染：包裹 .md-codeblock 容器 + 声明式复制按钮（消除命令式 DOM 注入）
+// 按钮文案由 MarkdownPreview 事件委托在点击时动态更新（初始文本为中性占位）
+const defaultCodeBlockRender = md.renderer.rules.code_block || ((tokens, idx, options, _env, self) => self.renderToken(tokens, idx, options));
+md.renderer.rules.code_block = (tokens, idx, options, env, self) => {
+  const pre = defaultCodeBlockRender(tokens, idx, options, env, self);
+  return `<div class="md-codeblock">${pre}<button type="button" class="md-copy-btn" data-copy>copy</button></div>`;
+};
+
 /** 同步渲染 markdown → HTML（无 Shiki 异步加载） */
 export function renderMarkdown(src: string): string {
   return md.render(src);
