@@ -18,8 +18,7 @@ export function Splitter({ left, right, ratio, onRatioChange, showRight }: Split
   const onPointerDown = useCallback((e: React.PointerEvent<HTMLDivElement>) => {
     draggingRef.current = true;
     (e.target as HTMLElement).setPointerCapture(e.pointerId);
-    document.body.style.cursor = "col-resize";
-    document.body.style.userSelect = "none";
+    document.documentElement.classList.add("md-splitter-dragging");
   }, []);
 
   const onPointerMove = useCallback(
@@ -41,14 +40,12 @@ export function Splitter({ left, right, ratio, onRatioChange, showRight }: Split
     } catch {
       // pointer may already be released
     }
-    document.body.style.cursor = "";
-    document.body.style.userSelect = "";
+    document.documentElement.classList.remove("md-splitter-dragging");
   }, []);
 
   useEffect(() => {
     return () => {
-      document.body.style.cursor = "";
-      document.body.style.userSelect = "";
+      document.documentElement.classList.remove("md-splitter-dragging");
     };
   }, []);
 
