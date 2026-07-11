@@ -296,7 +296,7 @@ function Result() {
       id="result-container"
       className={cn(
         "absolute top-0 left-1/2 -translate-x-1/2 rounded-lg border border-black/[0.08] shadow-lg shadow-black/[0.06] flex flex-col overflow-hidden transition-all duration-200 ease-out",
-        expanded ? "w-[720px] h-[480px]" : "w-[520px] h-[116px]",
+        expanded ? "w-[720px] h-[480px]" : "w-[720px] h-[116px]",
         visible ? "opacity-100" : "opacity-0",
       )}
       style={{ backgroundColor: "var(--color-surface)" }}

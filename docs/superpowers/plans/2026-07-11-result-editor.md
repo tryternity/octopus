@@ -1023,4 +1023,8 @@ git commit -m "docs: 更新 architecture.md——ASR 结果框 CM6 改造"
 - **Bug 8: rebuild_segments 边界 clamp** → dirty ranges clamp 到 `[0, total]` 防越界 Panic
 - **Bug 9: hasEdited 重置顺序** → `doCommit` 先读 `hasEdited` 到局部变量再重置 ref
 - **Bug 10: rebuild_segments clean 区段 kind 退化** → 从 `segment_kind_at_offset` 单一 kind → `append_clean_range` 子串匹配 → 最终改为**字符级 walk**（构建 old_flat 逐字符 kind 映射，clean 区域逐字符匹配跳过被删字符保留原 kind）
-- **后端注释遗留**：coordinator.rs 中 `update_edit_buffer` 注释已过时（命令已移除），后续清理
+- **后端注释遗留**：coordinator.rs 中 `update_edit_buffer` 注释已过时（命令已移除），已清理
+
+### 音频缓冲保留（编辑期间不丢字）
+
+- 编辑期间 `drain_samples()` → `trim_buffer(5.0)`：不再丢弃全部音频，每 tick 仅保留最后 5 秒原始音频。idle commit 恢复后第一个 tick `drain_samples` 拿到这 5 秒送 ASR，VAD 自动截掉开头静音段——用户编辑后立即说话不丢字（满足"嘴比手快"场景）。新增 `SharedAudioState::trim_buffer(keep_seconds)` 方法（`Vec::drain` 丢头部保留尾部）。
