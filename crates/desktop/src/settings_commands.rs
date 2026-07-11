@@ -242,6 +242,13 @@ fn apply_config_value(
             }
             cfg.language = v.to_string();
         }
+        "ui_language" => {
+            let v = value.as_str().ok_or("ui_language 需要字符串")?;
+            if !["zh-CN", "en"].contains(&v) {
+                return Err(format!("ui_language 非法值 '{}'（应为 zh-CN/en）", v));
+            }
+            cfg.ui_language = v.to_string();
+        }
         "engine_mode" => {
             let v = value.as_str().ok_or("engine_mode 需要字符串")?;
             if !["embedded", "websocket", "grpc"].contains(&v) {

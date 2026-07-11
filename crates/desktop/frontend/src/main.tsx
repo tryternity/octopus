@@ -2,11 +2,12 @@ import { createRoot } from 'react-dom/client'
 import './index.css'
 import App from './App.tsx'
 import { restoreCachedTheme } from './lib/theme'
+import { initI18n } from './lib/i18n'
 
 // 从 localStorage 同步恢复主题（零 IPC，微秒级）
 restoreCachedTheme()
 
-// 背景色已由 index.html <head> 脚本从 URL bg 参数注入（裸 hex，零 CSS 依赖）。
-// 不在此处设背景色——避免与 index.html 逻辑冲突。
-
-createRoot(document.getElementById('root')!).render(<App />)
+// 初始化 i18n（从后端 config 读 ui_language），完成后渲染
+initI18n().finally(() => {
+  createRoot(document.getElementById('root')!).render(<App />)
+})

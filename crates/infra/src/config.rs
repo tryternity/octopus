@@ -75,6 +75,10 @@ pub struct AppConfig {
     #[serde(default = "default_language")]
     pub language: String,
 
+    /// UI 界面语言: zh-CN | en
+    #[serde(default = "default_ui_language")]
+    pub ui_language: String,
+
     /// 全局 ASR 激活/关闭快捷键
     #[serde(default = "default_asr_shortcut")]
     pub asr_shortcut: String,
@@ -234,6 +238,9 @@ fn default_grpc_endpoint() -> String {
 fn default_language() -> String {
     "auto".into()
 }
+fn default_ui_language() -> String {
+    "zh-CN".into()
+}
 fn default_asr_shortcut() -> String {
     "CmdOrCtrl+Shift+A".into()
 }
@@ -331,6 +338,7 @@ impl Default for AppConfig {
             // 未配置 asr_engine → 空，由 asr::resolve_active_engine 回退 to 兜底引擎
             asr_engine: String::new(),
             language: default_language(),
+            ui_language: default_ui_language(),
             asr_shortcut: default_asr_shortcut(),
             paste_method: default_paste_method(),
             write_to_clipboard: default_write_to_clipboard(),

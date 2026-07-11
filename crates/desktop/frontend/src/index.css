@@ -158,3 +158,123 @@ html, body {
   animation: asr-caret-blink 1s steps(1) infinite;
   pointer-events: none;
 }
+
+/* ── Markdown 预览排版 ── */
+.md-prose {
+  max-width: 720px;
+  margin: 0 auto;
+  color: var(--color-foreground);
+  font-size: 15px;
+  line-height: 1.65;
+}
+.md-prose > * + * { margin-top: 1em; }
+.md-prose h1, .md-prose h2, .md-prose h3, .md-prose h4 {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+  line-height: 1.25;
+  margin-top: 1.6em;
+}
+.md-prose h1 {
+  font-size: 1.8em;
+  margin-top: 0;
+  padding-bottom: 0.35em;
+  border-bottom: 1px solid var(--color-border);
+}
+.md-prose h2 { font-size: 1.32em; }
+.md-prose h3 { font-size: 1.1em; }
+.md-prose h4 { font-size: 1em; color: var(--color-muted-foreground); }
+.md-prose a {
+  color: var(--color-voice, #d97706);
+  text-decoration: none;
+  border-bottom: 1px solid color-mix(in srgb, var(--color-voice, #d97706) 40%, transparent);
+}
+.md-prose a:hover { border-bottom-color: var(--color-voice, #d97706); }
+.md-prose code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.86em;
+  padding: 1.5px 6px;
+  border-radius: 4px;
+  background: var(--color-muted);
+  border: 1px solid var(--color-border);
+}
+.md-prose pre {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.85em;
+  line-height: 1.6;
+  padding: 14px 16px;
+  border-radius: 8px;
+  border: 1px solid var(--color-border);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  background: var(--color-muted);
+  margin: 0;
+}
+.md-prose pre code {
+  background: transparent;
+  border: 0;
+  padding: 0;
+  font-size: inherit;
+  white-space: inherit;
+}
+.md-prose blockquote {
+  border-left: 3px solid var(--color-voice, #d97706);
+  padding-left: 1em;
+  color: var(--color-muted-foreground);
+  margin: 0;
+}
+.md-prose table { border-collapse: collapse; width: 100%; }
+.md-prose th, .md-prose td { border: 1px solid var(--color-border); padding: 6px 12px; text-align: left; }
+.md-prose img { max-width: 100%; border-radius: 8px; }
+
+.md-codeblock { position: relative; }
+.md-copy-btn {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  display: inline-flex;
+  align-items: center;
+  font-size: 11px;
+  padding: 3px 8px;
+  border-radius: 4px;
+  border: 1px solid var(--color-border);
+  background: var(--color-background);
+  color: var(--color-muted-foreground);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms;
+}
+.md-codeblock:hover .md-copy-btn { opacity: 1; }
+.md-copy-btn:hover { color: var(--color-foreground); border-color: var(--color-muted-foreground); }
+
+.md-mermaid-pending {
+  font-family: ui-monospace, monospace;
+  font-size: 0.85em;
+  color: var(--color-muted-foreground);
+}
+
+.md-cm-editor .cm-scroller {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
+}
+.md-cm-editor .cm-scroller::-webkit-scrollbar { width: 8px; height: 8px; }
+.md-cm-editor .cm-scroller::-webkit-scrollbar-track { background: transparent; }
+.md-cm-editor .cm-scroller::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.35); border-radius: 4px; }
+.md-cm-editor .cm-scroller::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.6); }
+
+.md-preview {
+  scrollbar-width: thin;
+  scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
+}
+.md-preview::-webkit-scrollbar { width: 8px; }
+.md-preview::-webkit-scrollbar-track { background: transparent; }
+.md-preview::-webkit-scrollbar-thumb { background: rgba(128, 128, 128, 0.35); border-radius: 4px; }
+.md-preview::-webkit-scrollbar-thumb:hover { background: rgba(128, 128, 128, 0.6); }
+
+.md-cm-editor .cm-editor { height: 100%; flex: 1; min-height: 0; }
+
+/* Splitter 拖拽中：强制全局 col-resize 光标，覆盖 CM6 等子元素自带 cursor */
+.md-splitter-dragging * {
+  cursor: col-resize !important;
+  user-select: none !important;
+}
