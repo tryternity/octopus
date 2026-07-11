@@ -1,6 +1,6 @@
 # Action Bar 脚本增强——实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> ✅ **已实现**（2026-07-10/11，commit `5a0bef54`…`3e29b986` 多轮审查修复）。所有 Task 已完成、checkbox 已勾选。下方为原始实施计划，保留作执行记录。
 
 **Goal:** 为 action bar 脚本执行新增 JS/TS 运行时支持、执行结果捕获落库、异步/同步模式选择、脚本执行记录管理界面。
 

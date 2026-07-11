@@ -1,6 +1,6 @@
 # Extension Package 格式——实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> ✅ **已实现**（2026-07-10/11，commit `e385053b`…`8bafe1f8` + `a3de0fbf` 集成进菜单编辑）。所有 Task 已完成、checkbox 已勾选。下方为原始实施计划，保留作执行记录。
 
 **Goal:** 引入 Extension Package（`.octopusext` 文件夹），支持 config.yaml 声明元数据 + 执行体 + skill 预留，ZIP 导入到 `~/.octopus/extensions/` 并创建 DB 菜单项。
 
