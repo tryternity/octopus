@@ -306,7 +306,7 @@ fn build_coordinator_loop(
                             transcript.set_mode(config.polish_mode);
                         }
                         if editing {
-                            audio.trim_buffer(2.0); // 编辑期保留最后 2 秒音频（恢复后送 ASR，VAD 截静音）
+                            audio.trim_buffer(5.0); // 编辑期保留最后 5 秒音频（恢复后送 ASR，VAD 截静音）
                         } else {
                             dispatch_tick(&mut stage, &audio, &config, &app_handle, &tx);
                         }
@@ -321,7 +321,7 @@ fn build_coordinator_loop(
                             transcript.set_mode(config.polish_mode);
                         }
                         if editing {
-                            audio.trim_buffer(2.0);
+                            audio.trim_buffer(5.0);
                         } else {
                             dispatch_tick(&mut stage, &audio, &config, &app_handle, &tx);
                         }
@@ -337,7 +337,7 @@ fn build_coordinator_loop(
                             transcript.set_mode(config.polish_mode);
                         }
                         if editing {
-                            audio.trim_buffer(2.0);
+                            audio.trim_buffer(5.0);
                         } else {
                             dispatch_tick(&mut stage, &audio, &config, &app_handle, &tx);
                         }
