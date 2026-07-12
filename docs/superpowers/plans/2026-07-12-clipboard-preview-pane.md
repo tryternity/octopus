@@ -526,3 +526,6 @@ git commit -m "docs: 剪贴板预览面板完成，更新 architecture + spec"
 | 预览窗口尺寸 360px | 改为 200×200px | 在 300px 窗口内，200px 宽已足够；高度 1/3 避免遮挡过多 |
 | 默认开启 | 改为默认关闭，localStorage 记住选择 | 用户可按需开启，避免默认遮挡列表 |
 | capabilities + Rust 模块 | 不需要 | overlay 纯前端，无 Rust 改动 |
+| 预览无截断 | 长文本 >500 字截断 + … | 万字级文本一次性渲染 DOM 卡顿 |
+| hover 与键盘导航冲突 | 键盘 ↑↓ 时 keyboardNavRef 屏蔽 mouseEnter 300ms | scrollIntoView 滚动误触 onMouseEnter 抢回旧选中位置 |
+
