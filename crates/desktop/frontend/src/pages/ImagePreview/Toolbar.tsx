@@ -3,6 +3,7 @@ import {
   ZoomIn, ZoomOut, Expand, MoveHorizontal,
 } from "lucide-react";
 import { type Tool, PRESET_COLORS } from "@/lib/annotation";
+import { useT } from "@/lib/i18n";
 
 // SVG 图标 img（与截图工具一致，激活时变白）
 const SvgIcon = ({ src, alt, active }: { src: string; alt: string; active?: boolean }) => (
@@ -80,6 +81,7 @@ export default function Toolbar(props: {
   useEffect(() => { setShowPopover(false); }, [props.popoverDismissKey]);
 
   const [popoverLeft, setPopoverLeft] = useState(0);
+  const t = useT();
 
   const isText = props.tool === "text";
   const isBlur = props.tool === "blur";
@@ -88,7 +90,7 @@ export default function Toolbar(props: {
   const setSize = isText ? props.setToolFontSize : props.setToolWidth;
   const min = isText ? 10 : 1;
   const max = isText ? 48 : 10;
-  const label = isText ? "字号" : isBlur ? "遮挡" : "粗细";
+  const label = isText ? t("imagePreview.props.fontSize") : isBlur ? t("imagePreview.props.mosaic") : t("imagePreview.props.thickness");
 
   // 标注工具点击：已激活→收起浮窗+切回 none；未激活→切换工具+弹出浮窗
   const onToolClick = (key: Tool, e: React.MouseEvent<HTMLButtonElement>) => {
@@ -116,16 +118,16 @@ export default function Toolbar(props: {
   };
 
   const tools: { key: Tool; icon: React.ReactNode; title: string }[] = [
-    { key: "none", icon: <SvgIcon src="icons/arrow-pointer.svg" alt="选择" active={props.tool === "none"} />, title: "选择/移动" },
-    { key: "rect", icon: <SvgIcon src="icons/square.svg" alt="矩形" active={props.tool === "rect"} />, title: "矩形" },
-    { key: "oval", icon: <SvgIcon src="icons/circle.svg" alt="椭圆" active={props.tool === "oval"} />, title: "椭圆" },
-    { key: "diamond", icon: <SvgIcon src="icons/diamond.svg" alt="菱形" active={props.tool === "diamond"} />, title: "菱形" },
-    { key: "line", icon: <SvgIcon src="icons/straight-line.svg" alt="直线" active={props.tool === "line"} />, title: "直线" },
-    { key: "arrow", icon: <SvgIcon src="icons/arrow-line.svg" alt="箭头" active={props.tool === "arrow"} />, title: "箭头" },
-    { key: "pen", icon: <SvgIcon src="icons/sketching.svg" alt="画笔" active={props.tool === "pen"} />, title: "画笔（自由曲线）" },
-    { key: "text", icon: <SvgIcon src="icons/text.svg" alt="文字" active={props.tool === "text"} />, title: "文字" },
-    { key: "number", icon: <SvgIcon src="icons/sequence-note.svg" alt="序号" active={props.tool === "number"} />, title: "序号" },
-    { key: "blur", icon: <SvgIcon src="icons/mosaic.svg" alt="马赛克" active={props.tool === "blur"} />, title: "马赛克" },
+    { key: "none", icon: <SvgIcon src="icons/arrow-pointer.svg" alt={t("imagePreview.tool.select")} active={props.tool === "none"} />, title: t("imagePreview.tool.select") },
+    { key: "rect", icon: <SvgIcon src="icons/square.svg" alt={t("imagePreview.tool.rect")} active={props.tool === "rect"} />, title: t("imagePreview.tool.rect") },
+    { key: "oval", icon: <SvgIcon src="icons/circle.svg" alt={t("imagePreview.tool.ellipse")} active={props.tool === "oval"} />, title: t("imagePreview.tool.ellipse") },
+    { key: "diamond", icon: <SvgIcon src="icons/diamond.svg" alt={t("imagePreview.tool.diamond")} active={props.tool === "diamond"} />, title: t("imagePreview.tool.diamond") },
+    { key: "line", icon: <SvgIcon src="icons/straight-line.svg" alt={t("imagePreview.tool.line")} active={props.tool === "line"} />, title: t("imagePreview.tool.line") },
+    { key: "arrow", icon: <SvgIcon src="icons/arrow-line.svg" alt={t("imagePreview.tool.arrow")} active={props.tool === "arrow"} />, title: t("imagePreview.tool.arrow") },
+    { key: "pen", icon: <SvgIcon src="icons/sketching.svg" alt={t("imagePreview.tool.pen")} active={props.tool === "pen"} />, title: t("imagePreview.tool.pen") },
+    { key: "text", icon: <SvgIcon src="icons/text.svg" alt={t("imagePreview.tool.text")} active={props.tool === "text"} />, title: t("imagePreview.tool.text") },
+    { key: "number", icon: <SvgIcon src="icons/sequence-note.svg" alt={t("imagePreview.tool.number")} active={props.tool === "number"} />, title: t("imagePreview.tool.number") },
+    { key: "blur", icon: <SvgIcon src="icons/mosaic.svg" alt={t("imagePreview.tool.mosaic")} active={props.tool === "blur"} />, title: t("imagePreview.tool.mosaic") },
   ];
 
   return (
@@ -138,14 +140,14 @@ export default function Toolbar(props: {
         boxShadow: "0 4px 16px rgba(0,0,0,0.3)",
       }}>
         {/* 输出操作：保存 / 复制 / OCR（截图 SVG 图标） */}
-        <ToolButton title="保存为文件" active={false} onClick={() => props.onSave()}>
-          <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
+        <ToolButton title={t("imagePreview.saveToFile")} active={false} onClick={() => props.onSave()}>
+          <img src="icons/save.svg" alt={t("imagePreview.saveToFile")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
         </ToolButton>
-        <ToolButton title="复制到剪贴板" active={false} onClick={() => props.onCopy()}>
-          <img src="icons/copy.svg" alt="复制" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
+        <ToolButton title={t("imagePreview.copyToClipboard")} active={false} onClick={() => props.onCopy()}>
+          <img src="icons/copy.svg" alt={t("imagePreview.copyToClipboard")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
         </ToolButton>
         <div style={{ position: "relative" }}>
-          <ToolButton title={props.ocrWarn ? "前一个 OCR 还未完成，请稍后" : "OCR 识别"} active={props.ocrCopied || props.ocrWarn || props.ocrMode !== 'off'} onClick={() => props.onOcr()}>
+          <ToolButton title={props.ocrWarn ? t("imagePreview.ocrBusy") : t("imagePreview.ocr")} active={props.ocrCopied || props.ocrWarn || props.ocrMode !== 'off'} onClick={() => props.onOcr()}>
             {props.ocrCopied ? <img src="icons/check.svg" alt="完成" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : props.ocrMode === 'overlay' ? <img src="icons/ocr-all.svg" alt="OCR 叠加" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : props.ocrMode === 'mask' ? <img src="icons/ocr-text.svg" alt="OCR 遮罩" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} /> : <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />}
           </ToolButton>
           {props.ocrWarn && (
@@ -155,7 +157,7 @@ export default function Toolbar(props: {
               fontSize: 10, fontWeight: 500, padding: "3px 8px", borderRadius: 5,
               boxShadow: "0 2px 8px rgba(0,0,0,0.2)", pointerEvents: "none", zIndex: 110,
             }}>
-              前一个 OCR 还未完成，请稍后
+              {t("imagePreview.ocrBusy")}
             </span>
           )}
         </div>
@@ -169,21 +171,21 @@ export default function Toolbar(props: {
             {t.icon}
           </ToolButton>
         ))}
-        <ToolButton title="撤销 (Cmd/Ctrl+Z)" active={false} onClick={() => props.onUndo()}>
-          <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canUndo ? 1 : 0.3 }} />
+        <ToolButton title={t("imagePreview.undo")} active={false} onClick={() => props.onUndo()}>
+          <img src="icons/restore.svg" alt={t("imagePreview.undo")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canUndo ? 1 : 0.3 }} />
         </ToolButton>
-        <ToolButton title="重做 (Cmd/Ctrl+Shift+Z)" active={false} onClick={() => props.onRedo()}>
-          <img src="icons/redo.svg" alt="重做" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canRedo ? 1 : 0.3 }} />
+        <ToolButton title={t("imagePreview.redo")} active={false} onClick={() => props.onRedo()}>
+          <img src="icons/redo.svg" alt={t("imagePreview.redo")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: props.canRedo ? 1 : 0.3 }} />
         </ToolButton>
 
         {/* 缩放：缩小 + 当前百分比(点击重置 100%) + 放大 */}
         <Divider />
-        <ToolButton title="缩小" active={false} onClick={() => props.onZoomOut()}>
+        <ToolButton title={t("imagePreview.zoomOut")} active={false} onClick={() => props.onZoomOut()}>
           <ZoomOut className="h-[18px] w-[18px]" />
         </ToolButton>
         <button
           type="button"
-          title="重置为 100%"
+          title={t("imagePreview.resetZoom")}
           onClick={() => props.onZoomReset()}
           style={{
             height: 32, minWidth: 52, padding: "0 6px", border: "none", cursor: "pointer",
@@ -198,19 +200,19 @@ export default function Toolbar(props: {
         >
           {Math.round(props.zoom * 100)}%
         </button>
-        <ToolButton title="放大" active={false} onClick={() => props.onZoomIn()}>
+        <ToolButton title={t("imagePreview.zoomIn")} active={false} onClick={() => props.onZoomIn()}>
           <ZoomIn className="h-[18px] w-[18px]" />
         </ToolButton>
-        <ToolButton title="自适应宽度" active={false} onClick={() => props.onZoomFitWidth()}>
+        <ToolButton title={t("imagePreview.fitWidth")} active={false} onClick={() => props.onZoomFitWidth()}>
           <MoveHorizontal className="h-[18px] w-[18px]" />
         </ToolButton>
-        <ToolButton title="自适应窗口" active={false} onClick={() => props.onZoomFitWindow()}>
+        <ToolButton title={t("imagePreview.fitWindow")} active={false} onClick={() => props.onZoomFitWindow()}>
           <Expand className="h-[18px] w-[18px]" />
         </ToolButton>
 
         {/* 置顶单独推到最右 */}
         <Divider />
-        <ToolButton title={props.alwaysOnTop ? "取消置顶" : "窗口置顶"}
+        <ToolButton title={props.alwaysOnTop ? t("imagePreview.unpinWindow") : t("imagePreview.pinWindow")}
           active={props.alwaysOnTop} onClick={() => props.onToggleTop()}>
           <img src="icons/pin.svg" alt="置顶" className="w-[18px] h-[18px]" style={{ filter: props.alwaysOnTop ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
         </ToolButton>
@@ -273,7 +275,7 @@ export default function Toolbar(props: {
             <>
               <div style={{ height: 1, background: "var(--color-border)", margin: "0 -4px" }} />
               <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-                <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", fontWeight: 500 }}>实心填充</span>
+                <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", fontWeight: 500 }}>{t("imagePreview.props.solidFill")}</span>
                 <button
                   type="button"
                   onClick={() => props.setFilled(!props.filled)}

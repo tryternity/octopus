@@ -99,3 +99,38 @@ screenshot:
     circle: 圆圈
     thickness: 粗细
     solidFill: 实心填充
+
+# ════════ ImagePreview 图片预览 ════════
+imagePreview:
+  tool:
+    select: 选择/移动
+    rect: 矩形
+    ellipse: 椭圆
+    diamond: 菱形
+    line: 直线
+    arrow: 箭头
+    pen: 画笔（自由曲线）
+    text: 文字
+    number: 序号
+    mosaic: 马赛克
+  saveToFile: 保存为文件
+  copyToClipboard: 复制到剪贴板
+  ocr: OCR 识别
+  ocrBusy: 前一个 OCR 还未完成，请稍后
+  undo: 撤销 (Cmd/Ctrl+Z)
+  redo: 重做 (Cmd/Ctrl+Shift+Z)
+  zoomOut: 缩小
+  zoomIn: 放大
+  resetZoom: 重置为 100%
+  fitWidth: 自适应宽度
+  fitWindow: 自适应窗口
+  pinWindow: 窗口置顶
+  unpinWindow: 取消置顶
+  textPlaceholder: 输入文字…
+  imageNotLoaded: 图片尚未加载完成
+  copied: 已复制：${text}
+  props:
+    fontSize: 字号
+    mosaic: 遮挡
+    thickness: 粗细
+    solidFill: 实心填充

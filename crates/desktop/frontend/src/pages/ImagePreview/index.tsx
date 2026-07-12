@@ -14,6 +14,7 @@ import { AnnotationSvg } from "./AnnotationSvg";
 import { computeVisibleRect, visibleToViewport, computeSrcSlice } from "./viewportMath";
 import { openCompactEditorTab } from "@/lib/compactEditor";
 import { MIN_ZOOM, MAX_ZOOM, ZOOM_STEP, TOOLBAR_H, FIT_PADDING, computeFitZoom, computeFitToWidthZoom } from "./zoom";
+import { useT } from "@/lib/i18n";
 
 /**
  * 剪贴板图片项的预览窗口（轻工具栏形态）。
@@ -24,6 +25,7 @@ import { MIN_ZOOM, MAX_ZOOM, ZOOM_STEP, TOOLBAR_H, FIT_PADDING, computeFitZoom, 
  */
 
 export default function ImagePreview({ imageId: propImageId, initialWidth, initialHeight }: { imageId: number; initialWidth?: number; initialHeight?: number }) {
+  const t = useT();
   const bgCanvasRef = useRef<HTMLCanvasElement>(null);
   const imgRef = useRef<HTMLImageElement | null>(null);
   const scrollContainerRef = useRef<HTMLDivElement>(null);
@@ -584,7 +586,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
   // —— compose：图像 + 标注 合成到自然尺寸 PNG → Uint8Array（Raw body 二进制传输）——
   const composePngBytes = async (): Promise<ArrayBuffer> => {
     const img = imgRef.current;
-    if (!img || !natW || !natH) throw new Error("图片尚未加载完成");
+    if (!img || !natW || !natH) throw new Error(t("imagePreview.imageNotLoaded"));
     const c = document.createElement("canvas");
     c.width = natW; c.height = natH;
     const ctx = c.getContext("2d")!;
@@ -757,7 +759,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
                     onDoubleClick={(e) => {
                       e.stopPropagation();
                       navigator.clipboard?.writeText(b.text).then(() => {
-                        setOcrCopiedText(`已复制：${b.text.length > 20 ? b.text.slice(0, 20) + '…' : b.text}`);
+                        setOcrCopiedText(t("imagePreview.copied", { text: b.text.length > 20 ? b.text.slice(0, 20) + '…' : b.text }));
                         setTimeout(() => setOcrCopiedText(null), 2000);
                       }).catch(() => {});
                     }}
@@ -820,7 +822,7 @@ export default function ImagePreview({ imageId: propImageId, initialWidth, initi
                   if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); commitText(); }
                   if (e.key === "Escape") { e.stopPropagation(); textDraftRef.current = null; setTextDraft(null); }
                 }}
-                placeholder="输入文字…"
+                placeholder={t("imagePreview.textPlaceholder")}
                 className="absolute rounded bg-background px-1 py-0.5 shadow outline-none resize-none border border-border"
                 style={{
                   left: draftBox.left, top: draftBox.top, fontSize: draftBox.fs, minWidth: 120, lineHeight: 1.3,

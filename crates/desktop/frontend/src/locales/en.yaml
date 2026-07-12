@@ -99,3 +99,38 @@ screenshot:
     circle: Circle
     thickness: Thickness
     solidFill: Solid Fill
+
+# ════════ ImagePreview ════════
+imagePreview:
+  tool:
+    select: Select/Move
+    rect: Rectangle
+    ellipse: Ellipse
+    diamond: Diamond
+    line: Line
+    arrow: Arrow
+    pen: Pen (free draw)
+    text: Text
+    number: Number
+    mosaic: Mosaic
+  saveToFile: Save to File
+  copyToClipboard: Copy to Clipboard
+  ocr: OCR Recognition
+  ocrBusy: Previous OCR not finished, please wait
+  undo: Undo (Cmd/Ctrl+Z)
+  redo: Redo (Cmd/Ctrl+Shift+Z)
+  zoomOut: Zoom Out
+  zoomIn: Zoom In
+  resetZoom: Reset to 100%
+  fitWidth: Fit Width
+  fitWindow: Fit Window
+  pinWindow: Pin Window
+  unpinWindow: Unpin Window
+  textPlaceholder: Enter text…
+  imageNotLoaded: Image not loaded yet
+  copied: Copied: ${text}
+  props:
+    fontSize: Font Size
+    mosaic: Mosaic
+    thickness: Thickness
+    solidFill: Solid Fill
