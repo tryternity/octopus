@@ -351,35 +351,28 @@ export default function Clipboard() {
           // 选中条目在列表上半部分 → 预览弹在下方；下半部分 → 弹在上方
           const itemEl = document.querySelector(`[data-clip-index="${selectedIndex}"]`) as HTMLElement | null;
           const listEl = itemEl?.offsetParent as HTMLElement | null;
-          let previewTop: string | undefined;
+          const previewH = 200;
+          let previewTop = '0px';
           if (itemEl && listEl) {
             const itemMid = itemEl.offsetTop + itemEl.offsetHeight / 2 - listEl.scrollTop;
             const listH = listEl.clientHeight;
-            const previewH = Math.min(Math.round(listH / 3), 200);
             if (itemMid < listH / 2) {
-              // 选中在上半 → 预览在下方，与条目重叠 2px
+              // 选中在上半 → 预览在下方，底边与条目底边重叠 2px
               previewTop = `${itemEl.offsetTop + itemEl.offsetHeight - 2}px`;
             } else {
-              // 选中在下半 → 预览在上方，与条目重叠 2px
+              // 选中在下半 → 预览在上方，顶边与条目顶边重叠 2px
               previewTop = `${itemEl.offsetTop - previewH + 2}px`;
             }
           }
           return (
           <div
             className="absolute right-0 w-[200px] z-30 flex flex-col overflow-hidden rounded-l-lg border-l border-y border-border shadow-xl bg-background"
-            style={{ top: previewTop ?? '0', height: '200px' }}
+            style={{ top: previewTop, height: `${previewH}px` }}
           >
             <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/60 flex-shrink-0">
               <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
                 {previewItem.item_type === "voice" ? "ASR" : previewItem.item_type}
               </span>
-              <div className="flex-1" />
-              <button
-                className="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
-                onClick={() => setPreviewItem(null)}
-              >
-                <X className="w-3 h-3" />
-              </button>
             </div>
             <div className="flex-1 overflow-y-auto thin-scrollbar min-h-0">
               {previewItem.item_type === "image" ? (
