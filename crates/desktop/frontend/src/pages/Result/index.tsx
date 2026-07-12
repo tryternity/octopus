@@ -271,8 +271,6 @@ function Result() {
   };
 
   const onDragStart = (e: React.MouseEvent) => {
-    // 点击按钮（含 tool-btn / popup item）时不启动拖拽，避免吞掉 onClick
-    if ((e.target as HTMLElement).closest("button")) return;
     e.preventDefault();
     win.startDragging();
   };
@@ -309,12 +307,11 @@ function Result() {
         {/* Toolbar */}
         <div
           className={cn(
-            "flex items-center gap-[2px] px-1.5 pt-0.5 transition-opacity duration-150 cursor-grab active:cursor-grabbing",
+            "flex items-center gap-[2px] px-1.5 pt-0.5 transition-opacity duration-150",
             toolbarState.hide_toolbar === false
               ? "opacity-100"
               : toolbarVisible ? "opacity-100" : "opacity-0",
           )}
-          onMouseDown={onDragStart}
         >
           {tools.map(({ id, icon, label, active, disabled, onClick }) => (
             <button
