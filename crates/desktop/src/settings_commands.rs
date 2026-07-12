@@ -385,6 +385,11 @@ fn apply_config_value(
             // 前端传裸 model_name，空串=不选择模型，其余构造 3-part spec
             cfg.polish_llm = build_polish_llm_spec(bare_name)?;
         }
+        "translate_engine" => {
+            cfg.translate_engine = value.as_str()
+                .ok_or("translate_engine 必须为字符串")?
+                .to_string();
+        }
         _ => return Err(format!("未知配置字段: {}", key)),
     }
     Ok(())

@@ -5090,6 +5090,7 @@ dependencies = [
  "octopus-infra",
  "octopus-llm",
  "octopus-ocr",
+ "octopus-translation",
  "once_cell",
  "parking_lot",
  "percent-encoding",

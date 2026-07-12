@@ -44,6 +44,7 @@ mod shortcut;
 mod theme;
 mod tray;
 mod transcript;
+mod translation_commands;
 mod window_position;
 
 use coordinator::Coordinator;
@@ -306,6 +307,9 @@ pub fn run() {
             extensions::list_extensions,
             extensions::delete_extension,
             extensions::refresh_extensions,
+            translation_commands::list_downloadable_translation_models,
+            translation_commands::discover_translation_models,
+            translation_commands::translate_status,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)

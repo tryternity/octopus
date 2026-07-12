@@ -75,6 +75,7 @@ prost = { version = "0.13", optional = true }
 
 # LLM polish
 octopus-llm = { path = "../llm" }
+octopus-translation = { path = "../translation" }
 
 # 基础设施（跨 crate 共享常量等）
 octopus-infra = { path = "../infra" }

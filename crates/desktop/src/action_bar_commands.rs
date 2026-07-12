@@ -327,6 +327,51 @@ fn auto_translate_prompt(text: &str) -> &'static str {
     }
 }
 
+enum TranslateStrategy {
+    Local(std::sync::Arc<dyn octopus_translation::TranslationEngine>),
+    Llm,
+}
+
+fn resolve_translate_strategy(config: &octopus_infra::config::AppConfig) -> TranslateStrategy {
+    match config.translate_engine.as_str() {
+        "llm" => TranslateStrategy::Llm,
+        spec if spec.starts_with("local:") => {
+            let manager = octopus_translation::TranslationManager::new(spec);
+            match manager.engine() {
+                Ok(Some(e)) => TranslateStrategy::Local(e),
+                _ => {
+                    log::warn!("本地翻译引擎 {} 加载失败，fallback 到 LLM", spec);
+                    TranslateStrategy::Llm
+                }
+            }
+        }
+        _ => {
+            // 自动：有本地则用本地
+            let models = octopus_translation::discover_translation_models();
+            if models.iter().any(|m| m.downloaded) {
+                let manager = octopus_translation::TranslationManager::new("local:m2m100");
+                match manager.engine() {
+                    Ok(Some(e)) => TranslateStrategy::Local(e),
+                    _ => TranslateStrategy::Llm,
+                }
+            } else {
+                TranslateStrategy::Llm
+            }
+        }
+    }
+}
+
+fn detect_translate_direction(text: &str) -> (&'static str, &'static str) {
+    let has_cjk = text.chars().any(|c| {
+        matches!(c as u32, 0x4e00..=0x9fff | 0x3040..=0x30ff | 0xac00..=0xd7af)
+    });
+    if has_cjk {
+        ("zh", "en")
+    } else {
+        ("en", "zh")
+    }
+}
+
 /// URL 查询参数编码：保留 RFC 3986 unreserved（A-Za-z0-9-_.~），其余百分号编码。
 /// 复用 percent-encoding 库（项目已为 file 协议引入）。
 fn url_encode_param(s: &str) -> String {
@@ -658,14 +703,31 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
     match item.action_type.as_str() {
         "ai" => {
             let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
+
+            // 翻译特殊处理：优先本地引擎
+            if item.action_data == "auto_translate" {
+                let (source_lang, target_lang) = detect_translate_direction(&text);
+                let result = match resolve_translate_strategy(&config) {
+                    TranslateStrategy::Local(engine) => {
+                        engine.translate(&text, source_lang, target_lang)
+                        .map_err(|e| e.to_string())?
+                    }
+                    TranslateStrategy::Llm => {
+                        let llm_config = crate::config::llm_config_ignore_mode(&config)
+                            .ok_or("润色模型未配置，请在设置中配置 LLM")?;
+                        let prompt = auto_translate_prompt(&text);
+                        octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
+                        .map_err(|e| e.to_string())?
+                    }
+                };
+                action_bar_show_result(result, text, item.title, app.clone(), true);
+                return Ok(true);
+            }
+
+            // 非 auto_translate 的 AI 操作（润色/摘要/解释），仍走 LLM
             let llm_config = crate::config::llm_config_ignore_mode(&config)
                 .ok_or("润色模型未配置，请在设置中配置 LLM")?;
-            let prompt: &str = if item.action_data == "auto_translate" {
-                auto_translate_prompt(&text)
-            } else {
-                &item.action_data
-            };
-            let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
+            let result = octopus_llm::chat_text_with_prompt(&item.action_data, &text, &llm_config)
                 .map_err(|e| e.to_string())?;
             action_bar_show_result(result, text, item.title, app.clone(), true);
             Ok(true)
