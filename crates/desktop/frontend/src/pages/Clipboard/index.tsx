@@ -27,8 +27,17 @@ export default function Clipboard() {
   // 键盘导航以数组索引为第一性 citizen；执行动作时从 items[selectedIndex].id 取。
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [recording, setRecording] = useState(true);
-  // 预览面板开关（标题栏按钮控制）；关闭后 hover 不弹出预览
-  const [previewEnabled, setPreviewEnabled] = useState(true);
+  // 预览面板开关（标题栏按钮控制）；默认关闭，记住用户选择
+  const [previewEnabled, setPreviewEnabled] = useState(() => {
+    return localStorage.getItem("clipboard-preview-enabled") !== "false";
+  });
+  const togglePreview = useCallback(() => {
+    setPreviewEnabled(prev => {
+      const next = !prev;
+      localStorage.setItem("clipboard-preview-enabled", String(next));
+      return next;
+    });
+  }, []);
   // 预览内容：当前选中/hover 条目的完整数据
   const [previewItem, setPreviewItem] = useState<ClipboardItem | null>(null);
   const [previewThumb, setPreviewThumb] = useState<string | null>(null);
@@ -293,7 +302,7 @@ export default function Clipboard() {
               "p-1 rounded cursor-default transition-colors",
               previewEnabled ? "text-voice bg-voice/10" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
-            onClick={() => setPreviewEnabled(v => !v)}
+            onClick={togglePreview}
             title={previewEnabled ? t("clipboard.previewOn") : t("clipboard.previewOff")}
           >
             {previewEnabled ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
@@ -337,11 +346,26 @@ export default function Clipboard() {
           ))
         )}
 
-        {/* hover 预览 overlay：200×400 绝对定位在列表右侧 */}
-        {previewEnabled && previewItem && (
+        {/* hover 预览 overlay：200px 宽，高度约为列表 1/3，根据选中位置上/下弹出 */}
+        {previewEnabled && previewItem && (() => {
+          // 选中条目在列表上半部分 → 预览弹在下方；下半部分 → 弹在上方
+          const itemEl = document.querySelector(`[data-clip-index="${selectedIndex}"]`) as HTMLElement | null;
+          const listEl = itemEl?.offsetParent as HTMLElement | null;
+          let previewTop: string | undefined;
+          if (itemEl && listEl) {
+            const itemMid = itemEl.offsetTop + itemEl.offsetHeight / 2 - listEl.scrollTop;
+            const listH = listEl.clientHeight;
+            const previewH = Math.min(Math.round(listH / 3), 200);
+            if (itemMid < listH / 2) {
+              previewTop = `${Math.min(itemEl.offsetTop + itemEl.offsetHeight + 2, listH - previewH)}px`;
+            } else {
+              previewTop = `${Math.max(itemEl.offsetTop - previewH - 2, 0)}px`;
+            }
+          }
+          return (
           <div
-            className="absolute right-0 top-0 bottom-0 w-[200px] z-30 flex flex-col overflow-hidden rounded-l-lg border-l border-y border-border shadow-xl bg-background"
-            style={{ maxHeight: '100%' }}
+            className="absolute right-0 w-[200px] z-30 flex flex-col overflow-hidden rounded-l-lg border-l border-y border-border shadow-xl bg-background"
+            style={{ top: previewTop ?? '0', height: '200px' }}
           >
             <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/60 flex-shrink-0">
               <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
@@ -375,7 +399,8 @@ export default function Clipboard() {
               )}
             </div>
           </div>
-        )}
+          );
+        })()}
       </div>
 
       {/* Footer */}
