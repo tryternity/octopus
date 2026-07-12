@@ -1702,3 +1702,7 @@ git commit -m "docs: i18n 全面覆盖完成，更新架构文档和 spec 状态
 | GeneralPanel effect labels (立即/下次录音/下次启动) | 提取为 `settings.effect.now/nextRecording/nextStart` 公共 key | DRY |
 | FilterTabs TABS / HotwordPanel DIALECT_OPTIONS / ActionBarPanel TYPE_META/ACTION_TYPES | 全部重构为 `*Keys` + 组件内 `t()` 动态查找 | 模块级常量无法用 hook |
 | ClipboardItem/ClipboardPanel formatFilePaths | 用 `ti18n()` 非 React 上下文 `t` | 独立函数不在组件内 |
+| 跨窗口 locale 同步 | `initI18n()` 中新增 `listen("locale-changed")` | 每个 Tauri 窗口有独立 JS 上下文，Settings 切语言后其他窗口收不到 `setLocale` 通知 |
+| `rebuild_tray_labels` 漏 clipboard | 补上 `clipboard` MenuItem 更新 | 遗漏导致 dead_code warning + 剪贴板菜单项不更新 |
+| Result 窗口按钮无法点击 | `result_window.rs` 中 `BAR_W` 从 520 改为 720 | 前端精简态容器已改为 `w-[720px]`，但 poller 仍用 520 判定可交互区域，工具栏左侧按钮落在 520 范围外被穿透吞掉 |
+| Result 工具栏按钮 onMouseDown | 每个 button 加 `onMouseDown stopPropagation` | 工具栏容器 `onMouseDown={onDragStart}` 会调 `startDragging()` 吞掉 click；stopPropagation 阻止冒泡 |
