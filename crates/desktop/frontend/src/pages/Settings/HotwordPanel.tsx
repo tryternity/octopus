@@ -3,6 +3,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { confirm as confirmDialog } from '@tauri-apps/plugin-dialog';
 import { cn } from '@/lib/utils';
 import { Type, Plus, BookMarked, X, Search, Upload, Download, Trash2, Wand2, Check } from 'lucide-react';
+import { useT } from '@/lib/i18n';
 
 interface HotwordSet {
   id: number;
@@ -20,11 +21,11 @@ interface Props {
   showToast: (msg: string) => void;
 }
 
-const DIALECT_OPTIONS: { tok: string; label: string }[] = [
-  { tok: 'f/h', label: 'f/h 不分（浮 / 护）' },
-  { tok: 'hu/wu', label: 'hu/wu 不分（黄 / 王）' },
-  { tok: 'n/l', label: 'n/l 不分（刘 / 牛）' },
-  { tok: 'r/l', label: 'r/l 不分（热 / 乐）' },
+const DIALECT_KEYS: { tok: string; key: string }[] = [
+  { tok: 'f/h', key: 'settings.hotword.fH' },
+  { tok: 'hu/wu', key: 'settings.hotword.huWu' },
+  { tok: 'n/l', key: 'settings.hotword.nL' },
+  { tok: 'r/l', key: 'settings.hotword.rL' },
 ];
 
 const selectClass = 'border border-border rounded-md bg-background px-2.5 py-1.5 text-sm cursor-pointer outline-none focus:border-voice/40 hover:border-foreground/30 transition-colors';
@@ -61,6 +62,7 @@ function Toggle({ on, onClick, label }: { on: boolean; onClick: () => void; labe
 }
 
 export function HotwordPanel({ dialect, setVal, showToast }: Props) {
+  const t = useT();
   const [sets, setSets] = useState<HotwordSet[]>([]);
   const [hits, setHits] = useState<Record<string, number>>({});
   const [selectedId, setSelectedId] = useState<number | null>(null);
@@ -103,7 +105,7 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   }, [selectedId]);
 
   useEffect(() => {
-    refresh().catch((e) => showToast('加载失败：' + e));
+    refresh().catch((e) => showToast(t('settings.hotword.loadFailed') + e));
   }, [refresh, showToast]);
 
   const selected = sets.find((s) => s.id === selectedId) || null;
@@ -144,13 +146,13 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
         : await invoke<number>('import_hotwords', { mode: 'new', newName: name });
       await refresh();
       setSelectedId(id);
-      showToast(mode === 'create' ? '已新建版本' : '已导入为新版本');
-    } catch (e) { showToast(mode === 'create' ? '新建失败：' + e : '导入失败：' + e); }
+      showToast(mode === 'create' ? t('settings.hotword.newVersion') : t('settings.hotword.importedVersion'));
+    } catch (e) { showToast(mode === 'create' ? t('settings.hotword.newFailed') + e : t('settings.hotword.importFailed') + e); }
   }, [createVal, creating, refresh, showToast]);
 
   const toggleSet = useCallback(async (id: number, enabled: boolean) => {
     try { await invoke('toggle_hotword_set', { id, enabled }); await refresh(); }
-    catch (e) { showToast('切换失败：' + e); }
+    catch (e) { showToast(t('settings.hotword.switchFailed') + e); }
   }, [refresh, showToast]);
 
   const startRename = (id: number, cur: string) => { renameCancelledRef.current = false; setRenaming(id); setRenameVal(cur); };
@@ -159,14 +161,14 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
     const name = renameVal.trim();
     if (!name) { setRenaming(null); return; }
     try { await invoke('rename_hotword_set', { id, name }); await refresh(); }
-    catch (e) { showToast('重命名失败：' + e); }
+    catch (e) { showToast(t('settings.hotword.renameFailed') + e); }
     setRenaming(null);
   }, [renameVal, refresh, showToast]);
 
   const deleteSet = useCallback(async (id: number, name: string) => {
-    if (!(await confirmDialog(`删除版本「${name}」？（命中统计保留）`, { title: '确认删除', kind: 'warning' }))) return;
+    if (!(await confirmDialog(t('settings.hotword.deleteConfirmMsg', { name }), { title: t('settings.hotword.deleteConfirmTitle'), kind: 'warning' }))) return;
     try { await invoke('delete_hotword_set', { id }); await refresh(); }
-    catch (e) { showToast('删除失败：' + e); }
+    catch (e) { showToast(t('settings.hotword.deleteFailed') + e); }
   }, [refresh, showToast]);
 
   // ── 单词操作 ──
@@ -176,47 +178,47 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
     try {
       const added = await invoke<boolean>('add_word_to_set', { id: selectedId, word: w });
       setInput('');
-      showToast(added ? '已添加' : '已存在');
+      showToast(added ? t('settings.hotword.added') : t('settings.hotword.exists'));
       await refresh();
       if (added) flashAdded([w]);
-    } catch (e) { showToast('添加失败：' + e); }
+    } catch (e) { showToast(t('settings.hotword.addFailed') + e); }
   }, [input, selectedId, refresh, flashAdded, showToast]);
 
   const removeWord = useCallback(async (word: string) => {
     if (selectedId === null) return;
     try { await invoke('remove_word_from_set', { id: selectedId, word }); await refresh(); }
-    catch (e) { showToast('删除失败：' + e); }
+    catch (e) { showToast(t('settings.hotword.deleteFailed') + e); }
   }, [selectedId, refresh, showToast]);
 
   // ── 导入 / 导出 / 挖掘 ──
   const doImport = useCallback(async (mode: 'append' | 'overwrite') => {
-    if (selectedId === null) { showToast('请先选择版本'); return; }
+    if (selectedId === null) { showToast(t('settings.hotword.selectVersionFirst')); return; }
     try {
-      if (mode === 'overwrite' && !(await confirmDialog('覆盖当前版本的全部词？', { title: '确认覆盖', kind: 'warning' }))) return;
+      if (mode === 'overwrite' && !(await confirmDialog(t('settings.hotword.overwriteConfirmMsg'), { title: t('settings.hotword.overwriteConfirmTitle'), kind: 'warning' }))) return;
       await invoke('import_hotwords', { mode, targetSetId: selectedId });
       await refresh();
-      showToast(mode === 'append' ? '已追加' : '已覆盖');
-    } catch (e) { showToast('导入失败：' + e); }
+      showToast(mode === 'append' ? t('settings.hotword.appended') : t('settings.hotword.overwritten'));
+    } catch (e) { showToast(t('settings.hotword.importFailed2') + e); }
   }, [selectedId, refresh, showToast]);
 
   const doExport = useCallback(async () => {
     if (selectedId === null) return;
-    try { await invoke('export_hotwords', { setId: selectedId }); showToast('已导出'); }
-    catch (e) { showToast('导出失败：' + e); }
+    try { await invoke('export_hotwords', { setId: selectedId }); showToast(t('settings.hotword.exported')); }
+    catch (e) { showToast(t('settings.hotword.exportFailed') + e); }
   }, [selectedId, showToast]);
 
   // ── 挖掘（先候选后确认，不直接落库）──
   // 点「挖掘」→ 后端扫历史拿候选 → 排除当前版本已有词 → 弹确认面板。
   // 用户在面板里取消勾选 / 手动补词 → 点确认才批量 add_words_to_set。
   const mine = useCallback(async () => {
-    if (selectedId === null) { showToast('请先选择目标版本'); return; }
+    if (selectedId === null) { showToast(t('settings.hotword.selectTargetFirst')); return; }
     try {
       const candidates = await invoke<string[]>('list_hotword_candidates');
       const existing = new Set(selected?.wordsText.split(/\s+/).filter(Boolean) ?? []);
       const fresh = candidates.filter((w) => !existing.has(w));
-      if (fresh.length === 0) { showToast('未发现新候选'); return; }
+      if (fresh.length === 0) { showToast(t('settings.hotword.noNewCandidates')); return; }
       setMinePending({ words: fresh, selected: new Set(fresh) });
-    } catch (e) { showToast('挖掘失败：' + e); }
+    } catch (e) { showToast(t('settings.hotword.mineFailed') + e); }
   }, [selectedId, selected, showToast]);
 
   const toggleMineSel = (w: string) => {
@@ -249,10 +251,10 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
     if (ws.length === 0) return;
     try {
       const n = await invoke<number>('add_words_to_set', { id: selectedId, words: ws });
-      showToast(n > 0 ? `已添加 ${n} 词` : '选中词均已存在');
+      showToast(n > 0 ? t('settings.hotword.addedN', { n }) : t('settings.hotword.allExist'));
       await refresh();
       flashAdded(ws);
-    } catch (e) { showToast('添加失败：' + e); }
+    } catch (e) { showToast(t('settings.hotword.addFailed2') + e); }
   }, [minePending, selectedId, refresh, flashAdded, showToast]);
 
   const toggleDialect = useCallback((tok: string) => {
@@ -265,27 +267,30 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
   return (
     <div className="max-w-[640px]">
       <div className="mb-5">
-        <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">语音识别 · 热词纠错</div>
-        <h2 className="mt-0.5 text-lg font-semibold tracking-tight">热词管理</h2>
-        <p className="mt-1 text-xs text-muted-foreground">按场景管理多版本热词，勾选叠加生效。当前生效词 {totalActiveWords} 个。</p>
+        <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">{t('settings.hotword.title')}</div>
+        <h2 className="mt-0.5 text-lg font-semibold tracking-tight">{t('settings.hotword.header')}</h2>
+        <p className="mt-1 text-xs text-muted-foreground">{t('settings.hotword.intro', { n: totalActiveWords })}</p>
       </div>
 
       {/* 方言模糊 —— 保留 */}
-      <Card icon={Type} title="方言模糊">
+      <Card icon={Type} title={t('settings.hotword.dialectFuzzy')}>
         <div className="grid grid-cols-2 gap-x-8 gap-y-1 py-1">
-          {DIALECT_OPTIONS.map(({ tok, label }) => (
+          {DIALECT_KEYS.map(({ tok, key }) => {
+            const label = t(key);
+            return (
             <div key={tok} className="flex items-center justify-between py-2">
               <span className="text-sm">{label}</span>
               <Toggle on={enabledTokens.has(tok)} onClick={() => toggleDialect(tok)} label={label} />
             </div>
-          ))}
+            );
+          })}
         </div>
       </Card>
 
       {/* 版本管理 */}
-      <Card icon={BookMarked} title={`热词版本（${sets.length}）`}>
+      <Card icon={BookMarked} title={t('settings.hotword.versionsN', { n: sets.length })}>
         {!loaded ? (
-          <p className="py-8 text-center text-sm text-muted-foreground">加载中…</p>
+          <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.loading')}</p>
         ) : (
           <>
             <div className="flex items-center gap-2 py-2.5">
@@ -296,16 +301,16 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                   onChange={(e) => setCreateVal(e.target.value)}
                   onBlur={commitCreate}
                   onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur(); if (e.key === 'Escape') { createCancelledRef.current = true; setCreating(null); setCreateVal(''); } }}
-                  placeholder={creating === 'create' ? '版本名称（Enter 确认 / Esc 取消）' : '导入版本名称（Enter 后再选 txt）'}
+                  placeholder={creating === 'create' ? t('settings.hotword.newVersionPlaceholder') : t('settings.hotword.importVersionPlaceholder')}
                   className="flex-1 min-w-0 bg-background border border-voice/50 rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice"
                 />
               ) : (
                 <>
                   <button onClick={() => { createCancelledRef.current = false; setCreating('create'); setCreateVal(''); }} className="flex items-center gap-1.5 rounded-md bg-voice px-3 py-1.5 text-sm font-medium text-white hover:opacity-90">
-                    <Plus className="w-4 h-4" /> 新建版本
+                    <Plus className="w-4 h-4" /> {t('settings.hotword.newVersionBtn')}
                   </button>
                   <button onClick={() => { createCancelledRef.current = false; setCreating('import'); setCreateVal(''); }} className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">
-                    <Upload className="w-3.5 h-3.5" /> 导入新版本
+                    <Upload className="w-3.5 h-3.5" /> {t('settings.hotword.importBtn')}
                   </button>
                 </>
               )}
@@ -327,13 +332,13 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                     <button
                       onClick={() => { setSelectedId(s.id); startRename(s.id, s.name); }}
                       className={cn('truncate text-sm hover:text-voice', selectedId === s.id && 'font-medium text-voice')}
-                      title="点击重命名"
+                      title={t('settings.hotword.renameHint')}
                     >
                       {s.name}
                     </button>
                   )}
                   <span className="font-mono text-[10px] text-muted-foreground/60 flex-shrink-0">
-                    {s.wordsText.split(/\s+/).filter(Boolean).length} 词
+                    {s.wordsText.split(/\s+/).filter(Boolean).length} {t('settings.hotword.wordsCount')}
                   </span>
                 </div>
                 <div className="flex items-center gap-0.5 flex-shrink-0">
@@ -355,27 +360,27 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
 
       {/* 选中版本的词（逐词管理体感） */}
       {selected && (
-        <Card icon={Plus} title={`${selected.name}（${words.length} 词）`}>
+        <Card icon={Plus} title={`${selected.name}（${words.length} ${t('settings.hotword.wordsCount')}）`}>
           {/* 单个添加 + 导入追加/覆盖 + 挖掘 */}
           <div className="flex items-center gap-2 py-2.5">
             <input
               value={input}
               onChange={(e) => setInput(e.target.value)}
               onKeyDown={(e) => e.key === 'Enter' && addWord()}
-              placeholder="人名 / 地名 / 术语"
+              placeholder={t('settings.hotword.addPlaceholder')}
               className="flex-1 min-w-0 bg-background border border-border rounded px-2.5 py-1.5 text-sm outline-none focus:border-voice/50"
             />
             <button onClick={addWord} className="flex items-center gap-1.5 rounded-md bg-voice px-3 py-1.5 text-sm font-medium text-white hover:opacity-90">
-              <Plus className="w-4 h-4" /> 添加
+              <Plus className="w-4 h-4" /> {t('settings.hotword.addBtn')}
             </button>
-            <button onClick={() => doImport('append')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground" title="导入追加到当前版本">
-              <Upload className="w-3.5 h-3.5" /> 追加
+            <button onClick={() => doImport('append')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground" title={t('settings.hotword.appendHint')}>
+              <Upload className="w-3.5 h-3.5" /> {t('settings.hotword.appendBtn')}
             </button>
-            <button onClick={() => doImport('overwrite')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground" title="导入覆盖当前版本">
-              <Upload className="w-3.5 h-3.5" /> 覆盖
+            <button onClick={() => doImport('overwrite')} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground" title={t('settings.hotword.overwriteHint')}>
+              <Upload className="w-3.5 h-3.5" /> {t('settings.hotword.overwriteBtn')}
             </button>
             <button onClick={mine} className="flex items-center gap-1 rounded-md border border-border px-2 py-1.5 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">
-              <Wand2 className="w-3.5 h-3.5" /> 挖掘
+              <Wand2 className="w-3.5 h-3.5" /> {t('settings.hotword.mineBtn')}
             </button>
           </div>
 
@@ -384,7 +389,7 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
             <div className="border-t border-voice/30 bg-voice/5 px-3 py-2.5 space-y-2">
               <div className="flex items-center justify-between gap-2">
                 <span className="text-xs text-muted-foreground">
-                  已选 {minePending.selected.size}/{minePending.words.length} 个候选，确认后添加
+                  {t('settings.hotword.pendingHint', { selected: minePending.selected.size, total: minePending.words.length })}
                 </span>
                 <div className="flex items-center gap-2 flex-shrink-0">
                   <button
@@ -394,9 +399,9 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                     }}
                     className="text-xs text-muted-foreground hover:text-voice"
                   >
-                    {minePending.selected.size === minePending.words.length ? '全不选' : '全选'}
+                    {minePending.selected.size === minePending.words.length ? t('settings.hotword.deselectAll') : t('settings.hotword.selectAll')}
                   </button>
-                  <button onClick={() => setMinePending(null)} className="text-xs text-muted-foreground hover:text-foreground">取消</button>
+                  <button onClick={() => setMinePending(null)} className="text-xs text-muted-foreground hover:text-foreground">{t('settings.hotword.cancel')}</button></button>
                 </div>
               </div>
               <div className="flex flex-wrap gap-1.5 max-h-44 overflow-y-auto">
@@ -421,16 +426,16 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                   value={mineInput}
                   onChange={(e) => setMineInput(e.target.value)}
                   onKeyDown={(e) => { if (e.key === 'Enter') addMineWord(); }}
-                  placeholder="手动补一个词（Enter 加入候选）"
+                  placeholder={t('settings.hotword.manualPlaceholder')}
                   className="flex-1 min-w-0 bg-background border border-border rounded px-2 py-1 text-xs outline-none focus:border-voice/50"
                 />
-                <button onClick={addMineWord} className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">补词</button>
+                <button onClick={addMineWord} className="rounded border border-border px-2 py-1 text-xs text-muted-foreground hover:bg-muted/60 hover:text-foreground">{t('settings.hotword.manualBtn')}</button>
                 <button
                   onClick={commitMine}
                   disabled={minePending.selected.size === 0}
                   className="rounded-md bg-voice px-3 py-1 text-xs font-medium text-white hover:opacity-90 disabled:opacity-40"
                 >
-                  添加选中的 {minePending.selected.size} 个
+                  {t('settings.hotword.addSelectedN', { n: minePending.selected.size })}
                 </button>
               </div>
             </div>
@@ -441,21 +446,21 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
             <div className="flex items-center gap-2 py-2 border-t border-border/40">
               <div className="relative flex-1 min-w-0">
                 <Search className="absolute left-2 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-muted-foreground/50 pointer-events-none" />
-                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="搜索（汉字）" className="w-full bg-background border border-border rounded pl-7 pr-2.5 py-1.5 text-sm outline-none focus:border-voice/50" />
+                <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={t('settings.hotword.searchPlaceholder')} className="w-full bg-background border border-border rounded pl-7 pr-2.5 py-1.5 text-sm outline-none focus:border-voice/50" />
               </div>
               <select value={sort} onChange={(e) => setSort(e.target.value as 'time' | 'alpha' | 'hits')} className={cn(selectClass, 'flex-shrink-0')} aria-label="排序方式">
-                <option value="time">默认</option>
-                <option value="alpha">字母</option>
-                <option value="hits">命中度</option>
+                <option value="time">{t('settings.hotword.sortDefault')}</option>
+                <option value="alpha">{t('settings.hotword.sortAlpha')}</option>
+                <option value="hits">{t('settings.hotword.sortHit')}</option>
               </select>
             </div>
           )}
 
           {/* 卡片网格（命中数 inline） */}
           {words.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">空版本，添加或导入热词。</p>
+            <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.emptyVersion')}</p>
           ) : visible.length === 0 ? (
-            <p className="py-8 text-center text-sm text-muted-foreground">无匹配热词</p>
+            <p className="py-8 text-center text-sm text-muted-foreground">{t('settings.hotword.noMatch')}</p>
           ) : (
             <div className="flex flex-wrap gap-2 py-2.5">
               {visible.map((w) => {
