@@ -1,10 +1,10 @@
-# llm-base — ONNX 推理基础设施抽取（公共 crate）
+# onnx-infra — ONNX 推理基础设施抽取（公共 crate）
 
 > 抽取 asr-local 和 translation 共享的 ONNX 基础设施到独立 crate。
 
 ## 抽取内容
 
-从 `crates/asr-local/src/config.rs` 抽取以下函数到 `crates/llm-base/`：
+从 `crates/asr-local/src/config.rs` 抽取以下函数到 `crates/onnx-infra/`：
 
 | 函数 | 当前位置 | 依赖 |
 |------|---------|------|
@@ -20,7 +20,7 @@
 ## crate 结构
 
 ```
-crates/llm-base/
+crates/onnx-infra/
 ├── Cargo.toml
 └── src/
     ├── lib.rs       # re-exports
@@ -30,11 +30,11 @@ crates/llm-base/
 
 ## asr-local 改动
 
-`asr-local/src/config.rs` 中的函数改为从 `llm-base` re-export（或直接引用），避免破坏现有调用。
+`asr-local/src/config.rs` 中的函数改为从 `onnx-infra` re-export（或直接引用），避免破坏现有调用。
 
 ## Cargo 依赖链变化
 
 ```
 之前: infra ← asr-local ← desktop
-之后: infra ← llm-base ← (asr-local, translation) ← desktop
+之后: infra ← onnx-infra ← (asr-local, translation) ← desktop
 ```

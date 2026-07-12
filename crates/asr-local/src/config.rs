@@ -1,6 +1,6 @@
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::{Arc, RwLock};
 
 use octopus_infra::consts::{DEFAULT_ASR_MODEL_DIR, SILERO_VAD_PATH};
@@ -52,71 +52,8 @@ pub fn reload_models_config() {
 
 // ── HF cache helpers ──
 
-/// 根据 HF source（如 "onnx-community/whisper-small"）定位到本地缓存路径
-pub fn find_hf_cache(source: &str) -> Result<PathBuf> {
-    let home = std::env::var("HOME").context("HOME not set")?;
-    let model_dir_name = source.replace('/', "--");
-    let model_dir = PathBuf::from(home)
-        .join(".cache/huggingface/hub")
-        .join(format!("models--{}", model_dir_name));
-
-    if !model_dir.exists() {
-        anyhow::bail!(
-            "模型 '{}' 未在 ~/.octopus/models/ 或 HF cache 找到。请运行 `octopus-cli download {}` 下载。",
-            source,
-            source
-        );
-    }
-    find_latest_snapshot(&model_dir)
-}
-
-/// 在 HF 缓存路径中查找 onnx 子目录或直接返回根目录
-pub fn find_onnx_dir(hf_path: &Path) -> PathBuf {
-    let onnx = hf_path.join("onnx");
-    if onnx.exists() {
-        onnx
-    } else {
-        hf_path.to_path_buf()
-    }
-}
-
-/// 前 3 级模型目录查找（基于给定 octopus_home，可单测；不依赖全局 `$HOME`）。
-///
-/// 1. `octopus_home/<source>`（随包小模型，如 `models/zipformer`）
-/// 2. 绝对路径（`source` 本身是绝对路径）
-/// 3. `octopus_home/models/<source>`（download 下的 HF 模型，source 如 `onnx-community/whisper-small`）
-///
-/// 返回 `None` 表示前 3 级全 miss，调用方应回退第 4 级 HF cache（`find_hf_cache`）。
-fn resolve_local_in(source: &str, octopus_home: &Path) -> Option<PathBuf> {
-    // 1. octopus_home 下相对路径（随应用打包的小模型）
-    let local = octopus_home.join(source);
-    if local.is_dir() {
-        return Some(local);
-    }
-    // 2. 绝对路径（join 绝对路径会覆盖 base，等效直接判断 source 本身）
-    let abs = PathBuf::from(source);
-    if abs.is_dir() {
-        return Some(abs);
-    }
-    // 3. download 下的 HF 模型（~/.octopus/models/<source>）★ 阶段1 新增
-    let downloaded = octopus_home.join("models").join(source);
-    if downloaded.is_dir() {
-        return Some(downloaded);
-    }
-    None
-}
-
-/// 解析模型目录：前 3 级本地查找（随包 / 绝对路径 / download 下载），回退 HF 缓存。
-/// - source 为本地相对路径（如 "models/zipformer"）→ octopus_config_home/source
-/// - source 为绝对路径 → 直接用
-/// - source 为 HF repo 名（如 "onnx-community/whisper-small"）→ 优先 ~/.octopus/models/<source>（download 下到这里），
-///   否则 find_hf_cache（兼容已用 hf-cli 下的 ~/.cache/huggingface）
-pub fn resolve_model_dir(source: &str) -> Result<PathBuf> {
-    if let Some(p) = resolve_local_in(source, octopus_config_home()) {
-        return Ok(p);
-    }
-    find_hf_cache(source)
-}
+/// 模型路径查找——已抽取到 onnx-infra crate
+pub use onnx_infra::{find_hf_cache, find_onnx_dir, resolve_model_dir};
 
 // ── VAD model discovery ──
 
@@ -134,29 +71,7 @@ pub fn find_silero_vad() -> Result<PathBuf> {
 }
 
 // ── Internal helpers ──
-
-fn find_latest_snapshot(model_dir: &Path) -> Result<PathBuf> {
-    let snapshots = model_dir.join("snapshots");
-    if !snapshots.exists() {
-        anyhow::bail!("No snapshots dir in {}", model_dir.display());
-    }
-    let entries: Vec<_> = std::fs::read_dir(&snapshots)?
-        .filter_map(|e| e.ok())
-        .collect();
-    entries
-        .into_iter()
-        .filter_map(|e| {
-            let m = e.metadata().ok()?;
-            if m.is_dir() {
-                Some((e.path(), m.modified().ok()?))
-            } else {
-                None
-            }
-        })
-        .max_by_key(|(_, t)| *t)
-        .map(|(p, _)| p)
-        .context("No snapshots")
-}
+// find_latest_snapshot 已抽取到 onnx-infra crate
 
 // ── Engine routing ──
 
@@ -507,57 +422,15 @@ pub fn reload_app_config() {
     }
 }
 
-/// Apply hardware acceleration configuration (if enabled in config.yaml) to a SessionBuilder.
-/// If the acceleration registration fails, it logs a warning and falls back to CPU.
+/// Apply hardware acceleration configuration to a SessionBuilder.
+/// 基础实现已抽取到 onnx-infra crate；此处包装加入 ASR 特有的 qwen3-asr CoreML 跳过逻辑。
 pub fn apply_session_acceleration(builder: ort::session::builder::SessionBuilder) -> Result<ort::session::builder::SessionBuilder> {
     let app_cfg = load_app_config_cached();
 
-    if !app_cfg.asr_hardware_accelerated {
-        return Ok(builder);
-    }
-
-    // qwen3-asr 含 CoreML 不支持的动态算子 → onnxruntime 把图分区（CoreML 跑能跑的、CPU 跑
-    // 剩下的），每分区边界 CPU↔CoreML 张量拷贝开销 dominate，比纯 CPU 还慢，且狂刷
-    // "Context leak / CoreAnalytics"。检测到 active 引擎 category=qwen3-asr 时跳过 CoreML，纯 CPU。
-    // 用 resolve_engine_category 而非 parse_model_spec 的 matches!：裸名（如 "qwen3-asr-base"）
-    // 会返回 ModelSpec::NameOnly 导致 matches! 失效，resolve_engine_category 内部会查 DB
-    // 解析出真实 category，对裸名同样有效。
-    if resolve_engine_category(&app_cfg.asr_engine) == Some(EngineCategory::Qwen3Asr) {
-        log::info!(
-            "Skipping CoreML EP: active engine category=qwen3-asr (dynamic ops incompatible — \
-             graph partitioning would slow it down). Using CPU."
-        );
-        return Ok(builder);
-    }
-
-    // 按平台注册对应 EP——原实现跨平台全注册（CUDA/DirectML/CoreML 一起），在 macOS 上
-    // 会去 init Linux/Windows 专用的 CUDA/DirectML EP，其失败路径（dlopen libcuda 等）
-    // 可能直接 segfault（SIGSEGV 绕过 Rust 错误处理，下面 match 抓不到）。
-    // macOS=CoreML、Linux=CUDA、Windows=DirectML（Cargo feature 同步按平台条件化，见 Cargo.toml）。
-    let providers = vec![
-        #[cfg(target_os = "macos")]
-        ort::ep::CoreMLExecutionProvider::default().build(),
-        #[cfg(target_os = "linux")]
-        ort::ep::CUDAExecutionProvider::default().build(),
-        #[cfg(target_os = "windows")]
-        ort::ep::DirectMLExecutionProvider::default().build(),
-    ];
-
-    log::info!(
-        "Attempting to build session with hardware acceleration EPs on {} ({} provider(s))",
-        std::env::consts::OS,
-        providers.len()
-    );
-    match builder.with_execution_providers(providers) {
-        Ok(b) => {
-            log::info!("Successfully registered EPs!");
-            Ok(b)
-        }
-        Err(e) => {
-            log::warn!("Failed to register hardware acceleration EPs: {:?}. Falling back to CPU.", e);
-            ort::session::Session::builder().context("Failed to reconstruct fallback session builder")
-        }
-    }
+    // qwen3-asr 含 CoreML 不支持的动态算子 → 跳过 EP，纯 CPU。
+    let skip_coreml = app_cfg.asr_hardware_accelerated
+        && resolve_engine_category(&app_cfg.asr_engine) == Some(EngineCategory::Qwen3Asr);
+    onnx_infra::apply_session_acceleration(builder, skip_coreml)
 }
 
 #[cfg(test)]
@@ -633,48 +506,7 @@ mod tests {
 
     // ── resolve_local_in 查找内核测试（阶段1：download 模型发现）──
 
-    #[test]
-    fn resolve_local_in_finds_bundled_relative() {
-        // 第 1 级：octopus_home/<source>（随包小模型，如 models/zipformer）
-        let tmp = std::env::temp_dir().join("octopus_t_resolve_bundled");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(tmp.join("models/zipformer")).unwrap();
-        let p = super::resolve_local_in("models/zipformer", &tmp).unwrap();
-        assert_eq!(p, tmp.join("models/zipformer"));
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn resolve_local_in_finds_downloaded_hf_repo() {
-        // 第 3 级（新增）：octopus_home/models/<source>，source 是含 / 的 HF repo 名
-        let tmp = std::env::temp_dir().join("octopus_t_resolve_downloaded");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(tmp.join("models/onnx-community/whisper-small")).unwrap();
-        let p = super::resolve_local_in("onnx-community/whisper-small", &tmp).unwrap();
-        assert_eq!(p, tmp.join("models/onnx-community/whisper-small"));
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn resolve_local_in_finds_absolute_path() {
-        // 第 2 级：source 是绝对路径
-        let tmp = std::env::temp_dir().join("octopus_t_resolve_abs");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        let p = super::resolve_local_in(tmp.to_str().unwrap(), &std::env::temp_dir()).unwrap();
-        assert_eq!(p, tmp);
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
-
-    #[test]
-    fn resolve_local_in_returns_none_when_missing() {
-        // 前 3 级全 miss → None（HF cache 第 4 级由 find_hf_cache 处理，不在本函数）
-        let tmp = std::env::temp_dir().join("octopus_t_resolve_missing");
-        let _ = std::fs::remove_dir_all(&tmp);
-        std::fs::create_dir_all(&tmp).unwrap();
-        assert!(super::resolve_local_in("nonexistent/repo", &tmp).is_none());
-        let _ = std::fs::remove_dir_all(&tmp);
-    }
+    // resolve_local_in 测试已随函数移到 onnx-infra crate
 
     #[test]
     fn order_engine_infos_sorts_is_local_desc_then_category_then_name() {

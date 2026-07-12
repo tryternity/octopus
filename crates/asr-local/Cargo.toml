@@ -39,6 +39,7 @@ log = "0.4"
 parking_lot = { workspace = true }
 # 基础设施（跨 crate 共享常量等）
 octopus-infra = { path = "../infra" }
+onnx-infra = { path = "../onnx-infra" }
 octopus-llm = { path = "../llm" }
 
 jieba-rs = "0.6"
