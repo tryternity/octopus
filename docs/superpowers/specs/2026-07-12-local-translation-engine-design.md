@@ -18,7 +18,7 @@
 接入本地 m2m100-418M ONNX int8 模型后：
 - 完全离线，零网络延迟
 - 中⇄英翻译质量足够日常使用（418M 参数，支持 100+ 语言互译）
-- 与现有 ASR ONNX 架构一致（`ort` crate + `apply_session_acceleration`）
+- 与现有 ASR ONNX 架构一致（`ort` crate）
 
 ### 设计约束（已确认）
 
@@ -46,7 +46,7 @@
 | 精度 | int8 量化 |
 | Encoder ONNX | 448MB |
 | Decoder ONNX | 274MB |
-| Tokenizer | `sentencepiece.bpe.model`（2.3MB，SentencePiece BPE） |
+| Tokenizer | `tokenizer.json`（HuggingFace tokenizers，含 lang special tokens） |
 | vocab_size | 128,112 |
 | d_model | 1024 |
 | 语言数 | 100+（语言标记：`__en__` / `__zh__` / `__ja__` 等） |
@@ -156,9 +156,9 @@ pub struct M2M100Engine {
 1. `~/.octopus/models/<source>` 
 2. HF cache：`~/.cache/huggingface/hub/models--venddair--m2m100-418M-onnx-int8/snapshots/<hash>/`
 
-**加载文件**：`encoder_model.onnx` + `decoder_model.onnx` + `sentencepiece.bpe.model`
+**加载文件**：`encoder_model_quantized.onnx` + `decoder_model_quantized.onnx` + `tokenizer.json`
 
-**ONNX session**：`apply_session_acceleration`（CoreML/CUDA/DirectML，从 ASR 层复用或提取到 infra）
+**ONNX session**：标准 `Session::builder()`（未使用硬件加速，翻译模型小，CPU 足够）
 
 ### 5.2 Tokenizer 封装
 
@@ -270,7 +270,7 @@ pub struct DownloadableTranslationModel {
 
 ### 6.3 下载验证
 
-复用现有 `download_model` / `verify_model` 命令（`model_commands.rs`），通过 repo id 下载。模型完整性校验：检查 `encoder_model.onnx` + `decoder_model.onnx` + `sentencepiece.bpe.model` 三个文件是否存在。
+复用现有 `download_model` / `verify_model` 命令（`model_commands.rs`），通过 repo id 下载。模型完整性校验：检查 `encoder_model_quantized.onnx` + `decoder_model_quantized.onnx` + `tokenizer.json` 三个文件是否存在。
 
 ---
 

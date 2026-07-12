@@ -1,4 +1,4 @@
-use anyhow::Result;
+use anyhow::{Context, Result};
 use std::path::Path;
 use tokenizers::Tokenizer;
 
@@ -8,6 +8,9 @@ pub struct M2M100Tokenizer {
 
 pub const EOS_ID: i64 = 2;
 pub const DECODER_START_TOKEN_ID: i64 = 2;
+
+/// m2m100 tokenizer.json 中未知语言的 fallback token id（仅用于错误诊断，不应进入正常翻译流程）
+pub const FALLBACK_LANG_ID: u32 = 128022;
 
 /// 语言标记 token IDs（from tokenizer.json, m2m100 standard layout）
 pub fn lang_code_to_id(lang: &str, tok: &Tokenizer) -> Option<u32> {
@@ -51,7 +54,8 @@ impl M2M100Tokenizer {
         let encoding = self.tok.encode(text, false)
             .map_err(|e| anyhow::anyhow!("tokenizer encode 失败: {}", e))?;
         let text_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
-        let lang_id = lang_code_to_id(source_lang, &self.tok).unwrap_or(128022) as i64;
+        let lang_id = lang_code_to_id(source_lang, &self.tok)
+            .with_context(|| format!("不支持的语言代码: {}", source_lang))? as i64;
         // [source_lang_id] + text_tokens + [eos]
         let mut result = vec![lang_id];
         result.extend(text_ids);

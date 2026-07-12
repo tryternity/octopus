@@ -8,7 +8,8 @@ pub trait TranslationEngine: Send + Sync {
 }
 
 /// 全局缓存：spec → engine。spec 变化时自动重新加载。
-static GLOBAL_ENGINE: OnceLock<parking_lot::Mutex<(String, Option<Arc<dyn TranslationEngine>>)>> = OnceLock::new();
+type GlobalEngine = parking_lot::Mutex<(String, Option<Arc<dyn TranslationEngine>>)>;
+static GLOBAL_ENGINE: OnceLock<GlobalEngine> = OnceLock::new();
 
 pub fn cached_engine(engine_spec: &str) -> Result<Option<Arc<dyn TranslationEngine>>> {
     if !engine_spec.starts_with("local:") {

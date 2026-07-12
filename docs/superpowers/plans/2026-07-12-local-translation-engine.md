@@ -23,12 +23,12 @@
 - m2m100 模型 repo：`venddair/m2m100-418M-onnx-int8`
 - 解码策略：greedy（每步 argmax，max_length=200，eos_token_id=2）
 - Decoder `use_cache: false`：每步传完整已生成序列
-- Tokenizer：`sentencepiece.bpe.model`，`sentencepiece` crate static feature（自动编译 C++ 库，不依赖系统安装）
+- Tokenizer：`tokenizer.json`，`tokenizers` crate（HuggingFace tokenizers，含 lang special tokens）
 - 语言标记：ISO 639-1（`"zh"` / `"en"`）→ m2m100 标记（`__zh__` / `__en__`）
 - `translate_engine` 配置：`""` = 自动，`"local:m2m100"` = 指定本地，`"llm"` = 强制 LLM
 - 翻译方向检测：CJK 字符 → zh→en，否则 → en→zh（复用现有逻辑）
 - `ort` 版本与 asr-local 一致：`2.0.0-rc.12`，macOS 用 `coreml` feature
-- ONNX session 加速：复用 `apply_session_acceleration` 模式
+- ONNX session：标准 `Session::builder()`（未使用硬件加速）
 
 ---
 
@@ -346,7 +346,7 @@ pub struct M2M100Engine {
     tokenizer: M2M100Tokenizer,
 }
 
-/// ONNX session 加速——与 asr-local 的 apply_session_acceleration 同逻辑。
+/// ONNX session：标准 Session::builder（未使用硬件加速，翻译模型小）。
 /// 独立实现（避免引入 asr-local 依赖）。
 fn apply_acceleration(builder: ort::session::builder::SessionBuilder) -> Result<ort::session::builder::SessionBuilder> {
     // 一期纯 CPU——翻译模型不大，CoreML 对 decoder 自回归可能不稳定
@@ -396,9 +396,9 @@ impl M2M100Engine {
         let source = "venddair/m2m100-418M-onnx-int8";
         let model_dir = resolve_model_dir(source)?;
 
-        let encoder_path = model_dir.join("encoder_model.onnx");
+        let encoder_path = model_dir.join("onnx/encoder_model_quantized.onnx");
         let decoder_path = model_dir.join("decoder_model.onnx");
-        let tokenizer_path = model_dir.join("sentencepiece.bpe.model");
+        let tokenizer_path = model_dir.join("tokenizer.json");
 
         for (name, path) in [("encoder", &encoder_path), ("decoder", &decoder_path), ("tokenizer", &tokenizer_path)] {
             if !path.exists() {
@@ -610,9 +610,9 @@ pub fn list_downloadable_translation_models() -> Vec<DownloadableTranslationMode
 fn check_model_downloaded(repo: &str) -> bool {
     find_model_path(repo)
         .map(|dir| {
-            dir.join("encoder_model.onnx").exists()
+            dir.join("onnx/encoder_model_quantized.onnx").exists()
                 && dir.join("decoder_model.onnx").exists()
-                && dir.join("sentencepiece.bpe.model").exists()
+                && dir.join("tokenizer.json").exists()
         })
         .unwrap_or(false)
 }
@@ -1182,3 +1182,17 @@ Expected: 无错误
 git add docs/
 git commit -m "docs: sync architecture + spec status for translation engine"
 ```
+
+
+---
+
+## 代码审查修复记录（2026-07-12）
+
+| 问题 | 修复 |
+|------|------|
+| A. 魔数 128022 静默回退 | `lang_code_to_id` miss 时 `bail!` 并附 context；新增 `FALLBACK_LANG_ID` 具名常量 |
+| B. 翻译线程结果投递到错误 temp tab | `translate-done` 事件改为 `{ key, text }` JSON 格式（前端兼容旧 string 格式） |
+| C. 多段翻译 `\\n` 拼接改变原文结构 | `results.join("\\n")` → `results.join("")`（句子切分已保留标点/换行） |
+| D. 测试旧 repo 名 `venddair/...` + 无模型 panic | 改为 `lazycodepersona/m2m100_418m` + `#[ignore]` |
+| E. 文档引用旧文件名 | spec/plan 中 `encoder_model.onnx` → `*_quantized.onnx`、`sentencepiece.bpe.model` → `tokenizer.json`、删除 `apply_session_acceleration` |
+| F. clippy | engine.rs 提 type 别名 `GlobalEngine` |

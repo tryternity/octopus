@@ -84,7 +84,7 @@ impl M2M100Engine {
 
         // Decoder greedy loop
         let target_lang_id = lang_code_to_id(target_lang, self.tokenizer.tokenizer())
-            .unwrap_or(128022) as i64;
+            .with_context(|| format!("不支持的翻译目标语言: {}", target_lang))? as i64;
         let mut decoder_ids: Vec<i64> = vec![DECODER_START_TOKEN_ID, target_lang_id];
         let mut decoder = self.decoder.lock();
 
@@ -118,7 +118,6 @@ impl M2M100Engine {
                 break;
             }
             if decoder_ids.len() >= 10 {
-                // 连续 8 个相同 token 才触发——阈值足够高，不会误杀正常标点重复
                 let last8 = &decoder_ids[decoder_ids.len()-8..];
                 if last8.iter().all(|&id| id == next_token) {
                     log::warn!("重复 token 检测触发，停止解码");
@@ -219,7 +218,7 @@ impl TranslationEngine for M2M100Engine {
             results.push(translated);
         }
 
-        Ok(results.join("\n"))
+        Ok(results.join(""))
     }
 }
 
