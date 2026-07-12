@@ -1,18 +1,20 @@
 import { Languages, ArrowRight } from "lucide-react";
+import { useT } from "@/lib/i18n";
 
 export default function TranslateTab() {
+  const t = useT();
   const engines = [
-    { name: "DeepL", desc: "高质量商业翻译 API" },
-    { name: "Google Translate", desc: "免费通用翻译" },
-    { name: "百度翻译", desc: "国内免费翻译" },
-    { name: "Argos Translate", desc: "本地离线翻译" },
+    { name: "DeepL", desc: t("settings.models.translate.descHighQuality") },
+    { name: "Google Translate", desc: t("settings.models.translate.descFree") },
+    { name: "百度翻译", desc: t("settings.models.translate.descCn") },
+    { name: "Argos Translate", desc: t("settings.models.translate.descLocal") },
   ];
 
   return (
     <div className="max-w-[560px]">
       <div className="flex flex-col items-center gap-2 py-8 px-4 rounded-lg border border-dashed border-border/60">
         <Languages className="w-6 h-6 text-muted-foreground/40" />
-        <span className="text-xs font-medium text-muted-foreground">翻译模型配置即将支持</span>
+        <span className="text-xs font-medium text-muted-foreground">{t("settings.models.translate.comingSoon")}</span>
       </div>
       <div className="flex flex-col gap-1 mt-3">
         {engines.map((e) => (

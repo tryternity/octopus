@@ -8,6 +8,7 @@ import {
   newerSnapshot,
   sparklineDataFromNullable,
 } from "./systemStatusMath";
+import { useT } from "@/lib/i18n";
 
 export interface ProcessStats {
   rss_bytes: number;
@@ -40,8 +41,9 @@ export interface SystemStatusSnapshot {
 }
 
 function Sparkline({ data, color, max }: { data: number[]; color: string; max?: number }) {
+  const t = useT();
   const pts = sparklinePoints(data, { max });
-  if (!pts) return <div className="h-8 text-[10px] text-muted-foreground/50">采集中…</div>;
+  if (!pts) return <div className="h-8 text-[10px] text-muted-foreground/50">{t("settings.system.collecting")}</div>;
   return (
     <svg viewBox="0 0 100 32" preserveAspectRatio="none" className="w-full h-8">
       <polyline
@@ -76,12 +78,13 @@ function Card({
 }
 
 export default function SystemPanel({ showToast }: { showToast: (msg: string) => void }) {
+  const t = useT();
   const [snap, setSnap] = useState<SystemStatusSnapshot | null>(null);
 
   useEffect(() => {
     invoke<SystemStatusSnapshot>("get_system_status")
       .then(setSnap)
-      .catch((e) => showToast("加载状态失败：" + e));
+      .catch((e) => showToast(t("settings.system.loadFailed") + e));
     let unlisten: UnlistenFn;
     let cancelled = false;
     listen<SystemStatusSnapshot>("system-status", (e) => {
@@ -98,7 +101,7 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
 
   if (!snap) {
     return (
-      <div className="flex items-center justify-center h-full text-muted-foreground">加载中...</div>
+      <div className="flex items-center justify-center h-full text-muted-foreground">{t("settings.system.loading")}</div>
     );
   }
 
@@ -120,34 +123,34 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
         <span className="text-sm font-medium flex items-center gap-3">
           {snap.process.real_bytes != null ? (
             <>
-              <span>进程内存 {fmtBytes(snap.process.real_bytes)}</span>
+              <span>{t("settings.system.processMem")} {fmtBytes(snap.process.real_bytes)}</span>
               <span className="text-muted-foreground">
-                常驻 {fmtBytes(snap.process.rss_bytes)}
+                {t("settings.system.resident")} {fmtBytes(snap.process.rss_bytes)}
               </span>
             </>
           ) : (
-            <span>进程总内存 {fmtBytes(snap.process.rss_bytes)}</span>
+            <span>{t("settings.system.processTotalMem")} {fmtBytes(snap.process.rss_bytes)}</span>
           )}
         </span>
         <span className="text-xs text-muted-foreground/70">
-          系统 CPU {snap.system.cpu_percent.toFixed(1)}%
+          {t("settings.system.systemCpu")} {snap.system.cpu_percent.toFixed(1)}%
         </span>
       </div>
 
       {/* 内存 / CPU 并排（布局 B） */}
       <div className="grid grid-cols-2 gap-3">
-        <Card icon={MemoryStick} title={hasReal ? "内存（实际占用）" : "内存（常驻）"}>
+        <Card icon={MemoryStick} title={hasReal ? t("settings.system.memActual") : t("settings.system.memResident")}>
           <div className="text-lg font-semibold mb-1">
             {fmtBytes(memMain)}
             {hasReal && (
               <span className="ml-2 text-xs text-muted-foreground font-normal">
-                常驻 {fmtBytes(snap.process.rss_bytes)}
+                {t("settings.system.resident")} {fmtBytes(snap.process.rss_bytes)}
               </span>
             )}
           </div>
           <Sparkline data={realSeries} color="#6ab0f3" max={realMax} />
         </Card>
-        <Card icon={Cpu} title="CPU（进程）">
+        <Card icon={Cpu} title={t("settings.system.cpuProcess")}>
           <div className="text-lg font-semibold mb-1">
             {snap.process.cpu_percent.toFixed(1)}%
           </div>
@@ -156,9 +159,9 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
       </div>
 
       {/* 模型列表 */}
-      <Card icon={Boxes} title="模型（估算）">
+      <Card icon={Boxes} title={t("settings.system.modelEstimate")}>
         {snap.models.length === 0 ? (
-          <div className="text-xs text-muted-foreground/60">暂无已加载模型</div>
+          <div className="text-xs text-muted-foreground/60">{t("settings.system.noModels")}</div>
         ) : (
           <div className="flex flex-col gap-1.5">
             {snap.models.map((m) => (
@@ -170,17 +173,17 @@ export default function SystemPanel({ showToast }: { showToast: (msg: string) =>
                   <span>{m.display_name}</span>
                 </div>
                 <span className="text-xs text-muted-foreground/70">
-                  约 {fmtBytes(m.estimated_bytes)}
+                  {t("settings.system.approx")} {fmtBytes(m.estimated_bytes)}
                 </span>
               </div>
             ))}
           </div>
         )}
         <div className="mt-2 text-[10px] text-muted-foreground/50">
-          模型内存为「加载前后进程内存差值」估算（macOS 用 phys_footprint、其他平台用常驻内存；同进程 ort 无法精确拆分），仅供参考。
+          {t("settings.system.modelMemHint")}
         </div>
         <div className="text-[10px] text-muted-foreground/50">
-          OCR idle 60s 自动释放（列表条目消失即已释放）；macOS 下进程内存数值通常不立即回落，下次 OCR 复用已释放空间。
+          {t("settings.system.ocrIdleHint")}
         </div>
       </Card>
     </div>
