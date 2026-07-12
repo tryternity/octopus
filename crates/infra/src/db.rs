@@ -262,15 +262,21 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 24", [])?;
             log::info!("schema upgraded to v24 (action_bar_items.shortcut)");
         }
-        // v24→v25：seed 新增「问豆包」菜单项（id=11）
+        // v24→v25：seed 新增「问豆包」菜单项（用 title 去重避免 id 冲突）
         if v < 25 {
-            conn.execute(
-                "INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
-                    (11, NULL, '问豆包', 'sparkles', 'script', '#osascript\nset the clipboard to (do shell script (\"printf %s \" & quoted form of (system attribute \"OCTOPUS_TEXT\")))\ntell application \"Doubao\" to activate\ndelay 0.5\ntell application \"System Events\"\n    keystroke \"v\" using command down\n    delay 0.1\n    key code 36\nend tell', 4, 1)",
-                [],
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM action_bar_items WHERE title='问豆包' AND parent_id IS NULL",
+                [], |r| r.get(0),
             )?;
+            if exists == 0 {
+                conn.execute(
+                    "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
+                        (NULL, '问豆包', 'sparkles', 'script', '#osascript\nset the clipboard to (do shell script (\"printf %s \" & quoted form of (system attribute \"OCTOPUS_TEXT\")))\ntell application \"Doubao\" to activate\ndelay 0.5\ntell application \"System Events\"\n    keystroke \"v\" using command down\n    delay 0.1\n    key code 36\nend tell', 4, 1)",
+                    [],
+                )?;
+                log::info!("schema upgraded to v25 (seed: 问豆包 menu item)");
+            }
             conn.execute("PRAGMA user_version = 25", [])?;
-            log::info!("schema upgraded to v25 (seed: 问豆包 menu item)");
         }
         return Ok(());
     }
