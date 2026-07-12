@@ -271,7 +271,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
             if exists == 0 {
                 conn.execute(
                     "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
-                        (NULL, '问豆包', 'sparkles', 'script', '#osascript\nset the clipboard to (do shell script (\"printf %s \" & quoted form of (system attribute \"OCTOPUS_TEXT\")))\ntell application \"Doubao\" to activate\ndelay 0.5\ntell application \"System Events\"\n    keystroke \"v\" using command down\n    delay 0.1\n    key code 36\nend tell', 4, 1)",
+                        (NULL, '问豆包', 'sparkles', 'script', '#osascript\nset the clipboard to (do shell script (\"printf %s \" & quoted form of (system attribute \"OCTOPUS_TEXT\")))\ntell application \"Doubao\" to activate\nrepeat 20 times\n    tell application \"System Events\"\n        if name of first application process whose frontmost is true is \"Doubao\" then exit repeat\n    end tell\n    delay 0.1\nend repeat\ndelay 0.3\ntell application \"System Events\"\n    keystroke \"v\" using command down\n    delay 0.15\n    key code 36\nend tell', 4, 1)",
                     [],
                 )?;
                 log::info!("schema upgraded to v25 (seed: 问豆包 menu item)");

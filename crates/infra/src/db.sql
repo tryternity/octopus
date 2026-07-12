@@ -311,10 +311,16 @@ INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, 
 SELECT NULL, '问豆包', 'sparkles', 'script', '#osascript
 set the clipboard to (do shell script ("printf %s " & quoted form of (system attribute "OCTOPUS_TEXT")))
 tell application "Doubao" to activate
-delay 0.5
+repeat 20 times
+    tell application "System Events"
+        if name of first application process whose frontmost is true is "Doubao" then exit repeat
+    end tell
+    delay 0.1
+end repeat
+delay 0.3
 tell application "System Events"
     keystroke "v" using command down
-    delay 0.1
+    delay 0.15
     key code 36
 end tell', 4, 1
 WHERE NOT EXISTS (SELECT 1 FROM action_bar_items WHERE title='问豆包' AND parent_id IS NULL);
