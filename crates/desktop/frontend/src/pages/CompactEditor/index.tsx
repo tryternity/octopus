@@ -311,7 +311,7 @@ function CompactEditor() {
       {/* 内容区：所有 tab hidden 挂载（图片保持状态），仅活跃 tab 可见 */}
       {tabs.length > 0 ? (
         tabs.map((tab, i) => (
-          <div key={tab.key} className="flex-1 flex flex-col" style={{ display: i === activeIdx ? 'flex' : 'none' }}>
+          <div key={tab.key} className="flex-1 flex flex-col min-h-0" style={{ display: i === activeIdx ? 'flex' : 'none' }}>
             {tab.itemType === 'image' ? (
               // 图片 Tab 懒加载：仅活跃 Tab 挂载 ImagePreview
               i === activeIdx ? (
