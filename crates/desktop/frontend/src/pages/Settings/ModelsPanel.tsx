@@ -42,7 +42,7 @@ export default function ModelsPanel({ showToast }: { showToast: (msg: string) =>
         {activeTab === "语音识别" && <AsrTab showToast={showToast} />}
         {activeTab === "文本模型" && <LlmTab showToast={showToast} />}
         {activeTab === "扫描识别" && <OcrTab showToast={showToast} />}
-        {activeTab === "翻译模型" && <TranslateTab />}
+        {activeTab === "翻译模型" && <TranslateTab showToast={showToast} />}
       </div>
     </div>
   );
