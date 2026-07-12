@@ -72,6 +72,7 @@ export default function Clipboard() {
   useEffect(() => {
     return () => {
       if (confirmTimer.current) clearTimeout(confirmTimer.current);
+      if (keyboardNavTimerRef.current) clearTimeout(keyboardNavTimerRef.current);
     };
   }, []);
 
@@ -99,15 +100,17 @@ export default function Clipboard() {
     if (item) setPreviewItem(item);
   }, [selectedIndex, items]);
 
-  // 图片类型拉缩略图
+  // 图片类型拉缩略图（竞态守卫：快速切换时只保留最后一个结果）
   useEffect(() => {
+    let cancelled = false;
     if (previewItem?.item_type === "image") {
       invoke<string>("get_image_thumb", { id: previewItem.id })
-        .then(setPreviewThumb)
-        .catch(() => setPreviewThumb(null));
+        .then(data => { if (!cancelled) setPreviewThumb(data); })
+        .catch(() => { if (!cancelled) setPreviewThumb(null); });
     } else {
       setPreviewThumb(null);
     }
+    return () => { cancelled = true; };
   }, [previewItem]);
 
   // 浮窗失焦时清空预览内容（隐藏 overlay）
@@ -130,6 +133,7 @@ export default function Clipboard() {
   filterRef.current = filter;
   // 区分键盘/鼠标导航：键盘按 ↑↓ 时设 true，阻止 scrollIntoView 触发的 mouseEnter 抢 selectedIndex
   const keyboardNavRef = useRef(false);
+  const keyboardNavTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -141,7 +145,8 @@ export default function Clipboard() {
         keyboardNavRef.current = true;
         setSelectedIndex((prev) => moveIndex(prev, cur.length, e.key === "ArrowDown" ? 1 : -1));
         // 300ms 后恢复鼠标 hover 响应（留时间给 scrollIntoView + mouseEnter 事件平息）
-        setTimeout(() => { keyboardNavRef.current = false; }, 300);
+        if (keyboardNavTimerRef.current) clearTimeout(keyboardNavTimerRef.current);
+        keyboardNavTimerRef.current = setTimeout(() => { keyboardNavRef.current = false; }, 300);
         return;
       }
       // Enter：对选中条目执行粘贴（复用 paste_clipboard_item，后端已双保险：写剪贴板+模拟粘贴）
@@ -378,10 +383,12 @@ export default function Clipboard() {
             const listH = listEl.clientHeight;
             if (itemMid < listH / 2) {
               // 选中在上半 → 预览在下方，底边与条目底边重叠 2px
-              previewTop = `${itemEl.offsetTop + itemEl.offsetHeight - 2}px`;
+              const top = itemEl.offsetTop + itemEl.offsetHeight - 2;
+              previewTop = `${Math.min(top, listH - previewH)}px`;
             } else {
               // 选中在下半 → 预览在上方，顶边与条目顶边重叠 2px
-              previewTop = `${itemEl.offsetTop - previewH + 2}px`;
+              const top = itemEl.offsetTop - previewH + 2;
+              previewTop = `${Math.max(top, 0)}px`;
             }
           }
           return (
