@@ -351,9 +351,11 @@ fn resolve_translate_strategy(config: &octopus_infra::config::AppConfig) -> Tran
         "llm" => TranslateStrategy::Llm,
         spec if spec.starts_with("local:") => TranslateStrategy::Local(spec.to_string()),
         _ => {
-            // 自动：有本地则用本地
+            // 自动：优先 opus-mt（轻量），其次 m2m100，否则 LLM
             let models = octopus_translation::discover_translation_models();
-            if models.iter().any(|m| m.downloaded) {
+            if models.iter().any(|m| m.name == "opus-mt" && m.downloaded) {
+                TranslateStrategy::Local("local:opus-mt".into())
+            } else if models.iter().any(|m| m.name == "m2m100-418M" && m.downloaded) {
                 TranslateStrategy::Local("local:m2m100-418M".into())
             } else {
                 TranslateStrategy::Llm
@@ -379,6 +381,14 @@ fn do_translate(text: &str, config: &octopus_infra::config::AppConfig) -> Result
     let (source_lang, target_lang) = detect_translate_direction(text);
     match resolve_translate_strategy(config) {
         TranslateStrategy::Local(spec) => {
+            // opus-mt 需要方向信息来加载对应子目录
+            if spec.starts_with("local:opus-mt") {
+                let engine = octopus_translation::load_opus_mt(source_lang, target_lang)
+                    .map_err(|e| e.to_string())?;
+                return engine.translate(text, source_lang, target_lang)
+                    .map_err(|e| e.to_string());
+            }
+            // m2m100 等其他引擎
             let manager = octopus_translation::TranslationManager::new(&spec);
             let engine = manager.engine()
                 .map_err(|e| e.to_string())?
