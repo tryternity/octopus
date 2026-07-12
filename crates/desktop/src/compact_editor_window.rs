@@ -1,4 +1,4 @@
-//! 统一内容查看器窗口：独立 Tauri 窗口，原生标题栏，880×620 可调大小，居中。
+//! 统一内容查看器窗口：独立 Tauri 窗口，原生标题栏，1100×680 可调大小，居中。
 //! 支持 tab 切换文本/图片/语音条目。窗口尺寸可调 + 记忆。
 //!
 //! 单例 + 关窗即销毁：open 时已存在则 show+focus（由 commands 层额外 emit load 推送新文本），
@@ -25,7 +25,7 @@ struct WindowState {
     maximized: bool,
 }
 
-/// 读窗口状态记忆（DB app_config）。无记忆用默认 880×620 居中。
+/// 读窗口状态记忆（DB app_config）。无记忆用默认 1100×680 居中。
 fn load_window_state() -> WindowState {
     octopus_infra::db::load_config_key(STATE_KEY)
         .ok()

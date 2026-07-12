@@ -176,7 +176,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 24 {
+    if v >= 25 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -262,13 +262,29 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 24", [])?;
             log::info!("schema upgraded to v24 (action_bar_items.shortcut)");
         }
+        // v24→v25：seed 新增「问豆包」菜单项（用 title 去重避免 id 冲突）
+        if v < 25 {
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM action_bar_items WHERE title='问豆包' AND parent_id IS NULL",
+                [], |r| r.get(0),
+            )?;
+            if exists == 0 {
+                conn.execute(
+                    "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
+                        (NULL, '问豆包', 'sparkles', 'script', '#osascript\nset the clipboard to (do shell script (\"printf %s \" & quoted form of (system attribute \"OCTOPUS_TEXT\")))\ndo shell script \"open -a Doubao\"\ndelay 2\ntell application \"System Events\"\n    tell process \"Doubao\"\n        keystroke \"v\" using command down\n        delay 0.3\n        key code 36\n    end tell\nend tell', 4, 1)",
+                    [],
+                )?;
+                log::info!("schema upgraded to v25 (seed: 问豆包 menu item)");
+            }
+            conn.execute("PRAGMA user_version = 25", [])?;
+        }
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 24", [])?;
-    log::info!("DB initialized (v24): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 25", [])?;
+    log::info!("DB initialized (v25): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -2013,13 +2029,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v24() {
+    fn init_schema_fresh_db_builds_v25() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 24, "全新库 init_schema 后应到 v24");
+        assert_eq!(v, 25, "全新库 init_schema 后应到 v25");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2033,16 +2049,16 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_v24_is_noop() {
-        // 已是 v24 的库再调 init_schema 应早退（不重跑、不报错）
+    fn init_schema_v25_is_noop() {
+        // 已是 v25 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 24", []).unwrap();
+        conn.execute("PRAGMA user_version = 25", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 24);
+        assert_eq!(v, 25);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -2919,7 +2935,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 24);
+        assert_eq!(v, 25);
 
         // 「通用」版本存在，含两个 active 词（normalize 排序），不含 pending
         let (name, words_text): (String, String) = conn
