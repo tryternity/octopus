@@ -709,7 +709,13 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                 let (source_lang, target_lang) = detect_translate_direction(&text);
                 let result = match resolve_translate_strategy(&config) {
                     TranslateStrategy::Local(engine) => {
-                        engine.translate(&text, source_lang, target_lang)
+                        // 本地翻译是 CPU 密集阻塞操作，用 spawn_blocking 避免卡死 async 运行时
+                        let text_clone = text.clone();
+                        tokio::task::spawn_blocking(move || {
+                            engine.translate(&text_clone, source_lang, target_lang)
+                        })
+                        .await
+                        .map_err(|e| format!("翻译任务异常: {}", e))?
                         .map_err(|e| e.to_string())?
                     }
                     TranslateStrategy::Llm => {

@@ -26,7 +26,7 @@ interface ActionBarItem {
   shortcut?: string;
 }
 
-const AI_TRANSLATE_TIMEOUT_MS = 5000;
+const AI_TRANSLATE_TIMEOUT_MS = 120000; // 本地翻译长文本需要更长时间
 const AI_TIMEOUT_MS = 10000;
 
 /** 序号 → 显示标签：1-9 显示数字，10-35 显示 a-z */
