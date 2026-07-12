@@ -26,7 +26,6 @@ interface ActionBarItem {
   shortcut?: string;
 }
 
-const AI_TRANSLATE_TIMEOUT_MS = 120000; // 本地翻译长文本需要更长时间
 const AI_TIMEOUT_MS = 10000;
 
 /** 序号 → 显示标签：1-9 显示数字，10-35 显示 a-z */
@@ -247,23 +246,26 @@ export default function ActionBar() {
     setView("loading");
     timedOutRef.current = false;
 
-    const timeoutMs = item.actionData === "auto_translate" ? AI_TRANSLATE_TIMEOUT_MS : AI_TIMEOUT_MS;
-    const timeoutId = setTimeout(() => {
+    // 本地翻译（auto_translate）可能耗时很长（长文本分段），不设超时
+    // LLM 操作保留 10s 超时
+    const isTranslate = item.actionData === "auto_translate";
+    const timeoutMs = isTranslate ? 0 : AI_TIMEOUT_MS;
+    const timeoutId = timeoutMs > 0 ? setTimeout(() => {
       timedOutRef.current = true;
       showQuickError(t("actionbar.timeout", { n: timeoutMs / 1000 }));
       setView("main");
-    }, timeoutMs);
+    }, timeoutMs) : null;
 
     try {
       await invoke("execute_action_bar", { itemId: item.id, text: ctx.text });
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
       if (timedOutRef.current) {
         console.warn("[action-bar] AI result arrived after timeout, discarding");
         return;
       }
       // action_bar_show_result 后端已隐藏本窗口并展示 CompactEditor
     } catch (e) {
-      clearTimeout(timeoutId);
+      if (timeoutId) clearTimeout(timeoutId);
       if (timedOutRef.current) return;
       showQuickError(String(e).slice(0, 40));
       setView("main");
