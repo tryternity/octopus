@@ -9,6 +9,10 @@ use crate::engine::TranslationEngine;
 /// MarianMT decoder 上限 512（config model_max_length），留余量
 const MAX_ENCODER_TOKENS: usize = 500;
 const MAX_DECODER_LENGTH: usize = 500;
+/// 禁止 3-gram 重复（标准 HF 默认值）
+const NO_REPEAT_NGRAM_SIZE: usize = 3;
+/// 重复惩罚因子（logit / penalty，>1 降低已出现 token 概率）
+const REPETITION_PENALTY: f32 = 1.3;
 
 /// Opus-MT MarianMT 引擎。按翻译方向加载对应子目录（zh-en / en-zh）。
 pub struct OpusMTEngine {
@@ -130,9 +134,44 @@ impl OpusMTEngine {
                 .try_extract_tensor::<f32>()?;
             let vocab_size = logits_shape[2] as usize;
             let offset = (dec_len - 1) * vocab_size;
-            let last_logits = &logits_data[offset..offset + vocab_size];
+            // 拷贝最后位置的 logits（需要修改副本做惩罚）
+            let mut logits: Vec<f32> = logits_data[offset..offset + vocab_size].to_vec();
 
-            let next_token = last_logits
+            // 1) Repetition penalty：已出现 token 的 logit / penalty
+            let generated: std::collections::HashSet<i64> =
+                decoder_ids.iter().copied().collect();
+            for &tid in &generated {
+                let idx = tid as usize;
+                if idx < logits.len() {
+                    if logits[idx] > 0.0 {
+                        logits[idx] /= REPETITION_PENALTY;
+                    } else {
+                        logits[idx] *= REPETITION_PENALTY;
+                    }
+                }
+            }
+
+            // 2) No-repeat-ngram-size：禁止生成已出现过的 n-gram 的下一个 token
+            if decoder_ids.len() >= NO_REPEAT_NGRAM_SIZE - 1 {
+                let n = NO_REPEAT_NGRAM_SIZE;
+                // 当前 n-1 前缀
+                let prefix_len = n - 1;
+                let prefix = &decoder_ids[decoder_ids.len() - prefix_len..];
+                // 在已生成序列中找相同前缀，记录其后继 token
+                let mut banned: Vec<usize> = Vec::new();
+                for i in 0..=decoder_ids.len().saturating_sub(n) {
+                    if decoder_ids[i..i + prefix_len] == *prefix {
+                        banned.push(decoder_ids[i + prefix_len] as usize);
+                    }
+                }
+                for idx in banned {
+                    if idx < logits.len() {
+                        logits[idx] = f32::NEG_INFINITY;
+                    }
+                }
+            }
+
+            let next_token = logits
                 .iter()
                 .enumerate()
                 .max_by(|(_, a), (_, b)| {
@@ -143,14 +182,6 @@ impl OpusMTEngine {
 
             if next_token == self.eos_id {
                 break;
-            }
-            // 重复 token 检测
-            if decoder_ids.len() >= 10 {
-                let last8 = &decoder_ids[decoder_ids.len()-8..];
-                if last8.iter().all(|&id| id == next_token) {
-                    log::warn!("opus-mt 重复 token 检测触发，停止解码");
-                    break;
-                }
             }
             decoder_ids.push(next_token);
         }
