@@ -512,3 +512,17 @@ git commit -m "docs: 剪贴板预览面板完成，更新 architecture + spec"
 - `db::get_clipboard_item_by_id` 可能不存在——需确认或改用 `db::with_db` 内联查询
 - clipboard_window.rs 的 `on_window_event` 结构需要适配——当前 `Focused(false)` 分支已有 dock 逻辑，需在其同级加入 `Focused(true)` 分支
 - 焦点抖动——延迟 150ms 隐藏可能不够，实际测试需调整
+
+
+---
+
+## 实施偏差记录（2026-07-12）
+
+| 计划描述 | 实际实施 | 原因 |
+|----------|---------|------|
+| 独立 Tauri 预览窗口 + Rust 定位逻辑 | 改为 hover overlay（单窗口内 absolute div） | 双窗口方案焦点/层级冲突无法根治（3 轮修复仍失败）；overlay 在现有 300×600 窗口内，无穿透/dock/焦点问题 |
+| 预览窗口生命周期（Focused 事件） | 改为 Eye/EyeOff 开关 + hover 触发 | overlay 不需要窗口级生命周期管理 |
+| 位置计算（左/右自动选择） | 改为智能上下定位（选中在上半→弹下方，下半→弹上方，与条目重叠 2px） | overlay 在列表内部，只需要上下定位 |
+| 预览窗口尺寸 360px | 改为 200×200px | 在 300px 窗口内，200px 宽已足够；高度 1/3 避免遮挡过多 |
+| 默认开启 | 改为默认关闭，localStorage 记住选择 | 用户可按需开启，避免默认遮挡列表 |
+| capabilities + Rust 模块 | 不需要 | overlay 纯前端，无 Rust 改动 |
