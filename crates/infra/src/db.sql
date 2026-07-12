@@ -292,7 +292,16 @@ INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type,
     (1, NULL, 'AI',    'sparkles', 'submenu', '', 0, 1),
     (2, NULL, '翻译',  'globe',    'ai', 'auto_translate', 1, 1),
     (3, NULL, '搜索',  'search',   'submenu', '', 2, 1),
-    (4, NULL, '网页',  'link',     'url', '', 3, 1);
+    (4, NULL, '网页',  'link',     'url', '', 3, 1),
+    (11, NULL, '问豆包', 'sparkles', 'script', '#osascript
+set the clipboard to (do shell script ("printf %s " & quoted form of (system attribute "OCTOPUS_TEXT")))
+tell application "Doubao" to activate
+delay 0.5
+tell application "System Events"
+    keystroke "v" using command down
+    delay 0.1
+    key code 36
+end tell', 4, 1);
 
 -- 种子：AI 子菜单（parent_id=1）
 INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
