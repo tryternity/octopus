@@ -1179,3 +1179,27 @@ Expected: 看到 7-8 个 feat/refactor/docs 提交，对应 Task 1-9。
 
 - [x] **Step 1:** repetition_penalty=1.3（已出现 token logit / 1.3）
 - [x] **Step 2:** no_repeat_ngram_size=3（禁止已出现 3-gram 后继 token）
+
+---
+
+### Task 15: 代码审查两轮修复（6+6 项）
+
+**背景：** 两轮代码审查发现 P0 panic、P1 路径不一致、P2 前端状态不对称等问题。
+
+**一轮（6b2cc53d）：**
+- [x] **P0:** no-repeat-ngram 切片越界 panic（`>= n-1` → `>= n`，循环上界修正）
+- [x] **P1:** discovery 路径统一为 `resolve_model_dir`（HF cache + `~/.octopus/models/<repo>`）
+- [x] **P1:** downloadable 列表补 `Xenova/opus-mt-en-zh`，discovery dedup 为一行
+- [x] **P1:** tokenizer encode 加 `truncate` 兜底，分段判断改用实测 token 数
+- [x] **P1:** 段内拼接从 `\n` 改为 `""`（与 m2m100 一致，保持段落对齐）
+- [x] **P3:** repetition penalty 排除 decoder_start_id
+
+**二轮（fba52820）：**
+- [x] **P0 守护:** penalty 逻辑抽为纯函数 `apply_penalties` + 6 单测（len=1/2/3/重复 n-gram/正负 logit）
+- [x] **P2 前端:** TranslateTab 匹配从 `m.source===repo` → `m.name===name`
+- [x] **P2 encoder eos:** `encode(text, false)` → `encode(text, true)` 补 `</s>`
+- [x] **P3 spec 大小写:** 前端去掉 `.toLowerCase()`
+- [x] **清理:** discovery dead code + 错别字 + unwrap_or 默认值
+
+**e2e 测试（015ba9c7）：**
+- [x] 补 `tests/opus_mt_test.rs`（中→英 + 英→中，`#[ignore]`，断言无 4+ 连续重复词）

@@ -297,7 +297,9 @@ m2m100 greedy `max_length=200` tokens，超长原文会截断翻译。不特殊�
 
 | 文件 | 职责 |
 |------|------|
-| `crates/translation/src/opus_mt.rs` | Opus-MT MarianMT 引擎：encoder-decoder greedy，按方向加载 zh-en/en-zh 子目录，从 generation_config 读 token IDs，tokenizer precompiled_charsmap=null 修复 |
+| `crates/translation/src/opus_mt.rs` | Opus-MT MarianMT 引擎：encoder-decoder greedy，按方向加载 zh-en/en-zh 子目录，从 generation_config 读 token IDs，tokenizer precompiled_charsmap=null 修复，`apply_penalties` 纯函数 + 6 单测 |
+| `crates/translation/tests/opus_mt_test.rs` | opus-mt e2e 测试（中→英 + 英→中，`#[ignore]`，断言非空 + 无 4+ 连续重复词） |
+| `crates/desktop/frontend/src/pages/Settings/Models/TranslateTab.tsx` | 前端匹配逻辑改为 `m.name === model.name`（opus-mt 同名共享状态）；engine option value 去掉 `.toLowerCase()` |
 
 ### 7.4 不变
 
@@ -339,14 +341,18 @@ m2m100 greedy `max_length=200` tokens，超长原文会截断翻译。不特殊�
     └── (同上)
 ```
 
-一组模型在设置页算一个（两个方向需都存在才算 downloaded）。
+一组模型在设置页算一个（两个方向需都存在才算 downloaded）。downloadable 列表列出两个 repo（`Xenova/opus-mt-zh-en` + `Xenova/opus-mt-en-zh`），discovery dedup 为一行，前端 TranslateTab 按 `m.name === model.name` 匹配（同名模型共享 downloaded 状态）。模型发现路径与 download 落盘路径统一：都走 `resolve_model_dir` 查 HF cache + `~/.octopus/models/<repo>`。
 
 ### 9.3 greedy 解码防重复
 
-MarianMT 训练用 beam search（`num_beams=6`），greedy 解码容易陷入重复循环（如 `preview preview list rows list rows`）。标准 HF 默认值两层惩罚：
+MarianMT 训练用 beam search（`num_beams=6`），greedy 解码容易陷入重复循环（如 `preview preview list rows list rows`）。标准 HF 默认值两层惩罚，抽为纯函数 `apply_penalties(logits, decoder_ids)`（便于单测，不依赖 ONNX）：
 
-- **repetition_penalty = 1.3**：已出现 token 的 logit / 1.3（正 logit 降低，负 logit 加重），降低重复概率
-- **no_repeat_ngram_size = 3**：禁止生成已出现过的 3-gram 后继 token——在已生成序列中匹配当前 n-1 前缀，ban 掉所有已见后继
+- **repetition_penalty = 1.3**：已生成 token（不含 decoder_start_id prompt）的 logit / 1.3（正 logit 降低，负 logit 加重），降低重复概率
+- **no_repeat_ngram_size = 3**：需历史中已存在完整 n-gram（`decoder_ids.len() >= n`），禁止生成已出现过的 3-gram 后继 token
+
+**关键边界**：进入条件必须是 `>= n`（不是 `>= n-1`），否则 `len=2` 时切片越界 panic。单测 `test_apply_penalties_len2_no_crash` 锁死此回归路径。
+
+**encoder 输入含 eos**：`encode(text, true)` 让 post_processor 自动补 `</s>`（MarianMT 训练时 encoder 输入带 eos）。超长输入用 `truncate(MAX_ENCODER_TOKENS, Right)` 兑底。
 
 ### 9.4 tokenizer precompiled_charsmap=null 修复
 
@@ -358,7 +364,7 @@ Xenova 导出的 tokenizer.json 中 `normalizer.precompiled_charsmap` 为 `null`
 2. **m2m100-418M**（多语言 100+）—— opus-mt 未下载时 fallback
 3. **LLM**（远程）—— 本地引擎均未下载时
 
-用户可在设置页手动选择 `local:opus-mt` / `local:m2m100` / `自动` / `LLM`。
+用户可在设置页手动选择 `local:opus-mt` / `local:m2m100-418M` / `自动` / `LLM`。前端 engine option value 不做 `.toLowerCase()`（与后端 spec 字面量一致）。
 
 ### 9.6 引擎缓存
 
