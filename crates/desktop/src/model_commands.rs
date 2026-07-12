@@ -257,7 +257,7 @@ fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> 
             log::info!("[model_commands] {} 不在 ASR models 表中，跳过 DB 状态更新", repo);
             return Ok(());
         }
-    };;
+    };
     if let Some(json) = manifest_json {
         octopus_infra::db::set_model_secret_key(&model_name, json).map_err(|e| e.to_string())?;
     }

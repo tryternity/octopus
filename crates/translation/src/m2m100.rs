@@ -118,8 +118,7 @@ impl M2M100Engine {
                 break;
             }
             if decoder_ids.len() >= 10 {
-                // 连续 8 个相同 token 才触发（提高阈值）
-                // 仅检查非标点 token：标点/空格重复是正常的（如 ...... 或连续空格）
+                // 连续 8 个相同 token 才触发——阈值足够高，不会误杀正常标点重复
                 let last8 = &decoder_ids[decoder_ids.len()-8..];
                 if last8.iter().all(|&id| id == next_token) {
                     log::warn!("重复 token 检测触发，停止解码");
@@ -169,7 +168,6 @@ impl M2M100Engine {
                     while end > start + 100 && !is_boundary(chars[end - 1]) {
                         end -= 1;
                     }
-                    if end == start { end = (start + 200).min(chars.len()); }
                     if end > start {
                         chunks.push(chars[start..end].iter().collect());
                     }

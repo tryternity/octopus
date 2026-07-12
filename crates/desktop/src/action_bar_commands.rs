@@ -328,32 +328,20 @@ fn auto_translate_prompt(text: &str) -> &'static str {
 }
 
 enum TranslateStrategy {
-    Local(std::sync::Arc<dyn octopus_translation::TranslationEngine>),
+    /// 本地翻译引擎 spec（如 "local:m2m100"），引擎加载延迟到后台线程
+    Local(String),
     Llm,
 }
 
 fn resolve_translate_strategy(config: &octopus_infra::config::AppConfig) -> TranslateStrategy {
     match config.translate_engine.as_str() {
         "llm" => TranslateStrategy::Llm,
-        spec if spec.starts_with("local:") => {
-            let manager = octopus_translation::TranslationManager::new(spec);
-            match manager.engine() {
-                Ok(Some(e)) => TranslateStrategy::Local(e),
-                _ => {
-                    log::warn!("本地翻译引擎 {} 加载失败，fallback 到 LLM", spec);
-                    TranslateStrategy::Llm
-                }
-            }
-        }
+        spec if spec.starts_with("local:") => TranslateStrategy::Local(spec.to_string()),
         _ => {
             // 自动：有本地则用本地
             let models = octopus_translation::discover_translation_models();
             if models.iter().any(|m| m.downloaded) {
-                let manager = octopus_translation::TranslationManager::new("local:m2m100-418M");
-                match manager.engine() {
-                    Ok(Some(e)) => TranslateStrategy::Local(e),
-                    _ => TranslateStrategy::Llm,
-                }
+                TranslateStrategy::Local("local:m2m100-418M".into())
             } else {
                 TranslateStrategy::Llm
             }
@@ -708,23 +696,31 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             if item.action_data == "auto_translate" {
                 let (source_lang, target_lang) = detect_translate_direction(&text);
                 match resolve_translate_strategy(&config) {
-                    TranslateStrategy::Local(engine) => {
+                    TranslateStrategy::Local(spec) => {
                         // 本地翻译耗时很长——立即打开 CompactEditor 显示 loading，
-                        // 后台线程逐 chunk 翻译，通过 emit 事件追加译文。
+                        // 引擎加载 + 翻译都在后台线程执行，不阻塞主线程
                         let label = "翻译";
                         let loading_text = format!("【{}】\n⏳ 正在翻译…", label);
                         action_bar_show_result(loading_text, text.clone(), item.title.clone(), app.clone(), false);
 
                         let app_clone = app.clone();
                         std::thread::spawn(move || {
-                            let result = engine.translate(&text, source_lang, target_lang);
-                            match result {
-                                Ok(translated) => {
-                                    let display = format!("【{}】\n{}", label, translated);
-                                    let _ = app_clone.emit("translate-done", &display);
+                            let manager = octopus_translation::TranslationManager::new(&spec);
+                            match manager.engine() {
+                                Ok(Some(engine)) => {
+                                    let result = engine.translate(&text, source_lang, target_lang);
+                                    match result {
+                                        Ok(translated) => {
+                                            let display = format!("【{}】\n{}", label, translated);
+                                            let _ = app_clone.emit("translate-done", &display);
+                                        }
+                                        Err(e) => {
+                                            let _ = app_clone.emit("translate-done", format!("【{}】\n❌ {}", label, e));
+                                        }
+                                    }
                                 }
-                                Err(e) => {
-                                    let _ = app_clone.emit("translate-done", format!("【{}】\n❌ {}", label, e));
+                                _ => {
+                                    let _ = app_clone.emit("translate-done", format!("【{}】\n❌ 引擎加载失败", label));
                                 }
                             }
                         });

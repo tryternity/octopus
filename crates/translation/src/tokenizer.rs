@@ -11,7 +11,8 @@ pub const DECODER_START_TOKEN_ID: i64 = 2;
 
 /// 语言标记 token IDs（from tokenizer.json, m2m100 standard layout）
 pub fn lang_code_to_id(lang: &str, tok: &Tokenizer) -> Option<u32> {
-    let token = match lang {
+    let prefix = lang.get(..2).unwrap_or(lang).to_lowercase();
+    let token = match prefix.as_str() {
         "zh" => "__zh__",
         "en" => "__en__",
         "ja" => "__ja__",
