@@ -307,11 +307,12 @@ function Result() {
         {/* Toolbar */}
         <div
           className={cn(
-            "flex items-center gap-[2px] px-1.5 pt-0.5 transition-opacity duration-150",
+            "flex items-center gap-[2px] px-1.5 pt-0.5 transition-opacity duration-150 cursor-grab active:cursor-grabbing",
             toolbarState.hide_toolbar === false
               ? "opacity-100"
               : toolbarVisible ? "opacity-100" : "opacity-0",
           )}
+          onMouseDown={onDragStart}
         >
           {tools.map(({ id, icon, label, active, disabled, onClick }) => (
             <button
@@ -326,6 +327,7 @@ function Result() {
               title={label}
               aria-label={label}
               disabled={disabled}
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={onClick}
             >
               <SvgIcon name={icon} size={16} />
