@@ -260,9 +260,25 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
   function writeDoc(newText: string, caretPos?: number | null) {
     const view = viewRef.current;
     if (!view) return;
-    const changes: ChangeSpec = { from: 0, to: view.state.doc.length, insert: newText };
+    const cur = view.state.doc.toString();
+    const curLen = cur.length;
+    // 流式追加快路径：新文本是旧文本的前缀扩展 → 只插尾部 O(delta)；
+    // 否则（中插 / 润色重写 / 分支回退）走全量替换。改前是无条件全量替换，
+    // 长文本 + 高频 emit 时 O(n) 重建是 Result 窗卡顿主嫌。
+    const isAppend = newText.length > curLen && newText.startsWith(cur);
+    const changes: ChangeSpec = isAppend
+      ? { from: curLen, insert: newText.slice(curLen) }
+      : { from: 0, to: curLen, insert: newText };
     const anchor = caretPos != null ? caretPos : newText.length;
+    const t0 = performance.now();
     view.dispatch({ changes, selection: { anchor }, scrollIntoView: true });
+    const dt = performance.now() - t0;
+    // 阈值打点（dispatch 慢 或 文本已长）：事后翻 ~/.octopus/logs/asr.log 对账卡顿时刻。
+    if (dt > 8 || newText.length > 800) {
+      void invoke("perf_log_cmd", {
+        msg: `[FE writeDoc] ${dt.toFixed(1)}ms total=${newText.length} delta=${newText.length - curLen} mode=${isAppend ? "append" : "full"}`,
+      }).catch(() => {});
+    }
   }
 
   return (
