@@ -42,6 +42,14 @@ function labelToIndex(key: string): number {
   return -1;
 }
 
+/** KeyboardEvent.code → 单字符（0-9 a-z）。非字母数字返回 null。
+ *  macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键。 */
+function codeToChar(code: string): string | null {
+  if (code.startsWith("Key") && code.length === 4) return code[3].toLowerCase();
+  if (code.startsWith("Digit") && code.length === 6) return code[5].toLowerCase();
+  return null;
+}
+
 const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
   index: number; label: string; active: boolean; onClick: () => void;
   btnRef?: (el: HTMLButtonElement | null) => void;
@@ -71,7 +79,7 @@ const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
     </span>
     <span className="text-[10px] font-medium leading-none whitespace-nowrap">{label}</span>
     {shortcut && (
-      <span className="text-[9px] text-muted-foreground/50 font-mono leading-none">⌥{shortcut}</span>
+      <span className="text-[9px] text-voice/70 font-mono leading-none">⌥{shortcut}</span>
     )}
   </button>
 );
@@ -186,8 +194,17 @@ export default function ActionBar() {
     };
     refresh();
     const listenPromise = rawListen("action-bar://show", () => refresh());
+    // 设置页保存后 emit 此事件 → 浮窗立即刷新菜单（无需关闭再打开）
+    const itemsListenPromise = rawListen("action-bar://items-changed", () => {
+      invoke<ActionBarItem[]>("list_action_bar_items").then((items) => {
+        setMenuItems(items);
+      });
+    });
 
-    return () => { listenPromise.then((fn: () => void) => fn()); };
+    return () => {
+      listenPromise.then((fn: () => void) => fn());
+      itemsListenPromise.then((fn: () => void) => fn());
+    };
   }, []);
 
   // 点击外部消失 + 窗口失焦消失
@@ -312,9 +329,10 @@ export default function ActionBar() {
       if (viewRef.current === "loading") return;
 
       // 组合快捷键：Alt/⌥ + 字符 → 直接执行（最高优先级，跨层级）
+      // macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键
       if (e.altKey) {
-        const ch = e.key.toLowerCase();
-        if (/^[0-9a-z]$/.test(ch)) {
+        const ch = codeToChar(e.code);
+        if (ch) {
           const item = menuItemsRef.current.find((i: ActionBarItem) => i.shortcut === ch);
           if (item) {
             e.preventDefault();

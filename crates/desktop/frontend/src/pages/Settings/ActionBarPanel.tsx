@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback, memo } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -586,7 +587,7 @@ const TreeNodeBase = (props: NodeProps) => {
 
         {/* 快捷键徽章 */}
         {item.shortcut && (
-          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] text-muted-foreground">
+          <span className="shrink-0 rounded bg-voice/10 px-1 py-0.5 font-mono text-[10px] text-voice/80">
             ⌥{item.shortcut}
           </span>
         )}
@@ -832,6 +833,8 @@ export default function ActionBarPanel({
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
     const list = await invoke<ActionBarItem[]>("list_action_bar_items");
     setItems(list);
+    // 通知浮窗重新加载菜单（设置页改动后浮窗立即生效）
+    emit("action-bar://items-changed", null);
     // 注意：不在此处改动 expanded，否则会覆盖用户的折叠选择。
     // 首次全部展开见下方 useEffect；新增子项时由 handleAdd 显式展开父节点。
     setLoaded(true);

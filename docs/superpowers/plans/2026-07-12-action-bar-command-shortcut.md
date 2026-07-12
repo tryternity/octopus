@@ -7,6 +7,11 @@
 - Task 1：agent 发现并修复了 3 个现有测试（`init_schema_fresh_db_builds_v23` → v24、`init_schema_v23_is_noop` → v24、`migrate_v22_hotwords_to_general_set` 断言 v==23 → v==24），原计划未列出这些
 - Task 3：`extensions.rs` 的 `install_extension` 内部也调用 `insert_action_bar_item`，补传 `""` 空快捷键参数
 - Task 2：修复了 2 个现有测试（`action_bar_items_list_enabled_filters_disabled`、`action_bar_items_move_swaps_order`）中的旧签名调用，补传 `""` 空快捷键
+- Task 4 后续修复（e2e 测试发现）：macOS Option 键改变 `e.key` 输出（Alt+H → "˙"），改用 `e.code` + `codeToChar` 辅助函数提取物理按键字符
+- Task 4 后续修复：浮窗快捷键标记颜色从 `muted-foreground/50` 调亮为 `voice/70`
+- Task 5 后续修复：设置页树行徽章从 `bg-muted text-muted-foreground` 调亮为 `bg-voice/10 text-voice/80`
+- Task 4/5 后续修复：设置页保存后 `emit("action-bar://items-changed")` 让浮窗即时刷新菜单（原设计仅靠下次 show 刷新）
+- Task 5 无关修复：设置页导航"提示词"→"提 示 词"对齐四字导航项
 
 **Goal:** 为 action bar 菜单项新增 `Alt/⌥ + 字符` 组合快捷键，按下直接执行对应命令，跨主菜单和子菜单层级。
 
