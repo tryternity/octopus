@@ -18,6 +18,14 @@ describe("i18n", () => {
     expect(t("editor.save")).toBe("Save");
   });
 
+  it("嵌套 key 查找（从 YAML 嵌套结构 flatten 后的 flat key）", () => {
+    expect(t("editor.view.split")).toBe("分屏");
+    expect(t("editor.view.editor")).toBe("编辑");
+    setLocale("en");
+    expect(t("editor.view.split")).toBe("Split");
+    expect(t("editor.view.editor")).toBe("Editor");
+  });
+
   it("插值", () => {
     expect(t("editor.charCount", { n: 42 })).toBe("42 字");
     setLocale("en");

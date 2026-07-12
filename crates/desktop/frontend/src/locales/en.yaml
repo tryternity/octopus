@@ -1,0 +1,32 @@
+# ════════ Editor ════════
+editor:
+  undo: Undo
+  redo: Redo
+  fontSize: Font Size
+  view:
+    split: Split
+    editor: Editor
+    preview: Preview
+  clear: Clear
+  clearConfirm: Press again to confirm
+  save: Save
+  saved: Saved
+  charCount: ${n} chars
+  copyCode: Copy
+  copied: Copied
+  previewEmpty: Start typing to see preview
+  switchHint: Switch to this tab to edit
+  imageTabHint: Switch to this tab to load image
+  noTabs: No open items
+
+# ════════ Tab ════════
+tab:
+  image: Image
+  empty: Empty
+  close: Close
+
+# ════════ Settings ════════
+settings:
+  uiLanguage: Interface Language
+  uiLanguageZhCN: 中文
+  uiLanguageEn: English

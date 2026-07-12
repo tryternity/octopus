@@ -1,13 +1,27 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
-import zhCN from "@/locales/zh-CN.json";
-import en from "@/locales/en.json";
+import zhCN from "@/locales/zh-CN.yaml";
+import en from "@/locales/en.yaml";
 
 type Locale = "zh-CN" | "en";
 
+/** 递归拍平嵌套对象为 flat dotted keys */
+function flatten(obj: Record<string, unknown>, prefix = ""): Record<string, string> {
+  const result: Record<string, string> = {};
+  for (const [key, val] of Object.entries(obj)) {
+    const fullKey = prefix ? `${prefix}.${key}` : key;
+    if (typeof val === "string") {
+      result[fullKey] = val;
+    } else if (typeof val === "object" && val !== null) {
+      Object.assign(result, flatten(val as Record<string, unknown>, fullKey));
+    }
+  }
+  return result;
+}
+
 const DICTS: Record<Locale, Record<string, string>> = {
-  "zh-CN": zhCN as Record<string, string>,
-  "en": en as Record<string, string>,
+  "zh-CN": flatten(zhCN as Record<string, unknown>),
+  "en": flatten(en as Record<string, unknown>),
 };
 
 let currentLocale: Locale = "zh-CN";

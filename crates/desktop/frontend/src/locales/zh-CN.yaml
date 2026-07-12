@@ -1,0 +1,32 @@
+# ════════ Editor 图文编辑器 ════════
+editor:
+  undo: 撤销
+  redo: 重做
+  fontSize: 字号
+  view:
+    split: 分屏
+    editor: 编辑
+    preview: 预览
+  clear: 清空
+  clearConfirm: 再按确认清空
+  save: 保存
+  saved: 已保存
+  charCount: ${n} 字
+  copyCode: 复制
+  copied: 已复制
+  previewEmpty: 开始输入即可看到预览
+  switchHint: 切换到此标签编辑
+  imageTabHint: 切换到此标签加载图片
+  noTabs: 没有打开的条目
+
+# ════════ Tab 标签页 ════════
+tab:
+  image: 图片
+  empty: 空
+  close: 关闭
+
+# ════════ Settings 设置 ════════
+settings:
+  uiLanguage: 界面语言
+  uiLanguageZhCN: 中文
+  uiLanguageEn: English

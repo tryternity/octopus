@@ -162,8 +162,8 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
         </Row>
         <Row label={t("settings.uiLanguage")} effect="立即">
           <select className={selectClass} value={(cfg.ui_language as string) || "zh-CN"} onChange={(e) => setUiLanguage(e.target.value)}>
-            <option value="zh-CN">{t("settings.uiLanguage.zhCN")}</option>
-            <option value="en">{t("settings.uiLanguage.en")}</option>
+            <option value="zh-CN">{t("settings.uiLanguageZhCN")}</option>
+            <option value="en">{t("settings.uiLanguageEn")}</option>
           </select>
         </Row>
       </Card>
