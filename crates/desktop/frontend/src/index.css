@@ -254,6 +254,7 @@ html, body {
 }
 
 .md-cm-editor .cm-scroller {
+  overflow: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
 }
