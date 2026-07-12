@@ -8,7 +8,7 @@
 
 ## 1. 窗口属性
 
-- 原生标题栏、**880×620 可调 + 记忆**、居中、min 400×320
+- 原生标题栏、**1100×680 可调 + 记忆**、居中、min 600×360
 - **窗口记忆**：`WindowState` 存 `app_config`，`CloseRequested` 存位置/大小到 `app_config`（物理像素÷`scale_factor` 存逻辑像素），开窗读记忆无记忆用默认居中
 - 关窗即销毁
 - macOS 开窗切 Regular、关窗 `Destroyed` 经 `on_compact_editor_closed` 切回 Accessory（与 settings 对称）
