@@ -187,6 +187,7 @@ pub fn rebuild_tray_labels() {
         let sc = ASR_SHORTCUT.get().map(|s| fmt_shortcut(s)).unwrap_or_default();
         let _ = tray_items.toggle.set_text(crate::i18n::t("tray.startAsr", &[("shortcut", &sc)]));
         let _ = tray_items.screenshot.set_text(crate::i18n::t("tray.screenshot", &[("shortcut", &sc)]));
+        let _ = tray_items.clipboard.set_text(crate::i18n::t("tray.clipboard", &[("shortcut", &sc)]));
         let _ = tray_items.compact_editor.set_text(crate::i18n::t("tray.compactEditor", &[]));
         let _ = tray_items.settings.set_text(crate::i18n::t("tray.settings", &[]));
         let _ = tray_items.quit.set_text(crate::i18n::t("tray.quit", &[]));
