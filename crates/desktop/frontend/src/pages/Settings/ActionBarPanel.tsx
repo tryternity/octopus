@@ -291,6 +291,7 @@ const EditForm = ({
   onSave,
   onCancel,
 }: EditFormProps) => {
+  const t = useT();
   const type = form.actionType || "copy";
   const meta = TYPE_META[type];
   const showContent = type !== "submenu" && type !== "copy" && type !== "extension";
@@ -339,14 +340,14 @@ const EditForm = ({
                 onChange({ ...form, actionType: e.target.value })
               }
             >
-              {ACTION_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
+              {ACTION_TYPES.map((at) => (
+                <option key={at.value} value={at.value}>
+                  {t(at.labelKey)}
                 </option>
               ))}
             </select>
             <p className="mt-1.5 text-[11px] text-muted-foreground/80">
-              {meta.desc}
+              {t(meta.descKey)}
               {isSystem && " · " + t("settings.actionBar.builtinTypeLocked")}
             </p>
           </div>
@@ -356,7 +357,7 @@ const EditForm = ({
           <Field label={t("settings.actionBar.contentLabel")}>
             <textarea
               className="w-full min-h-[120px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
-              placeholder={meta.placeholder}
+              placeholder={meta.placeholderKey ? t(meta.placeholderKey) : ""}
               value={form.actionData || ""}
               onChange={(e) =>
                 onChange({ ...form, actionData: e.target.value })
@@ -508,6 +509,7 @@ interface NodeProps {
 }
 
 const TreeNodeBase = (props: NodeProps) => {
+  const t = useT();
   const {
     item,
     siblings,
@@ -702,6 +704,7 @@ interface ScriptRun {
 }
 
 const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => {
+  const t = useT();
   const [runs, setRuns] = useState<ScriptRun[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -816,6 +819,7 @@ export default function ActionBarPanel({
 }: {
   showToast: (msg: string) => void;
 }) {
+  const t = useT();
   const [items, setItems] = useState<ActionBarItem[]>([]);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [editingId, setEditingId] = useState<number | null>(null);

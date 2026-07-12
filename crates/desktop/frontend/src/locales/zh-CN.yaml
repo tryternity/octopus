@@ -30,8 +30,8 @@ settings:
   uiLanguage: 界面语言
   uiLanguageZhCN: 中文
   uiLanguageEn: English
-  loadFailed: 加载配置失败：
-  setFailed: 设置失败：
+  loadFailed: "加载配置失败："
+  setFailed: "设置失败："
   loading: 加载中...
   nav:
     general: 系统设置
@@ -117,11 +117,11 @@ settings:
       ocr: 扫描识别
       translate: 翻译模型
     current: 当前使用
-    loadFailed: 加载模型列表失败：
-    downloadFailed: 下载失败：
+    loadFailed: "加载模型列表失败："
+    downloadFailed: "下载失败："
     alreadyReady: 模型已就绪，无需重新下载
     downloadComplete: 下载完成
-    downloadStartFailed: 下载启动失败：
+    downloadStartFailed: "下载启动失败："
     verifyComplete: 校验完成
     verifyFailed: 校验失败
     localModels: 本地模型
@@ -132,16 +132,16 @@ settings:
     download: 下载
     enable: 启用
     disable: 禁用
-    switchFailed: 切换失败：
+    switchFailed: "切换失败："
     env:
-      loadFailed: 加载环境变量失败：
+      loadFailed: "加载环境变量失败："
       saved: 已保存
-      saveFailed: 保存失败：
+      saveFailed: "保存失败："
       deleted: 已删除
       builtinNoDelete: 内置变量不可删除
-      deleteFailed: 删除失败：
+      deleteFailed: "删除失败："
       added: 已添加
-      addFailed: 添加失败：
+      addFailed: "添加失败："
       hintPrefix: 模型下载地址中的
       hintVar: 变量名
       hintSuffix: 会自动替换为此处配置的值
@@ -154,15 +154,15 @@ settings:
       descLocal: 本地离线翻译
       comingSoon: 翻译模型配置即将支持
   prompts:
-    loadFailed: 加载失败：
+    loadFailed: "加载失败："
     activated: 已激活
-    activateFailed: 激活失败：
+    activateFailed: "激活失败："
     emptyError: 标题和内容不能为空
     created: 已创建
     saved: 已保存
-    saveFailed: 保存失败：
+    saveFailed: "保存失败："
     deleted: 已删除
-    deleteFailed: 删除失败：
+    deleteFailed: "删除失败："
     newPrompt: 新建提示词
     editPrompt: 编辑提示词
     titlePlaceholder: 标题
@@ -184,9 +184,9 @@ settings:
     polishPolished: 已润色
     polishFailed: 润色失败
     polishNone: 未润色
-    loadFailed: 加载历史失败：
+    loadFailed: "加载历史失败："
     deletedN: 已删除 ${n} 条
-    deleteFailed: 删除失败：
+    deleteFailed: "删除失败："
     searchPlaceholder: 搜索识别文本...
     selectedN: 已选 ${n} 项
     selectAll: 全选
@@ -200,7 +200,7 @@ settings:
     allLoaded: 已全部加载
     loadedN: 已加载 ${n} 条
     copied: 已复制
-    copyFailed: 复制失败：
+    copyFailed: "复制失败："
     deleted: 已删除
     view: 查看
     copy: 复制
@@ -211,33 +211,33 @@ settings:
     huWu: hu/wu 不分（黄 / 王）
     nL: n/l 不分（刘 / 牛）
     rL: r/l 不分（热 / 乐）
-    loadFailed: 加载失败：
+    loadFailed: "加载失败："
     newVersion: 已新建版本
     importedVersion: 已导入为新版本
-    newFailed: 新建失败：
-    importFailed: 导入失败：
-    switchFailed: 切换失败：
-    renameFailed: 重命名失败：
+    newFailed: "新建失败："
+    importFailed: "导入失败："
+    switchFailed: "切换失败："
+    renameFailed: "重命名失败："
     deleteConfirmMsg: 删除版本「${name}」？（命中统计保留）
     deleteConfirmTitle: 确认删除
-    deleteFailed: 删除失败：
+    deleteFailed: "删除失败："
     added: 已添加
     exists: 已存在
-    addFailed: 添加失败：
+    addFailed: "添加失败："
     selectVersionFirst: 请先选择版本
     overwriteConfirmMsg: 覆盖当前版本的全部词？
     overwriteConfirmTitle: 确认覆盖
     appended: 已追加
     overwritten: 已覆盖
-    importFailed2: 导入失败：
+    importFailed2: "导入失败："
     exported: 已导出
-    exportFailed: 导出失败：
+    exportFailed: "导出失败："
     selectTargetFirst: 请先选择目标版本
     noNewCandidates: 未发现新候选
-    mineFailed: 挖掘失败：
+    mineFailed: "挖掘失败："
     addedN: 已添加 ${n} 词
     allExist: 选中词均已存在
-    addFailed2: 添加失败：
+    addFailed2: "添加失败："
     title: 语音识别 · 热词纠错
     header: 热词管理
     intro: 按场景管理多版本热词，勾选叠加生效。当前生效词 ${n} 个。
@@ -316,7 +316,7 @@ settings:
     confirm: 确认
     addSubItem: 新增子项
     cleanedOldRecords: 已清理旧记录
-    cleanFailed: 清理失败：
+    cleanFailed: "清理失败："
     loadingRecords: 加载中…
     noRecords: 暂无执行记录
     recordsHint: 运行脚本后，执行结果会记录在这里。
@@ -330,10 +330,10 @@ settings:
     created: 已创建
     saved: 已保存
     newMenuItem: 新菜单项
-    saveFailed: 保存失败：
+    saveFailed: "保存失败："
     deleted: 已删除
-    deleteFailed: 删除失败：
-    moveFailed: 移动失败：
+    deleteFailed: "删除失败："
+    moveFailed: "移动失败："
     titleMain: 命令面板 ·
     editMenuItem: 编辑菜单项
     scriptRecords: 脚本执行记录
@@ -356,9 +356,9 @@ settings:
     groupStatus: 状态
     filterFavorite: 收藏
     filterNonFavorite: 非收藏
-    loadFailed: 加载失败：
+    loadFailed: "加载失败："
     deletedN: 已删除 ${n} 条
-    deleteFailed: 删除失败：
+    deleteFailed: "删除失败："
     searchPlaceholder: 搜索内容…
     loading: 加载中…
     empty: 暂无记录
@@ -372,9 +372,9 @@ settings:
     confirmDeleteN: 确认删除 ${n} 项
     deleteSelected: 删除选中
     showingN: 显示 ${n} 条
-    copyFailed: 复制失败：
+    copyFailed: "复制失败："
     deleted: 已删除
-    openFailed: 打开失败：
+    openFailed: "打开失败："
     clickToCopy: 单击复制
     copied: 已复制
     copy: 复制
@@ -388,7 +388,7 @@ settings:
     fileFallback: 文件
   system:
     collecting: 采集中…
-    loadFailed: 加载状态失败：
+    loadFailed: "加载状态失败："
     loading: 加载中...
     processMem: 进程内存
     resident: 常驻
@@ -432,8 +432,8 @@ result:
   save: 保存
   listening: 正在聆听…
   polishing: 润色中…
-  polishFailed: 润色失败：
-  switchFailed: 切换失败：
+  polishFailed: "润色失败："
+  switchFailed: "切换失败："
   polish:
     off: 关闭
     finalOnly: 仅最终润色
@@ -545,7 +545,7 @@ imagePreview:
   unpinWindow: 取消置顶
   textPlaceholder: 输入文字…
   imageNotLoaded: 图片尚未加载完成
-  copied: 已复制：${text}
+  copied: "已复制：${text}"
   props:
     fontSize: 字号
     mosaic: 遮挡

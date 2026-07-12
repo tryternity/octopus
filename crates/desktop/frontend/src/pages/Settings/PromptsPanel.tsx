@@ -226,7 +226,7 @@ export default function PromptsPanel({ showToast }: { showToast: (msg: string) =
           </div>
         );
       })}
-      {prompts.length === 0 && <div className="text-center py-12 text-muted-foreground text-sm">{t("settings.prompts.empty")}</div>}}
+      {prompts.length === 0 && <div className="text-center py-12 text-muted-foreground text-sm">{t("settings.prompts.empty")}</div>}
     </div>
   );
 }

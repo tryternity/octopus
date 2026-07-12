@@ -21,6 +21,7 @@ export default function SaveImagePopover({
   triggerRef: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
 }) {
+  const t = useT();
   const [format, setFormat] = useState<ImageFormat>("jpeg");
   const [quality, setQuality] = useState(85);
   const [openFolder, setOpenFolder] = useState(false);
@@ -191,7 +192,7 @@ export default function SaveImagePopover({
             {t("clipboard.saveImage.savedToDownloads")}
           </>
         ) : (
-          "{t("clipboard.saveImage.saveToDownloads")}"
+          t("clipboard.saveImage.saveToDownloads")
         )}
       </button>
     </div>

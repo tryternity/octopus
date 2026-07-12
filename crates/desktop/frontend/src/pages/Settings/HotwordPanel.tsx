@@ -401,7 +401,7 @@ export function HotwordPanel({ dialect, setVal, showToast }: Props) {
                   >
                     {minePending.selected.size === minePending.words.length ? t('settings.hotword.deselectAll') : t('settings.hotword.selectAll')}
                   </button>
-                  <button onClick={() => setMinePending(null)} className="text-xs text-muted-foreground hover:text-foreground">{t('settings.hotword.cancel')}</button></button>
+                  <button onClick={() => setMinePending(null)} className="text-xs text-muted-foreground hover:text-foreground">{t('settings.hotword.cancel')}</button>
                 </div>
               </div>
               <div className="flex flex-wrap gap-1.5 max-h-44 overflow-y-auto">
