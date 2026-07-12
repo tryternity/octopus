@@ -1,6 +1,6 @@
 # 本地翻译引擎设计（m2m100 ONNX）
 
-> **状态**：设计完成，待实现
+> **状态**：已实现
 > **日期**：2026-07-12
 > **scope**：接入 m2m100-418M ONNX int8 本地翻译引擎，新建 `octopus-translation` crate，支持中⇄英离线翻译，与现有 LLM 翻译共存，用户可配置切换
 > **前置文档**：[`2026-07-09-action-bar-menu-db-design.md`](./2026-07-09-action-bar-menu-db-design.md)（action bar DB 化，翻译功能走 `auto_translate`）

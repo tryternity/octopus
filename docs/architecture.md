@@ -29,6 +29,12 @@ octopus/
 
 无项目内依赖的最底层 crate，承载跨 crate 共享的基础设施：`consts`（固定路径常量：VAD 模型 / 默认 ASR 模型目录）+ `paths`（`octopus_config_home()` 返回 `~/.octopus`，三端统一）+ `config`（`AppConfig`——应用配置统一 schema）+ `db`（SQLite 嵌入式存储，含 `app_config` 表 / `models` 表 / `prompts` 表 / `clipboard_history` 表（统一存储 text/voice/ocr/image/file，吞并原 `transcriptions` 表）+ FTS5 虚表 / `image_data` 表）+ `net`（网络超时常量：WS/HTTP/gRPC/下载，各 crate 统一引用避免散落不一致）。DB schema 当前 v23（v17→v18：FTS5 backfill；v18→v19：action_bar_items 表；v19→v20：hotwords 表 + paste_input_source_switch；v20→v21：action_bar_items 加 is_async/write_output_to_clipboard 列 + script_runs 表；v21→v22：env 变量 seed；v22→v23：hotword_sets + hotword_hits + db.sql seed 默认「通用」版本。**开发期简化**：`init_schema` 以 db.sql 为唯一 schema 真相——`user_version >= 23` 跳过，v17+ 库跑增量迁移升到 v23（FTS5 backfill + ALTER TABLE 补列 + env seed + v22→v23 热词多版本迁移），其他（含全新库）跑 db.sql 建表+seed+yaml 导入一次性到 v23，无 DROP 兜底（开发期无旧库需兼容）。`ensure_db` 打开后设 `PRAGMA journal_mode=WAL` + `busy_timeout=5000`（多任务并发友好，server 多连接不再 SQLITE_BUSY）；`save_app_config` 30 字段写入包 `unchecked_transaction`（原子，中途崩溃全回滚，不再配置半更新）。voice 历史搜索走 FTS5 MATCH（trigram 倒排索引，>=3 字符），<3 字符回退 LIKE（trigram 无法生成 3-gram）。`with_db` 为公开 API 供其他 crate 调用。**并发约束**：`with_db` 内部用 `parking_lot::ReentrantMutex`（**同线程可重入**，无毒化）——闭包内可安全地再调 `with_db`（如间接读 config / 查模型 meta），不再有历史 `Mutex`（非递归）期的同线程重入死锁（arch-fixes ③，2026-07-06）；回归测试 `with_db_reentrant_no_deadlock` 守护，退回 `Mutex` 会挂起。仍为单连接排他（性能上限，非死锁），server 上量再上 r2d2 池。
 
+### onnx-infra（ONNX 推理基础设施）
+无项目内依赖的最底层 ONNX 公共设施，从 asr-local 抽取。`paths` 模块提供模型路径查找（`resolve_model_dir`：4 级查找 `~/.octopus/models/` → 绝对路径 → HF cache snapshots）；`session` 模块提供 `apply_session_acceleration`（按平台注册 CoreML/CUDA/DirectML EP，generic 化 `skip_coreml` 参数）。asr-local 和 translation 都依赖此 crate。
+
+### octopus-translation（本地翻译引擎）
+本地翻译引擎，m2m100-418M ONNX int8（lazycodepersona/m2m100_418m）。`TranslationEngine` trait + `TranslationManager`（lazy load + 缓存）；`M2M100Engine` 实现 encoder-decoder greedy 解码（SentencePiece BPE via HF `tokenizers` crate）；`discovery` 模块动态扫描 HF cache + `~/.octopus/models/`。action bar 翻译（`auto_translate`）优先本地引擎，未配置时 fallback LLM。`translate_engine` 配置：`""` = 自动，`"local:m2m100"` = 指定本地，`"llm"` = 强制 LLM。
+
 ### octopus-asr-local（核心推理库）
 
 ASR 推理的核心库，所有上层组件都依赖它。

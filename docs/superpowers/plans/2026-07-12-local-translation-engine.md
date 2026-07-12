@@ -1,6 +1,16 @@
 # 本地翻译引擎（m2m100 ONNX int8）Implementation Plan
 
+> **状态**：已实现（Task 0-6 全部完成）
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+
+**实际实现偏差记录**：
+- Task 0：新建 `onnx-infra` crate 抽取公共 ONNX 基础设施（模型路径查找 + session 加速），asr-local re-export 保持兼容
+- Task 1-2：`venddair/m2m100-418M-onnx-int8` 模型 int8 量化精度有损（输出乱码），切换到 `lazycodepersona/m2m100_418m`（IR=6, opset=11，ort rc.12 完全兼容）
+- Task 2：原计划用 `sentencepiece` C++ crate → 与 ORT 静态库 protobuf 符号冲突 → 换 `sentencepiece-rs`（纯 Rust）→ 再换 HF `tokenizers` crate（与 lazycodepersona 的 `tokenizer.json` 匹配）
+- Task 2：encoder 输入需手动构建 `[source_lang_id] + text_tokens + [eos]`（Rust `tokenizers` 不自动加特殊 token）
+- Task 2：decoder 初始输入为 `[eos, target_lang_id]`（m2m100 需要 forced BOS = 目标语言标记）
+- Task 2：greedy 解码加入重复 token 检测（连续 5 个相同 token 则停止）
+- Task 4：`translate_engine` 配置字段加到 `AppConfig` + `apply_config_value`
 
 **Goal:** 新建 `octopus-translation` crate，接入 m2m100-418M ONNX int8 本地翻译引擎，action bar 翻译优先本地引擎，未配置时 fallback LLM。
 
