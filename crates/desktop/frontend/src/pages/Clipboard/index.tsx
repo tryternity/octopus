@@ -7,9 +7,10 @@ import { moveIndex, moveTab } from "@/lib/clipboardNav";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
-import { Pin, X, Settings2, CircleCheck, CircleX, Trash2 } from "lucide-react";
+import { Pin, X, Settings2, CircleCheck, CircleX, Trash2, Eye, EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import type { ClipboardItem } from "@/types/clipboard";
 
 interface ConfigResponse {
   config: Record<string, string | number | boolean>;
@@ -26,6 +27,11 @@ export default function Clipboard() {
   // 键盘导航以数组索引为第一性 citizen；执行动作时从 items[selectedIndex].id 取。
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [recording, setRecording] = useState(true);
+  // 预览面板开关（标题栏按钮控制）；关闭后 hover 不弹出预览
+  const [previewEnabled, setPreviewEnabled] = useState(true);
+  // 预览内容：当前选中/hover 条目的完整数据
+  const [previewItem, setPreviewItem] = useState<ClipboardItem | null>(null);
+  const [previewThumb, setPreviewThumb] = useState<string | null>(null);
   // 一键清理两步确认：点 1 次 → confirming=true（变红 + 3s 超时），再点才执行。
   const [confirming, setConfirming] = useState(false);
   const confirmTimer = useRef<number | null>(null);
@@ -71,6 +77,24 @@ export default function Clipboard() {
     const el = document.querySelector(`[data-clip-index="${selectedIndex}"]`);
     el?.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
+
+  // 选中变化时更新预览内容
+  useEffect(() => {
+    if (selectedIndex === null) { setPreviewItem(null); return; }
+    const item = items[selectedIndex];
+    if (item) setPreviewItem(item);
+  }, [selectedIndex, items]);
+
+  // 图片类型拉缩略图
+  useEffect(() => {
+    if (previewItem?.item_type === "image") {
+      invoke<string>("get_image_thumb", { id: previewItem.id })
+        .then(setPreviewThumb)
+        .catch(() => setPreviewThumb(null));
+    } else {
+      setPreviewThumb(null);
+    }
+  }, [previewItem]);
 
   // 全局按键处理需要读最新 items/selectedIndex/search，用 ref 避免闭包过期。
   const itemsRef = useRef(items);
@@ -267,6 +291,16 @@ export default function Clipboard() {
           <button
             className={cn(
               "p-1 rounded cursor-default transition-colors",
+              previewEnabled ? "text-voice bg-voice/10" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+            onClick={() => setPreviewEnabled(v => !v)}
+            title={previewEnabled ? t("clipboard.previewOn") : t("clipboard.previewOff")}
+          >
+            {previewEnabled ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+          </button>
+          <button
+            className={cn(
+              "p-1 rounded cursor-default transition-colors",
               pinned ? "text-voice bg-voice/10" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
             onClick={togglePin}
@@ -284,7 +318,7 @@ export default function Clipboard() {
       </div>
 
       {/* List */}
-      <div className="clipboard-list flex-1 overflow-y-auto pb-1">
+      <div className="clipboard-list flex-1 overflow-y-auto pb-1 relative">
         {items.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-1 text-muted-foreground/50">
             <span className="text-xs">{t("clipboard.empty")}</span>
@@ -301,6 +335,46 @@ export default function Clipboard() {
               onChanged={refresh}
             />
           ))
+        )}
+
+        {/* hover 预览 overlay：200×400 绝对定位在列表右侧 */}
+        {previewEnabled && previewItem && (
+          <div
+            className="absolute right-0 top-0 bottom-0 w-[200px] z-30 flex flex-col overflow-hidden rounded-l-lg border-l border-y border-border shadow-xl bg-background"
+            style={{ maxHeight: '100%' }}
+          >
+            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/60 flex-shrink-0">
+              <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
+                {previewItem.item_type === "voice" ? "ASR" : previewItem.item_type}
+              </span>
+              <div className="flex-1" />
+              <button
+                className="p-0.5 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+                onClick={() => setPreviewItem(null)}
+              >
+                <X className="w-3 h-3" />
+              </button>
+            </div>
+            <div className="flex-1 overflow-y-auto thin-scrollbar min-h-0">
+              {previewItem.item_type === "image" ? (
+                <div className="flex items-center justify-center p-2 min-h-full">
+                  {previewThumb ? (
+                    <img src={previewThumb} alt="preview" className="max-w-full max-h-full rounded object-contain" />
+                  ) : (
+                    <span className="text-[10px] text-muted-foreground">Loading...</span>
+                  )}
+                </div>
+              ) : previewItem.item_type === "file" ? (
+                <pre className="px-2 py-1.5 text-[10px] text-muted-foreground whitespace-pre-wrap break-all font-mono">
+                  {previewItem.ref_data || ""}
+                </pre>
+              ) : (
+                <pre className="px-2 py-1.5 text-[10px] text-foreground whitespace-pre-wrap break-words font-mono leading-relaxed">
+                  {previewItem.content}
+                </pre>
+              )}
+            </div>
+          </div>
         )}
       </div>
 

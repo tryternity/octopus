@@ -163,6 +163,7 @@ function ClipboardItemRow({
       )}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
+      onMouseEnter={() => onSelect(index)}
     >
       {isSelected && !deletePending && (
         <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-voice" />
