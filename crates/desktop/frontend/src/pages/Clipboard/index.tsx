@@ -110,6 +110,15 @@ export default function Clipboard() {
     }
   }, [previewItem]);
 
+  // 浮窗失焦时清空预览内容（隐藏 overlay）
+  useEffect(() => {
+    const win = getCurrentWindow();
+    const unlisten = win.onFocusChanged(({ payload: focused }) => {
+      if (!focused) setPreviewItem(null);
+    });
+    return () => { unlisten.then((f) => f()); };
+  }, []);
+
   // 全局按键处理需要读最新 items/selectedIndex/search，用 ref 避免闭包过期。
   const itemsRef = useRef(items);
   itemsRef.current = items;
