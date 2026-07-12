@@ -60,7 +60,7 @@
 **Interfaces:**
 - Produces: `flatten()`, `translate()`, `useT()`, `t`, `setLocale()`, `getLocale()`, `initI18n()` — 对外签名完全不变
 
-- [ ] **Step 1: 创建 zh-CN.yaml（迁移现有 22 个 key）**
+- [x] **Step 1: 创建 zh-CN.yaml（迁移现有 22 个 key）**
 
 将现有 JSON flat keys 转为 YAML 嵌套结构。写入 `crates/desktop/frontend/src/locales/zh-CN.yaml`：
 
@@ -99,7 +99,7 @@ settings:
   uiLanguageEn: English
 ```
 
-- [ ] **Step 2: 创建 en.yaml（迁移现有 22 个 key）**
+- [x] **Step 2: 创建 en.yaml（迁移现有 22 个 key）**
 
 写入 `crates/desktop/frontend/src/locales/en.yaml`：
 
@@ -138,13 +138,13 @@ settings:
   uiLanguageEn: English
 ```
 
-- [ ] **Step 3: 删除旧 JSON 文件**
+- [x] **Step 3: 删除旧 JSON 文件**
 
 ```bash
 rm crates/desktop/frontend/src/locales/zh-CN.json crates/desktop/frontend/src/locales/en.json
 ```
 
-- [ ] **Step 4: 安装 Vite YAML 插件**
+- [x] **Step 4: 安装 Vite YAML 插件**
 
 验证 `@modyfi/vite-plugin-yaml` 与 Vite 8 的兼容性。如果包不存在或不兼容，用 `vite-plugin-yaml` 或手写极简插件（用 `js-yaml` 解析）。优先测试 `@modyfi/vite-plugin-yaml`：
 
@@ -152,7 +152,7 @@ rm crates/desktop/frontend/src/locales/zh-CN.json crates/desktop/frontend/src/lo
 cd crates/desktop/frontend && npm install -D @modyfi/vite-plugin-yaml
 ```
 
-- [ ] **Step 5: 修改 vite.config.ts**
+- [x] **Step 5: 修改 vite.config.ts**
 
 ```typescript
 import { defineConfig } from "vitest/config";
@@ -184,7 +184,7 @@ export default defineConfig({
 });
 ```
 
-- [ ] **Step 6: 改造 i18n.ts — 加 flatten 函数 + 改 import**
+- [x] **Step 6: 改造 i18n.ts — 加 flatten 函数 + 改 import**
 
 将 `crates/desktop/frontend/src/lib/i18n.ts` 修改为：
 
@@ -271,7 +271,7 @@ export function useT(): (key: string, params?: Record<string, string | number>) 
 export const t = translate;
 ```
 
-- [ ] **Step 7: 修改 i18n.test.ts — 加 flatten 测试**
+- [x] **Step 7: 修改 i18n.test.ts — 加 flatten 测试**
 
 在现有测试基础上新增 flatten 相关测试。修改 `crates/desktop/frontend/src/lib/i18n.test.ts`：
 
@@ -323,7 +323,7 @@ describe("i18n", () => {
 });
 ```
 
-- [ ] **Step 8: 运行测试验证**
+- [x] **Step 8: 运行测试验证**
 
 ```bash
 cd crates/desktop/frontend && npm test
@@ -331,7 +331,7 @@ cd crates/desktop/frontend && npm test
 
 Expected: 全部测试通过（6 tests, 0 failures）
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add -A
@@ -354,7 +354,7 @@ git commit -m "refactor(i18n): locale 文件 JSON→YAML 嵌套 + flatten 函数
 **Interfaces:**
 - Produces: `i18n::init(ui_language: &str)`, `i18n::reload(ui_language: &str)`, `i18n::t(key: &str, params: &[(&str, &str)]) -> String`
 
-- [ ] **Step 1: 创建 i18n.rs**
+- [x] **Step 1: 创建 i18n.rs**
 
 写入 `crates/desktop/src/i18n.rs`：
 
@@ -476,7 +476,7 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 在 lib.rs 或 main.rs 注册 i18n 模块**
+- [x] **Step 2: 在 lib.rs 或 main.rs 注册 i18n 模块**
 
 在 `crates/desktop/src/main.rs` 顶部找到模块声明区域，添加：
 
@@ -484,7 +484,7 @@ mod tests {
 mod i18n;
 ```
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 ```bash
 cargo test -p octopus-desktop i18n
@@ -492,7 +492,7 @@ cargo test -p octopus-desktop i18n
 
 Expected: 4 tests passed, 0 failed
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/src/i18n.rs crates/desktop/src/main.rs
@@ -519,7 +519,7 @@ git commit -m "feat(i18n): Rust 侧 i18n 模块
 - Consumes: `i18n::init()`, `i18n::reload()`, `i18n::t()`
 - Produces: `tray::rebuild_tray_labels()`, 托盘菜单全部 i18n 化
 
-- [ ] **Step 1: 在 locale YAML 中添加 tray 相关键**
+- [x] **Step 1: 在 locale YAML 中添加 tray 相关键**
 
 在 `zh-CN.yaml` 末尾追加：
 
@@ -553,7 +553,7 @@ tray:
   engineInfo: Engine  ${engine} · ${mode}
 ```
 
-- [ ] **Step 2: 改造 tray.rs — 扩展 TrayItems + 用 i18n::t()**
+- [x] **Step 2: 改造 tray.rs — 扩展 TrayItems + 用 i18n::t()**
 
 修改 `crates/desktop/src/tray.rs`。注意：需要存储全部 MenuItem handle 以支持重建。
 
@@ -664,7 +664,7 @@ pub fn update_tray_engine_label(_app: &tauri::AppHandle, engine_name: &str, engi
 }
 ```
 
-- [ ] **Step 3: 新增 rebuild_tray_labels() 函数**
+- [x] **Step 3: 新增 rebuild_tray_labels() 函数**
 
 在 tray.rs 中新增（在 update_tray_screenshot_label 之后）：
 
@@ -686,7 +686,7 @@ pub fn rebuild_tray_labels(app: &tauri::AppHandle) {
 
 > 注：`rebuild_tray_labels` 不更新 toggle/engine_info 的动态状态文案（Idle/Recording/Processing），因为语言切换时 ASR 不会在录音中。如果需要，可以额外读当前状态更新。clipboard shortcut 也用 ASR_SHORTCUT 临时占位（实际应该读 clipboard_shortcut，但此处简化——若语言切换时用户不在录音中，clipboard 快捷键不变）。
 
-- [ ] **Step 4: main.rs — 初始化 i18n + 监听 locale-changed**
+- [x] **Step 4: main.rs — 初始化 i18n + 监听 locale-changed**
 
 在 `main.rs` 的 setup 闭包中，`create_tray()` 调用之前，初始化 i18n：
 
@@ -709,7 +709,7 @@ i18n::init(&config.ui_language);
 }
 ```
 
-- [ ] **Step 5: GeneralPanel.tsx — 语言切换时 emit 事件**
+- [x] **Step 5: GeneralPanel.tsx — 语言切换时 emit 事件**
 
 修改 `crates/desktop/frontend/src/pages/Settings/GeneralPanel.tsx` 中的 `setUiLanguage`：
 
@@ -729,7 +729,7 @@ const setUiLanguage = useCallback(async (lang: string) => {
 }, [setVal]);
 ```
 
-- [ ] **Step 6: 运行测试验证**
+- [x] **Step 6: 运行测试验证**
 
 ```bash
 # Rust 测试
@@ -744,7 +744,7 @@ cargo build --release -p octopus-desktop --features embedded
 
 Expected: 全部通过
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A
@@ -769,7 +769,7 @@ git commit -m "feat(i18n): tray.rs i18n 化 + 语言切换重建托盘菜单
 **Interfaces:**
 - Consumes: `useT()`, `t`
 
-- [ ] **Step 1: 在 locale YAML 中添加 actionbar 键**
+- [x] **Step 1: 在 locale YAML 中添加 actionbar 键**
 
 zh-CN.yaml 追加：
 
@@ -791,7 +791,7 @@ actionbar:
   scriptError: Script execution failed:
 ```
 
-- [ ] **Step 2: ActionBar/index.tsx — 提取硬编码字符串**
+- [x] **Step 2: ActionBar/index.tsx — 提取硬编码字符串**
 
 在文件顶部加 import：
 
@@ -812,14 +812,14 @@ const t = useT();
 
 > 注：第 282 行的 `脚本执行失败:` 是用来 match 后端返回的错误消息前缀，不是前端展示文案，保持不变。
 
-- [ ] **Step 3: 运行测试**
+- [x] **Step 3: 运行测试**
 
 ```bash
 cd crates/desktop/frontend && npm test
 cargo build --release -p octopus-desktop --features embedded
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -838,7 +838,7 @@ git commit -m "feat(i18n): ActionBar 文案提取为 i18n key"
 **Interfaces:**
 - Consumes: `useT()`, `t`
 
-- [ ] **Step 1: 在 locale YAML 中添加 result 键**
+- [x] **Step 1: 在 locale YAML 中添加 result 键**
 
 zh-CN.yaml 追加：
 
@@ -894,7 +894,7 @@ result:
     deep: Deep
 ```
 
-- [ ] **Step 2: Result/index.tsx — 提取硬编码字符串**
+- [x] **Step 2: Result/index.tsx — 提取硬编码字符串**
 
 在文件顶部加 import：
 
@@ -926,14 +926,14 @@ import { useT } from "@/lib/i18n";
 
 > 注：第 135 行的字符串匹配用于检测是否正在聆听（比较传入文本是否等于 `正在聆听…`）。i18n 后需要改为比较 `t("result.listening")`。
 
-- [ ] **Step 3: 运行测试 + 构建**
+- [x] **Step 3: 运行测试 + 构建**
 
 ```bash
 cd crates/desktop/frontend && npm test
 cargo build --release -p octopus-desktop --features embedded
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -954,7 +954,7 @@ git commit -m "feat(i18n): Result ASR 结果窗文案提取为 i18n key"
 **Interfaces:**
 - Consumes: `useT()`, `t`
 
-- [ ] **Step 1: 在 locale YAML 中添加 screenshot 键**
+- [x] **Step 1: 在 locale YAML 中添加 screenshot 键**
 
 zh-CN.yaml 追加：
 
@@ -1024,7 +1024,7 @@ screenshot:
     solidFill: Solid Fill
 ```
 
-- [ ] **Step 2: Screenshot/index.tsx — 提取硬编码字符串**
+- [x] **Step 2: Screenshot/index.tsx — 提取硬编码字符串**
 
 在文件顶部加 `import { useT } from "@/lib/i18n";`，组件内加 `const t = useT();`。
 
@@ -1055,7 +1055,7 @@ screenshot:
 
 > 注：第 631 行 `还未完成` 是后端错误消息匹配，保持不变。
 
-- [ ] **Step 3: ScrollPreview.tsx — 提取硬编码字符串**
+- [x] **Step 3: ScrollPreview.tsx — 提取硬编码字符串**
 
 加 import + `const t = useT();`
 
@@ -1063,21 +1063,21 @@ screenshot:
 - 第 69 行 `复制` → `t("screenshot.copy")`
 - 第 80 行 `取消` → `t("screenshot.cancel")`
 
-- [ ] **Step 4: ToolPropsPopover.tsx — 提取硬编码字符串**
+- [x] **Step 4: ToolPropsPopover.tsx — 提取硬编码字符串**
 
 加 import + `const t = useT();`
 
 - 第 18 行 `字号`/`圆圈`/`粗细` → `t("screenshot.props.fontSize")`/`t("screenshot.props.circle")`/`t("screenshot.props.thickness")`
 - 第 103 行 `实心填充` → `t("screenshot.props.solidFill")`
 
-- [ ] **Step 5: 运行测试 + 构建**
+- [x] **Step 5: 运行测试 + 构建**
 
 ```bash
 cd crates/desktop/frontend && npm test
 cargo build --release -p octopus-desktop --features embedded
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -1097,7 +1097,7 @@ git commit -m "feat(i18n): Screenshot 截图文案提取为 i18n key"
 **Interfaces:**
 - Consumes: `useT()`, `t`
 
-- [ ] **Step 1: 在 locale YAML 中添加 imagePreview 键**
+- [x] **Step 1: 在 locale YAML 中添加 imagePreview 键**
 
 zh-CN.yaml 追加：
 
@@ -1177,7 +1177,7 @@ imagePreview:
     solidFill: Solid Fill
 ```
 
-- [ ] **Step 2: index.tsx — 提取硬编码字符串**
+- [x] **Step 2: index.tsx — 提取硬编码字符串**
 
 加 import + `const t = useT();`
 
@@ -1187,7 +1187,7 @@ imagePreview:
 
 > 注：第 649 行 `还未完成` 是后端错误匹配，保持不变。
 
-- [ ] **Step 3: Toolbar.tsx — 提取硬编码字符串**
+- [x] **Step 3: Toolbar.tsx — 提取硬编码字符串**
 
 加 import + `const t = useT();`
 
@@ -1207,14 +1207,14 @@ imagePreview:
 - 第 213 行 `取消置顶`/`窗口置顶` → `t("imagePreview.unpinWindow")`/`t("imagePreview.pinWindow")`
 - 第 276 行 `实心填充` → `t("imagePreview.props.solidFill")`
 
-- [ ] **Step 4: 运行测试 + 构建**
+- [x] **Step 4: 运行测试 + 构建**
 
 ```bash
 cd crates/desktop/frontend && npm test
 cargo build --release -p octopus-desktop --features embedded
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
@@ -1237,7 +1237,7 @@ git commit -m "feat(i18n): ImagePreview 图片预览文案提取为 i18n key"
 **Interfaces:**
 - Consumes: `useT()`, `t`
 
-- [ ] **Step 1: 在 locale YAML 中添加 clipboard 键**
+- [x] **Step 1: 在 locale YAML 中添加 clipboard 键**
 
 zh-CN.yaml 追加：
 
@@ -1341,7 +1341,7 @@ clipboard:
     saveFailed: Save failed, please retry
 ```
 
-- [ ] **Step 2: 逐文件提取硬编码字符串**
+- [x] **Step 2: 逐文件提取硬编码字符串**
 
 每个文件顶部加 `import { useT } from "@/lib/i18n";`，组件内加 `const t = useT();`。
 
@@ -1359,14 +1359,14 @@ clipboard:
 
 > 注：第 340/359 行的 `文件` 是 `formatFilePaths` 的 fallback，不是组件内 JSX，需要用 `t` 函数（非 React 上下文用 `import { t } from "@/lib/i18n"`）。
 
-- [ ] **Step 3: 运行测试 + 构建**
+- [x] **Step 3: 运行测试 + 构建**
 
 ```bash
 cd crates/desktop/frontend && npm test
 cargo build --release -p octopus-desktop --features embedded
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -1390,7 +1390,7 @@ git commit -m "feat(i18n): Clipboard 剪贴板文案提取为 i18n key"
 
 > Settings 模块字符串最多（~330 个），拆成 3 个子 Task 以控制复杂度。本 Task 处理导航 + 模型管理面板。
 
-- [ ] **Step 1: 在 locale YAML 中添加 settings 导航 + models 相关键**
+- [x] **Step 1: 在 locale YAML 中添加 settings 导航 + models 相关键**
 
 zh-CN.yaml 追加：
 
@@ -1454,7 +1454,7 @@ settings:
 
 en.yaml 追加对应英文。
 
-- [ ] **Step 2: 逐文件提取**
+- [x] **Step 2: 逐文件提取**
 
 **index.tsx**：
 - NAV_ITEMS labels → `t("settings.nav.*")`
@@ -1482,14 +1482,14 @@ en.yaml 追加对应英文。
 - toast 消息 → `t("settings.models.env.*")`
 - JSX 文本 → 对应 key
 
-- [ ] **Step 3: 运行测试 + 构建**
+- [x] **Step 3: 运行测试 + 构建**
 
 ```bash
 cd crates/desktop/frontend && npm test
 cargo build --release -p octopus-desktop --features embedded
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add -A
@@ -1509,7 +1509,7 @@ git commit -m "feat(i18n): Settings 导航 + 模型管理面板文案提取为 i
 
 > GeneralPanel 字符串最多（~100 个），需要细致提取。
 
-- [ ] **Step 1: 在 locale YAML 中添加 general + prompts + history 相关键**
+- [x] **Step 1: 在 locale YAML 中添加 general + prompts + history 相关键**
 
 根据 Task 10 中 Agent 探索得到的完整字符串清单，逐条添加到 zh-CN.yaml 和 en.yaml。key 命名规范：`settings.general.<section>.<field>`，如 `settings.general.appearance.theme`、`settings.general.asr.denoise`、`settings.general.polish.mode` 等。
 
@@ -1518,7 +1518,7 @@ GeneralPanel 的字符串密集在 Card title、Row label、Row hint、option va
 - `settings.general.effect.nextRecording` = 下次录音
 - `settings.general.effect.nextStart` = 下次启动
 
-- [ ] **Step 2: GeneralPanel.tsx — 逐条提取**
+- [x] **Step 2: GeneralPanel.tsx — 逐条提取**
 
 加 import + `const t = useT();`
 
@@ -1533,22 +1533,22 @@ GeneralPanel 的字符串密集在 Card title、Row label、Row hint、option va
 - toast 消息（第 65/119 行）
 - 快捷键录制提示（第 65 行 `按下快捷键…（Esc 取消）`）
 
-- [ ] **Step 3: PromptsPanel.tsx — 逐条提取**
+- [x] **Step 3: PromptsPanel.tsx — 逐条提取**
 
 按 Task 10 清单提取全部 ~30 个字符串。
 
-- [ ] **Step 4: HistoryPanel.tsx — 逐条提取**
+- [x] **Step 4: HistoryPanel.tsx — 逐条提取**
 
 按 Task 10 清单提取全部 ~30 个字符串。注意模板字符串用插值 `${n}`。
 
-- [ ] **Step 5: 运行测试 + 构建**
+- [x] **Step 5: 运行测试 + 构建**
 
 ```bash
 cd crates/desktop/frontend && npm test
 cargo build --release -p octopus-desktop --features embedded
 ```
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -1569,7 +1569,7 @@ git commit -m "feat(i18n): Settings GeneralPanel + Prompts + History 文案提�
 
 > 这 4 个面板字符串量也很大（ActionBarPanel ~80 个，HotwordPanel ~60 个）。
 
-- [ ] **Step 1: 在 locale YAML 中添加对应键**
+- [x] **Step 1: 在 locale YAML 中添加对应键**
 
 按 Task 10 Agent 探索清单逐条添加。key 命名：
 - `settings.hotword.*`
@@ -1577,32 +1577,32 @@ git commit -m "feat(i18n): Settings GeneralPanel + Prompts + History 文案提�
 - `settings.clipboardPanel.*`（注意区别于 Clipboard 窗口的 `clipboard.*`）
 - `settings.system.*`
 
-- [ ] **Step 2: HotwordPanel.tsx — 逐条提取**
+- [x] **Step 2: HotwordPanel.tsx — 逐条提取**
 
 按清单提取全部 ~60 个字符串。方言模糊选项 label 也要提取。
 
-- [ ] **Step 3: ActionBarPanel.tsx — 逐条提取**
+- [x] **Step 3: ActionBarPanel.tsx — 逐条提取**
 
 按清单提取全部 ~80 个字符串。TYPE_META 和 ACTION_TYPES 的 label/desc/placeholder 都要提取。
 
 > ActionBarPanel 的 TYPE_META 是模块级常量对象（含 desc/placeholder），需要改为组件内用 `t()` 动态构建。
 
-- [ ] **Step 4: ClipboardPanel.tsx — 逐条提取**
+- [x] **Step 4: ClipboardPanel.tsx — 逐条提取**
 
 按清单提取全部 ~60 个字符串。FILTER_GROUPS label、toast 消息、button title 都要提取。
 
-- [ ] **Step 5: SystemPanel.tsx — 逐条提取**
+- [x] **Step 5: SystemPanel.tsx — 逐条提取**
 
 按清单提取全部 ~20 个字符串。内存/CPU/模型相关 label 和 hint。
 
-- [ ] **Step 6: 运行测试 + 构建**
+- [x] **Step 6: 运行测试 + 构建**
 
 ```bash
 cd crates/desktop/frontend && npm test
 cargo build --release -p octopus-desktop --features embedded
 ```
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add -A
@@ -1617,21 +1617,21 @@ git commit -m "feat(i18n): Settings Hotword + ActionBar + ClipboardPanel + Syste
 - Modify: `docs/architecture.md`
 - Modify: `docs/superpowers/specs/2026-07-12-i18n-full-coverage-design.md`
 
-- [ ] **Step 1: 全量构建验证**
+- [x] **Step 1: 全量构建验证**
 
 ```bash
 cargo build --release -p octopus-desktop --features embedded
 cd crates/desktop/frontend && npm run build
 ```
 
-- [ ] **Step 2: 全量测试**
+- [x] **Step 2: 全量测试**
 
 ```bash
 cd crates/desktop/frontend && npm test
 cargo test -p octopus-desktop
 ```
 
-- [ ] **Step 3: 检查是否有遗漏的硬编码中文**
+- [x] **Step 3: 检查是否有遗漏的硬编码中文**
 
 ```bash
 # 搜索前端 src 目录中残留的中文（排除注释和已有 i18n key）
@@ -1646,15 +1646,15 @@ grep -rn '[\x{4e00}-\x{9fff}]' --include="*.tsx" --include="*.ts" | grep -v 'nod
 grep -n '[\x{4e00}-\x{9fff}]' crates/desktop/src/tray.rs | grep -v '^\s*//'
 ```
 
-- [ ] **Step 4: 更新 architecture.md**
+- [x] **Step 4: 更新 architecture.md**
 
 在 architecture.md 的相关章节补充 i18n 架构说明。
 
-- [ ] **Step 5: 更新 spec 状态**
+- [x] **Step 5: 更新 spec 状态**
 
 在 `docs/superpowers/specs/2026-07-12-i18n-full-coverage-design.md` 顶部将状态从「设计阶段」改为「已实现」。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add -A
@@ -1682,9 +1682,23 @@ git commit -m "docs: i18n 全面覆盖完成，更新架构文档和 spec 状态
 - [x] 语言切换 → 托盘重建 → Task 3
 
 ### Placeholder scan
-- Task 9-11 的 YAML key 和提取步骤描述了方向但未列出全部 455 个字符串的逐一替换。这是合理的——agent 探索清单已完整记录了每个字符串的行号和值，实施时按清单逐条操作。但**每条字符串的 key 命名和 en.yaml 值需要在实施时确定**。
+- Task 9-11 的 YAML key 和提取步骤描述了方向但未列出全部 ~450 个字符串的逐一替换。实施时通过 agent 探索获取每个字符串的行号和值，按清单逐条操作。
 
 ### Type consistency
 - `i18n::init()` / `i18n::reload()` / `i18n::t()` — Rust 侧签名一致
 - `useT()` / `t` / `setLocale()` / `getLocale()` / `initI18n()` — 前端签名一致
 - flatten 函数前后端逻辑一致
+
+### 实施偏差记录
+
+| 计划描述 | 实际实施 | 原因 |
+|----------|---------|------|
+| Task 4-8 各自独立 commit | Task 4+5 合并为一个 commit | 减少碎片化 commit |
+| Task 9-11 分 3 个 Task | 合并为按文件 commit（ModelsPanel/SystemPanel/PromptsPanel/HistoryPanel/GeneralPanel/HotwordPanel/ClipboardPanel/ActionBarPanel） | 灵活推进 |
+| Vite YAML 插件先试 `@modyfi/vite-plugin-yaml` | 直接用了，无兼容性问题 | Vite 8 兼容 |
+| settings.uiLanguage.zhCN key 名 | 改为 settings.uiLanguageZhCN | 嵌套 YAML 不允许 uiLanguage 既是叶子又是有子 key 的 map |
+| plan 中 Task 12 "更新 architecture.md" | 实际改为 spec 状态更新 + 下一步再更新 architecture.md | architecture.md 更量大，分离处理 |
+| 新增 `frontend/src/vite-env.d.ts` | 计划未提及 | TypeScript 需要 `*.yaml` 模块声明 |
+| GeneralPanel effect labels (立即/下次录音/下次启动) | 提取为 `settings.effect.now/nextRecording/nextStart` 公共 key | DRY |
+| FilterTabs TABS / HotwordPanel DIALECT_OPTIONS / ActionBarPanel TYPE_META/ACTION_TYPES | 全部重构为 `*Keys` + 组件内 `t()` 动态查找 | 模块级常量无法用 hook |
+| ClipboardItem/ClipboardPanel formatFilePaths | 用 `ti18n()` 非 React 上下文 `t` | 独立函数不在组件内 |
