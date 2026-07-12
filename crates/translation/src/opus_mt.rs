@@ -54,8 +54,7 @@ impl OpusMTEngine {
             b.commit_from_file(&decoder_real)
                 .context("加载 opus-mt decoder ONNX 失败")?
         };
-        let tokenizer = Tokenizer::from_file(&tokenizer_path)
-            .map_err(|e| anyhow::anyhow!("加载 opus-mt tokenizer.json 失败: {}", e))?;
+        let tokenizer = load_opus_tokenizer(&tokenizer_path)?;
 
         // 从 generation_config.json 读取关键 token IDs
         let gen_path = dir.join("generation_config.json");
@@ -202,6 +201,22 @@ impl TranslationEngine for OpusMTEngine {
     fn translate(&self, text: &str, _source_lang: &str, _target_lang: &str) -> Result<String> {
         // Opus-MT 方向已由 load 时确定，source/target lang 不再需要
         self.split_and_translate(text)
+    }
+}
+
+/// 加载 opus-mt tokenizer.json。
+/// 修复 Xenova 导出的 tokenizer.json 中 precompiled_charsmap=null 导致 tokenizers 0.21 panic。
+fn load_opus_tokenizer(path: &std::path::Path) -> Result<Tokenizer> {
+    let raw = std::fs::read_to_string(path)
+        .with_context(|| format!("读取 tokenizer.json 失败: {:?}", path))?;
+    // null precompiled_charsmap 替换为空字符串（空映射 = 不做 normalization）
+    if raw.contains("\"precompiled_charsmap\": null") {
+        let fixed = raw.replace("\"precompiled_charsmap\": null", "\"precompiled_charsmap\": \"\"");
+        Tokenizer::from_bytes(fixed.as_bytes())
+            .map_err(|e| anyhow::anyhow!("加载修复后的 tokenizer.json 失败: {}", e))
+    } else {
+        Tokenizer::from_file(path)
+            .map_err(|e| anyhow::anyhow!("加载 tokenizer.json 失败: {}", e))
     }
 }
 
