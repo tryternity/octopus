@@ -113,7 +113,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
   const engineOptions: EngineOption[] = [
     { value: "", label: t("settings.models.translate.engineAuto"), isLocal: false, downloaded: true },
     ...models.map((m) => ({
-      value: `local:${m.name.split(" ")[0].toLowerCase()}`,
+      value: `local:${m.name.split(" ")[0]}`,
       label: `${m.name}${t("settings.models.translate.engineLocal")}`,
       isLocal: true,
       downloaded: m.downloaded,
@@ -152,7 +152,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
         count={`${models.filter((m) => m.downloaded).length}/${models.length}`}
       >
         {downloadable.map((model) => {
-          const local = models.find((m) => m.source === model.repo);
+          const local = models.find((m) => m.name === model.name);
           const downloaded = local?.downloaded ?? false;
           const isBusy = busyRepo === model.repo;
           return (

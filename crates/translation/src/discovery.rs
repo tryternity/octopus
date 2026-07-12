@@ -45,7 +45,7 @@ pub fn discover_translation_models() -> Vec<TranslationModelInfo> {
                     path,
                 });
             }
-            let (downloaded, path) = check_model(name, repo);
+            let (downloaded, path) = check_model(repo);
             Some(TranslationModelInfo {
                 name: name.to_string(),
                 source: repo.to_string(),
@@ -69,14 +69,8 @@ pub fn list_downloadable_translation_models() -> Vec<DownloadableTranslationMode
     }).collect()
 }
 
-/// 检查模型是否已下载。
-/// m2m100：HF repo 解析。
-/// opus-mt：检查 HF cache 或 ~/.octopus/models/ 下两个方向是否齐全。
-fn check_model(name: &str, repo: &str) -> (bool, String) {
-    if name == "opus-mt" {
-        return check_opus_mt();
-    }
-    // m2m100 路径
+/// 检查模型是否已下载（m2m100 路径）。
+fn check_model(repo: &str) -> (bool, String) {
     match onnx_infra::resolve_model_dir(repo) {
         Ok(dir) => {
             let downloaded = dir.join("onnx/encoder_model_quantized.onnx").exists()

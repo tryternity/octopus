@@ -89,10 +89,11 @@ impl OpusMTEngine {
 
     /// 单 chunk 翻译核心逻辑
     fn translate_chunk(&self, text: &str) -> Result<String> {
-        // MarianMT tokenizer：直接 encode，加 truncation 防超 encoder 上限
-        let mut encoding = self.tokenizer.encode(text, false)
+        // MarianMT tokenizer：encode(text, true) 让 post_processor 自动补 </s>（eos），
+        // 加 truncation 防超 encoder 上限
+        let mut encoding = self.tokenizer.encode(text, true)
             .map_err(|e| anyhow::anyhow!("opus-mt tokenizer encode 失败: {}", e))?;
-        // 兑底：超过 model_max_length 截断，防止 ONNX 位置越界
+        // 兜底：超过 model_max_length 截断，防止 ONNX 位置越界
         if encoding.len() > MAX_ENCODER_TOKENS {
             log::warn!("opus-mt 输入 {} tokens 超上限 {}，截断", encoding.len(), MAX_ENCODER_TOKENS);
             encoding.truncate(MAX_ENCODER_TOKENS, 0, tokenizers::TruncationDirection::Right);
@@ -142,39 +143,8 @@ impl OpusMTEngine {
             // 拷贝最后位置的 logits（需要修改副本做惩罚）
             let mut logits: Vec<f32> = logits_data[offset..offset + vocab_size].to_vec();
 
-            // 1) Repetition penalty：已生成 token 的 logit / penalty（不含 decoder_start_id prompt）
-            let generated: std::collections::HashSet<i64> =
-                decoder_ids[1..].iter().copied().collect();
-            for &tid in &generated {
-                let idx = tid as usize;
-                if idx < logits.len() {
-                    if logits[idx] > 0.0 {
-                        logits[idx] /= REPETITION_PENALTY;
-                    } else {
-                        logits[idx] *= REPETITION_PENALTY;
-                    }
-                }
-            }
-
-            // 2) No-repeat-ngram-size：禁止生成已出现过的 n-gram 的下一个 token
-            // 需历史中已存在完整 n-gram（len >= n），才能禁止其重复
-            if decoder_ids.len() >= NO_REPEAT_NGRAM_SIZE {
-                let n = NO_REPEAT_NGRAM_SIZE;
-                let prefix_len = n - 1;
-                let prefix = &decoder_ids[decoder_ids.len() - prefix_len..];
-                // 在已生成序列中找相同前缀，记录其后继 token
-                let mut banned: Vec<usize> = Vec::new();
-                for i in 0..decoder_ids.len().saturating_sub(prefix_len) {
-                    if decoder_ids[i..i + prefix_len] == *prefix {
-                        banned.push(decoder_ids[i + prefix_len] as usize);
-                    }
-                }
-                for idx in banned {
-                    if idx < logits.len() {
-                        logits[idx] = f32::NEG_INFINITY;
-                    }
-                }
-            }
+            // 1) Repetition penalty + 2) No-repeat-ngram —— 纯逻辑抽为函数，便于单测
+            apply_penalties(&mut logits, &decoder_ids);
 
             let next_token = logits
                 .iter()
@@ -205,10 +175,10 @@ impl OpusMTEngine {
             return Ok(String::new());
         }
 
-        // 用实际 token 数判断是否需要分段（比字符估算准确）
-        let token_count = self.tokenizer.encode(text, false)
+        // 用实际 token 数判断是否需要分段
+        let token_count = self.tokenizer.encode(text, true)
             .map(|enc| enc.len())
-            .unwrap_or(0);
+            .unwrap_or(MAX_ENCODER_TOKENS + 1);
         if token_count <= MAX_ENCODER_TOKENS {
             return self.translate_chunk(text);
         }
@@ -325,4 +295,105 @@ fn split_sentences(text: &str) -> Vec<String> {
 
 fn is_sentence_end(ch: char) -> bool {
     matches!(ch, '。' | '！' | '？' | '．' | '\n' | '.' | '!' | '?' | ';' | '；')
+}
+
+/// 对 decoder logits 施加 repetition penalty + no-repeat-ngram 惩罚（原地修改）。
+/// 纯函数，不依赖 ONNX，便于单测。
+/// - `logits`：当前步 logits 副本（vocab_size 长度）
+/// - `decoder_ids`：含 decoder_start_id 的完整序列（index 0 = start_id）
+fn apply_penalties(logits: &mut [f32], decoder_ids: &[i64]) {
+    // 1) Repetition penalty：已生成 token（不含 decoder_start_id prompt）
+    let generated: std::collections::HashSet<i64> =
+        decoder_ids[1..].iter().copied().collect();
+    for &tid in &generated {
+        let idx = tid as usize;
+        if idx < logits.len() {
+            if logits[idx] > 0.0 {
+                logits[idx] /= REPETITION_PENALTY;
+            } else {
+                logits[idx] *= REPETITION_PENALTY;
+            }
+        }
+    }
+
+    // 2) No-repeat-ngram-size：需历史中已存在完整 n-gram（len >= n）
+    if decoder_ids.len() >= NO_REPEAT_NGRAM_SIZE {
+        let n = NO_REPEAT_NGRAM_SIZE;
+        let prefix_len = n - 1;
+        let prefix = &decoder_ids[decoder_ids.len() - prefix_len..];
+        for i in 0..decoder_ids.len().saturating_sub(prefix_len) {
+            if decoder_ids[i..i + prefix_len] == *prefix {
+                let banned_idx = decoder_ids[i + prefix_len] as usize;
+                if banned_idx < logits.len() {
+                    logits[banned_idx] = f32::NEG_INFINITY;
+                }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_apply_penalties_len1_no_crash() {
+        // decoder_ids = [start_id]，len=1 → 不应 panic
+        let mut logits = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        apply_penalties(&mut logits, &[100]);
+        // len < NO_REPEAT_NGRAM_SIZE(3) → ngram 不触发，repetition 也无已生成 token
+        assert_eq!(logits, vec![1.0, 2.0, 3.0, 4.0, 5.0]);
+    }
+
+    #[test]
+    fn test_apply_penalties_len2_no_crash() {
+        // decoder_ids = [start_id, token_a]，len=2 → 不应 panic
+        let mut logits = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        apply_penalties(&mut logits, &[100, 1]);
+        // len < 3 → ngram 不触发；repetition penalty 对 token 1 生效
+        assert!(logits[1] < 2.0); // 2.0 / 1.3 ≈ 1.54
+    }
+
+    #[test]
+    fn test_apply_penalties_len3_ngram_bans() {
+        // decoder_ids = [start_id, 1, 2]，len=3 → ngram 触发
+        // prefix_len=2，prefix = [1, 2]
+        // 在 decoder_ids 中找 [1,2]：i=0 → [100,1]≠[1,2]；i=1 → [1,2]==[1,2] → ban decoder_ids[3]?
+        // 不，decoder_ids.len()=3, saturating_sub(2)=1, 所以 i in 0..1 → i=0
+        // decoder_ids[0..2] = [100, 1] ≠ [1, 2] → 不 ban
+        let mut logits = vec![1.0, 2.0, 3.0, 4.0, 5.0];
+        apply_penalties(&mut logits, &[100, 1, 2]);
+        // ngram 不 ban（前缀不匹配），repetition penalty 对 1 和 2 生效
+        assert!(logits[1] < 2.0);
+        assert!(logits[2] < 3.0);
+    }
+
+    #[test]
+    fn test_apply_penalties_ngram_bans_repeated_pattern() {
+        // 构造重复 n-gram：[start, 1, 2, 3, 1, 2]
+        // 当前 prefix = [1, 2]（最后 2 个）
+        // 历史中 i=0: [start,1]≠[1,2]; i=1: [1,2]==[1,2] → ban decoder_ids[3]=3
+        // i=2: [2,3]≠[1,2]; i=3: [3,1]≠[1,2]
+        let mut logits = vec![0.0; 10];
+        logits[3] = 5.0; // token 3 有高 logit
+        apply_penalties(&mut logits, &[100, 1, 2, 3, 1, 2]);
+        // token 3 应被 ban（NEG_INFINITY）
+        assert!(logits[3].is_infinite() && logits[3].is_sign_negative());
+    }
+
+    #[test]
+    fn test_apply_penalties_repetition_penalty_only_positive() {
+        // 正 logit → 除以 penalty（降低）
+        let mut logits = vec![2.6];
+        apply_penalties(&mut logits, &[100, 0]);
+        assert!((logits[0] - 2.0).abs() < 0.01); // 2.6 / 1.3 = 2.0
+    }
+
+    #[test]
+    fn test_apply_penalties_repetition_penalty_negative() {
+        // 负 logit → 乘以 penalty（更负，也降低概率）
+        let mut logits = vec![-1.0];
+        apply_penalties(&mut logits, &[100, 0]);
+        assert!((logits[0] - (-1.3)).abs() < 0.01); // -1.0 * 1.3 = -1.3
+    }
 }
