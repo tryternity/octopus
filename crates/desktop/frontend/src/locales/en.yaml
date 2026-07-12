@@ -15,6 +15,16 @@ editor:
   copyCode: Copy
   copied: Copied
   previewEmpty: Start typing to see preview
+  translate: Translate
+  translateFail: Translation failed
+  translateConfirm: Press again to overwrite translation
+  translating: Translating...
+  contrast:
+    original: Source
+    translated: Translation
+    layoutOriginal: Source only
+    layoutContrast: Side by side
+    layoutTranslated: Translation only
   switchHint: Switch to this tab to edit
   imageTabHint: Switch to this tab to load image
   noTabs: No open items

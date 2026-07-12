@@ -18,12 +18,18 @@ export interface Tab {
   imgWidth?: number;
   imgHeight?: number;
   isTemp?: boolean;
+  mode?: 'single' | 'contrast';
+  originalText?: string;
+  translatedText?: string;
 }
 interface OpenTabPayload {
   itemId: number;
   source: string;
   text?: string;
   isTemp?: boolean;
+  mode?: string;
+  originalText?: string;
+  translatedText?: string;
 }
 // 后端 get_pending_compact_tabs 返回（含完整数据，前端免再查 DB）。
 interface PendingTabFull {
@@ -34,6 +40,9 @@ interface PendingTabFull {
   imgWidth?: number;
   imgHeight?: number;
   isTemp?: boolean;
+  mode?: string;
+  originalText?: string;
+  translatedText?: string;
 }
 function pendingToTab(p: PendingTabFull): Tab {
   const key = p.isTemp ? `temp:${Date.now()}_${p.itemId}_${Math.random().toString(36).slice(2, 6)}` : `${p.source}:${p.itemId}`;
@@ -41,7 +50,7 @@ function pendingToTab(p: PendingTabFull): Tab {
   if (p.itemType === 'image') {
     return { key, source, itemId: p.itemId, itemType: 'image', imgWidth: p.imgWidth || 0, imgHeight: p.imgHeight || 0 };
   }
-  return { key, source, itemId: p.itemId, itemType: 'text', text: p.text, isTemp: p.isTemp };
+  return { key, source, itemId: p.itemId, itemType: 'text', text: p.text, isTemp: p.isTemp, mode: p.mode as Tab['mode'], originalText: p.originalText, translatedText: p.translatedText };
 }
 
 const FONT_KEY = "compact-editor-font-size";
@@ -164,7 +173,7 @@ function CompactEditor() {
         const p = payload as OpenTabPayload;
         if (p.source === 'temp') {
           const tempKey = `temp:${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          const next = [...tabsRef.current, { key: tempKey, source: 'temp' as const, itemId: 0, itemType: 'text' as const, text: p.text, isTemp: true }];
+          const next = [...tabsRef.current, { key: tempKey, source: 'temp' as const, itemId: 0, itemType: 'text' as const, text: p.text, isTemp: true, mode: (p.mode === 'contrast' ? 'contrast' : 'single') as Tab['mode'], originalText: p.originalText, translatedText: p.translatedText }];
           tabsRef.current = next;
           setTabs(next);
           setActiveIdx(next.length - 1);

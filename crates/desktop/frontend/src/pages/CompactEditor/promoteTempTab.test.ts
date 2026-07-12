@@ -45,4 +45,27 @@ describe("promoteTempTab", () => {
     expect(tabs[0].isTemp).toBe(true); // 原数组保持 temp
     expect(tabs[0].key).toBe("temp:abc_1");
   });
+
+  it("contrast temp 升级为 single clipboard，丢弃原文", () => {
+    const tabs = [tempTab({
+      text: "译文内容",
+      mode: "contrast",
+      originalText: "原文",
+      translatedText: "译文内容",
+    })];
+    const result = promoteTempTab(tabs, 0, 42);
+    expect(result[0].key).toBe("clipboard:42");
+    expect(result[0].itemId).toBe(42);
+    expect(result[0].isTemp).toBe(false);
+    expect(result[0].mode).toBe("single");
+    expect(result[0].originalText).toBeUndefined();
+    expect(result[0].translatedText).toBeUndefined();
+  });
+
+  it("single temp 升级保持 mode undefined", () => {
+    const tabs = [tempTab({ text: "内容" })];
+    const result = promoteTempTab(tabs, 0, 42);
+    expect(result[0].mode).toBeUndefined();
+    expect(result[0].isTemp).toBe(false);
+  });
 });

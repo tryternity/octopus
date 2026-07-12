@@ -15,6 +15,16 @@ editor:
   copyCode: 复制
   copied: 已复制
   previewEmpty: 开始输入即可看到预览
+  translate: 翻译
+  translateFail: 翻译失败
+  translateConfirm: 再按确认覆盖译文
+  translating: 翻译中...
+  contrast:
+    original: 原文
+    translated: 译文
+    layoutOriginal: 只原文
+    layoutContrast: 对照
+    layoutTranslated: 只译文
   switchHint: 切换到此标签编辑
   imageTabHint: 切换到此标签加载图片
   noTabs: 没有打开的条目
