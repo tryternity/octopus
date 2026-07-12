@@ -1,6 +1,6 @@
 # i18n 全面覆盖设计
 
-> **状态**：设计阶段
+> **状态**：✅ 已实现（2026-07-12）
 > **日期**：2026-07-12
 > **scope**：将 octopus 桌面应用全部 UI 文案（前端 6 个 page 模块 + Settings 全面板 + Rust tray.rs）纳入 i18n 体系；locale 文件从 JSON flat 迁移为 YAML 嵌套；新增 Rust 侧 i18n 能力
 
