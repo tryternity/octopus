@@ -18,16 +18,16 @@ pub struct DownloadableTranslationModel {
 }
 
 const KNOWN_MODELS: &[(&str, &str, u64)] = &[
-    ("m2m100-418M (int8)", "venddair/m2m100-418M-onnx-int8", 724),
+    ("m2m100-418M", "lazycodepersona/m2m100_418m", 600),
 ];
 
 pub fn discover_translation_models() -> Vec<TranslationModelInfo> {
     KNOWN_MODELS.iter().map(|(name, repo, size_mb)| {
         let path = find_model_path(repo);
         let downloaded = path.as_ref().map(|d| {
-            d.join("encoder_model.onnx").exists()
-                && d.join("decoder_model.onnx").exists()
-                && d.join("sentencepiece.bpe.model").exists()
+            d.join("onnx/encoder_model_quantized.onnx").exists()
+                && d.join("onnx/decoder_model_quantized.onnx").exists()
+                && d.join("tokenizer.json").exists()
         }).unwrap_or(false);
         TranslationModelInfo {
             name: name.to_string(),
@@ -51,8 +51,5 @@ pub fn list_downloadable_translation_models() -> Vec<DownloadableTranslationMode
 }
 
 fn find_model_path(repo: &str) -> Option<std::path::PathBuf> {
-    if let Ok(dir) = onnx_infra::resolve_model_dir(repo) {
-        return Some(dir);
-    }
-    None
+    onnx_infra::resolve_model_dir(repo).ok()
 }

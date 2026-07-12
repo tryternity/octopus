@@ -224,6 +224,10 @@ pub struct AppConfig {
     /// 默认 "PP-OCRv6-small"。OCR 引擎 OnceLock 单例缓存，改后重启生效。
     #[serde(default = "default_ocr_model")]
     pub ocr_model: String,
+
+    /// 翻译引擎："" = 自动（有本地用本地，否则 LLM），"local:m2m100" = 指定本地，"llm" = 强制 LLM
+    #[serde(default)]
+    pub translate_engine: String,
 }
 
 fn default_engine_mode() -> String {
@@ -371,6 +375,7 @@ impl Default for AppConfig {
             action_bar_search_engine: default_action_bar_search_engine(),
             screenshot_shortcut: default_screenshot_shortcut(),
             ocr_model: default_ocr_model(),
+            translate_engine: String::new(),
         }
     }
 }
