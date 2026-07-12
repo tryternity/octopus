@@ -10,6 +10,7 @@ mod compact_editor_commands;
 mod compact_editor_window;
 
 mod image_migration;
+mod i18n;
 mod clipboard_window;
 mod clipboard_dock;
 mod coordinator;
