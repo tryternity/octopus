@@ -189,11 +189,31 @@ function CompactEditor() {
       }
       setInitialLoading(false);
     })();
+
+    // 翻译完成事件——更新最后一个 temp tab 的文本
+    let unlistenTranslate: (() => void) | undefined;
+    (async () => {
+      const fn = await listen("translate-done", (payload) => {
+        const text = payload as unknown as string;
+        const tabs = tabsRef.current;
+        // 找最后一个 temp tab（就是刚打开的翻译结果 tab）
+        for (let i = tabs.length - 1; i >= 0; i--) {
+          if (tabs[i].isTemp) {
+            updateActiveTextAt(text, i);
+            break;
+          }
+        }
+      });
+      if (cancelled) { fn(); return; }
+      unlistenTranslate = fn;
+    })();
+
     return () => {
       cancelled = true;
       unlisten?.();
+      unlistenTranslate?.();
     };
-  }, [loadAndAddTab]);
+  }, [loadAndAddTab, updateActiveTextAt]);
 
   const doSave = useCallback(async () => {
     if (!active) return;

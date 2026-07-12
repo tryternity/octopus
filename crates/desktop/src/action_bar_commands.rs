@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::action_bar_window::{hide_action_bar_window, show_action_bar_window};
 use crate::focus_tracker::FocusTracker;
@@ -707,27 +707,39 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             // 翻译特殊处理：优先本地引擎
             if item.action_data == "auto_translate" {
                 let (source_lang, target_lang) = detect_translate_direction(&text);
-                let result = match resolve_translate_strategy(&config) {
+                match resolve_translate_strategy(&config) {
                     TranslateStrategy::Local(engine) => {
-                        // 本地翻译是 CPU 密集阻塞操作，用 spawn_blocking 避免卡死 async 运行时
-                        let text_clone = text.clone();
-                        tokio::task::spawn_blocking(move || {
-                            engine.translate(&text_clone, source_lang, target_lang)
-                        })
-                        .await
-                        .map_err(|e| format!("翻译任务异常: {}", e))?
-                        .map_err(|e| e.to_string())?
+                        // 本地翻译耗时很长——立即打开 CompactEditor 显示 loading，
+                        // 后台线程逐 chunk 翻译，通过 emit 事件追加译文。
+                        let label = "翻译";
+                        let loading_text = format!("【{}】\n⏳ 正在翻译…", label);
+                        action_bar_show_result(loading_text, text.clone(), item.title.clone(), app.clone(), false);
+
+                        let app_clone = app.clone();
+                        std::thread::spawn(move || {
+                            let result = engine.translate(&text, source_lang, target_lang);
+                            match result {
+                                Ok(translated) => {
+                                    let display = format!("【{}】\n{}", label, translated);
+                                    let _ = app_clone.emit("translate-done", &display);
+                                }
+                                Err(e) => {
+                                    let _ = app_clone.emit("translate-done", format!("【{}】\n❌ {}", label, e));
+                                }
+                            }
+                        });
+                        return Ok(true);
                     }
                     TranslateStrategy::Llm => {
                         let llm_config = crate::config::llm_config_ignore_mode(&config)
                             .ok_or("润色模型未配置，请在设置中配置 LLM")?;
                         let prompt = auto_translate_prompt(&text);
-                        octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
-                        .map_err(|e| e.to_string())?
+                        let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
+                        .map_err(|e| e.to_string())?;
+                        action_bar_show_result(result, text, item.title, app.clone(), true);
+                        return Ok(true);
                     }
-                };
-                action_bar_show_result(result, text, item.title, app.clone(), true);
-                return Ok(true);
+                }
             }
 
             // 非 auto_translate 的 AI 操作（润色/摘要/解释），仍走 LLM
