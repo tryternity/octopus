@@ -32,6 +32,7 @@ mod hotword_commands;
 mod input_source;
 mod paste;
 mod pin_window;
+mod perf_log;
 mod pipeline;
 mod result_window;
 mod screenshot_commands;
@@ -311,6 +312,8 @@ pub fn run() {
             translation_commands::list_downloadable_translation_models,
             translation_commands::discover_translation_models,
             translation_commands::translate_status,
+            // 临时性能打点（ASR Result 窗卡顿取证，根因定位后移除）
+            perf_log::perf_log_cmd,
         ])
         .setup(move |app| {
             // Initialize clipboard handle (clipboard-rs, replaces tauri-plugin-clipboard-manager)
