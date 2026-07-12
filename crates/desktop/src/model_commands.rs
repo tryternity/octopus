@@ -250,7 +250,14 @@ fn verify_model_inner(model_name: String, repo: &str) -> Result<VerifyResult, St
 
 /// 写 secret_key（可选）+ is_enabled + reload 运行时 AsrConfig 缓存。
 fn apply_model_state(repo: &str, manifest_json: Option<&str>, enabled: bool) -> Result<(), String> {
-    let model_name = lookup_model_name(repo)?;
+    // 翻译模型不在 ASR models 表中——跳过 DB 状态更新，文件系统检查即可
+    let model_name = match lookup_model_name(repo) {
+        Ok(name) => name,
+        Err(_) => {
+            log::info!("[model_commands] {} 不在 ASR models 表中，跳过 DB 状态更新", repo);
+            return Ok(());
+        }
+    };;
     if let Some(json) = manifest_json {
         octopus_infra::db::set_model_secret_key(&model_name, json).map_err(|e| e.to_string())?;
     }

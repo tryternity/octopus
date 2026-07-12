@@ -53,12 +53,15 @@ pub fn translate_status() -> Result<TranslateStatus, String> {
         });
     }
 
-    if let Some(m) = models.into_iter().find(|m| m.downloaded) {
-        return Ok(TranslateStatus {
-            strategy: "local".into(),
-            engine_name: m.name.clone(),
-            available: true,
-        });
+    // local:* — 灵活匹配，同 resolve_translate_strategy 的 starts_with 逻辑
+    if spec.starts_with("local:") {
+        if let Some(m) = models.into_iter().find(|m| m.downloaded) {
+            return Ok(TranslateStatus {
+                strategy: "local".into(),
+                engine_name: m.name.clone(),
+                available: true,
+            });
+        }
     }
 
     Ok(TranslateStatus {

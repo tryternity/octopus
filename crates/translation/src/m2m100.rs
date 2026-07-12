@@ -117,9 +117,11 @@ impl M2M100Engine {
             if next_token == EOS_ID {
                 break;
             }
-            if decoder_ids.len() >= 6 {
-                let last5 = &decoder_ids[decoder_ids.len()-5..];
-                if last5.iter().all(|&id| id == next_token) {
+            if decoder_ids.len() >= 10 {
+                // 连续 8 个相同 token 才触发（提高阈值）
+                // 仅检查非标点 token：标点/空格重复是正常的（如 ...... 或连续空格）
+                let last8 = &decoder_ids[decoder_ids.len()-8..];
+                if last8.iter().all(|&id| id == next_token) {
                     log::warn!("重复 token 检测触发，停止解码");
                     break;
                 }
@@ -163,10 +165,11 @@ impl M2M100Engine {
                 let mut start = 0;
                 while start < chars.len() {
                     let mut end = (start + 200).min(chars.len());
-                    // 尽量在标点或空格处切
-                    while end < chars.len() && !is_boundary(chars[end]) {
-                        end += 1;
+                    // 尽量在标点或空格处切——向前搜索边界，找不到则硬切
+                    while end > start + 100 && !is_boundary(chars[end - 1]) {
+                        end -= 1;
                     }
+                    if end == start { end = (start + 200).min(chars.len()); }
                     if end > start {
                         chunks.push(chars[start..end].iter().collect());
                     }
@@ -201,6 +204,9 @@ impl TranslationEngine for M2M100Engine {
     }
 
     fn translate(&self, text: &str, source_lang: &str, target_lang: &str) -> Result<String> {
+        if text.trim().is_empty() {
+            return Ok(String::new());
+        }
         let chunks = self.split_into_chunks(text, source_lang)?;
 
         if chunks.len() == 1 {
