@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, Manager};
+use tauri::{AppHandle, Emitter, Manager};
 
 use crate::action_bar_window::{hide_action_bar_window, show_action_bar_window};
 use crate::focus_tracker::FocusTracker;
@@ -374,7 +374,7 @@ fn detect_translate_direction(text: &str) -> (&'static str, &'static str) {
 }
 
 /// 执行翻译（公共逻辑）：解析引擎策略 + 执行翻译。
-/// 供 execute_action_bar_inner（action bar 入口）和 translate_text（工具栏入口）复用。
+/// 供 do_translate_streaming 复用。
 fn do_translate(text: &str, config: &octopus_infra::config::AppConfig) -> Result<String, String> {
     let (source_lang, target_lang) = detect_translate_direction(text);
     match resolve_translate_strategy(config) {
@@ -396,11 +396,54 @@ fn do_translate(text: &str, config: &octopus_infra::config::AppConfig) -> Result
     }
 }
 
-/// 前端工具栏翻译按钮调用。返回纯译文字符串，前端据此切 contrast 模式。
+/// 流式翻译：按段落（换行）切分，逐段翻译，每段完成 emit 累积结果。
+/// 前端 listen "translate-progress"（增量更新）+ "translate-done"（翻译完成）。
+fn do_translate_streaming(text: &str, app: &AppHandle) {
+    let config = match octopus_infra::config::load_config() {
+        Ok(c) => c,
+        Err(e) => {
+            let _ = app.emit("translate-done", format!("❌ 配置加载失败: {}", e));
+            return;
+        }
+    };
+
+    // 按换行切分段落，逐段翻译
+    let segments: Vec<&str> = text.split('\n').collect();
+    let total = segments.len();
+    let mut accumulated = String::new();
+
+    for (i, seg) in segments.iter().enumerate() {
+        if seg.trim().is_empty() {
+            if i < total - 1 { accumulated.push('\n'); }
+            continue;
+        }
+        match do_translate(seg, &config) {
+            Ok(t) => {
+                accumulated.push_str(&t);
+            }
+            Err(e) => {
+                accumulated = format!("❌ 翻译失败: {}", e);
+                break;
+            }
+        }
+        if i < total - 1 { accumulated.push('\n'); }
+
+        // 每段完成 emit 增量结果（前端实时更新译文区）
+        let _ = app.emit("translate-progress", &accumulated);
+    }
+
+    let _ = app.emit("translate-done", &accumulated);
+}
+
+/// 前端工具栏翻译按钮调用。fire-and-forget：立即返回，翻译结果通过事件 emit。
+/// 前端 invoke 后立即切 contrast 模式（译文区显示 loading），listen translate-progress/done 更新。
 #[tauri::command]
-pub fn translate_text(text: String) -> Result<String, String> {
-    let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
-    do_translate(&text, &config)
+pub fn translate_text(text: String, app: AppHandle) -> Result<(), String> {
+    let app_clone = app.clone();
+    std::thread::spawn(move || {
+        do_translate_streaming(&text, &app_clone);
+    });
+    Ok(())
 }
 
 /// URL 查询参数编码：保留 RFC 3986 unreserved（A-Za-z0-9-_.~），其余百分号编码。
@@ -737,47 +780,31 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
 
             // 翻译特殊处理：优先本地引擎
             if item.action_data == "auto_translate" {
-                let (source_lang, target_lang) = detect_translate_direction(&text);
                 match resolve_translate_strategy(&config) {
-                    TranslateStrategy::Local(spec) => {
-                        // 本地翻译耗时——浮窗保持可见（前端已 setView("loading") 显示 spinner），
-                        // 翻译完成后再隐藏浮窗 + 开 CompactEditor 展示结果。
-                        // 不预先开 loading tab，避免与托盘「图文编辑」temp tab 竞争。
+                    TranslateStrategy::Local(_) => {
+                        // 流式翻译：立即隐藏浮窗 + 打开 contrast tab（译文区 loading），
+                        // 后台逐段翻译，通过 emit 事件实时更新译文区。
+                        // 用户无需等待，翻译结果在编辑器中逐段出现。
+                        if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+                            let _ = win.hide();
+                        }
+                        #[cfg(target_os = "macos")]
+                        { crate::activation::after_floating_window_hide_keep_active(&app); }
+                        finalize_action_bar(&app);
+
+                        let original_text = text.clone();
+                        let payload = crate::compact_editor_commands::TempTabPayload {
+                            text: "【翻译】\n⏳ 正在翻译…".into(),
+                            mode: Some("contrast".into()),
+                            original_text: Some(original_text.clone()),
+                            translated_text: Some("⏳ 正在翻译…".into()),
+                            ..Default::default()
+                        };
+                        crate::compact_editor_commands::open_temp_compact_editor(&app, &payload);
 
                         let app_clone = app.clone();
-                        let original_text = text.clone();
                         std::thread::spawn(move || {
-                            let translated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                let manager = octopus_translation::TranslationManager::new(&spec);
-                                match manager.engine() {
-                                    Ok(Some(engine)) => match engine.translate(&text, source_lang, target_lang) {
-                                        Ok(translated) => translated,
-                                        Err(e) => format!("❌ {}", e),
-                                    },
-                                    _ => "引擎加载失败".into(),
-                                }
-                            }))
-                            .unwrap_or_else(|_| "引擎内部错误".into());
-
-                            // 翻译完成：隐藏浮窗 + 恢复 depth + 重置 guard + 开结果 tab
-                            // 全部走主线程（win.hide / w.show / 建窗 均为 AppKit/NSWindow 操作）
-                            let app_for_thread = app_clone.clone();
-                            let _ = app_clone.run_on_main_thread(move || {
-                                if let Some(win) = app_for_thread.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
-                                    let _ = win.hide();
-                                }
-                                #[cfg(target_os = "macos")]
-                                { crate::activation::after_floating_window_hide_keep_active(&app_for_thread); }
-                                finalize_action_bar(&app_for_thread);
-                                let payload = crate::compact_editor_commands::TempTabPayload {
-                                    text: format!("【翻译】\n{}", translated),
-                                    mode: Some("contrast".into()),
-                                    original_text: Some(original_text),
-                                    translated_text: Some(translated),
-                                    ..Default::default()
-                                };
-                                crate::compact_editor_commands::open_temp_compact_editor(&app_for_thread, &payload);
-                            });
+                            do_translate_streaming(&original_text, &app_clone);
                         });
                         return Ok(true);
                     }

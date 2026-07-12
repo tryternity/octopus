@@ -169,13 +169,21 @@ function CompactEditor() {
   useEffect(() => {
     let cancelled = false;
     let unlisten: (() => void) | undefined;
+    let unlistenProgress: (() => void) | undefined;
+    let unlistenDone: (() => void) | undefined;
     (async () => {
       // 1. 先注册事件监听——确保 take pending 期间发出的 emit 不会丢失
       const fn = await listen("compact-editor://open-tab", (payload) => {
         const p = payload as OpenTabPayload;
         if (p.source === 'temp') {
           const tempKey = `temp:${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
-          const next = [...tabsRef.current, { key: tempKey, source: 'temp' as const, itemId: 0, itemType: 'text' as const, text: p.text, isTemp: true, mode: (p.mode === 'contrast' ? 'contrast' : 'single') as Tab['mode'], originalText: p.originalText, translatedText: p.translatedText }];
+          const newTab: Tab = { key: tempKey, source: 'temp' as const, itemId: 0, itemType: 'text' as const, text: p.text || "", isTemp: true, mode: (p.mode === 'contrast' ? 'contrast' : 'single'), originalText: p.originalText, translatedText: p.translatedText };
+          // action bar 流式翻译开的 contrast tab——译文区 loading，设为翻译中 tab
+          if (newTab.mode === 'contrast' && (newTab.translatedText || "").startsWith("⏳")) {
+            translatingTabKeyRef.current = tempKey;
+            setTranslating(true);
+          }
+          const next = [...tabsRef.current, newTab];
           tabsRef.current = next;
           setTabs(next);
           setActiveIdx(next.length - 1);
@@ -186,6 +194,36 @@ function CompactEditor() {
       if (cancelled) { fn(); return; }
       unlisten = fn;
 
+      // translate-progress：流式翻译逐段更新译文
+      const fnProgress = await listen("translate-progress", (payload) => {
+        const text = payload as string;
+        const key = translatingTabKeyRef.current;
+        if (!key) return;
+        const next = tabsRef.current.map((t) =>
+          t.key === key ? { ...t, translatedText: text } : t
+        );
+        tabsRef.current = next;
+        setTabs(next);
+      });
+      if (cancelled) { fnProgress(); return; }
+      unlistenProgress = fnProgress;
+
+      // translate-done：翻译完成
+      const fnDone = await listen("translate-done", (payload) => {
+        const text = payload as string;
+        const key = translatingTabKeyRef.current;
+        setTranslating(false);
+        translatingTabKeyRef.current = null;
+        if (!key) return;
+        const next = tabsRef.current.map((t) =>
+          t.key === key ? { ...t, translatedText: text } : t
+        );
+        tabsRef.current = next;
+        setTabs(next);
+      });
+      if (cancelled) { fnDone(); return; }
+      unlistenDone = fnDone;
+
       // 2. 再 take pending tabs（此时 listen 已就绪）
       const pendingTabs = await invoke<PendingTabFull[]>("get_pending_compact_tabs");
       if (cancelled) return;
@@ -193,7 +231,14 @@ function CompactEditor() {
         // pending 含完整数据（text/img 尺寸）；URL 占位 tab 同 key 但缺 text，
         // 须用 pending 覆盖占位——旧 `continue` 跳过 pending → 首个文本 tab 永远 text=""。
         // 图片 tab 按 itemId 加载不受影响，文本必须靠此补全。详见 mergePendingTabs 单测。
-        const next = mergePendingTabs(tabsRef.current, pendingTabs.map(pendingToTab));
+        const mapped = pendingTabs.map(pendingToTab);
+        // action bar 流式翻译开的 pending contrast tab——译文区 loading，设为翻译中 tab
+        const loadingContrast = mapped.find(t => t.mode === 'contrast' && (t.translatedText || "").startsWith("⏳"));
+        if (loadingContrast) {
+          translatingTabKeyRef.current = loadingContrast.key;
+          setTranslating(true);
+        }
+        const next = mergePendingTabs(tabsRef.current, mapped);
         tabsRef.current = next;
         setTabs(next);
         setActiveIdx(next.length - 1);
@@ -204,6 +249,8 @@ function CompactEditor() {
     return () => {
       cancelled = true;
       unlisten?.();
+      unlistenProgress?.();
+      unlistenDone?.();
     };
   }, [loadAndAddTab, updateActiveTextAt]);
 
@@ -267,28 +314,34 @@ function CompactEditor() {
   const doSaveRef = useRef(doSave);
   useEffect(() => { doSaveRef.current = doSave; }, [doSave]);
 
-  // 工具栏翻译按钮：翻全文，成功后切 contrast 模式
-  const handleTranslateForTab = useCallback(async (idx: number) => {
+  // 正在翻译的 tab key（translate 事件据此更新译文）
+  const translatingTabKeyRef = useRef<string | null>(null);
+
+  // 工具栏翻译按钮：fire-and-forget——立即切 contrast（译文 loading），后台翻译 emit 更新
+  const handleTranslateForTab = useCallback((idx: number) => {
     const tab = tabsRef.current[idx];
     if (!tab || tab.source === 'transcription') return;
     const sourceText = tab.text || "";
     if (!sourceText.trim()) return;
+
+    // 立即切 contrast（译文区 loading），记录 tab key 供事件更新
+    translatingTabKeyRef.current = tab.key;
     setTranslating(true);
-    try {
-      const translated = await invoke<string>("translate_text", { text: sourceText });
-      const next = tabsRef.current.map((t, i) =>
-        i === idx
-          ? { ...t, mode: 'contrast' as const, originalText: sourceText, translatedText: translated }
-          : t
-      );
-      tabsRef.current = next;
-      setTabs(next);
-    } catch (e) {
-      console.error("翻译失败:", e);
-      alert(ti18n("editor.translateFail") + ": " + String(e));
-    } finally {
+    const next = tabsRef.current.map((t, i) =>
+      i === idx
+        ? { ...t, mode: 'contrast' as const, originalText: sourceText, translatedText: '⏳ ' + ti18n("editor.translating") }
+        : t
+    );
+    tabsRef.current = next;
+    setTabs(next);
+
+    // fire-and-forget——后端 spawn 线程，结果通过 emit 事件返回
+    invoke("translate_text", { text: sourceText }).catch((e) => {
+      console.error("翻译启动失败:", e);
       setTranslating(false);
-    }
+      translatingTabKeyRef.current = null;
+      alert(ti18n("editor.translateFail") + ": " + String(e));
+    });
   }, []);
 
   // 关闭 tab：仅剩一个则关窗；否则移除并修正 activeIdx。
