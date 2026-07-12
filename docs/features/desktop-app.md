@@ -109,6 +109,10 @@
 - **贴图窗口**：自定义 `PinNSWindow`（`define_class!`）+ `NSTrackingArea` 检测 hover（见 [screenshot.md](./screenshot.md) §8）
 - **屏幕录制权限**：`cargo run` 时授终端应用权限；打包 .app 后绑 octopus
 - **窗口串行创建**（150ms 间隔）：WKWebView 同时创建多个全屏窗口会 segfault
+- **粘贴前输入源切换**（`switch_input_source_on_paste` 默认 `true`）：CJK 输入法 composing 状态下模拟 Cmd+V 可能乱码/丢字符，三段式注入根治——(1) 切到 ABC → (2) 模拟 Cmd+V → (3) 恢复原输入源。实现 `input_source.rs` 用 `osascript -l JavaScript`（JXA）独立进程调 Carbon TIS API。
+  - **v1→v2→v3 演进**：v1 直接 FFI → SIGTRAP；v2 GCD `dispatch_sync_f` → 仍 SIGTRAP（tokio `spawn_blocking` 与 libdispatch main queue 冲突）；**v3 独立 osascript 进程**（main thread 天然满足 TIS 要求）= 当前。
+  - **RAII `InputSourceGuard`**：已是 ABC/US 时跳过（省 fork）；`Drop` 用存的 source **ID（String）**恢复（非 CFTypeRef，跨进程安全）。两条接入路径：ASR 粘贴（`paste.rs`）+ 剪贴板双击粘贴（`focus_tracker.rs`）。
+- **自动粘贴焦点追踪（已暂缓）**：`focus_tracker.rs` 尝试在剪贴板浮窗失焦后自动将选中文本粘贴到前一个前台 app——7 个已记录的 macOS 陷阱（Accessory `hide()` 不还焦点 / enigo 非主线程静默失败 / `activate` by name 不可靠 `-1728` / WeChat 阻止 AppleScript）。最终结论：无单一方案覆盖所有 app，**已回退**为复制到剪贴板 + 手动 Cmd+V。重启条件：NSPanel（tauri-nspanel）或 CGEvent 直接注入。
 
 ### Windows
 
