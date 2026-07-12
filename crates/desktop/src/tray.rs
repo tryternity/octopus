@@ -124,7 +124,7 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             }
             "compact_editor" => {
                 info!("Tray: open compact editor (empty)");
-                crate::compact_editor_commands::open_temp_compact_editor(app, "");
+                crate::compact_editor_commands::open_temp_compact_editor(app, &Default::default());
             }
             "settings" => {
                 info!("Tray: open settings");

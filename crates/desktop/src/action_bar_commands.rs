@@ -173,7 +173,7 @@ pub fn action_bar_dismiss(app: AppHandle) {
 /// AI 结果通过临时 tab 打开 CompactEditor 展示（不写 DB）。
 /// 结果写入剪贴板留给用户——不恢复原始剪贴板（与 dismiss/open_url 不同）。
 #[tauri::command]
-pub fn action_bar_show_result(result: String, _original_text: String, action: String, app: AppHandle, write_clipboard: bool) {
+pub fn action_bar_show_result(result: String, original_text: String, action: String, app: AppHandle, write_clipboard: bool) {
     // 只隐藏浮窗本身——不调 hide_action_bar_window（含 after_floating_window_hide → deactivate），
     // 因为接下来要展示 CompactEditor，deactivate 会导致新窗口被压在后台。
     // 但必须递减 FLOAT_DEPTH + 恢复隐藏窗口（after_floating_window_hide_keep_active），
@@ -202,9 +202,22 @@ pub fn action_bar_show_result(result: String, _original_text: String, action: St
 
     finalize_action_bar(&app);
 
-    // 用临时 tab 打开 CompactEditor（不写 DB，保存按钮灰掉）。决策逻辑见
-    // compact_editor_commands::open_temp_compact_editor（托盘「图文编辑」复用同一路径）。
-    crate::compact_editor_commands::open_temp_compact_editor(&app, &display_text);
+    // 用临时 tab 打开 CompactEditor（不写 DB，保存按钮灰掉）。
+    // 翻译 action 且有原文 → contrast 模式（左原文右译文）；其他 → single。
+    let payload = if action == "translate" && !original_text.is_empty() {
+        crate::compact_editor_commands::TempTabPayload {
+            text: display_text.clone(),
+            mode: Some("contrast".into()),
+            original_text: Some(original_text),
+            translated_text: Some(result.clone()),
+        }
+    } else {
+        crate::compact_editor_commands::TempTabPayload {
+            text: display_text,
+            ..Default::default()
+        }
+    };
+    crate::compact_editor_commands::open_temp_compact_editor(&app, &payload);
 }
 
 // ── 辅助函数 ──
@@ -358,6 +371,36 @@ fn detect_translate_direction(text: &str) -> (&'static str, &'static str) {
     } else {
         ("en", "zh")
     }
+}
+
+/// 执行翻译（公共逻辑）：解析引擎策略 + 执行翻译。
+/// 供 execute_action_bar_inner（action bar 入口）和 translate_text（工具栏入口）复用。
+fn do_translate(text: &str, config: &octopus_infra::config::AppConfig) -> Result<String, String> {
+    let (source_lang, target_lang) = detect_translate_direction(text);
+    match resolve_translate_strategy(config) {
+        TranslateStrategy::Local(spec) => {
+            let manager = octopus_translation::TranslationManager::new(&spec);
+            let engine = manager.engine()
+                .map_err(|e| e.to_string())?
+                .ok_or_else(|| "翻译引擎加载失败".to_string())?;
+            engine.translate(text, source_lang, target_lang)
+                .map_err(|e| e.to_string())
+        }
+        TranslateStrategy::Llm => {
+            let llm_config = crate::config::llm_config_ignore_mode(config)
+                .ok_or_else(|| "翻译引擎未配置，请在设置中配置本地翻译模型或 LLM".to_string())?;
+            let prompt = auto_translate_prompt(text);
+            octopus_llm::chat_text_with_prompt(prompt, text, &llm_config)
+                .map_err(|e| e.to_string())
+        }
+    }
+}
+
+/// 前端工具栏翻译按钮调用。返回纯译文字符串，前端据此切 contrast 模式。
+#[tauri::command]
+pub fn translate_text(text: String) -> Result<String, String> {
+    let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
+    do_translate(&text, &config)
 }
 
 /// URL 查询参数编码：保留 RFC 3986 unreserved（A-Za-z0-9-_.~），其余百分号编码。
@@ -702,18 +745,19 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                         // 不预先开 loading tab，避免与托盘「图文编辑」temp tab 竞争。
 
                         let app_clone = app.clone();
+                        let original_text = text.clone();
                         std::thread::spawn(move || {
-                            let display = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                            let translated = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                                 let manager = octopus_translation::TranslationManager::new(&spec);
                                 match manager.engine() {
                                     Ok(Some(engine)) => match engine.translate(&text, source_lang, target_lang) {
-                                        Ok(translated) => format!("【翻译】\n{}", translated),
-                                        Err(e) => format!("【翻译】\n❌ {}", e),
+                                        Ok(translated) => translated,
+                                        Err(e) => format!("❌ {}", e),
                                     },
-                                    _ => "【翻译】\n❌ 引擎加载失败".into(),
+                                    _ => "引擎加载失败".into(),
                                 }
                             }))
-                            .unwrap_or_else(|_| "【翻译】\n❌ 引擎内部错误".into());
+                            .unwrap_or_else(|_| "引擎内部错误".into());
 
                             // 翻译完成：隐藏浮窗 + 恢复 depth + 重置 guard + 开结果 tab
                             // 全部走主线程（win.hide / w.show / 建窗 均为 AppKit/NSWindow 操作）
@@ -725,7 +769,14 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                                 #[cfg(target_os = "macos")]
                                 { crate::activation::after_floating_window_hide_keep_active(&app_for_thread); }
                                 finalize_action_bar(&app_for_thread);
-                                crate::compact_editor_commands::open_temp_compact_editor(&app_for_thread, &display);
+                                let payload = crate::compact_editor_commands::TempTabPayload {
+                                    text: format!("【翻译】\n{}", translated),
+                                    mode: Some("contrast".into()),
+                                    original_text: Some(original_text),
+                                    translated_text: Some(translated),
+                                    ..Default::default()
+                                };
+                                crate::compact_editor_commands::open_temp_compact_editor(&app_for_thread, &payload);
                             });
                         });
                         return Ok(true);
@@ -736,7 +787,7 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                         let prompt = auto_translate_prompt(&text);
                         let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
                         .map_err(|e| e.to_string())?;
-                        action_bar_show_result(result, text, item.title, app.clone(), true);
+                        action_bar_show_result(result, text, "translate".into(), app.clone(), true);
                         return Ok(true);
                     }
                 }
@@ -747,7 +798,7 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                 .ok_or("润色模型未配置，请在设置中配置 LLM")?;
             let result = octopus_llm::chat_text_with_prompt(&item.action_data, &text, &llm_config)
                 .map_err(|e| e.to_string())?;
-            action_bar_show_result(result, text, item.title, app.clone(), true);
+            action_bar_show_result(result, String::new(), item.title, app.clone(), true);
             Ok(true)
         }
         "url" => {

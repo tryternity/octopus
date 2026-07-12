@@ -24,6 +24,24 @@ pub struct OpenTabPayload {
     pub source: String,
 }
 
+/// 临时 tab 打开参数（不写 DB）。mode=None 为单栏（现有行为），mode="contrast" 为翻译对照。
+#[derive(Clone, Serialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct TempTabPayload {
+    /// 单栏文本（mode=None 时用）
+    #[serde(default)]
+    pub text: String,
+    /// "contrast" | None
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// 对照原文（mode=contrast 时用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_text: Option<String>,
+    /// 对照译文（mode=contrast 时用）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translated_text: Option<String>,
+}
+
 /// 待打开的 tab（含完整数据）。open 时写入队列，前端 mount take 全部。
 /// 合并 itemType + text 到一次返回，消除前端多次串行 IPC。
 #[derive(Clone, Serialize)]
@@ -40,6 +58,15 @@ pub struct PendingTabFull {
     /// 临时文本（不写 DB，保存按钮灰掉）
     #[serde(default)]
     pub is_temp: bool,
+    /// 对照模式（mode=contrast）
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub mode: Option<String>,
+    /// 对照原文
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub original_text: Option<String>,
+    /// 对照译文
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub translated_text: Option<String>,
 }
 
 /// 待开 tab 队列（支持批量双开）。open 时 push，前端 mount take 全部。
@@ -69,37 +96,46 @@ fn push_pending_tab(item_id: i64, source: &str) {
         img_width: img_w,
         img_height: img_h,
         is_temp: false,
+        mode: None,
+        original_text: None,
+        translated_text: None,
     });
 }
 
-/// 存储临时文本 tab（不查 DB，text 直接传入）。保存按钮前端灰掉。
-pub fn store_pending_temp_tab(text: String, source: &str) {
+/// 存储临时 tab（不查 DB，payload 直接传入）。
+pub fn store_pending_temp(payload: TempTabPayload, source: &str) {
     PENDING_TABS.lock().push(PendingTabFull {
         item_id: 0,
         source: source.to_string(),
         item_type: "text".into(),
-        text,
+        text: payload.text,
         img_width: 0,
         img_height: 0,
         is_temp: true,
+        mode: payload.mode,
+        original_text: payload.original_text,
+        translated_text: payload.translated_text,
     });
 }
 
-/// 打开 CompactEditor 并定位到一个临时文本 tab（不写 DB，保存按钮灰掉）。
-/// 窗口已存在 → emit 推送新 temp tab；窗口不存在 → store_pending_temp_tab + 建窗。
-/// text="" 即「打开空白编辑器」（托盘菜单「图文编辑」入口）。
-pub fn open_temp_compact_editor(app: &tauri::AppHandle, text: &str) {
+/// 打开 CompactEditor 并定位到一个临时 tab（不写 DB）。
+/// payload.mode=None 为单栏（现有行为）；payload.mode="contrast" 为翻译对照（左原文右译文）。
+/// 窗口已存在 → emit 推送新 temp tab；窗口不存在 → store_pending_temp + 建窗。
+pub fn open_temp_compact_editor(app: &tauri::AppHandle, payload: &TempTabPayload) {
     if let Some(window) = app.get_webview_window(WINDOW_LABEL) {
         let _ = window.emit("compact-editor://open-tab", serde_json::json!({
             "itemId": 0,
             "source": "temp",
-            "text": text,
+            "text": payload.text,
             "isTemp": true,
+            "mode": payload.mode,
+            "originalText": payload.original_text,
+            "translatedText": payload.translated_text,
         }));
         let _ = window.show();
         let _ = window.set_focus();
     } else {
-        store_pending_temp_tab(text.to_string(), "temp");
+        store_pending_temp(payload.clone(), "temp");
         create_compact_editor_window(app, None);
     }
 }

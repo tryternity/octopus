@@ -293,6 +293,7 @@ pub fn run() {
             system_status_commands::get_system_status,
             action_bar_commands::trigger_action_bar,
             action_bar_commands::action_bar_show_result,
+            action_bar_commands::translate_text,
             action_bar_commands::action_bar_get_context,
             action_bar_commands::action_bar_dismiss,
             action_bar_commands::list_action_bar_items,
