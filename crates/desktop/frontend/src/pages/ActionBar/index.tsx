@@ -263,7 +263,9 @@ export default function ActionBar() {
         console.warn("[action-bar] AI result arrived after timeout, discarding");
         return;
       }
-      // action_bar_show_result 后端已隐藏本窗口并展示 CompactEditor
+      // LLM 路径：action_bar_show_result 后端已隐藏本窗口并展示 CompactEditor
+      // 本地翻译路径：后端 return Ok(true) 不预隐藏，翻译完成后主线程隐藏 + 开结果 tab
+      // 两种路径都依赖后端收口，前端 view 保持 "loading" 直到窗口被隐藏
     } catch (e) {
       if (timeoutId) clearTimeout(timeoutId);
       if (timedOutRef.current) return;

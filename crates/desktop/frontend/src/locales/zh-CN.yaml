@@ -39,7 +39,7 @@ settings:
     actionBar: 命令面板
     hotword: 热词管理
     models: 模型管理
-    prompts: 提示词
+    prompts: 提 示 词
     system: 系统状态
   effect:
     now: 立即

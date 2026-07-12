@@ -697,26 +697,36 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                 let (source_lang, target_lang) = detect_translate_direction(&text);
                 match resolve_translate_strategy(&config) {
                     TranslateStrategy::Local(spec) => {
-                        // 本地翻译耗时——先隐藏浮窗，翻译完成后再开 CompactEditor 展示结果。
-                        // 不预先开 loading tab，避免与托盘「图文编辑」temp tab 竞争 translate-done 投递。
-                        if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
-                            let _ = win.hide();
-                        }
-                        #[cfg(target_os = "macos")]
-                        { crate::activation::after_floating_window_hide_keep_active(&app); }
-                        finalize_action_bar(&app);
+                        // 本地翻译耗时——浮窗保持可见（前端已 setView("loading") 显示 spinner），
+                        // 翻译完成后再隐藏浮窗 + 开 CompactEditor 展示结果。
+                        // 不预先开 loading tab，避免与托盘「图文编辑」temp tab 竞争。
 
                         let app_clone = app.clone();
                         std::thread::spawn(move || {
-                            let manager = octopus_translation::TranslationManager::new(&spec);
-                            let display = match manager.engine() {
-                                Ok(Some(engine)) => match engine.translate(&text, source_lang, target_lang) {
-                                    Ok(translated) => format!("【翻译】\n{}", translated),
-                                    Err(e) => format!("【翻译】\n❌ {}", e),
-                                },
-                                _ => "【翻译】\n❌ 引擎加载失败".into(),
-                            };
-                            crate::compact_editor_commands::open_temp_compact_editor(&app_clone, &display);
+                            let display = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let manager = octopus_translation::TranslationManager::new(&spec);
+                                match manager.engine() {
+                                    Ok(Some(engine)) => match engine.translate(&text, source_lang, target_lang) {
+                                        Ok(translated) => format!("【翻译】\n{}", translated),
+                                        Err(e) => format!("【翻译】\n❌ {}", e),
+                                    },
+                                    _ => "【翻译】\n❌ 引擎加载失败".into(),
+                                }
+                            }))
+                            .unwrap_or_else(|_| "【翻译】\n❌ 引擎内部错误".into());
+
+                            // 翻译完成：隐藏浮窗 + 恢复 depth + 重置 guard + 开结果 tab
+                            // 全部走主线程（win.hide / w.show / 建窗 均为 AppKit/NSWindow 操作）
+                            let app_for_thread = app_clone.clone();
+                            let _ = app_clone.run_on_main_thread(move || {
+                                if let Some(win) = app_for_thread.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+                                    let _ = win.hide();
+                                }
+                                #[cfg(target_os = "macos")]
+                                { crate::activation::after_floating_window_hide_keep_active(&app_for_thread); }
+                                finalize_action_bar(&app_for_thread);
+                                crate::compact_editor_commands::open_temp_compact_editor(&app_for_thread, &display);
+                            });
                         });
                         return Ok(true);
                     }
