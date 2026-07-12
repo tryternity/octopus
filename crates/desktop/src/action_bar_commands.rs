@@ -697,14 +697,9 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                 let (source_lang, target_lang) = detect_translate_direction(&text);
                 match resolve_translate_strategy(&config) {
                     TranslateStrategy::Local(spec) => {
-                        // 本地翻译耗时——先隐藏浮窗，翻译完成后再开 CompactEditor 展示结果。
-                        // 不预先开 loading tab，避免与托盘「图文编辑」temp tab 竞争 translate-done 投递。
-                        if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
-                            let _ = win.hide();
-                        }
-                        #[cfg(target_os = "macos")]
-                        { crate::activation::after_floating_window_hide_keep_active(&app); }
-                        finalize_action_bar(&app);
+                        // 本地翻译耗时——浮窗保持可见（前端已 setView("loading") 显示 spinner），
+                        // 翻译完成后再隐藏浮窗 + 开 CompactEditor 展示结果。
+                        // 不预先开 loading tab，避免与托盘「图文编辑」temp tab 竞争。
 
                         let app_clone = app.clone();
                         std::thread::spawn(move || {
@@ -716,7 +711,16 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                                 },
                                 _ => "【翻译】\n❌ 引擎加载失败".into(),
                             };
-                            crate::compact_editor_commands::open_temp_compact_editor(&app_clone, &display);
+                            // 翻译完成：隐藏浮窗 + 开结果 tab（主线程建窗）
+                            if let Some(win) = app_clone.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+                                let _ = win.hide();
+                            }
+                            #[cfg(target_os = "macos")]
+                            { crate::activation::after_floating_window_hide_keep_active(&app_clone); }
+                            let app_for_thread = app_clone.clone();
+                            let _ = app_clone.run_on_main_thread(move || {
+                                crate::compact_editor_commands::open_temp_compact_editor(&app_for_thread, &display);
+                            });
                         });
                         return Ok(true);
                     }
