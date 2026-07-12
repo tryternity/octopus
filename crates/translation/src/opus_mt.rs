@@ -209,9 +209,16 @@ impl TranslationEngine for OpusMTEngine {
 fn load_opus_tokenizer(path: &std::path::Path) -> Result<Tokenizer> {
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("读取 tokenizer.json 失败: {:?}", path))?;
-    // null precompiled_charsmap 替换为空字符串（空映射 = 不做 normalization）
-    if raw.contains("\"precompiled_charsmap\": null") {
-        let fixed = raw.replace("\"precompiled_charsmap\": null", "\"precompiled_charsmap\": \"\"");
+    // 含 precompiled_charsmap → 整个 normalizer 块移除（MarianMT 不需要 normalization）
+    if raw.contains("\"precompiled_charsmap\"") {
+        let mut json: serde_json::Value = serde_json::from_str(&raw)
+            .map_err(|e| anyhow::anyhow!("解析 tokenizer.json 失败: {}", e))?;
+        // 删除 normalizer 字段
+        if let Some(obj) = json.as_object_mut() {
+            obj.remove("normalizer");
+        }
+        let fixed = serde_json::to_string(&json)
+            .map_err(|e| anyhow::anyhow!("序列化 tokenizer.json 失败: {}", e))?;
         Tokenizer::from_bytes(fixed.as_bytes())
             .map_err(|e| anyhow::anyhow!("加载修复后的 tokenizer.json 失败: {}", e))
     } else {
