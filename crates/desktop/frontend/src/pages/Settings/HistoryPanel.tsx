@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, useRef } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
 import { Copy, Trash2, Search, Eye } from "lucide-react";
+import { useT } from "@/lib/i18n";
 
 interface HistoryRecord {
   id: number;
@@ -12,9 +13,10 @@ interface HistoryRecord {
   duration_ms: number;
 }
 
-const POLISH_LABELS: Record<string, string> = { done: "已润色", failed: "润色失败", off: "未润色" };
+const POLISH_KEYS: Record<string, string> = { done: "settings.history.polishPolished", failed: "settings.history.polishFailed", off: "settings.history.polishNone" };
 
 export default function HistoryPanel({ showToast }: { showToast: (msg: string) => void }) {
+  const t = useT();
   const [records, setRecords] = useState<HistoryRecord[]>([]);
   const [loading, setLoading] = useState(false);
   const [offset, setOffset] = useState(0);
@@ -36,7 +38,7 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
       else { setRecords((prev) => [...prev, ...recs]); }
       setOffset(o + recs.length);
       setDone(recs.length < 20);
-    } catch (e) { showToast("加载历史失败：" + e); }
+    } catch (e) { showToast(t("settings.history.loadFailed") + e); }
     setLoading(false);
   }, [offset, showToast, debouncedSearch]);
 
@@ -64,11 +66,11 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
     try {
       const ids = Array.from(selectedIds);
       await invoke("delete_history", { ids });
-      showToast(`已删除 ${ids.length} 条`);
+      showToast(t("settings.history.deletedN", { n: ids.length }));
       setSelectedIds(new Set());
       setConfirmDelete(false);
       loadHistory(true);
-    } catch (e) { showToast("删除失败：" + e); }
+    } catch (e) { showToast(t("settings.history.deleteFailed") + e); }
   };
 
   const handleSingleDeleted = () => {
@@ -84,7 +86,7 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
           <Search className="w-3.5 h-3.5 text-muted-foreground" />
           <input
             type="text"
-            placeholder="搜索识别文本..."
+            placeholder={t("settings.history.searchPlaceholder")}
             value={search}
             onChange={(e) => setSearch(e.target.value)}
             className="flex-1 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
@@ -105,7 +107,7 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
                 onChange={(e) => setSelectedIds(e.target.checked ? new Set(records.map((r) => r.id)) : new Set())}
               />
               <span className="text-[10px] text-muted-foreground group-hover/header:text-foreground transition-colors">
-                {hasSelection ? `已选 ${selectedIds.size} 项` : "全选"}
+                {hasSelection ? t("settings.history.selectedN", { n: selectedIds.size }) : t("settings.history.selectAll")}
               </span>
             </label>
           </div>
@@ -113,7 +115,7 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
 
         {records.length === 0 && !loading && (
           <div className="flex flex-col items-center justify-center py-16 gap-1 text-muted-foreground">
-            <span className="text-sm">暂无识别记录</span>
+            <span className="text-sm">{t("settings.history.empty")}</span>
           </div>
         )}
 
@@ -129,25 +131,25 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
         ))}
 
         {loading && (
-          <div className="text-center py-4 text-muted-foreground text-xs">加载中...</div>
+          <div className="text-center py-4 text-muted-foreground text-xs">{t("settings.history.loading")}</div>
         )}
         {!loading && !done && records.length > 0 && (
           <button
             className="w-full py-3 text-xs text-muted-foreground hover:text-foreground transition-colors"
             onClick={() => loadHistory()}
           >
-            加载更多
+            {t("settings.history.loadMore")}
           </button>
         )}
         {!loading && done && records.length > 0 && (
-          <div className="text-center py-3 text-muted-foreground/50 text-[10px]">— 没有更多了 —</div>
+          <div className="text-center py-3 text-muted-foreground/50 text-[10px]">{t("settings.history.noMore")}</div>
         )}
       </div>
 
       {/* ── 底部：状态 + 批量操作 ── */}
       <div className="flex items-center justify-between py-2 border-t border-border">
         <span className="text-[10px] text-muted-foreground">
-          共 {records.length} 条记录
+          {t("settings.history.totalN", { n: records.length })}
         </span>
         {hasSelection ? (
           <button
@@ -160,10 +162,10 @@ export default function HistoryPanel({ showToast }: { showToast: (msg: string) =
             onClick={handleBatchDelete}
           >
             <Trash2 className="w-3 h-3" />
-            {confirmDelete ? `确认删除 ${selectedIds.size} 项` : "删除选中"}
+            {confirmDelete ? t("settings.history.confirmDeleteN", { n: selectedIds.size }) : t("settings.history.deleteSelected")}
           </button>
         ) : (
-          <span className="text-[10px] text-muted-foreground/50">{done ? "已全部加载" : `已加载 ${records.length} 条`}</span>
+          <span className="text-[10px] text-muted-foreground/50">{done ? t("settings.history.allLoaded") : t("settings.history.loadedN", { n: records.length })}</span>
         )}
       </div>
     </div>
@@ -186,6 +188,7 @@ function HistoryRow({
   showToast: (msg: string) => void;
   onDeleted: () => void;
 }) {
+  const t = useT();
   const [deletePending, setDeletePending] = useState(false);
   const deleteTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -202,8 +205,8 @@ function HistoryRow({
     e.stopPropagation();
     try {
       await navigator.clipboard.writeText(rec.text);
-      showToast("已复制");
-    } catch (e) { showToast("复制失败：" + e); }
+      showToast(t("settings.history.copied"));
+    } catch (e) { showToast(t("settings.history.copyFailed") + e); }
   };
 
   const handleDeleteClick = async (e: React.MouseEvent) => {
@@ -215,9 +218,9 @@ function HistoryRow({
       if (deleteTimer.current) clearTimeout(deleteTimer.current);
       try {
         await invoke("delete_history", { ids: [rec.id] });
-        showToast("已删除");
+        showToast(t("settings.history.deleted"));
         onDeleted();
-      } catch (e) { showToast("删除失败：" + e); }
+      } catch (e) { showToast(t("settings.history.deleteFailed") + e); }
     }
   };
 
@@ -251,7 +254,7 @@ function HistoryRow({
             "text-[10px] px-1.5 py-0.5 rounded font-medium",
             isPolished ? "bg-amber-600/10 text-amber-700" : "text-muted-foreground",
           )}>
-            {POLISH_LABELS[rec.polish_status] || rec.polish_status}
+            {t(POLISH_KEYS[rec.polish_status] || rec.polish_status)}
           </span>
           <span className="text-[10px] text-muted-foreground/50">{rec.engine}</span>
         </div>
@@ -264,14 +267,14 @@ function HistoryRow({
         <button
           className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
           onClick={(e) => { e.stopPropagation(); openCompactEditorTab(rec.id, "transcription"); }}
-          title="查看"
+          title={t("settings.history.view")}
         >
           <Eye className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
         </button>
         <button
           className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
           onClick={copyRecord}
-          title="复制"
+          title={t("settings.history.copy")}
         >
           <Copy className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
         </button>
@@ -283,7 +286,7 @@ function HistoryRow({
               : "opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity",
           )}
           onClick={handleDeleteClick}
-          title={deletePending ? "再次点击确认删除" : "删除"}
+          title={deletePending ? t("settings.history.deleteConfirm") : t("settings.history.delete")}
         >
           <Trash2 className={cn(
             "w-3.5 h-3.5 transition-colors",

@@ -1,15 +1,16 @@
 import { cn } from "@/lib/utils";
 import { LayoutGrid, ScanText } from "lucide-react";
 import { SvgIcon, type IconName } from "@/components/SvgIcon";
+import { useT } from "@/lib/i18n";
 
-const TABS = [
-  { value: "all", icon: LayoutGrid, label: "全部", svg: undefined as string | undefined },
-  { value: "favorite", icon: null, label: "收藏", svg: "favorite" },
-  { value: "asr", icon: null, label: "语音", svg: "voice" },
-  { value: "text", icon: null, label: "文本", svg: "text" },
-  { value: "ocr", icon: ScanText, label: "OCR", svg: undefined },
-  { value: "image", icon: null, label: "图片", svg: "images" },
-  { value: "file", icon: null, label: "文件", svg: "files" },
+const TAB_DEFS = [
+  { value: "all", icon: LayoutGrid, labelKey: "clipboard.filter.all", svg: undefined as string | undefined },
+  { value: "favorite", icon: null, labelKey: "clipboard.filter.favorite", svg: "favorite" },
+  { value: "asr", icon: null, labelKey: "clipboard.filter.voice", svg: "voice" },
+  { value: "text", icon: null, labelKey: "clipboard.filter.text", svg: "text" },
+  { value: "ocr", icon: ScanText, labelKey: "OCR", svg: undefined },
+  { value: "image", icon: null, labelKey: "clipboard.filter.image", svg: "images" },
+  { value: "file", icon: null, labelKey: "clipboard.filter.file", svg: "files" },
 ] as const;
 
 export default function FilterTabs({
@@ -19,9 +20,12 @@ export default function FilterTabs({
   value: string;
   onChange: (v: string) => void;
 }) {
+  const t = useT();
   return (
     <div className="flex items-center gap-0.5">
-      {TABS.map(({ value: tabValue, icon: Icon, label, svg }, i) => (
+      {TAB_DEFS.map(({ value: tabValue, icon: Icon, labelKey, svg }, i) => {
+        const label = labelKey === "OCR" ? "OCR" : t(labelKey);
+        return (
         <button
           key={tabValue}
           data-tab-index={i}
@@ -35,16 +39,14 @@ export default function FilterTabs({
           onClick={() => onChange(tabValue)}
         >
           {svg ? (
-            // SvgIcon 用 mask + currentColor：未选中随 button 的 text-muted-foreground 置灰，
-            // 选中随 text-primary-foreground 变白，深色模式自动跟随主题（img 加载的 SVG 不响应
-            // currentColor，未选中恒为黑色剪影，深色背景下不可见）。
             <SvgIcon name={svg as IconName} size={16} />
           ) : Icon ? (
             <Icon className="w-4 h-4" />
           ) : null}
           {tabValue === "all" && <span className="ml-1 text-xs">{label}</span>}
         </button>
-      ))}
+        );
+      })}
     </div>
   );
 }

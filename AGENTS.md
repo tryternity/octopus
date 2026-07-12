@@ -247,3 +247,4 @@ macOS 有**两套**坐标 API，**必须区分**：
 - **mousedown capture 拦截 onClick**——`addEventListener("mousedown", fn, true)` 在 onClick 之前触发。外部点击检测用 `click` 冒泡阶段（`false`）
 - **transparent 窗口的 html 背景色**——`transparent:true` 只让窗口支持透明，html `backgroundColor` 仍渲染不透明层。透明窗口不设 html/body 背景
 - **`builder.maximized(true)` 在 WRY 不生效**——用 show 前 `win.maximize()` 或主屏尺寸直接创建
+- **click-through poller 的 BAR_W 必须与前端容器同宽**——`result_window.rs` 的 `BAR_W` 判定精简态可交互区域，如果前端 CSS 改了容器宽度但 `BAR_W` 没同步，poller 会误判光标在小条外 → 窗口穿透 → 按钮点不到（已踩坑 1 次：前端从 520 改为 720 但 BAR_W 仍为 520）

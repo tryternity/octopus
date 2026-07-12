@@ -4,6 +4,7 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { CheckCircle2, Download, RefreshCw, Cloud, HardDrive } from "lucide-react";
 import { CollapsibleSection } from "./CollapsibleSection";
+import { useT } from "@/lib/i18n";
 
 interface DownloadableModel {
   name: string;
@@ -35,16 +36,18 @@ function fmtBytes(n: number | null | undefined): string {
 }
 
 function CurrentBanner({ label }: { label: string }) {
+  const t = useT();
   return (
     <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-voice bg-voice/5 text-[11px] mb-1">
       <CheckCircle2 className="w-3 h-3 text-voice shrink-0" />
-      <span className="text-muted-foreground">当前使用</span>
+      <span className="text-muted-foreground">{t("settings.models.current")}</span>
       <span className="font-medium text-foreground">{label}</span>
     </div>
   );
 }
 
 export default function AsrTab({ showToast }: { showToast: (msg: string) => void }) {
+  const t = useT();
   const [models, setModels] = useState<DownloadableModel[]>([]);
   const [progress, setProgress] = useState<Record<string, DownloadProgress>>({});
   const [busyRepo, setBusyRepo] = useState<string | null>(null);
@@ -55,7 +58,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     try {
       const data = await invoke<DownloadableModel[]>("list_downloadable_models");
       setModels(data);
-    } catch (e) { showToast("加载模型列表失败：" + e); }
+    } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast]);
 
   useEffect(() => {
@@ -81,9 +84,9 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
           const data = p as { repo: string; already_ready?: boolean; error?: string };
           setBusyRepo(null);
           setProgress((prev) => { const next = { ...prev }; delete next[data.repo]; return next; });
-          if (data.error) showToast("下载失败：" + data.error);
-          else if (data.already_ready) showToast("模型已就绪，无需重新下载");
-          else showToast("下载完成");
+          if (data.error) showToast(t("settings.models.downloadFailed") + data.error);
+          else if (data.already_ready) showToast(t("settings.models.alreadyReady"));
+          else showToast(t("settings.models.downloadComplete"));
           loadModels();
         }],
       ];
@@ -100,14 +103,14 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     if (busyRepo) return;
     setBusyRepo(model.repo);
     try { await invoke("download_model", { repo: model.repo }); }
-    catch (e) { setBusyRepo(null); showToast("下载启动失败：" + e); }
+    catch (e) { setBusyRepo(null); showToast(t("settings.models.downloadStartFailed") + e); }
   };
 
   const handleVerify = async (model: DownloadableModel) => {
     if (busyRepo) return;
     setBusyRepo(model.repo);
-    try { await invoke("verify_model", { repo: model.repo }); showToast("校验完成"); loadModels(); }
-    catch (e) { showToast("校验失败：" + e); }
+    try { await invoke("verify_model", { repo: model.repo }); showToast(t("settings.models.verifyComplete")); loadModels(); }
+    catch (e) { showToast(t("settings.models.verifyFailed") + e); }
     finally { setBusyRepo(null); }
   };
 
@@ -117,7 +120,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
     <div className="space-y-0.5 max-w-[560px]">
       {currentLabel && <CurrentBanner label={currentLabel} />}
 
-      <CollapsibleSection icon={HardDrive} label="本地模型" count={`${readyCount}/${models.length}`}>
+      <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")} count={`${readyCount}/${models.length}`}>
       {models.map((model) => {
         const prog = progress[model.repo];
         const pct = prog && prog.total > 0 ? (prog.downloaded / prog.total) * 100 : 0;
@@ -153,7 +156,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
                   disabled={!!busyRepo}
                   onClick={() => handleVerify(model)}
                 >
-                  <RefreshCw className="w-2.5 h-2.5" /> 校验
+                  <RefreshCw className="w-2.5 h-2.5" /> {t("settings.models.verify")}
                 </button>
               ) : (
                 <button
@@ -166,7 +169,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
                   onClick={() => handleDownload(model)}
                 >
                   <Download className="w-2.5 h-2.5" />
-                  {busyRepo === model.repo ? "下载中…" : "下载"}
+                  {busyRepo === model.repo ? t("settings.models.downloading") : t("settings.models.download")}
                 </button>
               )}
             </div>
@@ -176,7 +179,7 @@ export default function AsrTab({ showToast }: { showToast: (msg: string) => void
       </CollapsibleSection>
 
       {cloudEngines.length > 0 && (
-        <CollapsibleSection icon={Cloud} label="云端引擎">
+        <CollapsibleSection icon={Cloud} label={t("settings.models.cloudEngines")}>
           {cloudEngines.map((engine) => (
             <div
               key={engine.name}

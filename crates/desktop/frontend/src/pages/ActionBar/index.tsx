@@ -5,6 +5,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
 import { Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import { detectActionUrl } from "./urlDetect";
+import { t } from "@/lib/i18n";
 
 interface Context {
   text: string;
@@ -249,7 +250,7 @@ export default function ActionBar() {
     const timeoutMs = item.actionData === "auto_translate" ? AI_TRANSLATE_TIMEOUT_MS : AI_TIMEOUT_MS;
     const timeoutId = setTimeout(() => {
       timedOutRef.current = true;
-      showQuickError(`请求超时（${timeoutMs / 1000}s）`);
+      showQuickError(t("actionbar.timeout", { n: timeoutMs / 1000 }));
       setView("main");
     }, timeoutMs);
 
@@ -456,7 +457,7 @@ export default function ActionBar() {
     return (
       <div data-action-bar className="flex items-center justify-center gap-2.5 px-6 py-3 bg-background/95 backdrop-blur-xl text-foreground rounded-lg border border-border/50 shadow-2xl shadow-black/10">
         <Loader2 className="w-4 h-4 animate-spin text-voice" />
-        <span className="text-[12px] font-medium">处理中</span>
+        <span className="text-[12px] font-medium">{t("actionbar.processing")}</span>
         <span className="flex gap-0.5">
           <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "0ms" }} />
           <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "150ms" }} />

@@ -7,6 +7,7 @@ import { openCompactEditorTab } from "@/lib/compactEditor";
 import type { ClipboardItem } from "@/types/clipboard";
 import { metaParts, typeAccent, imageMeta, fileMeta, detectUrl } from "@/types/clipboard";
 import SaveImagePopover from "./SaveImagePopover";
+import { useT, t as ti18n } from "@/lib/i18n";
 
 function ClipboardItemRow({
   item,
@@ -23,6 +24,7 @@ function ClipboardItemRow({
   onSelect: (index: number) => void;
   onChanged: () => void;
 }) {
+  const t = useT();
   const [deletePending, setDeletePending] = useState(false);
   const [showSavePopover, setShowSavePopover] = useState(false);
   const [thumbSrc, setThumbSrc] = useState<string | null>(null);
@@ -105,7 +107,7 @@ function ClipboardItemRow({
   };
 
   // 单击左侧类型图标 → 复制（copy_clipboard_item，不隐藏浮窗、不触发粘贴）。
-  // 触效：icon 放大回弹 + 闪绿；右侧弹「已复制」气泡 1.5s。
+  // 触效：icon 放大回弹 + 闪绿；右侧弹「{t("clipboard.copied")}」气泡 1.5s。
   const handleCopy = async (e: React.MouseEvent) => {
     e.stopPropagation();
     try {
@@ -175,7 +177,7 @@ function ClipboardItemRow({
         type="button"
         onClick={handleCopy}
         onDoubleClick={(e) => e.stopPropagation()}
-        title="单击复制"
+        title={t("clipboard.clickToCopy")}
         className="relative flex-shrink-0 cursor-pointer rounded p-0.5 transition-transform duration-150 hover:scale-110 active:scale-90"
       >
         <Icon className={cn(
@@ -185,7 +187,7 @@ function ClipboardItemRow({
         )} />
         {copied && (
           <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1.5 -translate-y-1/2 whitespace-nowrap rounded-md bg-emerald-500 px-2 py-0.5 text-[10px] font-semibold text-white shadow-md">
-            已复制
+            {t("clipboard.copied")}
           </span>
         )}
       </button>
@@ -221,7 +223,7 @@ function ClipboardItemRow({
               copied ? "opacity-100" : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
             )}
             onClick={handleCopy}
-            title="复制"
+            title={t("clipboard.copy")}
           >
             {copied ? (
               <Check className="w-3.5 h-3.5 text-emerald-500" />
@@ -236,7 +238,7 @@ function ClipboardItemRow({
                 e.stopPropagation();
                 if (link) openUrl(link.url).catch(console.error);
               }}
-              title="打开链接"
+              title={t("clipboard.openLink")}
             >
               <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />
             </button>
@@ -245,7 +247,7 @@ function ClipboardItemRow({
             <button
               className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
               onClick={handleEditText}
-              title="编辑"
+              title={t("clipboard.edit")}
             >
               <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
             </button>
@@ -257,9 +259,9 @@ function ClipboardItemRow({
                 e.stopPropagation();
                 openCompactEditorTab(item.id);
               }}
-              title="预览"
+              title={t("clipboard.preview")}
             >
-              <img src="icons/eye-edit.svg" alt="预览" className="w-3.5 h-3.5" style={{ filter: "var(--icon-filter)" }} />
+              <img src="icons/eye-edit.svg" alt={t("clipboard.preview")} className="w-3.5 h-3.5" style={{ filter: "var(--icon-filter)" }} />
             </button>
           )}
           {item.item_type === "image" && (
@@ -273,7 +275,7 @@ function ClipboardItemRow({
                     : "opacity-0 group-hover:opacity-60 hover:!opacity-100",
                 )}
                 onClick={handleSaveImage}
-                title="保存为文件"
+                title={t("clipboard.saveToFile")}
               >
                 <Download className={cn(
                   "w-3.5 h-3.5 text-muted-foreground",
@@ -289,7 +291,7 @@ function ClipboardItemRow({
             <button
               className="p-1 rounded-md opacity-0 group-hover:opacity-50 hover:opacity-100 transition-opacity"
               onClick={handleOpenFile}
-              title="打开文件"
+              title={t("clipboard.openFile")}
             >
               <FolderOpen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
             </button>
@@ -302,7 +304,7 @@ function ClipboardItemRow({
                 : "opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity",
             )}
             onClick={handleDeleteClick}
-            title={deletePending ? "再次点击确认删除" : "删除"}
+            title={deletePending ? t("clipboard.deleteConfirm") : t("clipboard.delete")}
           >
             <Trash2 className={cn(
               "w-3.5 h-3.5 transition-colors",
@@ -337,7 +339,7 @@ export default memo(ClipboardItemRow);
 
 /// ref_data 是 JSON 路径数组，取每个路径最后 2 段显示。
 function formatFilePaths(refData?: string): string {
-  if (!refData) return "文件";
+  if (!refData) return ti18n("clipboard.filter.file");
   try {
     const paths: string[] = JSON.parse(refData);
     const display = paths.slice(0, 3).map((raw) => {
@@ -356,6 +358,6 @@ function formatFilePaths(refData?: string): string {
     }
     return display.join("  ") + (paths.length > 1 ? ` (${paths.length})` : "");
   } catch {
-    return "文件";
+    return ti18n("clipboard.filter.file");
   }
 }

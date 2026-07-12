@@ -12,29 +12,31 @@ import {
 } from "lucide-react";
 import SaveImagePopover from "../Clipboard/SaveImagePopover";
 import { openCompactEditorTab } from "@/lib/compactEditor";
+import { useT, t as ti18n } from "@/lib/i18n";
 
 const PAGE_SIZE = 50;
 
 // 过滤分组：主分类 | 内容类型 | 状态。视觉上用分隔线区分层级，而非平铺 8 个等权按钮。
-const FILTER_GROUPS: { label?: string; items: { value: string; icon: any; label: string; svg?: string }[] }[] = [
-  { items: [{ value: "all", icon: LayoutGrid, label: "全部" }] },
+const FILTER_GROUPS: { labelKey?: string; items: { value: string; icon: any; labelKey: string; svg?: string }[] }[] = [
+  { items: [{ value: "all", icon: LayoutGrid, labelKey: "settings.clipboardPanel.filterAll" }] },
   {
-    label: "类型",
+    labelKey: "settings.clipboardPanel.groupType",
     items: [
-      { value: "asr", icon: null, label: "语音", svg: "voice" },
-      { value: "ocr", icon: ScanText, label: "OCR" },
-      { value: "text", icon: null, label: "文本", svg: "text" },
-      { value: "image", icon: null, label: "图片", svg: "images" },
-      { value: "file", icon: null, label: "文件", svg: "files" },
+      { value: "asr", icon: null, labelKey: "settings.clipboardPanel.filterVoice", svg: "voice" },
+      { value: "ocr", icon: ScanText, labelKey: "OCR" },
+      { value: "text", icon: null, labelKey: "settings.clipboardPanel.filterText", svg: "text" },
+      { value: "image", icon: null, labelKey: "settings.clipboardPanel.filterImage", svg: "images" },
+      { value: "file", icon: null, labelKey: "settings.clipboardPanel.filterFile", svg: "files" },
     ],
   },
-  { label: "状态", items: [
-    { value: "favorite", icon: Star, label: "收藏", svg: "favorite" },
-    { value: "unfavorite", icon: Star, label: "非收藏", svg: "un-favorite" },
+  { labelKey: "settings.clipboardPanel.groupStatus", items: [
+    { value: "favorite", icon: Star, labelKey: "settings.clipboardPanel.filterFavorite", svg: "favorite" },
+    { value: "unfavorite", icon: Star, labelKey: "settings.clipboardPanel.filterNonFavorite", svg: "un-favorite" },
   ] },
 ];
 
 export default function ClipboardPanel({ showToast }: { showToast: (msg: string) => void }) {
+  const t = useT();
   const [items, setItems] = useState<ClipboardItem[]>([]);
   const [total, setTotal] = useState(0);
   const [filter, setFilter] = useState("all");
@@ -67,7 +69,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
       const count = await invoke<number>("clipboard_stats", { filter, search: debouncedSearch || null });
       setTotal(count);
     } catch (e) {
-      showToast("加载失败：" + e);
+      showToast(t("settings.clipboardPanel.loadFailed") + e);
     }
     setLoading(false);
   }, [filter, debouncedSearch, showToast, page]);
@@ -98,19 +100,23 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
     }
     try {
       await invoke("delete_clipboard_items", { ids: Array.from(selectedIds) });
-      showToast(`已删除 ${selectedIds.size} 条`);
+      showToast(t("settings.clipboardPanel.deletedN", { n: selectedIds.size }));
       setSelectedIds(new Set());
       setConfirmDelete(false);
       fetchData(true);
     } catch (e) {
-      showToast("删除失败：" + e);
+      showToast(t("settings.clipboardPanel.deleteFailed") + e);
     }
   };
 
   const selectableItems = items.filter((i) => !i.is_favorite);
   const allChecked = selectableItems.length > 0 && selectableItems.every((i) => selectedIds.has(i.id));
   const hasSelection = selectedIds.size > 0;
-  const activeFilterLabel = FILTER_GROUPS.flatMap(g => g.items).find(t => t.value === filter)?.label;
+  const activeFilterLabel = (() => {
+    const item = FILTER_GROUPS.flatMap(g => g.items).find(it => it.value === filter);
+    if (!item) return undefined;
+    return item.labelKey === "OCR" ? "OCR" : t(item.labelKey);
+  })();
 
   return (
     <div className="flex flex-col h-full">
@@ -120,7 +126,9 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
           {FILTER_GROUPS.map((group, gi) => (
             <div key={gi} className="flex items-center gap-1">
               {gi > 0 && <div className="w-px h-4 bg-border mx-1" />}
-              {group.items.map(({ value: v, icon: Icon, label, svg }) => (
+              {group.items.map(({ value: v, icon: Icon, labelKey, svg }) => {
+                const label = labelKey === "OCR" ? "OCR" : t(labelKey);
+                return (
                 <button
                   key={v}
                   title={label}
@@ -139,7 +147,8 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
                   )}
                   <span>{label}</span>
                 </button>
-              ))}
+                );
+              })}
             </div>
           ))}
           <div className="flex-1" />
@@ -147,7 +156,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
             <Search className="w-3.5 h-3.5 text-muted-foreground" />
             <input
               type="text"
-              placeholder="搜索内容…"
+              placeholder={t("settings.clipboardPanel.searchPlaceholder")}
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className="w-44 bg-transparent text-xs outline-none placeholder:text-muted-foreground"
@@ -164,7 +173,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
         {loading && items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 gap-2 text-muted-foreground">
             <Loader2 className="w-5 h-5 animate-spin text-muted-foreground/50" />
-            <span className="text-xs">加载中…</span>
+            <span className="text-xs">{t("settings.clipboardPanel.loading")}</span>
           </div>
         ) : items.length === 0 ? (
           <div className="flex flex-col items-center justify-center py-20 gap-3 text-muted-foreground">
@@ -172,9 +181,9 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
               <ClipboardEmptyIcon />
             </div>
             <div className="text-center">
-              <p className="text-sm text-muted-foreground font-medium">暂无记录</p>
+              <p className="text-sm text-muted-foreground font-medium">{t("settings.clipboardPanel.empty")}</p>
               <p className="text-xs text-muted-foreground/70 mt-1">
-                {search ? `未找到匹配「${search}」的内容` : "复制文本、识别语音或截图后会出现在这里"}
+                {search ? t("settings.clipboardPanel.emptySearch", { search }) : t("settings.clipboardPanel.emptyHint")}
               </p>
             </div>
           </div>
@@ -190,7 +199,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
                   onChange={(e) => toggleSelectAll(e.target.checked)}
                 />
                 <span className="text-[10px] text-muted-foreground group-hover/header:text-foreground transition-colors">
-                  {hasSelection ? `已选 ${selectedIds.size} 项` : "全选"}
+                  {hasSelection ? t("settings.clipboardPanel.selectedN", { n: selectedIds.size }) : t("settings.clipboardPanel.selectAll")}
                 </span>
               </label>
             </div>
@@ -207,7 +216,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
             {loading && items.length > 0 && (
               <div className="flex items-center justify-center py-4 gap-2 text-muted-foreground">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
-                <span className="text-xs">加载中…</span>
+                <span className="text-xs">{t("settings.clipboardPanel.loading")}</span>
               </div>
             )}
             {!loading && !noMore && items.length > 0 && (
@@ -216,11 +225,11 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
                 onClick={() => fetchData()}
               >
                 <ChevronDown className="w-3 h-3" />
-                加载更多
+                {t("settings.clipboardPanel.loadMore")}
               </button>
             )}
             {!loading && noMore && items.length > 0 && (
-              <div className="text-center py-4 text-muted-foreground/50 text-[10px] tracking-wider">— 已全部加载 —</div>
+              <div className="text-center py-4 text-muted-foreground/50 text-[10px] tracking-wider">{t("settings.clipboardPanel.allLoaded")}</div>
             )}
           </div>
         )}
@@ -229,7 +238,7 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
       {/* ── 底部：状态 + 批量操作 ── */}
       <div className="flex items-center justify-between py-2 border-t border-border">
         <span className="text-[10px] text-muted-foreground tabular-nums">
-          共 {total} 条{filter !== "all" && activeFilterLabel ? ` · ${activeFilterLabel}` : ""}
+          {t("settings.clipboardPanel.totalN", { n: total })}{filter !== "all" && activeFilterLabel ? ` · ${activeFilterLabel}` : ""}
         </span>
         {hasSelection ? (
           <button
@@ -242,10 +251,10 @@ export default function ClipboardPanel({ showToast }: { showToast: (msg: string)
             onClick={handleBatchDelete}
           >
             <Trash2 className="w-3 h-3" />
-            {confirmDelete ? `确认删除 ${selectedIds.size} 项` : `删除选中`}
+            {confirmDelete ? t("settings.clipboardPanel.confirmDeleteN", { n: selectedIds.size }) : t("settings.clipboardPanel.deleteSelected")}
           </button>
         ) : (
-          <span className="text-[10px] text-muted-foreground/50 tabular-nums">显示 {items.length} 条</span>
+          <span className="text-[10px] text-muted-foreground/50 tabular-nums">{t("settings.clipboardPanel.showingN", { n: items.length })}</span>
         )}
       </div>
     </div>
@@ -267,6 +276,7 @@ function ClipboardRow({
   onChanged: () => void;
   showToast: (msg: string) => void;
 }) {
+  const t = useT();
   const [deletePending, setDeletePending] = useState(false);
   const [showSavePopover, setShowSavePopover] = useState(false);
   const [thumbSrc, setThumbSrc] = useState<string | null>(null);
@@ -300,7 +310,7 @@ function ClipboardRow({
       if (copyTimer.current) clearTimeout(copyTimer.current);
       copyTimer.current = setTimeout(() => setCopied(false), 1500);
     } catch (e) {
-      showToast("复制失败：" + e);
+      showToast(t("settings.clipboardPanel.copyFailed") + e);
     }
   };
 
@@ -322,8 +332,8 @@ function ClipboardRow({
     } else {
       if (deleteTimer.current) clearTimeout(deleteTimer.current);
       invoke("delete_clipboard_item", { id: item.id })
-        .then(() => { onChanged(); showToast("已删除"); })
-        .catch((e) => showToast("删除失败：" + e));
+        .then(() => { onChanged(); showToast(t("settings.clipboardPanel.deleted")); })
+        .catch((e) => showToast(t("settings.clipboardPanel.deleteFailed") + e));
     }
   };
 
@@ -332,13 +342,13 @@ function ClipboardRow({
     try {
       await invoke("open_file_item", { id: item.id });
     } catch (e) {
-      showToast("打开失败：" + e);
+      showToast(t("settings.clipboardPanel.openFailed") + e);
     }
   };
 
   const handleEditOrPreview = (e: React.MouseEvent) => {
     e.stopPropagation();
-    openCompactEditorTab(item.id).catch((e) => showToast("打开失败：" + e));
+    openCompactEditorTab(item.id).catch((e) => showToast(t("settings.clipboardPanel.openFailed") + e));
   };
 
   const handleSaveImage = (e: React.MouseEvent) => {
@@ -409,7 +419,7 @@ function ClipboardRow({
         type="button"
         onClick={handleCopy}
         onDoubleClick={(e) => e.stopPropagation()}
-        title="单击复制"
+        title={t("settings.clipboardPanel.clickToCopy")}
         className="relative flex-shrink-0 cursor-pointer rounded p-0.5 transition-transform duration-150 hover:scale-110 active:scale-90"
       >
         <Icon className={cn(
@@ -419,7 +429,7 @@ function ClipboardRow({
         )} />
         {copied && (
           <span className="pointer-events-none absolute left-full top-1/2 z-10 ml-1 -translate-y-1/2 whitespace-nowrap rounded bg-emerald-500 px-1.5 py-0.5 text-[10px] font-medium text-white shadow">
-            已复制
+            {t("settings.clipboardPanel.copied")}
           </span>
         )}
       </button>
@@ -459,7 +469,7 @@ function ClipboardRow({
                 copied ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
               )}
               onClick={handleCopy}
-              title="复制"
+              title={t("settings.clipboardPanel.copy")}
             >
               {copied ? (
                 <Check className="w-3.5 h-3.5 text-emerald-500" />
@@ -471,7 +481,7 @@ function ClipboardRow({
               <button
                 className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
                 onClick={(e) => { e.stopPropagation(); if (link) openUrl(link.url).catch(console.error); }}
-                title="打开链接"
+                title={t("settings.clipboardPanel.openLink")}
               >
                 <LinkIcon className="w-3.5 h-3.5 text-blue-500 hover:text-blue-600" />
               </button>
@@ -480,7 +490,7 @@ function ClipboardRow({
               <button
                 className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
                 onClick={handleEditOrPreview}
-                title="编辑"
+                title={t("settings.clipboardPanel.edit")}
               >
                 <SquarePen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
               </button>
@@ -489,9 +499,9 @@ function ClipboardRow({
               <button
                 className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
                 onClick={handleEditOrPreview}
-                title="预览"
+                title={t("settings.clipboardPanel.preview")}
               >
-                <img src="icons/eye-edit.svg" alt="预览" className="w-3.5 h-3.5" style={{ filter: "var(--icon-filter)" }} />
+                <img src="icons/eye-edit.svg" alt={t("settings.clipboardPanel.preview")} className="w-3.5 h-3.5" style={{ filter: "var(--icon-filter)" }} />
               </button>
             )}
             {item.item_type === "image" && (
@@ -503,7 +513,7 @@ function ClipboardRow({
                     showSavePopover ? "opacity-100" : "opacity-0 group-hover:opacity-50 hover:!opacity-100",
                   )}
                   onClick={handleSaveImage}
-                  title="保存为文件"
+                  title={t("settings.clipboardPanel.saveToFile")}
                 >
                   <Download className={cn(
                     "w-3.5 h-3.5 text-muted-foreground",
@@ -519,7 +529,7 @@ function ClipboardRow({
               <button
                 className="p-1 rounded opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity"
                 onClick={handleOpenFile}
-                title="打开文件"
+                title={t("settings.clipboardPanel.openFile")}
               >
                 <FolderOpen className="w-3.5 h-3.5 text-muted-foreground hover:text-foreground" />
               </button>
@@ -532,7 +542,7 @@ function ClipboardRow({
                   : "opacity-0 group-hover:opacity-50 hover:!opacity-100 transition-opacity",
               )}
               onClick={handleDeleteClick}
-              title={deletePending ? "再次点击确认删除" : "删除"}
+              title={deletePending ? t("settings.clipboardPanel.deleteConfirm") : t("settings.clipboardPanel.delete")}
             >
               <Trash2 className={cn(
                 "w-3.5 h-3.5 transition-colors",
@@ -568,7 +578,7 @@ function useDebouncedValue<T>(value: T, delay: number): T {
 }
 
 function formatFilePaths(refData?: string): string {
-  if (!refData) return "文件";
+  if (!refData) return ti18n("settings.clipboardPanel.fileFallback");
   try {
     const paths: string[] = JSON.parse(refData);
     const display = paths.slice(0, 3).map((raw) => {
@@ -580,7 +590,7 @@ function formatFilePaths(refData?: string): string {
     if (paths.length > 3) return display.join("  ") + `  +${paths.length - 3}`;
     return display.join("  ") + (paths.length > 1 ? ` (${paths.length})` : "");
   } catch {
-    return "文件";
+    return ti18n("settings.clipboardPanel.fileFallback");
   }
 }
 

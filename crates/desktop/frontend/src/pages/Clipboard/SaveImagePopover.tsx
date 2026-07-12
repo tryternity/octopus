@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, type RefObject } from "react";
 import { cn } from "@/lib/utils";
 import { invoke } from "@/lib/tauri";
 import { Loader2, Check } from "lucide-react";
+import { useT } from "@/lib/i18n";
 
 type ImageFormat = "jpeg" | "webp" | "png";
 
@@ -20,6 +21,7 @@ export default function SaveImagePopover({
   triggerRef: RefObject<HTMLButtonElement | null>;
   onClose: () => void;
 }) {
+  const t = useT();
   const [format, setFormat] = useState<ImageFormat>("jpeg");
   const [quality, setQuality] = useState(85);
   const [openFolder, setOpenFolder] = useState(false);
@@ -60,7 +62,7 @@ export default function SaveImagePopover({
       setSaving(false);
       // 不闪退：把失败原因留在 popover 内呈现，而非 console 静默 + 瞬关造成
       // "点击保存→弹窗消失→不知成功失败"的信息孤岛。用户可改格式重试或点外部关闭。
-      setError(typeof e === "string" && e ? e : "保存失败，请重试");
+      setError(typeof e === "string" && e ? e : t("clipboard.saveImage.saveFailed"));
     }
   };
 
@@ -121,8 +123,8 @@ export default function SaveImagePopover({
             }}
           />
           <div className="flex justify-between text-[8px] text-stone-300 font-medium tabular-nums">
-            <span>小</span>
-            <span>大</span>
+            <span>{t("clipboard.saveImage.small")}</span>
+            <span>{t("clipboard.saveImage.large")}</span>
           </div>
         </div>
       )}
@@ -130,7 +132,7 @@ export default function SaveImagePopover({
       {/* PNG 提示 */}
       {!lossy && (
         <div className="text-[10px] text-stone-400 leading-relaxed">
-          PNG 为无损格式，不压缩
+          {t("clipboard.saveImage.pngHint")}
         </div>
       )}
 
@@ -141,7 +143,7 @@ export default function SaveImagePopover({
         onClick={() => setOpenFolder((v) => !v)}
       >
         <span className="text-[11px] text-stone-600 font-medium">
-          保存后打开文件夹
+          {t("clipboard.saveImage.openFolder")}
         </span>
         <span
           className={cn(
@@ -182,15 +184,15 @@ export default function SaveImagePopover({
         {saving ? (
           <>
             <Loader2 className="w-3 h-3 animate-spin" />
-            保存中
+            {t("clipboard.saveImage.saving")}
           </>
         ) : done ? (
           <>
             <Check className="w-3 h-3" />
-            已保存到下载
+            {t("clipboard.saveImage.savedToDownloads")}
           </>
         ) : (
-          "保存到下载"
+          t("clipboard.saveImage.saveToDownloads")
         )}
       </button>
     </div>

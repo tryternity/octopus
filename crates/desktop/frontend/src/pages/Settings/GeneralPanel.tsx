@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Layers, Palette } from "lucide-react";
 import type { ThemeInfo } from "@/lib/theme";
@@ -56,13 +57,14 @@ function Toggle({ on, onClick }: { on: boolean; onClick: () => void }) {
 }
 
 function ShortcutButton({ shortcut, capturing, onClick }: { shortcut: string; capturing: boolean; onClick: () => void }) {
+  const t = useT();
   if (capturing) {
     return (
       <button
         className="px-3 py-1.5 rounded-md text-xs font-medium text-voice bg-voice/5 border border-voice/40 cursor-pointer animate-pulse"
         onClick={onClick}
       >
-        按下快捷键…（Esc 取消）
+        {t("settings.general.shortcutRecordingHint")}
       </button>
     );
   }
@@ -105,6 +107,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
   const setUiLanguage = useCallback(async (lang: string) => {
     await setVal("ui_language", lang);
     setLocale(lang as "zh-CN" | "en");
+    await emit("locale-changed", lang);
   }, [setVal]);
 
   const toggleVal = useCallback(async (key: string) => {
@@ -116,7 +119,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
     try {
       await invoke("set_active_prompt", { id });
       await refreshConfig();
-    } catch (e) { showToast("设置失败：" + e); }
+    } catch (e) { showToast(t("settings.setFailed") + e); }
   }, [refreshConfig, showToast]);
 
   const startShortcutCapture = useCallback((configKey: string) => {
@@ -154,45 +157,45 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
 
   return (
     <div className="max-w-[640px]">
-      <Card icon={Palette} title="外观">
-        <Row label="主题" effect="立即" hint="浮窗与窗口配色">
+      <Card icon={Palette} title={t("settings.general.appearance")}>
+        <Row label={t("settings.general.theme")} effect={t("settings.effect.now")} hint={t("settings.general.themeHint")}>
           <select className={selectClass} value={(cfg.clipboard_theme as string) || "light"} onChange={(e) => setTheme(e.target.value)}>
             {themes.map((t) => <option key={t.id} value={t.id}>{t.name}</option>)}
           </select>
         </Row>
-        <Row label={t("settings.uiLanguage")} effect="立即">
+        <Row label={t("settings.uiLanguage")} effect={t("settings.effect.now")}>
           <select className={selectClass} value={(cfg.ui_language as string) || "zh-CN"} onChange={(e) => setUiLanguage(e.target.value)}>
-            <option value="zh-CN">{t("settings.uiLanguage.zhCN")}</option>
-            <option value="en">{t("settings.uiLanguage.en")}</option>
+            <option value="zh-CN">{t("settings.uiLanguageZhCN")}</option>
+            <option value="en">{t("settings.uiLanguageEn")}</option>
           </select>
         </Row>
       </Card>
 
-      <Card icon={Mic} title="交互">
-        <Row label="麦克风设备" effect="下次录音">
+      <Card icon={Mic} title={t("settings.general.interaction")}>
+        <Row label={t("settings.general.micDevice")} effect={t("settings.effect.nextRecording")}>
           <select className={selectClass} value={cfg.microphone as string} onChange={(e) => setVal("microphone", e.target.value)}>
-            <option value="">系统默认</option>
+            <option value="">{t("settings.general.systemDefault")}</option>
             {microphones.map((m) => <option key={m} value={m}>{m}</option>)}
           </select>
         </Row>
-        <Row label="降噪模式" effect="立即">
+        <Row label={t("settings.general.denoiseMode")} effect={t("settings.effect.now")}>
           <select className={selectClass} value={cfg.denoise_mode as number} onChange={(e) => setVal("denoise_mode", parseInt(e.target.value))}>
-            <option value={0}>无</option><option value={1}>轻度</option><option value={2}>深度</option>
+            <option value={0}>{t("settings.general.denoiseNone")}</option><option value={1}>{t("settings.general.denoiseLight")}</option><option value={2}>{t("settings.general.denoiseDeep")}</option>
           </select>
         </Row>
-        <Row label="识别工具栏自动隐藏" effect="立即" hint="关闭后始终显示">
+        <Row label={t("settings.general.toolbarAutoHide")} effect={t("settings.effect.now")} hint={t("settings.general.toolbarAutoHideHint")}>
           <Toggle on={cfg.hide_toolbar as boolean} onClick={() => toggleVal("hide_toolbar")} />
         </Row>
-        <Row label="剪贴板监听" effect="立即" hint="关闭后不再记录剪贴板历史">
+        <Row label={t("settings.general.clipboardListen")} effect={t("settings.effect.now")} hint={t("settings.general.clipboardListenHint")}>
           <Toggle on={cfg.clipboard_enabled as boolean} onClick={() => toggleVal("clipboard_enabled")} />
         </Row>
-        <Row label="粘贴切换英文键盘" effect="立即" hint="粘贴前临时切到 ABC，避免中文输入法干扰（仅 macOS）">
+        <Row label={t("settings.general.pasteSwitchEnglish")} effect={t("settings.effect.now")} hint={t("settings.general.pasteSwitchEnglishHint")}>
           <Toggle on={cfg.switch_input_source_on_paste as boolean} onClick={() => toggleVal("switch_input_source_on_paste")} />
         </Row>
       </Card>
 
-      <Card icon={Layers} title="模型选择">
-        <Row label="语音识别模型" effect="下次录音">
+      <Card icon={Layers} title={t("settings.general.modelSelect")}>
+        <Row label={t("settings.general.asrModel")} effect={t("settings.effect.nextRecording")}>
           {/* 后端 asr_engine 存 3-part spec（"provider:category:name"），option value 是裸名，
               直接用 cfg.asr_engine 匹配不上 → 必须从 asr_engines 的 current 项取裸名（同润色模型行） */}
           <select className={selectClass}
@@ -201,34 +204,34 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             {asr_engines.map((e) => <option key={e.name} value={e.name}>{e.label}</option>)}
           </select>
         </Row>
-        <Row label="润色模型" effect="立即">
+        <Row label={t("settings.general.polishModel")} effect={t("settings.effect.now")}>
           <select className={selectClass}
             value={llm_models.find((m) => m.current)?.name ?? ""}
             onChange={(e) => setVal("polish_llm", e.target.value)}>
             {llm_models.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
           </select>
         </Row>
-        <Row label="OCR 模型" effect="下次启动" hint="截图识别用，改后重启生效">
+        <Row label={t("settings.general.ocrModel")} effect={t("settings.effect.nextStart")} hint={t("settings.general.ocrModelHint")}>
           <select className={selectClass} value={cfg.ocr_model as string} onChange={(e) => setVal("ocr_model", e.target.value)}>
             {ocr_models.map((m) => <option key={m.name} value={m.name}>{m.label}</option>)}
           </select>
         </Row>
       </Card>
 
-      <Card icon={Keyboard} title="快捷键">
-        <Row label="语音识别" effect="立即">
+      <Card icon={Keyboard} title={t("settings.general.shortcut")}>
+        <Row label={t("settings.general.asrShortcut")} effect={t("settings.effect.now")}>
           <ShortcutButton shortcut={cfg.asr_shortcut as string} capturing={capturingKey === "asr_shortcut"} onClick={() => startShortcutCapture("asr_shortcut")} />
         </Row>
-        <Row label="立即润色" effect="立即" hint="对当前识别结果立即润色">
+        <Row label={t("settings.general.polishShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.polishShortcutHint")}>
           <ShortcutButton shortcut={cfg.polish_global_shortcut as string} capturing={capturingKey === "polish_global_shortcut"} onClick={() => startShortcutCapture("polish_global_shortcut")} />
         </Row>
-        <Row label="语音编辑" effect="立即" hint="任意应用聚焦时唤起结果窗并编辑">
+        <Row label={t("settings.general.editShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.editShortcutHint")}>
           <ShortcutButton shortcut={cfg.edit_global_shortcut as string} capturing={capturingKey === "edit_global_shortcut"} onClick={() => startShortcutCapture("edit_global_shortcut")} />
         </Row>
-        <Row label="剪贴板浮窗" effect="立即">
+        <Row label={t("settings.general.clipboardShortcut")} effect={t("settings.effect.now")}>
           <ShortcutButton shortcut={cfg.clipboard_shortcut as string} capturing={capturingKey === "clipboard_shortcut"} onClick={() => startShortcutCapture("clipboard_shortcut")} />
         </Row>
-        <Row label="剪贴TAB切换" effect="立即" hint="浮窗内切过滤类型">
+        <Row label={t("settings.general.clipboardTabShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.clipboardTabShortcutHint")}>
           <div className="flex items-center gap-1.5">
             <select className={selectClass + " min-w-[120px]"} value={(cfg.clipboard_tab_modifier as string) || "ctrl"} onChange={(e) => setVal("clipboard_tab_modifier", e.target.value)}>
               <option value="cmd">⌘ Command</option>
@@ -238,64 +241,64 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
             <span className="text-xs text-muted-foreground">+ 1..7</span>
           </div>
         </Row>
-        <Row label="AI面板" effect="立即" hint="选中文本后按此键唤起">
+        <Row label={t("settings.general.actionBarShortcut")} effect={t("settings.effect.now")} hint={t("settings.general.actionBarShortcutHint")}>
           <ShortcutButton shortcut={cfg.action_bar_shortcut as string} capturing={capturingKey === "action_bar_shortcut"} onClick={() => startShortcutCapture("action_bar_shortcut")} />
         </Row>
       </Card>
 
-      <Card icon={Volume2} title="语音识别">
-        <Row label="识别语言" effect="下次录音">
+      <Card icon={Volume2} title={t("settings.general.recording")}>
+        <Row label={t("settings.general.recogLang")} effect={t("settings.effect.nextRecording")}>
           <select className={selectClass} value={cfg.language as string} onChange={(e) => setVal("language", e.target.value)}>
-            <option value="auto">自动</option><option value="zh">中文</option><option value="en">英语</option>
+            <option value="auto">{t("settings.general.recogAuto")}</option><option value="zh">{t("settings.general.recogZh")}</option><option value="en">{t("settings.general.recogEn")}</option>
           </select>
         </Row>
-        <Row label="硬件加速" effect="下次录音">
+        <Row label={t("settings.general.hardwareAccel")} effect={t("settings.effect.nextRecording")}>
           <Toggle on={cfg.asr_hardware_accelerated as boolean} onClick={() => toggleVal("asr_hardware_accelerated")} />
         </Row>
-        <Row label="拼音纠错" effect="立即" hint="拼音映射 + bigram 校正">
+        <Row label={t("settings.general.pinyinCorrect")} effect={t("settings.effect.now")} hint={t("settings.general.pinyinCorrectHint")}>
           <Toggle on={cfg.asr_correct as boolean} onClick={() => toggleVal("asr_correct")} />
         </Row>
-        <Row label="简繁输出" effect="立即" hint="开启 = 简体">
+        <Row label={t("settings.general.tradSimpOutput")} effect={t("settings.effect.now")} hint={t("settings.general.tradSimpOutputHint")}>
           <Toggle on={cfg.output_simplified as boolean} onClick={() => toggleVal("output_simplified")} />
         </Row>
-        <Row label="句间停顿" effect="下次录音" hint="说话停顿多久算一句话结束">
+        <Row label={t("settings.general.sentencePause")} effect={t("settings.effect.nextRecording")} hint={t("settings.general.sentencePauseHint")}>
           <select className={selectClass} value={cfg.segment_silence as number} onChange={(e) => setVal("segment_silence", parseFloat(e.target.value))}>
             {[300, 400, 500, 600].map((v) => <option key={v} value={v}>{v}ms</option>)}
           </select>
         </Row>
       </Card>
 
-      <Card icon={Sparkles} title="语音识别润色">
-        <Row label="润色模式" effect="立即">
+      <Card icon={Sparkles} title={t("settings.general.asrPolish")}>
+        <Row label={t("settings.general.polishMode")} effect={t("settings.effect.now")}>
           <select className={selectClass} value={cfg.polish_mode as number} onChange={(e) => setVal("polish_mode", parseInt(e.target.value))}>
-            <option value={0}>关闭</option><option value={1}>仅最终润色</option><option value={2}>中间 + 最终</option>
+            <option value={0}>{t("settings.general.polishOff")}</option><option value={1}>{t("settings.general.polishFinalOnly")}</option><option value={2}>{t("settings.general.polishIntermediate")}</option>
           </select>
         </Row>
-        <Row label="润色提示词" effect="立即" hint="选择不同风格 prompt">
+        <Row label={t("settings.general.polishPrompt")} effect={t("settings.effect.now")} hint={t("settings.general.polishPromptHint")}>
           <select className={selectClass} value={active_prompt_id} onChange={(e) => setActivePrompt(parseInt(e.target.value))}>
-            {prompts.map((p) => <option key={p.id} value={p.id}>{p.title}{p.is_system ? "（内置）" : ""}</option>)}
+            {prompts.map((p) => <option key={p.id} value={p.id}>{p.title}{p.is_system ? t("settings.general.builtinSuffix") : ""}</option>)}
           </select>
         </Row>
-        <Row label="润色间隔" effect="下次录音">
+        <Row label={t("settings.general.polishInterval")} effect={t("settings.effect.nextRecording")}>
           <select className={selectClass} value={cfg.polish_min_interval as number} onChange={(e) => setVal("polish_min_interval", parseFloat(e.target.value))}>
-            <option value={0}>仅最后</option>
-            {[3, 4, 5, 6, 7, 8].map((v) => <option key={v} value={v}>每 {v} 秒</option>)}
+            <option value={0}>{t("settings.general.polishIntervalLast")}</option>
+            {[3, 4, 5, 6, 7, 8].map((v) => <option key={v} value={v}>{t("settings.general.polishIntervalEvery", { v })}</option>)}
           </select>
         </Row>
-        <Row label="润色停顿阈值" effect="下次录音" hint="超过此值触发中间润色">
+        <Row label={t("settings.general.polishPauseThreshold")} effect={t("settings.effect.nextRecording")} hint={t("settings.general.polishPauseThresholdHint")}>
           <select className={selectClass} value={cfg.pause_polish_threshold_ms as number} onChange={(e) => setVal("pause_polish_threshold_ms", parseFloat(e.target.value))}>
             {[600, 700, 800, 900, 1000].map((v) => <option key={v} value={v}>{v}ms</option>)}
           </select>
         </Row>
       </Card>
 
-      <Card icon={ClipboardList} title="剪贴板">
-        <Row label="最大保留条数" effect="下次启动" hint="不含收藏，超出自动清理">
+      <Card icon={ClipboardList} title={t("settings.general.clipboardSettings")}>
+        <Row label={t("settings.general.maxItems")} effect={t("settings.effect.nextStart")} hint={t("settings.general.maxItemsHint")}>
           <select className={selectClass} value={cfg.clipboard_max_items as number} onChange={(e) => setVal("clipboard_max_items", parseInt(e.target.value))}>
             {[100, 200, 300, 500, 1000].map((v) => <option key={v} value={v}>{v} 条</option>)}
           </select>
         </Row>
-        <Row label="自动清理天数" effect="下次启动" hint="超过此天数的非收藏记录自动删除">
+        <Row label={t("settings.general.autoCleanDays")} effect={t("settings.effect.nextStart")} hint={t("settings.general.autoCleanDaysHint")}>
           <select className={selectClass} value={cfg.clipboard_max_age_days as number} onChange={(e) => setVal("clipboard_max_age_days", parseInt(e.target.value))}>
             {[1, 3, 7, 15, 30].map((v) => <option key={v} value={v}>{v} 天</option>)}
           </select>

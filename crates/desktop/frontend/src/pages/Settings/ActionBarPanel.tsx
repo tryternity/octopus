@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useT, t as ti18n } from "@/lib/i18n";
 
 interface ActionBarItem {
   id: number;
@@ -34,57 +35,56 @@ interface ActionBarItem {
 }
 
 // 动作类型元信息：颜色点 + 标签 + 说明 + 占位符。
-// 颜色用 Tailwind 默认调色板的中饱和值，在三套主题（暖纸 / 黑曜 / 北欧）下都可读。
+// descKey/placeholderKey 用 i18n 解析；label 为 UI 标签常量（SUBMENU/AI/URL/SCRIPT/EXT/COPY）。
 const TYPE_META: Record<
   string,
-  { dot: string; label: string; desc: string; placeholder: string }
+  { dot: string; label: string; descKey: string; placeholderKey: string }
 > = {
   submenu: {
     dot: "bg-voice",
     label: "SUBMENU",
-    desc: "本身不执行动作，展开后显示其子菜单项",
-    placeholder: "",
+    descKey: "settings.actionBar.typeSubmenuDesc",
+    placeholderKey: "",
   },
   ai: {
     dot: "bg-violet-500",
     label: "AI",
-    desc: "选中文本发送给 LLM，结果展示在浮窗。填 auto_translate 自动判断中英互译",
-    placeholder: "system prompt，或 auto_translate",
+    descKey: "settings.actionBar.typeAiDesc",
+    placeholderKey: "settings.actionBar.typeAiPlaceholder",
   },
   url: {
     dot: "bg-sky-500",
     label: "URL",
-    desc: "默认浏览器打开，{text} 会被替换为 URL 编码后的选中文本",
-    placeholder: "https://... 或 app://?text={text}（留空=选中文本即 URL）",
+    descKey: "settings.actionBar.typeUrlDesc",
+    placeholderKey: "settings.actionBar.typeUrlPlaceholder",
   },
   script: {
     dot: "bg-emerald-500",
     label: "SCRIPT",
-    desc: "首行 #shell / #osascript / #powershell / #python / #node / #deno / #bun / #javascript / #typescript；选中文本经 $OCTOPUS_TEXT 传入",
-    placeholder:
-      "#shell / #osascript / #powershell / #python\n#node / #deno / #bun\n#javascript / #typescript\n选中文本在 $OCTOPUS_TEXT 环境变量中",
+    descKey: "settings.actionBar.typeScriptDesc",
+    placeholderKey: "settings.actionBar.typeScriptPlaceholder",
   },
   extension: {
     dot: "bg-amber-500",
     label: "EXT",
-    desc: "从 .octopusext.zip 或文件夹导入扩展包（含 config.yaml + 脚本）",
-    placeholder: "",
+    descKey: "settings.actionBar.typeExtensionDesc",
+    placeholderKey: "",
   },
   copy: {
     dot: "bg-stone-400",
     label: "COPY",
-    desc: "将选中文本复制到剪贴板",
-    placeholder: "",
+    descKey: "settings.actionBar.typeCopyDesc",
+    placeholderKey: "",
   },
 };
 
 const ACTION_TYPES = [
-  { value: "submenu", label: "子菜单" },
-  { value: "ai", label: "AI（LLM 处理）" },
-  { value: "url", label: "URL（打开网页/应用）" },
-  { value: "script", label: "脚本" },
-  { value: "extension", label: "扩展包" },
-  { value: "copy", label: "复制" },
+  { value: "submenu", labelKey: "settings.actionBar.typeSubmenu" },
+  { value: "ai", labelKey: "settings.actionBar.typeAi" },
+  { value: "url", labelKey: "settings.actionBar.typeUrl" },
+  { value: "script", labelKey: "settings.actionBar.typeScript" },
+  { value: "extension", labelKey: "settings.actionBar.typeExtension" },
+  { value: "copy", labelKey: "settings.actionBar.typeCopy" },
 ];
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
@@ -182,7 +182,7 @@ const ExtensionDropZone = ({
     try {
       const selected = await openDialog({
         multiple: false,
-        filters: [{ name: "扩展包", extensions: ["zip"] }],
+        filters: [{ name: ti18n("settings.actionBar.extensionFilter"), extensions: ["zip"] }],
       });
       if (typeof selected === "string") {
         doImport(selected);
@@ -226,7 +226,7 @@ const ExtensionDropZone = ({
   const hasPackage = form.actionData && form.actionData.startsWith("/");
 
   return (
-    <Field label="扩展包">
+    <Field label={ti18n("settings.actionBar.extensionLabel")}>
       <div
         className={cn(
           "rounded-lg border border-dashed transition-colors min-h-[80px] flex flex-col items-center justify-center gap-1.5 p-3",
@@ -235,7 +235,7 @@ const ExtensionDropZone = ({
         )}
       >
         {importing ? (
-          <p className="text-xs text-muted-foreground">导入中…</p>
+          <p className="text-xs text-muted-foreground">{ti18n("settings.actionBar.importing")}</p>
         ) : hasPackage ? (
           <>
             <div className="flex items-center gap-2 w-full">
@@ -250,8 +250,8 @@ const ExtensionDropZone = ({
                   onChange({ ...form, actionData: "", title: "" });
                 }}
                 className="shrink-0 rounded-md p-1 text-muted-foreground/60 transition-colors hover:bg-red-500/10 hover:text-red-500"
-                aria-label="清除选择"
-                title="清除选择"
+                aria-label={ti18n("settings.actionBar.clearSelection")}
+                title={ti18n("settings.actionBar.clearSelection")}
               >
                 <X className="h-3.5 w-3.5" />
               </button>
@@ -260,21 +260,21 @@ const ExtensionDropZone = ({
         ) : (
           <>
             <p className="text-[11px] text-muted-foreground/70">
-              拖拽 .zip 或文件夹到此
+              {ti18n("settings.actionBar.dropHint")}
             </p>
             <div className="flex items-center gap-3">
               <button
                 onClick={handleOpenFile}
                 className="text-[11px] text-voice hover:underline"
               >
-                选择 zip 文件
+                {ti18n("settings.actionBar.selectZip")}
               </button>
               <span className="text-[11px] text-muted-foreground/40">|</span>
               <button
                 onClick={handleOpenDir}
                 className="text-[11px] text-voice hover:underline"
               >
-                选择文件夹
+                {ti18n("settings.actionBar.selectFolder")}
               </button>
             </div>
           </>
@@ -292,6 +292,7 @@ const EditForm = ({
   onSave,
   onCancel,
 }: EditFormProps) => {
+  const t = useT();
   const type = form.actionType || "copy";
   const meta = TYPE_META[type];
   const showContent = type !== "submenu" && type !== "copy" && type !== "extension";
@@ -305,11 +306,11 @@ const EditForm = ({
         className="flex items-center gap-1.5 text-xs text-muted-foreground transition-colors hover:text-foreground"
       >
         <ArrowLeft className="h-3.5 w-3.5" />
-        返回菜单
+        {ti18n("settings.actionBar.backToMenu")}
       </button>
 
       <div className="space-y-4">
-        <Field label="标题">
+        <Field label={t("settings.actionBar.titleLabel")}>
           <input
             className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
             value={form.title || ""}
@@ -330,7 +331,7 @@ const EditForm = ({
           />
         </Field>
 
-        <Field label="类型">
+        <Field label={t("settings.actionBar.typeLabel")}>
           <div>
             <select
               className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all disabled:opacity-60"
@@ -340,24 +341,24 @@ const EditForm = ({
                 onChange({ ...form, actionType: e.target.value })
               }
             >
-              {ACTION_TYPES.map((t) => (
-                <option key={t.value} value={t.value}>
-                  {t.label}
+              {ACTION_TYPES.map((at) => (
+                <option key={at.value} value={at.value}>
+                  {t(at.labelKey)}
                 </option>
               ))}
             </select>
             <p className="mt-1.5 text-[11px] text-muted-foreground/80">
-              {meta.desc}
-              {isSystem && " · 内置项类型不可更改"}
+              {t(meta.descKey)}
+              {isSystem && " · " + t("settings.actionBar.builtinTypeLocked")}
             </p>
           </div>
         </Field>
 
         {showContent && (
-          <Field label="内容">
+          <Field label={t("settings.actionBar.contentLabel")}>
             <textarea
               className="w-full min-h-[120px] resize-y bg-background border border-border rounded-md px-3 py-2 font-mono text-xs leading-relaxed outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
-              placeholder={meta.placeholder}
+              placeholder={meta.placeholderKey ? t(meta.placeholderKey) : ""}
               value={form.actionData || ""}
               onChange={(e) =>
                 onChange({ ...form, actionData: e.target.value })
@@ -371,7 +372,7 @@ const EditForm = ({
         )}
 
         {type === "script" && (
-          <Field label="执行选项">
+          <Field label={t("settings.actionBar.execOptions")}>
             <div className="space-y-2.5">
               <div className="flex items-center gap-2.5">
                 <Toggle
@@ -385,7 +386,7 @@ const EditForm = ({
                   }
                 />
                 <span className="text-xs text-muted-foreground">
-                  异步执行（不等待结果，后台运行）
+                  {t("settings.actionBar.asyncExec")}
                 </span>
               </div>
               {!(form.isAsync ?? true) && (
@@ -397,7 +398,7 @@ const EditForm = ({
                     }
                   />
                   <span className="text-xs text-muted-foreground">
-                    结果写入剪贴板
+                    {t("settings.actionBar.writeToClipboard")}
                   </span>
                 </div>
               )}
@@ -406,7 +407,7 @@ const EditForm = ({
         )}
 
         {showShortcut && (
-          <Field label="快捷键">
+          <Field label={t("settings.actionBar.shortcutLabel")}>
             <div className="flex items-center gap-2">
               <div className="flex items-center gap-1">
                 <span className="text-xs text-muted-foreground/60 font-mono">⌥ +</span>
@@ -426,26 +427,26 @@ const EditForm = ({
                 <button
                   onClick={() => onChange({ ...form, shortcut: "" })}
                   className="rounded p-1 text-muted-foreground/60 transition-colors hover:bg-red-500/10 hover:text-red-500"
-                  aria-label="清除快捷键"
+                  aria-label={t("settings.actionBar.clearSelection")}
                 >
                   <X className="h-3.5 w-3.5" />
                 </button>
               )}
               <span className="text-[11px] text-muted-foreground/60">
-                action bar 打开时按 Alt+此键直接执行
+                {t("settings.actionBar.shortcutHint")}
               </span>
             </div>
           </Field>
         )}
 
-        <Field label="启用">
+        <Field label={t("settings.actionBar.enableLabel")}>
           <div className="flex items-center gap-2.5">
             <Toggle
               checked={form.isEnabled ?? true}
               onChange={(v) => onChange({ ...form, isEnabled: v })}
             />
             <span className="text-xs text-muted-foreground">
-              {form.isEnabled ? "显示在菜单中" : "已隐藏"}
+              {form.isEnabled ? t("settings.actionBar.showInMenu") : t("settings.actionBar.hidden")}
             </span>
           </div>
         </Field>
@@ -456,13 +457,13 @@ const EditForm = ({
           onClick={onCancel}
           className="rounded-md border border-border px-4 py-2 text-xs transition-colors hover:bg-muted/60"
         >
-          取消
+          {t("settings.actionBar.cancel")}
         </button>
         <button
           onClick={onSave}
           className="rounded-md bg-voice px-5 py-2 text-xs font-medium text-white transition-opacity hover:opacity-90"
         >
-          保存
+          {t("settings.actionBar.save")}
         </button>
       </div>
     </div>
@@ -509,6 +510,7 @@ interface NodeProps {
 }
 
 const TreeNodeBase = (props: NodeProps) => {
+  const t = useT();
   const {
     item,
     siblings,
@@ -549,7 +551,7 @@ const TreeNodeBase = (props: NodeProps) => {
             "flex h-4 w-4 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground",
             !isSubmenu && "invisible pointer-events-none",
           )}
-          aria-label={isOpen ? "收起" : "展开"}
+          aria-label={isOpen ? t("settings.actionBar.collapse") : t("settings.actionBar.expand")}
         >
           {isOpen ? (
             <ChevronDown className="h-3.5 w-3.5" />
@@ -593,7 +595,7 @@ const TreeNodeBase = (props: NodeProps) => {
         {/* 内置标记 */}
         {item.isSystem && (
           <span className="shrink-0 text-[10px] text-muted-foreground/50">
-            内置
+            {t("settings.actionBar.builtin")}
           </span>
         )}
 
@@ -606,7 +608,7 @@ const TreeNodeBase = (props: NodeProps) => {
             }}
             disabled={isFirst}
             className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-25 disabled:hover:text-muted-foreground"
-            aria-label="上移"
+            aria-label={t("settings.actionBar.expand")}
           >
             <ArrowUp className="h-3.5 w-3.5" />
           </button>
@@ -617,7 +619,7 @@ const TreeNodeBase = (props: NodeProps) => {
             }}
             disabled={isLast}
             className="rounded p-0.5 text-muted-foreground hover:text-foreground disabled:opacity-25 disabled:hover:text-muted-foreground"
-            aria-label="下移"
+            aria-label={t("settings.actionBar.collapse")}
           >
             <ArrowDown className="h-3.5 w-3.5" />
           </button>
@@ -627,7 +629,7 @@ const TreeNodeBase = (props: NodeProps) => {
               props.onStartEdit(item);
             }}
             className="rounded p-0.5 text-muted-foreground hover:text-foreground"
-            aria-label="编辑"
+            aria-label={t("settings.actionBar.edit")}
           >
             <Pencil className="h-3.5 w-3.5" />
           </button>
@@ -643,11 +645,11 @@ const TreeNodeBase = (props: NodeProps) => {
                 ? "bg-red-500 text-white hover:bg-red-600"
                 : "text-muted-foreground hover:text-red-500 disabled:hover:text-muted-foreground",
             )}
-            aria-label="删除"
-            title={props.deleteConfirmId === item.id ? "再次点击确认删除" : "删除"}
+            aria-label={t("settings.actionBar.delete")}
+            title={props.deleteConfirmId === item.id ? t("settings.actionBar.deleteConfirm") : t("settings.actionBar.delete")}
           >
             {props.deleteConfirmId === item.id ? (
-              <span className="px-1 text-[10px] font-medium">确认</span>
+              <span className="px-1 text-[10px] font-medium">{t("settings.actionBar.confirm")}</span>
             ) : (
               <Trash2 className="h-3.5 w-3.5" />
             )}
@@ -676,7 +678,7 @@ const TreeNodeBase = (props: NodeProps) => {
             }}
             className="my-1 flex w-full items-center gap-1.5 rounded-md border border-dashed border-border py-1.5 pl-2 text-xs text-muted-foreground transition-colors hover:border-voice/40 hover:text-voice"
           >
-            <Plus className="h-3 w-3" /> 新增子项
+            <Plus className="h-3 w-3" /> {t("settings.actionBar.addSubItem")}
           </button>
         </div>
       )}
@@ -703,6 +705,7 @@ interface ScriptRun {
 }
 
 const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => {
+  const t = useT();
   const [runs, setRuns] = useState<ScriptRun[]>([]);
   const [loaded, setLoaded] = useState(false);
   const [expandedId, setExpandedId] = useState<number | null>(null);
@@ -718,22 +721,22 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
   const handleClear = useCallback(async () => {
     try {
       await invoke("clear_script_runs", { keepRecent: 100 });
-      showToast("已清理旧记录");
+      showToast(t("settings.actionBar.cleanedOldRecords"));
       refresh();
     } catch (e) {
-      showToast("清理失败：" + e);
+      showToast(t("settings.actionBar.cleanFailed") + e);
     }
   }, [showToast, refresh]);
 
   if (!loaded) {
-    return <p className="py-12 text-center text-sm text-muted-foreground">加载中…</p>;
+    return <p className="py-12 text-center text-sm text-muted-foreground">{t("settings.actionBar.loadingRecords")}</p>;
   }
 
   if (runs.length === 0) {
     return (
       <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-        <p className="text-sm font-medium">暂无执行记录</p>
-        <p className="text-xs text-muted-foreground">运行脚本后，执行结果会记录在这里。</p>
+        <p className="text-sm font-medium">{t("settings.actionBar.noRecords")}</p>
+        <p className="text-xs text-muted-foreground">{t("settings.actionBar.recordsHint")}</p>
       </div>
     );
   }
@@ -743,8 +746,8 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
     return r.exitCode === 0 ? "bg-emerald-500" : "bg-red-500";
   };
   const statusLabel = (r: ScriptRun) => {
-    if (r.exitCode === null) return r.errorMsg || "异常";
-    return r.exitCode === 0 ? "成功" : `失败(${r.exitCode})`;
+    if (r.exitCode === null) return r.errorMsg || t("settings.actionBar.statusError");
+    return r.exitCode === 0 ? t("settings.actionBar.statusSuccess") : t("settings.actionBar.statusFailed", { n: r.exitCode });
   };
 
   return (
@@ -754,7 +757,7 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
           onClick={handleClear}
           className="rounded-md border border-border px-2.5 py-1 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
         >
-          清理旧记录
+          {t("settings.actionBar.cleanOldRecords")}
         </button>
       </div>
       <div className="space-y-px">
@@ -766,7 +769,7 @@ const ScriptRunsList = ({ showToast }: { showToast: (msg: string) => void }) => 
             >
               <span className={cn("h-1.5 w-1.5 shrink-0 rounded-full", statusColor(r))} />
               <span className="shrink-0 text-xs font-medium">
-                {r.itemTitle || "已删除"}
+                {r.itemTitle || t("settings.actionBar.untitled")}
               </span>
               <span className="shrink-0 font-mono text-[10px] uppercase tracking-wider text-muted-foreground">
                 {r.scriptType}
@@ -817,6 +820,7 @@ export default function ActionBarPanel({
 }: {
   showToast: (msg: string) => void;
 }) {
+  const t = useT();
   const [items, setItems] = useState<ActionBarItem[]>([]);
   const [expanded, setExpanded] = useState<Set<number>>(new Set());
   const [editingId, setEditingId] = useState<number | null>(null);
@@ -900,19 +904,19 @@ export default function ActionBarPanel({
         const actionData = editingForm.actionData || "";
         const [sourcePath, dirName] = actionData.split("|");
         if (!sourcePath || !dirName) {
-          showToast("请先选择扩展包");
+          showToast(t("settings.actionBar.selectExtFirst"));
           return;
         }
         if (draftParentId !== undefined) {
           await invoke("install_extension", {
             sourcePath,
             dirName,
-            name: editingForm.title || "扩展",
+            name: editingForm.title || t("settings.actionBar.extName"),
             isAsync: editingForm.isAsync ?? true,
             writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
             parentId: draftParentId,
           });
-          showToast("已创建");
+          showToast(t("settings.actionBar.created"));
         } else if (editingId) {
           // 编辑已有扩展——检查是否重新导入了新包（actionData 含 |）
           if (actionData.includes("|")) {
@@ -920,7 +924,7 @@ export default function ActionBarPanel({
             await invoke("install_extension", {
               sourcePath,
               dirName,
-              name: editingForm.title || "扩展",
+              name: editingForm.title || t("settings.actionBar.extName"),
               isAsync: editingForm.isAsync ?? true,
               writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
               parentId: editingForm.parentId ?? null,
@@ -940,13 +944,13 @@ export default function ActionBarPanel({
               shortcut: editingForm.shortcut || "",
             });
           }
-          showToast("已保存");
+          showToast(t("settings.actionBar.saved"));
         }
       } else if (draftParentId !== undefined) {
         // 新建草稿——此时才写 DB
         await invoke("create_action_bar_item", {
           parentId: draftParentId,
-          title: editingForm.title || "新菜单项",
+          title: editingForm.title || t("settings.actionBar.newMenuItem"),
           icon: "",
           actionType: editingForm.actionType || "copy",
           actionData: editingForm.actionData || "",
@@ -954,7 +958,7 @@ export default function ActionBarPanel({
           writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
           shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
         });
-        showToast("已创建");
+          showToast(t("settings.actionBar.created"));
       } else if (editingId) {
         // 编辑已有项
         await invoke("update_action_bar_item", {
@@ -968,12 +972,12 @@ export default function ActionBarPanel({
           writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
           shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
         });
-        showToast("已保存");
+        showToast(t("settings.actionBar.saved"));
       }
       cancelEdit();
       refresh();
     } catch (e) {
-      showToast("保存失败：" + e);
+      showToast(t("settings.actionBar.saveFailed") + e);
     }
   }, [draftParentId, editingId, editingForm, showToast, cancelEdit, refresh]);
 
@@ -987,11 +991,11 @@ export default function ActionBarPanel({
       }
       try {
         await invoke("delete_action_bar_item", { id });
-        showToast("已删除");
+        showToast(t("settings.actionBar.deleted"));
         setDeleteConfirmId(null);
         refresh();
       } catch (e) {
-        showToast("删除失败：" + e);
+        showToast(t("settings.actionBar.deleteFailed") + e);
       }
     },
     [deleteConfirmId, showToast, refresh],
@@ -1003,7 +1007,7 @@ export default function ActionBarPanel({
         await invoke("move_action_bar_item", { id, direction });
         refresh();
       } catch (e) {
-        showToast("移动失败：" + e);
+        showToast(t("settings.actionBar.moveFailed") + e);
       }
     },
     [refresh, showToast],
@@ -1014,7 +1018,7 @@ export default function ActionBarPanel({
     setEditingId(null);
     setDraftParentId(parentId);
     setEditingForm({
-      title: "新菜单项",
+      title: t("settings.actionBar.newMenuItem"),
       actionType: "copy",
       actionData: "",
       isEnabled: true,
@@ -1045,16 +1049,13 @@ export default function ActionBarPanel({
       <div className="mb-5 flex items-start justify-between gap-4">
         <div className="min-w-0">
           <div className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/70">
-            命令面板 · {view === "edit" ? "编辑菜单项" : view === "runs" ? "脚本执行记录" : "菜单管理"}
+            {t("settings.actionBar.titleMain")} {view === "edit" ? t("settings.actionBar.editMenuItem") : view === "runs" ? t("settings.actionBar.scriptRecords") : t("settings.actionBar.menuManage")}
           </div>
           <h2 className="mt-0.5 text-lg font-semibold tracking-tight">
-            AI 命令面板菜单
+            {t("settings.actionBar.aiTitle")}
           </h2>
           <p className="mt-1 text-xs text-muted-foreground">
-            选中文本 → 全局热键唤出的两级菜单。共 {items.length} 项，{
-              enabledCount
-            }{" "}
-            项启用。
+            {t("settings.actionBar.aiIntro", { total: items.length, enabled: enabledCount })}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -1064,12 +1065,12 @@ export default function ActionBarPanel({
                 onClick={() => setView("runs")}
                 className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
               >
-                执行记录
+                {t("settings.actionBar.recordsBtn")}
               </button>
               <button
                 onClick={allExpanded ? collapseAll : expandAll}
                 className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
-                title={allExpanded ? "全部收缩" : "全部展开"}
+                title={allExpanded ? t("settings.actionBar.collapseAll") : t("settings.actionBar.expandAll")}
               >
                 {allExpanded ? (
                   <ChevronsDownUp className="h-3.5 w-3.5" />
@@ -1077,14 +1078,14 @@ export default function ActionBarPanel({
                   <ChevronsUpDown className="h-3.5 w-3.5" />
                 )}
                 <span className="hidden sm:inline">
-                  {allExpanded ? "全部收缩" : "全部展开"}
+                  {allExpanded ? t("settings.actionBar.collapseAll") : t("settings.actionBar.expandAll")}
                 </span>
               </button>
               <button
                 onClick={() => handleAdd(null)}
                 className="flex items-center gap-1.5 rounded-md bg-voice px-3.5 py-1.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
               >
-                <Plus className="h-4 w-4" /> 新增主菜单项
+                <Plus className="h-4 w-4" /> {t("settings.actionBar.addMainItem")}
               </button>
             </>
           )}
@@ -1093,7 +1094,7 @@ export default function ActionBarPanel({
               onClick={() => setView("menu")}
               className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
             >
-              返回菜单
+              {ti18n("settings.actionBar.backToMenu")}
             </button>
           )}
         </div>
@@ -1112,7 +1113,7 @@ export default function ActionBarPanel({
         <ScriptRunsList showToast={showToast} />
       ) : !loaded ? (
         <p className="py-12 text-center text-sm text-muted-foreground">
-          加载中…
+          {t("settings.actionBar.loadingRecords")}
         </p>
       ) : mainItems.length === 0 ? (
         <div className="flex flex-col items-center justify-center gap-3 py-16 text-center">
@@ -1120,16 +1121,16 @@ export default function ActionBarPanel({
             <Plus className="h-5 w-5" />
           </div>
           <div>
-            <p className="text-sm font-medium">还没有菜单项</p>
+            <p className="text-sm font-medium">{t("settings.actionBar.noItemsYet")}</p>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              新增第一个主菜单项，开始配置你的命令面板。
+              {t("settings.actionBar.noItemsHint")}
             </p>
           </div>
           <button
             onClick={() => handleAdd(null)}
             className="flex items-center gap-1.5 rounded-md bg-voice px-3.5 py-1.5 text-sm font-medium text-white transition-opacity hover:opacity-90"
           >
-            <Plus className="h-4 w-4" /> 新增主菜单项
+            <Plus className="h-4 w-4" /> {t("settings.actionBar.addMainItem")}
           </button>
         </div>
       ) : (

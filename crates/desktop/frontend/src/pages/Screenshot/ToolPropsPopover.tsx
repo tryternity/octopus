@@ -1,4 +1,5 @@
 import { PRESET_COLORS } from "@/lib/annotation";
+import { useT } from "@/lib/i18n";
 
 export function ToolPropsPopover({
   x, y, color, width, fontSize, circleSize, isText, isNumber, isShape, filled, onColorChange, onWidthChange, onFontSizeChange, onCircleSizeChange, onFilledChange,
@@ -11,11 +12,12 @@ export function ToolPropsPopover({
   onCircleSizeChange: (s: number) => void;
   onFilledChange: (f: boolean) => void;
 }) {
+  const t = useT();
   const sizeValue = isText ? fontSize : isNumber ? circleSize : width;
   const setSize = isText ? onFontSizeChange : isNumber ? onCircleSizeChange : onWidthChange;
   const min = isText ? 10 : isNumber ? 16 : 1;
   const max = isText ? 48 : isNumber ? 60 : 10;
-  const label = isText ? "字号" : isNumber ? "圆圈" : "粗细";
+  const label = isText ? t("screenshot.props.fontSize") : isNumber ? t("screenshot.props.circle") : t("screenshot.props.thickness");
 
   return (
     <div
@@ -100,7 +102,7 @@ export function ToolPropsPopover({
         <>
           <div style={{ height: 1, background: "var(--color-border)", margin: "0 -4px" }} />
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-            <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", fontWeight: 500 }}>实心填充</span>
+            <span style={{ fontSize: 10, color: "var(--color-muted-foreground)", fontWeight: 500 }}>{t("screenshot.props.solidFill")}</span>
             <button
               type="button"
               onClick={() => onFilledChange(!filled)}

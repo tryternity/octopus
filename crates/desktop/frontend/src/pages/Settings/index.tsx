@@ -13,6 +13,7 @@ import {
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import ClipboardPanel from "./ClipboardPanel";
 import GeneralPanel from "./GeneralPanel";
 import ModelsPanel from "./ModelsPanel";
@@ -33,17 +34,18 @@ export interface ConfigResponse {
 
 type PageName = "clipboard" | "settings" | "models" | "prompts" | "system" | "actionbar" | "hotword";
 
-const NAV_ITEMS: { page: PageName; icon: LucideIcon; label: string }[] = [
-  { page: "settings", icon: SettingsIcon, label: "系统设置" },
-  { page: "clipboard", icon: Clipboard, label: "剪贴管理" },
-  { page: "actionbar", icon: Command, label: "命令面板" },
-  { page: "hotword", icon: Type, label: "热词管理" },
-  { page: "models", icon: Box, label: "模型管理" },
-  { page: "prompts", icon: Wand2, label: "提 示 词" },
-  { page: "system", icon: Activity, label: "系统状态" },
+const NAV_ITEMS: { page: PageName; icon: LucideIcon; labelKey: string }[] = [
+  { page: "settings", icon: SettingsIcon, labelKey: "settings.nav.general" },
+  { page: "clipboard", icon: Clipboard, labelKey: "settings.nav.clipboard" },
+  { page: "actionbar", icon: Command, labelKey: "settings.nav.actionBar" },
+  { page: "hotword", icon: Type, labelKey: "settings.nav.hotword" },
+  { page: "models", icon: Box, labelKey: "settings.nav.models" },
+  { page: "prompts", icon: Wand2, labelKey: "settings.nav.prompts" },
+  { page: "system", icon: Activity, labelKey: "settings.nav.system" },
 ];
 
 function Settings() {
+  const t = useT();
   const [page, setPage] = useState<PageName>("settings");
   const [configResp, setConfigResp] = useState<ConfigResponse | null>(null);
   const [toast, setToast] = useState<string | null>(null);
@@ -58,7 +60,7 @@ function Settings() {
       const resp = await invoke<ConfigResponse>("get_config");
       setConfigResp(resp);
     } catch (e) {
-      showToast("加载配置失败：" + e);
+      showToast(t("settings.loadFailed") + e);
     }
   }, [showToast]);
 
@@ -90,7 +92,7 @@ function Settings() {
       await invoke("set_config", { key, value });
       await refreshConfig();
     } catch (e) {
-      showToast("设置失败：" + e);
+      showToast(t("settings.setFailed") + e);
     }
   }, [refreshConfig, showToast]);
 
@@ -99,7 +101,7 @@ function Settings() {
       {/* Sidebar */}
       <div className="w-[160px] flex-shrink-0 bg-muted/40 border-r border-border flex flex-col">
         <nav className="flex-1 pt-3">
-          {NAV_ITEMS.map(({ page: p, icon: Icon, label }) => (
+          {NAV_ITEMS.map(({ page: p, icon: Icon, labelKey }) => (
             <div
               key={p}
               className={cn(
@@ -111,7 +113,7 @@ function Settings() {
               onClick={() => setPage(p)}
             >
               <Icon className="w-4 h-4 flex-shrink-0" />
-              <span className="truncate">{label}</span>
+              <span className="truncate">{t(labelKey)}</span>
             </div>
           ))}
         </nav>
@@ -124,7 +126,7 @@ function Settings() {
         ) : page === "system" ? (
           <SystemPanel showToast={showToast} />
         ) : !configResp ? (
-          <div className="flex items-center justify-center h-full text-muted-foreground">加载中...</div>
+          <div className="flex items-center justify-center h-full text-muted-foreground">{t("settings.loading")}</div>
         ) : page === "settings" ? (
           <GeneralPanel configResp={configResp} setVal={setVal} showToast={showToast} refreshConfig={refreshConfig} />
         ) : page === "models" ? (
