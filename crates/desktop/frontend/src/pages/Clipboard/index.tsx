@@ -79,6 +79,11 @@ export default function Clipboard() {
   // 每行 prop 引用每帧变化 → memo 失效、50 行全重绘。setSelectedIndex 来自 useState 稳定，
   // useCallback([]) 产出恒定引用，行内再以 onSelect(index) 回带 index。
   const handleSelect = useCallback((index: number) => setSelectedIndex(index), []);
+  // hover 专用：键盘导航期间忽略（scrollIntoView 滚动会误触 mouseEnter）
+  const handleHover = useCallback((index: number) => {
+    if (keyboardNavRef.current) return;
+    setSelectedIndex(index);
+  }, []);
 
   // 选中变化时滚动到可见行。
   useEffect(() => {
@@ -114,6 +119,8 @@ export default function Clipboard() {
   searchRef.current = search;
   const filterRef = useRef(filter);
   filterRef.current = filter;
+  // 区分键盘/鼠标导航：键盘按 ↑↓ 时设 true，阻止 scrollIntoView 触发的 mouseEnter 抢 selectedIndex
+  const keyboardNavRef = useRef(false);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -122,7 +129,10 @@ export default function Clipboard() {
         e.preventDefault();
         const cur = itemsRef.current;
         if (cur.length === 0) return;
+        keyboardNavRef.current = true;
         setSelectedIndex((prev) => moveIndex(prev, cur.length, e.key === "ArrowDown" ? 1 : -1));
+        // 300ms 后恢复鼠标 hover 响应（留时间给 scrollIntoView + mouseEnter 事件平息）
+        setTimeout(() => { keyboardNavRef.current = false; }, 300);
         return;
       }
       // Enter：对选中条目执行粘贴（复用 paste_clipboard_item，后端已双保险：写剪贴板+模拟粘贴）
@@ -341,6 +351,7 @@ export default function Clipboard() {
               isLast={index === items.length - 1}
               isSelected={selectedIndex === index}
               onSelect={handleSelect}
+              onHover={handleHover}
               onChanged={refresh}
             />
           ))

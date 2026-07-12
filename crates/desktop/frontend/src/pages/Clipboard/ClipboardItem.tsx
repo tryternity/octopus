@@ -15,6 +15,7 @@ function ClipboardItemRow({
   isLast,
   isSelected,
   onSelect,
+  onHover,
   onChanged,
 }: {
   item: ClipboardItem;
@@ -22,6 +23,7 @@ function ClipboardItemRow({
   isLast: boolean;
   isSelected: boolean;
   onSelect: (index: number) => void;
+  onHover: (index: number) => void;
   onChanged: () => void;
 }) {
   const t = useT();
@@ -163,7 +165,7 @@ function ClipboardItemRow({
       )}
       onClick={handleClick}
       onDoubleClick={handleDoubleClick}
-      onMouseEnter={() => onSelect(index)}
+      onMouseEnter={() => onHover(index)}
     >
       {isSelected && !deletePending && (
         <div className="absolute left-0 top-1.5 bottom-1.5 w-[2px] rounded-r bg-voice" />
