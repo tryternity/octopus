@@ -384,11 +384,11 @@ export default function Clipboard() {
             if (itemMid < listH / 2) {
               // 选中在上半 → 预览在下方，底边与条目底边重叠 2px
               const top = itemEl.offsetTop + itemEl.offsetHeight - 2;
-              previewTop = `${Math.min(top, listH - previewH)}px`;
+              previewTop = `${Math.min(top, listEl.scrollTop + listH - previewH)}px`;
             } else {
               // 选中在下半 → 预览在上方，顶边与条目顶边重叠 2px
               const top = itemEl.offsetTop - previewH + 2;
-              previewTop = `${Math.max(top, 0)}px`;
+              previewTop = `${Math.max(top, listEl.scrollTop)}px`;
             }
           }
           return (
