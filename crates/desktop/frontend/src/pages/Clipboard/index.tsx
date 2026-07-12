@@ -357,9 +357,11 @@ export default function Clipboard() {
             const listH = listEl.clientHeight;
             const previewH = Math.min(Math.round(listH / 3), 200);
             if (itemMid < listH / 2) {
-              previewTop = `${Math.min(itemEl.offsetTop + itemEl.offsetHeight + 2, listH - previewH)}px`;
+              // 选中在上半 → 预览在下方，与条目重叠 2px
+              previewTop = `${itemEl.offsetTop + itemEl.offsetHeight - 2}px`;
             } else {
-              previewTop = `${Math.max(itemEl.offsetTop - previewH - 2, 0)}px`;
+              // 选中在下半 → 预览在上方，与条目重叠 2px
+              previewTop = `${itemEl.offsetTop - previewH + 2}px`;
             }
           }
           return (
