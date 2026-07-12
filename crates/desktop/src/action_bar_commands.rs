@@ -699,9 +699,7 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                     TranslateStrategy::Local(spec) => {
                         // 本地翻译耗时很长——立即打开 CompactEditor 显示 loading，
                         // 引擎加载 + 翻译都在后台线程执行，不阻塞主线程
-                        let label = "翻译";
-                        let loading_text = format!("【{}】\n⏳ 正在翻译…", label);
-                        action_bar_show_result(loading_text, text.clone(), item.title.clone(), app.clone(), false);
+                        action_bar_show_result("⏳ 正在翻译…".into(), text.clone(), item.title.clone(), app.clone(), false);
 
                         let app_clone = app.clone();
                         std::thread::spawn(move || {
@@ -711,16 +709,16 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                                     let result = engine.translate(&text, source_lang, target_lang);
                                     match result {
                                         Ok(translated) => {
-                                            let display = format!("【{}】\n{}", label, translated);
+                                            let display = format!("【翻译】\n{}", translated);
                                             let _ = app_clone.emit("translate-done", &display);
                                         }
                                         Err(e) => {
-                                            let _ = app_clone.emit("translate-done", format!("【{}】\n❌ {}", label, e));
+                                            let _ = app_clone.emit("translate-done", format!("【翻译】\n❌ {}", e));
                                         }
                                     }
                                 }
                                 _ => {
-                                    let _ = app_clone.emit("translate-done", format!("【{}】\n❌ 引擎加载失败", label));
+                                    let _ = app_clone.emit("translate-done", "【翻译】\n❌ 引擎加载失败");
                                 }
                             }
                         });
