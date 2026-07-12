@@ -9,7 +9,7 @@ ndarray = "0.17"
 anyhow = "1"
 log = "0.4"
 parking_lot = { workspace = true }
-sentencepiece = { version = "0.13", features = ["static"] }
+sentencepiece-rs = "0.2"
 serde = { version = "1", features = ["derive"] }
 octopus-infra = { path = "../infra" }
 onnx-infra = { path = "../onnx-infra" }

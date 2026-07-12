@@ -1,9 +1,9 @@
 use anyhow::{Context, Result};
 use std::path::Path;
+use sentencepiece_rs::SentencePieceProcessor;
 
-/// m2m100 SentencePiece BPE tokenizer 封装。
 pub struct M2M100Tokenizer {
-    sp: sentencepiece::SentencePieceProcessor,
+    sp: SentencePieceProcessor,
 }
 
 pub const BOS_ID: i64 = 0;
@@ -39,33 +39,30 @@ fn lang_code_to_token(lang: &str) -> Option<&'static str> {
 
 impl M2M100Tokenizer {
     pub fn load(model_path: &Path) -> Result<Self> {
-        let sp = sentencepiece::SentencePieceProcessor::open(model_path)
+        let sp = SentencePieceProcessor::open(model_path)
             .context("加载 SentencePiece 模型失败")?;
         Ok(Self { sp })
     }
 
-    /// 编码：text → token ids。在 tokens 前插入源语言标记 + 后接 EOS。
     pub fn encode(&self, text: &str, source_lang: &str) -> Result<Vec<i64>> {
         let lang_token = lang_code_to_token(source_lang).unwrap_or("__en__");
-        let lang_id = self.sp.piece_to_id(lang_token)
-            .context("语言标记 piece_to_id 失败")?
-            .unwrap_or(UNK_ID as u32);
-        let pieces = self.sp.encode(text).context("SentencePiece encode 失败")?;
-        let mut ids: Vec<i64> = vec![lang_id as i64];
-        ids.extend(pieces.iter().map(|p| p.id as i64));
-        ids.push(EOS_ID);
-        Ok(ids)
+        let lang_id = self.sp.model().try_piece_to_id(lang_token).unwrap_or(UNK_ID as usize);
+        let ids = self.sp.encode_to_ids(text).context("SentencePiece encode 失败")?;
+        let mut result: Vec<i64> = vec![lang_id as i64];
+        result.extend(ids.iter().map(|&id| id as i64));
+        result.push(EOS_ID);
+        Ok(result)
     }
 
-    /// 解码：token ids → text。过滤特殊 token 和语言标记。
     pub fn decode(&self, ids: &[i64]) -> Result<String> {
-        let filtered: Vec<u32> = ids
+        let vocab_size = self.sp.model().vocab_size();
+        let filtered: Vec<usize> = ids
             .iter()
-            .filter(|&&id| id > UNK_ID)
-            .map(|&id| id as u32)
+            .filter(|&&id| id > UNK_ID && (id as usize) < vocab_size)
+            .map(|&id| id as usize)
             .collect();
-        let text = self.sp.decode_piece_ids(&filtered)
-            .context("SentencePiece decode 失败")?;
+        let text = self.sp.decode_ids(&filtered)
+            .context("SentencePiece decode_ids 失败")?;
         Ok(text.trim().to_string())
     }
 }

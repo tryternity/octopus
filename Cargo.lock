@@ -1202,15 +1202,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "cmake"
-version = "0.1.58"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c0f78a02292a74a88ac736019ab962ece0bc380e3f977bf72e376c5d78ff0678"
-dependencies = [
- "cc",
-]
-
-[[package]]
 name = "color_quant"
 version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5251,7 +5242,7 @@ dependencies = [
  "onnx-infra",
  "ort",
  "parking_lot",
- "sentencepiece",
+ "sentencepiece-rs",
  "serde",
 ]
 
@@ -5382,8 +5373,6 @@ dependencies = [
 [[package]]
 name = "ort"
 version = "2.0.0-rc.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7de3af33d24a745ffb8fab904b13478438d1cd52868e6f17735ef6e1f8bf133"
 dependencies = [
  "ndarray 0.17.2",
  "ort-sys",
@@ -5395,8 +5384,6 @@ dependencies = [
 [[package]]
 name = "ort-sys"
 version = "2.0.0-rc.12"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d7b497d21a8b6fbb4b5a544f8fadb77e801a09ae0add9e411d31c6f89e3c1e90"
 dependencies = [
  "hmac-sha256",
  "lzma-rust2",
@@ -5989,16 +5976,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "prost"
-version = "0.14.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "528ac67416ff8646872a3c02cad9cc4ee5dc9f9540c9b10771855c95cb2e5ae1"
-dependencies = [
- "bytes",
- "prost-derive 0.14.4",
-]
-
-[[package]]
 name = "prost-build"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -6036,19 +6013,6 @@ name = "prost-derive"
 version = "0.13.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "8a56d757972c98b346a9b766e3f02746cde6dd1cd1d1d563472929fdd74bec4d"
-dependencies = [
- "anyhow",
- "itertools 0.14.0",
- "proc-macro2",
- "quote",
- "syn 2.0.117",
-]
-
-[[package]]
-name = "prost-derive"
-version = "0.14.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b570b25f7617e43d59005d0990ccb79e950a423952cea19671b7a876da390adf"
 dependencies = [
  "anyhow",
  "itertools 0.14.0",
@@ -6942,30 +6906,10 @@ dependencies = [
 ]
 
 [[package]]
-name = "sentencepiece"
-version = "0.13.1"
+name = "sentencepiece-rs"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3baa1506c7718f6b70bcac5475e563176dd51bb669dae38181abbf3070517453"
-dependencies = [
- "libc",
- "num-derive",
- "num-traits",
- "prost 0.14.4",
- "prost-derive 0.14.4",
- "sentencepiece-sys",
- "thiserror 2.0.18",
-]
-
-[[package]]
-name = "sentencepiece-sys"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "fa4f9b54dc005df8ec1c3f9e2347cea6b6657ec5460977a982e7a4e09ef49411"
-dependencies = [
- "cc",
- "cmake",
- "pkg-config",
-]
+checksum = "6bc4483945bfd66b8727ed59005af1543d3d966ca92f9bc065bfef532de1d7e8"
 
 [[package]]
 name = "serde"

@@ -3,6 +3,12 @@ members = ["crates/infra", "crates/onnx-infra", "crates/asr-local", "crates/asr-
 exclude = ["xcap"]
 resolver = "2"
 
+# ort crate 升级到 GitHub main（ORT 1.27.1）——crates.io 最新 rc.12 内置 ORT 1.24.2
+# 无法解析 m2m100 int8 量化模型（IR=8 + DynamicQuantizeLinear），1.27.1 修复。
+[patch.crates-io]
+ort = { path = "/Users/wudarui/workspace/agent/ort" }
+ort-sys = { path = "/Users/wudarui/workspace/agent/ort/ort-sys" }
+
 # Release profile：缩减打包体积（2026-06-20，体积裁剪报告）。
 # 仅加纯打包优化，不改运行时语义——三个选项都是链接期/符号表层面：
 #   strip         → 删符号表（__LINKEDIT 16.4M 基本全回收）
