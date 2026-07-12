@@ -711,14 +711,16 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                                 },
                                 _ => "【翻译】\n❌ 引擎加载失败".into(),
                             };
-                            // 翻译完成：隐藏浮窗 + 开结果 tab（主线程建窗）
-                            if let Some(win) = app_clone.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
-                                let _ = win.hide();
-                            }
-                            #[cfg(target_os = "macos")]
-                            { crate::activation::after_floating_window_hide_keep_active(&app_clone); }
+                            // 翻译完成：隐藏浮窗 + 恢复 depth + 重置 guard + 开结果 tab
+                            // 全部走主线程（win.hide / w.show / 建窗 均为 AppKit/NSWindow 操作）
                             let app_for_thread = app_clone.clone();
                             let _ = app_clone.run_on_main_thread(move || {
+                                if let Some(win) = app_for_thread.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+                                    let _ = win.hide();
+                                }
+                                #[cfg(target_os = "macos")]
+                                { crate::activation::after_floating_window_hide_keep_active(&app_for_thread); }
+                                finalize_action_bar(&app_for_thread);
                                 crate::compact_editor_commands::open_temp_compact_editor(&app_for_thread, &display);
                             });
                         });
