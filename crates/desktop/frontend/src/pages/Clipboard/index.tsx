@@ -400,7 +400,9 @@ export default function Clipboard() {
                 </pre>
               ) : (
                 <pre className="px-2 py-1.5 text-[11px] text-foreground whitespace-pre-wrap break-words font-mono leading-relaxed">
-                  {previewItem.content}
+                  {previewItem.content.length > 500
+                    ? previewItem.content.slice(0, 500) + "\n\n…"
+                    : previewItem.content}
                 </pre>
               )}
             </div>
