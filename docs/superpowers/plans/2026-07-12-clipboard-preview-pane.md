@@ -528,4 +528,9 @@ git commit -m "docs: 剪贴板预览面板完成，更新 architecture + spec"
 | capabilities + Rust 模块 | 不需要 | overlay 纯前端，无 Rust 改动 |
 | 预览无截断 | 长文本 >500 字截断 + … | 万字级文本一次性渲染 DOM 卡顿 |
 | hover 与键盘导航冲突 | 键盘 ↑↓ 时 keyboardNavRef 屏蔽 mouseEnter 300ms | scrollIntoView 滚动误触 onMouseEnter 抢回旧选中位置 |
+| en.yaml previewOn/Off 放错段 | 移到 clipboard: 段 | 英文 tooltip 显示 raw key（screenshot 段误放） |
+| 缩略图 IPC 竞态 | cancelled 守卫 + cleanup | 快速切图时旧 invoke 结果覆盖新图 |
+| previewTop clamp 坐标系 | clamp 上下界加 listEl.scrollTop | abs 子元素 top 是内容坐标，视口常量 clamp 致滚动后预览消失 |
+| 浮窗失焦隐藏预览 | onFocusChanged 失焦 setPreviewItem(null) | 预览应随浮窗一起消失 |
+| keyboardNavRef setTimeout | timer ref + 卸载清理 | 连按方向键堆叠 timer 未清理 |
 
