@@ -263,3 +263,23 @@ v17 废弃原 `transcriptions` 表（db.sql 不再含此表）。
 - **收藏 tab 自然删 0 条**：`filter="favorite"` + `keep_favorite=true` → `is_favorite = 1 AND is_favorite = 0` 恒假，后端无需特判，前端 `disabled` 按钮。
 - **两步 inline 确认**：点 1 次 → `confirming=true`（变红「再点确认」+ 3s 超时回退），再点才执行。filter 切换/卸载清 timer（防 A tab 点了第一步、切 B tab 误清 B）。
 - **与搜索框正交**：删整个 tab 类别非收藏，与搜索词无关。
+
+---
+
+## 13. 边缘吸附（dock）
+
+> 拖到屏幕边缘 ≤10px 自动吸附收缩为 8px voice 色细条，hover/点击展开，失焦收缩，拖离边缘恢复。
+
+**窗口物理尺寸不变**（300×600），收缩靠 CSS 隐藏 + `cursor_position()` 轮询穿透（与 result_window 统一）。
+- `DOCK_EXPANDED: AtomicBool` Rust 侧状态真相源。
+- dock 恢复用**保存坐标**定位显示器（非 `current_monitor()`，窗口刚创建在默认位置返回主屏导致副屏 dock 跑到主屏）。
+- 仅 macOS（`#[cfg(target_os="macos")]` gate）。
+
+## 14. hover 预览 overlay
+
+> 预览开关（标题栏 Eye/EyeOff，默认关闭，localStorage 记住）开启时，hover / 键盘 ↑↓ 选中条目后列表右侧弹出 200×200 absolute overlay。
+
+- 文本→等宽可滚动 `text-[11px]`（>500 字截断防卡顿）、图片→缩略图（cancelled 竞态守卫）、文件→路径。
+- 智能定位：选中在上半→预览在下方（底边与条目重叠 2px）；下半→上方。clamp 上下界含 `scrollTop`（abs 子元素随内容滚动）。
+- 键盘/hover 防冲突：键盘 ↑↓ 时 `keyboardNavRef=true` 屏蔽 mouseEnter 300ms（`onHover` prop 独立于 `onSelect`）。
+- 浮窗失焦时隐藏预览（`onFocusChanged`）。

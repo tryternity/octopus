@@ -93,6 +93,12 @@ ASR/VAD 用各自 cache 常驻，无 idle 释放。
 | **多行正文** | 同段 ≥2 行 | code fence 包裹保留原始分行（不 reflow，避免破坏对齐排版） |
 | **单行正文** | 同段仅 1 行 | 直接输出 |
 
+**CJK 感知的空格规则**（`needs_space_between`）：
+- ASCII↔ASCII 边界：插入空格（英文词间需要）。
+- CJK↔CJK：不插空格。
+- CJK↔ASCII：插空格。
+- 标题分类优先于列表标记检测（字号比 `TITLE_H1_RATIO=1.6` / `TITLE_H2_RATIO=1.3` 满足时，即使有列表前缀也归为标题）。
+
 常量（起始值，可调）：`MIN_BLOCKS_FOR_LAYOUT=3`、`TITLE_H1_RATIO=1.6`、`TITLE_H2_RATIO=1.3`、`PARAGRAPH_GAP_RATIO=0.8`。
 
 块数 < 3 时不分析布局，直接 `\n\n` join。`recognize` / `recognize_with_blocks` 返回的 String 语义从扁平文本变为 Markdown，消费端（DB content / CompactEditor / AI 输入）零改动受益。前端 ImagePreview 叠加不受影响（blocks 仍是原始 det 框）。
