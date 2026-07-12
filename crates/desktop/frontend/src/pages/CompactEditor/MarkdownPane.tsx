@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect, useMemo } from "react";
 import type { EditorView } from "@codemirror/view";
 import { undo, redo } from "@codemirror/commands";
-import { Undo2, Redo2, ZoomIn, ZoomOut, Eraser, Check, Save, Eye, Columns2, FileText } from "lucide-react";
+import { Undo2, Redo2, ZoomIn, ZoomOut, Eraser, Check, Save, Eye, Columns2, FileText, Languages, Loader2 } from "lucide-react";
 import { CodeMirrorEditor } from "./CodeMirrorEditor";
 import { MarkdownPreview } from "./MarkdownPreview";
 import { useSyncScroll } from "@/hooks/useSyncScroll";
@@ -25,6 +25,8 @@ interface MarkdownPaneProps {
   onSave: () => void;
   disableSave?: boolean;
   savedFlash: boolean;
+  onTranslate?: () => void;
+  translating?: boolean;
 }
 
 const ToolBtn = ({ onClick, title, disabled, children }: {
@@ -40,7 +42,7 @@ const ToolBtn = ({ onClick, title, disabled, children }: {
 );
 
 export function MarkdownPane({
-  text, readOnly, fontSize, onFontSizeChange, onChange, onClear, onSave, disableSave, savedFlash,
+  text, readOnly, fontSize, onFontSizeChange, onChange, onClear, onSave, disableSave, savedFlash, onTranslate, translating,
 }: MarkdownPaneProps) {
   const t = useT();
   const [viewMode, setViewMode] = useState<ViewMode>(readOnly ? "preview" : "split");
@@ -152,6 +154,21 @@ export function MarkdownPane({
         <ToolBtn onClick={() => setViewMode("editor")} title={t("editor.view.editor")} disabled={viewMode === "editor"}>
           <FileText className="w-4 h-4" />
         </ToolBtn>
+        {!readOnly && onTranslate && (
+          <>
+            <button
+              type="button"
+              onClick={onTranslate}
+              disabled={translating}
+              title={t("editor.translate")}
+              className="flex items-center gap-1 px-2 py-1 rounded-md text-xs bg-[#007aff] hover:bg-[#0066d6] text-white transition-colors disabled:opacity-50"
+            >
+              {translating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Languages className="w-3.5 h-3.5" />}
+              {translating ? t("editor.translating") : t("editor.translate")}
+            </button>
+            <span className="w-px h-4 bg-border mx-1" />
+          </>
+        )}
         <ToolBtn onClick={() => setViewMode("split")} title={t("editor.view.split")} disabled={viewMode === "split"}>
           <Columns2 className="w-4 h-4" />
         </ToolBtn>

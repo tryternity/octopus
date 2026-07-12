@@ -1,0 +1,203 @@
+import { useState, useRef, useCallback, useEffect, useMemo } from "react";
+import type { EditorView } from "@codemirror/view";
+import { undo, redo } from "@codemirror/commands";
+import {
+  Undo2, Redo2, ZoomIn, ZoomOut, Check, Save, FileText, Eye,
+  PanelLeft, Columns2, PanelRight, Languages, Loader2,
+} from "lucide-react";
+import { CodeMirrorEditor } from "./CodeMirrorEditor";
+import { MarkdownPreview } from "./MarkdownPreview";
+import { useT } from "@/lib/i18n";
+
+type PaneMode = "editor" | "preview";
+type ViewLayout = "left" | "contrast" | "right";
+
+const FONT_MIN = 12;
+const FONT_MAX = 24;
+
+interface TranslationContrastPaneProps {
+  originalText: string;
+  translatedText: string;
+  readOnly: boolean;
+  fontSize: number;
+  onFontSizeChange: (n: number) => void;
+  onOriginalChange: (s: string) => void;
+  onTranslatedChange: (s: string) => void;
+  onTranslate: () => void;
+  onSave: () => void;
+  disableSave?: boolean;
+  savedFlash: boolean;
+  translating: boolean;
+}
+
+const ToolBtn = ({ onClick, title, disabled, active, children }: {
+  onClick: () => void; title: string; disabled?: boolean; active?: boolean; children: React.ReactNode;
+}) => (
+  <button
+    type="button"
+    disabled={disabled}
+    title={title}
+    onClick={onClick}
+    className={`p-1.5 rounded-md transition-colors disabled:opacity-30 disabled:hover:bg-transparent ${
+      active ? "bg-accent text-foreground" : "text-muted-foreground hover:bg-accent hover:text-foreground"
+    }`}
+  >{children}</button>
+);
+
+export function TranslationContrastPane({
+  originalText, translatedText, readOnly, fontSize, onFontSizeChange,
+  onOriginalChange, onTranslatedChange, onTranslate, onSave, disableSave, savedFlash, translating,
+}: TranslationContrastPaneProps) {
+  const t = useT();
+  const [leftMode, setLeftMode] = useState<PaneMode>("editor");
+  const [rightMode, setRightMode] = useState<PaneMode>("editor");
+  const [viewLayout, setViewLayout] = useState<ViewLayout>("contrast");
+  const [translateConfirm, setTranslateConfirm] = useState(false);
+  const dirtyTranslatedRef = useRef(false);
+  const leftViewRef = useRef<EditorView | null>(null);
+  const rightViewRef = useRef<EditorView | null>(null);
+
+  useEffect(() => { dirtyTranslatedRef.current = false; }, [translatedText]);
+  const handleTranslatedChange = useCallback((next: string) => {
+    dirtyTranslatedRef.current = true;
+    onTranslatedChange(next);
+  }, [onTranslatedChange]);
+
+  const confirmTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (confirmTimerRef.current) clearTimeout(confirmTimerRef.current); }, []);
+
+  const handleTranslateClick = useCallback(() => {
+    if (dirtyTranslatedRef.current && !translateConfirm) {
+      setTranslateConfirm(true);
+      confirmTimerRef.current = setTimeout(() => { setTranslateConfirm(false); confirmTimerRef.current = null; }, 2000);
+      return;
+    }
+    if (confirmTimerRef.current) { clearTimeout(confirmTimerRef.current); confirmTimerRef.current = null; }
+    setTranslateConfirm(false);
+    dirtyTranslatedRef.current = false;
+    onTranslate();
+  }, [dirtyTranslatedRef, translateConfirm, onTranslate]);
+
+  const handleUndoLeft = useCallback(() => { if (leftViewRef.current) undo(leftViewRef.current); }, []);
+  const handleRedoLeft = useCallback(() => { if (leftViewRef.current) redo(leftViewRef.current); }, []);
+  const handleUndoRight = useCallback(() => { if (rightViewRef.current) undo(rightViewRef.current); }, []);
+  const handleRedoRight = useCallback(() => { if (rightViewRef.current) redo(rightViewRef.current); }, []);
+
+  const leftFlex = viewLayout === "left" ? "1" : viewLayout === "right" ? "0" : "1";
+  const rightFlex = viewLayout === "right" ? "1" : viewLayout === "left" ? "0" : "1";
+
+  const origCharCount = useMemo(() => [...originalText].length, [originalText]);
+  const transCharCount = useMemo(() => [...translatedText].length, [translatedText]);
+
+  const renderPane = (
+    label: string,
+    charCount: number,
+    paneMode: PaneMode,
+    setPaneMode: (m: PaneMode) => void,
+    text: string,
+    onChange: (s: string) => void,
+    viewRef: React.RefObject<EditorView | null>,
+    onUndo: () => void,
+    onRedo: () => void,
+    visible: boolean,
+    flexBasis: string,
+  ) => (
+    <div
+      className={`flex flex-col min-h-0 min-w-0 ${visible && flexBasis !== "0" ? "border-r last:border-r-0 border-border" : ""}`}
+      style={{ display: visible ? "flex" : "none", flex: flexBasis }}
+    >
+      <div className="flex-shrink-0 flex items-center gap-0.5 px-2 py-1 border-b border-border bg-muted/50">
+        <button type="button" onClick={onUndo} title={t("editor.undo")} className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground">
+          <Undo2 className="w-3.5 h-3.5" />
+        </button>
+        <button type="button" onClick={onRedo} title={t("editor.redo")} className="p-1 rounded hover:bg-accent text-muted-foreground hover:text-foreground">
+          <Redo2 className="w-3.5 h-3.5" />
+        </button>
+        <span className="text-[11px] text-muted-foreground font-medium ml-1">{label}</span>
+        <span className="text-[10px] text-muted-foreground tabular-nums">{t("editor.charCount", { n: charCount })}</span>
+        <div className="flex-1" />
+        <ToolBtn onClick={() => setPaneMode("editor")} title={t("editor.view.editor")} disabled={readOnly || paneMode === "editor"} active={paneMode === "editor"}>
+          <FileText className="w-3.5 h-3.5" />
+        </ToolBtn>
+        <ToolBtn onClick={() => setPaneMode("preview")} title={t("editor.view.preview")} disabled={paneMode === "preview"} active={paneMode === "preview"}>
+          <Eye className="w-3.5 h-3.5" />
+        </ToolBtn>
+      </div>
+      <div className="flex-1 flex min-h-0">
+        <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden" style={{ display: paneMode === "preview" ? "none" : "flex" }}>
+          <CodeMirrorEditor value={text} readOnly={readOnly} fontSize={fontSize} onChange={onChange} viewRef={viewRef} />
+        </div>
+        <div className="flex-1 min-h-0 min-w-0 flex flex-col overflow-hidden" style={{ display: paneMode === "editor" ? "none" : "flex" }}>
+          <MarkdownPreview source={text} fontSize={fontSize} />
+        </div>
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col flex-1 min-h-0">
+      <div className="flex-shrink-0 flex items-center gap-0.5 px-2 py-1.5 border-b border-border bg-muted">
+        <ToolBtn onClick={() => onFontSizeChange(Math.max(FONT_MIN, fontSize - 1))} title={t("editor.fontSize")} disabled={fontSize <= FONT_MIN}>
+          <ZoomOut className="w-4 h-4" />
+        </ToolBtn>
+        <span className="text-[11px] text-muted-foreground w-7 text-center tabular-nums">{fontSize}</span>
+        <ToolBtn onClick={() => onFontSizeChange(Math.min(FONT_MAX, fontSize + 1))} title={t("editor.fontSize")} disabled={fontSize >= FONT_MAX}>
+          <ZoomIn className="w-4 h-4" />
+        </ToolBtn>
+        <span className="w-px h-4 bg-border mx-1" />
+        <ToolBtn onClick={() => setViewLayout("left")} title={t("editor.contrast.layoutOriginal")} active={viewLayout === "left"}>
+          <PanelLeft className="w-4 h-4" />
+        </ToolBtn>
+        <ToolBtn onClick={() => setViewLayout("contrast")} title={t("editor.contrast.layoutContrast")} active={viewLayout === "contrast"}>
+          <Columns2 className="w-4 h-4" />
+        </ToolBtn>
+        <ToolBtn onClick={() => setViewLayout("right")} title={t("editor.contrast.layoutTranslated")} active={viewLayout === "right"}>
+          <PanelRight className="w-4 h-4" />
+        </ToolBtn>
+        <div className="flex-1" />
+        <button
+          type="button"
+          onClick={handleTranslateClick}
+          disabled={translating}
+          title={translateConfirm ? t("editor.translateConfirm") : t("editor.translate")}
+          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs transition-colors ${
+            translateConfirm
+              ? "bg-red-500 text-white"
+              : "bg-[#007aff] hover:bg-[#0066d6] text-white"
+          } disabled:opacity-50 disabled:cursor-not-allowed`}
+        >
+          {translating ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Languages className="w-3.5 h-3.5" />}
+          {translateConfirm ? t("editor.translateConfirm") : t("editor.translate")}
+        </button>
+        <span className="w-px h-4 bg-border mx-1" />
+        <button
+          type="button"
+          disabled={disableSave}
+          onClick={onSave}
+          className={`flex items-center gap-1 px-2.5 py-1 rounded-md text-xs transition-colors ${
+            disableSave
+              ? "bg-muted text-muted-foreground cursor-not-allowed"
+              : savedFlash ? "bg-emerald-600 text-white" : "bg-[#007aff] hover:bg-[#0066d6] text-white"
+          }`}
+        >
+          {savedFlash ? <Check className="w-3.5 h-3.5" /> : <Save className="w-3.5 h-3.5" />}
+          {savedFlash ? t("editor.saved") : t("editor.save")}
+          <span className="text-[10px] opacity-70">⌘↵</span>
+        </button>
+      </div>
+
+      <div className="flex-1 flex min-h-0">
+        {renderPane(
+          t("editor.contrast.original"), origCharCount, leftMode, setLeftMode,
+          originalText, onOriginalChange, leftViewRef, handleUndoLeft, handleRedoLeft,
+          viewLayout !== "right", leftFlex,
+        )}
+        {renderPane(
+          t("editor.contrast.translated"), transCharCount, rightMode, setRightMode,
+          translatedText, handleTranslatedChange, rightViewRef, handleUndoRight, handleRedoRight,
+          viewLayout !== "left", rightFlex,
+        )}
+      </div>
+    </div>
+  );
+}

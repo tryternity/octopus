@@ -5,6 +5,7 @@ import {
 } from "lucide-react";
 import ImagePreviewComponent from "@/pages/ImagePreview";
 import { MarkdownPane } from "./MarkdownPane";
+import { TranslationContrastPane } from "./TranslationContrastPane";
 import { mergePendingTabs } from "./mergePendingTabs";
 import { promoteTempTab } from "./promoteTempTab";
 import { useT, t as ti18n } from "@/lib/i18n";
@@ -100,6 +101,7 @@ function CompactEditor() {
     return saved >= FONT_MIN && saved <= FONT_MAX ? saved : 15;
   });
   const [savedFlash, setSavedFlash] = useState(false);
+  const [translating, setTranslating] = useState(false);
   const savedFlashTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   useEffect(() => () => { if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current); }, []);
 
@@ -209,11 +211,13 @@ function CompactEditor() {
     if (!active) return;
     if (active.source === 'transcription') return;
     if (active.itemType && active.itemType !== 'text') return;
+    // contrast 模式保存译文（右半），原文是脚手架不持久化
+    const saveText = active.mode === 'contrast' ? (active.translatedText || "") : (active.text || "");
     try {
       // temp tab（图文编辑空白入口）：空→关闭 tab；非空→insert 新条目并升级为正式 clipboard tab。
       // 升级后 key/itemId/isTemp 同步（promoteTempTab），后续编辑走下方「既有条目 update」路径。
       if (active.isTemp) {
-        if ((active.text || "").trim() === "") {
+        if (saveText.trim() === "") {
           if (tabs.length <= 1) { invoke("close_compact_editor"); return; }
           const idx = activeIdx;
           const next = tabsRef.current.filter((_, i) => i !== idx);
@@ -222,8 +226,12 @@ function CompactEditor() {
           setActiveIdx(Math.min(activeIdx, next.length - 1));
           return;
         }
-        const newId = await invoke<number>("insert_clipboard_text_item", { text: active.text || "" });
-        const next = promoteTempTab(tabsRef.current, activeIdx, newId);
+        // contrast temp 升级前把 text 设为译文（promoteTempTab 依赖 text 作为条目内容）
+        const tabsWithText = active.mode === 'contrast'
+          ? tabsRef.current.map((t, i) => i === activeIdx ? { ...t, text: saveText } : t)
+          : tabsRef.current;
+        const newId = await invoke<number>("insert_clipboard_text_item", { text: saveText });
+        const next = promoteTempTab(tabsWithText, activeIdx, newId);
         tabsRef.current = next;
         setTabs(next);
         setSavedFlash(true);
@@ -232,7 +240,7 @@ function CompactEditor() {
         return;
       }
       // 既有条目：空→删条目并关 tab；非空→update content。
-      if ((active.text || "").trim() === "") {
+      if (saveText.trim() === "") {
         await invoke("delete_clipboard_item", { id: active.itemId });
         if (tabs.length <= 1) {
           invoke("close_compact_editor");
@@ -245,7 +253,7 @@ function CompactEditor() {
         setActiveIdx(idx === activeIdx ? Math.min(activeIdx, next.length - 1) : activeIdx > idx ? activeIdx - 1 : activeIdx);
         return;
       }
-      await invoke("set_clipboard_item_text", { itemId: active.itemId, text: active.text || "" });
+      await invoke("set_clipboard_item_text", { itemId: active.itemId, text: saveText });
       setSavedFlash(true);
       if (savedFlashTimer.current) clearTimeout(savedFlashTimer.current);
       savedFlashTimer.current = setTimeout(() => setSavedFlash(false), 1200);
@@ -258,6 +266,30 @@ function CompactEditor() {
   // 每键拿新引用；若 keydown useEffect deps 含 doSave，监听器每键 remove+add（GC 压力）。改用 ref：
   const doSaveRef = useRef(doSave);
   useEffect(() => { doSaveRef.current = doSave; }, [doSave]);
+
+  // 工具栏翻译按钮：翻全文，成功后切 contrast 模式
+  const handleTranslateForTab = useCallback(async (idx: number) => {
+    const tab = tabsRef.current[idx];
+    if (!tab || tab.source === 'transcription') return;
+    const sourceText = tab.text || "";
+    if (!sourceText.trim()) return;
+    setTranslating(true);
+    try {
+      const translated = await invoke<string>("translate_text", { text: sourceText });
+      const next = tabsRef.current.map((t, i) =>
+        i === idx
+          ? { ...t, mode: 'contrast' as const, originalText: sourceText, translatedText: translated }
+          : t
+      );
+      tabsRef.current = next;
+      setTabs(next);
+    } catch (e) {
+      console.error("翻译失败:", e);
+      alert(ti18n("editor.translateFail") + ": " + String(e));
+    } finally {
+      setTranslating(false);
+    }
+  }, []);
 
   // 关闭 tab：仅剩一个则关窗；否则移除并修正 activeIdx。
   const closeTab = (idx: number) => {
@@ -332,19 +364,38 @@ function CompactEditor() {
                 </div>
               )
             ) : (
-              // 文本/语音 tab：仅活跃 tab 挂载 MarkdownPane
+              // 文本/语音 tab：仅活跃 tab 挂载，contrast 渲染 TranslationContrastPane
               i === activeIdx ? (
-                <MarkdownPane
-                  text={tab.text || ''}
-                  readOnly={tab.source === 'transcription'}
-                  fontSize={fontSize}
-                  onFontSizeChange={setFontSize}
-                  onChange={(next) => updateActiveTextAt(next, i)}
-                  onClear={() => updateActiveTextAt('', i)}
-                  onSave={doSave}
-                  disableSave={tab.source === 'transcription'}
-                  savedFlash={savedFlash}
-                />
+                tab.mode === 'contrast' ? (
+                  <TranslationContrastPane
+                    originalText={tab.originalText || ''}
+                    translatedText={tab.translatedText || ''}
+                    readOnly={tab.source === 'transcription'}
+                    fontSize={fontSize}
+                    onFontSizeChange={setFontSize}
+                    onOriginalChange={(next) => updateActiveTextAt(next, i)}
+                    onTranslatedChange={(next) => setTabs(prev => prev.map((t, j) => j === i ? { ...t, translatedText: next } : t))}
+                    onTranslate={() => handleTranslateForTab(i)}
+                    onSave={doSave}
+                    disableSave={tab.source === 'transcription'}
+                    savedFlash={savedFlash}
+                    translating={translating}
+                  />
+                ) : (
+                  <MarkdownPane
+                    text={tab.text || ''}
+                    readOnly={tab.source === 'transcription'}
+                    fontSize={fontSize}
+                    onFontSizeChange={setFontSize}
+                    onChange={(next) => updateActiveTextAt(next, i)}
+                    onClear={() => updateActiveTextAt('', i)}
+                    onSave={doSave}
+                    disableSave={tab.source === 'transcription'}
+                    savedFlash={savedFlash}
+                    onTranslate={tab.source === 'transcription' ? undefined : () => handleTranslateForTab(i)}
+                    translating={translating}
+                  />
+                )
               ) : (
                 <div className="flex-1 flex items-center justify-center text-xs text-muted-foreground">
                   {t("editor.switchHint")}
