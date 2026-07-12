@@ -13,9 +13,9 @@ const RESULT_WIDTH: f64 = 720.0;
 const RESULT_HEIGHT: f64 = 480.0;
 const WINDOW_LABEL: &str = "result_window";
 
-// 精简态小条在 720 宽窗口内水平居中的左边距（= (720-520)/2），与前端 CSS 定位一致。
+// 精简态小条与窗口同宽（720px），工具栏按钮从左边缘开始排列。
 // 轮询线程据此判光标是否在小条内（内→可交互，外→穿透）。
-const BAR_W: f64 = 520.0;
+const BAR_W: f64 = 720.0;
 const BAR_H: f64 = 116.0;
 const BAR_OFFSET_X: f64 = (RESULT_WIDTH - BAR_W) / 2.0;
 
