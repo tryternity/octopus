@@ -397,7 +397,7 @@ impl M2M100Engine {
         let model_dir = resolve_model_dir(source)?;
 
         let encoder_path = model_dir.join("onnx/encoder_model_quantized.onnx");
-        let decoder_path = model_dir.join("decoder_model.onnx");
+        let decoder_path = model_dir.join("decoder_model_quantized.onnx");
         let tokenizer_path = model_dir.join("tokenizer.json");
 
         for (name, path) in [("encoder", &encoder_path), ("decoder", &decoder_path), ("tokenizer", &tokenizer_path)] {
@@ -611,7 +611,7 @@ fn check_model_downloaded(repo: &str) -> bool {
     find_model_path(repo)
         .map(|dir| {
             dir.join("onnx/encoder_model_quantized.onnx").exists()
-                && dir.join("decoder_model.onnx").exists()
+                && dir.join("decoder_model_quantized.onnx").exists()
                 && dir.join("tokenizer.json").exists()
         })
         .unwrap_or(false)

@@ -190,32 +190,9 @@ function CompactEditor() {
       setInitialLoading(false);
     })();
 
-    // 翻译完成事件——更新最后一个 temp tab 的文本
-    let unlistenTranslate: (() => void) | undefined;
-    (async () => {
-      const fn = await listen("translate-done", (payload) => {
-        // 新格式: { key: string, text: string } — 定向更新最后一个 temp tab
-        // 旧格式: string — 兼容
-        const data = typeof payload === "string"
-          ? { text: payload }
-          : payload as { key?: string; text: string };
-        const tabs = tabsRef.current;
-        // 找最后一个 temp tab（就是刚打开的翻译结果 tab）
-        for (let i = tabs.length - 1; i >= 0; i--) {
-          if (tabs[i].isTemp) {
-            updateActiveTextAt(data.text, i);
-            break;
-          }
-        }
-      });
-      if (cancelled) { fn(); return; }
-      unlistenTranslate = fn;
-    })();
-
     return () => {
       cancelled = true;
       unlisten?.();
-      unlistenTranslate?.();
     };
   }, [loadAndAddTab, updateActiveTextAt]);
 

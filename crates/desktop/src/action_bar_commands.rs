@@ -2,7 +2,7 @@
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
-use tauri::{AppHandle, Emitter, Manager};
+use tauri::{AppHandle, Manager};
 
 use crate::action_bar_window::{hide_action_bar_window, show_action_bar_window};
 use crate::focus_tracker::FocusTracker;
@@ -697,33 +697,26 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                 let (source_lang, target_lang) = detect_translate_direction(&text);
                 match resolve_translate_strategy(&config) {
                     TranslateStrategy::Local(spec) => {
-                        // 本地翻译耗时很长——立即打开 CompactEditor 显示 loading，
-                        // 引擎加载 + 翻译都在后台线程执行，不阻塞主线程。
-                        // 用唯一 session key 关联 loading tab 和翻译结果，避免投递到错误的 temp tab。
-                        let session_key = format!("translate:{}", std::time::SystemTime::now()
-                            .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_millis());
-                        action_bar_show_result("⏳ 正在翻译…".into(), text.clone(), item.title.clone(), app.clone(), false);
+                        // 本地翻译耗时——先隐藏浮窗，翻译完成后再开 CompactEditor 展示结果。
+                        // 不预先开 loading tab，避免与托盘「图文编辑」temp tab 竞争 translate-done 投递。
+                        if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+                            let _ = win.hide();
+                        }
+                        #[cfg(target_os = "macos")]
+                        { crate::activation::after_floating_window_hide_keep_active(&app); }
+                        finalize_action_bar(&app);
 
                         let app_clone = app.clone();
                         std::thread::spawn(move || {
                             let manager = octopus_translation::TranslationManager::new(&spec);
-                            match manager.engine() {
-                                Ok(Some(engine)) => {
-                                    let result = engine.translate(&text, source_lang, target_lang);
-                                    match result {
-                                        Ok(translated) => {
-                                            let display = format!("【翻译】\n{}", translated);
-                                            let _ = app_clone.emit("translate-done", serde_json::json!({ "key": &session_key, "text": &display }));
-                                        }
-                                        Err(e) => {
-                                            let _ = app_clone.emit("translate-done", serde_json::json!({ "key": &session_key, "text": format!("【翻译】\n❌ {}", e) }));
-                                        }
-                                    }
-                                }
-                                _ => {
-                                    let _ = app_clone.emit("translate-done", serde_json::json!({ "key": &session_key, "text": "【翻译】\n❌ 引擎加载失败" }));
-                                }
-                            }
+                            let display = match manager.engine() {
+                                Ok(Some(engine)) => match engine.translate(&text, source_lang, target_lang) {
+                                    Ok(translated) => format!("【翻译】\n{}", translated),
+                                    Err(e) => format!("【翻译】\n❌ {}", e),
+                                },
+                                _ => "【翻译】\n❌ 引擎加载失败".into(),
+                            };
+                            crate::compact_editor_commands::open_temp_compact_editor(&app_clone, &display);
                         });
                         return Ok(true);
                     }

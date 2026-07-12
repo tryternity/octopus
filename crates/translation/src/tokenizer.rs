@@ -9,9 +9,6 @@ pub struct M2M100Tokenizer {
 pub const EOS_ID: i64 = 2;
 pub const DECODER_START_TOKEN_ID: i64 = 2;
 
-/// m2m100 tokenizer.json 中未知语言的 fallback token id（仅用于错误诊断，不应进入正常翻译流程）
-pub const FALLBACK_LANG_ID: u32 = 128022;
-
 /// 语言标记 token IDs（from tokenizer.json, m2m100 standard layout）
 pub fn lang_code_to_id(lang: &str, tok: &Tokenizer) -> Option<u32> {
     let prefix = lang.get(..2).unwrap_or(lang).to_lowercase();
