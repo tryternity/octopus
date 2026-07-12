@@ -380,15 +380,15 @@ export default function Clipboard() {
                   {previewThumb ? (
                     <img src={previewThumb} alt="preview" className="max-w-full max-h-full rounded object-contain" />
                   ) : (
-                    <span className="text-[10px] text-muted-foreground">Loading...</span>
+                    <span className="text-[11px] text-muted-foreground">Loading...</span>
                   )}
                 </div>
               ) : previewItem.item_type === "file" ? (
-                <pre className="px-2 py-1.5 text-[10px] text-muted-foreground whitespace-pre-wrap break-all font-mono">
+                <pre className="px-2 py-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap break-all font-mono">
                   {previewItem.ref_data || ""}
                 </pre>
               ) : (
-                <pre className="px-2 py-1.5 text-[10px] text-foreground whitespace-pre-wrap break-words font-mono leading-relaxed">
+                <pre className="px-2 py-1.5 text-[11px] text-foreground whitespace-pre-wrap break-words font-mono leading-relaxed">
                   {previewItem.content}
                 </pre>
               )}
