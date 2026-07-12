@@ -491,7 +491,8 @@ screenshot:
   confirm: Confirm
   cancel: Cancel
   pin: Pin
-  ocrBusy: Previous OCR not finished, please wait
+  previewOn: Disable Preview
+  previewOff: Enable Preview
   save: Save
   copy: Copy
   props:

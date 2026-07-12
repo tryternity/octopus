@@ -208,12 +208,14 @@ impl StreamingPipeline {
     /// - local：changed→[PersistRaw,Emit]；每 tick→[Polish]；空样本→[]（早退）
     /// - cloud：changed→[PersistRaw,Polish]；每 tick→[Emit{display+partial}]；error→[Error]
     pub fn tick(&mut self, samples: &[f32], transcript: &mut Transcript) -> Vec<PipelineEvent> {
+        let t_start = std::time::Instant::now();
         let is_cloud = self.engine.is_cloud();
         // local 空样本早退（等价原 handle_streaming_tick L1370）；cloud 不早退（仍 emit 预览/drain）
         if !is_cloud && samples.is_empty() {
             return Vec::new();
         }
         let mut changed = false;
+        let t_infer = std::time::Instant::now();
         for event in self.engine.tick(samples) {
             match event {
                 TranscriptEvent::Partial(text) | TranscriptEvent::Committed(text) => {
@@ -229,6 +231,7 @@ impl StreamingPipeline {
                 }
             }
         }
+        let infer_ms = t_infer.elapsed().as_millis();
         let mut events = Vec::new();
         // VAD 说话状态变化 → Speaking 事件
         let speaking = self.engine.silence_duration() < 0.3;
@@ -260,6 +263,13 @@ impl StreamingPipeline {
             }
             // local 每 tick 查停顿润色（等价原 handle_streaming_tick L1408）
             events.push(PipelineEvent::Polish { silence: self.engine.silence_duration() });
+        }
+        let total_ms = t_start.elapsed().as_millis();
+        if total_ms > 30 {
+            crate::perf_log::log(&format!(
+                "[BE tick] total={}ms infer={}ms samples={} changed={} is_cloud={}",
+                total_ms, infer_ms, samples.len(), changed, is_cloud
+            ));
         }
         events
     }

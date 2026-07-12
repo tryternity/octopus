@@ -7,9 +7,10 @@ import { moveIndex, moveTab } from "@/lib/clipboardNav";
 import FilterTabs from "./FilterTabs";
 import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
-import { Pin, X, Settings2, CircleCheck, CircleX, Trash2 } from "lucide-react";
+import { Pin, X, Settings2, CircleCheck, CircleX, Trash2, Eye, EyeOff } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
+import type { ClipboardItem } from "@/types/clipboard";
 
 interface ConfigResponse {
   config: Record<string, string | number | boolean>;
@@ -26,6 +27,20 @@ export default function Clipboard() {
   // 键盘导航以数组索引为第一性 citizen；执行动作时从 items[selectedIndex].id 取。
   const [selectedIndex, setSelectedIndex] = useState<number | null>(null);
   const [recording, setRecording] = useState(true);
+  // 预览面板开关（标题栏按钮控制）；默认关闭，记住用户选择
+  const [previewEnabled, setPreviewEnabled] = useState(() => {
+    return localStorage.getItem("clipboard-preview-enabled") !== "false";
+  });
+  const togglePreview = useCallback(() => {
+    setPreviewEnabled(prev => {
+      const next = !prev;
+      localStorage.setItem("clipboard-preview-enabled", String(next));
+      return next;
+    });
+  }, []);
+  // 预览内容：当前选中/hover 条目的完整数据
+  const [previewItem, setPreviewItem] = useState<ClipboardItem | null>(null);
+  const [previewThumb, setPreviewThumb] = useState<string | null>(null);
   // 一键清理两步确认：点 1 次 → confirming=true（变红 + 3s 超时），再点才执行。
   const [confirming, setConfirming] = useState(false);
   const confirmTimer = useRef<number | null>(null);
@@ -64,6 +79,11 @@ export default function Clipboard() {
   // 每行 prop 引用每帧变化 → memo 失效、50 行全重绘。setSelectedIndex 来自 useState 稳定，
   // useCallback([]) 产出恒定引用，行内再以 onSelect(index) 回带 index。
   const handleSelect = useCallback((index: number) => setSelectedIndex(index), []);
+  // hover 专用：键盘导航期间忽略（scrollIntoView 滚动会误触 mouseEnter）
+  const handleHover = useCallback((index: number) => {
+    if (keyboardNavRef.current) return;
+    setSelectedIndex(index);
+  }, []);
 
   // 选中变化时滚动到可见行。
   useEffect(() => {
@@ -71,6 +91,24 @@ export default function Clipboard() {
     const el = document.querySelector(`[data-clip-index="${selectedIndex}"]`);
     el?.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
+
+  // 选中变化时更新预览内容
+  useEffect(() => {
+    if (selectedIndex === null) { setPreviewItem(null); return; }
+    const item = items[selectedIndex];
+    if (item) setPreviewItem(item);
+  }, [selectedIndex, items]);
+
+  // 图片类型拉缩略图
+  useEffect(() => {
+    if (previewItem?.item_type === "image") {
+      invoke<string>("get_image_thumb", { id: previewItem.id })
+        .then(setPreviewThumb)
+        .catch(() => setPreviewThumb(null));
+    } else {
+      setPreviewThumb(null);
+    }
+  }, [previewItem]);
 
   // 全局按键处理需要读最新 items/selectedIndex/search，用 ref 避免闭包过期。
   const itemsRef = useRef(items);
@@ -81,6 +119,8 @@ export default function Clipboard() {
   searchRef.current = search;
   const filterRef = useRef(filter);
   filterRef.current = filter;
+  // 区分键盘/鼠标导航：键盘按 ↑↓ 时设 true，阻止 scrollIntoView 触发的 mouseEnter 抢 selectedIndex
+  const keyboardNavRef = useRef(false);
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
@@ -89,7 +129,10 @@ export default function Clipboard() {
         e.preventDefault();
         const cur = itemsRef.current;
         if (cur.length === 0) return;
+        keyboardNavRef.current = true;
         setSelectedIndex((prev) => moveIndex(prev, cur.length, e.key === "ArrowDown" ? 1 : -1));
+        // 300ms 后恢复鼠标 hover 响应（留时间给 scrollIntoView + mouseEnter 事件平息）
+        setTimeout(() => { keyboardNavRef.current = false; }, 300);
         return;
       }
       // Enter：对选中条目执行粘贴（复用 paste_clipboard_item，后端已双保险：写剪贴板+模拟粘贴）
@@ -267,6 +310,16 @@ export default function Clipboard() {
           <button
             className={cn(
               "p-1 rounded cursor-default transition-colors",
+              previewEnabled ? "text-voice bg-voice/10" : "text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+            onClick={togglePreview}
+            title={previewEnabled ? t("clipboard.previewOn") : t("clipboard.previewOff")}
+          >
+            {previewEnabled ? <Eye className="w-3.5 h-3.5" /> : <EyeOff className="w-3.5 h-3.5" />}
+          </button>
+          <button
+            className={cn(
+              "p-1 rounded cursor-default transition-colors",
               pinned ? "text-voice bg-voice/10" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
             onClick={togglePin}
@@ -284,7 +337,7 @@ export default function Clipboard() {
       </div>
 
       {/* List */}
-      <div className="clipboard-list flex-1 overflow-y-auto pb-1">
+      <div className="clipboard-list flex-1 overflow-y-auto pb-1 relative">
         {items.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-1 text-muted-foreground/50">
             <span className="text-xs">{t("clipboard.empty")}</span>
@@ -298,10 +351,64 @@ export default function Clipboard() {
               isLast={index === items.length - 1}
               isSelected={selectedIndex === index}
               onSelect={handleSelect}
+              onHover={handleHover}
               onChanged={refresh}
             />
           ))
         )}
+
+        {/* hover 预览 overlay：200px 宽，高度约为列表 1/3，根据选中位置上/下弹出 */}
+        {previewEnabled && previewItem && (() => {
+          // 选中条目在列表上半部分 → 预览弹在下方；下半部分 → 弹在上方
+          const itemEl = document.querySelector(`[data-clip-index="${selectedIndex}"]`) as HTMLElement | null;
+          const listEl = itemEl?.offsetParent as HTMLElement | null;
+          const previewH = 200;
+          let previewTop = '0px';
+          if (itemEl && listEl) {
+            const itemMid = itemEl.offsetTop + itemEl.offsetHeight / 2 - listEl.scrollTop;
+            const listH = listEl.clientHeight;
+            if (itemMid < listH / 2) {
+              // 选中在上半 → 预览在下方，底边与条目底边重叠 2px
+              previewTop = `${itemEl.offsetTop + itemEl.offsetHeight - 2}px`;
+            } else {
+              // 选中在下半 → 预览在上方，顶边与条目顶边重叠 2px
+              previewTop = `${itemEl.offsetTop - previewH + 2}px`;
+            }
+          }
+          return (
+          <div
+            className="absolute right-0 w-[200px] z-30 flex flex-col overflow-hidden rounded-l-lg border border-foreground/15 shadow-2xl shadow-black/20 bg-background"
+            style={{ top: previewTop, height: `${previewH}px` }}
+          >
+            <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/60 flex-shrink-0">
+              <span className="text-[9px] font-medium text-muted-foreground uppercase tracking-wide">
+                {previewItem.item_type === "voice" ? "ASR" : previewItem.item_type}
+              </span>
+            </div>
+            <div className="flex-1 overflow-y-auto thin-scrollbar min-h-0">
+              {previewItem.item_type === "image" ? (
+                <div className="flex items-center justify-center p-2 min-h-full">
+                  {previewThumb ? (
+                    <img src={previewThumb} alt="preview" className="max-w-full max-h-full rounded object-contain" />
+                  ) : (
+                    <span className="text-[11px] text-muted-foreground">Loading...</span>
+                  )}
+                </div>
+              ) : previewItem.item_type === "file" ? (
+                <pre className="px-2 py-1.5 text-[11px] text-muted-foreground whitespace-pre-wrap break-all font-mono">
+                  {previewItem.ref_data || ""}
+                </pre>
+              ) : (
+                <pre className="px-2 py-1.5 text-[11px] text-foreground whitespace-pre-wrap break-words font-mono leading-relaxed">
+                  {previewItem.content.length > 500
+                    ? previewItem.content.slice(0, 500) + "\n\n…"
+                    : previewItem.content}
+                </pre>
+              )}
+            </div>
+          </div>
+          );
+        })()}
       </div>
 
       {/* Footer */}

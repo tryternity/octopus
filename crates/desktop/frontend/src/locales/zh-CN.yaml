@@ -507,6 +507,8 @@ clipboard:
   pauseListen: 暂停监听
   resumeListen: 恢复监听
   pin: 置顶
+  previewOn: 关闭预览
+  previewOff: 开启预览
   empty: 暂无记录
   count: 条
   cleanAll: 一键清理
