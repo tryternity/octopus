@@ -30,6 +30,378 @@ settings:
   uiLanguage: Interface Language
   uiLanguageZhCN: 中文
   uiLanguageEn: English
+  loadFailed: Failed to load config:
+  setFailed: Failed to set:
+  loading: Loading...
+  nav:
+    general: Settings
+    clipboard: Clipboard
+    actionBar: Command Palette
+    hotword: Hotword
+    models: Models
+    prompts: Prompts
+    system: System
+  effect:
+    now: Now
+    nextRecording: Next Recording
+    nextStart: Next Start
+  general:
+    appearance: Appearance
+    theme: Theme
+    themeHint: Floating window & color scheme
+    interaction: Interaction
+    micDevice: Microphone
+    systemDefault: System Default
+    denoiseMode: Denoise
+    denoiseNone: None
+    denoiseLight: Light
+    denoiseDeep: Deep
+    toolbarAutoHide: Auto-hide Toolbar
+    toolbarAutoHideHint: Always show when off
+    clipboardListen: Clipboard Monitor
+    clipboardListenHint: Stop recording clipboard history when off
+    pasteSwitchEnglish: Paste Switch to English
+    pasteSwitchEnglishHint: Temporarily switch to ABC before pasting (macOS only)
+    modelSelect: Model Selection
+    asrModel: ASR Model
+    polishModel: Polish Model
+    ocrModel: OCR Model
+    ocrModelHint: For screenshot OCR, restart to apply
+    shortcut: Shortcuts
+    asrShortcut: Voice Recognition
+    polishShortcut: Polish Now
+    polishShortcutHint: Polish current recognition result
+    editShortcut: Voice Edit
+    editShortcutHint: Invoke result window when any app is focused
+    clipboardShortcut: Clipboard Float
+    clipboardTabShortcut: Clipboard Tab Switch
+    clipboardTabShortcutHint: Switch filter type in float window
+    actionBarShortcut: AI Panel
+    actionBarShortcutHint: Press this key after selecting text
+    recording: Voice Recognition
+    recogLang: Recognition Language
+    recogAuto: Auto
+    recogZh: Chinese
+    recogEn: English
+    hardwareAccel: Hardware Acceleration
+    pinyinCorrect: Pinyin Correction
+    pinyinCorrectHint: Pinyin mapping + bigram correction
+    tradSimpOutput: Traditional/Simplified
+    tradSimpOutputHint: On = Simplified
+    sentencePause: Sentence Pause
+    sentencePauseHint: How long of a pause ends a sentence
+    asrPolish: Voice Recognition Polish
+    polishMode: Polish Mode
+    polishOff: Off
+    polishFinalOnly: Final Only
+    polishIntermediate: Intermediate + Final
+    polishPrompt: Polish Prompt
+    polishPromptHint: Choose different style prompt
+    builtinSuffix: (Built-in)
+    polishInterval: Polish Interval
+    polishIntervalLast: Last Only
+    polishIntervalEvery: Every ${v}s
+    polishPauseThreshold: Polish Pause Threshold
+    polishPauseThresholdHint: Trigger intermediate polish above this value
+    clipboardSettings: Clipboard
+    maxItems: Max Items
+    maxItemsHint: Excluding favorites, auto-clean beyond this
+    autoCleanDays: Auto-clean Days
+    autoCleanDaysHint: Auto-delete non-favorite records older than this
+    shortcutRecordingHint: Press shortcut… (Esc to cancel)
+  models:
+    tab:
+      env: Constants
+      asr: Speech Recognition
+      llm: Text Model
+      ocr: OCR
+      translate: Translation
+    current: Current
+    loadFailed: Failed to load model list:
+    downloadFailed: Download failed:
+    alreadyReady: Model ready, no need to re-download
+    downloadComplete: Download complete
+    downloadStartFailed: Failed to start download:
+    verifyComplete: Verification complete
+    verifyFailed: Verification failed
+    localModels: Local Models
+    cloudEngines: Cloud Engines
+    cloudModels: Cloud Models
+    verify: Verify
+    downloading: Downloading…
+    download: Download
+    enable: Enable
+    disable: Disable
+    switchFailed: Switch failed:
+    env:
+      loadFailed: Failed to load env vars:
+      saved: Saved
+      saveFailed: Save failed:
+      deleted: Deleted
+      builtinNoDelete: Built-in variable cannot be deleted
+      deleteFailed: Delete failed:
+      added: Added
+      addFailed: Add failed:
+      hintPrefix: Model download URL
+      hintVar: variable name
+      hintSuffix: will be replaced with the configured value
+      varName: Variable Name
+      add: Add
+    translate:
+      descHighQuality: High-quality commercial translation API
+      descFree: Free universal translation
+      descCn: Free translation for China
+      descLocal: Local offline translation
+      comingSoon: Translation model configuration coming soon
+  prompts:
+    loadFailed: Load failed:
+    activated: Activated
+    activateFailed: Activate failed:
+    emptyError: Title and content cannot be empty
+    created: Created
+    saved: Saved
+    saveFailed: Save failed:
+    deleted: Deleted
+    deleteFailed: Delete failed:
+    newPrompt: New Prompt
+    editPrompt: Edit Prompt
+    titlePlaceholder: Title
+    descPlaceholder: Short description (optional)
+    contentPlaceholder: Prompt content…
+    save: Save
+    cancel: Cancel
+    header: Prompts
+    newBtn: New
+    builtin: Built-in
+    activeBadge: Active
+    activate: Activate
+    view: View
+    edit: Edit
+    delete: Delete
+    confirmDelete: Confirm Delete
+    empty: No prompts yet
+  history:
+    polishPolished: Polished
+    polishFailed: Polish Failed
+    polishNone: Not Polished
+    loadFailed: Failed to load history:
+    deletedN: Deleted ${n} records
+    deleteFailed: Delete failed:
+    searchPlaceholder: Search transcription text...
+    selectedN: ${n} selected
+    selectAll: Select All
+    empty: No records
+    loading: Loading...
+    loadMore: Load More
+    noMore: — No more —
+    totalN: ${n} records total
+    confirmDeleteN: Confirm delete ${n} items
+    deleteSelected: Delete Selected
+    allLoaded: All loaded
+    loadedN: ${n} loaded
+    copied: Copied
+    copyFailed: Copy failed:
+    deleted: Deleted
+    view: View
+    copy: Copy
+    delete: Delete
+    deleteConfirm: Click again to confirm
+  hotword:
+    fH: f/h confusion (浮 / 护)
+    huWu: hu/wu confusion (黄 / 王)
+    nL: n/l confusion (刘 / 牛)
+    rL: r/l confusion (热 / 乐)
+    loadFailed: Load failed:
+    newVersion: New version created
+    importedVersion: Imported as new version
+    newFailed: Create failed:
+    importFailed: Import failed:
+    switchFailed: Switch failed:
+    renameFailed: Rename failed:
+    deleteConfirmMsg: Delete version "${name}"? (hit stats preserved)
+    deleteConfirmTitle: Confirm Delete
+    deleteFailed: Delete failed:
+    added: Added
+    exists: Already exists
+    addFailed: Add failed:
+    selectVersionFirst: Please select a version first
+    overwriteConfirmMsg: Overwrite all words in current version?
+    overwriteConfirmTitle: Confirm Overwrite
+    appended: Appended
+    overwritten: Overwritten
+    importFailed2: Import failed:
+    exported: Exported
+    exportFailed: Export failed:
+    selectTargetFirst: Please select target version first
+    noNewCandidates: No new candidates found
+    mineFailed: Mining failed:
+    addedN: Added ${n} words
+    allExist: Selected words already exist
+    addFailed2: Add failed:
+    title: Voice Recognition · Hotword Correction
+    header: Hotword Management
+    intro: Manage multi-version hotwords by scene, check to stack. Currently ${n} active words.
+    dialectFuzzy: Dialect Fuzzy
+    versionsN: Hotword Versions (${n})
+    loading: Loading…
+    newVersionPlaceholder: Version name (Enter to confirm / Esc to cancel)
+    importVersionPlaceholder: Import version name (Enter then select txt)
+    newVersionBtn: New Version
+    importBtn: Import Version
+    renameHint: Click to rename
+    wordsCount: words
+    addPlaceholder: Names / Places / Terms
+    addBtn: Add
+    appendBtn: Append
+    appendHint: Import and append to current version
+    overwriteBtn: Overwrite
+    overwriteHint: Import and overwrite current version
+    mineBtn: Mine
+    pendingHint: ${selected}/${total} candidates selected, confirm to add
+    selectAll: Select All
+    deselectAll: Deselect All
+    cancel: Cancel
+    manualPlaceholder: Add a word manually (Enter to add)
+    manualBtn: Add Word
+    addSelectedN: Add ${n} selected
+    searchPlaceholder: Search (Chinese)
+    sortDefault: Default
+    sortAlpha: Alphabetical
+    sortHit: Hit Rate
+    emptyVersion: Empty version, add or import hotwords.
+    noMatch: No matching hotwords
+  actionBar:
+    typeSubmenu: Submenu
+    typeSubmenuDesc: Does not execute action itself, expands to show child menu items
+    typeAi: AI (LLM Processing)
+    typeAiDesc: Send selected text to LLM, show result in float window. Use auto_translate for auto language detection
+    typeAiPlaceholder: system prompt, or auto_translate
+    typeUrl: URL (Open Web/App)
+    typeUrlDesc: Open in default browser, {text} will be replaced with URL-encoded selected text
+    typeUrlPlaceholder: https://... or app://?text={text} (empty=selected text is URL)
+    typeScript: Script
+    typeScriptDesc: First line #shell / #osascript / #powershell / #python / #node / #deno / #bun / #javascript / #typescript; selected text passed via $OCTOPUS_TEXT
+    typeScriptPlaceholder: …selected text in $OCTOPUS_TEXT env var
+    typeExtension: Extension Package
+    typeExtensionDesc: Import from .octopusext.zip or folder (contains config.yaml + scripts)
+    typeCopy: Copy
+    typeCopyDesc: Copy selected text to clipboard
+    extensionFilter: Extension Package
+    extensionLabel: Extension Package
+    importing: Importing…
+    clearSelection: Clear Selection
+    dropHint: Drag .zip or folder here
+    selectZip: Select zip file
+    selectFolder: Select Folder
+    backToMenu: Back to Menu
+    titleLabel: Title
+    typeLabel: Type
+    builtinTypeLocked: · Built-in item type cannot be changed
+    contentLabel: Content
+    execOptions: Execution Options
+    asyncExec: Async execution (no wait, runs in background)
+    writeToClipboard: Write result to clipboard
+    shortcutLabel: Shortcut
+    shortcutHint: Press Alt+this key when action bar is open to execute directly
+    enableLabel: Enable
+    showInMenu: Show in menu
+    hidden: Hidden
+    cancel: Cancel
+    save: Save
+    collapse: Collapse
+    expand: Expand
+    builtin: Built-in
+    deleteConfirm: Click again to confirm
+    delete: Delete
+    confirm: Confirm
+    addSubItem: Add Sub-item
+    cleanedOldRecords: Old records cleaned
+    cleanFailed: Clean failed:
+    loadingRecords: Loading…
+    noRecords: No execution records
+    recordsHint: Execution results will be recorded here after running scripts.
+    statusError: Error
+    statusSuccess: Success
+    statusFailed: Failed(${n})
+    cleanOldRecords: Clean Old Records
+    untitled: Deleted
+    selectExtFirst: Please select an extension package first
+    extName: Extension
+    created: Created
+    saved: Saved
+    newMenuItem: New Menu Item
+    saveFailed: Save failed:
+    deleted: Deleted
+    deleteFailed: Delete failed:
+    moveFailed: Move failed:
+    titleMain: Command Palette ·
+    editMenuItem: Edit Menu Item
+    scriptRecords: Script Execution Records
+    menuManage: Menu Management
+    aiTitle: AI Command Palette Menu
+    aiIntro: Select text → invoke two-level menu via global hotkey. ${total} items, ${enabled} enabled.
+    recordsBtn: Execution Records
+    collapseAll: Collapse All
+    expandAll: Expand All
+    addMainItem: Add Main Menu Item
+    noItemsYet: No menu items yet
+    noItemsHint: Add your first main menu item to start configuring your command palette.
+  clipboardPanel:
+    filterAll: All
+    groupType: Type
+    filterVoice: Voice
+    filterText: Text
+    filterImage: Images
+    filterFile: Files
+    groupStatus: Status
+    filterFavorite: Favorites
+    filterNonFavorite: Non-Favorites
+    loadFailed: Load failed:
+    deletedN: Deleted ${n} records
+    deleteFailed: Delete failed:
+    searchPlaceholder: Search content…
+    loading: Loading…
+    empty: No records
+    emptySearch: No content matching "${search}"
+    emptyHint: Copied text, voice recognition, or screenshots will appear here
+    selectedN: ${n} selected
+    selectAll: Select All
+    loadMore: Load More
+    allLoaded: — All loaded —
+    totalN: ${n} total
+    confirmDeleteN: Confirm delete ${n} items
+    deleteSelected: Delete Selected
+    showingN: Showing ${n}
+    copyFailed: Copy failed:
+    deleted: Deleted
+    openFailed: Open failed:
+    clickToCopy: Click to copy
+    copied: Copied
+    copy: Copy
+    openLink: Open Link
+    edit: Edit
+    preview: Preview
+    saveToFile: Save to File
+    openFile: Open File
+    deleteConfirm: Click again to confirm
+    delete: Delete
+    fileFallback: File
+  system:
+    collecting: Collecting…
+    loadFailed: Failed to load status:
+    loading: Loading...
+    processMem: Process Memory
+    resident: Resident
+    processTotalMem: Process Total Memory
+    systemCpu: System CPU
+    memActual: Memory (Actual)
+    memResident: Memory (Resident)
+    cpuProcess: CPU (Process)
+    modelEstimate: Model (Estimated)
+    noModels: No loaded models
+    approx: ~
+    modelMemHint: Model memory is estimated from process memory delta before/after loading (macOS uses phys_footprint, other platforms use resident memory; same-process ort cannot be precisely split), for reference only.
+    ocrIdleHint: OCR auto-releases after 60s idle (list item disappears when released); on macOS process memory values typically don't drop immediately, next OCR reuses released space.
 
 # ════════ Tray ════════
 tray:

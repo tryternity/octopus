@@ -30,6 +30,378 @@ settings:
   uiLanguage: 界面语言
   uiLanguageZhCN: 中文
   uiLanguageEn: English
+  loadFailed: 加载配置失败：
+  setFailed: 设置失败：
+  loading: 加载中...
+  nav:
+    general: 系统设置
+    clipboard: 剪贴管理
+    actionBar: 命令面板
+    hotword: 热词管理
+    models: 模型管理
+    prompts: 提示词
+    system: 系统状态
+  effect:
+    now: 立即
+    nextRecording: 下次录音
+    nextStart: 下次启动
+  general:
+    appearance: 外观
+    theme: 主题
+    themeHint: 浮窗与窗口配色
+    interaction: 交互
+    micDevice: 麦克风设备
+    systemDefault: 系统默认
+    denoiseMode: 降噪模式
+    denoiseNone: 无
+    denoiseLight: 轻度
+    denoiseDeep: 深度
+    toolbarAutoHide: 识别工具栏自动隐藏
+    toolbarAutoHideHint: 关闭后始终显示
+    clipboardListen: 剪贴板监听
+    clipboardListenHint: 关闭后不再记录剪贴板历史
+    pasteSwitchEnglish: 粘贴切换英文键盘
+    pasteSwitchEnglishHint: 粘贴前临时切到 ABC，避免中文输入法干扰（仅 macOS）
+    modelSelect: 模型选择
+    asrModel: 语音识别模型
+    polishModel: 润色模型
+    ocrModel: OCR 模型
+    ocrModelHint: 截图识别用，改后重启生效
+    shortcut: 快捷键
+    asrShortcut: 语音识别
+    polishShortcut: 立即润色
+    polishShortcutHint: 对当前识别结果立即润色
+    editShortcut: 语音编辑
+    editShortcutHint: 任意应用聚焦时唤起结果窗并编辑
+    clipboardShortcut: 剪贴板浮窗
+    clipboardTabShortcut: 剪贴TAB切换
+    clipboardTabShortcutHint: 浮窗内切过滤类型
+    actionBarShortcut: AI面板
+    actionBarShortcutHint: 选中文本后按此键唤起
+    recording: 语音识别
+    recogLang: 识别语言
+    recogAuto: 自动
+    recogZh: 中文
+    recogEn: 英语
+    hardwareAccel: 硬件加速
+    pinyinCorrect: 拼音纠错
+    pinyinCorrectHint: 拼音映射 + bigram 校正
+    tradSimpOutput: 简繁输出
+    tradSimpOutputHint: 开启 = 简体
+    sentencePause: 句间停顿
+    sentencePauseHint: 说话停顿多久算一句话结束
+    asrPolish: 语音识别润色
+    polishMode: 润色模式
+    polishOff: 关闭
+    polishFinalOnly: 仅最终
+    polishIntermediate: 中间 + 最终
+    polishPrompt: 润色提示词
+    polishPromptHint: 选择不同风格 prompt
+    builtinSuffix: （内置）
+    polishInterval: 润色间隔
+    polishIntervalLast: 仅最后
+    polishIntervalEvery: 每 ${v} 秒
+    polishPauseThreshold: 润色停顿阈值
+    polishPauseThresholdHint: 超过此值触发中间润色
+    clipboardSettings: 剪贴板
+    maxItems: 最大保留条数
+    maxItemsHint: 不含收藏，超出自动清理
+    autoCleanDays: 自动清理天数
+    autoCleanDaysHint: 超过此天数的非收藏记录自动删除
+    shortcutRecordingHint: 按下快捷键…（Esc 取消）
+  models:
+    tab:
+      env: 常量
+      asr: 语音识别
+      llm: 文本模型
+      ocr: 扫描识别
+      translate: 翻译模型
+    current: 当前使用
+    loadFailed: 加载模型列表失败：
+    downloadFailed: 下载失败：
+    alreadyReady: 模型已就绪，无需重新下载
+    downloadComplete: 下载完成
+    downloadStartFailed: 下载启动失败：
+    verifyComplete: 校验完成
+    verifyFailed: 校验失败
+    localModels: 本地模型
+    cloudEngines: 云端引擎
+    cloudModels: 云端模型
+    verify: 校验
+    downloading: 下载中…
+    download: 下载
+    enable: 启用
+    disable: 禁用
+    switchFailed: 切换失败：
+    env:
+      loadFailed: 加载环境变量失败：
+      saved: 已保存
+      saveFailed: 保存失败：
+      deleted: 已删除
+      builtinNoDelete: 内置变量不可删除
+      deleteFailed: 删除失败：
+      added: 已添加
+      addFailed: 添加失败：
+      hintPrefix: 模型下载地址中的
+      hintVar: 变量名
+      hintSuffix: 会自动替换为此处配置的值
+      varName: 变量名
+      add: 添加
+    translate:
+      descHighQuality: 高质量商业翻译 API
+      descFree: 免费通用翻译
+      descCn: 国内免费翻译
+      descLocal: 本地离线翻译
+      comingSoon: 翻译模型配置即将支持
+  prompts:
+    loadFailed: 加载失败：
+    activated: 已激活
+    activateFailed: 激活失败：
+    emptyError: 标题和内容不能为空
+    created: 已创建
+    saved: 已保存
+    saveFailed: 保存失败：
+    deleted: 已删除
+    deleteFailed: 删除失败：
+    newPrompt: 新建提示词
+    editPrompt: 编辑提示词
+    titlePlaceholder: 标题
+    descPlaceholder: 简短描述（可选）
+    contentPlaceholder: 提示词内容…
+    save: 保存
+    cancel: 取消
+    header: 提示词
+    newBtn: 新建
+    builtin: 内置
+    activeBadge: 激活中
+    activate: 激活
+    view: 查看
+    edit: 编辑
+    delete: 删除
+    confirmDelete: 确认删除
+    empty: 暂无提示词
+  history:
+    polishPolished: 已润色
+    polishFailed: 润色失败
+    polishNone: 未润色
+    loadFailed: 加载历史失败：
+    deletedN: 已删除 ${n} 条
+    deleteFailed: 删除失败：
+    searchPlaceholder: 搜索识别文本...
+    selectedN: 已选 ${n} 项
+    selectAll: 全选
+    empty: 暂无识别记录
+    loading: 加载中...
+    loadMore: 加载更多
+    noMore: — 没有更多了 —
+    totalN: 共 ${n} 条记录
+    confirmDeleteN: 确认删除 ${n} 项
+    deleteSelected: 删除选中
+    allLoaded: 已全部加载
+    loadedN: 已加载 ${n} 条
+    copied: 已复制
+    copyFailed: 复制失败：
+    deleted: 已删除
+    view: 查看
+    copy: 复制
+    delete: 删除
+    deleteConfirm: 再次点击确认删除
+  hotword:
+    fH: f/h 不分（浮 / 护）
+    huWu: hu/wu 不分（黄 / 王）
+    nL: n/l 不分（刘 / 牛）
+    rL: r/l 不分（热 / 乐）
+    loadFailed: 加载失败：
+    newVersion: 已新建版本
+    importedVersion: 已导入为新版本
+    newFailed: 新建失败：
+    importFailed: 导入失败：
+    switchFailed: 切换失败：
+    renameFailed: 重命名失败：
+    deleteConfirmMsg: 删除版本「${name}」？（命中统计保留）
+    deleteConfirmTitle: 确认删除
+    deleteFailed: 删除失败：
+    added: 已添加
+    exists: 已存在
+    addFailed: 添加失败：
+    selectVersionFirst: 请先选择版本
+    overwriteConfirmMsg: 覆盖当前版本的全部词？
+    overwriteConfirmTitle: 确认覆盖
+    appended: 已追加
+    overwritten: 已覆盖
+    importFailed2: 导入失败：
+    exported: 已导出
+    exportFailed: 导出失败：
+    selectTargetFirst: 请先选择目标版本
+    noNewCandidates: 未发现新候选
+    mineFailed: 挖掘失败：
+    addedN: 已添加 ${n} 词
+    allExist: 选中词均已存在
+    addFailed2: 添加失败：
+    title: 语音识别 · 热词纠错
+    header: 热词管理
+    intro: 按场景管理多版本热词，勾选叠加生效。当前生效词 ${n} 个。
+    dialectFuzzy: 方言模糊
+    versionsN: 热词版本（${n}）
+    loading: 加载中…
+    newVersionPlaceholder: 版本名称（Enter 确认 / Esc 取消）
+    importVersionPlaceholder: 导入版本名称（Enter 后再选 txt）
+    newVersionBtn: 新建版本
+    importBtn: 导入新版本
+    renameHint: 点击重命名
+    wordsCount: 词
+    addPlaceholder: 人名 / 地名 / 术语
+    addBtn: 添加
+    appendBtn: 追加
+    appendHint: 导入追加到当前版本
+    overwriteBtn: 覆盖
+    overwriteHint: 导入覆盖当前版本
+    mineBtn: 挖掘
+    pendingHint: 已选 ${selected}/${total} 个候选，确认后添加
+    selectAll: 全选
+    deselectAll: 全不选
+    cancel: 取消
+    manualPlaceholder: 手动补一个词（Enter 加入候选）
+    manualBtn: 补词
+    addSelectedN: 添加选中的 ${n} 个
+    searchPlaceholder: 搜索（汉字）
+    sortDefault: 默认
+    sortAlpha: 字母
+    sortHit: 命中度
+    emptyVersion: 空版本，添加或导入热词。
+    noMatch: 无匹配热词
+  actionBar:
+    typeSubmenu: 子菜单
+    typeSubmenuDesc: 本身不执行动作，展开后显示其子菜单项
+    typeAi: AI（LLM 处理）
+    typeAiDesc: 选中文本发送给 LLM，结果展示在浮窗。填 auto_translate 自动判断中英互译
+    typeAiPlaceholder: system prompt，或 auto_translate
+    typeUrl: URL（打开网页/应用）
+    typeUrlDesc: 默认浏览器打开，{text} 会被替换为 URL 编码后的选中文本
+    typeUrlPlaceholder: https://... 或 app://?text={text}（留空=选中文本即 URL）
+    typeScript: 脚本
+    typeScriptDesc: 首行 #shell / #osascript / #powershell / #python / #node / #deno / #bun / #javascript / #typescript；选中文本经 $OCTOPUS_TEXT 传入
+    typeScriptPlaceholder: …选中文本在 $OCTOPUS_TEXT 环境变量中
+    typeExtension: 扩展包
+    typeExtensionDesc: 从 .octopusext.zip 或文件夹导入扩展包（含 config.yaml + 脚本）
+    typeCopy: 复制
+    typeCopyDesc: 将选中文本复制到剪贴板
+    extensionFilter: 扩展包
+    extensionLabel: 扩展包
+    importing: 导入中…
+    clearSelection: 清除选择
+    dropHint: 拖拽 .zip 或文件夹到此
+    selectZip: 选择 zip 文件
+    selectFolder: 选择文件夹
+    backToMenu: 返回菜单
+    titleLabel: 标题
+    typeLabel: 类型
+    builtinTypeLocked: · 内置项类型不可更改
+    contentLabel: 内容
+    execOptions: 执行选项
+    asyncExec: 异步执行（不等待结果，后台运行）
+    writeToClipboard: 结果写入剪贴板
+    shortcutLabel: 快捷键
+    shortcutHint: action bar 打开时按 Alt+此键直接执行
+    enableLabel: 启用
+    showInMenu: 显示在菜单中
+    hidden: 已隐藏
+    cancel: 取消
+    save: 保存
+    collapse: 收起
+    expand: 展开
+    builtin: 内置
+    deleteConfirm: 再次点击确认删除
+    delete: 删除
+    confirm: 确认
+    addSubItem: 新增子项
+    cleanedOldRecords: 已清理旧记录
+    cleanFailed: 清理失败：
+    loadingRecords: 加载中…
+    noRecords: 暂无执行记录
+    recordsHint: 运行脚本后，执行结果会记录在这里。
+    statusError: 异常
+    statusSuccess: 成功
+    statusFailed: 失败(${n})
+    cleanOldRecords: 清理旧记录
+    untitled: 未删除
+    selectExtFirst: 请先选择扩展包
+    extName: 扩展
+    created: 已创建
+    saved: 已保存
+    newMenuItem: 新菜单项
+    saveFailed: 保存失败：
+    deleted: 已删除
+    deleteFailed: 删除失败：
+    moveFailed: 移动失败：
+    titleMain: 命令面板 ·
+    editMenuItem: 编辑菜单项
+    scriptRecords: 脚本执行记录
+    menuManage: 菜单管理
+    aiTitle: AI 命令面板菜单
+    aiIntro: 选中文本 → 全局热键唤出的两级菜单。共 ${total} 项，${enabled} 项启用。
+    recordsBtn: 执行记录
+    collapseAll: 全部收缩
+    expandAll: 全部展开
+    addMainItem: 新增主菜单项
+    noItemsYet: 还没有菜单项
+    noItemsHint: 新增第一个主菜单项，开始配置你的命令面板。
+  clipboardPanel:
+    filterAll: 全部
+    groupType: 类型
+    filterVoice: 语音
+    filterText: 文本
+    filterImage: 图片
+    filterFile: 文件
+    groupStatus: 状态
+    filterFavorite: 收藏
+    filterNonFavorite: 非收藏
+    loadFailed: 加载失败：
+    deletedN: 已删除 ${n} 条
+    deleteFailed: 删除失败：
+    searchPlaceholder: 搜索内容…
+    loading: 加载中…
+    empty: 暂无记录
+    emptySearch: 未找到匹配「${search}」的内容
+    emptyHint: 复制文本、识别语音或截图后会出现在这里
+    selectedN: 已选 ${n} 项
+    selectAll: 全选
+    loadMore: 加载更多
+    allLoaded: — 已全部加载 —
+    totalN: 共 ${n} 条
+    confirmDeleteN: 确认删除 ${n} 项
+    deleteSelected: 删除选中
+    showingN: 显示 ${n} 条
+    copyFailed: 复制失败：
+    deleted: 已删除
+    openFailed: 打开失败：
+    clickToCopy: 单击复制
+    copied: 已复制
+    copy: 复制
+    openLink: 打开链接
+    edit: 编辑
+    preview: 预览
+    saveToFile: 保存为文件
+    openFile: 打开文件
+    deleteConfirm: 再次点击确认删除
+    delete: 删除
+    fileFallback: 文件
+  system:
+    collecting: 采集中…
+    loadFailed: 加载状态失败：
+    loading: 加载中...
+    processMem: 进程内存
+    resident: 常驻
+    processTotalMem: 进程总内存
+    systemCpu: 系统 CPU
+    memActual: 内存（实际占用）
+    memResident: 内存（常驻）
+    cpuProcess: CPU（进程）
+    modelEstimate: 模型（估算）
+    noModels: 暂无已加载模型
+    approx: 约
+    modelMemHint: 模型内存为「加载前后进程内存差值」估算（macOS 用 phys_footprint、其他平台用常驻内存；同进程 ort 无法精确拆分），仅供参考。
+    ocrIdleHint: OCR idle 60s 自动释放（列表条目消失即已释放）；macOS 下进程内存数值通常不立即回落，下次 OCR 复用已释放空间。
 
 # ════════ Tray 托盘菜单 ════════
 tray:
