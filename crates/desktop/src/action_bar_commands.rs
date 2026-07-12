@@ -703,14 +703,18 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
 
                         let app_clone = app.clone();
                         std::thread::spawn(move || {
-                            let manager = octopus_translation::TranslationManager::new(&spec);
-                            let display = match manager.engine() {
-                                Ok(Some(engine)) => match engine.translate(&text, source_lang, target_lang) {
-                                    Ok(translated) => format!("【翻译】\n{}", translated),
-                                    Err(e) => format!("【翻译】\n❌ {}", e),
-                                },
-                                _ => "【翻译】\n❌ 引擎加载失败".into(),
-                            };
+                            let display = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                let manager = octopus_translation::TranslationManager::new(&spec);
+                                match manager.engine() {
+                                    Ok(Some(engine)) => match engine.translate(&text, source_lang, target_lang) {
+                                        Ok(translated) => format!("【翻译】\n{}", translated),
+                                        Err(e) => format!("【翻译】\n❌ {}", e),
+                                    },
+                                    _ => "【翻译】\n❌ 引擎加载失败".into(),
+                                }
+                            }))
+                            .unwrap_or_else(|_| "【翻译】\n❌ 引擎内部错误".into());
+
                             // 翻译完成：隐藏浮窗 + 恢复 depth + 重置 guard + 开结果 tab
                             // 全部走主线程（win.hide / w.show / 建窗 均为 AppKit/NSWindow 操作）
                             let app_for_thread = app_clone.clone();
