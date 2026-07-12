@@ -1170,3 +1170,12 @@ Expected: 看到 7-8 个 feat/refactor/docs 提交，对应 Task 1-9。
 **背景：** Xenova 导出的 tokenizer.json 中 `precompiled_charsmap` 为 null，tokenizers 0.21.4 直接 panic。最终方案：解析 JSON 删除整个 `normalizer` 字段（MarianMT 不需要 normalization）。
 
 - [x] **Step 1:** `load_opus_tokenizer` 函数：含 `precompiled_charsmap` 则删除 `normalizer` 字段后 from_bytes 加载
+
+---
+
+### Task 14: Opus-MT greedy 解码重复修复
+
+**背景：** MarianMT 训练用 beam search（num_beams=6），greedy 解码陷入重复循环（preview preview list rows list rows）。旧重复检测只拦连续相同 token，拦不住模式重复。
+
+- [x] **Step 1:** repetition_penalty=1.3（已出现 token logit / 1.3）
+- [x] **Step 2:** no_repeat_ngram_size=3（禁止已出现 3-gram 后继 token）

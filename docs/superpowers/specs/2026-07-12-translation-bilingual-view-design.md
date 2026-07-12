@@ -341,11 +341,18 @@ m2m100 greedy `max_length=200` tokens，超长原文会截断翻译。不特殊�
 
 一组模型在设置页算一个（两个方向需都存在才算 downloaded）。
 
-### 9.3 tokenizer precompiled_charsmap=null 修复
+### 9.3 greedy 解码防重复
+
+MarianMT 训练用 beam search（`num_beams=6`），greedy 解码容易陷入重复循环（如 `preview preview list rows list rows`）。标准 HF 默认值两层惩罚：
+
+- **repetition_penalty = 1.3**：已出现 token 的 logit / 1.3（正 logit 降低，负 logit 加重），降低重复概率
+- **no_repeat_ngram_size = 3**：禁止生成已出现过的 3-gram 后继 token——在已生成序列中匹配当前 n-1 前缀，ban 掉所有已见后继
+
+### 9.4 tokenizer precompiled_charsmap=null 修复
 
 Xenova 导出的 tokenizer.json 中 `normalizer.precompiled_charsmap` 为 `null`，`tokenizers` crate 0.21.4 遇到 null 直接 panic（`Precompiled: Error("invalid type: null")`）。修复：加载时解析 JSON，删除整个 `normalizer` 字段（MarianMT 不需要 normalization）。
 
-### 9.4 引擎选择优先级（自动模式）
+### 9.5 引擎选择优先级（自动模式）
 
 1. **opus-mt**（轻量 30M，中英互译）—— 已下载则优先
 2. **m2m100-418M**（多语言 100+）—— opus-mt 未下载时 fallback
@@ -353,7 +360,7 @@ Xenova 导出的 tokenizer.json 中 `normalizer.precompiled_charsmap` 为 `null`
 
 用户可在设置页手动选择 `local:opus-mt` / `local:m2m100` / `自动` / `LLM`。
 
-### 9.5 引擎缓存
+### 9.6 引擎缓存
 
 `engine.rs` 全局缓存改为 `HashMap<String, Arc<dyn TranslationEngine>>`：
 - m2m100：按 spec key 缓存（如 `local:m2m100-418M`）
