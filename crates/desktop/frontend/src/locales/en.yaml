@@ -491,8 +491,6 @@ screenshot:
   confirm: Confirm
   cancel: Cancel
   pin: Pin
-  previewOn: Disable Preview
-  previewOff: Enable Preview
   save: Save
   copy: Copy
   props:
@@ -508,6 +506,8 @@ clipboard:
   pauseListen: Pause
   resumeListen: Resume
   pin: Pin
+  previewOn: Disable Preview
+  previewOff: Enable Preview
   empty: No records
   count: items
   cleanAll: Clear All
