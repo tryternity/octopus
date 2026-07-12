@@ -1706,3 +1706,7 @@ git commit -m "docs: i18n 全面覆盖完成，更新架构文档和 spec 状态
 | `rebuild_tray_labels` 漏 clipboard | 补上 `clipboard` MenuItem 更新 | 遗漏导致 dead_code warning + 剪贴板菜单项不更新 |
 | Result 窗口按钮无法点击 | `result_window.rs` 中 `BAR_W` 从 520 改为 720 | 前端精简态容器已改为 `w-[720px]`，但 poller 仍用 520 判定可交互区域，工具栏左侧按钮落在 520 范围外被穿透吞掉 |
 | Result 工具栏按钮 onMouseDown | 每个 button 加 `onMouseDown stopPropagation` | 工具栏容器 `onMouseDown={onDragStart}` 会调 `startDragging()` 吞掉 click；stopPropagation 阻止冒泡 |
+| 图文编辑器/ASR 编辑器滚动条不显示 | `.cm-scroller` 加 `overflow: auto` + tab 容器加 `min-h-0` | Tailwind v4 preflight 覆盖 CM6 默认 overflow；flexbox 高度约束链断裂致内容撑开不滚动 |
+| 「问豆包」菜单项 seed id 冲突 | 不用固定 id，改用 `title` 去重 + `WHERE NOT EXISTS` | 无固定 id 的 INSERT 在 AUTOINCREMENT 表中抢先占位 id=5，导致润色 seed 被冲突跳过 |
+| 问豆包 Electron app 启动 | `activate`/`launch` 不可靠，改用 `do shell script "open -a Doubao"` | Electron app 的 AppleScript 支持不完整，`open -a` 是 macOS 原生启动方式更可靠 |
+| DB schema v25 | 新增 v24→v25 migration（seed 问豆包） | `init_schema` user_version 检查从 `>=24` 改为 `>=25` |
