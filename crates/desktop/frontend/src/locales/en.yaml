@@ -100,7 +100,52 @@ screenshot:
     thickness: Thickness
     solidFill: Solid Fill
 
-# ════════ ImagePreview ════════
+# ════════ Clipboard ════════
+clipboard:
+  title: Clipboard
+  close: Close
+  pauseListen: Pause
+  resumeListen: Resume
+  pin: Pin
+  empty: No records
+  count: items
+  cleanAll: Clear All
+  cleanNonFavorite: Clear Non-Favorites
+  cleanConfirm: Click to confirm
+  cleanConfirmFull: Click again to confirm
+  cleanSearchError: Cannot clear while searching
+  cleanFavoriteEmpty: No items to clear in favorites
+  manageMode: Manage Clipboard
+  manage: Manage
+  search: Search
+  copied: Copied
+  clickToCopy: Click to copy
+  copy: Copy
+  openLink: Open Link
+  edit: Edit
+  preview: Preview
+  saveToFile: Save to File
+  openFile: Open File
+  delete: Delete
+  deleteConfirm: Click again to confirm
+  filter:
+    all: All
+    favorite: Favorites
+    voice: Voice
+    text: Text
+    image: Images
+    file: Files
+  saveImage:
+    format: Format
+    quality: Quality
+    small: Small
+    large: Large
+    pngHint: PNG is lossless, no compression
+    openFolder: Open folder after saving
+    saving: Saving
+    savedToDownloads: Saved to Downloads
+    saveToDownloads: Save to Downloads
+    saveFailed: Save failed, please retry
 imagePreview:
   tool:
     select: Select/Move

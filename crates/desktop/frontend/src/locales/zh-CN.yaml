@@ -100,7 +100,52 @@ screenshot:
     thickness: 粗细
     solidFill: 实心填充
 
-# ════════ ImagePreview 图片预览 ════════
+# ════════ Clipboard 剪贴板 ════════
+clipboard:
+  title: 剪贴板
+  close: 关闭
+  pauseListen: 暂停监听
+  resumeListen: 恢复监听
+  pin: 置顶
+  empty: 暂无记录
+  count: 条
+  cleanAll: 一键清理
+  cleanNonFavorite: 一键清理非收藏
+  cleanConfirm: 再点确认
+  cleanConfirmFull: 再点一次确认清理
+  cleanSearchError: 有搜索内容时无法清理
+  cleanFavoriteEmpty: 收藏标签下无可清理项
+  manageMode: 管理剪贴板
+  manage: 管理
+  search: 搜索
+  copied: 已复制
+  clickToCopy: 单击复制
+  copy: 复制
+  openLink: 打开链接
+  edit: 编辑
+  preview: 预览
+  saveToFile: 保存为文件
+  openFile: 打开文件
+  delete: 删除
+  deleteConfirm: 再次点击确认删除
+  filter:
+    all: 全部
+    favorite: 收藏
+    voice: 语音
+    text: 文本
+    image: 图片
+    file: 文件
+  saveImage:
+    format: 格式
+    quality: 质量
+    small: 小
+    large: 大
+    pngHint: PNG 为无损格式，不压缩
+    openFolder: 保存后打开文件夹
+    saving: 保存中
+    savedToDownloads: 已保存到下载
+    saveToDownloads: 保存到下载
+    saveFailed: 保存失败，请重试
 imagePreview:
   tool:
     select: 选择/移动
