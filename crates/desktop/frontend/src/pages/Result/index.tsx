@@ -271,6 +271,8 @@ function Result() {
   };
 
   const onDragStart = (e: React.MouseEvent) => {
+    // 点击按钮（含 tool-btn / popup item）时不启动拖拽，避免吞掉 onClick
+    if ((e.target as HTMLElement).closest("button")) return;
     e.preventDefault();
     win.startDragging();
   };
