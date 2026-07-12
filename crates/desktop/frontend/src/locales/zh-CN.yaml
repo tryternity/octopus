@@ -153,6 +153,24 @@ settings:
       descCn: 国内免费翻译
       descLocal: 本地离线翻译
       comingSoon: 翻译模型配置即将支持
+      loadFailed: "加载翻译模型失败："
+      downloadFailed: "下载失败："
+      downloadComplete: 下载完成
+      downloadStartFailed: "下载启动失败："
+      engineAuto: "自动（推荐）"
+      engineLlm: "LLM（远程）"
+      engineLocal: "（本地）"
+      engineNotDownloaded: "（未下载）"
+      engineTitle: 翻译引擎
+      modelTitle: 翻译模型
+      autoUsingLocal: "当前将使用本地引擎：${name}"
+      autoUsingLlm: 未检测到本地翻译模型，将使用 LLM 翻译
+      switchAuto: 已切换为自动模式
+      switchEngine: "已切换引擎：${value}"
+      switchFailed: "设置失败："
+      downloaded: 已下载
+      download: 下载
+      multiLang: 多语言翻译（100+ 语言互译）
   prompts:
     loadFailed: "加载失败："
     activated: 已激活

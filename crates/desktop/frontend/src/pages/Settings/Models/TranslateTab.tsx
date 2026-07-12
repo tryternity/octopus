@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { Download, CheckCircle2, Loader2, Languages } from "lucide-react";
-import CollapsibleSection from "./CollapsibleSection";
+import { useT } from "@/lib/i18n";
+import { CollapsibleSection } from "./CollapsibleSection";
 
 interface DownloadableModel {
   name: string;
@@ -39,6 +40,7 @@ interface DownloadProgress {
 }
 
 export default function TranslateTab({ showToast }: { showToast: (msg: string) => void }) {
+  const t = useT();
   const [models, setModels] = useState<TranslationModelInfo[]>([]);
   const [downloadable, setDownloadable] = useState<DownloadableModel[]>([]);
   const [status, setStatus] = useState<TranslateStatus | null>(null);
@@ -59,9 +61,9 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
       setStatus(st);
       setEngineConfig((cfg.config.translate_engine as string) || "");
     } catch (e) {
-      showToast("加载翻译模型失败：" + e);
+      showToast(t("settings.models.translate.loadFailed") + e);
     }
-  }, [showToast]);
+  }, [showToast, t]);
 
   useEffect(() => {
     loadData();
@@ -72,9 +74,9 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
       setBusyRepo(null);
       setProgress(null);
       if (e.payload.error) {
-        showToast("下载失败：" + e.payload.error);
+        showToast(t("settings.models.translate.downloadFailed") + e.payload.error);
       } else {
-        showToast("下载完成");
+        showToast(t("settings.models.translate.downloadComplete"));
         loadData();
       }
     });
@@ -91,7 +93,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
       await invoke("download_model", { repo: model.repo });
     } catch (e) {
       setBusyRepo(null);
-      showToast("下载启动失败：" + e);
+      showToast(t("settings.models.translate.downloadStartFailed") + e);
     }
   };
 
@@ -99,27 +101,29 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
     setEngineConfig(value);
     try {
       await invoke("set_config", { key: "translate_engine", value });
-      showToast(value === "" ? "已切换为自动模式" : `已切换引擎：${value}`);
+      showToast(value === ""
+        ? t("settings.models.translate.switchAuto")
+        : t("settings.models.translate.switchEngine", { value }));
       loadData();
     } catch (e) {
-      showToast("设置失败：" + e);
+      showToast(t("settings.models.translate.switchFailed") + e);
     }
   };
 
   const engineOptions: EngineOption[] = [
-    { value: "", label: "自动（推荐）", isLocal: false, downloaded: true },
+    { value: "", label: t("settings.models.translate.engineAuto"), isLocal: false, downloaded: true },
     ...models.map((m) => ({
       value: `local:${m.name.split(" ")[0].toLowerCase()}`,
-      label: `${m.name}（本地）`,
+      label: `${m.name}${t("settings.models.translate.engineLocal")}`,
       isLocal: true,
       downloaded: m.downloaded,
     })),
-    { value: "llm", label: "LLM（远程）", isLocal: false, downloaded: true },
+    { value: "llm", label: t("settings.models.translate.engineLlm"), isLocal: false, downloaded: true },
   ];
 
   return (
     <div className="max-w-[560px]">
-      <CollapsibleSection icon={Languages} label="翻译引擎" count={status?.engineName || ""}>
+      <CollapsibleSection icon={Languages} label={t("settings.models.translate.engineTitle")} count={status?.engineName || ""}>
         <div className="space-y-2 py-1">
           <select
             className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
@@ -128,15 +132,15 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
           >
             {engineOptions.map((opt) => (
               <option key={opt.value} value={opt.value} disabled={opt.isLocal && !opt.downloaded}>
-                {opt.label}{opt.isLocal && !opt.downloaded ? "（未下载）" : ""}
+                {opt.label}{opt.isLocal && !opt.downloaded ? t("settings.models.translate.engineNotDownloaded") : ""}
               </option>
             ))}
           </select>
           {status?.strategy === "auto" && (
             <p className="text-[11px] text-muted-foreground">
               {models.some((m) => m.downloaded)
-                ? `当前将使用本地引擎：${status.engineName}`
-                : "未检测到本地翻译模型，将使用 LLM 翻译"}
+                ? t("settings.models.translate.autoUsingLocal", { name: status.engineName })
+                : t("settings.models.translate.autoUsingLlm")}
             </p>
           )}
         </div>
@@ -144,7 +148,7 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
 
       <CollapsibleSection
         icon={Download}
-        label="翻译模型"
+        label={t("settings.models.translate.modelTitle")}
         count={`${models.filter((m) => m.downloaded).length}/${models.length}`}
       >
         {downloadable.map((model) => {
@@ -171,14 +175,14 @@ export default function TranslateTab({ showToast }: { showToast: (msg: string) =
                   <Loader2 className="w-3.5 h-3.5 animate-spin text-voice shrink-0" />
                 </div>
               ) : downloaded ? (
-                <span className="text-[11px] text-emerald-600 shrink-0">已下载</span>
+                <span className="text-[11px] text-emerald-600 shrink-0">{t("settings.models.translate.downloaded")}</span>
               ) : (
                 <button
                   onClick={() => handleDownload(model)}
                   disabled={!!busyRepo}
                   className="shrink-0 rounded-md bg-voice/10 px-2.5 py-1 text-[11px] font-medium text-voice transition-colors hover:bg-voice/20 disabled:opacity-40"
                 >
-                  下载
+                  {t("settings.models.translate.download")}
                 </button>
               )}
             </div>

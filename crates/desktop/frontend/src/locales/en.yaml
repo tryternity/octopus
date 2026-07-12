@@ -153,6 +153,24 @@ settings:
       descCn: Free translation for China
       descLocal: Local offline translation
       comingSoon: Translation model configuration coming soon
+      loadFailed: "Failed to load translation models: "
+      downloadFailed: "Download failed: "
+      downloadComplete: Download complete
+      downloadStartFailed: "Failed to start download: "
+      engineAuto: "Auto (Recommended)"
+      engineLlm: "LLM (Remote)"
+      engineLocal: " (Local)"
+      engineNotDownloaded: " (Not downloaded)"
+      engineTitle: Translation Engine
+      modelTitle: Translation Models
+      autoUsingLocal: "Using local engine: ${name}"
+      autoUsingLlm: No local translation model detected, will use LLM
+      switchAuto: Switched to auto mode
+      switchEngine: "Switched engine: ${value}"
+      switchFailed: "Setup failed: "
+      downloaded: Downloaded
+      download: Download
+      multiLang: Multilingual translation (100+ languages)
   prompts:
     loadFailed: "Load failed:"
     activated: Activated
