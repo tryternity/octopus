@@ -366,7 +366,7 @@ export default function Clipboard() {
           }
           return (
           <div
-            className="absolute right-0 w-[200px] z-30 flex flex-col overflow-hidden rounded-l-lg border-l border-y border-border shadow-xl bg-background"
+            className="absolute right-0 w-[200px] z-30 flex flex-col overflow-hidden rounded-l-lg border border-foreground/15 shadow-2xl shadow-black/20 bg-background"
             style={{ top: previewTop, height: `${previewH}px` }}
           >
             <div className="flex items-center gap-1 px-2 py-1.5 border-b border-border/60 flex-shrink-0">
