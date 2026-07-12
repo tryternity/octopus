@@ -283,6 +283,7 @@ html, body {
 /* ── ASR 编辑器 CM6 ── */
 .asr-cm-editor .cm-editor { height: 100%; }
 .asr-cm-editor .cm-scroller {
+  overflow: auto;
   scrollbar-width: thin;
   scrollbar-color: rgba(128, 128, 128, 0.35) transparent;
 }
