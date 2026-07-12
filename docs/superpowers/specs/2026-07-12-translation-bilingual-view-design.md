@@ -1,6 +1,6 @@
 # 翻译结果左右对比展示设计
 
-> **状态**：设计已确认，待编写实施计划
+> **状态**：已实现
 > **日期**：2026-07-12
 > **分支**：`translation-bilingual-view`
 > **scope**：在 CompactEditor 图文编辑器新增「翻译对照」视图模式，左原文 / 右译文双栏并排，两侧均可编辑（各自 markdown 编辑/预览），新增视图布局切换（只原文 / 对照 / 只译文）
@@ -28,10 +28,14 @@
 | 改造方式 | **新增**对照视图模式，不替换现有 editor/split/preview |
 | 两栏可编辑性 | **两侧都可编辑**，各自只有「编辑 / 预览」两态（无内部分栏） |
 | 触发方式 | **C：翻译自动进对照 + 普通文本 tab 点翻译切对照** |
-| 普通文本 tab 翻译原文取法 | **有选区翻选区，无选区翻全文** |
+| 普通文本 tab 翻译原文取法 | **有选区翻选区，无选区翻全文**（实现简化为翻全文） |
 | 保存语义 | **只存译文（右半）**，原文是脚手架不持久化 |
 | 组件结构 | **新增独立 `TranslationContrastPane` 组件**，不拼两个 MarkdownPane |
 | 视图切换 | **只原文 / 对照 / 只译文 三态**，正交于每列的编辑/预览 |
+| 编辑/预览切换 | **单 toggle 按钮**（点击切换两态，显示目标模式图标），非两个按钮 |
+| splitter | **可拖拽 splitter** 调整左右比例，复用 MarkdownPane 拖拽模式，比例持久化 localStorage |
+| 翻译执行 | **流式**：立即开编辑器，后台逐段翻译 emit `translate-progress`/`translate-done` |
+| 引擎选择 | **Opus-MT 优先**（轻量 30M），其次 m2m100（418M），其次 LLM |
 
 ---
 
@@ -78,9 +82,9 @@ export interface Tab {
 ### 3.2 入口 2：普通 tab 工具栏翻译（新增前端命令）
 
 - 用户点工具栏「翻译」按钮 → 前端读选区（CM6 有 API 取）或全文 → `invoke("translate_text", { text })`
-- 后端 `translate_text` 命令：解析引擎策略（复用 `resolve_translate_strategy`），执行翻译返回译文字符串
-- 前端拿到译文 → 切该 tab `mode='contrast'`，`originalText = 选中或全文`，`translatedText = 译文`
-- 翻译前先清空选区光标到末尾（避免对照模式下选区残留）
+- 后端 `translate_text` 命令：fire-and-forget（立即返回，后台 spawn 线程翻译，结果通过 `emit("translate-progress")` / `emit("translate-done")` 事件返回）
+- 前端立即切该 tab `mode='contrast'`（译文区显示 loading），listen 事件更新 `translatedText`
+- `translate_text` 返回 `Result<(), String>`（不返回译文）
 
 ### 3.3 入口 3：截图翻译（OCR → 翻译 → 对照）—— 本次仅预留架构
 
@@ -155,17 +159,20 @@ interface TranslationContrastPaneProps {
 ### 4.4 工具栏分组
 
 ```
-[字号-] [15] [字号+]  |  [只原文][对照][只译文]  |  左:[编辑][预览]  右:[编辑][预览]  |  [翻译] [保存]
+[字号-] [15] [字号+]  |  [只原文][对照][只译文]  |  左:[toggle编辑/预览]  右:[toggle编辑/预览]  |  [翻译] [保存]
 ```
 
 - **左段**：字号 ±（共享）
 - **中段**：视图布局切换组（`PanelLeft` / `Columns2` / `PanelRight` 图标）
-- **中右段**：左列 [编辑][预览] · 右列 [编辑][预览]
+- **中右段**：左列 / 右列各自一个 **toggle 按钮**（当前编辑态显示 Eye 图标→点切预览，当前预览态显示 FileText 图标→点切编辑），非两个独立按钮
 - **右段**：[翻译]（`Languages` 图标）→ `onTranslate` / [保存] → `onSave`
 
-### 4.5 视图布局切换实现
+### 4.5 视图布局切换 + Splitter
 
-三个列容器始终挂载（保持 CM6 状态），用 `display: none` 切换可见性——与 MarkdownPane 现有 split/preview 切换手法一致，不丢光标/撤销栈。
+- 三个列容器始终挂载（保持 CM6 状态），用 `display: none` 切换可见性——与 MarkdownPane 现有 split/preview 切换手法一致，不丢光标/撤销栈
+- **contrast 模式下中间有可拖拽 splitter**：grid 布局（`${splitRatio * 100}% 1px ${(1 - splitRatio) * 100}%`），拖拽 PointerEvent 实时更新比例（20%-80%），释放时持久化到 `localStorage`（key `contrast-split-ratio`），复用 MarkdownPane 的 splitter 模式
+- **splitter 颜色** `bg-muted-foreground/30`（比 `bg-border` 深一档，与 CM6 行号线视觉区分，避免混淆）；hover 变 voice 色
+- 仅 contrast 模式显示 splitter，left / right 模式隐藏
 
 ### 4.6 滚动
 
@@ -210,13 +217,13 @@ pub fn open_temp_compact_editor(app: &AppHandle, payload: TempTabPayload);
 
 ```rust
 #[tauri::command]
-pub fn translate_text(text: String, app: AppHandle) -> Result<String, String>;
+pub fn translate_text(text: String, app: AppHandle) -> Result<(), String>;
 ```
 
-- 复用 `detect_translate_direction` + `resolve_translate_strategy`
-- 本地引擎：同步执行（短文本 <2s，可接受）返回译文
-- LLM：同步调用 `chat_text_with_prompt`
-- 供普通 tab 工具栏翻译按钮调用，返回纯译文字符串
+- fire-and-forget：立即返回 `Ok(())`，后台 `std::thread::spawn` 翻译，结果通过 `emit("translate-progress", accumulated)` / `emit("translate-done", final)` 事件返回
+- 新增 `do_translate_streaming(text, app)` 公共函数：按换行切分段落，逐段调 `do_translate`，每段完成 emit 增量结果
+- `do_translate(text, config)` 对 opus-mt 走 `load_opus_mt(source, target)` 按方向加载引擎
+- 前端 listen `translate-progress`（实时更新译文区）+ `translate-done`（清 loading 状态）
 
 ### 5.3 action bar 翻译路径改 contrast
 
@@ -233,8 +240,7 @@ contrast 的原文不持久化，保存只写译文（=普通 clipboard 条目�
 
 ### 6.1 翻译失败
 
-- **入口 1（action bar）**：译文填 `format!("❌ 翻译失败：{}", e)`，仍以 contrast 打开（原文正常显示，右半是错误信息，用户可手动编辑覆盖）
-- **入口 2（普通 tab 工具栏）**：`translate_text` 返回 Err → 前端 toast 提示「翻译失败」+ 不切 contrast（保留 single 模式原 tab 不动）
+
 
 ### 6.2 引擎未配置 / 未下载
 
@@ -278,13 +284,22 @@ m2m100 greedy `max_length=200` tokens，超长原文会截断翻译。不特殊�
 
 | 文件 | 改动 |
 |------|------|
-| `frontend/src/pages/CompactEditor/index.tsx` | `Tab` 加 mode/originalText/translatedText 字段；`pendingToTab` / `OpenTabPayload` / `listen` temp 分支携带新字段；渲染区按 `mode` 分流 MarkdownPane vs TranslationContrastPane；`doSave` 对 contrast 取 translatedText；普通文本 tab 工具栏加翻译入口（挂给 MarkdownPane 或独立按钮） |
+| `frontend/src/pages/CompactEditor/index.tsx` | `Tab` 加 mode/originalText/translatedText 字段；`pendingToTab` / `OpenTabPayload` / `listen` temp 分支携带新字段；渲染区按 `mode` 分流 MarkdownPane vs TranslationContrastPane；`doSave` 对 contrast 取 translatedText；普通文本 tab 工具栏加翻译入口；listen translate-progress/done 事件流式更新 |
 | `crates/desktop/src/compact_editor_commands.rs` | `open_temp_compact_editor` 改收 `TempTabPayload`；`PendingTabFull` 加 3 字段；事件 payload 携带对照参数 |
-| `crates/desktop/src/action_bar_commands.rs` | `execute_action_bar_inner` local/LLM 翻译分支改调 contrast 版 open_temp；`action_bar_show_result` 加 `original_text` 参数；新增 `translate_text` 命令 |
+| `crates/desktop/src/action_bar_commands.rs` | `execute_action_bar_inner` local/LLM 翻译分支改流式 contrast（立即开 tab + 后台 emit）；`action_bar_show_result` 加 `original_text` 参数；新增 `translate_text` 命令（fire-and-forget）+ `do_translate_streaming` + `do_translate` |
 | `crates/desktop/src/tray.rs` | `open_temp_compact_editor` 调用点包成 `TempTabPayload { text:"", .. }` |
-| `crates/desktop/src/lib.rs` | 注册 `translate_text` 命令 |
+| `crates/desktop/src/main.rs` | 注册 `translate_text` 命令 |
+| `crates/translation/src/engine.rs` | 缓存改 HashMap 按 spec+方向分 key；新增 `load_opus_mt(source, target)` |
+| `crates/translation/src/discovery.rs` | KNOWN_MODELS 加 opus-mt；`check_opus_mt()` 检查 zh-en + en-zh 子目录 |
+| `crates/translation/Cargo.toml` | 加 `serde_json` 依赖 |
 
-### 7.3 不变
+### 7.3 新增（翻译引擎）
+
+| 文件 | 职责 |
+|------|------|
+| `crates/translation/src/opus_mt.rs` | Opus-MT MarianMT 引擎：encoder-decoder greedy，按方向加载 zh-en/en-zh 子目录，从 generation_config 读 token IDs，tokenizer precompiled_charsmap=null 修复 |
+
+### 7.4 不变
 
 - DB schema（无新表、无新列）
 - `CodeMirrorEditor` / `MarkdownPreview` 组件（contrast 复用）
@@ -293,7 +308,60 @@ m2m100 greedy `max_length=200` tokens，超长原文会截断翻译。不特殊�
 
 ---
 
-## 8. 不在本次范围
+## 9. 翻译引擎：Opus-MT 接入
+
+### 9.1 模型信息
+
+| 属性 | 值 |
+|------|-----|
+| 架构 | MarianMT（encoder-decoder，FairSeq 系） |
+| 参数量 | ~30M/方向（vs m2m100 418M） |
+| ONNX | int8 量化（encoder_model_int8.onnx + decoder_model_int8.onnx） |
+| d_model | 512（vs m2m100 1024） |
+| layers | 6+6（vs m2m100 12+12） |
+| vocab_size | 65001 |
+| 方向 | 1对1（需 zh-en + en-zh 两个子目录） |
+| tokenizer | HF tokenizers（tokenizer.json） |
+| decoder_start_id | 65000（从 generation_config.json 读） |
+| eos_id | 0 |
+
+### 9.2 目录结构
+
+```
+~/.octopus/models/translate/opus-mt/
+├── zh-en/   → Xenova/opus-mt-zh-en (HF cache symlink)
+│   ├── onnx/encoder_model_int8.onnx
+│   ├── onnx/decoder_model_int8.onnx
+│   ├── tokenizer.json
+│   ├── config.json
+│   └── generation_config.json
+└── en-zh/   → Xenova/opus-mt-en-zh (HF cache symlink)
+    └── (同上)
+```
+
+一组模型在设置页算一个（两个方向需都存在才算 downloaded）。
+
+### 9.3 tokenizer precompiled_charsmap=null 修复
+
+Xenova 导出的 tokenizer.json 中 `normalizer.precompiled_charsmap` 为 `null`，`tokenizers` crate 0.21.4 遇到 null 直接 panic（`Precompiled: Error("invalid type: null")`）。修复：加载时解析 JSON，删除整个 `normalizer` 字段（MarianMT 不需要 normalization）。
+
+### 9.4 引擎选择优先级（自动模式）
+
+1. **opus-mt**（轻量 30M，中英互译）—— 已下载则优先
+2. **m2m100-418M**（多语言 100+）—— opus-mt 未下载时 fallback
+3. **LLM**（远程）—— 本地引擎均未下载时
+
+用户可在设置页手动选择 `local:opus-mt` / `local:m2m100` / `自动` / `LLM`。
+
+### 9.5 引擎缓存
+
+`engine.rs` 全局缓存改为 `HashMap<String, Arc<dyn TranslationEngine>>`：
+- m2m100：按 spec key 缓存（如 `local:m2m100-418M`）
+- opus-mt：按 spec+方向 key 缓存（如 `local:opus-mt-zh-en`），因为不同方向加载不同子目录
+
+---
+
+## 10. 不在本次范围
 
 - **截图翻译触发 UI**（OCR → 翻译编排命令）——数据通路已支持，UI 后续独立任务
 - **对照模式的原文持久化**——原文是脚手架，关 tab 即丢，不进 DB

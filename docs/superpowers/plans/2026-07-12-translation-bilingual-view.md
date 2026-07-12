@@ -1,6 +1,6 @@
 # 翻译结果左右对比展示 Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 为 CompactEditor 图文编辑器新增「翻译对照」视图模式，左原文 / 右译文双栏并排，两侧均可编辑（各自 markdown 编辑/预览），新增视图布局切换（只原文 / 对照 / 只译文）。
 
@@ -48,7 +48,7 @@
 
 **背景：** 当前 `open_temp_compact_editor(app, text: &str)` 只传单段文本。需扩展为携带 `mode`/`original_text`/`translated_text` 的 struct，兼容现有调用方（托盘、action bar 非翻译 AI）。
 
-- [ ] **Step 1: 新增 `TempTabPayload` struct 并扩展 `PendingTabFull`**
+- [x] **Step 1: 新增 `TempTabPayload` struct 并扩展 `PendingTabFull`**
 
 在 `compact_editor_commands.rs` 的 `PendingTabFull` struct 后新增 `TempTabPayload`，并给 `PendingTabFull` 加 3 个 `#[serde(default)]` 字段：
 
@@ -86,7 +86,7 @@ pub struct TempTabPayload {
     pub translated_text: Option<String>,
 ```
 
-- [ ] **Step 2: 改 `store_pending_temp_tab` 签名为收 `TempTabPayload`**
+- [x] **Step 2: 改 `store_pending_temp_tab` 签名为收 `TempTabPayload`**
 
 将现有 `store_pending_temp_tab(text: String, source: &str)` 替换为：
 
@@ -108,7 +108,7 @@ pub fn store_pending_temp(payload: TempTabPayload, source: &str) {
 }
 ```
 
-- [ ] **Step 3: 改 `open_temp_compact_editor` 签名**
+- [x] **Step 3: 改 `open_temp_compact_editor` 签名**
 
 将现有 `open_temp_compact_editor(app: &tauri::AppHandle, text: &str)` 替换为收 `TempTabPayload`：
 
@@ -138,7 +138,7 @@ pub fn open_temp_compact_editor(app: &tauri::AppHandle, payload: &TempTabPayload
 
 注意：`TempTabPayload` 需 derive `Clone`（Step 1 已含）。
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 ```bash
 cargo build --release -p octopus-desktop --features embedded 2>&1 | tail -20
@@ -159,7 +159,7 @@ Expected: 编译失败（调用方 `tray.rs` / `action_bar_commands.rs` 仍传 `
 - Consumes: Task 1 的 `TempTabPayload` + `open_temp_compact_editor(app, &TempTabPayload)`
 - Produces: `action_bar_show_result(result, original_text, action, app, write_clipboard)` 新签名。Task 3 的翻译路径依赖此签名。
 
-- [ ] **Step 1: 修 `tray.rs` 调用点**
+- [x] **Step 1: 修 `tray.rs` 调用点**
 
 找到 `tray.rs` 中 `open_temp_compact_editor(app, "")` 调用（约 127 行），改为：
 
@@ -167,7 +167,7 @@ Expected: 编译失败（调用方 `tray.rs` / `action_bar_commands.rs` 仍传 `
 crate::compact_editor_commands::open_temp_compact_editor(app, &Default::default());
 ```
 
-- [ ] **Step 2: 修 `action_bar_show_result` 签名 + 非翻译路径**
+- [x] **Step 2: 修 `action_bar_show_result` 签名 + 非翻译路径**
 
 将 `action_bar_show_result` 签名改为加 `original_text: String` 参数：
 
@@ -196,7 +196,7 @@ pub fn action_bar_show_result(result: String, original_text: String, action: Str
 
 注意：`display_text` 仍由现有 label 匹配逻辑生成（翻译/润色/摘要/解释）。
 
-- [ ] **Step 3: 更新 `action_bar_show_result` 的所有调用点**
+- [x] **Step 3: 更新 `action_bar_show_result` 的所有调用点**
 
 搜索 `action_bar_show_result(` 的调用（约 3 处：润色/摘要/解释的 AI 路径 + LLM 翻译路径），每处加 `original_text` 参数。非翻译路径传 `String::new()`：
 
@@ -205,7 +205,7 @@ pub fn action_bar_show_result(result: String, original_text: String, action: Str
 
 用 `grep -n "action_bar_show_result" crates/desktop/src/action_bar_commands.rs` 确认全部调用点已更新。
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 ```bash
 cargo build --release -p octopus-desktop --features embedded 2>&1 | tail -20
@@ -213,7 +213,7 @@ cargo build --release -p octopus-desktop --features embedded 2>&1 | tail -20
 
 Expected: 编译成功（Task 1 的 `open_temp_compact_editor` 签名变更全部消化）。如有报错，检查遗漏的调用点。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/tray.rs crates/desktop/src/action_bar_commands.rs crates/desktop/src/compact_editor_commands.rs
@@ -232,7 +232,7 @@ git commit -m "refactor(compact-editor): open_temp_compact_editor 改收 TempTab
 **Interfaces:**
 - Produces: `do_translate(text, &config) -> Result<String, String>`（公共翻译执行）、`#[tauri::command] translate_text(text, app) -> Result<String, String>`（前端工具栏翻译用）
 
-- [ ] **Step 1: 提取公共翻译执行函数 `do_translate`**
+- [x] **Step 1: 提取公共翻译执行函数 `do_translate`**
 
 在 `action_bar_commands.rs` 的 `detect_translate_direction` 函数后新增（约 362 行）：
 
@@ -261,7 +261,7 @@ fn do_translate(text: &str, config: &octopus_infra::config::AppConfig) -> Result
 }
 ```
 
-- [ ] **Step 2: 新增 `translate_text` Tauri 命令**
+- [x] **Step 2: 新增 `translate_text` Tauri 命令**
 
 在 `do_translate` 后新增：
 
@@ -274,7 +274,7 @@ pub fn translate_text(text: String) -> Result<String, String> {
 }
 ```
 
-- [ ] **Step 3: 注册 `translate_text` 命令到 `main.rs`**
+- [x] **Step 3: 注册 `translate_text` 命令到 `main.rs`**
 
 在 `main.rs` 的 `generate_handler!` 列表中，`action_bar_commands::action_bar_show_result,` 行附近（约 295 行）追加：
 
@@ -282,7 +282,7 @@ pub fn translate_text(text: String) -> Result<String, String> {
             action_bar_commands::translate_text,
 ```
 
-- [ ] **Step 4: 改 `execute_action_bar_inner` 翻译分支用 contrast**
+- [x] **Step 4: 改 `execute_action_bar_inner` 翻译分支用 contrast**
 
 将 local 翻译分支（约 699-721 行）的 `display` 构建改为 contrast payload。替换整个 `TranslateStrategy::Local(spec)` 分支：
 
@@ -335,7 +335,7 @@ pub fn translate_text(text: String) -> Result<String, String> {
 
 注意：`source_lang` / `target_lang` 在 match 前已由 `detect_translate_direction` 计算，线程闭包需 move 它们——改为在闭包前用 `let` 绑定（已在 697 行 `let (source_lang, target_lang) = ...`）。
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 ```bash
 cargo build --release -p octopus-desktop --features embedded 2>&1 | tail -20
@@ -343,7 +343,7 @@ cargo build --release -p octopus-desktop --features embedded 2>&1 | tail -20
 
 Expected: 编译成功。如有 move/borrow 报错，检查 `text` / `source_lang` / `target_lang` 的所有权转移。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/src/action_bar_commands.rs crates/desktop/src/main.rs
@@ -358,7 +358,7 @@ git commit -m "feat(translation): action bar 翻译走 contrast 模式 + 新增 
 - Modify: `crates/desktop/frontend/src/locales/zh-CN.yaml:2-27`
 - Modify: `crates/desktop/frontend/src/locales/en.yaml`（对应 editor/tab 段）
 
-- [ ] **Step 1: zh-CN.yaml 新增 contrast + translate keys**
+- [x] **Step 1: zh-CN.yaml 新增 contrast + translate keys**
 
 在 `editor:` 段（约 2-20 行）的 `previewEmpty:` 行前插入：
 
@@ -375,7 +375,7 @@ git commit -m "feat(translation): action bar 翻译走 contrast 模式 + 新增 
     layoutTranslated: 只译文
 ```
 
-- [ ] **Step 2: en.yaml 同步英文**
+- [x] **Step 2: en.yaml 同步英文**
 
 在对应 `editor:` 段插入：
 
@@ -392,7 +392,7 @@ git commit -m "feat(translation): action bar 翻译走 contrast 模式 + 新增 
     layoutTranslated: Translation only
 ```
 
-- [ ] **Step 3: i18n 单测验证**
+- [x] **Step 3: i18n 单测验证**
 
 ```bash
 cd crates/desktop/frontend && npx vitest run src/lib/i18n.test.ts 2>&1 | tail -15
@@ -400,7 +400,7 @@ cd crates/desktop/frontend && npx vitest run src/lib/i18n.test.ts 2>&1 | tail -1
 
 Expected: PASS（确认新 key 在两个 locale 文件中都存在，无 missing key 报错）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/locales/zh-CN.yaml crates/desktop/frontend/src/locales/en.yaml
@@ -420,7 +420,7 @@ git commit -m "i18n: 新增翻译对照视图文案 (contrast.*)"
 **Interfaces:**
 - Produces: `Tab.mode/originalText/translatedText` 字段、`OpenTabPayload` 扩展字段、`PendingTabFull` 扩展字段。Task 6/7 的组件依赖这些字段。
 
-- [ ] **Step 1: Tab 接口加字段**
+- [x] **Step 1: Tab 接口加字段**
 
 在 `index.tsx` 的 `interface Tab`（约 12-21 行）末尾 `isTemp?: boolean;` 后追加：
 
@@ -430,7 +430,7 @@ git commit -m "i18n: 新增翻译对照视图文案 (contrast.*)"
   translatedText?: string;
 ```
 
-- [ ] **Step 2: OpenTabPayload 加字段**
+- [x] **Step 2: OpenTabPayload 加字段**
 
 在 `interface OpenTabPayload`（约 22-27 行）追加：
 
@@ -440,7 +440,7 @@ git commit -m "i18n: 新增翻译对照视图文案 (contrast.*)"
   translatedText?: string;
 ```
 
-- [ ] **Step 3: PendingTabFull 加字段**
+- [x] **Step 3: PendingTabFull 加字段**
 
 在 `interface PendingTabFull`（约 29-37 行）追加：
 
@@ -450,7 +450,7 @@ git commit -m "i18n: 新增翻译对照视图文案 (contrast.*)"
   translatedText?: string;
 ```
 
-- [ ] **Step 4: pendingToTab 映射新字段**
+- [x] **Step 4: pendingToTab 映射新字段**
 
 在 `pendingToTab` 函数（约 38-45 行）的两个 return 分支中都追加 mode/originalText/translatedText：
 
@@ -459,7 +459,7 @@ git commit -m "i18n: 新增翻译对照视图文案 (contrast.*)"
   return { key, source, itemId: p.itemId, itemType: 'text', text: p.text, isTemp: p.isTemp, mode: p.mode as Tab['mode'], originalText: p.originalText, translatedText: p.translatedText };
 ```
 
-- [ ] **Step 5: listen temp 分支处理 contrast**
+- [x] **Step 5: listen temp 分支处理 contrast**
 
 在 `useEffect` 的 listen temp 分支（约 165-170 行），构建 tab 时携带新字段：
 
@@ -483,7 +483,7 @@ git commit -m "i18n: 新增翻译对照视图文案 (contrast.*)"
         }
 ```
 
-- [ ] **Step 6: promoteTempTab 保留 contrast 字段语义**
+- [x] **Step 6: promoteTempTab 保留 contrast 字段语义**
 
 contrast temp tab 升级为 clipboard 条目时，mode 应回退为 single（DB 只存译文），但保留 translatedText 到 text。修改 `promoteTempTab.ts`：
 
@@ -509,7 +509,7 @@ export function promoteTempTab(tabs: Tab[], idx: number, newId: number): Tab[] {
 }
 ```
 
-- [ ] **Step 7: 补 promoteTempTab 单测**
+- [x] **Step 7: 补 promoteTempTab 单测**
 
 在 `promoteTempTab.test.ts` 追加 contrast 升级用例：
 
@@ -556,7 +556,7 @@ describe("promoteTempTab", () => {
 });
 ```
 
-- [ ] **Step 8: 运行单测**
+- [x] **Step 8: 运行单测**
 
 ```bash
 cd crates/desktop/frontend && npx vitest run src/pages/CompactEditor/promoteTempTab.test.ts 2>&1 | tail -15
@@ -564,7 +564,7 @@ cd crates/desktop/frontend && npx vitest run src/pages/CompactEditor/promoteTemp
 
 Expected: PASS。
 
-- [ ] **Step 9: Commit**
+- [x] **Step 9: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/CompactEditor/index.tsx crates/desktop/frontend/src/pages/CompactEditor/promoteTempTab.ts crates/desktop/frontend/src/pages/CompactEditor/promoteTempTab.test.ts
@@ -582,7 +582,7 @@ git commit -m "feat(compact-editor): Tab 数据模型扩展 contrast 字段 + pr
 - Consumes: `CodeMirrorEditor`（现有）、`MarkdownPreview`（现有）、`useT` / `t`（i18n）、Task 4 的 contrast.* / editor.translate keys
 - Produces: `TranslationContrastPane` 组件，Task 7 的 index.tsx 渲染区分流依赖此组件 Props
 
-- [ ] **Step 1: 创建组件文件**
+- [x] **Step 1: 创建组件文件**
 
 创建 `crates/desktop/frontend/src/pages/CompactEditor/TranslationContrastPane.tsx`：
 
@@ -802,7 +802,7 @@ export function TranslationContrastPane({
 }
 ```
 
-- [ ] **Step 2: TypeScript 编译验证**
+- [x] **Step 2: TypeScript 编译验证**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -20
@@ -810,7 +810,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -20
 
 Expected: PASS（无类型错误）。如有 `lucide-react` 图标名错误，确认图标存在（`PanelLeft` / `PanelRight` / `Columns2` / `Languages` / `Loader2` 均为 lucide-react 已有图标）。
 
-- [ ] **Step 3: Commit**
+- [x] **Step 3: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/CompactEditor/TranslationContrastPane.tsx
@@ -828,7 +828,7 @@ git commit -m "feat(compact-editor): 新增 TranslationContrastPane 对照视图
 **Interfaces:**
 - Consumes: Task 6 的 `TranslationContrastPane`、Task 3 的 `translate_text` 命令、Task 5 的 Tab 字段
 
-- [ ] **Step 1: doSave 处理 contrast temp tab**
+- [x] **Step 1: doSave 处理 contrast temp tab**
 
 在 `doSave`（约 199 行）的 `if (active.isTemp)` 分支内，contrast tab 升级时须把 `translatedText` 作为入库文本。在 `const newId = await invoke...` 前加判断：
 
@@ -862,7 +862,7 @@ git commit -m "feat(compact-editor): 新增 TranslationContrastPane 对照视图
 
 注意：这段替换原 `if (active.isTemp)` 的整个 if 体（约 206-224 行）。
 
-- [ ] **Step 2: 新增 contrast tab 保存（非 temp）路径**
+- [x] **Step 2: 新增 contrast tab 保存（非 temp）路径**
 
 在 `doSave` 的既有条目分支（约 225-238 行），contrast 已 promote 为 clipboard 后保存：
 
@@ -888,7 +888,7 @@ git commit -m "feat(compact-editor): 新增 TranslationContrastPane 对照视图
       }
 ```
 
-- [ ] **Step 3: 新增翻译状态 + handleTranslate**
+- [x] **Step 3: 新增翻译状态 + handleTranslate**
 
 在 `CompactEditor` 组件内（约 93 行 `savedFlash` state 附近）新增：
 
@@ -924,7 +924,7 @@ git commit -m "feat(compact-editor): 新增 TranslationContrastPane 对照视图
   }, [t]);
 ```
 
-- [ ] **Step 4: 渲染区分流 contrast vs single**
+- [x] **Step 4: 渲染区分流 contrast vs single**
 
 在内容区渲染（约 325-344 行），文本 tab 分支前加 contrast 判断：
 
@@ -964,7 +964,7 @@ git commit -m "feat(compact-editor): 新增 TranslationContrastPane 对照视图
 
 注意：上面 `i === activeIdx ? (` 替换原来的 `i === activeIdx ? (` 行（约 327 行），后续 `: (` 非活跃占位不变。
 
-- [ ] **Step 5: 引入 TranslationContrastPane**
+- [x] **Step 5: 引入 TranslationContrastPane**
 
 在文件顶部 import 区（约 7 行）追加：
 
@@ -972,7 +972,7 @@ git commit -m "feat(compact-editor): 新增 TranslationContrastPane 对照视图
 import { TranslationContrastPane } from "./TranslationContrastPane";
 ```
 
-- [ ] **Step 6: TypeScript 编译验证**
+- [x] **Step 6: TypeScript 编译验证**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -20
@@ -980,7 +980,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -20
 
 Expected: PASS。
 
-- [ ] **Step 7: 全量单测**
+- [x] **Step 7: 全量单测**
 
 ```bash
 cd crates/desktop/frontend && npx vitest run 2>&1 | tail -20
@@ -988,7 +988,7 @@ cd crates/desktop/frontend && npx vitest run 2>&1 | tail -20
 
 Expected: 全部 PASS。
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/CompactEditor/index.tsx
@@ -1005,7 +1005,7 @@ git commit -m "feat(compact-editor): 渲染分流 contrast + doSave 保存译文
 
 **背景：** 普通文本 tab（single 模式）工具栏需要「翻译」按钮，点击后切 contrast。按钮由 index.tsx 传 `onTranslate` 回调。readOnly tab（语音记录）不显示。
 
-- [ ] **Step 1: MarkdownPane Props 加 onTranslate + translating**
+- [x] **Step 1: MarkdownPane Props 加 onTranslate + translating**
 
 在 `interface MarkdownPaneProps`（约 18-28 行）追加：
 
@@ -1014,7 +1014,7 @@ git commit -m "feat(compact-editor): 渲染分流 contrast + doSave 保存译文
   translating?: boolean;
 ```
 
-- [ ] **Step 2: 函数签名解构新 props**
+- [x] **Step 2: 函数签名解构新 props**
 
 在 `export function MarkdownPane({...})` 参数列表（约 42-44 行）追加 `onTranslate, translating`：
 
@@ -1024,7 +1024,7 @@ export function MarkdownPane({
 }: MarkdownPaneProps) {
 ```
 
-- [ ] **Step 3: 工具栏加翻译按钮**
+- [x] **Step 3: 工具栏加翻译按钮**
 
 在工具栏的视图模式组前（约 151 行 `<span className="w-px h-4 bg-border mx-1" />` 视图组前）插入翻译按钮。仅 `!readOnly && onTranslate` 时显示：
 
@@ -1048,7 +1048,7 @@ export function MarkdownPane({
 
 注意：在 import 区加 `Languages` 到 lucide-react 导入（约第 4 行）。如果 `Loader2` 需要用于 translating spinner，一并加。
 
-- [ ] **Step 4: index.tsx 传 onTranslate 给 MarkdownPane**
+- [x] **Step 4: index.tsx 传 onTranslate 给 MarkdownPane**
 
 在 Task 7 Step 4 的渲染区，MarkdownPane 调用处加 props：
 
@@ -1068,7 +1068,7 @@ export function MarkdownPane({
                   />
 ```
 
-- [ ] **Step 5: TypeScript 编译 + 单测**
+- [x] **Step 5: TypeScript 编译 + 单测**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -10 && npx vitest run 2>&1 | tail -10
@@ -1076,7 +1076,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -10 && npx vitest run
 
 Expected: PASS。
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/CompactEditor/MarkdownPane.tsx crates/desktop/frontend/src/pages/CompactEditor/index.tsx
@@ -1091,7 +1091,7 @@ git commit -m "feat(compact-editor): MarkdownPane 工具栏加翻译按钮（sin
 - Verify: 全项目编译
 - Modify: `docs/architecture.md`（CompactEditor 段补 contrast 模式说明）
 
-- [ ] **Step 1: 后端全量编译**
+- [x] **Step 1: 后端全量编译**
 
 ```bash
 cargo build --release -p octopus-desktop --features embedded 2>&1 | tail -10
@@ -1099,7 +1099,7 @@ cargo build --release -p octopus-desktop --features embedded 2>&1 | tail -10
 
 Expected: 编译成功。
 
-- [ ] **Step 2: 前端全量编译 + 单测**
+- [x] **Step 2: 前端全量编译 + 单测**
 
 ```bash
 cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5 && npx vitest run 2>&1 | tail -10
@@ -1107,7 +1107,7 @@ cd crates/desktop/frontend && npx tsc --noEmit 2>&1 | tail -5 && npx vitest run 
 
 Expected: 全部 PASS。
 
-- [ ] **Step 3: architecture.md 文档同步**
+- [x] **Step 3: architecture.md 文档同步**
 
 在 `docs/architecture.md` 的 CompactEditor 段（约 181 行）末尾补一句 contrast 模式说明：
 
@@ -1115,17 +1115,58 @@ Expected: 全部 PASS。
 **翻译对照模式（2026-07-12）**：`Tab.mode='contrast'` 时渲染 `TranslationContrastPane`（替代 `MarkdownPane`），左原文/右译文双栏，各列独立 CM6 编辑器 + Markdown 预览（无 split，已外层分栏），新增视图布局切换（只原文/对照/只译文）。入口三条：(1) action bar 翻译（local/LLM 均走 contrast temp tab，携带 originalText+translatedText）；(2) 普通文本 tab 工具栏「翻译」按钮（invoke `translate_text`，成功后切 mode='contrast'）；(3) 截图翻译（数据通路已支持，UI 后续）。保存只写译文（`translatedText`），原文是脚手架不持久化；temp→clipboard 升级时 mode 回退 single。后端 `open_temp_compact_editor` 改收 `TempTabPayload { text, mode?, original_text?, translated_text? }`。详见 [spec](superpowers/specs/2026-07-12-translation-bilingual-view-design.md)。
 ```
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/architecture.md
 git commit -m "docs(sync): architecture 补 translation-bilingual-view contrast 模式说明"
 ```
 
-- [ ] **Step 5: 最终 git log 确认**
+- [x] **Step 5: 最终 git log 确认**
 
 ```bash
 git log --oneline -10
 ```
 
 Expected: 看到 7-8 个 feat/refactor/docs 提交，对应 Task 1-9。
+
+---
+
+### Task 10: 流式翻译（实现偏差补录）
+
+**背景：** 原 Task 3 设计为同步翻译后返回结果。用户反馈翻译太慢。改为流式：立即打开编辑器（译文 loading），后台逐段翻译 emit。
+
+- [x] **Step 1:** 新增 `do_translate_streaming` 按换行切段逐段翻译 emit；`translate_text` 改 fire-and-forget（`Result<(), String>` + spawn 线程）
+- [x] **Step 2:** action bar local 翻译改流式（立即打开 contrast tab + spawn 线程 emit）
+- [x] **Step 3:** 前端 listen `translate-progress`/`translate-done` + `translatingTabKeyRef` 跟踪
+- [x] **Step 4:** `handleTranslateForTab` 改 fire-and-forget（立即切 contrast + invoke 不等返回）
+
+---
+
+### Task 11: TranslationContrastPane splitter + toggle 按钮（实现偏差补录）
+
+**背景：** 原 Task 6 用 flex 布局 + 两个独立编辑/预览按钮。用户反馈缺 splitter、两按钮不如一个 toggle。
+
+- [x] **Step 1:** 加可拖拽 splitter（grid 布局 + PointerEvent + localStorage 持久化，复用 MarkdownPane 模式）
+- [x] **Step 2:** 编辑/预览改单 toggle 按钮（点一下切换，图标显示目标模式）
+- [x] **Step 3:** splitter 颜色调深（`bg-muted-foreground/30`，与行号线 `bg-border` 区分）
+
+---
+
+### Task 12: Opus-MT 轻量翻译引擎接入
+
+**背景：** m2m100（418M）太慢。接入 Opus-MT（MarianMT 30M/方向），推理速度快数倍。
+
+- [x] **Step 1:** `opus_mt.rs` MarianMT encoder-decoder greedy，按方向加载 zh-en/en-zh 子目录
+- [x] **Step 2:** `engine.rs` 缓存改 HashMap + `load_opus_mt(source, target)`
+- [x] **Step 3:** `discovery.rs` 加 opus-mt（一组模型，两个方向子目录）
+- [x] **Step 4:** `resolve_translate_strategy` 自动模式优先 opus-mt
+- [x] **Step 5:** `do_translate` 对 opus-mt 走 `load_opus_mt`
+
+---
+
+### Task 13: Opus-MT tokenizer precompiled_charsmap=null 修复
+
+**背景：** Xenova 导出的 tokenizer.json 中 `precompiled_charsmap` 为 null，tokenizers 0.21.4 直接 panic。最终方案：解析 JSON 删除整个 `normalizer` 字段（MarianMT 不需要 normalization）。
+
+- [x] **Step 1:** `load_opus_tokenizer` 函数：含 `precompiled_charsmap` 则删除 `normalizer` 字段后 from_bytes 加载
