@@ -1,5 +1,6 @@
 import { useState, useCallback, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { emit } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { Mic, Volume2, Sparkles, Keyboard, ClipboardList, Layers, Palette } from "lucide-react";
 import type { ThemeInfo } from "@/lib/theme";
@@ -105,6 +106,7 @@ export default function GeneralPanel({ configResp, setVal, showToast, refreshCon
   const setUiLanguage = useCallback(async (lang: string) => {
     await setVal("ui_language", lang);
     setLocale(lang as "zh-CN" | "en");
+    await emit("locale-changed", lang);
   }, [setVal]);
 
   const toggleVal = useCallback(async (key: string) => {

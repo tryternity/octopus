@@ -30,3 +30,15 @@ settings:
   uiLanguage: 界面语言
   uiLanguageZhCN: 中文
   uiLanguageEn: English
+
+# ════════ Tray 托盘菜单 ════════
+tray:
+  startAsr: 语音识别（${shortcut}）
+  stopAsr: 停止识别
+  processing: 处理中…
+  screenshot: 开始截图（${shortcut}）
+  clipboard: 剪  贴  板（${shortcut}）
+  compactEditor: 图文编辑
+  settings: 系统管理
+  quit: 退出系统
+  engineInfo: 引擎  ${engine} · ${mode}

@@ -30,3 +30,15 @@ settings:
   uiLanguage: Interface Language
   uiLanguageZhCN: 中文
   uiLanguageEn: English
+
+# ════════ Tray ════════
+tray:
+  startAsr: Start Recognition (${shortcut})
+  stopAsr: Stop
+  processing: Processing…
+  screenshot: Screenshot (${shortcut})
+  clipboard: Clipboard (${shortcut})
+  compactEditor: Image-Text Editor
+  settings: Settings
+  quit: Quit
+  engineInfo: Engine  ${engine} · ${mode}
