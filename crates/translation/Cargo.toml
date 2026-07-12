@@ -1,0 +1,24 @@
+[package]
+name = "octopus-translation"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ort = { version = "2.0.0-rc.12", features = ["download-binaries"] }
+ndarray = "0.17"
+anyhow = "1"
+log = "0.4"
+parking_lot = { workspace = true }
+sentencepiece = { version = "0.13", features = ["static"] }
+serde = { version = "1", features = ["derive"] }
+octopus-infra = { path = "../infra" }
+onnx-infra = { path = "../onnx-infra" }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["coreml"] }
+
+[target.'cfg(target_os = "linux")'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["cuda"] }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+ort = { version = "2.0.0-rc.12", features = ["directml"] }
