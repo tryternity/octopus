@@ -29,10 +29,9 @@ pub fn cached_engine(engine_spec: &str) -> Result<Option<Arc<dyn TranslationEngi
     // 按引擎名加载
     let engine_name = &engine_spec["local:".len()..];
     let engine: Arc<dyn TranslationEngine> = if engine_name.starts_with("opus-mt") {
-        // opus-mt：方向由 translate 时动态确定，引擎预加载需要两个方向。
-        // 但 OpusMTEngine::load 需要 source/target，这里不预加载——
-        // 实际在 do_translate 时根据方向动态加载。cached_engine 对 opus-mt 返回 None。
-        // 真正的 opus-mt 加载在 do_translate_for_engine 中处理。
+        // opus-mt 需要翻译方向信息才能加载对应子目录（zh-en / en-zh），
+        // cached_engine 无方向参数，对 opus-mt 返回 None。
+        // 实际加载由 do_translate → load_opus_mt(source, target) 处理。
         return Ok(None);
     } else {
         // 默认：m2m100

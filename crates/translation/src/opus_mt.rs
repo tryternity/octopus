@@ -89,9 +89,14 @@ impl OpusMTEngine {
 
     /// 单 chunk 翻译核心逻辑
     fn translate_chunk(&self, text: &str) -> Result<String> {
-        // MarianMT tokenizer：直接 encode，不加语言标记
-        let encoding = self.tokenizer.encode(text, false)
+        // MarianMT tokenizer：直接 encode，加 truncation 防超 encoder 上限
+        let mut encoding = self.tokenizer.encode(text, false)
             .map_err(|e| anyhow::anyhow!("opus-mt tokenizer encode 失败: {}", e))?;
+        // 兑底：超过 model_max_length 截断，防止 ONNX 位置越界
+        if encoding.len() > MAX_ENCODER_TOKENS {
+            log::warn!("opus-mt 输入 {} tokens 超上限 {}，截断", encoding.len(), MAX_ENCODER_TOKENS);
+            encoding.truncate(MAX_ENCODER_TOKENS, 0, tokenizers::TruncationDirection::Right);
+        }
         let input_ids: Vec<i64> = encoding.get_ids().iter().map(|&id| id as i64).collect();
         let seq_len = input_ids.len();
         if seq_len == 0 {
@@ -137,9 +142,9 @@ impl OpusMTEngine {
             // 拷贝最后位置的 logits（需要修改副本做惩罚）
             let mut logits: Vec<f32> = logits_data[offset..offset + vocab_size].to_vec();
 
-            // 1) Repetition penalty：已出现 token 的 logit / penalty
+            // 1) Repetition penalty：已生成 token 的 logit / penalty（不含 decoder_start_id prompt）
             let generated: std::collections::HashSet<i64> =
-                decoder_ids.iter().copied().collect();
+                decoder_ids[1..].iter().copied().collect();
             for &tid in &generated {
                 let idx = tid as usize;
                 if idx < logits.len() {
@@ -152,14 +157,14 @@ impl OpusMTEngine {
             }
 
             // 2) No-repeat-ngram-size：禁止生成已出现过的 n-gram 的下一个 token
-            if decoder_ids.len() >= NO_REPEAT_NGRAM_SIZE - 1 {
+            // 需历史中已存在完整 n-gram（len >= n），才能禁止其重复
+            if decoder_ids.len() >= NO_REPEAT_NGRAM_SIZE {
                 let n = NO_REPEAT_NGRAM_SIZE;
-                // 当前 n-1 前缀
                 let prefix_len = n - 1;
                 let prefix = &decoder_ids[decoder_ids.len() - prefix_len..];
                 // 在已生成序列中找相同前缀，记录其后继 token
                 let mut banned: Vec<usize> = Vec::new();
-                for i in 0..=decoder_ids.len().saturating_sub(n) {
+                for i in 0..decoder_ids.len().saturating_sub(prefix_len) {
                     if decoder_ids[i..i + prefix_len] == *prefix {
                         banned.push(decoder_ids[i + prefix_len] as usize);
                     }
@@ -200,13 +205,15 @@ impl OpusMTEngine {
             return Ok(String::new());
         }
 
-        // 简单 token 数估算（字符数 × 1.5 作为粗估）
-        let estimated_tokens = text.chars().count() * 3 / 2;
-        if estimated_tokens <= MAX_ENCODER_TOKENS {
+        // 用实际 token 数判断是否需要分段（比字符估算准确）
+        let token_count = self.tokenizer.encode(text, false)
+            .map(|enc| enc.len())
+            .unwrap_or(0);
+        if token_count <= MAX_ENCODER_TOKENS {
             return self.translate_chunk(text);
         }
 
-        log::info!("opus-mt 长文本分段：~{} tokens", estimated_tokens);
+        log::info!("opus-mt 长文本分段：{} tokens", token_count);
         let sentences = split_sentences(text);
         let mut results: Vec<String> = Vec::with_capacity(sentences.len());
 
@@ -220,7 +227,9 @@ impl OpusMTEngine {
             results.push(translated);
         }
 
-        Ok(results.join("\n"))
+        // 用空字符串拼接（保持段内连续），与 m2m100 一致
+        // 上层 do_translate_streaming 已按 \n 切段逐段翻译，段内不需再加 \n
+        Ok(results.join(""))
     }
 }
 
