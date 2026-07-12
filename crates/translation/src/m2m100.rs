@@ -4,10 +4,10 @@ use ort::value::TensorRef;
 use parking_lot::Mutex;
 
 use crate::engine::TranslationEngine;
-use crate::tokenizer::{M2M100Tokenizer, DECODER_START_TOKEN_ID, EOS_ID};
+use crate::tokenizer::{M2M100Tokenizer, EOS_ID, DECODER_START_TOKEN_ID, lang_code_to_id};
 
 const MAX_LENGTH: usize = 200;
-const M2M100_REPO: &str = "venddair/m2m100-418M-onnx-int8";
+const M2M100_REPO: &str = "lazycodepersona/m2m100_418m";
 
 pub struct M2M100Engine {
     encoder: Mutex<Session>,
@@ -20,9 +20,9 @@ impl M2M100Engine {
         let model_dir = onnx_infra::resolve_model_dir(M2M100_REPO)
             .context("m2m100 模型未找到，请在设置 > 模型管理 > 翻译模型 中下载")?;
 
-        let encoder_path = model_dir.join("encoder_model.onnx");
-        let decoder_path = model_dir.join("decoder_model.onnx");
-        let tokenizer_path = model_dir.join("sentencepiece.bpe.model");
+        let encoder_path = model_dir.join("onnx/encoder_model_quantized.onnx");
+        let decoder_path = model_dir.join("onnx/decoder_model_quantized.onnx");
+        let tokenizer_path = model_dir.join("tokenizer.json");
 
         for (name, path) in [
             ("encoder", &encoder_path),
@@ -64,7 +64,7 @@ impl TranslationEngine for M2M100Engine {
         "m2m100-418M"
     }
 
-    fn translate(&self, text: &str, source_lang: &str, _target_lang: &str) -> Result<String> {
+    fn translate(&self, text: &str, source_lang: &str, target_lang: &str) -> Result<String> {
         // 1. Tokenize
         let input_ids = self.tokenizer.encode(text, source_lang)?;
         let seq_len = input_ids.len();
@@ -88,7 +88,10 @@ impl TranslationEngine for M2M100Engine {
         };
 
         // 3. Decoder greedy loop
-        let mut decoder_ids: Vec<i64> = vec![DECODER_START_TOKEN_ID];
+        // m2m100 decoder 初始输入：[eos, target_lang_id]
+        let target_lang_id = lang_code_to_id(target_lang, self.tokenizer.tokenizer())
+            .unwrap_or(128022) as i64;
+        let mut decoder_ids: Vec<i64> = vec![DECODER_START_TOKEN_ID, target_lang_id];
         let mut decoder = self.decoder.lock();
 
         for _ in 0..MAX_LENGTH {
@@ -106,7 +109,7 @@ impl TranslationEngine for M2M100Engine {
             let (logits_shape, logits_data) = dec_outputs["logits"]
                 .try_extract_tensor::<f32>()?;
             let vocab_size = logits_shape[2] as usize;
-            // 最后一个位置的 logits
+            // 最后一个位置的 logits（batch=0, position=dec_len-1）
             let offset = (dec_len - 1) * vocab_size;
             let last_logits = &logits_data[offset..offset + vocab_size];
 
@@ -122,12 +125,20 @@ impl TranslationEngine for M2M100Engine {
             if next_token == EOS_ID {
                 break;
             }
+            // 重复 token 检测：连续 5 个相同 token 则停止
+            if decoder_ids.len() >= 6 {
+                let last5 = &decoder_ids[decoder_ids.len()-5..];
+                if last5.iter().all(|&id| id == next_token) {
+                    log::warn!("重复 token 检测触发，停止解码");
+                    break;
+                }
+            }
             decoder_ids.push(next_token);
         }
         drop(decoder);
 
-        // 4. Detokenize（跳过 start token）
-        let result_ids: Vec<i64> = decoder_ids[1..].to_vec();
+        // 4. Detokenize（跳过 start token + target lang token）
+        let result_ids: Vec<i64> = decoder_ids[2..].to_vec();
         let text = self.tokenizer.decode(&result_ids)?;
         Ok(text)
     }
