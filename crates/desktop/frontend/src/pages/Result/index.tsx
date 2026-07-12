@@ -6,18 +6,10 @@ import { cn } from "@/lib/utils";
 import { SvgIcon, type IconName } from "@/components/SvgIcon";
 import { parseShortcut, matchShortcut } from "./shortcut";
 import { AsrEditor, type AsrEditorHandle } from "./AsrEditor";
+import { useT, t as ti18n } from "@/lib/i18n";
 
-const POLISH_OPTIONS = [
-  { mode: 0, label: "关闭" },
-  { mode: 1, label: "仅最终润色" },
-  { mode: 2, label: "中间 + 最终润色" },
-];
-
-const DENOISE_OPTIONS = [
-  { mode: 0, label: "无降噪" },
-  { mode: 1, label: "轻度降噪" },
-  { mode: 2, label: "深度降噪" },
-];
+const POLISH_MODES = [0, 1, 2];
+const DENOISE_MODES = [0, 1, 2];
 
 interface ToolbarState {
   polish_mode: number;
@@ -37,6 +29,7 @@ interface PopupItem {
 type PopupType = "polish" | "denoise" | "asr" | "llm" | null;
 
 function Result() {
+  const t = useT();
   const [visible, setVisible] = useState(false);
   const [toolbarVisible, setToolbarVisible] = useState(false);
   const [expanded, setExpanded] = useState(false);
@@ -132,7 +125,7 @@ function Result() {
       const handlers: [string, (payload: unknown) => void][] = [
         ["show-result", (p) => {
           const t = p as string;
-          const isPlaceholder = t === "正在聆听…" || t === "正在聆听...";
+          const isPlaceholder = t === "正在聆听…" || t === "正在聆听..." || t === "Listening…" || t === "Listening...";
           setVisible(true);
           setIsRecording(true);
           refreshActive();
@@ -194,8 +187,8 @@ function Result() {
     // 编辑态先提交——否则后端润色的是旧 transcript，用户编辑被覆盖
     asrEditorRef.current?.commit();
     setPolishLoading(true);
-    try { await invoke("polish_now"); showToast("润色中…"); }
-    catch (e) { setPolishLoading(false); showToast("润色失败：" + e); }
+    try { await invoke("polish_now"); showToast(ti18n("result.polishing")); }
+    catch (e) { setPolishLoading(false); showToast(ti18n("result.polishFailed") + e); }
   }, [showToast, text]);
 
   const toggleExpand = useCallback(() => {
@@ -249,16 +242,18 @@ function Result() {
 
   const openPolishPopup = async () => {
     if (popupType === "polish") { setPopupType(null); return; }
-    setPopupItems(POLISH_OPTIONS.map(o => ({
-      label: o.label, current: o.mode === toolbarState.polish_mode, mode: o.mode,
+    const polishLabels = [ti18n("result.polish.off"), ti18n("result.polish.finalOnly"), ti18n("result.polish.intermediate")];
+    setPopupItems(POLISH_MODES.map(m => ({
+      label: polishLabels[m], current: m === toolbarState.polish_mode, mode: m,
     })));
     setPopupType("polish");
   };
 
   const openDenoisePopup = async () => {
     if (popupType === "denoise") { setPopupType(null); return; }
-    setPopupItems(DENOISE_OPTIONS.map(o => ({
-      label: o.label, current: o.mode === toolbarState.denoise_mode, mode: o.mode,
+    const denoiseLabels = [ti18n("result.denoise.none"), ti18n("result.denoise.light"), ti18n("result.denoise.deep")];
+    setPopupItems(DENOISE_MODES.map(m => ({
+      label: denoiseLabels[m], current: m === toolbarState.denoise_mode, mode: m,
     })));
     setPopupType("denoise");
   };
@@ -272,7 +267,7 @@ function Result() {
       }
       setPopupType(null);
       refreshActive();
-    } catch (e) { showToast("切换失败：" + e); }
+    } catch (e) { showToast(ti18n("result.switchFailed") + e); }
   };
 
   const onDragStart = (e: React.MouseEvent) => {
@@ -281,13 +276,13 @@ function Result() {
   };
 
   const tools: { id: string; icon: IconName; label: string; active?: boolean; disabled?: boolean; onClick: () => void }[] = [
-    { id: "close", icon: "close", label: "关闭", onClick: () => invoke("discard_recording") },
-    { id: "settings", icon: "settings", label: "系统设置", onClick: () => invoke("open_settings") },
-    { id: "denoise", icon: "denoise", label: "降噪模式", active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
-    { id: "polish", icon: "polish", label: "润色模式", active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
-    { id: "polish-now", icon: "polish-now", label: "立即润色", disabled: polishLoading, onClick: polishNow },
-    { id: "toggle-size", icon: (expanded ? "minimize" : "expand-edit") as IconName, label: expanded ? "缩小" : "放大", onClick: toggleExpand },
-    { id: "save", icon: "save" as IconName, label: "保存", onClick: () => asrEditorRef.current?.commit() },
+    { id: "close", icon: "close", label: t("result.close"), onClick: () => invoke("discard_recording") },
+    { id: "settings", icon: "settings", label: t("result.settings"), onClick: () => invoke("open_settings") },
+    { id: "denoise", icon: "denoise", label: t("result.denoiseMode"), active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
+    { id: "polish", icon: "polish", label: t("result.polishMode"), active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
+    { id: "polish-now", icon: "polish-now", label: t("result.polishNow"), disabled: polishLoading, onClick: polishNow },
+    { id: "toggle-size", icon: (expanded ? "minimize" : "expand-edit") as IconName, label: expanded ? t("result.zoomOut") : t("result.zoomIn"), onClick: toggleExpand },
+    { id: "save", icon: "save" as IconName, label: t("result.save"), onClick: () => asrEditorRef.current?.commit() },
   ];
 
   return (
@@ -306,7 +301,7 @@ function Result() {
         {/* 录音提示 */}
         {!text.trim() && isRecording && (
           <div className="absolute top-0 left-0 right-0 flex items-center justify-center h-[22px] pointer-events-none z-20">
-            <span className="text-[11px] select-none" style={{ color: "var(--color-tool-icon)", opacity: 0.35 }}>正在聆听…</span>
+            <span className="text-[11px] select-none" style={{ color: "var(--color-tool-icon)", opacity: 0.35 }}>{t("result.listening")}</span>
           </div>
         )}
         {/* Toolbar */}
@@ -332,6 +327,7 @@ function Result() {
               title={label}
               aria-label={label}
               disabled={disabled}
+              onMouseDown={(e) => e.stopPropagation()}
               onClick={onClick}
             >
               <SvgIcon name={icon} size={16} />

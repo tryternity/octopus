@@ -31,6 +31,9 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
     sort_order  INTEGER NOT NULL DEFAULT 0,    -- 同级排序，ASC
     is_system   INTEGER NOT NULL DEFAULT 1,    -- 1=内置不可删，0=用户自定义
     is_enabled  INTEGER NOT NULL DEFAULT 1,    -- 0=隐藏不显示
+    is_async    INTEGER NOT NULL DEFAULT 1,    -- 脚本异步执行（详见脚本增强 spec）
+    write_output_to_clipboard INTEGER NOT NULL DEFAULT 0, -- 脚本结果写剪贴板（详见脚本增强 spec）
+    shortcut    TEXT NOT NULL DEFAULT '',      -- Alt+字符组合快捷键（详见局部快捷键 spec）
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
@@ -144,13 +147,17 @@ pub struct ActionBarItem {
     pub sort_order: i64,
     pub is_system: bool,
     pub is_enabled: bool,
+    pub is_async: bool,                  // 脚本增强 spec
+    pub write_output_to_clipboard: bool, // 脚本增强 spec
+    pub shortcut: String,                // 局部快捷键 spec（Alt+字符）
 }
 
-pub fn list_action_bar_items() -> Result<Vec<ActionBarItem>>   // ORDER BY parent_id ASC NULLS FIRST, sort_order ASC
-pub fn insert_action_bar_item(parent_id: Option<i64>, title: &str, icon: &str, action_type: &str, action_data: &str) -> Result<i64>
-pub fn update_action_bar_item(id: i64, title: &str, icon: &str, action_type: &str, action_data: &str, is_enabled: bool) -> Result<()>
+pub fn list_action_bar_items() -> Result<Vec<ActionBarItem>>
+pub fn insert_action_bar_item(parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, shortcut) -> Result<i64>
+pub fn update_action_bar_item(id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard, shortcut) -> Result<()>
 pub fn delete_action_bar_item(id: i64) -> Result<()>           // is_system=1 拒绝删除
 pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移, -1=上移，交换同 parent 下 sort_order
+pub fn validate_shortcut(shortcut: &str) -> Result<()>         // 空或单个 0-9/a-z
 ```
 
 ### 5.2 Tauri 命令层（crates/desktop/src/）
@@ -159,8 +166,8 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移
 
 ```rust
 #[tauri::command] fn list_action_bar_items() -> Result<Vec<ActionBarItem>, String>
-#[tauri::command] fn create_action_bar_item(parentId, title, icon, actionType, actionData) -> Result<i64, String>
-#[tauri::command] fn update_action_bar_item(id, title, icon, actionType, actionData, isEnabled) -> Result<(), String>
+#[tauri::command] fn create_action_bar_item(parentId, title, icon, actionType, actionData, isAsync, writeOutputToClipboard, shortcut) -> Result<i64, String>
+#[tauri::command] fn update_action_bar_item(id, title, icon, actionType, actionData, isEnabled, isAsync, writeOutputToClipboard, shortcut) -> Result<(), String>
 #[tauri::command] fn delete_action_bar_item(id) -> Result<(), String>
 #[tauri::command] fn move_action_bar_item(id, direction) -> Result<(), String>
 ```
@@ -227,6 +234,7 @@ pub fn move_action_bar_item(id: i64, direction: i32) -> Result<()>  // +1=下移
 | **←→** | **当前行移动**：焦点在主菜单→主菜单项之间移动（移到 submenu 项自动展开其子菜单、移到非 submenu 项自动收起子菜单）；焦点在子菜单→子菜单项之间移动。 |
 | **Enter** | 执行当前焦点高亮项 |
 | **1-9 + a-z** | **快捷定位**（只移动高亮，不执行）：1-9 对应第 1-9 项，a-z 对应第 10-35 项。按焦点层决定定位哪一层。超出范围无效。 |
+| **Alt+0-9/a-z** | **组合快捷键直接执行**（跨层级）：按下立即执行对应命令，不需先导航。快捷键在设置页指定，全局唯一。⚠️ macOS 用 `e.code`（非 `e.key`）取物理键——Option 改变 `e.key` 输出。详见[局部快捷键 spec](2026-07-12-action-bar-command-shortcut-design.md)。 |
 | **Esc** | **直接关闭浮窗**（一次 Esc，不退焦点层） |
 
 **子菜单展开/收起由左右键控制**：左右键在主菜单移动时，移到 submenu 类型的项→展开子菜单预览，移到非 submenu 项→收起子菜单。上下键只切焦点层，不碰视图展开状态。

@@ -5,6 +5,7 @@ import { getCurrentWindow, LogicalSize } from "@tauri-apps/api/window";
 import { cn } from "@/lib/utils";
 import { Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import { detectActionUrl } from "./urlDetect";
+import { t } from "@/lib/i18n";
 
 interface Context {
   text: string;
@@ -22,6 +23,7 @@ interface ActionBarItem {
   sortOrder: number;
   isSystem: boolean;
   isEnabled: boolean;
+  shortcut?: string;
 }
 
 const AI_TRANSLATE_TIMEOUT_MS = 5000;
@@ -40,9 +42,18 @@ function labelToIndex(key: string): number {
   return -1;
 }
 
-const IconBtn = ({ index, label, active, onClick, btnRef }: {
+/** KeyboardEvent.code → 单字符（0-9 a-z）。非字母数字返回 null。
+ *  macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键。 */
+function codeToChar(code: string): string | null {
+  if (code.startsWith("Key") && code.length === 4) return code[3].toLowerCase();
+  if (code.startsWith("Digit") && code.length === 6) return code[5].toLowerCase();
+  return null;
+}
+
+const IconBtn = ({ index, label, active, onClick, btnRef, shortcut }: {
   index: number; label: string; active: boolean; onClick: () => void;
   btnRef?: (el: HTMLButtonElement | null) => void;
+  shortcut?: string;
 }) => (
   <button
     ref={btnRef}
@@ -67,6 +78,9 @@ const IconBtn = ({ index, label, active, onClick, btnRef }: {
       {indexLabel(index)}
     </span>
     <span className="text-[10px] font-medium leading-none whitespace-nowrap">{label}</span>
+    {shortcut && (
+      <span className="text-[9px] text-voice/70 font-mono leading-none">⌥{shortcut}</span>
+    )}
   </button>
 );
 
@@ -180,8 +194,17 @@ export default function ActionBar() {
     };
     refresh();
     const listenPromise = rawListen("action-bar://show", () => refresh());
+    // 设置页保存后 emit 此事件 → 浮窗立即刷新菜单（无需关闭再打开）
+    const itemsListenPromise = rawListen("action-bar://items-changed", () => {
+      invoke<ActionBarItem[]>("list_action_bar_items").then((items) => {
+        setMenuItems(items);
+      });
+    });
 
-    return () => { listenPromise.then((fn: () => void) => fn()); };
+    return () => {
+      listenPromise.then((fn: () => void) => fn());
+      itemsListenPromise.then((fn: () => void) => fn());
+    };
   }, []);
 
   // 点击外部消失 + 窗口失焦消失
@@ -227,7 +250,7 @@ export default function ActionBar() {
     const timeoutMs = item.actionData === "auto_translate" ? AI_TRANSLATE_TIMEOUT_MS : AI_TIMEOUT_MS;
     const timeoutId = setTimeout(() => {
       timedOutRef.current = true;
-      showQuickError(`请求超时（${timeoutMs / 1000}s）`);
+      showQuickError(t("actionbar.timeout", { n: timeoutMs / 1000 }));
       setView("main");
     }, timeoutMs);
 
@@ -304,6 +327,20 @@ export default function ActionBar() {
       }
 
       if (viewRef.current === "loading") return;
+
+      // 组合快捷键：Alt/⌥ + 字符 → 直接执行（最高优先级，跨层级）
+      // macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键
+      if (e.altKey) {
+        const ch = codeToChar(e.code);
+        if (ch) {
+          const item = menuItemsRef.current.find((i: ActionBarItem) => i.shortcut === ch);
+          if (item) {
+            e.preventDefault();
+            executeItem(item);
+          }
+        }
+        return;
+      }
 
       // 快捷定位：1-9 数字键 + a-z 字母键（支持最多 35 项）
       const idx = labelToIndex(e.key.toLowerCase());
@@ -420,7 +457,7 @@ export default function ActionBar() {
     return (
       <div data-action-bar className="flex items-center justify-center gap-2.5 px-6 py-3 bg-background/95 backdrop-blur-xl text-foreground rounded-lg border border-border/50 shadow-2xl shadow-black/10">
         <Loader2 className="w-4 h-4 animate-spin text-voice" />
-        <span className="text-[12px] font-medium">处理中</span>
+        <span className="text-[12px] font-medium">{t("actionbar.processing")}</span>
         <span className="flex gap-0.5">
           <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "0ms" }} />
           <span className="w-1 h-1 rounded-full bg-voice/40 animate-pulse" style={{ animationDelay: "150ms" }} />
@@ -454,6 +491,7 @@ export default function ActionBar() {
             active={selectedIdx === i}
             onClick={() => executeItem(item)}
             btnRef={(el: HTMLButtonElement | null) => { mainBtnRefs.current[i] = el; }}
+            shortcut={item.shortcut}
           />
         ))}
       </ScrollRow>
@@ -472,6 +510,7 @@ export default function ActionBar() {
             active={focusLayer === "sub" && subSelectedIdx === i}
             onClick={() => executeItem(item)}
             btnRef={(el: HTMLButtonElement | null) => { subBtnRefs.current[i] = el; }}
+            shortcut={item.shortcut}
           />
         ))}
       </ScrollRow>

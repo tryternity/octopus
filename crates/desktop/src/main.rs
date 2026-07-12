@@ -10,6 +10,7 @@ mod compact_editor_commands;
 mod compact_editor_window;
 
 mod image_migration;
+mod i18n;
 mod clipboard_window;
 mod clipboard_dock;
 mod coordinator;
@@ -52,7 +53,7 @@ use engine::TranscriptionEngine;
 use engine_embedded::EmbeddedEngine;
 use log::info;
 use std::sync::Arc;
-use tauri::{Emitter, Manager};
+use tauri::{Emitter, Listener, Manager};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -539,9 +540,21 @@ pub fn run() {
             );
             app.manage(coordinator);
 
-            // 4. Create Tray（失败降级：无托盘菜单仍可用快捷键操作）
+            // 4. Initialize i18n + Create Tray
+            i18n::init(&config.ui_language);
             if let Err(e) = tray::create_tray(app.handle(), &config) {
                 log::error!("Tray init failed ({}), running without tray menu", e);
+            }
+
+            // 4.1 Listen for locale changes → rebuild tray menu labels
+            {
+                let app_handle = app.handle().clone();
+                app.listen("locale-changed", move |_event| {
+                    let cfg = octopus_infra::config::load_config().unwrap_or_default();
+                    i18n::reload(&cfg.ui_language);
+                    tray::rebuild_tray_labels();
+                    let _ = app_handle; // keep handle alive
+                });
             }
 
             // 5. Create Result Window

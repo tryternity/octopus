@@ -152,17 +152,20 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
 
   useImperativeHandle(ref, () => ({ commit: doCommit }));
 
-  // ── selection IPC 防抖（拖选时不逐帧 invoke）──
-  function debouncedSelectionNotify(start: number, end: number) {
-    if (selectionTimerRef.current) clearTimeout(selectionTimerRef.current);
-    selectionTimerRef.current = setTimeout(() => {
-      selectionTimerRef.current = null;
-      if (start !== end) {
+  // ── selection IPC：折叠选区（点击定位）即时发送，非折叠（拖选）防抖 ──
+  function notifySelection(start: number, end: number) {
+    if (start === end) {
+      // 纯点击——即时通知后端（中插定位需灵敏）
+      if (selectionTimerRef.current) { clearTimeout(selectionTimerRef.current); selectionTimerRef.current = null; }
+      invoke("set_caret", { offset: start });
+    } else {
+      // 拖选——防抖（拖动过程不逐帧 invoke）
+      if (selectionTimerRef.current) clearTimeout(selectionTimerRef.current);
+      selectionTimerRef.current = setTimeout(() => {
+        selectionTimerRef.current = null;
         invoke("set_selection", { start, end });
-      } else {
-        invoke("set_caret", { offset: start });
-      }
-    }, 100);
+      }, 100);
+    }
   }
 
   useEffect(() => {
@@ -186,7 +189,7 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
           // 非编辑态光标/选区变化 → 防抖通知后端
           if (update.selectionSet && !editingRef.current && !update.docChanged) {
             const sel = update.state.selection.main;
-            debouncedSelectionNotify(sel.from, sel.to);
+            notifySelection(sel.from, sel.to);
           }
           // 用户编辑 → dirty ranges + 编辑态
           if (update.docChanged && isUserEdit(update.transactions)) {
@@ -210,6 +213,8 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
 
     const view = new EditorView({ state, parent: hostRef.current });
     viewRef.current = view;
+    // 窗口启动即聚焦 CM6 显示光标（用户无需手动点击）
+    view.focus();
 
     return () => {
       view.destroy();
@@ -256,11 +261,8 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     const view = viewRef.current;
     if (!view) return;
     const changes: ChangeSpec = { from: 0, to: view.state.doc.length, insert: newText };
-    view.dispatch(
-      caretPos != null
-        ? { changes, selection: { anchor: caretPos }, scrollIntoView: true }
-        : { changes, scrollIntoView: true },
-    );
+    const anchor = caretPos != null ? caretPos : newText.length;
+    view.dispatch({ changes, selection: { anchor }, scrollIntoView: true });
   }
 
   return (

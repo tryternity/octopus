@@ -9,6 +9,7 @@ import SearchBar from "./SearchBar";
 import ClipboardItemRow from "./ClipboardItem";
 import { Pin, X, Settings2, CircleCheck, CircleX, Trash2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 
 interface ConfigResponse {
   config: Record<string, string | number | boolean>;
@@ -18,6 +19,7 @@ interface ConfigResponse {
 const TABS_VALUES = ["all", "favorite", "asr", "text", "ocr", "image", "file"] as const;
 
 export default function Clipboard() {
+  const t = useT();
   const [filter, setFilter] = useState("all");
   const [search, setSearch] = useState("");
   const [pinned, setPinned] = useState(false);
@@ -241,11 +243,11 @@ export default function Clipboard() {
         <button
           className="p-1 rounded cursor-default hover:bg-accent text-muted-foreground hover:text-foreground transition-colors"
           onClick={() => getCurrentWindow().hide()}
-          title="关闭"
+          title={t("clipboard.close")}
         >
           <X className="w-3.5 h-3.5" />
         </button>
-        <span className="text-[11px] font-medium tracking-wide text-muted-foreground">剪贴板</span>
+        <span className="text-[11px] font-medium tracking-wide text-muted-foreground">{t("clipboard.title")}</span>
         <div className="flex items-center gap-0.5">
           {/* 监听开关：复制敏感内容前可在此快速暂停。与 Pin 同为状态 toggle，成组于右侧。 */}
           <button
@@ -256,7 +258,7 @@ export default function Clipboard() {
                 : "text-red-500 bg-red-500/15 hover:bg-red-500/25",
             )}
             onClick={toggleRecording}
-            title={recording ? "暂停监听" : "恢复监听"}
+            title={recording ? t("clipboard.pauseListen") : t("clipboard.resumeListen")}
           >
             {recording
               ? <CircleCheck className="w-3.5 h-3.5" />
@@ -268,7 +270,7 @@ export default function Clipboard() {
               pinned ? "text-voice bg-voice/10" : "text-muted-foreground hover:bg-accent hover:text-foreground",
             )}
             onClick={togglePin}
-            title="置顶"
+            title={t("clipboard.pin")}
           >
             <Pin className="w-3.5 h-3.5" />
           </button>
@@ -285,7 +287,7 @@ export default function Clipboard() {
       <div className="clipboard-list flex-1 overflow-y-auto pb-1">
         {items.length === 0 ? (
           <div className="flex flex-col items-center justify-center h-full gap-1 text-muted-foreground/50">
-            <span className="text-xs">暂无记录</span>
+            <span className="text-xs">{t("clipboard.empty")}</span>
           </div>
         ) : (
           items.map((item, index) => (
@@ -306,7 +308,7 @@ export default function Clipboard() {
       <div className="flex items-center justify-between px-3 py-1 border-t border-border text-[10px] text-muted-foreground/80">
         {/* 左：条数 + 一键清理 */}
         <div className="flex items-center gap-3">
-          <span>{total} 条</span>
+          <span>{total} {t("clipboard.count", { n: total })}</span>
           {/* 一键清理：删当前 tab 类别下所有非收藏条目（与搜索框正交）。
               两步确认：点 1 次 → 变红「再点确认」+ 3s 超时，再点才执行。
               收藏 tab 因 is_favorite=1 AND is_favorite=0 恒假删 0 条，禁用按钮。
@@ -323,12 +325,12 @@ export default function Clipboard() {
             disabled={filter === "favorite" || !!search}
             title={
               filter === "favorite"
-                ? "收藏标签下无可清理项"
+                ? t("clipboard.cleanFavoriteEmpty")
                 : !!search
-                  ? "有搜索内容时无法清理"
+                  ? t("clipboard.cleanSearchError")
                 : confirming
-                  ? "再点一次确认清理"
-                  : "一键清理非收藏"
+                  ? t("clipboard.cleanConfirmFull")
+                  : t("clipboard.cleanNonFavorite")
             }
             onClick={() => {
               if (filter === "favorite" || !!search) return;
@@ -349,17 +351,17 @@ export default function Clipboard() {
             }}
           >
             <Trash2 className="w-2.5 h-2.5" />
-            {confirming ? "再点确认" : "一键清理"}
+            {confirming ? t("clipboard.cleanConfirm") : t("clipboard.cleanAll")}
           </button>
         </div>
         {/* 右：管理 */}
         <button
           className="flex items-center gap-0.5 hover:text-foreground transition-colors"
           onClick={() => invoke("open_settings", { initialPage: "clipboard" })}
-          title="管理剪贴板"
+          title={t("clipboard.manageMode")}
         >
           <Settings2 className="w-2.5 h-2.5" />
-          管理
+          {t("clipboard.manage")}
         </button>
       </div>
         </>

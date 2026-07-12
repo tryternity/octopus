@@ -20,6 +20,10 @@ struct TrayItems<R: Runtime> {
     toggle: MenuItem<R>,
     engine_info: MenuItem<R>,
     screenshot: MenuItem<R>,
+    clipboard: MenuItem<R>,
+    compact_editor: MenuItem<R>,
+    settings: MenuItem<R>,
+    quit: MenuItem<R>,
 }
 
 /// 模块级存储，避免 MenuItem::with_id 重复 ID 导致的 panic
@@ -43,13 +47,14 @@ fn fmt_shortcut(s: &str) -> String {
 /// 分组：语音识别 → 引擎信息（只读分隔线）→ 截图/剪贴板 → 设置/退出。
 pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), String> {
     let _ = ASR_SHORTCUT.set(config.asr_shortcut.clone());
-    let toggle_text = format!("语音识别（{}）", fmt_shortcut(&config.asr_shortcut));
+    let sc = fmt_shortcut(&config.asr_shortcut);
+    let toggle_text = crate::i18n::t("tray.startAsr", &[("shortcut", &sc)]);
     let toggle = MenuItem::with_id(app, "toggle", &toggle_text, true, None::<&str>)
         .map_err(|e| format!("toggle menu: {e}"))?;
     let engine_info = MenuItem::with_id(
         app,
         "engine_info",
-        format!("引擎  {} · {}", config.asr_engine, config.engine_mode),
+        &crate::i18n::t("tray.engineInfo", &[("engine", &config.asr_engine), ("mode", &config.engine_mode)]),
         false,
         None::<&str>,
     )
@@ -58,22 +63,22 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
     let sep1 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator: {e}"))?;
 
-    let screenshot_text = format!("开始截图（{}）", fmt_shortcut(&config.screenshot_shortcut));
+    let screenshot_text = crate::i18n::t("tray.screenshot", &[("shortcut", &sc)]);
     let screenshot = MenuItem::with_id(app, "screenshot", &screenshot_text, true, None::<&str>)
         .map_err(|e| format!("screenshot menu: {e}"))?;
-    let clipboard_text = format!("剪  贴  板（{}）", fmt_shortcut(&config.clipboard_shortcut));
+    let clipboard_text = crate::i18n::t("tray.clipboard", &[("shortcut", &fmt_shortcut(&config.clipboard_shortcut))]);
     let clipboard = MenuItem::with_id(app, "clipboard", &clipboard_text, true, None::<&str>)
         .map_err(|e| format!("clipboard menu: {e}"))?;
     // 图文编辑：打开空白 CompactEditor（临时文本 tab，不写 DB）。
-    let compact_editor = MenuItem::with_id(app, "compact_editor", "图文编辑", true, None::<&str>)
+    let compact_editor = MenuItem::with_id(app, "compact_editor", &crate::i18n::t("tray.compactEditor", &[]), true, None::<&str>)
         .map_err(|e| format!("compact_editor menu: {e}"))?;
 
     let sep2 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("separator2: {e}"))?;
 
-    let settings = MenuItem::with_id(app, "settings", "系统管理", true, None::<&str>)
+    let settings = MenuItem::with_id(app, "settings", &crate::i18n::t("tray.settings", &[]), true, None::<&str>)
         .map_err(|e| format!("settings menu: {e}"))?;
-    let quit = MenuItem::with_id(app, "quit", "退出系统", true, None::<&str>)
+    let quit = MenuItem::with_id(app, "quit", &crate::i18n::t("tray.quit", &[]), true, None::<&str>)
         .map_err(|e| format!("quit menu: {e}"))?;
 
     let menu = Menu::with_items(app, &[
@@ -90,6 +95,10 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
             toggle: toggle.clone(),
             engine_info: engine_info.clone(),
             screenshot: screenshot.clone(),
+            clipboard: clipboard.clone(),
+            compact_editor: compact_editor.clone(),
+            settings: settings.clone(),
+            quit: quit.clone(),
         });
     }
 
@@ -143,9 +152,9 @@ pub fn create_tray(app: &tauri::AppHandle, config: &AppConfig) -> Result<(), Str
 pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
     let sc = ASR_SHORTCUT.get().map(|s| fmt_shortcut(s)).unwrap_or_default();
     let label = match state {
-        TrayState::Idle => format!("语音识别（{}）", sc),
-        TrayState::Recording => "停止识别".to_string(),
-        TrayState::Processing => "处理中…".to_string(),
+        TrayState::Idle => crate::i18n::t("tray.startAsr", &[("shortcut", &sc)]),
+        TrayState::Recording => crate::i18n::t("tray.stopAsr", &[]),
+        TrayState::Processing => crate::i18n::t("tray.processing", &[]),
     };
 
     let items = TRAY_ITEMS.lock();
@@ -156,7 +165,7 @@ pub fn update_tray_label(_app: &tauri::AppHandle, state: TrayState) {
 
 /// Update the engine info menu item label dynamically.
 pub fn update_tray_engine_label(_app: &tauri::AppHandle, engine_name: &str, engine_mode: &str) {
-    let label = format!("引擎  {} · {}", engine_name, engine_mode);
+    let label = crate::i18n::t("tray.engineInfo", &[("engine", engine_name), ("mode", engine_mode)]);
     let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {
         let _ = tray_items.engine_info.set_text(label);
@@ -168,5 +177,19 @@ pub fn update_tray_screenshot_label(active: bool) {
     let items = TRAY_ITEMS.lock();
     if let Some(tray_items) = items.as_ref() {
         let _ = tray_items.screenshot.set_enabled(!active);
+    }
+}
+
+/// 语言切换后重建所有菜单项文案
+pub fn rebuild_tray_labels() {
+    let items = TRAY_ITEMS.lock();
+    if let Some(tray_items) = items.as_ref() {
+        let sc = ASR_SHORTCUT.get().map(|s| fmt_shortcut(s)).unwrap_or_default();
+        let _ = tray_items.toggle.set_text(crate::i18n::t("tray.startAsr", &[("shortcut", &sc)]));
+        let _ = tray_items.screenshot.set_text(crate::i18n::t("tray.screenshot", &[("shortcut", &sc)]));
+        let _ = tray_items.clipboard.set_text(crate::i18n::t("tray.clipboard", &[("shortcut", &sc)]));
+        let _ = tray_items.compact_editor.set_text(crate::i18n::t("tray.compactEditor", &[]));
+        let _ = tray_items.settings.set_text(crate::i18n::t("tray.settings", &[]));
+        let _ = tray_items.quit.set_text(crate::i18n::t("tray.quit", &[]));
     }
 }

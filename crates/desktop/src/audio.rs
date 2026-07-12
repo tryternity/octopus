@@ -311,6 +311,19 @@ impl SharedAudioState {
         let rate = self.sample_rate.load(Ordering::Relaxed);
         self.process_pipeline(&raw, rate, false)
     }
+
+    /// 编辑期间不 drain——音频在缓冲区自然累积。
+    /// 仅保留最后 N 秒原始音频（防长时间编辑导致缓冲区无限增长）。
+    pub fn trim_buffer(&self, keep_seconds: f64) {
+        let rate = self.sample_rate.load(Ordering::Relaxed);
+        if rate == 0 { return; }
+        let max_samples = (rate as f64 * keep_seconds) as usize;
+        let mut buf = self.samples.lock();
+        if buf.len() > max_samples {
+            let drop = buf.len() - max_samples;
+            buf.drain(..drop);
+        }
+    }
 }
 
 // Safety: 见结构体文档注释。SharedAudioState 含 `Mutex<Option<cpal::Stream>>`（Stream

@@ -170,12 +170,13 @@ where
 /// v21：action_bar_items 加 is_async + write_output_to_clipboard 列；新建 script_runs 表。
 /// v20：新增 hotwords 表（db.sql IF NOT EXISTS 自动创建）。
 /// v23：新增 hotword_sets + hotword_hits 表；现有 active 热词迁「通用」版本。
+/// v24：action_bar_items 加 shortcut 列。
 fn init_schema(conn: &Connection) -> Result<()> {
     let v: u32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 23 {
+    if v >= 25 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -249,13 +250,41 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 23", [])?;
             log::info!("schema upgraded to v23 (hotword_sets + hotword_hits)");
         }
+        // v23→v24：action_bar_items 加 shortcut 列
+        {
+            let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if !cols.contains(&"shortcut".to_string()) {
+                conn.execute("ALTER TABLE action_bar_items ADD COLUMN shortcut TEXT NOT NULL DEFAULT ''", [])?;
+            }
+            conn.execute("PRAGMA user_version = 24", [])?;
+            log::info!("schema upgraded to v24 (action_bar_items.shortcut)");
+        }
+        // v24→v25：seed 新增「问豆包」菜单项（用 title 去重避免 id 冲突）
+        if v < 25 {
+            let exists: i64 = conn.query_row(
+                "SELECT COUNT(*) FROM action_bar_items WHERE title='问豆包' AND parent_id IS NULL",
+                [], |r| r.get(0),
+            )?;
+            if exists == 0 {
+                conn.execute(
+                    "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system) VALUES
+                        (NULL, '问豆包', 'sparkles', 'script', '#osascript\nset the clipboard to (do shell script (\"printf %s \" & quoted form of (system attribute \"OCTOPUS_TEXT\")))\ndo shell script \"open -a Doubao\"\ndelay 2\ntell application \"System Events\"\n    tell process \"Doubao\"\n        keystroke \"v\" using command down\n        delay 0.3\n        key code 36\n    end tell\nend tell', 4, 1)",
+                    [],
+                )?;
+                log::info!("schema upgraded to v25 (seed: 问豆包 menu item)");
+            }
+            conn.execute("PRAGMA user_version = 25", [])?;
+        }
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 23", [])?;
-    log::info!("DB initialized (v23): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 25", [])?;
+    log::info!("DB initialized (v25): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -958,9 +987,10 @@ pub struct ActionBarItem {
     pub is_enabled: bool,
     pub is_async: bool,
     pub write_output_to_clipboard: bool,
+    pub shortcut: String,
 }
 
-const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard";
+const ACTION_BAR_SELECT_COLS: &str = "id, parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut";
 
 fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem> {
     Ok(ActionBarItem {
@@ -975,7 +1005,39 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
         is_enabled: row.get::<_, i32>(8)? != 0,
         is_async: row.get::<_, i32>(9)? != 0,
         write_output_to_clipboard: row.get::<_, i32>(10)? != 0,
+        shortcut: row.get(11)?,
     })
+}
+
+/// 校验快捷键格式：空字符串或单个 0-9/a-z 字符。
+pub fn validate_shortcut(shortcut: &str) -> Result<()> {
+    if shortcut.is_empty() {
+        return Ok(());
+    }
+    if shortcut.len() == 1 && shortcut.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit()) {
+        return Ok(());
+    }
+    anyhow::bail!("快捷键必须为空或单个 0-9/a-z 字符");
+}
+
+/// 检查快捷键是否已被其他项占用（排除指定 id）。返回冲突项（如有）。
+fn check_shortcut_conflict_at(conn: &Connection, shortcut: &str, exclude_id: Option<i64>) -> Result<Option<ActionBarItem>> {
+    if shortcut.is_empty() {
+        return Ok(None);
+    }
+    let sql = match exclude_id {
+        Some(_) => format!("SELECT {} FROM action_bar_items WHERE shortcut=?1 AND id!=?2", ACTION_BAR_SELECT_COLS),
+        None => format!("SELECT {} FROM action_bar_items WHERE shortcut=?1", ACTION_BAR_SELECT_COLS),
+    };
+    let mut stmt = conn.prepare(&sql)?;
+    let mut rows = match exclude_id {
+        Some(eid) => stmt.query_map(params![shortcut, eid], row_to_action_bar_item)?,
+        None => stmt.query_map(params![shortcut], row_to_action_bar_item)?,
+    };
+    match rows.next() {
+        Some(r) => Ok(Some(r?)),
+        None => Ok(None),
+    }
 }
 
 /// 浮窗用——只返回 is_enabled=1 的项。
@@ -1037,8 +1099,9 @@ pub fn insert_action_bar_item(
     action_data: &str,
     is_async: bool,
     write_output_to_clipboard: bool,
+    shortcut: &str,
 ) -> Result<i64> {
-    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard))
+    with_db(|conn| insert_action_bar_item_at(conn, parent_id, title, icon, action_type, action_data, is_async, write_output_to_clipboard, shortcut))
 }
 
 fn insert_action_bar_item_at(
@@ -1050,16 +1113,22 @@ fn insert_action_bar_item_at(
     action_data: &str,
     is_async: bool,
     write_output_to_clipboard: bool,
+    shortcut: &str,
 ) -> Result<i64> {
+    let shortcut = shortcut.to_lowercase();
+    validate_shortcut(&shortcut)?;
+    if let Some(conflict) = check_shortcut_conflict_at(conn, &shortcut, None)? {
+        anyhow::bail!("快捷键 Alt+{} 已被「{}」占用", shortcut, conflict.title);
+    }
     let max_order: i64 = conn.query_row(
         "SELECT COALESCE(MAX(sort_order), -1) FROM action_bar_items WHERE parent_id IS ?1",
         params![parent_id],
         |r| r.get(0),
     )?;
     conn.execute(
-        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1, ?7, ?8)",
-        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32],
+        "INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system, is_enabled, is_async, write_output_to_clipboard, shortcut)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, 0, 1, ?7, ?8, ?9)",
+        params![parent_id, title, icon, action_type, action_data, max_order + 1, is_async as i32, write_output_to_clipboard as i32, shortcut],
     )?;
     Ok(conn.last_insert_rowid())
 }
@@ -1073,8 +1142,9 @@ pub fn update_action_bar_item(
     is_enabled: bool,
     is_async: bool,
     write_output_to_clipboard: bool,
+    shortcut: &str,
 ) -> Result<()> {
-    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard))
+    with_db(|conn| update_action_bar_item_at(conn, id, title, icon, action_type, action_data, is_enabled, is_async, write_output_to_clipboard, shortcut))
 }
 
 fn update_action_bar_item_at(
@@ -1087,14 +1157,20 @@ fn update_action_bar_item_at(
     is_enabled: bool,
     is_async: bool,
     write_output_to_clipboard: bool,
+    shortcut: &str,
 ) -> Result<()> {
     let row = load_action_bar_item_at(conn, id)?.context("菜单项不存在")?;
     if row.is_system && row.action_type != action_type {
         anyhow::bail!("系统内置菜单项不可更改动作类型");
     }
+    let shortcut = shortcut.to_lowercase();
+    validate_shortcut(&shortcut)?;
+    if let Some(conflict) = check_shortcut_conflict_at(conn, &shortcut, Some(id))? {
+        anyhow::bail!("快捷键 Alt+{} 已被「{}」占用", shortcut, conflict.title);
+    }
     conn.execute(
-        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, updated_at=datetime('now') WHERE id=?8",
-        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, id],
+        "UPDATE action_bar_items SET title=?1, icon=?2, action_type=?3, action_data=?4, is_enabled=?5, is_async=?6, write_output_to_clipboard=?7, shortcut=?8, updated_at=datetime('now') WHERE id=?9",
+        params![title, icon, action_type, action_data, is_enabled as i32, is_async as i32, write_output_to_clipboard as i32, shortcut, id],
     )?;
     Ok(())
 }
@@ -1822,6 +1898,67 @@ mod tests {
         conn
     }
 
+    #[test]
+    fn action_bar_shortcut_validate_and_conflict() {
+        let conn = open_init();
+
+        // 给 id=2（翻译）设快捷键 't'
+        conn.execute("UPDATE action_bar_items SET shortcut='t' WHERE id=2", []).unwrap();
+
+        // validate_shortcut: 合法
+        assert!(validate_shortcut("").is_ok());
+        assert!(validate_shortcut("t").is_ok());
+        assert!(validate_shortcut("5").is_ok());
+        // validate_shortcut: 非法
+        assert!(validate_shortcut("T").is_err());  // 大写
+        assert!(validate_shortcut("ab").is_err()); // 多字符
+        assert!(validate_shortcut("-").is_err());  // 非法字符
+        assert!(validate_shortcut(" ").is_err());  // 空格
+
+        // check_shortcut_conflict: 't' 已被 id=2 占用
+        let conflict = check_shortcut_conflict_at(&conn, "t", Some(5)).unwrap();
+        assert!(conflict.is_some());
+        assert_eq!(conflict.unwrap().id, 2);
+
+        // 排除自身——id=2 查 't' 不应冲突
+        let self_ok = check_shortcut_conflict_at(&conn, "t", Some(2)).unwrap();
+        assert!(self_ok.is_none());
+
+        // 无冲突字符
+        let free = check_shortcut_conflict_at(&conn, "z", None).unwrap();
+        assert!(free.is_none());
+    }
+
+    #[test]
+    fn action_bar_insert_with_shortcut() {
+        let conn = open_init();
+        let id = insert_action_bar_item_at(
+            &conn, None, "测试", "", "copy", "", true, false, "q",
+        ).unwrap();
+        let item = load_action_bar_item_at(&conn, id).unwrap().unwrap();
+        assert_eq!(item.shortcut, "q");
+    }
+
+    #[test]
+    fn action_bar_update_shortcut() {
+        let conn = open_init();
+        update_action_bar_item_at(
+            &conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "p",
+        ).unwrap();
+        let item = load_action_bar_item_at(&conn, 5).unwrap().unwrap();
+        assert_eq!(item.shortcut, "p");
+    }
+
+    #[test]
+    fn action_bar_shortcut_conflict_rejected() {
+        let conn = open_init();
+        // id=2 设快捷键 't'
+        update_action_bar_item_at(&conn, 2, "翻译", "globe", "ai", "auto_translate", true, true, false, "t").unwrap();
+        // id=5 也想用 't' → 应失败
+        let result = update_action_bar_item_at(&conn, 5, "润色", "pencil", "ai", "prompt", true, true, false, "t");
+        assert!(result.is_err());
+    }
+
     /// 回归：`with_db` 的锁必须可重入——闭包内再调 `with_db` 不应死锁。
     /// 历史 `parking_lot::Mutex`（非递归）致同线程重入永久死锁（memory with-db-reentrant-deadlock）；
     /// 改 `ReentrantMutex` 后根治。此测试若退回 `Mutex` 会**挂起**（重入第二次 lock 永久阻塞）。
@@ -1892,13 +2029,13 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_fresh_db_builds_v23() {
+    fn init_schema_fresh_db_builds_v25() {
         let conn = Connection::open_in_memory().unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 23, "全新库 init_schema 后应到 v23");
+        assert_eq!(v, 25, "全新库 init_schema 后应到 v25");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -1912,16 +2049,16 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_v23_is_noop() {
-        // 已是 v23 的库再调 init_schema 应早退（不重跑、不报错）
+    fn init_schema_v25_is_noop() {
+        // 已是 v25 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 23", []).unwrap();
+        conn.execute("PRAGMA user_version = 25", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 23);
+        assert_eq!(v, 25);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -2753,8 +2890,8 @@ mod tests {
     #[test]
     fn action_bar_items_list_enabled_filters_disabled() {
         let conn = open_init();
-        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "copy", "", true, false).unwrap();
-        update_action_bar_item_at(&conn, id, "测试禁用", "test", "copy", "", false, true, false).unwrap();
+        let id = insert_action_bar_item_at(&conn, None, "测试禁用", "test", "copy", "", true, false, "").unwrap();
+        update_action_bar_item_at(&conn, id, "测试禁用", "test", "copy", "", false, true, false, "").unwrap();
         let enabled = list_action_bar_items_at(&conn).unwrap();
         assert!(!enabled.iter().any(|i| i.id == id));
         let all = list_all_action_bar_items_at(&conn).unwrap();
@@ -2772,8 +2909,8 @@ mod tests {
     #[test]
     fn action_bar_items_move_swaps_order() {
         let conn = open_init();
-        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "copy", "", true, false).unwrap();
-        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "copy", "", true, false).unwrap();
+        let id_a = insert_action_bar_item_at(&conn, None, "AAA", "test", "copy", "", true, false, "").unwrap();
+        let id_b = insert_action_bar_item_at(&conn, None, "BBB", "test", "copy", "", true, false, "").unwrap();
         let a_before = load_action_bar_item_at(&conn, id_a).unwrap().unwrap();
         let b_before = load_action_bar_item_at(&conn, id_b).unwrap().unwrap();
         assert!(a_before.sort_order < b_before.sort_order);
@@ -2796,9 +2933,9 @@ mod tests {
 
         init_schema(&conn).unwrap();
 
-        // v23
+        // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 23);
+        assert_eq!(v, 25);
 
         // 「通用」版本存在，含两个 active 词（normalize 排序），不含 pending
         let (name, words_text): (String, String) = conn

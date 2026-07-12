@@ -281,6 +281,7 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
     is_enabled  INTEGER NOT NULL DEFAULT 1,
     is_async   INTEGER NOT NULL DEFAULT 1,
     write_output_to_clipboard INTEGER NOT NULL DEFAULT 0,
+    shortcut    TEXT NOT NULL DEFAULT '',
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
@@ -304,6 +305,21 @@ INSERT OR IGNORE INTO action_bar_items (id, parent_id, title, icon, action_type,
     (8, 3, 'Google', 'search', 'url', 'https://www.google.com/search?q={text}', 0, 1),
     (9, 3, '百度',   'search', 'url', 'https://www.baidu.com/s?wd={text}', 1, 1),
     (10, 3, 'Bing',  'search', 'url', 'https://www.bing.com/search?q={text}', 2, 1);
+
+-- 种子：「问豆包」（用 title 去重，不固定 id 避免与用户自建项冲突；放在固定 id seed 之后）
+INSERT INTO action_bar_items (parent_id, title, icon, action_type, action_data, sort_order, is_system)
+SELECT NULL, '问豆包', 'sparkles', 'script', '#osascript
+set the clipboard to (do shell script ("printf %s " & quoted form of (system attribute "OCTOPUS_TEXT")))
+do shell script "open -a Doubao"
+delay 2
+tell application "System Events"
+    tell process "Doubao"
+        keystroke "v" using command down
+        delay 0.3
+        key code 36
+    end tell
+end tell', 4, 1
+WHERE NOT EXISTS (SELECT 1 FROM action_bar_items WHERE title='问豆包' AND parent_id IS NULL);
 
 -- ── 脚本执行记录 ──────────────────────────────────────────────
 CREATE TABLE IF NOT EXISTS script_runs (

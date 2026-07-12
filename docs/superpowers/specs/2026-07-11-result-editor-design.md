@@ -24,7 +24,7 @@
 | 3 | 编辑信息回传 | CM6 维护 dirty ranges `Array<[from, to]>`，commit 时传 `{ text, dirtyRanges, caret?, selection? }` |
 | 4 | 流式更新竞态 | 前端 `editingRef` 拦截——用户输入即设 true，后续 `update-result` 不写入 CM6 |
 | 5 | 编辑结束恢复 | Cmd+Enter / 保存按钮 / 停止输入 2 秒自动恢复（前端 idle 定时器） |
-| 6 | 编辑期间麦克风 | 沿用现有 `drain_samples`（麦克风不停，丢弃不送 ASR），VAD 恢复后续迭代 |
+| 6 | 编辑期间麦克风 | 沿用现有音频采集（麦克风不停），编辑期间 `trim_buffer(5.0)` 保留最后 5 秒音频，恢复后送 ASR（VAD 截静音）防丢字 |
 | 7 | dirty ranges 数据结构 | 手动维护 `Array<[from, to]>`，每次 changes 用 `iterChangedRanges` 更新 + 排序合并 |
 | 8 | 中插 + 选中替换 | 非编辑态 CM6 `selectionSet` → `set_caret` / `set_selection`；用户选中后输入 → 走 dirty range（不走 ASR 替换） |
 
@@ -293,7 +293,7 @@ function buildTheme(expanded: boolean) {
 | 态 | 触发 | CM6 行为 | 后端行为 | update-result 事件 |
 |----|------|---------|---------|-------------------|
 | **流式态** | ASR 录音中，用户未输入 | 接收 dispatch 写入 + 光标同步 | 正常 tick + emit | 前端写入 CM6 |
-| **编辑态** | 用户开始输入（isUserEdit） | 接收用户编辑 + 维护 dirty ranges | drain_samples（麦克风不停） | 前端拦截（不写入） |
+| **编辑态** | 用户开始输入（isUserEdit） | 接收用户编辑 + 维护 dirty ranges | trim_buffer(5.0)（麦克风不停、保留最后 5 秒音频） | 前端拦截（不写入） |
 | **空闲态** | 录音已停/未开始，用户浏览 | 接收用户编辑（随时可编辑） | editing=false（无 drain） | 无事件到达 |
 
 ### 恢复时序
@@ -447,7 +447,7 @@ fn commit_edit_apply(stage: &mut Stage, text: &str, dirty_ranges: &[(usize, usiz
 | 后端 `global-edit-toggle` emit | 已移除——`trigger_global_edit` 仅保留 show+focus |
 | `segment_kind_at_offset` 函数 | 字符级 walk 替代后已删除 |
 
-> **保留**：`enter_edit_mode` 命令——后端需要此信号切 `editing=true` → `drain_samples`。调用时机从「用户显式按快捷键」变为「CM6 检测到首次用户输入」。
+> **保留**：`enter_edit_mode` 命令——后端需要此信号切 `editing=true` → tick 走 `trim_buffer(5.0)`（保留最后 5 秒音频，恢复后送 ASR 防"嘴比手快"丢字）。调用时机从「用户显式按快捷键」变为「CM6 检测到首次用户输入」。
 >
 > **保留**：`set_caret` / `set_selection` 命令——CM6 非编辑态光标/选区变化时调用，中插和选中替换功能不变。
 >

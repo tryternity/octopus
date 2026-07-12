@@ -3,6 +3,7 @@ import { invoke } from "@/lib/tauri";
 import { cn } from "@/lib/utils";
 import { CheckCircle2, Cloud, HardDrive } from "lucide-react";
 import { CollapsibleSection } from "./CollapsibleSection";
+import { useT } from "@/lib/i18n";
 
 interface LlmOption {
   id: number;
@@ -14,23 +15,25 @@ interface LlmOption {
 }
 
 function CurrentBanner({ label }: { label: string }) {
+  const t = useT();
   return (
     <div className="flex items-center gap-1.5 px-3 py-1.5 rounded-md border-l-2 border-voice bg-voice/5 text-[11px] mb-1">
       <CheckCircle2 className="w-3 h-3 text-voice shrink-0" />
-      <span className="text-muted-foreground">当前使用</span>
+      <span className="text-muted-foreground">{t("settings.models.current")}</span>
       <span className="font-medium text-foreground">{label}</span>
     </div>
   );
 }
 
 export default function LlmTab({ showToast }: { showToast: (msg: string) => void }) {
+  const t = useT();
   const [models, setModels] = useState<LlmOption[]>([]);
 
   const load = useCallback(async () => {
     try {
       const resp = await invoke<{ llm_models: LlmOption[] }>("get_config");
       setModels(resp.llm_models ?? []);
-    } catch (e) { showToast("加载模型列表失败：" + e); }
+    } catch (e) { showToast(t("settings.models.loadFailed") + e); }
   }, [showToast]);
 
   useEffect(() => { load(); }, [load]);
@@ -39,7 +42,7 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
     try {
       await invoke("set_model_enabled", { id: model.id, enabled: !model.is_enabled });
       load();
-    } catch (e) { showToast("切换失败：" + e); }
+    } catch (e) { showToast(t("settings.models.switchFailed") + e); }
   };
 
   const current = models.find((m) => m.current);
@@ -68,7 +71,7 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
         )}
         onClick={() => handleToggle(model)}
       >
-        {model.is_enabled ? "启用" : "禁用"}
+        {model.is_enabled ? t("settings.models.enable") : t("settings.models.disable")}
       </button>
     </div>
   );
@@ -77,12 +80,12 @@ export default function LlmTab({ showToast }: { showToast: (msg: string) => void
     <div className="space-y-0.5 max-w-[560px]">
       {current && <CurrentBanner label={current.label} />}
       {localModels.length > 0 && (
-        <CollapsibleSection icon={HardDrive} label="本地模型">
+        <CollapsibleSection icon={HardDrive} label={t("settings.models.localModels")}>
           {localModels.map(renderModel)}
         </CollapsibleSection>
       )}
       {cloudModels.length > 0 && (
-        <CollapsibleSection icon={Cloud} label="云端模型">
+        <CollapsibleSection icon={Cloud} label={t("settings.models.cloudModels")}>
           {cloudModels.map(renderModel)}
         </CollapsibleSection>
       )}

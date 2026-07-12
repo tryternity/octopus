@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@/lib/tauri";
 import { Plus, Trash2, Lock } from "lucide-react";
+import { useT } from "@/lib/i18n";
 
 const BUILTIN = ["huggingface", "modelscope", "github"];
 
 export default function EnvironmentTab({ showToast }: { showToast: (msg: string) => void }) {
+  const t = useT();
   const [vars, setVars] = useState<[string, string][]>([]);
   const [newKey, setNewKey] = useState("");
   const [newValue, setNewValue] = useState("");
@@ -13,7 +15,7 @@ export default function EnvironmentTab({ showToast }: { showToast: (msg: string)
     try {
       const data = await invoke<[string, string][]>("get_env_vars");
       setVars(data);
-    } catch (e) { showToast("加载环境变量失败：" + e); }
+    } catch (e) { showToast(t("settings.models.env.loadFailed") + e); }
   }, [showToast]);
 
   useEffect(() => { load(); }, [load]);
@@ -21,17 +23,17 @@ export default function EnvironmentTab({ showToast }: { showToast: (msg: string)
   const handleSave = async (key: string, value: string) => {
     try {
       await invoke("set_env_var", { key, value });
-      showToast("已保存");
+      showToast(t("settings.models.env.saved"));
       load();
-    } catch (e) { showToast("保存失败：" + e); }
+    } catch (e) { showToast(t("settings.models.env.saveFailed") + e); }
   };
 
   const handleDelete = async (key: string) => {
     try {
       const ok = await invoke<boolean>("delete_env_var_cmd", { key });
-      if (ok) { showToast("已删除"); load(); }
-      else showToast("内置变量不可删除");
-    } catch (e) { showToast("删除失败：" + e); }
+      if (ok) { showToast(t("settings.models.env.deleted")); load(); }
+      else showToast(t("settings.models.env.builtinNoDelete"));
+    } catch (e) { showToast(t("settings.models.env.deleteFailed") + e); }
   };
 
   const handleAdd = async () => {
@@ -39,15 +41,15 @@ export default function EnvironmentTab({ showToast }: { showToast: (msg: string)
     try {
       await invoke("set_env_var", { key: newKey.trim(), value: newValue.trim() });
       setNewKey(""); setNewValue("");
-      showToast("已添加");
+      showToast(t("settings.models.env.added"));
       load();
-    } catch (e) { showToast("添加失败：" + e); }
+    } catch (e) { showToast(t("settings.models.env.addFailed") + e); }
   };
 
   return (
     <div className="space-y-1.5 max-w-[560px]">
       <p className="text-[11px] text-muted-foreground/70 mb-2">
-        模型下载地址中的 <code className="px-1 py-0.5 rounded bg-muted text-[10px] font-mono">{"{变量名}"}</code> 会自动替换为此处配置的值
+        {t("settings.models.env.hintPrefix")} <code className="px-1 py-0.5 rounded bg-muted text-[10px] font-mono">{"{" + t("settings.models.env.hintVar") + "}"}</code> {t("settings.models.env.hintSuffix")}
       </p>
       {vars.map(([key, value]) => (
         <div
@@ -77,7 +79,7 @@ export default function EnvironmentTab({ showToast }: { showToast: (msg: string)
       <div className="flex items-center gap-2 px-3 py-1.5 mt-2 pt-2.5 border-t border-border/60">
         <input
           className="w-32 px-2 py-0.5 text-xs rounded border border-border bg-background outline-none focus:border-voice/40 transition-colors"
-          placeholder="变量名"
+          placeholder={t("settings.models.env.varName")}
           value={newKey}
           onChange={(e) => setNewKey(e.target.value)}
         />
@@ -91,7 +93,7 @@ export default function EnvironmentTab({ showToast }: { showToast: (msg: string)
           className="flex items-center gap-1 px-2 py-0.5 text-[11px] rounded bg-foreground/5 hover:bg-foreground/10 text-foreground transition-colors"
           onClick={handleAdd}
         >
-          <Plus className="w-3 h-3" /> 添加
+          <Plus className="w-3 h-3" /> {t("settings.models.env.add")}
         </button>
       </div>
     </div>
