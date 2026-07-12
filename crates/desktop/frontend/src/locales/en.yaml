@@ -42,3 +42,31 @@ tray:
   settings: Settings
   quit: Quit
   engineInfo: Engine  ${engine} · ${mode}
+
+# ════════ ActionBar ════════
+actionbar:
+  processing: Processing
+  timeout: Request timeout (${n}s)
+
+# ════════ Result ════════
+result:
+  close: Close
+  settings: Settings
+  denoiseMode: Denoise
+  polishMode: Polish Mode
+  polishNow: Polish Now
+  zoomIn: Zoom In
+  zoomOut: Zoom Out
+  save: Save
+  listening: Listening…
+  polishing: Polishing…
+  polishFailed: Polish failed:
+  switchFailed: Switch failed:
+  polish:
+    off: Off
+    finalOnly: Final Only
+    intermediate: Intermediate + Final
+  denoise:
+    none: None
+    light: Light
+    deep: Deep

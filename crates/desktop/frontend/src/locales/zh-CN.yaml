@@ -42,3 +42,31 @@ tray:
   settings: 系统管理
   quit: 退出系统
   engineInfo: 引擎  ${engine} · ${mode}
+
+# ════════ ActionBar 悬浮操作栏 ════════
+actionbar:
+  processing: 处理中
+  timeout: 请求超时（${n}s）
+
+# ════════ Result ASR 结果窗 ════════
+result:
+  close: 关闭
+  settings: 系统设置
+  denoiseMode: 降噪模式
+  polishMode: 润色模式
+  polishNow: 立即润色
+  zoomIn: 放大
+  zoomOut: 缩小
+  save: 保存
+  listening: 正在聆听…
+  polishing: 润色中…
+  polishFailed: 润色失败：
+  switchFailed: 切换失败：
+  polish:
+    off: 关闭
+    finalOnly: 仅最终润色
+    intermediate: 中间 + 最终润色
+  denoise:
+    none: 无降噪
+    light: 轻度降噪
+    deep: 深度降噪
