@@ -30,7 +30,8 @@ impl TranslationManager {
         if guard.is_some() {
             return Ok(guard.clone());
         }
-        if self.engine_spec == "local:m2m100" {
+        // 匹配 local:* 前缀——引擎名灵活（m2m100、m2m100-418m 等）
+        if self.engine_spec.starts_with("local:") {
             let e: Arc<dyn TranslationEngine> = Arc::new(crate::m2m100::M2M100Engine::load()?);
             *guard = Some(e.clone());
             return Ok(Some(e));

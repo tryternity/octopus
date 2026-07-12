@@ -349,7 +349,7 @@ fn resolve_translate_strategy(config: &octopus_infra::config::AppConfig) -> Tran
             // 自动：有本地则用本地
             let models = octopus_translation::discover_translation_models();
             if models.iter().any(|m| m.downloaded) {
-                let manager = octopus_translation::TranslationManager::new("local:m2m100");
+                let manager = octopus_translation::TranslationManager::new("local:m2m100-418M");
                 match manager.engine() {
                     Ok(Some(e)) => TranslateStrategy::Local(e),
                     _ => TranslateStrategy::Llm,
