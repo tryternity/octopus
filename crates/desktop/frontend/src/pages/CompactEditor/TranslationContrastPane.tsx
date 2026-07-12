@@ -245,7 +245,7 @@ export function TranslationContrastPane({
           onPointerMove={onDividerMove}
           onPointerUp={onDividerUp}
           onPointerCancel={onDividerUp}
-          className="relative bg-border cursor-col-resize select-none hover:bg-voice transition-colors"
+          className="relative bg-muted-foreground/30 cursor-col-resize select-none hover:bg-voice transition-colors"
           style={{ display: viewLayout === "contrast" ? "block" : "none" }}
         >
           <div className="absolute inset-y-0 -inset-x-[5px]" />
