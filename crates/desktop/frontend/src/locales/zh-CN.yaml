@@ -70,3 +70,32 @@ result:
     none: 无降噪
     light: 轻度降噪
     deep: 深度降噪
+
+# ════════ Screenshot 截图 ════════
+screenshot:
+  tool:
+    select: 选择
+    rect: 矩形
+    ellipse: 椭圆
+    diamond: 菱形
+    line: 直线
+    arrow: 箭头
+    pen: 画笔
+    text: 文字
+    number: 序号
+    mosaic: 马赛克
+    undo: 撤销
+    redo: 重做
+  scrollShot: 滚动截图
+  saveToFile: 保存到文件
+  confirm: 确认
+  cancel: 取消
+  pin: 贴图
+  ocrBusy: 前一个 OCR 还未完成，请稍后
+  save: 保存
+  copy: 复制
+  props:
+    fontSize: 字号
+    circle: 圆圈
+    thickness: 粗细
+    solidFill: 实心填充

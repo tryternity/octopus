@@ -1,4 +1,5 @@
 import { invoke } from "@/lib/tauri";
+import { useT } from "@/lib/i18n";
 
 interface ScrollPreviewProps {
   sel: { x: number; y: number; w: number; h: number };
@@ -7,6 +8,7 @@ interface ScrollPreviewProps {
 }
 
 export function ScrollPreview({ sel, scrollPreview, scrollHeight }: ScrollPreviewProps) {
+  const t = useT();
   return (
     <div style={{
       position: "fixed",
@@ -56,7 +58,7 @@ export function ScrollPreview({ sel, scrollPreview, scrollHeight }: ScrollPrevie
         }}
         onMouseEnter={(e) => { e.currentTarget.style.background = "var(--color-voice)"; }}
         onMouseLeave={(e) => { e.currentTarget.style.background = "var(--color-voice)"; }}>
-          保存
+          {t("screenshot.save")}
         </button>
         <button onClick={() => invoke("stop_scroll_recording_with_mode", { mode: "copy" }).catch(() => {})} style={{
           flex: 1, borderRadius: 6, border: "none",
@@ -66,7 +68,7 @@ export function ScrollPreview({ sel, scrollPreview, scrollHeight }: ScrollPrevie
         }}
         onMouseEnter={(e) => e.currentTarget.style.background = "#16a34a"}
         onMouseLeave={(e) => e.currentTarget.style.background = "#22c55e"}>
-          复制
+          {t("screenshot.copy")}
         </button>
         <button onClick={() => invoke("stop_scroll_recording_with_mode", { mode: "cancel" }).catch(() => {})} style={{
           flex: 1, borderRadius: 6,
@@ -77,7 +79,7 @@ export function ScrollPreview({ sel, scrollPreview, scrollHeight }: ScrollPrevie
         }}
         onMouseEnter={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.3)"; e.currentTarget.style.color = "rgba(255,255,255,0.8)"; }}
         onMouseLeave={(e) => { e.currentTarget.style.borderColor = "rgba(255,255,255,0.15)"; e.currentTarget.style.color = "rgba(255,255,255,0.5)"; }}>
-          取消
+          {t("screenshot.cancel")}
         </button>
       </div>
     </div>

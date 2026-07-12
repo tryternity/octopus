@@ -6,6 +6,7 @@ import { type Annotation, type Tool, drawAnnotation, drawAnnotationScaled, drawM
 import { ToolButton } from "./ToolButton";
 import { ToolPropsPopover } from "./ToolPropsPopover";
 import { ScrollPreview } from "./ScrollPreview";
+import { useT } from "@/lib/i18n";
 
 interface Selection {
   x: number; y: number; w: number; h: number;
@@ -17,6 +18,7 @@ const HANDLE_SIZE = 8;
 const MIN_SIZE = 10;
 
 export default function Screenshot() {
+  const t = useT();
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const bgImgRef = useRef<HTMLImageElement | null>(null);
   const startPtRef = useRef({ x: 0, y: 0 });
@@ -848,65 +850,65 @@ export default function Screenshot() {
             alignItems: "center",
           }}
         >
-          <ToolButton active={tool === "none"} onClick={() => setTool("none")} label="选择" icon={
-            <img src="icons/arrow-pointer.svg" alt="选择" className="w-[18px] h-[18px]" style={{ filter: tool === "none" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
+          <ToolButton active={tool === "none"} onClick={() => setTool("none")} label={t("screenshot.tool.select")} icon={
+            <img src="icons/arrow-pointer.svg" alt={t("screenshot.tool.select")} className="w-[18px] h-[18px]" style={{ filter: tool === "none" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
           } />
-          <ToolButton active={tool === "rect"} onClick={(e) => onToolSelect(e, "rect")} label="矩形" icon={
-            <img src="icons/square.svg" alt="矩形" className="w-[18px] h-[18px]" style={{ filter: tool === "rect" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
+          <ToolButton active={tool === "rect"} onClick={(e) => onToolSelect(e, "rect")} label={t("screenshot.tool.rect")} icon={
+            <img src="icons/square.svg" alt={t("screenshot.tool.rect")} className="w-[18px] h-[18px]" style={{ filter: tool === "rect" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
           } />
-          <ToolButton active={tool === "oval"} onClick={(e) => onToolSelect(e, "oval")} label="椭圆" icon={
-            <img src="icons/oval-vertical.svg" alt="椭圆" className="w-[18px] h-[18px]" style={{ filter: tool === "oval" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
+          <ToolButton active={tool === "oval"} onClick={(e) => onToolSelect(e, "oval")} label={t("screenshot.tool.ellipse")} icon={
+            <img src="icons/oval-vertical.svg" alt={t("screenshot.tool.ellipse")} className="w-[18px] h-[18px]" style={{ filter: tool === "oval" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
           } />
-          <ToolButton active={tool === "diamond"} onClick={(e) => onToolSelect(e, "diamond")} label="菱形" icon={
-            <img src="icons/diamond.svg" alt="菱形" className="w-[18px] h-[18px]" style={{ filter: tool === "diamond" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
+          <ToolButton active={tool === "diamond"} onClick={(e) => onToolSelect(e, "diamond")} label={t("screenshot.tool.diamond")} icon={
+            <img src="icons/diamond.svg" alt={t("screenshot.tool.diamond")} className="w-[18px] h-[18px]" style={{ filter: tool === "diamond" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
           } />
-          <ToolButton active={tool === "line"} onClick={(e) => onToolSelect(e, "line")} label="直线" icon={
-            <img src="icons/straight-line.svg" alt="直线" className="w-[18px] h-[18px]" style={{ filter: tool === "line" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
+          <ToolButton active={tool === "line"} onClick={(e) => onToolSelect(e, "line")} label={t("screenshot.tool.line")} icon={
+            <img src="icons/straight-line.svg" alt={t("screenshot.tool.line")} className="w-[18px] h-[18px]" style={{ filter: tool === "line" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
           } />
-          <ToolButton active={tool === "arrow"} onClick={(e) => onToolSelect(e, "arrow")} label="箭头" icon={
-            <img src="icons/arrow-line.svg" alt="箭头" className="w-[18px] h-[18px]" style={{ filter: tool === "arrow" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
+          <ToolButton active={tool === "arrow"} onClick={(e) => onToolSelect(e, "arrow")} label={t("screenshot.tool.arrow")} icon={
+            <img src="icons/arrow-line.svg" alt={t("screenshot.tool.arrow")} className="w-[18px] h-[18px]" style={{ filter: tool === "arrow" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
           } />
-          <ToolButton active={tool === "pen"} onClick={(e) => onToolSelect(e, "pen")} label="画笔" icon={
-            <img src="icons/sketching.svg" alt="画笔" className="w-[18px] h-[18px]" style={{ filter: tool === "pen" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
+          <ToolButton active={tool === "pen"} onClick={(e) => onToolSelect(e, "pen")} label={t("screenshot.tool.pen")} icon={
+            <img src="icons/sketching.svg" alt={t("screenshot.tool.pen")} className="w-[18px] h-[18px]" style={{ filter: tool === "pen" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
           } />
-          <ToolButton active={tool === "text"} onClick={(e) => onToolSelect(e, "text")} label="文字" icon={
-            <img src="icons/text.svg" alt="文字" className="w-[18px] h-[18px]" style={{ filter: tool === "text" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
+          <ToolButton active={tool === "text"} onClick={(e) => onToolSelect(e, "text")} label={t("screenshot.tool.text")} icon={
+            <img src="icons/text.svg" alt={t("screenshot.tool.text")} className="w-[18px] h-[18px]" style={{ filter: tool === "text" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
           } />
-          <ToolButton active={tool === "number"} onClick={(e) => onToolSelect(e, "number", () => setNumberCounter(1))} label="序号" icon={
-            <img src="icons/sequence-note.svg" alt="序号" className="w-[18px] h-[18px]" style={{ filter: tool === "number" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
+          <ToolButton active={tool === "number"} onClick={(e) => onToolSelect(e, "number", () => setNumberCounter(1))} label={t("screenshot.tool.number")} icon={
+            <img src="icons/sequence-note.svg" alt={t("screenshot.tool.number")} className="w-[18px] h-[18px]" style={{ filter: tool === "number" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
           } />
-          <ToolButton active={tool === "blur"} onClick={(e) => onToolSelect(e, "blur")} label="马赛克" icon={
-            <img src="icons/mosaic.svg" alt="马赛克" className="w-[18px] h-[18px]" style={{ filter: tool === "blur" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
+          <ToolButton active={tool === "blur"} onClick={(e) => onToolSelect(e, "blur")} label={t("screenshot.tool.mosaic")} icon={
+            <img src="icons/mosaic.svg" alt={t("screenshot.tool.mosaic")} className="w-[18px] h-[18px]" style={{ filter: tool === "blur" ? "brightness(0) invert(1)" : "var(--icon-filter)" }} />
           } />
           <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />
-          <ToolButton onClick={undoAnnotation} label="撤销" icon={
-            <img src="icons/restore.svg" alt="撤销" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: annotations.length > 0 ? 1 : 0.3 }} />
+          <ToolButton onClick={undoAnnotation} label={t("screenshot.tool.undo")} icon={
+            <img src="icons/restore.svg" alt={t("screenshot.tool.undo")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: annotations.length > 0 ? 1 : 0.3 }} />
           } />
-          <ToolButton onClick={redoAnnotation} label="重做" icon={
-            <img src="icons/redo.svg" alt="重做" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: redoAvailable ? 1 : 0.3 }} />
+          <ToolButton onClick={redoAnnotation} label={t("screenshot.tool.redo")} icon={
+            <img src="icons/redo.svg" alt={t("screenshot.tool.redo")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)", opacity: redoAvailable ? 1 : 0.3 }} />
           } />
           <ToolButton onClick={doOcr} label="OCR" icon={
             <img src="icons/ocr-ai.svg" alt="OCR" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
           } />
           <div style={{ width: 1, height: 20, background: "var(--color-border)", margin: "0 4px" }} />
-          <button onClick={startScroll} title="滚动截图" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
-            <img src="icons/scroll.svg" alt="滚动截图" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
+          <button onClick={startScroll} title={t("screenshot.scrollShot")} style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
+            <img src="icons/scroll.svg" alt={t("screenshot.scrollShot")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
           </button>
-          <button onClick={doSaveFile} title="保存到文件" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
-            <img src="icons/save.svg" alt="保存" className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
+          <button onClick={doSaveFile} title={t("screenshot.saveToFile")} style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
+            <img src="icons/save.svg" alt={t("screenshot.save")} className="w-[18px] h-[18px]" style={{ filter: "var(--icon-filter)" }} />
           </button>
-          <button onClick={doConfirm} title="确认" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "var(--color-voice)", cursor: "pointer" }}>
-            <img src="icons/copy.svg" alt="确认" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} />
+          <button onClick={doConfirm} title={t("screenshot.confirm")} style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "var(--color-voice)", cursor: "pointer" }}>
+            <img src="icons/copy.svg" alt={t("screenshot.confirm")} className="w-[18px] h-[18px]" style={{ filter: "brightness(0) invert(1)" }} />
           </button>
-          <button onClick={() => invoke("cancel_screenshot").catch(() => {})} title="取消" style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
-            <img src="icons/close.svg" alt="取消" className="w-[18px] h-[18px]" style={{ filter: "brightness(0) saturate(100%) invert(40%) sepia(94%) saturate(7470%) hue-rotate(346deg) brightness(95%) contrast(91%)" }} />
+          <button onClick={() => invoke("cancel_screenshot").catch(() => {})} title={t("screenshot.cancel")} style={{ padding: "4px", width: 32, height: 32, display: "flex", alignItems: "center", justifyContent: "center", borderRadius: 6, border: "none", background: "transparent", cursor: "pointer" }}>
+            <img src="icons/close.svg" alt={t("screenshot.cancel")} className="w-[18px] h-[18px]" style={{ filter: "brightness(0) saturate(100%) invert(40%) sepia(94%) saturate(7470%) hue-rotate(346deg) brightness(95%) contrast(91%)" }} />
           </button>
         </div>
       )}
 
       {/* 贴图按钮 */}
       {sel && mode !== "scrolling" && (
-        <button onClick={doPin} title="贴图" style={{
+        <button onClick={doPin} title={t("screenshot.pin")} style={{
           position: "fixed",
           left: sel.x + sel.w - 28,
           top: toolbarBelow ? (sel.y - 28) : (sel.y + sel.h + 6),
@@ -917,7 +919,7 @@ export default function Screenshot() {
           boxShadow: "0 2px 8px rgba(0,0,0,0.15)",
           cursor: "pointer", zIndex: 101,
         }}>
-          <img src="icons/pin.svg" alt="贴图" style={{ width: 14, height: 14, filter: "var(--icon-filter)" }} />
+          <img src="icons/pin.svg" alt={t("screenshot.pin")} style={{ width: 14, height: 14, filter: "var(--icon-filter)" }} />
         </button>
       )}
 
@@ -957,7 +959,7 @@ export default function Screenshot() {
           fontSize: 14, fontWeight: 500, boxShadow: "0 8px 24px rgba(0,0,0,0.3)",
           pointerEvents: "none",
         }}>
-          前一个 OCR 还未完成，请稍后
+          {t("screenshot.ocrBusy")}
         </div>
       )}
     </>

@@ -70,3 +70,32 @@ result:
     none: None
     light: Light
     deep: Deep
+
+# ════════ Screenshot ════════
+screenshot:
+  tool:
+    select: Select
+    rect: Rectangle
+    ellipse: Ellipse
+    diamond: Diamond
+    line: Line
+    arrow: Arrow
+    pen: Pen
+    text: Text
+    number: Number
+    mosaic: Mosaic
+    undo: Undo
+    redo: Redo
+  scrollShot: Scroll Capture
+  saveToFile: Save to File
+  confirm: Confirm
+  cancel: Cancel
+  pin: Pin
+  ocrBusy: Previous OCR not finished, please wait
+  save: Save
+  copy: Copy
+  props:
+    fontSize: Font Size
+    circle: Circle
+    thickness: Thickness
+    solidFill: Solid Fill
