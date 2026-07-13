@@ -64,7 +64,7 @@ futures-util = { version = "0.3", optional = true }
 # uuid 用于生成 task_id / event_id / request_id / voice_id；走 wss:// 必须 TLS。
 # base64 用于 Qwen-ASR Realtime 协议（audio 字段为 base64 PCM）+ Tencent 签名 Base64。
 #（flate2/hmac/sha1 已随 *_stream.rs 副本删去，下沉 octopus-asr-cloud；engine_aliyun.rs chunk 模式仅需 uuid/base64。）
-uuid = { version = "1", features = ["v4"], optional = true }
+uuid = { version = "1", features = ["v4"] }
 base64 = "0.22"
 
 # 云端 ASR 协议层（4 provider WSS + 批引擎，下沉 crate；desktop cloud feature 复用）
@@ -101,7 +101,7 @@ remote-grpc = ["tonic", "prost", "tonic-build"]
 # 云端 ASR WS 流式识别（Aliyun / ByteDance / Tencent / Baidu）：
 # 协议层下沉 octopus-asr-cloud（4 provider WSS 1:1 复刻自原 desktop *_stream.rs）。
 # tokio-tungstenite 启用 native-tls 以支持 wss://（engine_aliyun chunk 模式 + settings 连接测试亦用）。
-cloud = ["tokio-tungstenite", "tokio-tungstenite?/native-tls", "uuid", "futures-util", "octopus-asr-cloud"]
+cloud = ["tokio-tungstenite", "tokio-tungstenite?/native-tls", "futures-util", "octopus-asr-cloud"]
 
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"

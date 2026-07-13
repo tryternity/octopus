@@ -1274,6 +1274,69 @@ pub fn refresh_agent_detection() -> Result<Vec<crate::agent_adapter::AgentAdapte
     Ok(crate::agent_adapter::refresh_detection())
 }
 
+// ── Agent Voice（语音联动）──
+
+/// agent 项含 {{task}} 时：创建 agent_task → 隐藏浮窗 → 触发音录。
+#[tauri::command]
+pub fn trigger_agent_voice(
+    item_id: i64,
+    app: AppHandle,
+    coordinator: tauri::State<'_, crate::coordinator::Coordinator>,
+) -> Result<(), String> {
+    let item = octopus_infra::db::load_action_bar_item(item_id)
+        .map_err(|e| e.to_string())?
+        .ok_or("菜单项不存在")?;
+
+    let files: Vec<String> = PENDING_CONTEXT.lock().unwrap()
+        .as_ref().map(|c| c.files.clone()).unwrap_or_default();
+
+    let cwd = derive_cwd(&files);
+    let context = serde_json::json!({
+        "kind": "files",
+        "files": files,
+        "cwd": cwd,
+        "prompt_template": item.action_data,
+    }).to_string();
+
+    let task_id = uuid::Uuid::new_v4().to_string();
+    octopus_infra::db::insert_agent_task(&task_id, &item.agent, &context)
+        .map_err(|e| e.to_string())?;
+
+    // 隐藏 action bar 浮窗
+    if let Some(win) = app.get_webview_window(crate::action_bar_window::WINDOW_LABEL) {
+        let _ = win.hide();
+    }
+    #[cfg(target_os = "macos")]
+    { crate::activation::after_floating_window_hide(&app); }
+    finalize_action_bar(&app);
+
+    // 触发 agent 录音
+    coordinator.start_agent_recording(task_id);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn list_agent_tasks(limit: Option<i64>) -> Result<Vec<octopus_infra::db::AgentTask>, String> {
+    octopus_infra::db::list_agent_tasks(limit.unwrap_or(100)).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_agent_task(id: String) -> Result<(), String> {
+    octopus_infra::db::delete_agent_task(&id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn retry_agent_task(id: String, app: AppHandle) -> Result<(), String> {
+    let task = octopus_infra::db::load_agent_task(&id)
+        .map_err(|e| e.to_string())?
+        .ok_or("task 不存在")?;
+    if task.status != "failed" && task.status != "done" {
+        return Err("仅 failed/done 状态可重试".into());
+    }
+    crate::coordinator::retry_agent_task(&app, &id);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

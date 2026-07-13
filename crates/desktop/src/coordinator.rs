@@ -42,6 +42,19 @@ pub async fn current_transcription_id() -> Option<i64> {
     if id > 0 { Some(id) } else { None }
 }
 
+/// 录音类型——决定录音结束后 finalize 的回调路径。
+#[derive(Clone, Debug)]
+pub enum RecordType {
+    /// 普通语音输入 → paste/剪贴板
+    Input,
+    /// agent 桥接 → 录音结果作为 task 注入 agent 命令
+    AgentBridge { task_id: String },
+}
+
+impl Default for RecordType {
+    fn default() -> Self { RecordType::Input }
+}
+
 /// 协调器命令
 enum Command {
     /// 切换录音状态（开始/停止）
@@ -90,9 +103,11 @@ enum Command {
     /// 前端响应 prepare-record 事件：携带 prepare_id（跨会话/超时护栏）+ 前端缓存的选区。
     /// selection=None → 普通开录音；Some((text,start,end)) → 跨会话选中替换种子。
     /// C3：coordinator 校验 prepare_id 匹配 pending_prepare 后调 begin_recording。
-    StartRecording { prepare_id: i64, selection: Option<(String, usize, usize)> },
+    StartRecording { prepare_id: i64, selection: Option<(String, usize, usize)>, record_type: RecordType },
     /// 看门狗超时兜底：prepare-record 发出后 200ms 前端未响应 → 普通开录音（selection=None）。
     FallbackStart { prepare_id: i64 },
+    /// action bar agent 录音（跳过 prepare-record 两阶段，无 selection）
+    StartAgentRecording { task_id: String },
 }
 
 enum Stage {
@@ -460,7 +475,7 @@ fn build_coordinator_loop(
                             }
                         }
                     }
-                    Command::StartRecording { prepare_id, selection } => {
+                    Command::StartRecording { prepare_id, selection, record_type } => {
                         // 前端响应 prepare-record：校验 prepare_id 匹配 pending_prepare 后开录音。
                         // 不匹配（跨会话/超时后迟到/重复）→ 丢弃，防重复开录音。
                         if pending_prepare == Some(prepare_id) {
@@ -475,6 +490,7 @@ fn build_coordinator_loop(
                                 &tx,
                                 use_streaming,
                                 selection,
+                                record_type,
                                 #[cfg(feature = "cloud")]
                                 use_cloud_streaming,
                             );
@@ -499,6 +515,7 @@ fn build_coordinator_loop(
                                 &tx,
                                 use_streaming,
                                 None,
+                                RecordType::Input,
                                 #[cfg(feature = "cloud")]
                                 use_cloud_streaming,
                             );
@@ -508,6 +525,35 @@ fn build_coordinator_loop(
                                 prepare_id, pending_prepare
                             );
                         }
+                    }
+                    Command::StartAgentRecording { task_id } => {
+                        if !matches!(stage, Stage::Idle) {
+                            warn!("StartAgentRecording ignored: not Idle");
+                            continue;
+                        }
+                        let rc = runtime_config.read();
+                        config.asr_engine = match octopus_asr_local::config::resolve_active_engine(&rc.asr_engine) {
+                            Ok(_) => rc.asr_engine.clone(),
+                            Err(_) => "local:zipformer:zipformer-small-ctc".to_string(),
+                        };
+                        config.microphone = rc.microphone.clone();
+                        config.engine_mode = rc.engine_mode.clone();
+                        sync_runtime_fields(&mut config, &rc);
+                        drop(rc);
+                        use_streaming = config.engine_mode == "embedded"
+                            && crate::config::is_streaming_engine(&config);
+                        #[cfg(feature = "cloud")]
+                        {
+                            use_cloud_streaming = is_cloud_engine(&config);
+                            if use_cloud_streaming { use_streaming = false; }
+                        }
+                        info!("StartAgentRecording: task_id={}", task_id);
+                        begin_recording(
+                            &mut stage, &audio, &engine, &config, &app_handle, &tx,
+                            use_streaming, None,
+                            RecordType::AgentBridge { task_id },
+                            #[cfg(feature = "cloud")] use_cloud_streaming,
+                        );
                     }
                 }
             }
@@ -556,6 +602,14 @@ impl Coordinator {
             }
     }
 
+    /// action bar agent 录音触发：创建 agent task → 开始录音
+    pub fn start_agent_recording(&self, task_id: String) {
+        let tx = self.tx.lock();
+        if tx.send(Command::StartAgentRecording { task_id }).is_err() {
+            error!("Coordinator channel closed");
+        }
+    }
+
     /// 提交编辑（含 dirty ranges + 光标/选区恢复）
     pub fn commit_edit(&self, text: String, dirty_ranges: Vec<(usize, usize)>, has_edited: bool, caret: Option<usize>, selection: Option<(usize, usize)>) {
         let tx = self.tx.lock();
@@ -586,7 +640,7 @@ impl Coordinator {
     /// prepare_id 跨会话/超时护栏（看门狗的 FallbackStart 也带同 id，校验后丢弃迟到者）。
     pub fn start_recording(&self, prepare_id: i64, selection: Option<(String, usize, usize)>) {
         let tx = self.tx.lock();
-        if tx.send(Command::StartRecording { prepare_id, selection }).is_err() {
+        if tx.send(Command::StartRecording { prepare_id, selection, record_type: RecordType::Input }).is_err() {
             error!("Coordinator channel closed");
         }
     }
@@ -694,6 +748,7 @@ fn begin_recording(
     tx: &Sender<Command>,
     use_streaming: bool,
     selection: Option<(String, usize, usize)>,
+    record_type: RecordType,
     #[cfg(feature = "cloud")] use_cloud_streaming: bool,
 ) {
     info!("Toggle: starting {}", {
@@ -710,14 +765,14 @@ fn begin_recording(
 
     #[cfg(feature = "cloud")]
     if use_cloud_streaming {
-        prepare_cloud_streaming_session(stage, audio, config, app_handle, tx, selection);
+        prepare_cloud_streaming_session(stage, audio, config, app_handle, tx, selection, record_type.clone());
         return;
     }
 
     if use_streaming {
-        prepare_streaming_session(stage, audio, engine, config, app_handle, tx, selection);
+        prepare_streaming_session(stage, audio, engine, config, app_handle, tx, selection, record_type.clone());
     } else {
-        prepare_vad_segmented_session(stage, audio, engine, config, app_handle, tx, selection);
+        prepare_vad_segmented_session(stage, audio, engine, config, app_handle, tx, selection, record_type);
     }
 }
 
@@ -730,6 +785,7 @@ fn prepare_cloud_streaming_session(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
     selection: Option<(String, usize, usize)>,
+    record_type: RecordType,
 ) {
     match octopus_asr_local::config::find_silero_vad() {
         Ok(path) => match octopus_asr_local::vad::SileroVad::new(&path) {
@@ -742,13 +798,13 @@ fn prepare_cloud_streaming_session(
                 let tid = now_millis();
                 set_current_transcription_id(tid);
                 let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
-                    let mut t = Transcript::new(tid, config.polish_mode);
+                    let mut t = Transcript::new(tid, config.polish_mode, record_type.clone());
                     t.commit_edit(&text, &[], true);
                     t.set_selection(s, e);
                     debug!("[select] cross-session seeded (cloud) t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
                     (t, text, true)
                 } else {
-                    (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)
+                    (Transcript::new(tid, config.polish_mode, record_type.clone()), "正在聆听…".to_string(), false)
                 };
                 if is_continuation {
                     // 延续态：展示旧文本但不走 show-result（前端会把非占位符当最终文本→清空 caret）。
@@ -807,6 +863,7 @@ fn prepare_streaming_session(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
     selection: Option<(String, usize, usize)>,
+    record_type: RecordType,
 ) {
     // 流式引擎复用（②）：从 StreamingSessionManager 取常驻引擎 Arc + reset 清状态，
     // 不再每次录音 StreamingSession::new 重载 Session。模型变更由 active_session 懒加载覆盖，
@@ -848,13 +905,13 @@ fn prepare_streaming_session(
     let tid = now_millis();
     set_current_transcription_id(tid);
     let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
-        let mut t = Transcript::new(tid, config.polish_mode);
+        let mut t = Transcript::new(tid, config.polish_mode, record_type.clone());
         t.commit_edit(&text, &[], true);
         t.set_selection(s, e);
         debug!("[select] cross-session seeded t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
         (t, text, true)
     } else {
-        (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)
+        (Transcript::new(tid, config.polish_mode, record_type.clone()), "正在聆听…".to_string(), false)
     };
     if is_continuation {
         // 延续态：展示旧文本但不走 show-result（前端会把非占位符当最终文本→清空 caret）。
@@ -907,6 +964,7 @@ fn prepare_vad_segmented_session(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
     selection: Option<(String, usize, usize)>,
+    record_type: RecordType,
 ) {
     // 非流式模式：使用 VAD 伪流式分段识别（2c-3：编排收进 VadSegmentedPipeline）
     match crate::pipeline::VadSegmentedPipeline::new(
@@ -920,13 +978,13 @@ fn prepare_vad_segmented_session(
             let tid = now_millis();
             set_current_transcription_id(tid);
             let (transcript, show_text, is_continuation) = if let Some((text, s, e)) = selection {
-                let mut t = Transcript::new(tid, config.polish_mode);
+                let mut t = Transcript::new(tid, config.polish_mode, record_type.clone());
                 t.commit_edit(&text, &[], true);
                 t.set_selection(s, e);
                 debug!("[select] cross-session seeded (vad) t={} range=[{},{}] text_len={}", tid, s, e, text.chars().count());
                 (t, text, true)
             } else {
-                (Transcript::new(tid, config.polish_mode), "正在聆听…".to_string(), false)
+                (Transcript::new(tid, config.polish_mode, record_type.clone()), "正在聆听…".to_string(), false)
             };
             if is_continuation {
                 crate::result_window::show_result(app_handle, "正在聆听…");
@@ -1025,7 +1083,7 @@ fn handle_toggle(
                     // Toggle/Cancel 在 CloudClosing 阶段被忽略（busy closing），不阻塞主线程。
                     let rt = tauri::async_runtime::handle();
                     let tx_clone = tx.clone();
-                    let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+                    let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled, RecordType::Input));
                     // 跨会话护栏：close 在飞期间 Cancel/Discard 会把 stage 清回 Idle（绕过 Toggle
                     // 的"忙"保护），用户可立刻重开云端会话 → 新 CloudClosing。旧会话迟到的
                     // CloudStreamingDone 会匹配到新 CloudClosing。带 session_id（= 本会话
@@ -1055,7 +1113,7 @@ fn handle_toggle(
                     return;
                 }
                 // 无活跃 session：无需等 close，直接 finalize_cloud（无标点补全，服务端已分句）
-                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled, RecordType::Input));
                 finalize_cloud(stage, tr, partial, config, app_handle, tx);
                 return;
             }
@@ -1079,7 +1137,7 @@ fn handle_toggle(
                 transcript.apply_engine_full(&final_text);
             }
             info!("Final streaming text: '{}'", transcript.db_text());
-            let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+            let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled, RecordType::Input));
             finalize_after_stop(stage, tr, config, app_handle, tx);
         }
 
@@ -1159,6 +1217,16 @@ fn finalize_after_stop(
         return;
     }
 
+    // 按 record_type 分流
+    match &transcript.record_type {
+        RecordType::AgentBridge { task_id } => {
+            execute_agent_task(app_handle, task_id, &combined);
+            *stage = Stage::Idle;
+            return;
+        }
+        RecordType::Input => {} // 走现有 paste 流程
+    }
+
     crate::result_window::show_result(app_handle, &transcript.display_text());
     if skip_final_polish {
         // 立即润色已覆盖全部文本，直接 paste（polish_status="done"）
@@ -1170,6 +1238,68 @@ fn finalize_after_stop(
     } else {
         // 走原 final 路径（按 polish_mode 决定是否润色）
         start_final_polish_or_paste(stage, &combined, transcript, config, app_handle, tx);
+    }
+}
+
+/// agent task 执行器：从 DB 取上下文 + 识别文本 → 渲染命令 → Terminal.app
+fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, transcribed_text: &str) {
+    use crate::terminal_launcher::{TerminalAppLauncher, TerminalLauncher};
+
+    if let Err(e) = octopus_infra::db::update_agent_task_result(task_id, transcribed_text) {
+        log::error!("[agent-task] 更新 task 失败: {}", e);
+        return;
+    }
+
+    let task = match octopus_infra::db::load_agent_task(task_id) {
+        Ok(Some(t)) => t,
+        Ok(None) => { log::warn!("[agent-task] task {} 不存在", task_id); return; }
+        Err(e) => { log::error!("[agent-task] 加载 task 失败: {}", e); return; }
+    };
+
+    let context: serde_json::Value = serde_json::from_str(&task.context).unwrap_or(serde_json::json!({}));
+    let files: Vec<String> = context["files"].as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default();
+    let cwd = context["cwd"].as_str().unwrap_or("/tmp").to_string();
+    let prompt_template = context["prompt_template"].as_str().unwrap_or("").to_string();
+
+    let prompt = crate::action_bar_commands::render_agent_prompt(&prompt_template, transcribed_text, &files);
+
+    let adapters = crate::agent_adapter::list_adapters();
+    let adapter = match adapters.into_iter().find(|a| a.key == task.agent_key) {
+        Some(a) => a,
+        None => {
+            let msg = format!("Agent adapter '{}' 不存在", task.agent_key);
+            let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
+            crate::result_window::show_result(app_handle, &format!("❌ {}", msg));
+            return;
+        }
+    };
+    if !adapter.is_available {
+        let msg = format!("{} 未安装", adapter.display_name);
+        let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
+        crate::result_window::show_result(app_handle, &format!("❌ {}", msg));
+        return;
+    }
+
+    let command = crate::agent_adapter::render_command(&adapter.command_template, &prompt, &files, &cwd);
+    match TerminalAppLauncher.spawn(&command, std::path::Path::new(&cwd)) {
+        Ok(()) => { let _ = octopus_infra::db::update_agent_task_status(task_id, "done", ""); }
+        Err(e) => {
+            let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &e);
+            crate::result_window::show_result(app_handle, &format!("❌ Terminal 启动失败: {}", e));
+        }
+    }
+
+    crate::result_window::hide_result(app_handle);
+    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+}
+
+/// 重试 failed task（用已有 transcribed_text 重新执行）
+pub fn retry_agent_task(app_handle: &tauri::AppHandle, task_id: &str) {
+    match octopus_infra::db::load_agent_task(task_id) {
+        Ok(Some(t)) => execute_agent_task(app_handle, task_id, &t.transcribed_text),
+        _ => {}
     }
 }
 
@@ -1456,7 +1586,7 @@ fn handle_cloud_streaming_done(
                 Ok(_) => {}
                 Err(e) => warn!("CloudStreaming close WSS failed: {}", e),
             }
-            let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+            let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled, RecordType::Input));
             let p = std::mem::take(current_partial);
             (tr, p)
         }
@@ -1970,7 +2100,7 @@ fn handle_polish_done(
         use tauri::Emitter;
         let _ = app_handle.emit("polish-done", ());
         // PolishDone 处理完成（pending 已清），走 final 路径
-        let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+        let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled, RecordType::Input));
         finalize_after_stop(stage, tr, config, app_handle, _tx);
         return;
     }
@@ -2150,7 +2280,7 @@ fn commit_edit_apply(
                 debug!("commit_edit in Idle but no current_transcription_id — 跳过落库");
                 return;
             }
-            let mut t = Transcript::new(id, PolishMode::Disabled);
+            let mut t = Transcript::new(id, PolishMode::Disabled, RecordType::Input);
             // 从 DB 恢复已有 segments（保留 Raw/Polished/Edited 标记，
             // 否则 rebuild_segments 的 old_segments 为空 → clean 区域全退化为 Raw）
             let db_json: Option<String> = octopus_infra::db::with_db(|conn| {
@@ -2292,7 +2422,7 @@ fn dispatch_tick(
             // 所有在途段完成 → 收尾（停 tick 线程 + finalize）
             if pipeline.active_count() == 0 {
                 tick_active.store(false, Ordering::Relaxed);
-                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled));
+                let tr = std::mem::replace(transcript, Transcript::new(0, PolishMode::Disabled, RecordType::Input));
                 finalize_after_stop(stage, tr, config, app_handle, tx);
             }
         }
