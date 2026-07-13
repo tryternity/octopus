@@ -1,6 +1,6 @@
 # Action Bar 文件 Agent 桥接设计
 
-> **状态**：设计确认，待实现
+> **状态**：已实现 ✅
 > **日期**：2026-07-12
 > **scope**：在 Finder 内选中文件/文件夹后，通过全局热键弹出 action bar，将选中对象交给外部 CLI agent（Claude Code / pi）处理；附带复制路径内置动作
 > **前置文档**：
@@ -77,6 +77,11 @@ pub struct ActionBarContext {
     pub kind: ContextKind,
     pub text: Option<String>,   // Text 场景
     pub files: Vec<String>,     // Files 场景（POSIX 路径）
+    // 以下字段来自 main 的 app_context 合并（text 场景后台采集）：
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::app_context::AppSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surrounding: Option<crate::app_context::SurroundingText>,
 }
 ```
 
@@ -142,20 +147,26 @@ pub struct AgentAdapter {
 
 | key | display_name | detect_binary | command_template | 文件传法 |
 |---|---|---|---|---|
-| `claude` | Claude Code | `claude` | `claude --add-dir "{cwd}" "{prompt}"` | `--add-dir` 授目录访问权，文件路径在 prompt 内 |
-| `pi` | Pi | `pi` | `pi {files_at} "{prompt}"` | `@` 前缀传文件路径 |
+| `claude` | Claude Code | `claude` | `claude --add-dir {cwd} {prompt}` | `--add-dir` 授目录访问权，文件路径在 prompt 内 |
+| `pi` | Pi | `pi` | `pi {files_at} {prompt}` | `@` 前缀传文件路径 |
+
+> **注意**：模板中**不自带引号**——`render_command` 统一负责转义：
+> - `{prompt}` → `shell_escape_single`（单引号包裹，`$`/`` ` `` 全部字面）
+> - `{files}`/`{files_at}`/`{cwd}` → 每个路径独立 `shell_escape_single`（单引号包裹）
+> - 模板作者只需写裸占位符，引号由渲染层自动加
 
 **命令模板占位符**：
 
-| 占位符 | 渲染为 | 示例 |
+| 占位符 | 渲染为 | 转义方式 |
 |---|---|---|
-| `{prompt}` | 渲染后的 prompt（含 task） | `整理这些文件` |
-| `{files}` | 空格分隔裸路径 | `/a.pdf /b.pdf` |
-| `{files_at}` | 空格分隔 @ 前缀路径 | `@/a.pdf @/b.pdf` |
-| `{cwd}` | 首个文件的父目录 | `/Users/x/Documents` |
+| `{prompt}` | 单引号包裹的 prompt | `shell_escape_single` |
+| `{files}` | 每个路径独立单引号包裹，空格分隔 | `shell_escape_single` 逐路径 |
+| `{files_at}` | 每个路径 `@` 前缀 + 单引号包裹 | `shell_escape_single` 逐路径 |
+| `{cwd}` | 单引号包裹的工作目录 | `shell_escape_single` |
 
 **检测机制**：
-- 应用启动时遍历内置白名单 + DB 用户自定义 adapter，对每个 `detect_binary` 跑 `which`（`std::process::Command::new("which")`），缓存 `is_available` 到内存
+- 应用启动时遍历内置白名单 + DB 用户自定义 adapter，对每个 `detect_binary` 跑 `which`，缓存 `is_available` 到内存
+- `is_builtin_key(&str) -> bool`：零进程开销检查 key 是否为内置（create/update adapter 时拒绝与内置同名）
 - 设置页 Agent 面板有「刷新检测」按钮
 - 不实时监听 PATH
 

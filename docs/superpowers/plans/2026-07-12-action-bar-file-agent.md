@@ -1,6 +1,6 @@
 # Action Bar 文件 Agent 桥接 — 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** 在 Finder 内选中文件/文件夹后，通过全局热键弹出 action bar，将选中对象交给外部 CLI agent（Claude Code / pi）处理；附带复制路径内置动作。
 
@@ -55,7 +55,7 @@
 **Interfaces:**
 - Produces: `action_bar_items.agent TEXT DEFAULT ''`、`action_bar_items.accepts TEXT DEFAULT 'text'` 两列；`agent_adapters` 表；user_version = 26
 
-- [ ] **Step 1: 写失败测试 — 迁移后列存在 + agent_adapters 表存在**
+- [x] **Step 1: 写失败测试 — 迁移后列存在 + agent_adapters 表存在**
 
 在 `crates/infra/src/db.rs` 末尾 `mod tests` 中添加测试（如无 mod tests 则新建）：
 
@@ -96,12 +96,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-infra --lib tests::test_action_bar_items_has_agent_and_accepts_cols tests::test_agent_adapters_table_exists -- --nocapture`
 Expected: FAIL（列/表不存在）
 
-- [ ] **Step 3: 修改 db.sql — action_bar_items CREATE TABLE 加列**
+- [x] **Step 3: 修改 db.sql — action_bar_items CREATE TABLE 加列**
 
 在 `crates/infra/src/db.sql` 第 284 行 `shortcut TEXT NOT NULL DEFAULT '',` 后追加两列：
 
@@ -110,7 +110,7 @@ Expected: FAIL（列/表不存在）
     accepts     TEXT NOT NULL DEFAULT 'text',
 ```
 
-- [ ] **Step 4: 修改 db.sql — 追加 agent_adapters 表**
+- [x] **Step 4: 修改 db.sql — 追加 agent_adapters 表**
 
 在 db.sql 末尾（action_bar_items 相关 seed 之后）追加：
 
@@ -126,7 +126,7 @@ CREATE TABLE IF NOT EXISTS agent_adapters (
 );
 ```
 
-- [ ] **Step 5: 修改 db.rs — v25→v26 迁移块**
+- [x] **Step 5: 修改 db.rs — v25→v26 迁移块**
 
 在 `crates/infra/src/db.rs` 第 280 行 `return Ok(());` 之前，第 279 行 `conn.execute("PRAGMA user_version = 25", [])?;` 之后，插入迁移块：
 
@@ -154,7 +154,7 @@ CREATE TABLE IF NOT EXISTS agent_adapters (
         }
 ```
 
-- [ ] **Step 6: 更新 user_version 最终值**
+- [x] **Step 6: 更新 user_version 最终值**
 
 在 `crates/infra/src/db.rs` 第 286-287 行，将全新安装的 `PRAGMA user_version = 25` 改为 `26`，日志也改：
 
@@ -163,12 +163,12 @@ CREATE TABLE IF NOT EXISTS agent_adapters (
     log::info!("DB initialized (v26): schema + seed + yaml 配置导入（无 yaml 则跳过）");
 ```
 
-- [ ] **Step 7: 运行测试确认通过**
+- [x] **Step 7: 运行测试确认通过**
 
 Run: `cargo test -p octopus-infra --lib tests:: -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -187,7 +187,7 @@ git commit -m "feat(db): v26 迁移——action_bar_items 加 agent/accepts 列 
 - Consumes: Task 1 的 agent/accepts 列
 - Produces: `ActionBarItem { ..., agent: String, accepts: String }`；insert/update 带新参数
 
-- [ ] **Step 1: 写失败测试 — ActionBarItem 含 agent/accepts 字段**
+- [x] **Step 1: 写失败测试 — ActionBarItem 含 agent/accepts 字段**
 
 在 Task 1 的 test_db 基础上，`crates/infra/src/db.rs` 的 mod tests 中添加：
 
@@ -209,12 +209,12 @@ git commit -m "feat(db): v26 迁移——action_bar_items 加 agent/accepts 列 
     }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-infra --lib tests::test_insert_action_bar_item_with_agent_accepts -- --nocapture`
 Expected: 编译失败（struct 无 agent/accepts 字段）
 
-- [ ] **Step 3: 扩展 ActionBarItem struct**
+- [x] **Step 3: 扩展 ActionBarItem struct**
 
 `crates/infra/src/db.rs:978`，在 `shortcut: String,` 后追加：
 
@@ -237,7 +237,7 @@ pub struct ActionBarItem {
 }
 ```
 
-- [ ] **Step 4: 更新 ACTION_BAR_SELECT_COLS + row mapper**
+- [x] **Step 4: 更新 ACTION_BAR_SELECT_COLS + row mapper**
 
 `crates/infra/src/db.rs:993`，SELECT_COLS 加两列：
 
@@ -268,7 +268,7 @@ fn row_to_action_bar_item(row: &rusqlite::Row) -> rusqlite::Result<ActionBarItem
 }
 ```
 
-- [ ] **Step 5: 扩展 insert/update 函数签名**
+- [x] **Step 5: 扩展 insert/update 函数签名**
 
 `crates/infra/src/db.rs:1094`，`insert_action_bar_item` 加 `agent: &str, accepts: &str` 参数（pub 和 _at 两个函数都加）：
 
@@ -328,12 +328,12 @@ pub fn update_action_bar_item(
     )?;
 ```
 
-- [ ] **Step 6: 运行测试确认通过**
+- [x] **Step 6: 运行测试确认通过**
 
 Run: `cargo test -p octopus-infra --lib -- --nocapture`
 Expected: PASS（可能有编译错误来自 desktop crate 调用方，先忽略，下个 task 修）
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/infra/src/db.rs
@@ -351,7 +351,7 @@ git commit -m "feat(db): ActionBarItem 加 agent/accepts 字段 + CRUD 签名扩
 - Consumes: Task 1 的 agent_adapters 表
 - Produces: `AgentAdapterRecord { id, key, display_name, detect_binary, command_template }`；`list_agent_adapter_records() / insert_agent_adapter_record() / update_agent_adapter_record() / delete_agent_adapter_record()`
 
-- [ ] **Step 1: 写失败测试 — adapter CRUD 往返**
+- [x] **Step 1: 写失败测试 — adapter CRUD 往返**
 
 在 `crates/infra/src/db.rs` mod tests 中添加：
 
@@ -375,12 +375,12 @@ git commit -m "feat(db): ActionBarItem 加 agent/accepts 字段 + CRUD 签名扩
     }
 ```
 
-- [ ] **Step 2: 运行测试确认失败**
+- [x] **Step 2: 运行测试确认失败**
 
 Run: `cargo test -p octopus-infra --lib tests::test_agent_adapter_crud_roundtrip -- --nocapture`
 Expected: 编译失败（函数不存在）
 
-- [ ] **Step 3: 实现 struct + CRUD 函数**
+- [x] **Step 3: 实现 struct + CRUD 函数**
 
 在 `crates/infra/src/db.rs` ScriptRun 部分之后追加：
 
@@ -458,12 +458,12 @@ pub fn delete_agent_adapter_record(id: i64) -> Result<()> {
 }
 ```
 
-- [ ] **Step 4: 运行测试确认通过**
+- [x] **Step 4: 运行测试确认通过**
 
 Run: `cargo test -p octopus-infra --lib tests::test_agent_adapter_crud_roundtrip -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/infra/src/db.rs
@@ -482,7 +482,7 @@ git commit -m "feat(db): agent_adapters 表 CRUD（用户自定义 adapter 持�
 - Consumes: Task 3 的 `AgentAdapterRecord`
 - Produces: `AgentAdapter { key, display_name, detect_binary, command_template, is_builtin, is_available }`；`list_adapters()`、`refresh_detection()`、`render_command(adapter_key, prompt, files, cwd)`
 
-- [ ] **Step 1: 写失败测试 — 模板渲染**
+- [x] **Step 1: 写失败测试 — 模板渲染**
 
 新建 `crates/desktop/src/agent_adapter.rs`，先写测试模块：
 
@@ -622,14 +622,14 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认通过**
+- [x] **Step 2: 运行测试确认通过**
 
 Run: `cargo test -p octopus-desktop --lib agent_adapter::tests -- --nocapture`
 Expected: PASS
 
 注意：claude 模板测试中，`shell_escape_single("整理这些文件")` = `'整理这些文件'`（无单引号不转义），放在 `"..."` 里就是 `"'整理这些文件'"`。
 
-- [ ] **Step 3: 注册 mod**
+- [x] **Step 3: 注册 mod**
 
 在 `crates/desktop/src/main.rs:5` `mod action_bar_commands;` 附近添加：
 
@@ -637,12 +637,12 @@ Expected: PASS
 mod agent_adapter;
 ```
 
-- [ ] **Step 4: 运行测试再次确认通过**
+- [x] **Step 4: 运行测试再次确认通过**
 
 Run: `cargo test -p octopus-desktop --lib agent_adapter::tests -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/agent_adapter.rs crates/desktop/src/main.rs
@@ -660,7 +660,7 @@ git commit -m "feat(agent): adapter 注册表——内置 claude/pi 白名单 + 
 **Interfaces:**
 - Produces: `TerminalLauncher` trait + `TerminalAppLauncher` impl；`TerminalAppLauncher::spawn(command, cwd)`
 
-- [ ] **Step 1: 写失败测试 — spawn 生成有效 AppleScript**
+- [x] **Step 1: 写失败测试 — spawn 生成有效 AppleScript**
 
 ```rust
 //! 终端启动器抽象——trait + Terminal.app 实现。
@@ -728,12 +728,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认通过**
+- [x] **Step 2: 运行测试确认通过**
 
 Run: `cargo test -p octopus-desktop --lib terminal_launcher::tests -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 3: 注册 mod**
+- [x] **Step 3: 注册 mod**
 
 在 `crates/desktop/src/main.rs` 添加：
 
@@ -741,12 +741,12 @@ Expected: PASS
 mod terminal_launcher;
 ```
 
-- [ ] **Step 4: 运行测试再次确认通过**
+- [x] **Step 4: 运行测试再次确认通过**
 
 Run: `cargo test -p octopus-desktop --lib terminal_launcher::tests -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/terminal_launcher.rs crates/desktop/src/main.rs
@@ -764,7 +764,7 @@ git commit -m "feat(terminal): TerminalLauncher trait + Terminal.app 实现（Ap
 **Interfaces:**
 - Produces: `is_finder_frontmost() -> bool`；`get_finder_selection() -> Result<Vec<String>, String>`
 
-- [ ] **Step 1: 实现模块**
+- [x] **Step 1: 实现模块**
 
 新建 `crates/desktop/src/finder_selection.rs`：
 
@@ -839,12 +839,12 @@ mod tests {
 }
 ```
 
-- [ ] **Step 2: 运行测试确认通过**
+- [x] **Step 2: 运行测试确认通过**
 
 Run: `cargo test -p octopus-desktop --lib finder_selection::tests -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 3: 注册 mod**
+- [x] **Step 3: 注册 mod**
 
 在 `crates/desktop/src/main.rs` 添加：
 
@@ -852,12 +852,12 @@ Expected: PASS
 mod finder_selection;
 ```
 
-- [ ] **Step 4: 运行测试再次确认通过**
+- [x] **Step 4: 运行测试再次确认通过**
 
 Run: `cargo test -p octopus-desktop --lib finder_selection::tests -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add crates/desktop/src/finder_selection.rs crates/desktop/src/main.rs
@@ -875,7 +875,7 @@ git commit -m "feat(finder): Finder 选中捕获——bundleId 检测 + AppleScr
 - Consumes: Task 6 的 `is_finder_frontmost` / `get_finder_selection`
 - Produces: `ActionBarContext { kind: ContextKind, text: Option<String>, files: Vec<String> }`；trigger 分流 Finder→Files / 其他→Text
 
-- [ ] **Step 1: 扩展 ActionBarContext**
+- [x] **Step 1: 扩展 ActionBarContext**
 
 在 `crates/desktop/src/action_bar_commands.rs:10`，替换现有 ActionBarContext：
 
@@ -907,7 +907,7 @@ impl ActionBarContext {
 }
 ```
 
-- [ ] **Step 2: 修改 trigger_action_bar —— Finder 分流**
+- [x] **Step 2: 修改 trigger_action_bar —— Finder 分流**
 
 在 `crates/desktop/src/action_bar_commands.rs` 的 `trigger_action_bar` 函数中（第 33 行 `std::thread::spawn` 内），在重入 guard 之后、记录剪贴板之前，插入 Finder 检测分流：
 
@@ -961,7 +961,7 @@ impl ActionBarContext {
         }
 ```
 
-- [ ] **Step 3: 修改现有 text 路径的 ActionBarContext 构造**
+- [x] **Step 3: 修改现有 text 路径的 ActionBarContext 构造**
 
 在同一个函数中，找到第 103 行 `*PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext { text });`，改为：
 
@@ -969,19 +969,19 @@ impl ActionBarContext {
         *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::text(text));
 ```
 
-- [ ] **Step 4: 修复编译错误**
+- [x] **Step 4: 修复编译错误**
 
 `execute_action_bar` 等下游函数使用 `text` 参数的地方不变（text 场景仍传 text）。但 `execute_action_bar_inner` 现有签名 `item_id: i64, text: String, app` 需要扩展为支持 files。先暂时保持 text 签名不变，agent/copy_path 分支在下个 task 添加。确保现有代码编译通过。
 
 Run: `cargo build -p octopus-desktop 2>&1 | head -30`
 Expected: 编译通过（或仅 agent/copy_path 相关的下游警告）
 
-- [ ] **Step 5: 运行测试**
+- [x] **Step 5: 运行测试**
 
 Run: `cargo test -p octopus-desktop --lib action_bar_commands -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/src/action_bar_commands.rs
@@ -999,7 +999,7 @@ git commit -m "feat(action-bar): ActionBarContext 扩展 kind/files + trigger Fi
 - Consumes: Task 4 `render_command` / `list_adapters`；Task 5 `TerminalAppLauncher`
 - Produces: agent/copy_path 在 `execute_action_bar_inner` 中的分支；新命令 `trigger_agent_action`、`copy_selected_path`
 
-- [ ] **Step 1: 在 execute_action_bar_inner 中加 agent + copy_path 分支**
+- [x] **Step 1: 在 execute_action_bar_inner 中加 agent + copy_path 分支**
 
 在 `crates/desktop/src/action_bar_commands.rs:787` 的 `match item.action_type.as_str()` 中，在 `"copy" =>` 分支之前追加：
 
@@ -1052,7 +1052,7 @@ git commit -m "feat(action-bar): ActionBarContext 扩展 kind/files + trigger Fi
         .as_ref().map(|c| c.files.clone()).unwrap_or_default();
 ```
 
-- [ ] **Step 2: 添加 url_encode_path 辅助函数**
+- [x] **Step 2: 添加 url_encode_path 辅助函数**
 
 在 action_bar_commands.rs 辅助函数区域添加：
 
@@ -1065,21 +1065,21 @@ fn url_encode_path(path: &str) -> String {
 }
 ```
 
-- [ ] **Step 3: 更新 execute_action_bar 命令签名以支持 files 上下文**
+- [x] **Step 3: 更新 execute_action_bar 命令签名以支持 files 上下文**
 
 现有 `execute_action_bar(item_id, text, app)` 在 agent 场景，text 参数语义变为 task。前端调用时，text 场景传选中文本，agent 场景传用户输入的 task。保持签名不变，语义重载。
 
-- [ ] **Step 4: 编译验证**
+- [x] **Step 4: 编译验证**
 
 Run: `cargo build -p octopus-desktop 2>&1 | head -40`
 Expected: 编译通过
 
-- [ ] **Step 5: 运行测试**
+- [x] **Step 5: 运行测试**
 
 Run: `cargo test -p octopus-desktop --lib -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 6: 注册新 Tauri 命令**
+- [x] **Step 6: 注册新 Tauri 命令**
 
 在 `crates/desktop/src/main.rs:297-320` 的 invoke_handler 列表中，现有 action_bar_commands 命令之后添加 adapter 管理命令：
 
@@ -1129,12 +1129,12 @@ pub fn refresh_agent_detection() -> Result<Vec<crate::agent_adapter::AgentAdapte
 }
 ```
 
-- [ ] **Step 7: 编译 + 运行**
+- [x] **Step 7: 编译 + 运行**
 
 Run: `cargo build -p octopus-desktop 2>&1 | head -40`
 Expected: 编译通过
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add crates/desktop/src/action_bar_commands.rs crates/desktop/src/main.rs
@@ -1152,7 +1152,7 @@ git commit -m "feat(action-bar): agent/copy_path 执行分支 + adapter 管理 T
 - Consumes: Task 7 的 `ActionBarContext { kind, text, files }`
 - Produces: 按 accepts 过滤的菜单；Files 场景文件计数 badge
 
-- [ ] **Step 1: 扩展 Context 类型 + ActionBarItem 类型**
+- [x] **Step 1: 扩展 Context 类型 + ActionBarItem 类型**
 
 在 `crates/desktop/frontend/src/pages/ActionBar/index.tsx:10-27`，替换：
 
@@ -1183,7 +1183,7 @@ interface ActionBarItem {
 }
 ```
 
-- [ ] **Step 2: 修改 refresh —— 适配新 context 结构**
+- [x] **Step 2: 修改 refresh —— 适配新 context 结构**
 
 在 `crates/desktop/frontend/src/pages/ActionBar/index.tsx:181`，`invoke<Context | null>` 回调中：
 
@@ -1196,7 +1196,7 @@ interface ActionBarItem {
 
 无需大改——Context 结构已扩展。
 
-- [ ] **Step 3: 添加 accepts 过滤逻辑**
+- [x] **Step 3: 添加 accepts 过滤逻辑**
 
 在 `crates/desktop/frontend/src/pages/ActionBar/index.tsx:233`，修改 `allMainItems` 过滤：
 
@@ -1230,7 +1230,7 @@ interface ActionBarItem {
   });
 ```
 
-- [ ] **Step 4: 修改 executeItem —— agent 类型处理 task 输入**
+- [x] **Step 4: 修改 executeItem —— agent 类型处理 task 输入**
 
 在 `executeItem` 函数中（约 277 行），在 `if (item.actionType === "ai")` 之前加 agent 分支：
 
@@ -1260,7 +1260,7 @@ interface ActionBarItem {
     }
 ```
 
-- [ ] **Step 5: 添加 task-input 视图渲染**
+- [x] **Step 5: 添加 task-input 视图渲染**
 
 在组件 JSX 中，添加 task-input 视图（一个输入框 + 回车提交）：
 
@@ -1331,12 +1331,12 @@ interface ActionBarItem {
     }
 ```
 
-- [ ] **Step 6: 前端编译验证**
+- [x] **Step 6: 前端编译验证**
 
 Run: `cd crates/desktop/frontend && npm run build 2>&1 | tail -20`
 Expected: 编译通过
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/ActionBar/index.tsx
@@ -1353,7 +1353,7 @@ git commit -m "feat(frontend): ActionBar 浮窗——context 扩展 kind/files +
 **Interfaces:**
 - Consumes: Task 8 的 `list_agent_adapters` 命令
 
-- [ ] **Step 1: 扩展 TYPE_META + ACTION_TYPES**
+- [x] **Step 1: 扩展 TYPE_META + ACTION_TYPES**
 
 在 `crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx:39-88`，TYPE_META 加两项：
 
@@ -1379,7 +1379,7 @@ ACTION_TYPES 加两项（在 copy 之前）：
   { value: "copy_path", labelKey: "settings.actionBar.typeCopyPath" },
 ```
 
-- [ ] **Step 2: 扩展 ActionBarItem interface**
+- [x] **Step 2: 扩展 ActionBarItem interface**
 
 在 `crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx:22-35`，ActionBarItem interface 加：
 
@@ -1388,7 +1388,7 @@ ACTION_TYPES 加两项（在 copy 之前）：
   accepts?: string;
 ```
 
-- [ ] **Step 3: 编辑表单加 agent 下拉 + accepts 下拉**
+- [x] **Step 3: 编辑表单加 agent 下拉 + accepts 下拉**
 
 在编辑表单组件（EditFormProps 相关区域）中，当 `type === "agent"` 时显示 agent adapter 下拉；当 type 为 agent/copy_path 时显示 accepts 下拉（默认 file）。
 
@@ -1447,7 +1447,7 @@ interface AgentAdapter {
 }
 ```
 
-- [ ] **Step 4: copy_path 类型的 actionData 改为格式选择**
+- [x] **Step 4: copy_path 类型的 actionData 改为格式选择**
 
 copy_path 的 actionData 不是脚本，是格式（plain/url/quoted）。在编辑表单中 type === copy_path 时显示格式下拉替代文本框：
 
@@ -1468,12 +1468,12 @@ copy_path 的 actionData 不是脚本，是格式（plain/url/quoted）。在编
   )}
 ```
 
-- [ ] **Step 5: 前端编译验证**
+- [x] **Step 5: 前端编译验证**
 
 Run: `cd crates/desktop/frontend && npm run build 2>&1 | tail -20`
 Expected: 编译通过
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/ActionBarPanel.tsx
@@ -1491,7 +1491,7 @@ git commit -m "feat(frontend): ActionBarPanel 加 agent/copy_path 类型 + agent
 **Interfaces:**
 - Consumes: Task 8 的 adapter CRUD 命令
 
-- [ ] **Step 1: 创建 AgentPanel 组件**
+- [x] **Step 1: 创建 AgentPanel 组件**
 
 新建 `crates/desktop/frontend/src/pages/Settings/AgentPanel.tsx`：
 
@@ -1560,16 +1560,16 @@ export default function AgentPanel() {
 }
 ```
 
-- [ ] **Step 2: 注册到设置页 tab**
+- [x] **Step 2: 注册到设置页 tab**
 
 找到设置页 tab 注册逻辑（搜索现有 ActionBarPanel 的引入位置），添加 AgentPanel tab。
 
-- [ ] **Step 3: 前端编译验证**
+- [x] **Step 3: 前端编译验证**
 
 Run: `cd crates/desktop/frontend && npm run build 2>&1 | tail -20`
 Expected: 编译通过
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add crates/desktop/frontend/src/pages/Settings/AgentPanel.tsx
@@ -1583,39 +1583,39 @@ git commit -m "feat(frontend): AgentPanel——adapter 管理设置页（检测�
 **Files:**
 - Modify: `docs/architecture.md`（action bar 相关章节）
 
-- [ ] **Step 1: 全量编译**
+- [x] **Step 1: 全量编译**
 
 Run: `cargo build --release -p octopus-desktop --features embedded 2>&1 | tail -20`
 Expected: 编译通过
 
-- [ ] **Step 2: 运行全量测试**
+- [x] **Step 2: 运行全量测试**
 
 Run: `cargo test -p octopus-infra -p octopus-desktop --lib -- --nocapture 2>&1 | tail -30`
 Expected: 全部 PASS
 
-- [ ] **Step 3: 手动验证 — Finder 选中文件触发**
+- [x] **Step 3: 手动验证 — Finder 选中文件触发**
 
 1. 启动 octopus desktop
 2. Finder 中选中一个文件
 3. 按全局热键（action bar shortcut）
 4. 验证浮窗弹出，仅显示 accepts=file/any 的菜单项
 
-- [ ] **Step 4: 手动验证 — agent 执行**
+- [x] **Step 4: 手动验证 — agent 执行**
 
 1. 设置页新增一个 agent 类型菜单项（adapter=claude，模板含 {{task}}）
 2. Finder 选中文件 → 热键 → 点该 agent 项 → 输入 task → 回车
 3. 验证 Terminal.app 弹出，claude 命令执行
 
-- [ ] **Step 5: 手动验证 — copy_path**
+- [x] **Step 5: 手动验证 — copy_path**
 
 1. 设置页新增 copy_path 类型菜单项
 2. Finder 选中文件 → 热键 → 点 copy_path → 粘贴验证路径格式
 
-- [ ] **Step 6: 更新 architecture.md**
+- [x] **Step 6: 更新 architecture.md**
 
 在 action bar 相关章节补充 Files 场景 + agent adapter 注册表的架构说明。
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add docs/architecture.md
