@@ -1213,10 +1213,8 @@ fn finalize_after_stop(
         format!("{}。", transcript.db_text())
     };
     if combined.is_empty() {
-        // AgentBridge 空识别 → 标记 failed
-        if let RecordType::AgentBridge { task_id } = &transcript.record_type {
-            let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", "识别结果为空");
-        }
+        // 统一分流：AgentBridge 空文本标 failed
+        dispatch_by_record_type(&transcript, "", app_handle);
         TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
         *stage = Stage::Idle;
         crate::result_window::hide_result(app_handle);
@@ -1224,16 +1222,11 @@ fn finalize_after_stop(
         return;
     }
 
-    // 按 record_type 分流
-    match &transcript.record_type {
-        RecordType::AgentBridge { task_id } => {
-            // AgentBridge 用 db_text() 不追加句号（句号是 paste 逻辑，不适合 agent task）
-            let task_text = transcript.db_text();
-            execute_agent_task(app_handle, task_id, &task_text);
-            *stage = Stage::Idle;
-            return;
-        }
-        RecordType::Input => {} // 走现有 paste 流程
+    // 统一分流：AgentBridge 非空 → execute_agent_task
+    // AgentBridge 用 db_text() 不追加句号（句号是 paste 逻辑，不适合 agent task）
+    if dispatch_by_record_type(&transcript, &transcript.db_text(), app_handle) {
+        *stage = Stage::Idle;
+        return;
     }
 
     crate::result_window::show_result(app_handle, &transcript.display_text());
@@ -1247,6 +1240,27 @@ fn finalize_after_stop(
     } else {
         // 走原 final 路径（按 polish_mode 决定是否润色）
         start_final_polish_or_paste(stage, &combined, transcript, config, app_handle, tx);
+    }
+}
+
+/// 统一的 record_type 分流 helper——在所有 finalize/cancel/discard 出口调用。
+/// 返回 true = 已处理（AgentBridge 路径），调用方应直接 return；
+/// 返回 false = Input 路径，调用方继续走现有 paste 逻辑。
+fn dispatch_by_record_type(
+    transcript: &Transcript,
+    text: &str,
+    app_handle: &tauri::AppHandle,
+) -> bool {
+    match &transcript.record_type {
+        RecordType::Input => false,
+        RecordType::AgentBridge { task_id } => {
+            if text.trim().is_empty() {
+                let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", "识别结果为空");
+            } else {
+                execute_agent_task(app_handle, task_id, text);
+            }
+            true
+        }
     }
 }
 
@@ -1563,9 +1577,16 @@ fn finalize_cloud(
 
     let combined = transcript.db_text();
     if combined.is_empty() {
+        dispatch_by_record_type(&transcript, "", app_handle);
         *stage = Stage::Idle;
         crate::result_window::hide_result(app_handle);
         crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+        return;
+    }
+
+    // 统一分流：AgentBridge → execute_agent_task
+    if dispatch_by_record_type(&transcript, &combined, app_handle) {
+        *stage = Stage::Idle;
         return;
     }
 
@@ -1883,6 +1904,27 @@ fn handle_cancel(
         }
         _ => {}
     }
+    // 清理 agent task（AgentBridge 被 cancel 时标 failed）
+    let agent_task_to_fail: Option<String> = match stage {
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. }
+        | Stage::StoppingPolish { transcript, .. } => {
+            if let RecordType::AgentBridge { task_id } = &transcript.record_type {
+                Some(task_id.clone())
+            } else { None }
+        }
+        #[cfg(feature = "cloud")]
+        Stage::CloudClosing { transcript, .. } => {
+            if let RecordType::AgentBridge { task_id } = &transcript.record_type {
+                Some(task_id.clone())
+            } else { None }
+        }
+        _ => None,
+    };
+    if let Some(tid) = agent_task_to_fail {
+        let _ = octopus_infra::db::update_agent_task_status(&tid, "failed", "用户取消录音");
+    }
     // 清理 DB 脏数据（审查 Issue 6）：Cancel = 丢弃，已 INSERT 的记录需删除
     let db_id_to_delete: Option<i64> = match stage {
         Stage::Streaming { transcript, .. }
@@ -1934,6 +1976,28 @@ fn handle_discard(
     if matches!(stage, Stage::Pasting { .. }) {
         debug!("Discard ignored during Pasting (paste in flight)");
         return;
+    }
+
+    // 清理 agent task（AgentBridge 被 discard 时标 failed）
+    let agent_task_to_fail: Option<String> = match stage {
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. }
+        | Stage::StoppingPolish { transcript, .. } => {
+            if let RecordType::AgentBridge { task_id } = &transcript.record_type {
+                Some(task_id.clone())
+            } else { None }
+        }
+        #[cfg(feature = "cloud")]
+        Stage::CloudClosing { transcript, .. } => {
+            if let RecordType::AgentBridge { task_id } = &transcript.record_type {
+                Some(task_id.clone())
+            } else { None }
+        }
+        _ => None,
+    };
+    if let Some(tid) = agent_task_to_fail {
+        let _ = octopus_infra::db::update_agent_task_status(&tid, "failed", "用户放弃录音");
     }
 
     // 从 transcript 提取 (polished_text, polish_status, polish_model) for Finalize：
