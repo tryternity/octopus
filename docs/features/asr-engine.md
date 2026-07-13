@@ -307,8 +307,11 @@ is_streaming_engine(cfg) = resolve_active_engine(cfg.asr_engine).entry.is_stream
 - 挖掘两步走：`list_hotword_candidates`（不写 DB）→ 用户确认面板 → `add_words_to_set`（批量写）。
 
 **热词多版本管理**：
-- `hotword_sets` 表：按场景管理多版本，勾选叠加生效（生效词 = 所有 enabled 版本的全局并集去重）。
+- `hotword_sets` 表（v23 新增）：`id, name(UNIQUE), enabled, words_text, created_at, updated_at`。勾选叠加生效（生效词 = 所有 `enabled=1` 版本的全局并集去重）。
+- `hotword_hits` 表：`word PK, hit_count`。全局统计（按 word，不按版本）；删版本不删命中。
+- **`words_text` 不变量**：始终规范化——按任意空白分割 → 去重 → 按 `(pinyin_initials, localeCompare)` 排序 → 空格拼接。所有写入路径（增/删/导入/挖掘）都经 `normalize_words_text`。
 - `pinyin_initials` 放在 infra（asr-local 依赖 infra，反向不可），asr-local re-export。
+- 导入 3 模式：新建版本 / 追加到当前版本 / 覆盖当前版本（覆盖需确认）。
 - WKWebView 不支持 `window.prompt/confirm` → 用 inline input + `@tauri-apps/plugin-dialog` 原生确认。
 
 **全引擎一致**：11 个引擎均 `skip_corrector=false`，确保热词纠错对所有引擎一致生效。

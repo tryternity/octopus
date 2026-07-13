@@ -38,89 +38,63 @@
 
 ---
 
-## 3. 流式追加渲染
+## 3. 流式渲染（CM6 AsrEditor）
+
+> 2026-07-11 改造：contentEditable + 手写光标系统（`caret.ts` 122 行 + `CaretBlink.tsx` 49 行）替换为 CodeMirror 6 `AsrEditor.tsx`，实现**始终可编辑 + 随说随编**。~350 行旧代码删除。
 
 前端 `update-result` listener 接收后端 `emit("show-result", {text, caret})` / `emit("update-result", {text, caret})` 渲染。
 
-**单调渲染**：
-- 新文本是已显示内容的前缀（`startsWith`）→ 立即渲染并清待处理跳变
-- 跳变 / 段切换延迟合并（`DIVERTED_DELAY_MS=300`）只渲染最新，连续跳变不闪烁
+**单调渲染**（CM6 `updateListener` 区分用户编辑与程序写入）：
+- `isUserEdit(update)`：`transactions.some(tr => tr.isUserEvent("input"|"delete"|"drop"|"paste"))`。程序 dispatch 无 userEvent 注解 → 不标记编辑态。
+- 用户首次编辑 → `editingRef = true` + fire-and-forget `enter_edit_mode`（信号后端 `trim_buffer(5.0)`——麦克风不停，保留最后 5 秒音频，恢复后送 ASR 防"嘴比手快"丢字）。
+- 编辑态下 `update-result` 事件被 `editingRef` 拦截（return early，不写入 CM6）。
+- 非编辑态：新文本 `startsWith` 当前 → 立即写入 CM6；跳变/段切换延迟 300ms 合并（`DIVERTED_DELAY_MS`）。
 
-**`renderResultNow`（imperative DOM 同步）**：
-- `textRef` 是 contentEditable div，React 19 对其 children 的 commit 不写 DOM（保护用户编辑）→ `renderResultNow` 须 imperative `textRef.textContent = newText`（非编辑态）
-- `measureCaretPx` 长度读 DOM `firstText.nodeValue`（非 state text，否则 state 新 text 算 target、DOM 旧文本 clamp 到旧末尾 → 光标错位 + 新文字空白）
-- `flushSync(setText)` 驱动 state 让 `CaretBlink` effect 触发重测
-
-**whitespace-pre-wrap**：textRef div 加 `whitespace-pre-wrap`，否则编辑态 `innerText` 的 `\n` 在 `white-space:normal` 下折叠成空格。
+**`set_caret` / `set_selection`** 保留：CM6 `updateListener` 在 `selectionSet && !docChanged && !editingRef` 时触发——折叠选区→`set_caret`，非折叠→`set_selection`。
 
 ---
 
-## 4. 闪烁光标（CaretBlink）
+## 4. Dirty Ranges 编辑提交
 
-非编辑态显示自定义闪烁光标（`CaretBlink` 组件，纯定位指示器，非 contentEditable）。
+> 用户编辑 CM6 后，只标记实际改动的区域为 `Edited`，未编辑区域保留原始 SegmentKind。
 
-- 前端点击算 char offset（code-point 计数，与 Rust `char` 对齐）→ `invoke("set_caret", {offset})` → `set_caret` 劈段定位 `caret_gap`
-- 后续 delta 从该处生长，光标后文本右推
-- 光标经 caret 透传链跟随（`Emit{caret}`→`update_result(..,caret)`→前端 `setCaretPos`）
+**Dirty ranges 收集**：`Array<[from, to]>`，仅**插入**创建 range（`toB > fromB`）；纯删除不创建。每次 change → `iterChangedRanges` → push → sort + merge overlapping/adjacent。
 
-**CaretBlink 踩坑**：
-- 须接收 `RefObject`（effect 内读 `.current`），不可传 `container={textRef.current}` 作 prop——editing 切换致 textRef 重挂载时 render 阶段读到 detached 旧 div，光标错落首位
-- 须监听 scroll（passive + rAF 节流）重测 px（视口相对，随 `scrollTop` 变）+ 视口外（`px.top` 超 `[0, clientHeight]`）隐藏
-- 初始 `measure()` 改 rAF（同帧 `flushSync`+`textContent` 写后同步读 `getBoundingClientRect` = 强制回流，高频 ASR 每帧叠加；代价 1 帧光标滞后）
+**3 条提交路径**：Cmd+Enter / 保存按钮（`useImperativeHandle commit`）/ 空闲 2000ms 自动（`IDLE_TIMEOUT`）。
 
----
+**Commit payload**：`{ text, dirtyRanges, hasEdited, caret?, selection? }`。
 
-## 5. 编辑态
+**后端 `commit_edit`**：
+- 非空 dirty + `has_edited` → 全部标 `Edited`
+- 空 dirty + `!has_edited` → `rebuild_segments`（纯删除保留原 kind）
+- 非空 dirty → `rebuild_segments(old, flat, dirty_ranges)`：**字符级 walk**——构建 old 逐字符 kind 映射，dirty→Edited，clean→逐字符匹配保留原 kind。`push_or_merge` 合并相邻同 kind 段。
 
-coordinator 主循环 `editing` 标志置位时 tick 跳过喂引擎（**硬暂停**）。
+**3 态**：流式态 / 编辑态 / 空闲态（Idle = 停止后浏览，仍可自由编辑）。
 
-| 操作 | 行为 |
-|------|------|
-| 进入编辑 | `enterEdit`：用 `caretPosRef` 捕获点击位、`placeCaretAtCodePoint` 恢复光标（纯点击可恢复，拖选 caretPos=null 仍落末尾） |
-| 编辑中 | `UpdateEditBuffer { text }` 更新 `edit_buffer` |
-| 提交 | `commit_edit` 按 dirty ranges 劈段标 `Edited`，区间外保留原 SegmentKind（字符级 walk：构建 old_flat 逐字符 kind 映射，clean 区逐字符匹配跳过被删字符保留原 kind）。`rebuild_segments` + `push_or_merge`（合并相邻同 kind 段减碎片化） |
-| 取消 | Esc/Cmd → 退出编辑态，恢复编辑前文本（已废弃 `cancelEdit`/`UpdateEditBuffer`） |
-
-编辑入口两条：
-- 窗口内 `edit_shortcut` 默认 CmdOrCtrl+Enter（跨平台=⌘/Ctrl，结果窗聚焦时 toggle 进入/保存，不在设置页管理）
-- 全局 `edit_global_shortcut` 默认 CmdOrCtrl+Shift+E（任意应用聚焦时唤起结果窗 show+set_focus 并 toggle 编辑，复用同一 toggleEdit，空文本只唤起不进编辑）
+**Reset**：clear/hide/show 时 `asrEditorResetKey++` → AsrEditor `key={resetKey}` 重挂。
 
 ---
 
-## 6. 润色集成
+## 5. 润色集成
 
 详见 [coordinator.md](./coordinator.md) §7-§9。
 
 | 模式 | 触发 | 行为 |
 |------|------|------|
 | 停顿润色（mode=2） | 静音 ≥ `pause_polish_threshold_ms`（默认 600ms）/ 段边界 | 全篇一次润色，不重置流式引擎 |
-| 立即润色（PolishNow） | 工具栏「立即润色」按钮 / `polish_global_shortcut`（默认 CmdOrCtrl+Shift+S） | 忽略 mode，全部活跃 stage 支持 |
+| 立即润色（PolishNow） | 工具栏「立即润色」按钮 / `polish_global_shortcut` | 忽略 mode |
 | 最终润色 | 停止后（mode=1/2） | `Stage::Polishing` 异步线程跑 LLM |
 
-全局润色入口：`polish_global_shortcut` handler 调 `trigger_global_polish`：show 结果窗**不聚焦** + emit `global-polish-trigger` → 前端 `polishNow`（空文本静默、polishLoading 幂等）。
-
-润色完成后 emit `polish-done` 通知前端恢复按钮。
-
 ---
 
-## 7. 选中替换（产品核心特色）
+## 6. 选中替换
 
-详见 [coordinator.md](./coordinator.md) §8。
+CM6 `selectionSet` 事件替代旧 contentEditable 拖选流程：
+- 折叠选区 → `set_caret`（中插位置，后续 delta 从此生长）
+- 非折叠选区 → `set_selection`（替换范围，后续 delta 替换此区）
 
-前端拖选流程：
-1. `onMouseDown` 时在 `document` 上注册一次性 `mouseup` listener（鼠标移出 textRef/浮窗时 React `onMouseUp` 不触发）
-2. handler 内按 `isCollapsed` 分流：
-   - 折叠 → `set_caret` 中插
-   - 非折叠 → `clampRangeToContainer` 裁剪后 `set_selection` + 写 `currentSelectionRef`
+> 旧 contentEditable 三重陷阱（Range clamping / document mouseup / 坐标边界判断）已废弃——CM6 选区 API 原生可靠。
 
-**前端拖选三重陷阱**（WKWebView 中拖选到容器边界的高频踩坑区）：
-1. **`Range.startContainer` 飘移到父容器**——从右往左选到开头时鼠标划出 textRef 左边界 → `clampRangeToContainer` 用 `compareBoundaryPoints` 强制裁剪到容器内
-2. **React `onMouseUp` 不在 textRef 外触发**——`onMouseDown` 时在 `document` 上注册一次性 `mouseup` listener
-3. **mouseup 时鼠标在容器外**——用 `el.getBoundingClientRect()` 判断鼠标 X 坐标（`< rect.left` → offset=0，`> rect.right` → 末尾）
-
-**通用教训**：WKWebView 中拖选到容器边界是一个高频踩坑区——浏览器选区 API（`Selection`/`Range`）在边界处行为不稳定。三重防御（Range clamping + document mouseup + 坐标边界判断）缺一不可。
-
----
 
 ## 8. 快捷键
 

@@ -74,9 +74,23 @@ type Tab = {
 
 ---
 
-## 5. undo/redo
+## 5. Markdown 编辑器（CodeMirror 6 + markdown-it）
 
-Markdown 改造（2026-07-11）后文本 tab 用 CodeMirror 6，undo/redo 走 CM6 `history()` 扩展（替代旧 textarea 时代的 `document.execCommand` 方案——彼时受控 textarea 每次 value 同步清空 WebKit 原生 undo 栈致 Cmd+Z 失灵）。
+> 2026-07-11 改造：textarea 替换为 CM6 编辑器 + markdown-it 实时预览。组件 `MarkdownPane`（工具栏 + grid 布局 + Splitter 内联）。
+
+**视图模式** `split | editor | preview`，智能默认 = `readOnly ? 'preview' : 'split'`。
+
+**关键约束**：CM6 + Preview **始终挂载**，用 CSS grid + `display:none` 切换可见性（零 mount/unmount）。卸载 CM6 会导致 flexbox 高度塌陷 + 光标丢失。
+
+**markdown-it 配置**：`html:false, linkify:true, typographer:true, breaks:false`。插件 `markdown-it-task-lists`（enabled:false）+ `markdown-it-mark`。Mermaid 代码块输出 `md-mermaid-pending` 占位类（未来 SVG 渲染钩子）。代码块复制按钮通过声明式 `code_block`/`fence` 渲染规则（非命令式 DOM 注入）。
+
+**预览 debounce 150ms**；CM6 `updateListener` 同步触发 `onChange`（无 debounce）。
+
+**滚动同步**（`useSyncScroll`）：双向比例同步，rAF 节流 + echo count 防回环。
+
+**i18n 基础设施**（`lib/i18n.ts`，~60 行，无 i18next）：`initI18n()` 读 `ui_language` config → `setLocale()` 通知 `useT()` 订阅者 → `${name}` 插值。详见 [architecture.md](../architecture.md) i18n 全面覆盖段。
+
+**三层只读保护**：(1) `EditorState.readOnly`，(2) `disableSave = isTemp || readOnly` 隐藏 Clear/Save，(3) `doSave` 4 守卫。
 
 ---
 
