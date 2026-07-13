@@ -9,10 +9,26 @@ import { t } from "@/lib/i18n";
 
 type ContextKind = "text" | "files";
 
+type AppKind = 'editor' | 'terminal' | 'browser' | 'chat' | 'unknown';
+
+interface AppSource {
+  bundleId?: string;
+  name: string;
+  kind: AppKind;
+}
+
+interface SurroundingText {
+  before?: string;
+  after?: string;
+  windowTitle?: string;
+}
+
 interface Context {
   kind: ContextKind;
   text: string;
   files: string[];
+  source?: AppSource;
+  surrounding?: SurroundingText;
 }
 
 type View = "main" | "submenu" | "loading" | "task-input";

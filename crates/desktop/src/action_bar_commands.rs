@@ -22,14 +22,18 @@ pub struct ActionBarContext {
     pub kind: ContextKind,
     pub text: Option<String>,
     pub files: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::app_context::AppSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surrounding: Option<crate::app_context::SurroundingText>,
 }
 
 impl ActionBarContext {
     pub fn text(text: String) -> Self {
-        Self { kind: ContextKind::Text, text: Some(text), files: vec![] }
+        Self { kind: ContextKind::Text, text: Some(text), files: vec![], source: None, surrounding: None }
     }
     pub fn files(files: Vec<String>) -> Self {
-        Self { kind: ContextKind::Files, text: None, files }
+        Self { kind: ContextKind::Files, text: None, files, source: None, surrounding: None }
     }
 }
 
@@ -140,11 +144,33 @@ pub fn trigger_action_bar(app: AppHandle) {
 
         log::info!("[action-bar] got text len={}", text.len());
 
-        // 5. 暂存上下文
+        // 5. 暂存基础 ctx，显示浮窗，后台采集上下文
+        let text_for_gather = text.clone();
         *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext::text(text));
 
         // 6. 获取鼠标位置 + 显示浮窗（主线程）
         show_action_bar_at_mouse(&app_clone);
+
+        // 7. 后台采集上下文（source + surrounding），完成后回填 PENDING_CONTEXT
+        std::thread::spawn(move || {
+            match crate::app_context::gather_context(&text_for_gather) {
+                Ok(extra) => {
+                    log_app_context(&text_for_gather, &extra);
+                    let mut guard = PENDING_CONTEXT.lock().unwrap();
+                    if let Some(ref ctx) = *guard {
+                        if ctx.text.as_deref() == Some(&text_for_gather) {
+                            if let Some(ref mut ctx) = *guard {
+                                ctx.source = Some(extra.source);
+                                ctx.surrounding = extra.surrounding;
+                            }
+                        } else {
+                            log::info!("[action-bar] gather 回填跳过：ctx 已被新触发覆盖");
+                        }
+                    }
+                }
+                Err(e) => log::warn!("[action-bar] context gather 失败（降级到仅 text）: {}", e),
+            }
+        });
     });
 }
 
@@ -262,7 +288,11 @@ pub fn action_bar_show_result(result: String, original_text: String, action: Str
             ..Default::default()
         }
     };
-    crate::compact_editor_commands::open_temp_compact_editor(&app, &payload);
+    // 投递主线程——create_compact_editor_window 内含 set_dock_icon 需主线程
+    let app_for_editor = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        crate::compact_editor_commands::open_temp_compact_editor(&app_for_editor, &payload);
+    });
 }
 
 // ── 辅助函数 ──
@@ -275,6 +305,152 @@ fn read_clipboard_text(app: &AppHandle) -> Option<String> {
 fn write_clipboard_text(app: &AppHandle, text: &str) {
     let handle = app.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>();
     let _ = handle.write_text(text);
+}
+
+/// 将采集到的应用上下文以结构化文本追加写入 ~/.octopus/logs/action-bar.log，
+/// 方便直接验证 AX 取数结果（而非通过 AI 结果间接判断）。
+fn log_app_context(selected_text: &str, extra: &crate::app_context::ExtraContext) {
+    let log_path = context_log_path();
+
+    let entry = format_context_entry(selected_text, extra);
+
+    if let Err(e) = write_context_log(&log_path, &entry) {
+        log::warn!("[action-bar] 上下文日志写入失败 {}: {}", log_path.display(), e);
+    }
+}
+
+/// 默认日志路径：~/.octopus/logs/action-bar.log
+fn context_log_path() -> std::path::PathBuf {
+    let mut p = dirs::home_dir().unwrap_or_default();
+    p.push(".octopus");
+    p.push("logs");
+    p.push("action-bar.log");
+    p
+}
+
+/// 将上下文格式化为日志条目（纯函数，可单测）。
+fn format_context_entry(selected_text: &str, extra: &crate::app_context::ExtraContext) -> String {
+    let kind_label = match extra.source.kind {
+        crate::app_context::AppKind::Editor => "Editor",
+        crate::app_context::AppKind::Terminal => "Terminal",
+        crate::app_context::AppKind::Browser => "Browser",
+        crate::app_context::AppKind::Chat => "Chat",
+        crate::app_context::AppKind::Unknown => "Unknown",
+    };
+
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+
+    let before_preview = extra
+        .surrounding
+        .as_ref()
+        .and_then(|s| s.before.as_ref())
+        .map(|b| truncate_for_log(b, 500))
+        .unwrap_or_else(|| "(无)".to_string());
+
+    let after_preview = extra
+        .surrounding
+        .as_ref()
+        .and_then(|s| s.after.as_ref())
+        .map(|a| truncate_for_log(a, 500))
+        .unwrap_or_else(|| "(无)".to_string());
+
+    let window_title = extra
+        .surrounding
+        .as_ref()
+        .and_then(|s| s.window_title.as_ref())
+        .map(|t| t.as_str())
+        .unwrap_or("(无)");
+
+    format!(
+        "═══════════════════════════════════════════════════\n\
+         [{timestamp}]\n\
+         【应用】{name} ({kind})\n\
+         【BundleID】{bundle}\n\
+         【窗口标题】{title}\n\
+         【选中文本】({len} 字)\n{selected}\n\n\
+         【上文 before】\n{before}\n\n\
+         【下文 after】\n{after}\n\n\
+         【AX 诊断】\n{diag}\n\n",
+        timestamp = timestamp,
+        name = extra.source.name,
+        kind = kind_label,
+        bundle = extra.source.bundle_id.as_deref().unwrap_or("(未知)"),
+        title = window_title,
+        len = selected_text.chars().count(),
+        selected = truncate_for_log(selected_text, 1000),
+        before = before_preview,
+        after = after_preview,
+        diag = extra.diagnostics.as_deref().unwrap_or("(无)"),
+    )
+}
+
+/// 将日志条目写入文件：先创建父目录（非文件路径本身），再追加。
+fn write_context_log(path: &std::path::Path, entry: &str) -> std::io::Result<()> {
+    // 创建父目录，不是文件路径本身——曾经误用 create_dir_all(&path) 把日志文件创建成目录
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+
+    use std::io::Write;
+    let mut f = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)?;
+    f.write_all(entry.as_bytes())?;
+    Ok(())
+}
+
+/// 截断文本到指定字符数并添加省略标记。
+fn truncate_for_log(s: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max_chars {
+        s.to_string()
+    } else {
+        let head: String = chars[..max_chars].iter().collect();
+        format!("{}… ({} 字，已截断)", head, chars.len())
+    }
+}
+
+/// 将 ActionBarContext 的 source/surrounding 拼成 LLM 可理解的情境块，
+/// 追加到原始选中文本前面。供 AI 动作（润色/摘要/解释/翻译）使用。
+fn build_enriched_text(text: &str) -> String {
+    let ctx = PENDING_CONTEXT.lock().unwrap();
+    let Some(ref ctx) = *ctx else {
+        return text.to_string();
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+
+    // 来源
+    if let Some(ref source) = ctx.source {
+        let kind_label = match source.kind {
+            crate::app_context::AppKind::Editor => "编辑器",
+            crate::app_context::AppKind::Terminal => "终端",
+            crate::app_context::AppKind::Browser => "浏览器",
+            crate::app_context::AppKind::Chat => "聊天",
+            crate::app_context::AppKind::Unknown => "应用",
+        };
+        parts.push(format!("【来源】{}（{}）", source.name, kind_label));
+    }
+
+    // 前后文
+    if let Some(ref surr) = ctx.surrounding {
+        if let Some(ref title) = surr.window_title {
+            parts.push(format!("【窗口】{}", title));
+        }
+        if let Some(ref before) = surr.before {
+            parts.push(format!("【上文】\n{}", before));
+        }
+        if let Some(ref after) = surr.after {
+            parts.push(format!("【下文】\n{}", after));
+        }
+    }
+
+    if parts.is_empty() {
+        return text.to_string();
+    }
+
+    format!("{}\n\n【选中文本】\n{}", parts.join("\n\n"), text)
 }
 
 #[cfg(target_os = "macos")]
@@ -894,7 +1070,12 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                             translated_text: Some("⏳ 正在翻译…".into()),
                             ..Default::default()
                         };
-                        crate::compact_editor_commands::open_temp_compact_editor(&app, &payload);
+                        // 投递主线程——create_compact_editor_window 内含 set_dock_icon
+                        // 需主线程的 MainThreadMarker，worker 线程直接调会被跳过
+                        let app_for_editor = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            crate::compact_editor_commands::open_temp_compact_editor(&app_for_editor, &payload);
+                        });
 
                         let app_clone = app.clone();
                         std::thread::spawn(move || {
@@ -905,8 +1086,9 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                     TranslateStrategy::Llm => {
                         let llm_config = crate::config::llm_config_ignore_mode(&config)
                             .ok_or("润色模型未配置，请在设置中配置 LLM")?;
-                        let prompt = auto_translate_prompt(&text);
-                        let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
+                        let enriched_text = build_enriched_text(&text);
+                        let prompt = auto_translate_prompt(&enriched_text);
+                        let result = octopus_llm::chat_text_with_prompt(prompt, &enriched_text, &llm_config)
                         .map_err(|e| e.to_string())?;
                         action_bar_show_result(result, text, "translate".into(), app.clone(), true);
                         return Ok(true);
@@ -917,7 +1099,8 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             // 非 auto_translate 的 AI 操作（润色/摘要/解释），仍走 LLM
             let llm_config = crate::config::llm_config_ignore_mode(&config)
                 .ok_or("润色模型未配置，请在设置中配置 LLM")?;
-            let result = octopus_llm::chat_text_with_prompt(&item.action_data, &text, &llm_config)
+            let enriched_text = build_enriched_text(&text);
+            let result = octopus_llm::chat_text_with_prompt(&item.action_data, &enriched_text, &llm_config)
                 .map_err(|e| e.to_string())?;
             action_bar_show_result(result, String::new(), item.title, app.clone(), true);
             Ok(true)
@@ -1214,5 +1397,127 @@ mod tests {
         // 空列表——fallback 到 HOME 或 /tmp（不验证具体值，只验证不 panic）
         let cwd = derive_cwd(&[]);
         assert!(!cwd.is_empty());
+    }
+
+    // ── app_context 相关（main 引入）──
+
+    use crate::app_context::{AppKind, AppSource, ExtraContext, SurroundingText};
+
+    fn sample_extra() -> ExtraContext {
+        ExtraContext {
+            source: AppSource {
+                bundle_id: Some("com.apple.TextEdit".to_string()),
+                name: "TextEdit".to_string(),
+                kind: AppKind::Editor,
+            },
+            surrounding: Some(SurroundingText {
+                before: Some("上文内容".to_string()),
+                after: Some("下文内容".to_string()),
+                window_title: Some("report.txt".to_string()),
+            }),
+            diagnostics: None,
+        }
+    }
+
+    #[test]
+    fn test_truncate_for_log_short() {
+        assert_eq!(truncate_for_log("hello", 10), "hello");
+    }
+
+    #[test]
+    fn test_truncate_for_log_exact() {
+        assert_eq!(truncate_for_log("abcde", 5), "abcde");
+    }
+
+    #[test]
+    fn test_truncate_for_log_truncated() {
+        let result = truncate_for_log("abcdefghij", 3);
+        assert!(result.starts_with("abc…"));
+        assert!(result.contains("10 字"));
+    }
+
+    #[test]
+    fn test_truncate_for_log_cjk() {
+        let result = truncate_for_log("你好世界你好世界", 4);
+        assert!(result.starts_with("你好世界…"));
+        assert!(result.contains("8 字"));
+    }
+
+    #[test]
+    fn test_format_entry_contains_source() {
+        let entry = format_context_entry("选中的文字", &sample_extra());
+        assert!(entry.contains("TextEdit"));
+        assert!(entry.contains("Editor"));
+        assert!(entry.contains("com.apple.TextEdit"));
+    }
+
+    #[test]
+    fn test_format_entry_contains_surrounding() {
+        let entry = format_context_entry("选中", &sample_extra());
+        assert!(entry.contains("上文内容"));
+        assert!(entry.contains("下文内容"));
+        assert!(entry.contains("report.txt"));
+    }
+
+    #[test]
+    fn test_format_entry_no_surrounding() {
+        let extra = ExtraContext {
+            source: AppSource {
+                bundle_id: None,
+                name: "UnknownApp".to_string(),
+                kind: AppKind::Unknown,
+            },
+            surrounding: None,
+            diagnostics: None,
+        };
+        let entry = format_context_entry("hello", &extra);
+        assert!(entry.contains("UnknownApp"));
+        assert!(entry.contains("(无)"));
+        assert!(entry.contains("(未知)"));
+    }
+
+    #[test]
+    fn test_format_entry_selected_char_count() {
+        let entry = format_context_entry("你好world", &sample_extra());
+        assert!(entry.contains("(7 字)"));
+    }
+
+    #[test]
+    fn test_write_creates_file_not_directory() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("logs").join("action-bar.log");
+        write_context_log(&log_path, "test entry\n").unwrap();
+        assert!(log_path.is_file(), "日志路径应该是文件，不是目录");
+        assert!(!log_path.is_dir());
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(content, "test entry\n");
+    }
+
+    #[test]
+    fn test_write_appends_multiple_entries() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("deep").join("nested").join("action-bar.log");
+        write_context_log(&log_path, "first\n").unwrap();
+        write_context_log(&log_path, "second\n").unwrap();
+        let content = std::fs::read_to_string(&log_path).unwrap();
+        assert_eq!(content, "first\nsecond\n");
+    }
+
+    #[test]
+    fn test_write_creates_parent_dirs() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("a").join("b").join("c").join("action-bar.log");
+        write_context_log(&log_path, "deep path\n").unwrap();
+        assert!(log_path.is_file());
+        assert_eq!(std::fs::read_to_string(&log_path).unwrap(), "deep path\n");
+    }
+
+    #[test]
+    fn test_write_existing_directory_at_path_fails() {
+        let dir = tempfile::tempdir().unwrap();
+        let log_path = dir.path().join("action-bar.log");
+        std::fs::create_dir_all(&log_path).unwrap();
+        let result = write_context_log(&log_path, "test\n");
+        assert!(result.is_err(), "路径已是目录时写入应失败");
     }
 }
