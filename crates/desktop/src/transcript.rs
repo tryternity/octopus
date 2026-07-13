@@ -57,9 +57,6 @@ pub struct Transcript {
     db_inserted: bool,
     /// 最近一次 DB 落库时间（落库节流用，Finalize 兜底完整写入）。None=未落库过。
     last_db_write: Option<Instant>,
-    /// commit_edit 全量替换后置 true——后续 apply_engine_full 直接跳过
-    /// （防止 ASR 引擎输出的原文与替换后的译文不一致，走 diverted 路径重新注入原文）。
-    translation_committed: bool,
 }
 
 impl Transcript {
@@ -73,14 +70,11 @@ impl Transcript {
             polish_snapshot: Vec::new(), polish_caret_offset: 0, polish_caret_at_tail: true,
             pending_delta: String::new(), db_inserted: false,
             last_db_write: None,
-            translation_committed: false,
         }
     }
 
     pub fn db_inserted(&self) -> bool { self.db_inserted }
     pub fn mark_db_inserted(&mut self) { self.db_inserted = true; }
-    /// 标记翻译已提交——后续 apply_engine_full 跳过，防止 ASR 引擎原文重新注入。
-    pub fn mark_translation_committed(&mut self) { self.translation_committed = true; }
     /// 标记已落库（更新 last_db_write = now，落库节流计时基准）。
     pub fn mark_db_written(&mut self) { self.last_db_write = Some(Instant::now()); }
     /// 距上次落库是否 ≥ threshold（节流判定）。未落库过 → true（应落库）。
@@ -104,7 +98,6 @@ impl Transcript {
     /// 暂存 diverted_pending（不立即展示，避免抖动），重算基准；下次 apply 时连同补发。
     /// （不回退已展示——no rollback。）
     pub fn apply_engine_full(&mut self, full: &str) -> bool {
-        if self.translation_committed { return false; }
         // 消费 pending_delete（选中替换）——在任何 early return 之前。
         // 引擎静音期每 tick 产出 same-as-before 的 full（delta 空），旧代码在 delta 空
         // 时 return false 跳过消费 → 选区永远不删。现在只要 apply 被调用就消费。
@@ -1235,37 +1228,5 @@ mod user_scenario_tests {
         assert_eq!(result[0].text, "A");
         assert_eq!(result[1].kind, SegmentKind::Edited);
         assert_eq!(result[1].text, "C");
-    }
-
-    // ── translation_committed ──
-    #[test]
-    fn translation_committed_blocks_apply_engine_full() {
-        // 场景：ASR 产出原文 → commit_edit + mark_translation_committed(译文) →
-        // 后续 ASR tick 输出原文扩展（≠ 译文）→ apply_engine_full 被阻止，不重注入原文
-        let mut t = Transcript::new(100, PolishMode::Intermediate);
-        t.apply_engine_full("你好世界");
-        assert_eq!(t.finish_text(), "你好世界");
-        t.commit_edit("Hello world", &[], true);
-        t.mark_translation_committed();
-        assert_eq!(t.finish_text(), "Hello world");
-        // ASR 继续输出，与译文完全不一致
-        let changed = t.apply_engine_full("你好世界再见");
-        assert!(!changed, "translation_committed 后 apply_engine_full 必须跳过");
-        assert_eq!(t.finish_text(), "Hello world", "译文不应被覆盖");
-    }
-
-    #[test]
-    fn commit_edit_without_mark_does_not_block_apply() {
-        // 对照组：普通 commit_edit（非翻译）不设标志 → ASR 继续追加
-        // commit_edit 替换 transcript 段，但 engine_cumulative 不变（仍 "raw1"）
-        // ASR 后续输出 "raw1新语音"（原文 + 新内容）是 engine_cumulative 的前缀扩展 → 正常追加
-        let mut t = Transcript::new(101, PolishMode::Intermediate);
-        t.apply_engine_full("raw1");
-        t.commit_edit("edited", &[], true);
-        assert_eq!(t.finish_text(), "edited");
-        // ASR 从引擎视角输出原文 + 新增
-        let changed = t.apply_engine_full("raw1新语音");
-        assert!(changed, "非翻译 commit_edit 后 apply_engine_full 正常工作");
-        assert!(t.finish_text().ends_with("新语音"), "新语音应追加到 edited 后");
     }
 }

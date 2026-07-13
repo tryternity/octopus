@@ -148,6 +148,7 @@ function Result() {
           setTranslatedText("");
           translatingRef.current = false;
           setTranslating(false);
+          invoke("set_translation_active", { active: false });
           refreshActive();
           if (isPlaceholder) {
             setText("");
@@ -217,6 +218,7 @@ function Result() {
     setTranslatedText("");
     translatingRef.current = false;
     setTranslating(false);
+    invoke("set_translation_active", { active: false });
   }, []);
 
   const doTranslate = useCallback(async () => {
@@ -266,6 +268,7 @@ function Result() {
       invoke("set_result_click_through", { expanded: true });
     }
     setTimeout(() => doTranslateRef.current(), 100);
+    invoke("set_translation_active", { active: true });
   }, [toolbarState.translate_mode, expanded]);
 
   // 翻译事件监听——仅翻译模式下生效
@@ -312,23 +315,9 @@ function Result() {
     return () => clearInterval(timer);
   }, [translateMode, doTranslate]);
 
-  const onSave = useCallback(async () => {
-    if (translateModeRef.current === 'off') {
-      asrEditorRef.current?.commit();
-      return;
-    }
+  const onSave = useCallback(() => {
     asrEditorRef.current?.commit();
-    const finalText = await finalTranslate();
-    const submitText = finalText && !finalText.startsWith("❌")
-      ? finalText
-      : translatedTextRef.current;
-    invoke("commit_translation", {
-      text: submitText,
-    });
-    exitTranslateMode();
-  }, [finalTranslate, exitTranslateMode]);
-  const onSaveRef = useRef(onSave);
-  useEffect(() => { onSaveRef.current = onSave; }, [onSave]);
+  }, []);
 
   const toggleExpand = useCallback(() => {
     const next = !expanded;
@@ -364,7 +353,7 @@ function Result() {
       const sc = parseShortcut(toolbarState.edit_shortcut);
       if (matchShortcut(e, sc)) {
         e.preventDefault();
-        onSaveRef.current();
+        asrEditorRef.current?.commit();
       }
     };
     document.addEventListener("keydown", onKeyDown);

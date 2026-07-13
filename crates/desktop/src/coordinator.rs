@@ -25,6 +25,16 @@ pub(crate) fn set_current_transcription_id(id: i64) {
     CURRENT_TRANSCRIPTION_ID.store(id, Ordering::Relaxed);
 }
 
+/// 翻译模式激活标志——前端 enterTranslateMode/exitTranslateMode 设置。
+/// finalize_after_stop 读取此标志：true 时对最终文本做同步翻译，粘贴译文而非原文。
+static TRANSLATION_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// 前端命令：设置翻译模式激活状态。
+#[tauri::command]
+pub fn set_translation_active(active: bool) {
+    TRANSLATION_ACTIVE.store(active, Ordering::Relaxed);
+}
+
 /// Result 窗口取当前/最近 transcription_id（无会话返回 None）。
 #[tauri::command]
 pub async fn current_transcription_id() -> Option<i64> {
@@ -65,8 +75,6 @@ enum Command {
     EnterEditMode,
     /// 提交编辑（含 dirty ranges——用户明确编辑过的区间 + 光标/选区恢复信息）
     CommitEdit { text: String, dirty_ranges: Vec<(usize, usize)>, has_edited: bool, caret: Option<usize>, selection: Option<(usize, usize)> },
-    /// 提交翻译结果——整体替换 transcript + 标记 translation_committed（阻止后续 ASR 重注入原文）。
-    CommitTranslation { text: String },
     /// 运行时配置更新——外部（设置窗口 / 工具栏）修改 RuntimeConfig 后，
     /// 通过此命令通知 coordinator 立即把变更同步到 config 快照（无需等 Toggle）。
     /// 用于 polish_llm / polish_mode / asr_correct / output_simplified / hide_toolbar 等
@@ -424,13 +432,6 @@ fn build_coordinator_loop(
                         commit_edit_apply(&mut stage, &text, &dirty_ranges, has_edited, caret, selection, &app_handle);
                         editing = false;
                     }
-                    Command::CommitTranslation { text } => {
-                        commit_edit_apply(&mut stage, &text, &[], true, None, None, &app_handle);
-                        if let Some(t) = stage_transcript(&mut stage) {
-                            t.mark_translation_committed();
-                        }
-                        editing = false;
-                    }
                     Command::UpdateRuntime => {
                         // 设置窗口 / 工具栏改了 RuntimeConfig 字段——立即同步到 config 快照，
                         // 无需等下次 Toggle。用于 polish_llm 等运行时可变字段。
@@ -563,14 +564,6 @@ impl Coordinator {
         }
     }
 
-    /// 提交翻译结果——整体替换 + 标记 translation_committed（阻止后续 ASR tick 重注入原文）
-    pub fn commit_translation(&self, text: String) {
-        let tx = self.tx.lock();
-        if tx.send(Command::CommitTranslation { text }).is_err() {
-            error!("Coordinator channel closed");
-        }
-    }
-
     /// 前端点击光标定位：char offset → 通过命令通道投递（stage 在 spawn 线程，
     /// 主线程不持有）。命令循环里 handle_set_caret 调 stage_transcript.set_caret。
     pub fn set_caret(&self, offset: usize) {
@@ -660,12 +653,6 @@ pub fn commit_edit(
     selection: Option<(usize, usize)>,
 ) {
     coordinator.commit_edit(text, dirty_ranges, has_edited, caret, selection);
-}
-
-/// 前端命令：提交翻译结果（翻译模式保存——整体替换 + 阻止后续 ASR 重注入原文）。
-#[tauri::command]
-pub fn commit_translation(coordinator: tauri::State<'_, Coordinator>, text: String) {
-    coordinator.commit_translation(text);
 }
 
 /// 前端命令：非编辑态点击文本 → 定位光标（后续流式从该处插入）。
@@ -1165,11 +1152,29 @@ fn finalize_after_stop(
         format!("{}。", transcript.db_text())
     };
     if combined.is_empty() {
+        TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
         *stage = Stage::Idle;
         crate::result_window::hide_result(app_handle);
         crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
         return;
     }
+
+    // 翻译模式：对最终文本同步翻译，粘贴译文而非原文
+    if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
+        crate::result_window::show_result(app_handle, "⏳ 最终翻译中...");
+        let source = combined.clone();
+        let translated = crate::action_bar_commands::do_translate(&source, config)
+            .unwrap_or_else(|e| {
+                warn!("最终翻译失败，回退原文: {}", e);
+                source.clone()
+            });
+        info!("Translation finalize: {} chars → {} chars", source.chars().count(), translated.chars().count());
+        let raw = transcript.db_text();
+        let segs = transcript.segments_json();
+        do_paste(stage, &translated, transcript.id, &raw, &segs, "done", config, app_handle, tx);
+        return;
+    }
+
     crate::result_window::show_result(app_handle, &transcript.display_text());
     if skip_final_polish {
         // 立即润色已覆盖全部文本，直接 paste（polish_status="done"）

@@ -376,8 +376,8 @@ fn detect_translate_direction(text: &str) -> (&'static str, &'static str) {
 }
 
 /// 执行翻译（公共逻辑）：解析引擎策略 + 执行翻译。
-/// 供 do_translate_streaming 复用。
-fn do_translate(text: &str, config: &octopus_infra::config::AppConfig) -> Result<String, String> {
+/// 供 do_translate_streaming 和 finalize 翻译路径复用。
+pub(crate) fn do_translate(text: &str, config: &octopus_infra::config::AppConfig) -> Result<String, String> {
     let (source_lang, target_lang) = detect_translate_direction(text);
     match resolve_translate_strategy(config) {
         TranslateStrategy::Local(spec) => {
