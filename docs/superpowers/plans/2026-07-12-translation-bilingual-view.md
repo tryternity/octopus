@@ -1203,3 +1203,7 @@ Expected: 看到 7-8 个 feat/refactor/docs 提交，对应 Task 1-9。
 
 **e2e 测试（015ba9c7）：**
 - [x] 补 `tests/opus_mt_test.rs`（中→英 + 英→中，`#[ignore]`，断言无 4+ 连续重复词）
+
+**三轮清理（9ac1aa22 + 62c10f4c）：**
+- [x] splitter 颜色 `bg-border` → `bg-muted-foreground/30`（与行号线区分）
+- [x] opus_mt_test unused import 删除 + ignore message 改为引导 GUI 下载路径
