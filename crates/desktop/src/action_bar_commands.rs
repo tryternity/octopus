@@ -104,9 +104,10 @@ pub fn trigger_action_bar(app: AppHandle) {
         log::info!("[action-bar] got text len={}", text.len());
 
         // 5. 暂存上下文——采集来源应用 + 环境上下文（失败降级到仅 text）
-        let mut ctx = ActionBarContext { text, source: None, surrounding: None };
+        let mut ctx = ActionBarContext { text: text.clone(), source: None, surrounding: None };
         match crate::app_context::provider().gather() {
             Ok(extra) => {
+                log_app_context(&text, &extra);
                 ctx.source = Some(extra.source);
                 ctx.surrounding = extra.surrounding;
             }
@@ -242,6 +243,99 @@ fn read_clipboard_text(app: &AppHandle) -> Option<String> {
 fn write_clipboard_text(app: &AppHandle, text: &str) {
     let handle = app.state::<std::sync::Arc<octopus_clipboard::ClipboardHandle>>();
     let _ = handle.write_text(text);
+}
+
+/// 将采集到的应用上下文以结构化文本追加写入 ~/.octopus/logs/action-bar.log，
+/// 方便直接验证 AX 取数结果（而非通过 AI 结果间接判断）。
+fn log_app_context(selected_text: &str, extra: &crate::app_context::ExtraContext) {
+    let log_path = {
+        let mut p = dirs::home_dir().unwrap_or_default();
+        p.push(".octopus");
+        p.push("logs");
+        p.push("action-bar.log");
+        p
+    };
+
+    // 确保目录存在
+    if let Err(e) = std::fs::create_dir_all(&log_path) {
+        log::warn!("[action-bar] 无法创建日志目录: {}", e);
+    }
+
+    let kind_label = match extra.source.kind {
+        crate::app_context::AppKind::Editor => "Editor",
+        crate::app_context::AppKind::Terminal => "Terminal",
+        crate::app_context::AppKind::Browser => "Browser",
+        crate::app_context::AppKind::Chat => "Chat",
+        crate::app_context::AppKind::Unknown => "Unknown",
+    };
+
+    let timestamp = chrono::Local::now().format("%Y-%m-%d %H:%M:%S%.3f");
+
+    let before_preview = extra
+        .surrounding
+        .as_ref()
+        .and_then(|s| s.before.as_ref())
+        .map(|b| truncate_for_log(b, 500))
+        .unwrap_or_else(|| "(无)".to_string());
+
+    let after_preview = extra
+        .surrounding
+        .as_ref()
+        .and_then(|s| s.after.as_ref())
+        .map(|a| truncate_for_log(a, 500))
+        .unwrap_or_else(|| "(无)".to_string());
+
+    let window_title = extra
+        .surrounding
+        .as_ref()
+        .and_then(|s| s.window_title.as_ref())
+        .map(|t| t.as_str())
+        .unwrap_or("(无)");
+
+    let entry = format!(
+        "═══════════════════════════════════════════════════\n\
+         [{timestamp}]\n\
+         【应用】{name} ({kind})\n\
+         【BundleID】{bundle}\n\
+         【窗口标题】{title}\n\
+         【选中文本】({len} 字)\n{selected}\n\n\
+         【上文 before】\n{before}\n\n\
+         【下文 after】\n{after}\n\n",
+        timestamp = timestamp,
+        name = extra.source.name,
+        kind = kind_label,
+        bundle = extra.source.bundle_id.as_deref().unwrap_or("(未知)"),
+        title = window_title,
+        len = selected_text.chars().count(),
+        selected = truncate_for_log(selected_text, 1000),
+        before = before_preview,
+        after = after_preview,
+    );
+
+    use std::io::Write;
+    match std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+    {
+        Ok(mut f) => {
+            if let Err(e) = f.write_all(entry.as_bytes()) {
+                log::warn!("[action-bar] 写入上下文日志失败: {}", e);
+            }
+        }
+        Err(e) => log::warn!("[action-bar] 无法打开上下文日志 {}: {}", log_path.display(), e),
+    }
+}
+
+/// 截断文本到指定字符数并添加省略标记。
+fn truncate_for_log(s: &str, max_chars: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max_chars {
+        s.to_string()
+    } else {
+        let head: String = chars[..max_chars].iter().collect();
+        format!("{}… ({} 字，已截断)", head, chars.len())
+    }
 }
 
 /// 将 ActionBarContext 的 source/surrounding 拼成 LLM 可理解的情境块，

@@ -36,6 +36,7 @@ pub struct SurroundingText {
 }
 
 /// gather 采集到的额外上下文。
+#[derive(Clone)]
 pub struct ExtraContext {
     pub source: AppSource,
     pub surrounding: Option<SurroundingText>,
