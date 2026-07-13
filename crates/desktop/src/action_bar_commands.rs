@@ -519,6 +519,11 @@ fn url_encode_param(s: &str) -> String {
     utf8_percent_encode(s, ENCODE_SET).to_string()
 }
 
+/// file:// URL 路径编码：仅编码空格（macOS file:// URL 的最小需求）
+fn url_encode_path(path: &str) -> String {
+    path.replace(' ', "%20")
+}
+
 // ── 脚本执行（spawn_script + wait_with_timeout + 运行时探测）──
 
 struct ScriptResult {
@@ -833,6 +838,10 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
         .map_err(|e| e.to_string())?
         .ok_or("菜单项不存在")?;
 
+    // 从 PENDING_CONTEXT 取 files（Files 场景）
+    let app_state_files: Vec<String> = PENDING_CONTEXT.lock().unwrap()
+        .as_ref().map(|c| c.files.clone()).unwrap_or_default();
+
     match item.action_type.as_str() {
         "ai" => {
             let config = octopus_infra::config::load_config().map_err(|e| e.to_string())?;
@@ -956,6 +965,43 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                 Ok(false)
             }
         }
+        "agent" => {
+            // agent 桥接：渲染命令 → Terminal.app 启动
+            let adapter_key = item.agent.clone();
+            let adapters = crate::agent_adapter::list_adapters();
+            let adapter = adapters.into_iter().find(|a| a.key == adapter_key)
+                .ok_or_else(|| format!("Agent adapter '{}' 不存在", adapter_key))?;
+            if !adapter.is_available {
+                return Err(format!("{} 未安装（未在 PATH 找到 `{}`）", adapter.display_name, adapter.detect_binary));
+            }
+            // prompt 渲染：action_data 是模板，含 {{files}} {{task}}
+            // text 参数 = 用户输入的 task（或空，无 {{task}} 时）
+            let prompt = item.action_data
+                .replace("{{task}}", &text)
+                .replace("{{files}}", &app_state_files.join("\n"));
+            // cwd：首个文件的父目录
+            let cwd = app_state_files.first()
+                .and_then(|f| std::path::Path::new(f).parent().map(|p| p.to_string_lossy().to_string()))
+                .unwrap_or_else(|| std::env::var("HOME").unwrap_or_else(|_| "/tmp".into()));
+            let cwd_path = std::path::Path::new(&cwd);
+            let command = crate::agent_adapter::render_command(
+                &adapter.command_template, &prompt, &app_state_files, &cwd,
+            );
+            let launcher = crate::terminal_launcher::TerminalAppLauncher;
+            use crate::terminal_launcher::TerminalLauncher;
+            launcher.spawn(&command, cwd_path)?;
+            Ok(false)
+        }
+        "copy_path" => {
+            // 复制文件路径到剪贴板。format: plain / url / quoted
+            let formatted: String = match item.action_data.as_str() {
+                "url" => app_state_files.iter().map(|f| format!("file://{}", url_encode_path(f))).collect::<Vec<_>>().join("\n"),
+                "quoted" => app_state_files.iter().map(|f| format!("\"{}\"", f)).collect::<Vec<_>>().join("\n"),
+                _ => app_state_files.join("\n"), // plain
+            };
+            write_clipboard_text(app, &formatted);
+            Ok(false)
+        }
         "copy" => {
             write_clipboard_text(app, &text);
             Ok(false)
@@ -988,4 +1034,37 @@ pub async fn execute_action_bar(item_id: i64, text: String, app: AppHandle) -> R
             Err(e)
         }
     }
+}
+
+// ── Agent Adapter 管理命令（设置页用）──
+
+#[tauri::command]
+pub fn list_agent_adapters() -> Result<Vec<crate::agent_adapter::AgentAdapter>, String> {
+    Ok(crate::agent_adapter::list_adapters())
+}
+
+#[tauri::command]
+pub fn create_agent_adapter(
+    key: String, display_name: String, detect_binary: String, command_template: String,
+) -> Result<i64, String> {
+    octopus_infra::db::insert_agent_adapter_record(&key, &display_name, &detect_binary, &command_template)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn update_agent_adapter(
+    id: i64, key: String, display_name: String, detect_binary: String, command_template: String,
+) -> Result<(), String> {
+    octopus_infra::db::update_agent_adapter_record(id, &key, &display_name, &detect_binary, &command_template)
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn delete_agent_adapter(id: i64) -> Result<(), String> {
+    octopus_infra::db::delete_agent_adapter_record(id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub fn refresh_agent_detection() -> Result<Vec<crate::agent_adapter::AgentAdapter>, String> {
+    Ok(crate::agent_adapter::refresh_detection())
 }
