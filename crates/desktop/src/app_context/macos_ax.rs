@@ -145,37 +145,38 @@ fn ax_error_desc(err: AXError) -> &'static str {
 /// - Safari: 偏好设置 → 高级 → 勾选「在菜单栏中显示开发菜单」→ 开发菜单 → 勾选「允许从 Apple 事件执行 JavaScript」
 fn gather_browser_via_applescript(
     bundle_id: &str,
-    _selected_text: &str,
+    selected_text: &str,
 ) -> Option<(SurroundingText, Option<String>)> {
     use std::process::Command;
 
-    // JS 源码写入临时文件——AppleScript read 读入后执行，彻底绕开引号转义。
-    let js_source = r#"(function(){
-  var s=window.getSelection();
-  if(!s||s.rangeCount===0) return JSON.stringify({before:"",after:"",title:document.title});
-  var range=s.getRangeAt(0);
-  var block=range.startContainer;
-  var tags=["P","DIV","LI","TD","TH","BLOCKQUOTE","PRE","H1","H2","H3","H4","H5","H6","ARTICLE","SECTION"];
-  while(block&&block.parentNode){
-    if(tags.indexOf(block.nodeName)>=0) break;
-    block=block.parentNode;
-  }
-  if(!block) block=document.body;
-  var fr=document.createRange();
-  fr.selectNodeContents(block);
-  var br=document.createRange();
-  br.setStart(fr.startContainer,fr.startOffset);
-  try{br.setEnd(range.startContainer,range.startOffset);}catch(e){return JSON.stringify({before:"",after:"",title:document.title});}
-  var ar=document.createRange();
-  try{ar.setStart(range.endContainer,range.endOffset);ar.setEnd(fr.endContainer,fr.endOffset);}catch(e){return JSON.stringify({before:"",after:"",title:document.title});}
+    // JS 源码写入临时文件——用传入的 selected_text 在 DOM 中搜索定位，
+    // 不依赖 window.getSelection()（execute javascript 时选区可能已清空）。
+    // 转义 selected_text 中的反斜杠和双引号，防止注入。
+    let escaped = selected_text
+        .replace('\\', "\\\\")
+        .replace('"', "\\\"")
+        .replace('\n', "\\n")
+        .replace('\r', "\\r");
+    let js_source = format!(
+        r#"(function(){{
+  var sel="{escaped}";
+  sel=sel.trim();
+  if(!sel) return JSON.stringify({{before:"",after:"",title:document.title}});
+  var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
+  var node,combined="";
+  while(node=walker.nextNode()){{combined+=node.textContent;}}
+  var idx=combined.indexOf(sel);
+  if(idx<0) idx=combined.toLowerCase().indexOf(sel.toLowerCase());
+  if(idx<0) return JSON.stringify({{before:"",after:"",title:document.title}});
   var ml=1000;
-  var b=br.toString();
-  var a=ar.toString();
-  if(b.length>ml) b=b.slice(-ml);
-  if(a.length>ml) a=a.slice(0,ml);
-  return JSON.stringify({before:b,after:a,title:document.title});
-})()
-"#;
+  var b=idx>0?combined.slice(Math.max(0,idx-ml),idx):"";
+  var end=idx+sel.length;
+  var a=end<combined.length?combined.slice(end,end+ml):"";
+  return JSON.stringify({{before:b,after:a,title:document.title}});
+}})()
+"#,
+        escaped = escaped
+    );
 
     let js_path = std::env::temp_dir().join("octopus_browser_context.js");
     if let Err(e) = std::fs::write(&js_path, js_source) {
