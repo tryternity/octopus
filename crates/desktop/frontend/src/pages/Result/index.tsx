@@ -19,6 +19,9 @@ import { useT, t as ti18n } from "@/lib/i18n";
 const POLISH_MODES = [0, 1, 2];
 const DENOISE_MODES = [0, 1, 2];
 
+/** 翻译下拉菜单中「关闭翻译」项的 name 标记值（区别于 TranslateMode 类型）。 */
+const TRANSLATE_OFF_SENTINEL = "__off__";
+
 interface ToolbarState {
   polish_mode: number;
   denoise_mode: number;
@@ -373,7 +376,7 @@ function Result() {
       return;
     }
     if (popupType === "translate") { setPopupType(null); return; }
-    // 关闭翻译项 + 分隔线 + 四档
+    // 关闭翻译项 + 四档（平铺，无分隔线）
     const modeItems = buildTranslatePopupItems(translateMode, (m) =>
       m === 'manual' ? t("result.translateManual")
         : m === '4s' ? t("result.translateAuto4")
@@ -381,7 +384,7 @@ function Result() {
         : t("result.translateAuto12")
     );
     setPopupItems([
-      { label: t("result.translateClose"), current: false, name: "__off__" },
+      { label: t("result.translateClose"), current: false, name: TRANSLATE_OFF_SENTINEL },
       ...modeItems,
     ]);
     setPopupType("translate");
@@ -394,7 +397,7 @@ function Result() {
       } else if (popupType === "denoise" && item.mode !== undefined) {
         await invoke("set_denoise_mode", { mode: item.mode });
       } else if (popupType === "translate" && item.name) {
-        if (item.name === "__off__") {
+        if (item.name === TRANSLATE_OFF_SENTINEL) {
           setTranslateMode('off');
           setTranslatedText("");
           translatingRef.current = false;
