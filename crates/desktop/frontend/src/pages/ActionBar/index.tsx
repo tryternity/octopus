@@ -31,7 +31,7 @@ interface Context {
   surrounding?: SurroundingText;
 }
 
-type View = "main" | "submenu" | "loading" | "task-input";
+type View = "main" | "submenu" | "loading";
 
 interface ActionBarItem {
   id: number;
@@ -156,9 +156,6 @@ export default function ActionBar() {
   const submenuParentIdRef = useRef<number | null>(null);
   const [focusLayer, setFocusLayer] = useState<"main" | "sub">("main");
   const focusLayerRef = useRef<"main" | "sub">("main");
-  const [taskInput, setTaskInput] = useState("");
-  const [taskItem, setTaskItem] = useState<ActionBarItem | null>(null);
-  const taskInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { viewRef.current = view; }, [view]);
 
@@ -178,28 +175,12 @@ export default function ActionBar() {
   useEffect(() => { focusLayerRef.current = focusLayer; }, [focusLayer]);
   useEffect(() => { contextRef.current = context; }, [context]);
 
-  // 进入 task-input 视图时聚焦输入框
-  useEffect(() => {
-    if (view === "task-input") {
-      setTimeout(() => taskInputRef.current?.focus(), 50);
-    }
-  }, [view]);
-
-  const submitTask = async () => {
-    if (!taskItem) return;
-    setView("loading");
-    try {
-      await invoke("execute_action_bar", { itemId: taskItem.id, text: taskInput });
-    } catch (e) {
-      showQuickError(String(e).slice(0, 40));
-      setView("main");
-    }
-  };
+  // task-input 视图已移除（agent 含 {{task}} 改为联动语音）
 
   // 动态调整窗口高度——主菜单 1 行（~40px），子菜单 2 行（~76px），
   // 避免透明区域遮挡下层点击
   useEffect(() => {
-    const height = view === "submenu" ? 78 : view === "loading" ? 48 : view === "task-input" ? 48 : 40;
+    const height = view === "submenu" ? 78 : view === "loading" ? 48 : 40;
     const win = getCurrentWindow();
     win.setSize(new LogicalSize(380, height)).catch(() => {});
   }, [view]);
@@ -400,8 +381,8 @@ export default function ActionBar() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      // task-input 视图：不拦截任何键，让输入框自己处理（Escape 返回主菜单等）
-      if (viewRef.current === "task-input") return;
+      // loading 视图不拦截键盘导航
+      if (viewRef.current === "loading") return;
 
       if (e.key === "Escape") {
         e.preventDefault();
@@ -535,25 +516,6 @@ export default function ActionBar() {
   }, []);
 
   // ── 渲染 ──
-
-  if (view === "task-input") {
-    return (
-      <div data-action-bar className="flex items-center gap-2 px-3 py-2.5 bg-background/95 backdrop-blur-xl text-foreground rounded-lg border border-border/50 shadow-2xl shadow-black/10">
-        <input
-          ref={taskInputRef}
-          value={taskInput}
-          onChange={(e) => setTaskInput(e.target.value)}
-          onKeyDown={(e) => {
-            if (e.key === "Enter") { e.preventDefault(); submitTask(); }
-            if (e.key === "Escape") { setView("main"); setTaskInput(""); }
-          }}
-          placeholder={t("actionbar.taskPlaceholder")}
-          className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/50"
-        />
-        <span className="text-[10px] text-muted-foreground whitespace-nowrap">{t("actionbar.taskSubmit")}</span>
-      </div>
-    );
-  }
 
   if (view === "loading") {
     return (

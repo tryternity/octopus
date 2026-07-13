@@ -528,7 +528,9 @@ fn build_coordinator_loop(
                     }
                     Command::StartAgentRecording { task_id } => {
                         if !matches!(stage, Stage::Idle) {
-                            warn!("StartAgentRecording ignored: not Idle");
+                            warn!("StartAgentRecording ignored: not Idle, marking task failed");
+                            let _ = octopus_infra::db::update_agent_task_status(&task_id, "failed", "录音正在进行中，无法启动 agent 录音");
+                            crate::result_window::show_result(&app_handle, "❌ 录音正在进行中，请先停止");
                             continue;
                         }
                         let rc = runtime_config.read();
@@ -1210,6 +1212,10 @@ fn finalize_after_stop(
         format!("{}。", transcript.db_text())
     };
     if combined.is_empty() {
+        // AgentBridge 空识别 → 标记 failed
+        if let RecordType::AgentBridge { task_id } = &transcript.record_type {
+            let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", "识别结果为空");
+        }
         TRANSLATION_ACTIVE.store(false, Ordering::Relaxed);
         *stage = Stage::Idle;
         crate::result_window::hide_result(app_handle);
@@ -1220,7 +1226,9 @@ fn finalize_after_stop(
     // 按 record_type 分流
     match &transcript.record_type {
         RecordType::AgentBridge { task_id } => {
-            execute_agent_task(app_handle, task_id, &combined);
+            // AgentBridge 用 db_text() 不追加句号（句号是 paste 逻辑，不适合 agent task）
+            let task_text = transcript.db_text();
+            execute_agent_task(app_handle, task_id, &task_text);
             *stage = Stage::Idle;
             return;
         }
@@ -1243,17 +1251,22 @@ fn finalize_after_stop(
 
 /// agent task 执行器：从 DB 取上下文 + 识别文本 → 渲染命令 → Terminal.app
 fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, transcribed_text: &str) {
-    use crate::terminal_launcher::{TerminalAppLauncher, TerminalLauncher};
+    // 所有早返回路径统一执行 hide_result + tray Idle
+    let cleanup = || {
+        crate::result_window::hide_result(app_handle);
+        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+    };
 
     if let Err(e) = octopus_infra::db::update_agent_task_result(task_id, transcribed_text) {
         log::error!("[agent-task] 更新 task 失败: {}", e);
+        cleanup();
         return;
     }
 
     let task = match octopus_infra::db::load_agent_task(task_id) {
         Ok(Some(t)) => t,
-        Ok(None) => { log::warn!("[agent-task] task {} 不存在", task_id); return; }
-        Err(e) => { log::error!("[agent-task] 加载 task 失败: {}", e); return; }
+        Ok(None) => { log::warn!("[agent-task] task {} 不存在", task_id); cleanup(); return; }
+        Err(e) => { log::error!("[agent-task] 加载 task 失败: {}", e); cleanup(); return; }
     };
 
     let ctx = parse_agent_context(&task.context);
@@ -1265,7 +1278,9 @@ fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, transcribed_
         None => {
             let msg = format!("Agent adapter '{}' 不存在", task.agent_key);
             let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
+            // show 错误信息保留显示，仅 tray 复位
             crate::result_window::show_result(app_handle, &format!("❌ {}", msg));
+            crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
             return;
         }
     };
@@ -1273,20 +1288,27 @@ fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, transcribed_
         let msg = format!("{} 未安装", adapter.display_name);
         let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &msg);
         crate::result_window::show_result(app_handle, &format!("❌ {}", msg));
+        crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
         return;
     }
 
+    // Terminal.app 启动投递到后台线程，避免阻塞协调器（osascript 可能数秒）
     let command = crate::agent_adapter::render_command(&adapter.command_template, &prompt, &ctx.files, &ctx.cwd);
-    match TerminalAppLauncher.spawn(&command, std::path::Path::new(&ctx.cwd)) {
-        Ok(()) => { let _ = octopus_infra::db::update_agent_task_status(task_id, "done", ""); }
-        Err(e) => {
-            let _ = octopus_infra::db::update_agent_task_status(task_id, "failed", &e);
-            crate::result_window::show_result(app_handle, &format!("❌ Terminal 启动失败: {}", e));
+    let cwd = ctx.cwd.clone();
+    let app_clone = app_handle.clone();
+    let tid = task_id.to_string();
+    std::thread::spawn(move || {
+        use crate::terminal_launcher::{TerminalAppLauncher, TerminalLauncher};
+        match TerminalAppLauncher.spawn(&command, std::path::Path::new(&cwd)) {
+            Ok(()) => { let _ = octopus_infra::db::update_agent_task_status(&tid, "done", ""); }
+            Err(e) => {
+                let _ = octopus_infra::db::update_agent_task_status(&tid, "failed", &e);
+                crate::result_window::show_result(&app_clone, &format!("❌ Terminal 启动失败: {}", e));
+            }
         }
-    }
-
-    crate::result_window::hide_result(app_handle);
-    crate::tray::update_tray_label(app_handle, crate::tray::TrayState::Idle);
+        crate::result_window::hide_result(&app_clone);
+        crate::tray::update_tray_label(&app_clone, crate::tray::TrayState::Idle);
+    });
 }
 
 /// 解析 agent task context JSON（纯函数，可测试）。
