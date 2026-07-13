@@ -1246,6 +1246,30 @@ fn finalize_after_stop(
 /// 统一的 record_type 分流 helper——在所有 finalize/cancel/discard 出口调用。
 /// 返回 true = 已处理（AgentBridge 路径），调用方应直接 return；
 /// 返回 false = Input 路径，调用方继续走现有 paste 逻辑。
+/// 从 stage 提取 AgentBridge task_id（cancel/discard 清理用）。
+fn agent_task_id_in_stage(stage: &Stage) -> Option<String> {
+    match stage {
+        Stage::Streaming { transcript, .. }
+        | Stage::VadSegmented { transcript, .. }
+        | Stage::WaitingCompletion { transcript, .. }
+        | Stage::StoppingPolish { transcript } => {
+            if let RecordType::AgentBridge { task_id } = &transcript.record_type {
+                Some(task_id.clone())
+            } else { None }
+        }
+        #[cfg(feature = "cloud")]
+        Stage::CloudClosing { transcript, .. } => {
+            if let RecordType::AgentBridge { task_id } = &transcript.record_type {
+                Some(task_id.clone())
+            } else { None }
+        }
+        _ => None,
+    }
+}
+
+/// 统一的 record_type 分流 helper——在所有 finalize/cancel/discard 出口调用。
+/// 返回 true = 已处理（AgentBridge 路径），调用方应直接 return；
+/// 返回 false = Input 路径，调用方继续走现有 paste 逻辑。
 fn dispatch_by_record_type(
     transcript: &Transcript,
     text: &str,
@@ -1584,17 +1608,15 @@ fn finalize_cloud(
         return;
     }
 
+    // 确保 DB 记录已 INSERT（在 dispatch 之前——AgentBridge 也应进 ASR 历史）
+    if let Err(e) = update_transcription_raw(&mut transcript, &config.asr_engine, "streaming") {
+        warn!("CloudStreaming finalize INSERT failed: {}", e);
+    }
+
     // 统一分流：AgentBridge → execute_agent_task
     if dispatch_by_record_type(&transcript, &combined, app_handle) {
         *stage = Stage::Idle;
         return;
-    }
-
-    // 确保 DB 记录已 INSERT：CloudStreaming 只在 Finished 事件时 INSERT，
-    // 如果整个录音过程从未触发 Finished（用户没停顿够就 Toggle stop），
-    // 记录从未创建——后续 Finalize（UPDATE）会静默 0 行，数据丢失。
-    if let Err(e) = update_transcription_raw(&mut transcript, &config.asr_engine, "streaming") {
-        warn!("CloudStreaming finalize INSERT failed: {}", e);
     }
 
     // 立即润色仍在途：进 StoppingPolish 等 PolishDone
@@ -1905,24 +1927,7 @@ fn handle_cancel(
         _ => {}
     }
     // 清理 agent task（AgentBridge 被 cancel 时标 failed）
-    let agent_task_to_fail: Option<String> = match stage {
-        Stage::Streaming { transcript, .. }
-        | Stage::VadSegmented { transcript, .. }
-        | Stage::WaitingCompletion { transcript, .. }
-        | Stage::StoppingPolish { transcript, .. } => {
-            if let RecordType::AgentBridge { task_id } = &transcript.record_type {
-                Some(task_id.clone())
-            } else { None }
-        }
-        #[cfg(feature = "cloud")]
-        Stage::CloudClosing { transcript, .. } => {
-            if let RecordType::AgentBridge { task_id } = &transcript.record_type {
-                Some(task_id.clone())
-            } else { None }
-        }
-        _ => None,
-    };
-    if let Some(tid) = agent_task_to_fail {
+    if let Some(tid) = agent_task_id_in_stage(stage) {
         let _ = octopus_infra::db::update_agent_task_status(&tid, "failed", "用户取消录音");
     }
     // 清理 DB 脏数据（审查 Issue 6）：Cancel = 丢弃，已 INSERT 的记录需删除
@@ -1979,24 +1984,7 @@ fn handle_discard(
     }
 
     // 清理 agent task（AgentBridge 被 discard 时标 failed）
-    let agent_task_to_fail: Option<String> = match stage {
-        Stage::Streaming { transcript, .. }
-        | Stage::VadSegmented { transcript, .. }
-        | Stage::WaitingCompletion { transcript, .. }
-        | Stage::StoppingPolish { transcript, .. } => {
-            if let RecordType::AgentBridge { task_id } = &transcript.record_type {
-                Some(task_id.clone())
-            } else { None }
-        }
-        #[cfg(feature = "cloud")]
-        Stage::CloudClosing { transcript, .. } => {
-            if let RecordType::AgentBridge { task_id } = &transcript.record_type {
-                Some(task_id.clone())
-            } else { None }
-        }
-        _ => None,
-    };
-    if let Some(tid) = agent_task_to_fail {
+    if let Some(tid) = agent_task_id_in_stage(stage) {
         let _ = octopus_infra::db::update_agent_task_status(&tid, "failed", "用户放弃录音");
     }
 
