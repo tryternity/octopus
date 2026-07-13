@@ -162,10 +162,29 @@ fn gather_browser_via_applescript(
   var sel="{escaped}";
   sel=sel.trim();
   if(!sel) return JSON.stringify({{before:"",after:"",title:document.title}});
+  function findIn(text){{
+    var i=text.indexOf(sel);
+    if(i>=0) return i;
+    i=text.toLowerCase().indexOf(sel.toLowerCase());
+    if(i>=0) return i;
+    var mid=sel.slice(Math.floor(sel.length*0.2),Math.floor(sel.length*0.8)).trim();
+    if(mid.length>5){{
+      i=text.indexOf(mid);
+      if(i>=0) return i;
+      i=text.toLowerCase().indexOf(mid.toLowerCase());
+      if(i>=0) return i;
+    }}
+    var tail=sel.slice(-30).trim();
+    if(tail.length>5){{
+      i=text.indexOf(tail);
+      if(i>=0) return i;
+    }}
+    return -1;
+  }}
   var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
   var node;
   while(node=walker.nextNode()){{
-    if(node.textContent.indexOf(sel)>=0||node.textContent.toLowerCase().indexOf(sel.toLowerCase())>=0) break;
+    if(findIn(node.textContent)>=0) break;
   }}
   if(!node) return JSON.stringify({{before:"",after:"",title:document.title}});
   var targetChars=2000+sel.length;
@@ -176,9 +195,8 @@ fn gather_browser_via_applescript(
   }}
   if(!scope) scope=document.body;
   var full=scope.textContent||"";
-  var idx=full.indexOf(sel);
-  if(idx<0) idx=full.toLowerCase().indexOf(sel.toLowerCase());
-  if(idx<0) return JSON.stringify({{before:"",after:"",title:document.title}});
+  var idx=findIn(full);
+  if(idx<0) return JSON.stringify({{debug:"scope mismatch",fullLen:full.length,title:document.title}});
   var ml=1000;
   var b=idx>0?full.slice(Math.max(0,idx-ml),idx):"";
   var end=idx+sel.length;
