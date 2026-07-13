@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { indexLabel, labelToIndex } from "./index";
+import { indexLabel, labelToIndex } from "./label";
 
 describe("indexLabel / labelToIndex", () => {
   it("前 9 项显示数字 1-9", () => {
