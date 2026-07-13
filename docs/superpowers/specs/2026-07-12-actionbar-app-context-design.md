@@ -25,8 +25,8 @@ action bar 触发流程（`trigger_action_bar`，仅 macOS）：
 
 | 决策点 | 选择 |
 |--------|------|
-| 技术方案 | **平台无障碍 API（AX）+ Browser AppleScript JS 双路径** |
-| 平台范围 | **仅 macOS**（action bar 本身仅 macOS 支持；Windows/Linux 留 NullProvider stub） |
+| 技术方案 | **平台无障碍 API + Browser AppleScript JS（macOS）/ UIAutomation（Windows）** |
+| 平台范围 | **macOS + Windows**；Linux 暂不支持（回退 NullProvider，AT-SPI2 需事件流，v2 待 atspi crate） |
 | 失败行为 | **降级到现状**：上下文获取失败绝不阻塞浮窗显示，`source`/`surrounding` 为 None 时行为等同改造前 |
 | Terminal scrollback | 最近 **30 行 / 1000 字** 截断 |
 | Editor 前后文裁剪 | before/after 各 **1000 字** 截断 |
@@ -122,22 +122,22 @@ pub trait ContextProvider {
 
 ```
 crates/desktop/src/app_context/
-├── mod.rs          # 类型 + trait + classify_app（三平台进程名）+ provider() 工厂
+├── mod.rs          # 类型 + trait + classify_app（三平台进程名，内部统一 to_ascii_lowercase）+ provider() 工厂
 ├── ffi.rs          # AXUIElement C FFI 声明 + AX 属性名 CFString（macOS only）
 ├── macos_ax.rs     # macOS 实现：NSWorkspace + AX + Browser AppleScript JS（macOS only）
-├── windows_uia.rs  # Windows 实现：IUIAutomation + TextPattern/ValuePattern（Windows only）
-└── linux_atspi.rs  # Linux 实现：zbus blocking → AT-SPI2 DBus Text 接口（Linux only）
+├── windows_uia.rs  # Windows 实现：IUIAutomation + TextPattern/ValuePattern + TreeWalker（Windows only）
+└── linux_atspi.rs  # 设计参考（暂不编译）——AT-SPI2 需事件流，v2 待 atspi crate
 ```
 
 **各平台 API 对应**：
 
 | 能力 | macOS | Windows | Linux |
 |------|-------|---------|-------|
-| 前台应用 | NSWorkspace.frontmostApplication | GetForegroundWindow + QueryFullProcessImageNameW | AT-SPI2 Application.GetName |
-| 焦点元素 | AXFocusedUIElement | IUIAutomation.GetFocusedElement | AT-SPI2 Registry focus |
-| 文本内容 | AXValue | TextPattern.DocumentRange.GetText 或 ValuePattern | AT-SPI2 Text.GetText |
-| 选区定位 | AXSelectedTextRange（坐标系不一致→改用 find） | TextPattern.GetSelection | AT-SPI2 Text.GetSelection |
-| 浏览器 | AppleScript execute javascript | UIA TextPattern | AT-SPI2 Text |
+| 前台应用 | NSWorkspace.frontmostApplication | GetForegroundWindow + QueryFullProcessImageNameW | ❌ 暂不支持 |
+| 焦点元素 | AXFocusedUIElement | IUIAutomation.GetFocusedElement | ❌ 暂不支持 |
+| 文本内容 | AXValue | TextPattern.DocumentRange.GetText 或 ValuePattern | ❌ 暂不支持 |
+| 选区定位 | AXSelectedTextRange（坐标系不一致→改用 find） | 全文 find（GetSelection + ExpandToEnclosingUnit 留作 v2） | ❌ 暂不支持 |
+| 浏览器 | AppleScript execute javascript（精准 DOM 定位） | UIA TextPattern 全文 find（无 AppleScript 等价物，复杂页面精度降级） | ❌ 暂不支持 |
 
 ### 4.3 trigger_action_bar 集成（异步架构）
 
@@ -297,7 +297,7 @@ fn classify_app(bundle_id: &str) -> AppKind {
 
 | 故障 | 行为 |
 |------|------|
-| 非 macOS | `NullProvider` 返回 Err，行为等同改造前 |
+| Linux 平台 | `NullProvider` 返回 Err，行为等同改造前 |
 | 无辅助功能权限 | AX 调用返回错误码 → gather 返回 Err → 降级 |
 | Chrome `-25212` | 200ms 后重试一次；仍失败 → fallback AX 或 Browser JS |
 | 自绘编辑器（Sublime/WPS） | full_text 不含选中文本 → 降级返回 None |
@@ -315,10 +315,11 @@ fn classify_app(bundle_id: &str) -> AppKind {
 |------|------|---------|
 | Sublime Text / WPS 等自绘编辑器 | AX 树无真实内容，降级返回 None | 专属取数器（方案 C） |
 | Firefox (macOS) | 无 AppleScript JS 接口，fallback AX（覆盖率低） | 浏览器扩展 + WebSocket |
-| Windows/Linux 实现 | 已实现基础框架，需实际平台测试 | 完善 TextPattern/AT-SPI2 覆盖 |
+| Windows 浏览器 | UIA TextPattern 全文 find，无 AppleScript JS 精度 | GetSelection + ExpandToEnclosingUnit 段落级精准扩展 |
+| Windows 全文 find | selected_text 多次出现时命中第一次，可能错位 | GetSelection 精确选区 + range 扩展 |
+| Linux | 暂不支持（AT-SPI2 需事件流） | atspi crate + object:state-change:focused 事件 |
 | 前端来源标签 | 已移除（挤压菜单布局） | 浮窗 tooltip 或更紧凑样式 |
 | 上下文 UI 可见性 | 仅写日志文件 | 浮窗展开查看获取到的上下文 |
-| Windows/Linux | NullProvider stub | UIAutomation / AT-SPI2 |
 
 ---
 

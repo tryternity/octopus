@@ -10,11 +10,12 @@
 
 ## Global Constraints
 
-- **平台**：仅 macOS 实现；Windows/Linux 为 NullProvider stub
+- **平台**：macOS（AX + Browser JS）+ Windows（UIAutomation）；Linux 暂不支持（NullProvider）
 - **降级铁律**：上下文获取任何失败都不得阻塞浮窗显示
 - **Terminal scrollback**：30 行 / 1000 字截断
 - **Editor before/after**：各 1000 字截断
-- **AX 超时**：500ms 上限
+- **AX 超时**：500ms 上限（deadline 透传到每层递归）
+- **classify_app**：内部 `to_ascii_lowercase()` 统一大小写
 - **测试命令**：`cargo test -p octopus-desktop --bin octopus-desktop`
 
 ---
