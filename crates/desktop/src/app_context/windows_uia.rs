@@ -29,7 +29,7 @@ impl super::ContextProvider for UiaProvider {
 
         // 1. 前台窗口 + 进程信息
         let (_pid, exe_name) = frontmost_process().ok_or_else(|| anyhow::anyhow!("无法获取前台窗口进程"))?;
-        let kind = classify_app(&exe_name.to_lowercase());
+        let kind = classify_app(&exe_name);
 
         let source = AppSource {
             bundle_id: Some(exe_name.clone()),
@@ -105,9 +105,7 @@ fn gather_surrounding(selected_text: &str, kind: AppKind, deadline: Instant) -> 
     };
     use windows::Win32::UI::Accessibility::{
         CUIAutomation, IUIAutomation, IUIAutomationTextPattern,
-        IUIAutomationTextRange,
-        UIA_TextPatternId, UIA_WindowPatternId,
-        TreeScope_Ancestors,
+        UIA_TextPatternId, UIA_WindowControlTypeId,
     };
     use windows::core::Interface;
 
@@ -124,40 +122,15 @@ fn gather_surrounding(selected_text: &str, kind: AppKind, deadline: Instant) -> 
         // 需向上找 Window 祖先的 Name
         let window_title = find_window_title(&uia, &focused);
 
-        // 尝试 TextPattern 获取选区和文本
+        // 尝试 TextPattern 获取全文
+        // Windows 暂用全文 find 定位（与 macOS Terminal 路径相同）。
+        // TextPattern.GetSelection + ExpandToEnclosingUnit 段落级精准扩展留作 v2。
         let text_pattern: IUIAutomationTextPattern = focused
             .GetCurrentPattern(UIA_TextPatternId)
             .ok()
             .and_then(|p| p.cast().ok());
 
         let full_text = if let Some(ref tp) = text_pattern {
-            // 优先用 GetSelection 精确拿选区，再取选区所在范围文本
-            let selections = tp.GetSelection().ok();
-            if let Some(ranges) = selections {
-                let count = ranges.Length().unwrap_or(0);
-                if count > 0 {
-                    // 取第一个选区 range，扩展到所在段落/block 取上下文
-                    if let Some(sel_range) = ranges.GetElement(0).and_then(|e| e.cast::<IUIAutomationTextRange>().ok()) {
-                        // 选区文本验证
-                        let sel_text = sel_range.GetText(-1).ok().map(|t| t.to_string()).unwrap_or_default();
-                        // 选区起点向前取全文
-                        let doc_range = tp.get_DocumentRange().ok();
-                        let doc_text = doc_range
-                            .and_then(|r| r.GetText(-1).ok())
-                            .map(|t| t.to_string())
-                            .unwrap_or_default();
-                        // 用 selected_text 在全文中定位（比 UIA range 偏移更可靠）
-                        return Ok(build_surrounding_from_text(
-                            &doc_text,
-                            selected_text,
-                            kind,
-                            window_title,
-                            deadline,
-                        ));
-                    }
-                }
-            }
-            // GetSelection 失败 → 全文 find 退化
             let doc_range = tp.get_DocumentRange().ok();
             doc_range
                 .and_then(|r| r.GetText(-1).ok())
@@ -199,7 +172,7 @@ unsafe fn find_window_title(
     let cond = uia
         .CreatePropertyCondition(
             windows::Win32::UI::Accessibility::UIA_ControlTypePropertyId,
-            &windows::Win32::UI::Accessibility::UIA_ReservedNotSupportedValue.into(),
+            &windows::core::VARIANT::from(UIA_WindowControlTypeId as i32),
         )
         .ok()?;
 

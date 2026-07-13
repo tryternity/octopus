@@ -94,39 +94,40 @@ mod windows_uia;
 // ── 纯函数辅助 ──
 
 /// bundle_id / 进程名 → AppKind 映射（三平台统一）。
-/// macOS 用 bundle_id（com.apple.TextEdit），Windows 用 exe 名（notepad.exe），Linux 用进程名（gedit）。
+/// 内部统一转小写比较——Windows 文件系统不区分大小写（WINWORD.EXE = winword.exe），
+/// macOS bundle_id 本就小写，无副作用。
 pub fn classify_app(id: &str) -> AppKind {
-    match id {
+    let id = id.to_ascii_lowercase();
+    match id.as_str() {
         // ── Terminal ──
-        "com.apple.Terminal" | "com.googlecode.iterm2" => AppKind::Terminal,
+        "com.apple.terminal" | "com.googlecode.iterm2" => AppKind::Terminal,
         #[cfg(target_os = "windows")]
-        "cmd.exe" | "powershell.exe" | "pwsh.exe" | "WindowsTerminal.exe" | "conhost.exe" => AppKind::Terminal,
-        #[cfg(target_os = "linux")]
+        "cmd.exe" | "powershell.exe" | "pwsh.exe" | "windowsterminal.exe" | "conhost.exe" => AppKind::Terminal,
         "gnome-terminal" | "gnome-terminal-server" | "konsole" | "xterm" | "alacritty"
         | "kitty" | "terminator" | "tilix" | "foot" | "wezterm-gui" => AppKind::Terminal,
         // ── Editor ──
-        "com.microsoft.Word" | "com.apple.TextEdit"
+        "com.microsoft.word" | "com.apple.textedit"
         | "com.sublimetext.4" | "com.sublimetext.3"
-        | "com.microsoft.VSCode" | "com.todesktop.230313mzl4w4u92"
+        | "com.microsoft.vscode" | "com.todesktop.230313mzl4w4u92"
         | "com.github.atom" | "com.kingsoft.wpsoffice.mac" => AppKind::Editor,
         #[cfg(target_os = "windows")]
-        "notepad.exe" | "WINWORD.EXE" | "EXCEL.EXE" | "POWERPNT.EXE"
-        | "Code.exe" | "sublime_text.exe" | "wps.exe" | "notepad++.exe" => AppKind::Editor,
+        "notepad.exe" | "winword.exe" | "excel.exe" | "powerpnt.exe"
+        | "code.exe" | "sublime_text.exe" | "wps.exe" | "notepad++.exe" => AppKind::Editor,
         #[cfg(target_os = "linux")]
         "gedit" | "code" | "sublime_text" | "kate" | "nano"
         | "vim" | "gvim" | "emacs" | "wps" => AppKind::Editor,
         // ── Browser ──
-        "com.apple.Safari" | "com.google.Chrome"
+        "com.apple.safari" | "com.google.chrome"
         | "org.mozilla.firefox" | "com.microsoft.edgemac" => AppKind::Browser,
         #[cfg(target_os = "windows")]
         "chrome.exe" | "msedge.exe" | "firefox.exe" => AppKind::Browser,
         #[cfg(target_os = "linux")]
         "firefox" | "chromium" | "google-chrome" | "brave" | "microsoft-edge" => AppKind::Browser,
         // ── Chat ──
-        "com.tencent.xinWeChat" | "com.tinyspeck.slackmacgap"
-        | "com.hnc.Discord" => AppKind::Chat,
+        "com.tencent.xinweichat" | "com.tinyspeck.slackmacgap"
+        | "com.hnc.discord" => AppKind::Chat,
         #[cfg(target_os = "windows")]
-        "WeChat.exe" | "Slack.exe" | "Discord.exe" => AppKind::Chat,
+        "wechat.exe" | "slack.exe" | "discord.exe" => AppKind::Chat,
         #[cfg(target_os = "linux")]
         "slack" | "discord" => AppKind::Chat,
         _ => AppKind::Unknown,
