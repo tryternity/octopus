@@ -57,6 +57,9 @@ pub struct Transcript {
     db_inserted: bool,
     /// 最近一次 DB 落库时间（落库节流用，Finalize 兜底完整写入）。None=未落库过。
     last_db_write: Option<Instant>,
+    /// commit_edit 全量替换后置 true——后续 apply_engine_full 直接跳过
+    /// （防止 ASR 引擎输出的原文与替换后的译文不一致，走 diverted 路径重新注入原文）。
+    translation_committed: bool,
 }
 
 impl Transcript {
@@ -70,11 +73,14 @@ impl Transcript {
             polish_snapshot: Vec::new(), polish_caret_offset: 0, polish_caret_at_tail: true,
             pending_delta: String::new(), db_inserted: false,
             last_db_write: None,
+            translation_committed: false,
         }
     }
 
     pub fn db_inserted(&self) -> bool { self.db_inserted }
     pub fn mark_db_inserted(&mut self) { self.db_inserted = true; }
+    /// 标记翻译已提交——后续 apply_engine_full 跳过，防止 ASR 引擎原文重新注入。
+    pub fn mark_translation_committed(&mut self) { self.translation_committed = true; }
     /// 标记已落库（更新 last_db_write = now，落库节流计时基准）。
     pub fn mark_db_written(&mut self) { self.last_db_write = Some(Instant::now()); }
     /// 距上次落库是否 ≥ threshold（节流判定）。未落库过 → true（应落库）。
@@ -98,6 +104,7 @@ impl Transcript {
     /// 暂存 diverted_pending（不立即展示，避免抖动），重算基准；下次 apply 时连同补发。
     /// （不回退已展示——no rollback。）
     pub fn apply_engine_full(&mut self, full: &str) -> bool {
+        if self.translation_committed { return false; }
         // 消费 pending_delete（选中替换）——在任何 early return 之前。
         // 引擎静音期每 tick 产出 same-as-before 的 full（delta 空），旧代码在 delta 空
         // 时 return false 跳过消费 → 选区永远不删。现在只要 apply 被调用就消费。

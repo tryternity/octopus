@@ -209,6 +209,7 @@ pub fn run() {
             coordinator::polish_now,
             coordinator::enter_edit_mode,
             coordinator::commit_edit,
+            coordinator::commit_translation,
             coordinator::set_caret,
             coordinator::set_selection,
             coordinator::start_recording,

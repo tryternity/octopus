@@ -12,8 +12,8 @@ import { useT, t as ti18n } from "@/lib/i18n";
 const POLISH_MODES = [0, 1, 2];
 const DENOISE_MODES = [0, 1, 2];
 
-type TranslateMode = 'off' | 'manual' | '8s' | '12s' | '15s';
-const TRANSLATE_MODES: TranslateMode[] = ['manual', '8s', '12s', '15s'];
+type TranslateMode = 'off' | 'manual' | '4s' | '8s' | '12s';
+const TRANSLATE_MODES: TranslateMode[] = ['manual', '4s', '8s', '12s'];
 
 interface ToolbarState {
   polish_mode: number;
@@ -144,6 +144,10 @@ function Result() {
           const isPlaceholder = t === "正在聆听…" || t === "正在聆听..." || t === "Listening…" || t === "Listening...";
           setVisible(true);
           setIsRecording(true);
+          setTranslateMode('off');
+          setTranslatedText("");
+          translatingRef.current = false;
+          setTranslating(false);
           refreshActive();
           if (isPlaceholder) {
             setText("");
@@ -318,12 +322,8 @@ function Result() {
     const submitText = finalText && !finalText.startsWith("❌")
       ? finalText
       : translatedTextRef.current;
-    invoke("commit_edit", {
+    invoke("commit_translation", {
       text: submitText,
-      dirtyRanges: [],
-      hasEdited: true,
-      caret: null,
-      selection: null,
     });
     exitTranslateMode();
   }, [finalTranslate, exitTranslateMode]);
@@ -410,9 +410,9 @@ function Result() {
     if (popupType === "translate") { setPopupType(null); return; }
     setPopupItems(TRANSLATE_MODES.map(m => ({
       label: m === 'manual' ? t("result.translateManual")
+        : m === '4s' ? t("result.translateAuto4")
         : m === '8s' ? t("result.translateAuto8")
-        : m === '12s' ? t("result.translateAuto12")
-        : t("result.translateAuto15"),
+        : t("result.translateAuto12"),
       current: m === translateMode,
       name: m,
     })));

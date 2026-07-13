@@ -65,6 +65,8 @@ enum Command {
     EnterEditMode,
     /// 提交编辑（含 dirty ranges——用户明确编辑过的区间 + 光标/选区恢复信息）
     CommitEdit { text: String, dirty_ranges: Vec<(usize, usize)>, has_edited: bool, caret: Option<usize>, selection: Option<(usize, usize)> },
+    /// 提交翻译结果——整体替换 transcript + 标记 translation_committed（阻止后续 ASR 重注入原文）。
+    CommitTranslation { text: String },
     /// 运行时配置更新——外部（设置窗口 / 工具栏）修改 RuntimeConfig 后，
     /// 通过此命令通知 coordinator 立即把变更同步到 config 快照（无需等 Toggle）。
     /// 用于 polish_llm / polish_mode / asr_correct / output_simplified / hide_toolbar 等
@@ -422,6 +424,13 @@ fn build_coordinator_loop(
                         commit_edit_apply(&mut stage, &text, &dirty_ranges, has_edited, caret, selection, &app_handle);
                         editing = false;
                     }
+                    Command::CommitTranslation { text } => {
+                        commit_edit_apply(&mut stage, &text, &[], true, None, None, &app_handle);
+                        if let Some(t) = stage_transcript(&mut stage) {
+                            t.mark_translation_committed();
+                        }
+                        editing = false;
+                    }
                     Command::UpdateRuntime => {
                         // 设置窗口 / 工具栏改了 RuntimeConfig 字段——立即同步到 config 快照，
                         // 无需等下次 Toggle。用于 polish_llm 等运行时可变字段。
@@ -554,6 +563,14 @@ impl Coordinator {
         }
     }
 
+    /// 提交翻译结果——整体替换 + 标记 translation_committed（阻止后续 ASR tick 重注入原文）
+    pub fn commit_translation(&self, text: String) {
+        let tx = self.tx.lock();
+        if tx.send(Command::CommitTranslation { text }).is_err() {
+            error!("Coordinator channel closed");
+        }
+    }
+
     /// 前端点击光标定位：char offset → 通过命令通道投递（stage 在 spawn 线程，
     /// 主线程不持有）。命令循环里 handle_set_caret 调 stage_transcript.set_caret。
     pub fn set_caret(&self, offset: usize) {
@@ -643,6 +660,12 @@ pub fn commit_edit(
     selection: Option<(usize, usize)>,
 ) {
     coordinator.commit_edit(text, dirty_ranges, has_edited, caret, selection);
+}
+
+/// 前端命令：提交翻译结果（翻译模式保存——整体替换 + 阻止后续 ASR 重注入原文）。
+#[tauri::command]
+pub fn commit_translation(coordinator: tauri::State<'_, Coordinator>, text: String) {
+    coordinator.commit_translation(text);
 }
 
 /// 前端命令：非编辑态点击文本 → 定位光标（后续流式从该处插入）。

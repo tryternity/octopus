@@ -472,9 +472,9 @@ result:
     deep: 深度降噪
   translate: 翻译
   translateManual: 手动
+  translateAuto4: 自动 4s
   translateAuto8: 自动 8s
   translateAuto12: 自动 12s
-  translateAuto15: 自动 15s
   translateNow: 立即翻译
   translating: 翻译中…
   translateFail: "翻译失败："
