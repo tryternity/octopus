@@ -382,6 +382,226 @@ fn path_matches_filename(path: &str, filename: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// 读文件内容为纯文本。支持纯文本格式（.txt/.md/.rs 等）和 Office 格式（.docx/.xlsx/.pptx）。
+/// Office 格式本质是 zip 包含 XML，提取 XML 中的文本节点。
+fn read_file_as_text(path: &std::path::Path) -> Option<String> {
+    let ext = path.extension()?.to_string_lossy().to_lowercase();
+
+    match ext.as_str() {
+        "docx" | "pptx" => read_ooxml_text(path, &ext),
+        "xlsx" => read_xlsx_text(path),
+        _ => {
+            // 纯文本格式：直接读取（可能非 UTF-8，用 lossy 转换）
+            let bytes = std::fs::read(path).ok()?;
+            if bytes.is_empty() {
+                return None;
+            }
+            // 检查是否为 zip（二进制 Office 文件误存为 .txt）
+            if bytes.starts_with(b"PK\x03\x04") {
+                return read_ooxml_text(path, "docx");
+            }
+            Some(String::from_utf8_lossy(&bytes).to_string())
+        }
+    }
+}
+
+/// 从 OOXML 格式（.docx/.pptx）中提取纯文本。
+/// .docx: word/document.xml 的 <w:t> 节点
+/// .pptx: ppt/slides/slideN.xml 的 <a:t> 节点
+fn read_ooxml_text(path: &std::path::Path, ext: &str) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+
+    let mut texts = Vec::new();
+
+    for i in 0..archive.len() {
+        let file = archive.by_index(i).ok()?;
+        let name = file.name().to_string();
+
+        let is_target = match ext {
+            "docx" => name == "word/document.xml",
+            "pptx" => name.starts_with("ppt/slides/slide") && name.ends_with(".xml"),
+            _ => false,
+        };
+
+        if !is_target {
+            continue;
+        }
+
+        let xml_content = std::io::read_to_string(file).ok()?;
+        let extracted = extract_text_from_ooxml_xml(&xml_content);
+        texts.push(extracted);
+    }
+
+    if texts.is_empty() {
+        return None;
+    }
+
+    Some(texts.join("\n\n"))
+}
+
+/// 从 .xlsx 中提取纯文本。遍历 sharedStrings.xml 和 sheetN.xml。
+fn read_xlsx_text(path: &std::path::Path) -> Option<String> {
+    let file = std::fs::File::open(path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+
+    let mut shared_strings: Vec<String> = Vec::new();
+    let mut sheet_texts: Vec<String> = Vec::new();
+
+    for i in 0..archive.len() {
+        let file = archive.by_index(i).ok()?;
+        let name = file.name().to_string();
+        let content = std::io::read_to_string(file).ok()?;
+
+        if name == "xl/sharedStrings.xml" {
+            // 共享字符串表
+            shared_strings = extract_xlsx_shared_strings(&content);
+        } else if name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml") {
+            // 工作表——提取 cell 值
+            sheet_texts.push(extract_xlsx_sheet_text(&content, &shared_strings).join("\t"));
+        }
+    }
+
+    if sheet_texts.is_empty() {
+        return None;
+    }
+
+    Some(sheet_texts.join("\n"))
+}
+
+/// 从 OOXML XML 中提取 <w:t> 或 <a:t> 文本节点。
+fn extract_text_from_ooxml_xml(xml: &str) -> String {
+    let mut result = Vec::new();
+    let mut in_tag = false;
+    let mut tag_name = String::new();
+    let mut in_text = false;
+    let mut text_content = String::new();
+
+    for ch in xml.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                tag_name.clear();
+            }
+            '>' => {
+                in_tag = false;
+                let tag = tag_name.trim();
+                // <w:t> 或 <a:t>（含属性如 <w:t xml:space="preserve">）
+                if tag.starts_with("w:t") || tag.starts_with("a:t") {
+                    in_text = true;
+                } else if tag.starts_with("/w:t") || tag.starts_with("/a:t") {
+                    if !text_content.is_empty() {
+                        result.push(text_content.clone());
+                        text_content.clear();
+                    }
+                    in_text = false;
+                } else if tag == "w:p" || tag.starts_with("w:p ") || tag == "a:p" {
+                    // 段落结束 → 换行
+                    if !result.is_empty() && !result.last().unwrap().is_empty() {
+                        result.push("\n".to_string());
+                    }
+                }
+            }
+            _ if in_tag => tag_name.push(ch),
+            _ if in_text => text_content.push(ch),
+            _ => {}
+        }
+    }
+
+    result.join("")
+}
+
+/// 从 sharedStrings.xml 提取共享字符串列表。
+fn extract_xlsx_shared_strings(xml: &str) -> Vec<String> {
+    let mut strings = Vec::new();
+    let mut in_tag = false;
+    let mut tag = String::new();
+    let mut collect = false;
+    let mut buf = String::new();
+
+    for ch in xml.chars() {
+        match ch {
+            '<' => {
+                in_tag = true;
+                tag.clear();
+            }
+            '>' => {
+                in_tag = false;
+                let t = tag.trim();
+                if t.starts_with("t") && !t.starts_with("/t") {
+                    collect = true;
+                    buf.clear();
+                } else if t.starts_with("/t") {
+                    if collect && !buf.is_empty() {
+                        strings.push(buf.clone());
+                    }
+                    collect = false;
+                }
+            }
+            _ if in_tag => tag.push(ch),
+            _ if collect => buf.push(ch),
+            _ => {}
+        }
+    }
+
+    strings
+}
+
+/// 从 sheetN.xml 提取单元格文本（引用 sharedStrings 或内联值）。
+fn extract_xlsx_sheet_text(xml: &str, shared: &[String]) -> Vec<String> {
+    // 简化：提取 <c> 标签的 <v> 值和 t="s" 引用
+    // 用正则更简洁，但避免额外依赖
+    let mut texts = Vec::new();
+    let chars: Vec<char> = xml.chars().collect();
+    let mut i = 0;
+    while i < chars.len() {
+        // 查找 <c 开头
+        if chars[i] == '<' && i + 1 < chars.len() && chars[i + 1] == 'c' {
+            // 提取属性直到 >
+            let mut attrs = String::new();
+            i += 2;
+            while i < chars.len() && chars[i] != '>' {
+                attrs.push(chars[i]);
+                i += 1;
+            }
+            // 检查是否 t="s"（共享字符串引用）
+            let is_shared = attrs.contains("t=\"s\"");
+            // 查找 <v> 值
+            i += 1;
+            if i < chars.len() && chars[i] == '<' {
+                let mut tag = String::new();
+                i += 1;
+                while i < chars.len() && chars[i] != '>' {
+                    tag.push(chars[i]);
+                    i += 1;
+                }
+                i += 1; // skip >
+                if tag.trim().starts_with("v") {
+                    let mut val = String::new();
+                    while i < chars.len() && chars[i] != '<' {
+                        val.push(chars[i]);
+                        i += 1;
+                    }
+                    if !val.is_empty() {
+                        if is_shared {
+                            if let Ok(idx) = val.parse::<usize>() {
+                                if idx < shared.len() {
+                                    texts.push(shared[idx].clone());
+                                }
+                            }
+                        } else {
+                            texts.push(val);
+                        }
+                    }
+                }
+            }
+        } else {
+            i += 1;
+        }
+    }
+    texts
+}
+
 /// 自绘编辑器 fallback：从磁盘读文件内容获取上下文。
 ///
 /// 当 AX 树不含真实编辑器内容时（Sublime Text、WPS），尝试：
@@ -409,8 +629,8 @@ fn try_read_file_context(
     let file_path = find_file_path(&filename, bundle_id)?;
     log::info!("[app-context] 磁盘 fallback: 找到文件 {}", file_path.display());
 
-    // 3. 读文件内容
-    let content = std::fs::read_to_string(&file_path).ok()?;
+    // 3. 读文件内容——支持纯文本和 Office 格式（.docx/.xlsx/.pptx）
+    let content = read_file_as_text(&file_path)?;
     if content.is_empty() {
         return None;
     }
@@ -732,9 +952,10 @@ unsafe fn build_surrounding(
         let selected_trimmed = selected_text.trim();
         let full_trimmed = full_text.trim();
         if !full_trimmed.contains(selected_trimmed) {
-            // WPS Office 完全不支持上下文获取（AX -25212 + 无 AppleScript + 无插件 API + .docx 二进制）
-            // 跳过所有 fallback，直接降级。其他自绘编辑器尝试取数器/磁盘 fallback。
-            if !bundle_id_or_name.contains("kingsoft") {
+            // WPS Office: AX 禁用 + 无 AppleScript + 无插件 API。
+            // 但窗口标题含文件名时，可通过磁盘 fallback 读 .docx（OOXML zip 解析）。
+            // 先尝试 Sublime 插件（非 Sublime 会跳过），再尝试磁盘 fallback。
+            {
                 // Sublime Text 专用取数器
                 if bundle_id_or_name.contains("sublimetext") {
                     if let Some(sublime_ctx) = crate::app_context::sublime_plugin::try_sublime_plugin_context(
@@ -780,8 +1001,6 @@ unsafe fn build_surrounding(
                     },
                 };
                 diagnostics.push(format!("DEGRADED: {}", degrade_reason));
-            } else {
-                diagnostics.push("DEGRADED: WPS Office 不支持上下文获取（AX 禁用 + 无 AppleScript + 无插件 API）".to_string());
             }
             let diag = Some(diagnostics.join("\n  "));
             log::info!("[app-context] AX 诊断（降级）:\n  {}", diag.as_ref().unwrap());
