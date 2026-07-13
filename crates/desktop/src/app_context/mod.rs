@@ -95,7 +95,8 @@ pub fn classify_app(bundle_id: &str) -> AppKind {
         | "com.sublimetext.3"
         | "com.microsoft.VSCode"
         | "com.todesktop.230313mzl4w4u92"
-        | "com.github.atom" => AppKind::Editor,
+        | "com.github.atom"
+        | "com.kingsoft.wpsoffice.mac" => AppKind::Editor,
         "com.apple.Safari"
         | "com.google.Chrome"
         | "org.mozilla.firefox"
@@ -148,6 +149,7 @@ mod tests {
         assert_eq!(classify_app("com.microsoft.Word"), AppKind::Editor);
         assert_eq!(classify_app("com.apple.TextEdit"), AppKind::Editor);
         assert_eq!(classify_app("com.microsoft.VSCode"), AppKind::Editor);
+        assert_eq!(classify_app("com.kingsoft.wpsoffice.mac"), AppKind::Editor);
     }
 
     #[test]
