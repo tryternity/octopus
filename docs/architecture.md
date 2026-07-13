@@ -240,6 +240,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 - **Extension Package**（2026-07-10）：`~/.octopus/extensions/` 下含 `config.yaml`（YAML 元数据：name/description/version/author + action + rules 预留 + skill 预留）的文件夹 = 一个 Package。导入集成进菜单编辑（非独立子页）：新增子项选类型「扩展包」→ EditForm 拖拽区（zip/文件夹）或「选择文件/文件夹」→ `import_extension` 仅校验+重复检测（不复制）→ 保存时 `install_extension` 复制到 extensions + 创建 DB `action_bar_items` 记录（`action_data` 存脚本**绝对路径**，`action_type=script`）。`spawn_script` 检测 `action_data` 前缀：绝对路径→读文件内容 + 设 `OCTOPUS_PACKAGE_DIR` 环境变量；否则→内联。`config.yaml` 的 `skill` 块纯声明性（`ref` 关联 `~/.agents/skills` 或 `skill.file` 自带 SKILL.md），一期仅 config 预留 agent 接口。详见 [spec](superpowers/specs/2026-07-10-extension-package-design.md)。
 
+- **文件 Agent 桥接（2026-07-12，v26 迁移）**：action bar 从纯文本扩展到**文件场景**——Finder 内选中文件/文件夹 → 全局热键 → AppleScript `selection` 捕获 POSIX 路径列表 → 弹出浮窗 → 菜单按 `accepts` 字段过滤（text/file/any）→ 选中 agent 项 → 在 Terminal.app 新窗口启动 CLI agent（claude/pi），octopus 定位为**桥接器**不碰文件系统。**新增模块**：`finder_selection.rs`（bundleId 检测 `com.apple.finder` + AppleScript 拿 selection）、`agent_adapter.rs`（内置白名单 `claude`/`pi`，`which` 检测安装状态，命令模板渲染 `{prompt}`/`{files}`/`{files_at}`/`{cwd}`）、`terminal_launcher.rs`（`TerminalLauncher` trait + `TerminalAppLauncher` 实现，AppleScript `do script` 开新窗口，shell escape 防注入）。**DB 变更**（v25→v26）：`action_bar_items` 加 `agent TEXT`（绑 adapter key）+ `accepts TEXT`（text/file/any，submenu 默认 any）；新表 `agent_adapters`（用户自定义 adapter CRUD）。**新增 actionType**：`agent`（prompt 模板含 `{{task}}`→浮窗内联输入框，否则直接执行；命令模板单层花括号占位符）、`copy_path`（plain/url/quoted 三种路径格式写剪贴板）。**前端**：ActionBar 浮窗 `Context` 扩展 `kind:text|files` + `files: string[]`，accepts 过滤含 submenu 动态可见性（子项全不可见则隐藏）；设置页新增 Agent tab（`AgentPanel.tsx`，adapter 检测状态 + 自定义 CRUD）；`ActionBarPanel.tsx` TYPE_META 加 agent/copy_path + 编辑表单加 adapter 下拉 + accepts 下拉。`trigger_action_bar` Finder 分流提取 `show_action_bar_at_mouse` 共用函数（DRY：text 和 Files 路径共享鼠标定位+碰撞检测+主线程显示逻辑）。详见 [spec](superpowers/specs/2026-07-12-action-bar-file-agent-design.md)。
+
 - **键盘导航**：上下键切焦点层（main↔sub），左右键当前行移动（主菜单 submenu 项自动展开子菜单预览但不抢焦点，非 submenu 项收起），**1-9 + a-z 快捷定位第 1-35 项**（只移动高亮不执行，超出范围无效），菜单溢出时 scrollIntoView 自动滚动 + voice 色 <</> 箭头指示器（ScrollRow 组件），定位到 submenu 项同步展开预览，执行用 Enter），Esc 直接关闭浮窗（一次）。`focusLayer` 状态独立于 `view` 状态。
 
 - **窗口焦点协调（FLOAT_DEPTH 引用计数）**：全局快捷键不得将 settings/compact_editor 带到前台。macOS 上 WKWebView 要求 app 进程 active 才能获得键盘焦点，而 `set_focus` 触发 `NSApp.activate` 会把所有可见 Regular 窗口带到前台。解法（视觉焦点协调方案）：(1) show 前记录前台 app（`NSWorkspace.frontmostApplication`）+ app 非活跃时临时隐藏其他可见窗口（`WINDOWS_TO_HIDE_ON_FLOAT`：settings/compact_editor/clipboard_window）；(2) `set_focus` 激活浮窗获得键盘焦点；(3) hide 时先 `activate` 原前台 app 交还焦点，再 `show` 恢复被隐藏的 Regular 窗口。实现：`activation::before_floating_window_show` / `after_floating_window_hide` 公共函数（`FLOAT_DEPTH` 引用计数支持多浮窗嵌套——只有最外层 depth==1 记录状态/交还焦点），action bar + 剪贴板浮窗共用。`action_bar_show_result` 调 `after_floating_window_hide_keep_active`（递减 depth + 清状态 + 恢复隐藏窗口，跳过 deactivate 避免 CompactEditor 被压后台）。剪贴板浮窗另加 `Focused(false)` 事件回调 `restore_hidden_windows_only`（失焦 = 虚拟关闭：`float_depth_decrement_and_is_zero` 扣减——**depth>0（仍有浮窗存活如 action_bar）时直接 return 不清状态**，只有 depth==0 才清状态 + deactivate。纯逻辑提取为 `float_depth_increment` / `float_depth_decrement_and_is_zero` / `float_clear_state`，单测覆盖 5 场景）。`TRIGGER_IN_PROGRESS: AtomicBool` 重入 guard。
@@ -487,7 +489,7 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 
 ```
 ~/.octopus/
-├── octopus.db          # 嵌入式 SQLite（models + clipboard_history + app_config + prompts + image_data + action_bar_items + script_runs 表，唯一存储）
+├── octopus.db          # 嵌入式 SQLite（models + clipboard_history + app_config + prompts + image_data + action_bar_items + script_runs + agent_adapters 表，唯一存储）
 ├── config.yaml.bak     # 旧 config.yaml 迁移后的备份（首次启动自动生成，可安全删除）
 └── models/
     ├── silero_vad_v4.onnx   # VAD（1.8M，find_silero_vad 固定加载，随包）
@@ -513,7 +515,8 @@ Client ──WebSocket──→ /ws/stream  ──→ WsStreamSession(StreamingR
 | `models` | 引擎/LLM 模型配置 | db.sql seed |
 | `clipboard_history` | 剪贴板 + 识别历史（统一存储 text/voice/ocr/image/file） | 运行时写入 |
 | `app_config` | 应用行为配置（key-value TEXT，字段随 AppConfig struct 增长） | db.sql seed + yaml 迁移 |
-| `action_bar_items` | AI 命令面板菜单项（自引用 parent_id 两级菜单，5 种 action_type，shortcut 组合快捷键） | db.sql seed + 运行时 CRUD |
+| `action_bar_items` | AI 命令面板菜单项（自引用 parent_id 两级菜单，7 种 action_type 含 agent/copy_path，shortcut 组合快捷键，agent 绑 adapter key，accepts 按选中类型过滤） | db.sql seed + 运行时 CRUD |
+| `agent_adapters` | 用户自定义 agent 适配器（key/displayName/detectBinary/commandTemplate） | 运行时 CRUD |
 | `script_runs` | script 执行记录（stdout/stderr/exit_code/耗时，截断 64KB） | 运行时写入 |
 
 - **应用行为配置** `app_config` 表 → `infra::config::AppConfig`（`octopus_infra::config::load_config()` → `db::load_app_config()`）。schema 统一定义在 infra，asr/desktop/cli 共享。值统一 TEXT 存储。
