@@ -4,17 +4,17 @@
 //! 1. NSWorkspace.frontmostApplication → pid + bundleId + name
 //! 2. classify_app(bundleId) → AppKind
 //! 3. AXUIElementCreateApplication(pid) → app element
-//! 4. kAXFocusedUIElementAttribute → focused element
-//! 5. kAXSelectedTextRangeAttribute + kAXValueAttribute → 切前后文
+//! 4. AXFocusedUIElement → focused element
+//! 5. AXSelectedTextRange + AXValue → 切前后文
 //! 6. Terminal 特例：全文作 scrollback 截断
-//! 7. kAXTitleAttribute → 窗口标题
+//! 7. AXTitle → 窗口标题
 
 #![cfg(target_os = "macos")]
 
 use std::time::{Duration, Instant};
 
-use core_foundation::base::{CFRelease, CFTypeRef};
-use core_foundation::string::CFStringRef;
+use core_foundation::base::{CFRelease, CFTypeRef, TCFType};
+use core_foundation::string::CFString;
 
 use super::ffi::*;
 use super::*;
@@ -35,8 +35,8 @@ impl super::ContextProvider for AxProvider {
         let deadline = Instant::now() + AX_TIMEOUT;
 
         // 1. 前台应用信息
-        let (pid, bundle_id, name) = frontmost_app()
-            .ok_or_else(|| anyhow::anyhow!("无法获取前台应用"))?;
+        let (pid, bundle_id, name) =
+            frontmost_app().ok_or_else(|| anyhow::anyhow!("无法获取前台应用"))?;
 
         let kind = bundle_id
             .as_deref()
@@ -51,7 +51,7 @@ impl super::ContextProvider for AxProvider {
 
         // 2. 采集 surrounding（失败 → None，不阻断 source 返回）
         let surrounding = if deadline.checked_duration_since(Instant::now()).is_some() {
-            match gather_surrounding(pid, kind, deadline) {
+            match gather_surrounding(pid, kind) {
                 Ok(s) => Some(s),
                 Err(e) => {
                     log::info!("[app-context] surrounding 采集失败（降级）: {}", e);
@@ -89,11 +89,7 @@ fn frontmost_app() -> Option<(i32, Option<String>, String)> {
 }
 
 /// 通过 AX 采集选区周围文本。
-fn gather_surrounding(
-    pid: i32,
-    kind: AppKind,
-    _deadline: Instant,
-) -> anyhow::Result<SurroundingText> {
+fn gather_surrounding(pid: i32, kind: AppKind) -> anyhow::Result<SurroundingText> {
     unsafe {
         let app_element = AXUIElementCreateApplication(pid);
         if app_element.is_null() {
@@ -101,8 +97,7 @@ fn gather_surrounding(
         }
 
         // 获取焦点元素
-        let focused = get_attribute_value(app_element, kAXFocusedUIElementAttribute);
-        let result = match focused {
+        let result = match get_attribute_value(app_element, &ax_focused_ui_element()) {
             Ok(focused_ref) => {
                 let focused_element = focused_ref as AXUIElementRef;
                 let surrounding = build_surrounding(focused_element, app_element, kind);
@@ -127,15 +122,16 @@ unsafe fn build_surrounding(
     kind: AppKind,
 ) -> anyhow::Result<SurroundingText> {
     // 窗口标题：优先从焦点元素取，回退到 app element
-    let window_title = get_attribute_string(focused_element, kAXTitleAttribute)
-        .or_else(|_| get_attribute_string(app_element, kAXTitleAttribute))
+    let window_title = get_attribute_string(focused_element, &ax_title())
+        .or_else(|_| get_attribute_string(app_element, &ax_title()))
         .ok();
 
     // 全文
-    let full_text = get_attribute_string(focused_element, kAXValueAttribute).unwrap_or_default();
+    let full_text = get_attribute_string(focused_element, &ax_value()).unwrap_or_default();
 
     // 选区范围
-    let range = get_selected_range(focused_element).unwrap_or(TextRange { start: 0, end: 0 });
+    let range =
+        get_selected_range(focused_element).unwrap_or(TextRange { start: 0, end: 0 });
 
     let mut surrounding = if kind == AppKind::Terminal {
         // Terminal 特例：before 取 scrollback 截断
@@ -174,10 +170,10 @@ unsafe fn build_surrounding(
 /// 安全读取 AX 属性值（返回 CFTypeRef，调用方负责 CFRelease）。
 unsafe fn get_attribute_value(
     element: AXUIElementRef,
-    attr: CFStringRef,
+    attr: &CFString,
 ) -> anyhow::Result<CFTypeRef> {
     let mut value: CFTypeRef = std::ptr::null();
-    let err = AXUIElementCopyAttributeValue(element, attr, &mut value);
+    let err = AXUIElementCopyAttributeValue(element, attr.as_concrete_TypeRef(), &mut value);
     if err != 0 || value.is_null() {
         return Err(anyhow::anyhow!(
             "AXUIElementCopyAttributeValue error: {}",
@@ -190,20 +186,16 @@ unsafe fn get_attribute_value(
 /// 读取 AX 字符串属性。
 unsafe fn get_attribute_string(
     element: AXUIElementRef,
-    attr: CFStringRef,
+    attr: &CFString,
 ) -> anyhow::Result<String> {
-    use core_foundation::base::TCFType;
-    use core_foundation::string::CFString;
-
     let value = get_attribute_value(element, attr)?;
     let cf_string = CFString::wrap_under_create_rule(value as *const _);
-    let s = cf_string.to_string();
-    Ok(s)
+    Ok(cf_string.to_string())
 }
 
 /// 读取选区范围 (start, end)，单位为 UTF-16 字符偏移（AX 的 CFRange 单位）。
 unsafe fn get_selected_range(element: AXUIElementRef) -> anyhow::Result<TextRange> {
-    let value = get_attribute_value(element, kAXSelectedTextRangeAttribute)?;
+    let value = get_attribute_value(element, &ax_selected_text_range())?;
     let ax_value = value as AXValueRef;
 
     let mut range = CFRange {

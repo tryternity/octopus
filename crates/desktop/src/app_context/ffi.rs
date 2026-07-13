@@ -1,12 +1,12 @@
 //! macOS Accessibility (AXUIElement) C FFI 声明。
 //!
-//! AX 函数在 ApplicationServices/HIServices framework，返回 core-foundation 类型。
-//! 项目已依赖 core-foundation 0.10，这里只声明 AX 特有的 extern。
+//! AX 函数在 ApplicationServices/HIServices framework。
+//! kAX* 属性名用 CFString::new() 构造（extern static 在 Rust 链接器不可见）。
 
 #![cfg(target_os = "macos")]
 
 use core_foundation::base::CFTypeRef;
-use core_foundation::string::CFStringRef;
+use core_foundation::string::CFString;
 
 /// AXUIElement 不透明指针
 pub type AXUIElementRef = *const std::ffi::c_void;
@@ -17,6 +17,7 @@ pub type AXError = i32;
 pub type AXValueType = u32;
 
 /// AXValue 类型枚举值（AXValue.h）
+#[allow(non_upper_case_globals)]
 pub const kAXValueCFRangeType: AXValueType = 4;
 
 /// CFRange（值类型，用于 AXValueGetValue 解码选区范围）
@@ -32,7 +33,7 @@ extern "C" {
     pub fn AXUIElementCreateApplication(pid: i32) -> AXUIElementRef;
     pub fn AXUIElementCopyAttributeValue(
         element: AXUIElementRef,
-        attribute: CFStringRef,
+        attribute: core_foundation::string::CFStringRef,
         value: *mut CFTypeRef,
     ) -> AXError;
     pub fn AXValueGetValue(
@@ -41,12 +42,21 @@ extern "C" {
         value_ptr: *mut std::ffi::c_void,
     ) -> AXError;
     pub fn AXIsProcessTrustedWithOptions(options: CFTypeRef) -> bool;
+}
 
-    // kAX* 属性字符串是外部 CFStringRef 全局符号
-    pub static kAXFocusedUIElementAttribute: CFStringRef;
-    pub static kAXSelectedTextAttribute: CFStringRef;
-    pub static kAXSelectedTextRangeAttribute: CFStringRef;
-    pub static kAXValueAttribute: CFStringRef;
-    pub static kAXTitleAttribute: CFStringRef;
-    pub static kAXRoleAttribute: CFStringRef;
+// AX 属性名 CFString——用 new() 构造（extern static 不可链接）
+pub fn ax_focused_ui_element() -> CFString {
+    CFString::new("AXFocusedUIElement")
+}
+pub fn ax_selected_text() -> CFString {
+    CFString::new("AXSelectedText")
+}
+pub fn ax_selected_text_range() -> CFString {
+    CFString::new("AXSelectedTextRange")
+}
+pub fn ax_value() -> CFString {
+    CFString::new("AXValue")
+}
+pub fn ax_title() -> CFString {
+    CFString::new("AXTitle")
 }

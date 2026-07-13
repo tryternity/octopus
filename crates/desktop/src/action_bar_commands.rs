@@ -12,6 +12,10 @@ use crate::focus_tracker::FocusTracker;
 #[serde(rename_all = "camelCase")]
 pub struct ActionBarContext {
     pub text: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<crate::app_context::AppSource>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub surrounding: Option<crate::app_context::SurroundingText>,
 }
 
 static PENDING_CONTEXT: Mutex<Option<ActionBarContext>> = Mutex::new(None);
@@ -99,8 +103,16 @@ pub fn trigger_action_bar(app: AppHandle) {
 
         log::info!("[action-bar] got text len={}", text.len());
 
-        // 5. 暂存上下文
-        *PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext { text });
+        // 5. 暂存上下文——采集来源应用 + 环境上下文（失败降级到仅 text）
+        let mut ctx = ActionBarContext { text, source: None, surrounding: None };
+        match crate::app_context::provider().gather() {
+            Ok(extra) => {
+                ctx.source = Some(extra.source);
+                ctx.surrounding = extra.surrounding;
+            }
+            Err(e) => log::warn!("[action-bar] context gather 失败（降级到仅 text）: {}", e),
+        }
+        *PENDING_CONTEXT.lock().unwrap() = Some(ctx);
 
         // 6. 获取鼠标位置 + 显示浮窗（主线程）
         // 浮窗在鼠标正上方，X 轴居中对齐鼠标，Y 轴在鼠标上方
