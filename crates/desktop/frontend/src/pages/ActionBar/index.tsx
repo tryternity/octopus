@@ -595,7 +595,7 @@ export default function ActionBar() {
         {mainItems.map((item, i) => (
           <IconBtn
             key={item.id}
-            index={i + 1}
+            index={i}
             label={item.title}
             active={selectedIdx === i}
             onClick={() => executeItem(item)}
@@ -614,7 +614,7 @@ export default function ActionBar() {
         {subItems.map((item, i) => (
           <IconBtn
             key={item.id}
-            index={i + 1}
+            index={i}
             label={item.title}
             active={focusLayer === "sub" && subSelectedIdx === i}
             onClick={() => executeItem(item)}
