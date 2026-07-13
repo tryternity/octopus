@@ -244,6 +244,48 @@ fn write_clipboard_text(app: &AppHandle, text: &str) {
     let _ = handle.write_text(text);
 }
 
+/// 将 ActionBarContext 的 source/surrounding 拼成 LLM 可理解的情境块，
+/// 追加到原始选中文本前面。供 AI 动作（润色/摘要/解释/翻译）使用。
+fn build_enriched_text(text: &str) -> String {
+    let ctx = PENDING_CONTEXT.lock().unwrap();
+    let Some(ref ctx) = *ctx else {
+        return text.to_string();
+    };
+
+    let mut parts: Vec<String> = Vec::new();
+
+    // 来源
+    if let Some(ref source) = ctx.source {
+        let kind_label = match source.kind {
+            crate::app_context::AppKind::Editor => "编辑器",
+            crate::app_context::AppKind::Terminal => "终端",
+            crate::app_context::AppKind::Browser => "浏览器",
+            crate::app_context::AppKind::Chat => "聊天",
+            crate::app_context::AppKind::Unknown => "应用",
+        };
+        parts.push(format!("【来源】{}（{}）", source.name, kind_label));
+    }
+
+    // 前后文
+    if let Some(ref surr) = ctx.surrounding {
+        if let Some(ref title) = surr.window_title {
+            parts.push(format!("【窗口】{}", title));
+        }
+        if let Some(ref before) = surr.before {
+            parts.push(format!("【上文】\n{}", before));
+        }
+        if let Some(ref after) = surr.after {
+            parts.push(format!("【下文】\n{}", after));
+        }
+    }
+
+    if parts.is_empty() {
+        return text.to_string();
+    }
+
+    format!("{}\n\n【选中文本】\n{}", parts.join("\n\n"), text)
+}
+
 #[cfg(target_os = "macos")]
 fn get_mouse_position(_app: &AppHandle) -> (f64, f64) {
     use core_graphics::event::CGEvent;
@@ -833,8 +875,9 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                     TranslateStrategy::Llm => {
                         let llm_config = crate::config::llm_config_ignore_mode(&config)
                             .ok_or("润色模型未配置，请在设置中配置 LLM")?;
-                        let prompt = auto_translate_prompt(&text);
-                        let result = octopus_llm::chat_text_with_prompt(prompt, &text, &llm_config)
+                        let enriched_text = build_enriched_text(&text);
+                        let prompt = auto_translate_prompt(&enriched_text);
+                        let result = octopus_llm::chat_text_with_prompt(prompt, &enriched_text, &llm_config)
                         .map_err(|e| e.to_string())?;
                         action_bar_show_result(result, text, "translate".into(), app.clone(), true);
                         return Ok(true);
@@ -845,7 +888,8 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
             // 非 auto_translate 的 AI 操作（润色/摘要/解释），仍走 LLM
             let llm_config = crate::config::llm_config_ignore_mode(&config)
                 .ok_or("润色模型未配置，请在设置中配置 LLM")?;
-            let result = octopus_llm::chat_text_with_prompt(&item.action_data, &text, &llm_config)
+            let enriched_text = build_enriched_text(&text);
+            let result = octopus_llm::chat_text_with_prompt(&item.action_data, &enriched_text, &llm_config)
                 .map_err(|e| e.to_string())?;
             action_bar_show_result(result, String::new(), item.title, app.clone(), true);
             Ok(true)
