@@ -1159,22 +1159,6 @@ fn finalize_after_stop(
         return;
     }
 
-    // 翻译模式：对最终文本同步翻译，粘贴译文而非原文
-    if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
-        crate::result_window::show_result(app_handle, "⏳ 最终翻译中...");
-        let source = combined.clone();
-        let translated = crate::action_bar_commands::do_translate(&source, config)
-            .unwrap_or_else(|e| {
-                warn!("最终翻译失败，回退原文: {}", e);
-                source.clone()
-            });
-        info!("Translation finalize: {} chars → {} chars", source.chars().count(), translated.chars().count());
-        let raw = transcript.db_text();
-        let segs = transcript.segments_json();
-        do_paste(stage, &translated, transcript.id, &raw, &segs, "done", config, app_handle, tx);
-        return;
-    }
-
     crate::result_window::show_result(app_handle, &transcript.display_text());
     if skip_final_polish {
         // 立即润色已覆盖全部文本，直接 paste（polish_status="done"）
@@ -1294,6 +1278,22 @@ fn do_paste(
     app_handle: &tauri::AppHandle,
     tx: &Sender<Command>,
 ) {
+    // 翻译模式：润色完成后（或跳过润色），对最终文本同步翻译，粘贴译文。
+    // swap 消费确保只翻译一次（多个 do_paste 调用只有首个触发）。
+    let text_to_paste_owned: String;
+    let text_to_paste = if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
+        crate::result_window::show_result(app_handle, "⏳ 最终翻译中...");
+        text_to_paste_owned = crate::action_bar_commands::do_translate(text_to_paste, config)
+            .unwrap_or_else(|e| {
+                warn!("最终翻译失败，回退润色/原文: {}", e);
+                text_to_paste.to_string()
+            });
+        info!("Translation finalize: {} chars", text_to_paste_owned.chars().count());
+        &text_to_paste_owned
+    } else {
+        text_to_paste
+    };
+
     crate::result_window::show_result(app_handle, text_to_paste);
 
     *stage = Stage::Pasting {
