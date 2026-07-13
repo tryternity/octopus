@@ -380,3 +380,15 @@ CREATE TABLE IF NOT EXISTS agent_adapters (
     created_at       TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );
+
+-- ── Agent Task（agent × 语音识别联动）──────────────────────
+CREATE TABLE IF NOT EXISTS agent_tasks (
+    id               TEXT PRIMARY KEY,
+    status           TEXT NOT NULL DEFAULT 'pending',
+    agent_key        TEXT NOT NULL,
+    context          TEXT NOT NULL DEFAULT '{}',
+    transcribed_text TEXT NOT NULL DEFAULT '',
+    error_msg        TEXT NOT NULL DEFAULT '',
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
+);

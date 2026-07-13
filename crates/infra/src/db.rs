@@ -176,7 +176,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 26 {
+    if v >= 27 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -302,13 +302,22 @@ fn init_schema(conn: &Connection) -> Result<()> {
             conn.execute("PRAGMA user_version = 26", [])?;
             log::info!("schema upgraded to v26 (action_bar_items.agent/accepts + agent_adapters table)");
         }
+        // v26→v27：agent_tasks 表（action bar agent × 语音识别联动）
+        {
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS agent_tasks (id TEXT PRIMARY KEY, status TEXT NOT NULL DEFAULT 'pending', agent_key TEXT NOT NULL, context TEXT NOT NULL DEFAULT '{}', transcribed_text TEXT NOT NULL DEFAULT '', error_msg TEXT NOT NULL DEFAULT '', created_at TEXT NOT NULL DEFAULT (datetime('now')), updated_at TEXT NOT NULL DEFAULT (datetime('now')))",
+                [],
+            )?;
+            conn.execute("PRAGMA user_version = 27", [])?;
+            log::info!("schema upgraded to v27 (agent_tasks table)");
+        }
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 26", [])?;
-    log::info!("DB initialized (v26): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 27", [])?;
+    log::info!("DB initialized (v27): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -1382,6 +1391,88 @@ pub fn delete_agent_adapter_record(id: i64) -> Result<()> {
     })
 }
 
+// ── Agent Task（agent × 语音识别联动）──────────────────────
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentTask {
+    pub id: String,
+    pub status: String,
+    pub agent_key: String,
+    pub context: String,
+    pub transcribed_text: String,
+    pub error_msg: String,
+    pub created_at: String,
+    pub updated_at: String,
+}
+
+pub fn insert_agent_task(id: &str, agent_key: &str, context: &str) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "INSERT INTO agent_tasks (id, status, agent_key, context) VALUES (?1, 'pending', ?2, ?3)",
+            params![id, agent_key, context],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn load_agent_task(id: &str) -> Result<Option<AgentTask>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, status, agent_key, context, transcribed_text, error_msg, created_at, updated_at FROM agent_tasks WHERE id=?1"
+        )?;
+        let mut rows = stmt.query_map(params![id], |r| Ok(AgentTask {
+            id: r.get(0)?, status: r.get(1)?, agent_key: r.get(2)?, context: r.get(3)?,
+            transcribed_text: r.get(4)?, error_msg: r.get(5)?, created_at: r.get(6)?, updated_at: r.get(7)?,
+        }))?;
+        match rows.next() {
+            Some(r) => Ok(Some(r?)),
+            None => Ok(None),
+        }
+    })
+}
+
+pub fn update_agent_task_result(id: &str, transcribed_text: &str) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE agent_tasks SET transcribed_text=?1, status='executing', updated_at=datetime('now') WHERE id=?2",
+            params![transcribed_text, id],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn update_agent_task_status(id: &str, status: &str, error_msg: &str) -> Result<()> {
+    with_db(|conn| {
+        conn.execute(
+            "UPDATE agent_tasks SET status=?1, error_msg=?2, updated_at=datetime('now') WHERE id=?3",
+            params![status, error_msg, id],
+        )?;
+        Ok(())
+    })
+}
+
+pub fn list_agent_tasks(limit: i64) -> Result<Vec<AgentTask>> {
+    with_db(|conn| {
+        let mut stmt = conn.prepare(
+            "SELECT id, status, agent_key, context, transcribed_text, error_msg, created_at, updated_at FROM agent_tasks ORDER BY created_at DESC LIMIT ?1"
+        )?;
+        let rows = stmt.query_map(params![limit], |r| Ok(AgentTask {
+            id: r.get(0)?, status: r.get(1)?, agent_key: r.get(2)?, context: r.get(3)?,
+            transcribed_text: r.get(4)?, error_msg: r.get(5)?, created_at: r.get(6)?, updated_at: r.get(7)?,
+        }))?;
+        let mut list = Vec::new();
+        for r in rows { list.push(r?); }
+        Ok(list)
+    })
+}
+
+pub fn delete_agent_task(id: &str) -> Result<()> {
+    with_db(|conn| {
+        conn.execute("DELETE FROM agent_tasks WHERE id=?1", params![id])?;
+        Ok(())
+    })
+}
+
 // ── HotwordSet（热词版本/场景）──────────────────────────────────
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -2131,7 +2222,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 26, "全新库 init_schema 后应到 v26");
+        assert_eq!(v, 27, "全新库 init_schema 后应到 v27");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2275,9 +2366,9 @@ mod tests {
         // 运行迁移
         init_schema(&conn).unwrap();
 
-        // 验证：迁移后 user_version = 26
+        // 验证：迁移后 user_version = 27
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 26);
+        assert_eq!(v, 27);
 
         // 验证：submenu 行 accepts 升级为 'any'
         let accepts: String = conn.query_row(
@@ -2327,16 +2418,53 @@ mod tests {
     }
 
     #[test]
-    fn init_schema_v25_is_noop() {
-        // 已是 v26 的库再调 init_schema 应早退（不重跑、不报错）
+    fn migration_v26_to_v27_creates_agent_tasks_table() {
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("DROP TABLE agent_tasks", []).unwrap();
         conn.execute("PRAGMA user_version = 26", []).unwrap();
+        init_schema(&conn).unwrap();
+        let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
+        assert_eq!(v, 27);
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_tasks'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn agent_task_crud_roundtrip() {
+        let conn = open_init();
+        conn.execute(
+            "INSERT INTO agent_tasks (id, agent_key, context) VALUES ('test-1', 'claude', '{\"kind\":\"files\"}')",
+            [],
+        ).unwrap();
+        let row: Vec<(String, String)> = conn.prepare(
+            "SELECT status, agent_key FROM agent_tasks WHERE id='test-1'"
+        ).unwrap().query_map([], |r| Ok((r.get(0)?, r.get(1)?))).unwrap()
+        .filter_map(|r| r.ok()).collect();
+        assert_eq!(row[0].0, "pending");
+        assert_eq!(row[0].1, "claude");
+        conn.execute("UPDATE agent_tasks SET transcribed_text='hello', status='executing' WHERE id='test-1'", []).unwrap();
+        let text: String = conn.query_row("SELECT transcribed_text FROM agent_tasks WHERE id='test-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(text, "hello");
+        conn.execute("DELETE FROM agent_tasks WHERE id='test-1'", []).unwrap();
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM agent_tasks", [], |r| r.get(0)).unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn init_schema_v25_is_noop() {
+        // 已是 v27 的库再调 init_schema 应早退（不重跑、不报错）
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(INIT_SQL).unwrap();
+        conn.execute("PRAGMA user_version = 27", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 26);
+        assert_eq!(v, 27);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -3213,7 +3341,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 26);
+        assert_eq!(v, 27);
         let (name, words_text): (String, String) = conn
             .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
