@@ -13,7 +13,7 @@
 
 use std::time::{Duration, Instant};
 
-use core_foundation::base::{CFGetTypeID, CFRelease, CFTypeRef, TCFType};
+use core_foundation::base::{CFGetTypeID, CFRelease, CFRetain, CFTypeRef, TCFType};
 use core_foundation::string::CFString;
 
 use super::ffi::*;
@@ -131,20 +131,22 @@ unsafe fn build_surrounding(
     diagnostics.push(format!("focused_role={}", focused_role));
 
     // 焦点元素本身可能就是文本区（TextEdit、Terminal 等）
-    // 如果不是，尝试遍历子树找 AXTextArea/AXTextField
-    let text_element = if is_text_element(&focused_role) {
-        focused_element
+    // 如果不是，尝试遍历子树找 AXTextArea/AXTextField。
+    // find_text_element 返回的元素经过 CFRetain（+1），需在末尾释放。
+    // focused_element 本身是借用（由调用方持有），不需额外释放。
+    let (text_element, owns_text_element) = if is_text_element(&focused_role) {
+        (focused_element, false)
     } else {
-        // 遍历子树找文本元素
         match find_text_element(focused_element) {
             Some(child) => {
-                let child_role = get_attribute_string(child, &ax_role()).unwrap_or_default();
+                let child_role =
+                    get_attribute_string(child, &ax_role()).unwrap_or_default();
                 diagnostics.push(format!("found_text_child_role={}", child_role));
-                child
+                (child, true) // find_text_element 已 CFRetain
             }
             None => {
                 diagnostics.push("no_text_child_found".to_string());
-                focused_element // 回退到焦点元素本身，尽力尝试
+                (focused_element, false)
             }
         }
     };
@@ -178,6 +180,11 @@ unsafe fn build_surrounding(
     ));
 
     log::info!("[app-context] AX 诊断: {}", diagnostics.join(", "));
+
+    // 用完后释放 find_text_element 返回的 +1 引用
+    if owns_text_element {
+        CFRelease(text_element as CFTypeRef);
+    }
 
     let mut surrounding = if kind == AppKind::Terminal {
         let before = if !full_text.is_empty() {
@@ -222,6 +229,10 @@ unsafe fn is_text_element(role: &str) -> bool {
 
 /// 递归遍历 AX 子树，找到第一个有 AXValue 的文本元素（AXTextArea/AXTextField）。
 /// 深度限制 5 层，广度限制每层 50 个子元素（防止巨树卡死）。
+///
+/// **返回的元素经过 CFRetain（+1）**，调用方必须 CFRelease。
+/// 因为子元素从 CFArray 中取得，数组 Drop 后子元素会被释放——
+/// 必须 CFRetain 防止 use-after-free。
 unsafe fn find_text_element(element: AXUIElementRef) -> Option<AXUIElementRef> {
     find_text_element_depth(element, 0, 5)
 }
@@ -247,6 +258,9 @@ unsafe fn find_text_element_depth(
             Err(_) => false,
         };
         if has_value {
+            // CFRetain 防止 use-after-free：
+            // 如果 element 来自父层的 CFArray，数组 Drop 时会释放它。
+            CFRetain(element as CFTypeRef);
             return Some(element);
         }
     }
@@ -276,7 +290,7 @@ unsafe fn find_text_element_depth(
             continue;
         }
         if let Some(found) = find_text_element_depth(child, depth + 1, max_depth) {
-            return Some(found);
+            return Some(found); // found 已被 CFRetain，安全返回
         }
     }
 
