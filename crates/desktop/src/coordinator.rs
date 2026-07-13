@@ -2329,3 +2329,34 @@ fn update_transcription_raw(
     Ok(())
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// TRANSLATION_ACTIVE 的 swap(false) 消费语义：首次读取 true 后自动归零，
+    /// 确保多次 do_paste 调用只翻译一次（润色重试 / 跨阶段等场景）。
+    #[test]
+    fn translation_active_swap_consumes_once() {
+        let flag = AtomicBool::new(true);
+        // 首次 swap → 取回 true，flag 变 false
+        assert!(flag.swap(false, Ordering::Relaxed));
+        // 再次 swap → 取回 false（已消费）
+        assert!(!flag.swap(false, Ordering::Relaxed));
+    }
+
+    #[test]
+    fn translation_active_default_false() {
+        let flag = AtomicBool::new(false);
+        assert!(!flag.swap(false, Ordering::Relaxed));
+    }
+
+    #[test]
+    fn translation_active_set_and_clear() {
+        let flag = AtomicBool::new(false);
+        flag.store(true, Ordering::Relaxed);
+        assert!(flag.swap(false, Ordering::Relaxed), "set true 后首次 swap 应为 true");
+        flag.store(false, Ordering::Relaxed);
+        assert!(!flag.swap(false, Ordering::Relaxed), "store false 后 swap 应为 false");
+    }
+}
+

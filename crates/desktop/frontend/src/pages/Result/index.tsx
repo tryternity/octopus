@@ -7,13 +7,17 @@ import { SvgIcon, type IconName } from "@/components/SvgIcon";
 import { parseShortcut, matchShortcut } from "./shortcut";
 import { AsrEditor, type AsrEditorHandle } from "./AsrEditor";
 import { TranslationPane } from "./TranslationPane";
+import {
+  type TranslateMode,
+  TRANSLATE_MODES,
+  resolveRememberedTranslateMode,
+  parseThrottleSeconds,
+  buildTranslatePopupItems,
+} from "./translateMode";
 import { useT, t as ti18n } from "@/lib/i18n";
 
 const POLISH_MODES = [0, 1, 2];
 const DENOISE_MODES = [0, 1, 2];
-
-type TranslateMode = 'off' | 'manual' | '4s' | '8s' | '12s';
-const TRANSLATE_MODES: TranslateMode[] = ['manual', '4s', '8s', '12s'];
 
 interface ToolbarState {
   polish_mode: number;
@@ -231,10 +235,7 @@ function Result() {
   useEffect(() => { doTranslateRef.current = doTranslate; }, [doTranslate]);
 
   const enterTranslateMode = useCallback(() => {
-    const remembered = toolbarState.translate_mode;
-    const mode: TranslateMode = TRANSLATE_MODES.includes(remembered as TranslateMode)
-      ? remembered as TranslateMode
-      : 'manual';
+    const mode = resolveRememberedTranslateMode(toolbarState.translate_mode);
     setTranslateMode(mode);
     if (!expanded) {
       setExpanded(true);
@@ -272,11 +273,10 @@ function Result() {
     };
   }, [translateMode]);
 
-  // 自动档节流——translateMode 为 8s/12s/15s 时启动定时器
+  // 自动档节流——translateMode 为 4s/8s/12s 时启动定时器
   useEffect(() => {
-    if (translateMode === 'off' || translateMode === 'manual') return;
-    const secs = parseInt(translateMode, 10);
-    if (isNaN(secs)) return;
+    const secs = parseThrottleSeconds(translateMode);
+    if (secs === null) return;
 
     const timer = setInterval(() => {
       const current = asrEditorRef.current?.getText() ?? "";
@@ -370,14 +370,12 @@ function Result() {
       return;
     }
     if (popupType === "translate") { setPopupType(null); return; }
-    setPopupItems(TRANSLATE_MODES.map(m => ({
-      label: m === 'manual' ? t("result.translateManual")
+    setPopupItems(buildTranslatePopupItems(translateMode, (m) =>
+      m === 'manual' ? t("result.translateManual")
         : m === '4s' ? t("result.translateAuto4")
         : m === '8s' ? t("result.translateAuto8")
-        : t("result.translateAuto12"),
-      current: m === translateMode,
-      name: m,
-    })));
+        : t("result.translateAuto12")
+    ));
     setPopupType("translate");
   };
 
