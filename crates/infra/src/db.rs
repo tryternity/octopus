@@ -2455,6 +2455,97 @@ mod tests {
     }
 
     #[test]
+    fn agent_task_lifecycle_pending_to_done() {
+        let conn = open_init();
+        // 创建 task（pending）
+        conn.execute(
+            "INSERT INTO agent_tasks (id, agent_key, context) VALUES ('life-1', 'claude', '{\"kind\":\"files\",\"files\":[\"/a\"]}')",
+            [],
+        ).unwrap();
+        let status: String = conn.query_row("SELECT status FROM agent_tasks WHERE id='life-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "pending");
+
+        // 录音回调 → executing
+        conn.execute("UPDATE agent_tasks SET transcribed_text='帮我整理', status='executing', updated_at=datetime('now') WHERE id='life-1'", []).unwrap();
+        let (status, text): (String, String) = conn.query_row(
+            "SELECT status, transcribed_text FROM agent_tasks WHERE id='life-1'", [], |r| Ok((r.get(0)?, r.get(1)?))
+        ).unwrap();
+        assert_eq!(status, "executing");
+        assert_eq!(text, "帮我整理");
+
+        // 执行完成 → done
+        conn.execute("UPDATE agent_tasks SET status='done', updated_at=datetime('now') WHERE id='life-1'", []).unwrap();
+        let status: String = conn.query_row("SELECT status FROM agent_tasks WHERE id='life-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "done");
+
+        // 清理
+        conn.execute("DELETE FROM agent_tasks WHERE id='life-1'", []).unwrap();
+    }
+
+    #[test]
+    fn agent_task_lifecycle_pending_to_failed() {
+        let conn = open_init();
+        conn.execute("INSERT INTO agent_tasks (id, agent_key) VALUES ('life-2', 'pi')", []).unwrap();
+        // 空识别 → failed
+        conn.execute("UPDATE agent_tasks SET status='failed', error_msg='识别结果为空', updated_at=datetime('now') WHERE id='life-2'", []).unwrap();
+        let (status, err): (String, String) = conn.query_row(
+            "SELECT status, error_msg FROM agent_tasks WHERE id='life-2'", [], |r| Ok((r.get(0)?, r.get(1)?))
+        ).unwrap();
+        assert_eq!(status, "failed");
+        assert_eq!(err, "识别结果为空");
+        conn.execute("DELETE FROM agent_tasks WHERE id='life-2'", []).unwrap();
+    }
+
+    #[test]
+    fn agent_task_context_json_storage() {
+        let conn = open_init();
+        let complex_context = r#"{"kind":"files","files":["/a/b.pdf","/c d/e.pdf"],"cwd":"/Users/x","prompt_template":"{{task}}\n\n{{files}}"}"#;
+        conn.execute(
+            "INSERT INTO agent_tasks (id, agent_key, context) VALUES (?1, ?2, ?3)",
+            params!["ctx-1", "claude", complex_context],
+        ).unwrap();
+        let stored: String = conn.query_row("SELECT context FROM agent_tasks WHERE id='ctx-1'", [], |r| r.get(0)).unwrap();
+        // JSON 往返无损
+        let parsed: serde_json::Value = serde_json::from_str(&stored).unwrap();
+        assert_eq!(parsed["files"][0], "/a/b.pdf");
+        assert_eq!(parsed["files"][1], "/c d/e.pdf");
+        assert_eq!(parsed["cwd"], "/Users/x");
+        assert_eq!(parsed["prompt_template"], "{{task}}\n\n{{files}}");
+        conn.execute("DELETE FROM agent_tasks WHERE id='ctx-1'", []).unwrap();
+    }
+
+    #[test]
+    fn agent_task_list_ordered_by_created_at_desc() {
+        let conn = open_init();
+        conn.execute("INSERT INTO agent_tasks (id, agent_key) VALUES ('old', 'claude')", []).unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(1100));
+        conn.execute("INSERT INTO agent_tasks (id, agent_key) VALUES ('new', 'pi')", []).unwrap();
+        let ids: Vec<String> = conn.prepare(
+            "SELECT id FROM agent_tasks ORDER BY created_at DESC"
+        ).unwrap().query_map([], |r| r.get::<_, String>(0)).unwrap()
+        .filter_map(|r| r.ok()).collect();
+        assert_eq!(ids.len(), 2);
+        assert_eq!(ids[0], "new"); // 新的在前
+        assert_eq!(ids[1], "old");
+    }
+
+    #[test]
+    fn agent_task_default_status_is_pending() {
+        let conn = open_init();
+        conn.execute("INSERT INTO agent_tasks (id, agent_key) VALUES ('def-1', 'claude')", []).unwrap();
+        let status: String = conn.query_row("SELECT status FROM agent_tasks WHERE id='def-1'", [], |r| r.get(0)).unwrap();
+        assert_eq!(status, "pending");
+    }
+
+    #[test]
+    fn agent_task_default_context_is_empty_json() {
+        let conn = open_init();
+        conn.execute("INSERT INTO agent_tasks (id, agent_key) VALUES ('def-2', 'claude')", []).unwrap();
+        let context: String = conn.query_row("SELECT context FROM agent_tasks WHERE id='def-2'", [], |r| r.get(0)).unwrap();
+        assert_eq!(context, "{}");
+    }
+
+    #[test]
     fn init_schema_v25_is_noop() {
         // 已是 v27 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
