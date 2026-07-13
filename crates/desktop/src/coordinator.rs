@@ -530,7 +530,8 @@ fn build_coordinator_loop(
                         if !matches!(stage, Stage::Idle) {
                             warn!("StartAgentRecording ignored: not Idle, marking task failed");
                             let _ = octopus_infra::db::update_agent_task_status(&task_id, "failed", "录音正在进行中，无法启动 agent 录音");
-                            crate::result_window::show_result(&app_handle, "❌ 录音正在进行中，请先停止");
+                            // 不占用结果窗（会被流式 update_result 覆盖），改 emit 事件让前端弹 toast
+                            let _ = app_handle.emit("agent-task://error", "录音正在进行中，请先停止");
                             continue;
                         }
                         let rc = runtime_config.read();

@@ -119,7 +119,12 @@ function Result() {
         }, 200);
       }
     });
-    return () => { unlisten.then((f) => f()); };
+    // agent task 错误通知（录音进行中时 StartAgentRecording 被拒等）
+    const unlistenAgentError = listen<string>("agent-task://error", (payload) => {
+      const msg = typeof payload === "string" ? payload : (payload as any)?.payload ?? "";
+      if (msg) showToast(msg, 3000);
+    });
+    return () => { unlisten.then((f) => f()); unlistenAgentError.then((f) => f()); };
   }, []);
 
   // ── Toolbar hover ──
