@@ -230,7 +230,11 @@ pub fn action_bar_show_result(result: String, original_text: String, action: Str
             ..Default::default()
         }
     };
-    crate::compact_editor_commands::open_temp_compact_editor(&app, &payload);
+    // 投递主线程——create_compact_editor_window 内含 set_dock_icon 需主线程
+    let app_for_editor = app.clone();
+    let _ = app.run_on_main_thread(move || {
+        crate::compact_editor_commands::open_temp_compact_editor(&app_for_editor, &payload);
+    });
 }
 
 // ── 辅助函数 ──
@@ -969,7 +973,12 @@ async fn execute_action_bar_inner(item_id: i64, text: String, app: &AppHandle) -
                             translated_text: Some("⏳ 正在翻译…".into()),
                             ..Default::default()
                         };
-                        crate::compact_editor_commands::open_temp_compact_editor(&app, &payload);
+                        // 投递主线程——create_compact_editor_window 内含 set_dock_icon
+                        // 需主线程的 MainThreadMarker，worker 线程直接调会被跳过
+                        let app_for_editor = app.clone();
+                        let _ = app.run_on_main_thread(move || {
+                            crate::compact_editor_commands::open_temp_compact_editor(&app_for_editor, &payload);
+                        });
 
                         let app_clone = app.clone();
                         std::thread::spawn(move || {
