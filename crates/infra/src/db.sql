@@ -282,6 +282,8 @@ CREATE TABLE IF NOT EXISTS action_bar_items (
     is_async   INTEGER NOT NULL DEFAULT 1,
     write_output_to_clipboard INTEGER NOT NULL DEFAULT 0,
     shortcut    TEXT NOT NULL DEFAULT '',
+    agent       TEXT NOT NULL DEFAULT '',
+    accepts     TEXT NOT NULL DEFAULT 'text',
     created_at  TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at  TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (parent_id) REFERENCES action_bar_items(id) ON DELETE CASCADE
@@ -366,4 +368,15 @@ INSERT OR IGNORE INTO hotword_sets(name, enabled, words_text) VALUES('通用', 1
 CREATE TABLE IF NOT EXISTS hotword_hits (
     word        TEXT    PRIMARY KEY,
     hit_count   INTEGER NOT NULL DEFAULT 0
+);
+
+-- ── Agent Adapter（用户自定义 agent 适配器）──────────────────
+CREATE TABLE IF NOT EXISTS agent_adapters (
+    id               INTEGER PRIMARY KEY AUTOINCREMENT,
+    key              TEXT NOT NULL UNIQUE,
+    display_name     TEXT NOT NULL,
+    detect_binary    TEXT NOT NULL,
+    command_template TEXT NOT NULL,
+    created_at       TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at       TEXT NOT NULL DEFAULT (datetime('now'))
 );

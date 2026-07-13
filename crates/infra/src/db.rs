@@ -176,7 +176,7 @@ fn init_schema(conn: &Connection) -> Result<()> {
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .context("query user_version")?;
 
-    if v >= 25 {
+    if v >= 26 {
         return Ok(()); // 已最新
     }
     if v >= 17 {
@@ -278,13 +278,34 @@ fn init_schema(conn: &Connection) -> Result<()> {
             }
             conn.execute("PRAGMA user_version = 25", [])?;
         }
+        // v25→v26：action_bar_items 加 agent + accepts 列；新增 agent_adapters 表
+        {
+            let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)")?
+                .query_map([], |r| r.get::<_, String>(1))?
+                .filter_map(|r| r.ok())
+                .collect();
+            if !cols.contains(&"agent".to_string()) {
+                conn.execute("ALTER TABLE action_bar_items ADD COLUMN agent TEXT NOT NULL DEFAULT ''", [])?;
+            }
+            if !cols.contains(&"accepts".to_string()) {
+                conn.execute("ALTER TABLE action_bar_items ADD COLUMN accepts TEXT NOT NULL DEFAULT 'text'", [])?;
+            }
+            // submenu 既有项升级为 accepts='any'（容器类型两场景通用）
+            conn.execute(
+                "UPDATE action_bar_items SET accepts='any' WHERE action_type='submenu' AND accepts='text'",
+                [],
+            )?;
+            conn.execute_batch(INIT_SQL).ok(); // agent_adapters 表由 IF NOT EXISTS 自动建
+            conn.execute("PRAGMA user_version = 26", [])?;
+            log::info!("schema upgraded to v26 (action_bar_items.agent/accepts + agent_adapters table)");
+        }
         return Ok(());
     }
 
     conn.execute_batch(INIT_SQL).context("执行 db.sql 建表 + seed")?;
     migrate_yaml_to_db(conn)?; // config.yaml 存在时一次性导入（导入后重命名 .bak），否则幂等返回
-    conn.execute("PRAGMA user_version = 25", [])?;
-    log::info!("DB initialized (v25): schema + seed + yaml 配置导入（无 yaml 则跳过）");
+    conn.execute("PRAGMA user_version = 26", [])?;
+    log::info!("DB initialized (v26): schema + seed + yaml 配置导入（无 yaml 则跳过）");
     Ok(())
 }
 
@@ -2035,7 +2056,7 @@ mod tests {
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 25, "全新库 init_schema 后应到 v25");
+        assert_eq!(v, 26, "全新库 init_schema 后应到 v26");
         // 六张核心表都已建好（含 action_bar_items）
         let n: i64 = conn
             .query_row(
@@ -2049,16 +2070,36 @@ mod tests {
     }
 
     #[test]
+    fn action_bar_items_has_agent_and_accepts_cols() {
+        let conn = open_init();
+        let cols: Vec<String> = conn.prepare("PRAGMA table_info(action_bar_items)").unwrap()
+            .query_map([], |r| r.get::<_, String>(1)).unwrap()
+            .filter_map(|r| r.ok()).collect();
+        assert!(cols.contains(&"agent".to_string()), "missing agent column: {:?}", cols);
+        assert!(cols.contains(&"accepts".to_string()), "missing accepts column: {:?}", cols);
+    }
+
+    #[test]
+    fn agent_adapters_table_exists() {
+        let conn = open_init();
+        let count: i64 = conn.query_row(
+            "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='agent_adapters'",
+            [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(count, 1, "agent_adapters table should exist");
+    }
+
+    #[test]
     fn init_schema_v25_is_noop() {
-        // 已是 v25 的库再调 init_schema 应早退（不重跑、不报错）
+        // 已是 v26 的库再调 init_schema 应早退（不重跑、不报错）
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(INIT_SQL).unwrap();
-        conn.execute("PRAGMA user_version = 25", []).unwrap();
+        conn.execute("PRAGMA user_version = 26", []).unwrap();
         init_schema(&conn).unwrap();
         let v: u32 = conn
             .query_row("PRAGMA user_version", [], |r| r.get(0))
             .unwrap();
-        assert_eq!(v, 25);
+        assert_eq!(v, 26);
     }
 
     /// HotwordSet 全 CRUD 往返：建 → 列 → 重名冲突 → 改名 → 启停 →
@@ -2935,9 +2976,7 @@ mod tests {
 
         // v24
         let v: u32 = conn.query_row("PRAGMA user_version", [], |r| r.get(0)).unwrap();
-        assert_eq!(v, 25);
-
-        // 「通用」版本存在，含两个 active 词（normalize 排序），不含 pending
+        assert_eq!(v, 26);
         let (name, words_text): (String, String) = conn
             .query_row("SELECT name, words_text FROM hotword_sets WHERE name='通用'", [], |r| {
                 Ok((r.get(0)?, r.get(1)?))
