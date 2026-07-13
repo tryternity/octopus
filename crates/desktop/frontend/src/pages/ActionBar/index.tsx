@@ -390,8 +390,6 @@ export default function ActionBar() {
         return;
       }
 
-      if (viewRef.current === "loading") return;
-
       // 组合快捷键：Alt/⌥ + 字符 → 直接执行（最高优先级，跨层级）
       // macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键
       if (e.altKey) {
