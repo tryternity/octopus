@@ -304,7 +304,7 @@ export default function ActionBar() {
     }, timeoutMs) : null;
 
     try {
-      await invoke("execute_action_bar", { itemId: item.id, text: ctx.text });
+      await invoke("execute_action_bar", { itemId: item.id, text: ctx.text || "" });
       if (timeoutId) clearTimeout(timeoutId);
       if (timedOutRef.current) {
         console.warn("[action-bar] AI result arrived after timeout, discarding");
@@ -363,9 +363,10 @@ export default function ActionBar() {
     }
 
     // copy_path / url / script / copy
-    // url / script / copy → 脚本类错误显示红色气泡提示（1 秒消失），其他类切 error 视图
+    // copy_path / url / script / copy → 脚本类错误显示红色气泡提示（1 秒消失），其他类切 error 视图
+    // Files 场景 ctx.text 为空，确保传空串而非 undefined（Tauri 参数校验）
     try {
-      await invoke("execute_action_bar", { itemId: item.id, text: ctx.text });
+      await invoke("execute_action_bar", { itemId: item.id, text: ctx.text || "" });
     } catch (e) {
       showQuickError(String(e).replace(/^脚本执行失败:\s*/, "").slice(0, 40));
     }
@@ -397,6 +398,9 @@ export default function ActionBar() {
       }
 
       if (viewRef.current === "loading") return;
+
+      // task-input 视图：不拦截键盘导航，让输入框正常接收所有按键
+      if (viewRef.current === "task-input") return;
 
       // 组合快捷键：Alt/⌥ + 字符 → 直接执行（最高优先级，跨层级）
       // macOS 上 Alt 会改变 e.key 输出（如 Alt+H → "˙"），用 e.code 取物理键
