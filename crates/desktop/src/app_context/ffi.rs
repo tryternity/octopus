@@ -58,3 +58,9 @@ pub fn ax_value() -> CFString {
 pub fn ax_title() -> CFString {
     CFString::new("AXTitle")
 }
+pub fn ax_role() -> CFString {
+    CFString::new("AXRole")
+}
+pub fn ax_children() -> CFString {
+    CFString::new("AXChildren")
+}

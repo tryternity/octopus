@@ -116,25 +116,70 @@ fn gather_surrounding(pid: i32, kind: AppKind) -> anyhow::Result<SurroundingText
 }
 
 /// 从焦点元素构建 surrounding。
+///
+/// 某些编辑器（Sublime Text、自绘 UI）的焦点元素不是文本区本身，
+/// 需要遍历 AX 子树找到 AXTextArea / AXTextField 角色的元素。
 unsafe fn build_surrounding(
     focused_element: AXUIElementRef,
     app_element: AXUIElementRef,
     kind: AppKind,
 ) -> anyhow::Result<SurroundingText> {
+    let mut diagnostics: Vec<String> = Vec::new();
+
+    // 焦点元素角色
+    let focused_role = get_attribute_string(focused_element, &ax_role()).unwrap_or_default();
+    diagnostics.push(format!("focused_role={}", focused_role));
+
+    // 焦点元素本身可能就是文本区（TextEdit、Terminal 等）
+    // 如果不是，尝试遍历子树找 AXTextArea/AXTextField
+    let text_element = if is_text_element(&focused_role) {
+        focused_element
+    } else {
+        // 遍历子树找文本元素
+        match find_text_element(focused_element) {
+            Some(child) => {
+                let child_role = get_attribute_string(child, &ax_role()).unwrap_or_default();
+                diagnostics.push(format!("found_text_child_role={}", child_role));
+                child
+            }
+            None => {
+                diagnostics.push("no_text_child_found".to_string());
+                focused_element // 回退到焦点元素本身，尽力尝试
+            }
+        }
+    };
+
     // 窗口标题：优先从焦点元素取，回退到 app element
     let window_title = get_attribute_string(focused_element, &ax_title())
         .or_else(|_| get_attribute_string(app_element, &ax_title()))
         .ok();
 
     // 全文
-    let full_text = get_attribute_string(focused_element, &ax_value()).unwrap_or_default();
+    let (full_text, full_text_err) = match get_attribute_string(text_element, &ax_value()) {
+        Ok(s) => (s, None),
+        Err(e) => (String::new(), Some(e.to_string())),
+    };
+    diagnostics.push(format!(
+        "ax_value_len={} err={}",
+        full_text.chars().count(),
+        full_text_err.as_deref().unwrap_or("none")
+    ));
 
     // 选区范围
-    let range =
-        get_selected_range(focused_element).unwrap_or(TextRange { start: 0, end: 0 });
+    let (range, range_err) = match get_selected_range(text_element) {
+        Ok(r) => (r, None),
+        Err(e) => (TextRange { start: 0, end: 0 }, Some(e.to_string())),
+    };
+    diagnostics.push(format!(
+        "selected_range=({}, {}) err={}",
+        range.start,
+        range.end,
+        range_err.as_deref().unwrap_or("none")
+    ));
+
+    log::info!("[app-context] AX 诊断: {}", diagnostics.join(", "));
 
     let mut surrounding = if kind == AppKind::Terminal {
-        // Terminal 特例：before 取 scrollback 截断
         let before = if !full_text.is_empty() {
             Some(truncate_terminal_scrollback(
                 &full_text,
@@ -165,6 +210,64 @@ unsafe fn build_surrounding(
     }
 
     Ok(surrounding)
+}
+
+/// 判断 AX 角色是否为文本元素。
+unsafe fn is_text_element(role: &str) -> bool {
+    matches!(
+        role,
+        "AXTextArea" | "AXTextField" | "AXText" | "AXStaticText"
+    )
+}
+
+/// 递归遍历 AX 子树，找到第一个有 AXValue 的文本元素（AXTextArea/AXTextField）。
+/// 深度限制 5 层，广度限制每层 50 个子元素（防止巨树卡死）。
+unsafe fn find_text_element(element: AXUIElementRef) -> Option<AXUIElementRef> {
+    find_text_element_depth(element, 0, 5)
+}
+
+unsafe fn find_text_element_depth(
+    element: AXUIElementRef,
+    depth: usize,
+    max_depth: usize,
+) -> Option<AXUIElementRef> {
+    if depth >= max_depth {
+        return None;
+    }
+
+    // 当前元素角色
+    let role = get_attribute_string(element, &ax_role()).unwrap_or_default();
+    if is_text_element(&role) {
+        // 确认有 AXValue
+        if get_attribute_value(element, &ax_value()).is_ok() {
+            return Some(element);
+        }
+    }
+
+    // 遍历子元素
+    let children = match get_attribute_value(element, &ax_children()) {
+        Ok(v) => v,
+        Err(_) => return None,
+    };
+
+    let cf_array = core_foundation::array::CFArray::<CFTypeRef>::wrap_under_create_rule(children as *const _);
+    let count = cf_array.len().min(50);
+
+    for i in 0..count {
+        let Some(child_ref) = cf_array.get(i) else {
+            continue;
+        };
+        // ItemRef deref 到 CFTypeRef（即 *const c_void），直接 cast
+        let child: AXUIElementRef = *child_ref as AXUIElementRef;
+        if child.is_null() {
+            continue;
+        }
+        if let Some(found) = find_text_element_depth(child, depth + 1, max_depth) {
+            return Some(found);
+        }
+    }
+
+    None
 }
 
 /// 安全读取 AX 属性值（返回 CFTypeRef，调用方负责 CFRelease）。
