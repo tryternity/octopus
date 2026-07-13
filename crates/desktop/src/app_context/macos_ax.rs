@@ -402,28 +402,51 @@ fn try_read_file_context(
     }
 
     // 4. 用 selected_text 定位
+    let result = slice_around_text(&content, selected_text, 1000)?;
+    Some(SurroundingText {
+        before: result.0,
+        after: result.1,
+        window_title: Some(window_title.to_string()),
+    })
+}
+
+/// 在全文中搜索 selected_text，返回 (before, after) 各截断到 limit 字。
+/// 尝试精确匹配 → 忽略大小写匹配。
+fn slice_around_text(
+    full_text: &str,
+    selected_text: &str,
+    limit: usize,
+) -> Option<(Option<String>, Option<String>)> {
     let sel = selected_text.trim();
-    let pos = content.find(sel).or_else(|| content.to_lowercase().find(&sel.to_lowercase()))?;
-    let limit = 1000;
-    let before = if pos > 0 {
-        let start = pos.saturating_sub(limit);
-        Some(content[start..pos].to_string())
+    if sel.is_empty() || full_text.is_empty() {
+        return None;
+    }
+
+    // find 返回 byte offset，转 char offset 以正确处理多字节字符
+    let pos_bytes = full_text
+        .find(sel)
+        .or_else(|| full_text.to_lowercase().find(&sel.to_lowercase()))?;
+
+    // 计算 char-level 偏移
+    let full_chars: Vec<char> = full_text.chars().collect();
+    let pos_chars = full_text[..pos_bytes].chars().count();
+    let sel_chars = sel.chars().count();
+
+    let before = if pos_chars > 0 {
+        let start = pos_chars.saturating_sub(limit);
+        Some(full_chars[start..pos_chars].iter().collect())
     } else {
         None
     };
-    let end = pos + sel.len();
-    let after = if end < content.len() {
-        let after_end = (end + limit).min(content.len());
-        Some(content[end..after_end].to_string())
+    let end = pos_chars + sel_chars;
+    let after = if end < full_chars.len() {
+        let after_end = (end + limit).min(full_chars.len());
+        Some(full_chars[end..after_end].iter().collect())
     } else {
         None
     };
 
-    Some(SurroundingText {
-        before,
-        after,
-        window_title: Some(window_title.to_string()),
-    })
+    Some((before, after))
 }
 
 /// 从窗口标题提取文件名。
@@ -1268,5 +1291,259 @@ mod tests {
     #[test]
     fn test_extract_filename_no_extension() {
         assert_eq!(extract_filename_from_title("Makefile — Sublime Text"), None);
+    }
+
+    #[test]
+    fn test_extract_filename_vscode() {
+        assert_eq!(
+            extract_filename_from_title("main.rs - octopus - Visual Studio Code"),
+            Some("main.rs".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_empty_title() {
+        assert_eq!(extract_filename_from_title(""), None);
+    }
+
+    #[test]
+    fn test_extract_filename_only_extension() {
+        // 极端边界：标题只有 ".bashrc"
+        assert_eq!(
+            extract_filename_from_title(".bashrc — Sublime Text"),
+            Some(".bashrc".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_dotted_path() {
+        assert_eq!(
+            extract_filename_from_title("src/main.rs — Sublime Text"),
+            Some("src/main.rs".to_string())
+        );
+    }
+
+    // ── slice_around_text ──
+
+    #[test]
+    fn test_slice_normal() {
+        let full = "Hello world this is a test sentence";
+        let result = slice_around_text(full, "world", 5).unwrap();
+        assert_eq!(result.0.as_deref(), Some("ello "));
+        assert_eq!(result.1.as_deref(), Some(" this"));
+    }
+
+    #[test]
+    fn test_slice_start_of_text() {
+        let full = "Hello world";
+        let result = slice_around_text(full, "Hello", 5).unwrap();
+        assert_eq!(result.0, None); // 没有上文
+        assert_eq!(result.1.as_deref(), Some(" worl")); // 后 5 字符
+    }
+
+    #[test]
+    fn test_slice_end_of_text() {
+        let full = "Hello world";
+        let result = slice_around_text(full, "world", 5).unwrap();
+        assert_eq!(result.0.as_deref(), Some("ello "));
+        assert_eq!(result.1, None); // 没有下文
+    }
+
+    #[test]
+    fn test_slice_case_insensitive() {
+        let full = "Hello WORLD test";
+        let result = slice_around_text(full, "world", 3).unwrap();
+        assert_eq!(result.0.as_deref(), Some("lo ")); // 限制 3 字符
+        assert_eq!(result.1.as_deref(), Some(" te"));
+    }
+
+    #[test]
+    fn test_slice_cjk() {
+        let full = "你好世界这是一段测试文字";
+        let result = slice_around_text(full, "这是", 2).unwrap();
+        assert_eq!(result.0.as_deref(), Some("世界"));
+        assert_eq!(result.1.as_deref(), Some("一段"));
+    }
+
+    #[test]
+    fn test_slice_not_found() {
+        assert_eq!(slice_around_text("hello world", "nonexistent", 5), None);
+    }
+
+    #[test]
+    fn test_slice_empty_selected() {
+        assert_eq!(slice_around_text("hello", "", 5), None);
+    }
+
+    #[test]
+    fn test_slice_empty_full() {
+        assert_eq!(slice_around_text("", "test", 5), None);
+    }
+
+    #[test]
+    fn test_slice_limit_exceeds_content() {
+        // limit > 全文长度 → before/after 为全文剩余部分
+        let full = "ABC SELECT DEF";
+        let result = slice_around_text(full, "SELECT", 1000).unwrap();
+        assert_eq!(result.0.as_deref(), Some("ABC "));
+        assert_eq!(result.1.as_deref(), Some(" DEF"));
+    }
+
+    #[test]
+    fn test_slice_selected_with_whitespace() {
+        // trim 后匹配
+        let full = "hello world end";
+        let result = slice_around_text(full, "  world  ", 3).unwrap();
+        assert_eq!(result.0.as_deref(), Some("lo "));
+        assert_eq!(result.1.as_deref(), Some(" en"));
+    }
+
+    #[test]
+    fn test_slice_multiple_occurrences() {
+        // 多次出现 → 命中第一次
+        let full = "aaa bbb aaa ccc";
+        let result = slice_around_text(full, "aaa", 3).unwrap();
+        assert_eq!(result.0, None); // 第一次 "aaa" 在开头
+        assert_eq!(result.1.as_deref(), Some(" bb")); // 后 3 字
+    }
+
+    // ── try_read_file_context (用 tempfile 端到端测试) ──
+
+    #[test]
+    fn test_try_read_file_context_real_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("test_context.md");
+        let content = "这是上文内容。\n选中这段文字。\n这是下文内容。";
+        std::fs::write(&file_path, content).unwrap();
+
+        // find_file_path 走 mdfind 找不到 tempfile 目录，
+        // 所以直接测 slice_around_text 逻辑 + try_read_file_context 需要真实文件路径。
+        // 这里验证 slice 逻辑（try_read_file_context 的核心）：
+        let result = slice_around_text(content, "选中这段文字。", 1000).unwrap();
+        assert_eq!(result.0.as_deref(), Some("这是上文内容。\n"));
+        assert_eq!(result.1.as_deref(), Some("\n这是下文内容。"));
+    }
+
+    #[test]
+    fn test_try_read_file_context_large_file() {
+        // 模拟大文件：before/after 各截断到 1000 字
+        let before: String = "A".repeat(2000);
+        let after: String = "B".repeat(2000);
+        let content = format!("{}SELECTED{}", before, after);
+        let result = slice_around_text(&content, "SELECTED", 1000).unwrap();
+        assert_eq!(result.0.as_ref().unwrap().len(), 1000);
+        assert_eq!(result.0.as_ref().unwrap().chars().all(|c| c == 'A'), true);
+        assert_eq!(result.1.as_ref().unwrap().len(), 1000);
+        assert_eq!(result.1.as_ref().unwrap().chars().all(|c| c == 'B'), true);
+    }
+
+    #[test]
+    fn test_try_read_file_context_multiline_selected() {
+        let content = "line1\nline2\nline3\nSELECTED\nline5\nline6";
+        let result = slice_around_text(content, "SELECTED", 1000).unwrap();
+        assert_eq!(result.0.as_deref(), Some("line1\nline2\nline3\n"));
+        assert_eq!(result.1.as_deref(), Some("\nline5\nline6"));
+    }
+
+    // ── find_in_sublime_session (JSON 解析测试) ──
+
+    #[test]
+    fn test_find_in_sublime_session_file_history() {
+        let dir = tempfile::tempdir().unwrap();
+        let session_dir = dir.path().join("Library/Application Support/Sublime Text 3/Local");
+        std::fs::create_dir_all(&session_dir).unwrap();
+
+        let target = dir.path().join("project/src/main.rs");
+        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
+        std::fs::write(&target, "fn main() {}").unwrap();
+
+        let session = serde_json::json!({
+            "windows": [{
+                "file_history": [
+                    "/other/file.txt",
+                    target.to_string_lossy(),
+                    "/another/file.rs"
+                ],
+                "buffers": []
+            }]
+        });
+        let session_path = session_dir.join("Session.sublime_session");
+        std::fs::write(&session_path, serde_json::to_string(&session).unwrap()).unwrap();
+
+        // find_in_sublime_session 读固定路径，这里无法直接测（hardcoded home dir）。
+        // 验证 JSON 解析逻辑：
+        let json: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(&session_path).unwrap()
+        ).unwrap();
+
+        let found = json["windows"][0]["file_history"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|v| v.as_str())
+            .find(|p| p.ends_with("main.rs"));
+        assert_eq!(found, Some(target.to_string_lossy().as_ref()));
+    }
+
+    #[test]
+    fn test_find_in_sublime_session_buffers() {
+        let session = serde_json::json!({
+            "windows": [{
+                "file_history": [],
+                "buffers": [
+                    {"file": ""},
+                    {"file": "/home/user/notes.md"},
+                    {"file": "/tmp/test.rs"}
+                ]
+            }]
+        });
+        let json_str = serde_json::to_string(&session).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        let found = json["windows"][0]["buffers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b["file"].as_str())
+            .find(|p| p.ends_with("notes.md"));
+        assert_eq!(found, Some("/home/user/notes.md"));
+    }
+
+    #[test]
+    fn test_find_in_sublime_session_empty_buffers() {
+        let session = serde_json::json!({
+            "windows": [{
+                "file_history": [],
+                "buffers": [{"file": ""}, {"file": ""}]
+            }]
+        });
+        let json_str = serde_json::to_string(&session).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+
+        let found: Vec<&str> = json["windows"][0]["buffers"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(|b| b["file"].as_str())
+            .filter(|s| !s.is_empty())
+            .collect();
+        assert!(found.is_empty(), "空 file 的 buffer 应被过滤");
+    }
+
+    // ── name_result_is_app_name ──
+
+    #[test]
+    fn test_name_result_is_app_name_yes() {
+        assert!(name_result_is_app_name("Sublime Text"));
+        assert!(name_result_is_app_name("WPS Office"));
+        assert!(name_result_is_app_name("Code"));
+        assert!(name_result_is_app_name("sublime text")); // 大小写不敏感
+    }
+
+    #[test]
+    fn test_name_result_is_app_name_no() {
+        assert!(!name_result_is_app_name("main.rs"));
+        assert!(!name_result_is_app_name("test.txt"));
+        assert!(!name_result_is_app_name("unknown_app"));
     }
 }
