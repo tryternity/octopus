@@ -213,14 +213,6 @@ function Result() {
   }, [showToast, text]);
 
   // ── 翻译模式 ──
-  const exitTranslateMode = useCallback(() => {
-    setTranslateMode('off');
-    setTranslatedText("");
-    translatingRef.current = false;
-    setTranslating(false);
-    invoke("set_translation_active", { active: false });
-  }, []);
-
   const doTranslate = useCallback(async () => {
     const source = asrEditorRef.current?.getText() ?? text;
     if (!source.trim()) return;
@@ -237,25 +229,6 @@ function Result() {
     }
   }, [text, showToast]);
   useEffect(() => { doTranslateRef.current = doTranslate; }, [doTranslate]);
-
-  const finalTranslate = useCallback(async (): Promise<string> => {
-    const source = asrEditorRef.current?.getText() ?? text;
-    if (!source.trim()) return "";
-    return new Promise<string>((resolve) => {
-      let resolved = false;
-      const unlistenPromise = listen("translate-done", (e) => {
-        if (resolved) return;
-        resolved = true;
-        unlistenPromise.then(f => f());
-        resolve(e.payload as string);
-      });
-      invoke("translate_text", { text: source }).catch(() => {
-        if (resolved) return;
-        resolved = true;
-        resolve("");
-      });
-    });
-  }, [text]);
 
   const enterTranslateMode = useCallback(() => {
     const remembered = toolbarState.translate_mode;
