@@ -403,6 +403,8 @@ function Result() {
           translatingRef.current = false;
           setTranslating(false);
           invoke("set_translation_active", { active: false });
+          setExpanded(false);
+          invoke("set_result_click_through", { expanded: false });
           setPopupType(null);
           return;
         }
