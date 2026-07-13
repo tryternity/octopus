@@ -222,7 +222,19 @@ osascript 通过 `spawn()` + `Stdio::piped()` + `try_wait` 轮询超时执行（
 
 ### 5.4 Terminal 特例（AX 路径）
 
-iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（可见 scrollback）不在同一坐标系。改为用 selected_text 在 full_text 中 `find()` 定位，按位置切 before/after。
+iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（可见 scrollback）不在同一坐标系。改为用 selected_text 在 full_text 中 `find()` 定位，按位置切 before/after。Terminal 排除内容校验（选中文本可能在不可见区域，find-fail fallback 取 scrollback 末尾）。
+
+### 5.5 自绘编辑器磁盘文件 fallback（macOS）
+
+自绘编辑器（Sublime Text、WPS）的 AX 树不含真实编辑器内容。当内容校验降级时，尝试从磁盘读文件：
+
+1. `extract_filename_from_title("test.txt — Sublime Text")` → `"test.txt"`（em dash / hyphen 分隔，过滤 untitled/App 名/无扩展名）
+2. `find_file_path(filename, bundle_id)`：
+   - Sublime session（`file_history` + `buffers` JSON 解析，支持 ST3/ST4 路径）
+   - `mdfind -name` Spotlight fallback（文件名精确匹配）
+3. 读文件内容 → `slice_around_text`（char-level 偏移）切 before/after 各 1000 字
+
+**限制**：未保存文件（untitled）无法读取；二进制格式（.docx/.pdf）`read_to_string` 失败；文件已修改未保存时内容可能不一致。
 
 ### 5.5 AX 安全约束（踩坑总结）
 
@@ -241,49 +253,24 @@ iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（�
 
 ---
 
-## 6. id/进程名 → AppKind 映射（三平台统一）
+## 6. bundle id → AppKind 映射
 
 ```rust
-/// bundle_id（macOS）/ 进程名（Windows/Linux）→ AppKind（三平台统一）。
-/// 内部统一转小写比较——Windows 文件系统不区分大小写（WINWORD.EXE = winword.exe），
-/// macOS bundle_id 本就小写，无副作用。
-pub fn classify_app(id: &str) -> AppKind {
-    let id = id.to_ascii_lowercase();
-    match id.as_str() {
-        // ── Terminal ──
-        "com.apple.terminal" | "com.googlecode.iterm2" => AppKind::Terminal,
-        #[cfg(target_os = "windows")]
-        "cmd.exe" | "powershell.exe" | "pwsh.exe" | "windowsterminal.exe" | "conhost.exe" => AppKind::Terminal,
-        #[cfg(target_os = "linux")]
-        "gnome-terminal" | "konsole" | "xterm" | "kitty" | "wezterm-gui" | "alacritty" => AppKind::Terminal,
-        // ── Editor ──
-        "com.microsoft.word" | "com.apple.textedit" | "com.sublimetext.4"
-          | "com.microsoft.vscode" | "com.kingsoft.wpsoffice.mac" => AppKind::Editor,
-        #[cfg(target_os = "windows")]
-        "notepad.exe" | "winword.exe" | "code.exe" | "sublime_text.exe" | "wps.exe" => AppKind::Editor,
-        #[cfg(target_os = "linux")]
-        "gedit" | "code" | "sublime_text" | "vim" | "emacs" | "wps" => AppKind::Editor,
-        // ── Browser ──
-        "com.apple.safari" | "com.google.chrome" | "org.mozilla.firefox" => AppKind::Browser,
-        #[cfg(target_os = "windows")]
-        "chrome.exe" | "msedge.exe" | "firefox.exe" => AppKind::Browser,
-        #[cfg(target_os = "linux")]
-        "firefox" | "chromium" | "google-chrome" | "brave" | "microsoft-edge" => AppKind::Browser,
-        // ── Chat ──
-        "com.tencent.xinweichat" | "com.tinyspeck.slackmacgap" | "com.hnc.discord" => AppKind::Chat,
-        #[cfg(target_os = "windows")]
-        "wechat.exe" | "slack.exe" | "discord.exe" => AppKind::Chat,
-        _ => AppKind::Unknown,
+fn classify_app(bundle_id: &str) -> AppKind {
+    match bundle_id {
+        "com.apple.Terminal" | "com.googlecode.iterm2" => Terminal,
+        "com.microsoft.Word" | "com.apple.TextEdit"
+          | "com.sublimetext.4" | "com.sublimetext.3"
+          | "com.microsoft.VSCode" | "com.todesktop.230313mzl4w4u92"
+          | "com.github.atom" | "com.kingsoft.wpsoffice.mac" => Editor,
+        "com.apple.Safari" | "com.google.Chrome"
+          | "org.mozilla.firefox" | "com.microsoft.edgemac" => Browser,
+        "com.tencent.xinWeChat" | "com.tinyspeck.slackmacgap"
+          | "com.hnc.Discord" => Chat,
+        _ => Unknown,
     }
 }
 ```
-
-**演进**（commit `20b21a18`）：v1 仅 macOS bundle_id 按原样 match（大小写敏感），跨平台后改为：
-1. 签名 `bundle_id` → `id`（Windows/Linux 是进程名而非 bundle_id）
-2. 内部 `to_ascii_lowercase()` 归一（Windows `WINWORD.EXE` 等需小写匹配；macOS bundle_id 本就小写，无副作用）
-3. 三平台进程名各自 `#[cfg(target_os = "...")]` 分发，全小写
-
-> 完整进程名清单见源码 `crates/desktop/src/app_context/mod.rs`（含已停更的 atom/todesktop 等历史 key）。
 
 ---
 
@@ -338,8 +325,8 @@ pub fn classify_app(id: &str) -> AppKind {
 
 | 限制 | 现状 | v2 方向 |
 |------|------|---------|
-| Sublime Text / WPS 等自绘编辑器 | AX 树无真实内容，降级返回 None | 专属取数器（方案 C） |
-| Firefox (macOS) | 无 AppleScript JS 接口，fallback AX（覆盖率低） | 浏览器扩展 + WebSocket |
+| Sublime Text / WPS 自绘编辑器 | AX 降级 → 磁盘文件 fallback（从标题提取文件名 + session/mdfind 搜索 + 读文件切上下文） | 专属取数器 / 编辑器插件 API |
+| Firefox (macOS) | 无 AppleScript JS 接口，走 AX（Mozilla AX 比 Chrome 完整） | 浏览器扩展 + WebSocket |
 | Windows 浏览器 | UIA TextPattern 全文 find，无 AppleScript JS 精度 | GetSelection + ExpandToEnclosingUnit 段落级精准扩展 |
 | Windows 全文 find | selected_text 多次出现时命中第一次，可能错位 | GetSelection 精确选区 + range 扩展 |
 | Linux | 暂不支持（AT-SPI2 需事件流） | atspi crate + object:state-change:focused 事件 |
@@ -352,10 +339,15 @@ pub fn classify_app(id: &str) -> AppKind {
 
 | 层 | 测试 | 数量 |
 |----|------|------|
-| 纯函数（mod.rs） | classify_app / extract_surrounding / NullProvider | 7 |
-| AX 类型安全（macos_ax.rs） | is_cf_string / is_cf_array（覆盖两类崩溃根因） | 11 |
+| 纯函数（mod.rs） | classify_app / extract_surrounding | 5 |
+| AX 类型安全（macos_ax.rs） | is_cf_string / is_cf_array / is_cf_value | 11 |
 | AX 错误码翻译 | ax_error_desc | 2 |
 | 控制字符过滤 | strip_control_chars | 5 |
 | Terminal 截断 | truncate_text_tail / truncate_text_head | 6 |
-| 日志格式化/写入（action_bar_commands.rs） | format_context_entry / write_context_log（含文件vs目录 bug 回归） | 12 |
-| **合计** | | **43** |
+| 日志格式化/写入（action_bar_commands.rs） | format_context_entry / write_context_log | 12 |
+| 磁盘 fallback 标题提取 | extract_filename_from_title | 9 |
+| 磁盘 fallback 切片 | slice_around_text（char-level，含 CJK/大小写/limit/多行） | 11 |
+| 磁盘 fallback 端到端 | 真实文件/大文件截断/多行选中 | 3 |
+| Sublime session JSON 解析 | file_history / buffers / 空 buffer | 3 |
+| App 名判定 | name_result_is_app_name | 2 |
+| **合计** | | **69** |
