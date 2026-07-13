@@ -149,18 +149,8 @@ fn gather_browser_via_applescript(
 ) -> Option<(SurroundingText, Option<String>)> {
     use std::process::Command;
 
-    let (app_name, verb, tab_spec) = match bundle_id {
-        "com.google.Chrome" => ("Google Chrome", "execute javascript", "active tab"),
-        "com.microsoft.edgemac" => ("Microsoft Edge", "execute javascript", "active tab"),
-        "com.apple.Safari" => ("Safari", "do JavaScript", "document 1"),
-        "org.mozilla.firefox" => return None, // Firefox 不支持 AppleScript JS
-        _ => return None,
-    };
-
-    // JS 代码中不能出现双引号（与 AppleScript 的 "..." 字符串分隔符冲突）。
-    // 用 base64 编码 JS，在 AppleScript 中 decode + eval，彻底避免转义问题。
-    let js_source = r#"
-(function(){
+    // JS 源码写入临时文件——AppleScript read 读入后执行，彻底绕开引号转义。
+    let js_source = r#"(function(){
   var s=window.getSelection();
   if(!s||s.rangeCount===0) return JSON.stringify({before:"",after:"",title:document.title});
   var range=s.getRangeAt(0);
@@ -187,20 +177,36 @@ fn gather_browser_via_applescript(
 })()
 "#;
 
-    // base64 编码 JS 源码——AppleScript 侧 decode 后 eval，避免引号转义地狱。
-    // 用反引号（JS 模板字符串）包裹 base64，避免与 AppleScript 的双引号冲突。
-    use base64::{Engine, engine::general_purpose};
-    let js_b64 = general_purpose::STANDARD.encode(js_source.as_bytes());
+    let js_path = std::env::temp_dir().join("octopus_browser_context.js");
+    if let Err(e) = std::fs::write(&js_path, js_source) {
+        log::warn!("[app-context] 写 JS 临时文件失败: {}", e);
+        return None;
+    }
 
-    // 反引号在 JS 里等价于字符串引号，且不会与 AppleScript 的 "..." 冲突
-    let eval_js = format!("eval(atob(`{}`))", js_b64);
-
-    let script = format!(
-        r#"tell application "{}"
-    {} "{}" in {} of front window
+    // Chrome/Edge 和 Safari 的 AppleScript JS 语法完全不同：
+    // - Chrome/Edge: execute (active tab of window 1) javascript jsCode
+    // - Safari:      do JavaScript jsCode in document 1
+    let script = match bundle_id {
+        "com.google.Chrome" | "com.microsoft.edgemac" => {
+            let app_name = if bundle_id == "com.google.Chrome" { "Google Chrome" } else { "Microsoft Edge" };
+            format!(
+                r#"tell application "{}"
+    set jsCode to (read POSIX file "{}" as «class utf8»)
+    execute (active tab of window 1) javascript jsCode
 end tell"#,
-        app_name, verb, eval_js, tab_spec
-    );
+                app_name,
+                js_path.display()
+            )
+        }
+        "com.apple.Safari" => format!(
+            r#"tell application "Safari"
+    set jsCode to (read POSIX file "{}" as «class utf8»)
+    do JavaScript jsCode in document 1
+end tell"#,
+            js_path.display()
+        ),
+        _ => return None,
+    };
 
     let output = Command::new("osascript")
         .args(["-e", &script])
@@ -246,7 +252,7 @@ end tell"#,
             after,
             window_title,
         },
-        Some(format!("browser: AppleScript {} ({} chars result)", verb, json_str.len())),
+        Some(format!("browser: AppleScript execute javascript ({} chars result)", json_str.len())),
     ))
 }
 
