@@ -396,7 +396,6 @@ fn try_read_file_context(
     window_title: &str,
     bundle_id: &str,
     selected_text: &str,
-    _kind: AppKind,
 ) -> Option<SurroundingText> {
     // 1. 从标题提取文件名
     let filename = extract_filename_from_title(window_title)?;
@@ -509,7 +508,10 @@ fn find_file_path(filename: &str, bundle_id: &str) -> Option<std::path::PathBuf>
         }
     }
 
-    // Spotlight fallback（文件名精确匹配）
+    // Spotlight fallback（文件名精确匹配）。
+    // 无超时保护——mdfind 通常 <100ms，且整个 gather 在后台线程执行不阻塞 UI。
+    // 误读同名文件的内容兜底：slice_around_text 的 find() 在误读文件中大概率
+    // 不含 selected_text → 返回 None → 自动降级为空 surrounding。
     let output = std::process::Command::new("mdfind")
         .args(["-name", filename])
         .output()
@@ -549,36 +551,45 @@ fn find_in_sublime_session(filename: &str) -> Option<std::path::PathBuf> {
             Ok(c) => c,
             Err(_) => continue,
         };
-
-        // 解析 JSON，遍历所有窗口的 file_history 和 buffers
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-            if let Some(windows) = json["windows"].as_array() {
-                for win in windows {
-                    // file_history
-                    if let Some(history) = win["file_history"].as_array() {
-                        for item in history {
-                            if let Some(path) = item.as_str() {
-                                if path_matches_filename(path, filename) {
-                                    return Some(std::path::PathBuf::from(path));
-                                }
-                            }
-                        }
+            if let Some(path) = find_file_in_session_json(&json, filename) {
+                return Some(path);
+            }
+        }
+    }
+
+    None
+}
+
+/// 在 Sublime session JSON 中查找文件路径（纯函数，可单测）。
+/// 遍历所有窗口的 file_history 和 buffers，用 file_name 精确匹配。
+fn find_file_in_session_json(
+    json: &serde_json::Value,
+    filename: &str,
+) -> Option<std::path::PathBuf> {
+    let windows = json["windows"].as_array()?;
+    for win in windows {
+        // file_history
+        if let Some(history) = win["file_history"].as_array() {
+            for item in history {
+                if let Some(path) = item.as_str() {
+                    if path_matches_filename(path, filename) {
+                        return Some(std::path::PathBuf::from(path));
                     }
-                    // buffers
-                    if let Some(buffers) = win["buffers"].as_array() {
-                        for buf in buffers {
-                            if let Some(path) = buf["file"].as_str() {
-                                if !path.is_empty() && path_matches_filename(path, filename) {
-                                    return Some(std::path::PathBuf::from(path));
-                                }
-                            }
-                        }
+                }
+            }
+        }
+        // buffers
+        if let Some(buffers) = win["buffers"].as_array() {
+            for buf in buffers {
+                if let Some(path) = buf["file"].as_str() {
+                    if !path.is_empty() && path_matches_filename(path, filename) {
+                        return Some(std::path::PathBuf::from(path));
                     }
                 }
             }
         }
     }
-
     None
 }
 
@@ -729,7 +740,6 @@ unsafe fn build_surrounding(
                     title,
                     bundle_id_or_name,
                     selected_text,
-                    kind,
                 ) {
                     diagnostics.push("FALLBACK: AX 降级 → 从磁盘读文件成功".to_string());
                     let diag = Some(diagnostics.join("\n  "));
@@ -1464,89 +1474,96 @@ mod tests {
         assert_eq!(result.1.as_deref(), Some("\nline5\nline6"));
     }
 
-    // ── find_in_sublime_session (JSON 解析测试) ──
+    // ── path_matches_filename ──
 
     #[test]
-    fn test_find_in_sublime_session_file_history() {
-        let dir = tempfile::tempdir().unwrap();
-        let session_dir = dir.path().join("Library/Application Support/Sublime Text 3/Local");
-        std::fs::create_dir_all(&session_dir).unwrap();
+    fn test_path_matches_exact() {
+        assert!(path_matches_filename("/home/user/main.rs", "main.rs"));
+        assert!(path_matches_filename("/tmp/test.txt", "test.txt"));
+    }
 
-        let target = dir.path().join("project/src/main.rs");
-        std::fs::create_dir_all(target.parent().unwrap()).unwrap();
-        std::fs::write(&target, "fn main() {}").unwrap();
+    #[test]
+    fn test_path_matches_no_false_positive() {
+        // "ba.rs" 不应匹配 "a.rs"
+        assert!(!path_matches_filename("/x/ba.rs", "a.rs"));
+        // 子目录名不应匹配
+        assert!(!path_matches_filename("/home/main.rs/file.txt", "main.rs"));
+    }
 
-        let session = serde_json::json!({
+    #[test]
+    fn test_path_matches_no_path() {
+        // 裸文件名（无目录前缀）——file_name() 仍返回自身
+        assert!(path_matches_filename("main.rs", "main.rs"));
+    }
+
+    // ── find_file_in_session_json（纯函数，直接测真实逻辑）──
+
+    #[test]
+    fn test_session_json_file_history_single_window() {
+        let json = serde_json::json!({
             "windows": [{
-                "file_history": [
-                    "/other/file.txt",
-                    target.to_string_lossy(),
-                    "/another/file.rs"
-                ],
+                "file_history": ["/other/file.txt", "/home/user/main.rs"],
                 "buffers": []
             }]
         });
-        let session_path = session_dir.join("Session.sublime_session");
-        std::fs::write(&session_path, serde_json::to_string(&session).unwrap()).unwrap();
-
-        // find_in_sublime_session 读固定路径，这里无法直接测（hardcoded home dir）。
-        // 验证 JSON 解析逻辑：
-        let json: serde_json::Value = serde_json::from_str(
-            &std::fs::read_to_string(&session_path).unwrap()
-        ).unwrap();
-
-        let found = json["windows"][0]["file_history"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|v| v.as_str())
-            .find(|p| p.ends_with("main.rs"));
-        assert_eq!(found, Some(target.to_string_lossy().as_ref()));
+        let result = find_file_in_session_json(&json, "main.rs");
+        assert_eq!(result, Some(std::path::PathBuf::from("/home/user/main.rs")));
     }
 
     #[test]
-    fn test_find_in_sublime_session_buffers() {
-        let session = serde_json::json!({
+    fn test_session_json_buffers_single_window() {
+        let json = serde_json::json!({
             "windows": [{
                 "file_history": [],
-                "buffers": [
-                    {"file": ""},
-                    {"file": "/home/user/notes.md"},
-                    {"file": "/tmp/test.rs"}
-                ]
+                "buffers": [{"file": ""}, {"file": "/home/user/notes.md"}]
             }]
         });
-        let json_str = serde_json::to_string(&session).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
-
-        let found = json["windows"][0]["buffers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|b| b["file"].as_str())
-            .find(|p| p.ends_with("notes.md"));
-        assert_eq!(found, Some("/home/user/notes.md"));
+        let result = find_file_in_session_json(&json, "notes.md");
+        assert_eq!(result, Some(std::path::PathBuf::from("/home/user/notes.md")));
     }
 
     #[test]
-    fn test_find_in_sublime_session_empty_buffers() {
-        let session = serde_json::json!({
-            "windows": [{
-                "file_history": [],
-                "buffers": [{"file": ""}, {"file": ""}]
-            }]
+    fn test_session_json_multi_window() {
+        // P3b 回归保护：文件在第二个窗口
+        let json = serde_json::json!({
+            "windows": [
+                {"file_history": ["/a/x.rs"], "buffers": []},
+                {"file_history": ["/b/y.rs"], "buffers": [{"file": "/c/target.go"}]}
+            ]
         });
-        let json_str = serde_json::to_string(&session).unwrap();
-        let json: serde_json::Value = serde_json::from_str(&json_str).unwrap();
+        let result = find_file_in_session_json(&json, "target.go");
+        assert_eq!(result, Some(std::path::PathBuf::from("/c/target.go")));
+    }
 
-        let found: Vec<&str> = json["windows"][0]["buffers"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .filter_map(|b| b["file"].as_str())
-            .filter(|s| !s.is_empty())
-            .collect();
-        assert!(found.is_empty(), "空 file 的 buffer 应被过滤");
+    #[test]
+    fn test_session_json_empty_buffers_filtered() {
+        let json = serde_json::json!({
+            "windows": [{"file_history": [], "buffers": [{"file": ""}, {"file": ""}]}]
+        });
+        assert_eq!(find_file_in_session_json(&json, "anything.txt"), None);
+    }
+
+    #[test]
+    fn test_session_json_suffix_no_false_positive() {
+        // P3a 回归保护：ends_with "a.rs" 不应匹配 "ba.rs"
+        let json = serde_json::json!({
+            "windows": [{"file_history": ["/x/ba.rs"], "buffers": []}]
+        });
+        assert_eq!(find_file_in_session_json(&json, "a.rs"), None);
+    }
+
+    #[test]
+    fn test_session_json_not_found() {
+        let json = serde_json::json!({
+            "windows": [{"file_history": ["/a/b.rs"], "buffers": []}]
+        });
+        assert_eq!(find_file_in_session_json(&json, "missing.rs"), None);
+    }
+
+    #[test]
+    fn test_session_json_empty_windows() {
+        let json = serde_json::json!({"windows": []});
+        assert_eq!(find_file_in_session_json(&json, "main.rs"), None);
     }
 
     // ── name_result_is_app_name ──
