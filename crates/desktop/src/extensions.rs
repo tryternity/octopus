@@ -268,6 +268,8 @@ pub fn install_extension(
         is_async,
         write_output_to_clipboard,
         "",
+        "",
+        "text",
     )
     .map_err(|e| e.to_string())
 }
