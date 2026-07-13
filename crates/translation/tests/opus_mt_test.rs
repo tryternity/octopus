@@ -1,7 +1,7 @@
-use octopus_translation::{TranslationEngine, load_opus_mt};
+use octopus_translation::load_opus_mt;
 
 #[test]
-#[ignore = "需要本地 opus-mt 模型（~/.octopus/models/translate/opus-mt/zh-en）"]
+#[ignore = "需要本地 opus-mt 模型（设置 > 模型管理 > 翻译模型 下载 opus-mt）"]
 fn test_opus_mt_zh_to_en() {
     let engine = load_opus_mt("zh", "en").expect("模型加载失败——请确保 opus-mt zh-en 已下载");
     let result = engine.translate("你好世界", "zh", "en").expect("翻译失败");
@@ -18,7 +18,7 @@ fn test_opus_mt_zh_to_en() {
 }
 
 #[test]
-#[ignore = "需要本地 opus-mt 模型（~/.octopus/models/translate/opus-mt/en-zh）"]
+#[ignore = "需要本地 opus-mt 模型（设置 > 模型管理 > 翻译模型 下载 opus-mt）"]
 fn test_opus_mt_en_to_zh() {
     let engine = load_opus_mt("en", "zh").expect("模型加载失败——请确保 opus-mt en-zh 已下载");
     let result = engine.translate("Hello world", "en", "zh").expect("翻译失败");
