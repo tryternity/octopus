@@ -389,6 +389,9 @@ settings:
     acceptsFile: 文件
     acceptsAny: 文件 + 文本
     agentLabel: Agent
+    scopeAll: 全部
+    scopeText: 选中文本
+    scopeFile: 选中文件(夹)
   clipboardPanel:
     filterAll: 全部
     groupType: 类型

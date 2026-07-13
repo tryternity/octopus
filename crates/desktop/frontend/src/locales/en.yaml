@@ -389,6 +389,9 @@ settings:
     acceptsFile: Files
     acceptsAny: Files + Text
     agentLabel: Agent
+    scopeAll: All
+    scopeText: Selected Text
+    scopeFile: Selected Files
   clipboardPanel:
     filterAll: All
     groupType: Type

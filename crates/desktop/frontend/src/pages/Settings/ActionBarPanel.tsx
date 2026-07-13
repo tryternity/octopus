@@ -886,6 +886,7 @@ export default function ActionBarPanel({
   const [draftParentId, setDraftParentId] = useState<number | null | undefined>(undefined); // undefined=非草稿, null=顶层草稿, number=子菜单草稿
   const [loaded, setLoaded] = useState(false);
   const [view, setView] = useState<"menu" | "runs" | "edit">("menu");
+  const [scopeFilter, setScopeFilter] = useState<"all" | "text" | "file">("all");
 
   const refresh = useCallback(async (): Promise<ActionBarItem[]> => {
     const list = await invoke<ActionBarItem[]>("list_action_bar_items");
@@ -900,19 +901,29 @@ export default function ActionBarPanel({
 
   useEffect(() => {
     (async () => {
-      const list = await refresh();
-      // 仅首次加载默认展开全部 submenu 节点，让结构一眼可见
-      setExpanded(() => {
-        const next = new Set<number>();
-        list.forEach((i) => {
-          if (i.actionType === "submenu") next.add(i.id);
-        });
-        return next;
-      });
+      await refresh();
+      // 默认收起——用户手动展开查看子项
     })();
   }, [refresh]);
 
-  const mainItems = items.filter((i) => i.parentId === null);
+  // accepts 过滤：all=全部, text=选中文本, file=选中文件(夹)
+  const isItemInScope = (item: ActionBarItem): boolean => {
+    if (scopeFilter === "all") return true;
+    const accepts = item.accepts || "text";
+    if (scopeFilter === "text") return accepts === "text" || accepts === "any";
+    return accepts === "file" || accepts === "any";
+  };
+
+  // submenu 容器：子项中有任一在范围内则可见
+  const isSubmenuInScope = (item: ActionBarItem): boolean => {
+    const subs = items.filter((i) => i.parentId === item.id);
+    if (subs.length === 0) return isItemInScope(item);
+    return subs.some((s) => s.actionType === "submenu" ? isSubmenuInScope(s) : isItemInScope(s));
+  };
+
+  const mainItems = items.filter((i) => i.parentId === null && (
+    i.actionType === "submenu" ? isSubmenuInScope(i) : isItemInScope(i)
+  ));
   const enabledCount = items.filter((i) => i.isEnabled).length;
 
   const toggle = useCallback((id: number) => {
@@ -1124,6 +1135,23 @@ export default function ActionBarPanel({
         <div className="flex shrink-0 items-center gap-1.5">
           {view === "menu" && (
             <>
+              {/* Scope filter */}
+              <div className="flex items-center rounded-md border border-border overflow-hidden">
+                {(["all", "text", "file"] as const).map((s) => (
+                  <button
+                    key={s}
+                    onClick={() => setScopeFilter(s)}
+                    className={cn(
+                      "px-2.5 py-1.5 text-xs transition-colors",
+                      scopeFilter === s
+                        ? "bg-voice/12 text-voice font-medium"
+                        : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",
+                    )}
+                  >
+                    {s === "all" ? t("settings.actionBar.scopeAll") : s === "text" ? t("settings.actionBar.scopeText") : t("settings.actionBar.scopeFile")}
+                  </button>
+                ))}
+              </div>
               <button
                 onClick={() => setView("runs")}
                 className="flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1.5 text-xs text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
