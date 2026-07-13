@@ -118,7 +118,8 @@ pub fn classify_app(id: &str) -> AppKind {
         | "vim" | "gvim" | "emacs" | "wps" => AppKind::Editor,
         // ── Browser ──
         "com.apple.safari" | "com.google.chrome"
-        | "org.mozilla.firefox" | "com.microsoft.edgemac" => AppKind::Browser,
+        | "org.mozilla.firefox" | "org.mozilla.firefoxdeveloperedition"
+        | "org.mozilla.firefox.nightly" | "com.microsoft.edgemac" => AppKind::Browser,
         #[cfg(target_os = "windows")]
         "chrome.exe" | "msedge.exe" | "firefox.exe" => AppKind::Browser,
         #[cfg(target_os = "linux")]

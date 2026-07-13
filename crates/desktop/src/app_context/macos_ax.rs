@@ -154,11 +154,14 @@ fn gather_browser_via_applescript(
     // JS 源码写入临时文件——用传入的 selected_text 在 DOM 中搜索定位，
     // 不依赖 window.getSelection()（execute javascript 时选区可能已清空）。
     // 转义 selected_text 中的反斜杠和双引号，防止注入。
+    // 另转义 U+2028/U+2029（JS 字符串字面量中的换行符）。
     let escaped = selected_text
         .replace('\\', "\\\\")
         .replace('"', "\\\"")
         .replace('\n', "\\n")
-        .replace('\r', "\\r");
+        .replace('\r', "\\r")
+        .replace('\u{2028}', "\\u2028")
+        .replace('\u{2029}', "\\u2029");
     let js_source = format!(
         r#"(function(){{
   var sel="{escaped}";
@@ -371,12 +374,24 @@ end tell"#,
     ))
 }
 
+/// 判断路径的 file_name 部分是否精确匹配 filename（大小写敏感）。
+fn path_matches_filename(path: &str, filename: &str) -> bool {
+    std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().as_ref() == filename)
+        .unwrap_or(false)
+}
+
 /// 自绘编辑器 fallback：从磁盘读文件内容获取上下文。
 ///
 /// 当 AX 树不含真实编辑器内容时（Sublime Text、WPS），尝试：
 /// 1. 从窗口标题提取文件名
 /// 2. 用 App 的 session 文件查找完整路径（Sublime）或直接搜索
 /// 3. 读文件内容，用 selected_text 定位切 before/after
+///
+/// **限制**：仅对纯文本格式（.txt/.md/.rs/.py/.json 等）有效。
+/// Office 格式（.docx/.xlsx）是 zip 压缩二进制，read_to_string 会失败。
+/// WPS 用户编辑 .txt/.md 时可受益，编辑 .docx 时 fallback 无效。
 fn try_read_file_context(
     window_title: &str,
     bundle_id: &str,
@@ -535,24 +550,28 @@ fn find_in_sublime_session(filename: &str) -> Option<std::path::PathBuf> {
             Err(_) => continue,
         };
 
-        // 解析 JSON，搜索 file_history 和 buffers 中的路径
+        // 解析 JSON，遍历所有窗口的 file_history 和 buffers
         if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-            // 搜索 file_history
-            if let Some(history) = json["windows"][0]["file_history"].as_array() {
-                for item in history {
-                    if let Some(path) = item.as_str() {
-                        if path.ends_with(filename) {
-                            return Some(std::path::PathBuf::from(path));
+            if let Some(windows) = json["windows"].as_array() {
+                for win in windows {
+                    // file_history
+                    if let Some(history) = win["file_history"].as_array() {
+                        for item in history {
+                            if let Some(path) = item.as_str() {
+                                if path_matches_filename(path, filename) {
+                                    return Some(std::path::PathBuf::from(path));
+                                }
+                            }
                         }
                     }
-                }
-            }
-            // 搜索 buffers
-            if let Some(buffers) = json["windows"][0]["buffers"].as_array() {
-                for buf in buffers {
-                    if let Some(path) = buf["file"].as_str() {
-                        if path.ends_with(filename) {
-                            return Some(std::path::PathBuf::from(path));
+                    // buffers
+                    if let Some(buffers) = win["buffers"].as_array() {
+                        for buf in buffers {
+                            if let Some(path) = buf["file"].as_str() {
+                                if !path.is_empty() && path_matches_filename(path, filename) {
+                                    return Some(std::path::PathBuf::from(path));
+                                }
+                            }
                         }
                     }
                 }
@@ -698,7 +717,7 @@ unsafe fn build_surrounding(
     // 判定：full_text 不包含选中文本 → AX 无真实内容。
     // Terminal 排除：full_text 是真实 scrollback，选中文本可能在不可见区域
     // （光标行以下），此时 find-fail fallback 应取 scrollback 末尾作 before。
-    if kind != AppKind::Terminal && !full_text.is_empty() && !selected_text.is_empty() {
+    if kind == AppKind::Editor && !full_text.is_empty() && !selected_text.is_empty() {
         let selected_trimmed = selected_text.trim();
         let full_trimmed = full_text.trim();
         if !full_trimmed.contains(selected_trimmed) {
