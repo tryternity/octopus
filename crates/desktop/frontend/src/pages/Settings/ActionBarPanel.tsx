@@ -823,7 +823,6 @@ export default function ActionBarPanel({
   const mainItems = items.filter((i) => i.parentId === null && (
     i.actionType === "submenu" ? isSubmenuInScope(i) : isItemInScope(i)
   ));
-  const enabledCount = items.filter((i) => i.isEnabled).length;
 
   const toggle = useCallback((id: number) => {
     setExpanded((prev) => {
@@ -988,32 +987,20 @@ export default function ActionBarPanel({
     deleteConfirmId, draftParentId,
   };
 
-  const subtitle = view === "edit"
-    ? t("settings.actionBar.editMenuItem")
-    : view === "runs"
-      ? t("settings.actionBar.scriptRecords")
-      : t("settings.actionBar.menuManage");
-
   return (
     <div className="w-full min-w-0">
       {/* ── 页头 ── */}
-      <div className="mb-6 flex items-start justify-between gap-4">
-        <div className="min-w-0">
-          <div className="flex items-center gap-2">
-            {/* 签名色条——琥珀竖线 */}
-            <div className="h-4 w-[3px] rounded-full bg-voice" />
-            <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60">
-              {t("settings.actionBar.titleMain")}
-            </span>
-          </div>
-          <h2 className="mt-1 text-lg font-semibold tracking-tight">
-            {t("settings.actionBar.aiTitle")}
-          </h2>
-          <p className="mt-0.5 text-xs text-muted-foreground">
-            {view === "menu"
-              ? t("settings.actionBar.aiIntro", { total: items.length, enabled: enabledCount })
-              : subtitle}
-          </p>
+      <div className="mb-6 flex items-center justify-between gap-4">
+        <div className="flex items-center gap-2">
+          {/* 签名色条——琥珀竖线 */}
+          <div className="h-4 w-[3px] rounded-full bg-voice" />
+          <span className="font-mono text-[10px] uppercase tracking-widest text-muted-foreground/60">
+            {view === "edit"
+              ? t("settings.actionBar.editMenuItem")
+              : view === "runs"
+                ? t("settings.actionBar.scriptRecords")
+                : t("settings.actionBar.menuManage")}
+          </span>
         </div>
 
         {/* 操作组 */}
