@@ -256,11 +256,9 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
                 .map(|llms| llms.iter().any(|m| m.model_name == bare))
                 .unwrap_or(false)
     };
-    let translate_mode = octopus_infra::db::load_config_key("translate_mode")
-        .ok()
-        .flatten()
-        .filter(|s| matches!(s.as_str(), "manual" | "4s" | "8s" | "12s"))
-        .unwrap_or_else(|| "manual".to_string());
+    let translate_mode = resolve_translate_mode(
+        octopus_infra::db::load_config_key("translate_mode").ok().flatten()
+    );
     ToolbarState {
         asr_engine: g.asr_engine.clone(),
         polish_mode: polish_mode_to_u8(g.polish_mode),
@@ -386,11 +384,21 @@ pub fn set_denoise_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<
     Ok(())
 }
 
-/// 设置翻译自动档位（manual/8s/12s/15s）。纯持久化到 DB，翻译节流逻辑在前端。
+/// 校验翻译档位字符串（manual/4s/8s/12s）。合法返回 true。
+fn validate_translate_mode(mode: &str) -> bool {
+    matches!(mode, "manual" | "4s" | "8s" | "12s")
+}
+
+/// 从 DB 读取的 translate_mode（Option<String>）解析为合法值——非法或 None 时默认 "manual"。
+fn resolve_translate_mode(raw: Option<String>) -> String {
+    raw.filter(|s| validate_translate_mode(s))
+        .unwrap_or_else(|| "manual".to_string())
+}
+
+/// 设置翻译自动档位（manual/4s/8s/12s）。纯持久化到 DB，翻译节流逻辑在前端。
 #[tauri::command]
 pub fn set_translate_mode(mode: String) -> Result<(), String> {
-    let valid = matches!(mode.as_str(), "manual" | "4s" | "8s" | "12s");
-    if !valid {
+    if !validate_translate_mode(&mode) {
         return Err(format!("translate_mode='{}' 非法（应为 manual/4s/8s/12s）", mode));
     }
     octopus_infra::db::save_config_key("translate_mode", &mode).map_err(|e| e.to_string())
@@ -597,5 +605,43 @@ mod tests {
         assert!(validate_switch("whisper-small", &engines).is_ok());
         // 不在列表且非兜底 → 拒绝
         assert!(validate_switch("nonexistent", &engines).is_err());
+    }
+
+    // ── translate_mode 校验 ──
+    #[test]
+    fn validate_translate_mode_accepts_known_values() {
+        assert!(validate_translate_mode("manual"));
+        assert!(validate_translate_mode("4s"));
+        assert!(validate_translate_mode("8s"));
+        assert!(validate_translate_mode("12s"));
+    }
+
+    #[test]
+    fn validate_translate_mode_rejects_unknown() {
+        // 已移除的档位
+        assert!(!validate_translate_mode("15s"), "15s 已移除");
+        // 非法值
+        assert!(!validate_translate_mode(""));
+        assert!(!validate_translate_mode("off"));
+        assert!(!validate_translate_mode("3s"));
+        assert!(!validate_translate_mode("16s"));
+        assert!(!validate_translate_mode("auto"));
+        assert!(!validate_translate_mode("0"));
+    }
+
+    #[test]
+    fn resolve_translate_mode_defaults_to_manual() {
+        assert_eq!(resolve_translate_mode(None), "manual");
+        assert_eq!(resolve_translate_mode(Some(String::new())), "manual");
+        assert_eq!(resolve_translate_mode(Some("garbage".into())), "manual");
+        assert_eq!(resolve_translate_mode(Some("15s".into())), "manual", "已移除的 15s 应回退 manual");
+    }
+
+    #[test]
+    fn resolve_translate_mode_preserves_valid() {
+        assert_eq!(resolve_translate_mode(Some("manual".into())), "manual");
+        assert_eq!(resolve_translate_mode(Some("4s".into())), "4s");
+        assert_eq!(resolve_translate_mode(Some("8s".into())), "8s");
+        assert_eq!(resolve_translate_mode(Some("12s".into())), "12s");
     }
 }

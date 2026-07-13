@@ -1236,4 +1236,36 @@ mod user_scenario_tests {
         assert_eq!(result[1].kind, SegmentKind::Edited);
         assert_eq!(result[1].text, "C");
     }
+
+    // ── translation_committed ──
+    #[test]
+    fn translation_committed_blocks_apply_engine_full() {
+        // 场景：ASR 产出原文 → commit_edit + mark_translation_committed(译文) →
+        // 后续 ASR tick 输出原文扩展（≠ 译文）→ apply_engine_full 被阻止，不重注入原文
+        let mut t = Transcript::new(100, PolishMode::Intermediate);
+        t.apply_engine_full("你好世界");
+        assert_eq!(t.finish_text(), "你好世界");
+        t.commit_edit("Hello world", &[], true);
+        t.mark_translation_committed();
+        assert_eq!(t.finish_text(), "Hello world");
+        // ASR 继续输出，与译文完全不一致
+        let changed = t.apply_engine_full("你好世界再见");
+        assert!(!changed, "translation_committed 后 apply_engine_full 必须跳过");
+        assert_eq!(t.finish_text(), "Hello world", "译文不应被覆盖");
+    }
+
+    #[test]
+    fn commit_edit_without_mark_does_not_block_apply() {
+        // 对照组：普通 commit_edit（非翻译）不设标志 → ASR 继续追加
+        // commit_edit 替换 transcript 段，但 engine_cumulative 不变（仍 "raw1"）
+        // ASR 后续输出 "raw1新语音"（原文 + 新内容）是 engine_cumulative 的前缀扩展 → 正常追加
+        let mut t = Transcript::new(101, PolishMode::Intermediate);
+        t.apply_engine_full("raw1");
+        t.commit_edit("edited", &[], true);
+        assert_eq!(t.finish_text(), "edited");
+        // ASR 从引擎视角输出原文 + 新增
+        let changed = t.apply_engine_full("raw1新语音");
+        assert!(changed, "非翻译 commit_edit 后 apply_engine_full 正常工作");
+        assert!(t.finish_text().ends_with("新语音"), "新语音应追加到 edited 后");
+    }
 }
