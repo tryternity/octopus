@@ -307,7 +307,8 @@ fn format_context_entry(selected_text: &str, extra: &crate::app_context::ExtraCo
          【窗口标题】{title}\n\
          【选中文本】({len} 字)\n{selected}\n\n\
          【上文 before】\n{before}\n\n\
-         【下文 after】\n{after}\n\n",
+         【下文 after】\n{after}\n\n\
+         【AX 诊断】\n{diag}\n\n",
         timestamp = timestamp,
         name = extra.source.name,
         kind = kind_label,
@@ -317,6 +318,7 @@ fn format_context_entry(selected_text: &str, extra: &crate::app_context::ExtraCo
         selected = truncate_for_log(selected_text, 1000),
         before = before_preview,
         after = after_preview,
+        diag = extra.diagnostics.as_deref().unwrap_or("(无)"),
     )
 }
 
@@ -1117,6 +1119,7 @@ mod tests {
                 after: Some("下文内容".to_string()),
                 window_title: Some("report.txt".to_string()),
             }),
+            diagnostics: None,
         }
     }
 
@@ -1173,6 +1176,7 @@ mod tests {
                 kind: AppKind::Unknown,
             },
             surrounding: None,
+            diagnostics: None,
         };
         let entry = format_context_entry("hello", &extra);
         assert!(entry.contains("UnknownApp"));

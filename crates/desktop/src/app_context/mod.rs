@@ -40,6 +40,8 @@ pub struct SurroundingText {
 pub struct ExtraContext {
     pub source: AppSource,
     pub surrounding: Option<SurroundingText>,
+    /// AX 诊断信息（各步成功/失败 + range + full_text 预览），写入日志方便排查。
+    pub diagnostics: Option<String>,
 }
 
 /// 平台无关的应用上下文获取接口。

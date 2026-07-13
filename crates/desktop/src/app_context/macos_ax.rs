@@ -50,20 +50,20 @@ impl super::ContextProvider for AxProvider {
         };
 
         // 2. 采集 surrounding（失败 → None，不阻断 source 返回）
-        let surrounding = if deadline.checked_duration_since(Instant::now()).is_some() {
+        let (surrounding, diagnostics) = if deadline.checked_duration_since(Instant::now()).is_some() {
             match gather_surrounding(pid, kind) {
-                Ok(s) => Some(s),
+                Ok((s, diag)) => (Some(s), diag),
                 Err(e) => {
                     log::info!("[app-context] surrounding 采集失败（降级）: {}", e);
-                    None
+                    (None, Some(format!("gather_surrounding error: {}", e)))
                 }
             }
         } else {
             log::warn!("[app-context] gather 超时（source 已获取，surrounding 跳过）");
-            None
+            (None, Some("gather timeout (surrounding skipped)".to_string()))
         };
 
-        Ok(ExtraContext { source, surrounding })
+        Ok(ExtraContext { source, surrounding, diagnostics })
     }
 }
 
@@ -88,8 +88,8 @@ fn frontmost_app() -> Option<(i32, Option<String>, String)> {
     Some((pid, bundle_id, name))
 }
 
-/// 通过 AX 采集选区周围文本。
-fn gather_surrounding(pid: i32, kind: AppKind) -> anyhow::Result<SurroundingText> {
+/// 通过 AX 采集选区周围文本。返回 (surrounding, AX 诊断信息)。
+fn gather_surrounding(pid: i32, kind: AppKind) -> anyhow::Result<(SurroundingText, Option<String>)> {
     unsafe {
         let app_element = AXUIElementCreateApplication(pid);
         if app_element.is_null() {
@@ -111,7 +111,7 @@ fn gather_surrounding(pid: i32, kind: AppKind) -> anyhow::Result<SurroundingText
         };
 
         CFRelease(app_element as CFTypeRef);
-        result
+        result.map(|(s, diag)| (s, diag))
     }
 }
 
@@ -123,17 +123,13 @@ unsafe fn build_surrounding(
     focused_element: AXUIElementRef,
     app_element: AXUIElementRef,
     kind: AppKind,
-) -> anyhow::Result<SurroundingText> {
+) -> anyhow::Result<(SurroundingText, Option<String>)> {
     let mut diagnostics: Vec<String> = Vec::new();
 
     // 焦点元素角色
     let focused_role = get_attribute_string(focused_element, &ax_role()).unwrap_or_default();
     diagnostics.push(format!("focused_role={}", focused_role));
 
-    // 焦点元素本身可能就是文本区（TextEdit、Terminal 等）
-    // 如果不是，尝试遍历子树找 AXTextArea/AXTextField。
-    // find_text_element 返回的元素经过 CFRetain（+1），需在末尾释放。
-    // focused_element 本身是借用（由调用方持有），不需额外释放。
     let (text_element, owns_text_element) = if is_text_element(&focused_role) {
         (focused_element, false)
     } else {
@@ -142,7 +138,7 @@ unsafe fn build_surrounding(
                 let child_role =
                     get_attribute_string(child, &ax_role()).unwrap_or_default();
                 diagnostics.push(format!("found_text_child_role={}", child_role));
-                (child, true) // find_text_element 已 CFRetain
+                (child, true)
             }
             None => {
                 diagnostics.push("no_text_child_found".to_string());
@@ -151,7 +147,7 @@ unsafe fn build_surrounding(
         }
     };
 
-    // 窗口标题：优先从焦点元素取，回退到 app element
+    // 窗口标题
     let window_title = get_attribute_string(focused_element, &ax_title())
         .or_else(|_| get_attribute_string(app_element, &ax_title()))
         .ok();
@@ -179,7 +175,9 @@ unsafe fn build_surrounding(
         range_err.as_deref().unwrap_or("none")
     ));
 
-    log::info!("[app-context] AX 诊断: {}", diagnostics.join(", "));
+    // full_text 前 300 字预览（诊断偏移不对应问题）
+    let preview: String = full_text.chars().take(300).collect();
+    diagnostics.push(format!("full_text_preview={:?}", preview));
 
     // 用完后释放 find_text_element 返回的 +1 引用
     if owns_text_element {
@@ -216,7 +214,10 @@ unsafe fn build_surrounding(
         surrounding.after = None;
     }
 
-    Ok(surrounding)
+    let diag_string = diagnostics.join("\n  ");
+    log::info!("[app-context] AX 诊断:\n  {}", diag_string);
+
+    Ok((surrounding, Some(diag_string)))
 }
 
 /// 判断 AX 角色是否为文本元素。
