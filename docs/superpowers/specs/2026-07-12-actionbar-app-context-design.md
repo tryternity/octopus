@@ -184,7 +184,7 @@ Browser (Chrome/Edge/Safari)
 5. **焦点元素角色** (`AXRole`) 判断是否文本元素（AXTextArea/AXTextField/AXStaticText）
 6. 非文本元素 → **find_text_element** 遍历 AX 子树（深度 8 层、广度 100），优先找 `AXValue` 包含 selected_text 的文本元素。**每层递归入口检查 deadline**，超时即返回已采集部分
 7. **AXValue** + **AXSelectedTextRange**（经 `is_cf_value` 类型守卫）→ 切 before/after
-8. **内容校验**：full_text 不含选中文本 → 降级返回 None（Sublime/WPS 自绘编辑器场景）
+8. **内容校验**（仅 `kind != Terminal`）：full_text 不含选中文本 → 降级返回 None（Sublime/WPS 自绘编辑器场景）。Terminal 排除：full_text 是真实 scrollback，选中文本可能在不可见区域（光标行以下），find-fail fallback 应取 scrollback 末尾作 before
 
 **deadline 透传**：`Instant` 从 `gather()` 创建，透传到 `gather_surrounding` → `build_surrounding` → `find_text_element_depth`，确保庞大的 AX 树（Electron App）不会卡死。
 
