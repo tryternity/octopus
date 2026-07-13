@@ -1,16 +1,5 @@
 import { describe, it, expect } from "vitest";
-
-// 从 index.tsx 提取的纯函数（组件内未导出，此处复制逻辑做不变量测试）
-function indexLabel(index: number): string {
-  if (index <= 8) return String(index + 1);
-  return String.fromCharCode(88 + index);
-}
-
-function labelToIndex(key: string): number {
-  if (/^[1-9]$/.test(key)) return parseInt(key, 10) - 1;
-  if (/^[a-z]$/.test(key)) return key.charCodeAt(0) - 88;
-  return -1;
-}
+import { indexLabel, labelToIndex } from "./index";
 
 describe("indexLabel / labelToIndex", () => {
   it("前 9 项显示数字 1-9", () => {
