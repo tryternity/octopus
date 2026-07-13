@@ -133,29 +133,6 @@ pub fn extract_surrounding(full_text: &str, range: TextRange, limit: usize) -> S
     }
 }
 
-/// Terminal scrollback 截断：从选区起点向前取，以 max_lines 或 max_chars 先达到者为准。
-pub fn truncate_terminal_scrollback(
-    scrollback: &str,
-    selection_start: usize,
-    max_lines: usize,
-    max_chars: usize,
-) -> String {
-    let chars: Vec<char> = scrollback.chars().collect();
-    let start = selection_start.min(chars.len());
-    let before_part: String = chars[..start].iter().collect();
-
-    let lines: Vec<&str> = before_part.lines().collect();
-    let start_line = lines.len().saturating_sub(max_lines);
-    let by_lines: String = lines[start_line..].join("\n");
-
-    if by_lines.chars().count() > max_chars {
-        let char_start = by_lines.chars().count().saturating_sub(max_chars);
-        by_lines.chars().skip(char_start).collect()
-    } else {
-        by_lines
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -209,27 +186,6 @@ mod tests {
         let s = extract_surrounding(full, range, 2);
         assert_eq!(s.before.as_deref(), Some("世界"));
         assert_eq!(s.after.as_deref(), Some("一段"));
-    }
-
-    #[test]
-    fn test_truncate_terminal_by_lines() {
-        // "line1\nline2\nline3\nline4\nline5\nselected"
-        //  l=0...5='\n' 6-10...11='\n' ... 29='\n' 30='s' (start of "selected")
-        // selection_start=30 → before_part = "line1\n...line5\n" → 5 lines → take last 2
-        let scrollback = "line1\nline2\nline3\nline4\nline5\nselected";
-        let result = truncate_terminal_scrollback(scrollback, 30, 2, 10000);
-        let lines: Vec<&str> = result.lines().collect();
-        assert_eq!(lines.len(), 2);
-        assert_eq!(lines[0], "line4");
-        assert_eq!(lines[1], "line5");
-    }
-
-    #[test]
-    fn test_truncate_terminal_by_chars() {
-        let scrollback = "abcdefghijklmnopqrstuvwxyz selected";
-        let result = truncate_terminal_scrollback(scrollback, 26, 10000, 5);
-        assert_eq!(result.chars().count(), 5);
-        assert_eq!(result, "vwxyz");
     }
 
     #[test]
