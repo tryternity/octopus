@@ -9,7 +9,6 @@ import { AsrEditor, type AsrEditorHandle } from "./AsrEditor";
 import { TranslationPane } from "./TranslationPane";
 import {
   type TranslateMode,
-  TRANSLATE_MODES,
   resolveRememberedTranslateMode,
   parseThrottleSeconds,
   buildTranslatePopupItems,
