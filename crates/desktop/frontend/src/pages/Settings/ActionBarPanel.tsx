@@ -32,6 +32,8 @@ interface ActionBarItem {
   isAsync?: boolean;
   writeOutputToClipboard?: boolean;
   shortcut?: string;
+  agent?: string;
+  accepts?: string;
 }
 
 // 动作类型元信息：颜色点 + 标签 + 说明 + 占位符。
@@ -76,6 +78,18 @@ const TYPE_META: Record<
     descKey: "settings.actionBar.typeCopyDesc",
     placeholderKey: "",
   },
+  agent: {
+    dot: "bg-rose-500",
+    label: "AGENT",
+    descKey: "settings.actionBar.typeAgentDesc",
+    placeholderKey: "settings.actionBar.typeAgentPlaceholder",
+  },
+  copy_path: {
+    dot: "bg-cyan-500",
+    label: "PATH",
+    descKey: "settings.actionBar.typeCopyPathDesc",
+    placeholderKey: "",
+  },
 };
 
 const ACTION_TYPES = [
@@ -84,8 +98,18 @@ const ACTION_TYPES = [
   { value: "url", labelKey: "settings.actionBar.typeUrl" },
   { value: "script", labelKey: "settings.actionBar.typeScript" },
   { value: "extension", labelKey: "settings.actionBar.typeExtension" },
+  { value: "agent", labelKey: "settings.actionBar.typeAgent" },
+  { value: "copy_path", labelKey: "settings.actionBar.typeCopyPath" },
   { value: "copy", labelKey: "settings.actionBar.typeCopy" },
 ];
+
+/** 按 actionType 推导默认 accepts 值。用户可手动覆盖。 */
+function deriveAccepts(actionType: string | undefined, explicit?: string): string {
+  if (explicit) return explicit;
+  if (actionType === "agent" || actionType === "copy_path") return "file";
+  if (actionType === "submenu") return "any";
+  return "text";
+}
 
 const pad2 = (n: number) => String(n).padStart(2, "0");
 
@@ -295,8 +319,12 @@ const EditForm = ({
   const t = useT();
   const type = form.actionType || "copy";
   const meta = TYPE_META[type];
-  const showContent = type !== "submenu" && type !== "copy" && type !== "extension";
+  const showContent = type !== "submenu" && type !== "copy" && type !== "extension" && type !== "copy_path";
   const showShortcut = type !== "submenu";
+  const [adapters, setAdapters] = useState<{key:string;displayName:string;isAvailable:boolean}[]>([]);
+  useEffect(() => {
+    invoke<{key:string;displayName:string;isAvailable:boolean}[]>("list_agent_adapters").then(setAdapters).catch(() => {});
+  }, []);
 
   return (
     <div className="space-y-5">
@@ -403,6 +431,35 @@ const EditForm = ({
                 </div>
               )}
             </div>
+          </Field>
+        )}
+
+        {type === "agent" && (
+          <Field label="Agent">
+            <select
+              className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
+              value={form.agent || ""}
+              onChange={(e) => onChange({ ...form, agent: e.target.value })}
+            >
+              <option value="">选择 agent…</option>
+              {adapters.filter((a) => a.isAvailable).map((a) => (
+                <option key={a.key} value={a.key}>{a.displayName}</option>
+              ))}
+            </select>
+          </Field>
+        )}
+
+        {type === "copy_path" && (
+          <Field label="路径格式">
+            <select
+              className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
+              value={form.actionData || "plain"}
+              onChange={(e) => onChange({ ...form, actionData: e.target.value })}
+            >
+              <option value="plain">纯路径</option>
+              <option value="url">file:// URL</option>
+              <option value="quoted">带引号</option>
+            </select>
           </Field>
         )}
 
@@ -942,6 +999,8 @@ export default function ActionBarPanel({
               isAsync: editingForm.isAsync ?? true,
               writeOutputToClipboard: editingForm.writeOutputToClipboard ?? false,
               shortcut: editingForm.shortcut || "",
+              agent: "",
+              accepts: "text",
             });
           }
           showToast(t("settings.actionBar.saved"));
@@ -957,6 +1016,8 @@ export default function ActionBarPanel({
           isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
           writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
           shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
+          agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
+          accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
         });
           showToast(t("settings.actionBar.created"));
       } else if (editingId) {
@@ -971,6 +1032,8 @@ export default function ActionBarPanel({
           isAsync: editingForm.actionType === "script" ? (editingForm.isAsync ?? true) : true,
           writeOutputToClipboard: editingForm.actionType === "script" ? (editingForm.writeOutputToClipboard ?? false) : false,
           shortcut: editingForm.actionType !== "submenu" ? (editingForm.shortcut || "") : "",
+          agent: editingForm.actionType === "agent" ? (editingForm.agent || "") : "",
+          accepts: deriveAccepts(editingForm.actionType, editingForm.accepts),
         });
         showToast(t("settings.actionBar.saved"));
       }
