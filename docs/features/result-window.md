@@ -78,8 +78,8 @@ coordinator 主循环 `editing` 标志置位时 tick 跳过喂引擎（**硬暂�
 |------|------|
 | 进入编辑 | `enterEdit`：用 `caretPosRef` 捕获点击位、`placeCaretAtCodePoint` 恢复光标（纯点击可恢复，拖选 caretPos=null 仍落末尾） |
 | 编辑中 | `UpdateEditBuffer { text }` 更新 `edit_buffer` |
-| 提交 | `commit_edit(flat)` 整篇压成单 `Edited` 段（raw/polished 清零）+ UPDATE DB（segments JSON + text 列） |
-| 取消 | `cancelEdit`：退出编辑态，恢复编辑前文本 |
+| 提交 | `commit_edit` 按 dirty ranges 劈段标 `Edited`，区间外保留原 SegmentKind（字符级 walk：构建 old_flat 逐字符 kind 映射，clean 区逐字符匹配跳过被删字符保留原 kind）。`rebuild_segments` + `push_or_merge`（合并相邻同 kind 段减碎片化） |
+| 取消 | Esc/Cmd → 退出编辑态，恢复编辑前文本（已废弃 `cancelEdit`/`UpdateEditBuffer`） |
 
 编辑入口两条：
 - 窗口内 `edit_shortcut` 默认 CmdOrCtrl+Enter（跨平台=⌘/Ctrl，结果窗聚焦时 toggle 进入/保存，不在设置页管理）

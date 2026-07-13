@@ -195,9 +195,19 @@ DB 失败仅 `warn` log 不阻塞识别（best-effort）。
 | `clipboard_enabled` | `true` | 剪贴板监听 |
 | `clipboard_max_items` | 1000 | 最大保留条数 |
 | `clipboard_max_age_days` | 30 | 自动清理天数 |
-| `download_mirror` | — | HF 下载镜像 |
 | `ocr_model` | PP-OCRv5 | OCR 模型名 |
-| 快捷键们 | — | `asr_shortcut` / `clipboard_shortcut` / `screenshot_shortcut` / `edit_shortcut` / `edit_global_shortcut` / `polish_global_shortcut` |
+| `switch_input_source_on_paste` | true | 粘贴前临时切到 ABC 输入法（仅 macOS，防 CJK 乱码） |
+| 快捷键们 | — | `asr_shortcut` / `clipboard_shortcut` / `screenshot_shortcut` / `edit_shortcut` / `edit_global_shortcut` / `polish_global_shortcut` / `action_bar_shortcut` |
+
+### 环境变量系统（v22 新增，`category='env'`）
+
+`app_config` 表新增 `category='env'` 分组，与普通配置同表隔离。3 个内置变量：
+- `huggingface`（默认 `https://hf-mirror.com`，key 不可改）
+- `modelscope`（默认 `https://modelscope.cn`，key 不可改）
+- `github`（默认 `https://github.com`，key 不可改）
+- 用户可自定义任意 key-value（均可改/删）。
+
+**模板替换规则**：ASR 模型下载 URL 中的 `{huggingface}`/`{modelscope}` 等占位符在下载时替换为实际值。仅 ASR 模型下载替换，LLM/OCR source/API URL 不替换。旧的 `download_mirror`（`category='setting'`）已废弃，启动时自动迁移到 `env.huggingface`。
 
 `active_polish_prompt` 由 `db::load_active_prompt_id()` 独立读取，不入 AppConfig struct。
 

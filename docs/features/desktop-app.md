@@ -109,6 +109,10 @@
 - **贴图窗口**：自定义 `PinNSWindow`（`define_class!`）+ `NSTrackingArea` 检测 hover（见 [screenshot.md](./screenshot.md) §8）
 - **屏幕录制权限**：`cargo run` 时授终端应用权限；打包 .app 后绑 octopus
 - **窗口串行创建**（150ms 间隔）：WKWebView 同时创建多个全屏窗口会 segfault
+- **粘贴前输入源切换**（`switch_input_source_on_paste` 默认 `true`）：CJK 输入法 composing 状态下模拟 Cmd+V 可能乱码/丢字符，三段式注入根治——(1) 切到 ABC → (2) 模拟 Cmd+V → (3) 恢复原输入源。实现 `input_source.rs` 用 `osascript -l JavaScript`（JXA）独立进程调 Carbon TIS API。
+  - **v1→v2→v3 演进**：v1 直接 FFI → SIGTRAP；v2 GCD `dispatch_sync_f` → 仍 SIGTRAP（tokio `spawn_blocking` 与 libdispatch main queue 冲突）；**v3 独立 osascript 进程**（main thread 天然满足 TIS 要求）= 当前。
+  - **RAII `InputSourceGuard`**：已是 ABC/US 时跳过（省 fork）；`Drop` 用存的 source **ID（String）**恢复（非 CFTypeRef，跨进程安全）。两条接入路径：ASR 粘贴（`paste.rs`）+ 剪贴板双击粘贴（`focus_tracker.rs`）。
+- **自动粘贴焦点追踪（已暂缓）**：`focus_tracker.rs` 尝试在剪贴板浮窗失焦后自动将选中文本粘贴到前一个前台 app——7 个已记录的 macOS 陷阱（Accessory `hide()` 不还焦点 / enigo 非主线程静默失败 / `activate` by name 不可靠 `-1728` / WeChat 阻止 AppleScript）。最终结论：无单一方案覆盖所有 app，**已回退**为复制到剪贴板 + 手动 Cmd+V。重启条件：NSPanel（tauri-nspanel）或 CGEvent 直接注入。
 
 ### Windows
 
@@ -227,3 +231,49 @@ cargo run --release -p octopus-desktop --features remote-grpc
 - **probe race ThreadId 隔离**：多线程并发加载同一未缓存模型时 `before_map` key 用 `(ThreadId, String)`，Before/After 同线程配对。
 - **probe 持锁调用户闭包**：clone `Option<ProbeFn>`（Arc+1）释放锁后再调 f，避免 sysinfo 扫全部进程慢阻塞其他线程。
 - **OCR idle 60s 自动释放联动**：OCR `probe(Unload)` → `registry.remove(id)`，状态页 OCR 条目消失。释放后进程内存数值不立即下降（macOS libmalloc 不主动 munmap），真实收益是「下次重载复用 free list」——详见 [ocr.md](./ocr.md) §3.1-§3.2。
+
+---
+
+## 14. 命令面板菜单（action_bar_items DB）
+
+> AI 命令面板菜单项存储在 `action_bar_items` 表（自引用 `parent_id` 两级菜单，5 种 `action_type`：`submenu`/`ai`/`url`/`script`/`copy`）。
+
+**关键约束**：
+- `#[serde(rename_all = "camelCase")]` **必须**——`parent_id`→`parentId` 不匹配会导致菜单渲染完全失败（曾踩坑）。
+- 系统内置 seed 用 `INSERT OR IGNORE` + 固定 id；新增无固定 id 的 seed 须放在所有固定 id seed 之后，避免 AUTOINCREMENT 抢占 id。
+- 无固定 id 的 seed 用 `WHERE NOT EXISTS` 按 title 去重。
+
+**脚本执行设计**：
+- `run_script` 拆为 `spawn_script` + `wait_with_timeout` 共享逻辑；同步模式 60s 强制 kill，异步模式无超时。
+- stdout/stderr 截断 64KB（`chars().take(65536)`）防 DB 膨胀。
+- `write_output_to_clipboard` 仅同步模式可用；异步 UI 强制 false。
+- Electron app（如豆包）用 `do shell script "open -a"` 启动，`activate`/`launch` 不可靠。
+
+**扩展包格式**：
+- `.octopusext` 文件夹 = package；`config.yaml` 声明元数据 + action + skill。
+- `action_data` 存脚本**绝对路径**（前导 `/` 区分内联脚本）；运行时设 `OCTOPUS_PACKAGE_DIR` 环境变量。
+- 同名文件夹覆盖升级（不新建 DB 记录）；元数据实时从 config.yaml 读，不存 DB。
+
+**环境变量模板**：
+- 3 个内置变量（`huggingface`/`modelscope`/`github`，key 不可改、值可改）+ 用户自定义。
+- DB `app_config` 表 `category='env'`，与普通 config 同表隔离。
+- 模型下载 URL 中 `{huggingface}` 等占位符运行时替换为实际值（仅 ASR 模型下载，LLM/OCR source URL 不替换）。
+
+---
+
+## 15. 窗口焦点协调（FLOAT_DEPTH 引用计数）
+
+> 全局快捷键不得将 settings/compact_editor 带到前台。macOS `set_focus` 触发 `NSApp.activate` 会把所有可见 Regular 窗口带到前台。
+
+**策略**：
+- show 前：记录前台 app + app 非活跃时临时隐藏 Regular 窗口（`WINDOWS_TO_HIDE_ON_FLOAT`）。
+- `set_focus` 激活浮窗获得键盘焦点。
+- hide 时：先 `activate` 原前台 app 交还焦点，再 `show` 恢复被隐藏的 Regular 窗口。
+- `FLOAT_DEPTH` 引用计数支持多浮窗嵌套——只有最外层 depth==1 才记录/交还焦点。
+- `action_bar_show_result` 调 `after_floating_window_hide_keep_active`（跳过 deactivate 避免 CompactEditor 被压后台）。
+- 剪贴板失焦 = 虚拟关闭：`float_depth_decrement_and_is_zero` 扣减，depth>0 时直接 return。
+- `TRIGGER_IN_PROGRESS: AtomicBool` 重入 guard 防重复触发。
+
+**NSWindow 主线程约束**：
+- `setIgnoresMouseEvents` / `set_position` / `set_size` / `show` 等 NSWindow 操作必须在主线程（`run_on_main_thread`）。
+- `setSize` 在 `transparent + decorations(false)` 悬浮窗上被 NSWindow 拒绝——改用 CSS 伪装 + 点击穿透。

@@ -286,3 +286,29 @@ is_streaming_engine(cfg) = resolve_active_engine(cfg.asr_engine).entry.is_stream
 **流式引擎内部分流**：`StreamingSession::new` 检测 `decoder.onnx` 存在性——CTC 走 `StreamingZipformer`，Transducer 走 `StreamingZipformerTransducer`。
 
 **云引擎路由**：`resolve_category(provider, category)` 按 provider 分支识别 → `EngineCategory::Aliyun`/`ByteDance`/`Tencent`/`Baidu`。Aliyun 建 `AliyunEngine`（需 `aliyun` feature，`is_streaming=0` → chunk 路径）；ByteDance/Tencent/Baidu 不建独立 engine，直接经 `is_cloud_engine` 路由到 `CloudPipelineEngine`（`Stage::Streaming` cloud 分支）。云↔本地切换改 `app_config.asr_engine` 后**重启**生效。
+
+---
+
+## 热词纠错（Corrector + HotwordIndex）
+
+> 源文件：`crates/asr-local/src/corrector.rs`、`crates/infra/src/pinyin.rs`、`crates/infra/src/hotword_index.rs`。
+
+**核心架构决策**：候选词来源从「全词典模糊拼音」改为「仅 HotwordIndex」——根除了过度纠错问题。HotwordIndex 是有界集合（仅含用户配置的热词），空热词时 no-op（零过纠）。
+
+**方言模糊规则**（可配置，4 组）：
+- f/h 不分（浮/护）
+- hu/wu 不分（黄/王）
+- n/l 不分（刘/牛）
+- r/l 不分（热/乐）
+
+**命中统计分层**：
+- Corrector 只收集命中（`pending_hits` + `drain_hits()`），不写 DB。
+- Pipeline 负责 bump DB（corrector 从不触碰 DB，避免测试污染）。
+- 挖掘两步走：`list_hotword_candidates`（不写 DB）→ 用户确认面板 → `add_words_to_set`（批量写）。
+
+**热词多版本管理**：
+- `hotword_sets` 表：按场景管理多版本，勾选叠加生效（生效词 = 所有 enabled 版本的全局并集去重）。
+- `pinyin_initials` 放在 infra（asr-local 依赖 infra，反向不可），asr-local re-export。
+- WKWebView 不支持 `window.prompt/confirm` → 用 inline input + `@tauri-apps/plugin-dialog` 原生确认。
+
+**全引擎一致**：11 个引擎均 `skip_corrector=false`，确保热词纠错对所有引擎一致生效。
