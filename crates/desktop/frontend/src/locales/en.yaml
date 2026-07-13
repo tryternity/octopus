@@ -470,6 +470,14 @@ result:
     none: None
     light: Light
     deep: Deep
+  translate: Translate
+  translateManual: Manual
+  translateAuto8: Auto 8s
+  translateAuto12: Auto 12s
+  translateAuto15: Auto 15s
+  translateNow: Translate Now
+  translating: Translating…
+  translateFail: "Translation failed:"
 
 # ════════ Screenshot ════════
 screenshot:

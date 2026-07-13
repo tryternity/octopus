@@ -470,6 +470,14 @@ result:
     none: 无降噪
     light: 轻度降噪
     deep: 深度降噪
+  translate: 翻译
+  translateManual: 手动
+  translateAuto8: 自动 8s
+  translateAuto12: 自动 12s
+  translateAuto15: 自动 15s
+  translateNow: 立即翻译
+  translating: 翻译中…
+  translateFail: "翻译失败："
 
 # ════════ Screenshot 截图 ════════
 screenshot:
