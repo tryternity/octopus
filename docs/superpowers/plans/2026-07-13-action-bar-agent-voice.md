@@ -1,6 +1,6 @@
 # Action Bar Agent × 语音识别联动 — 实施计划
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [x]`) syntax for tracking.
 
 **Goal:** agent 项含 `{{task}}` 时联动语音录音（复用 ASR 流程），识别结果作为 task 注入 agent 命令执行。
 
@@ -26,7 +26,7 @@
 - Modify: `crates/infra/src/db.sql`（追加 agent_tasks DDL）
 - Modify: `crates/infra/src/db.rs`（v26→v27 迁移）
 
-- [ ] **Step 1: db.sql 追加 agent_tasks 表**
+- [x] **Step 1: db.sql 追加 agent_tasks 表**
 
 在 db.sql 末尾追加：
 
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
 );
 ```
 
-- [ ] **Step 2: db.rs v26→v27 迁移**
+- [x] **Step 2: db.rs v26→v27 迁移**
 
 在 v25→v26 迁移块之后、`return Ok(())` 之前，插入：
 
@@ -61,13 +61,13 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
 
 同步更新 `if v >= 26` → `if v >= 27`，以及全新安装 `PRAGMA user_version = 27`。
 
-- [ ] **Step 3: 更新既有测试中的 user_version 断言**
+- [x] **Step 3: 更新既有测试中的 user_version 断言**
 
 `init_schema_fresh_db_builds_v25` 中 `assert_eq!(v, 26...)` → `27`。
 `init_schema_v25_is_noop` 中 `PRAGMA user_version = 27` + `assert_eq!(v, 27)`。
 `migrate_v22_hotwords_to_general_set` 中 `assert_eq!(v, 26)` → `27`。
 
-- [ ] **Step 4: 补迁移测试**
+- [x] **Step 4: 补迁移测试**
 
 ```rust
 #[test]
@@ -90,12 +90,12 @@ fn migration_v26_to_v27_creates_agent_tasks_table() {
 }
 ```
 
-- [ ] **Step 5: 运行测试**
+- [x] **Step 5: 运行测试**
 
 Run: `cargo test -p octopus-infra --lib -- --nocapture`
 Expected: PASS
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add crates/infra/src/db.sql crates/infra/src/db.rs
@@ -109,7 +109,7 @@ git commit -m "feat(db): v27 迁移——agent_tasks 表"
 **Files:**
 - Modify: `crates/infra/src/db.rs`（在 agent_adapters CRUD 之后追加）
 
-- [ ] **Step 1: 定义 struct + CRUD 函数**
+- [x] **Step 1: 定义 struct + CRUD 函数**
 
 ```rust
 // ── Agent Task（agent × 语音识别联动）──────────────────────
@@ -195,7 +195,7 @@ pub fn delete_agent_task(id: &str) -> Result<()> {
 }
 ```
 
-- [ ] **Step 2: 补 CRUD 往返测试**
+- [x] **Step 2: 补 CRUD 往返测试**
 
 ```rust
 #[test]
@@ -225,7 +225,7 @@ fn agent_task_crud_roundtrip() {
 }
 ```
 
-- [ ] **Step 3: 运行测试 + Commit**
+- [x] **Step 3: 运行测试 + Commit**
 
 ```bash
 cargo test -p octopus-infra --lib -- agent_task -- --nocapture
@@ -241,7 +241,7 @@ git commit -m "feat(db): agent_tasks 表 CRUD"
 - Modify: `crates/desktop/src/coordinator.rs`（枚举定义 + Transcript 引用）
 - Modify: `crates/desktop/src/transcript.rs`（加字段 + new() 默认值）
 
-- [ ] **Step 1: 在 coordinator.rs 定义 RecordType**
+- [x] **Step 1: 在 coordinator.rs 定义 RecordType**
 
 在 `Command` 枚举之前定义：
 
@@ -261,7 +261,7 @@ impl Default for RecordType {
 }
 ```
 
-- [ ] **Step 2: Transcript 加 record_type 字段**
+- [x] **Step 2: Transcript 加 record_type 字段**
 
 `crates/desktop/src/transcript.rs`，在 `pub id: i64,` 之后加：
 
@@ -283,7 +283,7 @@ pub fn new(id: i64, mode: PolishMode, record_type: crate::coordinator::RecordTyp
 }
 ```
 
-- [ ] **Step 3: 修复所有 Transcript::new 调用点**
+- [x] **Step 3: 修复所有 Transcript::new 调用点**
 
 在 coordinator.rs 中搜索 `Transcript::new(` 调用，全部补 `RecordType::Input` 参数（现有录音都是 Input）。关键位置：
 
@@ -291,7 +291,7 @@ pub fn new(id: i64, mode: PolishMode, record_type: crate::coordinator::RecordTyp
 - begin_recording 需要接受 `record_type: RecordType` 参数并传递
 - 其他位置（如 `commit_edit_apply` 中的 `Transcript::new`）传 `RecordType::Input`（编辑态不是录音）
 
-- [ ] **Step 4: begin_recording 加 record_type 参数**
+- [x] **Step 4: begin_recording 加 record_type 参数**
 
 ```rust
 #[allow(clippy::too_many_arguments)]
@@ -313,17 +313,17 @@ fn begin_recording(
 
 所有调用 `begin_recording` 的位置补 `RecordType::Input`（StartRecording、FallbackStart 分支）。后续 Task 5 会从 start_recording 命令传 AgentBridge。
 
-- [ ] **Step 5: 编译验证**
+- [x] **Step 5: 编译验证**
 
 Run: `cargo check -p octopus-desktop 2>&1 | grep "^error" | head -10`
 Expected: 无 error（warnings 可接受）
 
-- [ ] **Step 6: 运行现有测试确认无回归**
+- [x] **Step 6: 运行现有测试确认无回归**
 
 Run: `cargo test -p octopus-desktop --bin octopus-desktop 2>&1 | grep "test result"`
 Expected: PASS
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add crates/desktop/src/coordinator.rs crates/desktop/src/transcript.rs
@@ -341,7 +341,7 @@ git commit -m "feat(coordinator): RecordType 枚举 + Transcript 加 record_type
 - Consumes: Task 3 的 RecordType
 - Produces: start_recording 带 record_type，begin_recording 透传
 
-- [ ] **Step 1: Command::StartRecording 加 record_type 字段**
+- [x] **Step 1: Command::StartRecording 加 record_type 字段**
 
 ```rust
     StartRecording {
@@ -357,7 +357,7 @@ git commit -m "feat(coordinator): RecordType 枚举 + Transcript 加 record_type
     FallbackStart { prepare_id: i64, record_type: RecordType },
 ```
 
-- [ ] **Step 2: Coordinator::start_recording 加参数**
+- [x] **Step 2: Coordinator::start_recording 加参数**
 
 ```rust
 pub fn start_recording(
@@ -373,7 +373,7 @@ pub fn start_recording(
 }
 ```
 
-- [ ] **Step 3: 主循环 match 分支更新**
+- [x] **Step 3: 主循环 match 分支更新**
 
 `Command::StartRecording` 分支：从 cmd 取出 record_type 传给 begin_recording。
 `Command::FallbackStart` 分支：同上。
@@ -394,7 +394,7 @@ let record_type = RecordType::Input;
 let _ = tx_clone.send(Command::FallbackStart { prepare_id, record_type: record_type.clone() });
 ```
 
-- [ ] **Step 4: Tauri 命令 start_recording 加参数**
+- [x] **Step 4: Tauri 命令 start_recording 加参数**
 
 ```rust
 #[tauri::command]
@@ -432,7 +432,7 @@ pub fn start_recording(
 
 `trigger_agent_voice` 内部直接调 `coordinator.start_recording(prepare_id, None, RecordType::AgentBridge { task_id })`——但这需要 coordinator 的 AppHandle 可访问。coordinator 在 `app.manage()` 后可从 `app.state::<Coordinator>()` 获取。
 
-- [ ] **Step 5: 编译 + 测试 + Commit**
+- [x] **Step 5: 编译 + 测试 + Commit**
 
 ```bash
 cargo check -p octopus-desktop
@@ -448,7 +448,7 @@ git commit -m "feat(coordinator): start_recording 加 RecordType 参数"
 **Files:**
 - Modify: `crates/desktop/src/coordinator.rs`
 
-- [ ] **Step 1: execute_agent_task 函数**
+- [x] **Step 1: execute_agent_task 函数**
 
 在 `finalize_after_stop` 之后定义：
 
@@ -527,7 +527,7 @@ fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, transcribed_
 }
 ```
 
-- [ ] **Step 2: finalize_after_stop 按 record_type 分流**
+- [x] **Step 2: finalize_after_stop 按 record_type 分流**
 
 在 `finalize_after_stop` 函数中，找到现有的 paste/show_result 逻辑。在润色完成 + 句末标点补全之后、paste 之前，插入 record_type 分流。
 
@@ -564,7 +564,7 @@ crate::result_window::show_result(app_handle, &transcript.display_text());
 
 注意：finalize_after_stop 有多个 return 点（空文本、润色 pending 等）。record_type 分流只在最终 combined 文本确定后的那个路径。需要仔细阅读现有代码，在正确位置插入 match。
 
-- [ ] **Step 3: 编译 + 测试 + Commit**
+- [x] **Step 3: 编译 + 测试 + Commit**
 
 ```bash
 cargo check -p octopus-desktop
@@ -581,7 +581,7 @@ git commit -m "feat(coordinator): finalize 按 record_type 分流 + execute_agen
 - Modify: `crates/desktop/src/action_bar_commands.rs`
 - Modify: `crates/desktop/src/main.rs`（注册命令）
 
-- [ ] **Step 1: trigger_agent_voice 命令**
+- [x] **Step 1: trigger_agent_voice 命令**
 
 在 action_bar_commands.rs 追加：
 
@@ -678,7 +678,7 @@ trigger_agent_voice：
 
 Coordinator 加一个 pub 方法 `start_agent_recording(&self, task_id: String)`。
 
-- [ ] **Step 2: Coordinator::start_agent_recording 方法**
+- [x] **Step 2: Coordinator::start_agent_recording 方法**
 
 ```rust
 pub fn start_agent_recording(&self, task_id: String) {
@@ -689,7 +689,7 @@ pub fn start_agent_recording(&self, task_id: String) {
 }
 ```
 
-- [ ] **Step 3: 主循环处理 StartAgentRecording**
+- [x] **Step 3: 主循环处理 StartAgentRecording**
 
 在主循环 match 中，复制 Toggle Idle 分支的 runtime sync 逻辑，但 record_type 传 AgentBridge：
 
@@ -724,7 +724,7 @@ pub fn start_agent_recording(&self, task_id: String) {
     }
 ```
 
-- [ ] **Step 4: trigger_agent_voice 完整实现**
+- [x] **Step 4: trigger_agent_voice 完整实现**
 
 ```rust
 #[tauri::command]
@@ -766,7 +766,7 @@ pub fn trigger_agent_voice(
 }
 ```
 
-- [ ] **Step 5: main.rs 注册命令**
+- [x] **Step 5: main.rs 注册命令**
 
 invoke_handler 加：
 
@@ -774,7 +774,7 @@ invoke_handler 加：
             action_bar_commands::trigger_agent_voice,
 ```
 
-- [ ] **Step 6: 添加 uuid 依赖（如未有）**
+- [x] **Step 6: 添加 uuid 依赖（如未有）**
 
 检查 Cargo.toml 是否有 uuid。如无，加：
 
@@ -782,7 +782,7 @@ invoke_handler 加：
 uuid = { version = "1", features = ["v4"] }
 ```
 
-- [ ] **Step 7: list/delete/retry agent_tasks 命令**
+- [x] **Step 7: list/delete/retry agent_tasks 命令**
 
 在 action_bar_commands.rs 追加：
 
@@ -831,7 +831,7 @@ main.rs 注册：
             action_bar_commands::retry_agent_task,
 ```
 
-- [ ] **Step 8: 编译 + 测试 + Commit**
+- [x] **Step 8: 编译 + 测试 + Commit**
 
 ```bash
 cargo check -p octopus-desktop
@@ -847,7 +847,7 @@ git commit -m "feat(agent-voice): trigger_agent_voice + task 管理命令"
 **Files:**
 - Modify: `crates/desktop/frontend/src/pages/ActionBar/index.tsx`
 
-- [ ] **Step 1: agent 含 {{task}} 时调 trigger_agent_voice**
+- [x] **Step 1: agent 含 {{task}} 时调 trigger_agent_voice**
 
 找到前端 `executeItem` 中 agent 含 `{{task}}` 分支：
 
@@ -866,7 +866,7 @@ git commit -m "feat(agent-voice): trigger_agent_voice + task 管理命令"
     }
 ```
 
-- [ ] **Step 2: 移除 task-input 视图（不再需要文本输入框）**
+- [x] **Step 2: 移除 task-input 视图（不再需要文本输入框）**
 
 移除 `taskInput`/`taskItem`/`submitTask` 相关 state 和 JSX。注意保留 `View` 类型中的 `"task-input"`（或移除）。
 
@@ -876,7 +876,7 @@ git commit -m "feat(agent-voice): trigger_agent_voice + task 管理命令"
 
 **决策**：一期含 {{task}} 全走语音，移除 task-input。如需 fallback 后续再加。
 
-- [ ] **Step 3: 编译 + Commit**
+- [x] **Step 3: 编译 + Commit**
 
 ```bash
 cd crates/desktop/frontend && node_modules/.bin/tsc --noEmit
@@ -893,7 +893,7 @@ git commit -m "feat(frontend): agent 含 {{task}} 时联动语音录音替代文
 - Modify: `crates/desktop/frontend/src/locales/zh-CN.yaml`
 - Modify: `crates/desktop/frontend/src/locales/en.yaml`
 
-- [ ] **Step 1: AgentPanel 加任务列表区**
+- [x] **Step 1: AgentPanel 加任务列表区**
 
 在 adapter 列表之后加一个任务列表区，查 `list_agent_tasks`，支持删除和重试。
 
@@ -925,7 +925,7 @@ git commit -m "feat(frontend): agent 含 {{task}} 时联动语音录音替代文
 </div>
 ```
 
-- [ ] **Step 2: i18n 键**
+- [x] **Step 2: i18n 键**
 
 zh-CN:
 ```yaml
@@ -947,7 +947,7 @@ en:
     taskStatusFailed: Failed
 ```
 
-- [ ] **Step 3: 编译 + Commit**
+- [x] **Step 3: 编译 + Commit**
 
 ```bash
 cd crates/desktop/frontend && node_modules/.bin/tsc --noEmit
@@ -962,21 +962,21 @@ git commit -m "feat(frontend): AgentPanel 任务列表区 + i18n"
 **Files:**
 - Modify: `docs/architecture.md`
 
-- [ ] **Step 1: 全量编译**
+- [x] **Step 1: 全量编译**
 
 Run: `cargo check -p octopus-desktop 2>&1 | grep "^error"`
 Expected: 无 error
 
-- [ ] **Step 2: 全量测试**
+- [x] **Step 2: 全量测试**
 
 Run: `cargo test -p octopus-infra --lib && cargo test -p octopus-desktop --bin octopus-desktop`
 Expected: 全 PASS
 
-- [ ] **Step 3: 更新 architecture.md**
+- [x] **Step 3: 更新 architecture.md**
 
 在文件 agent 桥接章节后追加语音联动说明。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add docs/architecture.md

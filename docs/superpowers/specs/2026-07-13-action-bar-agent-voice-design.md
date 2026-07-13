@@ -1,6 +1,6 @@
 # Action Bar Agent × 语音识别联动设计
 
-> **状态**：设计确认，待实现
+> **状态**：已实现 ✅
 > **日期**：2026-07-13
 > **scope**：action bar agent 项需要用户输入任务时，联动语音识别（复用现有 ASR 流程），识别结果作为 task 注入 agent 命令执行
 > **前置文档**：
@@ -132,50 +132,55 @@ CREATE TABLE IF NOT EXISTS agent_tasks (
 
 ### 3.4 coordinator 改动
 
-三个触点，最小侵入：
+五个触点：
 
-**Transcript 加 record_type 字段**：
+**RecordType 枚举定义**（`coordinator.rs`）：
 
 ```rust
-pub struct Transcript {
-    // ... 现有字段 ...
-    pub record_type: RecordType,  // 默认 Input
+#[derive(Clone, Debug)]
+pub enum RecordType {
+    Input,
+    AgentBridge { task_id: String },
+}
+impl Default for RecordType {
+    fn default() -> Self { RecordType::Input }
 }
 ```
 
-贯穿录音全生命周期，finalize 时从这里读取。
-
-**start_recording 接受 record_type 参数**：
+**Transcript 加 record_type 字段**（`transcript.rs`）：
 
 ```rust
-pub fn start_recording(
-    &self,
-    prepare_id: i64,
-    selection: Option<(String, usize, usize)>,
-    record_type: RecordType,  // 新增
-)
+pub struct Transcript {
+    pub record_type: crate::coordinator::RecordType,  // 默认 Input
+}
 ```
 
-现有 ASR 热键触发时传 `RecordType::Input`，action bar agent 触发时传 `RecordType::AgentBridge { task_id }`。在 `Transcript::new()` 时设置。
+`Transcript::new()` 加 `record_type` 参数。贯穿录音全生命周期。
+
+**start_recording / begin_recording / prepare_*_session 全链路透传 record_type**：
+
+`Coordinator::start_recording()` 发 `Command::StartRecording { record_type: RecordType::Input }`（ASR 热键路径固定 Input）。`begin_recording()` + `prepare_streaming_session` / `prepare_vad_segmented_session` / `prepare_cloud_streaming_session` 全部加 `record_type: RecordType` 参数，`Transcript::new()` 时设置。
+
+**StartAgentRecording Command**（跳过 prepare-record 两阶段）：
+
+```rust
+Command::StartAgentRecording { task_id: String }
+```
+
+`Coordinator::start_agent_recording(task_id)` 发送此命令。主循环处理：sync runtime config → `begin_recording(..., RecordType::AgentBridge { task_id })`。不走 prepare-record，agent 录音无 selection 需求。
 
 **finalize_after_stop 按 record_type 分流**：
 
 ```rust
-fn finalize_after_stop(...) {
-    // ... 现有：flush diverted + 润色检查 + 句末标点 ...
-
-    match &transcript.record_type {
-        RecordType::Input => {
-            // 现有逻辑：show_result + paste + DB 落库
-        }
-        RecordType::AgentBridge { task_id } => {
-            execute_agent_task(app_handle, task_id, &transcript.finish_text());
-        }
+match &transcript.record_type {
+    RecordType::AgentBridge { task_id } => {
+        execute_agent_task(app_handle, task_id, &combined);
+        *stage = Stage::Idle;
+        return;
     }
+    RecordType::Input => {} // 走现有 paste 流程
 }
 ```
-
-`execute_agent_task` 是独立函数，从 DB 取 task context，调 agent_adapter render_command + terminal_launcher，与 coordinator 解耦。
 
 ### 3.5 action bar → 录音联动
 
@@ -183,17 +188,23 @@ fn finalize_after_stop(...) {
 
 ```rust
 #[tauri::command]
-pub fn trigger_agent_voice(item_id: i64, app: AppHandle) -> Result<(), String> {
+pub fn trigger_agent_voice(
+    item_id: i64,
+    app: AppHandle,
+    coordinator: tauri::State<'_, Coordinator>,
+) -> Result<(), String> {
     // 1. 从 action_bar_items 读菜单项（agent_key, action_data）
     // 2. 从 PENDING_CONTEXT 取 files + cwd
     // 3. 组装 context JSON（kind, files, cwd, prompt_template）
-    // 4. 生成 UUID task_id
-    // 5. INSERT agent_tasks (id, status='pending', agent_key, context)
-    // 6. 隐藏 action bar 浮窗（hide_action_bar_window + finalize_action_bar）
-    // 7. coordinator.start_recording(..., RecordType::AgentBridge { task_id })
-    //    走现有 prepare-record → StartRecording 两阶段流程
+    // 4. 生成 UUID task_id + INSERT agent_tasks
+    // 5. 隐藏 action bar 浮窗
+    // 6. coordinator.start_agent_recording(task_id)
+    //    → 发 Command::StartAgentRecording → 直接 begin_recording
+    //    （跳过 prepare-record 两阶段，agent 录音无 selection 需求）
 }
 ```
+
+> **实现偏差**：设计阶段考虑走 prepare-record 两阶段流程，实现时改为独立 `StartAgentRecording` Command——更简洁，避免前端 start_recording 命令需要感知 record_type。
 
 **前端 ActionBar 修改**：
 
@@ -209,19 +220,27 @@ agent 项含 `{{task}}` 时：
 
 action bar 浮窗隐藏 → Result 浮窗弹出录音，沿用现有 `FLOAT_DEPTH` 引用计数机制。
 
-### 3.6 execute_agent_task 函数
+### 3.6 execute_agent_task + parse_agent_context
+
+`execute_agent_task` 调用 `parse_agent_context`（提取为 pub 纯函数供测试）：
 
 ```rust
+pub struct AgentContext {
+    pub files: Vec<String>,
+    pub cwd: String,
+    pub prompt_template: String,
+}
+
+pub fn parse_agent_context(context_json: &str) -> AgentContext {
+    // 解析 JSON，缺字段/非法 JSON 降级到默认值
+}
+
 fn execute_agent_task(app: &AppHandle, task_id: &str, transcribed_text: &str) {
-    // 1. UPDATE agent_tasks SET transcribed_text=?, status='executing' WHERE id=?
-    // 2. 从 DB 读回完整 task（agent_key, context, transcribed_text）
-    // 3. 解析 context JSON → files, cwd, prompt_template
-    // 4. 渲染 prompt：render_agent_prompt(template, transcribed_text, files)
-    // 5. 查 adapter → render_command(template, prompt, files, cwd)
-    // 6. TerminalAppLauncher.spawn(command, cwd)
-    // 7. UPDATE agent_tasks SET status='done'
-    // 8. 隐藏 Result 窗口
-    // 失败：UPDATE status='failed', error_msg；toast 提示
+    // 1. UPDATE agent_tasks SET transcribed_text, status='executing'
+    // 2. load_agent_task → parse_agent_context
+    // 3. render_agent_prompt → render_command → TerminalAppLauncher.spawn
+    // 4. UPDATE status='done' / 'failed'
+    // 5. hide_result + tray Idle
 }
 ```
 
@@ -235,9 +254,8 @@ fn execute_agent_task(app: &AppHandle, task_id: &str, transcribed_text: &str) {
 | e5f6g7h8 | ❌ failed | Pi | 制作摘要 | 10 分钟前 | 重试 · 删除 |
 | i9j0k1l2 | ⏳ pending | Claude Code | — | 1 小时前 | 删除 |
 
-- 仅查最近 100 条
-- failed 可重试（重新组装命令 + Terminal.app 执行）
-- pending 超过 30 分钟视为「死任务」，标红提示删除
+- 仅查最近 50 条
+- failed/done 可重试（重新组装命令 + Terminal.app 执行）
 
 **新增 Tauri 命令**：
 
