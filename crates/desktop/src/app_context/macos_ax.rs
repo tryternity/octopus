@@ -163,15 +163,26 @@ fn gather_browser_via_applescript(
   sel=sel.trim();
   if(!sel) return JSON.stringify({{before:"",after:"",title:document.title}});
   var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT,null,false);
-  var node,combined="";
-  while(node=walker.nextNode()){{combined+=node.textContent;}}
-  var idx=combined.indexOf(sel);
-  if(idx<0) idx=combined.toLowerCase().indexOf(sel.toLowerCase());
+  var node;
+  while(node=walker.nextNode()){{
+    if(node.textContent.indexOf(sel)>=0||node.textContent.toLowerCase().indexOf(sel.toLowerCase())>=0) break;
+  }}
+  if(!node) return JSON.stringify({{before:"",after:"",title:document.title}});
+  var tags=["P","DIV","LI","TD","TH","BLOCKQUOTE","PRE","H1","H2","H3","H4","H5","H6","DD","DT","SECTION","ARTICLE"];
+  var block=node;
+  while(block&&block.parentNode){{
+    if(tags.indexOf(block.nodeName)>=0) break;
+    block=block.parentNode;
+  }}
+  if(!block) block=node.parentNode||document.body;
+  var full=block.textContent||"";
+  var idx=full.indexOf(sel);
+  if(idx<0) idx=full.toLowerCase().indexOf(sel.toLowerCase());
   if(idx<0) return JSON.stringify({{before:"",after:"",title:document.title}});
   var ml=1000;
-  var b=idx>0?combined.slice(Math.max(0,idx-ml),idx):"";
+  var b=idx>0?full.slice(Math.max(0,idx-ml),idx):"";
   var end=idx+sel.length;
-  var a=end<combined.length?combined.slice(end,end+ml):"";
+  var a=end<full.length?full.slice(end,end+ml):"";
   return JSON.stringify({{before:b,after:a,title:document.title}});
 }})()
 "#,
