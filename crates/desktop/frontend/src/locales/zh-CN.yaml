@@ -476,6 +476,7 @@ result:
   translateAuto8: 自动 8s
   translateAuto12: 自动 12s
   translateNow: 立即翻译
+  translateClose: 关闭翻译
   translating: 翻译中…
   translateFail: "翻译失败："
 

@@ -1283,11 +1283,23 @@ fn do_paste(
     let text_to_paste_owned: String;
     let text_to_paste = if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
         crate::result_window::show_result(app_handle, "⏳ 最终翻译中...");
-        text_to_paste_owned = crate::action_bar_commands::do_translate(text_to_paste, config)
-            .unwrap_or_else(|e| {
-                warn!("最终翻译失败，回退润色/原文: {}", e);
-                text_to_paste.to_string()
-            });
+        // catch_unwind 兜底：do_translate 调模型加载（ort/candle）与 LLM 网络，
+        // panic 会杀 coordinator 线程导致整个状态机失效（同 start_final_polish_or_paste 的加固）
+        let text_ref = text_to_paste;
+        text_to_paste_owned = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            crate::action_bar_commands::do_translate(text_ref, config)
+        }))
+        .unwrap_or_else(|p| {
+            let msg = if let Some(s) = p.downcast_ref::<&str>() { (*s).to_string() }
+                else if let Some(s) = p.downcast_ref::<String>() { s.clone() }
+                else { "unknown panic".to_string() };
+            warn!("终翻 panic: {}", msg);
+            Err(msg)
+        })
+        .unwrap_or_else(|e| {
+            warn!("最终翻译失败，回退润色/原文: {}", e);
+            text_ref.to_string()
+        });
         info!("Translation finalize: {} chars", text_to_paste_owned.chars().count());
         &text_to_paste_owned
     } else {

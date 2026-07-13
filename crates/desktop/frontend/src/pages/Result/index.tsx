@@ -241,11 +241,13 @@ function Result() {
       setExpanded(true);
       invoke("set_result_click_through", { expanded: true });
     }
-    setTimeout(() => doTranslateRef.current(), 100);
+    setTimeout(() => {
+      if (translateModeRef.current !== 'off') doTranslateRef.current();
+    }, 100);
     invoke("set_translation_active", { active: true });
   }, [toolbarState.translate_mode, expanded]);
 
-  // 翻译事件监听——仅翻译模式下生效
+  // 翻译事件监听——仅翻译模式开启/关闭时订阅/退订，档位切换不重订阅（防竞态丢失 translate-done）
   useEffect(() => {
     if (translateMode === 'off') return;
     let unlistens: UnlistenFn[] = [];
@@ -271,7 +273,8 @@ function Result() {
       cancelled = true;
       unlistens.forEach(f => f());
     };
-  }, [translateMode]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [translateMode !== 'off']);
 
   // 自动档节流——translateMode 为 4s/8s/12s 时启动定时器
   useEffect(() => {
@@ -370,12 +373,17 @@ function Result() {
       return;
     }
     if (popupType === "translate") { setPopupType(null); return; }
-    setPopupItems(buildTranslatePopupItems(translateMode, (m) =>
+    // 关闭翻译项 + 分隔线 + 四档
+    const modeItems = buildTranslatePopupItems(translateMode, (m) =>
       m === 'manual' ? t("result.translateManual")
         : m === '4s' ? t("result.translateAuto4")
         : m === '8s' ? t("result.translateAuto8")
         : t("result.translateAuto12")
-    ));
+    );
+    setPopupItems([
+      { label: t("result.translateClose"), current: false, name: "__off__" },
+      ...modeItems,
+    ]);
     setPopupType("translate");
   };
 
@@ -386,6 +394,15 @@ function Result() {
       } else if (popupType === "denoise" && item.mode !== undefined) {
         await invoke("set_denoise_mode", { mode: item.mode });
       } else if (popupType === "translate" && item.name) {
+        if (item.name === "__off__") {
+          setTranslateMode('off');
+          setTranslatedText("");
+          translatingRef.current = false;
+          setTranslating(false);
+          invoke("set_translation_active", { active: false });
+          setPopupType(null);
+          return;
+        }
         const mode = item.name as TranslateMode;
         setTranslateMode(mode);
         setPopupType(null);
@@ -407,8 +424,8 @@ function Result() {
     { id: "denoise", icon: "denoise", label: t("result.denoiseMode"), active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
     { id: "polish", icon: "polish", label: t("result.polishMode"), active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
     { id: "polish-now", icon: "polish-now", label: t("result.polishNow"), disabled: polishLoading, onClick: polishNow },
-    { id: "translate", icon: "translate" as IconName, label: t("result.translate"), active: translateMode !== 'off', onClick: openTranslatePopup },
-    { id: "translate-now", icon: "redo" as IconName, label: t("result.translateNow"), disabled: translating || translateMode === 'off', onClick: doTranslate },
+    { id: "translate", icon: "translate", label: t("result.translate"), active: translateMode !== 'off', onClick: openTranslatePopup },
+    { id: "translate-now", icon: "redo", label: t("result.translateNow"), disabled: translating || translateMode === 'off', onClick: doTranslate },
     { id: "toggle-size", icon: (expanded ? "minimize" : "expand-edit") as IconName, label: expanded ? t("result.zoomOut") : t("result.zoomIn"), disabled: translateMode !== 'off', onClick: toggleExpand },
     { id: "save", icon: "save" as IconName, label: t("result.save"), onClick: onSave },
   ];
@@ -512,6 +529,13 @@ function Result() {
                 expanded={true}
                 onCommit={(payload) => {
                   setText(payload.text);
+                  invoke("commit_edit", {
+                    text: payload.text,
+                    dirtyRanges: payload.dirtyRanges,
+                    hasEdited: payload.hasEdited,
+                    caret: payload.caret ?? null,
+                    selection: payload.selection ?? null,
+                  });
                 }}
               />
             </div>

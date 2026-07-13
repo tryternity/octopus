@@ -476,6 +476,7 @@ result:
   translateAuto8: Auto 8s
   translateAuto12: Auto 12s
   translateNow: Translate Now
+  translateClose: Close Translation
   translating: Translating…
   translateFail: "Translation failed:"
 
