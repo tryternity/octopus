@@ -49,11 +49,12 @@ impl super::ContextProvider for AxProvider {
 
         // 2. 采集 surrounding（失败 → None，不阻断 source 返回）
         let deadline = Instant::now() + AX_TIMEOUT;
+        let bid = bundle_id.as_deref().unwrap_or("");
         let (surrounding, diagnostics) = if Instant::now() < deadline {
             // Browser 优先用 AppleScript execute javascript（直接读 DOM，比 AX 准确）
             if kind == AppKind::Browser {
                 if let Some(result) = gather_browser_via_applescript(
-                    bundle_id.as_deref().unwrap_or(""),
+                    bid,
                     selected_text,
                     deadline,
                 ) {
@@ -61,7 +62,7 @@ impl super::ContextProvider for AxProvider {
                 } else {
                     // AppleScript JS 失败（可能未开启 Allow JavaScript from Apple Events），fallback 到 AX
                     let mut diag_prefix = "browser AppleScript JS 失败，fallback 到 AX\n".to_string();
-                    match gather_surrounding(pid, kind, selected_text, deadline) {
+                    match gather_surrounding(pid, kind, selected_text, deadline, bid) {
                         Ok((s, diag)) => {
                             let full_diag = match diag {
                                 Some(d) => format!("{}{}", diag_prefix, d),
@@ -76,7 +77,7 @@ impl super::ContextProvider for AxProvider {
                     }
                 }
             } else {
-                match gather_surrounding(pid, kind, selected_text, deadline) {
+                match gather_surrounding(pid, kind, selected_text, deadline, bid) {
                     Ok((s, diag)) => (Some(s), diag),
                     Err(e) => {
                         log::info!("[app-context] surrounding 采集失败（降级）: {}", e);
@@ -370,8 +371,177 @@ end tell"#,
     ))
 }
 
+/// 自绘编辑器 fallback：从磁盘读文件内容获取上下文。
+///
+/// 当 AX 树不含真实编辑器内容时（Sublime Text、WPS），尝试：
+/// 1. 从窗口标题提取文件名
+/// 2. 用 App 的 session 文件查找完整路径（Sublime）或直接搜索
+/// 3. 读文件内容，用 selected_text 定位切 before/after
+fn try_read_file_context(
+    window_title: &str,
+    bundle_id: &str,
+    selected_text: &str,
+    _kind: AppKind,
+) -> Option<SurroundingText> {
+    // 1. 从标题提取文件名
+    let filename = extract_filename_from_title(window_title)?;
+    log::info!(
+        "[app-context] 磁盘 fallback: 标题='{}' → 文件名='{}'",
+        window_title,
+        filename
+    );
+
+    // 2. 查找文件完整路径
+    let file_path = find_file_path(&filename, bundle_id)?;
+    log::info!("[app-context] 磁盘 fallback: 找到文件 {}", file_path.display());
+
+    // 3. 读文件内容
+    let content = std::fs::read_to_string(&file_path).ok()?;
+    if content.is_empty() {
+        return None;
+    }
+
+    // 4. 用 selected_text 定位
+    let sel = selected_text.trim();
+    let pos = content.find(sel).or_else(|| content.to_lowercase().find(&sel.to_lowercase()))?;
+    let limit = 1000;
+    let before = if pos > 0 {
+        let start = pos.saturating_sub(limit);
+        Some(content[start..pos].to_string())
+    } else {
+        None
+    };
+    let end = pos + sel.len();
+    let after = if end < content.len() {
+        let after_end = (end + limit).min(content.len());
+        Some(content[end..after_end].to_string())
+    } else {
+        None
+    };
+
+    Some(SurroundingText {
+        before,
+        after,
+        window_title: Some(window_title.to_string()),
+    })
+}
+
+/// 从窗口标题提取文件名。
+/// "test.txt — Sublime Text" → "test.txt"
+/// "report.docx - WPS Office" → "report.docx"
+/// "untitled — Sublime Text" → None（未保存文件）
+fn extract_filename_from_title(title: &str) -> Option<String> {
+    // 取 " — " 或 " - " 前面的部分（em dash 优先，hyphen 回退）
+    let name_part = if title.contains(" — ") {
+        title.split(" — ").next()?
+    } else if title.contains(" - ") {
+        title.split(" - ").next()?
+    } else {
+        title
+    };
+    let name_part = name_part.trim();
+
+    if name_part.is_empty() || name_part == "untitled" || name_result_is_app_name(name_part) {
+        return None;
+    }
+
+    // 确保看起来像文件名（含扩展名或路径分隔符）
+    if name_part.contains('.') || name_part.contains('/') {
+        Some(name_part.to_string())
+    } else {
+        None
+    }
+}
+
+/// 判断标题前半段是否是 App 名（误匹配防护）。
+fn name_result_is_app_name(s: &str) -> bool {
+    matches!(
+        s.to_lowercase().as_str(),
+        "sublime text" | "wps office" | "code" | "finder" | "terminal" | "safari"
+    )
+}
+
+/// 查找文件的完整路径。
+/// 先查 Sublime session，再查 mdfind（Spotlight）。
+fn find_file_path(filename: &str, bundle_id: &str) -> Option<std::path::PathBuf> {
+    // Sublime session 查找
+    if bundle_id.contains("sublimetext") {
+        if let Some(path) = find_in_sublime_session(filename) {
+            return Some(path);
+        }
+    }
+
+    // Spotlight fallback（文件名精确匹配）
+    let output = std::process::Command::new("mdfind")
+        .args(["-name", filename])
+        .output()
+        .ok()?;
+
+    if !output.status.success() {
+        return None;
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 取第一个匹配
+    stdout
+        .lines()
+        .filter(|l| !l.is_empty())
+        .filter(|l| {
+            // 文件名精确匹配（mdfind -name 可能返回子串匹配）
+            std::path::Path::new(l)
+                .file_name()
+                .map(|n| n.to_string_lossy().as_ref() == filename)
+                .unwrap_or(false)
+        })
+        .next()
+        .map(std::path::PathBuf::from)
+}
+
+/// 从 Sublime Text session 文件中查找文件路径。
+fn find_in_sublime_session(filename: &str) -> Option<std::path::PathBuf> {
+    // Sublime Text 3/4 的 session 路径
+    let home = dirs::home_dir()?;
+    let candidates = [
+        home.join("Library/Application Support/Sublime Text/Local/Session.sublime_session"),
+        home.join("Library/Application Support/Sublime Text 3/Local/Session.sublime_session"),
+    ];
+
+    for session_path in &candidates {
+        let content = match std::fs::read_to_string(session_path) {
+            Ok(c) => c,
+            Err(_) => continue,
+        };
+
+        // 解析 JSON，搜索 file_history 和 buffers 中的路径
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+            // 搜索 file_history
+            if let Some(history) = json["windows"][0]["file_history"].as_array() {
+                for item in history {
+                    if let Some(path) = item.as_str() {
+                        if path.ends_with(filename) {
+                            return Some(std::path::PathBuf::from(path));
+                        }
+                    }
+                }
+            }
+            // 搜索 buffers
+            if let Some(buffers) = json["windows"][0]["buffers"].as_array() {
+                for buf in buffers {
+                    if let Some(path) = buf["file"].as_str() {
+                        if path.ends_with(filename) {
+                            return Some(std::path::PathBuf::from(path));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 /// 通过 AX 采集选区周围文本。返回 (surrounding, AX 诊断信息)。
-fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str, deadline: Instant) -> anyhow::Result<(SurroundingText, Option<String>)> {
+fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str, deadline: Instant, bundle_id: &str) -> anyhow::Result<(SurroundingText, Option<String>)> {
     unsafe {
         // 辅助功能权限诊断
         let trusted = AXIsProcessTrustedWithOptions(std::ptr::null());
@@ -399,7 +569,7 @@ fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str, deadline: In
         let result = match focused_result {
             Ok(focused_ref) => {
                 let focused_element = focused_ref as AXUIElementRef;
-                let surrounding = build_surrounding(focused_element, app_element, kind, selected_text, deadline);
+                let surrounding = build_surrounding(focused_element, app_element, kind, selected_text, deadline, bundle_id);
                 CFRelease(focused_ref);
                 surrounding
             }
@@ -407,7 +577,7 @@ fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str, deadline: In
                 log::info!("[app-context] 无法获取焦点元素（含重试）: {}", e);
                 match find_text_element_with_selected(app_element, selected_text, deadline) {
                     Some(text_elem) => {
-                        let surrounding = build_surrounding(text_elem, app_element, kind, selected_text, deadline);
+                        let surrounding = build_surrounding(text_elem, app_element, kind, selected_text, deadline, bundle_id);
                         CFRelease(text_elem as CFTypeRef);
                         let mut result = surrounding?;
                         result.1 = Some(format!(
@@ -436,6 +606,7 @@ unsafe fn build_surrounding(
     kind: AppKind,
     selected_text: &str,
     deadline: Instant,
+    bundle_id_or_name: &str,
 ) -> anyhow::Result<(SurroundingText, Option<String>)> {
     let mut diagnostics: Vec<String> = Vec::new();
 
@@ -501,16 +672,32 @@ unsafe fn build_surrounding(
     // ── 内容校验：AX 树可能不含真实编辑器文本 ──
     // 自绘编辑器（Sublime Text、Vim GUI 等）的 AX 树只有静态文本
     // （如试用版水印 "UNREGISTERED"），不包含编辑器实际内容。
-    // 判定：full_text 不包含选中文本 → AX 无真实内容 → 降级返回 None。
+    // 判定：full_text 不包含选中文本 → AX 无真实内容。
     // Terminal 排除：full_text 是真实 scrollback，选中文本可能在不可见区域
     // （光标行以下），此时 find-fail fallback 应取 scrollback 末尾作 before。
     if kind != AppKind::Terminal && !full_text.is_empty() && !selected_text.is_empty() {
         let selected_trimmed = selected_text.trim();
         let full_trimmed = full_text.trim();
         if !full_trimmed.contains(selected_trimmed) {
-            diagnostics.push(format!(
-                "DEGRADED: full_text 不含选中文本，AX 树无真实内容（如 Sublime 自绘编辑器）"
-            ));
+            // 自绘编辑器 fallback：尝试从磁盘读文件内容。
+            // 窗口标题通常含文件名（如 "test.txt — Sublime Text"），
+            // 用 App 的 session/recent files 查找完整路径。
+            if let Some(ref title) = window_title {
+                if let Some(file_ctx) = try_read_file_context(
+                    title,
+                    bundle_id_or_name,
+                    selected_text,
+                    kind,
+                ) {
+                    diagnostics.push("FALLBACK: AX 降级 → 从磁盘读文件成功".to_string());
+                    let diag = Some(diagnostics.join("\n  "));
+                    log::info!("[app-context] AX 降级 → 磁盘文件 fallback 成功");
+                    return Ok((file_ctx, diag));
+                }
+            }
+            diagnostics.push(
+                "DEGRADED: full_text 不含选中文本，磁盘 fallback 也失败".to_string(),
+            );
             let diag = Some(diagnostics.join("\n  "));
             log::info!("[app-context] AX 诊断（降级）:\n  {}", diag.as_ref().unwrap());
             return Ok((
@@ -1048,5 +1235,38 @@ mod tests {
     #[test]
     fn test_head_empty() {
         assert_eq!(truncate_text_head("", 5), None);
+    }
+
+    // ── extract_filename_from_title ──
+
+    #[test]
+    fn test_extract_filename_sublime() {
+        assert_eq!(
+            extract_filename_from_title("test.txt — Sublime Text"),
+            Some("test.txt".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_wps() {
+        assert_eq!(
+            extract_filename_from_title("report.docx - WPS Office"),
+            Some("report.docx".to_string())
+        );
+    }
+
+    #[test]
+    fn test_extract_filename_untitled() {
+        assert_eq!(extract_filename_from_title("untitled — Sublime Text"), None);
+    }
+
+    #[test]
+    fn test_extract_filename_app_name_only() {
+        assert_eq!(extract_filename_from_title("Sublime Text"), None);
+    }
+
+    #[test]
+    fn test_extract_filename_no_extension() {
+        assert_eq!(extract_filename_from_title("Makefile — Sublime Text"), None);
     }
 }
