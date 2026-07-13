@@ -137,6 +137,8 @@ pub struct ToolbarState {
     /// 结果展示区编辑 toggle 快捷键（Tauri Accelerator 字符串，默认 "Cmd+Enter"，进入/保存同键）。
     /// 仅结果窗聚焦时生效。
     pub edit_shortcut: String,
+    /// 翻译自动档（记忆档位）："manual" / "8s" / "12s" / "15s"。DB 无值时默认 "manual"。
+    pub translate_mode: String,
 }
 
 #[derive(Serialize)]
@@ -254,6 +256,11 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
                 .map(|llms| llms.iter().any(|m| m.model_name == bare))
                 .unwrap_or(false)
     };
+    let translate_mode = octopus_infra::db::load_config_key("translate_mode")
+        .ok()
+        .flatten()
+        .filter(|s| matches!(s.as_str(), "manual" | "8s" | "12s" | "15s"))
+        .unwrap_or_else(|| "manual".to_string());
     ToolbarState {
         asr_engine: g.asr_engine.clone(),
         polish_mode: polish_mode_to_u8(g.polish_mode),
@@ -261,6 +268,7 @@ pub fn toolbar_state(rc: State<'_, SharedRuntimeConfig>) -> ToolbarState {
         denoise_mode: g.denoise_mode,
         polish_llm_valid,
         edit_shortcut,
+        translate_mode,
     }
 }
 
@@ -347,7 +355,7 @@ pub fn set_polish_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<(
     }
     if let Err(e) = persist_polish_mode(mode) {
         log::warn!(
-            "写回 config.yaml 失败（polish_mode={}）：{} —— 本次仍生效，重启后回退",
+            "写回 DB 失败（polish_mode={}）：{} —— 本次仍生效，重启后回退",
             mode,
             e
         );
@@ -376,6 +384,16 @@ pub fn set_denoise_mode(mode: u8, rc: State<'_, SharedRuntimeConfig>) -> Result<
     // 不 reload 则改了也不生效（需重启）。reload 以 DB 为真——persist 成功即本次生效。
     octopus_asr_local::config::reload_app_config();
     Ok(())
+}
+
+/// 设置翻译自动档位（manual/8s/12s/15s）。纯持久化到 DB，翻译节流逻辑在前端。
+#[tauri::command]
+pub fn set_translate_mode(mode: String) -> Result<(), String> {
+    let valid = matches!(mode.as_str(), "manual" | "8s" | "12s" | "15s");
+    if !valid {
+        return Err(format!("translate_mode='{}' 非法（应为 manual/8s/12s/15s）", mode));
+    }
+    octopus_infra::db::save_config_key("translate_mode", &mode).map_err(|e| e.to_string())
 }
 
 /// 列出所有启用的 LLM 润色模型，并标记当前 polish_llm。
