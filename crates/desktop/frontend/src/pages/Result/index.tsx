@@ -321,12 +321,14 @@ function Result() {
     invoke("commit_edit", {
       text: submitText,
       dirtyRanges: [],
-      hasEdited: false,
+      hasEdited: true,
       caret: null,
       selection: null,
     });
     exitTranslateMode();
   }, [finalTranslate, exitTranslateMode]);
+  const onSaveRef = useRef(onSave);
+  useEffect(() => { onSaveRef.current = onSave; }, [onSave]);
 
   const toggleExpand = useCallback(() => {
     const next = !expanded;
@@ -362,7 +364,7 @@ function Result() {
       const sc = parseShortcut(toolbarState.edit_shortcut);
       if (matchShortcut(e, sc)) {
         e.preventDefault();
-        asrEditorRef.current?.commit();
+        onSaveRef.current();
       }
     };
     document.addEventListener("keydown", onKeyDown);
