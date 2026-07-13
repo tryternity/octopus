@@ -1,8 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
-import { useT } from "@/lib/i18n";
-import { Bot, Plus, Trash2, RefreshCw, Pencil, Check, X } from "lucide-react";
+import { Bot, Plus, RefreshCw, Check, X } from "lucide-react";
 
 interface AgentAdapter {
   key: string;
@@ -18,7 +17,6 @@ interface AgentPanelProps {
 }
 
 export default function AgentPanel({ showToast }: AgentPanelProps) {
-  const t = useT();
   const [adapters, setAdapters] = useState<AgentAdapter[]>([]);
   const [editing, setEditing] = useState<Partial<AgentAdapter> | null>(null);
   const [editId, setEditId] = useState<number | null>(null);
@@ -61,24 +59,6 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
     } catch (e) {
       showToast(String(e));
     }
-  };
-
-  const handleDelete = async (key: string) => {
-    const adapter = adapters.find((a) => a.key === key);
-    if (!adapter || adapter.isBuiltin) return;
-    // 找到 DB id 需要额外接口——此处用 key 删除（后端需要 key-based delete 或前端存 id）
-    // 简化：用 list 中的 key 匹配，后端 delete_agent_adapter 需要 id
-    // 先查 adapter 列表获取可能的 id——但 list_agent_adapters 返回的 AgentAdapter 无 id
-    // TODO: 后端 AgentAdapter 加 id 字段
-    showToast("自定义 adapter 删除功能待完善");
-  };
-
-  const startEdit = (adapter: AgentAdapter) => {
-    setEditing({ ...adapter });
-    // 内置 adapter 不允许编辑，仅查看
-    if (adapter.isBuiltin) return;
-    // 自定义 adapter 需要 id 来更新——暂用 key 查
-    setEditId(null); // 需要 DB id，后端 AgentAdapter 暂无 id 字段
   };
 
   const startCreate = () => {
