@@ -7,11 +7,15 @@ import { Loader2, ChevronLeft, ChevronRight } from "lucide-react";
 import { detectActionUrl } from "./urlDetect";
 import { t } from "@/lib/i18n";
 
+type ContextKind = "text" | "files";
+
 interface Context {
+  kind: ContextKind;
   text: string;
+  files: string[];
 }
 
-type View = "main" | "submenu" | "loading";
+type View = "main" | "submenu" | "loading" | "task-input";
 
 interface ActionBarItem {
   id: number;
@@ -24,6 +28,8 @@ interface ActionBarItem {
   isSystem: boolean;
   isEnabled: boolean;
   shortcut?: string;
+  agent?: string;
+  accepts?: string;
 }
 
 const AI_TIMEOUT_MS = 10000;
@@ -145,6 +151,9 @@ export default function ActionBar() {
   const submenuParentIdRef = useRef<number | null>(null);
   const [focusLayer, setFocusLayer] = useState<"main" | "sub">("main");
   const focusLayerRef = useRef<"main" | "sub">("main");
+  const [taskInput, setTaskInput] = useState("");
+  const [taskItem, setTaskItem] = useState<ActionBarItem | null>(null);
+  const taskInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => { viewRef.current = view; }, [view]);
 
@@ -164,10 +173,28 @@ export default function ActionBar() {
   useEffect(() => { focusLayerRef.current = focusLayer; }, [focusLayer]);
   useEffect(() => { contextRef.current = context; }, [context]);
 
+  // 进入 task-input 视图时聚焦输入框
+  useEffect(() => {
+    if (view === "task-input") {
+      setTimeout(() => taskInputRef.current?.focus(), 50);
+    }
+  }, [view]);
+
+  const submitTask = async () => {
+    if (!taskItem) return;
+    setView("loading");
+    try {
+      await invoke("execute_action_bar", { itemId: taskItem.id, text: taskInput });
+    } catch (e) {
+      showQuickError(String(e).slice(0, 40));
+      setView("main");
+    }
+  };
+
   // 动态调整窗口高度——主菜单 1 行（~40px），子菜单 2 行（~76px），
   // 避免透明区域遮挡下层点击
   useEffect(() => {
-    const height = view === "submenu" ? 78 : view === "loading" ? 48 : 40;
+    const height = view === "submenu" ? 78 : view === "loading" ? 48 : view === "task-input" ? 48 : 40;
     const win = getCurrentWindow();
     win.setSize(new LogicalSize(380, height)).catch(() => {});
   }, [view]);
@@ -227,16 +254,36 @@ export default function ActionBar() {
     };
   }, []);
 
-  const urlResult = context ? detectActionUrl(context.text) : { isUrl: false, url: "" };
+  const urlResult = context ? detectActionUrl(context.text || "") : { isUrl: false, url: "" };
+
+  // accepts 过滤：按选中类型（text/files）过滤菜单项可见性
+  const isItemVisible = (item: ActionBarItem): boolean => {
+    if (!context) return true;
+    const accepts = item.accepts || "text";
+    if (accepts === "any") return true;
+    if (context.kind === "text") return accepts === "text";
+    return accepts === "file";
+  };
+
+  // submenu 可见性：子项全不可见则自身也隐藏
+  const isSubmenuVisible = (item: ActionBarItem): boolean => {
+    const subs = menuItems.filter((i) => i.parentId === item.id);
+    if (subs.length === 0) return true;
+    return subs.some((s) =>
+      s.actionType === "submenu" ? isSubmenuVisible(s) : isItemVisible(s)
+    );
+  };
 
   // 派生菜单项
   const allMainItems = menuItems.filter((i) => i.parentId === null);
   const mainItems = allMainItems.filter((i) => {
+    if (!isItemVisible(i)) return false;
+    if (i.actionType === "submenu" && !isSubmenuVisible(i)) return false;
     // 网页项仅当选中文本是 URL 时显示
     if (i.actionType === "url" && i.actionData === "") return urlResult.isUrl;
     return true;
   });
-  const getSubItems = (parentId: number) => menuItems.filter((i) => i.parentId === parentId);
+  const getSubItems = (parentId: number) => menuItems.filter((i) => i.parentId === parentId && isItemVisible(i));
 
   // ── 动作执行 ──
 
@@ -297,6 +344,25 @@ export default function ActionBar() {
       return;
     }
 
+    // agent 类型：含 {{task}} → 弹输入框；否则直接执行
+    if (item.actionType === "agent") {
+      if (item.actionData.includes("{{task}}")) {
+        setTaskItem(item);
+        setTaskInput("");
+        setView("task-input");
+        return;
+      }
+      setView("loading");
+      try {
+        await invoke("execute_action_bar", { itemId: item.id, text: "" });
+      } catch (e) {
+        showQuickError(String(e).slice(0, 40));
+        setView("main");
+      }
+      return;
+    }
+
+    // copy_path / url / script / copy
     // url / script / copy → 脚本类错误显示红色气泡提示（1 秒消失），其他类切 error 视图
     try {
       await invoke("execute_action_bar", { itemId: item.id, text: ctx.text });
@@ -456,6 +522,25 @@ export default function ActionBar() {
   }, []);
 
   // ── 渲染 ──
+
+  if (view === "task-input") {
+    return (
+      <div data-action-bar className="flex items-center gap-2 px-3 py-2.5 bg-background/95 backdrop-blur-xl text-foreground rounded-lg border border-border/50 shadow-2xl shadow-black/10">
+        <input
+          ref={taskInputRef}
+          value={taskInput}
+          onChange={(e) => setTaskInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); submitTask(); }
+            if (e.key === "Escape") { setView("main"); setTaskInput(""); }
+          }}
+          placeholder="告诉 agent 做什么…"
+          className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/50"
+        />
+        <span className="text-[10px] text-muted-foreground whitespace-nowrap">↵ 执行 · Esc 取消</span>
+      </div>
+    );
+  }
 
   if (view === "loading") {
     return (
