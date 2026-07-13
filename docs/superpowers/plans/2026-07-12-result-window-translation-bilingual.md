@@ -916,3 +916,16 @@ Expected: 看到 7-8 个 feat/docs 提交，对应 Task 1-8。
 
 - [x] **Step 1:** `runtime_config.rs` 提取 `validate_translate_mode` + `resolve_translate_mode` 纯逻辑函数
 - [x] **Step 2:** 4 个单测：合法值/非法值/默认回退/合法值保留
+
+---
+
+### Task 12: 代码审查修复（panic 兜底 / 竞态 / 退出入口 / 编辑同步）
+
+**背景：** 两轮代码审查发现 6 个问题。
+
+- [x] **Step 1:** 翻译菜单加「关闭翻译」退出入口（`TRANSLATE_OFF_SENTINEL`），退出时还原迷你窗
+- [x] **Step 2:** `do_paste` 终翻包裹 `catch_unwind`——防模型加载 panic 杀 coordinator 线程
+- [x] **Step 3:** 翻译事件监听 deps 改 `[translateMode !== 'off']`——档位切换不重订阅防竞态
+- [x] **Step 4:** `enterTranslateMode` setTimeout 回调加 `translateModeRef.current` 校验
+- [x] **Step 5:** 翻译态原文 `onCommit` 补 `commit_edit`——编辑后原文同步到后端 transcript
+- [x] **Step 6:** 清理冗余 `as IconName` 强转 + 注释修正 + `__off__` 提常量

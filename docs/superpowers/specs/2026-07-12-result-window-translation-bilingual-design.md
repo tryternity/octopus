@@ -104,7 +104,7 @@ pub struct ToolbarState {
 
 - `translateMode === 'off'`：渲染单语 AsrEditor（现有行为），隐藏「立即翻译」按钮
 - `translateMode !== 'off'`：强制 `expanded=true`，渲染上下分栏（原文 AsrEditor + 译文 TranslationPane）
-- 翻译模式退出 → `translateMode='off'`，清空 `translatedText`，节流定时器清除
+- 翻译模式退出（菜单「关闭翻译」项）→ `translateMode='off'`，清空 `translatedText`，节流定时器清除，`set_translation_active(false)`，还原迷你窗（`expanded=false`）
 
 ---
 
@@ -186,6 +186,8 @@ useEffect(() => {
 ```
 
 ### 3.5 节流定时器生命周期
+
+详见 `translateMode.ts::parseThrottleSeconds`（提取的纯函数，有单测覆盖）。
 
 ```ts
 useEffect(() => {
@@ -310,11 +312,13 @@ interface TranslationPaneProps {
 - 单语态（`translateMode==='off'`）：点击 = 进入翻译模式（`setTranslateMode(记忆档位 || 'manual')` + 自动 `setExpanded(true)` + 首翻一次）
 - 翻译态（`translateMode!=='off'`）：点击 = 展开下拉菜单
   ```
+  关闭翻译
   ● 手动
   ○ 自动 4s
   ○ 自动 8s
   ○ 自动 12s
   ```
+  - 顶部「关闭翻译」项 → 退出翻译模式（`setTranslateMode('off')` + `set_translation_active(false)` + 还原迷你窗）
   - 当前档位带 ●
   - 点击某项 → `setTranslateMode(新档位)` + `invoke("set_translate_mode", { mode })` 写 DB + 重置节流定时器
 
@@ -415,7 +419,7 @@ let text_to_paste = if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
 `resolve_translate_strategy` 返回无可用引擎时，`do_translate_streaming` emit `translate-done` 携带 `❌ 翻译失败: ...`。译文区显示错误文案，用户可：
 
 - 手动改原文后重试
-- 退出翻译模式（点下拉选"手动"后再次点按钮退出 / 保存提交当前译文）
+- 退出翻译模式（菜单「关闭翻译」项）
 
 ### 8.2 终翻失败
 
@@ -434,36 +438,53 @@ let text_to_paste = if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
 - 终翻完成后粘贴译文，进入 Pasting 阶段
 - 前端 `show-result`（新一轮识别）重置 `TRANSLATION_ACTIVE` 为 false
 
-### 8.5 迷你窗限制
+### 8.5 终翻 panic 兜底
+
+`do_paste` 入口的终翻包裹 `catch_unwind`——`do_translate` 调模型加载（ort/candle）与 LLM 网络，panic 会杀 coordinator 线程导致状态机失效。panic 时回退原文（润色后的文本），与润色失败降级一致。
+
+### 8.6 事件监听竞态防护
+
+翻译事件监听 `useEffect` 的 deps 为 `[translateMode !== 'off']`——档位切换不触发 teardown/rebuild，避免重订阅窗口期丢失 `translate-done` 导致 `translating` 卡死。
+
+### 8.7 翻译态原文编辑同步
+
+翻译态上栏 AsrEditor 的 `onCommit` 调 `commit_edit`——用户修正 ASR 原文后，后端 transcript 同步更新，终翻使用修正后的文本。
+
+### 8.8 迷你窗限制
 
 - 进翻译模式强制 `setExpanded(true)`（大窗）
-- 翻译模式下「展开/收起」按钮禁用或隐藏（防止收成迷你窗后双语栏挤崩）
+- 翻译模式下「展开/收起」按钮禁用（防止收成迷你窗后双语栏挤崩）
+- 退出翻译模式还原迷你窗（`setExpanded(false)`）
 
 ---
 
 ## 9. 测试要点
 
-### 9.1 前端单测
+### 9.1 前端单测（已实现）
 
-- `doTranslate` 单飞：`translating=true` 时二次调用不触发 invoke
-- 节流定时器：档位切换正确启动/清除 interval；`translateMode==='manual'`/`'off'` 无 interval
-- 终翻 Promise：`translate-done` resolve 正确 payload
-- 渲染分流：`translateMode==='off'` 渲染单 AsrEditor；否则渲染上下分栏
+- `translateMode.ts::resolveRememberedTranslateMode`：合法值返回、非法值（含 15s/off/空）回退 manual
+- `translateMode.ts::parseThrottleSeconds`：4s/8s/12s → 秒数；manual/off → null
+- `translateMode.ts::buildTranslatePopupItems`：四项顺序、current 标记、label 映射
+- `shortcut.ts::parseShortcut`：CmdOrCtrl/Cmd+Shift/Ctrl+Alt/大小写
+- `shortcut.ts::matchShortcut`：匹配/不匹配/缺修饰键/多余修饰键/空值
 
-### 9.2 后端单测
+### 9.2 后端单测（已实现）
 
-- `set_translate_mode`：合法值写 DB 成功；非法值返回 Err
-- `toolbar_state`：DB 有 `translate_mode` 键时正确返回；无键时默认 `"manual"`
+- `runtime_config.rs::validate_translate_mode`：manual/4s/8s/12s 合法；15s/空/off/3s/16s/auto/0 非法
+- `runtime_config.rs::resolve_translate_mode`：None/空/垃圾/15s 回退 manual；合法值原样返回
+- `coordinator.rs::TRANSLATION_ACTIVE` swap-once 消费语义：首次 true 后归零
 
 ### 9.3 手动验证
 
 1. 单语态点翻译 → 自动进大窗 + 首翻 + 默认"手动"
-2. 切"自动 8s" → 持续说话 → 译文每 ~8s 跟进
-3. 点「立即翻译」→ 立即重翻
-4. Cmd+T → 等同立即翻译
-5. 保存 → 终翻 + 提交译文 + 退出翻译模式
-6. 重启 → 进翻译模式 → 默认用上次记忆的档位
-7. 译文引擎未配置 → 错误文案显示
+2. 切"自动 4s" → 持续说话 → 译文每 ~4s 跟进
+3. 点「立即翻译」/ Cmd+T → 立即重翻
+4. Cmd+Enter → 仅退出编辑态，不改双语布局、不替换原文
+5. **停止录音 → 终翻 + 粘贴译文**（核心行为）
+6. 润色模式开启时停止 → 先润色再翻译再粘贴译文
+7. 菜单「关闭翻译」→ 退出翻译模式 + 还原迷你窗
+8. 重启 → 进翻译模式 → 默认用上次记忆的档位
+9. 译文引擎未配置 → 错误文案显示
 
 ---
 
@@ -472,12 +493,15 @@ let text_to_paste = if TRANSLATION_ACTIVE.swap(false, Ordering::Relaxed) {
 | 文件 | 改动 |
 |------|------|
 | `crates/desktop/frontend/src/pages/Result/TranslationPane.tsx` | **新建** 译文区组件 |
-| `crates/desktop/frontend/src/pages/Result/index.tsx` | **修改** 翻译模式 state + 渲染分流 + 工具栏 + 节流 + Cmd+T + 移除 settings |
+| `crates/desktop/frontend/src/pages/Result/translateMode.ts` | **新建** 翻译模式纯逻辑（resolve/parse/buildPopupItems） |
+| `crates/desktop/frontend/src/pages/Result/translateMode.test.ts` | **新建** 纯逻辑单测 |
+| `crates/desktop/frontend/src/pages/Result/shortcut.test.ts` | **新建** 快捷键解析单测 |
+| `crates/desktop/frontend/src/pages/Result/index.tsx` | **修改** 翻译模式 state + 渲染分流 + 工具栏 + 节流 + Cmd+T + 退出入口 + 移除 settings |
 | `crates/desktop/frontend/src/pages/Result/AsrEditor.tsx` | **修改** AsrEditorHandle 新增 `getText()` |
-| `crates/desktop/frontend/src/locales/zh-CN.yaml` | **修改** 新增翻译相关 key |
-| `crates/desktop/frontend/src/locales/en.yaml` | **修改** 新增翻译相关 key |
+| `crates/desktop/frontend/src/locales/zh-CN.yaml` | **修改** 新增翻译相关 key（含 translateClose） |
+| `crates/desktop/frontend/src/locales/en.yaml` | **修改** 新增翻译相关 key（含 translateClose） |
 | `crates/desktop/src/runtime_config.rs` | **修改** `set_translate_mode` + `validate/resolve` 纯函数 + `ToolbarState.translate_mode` + 笔误清理 |
-| `crates/desktop/src/coordinator.rs` | **修改** `TRANSLATION_ACTIVE` + `set_translation_active` 命令 + `do_paste` 入口翻译拦截 |
+| `crates/desktop/src/coordinator.rs` | **修改** `TRANSLATION_ACTIVE` + `set_translation_active` 命令 + `do_paste` 入口翻译拦截（含 catch_unwind） + swap-once 单测 |
 | `crates/desktop/src/action_bar_commands.rs` | **修改** `do_translate` 改 `pub(crate)` |
 | `crates/desktop/src/main.rs` | **修改** 注册 `set_translate_mode` + `set_translation_active` |
 | `docs/architecture.md` | **修改** 补 Result 浮窗翻译双语视图说明 |
