@@ -146,7 +146,7 @@ fn gather_surrounding(pid: i32, kind: AppKind, selected_text: &str) -> anyhow::R
             }
             Err(e) => {
                 log::info!("[app-context] 无法获取焦点元素（含重试）: {}", e);
-                match find_text_element(app_element) {
+                match find_text_element_with_selected(app_element, selected_text) {
                     Some(text_elem) => {
                         let surrounding = build_surrounding(text_elem, app_element, kind, selected_text);
                         CFRelease(text_elem as CFTypeRef);
@@ -186,7 +186,7 @@ unsafe fn build_surrounding(
     let (text_element, owns_text_element) = if is_text_element(&focused_role) {
         (focused_element, false)
     } else {
-        match find_text_element(focused_element) {
+        match find_text_element_with_selected(focused_element, selected_text) {
             Some(child) => {
                 let child_role =
                     get_attribute_string(child, &ax_role()).unwrap_or_default();
@@ -365,20 +365,26 @@ fn truncate_text_head(s: &str, max_chars: usize) -> Option<String> {
     }
 }
 
-/// 递归遍历 AX 子树，找到第一个有 AXValue 的文本元素（AXTextArea/AXTextField）。
-/// 深度限制 5 层，广度限制每层 50 个子元素（防止巨树卡死）。
-///
-/// **返回的元素经过 CFRetain（+1）**，调用方必须 CFRelease。
-/// 因为子元素从 CFArray 中取得，数组 Drop 后子元素会被释放——
-/// 必须 CFRetain 防止 use-after-free。
-unsafe fn find_text_element(element: AXUIElementRef) -> Option<AXUIElementRef> {
-    find_text_element_depth(element, 0, 5)
+/// 递归遍历 AX 子树，找到文本元素。
+/// 优先找包含 selected_text 的文本元素；找不到则回退到第一个文本元素。
+unsafe fn find_text_element_with_selected(
+    element: AXUIElementRef,
+    selected_text: &str,
+) -> Option<AXUIElementRef> {
+    // 第一轮：找包含 selected_text 的文本元素
+    if let Some(found) = find_text_element_depth(element, 0, 8, Some(selected_text)) {
+        return Some(found);
+    }
+    // 回退：任意文本元素
+    find_text_element_depth(element, 0, 8, None)
 }
 
+/// 递归遍历。selected_text = Some(t) 时只匹配包含 t 的文本元素；None 时匹配任意。
 unsafe fn find_text_element_depth(
     element: AXUIElementRef,
     depth: usize,
     max_depth: usize,
+    selected_text: Option<&str>,
 ) -> Option<AXUIElementRef> {
     if depth >= max_depth {
         return None;
@@ -387,29 +393,42 @@ unsafe fn find_text_element_depth(
     // 当前元素角色
     let role = get_attribute_string(element, &ax_role()).unwrap_or_default();
     if is_text_element(&role) {
-        // 确认有 AXValue（必须释放，否则泄漏）
-        let has_value = match get_attribute_value(element, &ax_value()) {
-            Ok(v) => {
-                CFRelease(v);
-                true
+        // 读取 AXValue 检查是否匹配
+        let value = match get_attribute_string(element, &ax_value()) {
+            Ok(s) => Some(strip_control_chars(&s)),
+            Err(_) => {
+                // AXValue 读取失败也要检查是否纯粹无值——get_attribute_value 判断
+                match get_attribute_value(element, &ax_value()) {
+                    Ok(v) => {
+                        CFRelease(v);
+                        Some(String::new()) // 有值但不是 CFString
+                    }
+                    Err(_) => None, // 无值
+                }
             }
-            Err(_) => false,
         };
-        if has_value {
-            // CFRetain 防止 use-after-free：
-            // 如果 element 来自父层的 CFArray，数组 Drop 时会释放它。
-            CFRetain(element as CFTypeRef);
-            return Some(element);
+
+        if let Some(text) = &value {
+            match selected_text {
+                Some(sel) if !sel.is_empty() && text.contains(sel.trim()) => {
+                    CFRetain(element as CFTypeRef);
+                    return Some(element);
+                }
+                None if !text.is_empty() => {
+                    CFRetain(element as CFTypeRef);
+                    return Some(element);
+                }
+                _ => {}
+            }
         }
     }
 
-    // 遍历子元素——AXChildren 可能返回非 CFArray（如 CFBoolean false），需类型检查
+    // 遍历子元素
     let children = match get_attribute_value(element, &ax_children()) {
         Ok(v) => v,
         Err(_) => return None,
     };
 
-    // 类型检查：AXChildren 必须是 CFArray，否则释放后返回 None
     if !is_cf_array(children) {
         CFRelease(children);
         return None;
@@ -417,7 +436,7 @@ unsafe fn find_text_element_depth(
 
     let cf_array =
         core_foundation::array::CFArray::<CFTypeRef>::wrap_under_create_rule(children as *const _);
-    let count = cf_array.len().min(50);
+    let count = cf_array.len().min(100);
 
     for i in 0..count {
         let Some(child_ref) = cf_array.get(i) else {
@@ -427,8 +446,8 @@ unsafe fn find_text_element_depth(
         if child.is_null() {
             continue;
         }
-        if let Some(found) = find_text_element_depth(child, depth + 1, max_depth) {
-            return Some(found); // found 已被 CFRetain，安全返回
+        if let Some(found) = find_text_element_depth(child, depth + 1, max_depth, selected_text) {
+            return Some(found);
         }
     }
 
