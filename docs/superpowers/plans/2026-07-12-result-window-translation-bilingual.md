@@ -421,12 +421,26 @@ git commit -m "feat(result): 新建 TranslationPane 译文区组件"
   const [translating, setTranslating] = useState(false);
 ```
 
-在文件顶部（约 12 行 `const DENOISE_MODES` 之后）新增类型定义和辅助函数：
+> **实现偏差（translateMode.ts 提取）：** 翻译模式的类型/常量/纯逻辑后续重构为独立模块 `crates/desktop/frontend/src/pages/Result/translateMode.ts`（含纯函数单测），`index.tsx` 顶部改为 `import { type TranslateMode, resolveRememberedTranslateMode, parseThrottleSeconds, buildTranslatePopupItems } from "./translateMode"`。下文 Step 3 / Task 7 中相应的内联实现均已改为调用这些 helper。档位值也从 `8s/12s/15s` 调整为 `4s/8s/12s`。模块实际内容：
 
 ```tsx
-type TranslateMode = 'off' | 'manual' | '8s' | '12s' | '15s';
+export type TranslateMode = 'off' | 'manual' | '4s' | '8s' | '12s';
+// 'off' 仅前端态（不入库），TRANSLATE_MODES 不含 'off'
+export const TRANSLATE_MODES: TranslateMode[] = ['manual', '4s', '8s', '12s'];
 
-const TRANSLATE_MODES: TranslateMode[] = ['manual', '8s', '12s', '15s'];
+export function resolveRememberedTranslateMode(raw: string): TranslateMode {
+  return TRANSLATE_MODES.includes(raw as TranslateMode) ? raw as TranslateMode : 'manual';
+}
+export function parseThrottleSeconds(mode: TranslateMode): number | null {
+  if (mode === 'off' || mode === 'manual') return null;
+  const secs = parseInt(mode, 10);
+  return isNaN(secs) ? null : secs;
+}
+export function buildTranslatePopupItems(
+  currentMode: TranslateMode, labelFn: (m: TranslateMode) => string,
+): TranslatePopupItem[] {
+  return TRANSLATE_MODES.map(m => ({ label: labelFn(m), current: m === currentMode, name: m }));
+}
 ```
 
 在 state 区之后新增 refs：
@@ -452,10 +466,7 @@ type PopupType = "polish" | "denoise" | "asr" | "llm" | "translate" | null;
 
 ```tsx
   const enterTranslateMode = useCallback(() => {
-    const remembered = toolbarState.translate_mode;
-    const mode: TranslateMode = TRANSLATE_MODES.includes(remembered as TranslateMode)
-      ? remembered as TranslateMode
-      : 'manual';
+    const mode = resolveRememberedTranslateMode(toolbarState.translate_mode);
     setTranslateMode(mode);
     if (!expanded) {
       setExpanded(true);
@@ -476,14 +487,14 @@ type PopupType = "polish" | "denoise" | "asr" | "llm" | "translate" | null;
       return;
     }
     if (popupType === "translate") { setPopupType(null); return; }
-    setPopupItems(TRANSLATE_MODES.map(m => ({
-      label: m === 'manual' ? t("result.translateManual")
+    // translateMode.ts 提取后：菜单项构建改调 buildTranslatePopupItems（label 由 i18n 传入）
+    const modeItems = buildTranslatePopupItems(translateMode, (m) =>
+      m === 'manual' ? t("result.translateManual")
+        : m === '4s' ? t("result.translateAuto4")
         : m === '8s' ? t("result.translateAuto8")
-        : m === '12s' ? t("result.translateAuto12")
-        : t("result.translateAuto15"),
-      current: m === translateMode,
-      name: m,
-    })));
+        : t("result.translateAuto12")
+    );
+    setPopupItems(modeItems);
     setPopupType("translate");
   };
 
@@ -709,11 +720,11 @@ git commit -m "feat(result): 翻译模式 UI 骨架——渲染分流 + 工具�
 在事件监听 `useEffect` 之后新增：
 
 ```tsx
-  // 自动档节流——translateMode 为 8s/12s/15s 时启动定时器
+  // 自动档节流——translateMode 为 4s/8s/12s 时启动定时器
   useEffect(() => {
-    if (translateMode === 'off' || translateMode === 'manual') return;
-    const secs = parseInt(translateMode, 10);
-    if (isNaN(secs)) return;
+    // translateMode.ts 提取后：档位→秒数改调 parseThrottleSeconds（非自动档返回 null）
+    const secs = parseThrottleSeconds(translateMode);
+    if (secs === null) return;
 
     const timer = setInterval(() => {
       const current = asrEditorRef.current?.getText() ?? "";
@@ -732,10 +743,7 @@ git commit -m "feat(result): 翻译模式 UI 骨架——渲染分流 + 工具�
 
 ```tsx
   const enterTranslateMode = useCallback(() => {
-    const remembered = toolbarState.translate_mode;
-    const mode: TranslateMode = TRANSLATE_MODES.includes(remembered as TranslateMode)
-      ? remembered as TranslateMode
-      : 'manual';
+    const mode = resolveRememberedTranslateMode(toolbarState.translate_mode);
     setTranslateMode(mode);
     if (!expanded) {
       setExpanded(true);
