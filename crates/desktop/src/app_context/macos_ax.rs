@@ -321,6 +321,8 @@ end tell"#,
     }
     if timed_out {
         log::warn!("[app-context] browser osascript 超时，已终止");
+        let _ = stdout_thread.join();
+        let _ = stderr_thread.join();
         return None;
     }
 
