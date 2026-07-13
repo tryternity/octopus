@@ -127,20 +127,38 @@ crates/desktop/src/app_context/
 └── macos_ax.rs     # macOS 实现：NSWorkspace + AX + Browser AppleScript JS（macOS only）
 ```
 
-### 4.3 trigger_action_bar 集成
+### 4.3 trigger_action_bar 集成（异步架构）
+
+浮窗显示和上下文采集**异步分离**——浮窗先弹（仅 text），后台线程采集上下文完成后回填：
 
 ```rust
-let mut ctx = ActionBarContext { text: text.clone(), source: None, surrounding: None };
-match crate::app_context::gather_context(&text) {
-    Ok(extra) => {
-        log_app_context(&text, &extra);  // 写入 ~/.octopus/logs/action-bar.log
-        ctx.source = Some(extra.source);
-        ctx.surrounding = extra.surrounding;
+// 1. 暂存基础 ctx（仅 text），浮窗 mount 时能立即拿到
+*PENDING_CONTEXT.lock().unwrap() = Some(ActionBarContext {
+    text: text.clone(), source: None, surrounding: None,
+});
+
+// 2. 浮窗先弹（主线程）
+app.run_on_main_thread(move || show_action_bar_window(&app, win_x, win_y));
+
+// 3. 后台线程采集上下文，完成后回填 PENDING_CONTEXT
+std::thread::spawn(move || {
+    match gather_context(&text) {
+        Ok(extra) => {
+            // 回填前校验归属——防止跨触发污染
+            if ctx.text == text_for_gather {
+                ctx.source = Some(extra.source);
+                ctx.surrounding = extra.surrounding;
+            }
+        }
+        Err(e) => log::warn!(...),
     }
-    Err(e) => log::warn!("[action-bar] context gather 失败: {}", e),
-}
-*PENDING_CONTEXT.lock().unwrap() = Some(ctx);
+});
 ```
+
+**关键设计点**：
+- gather 不阻塞浮窗显示（osascript 卡住不影响用户体验）
+- 回填时校验 `ctx.text == text_for_gather`，防止用户 dismiss 后重触发时旧 gather 线程污染新 ctx
+- 浮窗 mount 时拿到基础 ctx（仅 text），execute_action_bar 时拿到完整 ctx（含 source/surrounding）
 
 ---
 
@@ -162,15 +180,19 @@ Browser (Chrome/Edge/Safari)
 1. **NSWorkspace.frontmostApplication** → pid + bundleId + name
 2. **classify_app(bundle_id)** → AppKind
 3. **AXUIElementCreateApplication(pid)** → app element
-4. **AXFocusedUIElement** → focused element（`-25212` 时 200ms 重试一次）
+4. **AXFocusedUIElement** → focused element（`-25212` 时 200ms 重试一次，受 deadline 约束）
 5. **焦点元素角色** (`AXRole`) 判断是否文本元素（AXTextArea/AXTextField/AXStaticText）
-6. 非文本元素 → **find_text_element** 遍历 AX 子树（深度 8 层、广度 100），优先找 `AXValue` 包含 selected_text 的文本元素
-7. **AXValue** + **AXSelectedTextRange** → 切 before/after
+6. 非文本元素 → **find_text_element** 遍历 AX 子树（深度 8 层、广度 100），优先找 `AXValue` 包含 selected_text 的文本元素。**每层递归入口检查 deadline**，超时即返回已采集部分
+7. **AXValue** + **AXSelectedTextRange**（经 `is_cf_value` 类型守卫）→ 切 before/after
 8. **内容校验**：full_text 不含选中文本 → 降级返回 None（Sublime/WPS 自绘编辑器场景）
+
+**deadline 透传**：`Instant` 从 `gather()` 创建，透传到 `gather_surrounding` → `build_surrounding` → `find_text_element_depth`，确保庞大的 AX 树（Electron App）不会卡死。
 
 ### 5.3 Browser AppleScript JS（macos_ax.rs::gather_browser_via_applescript）
 
-JS 源码写入 `/tmp/octopus_browser_context.js`，AppleScript `read POSIX file` 读入后执行：
+JS 源码写入唯一临时文件（`pid + 纳秒时间戳`），AppleScript `read POSIX file` 读入后执行。RAII guard 确保所有路径（含 spawn 失败/超时）Drop 时删除文件，防止选中文本明文残留。
+
+osascript 通过 `spawn()` + `Stdio::piped()` + `try_wait` 轮询超时执行（与 `spawn_script` 的 `wait_with_timeout_secs` 范式一致）。超时 kill 后回收僵尸进程，stdin/stdout/stderr 管道由独立线程并发读取防 pipe 满阻塞。
 
 - Chrome/Edge: `execute (active tab of window 1) javascript jsCode`
 - Safari: `do JavaScript jsCode in document 1`
@@ -196,9 +218,14 @@ iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（�
 |------|------|
 | AX 返回非 CFString 被当 CFString 解转 → NSException 崩溃 | `is_cf_string()` CFTypeID 检查 |
 | AXChildren 返回 CFBoolean 被当 CFArray 解转 → 崩溃 | `is_cf_array()` CFTypeID 检查 |
+| AXSelectedTextRange 返回非 AXValue 被当 AXValueGetValue → UB | `is_cf_value()` AXValueGetTypeID 检查 |
 | CFArray Drop 后子元素被释放 → use-after-free | `CFRetain` 返回的子元素 |
 | AXValue 检查后不释放 → 内存泄漏 | `Ok(v) => { CFRelease(v); }` |
 | 终端 scrollback 含 `\0` 控制字符 | `strip_control_chars()` 过滤 C0（保留 \n \t \r） |
+| AXSelectedTextRange 反向选区 → before/after 重叠 | `extract_surrounding` 归一化 `end = end.max(start)` |
+| 后台 gather 线程跨触发污染新 ctx | 回填前校验 `ctx.text == text_for_gather` |
+| osascript 挂起 → 后台线程泄漏 | `spawn` + `try_wait` 轮询 + `deadline` 超时 `kill` |
+| JS 临时文件明文残留 | RAII guard（Drop 删文件）+ 唯一文件名（纳秒时间戳）|
 
 ---
 

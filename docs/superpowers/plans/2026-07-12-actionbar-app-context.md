@@ -100,17 +100,31 @@
 - [x] 清理 dead_code warning
 - [x] `open_temp_compact_editor` 投递主线程修复 Dock 图标（main 上也存在的 bug）
 
+### 三轮代码审查修复
+- [x] **严重 1**：gather 改异步——浮窗先弹（仅 text），后台线程采集完成后回填（不阻塞浮窗 + guard 不泄漏）
+- [x] **严重 2**：deadline 透传到 `gather_surrounding` → `find_text_element_depth`，每层递归入口检查超时
+- [x] **中 3**：JS 临时文件 RAII guard（Drop 删文件）+ 唯一文件名（纳秒时间戳）
+- [x] **低 4**：`get_selected_range` 加 `is_cf_value`（`AXValueGetTypeID`）类型守卫
+- [x] **低 6**：`extract_surrounding` 归一化 range（`end = end.max(start)`）
+- [x] **二轮 新-1**：gather 回填前校验 `ctx.text == text_for_gather` 防跨触发污染
+- [x] **二轮 新-2**：osascript 改 `spawn` + `Stdio::piped()` + `try_wait` 轮询超时 + `kill`
+- [x] **二轮 新-3**：临时文件名加纳秒时间戳 + spawn 失败路径 RAII 清理
+- [x] **二轮 新-4**：移除死事件 `emit("action-bar://context-updated")`
+- [x] **三轮**：osascript spawn 补 `Stdio::piped()` + 并发读线程（防 child.stdout=None 功能回归）
+- [x] **三轮卫生**：超时路径显式 join 读线程
+
 ---
 
 ## 回顾检查项
 
 1. ✅ `ActionBarContext` 有 `source` + `surrounding` 字段
 2. ✅ macOS 走 NSWorkspace + AXUIElement（原生 App）/ AppleScript JS（浏览器）
-3. ✅ `gather()` 失败/超时降级到「仅 text」，浮窗照常显示
+3. ✅ `gather()` 异步——浮窗先弹，不阻塞；回填校验防污染
 4. ✅ Terminal：selected_text 搜索定位切 before/after（不依赖 AX range）
 5. ✅ Editor：before/after 各 1000 字截断
-6. ✅ AX 超时 500ms
+6. ✅ AX 超时：deadline 透传到每层递归 + osascript spawn 超时 kill
 7. ✅ AI 动作 prompt 注入上下文；本地翻译不注入
 8. ✅ 前端类型升级（来源标签已移除）
-9. ✅ 纯函数 + 类型安全 + 日志 单测共 41 个
-10. ✅ 手动验证：TextEdit / Terminal / iTerm2 / Chrome / Sublime / WPS / Safari
+9. ✅ CF 类型安全：`is_cf_string`/`is_cf_array`/`is_cf_value` + range 归一化 + RAII 文件清理
+10. ✅ 纯函数 + 类型安全 + 日志 单测共 41 个
+11. ✅ 手动验证：TextEdit / Terminal / iTerm2 / Chrome / Sublime / WPS / Safari
