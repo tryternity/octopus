@@ -382,15 +382,24 @@ fn path_matches_filename(path: &str, filename: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// 读文件内容为纯文本。支持纯文本格式（.txt/.md/.rs 等）和 Office 格式（.docx/.xlsx/.pptx）。
-/// Office 格式本质是 zip 包含 XML，提取 XML 中的文本节点。
+/// 读文件内容为纯文本。支持纯文本、Office 格式（.docx/.xlsx/.pptx）和 PDF。
+/// Office 格式优先用 officecli（如果安装了），否则 fallback 到内置 zip+XML 解析。
 fn read_file_as_text(path: &std::path::Path) -> Option<String> {
     let ext = path.extension()?.to_string_lossy().to_lowercase();
 
     match ext.as_str() {
         "pdf" => read_pdf_text(path),
-        "docx" | "pptx" => read_ooxml_text(path, &ext),
-        "xlsx" => read_xlsx_text(path),
+        "docx" | "pptx" | "xlsx" => {
+            // 优先用 officecli（更健壮，处理修订/批注/公式/图表）
+            if let Some(text) = try_officecli_text(path) {
+                return Some(text);
+            }
+            // Fallback 到内置 zip+XML 解析
+            match ext.as_str() {
+                "xlsx" => read_xlsx_text(path),
+                _ => read_ooxml_text(path, &ext),
+            }
+        }
         _ => {
             // 纯文本格式：直接读取（可能非 UTF-8，用 lossy 转换）
             let bytes = std::fs::read(path).ok()?;
@@ -403,6 +412,43 @@ fn read_file_as_text(path: &std::path::Path) -> Option<String> {
             }
             Some(String::from_utf8_lossy(&bytes).to_string())
         }
+    }
+}
+
+/// 尝试用 officecli 提取 Office 文档文本。
+/// officecli 是单二进制工具（iOfficeAI/OfficeCLI），支持 .docx/.xlsx/.pptx。
+/// 输出格式 `[/path] text`，去掉路径标签后是纯文本。
+fn try_officecli_text(path: &std::path::Path) -> Option<String> {
+    let output = std::process::Command::new("officecli")
+        .arg("view")
+        .arg(path)
+        .arg("text")
+        .output()
+        .ok()?;
+
+    if !output.status.success() || output.stdout.is_empty() {
+        return None;
+    }
+
+    // 去掉每行的 [/path] 前缀
+    let raw = String::from_utf8_lossy(&output.stdout);
+    let cleaned: String = raw
+        .lines()
+        .map(|line| {
+            // 去掉 [/body/...] 路径前缀
+            if let Some(idx) = line.find("] ") {
+                &line[idx + 2..]
+            } else {
+                line
+            }
+        })
+        .collect::<Vec<&str>>()
+        .join("\n");
+
+    if cleaned.trim().is_empty() {
+        None
+    } else {
+        Some(cleaned)
     }
 }
 
