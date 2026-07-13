@@ -6,10 +6,14 @@ import { cn } from "@/lib/utils";
 import { SvgIcon, type IconName } from "@/components/SvgIcon";
 import { parseShortcut, matchShortcut } from "./shortcut";
 import { AsrEditor, type AsrEditorHandle } from "./AsrEditor";
+import { TranslationPane } from "./TranslationPane";
 import { useT, t as ti18n } from "@/lib/i18n";
 
 const POLISH_MODES = [0, 1, 2];
 const DENOISE_MODES = [0, 1, 2];
+
+type TranslateMode = 'off' | 'manual' | '8s' | '12s' | '15s';
+const TRANSLATE_MODES: TranslateMode[] = ['manual', '8s', '12s', '15s'];
 
 interface ToolbarState {
   polish_mode: number;
@@ -17,6 +21,7 @@ interface ToolbarState {
   polish_llm_valid: boolean;
   hide_toolbar: boolean;
   edit_shortcut: string;
+  translate_mode: string;
 }
 
 interface PopupItem {
@@ -26,7 +31,7 @@ interface PopupItem {
   mode?: number;
 }
 
-type PopupType = "polish" | "denoise" | "asr" | "llm" | null;
+type PopupType = "polish" | "denoise" | "asr" | "llm" | "translate" | null;
 
 function Result() {
   const t = useT();
@@ -39,17 +44,28 @@ function Result() {
   const [toolbarState, setToolbarState] = useState<ToolbarState>({
     polish_mode: 0, denoise_mode: 1, polish_llm_valid: false,
     hide_toolbar: true, edit_shortcut: "CmdOrCtrl+Enter",
+    translate_mode: "manual",
   });
   const [popupType, setPopupType] = useState<PopupType>(null);
   const [popupItems, setPopupItems] = useState<PopupItem[]>([]);
   const [toast, setToast] = useState<string | null>(null);
   const [polishLoading, setPolishLoading] = useState(false);
+  const [translateMode, setTranslateMode] = useState<TranslateMode>('off');
+  const [translatedText, setTranslatedText] = useState("");
+  const [translating, setTranslating] = useState(false);
 
   const asrEditorRef = useRef<AsrEditorHandle>(null);
   const caretRef = useRef<number | null>(null);
   const [asrEditorResetKey, setAsrEditorResetKey] = useState(0);
   const speakingTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const toolbarVisibleRef = useRef(false);
+  const lastTranslatedRef = useRef<string>("");
+  const translatingRef = useRef(false);
+  const translateModeRef = useRef<TranslateMode>('off');
+  const translatedTextRef = useRef("");
+  const doTranslateRef = useRef<() => void>(() => {});
+  useEffect(() => { translateModeRef.current = translateMode; }, [translateMode]);
+  useEffect(() => { translatedTextRef.current = translatedText; }, [translatedText]);
 
   const win = useMemo(() => getCurrentWindow(), []);
 
@@ -191,6 +207,127 @@ function Result() {
     catch (e) { setPolishLoading(false); showToast(ti18n("result.polishFailed") + e); }
   }, [showToast, text]);
 
+  // ── 翻译模式 ──
+  const exitTranslateMode = useCallback(() => {
+    setTranslateMode('off');
+    setTranslatedText("");
+    translatingRef.current = false;
+    setTranslating(false);
+  }, []);
+
+  const doTranslate = useCallback(async () => {
+    const source = asrEditorRef.current?.getText() ?? text;
+    if (!source.trim()) return;
+    if (translatingRef.current) return;
+    translatingRef.current = true;
+    setTranslating(true);
+    lastTranslatedRef.current = source;
+    try {
+      await invoke("translate_text", { text: source });
+    } catch (e) {
+      translatingRef.current = false;
+      setTranslating(false);
+      showToast(ti18n("result.translateFail") + String(e));
+    }
+  }, [text, showToast]);
+  useEffect(() => { doTranslateRef.current = doTranslate; }, [doTranslate]);
+
+  const finalTranslate = useCallback(async (): Promise<string> => {
+    const source = asrEditorRef.current?.getText() ?? text;
+    if (!source.trim()) return "";
+    return new Promise<string>((resolve) => {
+      let resolved = false;
+      const unlistenPromise = listen("translate-done", (e) => {
+        if (resolved) return;
+        resolved = true;
+        unlistenPromise.then(f => f());
+        resolve(e.payload as string);
+      });
+      invoke("translate_text", { text: source }).catch(() => {
+        if (resolved) return;
+        resolved = true;
+        resolve("");
+      });
+    });
+  }, [text]);
+
+  const enterTranslateMode = useCallback(() => {
+    const remembered = toolbarState.translate_mode;
+    const mode: TranslateMode = TRANSLATE_MODES.includes(remembered as TranslateMode)
+      ? remembered as TranslateMode
+      : 'manual';
+    setTranslateMode(mode);
+    if (!expanded) {
+      setExpanded(true);
+      invoke("set_result_click_through", { expanded: true });
+    }
+    setTimeout(() => doTranslateRef.current(), 100);
+  }, [toolbarState.translate_mode, expanded]);
+
+  // 翻译事件监听——仅翻译模式下生效
+  useEffect(() => {
+    if (translateMode === 'off') return;
+    let unlistens: UnlistenFn[] = [];
+    let cancelled = false;
+
+    (async () => {
+      const fnProgress = await listen("translate-progress", (e) => {
+        setTranslatedText(e.payload as string);
+      });
+      if (cancelled) { fnProgress(); return; }
+      unlistens.push(fnProgress);
+
+      const fnDone = await listen("translate-done", (e) => {
+        setTranslatedText(e.payload as string);
+        translatingRef.current = false;
+        setTranslating(false);
+      });
+      if (cancelled) { fnDone(); return; }
+      unlistens.push(fnDone);
+    })();
+
+    return () => {
+      cancelled = true;
+      unlistens.forEach(f => f());
+    };
+  }, [translateMode]);
+
+  // 自动档节流——translateMode 为 8s/12s/15s 时启动定时器
+  useEffect(() => {
+    if (translateMode === 'off' || translateMode === 'manual') return;
+    const secs = parseInt(translateMode, 10);
+    if (isNaN(secs)) return;
+
+    const timer = setInterval(() => {
+      const current = asrEditorRef.current?.getText() ?? "";
+      if (current !== lastTranslatedRef.current && !translatingRef.current && current.trim()) {
+        doTranslate();
+      }
+    }, secs * 1000);
+
+    return () => clearInterval(timer);
+  }, [translateMode, doTranslate]);
+
+  const onSave = useCallback(async () => {
+    if (translateModeRef.current === 'off') {
+      asrEditorRef.current?.commit();
+      return;
+    }
+    asrEditorRef.current?.commit();
+    const finalText = await finalTranslate();
+    const submitText = finalText && !finalText.startsWith("❌")
+      ? finalText
+      : translatedTextRef.current;
+    invoke("commit_edit", {
+      text: submitText,
+      dirtyRanges: [],
+      hasEdited: false,
+      caret: null,
+      selection: null,
+    });
+    exitTranslateMode();
+  }, [finalTranslate, exitTranslateMode]);
+
   const toggleExpand = useCallback(() => {
     const next = !expanded;
     setExpanded(next);
@@ -215,6 +352,11 @@ function Result() {
         if (popupType) { setPopupType(null); return; }
         invoke("cancel_recording");
         win.hide();
+        return;
+      }
+      if (e.metaKey && e.key === 't') {
+        e.preventDefault();
+        if (translateModeRef.current !== 'off') doTranslateRef.current();
         return;
       }
       const sc = parseShortcut(toolbarState.edit_shortcut);
@@ -258,12 +400,35 @@ function Result() {
     setPopupType("denoise");
   };
 
+  const openTranslatePopup = async () => {
+    if (translateMode === 'off') {
+      enterTranslateMode();
+      return;
+    }
+    if (popupType === "translate") { setPopupType(null); return; }
+    setPopupItems(TRANSLATE_MODES.map(m => ({
+      label: m === 'manual' ? t("result.translateManual")
+        : m === '8s' ? t("result.translateAuto8")
+        : m === '12s' ? t("result.translateAuto12")
+        : t("result.translateAuto15"),
+      current: m === translateMode,
+      name: m,
+    })));
+    setPopupType("translate");
+  };
+
   const handlePopupSelect = async (item: PopupItem) => {
     try {
       if (popupType === "polish" && item.mode !== undefined) {
         await invoke("set_polish_mode", { mode: item.mode });
       } else if (popupType === "denoise" && item.mode !== undefined) {
         await invoke("set_denoise_mode", { mode: item.mode });
+      } else if (popupType === "translate" && item.name) {
+        const mode = item.name as TranslateMode;
+        setTranslateMode(mode);
+        setPopupType(null);
+        await invoke("set_translate_mode", { mode });
+        return;
       }
       setPopupType(null);
       refreshActive();
@@ -277,12 +442,13 @@ function Result() {
 
   const tools: { id: string; icon: IconName; label: string; active?: boolean; disabled?: boolean; onClick: () => void }[] = [
     { id: "close", icon: "close", label: t("result.close"), onClick: () => invoke("discard_recording") },
-    { id: "settings", icon: "settings", label: t("result.settings"), onClick: () => invoke("open_settings") },
     { id: "denoise", icon: "denoise", label: t("result.denoiseMode"), active: toolbarState.denoise_mode !== 0, onClick: openDenoisePopup },
     { id: "polish", icon: "polish", label: t("result.polishMode"), active: toolbarState.polish_mode !== 0, onClick: openPolishPopup },
     { id: "polish-now", icon: "polish-now", label: t("result.polishNow"), disabled: polishLoading, onClick: polishNow },
-    { id: "toggle-size", icon: (expanded ? "minimize" : "expand-edit") as IconName, label: expanded ? t("result.zoomOut") : t("result.zoomIn"), onClick: toggleExpand },
-    { id: "save", icon: "save" as IconName, label: t("result.save"), onClick: () => asrEditorRef.current?.commit() },
+    { id: "translate", icon: "translate" as IconName, label: t("result.translate"), active: translateMode !== 'off', onClick: openTranslatePopup },
+    { id: "translate-now", icon: "redo" as IconName, label: t("result.translateNow"), disabled: translating || translateMode === 'off', onClick: doTranslate },
+    { id: "toggle-size", icon: (expanded ? "minimize" : "expand-edit") as IconName, label: expanded ? t("result.zoomOut") : t("result.zoomIn"), disabled: translateMode !== 'off', onClick: toggleExpand },
+    { id: "save", icon: "save" as IconName, label: t("result.save"), onClick: onSave },
   ];
 
   return (
@@ -348,26 +514,55 @@ function Result() {
         )}
       </div>
 
-      {/* Text display — AsrEditor（CM6）替换 contentEditable div */}
+      {/* Text display */}
       <div className="flex-1 px-3.5 pt-1 pb-2 overflow-hidden relative">
-        <div className="relative h-full">
-          <AsrEditor
-            key={asrEditorResetKey}
-            ref={asrEditorRef}
-            text={text}
-            caret={caretRef.current}
-            expanded={expanded}
-            onCommit={(payload) => {
-              invoke("commit_edit", {
-                text: payload.text,
-                dirtyRanges: payload.dirtyRanges,
-                hasEdited: payload.hasEdited,
-                caret: payload.caret ?? null,
-                selection: payload.selection ?? null,
-              });
-            }}
-          />
-        </div>
+        {translateMode === 'off' ? (
+          <div className="relative h-full">
+            <AsrEditor
+              key={asrEditorResetKey}
+              ref={asrEditorRef}
+              text={text}
+              caret={caretRef.current}
+              expanded={expanded}
+              onCommit={(payload) => {
+                setText(payload.text);
+                if (translateModeRef.current === 'off') {
+                  invoke("commit_edit", {
+                    text: payload.text,
+                    dirtyRanges: payload.dirtyRanges,
+                    hasEdited: payload.hasEdited,
+                    caret: payload.caret ?? null,
+                    selection: payload.selection ?? null,
+                  });
+                }
+              }}
+            />
+          </div>
+        ) : (
+          <div className="flex flex-col h-full gap-1">
+            {/* 原文区（上） */}
+            <div className="flex-1 min-h-0 border-b border-black/[0.06] overflow-hidden">
+              <AsrEditor
+                key={asrEditorResetKey}
+                ref={asrEditorRef}
+                text={text}
+                caret={caretRef.current}
+                expanded={true}
+                onCommit={(payload) => {
+                  setText(payload.text);
+                }}
+              />
+            </div>
+            {/* 译文区（下） */}
+            <div className="flex-1 min-h-0 overflow-hidden">
+              <TranslationPane
+                text={translatedText}
+                translating={translating}
+                onChange={setTranslatedText}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
       {/* Popup */}
