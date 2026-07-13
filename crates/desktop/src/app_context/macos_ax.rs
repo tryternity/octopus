@@ -168,36 +168,22 @@ fn gather_browser_via_applescript(
     if(node.textContent.indexOf(sel)>=0||node.textContent.toLowerCase().indexOf(sel.toLowerCase())>=0) break;
   }}
   if(!node) return JSON.stringify({{before:"",after:"",title:document.title}});
-  var blockTags=["P","LI","TD","TH","BLOCKQUOTE","PRE","H1","H2","H3","H4","H5","H6","DD","DT"];
-  var block=node;
-  while(block&&block.parentNode){{
-    if(blockTags.indexOf(block.nodeName)>=0) break;
-    block=block.parentNode;
+  var targetChars=2000;
+  var scope=node;
+  while(scope&&scope.parentNode&&scope!==document.body){{
+    if((scope.textContent||"").length>=targetChars) break;
+    scope=scope.parentNode;
   }}
-  if(!block) block=node.parentNode||document.body;
-  var parent=block.parentNode;
-  var before="",after="";
-  if(parent){{
-    var ml=1000;
-    var parts=[];
-    for(var i=0;i<parent.children.length;i++){{
-      var c=parent.children[i];
-      if(c===block) break;
-      parts.push(c.textContent);
-    }}
-    before=parts.join(" ").trim();
-    if(before.length>ml) before=before.slice(-ml);
-    parts=[];
-    var seenBlock=false;
-    for(var i=0;i<parent.children.length;i++){{
-      var c=parent.children[i];
-      if(c===block){{seenBlock=true;continue;}}
-      if(seenBlock) parts.push(c.textContent);
-    }}
-    after=parts.join(" ").trim();
-    if(after.length>ml) after=after.slice(0,ml);
-  }}
-  return JSON.stringify({{before:before,after:after,title:document.title}});
+  if(!scope) scope=document.body;
+  var full=scope.textContent||"";
+  var idx=full.indexOf(sel);
+  if(idx<0) idx=full.toLowerCase().indexOf(sel.toLowerCase());
+  if(idx<0) return JSON.stringify({{before:"",after:"",title:document.title}});
+  var ml=1000;
+  var b=idx>0?full.slice(Math.max(0,idx-ml),idx):"";
+  var end=idx+sel.length;
+  var a=end<full.length?full.slice(end,end+ml):"";
+  return JSON.stringify({{before:b,after:a,title:document.title}});
 }})()
 "#,
         escaped = escaped
