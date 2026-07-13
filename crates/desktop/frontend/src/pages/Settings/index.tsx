@@ -10,6 +10,7 @@ import {
   Activity,
   Command,
   Type,
+  Bot,
   type LucideIcon,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -20,6 +21,7 @@ import ModelsPanel from "./ModelsPanel";
 import PromptsPanel from "./PromptsPanel";
 import SystemPanel from "./SystemPanel";
 import ActionBarPanel from "./ActionBarPanel";
+import AgentPanel from "./AgentPanel";
 import { HotwordPanel } from "./HotwordPanel";
 
 export interface ConfigResponse {
@@ -32,12 +34,13 @@ export interface ConfigResponse {
   microphones: string[];
 }
 
-type PageName = "clipboard" | "settings" | "models" | "prompts" | "system" | "actionbar" | "hotword";
+type PageName = "clipboard" | "settings" | "models" | "prompts" | "system" | "actionbar" | "agent" | "hotword";
 
 const NAV_ITEMS: { page: PageName; icon: LucideIcon; labelKey: string }[] = [
   { page: "settings", icon: SettingsIcon, labelKey: "settings.nav.general" },
   { page: "clipboard", icon: Clipboard, labelKey: "settings.nav.clipboard" },
   { page: "actionbar", icon: Command, labelKey: "settings.nav.actionBar" },
+  { page: "agent", icon: Bot, labelKey: "settings.nav.agent" },
   { page: "hotword", icon: Type, labelKey: "settings.nav.hotword" },
   { page: "models", icon: Box, labelKey: "settings.nav.models" },
   { page: "prompts", icon: Wand2, labelKey: "settings.nav.prompts" },
@@ -135,6 +138,8 @@ function Settings() {
           <PromptsPanel showToast={showToast} />
         ) : page === "actionbar" ? (
           <ActionBarPanel showToast={showToast} />
+        ) : page === "agent" ? (
+          <AgentPanel showToast={showToast} />
         ) : page === "hotword" ? (
           <HotwordPanel
             dialect={(configResp.config.fuzzy_dialect as string) || ""}
