@@ -122,10 +122,22 @@ pub trait ContextProvider {
 
 ```
 crates/desktop/src/app_context/
-├── mod.rs          # 类型 + trait + classify_app + extract_surrounding + 纯函数测试
-├── ffi.rs          # AXUIElement C FFI 声明 + AX 属性名 CFString 构造（macOS only）
-└── macos_ax.rs     # macOS 实现：NSWorkspace + AX + Browser AppleScript JS（macOS only）
+├── mod.rs          # 类型 + trait + classify_app（三平台进程名）+ provider() 工厂
+├── ffi.rs          # AXUIElement C FFI 声明 + AX 属性名 CFString（macOS only）
+├── macos_ax.rs     # macOS 实现：NSWorkspace + AX + Browser AppleScript JS（macOS only）
+├── windows_uia.rs  # Windows 实现：IUIAutomation + TextPattern/ValuePattern（Windows only）
+└── linux_atspi.rs  # Linux 实现：zbus blocking → AT-SPI2 DBus Text 接口（Linux only）
 ```
+
+**各平台 API 对应**：
+
+| 能力 | macOS | Windows | Linux |
+|------|-------|---------|-------|
+| 前台应用 | NSWorkspace.frontmostApplication | GetForegroundWindow + QueryFullProcessImageNameW | AT-SPI2 Application.GetName |
+| 焦点元素 | AXFocusedUIElement | IUIAutomation.GetFocusedElement | AT-SPI2 Registry focus |
+| 文本内容 | AXValue | TextPattern.DocumentRange.GetText 或 ValuePattern | AT-SPI2 Text.GetText |
+| 选区定位 | AXSelectedTextRange（坐标系不一致→改用 find） | TextPattern.GetSelection | AT-SPI2 Text.GetSelection |
+| 浏览器 | AppleScript execute javascript | UIA TextPattern | AT-SPI2 Text |
 
 ### 4.3 trigger_action_bar 集成（异步架构）
 
@@ -302,7 +314,8 @@ fn classify_app(bundle_id: &str) -> AppKind {
 | 限制 | 现状 | v2 方向 |
 |------|------|---------|
 | Sublime Text / WPS 等自绘编辑器 | AX 树无真实内容，降级返回 None | 专属取数器（方案 C） |
-| Firefox | 无 AppleScript JS 接口，fallback AX（覆盖率低） | 浏览器扩展 + WebSocket |
+| Firefox (macOS) | 无 AppleScript JS 接口，fallback AX（覆盖率低） | 浏览器扩展 + WebSocket |
+| Windows/Linux 实现 | 已实现基础框架，需实际平台测试 | 完善 TextPattern/AT-SPI2 覆盖 |
 | 前端来源标签 | 已移除（挤压菜单布局） | 浮窗 tooltip 或更紧凑样式 |
 | 上下文 UI 可见性 | 仅写日志文件 | 浮窗展开查看获取到的上下文 |
 | Windows/Linux | NullProvider stub | UIAutomation / AT-SPI2 |

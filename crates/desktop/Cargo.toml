@@ -116,7 +116,10 @@ windows = { version = "0.61", features = [
     "Win32_UI_WindowsAndMessaging",
     "Win32_Graphics_Gdi",
     "Win32_System_LibraryLoader",
-    "Win32_UI_Input_KeyboardAndMouse"
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_System_Com",
+    "Win32_UI_Accessibility",
+    "Win32_System_Threading",
 ] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
@@ -125,6 +128,7 @@ gtk = "0.18"
 gdk = "0.18"
 cairo-rs = { version = "0.18", features = ["use_glib"] }
 glib = "0.18"
+zbus = { version = "4", default-features = false, features = ["blocking"] }
 
 [dev-dependencies]
 tempfile = "3"
