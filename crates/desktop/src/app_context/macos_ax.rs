@@ -187,12 +187,13 @@ fn gather_browser_via_applescript(
 })()
 "#;
 
-    // base64 编码 JS 源码——AppleScript 侧 decode 后 eval，避免引号转义地狱
+    // base64 编码 JS 源码——AppleScript 侧 decode 后 eval，避免引号转义地狱。
+    // 用反引号（JS 模板字符串）包裹 base64，避免与 AppleScript 的双引号冲突。
     use base64::{Engine, engine::general_purpose};
     let js_b64 = general_purpose::STANDARD.encode(js_source.as_bytes());
 
-    // AppleScript：通过 atob + Function 解码执行 base64 JS
-    let eval_js = format!("eval(atob(\"{}\"))", js_b64);
+    // 反引号在 JS 里等价于字符串引号，且不会与 AppleScript 的 "..." 冲突
+    let eval_js = format!("eval(atob(`{}`))", js_b64);
 
     let script = format!(
         r#"tell application "{}"
