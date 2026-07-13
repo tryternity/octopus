@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import { cn } from "@/lib/utils";
 import { useT } from "@/lib/i18n";
 import { Bot, Plus, RefreshCw, Check, X } from "lucide-react";
@@ -236,6 +237,12 @@ function TaskList({ showToast }: { showToast: (msg: string) => void }) {
   }, []);
 
   useEffect(refresh, [refresh]);
+
+  // 后台 task 状态变更时实时刷新
+  useEffect(() => {
+    const unlisten = listen("agent-task://updated", () => refresh());
+    return () => { unlisten.then((f) => f()); };
+  }, [refresh]);
 
   const handleRetry = async (id: string) => {
     try {

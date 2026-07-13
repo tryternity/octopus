@@ -1341,15 +1341,14 @@ fn execute_agent_task(app_handle: &tauri::AppHandle, task_id: &str, transcribed_
         match TerminalAppLauncher.spawn(&command, std::path::Path::new(&cwd)) {
             Ok(()) => {
                 let _ = octopus_infra::db::update_agent_task_status(&tid, "done", "");
-                // 成功：hide_result + tray Idle
                 crate::result_window::hide_result(&app_clone);
             }
             Err(e) => {
                 let _ = octopus_infra::db::update_agent_task_status(&tid, "failed", &e);
-                // 失败：show 错误保留显示，仅 tray Idle，不 hide（让用户读到错误）
                 crate::result_window::show_result(&app_clone, &format!("❌ Terminal 启动失败: {}", e));
             }
         }
+        let _ = app_clone.emit("agent-task://updated", ());
         crate::tray::update_tray_label(&app_clone, crate::tray::TrayState::Idle);
     });
 }
