@@ -1207,3 +1207,16 @@ Expected: 看到 7-8 个 feat/refactor/docs 提交，对应 Task 1-9。
 **三轮清理（9ac1aa22 + 62c10f4c）：**
 - [x] splitter 颜色 `bg-border` → `bg-muted-foreground/30`（与行号线区分）
 - [x] opus_mt_test unused import 删除 + ignore message 改为引导 GUI 下载路径
+
+---
+
+### Task 16: Opus-MT 带空格 CJK 翻译截断修复
+
+**背景：** opus-mt tokenizer pre_tokenizer（WhitespaceSplit + Metaspace）对带空格中文产生句中独立 ▁ token，偏离训练分布（中文连续字符）→ decoder 过早 EOS → 译文截断为第一段（「要看 猫是主动咬…」只译出 "It depends."，无空格版完整 9 词）。详见 spec §9.5。
+
+- [x] **Step 1:** `opus_mt.rs` 加纯函数 `normalize_cjk_spaces()`（移除 CJK 字符相邻的 ASCII 空格，语言无关安全）+ `is_cjk_char()` 判定
+- [x] **Step 2:** `translate()` 入口 encode 前调 `normalize_cjk_spaces`
+- [x] **Step 3:** 4 纯函数单测（CJK 间 / CJK-Latin 边界 / 纯 Latin 不动 / 空串与首尾）
+- [x] **Step 4:** 回归测 `test_opus_mt_cjk_space_not_truncated`（断言带空格词数≥5，`#[ignore]`）
+
+> ⚠️ m2m100 不同源（训练中文空格连接），勿套用 `normalize_cjk_spaces`。

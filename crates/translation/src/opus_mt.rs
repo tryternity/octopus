@@ -209,8 +209,12 @@ impl TranslationEngine for OpusMTEngine {
     }
 
     fn translate(&self, text: &str, _source_lang: &str, _target_lang: &str) -> Result<String> {
+        // 规范化 CJK 邻接空格：opus-mt tokenizer (WhitespaceSplit + Metaspace) 对带空格
+        // 中文会在句中产生独立 ▁ token，偏离训练分布（中文为连续字符）→ decoder 过早 EOS
+        // → 译文截断为第一段（如「要看 猫…」只译出 "It depends."）。详见 normalize_cjk_spaces。
+        let text = normalize_cjk_spaces(text);
         // Opus-MT 方向已由 load 时确定，source/target lang 不再需要
-        self.split_and_translate(text)
+        self.split_and_translate(&text)
     }
 }
 
@@ -297,6 +301,45 @@ fn is_sentence_end(ch: char) -> bool {
     matches!(ch, '。' | '！' | '？' | '．' | '\n' | '.' | '!' | '?' | ';' | '；')
 }
 
+/// 判断字符是否为 CJK 表意文字/假名/韩文（用于空格规范化）。
+fn is_cjk_char(c: char) -> bool {
+    matches!(c as u32,
+        0x4e00..=0x9fff   // CJK 统一汉字
+        | 0x3400..=0x4dbf // CJK 扩展 A
+        | 0xf900..=0xfaff // CJK 兼容表意文字
+        | 0x3040..=0x30ff // 日文假名（平/片假名）
+        | 0xac00..=0xd7af // 韩文音节
+    )
+}
+
+/// 规范化 CJK 邻接空格：移除「左侧或右侧为 CJK 字符」的 ASCII 半角空格。
+///
+/// 背景：opus-mt 的 tokenizer pre_tokenizer 是 `WhitespaceSplit + Metaspace`，
+/// 对带空格的中文会在句中产生**独立的 `▁` token（id=7）**——而 opus-mt-zh-en
+/// 训练数据中中文是连续字符（句中无 `▁`）。这种 OOD 输入会让 decoder 翻译完
+/// 第一段（空格前）后过早输出 EOS，译文被截断（实测「要看 猫是主动咬…」→
+/// "It depends."）。移除 CJK 邻接空格让 token 序列回到训练分布。
+///
+/// 语言无关、安全：纯英文输入无 CJK 字符，空格全保留；中英混合时仅移除
+/// CJK 边界空格（如「使用 Python 编程」→「使用Python编程」），Latin 词内部
+/// 空格保留。换行等其它空白不动（上层已按 \n 切段）。
+fn normalize_cjk_spaces(text: &str) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    let mut out = String::with_capacity(text.len());
+    for (i, &c) in chars.iter().enumerate() {
+        if c == ' ' {
+            let prev_cjk = i > 0 && is_cjk_char(chars[i - 1]);
+            let next_cjk = i + 1 < chars.len() && is_cjk_char(chars[i + 1]);
+            // 空格任一侧是 CJK → 移除（CJK 不靠空格分词）
+            if prev_cjk || next_cjk {
+                continue;
+            }
+        }
+        out.push(c);
+    }
+    out
+}
+
 /// 对 decoder logits 施加 repetition penalty + no-repeat-ngram 惩罚（原地修改）。
 /// 纯函数，不依赖 ONNX，便于单测。
 /// - `logits`：当前步 logits 副本（vocab_size 长度）
@@ -335,6 +378,38 @@ fn apply_penalties(logits: &mut [f32], decoder_ids: &[i64]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalize_cjk_spaces_removes_between_cjk() {
+        // CJK 之间的空格移除（本 bug 的核心场景）
+        assert_eq!(normalize_cjk_spaces("要看 猫是主动咬"), "要看猫是主动咬");
+        assert_eq!(normalize_cjk_spaces("要 看 猫"), "要看猫");
+    }
+
+    #[test]
+    fn normalize_cjk_spaces_preserves_latin() {
+        // 纯英文空格全保留
+        assert_eq!(normalize_cjk_spaces("hello world"), "hello world");
+        assert_eq!(normalize_cjk_spaces("It depends."), "It depends.");
+    }
+
+    #[test]
+    fn normalize_cjk_spaces_mixed() {
+        // 中英混合：CJK 边界空格移除，Latin 词内部保留
+        assert_eq!(normalize_cjk_spaces("使用 Python 编程"), "使用Python编程");
+        assert_eq!(normalize_cjk_spaces("hello 世界"), "hello世界");
+        assert_eq!(normalize_cjk_spaces("世界 hello"), "世界hello");
+    }
+
+    #[test]
+    fn normalize_cjk_spaces_edges_and_empty() {
+        // 首尾空格：邻接 CJK 移除
+        assert_eq!(normalize_cjk_spaces(" 看"), "看");
+        assert_eq!(normalize_cjk_spaces("看 "), "看");
+        // 无空格 / 空串不变
+        assert_eq!(normalize_cjk_spaces("要看猫"), "要看猫");
+        assert_eq!(normalize_cjk_spaces(""), "");
+    }
 
     #[test]
     fn test_apply_penalties_len1_no_crash() {

@@ -358,7 +358,15 @@ MarianMT 训练用 beam search（`num_beams=6`），greedy 解码容易陷入重
 
 Xenova 导出的 tokenizer.json 中 `normalizer.precompiled_charsmap` 为 `null`，`tokenizers` crate 0.21.4 遇到 null 直接 panic（`Precompiled: Error("invalid type: null")`）。修复：加载时解析 JSON，删除整个 `normalizer` 字段（MarianMT 不需要 normalization）。
 
-### 9.5 引擎选择优先级（自动模式）
+### 9.5 CJK 邻接空格归一化（防译文截断）
+
+opus-mt tokenizer 的 pre_tokenizer = `WhitespaceSplit + Metaspace(add_prefix_space=true)`。**带空格的中文**（如「要看 猫是主动咬…」）被 WhitespaceSplit 按空格切段、每段加 ▁ → 句中产生**独立 `▁` token (id=7)**。但 opus-mt 训练数据中文是连续字符（句中无独立 ▁）→ OOD 输入 → decoder 翻译完空格前第一段后过早输出 EOS → 译文截断为第一段（实测「要看 猫…」只译出 "It depends."，无空格版完整 9 词）。
+
+**修复**：`translate()` 入口调纯函数 `normalize_cjk_spaces()` 移除「CJK 字符相邻的 ASCII 空格」。语言无关安全：纯英文空格全保留，中英混合仅移 CJK 边界空格（如「使用 Python 编程」→「使用Python编程」）。encode 前规范化让 token 序列回训练分布，带空格/无空格结果一致。
+
+⚠️ **m2m100 不同源**——其训练惯例中文分词后空格连接，带空格符合分布，**勿**套用 `normalize_cjk_spaces`（否则帮倒忙）。纯函数 4 单测 + 1 回归测（断言带空格词数≥5）守护。
+
+### 9.6 引擎选择优先级（自动模式）
 
 1. **opus-mt**（轻量 30M，中英互译）—— 已下载则优先
 2. **m2m100-418M**（多语言 100+）—— opus-mt 未下载时 fallback
@@ -366,7 +374,7 @@ Xenova 导出的 tokenizer.json 中 `normalizer.precompiled_charsmap` 为 `null`
 
 用户可在设置页手动选择 `local:opus-mt` / `local:m2m100-418M` / `自动` / `LLM`。前端 engine option value 不做 `.toLowerCase()`（与后端 spec 字面量一致）。
 
-### 9.6 引擎缓存
+### 9.7 引擎缓存
 
 `engine.rs` 全局缓存改为 `HashMap<String, Arc<dyn TranslationEngine>>`：
 - m2m100：按 spec key 缓存（如 `local:m2m100-418M`）
