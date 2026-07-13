@@ -169,18 +169,29 @@ Command::StartAgentRecording { task_id: String }
 
 `Coordinator::start_agent_recording(task_id)` 发送此命令。主循环处理：sync runtime config → `begin_recording(..., RecordType::AgentBridge { task_id })`。不走 prepare-record，agent 录音无 selection 需求。
 
-**finalize_after_stop 按 record_type 分流**：
+**finalize 统一分流（dispatch_by_record_type helper）**：
+
+抽统一 helper 覆盖「非空执行 / 空标 failed / Input 放行」三态，`finalize_after_stop` 和 `finalize_cloud` 都调用它：
 
 ```rust
-match &transcript.record_type {
-    RecordType::AgentBridge { task_id } => {
-        execute_agent_task(app_handle, task_id, &combined);
-        *stage = Stage::Idle;
-        return;
+fn dispatch_by_record_type(transcript: &Transcript, text: &str, app_handle: &AppHandle) -> bool {
+    match &transcript.record_type {
+        RecordType::Input => false, // 调用方走 paste
+        RecordType::AgentBridge { task_id } => {
+            if text.trim().is_empty() {
+                update_agent_task_status(task_id, "failed", "识别结果为空");
+            } else {
+                execute_agent_task(app_handle, task_id, text);
+            }
+            true // 已处理
+        }
     }
-    RecordType::Input => {} // 走现有 paste 流程
 }
 ```
+
+**cancel/discard 清理（agent_task_id_in_stage helper）**：
+
+`handle_cancel` 和 `handle_discard` 收尾时用 `agent_task_id_in_stage(stage)` 提取 AgentBridge task_id，标记 failed。
 
 ### 3.5 action bar → 录音联动
 
@@ -239,8 +250,10 @@ fn execute_agent_task(app: &AppHandle, task_id: &str, transcribed_text: &str) {
     // 1. UPDATE agent_tasks SET transcribed_text, status='executing'
     // 2. load_agent_task → parse_agent_context
     // 3. render_agent_prompt → render_command → TerminalAppLauncher.spawn
-    // 4. UPDATE status='done' / 'failed'
-    // 5. hide_result + tray Idle
+    //    spawn 投递后台线程避免阻塞协调器
+    // 4. UPDATE status='done' / 'failed'（后台线程内）
+    // 5. hide_result + tray Idle（Ok 臂 hide；Err 臂 show 错误保留）
+    // 早返回路径统一 cleanup（hide+tray）
 }
 ```
 
@@ -255,7 +268,7 @@ fn execute_agent_task(app: &AppHandle, task_id: &str, transcribed_text: &str) {
 | i9j0k1l2 | ⏳ pending | Claude Code | — | 1 小时前 | 删除 |
 
 - 仅查最近 50 条
-- failed/done 可重试（重新组装命令 + Terminal.app 执行）
+- failed/done 可重试（重新组装命令 + Terminal.app 执行）；空识别 task（transcribed_text 为空）拒绝重试
 
 **新增 Tauri 命令**：
 
