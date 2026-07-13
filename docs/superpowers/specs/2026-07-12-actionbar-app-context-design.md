@@ -224,17 +224,46 @@ osascript 通过 `spawn()` + `Stdio::piped()` + `try_wait` 轮询超时执行（
 
 iTerm2 的 `AXSelectedTextRange` 基于整个终端缓冲区，与 `AXValue`（可见 scrollback）不在同一坐标系。改为用 selected_text 在 full_text 中 `find()` 定位，按位置切 before/after。Terminal 排除内容校验（选中文本可能在不可见区域，find-fail fallback 取 scrollback 末尾）。
 
-### 5.5 自绘编辑器磁盘文件 fallback（macOS）
+### 5.5 自绘编辑器取数（macOS）
 
-自绘编辑器（Sublime Text、WPS）的 AX 树不含真实编辑器内容。当内容校验降级时，尝试从磁盘读文件：
+自绘编辑器（Sublime Text、WPS）的 AX 树不含真实编辑器内容。当 AX 内容校验降级时，按优先级尝试三条 fallback 路径：
+
+**路径 1：Sublime 插件取数器**（`sublime_plugin.rs`，仅 `com.sublimetext.*`）
+
+1. 自动安装插件到 `Packages/Octopus/octopus_context.py`（首次运行，内容比对确保最新）
+2. 触发 `subl --command octopus_export_context`
+3. 插件从 Sublime Python API 读 view 全文 + 选区位置 → 写 `/tmp/octopus_sublime_ctx.json`
+4. 读取 JSON → 用选区位置精确切 before/after 各 1000 字
+5. **对未保存文件（untitled）同样有效**——插件直接读 view 内容
+
+**路径 2：磁盘文件 fallback**（仅 `kind == Editor`）
 
 1. `extract_filename_from_title("test.txt — Sublime Text")` → `"test.txt"`（em dash / hyphen 分隔，过滤 untitled/App 名/无扩展名）
 2. `find_file_path(filename, bundle_id)`：
-   - Sublime session（`file_history` + `buffers` JSON 解析，支持 ST3/ST4 路径）
+   - Sublime session（`file_history` + `buffers` JSON 解析，`path_matches_filename` 精确匹配，遍历所有 windows）
    - `mdfind -name` Spotlight fallback（文件名精确匹配）
-3. 读文件内容 → `slice_around_text`（char-level 偏移）切 before/after 各 1000 字
+3. `read_file_as_text(path)` → `slice_around_text`（char-level 偏移）切 before/after 各 1000 字
 
-**限制**：未保存文件（untitled）无法读取；二进制格式（.docx/.pdf）`read_to_string` 失败；文件已修改未保存时内容可能不一致。
+**`read_file_as_text` 支持的格式**：
+
+| 格式 | 机制 |
+|------|------|
+| `.txt`/`.md`/`.rs`/`.py` 等 | 直接读取（UTF-8 lossy） |
+| `.docx`/`.pptx` | zip 解压 → `word/document.xml` 或 `ppt/slides/slideN.xml` → 提取 `<w:t>`/`<a:t>` 文本 |
+| `.xlsx` | zip 解压 → `sharedStrings.xml` + `worksheets/sheetN.xml` → 提取单元格文本 |
+| zip 文件（误存为 .txt） | 检测 `PK\x03\x04` 魔数 → 走 OOXML 解析 |
+
+**路径 3：降级返回 None**
+
+诊断日志区分 5 种降级原因：无窗口标题 / 标题无法提取文件名 / 文件未找到 / 读取失败 / 内容不含选中文本。
+
+**各编辑器覆盖情况**：
+
+| 编辑器 | 路径 1 插件 | 路径 2 磁盘 | 备注 |
+|--------|------------|------------|------|
+| Sublime Text | ✅ 最可靠 | ✅ session 精确 | 含未保存文件 |
+| WPS Office | ❌ 无插件 API | ✅ .docx OOXML | 需窗口标题含文件名 |
+| 其他自绘编辑器 | ❌ | ✅ 纯文本文件 | 需窗口标题含文件名 |
 
 ### 5.5 AX 安全约束（踩坑总结）
 
@@ -325,7 +354,8 @@ fn classify_app(bundle_id: &str) -> AppKind {
 
 | 限制 | 现状 | v2 方向 |
 |------|------|---------|
-| Sublime Text / WPS 自绘编辑器 | AX 降级 → 磁盘文件 fallback（从标题提取文件名 + session/mdfind 搜索 + 读文件切上下文） | 专属取数器 / 编辑器插件 API |
+| Sublime Text | ✅ 插件取数器（subl --command + Python API）+ 磁盘 fallback | — |
+| WPS Office | AX 禁用 + 无 AppleScript + 无插件 API；磁盘 fallback 支持 .docx（OOXML zip 解析），需窗口标题含文件名 | WPS 插件 API（如有） |
 | Firefox (macOS) | 无 AppleScript JS 接口，走 AX（Mozilla AX 比 Chrome 完整） | 浏览器扩展 + WebSocket |
 | Windows 浏览器 | UIA TextPattern 全文 find，无 AppleScript JS 精度 | GetSelection + ExpandToEnclosingUnit 段落级精准扩展 |
 | Windows 全文 find | selected_text 多次出现时命中第一次，可能错位 | GetSelection 精确选区 + range 扩展 |
@@ -348,6 +378,6 @@ fn classify_app(bundle_id: &str) -> AppKind {
 | 磁盘 fallback 标题提取 | extract_filename_from_title | 9 |
 | 磁盘 fallback 切片 | slice_around_text（char-level，含 CJK/大小写/limit/多行） | 11 |
 | 磁盘 fallback 端到端 | 真实文件/大文件截断/多行选中 | 3 |
-| Sublime session JSON 解析 | file_history / buffers / 空 buffer | 3 |
+| session JSON 解析 | find_file_in_session_json / path_matches_filename（多窗口/后缀防护/精确匹配） | 10 |
 | App 名判定 | name_result_is_app_name | 2 |
-| **合计** | | **69** |
+| **合计** | | **76** |
