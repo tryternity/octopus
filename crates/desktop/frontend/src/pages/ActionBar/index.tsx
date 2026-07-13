@@ -534,10 +534,10 @@ export default function ActionBar() {
             if (e.key === "Enter") { e.preventDefault(); submitTask(); }
             if (e.key === "Escape") { setView("main"); setTaskInput(""); }
           }}
-          placeholder="告诉 agent 做什么…"
+          placeholder={t("actionbar.taskPlaceholder")}
           className="flex-1 bg-transparent text-sm outline-none placeholder:text-muted-foreground/50"
         />
-        <span className="text-[10px] text-muted-foreground whitespace-nowrap">↵ 执行 · Esc 取消</span>
+        <span className="text-[10px] text-muted-foreground whitespace-nowrap">{t("actionbar.taskSubmit")}</span>
       </div>
     );
   }

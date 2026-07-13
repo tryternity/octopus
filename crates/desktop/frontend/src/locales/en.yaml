@@ -315,6 +315,11 @@ settings:
     typeExtensionDesc: Import from .octopusext.zip or folder (contains config.yaml + scripts)
     typeCopy: Copy
     typeCopyDesc: Copy selected text to clipboard
+    typeAgent: Agent (File Bridge)
+    typeAgentDesc: After selecting files in Finder, pass file paths + task to an external CLI agent (e.g. Claude Code / pi) to execute in terminal. Content is a prompt template supporting {{task}} and {{files}} placeholders
+    typeAgentPlaceholder: "{{task}}\n\nFiles:\n{{files}}"
+    typeCopyPath: Copy Path
+    typeCopyPathDesc: Copy selected file paths to clipboard, supports plain / file:// URL / quoted formats
     extensionFilter: Extension Package
     extensionLabel: Extension Package
     importing: Importing…
@@ -375,6 +380,15 @@ settings:
     addMainItem: Add Main Menu Item
     noItemsYet: No menu items yet
     noItemsHint: Add your first main menu item to start configuring your command palette.
+    selectAgent: Select agent…
+    pathFormat: Path Format
+    pathFormatPlain: Plain
+    pathFormatUrl: file:// URL
+    pathFormatQuoted: Quoted
+    acceptsScope: Scope
+    acceptsFile: Files
+    acceptsAny: Files + Text
+    agentLabel: Agent
   clipboardPanel:
     filterAll: All
     groupType: Type
@@ -448,6 +462,32 @@ tray:
 actionbar:
   processing: Processing
   timeout: Request timeout (${n}s)
+  taskPlaceholder: Tell the agent what to do…
+  taskSubmit: ↵ Run · Esc Cancel
+
+# ════════ Agent Panel ════════
+agentPanel:
+  title: Agents
+  refresh: Refresh
+  addNew: Add
+  editAdapter: Edit Adapter
+  newAdapter: New Adapter
+  installed: ✅ Installed
+  notFound: ❌ Not found
+  builtin: Built-in
+  keyLabel: Key (unique identifier)
+  displayNameLabel: Display Name
+  detectBinaryLabel: Detect Binary
+  templateLabel: Command Template
+  builtinOnly: Built-in adapters cannot be edited
+  refreshed: Detection refreshed
+  saved: Saved
+  saveFailed: Save failed
+  templateHelpTitle: Command Template Placeholders
+  templateHelpPrompt: "{prompt} — rendered prompt (includes user task)"
+  templateHelpFiles: "{files} — space-separated file paths"
+  templateHelpFilesAt: "{files_at} — @ prefixed file paths (pi style)"
+  templateHelpCwd: "{cwd} — parent directory of first file"
 
 # ════════ Result ════════
 result:

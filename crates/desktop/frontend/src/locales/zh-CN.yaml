@@ -315,6 +315,11 @@ settings:
     typeExtensionDesc: 从 .octopusext.zip 或文件夹导入扩展包（含 config.yaml + 脚本）
     typeCopy: 复制
     typeCopyDesc: 将选中文本复制到剪贴板
+    typeAgent: Agent（文件桥接）
+    typeAgentDesc: Finder 选中文件后，将文件路径 + 任务交给外部 CLI agent（如 Claude Code / pi）在终端中执行。内容填 prompt 模板，支持 {{task}} 和 {{files}} 占位符
+    typeAgentPlaceholder: "{{task}}\n\n文件列表：\n{{files}}"
+    typeCopyPath: 复制路径
+    typeCopyPathDesc: 将选中文件的路径复制到剪贴板，支持纯路径 / file:// URL / 带引号三种格式
     extensionFilter: 扩展包
     extensionLabel: 扩展包
     importing: 导入中…
@@ -375,6 +380,15 @@ settings:
     addMainItem: 新增主菜单项
     noItemsYet: 还没有菜单项
     noItemsHint: 新增第一个主菜单项，开始配置你的命令面板。
+    selectAgent: 选择 agent…
+    pathFormat: 路径格式
+    pathFormatPlain: 纯路径
+    pathFormatUrl: file:// URL
+    pathFormatQuoted: 带引号
+    acceptsScope: 适用场景
+    acceptsFile: 文件
+    acceptsAny: 文件 + 文本
+    agentLabel: Agent
   clipboardPanel:
     filterAll: 全部
     groupType: 类型
@@ -448,6 +462,32 @@ tray:
 actionbar:
   processing: 处理中
   timeout: 请求超时（${n}s）
+  taskPlaceholder: 告诉 agent 做什么…
+  taskSubmit: ↵ 执行 · Esc 取消
+
+# ════════ Agent 管理 ════════
+agentPanel:
+  title: Agent 管理
+  refresh: 刷新检测
+  addNew: 新增
+  editAdapter: 编辑 Adapter
+  newAdapter: 新增 Adapter
+  installed: ✅ 已安装
+  notFound: ❌ 未找到
+  builtin: 内置
+  keyLabel: Key（唯一标识）
+  displayNameLabel: 显示名称
+  detectBinaryLabel: 检测二进制名
+  templateLabel: 命令模板
+  builtinOnly: 内置 adapter 不可编辑
+  refreshed: 已刷新检测
+  saved: 已保存
+  saveFailed: 保存失败
+  templateHelpTitle: 命令模板占位符
+  templateHelpPrompt: "{prompt} — 渲染后的 prompt（含用户 task）"
+  templateHelpFiles: "{files} — 空格分隔的文件路径"
+  templateHelpFilesAt: "{files_at} — @ 前缀的文件路径（pi 风格）"
+  templateHelpCwd: "{cwd} — 首个文件的父目录"
 
 # ════════ Result ASR 结果窗 ════════
 result:

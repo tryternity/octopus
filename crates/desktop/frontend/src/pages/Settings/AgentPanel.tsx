@@ -1,6 +1,7 @@
 import { useState, useEffect } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { cn } from "@/lib/utils";
+import { useT } from "@/lib/i18n";
 import { Bot, Plus, RefreshCw, Check, X } from "lucide-react";
 
 interface AgentAdapter {
@@ -17,6 +18,7 @@ interface AgentPanelProps {
 }
 
 export default function AgentPanel({ showToast }: AgentPanelProps) {
+  const t = useT();
   const [adapters, setAdapters] = useState<AgentAdapter[]>([]);
   const [editing, setEditing] = useState<Partial<AgentAdapter> | null>(null);
   const [editId, setEditId] = useState<number | null>(null);
@@ -30,7 +32,7 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
   const handleRefresh = async () => {
     await invoke<AgentAdapter[]>("refresh_agent_detection");
     refresh();
-    showToast("已刷新检测");
+    showToast(t("agentPanel.refreshed"));
   };
 
   const handleSave = async () => {
@@ -55,9 +57,9 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
       setEditing(null);
       setEditId(null);
       refresh();
-      showToast("已保存");
+      showToast(t("agentPanel.saved"));
     } catch (e) {
-      showToast(String(e));
+      showToast(t("agentPanel.saveFailed") + String(e));
     }
   };
 
@@ -78,7 +80,7 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           <Bot className="w-5 h-5 text-voice" />
-          <h2 className="text-lg font-semibold">Agent 管理</h2>
+          <h2 className="text-lg font-semibold">{t("agentPanel.title")}</h2>
         </div>
         <div className="flex items-center gap-2">
           <button
@@ -86,14 +88,14 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
             className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors"
           >
             <RefreshCw className="w-3.5 h-3.5" />
-            刷新检测
+            {t("agentPanel.refresh")}
           </button>
           <button
             onClick={startCreate}
             className="flex items-center gap-1.5 text-xs text-voice hover:underline"
           >
             <Plus className="w-3.5 h-3.5" />
-            新增
+            {t("agentPanel.addNew")}
           </button>
         </div>
       </div>
@@ -112,7 +114,9 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
               <div className="flex items-center gap-2">
                 <span className="font-medium text-sm">{a.displayName}</span>
                 {a.isBuiltin && (
-                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">内置</span>
+                  <span className="text-[10px] px-1.5 py-0.5 rounded bg-muted text-muted-foreground">
+                    {t("agentPanel.builtin")}
+                  </span>
                 )}
               </div>
               <div className="text-xs text-muted-foreground font-mono mt-1">
@@ -124,9 +128,13 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
             </div>
             <div className="flex items-center gap-2 ml-3">
               {a.isAvailable ? (
-                <span className="text-xs text-emerald-500 whitespace-nowrap">✅ 已安装</span>
+                <span className="text-xs text-emerald-500 whitespace-nowrap">
+                  {t("agentPanel.installed")}
+                </span>
               ) : (
-                <span className="text-xs text-muted-foreground whitespace-nowrap">❌ 未找到</span>
+                <span className="text-xs text-muted-foreground whitespace-nowrap">
+                  {t("agentPanel.notFound")}
+                </span>
               )}
             </div>
           </div>
@@ -138,7 +146,7 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
         <div className="rounded-lg border border-voice/30 bg-card p-4 space-y-3">
           <div className="flex items-center justify-between">
             <h3 className="text-sm font-medium">
-              {editId !== null ? "编辑 Adapter" : "新增 Adapter"}
+              {editId !== null ? t("agentPanel.editAdapter") : t("agentPanel.newAdapter")}
             </h3>
             <button onClick={() => { setEditing(null); setEditId(null); }} className="text-muted-foreground hover:text-foreground">
               <X className="w-4 h-4" />
@@ -146,7 +154,7 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
           </div>
           <div className="grid grid-cols-2 gap-3">
             <div>
-              <label className="text-xs text-muted-foreground">Key（唯一标识）</label>
+              <label className="text-xs text-muted-foreground">{t("agentPanel.keyLabel")}</label>
               <input
                 className={inputClass}
                 value={editing.key || ""}
@@ -155,7 +163,7 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground">显示名称</label>
+              <label className="text-xs text-muted-foreground">{t("agentPanel.displayNameLabel")}</label>
               <input
                 className={inputClass}
                 value={editing.displayName || ""}
@@ -164,7 +172,7 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground">检测二进制名</label>
+              <label className="text-xs text-muted-foreground">{t("agentPanel.detectBinaryLabel")}</label>
               <input
                 className={inputClass}
                 value={editing.detectBinary || ""}
@@ -173,7 +181,7 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
               />
             </div>
             <div>
-              <label className="text-xs text-muted-foreground">命令模板</label>
+              <label className="text-xs text-muted-foreground">{t("agentPanel.templateLabel")}</label>
               <input
                 className={inputClass}
                 value={editing.commandTemplate || ""}
@@ -182,27 +190,24 @@ export default function AgentPanel({ showToast }: AgentPanelProps) {
               />
             </div>
           </div>
-          <div className="text-xs text-muted-foreground">
-            可用占位符：{"{prompt}"} {"{files}"} {"{files_at}"} {"{cwd}"}
-          </div>
           <button
             onClick={handleSave}
             className="flex items-center gap-1.5 px-3 py-1.5 rounded-md bg-voice text-white text-sm hover:bg-voice/90 transition-colors"
           >
             <Check className="w-3.5 h-3.5" />
-            保存
+            {t("agentPanel.saved")}
           </button>
         </div>
       )}
 
       {/* 命令模板占位符说明 */}
       <div className="rounded-lg border border-border p-4 space-y-2">
-        <h3 className="text-sm font-medium">命令模板占位符</h3>
+        <h3 className="text-sm font-medium">{t("agentPanel.templateHelpTitle")}</h3>
         <div className="space-y-1 text-xs text-muted-foreground font-mono">
-          <div><span className="text-foreground">{"{prompt}"}</span> — 渲染后的 prompt（含用户 task）</div>
-          <div><span className="text-foreground">{"{files}"}</span> — 空格分隔的文件路径</div>
-          <div><span className="text-foreground">{"{files_at}"}</span> — @ 前缀的文件路径（pi 风格）</div>
-          <div><span className="text-foreground">{"{cwd}"}</span> — 首个文件的父目录</div>
+          <div><span className="text-foreground">{"{prompt}"}</span> {t("agentPanel.templateHelpPrompt")}</div>
+          <div><span className="text-foreground">{"{files}"}</span> {t("agentPanel.templateHelpFiles")}</div>
+          <div><span className="text-foreground">{"{files_at}"}</span> {t("agentPanel.templateHelpFilesAt")}</div>
+          <div><span className="text-foreground">{"{cwd}"}</span> {t("agentPanel.templateHelpCwd")}</div>
         </div>
       </div>
     </div>

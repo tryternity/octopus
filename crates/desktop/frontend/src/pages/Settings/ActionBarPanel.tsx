@@ -435,13 +435,13 @@ const EditForm = ({
         )}
 
         {type === "agent" && (
-          <Field label="Agent">
+          <Field label={t("settings.actionBar.agentLabel")}>
             <select
               className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
               value={form.agent || ""}
               onChange={(e) => onChange({ ...form, agent: e.target.value })}
             >
-              <option value="">选择 agent…</option>
+              <option value="">{t("settings.actionBar.selectAgent")}</option>
               {adapters.filter((a) => a.isAvailable).map((a) => (
                 <option key={a.key} value={a.key}>{a.displayName}</option>
               ))}
@@ -450,15 +450,15 @@ const EditForm = ({
         )}
 
         {type === "copy_path" && (
-          <Field label="路径格式">
+          <Field label={t("settings.actionBar.pathFormat")}>
             <select
               className="w-full bg-background border border-border rounded-md px-3 py-2 text-sm outline-none focus:border-voice/50 focus:ring-1 focus:ring-voice/20 transition-all"
               value={form.actionData || "plain"}
               onChange={(e) => onChange({ ...form, actionData: e.target.value })}
             >
-              <option value="plain">纯路径</option>
-              <option value="url">file:// URL</option>
-              <option value="quoted">带引号</option>
+              <option value="plain">{t("settings.actionBar.pathFormatPlain")}</option>
+              <option value="url">{t("settings.actionBar.pathFormatUrl")}</option>
+              <option value="quoted">{t("settings.actionBar.pathFormatQuoted")}</option>
             </select>
           </Field>
         )}
