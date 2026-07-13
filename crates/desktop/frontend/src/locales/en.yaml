@@ -47,6 +47,7 @@ settings:
     general: Settings
     clipboard: Clipboard
     actionBar: Command Palette
+    agent: Agents
     hotword: Hotword
     models: Models
     prompts: Prompts

@@ -47,6 +47,7 @@ settings:
     general: 系统设置
     clipboard: 剪贴管理
     actionBar: 命令面板
+    agent: Agent 管理
     hotword: 热词管理
     models: 模型管理
     prompts: 提 示 词
