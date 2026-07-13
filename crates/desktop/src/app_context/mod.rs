@@ -87,6 +87,8 @@ pub fn gather_context(selected_text: &str) -> anyhow::Result<ExtraContext> {
 mod ffi;
 #[cfg(target_os = "macos")]
 mod macos_ax;
+#[cfg(target_os = "macos")]
+mod sublime_plugin;
 #[cfg(target_os = "windows")]
 mod windows_uia;
 // linux_atspi.rs 暂不编译——AT-SPI2 需事件流，见文件注释

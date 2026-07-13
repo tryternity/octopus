@@ -732,6 +732,20 @@ unsafe fn build_surrounding(
         let selected_trimmed = selected_text.trim();
         let full_trimmed = full_text.trim();
         if !full_trimmed.contains(selected_trimmed) {
+            // Sublime Text 专用取数器：通过插件直接读 view 内容（含未保存文件）
+            if bundle_id_or_name.contains("sublimetext") {
+                if let Some(sublime_ctx) = crate::app_context::sublime_plugin::try_sublime_plugin_context(
+                    bundle_id_or_name,
+                    selected_text,
+                ) {
+                    diagnostics.push("SUBLIME_PLUGIN: 插件取数成功".to_string());
+                    let diag = Some(diagnostics.join("\n  "));
+                    log::info!("[app-context] Sublime 插件取数成功");
+                    return Ok((sublime_ctx, diag));
+                }
+            }
+
+            // 通用磁盘 fallback：从窗口标题提取文件名 + session/mdfind 搜索
             // 自绘编辑器 fallback：尝试从磁盘读文件内容。
             // 窗口标题通常含文件名（如 "test.txt — Sublime Text"），
             // 用 App 的 session/recent files 查找完整路径。
