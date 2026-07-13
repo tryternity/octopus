@@ -104,7 +104,6 @@ pub fn trigger_action_bar(app: AppHandle) {
         log::info!("[action-bar] got text len={}", text.len());
 
         // 5. 先显示浮窗，再后台采集上下文（避免 gather 阻塞浮窗显示）
-        let app_for_gather = app_clone.clone();
         let text_for_gather = text.clone();
 
         // 浮窗先弹——获取鼠标位置 + 显示浮窗（主线程）
@@ -159,18 +158,23 @@ pub fn trigger_action_bar(app: AppHandle) {
         });
 
         // 浮窗已显示，后台采集上下文，完成后回填 PENDING_CONTEXT
-        // gather 自带 500ms 超时兜底，不会永久阻塞
         std::thread::spawn(move || {
             match crate::app_context::gather_context(&text_for_gather) {
                 Ok(extra) => {
                     log_app_context(&text_for_gather, &extra);
-                    // 回填 source/surrounding——前端后续 execute_action_bar 时读取
-                    if let Some(ctx) = PENDING_CONTEXT.lock().unwrap().as_mut() {
-                        ctx.source = Some(extra.source);
-                        ctx.surrounding = extra.surrounding;
+                    // 回填前校验归属——防止跨触发污染
+                    // （用户 dismiss 后重触发，旧 gather 线程回填到新 ctx）
+                    let mut guard = PENDING_CONTEXT.lock().unwrap();
+                    if let Some(ref ctx) = *guard {
+                        if ctx.text == text_for_gather {
+                            if let Some(ref mut ctx) = *guard {
+                                ctx.source = Some(extra.source);
+                                ctx.surrounding = extra.surrounding;
+                            }
+                        } else {
+                            log::info!("[action-bar] gather 回填跳过：ctx 已被新触发覆盖");
+                        }
                     }
-                    // 通知前端上下文已更新
-                    let _ = app_for_gather.emit("action-bar://context-updated", ());
                 }
                 Err(e) => log::warn!("[action-bar] context gather 失败（降级到仅 text）: {}", e),
             }

@@ -55,6 +55,7 @@ impl super::ContextProvider for AxProvider {
                 if let Some(result) = gather_browser_via_applescript(
                     bundle_id.as_deref().unwrap_or(""),
                     selected_text,
+                    deadline,
                 ) {
                     (Some(result.0), result.1)
                 } else {
@@ -145,6 +146,7 @@ fn ax_error_desc(err: AXError) -> &'static str {
 fn gather_browser_via_applescript(
     bundle_id: &str,
     selected_text: &str,
+    deadline: Instant,
 ) -> Option<(SurroundingText, Option<String>)> {
     use std::process::Command;
 
@@ -219,11 +221,27 @@ fn gather_browser_via_applescript(
         escaped = escaped
     );
 
-    let js_path = std::env::temp_dir().join(format!("octopus_browser_ctx_{}_{}.js", std::process::id(), js_source.len()));
+    let js_path = std::env::temp_dir().join(format!(
+        "octopus_browser_ctx_{}_{}.js",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_nanos()
+    ));
     if let Err(e) = std::fs::write(&js_path, js_source) {
         log::warn!("[app-context] 写 JS 临时文件失败: {}", e);
         return None;
     }
+
+    // RAII guard：无论成功/失败/超时，Drop 时删文件
+    struct TempFileGuard(std::path::PathBuf);
+    impl Drop for TempFileGuard {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let _file_guard = TempFileGuard(js_path.clone());
 
     // Chrome/Edge 和 Safari 的 AppleScript JS 语法完全不同：
     // - Chrome/Edge: execute (active tab of window 1) javascript jsCode
@@ -250,24 +268,53 @@ end tell"#,
         _ => return None,
     };
 
-    let output = Command::new("osascript")
-        .args(["-e", &script])
-        .output()
-        .ok()?;
+    // spawn + 超时轮询——防止 osascript 挂起（浏览器未响应/权限弹窗）导致线程泄漏。
+    // 用 try_wait 轮询模式（与 spawn_script 的 wait_with_timeout 一致），不引入新依赖。
+    let mut child = match Command::new("osascript").args(["-e", &script]).spawn() {
+        Ok(c) => c,
+        Err(e) => {
+            log::warn!("[app-context] osascript spawn 失败: {}", e);
+            return None;
+        }
+    };
 
-    // 用完即删——防止选中文本（可能含敏感信息）明文残留在 /tmp
-    let _ = std::fs::remove_file(&js_path);
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        log::info!(
-            "[app-context] browser AppleScript JS 失败: {}",
-            stderr.trim()
-        );
+    // 轮询等待，超时杀进程
+    let mut timed_out = false;
+    while Instant::now() < deadline {
+        match child.try_wait() {
+            Ok(Some(_)) => break,
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(20)),
+            Err(_) => break,
+        }
+    }
+    if child.try_wait().ok().flatten().is_none() {
+        let _ = child.kill();
+        let _ = child.wait();
+        timed_out = true;
+    }
+    if timed_out {
+        log::warn!("[app-context] browser osascript 超时，已终止");
         return None;
     }
 
-    let json_str = String::from_utf8_lossy(&output.stdout);
+    // 读取输出
+    use std::io::Read;
+    let mut stdout = String::new();
+    if let Some(mut out) = child.stdout.take() {
+        let _ = out.read_to_string(&mut stdout);
+    }
+    let mut stderr = String::new();
+    if let Some(mut err) = child.stderr.take() {
+        let _ = err.read_to_string(&mut stderr);
+    }
+    let status = child.wait().ok();
+
+    if status.as_ref().is_some_and(|s| !s.success()) {
+        log::info!("[app-context] browser AppleScript JS 失败: {}", stderr.trim());
+        return None;
+    }
+
+    let json_str = stdout;
     let json_str = json_str.trim();
 
     log::info!("[app-context] browser JS result: {} chars", json_str.len());
