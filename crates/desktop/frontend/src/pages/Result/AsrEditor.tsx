@@ -17,6 +17,7 @@ export interface AsrEditorCommit {
 
 export interface AsrEditorHandle {
   commit: () => void;
+  getText: () => string;
 }
 
 interface AsrEditorProps {
@@ -150,7 +151,10 @@ export const AsrEditor = forwardRef<AsrEditorHandle, AsrEditorProps>(function As
     onCommitRef.current({ text: docText, dirtyRanges, hasEdited, caret: caretPos, selection: selectionRange });
   }
 
-  useImperativeHandle(ref, () => ({ commit: doCommit }));
+  useImperativeHandle(ref, () => ({
+    commit: doCommit,
+    getText: () => viewRef.current?.state.doc.toString() ?? "",
+  }));
 
   // ── selection IPC：折叠选区（点击定位）即时发送，非折叠（拖选）防抖 ──
   function notifySelection(start: number, end: number) {
