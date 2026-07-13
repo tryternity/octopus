@@ -732,53 +732,57 @@ unsafe fn build_surrounding(
         let selected_trimmed = selected_text.trim();
         let full_trimmed = full_text.trim();
         if !full_trimmed.contains(selected_trimmed) {
-            // Sublime Text 专用取数器：通过插件直接读 view 内容（含未保存文件）
-            if bundle_id_or_name.contains("sublimetext") {
-                if let Some(sublime_ctx) = crate::app_context::sublime_plugin::try_sublime_plugin_context(
-                    bundle_id_or_name,
-                    selected_text,
-                ) {
-                    diagnostics.push("SUBLIME_PLUGIN: 插件取数成功".to_string());
-                    let diag = Some(diagnostics.join("\n  "));
-                    log::info!("[app-context] Sublime 插件取数成功");
-                    return Ok((sublime_ctx, diag));
+            // WPS Office 完全不支持上下文获取（AX -25212 + 无 AppleScript + 无插件 API + .docx 二进制）
+            // 跳过所有 fallback，直接降级。其他自绘编辑器尝试取数器/磁盘 fallback。
+            if !bundle_id_or_name.contains("kingsoft") {
+                // Sublime Text 专用取数器
+                if bundle_id_or_name.contains("sublimetext") {
+                    if let Some(sublime_ctx) = crate::app_context::sublime_plugin::try_sublime_plugin_context(
+                        bundle_id_or_name,
+                        selected_text,
+                    ) {
+                        diagnostics.push("SUBLIME_PLUGIN: 插件取数成功".to_string());
+                        let diag = Some(diagnostics.join("\n  "));
+                        log::info!("[app-context] Sublime 插件取数成功");
+                        return Ok((sublime_ctx, diag));
+                    }
                 }
-            }
 
-            // 通用磁盘 fallback：从窗口标题提取文件名 + session/mdfind 搜索
-            // 自绘编辑器 fallback：尝试从磁盘读文件内容。
-            // 窗口标题通常含文件名（如 "test.txt — Sublime Text"），
-            // 用 App 的 session/recent files 查找完整路径。
-            if let Some(ref title) = window_title {
-                if let Some(file_ctx) = try_read_file_context(
-                    title,
-                    bundle_id_or_name,
-                    selected_text,
-                ) {
-                    diagnostics.push("FALLBACK: AX 降级 → 从磁盘读文件成功".to_string());
-                    let diag = Some(diagnostics.join("\n  "));
-                    log::info!("[app-context] AX 降级 → 磁盘文件 fallback 成功");
-                    return Ok((file_ctx, diag));
+                // 通用磁盘 fallback：从窗口标题提取文件名 + session/mdfind 搜索
+                if let Some(ref title) = window_title {
+                    if let Some(file_ctx) = try_read_file_context(
+                        title,
+                        bundle_id_or_name,
+                        selected_text,
+                    ) {
+                        diagnostics.push("FALLBACK: AX 降级 → 从磁盘读文件成功".to_string());
+                        let diag = Some(diagnostics.join("\n  "));
+                        log::info!("[app-context] AX 降级 → 磁盘文件 fallback 成功");
+                        return Ok((file_ctx, diag));
+                    }
                 }
-            }
-            // 诊断降级原因
-            let degrade_reason = match &window_title {
-                None => "无窗口标题".to_string(),
-                Some(title) => match extract_filename_from_title(title) {
-                    None => format!("标题 '{}' 无法提取文件名", title),
-                    Some(fname) => match find_file_path(&fname, bundle_id_or_name) {
-                        None => format!("文件 '{}' 未在 session/mdfind 中找到", fname),
-                        Some(path) => match std::fs::read_to_string(&path) {
-                            Err(e) => format!("文件 {} 读取失败: {}", path.display(), e),
-                            Ok(content) if !content.contains(selected_trimmed) => {
-                                "文件内容不含选中文本".to_string()
-                            }
-                            Ok(_) => "未知原因".to_string(),
+
+                // 诊断降级原因
+                let degrade_reason = match &window_title {
+                    None => "无窗口标题".to_string(),
+                    Some(title) => match extract_filename_from_title(title) {
+                        None => format!("标题 '{}' 无法提取文件名", title),
+                        Some(fname) => match find_file_path(&fname, bundle_id_or_name) {
+                            None => format!("文件 '{}' 未在 session/mdfind 中找到", fname),
+                            Some(path) => match std::fs::read_to_string(&path) {
+                                Err(e) => format!("文件 {} 读取失败: {}", path.display(), e),
+                                Ok(content) if !content.contains(selected_trimmed) => {
+                                    "文件内容不含选中文本".to_string()
+                                }
+                                Ok(_) => "未知原因".to_string(),
+                            },
                         },
                     },
-                },
-            };
-            diagnostics.push(format!("DEGRADED: {}", degrade_reason));
+                };
+                diagnostics.push(format!("DEGRADED: {}", degrade_reason));
+            } else {
+                diagnostics.push("DEGRADED: WPS Office 不支持上下文获取（AX 禁用 + 无 AppleScript + 无插件 API）".to_string());
+            }
             let diag = Some(diagnostics.join("\n  "));
             log::info!("[app-context] AX 诊断（降级）:\n  {}", diag.as_ref().unwrap());
             return Ok((
