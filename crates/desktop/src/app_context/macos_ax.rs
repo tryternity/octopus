@@ -168,7 +168,7 @@ fn gather_browser_via_applescript(
     if(node.textContent.indexOf(sel)>=0||node.textContent.toLowerCase().indexOf(sel.toLowerCase())>=0) break;
   }}
   if(!node) return JSON.stringify({{before:"",after:"",title:document.title}});
-  var targetChars=2000;
+  var targetChars=2000+sel.length;
   var scope=node;
   while(scope&&scope.parentNode&&scope!==document.body){{
     if((scope.textContent||"").length>=targetChars) break;
