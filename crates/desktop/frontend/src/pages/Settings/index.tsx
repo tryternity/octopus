@@ -123,7 +123,7 @@ function Settings() {
       </div>
 
       {/* Content */}
-      <div className="flex-1 overflow-y-auto bg-background p-6">
+      <div className="flex-1 min-w-0 overflow-y-auto bg-background p-6">
         {page === "clipboard" ? (
           <ClipboardPanel showToast={showToast} />
         ) : page === "system" ? (
